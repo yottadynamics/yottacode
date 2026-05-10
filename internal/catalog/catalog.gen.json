@@ -1,0 +1,65 @@
+{
+  "generated_at": "2026-05-06T20:24:22Z",
+  "models": [
+    {
+      "id": "claude-opus-4-6",
+      "display_name": "Claude Opus 4.6",
+      "provider": "anthropic",
+      "context_window": 1000000,
+      "max_output": 128000,
+      "released_at": "2026-02-04T00:00:00Z",
+      "capabilities": {
+        "thinking": true,
+        "vision": true,
+        "pdf": true,
+        "structured_outputs": true
+      }
+    },
+    {
+      "id": "claude-opus-4-7",
+      "display_name": "Claude Opus 4.7",
+      "provider": "anthropic",
+      "context_window": 1000000,
+      "max_output": 128000,
+      "released_at": "2026-04-14T00:00:00Z",
+      "capabilities": {
+        "thinking": true,
+        "vision": true,
+        "pdf": true,
+        "structured_outputs": true
+      }
+    },
+    {
+      "id": "claude-sonnet-4-6",
+      "display_name": "Claude Sonnet 4.6",
+      "provider": "anthropic",
+      "context_window": 1000000,
+      "max_output": 128000,
+      "released_at": "2026-02-17T00:00:00Z",
+      "capabilities": {
+        "thinking": true,
+        "vision": true,
+        "pdf": true,
+        "structured_outputs": true
+      }
+    },
+    {
+      "id": "gpt-5.4",
+      "provider": "openai",
+      "released_at": "2026-03-05T06:24:12Z",
+      "capabilities": {}
+    },
+    {
+      "id": "gpt-5.4-mini",
+      "provider": "openai",
+      "released_at": "2026-03-14T01:18:43Z",
+      "capabilities": {}
+    },
+    {
+      "id": "gpt-5.5",
+      "provider": "openai",
+      "released_at": "2026-04-22T02:27:27Z",
+      "capabilities": {}
+    }
+  ]
+}

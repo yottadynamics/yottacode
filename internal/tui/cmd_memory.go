@@ -1,0 +1,446 @@
+package tui
+
+import (
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
+	"strings"
+
+	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/yottadynamics/yottacode/internal/adapter"
+	"github.com/yottadynamics/yottacode/internal/memory"
+)
+
+// projectMemorySizeWarnBytes is the chars-in-YOTTACODE.md (or USER.md)
+// threshold above which we emit a "large file will impact performance"
+// notice on startup.
+const projectMemorySizeWarnBytes = 40_000
+
+// editorDoneMsg fires when the /memory picker's vim subprocess returns.
+type editorDoneMsg struct {
+	err  error
+	path string
+}
+
+// cmdMemory opens the memory picker overlay.
+func cmdMemory(m Model, _ []string) (Model, tea.Cmd) {
+	m.openMemoryPicker()
+	return m, nil
+}
+
+type memoryPickerMode int
+
+const (
+	memoryRootMode memoryPickerMode = iota
+	memoryBrowseMode
+)
+
+type memoryPickerState struct {
+	mode memoryPickerMode
+
+	cursor int
+
+	userPath    string
+	projectPath string
+
+	userMemoryDir    string
+	projectMemoryDir string
+
+	browseScope   string
+	browseDir     string
+	entries       []memory.MemoryEntry
+	entryCursor   int
+	browseMessage string
+}
+
+const memoryPickerRowCount = 4
+
+func (m *Model) openMemoryPicker() {
+	st := &memoryPickerState{}
+	if home, err := os.UserHomeDir(); err == nil {
+		st.userPath = filepath.Join(home, ".yottacode", "USER.md")
+	}
+	if m.cwd != "" {
+		st.projectPath = filepath.Join(m.cwd, ".yottacode", "YOTTACODE.md")
+	}
+	if dir, err := memory.UserMemoryDir(); err == nil {
+		st.userMemoryDir = dir
+	}
+	if dir, err := memory.ProjectMemoryDir(m.cwd); err == nil {
+		st.projectMemoryDir = dir
+	}
+	m.memoryPicker = st
+	m.memoryPickerOpen = true
+}
+
+func (m Model) updateMemoryPicker(msg tea.KeyMsg) (Model, tea.Cmd) {
+	if m.memoryPicker == nil {
+		m.memoryPickerOpen = false
+		return m, nil
+	}
+	p := m.memoryPicker
+	if p.mode == memoryBrowseMode {
+		return m.updateMemoryBrowse(msg)
+	}
+	switch msg.Type {
+	case tea.KeyEsc:
+		m.memoryPickerOpen = false
+		m.memoryPicker = nil
+		m.openSlashPalette()
+		return m, nil
+	case tea.KeyUp:
+		if p.cursor > 0 {
+			p.cursor--
+		}
+		return m, nil
+	case tea.KeyDown:
+		if p.cursor < memoryPickerRowCount-1 {
+			p.cursor++
+		}
+		return m, nil
+	case tea.KeyEnter:
+		return m.commitMemoryPicker()
+	}
+	return m, nil
+}
+
+func (m Model) commitMemoryPicker() (Model, tea.Cmd) {
+	p := m.memoryPicker
+	if p == nil {
+		m.memoryPickerOpen = false
+		return m, nil
+	}
+	switch p.cursor {
+	case 0:
+		path := p.projectPath
+		m.memoryPickerOpen = false
+		m.memoryPicker = nil
+		if path == "" {
+			m.appendLine(styleError.Render("[memory] project path unavailable"))
+			return m, nil
+		}
+		return m.openInVim(path)
+	case 1:
+		path := p.userPath
+		m.memoryPickerOpen = false
+		m.memoryPicker = nil
+		if path == "" {
+			m.appendLine(styleError.Render("[memory] user path unavailable"))
+			return m, nil
+		}
+		return m.openInVim(path)
+	case 2:
+		return m.enterMemoryBrowse("user", p.userMemoryDir)
+	case 3:
+		return m.enterMemoryBrowse("project", p.projectMemoryDir)
+	}
+	return m, nil
+}
+
+func (m Model) enterMemoryBrowse(scope, dir string) (Model, tea.Cmd) {
+	p := m.memoryPicker
+	if p == nil {
+		return m, nil
+	}
+	entries, err := scanMemoryEntriesForBrowse(scope, m.cwd)
+	if err != nil {
+		m.memoryPickerOpen = false
+		m.memoryPicker = nil
+		m.appendLine(styleError.Render("[memory] " + err.Error()))
+		return m, nil
+	}
+	p.browseScope = scope
+	p.browseDir = dir
+	p.entries = entries
+	p.entryCursor = 0
+	p.browseMessage = ""
+	p.mode = memoryBrowseMode
+	return m, nil
+}
+
+func scanMemoryEntriesForBrowse(scope, cwd string) ([]memory.MemoryEntry, error) {
+	loaded, err := memory.Load(cwd)
+	if err != nil {
+		return nil, err
+	}
+	switch scope {
+	case "user":
+		return loaded.UserMemories, nil
+	case "project":
+		return loaded.ProjectMemories, nil
+	default:
+		return nil, fmt.Errorf("unknown scope %q", scope)
+	}
+}
+
+func (m Model) updateMemoryBrowse(msg tea.KeyMsg) (Model, tea.Cmd) {
+	p := m.memoryPicker
+	if p == nil {
+		return m, nil
+	}
+	switch msg.Type {
+	case tea.KeyEsc:
+		p.mode = memoryRootMode
+		p.entries = nil
+		p.browseMessage = ""
+		p.browseScope = ""
+		return m, nil
+	case tea.KeyUp:
+		if p.entryCursor > 0 {
+			p.entryCursor--
+		}
+		return m, nil
+	case tea.KeyDown:
+		if p.entryCursor < len(p.entries)-1 {
+			p.entryCursor++
+		}
+		return m, nil
+	case tea.KeyEnter:
+		return m.commitMemoryBrowseOpen()
+	}
+	if msg.Type == tea.KeyRunes && len(msg.Runes) == 1 {
+		switch msg.Runes[0] {
+		case 'd':
+			return m.commitMemoryBrowseDelete()
+		case 'f':
+			return m.commitMemoryBrowseOpenFolder()
+		}
+	}
+	return m, nil
+}
+
+func (m Model) commitMemoryBrowseOpen() (Model, tea.Cmd) {
+	p := m.memoryPicker
+	if p == nil || p.entryCursor >= len(p.entries) {
+		return m, nil
+	}
+	path := p.entries[p.entryCursor].Path
+	m.memoryPickerOpen = false
+	m.memoryPicker = nil
+	return m.openInVim(path)
+}
+
+func (m Model) commitMemoryBrowseDelete() (Model, tea.Cmd) {
+	p := m.memoryPicker
+	if p == nil || p.entryCursor >= len(p.entries) {
+		return m, nil
+	}
+	target := p.entries[p.entryCursor]
+	if err := os.Remove(target.Path); err != nil {
+		p.browseMessage = "couldn't delete " + target.Name + ": " + err.Error()
+		return m, nil
+	}
+	if err := memory.RegenerateMemoryIndex(p.browseScope, m.cwd); err != nil {
+		p.browseMessage = "deleted " + target.Name + " but index update failed: " + err.Error()
+	} else {
+		p.browseMessage = "deleted " + target.Name
+	}
+	entries, _ := scanMemoryEntriesForBrowse(p.browseScope, m.cwd)
+	p.entries = entries
+	if p.entryCursor >= len(p.entries) && p.entryCursor > 0 {
+		p.entryCursor = len(p.entries) - 1
+	}
+	if len(p.entries) == 0 {
+		p.entryCursor = 0
+	}
+	m, _ = reloadMemoryNow(m, "")
+	m.memoryPicker = p
+	return m, nil
+}
+
+func (m Model) commitMemoryBrowseOpenFolder() (Model, tea.Cmd) {
+	p := m.memoryPicker
+	if p == nil || p.browseDir == "" {
+		return m, nil
+	}
+	_ = os.MkdirAll(p.browseDir, 0o700)
+	openInFileManager(p.browseDir)
+	p.browseMessage = "opened " + abbrevHome(p.browseDir)
+	return m, nil
+}
+
+func (m Model) openInVim(path string) (Model, tea.Cmd) {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		m.appendLine(styleError.Render("[memory] mkdir: " + err.Error()))
+		return m, nil
+	}
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		if err := os.WriteFile(path, []byte{}, 0o644); err != nil {
+			m.appendLine(styleError.Render("[memory] create: " + err.Error()))
+			return m, nil
+		}
+	}
+	editor := "vim"
+	if _, err := exec.LookPath(editor); err != nil {
+		editor = "vi"
+	}
+	cmd := exec.Command(editor, path)
+	return m, tea.ExecProcess(cmd, func(err error) tea.Msg {
+		return editorDoneMsg{err: err, path: path}
+	})
+}
+
+func openInFileManager(path string) {
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "darwin":
+		cmd = exec.Command("open", path)
+	case "windows":
+		cmd = exec.Command("explorer", path)
+	default:
+		cmd = exec.Command("xdg-open", path)
+	}
+	cmd.Stdout = nil
+	cmd.Stderr = nil
+	cmd.Stdin = nil
+	_ = cmd.Start()
+	go func() { _ = cmd.Wait() }()
+}
+
+func renderMemoryPicker(p *memoryPickerState, _ int) string {
+	if p.mode == memoryBrowseMode {
+		return renderMemoryBrowse(p)
+	}
+	var b strings.Builder
+	b.WriteString(renderMenuHeader("Memory",
+		"Pick a memory file to edit, or browse agent-managed memories."))
+	b.WriteString("\n")
+
+	rows := []struct {
+		label string
+		desc  string
+	}{
+		{"Project context", memoryRowDesc("Saved at", p.projectPath)},
+		{"User preferences", memoryRowDesc("Saved at", p.userPath)},
+		{"Browse user memories", memoryDirRowDesc(p.userMemoryDir, "cross-project agent memories")},
+		{"Browse project memories", memoryDirRowDesc(p.projectMemoryDir, "this-repo agent memories")},
+	}
+	for i, r := range rows {
+		b.WriteString(renderMenuItem(menuItemOpts{
+			Number:     i + 1,
+			Label:      r.label,
+			LabelWidth: 26,
+			Desc:       r.desc,
+			Cursor:     i == p.cursor,
+		}))
+		b.WriteString("\n")
+	}
+
+	b.WriteString("\n")
+	b.WriteString(styleFooter.Render("↵ confirm · esc cancel · ↑↓ navigate"))
+
+	return strings.TrimRight(b.String(), "\n")
+}
+
+func renderMemoryBrowse(p *memoryPickerState) string {
+	var b strings.Builder
+	header := "Browse " + p.browseScope + "-scope memories"
+	b.WriteString(renderMenuHeader(header,
+		"Pick a memory to open, delete, or open the folder in your file manager."))
+	b.WriteString("\n")
+	if p.browseDir != "" {
+		fmt.Fprintf(&b, "  %s\n\n", styleAuto.Render(abbrevHome(p.browseDir)))
+	}
+	if p.browseMessage != "" {
+		b.WriteString(styleAuto.Render("  · " + p.browseMessage))
+		b.WriteString("\n\n")
+	}
+	if len(p.entries) == 0 {
+		b.WriteString(stylePaletteEmpty.Render("  (no memories)"))
+	} else {
+		for i, e := range p.entries {
+			label := e.Name
+			if e.Type != "" {
+				label = e.Name + " [" + e.Type + "]"
+			}
+			desc := e.Description
+			if desc == "" {
+				desc = abbrevHome(e.Path)
+			}
+			b.WriteString(renderMenuItem(menuItemOpts{
+				Label:      label,
+				LabelWidth: 32,
+				Desc:       desc,
+				Cursor:     i == p.entryCursor,
+			}))
+			b.WriteString("\n")
+		}
+	}
+	b.WriteString("\n")
+	b.WriteString(styleFooter.Render("↵ open · d delete · f open folder · esc back · ↑↓ navigate"))
+	return strings.TrimRight(b.String(), "\n")
+}
+
+func memoryRowDesc(prefix, path string) string {
+	if path == "" {
+		return "(unavailable)"
+	}
+	return prefix + " " + abbrevHome(path)
+}
+
+func memoryDirRowDesc(dir, fallback string) string {
+	if dir == "" {
+		return fallback
+	}
+	return abbrevHome(dir)
+}
+
+func reloadMemoryNow(m Model, notice string) (Model, tea.Cmd) {
+	mem, err := memory.Load(m.cwd)
+	if err != nil {
+		m.appendLine(styleError.Render("[memory] reload failed: " + err.Error()))
+		return m, nil
+	}
+	newSys := memory.SystemPrompt(composeSystemPrompt(m.baseSystemPrompt, m.providerProfile), mem)
+	for i := range m.sess.Messages {
+		if m.sess.Messages[i].Role == adapter.RoleSystem {
+			m.sess.Messages[i].Content = newSys
+			break
+		}
+	}
+	m.memorySummary = mem.Summary().String()
+	if notice != "" {
+		summary := m.memorySummary
+		if summary == "" {
+			summary = "(no memory)"
+		}
+		m.appendLine(styleAuto.Render(notice + " — " + summary))
+	}
+	return m, nil
+}
+
+func (m *Model) emitMemorySizeWarnings() {
+	type entry struct {
+		label string
+		path  string
+	}
+	var entries []entry
+	if home, err := os.UserHomeDir(); err == nil {
+		entries = append(entries, entry{"USER.md", filepath.Join(home, ".yottacode", "USER.md")})
+	}
+	if m.cwd != "" {
+		entries = append(entries, entry{"YOTTACODE.md", filepath.Join(m.cwd, ".yottacode", "YOTTACODE.md")})
+	}
+	for _, e := range entries {
+		info, err := os.Stat(e.path)
+		if err != nil || info.IsDir() {
+			continue
+		}
+		size := info.Size()
+		if size <= projectMemorySizeWarnBytes {
+			continue
+		}
+		m.appendLine(styleWatermark.Render(formatMemorySizeWarning(e.label, size)))
+	}
+}
+
+func formatMemorySizeWarning(label string, size int64) string {
+	return fmt.Sprintf("Large %s will impact performance (%.1fk chars > %.1fk) · /memory to edit",
+		label,
+		float64(size)/1000.0,
+		float64(projectMemorySizeWarnBytes)/1000.0)
+}

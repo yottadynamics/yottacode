@@ -1,0 +1,46 @@
+version: 2
+
+project_name: yottacode
+
+before:
+  hooks:
+    - go test ./...
+    - make verify-version VERSION={{ .Version }}
+
+builds:
+  - id: yottacode
+    main: ./cmd/yottacode
+    binary: yottacode
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w -X github.com/yottadynamics/yottacode/internal/version.Current={{ .Version }}
+
+archives:
+  - id: yottacode-archive
+    ids:
+      - yottacode
+    # .Version is already the tag with the leading "v" stripped, so e.g. tag
+    # "v0.1.0" → "yottacode_0.1.0_linux_amd64". No trimv needed (and goreleaser
+    # has no such function — that was the previous bug).
+    name_template: >-
+      yottacode_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+    formats:
+      - tar.gz
+
+checksum:
+  name_template: SHA256SUMS
+
+changelog:
+  use: git
+  sort: asc
+
+release:
+  draft: false
+  prerelease: auto
