@@ -1,0 +1,151 @@
+# Quickstart
+
+This guide gets yottacode running against a model provider and starts your first coding session.
+
+## 1. Install yottacode
+
+Build from source:
+
+```bash
+git clone https://github.com/yottadynamics/yottacode.git
+cd yottacode
+go build -o yottacode ./cmd/yottacode
+```
+
+Put the binary on your `PATH`:
+
+```bash
+sudo install -m 0755 ./yottacode /usr/local/bin/yottacode
+```
+
+Pre-built binaries land at the first tagged release. See [Installation](installation.md) for more options.
+
+## 2. Configure a provider
+
+yottacode does not guess a default model or endpoint. The fastest way to configure one is the wizard.
+
+### Run the wizard (recommended)
+
+```bash
+yottacode setup
+```
+
+<!-- Screenshot: drop ![Setup wizard](assets/setup-wizard.png) here once captured -->
+
+The wizard writes `~/.yottacode/config.toml` and `~/.yottacode/.env`, probes providers where possible, and can be rerun later with `/setup` from inside the TUI.
+
+### Or configure manually
+
+You need at minimum:
+
+- a model id
+- a provider base URL
+- an API key for providers that require one
+
+Pick one of the paths below; see [Providers](providers.md) for the full list.
+
+#### Local Ollama
+
+```bash
+ollama serve
+ollama pull <your-model-id>
+
+export YOTTACODE_PROVIDER=ollama
+export YOTTACODE_MODEL=<your-model-id>
+export YOTTACODE_BASE_URL=http://localhost:11434/v1
+
+yottacode
+```
+
+Ollama ignores API keys; yottacode handles that internally.
+
+#### OpenAI
+
+```bash
+export YOTTACODE_PROVIDER=openai
+export YOTTACODE_MODEL=<your-model-id>
+export YOTTACODE_BASE_URL=https://api.openai.com/v1
+export YOTTACODE_API_KEY=sk-...
+
+yottacode
+```
+
+#### ChatGPT OAuth (`openai-auth`)
+
+```bash
+yottacode openai-auth login
+
+export YOTTACODE_PROVIDER=openai-auth
+export YOTTACODE_MODEL=<your-model-id>     # /model list shows what your account allows
+export YOTTACODE_BASE_URL=https://chatgpt.com/backend-api/codex
+
+yottacode
+```
+
+`openai-auth` uses a browser "Sign in with ChatGPT" flow instead of an API key. Saved tokens live under `~/.yottacode/auth/`, which yottacode blocks from model reads and writes.
+
+#### xAI
+
+```bash
+export YOTTACODE_PROVIDER=xai
+export YOTTACODE_MODEL=<your-model-id>
+export YOTTACODE_BASE_URL=https://api.x.ai/v1
+export YOTTACODE_API_KEY=xai-...
+
+yottacode
+```
+
+## 3. Ask for help in the TUI
+
+Launch yottacode from a project directory:
+
+```bash
+cd ~/src/my-project
+yottacode
+```
+
+Try prompts like:
+
+```text
+summarize this repository
+```
+
+```text
+find the tests for the session package and explain how persistence works
+```
+
+```text
+add a regression test for the bug described in this issue
+```
+
+Useful interactive commands:
+
+- `/help` — list slash commands
+- `/provider` — show resolved provider and capabilities
+- `/doctor` — actively probe the configured endpoint
+- `/model <name>` — switch models for the current session
+- `/sessions` — resume, rename, or export sessions
+- `/memory` — edit USER.md / YOTTACODE.md or browse agent-managed memories
+- `/init` — draft or refresh `.yottacode/YOTTACODE.md`
+
+## 4. Use one-shot mode for scripts
+
+```bash
+yottacode run "summarize the public API of this repo"
+```
+
+`yottacode run` prints the final answer to stdout and sends status/tool progress to stderr, so it composes cleanly with pipes, redirects, and CI logs.
+
+## 5. Understand approvals
+
+yottacode reads and inspects your repo without prompting; mutating actions usually ask first. You will see approval modals for file writes, shell commands, destructive git operations, and similar changes.
+
+For real isolation, run yottacode inside a container or devcontainer. yottacode does not provide an in-process sandbox.
+
+## Next steps
+
+- [CLI usage](usage/cli.md)
+- [TUI slash commands](usage/tui-slash-commands.md)
+- [Configuring providers](providers.md)
+- [Security and allow lists](security-and-allow-lists.md)
+- [Memory](memory.md)

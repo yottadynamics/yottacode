@@ -8,6 +8,10 @@
 *.so
 *.dylib
 
+# Built binaries
+/yottacode
+/yotta-models
+
 # Test binary, built with `go test -c`
 *.test
 
@@ -26,6 +30,9 @@ go.work.sum
 
 # env file
 .env
+
+# yottacode project-local state
+.yottacode/
 
 # Editor/IDE
 # .idea/
