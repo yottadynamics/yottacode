@@ -111,8 +111,8 @@ Startup flow:
 - Assistant content is written to stdout.
 - Reasoning, tool status, and errors are written to stderr.
 - Approval-required tool calls fail unless an `allow` rule in
-  `.yottacode/permissions.json` matches them, or `--bypass-permissions`
-  is set (DANGEROUS).
+  `.yottacode/permissions.json` matches them, or
+  `--dangerously-skip-permissions` is set (DANGEROUS).
 
 ## Tools And Safety Layers
 
@@ -144,6 +144,48 @@ firejail, landlock, seccomp, or pluggable `Sandbox` backends to
 maintain — so the core stays small and portable. For real isolation
 across every tool (`run_bash`, `write_file`, `git`, etc.), run
 yottacode itself inside a container or devcontainer.
+
+## Agent modes
+
+Two **modes** (mutually exclusive, control workflow shape) and one
+**startup-only overlay** (orthogonal, applies on top of any mode) sit
+on top of the base approval flow:
+
+- **Plan mode** — read-only research state. Entered via `/plan`,
+  `Shift+Tab`, or `--permission-mode plan`. The model can read,
+  search, ask, and write only to a single plan file under
+  `~/.yottacode/plans/<slug>.md`. `exit_plan_mode` surfaces the plan
+  in an approval card with four hotkeys: `[A]` implement, `[Y]`
+  implement with auto mode enabled, `[L]` save for later, `[K]` keep
+  refining. State lives on `agent.PlanModeState`.
+- **Auto mode** — implementation state. Entered via `Shift+Tab` or
+  `--permission-mode auto` (no slash command, mirroring Claude
+  Code). Mutating tools auto-allow except a safety floor
+  (`run_bash`, `git_commit`, `git_checkpoint`, `rollback`).
+  Effective iteration cap is 4× the configured `MaxIterations`.
+  State lives on `agent.AutoModeState`.
+- **Permissions-bypass overlay** — drops permission prompts on *all* tools (no
+  safety floor) and removes the iteration cap entirely. Entered
+  only via `--dangerously-skip-permissions` at startup (mirroring
+  Claude Code) — no slash command, no keybinding, no in-TUI toggle.
+  Sits on top of whichever mode is active; the banner shows the
+  mode label with a `⚠ bypass` suffix (the standalone banner reads
+  `⚠ permissions bypass`). State lives on `agent.YoloModeState` — the
+  Go identifier predates the user-facing rename and is kept for
+  internal stability.
+
+`Shift+Tab` cycles through `normal → auto → plan → normal`. Permissions
+bypass is intentionally **not** in the cycle — the only entry point is
+the startup flag, so high-autonomy state is a conscious one-time
+decision, not a key chord away.
+
+The loop reads all three flags at turn start (effective iteration
+cap) and on every tool dispatch. Approval-chain priority (the internal
+"yolo" name still appears in the precedence label since
+`YoloModeState` is the Go identifier):
+`Deny > yolo > plan-gate > plan-file-allow > auto-allow > Allow > Ask > tool default`.
+See [security-and-allow-lists.md](security-and-allow-lists.md) for
+the full precedence table.
 
 ## Extension Points
 

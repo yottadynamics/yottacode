@@ -1,10 +1,11 @@
 # Built-in tools
 
-Twenty-eight tools ship in `internal/agent`. The model sees their JSON-schema
-parameters via the OpenAI tools API; the TUI renders each invocation as a
-bordered card with a verb-style header (see [How tool calls render in the
-TUI](#how-tool-calls-render-in-the-tui)). All paths are resolved against the
-agent's working directory (absolute paths are also accepted).
+Thirty tools ship in `internal/agent` (twenty-eight always-on plus `todo_write`
+and `exit_plan_mode`). The model sees their JSON-schema parameters via the
+OpenAI tools API; the TUI renders each invocation as a bordered card with a
+verb-style header (see [How tool calls render in the TUI](#how-tool-calls-render-in-the-tui)).
+All paths are resolved against the agent's working directory (absolute paths
+are also accepted).
 
 | Tool | Approval | One-line summary |
 |---|---|---|
@@ -36,12 +37,15 @@ agent's working directory (absolute paths are also accepted).
 | [`fetch_url`](#fetch_url) | none | Fetch a single HTTP(S) URL and return capped textual content |
 | [`run_bash`](#run_bash) | required | Shell command via `/bin/sh -c` |
 | [`git`](#git) | varies | Unified git invocation; read-only auto-runs, mutations prompt |
+| [`todo_write`](#todo_write) | none | Maintain the agent's working task plan, rendered as a card |
+| [`exit_plan_mode`](#exit_plan_mode) | required | Only callable in `/plan` mode; presents the plan for user approval |
 
 "Approval = required" means the tool always pauses for a `y` / `a` /
 `N` from the user, unless an `allow` rule in
 `<cwd>/.yottacode/permissions.json` (or its gitignored
-`.local.json` sibling) matches the call, or `--bypass-permissions`
-is set (DANGEROUS). See [architecture.md](architecture.md) for the
+`.local.json` sibling) matches the call, or
+`--dangerously-skip-permissions` is set (DANGEROUS). See
+[architecture.md](architecture.md) for the
 approval round-trip and the permissions schema.
 
 ## How tool calls render in the TUI
@@ -500,3 +504,53 @@ called out in the approval preview with a `⚠ DESTRUCTIVE FLAG(S):` prefix
 so you don't `y` past them by reflex.
 
 Stdout is capped at 1 MiB; stderr at 64 KiB.
+
+## todo_write
+
+Maintain the agent's working task plan. The list is owned by the session and
+rendered as a card in the transcript so the user can track multi-step work
+without reading every tool call.
+
+| Param | Type | Default | Notes |
+|---|---|---|---|
+| `todos` | []object | — | Complete plan; previous list is replaced wholesale |
+
+Each item has `content` (short human-readable description) and `status`
+(`pending` / `in_progress` / `completed`, at most one `in_progress`).
+No filesystem or network side effects — purely a visibility primitive,
+so it never prompts for approval.
+
+The model is instructed to call `todo_write` proactively for any task with
+three or more distinct steps and to update it as soon as each step finishes.
+Pass an empty list to clear the plan.
+
+## exit_plan_mode
+
+Only callable while `/plan` mode is active (the registry hides it from the
+adapter schema otherwise). Takes no arguments — the TUI reads the plan body
+from the resolved plan file on disk and renders it in the approval card.
+Matches Claude Code's `ExitPlanMode` shape exactly.
+
+| Param | Type | Default | Notes |
+|---|---|---|---|
+| _(none)_ | — | — | The plan content comes from `~/.yottacode/plans/<slug>.md` |
+
+If the plan file doesn't exist or is empty when `exit_plan_mode` is called,
+the TUI auto-denies the call with a console notice — the model is expected
+to write the plan to the file first, then call this tool.
+
+The TUI renders the plan inside an approval card with three hotkeys:
+
+- `[A] approve and implement` — exits plan mode and the agent immediately resumes execution.
+- `[L] later` — exits plan mode but ends the turn; the plan stays on disk for resume via `/plan list` or `--plan-resume`.
+- `[K] keep planning` — stays in plan mode; model receives refinement guidance.
+
+`--dangerously-skip-permissions` does NOT skip this approval — that approval
+is the user-visible signal, not a safety gate.
+
+While `/plan` is active, every other mutating tool is blocked except writes
+to the resolved plan file under `~/.yottacode/plans/<slug>.md`. Read-only
+tools auto-allow as usual; writes to the plan file auto-allow too (no per-edit
+prompt — the plan file is the model's only legitimate mutation surface during
+planning). See [tui-slash-commands.md#plan-mode](tui-slash-commands.md#plan-mode)
+for the full plan-mode flow.

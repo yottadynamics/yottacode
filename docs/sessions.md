@@ -35,7 +35,12 @@ In the TUI:
 
 ```bash
 yottacode sessions resume <id-or-name>
+yottacode --resume <id-or-name>
+yottacode --continue                  # the most recent session in this directory
+yottacode -c                          # short form
 ```
+
+`--continue` (mirrors Claude Code's flag) skips the picker and resumes the newest saved session whose cwd matches the current directory — useful for "I quit a few minutes ago and want to pick up where I left off." When no saved session matches the current directory, `--continue` errors out with a hint. `--continue` and `--resume` are mutually exclusive; pass one or the other.
 
 In the TUI:
 
@@ -44,7 +49,7 @@ In the TUI:
 /sessions <id-or-name>
 ```
 
-Runtime flags like `--max-iterations` and `--bypass-permissions` are not stored in the session. Pass them again when resuming if you need them.
+Runtime flags like `--max-iterations` and `--dangerously-skip-permissions` are not stored in the session. Pass them again when resuming if you need them. Mode state (auto / plan) is also not persisted: a session that ended in auto mode resumes in normal mode, same as Claude Code — use `Shift+Tab` to re-enter the mode you want.
 
 ## Summarized resume
 

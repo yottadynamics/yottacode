@@ -63,9 +63,9 @@ const (
 	// normally auto-execute. Useful for things like `Read(.env)`.
 	Ask
 	// Deny means a rule explicitly refuses this call — never execute,
-	// even under --bypass-permissions. The user wrote the rule on
-	// purpose; bypass is a "skip prompts" knob, not a "ignore my
-	// policy" knob.
+	// even under --dangerously-skip-permissions. The user wrote the
+	// rule on purpose; bypass is a "skip prompts" knob, not an "ignore
+	// my policy" knob.
 	Deny
 )
 

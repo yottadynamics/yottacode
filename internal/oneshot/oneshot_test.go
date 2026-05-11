@@ -142,7 +142,7 @@ func TestOneshot_ApprovalNeededWithoutBypassErrors(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	err := stream(context.Background(), cfg, &hist, &stdout, &stderr)
 	if err == nil {
-		t.Fatalf("expected error when ApprovalNeeded fires without --bypass-permissions")
+		t.Fatalf("expected error when ApprovalNeeded fires without --dangerously-skip-permissions")
 	}
 	if !strings.Contains(err.Error(), "approval") {
 		t.Errorf("error should mention approval; got %v", err)

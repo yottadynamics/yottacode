@@ -18,4 +18,12 @@ const (
 	// The TUI suppresses this option for cases where derivation isn't
 	// safe (compound shell commands, dangerous verbs).
 	AllowAlways
+	// SaveForLater is the plan-mode-specific "[L] approve and
+	// implement later" decision. The loop refuses the tool call (so
+	// Execute never runs) but returns a firm "end this turn" message
+	// to the model instead of the generic denial / refinement hint.
+	// Only meaningful for exit_plan_mode; other tools should never
+	// receive this value, and the loop falls back to generic-denial
+	// semantics if they do.
+	SaveForLater
 )

@@ -15,6 +15,31 @@ By default:
 
 Approval prompts can be answered once or turned into a reusable allow rule.
 
+### Gate precedence
+
+Tool calls flow through layered gates in this order:
+
+1. **`Deny` rules** in `permissions.json` always win.
+2. **Plan-mode gate** (only when plan mode is active) — blocks every mutating tool except `todo_write`, `exit_plan_mode`, and writes to the resolved plan file. Returns a structured error to the model so it can switch to a read-only or plan-file alternative.
+3. **Permissions-bypass auto-allow** (only when `--dangerously-skip-permissions` was passed at startup) — every tool auto-allows silently. No safety floor.
+4. **Plan-mode auto-allow** — writes to the resolved plan file are the model's only legitimate mutation surface while planning; they auto-allow without a prompt.
+5. **Auto-mode auto-allow** (only when auto mode is active) — non-safety-floor mutating tools auto-allow. Safety floor (`run_bash`, `git_commit`, `git_checkpoint`, `rollback`) is unaffected and still prompts.
+6. **`Allow` rules** in `permissions.json` skip the prompt.
+7. **`Ask` rules** force a prompt even on tools that would normally auto-execute.
+8. **Tool-default policy** (the tool's own `RequiresApproval`) prompts mutating tools and auto-executes read-only ones.
+
+`Deny` always wins, including over permissions bypass. `--dangerously-skip-permissions` is "skip prompts," not "ignore my policy."
+
+Trust controls separate into **modes** (workflow shape, mutually exclusive) and the **permissions-bypass overlay** (orthogonal startup flag):
+
+| Surface | Entry point | Effect |
+|---|---|---|
+| Plan mode | `/plan` · `Shift+Tab` · `--permission-mode plan` | Read-only research; gated to plan file; ends with `exit_plan_mode` |
+| Auto mode | `Shift+Tab` · `--permission-mode auto` (no slash command) | Edits auto, bash/commits prompt, 4× iteration cap |
+| Permissions bypass | `--dangerously-skip-permissions` at startup (no slash, no keybinding) | Drops all prompts, no iteration cap; sits on top of any mode |
+
+Mirroring Claude Code, auto mode has no slash command and permissions bypass enters only via the startup flag — these high-autonomy states are intentionally kept off the palette and off the `Shift+Tab` cycle so they can't be triggered by accident. Permissions bypass, once enabled, is one-way per process: restart without the flag to recover. The bypass banner (`⚠ permissions bypass`) takes precedence visually while it's on; when a mode (auto or plan) is also active, the mode banner picks up a `⚠ bypass` suffix.
+
 ## No in-process sandbox
 
 yottacode does not sandbox tools inside its own process. `run_bash`, file edits, git commands, and other tools run on the host.
@@ -32,6 +57,7 @@ Mutating filesystem tools are constrained before they run:
 - yottacode app state is denied
 - canonical `.git` internals are denied
 - `.git/hooks/` is deliberately allowed
+- in `/plan` mode, the *only* write target outside cwd is the resolved plan file at `~/.yottacode/plans/<slug>.md` — symlink rejection and the deny list still apply
 
 Extra write roots:
 
@@ -85,7 +111,7 @@ Add this to `.gitignore`:
 }
 ```
 
-Rules support `allow`, `ask`, and `deny` policy. Explicit deny rules still apply even when `--bypass-permissions` is set.
+Rules support `allow`, `ask`, and `deny` policy. Explicit deny rules still apply even when `--dangerously-skip-permissions` is set.
 
 ## Creating allow rules from approvals
 
@@ -98,13 +124,13 @@ Examples:
 - `Write(docs/**)`
 - `Git(commit *)`
 
-## Bypass mode
+## Permissions bypass (the danger setting)
 
 ```bash
-yottacode --bypass-permissions
+yottacode --dangerously-skip-permissions
 ```
 
-This is dangerous. It skips approval prompts for matching operations, but explicit deny rules remain enforced. Use it only in trusted automation or disposable environments.
+This is dangerous. It skips approval prompts for matching operations and removes the iteration cap, but explicit deny rules remain enforced. Use it only in trusted automation or disposable environments. There is no in-TUI toggle — restart without the flag to recover. Mirrors Claude Code's `--dangerously-skip-permissions` flag.
 
 ## Provider-hosted search allow lists
 

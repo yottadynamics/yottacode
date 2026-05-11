@@ -122,6 +122,66 @@ func loadByName(dir, name string) (*Session, error) {
 	return nil, errors.New("not found by name")
 }
 
+// LatestInCwd returns the most recent saved session whose Cwd matches
+// the given directory. Used by `yottacode --continue` (mirroring
+// Claude Code's --continue) to skip the picker and resume the
+// directory's last session directly. Returns an error wrapping
+// errNoSessionInCwd when no saved session matches.
+//
+// "Most recent" is determined by sorting all matches descending by
+// Session.Created, falling back to the timestamp-prefixed ID when two
+// sessions share an identical Created (test fixtures). The Cwd
+// comparison is exact-string match — symlinked or differently-resolved
+// paths won't unify; users hit by that should pass the matching path
+// explicitly.
+func LatestInCwd(cwd string) (*Session, error) {
+	dir, err := sessionsDir()
+	if err != nil {
+		return nil, err
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	var matches []Session
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
+			continue
+		}
+		p := filepath.Join(dir, e.Name())
+		b, err := os.ReadFile(p)
+		if err != nil {
+			continue
+		}
+		var s Session
+		if err := json.Unmarshal(b, &s); err != nil {
+			continue
+		}
+		if s.Cwd != cwd {
+			continue
+		}
+		s.path = p
+		matches = append(matches, s)
+	}
+	if len(matches) == 0 {
+		return nil, ErrNoSessionInCwd
+	}
+	sort.Slice(matches, func(i, j int) bool {
+		if matches[i].Created.Equal(matches[j].Created) {
+			return matches[i].ID > matches[j].ID
+		}
+		return matches[i].Created.After(matches[j].Created)
+	})
+	out := matches[0]
+	return &out, nil
+}
+
+// ErrNoSessionInCwd is returned by LatestInCwd when no saved session
+// has a Cwd field matching the requested directory. Sentinel so
+// callers can present a friendly "no prior session in this directory"
+// error without string matching.
+var ErrNoSessionInCwd = errors.New("no saved session in this directory")
+
 // List returns every saved session's metadata, newest first. Doesn't load the
 // full message log to keep this cheap for the /sessions slash command.
 func List() ([]SessionInfo, error) {

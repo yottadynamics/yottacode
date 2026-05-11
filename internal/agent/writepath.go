@@ -51,6 +51,16 @@ type WritePathOptions struct {
 	// AllowSymlinks lets the validator follow symlinks on write paths.
 	// Default false — symlinks are a known exfil vector.
 	AllowSymlinks bool
+
+	// PlanModeAllowedFile is the absolute path of the single plan file
+	// the agent is permitted to write to while plan mode is active.
+	// When non-empty, ValidateWritePath short-circuits to nil for an
+	// exact match (after symlink rejection still applies). Empty when
+	// plan mode is off — the regular Cwd / AllowedPaths / DenyExact
+	// stack is the only authority. The TUI mutates this field on the
+	// registered *WriteFileTool / *EditFileTool / *ApplyDiffTool when
+	// /plan toggles, and zeroes it on exit.
+	PlanModeAllowedFile string
 }
 
 // ValidateWritePath returns nil if a write to path is permitted under
@@ -78,6 +88,20 @@ func ValidateWritePath(path string, opts WritePathOptions) error {
 	if !opts.AllowSymlinks {
 		if info, err := os.Lstat(abs); err == nil && info.Mode()&os.ModeSymlink != 0 {
 			return fmt.Errorf("path %q is a symlink; refusing to follow (pass --allow-symlinks to override)", abs)
+		}
+	}
+
+	// Plan-mode short-circuit: an exact match against the
+	// session-resolved plan-file path is the one allowed write outside
+	// cwd. Symlink rejection above still applies (no symlink
+	// laundering). Deny list above also still applies (no naming a
+	// plan file at .yottacode/permissions.json or similar — the
+	// PlansDir lives under ~/.yottacode/plans/, which is not in the
+	// deny list).
+	if opts.PlanModeAllowedFile != "" {
+		allowedAbs, err := filepath.Abs(opts.PlanModeAllowedFile)
+		if err == nil && filepath.Clean(allowedAbs) == abs {
+			return nil
 		}
 	}
 

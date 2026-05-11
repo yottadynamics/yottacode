@@ -52,7 +52,7 @@ Yes. Use `.yottacode/permissions.json` for shared rules and `.yottacode/permissi
 
 ## Can I bypass every prompt?
 
-Use `--bypass-permissions`, but only in trusted contexts. Explicit deny rules still apply.
+Launch yottacode with `--dangerously-skip-permissions` (the permissions-bypass overlay), but only in trusted contexts. Explicit deny rules still apply. The overlay is one-way per process — restart without the flag to recover.
 
 ## What should go in USER.md?
 

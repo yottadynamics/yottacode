@@ -12,9 +12,9 @@ import "github.com/yottadynamics/yottacode/internal/adapter"
 //
 // Approval flow: when a tool requires approval and policy doesn't
 // pre-approve (a matching allow rule in permissions.json, or
-// --bypass-permissions), the loop emits ApprovalNeeded and blocks on
-// a receive from the decisions channel. The consumer must reply with
-// a Decision or cancel ctx.
+// --dangerously-skip-permissions), the loop emits ApprovalNeeded and
+// blocks on a receive from the decisions channel. The consumer must
+// reply with a Decision or cancel ctx.
 type Event interface{ event() }
 
 // IterationStart fires when a new model->tools->model loop iteration begins.
@@ -59,8 +59,8 @@ type ProviderToolCall struct {
 // ApprovalAuto is logged when the loop auto-approves (or auto-denies)
 // a tool call without asking the user. Source identifies which gate
 // fired: "permissions" (matched an allow rule), "deny-rule" (matched
-// a deny rule, no execution), or "bypass-permissions" (--bypass-permissions
-// flag is set and no rule matched).
+// a deny rule, no execution), or "bypass-permissions"
+// (--dangerously-skip-permissions flag is set and no rule matched).
 type ApprovalAuto struct {
 	ToolName string
 	Preview  string
