@@ -55,10 +55,26 @@ func (r *Registry) Get(name string) (Tool, bool) {
 }
 
 // AsAdapterTools converts the registry into the schema shape the adapter
-// advertises to the model.
+// advertises to the model. Equivalent to AsAdapterToolsFiltered(nil) —
+// every registered tool is exposed.
 func (r *Registry) AsAdapterTools() []adapter.Tool {
+	return r.AsAdapterToolsFiltered(nil)
+}
+
+// AsAdapterToolsFiltered is the gated variant: when filter is non-nil
+// and returns false for a tool name, that tool is omitted from the
+// advertised schema. Used by the loop to hide `exit_plan_mode` outside
+// of plan mode — without the filter the model could synthesize the
+// call out of context and confuse the user with an approval card for
+// a plan that doesn't exist. Pure read-side filter; the registry's
+// own map is unchanged so Get() still resolves the tool when
+// (legitimately) called.
+func (r *Registry) AsAdapterToolsFiltered(filter func(name string) bool) []adapter.Tool {
 	out := make([]adapter.Tool, 0, len(r.tools))
 	for _, t := range r.tools {
+		if filter != nil && !filter(t.Name()) {
+			continue
+		}
 		out = append(out, adapter.Tool{
 			Name:        t.Name(),
 			Description: t.Description(),

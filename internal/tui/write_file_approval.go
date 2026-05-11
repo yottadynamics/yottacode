@@ -15,16 +15,15 @@ type writeFileArgs struct {
 	Content string `json:"content"`
 }
 
-// renderWriteFileApproval produces a syntax-highlighted preview of the
-// content a write_file call is about to write, plus a header showing
-// the destination path and byte count. Truncates the previewed content
-// to a screen-sensible number of lines so a 5000-line write doesn't
-// blow out the modal — full content still flows through the tool's
-// Execute when approved.
+// renderWriteFileApprovalSummary produces a one-line "what's about to
+// be written" header for the approval modal body — just path + byte
+// count + line count. The full file content is emitted to scrollback
+// separately by emitWriteFileBodyToScrollback so the modal can stay
+// small enough for the hotkeys to dominate the eye.
 //
-// Returns ("", false) if the JSON doesn't parse or path/content are
-// empty; the caller falls back to the tool's PreviewCall string.
-func renderWriteFileApproval(argsJSON string) (string, bool) {
+// Returns ("", false) if argsJSON doesn't shape like write_file args;
+// the caller falls back to the tool's PreviewCall string.
+func renderWriteFileApprovalSummary(argsJSON string) (string, bool) {
 	var a writeFileArgs
 	if err := json.Unmarshal([]byte(argsJSON), &a); err != nil {
 		return "", false
@@ -32,29 +31,41 @@ func renderWriteFileApproval(argsJSON string) (string, bool) {
 	if a.Path == "" {
 		return "", false
 	}
-
-	header := stylePathHeader.Render(a.Path) + " " +
-		styleSplashInfo.Render(fmt.Sprintf("(%d bytes)", len(a.Content)))
-
-	const maxPreviewLines = 30
-	body := a.Content
-	lines := strings.Split(body, "\n")
-	truncated := false
-	if len(lines) > maxPreviewLines {
-		lines = lines[:maxPreviewLines]
-		body = strings.Join(lines, "\n")
-		truncated = true
+	lines := strings.Count(a.Content, "\n") + 1
+	if a.Content == "" {
+		lines = 0
 	}
+	return stylePathHeader.Render(a.Path) + " " +
+		styleSplashInfo.Render(fmt.Sprintf("(%d bytes · %d lines)", len(a.Content), lines)), true
+}
 
-	highlighted := HighlightFromPath(body, a.Path)
-
-	var b strings.Builder
-	b.WriteString(header + "\n")
-	b.WriteString(highlighted)
-	if truncated {
-		b.WriteString("\n" + styleSplashInfo.Render(
-			fmt.Sprintf("… (%d more lines, full content writes on approval)",
-				strings.Count(a.Content, "\n")+1-maxPreviewLines)))
+// emitWriteFileBodyToScrollback writes the full (untruncated) file
+// content to scrollback before the approval modal opens — labeled
+// header + syntax-highlighted body as plain rows. Same flat-text
+// treatment as emitPlanBodyToScrollback: no card wrap, so wide source
+// lines wrap naturally on the terminal without fighting an inner
+// gutter. The content persists in scrollback after the modal
+// dismisses regardless of decision.
+func emitWriteFileBodyToScrollback(m *Model, argsJSON string) {
+	var a writeFileArgs
+	if err := json.Unmarshal([]byte(argsJSON), &a); err != nil {
+		return
 	}
-	return strings.TrimRight(b.String(), "\n"), true
+	if a.Path == "" || a.Content == "" {
+		return
+	}
+	lines := strings.Count(a.Content, "\n") + 1
+	// Leading blank line separates the header from whatever
+	// preceded it in scrollback, so the emit doesn't visually fuse
+	// with prior tool cards or messages.
+	m.appendLine("")
+	m.appendLine(styleAuto.Render("[write_file]") + " " +
+		stylePathHeader.Render(a.Path) + " " +
+		styleSplashInfo.Render(fmt.Sprintf("(%d bytes · %d lines)", len(a.Content), lines)) + ":")
+	m.appendLine("")
+	highlighted := strings.TrimRight(HighlightFromPath(a.Content, a.Path), "\n")
+	for _, line := range strings.Split(highlighted, "\n") {
+		m.appendLine(line)
+	}
+	m.appendLine("")
 }

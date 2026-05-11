@@ -543,3 +543,70 @@ default_model = "gpt-5.5"
 		t.Errorf("APIKey should stay empty; got %q", opts.APIKey)
 	}
 }
+
+// --permission-mode mirrors Claude Code's flag. Empty and "default"
+// both mean "no startup mode"; "plan" and "auto" enter the named mode
+// at TUI startup. Resolve normalizes whitespace and case, then
+// rejects any other value.
+func TestResolve_PermissionMode_AcceptedValues(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+	}{
+		{"", ""},
+		{"default", "default"},
+		{"plan", "plan"},
+		{"auto", "auto"},
+		{"  Plan  ", "plan"}, // case + whitespace normalization
+		{"AUTO", "auto"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.in, func(t *testing.T) {
+			isolatedHome(t)
+			t.Setenv(EnvModel, "m")
+			t.Setenv(EnvBaseURL, "http://x/v1")
+			opts := ChatOptions{PermissionMode: tc.in}
+			if err := Resolve(&opts); err != nil {
+				t.Fatalf("Resolve(%q): %v", tc.in, err)
+			}
+			if opts.PermissionMode != tc.want {
+				t.Errorf("PermissionMode = %q, want %q", opts.PermissionMode, tc.want)
+			}
+		})
+	}
+}
+
+func TestResolve_PermissionMode_RejectsInvalid(t *testing.T) {
+	isolatedHome(t)
+	t.Setenv(EnvModel, "m")
+	t.Setenv(EnvBaseURL, "http://x/v1")
+	opts := ChatOptions{PermissionMode: "yolo"}
+	err := Resolve(&opts)
+	if err == nil {
+		t.Fatalf("expected error for --permission-mode yolo (yolo enters via --dangerously-skip-permissions)")
+	}
+	if !strings.Contains(err.Error(), "permission-mode") {
+		t.Errorf("error should mention permission-mode; got %q", err.Error())
+	}
+}
+
+// --dangerously-skip-permissions (BypassPermissions internally) is an
+// independent bool flag. The Resolve path does not touch it; this
+// test just locks the field stays untouched and accepts both values.
+func TestResolve_DangerouslySkipPermissions_PassesThrough(t *testing.T) {
+	for _, v := range []bool{false, true} {
+		v := v
+		t.Run(map[bool]string{true: "true", false: "false"}[v], func(t *testing.T) {
+			isolatedHome(t)
+			t.Setenv(EnvModel, "m")
+			t.Setenv(EnvBaseURL, "http://x/v1")
+			opts := ChatOptions{BypassPermissions: v}
+			if err := Resolve(&opts); err != nil {
+				t.Fatalf("Resolve: %v", err)
+			}
+			if opts.BypassPermissions != v {
+				t.Errorf("BypassPermissions = %v, want %v", opts.BypassPermissions, v)
+			}
+		})
+	}
+}

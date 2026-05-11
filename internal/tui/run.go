@@ -137,6 +137,20 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 		planStore.Replace(sess.Todos)
 	}
 
+	// Mode flags shared between LoopConfig and the TUI Model:
+	//   - plan (Shift+Tab cycle + /plan slash + --permission-mode plan
+	//     startup flag + plan-card [Y])
+	//   - auto (Shift+Tab cycle + --permission-mode auto startup flag
+	//     + plan-card [Y]; no slash command, mirroring Claude Code)
+	//   - yolo (--dangerously-skip-permissions startup flag only; no
+	//     slash command, no keybinding — opt-in once per process)
+	// Plan and auto are mutually exclusive; yolo is an orthogonal
+	// overlay that stacks with either. Per-session lifetime;
+	// always-off at startup unless the corresponding flag was passed.
+	planMode := &agent.PlanModeState{}
+	autoMode := &agent.AutoModeState{}
+	yoloMode := &agent.YoloModeState{}
+
 	reg := agent.NewRegistry()
 	reg.Register(&agent.ReadFileTool{Cwd: cwd, DenyReadPaths: denyReads})
 	reg.Register(&agent.ReadManyFilesTool{Cwd: cwd, DenyReadPaths: denyReads})
@@ -170,6 +184,12 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 	reg.Register(&agent.MemoryForgetTool{Cwd: cwd})
 	reg.Register(&agent.GitTool{Cwd: cwd})
 	reg.Register(&agent.TodoWriteTool{Store: planStore})
+	// ExitPlanModeTool is registered with a nil Approve callback at
+	// startup; cmdPlan wires the callback (and the plan-file slug)
+	// on /plan entry. The adapter-tools filter in the loop hides
+	// this tool from the model's schema until plan mode is active,
+	// so the nil-callback path is unreachable from the model.
+	reg.Register(&agent.ExitPlanModeTool{})
 
 	cfg := agent.LoopConfig{
 		Adapter:           ad,
@@ -178,6 +198,9 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 		BypassPermissions: opts.BypassPermissions,
 		Cwd:               cwd,
 		MaxIterations:     opts.MaxIterations,
+		PlanMode:          planMode,
+		AutoMode:          autoMode,
+		YoloMode:          yoloMode,
 	}
 
 	// Open the FTS5 index. A failure here is non-fatal — /recall just
@@ -222,6 +245,39 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 		BaseSystemPrompt:       baseSys,
 		FileCfg:                fileCfg,
 	})
+	// Startup flags drop the freshly-built model into the requested
+	// mode before the program starts. The entry log lines land in the
+	// historyLines buffer; tea.Println replays them when the program
+	// boots. --plan-resume wins over --permission-mode (resume implies
+	// plan); --dangerously-skip-permissions is an orthogonal overlay
+	// that stacks with whichever mode (if any) is requested.
+	switch {
+	case opts.PlanResume != "":
+		plans, err := agent.ListPlans()
+		switch {
+		case err != nil:
+			fmt.Fprintf(os.Stderr, "warning: --plan-resume: %v\n", err)
+			model, _ = togglePlanMode(model)
+		case len(plans) == 0:
+			fmt.Fprintf(os.Stderr, "warning: --plan-resume %q: no saved plans found; starting a fresh plan instead\n", opts.PlanResume)
+			model, _ = togglePlanMode(model)
+		default:
+			match := agent.MatchPlan(plans, opts.PlanResume)
+			if match == nil {
+				fmt.Fprintf(os.Stderr, "warning: --plan-resume %q: no match; starting a fresh plan instead\n", opts.PlanResume)
+				model, _ = togglePlanMode(model)
+			} else {
+				resumePlanFile(&model, *match)
+			}
+		}
+	case opts.PermissionMode == "plan":
+		model, _ = togglePlanMode(model)
+	case opts.PermissionMode == "auto":
+		model, _ = toggleAutoMode(model)
+	}
+	if opts.BypassPermissions {
+		model = enterYoloMode(model)
+	}
 	// Inline mode (no alt-screen): conversation lines flow into the
 	// terminal's native scrollback via tea.Println from inside the model.
 	// Only the live footer (input + status + transient overlays) redraws in

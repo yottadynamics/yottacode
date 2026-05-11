@@ -93,50 +93,60 @@ func TestLanguageFromPath_KnownExtensions(t *testing.T) {
 	}
 }
 
-// TestRenderWriteFileApproval — write_file approval modal rendering.
+// TestRenderWriteFileApprovalSummary — modal-body summary rendering.
+// The body itself (file content) now flows to scrollback via
+// emitWriteFileBodyToScrollback before the modal opens; the modal
+// body just shows path + size so the hotkeys dominate the box.
 
-func TestRenderWriteFileApproval_HappyPath(t *testing.T) {
+func TestRenderWriteFileApprovalSummary_HappyPath(t *testing.T) {
 	args := `{"path":"main.go","content":"package main\n\nfunc main() {}\n"}`
-	got, ok := renderWriteFileApproval(args)
+	got, ok := renderWriteFileApprovalSummary(args)
 	if !ok {
 		t.Fatalf("expected ok=true")
 	}
 	plain := stripANSI(got)
 	if !strings.Contains(plain, "main.go") {
-		t.Errorf("path missing from preview: %q", plain)
-	}
-	if !strings.Contains(plain, "package main") {
-		t.Errorf("content missing: %q", plain)
+		t.Errorf("path missing from summary: %q", plain)
 	}
 	if !strings.Contains(plain, "bytes") {
 		t.Errorf("byte count should be shown: %q", plain)
 	}
+	if !strings.Contains(plain, "lines") {
+		t.Errorf("line count should be shown: %q", plain)
+	}
+	// The summary explicitly does NOT include the body — body went
+	// to scrollback. Guard the modal contract.
+	if strings.Contains(plain, "package main") {
+		t.Errorf("body should NOT appear in modal summary; got %q", plain)
+	}
 }
 
-func TestRenderWriteFileApproval_TruncatesLongContent(t *testing.T) {
-	// 50 lines well over the 30-line cap.
+func TestRenderWriteFileApprovalSummary_OmitsBodyEvenForLongContent(t *testing.T) {
 	long := strings.Repeat("// filler\n", 50)
 	args, _ := json.Marshal(struct {
 		Path    string `json:"path"`
 		Content string `json:"content"`
 	}{Path: "x.go", Content: long})
-	got, ok := renderWriteFileApproval(string(args))
+	got, ok := renderWriteFileApprovalSummary(string(args))
 	if !ok {
 		t.Fatalf("expected ok=true")
 	}
-	if !strings.Contains(got, "more lines") {
-		t.Errorf("truncation notice missing: %q", got)
+	if strings.Contains(got, "filler") {
+		t.Errorf("long body must not bleed into the summary: %q", got)
+	}
+	if strings.Contains(got, "more lines") {
+		t.Errorf("no truncation notice — body lives in scrollback now: %q", got)
 	}
 }
 
-func TestRenderWriteFileApproval_RejectsBadJSON(t *testing.T) {
-	if _, ok := renderWriteFileApproval(`{not json`); ok {
+func TestRenderWriteFileApprovalSummary_RejectsBadJSON(t *testing.T) {
+	if _, ok := renderWriteFileApprovalSummary(`{not json`); ok {
 		t.Errorf("expected ok=false for malformed JSON")
 	}
 }
 
-func TestRenderWriteFileApproval_RequiresPath(t *testing.T) {
-	if _, ok := renderWriteFileApproval(`{"content":"x"}`); ok {
+func TestRenderWriteFileApprovalSummary_RequiresPath(t *testing.T) {
+	if _, ok := renderWriteFileApprovalSummary(`{"content":"x"}`); ok {
 		t.Errorf("expected ok=false when path is missing")
 	}
 }

@@ -17,6 +17,7 @@ import (
 	"github.com/yottadynamics/yottacode/internal/cli"
 	"github.com/yottadynamics/yottacode/internal/config"
 	"github.com/yottadynamics/yottacode/internal/oneshot"
+	"github.com/yottadynamics/yottacode/internal/session"
 	"github.com/yottadynamics/yottacode/internal/tui"
 	"github.com/yottadynamics/yottacode/internal/version"
 	"github.com/yottadynamics/yottacode/internal/wizard"
@@ -93,6 +94,9 @@ Configuration (no built-in defaults — must be set via flag or env):
 					return err
 				}
 			}
+			if err := resolveContinue(opts); err != nil {
+				return err
+			}
 			return tui.Run(cmd.Context(), *opts)
 		},
 	}
@@ -118,6 +122,43 @@ func shouldAutoLaunchSetup(opts cli.ChatOptions) bool {
 		return false
 	}
 	return true
+}
+
+// resolveContinue handles the --continue flag: when set (and --resume
+// isn't), it looks up the newest session in the current directory and
+// stuffs its ID into opts.Resume so downstream code (tui.Run /
+// oneshot.Run) takes the regular resume path. Two error paths surface
+// here so the user sees a clean message instead of a vague "session
+// load failed" later: --continue + --resume together is a usage
+// error; no matching session points the user at how to start fresh.
+//
+// No-op when --continue is false, so existing flows (--resume, no
+// flag) are unaffected.
+func resolveContinue(opts *cli.ChatOptions) error {
+	if !opts.Continue {
+		return nil
+	}
+	if opts.Resume != "" {
+		return errors.New("--continue and --resume are mutually exclusive")
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("--continue: %w", err)
+	}
+	sess, err := session.LatestInCwd(cwd)
+	if err != nil {
+		if errors.Is(err, session.ErrNoSessionInCwd) {
+			return fmt.Errorf("--continue: no saved session in %s — start a new one with `yottacode` (no flag) or list with `yottacode sessions resume`", cwd)
+		}
+		return fmt.Errorf("--continue: %w", err)
+	}
+	opts.Resume = sess.ID
+	label := sess.ID
+	if sess.Name != "" {
+		label = fmt.Sprintf("%s (%s)", sess.ID, sess.Name)
+	}
+	fmt.Fprintf(os.Stderr, "[continue] resuming %s\n", label)
+	return nil
 }
 
 // runSetupThenResolve runs the wizard then re-resolves opts so the
@@ -153,7 +194,7 @@ func newRunCmd(opts *cli.ChatOptions) *cobra.Command {
 The prompt may be passed as an argument or piped via stdin. Reasoning, tool
 status, and errors go to stderr so 'yottacode run "..." > out.md' produces a
 clean file. Tool calls that require approval will fail unless
---bypass-permissions is set (DANGEROUS — see flag help).
+--dangerously-skip-permissions is set (DANGEROUS — see flag help).
 
 Configuration (no built-in defaults — must be set via flag or env):
   --model      / $YOTTACODE_MODEL      model tag
@@ -162,6 +203,9 @@ Configuration (no built-in defaults — must be set via flag or env):
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := cli.Resolve(opts); err != nil {
+				return err
+			}
+			if err := resolveContinue(opts); err != nil {
 				return err
 			}
 			var prompt string
@@ -239,14 +283,15 @@ func bindCommonPersistentFlags(cmd *cobra.Command, opts *cli.ChatOptions) {
 	f.StringVar(&opts.Provider, "provider", "", "Provider override: openai | openai-auth | anthropic | gemini | xai | ollama | openai-compatible (or set $YOTTACODE_PROVIDER). openai-auth is the ChatGPT-subscription path (no API key) — log in via 'yottacode openai-auth login' before first use.")
 	f.StringVar(&opts.SystemPrompt, "system", "", "Override the default system prompt")
 	f.StringVar(&opts.Resume, "resume", "", "Resume session by id or name (set via the /sessions Rename action)")
-	// --bypass-permissions replaces the old --yolo flag. The new name
-	// makes the danger explicit: every approval prompt is skipped and
-	// model-emitted commands run without a human in the loop. Explicit
-	// `deny` rules in .yottacode/permissions.json are still honored.
-	// Use only in trusted CI / scripted contexts.
-	f.BoolVar(&opts.BypassPermissions, "bypass-permissions", false,
-		"DANGEROUS: auto-approve every tool call without prompting (deny rules still apply). Reserved for trusted CI / scripted contexts.")
-	f.IntVar(&opts.MaxIterations, "max-iterations", 25, "Max tool-call iterations per turn (raise for complex implementation work; runaway-loop guard)")
+	f.BoolVarP(&opts.Continue, "continue", "c", false, "Pick up where you left off: resume the most recent session you ran in this directory, without going through the picker. Matches the cwd recorded when the session was created. Use --resume <id|name> to pick a specific session instead. Errors if you pass both, or if no prior session exists here.")
+	// --dangerously-skip-permissions mirrors Claude Code's flag of the
+	// same name (the user-facing surface). Every approval prompt is
+	// skipped and model-emitted commands run without a human in the
+	// loop. Explicit `deny` rules in .yottacode/permissions.json are
+	// still honored. Use only in trusted CI / scripted contexts.
+	f.BoolVar(&opts.BypassPermissions, "dangerously-skip-permissions", false,
+		"DANGEROUS: auto-approve every tool call without prompting (deny rules still apply). Reserved for trusted CI / scripted contexts. Mirrors Claude Code's --dangerously-skip-permissions.")
+	f.IntVar(&opts.MaxIterations, "max-iterations", 50, "Max tool-call iterations per turn (raise for complex implementation work; runaway-loop guard). Auto mode effectively doubles this.")
 	f.StringVar(&opts.ReasoningEffort, "reasoning-effort", "", "Reasoning effort for supported reasoning models: low | medium | high (or set $YOTTACODE_REASONING_EFFORT)")
 	f.BoolVar(&opts.EnableWebSearch, "enable-web-search", false, "Enable provider-native web search when the selected provider supports it (enabled by default for OpenAI/xAI)")
 	f.BoolVar(&opts.DisableWebSearch, "disable-web-search", false, "Disable provider-native web search even when the selected provider would enable it by default")
@@ -259,6 +304,8 @@ func bindCommonPersistentFlags(cmd *cobra.Command, opts *cli.ChatOptions) {
 	f.StringVar(&opts.XSearchFromDate, "x-search-from-date", "", "Inclusive YYYY-MM-DD lower bound for provider-native x_search")
 	f.StringVar(&opts.XSearchToDate, "x-search-to-date", "", "Inclusive YYYY-MM-DD upper bound for provider-native x_search")
 	f.StringVar(&opts.AllowPaths, "allow-paths", "", "Comma-separated additional roots the model's write tools may mutate (or set $YOTTACODE_ALLOW_PATHS); cwd is always allowed")
+	f.StringVar(&opts.PermissionMode, "permission-mode", "", "Startup permission `mode`: default | plan | auto. 'plan' starts in read-only research mode (Shift+Tab to exit); 'auto' starts with edits auto-allowed (bash & commits still prompt). Mirrors Claude Code's --permission-mode. No-op for yottacode run.")
+	f.StringVar(&opts.PlanResume, "plan-resume", "", "Resume an existing plan by `slug` or substring (matched newest-first against ~/.yottacode/plans/). Implies --permission-mode plan. No-op for yottacode run.")
 }
 
 func adapterConfigFromOptions(opts cli.ChatOptions) adapter.Config {

@@ -233,3 +233,99 @@ func TestList_NewestFirst(t *testing.T) {
 		t.Errorf("Name didn't round-trip: %+v", infos[0])
 	}
 }
+
+// LatestInCwd is the engine behind `yottacode --continue`: it picks
+// the newest saved session whose Cwd matches the requested directory.
+// Mismatched Cwd values are filtered out — that's the whole point —
+// and the picker returns ErrNoSessionInCwd when nothing matches so
+// the CLI can surface a clean error rather than a generic load
+// failure.
+func TestLatestInCwd_PicksNewestMatch(t *testing.T) {
+	redirectHome(t)
+	// Two sessions in /proj/a, one in /proj/b. Newest in /proj/a wins
+	// for that cwd; /proj/b returns its only session; /proj/c returns
+	// the sentinel.
+	older, err := New("m", "/proj/a")
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := older.Save(); err != nil {
+		t.Fatalf("Save older: %v", err)
+	}
+	time.Sleep(2 * time.Millisecond)
+	other, err := New("m", "/proj/b")
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := other.Save(); err != nil {
+		t.Fatalf("Save other: %v", err)
+	}
+	time.Sleep(2 * time.Millisecond)
+	newer, err := New("m", "/proj/a")
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := newer.Save(); err != nil {
+		t.Fatalf("Save newer: %v", err)
+	}
+
+	got, err := LatestInCwd("/proj/a")
+	if err != nil {
+		t.Fatalf("LatestInCwd /proj/a: %v", err)
+	}
+	if got.ID != newer.ID {
+		t.Errorf("LatestInCwd /proj/a = %q, want newer %q", got.ID, newer.ID)
+	}
+
+	got, err = LatestInCwd("/proj/b")
+	if err != nil {
+		t.Fatalf("LatestInCwd /proj/b: %v", err)
+	}
+	if got.ID != other.ID {
+		t.Errorf("LatestInCwd /proj/b = %q, want %q", got.ID, other.ID)
+	}
+}
+
+func TestLatestInCwd_NoMatchReturnsSentinel(t *testing.T) {
+	redirectHome(t)
+	s, err := New("m", "/proj/a")
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := s.Save(); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	if _, err := LatestInCwd("/proj/elsewhere"); err == nil {
+		t.Fatalf("expected error for non-matching cwd")
+	} else if !errorsIs(err, ErrNoSessionInCwd) {
+		t.Errorf("expected ErrNoSessionInCwd sentinel; got %v", err)
+	}
+}
+
+func TestLatestInCwd_EmptyDirReturnsSentinel(t *testing.T) {
+	redirectHome(t)
+	_, err := LatestInCwd("/proj/a")
+	if err == nil {
+		t.Fatalf("expected error when no sessions exist at all")
+	}
+	if !errorsIs(err, ErrNoSessionInCwd) {
+		t.Errorf("expected ErrNoSessionInCwd sentinel; got %v", err)
+	}
+}
+
+// errorsIs is a tiny local shim so the new tests don't have to import
+// "errors" — keeps the existing import block minimal.
+func errorsIs(err, target error) bool {
+	for cur := err; cur != nil; {
+		if cur == target {
+			return true
+		}
+		type unwrapper interface{ Unwrap() error }
+		u, ok := cur.(unwrapper)
+		if !ok {
+			return false
+		}
+		cur = u.Unwrap()
+	}
+	return false
+}

@@ -141,7 +141,11 @@ func approvalBodyFor(m Model) string {
 			return diff
 		}
 	case "write_file":
-		if rendered, ok := renderWriteFileApproval(m.approvalArgs); ok {
+		// Body (file contents) was emitted to scrollback at
+		// ApprovalNeeded time so it persists past the modal and
+		// doesn't cram the box. Here we render only the destination
+		// path + size summary — the user already saw the body above.
+		if rendered, ok := renderWriteFileApprovalSummary(m.approvalArgs); ok {
 			return rendered
 		}
 	case "run_bash":

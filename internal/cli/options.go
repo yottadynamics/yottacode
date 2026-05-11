@@ -20,16 +20,26 @@ type ChatOptions struct {
 	APIKey                 string
 	SystemPrompt           string
 	Resume                 string
+	// Continue requests that, when set, the CLI resume the most recent
+	// session in the current working directory (mirroring Claude
+	// Code's --continue / -c flag). Mutually exclusive with Resume:
+	// passing both is a user error and main.go errors out before
+	// either path runs. The cwd lookup happens at command-dispatch
+	// time, not in Resolve, because Resolve doesn't know cwd.
+	Continue               bool
 	// Summarized requests that, when Resume is non-empty, the session
 	// be loaded with its prior transcript replaced by a structured
 	// summary (the same path /resume --summarized takes inside the
 	// TUI). Defaults to false; only the `resume` subcommand sets it.
 	Summarized             bool
-	// BypassPermissions auto-approves every tool call without prompting.
-	// DANGEROUS — model-emitted commands run without a human in the loop.
-	// Explicit `deny` rules in .yottacode/permissions.json are still
-	// honored, but every other approval gate is skipped. Reserved for
-	// trusted CI / scripted contexts; never enable in shared shells.
+	// BypassPermissions is the internal name for what the user-facing
+	// CLI exposes as --dangerously-skip-permissions: auto-approve every
+	// tool call without prompting. DANGEROUS — model-emitted commands
+	// run without a human in the loop. Explicit `deny` rules in
+	// .yottacode/permissions.json are still honored, but every other
+	// approval gate is skipped. Reserved for trusted CI / scripted
+	// contexts; never enable in shared shells. Mirrors Claude Code's
+	// --dangerously-skip-permissions flag.
 	BypassPermissions      bool
 	MaxIterations          int
 	Provider               string
@@ -50,6 +60,49 @@ type ChatOptions struct {
 	// session's cwd. Useful when legitimate work spans sibling repos
 	// or shared dirs. Empty by default — writes confine to cwd.
 	AllowPaths string
+
+	// PermissionMode selects the startup permission mode, mirroring
+	// Claude Code's --permission-mode flag. Valid values:
+	//
+	//   ""        — same as "default": no mode at startup.
+	//   "default" — explicit form of the empty default.
+	//   "plan"    — enter plan mode (read-only research; describe the
+	//               task as your first message). Equivalent to typing
+	//               /plan immediately after launch.
+	//   "auto"    — enter auto mode (edits auto-allow; run_bash and
+	//               git mutations still prompt). Reachable mid-session
+	//               via Shift+Tab.
+	//
+	// No-op for oneshot (`yottacode run`) since the interactive modes
+	// require an approval surface.
+	PermissionMode string
+
+	// PlanResume is a slug or substring matched against existing
+	// plan files under ~/.yottacode/plans/. When set, the TUI
+	// enters plan mode with the matched plan file attached so the
+	// model picks up where it (or you) left off. Empty means "start
+	// fresh"; an unmatched value falls back to fresh entry with a
+	// log line so the user sees what happened. Implies
+	// --permission-mode plan.
+	PlanResume string
+}
+
+// ValidPermissionModes is the closed set the --permission-mode flag
+// accepts. Exported so the flag-registration site and tests can keep
+// the list in one place.
+var ValidPermissionModes = []string{"", "default", "plan", "auto"}
+
+// IsValidPermissionMode reports whether s names a recognized startup
+// permission mode. The empty string and "default" are both accepted
+// (both mean "no startup mode") so users can omit the flag or pass it
+// explicitly without an error.
+func IsValidPermissionMode(s string) bool {
+	for _, v := range ValidPermissionModes {
+		if s == v {
+			return true
+		}
+	}
+	return false
 }
 
 // Env var names that back the flags. Exported so tests and the TUI
@@ -167,6 +220,10 @@ func Resolve(opts *ChatOptions) error {
 	case "", "low", "medium", "high":
 	default:
 		return errors.New("invalid reasoning effort: use low, medium, or high")
+	}
+	opts.PermissionMode = strings.ToLower(strings.TrimSpace(opts.PermissionMode))
+	if !IsValidPermissionMode(opts.PermissionMode) {
+		return fmt.Errorf("invalid --permission-mode %q: use default, plan, or auto", opts.PermissionMode)
 	}
 	return nil
 }

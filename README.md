@@ -57,7 +57,13 @@ Inline rendering keeps your scrollback intact. Markdown-rendered assistant outpu
 
 ### Repo-aware tool surface
 
-Twenty-eight built-in tools spanning reads, writes, filesystem, search, git helpers (status / diff / blame / log / commit / checkpoints / rollback / file-at-revision), bash, and tests — each with explicit approval policy. See [`docs/tools.md`](docs/tools.md).
+Thirty built-in tools spanning reads, writes, filesystem, search, git helpers (status / diff / blame / log / commit / checkpoints / rollback / file-at-revision), bash, tests, the `todo_write` working-plan tracker, and the `exit_plan_mode` plan-approval surface — each with explicit approval policy. See [`docs/tools.md`](docs/tools.md).
+
+### Read-only plan mode + auto mode
+
+`/plan` (or `Shift+Tab`, or `yottacode --permission-mode plan` at launch) toggles a read-only research mode that mirrors Claude Code's plan mode: the agent investigates, asks clarifying questions, writes a plan file under `~/.yottacode/plans/<slug>.md`, then calls `exit_plan_mode` (no arguments — the TUI reads the file) to present the plan in an approval card. Approve with `[A]` to resume execution, or `[Y]` to enter auto mode and skip per-tool prompts during implementation.
+
+Auto mode enters via `Shift+Tab` or `yottacode --permission-mode auto` at launch — useful when you trust a multi-step implementation and want to skip approval friction. `run_bash`, `git_commit`, `git_checkpoint`, and `rollback` remain in the safety floor and still prompt. `Shift+Tab` cycles through normal → auto → plan → normal. Mirroring Claude Code, there is no `/auto` slash command — auto enters via the keybinding or the startup flag, and the permissions-bypass overlay (every tool auto-runs, no iteration cap) enters only via `yottacode --dangerously-skip-permissions` at startup. See [`docs/tui-slash-commands.md#plan-mode`](docs/tui-slash-commands.md#plan-mode) and [`docs/tui-slash-commands.md#auto-mode`](docs/tui-slash-commands.md#auto-mode).
 
 ### Cross-session recall
 
@@ -85,10 +91,17 @@ In the TUI:
 /recall <query>       full-text search across every saved session
 /summarize            compress session history into a structured summary
 /memory               open the memory picker (USER.md / YOTTACODE.md / saved memories)
-/max-iterations <N>   cap tool-call iterations per turn (default: 25)
+/max-iterations <N>   cap tool-call iterations per turn (default: 50; auto 4×; --dangerously-skip-permissions removes the cap)
 /setup                re-run the setup wizard (reloads config on return)
 /init                 draft .yottacode/YOTTACODE.md from the current repo
+/plan                 toggle plan mode (read-only research + plan file) — also Shift+Tab, or `yottacode --permission-mode plan` at launch
+/plan list            resume an earlier plan from ~/.yottacode/plans/ — also `yottacode --plan-resume <slug>`
 ```
+
+Auto mode and the permissions-bypass overlay are intentionally not slash commands (mirroring Claude Code):
+
+- **Auto mode** — `Shift+Tab` from normal mode, or `yottacode --permission-mode auto` at launch
+- **Permissions bypass** (every tool auto-runs, no iteration cap, DANGEROUS — deny rules still win) — `yottacode --dangerously-skip-permissions` at launch only; no in-TUI toggle
 
 From the shell:
 
@@ -99,6 +112,7 @@ yottacode provider use openai
 yottacode model list
 yottacode sessions list
 yottacode sessions resume <id-or-name>
+yottacode --continue                       # most recent session in this directory
 yottacode memory list
 yottacode run "explain this repository"
 ```

@@ -59,8 +59,8 @@ type Config struct {
 	ProviderProfile        adapter.ProviderProfile
 	Cwd                    string
 	// BypassPermissions auto-approves every tool call. DANGEROUS — see
-	// the flag help on --bypass-permissions. Explicit `deny` rules in
-	// .yottacode/permissions.json still apply.
+	// the flag help on --dangerously-skip-permissions. Explicit `deny`
+	// rules in .yottacode/permissions.json still apply.
 	BypassPermissions      bool
 	Version                string // e.g. "0.3.0" — shown in the header
 	Commit                 string // short SHA the binary was built from; "" when unknown (go run, tarball)
@@ -149,8 +149,9 @@ type Model struct {
 	statsToolCalls int
 
 	// Per-turn throughput tracking
-	turnStart  time.Time
-	turnTokens int
+	turnStart     time.Time
+	turnTokens    int
+	turnToolCalls int
 
 	// Per-turn meta surfaced in the thinking-row footer instead of as
 	// scrollback lines. iterRound/iterMax come from agent.IterationStart;
@@ -310,6 +311,13 @@ type Model struct {
 	// successful action commits.
 	sessionsPickerOpen bool
 	sessionsPicker     *sessionsPickerState
+
+	// Plans picker overlay (/plan list). Single-row picker over
+	// ~/.yottacode/plans/ ordered newest-first; Enter resumes the
+	// chosen plan (attaches its file and enters plan mode if
+	// inactive). Esc closes without changes.
+	plansPickerOpen bool
+	plansPicker     *plansPickerState
 
 	// Connection probe state for the status footer dot
 	connection connState
@@ -710,6 +718,9 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.sessionsPickerOpen {
 			return m.updateSessionsPicker(msg)
 		}
+		if m.plansPickerOpen {
+			return m.updatePlansPicker(msg)
+		}
 		// Intercept large bracketed pastes before any other handling.
 		// Bubbletea sets msg.Paste=true with all the pasted runes in a
 		// single KeyMsg. For anything over the threshold, we swap the
@@ -766,6 +777,70 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		if m.awaitingApproval {
+			// exit_plan_mode is a different shape of approval — its
+			// keys mean "approve and execute" / "keep planning",
+			// never "always allow" (which would derive a permission
+			// rule that doesn't apply). Handle it before the generic
+			// modal so the user never sees the always-allow path.
+			if m.approvalTool == "exit_plan_mode" {
+				answered := false
+				switch msg.String() {
+				case "a", "A", "enter":
+					// Approve and implement: flip plan mode off
+					// BEFORE forwarding the decision so the next
+					// iteration's tool dispatch sees the new state
+					// and the schema filter stops advertising
+					// exit_plan_mode. Normal per-tool approval
+					// prompts continue for the implementation turn.
+					exitPlanMode(&m)
+					m.decisions <- agent.AllowOnce
+					m.awaitingApproval = false
+					answered = true
+				case "y", "Y":
+					// Approve and auto-implement: exit plan mode
+					// AND enter auto mode for the implementation.
+					// Per-tool prompts auto-allow for the rest of
+					// the turn except the safety floor (run_bash,
+					// git_commit, git_checkpoint, rollback).
+					exitPlanMode(&m)
+					if m.cfg.AutoMode != nil {
+						m.cfg.AutoMode.Active.Store(true)
+						m.appendLine(styleAutoBannerLabel.Render(AutoModeIcon+" auto mode active") +
+							" " + styleAutoBannerHint.Render("— implementing the approved plan; bash & commits still prompt"))
+					}
+					m.decisions <- agent.AllowOnce
+					m.awaitingApproval = false
+					answered = true
+				case "l", "L":
+					// Save and implement later: flip plan mode off
+					// (plan stays on disk for /plan list / --plan-resume)
+					// AND send SaveForLater so the model returns a
+					// firm "end this turn" message instead of
+					// implementing. The plan body is already in
+					// scrollback from emitPlanBodyToScrollback so we
+					// don't need to re-emit on dismiss.
+					exitPlanMode(&m)
+					m.appendLine(stylePlanBannerLabel.Render(PlanModeIcon+" plan saved for later") +
+						" " + stylePlanBannerHint.Render("— resume via /plan list or `yottacode --plan-resume <slug>`"))
+					m.decisions <- agent.SaveForLater
+					m.awaitingApproval = false
+					answered = true
+				case "k", "K", "n", "N", "esc":
+					// Keep planning: log a dismissal header so the
+					// user sees what they just did. Plan body is
+					// already in scrollback from
+					// emitPlanBodyToScrollback (above the modal).
+					m.appendLine(stylePlanBannerLabel.Render(PlanModeIcon+" plan kept") +
+						" " + stylePlanBannerHint.Render("— revise and call exit_plan_mode again when ready"))
+					m.decisions <- agent.Deny
+					m.awaitingApproval = false
+					answered = true
+				}
+				if answered {
+					return m, waitForEvent(m.eventsCh, m.turnErrCh)
+				}
+				return m, nil
+			}
 			answered := false
 			switch msg.String() {
 			case "y", "Y":
@@ -909,6 +984,18 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		case tea.KeyCtrlD:
 			return m, tea.Quit
+		case tea.KeyShiftTab:
+			// Cycle through normal → auto → plan → normal. Mirrors
+			// Claude Code's Shift+Tab. Suppressed while a palette
+			// overlay is open (the slash/file palette branch above
+			// intercepts navigation keys but lets unknown keys fall
+			// through to here) or mid-turn (flipping while the
+			// in-flight iteration's gate decisions are in motion
+			// would be confusing).
+			if m.turnActive || m.paletteOpen || m.filePaletteOpen {
+				return m, nil
+			}
+			return cycleAgentMode(m)
 		case tea.KeyCtrlU:
 			// Capture the line-before-cursor into the kill ring before
 			// forwarding to bubbles' textarea (which performs the actual
@@ -1130,6 +1217,9 @@ func (m Model) View() string {
 	if m.sessionsPickerOpen && m.sessionsPicker != nil {
 		return m.renderInlineOverlay(renderSessionsPicker(m.sessionsPicker, m.width))
 	}
+	if m.plansPickerOpen && m.plansPicker != nil {
+		return m.renderInlineOverlay(renderPlansPicker(m.plansPicker, m.width))
+	}
 
 	parts := []string{}
 	// During an active turn the live footer carries: a leading blank row
@@ -1162,13 +1252,40 @@ func (m Model) View() string {
 	}
 
 	if m.awaitingApproval {
-		parts = append(parts, renderApprovalModal(m))
+		// exit_plan_mode gets its own decision card — just the four
+		// hotkeys in a bordered box. The plan body itself is emitted
+		// to scrollback above this box when ApprovalNeeded fires (see
+		// handleAgentEvent), so the body persists naturally after the
+		// modal dismisses and isn't cramped inside the box.
+		if m.approvalTool == "exit_plan_mode" {
+			parts = append(parts, renderPlanApprovalCard(m.width))
+		} else {
+			parts = append(parts, renderApprovalModal(m))
+		}
 	} else {
 		if m.paletteOpen {
 			parts = append(parts, renderPalette(m.paletteFiltered, m.paletteIndex, liveContentWidth(m.width)+4))
 		}
 		if m.filePaletteOpen {
 			parts = append(parts, renderFilePalette(m.filePaletteFiltered, m.filePaletteIndex, m.filePaletteOffset, liveContentWidth(m.width)+4))
+		}
+		// Banner: one-line indicator above the input rule. Modes
+		// (plan/auto) are mutually exclusive; yolo is an orthogonal
+		// overlay flag whose `⚠ yolo` tag appends to the active mode
+		// banner. When no mode is active but yolo is, a standalone
+		// yolo banner shows so the user can still see the "rails
+		// off" state. Suppressed entirely while a palette is open
+		// (palettes already own the above-cmdline real estate).
+		yoloOn := m.cfg.YoloMode.IsActive()
+		switch {
+		case m.paletteOpen, m.filePaletteOpen:
+			// suppressed
+		case m.cfg.PlanMode.IsActive():
+			parts = append(parts, renderPlanModeBanner(computePlanBannerInfo(m), yoloOn, m.width))
+		case m.cfg.AutoMode.IsActive():
+			parts = append(parts, renderAutoModeBanner(yoloOn, m.width))
+		case yoloOn:
+			parts = append(parts, renderYoloStandaloneBanner(m.width))
 		}
 		// Bracket the input with thin dim rules above and below — gives
 		// the cmdline visible containment without the visual weight of
@@ -1288,7 +1405,15 @@ func (m Model) renderInputBody(contentW int) string {
 		// is fixed at column 0 so the placeholder doesn't shift as
 		// the cursor toggles visible/invisible.
 		cur := renderEmptyCursor(m.cursorVisible)
-		ph := styleInputPlaceholder.Render("ask anything…")
+		placeholder := "ask anything…"
+		if m.cfg.PlanMode.IsActive() {
+			// Surface the mode in the placeholder too — even if the
+			// status bar / above-cmdline banner are hidden by a
+			// narrow terminal or palette overlay, the empty-state
+			// prompt will still call it out.
+			placeholder = "ask anything… (plan mode)"
+		}
+		ph := styleInputPlaceholder.Render(placeholder)
 		row := styleInputPrompt.Render(promptStr) + cur + ph
 		if !m.firstMessageSent {
 			row += styleInputHint.Render("    /  commands  ·  @ files  ·  ↑↓ history")
@@ -1856,6 +1981,9 @@ func (m Model) renderStatus() string {
 	if provider != "" {
 		first += innerSep + provider
 	}
+	// Plan-mode indication lives in the banner above the cmdline (see
+	// renderPlanModeBanner); we intentionally do NOT duplicate it as a
+	// status-bar chip — one prominent signal beats two competing ones.
 
 	build := func(head string) string {
 		segs := []string{head}
@@ -2001,6 +2129,11 @@ func (m Model) startTurn(input string) (tea.Model, tea.Cmd) {
 		m.clearFileRefs()
 	}
 
+	// In plan mode without a plan-file slug yet (user typed `/plan` with
+	// no topic), derive the slug from this first user message so the
+	// model can start writing to it.
+	maybeFillPlanFile(&m, input)
+
 	m.sess.Messages = append(m.sess.Messages, adapter.Message{
 		Role:    adapter.RoleUser,
 		Content: input,
@@ -2019,6 +2152,7 @@ func (m Model) startTurn(input string) (tea.Model, tea.Cmd) {
 	m.turnActive = true
 	m.turnStart = time.Now()
 	m.turnTokens = 0
+	m.turnToolCalls = 0
 	// Per-turn meta surfaced in the thinking row resets to zero so
 	// nothing carries over from a previous turn.
 	m.iterRound = 0
@@ -2131,6 +2265,38 @@ func (m Model) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 		m.appendLine(styleAuto.Render(fmt.Sprintf("[%s] %s", e.Source, summary)))
 	case agent.ApprovalNeeded:
 		m.commitStreaming()
+		// exit_plan_mode reads the plan from the resolved plan file
+		// (single source of truth); the tool itself takes no arg. If
+		// the file is missing or empty the model called the tool
+		// prematurely — auto-deny with a console notice so the
+		// refinement-hint message reaches the model next iteration.
+		//
+		// On success: emit the plan body to scrollback as a quoted
+		// block ABOVE the decision modal so the user can see what
+		// they're approving. The body persists in scrollback even
+		// after they dismiss the modal — no need for a separate
+		// archive helper.
+		if e.ToolName == "exit_plan_mode" {
+			body, denyReason := loadPlanForApproval(m.cfg.PlanMode)
+			if denyReason != "" {
+				m.appendLine(styleError.Render("[plan] " + denyReason + " — refusing exit_plan_mode"))
+				// The decision channel may not have a slot yet — the
+				// loop sends ApprovalNeeded and then reads from
+				// decisions. We're synchronous in Update; the receiver
+				// is already blocking. Sending here is safe.
+				m.decisions <- agent.Deny
+				return m, waitForEvent(m.eventsCh, m.turnErrCh)
+			}
+			emitPlanBodyToScrollback(&m, body)
+		}
+		// write_file body emits to scrollback BEFORE the modal opens
+		// so long files don't cram the box and so the contents
+		// persist after the modal dismisses (visible by scrolling
+		// back) regardless of approve/deny. The modal then renders
+		// only a path + size summary.
+		if e.ToolName == "write_file" {
+			emitWriteFileBodyToScrollback(&m, e.ArgsJSON)
+		}
 		m.awaitingApproval = true
 		m.approvalTool = e.ToolName
 		m.approvalPreview = e.Preview
@@ -2163,6 +2329,7 @@ func (m Model) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 		m.pendingToolArgs = e.ArgsJSON
 		m.statsToolCalls++
 		m.toolsStarted++
+		m.turnToolCalls++
 	case agent.ToolResult:
 		// Render the buffered start info + this result as a unified
 		// tool card. Leading blank line gives each card breathing
@@ -2186,7 +2353,18 @@ func (m Model) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 			m.sess.Todos = e.Todos
 		}
 	case agent.IterCap:
-		m.appendLine(styleError.Render(fmt.Sprintf("[agent] hit max-iterations=%d", e.Max)))
+		// Cap hit. The hint suggests doubling — the most common
+		// recovery is "I want it to keep going." `e.Max` already
+		// reflects the auto-mode multiplier (the loop computes the
+		// effective cap before emitting), so the suggestion scales
+		// naturally.
+		suggest := e.Max * 2
+		m.appendLine(styleError.Render(fmt.Sprintf(
+			"[agent] hit %d/%d iterations · %d tool calls this turn",
+			e.Max, e.Max, m.turnToolCalls)))
+		m.appendLine(styleAuto.Render(fmt.Sprintf(
+			"  raise with `/max-iterations %d` and ask me to continue, or pass --max-iterations %d at launch",
+			suggest, suggest)))
 	case agent.ErrorEvent:
 		m.commitStreaming()
 		// Multi-line errors (e.g. 429 with retry-after hint) render

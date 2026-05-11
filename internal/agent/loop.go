@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"sync"
 
 	"github.com/yottadynamics/yottacode/internal/adapter"
@@ -29,15 +30,39 @@ type LoopConfig struct {
 	// disables rule matching and falls through to the tool's own
 	// RequiresApproval policy.
 	Permissions *permissions.Permissions
-	// BypassPermissions is the renamed --yolo: skip every approval
-	// prompt, run silently. DANGEROUS — model-emitted commands
-	// execute without a human in the loop. Explicit `deny` rules in
-	// permissions.json still refuse the call (bypass is "skip
-	// prompts," not "ignore my policy"). Use only in trusted CI /
-	// scripted contexts.
+	// BypassPermissions is the internal name for the user-facing
+	// --dangerously-skip-permissions flag (mirroring Claude Code).
+	// Skip every approval prompt, run silently. DANGEROUS —
+	// model-emitted commands execute without a human in the loop.
+	// Explicit `deny` rules in permissions.json still refuse the call
+	// (bypass is "skip prompts," not "ignore my policy"). Use only
+	// in trusted CI / scripted contexts.
 	BypassPermissions bool
 	Cwd               string
 	MaxIterations     int
+	// PlanMode is the shared plan-mode flag the TUI flips via /plan or
+	// Shift+Tab. nil disables plan mode entirely (oneshot; tests). When
+	// set and Active, the loop prepends a plan-mode addendum to the
+	// system prompt on every request and gates mutating tools through
+	// PlanModeGate before approval evaluation. Pointer-shared so a TUI
+	// flip takes effect on the next iteration with no reconfiguration.
+	PlanMode *PlanModeState
+
+	// AutoMode is the shared auto-mode flag the TUI flips via /auto,
+	// Shift+Tab, or the plan-card [Y] hotkey. When active, the loop
+	// auto-approves non-safety-floor tool calls (no modal) so the
+	// model can implement a multi-step plan without per-edit friction.
+	// run_bash and git mutations remain in the safety floor — see
+	// IsAutoModeSafetyFloor.
+	AutoMode *AutoModeState
+
+	// YoloMode is the unrestricted toggle — auto-approves ALL tool
+	// calls including the safety floor, and removes the iteration
+	// cap entirely. Explicit Deny rules in permissions.json still
+	// win. Intended for unattended long-running implementations
+	// where the user has decided no further oversight is needed.
+	// Mutually exclusive with AutoMode and PlanMode at the TUI layer.
+	YoloMode *YoloModeState
 }
 
 type loopState struct {
@@ -75,10 +100,22 @@ func Turn(
 	decisions <-chan Decision,
 ) error {
 	state := loopState{history: history}
-	for state.iteration = 1; state.iteration <= cfg.MaxIterations; state.iteration++ {
+	// Effective cap: auto mode quadruples the configured limit
+	// because the user explicitly opted into "let this run" — most
+	// plan implementations need 100–200 iterations. Yolo mode goes
+	// further still (no cap; MaxInt). Read once at turn start so a
+	// mode toggle mid-turn doesn't change the budget mid-flight.
+	effectiveCap := cfg.MaxIterations
+	switch {
+	case cfg.YoloMode.IsActive():
+		effectiveCap = math.MaxInt
+	case cfg.AutoMode.IsActive():
+		effectiveCap *= 4
+	}
+	for state.iteration = 1; state.iteration <= effectiveCap; state.iteration++ {
 		if err := send(ctx, events, IterationStart{
 			Number: state.iteration,
-			Max:    cfg.MaxIterations,
+			Max:    effectiveCap,
 		}); err != nil {
 			return err
 		}
@@ -110,7 +147,7 @@ func Turn(
 		}
 
 		if shouldContinueIncomplete(final) {
-			if state.iteration == cfg.MaxIterations {
+			if state.iteration == effectiveCap {
 				break
 			}
 			if err := send(ctx, events, IterationContinue{
@@ -128,7 +165,7 @@ func Turn(
 
 		return send(ctx, events, TurnDone{})
 	}
-	if err := send(ctx, events, IterCap{Max: cfg.MaxIterations}); err != nil {
+	if err := send(ctx, events, IterCap{Max: effectiveCap}); err != nil {
 		return err
 	}
 	return nil
@@ -140,8 +177,32 @@ func streamIteration(
 	history []adapter.Message,
 	events chan<- Event,
 ) (*adapter.Message, error) {
-	tools := cfg.Registry.AsAdapterTools()
-	stream := cfg.Adapter.ChatStream(ctx, history, tools)
+	// Hide exit_plan_mode from the schema when plan mode is off — the
+	// model should never see (or invent) the call outside of /plan.
+	planActive := cfg.PlanMode.IsActive()
+	tools := cfg.Registry.AsAdapterToolsFiltered(func(name string) bool {
+		if name == "exit_plan_mode" {
+			return planActive
+		}
+		return true
+	})
+	// When plan mode is active, prepend a fresh system message carrying
+	// the plan-mode addendum (path + current contents of the plan
+	// file). Re-read on every iteration so the model always sees the
+	// live plan body — critical for resume (model has no other way to
+	// learn what was previously planned) and for catching out-of-band
+	// edits (user manually tweaks the plan in $EDITOR mid-session).
+	// Done per-iteration on a local slice so the persisted history
+	// stays untouched.
+	msgs := history
+	if planActive {
+		body := readPlanFileForAddendum(cfg.PlanMode.PlanFile)
+		msgs = append([]adapter.Message{{
+			Role:    adapter.RoleSystem,
+			Content: fmt.Sprintf(PlanModeAddendum, cfg.PlanMode.PlanFile, body),
+		}}, history...)
+	}
+	stream := cfg.Adapter.ChatStream(ctx, msgs, tools)
 
 	var final *adapter.Message
 	for ev := range stream {
@@ -230,6 +291,16 @@ func parallelBatchSize(cfg LoopConfig, calls []adapter.ToolCall) int {
 		if !ok || tool.RequiresApproval(tc.ArgsJSON) || !toolParallelSafe(tool, tc.ArgsJSON) {
 			break
 		}
+		// In plan mode, blocked calls must hit the serial path so the
+		// gate can short-circuit before tool.Execute. Bundling them in
+		// a parallel batch would skip the gate entirely (the parallel
+		// branch goes straight to Execute via the read-only fast
+		// path).
+		if cfg.PlanMode.IsActive() {
+			if _, blocked := PlanModeGate(tool, tc.ArgsJSON, cfg.PlanMode.PlanFile); blocked {
+				break
+			}
+		}
 		n++
 	}
 	return n
@@ -314,38 +385,94 @@ func executeToolCall(
 	}
 	preview := tool.PreviewCall(tc.ArgsJSON)
 
+	// Plan-mode gate runs BEFORE permissions evaluation: explicit deny
+	// rules still beat the gate (the model never gets to call a denied
+	// tool, plan mode or not), but the gate beats the tool's own
+	// RequiresApproval policy. Returning the gate's error string as a
+	// tool result lets the model recover by switching to a read-only
+	// or plan-file alternative on the next iteration.
+	if cfg.PlanMode.IsActive() {
+		if msg, blocked := PlanModeGate(tool, tc.ArgsJSON, cfg.PlanMode.PlanFile); blocked {
+			_ = send(ctx, events, ApprovalAuto{
+				ToolName: tool.Name(), Preview: preview, Source: "plan-mode-block",
+			})
+			return msg, true, nil
+		}
+	}
+
 	verdict := permissions.Default
 	if cfg.Permissions != nil {
 		verdict = cfg.Permissions.Evaluate(tool.Name(), tc.ArgsJSON)
 	}
 
-	switch verdict {
-	case permissions.Deny:
+	// Permission Deny always wins, even over plan-mode auto-allow. A
+	// user who explicitly denies write_file via permissions.json wants
+	// no writes at all, plan file included.
+	if verdict == permissions.Deny {
 		_ = send(ctx, events, ApprovalAuto{
 			ToolName: tool.Name(), Preview: preview, Source: "deny-rule",
 		})
 		return "denied by permissions.json deny rule", true, nil
-	case permissions.Allow:
+	}
+
+	// Mode-priority approval chain. Order matters:
+	//   1. Yolo: auto-allow every tool (no safety floor).
+	//   2. Plan-mode auto-allow for the plan file.
+	//   3. Auto-mode auto-allow for non-floor tools.
+	//   4. Default: permissions verdict → tool's own RequiresApproval.
+	switch {
+	case cfg.YoloMode.IsActive():
 		if err := send(ctx, events, ApprovalAuto{
-			ToolName: tool.Name(), Preview: preview, Source: "permissions",
+			ToolName: tool.Name(), Preview: preview, Source: "yolo-mode",
 		}); err != nil {
 			return "", false, err
 		}
-	case permissions.Ask:
-		if denied, err := promptForApproval(ctx, cfg, tool, tc, preview, events, decisions); err != nil || denied {
-			return deniedResult(denied, err)
+	case cfg.PlanMode.IsActive() && IsPlanFileWrite(tool.Name(), tc.ArgsJSON, cfg.PlanMode.PlanFile):
+		if err := send(ctx, events, ApprovalAuto{
+			ToolName: tool.Name(), Preview: preview, Source: "plan-mode-allow",
+		}); err != nil {
+			return "", false, err
+		}
+	case cfg.AutoMode.IsActive() && !IsAutoModeSafetyFloor(tool.Name()):
+		// Auto-mode auto-allow. User opted into batch implementation
+		// after approving a plan (or via /auto); skip the per-tool
+		// modal for everything except the safety floor (run_bash,
+		// git_commit, git_checkpoint, rollback) which always prompt.
+		if err := send(ctx, events, ApprovalAuto{
+			ToolName: tool.Name(), Preview: preview, Source: "auto-mode",
+		}); err != nil {
+			return "", false, err
 		}
 	default:
-		if tool.RequiresApproval(tc.ArgsJSON) {
-			if cfg.BypassPermissions {
-				if err := send(ctx, events, ApprovalAuto{
-					ToolName: tool.Name(), Preview: preview, Source: "bypass-permissions",
-				}); err != nil {
-					return "", false, err
-				}
-			} else {
-				if denied, err := promptForApproval(ctx, cfg, tool, tc, preview, events, decisions); err != nil || denied {
-					return deniedResult(denied, err)
+		switch verdict {
+		case permissions.Allow:
+			if err := send(ctx, events, ApprovalAuto{
+				ToolName: tool.Name(), Preview: preview, Source: "permissions",
+			}); err != nil {
+				return "", false, err
+			}
+		case permissions.Ask:
+			if denied, savedForLater, err := promptForApproval(ctx, cfg, tool, tc, preview, events, decisions); err != nil || denied || savedForLater {
+				return deniedResultFor(tool.Name(), denied, savedForLater, err)
+			}
+		default:
+			if tool.RequiresApproval(tc.ArgsJSON) {
+				if cfg.BypassPermissions && tool.Name() != "exit_plan_mode" {
+					// exit_plan_mode is the one tool whose "approval"
+					// is the actual user signal, not a safety gate —
+					// even --dangerously-skip-permissions must NOT skip
+					// it. Without this carve-out, a yolo session would
+					// silently exit plan mode without the user ever
+					// seeing the plan.
+					if err := send(ctx, events, ApprovalAuto{
+						ToolName: tool.Name(), Preview: preview, Source: "bypass-permissions",
+					}); err != nil {
+						return "", false, err
+					}
+				} else {
+					if denied, savedForLater, err := promptForApproval(ctx, cfg, tool, tc, preview, events, decisions); err != nil || denied || savedForLater {
+						return deniedResultFor(tool.Name(), denied, savedForLater, err)
+					}
 				}
 			}
 		}
@@ -379,8 +506,11 @@ type planAware interface {
 }
 
 // promptForApproval emits ApprovalNeeded and blocks on the user's
-// decision. Returns (denied, err) — err is non-nil only on context
-// cancellation; denied=true when the user picked No.
+// decision. Returns (denied, savedForLater, err) — err is non-nil
+// only on context cancellation; denied=true when the user picked
+// No/Keep-planning; savedForLater=true when the user picked the
+// plan-mode "[L] approve and implement later" option (only fires for
+// exit_plan_mode; the standard modal never sends it).
 func promptForApproval(
 	ctx context.Context,
 	cfg LoopConfig,
@@ -389,20 +519,23 @@ func promptForApproval(
 	preview string,
 	events chan<- Event,
 	decisions <-chan Decision,
-) (bool, error) {
+) (bool, bool, error) {
 	if err := send(ctx, events, ApprovalNeeded{
 		ToolName: tool.Name(), Preview: preview, ArgsJSON: tc.ArgsJSON,
 	}); err != nil {
-		return false, err
+		return false, false, err
 	}
 	var d Decision
 	select {
 	case <-ctx.Done():
-		return false, ctx.Err()
+		return false, false, ctx.Err()
 	case d = <-decisions:
 	}
 	if d == Deny {
-		return true, nil
+		return true, false, nil
+	}
+	if d == SaveForLater {
+		return false, true, nil
 	}
 	if d == AllowAlways && cfg.Permissions != nil {
 		if rule, ok := permissions.DeriveAllowRule(tool.Name(), tc.ArgsJSON, cfg.Cwd); ok {
@@ -421,14 +554,32 @@ func promptForApproval(
 			}
 		}
 	}
-	return false, nil
+	return false, false, nil
 }
 
-func deniedResult(denied bool, err error) (string, bool, error) {
+// deniedResultFor packages the "user denied this tool" outcome. The
+// tool name parameter exists so exit_plan_mode can carry useful
+// steering — for that tool, "denied" means the user wants the model to
+// keep refining the plan, not that they've vetoed a code action.
+// Returning the generic "denied by user" there would teach the model
+// to give up. The savedForLater bool is plan-mode-specific: when the
+// user picks "[L] approve and implement later" the model gets a firm
+// "end this turn now" signal instead of refinement guidance.
+func deniedResultFor(toolName string, denied, savedForLater bool, err error) (string, bool, error) {
 	if err != nil {
 		return "", false, err
 	}
+	if savedForLater {
+		if toolName == "exit_plan_mode" {
+			return ExitPlanModeSavedForLaterMessage, true, nil
+		}
+		// Other tools should never see SaveForLater — defensive default.
+		return "user deferred this action", true, nil
+	}
 	if denied {
+		if toolName == "exit_plan_mode" {
+			return ExitPlanModeRefusalMessage, true, nil
+		}
 		return "denied by user", true, nil
 	}
 	return "", false, nil

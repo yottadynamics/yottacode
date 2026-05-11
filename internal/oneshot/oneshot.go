@@ -37,6 +37,16 @@ const defaultSystemPrompt = agent.DefaultSystemPrompt
 // produces a tool-free reply (or hits an error / iter cap). The session is
 // saved like any other for later /resume.
 func Run(ctx context.Context, opts cli.ChatOptions, prompt string) error {
+	// --permission-mode plan/auto are TUI-only (they need an approval
+	// surface and a Shift+Tab cycle that don't exist in non-interactive
+	// mode). Warn the user and proceed — matches how the old --plan
+	// flag was a no-op for `yottacode run`.
+	switch opts.PermissionMode {
+	case "plan":
+		fmt.Fprintln(os.Stderr, "warning: --permission-mode plan is interactive-only; ignored for `yottacode run`")
+	case "auto":
+		fmt.Fprintln(os.Stderr, "warning: --permission-mode auto is interactive-only; ignored for `yottacode run`")
+	}
 	cwd, err := os.Getwd()
 	if err != nil {
 		return err
@@ -199,6 +209,12 @@ func Run(ctx context.Context, opts cli.ChatOptions, prompt string) error {
 	reg.Register(&agent.MemoryForgetTool{Cwd: cwd})
 	reg.Register(&agent.GitTool{Cwd: cwd})
 	reg.Register(&agent.TodoWriteTool{Store: planStore})
+	// ExitPlanModeTool is registered for schema parity with the TUI
+	// build. The adapter-tools filter in the loop hides it whenever
+	// PlanMode is inactive (which is always, in oneshot v1) so the
+	// model never sees it. Plan mode itself is not yet exposed via
+	// any oneshot flag.
+	reg.Register(&agent.ExitPlanModeTool{})
 
 	cfg := agent.LoopConfig{
 		Adapter:           ad,
@@ -207,6 +223,9 @@ func Run(ctx context.Context, opts cli.ChatOptions, prompt string) error {
 		BypassPermissions: opts.BypassPermissions,
 		Cwd:               cwd,
 		MaxIterations:     opts.MaxIterations,
+		PlanMode:          &agent.PlanModeState{},
+		AutoMode:          &agent.AutoModeState{},
+		YoloMode:          &agent.YoloModeState{},
 	}
 
 	turnErr := stream(ctx, cfg, &sess.Messages, os.Stdout, os.Stderr)
@@ -300,7 +319,7 @@ func stream(
 		case agent.ApprovalAuto:
 			fmt.Fprintf(stderr, "[%s] %s\n", e.Source, e.Preview)
 		case agent.ApprovalNeeded:
-			err := fmt.Errorf("tool %q requires approval; add an allow rule to .yottacode/permissions.json, run interactively, or pass --bypass-permissions (DANGEROUS)", e.ToolName)
+			err := fmt.Errorf("tool %q requires approval; add an allow rule to .yottacode/permissions.json, run interactively, or pass --dangerously-skip-permissions (DANGEROUS)", e.ToolName)
 			fmt.Fprintf(stderr, "✗ %v\n", err)
 			if firstErr == nil {
 				firstErr = err
@@ -319,7 +338,8 @@ func stream(
 			}
 			fmt.Fprintf(stderr, "[plan] %d items (%d done)\n", len(e.Todos), done)
 		case agent.IterCap:
-			fmt.Fprintf(stderr, "[agent] hit max-iterations=%d\n", e.Max)
+			fmt.Fprintf(stderr, "[agent] hit %d/%d iterations — re-run with --max-iterations %d if the work was unfinished\n",
+				e.Max, e.Max, e.Max*2)
 		case agent.ErrorEvent:
 			// Multi-line errors (e.g. 429 with retry-after hint) print
 			// each line with its own ✗ prefix so the second line

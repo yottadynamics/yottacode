@@ -28,9 +28,12 @@ The same provider flags also apply to `yottacode doctor`.
 | `--x-search-to-date` | `YOTTACODE_X_SEARCH_TO_DATE` | no | Inclusive upper bound for xAI `x_search` in `YYYY-MM-DD` form |
 | `--system` | — | no | Override the default system prompt |
 | `--resume` | — | no | Resume a session by id or name |
-| `--bypass-permissions` | — | no | DANGEROUS: auto-approve every tool call without prompting (`deny` rules in `permissions.json` still apply). Renamed from the deprecated `--yolo`; no compatibility alias |
-| `--max-iterations` | — | no | Tool-call cap per turn; defaults to `25` |
+| `--continue` / `-c` | — | no | Resume the most recent session whose cwd matches the current directory. Mirrors Claude Code's `--continue`. Mutually exclusive with `--resume`. |
+| `--dangerously-skip-permissions` | — | no | DANGEROUS: auto-approve every tool call without prompting and remove the iteration cap (`deny` rules in `permissions.json` still apply). Mirrors Claude Code's flag. Launch-only; cannot be toggled mid-run — restart yottacode without the flag to recover. |
+| `--max-iterations` | — | no | Tool-call cap per turn; defaults to `50`. Auto mode raises the effective cap to 4× (200). `--dangerously-skip-permissions` removes it entirely. |
 | `--allow-paths` | `YOTTACODE_ALLOW_PATHS` | no | Comma-separated extra write roots in addition to the current working directory |
+| `--permission-mode` | — | no | Startup permission mode: `default` (no startup mode), `plan` (read-only research; describe the task as your first message), or `auto` (edits auto-allow; bash & commits still prompt). Mirrors Claude Code's `--permission-mode`. No-op for `yottacode run`. |
+| `--plan-resume` | — | no | Resume an existing plan by slug or substring (matched against `~/.yottacode/plans/`, newest-first). Implies `--permission-mode plan`. No-op for `yottacode run`. |
 
 Precedence is:
 

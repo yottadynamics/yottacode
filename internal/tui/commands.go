@@ -64,9 +64,22 @@ func init() {
 		// picker overlay). /memory takes no subcommands — the picker
 		// covers project edit, user edit, and auto-folder location.
 		{"memory", "", "open the memory picker (USER.md / YOTTACODE.md / saved memories)", cmdMemory},
-		{"max-iterations", "<N>", "cap tool-call iterations per turn (default: 25)", cmdMaxIterations},
+		{"max-iterations", "<N>", "cap tool-call iterations per turn (default: 50; auto mode doubles)", cmdMaxIterations},
 		{"setup", "", "re-run the setup wizard (reloads config on return)", cmdSetup},
 		{"init", "", "draft .yottacode/YOTTACODE.md from the current repo", cmdInit},
+		// /plan toggles plan mode (read-only research + plan file +
+		// exit_plan_mode for approval). Also bound to Shift+Tab — see
+		// model.go's KeyMsg handler.
+		// /plan with no Args means the palette executes the bare form
+		// on Enter (one keystroke, direct entry). `/plan list` still
+		// works when typed manually — cmdPlan branches on args[0].
+		//
+		// Auto mode and yolo are intentionally NOT slash-invocable
+		// (mirroring Claude Code). Auto enters via Shift+Tab or
+		// --permission-mode auto; yolo enters only via
+		// --dangerously-skip-permissions at startup — no in-TUI toggle,
+		// no palette entry, no accidental activation.
+		{"plan", "", "toggle plan mode — also Shift+Tab. Type `/plan list` to resume an earlier plan.", cmdPlan},
 	}
 }
 
@@ -1031,6 +1044,14 @@ func cmdClear(m Model, _ []string) (Model, tea.Cmd) {
 // into scrollback after a resume. System and tool-result messages are
 // skipped to keep the replay readable. Called from sessionsPicker's
 // resumeSession helper.
+//
+// Tool calls are rendered using each tool's PreviewCall — the same
+// path the live transcript takes via renderToolStartLine — so the
+// rebuilt scrollback reads "▸ read_file path=x.go" instead of the
+// bare "[tool] read_file(...)" that used to land on resume. Tools
+// missing from the registry (renamed, removed, or registered only in
+// a different binary) fall back to the bare form so the rebuild never
+// crashes on an unknown name.
 func rebuildTranscript(m *Model) {
 	for _, msg := range m.sess.Messages {
 		switch msg.Role {
@@ -1041,10 +1062,27 @@ func rebuildTranscript(m *Model) {
 				m.appendLine(renderAssistantBlock(msg.Content))
 			}
 			for _, tc := range msg.ToolCalls {
-				m.appendLine(styleToolCall.Render("[tool] " + tc.Name + "(...)"))
+				m.appendLine(renderRebuiltToolLine(m, tc))
 			}
 		}
 	}
+}
+
+// renderRebuiltToolLine produces the scrollback row for one tool call
+// during a session replay. Resolves the tool via the registry to call
+// PreviewCall (matching the live ▸ format); falls back to a bare
+// "[tool] <name>(...)" line when the tool isn't registered or the
+// preview comes back empty (defensive — a tool's PreviewCall returning
+// "" would otherwise render an unhelpful "▸ ").
+func renderRebuiltToolLine(m *Model, tc adapter.ToolCall) string {
+	if m.cfg.Registry != nil {
+		if tool, ok := m.cfg.Registry.Get(tc.Name); ok {
+			if preview := strings.TrimSpace(tool.PreviewCall(tc.ArgsJSON)); preview != "" {
+				return styleToolCall.Render("▸ " + preview)
+			}
+		}
+	}
+	return styleToolCall.Render("[tool] " + tc.Name + "(...)")
 }
 
 // cmdRedo finds the most recent user message, drops it (and everything that

@@ -50,6 +50,7 @@ var canonicalTools = []string{
 	"run_bash",
 	"git",
 	"todo_write",
+	"exit_plan_mode",
 }
 
 func TestDefaultSystemPrompt_NamesEveryRegisteredTool(t *testing.T) {
@@ -82,6 +83,47 @@ func TestDefaultSystemPrompt_KeepsActionDirectives(t *testing.T) {
 	} {
 		if !strings.Contains(DefaultSystemPrompt, want) {
 			t.Errorf("DefaultSystemPrompt is missing required directive %q", want)
+		}
+	}
+}
+
+// PlanModeAddendum is what the loop prepends to the system message
+// when /plan is active. It's not part of DefaultSystemPrompt but
+// shares the same load-bearing copy invariants — guard the directives
+// the model needs to recognize the mode and the exit surface.
+func TestPlanModeAddendum_KeepsCoreDirectives(t *testing.T) {
+	for _, want := range []string{
+		"PLAN MODE",
+		"MUST NOT make any edits",
+		"single allowed plan file",
+		"call exit_plan_mode with NO arguments",
+		"APPROVE ([A])",
+		"LATER ([L])",
+		"KEEP PLANNING ([K])",
+		"END THE TURN immediately",
+		"Looping exit_plan_mode without user feedback",
+		// Anti-investigate framing for recap-style questions — the
+		// plan body is already in the addendum; the model shouldn't
+		// go grep-hunting to answer "what was I planning."
+		"answer DIRECTLY from this body",
+		"Do NOT call read_file on the plan file",
+	} {
+		if !strings.Contains(PlanModeAddendum, want) {
+			t.Errorf("PlanModeAddendum is missing required directive %q", want)
+		}
+	}
+	// Has exactly two %s slots so fmt.Sprintf can fill both the
+	// plan-file path AND the file's current contents — the addendum
+	// embeds the live plan body every iteration so resume + manual
+	// edits Just Work.
+	if strings.Count(PlanModeAddendum, "%s") != 2 {
+		t.Errorf("PlanModeAddendum should contain exactly two %%s slots (path + contents); got %d", strings.Count(PlanModeAddendum, "%s"))
+	}
+	// Embed delimiters so the model can lift the content out
+	// reliably even if it contains tricky characters.
+	for _, want := range []string{"---PLAN-FILE-START---", "---PLAN-FILE-END---"} {
+		if !strings.Contains(PlanModeAddendum, want) {
+			t.Errorf("PlanModeAddendum missing delimiter %q", want)
 		}
 	}
 }
