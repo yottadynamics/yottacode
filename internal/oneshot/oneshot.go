@@ -161,6 +161,11 @@ func Run(ctx context.Context, opts cli.ChatOptions, prompt string) error {
 	}
 	denyReads := agent.DefaultDenyReadPaths(cwd)
 
+	planStore := agent.NewPlanStore()
+	if len(sess.Todos) > 0 {
+		planStore.Replace(sess.Todos)
+	}
+
 	reg := agent.NewRegistry()
 	reg.Register(&agent.ReadFileTool{Cwd: cwd, DenyReadPaths: denyReads})
 	reg.Register(&agent.ReadManyFilesTool{Cwd: cwd, DenyReadPaths: denyReads})
@@ -193,6 +198,7 @@ func Run(ctx context.Context, opts cli.ChatOptions, prompt string) error {
 	reg.Register(&agent.MemorySaveTool{Cwd: cwd})
 	reg.Register(&agent.MemoryForgetTool{Cwd: cwd})
 	reg.Register(&agent.GitTool{Cwd: cwd})
+	reg.Register(&agent.TodoWriteTool{Store: planStore})
 
 	cfg := agent.LoopConfig{
 		Adapter:           ad,
@@ -204,6 +210,7 @@ func Run(ctx context.Context, opts cli.ChatOptions, prompt string) error {
 	}
 
 	turnErr := stream(ctx, cfg, &sess.Messages, os.Stdout, os.Stderr)
+	sess.Todos = planStore.Snapshot()
 	if saveErr := sess.Save(); saveErr != nil {
 		fmt.Fprintf(os.Stderr, "⚠ session save failed: %v\n", saveErr)
 	}
@@ -303,6 +310,14 @@ func stream(
 			fmt.Fprintf(stderr, "[tool] %s\n", e.Preview)
 		case agent.ToolResult:
 			_ = e // result feeds the model; nothing to print
+		case agent.TodoUpdate:
+			done := 0
+			for _, td := range e.Todos {
+				if td.Status == agent.TodoCompleted {
+					done++
+				}
+			}
+			fmt.Fprintf(stderr, "[plan] %d items (%d done)\n", len(e.Todos), done)
 		case agent.IterCap:
 			fmt.Fprintf(stderr, "[agent] hit max-iterations=%d\n", e.Max)
 		case agent.ErrorEvent:

@@ -591,3 +591,62 @@ func TestLoop_TruncatedOutputAutoContinues(t *testing.T) {
 		t.Fatalf("final content = %q, want %q", got, "part two")
 	}
 }
+
+// TestLoop_PlanAwareToolEmitsTodoUpdate verifies the integration
+// between TodoWriteTool and the loop: after a planAware tool runs,
+// the loop should snapshot its store and emit a TodoUpdate event
+// carrying the new list.
+func TestLoop_PlanAwareToolEmitsTodoUpdate(t *testing.T) {
+	args := `{"todos":[{"content":"do thing","status":"in_progress"}]}`
+	streamer := &scriptedStreamer{turns: [][]adapter.StreamEvent{
+		{sseDone("", adapter.ToolCall{ID: "c1", Name: "todo_write", ArgsJSON: args})},
+		{sseToken("ok"), sseDone("ok")},
+	}}
+	reg := NewRegistry()
+	reg.Register(&TodoWriteTool{Store: NewPlanStore()})
+	cfg := LoopConfig{Adapter: streamer, Registry: reg, MaxIterations: 5}
+	hist := []adapter.Message{{Role: adapter.RoleUser, Content: "plan"}}
+
+	events, err := runTurnSync(t, context.Background(), cfg, &hist, nil)
+	if err != nil {
+		t.Fatalf("Turn: %v", err)
+	}
+	var update *TodoUpdate
+	for _, ev := range events {
+		if u, ok := ev.(TodoUpdate); ok {
+			update = &u
+		}
+	}
+	if update == nil {
+		t.Fatalf("expected TodoUpdate event; got %+v", events)
+	}
+	if len(update.Todos) != 1 {
+		t.Fatalf("TodoUpdate.Todos len = %d, want 1", len(update.Todos))
+	}
+	if update.Todos[0].Status != TodoInProgress || update.Todos[0].Content != "do thing" {
+		t.Errorf("TodoUpdate carries wrong item: %+v", update.Todos[0])
+	}
+}
+
+// TestLoop_NonPlanToolDoesNotEmitTodoUpdate guards the planAware
+// branch from accidentally firing for ordinary tools (regression
+// guard: a future refactor that drops the interface check would
+// break this test, not just leave it silently broken).
+func TestLoop_NonPlanToolDoesNotEmitTodoUpdate(t *testing.T) {
+	streamer := &scriptedStreamer{turns: [][]adapter.StreamEvent{
+		{sseDone("", adapter.ToolCall{ID: "c1", Name: "noop", ArgsJSON: `{}`})},
+		{sseToken("ok"), sseDone("ok")},
+	}}
+	reg := NewRegistry()
+	reg.Register(&mockTool{name: "noop", output: "did nothing"})
+	cfg := LoopConfig{Adapter: streamer, Registry: reg, MaxIterations: 5}
+	hist := []adapter.Message{{Role: adapter.RoleUser, Content: "go"}}
+
+	events, err := runTurnSync(t, context.Background(), cfg, &hist, nil)
+	if err != nil {
+		t.Fatalf("Turn: %v", err)
+	}
+	if hasEvent[TodoUpdate](events) {
+		t.Errorf("non-plan tool should not trigger TodoUpdate")
+	}
+}

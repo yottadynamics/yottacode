@@ -2176,6 +2176,15 @@ func (m Model) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 		m.pendingToolName = ""
 		m.pendingToolPreview = ""
 		m.pendingToolArgs = ""
+	case agent.TodoUpdate:
+		// The unified tool card already rendered the plan items
+		// (todo_write's renderToolCard branch reads argsJSON and emits
+		// one row per item). The event's only remaining job is to
+		// keep the session in sync so the per-turn Save persists the
+		// list across resumes.
+		if m.sess != nil {
+			m.sess.Todos = e.Todos
+		}
 	case agent.IterCap:
 		m.appendLine(styleError.Render(fmt.Sprintf("[agent] hit max-iterations=%d", e.Max)))
 	case agent.ErrorEvent:

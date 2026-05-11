@@ -96,6 +96,13 @@ type ToolResult struct {
 	Errored  bool
 }
 
+// TodoUpdate fires after a tool implementing the planAware interface
+// (TodoWriteTool today) finishes, carrying the new full snapshot of
+// the working plan. The TUI renders this as a scrollback card showing
+// the current list with status markers; oneshot prints a one-liner on
+// stderr. The slice is a copy — consumers may retain it.
+type TodoUpdate struct{ Todos []Todo }
+
 // AssistantMessage fires once a streamed assistant response is finalized,
 // just before its tool_calls (if any) are dispatched. Includes the same
 // Message that gets appended to history; useful for consumers that want to
@@ -136,6 +143,7 @@ func (ApprovalAuto) event()      {}
 func (ApprovalNeeded) event()    {}
 func (ToolStart) event()         {}
 func (ToolResult) event()        {}
+func (TodoUpdate) event()        {}
 func (AssistantMessage) event()  {}
 func (IterCap) event()           {}
 func (ErrorEvent) event()        {}
