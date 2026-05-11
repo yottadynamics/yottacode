@@ -361,7 +361,21 @@ func executeToolCall(
 		return msg, false, nil
 	}
 	_ = send(ctx, events, ToolResult{ToolName: tool.Name(), Output: out, Errored: false})
+	if pa, ok := tool.(planAware); ok {
+		if store := pa.PlanStore(); store != nil {
+			_ = send(ctx, events, TodoUpdate{Todos: store.Snapshot()})
+		}
+	}
 	return out, false, nil
+}
+
+// planAware is the optional capability marker for tools that maintain
+// a PlanStore. After such a tool runs successfully the loop snapshots
+// the store and emits a TodoUpdate event so consumers (TUI, oneshot)
+// can render the new state. Keeping the integration behind an
+// interface avoids string-matching on tool names.
+type planAware interface {
+	PlanStore() *PlanStore
 }
 
 // promptForApproval emits ApprovalNeeded and blocks on the user's

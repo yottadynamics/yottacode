@@ -132,6 +132,11 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 	}
 	denyReads := agent.DefaultDenyReadPaths(cwd)
 
+	planStore := agent.NewPlanStore()
+	if len(sess.Todos) > 0 {
+		planStore.Replace(sess.Todos)
+	}
+
 	reg := agent.NewRegistry()
 	reg.Register(&agent.ReadFileTool{Cwd: cwd, DenyReadPaths: denyReads})
 	reg.Register(&agent.ReadManyFilesTool{Cwd: cwd, DenyReadPaths: denyReads})
@@ -164,6 +169,7 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 	reg.Register(&agent.MemorySaveTool{Cwd: cwd})
 	reg.Register(&agent.MemoryForgetTool{Cwd: cwd})
 	reg.Register(&agent.GitTool{Cwd: cwd})
+	reg.Register(&agent.TodoWriteTool{Store: planStore})
 
 	cfg := agent.LoopConfig{
 		Adapter:           ad,

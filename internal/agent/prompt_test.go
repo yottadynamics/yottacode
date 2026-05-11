@@ -49,6 +49,7 @@ var canonicalTools = []string{
 	"run_tests",
 	"run_bash",
 	"git",
+	"todo_write",
 }
 
 func TestDefaultSystemPrompt_NamesEveryRegisteredTool(t *testing.T) {
@@ -75,6 +76,9 @@ func TestDefaultSystemPrompt_KeepsActionDirectives(t *testing.T) {
 		"Memory management",
 		"memory_save and memory_forget",
 		"Do NOT save",
+		"Multi-step planning",
+		"call todo_write BEFORE you start work",
+		"Do NOT call todo_write for trivial single-step requests",
 	} {
 		if !strings.Contains(DefaultSystemPrompt, want) {
 			t.Errorf("DefaultSystemPrompt is missing required directive %q", want)

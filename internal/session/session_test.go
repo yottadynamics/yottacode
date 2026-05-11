@@ -1,10 +1,15 @@
 package session
 
 import (
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/yottadynamics/yottacode/internal/adapter"
+	"github.com/yottadynamics/yottacode/internal/agent"
 )
 
 func redirectHome(t *testing.T) string {
@@ -117,6 +122,91 @@ func TestLoad_ByName(t *testing.T) {
 	}
 	if loaded.Name != "feature-branch" {
 		t.Errorf("loaded Name = %q, want feature-branch", loaded.Name)
+	}
+}
+
+// TestSaveLoad_TodosRoundtrip verifies the new Todos field is
+// persisted and restored alongside the message history. Sessions
+// written before this field existed must still load cleanly with
+// an empty Todos slice — covered separately by
+// TestSaveLoad_OldSessionWithoutTodos.
+func TestSaveLoad_TodosRoundtrip(t *testing.T) {
+	redirectHome(t)
+	s, err := New("m", "/proj")
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	s.Todos = []agent.Todo{
+		{Content: "scan repo", Status: agent.TodoCompleted},
+		{Content: "edit file", Status: agent.TodoInProgress},
+		{Content: "run tests", Status: agent.TodoPending},
+	}
+	if err := s.Save(); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	loaded, err := Load(s.ID)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(loaded.Todos) != 3 {
+		t.Fatalf("Todos len = %d, want 3", len(loaded.Todos))
+	}
+	if loaded.Todos[1].Status != agent.TodoInProgress || loaded.Todos[1].Content != "edit file" {
+		t.Errorf("middle Todo did not round-trip: %+v", loaded.Todos[1])
+	}
+}
+
+// TestSaveLoad_OldSessionWithoutTodos confirms the backwards
+// compatibility promise: a session JSON file that predates the
+// Todos field loads with an empty slice rather than failing.
+func TestSaveLoad_OldSessionWithoutTodos(t *testing.T) {
+	home := redirectHome(t)
+	old := map[string]any{
+		"id":       "20260101-000000.000000",
+		"model":    "m",
+		"created":  "2026-01-01T00:00:00Z",
+		"cwd":      "/x",
+		"messages": []any{},
+	}
+	b, err := json.MarshalIndent(old, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	dir := filepath.Join(home, ".yottacode", "sessions")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "20260101-000000.000000.json"), b, 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	loaded, err := Load("20260101-000000.000000")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(loaded.Todos) != 0 {
+		t.Errorf("Todos = %+v, want empty for legacy session", loaded.Todos)
+	}
+}
+
+// TestSave_OmitsEmptyTodos guards the json:",omitempty" tag — old
+// session JSONs should remain byte-identical after a save cycle when
+// no todos were ever added, so the field doesn't surprise readers
+// inspecting session files on disk.
+func TestSave_OmitsEmptyTodos(t *testing.T) {
+	redirectHome(t)
+	s, err := New("m", "/x")
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := s.Save(); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	b, err := os.ReadFile(s.path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if got := string(b); strings.Contains(got, `"todos"`) {
+		t.Errorf("save with empty Todos should omit the field; got %s", got)
 	}
 }
 

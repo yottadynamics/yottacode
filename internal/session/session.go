@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/yottadynamics/yottacode/internal/adapter"
+	"github.com/yottadynamics/yottacode/internal/agent"
 )
 
 // Session is one resumable conversation persisted as JSON in
@@ -26,6 +27,9 @@ type Session struct {
 	Created  time.Time         `json:"created"`
 	Cwd      string            `json:"cwd"`
 	Messages []adapter.Message `json:"messages"`
+	// Todos is the working plan written by the todo_write tool. Omitted
+	// from JSON when empty so older session files load unchanged.
+	Todos []agent.Todo `json:"todos,omitempty"`
 
 	path string // filled by New/Load, not serialized
 }

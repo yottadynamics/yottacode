@@ -6,6 +6,8 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
+
+	"github.com/yottadynamics/yottacode/internal/agent"
 )
 
 // Tool-output cards: one shape for every tool call, regardless of
@@ -62,6 +64,18 @@ func renderToolCard(toolName, preview, argsJSON, output string, errored bool, te
 	// styleCardBody, which would override the syntax colors.
 	if !errored && toolName == "edit_file" {
 		if rows, ok := editFileDiffRows(argsJSON, width); ok {
+			out = append(out, rows...)
+			out = append(out, styleCardGutter.Render("╰ ")+footer)
+			return strings.Join(out, "\n")
+		}
+	}
+	// todo_write renders one rich row per item (status icon + content),
+	// not the raw "plan updated: N items" string the model gets back as
+	// the tool result. We bypass the generic body path so the per-row
+	// status styling (green ✓, accent ▸, dim ·) survives the
+	// styleCardBody wrap.
+	if !errored && toolName == "todo_write" {
+		if rows, ok := todoWriteBodyRows(argsJSON); ok {
 			out = append(out, rows...)
 			out = append(out, styleCardGutter.Render("╰ ")+footer)
 			return strings.Join(out, "\n")
@@ -181,6 +195,12 @@ func toolFooter(toolName, output string, errored bool) string {
 		// edit_file's output is "edited <path>: N replacement(s)" — the
 		// whole story belongs in the footer (the diff body above already
 		// carries the visual change).
+		return styleCardMeta.Render(strings.TrimSpace(output))
+	case "todo_write":
+		// Body rendered the per-item status rows; surface the model's
+		// own one-liner ("plan updated: N items (M done)" / "plan
+		// cleared") in the footer so the user can read the count
+		// without parsing the list.
 		return styleCardMeta.Render(strings.TrimSpace(output))
 	case "glob":
 		return styleCardMeta.Render(matchFooter(output))
@@ -847,4 +867,51 @@ var (
 	styleCardMeta      = lipgloss.NewStyle().Foreground(colorDim)
 	styleCardOKFooter  = lipgloss.NewStyle().Foreground(colorSuccess).Bold(true)
 	styleCardErrFooter = lipgloss.NewStyle().Foreground(colorError).Bold(true)
+
+	// todo_write status icon + content styling — green ✓ for done
+	// (strikethrough + dim content), accent ▸ for in_progress (bold
+	// content), dim · for pending.
+	styleTodoDone       = lipgloss.NewStyle().Foreground(colorDim).Strikethrough(true)
+	styleTodoInProgress = lipgloss.NewStyle().Foreground(colorContent).Bold(true)
+	styleTodoPending    = lipgloss.NewStyle().Foreground(colorContent)
+	styleTodoCheckDone  = lipgloss.NewStyle().Foreground(colorSuccess).Bold(true)
+	styleTodoArrow      = lipgloss.NewStyle().Foreground(colorSuccess).Bold(true)
+	styleTodoBullet     = lipgloss.NewStyle().Foreground(colorDim)
 )
+
+// todoWriteBodyRows parses the todo_write tool's argsJSON and returns
+// one styled row per item, ready to be appended to the tool card body
+// with the card's "│ " gutter already prepended. Returns ok=false if
+// the args don't parse, so renderToolCard falls back to the standard
+// text-body path (the tool's plain return string).
+func todoWriteBodyRows(argsJSON string) ([]string, bool) {
+	var a struct {
+		Todos []agent.Todo `json:"todos"`
+	}
+	if err := json.Unmarshal([]byte(argsJSON), &a); err != nil {
+		return nil, false
+	}
+	if len(a.Todos) == 0 {
+		// Empty plan (the model just cleared it). One dim "(empty plan)"
+		// row gives the card a body so the footer ("plan cleared") still
+		// reads naturally; without it the card collapses to header +
+		// footer touching, which doesn't match the rest of the cards.
+		return []string{styleCardGutter.Render("│   ") + styleCardMeta.Render("(empty plan)")}, true
+	}
+	out := make([]string, 0, len(a.Todos))
+	for _, td := range a.Todos {
+		out = append(out, styleCardGutter.Render("│   ")+todoRow(td))
+	}
+	return out, true
+}
+
+func todoRow(td agent.Todo) string {
+	switch td.Status {
+	case agent.TodoCompleted:
+		return styleTodoCheckDone.Render("✓ ") + styleTodoDone.Render(td.Content)
+	case agent.TodoInProgress:
+		return styleTodoArrow.Render("▸ ") + styleTodoInProgress.Render(td.Content)
+	default:
+		return styleTodoBullet.Render("· ") + styleTodoPending.Render(td.Content)
+	}
+}
