@@ -218,7 +218,7 @@ Per-repo state lives under `<repo>/.yottacode/`:
 <repo>/.yottacode/
   YOTTACODE.md                  optional per-repo project memory (human-seeded;
                               the agent keeps it fresh through approval-gated
-                              writes — same role CLAUDE.md plays for Claude Code)
+                              writes)
   permissions.json            committable team-shared permission rules
   permissions.local.json      gitignored personal additions (where the
                               modal's [a]lways-allow path writes to)

@@ -1542,7 +1542,7 @@ func TestModel_ToolResultRendersUnifiedCard(t *testing.T) {
 	if !strings.Contains(v, "╭ x()") {
 		t.Errorf("card header should carry the preview: %q", v)
 	}
-	if !strings.Contains(v, "│ wrote 11 bytes to /tmp/y") {
+	if !strings.Contains(v, "│   wrote 11 bytes to /tmp/y") {
 		t.Errorf("card body should carry the tool output: %q", v)
 	}
 	if !strings.Contains(v, "╰ ") {

@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -51,7 +52,7 @@ func renderToolCard(toolName, preview, argsJSON, output string, errored bool, te
 		width = cardMinUsefulCols
 	}
 
-	header := renderCardHeader(preview)
+	header := renderCardHeader(toolHeader(toolName, argsJSON, preview, width))
 	footer := toolFooter(toolName, output, errored)
 
 	out := []string{header}
@@ -66,17 +67,27 @@ func renderToolCard(toolName, preview, argsJSON, output string, errored bool, te
 			return strings.Join(out, "\n")
 		}
 	}
+	// Git destructive-flag warning: lifted from the agent's multi-line
+	// preview into the body so it gets a proper aligned gutter and a
+	// bold-red "⚠ …" row instead of floating unaligned next to the
+	// header. Rendered before the regular body so it sits directly under
+	// the invocation.
+	if !errored && toolName == "git" {
+		if w := gitDestructiveWarning(preview); w != "" {
+			out = append(out, styleCardGutter.Render("│   ")+styleCardErrFooter.Render(w))
+		}
+	}
 	body := toolBodyLines(toolName, output, errored)
 	if len(body) > cardBodyLineCap {
 		visible := body[:cardBodyLineCap]
 		hidden := len(body) - cardBodyLineCap
 		for _, line := range visible {
-			out = append(out, styleCardGutter.Render("│ ")+styleCardBody.Render(line))
+			out = append(out, styleCardGutter.Render("│   ")+styleCardBody.Render(line))
 		}
-		out = append(out, styleCardGutter.Render("│ ")+styleCardMeta.Render(fmt.Sprintf("…%d more line(s)", hidden)))
+		out = append(out, styleCardGutter.Render("│   ")+styleCardMeta.Render(fmt.Sprintf("…%d more line(s)", hidden)))
 	} else {
 		for _, line := range body {
-			out = append(out, styleCardGutter.Render("│ ")+styleCardBody.Render(line))
+			out = append(out, styleCardGutter.Render("│   ")+styleCardBody.Render(line))
 		}
 	}
 	out = append(out, styleCardGutter.Render("╰ ")+footer)
@@ -122,8 +133,21 @@ func toolBodyLines(toolName, output string, errored bool) []string {
 		return listDirBody(output)
 	case "list_project_structure":
 		return listProjectStructureBody(output)
-	case "run_bash":
+	case "run_bash", "run_tests":
+		// run_tests emits the same exit=N/stdout/stderr envelope; share
+		// the splitter so its body shape matches Bash's.
 		return runBashBody(output)
+	case "git":
+		// Git wraps its output in the same exit=N / --- stdout --- /
+		// --- stderr --- envelope run_bash uses (with an extra leading
+		// `$ git X Y` line). Reusing runBashBody gives the same stdout +
+		// "── stderr ──" separator + stderr shape.
+		if strings.Contains(output, "\n--- stdout ---") {
+			return runBashBody(output)
+		}
+		// Fall through to default for older / non-enveloped output.
+	case "fetch_url":
+		return fetchURLBody(output)
 	case "read_file", "write_file":
 		// Footer carries the relevant summary; body adds noise.
 		return nil
@@ -147,19 +171,28 @@ func toolFooter(toolName, output string, errored bool) string {
 		return styleCardMeta.Render(listDirFooter(output))
 	case "run_bash":
 		return runBashFooter(output)
+	case "git":
+		return gitFooter(output)
 	case "read_file":
 		return styleCardMeta.Render(readFileFooter(output))
 	case "write_file":
-		return styleCardMeta.Render(strings.TrimSpace(output))
+		return styleCardMeta.Render(shortWriteFooter(output))
 	case "edit_file":
 		// edit_file's output is "edited <path>: N replacement(s)" — the
 		// whole story belongs in the footer (the diff body above already
 		// carries the visual change).
 		return styleCardMeta.Render(strings.TrimSpace(output))
 	case "glob":
-		return styleCardMeta.Render(genericMatchFooter(output, "match"))
+		return styleCardMeta.Render(matchFooter(output))
 	case "grep":
-		return styleCardMeta.Render(genericMatchFooter(output, "match"))
+		return styleCardMeta.Render(matchFooter(output))
+	case "fetch_url":
+		return styleCardMeta.Render(fetchURLFooter(output))
+	case "run_tests":
+		// run_tests reuses run_bash's exit=N\n--- stdout ---\n…\n--- stderr ---\n…
+		// envelope, so its footer should surface the exit code the same
+		// way — green when N=0, red otherwise.
+		return runBashFooter(output)
 	}
 	return styleCardMeta.Render("done")
 }
@@ -320,8 +353,15 @@ func parseRunBashOutput(out string) (exit int, stdout, stderr string) {
 	if !ok {
 		return 0, out, ""
 	}
-	if _, err := fmt.Sscanf(exitPart, "exit=%d", &exit); err != nil {
-		exit = 0
+	// run_bash emits "exit=N\n--- stdout ---"; git emits
+	// "$ git X Y\nexit=N\n--- stdout ---". Scan from the last `exit=` so
+	// the leading `$ git` line doesn't trip the parser. fmt.Sscanf with a
+	// %d verb stops at the first non-digit, so a trailing newline in the
+	// prefix is harmless.
+	if idx := strings.LastIndex(exitPart, "exit="); idx >= 0 {
+		if _, err := fmt.Sscanf(exitPart[idx:], "exit=%d", &exit); err != nil {
+			exit = 0
+		}
 	}
 	stdout, stderr, _ = strings.Cut(rest, stderrSep)
 	stdout = strings.TrimPrefix(stdout, "\n")
@@ -329,9 +369,82 @@ func parseRunBashOutput(out string) (exit int, stdout, stderr string) {
 	return exit, strings.TrimRight(stdout, "\n"), strings.TrimRight(stderr, "\n")
 }
 
-// genericMatchFooter counts non-empty lines and returns "N <noun>(s)".
-// Used by glob/grep where each line is one match.
-func genericMatchFooter(out, noun string) string {
+// gitFooter reuses parseRunBashOutput (which now handles the `$ git X Y\n`
+// prefix the git tool prepends) and renders the exit code in green/red
+// the same way run_bash does. Falls back to "done" when the envelope
+// doesn't match — e.g., a future code path that returns a bare string.
+func gitFooter(out string) string {
+	if !strings.Contains(out, "\n--- stdout ---") {
+		return styleCardMeta.Render("done")
+	}
+	exit, _, _ := parseRunBashOutput(out)
+	tag := fmt.Sprintf("exit %d", exit)
+	if exit == 0 {
+		return styleCardOKFooter.Render(tag)
+	}
+	return styleCardErrFooter.Render(tag)
+}
+
+// shortWriteFooter trims the redundant "to <abs/path>" tail from the
+// write_file tool's confirmation string, since the header already names
+// the path. Input:  "wrote 70 bytes to /home/me/hello.go"
+// Output: "wrote 70 bytes".
+func shortWriteFooter(out string) string {
+	out = strings.TrimSpace(out)
+	if i := strings.Index(out, " to "); i >= 0 {
+		return out[:i]
+	}
+	return out
+}
+
+// fetchURLBody returns just the metadata header rows from the fetch_url
+// tool's output (Status, Content-Type, optional Note). The full HTTP
+// response body — which can be 64+ KiB of minified HTML — is dropped:
+// the model gets the full content via ToolResult, but dumping it into
+// the card makes the user scroll past a wall of markup. The "URL:"
+// line is also dropped because the card header already names the URL.
+//
+// fetch_url's output format (see internal/agent/web_tools.go):
+//
+//	URL: <url>\n
+//	Status: <code>\n
+//	Content-Type: <mime>\n
+//	[Note: response truncated to N bytes\n]
+//	\n
+//	<raw body>
+//
+// — so the "metadata block" is everything before the first blank line.
+func fetchURLBody(out string) []string {
+	meta := out
+	if i := strings.Index(out, "\n\n"); i >= 0 {
+		meta = out[:i]
+	}
+	var rows []string
+	for _, line := range strings.Split(meta, "\n") {
+		if line == "" || strings.HasPrefix(line, "URL:") {
+			continue
+		}
+		rows = append(rows, line)
+	}
+	return rows
+}
+
+// fetchURLFooter returns "N bytes" — the size of the actual HTTP response
+// body (everything after the first blank line that separates metadata
+// from content). When the output doesn't have the expected envelope,
+// falls back to the total byte count so the user still gets a signal.
+func fetchURLFooter(out string) string {
+	body := out
+	if i := strings.Index(out, "\n\n"); i >= 0 {
+		body = out[i+2:]
+	}
+	return fmt.Sprintf("%d bytes", len(body))
+}
+
+// matchFooter counts non-empty lines and returns "N match(es)". Used by
+// glob/grep where each output line is one match. Hardcoded plural —
+// "matchs" was the previous bug, and these are the only two callers.
+func matchFooter(out string) string {
 	n := 0
 	for _, line := range strings.Split(out, "\n") {
 		if strings.TrimSpace(line) != "" {
@@ -339,9 +452,388 @@ func genericMatchFooter(out, noun string) string {
 		}
 	}
 	if n == 1 {
-		return "1 " + noun
+		return "1 match"
 	}
-	return fmt.Sprintf("%d %ss", n, noun)
+	return fmt.Sprintf("%d matches", n)
+}
+
+// toolHeader rewrites a tool's raw `preview` into a short, human-readable
+// card header — verb-style label + the user-meaningful argument in
+// parens. Examples:
+//
+//	run_bash      → Bash(rg --files | head)
+//	write_file    → Write(.yottacode/YOTTACODE.md)
+//	mkdir         → Mkdir(.yottacode)
+//	list_dir      → List(.)
+//	git           → Git(status -sb)
+//
+// For known tools it parses argsJSON; for unknown tools or empty
+// argsJSON it returns `preview` so the card never renders blank. The
+// `maxWidth` is the per-card width (terminal-minus-gutter) — long
+// commands and URLs get clipped with "…" so the header never wraps.
+func toolHeader(toolName, argsJSON, preview string, maxWidth int) string {
+	if argsJSON == "" {
+		return preview
+	}
+	headerBudget := maxWidth - 2 // "╭ " gutter
+	if headerBudget < 20 {
+		headerBudget = 20
+	}
+	switch toolName {
+	case "run_bash":
+		var a struct {
+			Command string `json:"command"`
+		}
+		if json.Unmarshal([]byte(argsJSON), &a) != nil {
+			return preview
+		}
+		return clipHeader("Bash("+oneLine(a.Command)+")", headerBudget)
+	case "read_file":
+		var a struct {
+			Path   string `json:"path"`
+			Offset int64  `json:"offset"`
+			Limit  int64  `json:"limit"`
+		}
+		if json.Unmarshal([]byte(argsJSON), &a) != nil {
+			return preview
+		}
+		if a.Offset == 0 && a.Limit == 0 {
+			return clipHeader("Read("+a.Path+")", headerBudget)
+		}
+		return clipHeader(fmt.Sprintf("Read(%s @ L%d+%d)", a.Path, a.Offset, a.Limit), headerBudget)
+	case "write_file":
+		var a struct {
+			Path string `json:"path"`
+		}
+		if json.Unmarshal([]byte(argsJSON), &a) != nil {
+			return preview
+		}
+		return clipHeader("Write("+a.Path+")", headerBudget)
+	case "edit_file":
+		var a struct {
+			Path       string `json:"path"`
+			ReplaceAll bool   `json:"replace_all"`
+		}
+		if json.Unmarshal([]byte(argsJSON), &a) != nil {
+			return preview
+		}
+		mode := "single"
+		if a.ReplaceAll {
+			mode = "all"
+		}
+		return clipHeader(fmt.Sprintf("Edit(%s, %s)", a.Path, mode), headerBudget)
+	case "delete_file":
+		var a struct {
+			Path string `json:"path"`
+		}
+		if json.Unmarshal([]byte(argsJSON), &a) != nil {
+			return preview
+		}
+		return clipHeader("Delete("+a.Path+")", headerBudget)
+	case "move_file":
+		var a struct {
+			Src, Dst string
+		}
+		_ = json.Unmarshal([]byte(argsJSON), &a)
+		return clipHeader("Move("+a.Src+" → "+a.Dst+")", headerBudget)
+	case "copy_file":
+		var a struct {
+			Src, Dst string
+		}
+		_ = json.Unmarshal([]byte(argsJSON), &a)
+		return clipHeader("Copy("+a.Src+" → "+a.Dst+")", headerBudget)
+	case "mkdir":
+		var a struct {
+			Path string `json:"path"`
+		}
+		if json.Unmarshal([]byte(argsJSON), &a) != nil {
+			return preview
+		}
+		return clipHeader("Mkdir("+a.Path+")", headerBudget)
+	case "read_many_files":
+		var a struct {
+			Paths []string `json:"paths"`
+		}
+		_ = json.Unmarshal([]byte(argsJSON), &a)
+		noun := "files"
+		if len(a.Paths) == 1 {
+			noun = "file"
+		}
+		return clipHeader(fmt.Sprintf("Read(%d %s)", len(a.Paths), noun), headerBudget)
+	case "list_dir":
+		var a struct {
+			Path string `json:"path"`
+		}
+		_ = json.Unmarshal([]byte(argsJSON), &a)
+		if a.Path == "" {
+			a.Path = "."
+		}
+		return clipHeader("List("+a.Path+")", headerBudget)
+	case "list_project_structure":
+		var a struct {
+			Path     string `json:"path"`
+			MaxDepth int    `json:"max_depth"`
+		}
+		_ = json.Unmarshal([]byte(argsJSON), &a)
+		if a.Path == "" {
+			a.Path = "."
+		}
+		if a.MaxDepth > 0 {
+			return clipHeader(fmt.Sprintf("Tree(%s, depth=%d)", a.Path, a.MaxDepth), headerBudget)
+		}
+		return clipHeader("Tree("+a.Path+")", headerBudget)
+	case "glob":
+		var a struct {
+			Pattern, Root string
+		}
+		_ = json.Unmarshal([]byte(argsJSON), &a)
+		root := a.Root
+		if root == "" || root == "." {
+			return clipHeader("Glob("+a.Pattern+")", headerBudget)
+		}
+		return clipHeader("Glob("+a.Pattern+" in "+root+")", headerBudget)
+	case "grep":
+		var a struct {
+			Pattern, Path string
+		}
+		_ = json.Unmarshal([]byte(argsJSON), &a)
+		root := a.Path
+		if root == "" || root == "." {
+			return clipHeader(fmt.Sprintf("Grep(%q)", a.Pattern), headerBudget)
+		}
+		return clipHeader(fmt.Sprintf("Grep(%q in %s)", a.Pattern, root), headerBudget)
+	case "fetch_url":
+		var a struct {
+			URL string `json:"url"`
+		}
+		_ = json.Unmarshal([]byte(argsJSON), &a)
+		return clipHeader("Fetch("+a.URL+")", headerBudget)
+	case "apply_diff":
+		// apply_diff carries a `diff` blob — no path field. Best we can
+		// do is label it as a patch op; the body shows the actual hunks.
+		return clipHeader("Patch(apply)", headerBudget)
+	case "git":
+		// Header stays single-line `Git(args)` regardless of destructive
+		// flags. The "⚠ DESTRUCTIVE FLAG(S)" warning that the agent's
+		// PreviewCall emits as a multi-line prefix gets lifted into a
+		// styled body row by renderToolCard — that keeps the gutter
+		// aligned and gives the warning its own attention-grabbing color
+		// instead of floating unaligned next to the header.
+		return rewriteGitPreview(preview)
+	case "git_branch_status":
+		return "Git(branch status)"
+	case "git_show_file_at_rev":
+		var a struct{ Path, Rev string }
+		_ = json.Unmarshal([]byte(argsJSON), &a)
+		if a.Rev == "" {
+			a.Rev = "HEAD"
+		}
+		return clipHeader(fmt.Sprintf("Git(show %s @ %s)", a.Path, a.Rev), headerBudget)
+	case "git_diff_files":
+		var a struct {
+			Base, Head string
+			Paths      []string
+		}
+		_ = json.Unmarshal([]byte(argsJSON), &a)
+		switch {
+		case a.Base != "" && a.Head != "":
+			return clipHeader(fmt.Sprintf("Git(diff %s..%s)", a.Base, a.Head), headerBudget)
+		case a.Base != "":
+			return clipHeader("Git(diff "+a.Base+")", headerBudget)
+		default:
+			return "Git(diff)"
+		}
+	case "git_stage_files":
+		var a struct {
+			Paths []string `json:"paths"`
+		}
+		_ = json.Unmarshal([]byte(argsJSON), &a)
+		return clipHeader(fmt.Sprintf("Git(stage %d %s)", len(a.Paths), pluralize("file", len(a.Paths))), headerBudget)
+	case "git_unstage_files":
+		var a struct {
+			Paths []string `json:"paths"`
+		}
+		_ = json.Unmarshal([]byte(argsJSON), &a)
+		return clipHeader(fmt.Sprintf("Git(unstage %d %s)", len(a.Paths), pluralize("file", len(a.Paths))), headerBudget)
+	case "git_commit":
+		return "Git(commit)"
+	case "git_log_file":
+		var a struct {
+			Path string `json:"path"`
+		}
+		_ = json.Unmarshal([]byte(argsJSON), &a)
+		return clipHeader("Git(log "+a.Path+")", headerBudget)
+	case "git_blame_lines":
+		var a struct {
+			Path       string `json:"path"`
+			Start, End int
+		}
+		_ = json.Unmarshal([]byte(argsJSON), &a)
+		return clipHeader(fmt.Sprintf("Git(blame %s:L%d-L%d)", a.Path, a.Start, a.End), headerBudget)
+	case "git_merge_base":
+		var a struct{ Base, Head string }
+		_ = json.Unmarshal([]byte(argsJSON), &a)
+		return clipHeader(fmt.Sprintf("Git(merge-base %s..%s)", a.Base, a.Head), headerBudget)
+	case "git_checkpoint":
+		var a struct {
+			Message string `json:"message"`
+		}
+		_ = json.Unmarshal([]byte(argsJSON), &a)
+		if strings.TrimSpace(a.Message) == "" {
+			return "Git(checkpoint)"
+		}
+		return clipHeader(fmt.Sprintf("Git(checkpoint %q)", a.Message), headerBudget)
+	case "list_git_changed_files":
+		return "Git(list changed)"
+	case "rollback":
+		var a struct {
+			Target string `json:"target"`
+		}
+		_ = json.Unmarshal([]byte(argsJSON), &a)
+		if a.Target == "" {
+			a.Target = "HEAD~1"
+		}
+		return clipHeader("Rollback("+a.Target+")", headerBudget)
+	case "run_tests":
+		var a struct {
+			Command, Path string
+		}
+		_ = json.Unmarshal([]byte(argsJSON), &a)
+		cmd := strings.TrimSpace(a.Command)
+		if cmd == "" {
+			cmd = "go test ./..."
+		}
+		return clipHeader("Test("+oneLine(cmd)+")", headerBudget)
+	case "memory_save":
+		var a struct {
+			Scope, Name string
+		}
+		_ = json.Unmarshal([]byte(argsJSON), &a)
+		return clipHeader(fmt.Sprintf("Memory(save %s/%s)", a.Scope, a.Name), headerBudget)
+	case "memory_forget":
+		var a struct {
+			Scope, Name string
+		}
+		_ = json.Unmarshal([]byte(argsJSON), &a)
+		return clipHeader(fmt.Sprintf("Memory(forget %s/%s)", a.Scope, a.Name), headerBudget)
+	}
+	return preview
+}
+
+// rewriteGitPreview extracts the `git X Y` portion of the agent's git
+// preview and returns the single-line `Git(X Y)` header. Drops any
+// "⚠ DESTRUCTIVE FLAG(S)" warning prefix the agent prepends — that
+// warning is re-rendered as a body row by renderToolCard so it gets
+// the aligned gutter and a distinct color instead of floating in the
+// header.
+//
+// The git tool's preview is either
+//
+//	$ git status -sb                                       (safe)
+//	⚠ DESTRUCTIVE FLAG(S): --force\n  $ git push --force   (destructive)
+//
+// — so we locate "$ git " (which appears in both shapes) and return only
+// the argv that follows.
+func rewriteGitPreview(preview string) string {
+	idx := strings.Index(preview, "$ git ")
+	if idx < 0 {
+		return preview
+	}
+	tail := preview[idx+len("$ git "):] // everything after "$ git "
+	if end := strings.IndexByte(tail, '\n'); end >= 0 {
+		tail = tail[:end]
+	}
+	return "Git(" + tail + ")"
+}
+
+// gitDestructiveWarning returns the "⚠ DESTRUCTIVE FLAG(S): …" line from
+// the agent's git preview if the agent flagged any args as dangerous —
+// otherwise empty. renderToolCard uses this to insert the warning as a
+// styled body row instead of letting it ride along as an unaligned
+// header prefix.
+func gitDestructiveWarning(preview string) string {
+	if !strings.HasPrefix(preview, "⚠") {
+		return ""
+	}
+	if i := strings.IndexByte(preview, '\n'); i >= 0 {
+		return strings.TrimSpace(preview[:i])
+	}
+	return strings.TrimSpace(preview)
+}
+
+// clipHeader sanitizes and truncates a single-line header so it fits
+// within `max` rune-width columns. ASCII control characters are
+// stripped first — a stray newline in an arg (e.g., an agent sending
+// {"path":".\n"}) would otherwise break the card's box shape because
+// only the first row gets the `╭ ` gutter. Truncation replaces the
+// tail with `…)` so the closing paren stays as the visible
+// end-of-args marker.
+//
+// clipHeader is the choke point for every per-tool header in
+// toolHeader(), so doing the sanitization here guarantees no tool can
+// produce a multi-row header by accident. The destructive-flag git
+// preview path bypasses clipHeader (it's intentionally multi-line) and
+// is the only header that legitimately spans rows.
+func clipHeader(s string, max int) string {
+	s = stripControlChars(s)
+	if max <= 0 {
+		return s
+	}
+	r := []rune(s)
+	if len(r) <= max {
+		return s
+	}
+	if max < 4 {
+		return string(r[:max])
+	}
+	// Cut to max-2 so we have room for "…)" and the closing paren stays
+	// visible as the natural end-of-args marker.
+	return string(r[:max-2]) + "…)"
+}
+
+// stripControlChars removes ASCII control characters (newline, CR, tab,
+// etc.) from a header string. The agent can submit args with embedded
+// whitespace; without this, a `\n` inside a path would split the header
+// across two terminal rows and the second row would render without the
+// `╭ ` gutter, collapsing the card's shape.
+func stripControlChars(s string) string {
+	needsClean := false
+	for _, r := range s {
+		if r < 0x20 || r == 0x7f {
+			needsClean = true
+			break
+		}
+	}
+	if !needsClean {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		if r >= 0x20 && r != 0x7f {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+// oneLine collapses a multi-line command into a single line + "…" tail
+// when the original had a newline. Used for run_bash / run_tests where
+// the agent can submit a heredoc but the header has to stay one row.
+func oneLine(s string) string {
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		return strings.TrimSpace(s[:i]) + " …"
+	}
+	return s
+}
+
+// pluralize returns the noun with a trailing "s" unless n == 1. Used by
+// git stage/unstage headers ("1 file" vs "3 files").
+func pluralize(noun string, n int) string {
+	if n == 1 {
+		return noun
+	}
+	return noun + "s"
 }
 
 // Card-specific styles. The gutter (╭ │ ╰) renders Muted (decorative);

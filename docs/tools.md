@@ -1,9 +1,10 @@
 # Built-in tools
 
 Twenty-eight tools ship in `internal/agent`. The model sees their JSON-schema
-parameters via the OpenAI tools API; users see them as `▸ preview` lines
-in the TUI. All paths are resolved against the agent's working directory
-(absolute paths are also accepted).
+parameters via the OpenAI tools API; the TUI renders each invocation as a
+bordered card with a verb-style header (see [How tool calls render in the
+TUI](#how-tool-calls-render-in-the-tui)). All paths are resolved against the
+agent's working directory (absolute paths are also accepted).
 
 | Tool | Approval | One-line summary |
 |---|---|---|
@@ -42,6 +43,92 @@ in the TUI. All paths are resolved against the agent's working directory
 `.local.json` sibling) matches the call, or `--bypass-permissions`
 is set (DANGEROUS). See [architecture.md](architecture.md) for the
 approval round-trip and the permissions schema.
+
+## How tool calls render in the TUI
+
+### Every tool call renders as a bordered card with three regions:
+
+```
+go test ./internal/tui/ -run TestDemo_CardOutput -v
+go test ./internal/tui/ -run TestDemo_CardOutput -v | sed -n '/^─── /,/^--- PASS/p' | sed '/^--- PASS/d' 
+
+```
+
+```text
+╭ Verb(arg)
+│   <body lines, capped at 10>
+╰ <summary footer>
+```
+
+The gutter glyphs (`╭ │ ╰`) render dim; the header is bold; the footer
+is dim, with `exit 0` in green and `exit N≠0` / `✗ <error>` in bold
+red. Body rows are indented three columns under the gutter so the
+shape reads as "header, indented content, footer."
+
+**Header verbs.** The raw tool name still appears in the agent's
+tool-call log; the TUI renames it for readability. Mapping:
+
+| Tool | Header |
+|---|---|
+| `run_bash` | `Bash(<command>)` |
+| `read_file` | `Read(<path>)` or `Read(<path> @ L<offset>+<limit>)` |
+| `read_many_files` | `Read(N files)` |
+| `write_file` | `Write(<path>)` |
+| `edit_file` | `Edit(<path>, single\|all)` |
+| `apply_diff` | `Patch(apply)` |
+| `mkdir` | `Mkdir(<path>)` |
+| `copy_file` | `Copy(<src> → <dst>)` |
+| `move_file` | `Move(<src> → <dst>)` |
+| `delete_file` | `Delete(<path>)` |
+| `list_dir` | `List(<path>)` |
+| `glob` | `Glob(<pattern>)` or `Glob(<pattern> in <root>)` |
+| `grep` | `Grep("<pattern>" in <path>)` |
+| `fetch_url` | `Fetch(<url>)` |
+| `run_tests` | `Test(<command>)` |
+| `rollback` | `Rollback(<target>)` |
+| `git` | `Git(<subcommand> <args>)` |
+| `git_branch_status` | `Git(branch status)` |
+| `git_show_file_at_rev` | `Git(show <path> @ <rev>)` |
+| `git_diff_files` | `Git(diff <base>..<head>)` |
+| `git_stage_files` / `git_unstage_files` | `Git(stage N files)` / `Git(unstage N files)` |
+| `git_commit` | `Git(commit)` |
+| `git_log_file` | `Git(log <path>)` |
+| `git_blame_lines` | `Git(blame <path>:L<a>-L<b>)` |
+| `git_merge_base` | `Git(merge-base <base>..<head>)` |
+| `git_checkpoint` | `Git(checkpoint)` |
+| `list_git_changed_files` | `Git(list changed)` |
+
+ASCII control characters inside an arg (a stray `\n` in a path, a tab
+in a filename, etc.) are stripped before the header renders, so a
+malformed arg can never break the card's box shape. Long bash
+commands are clipped to fit the terminal width with a `…)` tail.
+
+**Body.** Carries the tool's interesting output: directory entries,
+grep matches, command stdout, diff hunks. Capped at 10 visible lines
+with a trailing `…N more line(s)` notice — the model still receives
+the full output via the agent's tool-result event. A few tools have
+card-specific body shapes:
+
+- **`run_bash` / `run_tests` / `git`** split their output into stdout,
+  a `── stderr ──` separator, and stderr. The footer carries the
+  process exit code (green when zero, red otherwise).
+- **`edit_file`** renders a syntax-highlighted `-` (red) / `+` (green)
+  diff in the body instead of the textual confirmation.
+- **`git`** with a destructive flag (`--force`, `--hard`, `-D`,
+  `--delete`, …) prepends a bold-red `⚠ DESTRUCTIVE FLAG(S): <flags>`
+  row to the body so it's hard to `y` past by reflex.
+- **`fetch_url`** drops the raw HTTP body and shows only the response
+  metadata (`Status`, `Content-Type`, optional truncation note). The
+  footer reports the response body size. The model still receives the
+  full content; the user is spared 64+ KiB of minified markup.
+- **`read_file` / `write_file`** show no body — the footer's
+  `N lines · M bytes` / `wrote N bytes` carries the entire signal.
+
+**Footer.** Summarizes the call: `N entries`, `wrote N bytes`,
+`N lines · M bytes [(truncated)]`, `N matches`, `exit N` (colored), or
+the tool's confirmation message. When the call errored, the footer
+renders `╰ ✗ <error>` in bold red and the body shows the raw error
+verbatim (per-tool body shaping is bypassed for errors).
 
 ---
 
