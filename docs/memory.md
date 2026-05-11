@@ -90,7 +90,7 @@ The two trust anchors are the load-bearing context the agent sees on every singl
 
 `USER.md` holds preferences that travel with you ("prefer table-driven Go tests", "no trailing summaries"). Edit it through `/memory` (which opens vim) or directly — the model never writes there.
 
-`YOTTACODE.md` is the project's brief. `/init` drafts it from the current repo (build commands, layout, conventions, gotchas). After non-trivial work the agent will offer to refresh it through the approval modal — same role `CLAUDE.md` plays for Claude Code. Keep it under ~150 lines; bigger files get a "large memory will impact performance" notice on startup.
+`YOTTACODE.md` is the project's brief. `/init` drafts it from the current repo (build commands, layout, conventions, gotchas). After non-trivial work the agent will offer to refresh it through the approval modal. Keep it under ~150 lines; bigger files get a "large memory will impact performance" notice on startup.
 
 To make `YOTTACODE.md` human-only on a specific repo, add a deny rule to `.yottacode/permissions.json`:
 

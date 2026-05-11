@@ -12,8 +12,7 @@ import (
 // the agent a directive prompt and letting the normal turn loop run
 // with full tool access. The agent uses list_dir / glob / grep /
 // read_file to learn the repo, then calls write_file (approval-gated)
-// to land .yottacode/YOTTACODE.md. Mirrors Claude Code's `/init` for
-// CLAUDE.md.
+// to land .yottacode/YOTTACODE.md.
 //
 // The slash command is a thin wrapper: it composes the directive
 // (with an "already exists — refresh, don't overwrite blindly" hint
@@ -53,9 +52,9 @@ func buildInitPrompt(cwd string) string {
 
 	return fmt.Sprintf(`%s the per-repo context file at %s.
 
-YOTTACODE.md is to yottacode what CLAUDE.md is to Claude Code: a hand-curated
-brief on this repo that auto-injects into every turn's system prompt. It
-should help a fresh agent (or a teammate) ramp up in under a minute.
+YOTTACODE.md is a hand-curated brief on this repo that auto-injects into
+every turn's system prompt. It should help a fresh agent (or a teammate)
+ramp up in under a minute.
 
 %s
 

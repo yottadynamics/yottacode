@@ -149,15 +149,16 @@ func TestReadFileFooter_Shape(t *testing.T) {
 	}
 }
 
-// write_file: empty body, footer carries the full message.
-func TestToolCard_WriteFileFooterCarriesAll(t *testing.T) {
+// write_file: empty body. The footer drops the "to <abs/path>" tail
+// because the header already names the path — no need to print it twice.
+func TestToolCard_WriteFileFooterDropsRedundantPath(t *testing.T) {
 	body := toolBodyLines("write_file", "wrote 70 bytes to /home/me/hello.go", false)
 	if len(body) != 0 {
 		t.Errorf("write_file body should be empty (footer carries all): %v", body)
 	}
 	footer := stripANSI(toolFooter("write_file", "wrote 70 bytes to /home/me/hello.go", false))
-	if footer != "wrote 70 bytes to /home/me/hello.go" {
-		t.Errorf("footer = %q", footer)
+	if footer != "wrote 70 bytes" {
+		t.Errorf("footer = %q, want 'wrote 70 bytes' (path dropped — header carries it)", footer)
 	}
 }
 
@@ -190,7 +191,7 @@ func TestRenderToolCard_StructureInvariants(t *testing.T) {
 	if !strings.HasPrefix(got, "╭ list_dir(.)") {
 		t.Errorf("card should open with `╭ <preview>`: %q", got)
 	}
-	if !strings.Contains(got, "│ bin/") || !strings.Contains(got, "│ main.go") {
+	if !strings.Contains(got, "│   bin/") || !strings.Contains(got, "│   main.go") {
 		t.Errorf("card body should carry list_dir entries: %q", got)
 	}
 	if !strings.Contains(got, "╰ 2 entries") {
@@ -199,7 +200,7 @@ func TestRenderToolCard_StructureInvariants(t *testing.T) {
 }
 
 // edit_file gets a structured diff body: a single-line header, then
-// `- old` / `+ new` rows in the body (each gutter-prefixed with `│ `),
+// `- old` / `+ new` rows in the body (each gutter-prefixed with `│   `),
 // then the standard footer. The previous shape stuffed the whole
 // `edit_file(...)\n  - ...\n  + ...` triple into the header and broke
 // header alignment. This guards against regression.
@@ -214,18 +215,20 @@ func TestRenderToolCard_EditFileRendersDiffBody(t *testing.T) {
 		80,
 	))
 	// Header: single line with the invocation, no embedded `-`/`+` rows.
+	// toolHeader rewrites the raw preview into "Edit(path, scope)" once
+	// argsJSON is available; the diff still goes in the body.
 	header := strings.SplitN(got, "\n", 2)[0]
-	if !strings.HasPrefix(header, "╭ edit_file(main.go, single)") {
+	if !strings.HasPrefix(header, "╭ Edit(main.go, single)") {
 		t.Errorf("header should be the invocation only: %q", header)
 	}
 	if strings.Contains(header, "- package") || strings.Contains(header, "+ package") {
 		t.Errorf("diff lines must not be inlined into the header: %q", header)
 	}
 	// Body: gutter-prefixed `- old` / `+ new` rows.
-	if !strings.Contains(got, "│ - package foo") {
+	if !strings.Contains(got, "│   - package foo") {
 		t.Errorf("body should carry the gutter-prefixed `- old` row: %q", got)
 	}
-	if !strings.Contains(got, "│ + package bar") {
+	if !strings.Contains(got, "│   + package bar") {
 		t.Errorf("body should carry the gutter-prefixed `+ new` row: %q", got)
 	}
 	// Footer: the result message comes through unchanged.
@@ -251,6 +254,206 @@ func TestRenderToolCard_EditFileFallsBackWhenArgsMissing(t *testing.T) {
 	}
 	if !strings.Contains(got, "╰ edited /abs/main.go: 1 replacement(s)") {
 		t.Errorf("footer should still render: %q", got)
+	}
+}
+
+// toolHeader rewrites the per-tool preview into a short verb-style
+// label. The agent's PreviewCall output (e.g. "mkdir(.yottacode)") is
+// only a fallback for unknown tools / empty args; with argsJSON in hand
+// the TUI emits the cleaner form ("Mkdir(.yottacode)"). This locks
+// the user-visible headers for the tools the user actually sees.
+func TestToolHeader_RewritesPerToolPreviews(t *testing.T) {
+	cases := []struct {
+		tool, args, fallback, want string
+	}{
+		{"run_bash", `{"command":"ls -la"}`, "run_bash: ls -la", "Bash(ls -la)"},
+		{"mkdir", `{"path":".yottacode"}`, "mkdir(.yottacode)", "Mkdir(.yottacode)"},
+		{"write_file", `{"path":"foo.go","content":"x"}`, "write_file(foo.go, 1 bytes)", "Write(foo.go)"},
+		{"read_file", `{"path":"foo.go"}`, "read_file(foo.go)", "Read(foo.go)"},
+		{"read_file", `{"path":"foo.go","offset":10,"limit":20}`, "read_file(foo.go, offset=10, limit=20)", "Read(foo.go @ L10+20)"},
+		{"edit_file", `{"path":"foo.go","replace_all":true}`, "edit_file(foo.go, all)", "Edit(foo.go, all)"},
+		{"list_dir", `{"path":"internal"}`, "list_dir(internal)", "List(internal)"},
+		{"list_dir", `{}`, "list_dir(.)", "List(.)"},
+		{"grep", `{"pattern":"foo","path":"."}`, `grep("foo" in .)`, `Grep("foo")`},
+		{"glob", `{"pattern":"*.go"}`, "glob(*.go in .)", "Glob(*.go)"},
+		{"copy_file", `{"src":"a","dst":"b"}`, "copy_file(a -> b)", "Copy(a → b)"},
+		{"move_file", `{"src":"a","dst":"b"}`, "move_file(a -> b)", "Move(a → b)"},
+		{"delete_file", `{"path":"a"}`, "delete_file(a)", "Delete(a)"},
+		{"fetch_url", `{"url":"https://example.com/"}`, "fetch_url(https://example.com/)", "Fetch(https://example.com/)"},
+		{"git", `{"args":["status","-sb"]}`, "$ git status -sb", "Git(status -sb)"},
+		{"git_commit", `{"message":"x"}`, `git_commit("x")`, "Git(commit)"},
+		{"run_tests", `{"command":"go test ./..."}`, "run_tests(go test ./... in .)", "Test(go test ./...)"},
+		{"memory_save", `{"scope":"user","name":"foo"}`, "memory_save(...)", "Memory(save user/foo)"},
+		{"unknown_tool", `{"x":1}`, "unknown_tool(x=1)", "unknown_tool(x=1)"}, // fallback path
+		{"run_bash", ``, "run_bash: ls", "run_bash: ls"},                     // empty argsJSON → fallback
+	}
+	for _, tc := range cases {
+		got := toolHeader(tc.tool, tc.args, tc.fallback, 120)
+		if got != tc.want {
+			t.Errorf("%s: got %q, want %q", tc.tool, got, tc.want)
+		}
+	}
+}
+
+// Destructive-flag git invocations get a clean single-line header. The
+// "⚠ DESTRUCTIVE FLAG(S)" warning is lifted into a body row by
+// renderToolCard (see TestRenderToolCard_GitDestructiveWarningInBody)
+// so it gets the gutter alignment and a distinct color, instead of
+// floating unaligned next to the header.
+func TestToolHeader_GitHeaderIsAlwaysSingleLine(t *testing.T) {
+	preview := "⚠ DESTRUCTIVE FLAG(S): --force\n  $ git push --force"
+	got := toolHeader("git", `{"args":["push","--force"]}`, preview, 120)
+	if got != "Git(push --force)" {
+		t.Errorf("header should be the clean single-line form, got %q", got)
+	}
+	if strings.Contains(got, "\n") {
+		t.Errorf("header must not contain a newline: %q", got)
+	}
+}
+
+// fetch_url body strips the raw HTTP response and keeps just the
+// metadata rows (Status / Content-Type / optional Note). The URL is
+// dropped from the body because the card header already carries it.
+// Without this, the card dumps tens of kilobytes of minified HTML.
+func TestToolCard_FetchURLBodyKeepsMetadataDropsContent(t *testing.T) {
+	out := "URL: https://example.com\n" +
+		"Status: 200\n" +
+		"Content-Type: text/html; charset=utf-8\n" +
+		"Note: response truncated to 65536 bytes\n" +
+		"\n" +
+		"<!doctype html><html>" + strings.Repeat("x", 65000) + "</html>"
+
+	body := toolBodyLines("fetch_url", out, false)
+	want := []string{
+		"Status: 200",
+		"Content-Type: text/html; charset=utf-8",
+		"Note: response truncated to 65536 bytes",
+	}
+	if len(body) != len(want) {
+		t.Fatalf("body = %d lines, want %d: %v", len(body), len(want), body)
+	}
+	for i, w := range want {
+		if body[i] != w {
+			t.Errorf("body[%d] = %q, want %q", i, body[i], w)
+		}
+	}
+	for _, line := range body {
+		if strings.HasPrefix(line, "URL:") {
+			t.Errorf("URL line should be dropped (header carries it): %q", line)
+		}
+		if strings.Contains(line, "doctype") || strings.Contains(line, "<html>") {
+			t.Errorf("raw HTML body must not leak into the card: %q", line)
+		}
+	}
+	footer := stripANSI(toolFooter("fetch_url", out, false))
+	if !strings.HasSuffix(footer, " bytes") {
+		t.Errorf("footer should report byte count of the response body: %q", footer)
+	}
+}
+
+// gitDestructiveWarning lifts the "⚠ DESTRUCTIVE FLAG(S): …" line out
+// of the agent's preview when present, returns empty otherwise.
+// renderToolCard prepends it as a styled body row for git invocations
+// with dangerous flags.
+func TestGitDestructiveWarning_Extraction(t *testing.T) {
+	cases := []struct {
+		preview, want string
+	}{
+		{"$ git status -sb", ""},
+		{"⚠ DESTRUCTIVE FLAG(S): --force\n  $ git push --force", "⚠ DESTRUCTIVE FLAG(S): --force"},
+		{"⚠ DESTRUCTIVE FLAG(S): --hard, -D\n  $ git reset --hard", "⚠ DESTRUCTIVE FLAG(S): --hard, -D"},
+	}
+	for _, tc := range cases {
+		got := gitDestructiveWarning(tc.preview)
+		if got != tc.want {
+			t.Errorf("preview %q: got %q, want %q", tc.preview, got, tc.want)
+		}
+	}
+}
+
+// End-to-end: a destructive git invocation renders with a single-line
+// `╭ Git(...)` header AND a "⚠ DESTRUCTIVE FLAG(S)" body row sitting
+// under the gutter — the failure mode we're avoiding is the warning
+// floating above the body without a `│` prefix.
+func TestRenderToolCard_GitDestructiveWarningInBody(t *testing.T) {
+	preview := "⚠ DESTRUCTIVE FLAG(S): --force\n  $ git push --force origin main"
+	out := "$ git push --force origin main\nexit=0\n--- stdout ---\n--- stderr ---\nTo origin\n"
+	got := stripANSI(renderToolCard(
+		"git",
+		preview,
+		`{"args":["push","--force","origin","main"]}`,
+		out,
+		false,
+		80,
+	))
+	if !strings.Contains(got, "╭ Git(push --force origin main)") {
+		t.Errorf("header should be single-line `╭ Git(...)`, got: %q", got)
+	}
+	if !strings.Contains(got, "│   ⚠ DESTRUCTIVE FLAG(S): --force") {
+		t.Errorf("warning should render as a body row with the gutter prefix, got: %q", got)
+	}
+	if !strings.Contains(got, "╰ exit 0") {
+		t.Errorf("footer should surface the exit code, got: %q", got)
+	}
+}
+
+// Regression: if the agent submits an arg with an embedded newline
+// (`{"path":".\n"}` was observed in the wild for list_dir), the
+// header used to render across two rows and the second row had no
+// `╭ ` gutter — the card's box shape collapsed. clipHeader strips
+// ASCII control chars so any tool's header stays single-row.
+func TestToolHeader_StripsControlCharsInArgs(t *testing.T) {
+	cases := []struct {
+		tool, args, want string
+	}{
+		{"list_dir", `{"path":".\n"}`, "List(.)"},
+		{"read_file", `{"path":"foo\n.go"}`, "Read(foo.go)"},
+		{"write_file", `{"path":"x\ty.txt"}`, "Write(xy.txt)"},
+		{"mkdir", `{"path":".yottacode\r\n"}`, "Mkdir(.yottacode)"},
+		// grep uses %q which already escapes newlines as "\n" (literal
+		// backslash+n) — they're not raw control chars to begin with, so
+		// the stripper has nothing to do.
+		{"grep", `{"pattern":"a\nb"}`, `Grep("a\nb")`},
+	}
+	for _, tc := range cases {
+		got := toolHeader(tc.tool, tc.args, "fallback", 120)
+		if got != tc.want {
+			t.Errorf("%s with args %s: got %q, want %q", tc.tool, tc.args, got, tc.want)
+		}
+		// And under no circumstance should the result contain a newline —
+		// that's the actual card-shape invariant we're protecting.
+		if strings.ContainsAny(got, "\n\r\t") {
+			t.Errorf("%s: header still contains a control char: %q", tc.tool, got)
+		}
+	}
+}
+
+// Long bash commands get clipped so the header never wraps. The clip
+// tail is "…)" so the closing paren stays the visible end-of-args
+// marker.
+func TestToolHeader_LongCommandIsClipped(t *testing.T) {
+	long := strings.Repeat("rg --files | grep foo | xargs wc -l ; ", 10)
+	got := toolHeader("run_bash", `{"command":"`+long+`"}`, "run_bash: …", 40)
+	if !strings.HasSuffix(got, "…)") {
+		t.Errorf("clipped header should end with `…)`: %q", got)
+	}
+	if len([]rune(got)) > 40 {
+		t.Errorf("clipped header should fit in 40 cols: width=%d, %q", len([]rune(got)), got)
+	}
+}
+
+// gitFooter parses the git tool's "$ git X Y\nexit=N\n--- stdout ---..."
+// envelope and colors the exit code green/red the same way run_bash
+// does. Without this, a failed `git push` would render with the
+// generic dim "done" footer and the failure would be easy to miss.
+func TestGitFooter_SurfacesExitCode(t *testing.T) {
+	ok := "$ git status\nexit=0\n--- stdout ---\n## main\n--- stderr ---\n"
+	if got := stripANSI(toolFooter("git", ok, false)); got != "exit 0" {
+		t.Errorf("ok footer = %q, want 'exit 0'", got)
+	}
+	bad := "$ git push\nexit=128\n--- stdout ---\n--- stderr ---\nfatal: nothing to push\n"
+	if got := stripANSI(toolFooter("git", bad, false)); got != "exit 128" {
+		t.Errorf("bad footer = %q, want 'exit 128'", got)
 	}
 }
 
