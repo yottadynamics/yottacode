@@ -25,6 +25,7 @@ import (
 	"github.com/yottadynamics/yottacode/internal/providerops"
 	"github.com/yottadynamics/yottacode/internal/recall"
 	"github.com/yottadynamics/yottacode/internal/session"
+	"github.com/yottadynamics/yottacode/internal/subagents"
 )
 
 // Config carries everything Run needs to build a Model. Bundling these into a
@@ -73,6 +74,18 @@ type Config struct {
 	// (context watermarks, retrieval). The TUI reads these at session
 	// start and re-reads them on /memory reload.
 	FileCfg config.Config
+
+	// Subagents is the session task registry the /subagents slash
+	// command inspects. Populated by run.go alongside Agent tool
+	// registration; nil disables /subagents (tests that don't wire
+	// subagents in are still valid).
+	Subagents *subagents.Registry
+
+	// AgentTool is the dispatch tool registered on Cfg.Registry. The
+	// TUI keeps a typed reference so the slash command can introspect
+	// the resolved agent list, and so the background-done callback
+	// can be wired to push events onto the model's session inbox.
+	AgentTool *agent.AgentTool
 }
 
 // Model is the Bubbletea state for the chat TUI. The TUI runs in inline mode
@@ -184,6 +197,26 @@ type Model struct {
 	// the current logical row, mirroring bubbles' Ctrl+U semantics; an
 	// empty kill (cursor already at column 0) leaves the ring untouched.
 	killRing string
+
+	// subagentTasks is the session-scoped Registry for tracking
+	// foreground + background subagent runs. /subagents reads from it;
+	// the AgentTool writes into it. Nil when subagents aren't wired
+	// (tests).
+	subagentTasks *subagents.Registry
+
+	// subagentTool is the live AgentTool registered on the loop's
+	// registry. The TUI uses it to wire the background-done callback
+	// and to introspect the available agent configs from /subagents.
+	subagentTool *agent.AgentTool
+
+	// subagentInbox is a long-lived channel the AgentTool pushes
+	// SubagentBackgroundDone events onto from detached goroutines
+	// when a background subagent finishes after the parent turn has
+	// ended. The Model drains this in parallel with the per-turn
+	// eventsCh via waitForSubagentInbox so notifications surface
+	// without waiting for the next user input. Buffer is generous
+	// (32) so a flurry of completions can't block the goroutines.
+	subagentInbox chan agent.SubagentBackgroundDone
 
 	// Persistent session
 	sess *session.Session
@@ -318,6 +351,15 @@ type Model struct {
 	// inactive). Esc closes without changes.
 	plansPickerOpen bool
 	plansPicker     *plansPickerState
+
+	// Subagents picker overlay (/subagents with no args). Lists the
+	// session's subagent tasks newest-first; Enter opens the chosen
+	// task's transcript in $PAGER; `s` stops a running task; `r`
+	// refreshes the snapshot; Esc closes. Cleans up scrollback by
+	// keeping the table out of session history (vs. the inline-list
+	// rendering used by /subagents list).
+	subagentsPickerOpen bool
+	subagentsPicker     *subagentsPickerState
 
 	// Connection probe state for the status footer dot
 	connection connState
@@ -541,6 +583,9 @@ func New(parent context.Context, c Config) Model {
 		memorySummary:          c.MemorySummary,
 		baseSystemPrompt:       c.BaseSystemPrompt,
 		fileCfg:                c.FileCfg,
+		subagentTasks:          c.Subagents,
+		subagentTool:           c.AgentTool,
+		subagentInbox:          make(chan agent.SubagentBackgroundDone, 32),
 		sess:                   c.Session,
 		textInput:              ti,
 		spinner:                sp,
@@ -566,7 +611,15 @@ func (m Model) Init() tea.Cmd {
 	// just churns redraws of the live footer. Each redraw emits cursor
 	// and line-clear ANSI which can invalidate active mouse selections
 	// in scrollback on terminals/tmux. startTurn re-arms the tick.
-	return tea.Batch(textarea.Blink, cursorBlinkCmd(), runProviderProbe(m.parentCtx, m.adapterConfig(m.modelName, m.baseURL), false))
+	return tea.Batch(
+		textarea.Blink,
+		cursorBlinkCmd(),
+		runProviderProbe(m.parentCtx, m.adapterConfig(m.modelName, m.baseURL), false),
+		// Drain the long-lived subagent inbox for the life of the
+		// program. A nil channel here is a programming error (New
+		// always allocates it), so we don't guard.
+		waitForSubagentInbox(m.subagentInbox),
+	)
 }
 
 // Update is the public Bubbletea entry point. It delegates to update() then
@@ -721,6 +774,9 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.plansPickerOpen {
 			return m.updatePlansPicker(msg)
 		}
+		if m.subagentsPickerOpen {
+			return m.updateSubagentsPicker(msg)
+		}
 		// Intercept large bracketed pastes before any other handling.
 		// Bubbletea sets msg.Paste=true with all the pasted runes in a
 		// single KeyMsg. For anything over the threshold, we swap the
@@ -759,7 +815,33 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case tea.KeyEnter:
 				input := strings.TrimSpace(m.textInput.Value())
 				if strings.HasPrefix(input, "/") {
-					if m.turnCancel != nil {
+					// Decide whether to cancel the active turn before
+					// running this slash command.
+					//
+					//   - Known command with PreservesTurn=true (e.g.
+					//     /subagents, /help) → don't cancel; it's a
+					//     pure inspection that mustn't disrupt the
+					//     in-flight work.
+					//   - Known command with PreservesTurn=false (e.g.
+					//     /clear, /model, /sessions) → cancel; the
+					//     user is signaling "stop current work, apply
+					//     this change."
+					//   - Unknown command (typo, deprecated name) →
+					//     don't cancel; we're about to surface a
+					//     "unknown command" error and do nothing.
+					//     Canceling the turn for a typo was the actual
+					//     bug: `/subagent` (singular, typo'd) used to
+					//     kill the user's in-flight foreground
+					//     subagent before the error message even
+					//     printed.
+					shouldCancel := false
+					if fields := strings.Fields(input); len(fields) > 0 {
+						name := strings.TrimPrefix(fields[0], "/")
+						if c := findSlash(name); c != nil && !c.PreservesTurn {
+							shouldCancel = true
+						}
+					}
+					if shouldCancel && m.turnCancel != nil {
 						m.turnCancel()
 					}
 					m.textInput.SetValue("")
@@ -1125,6 +1207,17 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		out.emitMemorySizeWarnings()
 		return out, cmd
 
+	case pagerDoneMsg:
+		// Pager exited. The error path always lands in scrollback so
+		// a missing-pager / exec-failure isn't silently swallowed.
+		// Successful exits are silent — the user already saw the
+		// content; an extra "pager closed" line is just noise.
+		if msg.err != nil {
+			m.appendLine(styleError.Render("[subagents] pager exited with error: " + msg.err.Error()))
+			return m, nil
+		}
+		return m, nil
+
 	case setupDoneMsg:
 		return handleSetupDone(m, msg)
 
@@ -1219,6 +1312,9 @@ func (m Model) View() string {
 	}
 	if m.plansPickerOpen && m.plansPicker != nil {
 		return m.renderInlineOverlay(renderPlansPicker(m.plansPicker, m.width))
+	}
+	if m.subagentsPickerOpen && m.subagentsPicker != nil {
+		return m.renderInlineOverlay(renderSubagentsPicker(m.subagentsPicker, m.width))
 	}
 
 	parts := []string{}
@@ -2331,6 +2427,21 @@ func (m Model) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 		m.toolsStarted++
 		m.turnToolCalls++
 	case agent.ToolResult:
+		// The Agent tool already gets its own visualization via the
+		// SubagentStart / SubagentProgress / SubagentDone events that
+		// fired while the child was running (the ▶/├/└ card). Rendering
+		// the parent's standard tool card here would duplicate the
+		// prompt as a header AND the child's final answer as the body
+		// — interleaved with the subagent card because the events fire
+		// at different points in the lifecycle, producing misaligned
+		// box-drawing characters. Suppress the parent card for Agent
+		// and let the subagent card stand on its own.
+		if e.ToolName == agent.AgentToolName {
+			m.pendingToolName = ""
+			m.pendingToolPreview = ""
+			m.pendingToolArgs = ""
+			break
+		}
 		// Render the buffered start info + this result as a unified
 		// tool card. Leading blank line gives each card breathing
 		// room from the previous emission.
@@ -2343,6 +2454,14 @@ func (m Model) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 		m.pendingToolName = ""
 		m.pendingToolPreview = ""
 		m.pendingToolArgs = ""
+		// Reset streamingMode so the next ContentToken's "first content
+		// after non-content" branch fires and inserts a blank line
+		// between the just-rendered tool card and the resumed
+		// assistant body. Without this, streamingMode stays at
+		// streamContent from before the tool call, the blank-line
+		// guard is skipped, and the assistant's content lands tight
+		// against the card's `╰ done` footer with no breathing room.
+		m.streamingMode = streamIdle
 	case agent.TodoUpdate:
 		// The unified tool card already rendered the plan items
 		// (todo_write's renderToolCard branch reads argsJSON and emits
@@ -2382,6 +2501,29 @@ func (m Model) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 		if !m.turnStart.IsZero() {
 			m.appendLine(styleTurnFooter.Render("› Thought for " + formatDuration(time.Since(m.turnStart))))
 		}
+	case agent.SubagentStart:
+		// Lead with a blank line so the subagent block reads as its own
+		// section against the surrounding tool cards.
+		m.appendLine("")
+		m.appendLine(renderSubagentStart(e))
+	case agent.SubagentProgress:
+		// One-line tick. Multiple of these will land in quick
+		// succession while a child works through its tool budget; let
+		// scrollback collect them rather than overwriting.
+		m.appendLine(renderSubagentProgress(e))
+	case agent.SubagentDone:
+		m.appendLine(renderSubagentDone(e))
+	case agent.SubagentBackgroundDone:
+		// Routed through the long-lived inbox so it can fire after the
+		// parent turn ends. Always re-arm the inbox listener so the
+		// next completion lands without delay; pair with the turn
+		// listener when a turn is active so both streams stay drained.
+		m.appendLine("")
+		m.appendLine(renderSubagentBackgroundDone(e))
+		if m.turnActive {
+			return m, tea.Batch(waitForSubagentInbox(m.subagentInbox), waitForEvent(m.eventsCh, m.turnErrCh))
+		}
+		return m, waitForSubagentInbox(m.subagentInbox)
 	}
 	return m, waitForEvent(m.eventsCh, m.turnErrCh)
 }

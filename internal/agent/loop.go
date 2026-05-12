@@ -481,7 +481,16 @@ func executeToolCall(
 	if err := send(ctx, events, ToolStart{ToolName: tool.Name(), Preview: preview, ArgsJSON: tc.ArgsJSON}); err != nil {
 		return "", false, err
 	}
-	out, err := tool.Execute(ctx, tc.ArgsJSON)
+	// Attach the parent's events + decisions channels so tools that
+	// need to participate in the parent's approval flow (today:
+	// AgentTool, which forwards a foreground subagent's child
+	// ApprovalNeeded events to the parent's modal and routes the
+	// user's answer back) can do so without changing the Tool
+	// interface signature. While this tool's Execute is running the
+	// parent loop is blocked on its return, so neither channel has a
+	// competing reader/writer.
+	toolCtx := WithParentDecisions(WithParentEvents(ctx, events), decisions)
+	out, err := tool.Execute(toolCtx, tc.ArgsJSON)
 	if err != nil {
 		msg := fmt.Sprintf("error: %v", err)
 		_ = send(ctx, events, ToolResult{ToolName: tool.Name(), Output: msg, Errored: true})

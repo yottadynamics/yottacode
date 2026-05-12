@@ -13,10 +13,12 @@ import (
 	"github.com/yottadynamics/yottacode/internal/agent"
 	"github.com/yottadynamics/yottacode/internal/cli"
 	"github.com/yottadynamics/yottacode/internal/config"
+	"github.com/yottadynamics/yottacode/internal/experimental"
 	"github.com/yottadynamics/yottacode/internal/memory"
 	"github.com/yottadynamics/yottacode/internal/permissions"
 	"github.com/yottadynamics/yottacode/internal/recall"
 	"github.com/yottadynamics/yottacode/internal/session"
+	"github.com/yottadynamics/yottacode/internal/subagents"
 	"github.com/yottadynamics/yottacode/internal/version"
 	"github.com/yottadynamics/yottacode/internal/wizard"
 )
@@ -191,6 +193,61 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 	// so the nil-callback path is unreachable from the model.
 	reg.Register(&agent.ExitPlanModeTool{})
 
+	// Subagents: load definitions (built-in + ~/.yottacode/agents +
+	// .yottacode/agents) and register the Agent dispatch tool. The
+	// background-done callback is wired below after the Model exists
+	// so completions route to the long-lived inbox the Model owns.
+	subRes, _ := subagents.LoadAll(cwd, reg.Names())
+	for _, w := range subRes.Warnings {
+		fmt.Fprintln(os.Stderr, "subagents: "+w)
+	}
+	transcriptDir, _ := subagents.EnsureTranscriptDir(cwd)
+	subagentTasks := subagents.NewRegistry()
+	// Resolve experimental features. CLI > env > config; the cli
+	// package already merged CLI flags + env into opts.Experimental.
+	// Here we layer the [experimental] config section underneath
+	// (later additions wouldn't override earlier ones — we use the
+	// Set's Enable as the union operator).
+	expSet := experimental.NewSet()
+	for name, on := range fileCfg.Experimental {
+		if on {
+			expSet.Enable(name)
+		}
+	}
+	for _, name := range opts.Experimental {
+		expSet.Enable(name)
+	}
+	for _, unknown := range expSet.UnknownNames() {
+		fmt.Fprintf(os.Stderr, "warning: --experimental %q is not a recognized feature (typo? graduated? see docs/experimental.md)\n", unknown)
+	}
+
+	agentTool := &agent.AgentTool{
+		Configs:        subRes.Configs,
+		Tasks:          subagentTasks,
+		Adapter:        ad,
+		ParentRegistry: reg,
+		Permissions:    perms,
+		YoloMode:       yoloMode,
+		PlanMode:       planMode,
+		AutoMode:       autoMode,
+		Cwd:            cwd,
+		TranscriptDir:  transcriptDir,
+		// Background subagents are an opt-in experimental feature.
+		// When the gate is off, `run_in_background:true` returns a
+		// recoverable error the model relays to the user (see
+		// AgentTool.Execute). Foreground subagents are always on.
+		AllowBackground: expSet.IsEnabled(experimental.BackgroundSubagents),
+	}
+	reg.Register(agentTool)
+	// Pair with the Agent tool: lets the parent fetch a previously-
+	// dispatched (typically background) subagent's final result by
+	// task id. Without this tool, background runs are fire-and-forget
+	// — their results live in the transcript on disk and the in-memory
+	// registry, but the parent's model has no way to pull a result
+	// back into the conversation. With it, "what did the background
+	// subagent find?" becomes one tool call.
+	reg.Register(&agent.GetSubagentResultTool{Tasks: subagentTasks})
+
 	cfg := agent.LoopConfig{
 		Adapter:           ad,
 		Registry:          reg,
@@ -244,7 +301,22 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 		MemorySummary:          mem.Summary().String(),
 		BaseSystemPrompt:       baseSys,
 		FileCfg:                fileCfg,
+		Subagents:              subagentTasks,
+		AgentTool:              agentTool,
 	})
+	// Wire the AgentTool's background-completion callback into the
+	// Model's long-lived inbox. The callback runs from a detached
+	// goroutine when a background subagent finishes; non-blocking
+	// send so a full inbox doesn't deadlock the runner.
+	{
+		inbox := model.subagentInbox
+		agentTool.SetBackgroundDoneCallback(func(ev agent.SubagentBackgroundDone) {
+			select {
+			case inbox <- ev:
+			default:
+			}
+		})
+	}
 	// Startup flags drop the freshly-built model into the requested
 	// mode before the program starts. The entry log lines land in the
 	// historyLines buffer; tea.Println replays them when the program

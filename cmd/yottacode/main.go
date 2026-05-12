@@ -306,6 +306,14 @@ func bindCommonPersistentFlags(cmd *cobra.Command, opts *cli.ChatOptions) {
 	f.StringVar(&opts.AllowPaths, "allow-paths", "", "Comma-separated additional roots the model's write tools may mutate (or set $YOTTACODE_ALLOW_PATHS); cwd is always allowed")
 	f.StringVar(&opts.PermissionMode, "permission-mode", "", "Startup permission `mode`: default | plan | auto. 'plan' starts in read-only research mode (Shift+Tab to exit); 'auto' starts with edits auto-allowed (bash & commits still prompt). Mirrors Claude Code's --permission-mode. No-op for yottacode run.")
 	f.StringVar(&opts.PlanResume, "plan-resume", "", "Resume an existing plan by `slug` or substring (matched newest-first against ~/.yottacode/plans/). Implies --permission-mode plan. No-op for yottacode run.")
+	// --experimental is repeatable (cobra StringSliceVar handles this:
+	// multiple `--experimental foo --experimental bar` invocations
+	// append). Also accepts comma-separated values within a single
+	// invocation. Resolution merges this with $YOTTACODE_EXPERIMENTAL
+	// and the [experimental] config section. Recognized names live in
+	// internal/experimental — see `yottacode --experimental list` (or
+	// /experimental inside the TUI) for the current catalog.
+	f.StringSliceVar(&opts.Experimental, "experimental", nil, "Enable an experimental feature (repeatable). See docs/experimental.md for the catalog. Also accepts comma-separated values; merges with $YOTTACODE_EXPERIMENTAL and [experimental] in config.toml.")
 }
 
 func adapterConfigFromOptions(opts cli.ChatOptions) adapter.Config {

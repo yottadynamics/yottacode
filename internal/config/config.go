@@ -27,11 +27,19 @@ import (
 // Config bundles every tunable yottacode reads from disk. Sub-structs map
 // 1:1 to TOML sections so the file shape mirrors the Go shape.
 type Config struct {
-	Context   ContextConfig   `toml:"context"`
-	Retrieval RetrievalConfig `toml:"retrieval"`
-	Router    RouterConfig    `toml:"router"`
-	Active    Active          `toml:"active"`
-	Providers []Provider      `toml:"providers"`
+	Context      ContextConfig   `toml:"context"`
+	Retrieval    RetrievalConfig `toml:"retrieval"`
+	Router       RouterConfig    `toml:"router"`
+	Active       Active          `toml:"active"`
+	Providers    []Provider      `toml:"providers"`
+	// Experimental gates non-default features behind named opt-ins.
+	// Mirrors the --experimental CLI flag and the
+	// $YOTTACODE_EXPERIMENTAL env var. Each entry is a feature name
+	// from internal/experimental; values must be `true` to enable.
+	// Unrecognized names load without error and emit a startup
+	// warning so graduated/removed feature names don't break old
+	// configs.
+	Experimental map[string]bool `toml:"experimental"`
 }
 
 

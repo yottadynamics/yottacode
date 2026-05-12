@@ -36,3 +36,19 @@ func waitForEvent(ch <-chan agent.Event, errCh <-chan error) tea.Cmd {
 		}
 	}
 }
+
+// waitForSubagentInbox returns a tea.Cmd that blocks on the long-lived
+// subagent inbox. Background subagents emit SubagentBackgroundDone here
+// after the parent turn has already ended; the cmd surfaces them as a
+// normal agentEventMsg so handleAgentEvent renders the completion card.
+// The model re-arms this cmd after each message lands so the inbox
+// drains continuously for the life of the program.
+func waitForSubagentInbox(ch <-chan agent.SubagentBackgroundDone) tea.Cmd {
+	return func() tea.Msg {
+		ev, ok := <-ch
+		if !ok {
+			return nil
+		}
+		return agentEventMsg{ev: ev}
+	}
+}

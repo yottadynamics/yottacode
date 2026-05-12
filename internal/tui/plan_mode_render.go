@@ -71,14 +71,15 @@ func renderPlanModeBanner(info planBannerInfo, yoloOn bool, width int) string {
 }
 
 // planBannerMiddleText is the segment after the mode label. Shows the
-// plan-file basename once a slug is resolved, or the "awaiting your
-// message" hint before that. Never returns transient agent activity —
-// the live thinking row owns that signal.
+// plan-file basename once a slug is resolved, or "" before that —
+// the empty case lets the banner render as just `◈ plan mode` while
+// awaiting the first message, since the entry log right above the
+// cmdline already says "describe what you'd like planned in your
+// next message" and we'd otherwise repeat that hint on every redraw.
+// Never returns transient agent activity — the live thinking row
+// owns that signal.
 func planBannerMiddleText(info planBannerInfo) string {
-	if info.PlanFileBasename != "" {
-		return info.PlanFileBasename
-	}
-	return "awaiting your message"
+	return info.PlanFileBasename
 }
 
 // computePlanBannerInfo gathers the live inputs the banner needs from

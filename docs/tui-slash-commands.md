@@ -22,6 +22,7 @@ Type `/` in the TUI to open the slash-command palette. The palette filters as yo
 | `/setup` | — | Suspend the TUI and rerun setup |
 | `/init` | — | Ask the agent to draft or refresh `.yottacode/YOTTACODE.md` |
 | `/plan` | — | Toggle plan mode (also `Shift+Tab`). Type `/plan list` to open a picker and resume an earlier plan. |
+| `/subagents` | `[list \| view <id> \| stop <id> \| types]` | List subagent runs, view a transcript, stop a running task, or list available agent types. See [subagents.md](subagents.md). |
 
 > **Auto mode and the permissions-bypass overlay are intentionally not slash commands** (mirroring Claude Code). Auto enters via `Shift+Tab` (cycle: `normal → auto → plan → normal`) or `yottacode --permission-mode auto` at startup. Permissions bypass enters only via `yottacode --dangerously-skip-permissions` at startup — there is no in-TUI toggle, no palette entry, no accidental activation. See [Auto mode](#auto-mode) and [Permissions bypass](#permissions-bypass) below.
 

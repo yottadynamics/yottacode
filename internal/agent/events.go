@@ -1,6 +1,10 @@
 package agent
 
-import "github.com/yottadynamics/yottacode/internal/adapter"
+import (
+	"time"
+
+	"github.com/yottadynamics/yottacode/internal/adapter"
+)
 
 // Event is the union of things the agent loop emits while a turn runs.
 // Consumers (REPL today, TUI next, `yottacode run` after that) type-switch
@@ -133,6 +137,61 @@ type Fallback struct {
 	Policy string
 }
 
+// SubagentStart fires when the Agent tool begins a child Turn. The
+// parent's TUI/oneshot renders this as a short header so the user can
+// see that delegation is happening; the child's transcript file at
+// TranscriptPath captures everything that happens inside the child.
+type SubagentStart struct {
+	TaskID         string
+	AgentType      string
+	Prompt         string
+	Background     bool
+	TranscriptPath string
+}
+
+// SubagentProgress is the parent-visible activity stream for a running
+// subagent — typically "Explore: read_file internal/foo.go" or "Plan:
+// grep TODO". The child's raw ContentToken/ReasoningToken events are
+// deliberately NOT forwarded; only high-level tool-level activity
+// reaches the parent, which keeps the parent's UI uncluttered AND keeps
+// the child's reasoning out of the parent's adapter context.
+type SubagentProgress struct {
+	TaskID    string
+	AgentType string
+	Activity  string
+}
+
+// SubagentDone fires when a foreground subagent completes. The Result
+// is the child's final assistant message — that same string is also
+// returned synchronously from the Agent tool's Execute, so the parent's
+// model receives it as a normal tool result. SubagentDone is for the
+// UI side of the picture: it lets the TUI close the "subagent running"
+// card and oneshot print a final status line.
+type SubagentDone struct {
+	TaskID     string
+	AgentType  string
+	Result     string
+	Errored    bool
+	Duration   time.Duration
+	TokensUsed int
+	ToolCalls  int // child's tool-call count, for inline stats rendering
+}
+
+// SubagentBackgroundDone fires asynchronously when a background subagent
+// completes after the parent turn has already ended. The TUI surfaces
+// this as a card on the next idle redraw / via /subagents list. Oneshot
+// rejects background invocations entirely so this event is unreachable
+// from non-interactive contexts.
+type SubagentBackgroundDone struct {
+	TaskID     string
+	AgentType  string
+	Result     string
+	Errored    bool
+	Duration   time.Duration
+	TokensUsed int
+	ToolCalls  int // child's tool-call count, for inline stats rendering
+}
+
 func (ReasoningToken) event()    {}
 func (ContentToken) event()      {}
 func (StreamProgress) event()    {}
@@ -149,3 +208,8 @@ func (IterCap) event()           {}
 func (ErrorEvent) event()        {}
 func (TurnDone) event()          {}
 func (Fallback) event()          {}
+
+func (SubagentStart) event()          {}
+func (SubagentProgress) event()       {}
+func (SubagentDone) event()           {}
+func (SubagentBackgroundDone) event() {}

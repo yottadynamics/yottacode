@@ -30,6 +30,17 @@ type slashCommand struct {
 	Args string // for help rendering only
 	Help string
 	Run  func(m Model, args []string) (Model, tea.Cmd)
+
+	// PreservesTurn marks commands that are safe to invoke while a
+	// turn is active without canceling it. The default cancel-on-
+	// slash behavior is right for state-changing commands
+	// (/clear, /model, /sessions, /provider) — the user is signaling
+	// "stop the current work, apply this change instead." But
+	// informational commands (/subagents, /help, /system,
+	// /permissions) just inspect read-only snapshots; canceling the
+	// turn to render them is destructive. Those opt in via this
+	// field so the Enter-on-slash handler can skip turnCancel().
+	PreservesTurn bool
 }
 
 // allSlash is the registry. Order = display order in /help and the palette.
@@ -39,34 +50,34 @@ var allSlash []slashCommand
 
 func init() {
 	allSlash = []slashCommand{
-		{"help", "", "show this list", cmdHelp},
-		{"quit", "", "exit yottacode", cmdQuit},
-		{"clear", "", "start a fresh session (current is saved)", cmdClear},
-		{"permissions", "", "show where permissions are configured", cmdPermissions},
-		{"system", "", "show the active system prompt", cmdSystem},
+		{Name: "help", Help: "show this list", Run: cmdHelp, PreservesTurn: true},
+		{Name: "quit", Help: "exit yottacode", Run: cmdQuit},
+		{Name: "clear", Help: "start a fresh session (current is saved)", Run: cmdClear},
+		{Name: "permissions", Help: "show where permissions are configured", Run: cmdPermissions, PreservesTurn: true},
+		{Name: "system", Help: "show the active system prompt", Run: cmdSystem, PreservesTurn: true},
 		// /sessions opens the sessions sub-menu (Resume / Rename /
 		// Export). The bare invocation lands on the picker; the
 		// positional shortcut /sessions <id|name> resumes directly
 		// without going through the menu, matching how /model <name>
 		// works. Replaces the old /resume + /save + /export trio.
-		{"sessions", "", "open the sessions menu (or /sessions <id|name> to resume directly)", cmdSessions},
+		{Name: "sessions", Help: "open the sessions menu (or /sessions <id|name> to resume directly)", Run: cmdSessions},
 		// Args="" so palette Enter executes the bare form (opens
 		// the picker overlay) instead of filling in a placeholder.
 		// /model <name> still works as a power-user shortcut once
 		// typed out manually.
-		{"model", "", "open the model picker (subcommands: list [all], <name>)", cmdModel},
-		{"provider", "", "open the provider menu (subcommands: list, use, add, remove, models)", cmdProviderEntry},
-		{"doctor", "", "probe provider auth and model access", cmdDoctor},
-		{"redo", "", "edit and re-run the most recent message", cmdRedo},
-		{"recall", "<query>", "full-text search across every saved session", cmdRecall},
-		{"summarize", "", "compress session history into a structured summary", cmdSummarize},
+		{Name: "model", Help: "open the model picker (subcommands: list [all], <name>)", Run: cmdModel},
+		{Name: "provider", Help: "open the provider menu (subcommands: list, use, add, remove, models)", Run: cmdProviderEntry},
+		{Name: "doctor", Help: "probe provider auth and model access", Run: cmdDoctor, PreservesTurn: true},
+		{Name: "redo", Help: "edit and re-run the most recent message", Run: cmdRedo},
+		{Name: "recall", Args: "<query>", Help: "full-text search across every saved session", Run: cmdRecall, PreservesTurn: true},
+		{Name: "summarize", Help: "compress session history into a structured summary", Run: cmdSummarize},
 		// Args="" so palette Enter executes the bare form (opens the
 		// picker overlay). /memory takes no subcommands — the picker
 		// covers project edit, user edit, and auto-folder location.
-		{"memory", "", "open the memory picker (USER.md / YOTTACODE.md / saved memories)", cmdMemory},
-		{"max-iterations", "<N>", "cap tool-call iterations per turn (default: 50; auto mode doubles)", cmdMaxIterations},
-		{"setup", "", "re-run the setup wizard (reloads config on return)", cmdSetup},
-		{"init", "", "draft .yottacode/YOTTACODE.md from the current repo", cmdInit},
+		{Name: "memory", Help: "open the memory picker (USER.md / YOTTACODE.md / saved memories)", Run: cmdMemory},
+		{Name: "max-iterations", Args: "<N>", Help: "cap tool-call iterations per turn (default: 50; auto mode doubles)", Run: cmdMaxIterations},
+		{Name: "setup", Help: "re-run the setup wizard (reloads config on return)", Run: cmdSetup},
+		{Name: "init", Help: "draft .yottacode/YOTTACODE.md from the current repo", Run: cmdInit},
 		// /plan toggles plan mode (read-only research + plan file +
 		// exit_plan_mode for approval). Also bound to Shift+Tab — see
 		// model.go's KeyMsg handler.
@@ -79,7 +90,20 @@ func init() {
 		// --permission-mode auto; yolo enters only via
 		// --dangerously-skip-permissions at startup — no in-TUI toggle,
 		// no palette entry, no accidental activation.
-		{"plan", "", "toggle plan mode — also Shift+Tab. Type `/plan list` to resume an earlier plan.", cmdPlan},
+		{Name: "plan", Help: "toggle plan mode — also Shift+Tab. Type `/plan list` to resume an earlier plan.", Run: cmdPlan},
+		// /subagents inspects the session's subagent task registry —
+		// listing runs, viewing full transcripts (foreground transcripts
+		// are written to disk because the parent doesn't ingest the
+		// child's reasoning), and stopping a running task. Mirrors
+		// Claude Code's UX of "subagents are first-class enough to have
+		// their own listing command."
+		//
+		// PreservesTurn=true: viewing the subagent registry during an
+		// active foreground subagent run must NOT cancel the parent
+		// turn (which would kill the subagent we're trying to inspect).
+		// The picker reads a snapshot of the task registry; no state
+		// change happens, so the turn can keep streaming behind it.
+		{Name: "subagents", Help: "open the subagents picker (Enter views · t toggles types · s stops · Esc closes)", Run: cmdSubagents, PreservesTurn: true},
 	}
 }
 

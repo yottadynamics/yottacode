@@ -85,6 +85,18 @@ type ChatOptions struct {
 	// log line so the user sees what happened. Implies
 	// --permission-mode plan.
 	PlanResume string
+
+	// Experimental enables not-yet-stable features gated by the
+	// internal/experimental package. The CLI flag is repeatable so
+	// users can stack multiple opt-ins: `--experimental foo
+	// --experimental bar`. Names also accept comma-separated lists
+	// for symmetry with the $YOTTACODE_EXPERIMENTAL env var. The
+	// config-file [experimental] section provides a third source;
+	// they merge at startup. Unknown names land in the Set's
+	// UnknownNames and surface as a startup warning rather than
+	// fatal errors — so a typo or graduated feature doesn't lock
+	// the user out.
+	Experimental []string
 }
 
 // ValidPermissionModes is the closed set the --permission-mode flag
@@ -124,6 +136,12 @@ const (
 	EnvXSearchExcludedHandles = "YOTTACODE_X_SEARCH_EXCLUDED_HANDLES"
 	EnvXSearchFromDate        = "YOTTACODE_X_SEARCH_FROM_DATE"
 	EnvXSearchToDate          = "YOTTACODE_X_SEARCH_TO_DATE"
+	// EnvExperimental is a comma-separated list of experimental
+	// feature names to enable (see internal/experimental). Merges
+	// with --experimental flags and the [experimental] config
+	// section. CLI > env > config; later sources don't disable
+	// what earlier ones enabled.
+	EnvExperimental = "YOTTACODE_EXPERIMENTAL"
 )
 
 // Resolve fills empty fields from environment variables and configured
@@ -197,6 +215,28 @@ func Resolve(opts *ChatOptions) error {
 	}
 	if opts.XSearchToDate == "" {
 		opts.XSearchToDate = os.Getenv(EnvXSearchToDate)
+	}
+	// Experimental: env var merges with flags. We split the env on
+	// commas and append unique entries; later config-file merging
+	// happens in the consumer (TUI / oneshot) since cli.Resolve
+	// doesn't read the config file directly.
+	if env := strings.TrimSpace(os.Getenv(EnvExperimental)); env != "" {
+		for _, name := range strings.Split(env, ",") {
+			name = strings.TrimSpace(name)
+			if name == "" {
+				continue
+			}
+			already := false
+			for _, existing := range opts.Experimental {
+				if existing == name {
+					already = true
+					break
+				}
+			}
+			if !already {
+				opts.Experimental = append(opts.Experimental, name)
+			}
+		}
 	}
 	if opts.AllowPaths == "" {
 		opts.AllowPaths = os.Getenv(EnvAllowPaths)

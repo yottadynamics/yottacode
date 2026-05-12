@@ -179,6 +179,32 @@ bypass is intentionally **not** in the cycle — the only entry point is
 the startup flag, so high-autonomy state is a conscious one-time
 decision, not a key chord away.
 
+## Subagents
+
+The `Agent` tool (`internal/agent/agent_tool.go`) is the parent's
+delegation surface. When the model calls it, yottacode constructs a
+fresh `LoopConfig` that reuses the parent's adapter, permissions, and
+cwd, but pairs them with a filtered tool registry, fresh inactive
+plan/auto mode states, a standard iteration cap, and an isolated
+message history seeded from the chosen agent definition's system
+prompt and the user-supplied subagent prompt. `agent.Turn` runs
+recursively against that config; the child's events flow into a
+runner-local channel that the parent **does not** consume directly —
+the runner translates only high-level activity (subagent start /
+progress / done) into events on the parent's `events` channel, so the
+parent's context window never sees the child's reasoning or tool
+outputs. Only the child's final assistant content is returned as the
+parent's tool-result string. Foreground runs block the parent's tool
+call; background runs (`run_in_background: true`, TUI-only) detach to
+a goroutine bound to a session-scoped context, and surface their
+completion via a long-lived inbox channel the TUI's Model drains in
+parallel with the per-turn event stream. The child registry **always**
+excludes `Agent` itself (hard recursion guard, even against
+adversarial config) and `exit_plan_mode`. See
+[subagents.md](subagents.md) for the user-facing surface — agent
+definition format, built-in agents, `/subagents` command, and
+limitations.
+
 The loop reads all three flags at turn start (effective iteration
 cap) and on every tool dispatch. Approval-chain priority (the internal
 "yolo" name still appears in the precedence label since
@@ -195,6 +221,9 @@ Most feature work lands in one of these seams:
   oneshot setup paths.
 - Add a new slash command in [`internal/tui/commands.go`](../internal/tui/commands.go).
 - Add or expand an adapter while keeping `agent.Turn` unchanged.
+- Add a new built-in subagent type by dropping a markdown file under
+  [`internal/subagents/builtins/`](../internal/subagents/builtins/); `//go:embed`
+  picks it up at build time without Go changes.
 
 Provider diagnostics follow the same seam discipline:
 
