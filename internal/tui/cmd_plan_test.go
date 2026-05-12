@@ -184,11 +184,18 @@ func TestPlanModeBanner_HiddenWhenInactive(t *testing.T) {
 }
 
 func TestPlanModeBanner_NoSlugYet(t *testing.T) {
+	// Pre-slug, the banner should NOT carry an "awaiting your
+	// message" hint — that text was redundant with the entry log
+	// printed right above. The banner just reads `◈ plan mode`
+	// until a slug resolves and we have a basename to show.
 	m, _ := newPlanModeTestModel(t)
 	m, _ = cmdPlan(m, nil)
 	view := stripANSI(m.View())
-	if !strings.Contains(view, "awaiting your message") {
-		t.Errorf("banner should surface the awaiting-message state; got %q", view)
+	if strings.Contains(view, "awaiting your message") {
+		t.Errorf("banner should NOT carry the awaiting-message hint; got %q", view)
+	}
+	if !strings.Contains(view, "plan mode") {
+		t.Errorf("banner should still carry the plan-mode label; got %q", view)
 	}
 }
 
@@ -409,17 +416,21 @@ func TestPlanModeBanner_ShowsBasenameOnceResolved(t *testing.T) {
 }
 
 // Two states the banner cycles through. No activity in the banner —
-// that signal is the live thinking row's job.
+// that signal is the live thinking row's job. The "no slug yet"
+// case renders as just `◈ plan mode` (no middle text); the
+// "slug resolved" case shows the basename.
 func TestPlanModeBanner_TwoStates(t *testing.T) {
 	cases := []struct {
-		name    string
-		info    planBannerInfo
-		wantMid string
+		name        string
+		info        planBannerInfo
+		wantMid     string // empty means: no middle text should appear
+		forbidInMid string // text that must NOT appear anywhere in the banner
 	}{
 		{
-			name:    "no slug yet",
-			info:    planBannerInfo{},
-			wantMid: "awaiting your message",
+			name:        "no slug yet",
+			info:        planBannerInfo{},
+			wantMid:     "",
+			forbidInMid: "awaiting your message",
 		},
 		{
 			name:    "slug resolved",
@@ -430,8 +441,11 @@ func TestPlanModeBanner_TwoStates(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			got := stripANSI(renderPlanModeBanner(tc.info, false, 200))
-			if !strings.Contains(got, tc.wantMid) {
+			if tc.wantMid != "" && !strings.Contains(got, tc.wantMid) {
 				t.Errorf("banner should contain %q; got %q", tc.wantMid, got)
+			}
+			if tc.forbidInMid != "" && strings.Contains(got, tc.forbidInMid) {
+				t.Errorf("banner should NOT contain %q; got %q", tc.forbidInMid, got)
 			}
 			if !strings.Contains(got, "plan mode") {
 				t.Errorf("banner missing plan-mode label; got %q", got)

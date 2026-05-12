@@ -54,6 +54,30 @@ func (r *Registry) Get(name string) (Tool, bool) {
 	return t, ok
 }
 
+// Tools returns every registered Tool. The order is non-deterministic
+// (map iteration). Subagent registry construction uses this to clone
+// the parent's toolset while applying an allowlist filter — see
+// internal/agent/agent_tool.go. Read-only on the registry: callers
+// must not mutate the returned tools.
+func (r *Registry) Tools() []Tool {
+	out := make([]Tool, 0, len(r.tools))
+	for _, t := range r.tools {
+		out = append(out, t)
+	}
+	return out
+}
+
+// Names returns the set of registered tool names. Useful for callers
+// that need to validate references (e.g. subagent allowlists) without
+// caring about the Tool values themselves.
+func (r *Registry) Names() map[string]bool {
+	out := make(map[string]bool, len(r.tools))
+	for name := range r.tools {
+		out[name] = true
+	}
+	return out
+}
+
 // AsAdapterTools converts the registry into the schema shape the adapter
 // advertises to the model. Equivalent to AsAdapterToolsFiltered(nil) —
 // every registered tool is exposed.

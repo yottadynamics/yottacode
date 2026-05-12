@@ -59,6 +59,12 @@ Inline rendering keeps your scrollback intact. Markdown-rendered assistant outpu
 
 Thirty built-in tools spanning reads, writes, filesystem, search, git helpers (status / diff / blame / log / commit / checkpoints / rollback / file-at-revision), bash, tests, the `todo_write` working-plan tracker, and the `exit_plan_mode` plan-approval surface — each with explicit approval policy. See [`docs/tools.md`](docs/tools.md).
 
+### Typed subagents
+
+Delegate research, code search, and planning to typed subagents that run in their own context window — the parent only sees the final answer, never the child's tool calls or reasoning. Use it to keep the parent's context lean during long conversations. Three built-ins ship: **`Explore`** (read-only code search), **`Plan`** (drafts an implementation plan), **`general-purpose`** (open-ended research). Ship your own under `.yottacode/agents/<name>.md` (project) or `~/.yottacode/agents/<name>.md` (global) with YAML frontmatter declaring tools and an optional model override. `/subagents` opens an inline picker; `Enter` views any task's transcript in `$PAGER`. Mirrors Claude Code's `Agent` / `Task` tool surface. See [`docs/subagents.md`](docs/subagents.md).
+
+> Background subagents (`run_in_background:true` for fire-and-forget delegation) are an opt-in experimental feature. Enable with `yottacode --experimental background_subagents`, `YOTTACODE_EXPERIMENTAL=background_subagents`, or `[experimental]` in `~/.yottacode/config.toml`. Foreground delegation is default-on. See [`docs/experimental.md`](docs/experimental.md).
+
 ### Read-only plan mode + auto mode
 
 `/plan` (or `Shift+Tab`, or `yottacode --permission-mode plan` at launch) toggles a read-only research mode that mirrors Claude Code's plan mode: the agent investigates, asks clarifying questions, writes a plan file under `~/.yottacode/plans/<slug>.md`, then calls `exit_plan_mode` (no arguments — the TUI reads the file) to present the plan in an approval card. Approve with `[A]` to resume execution, or `[Y]` to enter auto mode and skip per-tool prompts during implementation.

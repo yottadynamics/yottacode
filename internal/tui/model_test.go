@@ -503,10 +503,36 @@ func TestModel_CtrlDDuringThinkingQuits(t *testing.T) {
 	}
 }
 
-func TestModel_SlashCommandDuringThinkingCancelsTurnAndRuns(t *testing.T) {
-	// While the agent is mid-turn, slash commands should still work — they
-	// cancel the in-flight call first so the agent goroutine doesn't keep
-	// scribbling alongside.
+func TestModel_StateChangingSlashDuringThinkingCancelsTurnAndRuns(t *testing.T) {
+	// While the agent is mid-turn, a state-changing slash command (one
+	// without PreservesTurn) should still work — but cancel the in-flight
+	// call first so the agent goroutine doesn't keep scribbling
+	// alongside. /sessions is a representative mutator: it can rename,
+	// resume, export — definitely a "stop current work, do this" intent.
+	m := newTestModel(t)
+	m.turnActive = true
+	canceled := false
+	m.turnCancel = func() { canceled = true }
+
+	for _, r := range "/sessions" {
+		m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	if !canceled {
+		t.Errorf("state-changing slash command during turn should cancel the turn first")
+	}
+}
+
+func TestModel_PreservesTurnSlashDuringThinkingDoesNotCancel(t *testing.T) {
+	// Commands marked PreservesTurn (e.g. /subagents, /help, /system,
+	// /permissions) are read-only inspections — submitting them during
+	// an active turn must NOT cancel the turn, otherwise viewing the
+	// status of an in-flight foreground subagent would kill it. The
+	// fix that introduced PreservesTurn was prompted by exactly this:
+	// opening /subagents during a foreground Agent call cascaded a ctx
+	// cancellation down through the parent loop and into the child
+	// Turn, leaving the user staring at "runner_canceled (parent-turn-
+	// canceled-or-deadline)" in the transcript.
 	m := newTestModel(t)
 	m.turnActive = true
 	canceled := false
@@ -517,11 +543,33 @@ func TestModel_SlashCommandDuringThinkingCancelsTurnAndRuns(t *testing.T) {
 		m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
 	}
 	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
-	if !canceled {
-		t.Errorf("slash command during turn should cancel the turn first")
+	if canceled {
+		t.Errorf("PreservesTurn slash command must NOT cancel the active turn")
 	}
 	if len(m.historyLines) <= beforeLen {
-		t.Errorf("/help should have appended output even mid-turn")
+		t.Errorf("/help should still produce output even when the turn is preserved")
+	}
+}
+
+func TestModel_UnknownSlashCommandDuringThinkingDoesNotCancel(t *testing.T) {
+	// Typos on slash commands (e.g. /subagent singular instead of
+	// /subagents) must NOT cancel the active turn. The command isn't
+	// going to do anything meaningful — it'll just produce an
+	// "unknown command" error — so canceling an in-flight foreground
+	// subagent over a typo is pure user damage. Regression for the
+	// specific case where `/subagent` killed a running subagent
+	// before the error message even printed.
+	m := newTestModel(t)
+	m.turnActive = true
+	canceled := false
+	m.turnCancel = func() { canceled = true }
+
+	for _, r := range "/subagent" { // typo: missing the trailing s
+		m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	if canceled {
+		t.Errorf("unknown slash command must NOT cancel the active turn (a typo shouldn't kill in-flight work)")
 	}
 }
 

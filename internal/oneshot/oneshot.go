@@ -25,8 +25,10 @@ import (
 	"github.com/yottadynamics/yottacode/internal/config"
 	"github.com/yottadynamics/yottacode/internal/filerefs"
 	"github.com/yottadynamics/yottacode/internal/memory"
+	"github.com/yottadynamics/yottacode/internal/experimental"
 	"github.com/yottadynamics/yottacode/internal/permissions"
 	"github.com/yottadynamics/yottacode/internal/session"
+	"github.com/yottadynamics/yottacode/internal/subagents"
 )
 
 // defaultSystemPrompt is sourced from internal/agent so the TUI and
@@ -216,6 +218,53 @@ func Run(ctx context.Context, opts cli.ChatOptions, prompt string) error {
 	// any oneshot flag.
 	reg.Register(&agent.ExitPlanModeTool{})
 
+	// Subagents: load definitions (built-in + ~/.yottacode/agents +
+	// .yottacode/agents) and register the dispatch tool. Background
+	// runs are rejected in oneshot — the model gets a recoverable
+	// error string and can retry without the flag.
+	subRes, _ := subagents.LoadAll(cwd, reg.Names())
+	for _, w := range subRes.Warnings {
+		fmt.Fprintln(os.Stderr, "subagents: "+w)
+	}
+	transcriptDir, _ := subagents.EnsureTranscriptDir(cwd)
+	tasks := subagents.NewRegistry()
+	// Oneshot doesn't expose plan/auto modes (no UI surface), so
+	// the parent's mode states are inactive instances. Subagents
+	// inherit them by pointer for consistency with the TUI path
+	// even though they'll never flip on in this context.
+	parentPlanMode := &agent.PlanModeState{}
+	parentAutoMode := &agent.AutoModeState{}
+	parentYoloMode := &agent.YoloModeState{}
+
+	// Background subagents stay disabled in oneshot regardless of
+	// experimental flag — there's no long-running session to host
+	// async completion notifications, so honoring `run_in_background`
+	// would silently lose results. Foreground subagents work in
+	// oneshot whether or not the experimental gate is on.
+	_ = experimental.BackgroundSubagents // referenced to document the link
+
+	agentTool := &agent.AgentTool{
+		Configs:         subRes.Configs,
+		Tasks:           tasks,
+		Adapter:         ad,
+		ParentRegistry:  reg,
+		Permissions:     perms,
+		YoloMode:        parentYoloMode,
+		PlanMode:        parentPlanMode,
+		AutoMode:        parentAutoMode,
+		Cwd:             cwd,
+		TranscriptDir:   transcriptDir,
+		AllowBackground: false,
+	}
+	reg.Register(agentTool)
+	// Even though oneshot rejects background spawns (AllowBackground=
+	// false), foreground subagent runs still write to the registry,
+	// so the parent can call get_subagent_result to re-read a
+	// completed foreground task's transcript-equivalent in the same
+	// turn. Rare workflow in oneshot, but keeping the surface
+	// symmetric with the TUI is worth the one extra line.
+	reg.Register(&agent.GetSubagentResultTool{Tasks: tasks})
+
 	cfg := agent.LoopConfig{
 		Adapter:           ad,
 		Registry:          reg,
@@ -223,9 +272,9 @@ func Run(ctx context.Context, opts cli.ChatOptions, prompt string) error {
 		BypassPermissions: opts.BypassPermissions,
 		Cwd:               cwd,
 		MaxIterations:     opts.MaxIterations,
-		PlanMode:          &agent.PlanModeState{},
-		AutoMode:          &agent.AutoModeState{},
-		YoloMode:          &agent.YoloModeState{},
+		PlanMode:          parentPlanMode,
+		AutoMode:          parentAutoMode,
+		YoloMode:          parentYoloMode,
 	}
 
 	turnErr := stream(ctx, cfg, &sess.Messages, os.Stdout, os.Stderr)
@@ -329,6 +378,24 @@ func stream(
 			fmt.Fprintf(stderr, "[tool] %s\n", e.Preview)
 		case agent.ToolResult:
 			_ = e // result feeds the model; nothing to print
+		case agent.SubagentStart:
+			label := "foreground"
+			if e.Background {
+				label = "background"
+			}
+			fmt.Fprintf(stderr, "[subagent:%s] start (%s) — %s\n", e.AgentType, label, truncateOneLine(e.Prompt, 120))
+		case agent.SubagentProgress:
+			fmt.Fprintf(stderr, "[subagent:%s] %s\n", e.AgentType, e.Activity)
+		case agent.SubagentDone:
+			tag := "done"
+			if e.Errored {
+				tag = "errored"
+			}
+			fmt.Fprintf(stderr, "[subagent:%s] %s in %s\n", e.AgentType, tag, formatTurnDuration(e.Duration))
+		case agent.SubagentBackgroundDone:
+			// Should not occur in oneshot (AllowBackground=false) but
+			// emit a defensive log if it ever does.
+			fmt.Fprintf(stderr, "[subagent:%s] background %s (unexpected in oneshot)\n", e.AgentType, e.TaskID)
 		case agent.TodoUpdate:
 			done := 0
 			for _, td := range e.Todos {
@@ -366,6 +433,19 @@ func stream(
 		return nil
 	}
 	return firstErr
+}
+
+// truncateOneLine returns at most max chars of s, collapsing any
+// newlines to spaces so a multi-line subagent prompt renders as a
+// single stderr log line.
+func truncateOneLine(s string, max int) string {
+	s = strings.ReplaceAll(s, "\n", " ")
+	s = strings.ReplaceAll(s, "\r", " ")
+	s = strings.TrimSpace(s)
+	if len(s) <= max {
+		return s
+	}
+	return s[:max] + "…"
 }
 
 // formatTurnDuration mirrors the TUI's formatDuration so the

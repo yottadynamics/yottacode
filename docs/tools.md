@@ -39,6 +39,7 @@ are also accepted).
 | [`git`](#git) | varies | Unified git invocation; read-only auto-runs, mutations prompt |
 | [`todo_write`](#todo_write) | none | Maintain the agent's working task plan, rendered as a card |
 | [`exit_plan_mode`](#exit_plan_mode) | required | Only callable in `/plan` mode; presents the plan for user approval |
+| [`Agent`](#agent) | none | Dispatch a typed subagent that runs in its own context window; see [subagents.md](subagents.md) |
 
 "Approval = required" means the tool always pauses for a `y` / `a` /
 `N` from the user, unless an `allow` rule in
@@ -554,3 +555,23 @@ tools auto-allow as usual; writes to the plan file auto-allow too (no per-edit
 prompt — the plan file is the model's only legitimate mutation surface during
 planning). See [tui-slash-commands.md#plan-mode](tui-slash-commands.md#plan-mode)
 for the full plan-mode flow.
+
+## Agent
+
+Dispatch a typed subagent. The subagent runs `agent.Turn` in its own message
+history, with a filtered tool registry and its own iteration budget. The
+parent's adapter context never sees the subagent's intermediate reasoning or
+tool calls — only the child's final reply is returned as the tool result.
+
+Mirrors Claude Code's `Agent` / `Task` tool surface.
+
+| Param | Type | Default | Notes |
+|---|---|---|---|
+| `subagent_type` | string (required) | — | The name of a registered agent definition (e.g. `general-purpose`, `Explore`, `Plan`, or a custom entry under `.yottacode/agents/`). |
+| `prompt` | string (required) | — | The task for the subagent. The subagent has no access to the parent conversation, so be self-contained. |
+| `description` | string | "" | A 3-5 word label shown to the user while the subagent runs. |
+| `run_in_background` | boolean | `false` | If true (TUI only), return immediately with a task id; the subagent runs to completion in the background. `oneshot` rejects this with a recoverable error so the model can retry without the flag. |
+
+The full documentation — file format for custom agents, the `/subagents`
+command, transcript layout, and the recursion + iteration safeguards — is
+in [subagents.md](subagents.md).
