@@ -423,6 +423,19 @@ func stream(
 			// it) recording how long the turn took end-to-end —
 			// matches the TUI's "› Thought for Ns" line.
 			fmt.Fprintf(stderr, "› Thought for %s\n", formatTurnDuration(time.Since(turnStart)))
+		case agent.TurnInterrupted:
+			// Cancel reached oneshot via SIGINT or a parent-ctx
+			// timeout. History was preserved by the agent loop —
+			// note it on stderr so the exit code's "non-zero =
+			// something happened" reads cleanly against a clean
+			// stdout. The orphaned-call count helps debug whether
+			// the cancel landed mid-tool or mid-stream.
+			fmt.Fprintln(stdout)
+			if e.OrphanedCalls > 0 {
+				fmt.Fprintf(stderr, "↩ interrupted (%d tool call(s) cancelled)\n", e.OrphanedCalls)
+			} else {
+				fmt.Fprintln(stderr, "↩ interrupted")
+			}
 		}
 	}
 

@@ -125,6 +125,27 @@ type ErrorEvent struct{ Err error }
 // error, not at iter cap). The consumer can re-enable input.
 type TurnDone struct{}
 
+// TurnInterrupted fires when the turn ended via user-initiated context
+// cancellation (Enter or Esc/Ctrl+C mid-turn) rather than an error or a
+// clean finish. By the time this event lands, the loop has already
+// preserved history correctness: any tokens that streamed before the
+// cancel are appended as a content-only assistant message, and any
+// in-flight or pending tool_calls in the current batch get synthetic
+// "interrupted by user" tool_result entries so no tool_use is left
+// orphaned for the next request. Consumers should render this as a
+// calm marker, not an error — the turn was cut on purpose.
+type TurnInterrupted struct {
+	// PartialContent is the assistant text that streamed before the
+	// cancel, already appended to history. Carried in the event so the
+	// TUI can render a one-line snippet without re-walking history.
+	PartialContent string
+	// OrphanedCalls counts tool_use entries in the just-cancelled batch
+	// that received synthetic results (i.e. were never actually run or
+	// did not produce real output). Zero when the cancel landed mid-
+	// stream before any tool call started.
+	OrphanedCalls int
+}
+
 // Fallback fires when the multi-provider router falls through from one
 // candidate to another after an early failure (an error before any
 // tokens streamed). Carries enough metadata for the TUI to render a
@@ -207,6 +228,7 @@ func (AssistantMessage) event()  {}
 func (IterCap) event()           {}
 func (ErrorEvent) event()        {}
 func (TurnDone) event()          {}
+func (TurnInterrupted) event()   {}
 func (Fallback) event()          {}
 
 func (SubagentStart) event()          {}

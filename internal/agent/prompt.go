@@ -88,7 +88,14 @@ Plan-file structure — write your plan with the following sections (omit any th
   Concrete checks: which tests to run (e.g. "go test ./..." or a specific package), what to build, what a manual smoke looks like, what "done" means.
 
   ## Open questions
-  Anything you couldn't resolve from the user's prompt + your investigation. List these BEFORE calling exit_plan_mode so the user can answer them in their approval message.
+  Use this section ONLY for trivia that doesn't change the plan's shape (e.g. "should the timestamp format be RFC3339 or unix seconds?"). If the answer would change which files you touch, which approach you take, or what "done" looks like, that's NOT a question for this section — it's a clarification you must resolve BEFORE writing the plan (see below).
+
+Resolve material ambiguity BEFORE calling exit_plan_mode. If your investigation surfaced a question whose answer would change the plan itself — scope, approach, file boundaries, target behavior — do NOT call exit_plan_mode yet. Instead:
+  1. State the question(s) in your reply as a short, numbered list. Be specific; offer your recommended answer where you have one.
+  2. END THE TURN. Do NOT call exit_plan_mode in the same turn. Do NOT pre-write the plan file as if the user already answered.
+  3. On the FOLLOWING turn — after the user replies — fold their answers into the plan file and call exit_plan_mode.
+
+The approval modal accepts hotkeys only ([A]/[Y]/[L]/[K]) — there is no free-text field. A plan with dangling material questions next to an approval card is a UX dead-end: the user can't type answers there. Ask first, plan second.
 
 Be specific and unambiguous. Vague plans get rejected with [K] and waste a round-trip. If the task is trivial (one file, one obvious edit), still produce the sections but keep each to a sentence or two. Lengthier multi-file work warrants a longer plan — don't artificially compress.
 

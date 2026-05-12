@@ -5,11 +5,22 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"strings"
 	"sync"
 
 	"github.com/yottadynamics/yottacode/internal/adapter"
 	"github.com/yottadynamics/yottacode/internal/permissions"
 )
+
+// interruptedToolResult is the synthetic tool_result content injected for
+// every tool_use that was orphaned by a user-initiated cancel — either
+// because the call was queued in the same batch but never executed, or
+// because the call started but was killed mid-flight. Every provider
+// rejects an assistant message whose tool_use blocks lack matching
+// tool_result entries on the next request, so this content goes in the
+// history before Turn returns. The string is also what the model sees on
+// the next turn, hence the plain English wording.
+const interruptedToolResult = "interrupted by user"
 
 // Streamer is the slice of the adapter the loop actually depends on. Defining
 // it here (instead of pulling in the concrete *adapter.Adapter) lets tests
@@ -122,12 +133,38 @@ func Turn(
 
 		final, err := streamIteration(ctx, cfg, *state.history, events)
 		if err != nil {
+			// Distinguish a user-initiated cancel (Enter / Esc / Ctrl+C
+			// fired the parent's turnCancel) from a real adapter error.
+			// On cancel we preserve whatever streamed so history stays
+			// valid for the follow-up turn the TUI is about to start;
+			// on error we keep the existing ErrorEvent path so the
+			// failure stays loud. context.Canceled is the user path;
+			// context.DeadlineExceeded would also land here if a future
+			// per-turn timeout is added.
+			if isCancelErr(err) {
+				if final != nil {
+					*state.history = append(*state.history, *final)
+				}
+				partialContent := ""
+				if final != nil {
+					partialContent = final.Content
+				}
+				_ = send(context.Background(), events, TurnInterrupted{
+					PartialContent: partialContent,
+				})
+				return err
+			}
 			_ = send(ctx, events, ErrorEvent{Err: err})
 			return err
 		}
 
 		*state.history = append(*state.history, *final)
 		if err := send(ctx, events, AssistantMessage{Message: *final}); err != nil {
+			if isCancelErr(err) {
+				_ = send(context.Background(), events, TurnInterrupted{
+					PartialContent: final.Content,
+				})
+			}
 			return err
 		}
 
@@ -140,6 +177,19 @@ func Turn(
 				return err
 			}
 			if err := executeToolCalls(ctx, cfg, final.ToolCalls, history, events, decisions); err != nil {
+				if isCancelErr(err) {
+					// executeToolCalls has already appended synthetic
+					// tool_result entries for any orphaned calls before
+					// returning, so history is valid. Count how many of
+					// the call slice landed as synthetic so the UI can
+					// render "N tool calls cancelled."
+					orphans := countOrphanedToolResults(*history, final.ToolCalls)
+					_ = send(context.Background(), events, TurnInterrupted{
+						PartialContent: final.Content,
+						OrphanedCalls:  orphans,
+					})
+					return err
+				}
 				_ = send(ctx, events, ErrorEvent{Err: err})
 				return err
 			}
@@ -204,20 +254,35 @@ func streamIteration(
 	}
 	stream := cfg.Adapter.ChatStream(ctx, msgs, tools)
 
+	// Accumulate streamed content tokens into a buffer alongside the
+	// normal send. If ctx is cancelled mid-stream (user hit Enter / Esc
+	// to interrupt), Turn needs to append a partial assistant message to
+	// history so the next turn's request body doesn't reference an
+	// orphan tool_use (or, in the simpler case, so the user's
+	// interruption preserves what they already saw on screen). Reasoning
+	// tokens are NOT accumulated: providers don't echo them back in
+	// history, and partial reasoning would just bloat the user message
+	// trail without changing what the model sees next turn. Any
+	// in-flight tool_use the adapter was mid-building is intentionally
+	// dropped — an assistant message with content and no tool_calls is
+	// valid for every provider, and the alternative (smuggling out
+	// half-parsed JSON args) is fragile.
 	var final *adapter.Message
+	var contentBuf strings.Builder
 	for ev := range stream {
 		switch ev.Kind {
 		case adapter.EventReasoning:
 			if err := send(ctx, events, ReasoningToken{Text: ev.Token}); err != nil {
-				return nil, err
+				return partialAssistantMessage(&contentBuf), err
 			}
 		case adapter.EventTokenDelta:
+			contentBuf.WriteString(ev.Token)
 			if err := send(ctx, events, ContentToken{Text: ev.Token}); err != nil {
-				return nil, err
+				return partialAssistantMessage(&contentBuf), err
 			}
 		case adapter.EventStreamProgress:
 			if err := send(ctx, events, StreamProgress{}); err != nil {
-				return nil, err
+				return partialAssistantMessage(&contentBuf), err
 			}
 		case adapter.EventProviderTool:
 			if err := send(ctx, events, ProviderToolCall{
@@ -225,7 +290,7 @@ func streamIteration(
 				Phase:    ev.ProviderToolPhase,
 				Detail:   ev.ProviderToolDetail,
 			}); err != nil {
-				return nil, err
+				return partialAssistantMessage(&contentBuf), err
 			}
 		case adapter.EventFallback:
 			if err := send(ctx, events, Fallback{
@@ -234,18 +299,38 @@ func streamIteration(
 				Reason: ev.FallbackReason,
 				Policy: ev.FallbackPolicy,
 			}); err != nil {
-				return nil, err
+				return partialAssistantMessage(&contentBuf), err
 			}
 		case adapter.EventDone:
 			final = ev.Final
 		case adapter.EventErr:
-			return nil, ev.Err
+			return partialAssistantMessage(&contentBuf), ev.Err
 		}
 	}
 	if final == nil {
+		// Stream channel closed without EventDone. If ctx was cancelled
+		// the adapter is allowed to bail without emitting Done — treat
+		// it as an interrupt and surface whatever we buffered. Otherwise
+		// it's an adapter bug; return the existing error so it's loud.
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return partialAssistantMessage(&contentBuf), ctxErr
+		}
 		return nil, errors.New("agent: stream ended without a final message")
 	}
 	return final, nil
+}
+
+// partialAssistantMessage returns nil when no content has been buffered
+// (the cancel landed before the first token), so Turn can distinguish
+// "nothing to preserve" from "preserve this partial reply."
+func partialAssistantMessage(buf *strings.Builder) *adapter.Message {
+	if buf == nil || buf.Len() == 0 {
+		return nil
+	}
+	return &adapter.Message{
+		Role:    adapter.RoleAssistant,
+		Content: buf.String(),
+	}
 }
 
 func executeToolCalls(
@@ -260,6 +345,16 @@ func executeToolCalls(
 		if batch := parallelBatchSize(cfg, calls); batch > 1 {
 			results, err := executeToolCallsParallel(ctx, cfg, calls[:batch], events, decisions)
 			if err != nil {
+				if isCancelErr(err) {
+					// Mixed-state batch: completed workers keep their
+					// real result; cancelled / errored workers get the
+					// synthetic interrupt marker. Then every queued
+					// call after this batch (none started) gets the
+					// marker too. History must end with a tool_result
+					// for every tool_use in the assistant message.
+					appendToolResultsWithInterrupts(history, calls[:batch], results)
+					appendSyntheticInterrupts(history, calls[batch:])
+				}
 				return err
 			}
 			appendToolResults(history, calls[:batch], results)
@@ -269,6 +364,16 @@ func executeToolCalls(
 		tc := calls[0]
 		result, denied, err := executeToolCall(ctx, cfg, tc, events, decisions)
 		if err != nil {
+			if isCancelErr(err) {
+				// Drop the synthetic result for the call that was
+				// in flight when ctx fired, plus every queued call
+				// behind it. The tool may have produced partial
+				// output before its Execute was cancelled; we
+				// deliberately discard it — the model will see the
+				// same "interrupted by user" marker for every
+				// orphan so the surface is uniform.
+				appendSyntheticInterrupts(history, calls)
+			}
 			return err
 		}
 		*history = append(*history, adapter.Message{
@@ -282,6 +387,44 @@ func executeToolCalls(
 		calls = calls[1:]
 	}
 	return nil
+}
+
+// appendSyntheticInterrupts pairs every tool_call in `calls` with a
+// "interrupted by user" tool_result. Idempotent against already-
+// resolved calls is NOT a goal — callers must only pass calls that have
+// not yet had a real result appended (the serial path's
+// `calls = calls[1:]` shrinks the slice after each real append, and the
+// parallel path passes `calls[batch:]` for batches that never started).
+func appendSyntheticInterrupts(history *[]adapter.Message, calls []adapter.ToolCall) {
+	for _, tc := range calls {
+		*history = append(*history, adapter.Message{
+			Role:       adapter.RoleTool,
+			Content:    interruptedToolResult,
+			ToolCallID: tc.ID,
+		})
+	}
+}
+
+// appendToolResultsWithInterrupts is the cancel-aware companion to
+// appendToolResults. Workers that completed cleanly (nil err) keep
+// their real result; workers that errored or returned empty content
+// get the synthetic interrupt marker. The "empty content" check is the
+// defensive arm — a worker may have been cancelled inside Execute
+// before it produced any output but after recording err. Pairs every
+// tool_call with exactly one tool_result so the assistant message
+// invariant holds.
+func appendToolResultsWithInterrupts(history *[]adapter.Message, calls []adapter.ToolCall, results []toolExecResult) {
+	for i, tc := range calls {
+		content := results[i].content
+		if results[i].err != nil || content == "" {
+			content = interruptedToolResult
+		}
+		*history = append(*history, adapter.Message{
+			Role:       adapter.RoleTool,
+			Content:    content,
+			ToolCallID: tc.ID,
+		})
+	}
 }
 
 func parallelBatchSize(cfg LoopConfig, calls []adapter.ToolCall) int {
@@ -328,9 +471,15 @@ func executeToolCallsParallel(
 		}(i, tc)
 	}
 	wg.Wait()
+	// Always return the populated results slice — even on error — so a
+	// cancel caller can pair partial successes with their tool_use IDs
+	// and synthesize a marker only for the workers that actually
+	// errored. Returning (nil, err) would force a synthetic result for
+	// every parallel call, including ones that finished cleanly before
+	// the cancel landed.
 	select {
 	case err := <-errCh:
-		return nil, err
+		return results, err
 	default:
 		return results, nil
 	}
@@ -492,11 +641,36 @@ func executeToolCall(
 	toolCtx := WithParentDecisions(WithParentEvents(ctx, events), decisions)
 	out, err := tool.Execute(toolCtx, tc.ArgsJSON)
 	if err != nil {
+		// Propagate cancel so the caller can synthesize "interrupted by
+		// user" results for this tool and everything queued behind it,
+		// instead of swallowing the cancel as an "error: context
+		// canceled" string. Without this, a ctx-respecting tool that
+		// returns ctx.Err() looks indistinguishable from a real tool
+		// failure and the loop continues to the next tool / next
+		// iteration, only catching cancel on a later send.
+		if isCancelErr(err) {
+			return "", false, err
+		}
+		// Defensive arm: tool returned a non-cancel error but ctx is
+		// already cancelled. Treat as cancel so we don't serve an
+		// orphaned half-error string to the model right before the
+		// next IterationStart fails anyway.
+		if ctx.Err() != nil {
+			return "", false, ctx.Err()
+		}
 		msg := fmt.Sprintf("error: %v", err)
 		_ = send(ctx, events, ToolResult{ToolName: tool.Name(), Output: msg, Errored: true})
 		return msg, false, nil
 	}
-	_ = send(ctx, events, ToolResult{ToolName: tool.Name(), Output: out, Errored: false})
+	if err := send(ctx, events, ToolResult{ToolName: tool.Name(), Output: out, Errored: false}); err != nil {
+		// Tool ran to completion but ctx fired before we could
+		// announce its result — propagate cancel so the caller treats
+		// this slot as orphaned (synthetic result). The real `out` is
+		// dropped intentionally: a model that interrupted mid-tool
+		// will see uniform "interrupted by user" markers across the
+		// batch instead of one stale real result amid synthetic ones.
+		return "", false, err
+	}
 	if pa, ok := tool.(planAware); ok {
 		if store := pa.PlanStore(); store != nil {
 			_ = send(ctx, events, TodoUpdate{Todos: store.Snapshot()})
@@ -603,4 +777,50 @@ func send(ctx context.Context, ch chan<- Event, ev Event) error {
 	case <-ctx.Done():
 		return ctx.Err()
 	}
+}
+
+// isCancelErr reports whether err is a user-initiated context
+// cancellation (or a deadline expiration, treated identically — both
+// mean "the turn was cut, preserve history"). Distinguishing this from
+// a real adapter / tool error lets the loop route to the interrupt
+// path (synthetic tool_results + TurnInterrupted) instead of
+// ErrorEvent.
+func isCancelErr(err error) bool {
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
+}
+
+// countOrphanedToolResults counts how many of `calls` received a
+// synthetic tool_result on the cancel path. Walks the tail of history
+// matching by ToolCallID — the synthetic entries carry the same IDs as
+// their parent tool_use blocks, with Content == interruptedToolResult.
+// The UI uses the count to render "N tool calls cancelled" in the
+// TurnInterrupted line.
+func countOrphanedToolResults(history []adapter.Message, calls []adapter.ToolCall) int {
+	if len(history) == 0 || len(calls) == 0 {
+		return 0
+	}
+	// Build a set of IDs from the just-cancelled batch so we can scan
+	// the history tail without an O(n*m) inner loop.
+	wanted := make(map[string]struct{}, len(calls))
+	for _, c := range calls {
+		wanted[c.ID] = struct{}{}
+	}
+	orphans := 0
+	// Walk back from the end — synthetic entries are the most recent
+	// appends, real tool_result entries from earlier in the batch may
+	// have a different content but the same ID space.
+	for i := len(history) - 1; i >= 0 && len(wanted) > 0; i-- {
+		m := history[i]
+		if m.Role != adapter.RoleTool {
+			continue
+		}
+		if _, ok := wanted[m.ToolCallID]; !ok {
+			continue
+		}
+		delete(wanted, m.ToolCallID)
+		if m.Content == interruptedToolResult {
+			orphans++
+		}
+	}
+	return orphans
 }

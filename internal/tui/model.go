@@ -285,6 +285,14 @@ type Model struct {
 	eventsCh   chan agent.Event
 	turnErrCh  chan error
 	decisions  chan agent.Decision
+	// pendingInputAfterTurn captures a user message typed and Enter'd
+	// during an active turn. The Enter handler cancels the current turn
+	// and stashes the input here; the turnEndedMsg handler picks it up
+	// and starts a fresh turn so the model sees the new message after
+	// history was preserved with synthetic tool_result entries by the
+	// agent loop. Cleared when consumed and when a context-wiping slash
+	// command (/clear, /sessions) preempts the queued submission.
+	pendingInputAfterTurn string
 
 	// Approval modal state
 	awaitingApproval       bool
@@ -790,10 +798,17 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.turnActive && !m.awaitingApproval {
 			switch msg.Type {
-			case tea.KeyCtrlC:
+			case tea.KeyCtrlC, tea.KeyEsc:
+				// Esc mirrors Claude Code's cancel feel — same effect
+				// as Ctrl+C while a turn is running: kill the
+				// in-flight iteration, leave the textarea contents
+				// alone, do NOT enqueue anything for resubmission.
+				// Use Enter to interrupt-with-feedback; use Esc /
+				// Ctrl+C to stop without sending.
 				if m.turnCancel != nil {
 					m.turnCancel()
 				}
+				m.pendingInputAfterTurn = ""
 				return m, nil
 			case tea.KeyCtrlD:
 				return m, tea.Quit
@@ -844,10 +859,38 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if shouldCancel && m.turnCancel != nil {
 						m.turnCancel()
 					}
+					// A slash command typed mid-turn is a fresh user
+					// intent — drop any plain-text message that was
+					// queued by an earlier Enter so we don't
+					// double-submit after the turn unwinds.
+					m.pendingInputAfterTurn = ""
 					m.textInput.SetValue("")
 					m.paletteOpen = false
 					m.paletteIndex = 0
 					return m.runSlash(input)
+				}
+				// Plain Enter on non-empty input mid-turn:
+				// interrupt-with-feedback. Cancel the current iteration
+				// (the agent loop's synthetic-tool_result policy keeps
+				// history valid), stash the message, and let the
+				// turnEndedMsg handler auto-submit it after the loop
+				// unwinds. Empty Enter stays silent — Ctrl+C / Esc are
+				// the explicit "stop without sending" surface.
+				if input == "" {
+					return m, nil
+				}
+				// Expand pasted-marker placeholders before stashing so
+				// the queued message reaches the agent in the same
+				// form as a normal submission. Mirrors the line near
+				// the normal-Enter path (~1135).
+				input = m.expandPastes(input)
+				m.pastes = nil
+				m.pendingInputAfterTurn = input
+				m.textInput.SetValue("")
+				m.paletteOpen = false
+				m.paletteIndex = 0
+				if m.turnCancel != nil {
+					m.turnCancel()
 				}
 				return m, nil
 			default:
@@ -1192,8 +1235,25 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Watermark check: post-turn, before the next prompt is
 		// accepted. Either fires a yellow notice (warn threshold) or
 		// returns a Cmd that runs auto-summarization (auto threshold).
-		if cmd := m.updateContextUsage(); cmd != nil {
-			return m, cmd
+		ctxCmd := m.updateContextUsage()
+		// If the user interrupted mid-turn by hitting Enter on a
+		// non-empty message, agent.Turn has already preserved history
+		// with synthetic tool_result entries — submit the queued
+		// message now as a fresh turn so the model sees the feedback.
+		// Run after sess.Save / index / watermark so any post-turn
+		// warning lands above the new user block. Watermark Cmd is
+		// dropped here: the queued submission is the user's explicit
+		// next-turn intent, and stacking an auto-summarize Cmd in
+		// front would yank context out from under the very message
+		// they just sent. If watermark guidance matters, the user
+		// will see it after the followup turn ends.
+		if queued := m.pendingInputAfterTurn; queued != "" {
+			m.pendingInputAfterTurn = ""
+			next, cmd := m.startTurn(queued)
+			return next, cmd
+		}
+		if ctxCmd != nil {
+			return m, ctxCmd
 		}
 		return m, nil
 
@@ -2501,6 +2561,23 @@ func (m Model) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 		if !m.turnStart.IsZero() {
 			m.appendLine(styleTurnFooter.Render("› Thought for " + formatDuration(time.Since(m.turnStart))))
 		}
+	case agent.TurnInterrupted:
+		// Calm marker, not a red error. The loop has already preserved
+		// history (partial assistant content + synthetic tool_result
+		// entries for any orphaned tool_use); this line just lets the
+		// user see that the cancel landed cleanly. If pending input
+		// was queued by Enter, turnEndedMsg will auto-submit it
+		// immediately after — no extra prompt needed here.
+		m.commitStreaming()
+		msg := "↩ interrupted"
+		if e.OrphanedCalls > 0 {
+			noun := "tool calls"
+			if e.OrphanedCalls == 1 {
+				noun = "tool call"
+			}
+			msg = fmt.Sprintf("%s (%d %s cancelled)", msg, e.OrphanedCalls, noun)
+		}
+		m.appendLine(styleTurnFooter.Render(msg))
 	case agent.SubagentStart:
 		// Lead with a blank line so the subagent block reads as its own
 		// section against the surrounding tool cards.
