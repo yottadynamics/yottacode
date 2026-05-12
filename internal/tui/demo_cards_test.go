@@ -8,7 +8,17 @@ import (
 // TestDemo_CardOutput is a throwaway visualization that renders every
 // built-in tool's card so the output format can be reviewed at a glance.
 // Run with: go test ./internal/tui/ -run TestDemo_CardOutput -v
+//
+// Skipped under -short (which CI uses) because the rendered output
+// contains lines like "╰ edited /abs/main.go: 1 replacement(s)" that
+// GitHub Actions' Go problem-matcher heuristically parses as compile
+// errors (path.go:line:message) and surfaces as spurious "Error:" PR
+// annotations. The test still passes — it's just noise in CI. Run
+// locally without -short (or with -run) to inspect card output.
 func TestDemo_CardOutput(t *testing.T) {
+	if testing.Short() {
+		t.Skip("demo visualization — run without -short or with -run TestDemo_CardOutput to inspect")
+	}
 	width := 80
 	cases := []struct {
 		label, toolName, preview, args, output string

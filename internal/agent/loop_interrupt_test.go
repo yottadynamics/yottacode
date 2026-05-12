@@ -306,6 +306,27 @@ func TestInterrupt_MidSerialToolBatch_SynthesizesOrphanResults(t *testing.T) {
 	}
 }
 
+// ctxBlockerTool blocks indefinitely on ctx until cancelled, then
+// returns ctx.Err(). Unlike waiterTool it doesn't expose a "started"
+// signal because the parallel cancel test gates on event delivery
+// (ToolResult fan-in) instead of tool-side timing — see
+// TestInterrupt_MidParallelToolBatch for the reasoning.
+type ctxBlockerTool struct {
+	name         string
+	parallelSafe bool
+}
+
+func (b *ctxBlockerTool) Name() string                 { return b.name }
+func (b *ctxBlockerTool) Description() string          { return "test " + b.name }
+func (b *ctxBlockerTool) Schema() map[string]any       { return map[string]any{"type": "object"} }
+func (b *ctxBlockerTool) RequiresApproval(string) bool { return false }
+func (b *ctxBlockerTool) ParallelSafe(string) bool     { return b.parallelSafe }
+func (b *ctxBlockerTool) PreviewCall(string) string    { return b.name + "()" }
+func (b *ctxBlockerTool) Execute(ctx context.Context, _ string) (string, error) {
+	<-ctx.Done()
+	return "", ctx.Err()
+}
+
 // TestInterrupt_MidParallelToolBatch_KeepsCompletedSynthesizesBlocker
 // exercises the parallel-batch cancel path (separate code from the
 // serial path: executeToolCallsParallel + appendToolResultsWithInterrupts).
@@ -317,6 +338,18 @@ func TestInterrupt_MidSerialToolBatch_SynthesizesOrphanResults(t *testing.T) {
 // would either lose the fast results (returning nil, err from the
 // parallel helper) or synthesize every slot (uniform interrupt marker
 // for the whole batch, wasting two completed tool calls).
+//
+// Timing on CI: the cancel is gated on event delivery (ToolResult
+// fan-in for both fast tools), NOT on a tool-side started signal.
+// Reason: with parallel goroutines + single-CPU CI scheduling, a
+// tool-side "started" trigger fires when the blocker enters Execute,
+// but the fast tools' goroutines may not yet have entered their
+// executeToolCall — cancelling there causes their first send (which
+// happens before Execute) to return ctx.Err() and the test sees
+// synthetic results for everyone. Waiting until both fast ToolResults
+// have been received by the consumer proves their full executeToolCall
+// path (including post-Execute send) ran successfully and the cancel
+// can no longer affect them.
 func TestInterrupt_MidParallelToolBatch_KeepsCompletedSynthesizesBlocker(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -331,21 +364,32 @@ func TestInterrupt_MidParallelToolBatch_KeepsCompletedSynthesizesBlocker(t *test
 	reg := NewRegistry()
 	reg.Register(&mockTool{name: "fast_a", parallelSafe: true, output: "A"})
 	reg.Register(&mockTool{name: "fast_b", parallelSafe: true, output: "B"})
-	blockerStarted := make(chan struct{})
-	reg.Register(&waiterTool{name: "blocker", started: blockerStarted, parallelSafe: true})
+	reg.Register(&ctxBlockerTool{name: "blocker", parallelSafe: true})
 	cfg := LoopConfig{Adapter: streamer, Registry: reg, MaxIterations: 5}
 	hist := []adapter.Message{{Role: adapter.RoleUser, Content: "fan out"}}
 
-	// Cancel only after the blocker has signalled it started — fast_a
-	// and fast_b are essentially instant so they'll have already
-	// completed by then. Cancel from a goroutine so the consumer keeps
-	// draining events.
-	go func() {
-		<-blockerStarted
-		cancel()
-	}()
-
-	events, err := drainInterruptTurn(t, ctx, cfg, &hist, nil, cancel)
+	var gotA, gotB bool
+	events, err := drainInterruptTurn(t, ctx, cfg, &hist, func(ev Event, c context.CancelFunc) {
+		// Cancel only after BOTH fast tools' ToolResult events have
+		// surfaced — meaning their executeToolCall path has fully
+		// returned and their real result is in the parallel results
+		// slice. Blocker may or may not have entered its Execute yet
+		// (depends on scheduler); either way it lands in the synthetic
+		// branch because its err is ctx.Err().
+		tr, ok := ev.(ToolResult)
+		if !ok || tr.Errored {
+			return
+		}
+		switch tr.ToolName {
+		case "fast_a":
+			gotA = true
+		case "fast_b":
+			gotB = true
+		}
+		if gotA && gotB {
+			c()
+		}
+	}, cancel)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected context.Canceled, got %v", err)
 	}

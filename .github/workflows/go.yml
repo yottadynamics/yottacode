@@ -36,4 +36,8 @@ jobs:
         run: go vet ./...
 
       - name: Test
-        run: go test -v ./...
+        # -short skips demo/visualization tests whose stdout would
+        # otherwise trip GitHub Actions' Go problem-matcher and surface
+        # as spurious "Error:" PR annotations (e.g. TestDemo_CardOutput
+        # in internal/tui/). Real tests do not opt into -short.
+        run: go test -short -v ./...
