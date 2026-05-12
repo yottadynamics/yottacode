@@ -107,6 +107,13 @@ func TestPlanModeAddendum_KeepsCoreDirectives(t *testing.T) {
 		// go grep-hunting to answer "what was I planning."
 		"answer DIRECTLY from this body",
 		"Do NOT call read_file on the plan file",
+		// Open-questions invariant: material ambiguity must be
+		// resolved BEFORE exit_plan_mode. The approval modal is
+		// hotkey-only — a plan with dangling open questions next to
+		// it is a UX dead-end (the user can't type answers there).
+		"Resolve material ambiguity BEFORE calling exit_plan_mode",
+		"END THE TURN. Do NOT call exit_plan_mode in the same turn",
+		"approval modal accepts hotkeys only",
 	} {
 		if !strings.Contains(PlanModeAddendum, want) {
 			t.Errorf("PlanModeAddendum is missing required directive %q", want)

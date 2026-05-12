@@ -179,6 +179,56 @@ bypass is intentionally **not** in the cycle — the only entry point is
 the startup flag, so high-autonomy state is a conscious one-time
 decision, not a key chord away.
 
+## Interrupts
+
+Mid-turn user input is a first-class flow, not a blocked interaction:
+pressing **Enter** while the agent is thinking (streaming, calling a
+tool, or running a foreground subagent) captures the new message,
+cancels the in-flight iteration via the turn's context, and queues
+the message for auto-submission as soon as `agent.Turn` unwinds. The
+TUI's `pendingInputAfterTurn` field carries the queue across the
+cancel; `turnEndedMsg` consumes it and calls `startTurn` so the agent
+sees the user's feedback without the operator needing to retype
+anything. Behaves identically across normal, plan, and auto modes —
+the loop is mode-agnostic about interrupts.
+
+**Esc** and **Ctrl+C** are the explicit "stop without sending"
+surface: they cancel the turn and drop any queued message, but leave
+the textarea contents alone. Esc mirrors Claude Code's cancel feel;
+Ctrl+C keeps the terminal-native semantics.
+
+**Synthetic `tool_result` policy.** Mid-turn cancellation must
+preserve provider-valid history: every `tool_use` block in the just-
+cancelled assistant message needs a matching `tool_result`, or the
+next request fails. The agent loop handles this in three places:
+
+1. `streamIteration` accumulates streamed content tokens. On
+   cancel, it returns a partial assistant message with the
+   accumulated content and no tool calls (any tool-use the adapter
+   was mid-building is deliberately dropped — content-only messages
+   are valid for every provider).
+2. `executeToolCall` propagates `ctx.Err()` from a ctx-respecting
+   tool (instead of swallowing it as an `error: context canceled`
+   string), so the caller can route into the cancel branch.
+3. `executeToolCalls` (serial and parallel) appends `"interrupted
+   by user"` `tool_result` entries for every orphaned call — both
+   the in-flight tool that was cancelled and any queued calls that
+   never started. Parallel workers that completed cleanly before
+   the cancel keep their real result.
+
+Once history is repaired, the loop emits a `TurnInterrupted` event
+(distinct from `ErrorEvent` so consumers render it as a calm
+`↩ interrupted` line, not a red error) and returns. The TUI's
+auto-submit then fires the queued message into a fresh turn that
+sees the partial assistant content + synthetic tool results in
+history.
+
+**Background subagents are exempt.** Their context is detached from
+the parent turn (`context.Background()`, not the parent's ctx), so a
+parent-turn cancel does not propagate. They continue running to
+completion and surface via `SubagentBackgroundDone` whenever they
+finish, regardless of which parent turn is active.
+
 ## Subagents
 
 The `Agent` tool (`internal/agent/agent_tool.go`) is the parent's

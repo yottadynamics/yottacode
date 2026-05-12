@@ -62,7 +62,9 @@ Opening a curated memory file (`USER.md`, `YOTTACODE.md`) suspends the TUI to `v
 
 `/plan` and `Shift+Tab` take no arguments — the plan slug is derived from the first user message of the plan-mode session. The banner shows "ready — your next message names the plan" until that message arrives. You can also launch directly into plan mode with `yottacode --permission-mode plan`.
 
-When the model finishes investigating, it calls the `exit_plan_mode` tool — which takes no arguments; the TUI reads the plan body from the file on disk and renders it in an approval card with four hotkeys:
+If the model surfaces material ambiguity during investigation — questions whose answers would change the plan's scope, approach, or target files — it is instructed to ask in its reply and end the turn *without* calling `exit_plan_mode`, so you can answer in your next message. The approval modal is hotkey-only ([A]/[Y]/[L]/[K]); putting dangling questions next to it would leave you with no way to type answers. Trivia that doesn't change the plan's shape can still live in the plan's "Open questions" section.
+
+When the model finishes investigating and the plan is unambiguous, it calls the `exit_plan_mode` tool — which takes no arguments; the TUI reads the plan body from the file on disk and renders it in an approval card with four hotkeys:
 
 - **`[A]` approve and implement** — exits plan mode and the agent immediately resumes execution. Per-tool approval prompts continue as normal.
 - **`[Y]` approve and auto-implement** — exits plan mode AND enters auto mode for the implementation. Edits auto-allow; `run_bash`, `git_commit`, `git_checkpoint`, and `rollback` still prompt (safety floor).
@@ -115,9 +117,13 @@ Plans never expire automatically — clean up the directory manually if it gets 
 
 The plan-mode gate runs *before* permissions evaluation, so explicit deny rules in `.yottacode/permissions.json` still win. `--dangerously-skip-permissions` does not skip the `exit_plan_mode` approval card — that approval is the user-visible signal, not a safety gate.
 
-## Slash commands during a turn
+## Interrupting a turn
 
-If you run a slash command while a model turn is in flight, yottacode cancels the turn first, then runs the command. Normal messages are blocked until the active turn finishes or is canceled.
+Pressing **Enter** while the agent is thinking captures whatever you typed, cancels the in-flight iteration, and queues the message for auto-submission the moment the loop unwinds. Any tokens that streamed before the cancel land in history as a partial assistant message, and any tool calls that were in flight or queued get a synthetic `interrupted by user` tool result so the next turn sees a valid conversation. This is the "interrupt with feedback" path — works the same in normal, plan, and auto modes.
+
+Press **Esc** or **Ctrl+C** while a turn is running to cancel without submitting. Any queued message is dropped; the textarea contents are preserved so a draft survives an accidental Esc.
+
+Slash commands typed mid-turn (e.g. `/clear`, `/model`) follow the same rule they always have — they cancel the turn and execute immediately. Slash commands that the codebase marks `PreservesTurn=true` (`/subagents`, `/help`) inspect without cancelling. Either way, a slash command mid-turn discards any plain-text message that was queued by an earlier Enter, so a `/clear` doesn't resurrect a stale follow-up message into a wiped session.
 
 ## Palette behavior
 
@@ -127,9 +133,10 @@ If you run a slash command while a model turn is in flight, yottacode cancels th
 
 ## Keyboard shortcuts
 
-- `Enter` submits
+- `Enter` submits (mid-turn: interrupt and queue the new message)
 - `Ctrl+J` inserts a newline
-- `Ctrl+C` cancels the current turn
+- `Esc` cancels the current turn (alias for Ctrl+C, mirrors Claude Code)
+- `Ctrl+C` cancels the current turn; quits when no turn is running
 - `Ctrl+D` exits when input is empty
 - `?` opens the cheatsheet when input is empty
 - `Shift+Tab` cycles agent modes: normal → auto → plan → normal
