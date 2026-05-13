@@ -152,6 +152,19 @@ func (t *WriteFileTool) Schema() map[string]any {
 
 func (t *WriteFileTool) RequiresApproval(string) bool { return true }
 
+// PathsToSnapshot reports the destination path so /checkpoints can
+// restore the pre-write contents (or remove the file if it didn't
+// exist before this turn).
+func (t *WriteFileTool) PathsToSnapshot(cwd, argsJSON string) []string {
+	var a struct {
+		Path string `json:"path"`
+	}
+	if err := json.Unmarshal([]byte(argsJSON), &a); err != nil || a.Path == "" {
+		return nil
+	}
+	return []string{resolvePath(cwd, a.Path)}
+}
+
 func (t *WriteFileTool) PreviewCall(argsJSON string) string {
 	var a struct {
 		Path    string `json:"path"`

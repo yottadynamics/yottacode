@@ -74,6 +74,58 @@ type LoopConfig struct {
 	// where the user has decided no further oversight is needed.
 	// Mutually exclusive with AutoMode and PlanMode at the TUI layer.
 	YoloMode *YoloModeState
+
+	// Checkpoints, when non-nil, receives pre-image snapshot
+	// requests for every Mutator tool call. nil disables checkpoint
+	// capture entirely — oneshot and tests pass nil. The TUI builds
+	// a *checkpoint.Store and attaches it; see internal/tui/run.go.
+	// Implementations must be safe under concurrent SnapshotPath
+	// calls within a turn.
+	Checkpoints CheckpointWriter
+}
+
+// CheckpointWriter is the slice of the checkpoint store the agent loop
+// depends on. Defining it here keeps internal/checkpoint out of the
+// agent's import surface and lets tests substitute a recording fake.
+type CheckpointWriter interface {
+	SnapshotPath(sessionID, checkpointID, absPath string) error
+}
+
+// checkpointIDKey is the unexported context key carrying the active
+// checkpoint id through one Turn. Set by the TUI's startTurn before it
+// launches Turn; read by executeToolCall right before each Mutator
+// tool runs. Out-of-band so adding the field doesn't change Turn's
+// signature.
+type checkpointIDKey struct{}
+
+// checkpointSessionKey carries the session id alongside the checkpoint
+// id so the snapshot writer doesn't need a separate lookup.
+type checkpointSessionKey struct{}
+
+// WithCheckpoint binds a checkpoint id + session id to ctx. The TUI calls
+// this immediately after checkpoints.Begin returns, before passing
+// ctx into Turn. Returns ctx unchanged when either id is empty so
+// callers don't need to special-case nil-checkpoint paths.
+func WithCheckpoint(ctx context.Context, sessionID, cpID string) context.Context {
+	if cpID == "" || sessionID == "" {
+		return ctx
+	}
+	ctx = context.WithValue(ctx, checkpointIDKey{}, cpID)
+	ctx = context.WithValue(ctx, checkpointSessionKey{}, sessionID)
+	return ctx
+}
+
+// CheckpointFromContext recovers the (sessionID, checkpointID) pair
+// stored by WithCheckpoint. Returns empty strings when no checkpoint
+// is bound — callers should treat that as "checkpointing disabled."
+func CheckpointFromContext(ctx context.Context) (sessionID, cpID string) {
+	if v, ok := ctx.Value(checkpointIDKey{}).(string); ok {
+		cpID = v
+	}
+	if v, ok := ctx.Value(checkpointSessionKey{}).(string); ok {
+		sessionID = v
+	}
+	return sessionID, cpID
 }
 
 type loopState struct {
@@ -639,6 +691,18 @@ func executeToolCall(
 	// parent loop is blocked on its return, so neither channel has a
 	// competing reader/writer.
 	toolCtx := WithParentDecisions(WithParentEvents(ctx, events), decisions)
+	// Snapshot pre-images for Mutator tools before they run. Soft-fail:
+	// a snapshot error must not block the user's tool call — surface it
+	// as a scrollback event but let the tool proceed.
+	if cfg.Checkpoints != nil {
+		if sessionID, cpID := CheckpointFromContext(ctx); cpID != "" {
+			for _, p := range ToolPathsToSnapshot(tool, cfg.Cwd, tc.ArgsJSON) {
+				if err := cfg.Checkpoints.SnapshotPath(sessionID, cpID, p); err != nil {
+					_ = send(ctx, events, CheckpointInfo{Message: fmt.Sprintf("snapshot %s: %v", p, err)})
+				}
+			}
+		}
+	}
 	out, err := tool.Execute(toolCtx, tc.ArgsJSON)
 	if err != nil {
 		// Propagate cancel so the caller can synthesize "interrupted by

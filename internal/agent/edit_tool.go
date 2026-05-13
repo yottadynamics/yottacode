@@ -40,6 +40,16 @@ func (t *EditFileTool) Schema() map[string]any {
 
 func (t *EditFileTool) RequiresApproval(string) bool { return true }
 
+// PathsToSnapshot reports the target file so /checkpoints can restore
+// the pre-edit contents on rewind.
+func (t *EditFileTool) PathsToSnapshot(cwd, argsJSON string) []string {
+	var a editArgs
+	if err := json.Unmarshal([]byte(argsJSON), &a); err != nil || a.Path == "" {
+		return nil
+	}
+	return []string{resolvePath(cwd, a.Path)}
+}
+
 func (t *EditFileTool) PreviewCall(argsJSON string) string {
 	var a editArgs
 	_ = json.Unmarshal([]byte(argsJSON), &a)

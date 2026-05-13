@@ -36,6 +36,33 @@ func toolParallelSafe(t Tool, argsJSON string) bool {
 	return ok && ps.ParallelSafe(argsJSON)
 }
 
+// Mutator is the optional capability marker for tools that modify files
+// on disk. The checkpoint subsystem queries this before tool.Execute to
+// capture pre-images so /checkpoints can restore. PathsToSnapshot
+// returns absolute paths the tool intends to touch, derived from
+// argsJSON. Returning extra paths is harmless (snapshots are
+// content-addressed and dedup); returning too few breaks restore.
+//
+// Tools that mutate files via opaque side effects (e.g. run_bash) do
+// NOT implement this — those mutations are intentionally untracked,
+// mirroring Claude Code /rewind. Surface the limitation in user-facing
+// docs / picker footer.
+type Mutator interface {
+	PathsToSnapshot(cwd, argsJSON string) []string
+}
+
+// ToolPathsToSnapshot exposes the Mutator capability to callers in
+// other packages (e.g. the agent loop's checkpoint hook) without
+// forcing them to import nothing-vs-something interface assertions.
+// Returns nil when the tool isn't a Mutator.
+func ToolPathsToSnapshot(t Tool, cwd, argsJSON string) []string {
+	m, ok := t.(Mutator)
+	if !ok {
+		return nil
+	}
+	return m.PathsToSnapshot(cwd, argsJSON)
+}
+
 // Registry owns the set of tools exposed to a given agent run.
 type Registry struct {
 	tools map[string]Tool

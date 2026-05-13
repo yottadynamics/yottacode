@@ -33,6 +33,30 @@ func (t *ApplyDiffTool) Schema() map[string]any {
 	}
 }
 func (t *ApplyDiffTool) RequiresApproval(string) bool { return true }
+
+// PathsToSnapshot reports every file the diff touches so /checkpoints
+// can restore each pre-image. Uses the same ParseDiffPaths the tool
+// already runs during validation, so the snapshot set matches the
+// validation set by construction.
+func (t *ApplyDiffTool) PathsToSnapshot(cwd, argsJSON string) []string {
+	var a struct {
+		Diff string `json:"diff"`
+	}
+	if err := json.Unmarshal([]byte(argsJSON), &a); err != nil || strings.TrimSpace(a.Diff) == "" {
+		return nil
+	}
+	rels := permissions.ParseDiffPaths(a.Diff)
+	out := make([]string, 0, len(rels))
+	for _, rel := range rels {
+		abs := rel
+		if !filepath.IsAbs(abs) {
+			abs = filepath.Join(cwd, rel)
+		}
+		out = append(out, abs)
+	}
+	return out
+}
+
 func (t *ApplyDiffTool) PreviewCall(argsJSON string) string {
 	var a struct {
 		Diff string `json:"diff"`

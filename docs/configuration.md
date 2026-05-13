@@ -207,13 +207,25 @@ Most state lives under `~/.yottacode/`:
   auth/openai-auth.json          ChatGPT OAuth token store (0600; denied to model tools)
   auth/openai-auth-models.json   per-account `openai-auth` model scan (0600)
   sessions/<id>.json             saved conversations
+  checkpoints/<session>/         /checkpoints + Esc Esc snapshot store
   index.sqlite                   FTS5 index for /recall
   USER.md                        optional global user memory (human-only)
   memory/<name>.md               agent-managed user-scope memories
   memory/MEMORY.md               auto-generated index of user-scope memories
   projects/<slug>/memory/        agent-managed project-scope memories (per-user)
-  config.toml                    tunables (context watermarks, retrieval)
+  config.toml                    tunables (context watermarks, retrieval, checkpoints)
 ```
+
+### Checkpoints retention
+
+`/checkpoints` and `Esc Esc` capture a per-prompt snapshot under `~/.yottacode/checkpoints/`. By default, snapshots expire 30 days after creation; the sweep runs opportunistically when a session opens. Override the window in `~/.yottacode/config.toml`:
+
+```toml
+[checkpoints]
+retention_days = 30   # set to 0 to fall back to the 30-day default; smaller values prune more aggressively
+```
+
+See [`tui-slash-commands.md`](tui-slash-commands.md#checkpoints---checkpoints--esc-esc) for the full feature.
 
 Per-repo state lives under `<repo>/.yottacode/`:
 

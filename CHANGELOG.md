@@ -8,6 +8,40 @@ the project uses semantic versioning once it's past `1.0.0`.
 
 ### Added
 
+#### Per-prompt checkpoints (`/checkpoints` / `Esc Esc`)
+
+A new user-facing rewind surface that mirrors Claude Code's `/rewind`.
+Every user message automatically creates a checkpoint capturing the
+conversation history and pre-edit contents of files the agent is about
+to touch; an opt-in picker (`/checkpoints` slash command, or `Esc Esc`
+double-tap within 500ms) lists past prompts and offers four restore
+actions: *Restore code and conversation*, *Restore conversation only*,
+*Restore code only*, and *Summarize from here*. The original prompt is
+prefilled in the input box after a restore so you can edit and resend.
+
+- **File-snapshot, not git-based** — pre-images are content-addressed
+  blobs under `~/.yottacode/checkpoints/<session>/` so checkpoints
+  don't pollute the working tree or fight with your git history.
+  Repeated edits to the same file across two checkpoints store only
+  the two distinct pre-images.
+- **Tracked tools**: `write_file`, `edit_file`, `apply_diff`,
+  `delete_file`, `move_file`, `copy_file`. Bash mutations and git
+  operations are intentionally not tracked, matching Claude Code's
+  `/rewind`. Picker footer surfaces this caveat.
+- **30-day TTL by default**, configurable via `[checkpoints]
+  retention_days = N` in `~/.yottacode/config.toml`. Sweep runs
+  opportunistically on session open; orphan blobs are GC'd.
+- **Atomic restore** — files are written `.tmp` then renamed, session
+  saved second, in-memory state updated last. A crash mid-restore
+  leaves the checkpoint intact so you can re-run.
+- **Active-turn gating** — the picker is unavailable while a turn is
+  running so file restores don't race live tool writes.
+
+New `internal/checkpoint` package with the `Store`,
+`Mutator` capability marker on the `Tool` interface, and
+`CheckpointWriter` hook on `LoopConfig` so any future capture site
+(subagent runs, oneshot) can opt in without further plumbing.
+
 #### Typed subagents (`Agent` tool)
 
 A new `Agent` tool lets the parent model delegate research, code

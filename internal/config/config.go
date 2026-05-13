@@ -27,11 +27,12 @@ import (
 // Config bundles every tunable yottacode reads from disk. Sub-structs map
 // 1:1 to TOML sections so the file shape mirrors the Go shape.
 type Config struct {
-	Context      ContextConfig   `toml:"context"`
-	Retrieval    RetrievalConfig `toml:"retrieval"`
-	Router       RouterConfig    `toml:"router"`
-	Active       Active          `toml:"active"`
-	Providers    []Provider      `toml:"providers"`
+	Context      ContextConfig     `toml:"context"`
+	Retrieval    RetrievalConfig   `toml:"retrieval"`
+	Router       RouterConfig      `toml:"router"`
+	Active       Active            `toml:"active"`
+	Providers    []Provider        `toml:"providers"`
+	Checkpoints  CheckpointsConfig `toml:"checkpoints"`
 	// Experimental gates non-default features behind named opt-ins.
 	// Mirrors the --experimental CLI flag and the
 	// $YOTTACODE_EXPERIMENTAL env var. Each entry is a feature name
@@ -41,6 +42,20 @@ type Config struct {
 	// configs.
 	Experimental map[string]bool `toml:"experimental"`
 }
+
+// CheckpointsConfig tunes the per-prompt file/conversation snapshot
+// store behind /checkpoints + Esc Esc. RetentionDays<=0 falls through
+// to DefaultCheckpointRetentionDays so the on-disk default doesn't
+// require users to write a [checkpoints] block.
+type CheckpointsConfig struct {
+	RetentionDays int `toml:"retention_days"`
+}
+
+// DefaultCheckpointRetentionDays mirrors Claude Code's 30-day TTL —
+// long enough to step back through a few days of work, short enough
+// that blob storage doesn't grow without bound. Override per-host via
+// `[checkpoints] retention_days = N` in config.toml.
+const DefaultCheckpointRetentionDays = 30
 
 
 // RouterConfig describes the multi-provider routing policy. When
