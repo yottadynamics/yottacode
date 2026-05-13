@@ -121,6 +121,14 @@ type IterCap struct{ Max int }
 // failure, ctx cancel, etc.). The error is also returned by Turn.
 type ErrorEvent struct{ Err error }
 
+// CheckpointInfo carries a non-fatal status from the checkpoint
+// subsystem — typically a snapshot failure for one file (permission
+// denied, race with deletion) that should NOT abort the user's tool
+// call. The TUI renders these dimly in the scrollback so the user
+// knows the file won't be restorable from this checkpoint without
+// confusing them about whether the tool itself failed.
+type CheckpointInfo struct{ Message string }
+
 // TurnDone fires when the turn completes cleanly (no more tool calls, no
 // error, not at iter cap). The consumer can re-enable input.
 type TurnDone struct{}
@@ -227,6 +235,7 @@ func (TodoUpdate) event()        {}
 func (AssistantMessage) event()  {}
 func (IterCap) event()           {}
 func (ErrorEvent) event()        {}
+func (CheckpointInfo) event()    {}
 func (TurnDone) event()          {}
 func (TurnInterrupted) event()   {}
 func (Fallback) event()          {}

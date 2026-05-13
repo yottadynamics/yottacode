@@ -6,11 +6,13 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/yottadynamics/yottacode/internal/adapter"
 	"github.com/yottadynamics/yottacode/internal/agent"
+	"github.com/yottadynamics/yottacode/internal/checkpoint"
 	"github.com/yottadynamics/yottacode/internal/cli"
 	"github.com/yottadynamics/yottacode/internal/config"
 	"github.com/yottadynamics/yottacode/internal/experimental"
@@ -258,6 +260,22 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 		PlanMode:          planMode,
 		AutoMode:          autoMode,
 		YoloMode:          yoloMode,
+	}
+
+	// Checkpoint store powers /checkpoints + Esc Esc. Failure here is
+	// non-fatal — the feature simply stays disabled and the rest of
+	// the TUI keeps working.
+	cpStore, cpErr := checkpoint.New("")
+	if cpErr == nil {
+		cfg.Checkpoints = cpStore
+		retention := fileCfg.Checkpoints.RetentionDays
+		if retention <= 0 {
+			retention = config.DefaultCheckpointRetentionDays
+		}
+		ttl := time.Duration(retention) * 24 * time.Hour
+		go func() {
+			_, _ = cpStore.Sweep(ttl)
+		}()
 	}
 
 	// Open the FTS5 index. A failure here is non-fatal — /recall just

@@ -71,6 +71,7 @@ func init() {
 		{Name: "redo", Help: "edit and re-run the most recent message", Run: cmdRedo},
 		{Name: "recall", Args: "<query>", Help: "full-text search across every saved session", Run: cmdRecall, PreservesTurn: true},
 		{Name: "summarize", Help: "compress session history into a structured summary", Run: cmdSummarize},
+		{Name: "checkpoints", Help: "open the checkpoints picker — also Esc Esc", Run: cmdCheckpoints},
 		// Args="" so palette Enter executes the bare form (opens the
 		// picker overlay). /memory takes no subcommands — the picker
 		// covers project edit, user edit, and auto-folder location.

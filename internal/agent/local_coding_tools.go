@@ -34,6 +34,19 @@ func (t *DeleteFileTool) Schema() map[string]any {
 	}
 }
 func (t *DeleteFileTool) RequiresApproval(string) bool { return true }
+
+// PathsToSnapshot reports the target so /checkpoints can recreate the
+// deleted file on rewind.
+func (t *DeleteFileTool) PathsToSnapshot(cwd, argsJSON string) []string {
+	var a struct {
+		Path string `json:"path"`
+	}
+	if err := json.Unmarshal([]byte(argsJSON), &a); err != nil || a.Path == "" {
+		return nil
+	}
+	return []string{resolvePath(cwd, a.Path)}
+}
+
 func (t *DeleteFileTool) PreviewCall(argsJSON string) string {
 	var a struct {
 		Path string `json:"path"`
@@ -91,6 +104,27 @@ func (t *MoveFileTool) Schema() map[string]any {
 	}
 }
 func (t *MoveFileTool) RequiresApproval(string) bool { return true }
+
+// PathsToSnapshot reports both src (so we can recreate it on rewind)
+// and dst (so we can remove the moved-to file on rewind).
+func (t *MoveFileTool) PathsToSnapshot(cwd, argsJSON string) []string {
+	var a struct {
+		Src string `json:"src"`
+		Dst string `json:"dst"`
+	}
+	if err := json.Unmarshal([]byte(argsJSON), &a); err != nil {
+		return nil
+	}
+	var out []string
+	if a.Src != "" {
+		out = append(out, resolvePath(cwd, a.Src))
+	}
+	if a.Dst != "" {
+		out = append(out, resolvePath(cwd, a.Dst))
+	}
+	return out
+}
+
 func (t *MoveFileTool) PreviewCall(argsJSON string) string {
 	var a struct {
 		Src string `json:"src"`
@@ -194,6 +228,19 @@ func (t *CopyFileTool) Schema() map[string]any {
 	}
 }
 func (t *CopyFileTool) RequiresApproval(string) bool { return true }
+
+// PathsToSnapshot reports only the destination — src is read-only here.
+func (t *CopyFileTool) PathsToSnapshot(cwd, argsJSON string) []string {
+	var a struct {
+		Src string `json:"src"`
+		Dst string `json:"dst"`
+	}
+	if err := json.Unmarshal([]byte(argsJSON), &a); err != nil || a.Dst == "" {
+		return nil
+	}
+	return []string{resolvePath(cwd, a.Dst)}
+}
+
 func (t *CopyFileTool) PreviewCall(argsJSON string) string {
 	var a struct {
 		Src string `json:"src"`

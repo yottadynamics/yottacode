@@ -18,6 +18,7 @@ import (
 	"github.com/yottadynamics/yottacode/internal/adapter"
 	"github.com/yottadynamics/yottacode/internal/agent"
 	openaiauth "github.com/yottadynamics/yottacode/internal/auth/openai"
+	"github.com/yottadynamics/yottacode/internal/checkpoint"
 	"github.com/yottadynamics/yottacode/internal/config"
 	"github.com/yottadynamics/yottacode/internal/contextwindow"
 	"github.com/yottadynamics/yottacode/internal/filerefs"
@@ -359,6 +360,19 @@ type Model struct {
 	// inactive). Esc closes without changes.
 	plansPickerOpen bool
 	plansPicker     *plansPickerState
+
+	// Checkpoints picker overlay (/checkpoints + Esc Esc). Two-screen
+	// state machine: first the prompt list (one row per past user
+	// message), then a four-action menu (restore code+conv / conv only
+	// / code only / summarize from here). Lifetime is one invocation;
+	// closed on Esc from the prompt list or after an action commits.
+	checkpointsPickerOpen bool
+	checkpointsPicker     *checkpointsPickerState
+
+	// lastEscAt timestamps the last bare Esc keypress so a second Esc
+	// within escChordWindow opens the checkpoints picker. Reset when
+	// the chord fires, or when any non-Esc key handler runs.
+	lastEscAt time.Time
 
 	// Subagents picker overlay (/subagents with no args). Lists the
 	// session's subagent tasks newest-first; Enter opens the chosen
@@ -782,6 +796,9 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.plansPickerOpen {
 			return m.updatePlansPicker(msg)
 		}
+		if m.checkpointsPickerOpen {
+			return m.updateCheckpointsPicker(msg)
+		}
 		if m.subagentsPickerOpen {
 			return m.updateSubagentsPicker(msg)
 		}
@@ -1109,6 +1126,20 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		case tea.KeyCtrlD:
 			return m, tea.Quit
+		case tea.KeyEsc:
+			// Esc-Esc within escChordWindow opens the /checkpoints picker
+			// — mirrors Claude Code's double-escape. Single Esc has no
+			// other meaning here (no overlay, no turn, no palette — those
+			// branches return early above), so consuming it for the chord
+			// is safe. Reset on chord fire so a third Esc starts a fresh
+			// window instead of immediately retriggering.
+			if !m.lastEscAt.IsZero() && time.Since(m.lastEscAt) <= escChordWindow {
+				m.lastEscAt = time.Time{}
+				m.openCheckpointsPicker()
+				return m, nil
+			}
+			m.lastEscAt = time.Now()
+			return m, nil
 		case tea.KeyShiftTab:
 			// Cycle through normal → auto → plan → normal. Mirrors
 			// Claude Code's Shift+Tab. Suppressed while a palette
@@ -1372,6 +1403,9 @@ func (m Model) View() string {
 	}
 	if m.plansPickerOpen && m.plansPicker != nil {
 		return m.renderInlineOverlay(renderPlansPicker(m.plansPicker, m.width))
+	}
+	if m.checkpointsPickerOpen && m.checkpointsPicker != nil {
+		return m.renderInlineOverlay(renderCheckpointsPicker(m.checkpointsPicker, m.width))
 	}
 	if m.subagentsPickerOpen && m.subagentsPicker != nil {
 		return m.renderInlineOverlay(renderSubagentsPicker(m.subagentsPicker, m.width))
@@ -2290,6 +2324,19 @@ func (m Model) startTurn(input string) (tea.Model, tea.Cmd) {
 	// model can start writing to it.
 	maybeFillPlanFile(&m, input)
 
+	// Create a /checkpoints checkpoint for this turn BEFORE the user
+	// message is appended — restore needs the conversation as it stood
+	// when the user typed this prompt. Soft on failure: a checkpoint
+	// store error must not block the turn (the feature simply doesn't
+	// capture this prompt).
+	var checkpointID string
+	if store, ok := m.cfg.Checkpoints.(*checkpoint.Store); ok && store != nil {
+		id, err := store.Begin(m.sess.ID, input, len(m.sess.Messages), m.sess.Messages)
+		if err == nil {
+			checkpointID = id
+		}
+	}
+
 	m.sess.Messages = append(m.sess.Messages, adapter.Message{
 		Role:    adapter.RoleUser,
 		Content: input,
@@ -2304,6 +2351,7 @@ func (m Model) startTurn(input string) (tea.Model, tea.Cmd) {
 	m.recordHistory(input)
 
 	turnCtx, cancel := context.WithCancel(m.parentCtx)
+	turnCtx = agent.WithCheckpoint(turnCtx, m.sess.ID, checkpointID)
 	m.turnCancel = cancel
 	m.turnActive = true
 	m.turnStart = time.Now()

@@ -71,6 +71,10 @@ Delegate research, code search, and planning to typed subagents that run in thei
 
 Auto mode enters via `Shift+Tab` or `yottacode --permission-mode auto` at launch — useful when you trust a multi-step implementation and want to skip approval friction. `run_bash`, `git_commit`, `git_checkpoint`, and `rollback` remain in the safety floor and still prompt. `Shift+Tab` cycles through normal → auto → plan → normal. Mirroring Claude Code, there is no `/auto` slash command — auto enters via the keybinding or the startup flag, and the permissions-bypass overlay (every tool auto-runs, no iteration cap) enters only via `yottacode --dangerously-skip-permissions` at startup. See [`docs/tui-slash-commands.md#plan-mode`](docs/tui-slash-commands.md#plan-mode) and [`docs/tui-slash-commands.md#auto-mode`](docs/tui-slash-commands.md#auto-mode).
 
+### Per-prompt checkpoints (`/checkpoints` / `Esc Esc`)
+
+Every user message gets an automatic checkpoint capturing the conversation plus the pre-edit contents of any files the agent is about to touch. `/checkpoints` or double-tap `Esc` opens a picker over past prompts; pick one and choose to restore conversation, files, or both — the original prompt reappears in the input box so you can edit and resend. Mirrors Claude Code's `/rewind`. 30-day TTL by default, configurable in `config.toml`. Bash and git mutations are not tracked. See [`docs/tui-slash-commands.md#checkpoints---checkpoints--esc-esc`](docs/tui-slash-commands.md#checkpoints---checkpoints--esc-esc).
+
 ### Cross-session recall
 
 `/recall <query>` runs local SQLite FTS5 search across every saved session. `/summarize` compacts long sessions after snapshotting the full pre-summary transcript. Per-turn atomic save means crashed terminals don't lose work.

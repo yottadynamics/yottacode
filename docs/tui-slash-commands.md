@@ -18,6 +18,7 @@ Type `/` in the TUI to open the slash-command palette. The palette filters as yo
 | `/redo` | — | Rewind the last user message and put it back in the input box |
 | `/recall` | `<query>` | Search across saved sessions |
 | `/summarize` | — | Compress the current session after snapshotting it |
+| `/checkpoints` | — | Open the checkpoints picker — also `Esc Esc`. Restore conversation, files, or both to any prior prompt |
 | `/memory` | — | Edit curated memory or browse agent-managed memories |
 | `/setup` | — | Suspend the TUI and rerun setup |
 | `/init` | — | Ask the agent to draft or refresh `.yottacode/YOTTACODE.md` |
@@ -117,6 +118,23 @@ Plans never expire automatically — clean up the directory manually if it gets 
 
 The plan-mode gate runs *before* permissions evaluation, so explicit deny rules in `.yottacode/permissions.json` still win. `--dangerously-skip-permissions` does not skip the `exit_plan_mode` approval card — that approval is the user-visible signal, not a safety gate.
 
+## Checkpoints (`/checkpoints` / `Esc Esc`)
+
+Every user prompt automatically creates a checkpoint *before* the agent responds: a snapshot of the conversation history plus the pre-edit contents of any files the agent is about to touch. `/checkpoints` or **`Esc Esc`** (double-tap within 500ms) opens a picker over those checkpoints, newest first.
+
+Pick a checkpoint and choose one of four actions:
+
+- **Restore code and conversation** — rewrite tracked files and rewind history to the moment that prompt was sent. The original prompt reappears in the input box so you can edit and resend.
+- **Restore conversation only** — rewind history; files are left untouched.
+- **Restore code only** — rewrite tracked files; conversation continues from where it is now.
+- **Summarize from here** — compress history up to that prompt, then keep going. Files untouched.
+
+**What's tracked.** Only file changes made through the `write_file`, `edit_file`, `apply_diff`, `delete_file`, `move_file`, and `copy_file` tools. Mirrors Claude Code's `/rewind`. **Bash mutations (`rm`, `sed`, `mv`, redirects), git operations, and external edits to files are NOT tracked** — those are off-checkpoint side effects.
+
+**Storage.** `~/.yottacode/checkpoints/<session>/`. File pre-images are content-addressed and deduped across checkpoints, so editing the same file twice only stores its two distinct pre-images. Checkpoints expire 30 days after creation by default; configure with `[checkpoints] retention_days = N` in `~/.yottacode/config.toml`. Sweep runs opportunistically on session open.
+
+**Caveats.** Directories (`mkdir`) aren't restored. Permission bits on restored files are limited to `0o777` (no setuid/setgid). Restoring code under an active turn is not allowed — the picker is gated until the turn ends.
+
 ## Interrupting a turn
 
 Pressing **Enter** while the agent is thinking captures whatever you typed, cancels the in-flight iteration, and queues the message for auto-submission the moment the loop unwinds. Any tokens that streamed before the cancel land in history as a partial assistant message, and any tool calls that were in flight or queued get a synthetic `interrupted by user` tool result so the next turn sees a valid conversation. This is the "interrupt with feedback" path — works the same in normal, plan, and auto modes.
@@ -136,6 +154,7 @@ Slash commands typed mid-turn (e.g. `/clear`, `/model`) follow the same rule the
 - `Enter` submits (mid-turn: interrupt and queue the new message)
 - `Ctrl+J` inserts a newline
 - `Esc` cancels the current turn (alias for Ctrl+C, mirrors Claude Code)
+- `Esc Esc` (idle, tapped within 500ms) opens the `/checkpoints` picker
 - `Ctrl+C` cancels the current turn; quits when no turn is running
 - `Ctrl+D` exits when input is empty
 - `?` opens the cheatsheet when input is empty

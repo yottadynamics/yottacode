@@ -18,6 +18,8 @@ Session ids are timestamp-like strings, for example:
 
 There is no manual save step.
 
+Each user message in a session also gets a per-prompt checkpoint capturing the conversation and any files the agent is about to touch. Open the picker mid-session via `/checkpoints` or **Esc Esc** to restore conversation, files, or both. See [tui-slash-commands.md](tui-slash-commands.md#checkpoints---checkpoints--esc-esc).
+
 ## List sessions
 
 ```bash
