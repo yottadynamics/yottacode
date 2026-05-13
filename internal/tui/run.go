@@ -21,6 +21,7 @@ import (
 	"github.com/yottadynamics/yottacode/internal/recall"
 	"github.com/yottadynamics/yottacode/internal/session"
 	"github.com/yottadynamics/yottacode/internal/subagents"
+	"github.com/yottadynamics/yottacode/internal/usercmd"
 	"github.com/yottadynamics/yottacode/internal/version"
 	"github.com/yottadynamics/yottacode/internal/wizard"
 )
@@ -46,6 +47,14 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 	if err != nil {
 		return err
 	}
+	// Load slash commands from three sources merged by precedence:
+	// project (<cwd>/.yottacode/commands/) > user (~/.yottacode/commands/)
+	// > defaults (embedded into the binary). Fail-soft: per-file load
+	// errors are surfaced as startup notices below but never block
+	// launch. Shadow warnings fire when user and project name-collide;
+	// user/project shadowing a default is silent (the documented
+	// override path).
+	customCmds, customErrs := usercmd.LoadAll(cwd)
 	// Load tunables (~/.yottacode/config.toml). Missing file → defaults
 	// (no error). Invalid file → return the error so the user fixes it
 	// rather than silently running with stale defaults.
@@ -321,7 +330,22 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 		FileCfg:                fileCfg,
 		Subagents:              subagentTasks,
 		AgentTool:              agentTool,
+		CustomCommands:         customCmds,
 	})
+	// Surface custom-command load errors via the startup notice path
+	// (historyLines is appendLine's queue; tea.Println replays it
+	// once the program starts). Errors render in red, warnings in the
+	// muted auto-mode style — same conventions other startup lines
+	// already use.
+	for _, e := range customErrs {
+		var rendered string
+		if e.Level == usercmd.LevelWarning {
+			rendered = styleAuto.Render(fmt.Sprintf("[commands] %s", e.Error()))
+		} else {
+			rendered = styleError.Render(fmt.Sprintf("[commands] %s", e.Error()))
+		}
+		model.appendLine(rendered)
+	}
 	// Wire the AgentTool's background-completion callback into the
 	// Model's long-lived inbox. The callback runs from a detached
 	// goroutine when a background subagent finishes; non-blocking

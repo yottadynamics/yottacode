@@ -27,6 +27,7 @@ import (
 	"github.com/yottadynamics/yottacode/internal/recall"
 	"github.com/yottadynamics/yottacode/internal/session"
 	"github.com/yottadynamics/yottacode/internal/subagents"
+	"github.com/yottadynamics/yottacode/internal/usercmd"
 )
 
 // Config carries everything Run needs to build a Model. Bundling these into a
@@ -87,6 +88,13 @@ type Config struct {
 	// the resolved agent list, and so the background-done callback
 	// can be wired to push events onto the model's session inbox.
 	AgentTool *agent.AgentTool
+
+	// CustomCommands is the set of user-authored slash commands
+	// loaded from ~/.yottacode/commands/ and <cwd>/.yottacode/commands/
+	// at startup. New() builds slashCommand entries from these and
+	// stores them on the Model so the dispatcher and /help can see
+	// them alongside built-ins.
+	CustomCommands []usercmd.Command
 }
 
 // Model is the Bubbletea state for the chat TUI. The TUI runs in inline mode
@@ -209,6 +217,13 @@ type Model struct {
 	// registry. The TUI uses it to wire the background-done callback
 	// and to introspect the available agent configs from /subagents.
 	subagentTool *agent.AgentTool
+
+	// customSlash carries the user-authored slash commands loaded
+	// from ~/.yottacode/commands/ and <cwd>/.yottacode/commands/. The
+	// dispatcher (m.findSlash) walks built-ins first, then this list.
+	// /help groups them under a "Custom commands:" header so it's
+	// obvious which entries come from user files.
+	customSlash []slashCommand
 
 	// subagentInbox is a long-lived channel the AgentTool pushes
 	// SubagentBackgroundDone events onto from detached goroutines
@@ -608,6 +623,7 @@ func New(parent context.Context, c Config) Model {
 		subagentTasks:          c.Subagents,
 		subagentTool:           c.AgentTool,
 		subagentInbox:          make(chan agent.SubagentBackgroundDone, 32),
+		customSlash:            buildCustomSlash(c.CustomCommands),
 		sess:                   c.Session,
 		textInput:              ti,
 		spinner:                sp,
@@ -869,7 +885,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					shouldCancel := false
 					if fields := strings.Fields(input); len(fields) > 0 {
 						name := strings.TrimPrefix(fields[0], "/")
-						if c := findSlash(name); c != nil && !c.PreservesTurn {
+						if c := m.findSlash(name); c != nil && !c.PreservesTurn {
 							shouldCancel = true
 						}
 					}
@@ -1210,7 +1226,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.fitTextareaHeight()
 			val := m.textInput.Value()
 			if strings.HasPrefix(val, "/") {
-				m.paletteFiltered = filterPalette(val)
+				m.paletteFiltered = m.filterPaletteAll(val)
 				m.paletteOpen = true
 				if m.paletteIndex >= len(m.paletteFiltered) {
 					m.paletteIndex = 0
@@ -2276,7 +2292,25 @@ func (m Model) renderTurnStatus() string {
 	return fmt.Sprintf("%s %s", m.spinner.View(), strings.Join(parts, " · "))
 }
 
+// startTurn sends `input` to the agent as a user message and renders
+// the same text in the transcript. Used by every prose submission and
+// most slash commands that delegate to the model.
 func (m Model) startTurn(input string) (tea.Model, tea.Cmd) {
+	return m.startTurnWithDisplay(input, "")
+}
+
+// startTurnWithDisplay sends `input` to the agent as a user message
+// but renders `displayLabel` (when non-empty) in the transcript
+// instead of the full input. Custom slash commands use this to show
+// just "/git:commit-message" in scrollback instead of dumping their
+// entire directive body, which is often 30-80 lines of instructions
+// the agent needs to see but the user wrote once and doesn't want to
+// re-read on every invocation.
+//
+// The session message, checkpoint snapshot, input history, and
+// downstream prompts still carry the full input — only the visible
+// scrollback rendering is compressed.
+func (m Model) startTurnWithDisplay(input, displayLabel string) (tea.Model, tea.Cmd) {
 	// Refuse the turn if the running session has no adapter — happens
 	// after `/provider remove` deletes the only configured provider
 	// (invalidateAdapter clears m.cfg.Adapter). Without this guard the
@@ -2346,8 +2380,15 @@ func (m Model) startTurn(input string) (tea.Model, tea.Cmd) {
 	m.firstMessageSent = true
 	// Thin colored left bar on the user block is enough of a visual
 	// anchor between turns — no horizontal rule needed (the rule
-	// fought with everything else above and below it).
-	m.appendLine(renderUserBlock(input))
+	// fought with everything else above and below it). When the
+	// caller passed an explicit displayLabel (custom slash commands),
+	// render that compact label instead of the full input body so
+	// scrollback isn't dominated by 80 lines of directive prompt.
+	rendered := input
+	if displayLabel != "" {
+		rendered = displayLabel
+	}
+	m.appendLine(renderUserBlock(rendered))
 	m.recordHistory(input)
 
 	turnCtx, cancel := context.WithCancel(m.parentCtx)

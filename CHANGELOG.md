@@ -8,6 +8,59 @@ the project uses semantic versioning once it's past `1.0.0`.
 
 ### Added
 
+#### Built-in custom-command starter kit
+
+Four commands now ship with the binary as embedded defaults, available
+on first launch with no `~/.yottacode/commands/` setup:
+
+- `/git:commit-message` — one-line commit message for the staged diff,
+  style-matched to the repo's recent commits
+- `/git:pr-description [base]` — title + body + `gh pr create` snippet
+  for the current branch
+- `/check:review [base]` — self-review of the branch diff across
+  correctness / scope / tests / style / security / performance
+- `/check:verify [task]` — detects the stack, runs build/test/lint,
+  cross-checks the diff against the stated task
+
+Defaults sit at the lowest precedence tier — a same-name file in
+`~/.yottacode/commands/` (user scope) or `<cwd>/.yottacode/commands/`
+(project scope) silently overrides the embedded version. The override
+path is what customization looks like: copy the default to your user
+dir, edit, and it wins on every invocation. The built-in commands
+(`/help`, `/clear`, `/model`, `/plan`, etc.) still sit above all three
+tiers and cannot be shadowed.
+
+#### Custom slash commands
+
+User-authored slash commands loaded from `~/.yottacode/commands/`
+(user scope, applies to every session) and `<cwd>/.yottacode/commands/`
+(project scope, committable so a team can share commands via git).
+Each `.md` file becomes one slash command; subdirectories namespace
+the name (`commands/frontend/component.md` → `/frontend:component`).
+Optional YAML frontmatter sets `description` (shown in the palette
+and `/help`) and `argument-hint` (changes palette Enter to fill
+`/name ` rather than fire immediately, mirroring built-ins like
+`/recall`). Bodies support `$ARGUMENTS` and `$1`..`$9` argument
+substitution, plus `@<path>` file references via the existing
+filerefs pipeline.
+
+Conflict resolution: project commands win over user commands of the
+same name; same-scope duplicates and built-in collisions are dropped
+with a startup warning. The implementation mirrors Claude Code's
+custom-commands surface; `` !`<bash>` `` pre-execution and per-command
+`model:` / `allowed-tools:` frontmatter are intentionally out of
+scope for this first cut (workaround for shell context: the body can
+instruct the agent to call `run_bash` itself).
+
+**Permissions:** custom commands are a prompt shortcut, not a
+permission bypass — the substituted body is sent to the agent
+immediately, but every mutating tool call the agent makes in response
+(`write_file`, `edit_file`, `git_commit`, `run_bash`, …) still flows
+through the normal per-tool approval system. Use auto mode or
+`.yottacode/permissions.json` allow rules to reduce prompt friction on
+commands you trust. See
+[`docs/tui-slash-commands.md#custom-commands`](docs/tui-slash-commands.md#custom-commands).
+
 #### Per-prompt checkpoints (`/checkpoints` / `Esc Esc`)
 
 A new user-facing rewind surface that mirrors Claude Code's `/rewind`.
