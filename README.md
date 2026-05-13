@@ -75,6 +75,10 @@ Auto mode enters via `Shift+Tab` or `yottacode --permission-mode auto` at launch
 
 Every user message gets an automatic checkpoint capturing the conversation plus the pre-edit contents of any files the agent is about to touch. `/checkpoints` or double-tap `Esc` opens a picker over past prompts; pick one and choose to restore conversation, files, or both — the original prompt reappears in the input box so you can edit and resend. Mirrors Claude Code's `/rewind`. 30-day TTL by default, configurable in `config.toml`. Bash and git mutations are not tracked. See [`docs/tui-slash-commands.md#checkpoints---checkpoints--esc-esc`](docs/tui-slash-commands.md#checkpoints---checkpoints--esc-esc).
 
+### Custom slash commands
+
+Drop a markdown file into `~/.yottacode/commands/` (user scope) or `.yottacode/commands/` (project scope, committable) and it shows up as `/<name>` in the palette. Bodies support `$ARGUMENTS` / `$1`..`$9` argument substitution, optional YAML frontmatter (`description`, `argument-hint`), and `@<path>` file references. Subdirectories namespace commands as `/ns:name`. Mirrors Claude Code's custom-commands surface. See [`docs/tui-slash-commands.md#custom-commands`](docs/tui-slash-commands.md#custom-commands).
+
 ### Cross-session recall
 
 `/recall <query>` runs local SQLite FTS5 search across every saved session. `/summarize` compacts long sessions after snapshotting the full pre-summary transcript. Per-turn atomic save means crashed terminals don't lose work.

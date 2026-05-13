@@ -31,8 +31,15 @@ go.work.sum
 # env file
 .env
 
-# yottacode project-local state
-.yottacode/
+# yottacode project-local state — most of this dir is session/checkpoint
+# scratch, but project-scope custom commands (.yottacode/commands/) are
+# meant to ship with the repo so teammates pick them up.
+#
+# Git can't re-include files inside a directory that's been excluded as
+# a whole (the directory itself is never walked), so we exclude the
+# *contents* with .yottacode/* and then negate the commands subdir.
+.yottacode/*
+!.yottacode/commands/
 
 # Editor/IDE
 # .idea/

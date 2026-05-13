@@ -25,6 +25,8 @@ Type `/` in the TUI to open the slash-command palette. The palette filters as yo
 | `/plan` | — | Toggle plan mode (also `Shift+Tab`). Type `/plan list` to open a picker and resume an earlier plan. |
 | `/subagents` | `[list \| view <id> \| stop <id> \| types]` | List subagent runs, view a transcript, stop a running task, or list available agent types. See [subagents.md](subagents.md). |
 
+Beyond the built-ins, you can ship your own slash commands by dropping markdown files in a `commands/` directory — see [Custom commands](#custom-commands).
+
 > **Auto mode and the permissions-bypass overlay are intentionally not slash commands** (mirroring Claude Code). Auto enters via `Shift+Tab` (cycle: `normal → auto → plan → normal`) or `yottacode --permission-mode auto` at startup. Permissions bypass enters only via `yottacode --dangerously-skip-permissions` at startup — there is no in-TUI toggle, no palette entry, no accidental activation. See [Auto mode](#auto-mode) and [Permissions bypass](#permissions-bypass) below.
 
 ## Provider picker
@@ -50,6 +52,153 @@ Type `/` in the TUI to open the slash-command palette. The palette filters as yo
 - Browse project memories (`~/.yottacode/projects/<slug>/memory/`)
 
 Opening a curated memory file (`USER.md`, `YOTTACODE.md`) suspends the TUI to `vim`; on exit, yottacode reloads memory and patches the active system prompt so the next turn sees your edits. The browse rows drop into a sub-list of agent-managed memories where `Enter` opens an entry in `vim`, `d` deletes it, `f` opens the folder in your file manager, and `Esc` returns to the root menu.
+
+## Custom commands
+
+Drop a markdown file in either location and it becomes a slash command:
+
+- `~/.yottacode/commands/` — **user scope**, applies to every yottacode session for this user
+- `<cwd>/.yottacode/commands/` — **project scope**, committable so a team can share commands via git
+
+The filename (without `.md`) becomes the command name. Subdirectories namespace the name with `:` — `commands/frontend/component.md` → `/frontend:component`. Each path segment must be lowercase letters, digits, or hyphens, starting with a letter or digit; invalid segments cause the file to be skipped with a startup warning.
+
+### Frontmatter
+
+Optional YAML block at the top of the file sets metadata shown in the palette and `/help`:
+
+```markdown
+---
+description: Review a PR and suggest changes
+argument-hint: <pr-number>
+---
+You are reviewing PR #$1.
+
+@docs/code-review.md
+
+Fetch the PR diff with `gh pr diff $1`, then walk the checklist file by file.
+```
+
+- `description` — shown in the right column of `/help` and the palette. Defaults to `(custom command)` when omitted.
+- `argument-hint` — shown after the command name and used by the palette: when set, pressing Enter on a highlighted command fills `/name ` and waits for input (matching how `/recall <query>` behaves) instead of firing immediately. Leave empty for commands that take no arguments.
+  - **YAML gotcha:** if your hint uses square brackets (the common `[optional]` convention), quote the value: `argument-hint: '[base-branch]'`. Bare `[...]` is YAML flow-sequence syntax and will fail to parse as a string. Angle brackets like `<required>` don't need quoting.
+
+Unknown frontmatter keys are silently ignored, so the file stays forward-compatible if more keys ship later.
+
+### Argument substitution
+
+Two forms are recognized in the body:
+
+- `$ARGUMENTS` — the entire post-name remainder. For `/review-pr 123 force`, `$ARGUMENTS` expands to `123 force`.
+- `$1` .. `$9` — positional arguments (whitespace-split). Missing positionals expand to the empty string.
+
+`$10` is parsed as `$1` followed by a literal `0` — only single-digit positionals are recognized. This matches Claude Code's documented surface; if you need more arguments, use `$ARGUMENTS`.
+
+A literal `$ABC` (not one of the recognized tokens) is left as-is.
+
+### File references in the body
+
+Any `@<path>` token in the resolved body is picked up by the same filerefs pipeline that handles user-typed `@` references. The file's contents inject into the system prompt before the turn fires, and the `@` is stripped from the user message so the model sees a plain path. This lets you pin a command to a specific spec or checklist file:
+
+```markdown
+---
+description: Audit security-sensitive changes
+---
+Audit the staged diff against @docs/security-and-allow-lists.md.
+List anything that violates the deny lists or skips approval gates.
+```
+
+### Conflict resolution
+
+- **Same name in the same scope**: both copies are dropped with a startup error. The loader can't pick a winner safely — you should rename one of the files.
+- **Same name across scopes**: project wins, user is shadowed. A startup notice tells you which file got shadowed.
+- **Same name as a built-in** (e.g. you create `commands/help.md`): the custom command is dropped with a startup warning. Built-ins always win at the dispatcher.
+
+Startup notices render in the same scrollback band as memory diagnostics — error lines in red, warnings in muted yellow.
+
+### Permissions and approvals
+
+Custom commands are a **prompt shortcut, not a permission bypass**. Typing `/release 0.2.0` does not pop an approval modal — the substituted body is sent to the agent immediately, the same way typing the prompt by hand would be. But every mutating tool the agent calls in response (`write_file`, `edit_file`, `apply_diff`, `git_commit`, `run_bash`, …) still goes through the normal per-tool approval system. A multi-step command like `/release` will surface multiple approval modals during execution, one per mutating tool call.
+
+Three ways to reduce friction on commands you trust:
+
+- **Auto mode** (`Shift+Tab` or `yottacode --permission-mode auto`) — edits auto-allow; `run_bash`, `git_commit`, `git_checkpoint`, and `rollback` remain in the safety floor and still prompt. See [Auto mode](#auto-mode).
+- **`.yottacode/permissions.json` allow rules** — pre-approve specific shell invocations or tool patterns (`allow: ["Bash(go test*)", "Bash(go mod tidy)"]`). Rules apply equally to commands the agent calls from a custom-command turn and to anything else.
+- **`yottacode --dangerously-skip-permissions`** — everything auto-runs, no iteration cap. Use only for fully-trusted scripted runs. See [Permissions bypass](#permissions-bypass).
+
+Per-command `allowed-tools:` frontmatter (a Claude Code feature that scopes which tools a command can call) is **not** supported in v1; the closest equivalent today is auto mode plus an `.yottacode/permissions.json` allow list. See [Out of scope](#out-of-scope-for-now).
+
+### Out of scope (for now)
+
+To keep the v1 surface tight, two Claude Code features were deferred:
+
+- **`` !`<bash cmd>` `` pre-execution** — embedding shell output in the prompt before send-off. Would require a per-command permission gate, output truncation, and timeout policy. Workaround: the body can tell the agent to call `run_bash` itself (one extra round-trip, but uses the existing approval gates).
+- **Per-command `model:` / `allowed-tools:` frontmatter** — pinning a command to a specific model or tool subset.
+
+Hot-reload is also deferred — changes to `commands/` files take effect the next time yottacode starts (same behavior as memory files).
+
+### Worked example end-to-end
+
+1. Create `~/.yottacode/commands/review-pr.md`:
+
+   ```markdown
+   ---
+   description: Review a PR and suggest changes
+   argument-hint: <pr-number>
+   ---
+   You are reviewing PR #$1.
+
+   @docs/code-review.md
+
+   Fetch the PR diff with `gh pr diff $1`, then walk the checklist file by file.
+   Report findings in markdown.
+   ```
+
+2. Launch `yottacode`. The palette filter `/rev` shows `/review-pr <pr-number>   Review a PR and suggest changes` alongside built-ins.
+3. Hit Enter on the row — the input fills `/review-pr ` (because `argument-hint` is set).
+4. Type `123` and submit.
+5. The user message that lands in scrollback reads `You are reviewing PR #123. docs/code-review.md …`, with `docs/code-review.md` injected into the system prompt for that turn.
+6. The agent runs the normal turn loop — tool calls, streaming reply, approvals all behave the same as if you'd typed the prompt by hand.
+
+### Built-in defaults
+
+Four commands ship with the binary and are available on first launch — no setup, no `~/.yottacode/commands/` files needed. Two cover git workflows, two cover pre-commit / pre-PR correctness checks. They appear in the palette and `/help` under the **Custom commands:** section, tagged `(default)` so you can see they're shipped rather than authored.
+
+```
+/git:commit-message                  (default)
+/git:create-pr       [base]          (default)
+/check:review        [base]          (default)
+/check:verify        [task-or-hint]  (default)
+```
+
+#### What each does
+
+| Command | Role |
+|---|---|
+| `/git:commit-message` | Gathers staged diff + recent commit-style + branch context + staged CHANGELOG/README/docs prose in a single bash call. Picks message content by priority (PROSE → branch-local commits → branch name → file list). Composes a one-line subject matching the dominant style, then **runs `git commit -F -` through an approval modal** — you read the message in the modal and approve or deny. Prints a `Note:` block listing unstaged-modified or untracked files when present, so you don't accidentally commit without them. Strict prohibitions: never auto-`git add`, never auto-amend, never auto-retry on hook failure. |
+| `/git:create-pr` `[base]` | Resolves the base branch (explicit arg, then `origin/HEAD`, then `main` / `master` / `develop`), reads the three-dot diff and two-dot log against it, respects `.github/pull_request_template.md` when present, drafts title + body, pushes the branch if not on origin, and runs `gh pr create` through an approval modal so you verify the full title + body before the PR lands. Falls back to draft-only output when `gh` isn't installed or authenticated. |
+| `/check:review` `[base]` | Self-reviews the branch diff against the resolved base across six dimensions (correctness, scope, tests, style, security, performance). Emits findings grouped **Blocker / Suggestion / Nit** with `file:line` refs and a one-paragraph recommendation. |
+| `/check:verify` `[task-or-hint]` | Detects the project's stack — **Go, Python, Java (Maven or Gradle), Rust**, plus `Makefile` as the universal fallback — and runs the appropriate build / test / lint commands. **Go runs with `-count=1` mandatory** to bypass the test cache (no stale-pass surprises). On failure, diagnoses by re-running the failing test in isolation AND checking `git log` to see if the test was touched in this branch — never declares "pre-existing" without that evidence. The argument is mixed-purpose free-form: a task description (cross-checked against the diff for scope drift) and/or a stack hint or command override (e.g., ``use `cargo make verify` ``) that single-turns unsupported stacks. Anything outside the four supported stacks falls through to "Unknown — ask the user" rather than guessing. Prints a structured **Verdict** (Done / Not done / Done with caveats / Inconclusive). |
+
+All four use only existing tools (`run_bash`, `read_file`, `git_*`) — no new infrastructure. Each invocation runs through the normal per-tool approval gates; see [Permissions and approvals](#permissions-and-approvals).
+
+#### Overriding a default
+
+To customize a default's body (e.g. you want `/git:commit-message` to always include a `Refs:` footer for your team), drop a file at the **same name path** in user or project scope:
+
+```
+~/.yottacode/commands/git/commit-message.md   → overrides the default for you everywhere
+<repo>/.yottacode/commands/git/commit-message.md  → overrides for anyone working in that repo
+```
+
+The override is **silent** — no startup warning fires when a user/project file shadows a default, because customizing the starter kit is the documented use case, not a misconfiguration. The override wins on every invocation; delete the file to fall back to the embedded default.
+
+Precedence summary (highest priority first):
+
+1. Project scope (`<cwd>/.yottacode/commands/`)
+2. User scope (`~/.yottacode/commands/`)
+3. Built-in defaults (embedded in the binary)
+
+Built-in commands like `/help`, `/clear`, `/model`, `/plan` sit above all three tiers and cannot be shadowed.
 
 ## Plan mode
 

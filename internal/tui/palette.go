@@ -14,14 +14,17 @@ import (
 func (m *Model) openSlashPalette() {
 	m.textInput.SetValue("/")
 	m.textInput.CursorEnd()
-	m.paletteFiltered = filterPalette("/")
+	m.paletteFiltered = m.filterPaletteAll("/")
 	m.paletteOpen = true
 	m.paletteIndex = 0
 	m.filePaletteOpen = false
 }
 
-// filterPalette returns the slash commands matching the typed prefix.
-// "/" matches everything; "/mo" matches "/model". Case-insensitive.
+// filterPalette returns the built-in slash commands matching the
+// typed prefix. "/" matches everything; "/mo" matches "/model".
+// Case-insensitive. Built-ins-only variant kept for tests that lock
+// the built-in palette behavior; the dispatcher uses the Model-bound
+// variant below so custom commands appear in the palette too.
 func filterPalette(typed string) []slashCommand {
 	typed = strings.TrimPrefix(typed, "/")
 	typed = strings.ToLower(typed)
@@ -31,6 +34,29 @@ func filterPalette(typed string) []slashCommand {
 	var out []slashCommand
 	for _, c := range allSlash {
 		if strings.HasPrefix(c.Name, typed) {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// filterPalette (method) returns built-ins followed by the session's
+// custom commands that match the typed prefix. Used by the live TUI
+// so users can see and tab-complete their custom commands.
+func (m *Model) filterPaletteAll(typed string) []slashCommand {
+	typed = strings.TrimPrefix(typed, "/")
+	typed = strings.ToLower(typed)
+	matches := func(name string) bool {
+		return typed == "" || strings.HasPrefix(name, typed)
+	}
+	out := make([]slashCommand, 0, len(allSlash)+len(m.customSlash))
+	for _, c := range allSlash {
+		if matches(c.Name) {
+			out = append(out, c)
+		}
+	}
+	for _, c := range m.customSlash {
+		if matches(c.Name) {
 			out = append(out, c)
 		}
 	}

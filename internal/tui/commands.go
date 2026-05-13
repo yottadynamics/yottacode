@@ -42,6 +42,17 @@ type slashCommand struct {
 	// turn to render them is destructive. Those opt in via this
 	// field so the Enter-on-slash handler can skip turnCancel().
 	PreservesTurn bool
+
+	// Source is the absolute path to the markdown file a custom
+	// command was loaded from. Empty for built-ins. /help renders the
+	// source path next to custom-command entries so users can find
+	// and edit the file behind a command they invoked.
+	Source string
+
+	// IsCustom is true for commands loaded from ~/.yottacode/commands/
+	// or <cwd>/.yottacode/commands/ via the usercmd package. Drives
+	// the /help two-section split (built-ins first, custom second).
+	IsCustom bool
 }
 
 // allSlash is the registry. Order = display order in /help and the palette.
@@ -109,11 +120,33 @@ func init() {
 	}
 }
 
-// findSlash returns the command with the given name, or nil if no match.
+// findSlash searches the built-in registry only. Used by registry
+// coverage tests that lock the built-in set ("is /init registered?",
+// "is /auto NOT registered?") and don't care about a session's
+// custom commands. The dispatcher uses the Model-bound variant below
+// so it can see custom commands too.
 func findSlash(name string) *slashCommand {
 	for i := range allSlash {
 		if allSlash[i].Name == name {
 			return &allSlash[i]
+		}
+	}
+	return nil
+}
+
+// findSlash (method) walks built-ins first, then the model's custom
+// commands, returning the first name match (or nil). Built-ins
+// always shadow custom commands; the usercmd loader refuses to
+// register a custom command with a reserved name in the first place,
+// so the second layer of defense here is belt-and-suspenders for any
+// future loader drift.
+func (m *Model) findSlash(name string) *slashCommand {
+	if c := findSlash(name); c != nil {
+		return c
+	}
+	for i := range m.customSlash {
+		if m.customSlash[i].Name == name {
+			return &m.customSlash[i]
 		}
 	}
 	return nil
@@ -132,7 +165,7 @@ func (m Model) runSlash(input string) (Model, tea.Cmd) {
 	// user usually wants to recall and fix them.
 	m.recordHistory(input)
 	name := strings.TrimPrefix(fields[0], "/")
-	cmd := findSlash(name)
+	cmd := m.findSlash(name)
 	if cmd == nil {
 		m.appendLine(styleError.Render(fmt.Sprintf("unknown command: /%s — try /help", name)))
 		return m, nil
@@ -149,28 +182,62 @@ func (m Model) runSlash(input string) (Model, tea.Cmd) {
 // /help shows just the bare context summary above the help list.
 func cmdHelp(m Model, _ []string) (Model, tea.Cmd) {
 	m.appendLine(renderStartupBox(m.version, m.commit, m.dirty, m.modelName, m.cwd, m.branch, m.memorySummary, m.providerProfile, m.startupTip(), m.width))
-	// Compute column width from actual content so the dashes always
-	// align even when commands or args change. Avoids a hardcoded
-	// padding that drifts as the registry grows.
-	lefts := make([]string, len(allSlash))
-	width := 0
-	for i, c := range allSlash {
+
+	// Compute one shared column width across BOTH built-ins and custom
+	// commands so the help text dashes line up across the two
+	// sections — avoids the visual jaggedness of two independent
+	// column widths.
+	leftFor := func(c slashCommand) string {
 		left := "/" + c.Name
 		if c.Args != "" {
 			left += " " + c.Args
 		}
-		lefts[i] = left
-		if w := len(left); w > width {
+		return left
+	}
+	width := 0
+	for _, c := range allSlash {
+		if w := len(leftFor(c)); w > width {
 			width = w
 		}
 	}
+	for _, c := range m.customSlash {
+		if w := len(leftFor(c)); w > width {
+			width = w
+		}
+	}
+
 	var b strings.Builder
 	b.WriteString("Available commands:\n")
-	for i, c := range allSlash {
-		b.WriteString(fmt.Sprintf("  %-*s   %s\n", width, lefts[i], c.Help))
+	for _, c := range allSlash {
+		b.WriteString(fmt.Sprintf("  %-*s   %s\n", width, leftFor(c), c.Help))
+	}
+	if len(m.customSlash) > 0 {
+		b.WriteString("\nCustom commands:\n")
+		for _, c := range m.customSlash {
+			line := fmt.Sprintf("  %-*s   %s", width, leftFor(c), c.Help)
+			if c.Source != "" {
+				line += stylePaletteEmpty.Render("  ·  " + displayPath(c.Source, m.cwd))
+			}
+			b.WriteString(line + "\n")
+		}
 	}
 	m.appendLine(strings.TrimRight(b.String(), "\n"))
 	return m, nil
+}
+
+// displayPath shortens an absolute path for /help readability: replaces
+// the home prefix with "~" and the cwd prefix with "." when applicable.
+// Falls back to the absolute path when neither prefix matches.
+func displayPath(abs, cwd string) string {
+	if cwd != "" && strings.HasPrefix(abs, cwd+"/") {
+		return "./" + strings.TrimPrefix(abs, cwd+"/")
+	}
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		if strings.HasPrefix(abs, home+"/") {
+			return "~/" + strings.TrimPrefix(abs, home+"/")
+		}
+	}
+	return abs
 }
 
 func cmdQuit(m Model, _ []string) (Model, tea.Cmd) {

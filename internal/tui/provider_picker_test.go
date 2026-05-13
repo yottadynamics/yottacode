@@ -646,6 +646,13 @@ default_model = "nvidia/nemotron-3-super-120b-a12b"
 	// the bug — the validator saw a non-empty NVIDIA_API_KEY and let
 	// the second profile through).
 	t.Setenv("NVIDIA_API_KEY", "nvapi-first-profile-key")
+	// Explicitly clear the second-profile key. The picker validates
+	// against the *effective* env var for the new profile (auto-minted
+	// as NVIDIA_NIM_2_API_KEY here), so if a parent process — like
+	// yottacode running tests via /check:verify after loading its own
+	// ~/.yottacode/.env — has this exported, the validator silently
+	// passes and the test fails. Tests must isolate from host env.
+	t.Setenv("NVIDIA_NIM_2_API_KEY", "")
 
 	m, _ = typeAndEnter(t, m, "/provider")
 	// Walk to "Add".
