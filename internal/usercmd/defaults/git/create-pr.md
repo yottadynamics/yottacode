@@ -12,36 +12,53 @@ then `gh pr create`. The approval modal on the create step shows
 the full title + body inline — that's the user's verification
 surface, exactly like `/git:commit-message`.
 
-1. **Tool call 1 — gather context** in one bash command:
+1. **Tool call 1 — gather context** as one heredoc'd bash script.
+   The `<<'SH'` (single-quoted delimiter) keeps `$base`, `$t`,
+   `$(...)` literal in the markdown so the inner bash expands them
+   at runtime. `$1` is replaced at the markdown level before bash
+   sees it.
 
    ```bash
-   # Resolve base branch: explicit $1 first, then origin/HEAD, then main/master/develop.
+   bash <<'SH'
    base="$1"
    if [ -z "$base" ]; then
      base=$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's@^origin/@@')
    fi
    if [ -z "$base" ]; then
      for candidate in main master develop; do
-       if git rev-parse --verify "$candidate" >/dev/null 2>&1; then base="$candidate"; break; fi
+       if git rev-parse --verify "$candidate" >/dev/null 2>&1; then
+         base="$candidate"; break
+       fi
      done
    fi
-   echo "BASE=$base" && \
-   echo "---CURRENT-BRANCH---" && \
-   git branch --show-current && \
-   echo "---AHEAD-COUNT---" && \
-   git rev-list --count "$base..HEAD" 2>/dev/null && \
-   echo "---STAT---" && \
-   git diff "$base"...HEAD --stat && \
-   echo "---LOG---" && \
-   git log "$base"..HEAD --format="%h %s%n%b%n---" && \
-   echo "---GH-AVAILABLE---" && \
-   { which gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1 && echo "yes" || echo "no"; } && \
-   echo "---ON-ORIGIN---" && \
-   { git ls-remote --exit-code --heads origin "$(git branch --show-current)" >/dev/null 2>&1 && echo "yes" || echo "no"; } && \
-   echo "---PR-TEMPLATE---" && \
+   echo "BASE=$base"
+   echo "---CURRENT-BRANCH---"
+   git branch --show-current
+   echo "---AHEAD-COUNT---"
+   git rev-list --count "$base..HEAD" 2>/dev/null
+   echo "---STAT---"
+   git diff "$base"...HEAD --stat
+   echo "---LOG---"
+   git log "$base"..HEAD --format="%h %s%n%b%n---"
+   echo "---GH-AVAILABLE---"
+   if which gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
+     echo "yes"
+   else
+     echo "no"
+   fi
+   echo "---ON-ORIGIN---"
+   if git ls-remote --exit-code --heads origin "$(git branch --show-current)" >/dev/null 2>&1; then
+     echo "yes"
+   else
+     echo "no"
+   fi
+   echo "---PR-TEMPLATE---"
    for t in .github/pull_request_template.md .github/PULL_REQUEST_TEMPLATE.md docs/pull_request_template.md PULL_REQUEST_TEMPLATE.md; do
-     [ -f "$t" ] && echo "FOUND: $t" && cat "$t" && break
+     if [ -f "$t" ]; then
+       echo "FOUND: $t"; cat "$t"; break
+     fi
    done
+   SH
    ```
 
    **Early-exit conditions** (the only ways to end without creating
@@ -117,32 +134,29 @@ surface, exactly like `/git:commit-message`.
    gh pr view --json url --jq .url
    ```
 
-6. **Print the text summary.** This is the only text output. Format:
+6. **Print the text summary.** This is the only text output. Emit
+   plain lines — do NOT wrap the summary in a markdown code fence
+   (triple-backticks). The examples below use indentation to mark
+   format, not fences.
 
-   - **Succeeded** —
+   Succeeded — print:
 
-     ```
-     PR created: <url>
+       PR created: <url>
 
-     Title: <title>
-     Base: <base>
-     Commits in PR: <ahead-count>
-     ```
+       Title: <title>
+       Base: <base>
+       Commits in PR: <ahead-count>
 
-   - **Approved but gh failed** (network, existing PR, missing
-     permissions, etc.) — surface the error verbatim:
+   Approved but gh failed (network, existing PR, missing
+   permissions, etc.) — surface the error verbatim:
 
-     ```
-     PR creation failed: <verbatim error from gh>
-     ```
+       PR creation failed: <verbatim error from gh>
 
-     Do NOT auto-retry, auto-edit, or "fix" the failure.
+   Do NOT auto-retry, auto-edit, or "fix" the failure.
 
-   - **Denied at the create-PR modal** — print:
+   Denied at the create-PR modal — print:
 
-     ```
-     PR not created — draft was unchanged in your branch.
-     ```
+       PR not created — draft was unchanged in your branch.
 
 **Hard prohibitions:**
 

@@ -8,22 +8,27 @@ text and stopping is a bug.
 
 The flow has two tool calls and one text summary, in this order:
 
-1. **Tool call 1 — gather context.** Run this exact bash command:
+1. **Tool call 1 — gather context** as one heredoc'd bash script.
+   The `<<'SH'` (single-quoted delimiter) keeps it as a single
+   logical command for the approval modal — splitting on `&&` would
+   produce a dozen numbered items per invocation.
 
    ```bash
-   git diff --cached --name-status && \
-   echo "---STYLE-LOG---" && \
-   git log -15 --format=%s && \
-   echo "---BRANCH---" && \
-   git branch --show-current 2>/dev/null && \
-   echo "---BRANCH-COMMITS---" && \
-   git log -10 --no-merges --not --remotes=origin --format=%s 2>/dev/null && \
-   echo "---PROSE---" && \
-   git diff --cached -- CHANGELOG.md README.md 'docs/*.md' 'docs/**/*.md' 2>/dev/null | head -140 && \
-   echo "---UNSTAGED-MODIFIED---" && \
-   git diff --name-only 2>/dev/null && \
-   echo "---UNTRACKED---" && \
+   bash <<'SH'
+   git diff --cached --name-status
+   echo "---STYLE-LOG---"
+   git log -15 --format=%s
+   echo "---BRANCH---"
+   git branch --show-current 2>/dev/null
+   echo "---BRANCH-COMMITS---"
+   git log -10 --no-merges --not --remotes=origin --format=%s 2>/dev/null
+   echo "---PROSE---"
+   git diff --cached -- CHANGELOG.md README.md 'docs/*.md' 'docs/**/*.md' 2>/dev/null | head -140
+   echo "---UNSTAGED-MODIFIED---"
+   git diff --name-only 2>/dev/null
+   echo "---UNTRACKED---"
    git ls-files --others --exclude-standard 2>/dev/null
+   SH
    ```
 
    **Early-exit conditions** (these are the only ways to end without
@@ -60,15 +65,15 @@ The flow has two tool calls and one text summary, in this order:
    in the message stay literal.
 
 4. **After the commit tool call returns, print the text summary.**
-   This is the only text output you emit. Format:
+   This is the only text output you emit. Emit plain lines — do
+   NOT wrap the summary in a markdown code fence (triple-backticks).
+   The example below uses indentation to mark format, not fences.
 
-   ```
-   Matched <style>. Source: <prose|branch-commits|branch-name|file-list>.
+       Matched <style>. Source: <prose|branch-commits|branch-name|file-list>.
 
-   `<the subject you committed>`
+       `<the subject you committed>`
 
-   [commit-status line]
-   ```
+       [commit-status line]
 
    The `[commit-status line]` depends on the tool result from step 3:
    - **Succeeded** — `Committed: <output of git log -1 --oneline>`.
