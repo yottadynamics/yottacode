@@ -6,6 +6,14 @@ the project uses semantic versioning once it's past `1.0.0`.
 
 ## Unreleased
 
+### Added
+
+### Changed
+
+### Fixed
+
+## 0.2.0 — 2026-05-13
+
 > Control flow + safety triad — typed subagents, per-prompt checkpoints,
 > plan & auto modes, and a custom-command starter kit.
 
