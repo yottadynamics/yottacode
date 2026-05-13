@@ -263,6 +263,120 @@ to `<repo>/.yottacode/permissions.json`:
 Add `**/.yottacode/permissions.local.json` to your `.gitignore` so
 personal allow rules don't leak into the team-shared file.
 
+A missing, empty, or whitespace-only `permissions.json` /
+`permissions.local.json` is treated as "no rules" — yottacode no longer
+fails to start when either file exists but has no content. Opening
+either path from `/permissions` seeds the file with the full
+`{allow, ask, deny}` skeleton before vim launches, so you always edit a
+fully-shaped file instead of an empty buffer. Files that already have
+content are never overwritten.
+
+### Starter Rule Set
+
+The default skeleton ships with empty arrays — yottacode is unopinionated
+about which rules a project wants. The set below is a curated starting
+point you can paste into `<repo>/.yottacode/permissions.json` and prune
+to taste. Decision precedence is `Deny > Allow > Ask > Default`, so the
+`deny` block always wins even if a broader `allow` is added later.
+
+```json
+{
+  "permissions": {
+    "allow": [
+      "Bash(git status)",
+      "Bash(git status *)",
+      "Bash(git diff)",
+      "Bash(git diff *)",
+      "Bash(git log)",
+      "Bash(git log *)",
+      "Bash(git show *)",
+      "Bash(git branch)",
+      "Bash(git branch -*)",
+      "Bash(git remote -v)",
+      "Bash(ls)",
+      "Bash(ls *)",
+      "Bash(pwd)",
+      "Bash(echo *)",
+      "Bash(which *)",
+      "Bash(head *)",
+      "Bash(tail *)",
+      "Bash(wc *)"
+    ],
+    "ask": [
+      "Bash(git push *)",
+      "Bash(git reset --hard *)",
+      "Bash(git rebase *)",
+      "Bash(gh pr create *)",
+      "Bash(gh pr merge *)",
+      "Bash(gh pr close *)",
+      "Bash(gh release *)",
+      "Bash(npm publish*)",
+      "Bash(cargo publish*)",
+      "Bash(docker push *)",
+      "Read(**/.env)",
+      "Read(**/.env.*)",
+      "Read(**/*.pem)",
+      "Read(**/id_rsa)",
+      "Read(**/credentials*)"
+    ],
+    "deny": [
+      "Bash(rm -rf /*)",
+      "Bash(rm -rf ~*)",
+      "Bash(sudo rm -rf *)",
+      "Bash(curl * | sh)",
+      "Bash(curl * | bash)",
+      "Bash(wget * | sh)",
+      "Bash(wget * | bash)",
+      "Bash(* | sudo sh)",
+      "Bash(* | sudo bash)",
+      "Bash(dd if=* of=/dev/*)",
+      "Bash(mkfs.*)",
+      "Bash(chmod -R 777 /)",
+      "Bash(chmod -R 777 /*)",
+      "Edit(/etc/**)",
+      "Edit(/usr/**)",
+      "Edit(/bin/**)",
+      "Edit(/sbin/**)",
+      "Edit(/boot/**)",
+      "Write(/etc/**)",
+      "Write(/usr/**)",
+      "Delete(/etc/**)",
+      "Delete(/usr/**)"
+    ]
+  }
+}
+```
+
+Pattern semantics that catch new authors out:
+
+- `*` matches the empty sequence too, so `Bash(rm -rf /*)` covers both
+  `rm -rf /` and `rm -rf /home/user` with one rule — you don't need a
+  separate `rm -rf /` entry.
+- The space before `*` is literal: `Bash(git status *)` matches
+  `git status -s` but not the bare `git status`. Add both forms when
+  you want to cover the command with and without arguments.
+- Path-typed rules (`Read`, `Write`, `Edit`, `Delete`, …) use
+  doublestar; `Read(**/.env)` matches both top-level `.env` and nested
+  `services/api/.env`.
+
+Personal additions go in `permissions.local.json` (gitignored). A
+common starter for a Go project:
+
+```json
+{
+  "permissions": {
+    "allow": [
+      "Bash(go *)",
+      "Bash(make *)",
+      "Bash(gofmt *)",
+      "Bash(goimports *)"
+    ],
+    "ask": [],
+    "deny": []
+  }
+}
+```
+
 ## Runtime Reconfiguration
 
 The TUI supports changing the active session configuration without restarting:

@@ -60,6 +60,13 @@ func (m Model) updatePermissionsPicker(msg tea.KeyMsg) (Model, tea.Cmd) {
 			m.appendLine(styleError.Render("[permissions] file path unavailable"))
 			return m, nil
 		}
+		// Seed both files with the full {allow, ask, deny} skeleton before
+		// vim opens, so a missing or 0-byte file (left behind by an earlier
+		// "open and quit") never reappears as an empty buffer — and never
+		// crashes the next startup on empty-JSON parse.
+		if err := m.perms.EnsureFiles(); err != nil {
+			m.appendLine(styleError.Render("[permissions] init: " + err.Error()))
+		}
 		return m.openInVim(path)
 	}
 	return m, nil
