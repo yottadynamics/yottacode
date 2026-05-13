@@ -6,6 +6,9 @@ the project uses semantic versioning once it's past `1.0.0`.
 
 ## Unreleased
 
+> Control flow + safety triad — typed subagents, per-prompt checkpoints,
+> plan & auto modes, and a custom-command starter kit.
+
 ### Added
 
 #### Built-in custom-command starter kit
@@ -171,6 +174,69 @@ break old configs. See `docs/experimental.md`.
 Off by default; the `run_in_background:true` argument on the
 `Agent` tool returns a recoverable error pointing at the enable
 instructions. Foreground subagents are always available.
+
+#### Plan and auto modes
+
+`/plan` enters a read-only design mode (`read_file`, `grep`,
+`list_dir`, `git` only) that produces a structured plan and stops
+before any mutation. The plan acceptance prompt offers `[Y]` to
+approve and auto-implement, which exits plan mode and enters auto
+mode for the implementation. Auto mode auto-allows `edit_file` /
+`write_file` / `apply_diff` while keeping a safety floor that still
+prompts for `run_bash`, `git_commit`, `git_checkpoint`, and
+`rollback`. `Shift+Tab` cycles between normal / plan / auto modes
+directly. Mode state propagates into subagent runs by shared
+pointer, so a plan-mode parent's child enters plan mode with the
+same plan file. See `docs/tui-slash-commands.md`.
+
+#### `todo_write` tool + inline todo cards
+
+A model-driven todo list. The `todo_write` tool replaces the
+working plan with a full snapshot (Claude Code's `TodoWrite`
+analogue); the loop emits one `TodoUpdate` event carrying the
+snapshot; the TUI renders the new state as a scrollback card. List
+persists to `session.Todos` (omitted from session JSON when empty
+for back-compat) and restores via `/sessions <id>`. Self-managed by
+default — the agent decides when to call it based on the active
+prompt, steered by the tool description toward multi-step work.
+Pairs naturally with `/plan`: the plan seeds the initial list, the
+agent maintains it during execution.
+
+#### Mid-turn interrupts
+
+`Ctrl+C` cancels in-flight turns cleanly: streaming stops, the
+in-progress tool call (if any) receives a context cancellation, and
+the conversation history is repaired so the next turn doesn't trip
+on a dangling `tool_use` without a matching `tool_result`. The new
+slash-command flag `PreservesTurn` marks read-only inspection
+commands (`/subagents`, `/help`, `/system`, `/permissions`,
+`/doctor`, `/recall`) so they don't cancel an active turn when
+submitted mid-run.
+
+#### Permission file integrity checks
+
+On load, `permissions.json` and `permissions.local.json` are
+validated for shape, duplicate rules, and known rule-type prefixes.
+Malformed files surface a startup warning naming the offending entry
+rather than silently dropping rules. Rule resolution itself is
+unchanged — deny > allow > ask > default still applies — but the
+loader is no longer silent on broken input. See
+`docs/security-and-allow-lists.md`.
+
+### Changed
+
+- Built-in tool output rendering refactored in the TUI. Tool-result
+  cards now compose from a per-tool renderer interface so future
+  tools can ship with custom card shapes without touching the main
+  TUI loop. Existing tool output is visually unchanged; the seam is
+  what's new.
+
+### Fixed
+
+- TUI card for `write_file` no longer mis-renders when the target
+  is a new file. Previously fell through to an edit-style diff with
+  an empty `before` block; new files now render with a clear
+  new-file indicator and full body preview.
 
 ### Other
 
