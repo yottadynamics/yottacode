@@ -25,7 +25,7 @@ func TestUserDirSmoke(t *testing.T) {
 		argHint string
 	}{
 		"git:commit-message":  {argHint: ""},
-		"git:pr-description":  {argHint: "[base-branch]"},
+		"git:create-pr":       {argHint: "[base-branch]"},
 		"check:review":        {argHint: "[base-branch]"},
 		"check:verify":        {argHint: "[what-was-asked]"},
 	}
@@ -69,10 +69,12 @@ func TestUserDirSmoke(t *testing.T) {
 		t.Errorf("$ARGUMENTS not substituted into /check:verify body")
 	}
 
-	// And /git:pr-description with a $1 positional.
-	resolved = Substitute(got["git:pr-description"].Body, "develop")
-	if !contains(resolved, "against `develop`") {
-		t.Errorf("$1 not substituted into /git:pr-description body; first 300 chars:\n%s", resolved[:300])
+	// And /git:create-pr with a $1 positional. The body's bash uses
+	// `base="$1"` near the top, so a literal "develop" substitution
+	// should land there.
+	resolved = Substitute(got["git:create-pr"].Body, "develop")
+	if !contains(resolved, "base=\"develop\"") {
+		t.Errorf("$1 not substituted into /git:create-pr body; first 400 chars:\n%s", resolved[:400])
 	}
 }
 

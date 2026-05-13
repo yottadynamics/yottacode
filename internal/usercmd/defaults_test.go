@@ -22,7 +22,7 @@ func TestLoadDefaults_AllFourEmbedded(t *testing.T) {
 		argHint string
 	}{
 		"git:commit-message": {argHint: ""},
-		"git:pr-description": {argHint: "[base-branch]"},
+		"git:create-pr":      {argHint: "[base-branch]"},
 		"check:review":       {argHint: "[base-branch]"},
 		"check:verify":       {argHint: "[what-was-asked]"},
 	}

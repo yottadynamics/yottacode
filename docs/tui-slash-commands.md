@@ -165,7 +165,7 @@ Four commands ship with the binary and are available on first launch — no setu
 
 ```
 /git:commit-message              (default)
-/git:pr-description [base]       (default)
+/git:create-pr       [base]      (default)
 /check:review        [base]      (default)
 /check:verify        [task]      (default)
 ```
@@ -175,7 +175,7 @@ Four commands ship with the binary and are available on first launch — no setu
 | Command | Role |
 |---|---|
 | `/git:commit-message` | Reads the staged diff and matches the repo's recent commit style (Conventional Commits, plain imperative, ticket-prefixed — whichever dominates the last 15 commits). Outputs a single-line commit message ready to copy. **Does not auto-commit** — the user runs `git commit` themselves. |
-| `/git:pr-description` `[base]` | Resolves the base branch (explicit arg, then `origin/HEAD`, then `main` / `master` / `develop`), reads the three-dot diff and two-dot log against it, respects `.github/pull_request_template.md` when present. Prints title + body + the exact `gh pr create` invocation when `gh` is on PATH. |
+| `/git:create-pr` `[base]` | Resolves the base branch (explicit arg, then `origin/HEAD`, then `main` / `master` / `develop`), reads the three-dot diff and two-dot log against it, respects `.github/pull_request_template.md` when present, drafts title + body, pushes the branch if not on origin, and runs `gh pr create` through an approval modal so you verify the full title + body before the PR lands. Falls back to draft-only output when `gh` isn't installed or authenticated. |
 | `/check:review` `[base]` | Self-reviews the branch diff against the resolved base across six dimensions (correctness, scope, tests, style, security, performance). Emits findings grouped **Blocker / Suggestion / Nit** with `file:line` refs and a one-paragraph recommendation. |
 | `/check:verify` `[task]` | Detects the project's stack (Go / Node / Rust / Python / Make targets), runs the appropriate build / test / lint commands, cross-checks the diff against the optional task description, and prints a structured **Verdict** (Done / Not done / Done with caveats). |
 

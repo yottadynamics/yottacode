@@ -13,7 +13,7 @@ flow"). When provided, cross-check the diff against that statement.
 1. **Inventory the change.** Identify what's actually different:
    - Uncommitted changes: `git status --porcelain` and `git diff`.
    - Committed changes on this branch (if applicable): resolve the
-     base branch the same way `/git:pr-description` does, then
+     base branch the same way `/git:create-pr` does, then
      `git diff <base>...HEAD --stat` for context.
    If both staged/unstaged and committed work exist, evaluate all of
    them together — "done" means done across the whole change.

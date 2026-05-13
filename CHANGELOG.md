@@ -15,8 +15,11 @@ on first launch with no `~/.yottacode/commands/` setup:
 
 - `/git:commit-message` — one-line commit message for the staged diff,
   style-matched to the repo's recent commits
-- `/git:pr-description [base]` — title + body + `gh pr create` snippet
-  for the current branch
+- `/git:create-pr [base]` — drafts title + body, auto-pushes the
+  branch to origin if needed, then runs `gh pr create` through an
+  approval modal (the modal is your verification surface — the full
+  title + body inlined in the heredoc). Falls back to draft-only
+  output when `gh` is unavailable or unauthenticated
 - `/check:review [base]` — self-review of the branch diff across
   correctness / scope / tests / style / security / performance
 - `/check:verify [task]` — detects the stack, runs build/test/lint,

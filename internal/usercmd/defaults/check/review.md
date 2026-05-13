@@ -7,7 +7,7 @@ branch if `$1` is empty) as if you were a thoughtful reviewer reading
 the PR for the first time. Surface findings — do not fix them.
 
 1. **Sanity-check.** `git rev-parse --is-inside-work-tree` must return
-   `true`. Resolve the base branch the same way `/git:pr-description`
+   `true`. Resolve the base branch the same way `/git:create-pr`
    does: explicit `$1`, then `git symbolic-ref refs/remotes/origin/HEAD`,
    then `main` / `master` / `develop`. Stop if the current branch
    equals the base.
