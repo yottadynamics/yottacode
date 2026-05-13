@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -1065,18 +1066,20 @@ func cmdClear(m Model, _ []string) (Model, tea.Cmd) {
 }
 
 // rebuildTranscript replays a session's prior user/assistant exchange
-// into scrollback after a resume. System and tool-result messages are
-// skipped to keep the replay readable. Called from sessionsPicker's
-// resumeSession helper.
+// into scrollback after a resume. System messages are skipped to keep
+// the replay readable; tool-role messages aren't emitted directly
+// either — their content is folded into the matching tool call's card
+// footer/body so the replay reads like the live transcript instead of
+// a flat dump. Called from sessionsPicker's resumeSession helper.
 //
-// Tool calls are rendered using each tool's PreviewCall — the same
-// path the live transcript takes via renderToolStartLine — so the
-// rebuilt scrollback reads "▸ read_file path=x.go" instead of the
-// bare "[tool] read_file(...)" that used to land on resume. Tools
-// missing from the registry (renamed, removed, or registered only in
-// a different binary) fall back to the bare form so the rebuild never
-// crashes on an unknown name.
+// Tool calls are rendered via renderToolCard — the same path the live
+// transcript uses on agent.ToolResult — so a resumed session shows
+// proper ╭/│/╰ cards instead of a bare orange "▸ name(...)" one-liner.
+// Tools missing from the registry (renamed, removed, or registered
+// only in a different binary) fall back to a one-line preview so the
+// rebuild never crashes on an unknown name.
 func rebuildTranscript(m *Model) {
+	results := toolResultsByCallID(m.sess.Messages)
 	for _, msg := range m.sess.Messages {
 		switch msg.Role {
 		case adapter.RoleUser:
@@ -1086,27 +1089,103 @@ func rebuildTranscript(m *Model) {
 				m.appendLine(renderAssistantBlock(msg.Content))
 			}
 			for _, tc := range msg.ToolCalls {
-				m.appendLine(renderRebuiltToolLine(m, tc))
+				m.appendLine("")
+				m.appendLine(renderRebuiltToolCard(m, tc, results[tc.ID]))
 			}
 		}
 	}
 }
 
-// renderRebuiltToolLine produces the scrollback row for one tool call
-// during a session replay. Resolves the tool via the registry to call
-// PreviewCall (matching the live ▸ format); falls back to a bare
-// "[tool] <name>(...)" line when the tool isn't registered or the
-// preview comes back empty (defensive — a tool's PreviewCall returning
-// "" would otherwise render an unhelpful "▸ ").
-func renderRebuiltToolLine(m *Model, tc adapter.ToolCall) string {
-	if m.cfg.Registry != nil {
-		if tool, ok := m.cfg.Registry.Get(tc.Name); ok {
-			if preview := strings.TrimSpace(tool.PreviewCall(tc.ArgsJSON)); preview != "" {
-				return styleToolCall.Render("▸ " + preview)
-			}
+// toolResultsByCallID indexes a session's tool-role messages by the
+// ToolCallID they answer, so rebuildTranscript can fold each tool call
+// into a single card carrying its own result instead of dumping the
+// raw tool messages as separate scrollback rows.
+func toolResultsByCallID(msgs []adapter.Message) map[string]string {
+	out := make(map[string]string, len(msgs))
+	for _, msg := range msgs {
+		if msg.Role == adapter.RoleTool && msg.ToolCallID != "" {
+			out[msg.ToolCallID] = msg.Content
 		}
 	}
-	return styleToolCall.Render("[tool] " + tc.Name + "(...)")
+	return out
+}
+
+// renderRebuiltToolCard produces the scrollback card for one tool call
+// during a session replay. Resolves the tool via the registry to call
+// PreviewCall (matching the live header), then runs the full
+// renderToolCard with the persisted tool result as the output —
+// reproducing the canonical ╭ header / │ body / ╰ footer shape live
+// execution emits on agent.ToolResult.
+//
+// write_file is special-cased to reproduce the live two-card stack:
+// the pre-approval body card (header + highlighted body + footer
+// flipped from "awaiting approval" to "approved" / "denied" since the
+// decision has already been made) plus the post-execution summary
+// card. That keeps the resumed view as close as possible to what the
+// user actually saw mid-session.
+//
+// Errored is hard-coded to false because the persisted tool message
+// only stores the result content, not the agent's errored flag. The
+// cosmetic mismatch for errored tool calls on replay (no red footer)
+// is acceptable — the failure text still renders inside the body.
+//
+// Falls back to a one-line "[tool] <name>(...)" when the tool isn't
+// registered (defensive) so the rebuild never crashes on an unknown
+// name.
+func renderRebuiltToolCard(m *Model, tc adapter.ToolCall, result string) string {
+	preview := tc.Name
+	if m.cfg.Registry != nil {
+		if tool, ok := m.cfg.Registry.Get(tc.Name); ok {
+			if p := strings.TrimSpace(tool.PreviewCall(tc.ArgsJSON)); p != "" {
+				preview = p
+			}
+		} else {
+			return styleToolCall.Render("[tool] " + tc.Name + "(...)")
+		}
+	}
+	summary := renderToolCard(tc.Name, preview, tc.ArgsJSON, result, false, m.width)
+	if tc.Name == "write_file" {
+		if body, ok := renderRebuiltWriteFileBodyCard(tc.ArgsJSON, result); ok {
+			return body + "\n\n" + summary
+		}
+	}
+	return summary
+}
+
+// renderRebuiltWriteFileBodyCard renders the replay equivalent of the
+// pre-approval body emit: same ╭/│/╰ shape (header + highlighted
+// content + footer) as emitWriteFileBodyToScrollback, but the footer
+// reflects the actual decision recorded in the session ("approved"
+// when the file was written, "denied" when the agent recorded
+// "denied by user"). Falls back to ("", false) when args don't parse
+// or content is empty — the caller still emits the summary card on
+// its own.
+func renderRebuiltWriteFileBodyCard(argsJSON, result string) (string, bool) {
+	var a writeFileArgs
+	if err := json.Unmarshal([]byte(argsJSON), &a); err != nil {
+		return "", false
+	}
+	if a.Path == "" || a.Content == "" {
+		return "", false
+	}
+	lines := strings.Count(a.Content, "\n") + 1
+	footer := "approved"
+	if strings.TrimSpace(result) == "denied by user" {
+		footer = "denied"
+	}
+	rows := []string{
+		styleCardGutter.Render("╭ ") +
+			styleCardHeader.Render("Write("+a.Path+")") + " " +
+			styleCardMeta.Render(fmt.Sprintf("(%d bytes · %d lines)", len(a.Content), lines)),
+	}
+	content := strings.ReplaceAll(a.Content, "\t", "    ")
+	highlighted := strings.TrimRight(HighlightFromPath(content, a.Path), "\n")
+	gutter := styleCardGutter.Render("│   ")
+	for _, line := range strings.Split(highlighted, "\n") {
+		rows = append(rows, gutter+line)
+	}
+	rows = append(rows, styleCardGutter.Render("╰ ")+styleCardMeta.Render(footer))
+	return strings.Join(rows, "\n"), true
 }
 
 // cmdRedo finds the most recent user message, drops it (and everything that

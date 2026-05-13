@@ -659,32 +659,74 @@ func TestAutoModeBanner_RendersWhenActive(t *testing.T) {
 }
 
 // rebuildTranscript replays a session's prior tool calls into
-// scrollback. Before the rich-preview pass, every tool call landed
-// as a bare "[tool] write_file(...)" line — useless on a long-running
-// auto-mode resume. Now the rebuild routes each call through the
-// tool's PreviewCall, matching the live "▸ <preview>" surface so the
-// rebuilt transcript reads like the live one did.
-func TestRebuildTranscript_UsesPreviewCall(t *testing.T) {
+// scrollback as full ╭/│/╰ tool cards — same shape live execution
+// emits — so a resumed session reads like the live one. write_file
+// gets the live two-card stack reproduced: a body card (header +
+// highlighted body + approved/denied footer) plus the post-execution
+// summary card.
+func TestRebuildTranscript_RendersWriteFileTwoCardStack(t *testing.T) {
 	m, _ := newPlanModeTestModel(t)
+	m.width = 100
 	m.sess.Messages = []adapter.Message{
 		{Role: adapter.RoleUser, Content: "do the thing"},
 		{Role: adapter.RoleAssistant, Content: "on it", ToolCalls: []adapter.ToolCall{
-			{ID: "1", Name: "write_file", ArgsJSON: `{"path":"hello.go","content":"package main"}`},
+			{ID: "1", Name: "write_file", ArgsJSON: `{"path":"hello.go","content":"package main\n\nfunc main() {}\n"}`},
 		}},
+		{Role: adapter.RoleTool, ToolCallID: "1", Content: "wrote 28 bytes to /tmp/hello.go"},
 	}
 	rebuildTranscript(&m)
 	out := stripANSI(m.transcript.String())
 	if !strings.Contains(out, "do the thing") {
 		t.Errorf("rebuild should replay the user message; got %q", out)
 	}
-	if !strings.Contains(out, "▸ ") {
-		t.Errorf("rebuild should render tool calls with the live ▸ prefix; got %q", out)
+	// Body card: header with size meta, highlighted body, approved footer.
+	if !strings.Contains(out, "(29 bytes · 4 lines)") {
+		t.Errorf("body card header should include byte/line meta; got %q", out)
 	}
-	if !strings.Contains(out, "hello.go") {
-		t.Errorf("rebuild should surface the PreviewCall arg detail (path); got %q", out)
+	if !strings.Contains(out, "package main") || !strings.Contains(out, "func main()") {
+		t.Errorf("body card should include the full file content; got %q", out)
 	}
-	if strings.Contains(out, "write_file(...)") {
-		t.Errorf("rebuild should no longer fall back to the bare 'name(...)' form when the tool is registered; got %q", out)
+	if !strings.Contains(out, "╰ approved") {
+		t.Errorf("body card footer should read 'approved' on a successful write; got %q", out)
+	}
+	// Summary card: separate ╭ Write(...) / ╰ wrote N bytes block.
+	if strings.Count(out, "╭ Write(hello.go)") < 2 {
+		t.Errorf("rebuild should emit both a body card and a summary card; got %q", out)
+	}
+	if !strings.Contains(out, "╰ wrote 28 bytes") {
+		t.Errorf("summary card footer should carry the persisted result; got %q", out)
+	}
+	if strings.Contains(out, "wrote 28 bytes to") {
+		t.Errorf("summary footer should strip the redundant 'to <path>' tail; got %q", out)
+	}
+	if strings.Contains(out, "▸ write_file") {
+		t.Errorf("rebuild must no longer emit the old one-line ▸ form; got %q", out)
+	}
+}
+
+// A denied write_file call persists its tool result as "denied by
+// user". The body card on replay should still show the proposed body
+// (so the user remembers what they rejected) with a "denied" footer;
+// the summary card carries the raw "denied by user" string.
+func TestRebuildTranscript_WriteFileDenied(t *testing.T) {
+	m, _ := newPlanModeTestModel(t)
+	m.width = 100
+	m.sess.Messages = []adapter.Message{
+		{Role: adapter.RoleAssistant, ToolCalls: []adapter.ToolCall{
+			{ID: "1", Name: "write_file", ArgsJSON: `{"path":"ttt.d","content":"sample text\n"}`},
+		}},
+		{Role: adapter.RoleTool, ToolCallID: "1", Content: "denied by user"},
+	}
+	rebuildTranscript(&m)
+	out := stripANSI(m.transcript.String())
+	if !strings.Contains(out, "sample text") {
+		t.Errorf("denied body card should still show the rejected content; got %q", out)
+	}
+	if !strings.Contains(out, "╰ denied") {
+		t.Errorf("denied body card footer should read 'denied'; got %q", out)
+	}
+	if !strings.Contains(out, "╰ denied by user") {
+		t.Errorf("summary card should carry the raw 'denied by user' string; got %q", out)
 	}
 }
 
