@@ -13,8 +13,13 @@ the project uses semantic versioning once it's past `1.0.0`.
 Four commands now ship with the binary as embedded defaults, available
 on first launch with no `~/.yottacode/commands/` setup:
 
-- `/git:commit-message` — one-line commit message for the staged diff,
-  style-matched to the repo's recent commits
+- `/git:commit-message` — gathers staged diff + branch context +
+  staged CHANGELOG/README/docs prose, composes a one-line subject
+  matching the repo's recent commit style, then runs `git commit`
+  through an approval modal (the modal is your verification — the
+  message is inlined in the heredoc). Prints a `Note:` block when
+  unstaged or untracked files exist so you don't accidentally commit
+  without them
 - `/git:create-pr [base]` — drafts title + body, auto-pushes the
   branch to origin if needed, then runs `gh pr create` through an
   approval modal (the modal is your verification surface — the full
@@ -22,8 +27,16 @@ on first launch with no `~/.yottacode/commands/` setup:
   output when `gh` is unavailable or unauthenticated
 - `/check:review [base]` — self-review of the branch diff across
   correctness / scope / tests / style / security / performance
-- `/check:verify [task]` — detects the stack, runs build/test/lint,
-  cross-checks the diff against the stated task
+- `/check:verify [task-or-hint]` — detects the stack (Go / Python /
+  Java with Maven or Gradle / Rust, plus Makefile as the universal
+  fallback), runs build/test/lint with cache discipline (Go uses
+  `-count=1` mandatory), cross-checks the diff against an optional
+  task description, and prints a structured **Verdict** (Done /
+  Not done / Done with caveats / Inconclusive). On failure, diagnoses
+  by re-running the failing test in isolation AND checking git log
+  for touched test files — never declares failures "pre-existing"
+  without that evidence. The argument is mixed-purpose: task
+  description, stack hint, command override, or all three in prose
 
 Defaults sit at the lowest precedence tier — a same-name file in
 `~/.yottacode/commands/` (user scope) or `<cwd>/.yottacode/commands/`

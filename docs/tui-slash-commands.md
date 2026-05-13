@@ -164,20 +164,20 @@ Hot-reload is also deferred — changes to `commands/` files take effect the nex
 Four commands ship with the binary and are available on first launch — no setup, no `~/.yottacode/commands/` files needed. Two cover git workflows, two cover pre-commit / pre-PR correctness checks. They appear in the palette and `/help` under the **Custom commands:** section, tagged `(default)` so you can see they're shipped rather than authored.
 
 ```
-/git:commit-message              (default)
-/git:create-pr       [base]      (default)
-/check:review        [base]      (default)
-/check:verify        [task]      (default)
+/git:commit-message                  (default)
+/git:create-pr       [base]          (default)
+/check:review        [base]          (default)
+/check:verify        [task-or-hint]  (default)
 ```
 
 #### What each does
 
 | Command | Role |
 |---|---|
-| `/git:commit-message` | Reads the staged diff and matches the repo's recent commit style (Conventional Commits, plain imperative, ticket-prefixed — whichever dominates the last 15 commits). Outputs a single-line commit message ready to copy. **Does not auto-commit** — the user runs `git commit` themselves. |
+| `/git:commit-message` | Gathers staged diff + recent commit-style + branch context + staged CHANGELOG/README/docs prose in a single bash call. Picks message content by priority (PROSE → branch-local commits → branch name → file list). Composes a one-line subject matching the dominant style, then **runs `git commit -F -` through an approval modal** — you read the message in the modal and approve or deny. Prints a `Note:` block listing unstaged-modified or untracked files when present, so you don't accidentally commit without them. Strict prohibitions: never auto-`git add`, never auto-amend, never auto-retry on hook failure. |
 | `/git:create-pr` `[base]` | Resolves the base branch (explicit arg, then `origin/HEAD`, then `main` / `master` / `develop`), reads the three-dot diff and two-dot log against it, respects `.github/pull_request_template.md` when present, drafts title + body, pushes the branch if not on origin, and runs `gh pr create` through an approval modal so you verify the full title + body before the PR lands. Falls back to draft-only output when `gh` isn't installed or authenticated. |
 | `/check:review` `[base]` | Self-reviews the branch diff against the resolved base across six dimensions (correctness, scope, tests, style, security, performance). Emits findings grouped **Blocker / Suggestion / Nit** with `file:line` refs and a one-paragraph recommendation. |
-| `/check:verify` `[task]` | Detects the project's stack (Go / Node / Rust / Python / Make targets), runs the appropriate build / test / lint commands, cross-checks the diff against the optional task description, and prints a structured **Verdict** (Done / Not done / Done with caveats). |
+| `/check:verify` `[task-or-hint]` | Detects the project's stack — **Go, Python, Java (Maven or Gradle), Rust**, plus `Makefile` as the universal fallback — and runs the appropriate build / test / lint commands. **Go runs with `-count=1` mandatory** to bypass the test cache (no stale-pass surprises). On failure, diagnoses by re-running the failing test in isolation AND checking `git log` to see if the test was touched in this branch — never declares "pre-existing" without that evidence. The argument is mixed-purpose free-form: a task description (cross-checked against the diff for scope drift) and/or a stack hint or command override (e.g., ``use `cargo make verify` ``) that single-turns unsupported stacks. Anything outside the four supported stacks falls through to "Unknown — ask the user" rather than guessing. Prints a structured **Verdict** (Done / Not done / Done with caveats / Inconclusive). |
 
 All four use only existing tools (`run_bash`, `read_file`, `git_*`) — no new infrastructure. Each invocation runs through the normal per-tool approval gates; see [Permissions and approvals](#permissions-and-approvals).
 

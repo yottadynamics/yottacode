@@ -24,7 +24,7 @@ func TestLoadDefaults_AllFourEmbedded(t *testing.T) {
 		"git:commit-message": {argHint: ""},
 		"git:create-pr":      {argHint: "[base-branch]"},
 		"check:review":       {argHint: "[base-branch]"},
-		"check:verify":       {argHint: "[what-was-asked]"},
+		"check:verify":       {argHint: "[task-or-hint]"},
 	}
 
 	got := map[string]Command{}
