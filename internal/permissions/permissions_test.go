@@ -86,6 +86,52 @@ func TestLoad_MergesSharedAndLocal(t *testing.T) {
 	}
 }
 
+// TestLoad_EmptyFileIsNotError pins the regression: openInVim creates
+// permissions.json as 0 bytes when the user first opens the picker row,
+// so the next startup was crashing on json.Unmarshal of an empty byte
+// slice. Empty / whitespace-only files now behave like a missing file.
+func TestLoad_EmptyFileIsNotError(t *testing.T) {
+	cwd := t.TempDir()
+	for _, body := range []string{"", "   ", "\n\n\t\n"} {
+		path := filepath.Join(cwd, ".yottacode", "permissions.json")
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+		p, err := Load(cwd)
+		if err != nil {
+			t.Fatalf("Load(empty=%q): %v", body, err)
+		}
+		if d, a, k := p.Snapshot(); len(d)+len(a)+len(k) != 0 {
+			t.Errorf("empty file should yield no rules; got deny=%v allow=%v ask=%v", d, a, k)
+		}
+	}
+}
+
+// TestLoad_PartialPermissionsShape locks in the contract for files that
+// declare only one of allow/ask/deny — the case described in the bug
+// report ({"permissions":{"allow":["Bash(go *)"]}} with no ask/deny).
+func TestLoad_PartialPermissionsShape(t *testing.T) {
+	cwd := t.TempDir()
+	path := filepath.Join(cwd, ".yottacode", "permissions.local.json")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(path, []byte(`{"permissions":{"allow":["Bash(go *)"]}}`), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	p, err := Load(cwd)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	_, allow, _ := p.Snapshot()
+	if len(allow) != 1 || allow[0].Pattern != "go *" {
+		t.Errorf("partial shape should still parse allow list; got %v", allow)
+	}
+}
+
 func TestLoad_MalformedFileErrors(t *testing.T) {
 	cwd := t.TempDir()
 	path := filepath.Join(cwd, ".yottacode", "permissions.json")
@@ -273,6 +319,80 @@ func TestEvaluate_CwdAnchoredAllow(t *testing.T) {
 	}
 	if got := p.Evaluate("write_file", `{"path":"internal/foo.go"}`); got != Allow {
 		t.Errorf("cwd-anchored Write rule should match nested descriptor; got %v", got)
+	}
+}
+
+// TestEnsureFiles_CreatesMissingWithFullShape verifies the init helper
+// writes a skeleton with all three lists present so users editing in
+// vim see the full surface and don't have to look up the schema.
+func TestEnsureFiles_CreatesMissingWithFullShape(t *testing.T) {
+	cwd := t.TempDir()
+	p, err := Load(cwd)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if err := p.EnsureFiles(); err != nil {
+		t.Fatalf("EnsureFiles: %v", err)
+	}
+	for _, name := range []string{"permissions.json", "permissions.local.json"} {
+		path := filepath.Join(cwd, ".yottacode", name)
+		b, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		var shape fileShape
+		if err := json.Unmarshal(b, &shape); err != nil {
+			t.Fatalf("parse %s: %v", name, err)
+		}
+		// All three keys must be present (as empty arrays, not absent) so
+		// the file in vim shows the full surface the user can fill in.
+		got := string(b)
+		for _, key := range []string{`"allow"`, `"ask"`, `"deny"`} {
+			if !strings.Contains(got, key) {
+				t.Errorf("%s missing %s key:\n%s", name, key, got)
+			}
+		}
+	}
+}
+
+func TestEnsureFiles_RewritesEmptyFile(t *testing.T) {
+	cwd := t.TempDir()
+	path := filepath.Join(cwd, ".yottacode", "permissions.json")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(path, []byte(""), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	p, _ := Load(cwd)
+	if err := p.EnsureFiles(); err != nil {
+		t.Fatalf("EnsureFiles: %v", err)
+	}
+	b, _ := os.ReadFile(path)
+	if !strings.Contains(string(b), `"allow"`) || !strings.Contains(string(b), `"ask"`) || !strings.Contains(string(b), `"deny"`) {
+		t.Errorf("empty file should be rewritten with full skeleton; got %q", b)
+	}
+}
+
+// TestEnsureFiles_PreservesExistingContent locks in the safety property:
+// once a file has real rules, EnsureFiles must never clobber it.
+func TestEnsureFiles_PreservesExistingContent(t *testing.T) {
+	cwd := t.TempDir()
+	original := `{"permissions":{"allow":["Bash(go *)"]}}`
+	path := filepath.Join(cwd, ".yottacode", "permissions.local.json")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(path, []byte(original), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	p, _ := Load(cwd)
+	if err := p.EnsureFiles(); err != nil {
+		t.Fatalf("EnsureFiles: %v", err)
+	}
+	b, _ := os.ReadFile(path)
+	if string(b) != original {
+		t.Errorf("non-empty file must be preserved; got %q want %q", b, original)
 	}
 }
 

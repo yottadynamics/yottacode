@@ -37,6 +37,7 @@
 package permissions
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -48,6 +49,19 @@ import (
 
 	"github.com/bmatcuk/doublestar/v4"
 )
+
+// skeleton is the canonical empty permissions file: the full
+// {allow, ask, deny} shape so users editing in vim see what they can
+// fill in. Written by EnsureFiles when a permissions file is missing
+// or whitespace-only.
+var skeleton = []byte(`{
+  "permissions": {
+    "allow": [],
+    "ask": [],
+    "deny": []
+  }
+}
+`)
 
 // Decision is the verdict for a single tool call.
 type Decision int
@@ -161,6 +175,13 @@ func (p *Permissions) loadFile(path, source string) error {
 	}
 	if err != nil {
 		return fmt.Errorf("permissions: read %s: %w", path, err)
+	}
+	// Empty / whitespace-only files behave like a missing file: openInVim
+	// creates a 0-byte file when the user first opens the picker row, and
+	// users who save vim without typing anything also land here. Erroring
+	// would block startup until they manually deleted the file.
+	if len(bytes.TrimSpace(b)) == 0 {
+		return nil
 	}
 	var shape fileShape
 	if err := json.Unmarshal(b, &shape); err != nil {
@@ -324,6 +345,43 @@ func (p *Permissions) AddAllow(rule string) error {
 		return err
 	}
 	return os.Rename(tmp, p.localPath)
+}
+
+// EnsureFiles writes a full {allow, ask, deny} skeleton to any
+// permissions file that is missing or contains only whitespace.
+// Existing content is preserved — even an empty-arrays-only file is
+// left alone so a user-customized layout (formatting, comments later,
+// extra top-level keys) is never clobbered. The /permissions picker
+// calls this before opening vim so the user always edits a fully-
+// shaped file instead of an empty buffer.
+func (p *Permissions) EnsureFiles() error {
+	if p == nil {
+		return errors.New("permissions: nil store")
+	}
+	for _, path := range []string{p.sharedPath, p.localPath} {
+		if err := ensureSkeleton(path); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func ensureSkeleton(path string) error {
+	b, err := os.ReadFile(path)
+	if err == nil && len(bytes.TrimSpace(b)) > 0 {
+		return nil
+	}
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("permissions: stat %s: %w", path, err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return fmt.Errorf("permissions: mkdir %s: %w", filepath.Dir(path), err)
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, skeleton, 0o644); err != nil {
+		return fmt.Errorf("permissions: write %s: %w", path, err)
+	}
+	return os.Rename(tmp, path)
 }
 
 // Snapshot returns a copy of every loaded rule (deny + allow + ask) for
