@@ -197,8 +197,14 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 	// github.Interface. The Interface is the foundation hook for
 	// v0.5.0's typed go-github client — swapping the ShellOut for the
 	// typed client is a one-line registration change.
+	ghClient := &githubapi.ShellOut{Cwd: cwd}
 	reg.Register(&agent.GHPRContextTool{Cwd: cwd})
-	reg.Register(&agent.GHPRCreateTool{Cwd: cwd, GH: &githubapi.ShellOut{Cwd: cwd}})
+	reg.Register(&agent.GHPRCreateTool{Cwd: cwd, GH: ghClient})
+	// gh_pr_review_context is the read-side composite paired with
+	// /git-review-pr. Shares the same github.Interface instance as
+	// gh_pr_create so the v0.5.0 swap to a typed go-github client
+	// changes one variable above instead of two registration sites.
+	reg.Register(&agent.GHPRReviewContextTool{Cwd: cwd, GH: ghClient})
 	reg.Register(&agent.GitLogFileTool{Cwd: cwd})
 	reg.Register(&agent.GitBlameLinesTool{Cwd: cwd})
 	reg.Register(&agent.GitMergeBaseTool{Cwd: cwd})

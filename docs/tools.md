@@ -1,6 +1,6 @@
 # Built-in tools
 
-Thirty-four tools ship in `internal/agent` (thirty-two always-on plus `todo_write`
+Thirty-five tools ship in `internal/agent` (thirty-three always-on plus `todo_write`
 and `exit_plan_mode`). The model sees their JSON-schema parameters via the
 OpenAI tools API; the TUI renders each invocation as a bordered card with a
 verb-style header (see [How tool calls render in the TUI](#how-tool-calls-render-in-the-tui)).
@@ -29,6 +29,7 @@ are also accepted).
 | [`git_commit_apply`](#git_commit_apply) | required | Validate a one-line subject and run `git commit` with structured result envelope |
 | [`gh_pr_context`](#gh_pr_context) | none | Typed snapshot for opening a PR (base resolution, ahead-count, push state, gh availability, PR template) |
 | [`gh_pr_create`](#gh_pr_create) | required | Validate title and open a PR via the `internal/github.Interface` adapter with typed result envelope |
+| [`gh_pr_review_context`](#gh_pr_review_context) | none | Fetch PR metadata + diff + check rollup via the `internal/github.Interface` adapter for review |
 | [`git_log_file`](#git_log_file) | none | Show history for one file |
 | [`git_blame_lines`](#git_blame_lines) | none | Blame a line range in a file |
 | [`git_merge_base`](#git_merge_base) | none | Find merge base between two refs |
@@ -454,6 +455,35 @@ change in `internal/tui/run.go` and nothing else.
 | `draft` | bool | `false` |
 
 Always prompts for approval.
+
+## gh_pr_review_context
+
+Composite read-only fetcher for the procedural `/git-review-pr`
+flow. Calls the three Interface read methods (`ReadPR`,
+`ListPRChecks`, `ReadPRDiff`) and folds their results into one
+typed snapshot under `## state`, `## pr`, `## checks.summary`,
+`## checks`, and `## diff` headers.
+
+The `## state` block carries deterministic flags callers branch
+on: `ref=`, `not_found=` (the gh CLI couldn't resolve the ref to
+an existing PR), `gh_unavailable=` (gh missing or
+unauthenticated), and `failing_checks=` (comma-separated names of
+check runs whose conclusion was FAILURE, CANCELLED, TIMED_OUT, or
+ACTION_REQUIRED). When `not_found` or `gh_unavailable` are true
+the snapshot short-circuits — the pr/checks/diff sections are
+omitted to keep the model's branching clean.
+
+Failing-check classification covers both the GraphQL check-run
+shape (Conclusion populated) and the legacy status-context shape
+(State="FAILURE"/"ERROR" with empty Conclusion). The diff is
+capped at 64 KiB with a truncation marker pointing at `gh pr
+diff <ref>` for the full content.
+
+| Param | Type | Default |
+|---|---|---|
+| `ref` | string | (uses current branch's PR) |
+
+No approval. Touches the network (not parallel-safe).
 
 ## git_log_file
 

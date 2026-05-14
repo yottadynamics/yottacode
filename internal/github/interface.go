@@ -11,15 +11,16 @@
 // continue working unchanged — only the registration of which
 // implementation to inject moves.
 //
-// Scope deliberately narrow: CreatePR only. Read operations
-// (ReadIssue, ReadPR, ListPRChecks) and other writes (AddPRComment)
-// land with the typed client, where caching and per-endpoint rate
-// awareness actually matter.
+// Scope: CreatePR + the read surface needed by /git-review-pr
+// (ReadPR, ReadPRDiff, ListPRChecks). Issue reads, PR comments,
+// and the v0.5.0 in-session cache / rate-limit awareness land with
+// the typed go-github client.
 package github
 
 import (
 	"context"
 	"errors"
+	"time"
 )
 
 // ErrGhUnavailable signals that the local environment cannot satisfy
@@ -28,6 +29,13 @@ import (
 // procedural /create-pr can fall through to a draft-only preview
 // instead of failing the turn opaquely.
 var ErrGhUnavailable = errors.New("gh CLI unavailable or unauthenticated")
+
+// ErrPRNotFound signals that the requested PR doesn't exist (no
+// open PR for the supplied branch, or the explicit number resolves
+// to a missing PR). Callers branch on this to surface a clean
+// "no PR found" instead of treating the missing PR as an opaque
+// gh exit-non-zero.
+var ErrPRNotFound = errors.New("pull request not found")
 
 // Interface is the typed surface yottacode uses to talk to GitHub.
 // Kept minimal: only the methods at least one shipped caller needs.
@@ -41,6 +49,23 @@ type Interface interface {
 	// so callers can fall back gracefully rather than reporting a
 	// generic execution failure.
 	CreatePR(ctx context.Context, req CreatePRRequest) (CreatePRResult, error)
+
+	// ReadPR fetches typed metadata about a single pull request.
+	// Ref accepts either a PR number ("17") or a branch name; gh
+	// itself accepts both, and the v0.5.0 typed client will mirror
+	// that ergonomics. Returns ErrPRNotFound when nothing matches.
+	ReadPR(ctx context.Context, req ReadPRRequest) (PRDetails, error)
+
+	// ReadPRDiff fetches the unified diff for a pull request as a
+	// single string. Capped by the caller (tool wrapper trims for
+	// model consumption); the Interface itself returns the full diff.
+	ReadPRDiff(ctx context.Context, req ReadPRRequest) (string, error)
+
+	// ListPRChecks returns the typed status of every check run on a
+	// PR. Empty slice is a valid result (PR with no CI). The
+	// `/git-review-pr` flow surfaces failing checks at the top of
+	// the review, which is why typed access matters here.
+	ListPRChecks(ctx context.Context, req ReadPRRequest) ([]CheckRun, error)
 }
 
 // CreatePRRequest is the typed payload for Interface.CreatePR.
@@ -67,4 +92,58 @@ type CreatePRRequest struct {
 type CreatePRResult struct {
 	URL    string
 	Number int
+}
+
+// ReadPRRequest is the typed payload for the read trio (ReadPR,
+// ReadPRDiff, ListPRChecks). Owner / Repo follow the same
+// optional-inference semantics as CreatePRRequest.
+//
+// Ref is the PR identifier — either a number ("17") or a branch
+// name ("feature/x"). Empty Ref tells the implementation to use
+// the cwd's current branch, mirroring `gh pr view` with no arg.
+type ReadPRRequest struct {
+	Owner string
+	Repo  string
+	Ref   string // PR number or branch name; "" = current branch
+}
+
+// PRDetails is the typed envelope ReadPR returns. Fields mirror
+// the `gh pr view --json` schema yottacode needs today; growing
+// it as callers ask for more fields keeps the contract surface
+// pinned to actual use rather than front-loading the entire API.
+//
+// State and Mergeable are uppercase strings matching the GitHub
+// API's enum literals (OPEN / CLOSED / MERGED, MERGEABLE /
+// CONFLICTING / UNKNOWN) so downstream pattern-matching against
+// the wire format stays unambiguous.
+type PRDetails struct {
+	Number    int
+	Title     string
+	Body      string
+	State     string // "OPEN" | "CLOSED" | "MERGED"
+	Draft     bool
+	BaseRef   string
+	HeadRef   string
+	HeadSHA   string
+	Mergeable string // "MERGEABLE" | "CONFLICTING" | "UNKNOWN"
+	Author    string // login, not display name
+	URL       string
+	Labels    []string
+}
+
+// CheckRun is one row from ListPRChecks. Name is the check's
+// label (e.g. "build", "test", "lint"). State is the lifecycle
+// state ("QUEUED" / "IN_PROGRESS" / "COMPLETED"). Conclusion is
+// the outcome once State is COMPLETED ("SUCCESS" / "FAILURE" /
+// "CANCELLED" / "NEUTRAL" / "SKIPPED" / "TIMED_OUT" /
+// "ACTION_REQUIRED"); empty before completion.
+//
+// Times are zero-valued when the check hasn't started or
+// completed yet — callers must IsZero-check before formatting.
+type CheckRun struct {
+	Name        string
+	State       string
+	Conclusion  string
+	StartedAt   time.Time
+	CompletedAt time.Time
 }

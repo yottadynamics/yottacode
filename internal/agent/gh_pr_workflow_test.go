@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -13,18 +14,52 @@ import (
 )
 
 // fakeGH is the test double for github.Interface. Captures the last
-// call's request and lets each test pre-set the response.
+// call's request and lets each test pre-set the response. The read
+// methods (ReadPR, ReadPRDiff, ListPRChecks) carry their own canned
+// fixtures so a single fakeGH can stand in for whichever subset of
+// the Interface a test exercises.
 type fakeGH struct {
+	// Create-PR side
 	lastReq github.CreatePRRequest
 	calls   int
 	res     github.CreatePRResult
 	err     error
+
+	// Read side — each fixture is used by the matching method when
+	// the test populates it. Errors short-circuit ahead of the
+	// returned value so the test can simulate ErrPRNotFound /
+	// ErrGhUnavailable / generic gh failures without contorting the
+	// fixture struct.
+	readPRRes      github.PRDetails
+	readPRErr      error
+	readPRReq      github.ReadPRRequest
+	readPRDiffRes  string
+	readPRDiffErr  error
+	readPRDiffReq  github.ReadPRRequest
+	listChecksRes  []github.CheckRun
+	listChecksErr  error
+	listChecksReq  github.ReadPRRequest
 }
 
 func (f *fakeGH) CreatePR(_ context.Context, req github.CreatePRRequest) (github.CreatePRResult, error) {
 	f.calls++
 	f.lastReq = req
 	return f.res, f.err
+}
+
+func (f *fakeGH) ReadPR(_ context.Context, req github.ReadPRRequest) (github.PRDetails, error) {
+	f.readPRReq = req
+	return f.readPRRes, f.readPRErr
+}
+
+func (f *fakeGH) ReadPRDiff(_ context.Context, req github.ReadPRRequest) (string, error) {
+	f.readPRDiffReq = req
+	return f.readPRDiffRes, f.readPRDiffErr
+}
+
+func (f *fakeGH) ListPRChecks(_ context.Context, req github.ReadPRRequest) ([]github.CheckRun, error) {
+	f.listChecksReq = req
+	return f.listChecksRes, f.listChecksErr
 }
 
 func TestValidatePRTitle(t *testing.T) {
@@ -262,6 +297,169 @@ func TestGHPRCreateTool_RoundsThroughTool(t *testing.T) {
 	}
 	if !gh.lastReq.Draft {
 		t.Errorf("expected Draft=true forwarded to client; got %+v", gh.lastReq)
+	}
+}
+
+func TestBuildPRReviewContext_HappyPath(t *testing.T) {
+	gh := &fakeGH{
+		readPRRes: github.PRDetails{
+			Number: 17, Title: "fix the thing", State: "OPEN", BaseRef: "main",
+			HeadRef: "feature/x", Author: "octocat", URL: "https://github.com/o/r/pull/17",
+			Labels: []string{"bug"},
+		},
+		readPRDiffRes: "diff --git a/f b/f\n+v2\n-v1\n",
+		listChecksRes: []github.CheckRun{
+			{Name: "build", State: "COMPLETED", Conclusion: "SUCCESS"},
+			{Name: "lint", State: "COMPLETED", Conclusion: "FAILURE"},
+		},
+	}
+	snap, err := BuildPRReviewContext(context.Background(), gh, "17")
+	if err != nil {
+		t.Fatalf("BuildPRReviewContext: %v", err)
+	}
+	if snap.NotFound || snap.GhUnavailable {
+		t.Errorf("expected found+available; got %+v", snap)
+	}
+	if snap.PR.Number != 17 || snap.PR.Title != "fix the thing" {
+		t.Errorf("PR metadata not populated: %+v", snap.PR)
+	}
+	if !slices.Equal(snap.FailingChecks, []string{"lint"}) {
+		t.Errorf("FailingChecks = %v; want [lint]", snap.FailingChecks)
+	}
+	if !strings.Contains(snap.Diff, "+v2") {
+		t.Errorf("Diff missing content: %q", snap.Diff)
+	}
+}
+
+func TestBuildPRReviewContext_NotFoundSurfaced(t *testing.T) {
+	gh := &fakeGH{readPRErr: github.ErrPRNotFound}
+	snap, err := BuildPRReviewContext(context.Background(), gh, "999")
+	if err != nil {
+		t.Fatalf("BuildPRReviewContext: %v", err)
+	}
+	if !snap.NotFound {
+		t.Errorf("expected NotFound=true; got %+v", snap)
+	}
+	// Critical: with NotFound the checks/diff fetches must NOT
+	// fire (a missing PR shouldn't burn three round trips).
+	if gh.listChecksReq.Ref != "" {
+		t.Errorf("ListPRChecks should not have been called on NotFound")
+	}
+	if gh.readPRDiffReq.Ref != "" {
+		t.Errorf("ReadPRDiff should not have been called on NotFound")
+	}
+}
+
+func TestBuildPRReviewContext_GhUnavailableSurfaced(t *testing.T) {
+	gh := &fakeGH{readPRErr: github.ErrGhUnavailable}
+	snap, err := BuildPRReviewContext(context.Background(), gh, "17")
+	if err != nil {
+		t.Fatalf("BuildPRReviewContext: %v", err)
+	}
+	if !snap.GhUnavailable {
+		t.Errorf("expected GhUnavailable=true; got %+v", snap)
+	}
+}
+
+func TestBuildPRReviewContext_ChecksSoftFail(t *testing.T) {
+	// A failing checks fetch shouldn't block the review — the PR
+	// metadata is the load-bearing piece. We surface the gap via
+	// FetchErr but keep going with the diff.
+	gh := &fakeGH{
+		readPRRes:     github.PRDetails{Number: 17, Title: "t"},
+		readPRDiffRes: "diff content",
+		listChecksErr: errors.New("transient"),
+	}
+	snap, err := BuildPRReviewContext(context.Background(), gh, "17")
+	if err != nil {
+		t.Fatalf("BuildPRReviewContext: %v", err)
+	}
+	if snap.PR.Number != 17 {
+		t.Errorf("expected PR populated despite checks failure")
+	}
+	if !strings.Contains(snap.FetchErr, "transient") {
+		t.Errorf("FetchErr should surface the checks failure; got %q", snap.FetchErr)
+	}
+	if snap.Diff == "" {
+		t.Errorf("Diff should be present despite checks failure")
+	}
+}
+
+func TestIsFailingCheck(t *testing.T) {
+	cases := []struct {
+		name string
+		c    github.CheckRun
+		want bool
+	}{
+		{"success", github.CheckRun{Conclusion: "SUCCESS"}, false},
+		{"failure", github.CheckRun{Conclusion: "FAILURE"}, true},
+		{"cancelled", github.CheckRun{Conclusion: "CANCELLED"}, true},
+		{"action required", github.CheckRun{Conclusion: "ACTION_REQUIRED"}, true},
+		{"neutral non-failing", github.CheckRun{Conclusion: "NEUTRAL"}, false},
+		{"skipped non-failing", github.CheckRun{Conclusion: "SKIPPED"}, false},
+		{"pending non-failing", github.CheckRun{State: "IN_PROGRESS"}, false},
+		// Status-context shape: State="FAILURE" with empty Conclusion
+		{"status-context failure", github.CheckRun{State: "FAILURE"}, true},
+		{"status-context error", github.CheckRun{State: "ERROR"}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isFailingCheck(tc.c); got != tc.want {
+				t.Errorf("isFailingCheck(%+v) = %v; want %v", tc.c, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestGHPRReviewContextTool_RoundsThroughTool(t *testing.T) {
+	gh := &fakeGH{
+		readPRRes:     github.PRDetails{Number: 17, Title: "t", State: "OPEN", URL: "https://x"},
+		readPRDiffRes: "diff content",
+		listChecksRes: []github.CheckRun{{Name: "ci", State: "SUCCESS"}},
+	}
+	tool := &GHPRReviewContextTool{Cwd: t.TempDir(), GH: gh}
+	out, err := tool.Execute(context.Background(), `{"ref":"17"}`)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if !strings.Contains(out, "## state") {
+		t.Errorf("expected ## state header in output:\n%s", out)
+	}
+	if !strings.Contains(out, "number=17") {
+		t.Errorf("expected number=17 in output:\n%s", out)
+	}
+}
+
+func TestRenderPRReviewContext_NotFoundShortCircuits(t *testing.T) {
+	// NotFound rendering should NOT include the pr/checks/diff
+	// sections — they'd be empty and add noise. State header only.
+	out := renderPRReviewContext(PRReviewContext{Ref: "999", NotFound: true})
+	if !strings.Contains(out, "not_found=true") {
+		t.Errorf("expected not_found=true: %q", out)
+	}
+	if strings.Contains(out, "## pr") || strings.Contains(out, "## diff") {
+		t.Errorf("expected NotFound to omit pr/diff sections: %q", out)
+	}
+}
+
+func TestRenderPRReviewContext_FailingChecksInState(t *testing.T) {
+	// FailingChecks must surface in ## state — the slash command
+	// reads it from there to flag broken CI at the top of the
+	// review before the model even sees the diff.
+	out := renderPRReviewContext(PRReviewContext{
+		Ref: "17",
+		PR:  github.PRDetails{Number: 17, State: "OPEN"},
+		Checks: []github.CheckRun{
+			{Name: "lint", Conclusion: "FAILURE"},
+		},
+		FailingChecks: []string{"lint"},
+	})
+	if !strings.Contains(out, "failing_checks=lint") {
+		t.Errorf("expected failing_checks=lint in ## state:\n%s", out)
+	}
+	// And the checks.summary should report fail=1.
+	if !strings.Contains(out, "fail=1") {
+		t.Errorf("expected fail=1 in summary:\n%s", out)
 	}
 }
 

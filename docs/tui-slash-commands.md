@@ -24,6 +24,7 @@ Type `/` in the TUI to open the slash-command palette. The palette filters as yo
 | `/init` | — | Ask the agent to draft or refresh `.yottacode/YOTTACODE.md` |
 | `/git-commit` | — | Compose and run a one-line commit on the staged changes. Procedural: control flow is in Go, the model only synthesizes the subject. Replaces the legacy markdown `/git:commit-message`. |
 | `/git-create-pr` | `[base]` | Open a pull request for the current branch. Procedural: base resolution, ahead-count gating, push-state detection, title validation, and gh-unavailable fall-through all live in Go. Replaces the legacy markdown `/git:create-pr`. |
+| `/git-review-pr` | `[ref]` | Self-review an existing pull request. Ref is a number (`17`) or branch (`feature/x`); empty defaults to the current branch's PR. Fetches PR metadata + diff + check rollup via the typed `internal/github.Interface`, surfaces failing CI at the top, emits a structured review (Failing checks / Blockers / Suggestions / Nits). Output to scrollback only — posting back to GitHub is deferred to a future `--post` flag. |
 | `/plan` | — | Toggle plan mode (also `Shift+Tab`). Type `/plan list` to open a picker and resume an earlier plan. |
 | `/subagents` | `[list \| view <id> \| stop <id> \| types]` | List subagent runs, view a transcript, stop a running task, or list available agent types. See [subagents.md](subagents.md). |
 

@@ -492,6 +492,269 @@ func validatePRTitle(title string) string {
 	return ""
 }
 
+// prReviewDiffCap bounds the diff body the review snapshot
+// surfaces. Bigger than the gh_pr_context diffstat cap (16 KiB)
+// because reviewers need the actual hunks, not just file names —
+// but bounded enough that a long-running branch's accumulated
+// diff doesn't blow the prompt cache. 64 KiB covers most
+// reasonable PRs; larger PRs surface a truncation marker that
+// points the model at running gh pr diff for the rest.
+const prReviewDiffCap = 64 * 1024
+
+// GHPRReviewContextTool fetches everything /git-review-pr needs in
+// one composite call: PR metadata, full diff (capped), and the
+// status check rollup. Counterpart to gh_pr_context (which gathers
+// local pre-PR state); this one talks to an existing PR via the
+// github.Interface.
+//
+// Read-only — no approval modal — but does touch the network and so
+// is NOT marked parallel-safe. The fetch fans out to three
+// Interface calls; the ShellOut impl folds two of them into one
+// `gh pr view --json ...` invocation but the typed v0.5.0 client
+// will make all three independently against the GraphQL surface.
+type GHPRReviewContextTool struct {
+	Cwd string
+	GH  github.Interface
+}
+
+func (t *GHPRReviewContextTool) Name() string { return "gh_pr_review_context" }
+
+func (t *GHPRReviewContextTool) Description() string {
+	return "Fetch the context needed to review a pull request: PR " +
+		"metadata (title, state, draft, base, head, mergeable, author, " +
+		"labels, URL), the unified diff (capped), and the status check " +
+		"rollup. Ref is the PR number or branch name; empty defaults to " +
+		"the current branch. Returns a typed snapshot keyed by section " +
+		"headers; failing checks are surfaced under ## checks.summary so " +
+		"the caller can flag broken CI at the top of the review."
+}
+
+func (t *GHPRReviewContextTool) Schema() map[string]any {
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"ref": map[string]any{
+				"type":        "string",
+				"description": "PR number (\"17\") or branch name. Empty defaults to current branch.",
+			},
+		},
+	}
+}
+
+func (t *GHPRReviewContextTool) RequiresApproval(string) bool { return false }
+
+func (t *GHPRReviewContextTool) PreviewCall(argsJSON string) string {
+	var a struct {
+		Ref string `json:"ref"`
+	}
+	_ = json.Unmarshal([]byte(argsJSON), &a)
+	if strings.TrimSpace(a.Ref) == "" {
+		return "gh_pr_review_context()"
+	}
+	return fmt.Sprintf("gh_pr_review_context(ref=%s)", a.Ref)
+}
+
+func (t *GHPRReviewContextTool) Execute(ctx context.Context, argsJSON string) (string, error) {
+	if t.GH == nil {
+		return "", errors.New("gh_pr_review_context: no GitHub adapter configured")
+	}
+	var a struct {
+		Ref string `json:"ref"`
+	}
+	if argsJSON != "" {
+		_ = json.Unmarshal([]byte(argsJSON), &a)
+	}
+	snap, err := BuildPRReviewContext(ctx, t.GH, strings.TrimSpace(a.Ref))
+	if err != nil {
+		return "", fmt.Errorf("gh_pr_review_context: %w", err)
+	}
+	return renderPRReviewContext(snap), nil
+}
+
+// PRReviewContext is the typed snapshot the review tool returns.
+// Same shape rationale as CommitContext / PRContext: callers
+// branch on typed fields, and the rendered string is for the
+// model's consumption rather than the only access path.
+type PRReviewContext struct {
+	Ref           string
+	NotFound      bool   // true when gh couldn't resolve the ref
+	GhUnavailable bool   // true when gh is missing / unauthed
+	FetchErr      string // any other Interface error, surfaced verbatim
+
+	PR            github.PRDetails
+	Checks        []github.CheckRun
+	Diff          string
+	DiffCapped    bool
+	FailingChecks []string
+}
+
+// BuildPRReviewContext is the deterministic core of
+// gh_pr_review_context. Fans out the three Interface calls
+// (ReadPR, ListPRChecks, ReadPRDiff), folds the typed errors into
+// the snapshot's NotFound / GhUnavailable flags so the caller can
+// branch without parsing err strings, and computes the
+// FailingChecks list for the slash command to surface at the top
+// of the review.
+func BuildPRReviewContext(ctx context.Context, client github.Interface, ref string) (PRReviewContext, error) {
+	snap := PRReviewContext{Ref: ref}
+
+	req := github.ReadPRRequest{Ref: ref}
+	pr, err := client.ReadPR(ctx, req)
+	if errors.Is(err, github.ErrGhUnavailable) {
+		snap.GhUnavailable = true
+		return snap, nil
+	}
+	if errors.Is(err, github.ErrPRNotFound) {
+		snap.NotFound = true
+		return snap, nil
+	}
+	if err != nil {
+		snap.FetchErr = err.Error()
+		return snap, nil
+	}
+	snap.PR = pr
+
+	checks, err := client.ListPRChecks(ctx, req)
+	if err != nil && !errors.Is(err, github.ErrPRNotFound) {
+		// Checks fetch failure is soft — the PR metadata is the
+		// load-bearing piece. Surface as FetchErr so the snapshot
+		// hints at the gap without blocking the review.
+		snap.FetchErr = "checks: " + err.Error()
+	}
+	snap.Checks = checks
+	for _, c := range checks {
+		if isFailingCheck(c) {
+			snap.FailingChecks = append(snap.FailingChecks, c.Name)
+		}
+	}
+
+	diff, err := client.ReadPRDiff(ctx, req)
+	if err != nil && !errors.Is(err, github.ErrPRNotFound) {
+		// Same soft-fail rationale as checks: the review can run
+		// against metadata alone if the diff fetch hiccups.
+		if snap.FetchErr != "" {
+			snap.FetchErr += "; diff: " + err.Error()
+		} else {
+			snap.FetchErr = "diff: " + err.Error()
+		}
+	}
+	snap.Diff, snap.DiffCapped = capString(diff, prReviewDiffCap)
+
+	return snap, nil
+}
+
+// isFailingCheck classifies a check run as broken. We surface
+// FAILURE / CANCELLED / TIMED_OUT / ACTION_REQUIRED as failing
+// because each represents a state a human reviewer would want
+// flagged. NEUTRAL and SKIPPED are non-blocking; PENDING /
+// IN_PROGRESS / QUEUED are still in flight (the snapshot's
+// rendered output covers them separately).
+func isFailingCheck(c github.CheckRun) bool {
+	switch strings.ToUpper(c.Conclusion) {
+	case "FAILURE", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED":
+		return true
+	}
+	// Some Status-API rollups don't populate Conclusion separately
+	// from State — handle the State==FAILURE shape too.
+	switch strings.ToUpper(c.State) {
+	case "FAILURE", "ERROR":
+		return true
+	}
+	return false
+}
+
+// renderPRReviewContext flattens the snapshot into the labeled
+// sections the model reads. Order: ## state header (typed flags
+// the caller branches on first) → ## pr metadata → ## checks
+// summary + list → ## diff. Failing-check names are duplicated
+// in ## state and the summary so a model scanning either
+// surface picks them up.
+func renderPRReviewContext(s PRReviewContext) string {
+	var b strings.Builder
+
+	// ## state goes first so the caller branches on the typed
+	// flags before doing any rendering work.
+	fmt.Fprintf(&b, "## state\nref=%s\nnot_found=%v\ngh_unavailable=%v\n",
+		s.Ref, s.NotFound, s.GhUnavailable)
+	if s.FetchErr != "" {
+		fmt.Fprintf(&b, "fetch_error=%s\n", s.FetchErr)
+	}
+	if len(s.FailingChecks) > 0 {
+		fmt.Fprintf(&b, "failing_checks=%s\n", strings.Join(s.FailingChecks, ","))
+	}
+
+	if s.NotFound || s.GhUnavailable {
+		// Nothing more to render — the slash command surfaces a
+		// "no PR found" / "gh unavailable" message and stops.
+		return strings.TrimRight(b.String(), "\n") + "\n"
+	}
+
+	b.WriteString("\n## pr\n")
+	fmt.Fprintf(&b, "number=%d\nstate=%s\ndraft=%v\nbase=%s\nhead=%s\nhead_sha=%s\nmergeable=%s\nauthor=%s\nurl=%s\n",
+		s.PR.Number, s.PR.State, s.PR.Draft, s.PR.BaseRef, s.PR.HeadRef,
+		s.PR.HeadSHA, s.PR.Mergeable, s.PR.Author, s.PR.URL)
+	fmt.Fprintf(&b, "title=%s\n", s.PR.Title)
+	if len(s.PR.Labels) > 0 {
+		fmt.Fprintf(&b, "labels=%s\n", strings.Join(s.PR.Labels, ","))
+	}
+	if strings.TrimSpace(s.PR.Body) != "" {
+		b.WriteString("body=|\n")
+		for _, line := range strings.Split(s.PR.Body, "\n") {
+			b.WriteString("  ")
+			b.WriteString(line)
+			b.WriteString("\n")
+		}
+	}
+
+	b.WriteString("\n## checks.summary\n")
+	if len(s.Checks) == 0 {
+		b.WriteString("(no checks)\n")
+	} else {
+		pass, fail, pending := 0, 0, 0
+		for _, c := range s.Checks {
+			switch {
+			case isFailingCheck(c):
+				fail++
+			case strings.ToUpper(c.Conclusion) == "SUCCESS" || strings.ToUpper(c.State) == "SUCCESS":
+				pass++
+			default:
+				pending++
+			}
+		}
+		fmt.Fprintf(&b, "total=%d pass=%d fail=%d pending=%d\n",
+			len(s.Checks), pass, fail, pending)
+	}
+
+	b.WriteString("\n## checks\n")
+	if len(s.Checks) == 0 {
+		b.WriteString("(none)\n")
+	} else {
+		for _, c := range s.Checks {
+			state := c.State
+			if c.Conclusion != "" {
+				state = c.State + "/" + c.Conclusion
+			}
+			fmt.Fprintf(&b, "- %s [%s]\n", c.Name, state)
+		}
+	}
+
+	b.WriteString("\n## diff\n")
+	if strings.TrimSpace(s.Diff) == "" {
+		b.WriteString("(empty)\n")
+	} else {
+		b.WriteString(s.Diff)
+		if !strings.HasSuffix(s.Diff, "\n") {
+			b.WriteString("\n")
+		}
+		if s.DiffCapped {
+			fmt.Fprintf(&b, "[truncated at %d bytes — run gh pr diff %s for the full diff]\n",
+				prReviewDiffCap, s.Ref)
+		}
+	}
+
+	return strings.TrimRight(b.String(), "\n") + "\n"
+}
+
 // renderPRCreateResult shapes the result envelope for the model.
 // Field names match PRCreateResult so a model parsing the output
 // maps back without ambiguity. The "draft preview" instruction at
