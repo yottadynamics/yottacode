@@ -1,0 +1,12 @@
+{
+  "url": "https://api.github.com/repos/yottadynamics/yottacode/releases/123456",
+  "html_url": "https://github.com/yottadynamics/yottacode/releases/tag/v0.3.0",
+  "id": 123456,
+  "tag_name": "v0.3.0",
+  "name": "v0.3.0",
+  "draft": false,
+  "prerelease": false,
+  "created_at": "2026-06-01T10:00:00Z",
+  "published_at": "2026-06-01T10:00:00Z",
+  "body": "Release notes for v0.3.0"
+}

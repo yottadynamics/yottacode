@@ -8,19 +8,53 @@ This page covers every install path plus post-install configuration. For the fas
 - A modern terminal for the interactive TUI
 - A model provider: Ollama, OpenAI, Anthropic, Gemini, xAI, ChatGPT OAuth through `openai-auth`, or any OpenAI-compatible `/v1` API
 
-## Pre-built binaries
-
-Linux and macOS binaries (amd64 + arm64) ship on the [releases page](https://github.com/yottadynamics/yottacode/releases).
+## Installer script (recommended)
 
 ```bash
-VERSION=0.1.0
+curl -fsSL https://raw.githubusercontent.com/yottadynamics/yottacode/main/install.sh | bash
+```
+
+The script detects your OS/arch (Linux + macOS, amd64 + arm64), resolves the latest GitHub release (or honors `VERSION=0.3.0` if set), verifies the archive against `SHA256SUMS`, and installs to `$HOME/.yottacode/bin/yottacode`. No `sudo` required. It then offers to append a `PATH` export to your shell rc file (zsh / bash / fish / sh detected from `$SHELL`), backing up the rc first.
+
+Useful flags and env:
+
+- `VERSION=0.3.0` — pin a version instead of "latest".
+- `INSTALL_DIR=/custom/path` — override the install location.
+- `--no-modify-rc` — skip the rc-file edit (useful when you manage `PATH` yourself).
+- `--yes` / `-y` — non-interactive: assume "yes" to prompts (required in CI).
+- `NO_COLOR=1` — disable ANSI colors and animations.
+
+Re-running the installer upgrades in place: same flow, the rc edit is detected and skipped via sentinel comments.
+
+## Updating
+
+`yottacode` checks GitHub for a newer release once per day on startup. The check is asynchronous, cached at `~/.yottacode/cache/update-check.json`, and runs **only** when the root interactive command launches into a real terminal — `yottacode run`, `yottacode --version`, scripts, and pipes never trigger it. When a newer release exists, you'll see a one-line prompt before the TUI starts:
+
+```
+yottacode 0.3.0 is available (you have 0.2.0).
+Release notes: https://github.com/yottadynamics/yottacode/releases/tag/v0.3.0
+Install now? [y/N]:
+```
+
+Answer `y` and the installer runs in the foreground; yottacode exits cleanly once it's done so you can re-launch on the new binary. Answer anything else and the TUI starts as normal.
+
+To disable the check entirely (CI, privacy, sandboxes): `export YOTTACODE_NO_UPDATE_CHECK=1`. To force a refresh: `rm ~/.yottacode/cache/update-check.json`.
+
+## Manual binary install
+
+<details><summary>Pinned download + manual extract</summary>
+
+```bash
+VERSION=0.2.0
 # Swap linux/darwin and amd64/arm64 to match your machine
 curl -fsSL https://github.com/yottadynamics/yottacode/releases/download/v${VERSION}/yottacode_${VERSION}_linux_amd64.tar.gz \
   | tar -xz
-sudo install -m 0755 ./yottacode /usr/local/bin/yottacode
+install -m 0755 ./yottacode "$HOME/.yottacode/bin/yottacode"
 ```
 
 Archive matrix: `yottacode_${VERSION}_{linux,darwin}_{amd64,arm64}.tar.gz`. Each release also publishes a `SHA256SUMS` file for verification.
+
+</details>
 
 ## Build from source
 

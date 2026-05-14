@@ -8,15 +8,13 @@
 
 ## Getting Started
 
-Pre-built binaries for Linux and macOS (amd64 + arm64) ship on the [releases page](https://github.com/yottadynamics/yottacode/releases). Download, extract, and put `yottacode` on your `PATH`:
+One-liner install (Linux + macOS, amd64 + arm64):
 
 ```bash
-export VERSION=0.1.0
-# Swap linux/darwin and amd64/arm64 to match your machine
-curl -fsSL https://github.com/yottadynamics/yottacode/releases/download/v${VERSION}/yottacode_${VERSION}_linux_amd64.tar.gz \
-  | tar -xz
-sudo install -m 0755 ./yottacode /usr/local/bin/yottacode
+curl -fsSL https://raw.githubusercontent.com/yottadynamics/yottacode/main/install.sh | bash
 ```
+
+The installer drops `yottacode` into `~/.yottacode/bin/` (no `sudo`), verifies the release archive against published SHA256 sums, and offers to add the directory to your shell `PATH` (creating a timestamped backup of the rc file before any edit). Pass `--no-modify-rc` to skip the rc edit, or `--yes` to accept it non-interactively.
 
 Then launch the interactive setup wizard to pick a provider and model:
 
@@ -24,7 +22,23 @@ Then launch the interactive setup wizard to pick a provider and model:
 yottacode setup
 ```
 
-Available archives: `yottacode_${VERSION}_{linux,darwin}_{amd64,arm64}.tar.gz`. Checksums in [`SHA256SUMS`](https://github.com/yottadynamics/yottacode/releases/download/v0.1.0/SHA256SUMS). Windows users should run yottacode under WSL.
+After install, yottacode checks GitHub for a newer release once a day on startup (cached at `~/.yottacode/cache/update-check.json`) and offers to upgrade before the TUI starts. Set `YOTTACODE_NO_UPDATE_CHECK=1` to disable.
+
+Windows users should run yottacode under WSL.
+
+<details><summary>Manual install (pinned version, no installer script)</summary>
+
+```bash
+export VERSION=0.2.0
+# Swap linux/darwin and amd64/arm64 to match your machine
+curl -fsSL https://github.com/yottadynamics/yottacode/releases/download/v${VERSION}/yottacode_${VERSION}_linux_amd64.tar.gz \
+  | tar -xz
+install -m 0755 ./yottacode "$HOME/.yottacode/bin/yottacode"
+```
+
+Available archives: `yottacode_${VERSION}_{linux,darwin}_{amd64,arm64}.tar.gz`; checksums in `SHA256SUMS` on each release.
+
+</details>
 
 For build-from-source, cross-compilation, manual provider configuration, and other install paths, see [`docs/installation.md`](docs/installation.md).
 

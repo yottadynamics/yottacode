@@ -1,10 +1,12 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 
@@ -121,5 +123,43 @@ func TestVersionCmd(t *testing.T) {
 	want := fmt.Sprintf("yottacode version %s\n", version.Full())
 	if out.String() != want {
 		t.Fatalf("version command output = %q, want %q", out.String(), want)
+	}
+}
+
+// shouldRunUpdateCheck has three skip paths. The tty check naturally
+// returns false under `go test` (stdin is a pipe), which gives us the
+// "non-tty" branch coverage for free; t.Setenv covers the env-var
+// branch. Skipping goroutine + network coverage here keeps the test
+// offline and deterministic.
+
+func TestShouldRunUpdateCheck_OptOut(t *testing.T) {
+	t.Setenv("YOTTACODE_NO_UPDATE_CHECK", "1")
+	if shouldRunUpdateCheck() {
+		t.Fatalf("expected false when YOTTACODE_NO_UPDATE_CHECK=1")
+	}
+}
+
+func TestShouldRunUpdateCheck_NonTTY(t *testing.T) {
+	t.Setenv("YOTTACODE_NO_UPDATE_CHECK", "")
+	if shouldRunUpdateCheck() {
+		t.Fatalf("expected false under go test (stdin is not a tty)")
+	}
+}
+
+func TestIsTerminal_DevNull(t *testing.T) {
+	f, err := os.Open(os.DevNull)
+	if err != nil {
+		t.Fatalf("open /dev/null: %v", err)
+	}
+	t.Cleanup(func() { _ = f.Close() })
+	if isTerminal(f) {
+		t.Fatalf("/dev/null should not be a terminal")
+	}
+}
+
+func TestMaybeStartUpdateCheck_NilWhenOptedOut(t *testing.T) {
+	t.Setenv("YOTTACODE_NO_UPDATE_CHECK", "1")
+	if ch := maybeStartUpdateCheck(context.Background()); ch != nil {
+		t.Fatalf("expected nil channel when opted out, got %v", ch)
 	}
 }

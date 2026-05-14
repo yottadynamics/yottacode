@@ -8,7 +8,33 @@ the project uses semantic versioning once it's past `1.0.0`.
 
 ### Added
 
+- `install.sh` one-liner installer (`curl … | bash`) for fresh
+  installs and in-place upgrades. Installs to `~/.yottacode/bin/` (no
+  `sudo`), verifies the release archive against `SHA256SUMS`, and —
+  with confirmation — appends a `PATH` export to the detected shell
+  rc file (zsh / bash / fish / sh), creating a timestamped backup
+  first. Honors `VERSION=`, `INSTALL_DIR=`, `NO_COLOR=`,
+  `--no-modify-rc`, and `--yes`. Output uses indented step headers
+  (`▸ Detecting platform (1/5)`) with UTF-8 glyphs for status
+  (`✓`/`✗`/`!`/`•`), ANSI colors when stdout is a TTY, and an
+  ASCII-only fallback for non-UTF-8 locales — pipes and CI runs see a
+  plain log with no escape sequences. `curl`'s native progress bar
+  drives the archive download.
+- Pre-TUI upgrade prompt. On startup of the root interactive command,
+  yottacode does an async GitHub release check (cached 24 h at
+  `~/.yottacode/cache/update-check.json`); when a newer release exists
+  the user sees a one-line prompt before the TUI starts and can accept
+  to run `install.sh` in the foreground. The check skips automatically
+  when stdin/stdout is not a terminal, and never runs for subcommands
+  like `yottacode run` or `yottacode --version`.
+- `YOTTACODE_NO_UPDATE_CHECK=1` env opts out of the daily check.
+
 ### Changed
+
+- Recommended install path moved from `/usr/local/bin/` (manual `sudo
+  install`) to `~/.yottacode/bin/` via `install.sh`. The README's old
+  manual block is preserved under a collapsed "Manual install" section
+  for users who want to pin a specific version without the script.
 
 ### Fixed
 

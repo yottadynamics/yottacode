@@ -65,7 +65,7 @@ require (
 	github.com/yuin/goldmark-emoji v1.0.6 // indirect
 	golang.org/x/net v0.41.0 // indirect
 	golang.org/x/sys v0.42.0 // indirect
-	golang.org/x/term v0.36.0 // indirect
+	golang.org/x/term v0.36.0
 	golang.org/x/text v0.30.0 // indirect
 	modernc.org/libc v1.72.0 // indirect
 	modernc.org/mathutil v1.7.1 // indirect

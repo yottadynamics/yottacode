@@ -1,17 +1,21 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 
 	"github.com/yottadynamics/yottacode/internal/adapter"
 	"github.com/yottadynamics/yottacode/internal/cli"
@@ -19,6 +23,7 @@ import (
 	"github.com/yottadynamics/yottacode/internal/oneshot"
 	"github.com/yottadynamics/yottacode/internal/session"
 	"github.com/yottadynamics/yottacode/internal/tui"
+	"github.com/yottadynamics/yottacode/internal/update"
 	"github.com/yottadynamics/yottacode/internal/version"
 	"github.com/yottadynamics/yottacode/internal/wizard"
 )
@@ -85,6 +90,11 @@ Configuration (no built-in defaults — must be set via flag or env):
   --api-key    / $YOTTACODE_API_KEY    optional bearer token (Ollama ignores it)`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// Fire the update check early so cache-miss latency overlaps
+			// with cli.Resolve / wizard / continue-resolution. Returns
+			// nil when the check is opted out — caller treats nil as
+			// "nothing to consume."
+			updateCh := maybeStartUpdateCheck(cmd.Context())
 			if err := cli.Resolve(opts); err != nil {
 				if shouldAutoLaunchSetup(*opts) {
 					if setupErr := runSetupThenResolve(cmd, opts); setupErr != nil {
@@ -97,10 +107,92 @@ Configuration (no built-in defaults — must be set via flag or env):
 			if err := resolveContinue(opts); err != nil {
 				return err
 			}
+			maybePromptUpgrade(cmd.Context(), updateCh)
 			return tui.Run(cmd.Context(), *opts)
 		},
 	}
 	return cmd
+}
+
+// shouldRunUpdateCheck gates the once-a-day GitHub poll. We skip when:
+//   - YOTTACODE_NO_UPDATE_CHECK=1 (documented opt-out for paranoid
+//     users, CI, sandboxes)
+//   - stdin or stdout isn't a terminal (pipes, CI, scripts — there's no
+//     one to answer the prompt)
+//   - version.Current is empty (defensive; release builds always set it)
+func shouldRunUpdateCheck() bool {
+	if os.Getenv("YOTTACODE_NO_UPDATE_CHECK") == "1" {
+		return false
+	}
+	if version.Current == "" {
+		return false
+	}
+	return isTerminal(os.Stdin) && isTerminal(os.Stdout)
+}
+
+func isTerminal(f *os.File) bool {
+	return term.IsTerminal(int(f.Fd()))
+}
+
+func maybeStartUpdateCheck(ctx context.Context) <-chan update.Result {
+	if !shouldRunUpdateCheck() {
+		return nil
+	}
+	return update.CheckBackground(ctx)
+}
+
+// maybePromptUpgrade consumes the update channel with a short timeout
+// and, if a newer release exists, asks the user whether to install it.
+// On "y" the function shells out to install.sh and exits the process on
+// success — the running binary does not exec the new one. On anything
+// else (including timeout, channel close, or "n"), control returns to
+// the caller and the TUI launches normally.
+func maybePromptUpgrade(ctx context.Context, ch <-chan update.Result) {
+	if ch == nil {
+		return
+	}
+	var r update.Result
+	select {
+	case res, ok := <-ch:
+		if !ok {
+			return
+		}
+		r = res
+	case <-time.After(1500 * time.Millisecond):
+		return
+	}
+	if !r.NewVersion {
+		return
+	}
+	fmt.Fprintf(os.Stderr, "yottacode %s is available (you have %s).\n", r.Latest, r.Current)
+	if r.URL != "" {
+		fmt.Fprintf(os.Stderr, "Release notes: %s\n", r.URL)
+	}
+	fmt.Fprint(os.Stderr, "Install now? [y/N]: ")
+	reader := bufio.NewReader(os.Stdin)
+	line, err := reader.ReadString('\n')
+	if err != nil && line == "" {
+		return
+	}
+	answer := strings.ToLower(strings.TrimSpace(line))
+	if answer != "y" && answer != "yes" {
+		return
+	}
+	if err := runInstaller(ctx); err != nil {
+		fmt.Fprintf(os.Stderr, "Upgrade failed (%v). Continuing with current version...\n", err)
+		return
+	}
+	fmt.Fprintln(os.Stderr, "yottacode upgraded. Run 'yottacode' again to start with the new version.")
+	os.Exit(0)
+}
+
+func runInstaller(ctx context.Context) error {
+	installCmd := exec.CommandContext(ctx, "bash", "-c",
+		"curl -fsSL https://raw.githubusercontent.com/yottadynamics/yottacode/main/install.sh | bash")
+	installCmd.Stdin = os.Stdin
+	installCmd.Stdout = os.Stdout
+	installCmd.Stderr = os.Stderr
+	return installCmd.Run()
 }
 
 // shouldAutoLaunchSetup reports whether a Resolve failure should
