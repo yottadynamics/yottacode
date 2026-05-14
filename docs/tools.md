@@ -715,8 +715,10 @@ Stdout is capped at 1 MiB; stderr at 64 KiB.
 ## todo_write
 
 Maintain the agent's working task plan. The list is owned by the session and
-rendered as a card in the transcript so the user can track multi-step work
-without reading every tool call.
+rendered as a live card in the TUI's in-flight area — updates in place on
+every `todo_write` call, so the user sees status flips without each call
+stacking a new card. At turn end one final-state snapshot lands in
+scrollback as the historical receipt for that turn.
 
 | Param | Type | Default | Notes |
 |---|---|---|---|
@@ -729,7 +731,12 @@ so it never prompts for approval.
 
 The model is instructed to call `todo_write` proactively for any task with
 three or more distinct steps and to update it as soon as each step finishes.
-Pass an empty list to clear the plan.
+When work has both a design/research phase and an execution phase, the
+todo list must end at the design-presentation step — implementation
+todos are only added in a follow-up `todo_write` call after the user has
+explicitly agreed to the design, so the plan never pre-stages unapproved
+work. Pass an empty list to clear the plan; the live card disappears and
+no end-of-turn snapshot is emitted.
 
 ## exit_plan_mode
 

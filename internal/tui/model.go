@@ -272,6 +272,27 @@ type Model struct {
 	codeBlockLang string
 	inCodeBlock   bool
 
+	// livePlan is the in-flight todo snapshot rendered as a live card
+	// in View() (next to/below the spinner). Updated in place on every
+	// agent.TodoUpdate; nil/empty means "no plan to show" (never set,
+	// or cleared via an empty todo_write call). Persists across turns
+	// so the user can glance at the active plan between turns —
+	// matches Claude Code's TodoWrite surface. The per-call ToolResult
+	// scrollback card for todo_write is suppressed (see handleAgentEvent)
+	// because the live card already shows the same content; without
+	// the suppression every todo_write would stack a duplicate card in
+	// scrollback alongside the in-place live render.
+	livePlan []agent.Todo
+
+	// livePlanTouched flips true the first time todo_write fires in
+	// the current turn. Drives the end-of-turn snapshot: at TurnDone
+	// we commit a single full-card snapshot to scrollback IFF the plan
+	// was touched, then reset the flag. A turn that never touches the
+	// plan emits no snapshot, so the live card stays unchanged in the
+	// View and scrollback stays clean. Reset in TurnInterrupted too so
+	// a cancelled turn doesn't leave the flag armed for the next one.
+	livePlanTouched bool
+
 	// pendingCmds holds tea.Println commands queued during one Update tick.
 	// Flushed at the tail of Update via the wrapper below. Kept as a slice on
 	// a pointer-backed field (strings.Builder above is *strings.Builder for
@@ -589,6 +610,18 @@ func New(parent context.Context, c Config) Model {
 		contextTokensInit = contextwindow.EstimateTokens(c.Session.Messages)
 	}
 
+	// Seed livePlan from the resumed session so the live plan card
+	// in View() reappears immediately on resume — the agent's
+	// PlanStore is already restored from sess.Todos in run.go, but
+	// the TUI keeps its own copy for the live-area render so resize
+	// and rendering don't need to reach across into agent state.
+	// livePlanTouched stays false: a resumed-but-untouched plan
+	// should not commit a redundant snapshot on the first TurnDone.
+	var livePlanInit []agent.Todo
+	if c.Session != nil && len(c.Session.Todos) > 0 {
+		livePlanInit = append([]agent.Todo(nil), c.Session.Todos...)
+	}
+
 	return Model{
 		parentCtx:              parent,
 		cfg:                    c.Cfg,
@@ -633,6 +666,7 @@ func New(parent context.Context, c Config) Model {
 		streaming:              &strings.Builder{},
 		reasoning:              &strings.Builder{},
 		codeBlockBuf:           &strings.Builder{},
+		livePlan:               livePlanInit,
 		firstMessageSent:       firstMessageSent,
 		contextTokens:          contextTokensInit,
 		// Cursor starts visible — the first blink tick (530ms after
@@ -1453,6 +1487,13 @@ func (m Model) View() string {
 			parts = append(parts, preview)
 		}
 	}
+	if card := m.renderLivePlanCard(); card != "" {
+		// Trailing blank gives the card breathing room from the
+		// thinking row below (during a turn) or the input box
+		// (between turns). Without it the card's `╰ plan updated`
+		// footer sits flush against the spinner row.
+		parts = append(parts, card, "")
+	}
 	if m.turnActive {
 		parts = append(parts, m.renderThinkingRow(), "")
 	}
@@ -1839,6 +1880,26 @@ func (m Model) renderThinkingRow() string {
 	indicator := styleSpinner.Render(m.renderTurnStatus())
 	hint := lipgloss.NewStyle().Foreground(colorMuted).Render(" · Ctrl+C to cancel")
 	return indicator + hint
+}
+
+// renderLivePlanCard returns the in-flight todo card for the live
+// frame, or "" when there is no plan to show. Re-rendered every
+// View() tick — when an agent.TodoUpdate event flips a status,
+// View() reads the new m.livePlan and the card content changes in
+// place, without anything new landing in scrollback. The matching
+// snapshot lands in scrollback at TurnDone (see the TurnDone case
+// in handleAgentEvent) so the user gets one historical receipt per
+// turn that touched the plan.
+//
+// Persists across turns: once seeded (either by an agent.TodoUpdate
+// or by resume via livePlanInit), the card stays in the live frame
+// until the agent calls todo_write with an empty list, which sets
+// m.livePlan to nil and the card silently disappears.
+func (m Model) renderLivePlanCard() string {
+	if len(m.livePlan) == 0 {
+		return ""
+	}
+	return renderTodoCardFromTodos(m.livePlan, m.width)
 }
 
 // renderToolStartLine produces the "▸ <tool> ..." line that lands in
@@ -2591,6 +2652,19 @@ func (m Model) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 			m.pendingToolArgs = ""
 			break
 		}
+		// todo_write fires its visualization through a different path:
+		// the live plan card in View() (driven by the TodoUpdate event
+		// that always trails each successful todo_write call). Rendering
+		// the standard scrollback card here would stack a duplicate card
+		// for every plan flip — exactly the visual noise this surface is
+		// designed to avoid. The end-of-turn commit in TurnDone lands
+		// one final snapshot in scrollback.
+		if e.ToolName == "todo_write" {
+			m.pendingToolName = ""
+			m.pendingToolPreview = ""
+			m.pendingToolArgs = ""
+			break
+		}
 		// Render the buffered start info + this result as a unified
 		// tool card. Leading blank line gives each card breathing
 		// room from the previous emission.
@@ -2612,11 +2686,18 @@ func (m Model) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 		// against the card's `╰ done` footer with no breathing room.
 		m.streamingMode = streamIdle
 	case agent.TodoUpdate:
-		// The unified tool card already rendered the plan items
-		// (todo_write's renderToolCard branch reads argsJSON and emits
-		// one row per item). The event's only remaining job is to
-		// keep the session in sync so the per-turn Save persists the
-		// list across resumes.
+		// Drive the live plan card in View(): livePlan is what
+		// renderLivePlanCard reads on every redraw, livePlanTouched
+		// arms the end-of-turn snapshot commit in TurnDone. An empty
+		// e.Todos clears the live card immediately (the model just
+		// called todo_write with []) without emitting anything to
+		// scrollback — silently disappearing matches the "plan cleared"
+		// semantics. Keep m.sess.Todos in sync so the per-turn Save
+		// persists the list across resumes; the constructor reseeds
+		// livePlan from sess.Todos so a resumed session sees the card
+		// immediately.
+		m.livePlan = e.Todos
+		m.livePlanTouched = true
 		if m.sess != nil {
 			m.sess.Todos = e.Todos
 		}
@@ -2643,6 +2724,24 @@ func (m Model) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 		}
 	case agent.TurnDone:
 		m.commitStreaming()
+		// If the agent touched the plan this turn, commit one full
+		// snapshot of the final state to scrollback AND clear the
+		// live card. Without the clear, View() keeps rendering
+		// m.livePlan after the commit, so the user sees the same
+		// plan twice — once in scrollback and once still in the
+		// live frame — for the rest of the inter-turn idle period.
+		// Clearing makes the handoff clean: live card during the
+		// turn, scrollback snapshot after. The card reappears on
+		// the next turn that fires todo_write (a fresh TodoUpdate
+		// repopulates m.livePlan). A turn that did NOT touch the
+		// plan leaves m.livePlan alone so a resumed-session plan
+		// stays visible between turns until the agent touches it.
+		if m.livePlanTouched && len(m.livePlan) > 0 {
+			m.appendLine("")
+			m.appendLine(renderTodoCardFromTodos(m.livePlan, m.width))
+			m.livePlan = nil
+		}
+		m.livePlanTouched = false
 		// Footnote: how long the turn took, end-to-end (model
 		// thinking + tool execution). Rendered in the same
 		// dim/italic style as other inline notices so it fades into
@@ -2658,6 +2757,11 @@ func (m Model) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 		// was queued by Enter, turnEndedMsg will auto-submit it
 		// immediately after — no extra prompt needed here.
 		m.commitStreaming()
+		// Don't commit a plan snapshot for an interrupted turn — the
+		// in-flight state was, by definition, not what the agent
+		// intended to ship. Reset the flag so the NEXT TurnDone
+		// doesn't fire a stale snapshot referencing this turn's work.
+		m.livePlanTouched = false
 		msg := "↩ interrupted"
 		if e.OrphanedCalls > 0 {
 			noun := "tool calls"
