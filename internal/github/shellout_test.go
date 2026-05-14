@@ -145,6 +145,144 @@ func TestBuildPRViewArgs_RepoFlag(t *testing.T) {
 	}
 }
 
+func TestShortcutPRTarget_FullInfoShortCircuits(t *testing.T) {
+	// Owner + Repo + numeric Ref is the only shape that lets us
+	// skip the `gh pr view` lookup. Verify the policy doesn't
+	// silently expand or contract.
+	owner, repo, number, ok := shortcutPRTarget(UpdatePRRequest{
+		Owner: "o", Repo: "r", Ref: "17",
+	})
+	if !ok {
+		t.Fatalf("expected shortcut to fire on full info; got ok=false")
+	}
+	if owner != "o" || repo != "r" || number != 17 {
+		t.Errorf("returned %s/%s#%d; want o/r#17", owner, repo, number)
+	}
+}
+
+func TestShortcutPRTarget_RequiresAllThreeFields(t *testing.T) {
+	cases := []struct {
+		name string
+		req  UpdatePRRequest
+	}{
+		{"missing owner", UpdatePRRequest{Repo: "r", Ref: "17"}},
+		{"missing repo", UpdatePRRequest{Owner: "o", Ref: "17"}},
+		{"branch ref not numeric", UpdatePRRequest{Owner: "o", Repo: "r", Ref: "feature/x"}},
+		{"empty ref", UpdatePRRequest{Owner: "o", Repo: "r"}},
+		{"whitespace ref", UpdatePRRequest{Owner: "o", Repo: "r", Ref: "   "}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, _, _, ok := shortcutPRTarget(tc.req)
+			if ok {
+				t.Errorf("expected shortcut to decline; got ok=true")
+			}
+		})
+	}
+}
+
+func TestParsePRTarget_FromGhJSON(t *testing.T) {
+	// Shape matching `gh pr view --json url` — the URL embeds
+	// owner/repo/number all three.
+	in := `{"url": "https://github.com/yottadynamics/yottacode/pull/17"}`
+	got, err := parsePRTarget(in)
+	if err != nil {
+		t.Fatalf("parsePRTarget: %v", err)
+	}
+	if got.Owner != "yottadynamics" || got.Repo != "yottacode" || got.Number != 17 {
+		t.Errorf("got %+v; want yottadynamics/yottacode#17", got)
+	}
+}
+
+func TestParsePRTarget_InvalidJSON(t *testing.T) {
+	_, err := parsePRTarget("not json")
+	if err == nil {
+		t.Fatal("expected parse error")
+	}
+	if !strings.Contains(err.Error(), "parse pr target") {
+		t.Errorf("expected wrapped error, got %v", err)
+	}
+}
+
+func TestPRTargetFromURL_Variants(t *testing.T) {
+	cases := []struct {
+		name   string
+		url    string
+		owner  string
+		repo   string
+		number int
+		ok     bool
+	}{
+		{"same-repo PR", "https://github.com/yottadynamics/yottacode/pull/17", "yottadynamics", "yottacode", 17, true},
+		{"large number", "https://github.com/owner/repo/pull/99999", "owner", "repo", 99999, true},
+		{"hyphenated names", "https://github.com/some-org/some-repo/pull/3", "some-org", "some-repo", 3, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := prTargetFromURL(tc.url)
+			if err != nil {
+				t.Fatalf("prTargetFromURL(%q): %v", tc.url, err)
+			}
+			if got.Owner != tc.owner || got.Repo != tc.repo || got.Number != tc.number {
+				t.Errorf("got %+v; want %s/%s#%d", got, tc.owner, tc.repo, tc.number)
+			}
+		})
+	}
+}
+
+func TestPRTargetFromURL_RejectsNearMisses(t *testing.T) {
+	cases := []struct {
+		name string
+		url  string
+	}{
+		{"issue not pull", "https://github.com/o/r/issues/17"},
+		{"missing pull segment", "https://github.com/o/r/17"},
+		{"non-github host", "https://gitlab.com/o/r/pull/17"},
+		{"trailing slash", "https://github.com/o/r/pull/17/"},
+		{"missing number", "https://github.com/o/r/pull/"},
+		{"empty", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := prTargetFromURL(tc.url)
+			if err == nil {
+				t.Errorf("expected error for %q, got nil", tc.url)
+			}
+		})
+	}
+}
+
+func TestParsePATCHResponse_PullsURLAndNumber(t *testing.T) {
+	// GitHub's REST API PATCH returns the full updated PR. We
+	// only care about html_url and number; unknown fields are
+	// ignored by json.Unmarshal.
+	in := `{
+		"number": 17,
+		"html_url": "https://github.com/yottadynamics/yottacode/pull/17",
+		"title": "irrelevant for this assertion",
+		"body": "also irrelevant",
+		"state": "open"
+	}`
+	got := parsePATCHResponse(in)
+	if got.URL != "https://github.com/yottadynamics/yottacode/pull/17" {
+		t.Errorf("URL = %q", got.URL)
+	}
+	if got.Number != 17 {
+		t.Errorf("Number = %d", got.Number)
+	}
+}
+
+func TestParsePATCHResponse_MalformedReturnsZero(t *testing.T) {
+	// Deliberately swallows JSON errors — callers (UpdatePR)
+	// surface "succeeded but no URL" as the failure mode the
+	// model sees, matching the CreatePR shape. Same UX whether
+	// gh succeeds with junk stdout or fails outright.
+	got := parsePATCHResponse("not json")
+	if got.URL != "" || got.Number != 0 {
+		t.Errorf("expected zero value on malformed input, got %+v", got)
+	}
+}
+
 func TestBuildPRDiffArgs(t *testing.T) {
 	args := buildPRDiffArgs(ReadPRRequest{Ref: "feature/x"})
 	want := []string{"pr", "diff", "feature/x"}

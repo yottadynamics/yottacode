@@ -66,6 +66,16 @@ type Interface interface {
 	// `/git-review-pr` flow surfaces failing checks at the top of
 	// the review, which is why typed access matters here.
 	ListPRChecks(ctx context.Context, req ReadPRRequest) ([]CheckRun, error)
+
+	// UpdatePR rewrites an existing PR's title and body. Used by
+	// /git-update-pr after follow-up commits make the original
+	// description stale. Other PR-level edits (labels, base,
+	// reviewers, draft toggle) are intentionally out of scope —
+	// the v0.5.0 spec defers them until a concrete workflow asks.
+	// Returns ErrPRNotFound when nothing matches the ref;
+	// ErrGhUnavailable when the local environment can't make the
+	// call.
+	UpdatePR(ctx context.Context, req UpdatePRRequest) (UpdatePRResult, error)
 }
 
 // CreatePRRequest is the typed payload for Interface.CreatePR.
@@ -129,6 +139,28 @@ type PRDetails struct {
 	Author    string // login, not display name
 	URL       string
 	Labels    []string
+}
+
+// UpdatePRRequest is the typed payload for Interface.UpdatePR.
+// Owner / Repo follow the same optional-inference semantics as
+// the other request types. Ref accepts a PR number or branch
+// name. Both Title and Body must be non-empty — empty Body would
+// clobber the existing description, which is almost never what
+// the caller wants and is easy to do by accident.
+type UpdatePRRequest struct {
+	Owner string
+	Repo  string
+	Ref   string
+	Title string
+	Body  string
+}
+
+// UpdatePRResult is the typed envelope UpdatePR returns on
+// success. URL is the canonical PR URL (unchanged by an edit),
+// surfaced so callers can re-link to the updated PR.
+type UpdatePRResult struct {
+	URL    string
+	Number int
 }
 
 // CheckRun is one row from ListPRChecks. Name is the check's

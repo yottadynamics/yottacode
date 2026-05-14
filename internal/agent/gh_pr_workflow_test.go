@@ -39,6 +39,11 @@ type fakeGH struct {
 	listChecksRes  []github.CheckRun
 	listChecksErr  error
 	listChecksReq  github.ReadPRRequest
+
+	// Update-PR side
+	updatePRRes github.UpdatePRResult
+	updatePRErr error
+	updatePRReq github.UpdatePRRequest
 }
 
 func (f *fakeGH) CreatePR(_ context.Context, req github.CreatePRRequest) (github.CreatePRResult, error) {
@@ -60,6 +65,11 @@ func (f *fakeGH) ReadPRDiff(_ context.Context, req github.ReadPRRequest) (string
 func (f *fakeGH) ListPRChecks(_ context.Context, req github.ReadPRRequest) ([]github.CheckRun, error) {
 	f.listChecksReq = req
 	return f.listChecksRes, f.listChecksErr
+}
+
+func (f *fakeGH) UpdatePR(_ context.Context, req github.UpdatePRRequest) (github.UpdatePRResult, error) {
+	f.updatePRReq = req
+	return f.updatePRRes, f.updatePRErr
 }
 
 func TestValidatePRTitle(t *testing.T) {
@@ -439,6 +449,135 @@ func TestRenderPRReviewContext_NotFoundShortCircuits(t *testing.T) {
 	}
 	if strings.Contains(out, "## pr") || strings.Contains(out, "## diff") {
 		t.Errorf("expected NotFound to omit pr/diff sections: %q", out)
+	}
+}
+
+func TestUpdatePR_ValidationFailsBeforeNetwork(t *testing.T) {
+	gh := &fakeGH{}
+	// Title with trailing period — validation must fail and the
+	// client must NOT be dialed.
+	res, err := UpdatePR(context.Background(), gh, github.UpdatePRRequest{
+		Ref: "17", Title: "refresh.", Body: "details",
+	})
+	if err != nil {
+		t.Fatalf("UpdatePR: %v", err)
+	}
+	if res.Updated {
+		t.Errorf("must not update on validation failure: %+v", res)
+	}
+	if res.ValidationErr == "" {
+		t.Errorf("expected validation error")
+	}
+	if gh.updatePRReq.Ref != "" {
+		t.Errorf("UpdatePR client must not be called on validation fail; got Ref=%q", gh.updatePRReq.Ref)
+	}
+}
+
+func TestUpdatePR_EmptyBodyRejected(t *testing.T) {
+	// Empty body is the silent footgun: a successful gh call
+	// with empty body clobbers the existing PR description.
+	// Validation catches it in Go.
+	gh := &fakeGH{}
+	res, err := UpdatePR(context.Background(), gh, github.UpdatePRRequest{
+		Ref: "17", Title: "refreshed title", Body: "   ",
+	})
+	if err != nil {
+		t.Fatalf("UpdatePR: %v", err)
+	}
+	if res.Updated {
+		t.Errorf("must not update with empty body: %+v", res)
+	}
+	if !strings.Contains(res.ValidationErr, "body is empty") {
+		t.Errorf("expected body-empty error, got %q", res.ValidationErr)
+	}
+}
+
+func TestUpdatePR_HappyPath(t *testing.T) {
+	gh := &fakeGH{updatePRRes: github.UpdatePRResult{
+		URL: "https://github.com/o/r/pull/17", Number: 17,
+	}}
+	res, err := UpdatePR(context.Background(), gh, github.UpdatePRRequest{
+		Ref: "17", Title: "refreshed scope", Body: "## Summary\n\n- bullet",
+	})
+	if err != nil {
+		t.Fatalf("UpdatePR: %v", err)
+	}
+	if !res.Updated {
+		t.Errorf("expected Updated=true: %+v", res)
+	}
+	if res.URL != "https://github.com/o/r/pull/17" || res.Number != 17 {
+		t.Errorf("URL/Number not populated: %+v", res)
+	}
+	// Verify the request was forwarded with the validated payload.
+	if gh.updatePRReq.Title != "refreshed scope" {
+		t.Errorf("title not forwarded: %+v", gh.updatePRReq)
+	}
+}
+
+func TestUpdatePR_GhUnavailableSurfaced(t *testing.T) {
+	gh := &fakeGH{updatePRErr: github.ErrGhUnavailable}
+	res, err := UpdatePR(context.Background(), gh, github.UpdatePRRequest{
+		Ref: "17", Title: "t", Body: "b",
+	})
+	if err != nil {
+		t.Fatalf("UpdatePR: %v", err)
+	}
+	if !res.GhUnavailable {
+		t.Errorf("expected GhUnavailable=true: %+v", res)
+	}
+}
+
+func TestUpdatePR_NotFoundSurfaced(t *testing.T) {
+	gh := &fakeGH{updatePRErr: github.ErrPRNotFound}
+	res, err := UpdatePR(context.Background(), gh, github.UpdatePRRequest{
+		Ref: "999", Title: "t", Body: "b",
+	})
+	if err != nil {
+		t.Fatalf("UpdatePR: %v", err)
+	}
+	if !res.NotFound {
+		t.Errorf("expected NotFound=true: %+v", res)
+	}
+}
+
+func TestUpdatePR_GenericGhErrorSurfaced(t *testing.T) {
+	gh := &fakeGH{updatePRErr: errors.New("rate limited")}
+	res, err := UpdatePR(context.Background(), gh, github.UpdatePRRequest{
+		Ref: "17", Title: "t", Body: "b",
+	})
+	if err != nil {
+		t.Fatalf("UpdatePR: %v", err)
+	}
+	if !strings.Contains(res.GhError, "rate limited") {
+		t.Errorf("GhError should surface verbatim cause: %q", res.GhError)
+	}
+}
+
+func TestGHPRUpdateTool_RoundsThroughTool(t *testing.T) {
+	gh := &fakeGH{updatePRRes: github.UpdatePRResult{
+		URL: "https://github.com/o/r/pull/17", Number: 17,
+	}}
+	tool := &GHPRUpdateTool{Cwd: t.TempDir(), GH: gh}
+	out, err := tool.Execute(context.Background(),
+		`{"ref":"17","title":"refreshed","body":"new body"}`)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if !strings.HasPrefix(out, "updated=true url=") {
+		t.Errorf("expected updated=true with url, got:\n%s", out)
+	}
+}
+
+func TestRenderPRUpdateResult_NotFoundShape(t *testing.T) {
+	out := renderPRUpdateResult(PRUpdateResult{NotFound: true})
+	if !strings.Contains(out, "reason=not_found") {
+		t.Errorf("missing not_found reason: %q", out)
+	}
+	// The hint pointing at /git-create-pr is the cross-family
+	// nudge — losing it would leave a user wondering what to do
+	// when their ref doesn't match an existing PR.
+	if !strings.Contains(out, "/git-create-pr") {
+		t.Errorf("expected /git-create-pr hint in NotFound shape: %q", out)
 	}
 }
 

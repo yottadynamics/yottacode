@@ -1,6 +1,6 @@
 # Built-in tools
 
-Thirty-six tools ship in `internal/agent` (thirty-four always-on plus `todo_write`
+Thirty-seven tools ship in `internal/agent` (thirty-five always-on plus `todo_write`
 and `exit_plan_mode`). The model sees their JSON-schema parameters via the
 OpenAI tools API; the TUI renders each invocation as a bordered card with a
 verb-style header (see [How tool calls render in the TUI](#how-tool-calls-render-in-the-tui)).
@@ -30,6 +30,7 @@ are also accepted).
 | [`gh_pr_context`](#gh_pr_context) | none | Typed snapshot for opening a PR (base resolution, ahead-count, push state, gh availability, PR template) |
 | [`gh_pr_create`](#gh_pr_create) | required | Validate title and open a PR via the `internal/github.Interface` adapter with typed result envelope |
 | [`gh_pr_review_context`](#gh_pr_review_context) | none | Fetch PR metadata + diff + check rollup via the `internal/github.Interface` adapter for review |
+| [`gh_pr_update`](#gh_pr_update) | required | Rewrite an existing PR's title and body via the `internal/github.Interface` adapter; title validation + non-empty-body guard |
 | [`git_push`](#git_push) | required | Push the current branch to origin with deterministic upstream detection; surfaces the PR URL when one exists |
 | [`git_log_file`](#git_log_file) | none | Show history for one file |
 | [`git_blame_lines`](#git_blame_lines) | none | Blame a line range in a file |
@@ -485,6 +486,40 @@ diff <ref>` for the full content.
 | `ref` | string | (uses current branch's PR) |
 
 No approval. Touches the network (not parallel-safe).
+
+## gh_pr_update
+
+Composite mutator that rewrites an existing PR's title and body.
+Paired with the procedural `/git-update-pr` slash command for the
+"follow-up commits made the original description stale" workflow.
+
+Deterministic guarantees:
+
+- **Title validation** (reuses `validatePRTitle` from `gh_pr_create`):
+  rejects empty, multi-line, oversize (>72 chars), and
+  trailing-period titles before dialing the adapter.
+- **Non-empty body guard:** empty body would clobber the existing
+  PR description, which is almost never intended. Caught in Go
+  with `updated=false reason=validation`.
+- **Scope-pinned:** only edits title and body. Labels, base,
+  reviewers, draft state, milestone, and projects are not
+  accepted — `/git-update-pr` enforces the same scope at the
+  prompt level.
+
+Returns a typed envelope. On success: `updated=true url=<url>
+number=<n>`. On a missing PR: `updated=false reason=not_found`
+with a hint pointing at `/git-create-pr`. On gh-unavailable:
+`updated=false reason=gh_unavailable`. On other gh errors:
+`updated=false reason=gh_error` with the gh output verbatim. The
+tool never auto-retries, auto-edits other fields, or auto-merges.
+
+| Param | Type | Default |
+|---|---|---|
+| `ref` | string | (uses current branch's PR) |
+| `title` | string | — |
+| `body` | string | — |
+
+Always prompts for approval.
 
 ## git_push
 

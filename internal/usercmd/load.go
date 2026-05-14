@@ -92,6 +92,7 @@ var Reserved = map[string]bool{
 	"git-create-pr":  true,
 	"git-review-pr":  true,
 	"git-push":       true,
+	"git-update-pr":  true,
 }
 
 // Load walks both scope directories (user first, then project) and

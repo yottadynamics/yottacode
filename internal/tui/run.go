@@ -211,6 +211,11 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 	// with the shared ghClient gives us the "PR updated: <url>"
 	// footer for free.
 	reg.Register(&agent.GitPushTool{Cwd: cwd, GH: ghClient})
+	// gh_pr_update is paired with /git-update-pr. Same Interface
+	// instance as the other PR tools — the v0.5.0 typed client
+	// swap will switch one variable above and pick up all four
+	// (create/read-review/push-lookup/update) at once.
+	reg.Register(&agent.GHPRUpdateTool{Cwd: cwd, GH: ghClient})
 	reg.Register(&agent.GitLogFileTool{Cwd: cwd})
 	reg.Register(&agent.GitBlameLinesTool{Cwd: cwd})
 	reg.Register(&agent.GitMergeBaseTool{Cwd: cwd})

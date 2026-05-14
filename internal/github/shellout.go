@@ -233,6 +233,191 @@ func (s *ShellOut) ReadPRDiff(ctx context.Context, req ReadPRRequest) (string, e
 	return stdout, nil
 }
 
+// UpdatePR rewrites an existing PR's title and body via GitHub's
+// REST API: `gh api repos/{owner}/{repo}/pulls/{n} -X PATCH
+// --input -` with a JSON payload on stdin.
+//
+// This route deliberately bypasses `gh pr edit`. As of gh 2.86
+// (Feb 2026) `pr edit` still queries the `projectCards` GraphQL
+// field in its response shape, which GitHub returns as a
+// deprecation *error* (not warning) for repos with any classic
+// Projects history — causing `pr edit` to fail with a non-zero
+// exit despite the mutation itself succeeding. The REST endpoint
+// has no equivalent of that field, so the round trip stays clean.
+//
+// JSON payload on stdin (rather than `-f title=… -f body=…`)
+// because `-f` form-encodes through shell argv, which means
+// arbitrary body content (backticks, dollar signs, newlines,
+// quotes) would need careful escaping. `--input -` accepts a
+// JSON object on stdin and forwards it verbatim — same rationale
+// as `--body-file -` in the CreatePR path.
+//
+// Validation is the caller's responsibility (gh_pr_update enforces
+// title rules + non-empty body in Go before dialing). ErrPRNotFound
+// + ErrGhUnavailable surface the same way as the other Interface
+// methods so callers branch on typed errors.
+func (s *ShellOut) UpdatePR(ctx context.Context, req UpdatePRRequest) (UpdatePRResult, error) {
+	var res UpdatePRResult
+	if err := checkGhAvailable(ctx); err != nil {
+		return res, err
+	}
+
+	owner, repo, number, err := s.resolvePRTarget(ctx, req)
+	if err != nil {
+		// resolvePRTarget already typed ErrPRNotFound / wrapped
+		// generic errors with stderr context, so just propagate.
+		return res, err
+	}
+
+	payload, err := json.Marshal(map[string]string{
+		"title": req.Title,
+		"body":  req.Body,
+	})
+	if err != nil {
+		return res, fmt.Errorf("marshal update payload: %w", err)
+	}
+
+	args := []string{
+		"api",
+		fmt.Sprintf("repos/%s/%s/pulls/%d", owner, repo, number),
+		"-X", "PATCH",
+		"--input", "-",
+	}
+	stdout, stderr, err := s.runGh(ctx, args, string(payload))
+	if err != nil {
+		if classifyGhNotFound(stderr) {
+			return res, ErrPRNotFound
+		}
+		return res, fmt.Errorf("gh api PATCH: %w (stderr: %s)", err, strings.TrimSpace(stderr))
+	}
+
+	parsed := parsePATCHResponse(stdout)
+	res.URL = parsed.URL
+	res.Number = parsed.Number
+	return res, nil
+}
+
+// shortcutPRTarget returns (owner, repo, number, true) when the
+// request carries enough info to skip a lookup round trip. False
+// means the caller must dial gh to resolve. Extracted from
+// resolvePRTarget so the fast-path policy is unit-testable
+// without invoking gh.
+func shortcutPRTarget(req UpdatePRRequest) (owner, repo string, number int, ok bool) {
+	if req.Owner == "" || req.Repo == "" {
+		return "", "", 0, false
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(req.Ref))
+	if err != nil {
+		return "", "", 0, false
+	}
+	return req.Owner, req.Repo, n, true
+}
+
+// resolvePRTarget gets (owner, repo, number) for a PATCH call.
+// Fast path: caller gave us everything explicitly — no gh round
+// trip. Slow path: one `gh pr view <ref> --json url` call
+// resolves the trio at once by parsing GitHub's canonical PR URL
+// (`https://github.com/<owner>/<repo>/pull/<n>`). owner/repo in
+// the URL is always the *base* repo (the one the PR lives in),
+// which is exactly what the REST PATCH endpoint needs — same-repo
+// and cross-fork PRs both produce the right target.
+//
+// Asking for `url` only (not `number` or repo fields) sidesteps
+// gh's field-name churn and keeps the JSON shape we depend on as
+// narrow as possible.
+func (s *ShellOut) resolvePRTarget(ctx context.Context, req UpdatePRRequest) (owner, repo string, number int, err error) {
+	if o, r, n, ok := shortcutPRTarget(req); ok {
+		return o, r, n, nil
+	}
+
+	args := []string{"pr", "view"}
+	if strings.TrimSpace(req.Ref) != "" {
+		args = append(args, req.Ref)
+	}
+	if req.Owner != "" && req.Repo != "" {
+		args = append(args, "--repo", req.Owner+"/"+req.Repo)
+	}
+	args = append(args, "--json", "url")
+
+	stdout, stderr, runErr := s.runGh(ctx, args, "")
+	if runErr != nil {
+		if classifyGhNotFound(stderr) {
+			return "", "", 0, ErrPRNotFound
+		}
+		return "", "", 0, fmt.Errorf("resolve PR target: %w (stderr: %s)",
+			runErr, strings.TrimSpace(stderr))
+	}
+
+	target, perr := parsePRTarget(stdout)
+	if perr != nil {
+		return "", "", 0, perr
+	}
+	return target.Owner, target.Repo, target.Number, nil
+}
+
+// prTarget is the resolved (owner, repo, number) tuple. Internal
+// shape only — callers receive it splayed across return values.
+type prTarget struct {
+	Owner  string
+	Repo   string
+	Number int
+}
+
+// prURLTarget extracts (owner, repo, number) from a canonical
+// GitHub PR URL. Anchored regex to refuse near-misses (e.g. a URL
+// pointing at /issues/<n> instead of /pull/<n>).
+var prURLTarget = regexp.MustCompile(`^https://github\.com/([^/]+)/([^/]+)/pull/(\d+)$`)
+
+// parsePRTarget maps gh's `--json url` output into a prTarget by
+// running prTargetFromURL on the extracted URL. Extracted from
+// resolvePRTarget so the JSON-to-tuple mapping is testable in
+// isolation.
+func parsePRTarget(stdout string) (prTarget, error) {
+	var raw struct {
+		URL string `json:"url"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &raw); err != nil {
+		return prTarget{}, fmt.Errorf("parse pr target: %w", err)
+	}
+	return prTargetFromURL(raw.URL)
+}
+
+// prTargetFromURL parses a canonical PR URL into the typed tuple.
+// Pure function for unit testing — covers both same-repo and
+// cross-fork cases (the URL embeds the base repo either way).
+func prTargetFromURL(url string) (prTarget, error) {
+	m := prURLTarget.FindStringSubmatch(url)
+	if m == nil {
+		return prTarget{}, fmt.Errorf("unexpected PR URL shape: %q", url)
+	}
+	number, err := strconv.Atoi(m[3])
+	if err != nil {
+		return prTarget{}, fmt.Errorf("parse PR number from URL %q: %w", url, err)
+	}
+	return prTarget{Owner: m[1], Repo: m[2], Number: number}, nil
+}
+
+// apiPullResponse is the slice of GitHub's REST API PATCH
+// response we actually use. The full response is the entire
+// updated PR object; we read html_url and number for the
+// UpdatePRResult envelope and let everything else fall on the
+// floor (json.Unmarshal ignores unknown fields).
+type apiPullResponse struct {
+	URL    string `json:"html_url"`
+	Number int    `json:"number"`
+}
+
+// parsePATCHResponse pulls (URL, Number) out of gh api's PATCH
+// response. Extracted for testability; on malformed JSON returns
+// a zero-value response rather than an error so the caller's
+// "succeeded but no URL" branch is the failure mode the model
+// sees (matches the CreatePR shape).
+func parsePATCHResponse(stdout string) apiPullResponse {
+	var r apiPullResponse
+	_ = json.Unmarshal([]byte(stdout), &r)
+	return r
+}
+
 // ListPRChecks reuses the same `gh pr view --json statusCheckRollup`
 // call as ReadPR. Keeps the shell-out cost to one process spawn
 // when callers want both metadata and checks (gh_pr_review_context

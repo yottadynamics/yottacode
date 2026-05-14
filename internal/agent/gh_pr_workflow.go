@@ -492,6 +492,182 @@ func validatePRTitle(title string) string {
 	return ""
 }
 
+// GHPRUpdateTool is the typed mutator that rewrites an existing
+// PR's title and body. Paired with /git-update-pr for the
+// "follow-up commits made the original description stale"
+// workflow. Title validation reuses validatePRTitle (same rules
+// as create-pr: ≤72 chars, no trailing period, single line);
+// body must be non-empty because an empty body would clobber the
+// existing description, which is almost never intended.
+//
+// Other PR-level edits (labels, base, reviewers, draft toggle)
+// are intentionally out of scope. When a concrete workflow asks
+// for them, they grow Interface.UpdatePR's request type rather
+// than spawning a new tool.
+type GHPRUpdateTool struct {
+	Cwd string
+	GH  github.Interface
+}
+
+func (t *GHPRUpdateTool) Name() string { return "gh_pr_update" }
+
+func (t *GHPRUpdateTool) Description() string {
+	return "Rewrite an existing pull request's title and body. Ref is " +
+		"the PR number or branch name; empty defaults to the current " +
+		"branch's PR. Title is validated to be a single line of at most " +
+		strconv.Itoa(PRTitleMaxLen) + " characters with no trailing " +
+		"period; body must be non-empty. Returns a typed result with " +
+		"the PR URL on success, or a gh_unavailable / not_found / " +
+		"validation / gh_error reason on failure. The approval modal " +
+		"fires once showing the new title + body + ref before the call " +
+		"lands."
+}
+
+func (t *GHPRUpdateTool) Schema() map[string]any {
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"ref": map[string]any{
+				"type":        "string",
+				"description": "PR number (\"17\") or branch name. Empty defaults to current branch.",
+			},
+			"title": map[string]any{
+				"type": "string",
+				"description": fmt.Sprintf(
+					"New PR title (≤%d chars, no trailing period, single line).",
+					PRTitleMaxLen),
+			},
+			"body": map[string]any{
+				"type":        "string",
+				"description": "New PR body / description (required, multi-line allowed). Empty would clobber the existing body — not accepted.",
+			},
+		},
+		"required": []string{"title", "body"},
+	}
+}
+
+func (t *GHPRUpdateTool) RequiresApproval(string) bool { return true }
+
+func (t *GHPRUpdateTool) PreviewCall(argsJSON string) string {
+	var a struct {
+		Ref, Title string
+	}
+	_ = json.Unmarshal([]byte(argsJSON), &a)
+	if a.Ref == "" {
+		return fmt.Sprintf("gh_pr_update(title=%q)", a.Title)
+	}
+	return fmt.Sprintf("gh_pr_update(ref=%s, title=%q)", a.Ref, a.Title)
+}
+
+// PRUpdateResult is the typed envelope UpdatePR returns. Same
+// shape rationale as PRCreateResult: callers branch on typed
+// fields. Reason discriminates the failure mode so the
+// procedural /git-update-pr handles each branch differently.
+type PRUpdateResult struct {
+	Updated       bool
+	URL           string
+	Number        int
+	ValidationErr string
+	GhUnavailable bool
+	NotFound      bool
+	GhError       string
+}
+
+func (t *GHPRUpdateTool) Execute(ctx context.Context, argsJSON string) (string, error) {
+	var a struct {
+		Ref   string `json:"ref"`
+		Title string `json:"title"`
+		Body  string `json:"body"`
+	}
+	if err := json.Unmarshal([]byte(argsJSON), &a); err != nil {
+		return "", fmt.Errorf("gh_pr_update: invalid args: %w", err)
+	}
+	if t.GH == nil {
+		return "", errors.New("gh_pr_update: no GitHub adapter configured")
+	}
+	res, err := UpdatePR(ctx, t.GH, github.UpdatePRRequest{
+		Ref:   a.Ref,
+		Title: a.Title,
+		Body:  a.Body,
+	})
+	if err != nil {
+		return "", fmt.Errorf("gh_pr_update: %w", err)
+	}
+	return renderPRUpdateResult(res), nil
+}
+
+// UpdatePR is the deterministic core of gh_pr_update. Validates
+// title and body *before* dialing the Interface, so oversize
+// titles and empty bodies never reach the network. Returns a
+// typed PRUpdateResult; the tool wrapper renders it for model
+// consumption.
+//
+// The Interface's ErrPRNotFound and ErrGhUnavailable get folded
+// into typed envelope fields so callers branch on flags rather
+// than err strings.
+func UpdatePR(ctx context.Context, client github.Interface, req github.UpdatePRRequest) (PRUpdateResult, error) {
+	var res PRUpdateResult
+
+	if v := validatePRTitle(req.Title); v != "" {
+		res.ValidationErr = v
+		return res, nil
+	}
+	if strings.TrimSpace(req.Body) == "" {
+		res.ValidationErr = "body is empty (would clobber the existing PR description)"
+		return res, nil
+	}
+
+	out, err := client.UpdatePR(ctx, req)
+	if errors.Is(err, github.ErrGhUnavailable) {
+		res.GhUnavailable = true
+		return res, nil
+	}
+	if errors.Is(err, github.ErrPRNotFound) {
+		res.NotFound = true
+		return res, nil
+	}
+	if err != nil {
+		res.GhError = err.Error()
+		return res, nil
+	}
+	res.Updated = true
+	res.URL = out.URL
+	res.Number = out.Number
+	return res, nil
+}
+
+// renderPRUpdateResult shapes the result envelope for the model.
+// Symmetric with renderPRCreateResult; the difference is the
+// NotFound branch (create can't 404 — it makes new) and the
+// "(no auto-edit beyond title+body)" guidance.
+func renderPRUpdateResult(r PRUpdateResult) string {
+	var b strings.Builder
+	switch {
+	case r.ValidationErr != "":
+		fmt.Fprintf(&b, "updated=false reason=validation\nerror=%s\n", r.ValidationErr)
+	case r.GhUnavailable:
+		b.WriteString("updated=false reason=gh_unavailable\n")
+		b.WriteString("Hint: install gh and run `gh auth login`.\n")
+	case r.NotFound:
+		b.WriteString("updated=false reason=not_found\n")
+		b.WriteString("Hint: no PR matches the ref. Run /git-create-pr to open one instead.\n")
+	case r.GhError != "":
+		b.WriteString("updated=false reason=gh_error\n")
+		b.WriteString("--- gh output ---\n")
+		b.WriteString(r.GhError)
+		if !strings.HasSuffix(r.GhError, "\n") {
+			b.WriteString("\n")
+		}
+		b.WriteString("--- end gh output ---\n")
+		b.WriteString("Do NOT auto-retry, auto-edit labels/reviewers, or auto-merge. Surface the error and stop.\n")
+	case r.Updated:
+		fmt.Fprintf(&b, "updated=true url=%s number=%d\n", r.URL, r.Number)
+	default:
+		b.WriteString("updated=false reason=unknown\n")
+	}
+	return b.String()
+}
+
 // prReviewDiffCap bounds the diff body the review snapshot
 // surfaces. Bigger than the gh_pr_context diffstat cap (16 KiB)
 // because reviewers need the actual hunks, not just file names —
