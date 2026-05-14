@@ -1,6 +1,6 @@
 # Built-in tools
 
-Thirty-seven tools ship in `internal/agent` (thirty-five always-on plus `todo_write`
+Thirty-eight tools ship in `internal/agent` (thirty-six always-on plus `todo_write`
 and `exit_plan_mode`). The model sees their JSON-schema parameters via the
 OpenAI tools API; the TUI renders each invocation as a bordered card with a
 verb-style header (see [How tool calls render in the TUI](#how-tool-calls-render-in-the-tui)).

@@ -183,10 +183,14 @@ Two markdown commands ship with the binary and are available on first launch —
 > rather than asked of the model in prose.
 >
 > Typing `/git` in the palette filters to every git-related
-> built-in — that's why the slugs are `git-commit` / `git-create-pr`
-> (flat `git-` prefix) rather than `git:commit` / `git:create-pr`
-> (the `:` namespace is reserved for custom-command path
-> derivation, not built-ins).
+> built-in. The full family today is `/git-commit`,
+> `/git-create-pr`, `/git-push`, `/git-update-pr`, and
+> `/git-review-pr` — five procedural commands covering the
+> commit → push → open PR → refresh PR → review PR workflow.
+> The slugs are flat (`git-commit`, not `git:commit`) because the
+> `:` namespace is reserved for custom-command path derivation;
+> built-in slugs use the kebab prefix for the same palette-filter
+> effect.
 
 #### What each does
 
