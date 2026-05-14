@@ -205,6 +205,12 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 	// gh_pr_create so the v0.5.0 swap to a typed go-github client
 	// changes one variable above instead of two registration sites.
 	reg.Register(&agent.GHPRReviewContextTool{Cwd: cwd, GH: ghClient})
+	// git_push is paired with /git-push. The GH dependency is for
+	// the best-effort PR-URL lookup after a successful push — a
+	// nil client would skip the lookup silently, but registering
+	// with the shared ghClient gives us the "PR updated: <url>"
+	// footer for free.
+	reg.Register(&agent.GitPushTool{Cwd: cwd, GH: ghClient})
 	reg.Register(&agent.GitLogFileTool{Cwd: cwd})
 	reg.Register(&agent.GitBlameLinesTool{Cwd: cwd})
 	reg.Register(&agent.GitMergeBaseTool{Cwd: cwd})

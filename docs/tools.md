@@ -1,6 +1,6 @@
 # Built-in tools
 
-Thirty-five tools ship in `internal/agent` (thirty-three always-on plus `todo_write`
+Thirty-six tools ship in `internal/agent` (thirty-four always-on plus `todo_write`
 and `exit_plan_mode`). The model sees their JSON-schema parameters via the
 OpenAI tools API; the TUI renders each invocation as a bordered card with a
 verb-style header (see [How tool calls render in the TUI](#how-tool-calls-render-in-the-tui)).
@@ -30,6 +30,7 @@ are also accepted).
 | [`gh_pr_context`](#gh_pr_context) | none | Typed snapshot for opening a PR (base resolution, ahead-count, push state, gh availability, PR template) |
 | [`gh_pr_create`](#gh_pr_create) | required | Validate title and open a PR via the `internal/github.Interface` adapter with typed result envelope |
 | [`gh_pr_review_context`](#gh_pr_review_context) | none | Fetch PR metadata + diff + check rollup via the `internal/github.Interface` adapter for review |
+| [`git_push`](#git_push) | required | Push the current branch to origin with deterministic upstream detection; surfaces the PR URL when one exists |
 | [`git_log_file`](#git_log_file) | none | Show history for one file |
 | [`git_blame_lines`](#git_blame_lines) | none | Blame a line range in a file |
 | [`git_merge_base`](#git_merge_base) | none | Find merge base between two refs |
@@ -484,6 +485,38 @@ diff <ref>` for the full content.
 | `ref` | string | (uses current branch's PR) |
 
 No approval. Touches the network (not parallel-safe).
+
+## git_push
+
+Composite mutator that pushes the current branch to origin.
+Deterministic guarantees:
+
+- **Upstream-aware:** detects whether the current branch already
+  tracks an upstream and adds `-u origin HEAD` only on first push.
+- **Detached-HEAD early exit:** rejects the push *before* invoking
+  git when HEAD isn't on a branch — returns
+  `pushed=false reason=detached_head`.
+- **No force-push surface:** `--force` / `--force-with-lease` are
+  intentionally not accepted. Use the unified `git` tool when you
+  actually need force-push.
+
+Returns a typed envelope. On success: `pushed=true branch=<name>
+set_upstream=<bool>` plus a best-effort PR-URL lookup via
+`internal/github.Interface.ReadPR`. When a PR exists for the
+branch, `pr_number=<n>` and `pr_url=<url>` are populated so
+callers (and `/git-push`) can surface a "PR updated" footer. When
+no PR exists, the envelope hints at `/git-create-pr` as the next
+step.
+
+Git errors (exit non-zero) populate `pushed=false reason=git_error`
+with the verbatim git output. The tool never auto-retries,
+auto-force-pushes, or rebases to "fix" a rejection.
+
+| Param | Type | Default |
+|---|---|---|
+| _(none)_ | | |
+
+Always prompts for approval.
 
 ## git_log_file
 
