@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -22,8 +23,36 @@ func TestValidateWritePath_RejectsOutsideCwd(t *testing.T) {
 	if err == nil {
 		t.Errorf("expected error for path outside cwd")
 	}
-	if !strings.Contains(err.Error(), "outside cwd") {
-		t.Errorf("error should mention 'outside cwd': %v", err)
+	if !strings.Contains(err.Error(), "outside session workspace") {
+		t.Errorf("error should mention the workspace boundary: %v", err)
+	}
+	// Must be the structured sentinel so the TUI can render the
+	// inline path-trust elevation modal via errors.As.
+	var sentinel *ErrPathOutsideWorkspace
+	if !errors.As(err, &sentinel) {
+		t.Fatalf("error should be *ErrPathOutsideWorkspace, got %T", err)
+	}
+	if sentinel.Path != target {
+		t.Errorf("sentinel.Path = %q, want %q", sentinel.Path, target)
+	}
+	if sentinel.Cwd != cwd {
+		t.Errorf("sentinel.Cwd = %q, want %q", sentinel.Cwd, cwd)
+	}
+}
+
+func TestErrPathOutsideWorkspace_MessageMentionsRecovery(t *testing.T) {
+	err := &ErrPathOutsideWorkspace{
+		Path: "/foo/bar/baz.go",
+		Cwd:  "/cwd",
+	}
+	msg := err.Error()
+	// Reject semantics from yottacode-roadmap/folder-trust.md: the
+	// model should see the workspace boundary AND a recovery hint
+	// (relaunch with --allow-paths covering the parent directory).
+	for _, want := range []string{"/foo/bar/baz.go", "/cwd", "--allow-paths"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("error message %q missing %q", msg, want)
+		}
 	}
 }
 
@@ -121,6 +150,7 @@ func TestDefaultDenyPaths_IncludesYottacodeState(t *testing.T) {
 		filepath.Join(home, ".yottacode", "memory"),
 		filepath.Join(home, ".yottacode", "projects"),
 		filepath.Join(home, ".yottacode", "USER.md"),
+		filepath.Join(home, ".yottacode", "trusted-roots.json"),
 		filepath.Join(cwd, ".yottacode", "permissions.json"),
 		filepath.Join(cwd, ".yottacode", "permissions.local.json"),
 		filepath.Join(cwd, ".git", "HEAD"),

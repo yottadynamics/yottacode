@@ -2,6 +2,61 @@
 
 yottacode is designed to be explicit about risk. It can inspect, edit, test, and run commands in your project, so approval and path policy matter.
 
+## Folder trust
+
+On first launch in a directory yottacode prompts:
+
+```
+Accessing workspace:
+
+  /home/me/my-repo
+
+Quick safety check: is this a project you created or one you trust?
+(Your own code, a well-known open-source project, or work from your team.)
+If not, take a moment to review what's in this folder first.
+
+yottacode will be able to read, edit, and execute files here.
+
+  [1] Yes, I trust this folder
+  [2] No, exit
+```
+
+The decision is recorded in `~/.yottacode/trusted-roots.json`. Every subfolder of a trusted root inherits the trust automatically, so cloning a new repo under an already-trusted parent does not re-prompt.
+
+**Skip the prompt:**
+
+- `--allow-paths <dir>` or `YOTTACODE_ALLOW_PATHS=<dir>` — passing the cwd's tree as an allow-paths root satisfies the gate session-only (no write to `trusted-roots.json`).
+- `YOTTACODE_TRUST_ALL=1` — CI escape hatch. Also session-only.
+- `yottacode run` (non-interactive) — trust verification is skipped entirely, matching Claude Code's `-p` behavior.
+- `--dangerously-skip-permissions` does **not** skip the trust gate on its own. Combine with `YOTTACODE_TRUST_ALL=1` for fully unattended runs.
+
+**Manage trust roots:**
+
+```bash
+yottacode trust list                  # show every trusted root + grant timestamp
+yottacode trust add [path]            # default: cwd
+yottacode trust remove <path>         # exact-path match
+yottacode trust clear                 # remove every entry
+```
+
+**Out-of-workspace writes.** When the model tries to write a file outside cwd + `--allow-paths` roots, yottacode shows an inline elevation prompt:
+
+```
+Write outside workspace
+
+Requested path:
+  /home/me/elsewhere/notes.md
+
+Session workspace:
+  /home/me/my-repo
+
+[1] Allow once         — trust just this file for the session
+[2] Trust for session  — trust this directory and every subfolder
+[3] Reject             — model sees the original error
+```
+
+`[1]` and `[2]` are session-scoped — they do **not** write to `trusted-roots.json`. Cross-session expansion still goes through `--allow-paths` or `yottacode trust add`.
+
 ## Approval model
 
 By default:

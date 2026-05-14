@@ -26,4 +26,15 @@ const (
 	// receive this value, and the loop falls back to generic-denial
 	// semantics if they do.
 	SaveForLater
+	// PathAllowOnce is the inline path-trust elevation answer for
+	// "[1] Allow once" — let this exact write proceed by adding the
+	// file's path to the session-scoped allow list. Future writes to
+	// other files outside cwd still prompt. Session-only, never
+	// persisted to ~/.yottacode/trusted-roots.json.
+	PathAllowOnce
+	// PathTrustSession is the inline path-trust elevation answer for
+	// "[2] Trust this directory for the session" — adds the file's
+	// parent directory to the session-scoped allow list so every
+	// future write under that directory also succeeds. Session-only.
+	PathTrustSession
 )

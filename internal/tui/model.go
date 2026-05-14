@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -346,6 +347,15 @@ type Model struct {
 	// user picks [a]. Shown in the modal so the user knows what
 	// they're committing to.
 	approvalDerivedRule    string
+
+	// Inline path-trust elevation modal state (Prompt 2 in
+	// yottacode-roadmap/folder-trust.md). When awaitingPathTrust is
+	// true, the regular approvalTool flow is bypassed: the user is
+	// picking [1] Allow once / [2] Trust for session / [3] Reject for
+	// a write target outside cwd. pathTrustReq holds the elevation
+	// event so the renderer and keypress handler can stay narrow.
+	awaitingPathTrust bool
+	pathTrustReq      agent.PathTrustElevationNeeded
 
 	// Cheatsheet overlay
 	cheatsheetOpen bool
@@ -968,6 +978,39 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, cmd
 			}
 		}
+		if m.awaitingPathTrust {
+			// Inline path-trust elevation (Prompt 2). The three
+			// choices are independent of the normal approval modal
+			// — the model never sees an Allow/Deny here, only the
+			// retry result on accept or the descriptive
+			// ErrPathOutsideWorkspace on reject. See
+			// yottacode-roadmap/folder-trust.md.
+			answered := false
+			switch msg.String() {
+			case "1", "o", "O":
+				addAllowedPathToWriteTools(m.cfg.Registry, m.pathTrustReq.Path)
+				m.decisions <- agent.PathAllowOnce
+				m.appendLine(stylePathTrustAccept.Render("trusted for this write: ") + m.pathTrustReq.Path)
+				m.awaitingPathTrust = false
+				answered = true
+			case "2", "t", "T":
+				dir := filepath.Dir(m.pathTrustReq.Path)
+				addAllowedPathToWriteTools(m.cfg.Registry, dir)
+				m.decisions <- agent.PathTrustSession
+				m.appendLine(stylePathTrustAccept.Render("trusted for this session: ") + dir)
+				m.awaitingPathTrust = false
+				answered = true
+			case "3", "n", "N", "esc":
+				m.decisions <- agent.Deny
+				m.appendLine(stylePathTrustReject.Render("path trust denied — model sees error"))
+				m.awaitingPathTrust = false
+				answered = true
+			}
+			if answered {
+				return m, waitForEvent(m.eventsCh, m.turnErrCh)
+			}
+			return m, nil
+		}
 		if m.awaitingApproval {
 			// exit_plan_mode is a different shape of approval — its
 			// keys mean "approve and execute" / "keep planning",
@@ -1498,7 +1541,12 @@ func (m Model) View() string {
 		parts = append(parts, m.renderThinkingRow(), "")
 	}
 
-	if m.awaitingApproval {
+	if m.awaitingPathTrust {
+		// Prompt 2: inline path-trust elevation modal. Mutually
+		// exclusive with the regular approval modal — only one of
+		// awaitingPathTrust / awaitingApproval is ever true.
+		parts = append(parts, renderPathTrustModal(m))
+	} else if m.awaitingApproval {
 		// exit_plan_mode gets its own decision card — just the four
 		// hotkeys in a bordered box. The plan body itself is emitted
 		// to scrollback above this box when ApprovalNeeded fires (see
@@ -2621,6 +2669,17 @@ func (m Model) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 		}
 		// Don't queue another waitForEvent until the user answers; the
 		// approval keypress handler issues it.
+		return m, nil
+	case agent.PathTrustElevationNeeded:
+		// Out-of-workspace write hit the validator. Park the
+		// elevation request and render Prompt 2 (the inline
+		// path-trust modal). The keypress handler in the input
+		// switch consumes m.awaitingPathTrust, mutates the
+		// registered write tools' AllowedPaths (on accept), and
+		// sends the corresponding Decision back to the loop.
+		m.commitStreaming()
+		m.awaitingPathTrust = true
+		m.pathTrustReq = e
 		return m, nil
 	case agent.ToolStart:
 		// Reasoning ended and a tool fires — clear the live reasoning

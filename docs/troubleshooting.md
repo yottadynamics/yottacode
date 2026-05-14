@@ -65,6 +65,17 @@ yottacode --max-iterations 50
 
 Keep the limit finite; it protects you from runaway tool loops.
 
+## The trust prompt fires on every launch
+
+The first-launch trust prompt records cwd in `~/.yottacode/trusted-roots.json` on Yes. If you see it again on a directory you already accepted, the cwd is most likely a fresh path (different absolute path, different worktree, different bind-mount). List and add directly:
+
+```bash
+yottacode trust list
+yottacode trust add /path/to/repo
+```
+
+Trust covers every subfolder of an added root. To bypass the prompt in CI runs, set `YOTTACODE_TRUST_ALL=1` (session-only — does not persist).
+
 ## Approval prompts are too frequent
 
 Use project-local allow rules for operations you trust:

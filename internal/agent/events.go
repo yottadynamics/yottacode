@@ -81,6 +81,36 @@ type ApprovalNeeded struct {
 	ArgsJSON string
 }
 
+// PathTrustElevationNeeded fires when a mutating tool's
+// ValidateWritePath rejects a target as outside the workspace
+// (Cwd + AllowedPaths). The TUI catches this via its existing
+// decisions channel and renders the inline path-trust elevation
+// modal — see yottacode-roadmap/folder-trust.md "Prompt 2."
+//
+// The loop blocks on the decisions channel exactly like
+// ApprovalNeeded. Expected replies:
+//
+//   - PathAllowOnce:    consumer added Path to the session allow
+//                       list; loop re-runs Execute once.
+//   - PathTrustSession: consumer added filepath.Dir(Path) to the
+//                       session allow list; loop re-runs Execute
+//                       once.
+//   - Deny:             loop surfaces the structured error to the
+//                       model as the tool result (Claude-style
+//                       per-tool deny: descriptive + with a
+//                       recovery hint).
+//
+// Cwd and AllowedRoots are echoed so the modal can render the
+// existing trust state next to the new request without re-walking
+// LoopConfig.
+type PathTrustElevationNeeded struct {
+	ToolName     string
+	Path         string
+	Cwd          string
+	AllowedRoots []string
+	ArgsJSON     string
+}
+
 // ToolStart fires immediately before a tool's Execute is called (after any
 // approval flow has resolved). The consumer can render this as a status line.
 // ArgsJSON carries the raw tool-call arguments so consumers can do structured
@@ -227,8 +257,9 @@ func (StreamProgress) event()    {}
 func (ProviderToolCall) event()  {}
 func (IterationStart) event()    {}
 func (IterationContinue) event() {}
-func (ApprovalAuto) event()      {}
-func (ApprovalNeeded) event()    {}
+func (ApprovalAuto) event()             {}
+func (ApprovalNeeded) event()           {}
+func (PathTrustElevationNeeded) event() {}
 func (ToolStart) event()         {}
 func (ToolResult) event()        {}
 func (TodoUpdate) event()        {}

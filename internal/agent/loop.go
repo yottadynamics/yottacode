@@ -704,21 +704,30 @@ func executeToolCall(
 		}
 	}
 	out, err := tool.Execute(toolCtx, tc.ArgsJSON)
+	// Inline path-trust elevation: if the write validator rejected
+	// the target as outside the workspace, give the user a chance to
+	// elevate (allow once / trust for session) before the model sees
+	// the error. On non-Deny, the consumer has mutated the tool's
+	// WriteOpts.AllowedPaths, so a retry of Execute succeeds via the
+	// normal path. On Deny, fall through to the regular error path
+	// — the model sees the descriptive *ErrPathOutsideWorkspace
+	// message with its recovery hint. See
+	// yottacode-roadmap/folder-trust.md "Prompt 2."
 	if err != nil {
-		// Propagate cancel so the caller can synthesize "interrupted by
-		// user" results for this tool and everything queued behind it,
-		// instead of swallowing the cancel as an "error: context
-		// canceled" string. Without this, a ctx-respecting tool that
-		// returns ctx.Err() looks indistinguishable from a real tool
-		// failure and the loop continues to the next tool / next
-		// iteration, only catching cancel on a later send.
+		if elev, ok := pathElevation(err); ok {
+			d, derr := promptForPathElevation(ctx, tool.Name(), elev, tc.ArgsJSON, events, decisions)
+			if derr != nil {
+				return "", false, derr
+			}
+			if d != Deny {
+				out, err = tool.Execute(toolCtx, tc.ArgsJSON)
+			}
+		}
+	}
+	if err != nil {
 		if isCancelErr(err) {
 			return "", false, err
 		}
-		// Defensive arm: tool returned a non-cancel error but ctx is
-		// already cancelled. Treat as cancel so we don't serve an
-		// orphaned half-error string to the model right before the
-		// next IterationStart fails anyway.
 		if ctx.Err() != nil {
 			return "", false, ctx.Err()
 		}
@@ -750,6 +759,53 @@ func executeToolCall(
 // interface avoids string-matching on tool names.
 type planAware interface {
 	PlanStore() *PlanStore
+}
+
+// pathElevation extracts the inline path-trust elevation signal
+// from a tool's error return. The write-path validator returns a
+// *ErrPathOutsideWorkspace exactly in the case Prompt 2 wants to
+// catch; this helper isolates the errors.As call so loop.go's
+// runTool stays narrow.
+func pathElevation(err error) (*ErrPathOutsideWorkspace, bool) {
+	var sentinel *ErrPathOutsideWorkspace
+	if errors.As(err, &sentinel) {
+		return sentinel, true
+	}
+	return nil, false
+}
+
+// promptForPathElevation emits PathTrustElevationNeeded and blocks
+// on the consumer's decision (the same decisions channel used by
+// promptForApproval). Returns the Decision verbatim — the caller
+// in runTool decides whether to retry Execute (non-Deny) or fall
+// through to the structured error path (Deny).
+//
+// Cancellation propagates as an error. Any non-cancel send/recv
+// failure also propagates so a half-completed elevation never
+// leaves the loop in an inconsistent state.
+func promptForPathElevation(
+	ctx context.Context,
+	toolName string,
+	sentinel *ErrPathOutsideWorkspace,
+	argsJSON string,
+	events chan<- Event,
+	decisions <-chan Decision,
+) (Decision, error) {
+	if err := send(ctx, events, PathTrustElevationNeeded{
+		ToolName:     toolName,
+		Path:         sentinel.Path,
+		Cwd:          sentinel.Cwd,
+		AllowedRoots: append([]string(nil), sentinel.AllowedRoots...),
+		ArgsJSON:     argsJSON,
+	}); err != nil {
+		return Deny, err
+	}
+	select {
+	case <-ctx.Done():
+		return Deny, ctx.Err()
+	case d := <-decisions:
+		return d, nil
+	}
 }
 
 // promptForApproval emits ApprovalNeeded and blocks on the user's
