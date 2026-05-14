@@ -28,6 +28,9 @@ func (t *TodoWriteTool) Description() string {
 		"Call it BEFORE you start work to lay out the plan, then call it AGAIN as soon as each step finishes — " +
 		"flip the just-finished item to 'completed' and move the next item to 'in_progress' in the SAME call. " +
 		"On multi-step work, calling this tool only once (or not at all) leaves the user blind to your progress and is a mistake. " +
+		"\n\nIMPORTANT: When a task has both a design/research phase and an execution phase (writing code, running commands, modifying files), the todo list MUST end at the design-presentation step. " +
+		"Do NOT include implementation steps in the same plan. After the design phase completes, present the design to the user and wait for explicit agreement before calling todo_write again with implementation steps. " +
+		"Queueing implementation as todos pre-stages work the user has not approved. " +
 		"\n\nDo NOT use this tool for trivial single-step requests (one read, one edit, a quick answer) — the plan card just adds noise there. " +
 		"Pass an empty list to clear the plan when the work is done or no longer relevant."
 }

@@ -73,12 +73,15 @@ func renderToolCard(toolName, preview, argsJSON, output string, errored bool, te
 	// not the raw "plan updated: N items" string the model gets back as
 	// the tool result. We bypass the generic body path so the per-row
 	// status styling (green ✓, accent ▸, dim ·) survives the
-	// styleCardBody wrap.
+	// styleCardBody wrap. Delegates to renderTodoCardFromTodos so the
+	// in-flight live card in View() and this scrollback path render
+	// the same shape from the same primitive.
 	if !errored && toolName == "todo_write" {
-		if rows, ok := todoWriteBodyRows(argsJSON); ok {
-			out = append(out, rows...)
-			out = append(out, styleCardGutter.Render("╰ ")+footer)
-			return strings.Join(out, "\n")
+		var a struct {
+			Todos []agent.Todo `json:"todos"`
+		}
+		if json.Unmarshal([]byte(argsJSON), &a) == nil {
+			return renderTodoCardFromTodos(a.Todos, termWidth)
 		}
 	}
 	// Git destructive-flag warning: lifted from the agent's multi-line
@@ -879,32 +882,6 @@ var (
 	styleTodoBullet     = lipgloss.NewStyle().Foreground(colorDim)
 )
 
-// todoWriteBodyRows parses the todo_write tool's argsJSON and returns
-// one styled row per item, ready to be appended to the tool card body
-// with the card's "│ " gutter already prepended. Returns ok=false if
-// the args don't parse, so renderToolCard falls back to the standard
-// text-body path (the tool's plain return string).
-func todoWriteBodyRows(argsJSON string) ([]string, bool) {
-	var a struct {
-		Todos []agent.Todo `json:"todos"`
-	}
-	if err := json.Unmarshal([]byte(argsJSON), &a); err != nil {
-		return nil, false
-	}
-	if len(a.Todos) == 0 {
-		// Empty plan (the model just cleared it). One dim "(empty plan)"
-		// row gives the card a body so the footer ("plan cleared") still
-		// reads naturally; without it the card collapses to header +
-		// footer touching, which doesn't match the rest of the cards.
-		return []string{styleCardGutter.Render("│   ") + styleCardMeta.Render("(empty plan)")}, true
-	}
-	out := make([]string, 0, len(a.Todos))
-	for _, td := range a.Todos {
-		out = append(out, styleCardGutter.Render("│   ")+todoRow(td))
-	}
-	return out, true
-}
-
 func todoRow(td agent.Todo) string {
 	switch td.Status {
 	case agent.TodoCompleted:
@@ -914,4 +891,55 @@ func todoRow(td agent.Todo) string {
 	default:
 		return styleTodoBullet.Render("· ") + styleTodoPending.Render(td.Content)
 	}
+}
+
+// renderTodoCardFromTodos renders the complete todo_write card from a
+// typed Todo slice. Used by both the scrollback path
+// (renderToolCard's todo_write branch, on each ToolResult) and the
+// in-flight live View() card (which updates in place every tick).
+// Sharing one renderer keeps the live preview and the end-of-turn
+// scrollback snapshot visually identical.
+//
+// The header and footer are synthesized from the slice itself — the
+// header reads "Plan: N items (M done)" (matches the agent's
+// PreviewCall format) and the footer reads "plan updated: N items
+// (M done)" or "plan cleared" (matches what the tool's Execute
+// returns to the model). That makes the helper standalone: callers
+// don't have to thread argsJSON or the model's response string
+// through to render correctly.
+func renderTodoCardFromTodos(todos []agent.Todo, termWidth int) string {
+	_ = termWidth // reserved for future row-truncation; todo content is the user's signal, never clipped today
+	out := []string{renderCardHeader(todoCardHeaderText(todos))}
+	if len(todos) == 0 {
+		out = append(out, styleCardGutter.Render("│   ")+styleCardMeta.Render("(empty plan)"))
+	} else {
+		for _, td := range todos {
+			out = append(out, styleCardGutter.Render("│   ")+todoRow(td))
+		}
+	}
+	out = append(out, styleCardGutter.Render("╰ ")+styleCardMeta.Render(todoCardFooterText(todos)))
+	return strings.Join(out, "\n")
+}
+
+func todoCardHeaderText(todos []agent.Todo) string {
+	done := 0
+	for _, td := range todos {
+		if td.Status == agent.TodoCompleted {
+			done++
+		}
+	}
+	return fmt.Sprintf("Plan: %d items (%d done)", len(todos), done)
+}
+
+func todoCardFooterText(todos []agent.Todo) string {
+	if len(todos) == 0 {
+		return "plan cleared"
+	}
+	done := 0
+	for _, td := range todos {
+		if td.Status == agent.TodoCompleted {
+			done++
+		}
+	}
+	return fmt.Sprintf("plan updated: %d items (%d done)", len(todos), done)
 }

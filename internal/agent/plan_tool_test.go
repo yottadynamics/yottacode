@@ -27,6 +27,23 @@ func TestTodoWriteTool_StaticMetadata(t *testing.T) {
 	}
 }
 
+// TestTodoWriteDescription_RequiresDesignBoundary guards the directive
+// that keeps the agent from queueing implementation work as todos
+// before the user has reviewed the design. The wording check is loose
+// (substring match) but pins the two load-bearing phrases — drift on
+// either is a behavior regression worth surfacing in CI.
+func TestTodoWriteDescription_RequiresDesignBoundary(t *testing.T) {
+	desc := newTodoWriteTool().Description()
+	for _, want := range []string{
+		"MUST end at the design-presentation step",
+		"explicit agreement",
+	} {
+		if !strings.Contains(desc, want) {
+			t.Errorf("Description missing required directive %q", want)
+		}
+	}
+}
+
 func TestTodoWriteTool_ImplementsPlanAware(t *testing.T) {
 	var _ planAware = newTodoWriteTool()
 }
