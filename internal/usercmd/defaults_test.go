@@ -8,11 +8,17 @@ import (
 	"testing"
 )
 
-// TestLoadDefaults_AllFourEmbedded locks the starter-kit contract: the
-// four Tier 1 commands ship with the binary and parse cleanly. If a
-// PR ever deletes one of the embedded .md files (or renames it
-// incompatibly), this test fails immediately.
-func TestLoadDefaults_AllFourEmbedded(t *testing.T) {
+// TestLoadDefaults_TwoEmbedded locks the starter-kit contract: the
+// two Tier 1 markdown commands ship with the binary and parse
+// cleanly. If a PR ever deletes one of the embedded .md files (or
+// renames it incompatibly), this test fails immediately.
+//
+// The git workflows (/git-commit, /git-create-pr) moved from
+// markdown defaults to procedural built-ins (cmd_git_commit.go,
+// cmd_git_create_pr.go) — that's why this list is now two, not
+// four. The TUI registry's drift test catches accidental removals
+// of the built-ins.
+func TestLoadDefaults_TwoEmbedded(t *testing.T) {
 	cmds, errs := LoadDefaults()
 	for _, e := range errs {
 		t.Errorf("unexpected default-load error: %v", e)
@@ -21,10 +27,8 @@ func TestLoadDefaults_AllFourEmbedded(t *testing.T) {
 	want := map[string]struct {
 		argHint string
 	}{
-		"git:commit-message": {argHint: ""},
-		"git:create-pr":      {argHint: "[base-branch]"},
-		"check:review":       {argHint: "[base-branch]"},
-		"check:verify":       {argHint: "[task-or-hint]"},
+		"check:review": {argHint: "[base-branch]"},
+		"check:verify": {argHint: "[task-or-hint]"},
 	}
 
 	got := map[string]Command{}
@@ -97,8 +101,8 @@ func TestLoadAll_DefaultsMergedWithEmptyDisk(t *testing.T) {
 			gotDefault++
 		}
 	}
-	if gotDefault < 4 {
-		t.Errorf("expected >= 4 default commands, got %d", gotDefault)
+	if gotDefault < 2 {
+		t.Errorf("expected >= 2 default commands, got %d", gotDefault)
 	}
 }
 
@@ -106,15 +110,19 @@ func TestLoadAll_DefaultsMergedWithEmptyDisk(t *testing.T) {
 // overrides the embedded default. The override is *silent* — no
 // shadow-warning notice is emitted, because customizing a default is
 // the documented use case.
+//
+// Uses /check:review as the override target because the git
+// workflows moved to procedural built-ins; the markdown defaults
+// that remain are check:review and check:verify.
 func TestLoadAll_UserShadowsDefault(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	home, _ := os.UserHomeDir()
-	dir := filepath.Join(home, ".yottacode", "commands", "git")
+	dir := filepath.Join(home, ".yottacode", "commands", "check")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
-	customBody := "MY CUSTOM COMMIT-MESSAGE BODY"
-	if err := os.WriteFile(filepath.Join(dir, "commit-message.md"), []byte(customBody), 0o644); err != nil {
+	customBody := "MY CUSTOM REVIEW BODY"
+	if err := os.WriteFile(filepath.Join(dir, "review.md"), []byte(customBody), 0o644); err != nil {
 		t.Fatalf("write: %v", err)
 	}
 
@@ -129,12 +137,12 @@ func TestLoadAll_UserShadowsDefault(t *testing.T) {
 
 	var got *Command
 	for i := range cmds {
-		if cmds[i].Name == "git:commit-message" {
+		if cmds[i].Name == "check:review" {
 			got = &cmds[i]
 		}
 	}
 	if got == nil {
-		t.Fatal("/git:commit-message not loaded after override")
+		t.Fatal("/check:review not loaded after override")
 	}
 	if got.Scope != ScopeUser {
 		t.Errorf("Scope = %q, want %q (user override should win)", got.Scope, ScopeUser)
@@ -149,11 +157,11 @@ func TestLoadAll_UserShadowsDefault(t *testing.T) {
 func TestLoadAll_ProjectShadowsDefault(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	cwd := t.TempDir()
-	dir := filepath.Join(cwd, ".yottacode", "commands", "git")
+	dir := filepath.Join(cwd, ".yottacode", "commands", "check")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "commit-message.md"), []byte("PROJECT VERSION"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "review.md"), []byte("PROJECT VERSION"), 0o644); err != nil {
 		t.Fatalf("write: %v", err)
 	}
 
@@ -165,7 +173,7 @@ func TestLoadAll_ProjectShadowsDefault(t *testing.T) {
 	}
 
 	for _, c := range cmds {
-		if c.Name == "git:commit-message" {
+		if c.Name == "check:review" {
 			if c.Scope != ScopeProject {
 				t.Errorf("Scope = %q, want project", c.Scope)
 			}
@@ -175,5 +183,5 @@ func TestLoadAll_ProjectShadowsDefault(t *testing.T) {
 			return
 		}
 	}
-	t.Fatal("/git:commit-message not loaded")
+	t.Fatal("/check:review not loaded")
 }

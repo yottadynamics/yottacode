@@ -16,6 +16,7 @@ import (
 	"github.com/yottadynamics/yottacode/internal/cli"
 	"github.com/yottadynamics/yottacode/internal/config"
 	"github.com/yottadynamics/yottacode/internal/experimental"
+	githubapi "github.com/yottadynamics/yottacode/internal/github"
 	"github.com/yottadynamics/yottacode/internal/memory"
 	"github.com/yottadynamics/yottacode/internal/permissions"
 	"github.com/yottadynamics/yottacode/internal/recall"
@@ -181,6 +182,23 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 	reg.Register(&agent.GitStageFilesTool{Cwd: cwd})
 	reg.Register(&agent.GitUnstageFilesTool{Cwd: cwd})
 	reg.Register(&agent.GitCommitTool{Cwd: cwd})
+	// Composite commit-workflow tools paired with the /commit slash
+	// command (cmd_commit.go). Context is read-only and parallel-safe;
+	// apply is approval-gated and validates the subject in Go before
+	// invoking git, so empty-staging / oversize / trailing-period /
+	// multi-line messages can't reach a `git commit` invocation no
+	// matter what the model emits.
+	reg.Register(&agent.GitCommitContextTool{Cwd: cwd})
+	reg.Register(&agent.GitCommitApplyTool{Cwd: cwd})
+	// Composite PR-workflow tools paired with the /create-pr slash
+	// command (cmd_create_pr.go). Context is read-only (no network
+	// beyond a cheap `git ls-remote` push-state check); create is
+	// approval-gated and validates the title in Go before dialing the
+	// github.Interface. The Interface is the foundation hook for
+	// v0.5.0's typed go-github client — swapping the ShellOut for the
+	// typed client is a one-line registration change.
+	reg.Register(&agent.GHPRContextTool{Cwd: cwd})
+	reg.Register(&agent.GHPRCreateTool{Cwd: cwd, GH: &githubapi.ShellOut{Cwd: cwd}})
 	reg.Register(&agent.GitLogFileTool{Cwd: cwd})
 	reg.Register(&agent.GitBlameLinesTool{Cwd: cwd})
 	reg.Register(&agent.GitMergeBaseTool{Cwd: cwd})

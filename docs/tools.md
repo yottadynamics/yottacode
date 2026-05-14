@@ -1,6 +1,6 @@
 # Built-in tools
 
-Thirty tools ship in `internal/agent` (twenty-eight always-on plus `todo_write`
+Thirty-four tools ship in `internal/agent` (thirty-two always-on plus `todo_write`
 and `exit_plan_mode`). The model sees their JSON-schema parameters via the
 OpenAI tools API; the TUI renders each invocation as a bordered card with a
 verb-style header (see [How tool calls render in the TUI](#how-tool-calls-render-in-the-tui)).
@@ -25,6 +25,10 @@ are also accepted).
 | [`git_stage_files`](#git_stage_files) | required | Stage specific files |
 | [`git_unstage_files`](#git_unstage_files) | required | Unstage specific files |
 | [`git_commit`](#git_commit) | required | Commit staged changes |
+| [`git_commit_context`](#git_commit_context) | none | Typed snapshot for drafting a commit message (paired with `git_commit_apply`) |
+| [`git_commit_apply`](#git_commit_apply) | required | Validate a one-line subject and run `git commit` with structured result envelope |
+| [`gh_pr_context`](#gh_pr_context) | none | Typed snapshot for opening a PR (base resolution, ahead-count, push state, gh availability, PR template) |
+| [`gh_pr_create`](#gh_pr_create) | required | Validate title and open a PR via the `internal/github.Interface` adapter with typed result envelope |
 | [`git_log_file`](#git_log_file) | none | Show history for one file |
 | [`git_blame_lines`](#git_blame_lines) | none | Blame a line range in a file |
 | [`git_merge_base`](#git_merge_base) | none | Find merge base between two refs |
@@ -344,6 +348,110 @@ Create a commit from the currently staged changes.
 | Param | Type | Default |
 |---|---|---|
 | `message` | string | — |
+
+Always prompts for approval.
+
+## git_commit_context
+
+Composite read-only snapshot used to draft a one-line commit message
+without parsing bash heredoc output. Returns labeled sections under
+`## state`, `## staged.name-status`, `## staged.diff`, `## recent.subjects`,
+`## branch.commits`, `## prose`, `## unstaged`, and `## untracked`. The
+`## state` block carries the deterministic `staged_empty=`,
+`detected_style=` (one of `conventional` / `ticket-prefix` / `plain`,
+chosen by majority over the last 15 subjects), and `branch=` fields so
+callers branch on typed flags rather than text inference.
+
+Pair with [`git_commit_apply`](#git_commit_apply) — context tool gathers
+state, apply tool validates and commits.
+
+| Param | Type | Default |
+|---|---|---|
+| _(none)_ | | |
+
+No approval. Parallel-safe.
+
+## git_commit_apply
+
+Composite mutator that validates a one-line subject and runs
+`git commit -F -` against the currently staged changes. The
+following rejections fire **before** invoking git (deterministic Go,
+not model judgment):
+
+- empty staging (`committed=false reason=staged_empty`)
+- empty / whitespace-only message
+- multi-line message (no body or footer accepted)
+- subject longer than 72 characters
+- subject ending in a period
+
+Returns a typed envelope. On success: `committed=true sha=<hash>` plus
+post-commit `## unstaged` / `## untracked` sections. On pre-commit hook
+failure: `committed=false reason=hook_error` followed by the hook's
+verbatim output. The tool never auto-retries, auto-stages, or amends.
+
+| Param | Type | Default |
+|---|---|---|
+| `message` | string | — |
+
+Always prompts for approval.
+
+## gh_pr_context
+
+Composite read-only snapshot used to open a pull request without
+parsing multi-step bash output. Returns labeled sections under
+`## state`, `## diff.stat`, `## commits.log`, and `## pr.template`.
+The `## state` block carries deterministic flags callers branch on:
+`resolved_base=`, `base_resolution=` (one of `explicit`, `origin-head`,
+`fallback:<name>`, `unresolved`), `current_branch=`,
+`base_equals_current=`, `ahead_count=`, `pushed_to_origin=`, and
+`gh_available=`.
+
+Base resolution priority: explicit `base` argument → `origin/HEAD`
+symbolic ref → first of `main` / `master` / `develop` that exists
+locally. The `pushed_to_origin` check uses `git ls-remote --exit-code
+--heads origin <branch>` so empty-remote repos correctly report
+`false` without crashing.
+
+Pair with [`gh_pr_create`](#gh_pr_create) — context tool gathers
+state, create tool validates the title and opens the PR.
+
+| Param | Type | Default |
+|---|---|---|
+| `base` | string | (auto-resolved from `origin/HEAD` then fallback chain) |
+
+No approval.
+
+## gh_pr_create
+
+Composite mutator that validates a PR title and opens the pull request
+through the typed `internal/github.Interface` adapter. The following
+rejections fire **before** dialing the adapter (deterministic Go, not
+model judgment):
+
+- empty title / body / base (`created=false reason=validation`)
+- multi-line title
+- title longer than 72 characters
+- title ending in a period
+
+Returns a typed envelope. On success: `created=true url=<url>
+number=<n>`. On a missing or unauthenticated `gh` CLI:
+`created=false reason=gh_unavailable` so the procedural `/git-create-pr`
+can fall through to draft-only output without surfacing an opaque
+exec failure. On other gh errors: `created=false reason=gh_error`
+followed by the gh output verbatim. The tool never auto-retries,
+auto-edits, or auto-merges.
+
+The adapter behind this tool is `internal/github.ShellOut` today
+(wraps the `gh` CLI). The v0.5.0 roadmap swaps it for a typed
+`go-github` client without callers changing — that's the registration
+change in `internal/tui/run.go` and nothing else.
+
+| Param | Type | Default |
+|---|---|---|
+| `base` | string | — |
+| `title` | string | — |
+| `body` | string | — |
+| `draft` | bool | `false` |
 
 Always prompts for approval.
 

@@ -88,6 +88,8 @@ var Reserved = map[string]bool{
 	"init":           true,
 	"plan":           true,
 	"subagents":      true,
+	"git-commit":     true,
+	"git-create-pr":  true,
 }
 
 // Load walks both scope directories (user first, then project) and

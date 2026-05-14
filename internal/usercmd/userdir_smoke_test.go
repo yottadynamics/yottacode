@@ -12,6 +12,11 @@ import (
 // when HOME isn't /home/ppetkov so it doesn't run in CI or on other
 // machines — this is a local sanity test that runs against the actual
 // dotfiles, not a fixture.
+//
+// The git workflows (commit-message, create-pr) moved to procedural
+// built-ins (/git-commit, /git-create-pr) and are not expected in
+// user scope anymore. Only the check:* family remains as markdown
+// starter kit.
 func TestUserDirSmoke(t *testing.T) {
 	if os.Getenv("HOME") != "/home/ppetkov" {
 		t.Skip("smoke test runs only against ppetkov's local ~/.yottacode/commands/")
@@ -24,10 +29,8 @@ func TestUserDirSmoke(t *testing.T) {
 	want := map[string]struct {
 		argHint string
 	}{
-		"git:commit-message":  {argHint: ""},
-		"git:create-pr":       {argHint: "[base-branch]"},
-		"check:review":        {argHint: "[base-branch]"},
-		"check:verify":        {argHint: "[task-or-hint]"},
+		"check:review": {argHint: "[base-branch]"},
+		"check:verify": {argHint: "[task-or-hint]"},
 	}
 
 	got := map[string]Command{}
@@ -67,14 +70,6 @@ func TestUserDirSmoke(t *testing.T) {
 	resolved := Substitute(got["check:verify"].Body, "fix the off-by-one bug")
 	if !contains(resolved, "fix the off-by-one bug") {
 		t.Errorf("$ARGUMENTS not substituted into /check:verify body")
-	}
-
-	// And /git:create-pr with a $1 positional. The body's bash uses
-	// `base="$1"` near the top, so a literal "develop" substitution
-	// should land there.
-	resolved = Substitute(got["git:create-pr"].Body, "develop")
-	if !contains(resolved, "base=\"develop\"") {
-		t.Errorf("$1 not substituted into /git:create-pr body; first 400 chars:\n%s", resolved[:400])
 	}
 }
 
