@@ -4,21 +4,37 @@ This guide gets yottacode running against a model provider and starts your first
 
 ## 1. Install yottacode
 
-Build from source:
+One-liner (Linux + macOS, amd64 + arm64):
 
 ```bash
-git clone https://github.com/yottadynamics/yottacode.git
-cd yottacode
-go build -o yottacode ./cmd/yottacode
+curl -fsSL https://raw.githubusercontent.com/yottadynamics/yottacode/main/install.sh | bash
 ```
 
-Put the binary on your `PATH`:
+The installer drops `yottacode` into `~/.yottacode/bin/` (no `sudo`), verifies the release archive against published SHA256 sums, and appends a `PATH` export to your shell rc — making a timestamped backup of the rc first.
+
+Skip the rc edit (you manage `PATH` yourself):
 
 ```bash
-sudo install -m 0755 ./yottacode /usr/local/bin/yottacode
+curl -fsSL https://raw.githubusercontent.com/yottadynamics/yottacode/main/install.sh \
+  | bash -s -- --no-modify-rc
 ```
 
-Pre-built binaries land at the first tagged release. See [Installation](installation.md) for more options.
+Pin a specific version instead of "latest":
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/yottadynamics/yottacode/main/install.sh \
+  | VERSION=0.2.0 bash
+```
+
+Verify the install:
+
+```bash
+yottacode --version
+```
+
+After install, yottacode checks GitHub for a newer release once a day on startup and offers to upgrade before the TUI starts. Set `YOTTACODE_NO_UPDATE_CHECK=1` to disable. Windows users should run yottacode under WSL.
+
+For build-from-source, cross-compile, and pinned-archive paths, see [Installation](installation.md).
 
 ## 2. Configure a provider
 
