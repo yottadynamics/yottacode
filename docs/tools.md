@@ -444,10 +444,14 @@ exec failure. On other gh errors: `created=false reason=gh_error`
 followed by the gh output verbatim. The tool never auto-retries,
 auto-edits, or auto-merges.
 
-The adapter behind this tool is `internal/github.ShellOut` today
-(wraps the `gh` CLI). The v0.5.0 roadmap swaps it for a typed
-`go-github` client without callers changing — that's the registration
-change in `internal/tui/run.go` and nothing else.
+The adapter behind this tool is `internal/github.TypedClient`,
+backed by the `go-github/v66` REST client. Auth resolves through a
+three-tier precedence chain: `$GITHUB_TOKEN` env var →
+`gh auth token` shell-out (one-shot, cached for the session) →
+`~/.yottacode/github.json` (yottacode-native PAT, written by a
+future `yottacode setup github` flow). The `gh` CLI is no longer
+required for API calls — only optionally used to source the token
+when `$GITHUB_TOKEN` isn't set.
 
 | Param | Type | Default |
 |---|---|---|
