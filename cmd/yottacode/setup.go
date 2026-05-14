@@ -97,6 +97,14 @@ Common flag-driven shapes:
 	f.BoolVar(&noEnvWrite, "no-env-write", false,
 		"Don't write .env even when keys were entered (the runtime expects them in the live env)")
 
+	// `yottacode setup github` — third-tier auth setup. Adds the
+	// PAT-storage path the auth resolver reads at
+	// ~/.yottacode/github.json. Sibling to the wizard above
+	// rather than a step in it because GitHub auth is opt-in:
+	// users who only push via gh or $GITHUB_TOKEN never need to
+	// run it.
+	cmd.AddCommand(newSetupGitHubCmd())
+
 	return cmd
 }
 

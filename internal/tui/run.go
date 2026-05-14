@@ -197,7 +197,7 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 	// github.Interface. The Interface is the foundation hook for
 	// v0.5.0's typed go-github client — swapping the ShellOut for the
 	// typed client is a one-line registration change.
-	ghClient := &githubapi.ShellOut{Cwd: cwd}
+	ghClient := githubapi.NewTypedClient(cwd)
 	reg.Register(&agent.GHPRContextTool{Cwd: cwd})
 	reg.Register(&agent.GHPRCreateTool{Cwd: cwd, GH: ghClient})
 	// gh_pr_review_context is the read-side composite paired with
