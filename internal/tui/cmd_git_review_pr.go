@@ -99,7 +99,12 @@ Step 4 — emit the review in this exact structure:
    "(none)" is the correct answer when the diff is clean.>
 
   ### Nits
-  <stylistic / cosmetic feedback. Same format. "(none)" if empty.>
+  <stylistic / cosmetic feedback (naming, magic numbers without
+   constants, comment density, small duplications, TODO comments
+   that should be tracked elsewhere). A diff of substantial size
+   will almost always have a Nit — emit at least one when the diff
+   spans more than ~3 hunks. "(none)" is correct only on
+   small focused fixes where the convention is unambiguous.>
 
   ### Notes for the author
   <optional: design context, alternatives considered, follow-ups

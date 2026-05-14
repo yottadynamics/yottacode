@@ -71,6 +71,26 @@ func TestGitReviewPRDirective_SuggestionsHasMarginalValueBar(t *testing.T) {
 	}
 }
 
+// TestGitReviewPRDirective_NitsHasDensityFloor pins the inverse of
+// the Suggestions bar: Nits should be POPULATED on non-trivial
+// diffs. After tightening the Suggestions bar in a prior pass, the
+// model generalized the marginal-value bar to Nits as well and
+// emitted all-(none) on a substantial PR — which is what this
+// floor language guards against.
+func TestGitReviewPRDirective_NitsHasDensityFloor(t *testing.T) {
+	got := gitReviewPRDirective("")
+	mustContain := []string{
+		"emit at least one when the diff",         // density floor
+		"spans more than ~3 hunks",                // concrete trigger
+		"small focused fixes",                     // narrow allowance for (none)
+	}
+	for _, frag := range mustContain {
+		if !strings.Contains(got, frag) {
+			t.Errorf("gitReviewPRDirective must contain %q; got:\n%s", frag, got)
+		}
+	}
+}
+
 // TestGitReviewPRDirective_PinsRubricStructure guards the
 // review's structural contract: the model must emit Blockers /
 // Suggestions / Nits sections in that order so reviews remain
