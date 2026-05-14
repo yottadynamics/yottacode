@@ -22,6 +22,11 @@ Type `/` in the TUI to open the slash-command palette. The palette filters as yo
 | `/memory` | — | Edit curated memory or browse agent-managed memories |
 | `/setup` | — | Suspend the TUI and rerun setup |
 | `/init` | — | Ask the agent to draft or refresh `.yottacode/YOTTACODE.md` |
+| `/git-commit` | — | Compose and run a one-line commit on the staged changes. Procedural: control flow is in Go, the model only synthesizes the subject. Replaces the legacy markdown `/git:commit-message`. |
+| `/git-create-pr` | `[base]` | Open a pull request for the current branch. Procedural: base resolution, ahead-count gating, push-state detection, title validation, and gh-unavailable fall-through all live in Go. Replaces the legacy markdown `/git:create-pr`. |
+| `/git-review-pr` | `[ref]` | Self-review an existing pull request. Ref is a number (`17`) or branch (`feature/x`); empty defaults to the current branch's PR. Fetches PR metadata + diff + check rollup via the typed `internal/github.Interface`, surfaces failing CI at the top, emits a structured review (Failing checks / Blockers / Suggestions / Nits). Output to scrollback only — posting back to GitHub is deferred to a future `--post` flag. |
+| `/git-push` | — | Push the current branch to origin. Procedural: deterministic upstream detection (adds `-u origin HEAD` only on first push), detached-HEAD early exit, no force-push surface. Surfaces "PR updated: `<url>`" when a PR exists for the branch, or points at `/git-create-pr` when one doesn't. |
+| `/git-update-pr` | `[ref]` | Refresh an existing PR's title and body to match the current commit list. Ref is a number or branch; empty defaults to the current branch's PR. Keeps the existing title verbatim when scope hasn't materially changed (no cosmetic title churn); regenerates the body from the full commit log. Scope-pinned: only edits title and body — labels, reviewers, base, draft state are off-limits. |
 | `/plan` | — | Toggle plan mode (also `Shift+Tab`). Type `/plan list` to open a picker and resume an earlier plan. |
 | `/subagents` | `[list \| view <id> \| stop <id> \| types]` | List subagent runs, view a transcript, stop a running task, or list available agent types. See [subagents.md](subagents.md). |
 
@@ -161,33 +166,48 @@ Hot-reload is also deferred — changes to `commands/` files take effect the nex
 
 ### Built-in defaults
 
-Four commands ship with the binary and are available on first launch — no setup, no `~/.yottacode/commands/` files needed. Two cover git workflows, two cover pre-commit / pre-PR correctness checks. They appear in the palette and `/help` under the **Custom commands:** section, tagged `(default)` so you can see they're shipped rather than authored.
+Two markdown commands ship with the binary and are available on first launch — no setup, no `~/.yottacode/commands/` files needed. Both cover pre-commit / pre-PR correctness checks. They appear in the palette and `/help` under the **Custom commands:** section, tagged `(default)` so you can see they're shipped rather than authored.
 
 ```
-/git:commit-message                  (default)
-/git:create-pr       [base]          (default)
-/check:review        [base]          (default)
-/check:verify        [task-or-hint]  (default)
+/check:review        [base]           (default)
+/check:verify        [task-or-hint]   (default)
 ```
+
+> **Note:** the git workflows that used to ship as markdown defaults
+> (`/git:commit-message`, `/git:create-pr`) are now the procedural
+> built-ins `/git-commit` and `/git-create-pr` (see the command
+> reference above). They're driven by composite Layer-1 tools so
+> empty staging, ahead-count gating, oversize titles / subjects,
+> trailing periods, push-state detection, gh-unavailable
+> fall-through, and hook failures are caught deterministically
+> rather than asked of the model in prose.
+>
+> Typing `/git` in the palette filters to every git-related
+> built-in. The full family today is `/git-commit`,
+> `/git-create-pr`, `/git-push`, `/git-update-pr`, and
+> `/git-review-pr` — five procedural commands covering the
+> commit → push → open PR → refresh PR → review PR workflow.
+> The slugs are flat (`git-commit`, not `git:commit`) because the
+> `:` namespace is reserved for custom-command path derivation;
+> built-in slugs use the kebab prefix for the same palette-filter
+> effect.
 
 #### What each does
 
 | Command | Role |
 |---|---|
-| `/git:commit-message` | Gathers staged diff + recent commit-style + branch context + staged CHANGELOG/README/docs prose in a single bash call. Picks message content by priority (PROSE → branch-local commits → branch name → file list). Composes a one-line subject matching the dominant style, then **runs `git commit -F -` through an approval modal** — you read the message in the modal and approve or deny. Prints a `Note:` block listing unstaged-modified or untracked files when present, so you don't accidentally commit without them. Strict prohibitions: never auto-`git add`, never auto-amend, never auto-retry on hook failure. |
-| `/git:create-pr` `[base]` | Resolves the base branch (explicit arg, then `origin/HEAD`, then `main` / `master` / `develop`), reads the three-dot diff and two-dot log against it, respects `.github/pull_request_template.md` when present, drafts title + body, pushes the branch if not on origin, and runs `gh pr create` through an approval modal so you verify the full title + body before the PR lands. Falls back to draft-only output when `gh` isn't installed or authenticated. |
 | `/check:review` `[base]` | Self-reviews the branch diff against the resolved base across six dimensions (correctness, scope, tests, style, security, performance). Emits findings grouped **Blocker / Suggestion / Nit** with `file:line` refs and a one-paragraph recommendation. |
 | `/check:verify` `[task-or-hint]` | Detects the project's stack — **Go, Python, Java (Maven or Gradle), Rust**, plus `Makefile` as the universal fallback — and runs the appropriate build / test / lint commands. **Go runs with `-count=1` mandatory** to bypass the test cache (no stale-pass surprises). On failure, diagnoses by re-running the failing test in isolation AND checking `git log` to see if the test was touched in this branch — never declares "pre-existing" without that evidence. The argument is mixed-purpose free-form: a task description (cross-checked against the diff for scope drift) and/or a stack hint or command override (e.g., ``use `cargo make verify` ``) that single-turns unsupported stacks. Anything outside the four supported stacks falls through to "Unknown — ask the user" rather than guessing. Prints a structured **Verdict** (Done / Not done / Done with caveats / Inconclusive). |
 
-All four use only existing tools (`run_bash`, `read_file`, `git_*`) — no new infrastructure. Each invocation runs through the normal per-tool approval gates; see [Permissions and approvals](#permissions-and-approvals).
+Both use only existing tools (`run_bash`, `read_file`, `git_*`) — no new infrastructure. Each invocation runs through the normal per-tool approval gates; see [Permissions and approvals](#permissions-and-approvals).
 
 #### Overriding a default
 
-To customize a default's body (e.g. you want `/git:commit-message` to always include a `Refs:` footer for your team), drop a file at the **same name path** in user or project scope:
+To customize a default's body (e.g. you want `/check:review` to enforce a team-specific checklist), drop a file at the **same name path** in user or project scope:
 
 ```
-~/.yottacode/commands/git/commit-message.md   → overrides the default for you everywhere
-<repo>/.yottacode/commands/git/commit-message.md  → overrides for anyone working in that repo
+~/.yottacode/commands/check/review.md   → overrides the default for you everywhere
+<repo>/.yottacode/commands/check/review.md  → overrides for anyone working in that repo
 ```
 
 The override is **silent** — no startup warning fires when a user/project file shadows a default, because customizing the starter kit is the documented use case, not a misconfiguration. The override wins on every invocation; delete the file to fall back to the embedded default.

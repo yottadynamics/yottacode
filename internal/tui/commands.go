@@ -91,6 +91,28 @@ func init() {
 		{Name: "max-iterations", Args: "<N>", Help: "cap tool-call iterations per turn (default: 50; auto mode doubles)", Run: cmdMaxIterations},
 		{Name: "setup", Help: "re-run the setup wizard (reloads config on return)", Run: cmdSetup},
 		{Name: "init", Help: "draft .yottacode/YOTTACODE.md from the current repo", Run: cmdInit},
+		// Git workflow built-ins. Slugs are prefixed `git-` (not
+		// namespaced `git:`) because built-in slugs are flat — the
+		// `:` separator is reserved for custom-command path
+		// derivation. The shared prefix means typing /git in the
+		// palette filters to every git-related built-in, which is
+		// the discoverability gain we want now that the legacy
+		// markdown /git:commit-message and /git:create-pr are
+		// retired.
+		//
+		// Both are driven by composite Layer-1 tools so the
+		// reliability work lives in Go rather than in the prompt:
+		// /git-commit by git_commit_context + git_commit_apply
+		// (empty-staging, oversize subjects, hook failures); and
+		// /git-create-pr by gh_pr_context + gh_pr_create (base
+		// resolution, ahead-count gating, title validation,
+		// gh-unavailable fall-through). See cmd_git_commit.go and
+		// cmd_git_create_pr.go for the directives.
+		{Name: "git-commit", Help: "compose and run a one-line git commit", Run: cmdGitCommit},
+		{Name: "git-create-pr", Args: "[base]", Help: "open a pull request for the current branch", Run: cmdGitCreatePR},
+		{Name: "git-review-pr", Args: "[ref]", Help: "review a pull request (number or branch; defaults to current branch's PR)", Run: cmdGitReviewPR},
+		{Name: "git-push", Help: "push the current branch to origin (sets upstream on first push; surfaces the PR URL when one exists)", Run: cmdGitPush},
+		{Name: "git-update-pr", Args: "[ref]", Help: "refresh a PR's title and body to match the current commit list", Run: cmdGitUpdatePR},
 		// /plan toggles plan mode (read-only research + plan file +
 		// exit_plan_mode for approval). Also bound to Shift+Tab — see
 		// model.go's KeyMsg handler.
