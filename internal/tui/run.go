@@ -192,6 +192,13 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 	reg.Register(&agent.GitStageFilesTool{Cwd: cwd})
 	reg.Register(&agent.GitUnstageFilesTool{Cwd: cwd})
 	reg.Register(&agent.GitCommitTool{Cwd: cwd})
+	// Git worktree tools
+	reg.Register(&agent.GitWorktreeListTool{Cwd: cwd})
+	reg.Register(&agent.GitWorktreeAddTool{Cwd: cwd})
+	reg.Register(&agent.GitWorktreeRemoveTool{Cwd: cwd})
+	reg.Register(&agent.GitWorktreeLockTool{Cwd: cwd})
+	reg.Register(&agent.GitWorktreeUnlockTool{Cwd: cwd})
+	reg.Register(&agent.GitWorktreePruneTool{Cwd: cwd})
 	// Composite commit-workflow tools paired with the /commit slash
 	// command (cmd_commit.go). Context is read-only and parallel-safe;
 	// apply is approval-gated and validates the subject in Go before

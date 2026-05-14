@@ -202,6 +202,13 @@ func Run(ctx context.Context, opts cli.ChatOptions, prompt string) error {
 	reg.Register(&agent.RollbackTool{Cwd: cwd})
 	reg.Register(&agent.RunTestsTool{Cwd: cwd})
 	reg.Register(&agent.RunBashTool{Cwd: cwd})
+	// Git worktree tools
+	reg.Register(&agent.GitWorktreeListTool{Cwd: cwd})
+	reg.Register(&agent.GitWorktreeAddTool{Cwd: cwd})
+	reg.Register(&agent.GitWorktreeRemoveTool{Cwd: cwd})
+	reg.Register(&agent.GitWorktreeLockTool{Cwd: cwd})
+	reg.Register(&agent.GitWorktreeUnlockTool{Cwd: cwd})
+	reg.Register(&agent.GitWorktreePruneTool{Cwd: cwd})
 	reg.Register(&agent.ListDirTool{Cwd: cwd})
 	reg.Register(&agent.ListProjectStructureTool{Cwd: cwd})
 	reg.Register(&agent.GlobTool{Cwd: cwd})
