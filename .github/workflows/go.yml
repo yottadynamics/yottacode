@@ -41,3 +41,44 @@ jobs:
         # as spurious "Error:" PR annotations (e.g. TestDemo_CardOutput
         # in internal/tui/). Real tests do not opt into -short.
         run: go test -short -v ./...
+
+  shellcheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: ShellCheck install.sh
+        uses: ludeeus/action-shellcheck@master
+        env:
+          SHELLCHECK_OPTS: -s bash
+        with:
+          scandir: '.'
+          additional_files: 'install.sh'
+          ignore_paths: 'docs internal cmd .git'
+
+  install-smoke:
+    # Run install.sh end-to-end against a pinned released version.
+    # Confirms the script can fetch, verify, extract, and install on a
+    # clean machine. YOTTACODE_NO_UPDATE_CHECK avoids any background
+    # poll once the installed binary is invoked.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      VERSION: '0.2.0'
+      YOTTACODE_NO_UPDATE_CHECK: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run install.sh
+        run: |
+          set -eu
+          export INSTALL_DIR="$RUNNER_TEMP/yottacode-bin"
+          bash ./install.sh --no-modify-rc
+      - name: Verify installed binary
+        run: |
+          set -eu
+          BIN="$RUNNER_TEMP/yottacode-bin/yottacode"
+          test -x "$BIN"
+          "$BIN" --version | tee /tmp/ver.txt
+          grep -q "$VERSION" /tmp/ver.txt
