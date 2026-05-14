@@ -120,7 +120,41 @@ func ValidateWritePath(path string, opts WritePathOptions) error {
 			return nil
 		}
 	}
-	return fmt.Errorf("path %q is outside cwd and not in --allow-paths", abs)
+	return &ErrPathOutsideWorkspace{
+		Path:         abs,
+		Cwd:          opts.Cwd,
+		AllowedRoots: append([]string(nil), opts.AllowedPaths...),
+	}
+}
+
+// ErrPathOutsideWorkspace is the structured error ValidateWritePath
+// returns when a write target falls outside cwd and every
+// --allow-paths root. Callers in the TUI (errors.As) catch this to
+// render the inline path-trust elevation modal — Prompt 2 in
+// yottacode-roadmap/folder-trust.md — and offer the user a choice
+// between Allow-once / Trust-for-session / Reject.
+//
+// The fields are the bits the modal needs to render a useful
+// dialog: the absolute path the model wanted, the workspace it's
+// outside of, and the existing allow-list so the user can see
+// what's already trusted before deciding.
+//
+// Error() returns a descriptive message the model sees on Reject:
+// names the workspace boundary plus a recovery hint, so the model
+// can switch to an in-workspace target or stop and ask the user
+// to relaunch with --allow-paths. Mirrors Claude Code's per-tool
+// deny semantics — informative, not prescriptive.
+type ErrPathOutsideWorkspace struct {
+	Path         string
+	Cwd          string
+	AllowedRoots []string
+}
+
+func (e *ErrPathOutsideWorkspace) Error() string {
+	return fmt.Sprintf(
+		"write to %q denied: outside session workspace %q. Choose a target under %q, or stop and ask the user to relaunch with --allow-paths %q.",
+		e.Path, e.Cwd, e.Cwd, filepath.Dir(e.Path),
+	)
 }
 
 // pathUnder reports whether descendant is at or below ancestor on the
@@ -290,6 +324,7 @@ func DefaultDenyPaths(cwd string) []string {
 			filepath.Join(yc, "auth"),     // OAuth tokens — only the login flow writes here
 			filepath.Join(yc, "index.sqlite"),
 			filepath.Join(yc, "USER.md"),
+			filepath.Join(yc, "trusted-roots.json"), // folder-trust store — only the trust prompt / `yottacode trust` writes here
 		)
 	}
 	if cwd != "" {

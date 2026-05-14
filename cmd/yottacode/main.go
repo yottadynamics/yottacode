@@ -67,6 +67,7 @@ func newCLI() *cobra.Command {
 		newProviderCmd(),
 		newModelCmd(),
 		newOpenAIAuthCmd(),
+		newTrustCmd(),
 		newVersionCmd(),
 	)
 	return root
@@ -395,7 +396,7 @@ func bindCommonPersistentFlags(cmd *cobra.Command, opts *cli.ChatOptions) {
 	f.StringVar(&opts.XSearchExcludedHandles, "x-search-excluded-handles", "", "Comma-separated X handle blocklist for provider-native x_search")
 	f.StringVar(&opts.XSearchFromDate, "x-search-from-date", "", "Inclusive YYYY-MM-DD lower bound for provider-native x_search")
 	f.StringVar(&opts.XSearchToDate, "x-search-to-date", "", "Inclusive YYYY-MM-DD upper bound for provider-native x_search")
-	f.StringVar(&opts.AllowPaths, "allow-paths", "", "Comma-separated additional roots the model's write tools may mutate (or set $YOTTACODE_ALLOW_PATHS); cwd is always allowed")
+	f.StringVar(&opts.AllowPaths, "allow-paths", "", "Comma-separated directory roots; the model may write anywhere in the subtree under each (recursive). Cwd is always allowed. Each entry also satisfies the first-launch trust gate for the session, but does not persist — use `yottacode trust add <path>` for cross-session trust. Env: $YOTTACODE_ALLOW_PATHS.")
 	f.StringVar(&opts.PermissionMode, "permission-mode", "", "Startup permission `mode`: default | plan | auto. 'plan' starts in read-only research mode (Shift+Tab to exit); 'auto' starts with edits auto-allowed (bash & commits still prompt). Mirrors Claude Code's --permission-mode. No-op for yottacode run.")
 	f.StringVar(&opts.PlanResume, "plan-resume", "", "Resume an existing plan by `slug` or substring (matched newest-first against ~/.yottacode/plans/). Implies --permission-mode plan. No-op for yottacode run.")
 	// --experimental is repeatable (cobra StringSliceVar handles this:

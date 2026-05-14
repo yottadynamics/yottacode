@@ -22,6 +22,7 @@ import (
 	"github.com/yottadynamics/yottacode/internal/recall"
 	"github.com/yottadynamics/yottacode/internal/session"
 	"github.com/yottadynamics/yottacode/internal/subagents"
+	"github.com/yottadynamics/yottacode/internal/trust"
 	"github.com/yottadynamics/yottacode/internal/usercmd"
 	"github.com/yottadynamics/yottacode/internal/version"
 	"github.com/yottadynamics/yottacode/internal/wizard"
@@ -37,6 +38,15 @@ const defaultSystemPrompt = agent.DefaultSystemPrompt
 func Run(ctx context.Context, opts cli.ChatOptions) error {
 	cwd, err := os.Getwd()
 	if err != nil {
+		return err
+	}
+
+	// Folder-trust gate: fires before openSession so an untrusted
+	// workspace never accumulates session state. Subfolders of any
+	// previously trusted root inherit trust; --allow-paths roots
+	// satisfy the gate session-only; YOTTACODE_TRUST_ALL=1 is the
+	// CI escape hatch. See yottacode-roadmap/folder-trust.md.
+	if err := ensureWorkspaceTrust(cwd, opts); err != nil {
 		return err
 	}
 
@@ -488,6 +498,32 @@ func sessionHasExchange(sess *session.Session) bool {
 // it never uses.
 func splitAllowPaths(s string) []string {
 	return splitCSV(s)
+}
+
+// ensureWorkspaceTrust fires the first-launch trust gate. Loads the
+// user-scope store, checks IsTrusted against cwd + the resolved
+// --allow-paths roots, and either no-ops (already trusted),
+// drives the Bubbletea picker (interactive + untrusted), or skips
+// (non-TTY).
+//
+// The store is loaded each launch — it's small and the user can
+// edit `yottacode trust remove` between runs, so we don't cache.
+func ensureWorkspaceTrust(cwd string, opts cli.ChatOptions) error {
+	storePath, err := trust.DefaultStorePath()
+	if err != nil {
+		return fmt.Errorf("trust store path: %w", err)
+	}
+	store, err := trust.Load(storePath)
+	if err != nil {
+		return fmt.Errorf("load trust store: %w", err)
+	}
+	allowPaths := splitAllowPaths(opts.AllowPaths)
+	if !trust.IsInteractiveStream(os.Stdin) || !trust.IsInteractiveStream(os.Stdout) {
+		// Non-TTY (piped, CI): skip the trust gate entirely.
+		// Matches Claude Code's `-p` behavior.
+		return trust.Ensure(store, storePath, cwd, allowPaths, false, os.Stdin, os.Stderr)
+	}
+	return trust.EnsureInteractive(store, storePath, cwd, allowPaths)
 }
 
 func splitCSV(s string) []string {

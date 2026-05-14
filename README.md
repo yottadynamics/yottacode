@@ -61,7 +61,7 @@ Memory is plain text, grep-able, and split across a handful of files. **You own 
 
 ### Built-in security and approval layer
 
-Mutating tools (writes, edits, shell, git mutations) ask before running, with a syntax-highlighted diff for edits. Project rules support `allow` / `ask` / `deny` (deny wins) for team-shared pre-approvals. Write-path validation confines writes to the working tree, blocks symlink writes, and firewalls secret-bearing paths (`.env`, `~/.ssh`, cloud credentials, auth stores) from both reads and writes.
+First-launch trust prompt on each new workspace (mirroring Claude Code) records consent at `~/.yottacode/trusted-roots.json`; subfolders of a trusted root inherit trust automatically. Manage roots with `yottacode trust list/add/remove/clear`. Mutating tools (writes, edits, shell, git mutations) ask before running, with a syntax-highlighted diff for edits. Project rules support `allow` / `ask` / `deny` (deny wins) for team-shared pre-approvals. Write-path validation confines writes to the working tree, blocks symlink writes, and firewalls secret-bearing paths (`.env`, `~/.ssh`, cloud credentials, auth stores) from both reads and writes.
 
 > Tools run on the host — there is no in-process sandbox. For stronger isolation, run yottacode inside a container or devcontainer. See [`docs/security-and-allow-lists.md`](docs/security-and-allow-lists.md).
 
