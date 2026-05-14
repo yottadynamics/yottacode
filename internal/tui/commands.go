@@ -108,8 +108,8 @@ func init() {
 		// resolution, ahead-count gating, title validation,
 		// gh-unavailable fall-through). See cmd_git_commit.go and
 		// cmd_git_create_pr.go for the directives.
-		{Name: "git-commit", Help: "compose and run a one-line git commit (procedural; replaces the legacy markdown /git:commit-message)", Run: cmdGitCommit},
-		{Name: "git-create-pr", Args: "[base]", Help: "open a pull request for the current branch (procedural; replaces the legacy markdown /git:create-pr)", Run: cmdGitCreatePR},
+		{Name: "git-commit", Help: "compose and run a one-line git commit", Run: cmdGitCommit},
+		{Name: "git-create-pr", Args: "[base]", Help: "open a pull request for the current branch", Run: cmdGitCreatePR},
 		// /plan toggles plan mode (read-only research + plan file +
 		// exit_plan_mode for approval). Also bound to Shift+Tab — see
 		// model.go's KeyMsg handler.
