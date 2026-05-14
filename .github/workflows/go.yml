@@ -74,7 +74,7 @@ jobs:
         run: |
           set -eu
           export INSTALL_DIR="$RUNNER_TEMP/yottacode-bin"
-          bash ./install.sh --no-modify-rc --yes
+          bash ./install.sh --no-modify-rc
       - name: Verify installed binary
         run: |
           set -eu

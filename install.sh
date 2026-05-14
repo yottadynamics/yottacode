@@ -13,7 +13,6 @@
 #
 # Flags:
 #   --no-modify-rc   Do not edit any shell rc file.
-#   --yes, -y        Reserved for future prompts; currently a no-op.
 #   --help, -h       Show this help.
 
 set -euo pipefail
@@ -24,17 +23,16 @@ set -euo pipefail
 REPO="yottadynamics/yottacode"
 BIN_NAME="yottacode"
 DEFAULT_INSTALL_DIR="${HOME}/.yottacode/bin"
+# shellcheck disable=SC2016  # literal $HOME shown to the user in messages
 PATH_BIN_DIR='$HOME/.yottacode/bin'
 TOTAL_STEPS=5
 
 NO_MODIFY_RC=0
-ASSUME_YES=0
 for arg in "$@"; do
   case "$arg" in
     --no-modify-rc) NO_MODIFY_RC=1 ;;
-    -y|--yes)       ASSUME_YES=1 ;;
     -h|--help)
-      sed -n '2,20p' "${BASH_SOURCE[0]:-$0}" 2>/dev/null | sed 's/^# \{0,1\}//'
+      sed -n '2,18p' "${BASH_SOURCE[0]:-$0}" 2>/dev/null | sed 's/^# \{0,1\}//'
       exit 0
       ;;
     *)
@@ -357,8 +355,10 @@ wire_path() {
   {
     printf '\n# >>> yottacode >>>\n'
     if [ "$SHELL_NAME" = fish ]; then
+      # shellcheck disable=SC2016  # literal $HOME goes into the rc file
       printf 'fish_add_path -p "$HOME/.yottacode/bin"\n'
     else
+      # shellcheck disable=SC2016  # literal $HOME / $PATH go into the rc file
       printf 'export PATH="$HOME/.yottacode/bin:$PATH"\n'
     fi
     printf '# <<< yottacode <<<\n'
