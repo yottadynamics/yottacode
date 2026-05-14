@@ -51,6 +51,26 @@ func TestGitReviewPRDirective_PinsHardProhibitions(t *testing.T) {
 	}
 }
 
+// TestGitReviewPRDirective_SuggestionsHasMarginalValueBar pins the
+// marginal-value bar on the Suggestions section. Without it, the
+// model leans toward filling the section even when the diff is
+// clean (the rubric's structure encourages output). The bar
+// language is what keeps Suggestions from collecting "could
+// consider…" filler that wastes the reviewer's attention.
+func TestGitReviewPRDirective_SuggestionsHasMarginalValueBar(t *testing.T) {
+	got := gitReviewPRDirective("")
+	mustContain := []string{
+		"NOTICEABLY",                         // bar phrasing
+		"\"(none)\" over filler",             // explicit preference
+		"\"(none)\" is the correct answer",   // permission to emit empty
+	}
+	for _, frag := range mustContain {
+		if !strings.Contains(got, frag) {
+			t.Errorf("gitReviewPRDirective must contain %q; got:\n%s", frag, got)
+		}
+	}
+}
+
 // TestGitReviewPRDirective_PinsRubricStructure guards the
 // review's structural contract: the model must emit Blockers /
 // Suggestions / Nits sections in that order so reviews remain

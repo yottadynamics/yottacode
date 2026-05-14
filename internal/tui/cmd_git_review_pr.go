@@ -92,7 +92,11 @@ Step 4 — emit the review in this exact structure:
 
   ### Suggestions
   <improvements that would strengthen the PR but aren't merge
-   blockers. Same format as blockers. "(none)" if empty.>
+   blockers. Same format as blockers. Marginal-value bar: only
+   emit a suggestion if acting on it would NOTICEABLY strengthen
+   the PR; if the suggestion is in the realm of "could be slightly
+   better" or "consider adding…", prefer "(none)" over filler.
+   "(none)" is the correct answer when the diff is clean.>
 
   ### Nits
   <stylistic / cosmetic feedback. Same format. "(none)" if empty.>
