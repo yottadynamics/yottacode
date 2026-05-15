@@ -35,6 +35,15 @@ the project uses semantic versioning once it's past `1.0.0`.
   install`) to `~/.yottacode/bin/` via `install.sh`. The README's old
   manual block is preserved under a collapsed "Manual install" section
   for users who want to pin a specific version without the script.
+- **`read_file` now speaks lines, not bytes.** `offset` is a 1-indexed
+  start line (default 1), `limit` is a maximum number of lines
+  (default 2000), and the response is `cat -n` style — every line is
+  prefixed with its line number and a tab. Lets the model cite
+  `file:line` directly, feed exact text to `edit_file`, and stop
+  reaching for `sed -n 'A,Bp' file` via `run_bash` to pull a range.
+  The 512 KiB byte cap is preserved as a defense-in-depth limit on
+  pathological files. Breaking: any caller passing byte offsets to
+  `read_file` must switch to line numbers.
 
 ### Fixed
 
