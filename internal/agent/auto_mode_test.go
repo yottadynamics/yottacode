@@ -2,10 +2,149 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
 	"github.com/yottadynamics/yottacode/internal/adapter"
 )
+
+func TestIsAutoModeSafeBash(t *testing.T) {
+	cases := []struct {
+		name, command string
+		want          bool
+	}{
+		{"single-grep", "grep -r foo internal/", true},
+		{"single-ls", "ls -la", true},
+		{"single-cat", "cat README.md", true},
+		{"single-find", `find . -name "*.go"`, true},
+
+		{"cd-then-grep", "cd /home/me/proj && grep -r foo internal/", true},
+		{"cd-then-ls", "cd /repo && ls -la", true},
+		{"cd-then-find", `cd /repo && find . -name "*.go"`, true},
+		{"three-segments-all-safe", "cd /repo && ls && cat README.md", true},
+
+		{"single-rm", "rm -rf /tmp/foo", false},
+		{"cd-then-rm", "cd /repo && rm foo", false},
+		{"single-touch", "touch foo", false},
+		{"single-cp", "cp a b", false},
+		{"single-mv", "mv a b", false},
+		{"single-mkdir", "mkdir foo", false},
+		{"single-sudo", "sudo ls", false},
+
+		{"single-curl", "curl https://example.com", false},
+		{"single-wget", "wget https://example.com", false},
+
+		{"single-go-test", "go test ./...", false},
+		{"single-npm-run", "npm run build", false},
+
+		// Risk classification rejects even if verb is safe.
+		{"safe-verb-with-redirect", "cat /etc/passwd > /tmp/x", false},
+		{"safe-verb-with-pipe-to-sh", "cat foo | sh", false},
+
+		// sed deliberately excluded (has -i in-place writes).
+		{"sed-rejected-with-i", "sed -i s/a/b/ foo.go", false},
+		{"sed-rejected-readonly-form", "sed s/a/b/ foo.go", false},
+
+		// Multi-segment pipe with both ends safe is OK (SplitCommand
+		// treats `|` as a separator and assigns no caution since neither
+		// segment trips destructive/caution patterns).
+		{"piped-grep", "cat foo.go | grep bar | wc -l", true},
+
+		{"empty", "", false},
+		{"whitespace", "   ", false},
+	}
+	for _, tc := range cases {
+		args := ""
+		if tc.command != "" {
+			b, _ := json.Marshal(struct {
+				Command string `json:"command"`
+			}{tc.command})
+			args = string(b)
+		} else {
+			args = `{"command":""}`
+		}
+		got := IsAutoModeSafeBash(args)
+		if got != tc.want {
+			t.Errorf("%s (%q): got %v, want %v", tc.name, tc.command, got, tc.want)
+		}
+	}
+}
+
+func TestIsAutoModeSafeBash_BadJSON(t *testing.T) {
+	if IsAutoModeSafeBash("{not json") {
+		t.Errorf("malformed JSON should return false")
+	}
+	if IsAutoModeSafeBash("") {
+		t.Errorf("empty argsJSON should return false")
+	}
+}
+
+// Loop integration: when auto-mode is active and the run_bash call's
+// verbs are all in the read-only allowlist, the loop fires
+// ApprovalAuto with Source="auto-mode-safe-bash" instead of prompting
+// the user.
+func TestLoop_AutoMode_SafeBashSkipsApproval(t *testing.T) {
+	streamer := &scriptedStreamer{turns: [][]adapter.StreamEvent{
+		{sseDone("", adapter.ToolCall{
+			ID:       "c1",
+			Name:     "run_bash",
+			ArgsJSON: `{"command":"cd /repo && grep -r foo internal/"}`,
+		})},
+		{sseToken("ok"), sseDone("ok")},
+	}}
+	reg := NewRegistry()
+	reg.Register(&mockTool{name: "run_bash", requiresApproval: true, output: "executed"})
+	autoMode := &AutoModeState{}
+	autoMode.Active.Store(true)
+	cfg := LoopConfig{Adapter: streamer, Registry: reg, MaxIterations: 5, AutoMode: autoMode}
+	hist := []adapter.Message{{Role: adapter.RoleUser, Content: "go"}}
+
+	events, err := runTurnSync(t, context.Background(), cfg, &hist, nil)
+	if err != nil {
+		t.Fatalf("Turn: %v", err)
+	}
+	if hasEvent[ApprovalNeeded](events) {
+		t.Errorf("auto-mode safe-bash should auto-allow, not prompt")
+	}
+	var sawSource bool
+	for _, e := range events {
+		if a, ok := e.(ApprovalAuto); ok && a.Source == "auto-mode-safe-bash" {
+			sawSource = true
+		}
+	}
+	if !sawSource {
+		t.Errorf("expected ApprovalAuto with Source=auto-mode-safe-bash; got %+v", events)
+	}
+}
+
+// A mutating bash command in auto-mode still goes through the modal:
+// the safety floor catches it because IsAutoModeSafeBash returns false.
+func TestLoop_AutoMode_UnsafeBashStillPrompts(t *testing.T) {
+	streamer := &scriptedStreamer{turns: [][]adapter.StreamEvent{
+		{sseDone("", adapter.ToolCall{
+			ID:       "c1",
+			Name:     "run_bash",
+			ArgsJSON: `{"command":"rm -rf /tmp/foo"}`,
+		})},
+		{sseToken("denied"), sseDone("denied")},
+	}}
+	reg := NewRegistry()
+	reg.Register(&mockTool{name: "run_bash", requiresApproval: true, output: "executed"})
+	autoMode := &AutoModeState{}
+	autoMode.Active.Store(true)
+	cfg := LoopConfig{Adapter: streamer, Registry: reg, MaxIterations: 5, AutoMode: autoMode}
+	hist := []adapter.Message{{Role: adapter.RoleUser, Content: "go"}}
+
+	events, _ := runTurnSync(t, context.Background(), cfg, &hist, func(ApprovalNeeded) Decision {
+		return Deny
+	})
+	// Verify auto-mode-safe-bash did NOT short-circuit this call.
+	for _, e := range events {
+		if a, ok := e.(ApprovalAuto); ok && a.Source == "auto-mode-safe-bash" {
+			t.Errorf("rm should not be auto-approved as safe-bash: %+v", e)
+		}
+	}
+}
 
 func TestAutoModeState_IsActiveNilSafe(t *testing.T) {
 	var a *AutoModeState

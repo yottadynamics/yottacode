@@ -45,7 +45,12 @@ const (
 // agent.ToolStart). edit_file uses it to render a proper old/new diff
 // body; other tools ignore it and fall back to the standard text-body
 // shape.
-func renderToolCard(toolName, preview, argsJSON, output string, errored bool, termWidth int) string {
+//
+// cwd is the session working directory — path-typed tool headers
+// (Write, Read, Edit, etc.) collapse the cwd prefix to `.` for
+// readability. Pass "" to disable shortening (test fixtures, replays
+// without a known cwd).
+func renderToolCard(toolName, preview, argsJSON, output string, errored bool, termWidth int, cwd string) string {
 	width := cardMaxWidthCap
 	if termWidth > 0 && termWidth-4 < width {
 		width = termWidth - 4
@@ -54,7 +59,7 @@ func renderToolCard(toolName, preview, argsJSON, output string, errored bool, te
 		width = cardMinUsefulCols
 	}
 
-	header := renderCardHeader(toolHeader(toolName, argsJSON, preview, width))
+	header := renderCardHeader(toolHeader(toolName, argsJSON, preview, width, cwd))
 	footer := toolFooter(toolName, output, errored)
 
 	out := []string{header}
@@ -64,6 +69,18 @@ func renderToolCard(toolName, preview, argsJSON, output string, errored bool, te
 	// styleCardBody, which would override the syntax colors.
 	if !errored && toolName == "edit_file" {
 		if rows, ok := editFileDiffRows(argsJSON, width); ok {
+			out = append(out, rows...)
+			out = append(out, styleCardGutter.Render("╰ ")+footer)
+			return strings.Join(out, "\n")
+		}
+	}
+	// write_file mirrors edit_file's diff-body shape: the whole file
+	// content rendered as `+` rows (a write is, from a diff perspective,
+	// pure addition). Skips the generic body path for the same reason
+	// edit_file does — the rows carry their own syntax-highlighted
+	// styling and shouldn't be wrapped in styleCardBody.
+	if !errored && toolName == "write_file" {
+		if rows, ok := writeFileBodyRows(argsJSON, width); ok {
 			out = append(out, rows...)
 			out = append(out, styleCardGutter.Render("╰ ")+footer)
 			return strings.Join(out, "\n")
@@ -494,7 +511,12 @@ func matchFooter(out string) string {
 // argsJSON it returns `preview` so the card never renders blank. The
 // `maxWidth` is the per-card width (terminal-minus-gutter) — long
 // commands and URLs get clipped with "…" so the header never wraps.
-func toolHeader(toolName, argsJSON, preview string, maxWidth int) string {
+//
+// cwd: when non-empty, path-typed tools (Write/Read/Edit/...) collapse
+// the cwd prefix to `.` so headers stay readable on deep paths. Bash
+// command text gets the same substring-level collapse so a model's
+// `cd /long/abs/path && grep ...` doesn't dominate the header.
+func toolHeader(toolName, argsJSON, preview string, maxWidth int, cwd string) string {
 	if argsJSON == "" {
 		return preview
 	}
@@ -502,6 +524,7 @@ func toolHeader(toolName, argsJSON, preview string, maxWidth int) string {
 	if headerBudget < 20 {
 		headerBudget = 20
 	}
+	short := func(p string) string { return displayPath(p, cwd) }
 	switch toolName {
 	case "run_bash":
 		var a struct {
@@ -510,7 +533,7 @@ func toolHeader(toolName, argsJSON, preview string, maxWidth int) string {
 		if json.Unmarshal([]byte(argsJSON), &a) != nil {
 			return preview
 		}
-		return clipHeader("Bash("+oneLine(a.Command)+")", headerBudget)
+		return clipHeader("Bash("+shortenCwdInText(oneLine(a.Command), cwd)+")", headerBudget)
 	case "read_file":
 		var a struct {
 			Path   string `json:"path"`
@@ -521,9 +544,9 @@ func toolHeader(toolName, argsJSON, preview string, maxWidth int) string {
 			return preview
 		}
 		if a.Offset == 0 && a.Limit == 0 {
-			return clipHeader("Read("+a.Path+")", headerBudget)
+			return clipHeader("Read("+short(a.Path)+")", headerBudget)
 		}
-		return clipHeader(fmt.Sprintf("Read(%s @ L%d+%d)", a.Path, a.Offset, a.Limit), headerBudget)
+		return clipHeader(fmt.Sprintf("Read(%s @ L%d+%d)", short(a.Path), a.Offset, a.Limit), headerBudget)
 	case "write_file":
 		var a struct {
 			Path string `json:"path"`
@@ -531,7 +554,7 @@ func toolHeader(toolName, argsJSON, preview string, maxWidth int) string {
 		if json.Unmarshal([]byte(argsJSON), &a) != nil {
 			return preview
 		}
-		return clipHeader("Write("+a.Path+")", headerBudget)
+		return clipHeader("Write("+short(a.Path)+")", headerBudget)
 	case "edit_file":
 		var a struct {
 			Path       string `json:"path"`
@@ -544,7 +567,7 @@ func toolHeader(toolName, argsJSON, preview string, maxWidth int) string {
 		if a.ReplaceAll {
 			mode = "all"
 		}
-		return clipHeader(fmt.Sprintf("Edit(%s, %s)", a.Path, mode), headerBudget)
+		return clipHeader(fmt.Sprintf("Edit(%s, %s)", short(a.Path), mode), headerBudget)
 	case "delete_file":
 		var a struct {
 			Path string `json:"path"`
@@ -552,19 +575,19 @@ func toolHeader(toolName, argsJSON, preview string, maxWidth int) string {
 		if json.Unmarshal([]byte(argsJSON), &a) != nil {
 			return preview
 		}
-		return clipHeader("Delete("+a.Path+")", headerBudget)
+		return clipHeader("Delete("+short(a.Path)+")", headerBudget)
 	case "move_file":
 		var a struct {
 			Src, Dst string
 		}
 		_ = json.Unmarshal([]byte(argsJSON), &a)
-		return clipHeader("Move("+a.Src+" → "+a.Dst+")", headerBudget)
+		return clipHeader("Move("+short(a.Src)+" → "+short(a.Dst)+")", headerBudget)
 	case "copy_file":
 		var a struct {
 			Src, Dst string
 		}
 		_ = json.Unmarshal([]byte(argsJSON), &a)
-		return clipHeader("Copy("+a.Src+" → "+a.Dst+")", headerBudget)
+		return clipHeader("Copy("+short(a.Src)+" → "+short(a.Dst)+")", headerBudget)
 	case "mkdir":
 		var a struct {
 			Path string `json:"path"`
@@ -572,7 +595,7 @@ func toolHeader(toolName, argsJSON, preview string, maxWidth int) string {
 		if json.Unmarshal([]byte(argsJSON), &a) != nil {
 			return preview
 		}
-		return clipHeader("Mkdir("+a.Path+")", headerBudget)
+		return clipHeader("Mkdir("+short(a.Path)+")", headerBudget)
 	case "read_many_files":
 		var a struct {
 			Paths []string `json:"paths"`
@@ -591,7 +614,7 @@ func toolHeader(toolName, argsJSON, preview string, maxWidth int) string {
 		if a.Path == "" {
 			a.Path = "."
 		}
-		return clipHeader("List("+a.Path+")", headerBudget)
+		return clipHeader("List("+short(a.Path)+")", headerBudget)
 	case "list_project_structure":
 		var a struct {
 			Path     string `json:"path"`
@@ -602,9 +625,9 @@ func toolHeader(toolName, argsJSON, preview string, maxWidth int) string {
 			a.Path = "."
 		}
 		if a.MaxDepth > 0 {
-			return clipHeader(fmt.Sprintf("Tree(%s, depth=%d)", a.Path, a.MaxDepth), headerBudget)
+			return clipHeader(fmt.Sprintf("Tree(%s, depth=%d)", short(a.Path), a.MaxDepth), headerBudget)
 		}
-		return clipHeader("Tree("+a.Path+")", headerBudget)
+		return clipHeader("Tree("+short(a.Path)+")", headerBudget)
 	case "glob":
 		var a struct {
 			Pattern, Root string
@@ -614,7 +637,7 @@ func toolHeader(toolName, argsJSON, preview string, maxWidth int) string {
 		if root == "" || root == "." {
 			return clipHeader("Glob("+a.Pattern+")", headerBudget)
 		}
-		return clipHeader("Glob("+a.Pattern+" in "+root+")", headerBudget)
+		return clipHeader("Glob("+a.Pattern+" in "+short(root)+")", headerBudget)
 	case "grep":
 		var a struct {
 			Pattern, Path string
@@ -624,7 +647,7 @@ func toolHeader(toolName, argsJSON, preview string, maxWidth int) string {
 		if root == "" || root == "." {
 			return clipHeader(fmt.Sprintf("Grep(%q)", a.Pattern), headerBudget)
 		}
-		return clipHeader(fmt.Sprintf("Grep(%q in %s)", a.Pattern, root), headerBudget)
+		return clipHeader(fmt.Sprintf("Grep(%q in %s)", a.Pattern, short(root)), headerBudget)
 	case "fetch_url":
 		var a struct {
 			URL string `json:"url"`

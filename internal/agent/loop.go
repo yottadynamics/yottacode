@@ -634,6 +634,22 @@ func executeToolCall(
 		}); err != nil {
 			return "", false, err
 		}
+	case cfg.AutoMode.IsActive() && tool.Name() == "run_bash" && IsAutoModeSafeBash(tc.ArgsJSON):
+		// Auto-mode read-only bypass for run_bash. The safety floor
+		// normally forces every shell command through the modal, but
+		// the model habitually opens implementation work with cd +
+		// grep + ls inspection chains — those interruptions break
+		// flow and add no safety value (read-only verbs, no risk
+		// flags). IsAutoModeSafeBash returns true only when every
+		// segment's verb is in the read-only allowlist AND no segment
+		// has a non-None risk (so a `cd X && cat Y > Z` redirect
+		// still goes to the modal). Mutating verbs (rm, mv, touch,
+		// curl, sudo, go run/test) fall through to the normal path.
+		if err := send(ctx, events, ApprovalAuto{
+			ToolName: tool.Name(), Preview: preview, Source: "auto-mode-safe-bash",
+		}); err != nil {
+			return "", false, err
+		}
 	case cfg.AutoMode.IsActive() && !IsAutoModeSafetyFloor(tool.Name()):
 		// Auto-mode auto-allow. User opted into batch implementation
 		// after approving a plan (or via /auto); skip the per-tool

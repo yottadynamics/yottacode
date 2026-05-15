@@ -34,12 +34,12 @@ type GitWorktreeAddTool struct{ Cwd string }
 
 func (t *GitWorktreeAddTool) Name() string { return "git_worktree_add" }
 func (t *GitWorktreeAddTool) Description() string {
-	return "Add a new worktree at <path> with optional branch <branch>."
+	return "Add a new worktree at <path> with optional branch <branch>. If <branch> exists locally, it will be checked out. Otherwise, a new branch will be created and checked out."
 }
 func (t *GitWorktreeAddTool) Schema() map[string]any {
 	return map[string]any{"type": "object", "properties": map[string]any{
 		"path":  map[string]any{"type": "string", "description": "Path for the new worktree"},
-		"branch": map[string]any{"type": "string", "description": "Branch name to create/checkout (optional)"},
+		"branch": map[string]any{"type": "string", "description": "Branch name to checkout (if exists) or create and checkout (optional)"},
 	}, "required": []string{"path"}}
 }
 func (t *GitWorktreeAddTool) RequiresApproval(string) bool { return true }
@@ -53,6 +53,8 @@ func (t *GitWorktreeAddTool) PreviewCall(argsJSON string) string {
 	if a.Branch == "" {
 		return fmt.Sprintf("git_worktree_add(%s)", a.Path)
 	}
+	// Note: PreviewCall cannot know if branch exists, so we show the create form
+	// The actual behavior will depend on branch existence
 	return fmt.Sprintf("git_worktree_add(%s, -b %s)", a.Path, a.Branch)
 }
 func (t *GitWorktreeAddTool) Execute(ctx context.Context, argsJSON string) (string, error) {
@@ -66,14 +68,36 @@ func (t *GitWorktreeAddTool) Execute(ctx context.Context, argsJSON string) (stri
 	if strings.TrimSpace(a.Path) == "" {
 		return "", errors.New("git_worktree_add: path is required")
 	}
-	args := []string{"worktree", "add", a.Path}
-	if a.Branch != "" {
-		args = append(args, "-b", a.Branch)
+	
+	var args []string
+	if a.Branch == "" {
+		// No branch specified - use current HEAD
+		args = []string{"worktree", "add", a.Path}
+	} else if branchExists(ctx, t.Cwd, a.Branch) {
+		// Branch exists locally - check it out
+		args = []string{"worktree", "add", a.Path, a.Branch}
+	} else {
+		// Branch doesn't exist - create and checkout new branch
+		args = []string{"worktree", "add", "-b", a.Branch, a.Path}
 	}
+	
 	if _, err := gitOutput(ctx, t.Cwd, args...); err != nil {
 		return "", fmt.Errorf("git_worktree_add: %w", err)
 	}
-	return fmt.Sprintf("added worktree at %s", a.Path), nil
+	
+	if a.Branch == "" {
+		return fmt.Sprintf("added worktree at %s (from HEAD)", a.Path), nil
+	} else if branchExists(ctx, t.Cwd, a.Branch) {
+		return fmt.Sprintf("added worktree at %s (from existing branch %s)", a.Path, a.Branch), nil
+	} else {
+		return fmt.Sprintf("added worktree at %s (created and checked out new branch %s)", a.Path, a.Branch), nil
+	}
+}
+
+// branchExists checks if a branch exists locally in the repository
+func branchExists(ctx context.Context, cwd, branch string) bool {
+	output, err := gitOutput(ctx, cwd, "rev-parse", "--verify", branch)
+	return err == nil && strings.TrimSpace(output) != ""
 }
 
 // GitWorktreeRemoveTool removes a worktree.

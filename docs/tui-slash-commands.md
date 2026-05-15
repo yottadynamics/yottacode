@@ -254,6 +254,8 @@ Safety floor (always prompts even in auto mode):
 - `git_checkpoint` — writes a checkpoint commit.
 - `rollback` — resets the repo state.
 
+**`run_bash` carve-out for read-only inspection.** The model habitually opens implementation work with `cd <project> && grep …` chains. To keep auto-mode flow uninterrupted, a `run_bash` call auto-allows (without showing the modal) when every segment uses a verb from a built-in read-only allowlist (`ls`, `cat`, `head`, `tail`, `wc`, `grep`, `rg`, `find`, `awk`, `cut`, `sort`, `uniq`, `diff`, `cd`, `pwd`, `which`, `echo`, `date`, `tree`, `stat`, `file`, `du`, `df`, …) AND no segment carries a risk flag (no `>` redirects, no pipe-into-shell, no sudo). Anything mutating (`rm`, `mv`, `touch`, `mkdir`, `curl`, `go test`, `sed -i`, …) still prompts.
+
 Auto mode and plan mode are mutually exclusive — entering one exits the other. The two share the `Shift+Tab` chord:
 
 ```

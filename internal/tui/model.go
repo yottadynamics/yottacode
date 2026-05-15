@@ -2732,7 +2732,7 @@ func (m Model) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 		if preview == "" {
 			preview = e.ToolName
 		}
-		m.appendLine(renderToolCard(e.ToolName, preview, m.pendingToolArgs, e.Output, e.Errored, m.width))
+		m.appendLine(renderToolCard(e.ToolName, preview, m.pendingToolArgs, e.Output, e.Errored, m.width, m.cwd))
 		m.pendingToolName = ""
 		m.pendingToolPreview = ""
 		m.pendingToolArgs = ""

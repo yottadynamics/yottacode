@@ -125,3 +125,58 @@ func editFileDiffRows(argsJSON string, cardWidth int) ([]string, bool) {
 	}
 	return rows, true
 }
+
+// writeArgs mirrors agent.WriteFileTool's expected arguments. Same
+// rationale as editArgs — local re-declaration avoids pulling the agent
+// package in just for a struct shape.
+type writeArgs struct {
+	Path    string `json:"path"`
+	Content string `json:"content"`
+}
+
+// writeFileBodyRows builds the body rows of the unified tool card for a
+// write_file invocation. The whole content is rendered as `+` lines so
+// it reads as a pure addition — a new file (or an overwrite) is, from
+// the diff perspective, "everything is new". Mirrors editFileDiffRows's
+// shape so write and edit cards scan the same way.
+//
+// Returns ok=false when argsJSON isn't shaped like write_file args; the
+// caller falls back to the generic text-body card path.
+func writeFileBodyRows(argsJSON string, cardWidth int) ([]string, bool) {
+	var a writeArgs
+	if err := json.Unmarshal([]byte(argsJSON), &a); err != nil {
+		return nil, false
+	}
+	if a.Path == "" {
+		return nil, false
+	}
+
+	innerWidth := cardWidth - 4
+	if innerWidth < 4 {
+		innerWidth = 4
+	}
+
+	hl := HighlightFromPath(a.Content, a.Path)
+
+	var rows []string
+	lines := strings.Split(strings.TrimRight(hl, "\n"), "\n")
+	markerCellW := 2 // "+ "
+	contentW := innerWidth - markerCellW
+	if contentW < 1 {
+		contentW = 1
+	}
+	for _, line := range lines {
+		if ansi.StringWidth(line) > contentW {
+			line = ansi.Truncate(line, contentW, "…")
+		}
+		rows = append(rows,
+			styleCardGutter.Render("│   ")+styleDiffAdd.Render("+ ")+line)
+	}
+
+	if len(rows) > cardBodyLineCap {
+		hidden := len(rows) - cardBodyLineCap
+		rows = append(rows[:cardBodyLineCap],
+			styleCardGutter.Render("│   ")+styleCardMeta.Render(fmt.Sprintf("…%d more line(s)", hidden)))
+	}
+	return rows, true
+}

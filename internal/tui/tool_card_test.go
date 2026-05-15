@@ -187,6 +187,7 @@ func TestRenderToolCard_StructureInvariants(t *testing.T) {
 		"d\tbin\nf\tmain.go\n",
 		false,
 		80,
+		"",
 	))
 	if !strings.HasPrefix(got, "╭ list_dir(.)") {
 		t.Errorf("card should open with `╭ <preview>`: %q", got)
@@ -213,6 +214,7 @@ func TestRenderToolCard_EditFileRendersDiffBody(t *testing.T) {
 		"edited /abs/main.go: 1 replacement(s)",
 		false,
 		80,
+		"",
 	))
 	// Header: single line with the invocation, no embedded `-`/`+` rows.
 	// toolHeader rewrites the raw preview into "Edit(path, scope)" once
@@ -248,6 +250,7 @@ func TestRenderToolCard_EditFileFallsBackWhenArgsMissing(t *testing.T) {
 		"edited /abs/main.go: 1 replacement(s)",
 		false,
 		80,
+		"",
 	))
 	if !strings.HasPrefix(got, "╭ edit_file(main.go, single)") {
 		t.Errorf("header should still render: %q", got)
@@ -288,7 +291,7 @@ func TestToolHeader_RewritesPerToolPreviews(t *testing.T) {
 		{"run_bash", ``, "run_bash: ls", "run_bash: ls"},                     // empty argsJSON → fallback
 	}
 	for _, tc := range cases {
-		got := toolHeader(tc.tool, tc.args, tc.fallback, 120)
+		got := toolHeader(tc.tool, tc.args, tc.fallback, 120, "")
 		if got != tc.want {
 			t.Errorf("%s: got %q, want %q", tc.tool, got, tc.want)
 		}
@@ -302,7 +305,7 @@ func TestToolHeader_RewritesPerToolPreviews(t *testing.T) {
 // floating unaligned next to the header.
 func TestToolHeader_GitHeaderIsAlwaysSingleLine(t *testing.T) {
 	preview := "⚠ DESTRUCTIVE FLAG(S): --force\n  $ git push --force"
-	got := toolHeader("git", `{"args":["push","--force"]}`, preview, 120)
+	got := toolHeader("git", `{"args":["push","--force"]}`, preview, 120, "")
 	if got != "Git(push --force)" {
 		t.Errorf("header should be the clean single-line form, got %q", got)
 	}
@@ -385,6 +388,7 @@ func TestRenderToolCard_GitDestructiveWarningInBody(t *testing.T) {
 		out,
 		false,
 		80,
+		"",
 	))
 	if !strings.Contains(got, "╭ Git(push --force origin main)") {
 		t.Errorf("header should be single-line `╭ Git(...)`, got: %q", got)
@@ -416,7 +420,7 @@ func TestToolHeader_StripsControlCharsInArgs(t *testing.T) {
 		{"grep", `{"pattern":"a\nb"}`, `Grep("a\nb")`},
 	}
 	for _, tc := range cases {
-		got := toolHeader(tc.tool, tc.args, "fallback", 120)
+		got := toolHeader(tc.tool, tc.args, "fallback", 120, "")
 		if got != tc.want {
 			t.Errorf("%s with args %s: got %q, want %q", tc.tool, tc.args, got, tc.want)
 		}
@@ -428,12 +432,77 @@ func TestToolHeader_StripsControlCharsInArgs(t *testing.T) {
 	}
 }
 
+// When cwd is non-empty, path-typed tool headers collapse the cwd
+// prefix to "." for readability. Verifies write_file, read_file,
+// edit_file, delete_file, mkdir, list_dir, list_project_structure, and
+// glob/grep "in <root>" forms all participate.
+func TestToolHeader_CwdCollapseInPathHeaders(t *testing.T) {
+	const cwd = "/home/me/proj"
+	cases := []struct {
+		tool, args, want string
+	}{
+		{"write_file", `{"path":"/home/me/proj/internal/x.go"}`, "Write(./internal/x.go)"},
+		{"read_file", `{"path":"/home/me/proj/main.go"}`, "Read(./main.go)"},
+		{"edit_file", `{"path":"/home/me/proj/a.go","replace_all":false}`, "Edit(./a.go, single)"},
+		{"delete_file", `{"path":"/home/me/proj/tmp.txt"}`, "Delete(./tmp.txt)"},
+		{"mkdir", `{"path":"/home/me/proj/.cache"}`, "Mkdir(./.cache)"},
+		{"list_dir", `{"path":"/home/me/proj"}`, "List(.)"},
+		{"list_project_structure", `{"path":"/home/me/proj"}`, "Tree(.)"},
+		{"glob", `{"pattern":"*.go","root":"/home/me/proj/internal"}`, "Glob(*.go in ./internal)"},
+		{"grep", `{"pattern":"foo","path":"/home/me/proj/internal"}`, `Grep("foo" in ./internal)`},
+	}
+	for _, tc := range cases {
+		got := toolHeader(tc.tool, tc.args, "fallback", 120, cwd)
+		if got != tc.want {
+			t.Errorf("%s: got %q, want %q", tc.tool, got, tc.want)
+		}
+	}
+}
+
+// run_bash headers collapse cwd inside the command text — `cd /abs/path`
+// reads as `cd .` once shortened. The agent still sees the original
+// command; only the user-facing header is rewritten.
+func TestToolHeader_RunBashCollapsesCwdInCommandText(t *testing.T) {
+	const cwd = "/home/me/proj"
+	args := `{"command":"cd /home/me/proj && grep -r foo internal/"}`
+	got := toolHeader("run_bash", args, "fallback", 120, cwd)
+	if !strings.Contains(got, "cd . &&") {
+		t.Errorf("expected `cd .` in shortened header, got: %q", got)
+	}
+	if strings.Contains(got, "/home/me/proj") {
+		t.Errorf("expected absolute cwd to be removed, got: %q", got)
+	}
+}
+
+// Empty cwd disables shortening — same headers as before the
+// path-shortening change. Used by replay/test paths that don't know
+// the live working directory.
+func TestToolHeader_EmptyCwdDisablesShortening(t *testing.T) {
+	args := `{"path":"/home/me/proj/internal/x.go"}`
+	got := toolHeader("write_file", args, "fallback", 120, "")
+	if got != "Write(/home/me/proj/internal/x.go)" {
+		t.Errorf("expected absolute path with empty cwd, got: %q", got)
+	}
+}
+
+// Sibling-of-cwd paths must NOT be partially-rewritten. `/home/me/proj`
+// as cwd should leave `/home/me/proj-archive/...` alone — otherwise the
+// shortening would emit nonsense like `./-archive/...`.
+func TestToolHeader_DoesNotClobberCwdSiblings(t *testing.T) {
+	const cwd = "/home/me/proj"
+	args := `{"path":"/home/me/proj-archive/notes.md"}`
+	got := toolHeader("write_file", args, "fallback", 120, cwd)
+	if got != "Write(/home/me/proj-archive/notes.md)" {
+		t.Errorf("sibling path must be left intact, got: %q", got)
+	}
+}
+
 // Long bash commands get clipped so the header never wraps. The clip
 // tail is "…)" so the closing paren stays the visible end-of-args
 // marker.
 func TestToolHeader_LongCommandIsClipped(t *testing.T) {
 	long := strings.Repeat("rg --files | grep foo | xargs wc -l ; ", 10)
-	got := toolHeader("run_bash", `{"command":"`+long+`"}`, "run_bash: …", 40)
+	got := toolHeader("run_bash", `{"command":"`+long+`"}`, "run_bash: …", 40, "")
 	if !strings.HasSuffix(got, "…)") {
 		t.Errorf("clipped header should end with `…)`: %q", got)
 	}
@@ -466,7 +535,7 @@ func TestRenderToolCard_TruncatesLongBody(t *testing.T) {
 		entries = append(entries, "f\tfile"+strings.Repeat("x", i))
 	}
 	out := strings.Join(entries, "\n") + "\n"
-	got := stripANSI(renderToolCard("list_dir", "list_dir(.)", "", out, false, 80))
+	got := stripANSI(renderToolCard("list_dir", "list_dir(.)", "", out, false, 80, ""))
 	if !strings.Contains(got, "…15 more line(s)") {
 		t.Errorf("card should signal truncation past cardBodyLineCap: %q", got)
 	}

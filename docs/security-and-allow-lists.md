@@ -78,7 +78,7 @@ Tool calls flow through layered gates in this order:
 2. **Plan-mode gate** (only when plan mode is active) — blocks every mutating tool except `todo_write`, `exit_plan_mode`, and writes to the resolved plan file. Returns a structured error to the model so it can switch to a read-only or plan-file alternative.
 3. **Permissions-bypass auto-allow** (only when `--dangerously-skip-permissions` was passed at startup) — every tool auto-allows silently. No safety floor.
 4. **Plan-mode auto-allow** — writes to the resolved plan file are the model's only legitimate mutation surface while planning; they auto-allow without a prompt.
-5. **Auto-mode auto-allow** (only when auto mode is active) — non-safety-floor mutating tools auto-allow. Safety floor (`run_bash`, `git_commit`, `git_checkpoint`, `rollback`) is unaffected and still prompts.
+5. **Auto-mode auto-allow** (only when auto mode is active) — non-safety-floor mutating tools auto-allow. Safety floor (`run_bash`, `git_commit`, `git_checkpoint`, `rollback`) normally still prompts, with one carve-out: `run_bash` calls whose every segment uses a read-only verb (`ls`, `cat`, `head`, `tail`, `wc`, `grep`, `rg`, `find`, `awk`, `cut`, `sort`, `uniq`, `diff`, `cd`, …) AND carries no risk flag (no redirects, no pipe-into-sh, no sudo) auto-allow under Source `auto-mode-safe-bash`. The intent: a model's habitual `cd <project> && grep …` chain doesn't break flow, while any mutation (rm, mv, touch, curl, go test, sed -i, …) still prompts.
 6. **`Allow` rules** in `permissions.json` skip the prompt.
 7. **`Ask` rules** force a prompt even on tools that would normally auto-execute.
 8. **Tool-default policy** (the tool's own `RequiresApproval`) prompts mutating tools and auto-executes read-only ones.
