@@ -119,7 +119,7 @@ func TestDemo_CardOutput(t *testing.T) {
 	fmt.Println()
 	for _, tc := range cases {
 		fmt.Printf("─── %s ───\n", tc.label)
-		fmt.Println(stripANSI(renderToolCard(tc.toolName, tc.preview, tc.args, tc.output, tc.errored, width)))
+		fmt.Println(stripANSI(renderToolCard(tc.toolName, tc.preview, tc.args, tc.output, tc.errored, width, "")))
 		fmt.Println()
 	}
 }

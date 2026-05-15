@@ -17,9 +17,13 @@ import (
 // none). Returns the rendered body, the number of segments, and ok=
 // true when the command was successfully parsed.
 //
+// cwd (when non-empty) is collapsed to "." inside each segment's text
+// so a `cd /long/abs/path && grep ...` reads as `cd . && grep ...`.
+// Display-only — the agent still sees the full command.
+//
 // On JSON parse failure the caller falls back to the original
 // PreviewCall string.
-func renderRunBashApproval(argsJSON string) (body string, segments int, ok bool) {
+func renderRunBashApproval(argsJSON, cwd string) (body string, segments int, ok bool) {
 	var a struct {
 		Command string `json:"command"`
 	}
@@ -31,10 +35,8 @@ func renderRunBashApproval(argsJSON string) (body string, segments int, ok bool)
 		return "", 0, false
 	}
 	if len(segs) == 1 {
-		// Single command — keep the modal compact, mirror PreviewCall
-		// shape but include risk reason if any.
 		s := segs[0]
-		line := s.Text
+		line := shortenCwdInText(s.Text, cwd)
 		if s.Risk != agent.RiskNone {
 			line = renderRiskInline(s) + line
 			if s.Reason != "" {
@@ -43,9 +45,6 @@ func renderRunBashApproval(argsJSON string) (body string, segments int, ok bool)
 		}
 		return line, 1, true
 	}
-	// Compound: number each segment, show separator before all but the
-	// first, color-code by risk. Width-cap each line so a runaway
-	// segment doesn't blow the modal.
 	var b strings.Builder
 	for i, s := range segs {
 		if i > 0 {
@@ -56,7 +55,7 @@ func renderRunBashApproval(argsJSON string) (body string, segments int, ok bool)
 		if s.Separator != "" {
 			sep = styleApprovalSep.Render("("+s.Separator+") ")
 		}
-		text := truncSegment(s.Text, 100)
+		text := truncSegment(shortenCwdInText(s.Text, cwd), 100)
 		risk := renderRiskInline(s)
 		reason := ""
 		if s.Reason != "" {

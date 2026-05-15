@@ -24,9 +24,10 @@ type planBannerInfo struct {
 // PlanModeIcon is the glyph that marks plan mode across all surfaces
 // (banner, entry log, resume log, exit log, plan-file lines, approval
 // card title). Single source of truth so changing the icon is one
-// edit. Diamond-with-dot — reads as "marked / centered intent"
-// without the edit-mode overtones the literal pencil glyph carries.
-const PlanModeIcon = "◈"
+// edit. Triangle (matching AutoModeIcon) so the two modes share a
+// shape — the color is what distinguishes them: auto is accent, plan
+// is warning (orange). Saves the user from learning two glyphs.
+const PlanModeIcon = "▸"
 
 // renderPlanModeBanner is the one-line indicator rendered immediately
 // above the cmdline while plan mode is active. Two states + an

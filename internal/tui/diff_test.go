@@ -85,3 +85,48 @@ func TestRenderEditDiff_MissingFields(t *testing.T) {
 		t.Errorf("expected ok=false when old_string is missing")
 	}
 }
+
+func TestWriteFileBodyRows_HappyPath(t *testing.T) {
+	args := `{"path":"main.go","content":"package main\n\nfunc main() {}\n"}`
+	rows, ok := writeFileBodyRows(args, 80)
+	if !ok {
+		t.Fatalf("expected ok=true for valid write_file args")
+	}
+	if len(rows) == 0 {
+		t.Fatalf("expected non-empty body rows")
+	}
+	plain := stripANSI(strings.Join(rows, "\n"))
+	for _, want := range []string{"+ package main", "+ func main() {}"} {
+		if !strings.Contains(plain, want) {
+			t.Errorf("missing %q in body: %q", want, plain)
+		}
+	}
+}
+
+func TestWriteFileBodyRows_BadJSON(t *testing.T) {
+	if _, ok := writeFileBodyRows(`{not json`, 80); ok {
+		t.Errorf("expected ok=false for malformed JSON")
+	}
+}
+
+func TestWriteFileBodyRows_MissingPath(t *testing.T) {
+	if _, ok := writeFileBodyRows(`{"content":"hi"}`, 80); ok {
+		t.Errorf("expected ok=false when path is missing")
+	}
+}
+
+func TestWriteFileBodyRows_TruncatesOverflow(t *testing.T) {
+	var lines []string
+	for i := 0; i < cardBodyLineCap+5; i++ {
+		lines = append(lines, "line")
+	}
+	args := `{"path":"x.go","content":"` + strings.Join(lines, "\\n") + `"}`
+	rows, ok := writeFileBodyRows(args, 80)
+	if !ok {
+		t.Fatalf("expected ok")
+	}
+	last := stripANSI(rows[len(rows)-1])
+	if !strings.Contains(last, "more line(s)") {
+		t.Errorf("expected truncation marker as final row, got: %q", last)
+	}
+}

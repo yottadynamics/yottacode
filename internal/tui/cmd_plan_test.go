@@ -577,6 +577,10 @@ func TestBanner_AutoPlusYoloShowsBothLabels(t *testing.T) {
 func TestBanner_PlanPlusYoloShowsBothLabels(t *testing.T) {
 	m, _ := newPlanModeTestModel(t)
 	m, _ = cmdPlan(m, nil)
+	// Simulate the user having submitted their first plan-mode message,
+	// which is when the persistent plan banner first appears (PlanFile
+	// non-empty is the gate — see model.go's banner switch).
+	m.cfg.PlanMode.PlanFile = "/tmp/plan-test.md"
 	m = enterYoloMode(m)
 	view := stripANSI(m.View())
 	if !strings.Contains(view, "plan mode") {

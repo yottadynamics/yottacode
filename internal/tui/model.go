@@ -1575,7 +1575,14 @@ func (m Model) View() string {
 		switch {
 		case m.paletteOpen, m.filePaletteOpen:
 			// suppressed
-		case m.cfg.PlanMode.IsActive():
+		case m.cfg.PlanMode.IsActive() && m.cfg.PlanMode.PlanFile != "":
+			// Plan-mode banner is gated behind "the user has submitted
+			// their first message in this plan session" — PlanFile is
+			// empty between /plan-entry and the first user prompt, then
+			// set by maybeFillPlanFile or the resume picker. Hiding
+			// the banner during that window avoids stacking it
+			// immediately below the entry log's "plan mode active —
+			// read-only research…" line, which scanned as a duplicate.
 			parts = append(parts, renderPlanModeBanner(computePlanBannerInfo(m), yoloOn, m.width))
 		case m.cfg.AutoMode.IsActive():
 			parts = append(parts, renderAutoModeBanner(yoloOn, m.width))
@@ -2732,7 +2739,7 @@ func (m Model) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 		if preview == "" {
 			preview = e.ToolName
 		}
-		m.appendLine(renderToolCard(e.ToolName, preview, m.pendingToolArgs, e.Output, e.Errored, m.width))
+		m.appendLine(renderToolCard(e.ToolName, preview, m.pendingToolArgs, e.Output, e.Errored, m.width, m.cwd))
 		m.pendingToolName = ""
 		m.pendingToolPreview = ""
 		m.pendingToolArgs = ""
