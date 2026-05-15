@@ -56,7 +56,7 @@ func TestReadFileTool_EmptyDenyList_AllowsRead(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
-	if out != "hello" {
+	if out != "     1\thello" {
 		t.Errorf("got %q", out)
 	}
 }

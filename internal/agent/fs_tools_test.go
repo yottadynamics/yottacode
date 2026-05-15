@@ -19,8 +19,8 @@ func TestReadFileTool_HappyPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
-	if out != "hi there" {
-		t.Errorf("content = %q, want 'hi there'", out)
+	if out != "     1\thi there" {
+		t.Errorf("content = %q, want '     1\\thi there'", out)
 	}
 }
 
@@ -35,8 +35,24 @@ func TestReadFileTool_AbsolutePath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
-	if out != "abs-content" {
+	if out != "     1\tabs-content" {
 		t.Errorf("content = %q", out)
+	}
+}
+
+// Multi-line read produces one prefixed line per source line, joined by
+// '\n', with no trailing newline when the window reaches EOF.
+func TestReadFileTool_MultilinePrefixed(t *testing.T) {
+	tmp := t.TempDir()
+	writeFile(t, tmp, "f.txt", "alpha\nbeta\ngamma\n")
+	tool := &ReadFileTool{Cwd: tmp}
+	out, err := tool.Execute(context.Background(), `{"path":"f.txt"}`)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	want := "     1\talpha\n     2\tbeta\n     3\tgamma"
+	if out != want {
+		t.Errorf("content = %q, want %q", out, want)
 	}
 }
 
@@ -54,10 +70,16 @@ func TestReadFileTool_MissingPath(t *testing.T) {
 	}
 }
 
+// A file that exceeds maxReadBytes is truncated and surfaces the marker
+// — the underlying byte cap still exists as a defense in depth even
+// though the tool now speaks lines.
 func TestReadFileTool_TruncatesLargeFile(t *testing.T) {
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "big.txt")
-	big := strings.Repeat("a", maxReadBytes+1000)
+	// Build something that's > maxReadBytes AND contains many lines so the
+	// line slicer doesn't terminate early on the implicit line limit.
+	line := strings.Repeat("a", 1024) + "\n"
+	big := strings.Repeat(line, (maxReadBytes/len(line))+10)
 	if err := os.WriteFile(path, []byte(big), 0o644); err != nil {
 		t.Fatalf("setup: %v", err)
 	}
@@ -71,54 +93,53 @@ func TestReadFileTool_TruncatesLargeFile(t *testing.T) {
 	}
 }
 
-func TestReadFileTool_Offset(t *testing.T) {
+func TestReadFileTool_OffsetSelectsLine(t *testing.T) {
 	tmp := t.TempDir()
-	writeFile(t, tmp, "f.txt", "0123456789")
+	writeFile(t, tmp, "f.txt", "one\ntwo\nthree\nfour\nfive\n")
 	tool := &ReadFileTool{Cwd: tmp}
-	out, err := tool.Execute(context.Background(), `{"path":"f.txt","offset":4}`)
+	out, err := tool.Execute(context.Background(), `{"path":"f.txt","offset":3}`)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
-	if out != "456789" {
-		t.Errorf("got %q, want '456789'", out)
+	want := "     3\tthree\n     4\tfour\n     5\tfive"
+	if out != want {
+		t.Errorf("got %q, want %q", out, want)
 	}
 }
 
-func TestReadFileTool_Limit(t *testing.T) {
+func TestReadFileTool_LimitTrimsTrailingLines(t *testing.T) {
 	tmp := t.TempDir()
-	writeFile(t, tmp, "f.txt", "abcdefghij")
+	writeFile(t, tmp, "f.txt", "one\ntwo\nthree\nfour\nfive\n")
 	tool := &ReadFileTool{Cwd: tmp}
-	out, err := tool.Execute(context.Background(), `{"path":"f.txt","limit":3}`)
+	out, err := tool.Execute(context.Background(), `{"path":"f.txt","limit":2}`)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
-	if !strings.HasPrefix(out, "abc") {
-		t.Errorf("got %q, want prefix 'abc'", out)
+	if !strings.HasPrefix(out, "     1\tone\n     2\ttwo\n") {
+		t.Errorf("got %q, want prefix '     1\\tone\\n     2\\ttwo\\n'", out)
 	}
-	if !strings.Contains(out, "[truncated]") {
-		t.Errorf("expected truncation marker since file is 10 bytes and limit is 3: %q", out)
+	if !strings.HasSuffix(out, "…[truncated]") {
+		t.Errorf("expected '…[truncated]' suffix: %q", out)
 	}
 }
 
 func TestReadFileTool_OffsetAndLimit(t *testing.T) {
 	tmp := t.TempDir()
-	writeFile(t, tmp, "f.txt", "0123456789")
+	writeFile(t, tmp, "f.txt", "one\ntwo\nthree\nfour\nfive\n")
 	tool := &ReadFileTool{Cwd: tmp}
-	out, err := tool.Execute(context.Background(), `{"path":"f.txt","offset":3,"limit":4}`)
+	out, err := tool.Execute(context.Background(), `{"path":"f.txt","offset":2,"limit":2}`)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
-	if !strings.HasPrefix(out, "3456") {
-		t.Errorf("got %q, want prefix '3456'", out)
-	}
-	if !strings.Contains(out, "[truncated]") {
-		t.Errorf("expected truncation marker (more bytes remain): %q", out)
+	want := "     2\ttwo\n     3\tthree\n…[truncated]"
+	if out != want {
+		t.Errorf("got %q, want %q", out, want)
 	}
 }
 
 func TestReadFileTool_OffsetPastEOFReturnsEmpty(t *testing.T) {
 	tmp := t.TempDir()
-	writeFile(t, tmp, "f.txt", "tiny")
+	writeFile(t, tmp, "f.txt", "only-line")
 	tool := &ReadFileTool{Cwd: tmp}
 	out, err := tool.Execute(context.Background(), `{"path":"f.txt","offset":1000}`)
 	if err != nil {
@@ -137,24 +158,28 @@ func TestReadFileTool_LimitBeyondFileNoTruncation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
-	if out != "short" {
-		t.Errorf("got %q, want 'short'", out)
+	if out != "     1\tshort" {
+		t.Errorf("got %q, want '     1\\tshort'", out)
 	}
 	if strings.Contains(out, "[truncated]") {
 		t.Errorf("file fits in limit, should not be truncated: %q", out)
 	}
 }
 
-func TestReadFileTool_NegativeOffsetClampedToZero(t *testing.T) {
+// offset < 1 is clamped to line 1 (the first valid 1-indexed line),
+// matching how the previous byte-based shape clamped negative offsets to
+// 0.
+func TestReadFileTool_NegativeOffsetClampedToFirstLine(t *testing.T) {
 	tmp := t.TempDir()
-	writeFile(t, tmp, "f.txt", "alpha")
+	writeFile(t, tmp, "f.txt", "alpha\nbeta")
 	tool := &ReadFileTool{Cwd: tmp}
 	out, err := tool.Execute(context.Background(), `{"path":"f.txt","offset":-7}`)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
-	if out != "alpha" {
-		t.Errorf("got %q, want 'alpha'", out)
+	want := "     1\talpha\n     2\tbeta"
+	if out != want {
+		t.Errorf("got %q, want %q", out, want)
 	}
 }
 
