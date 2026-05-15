@@ -26,11 +26,13 @@ func TestGitWorktreeTools(t *testing.T) {
 	require.NoError(t, runGit(repoPath, "add", "README.md"))
 	require.NoError(t, runGit(repoPath, "commit", "-m", "initial commit"))
 
-	// Create a second commit and an existing branch for testing
+	// Create a second commit and an existing branch for testing (without checking it out)
 	require.NoError(t, os.WriteFile(filepath.Join(repoPath, "existing.txt"), []byte("existing content\n"), 0644))
 	require.NoError(t, runGit(repoPath, "add", "existing.txt"))
 	require.NoError(t, runGit(repoPath, "commit", "-m", "add existing file"))
-	require.NoError(t, runGit(repoPath, "checkout", "-b", "existing-branch"))
+	// Create the branch existing-branch from master (current HEAD) without checking it out
+	require.NoError(t, runGit(repoPath, "branch", "existing-branch"))
+	// We are still on master
 
 	ctx := context.Background()
 
@@ -97,12 +99,43 @@ func TestGitWorktreeTools(t *testing.T) {
 	require.Contains(t, out, worktreePath2)
 	require.Contains(t, out, worktreePath3)
 
-	// Clean up: remove the other worktrees
+	// Test GitWorktreeMoveTool
+	moveTool := &GitWorktreeMoveTool{Cwd: repoPath}
+	worktreePath4 := filepath.Join(repoPath, ".yottacode", "worktrees", "test-worktree-4")
+	newWorktreePath := filepath.Join(repoPath, ".yottacode", "worktrees", "renamed-worktree")
+	// First add a worktree to move
+	out, err = addTool.Execute(ctx, `{"path": "`+worktreePath4+`"}`)
+	require.NoError(t, err)
+	require.Contains(t, out, "added worktree at "+worktreePath4)
+	// Then move it
+	out, err = moveTool.Execute(ctx, `{"path": "`+worktreePath4+`", "new-path": "`+newWorktreePath+`"}`)
+	require.NoError(t, err)
+	require.Contains(t, out, "moved worktree from "+worktreePath4+" to "+newWorktreePath)
+	// Verify it's moved by checking list
+	out, err = listTool.Execute(ctx, "{}")
+	require.NoError(t, err)
+	require.NotContains(t, out, worktreePath4)
+	require.Contains(t, out, newWorktreePath)
+
+	// Test GitWorktreeRepairTool (without path - repair all)
+	repairTool := &GitWorktreeRepairTool{Cwd: repoPath}
+	out, err = repairTool.Execute(ctx, "{}")
+	require.NoError(t, err)
+	require.Contains(t, out, "repaired all worktrees")
+	// Test GitWorktreeRepairTool with path
+	out, err = repairTool.Execute(ctx, `{"path": "`+newWorktreePath+`"}`)
+	require.NoError(t, err)
+	require.Contains(t, out, "repaired worktree at "+newWorktreePath)
+
+	// Clean up: remove the remaining worktrees
 	removeTool2 := &GitWorktreeRemoveTool{Cwd: repoPath}
 	out, err = removeTool2.Execute(ctx, `{"path": "`+worktreePath2+`"}`)
 	require.NoError(t, err)
 	removeTool3 := &GitWorktreeRemoveTool{Cwd: repoPath}
 	out, err = removeTool3.Execute(ctx, `{"path": "`+worktreePath3+`"}`)
+	require.NoError(t, err)
+	removeTool4 := &GitWorktreeRemoveTool{Cwd: repoPath}
+	out, err = removeTool4.Execute(ctx, `{"path": "`+newWorktreePath+`"}`)
 	require.NoError(t, err)
 
 	// Final list should show only the main worktree
@@ -110,6 +143,7 @@ func TestGitWorktreeTools(t *testing.T) {
 	require.NoError(t, err)
 	require.NotContains(t, out, worktreePath2)
 	require.NotContains(t, out, worktreePath3)
+	require.NotContains(t, out, newWorktreePath)
 	require.Contains(t, out, repoPath) // main worktree remains
 }
 

@@ -218,3 +218,87 @@ func (t *GitWorktreePruneTool) Execute(ctx context.Context, argsJSON string) (st
 	}
 	return "pruned stale worktree data", nil
 }
+
+// GitWorktreeMoveTool moves a worktree.
+type GitWorktreeMoveTool struct{ Cwd string }
+
+func (t *GitWorktreeMoveTool) Name() string { return "git_worktree_move" }
+func (t *GitWorktreeMoveTool) Description() string {
+	return "Move a worktree from <path> to <new-path>."
+}
+func (t *GitWorktreeMoveTool) Schema() map[string]any {
+	return map[string]any{"type": "object", "properties": map[string]any{
+		"path": map[string]any{"type": "string", "description": "Current path of the worktree to move"},
+		"new-path": map[string]any{"type": "string", "description": "New path for the worktree"},
+	}, "required": []string{"path", "new-path"}}
+}
+func (t *GitWorktreeMoveTool) RequiresApproval(string) bool { return true }
+func (t *GitWorktreeMoveTool) ParallelSafe(string) bool     { return false }
+func (t *GitWorktreeMoveTool) PreviewCall(argsJSON string) string {
+	var a struct {
+		Path     string `json:"path"`
+		NewPath  string `json:"new-path"`
+	}
+	_ = json.Unmarshal([]byte(argsJSON), &a)
+	return fmt.Sprintf("git_worktree_move(%s, %s)", a.Path, a.NewPath)
+}
+func (t *GitWorktreeMoveTool) Execute(ctx context.Context, argsJSON string) (string, error) {
+	var a struct {
+		Path     string `json:"path"`
+		NewPath  string `json:"new-path"`
+	}
+	if err := json.Unmarshal([]byte(argsJSON), &a); err != nil {
+		return "", fmt.Errorf("git_worktree_move: invalid args: %w", err)
+	}
+	if strings.TrimSpace(a.Path) == "" {
+		return "", errors.New("git_worktree_move: path is required")
+	}
+	if strings.TrimSpace(a.NewPath) == "" {
+		return "", errors.New("git_worktree_move: new-path is required")
+	}
+	if _, err := gitOutput(ctx, t.Cwd, "worktree", "move", a.Path, a.NewPath); err != nil {
+		return "", fmt.Errorf("git_worktree_move: %w", err)
+	}
+	return fmt.Sprintf("moved worktree from %s to %s", a.Path, a.NewPath), nil
+}
+
+// GitWorktreeRepairTool repairs a worktree.
+type GitWorktreeRepairTool struct{ Cwd string }
+
+func (t *GitWorktreeRepairTool) Name() string { return "git_worktree_repair" }
+func (t *GitWorktreeRepairTool) Description() string {
+	return "Repair a worktree at <path>, or all worktrees if <path> is not specified."
+}
+func (t *GitWorktreeRepairTool) Schema() map[string]any {
+	return map[string]any{"type": "object", "properties": map[string]any{
+		"path": map[string]any{"type": "string", "description": "Path of the worktree to repair (optional)"},
+	}}
+}
+func (t *GitWorktreeRepairTool) RequiresApproval(string) bool { return true }
+func (t *GitWorktreeRepairTool) ParallelSafe(string) bool     { return false }
+func (t *GitWorktreeRepairTool) PreviewCall(argsJSON string) string {
+	var a struct{ Path string `json:"path"` }
+	_ = json.Unmarshal([]byte(argsJSON), &a)
+	if a.Path == "" {
+		return "git_worktree_repair()"
+	}
+	return fmt.Sprintf("git_worktree_repair(%s)", a.Path)
+}
+func (t *GitWorktreeRepairTool) Execute(ctx context.Context, argsJSON string) (string, error) {
+	var a struct{ Path string `json:"path"` }
+	if err := json.Unmarshal([]byte(argsJSON), &a); err != nil {
+		return "", fmt.Errorf("git_worktree_repair: invalid args: %w", err)
+	}
+	var args []string
+	args = append(args, "worktree", "repair")
+	if a.Path != "" {
+		args = append(args, a.Path)
+	}
+	if _, err := gitOutput(ctx, t.Cwd, args...); err != nil {
+		return "", fmt.Errorf("git_worktree_repair: %w", err)
+	}
+	if a.Path == "" {
+		return "repaired all worktrees", nil
+	}
+	return fmt.Sprintf("repaired worktree at %s", a.Path), nil
+}
