@@ -1027,28 +1027,30 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				answered := false
 				switch msg.String() {
 				case "a", "A", "enter":
-					// Approve and implement: flip plan mode off
-					// BEFORE forwarding the decision so the next
-					// iteration's tool dispatch sees the new state
-					// and the schema filter stops advertising
-					// exit_plan_mode. Normal per-tool approval
-					// prompts continue for the implementation turn.
-					exitPlanMode(&m)
-					m.decisions <- agent.AllowOnce
-					m.awaitingApproval = false
-					answered = true
-				case "y", "Y":
-					// Approve and auto-implement: exit plan mode
-					// AND enter auto mode for the implementation.
-					// Per-tool prompts auto-allow for the rest of
-					// the turn except the safety floor (run_bash,
-					// git_commit, git_checkpoint, rollback).
+					// Auto-approval: exit plan mode AND enter auto
+					// mode for the implementation. Per-tool prompts
+					// auto-allow for the rest of the turn except the
+					// safety floor (run_bash, git_commit,
+					// git_checkpoint, rollback). [A] is the default
+					// (Enter) because users who approve a plan are
+					// usually ready to let it run.
 					exitPlanMode(&m)
 					if m.cfg.AutoMode != nil {
 						m.cfg.AutoMode.Active.Store(true)
 						m.appendLine(styleAutoBannerLabel.Render(AutoModeIcon+" auto mode active") +
 							" " + styleAutoBannerHint.Render("— implementing the approved plan; bash & commits still prompt"))
 					}
+					m.decisions <- agent.AllowOnce
+					m.awaitingApproval = false
+					answered = true
+				case "m", "M":
+					// Manual approval: flip plan mode off BEFORE
+					// forwarding the decision so the next iteration's
+					// tool dispatch sees the new state and the schema
+					// filter stops advertising exit_plan_mode. Normal
+					// per-tool approval prompts continue for the
+					// implementation turn — user reviews each step.
+					exitPlanMode(&m)
 					m.decisions <- agent.AllowOnce
 					m.awaitingApproval = false
 					answered = true

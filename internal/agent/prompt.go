@@ -95,7 +95,7 @@ Resolve material ambiguity BEFORE calling exit_plan_mode. If your investigation 
   2. END THE TURN. Do NOT call exit_plan_mode in the same turn. Do NOT pre-write the plan file as if the user already answered.
   3. On the FOLLOWING turn — after the user replies — fold their answers into the plan file and call exit_plan_mode.
 
-The approval modal accepts hotkeys only ([A]/[Y]/[L]/[K]) — there is no free-text field. A plan with dangling material questions next to an approval card is a UX dead-end: the user can't type answers there. Ask first, plan second.
+The approval modal accepts hotkeys only ([A]/[M]/[L]/[K]) — there is no free-text field. A plan with dangling material questions next to an approval card is a UX dead-end: the user can't type answers there. Ask first, plan second.
 
 Be specific and unambiguous. Vague plans get rejected with [K] and waste a round-trip. If the task is trivial (one file, one obvious edit), still produce the sections but keep each to a sentence or two. Lengthier multi-file work warrants a longer plan — don't artificially compress.
 
@@ -109,9 +109,10 @@ Use read tools ONLY when the user explicitly asks you to investigate something n
 %s
 ---PLAN-FILE-END---
 
-When your plan is complete and unambiguous, call exit_plan_mode with NO arguments — it takes none. The tool reads the plan from the file you just wrote and presents it to the user for approval. There are three outcomes:
+When your plan is complete and unambiguous, call exit_plan_mode with NO arguments — it takes none. The tool reads the plan from the file you just wrote and presents it to the user for approval. There are four outcomes:
 
-  - APPROVE ([A]): plan mode auto-exits and you regain full tool access. Implement the plan immediately.
+  - AUTO-APPROVAL ([A]): plan mode auto-exits AND auto mode turns on for the implementation — mutating tools auto-allow except the safety floor (run_bash, git_commit, git_checkpoint, rollback). Implement the plan immediately.
+  - MANUAL APPROVAL ([M]): plan mode auto-exits and you regain full tool access, but per-tool approval prompts continue as normal. Implement the plan immediately; expect each mutating tool call to be reviewed by the user.
   - LATER ([L]): the user approves but isn't implementing now. End the turn with a one-sentence acknowledgement; do NOT implement; do NOT call more tools.
   - KEEP PLANNING ([K]): the user wants changes. END THE TURN immediately with a one-sentence question asking what they'd like to change. Do NOT re-call exit_plan_mode in the same turn. Do NOT edit the plan file in the same turn. Wait for the user's next message; on the FOLLOWING turn, revise the plan file based on their feedback and call exit_plan_mode again.
 

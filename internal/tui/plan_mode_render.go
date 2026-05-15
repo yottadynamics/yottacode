@@ -118,10 +118,10 @@ func compactPlanBasename(planPath string) string {
 // truncation when the plan is long.
 func renderPlanApprovalCard(width int) string {
 	hotkeys := stylePlanApprovalHotkey.Render("[A]") + " " +
-		stylePlanApprovalChoice.Render("approve and implement") +
+		stylePlanApprovalChoice.Render("auto-approval") +
 		"\n" +
-		stylePlanApprovalHotkey.Render("[Y]") + " " +
-		stylePlanApprovalChoice.Render("approve and auto-implement") +
+		stylePlanApprovalHotkey.Render("[M]") + " " +
+		stylePlanApprovalChoice.Render("manual approval") +
 		"\n\n" +
 		stylePlanApprovalHotkey.Render("[L]") + " " +
 		stylePlanApprovalChoice.Render("later") +
