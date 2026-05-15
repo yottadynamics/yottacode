@@ -873,7 +873,13 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// "[Pasted text #N: 5 lines, 87 bytes]" than the literal paste.
 			return m.handleLargePaste(msg)
 		}
-		if m.turnActive && !m.awaitingApproval {
+		// While the path-trust modal is up, route keys to that handler
+		// (further down) — not to the mid-turn textarea path below.
+		// Without this exception, a turn in flight waiting on the
+		// elevation decision would swallow "1"/"2"/"3" into the
+		// textarea and route Esc to turnCancel instead of "reject",
+		// leaving the modal unresponsive until the process is killed.
+		if m.turnActive && !m.awaitingApproval && !m.awaitingPathTrust {
 			switch msg.Type {
 			case tea.KeyCtrlC, tea.KeyEsc:
 				// Esc mirrors Claude Code's cancel feel — same effect
