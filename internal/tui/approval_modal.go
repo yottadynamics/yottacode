@@ -149,7 +149,7 @@ func approvalBodyFor(m Model) string {
 			return rendered
 		}
 	case "run_bash":
-		if rendered, _, ok := renderRunBashApproval(m.approvalArgs); ok {
+		if rendered, _, ok := renderRunBashApproval(m.approvalArgs, m.cwd); ok {
 			return styleApprovalCommand.Render("$ ") + rendered
 		}
 	}

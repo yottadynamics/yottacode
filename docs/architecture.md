@@ -155,9 +155,10 @@ on top of the base approval flow:
   `Shift+Tab`, or `--permission-mode plan`. The model can read,
   search, ask, and write only to a single plan file under
   `~/.yottacode/plans/<slug>.md`. `exit_plan_mode` surfaces the plan
-  in an approval card with four hotkeys: `[A]` implement, `[Y]`
-  implement with auto mode enabled, `[L]` save for later, `[K]` keep
-  refining. State lives on `agent.PlanModeState`.
+  in an approval card with four hotkeys: `[A]` auto-approval
+  (implement with auto mode enabled), `[M]` manual approval
+  (implement, per-tool prompts continue), `[L]` save for later, `[K]`
+  keep refining. State lives on `agent.PlanModeState`.
 - **Auto mode** — implementation state. Entered via `Shift+Tab` or
   `--permission-mode auto` (no slash command, mirroring Claude
   Code). Mutating tools auto-allow except a safety floor

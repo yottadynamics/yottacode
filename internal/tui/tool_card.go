@@ -45,7 +45,12 @@ const (
 // agent.ToolStart). edit_file uses it to render a proper old/new diff
 // body; other tools ignore it and fall back to the standard text-body
 // shape.
-func renderToolCard(toolName, preview, argsJSON, output string, errored bool, termWidth int) string {
+//
+// cwd is the session working directory — path-typed tool headers,
+// grep/glob body lines, and footers that bake in absolute paths all
+// collapse the cwd prefix to `.` for readability. Pass "" to disable
+// shortening (test fixtures, replays without a known cwd).
+func renderToolCard(toolName, preview, argsJSON, output string, errored bool, termWidth int, cwd string) string {
 	width := cardMaxWidthCap
 	if termWidth > 0 && termWidth-4 < width {
 		width = termWidth - 4
@@ -54,8 +59,8 @@ func renderToolCard(toolName, preview, argsJSON, output string, errored bool, te
 		width = cardMinUsefulCols
 	}
 
-	header := renderCardHeader(toolHeader(toolName, argsJSON, preview, width))
-	footer := toolFooter(toolName, output, errored)
+	header := renderCardHeader(toolHeader(toolName, argsJSON, preview, width, cwd))
+	footer := toolFooter(toolName, output, errored, cwd)
 
 	out := []string{header}
 	// edit_file gets a structured diff body with bg-tinted +/- lines.
@@ -64,6 +69,17 @@ func renderToolCard(toolName, preview, argsJSON, output string, errored bool, te
 	// styleCardBody, which would override the syntax colors.
 	if !errored && toolName == "edit_file" {
 		if rows, ok := editFileDiffRows(argsJSON, width); ok {
+			out = append(out, rows...)
+			out = append(out, styleCardGutter.Render("╰ ")+footer)
+			return strings.Join(out, "\n")
+		}
+	}
+	// write_file mirrors edit_file's diff-body shape: the whole file
+	// content rendered as `+` rows (a write is, from a diff perspective,
+	// pure addition). Skips the generic body path so the highlighted
+	// rows don't get wrapped in styleCardBody.
+	if !errored && toolName == "write_file" {
+		if rows, ok := writeFileBodyRows(argsJSON, width); ok {
 			out = append(out, rows...)
 			out = append(out, styleCardGutter.Render("╰ ")+footer)
 			return strings.Join(out, "\n")
@@ -94,7 +110,7 @@ func renderToolCard(toolName, preview, argsJSON, output string, errored bool, te
 			out = append(out, styleCardGutter.Render("│   ")+styleCardErrFooter.Render(w))
 		}
 	}
-	body := toolBodyLines(toolName, output, errored)
+	body := toolBodyLines(toolName, output, errored, cwd)
 	if len(body) > cardBodyLineCap {
 		visible := body[:cardBodyLineCap]
 		hidden := len(body) - cardBodyLineCap
@@ -137,13 +153,28 @@ func renderCardHeader(preview string) string {
 //   - default: raw output trimmed of trailing whitespace
 //
 // Errored output is shown as-is so the user sees the error message.
-func toolBodyLines(toolName, output string, errored bool) []string {
+//
+// cwd, when non-empty, collapses the cwd prefix to "." in body lines
+// that bake in absolute paths (grep/glob results, run_bash stdout,
+// errors). The shortening is applied last, after per-tool shaping, so
+// each per-tool case can stay in terms of raw output.
+func toolBodyLines(toolName, output string, errored bool, cwd string) []string {
 	output = strings.TrimRight(output, "\n")
 	if output == "" {
 		return nil
 	}
+	shortenLines := func(lines []string) []string {
+		if cwd == "" {
+			return lines
+		}
+		out := make([]string, len(lines))
+		for i, l := range lines {
+			out[i] = shortenCwdInText(l, cwd)
+		}
+		return out
+	}
 	if errored {
-		return strings.Split(output, "\n")
+		return shortenLines(strings.Split(output, "\n"))
 	}
 	switch toolName {
 	case "list_dir":
@@ -153,14 +184,10 @@ func toolBodyLines(toolName, output string, errored bool) []string {
 	case "run_bash", "run_tests":
 		// run_tests emits the same exit=N/stdout/stderr envelope; share
 		// the splitter so its body shape matches Bash's.
-		return runBashBody(output)
+		return shortenLines(runBashBody(output))
 	case "git":
-		// Git wraps its output in the same exit=N / --- stdout --- /
-		// --- stderr --- envelope run_bash uses (with an extra leading
-		// `$ git X Y` line). Reusing runBashBody gives the same stdout +
-		// "── stderr ──" separator + stderr shape.
 		if strings.Contains(output, "\n--- stdout ---") {
-			return runBashBody(output)
+			return shortenLines(runBashBody(output))
 		}
 		// Fall through to default for older / non-enveloped output.
 	case "fetch_url":
@@ -169,17 +196,21 @@ func toolBodyLines(toolName, output string, errored bool) []string {
 		// Footer carries the relevant summary; body adds noise.
 		return nil
 	}
-	return strings.Split(output, "\n")
+	return shortenLines(strings.Split(output, "\n"))
 }
 
 // toolFooter produces the styled summary line at the card's bottom-edge.
 // Format depends on tool: list_dir = "N entries", write_file =
 // "wrote N bytes to path", run_bash = "exit N" (green if 0, red
 // otherwise), default = a one-line truncated preview of output.
-func toolFooter(toolName, output string, errored bool) string {
+//
+// cwd, when non-empty, collapses absolute paths in footers that bake
+// them in (today: edit_file's "edited <abs/path>: N replacement(s)"
+// line). Other footers don't carry absolute paths.
+func toolFooter(toolName, output string, errored bool, cwd string) string {
 	if errored {
 		summary := summarizeToolOutput(output)
-		return styleCardErrFooter.Render("✗ " + summary)
+		return styleCardErrFooter.Render("✗ " + shortenCwdInText(summary, cwd))
 	}
 	switch toolName {
 	case "list_dir":
@@ -195,10 +226,11 @@ func toolFooter(toolName, output string, errored bool) string {
 	case "write_file":
 		return styleCardMeta.Render(shortWriteFooter(output))
 	case "edit_file":
-		// edit_file's output is "edited <path>: N replacement(s)" — the
-		// whole story belongs in the footer (the diff body above already
-		// carries the visual change).
-		return styleCardMeta.Render(strings.TrimSpace(output))
+		// edit_file's output is "edited <abs/path>: N replacement(s)" —
+		// the whole story belongs in the footer (the diff body above
+		// already carries the visual change). Collapse the absolute path
+		// against cwd so the footer matches the header's shortened form.
+		return styleCardMeta.Render(shortenCwdInText(strings.TrimSpace(output), cwd))
 	case "todo_write":
 		// Body rendered the per-item status rows; surface the model's
 		// own one-liner ("plan updated: N items (M done)" / "plan
@@ -494,7 +526,11 @@ func matchFooter(out string) string {
 // argsJSON it returns `preview` so the card never renders blank. The
 // `maxWidth` is the per-card width (terminal-minus-gutter) — long
 // commands and URLs get clipped with "…" so the header never wraps.
-func toolHeader(toolName, argsJSON, preview string, maxWidth int) string {
+//
+// cwd, when non-empty, collapses the cwd prefix to "." in path-typed
+// headers and inside run_bash command text so deep absolute paths
+// don't dominate the card. Display-only; tool inputs are unchanged.
+func toolHeader(toolName, argsJSON, preview string, maxWidth int, cwd string) string {
 	if argsJSON == "" {
 		return preview
 	}
@@ -502,6 +538,7 @@ func toolHeader(toolName, argsJSON, preview string, maxWidth int) string {
 	if headerBudget < 20 {
 		headerBudget = 20
 	}
+	short := func(p string) string { return displayPath(p, cwd) }
 	switch toolName {
 	case "run_bash":
 		var a struct {
@@ -510,7 +547,7 @@ func toolHeader(toolName, argsJSON, preview string, maxWidth int) string {
 		if json.Unmarshal([]byte(argsJSON), &a) != nil {
 			return preview
 		}
-		return clipHeader("Bash("+oneLine(a.Command)+")", headerBudget)
+		return clipHeader("Bash("+shortenCwdInText(oneLine(a.Command), cwd)+")", headerBudget)
 	case "read_file":
 		var a struct {
 			Path   string `json:"path"`
@@ -521,9 +558,9 @@ func toolHeader(toolName, argsJSON, preview string, maxWidth int) string {
 			return preview
 		}
 		if a.Offset == 0 && a.Limit == 0 {
-			return clipHeader("Read("+a.Path+")", headerBudget)
+			return clipHeader("Read("+short(a.Path)+")", headerBudget)
 		}
-		return clipHeader(fmt.Sprintf("Read(%s @ L%d+%d)", a.Path, a.Offset, a.Limit), headerBudget)
+		return clipHeader(fmt.Sprintf("Read(%s @ L%d+%d)", short(a.Path), a.Offset, a.Limit), headerBudget)
 	case "write_file":
 		var a struct {
 			Path string `json:"path"`
@@ -531,7 +568,7 @@ func toolHeader(toolName, argsJSON, preview string, maxWidth int) string {
 		if json.Unmarshal([]byte(argsJSON), &a) != nil {
 			return preview
 		}
-		return clipHeader("Write("+a.Path+")", headerBudget)
+		return clipHeader("Write("+short(a.Path)+")", headerBudget)
 	case "edit_file":
 		var a struct {
 			Path       string `json:"path"`
@@ -544,7 +581,7 @@ func toolHeader(toolName, argsJSON, preview string, maxWidth int) string {
 		if a.ReplaceAll {
 			mode = "all"
 		}
-		return clipHeader(fmt.Sprintf("Edit(%s, %s)", a.Path, mode), headerBudget)
+		return clipHeader(fmt.Sprintf("Edit(%s, %s)", short(a.Path), mode), headerBudget)
 	case "delete_file":
 		var a struct {
 			Path string `json:"path"`
@@ -552,19 +589,19 @@ func toolHeader(toolName, argsJSON, preview string, maxWidth int) string {
 		if json.Unmarshal([]byte(argsJSON), &a) != nil {
 			return preview
 		}
-		return clipHeader("Delete("+a.Path+")", headerBudget)
+		return clipHeader("Delete("+short(a.Path)+")", headerBudget)
 	case "move_file":
 		var a struct {
 			Src, Dst string
 		}
 		_ = json.Unmarshal([]byte(argsJSON), &a)
-		return clipHeader("Move("+a.Src+" → "+a.Dst+")", headerBudget)
+		return clipHeader("Move("+short(a.Src)+" → "+short(a.Dst)+")", headerBudget)
 	case "copy_file":
 		var a struct {
 			Src, Dst string
 		}
 		_ = json.Unmarshal([]byte(argsJSON), &a)
-		return clipHeader("Copy("+a.Src+" → "+a.Dst+")", headerBudget)
+		return clipHeader("Copy("+short(a.Src)+" → "+short(a.Dst)+")", headerBudget)
 	case "mkdir":
 		var a struct {
 			Path string `json:"path"`
@@ -572,7 +609,7 @@ func toolHeader(toolName, argsJSON, preview string, maxWidth int) string {
 		if json.Unmarshal([]byte(argsJSON), &a) != nil {
 			return preview
 		}
-		return clipHeader("Mkdir("+a.Path+")", headerBudget)
+		return clipHeader("Mkdir("+short(a.Path)+")", headerBudget)
 	case "read_many_files":
 		var a struct {
 			Paths []string `json:"paths"`
@@ -591,7 +628,7 @@ func toolHeader(toolName, argsJSON, preview string, maxWidth int) string {
 		if a.Path == "" {
 			a.Path = "."
 		}
-		return clipHeader("List("+a.Path+")", headerBudget)
+		return clipHeader("List("+short(a.Path)+")", headerBudget)
 	case "list_project_structure":
 		var a struct {
 			Path     string `json:"path"`
@@ -602,9 +639,9 @@ func toolHeader(toolName, argsJSON, preview string, maxWidth int) string {
 			a.Path = "."
 		}
 		if a.MaxDepth > 0 {
-			return clipHeader(fmt.Sprintf("Tree(%s, depth=%d)", a.Path, a.MaxDepth), headerBudget)
+			return clipHeader(fmt.Sprintf("Tree(%s, depth=%d)", short(a.Path), a.MaxDepth), headerBudget)
 		}
-		return clipHeader("Tree("+a.Path+")", headerBudget)
+		return clipHeader("Tree("+short(a.Path)+")", headerBudget)
 	case "glob":
 		var a struct {
 			Pattern, Root string
@@ -614,7 +651,7 @@ func toolHeader(toolName, argsJSON, preview string, maxWidth int) string {
 		if root == "" || root == "." {
 			return clipHeader("Glob("+a.Pattern+")", headerBudget)
 		}
-		return clipHeader("Glob("+a.Pattern+" in "+root+")", headerBudget)
+		return clipHeader("Glob("+a.Pattern+" in "+short(root)+")", headerBudget)
 	case "grep":
 		var a struct {
 			Pattern, Path string
@@ -624,7 +661,7 @@ func toolHeader(toolName, argsJSON, preview string, maxWidth int) string {
 		if root == "" || root == "." {
 			return clipHeader(fmt.Sprintf("Grep(%q)", a.Pattern), headerBudget)
 		}
-		return clipHeader(fmt.Sprintf("Grep(%q in %s)", a.Pattern, root), headerBudget)
+		return clipHeader(fmt.Sprintf("Grep(%q in %s)", a.Pattern, short(root)), headerBudget)
 	case "fetch_url":
 		var a struct {
 			URL string `json:"url"`

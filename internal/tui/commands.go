@@ -247,19 +247,98 @@ func cmdHelp(m Model, _ []string) (Model, tea.Cmd) {
 	return m, nil
 }
 
-// displayPath shortens an absolute path for /help readability: replaces
-// the home prefix with "~" and the cwd prefix with "." when applicable.
-// Falls back to the absolute path when neither prefix matches.
+// displayPath shortens an absolute path for readability: replaces the
+// home prefix with "~" and the cwd prefix with "." when applicable.
+// Falls back to the absolute path when neither prefix matches. Also
+// handles the exact-match cases (abs == cwd → ".", abs == home → "~")
+// so a write/read/list of the project root itself renders cleanly.
 func displayPath(abs, cwd string) string {
-	if cwd != "" && strings.HasPrefix(abs, cwd+"/") {
-		return "./" + strings.TrimPrefix(abs, cwd+"/")
+	if cwd != "" {
+		if abs == cwd {
+			return "."
+		}
+		if strings.HasPrefix(abs, cwd+"/") {
+			return "./" + strings.TrimPrefix(abs, cwd+"/")
+		}
 	}
 	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		if abs == home {
+			return "~"
+		}
 		if strings.HasPrefix(abs, home+"/") {
 			return "~/" + strings.TrimPrefix(abs, home+"/")
 		}
 	}
 	return abs
+}
+
+// shortenCwdInText replaces occurrences of cwd inside a freeform string
+// (e.g. a shell command body, a tool's output line) with ".", and
+// occurrences of $HOME with "~". The match is word-boundary aware so
+// `/cwd` doesn't accidentally hit `/cwd-suffix/...` paths that share
+// the same prefix.
+//
+// Display-only — never mutates what the agent sends to a tool. Used by
+// run_bash command rendering (approval modal + header), tool card
+// header path rendering, grep/glob result body lines, and footers that
+// bake in absolute paths.
+func shortenCwdInText(s, cwd string) string {
+	if cwd != "" {
+		s = replaceAtBoundary(s, cwd, ".")
+	}
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		s = replaceAtBoundary(s, home, "~")
+	}
+	return s
+}
+
+// replaceAtBoundary replaces every occurrence of `old` in `s` with `new`,
+// but only when the surrounding characters can't extend the match into
+// a different token. A path-continuation char (alphanumeric, `_`, `-`,
+// `.`) on either side of the match cancels the replacement — that's
+// what keeps `/a/b` from clobbering `/a/b-sibling/x`.
+//
+// A trailing `/` is NOT a path-continuation char here, by design: when
+// the cwd is `/a/b` and the input is `/a/b/sub`, we WANT the match to
+// fire so `/a/b` collapses to `.` and the survivor reads `./sub`.
+func replaceAtBoundary(s, old, new string) string {
+	if old == "" {
+		return s
+	}
+	var b strings.Builder
+	i := 0
+	for i < len(s) {
+		if i+len(old) <= len(s) && s[i:i+len(old)] == old {
+			prevOK := i == 0 || !isPathContinuation(s[i-1])
+			nextOK := i+len(old) == len(s) || !isPathContinuation(s[i+len(old)])
+			if prevOK && nextOK {
+				b.WriteString(new)
+				i += len(old)
+				continue
+			}
+		}
+		b.WriteByte(s[i])
+		i++
+	}
+	return b.String()
+}
+
+// isPathContinuation reports whether a byte could extend a filesystem
+// path token (so we refuse to break the token by replacing only its
+// prefix). `/` is intentionally NOT included — see replaceAtBoundary's
+// docstring.
+func isPathContinuation(c byte) bool {
+	switch {
+	case c == '_' || c == '-' || c == '.':
+		return true
+	case c >= 'a' && c <= 'z':
+		return true
+	case c >= 'A' && c <= 'Z':
+		return true
+	case c >= '0' && c <= '9':
+		return true
+	}
+	return false
 }
 
 func cmdQuit(m Model, _ []string) (Model, tea.Cmd) {
@@ -1233,7 +1312,7 @@ func renderRebuiltToolCard(m *Model, tc adapter.ToolCall, result string) string 
 			return styleToolCall.Render("[tool] " + tc.Name + "(...)")
 		}
 	}
-	summary := renderToolCard(tc.Name, preview, tc.ArgsJSON, result, false, m.width)
+	summary := renderToolCard(tc.Name, preview, tc.ArgsJSON, result, false, m.width, m.cwd)
 	if tc.Name == "write_file" {
 		if body, ok := renderRebuiltWriteFileBodyCard(tc.ArgsJSON, result); ok {
 			return body + "\n\n" + summary

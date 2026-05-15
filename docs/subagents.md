@@ -143,7 +143,7 @@ parent is composing), and return a structured reply.
 ### Auto mode + subagents
 
 When the parent is in auto mode (entered via `Shift+Tab`,
-`--permission-mode auto`, or the plan-card `[Y]` hotkey):
+`--permission-mode auto`, or the plan-card `[A]` auto-approval hotkey):
 
 - The child auto-allows non-safety-floor mutating tools (no per-call
   modal). Same rule as for the parent: edits, writes, and most git

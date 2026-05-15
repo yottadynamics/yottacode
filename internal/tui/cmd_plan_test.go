@@ -276,7 +276,7 @@ func TestExitPlanModeApprovalCard_RendersFromPlanFile(t *testing.T) {
 	}
 	// The decision box (in View) carries only the hotkeys and title.
 	view := stripANSI(m.View())
-	for _, want := range []string{"Approve plan?", "approve and implement", "later", "keep planning"} {
+	for _, want := range []string{"Approve plan?", "auto-approval", "manual approval", "later", "keep planning"} {
 		if !strings.Contains(view, want) {
 			t.Errorf("approval card missing %q; got %q", want, view)
 		}
@@ -577,6 +577,10 @@ func TestBanner_AutoPlusYoloShowsBothLabels(t *testing.T) {
 func TestBanner_PlanPlusYoloShowsBothLabels(t *testing.T) {
 	m, _ := newPlanModeTestModel(t)
 	m, _ = cmdPlan(m, nil)
+	// Simulate the user having submitted their first plan-mode message,
+	// which is when the persistent plan banner first appears (PlanFile
+	// non-empty is the gate — see model.go's banner switch).
+	m.cfg.PlanMode.PlanFile = "/tmp/plan-test.md"
 	m = enterYoloMode(m)
 	view := stripANSI(m.View())
 	if !strings.Contains(view, "plan mode") {
@@ -763,10 +767,10 @@ func TestSlashYolo_NotRegistered(t *testing.T) {
 	}
 }
 
-// Plan card [Y] both approves the plan AND enters auto mode for the
+// Plan card [A] both approves the plan AND enters auto mode for the
 // implementation. The decision channel gets AllowOnce; plan mode is
 // off; auto mode is on.
-func TestExitPlanModeApprovalCard_YEntersAutoMode(t *testing.T) {
+func TestExitPlanModeApprovalCard_AEntersAutoMode(t *testing.T) {
 	m, planMode := newPlanModeTestModel(t)
 	autoMode := m.cfg.AutoMode
 	m, _ = cmdPlan(m, nil)
@@ -787,27 +791,67 @@ func TestExitPlanModeApprovalCard_YEntersAutoMode(t *testing.T) {
 	if !m.awaitingApproval {
 		t.Fatalf("ApprovalNeeded for exit_plan_mode should open the modal")
 	}
-	// Press [Y].
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+	// Press [A].
+	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
 	select {
 	case d := <-m.decisions:
 		if d != agent.AllowOnce {
-			t.Errorf("expected AllowOnce on [Y]; got %v", d)
+			t.Errorf("expected AllowOnce on [A]; got %v", d)
 		}
 	default:
-		t.Errorf("no decision sent on [Y]")
+		t.Errorf("no decision sent on [A]")
 	}
 	if planMode.IsActive() {
-		t.Errorf("plan mode should be off after [Y]")
+		t.Errorf("plan mode should be off after [A]")
 	}
 	if !autoMode.IsActive() {
-		t.Errorf("auto mode should be on after [Y]")
+		t.Errorf("auto mode should be on after [A]")
 	}
 }
 
-// The plan approval card advertises all four hotkeys: [A] approve and
-// implement, [Y] approve and auto-implement, [L] later, [K] keep
-// planning.
+// Plan card [M] approves the plan but stays in manual mode — per-tool
+// prompts continue. Decision is AllowOnce, plan mode is off, auto mode
+// stays off.
+func TestExitPlanModeApprovalCard_MIsManualApproval(t *testing.T) {
+	m, planMode := newPlanModeTestModel(t)
+	autoMode := m.cfg.AutoMode
+	m, _ = cmdPlan(m, nil)
+	maybeFillPlanFile(&m, "investigate")
+	if err := os.MkdirAll(filepath.Dir(planMode.PlanFile), 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(planMode.PlanFile, []byte("# Plan\n"), 0o644); err != nil {
+		t.Fatalf("write plan file: %v", err)
+	}
+	m.eventsCh = make(chan agent.Event, 4)
+	m.decisions = make(chan agent.Decision, 1)
+	m.turnErrCh = make(chan error, 1)
+	m, _ = m.handleAgentEventTea(agent.ApprovalNeeded{
+		ToolName: "exit_plan_mode",
+		ArgsJSON: `{}`,
+	})
+	if !m.awaitingApproval {
+		t.Fatalf("ApprovalNeeded for exit_plan_mode should open the modal")
+	}
+	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'m'}})
+	select {
+	case d := <-m.decisions:
+		if d != agent.AllowOnce {
+			t.Errorf("expected AllowOnce on [M]; got %v", d)
+		}
+	default:
+		t.Errorf("no decision sent on [M]")
+	}
+	if planMode.IsActive() {
+		t.Errorf("plan mode should be off after [M]")
+	}
+	if autoMode.IsActive() {
+		t.Errorf("auto mode must NOT be on after [M] — that's the whole point of the manual option")
+	}
+}
+
+// The plan approval card advertises all four hotkeys: [A] auto-approval,
+// [M] manual approval, [L] later, [K] keep planning.
 func TestExitPlanModeApprovalCard_AdvertisesAllHotkeys(t *testing.T) {
 	m, planMode := newPlanModeTestModel(t)
 	m, _ = cmdPlan(m, nil)
@@ -826,7 +870,7 @@ func TestExitPlanModeApprovalCard_AdvertisesAllHotkeys(t *testing.T) {
 		ArgsJSON: `{}`,
 	})
 	view := stripANSI(m.View())
-	for _, want := range []string{"approve and implement", "approve and auto-implement", "later", "keep planning"} {
+	for _, want := range []string{"auto-approval", "manual approval", "later", "keep planning"} {
 		if !strings.Contains(view, want) {
 			t.Errorf("approval card missing hotkey label %q; got %q", want, view)
 		}

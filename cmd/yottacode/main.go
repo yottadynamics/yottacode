@@ -70,7 +70,78 @@ func newCLI() *cobra.Command {
 		newTrustCmd(),
 		newVersionCmd(),
 	)
+	applyWrappedUsageTemplate(root)
 	return root
+}
+
+// applyWrappedUsageTemplate installs a Cobra usage template that wraps
+// flag descriptions to the current terminal width (via pflag's
+// FlagUsagesWrapped). The default template calls FlagUsages without
+// wrapping, which produced one giant unbroken line per flag — readable
+// only if your terminal happens to be wide enough. Detected width
+// falls back to 100 for non-TTY callers (pipes, CI) so output stays
+// stable.
+//
+// Applied to the root + every subcommand because Cobra resolves the
+// usage template per-command, not via inheritance.
+func applyWrappedUsageTemplate(root *cobra.Command) {
+	width := terminalWidth()
+	tmpl := wrappedUsageTemplate(width)
+	root.SetUsageTemplate(tmpl)
+	for _, c := range root.Commands() {
+		c.SetUsageTemplate(tmpl)
+	}
+}
+
+// terminalWidth returns the current stdout column count, clamped to a
+// readable range. Used only for help-text wrapping; the TUI computes
+// its own width via Bubbletea's WindowSizeMsg.
+func terminalWidth() int {
+	if w, _, err := term.GetSize(int(os.Stdout.Fd())); err == nil && w > 40 {
+		if w > 140 {
+			return 140
+		}
+		return w
+	}
+	return 100
+}
+
+// wrappedUsageTemplate is Cobra's default template with two changes:
+// `.LocalFlags.FlagUsages` → `.LocalFlags.FlagUsagesWrapped <width>`
+// and the same swap for `.InheritedFlags`. Everything else (Usage,
+// Aliases, Examples, Available Commands, footer) stays identical so
+// `yottacode --help` keeps its familiar shape.
+func wrappedUsageTemplate(width int) string {
+	return `Usage:{{if .Runnable}}
+  {{.UseLine}}{{end}}{{if .HasAvailableSubCommands}}
+  {{.CommandPath}} [command]{{end}}{{if gt (len .Aliases) 0}}
+
+Aliases:
+  {{.NameAndAliases}}{{end}}{{if .HasExample}}
+
+Examples:
+{{.Example}}{{end}}{{if .HasAvailableSubCommands}}{{$cmds := .Commands}}{{if eq (len .Groups) 0}}
+
+Available Commands:{{range $cmds}}{{if (or .IsAvailableCommand (eq .Name "help"))}}
+  {{rpad .Name .NamePadding }} {{.Short}}{{end}}{{end}}{{else}}{{range $group := .Groups}}
+
+{{.Title}}{{range $cmds}}{{if (and (eq .GroupID $group.ID) (or .IsAvailableCommand (eq .Name "help")))}}
+  {{rpad .Name .NamePadding }} {{.Short}}{{end}}{{end}}{{end}}{{if not .AllChildCommandsHaveGroup}}
+
+Additional Commands:{{range $cmds}}{{if (and (eq .GroupID "") (or .IsAvailableCommand (eq .Name "help")))}}
+  {{rpad .Name .NamePadding }} {{.Short}}{{end}}{{end}}{{end}}{{end}}{{end}}{{if .HasAvailableLocalFlags}}
+
+Flags:
+` + fmt.Sprintf("{{.LocalFlags.FlagUsagesWrapped %d | trimTrailingWhitespaces}}", width) + `{{end}}{{if .HasAvailableInheritedFlags}}
+
+Global Flags:
+` + fmt.Sprintf("{{.InheritedFlags.FlagUsagesWrapped %d | trimTrailingWhitespaces}}", width) + `{{end}}{{if .HasHelpSubCommands}}
+
+Additional help topics:{{range .Commands}}{{if .IsAdditionalHelpTopicCommand}}
+  {{rpad .CommandPath .CommandPathPadding}} {{.Short}}{{end}}{{end}}{{end}}{{if .HasAvailableSubCommands}}
+
+Use "{{.CommandPath}} [command] --help" for more information about a command.{{end}}
+`
 }
 
 // newRootCmd builds the top-level command. With no subcommand, `yottacode`
@@ -82,14 +153,7 @@ func newRootCmd(opts *cli.ChatOptions) *cobra.Command {
 		Use:     "yottacode",
 		Short:   "yottacode — model-agnostic terminal AI agent",
 		Version: version.Full(),
-		Long: `yottacode opens the Bubbletea TUI for interactive use. For piped
-input, scripts, or CI use the non-interactive 'yottacode run' subcommand.
-
-Configuration (no built-in defaults — must be set via flag or env):
-  --model      / $YOTTACODE_MODEL      model tag, e.g. gpt-5, claude-..., qwen3.5:latest
-  --base-url   / $YOTTACODE_BASE_URL   OpenAI-compatible endpoint
-  --api-key    / $YOTTACODE_API_KEY    optional bearer token (Ollama ignores it)`,
-		Args: cobra.NoArgs,
+		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Fire the update check early so cache-miss latency overlaps
 			// with cli.Resolve / wizard / continue-resolution. Returns
@@ -370,43 +434,37 @@ Use --json for scripting.`,
 // of silently dialing a localhost Ollama that might not be running.
 func bindCommonPersistentFlags(cmd *cobra.Command, opts *cli.ChatOptions) {
 	f := cmd.PersistentFlags()
-	f.StringVarP(&opts.Model, "model", "m", "", "Model tag (or set $YOTTACODE_MODEL)")
-	f.StringVar(&opts.BaseURL, "base-url", "", "OpenAI-compatible endpoint (or set $YOTTACODE_BASE_URL)")
-	f.StringVar(&opts.APIKey, "api-key", "", "Bearer token for the endpoint (or set $YOTTACODE_API_KEY); Ollama ignores it")
-	f.StringVar(&opts.Provider, "provider", "", "Provider override: openai | openai-auth | anthropic | gemini | xai | ollama | openai-compatible (or set $YOTTACODE_PROVIDER). openai-auth is the ChatGPT-subscription path (no API key) — log in via 'yottacode openai-auth login' before first use.")
+	// Help-text style: one-line summary per flag, env-var pointer in
+	// parentheses when applicable, no embedded backticks around literal
+	// command references (pflag treats backticks as the type-name
+	// placeholder and rewrites the flag header — `--allow-paths` had
+	// shown up as `--allow-paths yottacode trust add <path>` because of
+	// that). Full prose lives in docs/cli.md.
+	f.StringVarP(&opts.Model, "model", "m", "", "Model tag (env: YOTTACODE_MODEL)")
+	f.StringVar(&opts.BaseURL, "base-url", "", "OpenAI-compatible endpoint (env: YOTTACODE_BASE_URL)")
+	f.StringVar(&opts.APIKey, "api-key", "", "Bearer token; Ollama ignores it (env: YOTTACODE_API_KEY)")
+	f.StringVar(&opts.Provider, "provider", "", "openai | openai-auth | anthropic | gemini | xai | ollama | openai-compatible (env: YOTTACODE_PROVIDER)")
 	f.StringVar(&opts.SystemPrompt, "system", "", "Override the default system prompt")
-	f.StringVar(&opts.Resume, "resume", "", "Resume session by id or name (set via the /sessions Rename action)")
-	f.BoolVarP(&opts.Continue, "continue", "c", false, "Pick up where you left off: resume the most recent session you ran in this directory, without going through the picker. Matches the cwd recorded when the session was created. Use --resume <id|name> to pick a specific session instead. Errors if you pass both, or if no prior session exists here.")
-	// --dangerously-skip-permissions mirrors Claude Code's flag of the
-	// same name (the user-facing surface). Every approval prompt is
-	// skipped and model-emitted commands run without a human in the
-	// loop. Explicit `deny` rules in .yottacode/permissions.json are
-	// still honored. Use only in trusted CI / scripted contexts.
+	f.StringVar(&opts.Resume, "resume", "", "Resume a saved session by id or name")
+	f.BoolVarP(&opts.Continue, "continue", "c", false, "Resume the newest session created in this cwd (use --resume for a specific one)")
 	f.BoolVar(&opts.BypassPermissions, "dangerously-skip-permissions", false,
-		"DANGEROUS: auto-approve every tool call without prompting (deny rules still apply). Reserved for trusted CI / scripted contexts. Mirrors Claude Code's --dangerously-skip-permissions.")
-	f.IntVar(&opts.MaxIterations, "max-iterations", 50, "Max tool-call iterations per turn (raise for complex implementation work; runaway-loop guard). Auto mode effectively doubles this.")
-	f.StringVar(&opts.ReasoningEffort, "reasoning-effort", "", "Reasoning effort for supported reasoning models: low | medium | high (or set $YOTTACODE_REASONING_EFFORT)")
-	f.BoolVar(&opts.EnableWebSearch, "enable-web-search", false, "Enable provider-native web search when the selected provider supports it (enabled by default for OpenAI/xAI)")
-	f.BoolVar(&opts.DisableWebSearch, "disable-web-search", false, "Disable provider-native web search even when the selected provider would enable it by default")
-	f.BoolVar(&opts.EnableXSearch, "enable-x-search", false, "Enable provider-native X search when the selected provider supports it")
-	f.BoolVar(&opts.EnableCodeInterpreter, "enable-code-interpreter", false, "Enable provider-native code interpreter when the selected provider supports it")
-	f.StringVar(&opts.SearchAllowedDomains, "search-allowed-domains", "", "Comma-separated domain allowlist for provider-native web search when supported")
-	f.StringVar(&opts.SearchExcludedDomains, "search-excluded-domains", "", "Comma-separated domain blocklist for provider-native web search when supported")
-	f.StringVar(&opts.XSearchAllowedHandles, "x-search-allowed-handles", "", "Comma-separated X handle allowlist for provider-native x_search")
-	f.StringVar(&opts.XSearchExcludedHandles, "x-search-excluded-handles", "", "Comma-separated X handle blocklist for provider-native x_search")
-	f.StringVar(&opts.XSearchFromDate, "x-search-from-date", "", "Inclusive YYYY-MM-DD lower bound for provider-native x_search")
-	f.StringVar(&opts.XSearchToDate, "x-search-to-date", "", "Inclusive YYYY-MM-DD upper bound for provider-native x_search")
-	f.StringVar(&opts.AllowPaths, "allow-paths", "", "Comma-separated directory roots; the model may write anywhere in the subtree under each (recursive). Cwd is always allowed. Each entry also satisfies the first-launch trust gate for the session, but does not persist — use `yottacode trust add <path>` for cross-session trust. Env: $YOTTACODE_ALLOW_PATHS.")
-	f.StringVar(&opts.PermissionMode, "permission-mode", "", "Startup permission `mode`: default | plan | auto. 'plan' starts in read-only research mode (Shift+Tab to exit); 'auto' starts with edits auto-allowed (bash & commits still prompt). Mirrors Claude Code's --permission-mode. No-op for yottacode run.")
-	f.StringVar(&opts.PlanResume, "plan-resume", "", "Resume an existing plan by `slug` or substring (matched newest-first against ~/.yottacode/plans/). Implies --permission-mode plan. No-op for yottacode run.")
-	// --experimental is repeatable (cobra StringSliceVar handles this:
-	// multiple `--experimental foo --experimental bar` invocations
-	// append). Also accepts comma-separated values within a single
-	// invocation. Resolution merges this with $YOTTACODE_EXPERIMENTAL
-	// and the [experimental] config section. Recognized names live in
-	// internal/experimental — see `yottacode --experimental list` (or
-	// /experimental inside the TUI) for the current catalog.
-	f.StringSliceVar(&opts.Experimental, "experimental", nil, "Enable an experimental feature (repeatable). See docs/experimental.md for the catalog. Also accepts comma-separated values; merges with $YOTTACODE_EXPERIMENTAL and [experimental] in config.toml.")
+		"DANGEROUS: auto-approve every tool call (deny rules still apply). For trusted CI only")
+	f.IntVar(&opts.MaxIterations, "max-iterations", 50, "Max tool-call iterations per turn; auto mode raises the effective cap 4×")
+	f.StringVar(&opts.ReasoningEffort, "reasoning-effort", "", "low | medium | high (env: YOTTACODE_REASONING_EFFORT)")
+	f.BoolVar(&opts.EnableWebSearch, "enable-web-search", false, "Enable provider-native web search (on by default for OpenAI/xAI)")
+	f.BoolVar(&opts.DisableWebSearch, "disable-web-search", false, "Force-disable provider-native web search")
+	f.BoolVar(&opts.EnableXSearch, "enable-x-search", false, "Enable provider-native X search where supported")
+	f.BoolVar(&opts.EnableCodeInterpreter, "enable-code-interpreter", false, "Enable provider-native code interpreter where supported")
+	f.StringVar(&opts.SearchAllowedDomains, "search-allowed-domains", "", "Comma-separated domain allowlist for provider web search")
+	f.StringVar(&opts.SearchExcludedDomains, "search-excluded-domains", "", "Comma-separated domain blocklist for provider web search")
+	f.StringVar(&opts.XSearchAllowedHandles, "x-search-allowed-handles", "", "Comma-separated X handle allowlist for x_search")
+	f.StringVar(&opts.XSearchExcludedHandles, "x-search-excluded-handles", "", "Comma-separated X handle blocklist for x_search")
+	f.StringVar(&opts.XSearchFromDate, "x-search-from-date", "", "YYYY-MM-DD lower bound for x_search")
+	f.StringVar(&opts.XSearchToDate, "x-search-to-date", "", "YYYY-MM-DD upper bound for x_search")
+	f.StringVar(&opts.AllowPaths, "allow-paths", "", "Comma-separated dir roots writable for this session; use 'yottacode trust add' to persist (env: YOTTACODE_ALLOW_PATHS)")
+	f.StringVar(&opts.PermissionMode, "permission-mode", "", "Startup `mode`: default | plan | auto (TUI only)")
+	f.StringVar(&opts.PlanResume, "plan-resume", "", "Resume an existing plan by `slug` or substring; implies --permission-mode plan")
+	f.StringSliceVar(&opts.Experimental, "experimental", nil, "Enable experimental feature(s); repeatable or comma-separated (see docs/experimental.md)")
 }
 
 func adapterConfigFromOptions(opts cli.ChatOptions) adapter.Config {

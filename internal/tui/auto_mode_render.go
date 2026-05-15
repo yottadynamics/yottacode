@@ -14,12 +14,17 @@ const AutoModeIcon = "▸"
 // renderAutoModeBanner is the one-line indicator above the cmdline
 // while auto mode is active. The optional yolo suffix means the
 // permissions-bypass overlay is also on; in that case we drop the
-// "edits auto-allow; bash & commits prompt" detail (bypass overrides
-// it — bash auto-allows too) so the banner doesn't say something
-// misleading.
+// activity detail (bypass overrides it — bash auto-allows too) so the
+// banner doesn't say something misleading.
 //
-//	▸ auto mode · edits auto-allow; bash & commits prompt   (no bypass)
-//	▸ auto mode · ⚠ bypass                                  (bypass on)
+// Activity wording reflects the safe-bash carve-out: read-only shell
+// commands (cd, ls, cat, grep, find, …) auto-allow alongside edits;
+// only mutating bash and commits still prompt. The earlier
+// "bash & commits prompt" wording was a footgun once that bypass
+// landed — it implied every shell call interrupted the flow.
+//
+//	▸ auto mode · edits + read-only bash auto-allow; commits prompt   (no bypass)
+//	▸ auto mode · ⚠ bypass                                            (bypass on)
 func renderAutoModeBanner(yoloOn bool, width int) string {
 	if width <= 0 {
 		width = 80
@@ -35,7 +40,7 @@ func renderAutoModeBanner(yoloOn bool, width int) string {
 		return label
 	}
 
-	mid := styleAutoBannerActivity.Render("edits auto-allow; bash & commits prompt")
+	mid := styleAutoBannerActivity.Render("edits + read-only bash auto-allow; commits prompt")
 	out := label + dot + mid
 	if ansi.StringWidth(out) <= width {
 		return out
