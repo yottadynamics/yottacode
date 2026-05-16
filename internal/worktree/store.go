@@ -171,6 +171,38 @@ func Branch(name string) string {
 	return BranchPrefix + name
 }
 
+// SamePath reports whether two absolute paths name the same directory.
+// Tries the cheap clean+compare first, then falls back to
+// filepath.EvalSymlinks on both sides if that fails — on macOS, `/var`
+// is a symlink to `/private/var`, so `git worktree list` may return
+// one form while Dir() built the other from $HOME. Without the
+// fallback, attach-detection misses the existing worktree and the
+// caller falls through to `git worktree add -b`, which then fails
+// because the branch is already there.
+//
+// Returns false if either path is empty or if EvalSymlinks fails for
+// both (e.g. the path no longer exists). Callers should treat
+// SamePath == false as "no match", not as a hard error.
+func SamePath(a, b string) bool {
+	if a == "" || b == "" {
+		return false
+	}
+	cleanA := strings.TrimRight(strings.TrimSpace(filepath.Clean(a)), "/")
+	cleanB := strings.TrimRight(strings.TrimSpace(filepath.Clean(b)), "/")
+	if cleanA == cleanB {
+		return true
+	}
+	resolvedA, errA := filepath.EvalSymlinks(cleanA)
+	if errA != nil {
+		return false
+	}
+	resolvedB, errB := filepath.EvalSymlinks(cleanB)
+	if errB != nil {
+		return false
+	}
+	return resolvedA == resolvedB
+}
+
 // IsWorktreePath reports whether path lives inside a worktree that
 // belongs to the given repoRoot — i.e. under
 // ~/.yottacode/worktrees/<slug(repoRoot)>/<name>/... — and returns

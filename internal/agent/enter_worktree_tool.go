@@ -5,8 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
-	"strings"
 
 	"github.com/yottadynamics/yottacode/internal/worktree"
 )
@@ -124,7 +122,7 @@ func (t *EnterWorktreeTool) Execute(ctx context.Context, argsJSON string) (strin
 		return "", fmt.Errorf("enter_worktree: list: %w", err)
 	}
 	for _, w := range infos {
-		if samePathBasic(w.Path, wtDir) {
+		if worktree.SamePath(w.Path, wtDir) {
 			if err := worktree.CopyIncluded(repoRoot, wtDir); err != nil {
 				return "", fmt.Errorf("enter_worktree: copy .worktreeinclude: %w", err)
 			}
@@ -198,26 +196,3 @@ func (t *EnterWorktreeTool) swapCwd(newDir string) error {
 	return nil
 }
 
-// samePathBasic compares two absolute paths. Tries the cheap string
-// compare first, then falls back to filepath.EvalSymlinks on both
-// sides if that fails — on macOS, `/var` is a symlink to `/private/var`,
-// so `git worktree list` may return one form while worktree.Dir built
-// the other from $HOME. Without the fallback, attach-detection misses
-// the existing worktree and the caller falls through to `git worktree
-// add -b`, which fails because the branch is already there.
-func samePathBasic(a, b string) bool {
-	cleanA := strings.TrimRight(strings.TrimSpace(a), "/")
-	cleanB := strings.TrimRight(strings.TrimSpace(b), "/")
-	if cleanA == cleanB {
-		return true
-	}
-	resolvedA, errA := filepath.EvalSymlinks(cleanA)
-	if errA != nil {
-		return false
-	}
-	resolvedB, errB := filepath.EvalSymlinks(cleanB)
-	if errB != nil {
-		return false
-	}
-	return resolvedA == resolvedB
-}

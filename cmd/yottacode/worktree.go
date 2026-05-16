@@ -298,7 +298,7 @@ func ensureWorktree(ctx context.Context, opts *cli.ChatOptions) error {
 	}
 	exists := false
 	for _, w := range infos {
-		if filepath.Clean(w.Path) == filepath.Clean(wtDir) {
+		if worktree.SamePath(w.Path, wtDir) {
 			exists = true
 			break
 		}
