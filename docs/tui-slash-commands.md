@@ -232,12 +232,12 @@ Built-in commands like `/help`, `/clear`, `/model`, `/plan` sit above all three 
 
 `/plan` and `Shift+Tab` take no arguments — the plan slug is derived from the first user message of the plan-mode session. The banner shows "ready — your next message names the plan" until that message arrives. You can also launch directly into plan mode with `yottacode --permission-mode plan`.
 
-If the model surfaces material ambiguity during investigation — questions whose answers would change the plan's scope, approach, or target files — it is instructed to ask in its reply and end the turn *without* calling `exit_plan_mode`, so you can answer in your next message. The approval modal is hotkey-only ([A]/[Y]/[L]/[K]); putting dangling questions next to it would leave you with no way to type answers. Trivia that doesn't change the plan's shape can still live in the plan's "Open questions" section.
+If the model surfaces material ambiguity during investigation — questions whose answers would change the plan's scope, approach, or target files — it is instructed to ask in its reply and end the turn *without* calling `exit_plan_mode`, so you can answer in your next message. The approval modal is hotkey-only ([A]/[M]/[L]/[K]); putting dangling questions next to it would leave you with no way to type answers. Trivia that doesn't change the plan's shape can still live in the plan's "Open questions" section.
 
 When the model finishes investigating and the plan is unambiguous, it calls the `exit_plan_mode` tool — which takes no arguments; the TUI reads the plan body from the file on disk and renders it in an approval card with four hotkeys:
 
-- **`[A]` approve and implement** — exits plan mode and the agent immediately resumes execution. Per-tool approval prompts continue as normal.
-- **`[Y]` approve and auto-implement** — exits plan mode AND enters auto mode for the implementation. Edits auto-allow; `run_bash`, `git_commit`, `git_checkpoint`, and `rollback` still prompt (safety floor).
+- **`[A]` auto-approval** — exits plan mode AND enters auto mode for the implementation. Edits auto-allow; `run_bash`, `git_commit`, `git_checkpoint`, and `rollback` still prompt (safety floor).
+- **`[M]` manual approval** — exits plan mode and the agent immediately resumes execution. Per-tool approval prompts continue as normal, so you can review each step.
 - **`[L]` later** — exits plan mode but signals the model to *end the turn now without implementing*. The plan file stays on disk; resume any time via `/plan list` or `yottacode --plan-resume <slug>`.
 - **`[K]` keep planning** — stays in plan mode; the model gets refinement guidance and is expected to revise the plan file and call `exit_plan_mode` again.
 
@@ -245,7 +245,7 @@ If the plan file is missing or empty when `exit_plan_mode` is called, the TUI au
 
 ## Auto mode
 
-Press `Shift+Tab` from normal mode (or launch with `yottacode --permission-mode auto`) to enter auto mode — a state where mutating tools auto-allow without the per-tool approval modal. Reduces friction during a multi-step implementation when you trust the plan. Mirroring Claude Code, auto mode has no slash command; the entry points are the `Shift+Tab` cycle, the `--permission-mode auto` startup flag, and the plan-card's `[Y]` hotkey.
+Press `Shift+Tab` from normal mode (or launch with `yottacode --permission-mode auto`) to enter auto mode — a state where mutating tools auto-allow without the per-tool approval modal. Reduces friction during a multi-step implementation when you trust the plan. Mirroring Claude Code, auto mode has no slash command; the entry points are the `Shift+Tab` cycle, the `--permission-mode auto` startup flag, and the plan-card's `[A]` auto-approval hotkey.
 
 Safety floor (always prompts even in auto mode):
 
@@ -262,9 +262,9 @@ Auto mode and plan mode are mutually exclusive — entering one exits the other.
 Shift+Tab cycle:  normal → auto → plan → normal
 ```
 
-The plan-approval card's `[Y]` hotkey is a shortcut: it approves the plan AND enters auto mode in one keystroke, so the agent can implement the approved plan with minimal friction.
+The plan-approval card's `[A]` auto-approval hotkey is a shortcut: it approves the plan AND enters auto mode in one keystroke, so the agent can implement the approved plan with minimal friction. (Pick `[M]` instead if you want plan mode to exit but keep per-tool prompts.)
 
-Auto mode persists across turns until you toggle it off. The banner above the cmdline (`▶ auto mode · edits auto-allow; bash & commits prompt`) is always visible while active so the state isn't easy to forget.
+Auto mode persists across turns until you toggle it off. The banner above the cmdline (`▸ auto mode · edits + read-only bash auto-allow; commits prompt`) is always visible while active so the state isn't easy to forget.
 
 The default per-turn iteration cap is 50; auto mode raises the effective cap to 200 (4×). If you still hit the cap on long implementations, run `/max-iterations 500` (sanity ceiling) or relaunch with `--dangerously-skip-permissions` (no cap; see [Permissions bypass](#permissions-bypass)).
 

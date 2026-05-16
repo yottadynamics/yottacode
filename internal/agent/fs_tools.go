@@ -8,9 +8,21 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
-const maxReadBytes = 512 * 1024 // 512 KiB read cap — tool responses stay small
+const (
+	// maxReadBytes is the hard cap on how much of the file we read into
+	// memory before slicing into lines. With the default 2000-line
+	// window and ~80-char lines this leaves comfortable headroom; it
+	// also bounds the worst-case cost of a single pathologically long
+	// line.
+	maxReadBytes = 512 * 1024 // 512 KiB
+
+	// defaultReadLines mirrors Claude Code's Read tool: 2000 lines is
+	// the implicit limit when the model omits an explicit `limit`.
+	defaultReadLines = 2000
+)
 
 // ReadFileTool lets the model fetch local file contents. Read-only, no
 // approval. DenyReadPaths blocks a small set of credential-bearing
@@ -24,9 +36,10 @@ type ReadFileTool struct {
 func (t *ReadFileTool) Name() string { return "read_file" }
 
 func (t *ReadFileTool) Description() string {
-	return "Read a UTF-8 text file from disk. Optional offset (in bytes, default 0) " +
-		"and limit (in bytes, default 512 KiB cap) let you page through large files. " +
-		"If the read window stops before EOF, the response includes a '[truncated]' marker."
+	return "Read a UTF-8 text file. Output is `cat -n` style: every line is prefixed with its 1-indexed line number and a tab, " +
+		"so you can cite `file:line` directly and feed exact text to edit_file. " +
+		"Optional offset (1-indexed start line, default 1) and limit (lines, default 2000) read a specific range — use these instead of `sed -n 'A,Bp' file` via run_bash. " +
+		"When more content follows the returned window, a trailing '…[truncated]' marker is appended."
 }
 
 func (t *ReadFileTool) Schema() map[string]any {
@@ -39,11 +52,11 @@ func (t *ReadFileTool) Schema() map[string]any {
 			},
 			"offset": map[string]any{
 				"type":        "integer",
-				"description": "Byte offset to start reading from (default 0). Negative values are clamped to 0.",
+				"description": "1-indexed line number to start reading from (default 1). Values < 1 are clamped to 1.",
 			},
 			"limit": map[string]any{
 				"type":        "integer",
-				"description": fmt.Sprintf("Max bytes to return (default %d). Capped at the same value.", maxReadBytes),
+				"description": fmt.Sprintf("Maximum number of lines to return (default %d).", defaultReadLines),
 			},
 		},
 		"required": []string{"path"},
@@ -55,8 +68,8 @@ func (t *ReadFileTool) ParallelSafe(string) bool     { return true }
 
 type readFileArgs struct {
 	Path   string `json:"path"`
-	Offset int64  `json:"offset"`
-	Limit  int64  `json:"limit"`
+	Offset int    `json:"offset"` // 1-indexed start line
+	Limit  int    `json:"limit"`  // max lines to return
 }
 
 func (t *ReadFileTool) PreviewCall(argsJSON string) string {
@@ -76,12 +89,13 @@ func (t *ReadFileTool) Execute(ctx context.Context, argsJSON string) (string, er
 	if a.Path == "" {
 		return "", fmt.Errorf("read_file: path is required")
 	}
-	if a.Offset < 0 {
-		a.Offset = 0
+	startLine := a.Offset
+	if startLine < 1 {
+		startLine = 1
 	}
 	limit := a.Limit
-	if limit <= 0 || limit > maxReadBytes {
-		limit = maxReadBytes
+	if limit <= 0 {
+		limit = defaultReadLines
 	}
 
 	p := resolvePath(t.Cwd.Get(), a.Path)
@@ -93,35 +107,62 @@ func (t *ReadFileTool) Execute(ctx context.Context, argsJSON string) (string, er
 		return "", fmt.Errorf("read_file: %w", err)
 	}
 	defer f.Close()
-	if a.Offset > 0 {
-		if _, err := f.Seek(a.Offset, io.SeekStart); err != nil {
-			return "", fmt.Errorf("read_file: seek: %w", err)
-		}
-	}
 
-	// Read one extra byte so we can detect "more remains" vs "exact EOF".
-	buf := make([]byte, limit+1)
+	// Read up to maxReadBytes+1 so we can detect "file overflows our
+	// in-memory cap" vs "exact EOF".
+	buf := make([]byte, maxReadBytes+1)
 	n, err := io.ReadFull(f, buf)
 	switch {
 	case errors.Is(err, io.EOF):
-		// offset past EOF — return empty, no error.
+		// empty file — nothing to return.
 		return "", nil
 	case errors.Is(err, io.ErrUnexpectedEOF):
-		// We read fewer bytes than buf; that's normal for short files.
+		// fewer bytes than buf — normal for short files.
 		err = nil
 	}
 	if err != nil {
 		return "", fmt.Errorf("read_file: %w", err)
 	}
-	truncated := int64(n) > limit
-	if truncated {
-		n = int(limit)
+	fileExceedsCap := n > maxReadBytes
+	if fileExceedsCap {
+		// Trim back to the last complete line so we don't emit a half line.
+		if last := strings.LastIndexByte(string(buf[:maxReadBytes]), '\n'); last >= 0 {
+			n = last + 1
+		} else {
+			n = maxReadBytes
+		}
 	}
-	content := string(buf[:n])
-	if truncated {
-		content += "\n…[truncated]"
+
+	lines := strings.Split(string(buf[:n]), "\n")
+	// A file ending in '\n' produces an empty trailing element; drop it.
+	if len(lines) > 0 && lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
 	}
-	return content, nil
+	total := len(lines)
+	if startLine > total {
+		// Offset past EOF — empty result, no error.
+		return "", nil
+	}
+
+	startIdx := startLine - 1
+	endIdx := startIdx + limit
+	truncated := fileExceedsCap || endIdx < total
+	if endIdx > total {
+		endIdx = total
+	}
+	selected := lines[startIdx:endIdx]
+
+	var sb strings.Builder
+	for i, line := range selected {
+		fmt.Fprintf(&sb, "%6d\t%s", startLine+i, line)
+		if i < len(selected)-1 || truncated {
+			sb.WriteByte('\n')
+		}
+	}
+	if truncated {
+		sb.WriteString("…[truncated]")
+	}
+	return sb.String(), nil
 }
 
 // WriteFileTool creates or overwrites a file. Always needs approval; the

@@ -22,7 +22,7 @@ func TestToolCard_ListProjectStructureDropsMetaColumns(t *testing.T) {
 		"f\t163\t2026-05-03T02:09:50Z\tgo.sum",
 		"f\t5579\t2026-05-03T03:35:34Z\tmain.go",
 	}, "\n") + "\n"
-	body := toolBodyLines("list_project_structure", out, false)
+	body := toolBodyLines("list_project_structure", out, false, "")
 	want := []string{"internal/", "go.mod", "go.sum", "main.go"}
 	if len(body) != len(want) {
 		t.Fatalf("body lines = %d, want %d: %v", len(body), len(want), body)
@@ -32,7 +32,7 @@ func TestToolCard_ListProjectStructureDropsMetaColumns(t *testing.T) {
 			t.Errorf("body[%d] = %q, want %q", i, body[i], w)
 		}
 	}
-	footer := stripANSI(toolFooter("list_project_structure", out, false))
+	footer := stripANSI(toolFooter("list_project_structure", out, false, ""))
 	if footer != "4 entries" {
 		t.Errorf("footer = %q, want '4 entries'", footer)
 	}
@@ -42,7 +42,7 @@ func TestToolCard_ListProjectStructureDropsMetaColumns(t *testing.T) {
 // verbatim — the user wants to know "there's more we didn't show".
 func TestToolCard_ListProjectStructureKeepsTruncationMarker(t *testing.T) {
 	out := "f\t91\t2026-05-03T02:09:50Z\tgo.mod\n…[truncated at 5000 entries — narrow with path or lower max_depth]\n"
-	body := toolBodyLines("list_project_structure", out, false)
+	body := toolBodyLines("list_project_structure", out, false, "")
 	if len(body) != 2 {
 		t.Fatalf("body lines = %d, want 2: %v", len(body), body)
 	}
@@ -60,7 +60,7 @@ func TestToolCard_ListProjectStructureKeepsTruncationMarker(t *testing.T) {
 // just needs to skim what's there.
 func TestToolCard_ListDirDropsMarkerColumn(t *testing.T) {
 	out := "d\tbin\nf\tREADME.md\nl\tlink\n"
-	body := toolBodyLines("list_dir", out, false)
+	body := toolBodyLines("list_dir", out, false, "")
 	want := []string{"bin/", "README.md", "link"}
 	if len(body) != len(want) {
 		t.Fatalf("body lines = %d, want %d: %v", len(body), len(want), body)
@@ -70,7 +70,7 @@ func TestToolCard_ListDirDropsMarkerColumn(t *testing.T) {
 			t.Errorf("body[%d] = %q, want %q", i, body[i], w)
 		}
 	}
-	footer := stripANSI(toolFooter("list_dir", out, false))
+	footer := stripANSI(toolFooter("list_dir", out, false, ""))
 	if footer != "3 entries" {
 		t.Errorf("footer = %q, want '3 entries'", footer)
 	}
@@ -81,11 +81,11 @@ func TestToolCard_ListDirDropsMarkerColumn(t *testing.T) {
 // footer shows the exit code with a green/red tier.
 func TestToolCard_RunBashSplitsStdoutStderr(t *testing.T) {
 	out := "exit=0\n--- stdout ---\nhello\nworld\n--- stderr ---\n"
-	body := toolBodyLines("run_bash", out, false)
+	body := toolBodyLines("run_bash", out, false, "")
 	if !contains(body, "hello") || !contains(body, "world") {
 		t.Errorf("body should contain stdout lines: %v", body)
 	}
-	footer := stripANSI(toolFooter("run_bash", out, false))
+	footer := stripANSI(toolFooter("run_bash", out, false, ""))
 	if footer != "exit 0" {
 		t.Errorf("footer = %q, want 'exit 0'", footer)
 	}
@@ -97,14 +97,14 @@ func TestToolCard_RunBashErrorExitColored(t *testing.T) {
 	// With empty stdout there's still one blank line between the two
 	// section markers — the `\n` after the empty stdout body.
 	out := "exit=2\n--- stdout ---\n\n--- stderr ---\nboom\n"
-	body := toolBodyLines("run_bash", out, false)
+	body := toolBodyLines("run_bash", out, false, "")
 	if !contains(body, "── stderr ──") {
 		t.Errorf("body should label the stderr section: %v", body)
 	}
 	if !contains(body, "boom") {
 		t.Errorf("body should include the stderr line: %v", body)
 	}
-	footer := stripANSI(toolFooter("run_bash", out, false))
+	footer := stripANSI(toolFooter("run_bash", out, false, ""))
 	if footer != "exit 2" {
 		t.Errorf("footer = %q, want 'exit 2'", footer)
 	}
@@ -116,11 +116,11 @@ func TestToolCard_RunBashErrorExitColored(t *testing.T) {
 // of course gets the full content via ToolResult.Output regardless.
 func TestToolCard_ReadFileBodyIsEmpty(t *testing.T) {
 	out := "package main\n\nimport \"fmt\"\n\nfunc main() {}\n"
-	body := toolBodyLines("read_file", out, false)
+	body := toolBodyLines("read_file", out, false, "")
 	if len(body) != 0 {
 		t.Errorf("read_file body should be empty, got %v", body)
 	}
-	footer := stripANSI(toolFooter("read_file", out, false))
+	footer := stripANSI(toolFooter("read_file", out, false, ""))
 	if !strings.Contains(footer, "lines") || !strings.Contains(footer, "bytes") {
 		t.Errorf("read_file footer should report lines + bytes; got %q", footer)
 	}
@@ -152,11 +152,11 @@ func TestReadFileFooter_Shape(t *testing.T) {
 // write_file: empty body. The footer drops the "to <abs/path>" tail
 // because the header already names the path — no need to print it twice.
 func TestToolCard_WriteFileFooterDropsRedundantPath(t *testing.T) {
-	body := toolBodyLines("write_file", "wrote 70 bytes to /home/me/hello.go", false)
+	body := toolBodyLines("write_file", "wrote 70 bytes to /home/me/hello.go", false, "")
 	if len(body) != 0 {
 		t.Errorf("write_file body should be empty (footer carries all): %v", body)
 	}
-	footer := stripANSI(toolFooter("write_file", "wrote 70 bytes to /home/me/hello.go", false))
+	footer := stripANSI(toolFooter("write_file", "wrote 70 bytes to /home/me/hello.go", false, ""))
 	if footer != "wrote 70 bytes" {
 		t.Errorf("footer = %q, want 'wrote 70 bytes' (path dropped — header carries it)", footer)
 	}
@@ -166,11 +166,11 @@ func TestToolCard_WriteFileFooterDropsRedundantPath(t *testing.T) {
 // user needs to see the message verbatim. Footer carries an ✗
 // summary.
 func TestToolCard_ErroredOutputRendersRaw(t *testing.T) {
-	body := toolBodyLines("list_dir", "list_dir: open /nope: no such file or directory", true)
+	body := toolBodyLines("list_dir", "list_dir: open /nope: no such file or directory", true, "")
 	if len(body) != 1 || !strings.Contains(body[0], "no such file or directory") {
 		t.Errorf("errored body should render raw: %v", body)
 	}
-	footer := stripANSI(toolFooter("list_dir", "list_dir: open /nope: no such file or directory", true))
+	footer := stripANSI(toolFooter("list_dir", "list_dir: open /nope: no such file or directory", true, ""))
 	if !strings.HasPrefix(footer, "✗ ") {
 		t.Errorf("errored footer should be marked: %q", footer)
 	}
@@ -326,7 +326,7 @@ func TestToolCard_FetchURLBodyKeepsMetadataDropsContent(t *testing.T) {
 		"\n" +
 		"<!doctype html><html>" + strings.Repeat("x", 65000) + "</html>"
 
-	body := toolBodyLines("fetch_url", out, false)
+	body := toolBodyLines("fetch_url", out, false, "")
 	want := []string{
 		"Status: 200",
 		"Content-Type: text/html; charset=utf-8",
@@ -348,7 +348,7 @@ func TestToolCard_FetchURLBodyKeepsMetadataDropsContent(t *testing.T) {
 			t.Errorf("raw HTML body must not leak into the card: %q", line)
 		}
 	}
-	footer := stripANSI(toolFooter("fetch_url", out, false))
+	footer := stripANSI(toolFooter("fetch_url", out, false, ""))
 	if !strings.HasSuffix(footer, " bytes") {
 		t.Errorf("footer should report byte count of the response body: %q", footer)
 	}
@@ -433,9 +433,7 @@ func TestToolHeader_StripsControlCharsInArgs(t *testing.T) {
 }
 
 // When cwd is non-empty, path-typed tool headers collapse the cwd
-// prefix to "." for readability. Verifies write_file, read_file,
-// edit_file, delete_file, mkdir, list_dir, list_project_structure, and
-// glob/grep "in <root>" forms all participate.
+// prefix to "." for readability.
 func TestToolHeader_CwdCollapseInPathHeaders(t *testing.T) {
 	const cwd = "/home/me/proj"
 	cases := []struct {
@@ -459,9 +457,7 @@ func TestToolHeader_CwdCollapseInPathHeaders(t *testing.T) {
 	}
 }
 
-// run_bash headers collapse cwd inside the command text — `cd /abs/path`
-// reads as `cd .` once shortened. The agent still sees the original
-// command; only the user-facing header is rewritten.
+// run_bash headers collapse cwd inside the command text.
 func TestToolHeader_RunBashCollapsesCwdInCommandText(t *testing.T) {
 	const cwd = "/home/me/proj"
 	args := `{"command":"cd /home/me/proj && grep -r foo internal/"}`
@@ -474,9 +470,8 @@ func TestToolHeader_RunBashCollapsesCwdInCommandText(t *testing.T) {
 	}
 }
 
-// Empty cwd disables shortening — same headers as before the
-// path-shortening change. Used by replay/test paths that don't know
-// the live working directory.
+// Empty cwd disables shortening — replay/test paths that don't know
+// the live working directory get the same headers as before.
 func TestToolHeader_EmptyCwdDisablesShortening(t *testing.T) {
 	args := `{"path":"/home/me/proj/internal/x.go"}`
 	got := toolHeader("write_file", args, "fallback", 120, "")
@@ -494,6 +489,39 @@ func TestToolHeader_DoesNotClobberCwdSiblings(t *testing.T) {
 	got := toolHeader("write_file", args, "fallback", 120, cwd)
 	if got != "Write(/home/me/proj-archive/notes.md)" {
 		t.Errorf("sibling path must be left intact, got: %q", got)
+	}
+}
+
+// Grep body lines collapse cwd. The grep tool prints `/abs/path:line:match`
+// per result; the user reads the body, so the path needs shortening too —
+// not just the header.
+func TestToolBodyLines_GrepCollapsesCwd(t *testing.T) {
+	const cwd = "/home/me/proj"
+	out := "/home/me/proj/internal/agent/foo.go:42:func Bar() {}\n/home/me/proj/internal/tui/x.go:7:func Baz() {}"
+	lines := toolBodyLines("grep", out, false, cwd)
+	if len(lines) != 2 {
+		t.Fatalf("expected 2 body lines, got %d: %v", len(lines), lines)
+	}
+	want0 := "./internal/agent/foo.go:42:func Bar() {}"
+	want1 := "./internal/tui/x.go:7:func Baz() {}"
+	if lines[0] != want0 {
+		t.Errorf("lines[0] = %q, want %q", lines[0], want0)
+	}
+	if lines[1] != want1 {
+		t.Errorf("lines[1] = %q, want %q", lines[1], want1)
+	}
+}
+
+// Edit footer collapses the absolute path the tool returns. The agent's
+// Execute emits `edited /abs/path: N replacement(s)`; the footer should
+// read `./relpath: N replacement(s)` so it matches the header.
+func TestToolFooter_EditFileCollapsesCwd(t *testing.T) {
+	const cwd = "/home/me/proj"
+	out := "edited /home/me/proj/internal/x.go: 3 replacement(s)"
+	footer := stripANSI(toolFooter("edit_file", out, false, cwd))
+	want := "edited ./internal/x.go: 3 replacement(s)"
+	if footer != want {
+		t.Errorf("footer = %q, want %q", footer, want)
 	}
 }
 
@@ -517,11 +545,11 @@ func TestToolHeader_LongCommandIsClipped(t *testing.T) {
 // generic dim "done" footer and the failure would be easy to miss.
 func TestGitFooter_SurfacesExitCode(t *testing.T) {
 	ok := "$ git status\nexit=0\n--- stdout ---\n## main\n--- stderr ---\n"
-	if got := stripANSI(toolFooter("git", ok, false)); got != "exit 0" {
+	if got := stripANSI(toolFooter("git", ok, false, "")); got != "exit 0" {
 		t.Errorf("ok footer = %q, want 'exit 0'", got)
 	}
 	bad := "$ git push\nexit=128\n--- stdout ---\n--- stderr ---\nfatal: nothing to push\n"
-	if got := stripANSI(toolFooter("git", bad, false)); got != "exit 128" {
+	if got := stripANSI(toolFooter("git", bad, false, "")); got != "exit 128" {
 		t.Errorf("bad footer = %q, want 'exit 128'", got)
 	}
 }

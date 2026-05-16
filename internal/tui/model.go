@@ -892,7 +892,13 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// "[Pasted text #N: 5 lines, 87 bytes]" than the literal paste.
 			return m.handleLargePaste(msg)
 		}
-		if m.turnActive && !m.awaitingApproval {
+		// While the path-trust modal is up, route keys to that handler
+		// (further down) — not to the mid-turn textarea path below.
+		// Without this exception, a turn in flight waiting on the
+		// elevation decision would swallow "1"/"2"/"3" into the
+		// textarea and route Esc to turnCancel instead of "reject",
+		// leaving the modal unresponsive until the process is killed.
+		if m.turnActive && !m.awaitingApproval && !m.awaitingPathTrust {
 			switch msg.Type {
 			case tea.KeyCtrlC, tea.KeyEsc:
 				// Esc mirrors Claude Code's cancel feel — same effect
@@ -1040,28 +1046,30 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				answered := false
 				switch msg.String() {
 				case "a", "A", "enter":
-					// Approve and implement: flip plan mode off
-					// BEFORE forwarding the decision so the next
-					// iteration's tool dispatch sees the new state
-					// and the schema filter stops advertising
-					// exit_plan_mode. Normal per-tool approval
-					// prompts continue for the implementation turn.
-					exitPlanMode(&m)
-					m.decisions <- agent.AllowOnce
-					m.awaitingApproval = false
-					answered = true
-				case "y", "Y":
-					// Approve and auto-implement: exit plan mode
-					// AND enter auto mode for the implementation.
-					// Per-tool prompts auto-allow for the rest of
-					// the turn except the safety floor (run_bash,
-					// git_commit, git_checkpoint, rollback).
+					// Auto-approval: exit plan mode AND enter auto
+					// mode for the implementation. Per-tool prompts
+					// auto-allow for the rest of the turn except the
+					// safety floor (run_bash, git_commit,
+					// git_checkpoint, rollback). [A] is the default
+					// (Enter) because users who approve a plan are
+					// usually ready to let it run.
 					exitPlanMode(&m)
 					if m.cfg.AutoMode != nil {
 						m.cfg.AutoMode.Active.Store(true)
 						m.appendLine(styleAutoBannerLabel.Render(AutoModeIcon+" auto mode active") +
 							" " + styleAutoBannerHint.Render("— implementing the approved plan; bash & commits still prompt"))
 					}
+					m.decisions <- agent.AllowOnce
+					m.awaitingApproval = false
+					answered = true
+				case "m", "M":
+					// Manual approval: flip plan mode off BEFORE
+					// forwarding the decision so the next iteration's
+					// tool dispatch sees the new state and the schema
+					// filter stops advertising exit_plan_mode. Normal
+					// per-tool approval prompts continue for the
+					// implementation turn — user reviews each step.
+					exitPlanMode(&m)
 					m.decisions <- agent.AllowOnce
 					m.awaitingApproval = false
 					answered = true
@@ -1594,7 +1602,14 @@ func (m Model) View() string {
 		switch {
 		case m.paletteOpen, m.filePaletteOpen:
 			// suppressed
-		case m.cfg.PlanMode.IsActive():
+		case m.cfg.PlanMode.IsActive() && m.cfg.PlanMode.PlanFile != "":
+			// Plan-mode banner is gated behind "the user has submitted
+			// their first message in this plan session" — PlanFile is
+			// empty between /plan-entry and the first user prompt, then
+			// set by maybeFillPlanFile or the resume picker. Hiding
+			// the banner during that window avoids stacking it
+			// immediately below the entry log's "plan mode active —
+			// read-only research…" line, which scanned as a duplicate.
 			parts = append(parts, renderPlanModeBanner(computePlanBannerInfo(m), yoloOn, m.width))
 		case m.cfg.AutoMode.IsActive():
 			parts = append(parts, renderAutoModeBanner(yoloOn, m.width))

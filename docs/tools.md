@@ -757,9 +757,10 @@ If the plan file doesn't exist or is empty when `exit_plan_mode` is called,
 the TUI auto-denies the call with a console notice — the model is expected
 to write the plan to the file first, then call this tool.
 
-The TUI renders the plan inside an approval card with three hotkeys:
+The TUI renders the plan inside an approval card with four hotkeys:
 
-- `[A] approve and implement` — exits plan mode and the agent immediately resumes execution.
+- `[A] auto-approval` — exits plan mode AND turns on auto mode for the implementation, so mutating tools auto-allow without per-call prompts (safety floor still applies: `run_bash`, `git_commit`, `git_checkpoint`, `rollback`).
+- `[M] manual approval` — exits plan mode and the agent resumes execution, but per-tool prompts continue as normal so you can review each step.
 - `[L] later` — exits plan mode but ends the turn; the plan stays on disk for resume via `/plan list` or `--plan-resume`.
 - `[K] keep planning` — stays in plan mode; model receives refinement guidance.
 

@@ -273,14 +273,15 @@ func displayPath(abs, cwd string) string {
 }
 
 // shortenCwdInText replaces occurrences of cwd inside a freeform string
-// (e.g. a shell command body) with ".", and occurrences of $HOME with
-// "~". The match is word-boundary aware so `cwd` doesn't accidentally
-// hit `cwd-suffix/...` style paths that share the same prefix.
+// (e.g. a shell command body, a tool's output line) with ".", and
+// occurrences of $HOME with "~". The match is word-boundary aware so
+// `/cwd` doesn't accidentally hit `/cwd-suffix/...` paths that share
+// the same prefix.
 //
-// Used by the run_bash command rendering paths (approval modal +
-// toolHeader) so a model-issued `cd /long/abs/path && grep X internal/`
-// reads as `cd . && grep X internal/` on the user's screen, without
-// rewriting what the agent actually sent to the tool.
+// Display-only — never mutates what the agent sends to a tool. Used by
+// run_bash command rendering (approval modal + header), tool card
+// header path rendering, grep/glob result body lines, and footers that
+// bake in absolute paths.
 func shortenCwdInText(s, cwd string) string {
 	if cwd != "" {
 		s = replaceAtBoundary(s, cwd, ".")
@@ -324,9 +325,8 @@ func replaceAtBoundary(s, old, new string) string {
 
 // isPathContinuation reports whether a byte could extend a filesystem
 // path token (so we refuse to break the token by replacing only its
-// prefix). A `/` IS a continuation — the cwd `/a/b` should not match
-// inside `/a/b-sibling/x`, but should match inside `/a/b/sub` (after
-// which the trailing `/sub` survives intact).
+// prefix). `/` is intentionally NOT included — see replaceAtBoundary's
+// docstring.
 func isPathContinuation(c byte) bool {
 	switch {
 	case c == '_' || c == '-' || c == '.':
