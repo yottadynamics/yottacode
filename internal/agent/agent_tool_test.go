@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -50,6 +51,18 @@ func TestAgentTool_RecursionGuard(t *testing.T) {
 	}
 	if _, ok := child.Get("read_file"); !ok {
 		t.Errorf("child registry missing read_file (should be inherited)")
+	}
+}
+
+// AgentTool is ParallelSafe — multiple Agent calls from the same
+// assistant message fan out via executeToolCallsParallel. This is the
+// surface a parent leans on to spawn 2-3 Explore subagents in one
+// turn during plan-mode research; if it ever flips back to false the
+// fan-out silently regresses to sequential execution.
+func TestAgentTool_ParallelSafe(t *testing.T) {
+	tool, _ := newTestAgentTool(t, nil, nil, false)
+	if !tool.ParallelSafe("") {
+		t.Errorf("AgentTool.ParallelSafe() = false; want true so parallel foreground subagent dispatch works")
 	}
 }
 
@@ -119,6 +132,35 @@ func TestAgentTool_BackgroundRejectedWhenDisabled(t *testing.T) {
 	}
 	if !strings.Contains(out, "background_subagents") {
 		t.Errorf("output should name the specific feature flag; got %q", out)
+	}
+}
+
+// Foreground subagents share the same cap shape as background ones —
+// the (N+1)th concurrent spawn is rejected with a recoverable error
+// the model can adapt to (wait for an in-flight child to finish).
+// Pre-seed the registry with MaxForegroundSubagents running fg tasks
+// so the cap check fires before any real dispatch happens.
+func TestAgentTool_ForegroundCapEnforced(t *testing.T) {
+	cfg := subagents.AgentConfig{Name: "x", Description: "x", Prompt: "x", Source: "test"}
+	tool, _ := newTestAgentTool(t, []subagents.AgentConfig{cfg}, nil, false)
+	for i := 0; i < MaxForegroundSubagents; i++ {
+		tool.Tasks.Add(&subagents.Task{
+			ID:        subagents.NewTaskID(),
+			AgentType: "x",
+			Status:    subagents.TaskRunning,
+			Background: false,
+		})
+	}
+	args := mustJSON(t, agentArgs{SubagentType: "x", Prompt: "hello"})
+	out, err := tool.Execute(context.Background(), args)
+	if err != nil {
+		t.Fatalf("Execute err = %v, want nil", err)
+	}
+	if !strings.Contains(out, "foreground subagents may run concurrently") {
+		t.Errorf("output should explain the foreground cap; got %q", out)
+	}
+	if !strings.Contains(out, fmt.Sprintf("at most %d", MaxForegroundSubagents)) {
+		t.Errorf("output should name the cap value %d; got %q", MaxForegroundSubagents, out)
 	}
 }
 

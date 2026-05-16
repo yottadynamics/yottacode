@@ -193,6 +193,22 @@ func (r *Registry) ActiveCount() int {
 	return n
 }
 
+// ActiveForegroundCount returns the number of foreground tasks
+// currently in TaskRunning. Used by AgentTool.Execute to enforce the
+// foreground concurrency cap when the parent fans out multiple
+// Agent calls in one assistant message (now parallel-safe).
+func (r *Registry) ActiveForegroundCount() int {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	n := 0
+	for _, t := range r.tasks {
+		if t.Status == TaskRunning && !t.Background {
+			n++
+		}
+	}
+	return n
+}
+
 // MarkDone updates the task's terminal state and signals every
 // waiter blocked on WaitFor. Idempotent: calling MarkDone twice keeps
 // the first finish time + status and overwrites only the

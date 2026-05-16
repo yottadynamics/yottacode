@@ -3020,8 +3020,11 @@ func isFenceClose(line string) bool {
 // renderUserBlock formats a user message for scrollback emission. Each
 // line gets a thin colored left bar (▎) in Theme.Accent followed by the
 // content in Dim — the user already knows what they typed, so the bar
-// is enough of an anchor when scrolling back. Leading "\n" gives the
-// block one blank line of separation from the preceding emission. No
+// is enough of an anchor when scrolling back. Leading and trailing
+// "\n" give the block one blank line of separation on each side, so
+// the user echo sits as a clear divider between the previous
+// assistant/tool output and whatever follows it (the next tool card,
+// an [auto-mode]/[plan-mode-allow] auto-approval line, etc.). No
 // horizontal rule above: the bar is enough of an anchor, and the rule
 // fought with content on either side.
 func renderUserBlock(content string) string {
@@ -3030,7 +3033,7 @@ func renderUserBlock(content string) string {
 	for _, line := range strings.Split(content, "\n") {
 		lines = append(lines, bar+styleUserBody.Render(line))
 	}
-	return "\n" + strings.Join(lines, "\n")
+	return "\n" + strings.Join(lines, "\n") + "\n"
 }
 
 // renderAssistantBlock formats an assistant reply for scrollback emission.

@@ -112,14 +112,13 @@ func togglePlanMode(m Model) (Model, tea.Cmd) {
 	applyPlanFileToWriteTools(m.cfg.Registry, "")
 	state.Active.Store(true)
 	// Two-line entry: bold headline carries the mode + the prompt;
-	// dim second line carries the exit hint. The exit hint lives only
-	// here (not in the persistent banner) so it surfaces clearly once
-	// on entry without crowding the cmdline frame on every redraw.
-	// Trailing blank line separates the entry log from the live
-	// banner that renders immediately below it.
-	m.appendLine(stylePlanBannerLabel.Render(PlanModeIcon+" plan mode active") +
-		" " + stylePlanBannerHint.Render("— read-only research; describe what you'd like planned in your next message"))
-	m.appendLine(stylePlanBannerHint.Render("  exit with /plan or Shift+Tab"))
+	// Card-shaped entry: header + body + footer in the gutter style
+	// shared with tool-output cards. The exit hint lives in the footer
+	// (not in the persistent banner) so it surfaces once on entry
+	// without crowding the cmdline frame on every redraw. Trailing
+	// blank line separates the card from the live banner that renders
+	// immediately below it.
+	m.appendLine(renderPlanModeEntryCard())
 	m.appendLine("")
 	return m, nil
 }
@@ -175,8 +174,7 @@ func maybeFillPlanFile(m *Model, userMessage string) {
 	}
 	state.PlanFile = path
 	applyPlanFileToWriteTools(m.cfg.Registry, path)
-	m.appendLine(stylePlanBannerLabel.Render(PlanModeIcon+" plan file:") +
-		" " + stylePlanBannerHint.Render(abbrevHome(path)))
+	m.appendLine(renderPlanFileCard(path))
 }
 
 // applyPlanFileToWriteTools mutates the WriteOpts.PlanModeAllowedFile
