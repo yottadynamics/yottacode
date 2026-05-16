@@ -706,9 +706,23 @@ func toolHeader(toolName, argsJSON, preview string, maxWidth int, cwd string) st
 	case "git_stage_files":
 		var a struct {
 			Paths []string `json:"paths"`
+			All   bool     `json:"all"`
 		}
 		_ = json.Unmarshal([]byte(argsJSON), &a)
+		if a.All {
+			return clipHeader("Git(stage all)", headerBudget)
+		}
 		return clipHeader(fmt.Sprintf("Git(stage %d %s)", len(a.Paths), pluralize("file", len(a.Paths))), headerBudget)
+	case "git_create_branch":
+		var a struct {
+			Name       string `json:"name"`
+			StartPoint string `json:"start_point"`
+		}
+		_ = json.Unmarshal([]byte(argsJSON), &a)
+		if a.StartPoint != "" {
+			return clipHeader(fmt.Sprintf("Git(create branch %s from %s)", a.Name, a.StartPoint), headerBudget)
+		}
+		return clipHeader(fmt.Sprintf("Git(create branch %s)", a.Name), headerBudget)
 	case "git_unstage_files":
 		var a struct {
 			Paths []string `json:"paths"`

@@ -191,6 +191,7 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 	reg.Register(&agent.GitDiffFilesTool{Cwd: cwd})
 	reg.Register(&agent.GitStageFilesTool{Cwd: cwd})
 	reg.Register(&agent.GitUnstageFilesTool{Cwd: cwd})
+	reg.Register(&agent.GitCreateBranchTool{Cwd: cwd})
 	reg.Register(&agent.GitCommitTool{Cwd: cwd})
 	// Composite commit-workflow tools paired with the /commit slash
 	// command (cmd_commit.go). Context is read-only and parallel-safe;

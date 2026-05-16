@@ -1,6 +1,6 @@
 # Built-in tools
 
-Thirty-eight tools ship in `internal/agent` (thirty-six always-on plus `todo_write`
+Thirty-nine tools ship in `internal/agent` (thirty-seven always-on plus `todo_write`
 and `exit_plan_mode`). The model sees their JSON-schema parameters via the
 OpenAI tools API; the TUI renders each invocation as a bordered card with a
 verb-style header (see [How tool calls render in the TUI](#how-tool-calls-render-in-the-tui)).
@@ -22,8 +22,9 @@ are also accepted).
 | [`git_branch_status`](#git_branch_status) | none | Show branch/upstream/dirty state |
 | [`git_show_file_at_rev`](#git_show_file_at_rev) | none | Read a file from a past revision |
 | [`git_diff_files`](#git_diff_files) | none | Show a diff for refs and/or files |
-| [`git_stage_files`](#git_stage_files) | required | Stage specific files |
+| [`git_stage_files`](#git_stage_files) | required | Stage specific files or all changes |
 | [`git_unstage_files`](#git_unstage_files) | required | Unstage specific files |
+| [`git_create_branch`](#git_create_branch) | required | Create and switch to a new branch |
 | [`git_commit`](#git_commit) | required | Commit staged changes |
 | [`git_commit_context`](#git_commit_context) | none | Typed snapshot for drafting a commit message (paired with `git_commit_apply`) |
 | [`git_commit_apply`](#git_commit_apply) | required | Validate a one-line subject and run `git commit` with structured result envelope |
@@ -102,7 +103,8 @@ tool-call log; the TUI renames it for readability. Mapping:
 | `git_branch_status` | `Git(branch status)` |
 | `git_show_file_at_rev` | `Git(show <path> @ <rev>)` |
 | `git_diff_files` | `Git(diff <base>..<head>)` |
-| `git_stage_files` / `git_unstage_files` | `Git(stage N files)` / `Git(unstage N files)` |
+| `git_stage_files` / `git_unstage_files` | `Git(stage N files)` or `Git(stage all)` / `Git(unstage N files)` |
+| `git_create_branch` | `Git(create branch <name>)` or `Git(create branch <name> from <start_point>)` |
 | `git_commit` | `Git(commit)` |
 | `git_log_file` | `Git(log <path>)` |
 | `git_blame_lines` | `Git(blame <path>:L<a>-L<b>)` |
@@ -326,11 +328,15 @@ No approval.
 
 ## git_stage_files
 
-Stage specific files with `git add -- ...`.
+Stage specific files (`git add -- ...`) or all changes (`git add -A`).
 
-| Param | Type | Default |
-|---|---|---|
-| `paths` | []string | — |
+| Param | Type | Default | Description |
+|---|---|---|---|
+| `paths` | []string | — | Paths to stage. Mutually exclusive with `all`. |
+| `all` | bool | `false` | Stage all tracked, untracked, and deleted files (`git add -A`). Mutually exclusive with `paths`. |
+
+Provide either `paths` or `all`, not both. Returns `staged N file(s)` for path
+mode or `staged all changes` for the bulk mode.
 
 Always prompts for approval.
 
@@ -341,6 +347,25 @@ Unstage specific files with `git reset HEAD -- ...`.
 | Param | Type | Default |
 |---|---|---|
 | `paths` | []string | — |
+
+Always prompts for approval.
+
+## git_create_branch
+
+Create a new local branch and switch HEAD to it
+(`git switch -c <name> [<start_point>]`). The branch name is validated via
+`git check-ref-format --branch` before any switch happens, and the tool
+refuses with a `branch_exists` error if a local branch by that name already
+exists — it never overwrites or fast-forwards. The working tree is left
+as-is (no precheck against dirty state); git itself will refuse the switch
+if local changes would be clobbered.
+
+| Param | Type | Default | Description |
+|---|---|---|---|
+| `name` | string | — | Branch name to create (required). |
+| `start_point` | string | `HEAD` | Optional starting ref (commit / branch / tag). |
+
+Returns `created=true branch=<name> from=<short_sha>` on success.
 
 Always prompts for approval.
 

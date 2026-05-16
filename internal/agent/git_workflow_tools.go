@@ -161,30 +161,45 @@ type GitStageFilesTool struct{ Cwd string }
 
 func (t *GitStageFilesTool) Name() string { return "git_stage_files" }
 func (t *GitStageFilesTool) Description() string {
-	return "Stage specific files in git (git add -- ...)."
+	return "Stage files in git. Either pass `paths` for a specific set (git add -- ...) or `all: true` to stage every tracked, untracked, and deleted change (git add -A). The two modes are mutually exclusive."
 }
 func (t *GitStageFilesTool) Schema() map[string]any {
 	return map[string]any{"type": "object", "properties": map[string]any{
-		"paths": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Paths to stage"},
-	}, "required": []string{"paths"}}
+		"paths": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Paths to stage. Mutually exclusive with all."},
+		"all":   map[string]any{"type": "boolean", "description": "Stage all tracked, untracked, and deleted files (git add -A). Mutually exclusive with paths."},
+	}}
 }
 func (t *GitStageFilesTool) RequiresApproval(string) bool { return true }
 func (t *GitStageFilesTool) PreviewCall(argsJSON string) string {
 	var a struct {
 		Paths []string `json:"paths"`
+		All   bool     `json:"all"`
 	}
 	_ = json.Unmarshal([]byte(argsJSON), &a)
+	if a.All {
+		return "git_stage_files(all)"
+	}
 	return fmt.Sprintf("git_stage_files(%s)", strings.Join(a.Paths, ", "))
 }
 func (t *GitStageFilesTool) Execute(ctx context.Context, argsJSON string) (string, error) {
 	var a struct {
 		Paths []string `json:"paths"`
+		All   bool     `json:"all"`
 	}
 	if err := json.Unmarshal([]byte(argsJSON), &a); err != nil {
 		return "", fmt.Errorf("git_stage_files: invalid args: %w", err)
 	}
-	if len(a.Paths) == 0 {
-		return "", errors.New("git_stage_files: paths is required")
+	if a.All && len(a.Paths) > 0 {
+		return "", errors.New("git_stage_files: paths and all are mutually exclusive")
+	}
+	if !a.All && len(a.Paths) == 0 {
+		return "", errors.New("git_stage_files: paths or all is required")
+	}
+	if a.All {
+		if _, err := gitOutput(ctx, t.Cwd, "add", "-A"); err != nil {
+			return "", fmt.Errorf("git_stage_files: %w", err)
+		}
+		return "staged all changes", nil
 	}
 	args := append([]string{"add", "--"}, a.Paths...)
 	if _, err := gitOutput(ctx, t.Cwd, args...); err != nil {
@@ -227,6 +242,68 @@ func (t *GitUnstageFilesTool) Execute(ctx context.Context, argsJSON string) (str
 		return "", fmt.Errorf("git_unstage_files: %w", err)
 	}
 	return fmt.Sprintf("unstaged %d file(s)", len(a.Paths)), nil
+}
+
+type GitCreateBranchTool struct{ Cwd string }
+
+func (t *GitCreateBranchTool) Name() string { return "git_create_branch" }
+func (t *GitCreateBranchTool) Description() string {
+	return "Create a new git branch and switch to it (git switch -c <name> [<start_point>]). Refuses if the branch already exists locally."
+}
+func (t *GitCreateBranchTool) Schema() map[string]any {
+	return map[string]any{"type": "object", "properties": map[string]any{
+		"name":        map[string]any{"type": "string", "description": "Branch name to create"},
+		"start_point": map[string]any{"type": "string", "description": "Optional starting ref (commit/branch/tag). Defaults to HEAD."},
+	}, "required": []string{"name"}}
+}
+func (t *GitCreateBranchTool) RequiresApproval(string) bool { return true }
+func (t *GitCreateBranchTool) PreviewCall(argsJSON string) string {
+	var a struct {
+		Name       string `json:"name"`
+		StartPoint string `json:"start_point"`
+	}
+	_ = json.Unmarshal([]byte(argsJSON), &a)
+	if strings.TrimSpace(a.StartPoint) != "" {
+		return fmt.Sprintf("git_create_branch(name=%s from=%s)", a.Name, a.StartPoint)
+	}
+	return fmt.Sprintf("git_create_branch(name=%s)", a.Name)
+}
+func (t *GitCreateBranchTool) Execute(ctx context.Context, argsJSON string) (string, error) {
+	var a struct {
+		Name       string `json:"name"`
+		StartPoint string `json:"start_point"`
+	}
+	if err := json.Unmarshal([]byte(argsJSON), &a); err != nil {
+		return "", fmt.Errorf("git_create_branch: invalid args: %w", err)
+	}
+	name := strings.TrimSpace(a.Name)
+	if name == "" {
+		return "", errors.New("git_create_branch: name is required")
+	}
+	// Validate branch name via git's own ref-format checker. Surfaces a
+	// deterministic error for things like "foo..bar", "foo bar", trailing
+	// slashes, etc. before we attempt to switch.
+	if _, err := gitOutput(ctx, t.Cwd, "check-ref-format", "--branch", name); err != nil {
+		return "", fmt.Errorf("git_create_branch: invalid branch name %q: %w", name, err)
+	}
+	// Refuse if the branch already exists. `git switch -c` would fail
+	// anyway, but we return a structured error so callers can branch on
+	// "branch_exists" without parsing git's message.
+	if _, err := gitOutput(ctx, t.Cwd, "rev-parse", "--verify", "refs/heads/"+name); err == nil {
+		return "", fmt.Errorf("git_create_branch: branch_exists: %q already exists locally", name)
+	}
+	args := []string{"switch", "-c", name}
+	if sp := strings.TrimSpace(a.StartPoint); sp != "" {
+		args = append(args, sp)
+	}
+	if _, err := gitOutput(ctx, t.Cwd, args...); err != nil {
+		return "", fmt.Errorf("git_create_branch: %w", err)
+	}
+	fromSHA, err := gitOutput(ctx, t.Cwd, "rev-parse", "--short", "HEAD")
+	if err != nil {
+		return "", fmt.Errorf("git_create_branch: %w", err)
+	}
+	return fmt.Sprintf("created=true branch=%s from=%s", name, strings.TrimSpace(fromSHA)), nil
 }
 
 type GitCommitTool struct{ Cwd string }
