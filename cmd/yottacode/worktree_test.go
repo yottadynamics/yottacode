@@ -126,12 +126,18 @@ func TestWorktreeRemoveCmd(t *testing.T) {
 // trustRepoInHome points HOME at a tmp dir and writes a
 // trusted-roots.json that includes repo. Used by tests that need
 // ensureWorktree's trust gate to pass.
+//
+// HOME is resolved through EvalSymlinks so paths built from $HOME
+// (worktree.Dir, SlugDir) match what os.Getwd reports after chdir.
+// macOS's /var → /private/var symlink would otherwise leave expected
+// and actual paths in different forms.
 func trustRepoInHome(t *testing.T, repo string) {
 	t.Helper()
-	home := t.TempDir()
+	home, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
 	t.Setenv("HOME", home)
 	store := &trust.Store{Version: trust.Version}
-	_, err := store.Add(repo)
+	_, err = store.Add(repo)
 	require.NoError(t, err)
 	storePath := filepath.Join(home, ".yottacode", "trusted-roots.json")
 	require.NoError(t, trust.Save(storePath, store))

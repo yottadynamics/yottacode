@@ -77,7 +77,13 @@ func TestEnterWorktreeRejectsBadBase(t *testing.T) {
 // ~/.yottacode/worktrees/ rather than the developer's real home.
 func mkRepoForAgent(t *testing.T) string {
 	t.Helper()
-	t.Setenv("HOME", t.TempDir())
+	// HOME is resolved through EvalSymlinks so paths built from $HOME
+	// (worktree.Dir, SlugDir) match what os.Getwd reports after chdir.
+	// macOS's /var → /private/var symlink would otherwise leave the
+	// expected path in one form and the actual in the other.
+	homeResolved, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	t.Setenv("HOME", homeResolved)
 	dir := t.TempDir()
 	resolved, err := filepath.EvalSymlinks(dir)
 	require.NoError(t, err)
