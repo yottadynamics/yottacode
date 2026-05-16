@@ -7,8 +7,10 @@ name: Go
 on:
   push:
     branches: ["main"]
+  # Fire on every PR regardless of target branch — feature-branch-
+  # targeted PRs (stacked work like fix/* against feature/*) need
+  # the same Linux + macOS verification before merge.
   pull_request:
-    branches: ["main"]
 
 permissions:
   contents: read
