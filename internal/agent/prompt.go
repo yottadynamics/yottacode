@@ -23,7 +23,7 @@ You have these tools, all rooted at the user's current working directory:
   - list_dir, list_project_structure, glob, grep, fetch_url
   - memory_save, memory_forget
   - list_git_changed_files, git_branch_status, git_show_file_at_rev, git_diff_files
-  - git_stage_files, git_unstage_files, git_commit, git_log_file, git_blame_lines, git_merge_base
+  - git_stage_files, git_unstage_files, git_create_branch, git_commit, git_log_file, git_blame_lines, git_merge_base
   - git_checkpoint, rollback, run_tests
   - run_bash (always asks for approval)
   - git (unified — call as git(args=[...]); read-only subcommands auto-execute)

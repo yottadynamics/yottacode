@@ -40,6 +40,7 @@ var canonicalTools = []string{
 	"git_diff_files",
 	"git_stage_files",
 	"git_unstage_files",
+	"git_create_branch",
 	"git_commit",
 	"git_log_file",
 	"git_blame_lines",

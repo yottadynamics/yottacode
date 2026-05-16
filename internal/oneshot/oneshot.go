@@ -194,6 +194,7 @@ func Run(ctx context.Context, opts cli.ChatOptions, prompt string) error {
 	reg.Register(&agent.GitDiffFilesTool{Cwd: cwd})
 	reg.Register(&agent.GitStageFilesTool{Cwd: cwd})
 	reg.Register(&agent.GitUnstageFilesTool{Cwd: cwd})
+	reg.Register(&agent.GitCreateBranchTool{Cwd: cwd})
 	reg.Register(&agent.GitCommitTool{Cwd: cwd})
 	reg.Register(&agent.GitLogFileTool{Cwd: cwd})
 	reg.Register(&agent.GitBlameLinesTool{Cwd: cwd})
