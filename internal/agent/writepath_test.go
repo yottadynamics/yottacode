@@ -11,7 +11,7 @@ import (
 func TestValidateWritePath_AllowsCwdRelative(t *testing.T) {
 	cwd := t.TempDir()
 	target := filepath.Join(cwd, "sub", "file.txt")
-	if err := ValidateWritePath(target, WritePathOptions{Cwd: cwd}); err != nil {
+	if err := ValidateWritePath(target, WritePathOptions{Cwd: NewCwdRef(cwd)}); err != nil {
 		t.Errorf("expected ok for path under cwd, got %v", err)
 	}
 }
@@ -19,7 +19,7 @@ func TestValidateWritePath_AllowsCwdRelative(t *testing.T) {
 func TestValidateWritePath_RejectsOutsideCwd(t *testing.T) {
 	cwd := t.TempDir()
 	target := "/etc/passwd"
-	err := ValidateWritePath(target, WritePathOptions{Cwd: cwd})
+	err := ValidateWritePath(target, WritePathOptions{Cwd: NewCwdRef(cwd)})
 	if err == nil {
 		t.Errorf("expected error for path outside cwd")
 	}
@@ -61,7 +61,7 @@ func TestValidateWritePath_AllowsExtraRoot(t *testing.T) {
 	allowed := t.TempDir()
 	target := filepath.Join(allowed, "ok.txt")
 	err := ValidateWritePath(target, WritePathOptions{
-		Cwd:          cwd,
+		Cwd:          NewCwdRef(cwd),
 		AllowedPaths: []string{allowed},
 	})
 	if err != nil {
@@ -72,7 +72,7 @@ func TestValidateWritePath_AllowsExtraRoot(t *testing.T) {
 func TestValidateWritePath_RejectsTraversalEscape(t *testing.T) {
 	cwd := t.TempDir()
 	target := filepath.Join(cwd, "..", "outside.txt")
-	err := ValidateWritePath(target, WritePathOptions{Cwd: cwd})
+	err := ValidateWritePath(target, WritePathOptions{Cwd: NewCwdRef(cwd)})
 	if err == nil {
 		t.Errorf("expected error for ../outside.txt")
 	}
@@ -84,7 +84,7 @@ func TestValidateWritePath_RejectsSymlink(t *testing.T) {
 	if err := os.Symlink("/etc/passwd", link); err != nil {
 		t.Fatalf("symlink: %v", err)
 	}
-	err := ValidateWritePath(link, WritePathOptions{Cwd: cwd})
+	err := ValidateWritePath(link, WritePathOptions{Cwd: NewCwdRef(cwd)})
 	if err == nil {
 		t.Errorf("expected error for symlink target")
 	}
@@ -102,7 +102,7 @@ func TestValidateWritePath_AllowSymlinksOptIn(t *testing.T) {
 		t.Fatalf("symlink: %v", err)
 	}
 	err := ValidateWritePath(link, WritePathOptions{
-		Cwd:           cwd,
+		Cwd:           NewCwdRef(cwd),
 		AllowSymlinks: true,
 	})
 	if err != nil {
@@ -118,7 +118,7 @@ func TestValidateWritePath_DenyListWins(t *testing.T) {
 	}
 	target := filepath.Join(deny, "evil.txt")
 	err := ValidateWritePath(target, WritePathOptions{
-		Cwd:       cwd,
+		Cwd:       NewCwdRef(cwd),
 		DenyExact: []string{deny},
 	})
 	if err == nil {
@@ -131,10 +131,10 @@ func TestValidateWritePath_DenyListWins(t *testing.T) {
 
 func TestValidateWritePath_RejectsEmptyAndNUL(t *testing.T) {
 	cwd := t.TempDir()
-	if err := ValidateWritePath("", WritePathOptions{Cwd: cwd}); err == nil {
+	if err := ValidateWritePath("", WritePathOptions{Cwd: NewCwdRef(cwd)}); err == nil {
 		t.Errorf("expected error for empty path")
 	}
-	if err := ValidateWritePath("a\x00b", WritePathOptions{Cwd: cwd}); err == nil {
+	if err := ValidateWritePath("a\x00b", WritePathOptions{Cwd: NewCwdRef(cwd)}); err == nil {
 		t.Errorf("expected error for NUL in path")
 	}
 }
@@ -188,7 +188,7 @@ func TestDefaultDenyPaths_AllowsProjectMd(t *testing.T) {
 
 	target := filepath.Join(cwd, ".yottacode", "YOTTACODE.md")
 	err := ValidateWritePath(target, WritePathOptions{
-		Cwd:       cwd,
+		Cwd:       NewCwdRef(cwd),
 		DenyExact: DefaultDenyPaths(cwd),
 	})
 	if err != nil {
@@ -218,7 +218,7 @@ func TestValidateWritePath_AppStateDeniedEvenInsideHome(t *testing.T) {
 	// case below).
 	target := filepath.Join(home, ".yottacode", "memory", "evil.md")
 	err := ValidateWritePath(target, WritePathOptions{
-		Cwd:       cwd,
+		Cwd:       NewCwdRef(cwd),
 		DenyExact: DefaultDenyPaths(cwd),
 	})
 	if err == nil {
@@ -227,7 +227,7 @@ func TestValidateWritePath_AppStateDeniedEvenInsideHome(t *testing.T) {
 
 	permsTarget := filepath.Join(cwd, ".yottacode", "permissions.json")
 	err = ValidateWritePath(permsTarget, WritePathOptions{
-		Cwd:       cwd,
+		Cwd:       NewCwdRef(cwd),
 		DenyExact: DefaultDenyPaths(cwd),
 	})
 	if err == nil {

@@ -133,6 +133,29 @@ func TestStatusBar_NarrowTerminalKeepsModelAndCtx(t *testing.T) {
 	}
 }
 
+// When the session runs inside a yottacode worktree, the status bar
+// shows "worktree: <name>" so users see at a glance where edits land.
+// Empty worktree on the main checkout renders no chip.
+func TestStatusBar_RendersWorktreeChip(t *testing.T) {
+	m := newTestModel(t)
+	m.worktree = "feature-auth"
+	m, _ = applyMsg(m, tea.WindowSizeMsg{Width: 120, Height: 24})
+	plain := stripANSI(m.renderStatus())
+	if !strings.Contains(plain, "worktree: feature-auth") {
+		t.Errorf("status bar should include the worktree chip: %q", plain)
+	}
+}
+
+func TestStatusBar_NoWorktreeChipOnMainCheckout(t *testing.T) {
+	m := newTestModel(t)
+	m.worktree = ""
+	m, _ = applyMsg(m, tea.WindowSizeMsg{Width: 120, Height: 24})
+	plain := stripANSI(m.renderStatus())
+	if strings.Contains(plain, "worktree:") {
+		t.Errorf("main-checkout status bar should not render worktree chip: %q", plain)
+	}
+}
+
 // On a narrow-enough terminal that even "model · ctx" won't fit, the
 // vendor prefix on the model name (e.g. `nvidia/`) is stripped.
 func TestStatusBar_VeryNarrowTrimsVendorPrefix(t *testing.T) {

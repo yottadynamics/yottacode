@@ -44,6 +44,15 @@ func IsAutoModeSafetyFloor(toolName string) bool {
 	switch toolName {
 	case "run_bash", "git_commit", "git_checkpoint", "rollback":
 		return true
+	case "enter_worktree", "exit_worktree":
+		// Worktree entry/exit shifts what the agent is "working on"
+		// (and exit_worktree with cleanup=remove discards uncommitted
+		// work). Always prompt so the user sees the cwd-shift or
+		// destructive removal before it happens. The plain
+		// git_worktree_* wrappers stay auto-allowed in auto mode —
+		// they're narrow, explicit, and the user can `git_worktree_list`
+		// to inspect at any time.
+		return true
 	}
 	return false
 }

@@ -9,7 +9,7 @@ import (
 )
 
 // GitWorktreeListTool lists all worktrees for the current repository.
-type GitWorktreeListTool struct{ Cwd string }
+type GitWorktreeListTool struct{ Cwd *CwdRef }
 
 func (t *GitWorktreeListTool) Name() string { return "git_worktree_list" }
 func (t *GitWorktreeListTool) Description() string {
@@ -22,7 +22,7 @@ func (t *GitWorktreeListTool) RequiresApproval(string) bool { return false }
 func (t *GitWorktreeListTool) ParallelSafe(string) bool     { return true }
 func (t *GitWorktreeListTool) PreviewCall(string) string    { return "git_worktree_list()" }
 func (t *GitWorktreeListTool) Execute(ctx context.Context, argsJSON string) (string, error) {
-	out, err := gitOutput(ctx, t.Cwd, "worktree", "list", "--porcelain")
+	out, err := gitOutput(ctx, t.Cwd.Get(), "worktree", "list", "--porcelain")
 	if err != nil {
 		return "", fmt.Errorf("git_worktree_list: %w", err)
 	}
@@ -30,15 +30,27 @@ func (t *GitWorktreeListTool) Execute(ctx context.Context, argsJSON string) (str
 }
 
 // GitWorktreeAddTool adds a new worktree.
-type GitWorktreeAddTool struct{ Cwd string }
+type GitWorktreeAddTool struct{ Cwd *CwdRef }
 
 func (t *GitWorktreeAddTool) Name() string { return "git_worktree_add" }
 func (t *GitWorktreeAddTool) Description() string {
-	return "Add a new worktree at <path> with optional branch <branch>. If <branch> exists locally, it will be checked out. Otherwise, a new branch will be created and checked out."
+	return "LOW-LEVEL `git worktree add <path>` wrapper. For the common 'create " +
+		"a worktree called X' case, prefer enter_worktree — it auto-resolves " +
+		"the path under <repo>/.yottacode/worktrees/<name>/, generates a name " +
+		"if missing, copies .worktreeinclude, and swaps the session cwd. Use " +
+		"this tool only when you need to place a worktree at an explicit custom " +
+		"path outside that convention. Path is REQUIRED and must be an absolute " +
+		"or repo-relative path (not a bare name); branch is optional — if it " +
+		"exists locally it's checked out, otherwise a new branch is created."
 }
 func (t *GitWorktreeAddTool) Schema() map[string]any {
 	return map[string]any{"type": "object", "properties": map[string]any{
-		"path":  map[string]any{"type": "string", "description": "Path for the new worktree"},
+		"path": map[string]any{
+			"type": "string",
+			"description": "Explicit absolute or repo-relative path for the new worktree directory " +
+				"(e.g. '/abs/path/to/sibling-worktree' or '../sibling-worktree'). NOT a bare name — " +
+				"for that use enter_worktree, which resolves under .yottacode/worktrees/<name>/ automatically.",
+		},
 		"branch": map[string]any{"type": "string", "description": "Branch name to checkout (if exists) or create and checkout (optional)"},
 	}, "required": []string{"path"}}
 }
@@ -68,28 +80,32 @@ func (t *GitWorktreeAddTool) Execute(ctx context.Context, argsJSON string) (stri
 	if strings.TrimSpace(a.Path) == "" {
 		return "", errors.New("git_worktree_add: path is required")
 	}
-	
+
+	// Capture branch state BEFORE the git call. After `git worktree add -b`
+	// the branch always exists, so a post-call branchExists() check would
+	// always return true and the wrong message would be returned.
 	var args []string
-	if a.Branch == "" {
-		// No branch specified - use current HEAD
+	branchExistedBefore := false
+	switch {
+	case a.Branch == "":
 		args = []string{"worktree", "add", a.Path}
-	} else if branchExists(ctx, t.Cwd, a.Branch) {
-		// Branch exists locally - check it out
+	case branchExists(ctx, t.Cwd.Get(), a.Branch):
+		branchExistedBefore = true
 		args = []string{"worktree", "add", a.Path, a.Branch}
-	} else {
-		// Branch doesn't exist - create and checkout new branch
+	default:
 		args = []string{"worktree", "add", "-b", a.Branch, a.Path}
 	}
-	
-	if _, err := gitOutput(ctx, t.Cwd, args...); err != nil {
+
+	if _, err := gitOutput(ctx, t.Cwd.Get(), args...); err != nil {
 		return "", fmt.Errorf("git_worktree_add: %w", err)
 	}
-	
-	if a.Branch == "" {
+
+	switch {
+	case a.Branch == "":
 		return fmt.Sprintf("added worktree at %s (from HEAD)", a.Path), nil
-	} else if branchExists(ctx, t.Cwd, a.Branch) {
+	case branchExistedBefore:
 		return fmt.Sprintf("added worktree at %s (from existing branch %s)", a.Path, a.Branch), nil
-	} else {
+	default:
 		return fmt.Sprintf("added worktree at %s (created and checked out new branch %s)", a.Path, a.Branch), nil
 	}
 }
@@ -101,7 +117,7 @@ func branchExists(ctx context.Context, cwd, branch string) bool {
 }
 
 // GitWorktreeRemoveTool removes a worktree.
-type GitWorktreeRemoveTool struct{ Cwd string }
+type GitWorktreeRemoveTool struct{ Cwd *CwdRef }
 
 func (t *GitWorktreeRemoveTool) Name() string { return "git_worktree_remove" }
 func (t *GitWorktreeRemoveTool) Description() string {
@@ -127,14 +143,14 @@ func (t *GitWorktreeRemoveTool) Execute(ctx context.Context, argsJSON string) (s
 	if strings.TrimSpace(a.Path) == "" {
 		return "", errors.New("git_worktree_remove: path is required")
 	}
-	if _, err := gitOutput(ctx, t.Cwd, "worktree", "remove", a.Path); err != nil {
+	if _, err := gitOutput(ctx, t.Cwd.Get(), "worktree", "remove", a.Path); err != nil {
 		return "", fmt.Errorf("git_worktree_remove: %w", err)
 	}
 	return fmt.Sprintf("removed worktree at %s", a.Path), nil
 }
 
 // GitWorktreeLockTool locks a worktree.
-type GitWorktreeLockTool struct{ Cwd string }
+type GitWorktreeLockTool struct{ Cwd *CwdRef }
 
 func (t *GitWorktreeLockTool) Name() string { return "git_worktree_lock" }
 func (t *GitWorktreeLockTool) Description() string {
@@ -160,14 +176,14 @@ func (t *GitWorktreeLockTool) Execute(ctx context.Context, argsJSON string) (str
 	if strings.TrimSpace(a.Path) == "" {
 		return "", errors.New("git_worktree_lock: path is required")
 	}
-	if _, err := gitOutput(ctx, t.Cwd, "worktree", "lock", a.Path); err != nil {
+	if _, err := gitOutput(ctx, t.Cwd.Get(), "worktree", "lock", a.Path); err != nil {
 		return "", fmt.Errorf("git_worktree_lock: %w", err)
 	}
 	return fmt.Sprintf("locked worktree at %s", a.Path), nil
 }
 
 // GitWorktreeUnlockTool unlocks a worktree.
-type GitWorktreeUnlockTool struct{ Cwd string }
+type GitWorktreeUnlockTool struct{ Cwd *CwdRef }
 
 func (t *GitWorktreeUnlockTool) Name() string { return "git_worktree_unlock" }
 func (t *GitWorktreeUnlockTool) Description() string {
@@ -193,14 +209,14 @@ func (t *GitWorktreeUnlockTool) Execute(ctx context.Context, argsJSON string) (s
 	if strings.TrimSpace(a.Path) == "" {
 		return "", errors.New("git_worktree_unlock: path is required")
 	}
-	if _, err := gitOutput(ctx, t.Cwd, "worktree", "unlock", a.Path); err != nil {
+	if _, err := gitOutput(ctx, t.Cwd.Get(), "worktree", "unlock", a.Path); err != nil {
 		return "", fmt.Errorf("git_worktree_unlock: %w", err)
 	}
 	return fmt.Sprintf("unlocked worktree at %s", a.Path), nil
 }
 
 // GitWorktreePruneTool prunes stale worktree data.
-type GitWorktreePruneTool struct{ Cwd string }
+type GitWorktreePruneTool struct{ Cwd *CwdRef }
 
 func (t *GitWorktreePruneTool) Name() string { return "git_worktree_prune" }
 func (t *GitWorktreePruneTool) Description() string {
@@ -213,92 +229,9 @@ func (t *GitWorktreePruneTool) RequiresApproval(string) bool { return true }
 func (t *GitWorktreePruneTool) ParallelSafe(string) bool     { return false }
 func (t *GitWorktreePruneTool) PreviewCall(string) string    { return "git_worktree_prune()" }
 func (t *GitWorktreePruneTool) Execute(ctx context.Context, argsJSON string) (string, error) {
-	if _, err := gitOutput(ctx, t.Cwd, "worktree", "prune"); err != nil {
+	if _, err := gitOutput(ctx, t.Cwd.Get(), "worktree", "prune"); err != nil {
 		return "", fmt.Errorf("git_worktree_prune: %w", err)
 	}
 	return "pruned stale worktree data", nil
 }
 
-// GitWorktreeMoveTool moves a worktree.
-type GitWorktreeMoveTool struct{ Cwd string }
-
-func (t *GitWorktreeMoveTool) Name() string { return "git_worktree_move" }
-func (t *GitWorktreeMoveTool) Description() string {
-	return "Move a worktree from <path> to <new-path>."
-}
-func (t *GitWorktreeMoveTool) Schema() map[string]any {
-	return map[string]any{"type": "object", "properties": map[string]any{
-		"path": map[string]any{"type": "string", "description": "Current path of the worktree to move"},
-		"new-path": map[string]any{"type": "string", "description": "New path for the worktree"},
-	}, "required": []string{"path", "new-path"}}
-}
-func (t *GitWorktreeMoveTool) RequiresApproval(string) bool { return true }
-func (t *GitWorktreeMoveTool) ParallelSafe(string) bool     { return false }
-func (t *GitWorktreeMoveTool) PreviewCall(argsJSON string) string {
-	var a struct {
-		Path     string `json:"path"`
-		NewPath  string `json:"new-path"`
-	}
-	_ = json.Unmarshal([]byte(argsJSON), &a)
-	return fmt.Sprintf("git_worktree_move(%s, %s)", a.Path, a.NewPath)
-}
-func (t *GitWorktreeMoveTool) Execute(ctx context.Context, argsJSON string) (string, error) {
-	var a struct {
-		Path     string `json:"path"`
-		NewPath  string `json:"new-path"`
-	}
-	if err := json.Unmarshal([]byte(argsJSON), &a); err != nil {
-		return "", fmt.Errorf("git_worktree_move: invalid args: %w", err)
-	}
-	if strings.TrimSpace(a.Path) == "" {
-		return "", errors.New("git_worktree_move: path is required")
-	}
-	if strings.TrimSpace(a.NewPath) == "" {
-		return "", errors.New("git_worktree_move: new-path is required")
-	}
-	if _, err := gitOutput(ctx, t.Cwd, "worktree", "move", a.Path, a.NewPath); err != nil {
-		return "", fmt.Errorf("git_worktree_move: %w", err)
-	}
-	return fmt.Sprintf("moved worktree from %s to %s", a.Path, a.NewPath), nil
-}
-
-// GitWorktreeRepairTool repairs a worktree.
-type GitWorktreeRepairTool struct{ Cwd string }
-
-func (t *GitWorktreeRepairTool) Name() string { return "git_worktree_repair" }
-func (t *GitWorktreeRepairTool) Description() string {
-	return "Repair a worktree at <path>, or all worktrees if <path> is not specified."
-}
-func (t *GitWorktreeRepairTool) Schema() map[string]any {
-	return map[string]any{"type": "object", "properties": map[string]any{
-		"path": map[string]any{"type": "string", "description": "Path of the worktree to repair (optional)"},
-	}}
-}
-func (t *GitWorktreeRepairTool) RequiresApproval(string) bool { return true }
-func (t *GitWorktreeRepairTool) ParallelSafe(string) bool     { return false }
-func (t *GitWorktreeRepairTool) PreviewCall(argsJSON string) string {
-	var a struct{ Path string `json:"path"` }
-	_ = json.Unmarshal([]byte(argsJSON), &a)
-	if a.Path == "" {
-		return "git_worktree_repair()"
-	}
-	return fmt.Sprintf("git_worktree_repair(%s)", a.Path)
-}
-func (t *GitWorktreeRepairTool) Execute(ctx context.Context, argsJSON string) (string, error) {
-	var a struct{ Path string `json:"path"` }
-	if err := json.Unmarshal([]byte(argsJSON), &a); err != nil {
-		return "", fmt.Errorf("git_worktree_repair: invalid args: %w", err)
-	}
-	var args []string
-	args = append(args, "worktree", "repair")
-	if a.Path != "" {
-		args = append(args, a.Path)
-	}
-	if _, err := gitOutput(ctx, t.Cwd, args...); err != nil {
-		return "", fmt.Errorf("git_worktree_repair: %w", err)
-	}
-	if a.Path == "" {
-		return "repaired all worktrees", nil
-	}
-	return fmt.Sprintf("repaired worktree at %s", a.Path), nil
-}

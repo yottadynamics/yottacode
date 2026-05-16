@@ -30,6 +30,13 @@ type Session struct {
 	// Todos is the working plan written by the todo_write tool. Omitted
 	// from JSON when empty so older session files load unchanged.
 	Todos []agent.Todo `json:"todos,omitempty"`
+	// Worktree is the yottacode-managed worktree name this session was
+	// launched in (via `yottacode --worktree <name>`). Empty for sessions
+	// running against the main checkout. Stored so `sessions resume`
+	// lands back in the correct worktree dir even if the user moved or
+	// renamed the repo. Omitted from JSON when empty so existing session
+	// files load unchanged.
+	Worktree string `json:"worktree,omitempty"`
 
 	path string // filled by New/Load, not serialized
 }
@@ -213,6 +220,7 @@ func List() ([]SessionInfo, error) {
 			Model:    s.Model,
 			Created:  s.Created,
 			Messages: len(s.Messages),
+			Worktree: s.Worktree,
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID > out[j].ID })
@@ -226,6 +234,10 @@ type SessionInfo struct {
 	Model    string
 	Created  time.Time
 	Messages int
+	// Worktree is the yottacode worktree name this session ran in, or
+	// empty for the main checkout. Surfaced in `yottacode sessions list`
+	// output so users can tell which sessions belong to which worktree.
+	Worktree string
 }
 
 // Save atomically writes the session to disk.

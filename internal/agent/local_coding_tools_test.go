@@ -11,7 +11,7 @@ import (
 func TestDeleteFileTool_DeletesFile(t *testing.T) {
 	tmp := t.TempDir()
 	writeFile(t, tmp, "x.txt", "hi")
-	tool := &DeleteFileTool{Cwd: tmp, WriteOpts: WritePathOptions{Cwd: tmp}}
+	tool := &DeleteFileTool{Cwd: NewCwdRef(tmp), WriteOpts: WritePathOptions{Cwd: NewCwdRef(tmp)}}
 	out, err := tool.Execute(context.Background(), `{"path":"x.txt"}`)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -29,7 +29,7 @@ func TestDeleteFileTool_DeletesEmptyDir(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(tmp, "empty"), 0o755); err != nil {
 		t.Fatalf("setup: %v", err)
 	}
-	tool := &DeleteFileTool{Cwd: tmp, WriteOpts: WritePathOptions{Cwd: tmp}}
+	tool := &DeleteFileTool{Cwd: NewCwdRef(tmp), WriteOpts: WritePathOptions{Cwd: NewCwdRef(tmp)}}
 	out, err := tool.Execute(context.Background(), `{"path":"empty"}`)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -40,7 +40,7 @@ func TestDeleteFileTool_DeletesEmptyDir(t *testing.T) {
 }
 
 func TestDeleteFileTool_RejectsMissingPath(t *testing.T) {
-	tool := &DeleteFileTool{Cwd: t.TempDir()}
+	tool := &DeleteFileTool{Cwd: NewCwdRef(t.TempDir())}
 	if _, err := tool.Execute(context.Background(), `{}`); err == nil {
 		t.Errorf("expected error")
 	}
@@ -49,7 +49,7 @@ func TestDeleteFileTool_RejectsMissingPath(t *testing.T) {
 func TestMoveFileTool_MovesFile(t *testing.T) {
 	tmp := t.TempDir()
 	writeFile(t, tmp, "a.txt", "alpha")
-	tool := &MoveFileTool{Cwd: tmp, WriteOpts: WritePathOptions{Cwd: tmp}}
+	tool := &MoveFileTool{Cwd: NewCwdRef(tmp), WriteOpts: WritePathOptions{Cwd: NewCwdRef(tmp)}}
 	out, err := tool.Execute(context.Background(), `{"src":"a.txt","dst":"nested/b.txt"}`)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -70,7 +70,7 @@ func TestMoveFileTool_MovesFile(t *testing.T) {
 }
 
 func TestMoveFileTool_RequiresBothPaths(t *testing.T) {
-	tool := &MoveFileTool{Cwd: t.TempDir()}
+	tool := &MoveFileTool{Cwd: NewCwdRef(t.TempDir())}
 	if _, err := tool.Execute(context.Background(), `{"src":"a"}`); err == nil {
 		t.Errorf("expected error")
 	}
@@ -78,7 +78,7 @@ func TestMoveFileTool_RequiresBothPaths(t *testing.T) {
 
 func TestMkdirTool_CreatesParents(t *testing.T) {
 	tmp := t.TempDir()
-	tool := &MkdirTool{Cwd: tmp, WriteOpts: WritePathOptions{Cwd: tmp}}
+	tool := &MkdirTool{Cwd: NewCwdRef(tmp), WriteOpts: WritePathOptions{Cwd: NewCwdRef(tmp)}}
 	out, err := tool.Execute(context.Background(), `{"path":"a/b/c"}`)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -92,7 +92,7 @@ func TestMkdirTool_CreatesParents(t *testing.T) {
 }
 
 func TestMkdirTool_RequiresPath(t *testing.T) {
-	tool := &MkdirTool{Cwd: t.TempDir()}
+	tool := &MkdirTool{Cwd: NewCwdRef(t.TempDir())}
 	if _, err := tool.Execute(context.Background(), `{}`); err == nil {
 		t.Errorf("expected error")
 	}
@@ -101,7 +101,7 @@ func TestMkdirTool_RequiresPath(t *testing.T) {
 func TestCopyFileTool_CopiesFile(t *testing.T) {
 	tmp := t.TempDir()
 	writeFile(t, tmp, "src.txt", "payload")
-	tool := &CopyFileTool{Cwd: tmp, WriteOpts: WritePathOptions{Cwd: tmp}}
+	tool := &CopyFileTool{Cwd: NewCwdRef(tmp), WriteOpts: WritePathOptions{Cwd: NewCwdRef(tmp)}}
 	out, err := tool.Execute(context.Background(), `{"src":"src.txt","dst":"dst/out.txt"}`)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -127,7 +127,7 @@ func TestCopyFileTool_RejectsDirectorySource(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(tmp, "dirsrc"), 0o755); err != nil {
 		t.Fatalf("setup: %v", err)
 	}
-	tool := &CopyFileTool{Cwd: tmp, WriteOpts: WritePathOptions{Cwd: tmp}}
+	tool := &CopyFileTool{Cwd: NewCwdRef(tmp), WriteOpts: WritePathOptions{Cwd: NewCwdRef(tmp)}}
 	if _, err := tool.Execute(context.Background(), `{"src":"dirsrc","dst":"out"}`); err == nil {
 		t.Errorf("expected error")
 	}
@@ -137,7 +137,7 @@ func TestReadManyFilesTool_ReadsMultipleFiles(t *testing.T) {
 	tmp := t.TempDir()
 	writeFile(t, tmp, "b.txt", "bravo")
 	writeFile(t, tmp, "a.txt", "alpha")
-	tool := &ReadManyFilesTool{Cwd: tmp}
+	tool := &ReadManyFilesTool{Cwd: NewCwdRef(tmp)}
 	out, err := tool.Execute(context.Background(), `{"paths":["b.txt","a.txt"]}`)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -156,7 +156,7 @@ func TestReadManyFilesTool_ReadsMultipleFiles(t *testing.T) {
 func TestReadManyFilesTool_OffsetLimitAndTruncate(t *testing.T) {
 	tmp := t.TempDir()
 	writeFile(t, tmp, "x.txt", "0123456789")
-	tool := &ReadManyFilesTool{Cwd: tmp}
+	tool := &ReadManyFilesTool{Cwd: NewCwdRef(tmp)}
 	out, err := tool.Execute(context.Background(), `{"paths":["x.txt"],"offset":3,"limit":4}`)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -170,14 +170,14 @@ func TestReadManyFilesTool_OffsetLimitAndTruncate(t *testing.T) {
 }
 
 func TestReadManyFilesTool_RequiresPaths(t *testing.T) {
-	tool := &ReadManyFilesTool{Cwd: t.TempDir()}
+	tool := &ReadManyFilesTool{Cwd: NewCwdRef(t.TempDir())}
 	if _, err := tool.Execute(context.Background(), `{}`); err == nil {
 		t.Errorf("expected error")
 	}
 }
 
 func TestReadManyFilesTool_RejectsTooManyPaths(t *testing.T) {
-	tool := &ReadManyFilesTool{Cwd: t.TempDir()}
+	tool := &ReadManyFilesTool{Cwd: NewCwdRef(t.TempDir())}
 	var parts []string
 	for i := 0; i < defaultReadManyMaxFiles+1; i++ {
 		parts = append(parts, `"f`+string(rune('a'+i))+`.txt"`)

@@ -38,7 +38,7 @@ import (
 // footer when a PR exists. GH is optional — if nil, the PR
 // lookup is skipped silently.
 type GitPushTool struct {
-	Cwd string
+	Cwd *CwdRef
 	GH  github.Interface
 }
 
@@ -90,7 +90,7 @@ func (t *GitPushTool) Execute(ctx context.Context, _ string) (string, error) {
 	if _, err := exec.LookPath("git"); err != nil {
 		return "", errors.New("git_push: git binary not found in PATH")
 	}
-	res, err := PushBranch(ctx, t.Cwd, t.GH)
+	res, err := PushBranch(ctx, t.Cwd.Get(), t.GH)
 	if err != nil {
 		return "", fmt.Errorf("git_push: %w", err)
 	}

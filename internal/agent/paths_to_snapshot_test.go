@@ -21,25 +21,25 @@ func TestMutators_ReturnExpectedPaths(t *testing.T) {
 	}{
 		{
 			name:     "WriteFileTool",
-			tool:     &WriteFileTool{Cwd: cwd},
+			tool:     &WriteFileTool{Cwd: NewCwdRef(cwd)},
 			argsJSON: `{"path":"a/b.go","content":"x"}`,
 			want:     []string{filepath.Join(cwd, "a/b.go")},
 		},
 		{
 			name:     "EditFileTool",
-			tool:     &EditFileTool{Cwd: cwd},
+			tool:     &EditFileTool{Cwd: NewCwdRef(cwd)},
 			argsJSON: `{"path":"a/b.go","old_string":"x","new_string":"y"}`,
 			want:     []string{filepath.Join(cwd, "a/b.go")},
 		},
 		{
 			name:     "DeleteFileTool",
-			tool:     &DeleteFileTool{Cwd: cwd},
+			tool:     &DeleteFileTool{Cwd: NewCwdRef(cwd)},
 			argsJSON: `{"path":"old.txt"}`,
 			want:     []string{filepath.Join(cwd, "old.txt")},
 		},
 		{
 			name:     "MoveFileTool_BothEnds",
-			tool:     &MoveFileTool{Cwd: cwd},
+			tool:     &MoveFileTool{Cwd: NewCwdRef(cwd)},
 			argsJSON: `{"src":"a.txt","dst":"b.txt"}`,
 			want: []string{
 				filepath.Join(cwd, "a.txt"),
@@ -48,13 +48,13 @@ func TestMutators_ReturnExpectedPaths(t *testing.T) {
 		},
 		{
 			name:     "CopyFileTool_DstOnly",
-			tool:     &CopyFileTool{Cwd: cwd},
+			tool:     &CopyFileTool{Cwd: NewCwdRef(cwd)},
 			argsJSON: `{"src":"a.txt","dst":"b.txt"}`,
 			want:     []string{filepath.Join(cwd, "b.txt")},
 		},
 		{
 			name: "ApplyDiffTool_MultiFile",
-			tool: &ApplyDiffTool{Cwd: cwd},
+			tool: &ApplyDiffTool{Cwd: NewCwdRef(cwd)},
 			argsJSON: `{"diff":"diff --git a/x.go b/x.go\n--- a/x.go\n+++ b/x.go\n@@\n-old\n+new\ndiff --git a/y.go b/y.go\n--- a/y.go\n+++ b/y.go\n@@\n-old\n+new\n"}`,
 			want: []string{
 				filepath.Join(cwd, "x.go"),
@@ -63,13 +63,13 @@ func TestMutators_ReturnExpectedPaths(t *testing.T) {
 		},
 		{
 			name:     "WriteFileTool_EmptyPathReturnsNil",
-			tool:     &WriteFileTool{Cwd: cwd},
+			tool:     &WriteFileTool{Cwd: NewCwdRef(cwd)},
 			argsJSON: `{"path":"","content":"x"}`,
 			want:     nil,
 		},
 		{
 			name:     "EditFileTool_InvalidJSONReturnsNil",
-			tool:     &EditFileTool{Cwd: cwd},
+			tool:     &EditFileTool{Cwd: NewCwdRef(cwd)},
 			argsJSON: `not json`,
 			want:     nil,
 		},

@@ -71,7 +71,7 @@ var baseCandidates = []string{"main", "master", "develop"}
 // draft a PR title + body and decide whether to push or fall through
 // to draft-only. Replaces the multi-step bash heredoc the legacy
 // /git:create-pr directive used as its first tool call.
-type GHPRContextTool struct{ Cwd string }
+type GHPRContextTool struct{ Cwd *CwdRef }
 
 func (t *GHPRContextTool) Name() string { return "gh_pr_context" }
 
@@ -119,7 +119,7 @@ func (t *GHPRContextTool) Execute(ctx context.Context, argsJSON string) (string,
 	if argsJSON != "" {
 		_ = json.Unmarshal([]byte(argsJSON), &a)
 	}
-	snap, err := BuildPRContext(ctx, t.Cwd, strings.TrimSpace(a.Base))
+	snap, err := BuildPRContext(ctx, t.Cwd.Get(), strings.TrimSpace(a.Base))
 	if err != nil {
 		return "", fmt.Errorf("gh_pr_context: %w", err)
 	}
@@ -331,7 +331,7 @@ func renderPRContext(s PRContext) string {
 // github.Interface so v0.5.0's typed go-github client replaces the
 // shell-out without touching this file.
 type GHPRCreateTool struct {
-	Cwd string
+	Cwd *CwdRef
 	GH  github.Interface
 }
 
@@ -505,7 +505,7 @@ func validatePRTitle(title string) string {
 // for them, they grow Interface.UpdatePR's request type rather
 // than spawning a new tool.
 type GHPRUpdateTool struct {
-	Cwd string
+	Cwd *CwdRef
 	GH  github.Interface
 }
 
@@ -689,7 +689,7 @@ const prReviewDiffCap = 64 * 1024
 // `gh pr view --json ...` invocation but the typed v0.5.0 client
 // will make all three independently against the GraphQL surface.
 type GHPRReviewContextTool struct {
-	Cwd string
+	Cwd *CwdRef
 	GH  github.Interface
 }
 

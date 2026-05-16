@@ -34,8 +34,12 @@ import (
 // WritePathOptions configures the validator for a single tool. Build it
 // once per session in run.go and share across every mutating tool.
 type WritePathOptions struct {
-	// Cwd is the primary allowed root. Required.
-	Cwd string
+	// Cwd is the primary allowed root, queried at validate time so an
+	// in-session cwd swap (enter_worktree) flows through to the write
+	// validator without rebuilding WriteOpts. Required. Shared pointer
+	// across all mutating tools registered for one session, same as
+	// each tool's own t.Cwd.
+	Cwd *CwdRef
 
 	// AllowedPaths is the list of additional roots a user has opted into
 	// via --allow-paths or YOTTACODE_ALLOW_PATHS. Each entry is treated
@@ -105,7 +109,8 @@ func ValidateWritePath(path string, opts WritePathOptions) error {
 		}
 	}
 
-	if pathUnder(abs, opts.Cwd) {
+	cwd := opts.Cwd.Get()
+	if pathUnder(abs, cwd) {
 		return nil
 	}
 	for _, root := range opts.AllowedPaths {
@@ -122,7 +127,7 @@ func ValidateWritePath(path string, opts WritePathOptions) error {
 	}
 	return &ErrPathOutsideWorkspace{
 		Path:         abs,
-		Cwd:          opts.Cwd,
+		Cwd:          cwd,
 		AllowedRoots: append([]string(nil), opts.AllowedPaths...),
 	}
 }

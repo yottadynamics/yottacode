@@ -26,7 +26,7 @@ func TestReadFileTool_DefaultDeny_RefusesCredentialPath(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 	tool := &ReadFileTool{
-		Cwd:           tmp,
+		Cwd:           NewCwdRef(tmp),
 		DenyReadPaths: []string{filepath.Join(fakeHome, ".aws")},
 	}
 	args, _ := json.Marshal(map[string]string{"path": credPath})
@@ -50,7 +50,7 @@ func TestReadFileTool_EmptyDenyList_AllowsRead(t *testing.T) {
 	if err := os.WriteFile(p, []byte("hello"), 0o600); err != nil {
 		t.Fatalf("write: %v", err)
 	}
-	tool := &ReadFileTool{Cwd: tmp}
+	tool := &ReadFileTool{Cwd: NewCwdRef(tmp)}
 	args, _ := json.Marshal(map[string]string{"path": p})
 	out, err := tool.Execute(context.Background(), string(args))
 	if err != nil {
@@ -78,7 +78,7 @@ func TestReadManyFilesTool_DefaultDeny_RefusesCredentialPath(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 	tool := &ReadManyFilesTool{
-		Cwd:           tmp,
+		Cwd:           NewCwdRef(tmp),
 		DenyReadPaths: []string{filepath.Join(fakeHome, ".ssh")},
 	}
 	args, _ := json.Marshal(map[string]any{"paths": []string{benign, keyPath}})
@@ -104,7 +104,7 @@ func TestGrepTool_DefaultDeny_RefusesCredentialPath(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 	tool := &GrepTool{
-		Cwd:           tmp,
+		Cwd:           NewCwdRef(tmp),
 		DenyReadPaths: []string{filepath.Join(tmp, "home", ".aws")},
 	}
 	args, _ := json.Marshal(map[string]any{

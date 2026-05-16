@@ -101,6 +101,10 @@ Drop a markdown file into `~/.yottacode/commands/` (user scope) or `.yottacode/c
 
 `yottacode run "<prompt>"` for CI and automation — stdout = answer, stderr = reasoning + tool status. Composes cleanly with pipes and CI logs.
 
+### Parallel sessions via worktrees
+
+`yottacode --worktree <name>` (or `-w <name>`) runs the session in a fresh git worktree at `~/.yottacode/worktrees/<repo-slug>/<name>/` on branch `worktree-<name>`. Two yottacode sessions can edit the same repo in parallel without colliding, and the worktrees never clutter the project root or get indexed by IDEs / `find` / `grep`. A per-repo `.worktreeinclude` file copies gitignored configs (`.env`, IDE settings) into each new worktree so the agent doesn't trip over missing setup. The agent can spin its own worktrees via the `enter_worktree` / `exit_worktree` tools (always prompted, even in auto mode). Manage via `yottacode worktree list / remove / prune / status`. See [`docs/worktrees.md`](docs/worktrees.md).
+
 ## Common commands
 
 In the TUI:
@@ -155,6 +159,7 @@ Full references: [`docs/cli.md`](docs/cli.md) and [`docs/tui-slash-commands.md`]
 - [`docs/providers.md`](docs/providers.md) and [`docs/models.md`](docs/models.md) — provider/model setup and switching
 - [`docs/tools.md`](docs/tools.md) — built-in tools and approval behavior
 - [`docs/security-and-allow-lists.md`](docs/security-and-allow-lists.md) — approvals, permissions, path policy, isolation guidance
+- [`docs/worktrees.md`](docs/worktrees.md) — parallel sessions, `--worktree` flag, `.worktreeinclude`, safe-autonomy workflow
 - [`docs/memory.md`](docs/memory.md) and [`docs/sessions.md`](docs/sessions.md) — context, recall, persistence
 - [`docs/tui-slash-commands.md`](docs/tui-slash-commands.md) and [`docs/cli.md`](docs/cli.md) — command reference
 - [`docs/architecture.md`](docs/architecture.md) and [`docs/development.md`](docs/development.md) — internals and contribution workflow

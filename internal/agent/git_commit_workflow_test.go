@@ -69,7 +69,7 @@ func TestGitCommitContextTool_EmptyStaging(t *testing.T) {
 	writeFile(t, tmp, "f.txt", "v1\n")
 	gitCommit(t, tmp, "base")
 
-	tool := &GitCommitContextTool{Cwd: tmp}
+	tool := &GitCommitContextTool{Cwd: NewCwdRef(tmp)}
 	out, err := tool.Execute(context.Background(), `{}`)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -95,12 +95,12 @@ func TestGitCommitContextTool_StagedDiffAndStyle(t *testing.T) {
 
 	// Stage a change so the snapshot has a diff to render.
 	writeFile(t, tmp, "f.txt", "next\n")
-	stage := &GitStageFilesTool{Cwd: tmp}
+	stage := &GitStageFilesTool{Cwd: NewCwdRef(tmp)}
 	if _, err := stage.Execute(context.Background(), `{"paths":["f.txt"]}`); err != nil {
 		t.Fatalf("stage: %v", err)
 	}
 
-	tool := &GitCommitContextTool{Cwd: tmp}
+	tool := &GitCommitContextTool{Cwd: NewCwdRef(tmp)}
 	out, err := tool.Execute(context.Background(), `{}`)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -164,7 +164,7 @@ func TestApplyCommit_HappyPath(t *testing.T) {
 	writeFile(t, tmp, "f.txt", "v1\n")
 	gitCommit(t, tmp, "base")
 	writeFile(t, tmp, "f.txt", "v2\n")
-	stage := &GitStageFilesTool{Cwd: tmp}
+	stage := &GitStageFilesTool{Cwd: NewCwdRef(tmp)}
 	if _, err := stage.Execute(context.Background(), `{"paths":["f.txt"]}`); err != nil {
 		t.Fatalf("stage: %v", err)
 	}
@@ -186,7 +186,7 @@ func TestApplyCommit_ValidationFailsBeforeGit(t *testing.T) {
 	writeFile(t, tmp, "f.txt", "v1\n")
 	gitCommit(t, tmp, "base")
 	writeFile(t, tmp, "f.txt", "v2\n")
-	stage := &GitStageFilesTool{Cwd: tmp}
+	stage := &GitStageFilesTool{Cwd: NewCwdRef(tmp)}
 	if _, err := stage.Execute(context.Background(), `{"paths":["f.txt"]}`); err != nil {
 		t.Fatalf("stage: %v", err)
 	}
@@ -230,7 +230,7 @@ func TestApplyCommit_HookFailureSurfacedNotRetried(t *testing.T) {
 	}
 
 	writeFile(t, tmp, "f.txt", "v2\n")
-	stage := &GitStageFilesTool{Cwd: tmp}
+	stage := &GitStageFilesTool{Cwd: NewCwdRef(tmp)}
 	if _, err := stage.Execute(context.Background(), `{"paths":["f.txt"]}`); err != nil {
 		t.Fatalf("stage: %v", err)
 	}
@@ -260,7 +260,7 @@ func TestApplyCommit_MessageWithSpecialChars(t *testing.T) {
 	writeFile(t, tmp, "f.txt", "v1\n")
 	gitCommit(t, tmp, "base")
 	writeFile(t, tmp, "f.txt", "v2\n")
-	stage := &GitStageFilesTool{Cwd: tmp}
+	stage := &GitStageFilesTool{Cwd: NewCwdRef(tmp)}
 	if _, err := stage.Execute(context.Background(), `{"paths":["f.txt"]}`); err != nil {
 		t.Fatalf("stage: %v", err)
 	}
@@ -284,12 +284,12 @@ func TestGitCommitApplyTool_RoundsThroughTool(t *testing.T) {
 	writeFile(t, tmp, "f.txt", "v1\n")
 	gitCommit(t, tmp, "base")
 	writeFile(t, tmp, "f.txt", "v2\n")
-	stage := &GitStageFilesTool{Cwd: tmp}
+	stage := &GitStageFilesTool{Cwd: NewCwdRef(tmp)}
 	if _, err := stage.Execute(context.Background(), `{"paths":["f.txt"]}`); err != nil {
 		t.Fatalf("stage: %v", err)
 	}
 
-	tool := &GitCommitApplyTool{Cwd: tmp}
+	tool := &GitCommitApplyTool{Cwd: NewCwdRef(tmp)}
 	out, err := tool.Execute(context.Background(), `{"message":"bump f"}`)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)

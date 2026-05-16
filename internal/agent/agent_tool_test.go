@@ -21,7 +21,7 @@ func newTestAgentTool(t *testing.T, configs []subagents.AgentConfig, streamer St
 		Tasks:           subagents.NewRegistry(),
 		Adapter:         streamer,
 		ParentRegistry:  parent,
-		Cwd:             t.TempDir(),
+		Cwd:             NewCwdRef(t.TempDir()),
 		TranscriptDir:   t.TempDir(),
 		YoloMode:        &YoloModeState{},
 		PlanMode:        &PlanModeState{},

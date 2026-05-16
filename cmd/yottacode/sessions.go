@@ -76,11 +76,16 @@ func newSessionsListCmd() *cobra.Command {
 				if name == "" {
 					name = "—"
 				}
-				fmt.Fprintf(out, "%s\t%s\t%s\t%d msgs\t%s\n",
+				wt := s.Worktree
+				if wt == "" {
+					wt = "—"
+				}
+				fmt.Fprintf(out, "%s\t%s\t%s\t%d msgs\tworktree=%s\t%s\n",
 					s.ID,
 					name,
 					s.Model,
 					s.Messages,
+					wt,
 					s.Created.Format(time.RFC3339),
 				)
 			}

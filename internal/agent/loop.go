@@ -10,6 +10,7 @@ import (
 
 	"github.com/yottadynamics/yottacode/internal/adapter"
 	"github.com/yottadynamics/yottacode/internal/permissions"
+	"github.com/yottadynamics/yottacode/internal/worktree"
 )
 
 // interruptedToolResult is the synthetic tool_result content injected for
@@ -49,7 +50,7 @@ type LoopConfig struct {
 	// (bypass is "skip prompts," not "ignore my policy"). Use only
 	// in trusted CI / scripted contexts.
 	BypassPermissions bool
-	Cwd               string
+	Cwd               *CwdRef
 	MaxIterations     int
 	// PlanMode is the shared plan-mode flag the TUI flips via /plan or
 	// Shift+Tab. nil disables plan mode entirely (oneshot; tests). When
@@ -712,13 +713,23 @@ func executeToolCall(
 	// as a scrollback event but let the tool proceed.
 	if cfg.Checkpoints != nil {
 		if sessionID, cpID := CheckpointFromContext(ctx); cpID != "" {
-			for _, p := range ToolPathsToSnapshot(tool, cfg.Cwd, tc.ArgsJSON) {
+			for _, p := range ToolPathsToSnapshot(tool, cfg.Cwd.Get(), tc.ArgsJSON) {
 				if err := cfg.Checkpoints.SnapshotPath(sessionID, cpID, p); err != nil {
 					_ = send(ctx, events, CheckpointInfo{Message: fmt.Sprintf("snapshot %s: %v", p, err)})
 				}
 			}
 		}
 	}
+	// Snapshot the pre-tool cwd so we can emit CwdChanged after the
+	// tool returns if it swapped (today: enter_worktree / exit_worktree
+	// call cfg.Cwd.Set). The shared *CwdRef is the only authority on
+	// in-session cwd state — tools that swap go through it, never
+	// directly through os.Chdir without the ref.
+	cwdBefore := ""
+	if cfg.Cwd != nil {
+		cwdBefore = cfg.Cwd.Get()
+	}
+
 	out, err := tool.Execute(toolCtx, tc.ArgsJSON)
 	// Inline path-trust elevation: if the write validator rejected
 	// the target as outside the workspace, give the user a chance to
@@ -759,6 +770,17 @@ func executeToolCall(
 		// will see uniform "interrupted by user" markers across the
 		// batch instead of one stale real result amid synthetic ones.
 		return "", false, err
+	}
+	// If the tool moved cwd (enter_worktree / exit_worktree do this via
+	// cfg.Cwd.Set + os.Chdir), notify the consumer so the TUI can
+	// refresh the worktree chip and any cwd-derived display state.
+	// Compared against the pre-call snapshot to avoid re-firing when
+	// the swap was a no-op (e.g. attaching to a worktree the session
+	// is already inside of).
+	if cfg.Cwd != nil {
+		if after := cfg.Cwd.Get(); after != cwdBefore {
+			_ = send(ctx, events, CwdChanged{NewCwd: after})
+		}
 	}
 	if pa, ok := tool.(planAware); ok {
 		if store := pa.PlanStore(); store != nil {
@@ -857,7 +879,15 @@ func promptForApproval(
 		return false, true, nil
 	}
 	if d == AllowAlways && cfg.Permissions != nil {
-		if rule, ok := permissions.DeriveAllowRule(tool.Name(), tc.ArgsJSON, cfg.Cwd); ok {
+		// Inject worktree-aware path normalization so [A]-always inside
+		// a yottacode worktree doesn't bake the auto-generated worktree
+		// name (e.g. `noble-hopping-salmon`) into the saved rule.
+		// NormalizeForRule rewrites the name segment to `*` for paths
+		// under ~/.yottacode/worktrees/<slug>/<name>/; pass-through
+		// otherwise. The deriver applies it to both cwd and any
+		// absolute descriptor, so relative-path AND absolute-path tool
+		// args produce the same name-agnostic rule.
+		if rule, ok := permissions.DeriveAllowRule(tool.Name(), tc.ArgsJSON, cfg.Cwd.Get(), worktree.NormalizeForRule); ok {
 			if err := cfg.Permissions.AddAllow(rule); err != nil {
 				_ = send(ctx, events, ApprovalAuto{
 					ToolName: tool.Name(),

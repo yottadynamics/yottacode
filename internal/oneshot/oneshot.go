@@ -166,8 +166,16 @@ func Run(ctx context.Context, opts cli.ChatOptions, prompt string) error {
 	if err != nil {
 		return err
 	}
+	// cwdRef is the shared cwd holder every tool reads from. In
+	// oneshot the value never changes mid-run (enter_worktree is in
+	// the safety floor and would prompt — there's no approval surface
+	// here), but we still wire it consistently so the agent codepath
+	// matches the TUI's. WriteOpts shares the same pointer so the
+	// write validator and the tools agree on the current cwd.
+	cwdRef := agent.NewCwdRef(cwd)
+
 	writeOpts := agent.WritePathOptions{
-		Cwd:          cwd,
+		Cwd:          cwdRef,
 		AllowedPaths: splitAllowPaths(opts.AllowPaths),
 		DenyExact:    agent.DefaultDenyPaths(cwd),
 	}
@@ -179,44 +187,48 @@ func Run(ctx context.Context, opts cli.ChatOptions, prompt string) error {
 	}
 
 	reg := agent.NewRegistry()
-	reg.Register(&agent.ReadFileTool{Cwd: cwd, DenyReadPaths: denyReads})
-	reg.Register(&agent.ReadManyFilesTool{Cwd: cwd, DenyReadPaths: denyReads})
-	reg.Register(&agent.WriteFileTool{Cwd: cwd, WriteOpts: writeOpts})
-	reg.Register(&agent.EditFileTool{Cwd: cwd, WriteOpts: writeOpts})
-	reg.Register(&agent.ApplyDiffTool{Cwd: cwd, WriteOpts: writeOpts})
-	reg.Register(&agent.MkdirTool{Cwd: cwd, WriteOpts: writeOpts})
-	reg.Register(&agent.CopyFileTool{Cwd: cwd, WriteOpts: writeOpts})
-	reg.Register(&agent.MoveFileTool{Cwd: cwd, WriteOpts: writeOpts})
-	reg.Register(&agent.DeleteFileTool{Cwd: cwd, WriteOpts: writeOpts})
-	reg.Register(&agent.ListGitChangedFilesTool{Cwd: cwd})
-	reg.Register(&agent.GitBranchStatusTool{Cwd: cwd})
-	reg.Register(&agent.GitShowFileAtRevTool{Cwd: cwd})
-	reg.Register(&agent.GitDiffFilesTool{Cwd: cwd})
-	reg.Register(&agent.GitStageFilesTool{Cwd: cwd})
-	reg.Register(&agent.GitUnstageFilesTool{Cwd: cwd})
-	reg.Register(&agent.GitCommitTool{Cwd: cwd})
-	reg.Register(&agent.GitLogFileTool{Cwd: cwd})
-	reg.Register(&agent.GitBlameLinesTool{Cwd: cwd})
-	reg.Register(&agent.GitMergeBaseTool{Cwd: cwd})
-	reg.Register(&agent.GitCheckpointTool{Cwd: cwd})
-	reg.Register(&agent.RollbackTool{Cwd: cwd})
-	reg.Register(&agent.RunTestsTool{Cwd: cwd})
-	reg.Register(&agent.RunBashTool{Cwd: cwd})
-	// Git worktree tools
-	reg.Register(&agent.GitWorktreeListTool{Cwd: cwd})
-	reg.Register(&agent.GitWorktreeAddTool{Cwd: cwd})
-	reg.Register(&agent.GitWorktreeRemoveTool{Cwd: cwd})
-	reg.Register(&agent.GitWorktreeLockTool{Cwd: cwd})
-	reg.Register(&agent.GitWorktreeUnlockTool{Cwd: cwd})
-	reg.Register(&agent.GitWorktreePruneTool{Cwd: cwd})
-	reg.Register(&agent.ListDirTool{Cwd: cwd})
-	reg.Register(&agent.ListProjectStructureTool{Cwd: cwd})
-	reg.Register(&agent.GlobTool{Cwd: cwd})
-	reg.Register(&agent.GrepTool{Cwd: cwd, DenyReadPaths: denyReads})
+	reg.Register(&agent.ReadFileTool{Cwd: cwdRef,DenyReadPaths: denyReads})
+	reg.Register(&agent.ReadManyFilesTool{Cwd: cwdRef,DenyReadPaths: denyReads})
+	reg.Register(&agent.WriteFileTool{Cwd: cwdRef,WriteOpts: writeOpts})
+	reg.Register(&agent.EditFileTool{Cwd: cwdRef,WriteOpts: writeOpts})
+	reg.Register(&agent.ApplyDiffTool{Cwd: cwdRef,WriteOpts: writeOpts})
+	reg.Register(&agent.MkdirTool{Cwd: cwdRef,WriteOpts: writeOpts})
+	reg.Register(&agent.CopyFileTool{Cwd: cwdRef,WriteOpts: writeOpts})
+	reg.Register(&agent.MoveFileTool{Cwd: cwdRef,WriteOpts: writeOpts})
+	reg.Register(&agent.DeleteFileTool{Cwd: cwdRef,WriteOpts: writeOpts})
+	reg.Register(&agent.ListGitChangedFilesTool{Cwd: cwdRef})
+	reg.Register(&agent.GitBranchStatusTool{Cwd: cwdRef})
+	reg.Register(&agent.GitShowFileAtRevTool{Cwd: cwdRef})
+	reg.Register(&agent.GitDiffFilesTool{Cwd: cwdRef})
+	reg.Register(&agent.GitStageFilesTool{Cwd: cwdRef})
+	reg.Register(&agent.GitUnstageFilesTool{Cwd: cwdRef})
+	reg.Register(&agent.GitCommitTool{Cwd: cwdRef})
+	reg.Register(&agent.GitLogFileTool{Cwd: cwdRef})
+	reg.Register(&agent.GitBlameLinesTool{Cwd: cwdRef})
+	reg.Register(&agent.GitMergeBaseTool{Cwd: cwdRef})
+	reg.Register(&agent.GitCheckpointTool{Cwd: cwdRef})
+	reg.Register(&agent.RollbackTool{Cwd: cwdRef})
+	reg.Register(&agent.RunTestsTool{Cwd: cwdRef})
+	reg.Register(&agent.RunBashTool{Cwd: cwdRef})
+	// Git worktree tools. enter_worktree / exit_worktree always prompt
+	// (auto-mode safety floor); see IsAutoModeSafetyFloor.
+	reg.Register(&agent.EnterWorktreeTool{Cwd: cwdRef})
+	reg.Register(&agent.ExitWorktreeTool{Cwd: cwdRef})
+	reg.Register(&agent.WorktreeStatusTool{Cwd: cwdRef})
+	reg.Register(&agent.GitWorktreeListTool{Cwd: cwdRef})
+	reg.Register(&agent.GitWorktreeAddTool{Cwd: cwdRef})
+	reg.Register(&agent.GitWorktreeRemoveTool{Cwd: cwdRef})
+	reg.Register(&agent.GitWorktreeLockTool{Cwd: cwdRef})
+	reg.Register(&agent.GitWorktreeUnlockTool{Cwd: cwdRef})
+	reg.Register(&agent.GitWorktreePruneTool{Cwd: cwdRef})
+	reg.Register(&agent.ListDirTool{Cwd: cwdRef})
+	reg.Register(&agent.ListProjectStructureTool{Cwd: cwdRef})
+	reg.Register(&agent.GlobTool{Cwd: cwdRef})
+	reg.Register(&agent.GrepTool{Cwd: cwdRef,DenyReadPaths: denyReads})
 	reg.Register(&agent.FetchURLTool{})
-	reg.Register(&agent.MemorySaveTool{Cwd: cwd})
-	reg.Register(&agent.MemoryForgetTool{Cwd: cwd})
-	reg.Register(&agent.GitTool{Cwd: cwd})
+	reg.Register(&agent.MemorySaveTool{Cwd: cwdRef})
+	reg.Register(&agent.MemoryForgetTool{Cwd: cwdRef})
+	reg.Register(&agent.GitTool{Cwd: cwdRef})
 	reg.Register(&agent.TodoWriteTool{Store: planStore})
 	// ExitPlanModeTool is registered for schema parity with the TUI
 	// build. The adapter-tools filter in the loop hides it whenever
@@ -259,7 +271,7 @@ func Run(ctx context.Context, opts cli.ChatOptions, prompt string) error {
 		YoloMode:        parentYoloMode,
 		PlanMode:        parentPlanMode,
 		AutoMode:        parentAutoMode,
-		Cwd:             cwd,
+		Cwd:             cwdRef,
 		TranscriptDir:   transcriptDir,
 		AllowBackground: false,
 	}
@@ -277,7 +289,7 @@ func Run(ctx context.Context, opts cli.ChatOptions, prompt string) error {
 		Registry:          reg,
 		Permissions:       perms,
 		BypassPermissions: opts.BypassPermissions,
-		Cwd:               cwd,
+		Cwd:               cwdRef,
 		MaxIterations:     opts.MaxIterations,
 		PlanMode:          parentPlanMode,
 		AutoMode:          parentAutoMode,

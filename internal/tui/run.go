@@ -26,6 +26,7 @@ import (
 	"github.com/yottadynamics/yottacode/internal/usercmd"
 	"github.com/yottadynamics/yottacode/internal/version"
 	"github.com/yottadynamics/yottacode/internal/wizard"
+	"github.com/yottadynamics/yottacode/internal/worktree"
 )
 
 // defaultSystemPrompt is sourced from internal/agent so the TUI and
@@ -145,12 +146,21 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 		return err
 	}
 
+	// cwdRef is the shared working-directory holder every tool reads
+	// from. enter_worktree / exit_worktree call cwdRef.Set(...) (plus
+	// os.Chdir) so a mid-session worktree swap propagates to all
+	// tools without rebuilding the registry. WriteOpts holds the
+	// same pointer so write validation tracks the swap too — important
+	// now that yottacode worktrees live in ~/.yottacode/worktrees/,
+	// outside the original cwd's pathUnder perimeter.
+	cwdRef := agent.NewCwdRef(cwd)
+
 	// Path-validation policy: every mutating filesystem tool gets the
 	// same WriteOpts. Cwd-confined writes by default; --allow-paths
 	// expands the allowed roots; the deny list is hardcoded to keep
 	// yottacode's own state and git internals off-limits.
 	writeOpts := agent.WritePathOptions{
-		Cwd:          cwd,
+		Cwd:          cwdRef,
 		AllowedPaths: splitAllowPaths(opts.AllowPaths),
 		DenyExact:    agent.DefaultDenyPaths(cwd),
 	}
@@ -176,37 +186,45 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 	yoloMode := &agent.YoloModeState{}
 
 	reg := agent.NewRegistry()
-	reg.Register(&agent.ReadFileTool{Cwd: cwd, DenyReadPaths: denyReads})
-	reg.Register(&agent.ReadManyFilesTool{Cwd: cwd, DenyReadPaths: denyReads})
-	reg.Register(&agent.WriteFileTool{Cwd: cwd, WriteOpts: writeOpts})
-	reg.Register(&agent.EditFileTool{Cwd: cwd, WriteOpts: writeOpts})
-	reg.Register(&agent.ApplyDiffTool{Cwd: cwd, WriteOpts: writeOpts})
-	reg.Register(&agent.MkdirTool{Cwd: cwd, WriteOpts: writeOpts})
-	reg.Register(&agent.CopyFileTool{Cwd: cwd, WriteOpts: writeOpts})
-	reg.Register(&agent.MoveFileTool{Cwd: cwd, WriteOpts: writeOpts})
-	reg.Register(&agent.DeleteFileTool{Cwd: cwd, WriteOpts: writeOpts})
-	reg.Register(&agent.ListGitChangedFilesTool{Cwd: cwd})
-	reg.Register(&agent.GitBranchStatusTool{Cwd: cwd})
-	reg.Register(&agent.GitShowFileAtRevTool{Cwd: cwd})
-	reg.Register(&agent.GitDiffFilesTool{Cwd: cwd})
-	reg.Register(&agent.GitStageFilesTool{Cwd: cwd})
-	reg.Register(&agent.GitUnstageFilesTool{Cwd: cwd})
-	reg.Register(&agent.GitCommitTool{Cwd: cwd})
-	// Git worktree tools
-	reg.Register(&agent.GitWorktreeListTool{Cwd: cwd})
-	reg.Register(&agent.GitWorktreeAddTool{Cwd: cwd})
-	reg.Register(&agent.GitWorktreeRemoveTool{Cwd: cwd})
-	reg.Register(&agent.GitWorktreeLockTool{Cwd: cwd})
-	reg.Register(&agent.GitWorktreeUnlockTool{Cwd: cwd})
-	reg.Register(&agent.GitWorktreePruneTool{Cwd: cwd})
+	reg.Register(&agent.ReadFileTool{Cwd: cwdRef,DenyReadPaths: denyReads})
+	reg.Register(&agent.ReadManyFilesTool{Cwd: cwdRef,DenyReadPaths: denyReads})
+	reg.Register(&agent.WriteFileTool{Cwd: cwdRef,WriteOpts: writeOpts})
+	reg.Register(&agent.EditFileTool{Cwd: cwdRef,WriteOpts: writeOpts})
+	reg.Register(&agent.ApplyDiffTool{Cwd: cwdRef,WriteOpts: writeOpts})
+	reg.Register(&agent.MkdirTool{Cwd: cwdRef,WriteOpts: writeOpts})
+	reg.Register(&agent.CopyFileTool{Cwd: cwdRef,WriteOpts: writeOpts})
+	reg.Register(&agent.MoveFileTool{Cwd: cwdRef,WriteOpts: writeOpts})
+	reg.Register(&agent.DeleteFileTool{Cwd: cwdRef,WriteOpts: writeOpts})
+	reg.Register(&agent.ListGitChangedFilesTool{Cwd: cwdRef})
+	reg.Register(&agent.GitBranchStatusTool{Cwd: cwdRef})
+	reg.Register(&agent.GitShowFileAtRevTool{Cwd: cwdRef})
+	reg.Register(&agent.GitDiffFilesTool{Cwd: cwdRef})
+	reg.Register(&agent.GitStageFilesTool{Cwd: cwdRef})
+	reg.Register(&agent.GitUnstageFilesTool{Cwd: cwdRef})
+	reg.Register(&agent.GitCommitTool{Cwd: cwdRef})
+	// Git worktree tools. Layer 1 (enter/exit/status) are the agent-
+	// friendly entry points; Layer 2 (the git_worktree_* wrappers) sit
+	// underneath for finer-grained admin. enter_worktree and
+	// exit_worktree are in the auto-mode safety floor — they always
+	// prompt, even when auto mode is on, because they shift the agent's
+	// working context (and exit's force-remove is destructive).
+	reg.Register(&agent.EnterWorktreeTool{Cwd: cwdRef})
+	reg.Register(&agent.ExitWorktreeTool{Cwd: cwdRef})
+	reg.Register(&agent.WorktreeStatusTool{Cwd: cwdRef})
+	reg.Register(&agent.GitWorktreeListTool{Cwd: cwdRef})
+	reg.Register(&agent.GitWorktreeAddTool{Cwd: cwdRef})
+	reg.Register(&agent.GitWorktreeRemoveTool{Cwd: cwdRef})
+	reg.Register(&agent.GitWorktreeLockTool{Cwd: cwdRef})
+	reg.Register(&agent.GitWorktreeUnlockTool{Cwd: cwdRef})
+	reg.Register(&agent.GitWorktreePruneTool{Cwd: cwdRef})
 	// Composite commit-workflow tools paired with the /commit slash
 	// command (cmd_commit.go). Context is read-only and parallel-safe;
 	// apply is approval-gated and validates the subject in Go before
 	// invoking git, so empty-staging / oversize / trailing-period /
 	// multi-line messages can't reach a `git commit` invocation no
 	// matter what the model emits.
-	reg.Register(&agent.GitCommitContextTool{Cwd: cwd})
-	reg.Register(&agent.GitCommitApplyTool{Cwd: cwd})
+	reg.Register(&agent.GitCommitContextTool{Cwd: cwdRef})
+	reg.Register(&agent.GitCommitApplyTool{Cwd: cwdRef})
 	// Composite PR-workflow tools paired with the /create-pr slash
 	// command (cmd_create_pr.go). Context is read-only (no network
 	// beyond a cheap `git ls-remote` push-state check); create is
@@ -215,39 +233,39 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 	// v0.5.0's typed go-github client — swapping the ShellOut for the
 	// typed client is a one-line registration change.
 	ghClient := githubapi.NewTypedClient(cwd)
-	reg.Register(&agent.GHPRContextTool{Cwd: cwd})
-	reg.Register(&agent.GHPRCreateTool{Cwd: cwd, GH: ghClient})
+	reg.Register(&agent.GHPRContextTool{Cwd: cwdRef})
+	reg.Register(&agent.GHPRCreateTool{Cwd: cwdRef,GH: ghClient})
 	// gh_pr_review_context is the read-side composite paired with
 	// /git-review-pr. Shares the same github.Interface instance as
 	// gh_pr_create so the v0.5.0 swap to a typed go-github client
 	// changes one variable above instead of two registration sites.
-	reg.Register(&agent.GHPRReviewContextTool{Cwd: cwd, GH: ghClient})
+	reg.Register(&agent.GHPRReviewContextTool{Cwd: cwdRef,GH: ghClient})
 	// git_push is paired with /git-push. The GH dependency is for
 	// the best-effort PR-URL lookup after a successful push — a
 	// nil client would skip the lookup silently, but registering
 	// with the shared ghClient gives us the "PR updated: <url>"
 	// footer for free.
-	reg.Register(&agent.GitPushTool{Cwd: cwd, GH: ghClient})
+	reg.Register(&agent.GitPushTool{Cwd: cwdRef,GH: ghClient})
 	// gh_pr_update is paired with /git-update-pr. Same Interface
 	// instance as the other PR tools — the v0.5.0 typed client
 	// swap will switch one variable above and pick up all four
 	// (create/read-review/push-lookup/update) at once.
-	reg.Register(&agent.GHPRUpdateTool{Cwd: cwd, GH: ghClient})
-	reg.Register(&agent.GitLogFileTool{Cwd: cwd})
-	reg.Register(&agent.GitBlameLinesTool{Cwd: cwd})
-	reg.Register(&agent.GitMergeBaseTool{Cwd: cwd})
-	reg.Register(&agent.GitCheckpointTool{Cwd: cwd})
-	reg.Register(&agent.RollbackTool{Cwd: cwd})
-	reg.Register(&agent.RunTestsTool{Cwd: cwd})
-	reg.Register(&agent.RunBashTool{Cwd: cwd})
-	reg.Register(&agent.ListDirTool{Cwd: cwd})
-	reg.Register(&agent.ListProjectStructureTool{Cwd: cwd})
-	reg.Register(&agent.GlobTool{Cwd: cwd})
-	reg.Register(&agent.GrepTool{Cwd: cwd, DenyReadPaths: denyReads})
+	reg.Register(&agent.GHPRUpdateTool{Cwd: cwdRef,GH: ghClient})
+	reg.Register(&agent.GitLogFileTool{Cwd: cwdRef})
+	reg.Register(&agent.GitBlameLinesTool{Cwd: cwdRef})
+	reg.Register(&agent.GitMergeBaseTool{Cwd: cwdRef})
+	reg.Register(&agent.GitCheckpointTool{Cwd: cwdRef})
+	reg.Register(&agent.RollbackTool{Cwd: cwdRef})
+	reg.Register(&agent.RunTestsTool{Cwd: cwdRef})
+	reg.Register(&agent.RunBashTool{Cwd: cwdRef})
+	reg.Register(&agent.ListDirTool{Cwd: cwdRef})
+	reg.Register(&agent.ListProjectStructureTool{Cwd: cwdRef})
+	reg.Register(&agent.GlobTool{Cwd: cwdRef})
+	reg.Register(&agent.GrepTool{Cwd: cwdRef,DenyReadPaths: denyReads})
 	reg.Register(&agent.FetchURLTool{})
-	reg.Register(&agent.MemorySaveTool{Cwd: cwd})
-	reg.Register(&agent.MemoryForgetTool{Cwd: cwd})
-	reg.Register(&agent.GitTool{Cwd: cwd})
+	reg.Register(&agent.MemorySaveTool{Cwd: cwdRef})
+	reg.Register(&agent.MemoryForgetTool{Cwd: cwdRef})
+	reg.Register(&agent.GitTool{Cwd: cwdRef})
 	reg.Register(&agent.TodoWriteTool{Store: planStore})
 	// ExitPlanModeTool is registered with a nil Approve callback at
 	// startup; cmdPlan wires the callback (and the plan-file slug)
@@ -293,7 +311,7 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 		YoloMode:       yoloMode,
 		PlanMode:       planMode,
 		AutoMode:       autoMode,
-		Cwd:            cwd,
+		Cwd:            cwdRef,
 		TranscriptDir:  transcriptDir,
 		// Background subagents are an opt-in experimental feature.
 		// When the gate is off, `run_in_background:true` returns a
@@ -316,7 +334,7 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 		Registry:          reg,
 		Permissions:       perms,
 		BypassPermissions: opts.BypassPermissions,
-		Cwd:               cwd,
+		Cwd:               cwdRef,
 		MaxIterations:     opts.MaxIterations,
 		PlanMode:          planMode,
 		AutoMode:          autoMode,
@@ -377,6 +395,7 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 		Commit:                 version.Commit(),
 		Dirty:                  version.Dirty(),
 		Branch:                 gitBranch(cwd),
+		Worktree:               sess.Worktree,
 		MemorySummary:          mem.Summary().String(),
 		BaseSystemPrompt:       baseSys,
 		FileCfg:                fileCfg,
@@ -515,6 +534,12 @@ func splitAllowPaths(s string) []string {
 //
 // The store is loaded each launch — it's small and the user can
 // edit `yottacode trust remove` between runs, so we don't cache.
+//
+// When cwd is a yottacode-managed worktree (under ~/.yottacode/worktrees/
+// after the relocation), trust is checked against the *originating* repo
+// — the worktree itself is never in the user's persistent trust set,
+// but its parent repo is. Resolves the originating repo via
+// `git rev-parse --git-common-dir`, which works inside a linked worktree.
 func ensureWorkspaceTrust(cwd string, opts cli.ChatOptions) error {
 	storePath, err := trust.DefaultStorePath()
 	if err != nil {
@@ -525,12 +550,26 @@ func ensureWorkspaceTrust(cwd string, opts cli.ChatOptions) error {
 		return fmt.Errorf("load trust store: %w", err)
 	}
 	allowPaths := splitAllowPaths(opts.AllowPaths)
+
+	// If cwd is inside a yottacode-managed worktree, the trust gate
+	// belongs to the originating repo, not the worktree dir. Resolve
+	// back via git's common-dir lookup; on success, run the gate
+	// against the repo root. On failure (e.g. worktree no longer
+	// linked), fall through to checking cwd directly so we still
+	// produce a useful error message.
+	gateTarget := cwd
+	if _, _, ok := worktree.IsAnyWorktreePath(cwd); ok {
+		if repoRoot, err := worktree.ResolveRepoRoot(context.Background(), cwd); err == nil {
+			gateTarget = repoRoot
+		}
+	}
+
 	if !trust.IsInteractiveStream(os.Stdin) || !trust.IsInteractiveStream(os.Stdout) {
 		// Non-TTY (piped, CI): skip the trust gate entirely.
 		// Matches Claude Code's `-p` behavior.
-		return trust.Ensure(store, storePath, cwd, allowPaths, false, os.Stdin, os.Stderr)
+		return trust.Ensure(store, storePath, gateTarget, allowPaths, false, os.Stdin, os.Stderr)
 	}
-	return trust.EnsureInteractive(store, storePath, cwd, allowPaths)
+	return trust.EnsureInteractive(store, storePath, gateTarget, allowPaths)
 }
 
 func splitCSV(s string) []string {
@@ -601,5 +640,10 @@ func openSession(opts cli.ChatOptions, cwd string) (*session.Session, bool, erro
 	if err != nil {
 		return nil, false, err
 	}
+	// Stamp the worktree name when the session is launched inside one
+	// (via --worktree at startup). Sessions resume into the right
+	// worktree because Session.Cwd is the worktree dir; the field is
+	// kept for `sessions list` display and future tooling.
+	s.Worktree = opts.Worktree
 	return s, true, nil
 }

@@ -68,6 +68,7 @@ func newCLI() *cobra.Command {
 		newModelCmd(),
 		newOpenAIAuthCmd(),
 		newTrustCmd(),
+		newWorktreeCmd(),
 		newVersionCmd(),
 	)
 	return root
@@ -106,6 +107,16 @@ Configuration (no built-in defaults — must be set via flag or env):
 				}
 			}
 			if err := resolveContinue(opts); err != nil {
+				return err
+			}
+			// --worktree: materialize (or attach to) the named worktree,
+			// chdir into it, and stamp opts.Worktree with the resolved
+			// name so tui.Run records it on the session. ensureWorktree
+			// is a no-op when --worktree wasn't passed. Runs AFTER
+			// resolveContinue so --continue + --worktree composes
+			// correctly (find the prior session for this directory,
+			// then enter the worktree to run it).
+			if err := ensureWorktree(cmd.Context(), opts); err != nil {
 				return err
 			}
 			maybePromptUpgrade(cmd.Context(), updateCh)
@@ -301,6 +312,13 @@ Configuration (no built-in defaults — must be set via flag or env):
 			if err := resolveContinue(opts); err != nil {
 				return err
 			}
+			// --worktree: same handling as the TUI launch path. In
+			// oneshot mode the session won't auto-clean the worktree
+			// at exit (no interactive keep/remove prompt is possible);
+			// users run `yottacode worktree remove <name>` afterward.
+			if err := ensureWorktree(cmd.Context(), opts); err != nil {
+				return err
+			}
 			var prompt string
 			switch {
 			case len(args) == 1:
@@ -407,6 +425,22 @@ func bindCommonPersistentFlags(cmd *cobra.Command, opts *cli.ChatOptions) {
 	// internal/experimental — see `yottacode --experimental list` (or
 	// /experimental inside the TUI) for the current catalog.
 	f.StringSliceVar(&opts.Experimental, "experimental", nil, "Enable an experimental feature (repeatable). See docs/experimental.md for the catalog. Also accepts comma-separated values; merges with $YOTTACODE_EXPERIMENTAL and [experimental] in config.toml.")
+	// --worktree opens (or attaches to) a yottacode-managed git worktree
+	// under <repo>/.yottacode/worktrees/<name>/ on branch worktree-<name>
+	// and runs the session inside it. Passing the flag without a value
+	// auto-generates a name. Mirrors Claude Code's --worktree.
+	f.StringVarP(&opts.Worktree, "worktree", "w", "",
+		"Run inside a yottacode-managed git worktree under <repo>/.yottacode/worktrees/<name>/. "+
+			"Pass without value to auto-generate a name (e.g. 'bright-running-fox'). "+
+			"Requires workspace trust (one-time prompt per repo). Copies files matching "+
+			".worktreeinclude into the new worktree so .env etc. travel with the session.")
+	// Cobra's NoOptDefVal lets `--worktree` (no argument) parse to the
+	// sentinel that means "auto-generate". Without this, `--worktree`
+	// alone would consume the next positional and produce surprising
+	// behavior.
+	if wt := cmd.PersistentFlags().Lookup("worktree"); wt != nil {
+		wt.NoOptDefVal = cli.WorktreeAutoGenerate
+	}
 }
 
 func adapterConfigFromOptions(opts cli.ChatOptions) adapter.Config {

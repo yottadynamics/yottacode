@@ -13,7 +13,7 @@ import (
 // requires approval. There is no sandbox today; for real isolation,
 // run yottacode itself inside a container.
 type RunBashTool struct {
-	Cwd string
+	Cwd *CwdRef
 }
 
 func (t *RunBashTool) Name() string { return "run_bash" }
@@ -60,7 +60,7 @@ func (t *RunBashTool) Execute(ctx context.Context, argsJSON string) (string, err
 		return "", fmt.Errorf("run_bash: command is required")
 	}
 	c := exec.CommandContext(ctx, "/bin/sh", "-c", a.Command)
-	c.Dir = t.Cwd
+	c.Dir = t.Cwd.Get()
 	var stdout, stderr bytes.Buffer
 	c.Stdout = &cappedWriter{buf: &stdout}
 	c.Stderr = &cappedWriter{buf: &stderr}

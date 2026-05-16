@@ -31,10 +31,11 @@ func newPlanModeTestModel(t *testing.T) (Model, *agent.PlanModeState) {
 	autoMode := &agent.AutoModeState{}
 	yoloMode := &agent.YoloModeState{}
 	cwd := t.TempDir()
+	cwdRef := agent.NewCwdRef(cwd)
 	reg := agent.NewRegistry()
-	reg.Register(&agent.WriteFileTool{Cwd: cwd})
-	reg.Register(&agent.EditFileTool{Cwd: cwd})
-	reg.Register(&agent.ApplyDiffTool{Cwd: cwd})
+	reg.Register(&agent.WriteFileTool{Cwd: cwdRef})
+	reg.Register(&agent.EditFileTool{Cwd: cwdRef})
+	reg.Register(&agent.ApplyDiffTool{Cwd: cwdRef})
 	reg.Register(&agent.ExitPlanModeTool{})
 	cfg := agent.LoopConfig{Registry: reg, MaxIterations: 5, PlanMode: planMode, AutoMode: autoMode, YoloMode: yoloMode}
 	perms := permissions.LoadEmpty(cwd)

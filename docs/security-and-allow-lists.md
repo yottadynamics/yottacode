@@ -39,6 +39,19 @@ yottacode trust remove <path>         # exact-path match
 yottacode trust clear                 # remove every entry
 ```
 
+**Worktrees and trust.** `yottacode --worktree <name>` requires the
+repo root to be trusted; it refuses on an untrusted clone with a
+one-line hint to run `yottacode` in the repo once. Worktree
+directories live in user home at
+`~/.yottacode/worktrees/<repo-slug>/<name>/`. The first-launch trust
+gate inside a worktree session resolves back to the originating repo
+via `git rev-parse --git-common-dir`, so the worktree dir itself
+never needs to appear in `~/.yottacode/trusted-roots.json` — trust
+on the repo flows through. An active worktree session can write
+inside its own cwd normally; write validation reads cwd dynamically
+so an in-session `enter_worktree` swap doesn't leave the validator
+locked to the pre-swap perimeter. See [worktrees.md](worktrees.md).
+
 **Out-of-workspace writes.** When the model tries to write a file outside cwd + `--allow-paths` roots, yottacode shows an inline elevation prompt:
 
 ```

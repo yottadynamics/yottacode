@@ -109,8 +109,9 @@ type AgentTool struct {
 	AutoMode *AutoModeState
 
 	// Cwd is the working directory child tools resolve relative
-	// paths against. Same as the parent's cwd.
-	Cwd string
+	// paths against. Shared with the parent so an in-session cwd
+	// swap (enter_worktree) flows to the spawned subagent.
+	Cwd *CwdRef
 
 	// TranscriptDir is the directory background-task transcripts get
 	// persisted under. Must exist at Execute time; the caller (TUI
@@ -442,7 +443,7 @@ func (t *AgentTool) runChild(
 		Registry:          childReg,
 		Permissions:       t.Permissions,
 		BypassPermissions: false, // never bypass for child; rely on yolo for true unattended
-		Cwd:               t.Cwd,
+		Cwd:               t.Cwd, // shared CwdRef — enter_worktree mid-conversation propagates to child loops
 		MaxIterations:     childIterationCap,
 		PlanMode:          childPlanMode,
 		AutoMode:          childAutoMode,

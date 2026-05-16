@@ -296,7 +296,7 @@ func TestBuildPRContext_NoOriginNoTemplate(t *testing.T) {
 
 func TestGHPRCreateTool_RoundsThroughTool(t *testing.T) {
 	gh := &fakeGH{res: github.CreatePRResult{URL: "https://github.com/o/r/pull/3", Number: 3}}
-	tool := &GHPRCreateTool{Cwd: t.TempDir(), GH: gh}
+	tool := &GHPRCreateTool{Cwd: NewCwdRef(t.TempDir()), GH: gh}
 	out, err := tool.Execute(context.Background(),
 		`{"base":"main","title":"implement caching","body":"why","draft":true}`)
 	if err != nil {
@@ -427,7 +427,7 @@ func TestGHPRReviewContextTool_RoundsThroughTool(t *testing.T) {
 		readPRDiffRes: "diff content",
 		listChecksRes: []github.CheckRun{{Name: "ci", State: "SUCCESS"}},
 	}
-	tool := &GHPRReviewContextTool{Cwd: t.TempDir(), GH: gh}
+	tool := &GHPRReviewContextTool{Cwd: NewCwdRef(t.TempDir()), GH: gh}
 	out, err := tool.Execute(context.Background(), `{"ref":"17"}`)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -557,7 +557,7 @@ func TestGHPRUpdateTool_RoundsThroughTool(t *testing.T) {
 	gh := &fakeGH{updatePRRes: github.UpdatePRResult{
 		URL: "https://github.com/o/r/pull/17", Number: 17,
 	}}
-	tool := &GHPRUpdateTool{Cwd: t.TempDir(), GH: gh}
+	tool := &GHPRUpdateTool{Cwd: NewCwdRef(t.TempDir()), GH: gh}
 	out, err := tool.Execute(context.Background(),
 		`{"ref":"17","title":"refreshed","body":"new body"}`)
 	if err != nil {
