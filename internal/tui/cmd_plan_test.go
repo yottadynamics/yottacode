@@ -76,6 +76,49 @@ func TestCmdPlan_EntersAndPrintsBanner(t *testing.T) {
 	}
 }
 
+// Entry card uses the same gutter glyphs as the tool-output cards
+// (╭ / │ / ╰) so the surface reads as part of the same visual family.
+// If any of these disappear we've regressed to the older two-line
+// shape — the test pins all three.
+func TestRenderPlanModeEntryCard_HasCardShape(t *testing.T) {
+	out := stripANSI(renderPlanModeEntryCard())
+	for _, glyph := range []string{"╭ ", "│   ", "╰ "} {
+		if !strings.Contains(out, glyph) {
+			t.Errorf("entry card missing gutter glyph %q; got:\n%s", glyph, out)
+		}
+	}
+	for _, want := range []string{
+		PlanModeIcon + " plan mode active",
+		"read-only research; describe what you'd like planned in your next message",
+		"exit with /plan or Shift+Tab",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("entry card missing %q; got:\n%s", want, out)
+		}
+	}
+}
+
+// Plan-file card is the second moment in plan mode — emitted from
+// maybeFillPlanFile once the slug resolves. Same gutter family,
+// header + footer only (no body).
+func TestRenderPlanFileCard_HasCardShape(t *testing.T) {
+	out := stripANSI(renderPlanFileCard("/home/u/.yottacode/plans/foo-bar-deadbeef.md"))
+	for _, glyph := range []string{"╭ ", "╰ "} {
+		if !strings.Contains(out, glyph) {
+			t.Errorf("plan-file card missing gutter glyph %q; got:\n%s", glyph, out)
+		}
+	}
+	if strings.Contains(out, "│ ") {
+		t.Errorf("plan-file card should be header+footer only (no body row); got:\n%s", out)
+	}
+	if !strings.Contains(out, PlanModeIcon+" plan file") {
+		t.Errorf("plan-file card missing header; got:\n%s", out)
+	}
+	if !strings.Contains(out, "foo-bar-deadbeef.md") {
+		t.Errorf("plan-file card missing path basename; got:\n%s", out)
+	}
+}
+
 func TestCmdPlan_PositionalArgsIgnored(t *testing.T) {
 	// /plan used to take a topic; we removed it. Args are accepted (so
 	// users typing /plan describe their task don't get an "unknown args"

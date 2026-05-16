@@ -109,6 +109,34 @@ func compactPlanBasename(planPath string) string {
 	return truncateSlug(slug, maxBasenameWidth-3) + ".md"
 }
 
+// renderPlanModeEntryCard renders the on-entry log entry as a
+// tool-card-shaped block: header carries the ▸ icon + "plan mode
+// active" label, body explains the read-only research framing, footer
+// shows how to exit. Reuses styleCardGutter / styleCardHeader so the
+// surface reads as part of the same visual family as the tool-output
+// cards in scrollback.
+func renderPlanModeEntryCard() string {
+	header := styleCardGutter.Render("╭ ") +
+		stylePlanBannerLabel.Render(PlanModeIcon+" plan mode active")
+	body := styleCardGutter.Render("│   ") +
+		stylePlanBannerHint.Render("read-only research; describe what you'd like planned in your next message")
+	footer := styleCardGutter.Render("╰ ") +
+		stylePlanBannerHint.Render("exit with /plan or Shift+Tab")
+	return strings.Join([]string{header, body, footer}, "\n")
+}
+
+// renderPlanFileCard renders the plan-file-resolved log entry as a
+// two-line card: header announces the resolution, footer carries the
+// abbreviated path. Emitted from maybeFillPlanFile the first time a
+// plan-mode session resolves its slug from the user's opening message.
+func renderPlanFileCard(planPath string) string {
+	header := styleCardGutter.Render("╭ ") +
+		stylePlanBannerLabel.Render(PlanModeIcon+" plan file")
+	footer := styleCardGutter.Render("╰ ") +
+		stylePlanBannerActivity.Render(abbrevHome(planPath))
+	return strings.Join([]string{header, footer}, "\n")
+}
+
 // renderPlanApprovalCard renders the decision UI for an exit_plan_mode
 // approval. The plan body itself is NOT inside the box — it's emitted
 // to scrollback as a quoted block when ApprovalNeeded fires (see

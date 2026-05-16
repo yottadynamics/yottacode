@@ -33,11 +33,22 @@ const agentToolName = AgentToolName
 // MaxBackgroundSubagents caps how many background subagents may be
 // running concurrently per session. Hit the cap → the tool rejects
 // the call with a recoverable error message the model can adapt
-// around. Foreground subagents are unbounded (they serialize on the
-// parent's call stack anyway). 8 is a round number that matches what
-// most users informally do — enough for genuine parallelism, low
-// enough to keep API spend bounded if a model gets enthusiastic.
+// around. 8 is a round number that matches what most users informally
+// do — enough for genuine parallelism, low enough to keep API spend
+// bounded if a model gets enthusiastic.
 const MaxBackgroundSubagents = 8
+
+// MaxForegroundSubagents caps how many foreground subagents may be
+// running concurrently per session. Foreground spawns are no longer
+// serialized (AgentTool.ParallelSafe returns true), so a parent that
+// emits N Agent calls in one assistant message fans them out via the
+// loop's parallel-batch path. The cap matches the background ceiling
+// because the cost profile is the same: every concurrent child holds
+// a goroutine, an iteration budget, and a slice of the parent's
+// provider rate limit. The (N+1)th call returns a recoverable error
+// the model can react to by waiting on the in-flight children before
+// dispatching more.
+const MaxForegroundSubagents = 8
 
 // childChildIterationCap is the iteration budget every child subagent
 // runs under. We deliberately do NOT apply the auto-mode 4× multiplier
@@ -204,13 +215,23 @@ func (t *AgentTool) Schema() map[string]any {
 // rules.
 func (t *AgentTool) RequiresApproval(string) bool { return false }
 
-// ParallelSafe returns false so two Agent calls from the same
-// assistant message serialize. Two simultaneous subagent spawns can
-// rate-limit the same provider key and burn the iteration budget on
-// both — better to do them in sequence. (Background subagents are
-// the parallelism story; foreground spawns are a one-at-a-time
-// affair.)
-func (t *AgentTool) ParallelSafe(string) bool { return false }
+// ParallelSafe returns true so several Agent calls from the same
+// assistant message run concurrently — matching the user-visible
+// pattern in other Claude-Code-style frontends where a parent spawns
+// three Explore agents in one turn and they fan out at once. The
+// loop's executeToolCallsParallel handles the fan-out; each child
+// runs in its own goroutine with its own loop + provider call.
+//
+// The cost the older sequential design avoided is real but
+// manageable: N concurrent children share the parent's provider key,
+// so a thundering herd can hit rate limits and burn iteration
+// budget on dead-end investigations. Mitigations live elsewhere —
+// MaxBackgroundSubagents caps background fan-out, and per-tool
+// approval still gates write-y children. The model is generally
+// conservative about how many it spawns at once (typically 2–4
+// Explores), so an explicit numeric cap on foreground concurrency
+// would mostly punish the rare legitimate burst.
+func (t *AgentTool) ParallelSafe(string) bool { return true }
 
 func (t *AgentTool) PreviewCall(argsJSON string) string {
 	a := parseAgentArgs(argsJSON)
@@ -278,6 +299,10 @@ func (t *AgentTool) Execute(ctx context.Context, argsJSON string) (string, error
 	if a.RunInBackground && t.Tasks.ActiveCount() >= MaxBackgroundSubagents {
 		return fmt.Sprintf("error: at most %d background subagents may run concurrently (current: %d); wait for one to finish or stop it with /subagents stop <id>",
 			MaxBackgroundSubagents, t.Tasks.ActiveCount()), nil
+	}
+	if !a.RunInBackground && t.Tasks.ActiveForegroundCount() >= MaxForegroundSubagents {
+		return fmt.Sprintf("error: at most %d foreground subagents may run concurrently (current: %d); wait for one of the in-flight subagents to finish before dispatching more",
+			MaxForegroundSubagents, t.Tasks.ActiveForegroundCount()), nil
 	}
 
 	taskID := subagents.NewTaskID()

@@ -93,8 +93,11 @@ The `Agent` tool accepts `run_in_background: true`:
   results. Foreground delegation is the stable surface.
 
 The trade is between **context isolation** (both variants give it),
-**parallelism** (only background), and **causal chaining** (only
-foreground — the parent gets the answer in the same turn it asked).
+**parallelism** (both variants now — foreground subagents emitted in
+the same assistant message fan out concurrently via the loop's
+parallel-batch path; background still adds long-running off-turn
+parallelism on top), and **causal chaining** (only foreground — the
+parent gets the answer in the same turn it asked).
 
 ## Mode propagation
 
@@ -139,6 +142,12 @@ draft how we'd add a /history command"* gets a useful plan back even
 if it spawned the Plan subagent mid-investigation. The child can
 investigate the codebase, append to the plan file (the same one the
 parent is composing), and return a structured reply.
+
+**Prompt nudge**: the plan-mode addendum also steers the parent to
+dispatch subagents with `run_in_background:false`, so each
+subagent's findings return in the same turn and fold directly into
+the plan body — rather than landing via `get_subagent_result` after
+the plan is already being written.
 
 ### Auto mode + subagents
 
