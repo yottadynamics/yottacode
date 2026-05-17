@@ -14,16 +14,56 @@ tool is exposed to the parent model; the model dispatches by
 
 ## Built-in agents
 
-Three agent types ship with the binary:
+Four agent types ship with the binary:
 
 | Name | Tools | Purpose |
 | --- | --- | --- |
 | `general-purpose` | all parent tools (except `Agent` itself) | Answer open-ended questions. Falls back to writing if the task demands it. |
 | `Explore` | read-only (read_file, grep, glob, list_*, git read subcommands, fetch_url) | Fast code search and location lookup. |
-| `Plan` | Explore's tools + `todo_write` | Produce a written plan for a coding task. |
+| `Plan` | Explore's tools + `todo_write` | Produce a written plan for a coding task. Ends with a `### Critical Files for Implementation` trailer. |
+| `verification` | Explore's tools + `run_bash` | Adversarially verify a change: run builds / tests / probes, try to break it, end with a `VERDICT: PASS\|FAIL\|PARTIAL` line. Background-by-default. |
 
 The built-in definitions live in `internal/subagents/builtins/*.md`
 and are embedded in the binary — they ship without any setup.
+
+### `verification` in depth
+
+Dispatch after non-trivial work (3+ file edits, backend / API
+changes, infra changes). Pass the agent the original user task
+description, the files changed, and the approach taken — the prompt
+is structured around that input. The agent:
+
+1. Reads project conventions (`PROJECT.md`, `README`, `AGENTS.md`).
+2. Runs build / tests / linters as the universal baseline. A broken
+   build is automatic FAIL.
+3. Applies a strategy specific to the change type (frontend, backend,
+   CLI, infra, library, bug fix, data pipeline, migration, refactor).
+4. Runs at least one adversarial probe (concurrency, boundary,
+   idempotency, orphan operation) before issuing PASS.
+5. Returns a structured report with `### Check:` blocks (each with
+   the exact command run and the actual output observed), terminated
+   by a single parseable line:
+
+   ```
+   VERDICT: PASS
+   ```
+
+   or `FAIL` / `PARTIAL`. Use `PARTIAL` only for environmental
+   limitations (no test framework, server can't start) — never as a
+   hedge against "I'm unsure."
+
+The agent is read-only against the project directory: it can write
+ephemeral test scripts to `/tmp` via `run_bash` but cannot edit,
+create, or delete project files, install dependencies, or run git
+write operations.
+
+**Background-by-default**: the agent's frontmatter declares
+`background: true`, so dispatches default to a detached background
+task even when the caller omits `run_in_background`. The parent gets
+a task id back and can keep working; the verdict surfaces via the
+`SubagentBackgroundDone` event. In oneshot mode (where background
+isn't available), the dispatch silently falls back to foreground so
+the verdict still lands inline.
 
 ## Custom agents
 
@@ -56,6 +96,7 @@ Fields:
 - `description` (required) — one line shown to the parent model in the `Agent` tool schema.
 - `tools` (optional) — allowlist of tool names. Defaults to "inherit all parent tools (minus `Agent` itself)". Use `*` or `["*"]` to be explicit.
 - `model` (optional) — adapter model override for this agent. Useful for routing search-heavy agents to a cheaper model.
+- `background` (optional) — when `true`, dispatches default to background unless the caller explicitly passes `run_in_background:false`. Falls back to foreground in sessions where background isn't available (oneshot). Use this for slow off-turn checks the parent shouldn't block on (e.g. the `verification` builtin).
 - Body — the agent's system prompt. Be specific about what the parent should expect back.
 
 Unknown tool names in `tools:` emit a startup warning and are silently

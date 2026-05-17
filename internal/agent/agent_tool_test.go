@@ -164,6 +164,79 @@ func TestAgentTool_ForegroundCapEnforced(t *testing.T) {
 	}
 }
 
+// An agent definition with `background: true` should dispatch as
+// background even when the caller omits run_in_background. This is the
+// surface the verification agent leans on — callers shouldn't have to
+// remember to pass the flag for a slow off-turn check.
+func TestAgentTool_ConfigBackgroundDefaultsToBackground(t *testing.T) {
+	streamer := &scriptedStreamer{turns: [][]adapter.StreamEvent{
+		{sseDone("verdict: pass")},
+	}}
+	cfg := subagents.AgentConfig{
+		Name:        "verification",
+		Description: "x",
+		Prompt:      "verify",
+		Background:  true,
+		Source:      "test",
+	}
+	tool, _ := newTestAgentTool(t, []subagents.AgentConfig{cfg}, streamer, true /* AllowBackground */)
+	args := mustJSON(t, agentArgs{SubagentType: "verification", Prompt: "go"})
+	out, err := tool.Execute(context.Background(), args)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	// Background dispatch returns a task-id handle string, not the
+	// child's final reply. The "started as task" prefix is the
+	// distinguishing marker.
+	if !strings.Contains(out, "background subagent") {
+		t.Errorf("output = %q, want background-dispatch handle", out)
+	}
+	// Wait briefly for the detached goroutine to finish before listing
+	// — otherwise the registry may still show Running.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		tasks := tool.Tasks.List()
+		if len(tasks) == 1 && tasks[0].Status == subagents.TaskCompleted {
+			if !tasks[0].Background {
+				t.Errorf("task.Background = false, want true (config default should have flipped it)")
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("background task did not complete within 2s")
+}
+
+// When AllowBackground is false (oneshot mode), a config-level
+// `background: true` must silently fall back to foreground rather
+// than rejecting the call. Otherwise the verification agent becomes
+// unreachable from oneshot, which defeats the point of shipping it.
+func TestAgentTool_ConfigBackgroundFallsBackToForegroundWhenDisabled(t *testing.T) {
+	streamer := &scriptedStreamer{turns: [][]adapter.StreamEvent{
+		{sseDone("verdict: pass")},
+	}}
+	cfg := subagents.AgentConfig{
+		Name:        "verification",
+		Description: "x",
+		Prompt:      "verify",
+		Background:  true,
+		Source:      "test",
+	}
+	tool, _ := newTestAgentTool(t, []subagents.AgentConfig{cfg}, streamer, false /* AllowBackground */)
+	args := mustJSON(t, agentArgs{SubagentType: "verification", Prompt: "go"})
+	out, err := tool.Execute(context.Background(), args)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	// Foreground dispatch returns the child's final reply directly.
+	if !strings.Contains(out, "verdict: pass") {
+		t.Errorf("output = %q, want the child's final reply inline (foreground fallback)", out)
+	}
+	if strings.Contains(out, "experimental") {
+		t.Errorf("config-default background should silently fall back; got the experimental-gate error: %q", out)
+	}
+}
+
 func TestAgentTool_ForegroundCapturesFinalReply(t *testing.T) {
 	// The child Turn does one round: assistant returns content directly,
 	// no tool calls. The tool should return that content as the result.

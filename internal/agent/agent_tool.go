@@ -284,6 +284,18 @@ func (t *AgentTool) Execute(ctx context.Context, argsJSON string) (string, error
 	if cfg == nil {
 		return t.unknownSubagentError(a.SubagentType), nil
 	}
+	// An agent definition can declare `background: true` so callers
+	// don't have to remember the flag (the verification agent uses
+	// this: it's slow and the parent shouldn't block on it). An
+	// explicit caller-supplied `run_in_background:true` is still
+	// honored; the config only flips the *default* when the field is
+	// absent. If background isn't available in this session (oneshot
+	// mode), we silently fall back to foreground — the alternative
+	// (erroring) would make the verification agent unreachable from
+	// oneshot, which defeats the point.
+	if !a.RunInBackground && cfg.Background && t.AllowBackground {
+		a.RunInBackground = true
+	}
 	if a.RunInBackground && !t.AllowBackground {
 		// The model relays this message to the user verbatim, so
 		// it has to be both informative and actionable: name the
