@@ -741,8 +741,35 @@ func (t *AgentTool) fireBackgroundDone(ev SubagentBackgroundDone) {
 // transcriptFile is a thin wrapper around a per-task append-only file
 // the runner writes every child event to. Failures are swallowed —
 // transcript loss should never block the actual run.
+//
+// The writer maintains two pieces of state so the rendered output is
+// scannable markdown rather than a raw event dump: a content buffer
+// that accumulates ContentToken streams into one block per assistant
+// message, and a pending-tool record that pairs each ToolStart with
+// its ToolResult into a single rendered tool section.
 type transcriptFile struct {
 	f *os.File
+
+	// contentBuf accumulates ContentToken bodies between flushable
+	// events (tool start, error, turn done, run outcome). Flushed
+	// as one trimmed paragraph rather than one line per streamed
+	// token.
+	contentBuf strings.Builder
+
+	// pendingTool tracks the most recent ToolStart so we can pair it
+	// with its ToolResult into a single rendered block. nil when no
+	// tool call is in flight.
+	pendingTool *pendingToolCall
+}
+
+// pendingToolCall is the parked record between a ToolStart event and
+// its matching ToolResult. We hold the preview + start time so the
+// rendered block can show the same preview the user saw in the live
+// TUI plus the wall-clock duration of the call.
+type pendingToolCall struct {
+	name    string
+	preview string
+	started time.Time
 }
 
 func openTranscript(path string, cfg *subagents.AgentConfig, a agentArgs) *transcriptFile {
@@ -771,29 +798,116 @@ func (tr *transcriptFile) writeEvent(ev Event) {
 	if tr.f == nil {
 		return
 	}
-	ts := time.Now().UTC().Format("15:04:05.000")
 	switch e := ev.(type) {
 	case ReasoningToken:
-		fmt.Fprintf(tr.f, "[%s] reasoning: %s\n", ts, e.Text)
+		tr.flushContent()
+		if txt := strings.TrimSpace(e.Text); txt != "" {
+			fmt.Fprintf(tr.f, "> %s\n\n", txt)
+		}
 	case ContentToken:
-		fmt.Fprintf(tr.f, "[%s] content: %s\n", ts, e.Text)
+		tr.contentBuf.WriteString(e.Text)
 	case ToolStart:
-		fmt.Fprintf(tr.f, "[%s] tool_start %s: %s\n", ts, e.ToolName, e.Preview)
+		tr.flushContent()
+		tr.pendingTool = &pendingToolCall{
+			name:    e.ToolName,
+			preview: e.Preview,
+			started: time.Now(),
+		}
 	case ToolResult:
-		fmt.Fprintf(tr.f, "[%s] tool_result %s (errored=%t):\n%s\n---\n", ts, e.ToolName, e.Errored, e.Output)
+		tr.flushContent()
+		tr.renderToolBlock(e)
+		tr.pendingTool = nil
 	case ApprovalAuto:
-		fmt.Fprintf(tr.f, "[%s] approval_auto %s [%s]: %s\n", ts, e.ToolName, e.Source, e.Preview)
+		tr.flushContent()
+		fmt.Fprintf(tr.f, "_auto-approved %s (%s)_\n\n", e.ToolName, e.Source)
 	case ApprovalNeeded:
-		fmt.Fprintf(tr.f, "[%s] approval_needed %s: %s\n", ts, e.ToolName, e.Preview)
+		tr.flushContent()
+		fmt.Fprintf(tr.f, "_approval requested for %s_\n\n", e.ToolName)
 	case AssistantMessage:
-		fmt.Fprintf(tr.f, "[%s] assistant: %s\n", ts, e.Message.Content)
+		tr.flushContent()
+		if msg := strings.TrimSpace(e.Message.Content); msg != "" {
+			fmt.Fprintf(tr.f, "%s\n\n", msg)
+		}
 	case ErrorEvent:
-		fmt.Fprintf(tr.f, "[%s] error: %v\n", ts, e.Err)
+		tr.flushContent()
+		fmt.Fprintf(tr.f, "**Error:** %v\n\n", e.Err)
 	case IterCap:
-		fmt.Fprintf(tr.f, "[%s] iter_cap: %d\n", ts, e.Max)
+		tr.flushContent()
+		fmt.Fprintf(tr.f, "---\n\n_iteration cap hit (max %d)_\n\n", e.Max)
 	case TurnDone:
-		fmt.Fprintf(tr.f, "[%s] turn_done\n", ts)
+		tr.flushContent()
+		fmt.Fprint(tr.f, "---\n\n")
 	}
+}
+
+// flushContent drains the streaming content buffer as one trimmed
+// paragraph and resets it. No-op when the buffer is empty. Called
+// from every non-content branch in writeEvent so streamed tokens
+// always land before the next structural event.
+func (tr *transcriptFile) flushContent() {
+	if tr.contentBuf.Len() == 0 {
+		return
+	}
+	text := strings.TrimSpace(tr.contentBuf.String())
+	tr.contentBuf.Reset()
+	if text != "" {
+		fmt.Fprintf(tr.f, "%s\n\n", text)
+	}
+}
+
+// renderToolBlock renders one ToolResult (paired with its matching
+// ToolStart when available) as a markdown section: `### preview`
+// heading, fenced code block carrying the full output, and a meta
+// footer with errored / duration tags. The preview string from the
+// original ToolStart is reused when available so the heading matches
+// what the user saw in the live TUI.
+//
+// The output is written in full, untruncated. The transcript's job
+// is to be the faithful record of what the subagent did — the live
+// TUI already truncates tool cards at cardBodyLineCap lines, so the
+// transcript is where the user goes when they need to see the
+// complete output.
+func (tr *transcriptFile) renderToolBlock(r ToolResult) {
+	heading := r.ToolName
+	var duration time.Duration
+	if tr.pendingTool != nil && tr.pendingTool.name == r.ToolName {
+		if tr.pendingTool.preview != "" {
+			heading = tr.pendingTool.preview
+		}
+		duration = time.Since(tr.pendingTool.started)
+	}
+	fmt.Fprintf(tr.f, "### %s\n\n", heading)
+
+	if output := strings.TrimRight(r.Output, "\n"); output != "" {
+		lang := langForTool(r.ToolName)
+		fmt.Fprintf(tr.f, "```%s\n%s\n```\n", lang, output)
+	}
+
+	var meta []string
+	if r.Errored {
+		meta = append(meta, "errored")
+	}
+	if duration > 0 {
+		meta = append(meta, duration.Round(time.Millisecond).String())
+	}
+	if len(meta) > 0 {
+		fmt.Fprintf(tr.f, "\n_%s_\n", strings.Join(meta, " · "))
+	}
+	fmt.Fprint(tr.f, "\n")
+}
+
+// langForTool returns the markdown fenced-code-block language hint
+// for a tool's output. Returns "" for tools whose output isn't a
+// natural single language (grep match lines, dir listings, etc.) so
+// markdown renderers fall back to plain monospace.
+func langForTool(name string) string {
+	switch name {
+	case "run_bash", "run_tests":
+		return "bash"
+	case "edit_file", "apply_diff", "git_diff_files":
+		return "diff"
+	}
+	return ""
 }
 
 // writeOutcome appends the runner's final decision to the transcript
@@ -807,8 +921,12 @@ func (tr *transcriptFile) writeOutcome(outcome, result string) {
 	if tr.f == nil {
 		return
 	}
-	ts := time.Now().UTC().Format("15:04:05.000")
-	fmt.Fprintf(tr.f, "\n[%s] %s\n", ts, outcome)
+	tr.flushContent()
+	if tr.pendingTool != nil {
+		fmt.Fprintf(tr.f, "_%s call was in flight when the run ended_\n\n", tr.pendingTool.name)
+		tr.pendingTool = nil
+	}
+	fmt.Fprintf(tr.f, "---\n\n**Outcome:** %s\n", outcome)
 	if result != "" {
 		fmt.Fprintf(tr.f, "\n## Final result\n\n%s\n", result)
 	}

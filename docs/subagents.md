@@ -277,6 +277,42 @@ parent's context never includes this content, but the user can
 inspect it through the `/subagents` picker (Enter on a row) or by
 opening the file directly.
 
+### Format
+
+The transcript is markdown. Each tool call renders as a section:
+
+```markdown
+### Grep("AuthMiddleware")
+
+​```
+internal/auth/middleware.go:23:func AuthMiddleware(next http.Handler) http.Handler {
+internal/auth/middleware.go:45:    return AuthMiddleware
+​```
+
+_12ms_
+```
+
+Streamed assistant content accumulates into one paragraph per message
+(not one line per token). Tool outputs are fenced with a language
+hint when one makes sense (`bash` for `run_bash` / `run_tests`,
+`diff` for `edit_file` / `apply_diff` / `git_diff_files`, plain
+otherwise). Errored tool calls carry an `_errored_` tag in the meta
+footer below the fenced block.
+
+The full tool output is preserved — no truncation. The live TUI
+truncates tool cards at a fixed line cap so the scrollback stays
+skimmable; the transcript is the place you go when you need the
+complete output. (The parent agent never sees these outputs anyway —
+only the child's final reply crosses the subagent boundary.)
+
+`TurnDone` and `IterCap` collapse into horizontal rules (`---`) so
+turn boundaries are visible without a separate event line per
+boundary. The final `**Outcome:** runner_completed` (or
+`runner_canceled` / `runner_iter_cap` / `runner_errored` /
+`runner_no_final_reply`) sits at the end of the file as a guaranteed
+end-of-record marker, followed by the `## Final result` section
+carrying the same string the parent model received.
+
 ### Viewing a transcript
 
 Pressing Enter on a row in the `/subagents` picker suspends the
