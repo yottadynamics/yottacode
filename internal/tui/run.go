@@ -17,6 +17,7 @@ import (
 	"github.com/yottadynamics/yottacode/internal/config"
 	"github.com/yottadynamics/yottacode/internal/experimental"
 	githubapi "github.com/yottadynamics/yottacode/internal/github"
+	"github.com/yottadynamics/yottacode/internal/mcp"
 	"github.com/yottadynamics/yottacode/internal/memory"
 	"github.com/yottadynamics/yottacode/internal/permissions"
 	"github.com/yottadynamics/yottacode/internal/recall"
@@ -304,6 +305,44 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 	// subagent find?" becomes one tool call.
 	reg.Register(&agent.GetSubagentResultTool{Tasks: subagentTasks})
 
+	// MCP client setup: spawn each configured server as a stdio
+	// subprocess, list its tools, register each one in the agent
+	// tool registry under `mcp/<server>/<tool>`. Failed servers are
+	// non-fatal — yottacode keeps running with whichever clients
+	// came up; failure details surface via the /mcp slash command.
+	// Servers can be disabled per-entry in config.toml without
+	// commenting the block out.
+	mcpManager := mcp.NewManager(fileCfg.MCPServers)
+	mcpStartup := mcpManager.Start(ctx)
+	for _, r := range mcpStartup {
+		for _, w := range r.Warnings {
+			fmt.Fprintln(os.Stderr, w)
+		}
+		if r.Err != nil {
+			fmt.Fprintf(os.Stderr, "mcp: server %q failed to start: %v\n", r.Name, r.Err)
+			continue
+		}
+		client := mcpManager.Client(r.Name)
+		if client == nil {
+			continue
+		}
+		tools, err := client.ListTools(ctx)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "mcp: %s list tools: %v\n", r.Name, err)
+			continue
+		}
+		for _, td := range tools {
+			reg.Register(&agent.MCPTool{
+				Server:      r.Name,
+				ToolName:    td.Name,
+				Desc:        td.Description,
+				InputSchema: td.InputSchema,
+				ReadOnly:    td.ReadOnlyHint,
+				Client:      client,
+			})
+		}
+	}
+
 	cfg := agent.LoopConfig{
 		Adapter:           ad,
 		Registry:          reg,
@@ -376,6 +415,7 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 		Subagents:              subagentTasks,
 		AgentTool:              agentTool,
 		CustomCommands:         customCmds,
+		MCPManager:             mcpManager,
 	})
 	// Surface custom-command load errors via the startup notice path
 	// (historyLines is appendLine's queue; tea.Println replays it
@@ -446,6 +486,13 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 	if _, err := prog.Run(); err != nil {
 		return fmt.Errorf("tui: %w", err)
 	}
+	// Tear down MCP subprocesses before the index/session close so a
+	// slow shutdown can't leak servers past yottacode's lifetime. The
+	// context here is short-bounded; the SDK's CommandTransport.Close
+	// runs its own SIGTERM/SIGKILL ladder.
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	mcpManager.Stop(shutdownCtx)
+	shutdownCancel()
 	if idx != nil {
 		_ = idx.Close()
 	}

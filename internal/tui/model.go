@@ -22,6 +22,7 @@ import (
 	"github.com/yottadynamics/yottacode/internal/checkpoint"
 	"github.com/yottadynamics/yottacode/internal/config"
 	"github.com/yottadynamics/yottacode/internal/contextwindow"
+	mcppkg "github.com/yottadynamics/yottacode/internal/mcp"
 	"github.com/yottadynamics/yottacode/internal/filerefs"
 	"github.com/yottadynamics/yottacode/internal/permissions"
 	"github.com/yottadynamics/yottacode/internal/providerops"
@@ -96,6 +97,12 @@ type Config struct {
 	// stores them on the Model so the dispatcher and /help can see
 	// them alongside built-ins.
 	CustomCommands []usercmd.Command
+
+	// MCPManager is the live MCP client lifecycle manager, built from
+	// config.MCPServers at session start. The /mcp slash command
+	// inspects + restarts servers through it. Nil when no servers are
+	// configured (the slash command renders "no servers configured").
+	MCPManager *mcppkg.Manager
 }
 
 // Model is the Bubbletea state for the chat TUI. The TUI runs in inline mode
@@ -218,6 +225,11 @@ type Model struct {
 	// registry. The TUI uses it to wire the background-done callback
 	// and to introspect the available agent configs from /subagents.
 	subagentTool *agent.AgentTool
+
+	// mcpManager owns the lifecycle of every configured MCP client.
+	// Nil when the session has no MCP servers configured. The /mcp
+	// slash command reads from it; run.go invokes Stop on shutdown.
+	mcpManager *mcppkg.Manager
 
 	// customSlash carries the user-authored slash commands loaded
 	// from ~/.yottacode/commands/ and <cwd>/.yottacode/commands/. The
@@ -665,6 +677,7 @@ func New(parent context.Context, c Config) Model {
 		fileCfg:                c.FileCfg,
 		subagentTasks:          c.Subagents,
 		subagentTool:           c.AgentTool,
+		mcpManager:             c.MCPManager,
 		subagentInbox:          make(chan agent.SubagentBackgroundDone, 32),
 		customSlash:            buildCustomSlash(c.CustomCommands),
 		sess:                   c.Session,

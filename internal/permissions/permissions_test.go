@@ -146,6 +146,45 @@ func TestLoad_MalformedFileErrors(t *testing.T) {
 	}
 }
 
+func TestEvaluate_MCPToolAllowByServer(t *testing.T) {
+	cwd := t.TempDir()
+	seed(t, filepath.Join(cwd, ".yottacode", "permissions.json"),
+		[]string{"MCP(filesystem/*)"}, nil, nil)
+	p, _ := Load(cwd)
+	if got := p.Evaluate("mcp/filesystem/read_file", `{"path":"/x"}`); got != Allow {
+		t.Errorf("MCP(filesystem/*) should match mcp/filesystem/read_file; got %v", got)
+	}
+	if got := p.Evaluate("mcp/github/create_pull_request", `{}`); got != Default {
+		t.Errorf("MCP(filesystem/*) should NOT match mcp/github/*; got %v", got)
+	}
+}
+
+func TestEvaluate_MCPToolAllowExact(t *testing.T) {
+	cwd := t.TempDir()
+	seed(t, filepath.Join(cwd, ".yottacode", "permissions.json"),
+		[]string{"MCP(filesystem/read_file)"}, nil, nil)
+	p, _ := Load(cwd)
+	if got := p.Evaluate("mcp/filesystem/read_file", `{}`); got != Allow {
+		t.Errorf("exact MCP rule should Allow; got %v", got)
+	}
+	if got := p.Evaluate("mcp/filesystem/write_file", `{}`); got != Default {
+		t.Errorf("exact MCP rule should NOT match write_file; got %v", got)
+	}
+}
+
+func TestEvaluate_MCPToolDenyBeatsAllow(t *testing.T) {
+	cwd := t.TempDir()
+	seed(t, filepath.Join(cwd, ".yottacode", "permissions.json"),
+		[]string{"MCP(*)"}, nil, []string{"MCP(github/delete_repository)"})
+	p, _ := Load(cwd)
+	if got := p.Evaluate("mcp/github/delete_repository", `{}`); got != Deny {
+		t.Errorf("specific MCP deny should win over wildcard allow; got %v", got)
+	}
+	if got := p.Evaluate("mcp/github/create_issue", `{}`); got != Allow {
+		t.Errorf("MCP(*) wildcard should allow create_issue; got %v", got)
+	}
+}
+
 func TestEvaluate_DenyBeatsAllow(t *testing.T) {
 	cwd := t.TempDir()
 	seed(t, filepath.Join(cwd, ".yottacode", "permissions.json"),

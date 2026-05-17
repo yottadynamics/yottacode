@@ -813,6 +813,110 @@ func TestParseCandidate(t *testing.T) {
 	}
 }
 
+func TestLoad_ParsesMCPServers(t *testing.T) {
+	src := `
+[[mcp_servers]]
+name    = "filesystem"
+command = "npx"
+args    = ["-y", "@modelcontextprotocol/server-filesystem", "/tmp/scratch"]
+
+[[mcp_servers]]
+name     = "memory"
+command  = "npx"
+args     = ["-y", "@modelcontextprotocol/server-memory"]
+env      = { MEMORY_FILE = "$HOME/memory.json" }
+disabled = false
+`
+	cfg, err := Load(writeFile(t, src))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(cfg.MCPServers) != 2 {
+		t.Fatalf("want 2 MCP servers, got %d", len(cfg.MCPServers))
+	}
+	fs := cfg.MCPServers[0]
+	if fs.Name != "filesystem" || fs.Command != "npx" {
+		t.Errorf("filesystem entry = %+v", fs)
+	}
+	if len(fs.Args) != 3 || fs.Args[2] != "/tmp/scratch" {
+		t.Errorf("filesystem args = %+v", fs.Args)
+	}
+	mem := cfg.MCPServers[1]
+	if mem.Env["MEMORY_FILE"] != "$HOME/memory.json" {
+		t.Errorf("memory env preserves $VAR raw form; got %+v", mem.Env)
+	}
+}
+
+func TestLoad_RejectsMCPInvalidName(t *testing.T) {
+	for _, bad := range []string{"Filesystem", "1bad", "has space", "name!", ""} {
+		src := `
+[[mcp_servers]]
+name    = "` + bad + `"
+command = "npx"
+`
+		if _, err := Load(writeFile(t, src)); err == nil {
+			t.Errorf("expected error for invalid MCP name %q", bad)
+		}
+	}
+}
+
+func TestLoad_RejectsMCPDuplicateName(t *testing.T) {
+	src := `
+[[mcp_servers]]
+name    = "fs"
+command = "npx"
+
+[[mcp_servers]]
+name    = "fs"
+command = "uvx"
+`
+	_, err := Load(writeFile(t, src))
+	if err == nil {
+		t.Fatal("expected error for duplicate MCP name")
+	}
+	if !strings.Contains(err.Error(), "duplicate") {
+		t.Errorf("error should mention duplicate; got %q", err)
+	}
+}
+
+func TestLoad_RejectsMCPEmptyCommand(t *testing.T) {
+	src := `
+[[mcp_servers]]
+name    = "fs"
+command = ""
+`
+	_, err := Load(writeFile(t, src))
+	if err == nil {
+		t.Fatal("expected error for empty MCP command")
+	}
+	if !strings.Contains(err.Error(), "command") {
+		t.Errorf("error should mention command; got %q", err)
+	}
+}
+
+func TestLoad_RejectsMCPUnknownKey(t *testing.T) {
+	src := `
+[[mcp_servers]]
+name    = "fs"
+command = "npx"
+trnsport = "stdio"
+`
+	_, err := Load(writeFile(t, src))
+	if err == nil {
+		t.Fatal("expected error for misspelled MCP key (trnsport)")
+	}
+}
+
+func TestLoad_MCPServersOptional(t *testing.T) {
+	cfg, err := Load(writeFile(t, ``))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(cfg.MCPServers) != 0 {
+		t.Errorf("empty file should yield no MCP servers; got %d", len(cfg.MCPServers))
+	}
+}
+
 func writeFile(t *testing.T, body string) string {
 	t.Helper()
 	dir := t.TempDir()

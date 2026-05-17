@@ -8,6 +8,22 @@ the project uses semantic versioning once it's past `1.0.0`.
 
 ### Added
 
+- MCP (Model Context Protocol) client support. Configure stdio-based
+  MCP servers under `[[mcp_servers]]` in `~/.yottacode/config.toml`;
+  each server's tools register as `mcp/<server>/<tool>` in the agent
+  registry and flow through the existing approval modal and
+  permission rules. Servers default to approval-required; the MCP
+  spec's `annotations.readOnlyHint` flips a tool to auto-execute when
+  the server explicitly declares it read-only. Permission rules use
+  the `MCP(<server>/<tool>)` shape and support glob patterns
+  (`MCP(filesystem/*)`, `MCP(*/delete_*)`). A new `/mcp` slash
+  command lists configured servers and their status; `/mcp logs
+  <name>` dumps recent stderr from a server. v1 covers stdio
+  transport and tools only; HTTP/SSE transport, resources, prompts,
+  and OAuth2 auth are tracked for follow-up wedges. Uses the official
+  `github.com/modelcontextprotocol/go-sdk` for JSON-RPC framing. See
+  [docs/mcp.md](docs/mcp.md) for setup, the curated test-server list,
+  and troubleshooting.
 - `install.sh` one-liner installer (`curl … | bash`) for fresh
   installs and in-place upgrades. Installs to `~/.yottacode/bin/` (no
   `sudo`), verifies the release archive against `SHA256SUMS`, and —

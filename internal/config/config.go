@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/BurntSushi/toml"
@@ -33,6 +34,13 @@ type Config struct {
 	Active       Active            `toml:"active"`
 	Providers    []Provider        `toml:"providers"`
 	Checkpoints  CheckpointsConfig `toml:"checkpoints"`
+	// MCPServers lists Model Context Protocol servers launched at
+	// session start. Each entry becomes a stdio subprocess whose
+	// advertised tools register into the agent tool registry under
+	// the mcp/<name>/<tool> namespace. v1 supports stdio transport
+	// only; absence of a `transport` field means adding HTTP/SSE
+	// later is non-breaking.
+	MCPServers []MCPServer `toml:"mcp_servers"`
 	// Experimental gates non-default features behind named opt-ins.
 	// Mirrors the --experimental CLI flag and the
 	// $YOTTACODE_EXPERIMENTAL env var. Each entry is a feature name
@@ -192,6 +200,48 @@ type Model struct {
 	// table for this model. 0 means use the built-in fallback.
 	ContextWindow int `toml:"context_window"`
 }
+
+// MCPServer describes one Model Context Protocol server launched as a
+// stdio subprocess at session start. The MCP client connects over
+// stdin/stdout, lists the server's tools, and registers each tool in
+// the agent tool registry under mcp/<Name>/<tool>.
+//
+// The exec.LookPath / spawn / initialize-handshake is performed at
+// session start by internal/mcp.Manager — config.Validate only checks
+// structural well-formedness. Runtime failures (missing binary, init
+// timeout, subprocess crash) are surfaced via /mcp and the next tool
+// invocation rather than refusing the entire session.
+type MCPServer struct {
+	// Name is the unique identifier used in tool namespacing and in
+	// the /mcp slash command. Must match mcpNameRE.
+	Name string `toml:"name"`
+
+	// Command is the executable that runs the MCP server. Resolved
+	// via exec.LookPath at session start.
+	Command string `toml:"command"`
+
+	// Args are passed to Command verbatim. Typical shape:
+	//   command = "npx"
+	//   args    = ["-y", "@modelcontextprotocol/server-filesystem", "/workspace"]
+	Args []string `toml:"args"`
+
+	// Env supplies additional environment variables to the subprocess
+	// on top of yottacode's inherited environment. Values may use
+	// $VAR substitution from yottacode's process env, resolved at
+	// spawn time. Unresolved $VARs surface a startup warning but
+	// don't fail load.
+	Env map[string]string `toml:"env"`
+
+	// Disabled skips this entry at session start without removing it
+	// from the config file. Useful for temporarily quieting a
+	// misbehaving server.
+	Disabled bool `toml:"disabled"`
+}
+
+// mcpNameRE constrains MCPServer.Name to a lowercase-kebab/underscore
+// identifier so the tool namespace (mcp/<name>/<tool>) stays
+// glob-friendly for permission rules.
+var mcpNameRE = regexp.MustCompile(`^[a-z][a-z0-9_-]*$`)
 
 // ValidTiers is the whitelist for Model.Tier. Empty is also accepted
 // (treated as unspecified).
@@ -402,6 +452,22 @@ func Validate(cfg Config) error {
 						cfg.Active.DefaultModel, cfg.Active.Provider)
 				}
 			}
+		}
+	}
+
+	seenMCP := make(map[string]struct{}, len(cfg.MCPServers))
+	for i := range cfg.MCPServers {
+		s := &cfg.MCPServers[i]
+		if !mcpNameRE.MatchString(s.Name) {
+			return fmt.Errorf("mcp_servers[%d]: name %q invalid (must match %s)",
+				i, s.Name, mcpNameRE.String())
+		}
+		if _, dup := seenMCP[s.Name]; dup {
+			return fmt.Errorf("mcp_servers[%d]: duplicate name %q", i, s.Name)
+		}
+		seenMCP[s.Name] = struct{}{}
+		if strings.TrimSpace(s.Command) == "" {
+			return fmt.Errorf("mcp_servers[%q]: command is required", s.Name)
 		}
 	}
 

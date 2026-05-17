@@ -178,6 +178,8 @@ Examples:
 - `Edit(internal/**)`
 - `Write(docs/**)`
 - `Git(commit *)`
+- `MCP(filesystem/read_*)` — allow filesystem MCP server's read tools (see [MCP](mcp.md))
+- `MCP(github/*)` — allow every tool from the GitHub MCP server
 
 ## Permissions bypass (the danger setting)
 

@@ -139,6 +139,11 @@ func init() {
 		// The picker reads a snapshot of the task registry; no state
 		// change happens, so the turn can keep streaming behind it.
 		{Name: "subagents", Help: "open the subagents picker (Enter views · t toggles types · s stops · Esc closes)", Run: cmdSubagents, PreservesTurn: true},
+		// /mcp inspects the live MCP server manager: list configured
+		// servers, their start status + tool counts, and dump stderr
+		// from a misbehaving one. PreservesTurn=true: read-only on
+		// the manager state; safe to invoke mid-turn.
+		{Name: "mcp", Help: "show MCP server status; `/mcp logs <name>` for a server's stderr", Run: cmdMCP, PreservesTurn: true},
 	}
 }
 
