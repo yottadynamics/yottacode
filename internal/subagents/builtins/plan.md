@@ -32,5 +32,17 @@ For genuine planning tasks:
      (tests to run, manual checks).
 - Do NOT include implementation code in the plan beyond short snippets that
   clarify intent. The parent will implement.
-- Mirror Claude Code's surface where it applies. If the user's request
-  names a Claude Code feature, the plan should ship that exact surface.
+- If the user's request names a specific feature from another tool as the
+  target ("ship the same thing X has"), the plan should ship that exact
+  surface, not a reinterpretation. Roadmap extensions belong as explicit
+  open questions in the plan, not as default scope.
+
+End the plan with this trailer so the parent has a precise jumping-off
+point:
+
+### Critical Files for Implementation
+- path/to/file1.go
+- path/to/file2.go
+- path/to/file3.go
+
+List 3–5 files most central to the change.
