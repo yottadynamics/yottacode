@@ -139,6 +139,13 @@ func init() {
 		// The picker reads a snapshot of the task registry; no state
 		// change happens, so the turn can keep streaming behind it.
 		{Name: "subagents", Help: "open the subagents picker (Enter views · t toggles types · s stops · Esc closes)", Run: cmdSubagents, PreservesTurn: true},
+		// /skills opens the multi-select picker for Agent Skills. The
+		// model sees zero skills by default; this is where the user
+		// picks which to expose for the session. PreservesTurn=true:
+		// opening the picker mid-turn is read-only against the live
+		// SkillTool universe; the commit happens only on `c`, so a
+		// streaming turn isn't disturbed by browsing the list.
+		{Name: "skills", Help: "open the skills picker (Space toggles · Enter views body · a/n enable/disable all · c commits · Esc cancels)", Run: cmdSkills, PreservesTurn: true},
 	}
 }
 
@@ -157,11 +164,12 @@ func findSlash(name string) *slashCommand {
 }
 
 // findSlash (method) walks built-ins first, then the model's custom
-// commands, returning the first name match (or nil). Built-ins
-// always shadow custom commands; the usercmd loader refuses to
-// register a custom command with a reserved name in the first place,
-// so the second layer of defense here is belt-and-suspenders for any
-// future loader drift.
+// commands, then the model's skill-derived commands, returning the
+// first name match (or nil). Built-ins always shadow custom commands
+// and skills; custom commands shadow skills. The usercmd loader and
+// the skills loader both refuse to register a name that would
+// collide with a built-in, so the second layer of defense here is
+// belt-and-suspenders for any future loader drift.
 func (m *Model) findSlash(name string) *slashCommand {
 	if c := findSlash(name); c != nil {
 		return c
@@ -169,6 +177,11 @@ func (m *Model) findSlash(name string) *slashCommand {
 	for i := range m.customSlash {
 		if m.customSlash[i].Name == name {
 			return &m.customSlash[i]
+		}
+	}
+	for i := range m.skillSlash {
+		if m.skillSlash[i].Name == name {
+			return &m.skillSlash[i]
 		}
 	}
 	return nil
@@ -227,6 +240,11 @@ func cmdHelp(m Model, _ []string) (Model, tea.Cmd) {
 			width = w
 		}
 	}
+	for _, c := range m.skillSlash {
+		if w := len(leftFor(c)); w > width {
+			width = w
+		}
+	}
 
 	var b strings.Builder
 	b.WriteString("Available commands:\n")
@@ -236,6 +254,16 @@ func cmdHelp(m Model, _ []string) (Model, tea.Cmd) {
 	if len(m.customSlash) > 0 {
 		b.WriteString("\nCustom commands:\n")
 		for _, c := range m.customSlash {
+			line := fmt.Sprintf("  %-*s   %s", width, leftFor(c), c.Help)
+			if c.Source != "" {
+				line += stylePaletteEmpty.Render("  ·  " + displayPath(c.Source, m.cwd))
+			}
+			b.WriteString(line + "\n")
+		}
+	}
+	if len(m.skillSlash) > 0 {
+		b.WriteString("\nSkills:\n")
+		for _, c := range m.skillSlash {
 			line := fmt.Sprintf("  %-*s   %s", width, leftFor(c), c.Help)
 			if c.Source != "" {
 				line += stylePaletteEmpty.Render("  ·  " + displayPath(c.Source, m.cwd))
