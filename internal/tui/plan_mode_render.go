@@ -225,19 +225,31 @@ func renderPlanApprovalCard(width int) string {
 	return strings.Join(rows, "\n")
 }
 
+// Plan-mode banner / approval styles. Bare declarations (no
+// initializers) because the palette-colored fields would otherwise
+// capture the ZERO VALUE of colorWarning / colorDim / etc. at
+// package-init time — Go evaluates var initializers before any
+// init() functions run, but the color vars are only populated when
+// styles.go's init() calls buildStyles. The captured zero
+// AdaptiveColor renders as terminal default fg, which on many
+// palettes reads as a stuck bright/yellow color regardless of which
+// theme the user picks. Actual style construction lives in
+// buildStyles (styles.go) so every ApplyTheme swap rebuilds them
+// with the current palette.
+//
+// stylePlanBannerActivity is the middle segment of the plan-mode
+// banner — basename or the "awaiting your message" hint. Plain
+// content color so it reads as neutral status text rather than a
+// call-to-action; the label on the left is the only saturated
+// element on the row.
 var (
-	stylePlanBannerLabel    = lipgloss.NewStyle().Foreground(colorWarning).Bold(true)
-	stylePlanBannerHint     = lipgloss.NewStyle().Foreground(colorDim).Italic(true)
-	stylePlanBannerSep      = lipgloss.NewStyle().Foreground(colorRule)
-	// stylePlanBannerActivity is the middle segment of the plan-mode
-	// banner — the basename or the "awaiting your message" hint.
-	// Plain content color (off-white on dark, dark on light) so it
-	// reads as neutral status text rather than a call-to-action; the
-	// label on the left is the only saturated element on the row.
-	stylePlanBannerActivity = lipgloss.NewStyle().Foreground(colorContent)
+	stylePlanBannerLabel    lipgloss.Style
+	stylePlanBannerHint     lipgloss.Style
+	stylePlanBannerSep      lipgloss.Style
+	stylePlanBannerActivity lipgloss.Style
 
-	stylePlanApprovalTitle  = lipgloss.NewStyle().Foreground(colorWarning).Bold(true)
-	stylePlanApprovalTool   = lipgloss.NewStyle().Foreground(colorDim)
-	stylePlanApprovalHotkey = lipgloss.NewStyle().Foreground(colorAccent).Bold(true)
-	stylePlanApprovalChoice = lipgloss.NewStyle().Foreground(colorContent)
+	stylePlanApprovalTitle  lipgloss.Style
+	stylePlanApprovalTool   lipgloss.Style
+	stylePlanApprovalHotkey lipgloss.Style
+	stylePlanApprovalChoice lipgloss.Style
 )

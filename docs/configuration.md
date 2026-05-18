@@ -227,6 +227,20 @@ retention_days = 30   # set to 0 to fall back to the 30-day default; smaller val
 
 See [`tui-slash-commands.md`](tui-slash-commands.md#checkpoints---checkpoints--esc-esc) for the full feature.
 
+### Theme
+
+`/theme` switches the TUI color palette and persists the choice. Pin a non-default theme in `~/.yottacode/config.toml`:
+
+```toml
+[theme]
+name = "catppuccin"
+# one of: terminal, catppuccin, dimmed, gruvbox, high-contrast,
+#         low-contrast, no-color, nord, one-dark, solarized-dark,
+#         tokyo-night
+```
+
+Omit the section to ride the default (`terminal`). Unknown names are rejected at load time — see [themes.md](themes.md) for the full palette catalog.
+
 Per-repo state lives under `<repo>/.yottacode/`:
 
 ```text

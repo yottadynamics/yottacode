@@ -139,6 +139,16 @@ func init() {
 		// The picker reads a snapshot of the task registry; no state
 		// change happens, so the turn can keep streaming behind it.
 		{Name: "subagents", Help: "open the subagents picker (Enter views · t toggles types · s stops · Esc closes)", Run: cmdSubagents, PreservesTurn: true},
+		// /theme opens the theme picker. The picker is read-only
+		// until Enter commits — it inspects the registry and
+		// live-previews on cursor moves without writing anything,
+		// so PreservesTurn keeps it safe to invoke during an active
+		// turn. The state-changing branch (Enter / `/theme set`)
+		// runs through the same persistence path; switching mid-
+		// stream produces a half-styled view, but the picker's
+		// Enter is an explicit user action so the user is choosing
+		// that cost.
+		{Name: "theme", Help: "Change the theme", Run: cmdThemes, PreservesTurn: true},
 		// /skills opens the multi-select picker for Agent Skills. The
 		// model sees zero skills by default; this is where the user
 		// picks which to expose for the session. PreservesTurn=true:

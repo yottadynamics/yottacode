@@ -914,23 +914,29 @@ func pluralize(noun string, n int) string {
 // the header preview is Content (the value the user cares about);
 // metadata (duration, footer) renders Dim by default with state
 // colors for OK / Error footers.
+// Tool-card and todo-row styles. Bare declarations — see
+// plan_mode_render.go's note: initializers would capture zero
+// AdaptiveColors at package init. Actual construction lives in
+// buildStyles (styles.go) so theme swaps rebuild them correctly.
+//
+// Design: card metadata renders Dim by default with state colors
+// for OK / Error footers. todo_write status icon + content styling:
+// green ✓ for done (strikethrough + dim content), accent ▸ for
+// in_progress (bold content), dim · for pending.
 var (
-	styleCardGutter    = lipgloss.NewStyle().Foreground(colorRule)
-	styleCardHeader    = lipgloss.NewStyle().Foreground(colorContent).Bold(true)
-	styleCardBody      = lipgloss.NewStyle().Foreground(colorContent)
-	styleCardMeta      = lipgloss.NewStyle().Foreground(colorDim)
-	styleCardOKFooter  = lipgloss.NewStyle().Foreground(colorSuccess).Bold(true)
-	styleCardErrFooter = lipgloss.NewStyle().Foreground(colorError).Bold(true)
+	styleCardGutter    lipgloss.Style
+	styleCardHeader    lipgloss.Style
+	styleCardBody      lipgloss.Style
+	styleCardMeta      lipgloss.Style
+	styleCardOKFooter  lipgloss.Style
+	styleCardErrFooter lipgloss.Style
 
-	// todo_write status icon + content styling — green ✓ for done
-	// (strikethrough + dim content), accent ▸ for in_progress (bold
-	// content), dim · for pending.
-	styleTodoDone       = lipgloss.NewStyle().Foreground(colorDim).Strikethrough(true)
-	styleTodoInProgress = lipgloss.NewStyle().Foreground(colorContent).Bold(true)
-	styleTodoPending    = lipgloss.NewStyle().Foreground(colorContent)
-	styleTodoCheckDone  = lipgloss.NewStyle().Foreground(colorSuccess).Bold(true)
-	styleTodoArrow      = lipgloss.NewStyle().Foreground(colorSuccess).Bold(true)
-	styleTodoBullet     = lipgloss.NewStyle().Foreground(colorDim)
+	styleTodoDone       lipgloss.Style
+	styleTodoInProgress lipgloss.Style
+	styleTodoPending    lipgloss.Style
+	styleTodoCheckDone  lipgloss.Style
+	styleTodoArrow      lipgloss.Style
+	styleTodoBullet     lipgloss.Style
 )
 
 func todoRow(td agent.Todo) string {
