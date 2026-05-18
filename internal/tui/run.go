@@ -21,6 +21,7 @@ import (
 	"github.com/yottadynamics/yottacode/internal/permissions"
 	"github.com/yottadynamics/yottacode/internal/recall"
 	"github.com/yottadynamics/yottacode/internal/session"
+	"github.com/yottadynamics/yottacode/internal/skills"
 	"github.com/yottadynamics/yottacode/internal/subagents"
 	"github.com/yottadynamics/yottacode/internal/trust"
 	"github.com/yottadynamics/yottacode/internal/usercmd"
@@ -107,13 +108,23 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 			XSearchToDate:          strings.TrimSpace(opts.XSearchToDate),
 		})
 	}
+	// Load skills early so the resolved set can flow into both the
+	// system prompt (description-matched metadata tier) and the Skill
+	// tool registration below. Loading twice would be wasteful and
+	// risks the prompt and the tool drifting; this single load wins.
+	skillsRes, _ := skills.LoadAll(cwd, usercmd.Reserved)
+	for _, w := range skillsRes.Warnings {
+		fmt.Fprintln(os.Stderr, "skills: "+w)
+	}
+	composedBase := composeSystemPrompt(baseSys, ad.Profile())
+	composedBase = appendSkillsSection(composedBase, skillsRes.Skills)
 	if fresh {
 		sess.Messages = append(sess.Messages, adapter.Message{
 			Role:    adapter.RoleSystem,
-			Content: memory.SystemPrompt(composeSystemPrompt(baseSys, ad.Profile()), mem),
+			Content: memory.SystemPrompt(composedBase, mem),
 		})
 	} else {
-		recomposeSessionSystemPrompt(sess, memory.SystemPrompt(composeSystemPrompt(baseSys, ad.Profile()), mem))
+		recomposeSessionSystemPrompt(sess, memory.SystemPrompt(composedBase, mem))
 	}
 
 	// `--summarized` (only meaningful when resuming): replace the loaded
@@ -305,6 +316,24 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 	// subagent find?" becomes one tool call.
 	reg.Register(&agent.GetSubagentResultTool{Tasks: subagentTasks})
 
+	// Agent Skills tool. Skills are loaded up-front (alongside the
+	// system-prompt composition) so the same resolved set drives both
+	// the description-matched metadata tier in the prompt and the
+	// model-facing Skill tool. User-typed /<skill-name> dispatches
+	// through the TUI Model's skillSlash (built from c.Skills below)
+	// and works regardless of enablement — typing the slash IS the
+	// selection.
+	//
+	// Default policy: NO skills enabled at session start. The model
+	// sees an empty skills section in the prompt until the user opens
+	// /skills and picks some. This keeps the prompt small and avoids
+	// the model reaching for a skill the user didn't ask about. Slash
+	// invocations stay available so a user who knows the name can
+	// always pull a skill in one keystroke.
+	skillTool := &agent.SkillTool{All: skillsRes.Skills}
+	skillTool.SetEnabled(map[string]bool{}) // empty map = none enabled
+	reg.Register(skillTool)
+
 	cfg := agent.LoopConfig{
 		Adapter:           ad,
 		Registry:          reg,
@@ -377,7 +406,17 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 		Subagents:              subagentTasks,
 		AgentTool:              agentTool,
 		CustomCommands:         customCmds,
+		Skills:                 skillsRes.Skills,
+		SkillTool:              skillTool,
 	})
+	// Startup notice when skills exist but the default-off policy
+	// means none are enabled. Without this, new users would have no
+	// idea the surface exists — they'd see no skill list in the
+	// prompt and never type /skills. One muted line is the right
+	// amount of nudge: visible, not loud.
+	if n := len(skillsRes.Skills); n > 0 {
+		model.appendLine(styleAuto.Render(fmt.Sprintf("[skills] %d available — type /skills to enable for this session", n)))
+	}
 	// Surface custom-command load errors via the startup notice path
 	// (historyLines is appendLine's queue; tea.Println replays it
 	// once the program starts). Errors render in red, warnings in the
@@ -546,6 +585,26 @@ func composeSystemPrompt(base string, profile adapter.ProviderProfile) string {
 		return base + "\nFor live or current information, use the provider-native web_search tool when needed."
 	}
 	return base + "\nFor live or current information, use fetch_url for specific pages or feeds when needed."
+}
+
+// appendSkillsSection adds the description-matched metadata tier of
+// Agent Skills to the system prompt. This is the spec's "always-on,
+// small" tier — names + descriptions only; bodies stay out of the
+// prompt until the model invokes Skill(name=...). The framing mirrors
+// Claude Code's skills system reminder so models that have seen that
+// surface recognize the contract.
+func appendSkillsSection(base string, loaded []skills.Skill) string {
+	if len(loaded) == 0 {
+		return base
+	}
+	var b strings.Builder
+	b.WriteString(base)
+	b.WriteString("\n\n# Available skills\n\n")
+	b.WriteString("You have access to a set of reusable capability playbooks (Agent Skills). When a user request matches a skill's described scope, invoke it via the `Skill` tool (e.g. `Skill(skill=\"<name>\")`); the tool returns the skill's body so you can apply it in the current turn. Only invoke a skill that appears in the list below — do NOT guess names.\n\n")
+	for _, sk := range loaded {
+		fmt.Fprintf(&b, "- %s: %s\n", sk.Name, sk.Description)
+	}
+	return b.String()
 }
 
 func recomposeSessionSystemPrompt(sess *session.Session, content string) {

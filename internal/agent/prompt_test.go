@@ -52,6 +52,7 @@ var canonicalTools = []string{
 	"git",
 	"todo_write",
 	"exit_plan_mode",
+	"Skill",
 }
 
 func TestDefaultSystemPrompt_NamesEveryRegisteredTool(t *testing.T) {

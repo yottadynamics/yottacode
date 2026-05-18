@@ -27,6 +27,7 @@ import (
 	"github.com/yottadynamics/yottacode/internal/providerops"
 	"github.com/yottadynamics/yottacode/internal/recall"
 	"github.com/yottadynamics/yottacode/internal/session"
+	"github.com/yottadynamics/yottacode/internal/skills"
 	"github.com/yottadynamics/yottacode/internal/subagents"
 	"github.com/yottadynamics/yottacode/internal/usercmd"
 )
@@ -96,6 +97,20 @@ type Config struct {
 	// stores them on the Model so the dispatcher and /help can see
 	// them alongside built-ins.
 	CustomCommands []usercmd.Command
+
+	// Skills is the resolved set of Agent Skills (built-in + user +
+	// project) loaded at startup. New() builds slashCommand entries
+	// from skills with metadata.slash != "false" so `/<skill-name>`
+	// works alongside model-side invocation via the Skill tool.
+	Skills []skills.Skill
+
+	// SkillTool is the live Skill dispatch tool registered on
+	// Cfg.Registry. The TUI keeps a typed reference so the /skills
+	// picker can read SkillTool.All (the universe) and call
+	// SkillTool.SetEnabled (the per-session filter). nil disables the
+	// /skills picker; the slash command still falls through to the
+	// "unknown command" error in that case.
+	SkillTool *agent.SkillTool
 }
 
 // Model is the Bubbletea state for the chat TUI. The TUI runs in inline mode
@@ -225,6 +240,33 @@ type Model struct {
 	// /help groups them under a "Custom commands:" header so it's
 	// obvious which entries come from user files.
 	customSlash []slashCommand
+
+	// skillSlash carries one slashCommand per loaded skill that opted
+	// in (metadata.slash != "false"). Walked after built-ins and
+	// customSlash in m.findSlash so user-authored commands always
+	// shadow skills on name collision. /help groups them under their
+	// own "Skills:" header.
+	skillSlash []slashCommand
+
+	// skills is the raw list of loaded skills (built-in + user +
+	// project) shown to the user via /help. The Skill tool registered
+	// on cfg.Registry holds the authoritative copy plus the per-
+	// session enabled set; skillTool below is the typed handle.
+	skills []skills.Skill
+
+	// skillTool is the live SkillTool registered on cfg.Registry.
+	// /skills mutates its enablement map; reloadMemoryNow reads
+	// .Active() to recompose the system prompt's skills section.
+	// Nil when no skills are configured.
+	skillTool *agent.SkillTool
+
+	// skillsPickerOpen / skillsPicker drive the /skills inline overlay.
+	// Mirrors subagentsPicker: multi-select via spacebar toggles a
+	// skill's per-session enablement; Enter views the body in $PAGER;
+	// `c` (or Enter on the bottom row) commits and recomposes the
+	// system prompt; Esc cancels without changes.
+	skillsPickerOpen bool
+	skillsPicker     *skillsPickerState
 
 	// subagentInbox is a long-lived channel the AgentTool pushes
 	// SubagentBackgroundDone events onto from detached goroutines
@@ -667,6 +709,9 @@ func New(parent context.Context, c Config) Model {
 		subagentTool:           c.AgentTool,
 		subagentInbox:          make(chan agent.SubagentBackgroundDone, 32),
 		customSlash:            buildCustomSlash(c.CustomCommands),
+		skillSlash:             buildSkillSlash(c.Skills),
+		skills:                 c.Skills,
+		skillTool:              c.SkillTool,
 		sess:                   c.Session,
 		textInput:              ti,
 		spinner:                sp,
@@ -861,6 +906,9 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.subagentsPickerOpen {
 			return m.updateSubagentsPicker(msg)
+		}
+		if m.skillsPickerOpen {
+			return m.updateSkillsPicker(msg)
 		}
 		// Intercept large bracketed pastes before any other handling.
 		// Bubbletea sets msg.Paste=true with all the pasted runes in a
@@ -1510,6 +1558,9 @@ func (m Model) View() string {
 	}
 	if m.subagentsPickerOpen && m.subagentsPicker != nil {
 		return m.renderInlineOverlay(renderSubagentsPicker(m.subagentsPicker, m.width))
+	}
+	if m.skillsPickerOpen && m.skillsPicker != nil {
+		return m.renderInlineOverlay(renderSkillsPicker(m.skillsPicker, m.width))
 	}
 
 	parts := []string{}

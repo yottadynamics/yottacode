@@ -88,6 +88,7 @@ var Reserved = map[string]bool{
 	"init":           true,
 	"plan":           true,
 	"subagents":      true,
+	"skills":         true,
 	"git-commit":     true,
 	"git-create-pr":  true,
 	"git-review-pr":  true,

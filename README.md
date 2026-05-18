@@ -93,6 +93,12 @@ Every user message gets an automatic checkpoint capturing the conversation plus 
 
 Drop a markdown file into `~/.yottacode/commands/` (user scope) or `.yottacode/commands/` (project scope, committable) and it shows up as `/<name>` in the palette. Bodies support `$ARGUMENTS` / `$1`..`$9` argument substitution, optional YAML frontmatter (`description`, `argument-hint`), and `@<path>` file references. Subdirectories namespace commands as `/ns:name`. Mirrors Claude Code's custom-commands surface. See [`docs/tui-slash-commands.md#custom-commands`](docs/tui-slash-commands.md#custom-commands).
 
+### Agent Skills
+
+Reusable capability playbooks the agent loads on demand. Each skill is a directory with a `SKILL.md` (frontmatter `name` + `description` + optional `license` / `metadata` / `allowed-tools`, plus a markdown body). Names + descriptions are surfaced to the model only after you enable them via `/skills`; the body is loaded on activation via the `Skill` tool (model-side) or `/<skill-name>` slash (user-side). 16 built-in skills cover: SSH/remote ops · git investigation · Dockerfile review · TDD · verification before completion · Playwright webapp testing · `diagnose` debugging loop · security audit · plan writing & execution · pre-plan brainstorming · receiving code review · codebase architecture review · throwaway prototyping · session handoff · performance profiling. Drop a directory into `~/.yottacode/skills/<slug>/` for a user-scope skill, or `.yottacode/skills/<slug>/` for a project-scope skill — project shadows user shadows built-in. Format follows the [agentskills.io spec](https://agentskills.io/specification).
+
+Skills are **off by default each session** — the model sees no skill list in its prompt until you open `/skills` and pick which ones to enable. The selection lasts for the session. Slash-form invocations (e.g. `/diagnose`) bypass the enablement gate because typing the slash IS the selection.
+
 ### Cross-session recall
 
 `/recall <query>` runs local SQLite FTS5 search across every saved session. `/summarize` compacts long sessions after snapshotting the full pre-summary transcript. Per-turn atomic save means crashed terminals don't lose work.
