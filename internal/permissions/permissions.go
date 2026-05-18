@@ -16,9 +16,20 @@
 //
 // Each rule is "<Tool>(<pattern>)". Tool names are capitalized rule
 // prefixes (Bash, Read, Write, Edit, Mkdir, Copy, Move, Delete, List,
-// Glob, Grep, Fetch, Git, Tests, Rollback) — distinct from internal tool
-// names (run_bash, read_file, …). The mapping lives in tool_targets.go
-// so per-tool descriptor extraction stays in one place.
+// Glob, Grep, Fetch, Git, Github, Memory, Tests, Rollback) — distinct
+// from internal tool names (run_bash, read_file, …). The mapping lives
+// in tool_targets.go so per-tool descriptor extraction stays in one
+// place.
+//
+// Github(...) descriptors are the canonical verb name:
+//
+//   read_pr, read_pr_review_context, read_issue, list_open_issues,
+//   create_pr, update_pr, add_pr_comment
+//
+// Wildcards work as usual, so `Github(read_*)` covers every read,
+// `Github(*_pr)` covers every PR verb, and `Github(*)` is the
+// catch-all. Owner/repo scoping is deferred until cross-repo work
+// lands — for now everything resolves against the cwd's git remote.
 //
 // Pattern semantics:
 //

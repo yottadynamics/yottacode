@@ -30,8 +30,12 @@ are also accepted).
 | [`git_commit_apply`](#git_commit_apply) | required | Validate a one-line subject and run `git commit` with structured result envelope |
 | [`gh_pr_context`](#gh_pr_context) | none | Typed snapshot for opening a PR (base resolution, ahead-count, push state, gh availability, PR template) |
 | [`gh_pr_create`](#gh_pr_create) | required | Validate title and open a PR via the `internal/github.Interface` adapter with typed result envelope |
+| [`gh_pr_read`](#gh_pr_read) | none | Fetch PR metadata only via one API call (use instead of `run_bash gh pr view --json …`) |
 | [`gh_pr_review_context`](#gh_pr_review_context) | none | Fetch PR metadata + diff + check rollup via the `internal/github.Interface` adapter for review |
 | [`gh_pr_update`](#gh_pr_update) | required | Rewrite an existing PR's title and body via the `internal/github.Interface` adapter; title validation + non-empty-body guard |
+| [`gh_pr_add_comment`](#gh_pr_add_comment) | required | Post a top-level conversation comment on a PR; body capped, approval-gated |
+| [`gh_issue_read`](#gh_issue_read) | none | Fetch issue metadata + comments (use instead of `run_bash gh issue view --json …`) |
+| [`gh_issue_list`](#gh_issue_list) | none | List open issues matching label/assignee/milestone filters |
 | [`git_push`](#git_push) | required | Push the current branch to origin with deterministic upstream detection; surfaces the PR URL when one exists |
 | [`git_log_file`](#git_log_file) | none | Show history for one file |
 | [`git_blame_lines`](#git_blame_lines) | none | Blame a line range in a file |
