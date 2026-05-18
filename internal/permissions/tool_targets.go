@@ -107,6 +107,20 @@ func targetFor(toolName, argsJSON, cwd string) Target {
 		// `Git(commit *)` style rule covers the unified tool too.
 		sub := strings.TrimPrefix(toolName, "git_")
 		return Target{PermName: "Git", Descriptor: sub + " " + summarizeArgs(argsJSON)}
+	case "gh_pr_create":
+		return Target{PermName: "Github", Descriptor: "create_pr"}
+	case "gh_pr_update":
+		return Target{PermName: "Github", Descriptor: "update_pr"}
+	case "gh_pr_read":
+		return Target{PermName: "Github", Descriptor: "read_pr"}
+	case "gh_pr_review_context":
+		return Target{PermName: "Github", Descriptor: "read_pr_review_context"}
+	case "gh_pr_add_comment":
+		return Target{PermName: "Github", Descriptor: "add_pr_comment"}
+	case "gh_issue_read":
+		return Target{PermName: "Github", Descriptor: "read_issue"}
+	case "gh_issue_list":
+		return Target{PermName: "Github", Descriptor: "list_open_issues"}
 	}
 	return Target{}
 }

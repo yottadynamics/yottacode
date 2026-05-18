@@ -48,6 +48,11 @@ type TypedClient struct {
 	// http.Client. Tests provide a transport that returns
 	// canned responses.
 	HTTPClient *http.Client
+
+	// rate tracks the most recent rate-limit headers we've seen.
+	// Populated by recordRate after every successful API call;
+	// callers consult via RateLimit().
+	rate rateLimitTracker
 }
 
 // NewTypedClient builds a TypedClient wired with a fresh
@@ -104,8 +109,9 @@ func (c *TypedClient) resolveOwnerRepo(ctx context.Context, owner, repo string) 
 // classifyAPIError maps go-github's response errors into our
 // typed sentinels. 404 → ErrPRNotFound. Auth failures
 // (401 / 403 from missing or invalid token) → ErrGhUnavailable
-// for caller-side parity with the ShellOut behavior. Everything
-// else bubbles up wrapped.
+// for caller-side parity with the ShellOut behavior. Network-layer
+// failures (DNS, refused connection, TLS) → ErrGitHubUnreachable
+// via classifyNetworkError. Everything else bubbles up wrapped.
 func classifyAPIError(err error) error {
 	var apiErr *gogithub.ErrorResponse
 	if errors.As(err, &apiErr) && apiErr.Response != nil {
@@ -116,7 +122,59 @@ func classifyAPIError(err error) error {
 			return ErrGhUnavailable
 		}
 	}
+	// Network-layer concerns (no go-github ErrorResponse wrapping)
+	// surface as ErrGitHubUnreachable so callers branch on the
+	// right recovery — auth failures want `gh auth login`,
+	// unreachable wants "check your network".
+	if reachErr := classifyNetworkError(err); errors.Is(reachErr, ErrGitHubUnreachable) {
+		return reachErr
+	}
 	return err
+}
+
+// recordRate captures rate-limit headers from a go-github Response
+// into the TypedClient's tracker. No-op when the response is nil
+// (e.g., the call failed before getting a response). Called after
+// every successful API call.
+func (c *TypedClient) recordRate(resp *gogithub.Response) {
+	if resp == nil {
+		return
+	}
+	c.rate.update(RateLimitSnapshot{
+		Limit:     resp.Rate.Limit,
+		Remaining: resp.Rate.Remaining,
+		Reset:     resp.Rate.Reset.Time,
+	})
+}
+
+// AuthedUserLogin returns the login of the user the current token
+// authenticates as. Powers the doctor probe — the call doubles as
+// a connectivity check (the underlying HTTPS hit) and as the
+// auth-validity check (a bad token returns 401 → ErrGhUnavailable).
+// Not on the Interface — probe-specific, not a workflow operation.
+func (c *TypedClient) AuthedUserLogin(ctx context.Context) (string, error) {
+	cl, err := c.init(ctx)
+	if err != nil {
+		return "", err
+	}
+	user, resp, err := cl.Users.Get(ctx, "")
+	c.recordRate(resp)
+	if err != nil {
+		return "", classifyAPIError(err)
+	}
+	if user == nil || user.Login == nil {
+		return "", fmt.Errorf("authed user response missing login")
+	}
+	return *user.Login, nil
+}
+
+// RateLimit returns the most recent rate-limit snapshot the typed
+// client has observed. Snapshot.IsSet() is false until at least one
+// API call has populated the tracker. Used by the doctor probe to
+// surface remaining budget and by mutation tools to attach a
+// low-budget warning to their output.
+func (c *TypedClient) RateLimit() RateLimitSnapshot {
+	return c.rate.get()
 }
 
 // CreatePR opens a pull request via REST. Body is sent as the
@@ -150,7 +208,8 @@ func (c *TypedClient) CreatePR(ctx context.Context, req CreatePRRequest) (Create
 		Head:  gogithub.String(head),
 		Draft: gogithub.Bool(req.Draft),
 	}
-	created, _, err := cl.PullRequests.Create(ctx, owner, repo, newPR)
+	created, resp, err := cl.PullRequests.Create(ctx, owner, repo, newPR)
+	c.recordRate(resp)
 	if err != nil {
 		return res, fmt.Errorf("create pr: %w", classifyAPIError(err))
 	}
@@ -180,7 +239,8 @@ func (c *TypedClient) ReadPR(ctx context.Context, req ReadPRRequest) (PRDetails,
 	if err != nil {
 		return details, err
 	}
-	pr, _, err := cl.PullRequests.Get(ctx, owner, repo, number)
+	pr, resp, err := cl.PullRequests.Get(ctx, owner, repo, number)
+	c.recordRate(resp)
 	if err != nil {
 		return details, fmt.Errorf("read pr: %w", classifyAPIError(err))
 	}
@@ -203,8 +263,9 @@ func (c *TypedClient) ReadPRDiff(ctx context.Context, req ReadPRRequest) (string
 	if err != nil {
 		return "", err
 	}
-	diff, _, err := cl.PullRequests.GetRaw(ctx, owner, repo, number,
+	diff, resp, err := cl.PullRequests.GetRaw(ctx, owner, repo, number,
 		gogithub.RawOptions{Type: gogithub.Diff})
+	c.recordRate(resp)
 	if err != nil {
 		return "", fmt.Errorf("read pr diff: %w", classifyAPIError(err))
 	}
@@ -228,7 +289,8 @@ func (c *TypedClient) ListPRChecks(ctx context.Context, req ReadPRRequest) ([]Ch
 	if err != nil {
 		return nil, err
 	}
-	pr, _, err := cl.PullRequests.Get(ctx, owner, repo, number)
+	pr, resp, err := cl.PullRequests.Get(ctx, owner, repo, number)
+	c.recordRate(resp)
 	if err != nil {
 		return nil, fmt.Errorf("list checks: read pr: %w", classifyAPIError(err))
 	}
@@ -240,7 +302,8 @@ func (c *TypedClient) ListPRChecks(ctx context.Context, req ReadPRRequest) ([]Ch
 	out := []CheckRun{}
 
 	// Check-run rollup — the newer Checks API surface.
-	checks, _, cerr := cl.Checks.ListCheckRunsForRef(ctx, owner, repo, headSHA, nil)
+	checks, cresp, cerr := cl.Checks.ListCheckRunsForRef(ctx, owner, repo, headSHA, nil)
+	c.recordRate(cresp)
 	if cerr != nil {
 		return nil, fmt.Errorf("list checks: %w", classifyAPIError(cerr))
 	}
@@ -253,7 +316,8 @@ func (c *TypedClient) ListPRChecks(ctx context.Context, req ReadPRRequest) ([]Ch
 	// Legacy commit-status contexts — what statusCheckRollup's
 	// StatusContext branch covers. ListStatuses returns the
 	// latest status for each context.
-	statuses, _, serr := cl.Repositories.ListStatuses(ctx, owner, repo, headSHA, nil)
+	statuses, sresp, serr := cl.Repositories.ListStatuses(ctx, owner, repo, headSHA, nil)
+	c.recordRate(sresp)
 	if serr != nil {
 		// Status fetch is soft-fail: check-run rollup alone is
 		// the common case, statuses are a legacy supplement.
@@ -292,7 +356,8 @@ func (c *TypedClient) UpdatePR(ctx context.Context, req UpdatePRRequest) (Update
 		Title: gogithub.String(req.Title),
 		Body:  gogithub.String(req.Body),
 	}
-	updated, _, err := cl.PullRequests.Edit(ctx, owner, repo, number, patch)
+	updated, resp, err := cl.PullRequests.Edit(ctx, owner, repo, number, patch)
+	c.recordRate(resp)
 	if err != nil {
 		return res, fmt.Errorf("update pr: %w", classifyAPIError(err))
 	}
@@ -301,6 +366,145 @@ func (c *TypedClient) UpdatePR(ctx context.Context, req UpdatePRRequest) (Update
 	}
 	if updated.Number != nil {
 		res.Number = *updated.Number
+	}
+	return res, nil
+}
+
+// ReadIssue fetches issue metadata + the most-recent comments.
+// MaxComments controls the comment fetch: 0 → default (20),
+// negative → skip comments entirely, positive → cap at that many.
+// Comments are returned most-recent-first.
+func (c *TypedClient) ReadIssue(ctx context.Context, req ReadIssueRequest) (IssueDetails, error) {
+	var details IssueDetails
+	if req.Number <= 0 {
+		return details, fmt.Errorf("read issue: number is required")
+	}
+	cl, err := c.init(ctx)
+	if err != nil {
+		return details, err
+	}
+	owner, repo, err := c.resolveOwnerRepo(ctx, req.Owner, req.Repo)
+	if err != nil {
+		return details, err
+	}
+
+	issue, resp, err := cl.Issues.Get(ctx, owner, repo, req.Number)
+	c.recordRate(resp)
+	if err != nil {
+		err = classifyAPIError(err)
+		if errors.Is(err, ErrPRNotFound) {
+			// Issues.Get returns 404 for missing issues; remap to
+			// the issue-specific sentinel.
+			return details, ErrIssueNotFound
+		}
+		return details, fmt.Errorf("read issue: %w", err)
+	}
+	// go-github's Issues.Get returns *both* issues and PRs (PRs
+	// are issues at the API level). Reject PR-shaped responses so
+	// callers can't accidentally read a PR through this method.
+	if issue.PullRequestLinks != nil {
+		return details, ErrIssueNotFound
+	}
+	details = mapIssueDetails(issue)
+
+	cap := req.MaxComments
+	switch {
+	case cap < 0:
+		// caller opted out of comments
+		return details, nil
+	case cap == 0:
+		cap = 20
+	}
+	// ListComments doesn't expose a "most recent first" order
+	// natively for issue comments — they come oldest-first. We
+	// page conservatively and slice the tail.
+	opts := &gogithub.IssueListCommentsOptions{
+		Sort:        gogithub.String("created"),
+		Direction:   gogithub.String("desc"),
+		ListOptions: gogithub.ListOptions{PerPage: cap},
+	}
+	cs, cresp, cerr := cl.Issues.ListComments(ctx, owner, repo, req.Number, opts)
+	c.recordRate(cresp)
+	if cerr != nil {
+		// Comment fetch failure is soft — the issue body is the
+		// primary signal. Surface the metadata; skip comments.
+		return details, nil
+	}
+	for _, c := range cs {
+		details.Comments = append(details.Comments, mapIssueComment(c))
+	}
+	return details, nil
+}
+
+// ListOpenIssues returns lightweight summaries of open issues
+// matching the supplied filters. Pagination is GitHub's default
+// (30 per page, first page only) — callers that need more refine
+// the filter rather than asking for unbounded scrolling.
+func (c *TypedClient) ListOpenIssues(ctx context.Context, req ListIssuesRequest) ([]IssueSummary, error) {
+	cl, err := c.init(ctx)
+	if err != nil {
+		return nil, err
+	}
+	owner, repo, err := c.resolveOwnerRepo(ctx, req.Owner, req.Repo)
+	if err != nil {
+		return nil, err
+	}
+	opts := &gogithub.IssueListByRepoOptions{
+		State:     "open",
+		Labels:    req.Labels,
+		Assignee:  req.Assignee,
+		Milestone: req.Milestone,
+	}
+	issues, resp, err := cl.Issues.ListByRepo(ctx, owner, repo, opts)
+	c.recordRate(resp)
+	if err != nil {
+		return nil, fmt.Errorf("list issues: %w", classifyAPIError(err))
+	}
+	out := []IssueSummary{}
+	for _, i := range issues {
+		if i == nil || i.PullRequestLinks != nil {
+			// Skip PRs — Issues.ListByRepo returns them in the
+			// same stream. Caller asked for issues, not PRs.
+			continue
+		}
+		out = append(out, mapIssueSummary(i))
+	}
+	return out, nil
+}
+
+// AddPRComment posts a top-level conversation comment on the PR.
+// PR comments at the conversation level go through the Issues API
+// (PRs are issues at the API level) — this is the GitHub API
+// shape, not a yottacode quirk.
+func (c *TypedClient) AddPRComment(ctx context.Context, req AddPRCommentRequest) (AddPRCommentResult, error) {
+	var res AddPRCommentResult
+	body := strings.TrimSpace(req.Body)
+	if body == "" {
+		return res, fmt.Errorf("add pr comment: body is required")
+	}
+	cl, err := c.init(ctx)
+	if err != nil {
+		return res, err
+	}
+	owner, repo, err := c.resolveOwnerRepo(ctx, req.Owner, req.Repo)
+	if err != nil {
+		return res, err
+	}
+	number, err := c.resolvePRNumber(ctx, cl, owner, repo, req.Ref)
+	if err != nil {
+		return res, err
+	}
+	comment := &gogithub.IssueComment{Body: gogithub.String(body)}
+	created, resp, err := cl.Issues.CreateComment(ctx, owner, repo, number, comment)
+	c.recordRate(resp)
+	if err != nil {
+		return res, fmt.Errorf("add pr comment: %w", classifyAPIError(err))
+	}
+	if created.HTMLURL != nil {
+		res.URL = *created.HTMLURL
+	}
+	if created.ID != nil {
+		res.ID = *created.ID
 	}
 	return res, nil
 }
@@ -329,7 +533,8 @@ func (c *TypedClient) resolvePRNumber(ctx context.Context, cl *gogithub.Client, 
 		State: "open",
 		Head:  owner + ":" + ref,
 	}
-	prs, _, err := cl.PullRequests.List(ctx, owner, repo, opts)
+	prs, resp, err := cl.PullRequests.List(ctx, owner, repo, opts)
+	c.recordRate(resp)
 	if err != nil {
 		return 0, fmt.Errorf("resolve pr number: list prs: %w", classifyAPIError(err))
 	}
@@ -451,6 +656,97 @@ func mapCheckRun(cr *gogithub.CheckRun) CheckRun {
 		c.CompletedAt = cr.CompletedAt.Time
 	}
 	return c
+}
+
+// mapIssueDetails converts go-github's *Issue into our IssueDetails.
+// Same pattern as mapPRDetails — pointer dereferences guarded so
+// a partially populated response doesn't panic.
+func mapIssueDetails(i *gogithub.Issue) IssueDetails {
+	var d IssueDetails
+	if i == nil {
+		return d
+	}
+	if i.Number != nil {
+		d.Number = *i.Number
+	}
+	if i.Title != nil {
+		d.Title = *i.Title
+	}
+	if i.Body != nil {
+		d.Body = *i.Body
+	}
+	if i.State != nil {
+		d.State = strings.ToUpper(*i.State)
+	}
+	if i.User != nil && i.User.Login != nil {
+		d.Author = *i.User.Login
+	}
+	if i.HTMLURL != nil {
+		d.URL = *i.HTMLURL
+	}
+	for _, l := range i.Labels {
+		if l != nil && l.Name != nil && *l.Name != "" {
+			d.Labels = append(d.Labels, *l.Name)
+		}
+	}
+	for _, a := range i.Assignees {
+		if a != nil && a.Login != nil && *a.Login != "" {
+			d.Assignees = append(d.Assignees, *a.Login)
+		}
+	}
+	return d
+}
+
+// mapIssueComment converts go-github's *IssueComment into ours.
+func mapIssueComment(c *gogithub.IssueComment) IssueComment {
+	var out IssueComment
+	if c == nil {
+		return out
+	}
+	if c.User != nil && c.User.Login != nil {
+		out.Author = *c.User.Login
+	}
+	if c.Body != nil {
+		out.Body = *c.Body
+	}
+	if c.CreatedAt != nil {
+		out.Created = c.CreatedAt.Time
+	}
+	return out
+}
+
+// mapIssueSummary converts go-github's *Issue into the lightweight
+// IssueSummary returned by ListOpenIssues. Body / Comments are
+// intentionally dropped — callers that need them follow up with
+// ReadIssue.
+func mapIssueSummary(i *gogithub.Issue) IssueSummary {
+	var s IssueSummary
+	if i == nil {
+		return s
+	}
+	if i.Number != nil {
+		s.Number = *i.Number
+	}
+	if i.Title != nil {
+		s.Title = *i.Title
+	}
+	if i.User != nil && i.User.Login != nil {
+		s.Author = *i.User.Login
+	}
+	if i.HTMLURL != nil {
+		s.URL = *i.HTMLURL
+	}
+	for _, l := range i.Labels {
+		if l != nil && l.Name != nil && *l.Name != "" {
+			s.Labels = append(s.Labels, *l.Name)
+		}
+	}
+	for _, a := range i.Assignees {
+		if a != nil && a.Login != nil && *a.Login != "" {
+			s.Assignees = append(s.Assignees, *a.Login)
+		}
+	}
+	return s
 }
 
 // mapStatus converts a legacy commit-status context entry into

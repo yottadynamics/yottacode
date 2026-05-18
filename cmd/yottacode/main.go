@@ -405,16 +405,29 @@ Use --json for scripting.`,
 				return err
 			}
 			result := adapter.Probe(cmd.Context(), adapterConfigFromOptions(*opts))
+			ghResult := probeGitHub(cmd.Context())
 			if jsonOutput {
+				// JSON envelope: provider-probe fields stay at top
+				// level (back-compat — external scripts already
+				// parse `endpoint_reachable`, `auth_ok`, etc.), and
+				// the GitHub section lives under a sibling `github`
+				// key. Embedding ProbeResult flattens its fields.
 				enc := json.NewEncoder(cmd.OutOrStdout())
 				enc.SetIndent("", "  ")
-				if err := enc.Encode(result); err != nil {
+				combined := struct {
+					adapter.ProbeResult
+					GitHub GitHubProbeResult `json:"github"`
+				}{
+					ProbeResult: result,
+					GitHub:      ghResult,
+				}
+				if err := enc.Encode(combined); err != nil {
 					return err
 				}
 			} else {
-				fmt.Fprintln(cmd.OutOrStdout(), formatDoctorResult(result))
+				fmt.Fprintln(cmd.OutOrStdout(), formatDoctorResult(result)+renderGitHubProbe(ghResult))
 			}
-			if len(result.Issues) > 0 {
+			if len(result.Issues) > 0 || len(ghResult.Issues) > 0 {
 				return errors.New("doctor found issues")
 			}
 			return nil

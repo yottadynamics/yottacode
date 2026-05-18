@@ -208,7 +208,13 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 	// github.Interface. The Interface is the foundation hook for
 	// v0.5.0's typed go-github client — swapping the ShellOut for the
 	// typed client is a one-line registration change.
-	ghClient := githubapi.NewTypedClient(cwd)
+	// In-session cache wraps the typed client so duplicate reads
+	// within one turn make one API call. The cache lives for the
+	// session and is cleared at process exit — no explicit
+	// teardown needed. Writes (CreatePR, UpdatePR, AddPRComment)
+	// pass through; UpdatePR invalidates matching ReadPR entries
+	// so the next read sees fresh data.
+	ghClient := githubapi.NewCachingClient(githubapi.NewTypedClient(cwd))
 	reg.Register(&agent.GHPRContextTool{Cwd: cwd})
 	reg.Register(&agent.GHPRCreateTool{Cwd: cwd, GH: ghClient})
 	// gh_pr_review_context is the read-side composite paired with
@@ -216,6 +222,20 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 	// gh_pr_create so the v0.5.0 swap to a typed go-github client
 	// changes one variable above instead of two registration sites.
 	reg.Register(&agent.GHPRReviewContextTool{Cwd: cwd, GH: ghClient})
+	// gh_pr_read is the lightweight metadata-only sibling — one
+	// API call vs. review_context's three. The model picks between
+	// them based on whether it needs the diff + checks (review) or
+	// just metadata (read). The Description on each tool spells out
+	// the selection rule so the model doesn't reach for run_bash
+	// `gh pr view --json body`.
+	reg.Register(&agent.GHPRReadTool{Cwd: cwd, GH: ghClient})
+	// Issue-side counterparts: gh_issue_read for single-issue
+	// metadata + comments (the /git-implement-issue command's
+	// first step), gh_issue_list for filtered open-issue
+	// summaries. Same nudge-the-model-away-from-run_bash framing
+	// as the PR tools.
+	reg.Register(&agent.GHIssueReadTool{Cwd: cwd, GH: ghClient})
+	reg.Register(&agent.GHIssueListTool{Cwd: cwd, GH: ghClient})
 	// git_push is paired with /git-push. The GH dependency is for
 	// the best-effort PR-URL lookup after a successful push — a
 	// nil client would skip the lookup silently, but registering
@@ -227,6 +247,11 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 	// swap will switch one variable above and pick up all four
 	// (create/read-review/push-lookup/update) at once.
 	reg.Register(&agent.GHPRUpdateTool{Cwd: cwd, GH: ghClient})
+	// gh_pr_add_comment posts a conversation-level comment on a PR.
+	// Approval-gated like the other write tools. Used for
+	// cross-linking related issues, post-review follow-ups, and
+	// structured summaries the model wants public on the PR.
+	reg.Register(&agent.GHPRAddCommentTool{Cwd: cwd, GH: ghClient})
 	reg.Register(&agent.GitLogFileTool{Cwd: cwd})
 	reg.Register(&agent.GitBlameLinesTool{Cwd: cwd})
 	reg.Register(&agent.GitMergeBaseTool{Cwd: cwd})
