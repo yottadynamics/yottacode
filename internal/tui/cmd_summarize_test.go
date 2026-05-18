@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -68,7 +69,7 @@ func TestComposeSummarizedHistory_PreservesSystemAndRecent(t *testing.T) {
 		)
 	}
 
-	out := composeSummarizedHistory(history, "## Decisions made\n(none)\n## Code changes\n(none)\n## Open questions\n(none)\n## Preferences expressed\n(none)")
+	out := composeSummarizedHistory(history, "## Decisions made\n(none)\n## Code changes\n(none)\n## Open questions\n(none)\n## Preferences expressed\n(none)", 0)
 
 	// First message must be the preserved system prompt.
 	if out[0].Role != adapter.RoleSystem || out[0].Content != "SYS" {
@@ -103,6 +104,225 @@ func TestComposeSummarizedHistory_PreservesSystemAndRecent(t *testing.T) {
 	if strings.Contains(tailStr, "QA") {
 		t.Errorf("retention should drop oldest turn; got %q", tailStr)
 	}
+}
+
+// TestComposeSummarizedHistory_ByteBudgetDropsOldest pins Fix A's
+// load-bearing behavior: when retained turns would together exceed
+// the byte budget derived from the model window, oldest turns are
+// dropped so the compressed history actually shrinks. Before Fix A
+// composeSummarizedHistory would keep every retained turn verbatim,
+// which made compression a no-op for agent-heavy sessions where a
+// handful of turns each carried tens of thousands of tokens of tool
+// output.
+func TestComposeSummarizedHistory_ByteBudgetDropsOldest(t *testing.T) {
+	// Build 5 user turns, each carrying a 60K-char tool result.
+	// With windowTokens=128K, retainBudgetFraction=0.4 gives a budget
+	// of ~51K tokens — room for roughly 3 turns at 15K tokens each
+	// (60K chars ≈ 15K tokens). The two oldest turns must be dropped.
+	const turnChars = 60_000
+	history := []adapter.Message{
+		{Role: adapter.RoleSystem, Content: "SYS"},
+	}
+	for i := 0; i < 5; i++ {
+		marker := string(rune('A' + i))
+		history = append(history,
+			adapter.Message{Role: adapter.RoleUser, Content: "Q" + marker},
+			adapter.Message{Role: adapter.RoleTool, Content: marker + strings.Repeat("x", turnChars-1), ToolCallID: "t" + marker},
+			adapter.Message{Role: adapter.RoleAssistant, Content: "A" + marker},
+		)
+	}
+
+	out := composeSummarizedHistory(history, "## Decisions made\n(none)", 128_000)
+
+	// System + summary are always emitted; tail is the retained turns.
+	if len(out) < 2 {
+		t.Fatalf("output too short: %d", len(out))
+	}
+	// Most recent turn (E) must survive.
+	tailStr := ""
+	for _, m := range out[2:] {
+		tailStr += m.Content
+	}
+	if !strings.Contains(tailStr, "QE") {
+		t.Errorf("most-recent turn must be retained; tail had no QE: %q", firstNChars(tailStr, 200))
+	}
+	// Oldest turn (A) must be dropped.
+	if strings.Contains(tailStr, "QA") {
+		t.Errorf("oldest turn should be dropped under budget; tail still contains QA")
+	}
+	// Compression must actually reduce the size: output token count
+	// should be well under the input.
+	inputTokens := contextwindow.EstimateTokens(history)
+	outputTokens := contextwindow.EstimateTokens(out)
+	if outputTokens >= inputTokens {
+		t.Errorf("compression should reduce tokens; in=%d out=%d", inputTokens, outputTokens)
+	}
+	// Output must fit comfortably in the budget plus the synthetic
+	// summary + system message.
+	budget := retainBudgetFor(128_000)
+	if outputTokens > budget+2000 { // +2000 for summary + system overhead
+		t.Errorf("output (%d tokens) exceeds retainBudget %d + overhead", outputTokens, budget)
+	}
+}
+
+// TestComposeSummarizedHistory_TruncatesGiantToolResult guards the
+// per-message cap inside Fix A: a single tool result larger than
+// maxRetainedToolTokens is truncated in place with the compaction
+// marker, so one runaway payload can't dominate retention even when
+// it lives inside the most-recent (always-retained) turn.
+func TestComposeSummarizedHistory_TruncatesGiantToolResult(t *testing.T) {
+	// One user turn whose tool result is 200K chars (~50K tokens) —
+	// well above maxRetainedToolTokens (4K). The recent-turn always-
+	// keep rule applies, but the tool message itself gets truncated.
+	giant := strings.Repeat("y", 200_000)
+	history := []adapter.Message{
+		{Role: adapter.RoleSystem, Content: "SYS"},
+		{Role: adapter.RoleUser, Content: "ask"},
+		{Role: adapter.RoleTool, Content: giant, ToolCallID: "t1"},
+		{Role: adapter.RoleAssistant, Content: "ack"},
+	}
+	out := composeSummarizedHistory(history, "## Decisions made\n(none)", 128_000)
+
+	var toolMsg *adapter.Message
+	for i := range out {
+		if out[i].Role == adapter.RoleTool {
+			toolMsg = &out[i]
+			break
+		}
+	}
+	if toolMsg == nil {
+		t.Fatalf("retained tail should still contain the tool message")
+	}
+	if !strings.HasSuffix(toolMsg.Content, compactionMarker) {
+		t.Errorf("oversize tool result should be truncated with marker; got tail %q", lastNChars(toolMsg.Content, 80))
+	}
+	if estimateMessageTokens(*toolMsg) > maxRetainedToolTokens+50 {
+		t.Errorf("truncated tool tokens = %d, want ≤ %d", estimateMessageTokens(*toolMsg), maxRetainedToolTokens+50)
+	}
+}
+
+// TestComposeSummarizedHistory_AlwaysRetainsMostRecentUserTurn locks
+// the "current ask survives" invariant: even when the most recent
+// turn's own size exceeds the budget, it is kept so the model can
+// still see the user's pending question.
+func TestComposeSummarizedHistory_AlwaysRetainsMostRecentUserTurn(t *testing.T) {
+	// Single user turn far larger than the retain budget. With
+	// windowTokens=8192 the budget is min budget (~4K tokens), and
+	// the user turn alone is ~12K tokens.
+	bigAsk := strings.Repeat("z", 48_000)
+	history := []adapter.Message{
+		{Role: adapter.RoleSystem, Content: "SYS"},
+		{Role: adapter.RoleUser, Content: bigAsk},
+		{Role: adapter.RoleAssistant, Content: "ack"},
+	}
+	out := composeSummarizedHistory(history, "## Decisions made\n(none)", 8192)
+
+	foundUser := false
+	for _, m := range out {
+		if m.Role == adapter.RoleUser && m.Content == bigAsk {
+			foundUser = true
+			break
+		}
+	}
+	if !foundUser {
+		t.Errorf("most-recent user turn must always be retained even when oversize")
+	}
+}
+
+// TestRunSummarization_BudgetsInputAgainstWindow guards Fix C: when
+// the rendered history exceeds the summarize input budget, oldest
+// segments are dropped before the call so the request fits inside
+// the model window. Without this, a session that grew past the
+// model's real window would 400 on the summarize call instead of
+// freeing context.
+func TestRunSummarization_BudgetsInputAgainstWindow(t *testing.T) {
+	captured := make(chan []adapter.Message, 1)
+	stub := &capturingAdapter{
+		out: []adapter.StreamEvent{
+			{Kind: adapter.EventDone, Final: &adapter.Message{Role: adapter.RoleAssistant, Content: "## Decisions made\nbudgeted"}},
+		},
+		captured: captured,
+	}
+
+	// Build a history whose flattened size would exceed the 32K
+	// window's input budget: 30 user turns, each carrying a 4K-char
+	// user message. Total ~30K tokens of input segments, vs. a budget
+	// of ~21K (32K window − summarize prompt − 8K reserved output −
+	// 2K safety).
+	history := []adapter.Message{}
+	for i := 0; i < 30; i++ {
+		marker := fmt.Sprintf("U%02d", i)
+		history = append(history,
+			adapter.Message{Role: adapter.RoleUser, Content: marker + strings.Repeat("p", 4000)},
+			adapter.Message{Role: adapter.RoleAssistant, Content: "ok " + marker},
+		)
+	}
+
+	_, err := runSummarization(context.Background(), stub, history, 32_000)
+	if err != nil {
+		t.Fatalf("runSummarization: %v", err)
+	}
+	msgs := <-captured
+	if len(msgs) < 2 {
+		t.Fatalf("expected at least system+user messages; got %d", len(msgs))
+	}
+	// The flattened user payload is messages[1]. Its size must fit
+	// inside the budget so the provider doesn't 400.
+	body := msgs[1].Content
+	bodyTokens := (len(body) + 3) / 4
+	budget := summarizeInputBudget(32_000)
+	if bodyTokens > budget+500 { // small slack for the dropped-marker line
+		t.Errorf("summarize input not budgeted: bodyTokens=%d budget=%d", bodyTokens, budget)
+	}
+	// The oldest turn must be dropped; the most recent must survive.
+	if strings.Contains(body, "U00") {
+		t.Errorf("oldest turn (U00) should be dropped under budget")
+	}
+	if !strings.Contains(body, "U29") {
+		t.Errorf("most recent turn (U29) must survive")
+	}
+	if !strings.Contains(body, "earlier turns omitted") {
+		t.Errorf("dropped-content marker missing from rendered body")
+	}
+}
+
+// capturingAdapter is a scriptedAdapter variant that also records
+// the messages sent into ChatStream, so input-budget tests can
+// assert what the adapter actually received.
+type capturingAdapter struct {
+	out      []adapter.StreamEvent
+	captured chan<- []adapter.Message
+}
+
+func (c *capturingAdapter) ChatStream(_ context.Context, msgs []adapter.Message, _ []adapter.Tool) <-chan adapter.StreamEvent {
+	ch := make(chan adapter.StreamEvent, len(c.out)+1)
+	go func() {
+		defer close(ch)
+		// Best-effort send; don't block the producer if the test
+		// already drained.
+		select {
+		case c.captured <- msgs:
+		default:
+		}
+		for _, ev := range c.out {
+			ch <- ev
+		}
+	}()
+	return ch
+}
+
+func firstNChars(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n]
+}
+
+func lastNChars(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[len(s)-n:]
 }
 
 func TestWritePreSummarySnapshot_RoundTrips(t *testing.T) {
@@ -168,7 +388,7 @@ func TestInjectSummaryIntoSystemPrompt_IsIdempotent(t *testing.T) {
 
 func TestRunSummarization_EmptyHistoryErrors(t *testing.T) {
 	stub := &scriptedAdapter{}
-	_, err := runSummarization(context.Background(), stub, nil)
+	_, err := runSummarization(context.Background(), stub, nil, 0)
 	if err == nil {
 		t.Errorf("empty history should error")
 	}
@@ -182,7 +402,7 @@ func TestRunSummarization_StreamsAndStructures(t *testing.T) {
 	out, err := runSummarization(context.Background(), stub, []adapter.Message{
 		{Role: adapter.RoleUser, Content: "hi"},
 		{Role: adapter.RoleAssistant, Content: "hello"},
-	})
+	}, 0)
 	if err != nil {
 		t.Fatalf("runSummarization: %v", err)
 	}

@@ -128,4 +128,10 @@ var knownWindows = []windowEntry{
 	{"mistral-large", 128_000},
 	{"mistral-", 32_768},
 	{"mixtral-", 32_768},
+
+	// NVIDIA NIM. Nemotron-3-Super publishes a 262K window via
+	// integrate.api.nvidia.com; other NVIDIA-hosted models default to
+	// 128K which is the lowest-common-denominator across the catalog.
+	{"nvidia/nemotron", 262_144},
+	{"nvidia/", 128_000},
 }

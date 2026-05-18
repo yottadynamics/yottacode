@@ -19,13 +19,58 @@ import (
 	"github.com/yottadynamics/yottacode/internal/session"
 )
 
+// retainBudgetFraction is the fraction of the model's context window
+// allocated to verbatim-retained turns after compression. The
+// remaining capacity is reserved for the system prompt, the synthetic
+// summary, future user turns, and per-turn output. 0.4 keeps the
+// compressed history far enough below the auto-summarize threshold
+// that several more turns can land before compression fires again —
+// without it, an agent-heavy session would re-trigger summarization
+// on essentially unchanged content.
+const retainBudgetFraction = 0.4
+
+// minRetainBudget is the floor on the retain budget, used when the
+// caller doesn't know the model's window (test paths, exotic
+// providers). Picked to fit a single small turn comfortably.
+const minRetainBudget = 4096
+
+// maxRetainedToolTokens caps any single retained tool result so one
+// oversized payload (Agent report, large file read) can't blow the
+// retention budget for the whole tail. The truncation marker keeps
+// the model aware that content was dropped rather than silently
+// shortening.
+const maxRetainedToolTokens = 4096
+
+// compactionMarker is appended to retained tool content that was
+// truncated by the budget. Distinct from the inline summarize-time
+// truncation marker so an audit can tell the two apart.
+const compactionMarker = "…(truncated by compaction)"
+
+// summarizeInputSafety is the absolute token margin held back beyond
+// accounted-for overhead when budgeting the summarize input. Covers
+// 4-chars-per-token estimation drift plus the chat-completions
+// request envelope (role wrappers, JSON framing).
+const summarizeInputSafety = 2048
+
 // retainTurnsAfterSummary is the number of recent user/assistant turns
 // kept verbatim after the synthetic summary message. Tuned to "enough
 // recency context that the next prompt has working memory of the very
 // last exchange, but few enough that the compression actually saves
 // tokens." Tool messages associated with a retained assistant turn
-// travel with it.
+// travel with it. It is also an upper bound — the byte-budget walk in
+// composeSummarizedHistory may keep fewer turns when retained content
+// would exceed the budget.
 const retainTurnsAfterSummary = 5
+
+// summarizeTimeout is the wall-clock cap on a single compression call.
+// Auto-summarization runs against a transcript that, by definition,
+// is near the model's context window. On slow providers (NVIDIA NIM,
+// remote Ollama, anything CPU-bound) prefilling a 200K+ token prompt
+// can take well over two minutes before the first output token lands.
+// Five minutes matches the longest reasonable wait for a single
+// compression while still surfacing as "stuck" if the stream truly
+// stalls.
+const summarizeTimeout = 5 * time.Minute
 
 // summarizationPrompt is the system message asking the model for a
 // structured four-section compression of the session so far. The
@@ -107,11 +152,15 @@ func (m Model) summarizeCmd(auto bool) tea.Cmd {
 	parentCtx := m.parentCtx
 	sessID := m.sess.ID
 	tokensBefore := m.contextTokens
+	// Snapshot the window outside the goroutine so we still hold a
+	// stable view of model + fileCfg. Used to budget both the
+	// summarize input and the retained tail.
+	windowTokens := contextwindow.WindowFor(m.modelName, m.fileCfg.Context.DefaultWindow)
 	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(parentCtx, 2*time.Minute)
+		ctx, cancel := context.WithTimeout(parentCtx, summarizeTimeout)
 		defer cancel()
 
-		summary, err := runSummarization(ctx, ad, history)
+		summary, err := runSummarization(ctx, ad, history, windowTokens)
 		if err != nil {
 			return summaryDoneMsg{auto: auto, err: err}
 		}
@@ -120,7 +169,7 @@ func (m Model) summarizeCmd(auto bool) tea.Cmd {
 			return summaryDoneMsg{auto: auto, err: fmt.Errorf("snapshot: %w", err)}
 		}
 
-		newHistory := composeSummarizedHistory(history, summary)
+		newHistory := composeSummarizedHistory(history, summary, windowTokens)
 		return summaryDoneMsg{
 			auto:         auto,
 			newMessages:  newHistory,
@@ -132,9 +181,13 @@ func (m Model) summarizeCmd(auto bool) tea.Cmd {
 
 // runSummarization streams the compression call and returns the model's
 // output. Drops the system message from the input — we pass our own
-// summarization prompt instead.
-func runSummarization(ctx context.Context, ad agentStreamer, history []adapter.Message) (string, error) {
-	body := renderHistoryForSummarization(history)
+// summarization prompt instead. windowTokens is the resolved context
+// window for the active model; when > 0 the rendered transcript is
+// budgeted so input + summarization prompt + reserved output fits
+// inside the window. Pass 0 to disable budgeting (test paths,
+// scripted stubs).
+func runSummarization(ctx context.Context, ad agentStreamer, history []adapter.Message, windowTokens int) (string, error) {
+	body := renderHistoryForSummarization(history, windowTokens)
 	if strings.TrimSpace(body) == "" {
 		return "", errors.New("history is empty")
 	}
@@ -174,34 +227,81 @@ type agentStreamer interface {
 // single user message the compression model can read. Strips system
 // messages (we send our own summarization prompt) and tool-call args
 // (rarely useful for compression).
-func renderHistoryForSummarization(history []adapter.Message) string {
-	var b strings.Builder
+//
+// When windowTokens > 0 the body is capped at a budget derived from
+// the model's context window, leaving room for the summarization
+// system prompt, the reserved per-turn output, and an estimation
+// margin. Oldest segments are dropped first — the summarizer cares
+// more about recent decisions and open questions than the early
+// exploratory prompts. A leading marker is inserted whenever
+// segments are dropped so the model knows the input is partial.
+func renderHistoryForSummarization(history []adapter.Message, windowTokens int) string {
+	segments := make([]string, 0, len(history))
 	for _, m := range history {
 		switch m.Role {
 		case adapter.RoleUser:
-			b.WriteString("USER: ")
-			b.WriteString(strings.TrimSpace(m.Content))
-			b.WriteString("\n\n")
+			segments = append(segments, "USER: "+strings.TrimSpace(m.Content)+"\n\n")
 		case adapter.RoleAssistant:
+			var seg strings.Builder
 			if m.Content != "" {
-				b.WriteString("ASSISTANT: ")
-				b.WriteString(strings.TrimSpace(m.Content))
-				b.WriteString("\n\n")
+				seg.WriteString("ASSISTANT: ")
+				seg.WriteString(strings.TrimSpace(m.Content))
+				seg.WriteString("\n\n")
 			}
 			for _, tc := range m.ToolCalls {
-				fmt.Fprintf(&b, "ASSISTANT used tool: %s\n", tc.Name)
+				fmt.Fprintf(&seg, "ASSISTANT used tool: %s\n", tc.Name)
+			}
+			if seg.Len() > 0 {
+				segments = append(segments, seg.String())
 			}
 		case adapter.RoleTool:
 			out := strings.TrimSpace(m.Content)
 			if len(out) > 400 {
 				out = out[:400] + "…(truncated)"
 			}
-			b.WriteString("TOOL_RESULT: ")
-			b.WriteString(out)
-			b.WriteString("\n\n")
+			segments = append(segments, "TOOL_RESULT: "+out+"\n\n")
 		}
 	}
+
+	if windowTokens <= 0 {
+		return strings.TrimSpace(strings.Join(segments, ""))
+	}
+	budget := summarizeInputBudget(windowTokens)
+	if budget <= 0 {
+		// Window is so small even the prompt overhead doesn't fit.
+		// Return the full body and let the provider surface the
+		// error — silently producing an empty body would be worse.
+		return strings.TrimSpace(strings.Join(segments, ""))
+	}
+
+	used := 0
+	keepFromIdx := len(segments)
+	for i := len(segments) - 1; i >= 0; i-- {
+		cost := (len(segments[i]) + 3) / 4
+		if used+cost > budget && keepFromIdx < len(segments) {
+			break
+		}
+		used += cost
+		keepFromIdx = i
+	}
+	if keepFromIdx == 0 {
+		return strings.TrimSpace(strings.Join(segments, ""))
+	}
+	var b strings.Builder
+	b.WriteString("[earlier turns omitted due to compaction budget]\n\n")
+	for i := keepFromIdx; i < len(segments); i++ {
+		b.WriteString(segments[i])
+	}
 	return strings.TrimSpace(b.String())
+}
+
+// summarizeInputBudget computes how many tokens we can spend on the
+// flattened transcript, leaving headroom for the summarization
+// system prompt, the reserved per-turn output (matched to the chat
+// adapter's default), and an estimation margin.
+func summarizeInputBudget(windowTokens int) int {
+	overhead := (len(summarizationPrompt) + 3) / 4
+	return windowTokens - overhead - int(adapter.ChatDefaultMaxTokens) - summarizeInputSafety
 }
 
 // ensureFourSections adds any missing section header so downstream
@@ -226,13 +326,26 @@ func ensureFourSections(s string) string {
 
 // composeSummarizedHistory builds the new message list that replaces
 // the session: system prompt (preserved) + a synthetic assistant
-// summary message + the last retainTurnsAfterSummary user/assistant
-// turns from the original.
+// summary message + the most recent user/assistant turns that fit
+// within a budget derived from windowTokens.
 //
 // "Turn" here means a user message and the assistant reply that
-// followed (plus any tool messages between them). Walking backward
-// keeps the most recent turns by definition.
-func composeSummarizedHistory(history []adapter.Message, summary string) []adapter.Message {
+// followed (plus any tool messages between them). Retention is
+// byte-budgeted, not turn-count-only: in agent-heavy sessions a
+// single user turn can carry hundreds of thousands of tokens worth
+// of tool results, and keeping such a turn verbatim would leave the
+// compressed history barely smaller than the original. The budget
+// caps the retained tail so compression always makes useful progress
+// regardless of how the agent-tool traffic is distributed across
+// turns. retainTurnsAfterSummary remains an upper bound on turn
+// count, and oversize tool results are truncated in place rather
+// than dropped wholesale (so the model still sees that *something*
+// happened, just not its full payload).
+//
+// The single most recent user turn is always retained, even if its
+// own size exceeds the budget — the alternative would orphan the
+// model's view of "what is the user currently asking?".
+func composeSummarizedHistory(history []adapter.Message, summary string, windowTokens int) []adapter.Message {
 	out := make([]adapter.Message, 0, len(history))
 	for _, m := range history {
 		if m.Role == adapter.RoleSystem {
@@ -240,20 +353,11 @@ func composeSummarizedHistory(history []adapter.Message, summary string) []adapt
 		}
 	}
 
-	// Find the index ranges of the last N user-rooted turns so we can
-	// preserve them verbatim. Each turn starts at a user message and
-	// runs to (but not including) the next user message.
 	var userIdxs []int
 	for i, m := range history {
 		if m.Role == adapter.RoleUser {
 			userIdxs = append(userIdxs, i)
 		}
-	}
-	keepFrom := -1
-	if n := len(userIdxs); n > retainTurnsAfterSummary {
-		keepFrom = userIdxs[n-retainTurnsAfterSummary]
-	} else if n > 0 {
-		keepFrom = userIdxs[0]
 	}
 
 	// Synthetic summary message — clearly labeled as a compression
@@ -266,15 +370,113 @@ func composeSummarizedHistory(history []adapter.Message, summary string) []adapt
 		Content: "[Session summary — compressed at " + turnLabel + "]\n\n" + summary,
 	})
 
-	if keepFrom >= 0 {
-		for i := keepFrom; i < len(history); i++ {
-			if history[i].Role == adapter.RoleSystem {
-				continue
-			}
-			out = append(out, history[i])
+	if len(userIdxs) == 0 {
+		return out
+	}
+
+	keepFrom := chooseRetainStart(history, userIdxs, retainBudgetFor(windowTokens), retainTurnsAfterSummary)
+	if keepFrom < 0 {
+		return out
+	}
+	for i := keepFrom; i < len(history); i++ {
+		if history[i].Role == adapter.RoleSystem {
+			continue
 		}
+		out = append(out, capRetainedToolContent(history[i]))
 	}
 	return out
+}
+
+// retainBudgetFor derives the token budget for retained turns from
+// the model's context window. Falls back to a small floor when the
+// caller passes 0 (test paths, exotic providers without a known
+// window).
+func retainBudgetFor(windowTokens int) int {
+	if windowTokens <= 0 {
+		return minRetainBudget
+	}
+	budget := int(float64(windowTokens) * retainBudgetFraction)
+	if budget < minRetainBudget {
+		budget = minRetainBudget
+	}
+	return budget
+}
+
+// chooseRetainStart walks the user-turn index list from newest to
+// oldest, accumulating turns until either the byte budget is
+// exceeded or the turn cap is reached. Returns the history index at
+// which retention should begin, or -1 when no turns should be kept.
+// The most-recent turn is always included regardless of size — it
+// represents the user's current ask and dropping it would leave the
+// model without context for the next reply.
+func chooseRetainStart(history []adapter.Message, userIdxs []int, budgetTokens, turnCap int) int {
+	if len(userIdxs) == 0 {
+		return -1
+	}
+	n := len(userIdxs)
+	keepFrom := -1
+	used := 0
+	turnsKept := 0
+	for i := n - 1; i >= 0; i-- {
+		if turnsKept >= turnCap {
+			break
+		}
+		turnStart := userIdxs[i]
+		turnEnd := len(history)
+		if i+1 < n {
+			turnEnd = userIdxs[i+1]
+		}
+		turnTokens := 0
+		for j := turnStart; j < turnEnd; j++ {
+			if history[j].Role == adapter.RoleSystem {
+				continue
+			}
+			turnTokens += estimateMessageTokens(history[j])
+		}
+		if turnsKept > 0 && used+turnTokens > budgetTokens {
+			break
+		}
+		keepFrom = turnStart
+		used += turnTokens
+		turnsKept++
+	}
+	return keepFrom
+}
+
+// capRetainedToolContent truncates an oversize tool result so a
+// single giant payload (Agent report, large file read) can't blow
+// the retention budget on its own. Leaves user/assistant messages
+// untouched — those carry decisions and reasoning that survive
+// cleanly past compression. Returns a copy with capped Content
+// rather than mutating the input so callers can compare before/after.
+func capRetainedToolContent(m adapter.Message) adapter.Message {
+	if m.Role != adapter.RoleTool {
+		return m
+	}
+	if estimateMessageTokens(m) <= maxRetainedToolTokens {
+		return m
+	}
+	maxChars := maxRetainedToolTokens * 4
+	if maxChars <= len(compactionMarker) {
+		m.Content = compactionMarker
+		return m
+	}
+	m.Content = m.Content[:maxChars-len(compactionMarker)] + compactionMarker
+	return m
+}
+
+// estimateMessageTokens estimates the token count of a single
+// message using the same 4-chars-per-token heuristic as
+// contextwindow.EstimateTokens. Pulled inline rather than calling
+// the contextwindow helper to avoid the per-call slice allocation —
+// chooseRetainStart can call this hundreds of times for a long
+// history.
+func estimateMessageTokens(m adapter.Message) int {
+	chars := len(m.Content)
+	for _, tc := range m.ToolCalls {
+		chars += len(tc.Name) + len(tc.ArgsJSON)
+	}
+	return (chars + 3) / 4
 }
 
 // writePreSummarySnapshot writes the pre-compression history to
@@ -381,9 +583,10 @@ func findOrComputeSummary(deps summarizeDeps, sess *session.Session) (string, st
 	if !hasSummarizableHistory(sess.Messages) {
 		return "(no prior turns to summarize)", "empty", nil
 	}
-	ctx, cancel := context.WithTimeout(deps.ctx, 2*time.Minute)
+	ctx, cancel := context.WithTimeout(deps.ctx, summarizeTimeout)
 	defer cancel()
-	summary, err := runSummarization(ctx, deps.adapter, sess.Messages)
+	windowTokens := contextwindow.WindowFor(sess.Model, deps.fileCfg.Context.DefaultWindow)
+	summary, err := runSummarization(ctx, deps.adapter, sess.Messages, windowTokens)
 	if err != nil {
 		return "", "", fmt.Errorf("on-the-fly summarize: %w", err)
 	}
