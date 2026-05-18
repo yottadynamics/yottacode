@@ -387,6 +387,7 @@ Configuration (no built-in defaults — must be set via flag or env):
 
 func newDoctorCmd(opts *cli.ChatOptions) *cobra.Command {
 	var jsonOutput bool
+	var noGitHub bool
 	cmd := &cobra.Command{
 		Use:   "doctor",
 		Short: "Probe provider auth, model visibility, and resolved diagnostics",
@@ -397,6 +398,7 @@ It resolves the provider profile, calls /models, and reports:
   - authentication status
   - whether the selected model is visible
   - resolved provider-native capability diagnostics
+  - GitHub auth + rate-limit snapshot (skip with --no-github)
 
 Use --json for scripting.`,
 		Args: cobra.NoArgs,
@@ -405,6 +407,27 @@ Use --json for scripting.`,
 				return err
 			}
 			result := adapter.Probe(cmd.Context(), adapterConfigFromOptions(*opts))
+			// --no-github skips the GitHub side entirely. Used by
+			// scripted / CI invocations that don't have a token
+			// configured and shouldn't have doctor exit non-zero on
+			// "no GitHub token found". Also keeps doctor side-effect
+			// free for callers that only care about the provider
+			// probe.
+			if noGitHub {
+				if jsonOutput {
+					enc := json.NewEncoder(cmd.OutOrStdout())
+					enc.SetIndent("", "  ")
+					if err := enc.Encode(result); err != nil {
+						return err
+					}
+				} else {
+					fmt.Fprintln(cmd.OutOrStdout(), formatDoctorResult(result))
+				}
+				if len(result.Issues) > 0 {
+					return errors.New("doctor found issues")
+				}
+				return nil
+			}
 			ghResult := probeGitHub(cmd.Context())
 			if jsonOutput {
 				// JSON envelope: provider-probe fields stay at top
@@ -434,6 +457,7 @@ Use --json for scripting.`,
 		},
 	}
 	cmd.Flags().BoolVar(&jsonOutput, "json", false, "Emit doctor results as JSON")
+	cmd.Flags().BoolVar(&noGitHub, "no-github", false, "Skip the GitHub auth + rate-limit probe (use in CI / no-token environments)")
 	return cmd
 }
 
