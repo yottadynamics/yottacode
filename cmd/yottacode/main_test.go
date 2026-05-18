@@ -27,6 +27,7 @@ func TestDoctorCmd_JSONOutput(t *testing.T) {
 	cmd.SetArgs([]string{
 		"doctor",
 		"--json",
+		"--no-github", // CI has no GITHUB_TOKEN; skip the probe so we test the provider envelope in isolation.
 		"--provider", "openai",
 		"--model", "gpt-5",
 		"--base-url", srv.URL,

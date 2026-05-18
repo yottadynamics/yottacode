@@ -111,6 +111,12 @@ func init() {
 		{Name: "git-commit", Help: "compose and run a one-line git commit", Run: cmdGitCommit},
 		{Name: "git-create-pr", Args: "[base]", Help: "open a pull request for the current branch", Run: cmdGitCreatePR},
 		{Name: "git-review-pr", Args: "[ref]", Help: "review a pull request (number or branch; defaults to current branch's PR)", Run: cmdGitReviewPR},
+		// /git-implement-issue takes a GitHub issue number and runs
+		// the spec'd "issue → planned implementation → draft PR"
+		// flow (yottacode-roadmap/git-fix-issue.md). Plan-mode
+		// approval is the load-bearing safety gate; draft PR is the
+		// merge gate. See cmd_git_implement_issue.go for the directive.
+		{Name: "git-implement-issue", Args: "<n>", Help: "implement a GitHub issue end-to-end: fetch → plan → branch → code → tests → commit → push → draft PR", Run: cmdGitImplementIssue},
 		{Name: "git-push", Help: "push the current branch to origin (sets upstream on first push; surfaces the PR URL when one exists)", Run: cmdGitPush},
 		{Name: "git-update-pr", Args: "[ref]", Help: "refresh a PR's title and body to match the current commit list", Run: cmdGitUpdatePR},
 		// /plan toggles plan mode (read-only research + plan file +

@@ -285,6 +285,51 @@ either path from `/permissions` seeds the file with the full
 fully-shaped file instead of an empty buffer. Files that already have
 content are never overwritten.
 
+### Rule Prefixes
+
+Each rule has the shape `<Tool>(<pattern>)`. Supported tool prefixes:
+
+| Prefix | Applies to | Pattern matches against |
+|---|---|---|
+| `Bash` | `run_bash` | Full shell command text |
+| `Read` | `read_file`, `read_many_files` | cwd-relative path (doublestar) |
+| `Write` | `write_file` | cwd-relative path (doublestar) |
+| `Edit` | `edit_file`, `apply_diff` | cwd-relative path (doublestar) |
+| `Mkdir` | `mkdir` | cwd-relative path (doublestar) |
+| `Copy` / `Move` / `Delete` | the same-named tools | path or `src -> dst` (string) |
+| `List` | `list_dir`, `list_project_structure` | cwd-relative path (doublestar) |
+| `Glob` / `Grep` | the same-named tools | pattern string |
+| `Fetch` | `fetch_url` | URL (string) |
+| `Git` | unified `git` + discrete `git_*` helpers | joined args (string) |
+| `Github` | every `gh_*` tool (PR + issue surface) | canonical verb name (string) |
+| `Memory` | `memory_save` / `memory_forget` | `op scope:name` (string) |
+| `Tests` / `Rollback` | the same-named tools | empty descriptor (binary allow/deny) |
+
+`Github(...)` descriptors are the canonical verb name extracted from
+the tool name (independent of the resource-first tool naming so the
+roadmap's `Github(read_*)` style works):
+
+| Tool | Verb |
+|---|---|
+| `gh_pr_read` | `read_pr` |
+| `gh_pr_review_context` | `read_pr_review_context` |
+| `gh_pr_create` | `create_pr` |
+| `gh_pr_update` | `update_pr` |
+| `gh_pr_add_comment` | `add_pr_comment` |
+| `gh_issue_read` | `read_issue` |
+| `gh_issue_list` | `list_open_issues` |
+
+Wildcards work as in any other rule, so:
+
+- `Github(read_*)` covers every read verb
+- `Github(*_pr)` covers every PR-targeting verb
+- `Github(*)` is the catch-all (use sparingly — `Allow` it and writes auto-approve)
+
+Owner/repo scoping (`Github(create_pr owner/repo)`) is not yet
+implemented — every call currently resolves against the cwd's git
+remote. The roadmap tracks per-repo scoping for the cloud bot work
+(SaaS Phase 2).
+
 ### Starter Rule Set
 
 The default skeleton ships with empty arrays — yottacode is unopinionated
@@ -314,7 +359,9 @@ to taste. Decision precedence is `Deny > Allow > Ask > Default`, so the
       "Bash(which *)",
       "Bash(head *)",
       "Bash(tail *)",
-      "Bash(wc *)"
+      "Bash(wc *)",
+      "Github(read_*)",
+      "Github(list_open_issues)"
     ],
     "ask": [
       "Bash(git push *)",
@@ -323,6 +370,9 @@ to taste. Decision precedence is `Deny > Allow > Ask > Default`, so the
       "Bash(gh pr create *)",
       "Bash(gh pr merge *)",
       "Bash(gh pr close *)",
+      "Github(create_pr)",
+      "Github(update_pr)",
+      "Github(add_pr_comment)",
       "Bash(gh release *)",
       "Bash(npm publish*)",
       "Bash(cargo publish*)",

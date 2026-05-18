@@ -160,6 +160,7 @@ Full references: [`docs/cli.md`](docs/cli.md) and [`docs/tui-slash-commands.md`]
 - [`docs/configuration.md`](docs/configuration.md) — flags, env vars, config file, diagnostics
 - [`docs/providers.md`](docs/providers.md) and [`docs/models.md`](docs/models.md) — provider/model setup and switching
 - [`docs/tools.md`](docs/tools.md) — built-in tools and approval behavior
+- [`docs/github.md`](docs/github.md) — GitHub integration: auth, tools, permissions, rate limits
 - [`docs/security-and-allow-lists.md`](docs/security-and-allow-lists.md) — approvals, permissions, path policy, isolation guidance
 - [`docs/memory.md`](docs/memory.md) and [`docs/sessions.md`](docs/sessions.md) — context, recall, persistence
 - [`docs/tui-slash-commands.md`](docs/tui-slash-commands.md) and [`docs/cli.md`](docs/cli.md) — command reference
