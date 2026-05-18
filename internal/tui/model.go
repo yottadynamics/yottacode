@@ -422,6 +422,16 @@ type Model struct {
 	modelPickerOpen bool
 	modelPicker     *modelPickerState
 
+	// Theme-picker overlay (/themes). Two-pane layout: left holds
+	// the theme list, right shows a live showcase rendered with
+	// the highlighted palette. Cursor moves trigger ApplyTheme on
+	// the highlighted entry so the entire TUI repaints with the
+	// candidate look. Esc reverts to the theme that was active at
+	// open time; Enter commits the live-applied theme to
+	// config.toml.
+	themePickerOpen bool
+	themePicker     *themePickerState
+
 	// Provider sub-menu overlay (/provider). Layered state machine:
 	// menu → action sub-pickers (Use, Remove, Add). M6 wires List+Use;
 	// Remove and Add land in M7+M8.
@@ -590,6 +600,26 @@ func cursorBlinkCmd() tea.Cmd {
 
 // New builds a Model wired with the given config.
 func New(parent context.Context, c Config) Model {
+	// Defensive: tests build Config without FileCfg, leaving the
+	// thresholds at 0.0 — which would mean every status redraw colors
+	// the token counter as if we were over budget. Detect the zero
+	// value and substitute documented defaults so all callers see a
+	// usable config without each having to remember to populate it.
+	// Hoisted above the textarea/spinner construction so ApplyTheme
+	// can read FileCfg.Theme.Name before those components capture
+	// their style values.
+	if c.FileCfg.Context.DefaultWindow == 0 {
+		c.FileCfg = config.Default()
+	}
+
+	// Apply the configured theme BEFORE building any sub-component
+	// — textarea, spinner, and any palette-derived defaults capture
+	// styles by value. An unknown name (stale config from a removed
+	// theme) silently falls back to the default; config.Validate
+	// already rejects unknown names at load time, so reaching this
+	// branch means the user hand-edited config.toml after parse.
+	ApplyTheme(c.FileCfg.Theme.Name)
+
 	ti := textarea.New()
 	// Placeholder is dim italic and short — the four-hint preamble used
 	// to live here, but a crowded empty state buries the actual signal
@@ -628,15 +658,6 @@ func New(parent context.Context, c Config) Model {
 	// professional defaults Charm projects reach for.
 	sp.Spinner = spinner.Dot
 	sp.Style = styleSpinner
-
-	// Defensive: tests build Config without FileCfg, leaving the
-	// thresholds at 0.0 — which would mean every status redraw colors
-	// the token counter as if we were over budget. Detect the zero
-	// value and substitute documented defaults so all callers see a
-	// usable config without each having to remember to populate it.
-	if c.FileCfg.Context.DefaultWindow == 0 {
-		c.FileCfg = config.Default()
-	}
 
 	// A loaded session may already contain user turns from a prior
 	// launch (--resume). Skip the onboarding hint footer in that case
@@ -903,6 +924,9 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.checkpointsPickerOpen {
 			return m.updateCheckpointsPicker(msg)
+		}
+		if m.themePickerOpen {
+			return m.updateThemePicker(msg)
 		}
 		if m.subagentsPickerOpen {
 			return m.updateSubagentsPicker(msg)
@@ -1558,6 +1582,9 @@ func (m Model) View() string {
 	}
 	if m.subagentsPickerOpen && m.subagentsPicker != nil {
 		return m.renderInlineOverlay(renderSubagentsPicker(m.subagentsPicker, m.width))
+	}
+	if m.themePickerOpen && m.themePicker != nil {
+		return m.renderInlineOverlay(renderThemePicker(m.themePicker, m.width))
 	}
 	if m.skillsPickerOpen && m.skillsPicker != nil {
 		return m.renderInlineOverlay(renderSkillsPicker(m.skillsPicker, m.width))

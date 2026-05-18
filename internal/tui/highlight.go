@@ -15,11 +15,25 @@ import (
 // gracefully on 16-color terminals (chroma falls back internally).
 const highlightFormatterName = "terminal256"
 
-// highlightStyleName picks the chroma style. "monokai" reads well on
-// the dark backgrounds most yottacode users have; on light terminals
-// it's still readable. We don't expose this as user-configurable yet —
-// add a flag later if real users want it.
-const highlightStyleName = "monokai"
+// highlightStyleNameDefault is the chroma style used when the active
+// theme doesn't pick one (empty Palette.Highlight). "monokai" reads
+// well on the dark backgrounds most yottacode users have; on light
+// terminals it's still readable. Themes override via Palette.Highlight
+// — "light" pairs with "github", "high-contrast" with
+// "github-high-contrast", "no-color" with "bw".
+const highlightStyleNameDefault = "monokai"
+
+// activeHighlightStyleName returns the chroma style the active
+// theme requested, falling back to the default when the palette
+// didn't pin one. Used by HighlightCode below — kept as a helper
+// (instead of inlining) so tests can call it directly and so the
+// fallback branch lives in one place.
+func activeHighlightStyleName() string {
+	if themeHighlightStyle != "" {
+		return themeHighlightStyle
+	}
+	return highlightStyleNameDefault
+}
 
 // HighlightCode runs source through chroma and returns ANSI-colored
 // text. languageHint can be a chroma lexer name ("go", "python") or
@@ -38,7 +52,7 @@ func HighlightCode(source, languageHint string) string {
 	if lexer == nil {
 		return source
 	}
-	style := styles.Get(highlightStyleName)
+	style := styles.Get(activeHighlightStyleName())
 	if style == nil {
 		style = styles.Fallback
 	}

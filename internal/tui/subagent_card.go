@@ -15,19 +15,19 @@ import (
 
 // Subagent styles use the canonical palette from styles.go so the
 // surface reads as part of yottacode's existing visual language
-// (sessions picker, plans picker, tool cards). Earlier versions used
-// loud direct ANSI numbers (bright purple, neon green, vivid red);
-// those have been swapped for the adaptive Accent/Success/Error/Dim
-// tokens that respect the user's terminal theme.
+// (sessions picker, plans picker, tool cards). Bare declarations —
+// initializers would capture the zero AdaptiveColor at package
+// init; the actual styles are built inside buildStyles (styles.go)
+// so theme swaps via ApplyTheme rebuild them correctly.
 var (
-	styleSubagentLabel       = lipgloss.NewStyle().Foreground(colorAccent).Bold(true)
-	styleSubagentMeta        = lipgloss.NewStyle().Foreground(colorMuted)
-	styleSubagentActivity    = lipgloss.NewStyle().Foreground(colorContent)
-	styleSubagentOK          = lipgloss.NewStyle().Foreground(colorSuccess)
-	styleSubagentErr         = lipgloss.NewStyle().Foreground(colorError)
-	styleSubagentRunning     = lipgloss.NewStyle().Foreground(colorAccent).Bold(true)
-	styleSubagentCanceled    = lipgloss.NewStyle().Foreground(colorMuted).Italic(true)
-	styleSubagentTableHeader = lipgloss.NewStyle().Foreground(colorMuted).Bold(true)
+	styleSubagentLabel       lipgloss.Style
+	styleSubagentMeta        lipgloss.Style
+	styleSubagentActivity    lipgloss.Style
+	styleSubagentOK          lipgloss.Style
+	styleSubagentErr         lipgloss.Style
+	styleSubagentRunning     lipgloss.Style
+	styleSubagentCanceled    lipgloss.Style
+	styleSubagentTableHeader lipgloss.Style
 )
 
 // statusStyleFor returns the per-row color for a task's status —
