@@ -5,6 +5,8 @@ import (
 	"testing"
 
 	"github.com/yottadynamics/yottacode/internal/adapter"
+	"github.com/yottadynamics/yottacode/internal/agent"
+	"github.com/yottadynamics/yottacode/internal/skills"
 )
 
 // On a fresh session with no memory configured, the startup card
@@ -46,10 +48,30 @@ func TestWelcome_SystemOnlyStillFresh(t *testing.T) {
 
 func TestPickTip_NoMemoryAlwaysReturnsMemoryTip(t *testing.T) {
 	for day := 0; day < 366; day++ {
-		got := pickTip("", day)
+		got := pickTip("", 0, day)
 		if got != memoryTip {
 			t.Fatalf("day=%d: pickTip(no memory) = %q, want memoryTip", day, got)
 		}
+	}
+}
+
+// Memory wins over the skills tip even when skills are pending — the
+// memory tip is the highest-leverage first action for a brand-new
+// install, and we don't want to bury it behind a /skills nudge.
+func TestPickTip_MemoryWinsOverSkills(t *testing.T) {
+	got := pickTip("", 12, 0)
+	if got != memoryTip {
+		t.Fatalf("pickTip(no memory, skills=12) = %q, want memoryTip", got)
+	}
+}
+
+func TestPickTip_SkillsTipWhenInstalledButNoneEnabled(t *testing.T) {
+	got := pickTip("USER", 12, 0)
+	if !strings.Contains(got, "/skills") {
+		t.Errorf("skills tip should mention /skills: %q", got)
+	}
+	if !strings.Contains(got, "12") {
+		t.Errorf("skills tip should carry the install count: %q", got)
 	}
 }
 
@@ -60,7 +82,7 @@ func TestPickTip_MemoryConfiguredHitsPool(t *testing.T) {
 	}
 	seen := map[string]bool{}
 	for day := 0; day < 366; day++ {
-		got := pickTip("USER", day)
+		got := pickTip("USER", 0, day)
 		if got == "" {
 			t.Fatalf("day=%d: pickTip should never return empty when pool is non-empty", day)
 		}
@@ -102,6 +124,37 @@ func TestStartupTip_FreshSessionReturnsTip(t *testing.T) {
 	m.memorySummary = "USER+PROJECT"
 	if got := m.startupTip(); got == "" || strings.Contains(got, "drop preferences") {
 		t.Errorf("with memory loaded the memory tip should rotate out: %q", got)
+	}
+}
+
+// Skills surface: when skills are installed but the per-session
+// enablement set is empty, the welcome card folds the /skills nudge
+// into the tip slot — replacing the rotating pool entry, but never
+// the memory tip.
+func TestStartupTip_SkillsOnboardingReplacesPoolTip(t *testing.T) {
+	m := newTestModel(t)
+	m.memorySummary = "USER+PROJECT"
+	m.skills = []skills.Skill{{Name: "alpha"}, {Name: "beta"}, {Name: "gamma"}}
+	m.skillTool = &agent.SkillTool{All: m.skills}
+	m.skillTool.SetEnabled(map[string]bool{}) // mirrors run.go default-off policy
+	got := m.startupTip()
+	if !strings.Contains(got, "/skills") {
+		t.Errorf("skills onboarding tip should mention /skills: %q", got)
+	}
+	if !strings.Contains(got, "3") {
+		t.Errorf("skills onboarding tip should carry the install count: %q", got)
+	}
+}
+
+func TestStartupTip_SkillsHiddenOnceUserEnablesAny(t *testing.T) {
+	m := newTestModel(t)
+	m.memorySummary = "USER+PROJECT"
+	m.skills = []skills.Skill{{Name: "alpha"}, {Name: "beta"}}
+	m.skillTool = &agent.SkillTool{All: m.skills}
+	m.skillTool.SetEnabled(map[string]bool{"alpha": true})
+	got := m.startupTip()
+	if strings.Contains(got, "/skills") {
+		t.Errorf("skills onboarding tip should retire once user enables a skill: %q", got)
 	}
 }
 

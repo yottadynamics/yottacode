@@ -61,107 +61,43 @@ type slashCommand struct {
 var allSlash []slashCommand
 
 func init() {
+	// Ordered by reach frequency during an active session:
+	// workflow → config → git → utilities → meta.
 	allSlash = []slashCommand{
-		{Name: "help", Help: "show this list", Run: cmdHelp, PreservesTurn: true},
-		{Name: "quit", Help: "exit yottacode", Run: cmdQuit},
-		{Name: "clear", Help: "start a fresh session (current is saved)", Run: cmdClear},
-		{Name: "permissions", Help: "show where permissions are configured", Run: cmdPermissions, PreservesTurn: true},
-		{Name: "system", Help: "show the active system prompt", Run: cmdSystem, PreservesTurn: true},
-		// /sessions opens the sessions sub-menu (Resume / Rename /
-		// Export). The bare invocation lands on the picker; the
-		// positional shortcut /sessions <id|name> resumes directly
-		// without going through the menu, matching how /model <name>
-		// works. Replaces the old /resume + /save + /export trio.
-		{Name: "sessions", Help: "open the sessions menu (or /sessions <id|name> to resume directly)", Run: cmdSessions},
-		// Args="" so palette Enter executes the bare form (opens
-		// the picker overlay) instead of filling in a placeholder.
-		// /model <name> still works as a power-user shortcut once
-		// typed out manually.
+		// Workflow — most reached-for during active coding.
+		{Name: "plan", Help: "toggle plan mode — also Shift+Tab. Type `/plan list` to resume an earlier plan.", Run: cmdPlan},
 		{Name: "model", Help: "open the model picker (subcommands: list [all], <name>)", Run: cmdModel},
 		{Name: "provider", Help: "open the provider menu (subcommands: list, use, add, remove, models)", Run: cmdProviderEntry},
-		{Name: "doctor", Help: "probe provider auth and model access", Run: cmdDoctor, PreservesTurn: true},
-		{Name: "redo", Help: "edit and re-run the most recent message", Run: cmdRedo},
-		{Name: "recall", Args: "<query>", Help: "full-text search across every saved session", Run: cmdRecall, PreservesTurn: true},
-		{Name: "summarize", Help: "compress session history into a structured summary", Run: cmdSummarize},
-		{Name: "checkpoints", Help: "open the checkpoints picker — also Esc Esc", Run: cmdCheckpoints},
-		// Args="" so palette Enter executes the bare form (opens the
-		// picker overlay). /memory takes no subcommands — the picker
-		// covers project edit, user edit, and auto-folder location.
+		{Name: "sessions", Help: "open the sessions menu (or /sessions <id|name> to resume directly)", Run: cmdSessions},
 		{Name: "memory", Help: "open the memory picker (USER.md / YOTTACODE.md / saved memories)", Run: cmdMemory},
-		{Name: "max-iterations", Args: "<N>", Help: "cap tool-call iterations per turn (default: 50; auto mode doubles)", Run: cmdMaxIterations},
-		{Name: "setup", Help: "re-run the setup wizard (reloads config on return)", Run: cmdSetup},
+		{Name: "summarize", Help: "compress session history into a structured summary", Run: cmdSummarize},
+		{Name: "skills", Help: "select skills", Run: cmdSkills, PreservesTurn: true},
+		{Name: "subagents", Help: "open the subagents picker (Enter views · t toggles types · s stops · Esc closes)", Run: cmdSubagents, PreservesTurn: true},
 		{Name: "init", Help: "draft .yottacode/YOTTACODE.md from the current repo", Run: cmdInit},
-		// Git workflow built-ins. Slugs are prefixed `git-` (not
-		// namespaced `git:`) because built-in slugs are flat — the
-		// `:` separator is reserved for custom-command path
-		// derivation. The shared prefix means typing /git in the
-		// palette filters to every git-related built-in, which is
-		// the discoverability gain we want now that the legacy
-		// markdown /git:commit-message and /git:create-pr are
-		// retired.
-		//
-		// Both are driven by composite Layer-1 tools so the
-		// reliability work lives in Go rather than in the prompt:
-		// /git-commit by git_commit_context + git_commit_apply
-		// (empty-staging, oversize subjects, hook failures); and
-		// /git-create-pr by gh_pr_context + gh_pr_create (base
-		// resolution, ahead-count gating, title validation,
-		// gh-unavailable fall-through). See cmd_git_commit.go and
-		// cmd_git_create_pr.go for the directives.
+		{Name: "permissions", Help: "show where permissions are configured", Run: cmdPermissions, PreservesTurn: true},
+		{Name: "theme", Help: "change the theme", Run: cmdThemes, PreservesTurn: true},
+
+		// Git workflow.
 		{Name: "git-commit", Help: "compose and run a one-line git commit", Run: cmdGitCommit},
 		{Name: "git-create-pr", Args: "[base]", Help: "open a pull request for the current branch", Run: cmdGitCreatePR},
 		{Name: "git-review-pr", Args: "[ref]", Help: "review a pull request (number or branch; defaults to current branch's PR)", Run: cmdGitReviewPR},
-		// /git-implement-issue takes a GitHub issue number and runs
-		// the spec'd "issue → planned implementation → draft PR"
-		// flow (yottacode-roadmap/git-fix-issue.md). Plan-mode
-		// approval is the load-bearing safety gate; draft PR is the
-		// merge gate. See cmd_git_implement_issue.go for the directive.
 		{Name: "git-implement-issue", Args: "<n>", Help: "implement a GitHub issue end-to-end: fetch → plan → branch → code → tests → commit → push → draft PR", Run: cmdGitImplementIssue},
 		{Name: "git-push", Help: "push the current branch to origin (sets upstream on first push; surfaces the PR URL when one exists)", Run: cmdGitPush},
 		{Name: "git-update-pr", Args: "[ref]", Help: "refresh a PR's title and body to match the current commit list", Run: cmdGitUpdatePR},
-		// /plan toggles plan mode (read-only research + plan file +
-		// exit_plan_mode for approval). Also bound to Shift+Tab — see
-		// model.go's KeyMsg handler.
-		// /plan with no Args means the palette executes the bare form
-		// on Enter (one keystroke, direct entry). `/plan list` still
-		// works when typed manually — cmdPlan branches on args[0].
-		//
-		// Auto mode and yolo are intentionally NOT slash-invocable
-		// (mirroring Claude Code). Auto enters via Shift+Tab or
-		// --permission-mode auto; yolo enters only via
-		// --dangerously-skip-permissions at startup — no in-TUI toggle,
-		// no palette entry, no accidental activation.
-		{Name: "plan", Help: "toggle plan mode — also Shift+Tab. Type `/plan list` to resume an earlier plan.", Run: cmdPlan},
-		// /subagents inspects the session's subagent task registry —
-		// listing runs, viewing full transcripts (foreground transcripts
-		// are written to disk because the parent doesn't ingest the
-		// child's reasoning), and stopping a running task. Mirrors
-		// Claude Code's UX of "subagents are first-class enough to have
-		// their own listing command."
-		//
-		// PreservesTurn=true: viewing the subagent registry during an
-		// active foreground subagent run must NOT cancel the parent
-		// turn (which would kill the subagent we're trying to inspect).
-		// The picker reads a snapshot of the task registry; no state
-		// change happens, so the turn can keep streaming behind it.
-		{Name: "subagents", Help: "open the subagents picker (Enter views · t toggles types · s stops · Esc closes)", Run: cmdSubagents, PreservesTurn: true},
-		// /theme opens the theme picker. The picker is read-only
-		// until Enter commits — it inspects the registry and
-		// live-previews on cursor moves without writing anything,
-		// so PreservesTurn keeps it safe to invoke during an active
-		// turn. The state-changing branch (Enter / `/theme set`)
-		// runs through the same persistence path; switching mid-
-		// stream produces a half-styled view, but the picker's
-		// Enter is an explicit user action so the user is choosing
-		// that cost.
-		{Name: "theme", Help: "Change the theme", Run: cmdThemes, PreservesTurn: true},
-		// /skills opens the multi-select picker for Agent Skills. The
-		// model sees zero skills by default; this is where the user
-		// picks which to expose for the session. PreservesTurn=true:
-		// opening the picker mid-turn is read-only against the live
-		// SkillTool universe; the commit happens only on `c`, so a
-		// streaming turn isn't disturbed by browsing the list.
-		{Name: "skills", Help: "open the skills picker (Space toggles · Enter views body · a/n enable/disable all · c commits · Esc cancels)", Run: cmdSkills, PreservesTurn: true},
+
+		// Utilities.
+		{Name: "clear", Help: "start a fresh session (current is saved)", Run: cmdClear},
+		{Name: "system", Help: "show the active system prompt", Run: cmdSystem, PreservesTurn: true},
+		{Name: "doctor", Help: "probe provider auth and model access", Run: cmdDoctor, PreservesTurn: true},
+		{Name: "redo", Help: "edit and re-run the most recent message", Run: cmdRedo},
+		{Name: "recall", Args: "<query>", Help: "full-text search across every saved session", Run: cmdRecall, PreservesTurn: true},
+		{Name: "checkpoints", Help: "open the checkpoints picker — also Esc Esc", Run: cmdCheckpoints},
+		{Name: "max-iterations", Args: "<N>", Help: "cap tool-call iterations per turn (default: 50; auto mode doubles)", Run: cmdMaxIterations},
+		{Name: "setup", Help: "re-run the setup wizard (reloads config on return)", Run: cmdSetup},
+
+		// Meta — always last.
+		{Name: "help", Help: "show this list", Run: cmdHelp, PreservesTurn: true},
+		{Name: "quit", Help: "exit yottacode", Run: cmdQuit},
 	}
 }
 
@@ -1296,7 +1232,7 @@ func rebuildTranscript(m *Model) {
 	for _, msg := range m.sess.Messages {
 		switch msg.Role {
 		case adapter.RoleUser:
-			m.appendLine(renderUserBlock(msg.Content))
+			m.appendLine(renderUserBlock(msg.Content, m.width))
 		case adapter.RoleAssistant:
 			if msg.Content != "" {
 				m.appendLine(renderAssistantBlock(msg.Content))

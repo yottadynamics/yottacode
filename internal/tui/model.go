@@ -488,6 +488,7 @@ type Model struct {
 	paletteOpen     bool
 	paletteFiltered []slashCommand
 	paletteIndex    int
+	paletteOffset   int // first visible row when filtered list overflows the window
 
 	// File palette state — opens when the user types `@` (at start-of-
 	// word) so they can pick a file from cwd by tab-completion instead
@@ -1022,6 +1023,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.textInput.SetValue("")
 					m.paletteOpen = false
 					m.paletteIndex = 0
+					m.paletteOffset = 0
 					return m.runSlash(input)
 				}
 				// Plain Enter on non-empty input mid-turn:
@@ -1044,6 +1046,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.textInput.SetValue("")
 				m.paletteOpen = false
 				m.paletteIndex = 0
+				m.paletteOffset = 0
 				if m.turnCancel != nil {
 					m.turnCancel()
 				}
@@ -1192,11 +1195,17 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case tea.KeyUp:
 				if m.paletteIndex > 0 {
 					m.paletteIndex--
+					if m.paletteIndex < m.paletteOffset {
+						m.paletteOffset = m.paletteIndex
+					}
 				}
 				return m, nil
 			case tea.KeyDown:
 				if m.paletteIndex < len(m.paletteFiltered)-1 {
 					m.paletteIndex++
+					if m.paletteIndex >= m.paletteOffset+slashPaletteVisible {
+						m.paletteOffset = m.paletteIndex - slashPaletteVisible + 1
+					}
 				}
 				return m, nil
 			case tea.KeyTab:
@@ -1211,6 +1220,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.textInput.SetValue("")
 				m.paletteOpen = false
 				m.paletteIndex = 0
+				m.paletteOffset = 0
 				return m, nil
 			}
 		} else if m.filePaletteOpen {
@@ -1357,6 +1367,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.textInput.CursorEnd()
 					m.paletteOpen = false
 					m.paletteIndex = 0
+					m.paletteOffset = 0
 					return m, nil
 				}
 				input = "/" + chosen.Name
@@ -1367,6 +1378,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.textInput.SetValue("")
 			m.paletteOpen = false
 			m.paletteIndex = 0
+			m.paletteOffset = 0
 			m.dropFilePalette()
 			// Swap any [Pasted text #N: ...] markers back for their
 			// original content before the message hits the agent.
@@ -1387,11 +1399,20 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.paletteOpen = true
 				if m.paletteIndex >= len(m.paletteFiltered) {
 					m.paletteIndex = 0
+					m.paletteOffset = 0
+				}
+				// Clamp offset against the new filtered length so a
+				// narrower match-set doesn't leave the window stuck
+				// past the end of the list (would render an empty
+				// box with just the ↑ N more hint).
+				if m.paletteOffset > len(m.paletteFiltered)-slashPaletteVisible {
+					m.paletteOffset = 0
 				}
 				m.filePaletteOpen = false
 			} else {
 				m.paletteOpen = false
 				m.paletteIndex = 0
+				m.paletteOffset = 0
 				// Detect an active `@<query>` token at the end of the
 				// textarea value and (re)compute the file palette. The
 				// candidate list is walked once and cached; only the
@@ -1645,7 +1666,7 @@ func (m Model) View() string {
 		}
 	} else {
 		if m.paletteOpen {
-			parts = append(parts, renderPalette(m.paletteFiltered, m.paletteIndex, liveContentWidth(m.width)+4))
+			parts = append(parts, renderPalette(m.paletteFiltered, m.paletteIndex, m.paletteOffset, liveContentWidth(m.width)+4))
 		}
 		if m.filePaletteOpen {
 			parts = append(parts, renderFilePalette(m.filePaletteFiltered, m.filePaletteIndex, m.filePaletteOffset, liveContentWidth(m.width)+4))
@@ -2170,11 +2191,13 @@ func (m Model) activatePaletteSelection() (Model, tea.Cmd) {
 		m.textInput.CursorEnd()
 		m.paletteOpen = false
 		m.paletteIndex = 0
+		m.paletteOffset = 0
 		return m, nil
 	}
 	m.textInput.SetValue("")
 	m.paletteOpen = false
 	m.paletteIndex = 0
+	m.paletteOffset = 0
 	return m.runSlash("/" + chosen.Name)
 }
 
@@ -2590,7 +2613,7 @@ func (m Model) startTurnWithDisplay(input, displayLabel string) (tea.Model, tea.
 	if displayLabel != "" {
 		rendered = displayLabel
 	}
-	m.appendLine(renderUserBlock(rendered))
+	m.appendLine(renderUserBlock(rendered, m.width))
 	m.recordHistory(input)
 
 	turnCtx, cancel := context.WithCancel(m.parentCtx)
@@ -3105,11 +3128,30 @@ func isFenceClose(line string) bool {
 // an [auto-mode]/[plan-mode-allow] auto-approval line, etc.). No
 // horizontal rule above: the bar is enough of an anchor, and the rule
 // fought with content on either side.
-func renderUserBlock(content string) string {
-	bar := styleUserBar.Render("▎ ")
+//
+// Long lines are hard-wrapped at width-barWidth and every wrapped row
+// gets the bar re-applied, so a multi-line paste reads as one continuous
+// quoted block instead of letting the terminal auto-wrap continuation
+// rows to column 0 (which made the second line look detached from the
+// quote and lose its left-margin alignment).
+func renderUserBlock(content string, width int) string {
+	const prefix = "▎ "
+	prefixWidth := ansi.StringWidth(prefix)
+	bar := styleUserBar.Render(prefix)
+	bodyWidth := width - prefixWidth
 	var lines []string
 	for _, line := range strings.Split(content, "\n") {
-		lines = append(lines, bar+styleUserBody.Render(line))
+		// Width <= prefix means the terminal is too narrow to host the
+		// bar plus any content; fall back to the un-wrapped render
+		// rather than producing zero-width rows.
+		if bodyWidth <= 0 || ansi.StringWidth(line) <= bodyWidth {
+			lines = append(lines, bar+styleUserBody.Render(line))
+			continue
+		}
+		wrapped := ansi.Hardwrap(line, bodyWidth, true)
+		for _, row := range strings.Split(wrapped, "\n") {
+			lines = append(lines, bar+styleUserBody.Render(row))
+		}
 	}
 	return "\n" + strings.Join(lines, "\n") + "\n"
 }
