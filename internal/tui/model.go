@@ -1696,11 +1696,7 @@ func (m Model) View() string {
 		case yoloOn:
 			parts = append(parts, renderYoloStandaloneBanner(m.width))
 		}
-		// Bracket the input with thin dim rules above and below — gives
-		// the cmdline visible containment without the visual weight of
-		// a full rounded box. The hint line that used to ride below is
-		// now inlined into the placeholder row when input is empty.
-		parts = append(parts, m.renderInputRule(), m.renderInputBox(), m.renderInputRule())
+		parts = append(parts, m.renderInputFrame())
 	}
 
 	// Status bar tucks immediately below the bottom rule. Earlier
@@ -1733,9 +1729,7 @@ func (m Model) renderInlineOverlay(body string) string {
 	}
 	overlayRule := styleOverlayRule.Render(strings.Repeat("─", width))
 	return lipgloss.JoinVertical(lipgloss.Left,
-		m.renderInputRule(),
-		m.renderInputBox(),
-		m.renderInputRule(),
+		m.renderInputFrame(),
 		m.renderStatus(),
 		overlayRule,
 		body,
@@ -1743,20 +1737,14 @@ func (m Model) renderInlineOverlay(body string) string {
 }
 
 // renderInputBox renders the cmdline as a borderless input row capped at
-// `min(120, terminalWidth - 4)`. The earlier design wrapped this in a
-// saturated rounded border — the container ended up louder than its
-// content, so the border is gone. The chevron prompt (Accent + bold) +
-// dim placeholder/content carry the focal weight on their own.
-//
-// We render the value ourselves rather than using m.textInput.View()
-// because Bubbles textarea sizes Height by *logical* lines, not wrapped
-// visual rows — long single-line input either gets clipped (Height=1,
-// horizontal scroll) or padded with empty "❯ " rows below the cursor
-// (Height=N visual rows). Wrapping the value with ansi.Hardwrap and
+// `min(120, terminalWidth - 4)`. We render the value ourselves rather
+// than using m.textInput.View() because Bubbles textarea sizes Height by
+// *logical* lines, not wrapped visual rows — long single-line input
+// either gets clipped or padded. Wrapping with ansi.Hardwrap and
 // rendering each row with a prompt-or-indent prefix gets us the "wrap
-// below within the cap" behavior the cmdline actually wants. The
-// textarea still owns the value and cursor state via its own Update;
-// we just paint it differently.
+// below within the cap" behavior the cmdline actually wants. The textarea
+// still owns the value and cursor state via its own Update; we just
+// paint it differently.
 func (m Model) renderInputBox() string {
 	if m.width <= 0 {
 		return m.textInput.View()
@@ -1765,15 +1753,39 @@ func (m Model) renderInputBox() string {
 	return m.renderInputBody(contentW)
 }
 
+// renderInputFrame wraps the cmdline body in a closed bordered box with
+// rounded corners (╭/╮/╰/╯) and side borders (│) that spans the full
+// terminal width. The border uses colorRule (dim gray) so it reads as
+// chrome, not content — same visual family as the welcome card border.
+func (m Model) renderInputFrame() string {
+	if m.width <= 0 {
+		return m.textInput.View()
+	}
+	ruleStyle := lipgloss.NewStyle().Foreground(colorRule)
+	boxW := m.width
+	innerW := boxW - 4 // space inside "│ " ... " │"
+	if innerW < 1 {
+		innerW = 1
+	}
+	top := ruleStyle.Render("╭" + strings.Repeat("─", boxW-2) + "╮")
+	bot := ruleStyle.Render("╰" + strings.Repeat("─", boxW-2) + "╯")
+	body := m.renderInputBody(innerW)
+	border := ruleStyle.Render("│")
+	var bordered []string
+	for _, row := range strings.Split(body, "\n") {
+		visW := ansi.StringWidth(row)
+		pad := innerW - visW
+		if pad < 0 {
+			pad = 0
+		}
+		bordered = append(bordered, border+" "+row+strings.Repeat(" ", pad)+" "+border)
+	}
+	return top + "\n" + strings.Join(bordered, "\n") + "\n" + bot
+}
+
 // renderInputRule paints a single dim horizontal `─` line spanning
-// the full terminal width. Used as the top + bottom bracket around
-// the cmdline so the input has visual containment without the
-// weight of a full rounded box. Spans edge-to-edge (not the
-// inputContentWidth cap the input itself uses) so the bracket reads
-// as a screen-wide divider rather than a narrow underline floating
-// in dead space. Color is colorRule (Muted, dark gray) — chrome,
-// not content; the welcome card's border matches it so the two
-// surfaces read as part of the same chrome family.
+// the full terminal width. Used by the inline overlay layout where
+// the full-width divider is still appropriate.
 func (m Model) renderInputRule() string {
 	w := m.width
 	if w < 1 {
@@ -2421,7 +2433,7 @@ func (m Model) renderStatus() string {
 		if ctx != "" {
 			segs = append(segs, ctx)
 		}
-		return " " + strings.Join(segs, sep)
+		return "  " + strings.Join(segs, sep)
 	}
 
 	w := m.width
@@ -2912,8 +2924,17 @@ func (m Model) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 		// plan leaves m.livePlan alone so a resumed-session plan
 		// stays visible between turns until the agent touches it.
 		if m.livePlanTouched && len(m.livePlan) > 0 {
-			m.appendLine("")
-			m.appendLine(renderTodoCardFromTodos(m.livePlan, m.width))
+			allDone := true
+			for _, t := range m.livePlan {
+				if t.Status != agent.TodoCompleted {
+					allDone = false
+					break
+				}
+			}
+			if !allDone {
+				m.appendLine("")
+				m.appendLine(renderTodoCardFromTodos(m.livePlan, m.width))
+			}
 			m.livePlan = nil
 		}
 		m.livePlanTouched = false
