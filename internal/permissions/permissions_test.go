@@ -198,6 +198,110 @@ func TestEvaluate_AbsolutePathRule(t *testing.T) {
 	}
 }
 
+func TestEvaluate_GithubRuleMatchesByVerb(t *testing.T) {
+	cwd := t.TempDir()
+	seed(t, filepath.Join(cwd, ".yottacode", "permissions.json"),
+		[]string{"Github(read_pr)"}, nil, nil)
+	p, _ := Load(cwd)
+	if got := p.Evaluate("gh_pr_read", `{"ref":"29"}`); got != Allow {
+		t.Errorf("Github(read_pr) should match gh_pr_read; got %v", got)
+	}
+	if got := p.Evaluate("gh_pr_create", `{"base":"main","title":"t","body":"b"}`); got != Default {
+		t.Errorf("Github(read_pr) should NOT match gh_pr_create; got %v", got)
+	}
+}
+
+func TestEvaluate_GithubReadWildcard(t *testing.T) {
+	// Github(read_*) is the roadmap's canonical "all reads" rule.
+	// Must match every read verb but never a write verb.
+	cwd := t.TempDir()
+	seed(t, filepath.Join(cwd, ".yottacode", "permissions.json"),
+		[]string{"Github(read_*)"}, nil, nil)
+	p, _ := Load(cwd)
+	for _, tool := range []string{"gh_pr_read", "gh_pr_review_context", "gh_issue_read"} {
+		if got := p.Evaluate(tool, `{}`); got != Allow {
+			t.Errorf("Github(read_*) should match %s; got %v", tool, got)
+		}
+	}
+	for _, tool := range []string{"gh_pr_create", "gh_pr_update", "gh_pr_add_comment"} {
+		if got := p.Evaluate(tool, `{"base":"main","title":"t","body":"b"}`); got != Default {
+			t.Errorf("Github(read_*) should NOT match %s; got %v", tool, got)
+		}
+	}
+}
+
+func TestEvaluate_GithubCatchAllWildcard(t *testing.T) {
+	cwd := t.TempDir()
+	seed(t, filepath.Join(cwd, ".yottacode", "permissions.json"),
+		[]string{"Github(*)"}, nil, nil)
+	p, _ := Load(cwd)
+	for _, tool := range []string{"gh_pr_read", "gh_pr_create", "gh_pr_update", "gh_pr_add_comment", "gh_issue_read", "gh_issue_list", "gh_pr_review_context"} {
+		got := p.Evaluate(tool, `{}`)
+		if got != Allow {
+			t.Errorf("Github(*) should match %s; got %v", tool, got)
+		}
+	}
+}
+
+func TestEvaluate_GithubDenyOverridesAllow(t *testing.T) {
+	// Same precedence as Bash — Deny beats Allow regardless of
+	// rule order. Pin so future precedence refactors don't break
+	// the safety guarantee for write verbs.
+	cwd := t.TempDir()
+	seed(t, filepath.Join(cwd, ".yottacode", "permissions.json"),
+		[]string{"Github(*)"}, nil, []string{"Github(add_pr_comment)"})
+	p, _ := Load(cwd)
+	if got := p.Evaluate("gh_pr_add_comment", `{"ref":"29","body":"x"}`); got != Deny {
+		t.Errorf("Deny should beat Allow for add_pr_comment; got %v", got)
+	}
+	if got := p.Evaluate("gh_pr_read", `{}`); got != Allow {
+		t.Errorf("non-denied verb should still allow; got %v", got)
+	}
+}
+
+func TestEvaluate_GithubAskForWrites(t *testing.T) {
+	// Common per-write pattern: silently allow reads, force a
+	// prompt on writes even though the tool itself already
+	// requires approval. Pin this works.
+	cwd := t.TempDir()
+	seed(t, filepath.Join(cwd, ".yottacode", "permissions.json"),
+		[]string{"Github(read_*)"}, []string{"Github(create_pr)", "Github(update_pr)", "Github(add_pr_comment)"}, nil)
+	p, _ := Load(cwd)
+	if got := p.Evaluate("gh_pr_create", `{"base":"main","title":"t","body":"b"}`); got != Ask {
+		t.Errorf("Github ask rule should force Ask on create_pr; got %v", got)
+	}
+}
+
+func TestTargetFor_GithubVerbMapping(t *testing.T) {
+	// Pin the tool-name → verb mapping so a future rename of
+	// a tool surface that drops the gh_pr_read → read_pr mapping
+	// breaks visibly here instead of silently turning an Allow
+	// into a Default.
+	cases := []struct {
+		toolName string
+		wantVerb string
+	}{
+		{"gh_pr_create", "create_pr"},
+		{"gh_pr_update", "update_pr"},
+		{"gh_pr_read", "read_pr"},
+		{"gh_pr_review_context", "read_pr_review_context"},
+		{"gh_pr_add_comment", "add_pr_comment"},
+		{"gh_issue_read", "read_issue"},
+		{"gh_issue_list", "list_open_issues"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.toolName, func(t *testing.T) {
+			got := targetFor(tc.toolName, "{}", "")
+			if got.PermName != "Github" {
+				t.Errorf("PermName = %q; want Github", got.PermName)
+			}
+			if got.Descriptor != tc.wantVerb {
+				t.Errorf("Descriptor = %q; want %q", got.Descriptor, tc.wantVerb)
+			}
+		})
+	}
+}
+
 func TestEvaluate_BashGlobMatchesSpacesAndArgs(t *testing.T) {
 	cwd := t.TempDir()
 	seed(t, filepath.Join(cwd, ".yottacode", "permissions.json"),

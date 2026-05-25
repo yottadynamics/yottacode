@@ -44,6 +44,18 @@ type fakeGH struct {
 	updatePRRes github.UpdatePRResult
 	updatePRErr error
 	updatePRReq github.UpdatePRRequest
+
+	// Issue side
+	readIssueRes      github.IssueDetails
+	readIssueErr      error
+	readIssueReq      github.ReadIssueRequest
+	listIssuesRes     []github.IssueSummary
+	listIssuesErr     error
+	listIssuesReq     github.ListIssuesRequest
+	addPRCommentRes   github.AddPRCommentResult
+	addPRCommentErr   error
+	addPRCommentReq   github.AddPRCommentRequest
+	addPRCommentCalls int
 }
 
 func (f *fakeGH) CreatePR(_ context.Context, req github.CreatePRRequest) (github.CreatePRResult, error) {
@@ -70,6 +82,28 @@ func (f *fakeGH) ListPRChecks(_ context.Context, req github.ReadPRRequest) ([]gi
 func (f *fakeGH) UpdatePR(_ context.Context, req github.UpdatePRRequest) (github.UpdatePRResult, error) {
 	f.updatePRReq = req
 	return f.updatePRRes, f.updatePRErr
+}
+
+func (f *fakeGH) ReadIssue(_ context.Context, req github.ReadIssueRequest) (github.IssueDetails, error) {
+	f.readIssueReq = req
+	return f.readIssueRes, f.readIssueErr
+}
+
+func (f *fakeGH) ListOpenIssues(_ context.Context, req github.ListIssuesRequest) ([]github.IssueSummary, error) {
+	f.listIssuesReq = req
+	return f.listIssuesRes, f.listIssuesErr
+}
+
+func (f *fakeGH) AddPRComment(_ context.Context, req github.AddPRCommentRequest) (github.AddPRCommentResult, error) {
+	f.addPRCommentCalls++
+	f.addPRCommentReq = req
+	return f.addPRCommentRes, f.addPRCommentErr
+}
+
+func (f *fakeGH) RateLimit() github.RateLimitSnapshot {
+	// Test double — no rate tracking. Zero snapshot signals
+	// "unset" to callers checking IsSet().
+	return github.RateLimitSnapshot{}
 }
 
 func TestValidatePRTitle(t *testing.T) {
@@ -418,6 +452,310 @@ func TestIsFailingCheck(t *testing.T) {
 				t.Errorf("isFailingCheck(%+v) = %v; want %v", tc.c, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestBuildPRReadContext_HappyPath(t *testing.T) {
+	gh := &fakeGH{
+		readPRRes: github.PRDetails{
+			Number: 29, Title: "fix prompt", State: "OPEN", BaseRef: "main",
+			HeadRef: "feature/prompt", Author: "octocat",
+			URL:    "https://github.com/o/r/pull/29",
+			Body:   "Body line 1\nBody line 2",
+			Labels: []string{"docs"},
+		},
+	}
+	snap := BuildPRReadContext(context.Background(), gh, "29")
+	if snap.NotFound || snap.GhUnavailable {
+		t.Errorf("expected found+available; got %+v", snap)
+	}
+	if snap.PR.Number != 29 || snap.PR.Title != "fix prompt" {
+		t.Errorf("PR metadata not populated: %+v", snap.PR)
+	}
+	if snap.PR.Body == "" {
+		t.Errorf("Body should be populated")
+	}
+	// Critical contract: gh_pr_read MUST NOT call diff or checks.
+	// If a future refactor accidentally folds them in, this test
+	// catches it.
+	if gh.readPRDiffReq.Ref != "" {
+		t.Errorf("ReadPRDiff must NOT be called by gh_pr_read")
+	}
+	if gh.listChecksReq.Ref != "" {
+		t.Errorf("ListPRChecks must NOT be called by gh_pr_read")
+	}
+}
+
+func TestBuildPRReadContext_NotFoundSurfaced(t *testing.T) {
+	gh := &fakeGH{readPRErr: github.ErrPRNotFound}
+	snap := BuildPRReadContext(context.Background(), gh, "999")
+	if !snap.NotFound {
+		t.Errorf("expected NotFound=true; got %+v", snap)
+	}
+}
+
+func TestBuildPRReadContext_GhUnavailableSurfaced(t *testing.T) {
+	gh := &fakeGH{readPRErr: github.ErrGhUnavailable}
+	snap := BuildPRReadContext(context.Background(), gh, "29")
+	if !snap.GhUnavailable {
+		t.Errorf("expected GhUnavailable=true; got %+v", snap)
+	}
+}
+
+func TestBuildPRReadContext_GenericErrorSurfaced(t *testing.T) {
+	gh := &fakeGH{readPRErr: errors.New("api: rate limit exceeded")}
+	snap := BuildPRReadContext(context.Background(), gh, "29")
+	if snap.NotFound || snap.GhUnavailable {
+		t.Errorf("generic error should not flip typed flags: %+v", snap)
+	}
+	if !strings.Contains(snap.FetchErr, "rate limit") {
+		t.Errorf("FetchErr should carry the message; got %q", snap.FetchErr)
+	}
+}
+
+func TestAddPRComment_HappyPath(t *testing.T) {
+	gh := &fakeGH{
+		addPRCommentRes: github.AddPRCommentResult{
+			URL: "https://github.com/o/r/pull/29#issuecomment-123",
+			ID:  123,
+		},
+	}
+	res, err := AddPRComment(context.Background(), gh, github.AddPRCommentRequest{
+		Ref:  "29",
+		Body: "LGTM, cross-linking Refs #42",
+	})
+	if err != nil {
+		t.Fatalf("AddPRComment: %v", err)
+	}
+	if !res.Posted {
+		t.Errorf("expected Posted=true; got %+v", res)
+	}
+	if res.URL == "" || res.ID == 0 {
+		t.Errorf("expected URL+ID populated; got %+v", res)
+	}
+	if gh.addPRCommentReq.Ref != "29" {
+		t.Errorf("Ref not propagated to request: %q", gh.addPRCommentReq.Ref)
+	}
+}
+
+func TestAddPRComment_RejectsEmptyBody(t *testing.T) {
+	gh := &fakeGH{}
+	res, err := AddPRComment(context.Background(), gh, github.AddPRCommentRequest{
+		Ref:  "29",
+		Body: "   \n  \t  ",
+	})
+	if err != nil {
+		t.Fatalf("AddPRComment: %v", err)
+	}
+	if res.Posted {
+		t.Errorf("expected Posted=false on empty body")
+	}
+	if !strings.Contains(res.ValidationErr, "empty") {
+		t.Errorf("expected validation error; got %+v", res)
+	}
+	// Critical: validation runs before the network call. An empty
+	// body must NOT round-trip to GitHub.
+	if gh.addPRCommentCalls != 0 {
+		t.Errorf("AddPRComment should not have been called on empty body; calls=%d", gh.addPRCommentCalls)
+	}
+}
+
+func TestAddPRComment_RejectsOversizeBody(t *testing.T) {
+	gh := &fakeGH{}
+	huge := strings.Repeat("x", 20*1024) // exceeds 16KiB cap
+	res, err := AddPRComment(context.Background(), gh, github.AddPRCommentRequest{
+		Ref:  "29",
+		Body: huge,
+	})
+	if err != nil {
+		t.Fatalf("AddPRComment: %v", err)
+	}
+	if res.Posted {
+		t.Errorf("expected Posted=false on oversize body")
+	}
+	if !strings.Contains(res.ValidationErr, "cap is") {
+		t.Errorf("expected cap-mention validation error; got %q", res.ValidationErr)
+	}
+	if gh.addPRCommentCalls != 0 {
+		t.Errorf("AddPRComment should not have been called on oversize; calls=%d", gh.addPRCommentCalls)
+	}
+}
+
+func TestAddPRComment_NotFoundSurfaced(t *testing.T) {
+	gh := &fakeGH{addPRCommentErr: github.ErrPRNotFound}
+	res, err := AddPRComment(context.Background(), gh, github.AddPRCommentRequest{
+		Ref:  "999",
+		Body: "body",
+	})
+	if err != nil {
+		t.Fatalf("AddPRComment: %v", err)
+	}
+	if !res.NotFound {
+		t.Errorf("expected NotFound=true; got %+v", res)
+	}
+}
+
+func TestAddPRComment_GhUnavailableSurfaced(t *testing.T) {
+	gh := &fakeGH{addPRCommentErr: github.ErrGhUnavailable}
+	res, err := AddPRComment(context.Background(), gh, github.AddPRCommentRequest{
+		Ref:  "29",
+		Body: "body",
+	})
+	if err != nil {
+		t.Fatalf("AddPRComment: %v", err)
+	}
+	if !res.GhUnavailable {
+		t.Errorf("expected GhUnavailable=true; got %+v", res)
+	}
+}
+
+func TestGHPRAddCommentTool_RoundsThroughTool(t *testing.T) {
+	gh := &fakeGH{
+		addPRCommentRes: github.AddPRCommentResult{
+			URL: "https://github.com/o/r/pull/29#issuecomment-123",
+			ID:  123,
+		},
+	}
+	tool := &GHPRAddCommentTool{Cwd: NewCwdRef(t.TempDir()), GH: gh}
+	out, err := tool.Execute(context.Background(), `{"ref":"29","body":"LGTM"}`)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	for _, want := range []string{"posted=true", "url=https://github.com", "id=123"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output missing %q\n---\n%s\n---", want, out)
+		}
+	}
+}
+
+func TestGHPRAddCommentTool_RequiresApproval(t *testing.T) {
+	tool := &GHPRAddCommentTool{}
+	if !tool.RequiresApproval("") {
+		t.Errorf("gh_pr_add_comment is a write tool; MUST require approval")
+	}
+}
+
+func TestGHPRAddCommentTool_PreviewExcerptCapsLongBody(t *testing.T) {
+	tool := &GHPRAddCommentTool{}
+	long := strings.Repeat("a", 200)
+	got := tool.PreviewCall(`{"ref":"29","body":"` + long + `"}`)
+	if !strings.Contains(got, "…") {
+		t.Errorf("expected ellipsis in preview for long body; got %q", got)
+	}
+	if strings.Contains(got, long) {
+		t.Errorf("preview must not contain full long body")
+	}
+}
+
+func TestGHPRAddCommentTool_PreviewCollapsesMultiline(t *testing.T) {
+	tool := &GHPRAddCommentTool{}
+	got := tool.PreviewCall(`{"ref":"29","body":"line1\nline2\nline3"}`)
+	if strings.Contains(got, "\n") {
+		t.Errorf("preview should not contain newlines; got %q", got)
+	}
+	if !strings.Contains(got, "line1 line2 line3") {
+		t.Errorf("preview should collapse multiline body; got %q", got)
+	}
+}
+
+func TestPreviewExcerpt(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		cap  int
+		want string
+	}{
+		{"short", "short body", 80, "short body"},
+		{"multiline collapses", "line1\nline2", 80, "line1 line2"},
+		{"whitespace collapses", "  many   spaces  ", 80, "many spaces"},
+		{"truncates at cap", strings.Repeat("a", 100), 10, strings.Repeat("a", 10) + "…"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := previewExcerpt(tc.in, tc.cap)
+			if got != tc.want {
+				t.Errorf("got %q; want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestGHPRReadTool_RoundsThroughTool(t *testing.T) {
+	gh := &fakeGH{
+		readPRRes: github.PRDetails{
+			Number: 29, Title: "fix prompt", State: "OPEN",
+			URL: "https://x", Body: "body text",
+		},
+	}
+	tool := &GHPRReadTool{Cwd: NewCwdRef(t.TempDir()), GH: gh}
+	out, err := tool.Execute(context.Background(), `{"ref":"29"}`)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	for _, want := range []string{"## state", "## pr", "number=29", "title=fix prompt", "body=|", "body text"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output missing %q\n---\n%s\n---", want, out)
+		}
+	}
+	// Diff and checks sections must NOT appear in gh_pr_read output —
+	// that's the whole point of the tool.
+	if strings.Contains(out, "## diff") || strings.Contains(out, "## checks") {
+		t.Errorf("gh_pr_read output should not contain diff/checks sections:\n%s", out)
+	}
+}
+
+func TestGHPRReadTool_NoGHAdapterErrors(t *testing.T) {
+	tool := &GHPRReadTool{Cwd: NewCwdRef(t.TempDir()), GH: nil}
+	_, err := tool.Execute(context.Background(), `{"ref":"29"}`)
+	if err == nil || !strings.Contains(err.Error(), "no GitHub adapter") {
+		t.Errorf("expected adapter-missing error; got %v", err)
+	}
+}
+
+func TestGHPRReadTool_PreviewCall(t *testing.T) {
+	tool := &GHPRReadTool{}
+	if got := tool.PreviewCall(""); got != "gh_pr_read()" {
+		t.Errorf("empty args preview = %q", got)
+	}
+	if got := tool.PreviewCall(`{"ref":"29"}`); got != "gh_pr_read(ref=29)" {
+		t.Errorf("ref preview = %q", got)
+	}
+}
+
+func TestGHPRReadTool_NotApprovalRequired(t *testing.T) {
+	tool := &GHPRReadTool{}
+	if tool.RequiresApproval("") {
+		t.Errorf("gh_pr_read is read-only; must not require approval")
+	}
+}
+
+func TestGHPRReadTool_DescriptionNudgesAwayFromBash(t *testing.T) {
+	// Pin the model-nudge contract — the description must point at
+	// run_bash explicitly so the model doesn't keep reaching for
+	// `gh pr view --json body` from a Bash shell. If this assertion
+	// drifts the nudge is lost; intentionally pinned so removal
+	// requires a deliberate test edit.
+	tool := &GHPRReadTool{}
+	desc := tool.Description()
+	for _, want := range []string{"run_bash", "gh pr view", "ONE API call"} {
+		if !strings.Contains(desc, want) {
+			t.Errorf("Description missing nudge phrase %q\nfull description: %s", want, desc)
+		}
+	}
+}
+
+func TestGHPRReviewContextTool_DescriptionNudgesAwayFromBash(t *testing.T) {
+	// Sibling pin for gh_pr_review_context. Same contract: the
+	// description must explicitly steer the model toward typed
+	// tools over `gh pr view` / `gh pr diff` / `gh pr checks` via
+	// run_bash, and must call out gh_pr_read as the lighter
+	// alternative so the model knows to pick.
+	tool := &GHPRReviewContextTool{}
+	desc := tool.Description()
+	for _, want := range []string{"run_bash", "gh_pr_read", "three API calls"} {
+		if !strings.Contains(desc, want) {
+			t.Errorf("Description missing nudge phrase %q\nfull description: %s", want, desc)
+		}
 	}
 }
 

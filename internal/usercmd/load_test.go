@@ -137,6 +137,27 @@ func TestLoad_ProjectShadowsUser(t *testing.T) {
 	}
 }
 
+// When cwd equals $HOME the project commands dir aliases the user
+// commands dir. The loader must skip the project pass instead of
+// loading every file twice and emitting "shadowed by project command
+// at <same path>" warnings for each one.
+func TestLoad_CwdEqualsHomeNoSelfShadowing(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeCmd(t, filepath.Join(userScopeDir(t), "review.md"), "body")
+
+	cmds, errs := Load(home)
+	if len(cmds) != 1 || cmds[0].Name != "review" {
+		t.Fatalf("got %v, want single /review", cmds)
+	}
+	if cmds[0].Scope != ScopeUser {
+		t.Errorf("Scope = %q, want %q (project pass should have been skipped)", cmds[0].Scope, ScopeUser)
+	}
+	if len(errs) != 0 {
+		t.Errorf("expected no warnings, got %v", errs)
+	}
+}
+
 func TestLoad_SameScopeDuplicateBothDropped(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	dir := userScopeDir(t)

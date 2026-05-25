@@ -2,7 +2,9 @@ package adapter
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -348,6 +350,40 @@ func TestAdapter_SendsPlaceholderAuthWhenNoAPIKey(t *testing.T) {
 
 	if !strings.HasPrefix(gotAuth, "Bearer ") {
 		t.Errorf("Authorization should still send a Bearer placeholder; got %q", gotAuth)
+	}
+}
+
+// TestAdapter_SetsDefaultMaxTokens guards Fix B: the chatAdapter must
+// always send max_tokens. NVIDIA NIM treats a missing value as 0 and
+// rejects with 400 once input is anywhere near the model's window,
+// even though OpenAI itself tolerates the omission. Reproduces by
+// inspecting the JSON body that hits the wire.
+func TestAdapter_SetsDefaultMaxTokens(t *testing.T) {
+	var gotBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(raw, &gotBody)
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, sseBody(
+			`{"id":"c","object":"chat.completion.chunk","created":1,"model":"t","choices":[{"index":0,"delta":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`,
+		))
+	}))
+	t.Cleanup(srv.Close)
+
+	ad := New(srv.URL, "", "test")
+	ch := ad.ChatStream(context.Background(), []Message{{Role: RoleUser, Content: "ping"}}, nil)
+	_, _, _, _ = drainEvents(ch)
+
+	raw, ok := gotBody["max_tokens"]
+	if !ok {
+		t.Fatalf("request body should include max_tokens; got %+v", gotBody)
+	}
+	val, ok := raw.(float64) // JSON numbers unmarshal as float64
+	if !ok {
+		t.Fatalf("max_tokens should be numeric; got %T (%v)", raw, raw)
+	}
+	if int64(val) != ChatDefaultMaxTokens {
+		t.Errorf("max_tokens = %d, want %d", int64(val), ChatDefaultMaxTokens)
 	}
 }
 

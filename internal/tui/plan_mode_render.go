@@ -109,6 +109,34 @@ func compactPlanBasename(planPath string) string {
 	return truncateSlug(slug, maxBasenameWidth-3) + ".md"
 }
 
+// renderPlanModeEntryCard renders the on-entry log entry as a
+// tool-card-shaped block: header carries the ▸ icon + "plan mode
+// active" label, body explains the read-only research framing, footer
+// shows how to exit. Reuses styleCardGutter / styleCardHeader so the
+// surface reads as part of the same visual family as the tool-output
+// cards in scrollback.
+func renderPlanModeEntryCard() string {
+	header := styleCardGutter.Render("╭ ") +
+		stylePlanBannerLabel.Render(PlanModeIcon+" plan mode active")
+	body := styleCardGutter.Render("│   ") +
+		stylePlanBannerHint.Render("read-only research; describe what you'd like planned in your next message")
+	footer := styleCardGutter.Render("╰ ") +
+		stylePlanBannerHint.Render("exit with /plan or Shift+Tab")
+	return strings.Join([]string{header, body, footer}, "\n")
+}
+
+// renderPlanFileCard renders the plan-file-resolved log entry as a
+// two-line card: header announces the resolution, footer carries the
+// abbreviated path. Emitted from maybeFillPlanFile the first time a
+// plan-mode session resolves its slug from the user's opening message.
+func renderPlanFileCard(planPath string) string {
+	header := styleCardGutter.Render("╭ ") +
+		stylePlanBannerLabel.Render(PlanModeIcon+" plan file")
+	footer := styleCardGutter.Render("╰ ") +
+		stylePlanBannerActivity.Render(abbrevHome(planPath))
+	return strings.Join([]string{header, footer}, "\n")
+}
+
 // renderPlanApprovalCard renders the decision UI for an exit_plan_mode
 // approval. The plan body itself is NOT inside the box — it's emitted
 // to scrollback as a quoted block when ApprovalNeeded fires (see
@@ -197,19 +225,31 @@ func renderPlanApprovalCard(width int) string {
 	return strings.Join(rows, "\n")
 }
 
+// Plan-mode banner / approval styles. Bare declarations (no
+// initializers) because the palette-colored fields would otherwise
+// capture the ZERO VALUE of colorWarning / colorDim / etc. at
+// package-init time — Go evaluates var initializers before any
+// init() functions run, but the color vars are only populated when
+// styles.go's init() calls buildStyles. The captured zero
+// AdaptiveColor renders as terminal default fg, which on many
+// palettes reads as a stuck bright/yellow color regardless of which
+// theme the user picks. Actual style construction lives in
+// buildStyles (styles.go) so every ApplyTheme swap rebuilds them
+// with the current palette.
+//
+// stylePlanBannerActivity is the middle segment of the plan-mode
+// banner — basename or the "awaiting your message" hint. Plain
+// content color so it reads as neutral status text rather than a
+// call-to-action; the label on the left is the only saturated
+// element on the row.
 var (
-	stylePlanBannerLabel    = lipgloss.NewStyle().Foreground(colorWarning).Bold(true)
-	stylePlanBannerHint     = lipgloss.NewStyle().Foreground(colorDim).Italic(true)
-	stylePlanBannerSep      = lipgloss.NewStyle().Foreground(colorRule)
-	// stylePlanBannerActivity is the middle segment of the plan-mode
-	// banner — the basename or the "awaiting your message" hint.
-	// Plain content color (off-white on dark, dark on light) so it
-	// reads as neutral status text rather than a call-to-action; the
-	// label on the left is the only saturated element on the row.
-	stylePlanBannerActivity = lipgloss.NewStyle().Foreground(colorContent)
+	stylePlanBannerLabel    lipgloss.Style
+	stylePlanBannerHint     lipgloss.Style
+	stylePlanBannerSep      lipgloss.Style
+	stylePlanBannerActivity lipgloss.Style
 
-	stylePlanApprovalTitle  = lipgloss.NewStyle().Foreground(colorWarning).Bold(true)
-	stylePlanApprovalTool   = lipgloss.NewStyle().Foreground(colorDim)
-	stylePlanApprovalHotkey = lipgloss.NewStyle().Foreground(colorAccent).Bold(true)
-	stylePlanApprovalChoice = lipgloss.NewStyle().Foreground(colorContent)
+	stylePlanApprovalTitle  lipgloss.Style
+	stylePlanApprovalTool   lipgloss.Style
+	stylePlanApprovalHotkey lipgloss.Style
+	stylePlanApprovalChoice lipgloss.Style
 )

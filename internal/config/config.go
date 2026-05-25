@@ -22,6 +22,8 @@ import (
 	"strings"
 
 	"github.com/BurntSushi/toml"
+
+	"github.com/yottadynamics/yottacode/internal/tui/themes"
 )
 
 // Config bundles every tunable yottacode reads from disk. Sub-structs map
@@ -33,6 +35,7 @@ type Config struct {
 	Active       Active            `toml:"active"`
 	Providers    []Provider        `toml:"providers"`
 	Checkpoints  CheckpointsConfig `toml:"checkpoints"`
+	Theme        ThemeConfig       `toml:"theme"`
 	// Experimental gates non-default features behind named opt-ins.
 	// Mirrors the --experimental CLI flag and the
 	// $YOTTACODE_EXPERIMENTAL env var. Each entry is a feature name
@@ -41,6 +44,17 @@ type Config struct {
 	// warning so graduated/removed feature names don't break old
 	// configs.
 	Experimental map[string]bool `toml:"experimental"`
+}
+
+// ThemeConfig selects the TUI color palette. Name must match a theme
+// registered in internal/tui/themes (terminal, catppuccin, dimmed,
+// gruvbox, high-contrast, low-contrast, no-color, nord, one-dark,
+// solarized-dark, tokyo-night). Empty value falls through to the
+// package default; unknown values are rejected at load time so a
+// typo surfaces immediately instead of silently snapping back to
+// the default.
+type ThemeConfig struct {
+	Name string `toml:"name"`
 }
 
 // CheckpointsConfig tunes the per-prompt file/conversation snapshot
@@ -213,6 +227,9 @@ func Default() Config {
 			TopK:     10,
 			MinScore: 0.0,
 		},
+		Theme: ThemeConfig{
+			Name: themes.DefaultName,
+		},
 	}
 }
 
@@ -256,6 +273,9 @@ func Load(path string) (Config, error) {
 		}
 	}
 	cfg.Active.normalize()
+	if strings.TrimSpace(cfg.Theme.Name) == "" {
+		cfg.Theme.Name = themes.DefaultName
+	}
 	if err := Validate(cfg); err != nil {
 		return Default(), fmt.Errorf("config: %s: %w", path, err)
 	}
@@ -325,6 +345,11 @@ func Validate(cfg Config) error {
 	}
 	if cfg.Retrieval.MinScore < 0 || cfg.Retrieval.MinScore > 1 {
 		return fmt.Errorf("retrieval.min_score = %.3f out of range (0.0–1.0)", cfg.Retrieval.MinScore)
+	}
+
+	if name := strings.TrimSpace(cfg.Theme.Name); name != "" && !themes.IsValid(name) {
+		return fmt.Errorf("theme.name = %q is not a registered theme (try one of %s)",
+			name, strings.Join(themes.Names(), ", "))
 	}
 
 	seen := make(map[string]struct{}, len(cfg.Providers))
@@ -592,6 +617,17 @@ top_k = 10
 # Minimum relevance score (0.0–1.0) an entry must reach to be
 # injected.
 min_score = 0.0
+
+# ---------------------------------------------------------------------
+# TUI color theme. Uncomment to pin a palette; omit the section to
+# ride the default ("terminal"). One of: terminal | catppuccin | grey
+# | gruvbox | high-contrast | low-contrast | no-color | nord
+# | one-dark | solarized-dark | tokyo-night. Switch interactively
+# with /theme.
+# ---------------------------------------------------------------------
+
+# [theme]
+# name = "catppuccin"
 
 # ---------------------------------------------------------------------
 # Provider profiles (uncomment + customize). API keys are NEVER stored

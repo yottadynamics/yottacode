@@ -1,20 +1,17 @@
 // Package github is the typed adapter between yottacode and GitHub.
 //
-// The v0.5.0 roadmap (yottacode-roadmap/github-integration.md) calls
-// for a typed `go-github` client with auth precedence, in-session
-// caching, and rate-limit surfacing. That work is intentionally not
-// done here. What this package does ship is the Interface shape the
-// rest of the codebase consumes, plus a thin `gh` shell-out
-// implementation so procedural callers (the /create-pr slash
-// command, the gh_pr_workflow composite tool) can depend on a typed
-// surface from day one. When the v0.5.0 client lands, callers
-// continue working unchanged — only the registration of which
-// implementation to inject moves.
+// Shipped surface (v0.5.0):
 //
-// Scope: CreatePR + the read surface needed by /git-review-pr
-// (ReadPR, ReadPRDiff, ListPRChecks). Issue reads, PR comments,
-// and the v0.5.0 in-session cache / rate-limit awareness land with
-// the typed go-github client.
+//   - Typed client (TypedClient) wrapping go-github/v66, with HTTPClient
+//     injection for tests.
+//   - Auth resolver chain: $GITHUB_TOKEN → `gh auth token` → ~/.yottacode/github.json.
+//   - PR surface: CreatePR, ReadPR, ReadPRDiff, ListPRChecks, UpdatePR.
+//   - Issue surface: ReadIssue, ListOpenIssues.
+//   - PR comment surface: AddPRComment.
+//
+// Callers depend on the Interface, not on TypedClient directly, so
+// the cloud bot (SaaS Phase 2) can swap in a JWT-installation-token
+// implementation behind the same surface without changing call sites.
 package github
 
 import (
@@ -36,6 +33,13 @@ var ErrGhUnavailable = errors.New("gh CLI unavailable or unauthenticated")
 // "no PR found" instead of treating the missing PR as an opaque
 // gh exit-non-zero.
 var ErrPRNotFound = errors.New("pull request not found")
+
+// ErrIssueNotFound signals that the requested issue doesn't exist.
+// Sibling of ErrPRNotFound — same semantic, different resource.
+// Callers branch on this so /git-implement-issue can surface a
+// clean "no issue found" and STOP instead of treating the missing
+// issue as an opaque API failure.
+var ErrIssueNotFound = errors.New("issue not found")
 
 // Interface is the typed surface yottacode uses to talk to GitHub.
 // Kept minimal: only the methods at least one shipped caller needs.
@@ -76,6 +80,36 @@ type Interface interface {
 	// ErrGhUnavailable when the local environment can't make the
 	// call.
 	UpdatePR(ctx context.Context, req UpdatePRRequest) (UpdatePRResult, error)
+
+	// ReadIssue fetches typed metadata about a single issue —
+	// title, body, state, labels, assignees, and the most-recent
+	// comments. Powers /git-implement-issue's first step. Returns
+	// ErrIssueNotFound when the issue doesn't exist.
+	ReadIssue(ctx context.Context, req ReadIssueRequest) (IssueDetails, error)
+
+	// ListOpenIssues returns lightweight summaries of open issues
+	// matching the supplied filters. Empty filters return all open
+	// issues (paginated by GitHub's defaults — we don't fetch all
+	// pages here; callers that need pagination ask for it).
+	// Surfaces issues for /git-implement-issue tab-completion and
+	// for future planning surfaces.
+	ListOpenIssues(ctx context.Context, req ListIssuesRequest) ([]IssueSummary, error)
+
+	// AddPRComment posts a top-level conversation comment on a PR.
+	// Approval-gated by the tool layer (see GHPRAddCommentTool).
+	// Used to cross-link related issues, request reviewers via
+	// @-mention, or post structured follow-ups after a /git-review-pr
+	// run. Not for inline review comments (different endpoint;
+	// different scope).
+	AddPRComment(ctx context.Context, req AddPRCommentRequest) (AddPRCommentResult, error)
+
+	// RateLimit returns the most recent rate-limit snapshot the
+	// implementation has observed. Snapshot.IsSet() is false when
+	// no API call has populated the tracker yet. Used by the doctor
+	// probe and by mutation tools to surface low-budget warnings.
+	// Implementations that don't track rate state (test doubles)
+	// may return a zero-valued snapshot.
+	RateLimit() RateLimitSnapshot
 }
 
 // CreatePRRequest is the typed payload for Interface.CreatePR.
@@ -178,4 +212,101 @@ type CheckRun struct {
 	Conclusion  string
 	StartedAt   time.Time
 	CompletedAt time.Time
+}
+
+// ReadIssueRequest is the typed payload for Interface.ReadIssue.
+// Owner / Repo follow the same optional-inference semantics as
+// the PR request types. Number is required (issues don't have a
+// branch fallback the way PRs do).
+//
+// MaxComments caps the comment fetch — issues can be lengthy
+// threads, and the model rarely needs every comment for context.
+// Zero means "use the implementation's default" (currently 20
+// most-recent comments). Negative means "skip comments entirely".
+type ReadIssueRequest struct {
+	Owner       string
+	Repo        string
+	Number      int
+	MaxComments int
+}
+
+// IssueDetails is the typed envelope ReadIssue returns. Field
+// shape mirrors PRDetails where it overlaps (Number, Title, Body,
+// State, Author, URL, Labels) so the model brief and tool wrappers
+// can render issues and PRs with shared template code.
+//
+// Assignees is the login list (not display names) — matches the
+// Author convention. Comments is most-recent-first, capped per
+// MaxComments. Empty Comments doesn't mean "no comments existed"
+// when MaxComments was negative; check the request to disambiguate.
+type IssueDetails struct {
+	Number    int
+	Title     string
+	Body      string
+	State     string // "OPEN" | "CLOSED"
+	Author    string
+	URL       string
+	Labels    []string
+	Assignees []string
+	Comments  []IssueComment
+}
+
+// IssueComment is one row from IssueDetails.Comments. Body is the
+// raw Markdown source the commenter wrote. Author is the login.
+// Created is the UTC creation timestamp.
+type IssueComment struct {
+	Author  string
+	Body    string
+	Created time.Time
+}
+
+// ListIssuesRequest is the typed payload for Interface.ListOpenIssues.
+// Owner / Repo follow the same optional-inference semantics as the
+// other request types. Filters are AND-ed — e.g., Labels=["bug"]
+// and Assignee="octocat" returns only issues with both.
+//
+// Empty Labels means "no label filter" (any label OK, no label OK).
+// Empty Assignee / Milestone means "no filter on that axis".
+// State is fixed to "open" by the method semantics — callers that
+// need closed issues use ReadIssue with a specific number.
+type ListIssuesRequest struct {
+	Owner     string
+	Repo      string
+	Labels    []string
+	Assignee  string
+	Milestone string
+}
+
+// IssueSummary is the lightweight envelope ListOpenIssues returns.
+// Subset of IssueDetails — enough for a picker / completion list.
+// Callers that need bodies + comments follow up with ReadIssue.
+type IssueSummary struct {
+	Number    int
+	Title     string
+	Author    string
+	URL       string
+	Labels    []string
+	Assignees []string
+}
+
+// AddPRCommentRequest is the typed payload for Interface.AddPRComment.
+// Owner / Repo follow the same optional-inference semantics. Ref
+// accepts a PR number or branch name, mirroring ReadPRRequest.
+// Body is the Markdown source — required, non-empty.
+type AddPRCommentRequest struct {
+	Owner string
+	Repo  string
+	Ref   string
+	Body  string
+}
+
+// AddPRCommentResult is the typed envelope AddPRComment returns
+// on success. URL is the comment's permalink — callers surface
+// it so the user can jump to the posted comment on GitHub. ID is
+// the comment's numeric ID, useful for future edit/delete flows
+// (out of scope for v0.5.0 but exposed now to avoid a breaking
+// change later).
+type AddPRCommentResult struct {
+	URL string
+	ID  int64
 }

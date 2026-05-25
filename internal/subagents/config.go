@@ -17,6 +17,7 @@ type AgentConfig struct {
 	Tools       []string // optional tool allowlist; ["*"] or nil means "inherit all parent tools (minus Agent)"
 	Model       string   // optional adapter model override; empty means inherit parent's
 	Prompt      string   // markdown body — used as the child's system prompt
+	Background  bool     // when true, dispatches default to background unless the caller opts in to foreground
 	Source      string   // "builtin" | "global" | "project" — diagnostics only
 	SourcePath  string   // absolute path of the source file (empty for builtins)
 }
@@ -71,6 +72,8 @@ func ParseAgentFile(data []byte) (AgentConfig, error) {
 			cfg.Tools = parseToolList(val)
 		case "model":
 			cfg.Model = val
+		case "background":
+			cfg.Background = parseBool(val)
 		}
 	}
 	if cfg.Name == "" {
@@ -124,6 +127,20 @@ func parseToolList(val string) []string {
 		return nil
 	}
 	return out
+}
+
+// parseBool accepts the YAML truthy / falsy forms we care about for
+// frontmatter scalar fields. Tolerant of quotes and case so a
+// hand-edited `background: "true"` or `Background: YES` both parse.
+// Unrecognized values fall through as false rather than erroring —
+// matches the lenient style the rest of ParseAgentFile uses.
+func parseBool(val string) bool {
+	v := strings.ToLower(strings.Trim(val, "\"' \t"))
+	switch v {
+	case "true", "yes", "on", "1":
+		return true
+	}
+	return false
 }
 
 // ToolAllowed reports whether the named tool should be exposed to the

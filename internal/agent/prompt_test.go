@@ -40,6 +40,7 @@ var canonicalTools = []string{
 	"git_diff_files",
 	"git_stage_files",
 	"git_unstage_files",
+	"git_create_branch",
 	"git_commit",
 	"git_log_file",
 	"git_blame_lines",
@@ -51,6 +52,7 @@ var canonicalTools = []string{
 	"git",
 	"todo_write",
 	"exit_plan_mode",
+	"Skill",
 }
 
 func TestDefaultSystemPrompt_NamesEveryRegisteredTool(t *testing.T) {
@@ -80,6 +82,11 @@ func TestDefaultSystemPrompt_KeepsActionDirectives(t *testing.T) {
 		"Multi-step planning",
 		"call todo_write BEFORE you start work",
 		"Do NOT call todo_write for trivial single-step requests",
+		// Large-file read guidance: discourages the chunked-pagination
+		// reflex (L0+100, L100+100, …) that wastes turns and context
+		// on a file that fits in a single read.
+		"prefer ONE read_file call with a generous limit",
+		"stop — grep for the symbol you're actually hunting instead",
 	} {
 		if !strings.Contains(DefaultSystemPrompt, want) {
 			t.Errorf("DefaultSystemPrompt is missing required directive %q", want)
@@ -115,6 +122,10 @@ func TestPlanModeAddendum_KeepsCoreDirectives(t *testing.T) {
 		"Resolve material ambiguity BEFORE calling exit_plan_mode",
 		"END THE TURN. Do NOT call exit_plan_mode in the same turn",
 		"approval modal accepts hotkeys only",
+		// Foreground-subagent nudge: plan-mode research benefits from
+		// same-turn findings, so the addendum steers the parent toward
+		// run_in_background:false when dispatching subagents.
+		"Prefer run_in_background:false",
 	} {
 		if !strings.Contains(PlanModeAddendum, want) {
 			t.Errorf("PlanModeAddendum is missing required directive %q", want)

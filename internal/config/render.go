@@ -47,6 +47,15 @@ func Render(cfg Config) string {
 		b.WriteString("\n")
 	}
 
+	// [theme] is only rendered when the user has picked something
+	// other than the default — keeps the file minimal for users who
+	// never touched /themes. Load() backfills DefaultName when the
+	// section is absent, so omitting it here is lossless.
+	if name := strings.TrimSpace(cfg.Theme.Name); name != "" && name != "terminal" {
+		b.WriteString("[theme]\n")
+		fmt.Fprintf(&b, "name = %q\n\n", name)
+	}
+
 	for _, p := range cfg.Providers {
 		b.WriteString("[[providers]]\n")
 		fmt.Fprintf(&b, "name          = %q\n", p.Name)

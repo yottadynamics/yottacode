@@ -150,7 +150,8 @@ func TestTools_Metadata(t *testing.T) {
 			wantApproval:         true,
 			previewArgsJSON:      `{"paths":["x.go"]}`,
 			wantPreviewSubstring: "x.go",
-			wantSchemaRequired:   []string{"paths"},
+			// Cross-field validation (paths vs all) replaces the
+			// single-field "required" assertion the old schema had.
 		},
 		{
 			tool:                 &GitUnstageFilesTool{Cwd: NewCwdRef(cwd)},
@@ -159,6 +160,14 @@ func TestTools_Metadata(t *testing.T) {
 			previewArgsJSON:      `{"paths":["x.go"]}`,
 			wantPreviewSubstring: "x.go",
 			wantSchemaRequired:   []string{"paths"},
+		},
+		{
+			tool:                 &GitCreateBranchTool{Cwd: NewCwdRef(cwd)},
+			wantName:             "git_create_branch",
+			wantApproval:         true,
+			previewArgsJSON:      `{"name":"feat/x"}`,
+			wantPreviewSubstring: "feat/x",
+			wantSchemaRequired:   []string{"name"},
 		},
 		{
 			tool:                 &GitCommitTool{Cwd: NewCwdRef(cwd)},
