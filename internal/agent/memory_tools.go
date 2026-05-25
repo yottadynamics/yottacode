@@ -17,7 +17,7 @@ import (
 // MEMORY.md index for that scope. Replaces the post-turn extractor —
 // the agent now decides in-band when something is worth remembering.
 type MemorySaveTool struct {
-	Cwd string
+	Cwd *CwdRef
 }
 
 func (t *MemorySaveTool) Name() string { return "memory_save" }
@@ -82,10 +82,10 @@ func (t *MemorySaveTool) Execute(_ context.Context, argsJSON string) (string, er
 	if err := validateMemoryType(a.Type); err != nil {
 		return "", err
 	}
-	if err := ensureMemoryDir(a.Scope, t.Cwd); err != nil {
+	if err := ensureMemoryDir(a.Scope, t.Cwd.Get()); err != nil {
 		return "", err
 	}
-	path, err := memory.MemoryFilePath(a.Scope, a.Name, t.Cwd)
+	path, err := memory.MemoryFilePath(a.Scope, a.Name, t.Cwd.Get())
 	if err != nil {
 		return "", err
 	}
@@ -98,7 +98,7 @@ func (t *MemorySaveTool) Execute(_ context.Context, argsJSON string) (string, er
 	if err := atomicWriteMemoryFile(path, []byte(full)); err != nil {
 		return "", fmt.Errorf("memory_save: write %q: %w", path, err)
 	}
-	if err := memory.RegenerateMemoryIndex(a.Scope, t.Cwd); err != nil {
+	if err := memory.RegenerateMemoryIndex(a.Scope, t.Cwd.Get()); err != nil {
 		return "", fmt.Errorf("memory_save: regenerate index: %w", err)
 	}
 	return fmt.Sprintf("saved %s memory %q", a.Scope, a.Name), nil
@@ -108,7 +108,7 @@ func (t *MemorySaveTool) Execute(_ context.Context, argsJSON string) (string, er
 // MEMORY.md index. Errors cleanly when the named memory does not
 // exist — the agent can use that signal to learn the right names.
 type MemoryForgetTool struct {
-	Cwd string
+	Cwd *CwdRef
 }
 
 func (t *MemoryForgetTool) Name() string { return "memory_forget" }
@@ -154,7 +154,7 @@ func (t *MemoryForgetTool) Execute(_ context.Context, argsJSON string) (string, 
 	if err := json.Unmarshal([]byte(argsJSON), &a); err != nil {
 		return "", fmt.Errorf("memory_forget: invalid args: %w", err)
 	}
-	path, err := memory.MemoryFilePath(a.Scope, a.Name, t.Cwd)
+	path, err := memory.MemoryFilePath(a.Scope, a.Name, t.Cwd.Get())
 	if err != nil {
 		return "", err
 	}
@@ -164,7 +164,7 @@ func (t *MemoryForgetTool) Execute(_ context.Context, argsJSON string) (string, 
 		}
 		return "", fmt.Errorf("memory_forget: remove %q: %w", path, err)
 	}
-	if err := memory.RegenerateMemoryIndex(a.Scope, t.Cwd); err != nil {
+	if err := memory.RegenerateMemoryIndex(a.Scope, t.Cwd.Get()); err != nil {
 		return "", fmt.Errorf("memory_forget: regenerate index: %w", err)
 	}
 	return fmt.Sprintf("forgot %s memory %q", a.Scope, a.Name), nil

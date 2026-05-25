@@ -23,7 +23,7 @@ func TestTools_Metadata(t *testing.T) {
 	cwd := t.TempDir()
 	cases := []metadataCase{
 		{
-			tool:                 &ReadFileTool{Cwd: cwd},
+			tool:                 &ReadFileTool{Cwd: NewCwdRef(cwd)},
 			wantName:             "read_file",
 			wantApproval:         false,
 			previewArgsJSON:      `{"path":"x.go"}`,
@@ -31,7 +31,7 @@ func TestTools_Metadata(t *testing.T) {
 			wantSchemaRequired:   []string{"path"},
 		},
 		{
-			tool:                 &WriteFileTool{Cwd: cwd, WriteOpts: WritePathOptions{Cwd: cwd}},
+			tool:                 &WriteFileTool{Cwd: NewCwdRef(cwd), WriteOpts: WritePathOptions{Cwd: NewCwdRef(cwd)}},
 			wantName:             "write_file",
 			wantApproval:         true,
 			previewArgsJSON:      `{"path":"x.go","content":"hi"}`,
@@ -39,7 +39,7 @@ func TestTools_Metadata(t *testing.T) {
 			wantSchemaRequired:   []string{"path", "content"},
 		},
 		{
-			tool:                 &EditFileTool{Cwd: cwd, WriteOpts: WritePathOptions{Cwd: cwd}},
+			tool:                 &EditFileTool{Cwd: NewCwdRef(cwd), WriteOpts: WritePathOptions{Cwd: NewCwdRef(cwd)}},
 			wantName:             "edit_file",
 			wantApproval:         true,
 			previewArgsJSON:      `{"path":"x.go","old_string":"foo","new_string":"bar"}`,
@@ -47,7 +47,7 @@ func TestTools_Metadata(t *testing.T) {
 			wantSchemaRequired:   []string{"path", "old_string", "new_string"},
 		},
 		{
-			tool:                 &ReadManyFilesTool{Cwd: cwd},
+			tool:                 &ReadManyFilesTool{Cwd: NewCwdRef(cwd)},
 			wantName:             "read_many_files",
 			wantApproval:         false,
 			previewArgsJSON:      `{"paths":["a.go","b.go"]}`,
@@ -55,7 +55,7 @@ func TestTools_Metadata(t *testing.T) {
 			wantSchemaRequired:   []string{"paths"},
 		},
 		{
-			tool:                 &MkdirTool{Cwd: cwd, WriteOpts: WritePathOptions{Cwd: cwd}},
+			tool:                 &MkdirTool{Cwd: NewCwdRef(cwd), WriteOpts: WritePathOptions{Cwd: NewCwdRef(cwd)}},
 			wantName:             "mkdir",
 			wantApproval:         true,
 			previewArgsJSON:      `{"path":"sub/dir"}`,
@@ -63,7 +63,7 @@ func TestTools_Metadata(t *testing.T) {
 			wantSchemaRequired:   []string{"path"},
 		},
 		{
-			tool:                 &CopyFileTool{Cwd: cwd, WriteOpts: WritePathOptions{Cwd: cwd}},
+			tool:                 &CopyFileTool{Cwd: NewCwdRef(cwd), WriteOpts: WritePathOptions{Cwd: NewCwdRef(cwd)}},
 			wantName:             "copy_file",
 			wantApproval:         true,
 			previewArgsJSON:      `{"src":"a.go","dst":"b.go"}`,
@@ -71,7 +71,7 @@ func TestTools_Metadata(t *testing.T) {
 			wantSchemaRequired:   []string{"src", "dst"},
 		},
 		{
-			tool:                 &MoveFileTool{Cwd: cwd, WriteOpts: WritePathOptions{Cwd: cwd}},
+			tool:                 &MoveFileTool{Cwd: NewCwdRef(cwd), WriteOpts: WritePathOptions{Cwd: NewCwdRef(cwd)}},
 			wantName:             "move_file",
 			wantApproval:         true,
 			previewArgsJSON:      `{"src":"a.go","dst":"b.go"}`,
@@ -79,7 +79,7 @@ func TestTools_Metadata(t *testing.T) {
 			wantSchemaRequired:   []string{"src", "dst"},
 		},
 		{
-			tool:                 &DeleteFileTool{Cwd: cwd, WriteOpts: WritePathOptions{Cwd: cwd}},
+			tool:                 &DeleteFileTool{Cwd: NewCwdRef(cwd), WriteOpts: WritePathOptions{Cwd: NewCwdRef(cwd)}},
 			wantName:             "delete_file",
 			wantApproval:         true,
 			previewArgsJSON:      `{"path":"old.go"}`,
@@ -87,7 +87,7 @@ func TestTools_Metadata(t *testing.T) {
 			wantSchemaRequired:   []string{"path"},
 		},
 		{
-			tool:                 &ApplyDiffTool{Cwd: cwd},
+			tool:                 &ApplyDiffTool{Cwd: NewCwdRef(cwd)},
 			wantName:             "apply_diff",
 			wantApproval:         true,
 			previewArgsJSON:      `{"diff":"diff --git a/x b/x"}`,
@@ -95,42 +95,42 @@ func TestTools_Metadata(t *testing.T) {
 			wantSchemaRequired:   []string{"diff"},
 		},
 		{
-			tool:                 &ListGitChangedFilesTool{Cwd: cwd},
+			tool:                 &ListGitChangedFilesTool{Cwd: NewCwdRef(cwd)},
 			wantName:             "list_git_changed_files",
 			wantApproval:         false,
 			previewArgsJSON:      `{}`,
 			wantPreviewSubstring: "list_git_changed_files",
 		},
 		{
-			tool:                 &GitCheckpointTool{Cwd: cwd},
+			tool:                 &GitCheckpointTool{Cwd: NewCwdRef(cwd)},
 			wantName:             "git_checkpoint",
 			wantApproval:         true,
 			previewArgsJSON:      `{"message":"cp"}`,
 			wantPreviewSubstring: "cp",
 		},
 		{
-			tool:                 &RollbackTool{Cwd: cwd},
+			tool:                 &RollbackTool{Cwd: NewCwdRef(cwd)},
 			wantName:             "rollback",
 			wantApproval:         true,
 			previewArgsJSON:      `{"target":"HEAD~1"}`,
 			wantPreviewSubstring: "HEAD~1",
 		},
 		{
-			tool:                 &RunTestsTool{Cwd: cwd},
+			tool:                 &RunTestsTool{Cwd: NewCwdRef(cwd)},
 			wantName:             "run_tests",
 			wantApproval:         true,
 			previewArgsJSON:      `{"command":"go test ./..."}`,
 			wantPreviewSubstring: "go test ./...",
 		},
 		{
-			tool:                 &GitBranchStatusTool{Cwd: cwd},
+			tool:                 &GitBranchStatusTool{Cwd: NewCwdRef(cwd)},
 			wantName:             "git_branch_status",
 			wantApproval:         false,
 			previewArgsJSON:      `{}`,
 			wantPreviewSubstring: "git_branch_status",
 		},
 		{
-			tool:                 &GitShowFileAtRevTool{Cwd: cwd},
+			tool:                 &GitShowFileAtRevTool{Cwd: NewCwdRef(cwd)},
 			wantName:             "git_show_file_at_rev",
 			wantApproval:         false,
 			previewArgsJSON:      `{"path":"x.go","rev":"HEAD"}`,
@@ -138,14 +138,14 @@ func TestTools_Metadata(t *testing.T) {
 			wantSchemaRequired:   []string{"path"},
 		},
 		{
-			tool:                 &GitDiffFilesTool{Cwd: cwd},
+			tool:                 &GitDiffFilesTool{Cwd: NewCwdRef(cwd)},
 			wantName:             "git_diff_files",
 			wantApproval:         false,
 			previewArgsJSON:      `{"paths":["x.go"]}`,
 			wantPreviewSubstring: "paths=1",
 		},
 		{
-			tool:                 &GitStageFilesTool{Cwd: cwd},
+			tool:                 &GitStageFilesTool{Cwd: NewCwdRef(cwd)},
 			wantName:             "git_stage_files",
 			wantApproval:         true,
 			previewArgsJSON:      `{"paths":["x.go"]}`,
@@ -154,7 +154,7 @@ func TestTools_Metadata(t *testing.T) {
 			// single-field "required" assertion the old schema had.
 		},
 		{
-			tool:                 &GitUnstageFilesTool{Cwd: cwd},
+			tool:                 &GitUnstageFilesTool{Cwd: NewCwdRef(cwd)},
 			wantName:             "git_unstage_files",
 			wantApproval:         true,
 			previewArgsJSON:      `{"paths":["x.go"]}`,
@@ -162,7 +162,7 @@ func TestTools_Metadata(t *testing.T) {
 			wantSchemaRequired:   []string{"paths"},
 		},
 		{
-			tool:                 &GitCreateBranchTool{Cwd: cwd},
+			tool:                 &GitCreateBranchTool{Cwd: NewCwdRef(cwd)},
 			wantName:             "git_create_branch",
 			wantApproval:         true,
 			previewArgsJSON:      `{"name":"feat/x"}`,
@@ -170,7 +170,7 @@ func TestTools_Metadata(t *testing.T) {
 			wantSchemaRequired:   []string{"name"},
 		},
 		{
-			tool:                 &GitCommitTool{Cwd: cwd},
+			tool:                 &GitCommitTool{Cwd: NewCwdRef(cwd)},
 			wantName:             "git_commit",
 			wantApproval:         true,
 			previewArgsJSON:      `{"message":"msg"}`,
@@ -178,7 +178,7 @@ func TestTools_Metadata(t *testing.T) {
 			wantSchemaRequired:   []string{"message"},
 		},
 		{
-			tool:                 &GitLogFileTool{Cwd: cwd},
+			tool:                 &GitLogFileTool{Cwd: NewCwdRef(cwd)},
 			wantName:             "git_log_file",
 			wantApproval:         false,
 			previewArgsJSON:      `{"path":"x.go"}`,
@@ -186,7 +186,7 @@ func TestTools_Metadata(t *testing.T) {
 			wantSchemaRequired:   []string{"path"},
 		},
 		{
-			tool:                 &GitBlameLinesTool{Cwd: cwd},
+			tool:                 &GitBlameLinesTool{Cwd: NewCwdRef(cwd)},
 			wantName:             "git_blame_lines",
 			wantApproval:         false,
 			previewArgsJSON:      `{"path":"x.go","start":1,"end":2}`,
@@ -194,7 +194,7 @@ func TestTools_Metadata(t *testing.T) {
 			wantSchemaRequired:   []string{"path", "start", "end"},
 		},
 		{
-			tool:                 &GitMergeBaseTool{Cwd: cwd},
+			tool:                 &GitMergeBaseTool{Cwd: NewCwdRef(cwd)},
 			wantName:             "git_merge_base",
 			wantApproval:         false,
 			previewArgsJSON:      `{"base":"main","head":"feature"}`,
@@ -202,21 +202,21 @@ func TestTools_Metadata(t *testing.T) {
 			wantSchemaRequired:   []string{"base", "head"},
 		},
 		{
-			tool:                 &ListDirTool{Cwd: cwd},
+			tool:                 &ListDirTool{Cwd: NewCwdRef(cwd)},
 			wantName:             "list_dir",
 			wantApproval:         false,
 			previewArgsJSON:      `{"path":"sub"}`,
 			wantPreviewSubstring: "sub",
 		},
 		{
-			tool:                 &ListProjectStructureTool{Cwd: cwd},
+			tool:                 &ListProjectStructureTool{Cwd: NewCwdRef(cwd)},
 			wantName:             "list_project_structure",
 			wantApproval:         false,
 			previewArgsJSON:      `{"path":"sub","max_depth":2}`,
 			wantPreviewSubstring: "sub",
 		},
 		{
-			tool:                 &GlobTool{Cwd: cwd},
+			tool:                 &GlobTool{Cwd: NewCwdRef(cwd)},
 			wantName:             "glob",
 			wantApproval:         false,
 			previewArgsJSON:      `{"pattern":"**/*.go"}`,
@@ -224,7 +224,7 @@ func TestTools_Metadata(t *testing.T) {
 			wantSchemaRequired:   []string{"pattern"},
 		},
 		{
-			tool:                 &GrepTool{Cwd: cwd},
+			tool:                 &GrepTool{Cwd: NewCwdRef(cwd)},
 			wantName:             "grep",
 			wantApproval:         false,
 			previewArgsJSON:      `{"pattern":"needle"}`,
@@ -284,7 +284,7 @@ func TestTools_Metadata(t *testing.T) {
 }
 
 func TestRunBashTool_Metadata(t *testing.T) {
-	tool := &RunBashTool{Cwd: t.TempDir()}
+	tool := &RunBashTool{Cwd: NewCwdRef(t.TempDir())}
 	if tool.Name() != "run_bash" {
 		t.Errorf("Name = %q", tool.Name())
 	}
@@ -310,7 +310,7 @@ func TestRunBashTool_Metadata(t *testing.T) {
 func TestGitTool_Metadata(t *testing.T) {
 	// GitTool's RequiresApproval is args-driven, so the table-based test
 	// (which uses "{}") doesn't fit cleanly. Cover it here instead.
-	tool := &GitTool{Cwd: t.TempDir()}
+	tool := &GitTool{Cwd: NewCwdRef(t.TempDir())}
 	if tool.Name() != "git" {
 		t.Errorf("Name = %q", tool.Name())
 	}

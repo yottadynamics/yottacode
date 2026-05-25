@@ -21,7 +21,7 @@ func memTestSetup(t *testing.T) (home, cwd string) {
 
 func TestMemorySave_WritesFileAndIndex(t *testing.T) {
 	home, cwd := memTestSetup(t)
-	tool := &MemorySaveTool{Cwd: cwd}
+	tool := &MemorySaveTool{Cwd: NewCwdRef(cwd)}
 	out, err := tool.Execute(context.Background(), `{
 		"scope": "user",
 		"type": "feedback",
@@ -65,7 +65,7 @@ func TestMemorySave_WritesFileAndIndex(t *testing.T) {
 
 func TestMemorySave_OverwritesExisting(t *testing.T) {
 	home, cwd := memTestSetup(t)
-	tool := &MemorySaveTool{Cwd: cwd}
+	tool := &MemorySaveTool{Cwd: NewCwdRef(cwd)}
 	args1 := `{"scope":"user","type":"user","name":"prefs","description":"old","content":"first body"}`
 	args2 := `{"scope":"user","type":"user","name":"prefs","description":"new","content":"second body"}`
 	if _, err := tool.Execute(context.Background(), args1); err != nil {
@@ -99,7 +99,7 @@ func TestMemorySave_OverwritesExisting(t *testing.T) {
 
 func TestMemorySave_RoutesScopes(t *testing.T) {
 	home, cwd := memTestSetup(t)
-	tool := &MemorySaveTool{Cwd: cwd}
+	tool := &MemorySaveTool{Cwd: NewCwdRef(cwd)}
 	if _, err := tool.Execute(context.Background(), `{"scope":"user","type":"user","name":"prefs","description":"x","content":"x"}`); err != nil {
 		t.Fatalf("user-scope save: %v", err)
 	}
@@ -126,7 +126,7 @@ func TestMemorySave_RoutesScopes(t *testing.T) {
 
 func TestMemorySave_RejectsBadName(t *testing.T) {
 	_, cwd := memTestSetup(t)
-	tool := &MemorySaveTool{Cwd: cwd}
+	tool := &MemorySaveTool{Cwd: NewCwdRef(cwd)}
 	cases := []struct {
 		name string
 		args string
@@ -150,14 +150,14 @@ func TestMemorySave_RejectsBadName(t *testing.T) {
 
 func TestMemoryForget_DeletesAndUpdatesIndex(t *testing.T) {
 	home, cwd := memTestSetup(t)
-	save := &MemorySaveTool{Cwd: cwd}
+	save := &MemorySaveTool{Cwd: NewCwdRef(cwd)}
 	if _, err := save.Execute(context.Background(), `{"scope":"user","type":"user","name":"a","description":"x","content":"x"}`); err != nil {
 		t.Fatalf("save a: %v", err)
 	}
 	if _, err := save.Execute(context.Background(), `{"scope":"user","type":"user","name":"b","description":"x","content":"x"}`); err != nil {
 		t.Fatalf("save b: %v", err)
 	}
-	forget := &MemoryForgetTool{Cwd: cwd}
+	forget := &MemoryForgetTool{Cwd: NewCwdRef(cwd)}
 	if _, err := forget.Execute(context.Background(), `{"scope":"user","name":"a"}`); err != nil {
 		t.Fatalf("forget a: %v", err)
 	}
@@ -178,11 +178,11 @@ func TestMemoryForget_DeletesAndUpdatesIndex(t *testing.T) {
 
 func TestMemoryForget_RemovesIndexWhenEmpty(t *testing.T) {
 	home, cwd := memTestSetup(t)
-	save := &MemorySaveTool{Cwd: cwd}
+	save := &MemorySaveTool{Cwd: NewCwdRef(cwd)}
 	if _, err := save.Execute(context.Background(), `{"scope":"user","type":"user","name":"only","description":"x","content":"x"}`); err != nil {
 		t.Fatalf("save: %v", err)
 	}
-	forget := &MemoryForgetTool{Cwd: cwd}
+	forget := &MemoryForgetTool{Cwd: NewCwdRef(cwd)}
 	if _, err := forget.Execute(context.Background(), `{"scope":"user","name":"only"}`); err != nil {
 		t.Fatalf("forget: %v", err)
 	}
@@ -193,7 +193,7 @@ func TestMemoryForget_RemovesIndexWhenEmpty(t *testing.T) {
 
 func TestMemoryForget_MissingNameErrors(t *testing.T) {
 	_, cwd := memTestSetup(t)
-	forget := &MemoryForgetTool{Cwd: cwd}
+	forget := &MemoryForgetTool{Cwd: NewCwdRef(cwd)}
 	out, err := forget.Execute(context.Background(), `{"scope":"user","name":"never-saved"}`)
 	if err == nil {
 		t.Fatalf("expected error forgetting nonexistent memory, got out=%q", out)

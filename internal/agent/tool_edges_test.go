@@ -61,7 +61,7 @@ func TestCapped_DropsAfterFull(t *testing.T) {
 
 func TestReadFile_DirectoryReturnsError(t *testing.T) {
 	tmp := t.TempDir()
-	tool := &ReadFileTool{Cwd: tmp}
+	tool := &ReadFileTool{Cwd: NewCwdRef(tmp)}
 	if _, err := tool.Execute(context.Background(), `{"path":"."}`); err == nil {
 		t.Errorf("read_file on a directory should error")
 	}
@@ -76,7 +76,7 @@ func TestReadFile_PermissionDenied(t *testing.T) {
 	if err := os.WriteFile(path, []byte("locked"), 0o000); err != nil {
 		t.Fatalf("setup: %v", err)
 	}
-	tool := &ReadFileTool{Cwd: tmp}
+	tool := &ReadFileTool{Cwd: NewCwdRef(tmp)}
 	if _, err := tool.Execute(context.Background(), `{"path":"secret.txt"}`); err == nil {
 		t.Errorf("expected permission-denied error")
 	}
@@ -85,14 +85,14 @@ func TestReadFile_PermissionDenied(t *testing.T) {
 // --- write_file edge cases ------------------------------------------------
 
 func TestWriteFile_RejectsEmptyPath(t *testing.T) {
-	tool := &WriteFileTool{Cwd: t.TempDir()}
+	tool := &WriteFileTool{Cwd: NewCwdRef(t.TempDir())}
 	if _, err := tool.Execute(context.Background(), `{"path":"","content":"x"}`); err == nil {
 		t.Errorf("write_file with empty path should error")
 	}
 }
 
 func TestWriteFile_PreviewIsBytesOnly(t *testing.T) {
-	tool := &WriteFileTool{Cwd: t.TempDir()}
+	tool := &WriteFileTool{Cwd: NewCwdRef(t.TempDir())}
 	// Use a sentinel that doesn't collide with the literal preview shape
 	// `write_file(x, NNNN bytes)`. `@` isn't in any of those tokens.
 	long := strings.Repeat("@", 1000)
@@ -108,7 +108,7 @@ func TestWriteFile_PreviewIsBytesOnly(t *testing.T) {
 // --- edit_file edge cases -------------------------------------------------
 
 func TestEditFile_PreviewWithReplaceAllAnnotation(t *testing.T) {
-	tool := &EditFileTool{Cwd: t.TempDir()}
+	tool := &EditFileTool{Cwd: NewCwdRef(t.TempDir())}
 	preview := tool.PreviewCall(`{"path":"x","old_string":"a","new_string":"b","replace_all":true}`)
 	if !strings.Contains(preview, "all") {
 		t.Errorf("preview should annotate replace_all mode: %q", preview)
@@ -116,7 +116,7 @@ func TestEditFile_PreviewWithReplaceAllAnnotation(t *testing.T) {
 }
 
 func TestEditFile_PreviewBadJSONIsHarmless(t *testing.T) {
-	tool := &EditFileTool{Cwd: t.TempDir()}
+	tool := &EditFileTool{Cwd: NewCwdRef(t.TempDir())}
 	preview := tool.PreviewCall(`{not json`)
 	// Doesn't panic; produces *some* preview string.
 	if preview == "" {
@@ -129,7 +129,7 @@ func TestEditFile_PreviewBadJSONIsHarmless(t *testing.T) {
 func TestListDir_DefaultsToCwdWhenPathOmitted(t *testing.T) {
 	tmp := t.TempDir()
 	writeFile(t, tmp, "a.txt", "x")
-	tool := &ListDirTool{Cwd: tmp}
+	tool := &ListDirTool{Cwd: NewCwdRef(tmp)}
 	out, err := tool.Execute(context.Background(), `{}`)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -144,7 +144,7 @@ func TestListDir_DefaultMaxEntries(t *testing.T) {
 	for i := 0; i < 3; i++ {
 		writeFile(t, tmp, string(rune('a'+i))+".txt", "x")
 	}
-	tool := &ListDirTool{Cwd: tmp}
+	tool := &ListDirTool{Cwd: NewCwdRef(tmp)}
 	out, err := tool.Execute(context.Background(), `{}`)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -163,7 +163,7 @@ func TestGlob_RespectsMaxResults(t *testing.T) {
 	for i := 0; i < 10; i++ {
 		writeFile(t, tmp, "f"+string(rune('0'+i))+".go", "")
 	}
-	tool := &GlobTool{Cwd: tmp}
+	tool := &GlobTool{Cwd: NewCwdRef(tmp)}
 	out, err := tool.Execute(context.Background(), `{"pattern":"*.go","max_results":3}`)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -178,7 +178,7 @@ func TestGlob_RespectsMaxResults(t *testing.T) {
 func TestGrep_RegexAndIgnoreCaseTogether(t *testing.T) {
 	tmp := t.TempDir()
 	writeFile(t, tmp, "x.txt", "Hello World\nhello there\n")
-	tool := &GrepTool{Cwd: tmp}
+	tool := &GrepTool{Cwd: NewCwdRef(tmp)}
 	out, err := tool.Execute(context.Background(),
 		`{"pattern":"^h.+lo","path":".","regex":true,"ignore_case":true}`)
 	if err != nil {
@@ -193,7 +193,7 @@ func TestGrep_RegexAndIgnoreCaseTogether(t *testing.T) {
 // --- git edge cases -------------------------------------------------------
 
 func TestGit_EmptyArgsArrayIsAnError(t *testing.T) {
-	tool := &GitTool{Cwd: t.TempDir()}
+	tool := &GitTool{Cwd: NewCwdRef(t.TempDir())}
 	if _, err := tool.Execute(context.Background(), `{"args":[]}`); err == nil {
 		t.Errorf("empty args should error")
 	}

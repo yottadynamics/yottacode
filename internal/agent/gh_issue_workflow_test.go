@@ -77,7 +77,7 @@ func TestGHIssueReadTool_RoundsThroughTool(t *testing.T) {
 			Labels: []string{"bug"},
 		},
 	}
-	tool := &GHIssueReadTool{Cwd: t.TempDir(), GH: gh}
+	tool := &GHIssueReadTool{Cwd: NewCwdRef(t.TempDir()), GH: gh}
 	out, err := tool.Execute(context.Background(), `{"number":42}`)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -99,7 +99,7 @@ func TestGHIssueReadTool_RendersCommentsWhenPresent(t *testing.T) {
 			},
 		},
 	}
-	tool := &GHIssueReadTool{Cwd: t.TempDir(), GH: gh}
+	tool := &GHIssueReadTool{Cwd: NewCwdRef(t.TempDir()), GH: gh}
 	out, err := tool.Execute(context.Background(), `{"number":42}`)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -113,7 +113,7 @@ func TestGHIssueReadTool_RendersCommentsWhenPresent(t *testing.T) {
 
 func TestGHIssueReadTool_RejectsMissingNumber(t *testing.T) {
 	gh := &fakeGH{}
-	tool := &GHIssueReadTool{Cwd: t.TempDir(), GH: gh}
+	tool := &GHIssueReadTool{Cwd: NewCwdRef(t.TempDir()), GH: gh}
 	_, err := tool.Execute(context.Background(), `{}`)
 	if err == nil || !strings.Contains(err.Error(), "number is required") {
 		t.Errorf("expected number-required error; got %v", err)
@@ -199,7 +199,7 @@ func TestGHIssueListTool_RoundsThroughTool(t *testing.T) {
 			{Number: 1, Title: "first", Author: "alice", Labels: []string{"bug"}},
 		},
 	}
-	tool := &GHIssueListTool{Cwd: t.TempDir(), GH: gh}
+	tool := &GHIssueListTool{Cwd: NewCwdRef(t.TempDir()), GH: gh}
 	out, err := tool.Execute(context.Background(), `{"labels":["bug"]}`)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -213,7 +213,7 @@ func TestGHIssueListTool_RoundsThroughTool(t *testing.T) {
 
 func TestGHIssueListTool_RendersEmptyResultExplicitly(t *testing.T) {
 	gh := &fakeGH{listIssuesRes: nil}
-	tool := &GHIssueListTool{Cwd: t.TempDir(), GH: gh}
+	tool := &GHIssueListTool{Cwd: NewCwdRef(t.TempDir()), GH: gh}
 	out, err := tool.Execute(context.Background(), `{}`)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)

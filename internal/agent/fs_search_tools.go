@@ -28,7 +28,7 @@ const (
 
 // ListDirTool returns the immediate children of a directory.
 type ListDirTool struct {
-	Cwd string
+	Cwd *CwdRef
 }
 
 func (t *ListDirTool) Name() string { return "list_dir" }
@@ -74,9 +74,9 @@ func (t *ListDirTool) Execute(ctx context.Context, argsJSON string) (string, err
 	}
 	p := a.Path
 	if p == "" {
-		p = t.Cwd
+		p = t.Cwd.Get()
 	} else {
-		p = resolvePath(t.Cwd, p)
+		p = resolvePath(t.Cwd.Get(), p)
 	}
 	entries, err := os.ReadDir(p)
 	if err != nil {
@@ -104,7 +104,7 @@ func (t *ListDirTool) Execute(ctx context.Context, argsJSON string) (string, err
 
 // GlobTool finds files matching a doublestar pattern (e.g., "**/*.go").
 type GlobTool struct {
-	Cwd string
+	Cwd *CwdRef
 }
 
 func (t *GlobTool) Name() string { return "glob" }
@@ -158,9 +158,9 @@ func (t *GlobTool) Execute(ctx context.Context, argsJSON string) (string, error)
 	}
 	root := a.Root
 	if root == "" {
-		root = t.Cwd
+		root = t.Cwd.Get()
 	} else {
-		root = resolvePath(t.Cwd, root)
+		root = resolvePath(t.Cwd.Get(), root)
 	}
 	fsys := os.DirFS(root)
 	matches, err := doublestar.Glob(fsys, a.Pattern)
@@ -189,7 +189,7 @@ func (t *GlobTool) Execute(ctx context.Context, argsJSON string) (string, error)
 // path, it's validated against DenyReadPaths so a targeted grep can't
 // extract secrets line-by-line.
 type GrepTool struct {
-	Cwd           string
+	Cwd           *CwdRef
 	DenyReadPaths []string
 }
 
@@ -250,9 +250,9 @@ func (t *GrepTool) Execute(ctx context.Context, argsJSON string) (string, error)
 	}
 	root := a.Path
 	if root == "" {
-		root = t.Cwd
+		root = t.Cwd.Get()
 	} else {
-		root = resolvePath(t.Cwd, root)
+		root = resolvePath(t.Cwd.Get(), root)
 	}
 	if err := ValidateReadPath(root, t.DenyReadPaths); err != nil {
 		return "", fmt.Errorf("grep: %w", err)
@@ -334,7 +334,7 @@ func (c *capped) Write(p []byte) (int, error) {
 // "survey first" tool: the model can scan structure once and choose
 // what to read with read_many_files instead of reading exploratorily.
 type ListProjectStructureTool struct {
-	Cwd string
+	Cwd *CwdRef
 }
 
 func (t *ListProjectStructureTool) Name() string { return "list_project_structure" }
@@ -409,9 +409,9 @@ func (t *ListProjectStructureTool) Execute(ctx context.Context, argsJSON string)
 	}
 	root := a.Path
 	if root == "" {
-		root = t.Cwd
+		root = t.Cwd.Get()
 	} else {
-		root = resolvePath(t.Cwd, root)
+		root = resolvePath(t.Cwd.Get(), root)
 	}
 
 	rootInfo, err := os.Stat(root)

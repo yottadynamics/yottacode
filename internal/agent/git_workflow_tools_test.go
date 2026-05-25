@@ -10,7 +10,7 @@ func TestGitBranchStatusTool(t *testing.T) {
 	tmp := gitInit(t)
 	writeFile(t, tmp, "f.txt", "v1\n")
 	gitCommit(t, tmp, "base")
-	tool := &GitBranchStatusTool{Cwd: tmp}
+	tool := &GitBranchStatusTool{Cwd: NewCwdRef(tmp)}
 	out, err := tool.Execute(context.Background(), `{}`)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -27,7 +27,7 @@ func TestGitShowFileAtRevTool(t *testing.T) {
 	tmp := gitInit(t)
 	writeFile(t, tmp, "f.txt", "v1\n")
 	gitCommit(t, tmp, "base")
-	tool := &GitShowFileAtRevTool{Cwd: tmp}
+	tool := &GitShowFileAtRevTool{Cwd: NewCwdRef(tmp)}
 	out, err := tool.Execute(context.Background(), `{"path":"f.txt"}`)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -42,7 +42,7 @@ func TestGitDiffFilesTool(t *testing.T) {
 	writeFile(t, tmp, "f.txt", "v1\n")
 	gitCommit(t, tmp, "base")
 	writeFile(t, tmp, "f.txt", "v2\n")
-	tool := &GitDiffFilesTool{Cwd: tmp}
+	tool := &GitDiffFilesTool{Cwd: NewCwdRef(tmp)}
 	out, err := tool.Execute(context.Background(), `{"paths":["f.txt"]}`)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -55,11 +55,11 @@ func TestGitDiffFilesTool(t *testing.T) {
 func TestGitStageUnstageAndCommitTools(t *testing.T) {
 	tmp := gitInit(t)
 	writeFile(t, tmp, "f.txt", "v1\n")
-	stage := &GitStageFilesTool{Cwd: tmp}
+	stage := &GitStageFilesTool{Cwd: NewCwdRef(tmp)}
 	if _, err := stage.Execute(context.Background(), `{"paths":["f.txt"]}`); err != nil {
 		t.Fatalf("stage: %v", err)
 	}
-	commit := &GitCommitTool{Cwd: tmp}
+	commit := &GitCommitTool{Cwd: NewCwdRef(tmp)}
 	out, err := commit.Execute(context.Background(), `{"message":"add f"}`)
 	if err != nil {
 		t.Fatalf("commit: %v", err)
@@ -71,11 +71,11 @@ func TestGitStageUnstageAndCommitTools(t *testing.T) {
 	if _, err := stage.Execute(context.Background(), `{"paths":["f.txt"]}`); err != nil {
 		t.Fatalf("stage2: %v", err)
 	}
-	unstage := &GitUnstageFilesTool{Cwd: tmp}
+	unstage := &GitUnstageFilesTool{Cwd: NewCwdRef(tmp)}
 	if _, err := unstage.Execute(context.Background(), `{"paths":["f.txt"]}`); err != nil {
 		t.Fatalf("unstage: %v", err)
 	}
-	changed := &ListGitChangedFilesTool{Cwd: tmp}
+	changed := &ListGitChangedFilesTool{Cwd: NewCwdRef(tmp)}
 	out, err = changed.Execute(context.Background(), `{"staged":true,"unstaged":false,"untracked":false}`)
 	if err != nil {
 		t.Fatalf("changed: %v", err)
@@ -96,7 +96,7 @@ func TestGitStageFilesTool_AllMode(t *testing.T) {
 	writeFile(t, tmp, "tracked.txt", "v2\n")
 	writeFile(t, tmp, "untracked.txt", "new\n")
 
-	stage := &GitStageFilesTool{Cwd: tmp}
+	stage := &GitStageFilesTool{Cwd: NewCwdRef(tmp)}
 	out, err := stage.Execute(context.Background(), `{"all":true}`)
 	if err != nil {
 		t.Fatalf("stage all: %v", err)
@@ -119,7 +119,7 @@ func TestGitStageFilesTool_AllMode(t *testing.T) {
 func TestGitStageFilesTool_AllAndPathsMutuallyExclusive(t *testing.T) {
 	tmp := gitInit(t)
 	writeFile(t, tmp, "f.txt", "v1\n")
-	stage := &GitStageFilesTool{Cwd: tmp}
+	stage := &GitStageFilesTool{Cwd: NewCwdRef(tmp)}
 	_, err := stage.Execute(context.Background(), `{"paths":["f.txt"],"all":true}`)
 	if err == nil {
 		t.Fatalf("expected error when both paths and all are set")
@@ -131,7 +131,7 @@ func TestGitStageFilesTool_AllAndPathsMutuallyExclusive(t *testing.T) {
 
 func TestGitStageFilesTool_NeitherPathsNorAll(t *testing.T) {
 	tmp := gitInit(t)
-	stage := &GitStageFilesTool{Cwd: tmp}
+	stage := &GitStageFilesTool{Cwd: NewCwdRef(tmp)}
 	_, err := stage.Execute(context.Background(), `{}`)
 	if err == nil {
 		t.Fatalf("expected error when neither paths nor all is set")
@@ -146,7 +146,7 @@ func TestGitCreateBranchTool_HappyPath(t *testing.T) {
 	writeFile(t, tmp, "f.txt", "v1\n")
 	gitCommit(t, tmp, "base")
 
-	tool := &GitCreateBranchTool{Cwd: tmp}
+	tool := &GitCreateBranchTool{Cwd: NewCwdRef(tmp)}
 	out, err := tool.Execute(context.Background(), `{"name":"feat/test"}`)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -175,7 +175,7 @@ func TestGitCreateBranchTool_FromStartPoint(t *testing.T) {
 	writeFile(t, tmp, "f.txt", "v2\n")
 	gitCommit(t, tmp, "second")
 
-	tool := &GitCreateBranchTool{Cwd: tmp}
+	tool := &GitCreateBranchTool{Cwd: NewCwdRef(tmp)}
 	if _, err := tool.Execute(context.Background(), `{"name":"feat/from-first","start_point":"`+firstSHA+`"}`); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -200,7 +200,7 @@ func TestGitCreateBranchTool_AlreadyExists(t *testing.T) {
 	writeFile(t, tmp, "f.txt", "v1\n")
 	gitCommit(t, tmp, "base")
 
-	tool := &GitCreateBranchTool{Cwd: tmp}
+	tool := &GitCreateBranchTool{Cwd: NewCwdRef(tmp)}
 	if _, err := tool.Execute(context.Background(), `{"name":"feat/dup"}`); err != nil {
 		t.Fatalf("first create: %v", err)
 	}
@@ -229,7 +229,7 @@ func TestGitCreateBranchTool_InvalidName(t *testing.T) {
 	writeFile(t, tmp, "f.txt", "v1\n")
 	gitCommit(t, tmp, "base")
 
-	tool := &GitCreateBranchTool{Cwd: tmp}
+	tool := &GitCreateBranchTool{Cwd: NewCwdRef(tmp)}
 	_, err := tool.Execute(context.Background(), `{"name":"foo..bar"}`)
 	if err == nil {
 		t.Fatalf("expected error for invalid branch name")
@@ -241,7 +241,7 @@ func TestGitCreateBranchTool_InvalidName(t *testing.T) {
 
 func TestGitCreateBranchTool_EmptyName(t *testing.T) {
 	tmp := gitInit(t)
-	tool := &GitCreateBranchTool{Cwd: tmp}
+	tool := &GitCreateBranchTool{Cwd: NewCwdRef(tmp)}
 	_, err := tool.Execute(context.Background(), `{"name":""}`)
 	if err == nil {
 		t.Fatalf("expected error for empty name")
@@ -255,7 +255,7 @@ func TestGitLogFileTool(t *testing.T) {
 	tmp := gitInit(t)
 	writeFile(t, tmp, "f.txt", "v1\n")
 	gitCommit(t, tmp, "base")
-	tool := &GitLogFileTool{Cwd: tmp}
+	tool := &GitLogFileTool{Cwd: NewCwdRef(tmp)}
 	out, err := tool.Execute(context.Background(), `{"path":"f.txt"}`)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -269,7 +269,7 @@ func TestGitBlameLinesTool(t *testing.T) {
 	tmp := gitInit(t)
 	writeFile(t, tmp, "f.txt", "v1\nv2\n")
 	gitCommit(t, tmp, "base")
-	tool := &GitBlameLinesTool{Cwd: tmp}
+	tool := &GitBlameLinesTool{Cwd: NewCwdRef(tmp)}
 	out, err := tool.Execute(context.Background(), `{"path":"f.txt","start":1,"end":2}`)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -283,7 +283,7 @@ func TestGitMergeBaseTool(t *testing.T) {
 	tmp := gitInit(t)
 	writeFile(t, tmp, "f.txt", "v1\n")
 	gitCommit(t, tmp, "base")
-	tool := &GitMergeBaseTool{Cwd: tmp}
+	tool := &GitMergeBaseTool{Cwd: NewCwdRef(tmp)}
 	head, err := gitOutput(context.Background(), tmp, "rev-parse", "HEAD")
 	if err != nil {
 		t.Fatalf("rev-parse: %v", err)

@@ -330,7 +330,7 @@ func TestBuildPRContext_NoOriginNoTemplate(t *testing.T) {
 
 func TestGHPRCreateTool_RoundsThroughTool(t *testing.T) {
 	gh := &fakeGH{res: github.CreatePRResult{URL: "https://github.com/o/r/pull/3", Number: 3}}
-	tool := &GHPRCreateTool{Cwd: t.TempDir(), GH: gh}
+	tool := &GHPRCreateTool{Cwd: NewCwdRef(t.TempDir()), GH: gh}
 	out, err := tool.Execute(context.Background(),
 		`{"base":"main","title":"implement caching","body":"why","draft":true}`)
 	if err != nil {
@@ -616,7 +616,7 @@ func TestGHPRAddCommentTool_RoundsThroughTool(t *testing.T) {
 			ID:  123,
 		},
 	}
-	tool := &GHPRAddCommentTool{Cwd: t.TempDir(), GH: gh}
+	tool := &GHPRAddCommentTool{Cwd: NewCwdRef(t.TempDir()), GH: gh}
 	out, err := tool.Execute(context.Background(), `{"ref":"29","body":"LGTM"}`)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -687,7 +687,7 @@ func TestGHPRReadTool_RoundsThroughTool(t *testing.T) {
 			URL: "https://x", Body: "body text",
 		},
 	}
-	tool := &GHPRReadTool{Cwd: t.TempDir(), GH: gh}
+	tool := &GHPRReadTool{Cwd: NewCwdRef(t.TempDir()), GH: gh}
 	out, err := tool.Execute(context.Background(), `{"ref":"29"}`)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -705,7 +705,7 @@ func TestGHPRReadTool_RoundsThroughTool(t *testing.T) {
 }
 
 func TestGHPRReadTool_NoGHAdapterErrors(t *testing.T) {
-	tool := &GHPRReadTool{Cwd: t.TempDir(), GH: nil}
+	tool := &GHPRReadTool{Cwd: NewCwdRef(t.TempDir()), GH: nil}
 	_, err := tool.Execute(context.Background(), `{"ref":"29"}`)
 	if err == nil || !strings.Contains(err.Error(), "no GitHub adapter") {
 		t.Errorf("expected adapter-missing error; got %v", err)
@@ -765,7 +765,7 @@ func TestGHPRReviewContextTool_RoundsThroughTool(t *testing.T) {
 		readPRDiffRes: "diff content",
 		listChecksRes: []github.CheckRun{{Name: "ci", State: "SUCCESS"}},
 	}
-	tool := &GHPRReviewContextTool{Cwd: t.TempDir(), GH: gh}
+	tool := &GHPRReviewContextTool{Cwd: NewCwdRef(t.TempDir()), GH: gh}
 	out, err := tool.Execute(context.Background(), `{"ref":"17"}`)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -895,7 +895,7 @@ func TestGHPRUpdateTool_RoundsThroughTool(t *testing.T) {
 	gh := &fakeGH{updatePRRes: github.UpdatePRResult{
 		URL: "https://github.com/o/r/pull/17", Number: 17,
 	}}
-	tool := &GHPRUpdateTool{Cwd: t.TempDir(), GH: gh}
+	tool := &GHPRUpdateTool{Cwd: NewCwdRef(t.TempDir()), GH: gh}
 	out, err := tool.Execute(context.Background(),
 		`{"ref":"17","title":"refreshed","body":"new body"}`)
 	if err != nil {

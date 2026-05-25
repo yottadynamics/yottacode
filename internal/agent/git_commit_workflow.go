@@ -71,7 +71,7 @@ var (
 // to draft a commit message: what's staged, what style the repo
 // uses, what's untracked. Replaces the bash heredoc the legacy
 // /git:commit-message directive ran as its first tool call.
-type GitCommitContextTool struct{ Cwd string }
+type GitCommitContextTool struct{ Cwd *CwdRef }
 
 func (t *GitCommitContextTool) Name() string { return "git_commit_context" }
 
@@ -96,7 +96,7 @@ func (t *GitCommitContextTool) Execute(ctx context.Context, _ string) (string, e
 	if _, err := exec.LookPath("git"); err != nil {
 		return "", errors.New("git_commit_context: git binary not found in PATH")
 	}
-	snap, err := BuildCommitContext(ctx, t.Cwd)
+	snap, err := BuildCommitContext(ctx, t.Cwd.Get())
 	if err != nil {
 		return "", fmt.Errorf("git_commit_context: %w", err)
 	}
@@ -296,7 +296,7 @@ func renderCommitContext(s CommitContext) string {
 // without auto-retry or auto-amend — the legacy directive's "hard
 // prohibitions" become an unreachable code path rather than a model
 // discipline ask.
-type GitCommitApplyTool struct{ Cwd string }
+type GitCommitApplyTool struct{ Cwd *CwdRef }
 
 func (t *GitCommitApplyTool) Name() string { return "git_commit_apply" }
 
@@ -356,7 +356,7 @@ func (t *GitCommitApplyTool) Execute(ctx context.Context, argsJSON string) (stri
 	if err := json.Unmarshal([]byte(argsJSON), &a); err != nil {
 		return "", fmt.Errorf("git_commit_apply: invalid args: %w", err)
 	}
-	res, err := ApplyCommit(ctx, t.Cwd, a.Message)
+	res, err := ApplyCommit(ctx, t.Cwd.Get(), a.Message)
 	if err != nil {
 		return "", fmt.Errorf("git_commit_apply: %w", err)
 	}

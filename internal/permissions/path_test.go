@@ -87,7 +87,7 @@ func TestDeriveAllowRule_OutOfCwdAnchorsAtParent(t *testing.T) {
 	want := "Write(" + filepath.ToSlash(filepath.Join(home, "Desktop")) + "/**)"
 
 	// Tilde input — relPath expands ~ before derive sees it.
-	rule, ok := DeriveAllowRule("write_file", `{"path":"~/Desktop/notes.md"}`, cwd)
+	rule, ok := DeriveAllowRule("write_file", `{"path":"~/Desktop/notes.md"}`, cwd, nil)
 	if !ok {
 		t.Fatalf("DeriveAllowRule(~/Desktop/notes.md) should succeed")
 	}
@@ -97,7 +97,7 @@ func TestDeriveAllowRule_OutOfCwdAnchorsAtParent(t *testing.T) {
 
 	// Pre-resolved absolute — same expected rule.
 	abs := filepath.Join(home, "Desktop", "other.md")
-	rule2, ok2 := DeriveAllowRule("write_file", `{"path":"`+abs+`"}`, cwd)
+	rule2, ok2 := DeriveAllowRule("write_file", `{"path":"`+abs+`"}`, cwd, nil)
 	if !ok2 || rule2 != want {
 		t.Errorf("DeriveAllowRule(%s) = %q ok=%v; want %q ok=true", abs, rule2, ok2, want)
 	}
@@ -127,7 +127,7 @@ func TestDeriveAllowRule_SuppressedRoots(t *testing.T) {
 		cases = append(cases, filepath.Join(home, "directfile.txt"))
 	}
 	for _, p := range cases {
-		if _, ok := DeriveAllowRule("write_file", `{"path":"`+p+`"}`, cwd); ok {
+		if _, ok := DeriveAllowRule("write_file", `{"path":"`+p+`"}`, cwd, nil); ok {
 			t.Errorf("DeriveAllowRule(%q) should suppress; got ok=true", p)
 		}
 	}

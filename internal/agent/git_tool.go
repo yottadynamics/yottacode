@@ -59,7 +59,7 @@ var gitDestructiveFlags = map[string]bool{
 // argv-style tokens (no shell), and approval policy is decided by inspecting
 // the first arg.
 type GitTool struct {
-	Cwd string
+	Cwd *CwdRef
 }
 
 func (t *GitTool) Name() string { return "git" }
@@ -126,7 +126,7 @@ func (t *GitTool) Execute(ctx context.Context, argsJSON string) (string, error) 
 	}
 
 	cmd := exec.CommandContext(ctx, "git", args...)
-	cmd.Dir = t.Cwd
+	cmd.Dir = t.Cwd.Get()
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &capped{buf: &stdout, max: maxGitStdout}
 	cmd.Stderr = &capped{buf: &stderr, max: maxGitStderr}

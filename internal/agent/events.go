@@ -130,6 +130,16 @@ type ToolResult struct {
 	Errored  bool
 }
 
+// CwdChanged fires when a tool (today: enter_worktree / exit_worktree)
+// swapped the session's working directory mid-conversation. The TUI
+// refreshes its status-line worktree chip and any cwd-derived display
+// state; oneshot ignores it. Emitted by the loop right after the
+// tool's ToolResult when LoopConfig.Cwd.Get() differs from the
+// pre-call value.
+type CwdChanged struct {
+	NewCwd string
+}
+
 // TodoUpdate fires after a tool implementing the planAware interface
 // (TodoWriteTool today) finishes, carrying the new full snapshot of
 // the working plan. The TUI renders this as a scrollback card showing
@@ -262,6 +272,7 @@ func (ApprovalNeeded) event()           {}
 func (PathTrustElevationNeeded) event() {}
 func (ToolStart) event()         {}
 func (ToolResult) event()        {}
+func (CwdChanged) event()        {}
 func (TodoUpdate) event()        {}
 func (AssistantMessage) event()  {}
 func (IterCap) event()           {}

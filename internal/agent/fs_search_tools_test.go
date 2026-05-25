@@ -17,7 +17,7 @@ func TestListDir_HappyPath(t *testing.T) {
 	writeFile(t, tmp, "a.txt", "hi")
 	writeFile(t, tmp, "b.txt", "hi")
 
-	tool := &ListDirTool{Cwd: tmp}
+	tool := &ListDirTool{Cwd: NewCwdRef(tmp)}
 	out, err := tool.Execute(context.Background(), `{"path":"."}`)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -38,7 +38,7 @@ func TestListDir_RespectsMaxEntries(t *testing.T) {
 	for i := 0; i < 5; i++ {
 		writeFile(t, tmp, string(rune('a'+i))+".txt", "x")
 	}
-	tool := &ListDirTool{Cwd: tmp}
+	tool := &ListDirTool{Cwd: NewCwdRef(tmp)}
 	out, err := tool.Execute(context.Background(), `{"path":".","max_entries":2}`)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -49,7 +49,7 @@ func TestListDir_RespectsMaxEntries(t *testing.T) {
 }
 
 func TestListDir_MissingPath(t *testing.T) {
-	tool := &ListDirTool{Cwd: t.TempDir()}
+	tool := &ListDirTool{Cwd: NewCwdRef(t.TempDir())}
 	if _, err := tool.Execute(context.Background(), `{"path":"nope"}`); err == nil {
 		t.Errorf("expected error for missing dir")
 	}
@@ -64,7 +64,7 @@ func TestGlob_DoublestarRecurse(t *testing.T) {
 	writeFile(t, tmp, "a/b/y.go", "y")
 	writeFile(t, tmp, "a/skip.txt", "skip")
 
-	tool := &GlobTool{Cwd: tmp}
+	tool := &GlobTool{Cwd: NewCwdRef(tmp)}
 	out, err := tool.Execute(context.Background(), `{"pattern":"**/*.go"}`)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -79,7 +79,7 @@ func TestGlob_DoublestarRecurse(t *testing.T) {
 
 func TestGlob_NoMatches(t *testing.T) {
 	tmp := t.TempDir()
-	tool := &GlobTool{Cwd: tmp}
+	tool := &GlobTool{Cwd: NewCwdRef(tmp)}
 	out, err := tool.Execute(context.Background(), `{"pattern":"*.nonexistent"}`)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -90,7 +90,7 @@ func TestGlob_NoMatches(t *testing.T) {
 }
 
 func TestGlob_RequiresPattern(t *testing.T) {
-	tool := &GlobTool{Cwd: t.TempDir()}
+	tool := &GlobTool{Cwd: NewCwdRef(t.TempDir())}
 	if _, err := tool.Execute(context.Background(), `{}`); err == nil {
 		t.Errorf("expected error on empty pattern")
 	}
@@ -100,7 +100,7 @@ func TestGrep_FindsLiteralMatch(t *testing.T) {
 	tmp := t.TempDir()
 	writeFile(t, tmp, "doc.txt", "needle in haystack\nanother needle here\nno match here\n")
 
-	tool := &GrepTool{Cwd: tmp}
+	tool := &GrepTool{Cwd: NewCwdRef(tmp)}
 	out, err := tool.Execute(context.Background(), `{"pattern":"needle","path":"."}`)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -119,7 +119,7 @@ func TestGrep_FindsLiteralMatch(t *testing.T) {
 func TestGrep_IgnoreCase(t *testing.T) {
 	tmp := t.TempDir()
 	writeFile(t, tmp, "x.txt", "Needle\nnoodle\n")
-	tool := &GrepTool{Cwd: tmp}
+	tool := &GrepTool{Cwd: NewCwdRef(tmp)}
 	out, err := tool.Execute(context.Background(), `{"pattern":"needle","path":".","ignore_case":true}`)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -132,7 +132,7 @@ func TestGrep_IgnoreCase(t *testing.T) {
 func TestGrep_NoMatches(t *testing.T) {
 	tmp := t.TempDir()
 	writeFile(t, tmp, "x.txt", "hello\n")
-	tool := &GrepTool{Cwd: tmp}
+	tool := &GrepTool{Cwd: NewCwdRef(tmp)}
 	out, err := tool.Execute(context.Background(), `{"pattern":"absent","path":"."}`)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -145,7 +145,7 @@ func TestGrep_NoMatches(t *testing.T) {
 func TestGrep_RegexMode(t *testing.T) {
 	tmp := t.TempDir()
 	writeFile(t, tmp, "x.txt", "v1.2.3\nv4.5.6\nplain\n")
-	tool := &GrepTool{Cwd: tmp}
+	tool := &GrepTool{Cwd: NewCwdRef(tmp)}
 	out, err := tool.Execute(context.Background(), `{"pattern":"v[0-9]+\\.[0-9]+","path":".","regex":true}`)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -159,7 +159,7 @@ func TestGrep_RegexMode(t *testing.T) {
 }
 
 func TestGrep_RequiresPattern(t *testing.T) {
-	tool := &GrepTool{Cwd: t.TempDir()}
+	tool := &GrepTool{Cwd: NewCwdRef(t.TempDir())}
 	if _, err := tool.Execute(context.Background(), `{}`); err == nil {
 		t.Errorf("expected error on missing pattern")
 	}
@@ -174,7 +174,7 @@ func TestListProjectStructure_TreeWithSizesAndMtimes(t *testing.T) {
 	writeFile(t, tmp, "src/deep/b.go", "package b")
 	writeFile(t, tmp, "README.md", "# hi")
 
-	tool := &ListProjectStructureTool{Cwd: tmp}
+	tool := &ListProjectStructureTool{Cwd: NewCwdRef(tmp)}
 	out, err := tool.Execute(context.Background(), `{}`)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -200,7 +200,7 @@ func TestListProjectStructure_SkipsHeavyDirs(t *testing.T) {
 	}
 	writeFile(t, tmp, "main.go", "package main")
 
-	tool := &ListProjectStructureTool{Cwd: tmp}
+	tool := &ListProjectStructureTool{Cwd: NewCwdRef(tmp)}
 	out, err := tool.Execute(context.Background(), `{}`)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -224,7 +224,7 @@ func TestListProjectStructure_RespectsMaxDepth(t *testing.T) {
 	writeFile(t, tmp, "a/b/y", "2")
 	writeFile(t, tmp, "a/b/c/z", "3")
 
-	tool := &ListProjectStructureTool{Cwd: tmp}
+	tool := &ListProjectStructureTool{Cwd: NewCwdRef(tmp)}
 	out, err := tool.Execute(context.Background(), `{"max_depth":2}`)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -242,7 +242,7 @@ func TestListProjectStructure_HiddenOptIn(t *testing.T) {
 	writeFile(t, tmp, ".env", "secret")
 	writeFile(t, tmp, "main.go", "main")
 
-	tool := &ListProjectStructureTool{Cwd: tmp}
+	tool := &ListProjectStructureTool{Cwd: NewCwdRef(tmp)}
 	out, err := tool.Execute(context.Background(), `{}`)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -264,7 +264,7 @@ func TestListProjectStructure_TruncationMarker(t *testing.T) {
 	for i := 0; i < 12; i++ {
 		writeFile(t, tmp, fmt.Sprintf("f%02d", i), "x")
 	}
-	tool := &ListProjectStructureTool{Cwd: tmp}
+	tool := &ListProjectStructureTool{Cwd: NewCwdRef(tmp)}
 	out, err := tool.Execute(context.Background(), `{"max_entries":3}`)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -277,7 +277,7 @@ func TestListProjectStructure_TruncationMarker(t *testing.T) {
 func TestListProjectStructure_RejectsNonDir(t *testing.T) {
 	tmp := t.TempDir()
 	writeFile(t, tmp, "main.go", "x")
-	tool := &ListProjectStructureTool{Cwd: tmp}
+	tool := &ListProjectStructureTool{Cwd: NewCwdRef(tmp)}
 	if _, err := tool.Execute(context.Background(), `{"path":"main.go"}`); err == nil {
 		t.Errorf("expected error when path is a file")
 	}

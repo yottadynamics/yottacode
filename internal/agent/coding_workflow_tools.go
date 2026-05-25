@@ -15,7 +15,7 @@ import (
 )
 
 type ApplyDiffTool struct {
-	Cwd       string
+	Cwd       *CwdRef
 	WriteOpts WritePathOptions
 }
 
@@ -94,13 +94,13 @@ func (t *ApplyDiffTool) Execute(ctx context.Context, argsJSON string) (string, e
 	for _, rel := range paths {
 		abs := rel
 		if !filepath.IsAbs(abs) {
-			abs = filepath.Join(t.Cwd, rel)
+			abs = filepath.Join(t.Cwd.Get(), rel)
 		}
 		if err := ValidateWritePath(abs, t.WriteOpts); err != nil {
 			return "", fmt.Errorf("apply_diff: %w", err)
 		}
 	}
-	patch, err := os.CreateTemp(t.Cwd, "yottacode-apply-*.diff")
+	patch, err := os.CreateTemp(t.Cwd.Get(), "yottacode-apply-*.diff")
 	if err != nil {
 		return "", fmt.Errorf("apply_diff: create temp patch: %w", err)
 	}
@@ -117,7 +117,7 @@ func (t *ApplyDiffTool) Execute(ctx context.Context, argsJSON string) (string, e
 		return "", fmt.Errorf("apply_diff: close temp patch: %w", err)
 	}
 	cmd := exec.CommandContext(ctx, "git", "apply", "--whitespace=nowarn", patchPath)
-	cmd.Dir = t.Cwd
+	cmd.Dir = t.Cwd.Get()
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -128,7 +128,7 @@ func (t *ApplyDiffTool) Execute(ctx context.Context, argsJSON string) (string, e
 	return "applied diff", nil
 }
 
-type ListGitChangedFilesTool struct{ Cwd string }
+type ListGitChangedFilesTool struct{ Cwd *CwdRef }
 
 func (t *ListGitChangedFilesTool) Name() string { return "list_git_changed_files" }
 func (t *ListGitChangedFilesTool) Description() string {
@@ -183,7 +183,7 @@ func (t *ListGitChangedFilesTool) Execute(ctx context.Context, argsJSON string) 
 	var out []string
 	appendLines := func(args ...string) error {
 		cmd := exec.CommandContext(ctx, "git", args...)
-		cmd.Dir = t.Cwd
+		cmd.Dir = t.Cwd.Get()
 		b, err := cmd.CombinedOutput()
 		if err != nil {
 			return fmt.Errorf("git %s: %s", strings.Join(args, " "), strings.TrimSpace(string(b)))
@@ -219,7 +219,7 @@ func (t *ListGitChangedFilesTool) Execute(ctx context.Context, argsJSON string) 
 	return strings.Join(out, "\n") + "\n", nil
 }
 
-type GitCheckpointTool struct{ Cwd string }
+type GitCheckpointTool struct{ Cwd *CwdRef }
 
 func (t *GitCheckpointTool) Name() string { return "git_checkpoint" }
 func (t *GitCheckpointTool) Description() string {
@@ -260,14 +260,14 @@ func (t *GitCheckpointTool) Execute(ctx context.Context, argsJSON string) (strin
 	}
 	for _, args := range [][]string{{"add", "-A"}, {"commit", "-m", msg}} {
 		cmd := exec.CommandContext(ctx, "git", args...)
-		cmd.Dir = t.Cwd
+		cmd.Dir = t.Cwd.Get()
 		b, err := cmd.CombinedOutput()
 		if err != nil {
 			return "", fmt.Errorf("git_checkpoint: git %s: %s", strings.Join(args, " "), strings.TrimSpace(string(b)))
 		}
 	}
 	cmd := exec.CommandContext(ctx, "git", "rev-parse", "HEAD")
-	cmd.Dir = t.Cwd
+	cmd.Dir = t.Cwd.Get()
 	b, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("git_checkpoint: rev-parse HEAD: %s", strings.TrimSpace(string(b)))
@@ -275,7 +275,7 @@ func (t *GitCheckpointTool) Execute(ctx context.Context, argsJSON string) (strin
 	return fmt.Sprintf("created checkpoint %s", strings.TrimSpace(string(b))), nil
 }
 
-type RollbackTool struct{ Cwd string }
+type RollbackTool struct{ Cwd *CwdRef }
 
 func (t *RollbackTool) Name() string { return "rollback" }
 func (t *RollbackTool) Description() string {
@@ -315,7 +315,7 @@ func (t *RollbackTool) Execute(ctx context.Context, argsJSON string) (string, er
 		return "", errors.New("rollback: git binary not found in PATH")
 	}
 	cmd := exec.CommandContext(ctx, "git", "reset", "--hard", target)
-	cmd.Dir = t.Cwd
+	cmd.Dir = t.Cwd.Get()
 	b, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("rollback: %s", strings.TrimSpace(string(b)))
@@ -323,7 +323,7 @@ func (t *RollbackTool) Execute(ctx context.Context, argsJSON string) (string, er
 	return strings.TrimSpace(string(b)), nil
 }
 
-type RunTestsTool struct{ Cwd string }
+type RunTestsTool struct{ Cwd *CwdRef }
 
 func (t *RunTestsTool) Name() string { return "run_tests" }
 func (t *RunTestsTool) Description() string {
@@ -367,11 +367,11 @@ func (t *RunTestsTool) Execute(ctx context.Context, argsJSON string) (string, er
 	if command == "" {
 		command = "go test ./..."
 	}
-	root := t.Cwd
+	root := t.Cwd.Get()
 	if strings.TrimSpace(a.Path) != "" {
 		root = a.Path
 		if !filepath.IsAbs(root) {
-			root = filepath.Join(t.Cwd, root)
+			root = filepath.Join(t.Cwd.Get(), root)
 		}
 	}
 	cmd := exec.CommandContext(ctx, "/bin/sh", "-c", command)

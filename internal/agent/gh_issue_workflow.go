@@ -28,7 +28,7 @@ import (
 // gh_pr_review_context — there's no checks/diff equivalent to
 // bundle in for issues.
 type GHIssueReadTool struct {
-	Cwd string
+	Cwd *CwdRef
 	GH  github.Interface
 }
 
@@ -201,7 +201,7 @@ func renderIssueReadContext(s IssueReadContext) string {
 // Read-only, no approval. Filters are AND-ed (e.g., labels=[bug]
 // AND assignee=octocat returns only issues matching both).
 type GHIssueListTool struct {
-	Cwd string
+	Cwd *CwdRef
 	GH  github.Interface
 }
 

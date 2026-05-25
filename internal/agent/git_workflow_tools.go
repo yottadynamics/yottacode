@@ -10,7 +10,7 @@ import (
 	"strings"
 )
 
-type GitBranchStatusTool struct{ Cwd string }
+type GitBranchStatusTool struct{ Cwd *CwdRef }
 
 func (t *GitBranchStatusTool) Name() string { return "git_branch_status" }
 func (t *GitBranchStatusTool) Description() string {
@@ -26,19 +26,19 @@ func (t *GitBranchStatusTool) Execute(ctx context.Context, argsJSON string) (str
 	if _, err := exec.LookPath("git"); err != nil {
 		return "", errors.New("git_branch_status: git binary not found in PATH")
 	}
-	branch, err := gitOutput(ctx, t.Cwd, "rev-parse", "--abbrev-ref", "HEAD")
+	branch, err := gitOutput(ctx, t.Cwd.Get(), "rev-parse", "--abbrev-ref", "HEAD")
 	if err != nil {
 		return "", fmt.Errorf("git_branch_status: %w", err)
 	}
-	upstream, _ := gitOutput(ctx, t.Cwd, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}")
-	statusShort, err := gitOutput(ctx, t.Cwd, "status", "--short")
+	upstream, _ := gitOutput(ctx, t.Cwd.Get(), "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}")
+	statusShort, err := gitOutput(ctx, t.Cwd.Get(), "status", "--short")
 	if err != nil {
 		return "", fmt.Errorf("git_branch_status: %w", err)
 	}
 	dirty := strings.TrimSpace(statusShort) != ""
 	aheadBehind := ""
 	if strings.TrimSpace(upstream) != "" {
-		counts, err := gitOutput(ctx, t.Cwd, "rev-list", "--left-right", "--count", "HEAD...@{upstream}")
+		counts, err := gitOutput(ctx, t.Cwd.Get(), "rev-list", "--left-right", "--count", "HEAD...@{upstream}")
 		if err == nil {
 			parts := strings.Fields(counts)
 			if len(parts) == 2 {
@@ -65,7 +65,7 @@ func (t *GitBranchStatusTool) Execute(ctx context.Context, argsJSON string) (str
 	return b.String(), nil
 }
 
-type GitShowFileAtRevTool struct{ Cwd string }
+type GitShowFileAtRevTool struct{ Cwd *CwdRef }
 
 func (t *GitShowFileAtRevTool) Name() string { return "git_show_file_at_rev" }
 func (t *GitShowFileAtRevTool) Description() string {
@@ -98,14 +98,14 @@ func (t *GitShowFileAtRevTool) Execute(ctx context.Context, argsJSON string) (st
 	if strings.TrimSpace(a.Rev) == "" {
 		a.Rev = "HEAD"
 	}
-	out, err := gitOutput(ctx, t.Cwd, "show", a.Rev+":"+filepath.ToSlash(a.Path))
+	out, err := gitOutput(ctx, t.Cwd.Get(), "show", a.Rev+":"+filepath.ToSlash(a.Path))
 	if err != nil {
 		return "", fmt.Errorf("git_show_file_at_rev: %w", err)
 	}
 	return out, nil
 }
 
-type GitDiffFilesTool struct{ Cwd string }
+type GitDiffFilesTool struct{ Cwd *CwdRef }
 
 func (t *GitDiffFilesTool) Name() string { return "git_diff_files" }
 func (t *GitDiffFilesTool) Description() string {
@@ -147,7 +147,7 @@ func (t *GitDiffFilesTool) Execute(ctx context.Context, argsJSON string) (string
 		args = append(args, "--")
 		args = append(args, a.Paths...)
 	}
-	out, err := gitOutput(ctx, t.Cwd, args...)
+	out, err := gitOutput(ctx, t.Cwd.Get(), args...)
 	if err != nil {
 		return "", fmt.Errorf("git_diff_files: %w", err)
 	}
@@ -157,7 +157,7 @@ func (t *GitDiffFilesTool) Execute(ctx context.Context, argsJSON string) (string
 	return out, nil
 }
 
-type GitStageFilesTool struct{ Cwd string }
+type GitStageFilesTool struct{ Cwd *CwdRef }
 
 func (t *GitStageFilesTool) Name() string { return "git_stage_files" }
 func (t *GitStageFilesTool) Description() string {
@@ -196,19 +196,19 @@ func (t *GitStageFilesTool) Execute(ctx context.Context, argsJSON string) (strin
 		return "", errors.New("git_stage_files: paths or all is required")
 	}
 	if a.All {
-		if _, err := gitOutput(ctx, t.Cwd, "add", "-A"); err != nil {
+		if _, err := gitOutput(ctx, t.Cwd.Get(), "add", "-A"); err != nil {
 			return "", fmt.Errorf("git_stage_files: %w", err)
 		}
 		return "staged all changes", nil
 	}
 	args := append([]string{"add", "--"}, a.Paths...)
-	if _, err := gitOutput(ctx, t.Cwd, args...); err != nil {
+	if _, err := gitOutput(ctx, t.Cwd.Get(), args...); err != nil {
 		return "", fmt.Errorf("git_stage_files: %w", err)
 	}
 	return fmt.Sprintf("staged %d file(s)", len(a.Paths)), nil
 }
 
-type GitUnstageFilesTool struct{ Cwd string }
+type GitUnstageFilesTool struct{ Cwd *CwdRef }
 
 func (t *GitUnstageFilesTool) Name() string { return "git_unstage_files" }
 func (t *GitUnstageFilesTool) Description() string {
@@ -238,13 +238,13 @@ func (t *GitUnstageFilesTool) Execute(ctx context.Context, argsJSON string) (str
 		return "", errors.New("git_unstage_files: paths is required")
 	}
 	args := append([]string{"reset", "HEAD", "--"}, a.Paths...)
-	if _, err := gitOutput(ctx, t.Cwd, args...); err != nil {
+	if _, err := gitOutput(ctx, t.Cwd.Get(), args...); err != nil {
 		return "", fmt.Errorf("git_unstage_files: %w", err)
 	}
 	return fmt.Sprintf("unstaged %d file(s)", len(a.Paths)), nil
 }
 
-type GitCreateBranchTool struct{ Cwd string }
+type GitCreateBranchTool struct{ Cwd *CwdRef }
 
 func (t *GitCreateBranchTool) Name() string { return "git_create_branch" }
 func (t *GitCreateBranchTool) Description() string {
@@ -280,33 +280,27 @@ func (t *GitCreateBranchTool) Execute(ctx context.Context, argsJSON string) (str
 	if name == "" {
 		return "", errors.New("git_create_branch: name is required")
 	}
-	// Validate branch name via git's own ref-format checker. Surfaces a
-	// deterministic error for things like "foo..bar", "foo bar", trailing
-	// slashes, etc. before we attempt to switch.
-	if _, err := gitOutput(ctx, t.Cwd, "check-ref-format", "--branch", name); err != nil {
+	if _, err := gitOutput(ctx, t.Cwd.Get(), "check-ref-format", "--branch", name); err != nil {
 		return "", fmt.Errorf("git_create_branch: invalid branch name %q: %w", name, err)
 	}
-	// Refuse if the branch already exists. `git switch -c` would fail
-	// anyway, but we return a structured error so callers can branch on
-	// "branch_exists" without parsing git's message.
-	if _, err := gitOutput(ctx, t.Cwd, "rev-parse", "--verify", "refs/heads/"+name); err == nil {
+	if _, err := gitOutput(ctx, t.Cwd.Get(), "rev-parse", "--verify", "refs/heads/"+name); err == nil {
 		return "", fmt.Errorf("git_create_branch: branch_exists: %q already exists locally", name)
 	}
 	args := []string{"switch", "-c", name}
 	if sp := strings.TrimSpace(a.StartPoint); sp != "" {
 		args = append(args, sp)
 	}
-	if _, err := gitOutput(ctx, t.Cwd, args...); err != nil {
+	if _, err := gitOutput(ctx, t.Cwd.Get(), args...); err != nil {
 		return "", fmt.Errorf("git_create_branch: %w", err)
 	}
-	fromSHA, err := gitOutput(ctx, t.Cwd, "rev-parse", "--short", "HEAD")
+	fromSHA, err := gitOutput(ctx, t.Cwd.Get(), "rev-parse", "--short", "HEAD")
 	if err != nil {
 		return "", fmt.Errorf("git_create_branch: %w", err)
 	}
 	return fmt.Sprintf("created=true branch=%s from=%s", name, strings.TrimSpace(fromSHA)), nil
 }
 
-type GitCommitTool struct{ Cwd string }
+type GitCommitTool struct{ Cwd *CwdRef }
 
 func (t *GitCommitTool) Name() string { return "git_commit" }
 func (t *GitCommitTool) Description() string {
@@ -335,17 +329,17 @@ func (t *GitCommitTool) Execute(ctx context.Context, argsJSON string) (string, e
 	if strings.TrimSpace(a.Message) == "" {
 		return "", errors.New("git_commit: message is required")
 	}
-	if _, err := gitOutput(ctx, t.Cwd, "commit", "-m", a.Message); err != nil {
+	if _, err := gitOutput(ctx, t.Cwd.Get(), "commit", "-m", a.Message); err != nil {
 		return "", fmt.Errorf("git_commit: %w", err)
 	}
-	hash, err := gitOutput(ctx, t.Cwd, "rev-parse", "HEAD")
+	hash, err := gitOutput(ctx, t.Cwd.Get(), "rev-parse", "HEAD")
 	if err != nil {
 		return "", fmt.Errorf("git_commit: %w", err)
 	}
 	return fmt.Sprintf("created commit %s", strings.TrimSpace(hash)), nil
 }
 
-type GitLogFileTool struct{ Cwd string }
+type GitLogFileTool struct{ Cwd *CwdRef }
 
 func (t *GitLogFileTool) Name() string        { return "git_log_file" }
 func (t *GitLogFileTool) Description() string { return "Show git history for a single file." }
@@ -378,7 +372,7 @@ func (t *GitLogFileTool) Execute(ctx context.Context, argsJSON string) (string, 
 	if a.Limit <= 0 {
 		a.Limit = 10
 	}
-	out, err := gitOutput(ctx, t.Cwd, "log", "--oneline", "-n", fmt.Sprintf("%d", a.Limit), "--", a.Path)
+	out, err := gitOutput(ctx, t.Cwd.Get(), "log", "--oneline", "-n", fmt.Sprintf("%d", a.Limit), "--", a.Path)
 	if err != nil {
 		return "", fmt.Errorf("git_log_file: %w", err)
 	}
@@ -388,7 +382,7 @@ func (t *GitLogFileTool) Execute(ctx context.Context, argsJSON string) (string, 
 	return out, nil
 }
 
-type GitBlameLinesTool struct{ Cwd string }
+type GitBlameLinesTool struct{ Cwd *CwdRef }
 
 func (t *GitBlameLinesTool) Name() string        { return "git_blame_lines" }
 func (t *GitBlameLinesTool) Description() string { return "Show git blame for a line range in a file." }
@@ -420,14 +414,14 @@ func (t *GitBlameLinesTool) Execute(ctx context.Context, argsJSON string) (strin
 	if strings.TrimSpace(a.Path) == "" || a.Start <= 0 || a.End < a.Start {
 		return "", errors.New("git_blame_lines: path, start, and end are required and must form a valid range")
 	}
-	out, err := gitOutput(ctx, t.Cwd, "blame", "-L", fmt.Sprintf("%d,%d", a.Start, a.End), "--", a.Path)
+	out, err := gitOutput(ctx, t.Cwd.Get(), "blame", "-L", fmt.Sprintf("%d,%d", a.Start, a.End), "--", a.Path)
 	if err != nil {
 		return "", fmt.Errorf("git_blame_lines: %w", err)
 	}
 	return out, nil
 }
 
-type GitMergeBaseTool struct{ Cwd string }
+type GitMergeBaseTool struct{ Cwd *CwdRef }
 
 func (t *GitMergeBaseTool) Name() string        { return "git_merge_base" }
 func (t *GitMergeBaseTool) Description() string { return "Find the merge base between two refs." }
@@ -452,7 +446,7 @@ func (t *GitMergeBaseTool) Execute(ctx context.Context, argsJSON string) (string
 	if strings.TrimSpace(a.Base) == "" || strings.TrimSpace(a.Head) == "" {
 		return "", errors.New("git_merge_base: base and head are required")
 	}
-	out, err := gitOutput(ctx, t.Cwd, "merge-base", a.Base, a.Head)
+	out, err := gitOutput(ctx, t.Cwd.Get(), "merge-base", a.Base, a.Head)
 	if err != nil {
 		return "", fmt.Errorf("git_merge_base: %w", err)
 	}

@@ -397,7 +397,7 @@ func TestDeriveAllowRule(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			rule, ok := DeriveAllowRule(c.tool, c.args, cwd)
+			rule, ok := DeriveAllowRule(c.tool, c.args, cwd, nil)
 			if ok != c.wantOK {
 				t.Errorf("DeriveAllowRule(%s) ok=%v; want %v", c.name, ok, c.wantOK)
 			}

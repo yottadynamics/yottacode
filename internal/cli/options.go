@@ -86,6 +86,15 @@ type ChatOptions struct {
 	// --permission-mode plan.
 	PlanResume string
 
+	// Worktree is the yottacode worktree name the session should be
+	// launched inside (via the --worktree / -w flag). Empty for the
+	// main checkout (default). The sentinel WorktreeAutoGenerate marks
+	// "flag was passed without a value, auto-generate a name." Resolved
+	// to a concrete name by ensureWorktree() before tui.Run / oneshot.Run
+	// sees it; from those layers' perspective, an empty value means "no
+	// worktree" and a non-empty value is always a concrete name.
+	Worktree string
+
 	// Experimental enables not-yet-stable features gated by the
 	// internal/experimental package. The CLI flag is repeatable so
 	// users can stack multiple opt-ins: `--experimental foo
@@ -103,6 +112,14 @@ type ChatOptions struct {
 // accepts. Exported so the flag-registration site and tests can keep
 // the list in one place.
 var ValidPermissionModes = []string{"", "default", "plan", "auto"}
+
+// WorktreeAutoGenerate is the sentinel ChatOptions.Worktree takes when
+// the user passes `--worktree` without a value. The CLI layer detects
+// the sentinel before launch and replaces it with a freshly-generated
+// name (e.g. "bright-running-fox"). Downstream code (tui.Run /
+// oneshot.Run) never sees this sentinel — it's already resolved to a
+// concrete name by then.
+const WorktreeAutoGenerate = "@auto@"
 
 // IsValidPermissionMode reports whether s names a recognized startup
 // permission mode. The empty string and "default" are both accepted

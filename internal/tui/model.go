@@ -30,7 +30,23 @@ import (
 	"github.com/yottadynamics/yottacode/internal/skills"
 	"github.com/yottadynamics/yottacode/internal/subagents"
 	"github.com/yottadynamics/yottacode/internal/usercmd"
+	"github.com/yottadynamics/yottacode/internal/worktree"
 )
+
+// worktreeNameFromPath extracts the yottacode worktree name from any
+// path that lives under ~/.yottacode/worktrees/<slug>/<name>/..., or
+// returns "" when the path is in the main checkout (or outside the
+// yottacode worktree tree entirely). Used by the CwdChanged handler
+// so the status-bar chip stays in sync with mid-session
+// enter/exit_worktree swaps.
+func worktreeNameFromPath(path string) string {
+	_, name, ok := worktree.IsAnyWorktreePath(path)
+	if !ok {
+		return ""
+	}
+	return name
+}
+
 
 // Config carries everything Run needs to build a Model. Bundling these into a
 // struct is just ergonomics — there are too many fields for a positional
@@ -71,6 +87,7 @@ type Config struct {
 	Commit                 string // short SHA the binary was built from; "" when unknown (go run, tarball)
 	Dirty                  bool   // true when the build had uncommitted changes; renders a "*" beside the commit
 	Branch                 string // current git branch (empty if not in a repo)
+	Worktree               string // yottacode worktree name when running inside one (empty for main checkout); rendered as a status-line chip
 	MemorySummary          string // "USER", "YOTTA", "USER+YOTTA", "UMEM", "USER+UMEM", or "" if none
 	BaseSystemPrompt       string // pre-memory prompt — needed by /memory reload to recompose
 
@@ -155,6 +172,7 @@ type Model struct {
 	commit                 string
 	dirty                  bool
 	branch                 string
+	worktree               string // yottacode worktree name when session runs inside one
 	memorySummary          string
 	baseSystemPrompt       string // pre-memory prompt; used by /memory reload
 
@@ -724,6 +742,7 @@ func New(parent context.Context, c Config) Model {
 		commit:                 c.Commit,
 		dirty:                  c.Dirty,
 		branch:                 c.Branch,
+		worktree:               c.Worktree,
 		memorySummary:          c.MemorySummary,
 		baseSystemPrompt:       c.BaseSystemPrompt,
 		fileCfg:                c.FileCfg,
@@ -2428,10 +2447,23 @@ func (m Model) renderStatus() string {
 	// renderPlanModeBanner); we intentionally do NOT duplicate it as a
 	// status-bar chip — one prominent signal beats two competing ones.
 
+	// Worktree chip: when the session runs inside a yottacode-managed
+	// worktree, render "worktree: <name>" AFTER the context counter so
+	// the model+provider cluster stays adjacent to the ctx number on the
+	// left and the worktree label trails on the right where the eye
+	// looks last. Plain text per the no-emoji-in-TUI rule.
+	worktreeSeg := ""
+	if m.worktree != "" {
+		worktreeSeg = lipgloss.NewStyle().Foreground(colorDim).Render("worktree: " + m.worktree)
+	}
+
 	build := func(head string) string {
 		segs := []string{head}
 		if ctx != "" {
 			segs = append(segs, ctx)
+		}
+		if worktreeSeg != "" {
+			segs = append(segs, worktreeSeg)
 		}
 		return "  " + strings.Join(segs, sep)
 	}
@@ -2788,7 +2820,7 @@ func (m Model) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 		// (approvalAllowAlwaysOK = false) for compound shell commands
 		// and other shapes where derivation would be a footgun — see
 		// permissions.DeriveAllowRule.
-		if rule, ok := permissions.DeriveAllowRule(e.ToolName, e.ArgsJSON, m.cwd); ok && m.perms != nil {
+		if rule, ok := permissions.DeriveAllowRule(e.ToolName, e.ArgsJSON, m.cwd, worktree.NormalizeForRule); ok && m.perms != nil {
 			m.approvalAllowAlwaysOK = true
 			m.approvalDerivedRule = rule
 		} else {
@@ -2872,6 +2904,22 @@ func (m Model) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 		// guard is skipped, and the assistant's content lands tight
 		// against the card's `╰ done` footer with no breathing room.
 		m.streamingMode = streamIdle
+	case agent.CwdChanged:
+		// enter_worktree / exit_worktree swapped the session's working
+		// directory mid-conversation. Refresh m.cwd so the status-line
+		// worktree chip and any cwd-derived display state pick up the
+		// new value on the next render. The agent-level cwdRef and the
+		// process cwd are already in sync — the tool that emitted the
+		// event handled both.
+		m.cwd = e.NewCwd
+		// Compute the worktree name from the new path: any path under
+		// <some-repo>/.yottacode/worktrees/<name>/ identifies the name
+		// without needing to re-resolve the repo root.
+		m.worktree = worktreeNameFromPath(e.NewCwd)
+		if m.sess != nil {
+			m.sess.Cwd = e.NewCwd
+			m.sess.Worktree = m.worktree
+		}
 	case agent.TodoUpdate:
 		// Drive the live plan card in View(): livePlan is what
 		// renderLivePlanCard reads on every redraw, livePlanTouched

@@ -6,6 +6,15 @@ import (
 	"strings"
 )
 
+// PathNormalizer is the optional callback DeriveAllowRule applies to
+// path-like inputs (cwd plus any absolute descriptor) before turning
+// them into a glob pattern. Used by the agent loop to inject
+// `worktree.NormalizeForRule`, which rewrites the auto-generated
+// worktree-name segment of a yottacode worktree path to `*` so
+// `[A]-always` clicks don't bake ephemeral names into the saved rule.
+// A nil normalizer is treated as identity.
+type PathNormalizer func(string) string
+
 // DeriveAllowRule produces a sensible "always allow" pattern from a
 // single tool call. Used when the user hits `a` in the approval modal.
 //
@@ -39,7 +48,11 @@ import (
 //
 // ok=false means the modal should suppress the [a]lways-allow option
 // for this call.
-func DeriveAllowRule(toolName, argsJSON, cwd string) (rule string, ok bool) {
+func DeriveAllowRule(toolName, argsJSON, cwd string, normalize PathNormalizer) (rule string, ok bool) {
+	if normalize == nil {
+		normalize = identityPath
+	}
+	cwd = normalize(cwd)
 	target := targetFor(toolName, argsJSON, cwd)
 	if target.PermName == "" {
 		return "", false
@@ -54,7 +67,7 @@ func DeriveAllowRule(toolName, argsJSON, cwd string) (rule string, ok bool) {
 		}
 		return "Git(" + first + " *)", true
 	case "Read", "Write", "Edit", "Mkdir", "Delete", "List":
-		pat, ok := derivePathPattern(target.Descriptor, cwd)
+		pat, ok := derivePathPattern(target.Descriptor, cwd, normalize)
 		if !ok {
 			return "", false
 		}
@@ -64,8 +77,8 @@ func DeriveAllowRule(toolName, argsJSON, cwd string) (rule string, ok bool) {
 		if !ok {
 			return "", false
 		}
-		srcPat, sok := derivePathPattern(src, cwd)
-		dstPat, dok := derivePathPattern(dst, cwd)
+		srcPat, sok := derivePathPattern(src, cwd, normalize)
+		dstPat, dok := derivePathPattern(dst, cwd, normalize)
 		if !sok || !dok {
 			return "", false
 		}
@@ -74,17 +87,22 @@ func DeriveAllowRule(toolName, argsJSON, cwd string) (rule string, ok bool) {
 	return "", false
 }
 
+func identityPath(s string) string { return s }
+
 // derivePathPattern returns the always-allow glob for a single path
 // descriptor. In-cwd descriptors return "<absolute-cwd>/**". Out-of-cwd
 // absolute descriptors return "<parent-dir>/**" — except for system
-// roots and $HOME directly, which suppress the option.
-func derivePathPattern(desc, cwd string) (string, bool) {
+// roots and $HOME directly, which suppress the option. Both `desc`
+// (when absolute) and `cwd` are run through `normalize` first so
+// worktree-name segments collapse to `*` before the glob is built.
+func derivePathPattern(desc, cwd string, normalize PathNormalizer) (string, bool) {
 	if cwd == "" {
 		return "", false
 	}
 	if !strings.HasPrefix(desc, "/") {
 		return filepath.ToSlash(cwd) + "/**", true
 	}
+	desc = normalize(desc)
 	parent := filepath.ToSlash(filepath.Dir(desc))
 	if parent == "" || parent == "/" {
 		return "", false
