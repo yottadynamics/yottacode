@@ -59,14 +59,12 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 	if err != nil {
 		return err
 	}
-	// Load slash commands from three sources merged by precedence:
-	// project (<cwd>/.yottacode/commands/) > user (~/.yottacode/commands/)
-	// > defaults (embedded into the binary). Fail-soft: per-file load
-	// errors are surfaced as startup notices below but never block
-	// launch. Shadow warnings fire when user and project name-collide;
-	// user/project shadowing a default is silent (the documented
-	// override path).
-	customCmds, customErrs := usercmd.LoadAll(cwd)
+	// Load slash commands from two scopes merged by precedence:
+	// project (<cwd>/.yottacode/commands/) > user (~/.yottacode/commands/).
+	// Fail-soft: per-file load errors are surfaced as startup notices
+	// below but never block launch. Shadow warnings fire when user
+	// and project name-collide.
+	customCmds, customErrs := usercmd.Load(cwd)
 	// Load tunables (~/.yottacode/config.toml). Missing file → defaults
 	// (no error). Invalid file → return the error so the user fixes it
 	// rather than silently running with stale defaults.
@@ -434,14 +432,12 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 		Skills:                 skillsRes.Skills,
 		SkillTool:              skillTool,
 	})
-	// Startup notice when skills exist but the default-off policy
-	// means none are enabled. Without this, new users would have no
-	// idea the surface exists — they'd see no skill list in the
-	// prompt and never type /skills. One muted line is the right
-	// amount of nudge: visible, not loud.
-	if n := len(skillsRes.Skills); n > 0 {
-		model.appendLine(styleAuto.Render(fmt.Sprintf("[skills] %d available — type /skills to enable for this session", n)))
-	}
+	// Skills onboarding (skills installed but none enabled) is surfaced
+	// inside the welcome card via startupTip() — see welcome.go's
+	// memory > skills > rotating-pool priority. Emitting it as a
+	// separate tea.Println here used to race with the welcome box's
+	// per-row Println sequence, landing the notice above, below, or
+	// even inside the box depending on Init batch timing.
 	// Surface custom-command load errors via the startup notice path
 	// (historyLines is appendLine's queue; tea.Println replays it
 	// once the program starts). Errors render in red, warnings in the

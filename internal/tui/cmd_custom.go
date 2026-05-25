@@ -39,7 +39,7 @@ func buildCustomSlash(cmds []usercmd.Command) []slashCommand {
 			Name:     cmd.Name,
 			Args:     cmd.ArgHint,
 			Help:     help,
-			Source:   usercmd.DisplayPath(cmd),
+			Source:   cmd.SourceFile,
 			IsCustom: true,
 			// Custom commands send a prompt to the agent — they're
 			// stateful (will produce a new turn), so they cancel

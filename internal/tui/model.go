@@ -488,6 +488,7 @@ type Model struct {
 	paletteOpen     bool
 	paletteFiltered []slashCommand
 	paletteIndex    int
+	paletteOffset   int // first visible row when filtered list overflows the window
 
 	// File palette state — opens when the user types `@` (at start-of-
 	// word) so they can pick a file from cwd by tab-completion instead
@@ -1022,6 +1023,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.textInput.SetValue("")
 					m.paletteOpen = false
 					m.paletteIndex = 0
+					m.paletteOffset = 0
 					return m.runSlash(input)
 				}
 				// Plain Enter on non-empty input mid-turn:
@@ -1044,6 +1046,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.textInput.SetValue("")
 				m.paletteOpen = false
 				m.paletteIndex = 0
+				m.paletteOffset = 0
 				if m.turnCancel != nil {
 					m.turnCancel()
 				}
@@ -1192,11 +1195,17 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case tea.KeyUp:
 				if m.paletteIndex > 0 {
 					m.paletteIndex--
+					if m.paletteIndex < m.paletteOffset {
+						m.paletteOffset = m.paletteIndex
+					}
 				}
 				return m, nil
 			case tea.KeyDown:
 				if m.paletteIndex < len(m.paletteFiltered)-1 {
 					m.paletteIndex++
+					if m.paletteIndex >= m.paletteOffset+slashPaletteVisible {
+						m.paletteOffset = m.paletteIndex - slashPaletteVisible + 1
+					}
 				}
 				return m, nil
 			case tea.KeyTab:
@@ -1211,6 +1220,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.textInput.SetValue("")
 				m.paletteOpen = false
 				m.paletteIndex = 0
+				m.paletteOffset = 0
 				return m, nil
 			}
 		} else if m.filePaletteOpen {
@@ -1357,6 +1367,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.textInput.CursorEnd()
 					m.paletteOpen = false
 					m.paletteIndex = 0
+					m.paletteOffset = 0
 					return m, nil
 				}
 				input = "/" + chosen.Name
@@ -1367,6 +1378,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.textInput.SetValue("")
 			m.paletteOpen = false
 			m.paletteIndex = 0
+			m.paletteOffset = 0
 			m.dropFilePalette()
 			// Swap any [Pasted text #N: ...] markers back for their
 			// original content before the message hits the agent.
@@ -1387,11 +1399,20 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.paletteOpen = true
 				if m.paletteIndex >= len(m.paletteFiltered) {
 					m.paletteIndex = 0
+					m.paletteOffset = 0
+				}
+				// Clamp offset against the new filtered length so a
+				// narrower match-set doesn't leave the window stuck
+				// past the end of the list (would render an empty
+				// box with just the ↑ N more hint).
+				if m.paletteOffset > len(m.paletteFiltered)-slashPaletteVisible {
+					m.paletteOffset = 0
 				}
 				m.filePaletteOpen = false
 			} else {
 				m.paletteOpen = false
 				m.paletteIndex = 0
+				m.paletteOffset = 0
 				// Detect an active `@<query>` token at the end of the
 				// textarea value and (re)compute the file palette. The
 				// candidate list is walked once and cached; only the
@@ -1645,7 +1666,7 @@ func (m Model) View() string {
 		}
 	} else {
 		if m.paletteOpen {
-			parts = append(parts, renderPalette(m.paletteFiltered, m.paletteIndex, liveContentWidth(m.width)+4))
+			parts = append(parts, renderPalette(m.paletteFiltered, m.paletteIndex, m.paletteOffset, liveContentWidth(m.width)+4))
 		}
 		if m.filePaletteOpen {
 			parts = append(parts, renderFilePalette(m.filePaletteFiltered, m.filePaletteIndex, m.filePaletteOffset, liveContentWidth(m.width)+4))
@@ -1675,11 +1696,7 @@ func (m Model) View() string {
 		case yoloOn:
 			parts = append(parts, renderYoloStandaloneBanner(m.width))
 		}
-		// Bracket the input with thin dim rules above and below — gives
-		// the cmdline visible containment without the visual weight of
-		// a full rounded box. The hint line that used to ride below is
-		// now inlined into the placeholder row when input is empty.
-		parts = append(parts, m.renderInputRule(), m.renderInputBox(), m.renderInputRule())
+		parts = append(parts, m.renderInputFrame())
 	}
 
 	// Status bar tucks immediately below the bottom rule. Earlier
@@ -1712,9 +1729,7 @@ func (m Model) renderInlineOverlay(body string) string {
 	}
 	overlayRule := styleOverlayRule.Render(strings.Repeat("─", width))
 	return lipgloss.JoinVertical(lipgloss.Left,
-		m.renderInputRule(),
-		m.renderInputBox(),
-		m.renderInputRule(),
+		m.renderInputFrame(),
 		m.renderStatus(),
 		overlayRule,
 		body,
@@ -1722,20 +1737,14 @@ func (m Model) renderInlineOverlay(body string) string {
 }
 
 // renderInputBox renders the cmdline as a borderless input row capped at
-// `min(120, terminalWidth - 4)`. The earlier design wrapped this in a
-// saturated rounded border — the container ended up louder than its
-// content, so the border is gone. The chevron prompt (Accent + bold) +
-// dim placeholder/content carry the focal weight on their own.
-//
-// We render the value ourselves rather than using m.textInput.View()
-// because Bubbles textarea sizes Height by *logical* lines, not wrapped
-// visual rows — long single-line input either gets clipped (Height=1,
-// horizontal scroll) or padded with empty "❯ " rows below the cursor
-// (Height=N visual rows). Wrapping the value with ansi.Hardwrap and
+// `min(120, terminalWidth - 4)`. We render the value ourselves rather
+// than using m.textInput.View() because Bubbles textarea sizes Height by
+// *logical* lines, not wrapped visual rows — long single-line input
+// either gets clipped or padded. Wrapping with ansi.Hardwrap and
 // rendering each row with a prompt-or-indent prefix gets us the "wrap
-// below within the cap" behavior the cmdline actually wants. The
-// textarea still owns the value and cursor state via its own Update;
-// we just paint it differently.
+// below within the cap" behavior the cmdline actually wants. The textarea
+// still owns the value and cursor state via its own Update; we just
+// paint it differently.
 func (m Model) renderInputBox() string {
 	if m.width <= 0 {
 		return m.textInput.View()
@@ -1744,15 +1753,39 @@ func (m Model) renderInputBox() string {
 	return m.renderInputBody(contentW)
 }
 
+// renderInputFrame wraps the cmdline body in a closed bordered box with
+// rounded corners (╭/╮/╰/╯) and side borders (│) that spans the full
+// terminal width. The border uses colorRule (dim gray) so it reads as
+// chrome, not content — same visual family as the welcome card border.
+func (m Model) renderInputFrame() string {
+	if m.width <= 0 {
+		return m.textInput.View()
+	}
+	ruleStyle := lipgloss.NewStyle().Foreground(colorRule)
+	boxW := m.width
+	innerW := boxW - 4 // space inside "│ " ... " │"
+	if innerW < 1 {
+		innerW = 1
+	}
+	top := ruleStyle.Render("╭" + strings.Repeat("─", boxW-2) + "╮")
+	bot := ruleStyle.Render("╰" + strings.Repeat("─", boxW-2) + "╯")
+	body := m.renderInputBody(innerW)
+	border := ruleStyle.Render("│")
+	var bordered []string
+	for _, row := range strings.Split(body, "\n") {
+		visW := ansi.StringWidth(row)
+		pad := innerW - visW
+		if pad < 0 {
+			pad = 0
+		}
+		bordered = append(bordered, border+" "+row+strings.Repeat(" ", pad)+" "+border)
+	}
+	return top + "\n" + strings.Join(bordered, "\n") + "\n" + bot
+}
+
 // renderInputRule paints a single dim horizontal `─` line spanning
-// the full terminal width. Used as the top + bottom bracket around
-// the cmdline so the input has visual containment without the
-// weight of a full rounded box. Spans edge-to-edge (not the
-// inputContentWidth cap the input itself uses) so the bracket reads
-// as a screen-wide divider rather than a narrow underline floating
-// in dead space. Color is colorRule (Muted, dark gray) — chrome,
-// not content; the welcome card's border matches it so the two
-// surfaces read as part of the same chrome family.
+// the full terminal width. Used by the inline overlay layout where
+// the full-width divider is still appropriate.
 func (m Model) renderInputRule() string {
 	w := m.width
 	if w < 1 {
@@ -2170,11 +2203,13 @@ func (m Model) activatePaletteSelection() (Model, tea.Cmd) {
 		m.textInput.CursorEnd()
 		m.paletteOpen = false
 		m.paletteIndex = 0
+		m.paletteOffset = 0
 		return m, nil
 	}
 	m.textInput.SetValue("")
 	m.paletteOpen = false
 	m.paletteIndex = 0
+	m.paletteOffset = 0
 	return m.runSlash("/" + chosen.Name)
 }
 
@@ -2398,7 +2433,7 @@ func (m Model) renderStatus() string {
 		if ctx != "" {
 			segs = append(segs, ctx)
 		}
-		return " " + strings.Join(segs, sep)
+		return "  " + strings.Join(segs, sep)
 	}
 
 	w := m.width
@@ -2590,7 +2625,7 @@ func (m Model) startTurnWithDisplay(input, displayLabel string) (tea.Model, tea.
 	if displayLabel != "" {
 		rendered = displayLabel
 	}
-	m.appendLine(renderUserBlock(rendered))
+	m.appendLine(renderUserBlock(rendered, m.width))
 	m.recordHistory(input)
 
 	turnCtx, cancel := context.WithCancel(m.parentCtx)
@@ -2889,8 +2924,17 @@ func (m Model) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 		// plan leaves m.livePlan alone so a resumed-session plan
 		// stays visible between turns until the agent touches it.
 		if m.livePlanTouched && len(m.livePlan) > 0 {
-			m.appendLine("")
-			m.appendLine(renderTodoCardFromTodos(m.livePlan, m.width))
+			allDone := true
+			for _, t := range m.livePlan {
+				if t.Status != agent.TodoCompleted {
+					allDone = false
+					break
+				}
+			}
+			if !allDone {
+				m.appendLine("")
+				m.appendLine(renderTodoCardFromTodos(m.livePlan, m.width))
+			}
 			m.livePlan = nil
 		}
 		m.livePlanTouched = false
@@ -3105,11 +3149,30 @@ func isFenceClose(line string) bool {
 // an [auto-mode]/[plan-mode-allow] auto-approval line, etc.). No
 // horizontal rule above: the bar is enough of an anchor, and the rule
 // fought with content on either side.
-func renderUserBlock(content string) string {
-	bar := styleUserBar.Render("▎ ")
+//
+// Long lines are hard-wrapped at width-barWidth and every wrapped row
+// gets the bar re-applied, so a multi-line paste reads as one continuous
+// quoted block instead of letting the terminal auto-wrap continuation
+// rows to column 0 (which made the second line look detached from the
+// quote and lose its left-margin alignment).
+func renderUserBlock(content string, width int) string {
+	const prefix = "▎ "
+	prefixWidth := ansi.StringWidth(prefix)
+	bar := styleUserBar.Render(prefix)
+	bodyWidth := width - prefixWidth
 	var lines []string
 	for _, line := range strings.Split(content, "\n") {
-		lines = append(lines, bar+styleUserBody.Render(line))
+		// Width <= prefix means the terminal is too narrow to host the
+		// bar plus any content; fall back to the un-wrapped render
+		// rather than producing zero-width rows.
+		if bodyWidth <= 0 || ansi.StringWidth(line) <= bodyWidth {
+			lines = append(lines, bar+styleUserBody.Render(line))
+			continue
+		}
+		wrapped := ansi.Hardwrap(line, bodyWidth, true)
+		for _, row := range strings.Split(wrapped, "\n") {
+			lines = append(lines, bar+styleUserBody.Render(row))
+		}
 	}
 	return "\n" + strings.Join(lines, "\n") + "\n"
 }

@@ -41,21 +41,43 @@ func TestFilterPalette_LeadingSlashOptional(t *testing.T) {
 }
 
 func TestRenderPalette_HighlightsSelected(t *testing.T) {
-	out := renderPalette(allSlash, 0, 80)
-	// /help is at index 0; it should appear with the selected style applied.
-	// We can't easily detect ANSI here without a parser, but we can at least
-	// confirm it rendered and contains the command names.
-	if !strings.Contains(out, "/help") {
-		t.Errorf("palette missing /help: %q", out)
-	}
-	if !strings.Contains(out, "/model") {
-		t.Errorf("palette missing /model: %q", out)
+	out := renderPalette(allSlash, 0, 0, 80)
+	// /plan is at index 0; it should appear with the selected style applied.
+	if !strings.Contains(out, "/plan") {
+		t.Errorf("palette missing /plan: %q", out)
 	}
 }
 
 func TestRenderPalette_EmptyShowsHint(t *testing.T) {
-	out := renderPalette(nil, 0, 80)
+	out := renderPalette(nil, 0, 0, 80)
 	if !strings.Contains(out, "no matching") {
 		t.Errorf("empty palette should show hint; got %q", out)
+	}
+}
+
+// When the filtered list is longer than slashPaletteVisible, the
+// rendered palette must window the items and surface ↑/↓ overflow hints
+// so the user knows there's more to scroll to. Mirrors the file palette
+// behavior so both pickers feel the same.
+// When the filtered list is longer than slashPaletteVisible, the
+// rendered palette must window the items (no overflow-count hints —
+// the scrolling position is visible from the highlight alone).
+func TestRenderPalette_WindowedNoOverflowHints(t *testing.T) {
+	if len(allSlash) <= slashPaletteVisible {
+		t.Skipf("test requires more than %d built-in commands; have %d", slashPaletteVisible, len(allSlash))
+	}
+	out := stripANSI(renderPalette(allSlash, 0, 0, 80))
+	// Count rendered command rows — each starts with " /" after ANSI strip.
+	rows := 0
+	for _, line := range strings.Split(out, "\n") {
+		if strings.Contains(line, "/") {
+			rows++
+		}
+	}
+	if rows > slashPaletteVisible {
+		t.Errorf("rendered %d command rows, want at most %d", rows, slashPaletteVisible)
+	}
+	if strings.Contains(out, "more") {
+		t.Errorf("overflow hints should not appear: %q", out)
 	}
 }

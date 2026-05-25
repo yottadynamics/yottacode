@@ -15,12 +15,6 @@ import (
 type Scope string
 
 const (
-	// ScopeDefault is for commands embedded into the binary as the
-	// built-in starter kit (`/git:commit-message`, `/check:review`,
-	// etc.). Lowest precedence — a user or project file with the
-	// same name shadows the default. The body is editable by copying
-	// the default to ~/.yottacode/commands/<same-path>.md.
-	ScopeDefault Scope = "default"
 	ScopeUser    Scope = "user"
 	ScopeProject Scope = "project"
 )
@@ -133,7 +127,12 @@ func Load(cwd string) (cmds []Command, errs []LoadError) {
 
 	projectByName := map[string]Command{}
 	projectDup := map[string]bool{}
-	if projectDir := ProjectCommandsDir(cwd); projectDir != "" {
+	if projectDir := ProjectCommandsDir(cwd); projectDir != "" && !sameDir(projectDir, userDir) {
+		// Skip the project pass when projectDir aliases userDir
+		// (cwd == $HOME). Without this guard every command file
+		// gets loaded twice — once tagged user, once tagged project —
+		// and the merge below emits a confusing "shadowed by project
+		// command at <same path>" warning for each one.
 		var scopeErrs []LoadError
 		projectByName, projectDup, scopeErrs = loadScope(projectDir, ScopeProject)
 		errs = append(errs, scopeErrs...)
@@ -194,6 +193,27 @@ func Load(cwd string) (cmds []Command, errs []LoadError) {
 	// scan an alphabetized list.
 	sortByName(cmds)
 	return cmds, errs
+}
+
+// sameDir reports whether two directory paths resolve to the same location.
+// Compares the cleaned, absolute, symlink-evaluated forms so cwd == $HOME
+// is detected even when one side was supplied with a trailing slash or via
+// a symlink. Falls back to lexical comparison when symlink evaluation
+// fails (e.g. the path doesn't exist yet).
+func sameDir(a, b string) bool {
+	if a == "" || b == "" {
+		return false
+	}
+	canon := func(p string) string {
+		if abs, err := filepath.Abs(p); err == nil {
+			p = abs
+		}
+		if resolved, err := filepath.EvalSymlinks(p); err == nil {
+			return resolved
+		}
+		return filepath.Clean(p)
+	}
+	return canon(a) == canon(b)
 }
 
 // loadScope walks one directory, parsing every .md file into a Command.
