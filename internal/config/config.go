@@ -125,10 +125,16 @@ var ValidPolicies = []string{"fallback-chain", "cheap-first"}
 // scores agent-managed memory entries against the user's prompt and
 // injects only the most relevant ones into the system prompt.
 type RetrievalConfig struct {
-	Enabled  bool    `toml:"enabled"`
-	TopK     int     `toml:"top_k"`
-	MinScore float64 `toml:"min_score"`
+	Enabled        bool    `toml:"enabled"`
+	TopK           int     `toml:"top_k"`
+	MinScore       float64 `toml:"min_score"`
+	Strategy       string  `toml:"strategy"`
+	EmbeddingModel string  `toml:"embedding_model"`
 }
+
+// ValidStrategies is the whitelist for RetrievalConfig.Strategy.
+// Empty is treated as the default ("bm25") at load time.
+var ValidStrategies = []string{"keyword", "bm25", "semantic", "auto"}
 
 // ContextConfig governs context-window watermark behavior.
 type ContextConfig struct {
@@ -278,9 +284,11 @@ func Default() Config {
 			DefaultWindow: 128000,
 		},
 		Retrieval: RetrievalConfig{
-			Enabled:  true,
-			TopK:     10,
-			MinScore: 0.0,
+			Enabled:        true,
+			TopK:           10,
+			MinScore:       0.0,
+			Strategy:       "auto",
+			EmbeddingModel: "nomic-embed-text",
 		},
 		Theme: ThemeConfig{
 			Name: themes.DefaultName,
@@ -330,6 +338,12 @@ func Load(path string) (Config, error) {
 	cfg.Active.normalize()
 	if strings.TrimSpace(cfg.Theme.Name) == "" {
 		cfg.Theme.Name = themes.DefaultName
+	}
+	if strings.TrimSpace(cfg.Retrieval.Strategy) == "" {
+		cfg.Retrieval.Strategy = "auto"
+	}
+	if strings.TrimSpace(cfg.Retrieval.EmbeddingModel) == "" {
+		cfg.Retrieval.EmbeddingModel = "nomic-embed-text"
 	}
 	if err := Validate(cfg); err != nil {
 		return Default(), fmt.Errorf("config: %s: %w", path, err)
@@ -400,6 +414,10 @@ func Validate(cfg Config) error {
 	}
 	if cfg.Retrieval.MinScore < 0 || cfg.Retrieval.MinScore > 1 {
 		return fmt.Errorf("retrieval.min_score = %.3f out of range (0.0–1.0)", cfg.Retrieval.MinScore)
+	}
+	if cfg.Retrieval.Strategy != "" && !inSlice(ValidStrategies, cfg.Retrieval.Strategy) {
+		return fmt.Errorf("retrieval.strategy = %q invalid (expected one of %s)",
+			cfg.Retrieval.Strategy, strings.Join(ValidStrategies, ", "))
 	}
 
 	if name := strings.TrimSpace(cfg.Theme.Name); name != "" && !themes.IsValid(name) {
@@ -688,6 +706,15 @@ top_k = 10
 # Minimum relevance score (0.0–1.0) an entry must reach to be
 # injected.
 min_score = 0.0
+
+# Scoring strategy: "keyword" (legacy exact-token), "bm25" (stemming +
+# synonyms + BM25 ranking), "semantic" (bm25 + local Ollama embeddings),
+# "auto" (semantic if Ollama + embedding model detected, otherwise bm25).
+strategy = "auto"
+
+# Embedding model for semantic retrieval. Only used when strategy is
+# "semantic" or "auto". Must be installed in Ollama.
+# embedding_model = "nomic-embed-text"
 
 # ---------------------------------------------------------------------
 # TUI color theme. Uncomment to pin a palette; omit the section to

@@ -299,7 +299,14 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 	reg.Register(&agent.GlobTool{Cwd: cwdRef})
 	reg.Register(&agent.GrepTool{Cwd: cwdRef, DenyReadPaths: denyReads})
 	reg.Register(&agent.FetchURLTool{})
-	reg.Register(&agent.MemorySaveTool{Cwd: cwdRef})
+	var embedClient *memory.EmbedClient
+	if s := fileCfg.Retrieval.Strategy; s == "semantic" || s == "auto" {
+		ec := memory.NewEmbedClient("", fileCfg.Retrieval.EmbeddingModel)
+		if ec.Available(ctx) {
+			embedClient = ec
+		}
+	}
+	reg.Register(&agent.MemorySaveTool{Cwd: cwdRef, Embedder: embedClient})
 	reg.Register(&agent.MemoryForgetTool{Cwd: cwdRef})
 	reg.Register(&agent.GitTool{Cwd: cwdRef})
 	reg.Register(&agent.TodoWriteTool{Store: planStore})
@@ -458,6 +465,7 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 		Worktree:               sess.Worktree,
 		MemorySummary:          mem.Summary().String(),
 		BaseSystemPrompt:       baseSys,
+		EmbedClient:            embedClient,
 		FileCfg:                fileCfg,
 		Subagents:              subagentTasks,
 		AgentTool:              agentTool,

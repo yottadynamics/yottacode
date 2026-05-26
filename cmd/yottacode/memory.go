@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -8,6 +9,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/yottadynamics/yottacode/internal/config"
 	"github.com/yottadynamics/yottacode/internal/memory"
 )
 
@@ -26,6 +28,7 @@ into non-interactive cobra subcommands.
 	cmd.AddCommand(
 		newMemoryListCmd(),
 		newMemoryForgetCmd(),
+		newMemoryReindexCmd(),
 	)
 	return cmd
 }
@@ -106,4 +109,74 @@ The MEMORY.md index for the chosen scope is regenerated.`,
 	}
 	c.Flags().StringVar(&scope, "scope", "project", "memory scope (\"user\" or \"project\")")
 	return c
+}
+
+// newMemoryReindexCmd generates vector embeddings for all memories
+// missing .vec sidecar files. Requires a local Ollama server with an
+// embedding model installed.
+func newMemoryReindexCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "reindex",
+		Short: "Generate vector embeddings for semantic memory retrieval",
+		Long: `Reindex scans all user-scope and project-scope memories and generates
+embedding vectors for any entries missing a .vec sidecar file. Requires
+a local Ollama server with the configured embedding model installed
+(default: nomic-embed-text).
+
+Configure the model via [retrieval] embedding_model in
+~/.yottacode/config.toml.`,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cwd, err := os.Getwd()
+			if err != nil {
+				return err
+			}
+			cfg, _ := config.LoadDefault()
+			client := memory.NewEmbedClient("", cfg.Retrieval.EmbeddingModel)
+
+			ctx := context.Background()
+			if !client.Available(ctx) {
+				return fmt.Errorf("embedding model %q not available — is Ollama running with the model installed?\n  Try: ollama pull %s",
+					client.Model, client.Model)
+			}
+
+			loaded, err := memory.Load(cwd)
+			if err != nil {
+				return err
+			}
+
+			out := cmd.OutOrStdout()
+			var all []memory.MemoryEntry
+			all = append(all, loaded.UserMemories...)
+			all = append(all, loaded.ProjectMemories...)
+
+			if len(all) == 0 {
+				fmt.Fprintln(out, "no memories to index")
+				return nil
+			}
+
+			fmt.Fprintf(out, "embedding %d memories via %s...\n", len(all), client.Model)
+			var indexed, skipped int
+			for _, e := range all {
+				vecPath := memory.VecPath(e.Path)
+				if existing, _ := memory.ReadVec(vecPath); existing != nil {
+					skipped++
+					continue
+				}
+				text := e.Name + " " + e.Description + " " + e.Body
+				vec, err := client.Embed(ctx, text)
+				if err != nil {
+					fmt.Fprintf(out, "  skip %s: %v\n", e.Name, err)
+					continue
+				}
+				if err := memory.WriteVec(vecPath, vec); err != nil {
+					fmt.Fprintf(out, "  skip %s: %v\n", e.Name, err)
+					continue
+				}
+				indexed++
+			}
+			fmt.Fprintf(out, "done: %d indexed, %d already had vectors\n", indexed, skipped)
+			return nil
+		},
+	}
 }

@@ -24,6 +24,7 @@ import (
 	"github.com/yottadynamics/yottacode/internal/contextwindow"
 	mcppkg "github.com/yottadynamics/yottacode/internal/mcp"
 	"github.com/yottadynamics/yottacode/internal/filerefs"
+	"github.com/yottadynamics/yottacode/internal/memory"
 	"github.com/yottadynamics/yottacode/internal/permissions"
 	"github.com/yottadynamics/yottacode/internal/providerops"
 	"github.com/yottadynamics/yottacode/internal/recall"
@@ -91,6 +92,7 @@ type Config struct {
 	Worktree               string // yottacode worktree name when running inside one (empty for main checkout); rendered as a status-line chip
 	MemorySummary          string // "USER", "YOTTA", "USER+YOTTA", "UMEM", "USER+UMEM", or "" if none
 	BaseSystemPrompt       string // pre-memory prompt — needed by /memory reload to recompose
+	EmbedClient            *memory.EmbedClient
 
 	// FileCfg holds tunables loaded from ~/.yottacode/config.toml
 	// (context watermarks, retrieval). The TUI reads these at session
@@ -182,6 +184,7 @@ type Model struct {
 	worktree               string // yottacode worktree name when session runs inside one
 	memorySummary          string
 	baseSystemPrompt       string // pre-memory prompt; used by /memory reload
+	embedClient            *memory.EmbedClient
 
 	// fileCfg mirrors ~/.yottacode/config.toml. Fields read by the
 	// extractor (confidence threshold, max input) and the watermark
@@ -761,6 +764,7 @@ func New(parent context.Context, c Config) Model {
 		worktree:               c.Worktree,
 		memorySummary:          c.MemorySummary,
 		baseSystemPrompt:       c.BaseSystemPrompt,
+		embedClient:            c.EmbedClient,
 		fileCfg:                c.FileCfg,
 		subagentTasks:          c.Subagents,
 		subagentTool:           c.AgentTool,

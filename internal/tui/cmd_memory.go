@@ -56,7 +56,7 @@ type memoryPickerState struct {
 	browseMessage string
 }
 
-const memoryPickerRowCount = 4
+const memoryPickerRowCount = 5
 
 func (m *Model) openMemoryPicker() {
 	st := &memoryPickerState{}
@@ -136,7 +136,57 @@ func (m Model) commitMemoryPicker() (Model, tea.Cmd) {
 		return m.enterMemoryBrowse("user", p.userMemoryDir)
 	case 3:
 		return m.enterMemoryBrowse("project", p.projectMemoryDir)
+	case 4:
+		return m.runMemoryReindex()
 	}
+	return m, nil
+}
+
+func (m Model) runMemoryReindex() (Model, tea.Cmd) {
+	m.memoryPickerOpen = false
+	m.memoryPicker = nil
+
+	client := m.embedClient
+	if client == nil {
+		client = memory.NewEmbedClient("", m.fileCfg.Retrieval.EmbeddingModel)
+		if !client.Available(m.parentCtx) {
+			m.appendLine(styleError.Render(fmt.Sprintf(
+				"[memory] embedding model %q not available — is Ollama running with the model installed?  Try: ollama pull %s",
+				client.Model, client.Model)))
+			return m, nil
+		}
+	}
+
+	loaded, err := memory.Load(m.cwd)
+	if err != nil {
+		m.appendLine(styleError.Render("[memory] " + err.Error()))
+		return m, nil
+	}
+	var all []memory.MemoryEntry
+	all = append(all, loaded.UserMemories...)
+	all = append(all, loaded.ProjectMemories...)
+	if len(all) == 0 {
+		m.appendLine(styleAuto.Render("[memory] no memories to index"))
+		return m, nil
+	}
+	var indexed, skipped int
+	for _, e := range all {
+		vecPath := memory.VecPath(e.Path)
+		if existing, _ := memory.ReadVec(vecPath); existing != nil {
+			skipped++
+			continue
+		}
+		text := e.Name + " " + e.Description + " " + e.Body
+		vec, err := client.Embed(m.parentCtx, text)
+		if err != nil {
+			continue
+		}
+		if err := memory.WriteVec(vecPath, vec); err != nil {
+			continue
+		}
+		indexed++
+	}
+	m.appendLine(styleAuto.Render(fmt.Sprintf("[memory] reindex: %d embedded, %d already had vectors", indexed, skipped)))
 	return m, nil
 }
 
@@ -318,6 +368,7 @@ func renderMemoryPicker(p *memoryPickerState, _ int) string {
 		{"User preferences", memoryRowDesc("Saved at", p.userPath)},
 		{"Browse user memories", memoryDirRowDesc(p.userMemoryDir, "cross-project agent memories")},
 		{"Browse project memories", memoryDirRowDesc(p.projectMemoryDir, "this-repo agent memories")},
+		{"Reindex embeddings", "regenerate .vec sidecars for semantic retrieval"},
 	}
 	for i, r := range rows {
 		b.WriteString(renderMenuItem(menuItemOpts{
