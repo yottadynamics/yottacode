@@ -100,6 +100,20 @@ yottacode
 
 `openai-auth` uses a browser "Sign in with ChatGPT" flow instead of an API key. Saved tokens live under `~/.yottacode/auth/`, which yottacode blocks from model reads and writes.
 
+#### GitHub Copilot (`copilot`)
+
+```bash
+yottacode copilot-auth login
+
+export YOTTACODE_PROVIDER=copilot
+export YOTTACODE_MODEL=claude-haiku-4.5
+export YOTTACODE_BASE_URL=https://api.githubcopilot.com
+
+yottacode
+```
+
+`copilot` uses GitHub's device code flow. Model calls bill against the user's GitHub Copilot subscription. Available models depend on the subscription tier (Free, Pro, Pro+); the model picker marks plan-gated models.
+
 #### xAI
 
 ```bash
@@ -137,11 +151,14 @@ add a regression test for the bug described in this issue
 Useful interactive commands:
 
 - `/help` — list slash commands
-- `/provider` — show resolved provider and capabilities
-- `/doctor` — actively probe the configured endpoint
-- `/model <name>` — switch models for the current session
+- `/provider` — add, remove, or switch providers
+- `/model` — open model picker or `/model <name>` to switch directly
+- `/plan` — toggle plan mode (also Shift+Tab) for research before implementation
+- `/theme` — change the color theme
+- `/skills` — enable or disable built-in skills
 - `/sessions` — resume, rename, or export sessions
 - `/memory` — edit USER.md / YOTTACODE.md or browse agent-managed memories
+- `/doctor` — actively probe the configured endpoint
 - `/init` — draft or refresh `.yottacode/YOTTACODE.md`
 
 ## 4. Use one-shot mode for scripts

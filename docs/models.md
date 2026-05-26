@@ -60,6 +60,7 @@ Some models expose reasoning streams or summaries:
 |---|---|
 | OpenAI `o1*`, `o3*`, `o4*`, `gpt-5*` | Routed to Responses API when appropriate |
 | `openai-auth` account models | Use the ChatGPT-authenticated backend and surface reasoning summaries where available |
+| `copilot` account models | Use the GitHub Copilot backend; available models depend on subscription tier (Free/Pro/Pro+) |
 | xAI Grok reasoning models | Reasoning content is surfaced when present |
 | Ollama thinking models | Reasoning fields are surfaced when the OpenAI shim provides them |
 | Standard chat models | Stream final content only |

@@ -43,6 +43,11 @@ type ChatOptions struct {
 	BypassPermissions      bool
 	MaxIterations          int
 	Provider               string
+	// ProviderKind is the adapter kind (e.g. "copilot") resolved from
+	// the config profile. May differ from Provider (the profile name,
+	// e.g. "copilot-auth"). Set by applyProviderProfile; used by the
+	// adapter ProviderOverride so routing works correctly.
+	ProviderKind           string
 	ReasoningEffort        string
 	EnableWebSearch        bool
 	DisableWebSearch       bool
@@ -366,6 +371,9 @@ func applyProviderProfile(opts *ChatOptions) {
 	// rather than passing --provider explicitly.
 	if opts.Provider == "" {
 		opts.Provider = p.Name
+	}
+	if opts.ProviderKind == "" {
+		opts.ProviderKind = p.Kind
 	}
 	if opts.BaseURL == "" {
 		opts.BaseURL = p.BaseURL

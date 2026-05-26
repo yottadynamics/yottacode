@@ -12,6 +12,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	copilotauth "github.com/yottadynamics/yottacode/internal/auth/copilot"
 	openaiauth "github.com/yottadynamics/yottacode/internal/auth/openai"
 	"github.com/yottadynamics/yottacode/internal/catalog"
 	"github.com/yottadynamics/yottacode/internal/config"
@@ -43,6 +44,9 @@ const (
 	// The picker and adapter both read that file, so the scan is what
 	// makes the provider usable in the very first session.
 	stepOpenAIAuthScan
+	// stepCopilotLogin runs the device code flow when the user
+	// picked copilot. Sits between stepWriting and stepDone.
+	stepCopilotLogin
 	stepDone
 )
 
@@ -176,6 +180,10 @@ type wizardModel struct {
 	openAIAuthAccessToken string
 	openAIAuthModels      []string
 	openAIAuthScanErr     error
+
+	copilotUserCode  string
+	copilotVerifyURI string
+	copilotErr       error
 }
 
 // runInteractive opens the Bubbletea program and translates its
@@ -361,6 +369,77 @@ func pickedOpenAIAuth(choices [][2]string) bool {
 		}
 	}
 	return false
+}
+
+func pickedCopilot(choices [][2]string) bool {
+	for _, c := range choices {
+		if c[0] == "copilot-auth" {
+			return true
+		}
+	}
+	return false
+}
+
+// copilotDeviceCodeMsg is sent once the device code is obtained.
+type copilotDeviceCodeMsg struct {
+	dc  copilotauth.DeviceCode
+	err error
+}
+
+// copilotAuthDoneMsg is sent when the user completes device auth.
+type copilotAuthDoneMsg struct {
+	err error
+}
+
+func startCopilotLoginCmd(ctx context.Context) tea.Cmd {
+	return func() tea.Msg {
+		dc, err := copilotauth.RequestDeviceCode(ctx, nil, "")
+		return copilotDeviceCodeMsg{dc: dc, err: err}
+	}
+}
+
+func pollCopilotLoginCmd(ctx context.Context, dc copilotauth.DeviceCode) tea.Cmd {
+	return func() tea.Msg {
+		token, err := copilotauth.PollForToken(ctx, nil, "", dc)
+		if err != nil {
+			return copilotAuthDoneMsg{err: err}
+		}
+		storePath, err := copilotauth.DefaultStorePath()
+		if err != nil {
+			return copilotAuthDoneMsg{err: fmt.Errorf("resolve store path: %w", err)}
+		}
+		ts := copilotauth.TokenSet{GitHubToken: token}
+		if err := copilotauth.Save(storePath, ts); err != nil {
+			return copilotAuthDoneMsg{err: fmt.Errorf("save token: %w", err)}
+		}
+		ct, err := copilotauth.FetchCopilotToken(ctx, nil, token)
+		if err != nil {
+			return copilotAuthDoneMsg{err: fmt.Errorf("verify Copilot: %w", err)}
+		}
+		_, _ = copilotauth.FetchAndCacheModels(ctx, ct)
+		return copilotAuthDoneMsg{err: nil}
+	}
+}
+
+func (m wizardModel) viewCopilotLogin() string {
+	var b strings.Builder
+	w := lineWidthFor(m.width)
+	b.WriteString("\n  ")
+	b.WriteString(m.spin.View())
+	b.WriteString(" ")
+	b.WriteString(styleSelected.Render("waiting for device code authorization"))
+	b.WriteString("\n\n")
+	if m.copilotUserCode != "" {
+		b.WriteString("  ")
+		b.WriteString(styleHint.Render(truncate("Open "+m.copilotVerifyURI+" and enter code:", w-2)))
+		b.WriteString("\n  ")
+		b.WriteString(stylePathHL.Render(m.copilotUserCode))
+		b.WriteString("\n")
+	}
+	b.WriteString("\n  ")
+	b.WriteString(styleMuted.Render("Ctrl-C to cancel."))
+	b.WriteString("\n")
+	return b.String()
 }
 
 // startOpenAIAuthLoginCmd does the synchronous prep phase of the
@@ -558,6 +637,10 @@ func (m wizardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.step = stepOpenAIAuthLogin
 			return m, startOpenAIAuthLoginCmd(m.ctx)
 		}
+		if msg.err == nil && pickedCopilot(m.activeChoices()) {
+			m.step = stepCopilotLogin
+			return m, startCopilotLoginCmd(m.ctx)
+		}
 		m.step = stepDone
 		return m, tea.Quit
 	case openAIAuthURLReadyMsg:
@@ -603,6 +686,19 @@ func (m wizardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.openAIAuthAccessToken = ""
 		m.step = stepDone
 		return m, tea.Quit
+	case copilotDeviceCodeMsg:
+		if msg.err != nil {
+			m.copilotErr = msg.err
+			m.step = stepDone
+			return m, tea.Quit
+		}
+		m.copilotUserCode = msg.dc.UserCode
+		m.copilotVerifyURI = msg.dc.VerificationURI
+		return m, pollCopilotLoginCmd(m.ctx, msg.dc)
+	case copilotAuthDoneMsg:
+		m.copilotErr = msg.err
+		m.step = stepDone
+		return m, tea.Quit
 	case tea.KeyMsg:
 		// Global keys.
 		switch msg.String() {
@@ -624,7 +720,7 @@ func (m wizardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// no-op — going back would tear down the listener (or
 			// abandon a partial scan) without giving the user a
 			// recovery path. Ctrl-C cancels cleanly.
-			if m.step == stepOpenAIAuthLogin || m.step == stepOpenAIAuthScan {
+			if m.step == stepOpenAIAuthLogin || m.step == stepOpenAIAuthScan || m.step == stepCopilotLogin {
 				return m, nil
 			}
 			return m.goBack(), nil
@@ -664,6 +760,9 @@ func (m wizardModel) View() string {
 	}
 	if m.step == stepOpenAIAuthScan {
 		return m.viewChrome("Discovering models", m.viewOpenAIAuthScan())
+	}
+	if m.step == stepCopilotLogin {
+		return m.viewChrome("GitHub Copilot sign-in", m.viewCopilotLogin())
 	}
 	if m.step == stepDone {
 		if m.err != nil {
@@ -1551,6 +1650,9 @@ func (m wizardModel) viewConfigure() string {
 		case in.entry.Kind == "openai-auth":
 			b.WriteString("\n  ")
 			b.WriteString(styleHint.Render("(your full model list is discovered after browser sign-in below — gpt-5.5 is the universal default)"))
+		case in.entry.Kind == "copilot":
+			b.WriteString("\n  ")
+			b.WriteString(styleHint.Render("(your model list is cached after device code sign-in — run `yottacode copilot-auth login` after setup)"))
 		case catalog.IsCuratedKind(in.entry.Kind):
 			b.WriteString("\n  ")
 			b.WriteString(styleHint.Render("(catalog empty — run `go run ./cmd/yotta-models refresh` to populate)"))

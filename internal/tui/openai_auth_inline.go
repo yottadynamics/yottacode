@@ -99,9 +99,6 @@ func handleInlineOpenAIAuthURL(m Model, msg inlineOpenAIAuthURLMsg) (Model, tea.
 	}
 	m.openAIAuthPending = msg.pending
 	m.appendLine(styleAuto.Render("[openai-auth] browser opened — sign in to complete setup"))
-	if msg.pending.AuthURL != "" {
-		m.appendLine(styleAuto.Render("[openai-auth] fallback URL: " + msg.pending.AuthURL))
-	}
 	return m, waitInlineOpenAIAuthLoginCmd(m.parentCtx, msg.pending)
 }
 

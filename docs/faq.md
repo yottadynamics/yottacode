@@ -6,11 +6,15 @@ yottacode is a model-agnostic terminal AI agent for real codebases. It provides 
 
 ## Does yottacode require OpenAI?
 
-No. It works with OpenAI, Anthropic, Gemini, Ollama, xAI, ChatGPT OAuth through `openai-auth`, and OpenAI-compatible endpoints. Provider behavior depends on the endpoint and model you configure.
+No. It works with OpenAI, Anthropic, Gemini, Ollama, xAI, ChatGPT OAuth through `openai-auth`, GitHub Copilot through `copilot-auth`, and OpenAI-compatible endpoints. Provider behavior depends on the endpoint and model you configure.
 
 ## Can I use my ChatGPT account instead of an OpenAI API key?
 
 Yes. Run `yottacode openai-auth login` and configure provider `openai-auth`. Tokens are stored under `~/.yottacode/auth/`, and that directory is blocked from model reads and writes.
+
+## Can I use my GitHub Copilot subscription?
+
+Yes. Run `yottacode copilot-auth login` and configure provider `copilot`. Available models depend on your Copilot tier (Free, Pro, Pro+). The model picker marks plan-gated models with "upgrade plan".
 
 ## Why is there no default model?
 

@@ -10,7 +10,6 @@ import (
 	"os"
 	"os/signal"
 	"strings"
-	"time"
 
 	"github.com/spf13/cobra"
 
@@ -85,7 +84,7 @@ func newCopilotAuthLoginCmd() *cobra.Command {
 			fmt.Fprintf(cmd.ErrOrStderr(), "Copilot access verified (endpoint: %s)\n", ct.Endpoints.API)
 
 			fmt.Fprintf(cmd.ErrOrStderr(), "caching available models...\n")
-			if err := cacheCopilotModels(ctx, ct); err != nil {
+			if _, err := copilotauth.FetchAndCacheModels(ctx, ct); err != nil {
 				fmt.Fprintf(cmd.ErrOrStderr(), "warning: could not cache models: %v\n", err)
 			} else {
 				fmt.Fprintf(cmd.ErrOrStderr(), "model cache updated\n")
@@ -233,13 +232,9 @@ func newCopilotAuthModelsCmd() *cobra.Command {
 				return fetchCopilotModelsRaw(ctx, ct, cmd.OutOrStdout())
 			}
 
-			detailed, err := fetchCopilotModelsDetailed(ctx, ct)
+			detailed, err := copilotauth.FetchAndCacheModels(ctx, ct)
 			if err != nil {
 				return err
-			}
-
-			if cacheErr := cacheCopilotModels(ctx, ct); cacheErr != nil {
-				fmt.Fprintf(cmd.ErrOrStderr(), "warning: could not update cache: %v\n", cacheErr)
 			}
 
 			if jsonOutput {
@@ -302,133 +297,6 @@ func fetchCopilotModelsRaw(ctx context.Context, ct copilotauth.CopilotToken, w i
 	return err
 }
 
-func fetchCopilotModels(ctx context.Context, ct copilotauth.CopilotToken) ([]string, error) {
-	endpoint := ct.Endpoints.API
-	if endpoint == "" {
-		endpoint = copilotauth.CopilotAPIEndpoint
-	}
-	url := strings.TrimRight(endpoint, "/") + "/models"
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Authorization", "Bearer "+ct.Token)
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Editor-Version", "vscode/1.95.0")
-	req.Header.Set("Editor-Plugin-Version", "copilot/1.250.0")
-	req.Header.Set("Copilot-Integration-Id", "vscode-chat")
-	req.Header.Set("User-Agent", "GitHubCopilotChat/0.26.0")
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("fetch models: %w", err)
-	}
-	defer resp.Body.Close()
-	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("fetch models: HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))
-	}
-
-	var env struct {
-		Data []struct {
-			ID string `json:"id"`
-		} `json:"data"`
-	}
-	if err := json.Unmarshal(raw, &env); err != nil {
-		return nil, fmt.Errorf("parse models response: %w", err)
-	}
-	out := make([]string, 0, len(env.Data))
-	for _, m := range env.Data {
-		id := strings.TrimSpace(m.ID)
-		if id != "" && copilotauth.IsChatModel(id) {
-			out = append(out, id)
-		}
-	}
-	return out, nil
-}
-
-func cacheCopilotModels(ctx context.Context, ct copilotauth.CopilotToken) error {
-	raw, err := fetchCopilotModelsDetailed(ctx, ct)
-	if err != nil {
-		return err
-	}
-	path, err := copilotauth.DefaultModelsPath()
-	if err != nil {
-		return err
-	}
-	mf := copilotauth.ModelsFile{
-		CachedAt: time.Now().UTC(),
-		Models:   raw,
-	}
-	return copilotauth.SaveModels(path, mf)
-}
-
-func fetchCopilotModelsDetailed(ctx context.Context, ct copilotauth.CopilotToken) ([]copilotauth.CachedModel, error) {
-	endpoint := ct.Endpoints.API
-	if endpoint == "" {
-		endpoint = copilotauth.CopilotAPIEndpoint
-	}
-	url := strings.TrimRight(endpoint, "/") + "/models"
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Authorization", "Bearer "+ct.Token)
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Editor-Version", "vscode/1.95.0")
-	req.Header.Set("Editor-Plugin-Version", "copilot/1.250.0")
-	req.Header.Set("Copilot-Integration-Id", "vscode-chat")
-	req.Header.Set("User-Agent", "GitHubCopilotChat/0.26.0")
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))
-	}
-	var env struct {
-		Data []struct {
-			ID                  string `json:"id"`
-			Name                string `json:"name"`
-			ModelPickerEnabled  bool   `json:"model_picker_enabled"`
-			ModelPickerCategory string `json:"model_picker_category"`
-			Capabilities        struct {
-				Type   string `json:"type"`
-				Limits struct {
-					MaxContextWindowTokens int `json:"max_context_window_tokens"`
-					MaxOutputTokens        int `json:"max_output_tokens"`
-				} `json:"limits"`
-			} `json:"capabilities"`
-			Policy struct {
-				State string `json:"state"`
-			} `json:"policy"`
-		} `json:"data"`
-	}
-	if err := json.Unmarshal(raw, &env); err != nil {
-		return nil, fmt.Errorf("parse models: %w", err)
-	}
-	out := make([]copilotauth.CachedModel, 0, len(env.Data))
-	for _, m := range env.Data {
-		id := strings.TrimSpace(m.ID)
-		if id == "" || !copilotauth.IsChatModel(id) {
-			continue
-		}
-		if !m.ModelPickerEnabled && m.ModelPickerCategory == "" {
-			continue
-		}
-		out = append(out, copilotauth.CachedModel{
-			ID:            id,
-			Name:          m.Name,
-			ContextWindow: m.Capabilities.Limits.MaxContextWindowTokens,
-			MaxOutput:     m.Capabilities.Limits.MaxOutputTokens,
-			Disabled:      m.Policy.State == "disabled",
-		})
-	}
-	return out, nil
-}
 
 func resolveCopilotStorePath(override string) (string, error) {
 	if override != "" {

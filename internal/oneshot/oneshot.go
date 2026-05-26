@@ -78,7 +78,7 @@ func Run(ctx context.Context, opts cli.ChatOptions, prompt string) error {
 		BaseURL:                opts.BaseURL,
 		APIKey:                 opts.APIKey,
 		Model:                  opts.Model,
-		ProviderOverride:       adapter.Provider(strings.TrimSpace(opts.Provider)),
+		ProviderOverride:       adapter.Provider(strings.TrimSpace(opts.ProviderKind)),
 		ReasoningEffort:        opts.ReasoningEffort,
 		EnableWebSearch:        opts.EnableWebSearch,
 		DisableWebSearch:       opts.DisableWebSearch,

@@ -68,7 +68,7 @@ func Probe(ctx context.Context, cfg Config) ProbeResult {
 		return probeOpenAIAuth(res, cfg)
 	}
 	if res.Profile.Provider == ProviderCopilot {
-		return probeCopilot(res)
+		return probeCopilot(res, cfg)
 	}
 
 	if ctx == nil {
@@ -193,7 +193,7 @@ func probeOpenAIAuth(res ProbeResult, cfg Config) ProbeResult {
 	return res
 }
 
-func probeCopilot(res ProbeResult) ProbeResult {
+func probeCopilot(res ProbeResult, cfg Config) ProbeResult {
 	storePath, err := copilotauth.DefaultStorePath()
 	if err != nil {
 		res.Issues = uniqueStrings(append(res.Issues, fmt.Sprintf("copilot: resolve token store: %v", err)))
@@ -214,5 +214,21 @@ func probeCopilot(res ProbeResult) ProbeResult {
 	}
 	res.EndpointReachable = true
 	res.AuthOK = true
+
+	modelsPath, err := copilotauth.DefaultModelsPath()
+	if err != nil {
+		return res
+	}
+	mf, err := copilotauth.LoadModels(modelsPath)
+	if err != nil || len(mf.Models) == 0 {
+		return res
+	}
+	res.AvailableModels = make([]string, 0, len(mf.Models))
+	for _, m := range mf.Models {
+		res.AvailableModels = append(res.AvailableModels, m.ID)
+		if m.ID == cfg.Model {
+			res.ModelVisible = true
+		}
+	}
 	return res
 }
