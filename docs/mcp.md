@@ -6,12 +6,17 @@ yottacode is a client for Anthropic's [Model Context Protocol](https://modelcont
 
 v1 covers the part of the MCP ecosystem most users actually need:
 
-- **Stdio transport.** yottacode launches each MCP server as a subprocess at session start and talks JSON-RPC over stdin/stdout. Covers every server published as `@modelcontextprotocol/server-*` and most community servers.
+- **Stdio transport only.** yottacode launches each MCP server as a subprocess and talks JSON-RPC over stdin/stdout. Covers every server published as `@modelcontextprotocol/server-*` and most community servers. Remote servers that only expose HTTP/SSE or Streamable HTTP endpoints (e.g. `mcp.excalidraw.com`) are not supported yet — you must run a local subprocess.
+- **Non-blocking startup.** MCP servers initialize in the background after the TUI renders. A slow server (e.g. `npx -y` downloading a package for the first time) does not block the prompt. `/mcp` shows "starting..." for servers still initializing; tools register automatically once they come up.
 - **Tools only.** MCP's `resources` and `prompts` primitives are deferred — they're rare in practice and add real surface. Most servers ship only tools anyway.
 - **Per-tool approval.** Each MCP tool defaults to the approval modal. Servers can hint a tool as read-only (`annotations.readOnlyHint: true`) and yottacode honors that — read-only tools auto-execute. Users can still elevate trust with explicit permission rules.
 - **Subprocess sandboxing inherited from your OS.** yottacode does not run MCP servers in an isolated container. Each subprocess inherits yottacode's environment and filesystem permissions. Treat MCP servers as you'd treat any binary you choose to run.
 
-Deferred to follow-ups: HTTP/SSE transport (for container-hosted servers with bearer-token auth), MCP resources, MCP prompts, OAuth2 device-flow auth, and clean `/mcp restart` (currently the workaround is to restart the yottacode session).
+Deferred to follow-ups:
+
+- **HTTP/SSE transport** — needed for remote MCP servers that don't run as local subprocesses. This is a transport-level addition; many remote servers (like Excalidraw) don't require auth, so transport alone would unblock them.
+- **OAuth 2.1 device-flow auth** — needed on top of HTTP transport for remote servers that require authentication.
+- **MCP resources and prompts** — rarely used in practice; most servers only expose tools.
 
 ## Configuration
 
@@ -76,10 +81,18 @@ Precedence is the same as native tools: `deny` > `ask` > `allow` > default. `MCP
 | Command | Effect |
 |---|---|
 | `/mcp` | List configured servers, their start status, and tool count. |
+| `/mcp add <name> --command <cmd> [args...]` | Add a server to `config.toml`, start it immediately, and register its tools — no restart needed. Everything after `--command` is the executable + arguments. |
+| `/mcp remove <name>` | Remove a server from `config.toml`. Requires a restart to take effect. |
 | `/mcp logs <name>` | Show the last ~200 lines of the server's stderr (helpful when a server crashes during init or under load). |
 | `/mcp restart <name>` | Stop the named subprocess, respawn it from the stored config, and swap the registered tools to the fresh client. The tool surface may shrink or grow if the server's catalog changed between generations. |
 
-Editing `config.toml` mid-session still requires a full yottacode restart — `/mcp restart` rebuilds from the *originally loaded* config, not from disk.
+Examples:
+
+```
+/mcp add podman --command npx -y podman-mcp-server@latest
+/mcp add filesystem --command npx -y @modelcontextprotocol/server-filesystem /home/me/workspace
+/mcp add excalidraw --command node /path/to/excalidraw-mcp/dist/index.js --stdio
+```
 
 ## Non-text tool results
 
@@ -93,7 +106,28 @@ Full multi-modal passthrough (image / audio bytes forwarded to a vision-capable 
 
 MCP tools mutate state outside yottacode's file model (databases, external APIs, filesystem-via-server). yottacode's checkpoint system (`/checkpoints`, `Esc Esc`) cannot snapshot or restore MCP-driven changes — same limitation as `run_bash`. If you need rollback, use the underlying system's own mechanisms (database transactions, git, etc.).
 
-## Curated v1 test servers
+## Locally-built servers
+
+Some MCP servers are not published as npm packages and must be cloned and built locally. Use `node` (or the appropriate runtime) as the `command` and point `args` at the built entrypoint:
+
+```toml
+[[mcp_servers]]
+name    = "excalidraw"
+command = "node"
+args    = ["/home/me/excalidraw-mcp/dist/index.js", "--stdio"]
+```
+
+Build steps vary per server — check the server's README. Typical pattern for Node.js servers:
+
+```bash
+git clone https://github.com/<org>/<server>.git
+cd <server>
+pnpm install && pnpm run build
+```
+
+Then point `args` at the built `dist/index.js` (or equivalent). Most stdio servers accept a `--stdio` flag to select that transport.
+
+## Curated test servers
 
 Useful starting points; each is published as an `npx`-runnable npm package.
 
@@ -113,4 +147,4 @@ On a graceful yottacode shutdown (TUI quits, Ctrl+C handled), MCP subprocesses r
 - **`command not found` at session start.** yottacode resolves `command` via `PATH`. Use an absolute path if the binary lives elsewhere.
 - **Server crashes during init.** Check `/mcp logs <name>` for the stderr — npm install errors, missing env vars, or bad args show up there.
 - **Tool appears in `/mcp` but the model never calls it.** The schema may be malformed; yottacode passes it through verbatim, and some models refuse tools they can't parse. Re-check the server's `tools/list` output.
-- **Stale tools after editing config.** Restart the yottacode session. v1 doesn't reload `config.toml` mid-session.
+- **Stale tools after editing config.** Use `/mcp restart <name>` to reload from the originally-loaded config, or restart the yottacode session to pick up `config.toml` changes from disk.

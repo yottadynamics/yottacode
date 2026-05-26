@@ -28,7 +28,9 @@ import (
 	"github.com/yottadynamics/yottacode/internal/experimental"
 	"github.com/yottadynamics/yottacode/internal/permissions"
 	"github.com/yottadynamics/yottacode/internal/session"
+	"github.com/yottadynamics/yottacode/internal/skills"
 	"github.com/yottadynamics/yottacode/internal/subagents"
+	"github.com/yottadynamics/yottacode/internal/usercmd"
 )
 
 // defaultSystemPrompt is sourced from internal/agent so the TUI and
@@ -111,12 +113,21 @@ func Run(ctx context.Context, opts cli.ChatOptions, prompt string) error {
 	// TUI does the rebuild per-turn because it doesn't know the
 	// prompt at session start). USER.md, YOTTACODE.md, and both
 	// MEMORY.md indexes always inject in full.
+	// Load Agent Skills up-front so the resolved set drives both the
+	// system-prompt's description-matched metadata tier and the Skill
+	// tool registration below. Same one-load-two-uses pattern as the
+	// TUI runner.
+	skillsRes, _ := skills.LoadAll(cwd, usercmd.Reserved)
+	for _, w := range skillsRes.Warnings {
+		fmt.Fprintln(os.Stderr, "skills: "+w)
+	}
 	if fresh {
 		sys := opts.SystemPrompt
 		if sys == "" {
 			sys = defaultSystemPrompt
 		}
-		sys = memory.SystemPromptFor(composeSystemPrompt(sys, profile), mem, prompt, fileCfg.Retrieval)
+		composed := appendSkillsSection(composeSystemPrompt(sys, profile), skillsRes.Skills)
+		sys = memory.SystemPromptFor(composed, mem, prompt, fileCfg.Retrieval)
 		sess.Messages = append(sess.Messages, adapter.Message{
 			Role:    adapter.RoleSystem,
 			Content: sys,
@@ -126,7 +137,8 @@ func Run(ctx context.Context, opts cli.ChatOptions, prompt string) error {
 		if sys == "" {
 			sys = defaultSystemPrompt
 		}
-		recomposeSessionSystemPrompt(sess, memory.SystemPromptFor(composeSystemPrompt(sys, profile), mem, prompt, fileCfg.Retrieval))
+		composed := appendSkillsSection(composeSystemPrompt(sys, profile), skillsRes.Skills)
+		recomposeSessionSystemPrompt(sess, memory.SystemPromptFor(composed, mem, prompt, fileCfg.Retrieval))
 	}
 	// Auto-inject @<path> file references found in the prompt into the
 	// system prompt before the turn fires. Mirrors the TUI startTurn
@@ -166,8 +178,16 @@ func Run(ctx context.Context, opts cli.ChatOptions, prompt string) error {
 	if err != nil {
 		return err
 	}
+	// cwdRef is the shared cwd holder every tool reads from. In
+	// oneshot the value never changes mid-run (enter_worktree is in
+	// the safety floor and would prompt — there's no approval surface
+	// here), but we still wire it consistently so the agent codepath
+	// matches the TUI's. WriteOpts shares the same pointer so the
+	// write validator and the tools agree on the current cwd.
+	cwdRef := agent.NewCwdRef(cwd)
+
 	writeOpts := agent.WritePathOptions{
-		Cwd:          cwd,
+		Cwd:          cwdRef,
 		AllowedPaths: splitAllowPaths(opts.AllowPaths),
 		DenyExact:    agent.DefaultDenyPaths(cwd),
 	}
@@ -179,37 +199,49 @@ func Run(ctx context.Context, opts cli.ChatOptions, prompt string) error {
 	}
 
 	reg := agent.NewRegistry()
-	reg.Register(&agent.ReadFileTool{Cwd: cwd, DenyReadPaths: denyReads})
-	reg.Register(&agent.ReadManyFilesTool{Cwd: cwd, DenyReadPaths: denyReads})
-	reg.Register(&agent.WriteFileTool{Cwd: cwd, WriteOpts: writeOpts})
-	reg.Register(&agent.EditFileTool{Cwd: cwd, WriteOpts: writeOpts})
-	reg.Register(&agent.ApplyDiffTool{Cwd: cwd, WriteOpts: writeOpts})
-	reg.Register(&agent.MkdirTool{Cwd: cwd, WriteOpts: writeOpts})
-	reg.Register(&agent.CopyFileTool{Cwd: cwd, WriteOpts: writeOpts})
-	reg.Register(&agent.MoveFileTool{Cwd: cwd, WriteOpts: writeOpts})
-	reg.Register(&agent.DeleteFileTool{Cwd: cwd, WriteOpts: writeOpts})
-	reg.Register(&agent.ListGitChangedFilesTool{Cwd: cwd})
-	reg.Register(&agent.GitBranchStatusTool{Cwd: cwd})
-	reg.Register(&agent.GitShowFileAtRevTool{Cwd: cwd})
-	reg.Register(&agent.GitDiffFilesTool{Cwd: cwd})
-	reg.Register(&agent.GitStageFilesTool{Cwd: cwd})
-	reg.Register(&agent.GitUnstageFilesTool{Cwd: cwd})
-	reg.Register(&agent.GitCommitTool{Cwd: cwd})
-	reg.Register(&agent.GitLogFileTool{Cwd: cwd})
-	reg.Register(&agent.GitBlameLinesTool{Cwd: cwd})
-	reg.Register(&agent.GitMergeBaseTool{Cwd: cwd})
-	reg.Register(&agent.GitCheckpointTool{Cwd: cwd})
-	reg.Register(&agent.RollbackTool{Cwd: cwd})
-	reg.Register(&agent.RunTestsTool{Cwd: cwd})
-	reg.Register(&agent.RunBashTool{Cwd: cwd})
-	reg.Register(&agent.ListDirTool{Cwd: cwd})
-	reg.Register(&agent.ListProjectStructureTool{Cwd: cwd})
-	reg.Register(&agent.GlobTool{Cwd: cwd})
-	reg.Register(&agent.GrepTool{Cwd: cwd, DenyReadPaths: denyReads})
+	reg.Register(&agent.ReadFileTool{Cwd: cwdRef, DenyReadPaths: denyReads})
+	reg.Register(&agent.ReadManyFilesTool{Cwd: cwdRef, DenyReadPaths: denyReads})
+	reg.Register(&agent.WriteFileTool{Cwd: cwdRef, WriteOpts: writeOpts})
+	reg.Register(&agent.EditFileTool{Cwd: cwdRef, WriteOpts: writeOpts})
+	reg.Register(&agent.ApplyDiffTool{Cwd: cwdRef, WriteOpts: writeOpts})
+	reg.Register(&agent.MkdirTool{Cwd: cwdRef, WriteOpts: writeOpts})
+	reg.Register(&agent.CopyFileTool{Cwd: cwdRef, WriteOpts: writeOpts})
+	reg.Register(&agent.MoveFileTool{Cwd: cwdRef, WriteOpts: writeOpts})
+	reg.Register(&agent.DeleteFileTool{Cwd: cwdRef, WriteOpts: writeOpts})
+	reg.Register(&agent.ListGitChangedFilesTool{Cwd: cwdRef})
+	reg.Register(&agent.GitBranchStatusTool{Cwd: cwdRef})
+	reg.Register(&agent.GitShowFileAtRevTool{Cwd: cwdRef})
+	reg.Register(&agent.GitDiffFilesTool{Cwd: cwdRef})
+	reg.Register(&agent.GitStageFilesTool{Cwd: cwdRef})
+	reg.Register(&agent.GitUnstageFilesTool{Cwd: cwdRef})
+	reg.Register(&agent.GitCreateBranchTool{Cwd: cwdRef})
+	reg.Register(&agent.GitCommitTool{Cwd: cwdRef})
+	reg.Register(&agent.GitLogFileTool{Cwd: cwdRef})
+	reg.Register(&agent.GitBlameLinesTool{Cwd: cwdRef})
+	reg.Register(&agent.GitMergeBaseTool{Cwd: cwdRef})
+	reg.Register(&agent.GitCheckpointTool{Cwd: cwdRef})
+	reg.Register(&agent.RollbackTool{Cwd: cwdRef})
+	reg.Register(&agent.RunTestsTool{Cwd: cwdRef})
+	reg.Register(&agent.RunBashTool{Cwd: cwdRef})
+	// Git worktree tools. enter_worktree / exit_worktree always prompt
+	// (auto-mode safety floor); see IsAutoModeSafetyFloor.
+	reg.Register(&agent.EnterWorktreeTool{Cwd: cwdRef})
+	reg.Register(&agent.ExitWorktreeTool{Cwd: cwdRef})
+	reg.Register(&agent.WorktreeStatusTool{Cwd: cwdRef})
+	reg.Register(&agent.GitWorktreeListTool{Cwd: cwdRef})
+	reg.Register(&agent.GitWorktreeAddTool{Cwd: cwdRef})
+	reg.Register(&agent.GitWorktreeRemoveTool{Cwd: cwdRef})
+	reg.Register(&agent.GitWorktreeLockTool{Cwd: cwdRef})
+	reg.Register(&agent.GitWorktreeUnlockTool{Cwd: cwdRef})
+	reg.Register(&agent.GitWorktreePruneTool{Cwd: cwdRef})
+	reg.Register(&agent.ListDirTool{Cwd: cwdRef})
+	reg.Register(&agent.ListProjectStructureTool{Cwd: cwdRef})
+	reg.Register(&agent.GlobTool{Cwd: cwdRef})
+	reg.Register(&agent.GrepTool{Cwd: cwdRef, DenyReadPaths: denyReads})
 	reg.Register(&agent.FetchURLTool{})
-	reg.Register(&agent.MemorySaveTool{Cwd: cwd})
-	reg.Register(&agent.MemoryForgetTool{Cwd: cwd})
-	reg.Register(&agent.GitTool{Cwd: cwd})
+	reg.Register(&agent.MemorySaveTool{Cwd: cwdRef})
+	reg.Register(&agent.MemoryForgetTool{Cwd: cwdRef})
+	reg.Register(&agent.GitTool{Cwd: cwdRef})
 	reg.Register(&agent.TodoWriteTool{Store: planStore})
 	// ExitPlanModeTool is registered for schema parity with the TUI
 	// build. The adapter-tools filter in the loop hides it whenever
@@ -252,7 +284,7 @@ func Run(ctx context.Context, opts cli.ChatOptions, prompt string) error {
 		YoloMode:        parentYoloMode,
 		PlanMode:        parentPlanMode,
 		AutoMode:        parentAutoMode,
-		Cwd:             cwd,
+		Cwd:             cwdRef,
 		TranscriptDir:   transcriptDir,
 		AllowBackground: false,
 	}
@@ -265,12 +297,17 @@ func Run(ctx context.Context, opts cli.ChatOptions, prompt string) error {
 	// symmetric with the TUI is worth the one extra line.
 	reg.Register(&agent.GetSubagentResultTool{Tasks: tasks})
 
+	// Skill tool: reuses the set loaded above for system-prompt
+	// composition so the model's view stays consistent across both
+	// surfaces.
+	reg.Register(&agent.SkillTool{All: skillsRes.Skills})
+
 	cfg := agent.LoopConfig{
 		Adapter:           ad,
 		Registry:          reg,
 		Permissions:       perms,
 		BypassPermissions: opts.BypassPermissions,
-		Cwd:               cwd,
+		Cwd:               cwdRef,
 		MaxIterations:     opts.MaxIterations,
 		PlanMode:          parentPlanMode,
 		AutoMode:          parentAutoMode,
@@ -489,6 +526,24 @@ func composeSystemPrompt(base string, profile adapter.ProviderProfile) string {
 		return base + "\nFor live or current information, use the provider-native web_search tool when needed."
 	}
 	return base + "\nFor live or current information, use fetch_url for specific pages or feeds when needed."
+}
+
+// appendSkillsSection adds the description-matched metadata tier of
+// Agent Skills to the system prompt. Mirrors tui/run.go's helper of
+// the same name — bodies stay out of the prompt; the model loads them
+// on demand via the Skill tool.
+func appendSkillsSection(base string, loaded []skills.Skill) string {
+	if len(loaded) == 0 {
+		return base
+	}
+	var b strings.Builder
+	b.WriteString(base)
+	b.WriteString("\n\n# Available skills\n\n")
+	b.WriteString("You have access to a set of reusable capability playbooks (Agent Skills). When a user request matches a skill's described scope, invoke it via the `Skill` tool (e.g. `Skill(skill=\"<name>\")`); the tool returns the skill's body so you can apply it in the current turn. Only invoke a skill that appears in the list below — do NOT guess names.\n\n")
+	for _, sk := range loaded {
+		fmt.Fprintf(&b, "- %s: %s\n", sk.Name, sk.Description)
+	}
+	return b.String()
 }
 
 func hasBuiltin(tools []adapter.BuiltinToolKind, want adapter.BuiltinToolKind) bool {

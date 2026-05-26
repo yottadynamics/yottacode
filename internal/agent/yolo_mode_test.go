@@ -68,7 +68,7 @@ func TestLoop_YoloMode_DenyRuleStillWins(t *testing.T) {
 	reg.Register(&mockTool{name: "run_bash", requiresApproval: true, output: "executed"})
 	yoloMode := &YoloModeState{}
 	yoloMode.Active.Store(true)
-	cfg := LoopConfig{Adapter: streamer, Registry: reg, Permissions: perms, Cwd: cwd, MaxIterations: 5, YoloMode: yoloMode}
+	cfg := LoopConfig{Adapter: streamer, Registry: reg, Permissions: perms, Cwd: NewCwdRef(cwd), MaxIterations: 5, YoloMode: yoloMode}
 	hist := []adapter.Message{{Role: adapter.RoleUser, Content: "go"}}
 
 	events, _ := runTurnSync(t, context.Background(), cfg, &hist, nil)

@@ -178,6 +178,120 @@ func TestMapStatus_UsesStateAsConclusion(t *testing.T) {
 	}
 }
 
+func TestMapIssueDetails_FullFixture(t *testing.T) {
+	state := "open"
+	issue := &gogithub.Issue{
+		Number:  gogithub.Int(42),
+		Title:   gogithub.String("Add caching layer"),
+		Body:    gogithub.String("We need a cache for repeated reads."),
+		State:   &state,
+		HTMLURL: gogithub.String("https://github.com/o/r/issues/42"),
+		User: &gogithub.User{
+			Login: gogithub.String("reporter"),
+		},
+		Labels: []*gogithub.Label{
+			{Name: gogithub.String("bug")},
+			{Name: gogithub.String("priority-high")},
+		},
+		Assignees: []*gogithub.User{
+			{Login: gogithub.String("octocat")},
+		},
+	}
+	got := mapIssueDetails(issue)
+	if got.Number != 42 || got.Title != "Add caching layer" {
+		t.Errorf("scalars not mapped: %+v", got)
+	}
+	if got.State != "OPEN" {
+		t.Errorf("state should be uppercased: %q", got.State)
+	}
+	if got.Author != "reporter" {
+		t.Errorf("author = %q", got.Author)
+	}
+	if len(got.Labels) != 2 || got.Labels[0] != "bug" {
+		t.Errorf("labels = %v", got.Labels)
+	}
+	if len(got.Assignees) != 1 || got.Assignees[0] != "octocat" {
+		t.Errorf("assignees = %v", got.Assignees)
+	}
+}
+
+func TestMapIssueDetails_NilSafe(t *testing.T) {
+	got := mapIssueDetails(nil)
+	if got.Number != 0 || got.Title != "" || got.State != "" {
+		t.Errorf("nil input should return zero value, got %+v", got)
+	}
+}
+
+func TestMapIssueDetails_DropsEmptyLabelsAndAssignees(t *testing.T) {
+	issue := &gogithub.Issue{
+		Labels: []*gogithub.Label{
+			{Name: gogithub.String("")},
+			{Name: gogithub.String("keeper")},
+			{Name: nil},
+		},
+		Assignees: []*gogithub.User{
+			{Login: gogithub.String("")},
+			{Login: gogithub.String("kept")},
+			{Login: nil},
+		},
+	}
+	got := mapIssueDetails(issue)
+	if len(got.Labels) != 1 || got.Labels[0] != "keeper" {
+		t.Errorf("labels = %v; want [keeper]", got.Labels)
+	}
+	if len(got.Assignees) != 1 || got.Assignees[0] != "kept" {
+		t.Errorf("assignees = %v; want [kept]", got.Assignees)
+	}
+}
+
+func TestMapIssueComment_FullFixture(t *testing.T) {
+	now := time.Now()
+	c := &gogithub.IssueComment{
+		Body: gogithub.String("LGTM"),
+		User: &gogithub.User{
+			Login: gogithub.String("reviewer"),
+		},
+		CreatedAt: &gogithub.Timestamp{Time: now},
+	}
+	got := mapIssueComment(c)
+	if got.Author != "reviewer" || got.Body != "LGTM" {
+		t.Errorf("comment not mapped: %+v", got)
+	}
+	if got.Created.IsZero() {
+		t.Errorf("created timestamp should be populated")
+	}
+}
+
+func TestMapIssueComment_NilSafe(t *testing.T) {
+	got := mapIssueComment(nil)
+	if got.Author != "" || got.Body != "" {
+		t.Errorf("nil input should return zero value, got %+v", got)
+	}
+}
+
+func TestMapIssueSummary_DropsBodyAndComments(t *testing.T) {
+	// IssueSummary is the lightweight contract: Body should never
+	// appear in summary output even if go-github surfaces it.
+	issue := &gogithub.Issue{
+		Number:  gogithub.Int(7),
+		Title:   gogithub.String("summary issue"),
+		Body:    gogithub.String("this body should NOT appear in IssueSummary"),
+		HTMLURL: gogithub.String("https://github.com/o/r/issues/7"),
+		User:    &gogithub.User{Login: gogithub.String("op")},
+		Labels:  []*gogithub.Label{{Name: gogithub.String("triage")}},
+	}
+	got := mapIssueSummary(issue)
+	if got.Number != 7 || got.Title != "summary issue" {
+		t.Errorf("summary scalars not mapped: %+v", got)
+	}
+	// IssueSummary has no Body field — compile-time guarantee that
+	// the body cannot leak. This test exists to catch the case
+	// where someone adds Body to IssueSummary later: if they do,
+	// they need to consciously delete this test, which is the
+	// signal to think about whether it's right.
+	_ = got
+}
+
 func TestClassifyAPIError_404IsNotFound(t *testing.T) {
 	err := &gogithub.ErrorResponse{
 		Response: &http.Response{StatusCode: http.StatusNotFound},

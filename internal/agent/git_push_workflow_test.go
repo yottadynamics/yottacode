@@ -269,7 +269,7 @@ func TestGitPushTool_RoundsThroughTool(t *testing.T) {
 	writeFile(t, tmp, "f.txt", "v1\n")
 	gitCommit(t, tmp, "base")
 
-	tool := &GitPushTool{Cwd: tmp}
+	tool := &GitPushTool{Cwd: NewCwdRef(tmp)}
 	out, err := tool.Execute(context.Background(), `{}`)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)

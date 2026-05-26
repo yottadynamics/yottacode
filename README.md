@@ -75,7 +75,7 @@ Thirty built-in tools spanning reads, writes, filesystem, search, git helpers (s
 
 ### Typed subagents
 
-Delegate research, code search, and planning to typed subagents that run in their own context window — the parent only sees the final answer, never the child's tool calls or reasoning. Use it to keep the parent's context lean during long conversations. Three built-ins ship: **`Explore`** (read-only code search), **`Plan`** (drafts an implementation plan), **`general-purpose`** (open-ended research). Ship your own under `.yottacode/agents/<name>.md` (project) or `~/.yottacode/agents/<name>.md` (global) with YAML frontmatter declaring tools and an optional model override. `/subagents` opens an inline picker; `Enter` views any task's transcript in `$PAGER`. Mirrors Claude Code's `Agent` / `Task` tool surface. See [`docs/subagents.md`](docs/subagents.md).
+Delegate research, code search, planning, and verification to typed subagents that run in their own context window — the parent only sees the final answer, never the child's tool calls or reasoning. Use it to keep the parent's context lean during long conversations. Four built-ins ship: **`Explore`** (read-only code search), **`Plan`** (drafts an implementation plan), **`general-purpose`** (open-ended research), and **`verification`** (adversarial PASS/FAIL/PARTIAL verdict after running builds, tests, and probes; background-by-default). Ship your own under `.yottacode/agents/<name>.md` (project) or `~/.yottacode/agents/<name>.md` (global) with YAML frontmatter declaring tools, an optional model override, and an optional `background: true` default. `/subagents` opens an inline picker; `Enter` views any task's transcript in `$PAGER`. Mirrors Claude Code's `Agent` / `Task` tool surface. See [`docs/subagents.md`](docs/subagents.md).
 
 > Background subagents (`run_in_background:true` for fire-and-forget delegation) are an opt-in experimental feature. Enable with `yottacode --experimental background_subagents`, `YOTTACODE_EXPERIMENTAL=background_subagents`, or `[experimental]` in `~/.yottacode/config.toml`. Foreground delegation is default-on. See [`docs/experimental.md`](docs/experimental.md).
 
@@ -93,6 +93,12 @@ Every user message gets an automatic checkpoint capturing the conversation plus 
 
 Drop a markdown file into `~/.yottacode/commands/` (user scope) or `.yottacode/commands/` (project scope, committable) and it shows up as `/<name>` in the palette. Bodies support `$ARGUMENTS` / `$1`..`$9` argument substitution, optional YAML frontmatter (`description`, `argument-hint`), and `@<path>` file references. Subdirectories namespace commands as `/ns:name`. Mirrors Claude Code's custom-commands surface. See [`docs/tui-slash-commands.md#custom-commands`](docs/tui-slash-commands.md#custom-commands).
 
+### Agent Skills
+
+Reusable capability playbooks the agent loads on demand. Each skill is a directory with a `SKILL.md` (frontmatter `name` + `description` + optional `license` / `metadata` / `allowed-tools`, plus a markdown body). Names + descriptions are surfaced to the model only after you enable them via `/skills`; the body is loaded on activation via the `Skill` tool (model-side) or `/<skill-name>` slash (user-side). 16 built-in skills cover: SSH/remote ops · git investigation · Dockerfile review · TDD · verification before completion · Playwright webapp testing · `diagnose` debugging loop · security audit · plan writing & execution · pre-plan brainstorming · receiving code review · codebase architecture review · throwaway prototyping · session handoff · performance profiling. Drop a directory into `~/.yottacode/skills/<slug>/` for a user-scope skill, or `.yottacode/skills/<slug>/` for a project-scope skill — project shadows user shadows built-in. Format follows the [agentskills.io spec](https://agentskills.io/specification).
+
+Skills are **off by default each session** — the model sees no skill list in its prompt until you open `/skills` and pick which ones to enable. The selection lasts for the session. Slash-form invocations (e.g. `/diagnose`) bypass the enablement gate because typing the slash IS the selection.
+
 ### Cross-session recall
 
 `/recall <query>` runs local SQLite FTS5 search across every saved session. `/summarize` compacts long sessions after snapshotting the full pre-summary transcript. Per-turn atomic save means crashed terminals don't lose work.
@@ -100,6 +106,10 @@ Drop a markdown file into `~/.yottacode/commands/` (user scope) or `.yottacode/c
 ### Scriptable one-shot mode
 
 `yottacode run "<prompt>"` for CI and automation — stdout = answer, stderr = reasoning + tool status. Composes cleanly with pipes and CI logs.
+
+### Parallel sessions via worktrees
+
+`yottacode --worktree <name>` (or `-w <name>`) runs the session in a fresh git worktree at `~/.yottacode/worktrees/<repo-slug>/<name>/` on branch `worktree-<name>`. Two yottacode sessions can edit the same repo in parallel without colliding, and the worktrees never clutter the project root or get indexed by IDEs / `find` / `grep`. A per-repo `.worktreeinclude` file copies gitignored configs (`.env`, IDE settings) into each new worktree so the agent doesn't trip over missing setup. The agent can spin its own worktrees via the `enter_worktree` / `exit_worktree` tools (always prompted, even in auto mode). Manage via `yottacode worktree list / remove / prune / status`. See [`docs/worktrees.md`](docs/worktrees.md).
 
 ## Common commands
 
@@ -154,7 +164,9 @@ Full references: [`docs/cli.md`](docs/cli.md) and [`docs/tui-slash-commands.md`]
 - [`docs/configuration.md`](docs/configuration.md) — flags, env vars, config file, diagnostics
 - [`docs/providers.md`](docs/providers.md) and [`docs/models.md`](docs/models.md) — provider/model setup and switching
 - [`docs/tools.md`](docs/tools.md) — built-in tools and approval behavior
+- [`docs/github.md`](docs/github.md) — GitHub integration: auth, tools, permissions, rate limits
 - [`docs/security-and-allow-lists.md`](docs/security-and-allow-lists.md) — approvals, permissions, path policy, isolation guidance
+- [`docs/worktrees.md`](docs/worktrees.md) — parallel sessions, `--worktree` flag, `.worktreeinclude`, safe-autonomy workflow
 - [`docs/memory.md`](docs/memory.md) and [`docs/sessions.md`](docs/sessions.md) — context, recall, persistence
 - [`docs/tui-slash-commands.md`](docs/tui-slash-commands.md) and [`docs/cli.md`](docs/cli.md) — command reference
 - [`docs/architecture.md`](docs/architecture.md) and [`docs/development.md`](docs/development.md) — internals and contribution workflow

@@ -109,12 +109,27 @@ func targetFor(toolName, argsJSON, cwd string) Target {
 		return Target{PermName: "Tests", Descriptor: ""}
 	case "list_git_changed_files",
 		"git_branch_status", "git_show_file_at_rev", "git_diff_files",
-		"git_stage_files", "git_unstage_files", "git_commit",
+		"git_stage_files", "git_unstage_files", "git_create_branch",
+		"git_commit",
 		"git_log_file", "git_blame_lines", "git_merge_base":
 		// Discrete git_* helpers. Surfaced under Git so a single
 		// `Git(commit *)` style rule covers the unified tool too.
 		sub := strings.TrimPrefix(toolName, "git_")
 		return Target{PermName: "Git", Descriptor: sub + " " + summarizeArgs(argsJSON)}
+	case "gh_pr_create":
+		return Target{PermName: "Github", Descriptor: "create_pr"}
+	case "gh_pr_update":
+		return Target{PermName: "Github", Descriptor: "update_pr"}
+	case "gh_pr_read":
+		return Target{PermName: "Github", Descriptor: "read_pr"}
+	case "gh_pr_review_context":
+		return Target{PermName: "Github", Descriptor: "read_pr_review_context"}
+	case "gh_pr_add_comment":
+		return Target{PermName: "Github", Descriptor: "add_pr_comment"}
+	case "gh_issue_read":
+		return Target{PermName: "Github", Descriptor: "read_issue"}
+	case "gh_issue_list":
+		return Target{PermName: "Github", Descriptor: "list_open_issues"}
 	}
 	return Target{}
 }

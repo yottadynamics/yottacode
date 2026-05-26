@@ -16,7 +16,7 @@ const (
 )
 
 type DeleteFileTool struct {
-	Cwd       string
+	Cwd       *CwdRef
 	WriteOpts WritePathOptions
 }
 
@@ -64,7 +64,7 @@ func (t *DeleteFileTool) Execute(ctx context.Context, argsJSON string) (string, 
 	if a.Path == "" {
 		return "", fmt.Errorf("delete_file: path is required")
 	}
-	p := resolvePath(t.Cwd, a.Path)
+	p := resolvePath(t.Cwd.Get(), a.Path)
 	if err := ValidateWritePath(p, t.WriteOpts); err != nil {
 		return "", fmt.Errorf("delete_file: %w", err)
 	}
@@ -85,7 +85,7 @@ func (t *DeleteFileTool) Execute(ctx context.Context, argsJSON string) (string, 
 }
 
 type MoveFileTool struct {
-	Cwd       string
+	Cwd       *CwdRef
 	WriteOpts WritePathOptions
 }
 
@@ -144,8 +144,8 @@ func (t *MoveFileTool) Execute(ctx context.Context, argsJSON string) (string, er
 	if a.Src == "" || a.Dst == "" {
 		return "", fmt.Errorf("move_file: src and dst are required")
 	}
-	src := resolvePath(t.Cwd, a.Src)
-	dst := resolvePath(t.Cwd, a.Dst)
+	src := resolvePath(t.Cwd.Get(), a.Src)
+	dst := resolvePath(t.Cwd.Get(), a.Dst)
 	// Both source (we're removing it) and destination get validated.
 	if err := ValidateWritePath(src, t.WriteOpts); err != nil {
 		return "", fmt.Errorf("move_file: source: %w", err)
@@ -163,7 +163,7 @@ func (t *MoveFileTool) Execute(ctx context.Context, argsJSON string) (string, er
 }
 
 type MkdirTool struct {
-	Cwd       string
+	Cwd       *CwdRef
 	WriteOpts WritePathOptions
 }
 
@@ -198,7 +198,7 @@ func (t *MkdirTool) Execute(ctx context.Context, argsJSON string) (string, error
 	if a.Path == "" {
 		return "", fmt.Errorf("mkdir: path is required")
 	}
-	p := resolvePath(t.Cwd, a.Path)
+	p := resolvePath(t.Cwd.Get(), a.Path)
 	if err := ValidateWritePath(p, t.WriteOpts); err != nil {
 		return "", fmt.Errorf("mkdir: %w", err)
 	}
@@ -209,7 +209,7 @@ func (t *MkdirTool) Execute(ctx context.Context, argsJSON string) (string, error
 }
 
 type CopyFileTool struct {
-	Cwd       string
+	Cwd       *CwdRef
 	WriteOpts WritePathOptions
 }
 
@@ -260,8 +260,8 @@ func (t *CopyFileTool) Execute(ctx context.Context, argsJSON string) (string, er
 	if a.Src == "" || a.Dst == "" {
 		return "", fmt.Errorf("copy_file: src and dst are required")
 	}
-	src := resolvePath(t.Cwd, a.Src)
-	dst := resolvePath(t.Cwd, a.Dst)
+	src := resolvePath(t.Cwd.Get(), a.Src)
+	dst := resolvePath(t.Cwd.Get(), a.Dst)
 	// Only the destination is being written; source is read-only here so
 	// we don't validate it (lets users copy from outside cwd into cwd).
 	if err := ValidateWritePath(dst, t.WriteOpts); err != nil {
@@ -297,7 +297,7 @@ func (t *CopyFileTool) Execute(ctx context.Context, argsJSON string) (string, er
 }
 
 type ReadManyFilesTool struct {
-	Cwd           string
+	Cwd           *CwdRef
 	DenyReadPaths []string
 }
 
@@ -355,7 +355,7 @@ func (t *ReadManyFilesTool) Execute(ctx context.Context, argsJSON string) (strin
 	sort.Strings(paths)
 	var b strings.Builder
 	for i, rel := range paths {
-		p := resolvePath(t.Cwd, rel)
+		p := resolvePath(t.Cwd.Get(), rel)
 		if err := ValidateReadPath(p, t.DenyReadPaths); err != nil {
 			return "", fmt.Errorf("read_many_files: %w", err)
 		}

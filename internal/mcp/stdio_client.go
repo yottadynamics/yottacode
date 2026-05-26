@@ -19,7 +19,7 @@ import (
 // handshake. Slow servers don't block other servers (Manager.Start
 // runs them concurrently); a per-server timeout keeps the picture
 // bounded.
-const InitializeTimeout = 5 * time.Second
+const InitializeTimeout = 30 * time.Second
 
 // TerminateGracePeriod is how long the SDK's CommandTransport waits
 // after closing stdin before escalating to SIGTERM/SIGKILL. Match the

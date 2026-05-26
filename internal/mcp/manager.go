@@ -171,6 +171,30 @@ func (m *Manager) Names() []string {
 	return out
 }
 
+// Add registers a new MCP server at runtime and starts it. Used by
+// /mcp add to hot-start the server without requiring a TUI restart.
+// Returns the StartResult so the caller can register tools. Returns an
+// error if a server with the same name already exists.
+func (m *Manager) Add(ctx context.Context, cfg config.MCPServer) (StartResult, error) {
+	m.mu.Lock()
+	if _, exists := m.configs[cfg.Name]; exists {
+		m.mu.Unlock()
+		return StartResult{}, fmt.Errorf("mcp: server %q already exists", cfg.Name)
+	}
+	client := NewStdioClient(cfg.Name, cfg.Command, cfg.Args, cfg.Env)
+	m.configs[cfg.Name] = cfg
+	m.clients[cfg.Name] = client
+	m.order = append(m.order, cfg.Name)
+	m.mu.Unlock()
+
+	result := startOne(ctx, client)
+
+	m.mu.Lock()
+	m.status[cfg.Name] = result
+	m.mu.Unlock()
+	return result, nil
+}
+
 // Restart stops the named client, rebuilds a fresh StdioClient from
 // the stored config, and runs the same Start + ListTools dance as
 // the initial session-start path. After Restart returns, callers
@@ -203,6 +227,36 @@ func (m *Manager) Restart(ctx context.Context, name string) (StartResult, error)
 	m.status[name] = result
 	m.mu.Unlock()
 	return result, nil
+}
+
+// Remove stops the named client and removes it from the manager's
+// internal state. After Remove, the name no longer appears in Names(),
+// Statuses(), or Client(). Callers must Deregister the server's tools
+// from the agent registry separately. Returns an error if the name is
+// unknown.
+func (m *Manager) Remove(ctx context.Context, name string) error {
+	m.mu.Lock()
+	client, ok := m.clients[name]
+	if !ok {
+		m.mu.Unlock()
+		return fmt.Errorf("mcp: no server named %q", name)
+	}
+	delete(m.configs, name)
+	delete(m.clients, name)
+	delete(m.status, name)
+	filtered := m.order[:0]
+	for _, n := range m.order {
+		if n != name {
+			filtered = append(filtered, n)
+		}
+	}
+	m.order = filtered
+	m.mu.Unlock()
+
+	if client != nil {
+		_ = client.Stop(ctx)
+	}
+	return nil
 }
 
 // Stop shuts every client down concurrently. Each Stop call is bounded

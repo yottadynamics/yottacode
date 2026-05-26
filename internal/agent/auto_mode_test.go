@@ -138,6 +138,7 @@ func TestLoop_AutoMode_UnsafeBashStillPrompts(t *testing.T) {
 	events, _ := runTurnSync(t, context.Background(), cfg, &hist, func(ApprovalNeeded) Decision {
 		return Deny
 	})
+	// Verify auto-mode-safe-bash did NOT short-circuit this call.
 	for _, e := range events {
 		if a, ok := e.(ApprovalAuto); ok && a.Source == "auto-mode-safe-bash" {
 			t.Errorf("rm should not be auto-approved as safe-bash: %+v", e)
@@ -161,7 +162,13 @@ func TestAutoModeState_IsActiveNilSafe(t *testing.T) {
 }
 
 func TestIsAutoModeSafetyFloor(t *testing.T) {
-	for _, name := range []string{"run_bash", "git_commit", "git_checkpoint", "rollback"} {
+	for _, name := range []string{
+		"run_bash", "git_commit", "git_checkpoint", "rollback",
+		// enter_worktree / exit_worktree shift the agent's working
+		// context (and exit's force-remove is destructive); always
+		// prompt regardless of mode.
+		"enter_worktree", "exit_worktree",
+	} {
 		if !IsAutoModeSafetyFloor(name) {
 			t.Errorf("%s should be in the safety floor", name)
 		}
@@ -169,6 +176,11 @@ func TestIsAutoModeSafetyFloor(t *testing.T) {
 	for _, name := range []string{
 		"write_file", "edit_file", "apply_diff", "mkdir", "copy_file", "move_file",
 		"delete_file", "git_stage_files", "git_unstage_files", "read_file", "grep",
+		// The plain git_worktree_* wrappers are narrow, explicit, and
+		// recoverable; they stay auto-allowed in auto mode.
+		"git_worktree_list", "git_worktree_add", "git_worktree_remove",
+		"git_worktree_lock", "git_worktree_unlock", "git_worktree_prune",
+		"worktree_status",
 	} {
 		if IsAutoModeSafetyFloor(name) {
 			t.Errorf("%s should NOT be in the safety floor", name)
@@ -243,7 +255,7 @@ func TestLoop_AutoMode_DenyRuleStillWins(t *testing.T) {
 	reg.Register(&mockTool{name: "write_file", requiresApproval: true, output: "wrote"})
 	autoMode := &AutoModeState{}
 	autoMode.Active.Store(true)
-	cfg := LoopConfig{Adapter: streamer, Registry: reg, Permissions: perms, Cwd: cwd, MaxIterations: 5, AutoMode: autoMode}
+	cfg := LoopConfig{Adapter: streamer, Registry: reg, Permissions: perms, Cwd: NewCwdRef(cwd), MaxIterations: 5, AutoMode: autoMode}
 	hist := []adapter.Message{{Role: adapter.RoleUser, Content: "go"}}
 
 	events, _ := runTurnSync(t, context.Background(), cfg, &hist, nil)

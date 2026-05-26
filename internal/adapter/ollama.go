@@ -22,6 +22,22 @@ type chatAdapter struct {
 	profile ProviderProfile
 }
 
+// ChatDefaultMaxTokens is the per-turn output cap sent on every Chat
+// Completions request. Some OpenAI-compatible providers (NVIDIA NIM in
+// particular) treat a missing max_tokens as zero and include that in
+// the input+output ≤ window budget check — so a request with a full
+// transcript and no max_tokens is rejected with 400 even when the
+// input alone fits. Setting a real ceiling avoids that and reserves
+// output headroom on every other provider too. 8192 matches the
+// Anthropic adapter default — generous for code edits, within every
+// vendor's per-turn cap, and not so large that a runaway response
+// drains the wallet.
+//
+// Exported so callers that need to plan around the reserved output
+// (e.g. the auto-summarize input budget) can subtract the same value
+// the adapter actually sends.
+const ChatDefaultMaxTokens int64 = 8192
+
 // newChatAdapter builds a chatAdapter. apiKey is sent as Authorization:
 // Bearer; Ollama and Llama Stack ignore it, but the SDK requires a
 // non-empty value.
@@ -53,8 +69,9 @@ func (a *chatAdapter) ChatStream(ctx context.Context, messages []Message, tools 
 		defer close(out)
 
 		params := openai.ChatCompletionNewParams{
-			Model:    a.model,
-			Messages: toOpenAIMessages(messages),
+			Model:     a.model,
+			Messages:  toOpenAIMessages(messages),
+			MaxTokens: openai.Int(ChatDefaultMaxTokens),
 		}
 		if len(tools) > 0 {
 			params.Tools = toOpenAITools(tools)

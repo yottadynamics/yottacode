@@ -204,6 +204,114 @@ func TestManager_StartSurfacesEnvWarnings(t *testing.T) {
 	}
 }
 
+func TestManager_AddRegistersAndStartsServer(t *testing.T) {
+	bin := buildEchoServer(t)
+	mgr := mcp.NewManager(nil)
+	t.Cleanup(func() { mgr.Stop(context.Background()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	result, err := mgr.Add(ctx, config.MCPServer{
+		Name:    "echo",
+		Command: bin,
+	})
+	if err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if result.Err != nil {
+		t.Fatalf("Add result.Err = %v; want nil", result.Err)
+	}
+	if result.ToolCount == 0 {
+		t.Error("Add should report the tool count from the started server")
+	}
+	if mgr.Client("echo") == nil {
+		t.Error("Client(echo) should be non-nil after Add")
+	}
+	if names := mgr.Names(); len(names) != 1 || names[0] != "echo" {
+		t.Errorf("Names after Add = %v, want [echo]", names)
+	}
+}
+
+func TestManager_AddDuplicateReturnsError(t *testing.T) {
+	bin := buildEchoServer(t)
+	mgr := mcp.NewManager([]config.MCPServer{
+		{Name: "echo", Command: bin},
+	})
+	t.Cleanup(func() { mgr.Stop(context.Background()) })
+
+	_, err := mgr.Add(context.Background(), config.MCPServer{
+		Name:    "echo",
+		Command: bin,
+	})
+	if err == nil {
+		t.Fatal("Add duplicate should return an error")
+	}
+	if !strings.Contains(err.Error(), "echo") {
+		t.Errorf("error %q should mention the duplicate name", err)
+	}
+}
+
+func TestManager_AddBrokenServerRecordsFailure(t *testing.T) {
+	mgr := mcp.NewManager(nil)
+	t.Cleanup(func() { mgr.Stop(context.Background()) })
+
+	result, err := mgr.Add(context.Background(), config.MCPServer{
+		Name:    "broken",
+		Command: "/no/such/binary/yottacode-add-test",
+	})
+	if err != nil {
+		t.Fatalf("Add should not return an error for start failures: %v", err)
+	}
+	if result.Err == nil {
+		t.Error("broken server result.Err should be non-nil")
+	}
+	st := mgr.Status("broken")
+	if st.Err == nil {
+		t.Error("Status should record the failure")
+	}
+}
+
+func TestManager_RemoveStopsAndDropsServer(t *testing.T) {
+	bin := buildEchoServer(t)
+	mgr := mcp.NewManager([]config.MCPServer{
+		{Name: "echo", Command: bin},
+		{Name: "other", Command: bin},
+	})
+	t.Cleanup(func() { mgr.Stop(context.Background()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	mgr.Start(ctx)
+
+	if err := mgr.Remove(ctx, "echo"); err != nil {
+		t.Fatalf("Remove(echo): %v", err)
+	}
+	if mgr.Client("echo") != nil {
+		t.Error("Client(echo) should be nil after Remove")
+	}
+	names := mgr.Names()
+	for _, n := range names {
+		if n == "echo" {
+			t.Error("echo should not appear in Names() after Remove")
+		}
+	}
+	if len(names) != 1 || names[0] != "other" {
+		t.Errorf("Names after Remove = %v, want [other]", names)
+	}
+}
+
+func TestManager_RemoveUnknownReturnsError(t *testing.T) {
+	mgr := mcp.NewManager(nil)
+	err := mgr.Remove(context.Background(), "ghost")
+	if err == nil {
+		t.Fatal("Remove(ghost) should error")
+	}
+	if !strings.Contains(err.Error(), "ghost") {
+		t.Errorf("error %q should mention the missing name", err)
+	}
+}
+
 func TestManager_NoServersIsCleanNoop(t *testing.T) {
 	mgr := mcp.NewManager(nil)
 	if results := mgr.Start(context.Background()); len(results) != 0 {

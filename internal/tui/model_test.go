@@ -1714,13 +1714,31 @@ func TestModel_MouseEventDoesNotPanic(t *testing.T) {
 // every wrapped row.
 func TestModel_UserBlockUsesThinLeftBar(t *testing.T) {
 	m := newTestModel(t)
-	m.appendLine(renderUserBlock("hello\nworld"))
+	m.appendLine(renderUserBlock("hello\nworld", m.width))
 	v := stripANSI(m.transcript.String())
 	if !strings.Contains(v, "▎ hello") || !strings.Contains(v, "▎ world") {
 		t.Errorf("user block should render with ▎ left-bar marker: %q", v)
 	}
 	if strings.Contains(v, "❯ hello") {
 		t.Errorf("user block should not use the legacy ❯ marker: %q", v)
+	}
+}
+
+// A user input longer than the terminal width must be hard-wrapped
+// and every wrapped row must carry the ▎ bar prefix. Without this,
+// the terminal auto-wraps continuation rows to column 0 and the quoted
+// block loses its left-margin alignment partway through.
+func TestRenderUserBlock_LongLineHangIndentsUnderBar(t *testing.T) {
+	long := "Can you scan the current codebase and identify any gaps in the core components such as memory, permissions, models, providers, any of the Github integrations etc"
+	out := stripANSI(renderUserBlock(long, 80))
+	rows := strings.Split(strings.Trim(out, "\n"), "\n")
+	if len(rows) < 2 {
+		t.Fatalf("expected at least two rows after wrap, got %d: %q", len(rows), rows)
+	}
+	for i, row := range rows {
+		if !strings.HasPrefix(row, "▎ ") {
+			t.Errorf("row %d missing ▎ prefix: %q", i, row)
+		}
 	}
 }
 

@@ -8,8 +8,8 @@ import (
 
 func TestRegistry_RegisterAndGet(t *testing.T) {
 	r := NewRegistry()
-	r.Register(&ReadFileTool{Cwd: "/x"})
-	r.Register(&WriteFileTool{Cwd: "/x"})
+	r.Register(&ReadFileTool{Cwd: NewCwdRef("/x")})
+	r.Register(&WriteFileTool{Cwd: NewCwdRef("/x")})
 
 	if got, ok := r.Get("read_file"); !ok || got.Name() != "read_file" {
 		t.Errorf("Get(read_file): ok=%v name=%q", ok, got)
@@ -92,9 +92,9 @@ func TestRegistry_ConcurrentAccessIsSafe(t *testing.T) {
 
 func TestRegistry_AsAdapterTools(t *testing.T) {
 	r := NewRegistry()
-	r.Register(&ReadFileTool{Cwd: "/x"})
-	r.Register(&WriteFileTool{Cwd: "/x"})
-	r.Register(&ReadManyFilesTool{Cwd: "/x"})
+	r.Register(&ReadFileTool{Cwd: NewCwdRef("/x")})
+	r.Register(&WriteFileTool{Cwd: NewCwdRef("/x")})
+	r.Register(&ReadManyFilesTool{Cwd: NewCwdRef("/x")})
 
 	tools := r.AsAdapterTools()
 	if len(tools) != 3 {

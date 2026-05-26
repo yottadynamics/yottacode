@@ -388,7 +388,7 @@ func TestValidateWritePath_PlanModeAllowedFile(t *testing.T) {
 		t.Fatalf("mkdir: %v", err)
 	}
 
-	opts := WritePathOptions{Cwd: cwd, PlanModeAllowedFile: planFile}
+	opts := WritePathOptions{Cwd: NewCwdRef(cwd), PlanModeAllowedFile: planFile}
 
 	// Plan file (outside cwd) — allowed because of the short-circuit.
 	if err := ValidateWritePath(planFile, opts); err != nil {
@@ -419,7 +419,7 @@ func TestValidateWritePath_PlanModeAllowedFile_RespectsDenyList(t *testing.T) {
 	}
 	denied := filepath.Join(cwd, ".yottacode", "permissions.json")
 	opts := WritePathOptions{
-		Cwd:                 cwd,
+		Cwd:                 NewCwdRef(cwd),
 		DenyExact:           DefaultDenyPaths(cwd),
 		PlanModeAllowedFile: denied,
 	}
@@ -747,7 +747,7 @@ func TestLoop_PlanMode_DenyRuleStillWinsOverPlanFileWrite(t *testing.T) {
 	reg.Register(&mockTool{name: "write_file", requiresApproval: true, output: "wrote"})
 	planMode := &PlanModeState{PlanFile: planFile}
 	planMode.Active.Store(true)
-	cfg := LoopConfig{Adapter: streamer, Registry: reg, Permissions: perms, Cwd: cwd, MaxIterations: 5, PlanMode: planMode}
+	cfg := LoopConfig{Adapter: streamer, Registry: reg, Permissions: perms, Cwd: NewCwdRef(cwd), MaxIterations: 5, PlanMode: planMode}
 	hist := []adapter.Message{{Role: adapter.RoleUser, Content: "go"}}
 
 	events, _ := runTurnSync(t, context.Background(), cfg, &hist, nil)

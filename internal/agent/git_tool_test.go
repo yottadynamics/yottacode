@@ -46,7 +46,7 @@ func gitCommit(t *testing.T, dir, msg string) {
 
 func TestGit_StatusInRepo(t *testing.T) {
 	tmp := gitInit(t)
-	tool := &GitTool{Cwd: tmp}
+	tool := &GitTool{Cwd: NewCwdRef(tmp)}
 	out, err := tool.Execute(context.Background(), `{"args":["status"]}`)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -61,7 +61,7 @@ func TestGit_StatusInRepo(t *testing.T) {
 
 func TestGit_StatusOutsideRepoReportsError(t *testing.T) {
 	tmp := t.TempDir()
-	tool := &GitTool{Cwd: tmp}
+	tool := &GitTool{Cwd: NewCwdRef(tmp)}
 	out, err := tool.Execute(context.Background(), `{"args":["status"]}`)
 	if err != nil {
 		t.Fatalf("Execute (should not error on non-repo, only report exit): %v", err)
@@ -79,7 +79,7 @@ func TestGit_LogAfterCommit(t *testing.T) {
 	writeFile(t, tmp, "f.txt", "v1")
 	gitCommit(t, tmp, "first commit")
 
-	tool := &GitTool{Cwd: tmp}
+	tool := &GitTool{Cwd: NewCwdRef(tmp)}
 	out, err := tool.Execute(context.Background(), `{"args":["log","--oneline"]}`)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -95,7 +95,7 @@ func TestGit_DiffShowsModification(t *testing.T) {
 	gitCommit(t, tmp, "add f")
 	writeFile(t, tmp, "f.txt", "v2\n")
 
-	tool := &GitTool{Cwd: tmp}
+	tool := &GitTool{Cwd: NewCwdRef(tmp)}
 	out, err := tool.Execute(context.Background(), `{"args":["diff"]}`)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -157,14 +157,14 @@ func TestGit_PreviewBenignCommand(t *testing.T) {
 }
 
 func TestGit_BadJSON(t *testing.T) {
-	tool := &GitTool{Cwd: t.TempDir()}
+	tool := &GitTool{Cwd: NewCwdRef(t.TempDir())}
 	if _, err := tool.Execute(context.Background(), `not json`); err == nil {
 		t.Errorf("expected error on bad JSON")
 	}
 }
 
 func TestGit_EmptyArgs(t *testing.T) {
-	tool := &GitTool{Cwd: t.TempDir()}
+	tool := &GitTool{Cwd: NewCwdRef(t.TempDir())}
 	if _, err := tool.Execute(context.Background(), `{"args":[]}`); err == nil {
 		t.Errorf("expected error on empty args")
 	}
@@ -175,7 +175,7 @@ func TestGit_NoShellInterpretation(t *testing.T) {
 	// would create a file as a side effect. With argv-style exec, git just
 	// sees a literal ref token, errors out, and the file never appears.
 	tmp := gitInit(t)
-	tool := &GitTool{Cwd: tmp}
+	tool := &GitTool{Cwd: NewCwdRef(tmp)}
 	payload := "; touch INJECTION_PROOF"
 	out, err := tool.Execute(context.Background(), `{"args":["log","`+payload+`"]}`)
 	if err != nil {

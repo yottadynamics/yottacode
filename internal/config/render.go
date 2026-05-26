@@ -47,6 +47,15 @@ func Render(cfg Config) string {
 		b.WriteString("\n")
 	}
 
+	// [theme] is only rendered when the user has picked something
+	// other than the default — keeps the file minimal for users who
+	// never touched /themes. Load() backfills DefaultName when the
+	// section is absent, so omitting it here is lossless.
+	if name := strings.TrimSpace(cfg.Theme.Name); name != "" && name != "terminal" {
+		b.WriteString("[theme]\n")
+		fmt.Fprintf(&b, "name = %q\n\n", name)
+	}
+
 	for _, p := range cfg.Providers {
 		b.WriteString("[[providers]]\n")
 		fmt.Fprintf(&b, "name          = %q\n", p.Name)
@@ -95,6 +104,39 @@ func Render(cfg Config) string {
 		}
 		b.WriteString("\n")
 	}
+
+	for _, s := range cfg.MCPServers {
+		b.WriteString("[[mcp_servers]]\n")
+		fmt.Fprintf(&b, "name    = %q\n", s.Name)
+		fmt.Fprintf(&b, "command = %q\n", s.Command)
+		if len(s.Args) > 0 {
+			b.WriteString("args    = [")
+			for i, a := range s.Args {
+				if i > 0 {
+					b.WriteString(", ")
+				}
+				fmt.Fprintf(&b, "%q", a)
+			}
+			b.WriteString("]\n")
+		}
+		if len(s.Env) > 0 {
+			b.WriteString("env     = { ")
+			first := true
+			for k, v := range s.Env {
+				if !first {
+					b.WriteString(", ")
+				}
+				fmt.Fprintf(&b, "%s = %q", k, v)
+				first = false
+			}
+			b.WriteString(" }\n")
+		}
+		if s.Disabled {
+			b.WriteString("disabled = true\n")
+		}
+		b.WriteString("\n")
+	}
+
 	return b.String()
 }
 

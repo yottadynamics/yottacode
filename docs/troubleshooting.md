@@ -157,6 +157,36 @@ If that does not help, start a fresh session:
 
 If you need the context from a large session, manually summarize the important state into the new prompt instead of replaying the full tool history. Re-running `yottacode openai-auth login` will not fix malformed session history.
 
+## `--worktree` exits with "workspace trust not accepted"
+
+`yottacode --worktree <name>` requires the repo root to be trusted.
+Run yottacode once in the repo without `--worktree`, accept the
+trust prompt, then retry:
+
+```bash
+cd /path/to/repo
+yottacode               # accept the trust prompt
+# (Ctrl-C to exit when the TUI opens, or finish your session)
+yottacode --worktree feature-x
+```
+
+Trust is persistent — you only do this once per repo. See
+[security-and-allow-lists.md](security-and-allow-lists.md).
+
+## Worktree from `yottacode run --worktree` wasn't cleaned up
+
+This is intentional. Oneshot / non-interactive runs cannot show a
+keep-or-remove prompt, so they leave the worktree in place. Remove
+it manually:
+
+```bash
+yottacode worktree remove <name>             # if clean
+yottacode worktree remove <name> --force     # if dirty (discards uncommitted work)
+```
+
+`yottacode worktree list` shows everything under
+`~/.yottacode/worktrees/<repo-slug>/`.
+
 ## Reporting bugs
 
 Include:

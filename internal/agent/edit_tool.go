@@ -13,7 +13,7 @@ import (
 // file and refuses to apply a non-unique match unless replace_all is set,
 // which catches stale assumptions before they corrupt code.
 type EditFileTool struct {
-	Cwd       string
+	Cwd       *CwdRef
 	WriteOpts WritePathOptions
 }
 
@@ -81,7 +81,7 @@ func (t *EditFileTool) Execute(ctx context.Context, argsJSON string) (string, er
 	if a.OldString == a.NewString {
 		return "", fmt.Errorf("edit_file: old_string and new_string are identical — no-op")
 	}
-	p := resolvePath(t.Cwd, a.Path)
+	p := resolvePath(t.Cwd.Get(), a.Path)
 	if err := ValidateWritePath(p, t.WriteOpts); err != nil {
 		return "", fmt.Errorf("edit_file: %w", err)
 	}

@@ -63,6 +63,36 @@ the project uses semantic versioning once it's past `1.0.0`.
 
 ### Fixed
 
+- **Auto-summarization no longer silently no-ops on agent-heavy sessions.**
+  `composeSummarizedHistory` previously retained every turn when the
+  session had five or fewer user prompts, so on plan-mode sessions
+  (few prompts, huge tool results per turn) the compressed history
+  was as large as — or larger than — the input. Retention is now
+  byte-budgeted (40 % of the model's context window, capped at
+  `retainTurnsAfterSummary` turns), and any single retained tool
+  result above 4 K tokens is truncated in place with a marker. The
+  most recent user turn is always preserved.
+- **Summarize call now budgets its own input.** When the rendered
+  transcript exceeds the room left after the summarization prompt
+  and the reserved output, oldest turns are dropped before the
+  request is sent. Prevents the summarize call itself from
+  overflowing the model window on sessions that grew past it.
+- **OpenAI-compatible chat requests now send `max_tokens`.** NVIDIA
+  NIM (and any provider that treats the missing field as `0`) was
+  rejecting full-transcript requests with `400 Bad Request — you
+  requested 0 output tokens` even when the input alone fit the
+  window. The adapter now sets `max_tokens=8192` on every request,
+  matching the Anthropic adapter default.
+- **NVIDIA models now resolve to the correct context window.** Added
+  `nvidia/nemotron` (262 144) and a `nvidia/` family fallback
+  (128 000) to the `knownWindows` table so the status bar
+  denominator and watermark thresholds match what the provider
+  actually accepts.
+- **Summarize timeout raised from 2 → 5 minutes.** Prefill on a
+  200 K+ token transcript routinely takes longer than two minutes on
+  slow providers; the old limit surfaced as `context deadline
+  exceeded` mid-stream.
+
 ## 0.2.0 — 2026-05-13
 
 > Control flow + safety triad — typed subagents, per-prompt checkpoints,

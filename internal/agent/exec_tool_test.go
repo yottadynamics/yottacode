@@ -7,7 +7,7 @@ import (
 )
 
 func TestRunBashTool_EchoCapturesStdout(t *testing.T) {
-	tool := &RunBashTool{Cwd: t.TempDir()}
+	tool := &RunBashTool{Cwd: NewCwdRef(t.TempDir())}
 	out, err := tool.Execute(context.Background(), `{"command":"echo yes"}`)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -21,7 +21,7 @@ func TestRunBashTool_EchoCapturesStdout(t *testing.T) {
 }
 
 func TestRunBashTool_ReportsNonZeroExit(t *testing.T) {
-	tool := &RunBashTool{Cwd: t.TempDir()}
+	tool := &RunBashTool{Cwd: NewCwdRef(t.TempDir())}
 	out, err := tool.Execute(context.Background(), `{"command":"exit 42"}`)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -32,14 +32,14 @@ func TestRunBashTool_ReportsNonZeroExit(t *testing.T) {
 }
 
 func TestRunBashTool_RejectsEmptyCommand(t *testing.T) {
-	tool := &RunBashTool{Cwd: t.TempDir()}
+	tool := &RunBashTool{Cwd: NewCwdRef(t.TempDir())}
 	if _, err := tool.Execute(context.Background(), `{}`); err == nil {
 		t.Errorf("expected error on empty command")
 	}
 }
 
 func TestRunBashTool_BadJSON(t *testing.T) {
-	tool := &RunBashTool{Cwd: t.TempDir()}
+	tool := &RunBashTool{Cwd: NewCwdRef(t.TempDir())}
 	if _, err := tool.Execute(context.Background(), `not json`); err == nil {
 		t.Errorf("expected error on bad JSON")
 	}

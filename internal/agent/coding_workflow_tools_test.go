@@ -12,7 +12,7 @@ import (
 func TestApplyDiffTool_AppliesPatch(t *testing.T) {
 	tmp := gitInit(t)
 	writeFile(t, tmp, "a.txt", "one\ntwo\n")
-	tool := &ApplyDiffTool{Cwd: tmp, WriteOpts: WritePathOptions{Cwd: tmp}}
+	tool := &ApplyDiffTool{Cwd: NewCwdRef(tmp), WriteOpts: WritePathOptions{Cwd: NewCwdRef(tmp)}}
 	diff := "diff --git a/a.txt b/a.txt\nindex 814f4a4..b4e7f16 100644\n--- a/a.txt\n+++ b/a.txt\n@@ -1,2 +1,2 @@\n one\n-two\n+TWO\n"
 	args := map[string]string{"diff": diff}
 	b, err := json.Marshal(args)
@@ -30,7 +30,7 @@ func TestApplyDiffTool_AppliesPatch(t *testing.T) {
 
 func TestApplyDiffTool_RequiresDiff(t *testing.T) {
 	tmp := t.TempDir()
-	tool := &ApplyDiffTool{Cwd: tmp, WriteOpts: WritePathOptions{Cwd: tmp}}
+	tool := &ApplyDiffTool{Cwd: NewCwdRef(tmp), WriteOpts: WritePathOptions{Cwd: NewCwdRef(tmp)}}
 	if _, err := tool.Execute(context.Background(), `{}`); err == nil {
 		t.Errorf("expected error")
 	}
@@ -46,8 +46,8 @@ func TestApplyDiffTool_RefusesDeniedPath(t *testing.T) {
 	tmp := gitInit(t)
 	denied := filepath.Join(tmp, ".yottacode", "permissions.local.json")
 	tool := &ApplyDiffTool{
-		Cwd:       tmp,
-		WriteOpts: WritePathOptions{Cwd: tmp, DenyExact: DefaultDenyPaths(tmp)},
+		Cwd:       NewCwdRef(tmp),
+		WriteOpts: WritePathOptions{Cwd: NewCwdRef(tmp), DenyExact: DefaultDenyPaths(tmp)},
 	}
 	// New-file diff that creates the denied path.
 	diff := "diff --git a/.yottacode/permissions.local.json b/.yottacode/permissions.local.json\n" +
@@ -76,7 +76,7 @@ func TestApplyDiffTool_RefusesDeniedPath(t *testing.T) {
 // the model gets a clear signal.
 func TestApplyDiffTool_RefusesEmptyHeaderDiff(t *testing.T) {
 	tmp := gitInit(t)
-	tool := &ApplyDiffTool{Cwd: tmp, WriteOpts: WritePathOptions{Cwd: tmp}}
+	tool := &ApplyDiffTool{Cwd: NewCwdRef(tmp), WriteOpts: WritePathOptions{Cwd: NewCwdRef(tmp)}}
 	args := map[string]string{"diff": "garbage with no diff headers\n"}
 	b, _ := json.Marshal(args)
 	if _, err := tool.Execute(context.Background(), string(b)); err == nil {
@@ -90,7 +90,7 @@ func TestListGitChangedFilesTool_FindsStagedUnstagedAndUntracked(t *testing.T) {
 	gitCommit(t, tmp, "base")
 	writeFile(t, tmp, "tracked.txt", "v2\n")
 	writeFile(t, tmp, "new.txt", "n\n")
-	tool := &ListGitChangedFilesTool{Cwd: tmp}
+	tool := &ListGitChangedFilesTool{Cwd: NewCwdRef(tmp)}
 	out, err := tool.Execute(context.Background(), `{}`)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -105,7 +105,7 @@ func TestListGitChangedFilesTool_FindsStagedUnstagedAndUntracked(t *testing.T) {
 
 func TestListGitChangedFilesTool_NoChanges(t *testing.T) {
 	tmp := gitInit(t)
-	tool := &ListGitChangedFilesTool{Cwd: tmp}
+	tool := &ListGitChangedFilesTool{Cwd: NewCwdRef(tmp)}
 	out, err := tool.Execute(context.Background(), `{}`)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -120,7 +120,7 @@ func TestGitCheckpointAndRollback(t *testing.T) {
 	writeFile(t, tmp, "f.txt", "v1\n")
 	gitCommit(t, tmp, "base")
 	writeFile(t, tmp, "f.txt", "v2\n")
-	cp := &GitCheckpointTool{Cwd: tmp}
+	cp := &GitCheckpointTool{Cwd: NewCwdRef(tmp)}
 	out, err := cp.Execute(context.Background(), `{"message":"checkpoint 1"}`)
 	if err != nil {
 		t.Fatalf("checkpoint: %v", err)
@@ -129,7 +129,7 @@ func TestGitCheckpointAndRollback(t *testing.T) {
 		t.Errorf("out = %q", out)
 	}
 	writeFile(t, tmp, "f.txt", "v3\n")
-	rb := &RollbackTool{Cwd: tmp}
+	rb := &RollbackTool{Cwd: NewCwdRef(tmp)}
 	if _, err := rb.Execute(context.Background(), `{}`); err != nil {
 		t.Fatalf("rollback: %v", err)
 	}
@@ -141,7 +141,7 @@ func TestGitCheckpointAndRollback(t *testing.T) {
 
 func TestRunTestsTool_DefaultAndCustomCommand(t *testing.T) {
 	tmp := t.TempDir()
-	tool := &RunTestsTool{Cwd: tmp}
+	tool := &RunTestsTool{Cwd: NewCwdRef(tmp)}
 	out, err := tool.Execute(context.Background(), `{"command":"printf ok"}`)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -153,7 +153,7 @@ func TestRunTestsTool_DefaultAndCustomCommand(t *testing.T) {
 
 func TestRunTestsTool_ReportsFailureAsData(t *testing.T) {
 	tmp := t.TempDir()
-	tool := &RunTestsTool{Cwd: tmp}
+	tool := &RunTestsTool{Cwd: NewCwdRef(tmp)}
 	out, err := tool.Execute(context.Background(), `{"command":"sh -c 'echo nope >&2; exit 7'"}`)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)

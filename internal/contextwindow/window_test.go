@@ -46,6 +46,10 @@ func TestWindowFor_KnownPrefixes(t *testing.T) {
 		{"claude-sonnet-4-5", 200_000},
 		{"claude-opus-4-7", 1_000_000},
 		{"qwen3.5:latest", 128_000},
+		{"nvidia/nemotron-3-super-120b-a12b", 262_144},
+		{"nvidia/nemotron-4-340b-instruct", 262_144},
+		{"nvidia/llama-3.1-nemotron-70b-instruct", 128_000},
+		{"nvidia/mistral-some-other", 128_000},
 	}
 	for _, c := range cases {
 		if got := WindowFor(c.model, 99); got != c.want {

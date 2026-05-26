@@ -68,6 +68,8 @@ func newCLI() *cobra.Command {
 		newModelCmd(),
 		newOpenAIAuthCmd(),
 		newTrustCmd(),
+		newWorktreeCmd(),
+		newMcpCmd(),
 		newVersionCmd(),
 	)
 	applyWrappedUsageTemplate(root)
@@ -170,6 +172,16 @@ func newRootCmd(opts *cli.ChatOptions) *cobra.Command {
 				}
 			}
 			if err := resolveContinue(opts); err != nil {
+				return err
+			}
+			// --worktree: materialize (or attach to) the named worktree,
+			// chdir into it, and stamp opts.Worktree with the resolved
+			// name so tui.Run records it on the session. ensureWorktree
+			// is a no-op when --worktree wasn't passed. Runs AFTER
+			// resolveContinue so --continue + --worktree composes
+			// correctly (find the prior session for this directory,
+			// then enter the worktree to run it).
+			if err := ensureWorktree(cmd.Context(), opts); err != nil {
 				return err
 			}
 			maybePromptUpgrade(cmd.Context(), updateCh)
@@ -365,6 +377,13 @@ Configuration (no built-in defaults — must be set via flag or env):
 			if err := resolveContinue(opts); err != nil {
 				return err
 			}
+			// --worktree: same handling as the TUI launch path. In
+			// oneshot mode the session won't auto-clean the worktree
+			// at exit (no interactive keep/remove prompt is possible);
+			// users run `yottacode worktree remove <name>` afterward.
+			if err := ensureWorktree(cmd.Context(), opts); err != nil {
+				return err
+			}
 			var prompt string
 			switch {
 			case len(args) == 1:
@@ -387,6 +406,7 @@ Configuration (no built-in defaults — must be set via flag or env):
 
 func newDoctorCmd(opts *cli.ChatOptions) *cobra.Command {
 	var jsonOutput bool
+	var noGitHub bool
 	cmd := &cobra.Command{
 		Use:   "doctor",
 		Short: "Probe provider auth, model visibility, and resolved diagnostics",
@@ -397,6 +417,7 @@ It resolves the provider profile, calls /models, and reports:
   - authentication status
   - whether the selected model is visible
   - resolved provider-native capability diagnostics
+  - GitHub auth + rate-limit snapshot (skip with --no-github)
 
 Use --json for scripting.`,
 		Args: cobra.NoArgs,
@@ -405,22 +426,57 @@ Use --json for scripting.`,
 				return err
 			}
 			result := adapter.Probe(cmd.Context(), adapterConfigFromOptions(*opts))
+			// --no-github skips the GitHub side entirely. Used by
+			// scripted / CI invocations that don't have a token
+			// configured and shouldn't have doctor exit non-zero on
+			// "no GitHub token found". Also keeps doctor side-effect
+			// free for callers that only care about the provider
+			// probe.
+			if noGitHub {
+				if jsonOutput {
+					enc := json.NewEncoder(cmd.OutOrStdout())
+					enc.SetIndent("", "  ")
+					if err := enc.Encode(result); err != nil {
+						return err
+					}
+				} else {
+					fmt.Fprintln(cmd.OutOrStdout(), formatDoctorResult(result))
+				}
+				if len(result.Issues) > 0 {
+					return errors.New("doctor found issues")
+				}
+				return nil
+			}
+			ghResult := probeGitHub(cmd.Context())
 			if jsonOutput {
+				// JSON envelope: provider-probe fields stay at top
+				// level (back-compat — external scripts already
+				// parse `endpoint_reachable`, `auth_ok`, etc.), and
+				// the GitHub section lives under a sibling `github`
+				// key. Embedding ProbeResult flattens its fields.
 				enc := json.NewEncoder(cmd.OutOrStdout())
 				enc.SetIndent("", "  ")
-				if err := enc.Encode(result); err != nil {
+				combined := struct {
+					adapter.ProbeResult
+					GitHub GitHubProbeResult `json:"github"`
+				}{
+					ProbeResult: result,
+					GitHub:      ghResult,
+				}
+				if err := enc.Encode(combined); err != nil {
 					return err
 				}
 			} else {
-				fmt.Fprintln(cmd.OutOrStdout(), formatDoctorResult(result))
+				fmt.Fprintln(cmd.OutOrStdout(), formatDoctorResult(result)+renderGitHubProbe(ghResult))
 			}
-			if len(result.Issues) > 0 {
+			if len(result.Issues) > 0 || len(ghResult.Issues) > 0 {
 				return errors.New("doctor found issues")
 			}
 			return nil
 		},
 	}
 	cmd.Flags().BoolVar(&jsonOutput, "json", false, "Emit doctor results as JSON")
+	cmd.Flags().BoolVar(&noGitHub, "no-github", false, "Skip the GitHub auth + rate-limit probe (use in CI / no-token environments)")
 	return cmd
 }
 
@@ -465,6 +521,15 @@ func bindCommonPersistentFlags(cmd *cobra.Command, opts *cli.ChatOptions) {
 	f.StringVar(&opts.PermissionMode, "permission-mode", "", "Startup `mode`: default | plan | auto (TUI only)")
 	f.StringVar(&opts.PlanResume, "plan-resume", "", "Resume an existing plan by `slug` or substring; implies --permission-mode plan")
 	f.StringSliceVar(&opts.Experimental, "experimental", nil, "Enable experimental feature(s); repeatable or comma-separated (see docs/experimental.md)")
+	f.StringVarP(&opts.Worktree, "worktree", "w", "",
+		"Run inside a yottacode-managed git worktree at <repo>/.yottacode/worktrees/<name>/ (auto-generates name if no value; copies .worktreeinclude entries)")
+	// Cobra's NoOptDefVal lets `--worktree` (no argument) parse to the
+	// sentinel that means "auto-generate". Without this, `--worktree`
+	// alone would consume the next positional and produce surprising
+	// behavior.
+	if wt := cmd.PersistentFlags().Lookup("worktree"); wt != nil {
+		wt.NoOptDefVal = cli.WorktreeAutoGenerate
+	}
 }
 
 func adapterConfigFromOptions(opts cli.ChatOptions) adapter.Config {

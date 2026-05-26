@@ -303,7 +303,7 @@ func TestLoop_PermissionsAllowAutoApproves(t *testing.T) {
 	reg.Register(&mockTool{name: "run_bash", requiresApproval: true, output: "x"})
 	cfg := LoopConfig{
 		Adapter: streamer, Registry: reg, Permissions: perms,
-		Cwd: cwd, MaxIterations: 5,
+		Cwd: NewCwdRef(cwd), MaxIterations: 5,
 	}
 	hist := []adapter.Message{{Role: adapter.RoleUser, Content: "go"}}
 
@@ -333,7 +333,7 @@ func TestLoop_PermissionsDenyBlocksEvenUnderBypass(t *testing.T) {
 	cfg := LoopConfig{
 		Adapter: streamer, Registry: reg, Permissions: perms,
 		BypassPermissions: true, // even bypass must respect deny
-		Cwd:               cwd, MaxIterations: 5,
+		Cwd:               NewCwdRef(cwd), MaxIterations: 5,
 	}
 	hist := []adapter.Message{{Role: adapter.RoleUser, Content: "go"}}
 
@@ -363,7 +363,7 @@ func TestLoop_PermissionsAskForcesPromptOnReadOnlyTool(t *testing.T) {
 	reg.Register(&mockTool{name: "read_file", requiresApproval: false, output: "secret"})
 	cfg := LoopConfig{
 		Adapter: streamer, Registry: reg, Permissions: perms,
-		Cwd: cwd, MaxIterations: 5,
+		Cwd: NewCwdRef(cwd), MaxIterations: 5,
 	}
 	hist := []adapter.Message{{Role: adapter.RoleUser, Content: "go"}}
 
@@ -409,7 +409,7 @@ func TestLoop_ApprovalAllowAlwaysAppendsToPermissionsLocal(t *testing.T) {
 	reg.Register(&mockTool{name: "run_bash", requiresApproval: true, output: "x"})
 	cfg := LoopConfig{
 		Adapter: streamer, Registry: reg, Permissions: perms,
-		Cwd: cwd, MaxIterations: 5,
+		Cwd: NewCwdRef(cwd), MaxIterations: 5,
 	}
 	hist := []adapter.Message{{Role: adapter.RoleUser, Content: "go"}}
 

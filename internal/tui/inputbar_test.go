@@ -133,6 +133,29 @@ func TestStatusBar_NarrowTerminalKeepsModelAndCtx(t *testing.T) {
 	}
 }
 
+// When the session runs inside a yottacode worktree, the status bar
+// shows "worktree: <name>" so users see at a glance where edits land.
+// Empty worktree on the main checkout renders no chip.
+func TestStatusBar_RendersWorktreeChip(t *testing.T) {
+	m := newTestModel(t)
+	m.worktree = "feature-auth"
+	m, _ = applyMsg(m, tea.WindowSizeMsg{Width: 120, Height: 24})
+	plain := stripANSI(m.renderStatus())
+	if !strings.Contains(plain, "worktree: feature-auth") {
+		t.Errorf("status bar should include the worktree chip: %q", plain)
+	}
+}
+
+func TestStatusBar_NoWorktreeChipOnMainCheckout(t *testing.T) {
+	m := newTestModel(t)
+	m.worktree = ""
+	m, _ = applyMsg(m, tea.WindowSizeMsg{Width: 120, Height: 24})
+	plain := stripANSI(m.renderStatus())
+	if strings.Contains(plain, "worktree:") {
+		t.Errorf("main-checkout status bar should not render worktree chip: %q", plain)
+	}
+}
+
 // On a narrow-enough terminal that even "model · ctx" won't fit, the
 // vendor prefix on the model name (e.g. `nvidia/`) is stripped.
 func TestStatusBar_VeryNarrowTrimsVendorPrefix(t *testing.T) {
@@ -152,40 +175,34 @@ func TestStatusBar_VeryNarrowTrimsVendorPrefix(t *testing.T) {
 // The input row is bracketed by two dim horizontal rules — top and
 // bottom. Replaces the old saturated rounded box. Each rule is a
 // sequence of `─` spanning the input's content width.
-func TestInput_BracketedByHorizontalRules(t *testing.T) {
+func TestInput_EnclosedInBorderedBox(t *testing.T) {
 	m := newTestModel(t)
 	plain := stripANSI(m.View())
 	lines := strings.Split(plain, "\n")
-	var ruleIdx []int
 	cmdIdx := -1
 	for i, line := range lines {
-		t := strings.TrimSpace(line)
 		if strings.Contains(line, "ask anything…") {
 			cmdIdx = i
-		}
-		if t != "" && strings.HasPrefix(t, "─") && !strings.ContainsAny(t, "╭╮╯╰│") {
-			ruleIdx = append(ruleIdx, i)
+			break
 		}
 	}
 	if cmdIdx < 0 {
 		t.Fatalf("placeholder row not found: %q", plain)
 	}
-	if len(ruleIdx) < 2 {
-		t.Fatalf("expected at least two `─` rules, got %d in: %q", len(ruleIdx), plain)
+	if cmdIdx < 1 || cmdIdx >= len(lines)-1 {
+		t.Fatalf("cmdline at edge of view, can't check borders; idx=%d lines=%d", cmdIdx, len(lines))
 	}
-	// One rule must be on the line above the cmdline; one must be
-	// directly below.
-	above, below := false, false
-	for _, idx := range ruleIdx {
-		if idx == cmdIdx-1 {
-			above = true
-		}
-		if idx == cmdIdx+1 {
-			below = true
-		}
+	above := strings.TrimSpace(lines[cmdIdx-1])
+	below := strings.TrimSpace(lines[cmdIdx+1])
+	if !strings.HasPrefix(above, "╭") || !strings.HasSuffix(above, "╮") {
+		t.Errorf("top border should be ╭...╮; got %q", above)
 	}
-	if !above || !below {
-		t.Errorf("expected rules immediately above and below the cmdline; got rules at %v, cmdline at %d", ruleIdx, cmdIdx)
+	if !strings.HasPrefix(below, "╰") || !strings.HasSuffix(below, "╯") {
+		t.Errorf("bottom border should be ╰...╯; got %q", below)
+	}
+	cmdRow := strings.TrimSpace(lines[cmdIdx])
+	if !strings.HasPrefix(cmdRow, "│") || !strings.HasSuffix(cmdRow, "│") {
+		t.Errorf("cmdline row should have │ side borders; got %q", cmdRow)
 	}
 }
 

@@ -30,6 +30,7 @@ Type `/` in the TUI to open the slash-command palette. The palette filters as yo
 | `/plan` | — | Toggle plan mode (also `Shift+Tab`). Type `/plan list` to open a picker and resume an earlier plan. |
 | `/subagents` | `[list \| view <id> \| stop <id> \| types]` | List subagent runs, view a transcript, stop a running task, or list available agent types. See [subagents.md](subagents.md). |
 | `/mcp` | `[logs <name>]` | List configured MCP servers (status + tool count), or dump a server's recent stderr with `logs <name>`. See [mcp.md](mcp.md). |
+| `/theme` | `[set <name> \| <name>]` | Change the theme — opens the picker with arrow-key live preview across every registered palette (`terminal`, `catppuccin`, `dimmed`, `gruvbox`, `high-contrast`, `low-contrast`, `no-color`, `nord`, `one-dark`, `solarized-dark`, `tokyo-night`). Enter applies and persists to `~/.yottacode/config.toml`; Esc reverts. Scriptable shortcuts: `/theme set <name>` and `/theme <name>` bypass the picker. See [themes.md](themes.md). |
 
 Beyond the built-ins, you can ship your own slash commands by dropping markdown files in a `commands/` directory — see [Custom commands](#custom-commands).
 
@@ -220,6 +221,83 @@ Precedence summary (highest priority first):
 3. Built-in defaults (embedded in the binary)
 
 Built-in commands like `/help`, `/clear`, `/model`, `/plan` sit above all three tiers and cannot be shadowed.
+
+## Agent Skills
+
+A **skill** is a reusable capability playbook the agent loads on demand. Names + descriptions are always in the system prompt so the model picks the right skill by keyword match; the body is loaded only when invoked. Skills are spec-compliant with [agentskills.io](https://agentskills.io/specification), so a skill authored for Claude Code drops in without changes.
+
+### Default policy: off
+
+**Skills are off by default each session.** The model sees no skill list in its system prompt at startup; the SkillTool's `Skill(skill="<name>")` call returns "unknown skill" until you opt in. Open `/skills` to pick which skills to expose — selection lasts the session. A startup line like `[skills] 10 available — type /skills to enable for this session` surfaces the gate.
+
+This trades convenience for context discipline: the model can't ambient-reach for a skill the user didn't ask about, and the prompt stays small.
+
+### Two ways to invoke
+
+- **Model-side** — once you've enabled it via `/skills`, the agent can call `Skill(skill="<name>")` when a user request matches a skill's described scope. The tool returns the body so the model can apply it in the current turn.
+- **User-side** — type `/<skill-name>` to inject the skill body yourself, optionally with extra context (`/remote-ops tail logs on prod-app-01`). Slash invocations **bypass the enablement gate** because typing the slash IS the selection. The body lands in the next user message and the model continues from there.
+
+### The `/skills` picker
+
+| Key | Action |
+|---|---|
+| `Up` / `Down` | Move cursor |
+| `Space` | Toggle the cursor row's enablement |
+| `a` / `n` | Enable all / disable all |
+| `Enter` | Open the cursor row's body in `$PAGER` (for review) |
+| `c` | Commit the working toggles to the session |
+| `Esc` | Cancel — no changes applied |
+
+The picker shows every loaded skill (built-in + user + project) with its source tag and description. On commit, the system prompt is recomposed so the next turn sees the updated "Available skills" section. The selection is **per-session**, not persisted to disk — opening a new yottacode session starts with everything disabled again. A `[skills]` config option to set a persistent default-on set is on the v1.1 roadmap.
+
+### Discovery
+
+Three tiers, project wins:
+
+1. **Project scope** — `<cwd>/.yottacode/skills/<slug>/SKILL.md` (committable)
+2. **User scope** — `~/.yottacode/skills/<slug>/SKILL.md`
+3. **Built-in** — 16 skills compiled into the binary:
+   - **Engineering loop**: `test-driven-development`, `verification-before-completion`, `diagnose`, `writing-plans`, `executing-plans`, `brainstorming`, `receiving-code-review`, `handoff`
+   - **Architecture & perf**: `improve-codebase-architecture`, `prototype`, `performance-profiler`
+   - **Targeted reviews**: `dockerfile-review`, `security-auditor`, `webapp-testing`
+   - **Ops & history**: `remote-ops`, `git-investigation`
+
+A skill's directory name must match its frontmatter `name` exactly. Names that would shadow a built-in slash command (`help`, `plan`, etc.) are dropped with a startup warning.
+
+### SKILL.md format
+
+```markdown
+---
+name: remote-ops
+description: SSH/scp/rsync playbook for connecting to remote hosts.
+license: MIT
+metadata:
+  author: you
+  slash: "true"
+allowed-tools: Bash(ssh:*) Bash(scp:*) Read
+---
+# Remote operations
+
+…body in markdown…
+```
+
+| Field | Required | Notes |
+|---|---|---|
+| `name` | yes | `[a-z0-9-]{1,64}`, must match parent dir |
+| `description` | yes | 1-1024 chars; keyword-rich (drives matching) |
+| `license` | no | string or LICENSE.txt reference |
+| `compatibility` | no | ≤500 chars, documentation-only |
+| `metadata` | no | free-form map for host-specific keys |
+| `metadata.slash` | no | `"false"` opts out of the `/<name>` palette entry; default is exposed |
+| `allowed-tools` | no | **parsed but not enforced in v1** — gated on the per-tool sandbox direction |
+
+A skill may ship `scripts/`, `references/`, `assets/` subdirectories. The body references them by relative path (`./scripts/check.sh`); the agent reads them via `read_file` or runs them via `run_bash` on demand.
+
+### Out of scope (for now)
+
+- `allowed-tools` enforcement — landing alongside the broader per-tool sandbox work.
+- `yottacode skill install <git-url>` / `update` — installs go in `~/.yottacode/skills/` manually for v1.
+- `/skills` picker with multi-select toggles — v1.1 follow-up.
 
 ## Plan mode
 

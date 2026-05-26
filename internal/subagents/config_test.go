@@ -103,6 +103,61 @@ func TestParseAgentFile_RejectsBadName(t *testing.T) {
 	_ = body
 }
 
+func TestParseAgentFile_BackgroundField(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		raw  string
+		want bool
+	}{
+		{"true", "background: true", true},
+		{"True", "background: True", true},
+		{"yes", "background: yes", true},
+		{"1", "background: 1", true},
+		{"quoted true", `background: "true"`, true},
+		{"absent", "", false},
+		{"false", "background: false", false},
+		{"garbage", "background: maybe", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := []byte("---\nname: x\ndescription: y\n" + tc.raw + "\n---\n\nbody\n")
+			cfg, err := ParseAgentFile(body)
+			if err != nil {
+				t.Fatalf("ParseAgentFile: %v", err)
+			}
+			if cfg.Background != tc.want {
+				t.Errorf("Background = %v, want %v (raw=%q)", cfg.Background, tc.want, tc.raw)
+			}
+		})
+	}
+}
+
+func TestLoadBuiltins_VerificationPresent(t *testing.T) {
+	cfgs := LoadBuiltins()
+	verif := Find(cfgs, "verification")
+	if verif == nil {
+		t.Fatalf("verification agent missing from builtins (got: %v)", agentNames(cfgs))
+	}
+	if !verif.Background {
+		t.Errorf("verification.Background = false, want true (the agent is designed to run off-turn)")
+	}
+	if !verif.ToolAllowed("run_bash") {
+		t.Errorf("verification must have run_bash to actually exercise builds/tests")
+	}
+	for _, denied := range []string{"write_file", "apply_diff", "delete_file", "git_commit"} {
+		if verif.ToolAllowed(denied) {
+			t.Errorf("verification must NOT have %q in its allowlist", denied)
+		}
+	}
+}
+
+func agentNames(cfgs []AgentConfig) []string {
+	names := make([]string, len(cfgs))
+	for i, c := range cfgs {
+		names[i] = c.Name
+	}
+	return names
+}
+
 func TestToolAllowed_WildcardInherit(t *testing.T) {
 	cfg := AgentConfig{Tools: nil}
 	if !cfg.ToolAllowed("read_file") {

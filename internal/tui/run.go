@@ -22,11 +22,13 @@ import (
 	"github.com/yottadynamics/yottacode/internal/permissions"
 	"github.com/yottadynamics/yottacode/internal/recall"
 	"github.com/yottadynamics/yottacode/internal/session"
+	"github.com/yottadynamics/yottacode/internal/skills"
 	"github.com/yottadynamics/yottacode/internal/subagents"
 	"github.com/yottadynamics/yottacode/internal/trust"
 	"github.com/yottadynamics/yottacode/internal/usercmd"
 	"github.com/yottadynamics/yottacode/internal/version"
 	"github.com/yottadynamics/yottacode/internal/wizard"
+	"github.com/yottadynamics/yottacode/internal/worktree"
 )
 
 // defaultSystemPrompt is sourced from internal/agent so the TUI and
@@ -59,14 +61,12 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 	if err != nil {
 		return err
 	}
-	// Load slash commands from three sources merged by precedence:
-	// project (<cwd>/.yottacode/commands/) > user (~/.yottacode/commands/)
-	// > defaults (embedded into the binary). Fail-soft: per-file load
-	// errors are surfaced as startup notices below but never block
-	// launch. Shadow warnings fire when user and project name-collide;
-	// user/project shadowing a default is silent (the documented
-	// override path).
-	customCmds, customErrs := usercmd.LoadAll(cwd)
+	// Load slash commands from two scopes merged by precedence:
+	// project (<cwd>/.yottacode/commands/) > user (~/.yottacode/commands/).
+	// Fail-soft: per-file load errors are surfaced as startup notices
+	// below but never block launch. Shadow warnings fire when user
+	// and project name-collide.
+	customCmds, customErrs := usercmd.Load(cwd)
 	// Load tunables (~/.yottacode/config.toml). Missing file → defaults
 	// (no error). Invalid file → return the error so the user fixes it
 	// rather than silently running with stale defaults.
@@ -108,13 +108,23 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 			XSearchToDate:          strings.TrimSpace(opts.XSearchToDate),
 		})
 	}
+	// Load skills early so the resolved set can flow into both the
+	// system prompt (description-matched metadata tier) and the Skill
+	// tool registration below. Loading twice would be wasteful and
+	// risks the prompt and the tool drifting; this single load wins.
+	skillsRes, _ := skills.LoadAll(cwd, usercmd.Reserved)
+	for _, w := range skillsRes.Warnings {
+		fmt.Fprintln(os.Stderr, "skills: "+w)
+	}
+	composedBase := composeSystemPrompt(baseSys, ad.Profile())
+	composedBase = appendSkillsSection(composedBase, skillsRes.Skills)
 	if fresh {
 		sess.Messages = append(sess.Messages, adapter.Message{
 			Role:    adapter.RoleSystem,
-			Content: memory.SystemPrompt(composeSystemPrompt(baseSys, ad.Profile()), mem),
+			Content: memory.SystemPrompt(composedBase, mem),
 		})
 	} else {
-		recomposeSessionSystemPrompt(sess, memory.SystemPrompt(composeSystemPrompt(baseSys, ad.Profile()), mem))
+		recomposeSessionSystemPrompt(sess, memory.SystemPrompt(composedBase, mem))
 	}
 
 	// `--summarized` (only meaningful when resuming): replace the loaded
@@ -146,12 +156,21 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 		return err
 	}
 
+	// cwdRef is the shared working-directory holder every tool reads
+	// from. enter_worktree / exit_worktree call cwdRef.Set(...) (plus
+	// os.Chdir) so a mid-session worktree swap propagates to all
+	// tools without rebuilding the registry. WriteOpts holds the
+	// same pointer so write validation tracks the swap too — important
+	// now that yottacode worktrees live in ~/.yottacode/worktrees/,
+	// outside the original cwd's pathUnder perimeter.
+	cwdRef := agent.NewCwdRef(cwd)
+
 	// Path-validation policy: every mutating filesystem tool gets the
 	// same WriteOpts. Cwd-confined writes by default; --allow-paths
 	// expands the allowed roots; the deny list is hardcoded to keep
 	// yottacode's own state and git internals off-limits.
 	writeOpts := agent.WritePathOptions{
-		Cwd:          cwd,
+		Cwd:          cwdRef,
 		AllowedPaths: splitAllowPaths(opts.AllowPaths),
 		DenyExact:    agent.DefaultDenyPaths(cwd),
 	}
@@ -177,30 +196,46 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 	yoloMode := &agent.YoloModeState{}
 
 	reg := agent.NewRegistry()
-	reg.Register(&agent.ReadFileTool{Cwd: cwd, DenyReadPaths: denyReads})
-	reg.Register(&agent.ReadManyFilesTool{Cwd: cwd, DenyReadPaths: denyReads})
-	reg.Register(&agent.WriteFileTool{Cwd: cwd, WriteOpts: writeOpts})
-	reg.Register(&agent.EditFileTool{Cwd: cwd, WriteOpts: writeOpts})
-	reg.Register(&agent.ApplyDiffTool{Cwd: cwd, WriteOpts: writeOpts})
-	reg.Register(&agent.MkdirTool{Cwd: cwd, WriteOpts: writeOpts})
-	reg.Register(&agent.CopyFileTool{Cwd: cwd, WriteOpts: writeOpts})
-	reg.Register(&agent.MoveFileTool{Cwd: cwd, WriteOpts: writeOpts})
-	reg.Register(&agent.DeleteFileTool{Cwd: cwd, WriteOpts: writeOpts})
-	reg.Register(&agent.ListGitChangedFilesTool{Cwd: cwd})
-	reg.Register(&agent.GitBranchStatusTool{Cwd: cwd})
-	reg.Register(&agent.GitShowFileAtRevTool{Cwd: cwd})
-	reg.Register(&agent.GitDiffFilesTool{Cwd: cwd})
-	reg.Register(&agent.GitStageFilesTool{Cwd: cwd})
-	reg.Register(&agent.GitUnstageFilesTool{Cwd: cwd})
-	reg.Register(&agent.GitCommitTool{Cwd: cwd})
+	reg.Register(&agent.ReadFileTool{Cwd: cwdRef, DenyReadPaths: denyReads})
+	reg.Register(&agent.ReadManyFilesTool{Cwd: cwdRef, DenyReadPaths: denyReads})
+	reg.Register(&agent.WriteFileTool{Cwd: cwdRef, WriteOpts: writeOpts})
+	reg.Register(&agent.EditFileTool{Cwd: cwdRef, WriteOpts: writeOpts})
+	reg.Register(&agent.ApplyDiffTool{Cwd: cwdRef, WriteOpts: writeOpts})
+	reg.Register(&agent.MkdirTool{Cwd: cwdRef, WriteOpts: writeOpts})
+	reg.Register(&agent.CopyFileTool{Cwd: cwdRef, WriteOpts: writeOpts})
+	reg.Register(&agent.MoveFileTool{Cwd: cwdRef, WriteOpts: writeOpts})
+	reg.Register(&agent.DeleteFileTool{Cwd: cwdRef, WriteOpts: writeOpts})
+	reg.Register(&agent.ListGitChangedFilesTool{Cwd: cwdRef})
+	reg.Register(&agent.GitBranchStatusTool{Cwd: cwdRef})
+	reg.Register(&agent.GitShowFileAtRevTool{Cwd: cwdRef})
+	reg.Register(&agent.GitDiffFilesTool{Cwd: cwdRef})
+	reg.Register(&agent.GitStageFilesTool{Cwd: cwdRef})
+	reg.Register(&agent.GitUnstageFilesTool{Cwd: cwdRef})
+	reg.Register(&agent.GitCreateBranchTool{Cwd: cwdRef})
+	reg.Register(&agent.GitCommitTool{Cwd: cwdRef})
+	// Git worktree tools. Layer 1 (enter/exit/status) are the agent-
+	// friendly entry points; Layer 2 (the git_worktree_* wrappers) sit
+	// underneath for finer-grained admin. enter_worktree and
+	// exit_worktree are in the auto-mode safety floor — they always
+	// prompt, even when auto mode is on, because they shift the agent's
+	// working context (and exit's force-remove is destructive).
+	reg.Register(&agent.EnterWorktreeTool{Cwd: cwdRef})
+	reg.Register(&agent.ExitWorktreeTool{Cwd: cwdRef})
+	reg.Register(&agent.WorktreeStatusTool{Cwd: cwdRef})
+	reg.Register(&agent.GitWorktreeListTool{Cwd: cwdRef})
+	reg.Register(&agent.GitWorktreeAddTool{Cwd: cwdRef})
+	reg.Register(&agent.GitWorktreeRemoveTool{Cwd: cwdRef})
+	reg.Register(&agent.GitWorktreeLockTool{Cwd: cwdRef})
+	reg.Register(&agent.GitWorktreeUnlockTool{Cwd: cwdRef})
+	reg.Register(&agent.GitWorktreePruneTool{Cwd: cwdRef})
 	// Composite commit-workflow tools paired with the /commit slash
 	// command (cmd_commit.go). Context is read-only and parallel-safe;
 	// apply is approval-gated and validates the subject in Go before
 	// invoking git, so empty-staging / oversize / trailing-period /
 	// multi-line messages can't reach a `git commit` invocation no
 	// matter what the model emits.
-	reg.Register(&agent.GitCommitContextTool{Cwd: cwd})
-	reg.Register(&agent.GitCommitApplyTool{Cwd: cwd})
+	reg.Register(&agent.GitCommitContextTool{Cwd: cwdRef})
+	reg.Register(&agent.GitCommitApplyTool{Cwd: cwdRef})
 	// Composite PR-workflow tools paired with the /create-pr slash
 	// command (cmd_create_pr.go). Context is read-only (no network
 	// beyond a cheap `git ls-remote` push-state check); create is
@@ -208,40 +243,65 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 	// github.Interface. The Interface is the foundation hook for
 	// v0.5.0's typed go-github client — swapping the ShellOut for the
 	// typed client is a one-line registration change.
-	ghClient := githubapi.NewTypedClient(cwd)
-	reg.Register(&agent.GHPRContextTool{Cwd: cwd})
-	reg.Register(&agent.GHPRCreateTool{Cwd: cwd, GH: ghClient})
+	// In-session cache wraps the typed client so duplicate reads
+	// within one turn make one API call. The cache lives for the
+	// session and is cleared at process exit — no explicit
+	// teardown needed. Writes (CreatePR, UpdatePR, AddPRComment)
+	// pass through; UpdatePR invalidates matching ReadPR entries
+	// so the next read sees fresh data.
+	ghClient := githubapi.NewCachingClient(githubapi.NewTypedClient(cwd))
+	reg.Register(&agent.GHPRContextTool{Cwd: cwdRef})
+	reg.Register(&agent.GHPRCreateTool{Cwd: cwdRef, GH: ghClient})
 	// gh_pr_review_context is the read-side composite paired with
 	// /git-review-pr. Shares the same github.Interface instance as
 	// gh_pr_create so the v0.5.0 swap to a typed go-github client
 	// changes one variable above instead of two registration sites.
-	reg.Register(&agent.GHPRReviewContextTool{Cwd: cwd, GH: ghClient})
+	reg.Register(&agent.GHPRReviewContextTool{Cwd: cwdRef, GH: ghClient})
+	// gh_pr_read is the lightweight metadata-only sibling — one
+	// API call vs. review_context's three. The model picks between
+	// them based on whether it needs the diff + checks (review) or
+	// just metadata (read). The Description on each tool spells out
+	// the selection rule so the model doesn't reach for run_bash
+	// `gh pr view --json body`.
+	reg.Register(&agent.GHPRReadTool{Cwd: cwdRef, GH: ghClient})
+	// Issue-side counterparts: gh_issue_read for single-issue
+	// metadata + comments (the /git-implement-issue command's
+	// first step), gh_issue_list for filtered open-issue
+	// summaries. Same nudge-the-model-away-from-run_bash framing
+	// as the PR tools.
+	reg.Register(&agent.GHIssueReadTool{Cwd: cwdRef, GH: ghClient})
+	reg.Register(&agent.GHIssueListTool{Cwd: cwdRef, GH: ghClient})
 	// git_push is paired with /git-push. The GH dependency is for
 	// the best-effort PR-URL lookup after a successful push — a
 	// nil client would skip the lookup silently, but registering
 	// with the shared ghClient gives us the "PR updated: <url>"
 	// footer for free.
-	reg.Register(&agent.GitPushTool{Cwd: cwd, GH: ghClient})
+	reg.Register(&agent.GitPushTool{Cwd: cwdRef,GH: ghClient})
 	// gh_pr_update is paired with /git-update-pr. Same Interface
 	// instance as the other PR tools — the v0.5.0 typed client
 	// swap will switch one variable above and pick up all four
 	// (create/read-review/push-lookup/update) at once.
-	reg.Register(&agent.GHPRUpdateTool{Cwd: cwd, GH: ghClient})
-	reg.Register(&agent.GitLogFileTool{Cwd: cwd})
-	reg.Register(&agent.GitBlameLinesTool{Cwd: cwd})
-	reg.Register(&agent.GitMergeBaseTool{Cwd: cwd})
-	reg.Register(&agent.GitCheckpointTool{Cwd: cwd})
-	reg.Register(&agent.RollbackTool{Cwd: cwd})
-	reg.Register(&agent.RunTestsTool{Cwd: cwd})
-	reg.Register(&agent.RunBashTool{Cwd: cwd})
-	reg.Register(&agent.ListDirTool{Cwd: cwd})
-	reg.Register(&agent.ListProjectStructureTool{Cwd: cwd})
-	reg.Register(&agent.GlobTool{Cwd: cwd})
-	reg.Register(&agent.GrepTool{Cwd: cwd, DenyReadPaths: denyReads})
+	reg.Register(&agent.GHPRUpdateTool{Cwd: cwdRef, GH: ghClient})
+	// gh_pr_add_comment posts a conversation-level comment on a PR.
+	// Approval-gated like the other write tools. Used for
+	// cross-linking related issues, post-review follow-ups, and
+	// structured summaries the model wants public on the PR.
+	reg.Register(&agent.GHPRAddCommentTool{Cwd: cwdRef, GH: ghClient})
+	reg.Register(&agent.GitLogFileTool{Cwd: cwdRef})
+	reg.Register(&agent.GitBlameLinesTool{Cwd: cwdRef})
+	reg.Register(&agent.GitMergeBaseTool{Cwd: cwdRef})
+	reg.Register(&agent.GitCheckpointTool{Cwd: cwdRef})
+	reg.Register(&agent.RollbackTool{Cwd: cwdRef})
+	reg.Register(&agent.RunTestsTool{Cwd: cwdRef})
+	reg.Register(&agent.RunBashTool{Cwd: cwdRef})
+	reg.Register(&agent.ListDirTool{Cwd: cwdRef})
+	reg.Register(&agent.ListProjectStructureTool{Cwd: cwdRef})
+	reg.Register(&agent.GlobTool{Cwd: cwdRef})
+	reg.Register(&agent.GrepTool{Cwd: cwdRef, DenyReadPaths: denyReads})
 	reg.Register(&agent.FetchURLTool{})
-	reg.Register(&agent.MemorySaveTool{Cwd: cwd})
-	reg.Register(&agent.MemoryForgetTool{Cwd: cwd})
-	reg.Register(&agent.GitTool{Cwd: cwd})
+	reg.Register(&agent.MemorySaveTool{Cwd: cwdRef})
+	reg.Register(&agent.MemoryForgetTool{Cwd: cwdRef})
+	reg.Register(&agent.GitTool{Cwd: cwdRef})
 	reg.Register(&agent.TodoWriteTool{Store: planStore})
 	// ExitPlanModeTool is registered with a nil Approve callback at
 	// startup; cmdPlan wires the callback (and the plan-file slug)
@@ -287,7 +347,7 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 		YoloMode:       yoloMode,
 		PlanMode:       planMode,
 		AutoMode:       autoMode,
-		Cwd:            cwd,
+		Cwd:            cwdRef,
 		TranscriptDir:  transcriptDir,
 		// Background subagents are an opt-in experimental feature.
 		// When the gate is off, `run_in_background:true` returns a
@@ -305,50 +365,36 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 	// subagent find?" becomes one tool call.
 	reg.Register(&agent.GetSubagentResultTool{Tasks: subagentTasks})
 
-	// MCP client setup: spawn each configured server as a stdio
-	// subprocess, list its tools, register each one in the agent
-	// tool registry under `mcp/<server>/<tool>`. Failed servers are
-	// non-fatal — yottacode keeps running with whichever clients
-	// came up; failure details surface via the /mcp slash command.
-	// Servers can be disabled per-entry in config.toml without
-	// commenting the block out.
+	// MCP client setup: construct the manager now but defer Start to
+	// the Bubble Tea Init cmd so the TUI renders immediately. Servers
+	// initialize in the background; tools are registered when the
+	// mcpStartupDoneMsg lands in Update. Failed servers are non-fatal.
 	mcpManager := mcp.NewManager(fileCfg.MCPServers)
-	mcpStartup := mcpManager.Start(ctx)
-	for _, r := range mcpStartup {
-		for _, w := range r.Warnings {
-			fmt.Fprintln(os.Stderr, w)
-		}
-		if r.Err != nil {
-			fmt.Fprintf(os.Stderr, "mcp: server %q failed to start: %v\n", r.Name, r.Err)
-			continue
-		}
-		client := mcpManager.Client(r.Name)
-		if client == nil {
-			continue
-		}
-		tools, err := client.ListTools(ctx)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "mcp: %s list tools: %v\n", r.Name, err)
-			continue
-		}
-		for _, td := range tools {
-			reg.Register(&agent.MCPTool{
-				Server:      r.Name,
-				ToolName:    td.Name,
-				Desc:        td.Description,
-				InputSchema: td.InputSchema,
-				ReadOnly:    td.ReadOnlyHint,
-				Client:      client,
-			})
-		}
-	}
+
+	// Agent Skills tool. Skills are loaded up-front (alongside the
+	// system-prompt composition) so the same resolved set drives both
+	// the description-matched metadata tier in the prompt and the
+	// model-facing Skill tool. User-typed /<skill-name> dispatches
+	// through the TUI Model's skillSlash (built from c.Skills below)
+	// and works regardless of enablement — typing the slash IS the
+	// selection.
+	//
+	// Default policy: NO skills enabled at session start. The model
+	// sees an empty skills section in the prompt until the user opens
+	// /skills and picks some. This keeps the prompt small and avoids
+	// the model reaching for a skill the user didn't ask about. Slash
+	// invocations stay available so a user who knows the name can
+	// always pull a skill in one keystroke.
+	skillTool := &agent.SkillTool{All: skillsRes.Skills}
+	skillTool.SetEnabled(map[string]bool{}) // empty map = none enabled
+	reg.Register(skillTool)
 
 	cfg := agent.LoopConfig{
 		Adapter:           ad,
 		Registry:          reg,
 		Permissions:       perms,
 		BypassPermissions: opts.BypassPermissions,
-		Cwd:               cwd,
+		Cwd:               cwdRef,
 		MaxIterations:     opts.MaxIterations,
 		PlanMode:          planMode,
 		AutoMode:          autoMode,
@@ -409,6 +455,7 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 		Commit:                 version.Commit(),
 		Dirty:                  version.Dirty(),
 		Branch:                 gitBranch(cwd),
+		Worktree:               sess.Worktree,
 		MemorySummary:          mem.Summary().String(),
 		BaseSystemPrompt:       baseSys,
 		FileCfg:                fileCfg,
@@ -416,7 +463,15 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 		AgentTool:              agentTool,
 		CustomCommands:         customCmds,
 		MCPManager:             mcpManager,
+		Skills:                 skillsRes.Skills,
+		SkillTool:              skillTool,
 	})
+	// Skills onboarding (skills installed but none enabled) is surfaced
+	// inside the welcome card via startupTip() — see welcome.go's
+	// memory > skills > rotating-pool priority. Emitting it as a
+	// separate tea.Println here used to race with the welcome box's
+	// per-row Println sequence, landing the notice above, below, or
+	// even inside the box depending on Init batch timing.
 	// Surface custom-command load errors via the startup notice path
 	// (historyLines is appendLine's queue; tea.Println replays it
 	// once the program starts). Errors render in red, warnings in the
@@ -555,6 +610,12 @@ func splitAllowPaths(s string) []string {
 //
 // The store is loaded each launch — it's small and the user can
 // edit `yottacode trust remove` between runs, so we don't cache.
+//
+// When cwd is a yottacode-managed worktree (under ~/.yottacode/worktrees/
+// after the relocation), trust is checked against the *originating* repo
+// — the worktree itself is never in the user's persistent trust set,
+// but its parent repo is. Resolves the originating repo via
+// `git rev-parse --git-common-dir`, which works inside a linked worktree.
 func ensureWorkspaceTrust(cwd string, opts cli.ChatOptions) error {
 	storePath, err := trust.DefaultStorePath()
 	if err != nil {
@@ -565,12 +626,26 @@ func ensureWorkspaceTrust(cwd string, opts cli.ChatOptions) error {
 		return fmt.Errorf("load trust store: %w", err)
 	}
 	allowPaths := splitAllowPaths(opts.AllowPaths)
+
+	// If cwd is inside a yottacode-managed worktree, the trust gate
+	// belongs to the originating repo, not the worktree dir. Resolve
+	// back via git's common-dir lookup; on success, run the gate
+	// against the repo root. On failure (e.g. worktree no longer
+	// linked), fall through to checking cwd directly so we still
+	// produce a useful error message.
+	gateTarget := cwd
+	if _, _, ok := worktree.IsAnyWorktreePath(cwd); ok {
+		if repoRoot, err := worktree.ResolveRepoRoot(context.Background(), cwd); err == nil {
+			gateTarget = repoRoot
+		}
+	}
+
 	if !trust.IsInteractiveStream(os.Stdin) || !trust.IsInteractiveStream(os.Stdout) {
 		// Non-TTY (piped, CI): skip the trust gate entirely.
 		// Matches Claude Code's `-p` behavior.
-		return trust.Ensure(store, storePath, cwd, allowPaths, false, os.Stdin, os.Stderr)
+		return trust.Ensure(store, storePath, gateTarget, allowPaths, false, os.Stdin, os.Stderr)
 	}
-	return trust.EnsureInteractive(store, storePath, cwd, allowPaths)
+	return trust.EnsureInteractive(store, storePath, gateTarget, allowPaths)
 }
 
 func splitCSV(s string) []string {
@@ -592,6 +667,26 @@ func composeSystemPrompt(base string, profile adapter.ProviderProfile) string {
 		return base + "\nFor live or current information, use the provider-native web_search tool when needed."
 	}
 	return base + "\nFor live or current information, use fetch_url for specific pages or feeds when needed."
+}
+
+// appendSkillsSection adds the description-matched metadata tier of
+// Agent Skills to the system prompt. This is the spec's "always-on,
+// small" tier — names + descriptions only; bodies stay out of the
+// prompt until the model invokes Skill(name=...). The framing mirrors
+// Claude Code's skills system reminder so models that have seen that
+// surface recognize the contract.
+func appendSkillsSection(base string, loaded []skills.Skill) string {
+	if len(loaded) == 0 {
+		return base
+	}
+	var b strings.Builder
+	b.WriteString(base)
+	b.WriteString("\n\n# Available skills\n\n")
+	b.WriteString("You have access to a set of reusable capability playbooks (Agent Skills). When a user request matches a skill's described scope, invoke it via the `Skill` tool (e.g. `Skill(skill=\"<name>\")`); the tool returns the skill's body so you can apply it in the current turn. Only invoke a skill that appears in the list below — do NOT guess names.\n\n")
+	for _, sk := range loaded {
+		fmt.Fprintf(&b, "- %s: %s\n", sk.Name, sk.Description)
+	}
+	return b.String()
 }
 
 func recomposeSessionSystemPrompt(sess *session.Session, content string) {
@@ -641,5 +736,10 @@ func openSession(opts cli.ChatOptions, cwd string) (*session.Session, bool, erro
 	if err != nil {
 		return nil, false, err
 	}
+	// Stamp the worktree name when the session is launched inside one
+	// (via --worktree at startup). Sessions resume into the right
+	// worktree because Session.Cwd is the worktree dir; the field is
+	// kept for `sessions list` display and future tooling.
+	s.Worktree = opts.Worktree
 	return s, true, nil
 }

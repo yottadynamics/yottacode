@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
 	"time"
 
@@ -37,14 +38,21 @@ func (m Model) shouldShowStartupCard() bool {
 //
 // Tip rotation is deterministic per day (time.Now().YearDay() % len(pool))
 // rather than random — gives a single tip per launch on a given day,
-// cycles through the whole pool over a week, and stays testable. If
-// memory isn't yet configured the memory tip wins unconditionally —
-// it's the highest-leverage thing the user could do next.
+// cycles through the whole pool over a week, and stays testable.
+// Priority order (highest-leverage onboarding wins):
+//  1. memory not yet configured → memory tip
+//  2. skills installed but none enabled → skills tip (self-retires once
+//     the user picks any via /skills)
+//  3. rotating pool by day-of-year
 func (m Model) startupTip() string {
 	if !m.isFreshSession() {
 		return ""
 	}
-	return pickTip(m.memorySummary, time.Now().YearDay())
+	var skillsToOnboard int
+	if m.skillTool != nil && len(m.skills) > 0 && len(m.skillTool.Active()) == 0 {
+		skillsToOnboard = len(m.skills)
+	}
+	return pickTip(m.memorySummary, skillsToOnboard, time.Now().YearDay())
 }
 
 // renderInlineCodeSpans walks a tip string and applies styleInlineCode
@@ -91,12 +99,17 @@ func collapseSpaces(s string) string {
 // pickTip is the rotation function. Split out so tests can pin the
 // seed and assert specific tips without time-dependence.
 //
-// memorySummary == "" forces the memory tip — landing-page-equivalent
-// for a brand-new install. Past that, dayOfYear picks one from the
-// rotating pool.
-func pickTip(memorySummary string, dayOfYear int) string {
+// Priority: memory tip > skills tip > rotating pool. memorySummary == ""
+// forces the memory tip (landing-page-equivalent for a brand-new install).
+// skillsToOnboard > 0 means skills are installed but none are enabled
+// yet — surface the skills onboarding line so the user discovers /skills.
+// Past those gates, dayOfYear picks one from the rotating pool.
+func pickTip(memorySummary string, skillsToOnboard int, dayOfYear int) string {
 	if memorySummary == "" {
 		return memoryTip
+	}
+	if skillsToOnboard > 0 {
+		return fmt.Sprintf(skillsTipFmt, skillsToOnboard)
 	}
 	pool := tipPool()
 	if len(pool) == 0 {
@@ -113,6 +126,11 @@ func pickTip(memorySummary string, dayOfYear int) string {
 // always sees this exact line — it's the one tip we don't want to roll
 // past randomly.
 const memoryTip = "drop preferences into `~/.yottacode/USER.md` so they auto-load into every session."
+
+// skillsTipFmt is the onboarding line shown when skills are installed
+// but none are enabled for this session. The %d carries the install
+// count so the user sees the surface area before opening the picker.
+const skillsTipFmt = "%d skills installed — type `/skills` to enable any for this session."
 
 // tipPool returns the rotating list shown to users who already have
 // memory configured. Each entry highlights exactly one feature so the

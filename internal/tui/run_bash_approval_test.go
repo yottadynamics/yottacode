@@ -116,6 +116,8 @@ func TestRenderRunBashApproval_TruncatesLongSegment(t *testing.T) {
 	}
 }
 
+// Approval body collapses cwd inside command segments — `cd /abs/cwd`
+// reads as `cd .` while everything else stays put.
 func TestRenderRunBashApproval_CollapsesCwd(t *testing.T) {
 	args := `{"command":"cd /home/me/proj && grep -r foo internal/"}`
 	body, segs, ok := renderRunBashApproval(args, "/home/me/proj")
@@ -130,6 +132,7 @@ func TestRenderRunBashApproval_CollapsesCwd(t *testing.T) {
 	}
 }
 
+// Empty cwd disables shortening — same body as before the change.
 func TestRenderRunBashApproval_EmptyCwdNoOp(t *testing.T) {
 	args := `{"command":"cd /home/me/proj && ls"}`
 	body, _, ok := renderRunBashApproval(args, "")

@@ -71,7 +71,7 @@ var baseCandidates = []string{"main", "master", "develop"}
 // draft a PR title + body and decide whether to push or fall through
 // to draft-only. Replaces the multi-step bash heredoc the legacy
 // /git:create-pr directive used as its first tool call.
-type GHPRContextTool struct{ Cwd string }
+type GHPRContextTool struct{ Cwd *CwdRef }
 
 func (t *GHPRContextTool) Name() string { return "gh_pr_context" }
 
@@ -119,7 +119,7 @@ func (t *GHPRContextTool) Execute(ctx context.Context, argsJSON string) (string,
 	if argsJSON != "" {
 		_ = json.Unmarshal([]byte(argsJSON), &a)
 	}
-	snap, err := BuildPRContext(ctx, t.Cwd, strings.TrimSpace(a.Base))
+	snap, err := BuildPRContext(ctx, t.Cwd.Get(), strings.TrimSpace(a.Base))
 	if err != nil {
 		return "", fmt.Errorf("gh_pr_context: %w", err)
 	}
@@ -331,7 +331,7 @@ func renderPRContext(s PRContext) string {
 // github.Interface so v0.5.0's typed go-github client replaces the
 // shell-out without touching this file.
 type GHPRCreateTool struct {
-	Cwd string
+	Cwd *CwdRef
 	GH  github.Interface
 }
 
@@ -505,7 +505,7 @@ func validatePRTitle(title string) string {
 // for them, they grow Interface.UpdatePR's request type rather
 // than spawning a new tool.
 type GHPRUpdateTool struct {
-	Cwd string
+	Cwd *CwdRef
 	GH  github.Interface
 }
 
@@ -668,6 +668,191 @@ func renderPRUpdateResult(r PRUpdateResult) string {
 	return b.String()
 }
 
+// prCommentBodyCap bounds the comment body the model can post in
+// one call. GitHub itself accepts up to ~65k characters, but
+// model-generated comments that long are almost always a mistake
+// (looping output, runaway template). Cap pre-network so we fail
+// fast on validation rather than burning a round trip.
+const prCommentBodyCap = 16 * 1024
+
+// GHPRAddCommentTool posts a top-level conversation comment on a
+// PR. Approval-gated — every comment goes through the modal so the
+// user reads the body before it lands publicly on GitHub.
+//
+// Companion to gh_pr_create / gh_pr_update for the write surface.
+// Validates body length in Go before dialing the Interface so
+// runaway template output can't reach the network.
+type GHPRAddCommentTool struct {
+	Cwd *CwdRef
+	GH  github.Interface
+}
+
+func (t *GHPRAddCommentTool) Name() string { return "gh_pr_add_comment" }
+
+func (t *GHPRAddCommentTool) Description() string {
+	return "Post a top-level conversation comment on a pull request. " +
+		"Body is the comment Markdown — required, non-empty, capped at " +
+		strconv.Itoa(prCommentBodyCap) + " characters. Use ref to " +
+		"target a specific PR (number or branch name); empty ref " +
+		"defaults to the current branch. Approval-gated: the modal " +
+		"renders the full body so the user reads it before it lands. " +
+		"Used to cross-link related issues (`Refs #42`), post follow-" +
+		"up notes after a /git-review-pr run, or surface structured " +
+		"summaries. NOT for inline review comments on specific lines " +
+		"— that's a different GitHub API surface and out of scope here."
+}
+
+func (t *GHPRAddCommentTool) Schema() map[string]any {
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"ref": map[string]any{
+				"type":        "string",
+				"description": "PR number (\"17\") or branch name. Empty defaults to current branch.",
+			},
+			"body": map[string]any{
+				"type": "string",
+				"description": fmt.Sprintf(
+					"Comment Markdown (required, ≤%d chars).", prCommentBodyCap),
+			},
+		},
+		"required": []string{"body"},
+	}
+}
+
+func (t *GHPRAddCommentTool) RequiresApproval(string) bool { return true }
+
+func (t *GHPRAddCommentTool) PreviewCall(argsJSON string) string {
+	var a struct {
+		Ref  string `json:"ref"`
+		Body string `json:"body"`
+	}
+	_ = json.Unmarshal([]byte(argsJSON), &a)
+	excerpt := previewExcerpt(a.Body, 80)
+	if strings.TrimSpace(a.Ref) == "" {
+		return fmt.Sprintf("gh_pr_add_comment(body=%q)", excerpt)
+	}
+	return fmt.Sprintf("gh_pr_add_comment(ref=%s, body=%q)", a.Ref, excerpt)
+}
+
+// PRAddCommentResult is the typed envelope AddPRComment returns
+// through the tool wrapper. Reason discriminates the failure mode
+// — same pattern as PRCreateResult / PRUpdateResult so the model
+// brief and slash commands can branch on typed flags rather than
+// stringy error checks.
+type PRAddCommentResult struct {
+	Posted        bool
+	URL           string
+	ID            int64
+	ValidationErr string
+	GhUnavailable bool
+	NotFound      bool
+	GhError       string
+}
+
+func (t *GHPRAddCommentTool) Execute(ctx context.Context, argsJSON string) (string, error) {
+	var a struct {
+		Ref  string `json:"ref"`
+		Body string `json:"body"`
+	}
+	if err := json.Unmarshal([]byte(argsJSON), &a); err != nil {
+		return "", fmt.Errorf("gh_pr_add_comment: invalid args: %w", err)
+	}
+	if t.GH == nil {
+		return "", errors.New("gh_pr_add_comment: no GitHub adapter configured")
+	}
+
+	res, err := AddPRComment(ctx, t.GH, github.AddPRCommentRequest{
+		Ref:  a.Ref,
+		Body: a.Body,
+	})
+	if err != nil {
+		return "", fmt.Errorf("gh_pr_add_comment: %w", err)
+	}
+	return renderPRAddCommentResult(res), nil
+}
+
+// AddPRComment is the deterministic core of gh_pr_add_comment.
+// Validates body length and presence in Go before dialing the
+// Interface; folds typed errors (ErrPRNotFound, ErrGhUnavailable)
+// into the typed result envelope so callers branch on flags rather
+// than err strings.
+func AddPRComment(ctx context.Context, client github.Interface, req github.AddPRCommentRequest) (PRAddCommentResult, error) {
+	var res PRAddCommentResult
+	body := strings.TrimSpace(req.Body)
+	if body == "" {
+		res.ValidationErr = "body is empty"
+		return res, nil
+	}
+	if len(body) > prCommentBodyCap {
+		res.ValidationErr = fmt.Sprintf(
+			"body is %d chars; cap is %d", len(body), prCommentBodyCap)
+		return res, nil
+	}
+
+	posted, err := client.AddPRComment(ctx, req)
+	if errors.Is(err, github.ErrGhUnavailable) {
+		res.GhUnavailable = true
+		return res, nil
+	}
+	if errors.Is(err, github.ErrPRNotFound) {
+		res.NotFound = true
+		return res, nil
+	}
+	if err != nil {
+		res.GhError = err.Error()
+		return res, nil
+	}
+	res.Posted = true
+	res.URL = posted.URL
+	res.ID = posted.ID
+	return res, nil
+}
+
+// renderPRAddCommentResult shapes the result envelope for the
+// model. Same shape rationale as renderPRUpdateResult.
+func renderPRAddCommentResult(r PRAddCommentResult) string {
+	var b strings.Builder
+	switch {
+	case r.ValidationErr != "":
+		fmt.Fprintf(&b, "posted=false reason=validation\nerror=%s\n", r.ValidationErr)
+	case r.GhUnavailable:
+		b.WriteString("posted=false reason=gh_unavailable\n")
+		b.WriteString("Hint: install gh and run `gh auth login`, or set $GITHUB_TOKEN.\n")
+	case r.NotFound:
+		b.WriteString("posted=false reason=not_found\n")
+		b.WriteString("Hint: no PR matches the ref. Verify the number or branch name.\n")
+	case r.GhError != "":
+		b.WriteString("posted=false reason=gh_error\n")
+		b.WriteString("--- gh output ---\n")
+		b.WriteString(r.GhError)
+		if !strings.HasSuffix(r.GhError, "\n") {
+			b.WriteString("\n")
+		}
+		b.WriteString("--- end gh output ---\n")
+		b.WriteString("Do NOT auto-retry. Surface the error and stop.\n")
+	case r.Posted:
+		fmt.Fprintf(&b, "posted=true url=%s id=%d\n", r.URL, r.ID)
+	default:
+		b.WriteString("posted=false reason=unknown\n")
+	}
+	return b.String()
+}
+
+// previewExcerpt collapses a multi-line body into a single-line
+// excerpt for tool preview rendering, capped at `cap` characters
+// with an ellipsis suffix when truncated. Pulled out so the
+// add-comment preview and any future preview that wants a body
+// excerpt can share the same implementation.
+func previewExcerpt(body string, cap int) string {
+	body = strings.ReplaceAll(body, "\n", " ")
+	body = strings.Join(strings.Fields(body), " ")
+	if len(body) <= cap {
+		return body
+	}
+	return body[:cap] + "…"
+}
+
 // prReviewDiffCap bounds the diff body the review snapshot
 // surfaces. Bigger than the gh_pr_context diffstat cap (16 KiB)
 // because reviewers need the actual hunks, not just file names —
@@ -685,24 +870,32 @@ const prReviewDiffCap = 64 * 1024
 //
 // Read-only — no approval modal — but does touch the network and so
 // is NOT marked parallel-safe. The fetch fans out to three
-// Interface calls; the ShellOut impl folds two of them into one
-// `gh pr view --json ...` invocation but the typed v0.5.0 client
-// will make all three independently against the GraphQL surface.
+// Interface calls (ReadPR + ListPRChecks + ReadPRDiff). When the
+// caller only needs PR metadata (title, body, state, labels), the
+// cheaper gh_pr_read tool is the right choice — see its Description
+// for the selection rule.
 type GHPRReviewContextTool struct {
-	Cwd string
+	Cwd *CwdRef
 	GH  github.Interface
 }
 
 func (t *GHPRReviewContextTool) Name() string { return "gh_pr_review_context" }
 
 func (t *GHPRReviewContextTool) Description() string {
-	return "Fetch the context needed to review a pull request: PR " +
-		"metadata (title, state, draft, base, head, mergeable, author, " +
-		"labels, URL), the unified diff (capped), and the status check " +
-		"rollup. Ref is the PR number or branch name; empty defaults to " +
-		"the current branch. Returns a typed snapshot keyed by section " +
-		"headers; failing checks are surfaced under ## checks.summary so " +
-		"the caller can flag broken CI at the top of the review."
+	return "Fetch everything needed to review an existing pull request: " +
+		"PR metadata (title, body, state, draft, base, head, mergeable, " +
+		"author, labels, URL) + the full unified diff (capped) + every " +
+		"check-run with state and conclusion + a failing-checks summary. " +
+		"Use this for any PR review, audit, or 'what changed and is CI " +
+		"green' question — three API calls, one snapshot. Prefer this " +
+		"over shelling out to `gh pr view`, `gh pr diff`, or `gh pr " +
+		"checks` from run_bash: the typed call is faster, handles auth " +
+		"directly, and returns structured data the model can branch on " +
+		"(## state flags for not_found / gh_unavailable; ## " +
+		"checks.summary for CI rollup). If you only need PR metadata " +
+		"(no diff, no checks), use gh_pr_read instead — single API call, " +
+		"same metadata shape. Ref is the PR number or branch name; " +
+		"empty defaults to the current branch."
 }
 
 func (t *GHPRReviewContextTool) Schema() map[string]any {
@@ -925,6 +1118,150 @@ func renderPRReviewContext(s PRReviewContext) string {
 		if s.DiffCapped {
 			fmt.Fprintf(&b, "[truncated at %d bytes — run gh pr diff %s for the full diff]\n",
 				prReviewDiffCap, s.Ref)
+		}
+	}
+
+	return strings.TrimRight(b.String(), "\n") + "\n"
+}
+
+// GHPRReadTool is the cheap counterpart to GHPRReviewContextTool —
+// a single ReadPR call returning just the PR metadata (no diff, no
+// checks). Exists so the model has a body-only read path that
+// doesn't pull megabytes of diff + every check-run when the task
+// is "fetch the PR description" or "what's the title of #29".
+//
+// Read-only, no approval modal, single API call. The cheap default
+// for any PR-metadata question; gh_pr_review_context stays the
+// right choice when the model also needs the diff or check status.
+type GHPRReadTool struct {
+	Cwd *CwdRef
+	GH  github.Interface
+}
+
+func (t *GHPRReadTool) Name() string { return "gh_pr_read" }
+
+func (t *GHPRReadTool) Description() string {
+	return "Fetch typed metadata for a single pull request: number, " +
+		"title, body, state, draft flag, base/head refs, head SHA, " +
+		"mergeable state, author, labels, URL. ONE API call — no diff, " +
+		"no check-runs. Prefer this over shelling out to `gh pr view " +
+		"--json ...` from run_bash whenever the goal is reading PR " +
+		"metadata: faster, no subprocess, structured result. Use " +
+		"gh_pr_review_context instead when the diff or CI status also " +
+		"matters (PR review, audit). Ref is the PR number or branch " +
+		"name; empty defaults to the current branch. Returns a typed " +
+		"snapshot keyed by section headers (## state then ## pr); " +
+		"## state flags not_found / gh_unavailable so the caller can " +
+		"branch without parsing free-text errors."
+}
+
+func (t *GHPRReadTool) Schema() map[string]any {
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"ref": map[string]any{
+				"type":        "string",
+				"description": "PR number (\"17\") or branch name. Empty defaults to current branch.",
+			},
+		},
+	}
+}
+
+func (t *GHPRReadTool) RequiresApproval(string) bool { return false }
+
+func (t *GHPRReadTool) PreviewCall(argsJSON string) string {
+	var a struct {
+		Ref string `json:"ref"`
+	}
+	_ = json.Unmarshal([]byte(argsJSON), &a)
+	if strings.TrimSpace(a.Ref) == "" {
+		return "gh_pr_read()"
+	}
+	return fmt.Sprintf("gh_pr_read(ref=%s)", a.Ref)
+}
+
+func (t *GHPRReadTool) Execute(ctx context.Context, argsJSON string) (string, error) {
+	if t.GH == nil {
+		return "", errors.New("gh_pr_read: no GitHub adapter configured")
+	}
+	var a struct {
+		Ref string `json:"ref"`
+	}
+	if argsJSON != "" {
+		_ = json.Unmarshal([]byte(argsJSON), &a)
+	}
+	snap := BuildPRReadContext(ctx, t.GH, strings.TrimSpace(a.Ref))
+	return renderPRReadContext(snap), nil
+}
+
+// PRReadContext is the typed snapshot gh_pr_read returns. Same
+// state-flag pattern as PRReviewContext (NotFound / GhUnavailable
+// / FetchErr) so the model branches on typed flags before reading
+// the metadata. PR is zero-valued when the read failed.
+type PRReadContext struct {
+	Ref           string
+	NotFound      bool
+	GhUnavailable bool
+	FetchErr      string
+
+	PR github.PRDetails
+}
+
+// BuildPRReadContext is the deterministic core of gh_pr_read.
+// Wraps a single Interface.ReadPR call and folds the typed errors
+// into the snapshot's flags. Doesn't return an error itself —
+// every failure shape is captured in the snapshot so callers can
+// branch on flags rather than err strings.
+func BuildPRReadContext(ctx context.Context, client github.Interface, ref string) PRReadContext {
+	snap := PRReadContext{Ref: ref}
+	pr, err := client.ReadPR(ctx, github.ReadPRRequest{Ref: ref})
+	if errors.Is(err, github.ErrGhUnavailable) {
+		snap.GhUnavailable = true
+		return snap
+	}
+	if errors.Is(err, github.ErrPRNotFound) {
+		snap.NotFound = true
+		return snap
+	}
+	if err != nil {
+		snap.FetchErr = err.Error()
+		return snap
+	}
+	snap.PR = pr
+	return snap
+}
+
+// renderPRReadContext mirrors renderPRReviewContext's state-first
+// layout so the model can apply the same parsing template to both
+// tools. Diff and checks sections intentionally omitted — that's
+// the entire point of gh_pr_read.
+func renderPRReadContext(s PRReadContext) string {
+	var b strings.Builder
+
+	fmt.Fprintf(&b, "## state\nref=%s\nnot_found=%v\ngh_unavailable=%v\n",
+		s.Ref, s.NotFound, s.GhUnavailable)
+	if s.FetchErr != "" {
+		fmt.Fprintf(&b, "fetch_error=%s\n", s.FetchErr)
+	}
+
+	if s.NotFound || s.GhUnavailable {
+		return strings.TrimRight(b.String(), "\n") + "\n"
+	}
+
+	b.WriteString("\n## pr\n")
+	fmt.Fprintf(&b, "number=%d\nstate=%s\ndraft=%v\nbase=%s\nhead=%s\nhead_sha=%s\nmergeable=%s\nauthor=%s\nurl=%s\n",
+		s.PR.Number, s.PR.State, s.PR.Draft, s.PR.BaseRef, s.PR.HeadRef,
+		s.PR.HeadSHA, s.PR.Mergeable, s.PR.Author, s.PR.URL)
+	fmt.Fprintf(&b, "title=%s\n", s.PR.Title)
+	if len(s.PR.Labels) > 0 {
+		fmt.Fprintf(&b, "labels=%s\n", strings.Join(s.PR.Labels, ","))
+	}
+	if strings.TrimSpace(s.PR.Body) != "" {
+		b.WriteString("body=|\n")
+		for _, line := range strings.Split(s.PR.Body, "\n") {
+			b.WriteString("  ")
+			b.WriteString(line)
+			b.WriteString("\n")
 		}
 	}
 

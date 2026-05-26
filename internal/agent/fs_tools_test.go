@@ -14,7 +14,7 @@ func TestReadFileTool_HappyPath(t *testing.T) {
 	if err := os.WriteFile(path, []byte("hi there"), 0o644); err != nil {
 		t.Fatalf("setup: %v", err)
 	}
-	tool := &ReadFileTool{Cwd: tmp}
+	tool := &ReadFileTool{Cwd: NewCwdRef(tmp)}
 	out, err := tool.Execute(context.Background(), `{"path":"hello.txt"}`)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -30,7 +30,7 @@ func TestReadFileTool_AbsolutePath(t *testing.T) {
 	if err := os.WriteFile(path, []byte("abs-content"), 0o644); err != nil {
 		t.Fatalf("setup: %v", err)
 	}
-	tool := &ReadFileTool{Cwd: "/unused"}
+	tool := &ReadFileTool{Cwd: NewCwdRef("/unused")}
 	out, err := tool.Execute(context.Background(), `{"path":"`+path+`"}`)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -45,7 +45,7 @@ func TestReadFileTool_AbsolutePath(t *testing.T) {
 func TestReadFileTool_MultilinePrefixed(t *testing.T) {
 	tmp := t.TempDir()
 	writeFile(t, tmp, "f.txt", "alpha\nbeta\ngamma\n")
-	tool := &ReadFileTool{Cwd: tmp}
+	tool := &ReadFileTool{Cwd: NewCwdRef(tmp)}
 	out, err := tool.Execute(context.Background(), `{"path":"f.txt"}`)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -57,14 +57,14 @@ func TestReadFileTool_MultilinePrefixed(t *testing.T) {
 }
 
 func TestReadFileTool_BadJSON(t *testing.T) {
-	tool := &ReadFileTool{Cwd: t.TempDir()}
+	tool := &ReadFileTool{Cwd: NewCwdRef(t.TempDir())}
 	if _, err := tool.Execute(context.Background(), `{not json`); err == nil {
 		t.Errorf("expected error on malformed JSON")
 	}
 }
 
 func TestReadFileTool_MissingPath(t *testing.T) {
-	tool := &ReadFileTool{Cwd: t.TempDir()}
+	tool := &ReadFileTool{Cwd: NewCwdRef(t.TempDir())}
 	if _, err := tool.Execute(context.Background(), `{}`); err == nil {
 		t.Errorf("expected error on empty path")
 	}
@@ -83,7 +83,7 @@ func TestReadFileTool_TruncatesLargeFile(t *testing.T) {
 	if err := os.WriteFile(path, []byte(big), 0o644); err != nil {
 		t.Fatalf("setup: %v", err)
 	}
-	tool := &ReadFileTool{Cwd: tmp}
+	tool := &ReadFileTool{Cwd: NewCwdRef(tmp)}
 	out, err := tool.Execute(context.Background(), `{"path":"big.txt"}`)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -96,7 +96,7 @@ func TestReadFileTool_TruncatesLargeFile(t *testing.T) {
 func TestReadFileTool_OffsetSelectsLine(t *testing.T) {
 	tmp := t.TempDir()
 	writeFile(t, tmp, "f.txt", "one\ntwo\nthree\nfour\nfive\n")
-	tool := &ReadFileTool{Cwd: tmp}
+	tool := &ReadFileTool{Cwd: NewCwdRef(tmp)}
 	out, err := tool.Execute(context.Background(), `{"path":"f.txt","offset":3}`)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -110,7 +110,7 @@ func TestReadFileTool_OffsetSelectsLine(t *testing.T) {
 func TestReadFileTool_LimitTrimsTrailingLines(t *testing.T) {
 	tmp := t.TempDir()
 	writeFile(t, tmp, "f.txt", "one\ntwo\nthree\nfour\nfive\n")
-	tool := &ReadFileTool{Cwd: tmp}
+	tool := &ReadFileTool{Cwd: NewCwdRef(tmp)}
 	out, err := tool.Execute(context.Background(), `{"path":"f.txt","limit":2}`)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -126,7 +126,7 @@ func TestReadFileTool_LimitTrimsTrailingLines(t *testing.T) {
 func TestReadFileTool_OffsetAndLimit(t *testing.T) {
 	tmp := t.TempDir()
 	writeFile(t, tmp, "f.txt", "one\ntwo\nthree\nfour\nfive\n")
-	tool := &ReadFileTool{Cwd: tmp}
+	tool := &ReadFileTool{Cwd: NewCwdRef(tmp)}
 	out, err := tool.Execute(context.Background(), `{"path":"f.txt","offset":2,"limit":2}`)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -140,7 +140,7 @@ func TestReadFileTool_OffsetAndLimit(t *testing.T) {
 func TestReadFileTool_OffsetPastEOFReturnsEmpty(t *testing.T) {
 	tmp := t.TempDir()
 	writeFile(t, tmp, "f.txt", "only-line")
-	tool := &ReadFileTool{Cwd: tmp}
+	tool := &ReadFileTool{Cwd: NewCwdRef(tmp)}
 	out, err := tool.Execute(context.Background(), `{"path":"f.txt","offset":1000}`)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -153,7 +153,7 @@ func TestReadFileTool_OffsetPastEOFReturnsEmpty(t *testing.T) {
 func TestReadFileTool_LimitBeyondFileNoTruncation(t *testing.T) {
 	tmp := t.TempDir()
 	writeFile(t, tmp, "f.txt", "short")
-	tool := &ReadFileTool{Cwd: tmp}
+	tool := &ReadFileTool{Cwd: NewCwdRef(tmp)}
 	out, err := tool.Execute(context.Background(), `{"path":"f.txt","limit":1000}`)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -172,7 +172,7 @@ func TestReadFileTool_LimitBeyondFileNoTruncation(t *testing.T) {
 func TestReadFileTool_NegativeOffsetClampedToFirstLine(t *testing.T) {
 	tmp := t.TempDir()
 	writeFile(t, tmp, "f.txt", "alpha\nbeta")
-	tool := &ReadFileTool{Cwd: tmp}
+	tool := &ReadFileTool{Cwd: NewCwdRef(tmp)}
 	out, err := tool.Execute(context.Background(), `{"path":"f.txt","offset":-7}`)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -185,7 +185,7 @@ func TestReadFileTool_NegativeOffsetClampedToFirstLine(t *testing.T) {
 
 func TestWriteFileTool_CreatesFileAndParents(t *testing.T) {
 	tmp := t.TempDir()
-	tool := &WriteFileTool{Cwd: tmp, WriteOpts: WritePathOptions{Cwd: tmp}}
+	tool := &WriteFileTool{Cwd: NewCwdRef(tmp), WriteOpts: WritePathOptions{Cwd: NewCwdRef(tmp)}}
 	out, err := tool.Execute(context.Background(), `{"path":"nested/dir/out.txt","content":"payload"}`)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -208,7 +208,7 @@ func TestWriteFileTool_Overwrites(t *testing.T) {
 	if err := os.WriteFile(path, []byte("old"), 0o644); err != nil {
 		t.Fatalf("setup: %v", err)
 	}
-	tool := &WriteFileTool{Cwd: tmp, WriteOpts: WritePathOptions{Cwd: tmp}}
+	tool := &WriteFileTool{Cwd: NewCwdRef(tmp), WriteOpts: WritePathOptions{Cwd: NewCwdRef(tmp)}}
 	if _, err := tool.Execute(context.Background(), `{"path":"x.txt","content":"new"}`); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -219,7 +219,7 @@ func TestWriteFileTool_Overwrites(t *testing.T) {
 }
 
 func TestWriteFileTool_BadJSON(t *testing.T) {
-	tool := &WriteFileTool{Cwd: t.TempDir()}
+	tool := &WriteFileTool{Cwd: NewCwdRef(t.TempDir())}
 	if _, err := tool.Execute(context.Background(), `garbage`); err == nil {
 		t.Errorf("expected error on bad JSON")
 	}

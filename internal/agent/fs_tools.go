@@ -29,7 +29,7 @@ const (
 // locations (see DefaultDenyReadPaths) so prompt injection can't
 // silently exfiltrate keys; everything else is fair game.
 type ReadFileTool struct {
-	Cwd           string
+	Cwd           *CwdRef
 	DenyReadPaths []string
 }
 
@@ -98,7 +98,7 @@ func (t *ReadFileTool) Execute(ctx context.Context, argsJSON string) (string, er
 		limit = defaultReadLines
 	}
 
-	p := resolvePath(t.Cwd, a.Path)
+	p := resolvePath(t.Cwd.Get(), a.Path)
 	if err := ValidateReadPath(p, t.DenyReadPaths); err != nil {
 		return "", fmt.Errorf("read_file: %w", err)
 	}
@@ -170,7 +170,7 @@ func (t *ReadFileTool) Execute(ctx context.Context, argsJSON string) (string, er
 // paths *before* the approval modal opens, so the model can't trick a
 // distracted user into approving a misleading path.
 type WriteFileTool struct {
-	Cwd       string
+	Cwd       *CwdRef
 	WriteOpts WritePathOptions
 }
 
@@ -226,7 +226,7 @@ func (t *WriteFileTool) Execute(ctx context.Context, argsJSON string) (string, e
 	if a.Path == "" {
 		return "", fmt.Errorf("write_file: path is required")
 	}
-	p := resolvePath(t.Cwd, a.Path)
+	p := resolvePath(t.Cwd.Get(), a.Path)
 	if err := ValidateWritePath(p, t.WriteOpts); err != nil {
 		return "", fmt.Errorf("write_file: %w", err)
 	}

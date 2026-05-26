@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -21,7 +22,7 @@ func newTestAgentTool(t *testing.T, configs []subagents.AgentConfig, streamer St
 		Tasks:           subagents.NewRegistry(),
 		Adapter:         streamer,
 		ParentRegistry:  parent,
-		Cwd:             t.TempDir(),
+		Cwd:             NewCwdRef(t.TempDir()),
 		TranscriptDir:   t.TempDir(),
 		YoloMode:        &YoloModeState{},
 		PlanMode:        &PlanModeState{},
@@ -50,6 +51,18 @@ func TestAgentTool_RecursionGuard(t *testing.T) {
 	}
 	if _, ok := child.Get("read_file"); !ok {
 		t.Errorf("child registry missing read_file (should be inherited)")
+	}
+}
+
+// AgentTool is ParallelSafe — multiple Agent calls from the same
+// assistant message fan out via executeToolCallsParallel. This is the
+// surface a parent leans on to spawn 2-3 Explore subagents in one
+// turn during plan-mode research; if it ever flips back to false the
+// fan-out silently regresses to sequential execution.
+func TestAgentTool_ParallelSafe(t *testing.T) {
+	tool, _ := newTestAgentTool(t, nil, nil, false)
+	if !tool.ParallelSafe("") {
+		t.Errorf("AgentTool.ParallelSafe() = false; want true so parallel foreground subagent dispatch works")
 	}
 }
 
@@ -119,6 +132,108 @@ func TestAgentTool_BackgroundRejectedWhenDisabled(t *testing.T) {
 	}
 	if !strings.Contains(out, "background_subagents") {
 		t.Errorf("output should name the specific feature flag; got %q", out)
+	}
+}
+
+// Foreground subagents share the same cap shape as background ones —
+// the (N+1)th concurrent spawn is rejected with a recoverable error
+// the model can adapt to (wait for an in-flight child to finish).
+// Pre-seed the registry with MaxForegroundSubagents running fg tasks
+// so the cap check fires before any real dispatch happens.
+func TestAgentTool_ForegroundCapEnforced(t *testing.T) {
+	cfg := subagents.AgentConfig{Name: "x", Description: "x", Prompt: "x", Source: "test"}
+	tool, _ := newTestAgentTool(t, []subagents.AgentConfig{cfg}, nil, false)
+	for i := 0; i < MaxForegroundSubagents; i++ {
+		tool.Tasks.Add(&subagents.Task{
+			ID:        subagents.NewTaskID(),
+			AgentType: "x",
+			Status:    subagents.TaskRunning,
+			Background: false,
+		})
+	}
+	args := mustJSON(t, agentArgs{SubagentType: "x", Prompt: "hello"})
+	out, err := tool.Execute(context.Background(), args)
+	if err != nil {
+		t.Fatalf("Execute err = %v, want nil", err)
+	}
+	if !strings.Contains(out, "foreground subagents may run concurrently") {
+		t.Errorf("output should explain the foreground cap; got %q", out)
+	}
+	if !strings.Contains(out, fmt.Sprintf("at most %d", MaxForegroundSubagents)) {
+		t.Errorf("output should name the cap value %d; got %q", MaxForegroundSubagents, out)
+	}
+}
+
+// An agent definition with `background: true` should dispatch as
+// background even when the caller omits run_in_background. This is the
+// surface the verification agent leans on — callers shouldn't have to
+// remember to pass the flag for a slow off-turn check.
+func TestAgentTool_ConfigBackgroundDefaultsToBackground(t *testing.T) {
+	streamer := &scriptedStreamer{turns: [][]adapter.StreamEvent{
+		{sseDone("verdict: pass")},
+	}}
+	cfg := subagents.AgentConfig{
+		Name:        "verification",
+		Description: "x",
+		Prompt:      "verify",
+		Background:  true,
+		Source:      "test",
+	}
+	tool, _ := newTestAgentTool(t, []subagents.AgentConfig{cfg}, streamer, true /* AllowBackground */)
+	args := mustJSON(t, agentArgs{SubagentType: "verification", Prompt: "go"})
+	out, err := tool.Execute(context.Background(), args)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	// Background dispatch returns a task-id handle string, not the
+	// child's final reply. The "started as task" prefix is the
+	// distinguishing marker.
+	if !strings.Contains(out, "background subagent") {
+		t.Errorf("output = %q, want background-dispatch handle", out)
+	}
+	// Wait briefly for the detached goroutine to finish before listing
+	// — otherwise the registry may still show Running.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		tasks := tool.Tasks.List()
+		if len(tasks) == 1 && tasks[0].Status == subagents.TaskCompleted {
+			if !tasks[0].Background {
+				t.Errorf("task.Background = false, want true (config default should have flipped it)")
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("background task did not complete within 2s")
+}
+
+// When AllowBackground is false (oneshot mode), a config-level
+// `background: true` must silently fall back to foreground rather
+// than rejecting the call. Otherwise the verification agent becomes
+// unreachable from oneshot, which defeats the point of shipping it.
+func TestAgentTool_ConfigBackgroundFallsBackToForegroundWhenDisabled(t *testing.T) {
+	streamer := &scriptedStreamer{turns: [][]adapter.StreamEvent{
+		{sseDone("verdict: pass")},
+	}}
+	cfg := subagents.AgentConfig{
+		Name:        "verification",
+		Description: "x",
+		Prompt:      "verify",
+		Background:  true,
+		Source:      "test",
+	}
+	tool, _ := newTestAgentTool(t, []subagents.AgentConfig{cfg}, streamer, false /* AllowBackground */)
+	args := mustJSON(t, agentArgs{SubagentType: "verification", Prompt: "go"})
+	out, err := tool.Execute(context.Background(), args)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	// Foreground dispatch returns the child's final reply directly.
+	if !strings.Contains(out, "verdict: pass") {
+		t.Errorf("output = %q, want the child's final reply inline (foreground fallback)", out)
+	}
+	if strings.Contains(out, "experimental") {
+		t.Errorf("config-default background should silently fall back; got the experimental-gate error: %q", out)
 	}
 }
 

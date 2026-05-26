@@ -182,15 +182,19 @@ func approvalToast(rule string) string {
 	return styleApprovalToast.Render(fmt.Sprintf("✓ Added %s to permissions.local.json", rule))
 }
 
+// Approval-modal styles. Bare declarations — see plan_mode_render.go's
+// note: initializers would capture the zero AdaptiveColor at package
+// init, freezing the modal at default-fg regardless of theme. Actual
+// construction lives in buildStyles (styles.go).
+//
+// Design: title sits left in Warning (the box is the caution color);
+// tool name sits right in Dim so the eye lands on the command body.
 var (
-	// Header label styles. Title sits left in Warning (the box is the
-	// caution color); tool name sits right in Dim so the eye lands on
-	// the command body.
-	styleApprovalTitle     = lipgloss.NewStyle().Foreground(colorWarning).Bold(true)
-	styleApprovalTool      = lipgloss.NewStyle().Foreground(colorDim)
-	styleApprovalCommand   = lipgloss.NewStyle().Foreground(colorContent).Bold(true)
-	styleApprovalHotkey    = lipgloss.NewStyle().Foreground(colorAccent).Bold(true)
-	styleApprovalChoice    = lipgloss.NewStyle().Foreground(colorContent)
-	styleApprovalChoiceDim = lipgloss.NewStyle().Foreground(colorDim)
-	styleApprovalToast     = lipgloss.NewStyle().Foreground(colorSuccess)
+	styleApprovalTitle     lipgloss.Style
+	styleApprovalTool      lipgloss.Style
+	styleApprovalCommand   lipgloss.Style
+	styleApprovalHotkey    lipgloss.Style
+	styleApprovalChoice    lipgloss.Style
+	styleApprovalChoiceDim lipgloss.Style
+	styleApprovalToast     lipgloss.Style
 )
