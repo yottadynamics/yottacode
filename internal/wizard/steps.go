@@ -1121,6 +1121,10 @@ func (m wizardModel) newProviderInputs(e CatalogEntry) providerInputs {
 		const openAIAuthDefault = "gpt-5.5"
 		in.customModel.SetValue(openAIAuthDefault)
 		in.chosenModel = openAIAuthDefault
+	case e.Kind == "copilot":
+		const copilotDefault = "claude-haiku-4.5"
+		in.customModel.SetValue(copilotDefault)
+		in.chosenModel = copilotDefault
 	}
 	// For curated kinds (anthropic/openai/gemini), source the model
 	// list from the embedded catalog. Empty when the maintainer hasn't
@@ -1134,7 +1138,7 @@ func (m wizardModel) newProviderInputs(e CatalogEntry) providerInputs {
 	// renders the textinput (pre-filled with gpt-5.5) plus the
 	// "discovered after sign-in" hint instead of the misleading
 	// "yotta-models refresh" suggestion.
-	if catalog.IsCuratedKind(e.Kind) && e.Kind != "openai-auth" {
+	if catalog.IsCuratedKind(e.Kind) && e.Kind != "openai-auth" && e.Kind != "copilot" {
 		in.curatedModels = catalog.Get(e.Kind)
 		if len(in.curatedModels) > 0 {
 			in.chosenModel = in.curatedModels[0].ID
@@ -1167,6 +1171,8 @@ func FreeFormModelPlaceholder(name string) string {
 		return "llama3.1:8b"
 	case "nvidia-nim":
 		return "nvidia/nemotron-3-super-120b-a12b"
+	case "copilot-auth":
+		return "claude-haiku-4.5"
 	case "custom":
 		return "your-model-name"
 	}

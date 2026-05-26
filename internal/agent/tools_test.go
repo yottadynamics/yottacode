@@ -21,8 +21,8 @@ func TestRegistry_RegisterAndGet(t *testing.T) {
 
 func TestRegistry_Deregister(t *testing.T) {
 	r := NewRegistry()
-	r.Register(&ReadFileTool{Cwd: "/x"})
-	r.Register(&WriteFileTool{Cwd: "/x"})
+	r.Register(&ReadFileTool{Cwd: NewCwdRef("/x")})
+	r.Register(&WriteFileTool{Cwd: NewCwdRef("/x")})
 
 	if ok := r.Deregister("read_file"); !ok {
 		t.Errorf("Deregister(read_file) returned false; want true")
@@ -49,7 +49,7 @@ func TestRegistry_Deregister(t *testing.T) {
 func TestRegistry_ConcurrentAccessIsSafe(t *testing.T) {
 	r := NewRegistry()
 	for i := 0; i < 16; i++ {
-		r.Register(&ReadFileTool{Cwd: fmt.Sprintf("/seed-%d", i)})
+		r.Register(&ReadFileTool{Cwd: NewCwdRef(fmt.Sprintf("/seed-%d", i))})
 	}
 
 	const goroutines = 32
@@ -80,9 +80,9 @@ func TestRegistry_ConcurrentAccessIsSafe(t *testing.T) {
 			defer wg.Done()
 			name := fmt.Sprintf("/scratch-%d", id)
 			for j := 0; j < iterations; j++ {
-				r.Register(&ReadFileTool{Cwd: name})
+				r.Register(&ReadFileTool{Cwd: NewCwdRef(name)})
 				r.Deregister("read_file") // may or may not exist this round
-				r.Register(&ReadFileTool{Cwd: "/x"})
+				r.Register(&ReadFileTool{Cwd: NewCwdRef("/x")})
 			}
 		}(i)
 	}

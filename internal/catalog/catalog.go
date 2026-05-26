@@ -79,6 +79,12 @@ func Get(provider string) []Model {
 		}
 		return []Model{}
 	}
+	if provider == "copilot" {
+		if ms := copilotCachedModels(); ms != nil {
+			return ms
+		}
+		return []Model{}
+	}
 	if ms, ok := byProv[provider]; ok {
 		return ms
 	}

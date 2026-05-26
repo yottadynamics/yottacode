@@ -76,6 +76,9 @@ func configRequiresAPIKey(cfg Config, provider Provider) bool {
 	if provider == ProviderOpenAIAuth {
 		return false
 	}
+	if provider == ProviderCopilot {
+		return false
+	}
 	if isLoopbackURL(cfg.BaseURL) {
 		return false
 	}

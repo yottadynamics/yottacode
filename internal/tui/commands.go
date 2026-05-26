@@ -16,6 +16,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/yottadynamics/yottacode/internal/adapter"
+	copilotauth "github.com/yottadynamics/yottacode/internal/auth/copilot"
 	openaiauth "github.com/yottadynamics/yottacode/internal/auth/openai"
 	"github.com/yottadynamics/yottacode/internal/catalog"
 	"github.com/yottadynamics/yottacode/internal/config"
@@ -67,7 +68,7 @@ func init() {
 		// Workflow — most reached-for during active coding.
 		{Name: "plan", Help: "toggle plan mode — also Shift+Tab. Type `/plan list` to resume an earlier plan.", Run: cmdPlan},
 		{Name: "model", Help: "open the model picker (subcommands: list [all], <name>)", Run: cmdModel},
-		{Name: "provider", Help: "open the provider menu (subcommands: list, use, add, remove, models)", Run: cmdProviderEntry},
+		{Name: "provider", Help: "select a new provider (subcommands: list, use, add, remove, models)", Run: cmdProviderEntry},
 		{Name: "sessions", Help: "open the sessions menu (or /sessions <id|name> to resume directly)", Run: cmdSessions},
 		{Name: "memory", Help: "open the memory picker (USER.md / YOTTACODE.md / saved memories)", Run: cmdMemory},
 		{Name: "summarize", Help: "compress session history into a structured summary", Run: cmdSummarize},
@@ -533,6 +534,23 @@ func providerAdd(m Model, args []string) (Model, tea.Cmd) {
 		m.appendLine(styleAuto.Render(fmt.Sprintf("(profile %q will be saved after sign-in completes)", p.Name)))
 		return m, startInlineOpenAIAuthLoginCmd(m.parentCtx)
 	}
+	if p.Kind == "copilot" {
+		m.copilotPendingAdd = &pendingCopilotAdd{
+			add: providerops.AddProvider{
+				Name:         p.Name,
+				Kind:         p.Kind,
+				BaseURL:      p.BaseURL,
+				APIKeyEnv:    p.APIKeyEnv,
+				DefaultModel: p.DefaultModel,
+				Models:       append([]config.Model(nil), p.Models...),
+			},
+			becomesActive: cfg.Active.Provider == "",
+			fromPicker:    false,
+		}
+		m.appendLine(styleAuto.Render("[copilot] starting device code sign-in..."))
+		m.appendLine(styleAuto.Render(fmt.Sprintf("(profile %q will be saved after sign-in completes)", p.Name)))
+		return m, startInlineCopilotAuthCmd(m.parentCtx)
+	}
 	cfg.Providers = append(cfg.Providers, p)
 	// First add wins active — same behavior as the picker. Without
 	// this, the user can `/provider add foo …` from a freshly
@@ -647,6 +665,9 @@ func applyProviderRemove(m Model, name string) (Model, tea.Cmd) {
 	if removedKind == "openai-auth" {
 		m = cleanupOpenAIAuthTokenStore(m)
 	}
+	if removedKind == "copilot" {
+		m = cleanupCopilotTokenStore(m)
+	}
 	// Drop the matching API key from ~/.yottacode/.env when no other
 	// remaining profile still references it. Skips when shared
 	// (legacy configs predating per-profile env-var minting can have
@@ -721,6 +742,25 @@ func cleanupOpenAIAuthTokenStore(m Model) Model {
 	// directory is empty, which is the right semantics — if a future
 	// provider drops another token file in there we don't want to
 	// blow it away.
+	_ = os.Remove(filepath.Dir(path))
+	return m
+}
+
+func cleanupCopilotTokenStore(m Model) Model {
+	path, err := copilotauth.DefaultStorePath()
+	if err != nil {
+		return m
+	}
+	if removeErr := os.Remove(path); removeErr == nil {
+		m.appendLine(styleAuto.Render("[provider] copilot: token store deleted (logged out)"))
+	} else if !errors.Is(removeErr, os.ErrNotExist) {
+		m.appendLine(styleError.Render(fmt.Sprintf("[provider] copilot: could not delete token store: %v", removeErr)))
+	}
+	if modelsPath, err := copilotauth.DefaultModelsPath(); err == nil {
+		if removeErr := os.Remove(modelsPath); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+			m.appendLine(styleError.Render(fmt.Sprintf("[provider] copilot: could not delete models cache: %v", removeErr)))
+		}
+	}
 	_ = os.Remove(filepath.Dir(path))
 	return m
 }
@@ -910,6 +950,9 @@ func formatProviderModels(p *config.Provider, activeModel string) string {
 			if m.ContextWindow > 0 {
 				line += fmt.Sprintf("  ctx=%d", m.ContextWindow)
 			}
+			if m.Disabled {
+				line += "  [upgrade plan]"
+			}
 			fmt.Fprintf(&b, "%s%s\n", marker, line)
 		}
 	} else {
@@ -1011,6 +1054,8 @@ func detectKindAsProvider(kind string) adapter.Provider {
 		return adapter.ProviderOpenAI
 	case "openai-auth":
 		return adapter.ProviderOpenAIAuth
+	case "copilot":
+		return adapter.ProviderCopilot
 	case "gemini":
 		return adapter.ProviderGemini
 	case "ollama":

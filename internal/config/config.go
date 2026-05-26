@@ -267,7 +267,7 @@ func MCPNameValid(name string) bool { return mcpNameRE.MatchString(name) }
 var ValidTiers = []string{"cheap", "balanced", "expensive"}
 
 // ValidKinds is the whitelist for Provider.Kind.
-var ValidKinds = []string{"anthropic", "openai", "openai-auth", "openai-compatible", "ollama", "gemini"}
+var ValidKinds = []string{"anthropic", "openai", "openai-auth", "copilot", "openai-compatible", "ollama", "gemini"}
 
 // Default returns a Config populated with the documented defaults.
 func Default() Config {

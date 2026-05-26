@@ -84,6 +84,8 @@ func TestDetectProviderURLPatterns(t *testing.T) {
 	}{
 		{"https://chatgpt.com/backend-api/codex", ProviderOpenAIAuth},
 		{"https://chatgpt.com/backend-api/codex/responses", ProviderOpenAIAuth},
+		{"https://api.githubcopilot.com", ProviderCopilot},
+		{"https://api.githubcopilot.com/chat/completions", ProviderCopilot},
 		{"https://api.openai.com/v1", ProviderOpenAI},
 		{"https://api.anthropic.com", ProviderAnthropic},
 		{"https://api.x.ai/v1", ProviderXAI},

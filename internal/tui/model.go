@@ -578,6 +578,7 @@ type Model struct {
 	// profile on disk that the next chat turn 401s against. Dropped on
 	// either success-after-persist or any failure branch.
 	openAIAuthPendingAdd *pendingOpenAIAuthAdd
+	copilotPendingAdd    *pendingCopilotAdd
 }
 
 // pendingOpenAIAuthAdd carries everything persistProviderAdd would
@@ -1557,6 +1558,12 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case inlineOpenAIAuthScanDoneMsg:
 		return handleInlineOpenAIAuthScanDone(m, msg)
+
+	case inlineCopilotAuthCodeMsg:
+		return handleInlineCopilotAuthCode(m, msg)
+
+	case inlineCopilotAuthDoneMsg:
+		return handleInlineCopilotAuthDone(m, msg)
 
 	case summaryDoneMsg:
 		m.summarizing = false

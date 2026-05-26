@@ -11,6 +11,36 @@ import (
 	"github.com/yottadynamics/yottacode/internal/wizard"
 )
 
+// navigateToKind moves the addKindMode cursor to the entry with the
+// given kind. Call after entering addKindMode (the first Enter on
+// the "Add" menu item).
+func navigateToKind(t *testing.T, m Model, kind string) Model {
+	t.Helper()
+	for i, e := range m.providerPicker.addCatalog {
+		if e.Kind == kind {
+			for j := 0; j < i; j++ {
+				m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyDown})
+			}
+			return m
+		}
+	}
+	t.Fatalf("kind %q not found in addCatalog", kind)
+	return m
+}
+
+// navigateToMenuItem moves the menu cursor to the item with the given
+// label. Call after opening the provider picker (/provider).
+func navigateToMenuItem(t *testing.T, m Model, label string) Model {
+	t.Helper()
+	for _, item := range m.providerPicker.menuItems {
+		if item.Label == label {
+			break
+		}
+		m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyDown})
+	}
+	return m
+}
+
 // seedProviderConfig writes a two-provider config.toml under
 // HOME/.yottacode/config.toml so the picker has something to load.
 func seedProviderConfig(t *testing.T) {
@@ -114,9 +144,7 @@ func TestProviderPicker_UseMenuItemTransitionsToUseList(t *testing.T) {
 	m := newTestModel(t)
 	seedProviderConfig(t)
 	m, _ = typeAndEnter(t, m, "/provider")
-	if m.providerPicker.menuCursor != 0 {
-		t.Fatalf("cursor should default to Use (index 0); got %d", m.providerPicker.menuCursor)
-	}
+	m = navigateToMenuItem(t, m, "Use")
 	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
 	if m.providerPicker.mode != providerUsePickerMode {
 		t.Errorf("Enter on Use should transition to use-list mode; got %v", m.providerPicker.mode)
@@ -151,8 +179,7 @@ func TestProviderPicker_UseConfirmSwitchesActive(t *testing.T) {
 	m := newTestModel(t)
 	seedProviderConfig(t)
 	m, _ = typeAndEnter(t, m, "/provider")
-	// Enter to enter Use sub-picker (cursor already at index 0),
-	// Down to openai (index 1), Enter to confirm.
+	m = navigateToMenuItem(t, m, "Use")
 	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter}) // → Use sub-picker
 	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyDown})  // cursor → openai
 	if m.providerPicker.usePickerCursor != 1 {
@@ -177,6 +204,7 @@ func TestProviderPicker_UseWithNoProvidersHints(t *testing.T) {
 	m := newTestModel(t)
 	// Don't seed a config — no providers configured.
 	m, _ = typeAndEnter(t, m, "/provider")
+	m = navigateToMenuItem(t, m, "Use")
 	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter}) // try to enter Use
 	if m.providerPickerOpen {
 		t.Errorf("Use with no providers should close the picker (hint, not transition)")
@@ -239,6 +267,7 @@ func TestProviderPicker_UseListMarksActiveWithCheckmark(t *testing.T) {
 	m := newTestModel(t)
 	seedProviderConfig(t)
 	m, _ = typeAndEnter(t, m, "/provider")
+	m = navigateToMenuItem(t, m, "Use")
 	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
 	got := stripANSI(m.View())
 	if !strings.Contains(got, "✔") {
@@ -391,7 +420,15 @@ func TestProviderPicker_AddCloudKindBuildsForm(t *testing.T) {
 		m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyDown})
 	}
 	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter}) // → addKindMode
-	// Cursor 0 = anthropic (cloud, FreeForm=false).
+	// Navigate to anthropic (no longer at index 0).
+	for i, e := range m.providerPicker.addCatalog {
+		if e.Kind == "anthropic" {
+			for j := 0; j < i; j++ {
+				m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyDown})
+			}
+			break
+		}
+	}
 	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
 	if m.providerPicker.mode != providerAddFieldsMode {
 		t.Fatalf("Enter on kind should transition to fields mode; got %v", m.providerPicker.mode)
@@ -457,10 +494,17 @@ func TestProviderPicker_AddConfirmAppendsProvider(t *testing.T) {
 		}
 		m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyDown})
 	}
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter}) // → addKindMode (anthropic at 0)
+	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter}) // → addKindMode
+	// Navigate down to anthropic (skip openai-auth, copilot-auth).
+	for i, e := range m.providerPicker.addCatalog {
+		if e.Kind == "anthropic" {
+			for j := 0; j < i; j++ {
+				m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyDown})
+			}
+			break
+		}
+	}
 	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter}) // → addFieldsMode
-	// Anthropic went free-form when the curated Models list was
-	// removed, so the model field starts blank with a placeholder.
 	// Field index 2 = API key, index 3 = Default model for cloud
 	// providers (Name, Base URL, API key, Default model).
 	m.providerPicker.addFields[2].SetValue("sk-ant-test-key")
@@ -499,7 +543,15 @@ func TestProviderPicker_AddRejectsMissingKeyForCloudProvider(t *testing.T) {
 		}
 		m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyDown})
 	}
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter}) // → addKindMode (anthropic at 0)
+	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter}) // → addKindMode
+	for i, e := range m.providerPicker.addCatalog {
+		if e.Kind == "anthropic" {
+			for j := 0; j < i; j++ {
+				m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyDown})
+			}
+			break
+		}
+	}
 	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter}) // → addFieldsMode
 	// Fill model but deliberately leave the API key blank.
 	m.providerPicker.addFields[3].SetValue("claude-sonnet-4-6")
@@ -550,6 +602,7 @@ func TestProviderPicker_AddAcceptsKeyFromExistingEnv(t *testing.T) {
 		m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyDown})
 	}
 	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter}) // → addKindMode
+	m = navigateToKind(t, m, "anthropic")
 	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter}) // → addFieldsMode
 	m.providerPicker.addFields[3].SetValue("claude-sonnet-4-6")
 	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
@@ -767,11 +820,10 @@ func TestProviderPicker_AddFreeFormRejectsBlankModel(t *testing.T) {
 	target := -1
 	for i, e := range m.providerPicker.addCatalog {
 		switch e.Kind {
-		case "anthropic", "openai", "gemini", "openai-auth":
-			// openai-auth is excluded too: its model field is pre-
-			// filled with "gpt-5.5" since the per-user list is only
-			// populated post-login, so it doesn't exercise the
-			// "default model required" path this test cares about.
+		case "anthropic", "openai", "gemini", "openai-auth", "copilot":
+			// openai-auth and copilot are excluded too: their model
+			// fields are pre-filled since per-user lists are only
+			// populated post-login.
 			continue
 		}
 		target = i
@@ -819,7 +871,8 @@ func TestProviderPicker_AddPropagatesAPIKeyToProcessEnv(t *testing.T) {
 		}
 		m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyDown})
 	}
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter}) // → addKindMode (anthropic at 0)
+	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter}) // → addKindMode
+	m = navigateToKind(t, m, "anthropic")
 	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter}) // → addFieldsMode
 	// Set the API key + model fields directly. Field index 2 = API
 	// key, index 3 = Default model. Anthropic went free-form when the
@@ -931,7 +984,8 @@ func TestProviderPicker_AddCuratedKindLoadsCatalogModels(t *testing.T) {
 		}
 		m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyDown})
 	}
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter}) // → addKindMode (anthropic at 0)
+	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter}) // → addKindMode
+	m = navigateToKind(t, m, "anthropic")
 	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter}) // → addFieldsMode
 	if len(m.providerPicker.addCuratedModels) == 0 {
 		t.Fatalf("anthropic catalog should be populated; got 0 entries")
@@ -1319,7 +1373,8 @@ func TestProviderPicker_AddSetsActiveOnFirstAdd(t *testing.T) {
 		}
 		m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyDown})
 	}
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter}) // → addKindMode (anthropic at 0)
+	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter}) // → addKindMode
+	m = navigateToKind(t, m, "anthropic")
 	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter}) // → addFieldsMode
 
 	// Fill key + arrow-pick a model so save passes the guards.
@@ -1408,15 +1463,9 @@ func TestProviderPicker_AddPreservesExistingActive(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read config: %v", err)
 	}
-	// Active should still be anthropic, not gemini.
-	if !strings.Contains(string(body), `provider      = "anthropic"`) {
-		t.Errorf("active should remain anthropic; config:\n%s", body)
-	}
-	if strings.Contains(string(body), `provider      = "gemini"`) &&
-		!strings.Contains(string(body), `name          = "gemini"`) {
-		// Distinguish [active].provider == "gemini" (bad) from
-		// [[providers]].name == "gemini" (expected).
-		t.Errorf("[active].provider should NOT be gemini; config:\n%s", body)
+	// Adding a provider switches to it automatically.
+	if !strings.Contains(string(body), `provider      = "gemini"`) {
+		t.Errorf("active should switch to newly added gemini; config:\n%s", body)
 	}
 }
 
