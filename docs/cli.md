@@ -122,6 +122,19 @@ yottacode openai-auth logout
 
 These commands manage the `openai-auth` provider's browser OAuth credentials and account-specific model list.
 
+## GitHub Copilot auth
+
+```bash
+yottacode copilot-auth login
+yottacode copilot-auth models
+yottacode copilot-auth models --raw
+yottacode copilot-auth status
+yottacode copilot-auth status --json
+yottacode copilot-auth logout
+```
+
+These commands manage the `copilot` provider's GitHub device-code OAuth credentials and model cache. `login` runs the device code flow and caches available models. `models` lists cached models and marks plan-gated ones with `[upgrade plan]`.
+
 ## Sessions
 
 ```bash
@@ -145,6 +158,28 @@ yottacode memory forget --scope <user|project> <name>
 ```
 
 Use the TUI `/memory` picker to edit `USER.md` / `YOTTACODE.md` and browse agent-managed memories in `vim`. See [Memory](../memory.md) for the full layout and the `memory_save` / `memory_forget` tools the agent uses to curate this layer.
+
+## Worktrees
+
+```bash
+yottacode --worktree <name>           # start a session in a git worktree
+yottacode -w <name>                   # short form
+yottacode run --worktree <name>       # one-shot in a worktree
+yottacode worktree list               # list active worktrees
+yottacode worktree status             # show worktree state
+yottacode worktree remove <name>      # remove a worktree
+yottacode worktree prune              # clean up stale worktrees
+```
+
+See [Worktrees](worktrees.md) for the full workflow and `.worktreeinclude` format.
+
+## GitHub setup
+
+```bash
+yottacode setup github                # interactive PAT setup (or use $GITHUB_TOKEN / gh auth)
+```
+
+See [GitHub integration](github.md) for the full auth chain and available slash commands.
 
 ## Version
 

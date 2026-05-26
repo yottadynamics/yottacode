@@ -69,6 +69,12 @@ export YOTTACODE_MODEL=<your-model-id>     # /model list shows what your account
 export YOTTACODE_BASE_URL=https://chatgpt.com/backend-api/codex
 yottacode
 
+# GitHub Copilot (first run: yottacode copilot-auth login)
+export YOTTACODE_PROVIDER=copilot
+export YOTTACODE_MODEL=claude-haiku-4.5
+export YOTTACODE_BASE_URL=https://api.githubcopilot.com
+yottacode
+
 # Anthropic
 export YOTTACODE_PROVIDER=anthropic
 export YOTTACODE_MODEL=<your-model-id>
@@ -206,6 +212,8 @@ Most state lives under `~/.yottacode/`:
 ~/.yottacode/
   auth/openai-auth.json          ChatGPT OAuth token store (0600; denied to model tools)
   auth/openai-auth-models.json   per-account `openai-auth` model scan (0600)
+  auth/copilot.json              GitHub Copilot OAuth token store (0600; denied to model tools)
+  auth/copilot-models.json       per-account `copilot` model cache (0600)
   sessions/<id>.json             saved conversations
   checkpoints/<session>/         /checkpoints + Esc Esc snapshot store
   index.sqlite                   FTS5 index for /recall

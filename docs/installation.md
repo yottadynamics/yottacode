@@ -6,7 +6,7 @@ This page covers every install path plus post-install configuration. For the fas
 
 - Go 1.25+ for building from source
 - A modern terminal for the interactive TUI
-- A model provider: Ollama, OpenAI, Anthropic, Gemini, xAI, ChatGPT OAuth through `openai-auth`, or any OpenAI-compatible `/v1` API
+- A model provider: Ollama, OpenAI, Anthropic, Gemini, xAI, ChatGPT OAuth through `openai-auth`, GitHub Copilot through `copilot-auth`, or any OpenAI-compatible `/v1` API
 
 ## Installer script (recommended)
 
@@ -148,5 +148,19 @@ yottacode
 ```
 
 `openai-auth` stores tokens under `~/.yottacode/auth/` with restrictive permissions; that directory is blocked from model reads and writes.
+
+### GitHub Copilot (`copilot`)
+
+```bash
+yottacode copilot-auth login
+
+export YOTTACODE_PROVIDER=copilot
+export YOTTACODE_MODEL=claude-haiku-4.5
+export YOTTACODE_BASE_URL=https://api.githubcopilot.com
+
+yottacode
+```
+
+`copilot` uses GitHub's device code flow and bills against your Copilot subscription. Tokens and model cache live under `~/.yottacode/auth/`.
 
 Other OpenAI-compatible endpoints (NVIDIA NIM's free tier, Groq, vLLM, ...) work the same way — see [Configuring providers](providers.md).

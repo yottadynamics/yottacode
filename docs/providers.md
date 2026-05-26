@@ -10,7 +10,7 @@ At startup, yottacode needs:
 - `base_url`
 - `api_key` for remote providers that require API-key auth
 
-The `openai-auth` provider is the exception: it uses browser OAuth and stores refreshable tokens under `~/.yottacode/auth/`.
+The `openai-auth` and `copilot` providers are exceptions: they use OAuth flows and store tokens under `~/.yottacode/auth/`.
 
 You can provide them through flags, environment variables, or `~/.yottacode/config.toml`.
 
@@ -100,6 +100,33 @@ yottacode openai-auth logout
 ```
 
 Tokens and scanned model lists live in `~/.yottacode/auth/` with restrictive file permissions. That directory is denied to model read and write tools.
+
+## GitHub Copilot (`copilot`)
+
+```bash
+yottacode copilot-auth login
+
+export YOTTACODE_PROVIDER=copilot
+export YOTTACODE_MODEL=claude-haiku-4.5
+export YOTTACODE_BASE_URL=https://api.githubcopilot.com
+```
+
+`copilot` uses GitHub's device code flow to authenticate. Model calls bill against the user's GitHub Copilot subscription. Available models depend on the subscription tier (Free, Pro, Pro+); the model picker marks plan-gated models with "upgrade plan".
+
+Lifecycle commands:
+
+```bash
+yottacode copilot-auth login          # device code flow, saves token + caches models
+yottacode copilot-auth models         # list available models (updates cache)
+yottacode copilot-auth models --raw   # full API response for debugging
+yottacode copilot-auth status
+yottacode copilot-auth status --json
+yottacode copilot-auth logout
+```
+
+In the TUI, `/provider add` with the `copilot-auth` entry runs the device code flow inline — no separate CLI step needed.
+
+Tokens and cached model lists live in `~/.yottacode/auth/` with restrictive file permissions. That directory is denied to model read and write tools.
 
 ## Ollama
 

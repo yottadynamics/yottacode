@@ -38,7 +38,7 @@ Beyond the built-ins, you can ship your own slash commands by dropping markdown 
 
 ## Provider picker
 
-`/provider` shows the resolved provider profile and diagnostics. `/provider use <name>` switches to a configured provider directly. The provider picker also supports adding and removing profiles; adding `openai-auth` starts the browser OAuth flow inline and stores the account-specific model list after login.
+`/provider` shows the resolved provider profile and diagnostics. `/provider use <name>` switches to a configured provider directly. The provider picker also supports adding and removing profiles; adding `openai-auth` starts the browser OAuth flow inline, and adding `copilot-auth` starts the GitHub device code flow inline. Both store account-specific model lists after login.
 
 ## Sessions picker
 
