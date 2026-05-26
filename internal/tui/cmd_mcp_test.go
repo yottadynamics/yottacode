@@ -16,6 +16,8 @@ var (
 	mcpEchoOnce sync.Once
 	mcpEchoBin  string
 	mcpEchoErr  error
+	// realHome is captured at init before any test overrides HOME.
+	realHome = os.Getenv("HOME")
 )
 
 func buildMCPEchoServer(t *testing.T) string {
@@ -28,6 +30,14 @@ func buildMCPEchoServer(t *testing.T) string {
 		}
 		mcpEchoBin = filepath.Join(dir, "echo-server")
 		cmd := exec.Command("go", "build", "-o", mcpEchoBin, "../../internal/mcp/testdata/echo_server")
+		// Point HOME and GOPATH at the real home so module cache
+		// files don't land inside t.TempDir(). Read-only module
+		// cache entries cause TempDir cleanup to fail with
+		// "permission denied" on CI.
+		cmd.Env = append(os.Environ(),
+			"HOME="+realHome,
+			"GOPATH="+filepath.Join(realHome, "go"),
+		)
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		if err := cmd.Run(); err != nil {
