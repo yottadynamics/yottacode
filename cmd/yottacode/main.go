@@ -69,6 +69,7 @@ func newCLI() *cobra.Command {
 		newOpenAIAuthCmd(),
 		newTrustCmd(),
 		newWorktreeCmd(),
+		newMcpCmd(),
 		newVersionCmd(),
 	)
 	applyWrappedUsageTemplate(root)

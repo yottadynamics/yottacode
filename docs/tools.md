@@ -7,6 +7,8 @@ verb-style header (see [How tool calls render in the TUI](#how-tool-calls-render
 All paths are resolved against the agent's working directory (absolute paths
 are also accepted).
 
+In addition to the built-ins, **MCP tools** register dynamically when an `[[mcp_servers]]` block is present in `~/.yottacode/config.toml`. They appear as `mcp/<server>/<tool>` and flow through the same approval modal and permission rules — see [`mcp.md`](mcp.md) and the `MCP(...)` rule shape in [`security-and-allow-lists.md`](security-and-allow-lists.md#rule-shape). MCP tools default to approval-required unless the server explicitly hints them as read-only.
+
 | Tool | Approval | One-line summary |
 |---|---|---|
 | [`read_file`](#read_file) | none | Read a UTF-8 file with optional byte offset/limit |

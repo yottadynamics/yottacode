@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"sync"
 
 	"github.com/yottadynamics/yottacode/internal/adapter"
 )
@@ -64,7 +65,18 @@ func ToolPathsToSnapshot(t Tool, cwd, argsJSON string) []string {
 }
 
 // Registry owns the set of tools exposed to a given agent run.
+//
+// Concurrency: the agent loop's goroutine calls Get to dispatch each
+// tool invocation while the TUI goroutine may concurrently mutate the
+// set (the /mcp restart path calls Deregister followed by Register on
+// the fresh client's tool catalog). A concurrent map read+write is a
+// Go runtime panic — not just inconsistent state — so every entry
+// point takes the mutex. Lock granularity is the whole map: the
+// expected mid-session mutation rate is so low (slash commands, not
+// per-turn) that fine-grained locking would only add complexity for
+// no measurable win.
 type Registry struct {
+	mu    sync.RWMutex
 	tools map[string]Tool
 }
 
@@ -73,11 +85,35 @@ func NewRegistry() *Registry {
 }
 
 func (r *Registry) Register(t Tool) {
+	r.mu.Lock()
 	r.tools[t.Name()] = t
+	r.mu.Unlock()
+}
+
+// Deregister removes a tool by name. Returns true when a tool was
+// actually removed, false when no such name was registered. Used by
+// the MCP /mcp restart path to drop stale tools before re-registering
+// the post-restart generation — without it, tools that disappear
+// after a server restart would linger in the registry and surface as
+// "missing client" errors on first invocation.
+//
+// Safe to call mid-session: tools currently executing aren't affected
+// (they hold their own receiver), only future Get() lookups miss the
+// removed name.
+func (r *Registry) Deregister(name string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.tools[name]; !ok {
+		return false
+	}
+	delete(r.tools, name)
+	return true
 }
 
 func (r *Registry) Get(name string) (Tool, bool) {
+	r.mu.RLock()
 	t, ok := r.tools[name]
+	r.mu.RUnlock()
 	return t, ok
 }
 
@@ -87,6 +123,8 @@ func (r *Registry) Get(name string) (Tool, bool) {
 // internal/agent/agent_tool.go. Read-only on the registry: callers
 // must not mutate the returned tools.
 func (r *Registry) Tools() []Tool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	out := make([]Tool, 0, len(r.tools))
 	for _, t := range r.tools {
 		out = append(out, t)
@@ -98,6 +136,8 @@ func (r *Registry) Tools() []Tool {
 // that need to validate references (e.g. subagent allowlists) without
 // caring about the Tool values themselves.
 func (r *Registry) Names() map[string]bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	out := make(map[string]bool, len(r.tools))
 	for name := range r.tools {
 		out[name] = true
@@ -121,6 +161,8 @@ func (r *Registry) AsAdapterTools() []adapter.Tool {
 // own map is unchanged so Get() still resolves the tool when
 // (legitimately) called.
 func (r *Registry) AsAdapterToolsFiltered(filter func(name string) bool) []adapter.Tool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	out := make([]adapter.Tool, 0, len(r.tools))
 	for _, t := range r.tools {
 		if filter != nil && !filter(t.Name()) {

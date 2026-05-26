@@ -104,6 +104,39 @@ func Render(cfg Config) string {
 		}
 		b.WriteString("\n")
 	}
+
+	for _, s := range cfg.MCPServers {
+		b.WriteString("[[mcp_servers]]\n")
+		fmt.Fprintf(&b, "name    = %q\n", s.Name)
+		fmt.Fprintf(&b, "command = %q\n", s.Command)
+		if len(s.Args) > 0 {
+			b.WriteString("args    = [")
+			for i, a := range s.Args {
+				if i > 0 {
+					b.WriteString(", ")
+				}
+				fmt.Fprintf(&b, "%q", a)
+			}
+			b.WriteString("]\n")
+		}
+		if len(s.Env) > 0 {
+			b.WriteString("env     = { ")
+			first := true
+			for k, v := range s.Env {
+				if !first {
+					b.WriteString(", ")
+				}
+				fmt.Fprintf(&b, "%s = %q", k, v)
+				first = false
+			}
+			b.WriteString(" }\n")
+		}
+		if s.Disabled {
+			b.WriteString("disabled = true\n")
+		}
+		b.WriteString("\n")
+	}
+
 	return b.String()
 }
 

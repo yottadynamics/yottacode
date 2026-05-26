@@ -17,6 +17,7 @@ import (
 	"github.com/yottadynamics/yottacode/internal/config"
 	"github.com/yottadynamics/yottacode/internal/experimental"
 	githubapi "github.com/yottadynamics/yottacode/internal/github"
+	"github.com/yottadynamics/yottacode/internal/mcp"
 	"github.com/yottadynamics/yottacode/internal/memory"
 	"github.com/yottadynamics/yottacode/internal/permissions"
 	"github.com/yottadynamics/yottacode/internal/recall"
@@ -364,6 +365,12 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 	// subagent find?" becomes one tool call.
 	reg.Register(&agent.GetSubagentResultTool{Tasks: subagentTasks})
 
+	// MCP client setup: construct the manager now but defer Start to
+	// the Bubble Tea Init cmd so the TUI renders immediately. Servers
+	// initialize in the background; tools are registered when the
+	// mcpStartupDoneMsg lands in Update. Failed servers are non-fatal.
+	mcpManager := mcp.NewManager(fileCfg.MCPServers)
+
 	// Agent Skills tool. Skills are loaded up-front (alongside the
 	// system-prompt composition) so the same resolved set drives both
 	// the description-matched metadata tier in the prompt and the
@@ -455,6 +462,7 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 		Subagents:              subagentTasks,
 		AgentTool:              agentTool,
 		CustomCommands:         customCmds,
+		MCPManager:             mcpManager,
 		Skills:                 skillsRes.Skills,
 		SkillTool:              skillTool,
 	})
@@ -533,6 +541,13 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 	if _, err := prog.Run(); err != nil {
 		return fmt.Errorf("tui: %w", err)
 	}
+	// Tear down MCP subprocesses before the index/session close so a
+	// slow shutdown can't leak servers past yottacode's lifetime. The
+	// context here is short-bounded; the SDK's CommandTransport.Close
+	// runs its own SIGTERM/SIGKILL ladder.
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	mcpManager.Stop(shutdownCtx)
+	shutdownCancel()
 	if idx != nil {
 		_ = idx.Close()
 	}

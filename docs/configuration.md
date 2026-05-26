@@ -441,6 +441,25 @@ common starter for a Go project:
 }
 ```
 
+## MCP servers
+
+yottacode is a client for Anthropic's Model Context Protocol. Each `[[mcp_servers]]` block in `~/.yottacode/config.toml` launches a subprocess at session start and registers its tools under the `mcp/<name>/<tool>` namespace.
+
+```toml
+[[mcp_servers]]
+name    = "filesystem"
+command = "npx"
+args    = ["-y", "@modelcontextprotocol/server-filesystem", "/home/me/workspace"]
+
+[[mcp_servers]]
+name     = "github"
+command  = "npx"
+args     = ["-y", "@modelcontextprotocol/server-github"]
+env      = { GITHUB_PERSONAL_ACCESS_TOKEN = "$GITHUB_PAT" }
+```
+
+`env` values support `$VAR` substitution from yottacode's process environment so secrets stay out of the config file. v1 supports stdio transport only. See [`mcp.md`](mcp.md) for the full reference, including permission rules (`MCP(...)`), the `/mcp` slash command, and a curated server list.
+
 ## Runtime Reconfiguration
 
 The TUI supports changing the active session configuration without restarting:

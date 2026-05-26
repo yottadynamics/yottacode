@@ -22,6 +22,7 @@ import (
 	"github.com/yottadynamics/yottacode/internal/checkpoint"
 	"github.com/yottadynamics/yottacode/internal/config"
 	"github.com/yottadynamics/yottacode/internal/contextwindow"
+	mcppkg "github.com/yottadynamics/yottacode/internal/mcp"
 	"github.com/yottadynamics/yottacode/internal/filerefs"
 	"github.com/yottadynamics/yottacode/internal/permissions"
 	"github.com/yottadynamics/yottacode/internal/providerops"
@@ -114,6 +115,12 @@ type Config struct {
 	// stores them on the Model so the dispatcher and /help can see
 	// them alongside built-ins.
 	CustomCommands []usercmd.Command
+
+	// MCPManager is the live MCP client lifecycle manager, built from
+	// config.MCPServers at session start. The /mcp slash command
+	// inspects + restarts servers through it. Nil when no servers are
+	// configured (the slash command renders "no servers configured").
+	MCPManager *mcppkg.Manager
 
 	// Skills is the resolved set of Agent Skills (built-in + user +
 	// project) loaded at startup. New() builds slashCommand entries
@@ -251,6 +258,11 @@ type Model struct {
 	// registry. The TUI uses it to wire the background-done callback
 	// and to introspect the available agent configs from /subagents.
 	subagentTool *agent.AgentTool
+
+	// mcpManager owns the lifecycle of every configured MCP client.
+	// Nil when the session has no MCP servers configured. The /mcp
+	// slash command reads from it; run.go invokes Stop on shutdown.
+	mcpManager *mcppkg.Manager
 
 	// customSlash carries the user-authored slash commands loaded
 	// from ~/.yottacode/commands/ and <cwd>/.yottacode/commands/. The
@@ -498,6 +510,9 @@ type Model struct {
 	// rendering used by /subagents list).
 	subagentsPickerOpen bool
 	subagentsPicker     *subagentsPickerState
+
+	mcpPickerOpen bool
+	mcpPicker     *mcpPickerState
 
 	// Connection probe state for the status footer dot
 	connection connState
@@ -748,6 +763,7 @@ func New(parent context.Context, c Config) Model {
 		fileCfg:                c.FileCfg,
 		subagentTasks:          c.Subagents,
 		subagentTool:           c.AgentTool,
+		mcpManager:             c.MCPManager,
 		subagentInbox:          make(chan agent.SubagentBackgroundDone, 32),
 		customSlash:            buildCustomSlash(c.CustomCommands),
 		skillSlash:             buildSkillSlash(c.Skills),
@@ -787,6 +803,7 @@ func (m Model) Init() tea.Cmd {
 		// program. A nil channel here is a programming error (New
 		// always allocates it), so we don't guard.
 		waitForSubagentInbox(m.subagentInbox),
+		startMCPServers(m.parentCtx, m.mcpManager),
 	)
 }
 
@@ -845,6 +862,10 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if probe.announce {
 			m.appendLine(formatProbeResult(probe.result))
 		}
+		return m, nil
+	}
+	if done, ok := msg.(mcpStartupDoneMsg); ok {
+		m.handleMCPStartupDone(done.results)
 		return m, nil
 	}
 
@@ -953,6 +974,9 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.skillsPickerOpen {
 			return m.updateSkillsPicker(msg)
+		}
+		if m.mcpPickerOpen {
+			return m.updateMCPPicker(msg)
 		}
 		// Intercept large bracketed pastes before any other handling.
 		// Bubbletea sets msg.Paste=true with all the pasted runes in a
@@ -1628,6 +1652,9 @@ func (m Model) View() string {
 	}
 	if m.skillsPickerOpen && m.skillsPicker != nil {
 		return m.renderInlineOverlay(renderSkillsPicker(m.skillsPicker, m.width))
+	}
+	if m.mcpPickerOpen && m.mcpPicker != nil {
+		return m.renderInlineOverlay(renderMCPPicker(m.mcpPicker, m.width))
 	}
 
 	parts := []string{}

@@ -41,6 +41,15 @@ type Target struct {
 // the Tool interface unchanged — the loop calls into permissions, and
 // the package knows how to read each tool's args shape.
 func targetFor(toolName, argsJSON, cwd string) Target {
+	// MCP tools register in the agent registry as
+	// `mcp/<server>/<tool>`. The permission shape is
+	// `MCP(<server>/<tool>)` so rules can wildcard either dimension
+	// (`MCP(filesystem/*)` for all filesystem MCP tools,
+	// `MCP(*)` for everything). The descriptor drops the `mcp/`
+	// prefix so the rule reads naturally.
+	if strings.HasPrefix(toolName, "mcp/") {
+		return Target{PermName: "MCP", Descriptor: strings.TrimPrefix(toolName, "mcp/")}
+	}
 	switch toolName {
 	case "run_bash":
 		return Target{PermName: "Bash", Descriptor: extractCommand(argsJSON)}
