@@ -3,6 +3,7 @@ package catalog
 import (
 	"context"
 
+	copilotauth "github.com/yottadynamics/yottacode/internal/auth/copilot"
 	openaiauth "github.com/yottadynamics/yottacode/internal/auth/openai"
 	"github.com/yottadynamics/yottacode/internal/config"
 )
@@ -23,6 +24,7 @@ var curatedKinds = map[string]bool{
 	"anthropic":   true,
 	"openai":      true,
 	"openai-auth": true,
+	"copilot":     true,
 	"gemini":      true,
 }
 
@@ -72,6 +74,32 @@ func wrapOpenAIAuthIDs(ids []string) []Model {
 			ID:          id,
 			DisplayName: display,
 			Provider:    "openai-auth",
+		})
+	}
+	return out
+}
+
+// copilotCachedModels reads ~/.yottacode/auth/copilot-models.json
+// and converts the entries to catalog.Model. Returns nil when the
+// file is missing — pickers render an empty-state hint.
+func copilotCachedModels() []Model {
+	path, err := copilotauth.DefaultModelsPath()
+	if err != nil {
+		return nil
+	}
+	mf, err := copilotauth.LoadModels(path)
+	if err != nil || len(mf.Models) == 0 {
+		return nil
+	}
+	out := make([]Model, 0, len(mf.Models))
+	for _, m := range mf.Models {
+		out = append(out, Model{
+			ID:            m.ID,
+			DisplayName:   m.Name,
+			Provider:      "copilot",
+			ContextWindow: m.ContextWindow,
+			MaxOutput:     m.MaxOutput,
+			Disabled:      m.Disabled,
 		})
 	}
 	return out

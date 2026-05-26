@@ -67,6 +67,7 @@ func newCLI() *cobra.Command {
 		newProviderCmd(),
 		newModelCmd(),
 		newOpenAIAuthCmd(),
+		newCopilotAuthCmd(),
 		newTrustCmd(),
 		newWorktreeCmd(),
 		newMcpCmd(),
@@ -499,7 +500,7 @@ func bindCommonPersistentFlags(cmd *cobra.Command, opts *cli.ChatOptions) {
 	f.StringVarP(&opts.Model, "model", "m", "", "Model tag (env: YOTTACODE_MODEL)")
 	f.StringVar(&opts.BaseURL, "base-url", "", "OpenAI-compatible endpoint (env: YOTTACODE_BASE_URL)")
 	f.StringVar(&opts.APIKey, "api-key", "", "Bearer token; Ollama ignores it (env: YOTTACODE_API_KEY)")
-	f.StringVar(&opts.Provider, "provider", "", "openai | openai-auth | anthropic | gemini | xai | ollama | openai-compatible (env: YOTTACODE_PROVIDER)")
+	f.StringVar(&opts.Provider, "provider", "", "openai | openai-auth | copilot | anthropic | gemini | xai | ollama | openai-compatible (env: YOTTACODE_PROVIDER)")
 	f.StringVar(&opts.SystemPrompt, "system", "", "Override the default system prompt")
 	f.StringVar(&opts.Resume, "resume", "", "Resume a saved session by id or name")
 	f.BoolVarP(&opts.Continue, "continue", "c", false, "Resume the newest session created in this cwd (use --resume for a specific one)")

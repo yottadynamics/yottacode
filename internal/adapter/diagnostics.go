@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	copilotauth "github.com/yottadynamics/yottacode/internal/auth/copilot"
 	openaiauth "github.com/yottadynamics/yottacode/internal/auth/openai"
 )
 
@@ -65,6 +66,9 @@ func Probe(ctx context.Context, cfg Config) ProbeResult {
 	// subscription quota on every connection check.
 	if res.Profile.Provider == ProviderOpenAIAuth {
 		return probeOpenAIAuth(res, cfg)
+	}
+	if res.Profile.Provider == ProviderCopilot {
+		return probeCopilot(res)
 	}
 
 	if ctx == nil {
@@ -186,5 +190,29 @@ func probeOpenAIAuth(res ProbeResult, cfg Config) ProbeResult {
 			fmt.Sprintf("model %q not in your account's discovered set (available: %s) — re-run %s to refresh",
 				cfg.Model, strings.Join(allow, ", "), openAIAuthLoginHint)))
 	}
+	return res
+}
+
+func probeCopilot(res ProbeResult) ProbeResult {
+	storePath, err := copilotauth.DefaultStorePath()
+	if err != nil {
+		res.Issues = uniqueStrings(append(res.Issues, fmt.Sprintf("copilot: resolve token store: %v", err)))
+		return res
+	}
+	ts, err := copilotauth.Load(storePath)
+	if err != nil {
+		if errors.Is(err, copilotauth.ErrNotFound) {
+			res.Issues = uniqueStrings(append(res.Issues, "copilot: not logged in — "+copilotLoginHint))
+			return res
+		}
+		res.Issues = uniqueStrings(append(res.Issues, fmt.Sprintf("copilot: load token store: %v", err)))
+		return res
+	}
+	if ts.GitHubToken == "" {
+		res.Issues = uniqueStrings(append(res.Issues, "copilot: token store has no GitHub token — "+copilotLoginHint))
+		return res
+	}
+	res.EndpointReachable = true
+	res.AuthOK = true
 	return res
 }

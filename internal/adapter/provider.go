@@ -9,6 +9,7 @@ type Provider string
 const (
 	ProviderOpenAI           Provider = "openai"
 	ProviderOpenAIAuth       Provider = "openai-auth"
+	ProviderCopilot          Provider = "copilot"
 	ProviderXAI              Provider = "xai"
 	ProviderOllama           Provider = "ollama"
 	ProviderAnthropic        Provider = "anthropic"
@@ -79,6 +80,8 @@ func detectProvider(baseURL string, override Provider) Provider {
 		// the patterns are disjoint anyway, but listing chatgpt.com
 		// first keeps the common case (openai) at the same speed.
 		return ProviderOpenAIAuth
+	case strings.Contains(baseURL, "api.githubcopilot.com"):
+		return ProviderCopilot
 	case strings.Contains(baseURL, "api.openai.com"):
 		return ProviderOpenAI
 	case strings.Contains(baseURL, "api.anthropic.com"):
@@ -150,7 +153,7 @@ func buildProfile(cfg Config, usesResponses bool) ProviderProfile {
 	profile := ProviderProfile{
 		Provider:                provider,
 		UsesResponsesAPI:        usesResponses,
-		SupportsReasoning:       provider == ProviderOpenAI || provider == ProviderOpenAIAuth || provider == ProviderXAI || provider == ProviderOllama || provider == ProviderAnthropic || provider == ProviderGemini,
+		SupportsReasoning:       provider == ProviderOpenAI || provider == ProviderOpenAIAuth || provider == ProviderCopilot || provider == ProviderXAI || provider == ProviderOllama || provider == ProviderAnthropic || provider == ProviderGemini,
 		SupportsWebSearch:       provider == ProviderOpenAI || provider == ProviderXAI || provider == ProviderAnthropic,
 		SupportsXSearch:         provider == ProviderXAI,
 		SupportsCodeInterpreter: provider == ProviderOpenAI || provider == ProviderXAI,

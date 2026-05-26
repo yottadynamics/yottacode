@@ -47,6 +47,9 @@ func NewWithConfig(cfg Config) Client {
 	if provider == ProviderOpenAIAuth {
 		return newOpenAIAuthAdapter(cfg)
 	}
+	if provider == ProviderCopilot {
+		return newCopilotAdapter(cfg)
+	}
 	// Static configuration check: cloud providers all need an API key,
 	// and silently substituting the "local-no-auth" sentinel just
 	// pushes the failure upstream as a confusing 401. Fail fast with

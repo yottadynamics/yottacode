@@ -61,6 +61,20 @@ type CatalogEntry struct {
 // providers go first; "custom" lands at the bottom for power users.
 var Catalog = []CatalogEntry{
 	{
+		Name:      "openai-auth",
+		Kind:      "openai-auth",
+		BaseURL:   "https://chatgpt.com/backend-api/codex",
+		APIKeyEnv: "",
+		Note:      "OpenAI via ChatGPT login (browser OAuth)",
+	},
+	{
+		Name:      "copilot-auth",
+		Kind:      "copilot",
+		BaseURL:   "https://api.githubcopilot.com",
+		APIKeyEnv: "",
+		Note:      "GitHub Copilot (device code OAuth)",
+	},
+	{
 		Name:      "anthropic",
 		Kind:      "anthropic",
 		BaseURL:   "https://api.anthropic.com",
@@ -75,34 +89,11 @@ var Catalog = []CatalogEntry{
 		Note:      "GPT + o-series (OpenAI) — model list from internal/catalog",
 	},
 	{
-		// openai-auth uses OpenAI's "Sign in with ChatGPT" OAuth flow
-		// instead of an API key — model calls bill against the user's
-		// ChatGPT subscription, not API tokens. The empty APIKeyEnv is
-		// treated like Ollama's: the wizard skips the env-var prompt.
-		// The OAuth flow is NOT yet driven inline by the wizard — after
-		// the wizard completes, the user runs `yottacode openai-auth
-		// login` to do the one-time browser sign-in (Phase 4 will fold
-		// that step into the wizard itself). The model allow-list is
-		// locked to gpt-5.5 (verified by the probe scanner).
-		Name:      "openai-auth",
-		Kind:      "openai-auth",
-		BaseURL:   "https://chatgpt.com/backend-api/codex",
-		APIKeyEnv: "",
-		Note:      "OpenAI via ChatGPT login (browser OAuth) — run `yottacode openai-auth login` after setup",
-	},
-	{
 		Name:      "gemini",
 		Kind:      "gemini",
 		BaseURL:   "https://generativelanguage.googleapis.com",
 		APIKeyEnv: "GEMINI_API_KEY",
 		Note:      "Gemini (Google) — model list from internal/catalog",
-	},
-	{
-		Name:      "ollama",
-		Kind:      "ollama",
-		BaseURL:   "http://localhost:11434/v1",
-		APIKeyEnv: "", // local, no key
-		Note:      "local models via Ollama (auto-probed on localhost:11434)",
 	},
 	{
 		Name:      "xai",
@@ -116,24 +107,21 @@ var Catalog = []CatalogEntry{
 		Kind:      "openai-compatible",
 		BaseURL:   "https://integrate.api.nvidia.com/v1",
 		APIKeyEnv: "NVIDIA_API_KEY",
-		// build.nvidia.com frequently mints API keys scoped to a
-		// single model, so /v1/models shows the platform's full
-		// catalog but only a subset will accept any given key.
-		// Picking an unauthorized model surfaces as a 404 from
-		// /v1/chat/completions — the wizard surfaces that explanation
-		// at the point of failure (validationGlyph), not preemptively
-		// in this Note.
-		Note: "NVIDIA NIM — OpenAI-compatible endpoint at build.nvidia.com",
+		Note:      "NVIDIA NIM — OpenAI-compatible endpoint at build.nvidia.com",
+	},
+	{
+		Name:      "ollama",
+		Kind:      "ollama",
+		BaseURL:   "http://localhost:11434/v1",
+		APIKeyEnv: "",
+		Note:      "local models via Ollama (auto-probed on localhost:11434)",
 	},
 	{
 		Name:      "custom",
 		Kind:      "openai-compatible",
-		BaseURL:   "", // user enters
-		APIKeyEnv: "", // user enters
-		// Catch-all for everything OpenAI-compatible that isn't a
-		// first-class entry above: vLLM, Llama Stack, Groq, Fireworks,
-		// OpenRouter, Together, self-hosted gateways, etc.
-		Note: "Custom OpenAI-compatible endpoint (vLLM, Llama Stack, Groq, Fireworks, OpenRouter, Together, …)",
+		BaseURL:   "",
+		APIKeyEnv: "",
+		Note:      "Custom OpenAI-compatible endpoint (vLLM, Llama Stack, Groq, Fireworks, OpenRouter, Together, ...)",
 	},
 }
 

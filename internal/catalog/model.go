@@ -27,6 +27,7 @@ type Model struct {
 	ReleasedAt    time.Time    `json:"released_at,omitempty"`
 	Description   string       `json:"description,omitempty"`
 	Capabilities  Capabilities `json:"capabilities,omitempty"`
+	Disabled      bool         `json:"disabled,omitempty"`
 }
 
 // Capabilities is the small flag set we surface in the picker. *bool

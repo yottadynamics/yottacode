@@ -415,6 +415,8 @@ func renderModelPicker(p *modelPickerState, width int) string {
 		switch {
 		case p.provider.Kind == "openai-auth":
 			emptyHint = "no models discovered yet — run `yottacode openai-auth login` to populate"
+		case p.provider.Kind == "copilot":
+			emptyHint = "no models cached yet — run `yottacode copilot-auth login` to populate"
 		case catalog.IsCurated(p.provider):
 			emptyHint += " — run `go run ./cmd/yotta-models refresh` to populate the catalog"
 		}
@@ -456,7 +458,7 @@ func renderModelPicker(p *modelPickerState, width int) string {
 			if perModel {
 				_, enabled = configured[p.entries[i].ID]
 			}
-			line := renderPickerRow(p.entries[i], i == p.cursor, p.activeModel, enabled)
+			line := renderPickerRow(p.entries[i], i == p.cursor, p.activeModel, enabled, p.entries[i].Disabled)
 			b.WriteString(line)
 			b.WriteString("\n")
 		}
@@ -521,10 +523,13 @@ func renderProviderTabStrip(p *modelPickerState) string {
 // lines up regardless of name length. Capability chips show only
 // known-true caps (the picker is a glance view; nuanced "—/✗/✓"
 // belongs in a future details panel).
-func renderPickerRow(e catalog.Model, isCursor bool, activeModel string, enabled bool) string {
+func renderPickerRow(e catalog.Model, isCursor bool, activeModel string, enabled bool, planDisabled bool) string {
 	var savedFor string
 	if !enabled {
 		savedFor = " · needs API key"
+	} else if planDisabled {
+		savedFor = " · upgrade plan"
+		enabled = false
 	}
 	chips := capabilityChips(e.Capabilities)
 	var ctx string

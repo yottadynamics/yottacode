@@ -126,9 +126,9 @@ func (m *Model) openProviderPicker(initialMode ...providerPickerMode) {
 	st := &providerPickerState{
 		mode: providerMenuMode,
 		menuItems: []providerMenuItem{
-			{Label: "Use", Subtitle: "browse providers and switch the active one", Action: providerUsePickerMode},
 			{Label: "Add", Subtitle: "configure a new provider", Action: providerAddKindMode},
 			{Label: "Remove", Subtitle: "delete a configured provider", Action: providerRemovePickerMode},
+			{Label: "Use", Subtitle: "browse providers and switch the active one", Action: providerUsePickerMode},
 		},
 		addCatalog:     append([]wizard.CatalogEntry(nil), wizard.Catalog...),
 		providers:      append([]config.Provider(nil), cfg.Providers...),
@@ -464,6 +464,8 @@ func populateAddFields(p *providerPickerState, e wizard.CatalogEntry, inputWidth
 	switch {
 	case e.Kind == "openai-auth":
 		model.SetValue("gpt-5.5")
+	case e.Kind == "copilot":
+		model.SetValue("claude-haiku-4.5")
 	case catalog.IsCuratedKind(e.Kind):
 		p.addCuratedModels = catalog.Get(e.Kind)
 	}
@@ -637,6 +639,23 @@ func (m Model) persistProviderAdd(picked wizard.CatalogEntry, name, baseURL, api
 		m.appendLine(styleAuto.Render(fmt.Sprintf("(profile %q will be saved after sign-in completes)", add.Name)))
 		return m, startInlineOpenAIAuthLoginCmd(m.parentCtx)
 	}
+	if picked.Kind == "copilot" {
+		cfg := loadConfigForCommand(m)
+		if cfg.FindProvider(add.Name) != nil {
+			m.appendLine(styleError.Render(fmt.Sprintf("[provider] provider %q already exists; remove it first", add.Name)))
+			return m, nil
+		}
+		m.providerPickerOpen = false
+		m.providerPicker = nil
+		m.copilotPendingAdd = &pendingCopilotAdd{
+			add:           add,
+			becomesActive: cfg.Active.Provider == "",
+			fromPicker:    true,
+		}
+		m.appendLine(styleAuto.Render("[copilot] starting device code sign-in..."))
+		m.appendLine(styleAuto.Render(fmt.Sprintf("(profile %q will be saved after sign-in completes)", add.Name)))
+		return m, startInlineCopilotAuthCmd(m.parentCtx)
+	}
 	updated, becameActive, ok := commitProviderAddNow(&m, add, apiKey, picked)
 	if !ok {
 		return m, nil
@@ -662,20 +681,13 @@ func commitProviderAddNow(m *Model, add providerops.AddProvider, apiKey string, 
 		m.appendLine(styleError.Render(fmt.Sprintf("[provider] %v", err)))
 		return cfg, false, false
 	}
-	// First add wins active. Without this, the on-disk config carries
-	// providers but no [active] block, and the next `yottacode`
-	// invocation errors out with "no model set" — cli.Resolve has its
-	// own fallback now, but persisting an explicit active makes the
-	// config self-describing and keeps /sessions, /model list, and the
-	// status bar all pointing at the same profile. Subsequent adds
-	// don't disturb whatever the user already picked.
-	becameActive := false
-	if updated.Active.Provider == "" {
-		if next, err := providerops.SetActive(updated, add.Name); err == nil {
-			updated = next
-			becameActive = true
-		}
+	// Always switch to the newly added provider — if you're adding one,
+	// you want to use it. Also covers the first-add case where no
+	// active was set yet.
+	if next, err := providerops.SetActive(updated, add.Name); err == nil {
+		updated = next
 	}
+	becameActive := true
 	if err := config.Validate(updated); err != nil {
 		m.appendLine(styleError.Render(fmt.Sprintf("[provider] config invalid: %v", err)))
 		return cfg, false, false
@@ -928,6 +940,10 @@ func renderProviderAddModelExtras(p *providerPickerState) string {
 		if p.addPicked.Kind == "openai-auth" {
 			return "  " + stylePaletteEmpty.Render(
 				"(your full model list is discovered after browser sign-in — gpt-5.5 is the universal default)") + "\n"
+		}
+		if p.addPicked.Kind == "copilot" {
+			return "  " + stylePaletteEmpty.Render(
+				"(your model list is cached after device code sign-in — claude-haiku-4.5 is a safe default)") + "\n"
 		}
 		return "  " + stylePaletteEmpty.Render(
 			"(catalog empty — run `go run ./cmd/yotta-models refresh` to populate)") + "\n"
