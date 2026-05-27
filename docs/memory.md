@@ -151,11 +151,15 @@ The agent picks one of these when saving:
 
 ### What the agent saves
 
+The agent is designed to be **self-learning** — it actively builds its understanding of you and your work across sessions and projects, so every future conversation starts smarter than the last.
+
 Save when:
 
 - The user states a durable preference, correction, or project fact.
+- The user **confirms or validates** a non-obvious approach — save what worked and why.
 - The user supplies a reference you'd otherwise re-derive every turn.
-- The same correction has come up twice — that's a pattern worth pinning.
+- The agent observes a **recurring pattern**: the user always approves a certain style, always rejects a certain approach, always asks for the same thing. The agent doesn't wait for "remember this" — if it sees a pattern twice, it saves it.
+- A task outcome teaches something: an approach that failed and why, a subtle constraint discovered, a debugging technique that cracked a hard problem.
 
 Don't save:
 
@@ -164,6 +168,15 @@ Don't save:
 - Git-derivable info (current branch, last commit message).
 - One-off task instructions.
 - Anything sensitive (API keys, internal URLs, PII).
+
+### Scope selection — cross-project learning
+
+Scope selection is critical for building knowledge that transfers across projects:
+
+- **`scope=user`** (stored in `~/.yottacode/memory/`, loaded in **every** project): anything about the person, not the repo. Coding style, communication preferences, tool preferences, workflow patterns, feedback corrections, debugging approaches, domain expertise areas. The test: "would this help me in a completely different repo for this user?" If yes, it's user-scope.
+- **`scope=project`** (stored per-repo, loaded only in that repo): **only** for facts that are meaningless outside this specific codebase — architecture decisions, naming conventions unique to this repo, team-specific processes, deployment targets.
+- **Default to user-scope.** Most things the agent learns about how someone works, thinks, and prefers are portable. Project-scope is the exception, not the default.
+- When saving a project-scope memory, the agent considers: is the underlying principle user-scope? E.g., "user wants table-driven tests in this Go repo" is really "user prefers table-driven tests" (user-scope) — the Go repo is just where it was learned.
 
 The full guidance lives in the agent's system prompt; see `internal/agent/prompt.go` for the current copy.
 
@@ -299,16 +312,18 @@ These two predate the memory redesign and are unchanged.
 
 ## Decision tree: where does this go?
 
-| Scenario | Where it lives |
-|---|---|
-| "I prefer table-driven tests across every project" | `USER.md` (you write) |
-| "Build / test / lint commands for this repo" | `YOTTACODE.md` (`/init` drafts; agent keeps fresh) |
-| "User said don't show stack traces" | `memory_save scope=user, type=feedback` (agent writes) |
-| "JWT cache lives in pkg/auth/cache.go for this repo" | `memory_save scope=project, type=project` |
-| "API has these public endpoints (this repo)" | `memory_save scope=project, type=reference` |
-| "We're mid-refactor of the user model" | Don't save — ephemeral |
-| "Look up which session we discussed X in" | `/recall <query>` |
-| "Compress the current transcript" | `/summarize` |
+| Scenario | Where it lives | Why this scope |
+|---|---|---|
+| "I prefer table-driven tests" | `USER.md` (you write) or `memory_save scope=user, type=user` (agent learns) | Portable — applies in every repo |
+| "Build / test / lint commands for this repo" | `YOTTACODE.md` (`/init` drafts; agent keeps fresh) | Repo-specific, team-shareable |
+| "User said don't show stack traces" | `memory_save scope=user, type=feedback` | Portable — a communication preference |
+| "User approved the bundled-PR approach" | `memory_save scope=user, type=feedback` | Portable — a validated workflow pattern |
+| "An approach failed because of X constraint" | `memory_save scope=user, type=feedback` | Portable — lesson learned |
+| "JWT cache lives in pkg/auth/cache.go" | `memory_save scope=project, type=project` | Meaningless outside this repo |
+| "API has these public endpoints (this repo)" | `memory_save scope=project, type=reference` | Repo-specific API surface |
+| "We're mid-refactor of the user model" | Don't save — ephemeral | |
+| "Look up which session we discussed X in" | `/recall <query>` | |
+| "Compress the current transcript" | `/summarize` | |
 
 ---
 
