@@ -43,7 +43,8 @@ type PathNormalizer func(string) string
 //   - Move/Copy: src and dst broadened independently with the same
 //     rule, joined with " -> ".
 //   - Git: first arg + " *".
-//   - Glob/Grep/Fetch/Tests/Rollback: not derived (too varied or too
+//   - Tests: same as Bash — first argv-token of the test command + " *".
+//   - Glob/Grep/Fetch/Rollback: not derived (too varied or too
 //     high-trust to grant blanket on one click).
 //
 // ok=false means the modal should suppress the [a]lways-allow option
@@ -72,6 +73,12 @@ func DeriveAllowRule(toolName, argsJSON, cwd string, normalize PathNormalizer) (
 			return "", false
 		}
 		return target.PermName + "(" + pat + ")", true
+	case "Tests":
+		verb, ok := deriveCommandVerb(target.Descriptor)
+		if !ok {
+			return "", false
+		}
+		return "Tests(" + verb + " *)", true
 	case "Move", "Copy":
 		src, dst, ok := splitSrcDst(target.Descriptor)
 		if !ok {
@@ -159,6 +166,16 @@ func splitSrcDst(desc string) (src, dst string, ok bool) {
 // from this package and create a cycle): any unquoted occurrence of
 // `&&`, `||`, `;`, `|`, `$(`, or backtick disables derivation.
 func deriveBash(command string) (string, bool) {
+	verb, ok := deriveCommandVerb(command)
+	if !ok {
+		return "", false
+	}
+	return "Bash(" + verb + " *)", true
+}
+
+// deriveCommandVerb extracts the first token of a shell command after
+// safety checks (compound commands and dangerous verbs are rejected).
+func deriveCommandVerb(command string) (string, bool) {
 	command = strings.TrimSpace(command)
 	if command == "" {
 		return "", false
@@ -173,7 +190,7 @@ func deriveBash(command string) (string, bool) {
 	if dangerousBashVerbs[first] {
 		return "", false
 	}
-	return "Bash(" + first + " *)", true
+	return first, true
 }
 
 // isCompoundShellCommand returns true when the command contains an

@@ -345,6 +345,11 @@ type Model struct {
 	codeBlockLang string
 	inCodeBlock   bool
 
+	// Table streaming state. Markdown pipe tables buffer until the
+	// first non-table line, then render through glamour in one shot.
+	tableBuf *strings.Builder
+	inTable  bool
+
 	// livePlan is the in-flight todo snapshot rendered as a live card
 	// in View() (next to/below the spinner). Updated in place on every
 	// agent.TodoUpdate; nil/empty means "no plan to show" (never set,
@@ -779,6 +784,7 @@ func New(parent context.Context, c Config) Model {
 		streaming:              &strings.Builder{},
 		reasoning:              &strings.Builder{},
 		codeBlockBuf:           &strings.Builder{},
+		tableBuf:               &strings.Builder{},
 		livePlan:               livePlanInit,
 		firstMessageSent:       firstMessageSent,
 		contextTokens:          contextTokensInit,
@@ -1686,6 +1692,8 @@ func (m Model) View() string {
 		// terminal row.
 		if m.inCodeBlock {
 			parts = append(parts, m.renderCodeBlockNotice())
+		} else if m.inTable {
+			parts = append(parts, m.renderTableNotice())
 		} else if preview := m.renderStreamingPreview(); preview != "" {
 			parts = append(parts, preview)
 		}
@@ -2067,6 +2075,14 @@ func (m Model) renderCodeBlockNotice() string {
 		lang = "code"
 	}
 	return styleTurnFooter.Render(fmt.Sprintf("…writing %s (%d lines, will format on close)", lang, lines))
+}
+
+func (m Model) renderTableNotice() string {
+	rows := strings.Count(m.tableBuf.String(), "\n")
+	if m.streaming.Len() > 0 {
+		rows++
+	}
+	return styleTurnFooter.Render(fmt.Sprintf("…formatting table (%d rows, will render on close)", rows))
 }
 
 // renderStreamingPreview returns the trailing partial prose line capped
@@ -3093,9 +3109,14 @@ func (m *Model) commitStreaming() {
 			// Partial line of an unclosed code block — append to buffer
 			// and emit the whole buffer plain.
 			m.codeBlockBuf.WriteString(m.streaming.String())
+		} else if m.inTable {
+			m.tableBuf.WriteString(m.streaming.String())
 		} else {
-			m.appendLine(renderAssistantBlock(m.streaming.String()))
+			m.emitAssistantProse(m.streaming.String())
 		}
+	}
+	if m.inTable {
+		m.flushTable()
 	}
 	if m.inCodeBlock {
 		m.flushCodeBlock(false /* highlight */)
@@ -3146,11 +3167,53 @@ func (m *Model) handleStreamLine(line string) {
 		return
 	}
 	if lang, ok := parseFenceOpen(line); ok {
+		if m.inTable {
+			m.flushTable()
+		}
 		m.inCodeBlock = true
 		m.codeBlockLang = lang
 		return
 	}
-	m.appendLine(renderAssistantBlock(line))
+	if m.inTable {
+		if isTableLine(line) {
+			m.tableBuf.WriteString(line)
+			m.tableBuf.WriteByte('\n')
+			return
+		}
+		// Blank lines between table rows don't end the table — the
+		// LLM may resume on the next line. Swallowing them prevents
+		// a single table from being split into multiple glamour
+		// renders with inconsistent column widths.
+		if strings.TrimSpace(line) == "" {
+			return
+		}
+		m.flushTable()
+	}
+	if isTableLine(line) && !isTableSeparatorOnly(line) {
+		m.inTable = true
+		m.tableBuf.WriteString(line)
+		m.tableBuf.WriteByte('\n')
+		return
+	}
+	if isUnicodeTableLine(line) {
+		m.emitUnicodeTableLine(line)
+		return
+	}
+	m.emitAssistantProse(line)
+}
+
+// emitAssistantProse renders a prose line from the assistant, word-wraps
+// it to the terminal width, and appends the result to scrollback.
+// Without this, long lines from the LLM are emitted as-is and the
+// terminal does a hard character break mid-word instead of a clean word
+// break. The wrapped result is emitted as a single appendLine call so
+// the transcript doesn't double-space between continuation rows.
+func (m *Model) emitAssistantProse(line string) {
+	rendered := renderAssistantBlock(line)
+	if m.width > 0 && ansi.StringWidth(rendered) > m.width {
+		rendered = ansi.Wrap(rendered, m.width, "")
+	}
+	m.appendLine(rendered)
 }
 
 // flushCodeBlock emits the buffered code block to scrollback and
@@ -3178,6 +3241,349 @@ func (m *Model) flushCodeBlock(highlight bool) {
 	for _, line := range strings.Split(body, "\n") {
 		m.appendLine(renderCodeBlockLine(line))
 	}
+}
+
+func (m *Model) flushTable() {
+	raw := strings.TrimRight(m.tableBuf.String(), "\n")
+	m.tableBuf.Reset()
+	m.inTable = false
+	if raw == "" {
+		return
+	}
+	// Size the glamour renderer to the table's content rather than
+	// the full terminal width. This prevents glamour from stretching
+	// narrow tables across the entire screen.
+	cols, idealWidth := tableMetrics(raw)
+	if idealWidth > m.width {
+		idealWidth = m.width
+	}
+	minWidth := cols*3 + cols + 1
+	if minWidth < 20 {
+		minWidth = 20
+	}
+	// Render → measure → shrink loop. Each iteration measures the
+	// actual rendered output and shrinks by exactly the overflow
+	// amount, converging in 2-3 passes without any hardcoded margin.
+	width := idealWidth
+	var bestLines []string
+	for i := 0; i < 8 && width >= minWidth; i++ {
+		r := newMarkdownRenderer(width)
+		rendered := strings.TrimRight(r.render(raw), "\n")
+		lines := strings.Split(rendered, "\n")
+		maxW := 0
+		for _, line := range lines {
+			if w := ansi.StringWidth(line); w > maxW {
+				maxW = w
+			}
+		}
+		bestLines = lines
+		if maxW <= m.width {
+			break
+		}
+		overflow := maxW - m.width
+		width -= overflow + 1
+	}
+	if bestLines == nil {
+		r := newMarkdownRenderer(minWidth)
+		rendered := strings.TrimRight(r.render(raw), "\n")
+		bestLines = strings.Split(rendered, "\n")
+	}
+	bestLines = fixTableAlignment(bestLines)
+	m.emitTableLines(bestLines)
+}
+
+// fixTableAlignment corrects column-separator misalignment in glamour's
+// rendered table output. Glamour uses byte length for column width
+// calculations, not display width, so multi-byte characters (–, •, §,
+// ≈, →, etc.) shift │ separators by 1-2 positions per occurrence. This
+// function detects the canonical separator positions (mode across all
+// data rows) and adjusts whitespace in misaligned rows to restore
+// vertical alignment.
+func fixTableAlignment(lines []string) []string {
+	const sep = "│"
+	type lineInfo struct {
+		positions []int
+	}
+	infos := make([]lineInfo, len(lines))
+	maxSepCount := 0
+	for i, line := range lines {
+		infos[i].positions = tableSepDisplayPositions(line, sep)
+		if len(infos[i].positions) > maxSepCount {
+			maxSepCount = len(infos[i].positions)
+		}
+	}
+	if maxSepCount == 0 {
+		return lines
+	}
+
+	// Canonical position per separator column = most-frequent position.
+	canonical := make([]int, maxSepCount)
+	for col := 0; col < maxSepCount; col++ {
+		freq := map[int]int{}
+		for _, info := range infos {
+			if col < len(info.positions) {
+				freq[info.positions[col]]++
+			}
+		}
+		best, bestN := 0, 0
+		for pos, n := range freq {
+			if n > bestN || (n == bestN && pos < best) {
+				best, bestN = pos, n
+			}
+		}
+		canonical[col] = best
+	}
+
+	result := make([]string, len(lines))
+	for i, line := range lines {
+		seps := infos[i].positions
+		if len(seps) != maxSepCount {
+			result[i] = line
+			continue
+		}
+		aligned := true
+		for col := range seps {
+			if seps[col] != canonical[col] {
+				aligned = false
+				break
+			}
+		}
+		if aligned {
+			result[i] = line
+			continue
+		}
+		result[i] = realignTableRow(line, sep, canonical)
+	}
+	return result
+}
+
+// tableSepDisplayPositions returns the display-column positions of every
+// occurrence of sep in line (ANSI-aware).
+func tableSepDisplayPositions(line, sep string) []int {
+	plain := ansi.Strip(line)
+	var positions []int
+	pos := 0
+	for _, r := range plain {
+		if string(r) == sep {
+			positions = append(positions, pos)
+		}
+		pos += ansi.StringWidth(string(r))
+	}
+	return positions
+}
+
+// realignTableRow adjusts whitespace within a glamour-rendered table row
+// so each │ separator lands at its canonical display-column position.
+// Works on the raw ANSI string: splits by the literal sep character,
+// trims/pads trailing spaces in each cell segment, then reassembles.
+func realignTableRow(line, sep string, canonical []int) string {
+	parts := strings.Split(line, sep)
+	if len(parts) < 2 {
+		return line
+	}
+	var b strings.Builder
+	b.Grow(len(line) + 8)
+	displayPos := 0
+	for i, part := range parts {
+		if i == len(parts)-1 {
+			b.WriteString(part)
+			break
+		}
+		target := canonical[i]
+		partW := ansi.StringWidth(part)
+		end := displayPos + partW
+
+		if end == target {
+			b.WriteString(part)
+		} else if end < target {
+			b.WriteString(part)
+			for j := end; j < target; j++ {
+				b.WriteByte(' ')
+			}
+		} else {
+			// Trim trailing spaces to make room.
+			trimmed := strings.TrimRight(part, " ")
+			trimW := ansi.StringWidth(trimmed)
+			b.WriteString(trimmed)
+			pad := target - (displayPos + trimW)
+			if pad < 0 {
+				pad = 0
+			}
+			for j := 0; j < pad; j++ {
+				b.WriteByte(' ')
+			}
+		}
+		b.WriteString(sep)
+		displayPos = target + ansi.StringWidth(sep)
+	}
+	return b.String()
+}
+
+// tableMetrics parses a markdown pipe table and returns the number of
+// columns and the ideal rendering width derived from cell content.
+// The ideal width is the sum of each column's widest cell plus
+// per-column border and padding overhead.
+func tableMetrics(raw string) (numCols int, idealWidth int) {
+	var colMax []int
+	for _, line := range strings.Split(raw, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || isTableSeparatorOnly(line) {
+			continue
+		}
+		line = strings.Trim(line, "|")
+		cells := strings.Split(line, "|")
+		for i, cell := range cells {
+			w := ansi.StringWidth(strings.TrimSpace(cell))
+			if i >= len(colMax) {
+				colMax = append(colMax, w)
+			} else if w > colMax[i] {
+				colMax[i] = w
+			}
+		}
+	}
+	numCols = len(colMax)
+	if numCols == 0 {
+		return 0, 40
+	}
+	// border: (numCols+1) │ chars, padding: 2 per cell, glamour indent: 2
+	total := numCols + 1 + 2
+	for _, w := range colMax {
+		total += w + 2
+	}
+	return numCols, total
+}
+
+// emitTableLines sends glamour-rendered table lines to scrollback.
+// Lines that still exceed terminal width are hard-wrapped with
+// continuation rows indented to preserve visual alignment within
+// the table, rather than letting queuePrintln orphan words outside
+// the table grid.
+func (m *Model) emitTableLines(lines []string) {
+	for _, line := range lines {
+		m.emitUnicodeTableLine(line)
+	}
+}
+
+// emitUnicodeTableLine prints an already-rendered table row without
+// letting terminal hard-wrap orphan overflow at column zero. Data rows
+// keep their left/table separators and split the overflowing cell onto
+// continuation rows inside that same column.
+func (m *Model) emitUnicodeTableLine(line string) {
+	if m.width <= 0 || ansi.StringWidth(line) <= m.width || !strings.Contains(line, "│") {
+		m.appendLine(line)
+		return
+	}
+	for _, row := range wrapUnicodeTableRow(line, m.width) {
+		m.appendLine(row)
+	}
+}
+
+func wrapUnicodeTableRow(line string, width int) []string {
+	if width <= 0 || ansi.StringWidth(line) <= width || !strings.Contains(line, "│") {
+		return []string{line}
+	}
+	parts := strings.Split(line, "│")
+	lastCell := -1
+	for i, part := range parts {
+		if strings.TrimSpace(ansi.Strip(part)) != "" {
+			lastCell = i
+		}
+	}
+	if lastCell < 0 {
+		return []string{line}
+	}
+	prefix := ""
+	if lastCell > 0 {
+		prefix = strings.Join(parts[:lastCell], "│") + "│"
+	}
+	suffix := ""
+	if lastCell < len(parts)-1 {
+		suffix = "│" + strings.Join(parts[lastCell+1:], "│")
+	}
+	cellWidth := width - ansi.StringWidth(prefix) - ansi.StringWidth(suffix)
+	if cellWidth < 4 {
+		prefix = strings.Repeat(" ", ansi.StringWidth(prefix))
+		cellWidth = width - ansi.StringWidth(prefix) - ansi.StringWidth(suffix)
+		if cellWidth < 4 {
+			return []string{line}
+		}
+	}
+	cellText := strings.TrimSpace(parts[lastCell])
+	rows := wrapWordsByDisplay(cellText, cellWidth)
+	if len(rows) == 1 && ansi.StringWidth(prefix)+ansi.StringWidth(rows[0])+ansi.StringWidth(suffix) > width {
+		prefix = strings.Repeat(" ", ansi.StringWidth(prefix))
+		cellWidth = width - ansi.StringWidth(prefix) - ansi.StringWidth(suffix)
+		rows = wrapWordsByDisplay(cellText, cellWidth)
+	}
+	out := make([]string, 0, len(rows))
+	for _, row := range rows {
+		if strings.TrimSpace(row) == "" {
+			continue
+		}
+		if ansi.StringWidth(prefix)+ansi.StringWidth(row)+ansi.StringWidth(suffix) > width {
+			prefix = strings.Repeat(" ", ansi.StringWidth(prefix))
+			cellWidth = width - ansi.StringWidth(prefix) - ansi.StringWidth(suffix)
+		}
+		out = append(out, prefix+padDisplay(row, cellWidth)+suffix)
+	}
+	if len(out) == 0 {
+		return []string{line}
+	}
+	return out
+}
+
+func wrapWordsByDisplay(text string, width int) []string {
+	if width <= 0 {
+		return []string{text}
+	}
+	var rows []string
+	for _, word := range strings.Fields(text) {
+		for ansi.StringWidth(word) > width {
+			part, rest := splitDisplayWidth(word, width)
+			if part == "" {
+				break
+			}
+			rows = append(rows, part)
+			word = rest
+		}
+		if word == "" {
+			continue
+		}
+		if len(rows) == 0 {
+			rows = append(rows, word)
+			continue
+		}
+		last := rows[len(rows)-1]
+		if ansi.StringWidth(last)+1+ansi.StringWidth(word) <= width {
+			rows[len(rows)-1] = last + " " + word
+			continue
+		}
+		rows = append(rows, word)
+	}
+	return rows
+}
+
+func splitDisplayWidth(s string, width int) (string, string) {
+	if width <= 0 {
+		return "", s
+	}
+	used := 0
+	for i, r := range s {
+		rw := ansi.StringWidth(string(r))
+		if used+rw > width {
+			return s[:i], s[i:]
+		}
+		used += rw
+	}
+	return s, ""
+}
+
+func padDisplay(s string, width int) string {
+	w := ansi.StringWidth(s)
+	if w >= width {
+		return s
+	}
+	return s + strings.Repeat(" ", width-w)
 }
 
 func renderCodeBlockLine(line string) string {
@@ -3221,15 +3627,32 @@ func isFenceClose(line string) bool {
 	return strings.TrimSpace(line) == "```"
 }
 
+var (
+	tableLineRE    = regexp.MustCompile(`^\s*\|.*\|`)
+	tableSepOnlyRE = regexp.MustCompile(`^\s*\|[\s:|\-]+\|\s*$`)
+	unicodeTableRE = regexp.MustCompile(`[│┼]`)
+)
+
+func isTableLine(line string) bool {
+	return tableLineRE.MatchString(line)
+}
+
+func isTableSeparatorOnly(line string) bool {
+	return tableSepOnlyRE.MatchString(line)
+}
+
+func isUnicodeTableLine(line string) bool {
+	return unicodeTableRE.MatchString(line)
+}
+
 // renderUserBlock formats a user message for scrollback emission. Each
-// line gets a thin colored left bar (▎) in Theme.Accent followed by the
-// content in Dim — the user already knows what they typed, so the bar
-// is enough of an anchor when scrolling back. Leading and trailing
-// "\n" give the block one blank line of separation on each side, so
-// the user echo sits as a clear divider between the previous
-// assistant/tool output and whatever follows it (the next tool card,
-// an [auto-mode]/[plan-mode-allow] auto-approval line, etc.). No
-// horizontal rule above: the bar is enough of an anchor, and the rule
+// line gets the same chevron prompt (❯) used by the live input bar, so
+// scrollback echoes look like the text the user typed into the cmdline.
+// Leading and trailing "\n" give the block one blank line of separation
+// on each side, so the user echo sits as a clear divider between the
+// previous assistant/tool output and whatever follows it (the next tool
+// card, an [auto-mode]/[plan-mode-allow] auto-approval line, etc.). No
+// horizontal rule above: the chevron is enough of an anchor, and the rule
 // fought with content on either side.
 //
 // Long lines are hard-wrapped at width-barWidth and every wrapped row
@@ -3238,7 +3661,7 @@ func isFenceClose(line string) bool {
 // rows to column 0 (which made the second line look detached from the
 // quote and lose its left-margin alignment).
 func renderUserBlock(content string, width int) string {
-	const prefix = "▎ "
+	const prefix = "❯ "
 	prefixWidth := ansi.StringWidth(prefix)
 	bar := styleUserBar.Render(prefix)
 	bodyWidth := width - prefixWidth

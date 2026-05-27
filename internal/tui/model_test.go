@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/x/ansi"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
@@ -353,6 +354,258 @@ func TestModel_StreamingUnclosedCodeBlockEmitsPlainOnCommit(t *testing.T) {
 	transcript := stripANSI(m.transcript.String())
 	if !strings.Contains(transcript, "  func broken(") {
 		t.Errorf("partial code should still land in scrollback with indent: %q", transcript)
+	}
+}
+
+func TestModel_StreamingTableBuffersUntilNonTableLine(t *testing.T) {
+	m := newTestModel(t)
+	m, _ = applyMsg(m, agentEventMsg{ev: agent.ContentToken{
+		Text: "| Col1 | Col2 |\n| --- | --- |\n| val1 | val2 |\n",
+	}})
+	transcript := m.transcript.String()
+	if strings.Contains(transcript, "val1") {
+		t.Errorf("table body should NOT be in scrollback yet (buffered): %q", transcript)
+	}
+	if !m.inTable {
+		t.Errorf("model should be in table state")
+	}
+	// Non-table line flushes the table.
+	m, _ = applyMsg(m, agentEventMsg{ev: agent.ContentToken{Text: "Done.\n"}})
+	transcript = m.transcript.String()
+	if !strings.Contains(stripANSI(transcript), "val1") {
+		t.Errorf("table content should land in scrollback after flush: %q", stripANSI(transcript))
+	}
+	if m.inTable {
+		t.Errorf("model should exit table state after flush")
+	}
+}
+
+func TestModel_StreamingTableRenderedThroughGlamour(t *testing.T) {
+	m := newTestModel(t)
+	m, _ = applyMsg(m, agentEventMsg{ev: agent.ContentToken{
+		Text: "| Name | Age |\n| --- | --- |\n| Alice | 30 |\nDone.\n",
+	}})
+	plain := stripANSI(m.transcript.String())
+	if !strings.Contains(plain, "Alice") {
+		t.Errorf("table content words should survive glamour rendering: %q", plain)
+	}
+	if !strings.Contains(plain, "30") {
+		t.Errorf("table data should survive glamour rendering: %q", plain)
+	}
+}
+
+func TestModel_StreamingTableShowsLiveNotice(t *testing.T) {
+	m := newTestModel(t)
+	m, _ = applyMsg(m, agentEventMsg{ev: agent.ContentToken{
+		Text: "| H1 | H2 |\n| --- | --- |\n| a | b |\n",
+	}})
+	view := m.View()
+	if !strings.Contains(view, "formatting table") {
+		t.Errorf("footer should show 'formatting table' notice: %q", view)
+	}
+	if !strings.Contains(view, "rows") {
+		t.Errorf("footer should mention row count: %q", view)
+	}
+}
+
+func TestModel_StreamingUnclosedTableRendersOnCommit(t *testing.T) {
+	m := newTestModel(t)
+	m, _ = applyMsg(m, agentEventMsg{ev: agent.ContentToken{
+		Text: "| X | Y |\n| --- | --- |\n| 1 | 2 |",
+	}})
+	if !m.inTable {
+		t.Errorf("should be in table state before commit")
+	}
+	m, _ = applyMsg(m, agentEventMsg{ev: agent.AssistantMessage{}})
+	plain := stripANSI(m.transcript.String())
+	if !strings.Contains(plain, "1") || !strings.Contains(plain, "2") {
+		t.Errorf("table content should land in scrollback on commit: %q", plain)
+	}
+	if m.inTable {
+		t.Errorf("commit should exit table state")
+	}
+}
+
+func TestModel_TableInsideCodeBlockNotIntercepted(t *testing.T) {
+	m := newTestModel(t)
+	m, _ = applyMsg(m, agentEventMsg{ev: agent.ContentToken{
+		Text: "```\n| Col1 | Col2 |\n| --- | --- |\n| a | b |\n",
+	}})
+	if m.inTable {
+		t.Errorf("table inside code block should NOT trigger table state")
+	}
+	if !m.inCodeBlock {
+		t.Errorf("should be in code block state")
+	}
+}
+
+func TestModel_SeparatorOnlyLineDoesNotStartTable(t *testing.T) {
+	m := newTestModel(t)
+	m, _ = applyMsg(m, agentEventMsg{ev: agent.ContentToken{
+		Text: "|---|---|\n",
+	}})
+	if m.inTable {
+		t.Errorf("separator-only line should not start table state")
+	}
+	if !strings.Contains(stripANSI(m.transcript.String()), "|---|---|") {
+		t.Errorf("separator-only line should emit as prose: %q", stripANSI(m.transcript.String()))
+	}
+}
+
+func TestModel_UnicodeTableOverflowWrapsInsideCell(t *testing.T) {
+	m := newTestModel(t) // width = 80
+	line := "  Retrieval / scoring      │ No scoring – entire memory snapshot       │ semantic uses local Ollama embeddings, auto falls back to BM25Top-K"
+	m, _ = applyMsg(m, agentEventMsg{ev: agent.ContentToken{Text: line + "\n"}})
+	plain := stripANSI(m.transcript.String())
+	if strings.Contains(plain, "\nlocal") || strings.Contains(plain, "\nauto") {
+		t.Fatalf("overflow should not be orphaned at column zero: %q", plain)
+	}
+	if !strings.Contains(plain, "│local") {
+		t.Fatalf("overflow should continue inside the last table cell: %q", plain)
+	}
+	for _, row := range strings.Split(strings.TrimSpace(plain), "\n") {
+		if ansi.StringWidth(row) > m.width {
+			t.Fatalf("wrapped table row width = %d, want <= %d: %q", ansi.StringWidth(row), m.width, row)
+		}
+	}
+}
+
+func TestModel_LongProseLineWordWraps(t *testing.T) {
+	m := newTestModel(t) // width = 80
+	long := "Auto-summarization in yottacode operates on the session transcript (the rolling history of user/assistant/tool turns), not on the agent-managed memory files."
+	m, _ = applyMsg(m, agentEventMsg{ev: agent.ContentToken{Text: long + "\nDone.\n"}})
+	plain := stripANSI(m.transcript.String())
+	if !strings.Contains(plain, "Auto-summarization") {
+		t.Errorf("content should be in scrollback: %q", plain)
+	}
+	if !strings.Contains(plain, "files.") {
+		t.Errorf("end of content should be in scrollback: %q", plain)
+	}
+	// The original line is ~160 chars — wider than the 80-col model.
+	// After word-wrapping, each prose line in the scrollback should
+	// fit within the terminal width. Find the content block and check.
+	found := false
+	for _, line := range strings.Split(plain, "\n") {
+		if strings.Contains(line, "Auto-summarization") {
+			found = true
+		}
+		if !found {
+			continue
+		}
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		if len(line) > m.width+2 {
+			t.Errorf("wrapped prose line too long (%d > %d): %q", len(line), m.width, line)
+		}
+		if strings.Contains(line, "Done") {
+			break
+		}
+	}
+	if !found {
+		t.Errorf("did not find wrapped content in scrollback")
+	}
+}
+
+func TestTableMetrics_SkipsSeparatorRow(t *testing.T) {
+	raw := "| Name | Age |\n| --- | --- |\n| Alice | 30 |"
+	cols, width := tableMetrics(raw)
+	if cols != 2 {
+		t.Errorf("expected 2 columns, got %d", cols)
+	}
+	// "Alice" = 5, "Age" = 3 → max per-col = [5, 3]
+	// total = numCols+1 + 2 + sum(w+2) = 3 + 2 + (5+2) + (3+2) = 17
+	if width != 17 {
+		t.Errorf("expected idealWidth 17, got %d", width)
+	}
+}
+
+func TestTableMetrics_DisplayWidthNotByteLength(t *testing.T) {
+	// § is 2 bytes but 1 display column; – is 3 bytes but 1 display column
+	raw := "| A | B |\n| --- | --- |\n| x§y | a–b |"
+	cols, width := tableMetrics(raw)
+	if cols != 2 {
+		t.Errorf("expected 2 columns, got %d", cols)
+	}
+	// "x§y" display width = 3, "a–b" display width = 3 → max = [3, 3]
+	// total = 3 + 2 + (3+2) + (3+2) = 15
+	if width != 15 {
+		t.Errorf("expected idealWidth 15, got %d (byte-length bug?)", width)
+	}
+}
+
+func TestFixTableAlignment_CorrectsMisalignedSeparators(t *testing.T) {
+	// Simulate glamour output where one line has a shifted separator.
+	lines := []string{
+		"  Header   │ Col2    ",
+		"  data     │ val     ",
+		"  data      │ val    ", // separator shifted right by 1
+		"  data     │ val     ",
+	}
+	fixed := fixTableAlignment(lines)
+	// All lines should have │ at the same display position after fixing.
+	ref := tableSepDisplayPositions(fixed[0], "│")
+	for i, line := range fixed {
+		seps := tableSepDisplayPositions(line, "│")
+		if len(seps) != len(ref) {
+			continue
+		}
+		for k := range seps {
+			if seps[k] != ref[k] {
+				t.Errorf("line %d: separator %d at position %d, want %d", i, k, seps[k], ref[k])
+			}
+		}
+	}
+}
+
+func TestFixTableAlignment_NoChangeWhenAligned(t *testing.T) {
+	lines := []string{
+		"  Header │ Col2 ",
+		"  data   │ val  ",
+		"  more   │ val  ",
+	}
+	fixed := fixTableAlignment(lines)
+	for i, line := range fixed {
+		if line != lines[i] {
+			t.Errorf("line %d changed when already aligned: %q → %q", i, lines[i], line)
+		}
+	}
+}
+
+func TestModel_BlankLineMidTableDoesNotSplit(t *testing.T) {
+	m := newTestModel(t)
+	// Stream a table with a blank line between rows. The blank line
+	// should NOT flush the first half as a separate table.
+	m, _ = applyMsg(m, agentEventMsg{ev: agent.ContentToken{
+		Text: "| A | B |\n| --- | --- |\n| x | y |\n\n| z | w |\n",
+	}})
+	// Should still be in table mode (blank line didn't end it).
+	if !m.inTable {
+		t.Errorf("blank line should not end table state")
+	}
+	// Flush by sending non-table text.
+	m, _ = applyMsg(m, agentEventMsg{ev: agent.ContentToken{Text: "Done.\n"}})
+	plain := stripANSI(m.transcript.String())
+	// Both rows should appear in a single rendered table.
+	if !strings.Contains(plain, "x") || !strings.Contains(plain, "z") {
+		t.Errorf("both table rows should be in scrollback: %q", plain)
+	}
+}
+
+func TestFixTableAlignment_PreservesNonTableLines(t *testing.T) {
+	lines := []string{
+		"",                        // blank
+		"  Header │ Col2 │ Col3 ", // 2 separators
+		"  data   │ val  │ v2   ", // 2 separators
+		"──────┼──────┼──────",    // no │, uses ┼
+		"  data   │ val  │ v2   ", // 2 separators
+	}
+	fixed := fixTableAlignment(lines)
+	if fixed[0] != "" {
+		t.Errorf("blank line should be preserved: %q", fixed[0])
+	}
+	if fixed[3] != lines[3] {
+		t.Errorf("separator row should be preserved: %q", fixed[3])
 	}
 }
 
@@ -1708,27 +1961,25 @@ func TestModel_MouseEventDoesNotPanic(t *testing.T) {
 	})
 }
 
-// User block renders with a thin colored left bar (▎) per Phase 4a.
-// The old inverse-pill ❯ marker is gone — the bar is enough of a
-// visual anchor when scrolling back. Multi-line input gets a bar on
-// every wrapped row.
-func TestModel_UserBlockUsesThinLeftBar(t *testing.T) {
+// User block renders with the same chevron prompt as the live input bar.
+// Multi-line input gets the marker on every wrapped row.
+func TestModel_UserBlockUsesInputChevron(t *testing.T) {
 	m := newTestModel(t)
 	m.appendLine(renderUserBlock("hello\nworld", m.width))
 	v := stripANSI(m.transcript.String())
-	if !strings.Contains(v, "▎ hello") || !strings.Contains(v, "▎ world") {
-		t.Errorf("user block should render with ▎ left-bar marker: %q", v)
+	if !strings.Contains(v, "❯ hello") || !strings.Contains(v, "❯ world") {
+		t.Errorf("user block should render with ❯ prompt marker: %q", v)
 	}
-	if strings.Contains(v, "❯ hello") {
-		t.Errorf("user block should not use the legacy ❯ marker: %q", v)
+	if strings.Contains(v, "▎ hello") {
+		t.Errorf("user block should not use the old ▎ marker: %q", v)
 	}
 }
 
 // A user input longer than the terminal width must be hard-wrapped
-// and every wrapped row must carry the ▎ bar prefix. Without this,
+// and every wrapped row must carry the ❯ prompt prefix. Without this,
 // the terminal auto-wraps continuation rows to column 0 and the quoted
 // block loses its left-margin alignment partway through.
-func TestRenderUserBlock_LongLineHangIndentsUnderBar(t *testing.T) {
+func TestRenderUserBlock_LongLineHangIndentsUnderPrompt(t *testing.T) {
 	long := "Can you scan the current codebase and identify any gaps in the core components such as memory, permissions, models, providers, any of the Github integrations etc"
 	out := stripANSI(renderUserBlock(long, 80))
 	rows := strings.Split(strings.Trim(out, "\n"), "\n")
@@ -1736,8 +1987,8 @@ func TestRenderUserBlock_LongLineHangIndentsUnderBar(t *testing.T) {
 		t.Fatalf("expected at least two rows after wrap, got %d: %q", len(rows), rows)
 	}
 	for i, row := range rows {
-		if !strings.HasPrefix(row, "▎ ") {
-			t.Errorf("row %d missing ▎ prefix: %q", i, row)
+		if !strings.HasPrefix(row, "❯ ") {
+			t.Errorf("row %d missing ❯ prefix: %q", i, row)
 		}
 	}
 }
