@@ -108,7 +108,7 @@ func (t *MemorySaveTool) Execute(_ context.Context, argsJSON string) (string, er
 	if t.Embedder != nil {
 		text := a.Name + " " + a.Description + " " + a.Content
 		if vec, err := t.Embedder.Embed(context.Background(), text); err == nil {
-			_ = memory.WriteVec(memory.VecPath(path), vec)
+			_ = memory.WriteVecWithModel(memory.VecPath(path), vec, t.Embedder.Model)
 		}
 	}
 	return fmt.Sprintf("saved %s memory %q", a.Scope, a.Name), nil

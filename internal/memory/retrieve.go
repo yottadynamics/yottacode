@@ -70,14 +70,14 @@ func Score(entry MemoryEntry, query string) float64 {
 // score with alphabetical tie-breaking.
 func scoreBM25(entries []MemoryEntry, query string) []Scored {
 	corpus := BuildCorpus(entries)
-	qStems := stemExpandTokenize(query)
+	qStems := StemExpandTokenize(query)
 	return corpus.Rank(qStems)
 }
 
-// stemExpandTokenize tokenizes, stems, and expands synonyms for the
+// StemExpandTokenize tokenizes, stems, and expands synonyms for the
 // query side. Synonym expansion runs on queries only (not documents)
 // to increase recall without inflating document frequencies.
-func stemExpandTokenize(s string) []string {
+func StemExpandTokenize(s string) []string {
 	raw := tokenize(s)
 	seen := make(map[string]struct{}, len(raw)*3)
 	out := make([]string, 0, len(raw)*3)

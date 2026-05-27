@@ -78,7 +78,7 @@ func BuildCorpus(entries []MemoryEntry) *Corpus {
 // non-negative score; higher means more relevant. The score combines
 // a headline field (boosted) and a body field.
 func (c *Corpus) BM25(docIdx int, queryStems []string) float64 {
-	if c.N == 0 || len(queryStems) == 0 {
+	if c.N == 0 || len(queryStems) == 0 || docIdx < 0 || docIdx >= len(c.Docs) || c.AvgDL == 0 {
 		return 0
 	}
 	d := c.Docs[docIdx]

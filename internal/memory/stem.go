@@ -231,6 +231,9 @@ func step4(w []byte) []byte {
 }
 
 func step5a(w []byte) []byte {
+	if len(w) == 0 {
+		return w
+	}
 	if w[len(w)-1] == 'e' {
 		stem := w[:len(w)-1]
 		if measure(stem) > 1 {
@@ -244,6 +247,9 @@ func step5a(w []byte) []byte {
 }
 
 func step5b(w []byte) []byte {
+	if len(w) == 0 {
+		return w
+	}
 	if measure(w) > 1 && endsDoubleConsonant(w) && w[len(w)-1] == 'l' {
 		return w[:len(w)-1]
 	}
