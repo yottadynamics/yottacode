@@ -95,6 +95,8 @@ func targetFor(toolName, argsJSON, cwd string) Target {
 		return Target{PermName: "Grep", Descriptor: extractField(argsJSON, "pattern")}
 	case "fetch_url":
 		return Target{PermName: "Fetch", Descriptor: extractField(argsJSON, "url")}
+	case "web_search":
+		return Target{PermName: "Fetch", Descriptor: extractField(argsJSON, "query")}
 	case "memory_save":
 		return Target{PermName: "Memory", Descriptor: "save " + extractField(argsJSON, "scope") + ":" + extractField(argsJSON, "name")}
 	case "memory_forget":

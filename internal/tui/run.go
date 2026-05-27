@@ -299,6 +299,9 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 	reg.Register(&agent.GlobTool{Cwd: cwdRef})
 	reg.Register(&agent.GrepTool{Cwd: cwdRef, DenyReadPaths: denyReads})
 	reg.Register(&agent.FetchURLTool{})
+	if !hasBuiltin(ad.Profile().EnabledBuiltinTools, adapter.BuiltinToolWebSearch) {
+		reg.Register(&agent.WebSearchTool{})
+	}
 	reg.Register(&agent.MemorySaveTool{Cwd: cwdRef})
 	reg.Register(&agent.MemoryForgetTool{Cwd: cwdRef})
 	reg.Register(&agent.GitTool{Cwd: cwdRef})
@@ -666,7 +669,7 @@ func composeSystemPrompt(base string, profile adapter.ProviderProfile) string {
 	if hasBuiltin(profile.EnabledBuiltinTools, adapter.BuiltinToolWebSearch) {
 		return base + "\nFor live or current information, use the provider-native web_search tool when needed."
 	}
-	return base + "\nFor live or current information, use fetch_url for specific pages or feeds when needed."
+	return base + "\nFor live or current information, use the web_search tool to search the web via DuckDuckGo, or fetch_url for specific pages or feeds when needed."
 }
 
 // appendSkillsSection adds the description-matched metadata tier of
