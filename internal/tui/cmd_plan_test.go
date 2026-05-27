@@ -83,7 +83,7 @@ func TestCmdPlan_EntersAndPrintsBanner(t *testing.T) {
 // shape — the test pins all three.
 func TestRenderPlanModeEntryCard_HasCardShape(t *testing.T) {
 	out := stripANSI(renderPlanModeEntryCard())
-	for _, glyph := range []string{"╭ ", "│   ", "╰ "} {
+	for _, glyph := range []string{"╭ ", "│  ", "╰ "} {
 		if !strings.Contains(out, glyph) {
 			t.Errorf("entry card missing gutter glyph %q; got:\n%s", glyph, out)
 		}

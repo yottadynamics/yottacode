@@ -1859,7 +1859,7 @@ func TestModel_ToolResultRendersUnifiedCard(t *testing.T) {
 	if !strings.Contains(v, "╭ x()") {
 		t.Errorf("card header should carry the preview: %q", v)
 	}
-	if !strings.Contains(v, "│   wrote 11 bytes to /tmp/y") {
+	if !strings.Contains(v, "│  wrote 11 bytes to /tmp/y") {
 		t.Errorf("card body should carry the tool output: %q", v)
 	}
 	if !strings.Contains(v, "╰ ") {
@@ -1986,9 +1986,15 @@ func TestRenderUserBlock_LongLineHangIndentsUnderPrompt(t *testing.T) {
 	if len(rows) < 2 {
 		t.Fatalf("expected at least two rows after wrap, got %d: %q", len(rows), rows)
 	}
-	for i, row := range rows {
-		if !strings.HasPrefix(row, "❯ ") {
-			t.Errorf("row %d missing ❯ prefix: %q", i, row)
+	if !strings.HasPrefix(rows[0], "❯ ") {
+		t.Errorf("first row missing ❯ prefix: %q", rows[0])
+	}
+	for i, row := range rows[1:] {
+		if strings.HasPrefix(row, "❯ ") {
+			t.Errorf("continuation row %d should indent, not repeat ❯: %q", i+1, row)
+		}
+		if !strings.HasPrefix(row, "  ") {
+			t.Errorf("continuation row %d missing hanging indent: %q", i+1, row)
 		}
 	}
 }

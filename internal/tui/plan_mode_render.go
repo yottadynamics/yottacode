@@ -118,7 +118,7 @@ func compactPlanBasename(planPath string) string {
 func renderPlanModeEntryCard() string {
 	header := styleCardGutter.Render("╭ ") +
 		stylePlanBannerLabel.Render(PlanModeIcon+" plan mode active")
-	body := styleCardGutter.Render("│   ") +
+	body := styleCardGutter.Render("│  ") +
 		stylePlanBannerHint.Render("read-only research; describe what you'd like planned in your next message")
 	footer := styleCardGutter.Render("╰ ") +
 		stylePlanBannerHint.Render("exit with /plan or Shift+Tab")
