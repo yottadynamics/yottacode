@@ -302,8 +302,16 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 	if !hasBuiltin(ad.Profile().EnabledBuiltinTools, adapter.BuiltinToolWebSearch) {
 		reg.Register(&agent.WebSearchTool{})
 	}
-	reg.Register(&agent.MemorySaveTool{Cwd: cwdRef})
+	var embedClient *memory.EmbedClient
+	if s := fileCfg.Retrieval.Strategy; s == "semantic" || s == "auto" {
+		ec := memory.NewEmbedClient("", fileCfg.Retrieval.EmbeddingModel)
+		if ec.Available(ctx) {
+			embedClient = ec
+		}
+	}
+	reg.Register(&agent.MemorySaveTool{Cwd: cwdRef, Embedder: embedClient})
 	reg.Register(&agent.MemoryForgetTool{Cwd: cwdRef})
+	reg.Register(&agent.MemorySearchTool{Cwd: cwdRef, Embedder: embedClient})
 	reg.Register(&agent.GitTool{Cwd: cwdRef})
 	reg.Register(&agent.TodoWriteTool{Store: planStore})
 	// ExitPlanModeTool is registered with a nil Approve callback at
@@ -428,6 +436,7 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 		go func() {
 			_ = recall.Backfill(idx)
 		}()
+		reg.Register(&agent.SessionRecallTool{Searcher: &recallAdapter{idx: idx}})
 	}
 
 	model := New(ctx, Config{
@@ -461,6 +470,7 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 		Worktree:               sess.Worktree,
 		MemorySummary:          mem.Summary().String(),
 		BaseSystemPrompt:       baseSys,
+		EmbedClient:            embedClient,
 		FileCfg:                fileCfg,
 		Subagents:              subagentTasks,
 		AgentTool:              agentTool,
@@ -745,4 +755,29 @@ func openSession(opts cli.ChatOptions, cwd string) (*session.Session, bool, erro
 	// kept for `sessions list` display and future tooling.
 	s.Worktree = opts.Worktree
 	return s, true, nil
+}
+
+// recallAdapter bridges *recall.Index (which returns recall.Hit) to
+// agent.RecallSearcher (which expects agent.RecallHit) so the agent
+// package stays cycle-free (agent → session → agent would cycle if
+// agent imported recall directly).
+type recallAdapter struct{ idx *recall.Index }
+
+func (a *recallAdapter) Search(query string, limit int) ([]agent.RecallHit, error) {
+	hits, err := a.idx.Search(query, limit)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]agent.RecallHit, len(hits))
+	for i, h := range hits {
+		out[i] = agent.RecallHit{
+			SessionID:   h.SessionID,
+			SessionName: h.SessionName,
+			Model:       h.Model,
+			Created:     h.Created,
+			Role:        string(h.Role),
+			Snippet:     h.Snippet,
+		}
+	}
+	return out, nil
 }

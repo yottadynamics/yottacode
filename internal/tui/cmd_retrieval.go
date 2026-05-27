@@ -48,7 +48,7 @@ func (m *Model) rebuildSystemPromptForTurn(query string) {
 		return
 	}
 	composed := composeSystemPrompt(m.baseSystemPrompt, m.providerProfile)
-	newSys := memory.SystemPromptFor(composed, mem, query, m.fileCfg.Retrieval)
+	newSys := memory.SystemPromptForSemantic(composed, mem, query, m.fileCfg.Retrieval, m.embedClient)
 	if summary != "" {
 		newSys = strings.TrimRight(newSys, "\n") + summaryHeading + summary
 	}

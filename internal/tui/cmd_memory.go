@@ -25,9 +25,68 @@ type editorDoneMsg struct {
 	path string
 }
 
-// cmdMemory opens the memory picker overlay.
-func cmdMemory(m Model, _ []string) (Model, tea.Cmd) {
+// cmdMemory opens the memory picker overlay, or dispatches subcommands.
+func cmdMemory(m Model, args []string) (Model, tea.Cmd) {
+	if len(args) > 0 && args[0] == "search" {
+		query := strings.Join(args[1:], " ")
+		return cmdMemorySearch(m, query)
+	}
 	m.openMemoryPicker()
+	return m, nil
+}
+
+// cmdMemorySearch scores all memories against the query and displays
+// the ranked results with scores — lets the user see exactly what the
+// agent's retrieval would return.
+func cmdMemorySearch(m Model, query string) (Model, tea.Cmd) {
+	if strings.TrimSpace(query) == "" {
+		m.appendLine(styleError.Render("[memory] usage: /memory search <query>"))
+		return m, nil
+	}
+
+	loaded, err := memory.Load(m.cwd)
+	if err != nil {
+		m.appendLine(styleError.Render("[memory] " + err.Error()))
+		return m, nil
+	}
+
+	var all []memory.MemoryEntry
+	all = append(all, loaded.UserMemories...)
+	all = append(all, loaded.ProjectMemories...)
+	if len(all) == 0 {
+		m.appendLine(styleAuto.Render("[memory] no memories to search"))
+		return m, nil
+	}
+
+	corpus := memory.BuildCorpus(all)
+	qStems := memory.StemExpandTokenize(query)
+	ranked := corpus.Rank(qStems)
+
+	var b strings.Builder
+	b.WriteString(styleAuto.Render(fmt.Sprintf("[memory] search: %q (%d memories)\n", query, len(ranked))))
+	shown := 0
+	for _, s := range ranked {
+		if s.Score <= 0 {
+			continue
+		}
+		shown++
+		scope := s.Entry.Scope
+		if scope == "" {
+			scope = "?"
+		}
+		line := fmt.Sprintf("  %.3f  %-8s %-10s %s", s.Score, scope, s.Entry.Type, s.Entry.Name)
+		if s.Entry.Description != "" {
+			line += " — " + s.Entry.Description
+		}
+		b.WriteString(line + "\n")
+		if shown >= 10 {
+			break
+		}
+	}
+	if shown == 0 {
+		b.WriteString("  (no matches)\n")
+	}
+	m.appendLine(strings.TrimRight(b.String(), "\n"))
 	return m, nil
 }
 
@@ -56,7 +115,7 @@ type memoryPickerState struct {
 	browseMessage string
 }
 
-const memoryPickerRowCount = 4
+const memoryPickerRowCount = 5
 
 func (m *Model) openMemoryPicker() {
 	st := &memoryPickerState{}
@@ -136,7 +195,57 @@ func (m Model) commitMemoryPicker() (Model, tea.Cmd) {
 		return m.enterMemoryBrowse("user", p.userMemoryDir)
 	case 3:
 		return m.enterMemoryBrowse("project", p.projectMemoryDir)
+	case 4:
+		return m.runMemoryReindex()
 	}
+	return m, nil
+}
+
+func (m Model) runMemoryReindex() (Model, tea.Cmd) {
+	m.memoryPickerOpen = false
+	m.memoryPicker = nil
+
+	client := m.embedClient
+	if client == nil {
+		client = memory.NewEmbedClient("", m.fileCfg.Retrieval.EmbeddingModel)
+		if !client.Available(m.parentCtx) {
+			m.appendLine(styleError.Render(fmt.Sprintf(
+				"[memory] embedding model %q not available — is Ollama running with the model installed?  Try: ollama pull %s",
+				client.Model, client.Model)))
+			return m, nil
+		}
+	}
+
+	loaded, err := memory.Load(m.cwd)
+	if err != nil {
+		m.appendLine(styleError.Render("[memory] " + err.Error()))
+		return m, nil
+	}
+	var all []memory.MemoryEntry
+	all = append(all, loaded.UserMemories...)
+	all = append(all, loaded.ProjectMemories...)
+	if len(all) == 0 {
+		m.appendLine(styleAuto.Render("[memory] no memories to index"))
+		return m, nil
+	}
+	var indexed, skipped int
+	for _, e := range all {
+		vecPath := memory.VecPath(e.Path)
+		if !memory.NeedsReembed(vecPath, client.Model) {
+			skipped++
+			continue
+		}
+		text := e.Name + " " + e.Description + " " + e.Body
+		vec, err := client.Embed(m.parentCtx, text)
+		if err != nil {
+			continue
+		}
+		if err := memory.WriteVecWithModel(vecPath, vec, client.Model); err != nil {
+			continue
+		}
+		indexed++
+	}
+	m.appendLine(styleAuto.Render(fmt.Sprintf("[memory] reindex: %d embedded, %d up-to-date", indexed, skipped)))
 	return m, nil
 }
 
@@ -233,6 +342,7 @@ func (m Model) commitMemoryBrowseDelete() (Model, tea.Cmd) {
 		p.browseMessage = "couldn't delete " + target.Name + ": " + err.Error()
 		return m, nil
 	}
+	memory.DeleteVec(target.Path)
 	if err := memory.RegenerateMemoryIndex(p.browseScope, m.cwd); err != nil {
 		p.browseMessage = "deleted " + target.Name + " but index update failed: " + err.Error()
 	} else {
@@ -318,6 +428,7 @@ func renderMemoryPicker(p *memoryPickerState, _ int) string {
 		{"User preferences", memoryRowDesc("Saved at", p.userPath)},
 		{"Browse user memories", memoryDirRowDesc(p.userMemoryDir, "cross-project agent memories")},
 		{"Browse project memories", memoryDirRowDesc(p.projectMemoryDir, "this-repo agent memories")},
+		{"Reindex embeddings", "regenerate .vec sidecars for semantic retrieval"},
 	}
 	for i, r := range rows {
 		b.WriteString(renderMenuItem(menuItemOpts{

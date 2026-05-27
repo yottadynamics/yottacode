@@ -1,13 +1,16 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io/fs"
 	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
 
+	"github.com/yottadynamics/yottacode/internal/config"
 	"github.com/yottadynamics/yottacode/internal/memory"
 )
 
@@ -26,6 +29,8 @@ into non-interactive cobra subcommands.
 	cmd.AddCommand(
 		newMemoryListCmd(),
 		newMemoryForgetCmd(),
+		newMemoryReindexCmd(),
+		newMemorySearchCmd(),
 	)
 	return cmd
 }
@@ -97,6 +102,7 @@ The MEMORY.md index for the chosen scope is regenerated.`,
 				}
 				return err
 			}
+			memory.DeleteVec(path)
 			if err := memory.RegenerateMemoryIndex(scope, cwd); err != nil {
 				return fmt.Errorf("removed %s but failed to refresh index: %w", name, err)
 			}
@@ -106,4 +112,137 @@ The MEMORY.md index for the chosen scope is regenerated.`,
 	}
 	c.Flags().StringVar(&scope, "scope", "project", "memory scope (\"user\" or \"project\")")
 	return c
+}
+
+// newMemoryReindexCmd generates vector embeddings for all memories
+// missing .vec sidecar files. Requires a local Ollama server with an
+// embedding model installed.
+func newMemoryReindexCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "reindex",
+		Short: "Generate vector embeddings for semantic memory retrieval",
+		Long: `Reindex scans all user-scope and project-scope memories and generates
+embedding vectors for any entries missing a .vec sidecar file. Requires
+a local Ollama server with the configured embedding model installed
+(default: nomic-embed-text).
+
+Configure the model via [retrieval] embedding_model in
+~/.yottacode/config.toml.`,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cwd, err := os.Getwd()
+			if err != nil {
+				return err
+			}
+			cfg, _ := config.LoadDefault()
+			client := memory.NewEmbedClient("", cfg.Retrieval.EmbeddingModel)
+
+			ctx := context.Background()
+			if !client.Available(ctx) {
+				return fmt.Errorf("embedding model %q not available — is Ollama running with the model installed?\n  Try: ollama pull %s",
+					client.Model, client.Model)
+			}
+
+			loaded, err := memory.Load(cwd)
+			if err != nil {
+				return err
+			}
+
+			out := cmd.OutOrStdout()
+			var all []memory.MemoryEntry
+			all = append(all, loaded.UserMemories...)
+			all = append(all, loaded.ProjectMemories...)
+
+			if len(all) == 0 {
+				fmt.Fprintln(out, "no memories to index")
+				return nil
+			}
+
+			fmt.Fprintf(out, "embedding %d memories via %s...\n", len(all), client.Model)
+			var indexed, skipped int
+			for _, e := range all {
+				vecPath := memory.VecPath(e.Path)
+				if !memory.NeedsReembed(vecPath, client.Model) {
+					skipped++
+					continue
+				}
+				text := e.Name + " " + e.Description + " " + e.Body
+				vec, err := client.Embed(ctx, text)
+				if err != nil {
+					fmt.Fprintf(out, "  skip %s: %v\n", e.Name, err)
+					continue
+				}
+				if err := memory.WriteVecWithModel(vecPath, vec, client.Model); err != nil {
+					fmt.Fprintf(out, "  skip %s: %v\n", e.Name, err)
+					continue
+				}
+				indexed++
+			}
+			fmt.Fprintf(out, "done: %d indexed, %d up-to-date\n", indexed, skipped)
+			return nil
+		},
+	}
+}
+
+// newMemorySearchCmd scores all memories against a query and displays
+// ranked results — the same view the agent's retrieval sees.
+func newMemorySearchCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "search <query>",
+		Short: "Search memories using BM25 scoring (stemming + synonyms)",
+		Long: `Search scores all user-scope and project-scope memories against the
+query using the BM25 retrieval algorithm with Porter stemming and
+synonym expansion. Shows the same ranked results the agent's
+per-turn retrieval would return.`,
+		Args: cobra.MinimumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cwd, err := os.Getwd()
+			if err != nil {
+				return err
+			}
+			query := strings.Join(args, " ")
+			loaded, err := memory.Load(cwd)
+			if err != nil {
+				return err
+			}
+
+			var all []memory.MemoryEntry
+			all = append(all, loaded.UserMemories...)
+			all = append(all, loaded.ProjectMemories...)
+			if len(all) == 0 {
+				fmt.Fprintln(cmd.OutOrStdout(), "(no memories)")
+				return nil
+			}
+
+			corpus := memory.BuildCorpus(all)
+			qStems := memory.StemExpandTokenize(query)
+			ranked := corpus.Rank(qStems)
+
+			out := cmd.OutOrStdout()
+			fmt.Fprintf(out, "query: %q  (%d memories scored)\n\n", query, len(ranked))
+			shown := 0
+			for _, s := range ranked {
+				if s.Score <= 0 {
+					continue
+				}
+				shown++
+				scope := s.Entry.Scope
+				if scope == "" {
+					scope = "?"
+				}
+				fmt.Fprintf(out, "  %.3f  %-8s %-10s %s", s.Score, scope, s.Entry.Type, s.Entry.Name)
+				if s.Entry.Description != "" {
+					fmt.Fprintf(out, " — %s", s.Entry.Description)
+				}
+				fmt.Fprintln(out)
+				if shown >= 20 {
+					break
+				}
+			}
+			if shown == 0 {
+				fmt.Fprintln(out, "  (no matches)")
+			}
+			return nil
+		},
+	}
 }

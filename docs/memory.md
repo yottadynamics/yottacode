@@ -151,11 +151,15 @@ The agent picks one of these when saving:
 
 ### What the agent saves
 
+The agent is designed to be **self-learning** — it actively builds its understanding of you and your work across sessions and projects, so every future conversation starts smarter than the last.
+
 Save when:
 
 - The user states a durable preference, correction, or project fact.
+- The user **confirms or validates** a non-obvious approach — save what worked and why.
 - The user supplies a reference you'd otherwise re-derive every turn.
-- The same correction has come up twice — that's a pattern worth pinning.
+- The agent observes a **recurring pattern**: the user always approves a certain style, always rejects a certain approach, always asks for the same thing. The agent doesn't wait for "remember this" — if it sees a pattern twice, it saves it.
+- A task outcome teaches something: an approach that failed and why, a subtle constraint discovered, a debugging technique that cracked a hard problem.
 
 Don't save:
 
@@ -165,14 +169,27 @@ Don't save:
 - One-off task instructions.
 - Anything sensitive (API keys, internal URLs, PII).
 
+### Scope selection — cross-project learning
+
+Scope selection is critical for building knowledge that transfers across projects:
+
+- **`scope=user`** (stored in `~/.yottacode/memory/`, loaded in **every** project): anything about the person, not the repo. Coding style, communication preferences, tool preferences, workflow patterns, feedback corrections, debugging approaches, domain expertise areas. The test: "would this help me in a completely different repo for this user?" If yes, it's user-scope.
+- **`scope=project`** (stored per-repo, loaded only in that repo): **only** for facts that are meaningless outside this specific codebase — architecture decisions, naming conventions unique to this repo, team-specific processes, deployment targets.
+- **Default to user-scope.** Most things the agent learns about how someone works, thinks, and prefers are portable. Project-scope is the exception, not the default.
+- When saving a project-scope memory, the agent considers: is the underlying principle user-scope? E.g., "user wants table-driven tests in this Go repo" is really "user prefers table-driven tests" (user-scope) — the Go repo is just where it was learned.
+
 The full guidance lives in the agent's system prompt; see `internal/agent/prompt.go` for the current copy.
 
-### The two tools
+### The four tools
 
-The agent has two memory tools, both **silent by default** (no approval modal — they're as ordinary as `read_file`):
+The agent has four memory tools, all **silent by default** (no approval modal — they're as ordinary as `read_file`):
 
-- **`memory_save`** — writes a new memory file or overwrites an existing one with the same name. Updates `MEMORY.md`.
+- **`memory_save`** — writes a new memory file or overwrites an existing one with the same name. Updates `MEMORY.md`. Generates a `.vec` sidecar when an embedding model is available.
 - **`memory_forget`** — deletes a memory file by name. Updates `MEMORY.md`. Errors when the named memory doesn't exist (so the agent learns the right names).
+- **`memory_search`** — searches across user and/or project memory stores, returning ranked results with relevance scores. The agent uses this to check for duplicates before saving, find related memories when reasoning about a topic, or verify a remembered fact. Accepts `scope` (`all`, `user`, `project`) and `limit` parameters.
+- **`session_recall`** — searches across all past sessions via the FTS5 full-text index. Returns ranked snippets with session metadata (name, date, model). The agent uses this to find prior discussions, check if an issue was already resolved, or pull in context from earlier conversations. Supports FTS5 query syntax (OR, exact phrases in quotes).
+
+The introspection tools (`memory_search`, `session_recall`) are the key to self-learning — they let the agent think based on its own accumulated knowledge rather than relying only on what the retrieval orchestrator injects each turn.
 
 To require approval per save / forget, add an `ask` rule:
 
@@ -205,20 +222,65 @@ What is NOT filtered:
 - `USER.md`, `YOTTACODE.md` — always in full.
 - Both `MEMORY.md` indexes — always in full. The model needs to know which files exist even when their bodies aren't injected.
 
-Tunables in `~/.yottacode/config.toml`:
+#### Retrieval strategies
+
+yottacode supports three scoring strategies, selectable via config:
+
+| Strategy | How it scores | When to use |
+|---|---|---|
+| `keyword` | Exact token overlap, name/type/description weighted 3x over body | Legacy fallback; fast, fully transparent |
+| `bm25` | Porter stemming + synonym expansion + Okapi BM25 ranking (IDF weighting, term saturation, length normalization) | Default when no embedding model is available. Handles "fakes" → "mocks", "running" → "run", "db" → "database" |
+| `semantic` | BM25 score (60%) + cosine similarity from local Ollama embeddings (40%) | When you want conceptual matching — "error handling philosophy" finds memories about soft failures even without shared keywords |
+| `auto` **(default)** | Probes for a local Ollama embedding model at session start. If found → `semantic`; otherwise → `bm25` | Recommended. Zero config, best available scoring |
+
+**BM25** is the baseline — pure Go, zero dependencies, deterministic. It ships a Porter stemmer and ~15 hand-curated synonym groups for programming/dev vocabulary (test/mock/fake, database/db/sql, deploy/release/ship, auth/login/credential, etc.). This alone is a major upgrade over raw keyword matching.
+
+**Semantic** layers local embeddings on top when a local Ollama server is available with an embedding model installed. Vector sidecars (`.vec` files) are stored alongside memory `.md` files and generated automatically on `memory_save`. The combined score blends BM25 (which excels at exact matches like file paths and function names) with cosine similarity (which captures conceptual relationships).
+
+#### Enabling semantic retrieval
+
+To get the full advantage of semantic memory retrieval:
+
+1. Install [Ollama](https://ollama.com) if you haven't already
+2. Pull a small embedding model (runs on CPU, no GPU needed):
+   ```
+   ollama pull nomic-embed-text
+   ```
+3. Restart yottacode — semantic retrieval activates automatically
+
+The embedding model is small (~270MB) and fast. It runs locally — no data leaves your machine. Once installed, every `memory_save` generates a vector sidecar alongside the memory file. To generate vectors for existing memories, use `/memory` → **Reindex embeddings** or:
+
+```
+yottacode memory reindex
+```
+
+If you prefer an even smaller model (~45MB), `all-minilm` works too:
+
+```
+ollama pull all-minilm
+```
+
+Then set it in your config:
 
 ```toml
 [retrieval]
-enabled  = true   # off → load every entry every turn (no filter)
-top_k    = 10     # cap on memory bodies per turn (shared across user + project)
-min_score = 0.0   # drop entries scoring below this (keyword overlap, 0-1)
+embedding_model = "all-minilm"
 ```
 
-The scoring is intentionally simple: case-folded keyword overlap with name/type/description weighted 3× over body. No embeddings — pure-Go, deterministic, no extra dependency.
+#### Config tunables
+
+```toml
+[retrieval]
+enabled         = true              # off → load every entry every turn (no filter)
+top_k           = 10                # cap on memory bodies per turn (shared across user + project)
+min_score       = 0.0               # drop entries scoring below this (0.0–1.0)
+strategy        = "auto"            # "keyword" | "bm25" | "semantic" | "auto"
+embedding_model = "nomic-embed-text" # Ollama model for semantic retrieval
+```
 
 ### `/memory` picker
 
-The TUI's `/memory` command opens a four-row picker:
+The TUI's `/memory` command opens a five-row picker:
 
 | Row | Action |
 |---|---|
@@ -226,23 +288,46 @@ The TUI's `/memory` command opens a four-row picker:
 | User preferences | Edits `~/.yottacode/USER.md` in vim |
 | Browse user memories | Sub-list of `~/.yottacode/memory/*.md` |
 | Browse project memories | Sub-list of `~/.yottacode/projects/<slug>/memory/*.md` |
+| Reindex embeddings | Generates `.vec` sidecars for semantic retrieval (requires Ollama) |
 
 In the browse sub-lists: `Enter` opens the chosen memory in vim, `d` deletes it (and regenerates `MEMORY.md`), `f` opens the folder in your file manager, `Esc` returns to the root menu.
 
 ### Cobra subcommands (for scripts)
 
-The same actions are exposed as non-interactive subcommands so CI or one-off shells can list and delete memories without launching the TUI:
+The same actions are exposed as non-interactive subcommands so CI or one-off shells can list, delete, and reindex memories without launching the TUI:
 
 ```
 yottacode memory list [--scope user|project]   # default: project
 yottacode memory forget --scope <s> <name>
+yottacode memory reindex                       # generate .vec sidecars for all memories
+yottacode memory search <query>                # search memories by query (same as memory_search tool)
 ```
+
+### Agent introspection flow
+
+The agent's self-learning loop uses the four tools together:
+
+```
+  session_recall("was this discussed before?")
+        │
+        ▼
+  memory_search("do I already know about X?")
+        │
+        ├── found a match → use it, update if stale
+        │
+        └── no match → learn from this session
+                │
+                ├── memory_save(scope=user, ...) for portable knowledge
+                └── memory_save(scope=project, ...) for repo-specific facts
+```
+
+The agent decides autonomously when to search, save, update, or forget — the tools give it the capability, but the LLM owns the judgment about when and what to remember.
 
 ---
 
 ## Layer 3 — Recall + summarization
 
-These two predate the memory redesign and are unchanged.
+`/recall` remains available as a user-initiated slash command. The agent can now also search past sessions proactively via the `session_recall` tool — same FTS5 index, same ranked results, but the agent decides when to look.
 
 `/recall <query>` searches every saved session in `~/.yottacode/sessions/` via an SQLite FTS5 index at `~/.yottacode/index.sqlite`. Useful for "I remember we discussed X — which session was that in?" The index is rebuilt incrementally on every session save and backfilled at TUI startup.
 
@@ -252,16 +337,18 @@ These two predate the memory redesign and are unchanged.
 
 ## Decision tree: where does this go?
 
-| Scenario | Where it lives |
-|---|---|
-| "I prefer table-driven tests across every project" | `USER.md` (you write) |
-| "Build / test / lint commands for this repo" | `YOTTACODE.md` (`/init` drafts; agent keeps fresh) |
-| "User said don't show stack traces" | `memory_save scope=user, type=feedback` (agent writes) |
-| "JWT cache lives in pkg/auth/cache.go for this repo" | `memory_save scope=project, type=project` |
-| "API has these public endpoints (this repo)" | `memory_save scope=project, type=reference` |
-| "We're mid-refactor of the user model" | Don't save — ephemeral |
-| "Look up which session we discussed X in" | `/recall <query>` |
-| "Compress the current transcript" | `/summarize` |
+| Scenario | Where it lives | Why this scope |
+|---|---|---|
+| "I prefer table-driven tests" | `USER.md` (you write) or `memory_save scope=user, type=user` (agent learns) | Portable — applies in every repo |
+| "Build / test / lint commands for this repo" | `YOTTACODE.md` (`/init` drafts; agent keeps fresh) | Repo-specific, team-shareable |
+| "User said don't show stack traces" | `memory_save scope=user, type=feedback` | Portable — a communication preference |
+| "User approved the bundled-PR approach" | `memory_save scope=user, type=feedback` | Portable — a validated workflow pattern |
+| "An approach failed because of X constraint" | `memory_save scope=user, type=feedback` | Portable — lesson learned |
+| "JWT cache lives in pkg/auth/cache.go" | `memory_save scope=project, type=project` | Meaningless outside this repo |
+| "API has these public endpoints (this repo)" | `memory_save scope=project, type=reference` | Repo-specific API surface |
+| "We're mid-refactor of the user model" | Don't save — ephemeral | |
+| "Look up which session we discussed X in" | `/recall <query>` | |
+| "Compress the current transcript" | `/summarize` | |
 
 ---
 

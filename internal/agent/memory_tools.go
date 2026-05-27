@@ -16,8 +16,12 @@ import (
 // (~/.yottacode/projects/<slug>/memory/) directory and refreshes the
 // MEMORY.md index for that scope. Replaces the post-turn extractor —
 // the agent now decides in-band when something is worth remembering.
+//
+// When Embedder is set, a vector sidecar (.vec) is generated alongside
+// the memory file for semantic retrieval.
 type MemorySaveTool struct {
-	Cwd *CwdRef
+	Cwd      *CwdRef
+	Embedder *memory.EmbedClient
 }
 
 func (t *MemorySaveTool) Name() string { return "memory_save" }
@@ -101,6 +105,12 @@ func (t *MemorySaveTool) Execute(_ context.Context, argsJSON string) (string, er
 	if err := memory.RegenerateMemoryIndex(a.Scope, t.Cwd.Get()); err != nil {
 		return "", fmt.Errorf("memory_save: regenerate index: %w", err)
 	}
+	if t.Embedder != nil {
+		text := a.Name + " " + a.Description + " " + a.Content
+		if vec, err := t.Embedder.Embed(context.Background(), text); err == nil {
+			_ = memory.WriteVecWithModel(memory.VecPath(path), vec, t.Embedder.Model)
+		}
+	}
 	return fmt.Sprintf("saved %s memory %q", a.Scope, a.Name), nil
 }
 
@@ -164,6 +174,7 @@ func (t *MemoryForgetTool) Execute(_ context.Context, argsJSON string) (string, 
 		}
 		return "", fmt.Errorf("memory_forget: remove %q: %w", path, err)
 	}
+	memory.DeleteVec(path)
 	if err := memory.RegenerateMemoryIndex(a.Scope, t.Cwd.Get()); err != nil {
 		return "", fmt.Errorf("memory_forget: regenerate index: %w", err)
 	}

@@ -19,6 +19,7 @@
 package memory
 
 import (
+	"context"
 	"sort"
 	"strings"
 	"unicode"
@@ -35,7 +36,8 @@ type Scored struct {
 }
 
 // Score returns a relevance score in [0.0, 1.0] for the given entry
-// against the query. Pure and deterministic.
+// against the query using the legacy keyword strategy. Pure and
+// deterministic. Kept for backward compatibility with strategy="keyword".
 func Score(entry MemoryEntry, query string) float64 {
 	qTokens := tokenize(query)
 	if len(qTokens) == 0 {
@@ -63,29 +65,114 @@ func Score(entry MemoryEntry, query string) float64 {
 	return score
 }
 
-// Select ranks entries against the query and returns at most cfg.TopK
-// with score >= cfg.MinScore.
-func Select(entries []MemoryEntry, query string, cfg config.RetrievalConfig) []MemoryEntry {
-	if !cfg.Enabled || len(entries) == 0 {
-		return entries
-	}
-	scored := make([]Scored, 0, len(entries))
-	for _, e := range entries {
-		scored = append(scored, Scored{Entry: e, Score: Score(e, query)})
-	}
-	sort.SliceStable(scored, func(i, j int) bool {
-		if scored[i].Score != scored[j].Score {
-			return scored[i].Score > scored[j].Score
-		}
-		return scored[i].Entry.Name < scored[j].Entry.Name
-	})
+// scoreBM25 scores entries against the query using BM25 with stemming
+// and synonym expansion. Returns Scored slice sorted descending by
+// score with alphabetical tie-breaking.
+func scoreBM25(entries []MemoryEntry, query string) []Scored {
+	corpus := BuildCorpus(entries)
+	qStems := StemExpandTokenize(query)
+	return corpus.Rank(qStems)
+}
 
-	out := make([]MemoryEntry, 0, len(scored))
+// StemExpandTokenize tokenizes, stems, and expands synonyms for the
+// query side. Synonym expansion runs on queries only (not documents)
+// to increase recall without inflating document frequencies.
+func StemExpandTokenize(s string) []string {
+	raw := tokenize(s)
+	seen := make(map[string]struct{}, len(raw)*3)
+	out := make([]string, 0, len(raw)*3)
+	for _, t := range raw {
+		stemmed := Stem(t)
+		if _, ok := seen[stemmed]; ok {
+			continue
+		}
+		seen[stemmed] = struct{}{}
+		out = append(out, stemmed)
+		for _, syn := range Expand(stemmed) {
+			if syn == stemmed {
+				continue
+			}
+			if _, ok := seen[syn]; ok {
+				continue
+			}
+			seen[syn] = struct{}{}
+			out = append(out, syn)
+		}
+	}
+	return out
+}
+
+const (
+	semanticBM25Weight   = 0.6
+	semanticCosineWeight = 0.4
+)
+
+// Select ranks entries against the query and returns at most cfg.TopK
+// with score >= cfg.MinScore. Strategy selects the scoring algorithm:
+// "keyword" uses the legacy exact-token scorer, "bm25" (default) uses
+// BM25 with stemming and synonyms.
+func Select(entries []MemoryEntry, query string, cfg config.RetrievalConfig) []MemoryEntry {
+	return SelectWithEmbeddings(entries, query, cfg, nil)
+}
+
+// SelectWithEmbeddings is like Select but accepts an optional
+// EmbedClient for semantic scoring. When embedClient is non-nil and
+// strategy is "semantic", BM25 scores are combined with cosine
+// similarity from vector embeddings.
+func SelectWithEmbeddings(entries []MemoryEntry, query string, cfg config.RetrievalConfig, embedClient *EmbedClient) []MemoryEntry {
+	scored := SelectWithEmbeddingsScored(entries, query, cfg, embedClient)
+	if scored == nil {
+		return nil
+	}
+	out := make([]MemoryEntry, len(scored))
+	for i, s := range scored {
+		out[i] = s.Entry
+	}
+	return out
+}
+
+// SelectWithEmbeddingsScored is like SelectWithEmbeddings but returns
+// Scored entries with their relevance scores preserved. Used by
+// memory_search so the agent can see how well each memory matched.
+func SelectWithEmbeddingsScored(entries []MemoryEntry, query string, cfg config.RetrievalConfig, embedClient *EmbedClient) []Scored {
+	if entries == nil {
+		return nil
+	}
+	if !cfg.Enabled || len(entries) == 0 {
+		out := make([]Scored, len(entries))
+		for i, e := range entries {
+			out[i] = Scored{Entry: e, Score: 0}
+		}
+		return out
+	}
+
+	strategy := resolveStrategy(cfg.Strategy, embedClient)
+
+	var scored []Scored
+	switch strategy {
+	case "keyword":
+		scored = make([]Scored, 0, len(entries))
+		for _, e := range entries {
+			scored = append(scored, Scored{Entry: e, Score: Score(e, query)})
+		}
+		sort.SliceStable(scored, func(i, j int) bool {
+			if scored[i].Score != scored[j].Score {
+				return scored[i].Score > scored[j].Score
+			}
+			return scored[i].Entry.Name < scored[j].Entry.Name
+		})
+	case "semantic":
+		scored = scoreSemantic(entries, query, embedClient)
+	default:
+		scored = scoreBM25(entries, query)
+	}
+
+	out := make([]Scored, 0, len(scored))
 	for _, s := range scored {
 		if s.Score < cfg.MinScore {
 			continue
 		}
-		out = append(out, s.Entry)
+		out = append(out, s)
 		if cfg.TopK > 0 && len(out) >= cfg.TopK {
 			break
 		}
@@ -93,12 +180,88 @@ func Select(entries []MemoryEntry, query string, cfg config.RetrievalConfig) []M
 	return out
 }
 
+// resolveStrategy determines the effective scoring strategy. "auto"
+// resolves to "semantic" when an embed client is available, otherwise
+// "bm25". Empty defaults to "bm25".
+func resolveStrategy(strategy string, embedClient *EmbedClient) string {
+	switch strategy {
+	case "semantic":
+		if embedClient == nil {
+			return "bm25"
+		}
+		return "semantic"
+	case "auto":
+		if embedClient != nil {
+			return "semantic"
+		}
+		return "bm25"
+	case "keyword":
+		return "keyword"
+	default:
+		return "bm25"
+	}
+}
+
+// scoreSemantic combines BM25 scores with cosine similarity from
+// vector embeddings. Entries without .vec sidecars score on BM25 alone.
+func scoreSemantic(entries []MemoryEntry, query string, client *EmbedClient) []Scored {
+	bm25Scored := scoreBM25(entries, query)
+	if client == nil {
+		return bm25Scored
+	}
+
+	queryVec, err := client.Embed(context.Background(), query)
+	if err != nil {
+		return bm25Scored
+	}
+
+	maxBM25 := 0.0
+	for _, s := range bm25Scored {
+		if s.Score > maxBM25 {
+			maxBM25 = s.Score
+		}
+	}
+
+	for i := range bm25Scored {
+		normBM25 := 0.0
+		if maxBM25 > 0 {
+			normBM25 = bm25Scored[i].Score / maxBM25
+		}
+
+		cosine := 0.0
+		entryVec, _ := ReadVec(VecPath(bm25Scored[i].Entry.Path))
+		if entryVec != nil {
+			cosine = CosineSimilarity(queryVec, entryVec)
+			if cosine < 0 {
+				cosine = 0
+			}
+		}
+
+		bm25Scored[i].Score = semanticBM25Weight*normBM25 + semanticCosineWeight*cosine
+	}
+
+	sort.SliceStable(bm25Scored, func(i, j int) bool {
+		if bm25Scored[i].Score != bm25Scored[j].Score {
+			return bm25Scored[i].Score > bm25Scored[j].Score
+		}
+		return bm25Scored[i].Entry.Name < bm25Scored[j].Entry.Name
+	})
+	return bm25Scored
+}
+
 // SystemPromptFor is the per-turn variant of SystemPrompt: USER.md
 // and YOTTACODE.md inject in full as before, both MEMORY.md indexes
 // inject in full (they're the table of contents), and per-entry
 // bodies pass through Select(query, cfg) first.
 func SystemPromptFor(base string, l Loaded, query string, cfg config.RetrievalConfig) string {
-	user, project := selectAcrossScopes(l.UserMemories, l.ProjectMemories, query, cfg)
+	return SystemPromptForSemantic(base, l, query, cfg, nil)
+}
+
+// SystemPromptForSemantic is like SystemPromptFor but accepts an
+// optional EmbedClient for semantic retrieval. Pass nil to use
+// keyword/bm25 scoring only.
+func SystemPromptForSemantic(base string, l Loaded, query string, cfg config.RetrievalConfig, embedClient *EmbedClient) string {
+	user, project := selectAcrossScopes(l.UserMemories, l.ProjectMemories, query, cfg, embedClient)
 	filtered := Loaded{
 		UserPath:           l.UserPath,
 		UserText:           l.UserText,
@@ -116,14 +279,14 @@ func SystemPromptFor(base string, l Loaded, query string, cfg config.RetrievalCo
 
 // selectAcrossScopes ranks both pools jointly under one cfg.TopK
 // budget, then partitions the result back into per-scope slices.
-func selectAcrossScopes(user, project []MemoryEntry, query string, cfg config.RetrievalConfig) ([]MemoryEntry, []MemoryEntry) {
+func selectAcrossScopes(user, project []MemoryEntry, query string, cfg config.RetrievalConfig, embedClient *EmbedClient) ([]MemoryEntry, []MemoryEntry) {
 	if !cfg.Enabled {
 		return user, project
 	}
 	combined := make([]MemoryEntry, 0, len(user)+len(project))
 	combined = append(combined, user...)
 	combined = append(combined, project...)
-	winners := Select(combined, query, cfg)
+	winners := SelectWithEmbeddings(combined, query, cfg, embedClient)
 	wantUser := make(map[string]bool, len(winners))
 	wantProject := make(map[string]bool, len(winners))
 	for _, w := range winners {
