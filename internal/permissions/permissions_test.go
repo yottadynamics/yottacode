@@ -432,6 +432,9 @@ func TestDeriveAllowRule(t *testing.T) {
 		{"move within cwd", "move_file", `{"src":"a/b.go","dst":"c/d.go"}`, true, "Move(" + cwdSlash + "/** -> " + cwdSlash + "/**)"},
 		{"copy top-level", "copy_file", `{"src":"a.txt","dst":"b.txt"}`, true, "Copy(" + cwdSlash + "/** -> " + cwdSlash + "/**)"},
 		{"git", "git", `{"args":["commit","-m","x"]}`, true, "Git(commit *)"},
+		{"tests simple", "run_tests", `{"command":"go test ./..."}`, true, "Tests(go *)"},
+		{"tests default cmd", "run_tests", `{}`, true, "Tests(go *)"},
+		{"tests compound", "run_tests", `{"command":"cd pkg && go test"}`, false, ""},
 		{"unknown tool", "weird", `{}`, false, ""},
 	}
 	for _, c := range cases {

@@ -76,7 +76,7 @@ func renderEditDiff(argsJSON string) (string, bool) {
 //     `\x1b[0m` resets compose cleanly when there's no bg to preserve.
 //   - Total visible rows are capped at cardBodyLineCap; overflow shows a
 //     dim "…N more line(s)" notice on a final row.
-//   - Each row carries the `│   ` card body gutter (gutter glyph + 3
+//   - Each row carries the `│  ` card body gutter (gutter glyph + 2
 //     spaces) so it composes cleanly with the rest of the card chrome
 //     and is indented under the header/footer for visual hierarchy.
 func editFileDiffRows(argsJSON string, cardWidth int) ([]string, bool) {
@@ -88,7 +88,7 @@ func editFileDiffRows(argsJSON string, cardWidth int) ([]string, bool) {
 		return nil, false
 	}
 
-	innerWidth := cardWidth - 4 // subtract `│   ` (gutter + 3-space body indent)
+	innerWidth := cardWidth - 3 // subtract `│  ` (gutter + 2-space body indent)
 	if innerWidth < 4 {
 		innerWidth = 4
 	}
@@ -112,7 +112,7 @@ func editFileDiffRows(argsJSON string, cardWidth int) ([]string, bool) {
 				line = ansi.Truncate(line, contentW, "…")
 			}
 			rows = append(rows,
-				styleCardGutter.Render("│   ")+markStyle.Render(marker+" ")+line)
+				styleCardGutter.Render("│  ")+markStyle.Render(marker+" ")+line)
 		}
 	}
 	emit(styleDiffDel, "-", oldHL)
@@ -121,7 +121,7 @@ func editFileDiffRows(argsJSON string, cardWidth int) ([]string, bool) {
 	if len(rows) > cardBodyLineCap {
 		hidden := len(rows) - cardBodyLineCap
 		rows = append(rows[:cardBodyLineCap],
-			styleCardGutter.Render("│   ")+styleCardMeta.Render(fmt.Sprintf("…%d more line(s)", hidden)))
+			styleCardGutter.Render("│  ")+styleCardMeta.Render(fmt.Sprintf("…%d more line(s)", hidden)))
 	}
 	return rows, true
 }
@@ -151,7 +151,7 @@ func writeFileBodyRows(argsJSON string, cardWidth int) ([]string, bool) {
 		return nil, false
 	}
 
-	innerWidth := cardWidth - 4
+	innerWidth := cardWidth - 3
 	if innerWidth < 4 {
 		innerWidth = 4
 	}
@@ -170,13 +170,13 @@ func writeFileBodyRows(argsJSON string, cardWidth int) ([]string, bool) {
 			line = ansi.Truncate(line, contentW, "…")
 		}
 		rows = append(rows,
-			styleCardGutter.Render("│   ")+styleDiffAdd.Render("+ ")+line)
+			styleCardGutter.Render("│  ")+styleDiffAdd.Render("+ ")+line)
 	}
 
 	if len(rows) > cardBodyLineCap {
 		hidden := len(rows) - cardBodyLineCap
 		rows = append(rows[:cardBodyLineCap],
-			styleCardGutter.Render("│   ")+styleCardMeta.Render(fmt.Sprintf("…%d more line(s)", hidden)))
+			styleCardGutter.Render("│  ")+styleCardMeta.Render(fmt.Sprintf("…%d more line(s)", hidden)))
 	}
 	return rows, true
 }

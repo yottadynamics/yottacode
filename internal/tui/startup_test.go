@@ -48,10 +48,10 @@ func TestLabelRow_NoColonRightPaddedLabel(t *testing.T) {
 	if strings.Contains(plain, ":") {
 		t.Errorf("label row should not contain a colon: %q", plain)
 	}
-	// "model" (5) + 4 spaces of padding to width 9 + 1 separator = 10
+	// "model" (5) + 4 spaces of padding to width 9 + 2 separator = 11
 	// chars before the value starts.
-	if !strings.HasPrefix(plain, "model     gpt-4o") {
-		t.Errorf("label should be right-padded to width and separated by one space: %q", plain)
+	if !strings.HasPrefix(plain, "model      gpt-4o") {
+		t.Errorf("label should be right-padded to width and separated by two spaces: %q", plain)
 	}
 }
 

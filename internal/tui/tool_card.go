@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/yottadynamics/yottacode/internal/agent"
 )
@@ -107,20 +108,37 @@ func renderToolCard(toolName, preview, argsJSON, output string, errored bool, te
 	// the invocation.
 	if !errored && toolName == "git" {
 		if w := gitDestructiveWarning(preview); w != "" {
-			out = append(out, styleCardGutter.Render("│   ")+styleCardErrFooter.Render(w))
+			out = append(out, styleCardGutter.Render("│  ")+styleCardErrFooter.Render(w))
 		}
 	}
 	body := toolBodyLines(toolName, output, errored, cwd)
+	gutter := styleCardGutter.Render("│  ")
+	gutterWidth := ansi.StringWidth(gutter)
+	bodyWidth := width - gutterWidth
+	if bodyWidth < 20 {
+		bodyWidth = 20
+	}
+	appendBodyLine := func(line string) {
+		styled := styleCardBody.Render(line)
+		if ansi.StringWidth(styled) <= bodyWidth {
+			out = append(out, gutter+styled)
+			return
+		}
+		wrapped := ansi.Wrap(styled, bodyWidth, "")
+		for _, row := range strings.Split(wrapped, "\n") {
+			out = append(out, gutter+row)
+		}
+	}
 	if len(body) > cardBodyLineCap {
 		visible := body[:cardBodyLineCap]
 		hidden := len(body) - cardBodyLineCap
 		for _, line := range visible {
-			out = append(out, styleCardGutter.Render("│   ")+styleCardBody.Render(line))
+			appendBodyLine(line)
 		}
-		out = append(out, styleCardGutter.Render("│   ")+styleCardMeta.Render(fmt.Sprintf("…%d more line(s)", hidden)))
+		out = append(out, gutter+styleCardMeta.Render(fmt.Sprintf("…%d more line(s)", hidden)))
 	} else {
 		for _, line := range body {
-			out = append(out, styleCardGutter.Render("│   ")+styleCardBody.Render(line))
+			appendBodyLine(line)
 		}
 	}
 	out = append(out, styleCardGutter.Render("╰ ")+footer)
@@ -374,7 +392,7 @@ func runBashBody(out string) []string {
 		if len(lines) > 0 {
 			lines = append(lines, "")
 		}
-		lines = append(lines, "── stderr ──")
+		lines = append(lines, lipgloss.NewStyle().Foreground(colorWarning).Render("── stderr ──"))
 		lines = append(lines, strings.Split(stderr, "\n")...)
 	}
 	return lines
@@ -968,10 +986,10 @@ func renderTodoCardFromTodos(todos []agent.Todo, termWidth int) string {
 	_ = termWidth // reserved for future row-truncation; todo content is the user's signal, never clipped today
 	out := []string{renderCardHeader(todoCardHeaderText(todos))}
 	if len(todos) == 0 {
-		out = append(out, styleCardGutter.Render("│   ")+styleCardMeta.Render("(empty plan)"))
+		out = append(out, styleCardGutter.Render("│  ")+styleCardMeta.Render("(empty plan)"))
 	} else {
 		for _, td := range todos {
-			out = append(out, styleCardGutter.Render("│   ")+todoRow(td))
+			out = append(out, styleCardGutter.Render("│  ")+todoRow(td))
 		}
 	}
 	out = append(out, styleCardGutter.Render("╰ ")+styleCardMeta.Render(todoCardFooterText(todos)))

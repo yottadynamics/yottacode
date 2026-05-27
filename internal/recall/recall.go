@@ -68,6 +68,11 @@ func openAt(path string) (*Index, error) {
 	if err != nil {
 		return nil, err
 	}
+	// WAL mode allows concurrent reads during writes; busy_timeout
+	// retries for 5 s instead of failing immediately with SQLITE_BUSY
+	// when Backfill and the TUI goroutine write at the same time.
+	db.Exec("PRAGMA journal_mode=WAL")
+	db.Exec("PRAGMA busy_timeout=5000")
 	if _, err := db.Exec(schema); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("recall: ensure schema: %w", err)

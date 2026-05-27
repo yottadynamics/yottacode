@@ -95,6 +95,8 @@ func targetFor(toolName, argsJSON, cwd string) Target {
 		return Target{PermName: "Grep", Descriptor: extractField(argsJSON, "pattern")}
 	case "fetch_url":
 		return Target{PermName: "Fetch", Descriptor: extractField(argsJSON, "url")}
+	case "web_search":
+		return Target{PermName: "Fetch", Descriptor: extractField(argsJSON, "query")}
 	case "memory_save":
 		return Target{PermName: "Memory", Descriptor: "save " + extractField(argsJSON, "scope") + ":" + extractField(argsJSON, "name")}
 	case "memory_forget":
@@ -106,7 +108,11 @@ func targetFor(toolName, argsJSON, cwd string) Target {
 	case "rollback":
 		return Target{PermName: "Rollback", Descriptor: ""}
 	case "run_tests":
-		return Target{PermName: "Tests", Descriptor: ""}
+		cmd := extractField(argsJSON, "command")
+		if cmd == "" {
+			cmd = "go test ./..."
+		}
+		return Target{PermName: "Tests", Descriptor: cmd}
 	case "list_git_changed_files",
 		"git_branch_status", "git_show_file_at_rev", "git_diff_files",
 		"git_stage_files", "git_unstage_files", "git_create_branch",

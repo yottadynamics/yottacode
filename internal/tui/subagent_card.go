@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/yottadynamics/yottacode/internal/agent"
 	"github.com/yottadynamics/yottacode/internal/subagents"
@@ -55,10 +56,11 @@ func statusStyleFor(s subagents.TaskStatus) lipgloss.Style {
 // width-counting (it counts bytes, not visible cells), so we
 // pad BEFORE wrapping with the style.
 func padRight(s string, n int) string {
-	if len(s) >= n {
+	w := ansi.StringWidth(s)
+	if w >= n {
 		return s
 	}
-	return s + strings.Repeat(" ", n-len(s))
+	return s + strings.Repeat(" ", n-w)
 }
 
 // wrapWithHangingIndent word-wraps text so each line fits within
@@ -84,7 +86,7 @@ func wrapWithHangingIndent(text string, lineWidth, indent int) string {
 	var lines []string
 	cur := words[0]
 	for _, w := range words[1:] {
-		if len(cur)+1+len(w) > lineWidth {
+		if ansi.StringWidth(cur)+1+ansi.StringWidth(w) > lineWidth {
 			lines = append(lines, cur)
 			cur = w
 			continue
@@ -370,9 +372,9 @@ func renderSubagentList(tasks []subagents.Task) string {
 func truncateForRender(s string, n int) string {
 	s = strings.ReplaceAll(s, "\n", " ")
 	s = strings.TrimSpace(s)
-	if len(s) <= n {
+	if ansi.StringWidth(s) <= n {
 		return s
 	}
-	return s[:n] + "…"
+	return ansi.Truncate(s, n, "…")
 }
 

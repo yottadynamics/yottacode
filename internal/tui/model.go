@@ -348,6 +348,11 @@ type Model struct {
 	codeBlockLang string
 	inCodeBlock   bool
 
+	// Table streaming state. Markdown pipe tables buffer until the
+	// first non-table line, then render through glamour in one shot.
+	tableBuf *strings.Builder
+	inTable  bool
+
 	// livePlan is the in-flight todo snapshot rendered as a live card
 	// in View() (next to/below the spinner). Updated in place on every
 	// agent.TodoUpdate; nil/empty means "no plan to show" (never set,
@@ -398,14 +403,22 @@ type Model struct {
 	eventsCh   chan agent.Event
 	turnErrCh  chan error
 	decisions  chan agent.Decision
-	// pendingInputAfterTurn captures a user message typed and Enter'd
-	// during an active turn. The Enter handler cancels the current turn
-	// and stashes the input here; the turnEndedMsg handler picks it up
-	// and starts a fresh turn so the model sees the new message after
-	// history was preserved with synthetic tool_result entries by the
-	// agent loop. Cleared when consumed and when a context-wiping slash
-	// command (/clear, /sessions) preempts the queued submission.
+	// pendingInputAfterTurn captures a user message that couldn't be
+	// delivered mid-turn (model finished without a tool round, or the
+	// userMsgCh buffer was full and we fell back to cancel+resubmit).
+	// The turnEndedMsg handler picks it up and starts a fresh turn.
 	pendingInputAfterTurn string
+
+	// userMsgCh feeds mid-turn user messages into the agent loop's
+	// UserMessages channel. Created per-turn in startTurn; the loop
+	// checks it (non-blocking) between tool rounds and appends the
+	// message to history without cancelling. Buffer of 1; overflow
+	// falls back to the old cancel+resubmit path.
+	userMsgCh chan string
+
+	// paragraphStart tracks blank-line boundaries so the first line
+	// of each new prose paragraph gets 2 extra spaces of indent.
+	paragraphStart bool
 
 	// Approval modal state
 	awaitingApproval       bool
@@ -783,6 +796,7 @@ func New(parent context.Context, c Config) Model {
 		streaming:              &strings.Builder{},
 		reasoning:              &strings.Builder{},
 		codeBlockBuf:           &strings.Builder{},
+		tableBuf:               &strings.Builder{},
 		livePlan:               livePlanInit,
 		firstMessageSent:       firstMessageSent,
 		contextTokens:          contextTokensInit,
@@ -1000,6 +1014,82 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// elevation decision would swallow "1"/"2"/"3" into the
 		// textarea and route Esc to turnCancel instead of "reject",
 		// leaving the modal unresponsive until the process is killed.
+		// Palette navigation during a turn: let the user browse
+		// /commands and @files while the model is thinking. Handled
+		// before the mid-turn textarea block so Up/Down/Tab/Esc reach
+		// the palette instead of the textarea.
+		if m.turnActive && !m.awaitingApproval && !m.awaitingPathTrust && m.paletteOpen {
+			switch msg.Type {
+			case tea.KeyUp:
+				if m.paletteIndex > 0 {
+					m.paletteIndex--
+					if m.paletteIndex < m.paletteOffset {
+						m.paletteOffset = m.paletteIndex
+					}
+				}
+				return m, nil
+			case tea.KeyDown:
+				if m.paletteIndex < len(m.paletteFiltered)-1 {
+					m.paletteIndex++
+					if m.paletteIndex >= m.paletteOffset+slashPaletteVisible {
+						m.paletteOffset = m.paletteIndex - slashPaletteVisible + 1
+					}
+				}
+				return m, nil
+			case tea.KeyTab:
+				if len(m.paletteFiltered) > 0 {
+					c := m.paletteFiltered[m.paletteIndex]
+					m.textInput.SetValue("/" + c.Name + " ")
+					m.textInput.CursorEnd()
+					m.paletteOpen = false
+				}
+				return m, nil
+			case tea.KeyEsc:
+				m.textInput.SetValue("")
+				m.paletteOpen = false
+				m.paletteIndex = 0
+				m.paletteOffset = 0
+				return m, nil
+			}
+			// Non-navigation keys (Enter, typing) fall through to
+			// the mid-turn handler below.
+		}
+		if m.turnActive && !m.awaitingApproval && !m.awaitingPathTrust && m.filePaletteOpen {
+			switch msg.Type {
+			case tea.KeyUp:
+				if m.filePaletteIndex > 0 {
+					m.filePaletteIndex--
+					if m.filePaletteIndex < m.filePaletteOffset {
+						m.filePaletteOffset = m.filePaletteIndex
+					}
+				}
+				return m, nil
+			case tea.KeyDown:
+				if m.filePaletteIndex < len(m.filePaletteFiltered)-1 {
+					m.filePaletteIndex++
+					if m.filePaletteIndex >= m.filePaletteOffset+filePaletteVisible {
+						m.filePaletteOffset = m.filePaletteIndex - filePaletteVisible + 1
+					}
+				}
+				return m, nil
+			case tea.KeyTab, tea.KeyEnter:
+				if len(m.filePaletteFiltered) > 0 {
+					m.acceptFilePaletteChoice()
+					return m, nil
+				}
+				if msg.Type == tea.KeyEsc {
+					m.filePaletteOpen = false
+					m.filePaletteIndex = 0
+					m.filePaletteOffset = 0
+					return m, nil
+				}
+			case tea.KeyEsc:
+				m.filePaletteOpen = false
+				m.filePaletteIndex = 0
+				m.filePaletteOffset = 0
+				return m, nil
+			}
+		}
 		if m.turnActive && !m.awaitingApproval && !m.awaitingPathTrust {
 			switch msg.Type {
 			case tea.KeyCtrlC, tea.KeyEsc:
@@ -1013,6 +1103,11 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.turnCancel()
 				}
 				m.pendingInputAfterTurn = ""
+				// Drain any queued-but-undelivered append message.
+				select {
+				case <-m.userMsgCh:
+				default:
+				}
 				return m, nil
 			case tea.KeyCtrlD:
 				return m, tea.Quit
@@ -1033,6 +1128,21 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			case tea.KeyEnter:
 				input := strings.TrimSpace(m.textInput.Value())
+				// Palette selection: resolve the highlighted entry
+				// so Enter picks the selected command, not the
+				// partial text in the textarea.
+				if m.paletteOpen && len(m.paletteFiltered) > 0 && !strings.Contains(input, " ") {
+					chosen := m.paletteFiltered[m.paletteIndex]
+					if chosen.Args != "" {
+						m.textInput.SetValue("/" + chosen.Name + " ")
+						m.textInput.CursorEnd()
+						m.paletteOpen = false
+						m.paletteIndex = 0
+						m.paletteOffset = 0
+						return m, nil
+					}
+					input = "/" + chosen.Name
+				}
 				if strings.HasPrefix(input, "/") {
 					// Decide whether to cancel the active turn before
 					// running this slash command.
@@ -1064,10 +1174,13 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.turnCancel()
 					}
 					// A slash command typed mid-turn is a fresh user
-					// intent — drop any plain-text message that was
-					// queued by an earlier Enter so we don't
-					// double-submit after the turn unwinds.
+					// intent — drop any queued message so we don't
+					// auto-submit stale input after the turn unwinds.
 					m.pendingInputAfterTurn = ""
+					select {
+					case <-m.userMsgCh:
+					default:
+					}
 					m.textInput.SetValue("")
 					m.paletteOpen = false
 					m.paletteIndex = 0
@@ -1075,35 +1188,62 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m.runSlash(input)
 				}
 				// Plain Enter on non-empty input mid-turn:
-				// interrupt-with-feedback. Cancel the current iteration
-				// (the agent loop's synthetic-tool_result policy keeps
-				// history valid), stash the message, and let the
-				// turnEndedMsg handler auto-submit it after the loop
-				// unwinds. Empty Enter stays silent — Ctrl+C / Esc are
-				// the explicit "stop without sending" surface.
+				// queue the message for delivery at the next tool
+				// round without cancelling the active turn. The agent
+				// loop picks it up from userMsgCh between tool-call
+				// batches and appends it to history as a user message.
+				// If the buffer is full (a second message before the
+				// first was consumed), fall back to the old
+				// cancel+resubmit path.
 				if input == "" {
 					return m, nil
 				}
-				// Expand pasted-marker placeholders before stashing so
-				// the queued message reaches the agent in the same
-				// form as a normal submission. Mirrors the line near
-				// the normal-Enter path (~1135).
 				input = m.expandPastes(input)
 				m.pastes = nil
-				m.pendingInputAfterTurn = input
-				m.textInput.SetValue("")
-				m.paletteOpen = false
-				m.paletteIndex = 0
-				m.paletteOffset = 0
-				if m.turnCancel != nil {
-					m.turnCancel()
+				select {
+				case m.userMsgCh <- input:
+					m.textInput.SetValue("")
+					m.paletteOpen = false
+					m.paletteIndex = 0
+					m.paletteOffset = 0
+					m.appendLine(renderUserBlock(input, m.width))
+					m.appendLine(styleAuto.Render("[queued] will be delivered at next tool round"))
+					return m, nil
+				default:
+					// Buffer full — fall back to cancel+resubmit.
+					m.pendingInputAfterTurn = input
+					m.textInput.SetValue("")
+					m.paletteOpen = false
+					m.paletteIndex = 0
+					m.paletteOffset = 0
+					if m.turnCancel != nil {
+						m.turnCancel()
+					}
+					return m, nil
 				}
-				return m, nil
 			default:
 				m.preGrowTextarea()
 				var cmd tea.Cmd
 				m.textInput, cmd = m.textInput.Update(msg)
 				m.fitTextareaHeight()
+				val := m.textInput.Value()
+				if strings.HasPrefix(val, "/") {
+					m.paletteFiltered = m.filterPaletteAll(val)
+					m.paletteOpen = true
+					if m.paletteIndex >= len(m.paletteFiltered) {
+						m.paletteIndex = 0
+						m.paletteOffset = 0
+					}
+					if m.paletteOffset > len(m.paletteFiltered)-slashPaletteVisible {
+						m.paletteOffset = 0
+					}
+					m.filePaletteOpen = false
+				} else {
+					m.paletteOpen = false
+					m.paletteIndex = 0
+					m.paletteOffset = 0
+					m.refreshFilePalette(val)
+				}
 				return m, cmd
 			}
 		}
@@ -1520,6 +1660,17 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// front would yank context out from under the very message
 		// they just sent. If watermark guidance matters, the user
 		// will see it after the followup turn ends.
+		// Drain any user message that was queued but never consumed
+		// by the agent loop (the model finished without a tool round).
+		// Move it to pendingInputAfterTurn so the existing auto-submit
+		// path handles it as a new turn.
+		select {
+		case undelivered := <-m.userMsgCh:
+			if undelivered != "" && m.pendingInputAfterTurn == "" {
+				m.pendingInputAfterTurn = undelivered
+			}
+		default:
+		}
 		if queued := m.pendingInputAfterTurn; queued != "" {
 			m.pendingInputAfterTurn = ""
 			next, cmd := m.startTurn(queued)
@@ -1690,6 +1841,8 @@ func (m Model) View() string {
 		// terminal row.
 		if m.inCodeBlock {
 			parts = append(parts, m.renderCodeBlockNotice())
+		} else if m.inTable {
+			parts = append(parts, m.renderTableNotice())
 		} else if preview := m.renderStreamingPreview(); preview != "" {
 			parts = append(parts, preview)
 		}
@@ -2071,6 +2224,14 @@ func (m Model) renderCodeBlockNotice() string {
 		lang = "code"
 	}
 	return styleTurnFooter.Render(fmt.Sprintf("…writing %s (%d lines, will format on close)", lang, lines))
+}
+
+func (m Model) renderTableNotice() string {
+	rows := strings.Count(m.tableBuf.String(), "\n")
+	if m.streaming.Len() > 0 {
+		rows++
+	}
+	return styleTurnFooter.Render(fmt.Sprintf("…formatting table (%d rows, will render on close)", rows))
 }
 
 // renderStreamingPreview returns the trailing partial prose line capped
@@ -2714,6 +2875,8 @@ func (m Model) startTurnWithDisplay(input, displayLabel string) (tea.Model, tea.
 	m.eventsCh = make(chan agent.Event, 64)
 	m.decisions = make(chan agent.Decision, 1)
 	m.turnErrCh = make(chan error, 1)
+	m.userMsgCh = make(chan string, 1)
+	m.cfg.UserMessages = m.userMsgCh
 
 	go func(ev chan agent.Event, dec chan agent.Decision, errCh chan error) {
 		err := agent.Turn(turnCtx, m.cfg, &m.sess.Messages, ev, dec)
@@ -2786,6 +2949,7 @@ func (m Model) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 		// line stays in m.streaming for the live footer preview.
 		if m.streamingMode != streamContent {
 			m.appendLine("")
+			m.paragraphStart = true
 		}
 		m.streamingMode = streamContent
 		m.streaming.WriteString(e.Text)
@@ -2995,6 +3159,8 @@ func (m Model) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 		for _, line := range strings.Split(strings.TrimRight(e.Err.Error(), "\n"), "\n") {
 			m.appendLine(styleError.Render("✗ " + line))
 		}
+	case agent.UserMessageAppended:
+		m.appendLine(styleAuto.Render("[delivered] " + truncateForRender(e.Content, 80)))
 	case agent.TurnDone:
 		m.commitStreaming()
 		// If the agent touched the plan this turn, commit one full
@@ -3097,9 +3263,14 @@ func (m *Model) commitStreaming() {
 			// Partial line of an unclosed code block — append to buffer
 			// and emit the whole buffer plain.
 			m.codeBlockBuf.WriteString(m.streaming.String())
+		} else if m.inTable {
+			m.tableBuf.WriteString(m.streaming.String())
 		} else {
-			m.appendLine(renderAssistantBlock(m.streaming.String()))
+			m.emitAssistantProse(m.streaming.String())
 		}
+	}
+	if m.inTable {
+		m.flushTable()
 	}
 	if m.inCodeBlock {
 		m.flushCodeBlock(false /* highlight */)
@@ -3150,11 +3321,149 @@ func (m *Model) handleStreamLine(line string) {
 		return
 	}
 	if lang, ok := parseFenceOpen(line); ok {
+		if m.inTable {
+			m.flushTable()
+		}
 		m.inCodeBlock = true
 		m.codeBlockLang = lang
 		return
 	}
-	m.appendLine(renderAssistantBlock(line))
+	if m.inTable {
+		if isTableLine(line) {
+			m.tableBuf.WriteString(line)
+			m.tableBuf.WriteByte('\n')
+			return
+		}
+		// Blank lines between table rows don't end the table — the
+		// LLM may resume on the next line. Swallowing them prevents
+		// a single table from being split into multiple glamour
+		// renders with inconsistent column widths.
+		if strings.TrimSpace(line) == "" {
+			return
+		}
+		m.flushTable()
+	}
+	if isTableLine(line) && !isTableSeparatorOnly(line) {
+		m.inTable = true
+		m.tableBuf.WriteString(line)
+		m.tableBuf.WriteByte('\n')
+		return
+	}
+	if isUnicodeTableLine(line) {
+		m.emitUnicodeTableLine(line)
+		return
+	}
+	m.emitAssistantProse(line)
+}
+
+// proseMaxWidth caps the wrap width for assistant prose so text doesn't
+// run edge-to-edge on wide terminals. Matches the card system's
+// cardMaxWidthCap for visual consistency.
+const proseMaxWidth = 120
+
+// emitAssistantProse renders a prose line from the assistant, word-wraps
+// it to a comfortable reading width, and appends the result to scrollback.
+// The wrap width is capped at proseMaxWidth so wide terminals still get
+// a readable column. Continuation lines get a 4-space hanging indent
+// (matching the body-padding + list-marker column) so wrapped text
+// stays visually grouped with its first line.
+func (m *Model) emitAssistantProse(line string) {
+	rendered := renderAssistantBlock(line)
+	if strings.TrimSpace(rendered) == "" {
+		m.paragraphStart = true
+		m.appendLine(rendered)
+		return
+	}
+	if m.paragraphStart {
+		m.paragraphStart = false
+		rendered = "  " + rendered
+	}
+	wrapW := m.width
+	if wrapW <= 0 || wrapW > proseMaxWidth {
+		wrapW = proseMaxWidth
+	}
+	if ansi.StringWidth(rendered) > wrapW {
+		rendered = wrapProseHanging(rendered, wrapW)
+	}
+	m.appendLine(rendered)
+}
+
+// wrapProseHanging word-wraps s to fit within limit visible columns.
+// Continuation lines are indented to match the first line's content
+// start: for plain prose that's the body padding (2 spaces); for list
+// items it's past the marker (4 for "- ", 5 for "1. ", etc.) so text
+// stays aligned under the first word, not under the bullet.
+func wrapProseHanging(s string, limit int) string {
+	indentW := visibleContentStart(s)
+	if indentW < 0 {
+		indentW = 0
+	}
+	wrapAt := limit - indentW
+	if wrapAt < 20 {
+		wrapAt = 20
+	}
+	wrapped := ansi.Wrap(s, wrapAt, "")
+	lines := strings.Split(wrapped, "\n")
+	if len(lines) <= 1 {
+		return wrapped
+	}
+	pad := strings.Repeat(" ", indentW)
+	for i := 1; i < len(lines); i++ {
+		lines[i] = pad + lines[i]
+	}
+	return strings.Join(lines, "\n")
+}
+
+// visibleContentStart returns the column where the first "real" content
+// character sits, skipping ANSI escape codes, leading whitespace, and
+// common list markers (-, *, +, 1., 2)). For plain prose with 2-space
+// body padding it returns 2; for "  - item" it returns 4; for
+// "  1. item" it returns 5. Used by wrapProseHanging to compute the
+// continuation indent.
+func visibleContentStart(s string) int {
+	col := 0
+	inEsc := false
+	phase := 0 // 0=leading spaces, 1=marker, 2=done
+	for _, r := range s {
+		if r == '\x1b' {
+			inEsc = true
+			continue
+		}
+		if inEsc {
+			if (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') {
+				inEsc = false
+			}
+			continue
+		}
+		switch phase {
+		case 0:
+			if r == ' ' {
+				col++
+			} else if r == '-' || r == '*' || r == '+' || r == '•' || (r >= '0' && r <= '9') {
+				phase = 1
+				col++
+			} else {
+				return col
+			}
+		case 1:
+			col++
+			if r == ' ' {
+				return col
+			}
+			if r == '.' || r == ')' {
+				// "1." or "1)" — expect a space next
+				continue
+			}
+			if r >= '0' && r <= '9' {
+				// multi-digit number
+				continue
+			}
+			// Not a recognized marker pattern; content started
+			// at the first non-space char we saw in phase 0.
+			return col - 1
+		}
+	}
+	return col
 }
 
 // flushCodeBlock emits the buffered code block to scrollback and
@@ -3182,6 +3491,349 @@ func (m *Model) flushCodeBlock(highlight bool) {
 	for _, line := range strings.Split(body, "\n") {
 		m.appendLine(renderCodeBlockLine(line))
 	}
+}
+
+func (m *Model) flushTable() {
+	raw := strings.TrimRight(m.tableBuf.String(), "\n")
+	m.tableBuf.Reset()
+	m.inTable = false
+	if raw == "" {
+		return
+	}
+	// Size the glamour renderer to the table's content rather than
+	// the full terminal width. This prevents glamour from stretching
+	// narrow tables across the entire screen.
+	cols, idealWidth := tableMetrics(raw)
+	if idealWidth > m.width {
+		idealWidth = m.width
+	}
+	minWidth := cols*3 + cols + 1
+	if minWidth < 20 {
+		minWidth = 20
+	}
+	// Render → measure → shrink loop. Each iteration measures the
+	// actual rendered output and shrinks by exactly the overflow
+	// amount, converging in 2-3 passes without any hardcoded margin.
+	width := idealWidth
+	var bestLines []string
+	for i := 0; i < 8 && width >= minWidth; i++ {
+		r := newMarkdownRenderer(width)
+		rendered := strings.TrimRight(r.render(raw), "\n")
+		lines := strings.Split(rendered, "\n")
+		maxW := 0
+		for _, line := range lines {
+			if w := ansi.StringWidth(line); w > maxW {
+				maxW = w
+			}
+		}
+		bestLines = lines
+		if maxW <= m.width {
+			break
+		}
+		overflow := maxW - m.width
+		width -= overflow + 1
+	}
+	if bestLines == nil {
+		r := newMarkdownRenderer(minWidth)
+		rendered := strings.TrimRight(r.render(raw), "\n")
+		bestLines = strings.Split(rendered, "\n")
+	}
+	bestLines = fixTableAlignment(bestLines)
+	m.emitTableLines(bestLines)
+}
+
+// fixTableAlignment corrects column-separator misalignment in glamour's
+// rendered table output. Glamour uses byte length for column width
+// calculations, not display width, so multi-byte characters (–, •, §,
+// ≈, →, etc.) shift │ separators by 1-2 positions per occurrence. This
+// function detects the canonical separator positions (mode across all
+// data rows) and adjusts whitespace in misaligned rows to restore
+// vertical alignment.
+func fixTableAlignment(lines []string) []string {
+	const sep = "│"
+	type lineInfo struct {
+		positions []int
+	}
+	infos := make([]lineInfo, len(lines))
+	maxSepCount := 0
+	for i, line := range lines {
+		infos[i].positions = tableSepDisplayPositions(line, sep)
+		if len(infos[i].positions) > maxSepCount {
+			maxSepCount = len(infos[i].positions)
+		}
+	}
+	if maxSepCount == 0 {
+		return lines
+	}
+
+	// Canonical position per separator column = most-frequent position.
+	canonical := make([]int, maxSepCount)
+	for col := 0; col < maxSepCount; col++ {
+		freq := map[int]int{}
+		for _, info := range infos {
+			if col < len(info.positions) {
+				freq[info.positions[col]]++
+			}
+		}
+		best, bestN := 0, 0
+		for pos, n := range freq {
+			if n > bestN || (n == bestN && pos < best) {
+				best, bestN = pos, n
+			}
+		}
+		canonical[col] = best
+	}
+
+	result := make([]string, len(lines))
+	for i, line := range lines {
+		seps := infos[i].positions
+		if len(seps) != maxSepCount {
+			result[i] = line
+			continue
+		}
+		aligned := true
+		for col := range seps {
+			if seps[col] != canonical[col] {
+				aligned = false
+				break
+			}
+		}
+		if aligned {
+			result[i] = line
+			continue
+		}
+		result[i] = realignTableRow(line, sep, canonical)
+	}
+	return result
+}
+
+// tableSepDisplayPositions returns the display-column positions of every
+// occurrence of sep in line (ANSI-aware).
+func tableSepDisplayPositions(line, sep string) []int {
+	plain := ansi.Strip(line)
+	var positions []int
+	pos := 0
+	for _, r := range plain {
+		if string(r) == sep {
+			positions = append(positions, pos)
+		}
+		pos += ansi.StringWidth(string(r))
+	}
+	return positions
+}
+
+// realignTableRow adjusts whitespace within a glamour-rendered table row
+// so each │ separator lands at its canonical display-column position.
+// Works on the raw ANSI string: splits by the literal sep character,
+// trims/pads trailing spaces in each cell segment, then reassembles.
+func realignTableRow(line, sep string, canonical []int) string {
+	parts := strings.Split(line, sep)
+	if len(parts) < 2 {
+		return line
+	}
+	var b strings.Builder
+	b.Grow(len(line) + 8)
+	displayPos := 0
+	for i, part := range parts {
+		if i == len(parts)-1 {
+			b.WriteString(part)
+			break
+		}
+		target := canonical[i]
+		partW := ansi.StringWidth(part)
+		end := displayPos + partW
+
+		if end == target {
+			b.WriteString(part)
+		} else if end < target {
+			b.WriteString(part)
+			for j := end; j < target; j++ {
+				b.WriteByte(' ')
+			}
+		} else {
+			// Trim trailing spaces to make room.
+			trimmed := strings.TrimRight(part, " ")
+			trimW := ansi.StringWidth(trimmed)
+			b.WriteString(trimmed)
+			pad := target - (displayPos + trimW)
+			if pad < 0 {
+				pad = 0
+			}
+			for j := 0; j < pad; j++ {
+				b.WriteByte(' ')
+			}
+		}
+		b.WriteString(sep)
+		displayPos = target + ansi.StringWidth(sep)
+	}
+	return b.String()
+}
+
+// tableMetrics parses a markdown pipe table and returns the number of
+// columns and the ideal rendering width derived from cell content.
+// The ideal width is the sum of each column's widest cell plus
+// per-column border and padding overhead.
+func tableMetrics(raw string) (numCols int, idealWidth int) {
+	var colMax []int
+	for _, line := range strings.Split(raw, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || isTableSeparatorOnly(line) {
+			continue
+		}
+		line = strings.Trim(line, "|")
+		cells := strings.Split(line, "|")
+		for i, cell := range cells {
+			w := ansi.StringWidth(strings.TrimSpace(cell))
+			if i >= len(colMax) {
+				colMax = append(colMax, w)
+			} else if w > colMax[i] {
+				colMax[i] = w
+			}
+		}
+	}
+	numCols = len(colMax)
+	if numCols == 0 {
+		return 0, 40
+	}
+	// border: (numCols+1) │ chars, padding: 2 per cell, glamour indent: 2
+	total := numCols + 1 + 2
+	for _, w := range colMax {
+		total += w + 2
+	}
+	return numCols, total
+}
+
+// emitTableLines sends glamour-rendered table lines to scrollback.
+// Lines that still exceed terminal width are hard-wrapped with
+// continuation rows indented to preserve visual alignment within
+// the table, rather than letting queuePrintln orphan words outside
+// the table grid.
+func (m *Model) emitTableLines(lines []string) {
+	for _, line := range lines {
+		m.emitUnicodeTableLine(line)
+	}
+}
+
+// emitUnicodeTableLine prints an already-rendered table row without
+// letting terminal hard-wrap orphan overflow at column zero. Data rows
+// keep their left/table separators and split the overflowing cell onto
+// continuation rows inside that same column.
+func (m *Model) emitUnicodeTableLine(line string) {
+	if m.width <= 0 || ansi.StringWidth(line) <= m.width || !strings.Contains(line, "│") {
+		m.appendLine(line)
+		return
+	}
+	for _, row := range wrapUnicodeTableRow(line, m.width) {
+		m.appendLine(row)
+	}
+}
+
+func wrapUnicodeTableRow(line string, width int) []string {
+	if width <= 0 || ansi.StringWidth(line) <= width || !strings.Contains(line, "│") {
+		return []string{line}
+	}
+	parts := strings.Split(line, "│")
+	lastCell := -1
+	for i, part := range parts {
+		if strings.TrimSpace(ansi.Strip(part)) != "" {
+			lastCell = i
+		}
+	}
+	if lastCell < 0 {
+		return []string{line}
+	}
+	prefix := ""
+	if lastCell > 0 {
+		prefix = strings.Join(parts[:lastCell], "│") + "│"
+	}
+	suffix := ""
+	if lastCell < len(parts)-1 {
+		suffix = "│" + strings.Join(parts[lastCell+1:], "│")
+	}
+	cellWidth := width - ansi.StringWidth(prefix) - ansi.StringWidth(suffix)
+	if cellWidth < 4 {
+		prefix = strings.Repeat(" ", ansi.StringWidth(prefix))
+		cellWidth = width - ansi.StringWidth(prefix) - ansi.StringWidth(suffix)
+		if cellWidth < 4 {
+			return []string{line}
+		}
+	}
+	cellText := strings.TrimSpace(parts[lastCell])
+	rows := wrapWordsByDisplay(cellText, cellWidth)
+	if len(rows) == 1 && ansi.StringWidth(prefix)+ansi.StringWidth(rows[0])+ansi.StringWidth(suffix) > width {
+		prefix = strings.Repeat(" ", ansi.StringWidth(prefix))
+		cellWidth = width - ansi.StringWidth(prefix) - ansi.StringWidth(suffix)
+		rows = wrapWordsByDisplay(cellText, cellWidth)
+	}
+	out := make([]string, 0, len(rows))
+	for _, row := range rows {
+		if strings.TrimSpace(row) == "" {
+			continue
+		}
+		if ansi.StringWidth(prefix)+ansi.StringWidth(row)+ansi.StringWidth(suffix) > width {
+			prefix = strings.Repeat(" ", ansi.StringWidth(prefix))
+			cellWidth = width - ansi.StringWidth(prefix) - ansi.StringWidth(suffix)
+		}
+		out = append(out, prefix+padDisplay(row, cellWidth)+suffix)
+	}
+	if len(out) == 0 {
+		return []string{line}
+	}
+	return out
+}
+
+func wrapWordsByDisplay(text string, width int) []string {
+	if width <= 0 {
+		return []string{text}
+	}
+	var rows []string
+	for _, word := range strings.Fields(text) {
+		for ansi.StringWidth(word) > width {
+			part, rest := splitDisplayWidth(word, width)
+			if part == "" {
+				break
+			}
+			rows = append(rows, part)
+			word = rest
+		}
+		if word == "" {
+			continue
+		}
+		if len(rows) == 0 {
+			rows = append(rows, word)
+			continue
+		}
+		last := rows[len(rows)-1]
+		if ansi.StringWidth(last)+1+ansi.StringWidth(word) <= width {
+			rows[len(rows)-1] = last + " " + word
+			continue
+		}
+		rows = append(rows, word)
+	}
+	return rows
+}
+
+func splitDisplayWidth(s string, width int) (string, string) {
+	if width <= 0 {
+		return "", s
+	}
+	used := 0
+	for i, r := range s {
+		rw := ansi.StringWidth(string(r))
+		if used+rw > width {
+			return s[:i], s[i:]
+		}
+		used += rw
+	}
+	return s, ""
+}
+
+func padDisplay(s string, width int) string {
+	w := ansi.StringWidth(s)
+	if w >= width {
+		return s
+	}
+	return s + strings.Repeat(" ", width-w)
 }
 
 func renderCodeBlockLine(line string) string {
@@ -3225,15 +3877,32 @@ func isFenceClose(line string) bool {
 	return strings.TrimSpace(line) == "```"
 }
 
+var (
+	tableLineRE    = regexp.MustCompile(`^\s*\|.*\|`)
+	tableSepOnlyRE = regexp.MustCompile(`^\s*\|[\s:|\-]+\|\s*$`)
+	unicodeTableRE = regexp.MustCompile(`[│┼]`)
+)
+
+func isTableLine(line string) bool {
+	return tableLineRE.MatchString(line)
+}
+
+func isTableSeparatorOnly(line string) bool {
+	return tableSepOnlyRE.MatchString(line)
+}
+
+func isUnicodeTableLine(line string) bool {
+	return unicodeTableRE.MatchString(line)
+}
+
 // renderUserBlock formats a user message for scrollback emission. Each
-// line gets a thin colored left bar (▎) in Theme.Accent followed by the
-// content in Dim — the user already knows what they typed, so the bar
-// is enough of an anchor when scrolling back. Leading and trailing
-// "\n" give the block one blank line of separation on each side, so
-// the user echo sits as a clear divider between the previous
-// assistant/tool output and whatever follows it (the next tool card,
-// an [auto-mode]/[plan-mode-allow] auto-approval line, etc.). No
-// horizontal rule above: the bar is enough of an anchor, and the rule
+// line gets the same chevron prompt (❯) used by the live input bar, so
+// scrollback echoes look like the text the user typed into the cmdline.
+// Leading and trailing "\n" give the block one blank line of separation
+// on each side, so the user echo sits as a clear divider between the
+// previous assistant/tool output and whatever follows it (the next tool
+// card, an [auto-mode]/[plan-mode-allow] auto-approval line, etc.). No
+// horizontal rule above: the chevron is enough of an anchor, and the rule
 // fought with content on either side.
 //
 // Long lines are hard-wrapped at width-barWidth and every wrapped row
@@ -3242,9 +3911,10 @@ func isFenceClose(line string) bool {
 // rows to column 0 (which made the second line look detached from the
 // quote and lose its left-margin alignment).
 func renderUserBlock(content string, width int) string {
-	const prefix = "▎ "
+	const prefix = "❯ "
 	prefixWidth := ansi.StringWidth(prefix)
 	bar := styleUserBar.Render(prefix)
+	indent := strings.Repeat(" ", prefixWidth)
 	bodyWidth := width - prefixWidth
 	var lines []string
 	for _, line := range strings.Split(content, "\n") {
@@ -3256,8 +3926,13 @@ func renderUserBlock(content string, width int) string {
 			continue
 		}
 		wrapped := ansi.Hardwrap(line, bodyWidth, true)
-		for _, row := range strings.Split(wrapped, "\n") {
-			lines = append(lines, bar+styleUserBody.Render(row))
+		rows := strings.Split(wrapped, "\n")
+		for i, row := range rows {
+			if i == 0 {
+				lines = append(lines, bar+styleUserBody.Render(row))
+			} else {
+				lines = append(lines, indent+styleUserBody.Render(row))
+			}
 		}
 	}
 	return "\n" + strings.Join(lines, "\n") + "\n"
@@ -3464,12 +4139,7 @@ func looksLikeCodeLine(line string) bool {
 			return true
 		}
 	}
-	return strings.Contains(trim, ":=") ||
-		strings.Contains(trim, "->") ||
-		strings.Contains(trim, "::") ||
-		strings.Contains(trim, "{") ||
-		strings.Contains(trim, "}") ||
-		(strings.HasPrefix(line, "    ") || strings.HasPrefix(line, "\t"))
+	return strings.Contains(trim, ":=") || strings.Contains(trim, "::")
 }
 
 func looksLikeShellCommand(line string) bool {
