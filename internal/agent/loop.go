@@ -136,6 +136,7 @@ type loopState struct {
 
 type toolExecResult struct {
 	content string
+	images  []adapter.ImageBlock
 	denied  bool
 	err     error
 }
@@ -415,16 +416,9 @@ func executeToolCalls(
 			continue
 		}
 		tc := calls[0]
-		result, denied, err := executeToolCall(ctx, cfg, tc, events, decisions)
+		result, images, denied, err := executeToolCall(ctx, cfg, tc, events, decisions)
 		if err != nil {
 			if isCancelErr(err) {
-				// Drop the synthetic result for the call that was
-				// in flight when ctx fired, plus every queued call
-				// behind it. The tool may have produced partial
-				// output before its Execute was cancelled; we
-				// deliberately discard it — the model will see the
-				// same "interrupted by user" marker for every
-				// orphan so the surface is uniform.
 				appendSyntheticInterrupts(history, calls)
 			}
 			return err
@@ -432,6 +426,7 @@ func executeToolCalls(
 		*history = append(*history, adapter.Message{
 			Role:       adapter.RoleTool,
 			Content:    result,
+			Images:     images,
 			ToolCallID: tc.ID,
 		})
 		if denied {
@@ -516,8 +511,8 @@ func executeToolCallsParallel(
 		wg.Add(1)
 		go func(i int, tc adapter.ToolCall) {
 			defer wg.Done()
-			result, denied, err := executeToolCall(ctx, cfg, tc, events, decisions)
-			results[i] = toolExecResult{content: result, denied: denied, err: err}
+			result, images, denied, err := executeToolCall(ctx, cfg, tc, events, decisions)
+			results[i] = toolExecResult{content: result, images: images, denied: denied, err: err}
 			if err != nil {
 				errCh <- err
 			}
@@ -543,6 +538,7 @@ func appendToolResults(history *[]adapter.Message, calls []adapter.ToolCall, res
 		*history = append(*history, adapter.Message{
 			Role:       adapter.RoleTool,
 			Content:    results[i].content,
+			Images:     results[i].images,
 			ToolCallID: tc.ID,
 		})
 	}
@@ -580,10 +576,10 @@ func executeToolCall(
 	tc adapter.ToolCall,
 	events chan<- Event,
 	decisions <-chan Decision,
-) (string, bool, error) {
+) (string, []adapter.ImageBlock, bool, error) {
 	tool, ok := cfg.Registry.Get(tc.Name)
 	if !ok {
-		return fmt.Sprintf("error: unknown tool %q", tc.Name), false, nil
+		return fmt.Sprintf("error: unknown tool %q", tc.Name), nil, false, nil
 	}
 	preview := tool.PreviewCall(tc.ArgsJSON)
 
@@ -598,7 +594,7 @@ func executeToolCall(
 			_ = send(ctx, events, ApprovalAuto{
 				ToolName: tool.Name(), Preview: preview, Source: "plan-mode-block",
 			})
-			return msg, true, nil
+			return msg, nil, true, nil
 		}
 	}
 
@@ -614,7 +610,7 @@ func executeToolCall(
 		_ = send(ctx, events, ApprovalAuto{
 			ToolName: tool.Name(), Preview: preview, Source: "deny-rule",
 		})
-		return "denied by permissions.json deny rule", true, nil
+		return "denied by permissions.json deny rule", nil, true, nil
 	}
 
 	// Mode-priority approval chain. Order matters:
@@ -627,39 +623,25 @@ func executeToolCall(
 		if err := send(ctx, events, ApprovalAuto{
 			ToolName: tool.Name(), Preview: preview, Source: "yolo-mode",
 		}); err != nil {
-			return "", false, err
+			return "", nil, false, err
 		}
 	case cfg.PlanMode.IsActive() && IsPlanFileWrite(tool.Name(), tc.ArgsJSON, cfg.PlanMode.PlanFile):
 		if err := send(ctx, events, ApprovalAuto{
 			ToolName: tool.Name(), Preview: preview, Source: "plan-mode-allow",
 		}); err != nil {
-			return "", false, err
+			return "", nil, false, err
 		}
 	case cfg.AutoMode.IsActive() && tool.Name() == "run_bash" && IsAutoModeSafeBash(tc.ArgsJSON):
-		// Auto-mode read-only bypass for run_bash. The safety floor
-		// normally forces every shell command through the modal, but
-		// the model habitually opens implementation work with cd +
-		// grep + ls inspection chains — those interruptions break
-		// flow and add no safety value (read-only verbs, no risk
-		// flags). IsAutoModeSafeBash returns true only when every
-		// segment's verb is in the read-only allowlist AND no segment
-		// has a non-None risk (so a `cd X && cat Y > Z` redirect
-		// still goes to the modal). Mutating verbs (rm, mv, touch,
-		// curl, sudo, go run/test) fall through to the normal path.
 		if err := send(ctx, events, ApprovalAuto{
 			ToolName: tool.Name(), Preview: preview, Source: "auto-mode-safe-bash",
 		}); err != nil {
-			return "", false, err
+			return "", nil, false, err
 		}
 	case cfg.AutoMode.IsActive() && !IsAutoModeSafetyFloor(tool.Name()):
-		// Auto-mode auto-allow. User opted into batch implementation
-		// after approving a plan (or via /auto); skip the per-tool
-		// modal for everything except the safety floor (run_bash,
-		// git_commit, git_checkpoint, rollback) which always prompt.
 		if err := send(ctx, events, ApprovalAuto{
 			ToolName: tool.Name(), Preview: preview, Source: "auto-mode",
 		}); err != nil {
-			return "", false, err
+			return "", nil, false, err
 		}
 	default:
 		switch verdict {
@@ -667,29 +649,23 @@ func executeToolCall(
 			if err := send(ctx, events, ApprovalAuto{
 				ToolName: tool.Name(), Preview: preview, Source: "permissions",
 			}); err != nil {
-				return "", false, err
+				return "", nil, false, err
 			}
 		case permissions.Ask:
 			if denied, savedForLater, err := promptForApproval(ctx, cfg, tool, tc, preview, events, decisions); err != nil || denied || savedForLater {
-				return deniedResultFor(tool.Name(), denied, savedForLater, err)
+				return deniedResultForMultimodal(tool.Name(), denied, savedForLater, err)
 			}
 		default:
 			if tool.RequiresApproval(tc.ArgsJSON) {
 				if cfg.BypassPermissions && tool.Name() != "exit_plan_mode" {
-					// exit_plan_mode is the one tool whose "approval"
-					// is the actual user signal, not a safety gate —
-					// even --dangerously-skip-permissions must NOT skip
-					// it. Without this carve-out, a yolo session would
-					// silently exit plan mode without the user ever
-					// seeing the plan.
 					if err := send(ctx, events, ApprovalAuto{
 						ToolName: tool.Name(), Preview: preview, Source: "bypass-permissions",
 					}); err != nil {
-						return "", false, err
+						return "", nil, false, err
 					}
 				} else {
 					if denied, savedForLater, err := promptForApproval(ctx, cfg, tool, tc, preview, events, decisions); err != nil || denied || savedForLater {
-						return deniedResultFor(tool.Name(), denied, savedForLater, err)
+						return deniedResultForMultimodal(tool.Name(), denied, savedForLater, err)
 					}
 				}
 			}
@@ -697,7 +673,7 @@ func executeToolCall(
 	}
 
 	if err := send(ctx, events, ToolStart{ToolName: tool.Name(), Preview: preview, ArgsJSON: tc.ArgsJSON}); err != nil {
-		return "", false, err
+		return "", nil, false, err
 	}
 	// Attach the parent's events + decisions channels so tools that
 	// need to participate in the parent's approval flow (today:
@@ -730,7 +706,16 @@ func executeToolCall(
 		cwdBefore = cfg.Cwd.Get()
 	}
 
-	out, err := tool.Execute(toolCtx, tc.ArgsJSON)
+	var out string
+	var images []adapter.ImageBlock
+	var err error
+	if mm, ok := tool.(MultimodalTool); ok {
+		var res MultimodalResult
+		res, err = mm.ExecuteMultimodal(toolCtx, tc.ArgsJSON)
+		out, images = res.Content, res.Images
+	} else {
+		out, err = tool.Execute(toolCtx, tc.ArgsJSON)
+	}
 	// Inline path-trust elevation: if the write validator rejected
 	// the target as outside the workspace, give the user a chance to
 	// elevate (allow once / trust for session) before the model sees
@@ -744,23 +729,29 @@ func executeToolCall(
 		if elev, ok := pathElevation(err); ok {
 			d, derr := promptForPathElevation(ctx, tool.Name(), elev, tc.ArgsJSON, events, decisions)
 			if derr != nil {
-				return "", false, derr
+				return "", nil, false, derr
 			}
 			if d != Deny {
-				out, err = tool.Execute(toolCtx, tc.ArgsJSON)
+				if mm, ok := tool.(MultimodalTool); ok {
+					var res MultimodalResult
+					res, err = mm.ExecuteMultimodal(toolCtx, tc.ArgsJSON)
+					out, images = res.Content, res.Images
+				} else {
+					out, err = tool.Execute(toolCtx, tc.ArgsJSON)
+				}
 			}
 		}
 	}
 	if err != nil {
 		if isCancelErr(err) {
-			return "", false, err
+			return "", nil, false, err
 		}
 		if ctx.Err() != nil {
-			return "", false, ctx.Err()
+			return "", nil, false, ctx.Err()
 		}
 		msg := fmt.Sprintf("error: %v", err)
 		_ = send(ctx, events, ToolResult{ToolName: tool.Name(), Output: msg, Errored: true})
-		return msg, false, nil
+		return msg, nil, false, nil
 	}
 	if err := send(ctx, events, ToolResult{ToolName: tool.Name(), Output: out, Errored: false}); err != nil {
 		// Tool ran to completion but ctx fired before we could
@@ -769,14 +760,8 @@ func executeToolCall(
 		// dropped intentionally: a model that interrupted mid-tool
 		// will see uniform "interrupted by user" markers across the
 		// batch instead of one stale real result amid synthetic ones.
-		return "", false, err
+		return "", nil, false, err
 	}
-	// If the tool moved cwd (enter_worktree / exit_worktree do this via
-	// cfg.Cwd.Set + os.Chdir), notify the consumer so the TUI can
-	// refresh the worktree chip and any cwd-derived display state.
-	// Compared against the pre-call snapshot to avoid re-firing when
-	// the swap was a no-op (e.g. attaching to a worktree the session
-	// is already inside of).
 	if cfg.Cwd != nil {
 		if after := cfg.Cwd.Get(); after != cwdBefore {
 			_ = send(ctx, events, CwdChanged{NewCwd: after})
@@ -787,7 +772,7 @@ func executeToolCall(
 			_ = send(ctx, events, TodoUpdate{Todos: store.Snapshot()})
 		}
 	}
-	return out, false, nil
+	return out, images, false, nil
 }
 
 // planAware is the optional capability marker for tools that maintain
@@ -922,7 +907,6 @@ func deniedResultFor(toolName string, denied, savedForLater bool, err error) (st
 		if toolName == "exit_plan_mode" {
 			return ExitPlanModeSavedForLaterMessage, true, nil
 		}
-		// Other tools should never see SaveForLater — defensive default.
 		return "user deferred this action", true, nil
 	}
 	if denied {
@@ -932,6 +916,11 @@ func deniedResultFor(toolName string, denied, savedForLater bool, err error) (st
 		return "denied by user", true, nil
 	}
 	return "", false, nil
+}
+
+func deniedResultForMultimodal(toolName string, denied, savedForLater bool, err error) (string, []adapter.ImageBlock, bool, error) {
+	s, d, e := deniedResultFor(toolName, denied, savedForLater, err)
+	return s, nil, d, e
 }
 
 // send is a context-aware channel send; if ctx is canceled while we're

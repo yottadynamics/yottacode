@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -205,9 +206,20 @@ func copilotUnsanitizeName(sanitized string, origNames []string) string {
 func buildCopilotRequest(model string, messages []Message, tools []Tool) ([]byte, error) {
 	chatMessages := make([]map[string]any, 0, len(messages))
 	for _, m := range messages {
+		var content any = m.Content
+		if m.Role == RoleUser && len(m.Images) > 0 {
+			parts := []any{
+				map[string]any{"type": "text", "text": m.Content},
+			}
+			for _, img := range m.Images {
+				dataURL := fmt.Sprintf("data:%s;base64,%s", img.MediaType, base64.StdEncoding.EncodeToString(img.Data))
+				parts = append(parts, map[string]any{"type": "image_url", "image_url": map[string]any{"url": dataURL}})
+			}
+			content = parts
+		}
 		msg := map[string]any{
 			"role":    string(m.Role),
-			"content": m.Content,
+			"content": content,
 		}
 		if m.Role == RoleAssistant && len(m.ToolCalls) > 0 {
 			tcs := make([]map[string]any, 0, len(m.ToolCalls))

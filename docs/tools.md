@@ -11,7 +11,7 @@ In addition to the built-ins, **MCP tools** register dynamically when an `[[mcp_
 
 | Tool | Approval | One-line summary |
 |---|---|---|
-| [`read_file`](#read_file) | none | Read a UTF-8 file with optional byte offset/limit |
+| [`read_file`](#read_file) | none | Read a text or image file (png/jpg/gif/webp) with optional line offset/limit |
 | [`read_many_files`](#read_many_files) | none | Read multiple UTF-8 files in one call |
 | [`write_file`](#write_file) | required | Overwrite or create a file |
 | [`edit_file`](#edit_file) | required | Surgical `old_string`→`new_string` replacement |
@@ -90,7 +90,7 @@ tool-call log; the TUI renames it for readability. Mapping:
 | Tool | Header |
 |---|---|
 | `run_bash` | `Bash(<command>)` |
-| `read_file` | `Read(<path>)` or `Read(<path> @ L<offset>+<limit>)` |
+| `read_file` | `Read(<path>)` or `Read(<path> @ L<offset>+<limit>)` (images: `Read(<path>)`) |
 | `read_many_files` | `Read(N files)` |
 | `write_file` | `Write(<path>)` |
 | `edit_file` | `Edit(<path>, single\|all)` |
@@ -154,14 +154,23 @@ verbatim (per-tool body shaping is bypassed for errors).
 
 ## read_file
 
-Read a UTF-8 text file. Returns the bytes between `offset` and `offset+limit`.
-A `[truncated]` marker is appended when the window stops before EOF.
+Read a text or image file. For text files, output is `cat -n` style
+(1-indexed line numbers). For image files (`.png`, `.jpg`, `.jpeg`,
+`.gif`, `.webp`), the image data is returned as a native visual content
+block that vision-capable models can see directly.
 
 | Param | Type | Default | Notes |
 |---|---|---|---|
 | `path` | string | — | Absolute or cwd-relative |
-| `offset` | int | `0` | Bytes; negatives clamped to 0 |
-| `limit` | int | `524288` (512 KiB) | Hard cap is the same value |
+| `offset` | int | `1` | 1-indexed start line (text files only) |
+| `limit` | int | `2000` | Max lines to return (text files only) |
+
+**Image support.** When the path points to a recognized image file and the
+provider supports images in tool results (currently Anthropic only), the
+tool reads the raw bytes (up to 20 MiB) and returns them as an image
+content block alongside a text label like `[image: photo.png, image/png,
+12345 bytes]`. On providers that don't support images in tool results, only
+the text label is returned. The same deny list applies to images.
 
 No approval — the model legitimately needs to read dotfiles, USER.md,
 `/etc/os-release`, etc. A narrow deny list still applies:

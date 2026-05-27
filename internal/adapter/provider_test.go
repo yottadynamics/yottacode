@@ -102,9 +102,29 @@ func TestDetectProviderURLPatterns(t *testing.T) {
 }
 
 func TestDetectProviderOverrideWins(t *testing.T) {
-	// Even with an OpenAI-shaped URL, an explicit override is honored.
 	got := detectProvider("https://api.openai.com/v1", ProviderOpenAIAuth)
 	if got != ProviderOpenAIAuth {
 		t.Errorf("override should win, got %q", got)
+	}
+}
+
+func TestBuildProfile_SupportsImages(t *testing.T) {
+	for _, tc := range []struct {
+		provider Provider
+		want     bool
+	}{
+		{ProviderAnthropic, true},
+		{ProviderOpenAI, true},
+		{ProviderOpenAIAuth, true},
+		{ProviderCopilot, true},
+		{ProviderGemini, true},
+		{ProviderXAI, true},
+		{ProviderOllama, false},
+		{ProviderOpenAICompatible, false},
+	} {
+		profile := buildProfile(Config{ProviderOverride: tc.provider, Model: "test"}, false)
+		if profile.SupportsImages != tc.want {
+			t.Errorf("SupportsImages for %q = %v, want %v", tc.provider, profile.SupportsImages, tc.want)
+		}
 	}
 }

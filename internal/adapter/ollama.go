@@ -2,8 +2,10 @@ package adapter
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 
 	"github.com/openai/openai-go"
 	"github.com/openai/openai-go/option"
@@ -151,7 +153,18 @@ func toOpenAIMessages(ms []Message) []openai.ChatCompletionMessageParamUnion {
 		case RoleSystem:
 			out = append(out, openai.SystemMessage(m.Content))
 		case RoleUser:
-			out = append(out, openai.UserMessage(m.Content))
+			if len(m.Images) > 0 {
+				parts := []openai.ChatCompletionContentPartUnionParam{
+					openai.TextContentPart(m.Content),
+				}
+				for _, img := range m.Images {
+					dataURL := fmt.Sprintf("data:%s;base64,%s", img.MediaType, base64.StdEncoding.EncodeToString(img.Data))
+					parts = append(parts, openai.ImageContentPart(openai.ChatCompletionContentPartImageImageURLParam{URL: dataURL}))
+				}
+				out = append(out, openai.UserMessage(parts))
+			} else {
+				out = append(out, openai.UserMessage(m.Content))
+			}
 		case RoleAssistant:
 			asst := openai.ChatCompletionAssistantMessageParam{
 				Content: openai.ChatCompletionAssistantMessageParamContentUnion{

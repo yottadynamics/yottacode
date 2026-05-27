@@ -196,7 +196,7 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 	yoloMode := &agent.YoloModeState{}
 
 	reg := agent.NewRegistry()
-	reg.Register(&agent.ReadFileTool{Cwd: cwdRef, DenyReadPaths: denyReads})
+	reg.Register(&agent.ReadFileTool{Cwd: cwdRef, DenyReadPaths: denyReads, SupportsImages: ad.Profile().SupportsImages})
 	reg.Register(&agent.ReadManyFilesTool{Cwd: cwdRef, DenyReadPaths: denyReads})
 	reg.Register(&agent.WriteFileTool{Cwd: cwdRef, WriteOpts: writeOpts})
 	reg.Register(&agent.EditFileTool{Cwd: cwdRef, WriteOpts: writeOpts})

@@ -28,15 +28,24 @@ type Citation struct {
 	Filename string `json:"filename,omitempty"`
 }
 
+// ImageBlock carries a single image as raw bytes plus its MIME type.
+// Used in tool-result messages so the model can see screenshots, photos,
+// diagrams, etc. alongside the textual output.
+type ImageBlock struct {
+	Data      []byte `json:"data"`
+	MediaType string `json:"media_type"` // e.g. "image/png", "image/jpeg"
+}
+
 // Message is the neutral conversation unit the agent persists and replays.
 // Tool-role messages carry ToolCallID to bind them to the call they answer.
 type Message struct {
-	Role       Role       `json:"role"`
-	Content    string     `json:"content,omitempty"`
-	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
-	Citations  []Citation `json:"citations,omitempty"`
-	StopReason string     `json:"stop_reason,omitempty"`
-	ToolCallID string     `json:"tool_call_id,omitempty"`
+	Role       Role         `json:"role"`
+	Content    string       `json:"content,omitempty"`
+	Images     []ImageBlock `json:"images,omitempty"`
+	ToolCalls  []ToolCall   `json:"tool_calls,omitempty"`
+	Citations  []Citation   `json:"citations,omitempty"`
+	StopReason string       `json:"stop_reason,omitempty"`
+	ToolCallID string       `json:"tool_call_id,omitempty"`
 }
 
 // Tool is the schema the adapter advertises to the model. Schema must be a
