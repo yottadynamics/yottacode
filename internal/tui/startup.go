@@ -124,7 +124,7 @@ func renderStartupRows(rows []startupInfoRow) []string {
 // a single trailing space separates the (padded) label from the value.
 func labelRow(key string, keyWidth int, value string) string {
 	label := fmt.Sprintf("%-*s", keyWidth, key)
-	return styleSplashInfo.Render(label) + " " + value
+	return styleSplashInfo.Render(label) + "  " + value
 }
 
 func renderProviderSummary(profile adapter.ProviderProfile) string {

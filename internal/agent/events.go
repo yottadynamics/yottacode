@@ -286,3 +286,10 @@ func (SubagentStart) event()          {}
 func (SubagentProgress) event()       {}
 func (SubagentDone) event()           {}
 func (SubagentBackgroundDone) event() {}
+func (UserMessageAppended) event()    {}
+
+// UserMessageAppended fires when a user message queued via UserMessages
+// is injected into history between tool rounds. The TUI renders a
+// "[delivered]" receipt so the user knows the model will see it on the
+// next iteration.
+type UserMessageAppended struct{ Content string }
