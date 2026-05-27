@@ -77,6 +77,7 @@ var (
 	styleUserBar          lipgloss.Style
 	styleUserBody         lipgloss.Style
 	styleAssistantBody    lipgloss.Style
+	styleAssistantProse   lipgloss.Style
 	styleAssistantBold    lipgloss.Style
 	styleAssistantHeading lipgloss.Style
 	styleAssistantQuote   lipgloss.Style
@@ -191,6 +192,7 @@ func buildStyles(p themes.Palette) {
 	styleUserBar = lipgloss.NewStyle().Foreground(colorRule).Bold(true)
 	styleUserBody = lipgloss.NewStyle().Foreground(colorDim)
 	styleAssistantBody = lipgloss.NewStyle().Foreground(colorContent).PaddingLeft(2)
+	styleAssistantProse = lipgloss.NewStyle().Foreground(colorContent)
 	styleAssistantBold = lipgloss.NewStyle().Foreground(colorContent).Bold(true)
 	styleAssistantHeading = lipgloss.NewStyle().Foreground(colorAssistant).Bold(true).Underline(true).PaddingLeft(2)
 	styleAssistantQuote = lipgloss.NewStyle().Foreground(colorMuted).Italic(true)

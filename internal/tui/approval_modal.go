@@ -163,7 +163,7 @@ func approvalBodyFor(m Model) string {
 func approvalHotkeyGrid(allowAlways bool, derivedRule string) string {
 	primary := strings.Join([]string{
 		styleApprovalHotkey.Render("[Y]") + " " + styleApprovalChoice.Render("yes"),
-		strings.Repeat(" ", 12),
+		strings.Repeat(" ", 6),
 		styleApprovalHotkey.Render("[N]") + " " + styleApprovalChoice.Render("no"),
 	}, "")
 	if !allowAlways {

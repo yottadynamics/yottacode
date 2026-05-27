@@ -75,7 +75,7 @@ func emitWriteFileBodyToScrollback(m *Model, argsJSON string) {
 		styleCardMeta.Render(fmt.Sprintf("(%d bytes · %d lines)", len(a.Content), lines)))
 	content := strings.ReplaceAll(a.Content, "\t", "    ")
 	highlighted := strings.TrimRight(HighlightFromPath(content, a.Path), "\n")
-	gutter := styleCardGutter.Render("│   ")
+	gutter := styleCardGutter.Render("│  ")
 	for _, line := range strings.Split(highlighted, "\n") {
 		m.appendLine(gutter + line)
 	}

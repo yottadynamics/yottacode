@@ -407,14 +407,22 @@ type Model struct {
 	eventsCh   chan agent.Event
 	turnErrCh  chan error
 	decisions  chan agent.Decision
-	// pendingInputAfterTurn captures a user message typed and Enter'd
-	// during an active turn. The Enter handler cancels the current turn
-	// and stashes the input here; the turnEndedMsg handler picks it up
-	// and starts a fresh turn so the model sees the new message after
-	// history was preserved with synthetic tool_result entries by the
-	// agent loop. Cleared when consumed and when a context-wiping slash
-	// command (/clear, /sessions) preempts the queued submission.
+	// pendingInputAfterTurn captures a user message that couldn't be
+	// delivered mid-turn (model finished without a tool round, or the
+	// userMsgCh buffer was full and we fell back to cancel+resubmit).
+	// The turnEndedMsg handler picks it up and starts a fresh turn.
 	pendingInputAfterTurn string
+
+	// userMsgCh feeds mid-turn user messages into the agent loop's
+	// UserMessages channel. Created per-turn in startTurn; the loop
+	// checks it (non-blocking) between tool rounds and appends the
+	// message to history without cancelling. Buffer of 1; overflow
+	// falls back to the old cancel+resubmit path.
+	userMsgCh chan string
+
+	// paragraphStart tracks blank-line boundaries so the first line
+	// of each new prose paragraph gets 2 extra spaces of indent.
+	paragraphStart bool
 
 	// Approval modal state
 	awaitingApproval       bool
@@ -1019,6 +1027,82 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// elevation decision would swallow "1"/"2"/"3" into the
 		// textarea and route Esc to turnCancel instead of "reject",
 		// leaving the modal unresponsive until the process is killed.
+		// Palette navigation during a turn: let the user browse
+		// /commands and @files while the model is thinking. Handled
+		// before the mid-turn textarea block so Up/Down/Tab/Esc reach
+		// the palette instead of the textarea.
+		if m.turnActive && !m.awaitingApproval && !m.awaitingPathTrust && m.paletteOpen {
+			switch msg.Type {
+			case tea.KeyUp:
+				if m.paletteIndex > 0 {
+					m.paletteIndex--
+					if m.paletteIndex < m.paletteOffset {
+						m.paletteOffset = m.paletteIndex
+					}
+				}
+				return m, nil
+			case tea.KeyDown:
+				if m.paletteIndex < len(m.paletteFiltered)-1 {
+					m.paletteIndex++
+					if m.paletteIndex >= m.paletteOffset+slashPaletteVisible {
+						m.paletteOffset = m.paletteIndex - slashPaletteVisible + 1
+					}
+				}
+				return m, nil
+			case tea.KeyTab:
+				if len(m.paletteFiltered) > 0 {
+					c := m.paletteFiltered[m.paletteIndex]
+					m.textInput.SetValue("/" + c.Name + " ")
+					m.textInput.CursorEnd()
+					m.paletteOpen = false
+				}
+				return m, nil
+			case tea.KeyEsc:
+				m.textInput.SetValue("")
+				m.paletteOpen = false
+				m.paletteIndex = 0
+				m.paletteOffset = 0
+				return m, nil
+			}
+			// Non-navigation keys (Enter, typing) fall through to
+			// the mid-turn handler below.
+		}
+		if m.turnActive && !m.awaitingApproval && !m.awaitingPathTrust && m.filePaletteOpen {
+			switch msg.Type {
+			case tea.KeyUp:
+				if m.filePaletteIndex > 0 {
+					m.filePaletteIndex--
+					if m.filePaletteIndex < m.filePaletteOffset {
+						m.filePaletteOffset = m.filePaletteIndex
+					}
+				}
+				return m, nil
+			case tea.KeyDown:
+				if m.filePaletteIndex < len(m.filePaletteFiltered)-1 {
+					m.filePaletteIndex++
+					if m.filePaletteIndex >= m.filePaletteOffset+filePaletteVisible {
+						m.filePaletteOffset = m.filePaletteIndex - filePaletteVisible + 1
+					}
+				}
+				return m, nil
+			case tea.KeyTab, tea.KeyEnter:
+				if len(m.filePaletteFiltered) > 0 {
+					m.acceptFilePaletteChoice()
+					return m, nil
+				}
+				if msg.Type == tea.KeyEsc {
+					m.filePaletteOpen = false
+					m.filePaletteIndex = 0
+					m.filePaletteOffset = 0
+					return m, nil
+				}
+			case tea.KeyEsc:
+				m.filePaletteOpen = false
+				m.filePaletteIndex = 0
+				m.filePaletteOffset = 0
+				return m, nil
+			}
+		}
 		if m.turnActive && !m.awaitingApproval && !m.awaitingPathTrust {
 			switch msg.Type {
 			case tea.KeyCtrlC, tea.KeyEsc:
@@ -1032,6 +1116,11 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.turnCancel()
 				}
 				m.pendingInputAfterTurn = ""
+				// Drain any queued-but-undelivered append message.
+				select {
+				case <-m.userMsgCh:
+				default:
+				}
 				return m, nil
 			case tea.KeyCtrlD:
 				return m, tea.Quit
@@ -1052,6 +1141,21 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			case tea.KeyEnter:
 				input := strings.TrimSpace(m.textInput.Value())
+				// Palette selection: resolve the highlighted entry
+				// so Enter picks the selected command, not the
+				// partial text in the textarea.
+				if m.paletteOpen && len(m.paletteFiltered) > 0 && !strings.Contains(input, " ") {
+					chosen := m.paletteFiltered[m.paletteIndex]
+					if chosen.Args != "" {
+						m.textInput.SetValue("/" + chosen.Name + " ")
+						m.textInput.CursorEnd()
+						m.paletteOpen = false
+						m.paletteIndex = 0
+						m.paletteOffset = 0
+						return m, nil
+					}
+					input = "/" + chosen.Name
+				}
 				if strings.HasPrefix(input, "/") {
 					// Decide whether to cancel the active turn before
 					// running this slash command.
@@ -1083,10 +1187,13 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.turnCancel()
 					}
 					// A slash command typed mid-turn is a fresh user
-					// intent — drop any plain-text message that was
-					// queued by an earlier Enter so we don't
-					// double-submit after the turn unwinds.
+					// intent — drop any queued message so we don't
+					// auto-submit stale input after the turn unwinds.
 					m.pendingInputAfterTurn = ""
+					select {
+					case <-m.userMsgCh:
+					default:
+					}
 					m.textInput.SetValue("")
 					m.paletteOpen = false
 					m.paletteIndex = 0
@@ -1094,36 +1201,63 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m.runSlash(input)
 				}
 				// Plain Enter on non-empty input mid-turn:
-				// interrupt-with-feedback. Cancel the current iteration
-				// (the agent loop's synthetic-tool_result policy keeps
-				// history valid), stash the message, and let the
-				// turnEndedMsg handler auto-submit it after the loop
-				// unwinds. Empty Enter stays silent — Ctrl+C / Esc are
-				// the explicit "stop without sending" surface.
+				// queue the message for delivery at the next tool
+				// round without cancelling the active turn. The agent
+				// loop picks it up from userMsgCh between tool-call
+				// batches and appends it to history as a user message.
+				// If the buffer is full (a second message before the
+				// first was consumed), fall back to the old
+				// cancel+resubmit path.
 				if input == "" {
 					return m, nil
 				}
-				// Expand pasted-marker placeholders before stashing so
-				// the queued message reaches the agent in the same
-				// form as a normal submission. Mirrors the line near
-				// the normal-Enter path (~1135).
 				input = m.expandPastes(input)
 				m.pastes = nil
 				m.pastedImages = nil
-				m.pendingInputAfterTurn = input
-				m.textInput.SetValue("")
-				m.paletteOpen = false
-				m.paletteIndex = 0
-				m.paletteOffset = 0
-				if m.turnCancel != nil {
-					m.turnCancel()
+				select {
+				case m.userMsgCh <- input:
+					m.textInput.SetValue("")
+					m.paletteOpen = false
+					m.paletteIndex = 0
+					m.paletteOffset = 0
+					m.appendLine(renderUserBlock(input, m.width))
+					m.appendLine(styleAuto.Render("[queued] will be delivered at next tool round"))
+					return m, nil
+				default:
+					// Buffer full — fall back to cancel+resubmit.
+					m.pendingInputAfterTurn = input
+					m.textInput.SetValue("")
+					m.paletteOpen = false
+					m.paletteIndex = 0
+					m.paletteOffset = 0
+					if m.turnCancel != nil {
+						m.turnCancel()
+					}
+					return m, nil
 				}
-				return m, nil
 			default:
 				m.preGrowTextarea()
 				var cmd tea.Cmd
 				m.textInput, cmd = m.textInput.Update(msg)
 				m.fitTextareaHeight()
+				val := m.textInput.Value()
+				if strings.HasPrefix(val, "/") {
+					m.paletteFiltered = m.filterPaletteAll(val)
+					m.paletteOpen = true
+					if m.paletteIndex >= len(m.paletteFiltered) {
+						m.paletteIndex = 0
+						m.paletteOffset = 0
+					}
+					if m.paletteOffset > len(m.paletteFiltered)-slashPaletteVisible {
+						m.paletteOffset = 0
+					}
+					m.filePaletteOpen = false
+				} else {
+					m.paletteOpen = false
+					m.paletteIndex = 0
+					m.paletteOffset = 0
+					m.refreshFilePalette(val)
+				}
 				return m, cmd
 			}
 		}
@@ -1543,6 +1677,17 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// front would yank context out from under the very message
 		// they just sent. If watermark guidance matters, the user
 		// will see it after the followup turn ends.
+		// Drain any user message that was queued but never consumed
+		// by the agent loop (the model finished without a tool round).
+		// Move it to pendingInputAfterTurn so the existing auto-submit
+		// path handles it as a new turn.
+		select {
+		case undelivered := <-m.userMsgCh:
+			if undelivered != "" && m.pendingInputAfterTurn == "" {
+				m.pendingInputAfterTurn = undelivered
+			}
+		default:
+		}
 		if queued := m.pendingInputAfterTurn; queued != "" {
 			m.pendingInputAfterTurn = ""
 			next, cmd := m.startTurn(queued)
@@ -2850,6 +2995,8 @@ func (m Model) startTurnWithDisplay(input, displayLabel string) (tea.Model, tea.
 	m.eventsCh = make(chan agent.Event, 64)
 	m.decisions = make(chan agent.Decision, 1)
 	m.turnErrCh = make(chan error, 1)
+	m.userMsgCh = make(chan string, 1)
+	m.cfg.UserMessages = m.userMsgCh
 
 	go func(ev chan agent.Event, dec chan agent.Decision, errCh chan error) {
 		err := agent.Turn(turnCtx, m.cfg, &m.sess.Messages, ev, dec)
@@ -2922,6 +3069,7 @@ func (m Model) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 		// line stays in m.streaming for the live footer preview.
 		if m.streamingMode != streamContent {
 			m.appendLine("")
+			m.paragraphStart = true
 		}
 		m.streamingMode = streamContent
 		m.streaming.WriteString(e.Text)
@@ -3131,6 +3279,8 @@ func (m Model) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 		for _, line := range strings.Split(strings.TrimRight(e.Err.Error(), "\n"), "\n") {
 			m.appendLine(styleError.Render("✗ " + line))
 		}
+	case agent.UserMessageAppended:
+		m.appendLine(styleAuto.Render("[delivered] " + truncateForRender(e.Content, 80)))
 	case agent.TurnDone:
 		m.commitStreaming()
 		// If the agent touched the plan this turn, commit one full
@@ -3326,18 +3476,114 @@ func (m *Model) handleStreamLine(line string) {
 	m.emitAssistantProse(line)
 }
 
+// proseMaxWidth caps the wrap width for assistant prose so text doesn't
+// run edge-to-edge on wide terminals. Matches the card system's
+// cardMaxWidthCap for visual consistency.
+const proseMaxWidth = 120
+
 // emitAssistantProse renders a prose line from the assistant, word-wraps
-// it to the terminal width, and appends the result to scrollback.
-// Without this, long lines from the LLM are emitted as-is and the
-// terminal does a hard character break mid-word instead of a clean word
-// break. The wrapped result is emitted as a single appendLine call so
-// the transcript doesn't double-space between continuation rows.
+// it to a comfortable reading width, and appends the result to scrollback.
+// The wrap width is capped at proseMaxWidth so wide terminals still get
+// a readable column. Continuation lines get a 4-space hanging indent
+// (matching the body-padding + list-marker column) so wrapped text
+// stays visually grouped with its first line.
 func (m *Model) emitAssistantProse(line string) {
 	rendered := renderAssistantBlock(line)
-	if m.width > 0 && ansi.StringWidth(rendered) > m.width {
-		rendered = ansi.Wrap(rendered, m.width, "")
+	if strings.TrimSpace(rendered) == "" {
+		m.paragraphStart = true
+		m.appendLine(rendered)
+		return
+	}
+	if m.paragraphStart {
+		m.paragraphStart = false
+		rendered = "  " + rendered
+	}
+	wrapW := m.width
+	if wrapW <= 0 || wrapW > proseMaxWidth {
+		wrapW = proseMaxWidth
+	}
+	if ansi.StringWidth(rendered) > wrapW {
+		rendered = wrapProseHanging(rendered, wrapW)
 	}
 	m.appendLine(rendered)
+}
+
+// wrapProseHanging word-wraps s to fit within limit visible columns.
+// Continuation lines are indented to match the first line's content
+// start: for plain prose that's the body padding (2 spaces); for list
+// items it's past the marker (4 for "- ", 5 for "1. ", etc.) so text
+// stays aligned under the first word, not under the bullet.
+func wrapProseHanging(s string, limit int) string {
+	indentW := visibleContentStart(s)
+	if indentW < 0 {
+		indentW = 0
+	}
+	wrapAt := limit - indentW
+	if wrapAt < 20 {
+		wrapAt = 20
+	}
+	wrapped := ansi.Wrap(s, wrapAt, "")
+	lines := strings.Split(wrapped, "\n")
+	if len(lines) <= 1 {
+		return wrapped
+	}
+	pad := strings.Repeat(" ", indentW)
+	for i := 1; i < len(lines); i++ {
+		lines[i] = pad + lines[i]
+	}
+	return strings.Join(lines, "\n")
+}
+
+// visibleContentStart returns the column where the first "real" content
+// character sits, skipping ANSI escape codes, leading whitespace, and
+// common list markers (-, *, +, 1., 2)). For plain prose with 2-space
+// body padding it returns 2; for "  - item" it returns 4; for
+// "  1. item" it returns 5. Used by wrapProseHanging to compute the
+// continuation indent.
+func visibleContentStart(s string) int {
+	col := 0
+	inEsc := false
+	phase := 0 // 0=leading spaces, 1=marker, 2=done
+	for _, r := range s {
+		if r == '\x1b' {
+			inEsc = true
+			continue
+		}
+		if inEsc {
+			if (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') {
+				inEsc = false
+			}
+			continue
+		}
+		switch phase {
+		case 0:
+			if r == ' ' {
+				col++
+			} else if r == '-' || r == '*' || r == '+' || r == '•' || (r >= '0' && r <= '9') {
+				phase = 1
+				col++
+			} else {
+				return col
+			}
+		case 1:
+			col++
+			if r == ' ' {
+				return col
+			}
+			if r == '.' || r == ')' {
+				// "1." or "1)" — expect a space next
+				continue
+			}
+			if r >= '0' && r <= '9' {
+				// multi-digit number
+				continue
+			}
+			// Not a recognized marker pattern; content started
+			// at the first non-space char we saw in phase 0.
+			return col - 1
+		}
+	}
+	return col
 }
 
 // flushCodeBlock emits the buffered code block to scrollback and
@@ -3788,6 +4034,7 @@ func renderUserBlock(content string, width int) string {
 	const prefix = "❯ "
 	prefixWidth := ansi.StringWidth(prefix)
 	bar := styleUserBar.Render(prefix)
+	indent := strings.Repeat(" ", prefixWidth)
 	bodyWidth := width - prefixWidth
 	var lines []string
 	for _, line := range strings.Split(content, "\n") {
@@ -3799,8 +4046,13 @@ func renderUserBlock(content string, width int) string {
 			continue
 		}
 		wrapped := ansi.Hardwrap(line, bodyWidth, true)
-		for _, row := range strings.Split(wrapped, "\n") {
-			lines = append(lines, bar+styleUserBody.Render(row))
+		rows := strings.Split(wrapped, "\n")
+		for i, row := range rows {
+			if i == 0 {
+				lines = append(lines, bar+styleUserBody.Render(row))
+			} else {
+				lines = append(lines, indent+styleUserBody.Render(row))
+			}
 		}
 	}
 	return "\n" + strings.Join(lines, "\n") + "\n"
@@ -4007,12 +4259,7 @@ func looksLikeCodeLine(line string) bool {
 			return true
 		}
 	}
-	return strings.Contains(trim, ":=") ||
-		strings.Contains(trim, "->") ||
-		strings.Contains(trim, "::") ||
-		strings.Contains(trim, "{") ||
-		strings.Contains(trim, "}") ||
-		(strings.HasPrefix(line, "    ") || strings.HasPrefix(line, "\t"))
+	return strings.Contains(trim, ":=") || strings.Contains(trim, "::")
 }
 
 func looksLikeShellCommand(line string) bool {

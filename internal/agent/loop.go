@@ -83,6 +83,15 @@ type LoopConfig struct {
 	// Implementations must be safe under concurrent SnapshotPath
 	// calls within a turn.
 	Checkpoints CheckpointWriter
+
+	// UserMessages, when non-nil, is checked (non-blocking) after
+	// each tool round completes. If a message is pending, it's
+	// appended to history as a RoleUser message and the loop
+	// continues — the next streamIteration sees the user's input
+	// alongside the tool results. This lets the TUI inject
+	// additive instructions ("also check the tests") without
+	// cancelling the active turn.
+	UserMessages <-chan string
 }
 
 // CheckpointWriter is the slice of the checkpoint store the agent loop
@@ -246,6 +255,24 @@ func Turn(
 				}
 				_ = send(ctx, events, ErrorEvent{Err: err})
 				return err
+			}
+			// Between tool rounds: check for a user message queued
+			// by the TUI. History is clean (all tool_use entries
+			// have matching tool_result), so appending a user
+			// message here pairs naturally with the next
+			// streamIteration call.
+			if cfg.UserMessages != nil {
+				select {
+				case msg := <-cfg.UserMessages:
+					if msg != "" {
+						*state.history = append(*state.history, adapter.Message{
+							Role:    adapter.RoleUser,
+							Content: msg,
+						})
+						_ = send(ctx, events, UserMessageAppended{Content: msg})
+					}
+				default:
+				}
 			}
 			continue
 		}
