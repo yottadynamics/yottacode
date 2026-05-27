@@ -120,8 +120,30 @@ func Select(entries []MemoryEntry, query string, cfg config.RetrievalConfig) []M
 // strategy is "semantic", BM25 scores are combined with cosine
 // similarity from vector embeddings.
 func SelectWithEmbeddings(entries []MemoryEntry, query string, cfg config.RetrievalConfig, embedClient *EmbedClient) []MemoryEntry {
+	scored := SelectWithEmbeddingsScored(entries, query, cfg, embedClient)
+	if scored == nil {
+		return nil
+	}
+	out := make([]MemoryEntry, len(scored))
+	for i, s := range scored {
+		out[i] = s.Entry
+	}
+	return out
+}
+
+// SelectWithEmbeddingsScored is like SelectWithEmbeddings but returns
+// Scored entries with their relevance scores preserved. Used by
+// memory_search so the agent can see how well each memory matched.
+func SelectWithEmbeddingsScored(entries []MemoryEntry, query string, cfg config.RetrievalConfig, embedClient *EmbedClient) []Scored {
+	if entries == nil {
+		return nil
+	}
 	if !cfg.Enabled || len(entries) == 0 {
-		return entries
+		out := make([]Scored, len(entries))
+		for i, e := range entries {
+			out[i] = Scored{Entry: e, Score: 0}
+		}
+		return out
 	}
 
 	strategy := resolveStrategy(cfg.Strategy, embedClient)
@@ -145,12 +167,12 @@ func SelectWithEmbeddings(entries []MemoryEntry, query string, cfg config.Retrie
 		scored = scoreBM25(entries, query)
 	}
 
-	out := make([]MemoryEntry, 0, len(scored))
+	out := make([]Scored, 0, len(scored))
 	for _, s := range scored {
 		if s.Score < cfg.MinScore {
 			continue
 		}
-		out = append(out, s.Entry)
+		out = append(out, s)
 		if cfg.TopK > 0 && len(out) >= cfg.TopK {
 			break
 		}

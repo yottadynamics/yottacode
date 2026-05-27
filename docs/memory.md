@@ -180,12 +180,16 @@ Scope selection is critical for building knowledge that transfers across project
 
 The full guidance lives in the agent's system prompt; see `internal/agent/prompt.go` for the current copy.
 
-### The two tools
+### The four tools
 
-The agent has two memory tools, both **silent by default** (no approval modal — they're as ordinary as `read_file`):
+The agent has four memory tools, all **silent by default** (no approval modal — they're as ordinary as `read_file`):
 
-- **`memory_save`** — writes a new memory file or overwrites an existing one with the same name. Updates `MEMORY.md`.
+- **`memory_save`** — writes a new memory file or overwrites an existing one with the same name. Updates `MEMORY.md`. Generates a `.vec` sidecar when an embedding model is available.
 - **`memory_forget`** — deletes a memory file by name. Updates `MEMORY.md`. Errors when the named memory doesn't exist (so the agent learns the right names).
+- **`memory_search`** — searches across user and/or project memory stores, returning ranked results with relevance scores. The agent uses this to check for duplicates before saving, find related memories when reasoning about a topic, or verify a remembered fact. Accepts `scope` (`all`, `user`, `project`) and `limit` parameters.
+- **`session_recall`** — searches across all past sessions via the FTS5 full-text index. Returns ranked snippets with session metadata (name, date, model). The agent uses this to find prior discussions, check if an issue was already resolved, or pull in context from earlier conversations. Supports FTS5 query syntax (OR, exact phrases in quotes).
+
+The introspection tools (`memory_search`, `session_recall`) are the key to self-learning — they let the agent think based on its own accumulated knowledge rather than relying only on what the retrieval orchestrator injects each turn.
 
 To require approval per save / forget, add an `ask` rule:
 
@@ -296,13 +300,34 @@ The same actions are exposed as non-interactive subcommands so CI or one-off she
 yottacode memory list [--scope user|project]   # default: project
 yottacode memory forget --scope <s> <name>
 yottacode memory reindex                       # generate .vec sidecars for all memories
+yottacode memory search <query>                # search memories by query (same as memory_search tool)
 ```
+
+### Agent introspection flow
+
+The agent's self-learning loop uses the four tools together:
+
+```
+  session_recall("was this discussed before?")
+        │
+        ▼
+  memory_search("do I already know about X?")
+        │
+        ├── found a match → use it, update if stale
+        │
+        └── no match → learn from this session
+                │
+                ├── memory_save(scope=user, ...) for portable knowledge
+                └── memory_save(scope=project, ...) for repo-specific facts
+```
+
+The agent decides autonomously when to search, save, update, or forget — the tools give it the capability, but the LLM owns the judgment about when and what to remember.
 
 ---
 
 ## Layer 3 — Recall + summarization
 
-These two predate the memory redesign and are unchanged.
+`/recall` remains available as a user-initiated slash command. The agent can now also search past sessions proactively via the `session_recall` tool — same FTS5 index, same ranked results, but the agent decides when to look.
 
 `/recall <query>` searches every saved session in `~/.yottacode/sessions/` via an SQLite FTS5 index at `~/.yottacode/index.sqlite`. Useful for "I remember we discussed X — which session was that in?" The index is rebuilt incrementally on every session save and backfilled at TUI startup.
 
