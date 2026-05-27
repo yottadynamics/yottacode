@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/yottadynamics/yottacode/internal/agent"
 )
@@ -111,16 +112,33 @@ func renderToolCard(toolName, preview, argsJSON, output string, errored bool, te
 		}
 	}
 	body := toolBodyLines(toolName, output, errored, cwd)
+	gutter := styleCardGutter.Render("│   ")
+	gutterWidth := ansi.StringWidth(gutter)
+	bodyWidth := width - gutterWidth
+	if bodyWidth < 20 {
+		bodyWidth = 20
+	}
+	appendBodyLine := func(line string) {
+		styled := styleCardBody.Render(line)
+		if ansi.StringWidth(styled) <= bodyWidth {
+			out = append(out, gutter+styled)
+			return
+		}
+		wrapped := ansi.Hardwrap(styled, bodyWidth, true)
+		for _, row := range strings.Split(wrapped, "\n") {
+			out = append(out, gutter+row)
+		}
+	}
 	if len(body) > cardBodyLineCap {
 		visible := body[:cardBodyLineCap]
 		hidden := len(body) - cardBodyLineCap
 		for _, line := range visible {
-			out = append(out, styleCardGutter.Render("│   ")+styleCardBody.Render(line))
+			appendBodyLine(line)
 		}
-		out = append(out, styleCardGutter.Render("│   ")+styleCardMeta.Render(fmt.Sprintf("…%d more line(s)", hidden)))
+		out = append(out, gutter+styleCardMeta.Render(fmt.Sprintf("…%d more line(s)", hidden)))
 	} else {
 		for _, line := range body {
-			out = append(out, styleCardGutter.Render("│   ")+styleCardBody.Render(line))
+			appendBodyLine(line)
 		}
 	}
 	out = append(out, styleCardGutter.Render("╰ ")+footer)

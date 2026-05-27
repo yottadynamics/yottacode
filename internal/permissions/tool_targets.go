@@ -108,7 +108,11 @@ func targetFor(toolName, argsJSON, cwd string) Target {
 	case "rollback":
 		return Target{PermName: "Rollback", Descriptor: ""}
 	case "run_tests":
-		return Target{PermName: "Tests", Descriptor: ""}
+		cmd := extractField(argsJSON, "command")
+		if cmd == "" {
+			cmd = "go test ./..."
+		}
+		return Target{PermName: "Tests", Descriptor: cmd}
 	case "list_git_changed_files",
 		"git_branch_status", "git_show_file_at_rev", "git_diff_files",
 		"git_stage_files", "git_unstage_files", "git_create_branch",
