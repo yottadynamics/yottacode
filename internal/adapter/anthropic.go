@@ -2,6 +2,7 @@ package adapter
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"strings"
@@ -230,9 +231,22 @@ func splitForAnthropic(ms []Message) (system []anthropic.TextBlockParam, out []a
 			system = append(system, anthropic.TextBlockParam{Text: m.Content})
 
 		case RoleUser:
-			out = append(out, anthropic.NewUserMessage(
-				anthropic.ContentBlockParamUnion{OfText: &anthropic.TextBlockParam{Text: m.Content}},
-			))
+			blocks := []anthropic.ContentBlockParamUnion{
+				{OfText: &anthropic.TextBlockParam{Text: m.Content}},
+			}
+			for _, img := range m.Images {
+				blocks = append(blocks, anthropic.ContentBlockParamUnion{
+					OfImage: &anthropic.ImageBlockParam{
+						Source: anthropic.ImageBlockParamSourceUnion{
+							OfBase64: &anthropic.Base64ImageSourceParam{
+								Data:      base64.StdEncoding.EncodeToString(img.Data),
+								MediaType: anthropic.Base64ImageSourceMediaType(img.MediaType),
+							},
+						},
+					},
+				})
+			}
+			out = append(out, anthropic.NewUserMessage(blocks...))
 
 		case RoleAssistant:
 			var blocks []anthropic.ContentBlockParamUnion
@@ -257,16 +271,25 @@ func splitForAnthropic(ms []Message) (system []anthropic.TextBlockParam, out []a
 			out = append(out, anthropic.NewAssistantMessage(blocks...))
 
 		case RoleTool:
-			// Tool results are user-role messages carrying a single
-			// tool_result content block. yottacode emits string
-			// content; the SDK accepts an array of result content
-			// blocks, so we wrap once.
+			content := []anthropic.ToolResultBlockParamContentUnion{
+				{OfText: &anthropic.TextBlockParam{Text: m.Content}},
+			}
+			for _, img := range m.Images {
+				content = append(content, anthropic.ToolResultBlockParamContentUnion{
+					OfImage: &anthropic.ImageBlockParam{
+						Source: anthropic.ImageBlockParamSourceUnion{
+							OfBase64: &anthropic.Base64ImageSourceParam{
+								Data:      base64.StdEncoding.EncodeToString(img.Data),
+								MediaType: anthropic.Base64ImageSourceMediaType(img.MediaType),
+							},
+						},
+					},
+				})
+			}
 			result := anthropic.ContentBlockParamUnion{
 				OfToolResult: &anthropic.ToolResultBlockParam{
 					ToolUseID: m.ToolCallID,
-					Content: []anthropic.ToolResultBlockParamContentUnion{
-						{OfText: &anthropic.TextBlockParam{Text: m.Content}},
-					},
+					Content:   content,
 				},
 			}
 			out = append(out, anthropic.NewUserMessage(result))

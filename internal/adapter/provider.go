@@ -52,6 +52,7 @@ type ProviderProfile struct {
 	Provider                Provider          `json:"provider"`
 	UsesResponsesAPI        bool              `json:"uses_responses_api"`
 	SupportsReasoning       bool              `json:"supports_reasoning"`
+	SupportsImages          bool              `json:"supports_images"`
 	SupportsWebSearch       bool              `json:"supports_web_search"`
 	SupportsXSearch         bool              `json:"supports_x_search"`
 	SupportsCodeInterpreter bool              `json:"supports_code_interpreter"`
@@ -154,6 +155,7 @@ func buildProfile(cfg Config, usesResponses bool) ProviderProfile {
 		Provider:                provider,
 		UsesResponsesAPI:        usesResponses,
 		SupportsReasoning:       provider == ProviderOpenAI || provider == ProviderOpenAIAuth || provider == ProviderCopilot || provider == ProviderXAI || provider == ProviderOllama || provider == ProviderAnthropic || provider == ProviderGemini,
+		SupportsImages:          provider == ProviderAnthropic || provider == ProviderOpenAI || provider == ProviderOpenAIAuth || provider == ProviderCopilot || provider == ProviderGemini || provider == ProviderXAI,
 		SupportsWebSearch:       provider == ProviderOpenAI || provider == ProviderXAI || provider == ProviderAnthropic,
 		SupportsXSearch:         provider == ProviderXAI,
 		SupportsCodeInterpreter: provider == ProviderOpenAI || provider == ProviderXAI,

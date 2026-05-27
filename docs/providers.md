@@ -234,3 +234,22 @@ In the TUI, use the provider picker or:
 ```
 
 Switching provider in an active session rebuilds the adapter while preserving the session history.
+
+## Image support
+
+Image support varies by provider. Two capabilities matter:
+
+| Provider | Pasted images | `read_file` images |
+|---|---|---|
+| Anthropic | yes | yes |
+| OpenAI | yes | no |
+| ChatGPT OAuth (`openai-auth`) | yes | no |
+| GitHub Copilot | yes | no |
+| Gemini | yes | no |
+| xAI | yes | no |
+| Ollama | no | no |
+| OpenAI-compatible (NVIDIA NIM, etc.) | no | no |
+
+**Pasted images** — paste a screenshot path or `file:///` URL in the input; the image is sent as a native content block the model can see. Providers marked "no" receive only the text marker (no image data), avoiding API errors from text-only models.
+
+**`read_file` images** — `read_file("photo.png")` returns the image as a visual content block in the tool result. Only Anthropic supports image blocks in tool results today; other providers receive a text label with file metadata.

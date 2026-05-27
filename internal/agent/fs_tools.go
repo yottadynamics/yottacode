@@ -9,6 +9,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/yottadynamics/yottacode/internal/adapter"
 )
 
 const (
@@ -29,16 +31,17 @@ const (
 // locations (see DefaultDenyReadPaths) so prompt injection can't
 // silently exfiltrate keys; everything else is fair game.
 type ReadFileTool struct {
-	Cwd           *CwdRef
-	DenyReadPaths []string
+	Cwd            *CwdRef
+	DenyReadPaths  []string
+	SupportsImages bool
 }
 
 func (t *ReadFileTool) Name() string { return "read_file" }
 
 func (t *ReadFileTool) Description() string {
-	return "Read a UTF-8 text file. Output is `cat -n` style: every line is prefixed with its 1-indexed line number and a tab, " +
-		"so you can cite `file:line` directly and feed exact text to edit_file. " +
-		"Optional offset (1-indexed start line, default 1) and limit (lines, default 2000) read a specific range — use these instead of `sed -n 'A,Bp' file` via run_bash. " +
+	return "Read a file. For text files, output is `cat -n` style: every line is prefixed with its 1-indexed line number and a tab. " +
+		"For image files (png, jpg, gif, webp), the image is returned as visual content the model can see directly. " +
+		"Optional offset (1-indexed start line, default 1) and limit (lines, default 2000) apply to text files only. " +
 		"When more content follows the returned window, a trailing '…[truncated]' marker is appended."
 }
 
@@ -82,13 +85,11 @@ func (t *ReadFileTool) PreviewCall(argsJSON string) string {
 }
 
 func (t *ReadFileTool) Execute(ctx context.Context, argsJSON string) (string, error) {
-	var a readFileArgs
-	if err := json.Unmarshal([]byte(argsJSON), &a); err != nil {
-		return "", fmt.Errorf("read_file: invalid args: %w", err)
-	}
-	if a.Path == "" {
-		return "", fmt.Errorf("read_file: path is required")
-	}
+	res, err := t.ExecuteMultimodal(ctx, argsJSON)
+	return res.Content, err
+}
+
+func (t *ReadFileTool) readText(ctx context.Context, a readFileArgs) (string, error) {
 	startLine := a.Offset
 	if startLine < 1 {
 		startLine = 1
@@ -108,16 +109,12 @@ func (t *ReadFileTool) Execute(ctx context.Context, argsJSON string) (string, er
 	}
 	defer f.Close()
 
-	// Read up to maxReadBytes+1 so we can detect "file overflows our
-	// in-memory cap" vs "exact EOF".
 	buf := make([]byte, maxReadBytes+1)
 	n, err := io.ReadFull(f, buf)
 	switch {
 	case errors.Is(err, io.EOF):
-		// empty file — nothing to return.
 		return "", nil
 	case errors.Is(err, io.ErrUnexpectedEOF):
-		// fewer bytes than buf — normal for short files.
 		err = nil
 	}
 	if err != nil {
@@ -125,7 +122,6 @@ func (t *ReadFileTool) Execute(ctx context.Context, argsJSON string) (string, er
 	}
 	fileExceedsCap := n > maxReadBytes
 	if fileExceedsCap {
-		// Trim back to the last complete line so we don't emit a half line.
 		if last := strings.LastIndexByte(string(buf[:maxReadBytes]), '\n'); last >= 0 {
 			n = last + 1
 		} else {
@@ -134,13 +130,11 @@ func (t *ReadFileTool) Execute(ctx context.Context, argsJSON string) (string, er
 	}
 
 	lines := strings.Split(string(buf[:n]), "\n")
-	// A file ending in '\n' produces an empty trailing element; drop it.
 	if len(lines) > 0 && lines[len(lines)-1] == "" {
 		lines = lines[:len(lines)-1]
 	}
 	total := len(lines)
 	if startLine > total {
-		// Offset past EOF — empty result, no error.
 		return "", nil
 	}
 
@@ -163,6 +157,70 @@ func (t *ReadFileTool) Execute(ctx context.Context, argsJSON string) (string, er
 		sb.WriteString("…[truncated]")
 	}
 	return sb.String(), nil
+}
+
+const maxImageBytes = 20 * 1024 * 1024 // 20 MiB
+
+var imageMediaTypes = map[string]string{
+	".png":  "image/png",
+	".jpg":  "image/jpeg",
+	".jpeg": "image/jpeg",
+	".gif":  "image/gif",
+	".webp": "image/webp",
+}
+
+func imageMediaType(path string) (string, bool) {
+	ext := strings.ToLower(filepath.Ext(path))
+	mt, ok := imageMediaTypes[ext]
+	return mt, ok
+}
+
+func (t *ReadFileTool) ExecuteMultimodal(ctx context.Context, argsJSON string) (MultimodalResult, error) {
+	var a readFileArgs
+	if err := json.Unmarshal([]byte(argsJSON), &a); err != nil {
+		return MultimodalResult{}, fmt.Errorf("read_file: invalid args: %w", err)
+	}
+	if a.Path == "" {
+		return MultimodalResult{}, fmt.Errorf("read_file: path is required")
+	}
+
+	p := resolvePath(t.Cwd.Get(), a.Path)
+	if err := ValidateReadPath(p, t.DenyReadPaths); err != nil {
+		return MultimodalResult{}, fmt.Errorf("read_file: %w", err)
+	}
+
+	mediaType, isImage := imageMediaType(p)
+	if !isImage {
+		text, err := t.readText(ctx, a)
+		return MultimodalResult{Content: text}, err
+	}
+
+	info, err := os.Stat(p)
+	if err != nil {
+		return MultimodalResult{}, fmt.Errorf("read_file: %w", err)
+	}
+	label := fmt.Sprintf("[image: %s, %s, %d bytes]", filepath.Base(p), mediaType, info.Size())
+
+	if !t.SupportsImages {
+		return MultimodalResult{
+			Content: label + " — current model does not support image input",
+		}, nil
+	}
+	if info.Size() > maxImageBytes {
+		return MultimodalResult{
+			Content: label + " — image exceeds 20 MiB size limit",
+		}, nil
+	}
+
+	data, err := os.ReadFile(p)
+	if err != nil {
+		return MultimodalResult{}, fmt.Errorf("read_file: %w", err)
+	}
+
+	return MultimodalResult{
+		Content: label,
+		Images:  []adapter.ImageBlock{{Data: data, MediaType: mediaType}},
+	}, nil
 }
 
 // WriteFileTool creates or overwrites a file. Always needs approval; the

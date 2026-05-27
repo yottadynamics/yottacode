@@ -398,6 +398,13 @@ type Model struct {
 	pastes   map[string]string
 	pasteSeq int
 
+	// pastedImages maps image markers to their loaded ImageBlock data.
+	// When the user pastes a path to an image file, handleLargePaste
+	// detects the extension and reads the file. On submit,
+	// collectPastedImages() returns the blocks to attach to the user
+	// message.
+	pastedImages map[string]adapter.ImageBlock
+
 	turnActive bool
 	turnCancel context.CancelFunc
 	eventsCh   chan agent.Event
@@ -997,15 +1004,25 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.mcpPickerOpen {
 			return m.updateMCPPicker(msg)
 		}
+		// Intercept image pastes before any other handling. Terminals
+		// paste image paths as file:/// URLs or raw paths — detect
+		// these regardless of size and replace with a compact marker.
+		if msg.Paste {
+			if marker, ok := m.tryImagePaste(string(msg.Runes)); ok {
+				syn := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(marker)}
+				m.preGrowTextarea()
+				var cmd tea.Cmd
+				m.textInput, cmd = m.textInput.Update(syn)
+				m.fitTextareaHeight()
+				return m, cmd
+			}
+		}
 		// Intercept large bracketed pastes before any other handling.
 		// Bubbletea sets msg.Paste=true with all the pasted runes in a
 		// single KeyMsg. For anything over the threshold, we swap the
 		// runes for a short marker and stash the original — keeps the
 		// cmdline from stretching to fill the screen on a 5KB paste.
 		if msg.Paste && (len(msg.Runes) > pasteThreshold || strings.ContainsRune(string(msg.Runes), '\n')) {
-			// Marker-out anything either large or multi-line — both stretch
-			// the cmdline beyond a single readable row and we'd rather show
-			// "[Pasted text #N: 5 lines, 87 bytes]" than the literal paste.
 			return m.handleLargePaste(msg)
 		}
 		// While the path-trust modal is up, route keys to that handler
@@ -1200,6 +1217,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				input = m.expandPastes(input)
 				m.pastes = nil
+				m.pastedImages = nil
 				select {
 				case m.userMsgCh <- input:
 					m.textInput.SetValue("")
@@ -1573,8 +1591,11 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			input = m.expandPastes(input)
 			m.pastes = nil
 			if strings.HasPrefix(input, "/") {
+				m.pastedImages = nil
 				return m.runSlash(input)
 			}
+			// pastedImages is consumed by startTurn → startTurnWithDisplay
+			// via collectPastedImages(); no nil needed here.
 			return m.startTurn(input)
 		default:
 			m.preGrowTextarea()
@@ -2442,6 +2463,10 @@ const pasteThreshold = 200
 // handleLargePaste swaps a big bracketed paste for a short placeholder
 // marker. The original content is stashed in m.pastes keyed by the
 // marker text; expandPastes() puts it back on submit.
+//
+// Image file paths are detected by extension and loaded eagerly — the
+// marker reads "[Image: filename.png]" and the decoded bytes are
+// stashed in m.pastedImages for attachment on submit.
 func (m Model) handleLargePaste(msg tea.KeyMsg) (Model, tea.Cmd) {
 	content := string(msg.Runes)
 	m.pasteSeq++
@@ -2451,11 +2476,6 @@ func (m Model) handleLargePaste(msg tea.KeyMsg) (Model, tea.Cmd) {
 		m.pastes = map[string]string{}
 	}
 	m.pastes[marker] = content
-	// Insert the marker into the textarea via a synthetic non-paste
-	// KeyMsg. We strip Paste:true so the textarea treats this as
-	// regular typed input — a bracketed-paste flag would re-trigger
-	// any future paste-aware logic and we want the marker treated as
-	// plain text.
 	syn := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(marker)}
 	m.preGrowTextarea()
 	var cmd tea.Cmd
@@ -2464,9 +2484,91 @@ func (m Model) handleLargePaste(msg tea.KeyMsg) (Model, tea.Cmd) {
 	return m, cmd
 }
 
+var pasteImageExts = map[string]string{
+	".png":  "image/png",
+	".jpg":  "image/jpeg",
+	".jpeg": "image/jpeg",
+	".gif":  "image/gif",
+	".webp": "image/webp",
+}
+
+// tryImagePaste checks whether the pasted content is a path or file://
+// URL pointing to an image file. If so it reads the file, stashes the
+// decoded bytes in m.pastedImages, and returns the compact marker.
+// Returns ("", false) when the paste is not an image path.
+func (m *Model) tryImagePaste(content string) (string, bool) {
+	path := strings.TrimSpace(content)
+	if strings.ContainsRune(path, '\n') {
+		return "", false
+	}
+	path = fileURLToPath(path)
+	ext := strings.ToLower(filepath.Ext(path))
+	mediaType, ok := pasteImageExts[ext]
+	if !ok {
+		return "", false
+	}
+	info, err := os.Stat(path)
+	if err != nil || info.IsDir() {
+		return "", false
+	}
+	const maxPasteImageBytes = 20 * 1024 * 1024
+	if info.Size() > maxPasteImageBytes {
+		return "", false
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", false
+	}
+	m.pasteSeq++
+	marker := fmt.Sprintf("[Image #%d: %s]", m.pasteSeq, filepath.Base(path))
+	if m.pastedImages == nil {
+		m.pastedImages = map[string]adapter.ImageBlock{}
+	}
+	m.pastedImages[marker] = adapter.ImageBlock{Data: data, MediaType: mediaType}
+	return marker, true
+}
+
+// fileURLToPath converts a file:// URL to a local path, decoding
+// percent-encoded characters. Returns the input unchanged when it
+// doesn't start with file://.
+func fileURLToPath(s string) string {
+	if !strings.HasPrefix(s, "file://") {
+		return s
+	}
+	s = strings.TrimPrefix(s, "file://")
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); i++ {
+		if s[i] == '%' && i+2 < len(s) {
+			hi := unhex(s[i+1])
+			lo := unhex(s[i+2])
+			if hi >= 0 && lo >= 0 {
+				b.WriteByte(byte(hi<<4 | lo))
+				i += 2
+				continue
+			}
+		}
+		b.WriteByte(s[i])
+	}
+	return b.String()
+}
+
+func unhex(c byte) int {
+	switch {
+	case '0' <= c && c <= '9':
+		return int(c - '0')
+	case 'a' <= c && c <= 'f':
+		return int(c - 'a' + 10)
+	case 'A' <= c && c <= 'F':
+		return int(c - 'A' + 10)
+	}
+	return -1
+}
+
 // expandPastes swaps any placeholder markers present in s for their
 // stashed full content. No-op when there are no markers — safe to call
-// on every submission.
+// on every submission. Image markers are left in place — they serve as
+// readable labels for the model ("I pasted [Image #1: photo.png]").
 func (m Model) expandPastes(s string) string {
 	if len(m.pastes) == 0 {
 		return s
@@ -2475,6 +2577,21 @@ func (m Model) expandPastes(s string) string {
 		s = strings.ReplaceAll(s, marker, content)
 	}
 	return s
+}
+
+// collectPastedImages returns all image blocks stashed during paste
+// handling and clears the stash. Called on submit alongside
+// expandPastes.
+func (m *Model) collectPastedImages() []adapter.ImageBlock {
+	if len(m.pastedImages) == 0 {
+		return nil
+	}
+	imgs := make([]adapter.ImageBlock, 0, len(m.pastedImages))
+	for _, img := range m.pastedImages {
+		imgs = append(imgs, img)
+	}
+	m.pastedImages = nil
+	return imgs
 }
 
 const maxTextareaLines = 6
@@ -2839,9 +2956,16 @@ func (m Model) startTurnWithDisplay(input, displayLabel string) (tea.Model, tea.
 		}
 	}
 
+	var userImages []adapter.ImageBlock
+	if m.providerProfile.SupportsImages {
+		userImages = m.collectPastedImages()
+	} else {
+		m.pastedImages = nil
+	}
 	m.sess.Messages = append(m.sess.Messages, adapter.Message{
 		Role:    adapter.RoleUser,
 		Content: input,
+		Images:  userImages,
 	})
 	// First user submission this launch — drops the onboarding hint
 	// footer below the input from now on.

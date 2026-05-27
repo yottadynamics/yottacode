@@ -37,6 +37,21 @@ func toolParallelSafe(t Tool, argsJSON string) bool {
 	return ok && ps.ParallelSafe(argsJSON)
 }
 
+// MultimodalResult carries the output of a multimodal tool execution —
+// text content plus optional image blocks.
+type MultimodalResult struct {
+	Content string
+	Images  []adapter.ImageBlock
+}
+
+// MultimodalTool is an optional interface for tools that can produce
+// image content alongside text output. The agent loop prefers
+// ExecuteMultimodal over Execute when both are available; images are
+// attached to the tool-result message so the model can see them.
+type MultimodalTool interface {
+	ExecuteMultimodal(ctx context.Context, argsJSON string) (MultimodalResult, error)
+}
+
 // Mutator is the optional capability marker for tools that modify files
 // on disk. The checkpoint subsystem queries this before tool.Execute to
 // capture pre-images so /checkpoints can restore. PathsToSnapshot

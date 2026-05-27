@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -186,8 +187,14 @@ type geminiContent struct {
 type geminiPart struct {
 	Text             string                  `json:"text,omitempty"`
 	Thought          bool                    `json:"thought,omitempty"`
+	InlineData       *geminiInlineData       `json:"inlineData,omitempty"`
 	FunctionCall     *geminiFunctionCall     `json:"functionCall,omitempty"`
 	FunctionResponse *geminiFunctionResponse `json:"functionResponse,omitempty"`
+}
+
+type geminiInlineData struct {
+	MimeType string `json:"mimeType"`
+	Data     string `json:"data"`
 }
 
 type geminiFunctionCall struct {
@@ -238,9 +245,18 @@ func buildGeminiRequest(messages []Message, tools []Tool) geminiRequest {
 			}
 			sysParts = append(sysParts, geminiPart{Text: m.Content})
 		case RoleUser:
+			parts := []geminiPart{{Text: m.Content}}
+			for _, img := range m.Images {
+				parts = append(parts, geminiPart{
+					InlineData: &geminiInlineData{
+						MimeType: img.MediaType,
+						Data:     base64.StdEncoding.EncodeToString(img.Data),
+					},
+				})
+			}
 			req.Contents = append(req.Contents, geminiContent{
 				Role:  "user",
-				Parts: []geminiPart{{Text: m.Content}},
+				Parts: parts,
 			})
 		case RoleAssistant:
 			var parts []geminiPart

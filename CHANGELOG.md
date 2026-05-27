@@ -8,6 +8,19 @@ the project uses semantic versioning once it's past `1.0.0`.
 
 ### Added
 
+- **Image support.** `read_file` now detects image files (png, jpg, gif,
+  webp) and returns the image data as a native visual content block on
+  providers that support it (Anthropic). On other providers the tool
+  returns a text label with file metadata. The adapter layer carries a
+  new `SupportsImages` capability flag on the provider profile.
+- **Image paste in the TUI.** Pasting an image file path or `file:///`
+  URL in the input box is detected and replaced with a compact
+  `[Image #N: filename.png]` marker. The image bytes are read eagerly
+  and attached to the user message as a native image content block on
+  vision-capable providers (Anthropic, OpenAI, Gemini, xAI, Copilot).
+  On text-only providers (Ollama, OpenAI-compatible) the marker is sent
+  as plain text and the image data is not transmitted, avoiding API
+  errors from models without vision support.
 - MCP (Model Context Protocol) client support. Configure stdio-based
   MCP servers under `[[mcp_servers]]` in `~/.yottacode/config.toml`;
   each server's tools register as `mcp/<server>/<tool>` in the agent

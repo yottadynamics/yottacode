@@ -67,7 +67,7 @@ First-launch trust prompt on each new workspace (mirroring Claude Code) records 
 
 ### Polished terminal UX
 
-Inline rendering keeps your scrollback intact. Markdown-rendered assistant output, slash-command palette with Tab completion, multi-line input via `Ctrl+J`, input history, and a `?` cheatsheet overlay.
+Inline rendering keeps your scrollback intact. Markdown-rendered assistant output, slash-command palette with Tab completion, multi-line input via `Ctrl+J`, input history, image paste support (paste a screenshot path or `file:///` URL and the model sees it), and a `?` cheatsheet overlay.
 
 ### Repo-aware tool surface
 

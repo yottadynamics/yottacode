@@ -2,8 +2,10 @@ package adapter
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 
 	"github.com/openai/openai-go"
@@ -245,7 +247,22 @@ func splitForResponses(ms []Message) (instructions string, items []responses.Res
 			}
 			instructions += m.Content
 		case RoleUser:
-			items = append(items, responses.ResponseInputItemParamOfMessage(m.Content, responses.EasyInputMessageRoleUser))
+			if len(m.Images) > 0 {
+				parts := responses.ResponseInputMessageContentListParam{
+					responses.ResponseInputContentParamOfInputText(m.Content),
+				}
+				for _, img := range m.Images {
+					dataURL := fmt.Sprintf("data:%s;base64,%s", img.MediaType, base64.StdEncoding.EncodeToString(img.Data))
+					parts = append(parts, responses.ResponseInputContentUnionParam{
+						OfInputImage: &responses.ResponseInputImageParam{
+							ImageURL: param.NewOpt(dataURL),
+						},
+					})
+				}
+				items = append(items, responses.ResponseInputItemParamOfMessage(parts, responses.EasyInputMessageRoleUser))
+			} else {
+				items = append(items, responses.ResponseInputItemParamOfMessage(m.Content, responses.EasyInputMessageRoleUser))
+			}
 		case RoleAssistant:
 			if m.Content != "" {
 				items = append(items, responses.ResponseInputItemParamOfMessage(m.Content, responses.EasyInputMessageRoleAssistant))

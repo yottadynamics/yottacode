@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -504,7 +505,18 @@ func splitForOpenAIAuth(ms []Message) (instructions string, items []inputItem) {
 			}
 			instructions += m.Content
 		case RoleUser:
-			items = append(items, inputItem{Role: "user", Content: m.Content})
+			if len(m.Images) > 0 {
+				parts := []any{
+					map[string]any{"type": "input_text", "text": m.Content},
+				}
+				for _, img := range m.Images {
+					dataURL := fmt.Sprintf("data:%s;base64,%s", img.MediaType, base64.StdEncoding.EncodeToString(img.Data))
+					parts = append(parts, map[string]any{"type": "input_image", "image_url": dataURL})
+				}
+				items = append(items, inputItem{Role: "user", Content: parts})
+			} else {
+				items = append(items, inputItem{Role: "user", Content: m.Content})
+			}
 		case RoleAssistant:
 			if m.Content != "" {
 				items = append(items, inputItem{Role: "assistant", Content: m.Content})
