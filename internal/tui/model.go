@@ -920,7 +920,15 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.WindowSizeMsg:
 		wasReady := m.ready
-		m.width = msg.Width
+		// Reserve scrollbackLeftMargin cols on the left so every emitted
+		// line gets a uniform left margin (added in queuePrintln). All
+		// downstream width math (tool cards, table sizing, prose wrap)
+		// operates on the reduced m.width so content never overflows the
+		// margin we just claimed.
+		m.width = msg.Width - scrollbackLeftMargin
+		if m.width < 20 {
+			m.width = msg.Width // terminal too narrow; bypass the margin
+		}
 		m.height = msg.Height
 		m.md = newMarkdownRenderer(msg.Width - 4)
 		m.textInput.SetWidth(liveContentWidth(msg.Width))
@@ -3525,12 +3533,27 @@ func (m *Model) handleStreamLine(line string) {
 // cardMaxWidthCap for visual consistency.
 const proseMaxWidth = 120
 
+// scrollbackLeftMargin is the column inset applied to every line emitted
+// to scrollback (cards, prose, user input, system notices, footers).
+// We claim it once in the WindowSizeMsg handler — m.width is the
+// terminal width minus this margin, so every downstream width calc
+// (table sizing, prose wrap, card width) naturally leaves room for it —
+// and prepend the spaces in queuePrintln. One knob shifts the whole
+// conversation canvas without touching individual style padding.
+const scrollbackLeftMargin = 2
+
 // emitAssistantProse renders a prose line from the assistant, word-wraps
 // it to a comfortable reading width, and appends the result to scrollback.
 // The wrap width is capped at proseMaxWidth so wide terminals still get
-// a readable column. Continuation lines get a 4-space hanging indent
-// (matching the body-padding + list-marker column) so wrapped text
-// stays visually grouped with its first line.
+// a readable column. Continuation lines after a wrap pick up a hanging
+// indent that matches the first line's visible content column.
+//
+// Indent is owned by the per-line style (styleAssistantBody, etc., via
+// PaddingLeft(2)). Earlier code added an extra "  " prefix to the first
+// line of each paragraph here, which doubled the indent — paragraph
+// openers landed at column 5 while continuations stayed at column 3.
+// Removing the explicit prefix keeps every prose line at the same
+// 2-space indent regardless of whether it opens a paragraph.
 func (m *Model) emitAssistantProse(line string) {
 	rendered := renderAssistantBlock(line)
 	if strings.TrimSpace(rendered) == "" {
@@ -3538,10 +3561,7 @@ func (m *Model) emitAssistantProse(line string) {
 		m.appendLine(rendered)
 		return
 	}
-	if m.paragraphStart {
-		m.paragraphStart = false
-		rendered = "  " + rendered
-	}
+	m.paragraphStart = false
 	wrapW := m.width
 	if wrapW <= 0 || wrapW > proseMaxWidth {
 		wrapW = proseMaxWidth
@@ -4415,14 +4435,21 @@ func (m *Model) queuePrintln(s string) {
 		width = 80
 	}
 	const clearLine = "\r\x1b[2K"
+	margin := strings.Repeat(" ", scrollbackLeftMargin)
 	for _, line := range strings.Split(s, "\n") {
-		if line == "" || ansi.StringWidth(line) <= width {
-			m.pendingCmds = append(m.pendingCmds, tea.Println(clearLine+line))
+		// Blank rows emit as bare empty lines so visual paragraph
+		// breaks stay clean — no trailing whitespace to scroll past.
+		if line == "" {
+			m.pendingCmds = append(m.pendingCmds, tea.Println(clearLine))
+			continue
+		}
+		if ansi.StringWidth(line) <= width {
+			m.pendingCmds = append(m.pendingCmds, tea.Println(clearLine+margin+line))
 			continue
 		}
 		wrapped := ansi.Hardwrap(line, width, true)
 		for _, row := range strings.Split(wrapped, "\n") {
-			m.pendingCmds = append(m.pendingCmds, tea.Println(clearLine+row))
+			m.pendingCmds = append(m.pendingCmds, tea.Println(clearLine+margin+row))
 		}
 	}
 }

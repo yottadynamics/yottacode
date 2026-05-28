@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/openai/openai-go"
 	"github.com/openai/openai-go/option"
@@ -82,18 +83,32 @@ func (a *chatAdapter) ChatStream(ctx context.Context, messages []Message, tools 
 		stream := a.client.Chat.Completions.NewStreaming(ctx, params)
 		defer stream.Close()
 
-		acc := openai.ChatCompletionAccumulator{}
-		var finishReason string
+		// We do all accumulation ourselves rather than via the SDK's
+		// ChatCompletionAccumulator: openai-go v1.12.0 panics in
+		// streamaccumulator.go:172 whenever a delta carries
+		// `"tool_calls": []` (the JSON field is present but empty),
+		// which NVIDIA NIM's reasoning models emit on some chunks.
+		// Tracking content + tool-call args directly here sidesteps the
+		// upstream bug without losing any behavior — we already walk
+		// every chunk for streaming events anyway.
+		var (
+			content       strings.Builder
+			finishReason  string
+			toolCallOrder []int64
+			toolCallByIdx = map[int64]*ToolCall{}
+			sawChoice     bool
+		)
 		for stream.Next() {
 			chunk := stream.Current()
-			acc.AddChunk(chunk)
 			if len(chunk.Choices) == 0 {
 				continue
 			}
-			if r := chunk.Choices[0].FinishReason; r != "" {
+			sawChoice = true
+			choice := chunk.Choices[0]
+			if r := choice.FinishReason; r != "" {
 				finishReason = r
 			}
-			delta := chunk.Choices[0].Delta
+			delta := choice.Delta
 			if reasoning := extractReasoning(delta); reasoning != "" {
 				select {
 				case <-ctx.Done():
@@ -103,6 +118,7 @@ func (a *chatAdapter) ChatStream(ctx context.Context, messages []Message, tools 
 				}
 			}
 			if delta.Content != "" {
+				content.WriteString(delta.Content)
 				select {
 				case <-ctx.Done():
 					out <- StreamEvent{Kind: EventErr, Err: ctx.Err()}
@@ -110,19 +126,28 @@ func (a *chatAdapter) ChatStream(ctx context.Context, messages []Message, tools 
 				case out <- StreamEvent{Kind: EventTokenDelta, Token: delta.Content}:
 				}
 			}
-			// Tool-call argument deltas are accumulated invisibly by
-			// the SDK's ChatCompletionAccumulator, so they don't
-			// surface as Content/reasoning. Emit a heartbeat per
-			// active tool-call delta so the TUI's tok/s indicator
-			// keeps moving on tool-call-only turns. Without this, a
-			// chat-completions provider (Ollama / vLLM / xAI / etc.)
-			// that goes straight to a tool call reads "0.0 tok/s"
-			// the entire time the args stream — same fix pattern as
-			// the Responses and Anthropic adapters.
+			// Tool-call argument deltas don't surface as
+			// Content/reasoning, so accumulate them by index and
+			// emit a heartbeat per non-empty delta. Without the
+			// heartbeat a chat-completions provider that goes
+			// straight to a tool call reads "0.0 tok/s" for the
+			// whole turn — same fix pattern as the Responses and
+			// Anthropic adapters.
 			for _, tc := range delta.ToolCalls {
 				if tc.ID == "" && tc.Function.Name == "" && tc.Function.Arguments == "" {
 					continue
 				}
+				acc, ok := toolCallByIdx[tc.Index]
+				if !ok {
+					acc = &ToolCall{}
+					toolCallByIdx[tc.Index] = acc
+					toolCallOrder = append(toolCallOrder, tc.Index)
+				}
+				if tc.ID != "" {
+					acc.ID = tc.ID
+				}
+				acc.Name += tc.Function.Name
+				acc.ArgsJSON += tc.Function.Arguments
 				select {
 				case <-ctx.Done():
 					out <- StreamEvent{Kind: EventErr, Err: ctx.Err()}
@@ -135,12 +160,18 @@ func (a *chatAdapter) ChatStream(ctx context.Context, messages []Message, tools 
 			out <- StreamEvent{Kind: EventErr, Err: err}
 			return
 		}
-		if len(acc.Choices) == 0 {
+		if !sawChoice {
 			out <- StreamEvent{Kind: EventErr, Err: errors.New("adapter: empty completion")}
 			return
 		}
-		final := fromOpenAIAssistant(acc.Choices[0].Message)
-		final.StopReason = finishReason
+		final := Message{
+			Role:       RoleAssistant,
+			Content:    content.String(),
+			StopReason: finishReason,
+		}
+		for _, idx := range toolCallOrder {
+			final.ToolCalls = append(final.ToolCalls, *toolCallByIdx[idx])
+		}
 		out <- StreamEvent{Kind: EventDone, Final: &final}
 	}()
 	return out
@@ -240,17 +271,3 @@ func extractReasoning(delta openai.ChatCompletionChunkChoiceDelta) string {
 	return ""
 }
 
-func fromOpenAIAssistant(m openai.ChatCompletionMessage) Message {
-	out := Message{
-		Role:    RoleAssistant,
-		Content: m.Content,
-	}
-	for _, tc := range m.ToolCalls {
-		out.ToolCalls = append(out.ToolCalls, ToolCall{
-			ID:       tc.ID,
-			Name:     tc.Function.Name,
-			ArgsJSON: tc.Function.Arguments,
-		})
-	}
-	return out
-}
