@@ -207,6 +207,7 @@ See [`docs/worktrees.md`](docs/worktrees.md).
 | `/clear` | Start a fresh session (current is saved) |
 | `/permissions` | Show where permissions are configured |
 | `/system` | Show the active system prompt |
+| `/context` | Show context window usage breakdown (bar + per-bucket legend + MCP/Memory/Skills sections) |
 | `/sessions` | Open the sessions menu (or `/sessions <id\|name>` to resume) |
 | `/model` | Open the model picker (`list [all]`, `<name>`) |
 | `/provider` | Open the provider menu (`list`, `use`, `add`, `remove`, `models`) |
