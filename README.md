@@ -154,6 +154,24 @@ Reusable capability playbooks the agent loads on demand. 16 built-in skills cove
 
 Drop a directory into `~/.yottacode/skills/<slug>/` (user-scope) or `.yottacode/skills/<slug>/` (project-scope) — project shadows user shadows built-in. Format follows the [agentskills.io spec](https://agentskills.io/specification).
 
+Install from a path, URL, or GitHub shorthand:
+
+```bash
+yottacode skills install ./my-skill/                       # local dir
+yottacode skills install https://example.com/SKILL.md      # single-file URL
+yottacode skills install obra/superpowers/skills/test-driven-development
+yottacode skills list
+yottacode skills check                                     # report drift vs lockfile
+yottacode skills update [name] [--force]                   # refetch from recorded source
+yottacode skills uninstall <name>
+yottacode skills new <slug>                                # scaffold a starter SKILL.md
+yottacode skills validate <path>                           # lint a SKILL.md (file or dir)
+```
+
+Every install records source + content-hash in `~/.yottacode/skills/.lock.json` so `check` can flag hand-edits and `update` can refresh in place without clobbering them (use `--force` to override).
+
+The same surface is mirrored in the TUI as `/skills install|list|show|uninstall|check|update`.
+
 > Skills are **off by default each session** — the model sees no skill list until you open `/skills` and pick which ones to enable. Slash-form invocations (e.g. `/diagnose`) bypass the enablement gate because typing the slash IS the selection.
 
 ### Cross-Session Recall

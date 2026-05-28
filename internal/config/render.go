@@ -105,6 +105,22 @@ func Render(cfg Config) string {
 		b.WriteString("\n")
 	}
 
+	// [skills] is only rendered when default_on is non-empty so the
+	// TOML stays minimal for users who haven't pinned any persistent
+	// preferences. Load backfills an empty DefaultOn when the section
+	// is absent, so omitting it here is lossless.
+	if len(cfg.Skills.DefaultOn) > 0 {
+		b.WriteString("[skills]\n")
+		b.WriteString("default_on = [")
+		for i, name := range cfg.Skills.DefaultOn {
+			if i > 0 {
+				b.WriteString(", ")
+			}
+			fmt.Fprintf(&b, "%q", name)
+		}
+		b.WriteString("]\n\n")
+	}
+
 	for _, s := range cfg.MCPServers {
 		b.WriteString("[[mcp_servers]]\n")
 		fmt.Fprintf(&b, "name    = %q\n", s.Name)

@@ -409,8 +409,26 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 	// the model reaching for a skill the user didn't ask about. Slash
 	// invocations stay available so a user who knows the name can
 	// always pull a skill in one keystroke.
+	//
+	// Persistent override: `[skills] default_on = [...]` in config
+	// seeds the enablement map with the named skills so a user who's
+	// found a stable workflow doesn't have to redo the picker dance
+	// each session. Names that don't match any loaded skill emit a
+	// warning so a typo surfaces instead of silently no-op'ing.
 	skillTool := &agent.SkillTool{All: skillsRes.Skills}
-	skillTool.SetEnabled(map[string]bool{}) // empty map = none enabled
+	defaultOn := map[string]bool{}
+	loadedNames := map[string]bool{}
+	for _, sk := range skillsRes.Skills {
+		loadedNames[sk.Name] = true
+	}
+	for _, name := range fileCfg.Skills.DefaultOn {
+		if !loadedNames[name] {
+			fmt.Fprintln(os.Stderr, "skills: [skills] default_on references unknown skill "+name+" — ignoring")
+			continue
+		}
+		defaultOn[name] = true
+	}
+	skillTool.SetEnabled(defaultOn)
 	reg.Register(skillTool)
 
 	cfg := agent.LoopConfig{

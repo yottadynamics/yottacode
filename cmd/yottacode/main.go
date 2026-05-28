@@ -71,6 +71,7 @@ func newCLI() *cobra.Command {
 		newTrustCmd(),
 		newWorktreeCmd(),
 		newMcpCmd(),
+		newSkillsCmd(),
 		newVersionCmd(),
 	)
 	applyWrappedUsageTemplate(root)

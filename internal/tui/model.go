@@ -301,6 +301,15 @@ type Model struct {
 	skillsPickerOpen bool
 	skillsPicker     *skillsPickerState
 
+	// skillsMenuOpen / skillsMenu drive the top-level /skills overlay.
+	// /skills now opens a menu (Catalog / Install / Check / Update);
+	// the picker is one of the menu's options (Catalog). The two
+	// overlays are mutually exclusive — picking Catalog closes the
+	// menu before opening the picker, so only one inline overlay is
+	// ever active at a time.
+	skillsMenuOpen bool
+	skillsMenu     *skillsMenuState
+
 	// subagentInbox is a long-lived channel the AgentTool pushes
 	// SubagentBackgroundDone events onto from detached goroutines
 	// when a background subagent finishes after the parent turn has
@@ -1016,6 +1025,9 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.subagentsPickerOpen {
 			return m.updateSubagentsPicker(msg)
+		}
+		if m.skillsMenuOpen {
+			return m.updateSkillsMenu(msg)
 		}
 		if m.skillsPickerOpen {
 			return m.updateSkillsPicker(msg)
@@ -1857,6 +1869,9 @@ func (m Model) View() string {
 	}
 	if m.themePickerOpen && m.themePicker != nil {
 		return m.renderInlineOverlay(renderThemePicker(m.themePicker, m.width))
+	}
+	if m.skillsMenuOpen && m.skillsMenu != nil {
+		return m.renderInlineOverlay(renderSkillsMenu(m.skillsMenu, m.width))
 	}
 	if m.skillsPickerOpen && m.skillsPicker != nil {
 		return m.renderInlineOverlay(renderSkillsPicker(m.skillsPicker, m.width))
