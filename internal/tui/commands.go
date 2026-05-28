@@ -120,6 +120,7 @@ func init() {
 		// Utilities.
 		{Name: "clear", Help: "start a fresh session (current is saved)", Run: cmdClear},
 		{Name: "system", Help: "show the active system prompt", Run: cmdSystem, PreservesTurn: true},
+		{Name: "context", Help: "show context window usage breakdown", Run: cmdContext, PreservesTurn: true},
 		{Name: "doctor", Help: "probe provider auth and model access", Run: cmdDoctor, PreservesTurn: true},
 		{Name: "redo", Help: "edit and re-run the most recent message", Run: cmdRedo},
 		{Name: "recall", Args: "<query>", Help: "full-text search across every saved session", Run: cmdRecall, PreservesTurn: true},

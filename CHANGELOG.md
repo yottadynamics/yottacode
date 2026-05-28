@@ -8,6 +8,17 @@ the project uses semantic versioning once it's past `1.0.0`.
 
 ### Added
 
+- **`/context` slash command.** New inspection view showing how the
+  context window is being spent: a segmented progress bar painted by
+  bucket (system prompt, system tools, MCP tools, memory files,
+  skills, messages) plus per-bucket legend and dedicated
+  `MCP tools · /mcp`, `Memory files · /memory`, and
+  `Skills · /skills · loaded on demand` sections that enumerate
+  individual items with token estimates. `PreservesTurn=true` —
+  safe to invoke while a turn is streaming. New helpers
+  (`EstimateText`, `EstimateToolSchemas`, `SplitMessages`) live in
+  `internal/contextwindow` so the same math drives the status-bar
+  `ctx` segment and the new view.
 - **Image support.** `read_file` now detects image files (png, jpg, gif,
   webp) and returns the image data as a native visual content block on
   providers that support it (Anthropic). On other providers the tool
