@@ -106,3 +106,80 @@ func TestValidateKey(t *testing.T) {
 		t.Errorf("ollama: status %v (should be unknown — no validation)", r.Status)
 	}
 }
+
+func TestDetectEmbeddingModels(t *testing.T) {
+	tests := []struct {
+		name      string
+		installed []string
+		want      []string
+	}{
+		{"none", []string{"llama3.1:8b", "qwen3.5:latest"}, nil},
+		{"nomic only", []string{"llama3.1:8b", "nomic-embed-text:latest"}, []string{"nomic-embed-text"}},
+		{"minilm only", []string{"all-minilm:latest"}, []string{"all-minilm"}},
+		{"both prefer nomic", []string{"all-minilm", "nomic-embed-text"}, []string{"nomic-embed-text", "all-minilm"}},
+		{"empty list", nil, nil},
+		{"tag stripped", []string{"nomic-embed-text:v1.5"}, []string{"nomic-embed-text"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := DetectEmbeddingModels(tt.installed)
+			if len(got) != len(tt.want) {
+				t.Fatalf("got %v, want %v", got, tt.want)
+			}
+			for i := range got {
+				if got[i] != tt.want[i] {
+					t.Errorf("got[%d]=%q, want %q", i, got[i], tt.want[i])
+				}
+			}
+		})
+	}
+}
+
+func TestOllamaPull_Success(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/api/pull" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		w.Write([]byte(`{"status":"pulling manifest"}` + "\n"))
+		w.Write([]byte(`{"status":"success"}` + "\n"))
+	}))
+	defer srv.Close()
+
+	err := OllamaPull(context.Background(), srv.URL, "nomic-embed-text")
+	if err != nil {
+		t.Fatalf("expected success, got %v", err)
+	}
+}
+
+func TestOllamaPull_ServerError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	err := OllamaPull(context.Background(), srv.URL, "nomic-embed-text")
+	if err == nil {
+		t.Fatal("expected error for 500 response")
+	}
+}
+
+func TestOllamaPull_Canceled(t *testing.T) {
+	handlerDone := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-handlerDone
+	}))
+	defer func() {
+		close(handlerDone)
+		srv.Close()
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	err := OllamaPull(ctx, srv.URL, "nomic-embed-text")
+	if err == nil {
+		t.Fatal("expected error for canceled context")
+	}
+}

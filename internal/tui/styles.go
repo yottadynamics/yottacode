@@ -94,6 +94,7 @@ var (
 	styleStatusModel      lipgloss.Style
 	styleAuto             lipgloss.Style
 	styleError            lipgloss.Style
+	styleWarnIcon         lipgloss.Style
 	styleApprovalBox      lipgloss.Style
 	stylePaletteBox       lipgloss.Style
 	stylePaletteItem      lipgloss.Style
@@ -224,6 +225,7 @@ func buildStyles(p themes.Palette) {
 	styleStatusModel = lipgloss.NewStyle().Foreground(colorContent)
 	styleAuto = lipgloss.NewStyle().Foreground(colorMuted).Italic(true)
 	styleError = lipgloss.NewStyle().Foreground(colorErr).Bold(true)
+	styleWarnIcon = lipgloss.NewStyle().Foreground(colorWarning).Bold(true)
 	styleApprovalBox = lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(colorWarn).

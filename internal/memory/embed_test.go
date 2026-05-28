@@ -113,3 +113,48 @@ func TestNewEmbedClient_StripV1Suffix(t *testing.T) {
 		t.Errorf("expected /v1 stripped; got %s", client.BaseURL)
 	}
 }
+
+func TestStatus_ReachableAndInstalled(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{
+			"models": []map[string]string{
+				{"name": "nomic-embed-text:latest"},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	client := NewEmbedClient(srv.URL, "nomic-embed-text")
+	reachable, installed := client.Status(context.Background())
+	if !reachable || !installed {
+		t.Errorf("Status() = (reachable=%v, installed=%v), want (true, true)", reachable, installed)
+	}
+}
+
+func TestStatus_ReachableButModelMissing(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{
+			"models": []map[string]string{
+				{"name": "llama3.1:8b"},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	client := NewEmbedClient(srv.URL, "nomic-embed-text")
+	reachable, installed := client.Status(context.Background())
+	if !reachable {
+		t.Errorf("Status() reachable should be true, got false")
+	}
+	if installed {
+		t.Errorf("Status() installed should be false, got true")
+	}
+}
+
+func TestStatus_OllamaDown(t *testing.T) {
+	client := NewEmbedClient("http://localhost:1", "nomic-embed-text")
+	reachable, installed := client.Status(context.Background())
+	if reachable || installed {
+		t.Errorf("Status() = (reachable=%v, installed=%v), want (false, false)", reachable, installed)
+	}
+}

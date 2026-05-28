@@ -389,6 +389,13 @@ type Model struct {
 	// regenerated at the new width on every resize.
 	historyLines []string
 
+	// pendingStartupNotices holds notice strings set by run.go before the
+	// program starts (e.g. "embedding model missing"). Emitted via
+	// appendLine inside the first WindowSizeMsg handler, AFTER the startup
+	// box has been queued — calling appendLine from run.go would queue
+	// them before the box and the message would land above it.
+	pendingStartupNotices []string
+
 	// pastes maps short placeholder markers to the full content of large
 	// pastes. When the user pastes more than pasteThreshold bytes, we
 	// insert a `[Pasted text #N: lines, bytes]` token into the input box
@@ -496,6 +503,11 @@ type Model struct {
 	// one /memory invocation; closed on Esc or after Enter dispatches.
 	memoryPickerOpen bool
 	memoryPicker     *memoryPickerState
+
+	// Embed setup overlay — opened from /memory "Enable semantic search".
+	embedSetupOpen    bool
+	embedSetupCursor  int
+	embedSetupPulling bool
 
 	// Sessions picker overlay (/sessions). Layered state machine:
 	// menu (Resume/Rename/Export) → list-of-recent → optional
@@ -915,6 +927,10 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// One blank line of breathing room between the card and
 				// the input frame — matches the Phase 2 spacing target.
 				m.queuePrintln("")
+				for _, n := range m.pendingStartupNotices {
+					m.appendLine(n)
+				}
+				m.pendingStartupNotices = nil
 				m.emitMemorySizeWarnings()
 				// Resumed session: replay the prior user/assistant
 				// transcript into scrollback so the user can see the
@@ -979,6 +995,9 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.providerPickerOpen {
 			return m.updateProviderPicker(msg)
+		}
+		if m.embedSetupOpen {
+			return m.updateEmbedSetup(msg)
 		}
 		if m.memoryPickerOpen {
 			return m.updateMemoryPicker(msg)
@@ -1741,6 +1760,9 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case inlineCopilotAuthDoneMsg:
 		return handleInlineCopilotAuthDone(m, msg)
 
+	case embedSetupDoneMsg:
+		return m.handleEmbedSetupDone(msg)
+
 	case summaryDoneMsg:
 		m.summarizing = false
 		if msg.err != nil {
@@ -1814,6 +1836,9 @@ func (m Model) View() string {
 	}
 	if m.providerPickerOpen && m.providerPicker != nil {
 		return m.renderInlineOverlay(renderProviderPicker(m.providerPicker, m.width))
+	}
+	if m.embedSetupOpen {
+		return m.renderInlineOverlay(m.renderEmbedSetup())
 	}
 	if m.memoryPickerOpen && m.memoryPicker != nil {
 		return m.renderInlineOverlay(renderMemoryPicker(m.memoryPicker, m.width))

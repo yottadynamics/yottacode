@@ -155,6 +155,59 @@ func TestPlanValidateSuccessRoute(t *testing.T) {
 	}
 }
 
+func TestPlanToConfig_RetrievalFields(t *testing.T) {
+	plan := newAnthropicPlan()
+	plan.RetrievalStrategy = "auto"
+	plan.EmbeddingModel = "nomic-embed-text"
+	cfg := plan.ToConfig()
+
+	if cfg.Retrieval.Strategy != "auto" {
+		t.Errorf("expected strategy %q, got %q", "auto", cfg.Retrieval.Strategy)
+	}
+	if cfg.Retrieval.EmbeddingModel != "nomic-embed-text" {
+		t.Errorf("expected embedding_model %q, got %q", "nomic-embed-text", cfg.Retrieval.EmbeddingModel)
+	}
+}
+
+func TestPlanToConfig_RetrievalFieldsEmpty(t *testing.T) {
+	plan := newAnthropicPlan()
+	cfg := plan.ToConfig()
+
+	if cfg.Retrieval.Strategy != "auto" {
+		t.Errorf("default strategy should be %q, got %q", "auto", cfg.Retrieval.Strategy)
+	}
+	if cfg.Retrieval.EmbeddingModel != "nomic-embed-text" {
+		t.Errorf("default embedding_model should be %q, got %q", "nomic-embed-text", cfg.Retrieval.EmbeddingModel)
+	}
+}
+
+func TestPlanRenderTOML_WithRetrieval(t *testing.T) {
+	plan := newAnthropicPlan()
+	plan.RetrievalStrategy = "auto"
+	plan.EmbeddingModel = "nomic-embed-text"
+	out := plan.RenderTOML()
+
+	wantContains := []string{
+		`[retrieval]`,
+		`strategy        = "auto"`,
+		`embedding_model = "nomic-embed-text"`,
+	}
+	for _, want := range wantContains {
+		if !strings.Contains(out, want) {
+			t.Errorf("RenderTOML missing %q\n---\n%s", want, out)
+		}
+	}
+}
+
+func TestPlanRenderTOML_WithoutRetrieval(t *testing.T) {
+	plan := newAnthropicPlan()
+	out := plan.RenderTOML()
+
+	if strings.Contains(out, "[retrieval]") {
+		t.Errorf("RenderTOML should not contain [retrieval] when fields are empty\n---\n%s", out)
+	}
+}
+
 // newAnthropicPlan builds a representative plan used across many
 // tests. Anthropic is convenient because it has a real api_key_env.
 // PlanProvider stopped carrying a Models slice when the curated

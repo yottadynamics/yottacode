@@ -107,15 +107,16 @@ func TestSlash_MemoryPickerArrowKeysClampToRange(t *testing.T) {
 	m := newTestModel(t)
 	m, _ = typeAndEnter(t, m, "/memory")
 
-	for i := 0; i < memoryPickerRowCount+2; i++ {
+	rowCount := m.memoryPicker.rowCount()
+	for i := 0; i < rowCount+2; i++ {
 		m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyDown})
 	}
-	if m.memoryPicker.cursor != memoryPickerRowCount-1 {
+	if m.memoryPicker.cursor != rowCount-1 {
 		t.Errorf("cursor should clamp at last row (%d); got %d",
-			memoryPickerRowCount-1, m.memoryPicker.cursor)
+			rowCount-1, m.memoryPicker.cursor)
 	}
 
-	for i := 0; i < memoryPickerRowCount+2; i++ {
+	for i := 0; i < rowCount+2; i++ {
 		m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyUp})
 	}
 	if m.memoryPicker.cursor != 0 {
@@ -287,6 +288,20 @@ func TestFormatMemorySizeWarning_MatchesExpectedShape(t *testing.T) {
 	want := "Large YOTTACODE.md will impact performance (60.9k chars > 40.0k) · /memory to edit"
 	if got != want {
 		t.Errorf("formatMemorySizeWarning = %q, want %q", got, want)
+	}
+}
+
+func TestMemoryPickerRowCount_WithoutEmbedClient(t *testing.T) {
+	st := &memoryPickerState{showEnableSemanticRow: true}
+	if got := st.rowCount(); got != 6 {
+		t.Errorf("rowCount with semantic row = %d, want 6", got)
+	}
+}
+
+func TestMemoryPickerRowCount_WithEmbedClient(t *testing.T) {
+	st := &memoryPickerState{showEnableSemanticRow: false}
+	if got := st.rowCount(); got != 5 {
+		t.Errorf("rowCount without semantic row = %d, want 5", got)
 	}
 }
 

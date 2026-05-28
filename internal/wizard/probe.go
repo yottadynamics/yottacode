@@ -1,9 +1,11 @@
 package wizard
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"strings"
@@ -102,6 +104,85 @@ func ProbeOllama(ctx context.Context, base string) OllamaProbeResult {
 		}
 	}
 	return res
+}
+
+// EmbeddingModelInfo describes a known Ollama embedding model that the
+// wizard can offer to pull for semantic memory search.
+type EmbeddingModelInfo struct {
+	Name string
+	Desc string
+	Size string
+}
+
+// KnownEmbeddingModels lists the Ollama embedding models the wizard
+// recognizes. Order is preference order: the first match in a probe
+// result wins auto-detection.
+var KnownEmbeddingModels = []EmbeddingModelInfo{
+	{Name: "nomic-embed-text", Desc: "recommended", Size: "~270 MB"},
+	{Name: "all-minilm", Desc: "lightweight", Size: "~45 MB"},
+}
+
+// DetectEmbeddingModels returns which known embedding models are already
+// installed, given a list of Ollama model names from /api/tags. Returns
+// them in preference order (nomic-embed-text first).
+func DetectEmbeddingModels(installed []string) []string {
+	set := make(map[string]bool, len(installed))
+	for _, m := range installed {
+		base := m
+		if idx := strings.Index(m, ":"); idx > 0 {
+			base = m[:idx]
+		}
+		set[base] = true
+	}
+	var found []string
+	for _, known := range KnownEmbeddingModels {
+		if set[known.Name] {
+			found = append(found, known.Name)
+		}
+	}
+	return found
+}
+
+// OllamaPull sends POST /api/pull to the Ollama server and blocks until
+// the pull completes or the context expires. Returns nil on success.
+func OllamaPull(ctx context.Context, baseURL, model string) error {
+	if baseURL == "" {
+		baseURL = "http://localhost:11434"
+		if h := strings.TrimSpace(os.Getenv("OLLAMA_HOST")); h != "" {
+			if !strings.HasPrefix(h, "http") {
+				h = "http://" + h
+			}
+			baseURL = strings.TrimSuffix(h, "/")
+		}
+	}
+	baseURL = strings.TrimSuffix(baseURL, "/v1")
+	baseURL = strings.TrimSuffix(baseURL, "/")
+
+	body, err := json.Marshal(struct {
+		Name string `json:"name"`
+	}{Name: model})
+	if err != nil {
+		return fmt.Errorf("pull: marshal: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/api/pull", bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("pull: request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("pull: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("pull: http %d", resp.StatusCode)
+	}
+
+	_, _ = io.Copy(io.Discard, resp.Body)
+	return nil
 }
 
 // ValidationStatus reports whether a provided API key works against

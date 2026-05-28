@@ -44,6 +44,16 @@ type Plan struct {
 	// the runtime knows where to look — values are expected to come
 	// from the live shell or a secrets manager.
 	SkipEnvWrite bool
+
+	// RetrievalStrategy is the retrieval scoring strategy set by the
+	// wizard. Empty means "wizard didn't touch retrieval; preserve
+	// disk." Non-empty overrides [retrieval].strategy in config.toml.
+	RetrievalStrategy string
+
+	// EmbeddingModel is the Ollama embedding model chosen during
+	// setup. Empty means "wizard didn't set one; preserve disk."
+	// Non-empty overrides [retrieval].embedding_model.
+	EmbeddingModel string
 }
 
 // PlanProvider mirrors a config.Provider but holds only the fields the
@@ -101,6 +111,12 @@ func (p Plan) ToConfig() config.Config {
 			Policy:     p.RouterPolicy,
 			Candidates: append([]string(nil), p.RouterCandList...),
 		}
+	}
+	if p.RetrievalStrategy != "" {
+		cfg.Retrieval.Strategy = p.RetrievalStrategy
+	}
+	if p.EmbeddingModel != "" {
+		cfg.Retrieval.EmbeddingModel = p.EmbeddingModel
 	}
 	return cfg
 }
@@ -206,6 +222,17 @@ func (p Plan) RenderTOML() string {
 			fmt.Fprintf(&b, "%q", c)
 		}
 		b.WriteString("]\n\n")
+	}
+
+	if p.RetrievalStrategy != "" || p.EmbeddingModel != "" {
+		b.WriteString("[retrieval]\n")
+		if p.RetrievalStrategy != "" {
+			fmt.Fprintf(&b, "strategy        = %q\n", p.RetrievalStrategy)
+		}
+		if p.EmbeddingModel != "" {
+			fmt.Fprintf(&b, "embedding_model = %q\n", p.EmbeddingModel)
+		}
+		b.WriteString("\n")
 	}
 
 	return b.String()

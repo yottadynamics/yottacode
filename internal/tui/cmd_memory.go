@@ -11,7 +11,9 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/yottadynamics/yottacode/internal/adapter"
+	"github.com/yottadynamics/yottacode/internal/config"
 	"github.com/yottadynamics/yottacode/internal/memory"
+	"github.com/yottadynamics/yottacode/internal/wizard"
 )
 
 // projectMemorySizeWarnBytes is the chars-in-YOTTACODE.md (or USER.md)
@@ -113,9 +115,17 @@ type memoryPickerState struct {
 	entries       []memory.MemoryEntry
 	entryCursor   int
 	browseMessage string
+
+	showEnableSemanticRow bool
 }
 
-const memoryPickerRowCount = 5
+func (p *memoryPickerState) rowCount() int {
+	n := 5
+	if p.showEnableSemanticRow {
+		n++
+	}
+	return n
+}
 
 func (m *Model) openMemoryPicker() {
 	st := &memoryPickerState{}
@@ -131,6 +141,7 @@ func (m *Model) openMemoryPicker() {
 	if dir, err := memory.ProjectMemoryDir(m.cwd); err == nil {
 		st.projectMemoryDir = dir
 	}
+	st.showEnableSemanticRow = (m.embedClient == nil)
 	m.memoryPicker = st
 	m.memoryPickerOpen = true
 }
@@ -156,7 +167,7 @@ func (m Model) updateMemoryPicker(msg tea.KeyMsg) (Model, tea.Cmd) {
 		}
 		return m, nil
 	case tea.KeyDown:
-		if p.cursor < memoryPickerRowCount-1 {
+		if p.cursor < p.rowCount()-1 {
 			p.cursor++
 		}
 		return m, nil
@@ -197,6 +208,10 @@ func (m Model) commitMemoryPicker() (Model, tea.Cmd) {
 		return m.enterMemoryBrowse("project", p.projectMemoryDir)
 	case 4:
 		return m.runMemoryReindex()
+	case 5:
+		if p.showEnableSemanticRow {
+			return m.runEmbedSetup()
+		}
 	}
 	return m, nil
 }
@@ -430,6 +445,12 @@ func renderMemoryPicker(p *memoryPickerState, _ int) string {
 		{"Browse project memories", memoryDirRowDesc(p.projectMemoryDir, "this-repo agent memories")},
 		{"Reindex embeddings", "regenerate .vec sidecars for semantic retrieval"},
 	}
+	if p.showEnableSemanticRow {
+		rows = append(rows, struct {
+			label string
+			desc  string
+		}{"Enable semantic search", "pull an embedding model via Ollama"})
+	}
 	for i, r := range rows {
 		b.WriteString(renderMenuItem(menuItemOpts{
 			Number:     i + 1,
@@ -554,4 +575,106 @@ func formatMemorySizeWarning(label string, size int64) string {
 		label,
 		float64(size)/1000.0,
 		float64(projectMemorySizeWarnBytes)/1000.0)
+}
+
+// ---------------------------------------------------------------------------
+// Embed setup overlay — "Enable semantic search" from /memory picker
+// ---------------------------------------------------------------------------
+
+type embedSetupDoneMsg struct {
+	model string
+	err   error
+}
+
+func (m Model) runEmbedSetup() (Model, tea.Cmd) {
+	m.memoryPickerOpen = false
+	m.memoryPicker = nil
+	m.embedSetupOpen = true
+	m.embedSetupCursor = 0
+	m.embedSetupPulling = false
+	return m, nil
+}
+
+func (m Model) updateEmbedSetup(msg tea.KeyMsg) (Model, tea.Cmd) {
+	if m.embedSetupPulling {
+		return m, nil
+	}
+	switch msg.Type {
+	case tea.KeyEsc:
+		m.embedSetupOpen = false
+		return m, nil
+	case tea.KeyUp:
+		if m.embedSetupCursor > 0 {
+			m.embedSetupCursor--
+		}
+	case tea.KeyDown:
+		if m.embedSetupCursor < 1 {
+			m.embedSetupCursor++
+		}
+	case tea.KeyEnter:
+		models := []string{
+			wizard.KnownEmbeddingModels[0].Name,
+			wizard.KnownEmbeddingModels[1].Name,
+		}
+		chosen := models[m.embedSetupCursor]
+		m.embedSetupPulling = true
+		return m, func() tea.Msg {
+			err := wizard.OllamaPull(m.parentCtx, "", chosen)
+			return embedSetupDoneMsg{model: chosen, err: err}
+		}
+	}
+	return m, nil
+}
+
+func (m Model) handleEmbedSetupDone(msg embedSetupDoneMsg) (Model, tea.Cmd) {
+	m.embedSetupOpen = false
+	m.embedSetupPulling = false
+	if msg.err != nil {
+		m.appendLine(styleError.Render("[memory] pull failed: " + msg.err.Error()))
+		return m, nil
+	}
+	m.fileCfg.Retrieval.Strategy = "auto"
+	m.fileCfg.Retrieval.EmbeddingModel = msg.model
+	m.embedClient = memory.NewEmbedClient("", msg.model)
+
+	cfgPath, _ := config.DefaultPath()
+	if cfgPath != "" {
+		if cfg, err := config.Load(cfgPath); err == nil {
+			cfg.Retrieval.Strategy = "auto"
+			cfg.Retrieval.EmbeddingModel = msg.model
+			_ = config.Save(cfg, cfgPath)
+		}
+	}
+
+	m.appendLine(styleAuto.Render(fmt.Sprintf(
+		"[memory] %s pulled — semantic search enabled. Running reindex...", msg.model)))
+	return m.runMemoryReindex()
+}
+
+func (m Model) renderEmbedSetup() string {
+	var b strings.Builder
+	b.WriteString(renderMenuHeader("Enable Semantic Search",
+		"Pick an embedding model to pull via Ollama."))
+	b.WriteString("\n")
+
+	if m.embedSetupPulling {
+		b.WriteString("  " + m.spinner.View() + " pulling model...\n")
+		return strings.TrimRight(b.String(), "\n")
+	}
+
+	for i, em := range wizard.KnownEmbeddingModels {
+		b.WriteString(renderMenuItem(menuItemOpts{
+			Number:     i + 1,
+			Label:      em.Name,
+			LabelWidth: 22,
+			Desc:       em.Desc + " · " + em.Size,
+			Cursor:     i == m.embedSetupCursor,
+		}))
+		b.WriteString("\n")
+	}
+
+	b.WriteString("\n")
+	b.WriteString(styleFooter.Render("enter pull · esc cancel · up/down navigate"))
+
+	return strings.TrimRight(b.String(), "\n")
 }

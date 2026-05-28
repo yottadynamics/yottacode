@@ -189,3 +189,51 @@ func TestApplyMergeEnvKeepsExisting(t *testing.T) {
 		t.Errorf(".env merge dropped new key: %s", body)
 	}
 }
+
+func TestMergePreservesRetrievalTunables(t *testing.T) {
+	tmp := t.TempDir()
+	cfgPath := filepath.Join(tmp, "config.toml")
+	envPath := filepath.Join(tmp, ".env")
+
+	// Write an initial config with custom retrieval tunables.
+	initial := newAnthropicPlan()
+	if _, err := Apply(initial, WriteOptions{ConfigPath: cfgPath, EnvPath: envPath}); err != nil {
+		t.Fatalf("initial Apply: %v", err)
+	}
+	// Load, tweak top_k, and re-save so the file has a custom tunable.
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	cfg.Retrieval.TopK = 5
+	cfg.Retrieval.MinScore = 0.3
+	if err := config.Save(cfg, cfgPath); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	// Now merge a plan that sets retrieval strategy + embedding model.
+	updated := newAnthropicPlan()
+	updated.RetrievalStrategy = "auto"
+	updated.EmbeddingModel = "nomic-embed-text"
+	if _, err := Apply(updated, WriteOptions{ConfigPath: cfgPath, EnvPath: envPath}); err != nil {
+		t.Fatalf("merge Apply: %v", err)
+	}
+
+	// Reload and check: strategy + model overridden, top_k + min_score preserved.
+	merged, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatalf("Load merged: %v", err)
+	}
+	if merged.Retrieval.Strategy != "auto" {
+		t.Errorf("strategy = %q, want %q", merged.Retrieval.Strategy, "auto")
+	}
+	if merged.Retrieval.EmbeddingModel != "nomic-embed-text" {
+		t.Errorf("embedding_model = %q, want %q", merged.Retrieval.EmbeddingModel, "nomic-embed-text")
+	}
+	if merged.Retrieval.TopK != 5 {
+		t.Errorf("top_k = %d, want 5 (should be preserved from disk)", merged.Retrieval.TopK)
+	}
+	if merged.Retrieval.MinScore != 0.3 {
+		t.Errorf("min_score = %.1f, want 0.3 (should be preserved from disk)", merged.Retrieval.MinScore)
+	}
+}
