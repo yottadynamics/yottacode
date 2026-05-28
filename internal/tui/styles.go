@@ -223,8 +223,12 @@ func buildStyles(p themes.Palette) {
 		PaddingLeft(2)
 
 	styleStatusModel = lipgloss.NewStyle().Foreground(colorContent)
-	styleAuto = lipgloss.NewStyle().Foreground(colorMuted).Italic(true)
-	styleError = lipgloss.NewStyle().Foreground(colorErr).Bold(true)
+	// System notices (`[queued]`, `[mcp]`, `[checkpoints]`, …) and
+	// command-handler errors (`[git-commit] …`) get the same 2-col
+	// left padding as assistant prose so the conversation gutter
+	// stays uniform — every line of scrollback sits at column 3.
+	styleAuto = lipgloss.NewStyle().Foreground(colorMuted).Italic(true).PaddingLeft(2)
+	styleError = lipgloss.NewStyle().Foreground(colorErr).Bold(true).PaddingLeft(2)
 	styleWarnIcon = lipgloss.NewStyle().Foreground(colorWarning).Bold(true)
 	styleApprovalBox = lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).

@@ -57,8 +57,11 @@ func TestModel_WindowSizeMakesItReady(t *testing.T) {
 	if !m.ready {
 		t.Errorf("expected ready=true after WindowSizeMsg")
 	}
-	if m.width != 80 {
-		t.Errorf("model width = %d, want 80", m.width)
+	// m.width is the terminal width minus scrollbackLeftMargin (the
+	// 2-col gutter reserved on every emitted line). newTestModel sends
+	// a WindowSizeMsg of 80, so the available content width is 78.
+	if want := 80 - scrollbackLeftMargin; m.width != want {
+		t.Errorf("model width = %d, want %d (terminal 80 - margin %d)", m.width, want, scrollbackLeftMargin)
 	}
 }
 
@@ -1839,6 +1842,43 @@ func TestRenderAssistantBlock_HeadingStillFollowedByBlank(t *testing.T) {
 	between := plain[idxHeading:idxBody]
 	if !strings.Contains(between, "\n\n") {
 		t.Errorf("heading should be followed by a blank line before the body: %q", between)
+	}
+}
+
+// Regression: emitAssistantProse used to add an explicit "  " prefix
+// to the first line of every paragraph, on top of the 2-space PaddingLeft
+// that styleAssistantBody already applies. The result was a 4-space
+// indent on paragraph openers and a 2-space indent on continuation
+// lines — visually inconsistent. The double-indent is gone now; every
+// prose line lands at the same column.
+func TestEmitAssistantProse_ParagraphOpenerNotDoubleIndented(t *testing.T) {
+	m := newTestModel(t)
+	src := "First paragraph line.\nContinuation line.\n\nSecond paragraph opener.\n"
+	m, _ = applyMsg(m, agentEventMsg{ev: agent.ContentToken{Text: src}})
+	m, _ = applyMsg(m, agentEventMsg{ev: agent.AssistantMessage{}})
+	plain := stripANSI(m.transcript.String())
+	for _, want := range []string{"  First paragraph line.", "  Continuation line.", "  Second paragraph opener."} {
+		if !strings.Contains(plain, want) {
+			t.Errorf("expected uniform 2-space indent on %q, transcript: %q", want, plain)
+		}
+	}
+	if strings.Contains(plain, "    First paragraph line.") || strings.Contains(plain, "    Second paragraph opener.") {
+		t.Errorf("paragraph opener should not carry a doubled 4-space indent: %q", plain)
+	}
+}
+
+// System notices like `[queued]` and command-handler error lines now
+// carry the same 2-space left padding as assistant prose, so the
+// conversation gutter stays uniform regardless of which path emitted
+// the line.
+func TestSystemNoticeStyles_AlignWithProse(t *testing.T) {
+	auto := stripANSI(styleAuto.Render("[queued] check"))
+	if !strings.HasPrefix(auto, "  [queued] check") {
+		t.Errorf("styleAuto should pad system notices with 2 leading spaces: %q", auto)
+	}
+	errLine := stripANSI(styleError.Render("[git-commit] failed"))
+	if !strings.HasPrefix(errLine, "  [git-commit] failed") {
+		t.Errorf("styleError should pad error notices with 2 leading spaces: %q", errLine)
 	}
 }
 

@@ -227,6 +227,39 @@ func TestAdapter_EmitsStreamProgressForToolCallDeltas(t *testing.T) {
 	}
 }
 
+// TestAdapter_HandlesEmptyToolCallsArrayDelta pins the fix for an
+// openai-go v1.12.0 panic at streamaccumulator.go:172 when a delta
+// chunk carries `"tool_calls": []` — the field is JSON-present but
+// the array is empty, and the SDK indexes [0] without checking. NVIDIA
+// NIM's reasoning models (e.g. nemotron-super-49b-v1 with "detailed
+// thinking on") emit chunks of this shape, which would crash the
+// adapter goroutine before this fix.
+func TestAdapter_HandlesEmptyToolCallsArrayDelta(t *testing.T) {
+	body := sseBody(
+		`{"id":"c1","object":"chat.completion.chunk","created":1,"model":"test","choices":[{"index":0,"delta":{"role":"assistant","content":"","tool_calls":[]},"finish_reason":null}]}`,
+		`{"id":"c1","object":"chat.completion.chunk","created":1,"model":"test","choices":[{"index":0,"delta":{"content":"hi","tool_calls":[]},"finish_reason":null}]}`,
+		`{"id":"c1","object":"chat.completion.chunk","created":1,"model":"test","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+	)
+	srv := mockServer(t, body)
+
+	ad := New(srv.URL, "", "test")
+	ch := ad.ChatStream(context.Background(), []Message{{Role: RoleUser, Content: "hi"}}, nil)
+	tokens, _, final, errs := drainEvents(ch)
+
+	if len(errs) > 0 {
+		t.Fatalf("unexpected errors: %v", errs)
+	}
+	if got := strings.Join(tokens, ""); got != "hi" {
+		t.Errorf("tokens = %q, want hi", got)
+	}
+	if final == nil || final.Content != "hi" {
+		t.Fatalf("final = %+v, want Content=hi", final)
+	}
+	if len(final.ToolCalls) != 0 {
+		t.Errorf("unexpected tool calls: %+v", final.ToolCalls)
+	}
+}
+
 func TestAdapter_HTTPError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "boom", http.StatusInternalServerError)
