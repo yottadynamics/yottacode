@@ -365,10 +365,27 @@ func buildPlanFromOptions(ctx context.Context, opts Options) (Plan, error) {
 		}
 	}
 
+	// Retrieval: when Ollama is among the enabled providers and is
+	// reachable, check for installed embedding models. If found, enable
+	// semantic search. Don't auto-pull (consistency: we never auto-pull
+	// chat models in non-interactive mode either).
+	for _, pp := range plan.Providers {
+		if pp.Kind == "ollama" {
+			probe := ProbeOllama(ctx, "")
+			if probe.Reachable {
+				detected := DetectEmbeddingModels(probe.Models)
+				if len(detected) > 0 {
+					plan.RetrievalStrategy = "auto"
+					plan.EmbeddingModel = detected[0]
+				}
+			}
+			break
+		}
+	}
+
 	if err := plan.Validate(); err != nil {
 		return Plan{}, err
 	}
-	_ = ctx // reserved for future per-key validation
 	return plan, nil
 }
 

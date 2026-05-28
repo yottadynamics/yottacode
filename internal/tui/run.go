@@ -303,10 +303,23 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 		reg.Register(&agent.WebSearchTool{})
 	}
 	var embedClient *memory.EmbedClient
+	var embedMissingLine1, embedMissingLine2 string
 	if s := fileCfg.Retrieval.Strategy; s == "semantic" || s == "auto" {
 		ec := memory.NewEmbedClient("", fileCfg.Retrieval.EmbeddingModel)
-		if ec.Available(ctx) {
+		reachable, installed := ec.Status(ctx)
+		switch {
+		case installed:
 			embedClient = ec
+		case reachable:
+			// Ollama is up but the configured embedding model isn't
+			// there — most likely the user removed it via `ollama rm`
+			// after enabling semantic search. Surface this on startup
+			// so the silent fallback to BM25 doesn't look like a
+			// retrieval-quality regression with no cause.
+			embedMissingLine1 = fmt.Sprintf(
+				"[memory] embedding model %q not installed — falling back to BM25 (keyword search).",
+				ec.Model)
+			embedMissingLine2 = fmt.Sprintf("Run: ollama pull %s", ec.Model)
 		}
 	}
 	reg.Register(&agent.MemorySaveTool{Cwd: cwdRef, Embedder: embedClient})
@@ -490,6 +503,11 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 	// once the program starts). Errors render in red, warnings in the
 	// muted auto-mode style — same conventions other startup lines
 	// already use.
+	if embedMissingLine1 != "" {
+		line1 := styleWarnIcon.Render("⚠") + " " + styleAuto.Render(embedMissingLine1)
+		line2 := "  " + styleAuto.Render(embedMissingLine2)
+		model.pendingStartupNotices = append(model.pendingStartupNotices, line1, line2)
+	}
 	for _, e := range customErrs {
 		var rendered string
 		if e.Level == usercmd.LevelWarning {

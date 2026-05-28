@@ -184,6 +184,15 @@ type wizardModel struct {
 	copilotUserCode  string
 	copilotVerifyURI string
 	copilotErr       error
+
+	// Embedding model sub-step state. Active when the user just
+	// finished configuring Ollama and the wizard asks about semantic
+	// search.
+	embedSubStep     bool
+	embedCursor      int    // 0=nomic-embed-text, 1=all-minilm, 2=skip
+	embedPulling     bool
+	embedPullErr     error
+	embedChosenModel string // set on success (auto-detected or pulled)
 }
 
 // runInteractive opens the Bubbletea program and translates its
@@ -378,6 +387,13 @@ func pickedCopilot(choices [][2]string) bool {
 		}
 	}
 	return false
+}
+
+// embedPullDoneMsg is sent when the async Ollama pull for an embedding
+// model completes.
+type embedPullDoneMsg struct {
+	model string
+	err   error
 }
 
 // copilotDeviceCodeMsg is sent once the device code is obtained.
@@ -686,6 +702,18 @@ func (m wizardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.openAIAuthAccessToken = ""
 		m.step = stepDone
 		return m, tea.Quit
+	case embedPullDoneMsg:
+		m.embedPulling = false
+		if msg.err != nil {
+			m.embedPullErr = msg.err
+			return m, nil
+		}
+		m.embedChosenModel = msg.model
+		m.embedSubStep = false
+		m.providerCursor = m.configIdx
+		m.step = stepProviders
+		m.notice = msg.model + " pulled — semantic search enabled"
+		return m, nil
 	case copilotDeviceCodeMsg:
 		if msg.err != nil {
 			m.copilotErr = msg.err
@@ -897,6 +925,12 @@ func (m wizardModel) goBack() wizardModel {
 	case stepProviders:
 		m.step = stepWelcome
 	case stepConfigure:
+		if m.embedSubStep {
+			m.embedSubStep = false
+			m.embedPulling = false
+			m.embedPullErr = nil
+			return m
+		}
 		// Return to the provider list with the cursor on the row the
 		// user was just editing — preserves orientation across the
 		// back-and-forth pattern that's now the dominant flow.
@@ -1348,6 +1382,9 @@ func (m wizardModel) fieldKind() string {
 }
 
 func (m wizardModel) updateConfigure(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.embedSubStep {
+		return m.updateEmbedSubStep(msg)
+	}
 	if m.configIdx >= len(m.inputs) {
 		return m, nil
 	}
@@ -1473,6 +1510,16 @@ func (m wizardModel) updateConfigure(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			// more auto-advance to the next provider in a hard-coded
 			// loop — the user chooses pace and order.
 			m.inputs[m.configIdx].configured = true
+			if in.entry.Kind == "ollama" && m.ollamaProbe.Reachable {
+				detected := DetectEmbeddingModels(m.ollamaProbe.Models)
+				if len(detected) > 0 {
+					m.embedChosenModel = detected[0]
+				}
+				m.embedSubStep = true
+				m.embedCursor = 0
+				m.embedPullErr = nil
+				return m, nil
+			}
 			m.providerCursor = m.configIdx
 			m.step = stepProviders
 			return m, nil
@@ -1540,6 +1587,9 @@ func prevField(in providerInputs) int {
 }
 
 func (m wizardModel) viewConfigure() string {
+	if m.embedSubStep {
+		return m.viewEmbedSubStep()
+	}
 	if m.configIdx >= len(m.inputs) {
 		return ""
 	}
@@ -1657,6 +1707,146 @@ func (m wizardModel) viewConfigure() string {
 			b.WriteString("\n  ")
 			b.WriteString(styleHint.Render("(catalog empty — run `go run ./cmd/yotta-models refresh` to populate)"))
 		}
+	}
+	return b.String()
+}
+
+// ---------------------------------------------------------------------------
+// Embedding model sub-step (shown after Ollama provider configuration)
+// ---------------------------------------------------------------------------
+
+func (m wizardModel) updateEmbedSubStep(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.embedPulling {
+		return m, nil
+	}
+
+	// Auto-detected: show confirmation (y/enter = accept, n/esc = decline).
+	if m.embedChosenModel != "" && m.embedPullErr == nil {
+		switch msg.String() {
+		case "enter", "y":
+			m.embedSubStep = false
+			m.providerCursor = m.configIdx
+			m.step = stepProviders
+			return m, nil
+		case "n":
+			m.embedChosenModel = ""
+			m.embedSubStep = false
+			m.providerCursor = m.configIdx
+			m.step = stepProviders
+			return m, nil
+		}
+		return m, nil
+	}
+
+	// Pull error: enter retries the same model, esc skips.
+	if m.embedPullErr != nil {
+		switch msg.String() {
+		case "enter":
+			model := KnownEmbeddingModels[m.embedCursor].Name
+			m.embedPulling = true
+			m.embedPullErr = nil
+			baseURL := m.ollamaProbe.BaseURL
+			return m, tea.Batch(m.spin.Tick, func() tea.Msg {
+				err := OllamaPull(m.ctx, baseURL, model)
+				return embedPullDoneMsg{model: model, err: err}
+			})
+		case "esc":
+			m.embedPullErr = nil
+			m.embedSubStep = false
+			m.providerCursor = m.configIdx
+			m.step = stepProviders
+			return m, nil
+		}
+		return m, nil
+	}
+
+	// Picker mode: 3 rows.
+	switch msg.String() {
+	case "up", "k":
+		if m.embedCursor > 0 {
+			m.embedCursor--
+		}
+	case "down", "j":
+		if m.embedCursor < 2 {
+			m.embedCursor++
+		}
+	case "enter":
+		if m.embedCursor == 2 {
+			m.embedSubStep = false
+			m.providerCursor = m.configIdx
+			m.step = stepProviders
+			return m, nil
+		}
+		model := KnownEmbeddingModels[m.embedCursor].Name
+		m.embedPulling = true
+		m.embedPullErr = nil
+		baseURL := m.ollamaProbe.BaseURL
+		return m, tea.Batch(m.spin.Tick, func() tea.Msg {
+			err := OllamaPull(m.ctx, baseURL, model)
+			return embedPullDoneMsg{model: model, err: err}
+		})
+	}
+	return m, nil
+}
+
+func (m wizardModel) viewEmbedSubStep() string {
+	var b strings.Builder
+	w := lineWidthFor(m.width)
+
+	if m.embedPulling {
+		b.WriteString("\n  ")
+		b.WriteString(m.spin.View())
+		b.WriteString(" ")
+		b.WriteString(truncate("pulling embedding model...", w-4))
+		b.WriteString("\n\n  ")
+		b.WriteString(styleHint.Render(truncate("This may take a minute for the first download.", w-2)))
+		b.WriteString("\n")
+		return b.String()
+	}
+
+	if m.embedPullErr != nil {
+		b.WriteString("\n  ")
+		b.WriteString(styleErr.Render(truncate("pull failed: "+m.embedPullErr.Error(), w-2)))
+		b.WriteString("\n\n  ")
+		b.WriteString(styleHint.Render(truncate("Enter to retry, esc to skip.", w-2)))
+		b.WriteString("\n")
+		return b.String()
+	}
+
+	if m.embedChosenModel != "" {
+		b.WriteString("\n  ")
+		b.WriteString(styleOK.Render("found: ") + truncate(m.embedChosenModel, w-10))
+		b.WriteString("\n\n  ")
+		b.WriteString(truncate("Enable semantic memory search?  y/enter = yes, n = skip", w-2))
+		b.WriteString("\n")
+		return b.String()
+	}
+
+	// Picker mode.
+	b.WriteString("\n  ")
+	b.WriteString(truncate("Enable semantic memory search?", w-2))
+	b.WriteString("\n  ")
+	b.WriteString(styleHint.Render(truncate("Uses a small local embedding model for relevance-scored memory.", w-2)))
+	b.WriteString("\n\n")
+
+	type row struct {
+		label string
+		desc  string
+	}
+	rows := []row{
+		{KnownEmbeddingModels[0].Name, KnownEmbeddingModels[0].Desc + " · " + KnownEmbeddingModels[0].Size},
+		{KnownEmbeddingModels[1].Name, KnownEmbeddingModels[1].Desc + " · " + KnownEmbeddingModels[1].Size},
+		{"Skip", "use keyword search only (BM25)"},
+	}
+	for i, r := range rows {
+		cursor := "  "
+		labelStyle := styleMuted
+		if i == m.embedCursor {
+			cursor = styleSelected.Render("> ")
+			labelStyle = styleSelected
+		}
+		line := cursor + labelStyle.Render(r.label) + "  " + styleDim.Render(r.desc)
+		b.WriteString(truncate(line, w) + "\n")
 	}
 	return b.String()
 }
@@ -1950,6 +2140,11 @@ func (m wizardModel) viewReview() string {
 		tail := styleDim.Render(dash + truncate(strings.Join(m.finalPlan.RouterCandList, ", "), budget))
 		b.WriteString(routerLabel + policy + tail + "\n")
 	}
+	if m.finalPlan.EmbeddingModel != "" {
+		searchLabel := "  " + styleMuted.Render("search: ")
+		searchText := "semantic (" + m.finalPlan.EmbeddingModel + ")"
+		b.WriteString(searchLabel + styleSelected.Render(truncate(searchText, w-lipgloss.Width(searchLabel))) + "\n")
+	}
 	if m.existingCfg && !m.opts.Force {
 		b.WriteString("  " + styleHint.Render(truncate("merging into existing config — tunables (context / retrieval) preserved", w)) + "\n\n")
 	}
@@ -2138,6 +2333,10 @@ func (m wizardModel) assemblePlan() Plan {
 					in.entry.Name+":"+in.chosenModel)
 			}
 		}
+	}
+	if m.embedChosenModel != "" {
+		plan.RetrievalStrategy = "auto"
+		plan.EmbeddingModel = m.embedChosenModel
 	}
 	return plan
 }

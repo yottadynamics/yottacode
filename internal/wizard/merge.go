@@ -39,6 +39,12 @@ func mergeConfig(plan Plan, existingPath string) (string, error) {
 	// have hand-tuned context-window watermarks or retrieval top_k.
 	merged.Context = existing.Context
 	merged.Retrieval = existing.Retrieval
+	if plan.RetrievalStrategy != "" {
+		merged.Retrieval.Strategy = plan.RetrievalStrategy
+	}
+	if plan.EmbeddingModel != "" {
+		merged.Retrieval.EmbeddingModel = plan.EmbeddingModel
+	}
 
 	// Providers: union by name with Plan winning on collision.
 	merged.Providers = mergeProviders(existing.Providers, plan.Providers)

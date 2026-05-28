@@ -95,20 +95,30 @@ func (c *EmbedClient) Embed(ctx context.Context, text string) ([]float32, error)
 // Available reports whether the configured embedding model is
 // installed on the Ollama server. Uses a short probe timeout.
 func (c *EmbedClient) Available(ctx context.Context) bool {
+	_, installed := c.Status(ctx)
+	return installed
+}
+
+// Status probes the Ollama server and reports separately whether the
+// server is reachable and whether the configured model is installed.
+// Distinguishes "Ollama isn't running" (reachable=false) from "Ollama
+// is running but the model was removed" (reachable=true, installed=false)
+// so callers can surface a targeted warning.
+func (c *EmbedClient) Status(ctx context.Context) (reachable, installed bool) {
 	probeCtx, cancel := context.WithTimeout(ctx, 800*time.Millisecond)
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(probeCtx, http.MethodGet, c.BaseURL+"/api/tags", nil)
 	if err != nil {
-		return false
+		return false, false
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return false
+		return false, false
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return false
+		return false, false
 	}
 
 	var body struct {
@@ -117,13 +127,15 @@ func (c *EmbedClient) Available(ctx context.Context) bool {
 		} `json:"models"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-		return false
+		return false, false
 	}
+	reachable = true
 	for _, m := range body.Models {
 		name := strings.TrimSpace(m.Name)
 		if name == c.Model || strings.HasPrefix(name, c.Model+":") {
-			return true
+			installed = true
+			return
 		}
 	}
-	return false
+	return
 }
