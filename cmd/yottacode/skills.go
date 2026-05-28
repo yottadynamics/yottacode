@@ -8,8 +8,10 @@ package main
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 
 	"github.com/yottadynamics/yottacode/internal/skills"
 )
@@ -27,7 +29,9 @@ func newSkillsCmd() *cobra.Command {
   show <name>        print the body of a loaded skill
   uninstall <name>   remove a user-installed skill from ~/.yottacode/skills/
   check [name]       compare installed bytes against ~/.yottacode/skills/.lock.json
-  update [name]      re-fetch installed skills from their recorded source`,
+  update [name]      re-fetch installed skills from their recorded source
+  new <slug>         scaffold a starter SKILL.md under ~/.yottacode/skills/<slug>/
+  validate <path>    parse a SKILL.md (or skill dir) and report errors`,
 		Args: cobra.NoArgs,
 	}
 	cmd.AddCommand(
@@ -37,6 +41,8 @@ func newSkillsCmd() *cobra.Command {
 		newSkillsUninstallCmd(),
 		newSkillsCheckCmd(),
 		newSkillsUpdateCmd(),
+		newSkillsNewCmd(),
+		newSkillsValidateCmd(),
 	)
 	return cmd
 }
@@ -80,6 +86,24 @@ Refuses to overwrite an existing install unless --force is set.`,
 	return c
 }
 
+// truncateRunes returns at most n runes of s, suffixed with "…" when
+// truncation happens. Used by `skills list` to fit each row inside
+// the terminal width. Counts runes so multi-byte characters don't
+// blow up the visual column width.
+func truncateRunes(s string, n int) string {
+	if n <= 0 {
+		return ""
+	}
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	if n == 1 {
+		return "…"
+	}
+	return string(r[:n-1]) + "…"
+}
+
 func newSkillsListCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "list",
@@ -108,8 +132,30 @@ func newSkillsListCmd() *cobra.Command {
 					maxName = l
 				}
 			}
+			// Column width budget: when stdout is a TTY, truncate the
+			// description so each row fits one line — the previous
+			// uncapped print soft-wrapped mid-word in narrow
+			// terminals and broke the column alignment for every
+			// subsequent skill. Piped output (CI, `| grep`,
+			// scripting) keeps full descriptions so callers can
+			// still match against the full text.
+			descMax := 0
+			if w, _, err := term.GetSize(int(os.Stdout.Fd())); err == nil && term.IsTerminal(int(os.Stdout.Fd())) {
+				// Layout: <name> <2sp> <source padded to 9> <2sp> <description>
+				const layoutOverhead = 2 + 9 + 2
+				descMax = w - maxName - layoutOverhead
+				if descMax < 20 {
+					// Very narrow terminal — skip truncation rather
+					// than render near-empty descriptions.
+					descMax = 0
+				}
+			}
 			for _, sk := range res.Skills {
-				fmt.Fprintf(out, "%-*s  %-9s  %s\n", maxName, sk.Name, sk.Source, sk.Description)
+				desc := sk.Description
+				if descMax > 0 {
+					desc = truncateRunes(desc, descMax)
+				}
+				fmt.Fprintf(out, "%-*s  %-9s  %s\n", maxName, sk.Name, sk.Source, desc)
 			}
 			return nil
 		},
@@ -134,11 +180,35 @@ func newSkillsShowCmd() *cobra.Command {
 			if sk == nil {
 				return fmt.Errorf("no skill named %q (run 'yottacode skills list' to see what's loaded)", args[0])
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "# %s\n_%s — %s_\n\n%s\n",
-				sk.Name, sk.Source, sk.SourcePath, sk.Body)
+			fmt.Fprint(cmd.OutOrStdout(), renderSkillShow(*sk))
 			return nil
 		},
 	}
+}
+
+// renderSkillShow formats a Skill for the `show` surface. Splits
+// metadata across its own block above the body so attribution +
+// upstream pointers are easy to spot when vetting a community
+// skill. Empty fields are dropped so the header stays compact for
+// built-in skills (which generally don't populate them).
+func renderSkillShow(sk skills.Skill) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "# %s\n_%s — %s_\n\n", sk.Name, sk.Source, sk.SourcePath)
+	if author := strings.TrimSpace(sk.Metadata["author"]); author != "" {
+		fmt.Fprintf(&b, "Author: %s\n", author)
+	}
+	if src := strings.TrimSpace(sk.Metadata["source-url"]); src != "" {
+		fmt.Fprintf(&b, "Source: %s\n", src)
+	}
+	// Trailing newline before the body when any metadata was
+	// rendered, so the body's `#` heading visually separates from
+	// the metadata block.
+	if b.Len() > len("# "+sk.Name+"\n_"+string(sk.Source)+" — "+sk.SourcePath+"_\n\n") {
+		b.WriteByte('\n')
+	}
+	b.WriteString(sk.Body)
+	b.WriteByte('\n')
+	return b.String()
 }
 
 func newSkillsUninstallCmd() *cobra.Command {
@@ -209,6 +279,61 @@ With no name argument, every tracked + installed skill is checked.`,
 				}
 				fmt.Fprintln(out, line)
 			}
+			return nil
+		},
+	}
+}
+
+// newSkillsNewCmd scaffolds a starter SKILL.md so a new author
+// doesn't have to copy/paste frontmatter from another skill. Refuses
+// to overwrite an existing dir unless --force is set.
+func newSkillsNewCmd() *cobra.Command {
+	var force bool
+	c := &cobra.Command{
+		Use:   "new <slug>",
+		Short: "Scaffold a starter SKILL.md under ~/.yottacode/skills/<slug>/",
+		Long: `Create ~/.yottacode/skills/<slug>/SKILL.md with placeholder
+frontmatter (name, description, license, author, source-url) and a
+body template. Fill in the TODO markers, then test with
+` + "`yottacode skills validate ~/.yottacode/skills/<slug>`" + `.`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			res, err := skills.NewSkill(skills.NewSkillOptions{
+				Slug:  args[0],
+				Force: force,
+			})
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "wrote %s\n", res.SkillFile)
+			return nil
+		},
+	}
+	c.Flags().BoolVarP(&force, "force", "f", false, "Overwrite an existing dir of the same slug")
+	return c
+}
+
+// newSkillsValidateCmd runs the loader's parser against a SKILL.md
+// (or a skill dir) and reports the first error or "ok". Useful in
+// CI for community-contributed skills.
+func newSkillsValidateCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "validate <path>",
+		Short: "Parse a SKILL.md (or skill dir) and report errors",
+		Long: `Validates a SKILL.md against the same rules the runtime loader
+applies (frontmatter shape, required fields, name pattern, length
+caps, body non-empty). When path is a directory, the name field
+must match the directory name; when path points at a bare SKILL.md
+file, the name/dir match is skipped (CI / authoring use case).`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			res := skills.Validate(args[0])
+			out := cmd.OutOrStdout()
+			if res.Err != nil {
+				fmt.Fprintf(out, "%s: %v\n", res.Path, res.Err)
+				return res.Err
+			}
+			fmt.Fprintf(out, "%s: ok (%s — %s)\n", res.Path, res.Skill.Name, res.Skill.Description)
 			return nil
 		},
 	}

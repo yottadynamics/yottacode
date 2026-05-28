@@ -64,6 +64,21 @@ func (t *SkillTool) IsEnabled(name string) bool {
 	return t.enabled[name]
 }
 
+// Enable marks the named skill as exposed without disturbing the
+// rest of the enablement set. Used by install paths so a
+// just-installed skill is immediately visible — installing something
+// strongly implies "I want to use this," and forcing a second trip
+// through the picker for a checkbox was its own usability bug.
+func (t *SkillTool) Enable(name string) {
+	if t.enabled == nil {
+		// Nil meant "all enabled" — adding to a nil map would be a
+		// no-op against the "everything is on" baseline, so we
+		// switch into an explicit map to make the addition stick.
+		t.enabled = map[string]bool{}
+	}
+	t.enabled[name] = true
+}
+
 // Active returns the subset of All currently enabled, in input order.
 // Used by callers that need to recompute prompt sections or slash
 // dispatch around the active set.

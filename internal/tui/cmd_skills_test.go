@@ -21,17 +21,19 @@ description: Sample skill for slash-form tests.
 Body.
 `
 
-// TestSkillsSlash_BareOpensPicker locks the regression where the
-// /skills entry point routes the no-args path to the picker (the
-// pre-subcommand behavior). Without this, a future refactor that
-// drops the "len(args)==0" branch silently breaks every user who
-// types /skills to enable skills for the session.
-func TestSkillsSlash_BareOpensPicker(t *testing.T) {
+// TestSkillsSlash_BareOpensMenu locks the regression where the
+// /skills entry point opens the top-level menu (Catalog / Install /
+// Check / Update). The picker (now Catalog) is reachable via the
+// menu — not directly from the slash command anymore.
+func TestSkillsSlash_BareOpensMenu(t *testing.T) {
 	m := newTestModel(t)
 	m.skillTool = &agent.SkillTool{All: nil}
 	m, _ = m.runSlash("/skills")
-	if !m.skillsPickerOpen {
-		t.Fatal("/skills with no args should open the picker")
+	if !m.skillsMenuOpen {
+		t.Fatal("/skills with no args should open the menu")
+	}
+	if m.skillsPickerOpen {
+		t.Fatal("/skills should NOT open the picker directly anymore")
 	}
 }
 

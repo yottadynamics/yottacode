@@ -17,14 +17,21 @@ import (
 // users don't have to leave the TUI to manage what's installed.
 func cmdSkills(m Model, args []string) (Model, tea.Cmd) {
 	if len(args) == 0 {
-		m.openSkillsPicker()
+		m.openSkillsMenu()
 		return m, nil
 	}
 	switch args[0] {
 	case "install":
 		return cmdSkillsInstall(m, args[1:])
 	case "list", "ls":
-		return cmdSkillsList(m, args[1:])
+		// Catalog covers what "list" used to do (loaded skills with
+		// source + description) and adds tabs + filter + per-row
+		// actions on top. The flat-text /skills list dump was
+		// redundant *and* badly wrapped on long descriptions in
+		// narrow terminals; redirecting preserves user muscle
+		// memory while routing them to the better view. The CLI
+		// `yottacode skills list` remains for scripting use.
+		return skillsMenuOpenCatalog(m)
 	case "show":
 		return cmdSkillsShow(m, args[1:])
 	case "uninstall", "remove", "rm":
@@ -36,7 +43,7 @@ func cmdSkills(m Model, args []string) (Model, tea.Cmd) {
 	default:
 		m.appendLine(styleError.Render(
 			"[skills] unknown subcommand " + args[0] +
-				" (try: install <source> [--force], list, show <name>, uninstall <name>, check [name], update [name] [--force])"))
+				" (try: install <source> [--force], show <name>, uninstall <name>, check [name], update [name] [--force])"))
 		return m, nil
 	}
 }
@@ -71,6 +78,13 @@ func cmdSkillsInstall(m Model, args []string) (Model, tea.Cmd) {
 		"[skills] installed %s (%s) at %s", res.Skill.Name, res.SourceType, res.Dir)))
 	for _, w := range res.Warnings {
 		m.appendLine(styleError.Render("[skills] warning: " + w))
+	}
+	// Auto-enable the just-installed skill so it's immediately
+	// visible with a checkmark in the picker and exposed to the
+	// model on the next turn. reloadSkillsRegistry's recompose call
+	// picks up the new enablement.
+	if m.skillTool != nil {
+		m.skillTool.Enable(res.Skill.Name)
 	}
 	return reloadSkillsRegistry(m), nil
 }
@@ -155,34 +169,6 @@ func cmdSkillsUpdate(m Model, args []string) (Model, tea.Cmd) {
 	return reloadSkillsRegistry(m), nil
 }
 
-// cmdSkillsList prints the loaded set from the live SkillTool — same
-// universe the picker shows. Reads SkillTool.All instead of
-// re-running LoadAll so the displayed list matches what the session
-// is actually working with (no risk of disk/session drift mid-session).
-func cmdSkillsList(m Model, _ []string) (Model, tea.Cmd) {
-	if m.skillTool == nil {
-		m.appendLine(styleError.Render("[skills] not available in this session"))
-		return m, nil
-	}
-	all := m.skillTool.All
-	if len(all) == 0 {
-		m.appendLine("(no skills loaded)")
-		return m, nil
-	}
-	maxName := 4
-	for _, sk := range all {
-		if l := len(sk.Name); l > maxName {
-			maxName = l
-		}
-	}
-	var b strings.Builder
-	for _, sk := range all {
-		fmt.Fprintf(&b, "  %-*s  %-9s  %s\n", maxName, sk.Name, sk.Source, sk.Description)
-	}
-	m.appendLine(strings.TrimRight(b.String(), "\n"))
-	return m, nil
-}
-
 // cmdSkillsShow prints the full body of one skill to the transcript.
 // The Markdown isn't rendered through a styler — keeping it raw mirrors
 // what the model receives via Skill(skill="<name>"), which is the
@@ -202,9 +188,27 @@ func cmdSkillsShow(m Model, args []string) (Model, tea.Cmd) {
 		m.appendLine(styleError.Render("[skills] no skill named " + name))
 		return m, nil
 	}
-	m.appendLine(fmt.Sprintf("# %s\n_%s — %s_\n\n%s",
-		sk.Name, sk.Source, sk.SourcePath, sk.Body))
+	m.appendLine(renderSkillForTranscript(*sk))
 	return m, nil
+}
+
+// renderSkillForTranscript formats a Skill for inline display in the
+// transcript. Same shape as the CLI `show` output: header line +
+// optional Author/Source metadata block + body. Empty metadata
+// fields are dropped so built-ins (which usually don't populate
+// them) stay compact.
+func renderSkillForTranscript(sk skills.Skill) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "# %s\n_%s — %s_\n", sk.Name, sk.Source, sk.SourcePath)
+	if author := strings.TrimSpace(sk.Metadata["author"]); author != "" {
+		fmt.Fprintf(&b, "Author: %s\n", author)
+	}
+	if src := strings.TrimSpace(sk.Metadata["source-url"]); src != "" {
+		fmt.Fprintf(&b, "Source: %s\n", src)
+	}
+	b.WriteByte('\n')
+	b.WriteString(sk.Body)
+	return b.String()
 }
 
 // cmdSkillsUninstall removes a user-scope skill and refreshes the

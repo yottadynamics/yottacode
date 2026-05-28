@@ -83,6 +83,33 @@ auto_threshold = 0.9`
 	}
 }
 
+// TestLoad_ParsesSkillsDefaultOn locks the [skills] block schema.
+// Without this test, a TOML-tag typo on DefaultOn would silently
+// keep the field empty and the seeding logic in tui/run.go would
+// quietly fall back to the default-off behavior — undetectable from
+// the outside.
+func TestLoad_ParsesSkillsDefaultOn(t *testing.T) {
+	src := `
+[skills]
+default_on = ["test-driven-development", "diagnose"]
+`
+	path := writeFile(t, src)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	got := cfg.Skills.DefaultOn
+	want := []string{"test-driven-development", "diagnose"}
+	if len(got) != len(want) {
+		t.Fatalf("default_on = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
 func TestLoad_RejectsWarnAboveAuto(t *testing.T) {
 	src := `[context]
 warn_threshold = 0.9

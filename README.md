@@ -164,6 +164,8 @@ yottacode skills list
 yottacode skills check                                     # report drift vs lockfile
 yottacode skills update [name] [--force]                   # refetch from recorded source
 yottacode skills uninstall <name>
+yottacode skills new <slug>                                # scaffold a starter SKILL.md
+yottacode skills validate <path>                           # lint a SKILL.md (file or dir)
 ```
 
 Every install records source + content-hash in `~/.yottacode/skills/.lock.json` so `check` can flag hand-edits and `update` can refresh in place without clobbering them (use `--force` to override).

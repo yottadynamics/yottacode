@@ -52,6 +52,20 @@ type Config struct {
 	// warning so graduated/removed feature names don't break old
 	// configs.
 	Experimental map[string]bool `toml:"experimental"`
+	// Skills carries persistent Agent Skills preferences — currently
+	// just the default-on list seeded into SkillTool.SetEnabled at
+	// session start. Absent block keeps the default-off behavior so
+	// users without preferences see today's small-prompt experience.
+	Skills SkillsConfig `toml:"skills"`
+}
+
+// SkillsConfig declares persistent Agent Skills behavior. DefaultOn
+// is the set of skill names to mark as enabled when each new TUI
+// session starts (or a session is resumed). Names that don't match
+// any loaded skill produce a startup warning so a typo surfaces
+// instead of silently no-op'ing — same pattern as Experimental.
+type SkillsConfig struct {
+	DefaultOn []string `toml:"default_on"`
 }
 
 // ThemeConfig selects the TUI color palette. Name must match a theme
