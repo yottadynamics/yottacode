@@ -242,13 +242,13 @@ yottacode supports three scoring strategies, selectable via config:
 To get the full advantage of semantic memory retrieval:
 
 1. Install [Ollama](https://ollama.com) if you haven't already
-2. Pull a small embedding model (runs on CPU, no GPU needed):
+2. Pull a small embedding model:
    ```
    ollama pull nomic-embed-text
    ```
 3. Restart yottacode — semantic retrieval activates automatically
 
-The embedding model is small (~270MB) and fast. It runs locally — no data leaves your machine. Once installed, every `memory_save` generates a vector sidecar alongside the memory file. To generate vectors for existing memories, use `/memory` → **Reindex embeddings** or:
+`nomic-embed-text` runs entirely on CPU — no GPU required. The model is small (~270MB) and fast, and it runs locally so no data leaves your machine. Once installed, every `memory_save` generates a vector sidecar alongside the memory file. To generate vectors for existing memories, use `/memory` → **Reindex embeddings** or:
 
 ```
 yottacode memory reindex
