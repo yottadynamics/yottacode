@@ -250,6 +250,58 @@ This trades convenience for context discipline: the model can't ambient-reach fo
 
 The picker shows every loaded skill (built-in + user + project) with its source tag and description. On commit, the system prompt is recomposed so the next turn sees the updated "Available skills" section. The selection is **per-session**, not persisted to disk — opening a new yottacode session starts with everything disabled again. A `[skills]` config option to set a persistent default-on set is on the v1.1 roadmap.
 
+### Install, list, show, uninstall
+
+`/skills` overloads on subcommand — no args opens the picker; the four subcommands mirror the `yottacode skills` CLI tree for in-TUI management.
+
+| Form | What it does |
+|---|---|
+| `/skills install <source> [--force]` | Install a skill from a local path, `https://.../SKILL.md` URL, or `owner/repo[/path]` GitHub shorthand. Refuses to overwrite an existing slug unless `--force` is set. |
+| `/skills list` | Print every loaded skill (built-in + user + project) with its source and description. |
+| `/skills show <name>` | Print one skill's full body — the same bytes the model receives when it calls `Skill(skill="<name>")`. |
+| `/skills uninstall <name>` | Remove a user-scope skill from `~/.yottacode/skills/`. Built-in and project-scope skills are out of scope (project skills are committed source — remove via git/rm; built-ins are embedded in the binary). |
+| `/skills check [name]` | Report drift between the installed bytes and `~/.yottacode/skills/.lock.json`. Statuses: `ok`, `modified`, `missing-lock`, `orphaned-lock`, `hash-error`. Read-only. |
+| `/skills update [name] [--force]` | Re-fetch from the originally-recorded source. Skips installs whose on-disk hash diverges from the lockfile unless `--force` is set, so hand-edits aren't silently overwritten. |
+
+Source shapes:
+
+```text
+./path/to/skill           local directory containing SKILL.md
+./path/to/skill/SKILL.md  local SKILL.md file (no resources copied)
+https://.../SKILL.md      single-file fetch — URL must end in /SKILL.md
+owner/repo                GitHub repo root (must contain SKILL.md)
+owner/repo/path/to/skill  GitHub subpath; scripts/, references/, assets/
+                          are walked via the Contents API
+```
+
+The installer writes into `~/.yottacode/skills/<slug>/` where `<slug>` is taken from the SKILL.md frontmatter `name` — so a source dir named `weird-name` whose frontmatter says `name: sample` lands at `~/.yottacode/skills/sample/`. The on-disk dir name is always the canonical slug.
+
+Authenticated GitHub fetches: set `GITHUB_TOKEN` to lift the 60-req/hr unauthenticated rate limit on the Contents API. Only sent to `api.github.com` hosts.
+
+### Provenance and updates
+
+Every install records a row in `~/.yottacode/skills/.lock.json`:
+
+```json
+{
+  "version": 1,
+  "entries": {
+    "remote-ops": {
+      "name": "remote-ops",
+      "source_type": "github",
+      "source": "obra/superpowers/skills/remote-ops",
+      "hash": "sha256:…",
+      "installed_at": "2026-05-27T12:00:00Z",
+      "trust": "unverified"
+    }
+  }
+}
+```
+
+The lockfile is dot-prefixed so the skill loader skips it. `trust` is reserved for a future signing/trust subsystem and is always `"unverified"` in this release.
+
+`/skills check` compares the on-disk hash of every installed skill to its recorded hash; `/skills update` re-runs the installer against the recorded `source` and refreshes the lockfile entry. The dirty check on `update` ensures a hand-edit is never silently overwritten — you'll see `skipped-user-modified` until you pass `--force` to confirm the overwrite.
+
 ### Discovery
 
 Three tiers, project wins:
@@ -296,8 +348,7 @@ A skill may ship `scripts/`, `references/`, `assets/` subdirectories. The body r
 ### Out of scope (for now)
 
 - `allowed-tools` enforcement — landing alongside the broader per-tool sandbox work.
-- `yottacode skill install <git-url>` / `update` — installs go in `~/.yottacode/skills/` manually for v1.
-- `/skills` picker with multi-select toggles — v1.1 follow-up.
+- Ed25519-signed skills + a public registry — post-v0.4.0 per the roadmap. The lockfile's `trust` field is reserved for this.
 
 ## Plan mode
 
