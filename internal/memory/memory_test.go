@@ -269,64 +269,6 @@ func TestLoad_ProjectMemoriesIsolatedAcrossProjects(t *testing.T) {
 	}
 }
 
-func TestRenderMemoryIndex_FreeFormTypesRendered(t *testing.T) {
-	entries := []MemoryEntry{
-		{Name: "a-pref", Type: "user", Description: "u"},
-		{Name: "z-decision", Type: "decision", Description: "d"}, // free-form
-		{Name: "m-fact", Type: "project", Description: "p"},
-		{Name: "b-gotcha", Type: "gotcha", Description: "g"}, // free-form
-	}
-	out := RenderMemoryIndex("user", entries)
-
-	// Every type present is rendered, including the free-form ones.
-	for _, h := range []string{"## user", "## project", "## decision", "## gotcha"} {
-		if !strings.Contains(out, h) {
-			t.Errorf("index missing %q section:\n%s", h, out)
-		}
-	}
-	// Conventional types come first (canonical order), then custom types
-	// alphabetically: user < project < decision < gotcha.
-	iUser := strings.Index(out, "## user")
-	iProject := strings.Index(out, "## project")
-	iDecision := strings.Index(out, "## decision")
-	iGotcha := strings.Index(out, "## gotcha")
-	if !(iUser < iProject && iProject < iDecision && iDecision < iGotcha) {
-		t.Errorf("order = user:%d project:%d decision:%d gotcha:%d; want conventional-first then alphabetical custom",
-			iUser, iProject, iDecision, iGotcha)
-	}
-}
-
-func TestScanMemoryDir_FilenameIsAuthoritativeOverFrontmatterName(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	memDir := filepath.Join(home, ".yottacode", "memory")
-	// Hand-edited divergence: the file is bar.md but its frontmatter
-	// claims name: foo. The filename must win — otherwise the index
-	// would link to a non-existent foo.md and memory_forget("bar")
-	// (the real file) couldn't be matched by the model's view.
-	writeFile(t, filepath.Join(memDir, "bar.md"),
-		"---\nname: foo\ntype: reference\ndescription: drifted name\n---\nbody\n")
-
-	got, err := Load(t.TempDir())
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if len(got.UserMemories) != 1 {
-		t.Fatalf("want 1 memory, got %d: %+v", len(got.UserMemories), got.UserMemories)
-	}
-	if name := got.UserMemories[0].Name; name != "bar" {
-		t.Errorf("entry Name = %q, want basename %q (frontmatter name must not override identity)", name, "bar")
-	}
-
-	idx := RenderMemoryIndex("user", got.UserMemories)
-	if !strings.Contains(idx, "(bar.md)") {
-		t.Errorf("index link should target the real file bar.md; got:\n%s", idx)
-	}
-	if strings.Contains(idx, "(foo.md)") {
-		t.Errorf("index must not link to the non-existent foo.md; got:\n%s", idx)
-	}
-}
-
 func TestLoad_MemorySkipsSymlinks(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

@@ -52,44 +52,6 @@ func TestProjectSlug_EmptyCwdReturnsDefault(t *testing.T) {
 	}
 }
 
-func TestProjectSlug_UsesGitSlugCache(t *testing.T) {
-	// A directory with no git remote would normally fall back to its
-	// slugified basename. Pre-seeding the cache proves ProjectSlug
-	// consults it first — and thus avoids the per-turn git subprocess.
-	cwd := filepath.Join(t.TempDir(), "cached-proj")
-	gitSlugCacheMu.Lock()
-	gitSlugCache[cwd] = "github-com-acme-widget"
-	gitSlugCacheMu.Unlock()
-	t.Cleanup(func() {
-		gitSlugCacheMu.Lock()
-		delete(gitSlugCache, cwd)
-		gitSlugCacheMu.Unlock()
-	})
-	if got := ProjectSlug(cwd); got != "github-com-acme-widget" {
-		t.Errorf("ProjectSlug should return the cached git slug, not the basename; got %q", got)
-	}
-}
-
-func TestProjectSlugFromGit_CachesNegativeResult(t *testing.T) {
-	// A non-repo resolves to "" and that result is cached, so a second
-	// lookup is served from the cache rather than forking git again.
-	cwd := t.TempDir() // bare temp dir, no .git
-	if got := projectSlugFromGit(cwd); got != "" {
-		t.Fatalf("non-repo should resolve to empty slug; got %q", got)
-	}
-	t.Cleanup(func() {
-		gitSlugCacheMu.Lock()
-		delete(gitSlugCache, cwd)
-		gitSlugCacheMu.Unlock()
-	})
-	gitSlugCacheMu.RLock()
-	cached, ok := gitSlugCache[cwd]
-	gitSlugCacheMu.RUnlock()
-	if !ok || cached != "" {
-		t.Errorf("negative git result should be cached as \"\"; ok=%v cached=%q", ok, cached)
-	}
-}
-
 func TestProjectSlug_HandlesSpacesAndUppercase(t *testing.T) {
 	cwd := filepath.Join(t.TempDir(), "My  Cool Project")
 	if err := os.MkdirAll(cwd, 0o755); err != nil {

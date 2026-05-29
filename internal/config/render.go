@@ -10,7 +10,7 @@ import (
 )
 
 // Render produces the canonical TOML body for a Config. Stable
-// section order: tunables block (context / retrieval)
+// section order: tunables block (auto_memory / context / retrieval)
 // first via the BurntSushi encoder, then human-edited sections
 // (active, providers, router) hand-rendered with explicit alignment
 // so diffs read top-to-bottom. The encoder's emit order isn't

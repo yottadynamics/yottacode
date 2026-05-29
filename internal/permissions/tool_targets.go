@@ -101,16 +101,6 @@ func targetFor(toolName, argsJSON, cwd string) Target {
 		return Target{PermName: "Memory", Descriptor: "save " + extractField(argsJSON, "scope") + ":" + extractField(argsJSON, "name")}
 	case "memory_forget":
 		return Target{PermName: "Memory", Descriptor: "forget " + extractField(argsJSON, "scope") + ":" + extractField(argsJSON, "name")}
-	case "memory_search":
-		return Target{PermName: "Memory", Descriptor: "search " + extractField(argsJSON, "query")}
-	case "memory_get":
-		return Target{PermName: "Memory", Descriptor: "get " + extractField(argsJSON, "scope") + ":" + extractField(argsJSON, "name")}
-	case "session_recall":
-		// session_recall is the broadest read surface — FTS5 over EVERY
-		// past session in EVERY project, no cwd filter. It belongs under
-		// the Memory namespace so deny:["Memory(*)"] actually blocks
-		// cross-session history reads, as docs/memory.md promises.
-		return Target{PermName: "Memory", Descriptor: "recall " + extractField(argsJSON, "query")}
 	case "git":
 		return Target{PermName: "Git", Descriptor: extractGitArgs(argsJSON)}
 	case "git_checkpoint":

@@ -59,19 +59,14 @@ func scanMemoryDir(dir, scope string) ([]MemoryEntry, error) {
 		if typ == "" {
 			typ = "reference"
 		}
-		// The filename is the entry's identity, not the frontmatter
-		// `name:` field. The index renders links as [Name](Name.md) and
-		// memory_forget resolves a memory by computing <Name>.md, so Name
-		// MUST equal the basename or both break. Tool-written files keep
-		// the two in sync (memory_save writes <name>.md with name: <name>),
-		// but a hand-edited file whose frontmatter name drifts from its
-		// filename would otherwise produce dead index links and an
-		// un-forgettable memory. Trusting the basename closes that gap;
-		// the frontmatter `name:` stays as human-facing redundancy.
+		entryName := fm.Name
+		if entryName == "" {
+			entryName = base
+		}
 		entries = append(entries, MemoryEntry{
 			Path:        full,
 			Scope:       scope,
-			Name:        base,
+			Name:        entryName,
 			Type:        typ,
 			Description: fm.Description,
 			Body:        strings.TrimRight(body, "\n"),
@@ -101,22 +96,7 @@ func RenderMemoryIndex(scope string, entries []MemoryEntry) string {
 	for _, e := range entries {
 		byType[e.Type] = append(byType[e.Type], e)
 	}
-	// Render the conventional types first in canonical order, then any
-	// free-form (custom) types alphabetically. Types are free-form, so
-	// the renderer must cover whatever's present — iterating only the
-	// conventional list would silently drop custom-typed memories from
-	// the index even though their bodies still inject.
-	conventional := []string{"user", "feedback", "project", "reference"}
-	isConventional := map[string]bool{"user": true, "feedback": true, "project": true, "reference": true}
-	var custom []string
-	for typ := range byType {
-		if !isConventional[typ] {
-			custom = append(custom, typ)
-		}
-	}
-	sort.Strings(custom)
-	order := append(append([]string{}, conventional...), custom...)
-	for _, t := range order {
+	for _, t := range []string{"user", "feedback", "project", "reference"} {
 		group := byType[t]
 		if len(group) == 0 {
 			continue
@@ -157,7 +137,7 @@ func RegenerateMemoryIndex(scope, cwd string) error {
 		return nil
 	}
 	body := RenderMemoryIndex(scope, entries)
-	return AtomicWrite(indexPath, []byte(body), 0o600)
+	return atomicWriteFile(indexPath, []byte(body), 0o600)
 }
 
 // memoryDirFor resolves the directory for the given scope. Project
@@ -173,6 +153,13 @@ func memoryDirFor(scope, cwd string) (string, error) {
 	}
 }
 
-// Index files are written via the shared memory.AtomicWrite (see
-// atomicwrite.go) so MEMORY.md gets the same unique-temp + fsync
-// durability as every other memory write.
+// atomicWriteFile writes data to path via tmp+rename. Mirrors the
+// pattern in extract.go saveFact so the new tools and the doomed
+// extractor share write semantics until extract.go is removed.
+func atomicWriteFile(path string, data []byte, perm os.FileMode) error {
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, perm); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
+}

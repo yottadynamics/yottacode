@@ -217,17 +217,6 @@ func (a *responsesAdapter) ChatStream(ctx context.Context, messages []Message, t
 			return
 		}
 
-		// A function_call item is removed from `pending` on its
-		// function_call_arguments.done event. Any left once the stream
-		// ends means the response was cut off mid-tool-call; emitting a
-		// clean EventDone would silently drop those calls and commit a
-		// corrupted assistant turn (tool_use blocks the user saw, missing
-		// from history). Surface an error so the loop retries or reports.
-		if len(pending) > 0 {
-			out <- StreamEvent{Kind: EventErr, Err: fmt.Errorf("openai: stream ended with %d incomplete tool call(s) — response truncated", len(pending))}
-			return
-		}
-
 		final := Message{
 			Role:      RoleAssistant,
 			Content:   content.String(),

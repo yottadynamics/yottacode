@@ -241,58 +241,18 @@ type SessionInfo struct {
 }
 
 // Save atomically writes the session to disk.
-//
-// The temp file gets a unique name (os.CreateTemp) rather than a fixed
-// "<path>.tmp" suffix: two yottacode processes editing the same session
-// (e.g. two terminals, or one `--continue` alongside a `--resume`) would
-// otherwise write to the same temp path and clobber each other's
-// in-flight write, so one process's history would be silently lost on
-// rename. A per-write unique temp name makes concurrent saves
-// last-writer-wins on the final file instead of corrupting it.
 func (s *Session) Save() error {
 	b, err := json.MarshalIndent(s, "", "  ")
 	if err != nil {
 		return err
 	}
-	dir := filepath.Dir(s.path)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(s.path), 0o700); err != nil {
 		return err
 	}
-	tmp, err := os.CreateTemp(dir, "."+filepath.Base(s.path)+".*.tmp")
-	if err != nil {
+	tmp := s.path + ".tmp"
+	if err := os.WriteFile(tmp, b, 0o600); err != nil {
 		return err
 	}
-	tmpName := tmp.Name()
-	// Best-effort cleanup if we bail before the rename succeeds; a
-	// successful rename consumes tmpName so the Remove is a harmless no-op.
-	defer os.Remove(tmpName)
-	if _, err := tmp.Write(b); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Chmod(0o600); err != nil {
-		tmp.Close()
-		return err
-	}
-	// fsync the data before rename, and the directory after, so a
-	// crash/power-loss just after Save returns can't leave the
-	// transcript (the highest-value durable artifact) zero-length or
-	// stale — matching the memory layer's atomic writes.
-	if err := tmp.Sync(); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	if err := os.Rename(tmpName, s.path); err != nil {
-		return err
-	}
-	// Best-effort directory fsync so the rename itself is durable.
-	if d, derr := os.Open(dir); derr == nil {
-		_ = d.Sync()
-		_ = d.Close()
-	}
-	return nil
+	return os.Rename(tmp, s.path)
 }
 

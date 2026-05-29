@@ -534,18 +534,11 @@ func executeToolCallsParallel(
 	results := make([]toolExecResult, len(calls))
 	var wg sync.WaitGroup
 	errCh := make(chan error, len(calls))
-	// One shared lock per batch guards the single decisions channel and
-	// the single TUI modal: any worker that needs to prompt the user (a
-	// permission Ask, a path-trust elevation, a forwarded subagent
-	// approval) acquires it for the duration of that round-trip so two
-	// workers can't interleave on the channel. Workers that never prompt
-	// run fully in parallel — they never touch the gate.
-	gateCtx := WithApprovalGate(ctx, new(sync.Mutex))
 	for i, tc := range calls {
 		wg.Add(1)
 		go func(i int, tc adapter.ToolCall) {
 			defer wg.Done()
-			result, images, denied, err := executeToolCall(gateCtx, cfg, tc, events, decisions)
+			result, images, denied, err := executeToolCall(ctx, cfg, tc, events, decisions)
 			results[i] = toolExecResult{content: result, images: images, denied: denied, err: err}
 			if err != nil {
 				errCh <- err
@@ -848,11 +841,6 @@ func promptForPathElevation(
 	events chan<- Event,
 	decisions <-chan Decision,
 ) (Decision, error) {
-	// Serialize against other concurrent workers in the same parallel
-	// batch (no-op on the serial path); released when this elevation's
-	// decision is in hand.
-	unlock := lockApprovalGate(ctx)
-	defer unlock()
 	if err := send(ctx, events, PathTrustElevationNeeded{
 		ToolName:     toolName,
 		Path:         sentinel.Path,
@@ -885,11 +873,6 @@ func promptForApproval(
 	events chan<- Event,
 	decisions <-chan Decision,
 ) (bool, bool, error) {
-	// Serialize this round-trip against other concurrent workers in the
-	// same parallel batch (no-op on the serial path). Released as soon as
-	// the user's decision is in hand — never held across tool.Execute.
-	unlock := lockApprovalGate(ctx)
-	defer unlock()
 	if err := send(ctx, events, ApprovalNeeded{
 		ToolName: tool.Name(), Preview: preview, ArgsJSON: tc.ArgsJSON,
 	}); err != nil {

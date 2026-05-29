@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"math"
 	"os"
-	"path/filepath"
 	"strings"
 )
 
@@ -31,60 +30,42 @@ func WriteVec(path string, vec []float32) error {
 }
 
 // WriteVecWithModel writes a vector with an explicit model name header.
-//
-// Staging uses a UNIQUE temp file (os.CreateTemp) and fsyncs before
-// rename, for the same reasons as memory.AtomicWrite: a fixed
-// "<path>.tmp" name let a concurrent writer's deferred cleanup delete
-// this writer's in-flight temp (silently dropping the .vec), and the
-// missing fsync left a crash window. The streaming header+binary layout
-// can't go through AtomicWrite's single-buffer API, so the same
-// guarantees are applied inline here.
 func WriteVecWithModel(path string, vec []float32, model string) error {
 	if len(model) > 1024 {
 		return fmt.Errorf("vec: model name too long (%d bytes, max 1024)", len(model))
 	}
-	dir := filepath.Dir(path)
-	f, err := os.CreateTemp(dir, "."+filepath.Base(path)+".*.tmp")
+	f, err := os.Create(path + ".tmp")
 	if err != nil {
-		return fmt.Errorf("vec: create temp for %s: %w", path, err)
+		return fmt.Errorf("vec: create %s: %w", path, err)
 	}
-	tmp := f.Name()
-	committed := false
 	defer func() {
-		if !committed {
+		if err != nil {
 			f.Close()
-			os.Remove(tmp)
+			os.Remove(path + ".tmp")
 		}
 	}()
 
-	if _, err := f.Write(vecMagic[:]); err != nil {
+	if _, err = f.Write(vecMagic[:]); err != nil {
 		return fmt.Errorf("vec: write header %s: %w", path, err)
 	}
 	modelBytes := []byte(model)
-	if err := binary.Write(f, binary.LittleEndian, uint16(len(modelBytes))); err != nil {
+	if err = binary.Write(f, binary.LittleEndian, uint16(len(modelBytes))); err != nil {
 		return fmt.Errorf("vec: write model len %s: %w", path, err)
 	}
-	if _, err := f.Write(modelBytes); err != nil {
+	if _, err = f.Write(modelBytes); err != nil {
 		return fmt.Errorf("vec: write model %s: %w", path, err)
 	}
-	if err := binary.Write(f, binary.LittleEndian, uint32(len(vec))); err != nil {
+	if err = binary.Write(f, binary.LittleEndian, uint32(len(vec))); err != nil {
 		return fmt.Errorf("vec: write dims %s: %w", path, err)
 	}
-	if err := binary.Write(f, binary.LittleEndian, vec); err != nil {
+	if err = binary.Write(f, binary.LittleEndian, vec); err != nil {
 		return fmt.Errorf("vec: write data %s: %w", path, err)
 	}
-	if err := f.Sync(); err != nil {
-		return fmt.Errorf("vec: sync %s: %w", path, err)
-	}
-	if err := f.Close(); err != nil {
+	if err = f.Close(); err != nil {
+		os.Remove(path + ".tmp")
 		return fmt.Errorf("vec: close %s: %w", path, err)
 	}
-	if err := os.Rename(tmp, path); err != nil {
-		return fmt.Errorf("vec: rename %s: %w", path, err)
-	}
-	committed = true
-	syncDir(dir)
-	return nil
+	return os.Rename(path+".tmp", path)
 }
 
 // ReadVec reads a float32 vector from a .vec file. Handles both the

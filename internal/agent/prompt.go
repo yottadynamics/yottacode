@@ -76,7 +76,7 @@ Scope selection — this is critical for cross-project learning:
   - Default to user-scope. Most things you learn about how someone works, thinks, and prefers are portable. Only use project-scope when the memory is genuinely repo-specific.
   - When you save a project-scope memory, briefly consider: is the underlying principle user-scope? E.g., "user wants table-driven tests in this Go repo" is really "user prefers table-driven tests" (user-scope) — the Go repo is just where you learned it.
 
-Memory types: "user" for preferences, "feedback" for corrections (both positive and negative), "project" for project facts, "reference" for material to look back at. These four are conventions that group together in the index, not a fixed set — if none fit, coin your own short lowercase label (e.g. "decision", "gotcha"). Names are kebab-case slugs that become filenames (use them as memorable handles). Write descriptions in one line — they're what you'll see in the MEMORY.md index next session.
+Memory types: "user" for preferences, "feedback" for corrections (both positive and negative), "project" for project facts, "reference" for material to look back at. Names are kebab-case slugs that become filenames (use them as memorable handles). Write descriptions in one line — they're what you'll see in the MEMORY.md index next session.
 
 Memory hygiene:
   - Forget when a memory is wrong, stale, or superseded.

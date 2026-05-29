@@ -67,78 +67,11 @@ func Score(entry MemoryEntry, query string) float64 {
 
 // scoreBM25 scores entries against the query using BM25 with stemming
 // and synonym expansion. Returns Scored slice sorted descending by
-// score with alphabetical tie-breaking. Raw BM25 is unbounded, so the
-// scores are normalized into [0,1] (see normalizeByMax) to honor the
-// contract documented on Scored.
+// score with alphabetical tie-breaking.
 func scoreBM25(entries []MemoryEntry, query string) []Scored {
-	corpus := cachedCorpus(entries)
-	scored := corpus.rankWeighted(stemExpandWeighted(query))
-	normalizeByMax(scored)
-	return scored
-}
-
-// synonymWeight is the BM25 contribution multiplier for a synonym-derived
-// query term, relative to 1.0 for the original stem. Query-side synonym
-// expansion (StemExpandTokenize) boosts recall, but counting every
-// synonym as a full term lets a document that touches several distinct
-// synonyms of a group outrank one that uses the exact searched term. A
-// fractional weight keeps the recall benefit while preserving exact-term
-// precedence. 0.5 (synonyms count half) is a deliberately conservative
-// default; tune it if a relevance eval warrants.
-const synonymWeight = 0.5
-
-// stemExpandWeighted is the weighted counterpart of StemExpandTokenize:
-// it tokenizes + stems the query, then expands synonyms, tagging the
-// original stems with weight 1.0 and synonyms with synonymWeight. When a
-// term appears both as an original stem and as a synonym of another, the
-// higher (original) weight wins.
-func stemExpandWeighted(s string) []weightedStem {
-	raw := tokenize(s)
-	idx := make(map[string]int, len(raw)*3)
-	out := make([]weightedStem, 0, len(raw)*3)
-	add := func(stem string, w float64) {
-		if i, ok := idx[stem]; ok {
-			if w > out[i].weight {
-				out[i].weight = w
-			}
-			return
-		}
-		idx[stem] = len(out)
-		out = append(out, weightedStem{stem: stem, weight: w})
-	}
-	for _, t := range raw {
-		st := Stem(t)
-		add(st, 1.0)
-		for _, syn := range Expand(st) {
-			if syn == st {
-				continue
-			}
-			add(syn, synonymWeight)
-		}
-	}
-	return out
-}
-
-// normalizeByMax rescales scores into [0,1] by dividing every score by
-// the maximum in the slice. Raw BM25 scores are unbounded, but Scored
-// documents a [0,1] range and the MinScore filter + memory_search's
-// displayed score both rely on it. Dividing by a single positive
-// constant preserves rank order and the alphabetical tie-break. It is a
-// no-op when the max is <= 0 (no query term matched any document — all
-// scores are already 0).
-func normalizeByMax(scored []Scored) {
-	maxScore := 0.0
-	for _, s := range scored {
-		if s.Score > maxScore {
-			maxScore = s.Score
-		}
-	}
-	if maxScore <= 0 {
-		return
-	}
-	for i := range scored {
-		scored[i].Score /= maxScore
-	}
+	corpus := BuildCorpus(entries)
+	qStems := StemExpandTokenize(query)
+	return corpus.Rank(qStems)
 }
 
 // StemExpandTokenize tokenizes, stems, and expands synonyms for the
@@ -175,10 +108,9 @@ const (
 )
 
 // Select ranks entries against the query and returns at most cfg.TopK
-// with score >= cfg.MinScore, further capped so the combined entry
-// bodies stay within cfg.MaxBytes (0 = unlimited). Strategy selects the
-// scoring algorithm: "keyword" uses the legacy exact-token scorer,
-// "bm25" (default) uses BM25 with stemming and synonyms.
+// with score >= cfg.MinScore. Strategy selects the scoring algorithm:
+// "keyword" uses the legacy exact-token scorer, "bm25" (default) uses
+// BM25 with stemming and synonyms.
 func Select(entries []MemoryEntry, query string, cfg config.RetrievalConfig) []MemoryEntry {
 	return SelectWithEmbeddings(entries, query, cfg, nil)
 }
@@ -229,11 +161,6 @@ func SelectWithEmbeddingsScored(entries []MemoryEntry, query string, cfg config.
 			}
 			return scored[i].Entry.Name < scored[j].Entry.Name
 		})
-		// Normalize to top=1.0 like the other strategies so min_score
-		// has one consistent meaning regardless of strategy. Score()'s
-		// denominator is a theoretical all-headline-hit maximum, so its
-		// raw top is usually well below 1.0.
-		normalizeByMax(scored)
 	case "semantic":
 		scored = scoreSemantic(entries, query, embedClient)
 	default:
@@ -241,23 +168,11 @@ func SelectWithEmbeddingsScored(entries []MemoryEntry, query string, cfg config.
 	}
 
 	out := make([]Scored, 0, len(scored))
-	usedBytes := 0
 	for _, s := range scored {
 		if s.Score < cfg.MinScore {
 			continue
 		}
-		// Byte budget: stop once the accumulated bodies would exceed
-		// MaxBytes. Entries are rank-ordered, so this drops the
-		// least-relevant tail first. The top-ranked entry is always
-		// admitted even if it alone exceeds the budget — dropping the
-		// single most-relevant memory would be more surprising than
-		// briefly overshooting. MaxBytes <= 0 means unlimited (count is
-		// then bounded by TopK alone).
-		if cfg.MaxBytes > 0 && len(out) > 0 && usedBytes+len(s.Entry.Body) > cfg.MaxBytes {
-			break
-		}
 		out = append(out, s)
-		usedBytes += len(s.Entry.Body)
 		if cfg.TopK > 0 && len(out) >= cfg.TopK {
 			break
 		}
@@ -313,7 +228,14 @@ func scoreSemantic(entries []MemoryEntry, query string, client *EmbedClient) []S
 			normBM25 = bm25Scored[i].Score / maxBM25
 		}
 
-		cosine := entryCosine(queryVec, VecPath(bm25Scored[i].Entry.Path), client.Model)
+		cosine := 0.0
+		entryVec, _ := ReadVec(VecPath(bm25Scored[i].Entry.Path))
+		if entryVec != nil {
+			cosine = CosineSimilarity(queryVec, entryVec)
+			if cosine < 0 {
+				cosine = 0
+			}
+		}
 
 		bm25Scored[i].Score = semanticBM25Weight*normBM25 + semanticCosineWeight*cosine
 	}
@@ -324,34 +246,7 @@ func scoreSemantic(entries []MemoryEntry, query string, client *EmbedClient) []S
 		}
 		return bm25Scored[i].Entry.Name < bm25Scored[j].Entry.Name
 	})
-	// Re-normalize the blended score so the top match is 1.0, matching
-	// the bm25 and keyword strategies. Without this the blend tops out
-	// around 0.6–0.85, so a user-set min_score would mean something
-	// different here than under bm25 — and would silently start dropping
-	// matches the moment "auto" resolves to semantic (Ollama present).
-	normalizeByMax(bm25Scored)
 	return bm25Scored
-}
-
-// entryCosine returns the cosine similarity between the query vector
-// and the entry's stored embedding — but only when that embedding was
-// produced by currentModel. A legacy sidecar (no model recorded) or one
-// embedded with a different model lives in an incompatible vector
-// space, so blending its cosine into the score is meaningless: it would
-// inject noise that looks like signal. In that case we return 0 and let
-// BM25 carry the entry until `yottacode memory reindex` rebuilds the
-// sidecar. Negative cosines clamp to 0. A missing or unreadable sidecar
-// also yields 0.
-func entryCosine(queryVec []float32, vecPath, currentModel string) float64 {
-	entryVec, meta, err := readVecMetaCached(vecPath)
-	if err != nil || entryVec == nil || meta.Model != currentModel {
-		return 0
-	}
-	cosine := CosineSimilarity(queryVec, entryVec)
-	if cosine < 0 {
-		return 0
-	}
-	return cosine
 }
 
 // SystemPromptFor is the per-turn variant of SystemPrompt: USER.md
@@ -382,38 +277,9 @@ func SystemPromptForSemantic(base string, l Loaded, query string, cfg config.Ret
 	return SystemPrompt(base, filtered)
 }
 
-// shadowUserByProject drops user-scope memories whose name also exists in
-// project scope. In a given repo the project-scope memory of a name is
-// authoritative, so the user-scope twin's body is not injected — it would
-// otherwise duplicate or, worse, contradict the project version. This
-// mirrors the project-shadows-user precedence slash commands and config
-// layering already use. The user file stays on disk and still applies in
-// every other repo (where no project twin exists). Shadowing keys on the
-// full project set, so it applies whether or not the project twin ranked
-// this turn — a name's owner doesn't flip based on relevance.
-func shadowUserByProject(user, project []MemoryEntry) []MemoryEntry {
-	if len(user) == 0 || len(project) == 0 {
-		return user
-	}
-	pNames := make(map[string]bool, len(project))
-	for _, p := range project {
-		pNames[p.Name] = true
-	}
-	out := make([]MemoryEntry, 0, len(user))
-	for _, u := range user {
-		if !pNames[u.Name] {
-			out = append(out, u)
-		}
-	}
-	return out
-}
-
 // selectAcrossScopes ranks both pools jointly under one cfg.TopK
 // budget, then partitions the result back into per-scope slices.
 func selectAcrossScopes(user, project []MemoryEntry, query string, cfg config.RetrievalConfig, embedClient *EmbedClient) ([]MemoryEntry, []MemoryEntry) {
-	// Project shadows user before ranking, so a shadowed user twin never
-	// consumes a TopK slot or injects its body.
-	user = shadowUserByProject(user, project)
 	if !cfg.Enabled {
 		return user, project
 	}

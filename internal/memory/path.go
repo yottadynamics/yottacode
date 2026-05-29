@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
-	"sync"
 )
 
 // Memory layout:
@@ -101,43 +100,15 @@ func ProjectSlug(cwd string) string {
 	return "default"
 }
 
-// gitSlugCache memoizes projectSlugFromGit per cwd. The TUI re-resolves
-// the project slug on every turn (memory reload + memory_search both
-// call Load → ProjectMemoryDir → ProjectSlug), and each miss otherwise
-// forks a `git` subprocess. A project's `origin` remote is effectively
-// immutable for the life of a session, so caching the result — including
-// the negative "" result for non-repos — keeps the per-turn path off the
-// process fork. Negative results are cached deliberately: a `git init`
-// mid-session won't shift the memory location until restart, which is the
-// desired stability (project memory shouldn't migrate underfoot).
-var (
-	gitSlugCacheMu sync.RWMutex
-	gitSlugCache   = map[string]string{}
-)
-
-// projectSlugFromGit returns the cached git-derived slug for cwd,
-// computing it on first use. See gitSlugCache for the caching rationale.
+// projectSlugFromGit shells out to `git -C <cwd> remote get-url origin`
+// and converts the URL to a slug. Returns "" on any failure (not a
+// git repo, no `origin` remote, git not on PATH). The git binary is
+// looked up once per call — cheap relative to the network calls
+// that gate every chat turn.
 func projectSlugFromGit(cwd string) string {
 	if cwd == "" {
 		return ""
 	}
-	gitSlugCacheMu.RLock()
-	slug, ok := gitSlugCache[cwd]
-	gitSlugCacheMu.RUnlock()
-	if ok {
-		return slug
-	}
-	slug = computeProjectSlugFromGit(cwd)
-	gitSlugCacheMu.Lock()
-	gitSlugCache[cwd] = slug
-	gitSlugCacheMu.Unlock()
-	return slug
-}
-
-// computeProjectSlugFromGit shells out to `git -C <cwd> remote get-url
-// origin` and converts the URL to a slug. Returns "" on any failure (not
-// a git repo, no `origin` remote, git not on PATH).
-func computeProjectSlugFromGit(cwd string) string {
 	if _, err := exec.LookPath("git"); err != nil {
 		return ""
 	}
@@ -151,9 +122,9 @@ func computeProjectSlugFromGit(cwd string) string {
 // slugifyGitURL turns a git remote URL into a stable per-project
 // slug. Examples:
 //
-//	https://github.com/user/repo.git    → github-com-user-repo
-//	git@github.com:user/repo.git        → github-com-user-repo
-//	ssh://git@gitlab.com/user/repo.git  → gitlab-com-user-repo
+//	https://github.com/user/repo.git    → github.com-user-repo
+//	git@github.com:user/repo.git        → github.com-user-repo
+//	ssh://git@gitlab.com/user/repo.git  → gitlab.com-user-repo
 //	file:///srv/git/repo.git            → srv-git-repo
 //
 // The .git suffix is dropped (almost everyone has it; treating it as

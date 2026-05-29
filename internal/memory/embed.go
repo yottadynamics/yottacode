@@ -18,16 +18,6 @@ type EmbedClient struct {
 	Timeout time.Duration
 }
 
-// InteractiveEmbedTimeout bounds a single embedding call made on the
-// synchronous, user-facing path: per-turn retrieval (rebuilding the
-// system prompt before a turn fires) and memory_save. The default
-// client Timeout (30s) is correct for batch `memory reindex`, but on the
-// interactive path a mid-session Ollama hang (model unloaded, swapped,
-// or busy) would otherwise freeze the TUI for up to 30s every turn.
-// Interactive callers set Timeout to this short bound; on timeout the
-// retriever falls back to BM25 and memory_save just skips the .vec.
-const InteractiveEmbedTimeout = 2 * time.Second
-
 // NewEmbedClient returns a client configured for local Ollama embeddings.
 // BaseURL defaults to http://localhost:11434 (or $OLLAMA_HOST).
 // Model defaults to "nomic-embed-text".

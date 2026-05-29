@@ -394,9 +394,7 @@ func (m Model) openInVim(path string) (Model, tea.Cmd) {
 		return m, nil
 	}
 	if _, err := os.Stat(path); os.IsNotExist(err) {
-		// 0o600 to match tool-written memory files (atomicWrite uses
-		// 0o600); these hold the same user data class.
-		if err := os.WriteFile(path, []byte{}, 0o600); err != nil {
+		if err := os.WriteFile(path, []byte{}, 0o644); err != nil {
 			m.appendLine(styleError.Render("[memory] create: " + err.Error()))
 			return m, nil
 		}

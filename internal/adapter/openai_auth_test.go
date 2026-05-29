@@ -141,67 +141,6 @@ func TestBuildRequestMapsTools(t *testing.T) {
 
 // --- SSE reader ---------------------------------------------------------
 
-// TestConsumeSSE_TruncatedToolCallErrors guards the truncation fix: a
-// function_call announced via output_item.added but whose
-// function_call_arguments.done never arrives before the stream ends must
-// surface EventErr, not a clean EventDone that silently drops the call.
-func TestConsumeSSE_TruncatedToolCallErrors(t *testing.T) {
-	a := &openAIAuthAdapter{}
-	stream := "event: response.output_item.added\n" +
-		`data: {"item":{"id":"item_1","type":"function_call","call_id":"call_1","name":"read_file"}}` + "\n\n"
-	out := make(chan StreamEvent, 16)
-	go func() {
-		a.consumeSSE(context.Background(), strings.NewReader(stream), out)
-		close(out)
-	}()
-	var sawErr, sawDone bool
-	for ev := range out {
-		switch ev.Kind {
-		case EventErr:
-			sawErr = true
-		case EventDone:
-			sawDone = true
-		}
-	}
-	if !sawErr {
-		t.Error("truncated tool call should surface EventErr")
-	}
-	if sawDone {
-		t.Error("must not emit a clean EventDone when a tool call is incomplete")
-	}
-}
-
-// TestConsumeSSE_CompleteToolCallSucceeds is the positive control: a
-// fully-delivered tool call still emits EventDone carrying it.
-func TestConsumeSSE_CompleteToolCallSucceeds(t *testing.T) {
-	a := &openAIAuthAdapter{}
-	stream := "event: response.output_item.added\n" +
-		`data: {"item":{"id":"item_1","type":"function_call","call_id":"call_1","name":"read_file"}}` + "\n\n" +
-		"event: response.function_call_arguments.done\n" +
-		`data: {"item_id":"item_1","arguments":"{\"path\":\"x\"}"}` + "\n\n"
-	out := make(chan StreamEvent, 16)
-	go func() {
-		a.consumeSSE(context.Background(), strings.NewReader(stream), out)
-		close(out)
-	}()
-	var final *Message
-	var sawErr bool
-	for ev := range out {
-		switch ev.Kind {
-		case EventErr:
-			sawErr = true
-		case EventDone:
-			final = ev.Final
-		}
-	}
-	if sawErr {
-		t.Fatal("complete stream should not error")
-	}
-	if final == nil || len(final.ToolCalls) != 1 || final.ToolCalls[0].Name != "read_file" {
-		t.Fatalf("expected one read_file tool call, got %+v", final)
-	}
-}
-
 func TestSSEReaderSimple(t *testing.T) {
 	stream := "event: foo\ndata: {\"a\":1}\n\nevent: bar\ndata: {\"b\":2}\n\n"
 	r := newSSEReader(strings.NewReader(stream))
