@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	openaiauth "github.com/yottadynamics/yottacode/internal/auth/openai"
@@ -189,6 +190,7 @@ func (a *openAIAuthAdapter) runOnce(ctx context.Context, messages []Message, too
 		// (TUI + oneshot) split on `\n` and re-prefix each line, so this
 		// reads cleanly in scrollback. Other 4xx/5xx stay one-line.
 		if resp.StatusCode == http.StatusTooManyRequests {
+			recordOpenAIAuthRateLimit(resp.Header, raw)
 			if hint := formatRateLimitHint(resp.Header, raw); hint != "" {
 				out <- StreamEvent{Kind: EventErr,
 					Err: fmt.Errorf("openai-auth: %s\n%s", msg, hint)}
@@ -418,6 +420,260 @@ func formatRateLimitHint(h http.Header, body []byte) string {
 	return ""
 }
 
+// OpenAIAuthRateLimit captures the last 429 the openai-auth adapter
+// saw. Populated as a side effect of formatRateLimitHint parsing and
+// exposed via LastOpenAIAuthRateLimit() so the /usage command can
+// surface plan + reset metadata for the subscription-based provider
+// (no quota query endpoint exists; the 429 is the only public signal).
+type OpenAIAuthRateLimit struct {
+	Observed time.Time
+	PlanType string
+	ResetsAt time.Time
+}
+
+var (
+	openAIAuthRateLimitMu sync.RWMutex
+	openAIAuthRateLimit   *OpenAIAuthRateLimit
+)
+
+// LastOpenAIAuthRateLimit returns the most recent rate-limit memo
+// captured by this process, or nil if no 429 was observed. The
+// returned pointer is a copy — callers can read it without holding
+// the package lock.
+func LastOpenAIAuthRateLimit() *OpenAIAuthRateLimit {
+	openAIAuthRateLimitMu.RLock()
+	defer openAIAuthRateLimitMu.RUnlock()
+	if openAIAuthRateLimit == nil {
+		return nil
+	}
+	c := *openAIAuthRateLimit
+	return &c
+}
+
+// SetOpenAIAuthRateLimitForTest seeds the package's rate-limit memo
+// from tests in other packages (the /usage TUI renderer in particular).
+// Test-only — never call from production paths.
+func SetOpenAIAuthRateLimitForTest(memo *OpenAIAuthRateLimit) {
+	openAIAuthRateLimitMu.Lock()
+	defer openAIAuthRateLimitMu.Unlock()
+	if memo == nil {
+		openAIAuthRateLimit = nil
+		return
+	}
+	c := *memo
+	openAIAuthRateLimit = &c
+}
+
+// OpenAIAuthAccount captures what the best-effort backend-api probe
+// learned about the signed-in ChatGPT account. Every field is
+// optional — the probe degrades gracefully when the endpoint
+// returns less than we hoped for, and the /usage renderer prints
+// only what's actually populated.
+//
+// The endpoints we hit are NOT documented by OpenAI. They're the
+// same surface the official Codex CLI talks to; if the shape
+// changes upstream, this probe will silently empty out (the renderer
+// falls back to the 429 memo and the "subscription" label).
+type OpenAIAuthAccount struct {
+	Email    string
+	Plan     string
+	Provider string // e.g. "google", "email" — login method
+	ProbedAt time.Time
+}
+
+// openAIAuthAccountCache memoizes the probe result for a short
+// window. /usage gets called interactively; 5 minutes is plenty —
+// long enough that successive invocations don't hammer the backend,
+// short enough that a plan change shows up before the next session
+// restart.
+var (
+	openAIAuthAccountMu     sync.RWMutex
+	openAIAuthAccount       *OpenAIAuthAccount
+	openAIAuthAccountExpiry time.Time
+)
+
+const openAIAuthAccountTTL = 5 * time.Minute
+
+// openAIAuthMeEndpoint is the URL we GET for plan + account info.
+// Same hostname as the codex responses endpoint; the OAuth token
+// from the codex flow authorizes both. Centralized as a var so
+// tests can point it at httptest.
+var openAIAuthMeEndpoint = "https://chatgpt.com/backend-api/me"
+
+// LastOpenAIAuthAccount returns the cached probe result, or nil if
+// the cache is empty or expired. Pure accessor — never makes a
+// network call. Callers in interactive paths (e.g. /usage) should
+// call ProbeOpenAIAuthAccount first to refresh.
+func LastOpenAIAuthAccount() *OpenAIAuthAccount {
+	openAIAuthAccountMu.RLock()
+	defer openAIAuthAccountMu.RUnlock()
+	if openAIAuthAccount == nil || time.Now().After(openAIAuthAccountExpiry) {
+		return nil
+	}
+	c := *openAIAuthAccount
+	return &c
+}
+
+// SetOpenAIAuthAccountForTest seeds the cache from tests in other
+// packages. Test-only.
+func SetOpenAIAuthAccountForTest(a *OpenAIAuthAccount) {
+	openAIAuthAccountMu.Lock()
+	defer openAIAuthAccountMu.Unlock()
+	if a == nil {
+		openAIAuthAccount = nil
+		openAIAuthAccountExpiry = time.Time{}
+		return
+	}
+	c := *a
+	openAIAuthAccount = &c
+	openAIAuthAccountExpiry = time.Now().Add(openAIAuthAccountTTL)
+}
+
+// ProbeOpenAIAuthAccount fires a one-shot GET against the
+// undocumented /backend-api/me endpoint, parses whatever account
+// info comes back, caches it, and returns the result. nil return
+// means the probe found nothing — either the user isn't logged in,
+// the token can't reach the endpoint, the endpoint changed shape,
+// or any HTTP failure. Callers must treat nil as "no data," not
+// "error" — /usage renders provider notes from the 429 memo when
+// the probe degrades.
+//
+// Re-uses any cached result younger than openAIAuthAccountTTL.
+func ProbeOpenAIAuthAccount(ctx context.Context) *OpenAIAuthAccount {
+	if cached := LastOpenAIAuthAccount(); cached != nil {
+		return cached
+	}
+
+	storePath, err := openaiauth.DefaultStorePath()
+	if err != nil {
+		return nil
+	}
+	src := openaiauth.NewTokenSource(storePath)
+	token, err := src.Token(ctx)
+	if err != nil || token == "" {
+		return nil
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, openAIAuthMeEndpoint, nil)
+	if err != nil {
+		return nil
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("originator", openAIAuthOriginator)
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil
+	}
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
+	if err != nil {
+		return nil
+	}
+
+	// Parse defensively. The wire shape is undocumented and has
+	// shifted over time — try a permissive struct first, then fall
+	// back to a generic map for keys we know by past observation.
+	var v struct {
+		Email                   string `json:"email"`
+		PhoneNumber             string `json:"phone_number"`
+		SubscriptionPlan        string `json:"subscription_plan"`
+		SubscriptionPlanType    string `json:"plan_type"`
+		ChatgptSubscriptionPlan string `json:"chatgpt_subscription_plan"`
+		Plan                    string `json:"plan"`
+		Provider                string `json:"provider"`
+	}
+	_ = json.Unmarshal(raw, &v)
+
+	acct := &OpenAIAuthAccount{
+		Email:    strings.TrimSpace(v.Email),
+		Provider: strings.TrimSpace(v.Provider),
+		ProbedAt: time.Now(),
+	}
+	switch {
+	case v.SubscriptionPlan != "":
+		acct.Plan = v.SubscriptionPlan
+	case v.ChatgptSubscriptionPlan != "":
+		acct.Plan = v.ChatgptSubscriptionPlan
+	case v.SubscriptionPlanType != "":
+		acct.Plan = v.SubscriptionPlanType
+	case v.Plan != "":
+		acct.Plan = v.Plan
+	}
+	acct.Plan = strings.TrimSpace(acct.Plan)
+
+	// If we got literally nothing useful, don't pollute the cache —
+	// next probe is cheap and the wire shape may recover.
+	if acct.Email == "" && acct.Plan == "" {
+		return nil
+	}
+
+	openAIAuthAccountMu.Lock()
+	openAIAuthAccount = acct
+	openAIAuthAccountExpiry = time.Now().Add(openAIAuthAccountTTL)
+	openAIAuthAccountMu.Unlock()
+
+	// Return a copy.
+	c := *acct
+	return &c
+}
+
+// recordOpenAIAuthRateLimit parses plan + reset metadata out of a 429
+// response and stashes it for the /usage command. Best-effort: a 429
+// without a parseable shape clears nothing (the previous memo, if any,
+// stays — better than dropping the only signal we have).
+func recordOpenAIAuthRateLimit(h http.Header, body []byte) {
+	var p struct {
+		Error struct {
+			PlanType        string  `json:"plan_type"`
+			ResetsAt        int64   `json:"resets_at"`
+			ResetsInSeconds float64 `json:"resets_in_seconds"`
+		} `json:"error"`
+	}
+	_ = json.Unmarshal(body, &p)
+
+	memo := &OpenAIAuthRateLimit{Observed: time.Now()}
+
+	switch plan := strings.TrimSpace(p.Error.PlanType); {
+	case plan != "":
+		memo.PlanType = plan
+	default:
+		memo.PlanType = strings.TrimSpace(h.Get("x-codex-plan-type"))
+	}
+
+	switch {
+	case p.Error.ResetsAt > 0:
+		memo.ResetsAt = time.Unix(p.Error.ResetsAt, 0)
+	case p.Error.ResetsInSeconds > 0:
+		memo.ResetsAt = time.Now().Add(time.Duration(p.Error.ResetsInSeconds * float64(time.Second)))
+	default:
+		if v := strings.TrimSpace(h.Get("x-codex-primary-reset-at")); v != "" {
+			if ts, err := strconv.ParseInt(v, 10, 64); err == nil && ts > 0 {
+				memo.ResetsAt = time.Unix(ts, 0)
+			}
+		}
+		if memo.ResetsAt.IsZero() {
+			if v := strings.TrimSpace(h.Get("x-codex-primary-reset-after-seconds")); v != "" {
+				if secs, err := strconv.ParseFloat(v, 64); err == nil && secs > 0 {
+					memo.ResetsAt = time.Now().Add(time.Duration(secs * float64(time.Second)))
+				}
+			}
+		}
+	}
+
+	if memo.PlanType == "" && memo.ResetsAt.IsZero() {
+		return
+	}
+	openAIAuthRateLimitMu.Lock()
+	openAIAuthRateLimit = memo
+	openAIAuthRateLimitMu.Unlock()
+}
+
 // humanizeDuration renders a positive duration in the most readable
 // unit for an error message. Sub-minute → seconds, sub-hour → minutes,
 // sub-day → hours+minutes, otherwise days+hours. Codex weekly windows
@@ -580,6 +836,7 @@ func (a *openAIAuthAdapter) consumeSSE(ctx context.Context, body io.Reader, out 
 	var finalCalls []ToolCall
 	var citations []Citation
 	var messageStatus string
+	var usage *Usage
 
 	reader := newSSEReader(body)
 	for {
@@ -696,6 +953,39 @@ func (a *openAIAuthAdapter) consumeSSE(ctx context.Context, body io.Reader, out 
 				delete(pending, d.ItemID)
 			}
 
+		case "response.completed":
+			// Final usage tally lands here. Same shape as the
+			// SDK-backed Responses adapter, parsed by hand because
+			// this path doesn't use openai-go.
+			var d struct {
+				Response struct {
+					Usage struct {
+						InputTokens        int64 `json:"input_tokens"`
+						InputTokensDetails struct {
+							CachedTokens int64 `json:"cached_tokens"`
+						} `json:"input_tokens_details"`
+						OutputTokens        int64 `json:"output_tokens"`
+						OutputTokensDetails struct {
+							ReasoningTokens int64 `json:"reasoning_tokens"`
+						} `json:"output_tokens_details"`
+					} `json:"usage"`
+				} `json:"response"`
+			}
+			if err := json.Unmarshal(ev.Data, &d); err == nil {
+				u := d.Response.Usage
+				cached := u.InputTokensDetails.CachedTokens
+				input := u.InputTokens - cached
+				if input < 0 {
+					input = 0
+				}
+				usage = &Usage{
+					InputTokens:     input,
+					OutputTokens:    u.OutputTokens,
+					CacheReadTokens: cached,
+					ReasoningTokens: u.OutputTokensDetails.ReasoningTokens,
+				}
+			}
+
 		case "error":
 			var d struct {
 				Message string `json:"message"`
@@ -715,6 +1005,7 @@ func (a *openAIAuthAdapter) consumeSSE(ctx context.Context, body io.Reader, out 
 		Content:   content.String(),
 		ToolCalls: finalCalls,
 		Citations: dedupeCitations(citations),
+		Usage:     usage,
 	}
 	if messageStatus == "incomplete" {
 		final.StopReason = "incomplete"

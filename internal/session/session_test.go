@@ -313,6 +313,167 @@ func TestLatestInCwd_EmptyDirReturnsSentinel(t *testing.T) {
 	}
 }
 
+// TestSaveLoad_UsageRoundtrip locks the per-session usage
+// accumulation pipeline: AddUsage must sum into TotalUsage +
+// ModelUsage, and a Save/Load cycle must preserve every field. This
+// is the test the /usage slash command will fail silently against if
+// the accumulator ever drops the cache fields.
+func TestSaveLoad_UsageRoundtrip(t *testing.T) {
+	redirectHome(t)
+	s, err := New("claude-sonnet-4-5", "/proj")
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	s.AddUsage("claude-sonnet-4-5", &adapter.Usage{
+		InputTokens:         1000,
+		OutputTokens:        500,
+		CacheCreationTokens: 200,
+		CacheReadTokens:     800,
+	})
+	s.AddUsage("claude-sonnet-4-5", &adapter.Usage{
+		InputTokens:  300,
+		OutputTokens: 100,
+	})
+	s.AddUsage("gpt-5", &adapter.Usage{
+		InputTokens:     50,
+		OutputTokens:    20,
+		ReasoningTokens: 10,
+	})
+	if err := s.Save(); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	loaded, err := Load(s.ID)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got, want := loaded.TotalUsage.InputTokens, int64(1350); got != want {
+		t.Errorf("TotalUsage.InputTokens = %d, want %d", got, want)
+	}
+	if got, want := loaded.TotalUsage.OutputTokens, int64(620); got != want {
+		t.Errorf("TotalUsage.OutputTokens = %d, want %d", got, want)
+	}
+	if got, want := loaded.TotalUsage.CacheCreationTokens, int64(200); got != want {
+		t.Errorf("TotalUsage.CacheCreationTokens = %d, want %d", got, want)
+	}
+	if got, want := loaded.TotalUsage.CacheReadTokens, int64(800); got != want {
+		t.Errorf("TotalUsage.CacheReadTokens = %d, want %d", got, want)
+	}
+	if got, want := loaded.TotalUsage.ReasoningTokens, int64(10); got != want {
+		t.Errorf("TotalUsage.ReasoningTokens = %d, want %d", got, want)
+	}
+	if got, want := len(loaded.ModelUsage), 2; got != want {
+		t.Errorf("ModelUsage has %d entries, want %d", got, want)
+	}
+	if got, want := loaded.ModelUsage["claude-sonnet-4-5"].InputTokens, int64(1300); got != want {
+		t.Errorf("ModelUsage[claude].InputTokens = %d, want %d", got, want)
+	}
+	if got, want := loaded.ModelUsage["gpt-5"].ReasoningTokens, int64(10); got != want {
+		t.Errorf("ModelUsage[gpt-5].ReasoningTokens = %d, want %d", got, want)
+	}
+}
+
+// TestSaveLoad_OldSessionWithoutUsage is the backward-compat guard:
+// existing session JSON files written before the usage fields landed
+// must still load cleanly, with TotalUsage zero and ModelUsage nil.
+// The omitzero/omitempty tags also mean a fresh-no-usage save stays
+// byte-identical to the old shape.
+func TestSaveLoad_OldSessionWithoutUsage(t *testing.T) {
+	home := redirectHome(t)
+	old := map[string]any{
+		"id":       "20250101-000000.000000",
+		"model":    "m",
+		"created":  "2025-01-01T00:00:00Z",
+		"cwd":      "/x",
+		"messages": []any{},
+	}
+	b, err := json.MarshalIndent(old, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	dir := filepath.Join(home, ".yottacode", "sessions")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "20250101-000000.000000.json"), b, 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	loaded, err := Load("20250101-000000.000000")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !loaded.TotalUsage.IsZero() {
+		t.Errorf("TotalUsage = %+v, want zero for legacy session", loaded.TotalUsage)
+	}
+	if loaded.ModelUsage != nil {
+		t.Errorf("ModelUsage = %+v, want nil for legacy session", loaded.ModelUsage)
+	}
+}
+
+// TestSave_OmitsZeroUsage guards the byte-identical-on-disk promise
+// for sessions that have never recorded a usage event.
+func TestSave_OmitsZeroUsage(t *testing.T) {
+	redirectHome(t)
+	s, err := New("m", "/x")
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := s.Save(); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	b, err := os.ReadFile(s.path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	got := string(b)
+	if strings.Contains(got, `"total_usage"`) {
+		t.Errorf("save with zero TotalUsage should omit the field; got %s", got)
+	}
+	if strings.Contains(got, `"model_usage"`) {
+		t.Errorf("save with nil ModelUsage should omit the field; got %s", got)
+	}
+}
+
+// TestUsageSince_FiltersAndSorts covers the daily-rollup scan: only
+// sessions created on or after t come back, newest first, with usage
+// fields populated from the stripped-decode path.
+func TestUsageSince_FiltersAndSorts(t *testing.T) {
+	redirectHome(t)
+	older, _ := New("m", "/proj")
+	older.Created = time.Now().Add(-48 * time.Hour)
+	older.AddUsage("m", &adapter.Usage{InputTokens: 100, OutputTokens: 50})
+	if err := older.Save(); err != nil {
+		t.Fatalf("Save older: %v", err)
+	}
+	newer1, _ := New("m", "/proj")
+	newer1.Created = time.Now().Add(-2 * time.Hour)
+	newer1.AddUsage("m", &adapter.Usage{InputTokens: 200, OutputTokens: 80})
+	if err := newer1.Save(); err != nil {
+		t.Fatalf("Save newer1: %v", err)
+	}
+	newer2, _ := New("m", "/proj")
+	newer2.Created = time.Now().Add(-30 * time.Minute)
+	newer2.AddUsage("m", &adapter.Usage{InputTokens: 300, OutputTokens: 120})
+	if err := newer2.Save(); err != nil {
+		t.Fatalf("Save newer2: %v", err)
+	}
+
+	summaries, err := UsageSince(time.Now().Add(-24 * time.Hour))
+	if err != nil {
+		t.Fatalf("UsageSince: %v", err)
+	}
+	if got, want := len(summaries), 2; got != want {
+		t.Fatalf("UsageSince returned %d; want %d (older session must be filtered out)", got, want)
+	}
+	// Newest first.
+	if !summaries[0].Created.After(summaries[1].Created) {
+		t.Errorf("summaries[0].Created (%v) must be after summaries[1].Created (%v)",
+			summaries[0].Created, summaries[1].Created)
+	}
+	if got, want := summaries[0].TotalUsage.InputTokens, int64(300); got != want {
+		t.Errorf("newest TotalUsage.InputTokens = %d, want %d", got, want)
+	}
+}
+
 // errorsIs is a tiny local shim so the new tests don't have to import
 // "errors" — keeps the existing import block minimal.
 func errorsIs(err, target error) bool {

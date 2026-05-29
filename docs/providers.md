@@ -202,6 +202,8 @@ This works with many gateways and self-hosted runtimes that expose `/v1/chat/com
 
 Tested examples include NVIDIA NIM, Groq, vLLM, and Llama Stack. Other gateways that speak the same wire protocol should work but are not formally validated.
 
+`/usage` cost estimates apply to paid cloud providers only. Ollama and NVIDIA NIM (`openai-compatible` pointed at `integrate.api.nvidia.com`) are excluded by design — their per-call cost is undefined for end users. OpenRouter, Groq, and other `openai-compatible` proxies are treated as paid endpoints and priced from the local catalog when the model is known. See [cost.md](cost.md).
+
 ## Diagnostics
 
 Inside the TUI:

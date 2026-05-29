@@ -246,6 +246,9 @@ func buildCopilotRequest(model string, messages []Message, tools []Tool) ([]byte
 		"messages":   chatMessages,
 		"stream":     true,
 		"max_tokens": ChatDefaultMaxTokens,
+		"stream_options": map[string]any{
+			"include_usage": true,
+		},
 	}
 	if functionTools := copilotFunctionTools(tools); len(functionTools) > 0 {
 		body["tools"] = functionTools
@@ -276,6 +279,7 @@ func (a *copilotAdapter) consumeSSE(ctx context.Context, body io.Reader, origToo
 	var content strings.Builder
 	var finalCalls []ToolCall
 	var finishReason string
+	var usage *Usage
 
 	// Track in-progress tool calls by index
 	toolCallsByIndex := map[int]*ToolCall{}
@@ -308,9 +312,36 @@ func (a *copilotAdapter) consumeSSE(ctx context.Context, body io.Reader, origToo
 				} `json:"delta"`
 				FinishReason string `json:"finish_reason"`
 			} `json:"choices"`
+			// Usage rides on the final chunk when include_usage is on
+			// (choices is empty there). Standard Chat Completions shape:
+			// prompt_tokens covers the full input (incl. cached), so
+			// subtract cached_tokens to get the non-cached portion.
+			Usage *struct {
+				PromptTokens        int64 `json:"prompt_tokens"`
+				CompletionTokens    int64 `json:"completion_tokens"`
+				PromptTokensDetails struct {
+					CachedTokens int64 `json:"cached_tokens"`
+				} `json:"prompt_tokens_details"`
+				CompletionTokensDetails struct {
+					ReasoningTokens int64 `json:"reasoning_tokens"`
+				} `json:"completion_tokens_details"`
+			} `json:"usage"`
 		}
 		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
 			continue
+		}
+		if chunk.Usage != nil {
+			cached := chunk.Usage.PromptTokensDetails.CachedTokens
+			input := chunk.Usage.PromptTokens - cached
+			if input < 0 {
+				input = 0
+			}
+			usage = &Usage{
+				InputTokens:     input,
+				OutputTokens:    chunk.Usage.CompletionTokens,
+				CacheReadTokens: cached,
+				ReasoningTokens: chunk.Usage.CompletionTokensDetails.ReasoningTokens,
+			}
 		}
 		if len(chunk.Choices) == 0 {
 			continue
@@ -370,6 +401,7 @@ func (a *copilotAdapter) consumeSSE(ctx context.Context, body io.Reader, origToo
 		Content:    content.String(),
 		ToolCalls:  finalCalls,
 		StopReason: finishReason,
+		Usage:      usage,
 	}
 	out <- StreamEvent{Kind: EventDone, Final: &final}
 }

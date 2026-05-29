@@ -11,6 +11,7 @@ Type `/` in the TUI to open the slash-command palette. The palette filters as yo
 | `/clear` | — | Save the current session and start a fresh one |
 | `/permissions` | — | Print shared and local permission file paths |
 | `/system` | — | Show the active system prompt, including injected memory |
+| `/usage` | — | Show per-session token totals, today's rolling total, and estimated cost (paid cloud providers only). Ollama and NVIDIA NIM are excluded by design; openai-auth / Copilot show token counts with a "subscription" label instead of a dollar figure. See [cost.md](cost.md). |
 | `/sessions` | `[id\|name]` | Open the sessions picker or resume a known session directly |
 | `/model` | `<name>` | Switch the active model for this session |
 | `/provider` | — | Show resolved provider, API style, built-ins, capabilities, and diagnostics |

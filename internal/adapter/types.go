@@ -46,6 +46,52 @@ type Message struct {
 	Citations  []Citation   `json:"citations,omitempty"`
 	StopReason string       `json:"stop_reason,omitempty"`
 	ToolCallID string       `json:"tool_call_id,omitempty"`
+	// Usage is the provider-reported token counts for the turn that
+	// produced this message. Pointer so nil ≠ "zero tokens" — adapters
+	// that didn't observe usage data leave it unset, and the /usage
+	// command can tell the difference.
+	Usage *Usage `json:"usage,omitempty"`
+}
+
+// Usage is the per-turn token breakdown reported by the provider.
+// Fields are normalized across providers: cache fields are populated
+// only by providers that expose prompt caching (Anthropic, OpenAI's
+// cached_input); ReasoningTokens is populated by o-series and Gemini
+// "thoughts". All fields are int64 to match the JSON wire types and
+// to keep arithmetic on session totals overflow-safe.
+type Usage struct {
+	InputTokens         int64 `json:"input_tokens,omitempty"`
+	OutputTokens        int64 `json:"output_tokens,omitempty"`
+	CacheCreationTokens int64 `json:"cache_creation_tokens,omitempty"`
+	CacheReadTokens     int64 `json:"cache_read_tokens,omitempty"`
+	ReasoningTokens     int64 `json:"reasoning_tokens,omitempty"`
+}
+
+// Add accumulates other into u. Used by the session accumulator and
+// the daily rollup. Treats nil receivers/args as zero so callers can
+// chain without nil-guarding.
+func (u *Usage) Add(other *Usage) {
+	if u == nil || other == nil {
+		return
+	}
+	u.InputTokens += other.InputTokens
+	u.OutputTokens += other.OutputTokens
+	u.CacheCreationTokens += other.CacheCreationTokens
+	u.CacheReadTokens += other.CacheReadTokens
+	u.ReasoningTokens += other.ReasoningTokens
+}
+
+// IsZero reports whether all token counts are zero. A non-nil zero
+// Usage is the "we tried but the provider returned no data" signal —
+// distinct from nil ("we didn't try / never reached the parsing
+// path"). The /usage renderer uses this to format empty sessions.
+func (u *Usage) IsZero() bool {
+	if u == nil {
+		return true
+	}
+	return u.InputTokens == 0 && u.OutputTokens == 0 &&
+		u.CacheCreationTokens == 0 && u.CacheReadTokens == 0 &&
+		u.ReasoningTokens == 0
 }
 
 // Tool is the schema the adapter advertises to the model. Schema must be a

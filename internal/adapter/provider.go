@@ -56,9 +56,13 @@ type ProviderProfile struct {
 	SupportsWebSearch       bool              `json:"supports_web_search"`
 	SupportsXSearch         bool              `json:"supports_x_search"`
 	SupportsCodeInterpreter bool              `json:"supports_code_interpreter"`
-	EnabledBuiltinTools     []BuiltinToolKind `json:"enabled_builtin_tools,omitempty"`
-	Issues                  []string          `json:"issues,omitempty"`
-	Warnings                []string          `json:"warnings,omitempty"`
+	// SupportsUsageReporting indicates the adapter populates per-turn
+	// Usage on its returned Message. False for local/free providers
+	// (Ollama, NVIDIA NIM) where /usage has no meaningful surface.
+	SupportsUsageReporting bool              `json:"supports_usage_reporting"`
+	EnabledBuiltinTools    []BuiltinToolKind `json:"enabled_builtin_tools,omitempty"`
+	Issues                 []string          `json:"issues,omitempty"`
+	Warnings               []string          `json:"warnings,omitempty"`
 }
 
 // Client is the richer adapter surface used by entry points. The agent loop
@@ -159,6 +163,7 @@ func buildProfile(cfg Config, usesResponses bool) ProviderProfile {
 		SupportsWebSearch:       provider == ProviderOpenAI || provider == ProviderXAI || provider == ProviderAnthropic,
 		SupportsXSearch:         provider == ProviderXAI,
 		SupportsCodeInterpreter: provider == ProviderOpenAI || provider == ProviderXAI,
+		SupportsUsageReporting:  !isFreeOrLocal(provider, cfg.BaseURL),
 		EnabledBuiltinTools:     enabled,
 	}
 	profile.Issues, profile.Warnings = providerDiagnostics(cfg, profile)
@@ -247,6 +252,26 @@ func remoteProvider(provider Provider, baseURL string) bool {
 	}
 	baseURL = strings.ToLower(strings.TrimSpace(baseURL))
 	return !strings.Contains(baseURL, "localhost") && !strings.Contains(baseURL, "127.0.0.1")
+}
+
+// isFreeOrLocal flags providers that don't bill per token and so have
+// no meaningful surface for /usage. Ollama is the obvious local case.
+// NVIDIA NIM (served via openai-compatible at integrate.api.nvidia.com)
+// is in the per-user-decision exclusion list — Inception credits make
+// the per-call cost undefined for end users. Any openai-compatible
+// proxy pointed at localhost / 127.0.0.1 is treated as local too,
+// covering self-hosted vLLM and similar.
+func isFreeOrLocal(provider Provider, baseURL string) bool {
+	if provider == ProviderOllama {
+		return true
+	}
+	if provider != ProviderOpenAICompatible {
+		return false
+	}
+	b := strings.ToLower(strings.TrimSpace(baseURL))
+	return strings.Contains(b, "integrate.api.nvidia.com") ||
+		strings.Contains(b, "localhost") ||
+		strings.Contains(b, "127.0.0.1")
 }
 
 func looksLikeOpenAIModel(model string) bool {

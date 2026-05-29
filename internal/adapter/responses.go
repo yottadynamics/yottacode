@@ -36,15 +36,19 @@ func newResponsesAdapter(cfg Config) *responsesAdapter {
 	if apiKey == "" {
 		apiKey = "local-no-auth"
 	}
+	profile := buildProfile(cfg, true)
 	c := openai.NewClient(
 		option.WithBaseURL(cfg.BaseURL),
 		option.WithAPIKey(apiKey),
+		// Snapshot rate-limit headers off every response so /usage can
+		// show live per-minute token/request headroom.
+		option.WithMiddleware(recordRateLimitMiddleware(profile.Provider)),
 	)
 	return &responsesAdapter{
 		client:  c,
 		model:   cfg.Model,
 		cfg:     cfg,
-		profile: buildProfile(cfg, true),
+		profile: profile,
 	}
 }
 
@@ -99,6 +103,7 @@ func (a *responsesAdapter) ChatStream(ctx context.Context, messages []Message, t
 		var finalCalls []ToolCall
 		var citations []Citation
 		var messageStatus string
+		var usage *Usage
 
 		for stream.Next() {
 			evt := stream.Current()
@@ -204,6 +209,24 @@ func (a *responsesAdapter) ChatStream(ctx context.Context, messages []Message, t
 					delete(pending, evt.ItemID)
 				}
 
+			case "response.completed":
+				// Final usage tally lands here, on the Response field.
+				// Responses API reports cached_tokens as a subset of
+				// input_tokens; surface them split so the cost
+				// calculator can price cache hits separately.
+				u := evt.Response.Usage
+				cached := u.InputTokensDetails.CachedTokens
+				input := u.InputTokens - cached
+				if input < 0 {
+					input = 0
+				}
+				usage = &Usage{
+					InputTokens:     input,
+					OutputTokens:    u.OutputTokens,
+					CacheReadTokens: cached,
+					ReasoningTokens: u.OutputTokensDetails.ReasoningTokens,
+				}
+
 			case "error":
 				if evt.Message != "" {
 					out <- StreamEvent{Kind: EventErr, Err: errors.New(evt.Message)}
@@ -228,6 +251,7 @@ func (a *responsesAdapter) ChatStream(ctx context.Context, messages []Message, t
 				}
 				return ""
 			}(),
+			Usage: usage,
 		}
 		out <- StreamEvent{Kind: EventDone, Final: &final}
 	}()

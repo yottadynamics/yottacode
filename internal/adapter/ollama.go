@@ -49,14 +49,19 @@ func newChatAdapter(cfg Config) *chatAdapter {
 	if apiKey == "" {
 		apiKey = "local-no-auth"
 	}
+	profile := buildProfile(cfg, false)
 	c := openai.NewClient(
 		option.WithBaseURL(cfg.BaseURL),
 		option.WithAPIKey(apiKey),
+		// Snapshot rate-limit headers off every response so /usage can
+		// show live per-minute token/request headroom. Local providers
+		// (Ollama) don't emit these; recordRateLimit no-ops there.
+		option.WithMiddleware(recordRateLimitMiddleware(profile.Provider)),
 	)
 	return &chatAdapter{
 		client:  c,
 		model:   cfg.Model,
-		profile: buildProfile(cfg, false),
+		profile: profile,
 	}
 }
 
@@ -75,6 +80,13 @@ func (a *chatAdapter) ChatStream(ctx context.Context, messages []Message, tools 
 			Model:     a.model,
 			Messages:  toOpenAIMessages(messages),
 			MaxTokens: openai.Int(ChatDefaultMaxTokens),
+			// IncludeUsage gives us a final chunk with token counts
+			// (choices empty, usage populated). Harmless for providers
+			// that ignore the flag (Ollama returns zero-valued usage,
+			// which the /usage renderer treats as "no data").
+			StreamOptions: openai.ChatCompletionStreamOptionsParam{
+				IncludeUsage: openai.Bool(true),
+			},
 		}
 		if len(tools) > 0 {
 			params.Tools = toOpenAITools(tools)
@@ -97,9 +109,28 @@ func (a *chatAdapter) ChatStream(ctx context.Context, messages []Message, tools 
 			toolCallOrder []int64
 			toolCallByIdx = map[int64]*ToolCall{}
 			sawChoice     bool
+			usage         *Usage
 		)
 		for stream.Next() {
 			chunk := stream.Current()
+			// Usage rides in on the last chunk (or, for some
+			// providers, sprinkled across all chunks with the same
+			// cumulative totals). Read whenever the JSON field is
+			// valid; the last assignment wins.
+			if chunk.JSON.Usage.Valid() {
+				cu := chunk.Usage
+				cached := cu.PromptTokensDetails.CachedTokens
+				input := cu.PromptTokens - cached
+				if input < 0 {
+					input = 0
+				}
+				usage = &Usage{
+					InputTokens:     input,
+					OutputTokens:    cu.CompletionTokens,
+					CacheReadTokens: cached,
+					ReasoningTokens: cu.CompletionTokensDetails.ReasoningTokens,
+				}
+			}
 			if len(chunk.Choices) == 0 {
 				continue
 			}
@@ -168,6 +199,7 @@ func (a *chatAdapter) ChatStream(ctx context.Context, messages []Message, tools 
 			Role:       RoleAssistant,
 			Content:    content.String(),
 			StopReason: finishReason,
+			Usage:      usage,
 		}
 		for _, idx := range toolCallOrder {
 			final.ToolCalls = append(final.ToolCalls, *toolCallByIdx[idx])
@@ -270,4 +302,3 @@ func extractReasoning(delta openai.ChatCompletionChunkChoiceDelta) string {
 	}
 	return ""
 }
-

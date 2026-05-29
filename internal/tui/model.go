@@ -471,6 +471,15 @@ type Model struct {
 	// Cheatsheet overlay
 	cheatsheetOpen bool
 
+	// Usage overlay (/usage). Read-only panel rendered below the
+	// cmdline via renderInlineOverlay rather than appended to chat
+	// scrollback — token tallies are transient inspection, not part
+	// of the conversation the model should re-read. usagePanel holds
+	// the body rendered once at open time (so the per-frame redraw
+	// doesn't re-fire the openai-auth backend probe); any key closes.
+	usageOpen  bool
+	usagePanel string
+
 	// Permissions picker (/permissions). Two-row picker (shared /
 	// local) modelled on /memory's three-row picker — Up/Down
 	// navigates, Enter suspends to vim on the chosen rule file, Esc
@@ -997,6 +1006,11 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		if m.cheatsheetOpen {
 			m.cheatsheetOpen = false
+			return m, nil
+		}
+		if m.usageOpen {
+			m.usageOpen = false
+			m.usagePanel = ""
 			return m, nil
 		}
 		if m.permissionsOpen {
@@ -1847,6 +1861,9 @@ func (m Model) View() string {
 	// model, token count) without leaving the picker.
 	if m.cheatsheetOpen {
 		return m.renderInlineOverlay(renderCheatsheet(m.width))
+	}
+	if m.usageOpen {
+		return m.renderInlineOverlay(m.usagePanel)
 	}
 	if m.permissionsOpen {
 		return m.renderInlineOverlay(renderPermissionsOverlay(m))
@@ -3133,6 +3150,12 @@ func (m Model) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 		if rendered := renderCitations(e.Message.Citations); rendered != "" {
 			m.appendLine(rendered)
 		}
+		// Accumulate the turn's token usage on the session. Nil-safe
+		// (adapter didn't observe usage → no-op). m.modelName beats
+		// m.sess.Model because the user may have switched mid-session
+		// via /provider use; the per-model breakdown wants the model
+		// that actually produced the turn.
+		m.sess.AddUsage(m.modelName, e.Message.Usage)
 	case agent.ProviderToolCall:
 		m.reasoning.Reset()
 		m.appendLine("")
