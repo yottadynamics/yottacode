@@ -339,7 +339,7 @@ yottacode supports three scoring strategies, selectable via config:
 
 **BM25** is the baseline — pure Go, zero dependencies, deterministic. It ships a Porter stemmer and ~15 hand-curated synonym groups for programming/dev vocabulary (test/mock/fake, database/db/sql, deploy/release/ship, auth/login/credential, etc.). This alone is a major upgrade over raw keyword matching. Synonym-derived query terms are scored at a fractional weight (half of an exact term) so a memory that incidentally touches several distinct synonyms of a group can't outrank one that uses the exact term you searched for — recall stays up, exact-match precision wins ties. (The CLI / TUI `/memory search` preview uses equal weights; the agent's retrieval applies the down-weight.)
 
-**Semantic** layers local embeddings on top when a local Ollama server is available with an embedding model installed. Vector sidecars (`.vec` files) are stored alongside memory `.md` files and generated automatically on `memory_save`. The combined score blends BM25 (which excels at exact matches like file paths and function names) with cosine similarity (which captures conceptual relationships). A sidecar produced by a *different* embedding model than the one in use is skipped for the cosine term (cross-model vectors aren't comparable) — that entry simply ranks on BM25 until `memory reindex` rebuilds it.
+**Semantic** layers local embeddings on top when a local Ollama server is available with an embedding model installed. Vector sidecars (`.vec` files) are stored alongside memory `.md` files and generated automatically on `memory_save`. The combined score blends BM25 (which excels at exact matches like file paths and function names) with cosine similarity (which captures conceptual relationships) — by default **60% BM25 / 40% cosine**, tunable via `retrieval.semantic_weight` (the cosine fraction; BM25 gets the rest). Raise it to trust meaning-based matches more on paraphrased queries, lower it (or set `0.0`) to lean on exact keywords. Because the blended score is re-normalized to top=1.0, only the ratio matters. A sidecar produced by a *different* embedding model than the one in use is skipped for the cosine term (cross-model vectors aren't comparable) — that entry simply ranks on BM25 until `memory reindex` rebuilds it.
 
 **Score normalization & `min_score`.** All strategies normalize their top match to 1.0, so `retrieval.min_score` means the same thing regardless of strategy — and doesn't silently start dropping every memory the moment `auto` resolves to `semantic` (Ollama present).
 
@@ -423,13 +423,27 @@ max_bytes       = 24000             # cap on combined injected body bytes per tu
 min_score       = 0.0               # 0.0 = no relevance floor (every entry up to top_k); >0 drops below it
 strategy        = "auto"            # "keyword" | "bm25" | "semantic" | "auto"
 embedding_model = "nomic-embed-text" # Ollama model for semantic retrieval
+semantic_weight = 0.4               # cosine fraction of the semantic blend; BM25 gets 1 - this (0=pure BM25, 1=pure cosine)
 ```
 
 `top_k` and `max_bytes` are independent caps applied together: retrieval stops at whichever binds first. The byte cap drops the least-relevant tail (entries are rank-ordered), but the single top-ranked entry is always admitted even if it alone exceeds `max_bytes`.
 
+#### Measuring retrieval accuracy
+
+Retrieval quality is *measured*, not guessed. A relevance-eval harness lives in `internal/memory/eval_test.go`: a labeled fixture (a corpus of memories plus query→expected-memory cases) scored with standard IR metrics — **Hit@1**, **Hit@3**, and **MRR** (mean reciprocal rank).
+
+```
+go test ./internal/memory -run Relevance -v
+```
+
+- **`TestRetrievalRelevance_BM25`** is the deterministic, dependency-free gate: it runs the fixture through BM25 and fails if quality falls below calibrated floors, so a regression in stemming / synonym expansion / headline weighting is caught in CI.
+- **`TestRetrievalRelevance_Semantic`** runs the same fixture through the BM25+embedding blend when a local Ollama model is available (skipped otherwise) and logs a BM25-vs-semantic comparison — including a **paraphrase / low-overlap** set, the regime where keyword scoring is weakest and semantic cosine earns its keep.
+
+On topic-distinct memories BM25 alone already scores perfectly; semantic's measurable advantage shows up on paraphrased, low-keyword-overlap queries. Add cases to the fixture to harden the gate or to characterize a new scoring change before shipping it.
+
 ### `/memory` picker
 
-The TUI's `/memory` command opens a five-row picker (plus a conditional sixth row):
+The TUI's `/memory` command opens a six-row picker (plus a conditional seventh row):
 
 | Row | Action |
 |---|---|
@@ -437,12 +451,13 @@ The TUI's `/memory` command opens a five-row picker (plus a conditional sixth ro
 | User preferences | Edits `~/.yottacode/USER.md` in vim |
 | Browse user memories | Sub-list of `~/.yottacode/memory/*.md` |
 | Browse project memories | Sub-list of `~/.yottacode/projects/<slug>/memory/*.md` |
+| Search memories | Opens a query box; ranks saved memories and lets you open one (see below) |
 | Reindex embeddings | Generates `.vec` sidecars for semantic retrieval (requires Ollama) |
 | Enable semantic search | Appears only when no embedding model is active (e.g. first run without Ollama); pulls an Ollama embedding model and reindexes |
 
 In the browse sub-lists: `Enter` opens the chosen memory in vim, `d` deletes it (and regenerates `MEMORY.md`), `f` opens the folder in your file manager, `Esc` returns to the root menu.
 
-`/memory search <query>` skips the picker and ranks your saved memories inline — same BM25 scoring the agent's retrieval uses, printed straight to the transcript with relevance scores. It's a deterministic, zero-token way to see "what do I have stored about X" without spending a model turn (the equivalent of the `yottacode memory search` CLI command, in the TUI). Use `/recall <query>` for the analogous search over past *sessions*.
+**Searching memories.** Two entry points land in the same interactive results overlay: the **Search memories** picker row (which opens a query box first), or `/memory search <query>` typed directly. Results are ranked by the same BM25 the agent's retrieval uses (each row shows scope + score + description). `↑`/`↓` scroll, `Enter` opens the highlighted memory in vim, and `Esc` steps back (results → root → close). Exiting the editor returns you to the **same results** — the query isn't lost. Crucially, results render in the overlay and are **never printed into the conversation transcript**, so searching doesn't pollute your session scrollback. It's a deterministic, zero-token way to find "what do I have stored about X" without spending a model turn (the interactive equivalent of the `yottacode memory search` CLI command). Use `/recall <query>` for the analogous search over past *sessions*.
 
 ### Cobra subcommands (for scripts)
 

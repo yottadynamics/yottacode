@@ -169,11 +169,6 @@ func StemExpandTokenize(s string) []string {
 	return out
 }
 
-const (
-	semanticBM25Weight   = 0.6
-	semanticCosineWeight = 0.4
-)
-
 // Select ranks entries against the query and returns at most cfg.TopK
 // with score >= cfg.MinScore, further capped so the combined entry
 // bodies stay within cfg.MaxBytes (0 = unlimited). Strategy selects the
@@ -235,7 +230,7 @@ func SelectWithEmbeddingsScored(entries []MemoryEntry, query string, cfg config.
 		// raw top is usually well below 1.0.
 		normalizeByMax(scored)
 	case "semantic":
-		scored = scoreSemantic(entries, query, embedClient)
+		scored = scoreSemantic(entries, query, embedClient, cfg.SemanticWeight)
 	default:
 		scored = scoreBM25(entries, query)
 	}
@@ -287,9 +282,20 @@ func resolveStrategy(strategy string, embedClient *EmbedClient) string {
 	}
 }
 
-// scoreSemantic combines BM25 scores with cosine similarity from
-// vector embeddings. Entries without .vec sidecars score on BM25 alone.
-func scoreSemantic(entries []MemoryEntry, query string, client *EmbedClient) []Scored {
+// scoreSemantic combines BM25 scores with cosine similarity from vector
+// embeddings, blended as (1-cosineWeight)*BM25 + cosineWeight*cosine and
+// re-normalized to top=1.0. cosineWeight is retrieval.semantic_weight
+// (clamped to [0,1]): 0 = pure BM25, 1 = pure cosine, 0.4 = the default
+// 60/40 split. Entries without a matching-model .vec sidecar score on
+// BM25 alone.
+func scoreSemantic(entries []MemoryEntry, query string, client *EmbedClient, cosineWeight float64) []Scored {
+	if cosineWeight < 0 {
+		cosineWeight = 0
+	}
+	if cosineWeight > 1 {
+		cosineWeight = 1
+	}
+	bm25Weight := 1 - cosineWeight
 	bm25Scored := scoreBM25(entries, query)
 	if client == nil {
 		return bm25Scored
@@ -315,7 +321,7 @@ func scoreSemantic(entries []MemoryEntry, query string, client *EmbedClient) []S
 
 		cosine := entryCosine(queryVec, VecPath(bm25Scored[i].Entry.Path), client.Model)
 
-		bm25Scored[i].Score = semanticBM25Weight*normBM25 + semanticCosineWeight*cosine
+		bm25Scored[i].Score = bm25Weight*normBM25 + cosineWeight*cosine
 	}
 
 	sort.SliceStable(bm25Scored, func(i, j int) bool {

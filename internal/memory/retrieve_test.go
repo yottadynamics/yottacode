@@ -600,7 +600,7 @@ func TestScoreSemantic_BlendIsLive(t *testing.T) {
 	}
 
 	client := &EmbedClient{BaseURL: srv.URL, Model: "test-model", Timeout: 5 * time.Second}
-	cfg := config.RetrievalConfig{Enabled: true, TopK: 0, MinScore: 0, Strategy: "semantic"}
+	cfg := config.RetrievalConfig{Enabled: true, TopK: 0, MinScore: 0, Strategy: "semantic", SemanticWeight: 0.4}
 	scored := SelectWithEmbeddingsScored(in, "needle", cfg, client)
 
 	byName := map[string]float64{}
@@ -619,6 +619,59 @@ func TestScoreSemantic_BlendIsLive(t *testing.T) {
 	// (3) top normalizes to 1.0.
 	if scored[0].Score != 1.0 {
 		t.Errorf("top blended score should normalize to 1.0; got %.4f (top=%s)", scored[0].Score, scored[0].Entry.Name)
+	}
+}
+
+// TestScoreSemantic_WeightTunable verifies retrieval.semantic_weight
+// actually shifts the BM25↔cosine balance: weight 0 → pure BM25 (the
+// zero-BM25 / high-cosine entry scores 0), weight 1 → pure cosine (the
+// zero-cosine / high-BM25 entry scores 0). Same hermetic fake embedder as
+// the blend test (query embeds to [1,0,0]).
+func TestScoreSemantic_WeightTunable(t *testing.T) {
+	resetCorpusCache()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"embedding":[1,0,0]}`))
+	}))
+	defer srv.Close()
+
+	dir := t.TempDir()
+	mk := func(name, body string, vec []float32) MemoryEntry {
+		p := filepath.Join(dir, name+".md")
+		if err := WriteVecWithModel(VecPath(p), vec, "test-model"); err != nil {
+			t.Fatal(err)
+		}
+		return MemoryEntry{Scope: "user", Name: name, Type: "reference", Body: body, Path: p}
+	}
+	in := []MemoryEntry{
+		mk("lexical", "needle needle needle", []float32{0, 1, 0}), // strong BM25, cosine 0
+		mk("conceptual", "zzz qqq www", []float32{1, 0, 0}),       // zero BM25, cosine 1
+	}
+	client := &EmbedClient{BaseURL: srv.URL, Model: "test-model", Timeout: 5 * time.Second}
+
+	score := func(weight float64, name string) float64 {
+		cfg := config.RetrievalConfig{Enabled: true, TopK: 0, MinScore: 0, Strategy: "semantic", SemanticWeight: weight}
+		for _, s := range SelectWithEmbeddingsScored(in, "needle", cfg, client) {
+			if s.Entry.Name == name {
+				return s.Score
+			}
+		}
+		return -1
+	}
+
+	// weight 0 = pure BM25: the cosine-only entry contributes nothing.
+	if got := score(0, "conceptual"); got != 0 {
+		t.Errorf("semantic_weight=0 should be pure BM25; conceptual (zero BM25) scored %.4f, want 0", got)
+	}
+	if got := score(0, "lexical"); got != 1.0 {
+		t.Errorf("semantic_weight=0: BM25-strong entry should normalize to 1.0; got %.4f", got)
+	}
+	// weight 1 = pure cosine: the BM25-only entry (cosine 0) contributes nothing.
+	if got := score(1, "lexical"); got != 0 {
+		t.Errorf("semantic_weight=1 should be pure cosine; lexical (cosine 0) scored %.4f, want 0", got)
+	}
+	if got := score(1, "conceptual"); got != 1.0 {
+		t.Errorf("semantic_weight=1: cosine-strong entry should normalize to 1.0; got %.4f", got)
 	}
 }
 

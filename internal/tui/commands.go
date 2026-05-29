@@ -66,6 +66,9 @@ func init() {
 	// workflow → config → git → utilities → meta.
 	allSlash = []slashCommand{
 		// Workflow — most reached-for during active coding.
+		// Auto mode and yolo are intentionally NOT slash-invocable (mirroring
+		// Claude Code): auto via Shift+Tab or --permission-mode auto; yolo only
+		// via --dangerously-skip-permissions at startup.
 		{Name: "plan", Help: "toggle plan mode — also Shift+Tab. Type `/plan list` to resume an earlier plan.", Run: cmdPlan},
 		{Name: "model", Help: "open the model picker (subcommands: list [all], <name>)", Run: cmdModel},
 		{Name: "provider", Help: "select a new provider (subcommands: list, use, add, remove, models)", Run: cmdProviderEntry},
@@ -89,32 +92,6 @@ func init() {
 		{Name: "git-implement-issue", Args: "<n>", Help: "implement a GitHub issue end-to-end: fetch → plan → branch → code → tests → commit → push → draft PR", Run: cmdGitImplementIssue},
 		{Name: "git-push", Help: "push the current branch to origin (sets upstream on first push; surfaces the PR URL when one exists)", Run: cmdGitPush},
 		{Name: "git-update-pr", Args: "[ref]", Help: "refresh a PR's title and body to match the current commit list", Run: cmdGitUpdatePR},
-		// /plan toggles plan mode (read-only research + plan file +
-		// exit_plan_mode for approval). Also bound to Shift+Tab — see
-		// model.go's KeyMsg handler.
-		// /plan with no Args means the palette executes the bare form
-		// on Enter (one keystroke, direct entry). `/plan list` still
-		// works when typed manually — cmdPlan branches on args[0].
-		//
-		// Auto mode and yolo are intentionally NOT slash-invocable
-		// (mirroring Claude Code). Auto enters via Shift+Tab or
-		// --permission-mode auto; yolo enters only via
-		// --dangerously-skip-permissions at startup — no in-TUI toggle,
-		// no palette entry, no accidental activation.
-		{Name: "plan", Help: "toggle plan mode — also Shift+Tab. Type `/plan list` to resume an earlier plan.", Run: cmdPlan},
-		// /subagents inspects the session's subagent task registry —
-		// listing runs, viewing full transcripts (foreground transcripts
-		// are written to disk because the parent doesn't ingest the
-		// child's reasoning), and stopping a running task. Mirrors
-		// Claude Code's UX of "subagents are first-class enough to have
-		// their own listing command."
-		//
-		// PreservesTurn=true: viewing the subagent registry during an
-		// active foreground subagent run must NOT cancel the parent
-		// turn (which would kill the subagent we're trying to inspect).
-		// The picker reads a snapshot of the task registry; no state
-		// change happens, so the turn can keep streaming behind it.
-		{Name: "subagents", Help: "open the subagents picker (Enter views · t toggles types · s stops · Esc closes)", Run: cmdSubagents, PreservesTurn: true},
 		// /mcp inspects the live MCP server manager: list configured
 		// servers, their start status + tool counts, and dump stderr
 		// from a misbehaving one. PreservesTurn=true: read-only on
