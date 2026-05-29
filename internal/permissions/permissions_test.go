@@ -311,6 +311,22 @@ func TestEvaluate_GithubAskForWrites(t *testing.T) {
 	}
 }
 
+// TestTargetFor_MemoryToolsAllGated pins that every memory tool — the
+// four agent-managed ones AND session_recall — resolves to the Memory
+// permission namespace, so a deny:["Memory(*)"] rule blocks them all.
+// session_recall was the gap: it had no targetFor case, so it fell to
+// Default and ran unconditionally despite the docs promising coverage.
+func TestTargetFor_MemoryToolsAllGated(t *testing.T) {
+	for _, tool := range []string{"memory_save", "memory_forget", "memory_search", "memory_get", "session_recall"} {
+		t.Run(tool, func(t *testing.T) {
+			got := targetFor(tool, `{"scope":"user","name":"x","query":"q"}`, "")
+			if got.PermName != "Memory" {
+				t.Errorf("targetFor(%q).PermName = %q; want Memory (deny:[Memory(*)] must gate it)", tool, got.PermName)
+			}
+		})
+	}
+}
+
 func TestTargetFor_GithubVerbMapping(t *testing.T) {
 	// Pin the tool-name → verb mapping so a future rename of
 	// a tool surface that drops the gh_pr_read → read_pr mapping

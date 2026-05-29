@@ -13,6 +13,7 @@ import (
 
 	"github.com/yottadynamics/yottacode/internal/adapter"
 	"github.com/yottadynamics/yottacode/internal/agent"
+	"github.com/yottadynamics/yottacode/internal/memory"
 )
 
 // scriptedStreamer is a duplicate of the one in internal/agent — kept here
@@ -57,6 +58,60 @@ func sseReason(s string) adapter.StreamEvent {
 func sseDone(content string, tcs ...adapter.ToolCall) adapter.StreamEvent {
 	msg := &adapter.Message{Role: adapter.RoleAssistant, Content: content, ToolCalls: tcs}
 	return adapter.StreamEvent{Kind: adapter.EventDone, Final: msg}
+}
+
+// TestRegisterMemoryTools_ParityWithTUI guards the oneshot↔TUI memory
+// parity that #4 fixed: memory_search must be registered (it was
+// previously omitted in oneshot), and both memory_save and
+// memory_search must carry the embedder + configured strategy so
+// headless runs produce .vec sidecars and rank the same way the
+// interactive surface does.
+func TestRegisterMemoryTools_ParityWithTUI(t *testing.T) {
+	reg := agent.NewRegistry()
+	cwdRef := agent.NewCwdRef("/tmp")
+	client := memory.NewEmbedClient("http://localhost:11434", "test-model")
+
+	registerMemoryTools(reg, cwdRef, client, "bm25")
+
+	for _, name := range []string{"memory_save", "memory_forget", "memory_search"} {
+		if _, ok := reg.Get(name); !ok {
+			t.Errorf("memory tool %q not registered", name)
+		}
+	}
+
+	saveTool, _ := reg.Get("memory_save")
+	save, ok := saveTool.(*agent.MemorySaveTool)
+	if !ok {
+		t.Fatalf("memory_save is %T, want *agent.MemorySaveTool", saveTool)
+	}
+	if save.Embedder != client {
+		t.Error("memory_save did not receive the wired embedder — headless saves would skip .vec sidecars")
+	}
+
+	searchTool, _ := reg.Get("memory_search")
+	search, ok := searchTool.(*agent.MemorySearchTool)
+	if !ok {
+		t.Fatalf("memory_search is %T, want *agent.MemorySearchTool", searchTool)
+	}
+	if search.Embedder != client {
+		t.Error("memory_search did not receive the wired embedder")
+	}
+	if search.Strategy != "bm25" {
+		t.Errorf("memory_search strategy = %q, want the configured %q", search.Strategy, "bm25")
+	}
+}
+
+// TestRegisterMemoryTools_NilEmbedderOK confirms the registration is
+// safe when no embedder is available (Ollama absent) — all three tools
+// still register and degrade to BM25.
+func TestRegisterMemoryTools_NilEmbedderOK(t *testing.T) {
+	reg := agent.NewRegistry()
+	registerMemoryTools(reg, agent.NewCwdRef("/tmp"), nil, "auto")
+	for _, name := range []string{"memory_save", "memory_forget", "memory_search"} {
+		if _, ok := reg.Get(name); !ok {
+			t.Errorf("memory tool %q not registered with nil embedder", name)
+		}
+	}
 }
 
 func TestOneshot_ContentGoesToStdout(t *testing.T) {

@@ -309,6 +309,10 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 		reachable, installed := ec.Status(ctx)
 		switch {
 		case installed:
+			// Short per-call bound on the interactive path so a
+			// mid-session Ollama hang can't freeze the TUI; reindex uses
+			// its own default-timeout client.
+			ec.Timeout = memory.InteractiveEmbedTimeout
 			embedClient = ec
 		case reachable:
 			// Ollama is up but the configured embedding model isn't
@@ -324,7 +328,8 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 	}
 	reg.Register(&agent.MemorySaveTool{Cwd: cwdRef, Embedder: embedClient})
 	reg.Register(&agent.MemoryForgetTool{Cwd: cwdRef})
-	reg.Register(&agent.MemorySearchTool{Cwd: cwdRef, Embedder: embedClient})
+	reg.Register(&agent.MemorySearchTool{Cwd: cwdRef, Embedder: embedClient, Strategy: fileCfg.Retrieval.Strategy})
+	reg.Register(&agent.MemoryGetTool{Cwd: cwdRef})
 	reg.Register(&agent.GitTool{Cwd: cwdRef})
 	reg.Register(&agent.TodoWriteTool{Store: planStore})
 	// ExitPlanModeTool is registered with a nil Approve callback at

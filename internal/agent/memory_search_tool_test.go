@@ -7,8 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
 	"time"
+	"unicode/utf8"
 
 	"github.com/yottadynamics/yottacode/internal/memory"
 )
@@ -86,6 +86,64 @@ func TestMemorySearchTool_EmptyQuery(t *testing.T) {
 	_, err := tool.Execute(context.Background(), string(args))
 	if err == nil {
 		t.Error("expected error for empty query")
+	}
+}
+
+func TestMemorySearchTool_HonorsConfiguredStrategy(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	memDir := filepath.Join(home, ".yottacode", "memory")
+	if err := os.MkdirAll(memDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// The query "suite" overlaps this memory ONLY after stemming
+	// (suite ↔ suites). The name/description deliberately avoid the bare
+	// token "suite" so the legacy keyword scorer finds no exact match.
+	writeTestMemory(t, memDir, "full-runs", "feedback",
+		"prefer the local run", "Prefer running the full suites locally.")
+
+	cwd := t.TempDir()
+	cwdRef := &CwdRef{}
+	cwdRef.Set(cwd)
+
+	args, _ := json.Marshal(memorySearchArgs{Query: "suite", Scope: "user"})
+
+	// Legacy keyword strategy: no stemming, so the only memory scores 0
+	// and is filtered out as non-matching.
+	kw := &MemorySearchTool{Cwd: cwdRef, Strategy: "keyword"}
+	kwOut, err := kw.Execute(context.Background(), string(args))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(kwOut, "no matching memories found") {
+		t.Errorf("keyword strategy: stem-only query scores 0 and should be filtered; got: %s", kwOut)
+	}
+
+	// BM25 strategy: stems suite↔suites, so the same memory matches.
+	bm := &MemorySearchTool{Cwd: cwdRef, Strategy: "bm25"}
+	bmOut, err := bm.Execute(context.Background(), string(args))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(bmOut, "full-runs") {
+		t.Errorf("bm25 strategy should match the memory via stemming; got: %s", bmOut)
+	}
+}
+
+func TestTruncateRunes_NeverSplitsMultibyte(t *testing.T) {
+	// 400 multibyte runes; cap at 300 must yield valid UTF-8 (300 runes + ellipsis).
+	s := strings.Repeat("界", 400)
+	got := truncateRunes(s, 300)
+	if !utf8.ValidString(got) {
+		t.Errorf("truncateRunes produced invalid UTF-8")
+	}
+	if n := utf8.RuneCountInString(strings.TrimSuffix(got, "…")); n != 300 {
+		t.Errorf("kept %d runes, want 300", n)
+	}
+	// Short strings pass through unchanged.
+	if truncateRunes("abc", 300) != "abc" {
+		t.Errorf("short string should be unchanged")
 	}
 }
 
