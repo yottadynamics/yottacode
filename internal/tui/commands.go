@@ -1387,7 +1387,7 @@ func renderRebuiltWriteFileBodyCard(argsJSON, result string) (string, bool) {
 	}
 	content := strings.ReplaceAll(a.Content, "\t", "    ")
 	highlighted := strings.TrimRight(HighlightFromPath(content, a.Path), "\n")
-	gutter := styleCardGutter.Render("│  ")
+	gutter := styleCardGutter.Render("│ ")
 	for _, line := range strings.Split(highlighted, "\n") {
 		rows = append(rows, gutter+line)
 	}

@@ -192,7 +192,7 @@ func TestRenderToolCard_StructureInvariants(t *testing.T) {
 	if !strings.HasPrefix(got, "╭ list_dir(.)") {
 		t.Errorf("card should open with `╭ <preview>`: %q", got)
 	}
-	if !strings.Contains(got, "│  bin/") || !strings.Contains(got, "│  main.go") {
+	if !strings.Contains(got, "│ bin/") || !strings.Contains(got, "│ main.go") {
 		t.Errorf("card body should carry list_dir entries: %q", got)
 	}
 	if !strings.Contains(got, "╰ 2 entries") {
@@ -201,7 +201,7 @@ func TestRenderToolCard_StructureInvariants(t *testing.T) {
 }
 
 // edit_file gets a structured diff body: a single-line header, then
-// `- old` / `+ new` rows in the body (each gutter-prefixed with `│  `),
+// `- old` / `+ new` rows in the body (each gutter-prefixed with `│ `),
 // then the standard footer. The previous shape stuffed the whole
 // `edit_file(...)\n  - ...\n  + ...` triple into the header and broke
 // header alignment. This guards against regression.
@@ -227,10 +227,10 @@ func TestRenderToolCard_EditFileRendersDiffBody(t *testing.T) {
 		t.Errorf("diff lines must not be inlined into the header: %q", header)
 	}
 	// Body: gutter-prefixed `- old` / `+ new` rows.
-	if !strings.Contains(got, "│  - package foo") {
+	if !strings.Contains(got, "│ - package foo") {
 		t.Errorf("body should carry the gutter-prefixed `- old` row: %q", got)
 	}
-	if !strings.Contains(got, "│  + package bar") {
+	if !strings.Contains(got, "│ + package bar") {
 		t.Errorf("body should carry the gutter-prefixed `+ new` row: %q", got)
 	}
 	// Footer: the result message comes through unchanged.
@@ -393,7 +393,7 @@ func TestRenderToolCard_GitDestructiveWarningInBody(t *testing.T) {
 	if !strings.Contains(got, "╭ Git(push --force origin main)") {
 		t.Errorf("header should be single-line `╭ Git(...)`, got: %q", got)
 	}
-	if !strings.Contains(got, "│  ⚠ DESTRUCTIVE FLAG(S): --force") {
+	if !strings.Contains(got, "│ ⚠ DESTRUCTIVE FLAG(S): --force") {
 		t.Errorf("warning should render as a body row with the gutter prefix, got: %q", got)
 	}
 	if !strings.Contains(got, "╰ exit 0") {

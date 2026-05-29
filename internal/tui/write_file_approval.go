@@ -41,7 +41,7 @@ func renderWriteFileApprovalSummary(argsJSON string) (string, bool) {
 
 // emitWriteFileBodyToScrollback writes the full (untruncated) file
 // content to scrollback before the approval modal opens, framed as a
-// tool card (╭ header / │   body / ╰ footer) so it reads like the
+// tool card (╭ header / │ body / ╰ footer) so it reads like the
 // post-execution cards the user already knows. Body lines carry their
 // own chroma-emitted ANSI colors and are emitted with only the gutter
 // prefix — they are NOT wrapped in styleCardBody, which would override
@@ -75,7 +75,7 @@ func emitWriteFileBodyToScrollback(m *Model, argsJSON string) {
 		styleCardMeta.Render(fmt.Sprintf("(%d bytes · %d lines)", len(a.Content), lines)))
 	content := strings.ReplaceAll(a.Content, "\t", "    ")
 	highlighted := strings.TrimRight(HighlightFromPath(content, a.Path), "\n")
-	gutter := styleCardGutter.Render("│  ")
+	gutter := styleCardGutter.Render("│ ")
 	for _, line := range strings.Split(highlighted, "\n") {
 		m.appendLine(gutter + line)
 	}
