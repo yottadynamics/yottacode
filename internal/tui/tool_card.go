@@ -108,11 +108,11 @@ func renderToolCard(toolName, preview, argsJSON, output string, errored bool, te
 	// the invocation.
 	if !errored && toolName == "git" {
 		if w := gitDestructiveWarning(preview); w != "" {
-			out = append(out, styleCardGutter.Render("│  ")+styleCardErrFooter.Render(w))
+			out = append(out, styleCardGutter.Render("│ ")+styleCardErrFooter.Render(w))
 		}
 	}
 	body := toolBodyLines(toolName, output, errored, cwd)
-	gutter := styleCardGutter.Render("│  ")
+	gutter := styleCardGutter.Render("│ ")
 	gutterWidth := ansi.StringWidth(gutter)
 	bodyWidth := width - gutterWidth
 	if bodyWidth < 20 {
@@ -986,10 +986,10 @@ func renderTodoCardFromTodos(todos []agent.Todo, termWidth int) string {
 	_ = termWidth // reserved for future row-truncation; todo content is the user's signal, never clipped today
 	out := []string{renderCardHeader(todoCardHeaderText(todos))}
 	if len(todos) == 0 {
-		out = append(out, styleCardGutter.Render("│  ")+styleCardMeta.Render("(empty plan)"))
+		out = append(out, styleCardGutter.Render("│ ")+styleCardMeta.Render("(empty plan)"))
 	} else {
 		for _, td := range todos {
-			out = append(out, styleCardGutter.Render("│  ")+todoRow(td))
+			out = append(out, styleCardGutter.Render("│ ")+todoRow(td))
 		}
 	}
 	out = append(out, styleCardGutter.Render("╰ ")+styleCardMeta.Render(todoCardFooterText(todos)))
