@@ -74,25 +74,53 @@ func BuildCorpus(entries []MemoryEntry) *Corpus {
 	return c
 }
 
-// BM25 scores query stems against document at docIdx. Returns a
-// non-negative score; higher means more relevant. The score combines
-// a headline field (boosted) and a body field.
+// weightedStem is a query stem paired with its contribution weight.
+// Original query stems carry weight 1.0; synonyms are down-weighted (see
+// synonymWeight in retrieve.go) so a document that happens to touch
+// several distinct synonyms of a term can't outrank one that uses the
+// exact term the user searched for.
+type weightedStem struct {
+	stem   string
+	weight float64
+}
+
+// equalWeight wraps plain stems at weight 1.0 — the legacy/public scoring
+// behavior used by the CLI and TUI /memory search surfaces.
+func equalWeight(stems []string) []weightedStem {
+	out := make([]weightedStem, len(stems))
+	for i, s := range stems {
+		out[i] = weightedStem{stem: s, weight: 1.0}
+	}
+	return out
+}
+
+// BM25 scores equal-weighted query stems against document at docIdx.
+// Retained for the public/legacy path; the agent's retrieval uses the
+// weighted variant (bm25Weighted) so synonyms count for less than exact
+// terms.
 func (c *Corpus) BM25(docIdx int, queryStems []string) float64 {
-	if c.N == 0 || len(queryStems) == 0 || docIdx < 0 || docIdx >= len(c.Docs) || c.AvgDL == 0 {
+	return c.bm25Weighted(docIdx, equalWeight(queryStems))
+}
+
+// bm25Weighted is BM25 with a per-term weight applied to each term's
+// combined headline+body contribution. Returns a non-negative score;
+// higher means more relevant.
+func (c *Corpus) bm25Weighted(docIdx int, terms []weightedStem) float64 {
+	if c.N == 0 || len(terms) == 0 || docIdx < 0 || docIdx >= len(c.Docs) || c.AvgDL == 0 {
 		return 0
 	}
 	d := c.Docs[docIdx]
 	var score float64
-	for _, q := range queryStems {
-		idf := c.idf(q)
-		hTF := float64(d.HeadlineFreq[q])
-		bTF := float64(d.BodyFreq[q])
+	for _, t := range terms {
+		idf := c.idf(t.stem)
+		hTF := float64(d.HeadlineFreq[t.stem])
+		bTF := float64(d.BodyFreq[t.stem])
 		dl := float64(d.Length)
 
 		hScore := idf * (hTF * (bm25K1 + 1)) / (hTF + bm25K1*(1-bm25B+bm25B*dl/c.AvgDL))
 		bScore := idf * (bTF * (bm25K1 + 1)) / (bTF + bm25K1*(1-bm25B+bm25B*dl/c.AvgDL))
 
-		score += hScore*headlineBoost + bScore
+		score += (hScore*headlineBoost + bScore) * t.weight
 	}
 	return score
 }
@@ -102,12 +130,19 @@ func (c *Corpus) idf(term string) float64 {
 	return math.Log(1 + (float64(c.N)-df+0.5)/(df+0.5))
 }
 
-// Rank scores all documents against the query and returns them sorted
-// by descending score with alphabetical tie-breaking by entry name.
+// Rank scores all documents against equal-weighted query stems and
+// returns them sorted by descending score with alphabetical tie-breaking
+// by entry name. The agent's retrieval path uses rankWeighted so synonym
+// terms are down-weighted; Rank stays equal-weighted for the public/CLI
+// surfaces.
 func (c *Corpus) Rank(queryStems []string) []Scored {
+	return c.rankWeighted(equalWeight(queryStems))
+}
+
+func (c *Corpus) rankWeighted(terms []weightedStem) []Scored {
 	scored := make([]Scored, c.N)
 	for i := range c.Docs {
-		scored[i] = Scored{Entry: c.Docs[i].Entry, Score: c.BM25(i, queryStems)}
+		scored[i] = Scored{Entry: c.Docs[i].Entry, Score: c.bm25Weighted(i, terms)}
 	}
 	sort.SliceStable(scored, func(i, j int) bool {
 		if scored[i].Score != scored[j].Score {

@@ -141,13 +141,14 @@ var ValidPolicies = []string{"fallback-chain", "cheap-first"}
 type RetrievalConfig struct {
 	Enabled        bool    `toml:"enabled"`
 	TopK           int     `toml:"top_k"`
+	MaxBytes       int     `toml:"max_bytes"`
 	MinScore       float64 `toml:"min_score"`
 	Strategy       string  `toml:"strategy"`
 	EmbeddingModel string  `toml:"embedding_model"`
 }
 
 // ValidStrategies is the whitelist for RetrievalConfig.Strategy.
-// Empty is treated as the default ("bm25") at load time.
+// Empty is coerced to the default ("auto") at load time.
 var ValidStrategies = []string{"keyword", "bm25", "semantic", "auto"}
 
 // ContextConfig governs context-window watermark behavior.
@@ -300,6 +301,7 @@ func Default() Config {
 		Retrieval: RetrievalConfig{
 			Enabled:        true,
 			TopK:           10,
+			MaxBytes:       24000,
 			MinScore:       0.0,
 			Strategy:       "auto",
 			EmbeddingModel: "nomic-embed-text",
@@ -425,6 +427,9 @@ func Validate(cfg Config) error {
 	}
 	if cfg.Retrieval.TopK < 0 {
 		return fmt.Errorf("retrieval.top_k = %d must be >= 0", cfg.Retrieval.TopK)
+	}
+	if cfg.Retrieval.MaxBytes < 0 {
+		return fmt.Errorf("retrieval.max_bytes = %d must be >= 0 (0 = unlimited)", cfg.Retrieval.MaxBytes)
 	}
 	if cfg.Retrieval.MinScore < 0 || cfg.Retrieval.MinScore > 1 {
 		return fmt.Errorf("retrieval.min_score = %.3f out of range (0.0–1.0)", cfg.Retrieval.MinScore)
@@ -686,8 +691,8 @@ func (c *Config) FindProvider(name string) *Provider {
 // DefaultsTOML is the documented default file written by EnsureDefault.
 const DefaultsTOML = `# yottacode configuration
 #
-# Loaded at session start. Edit and run /memory reload (in the TUI) to
-# apply changes mid-session — no restart required.
+# Loaded at session start. Changes apply on the next session start, or
+# after running /setup in the TUI.
 #
 # Values out of range are rejected at load time, not silently clamped.
 # Unknown sections and keys are also rejected so typos surface

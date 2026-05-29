@@ -111,14 +111,25 @@ The agent owns this layer end-to-end. It decides in-conversation what is worth r
   memory/                                     # user-scope (cross-project)
     MEMORY.md                                 # auto-generated index
     <name>.md                                 # one file per memory
+    <name>.vec                                # embedding sidecar (semantic mode)
+    .archive/                                 # prior versions kept on overwrite (see below)
+      <name>.<stamp>.md
   projects/
     <project_slug>/
       memory/                                 # project-scope (this repo only, private to you)
         MEMORY.md
         <name>.md
+        .archive/
 ```
 
-`<project_slug>` is derived from the git remote (`https://github.com/user/repo.git` → `github-com-user-repo`); falls back to `filepath.Base(cwd)` for non-git directories. Two distinct repos can collide on basename; initializing git gets you a unique remote-derived slug.
+The `.archive/` subdirectory holds the prior version of any memory that
+`memory_save` overwrote, so an update can never silently destroy a
+different memory that reused the name. It's a dotted subdir, so the
+scanner skips it — archived versions never appear in the index,
+retrieval, or `memory list`. `memory_forget` does not prune `.archive/`
+yet; remove it by hand (`rm -rf ~/.yottacode/memory/.archive`) if it grows.
+
+`<project_slug>` is derived from the git remote (`https://github.com/user/repo.git` → `github-com-user-repo`); falls back to `filepath.Base(cwd)` for non-git directories. Slugs are not guaranteed collision-free: two non-git repos can collide on basename, and the remote-derived slug collapses the org/repo boundary (`.` and `/` both become `-`), so distinct remote URLs can also map to the same slug and share a project-memory directory. A collision means one repo's project memories load/edit in the other.
 
 Per-project memories live in your home directory, not in the repo. They're private to this user/machine — a clone of the same repo on a different machine starts with an empty project memory. Use `YOTTACODE.md` for things the team should share; use project-scope memory for what *you* personally want to remember about working in this repo.
 
@@ -140,14 +151,24 @@ ahead of the call or the refresh path 401s on the next request.
 
 `MEMORY.md` is auto-generated — a table-of-contents grouped by type, regenerated every time `memory_save` or `memory_forget` runs. Don't edit it; edit individual `<name>.md` files instead.
 
-### The four types
+### Types — four conventions, free-form underneath
 
-The agent picks one of these when saving:
+`type` is a short label the agent attaches when saving. Four labels are
+**conventional** (and group together, in this order, in `MEMORY.md`):
 
 - **`user`** — preferences, style, tooling. ("Prefer two-space indents." "Don't summarize after every change.")
 - **`feedback`** — corrections the user gave you. ("Don't generate stack traces in final answers — cut to the fix.")
 - **`project`** — load-bearing facts about this repo. ("The schema migration runner reads `migrations/sql/*.up.sql`, not `*.sql`.")
 - **`reference`** — material to look back at. (API shapes, command incantations, "what does `make ship` actually do".)
+
+But the set is **not closed**: when none of the four fit, the agent may coin
+its own short label — e.g. `decision`, `gotcha`, `api-shape`. A custom type
+is validated only as a label (lowercased + trimmed; lowercase letters,
+digits, spaces, hyphens or underscores; ≤32 chars) and renders as its own
+`## <type>` group in the index, after the four conventional ones
+(alphabetically). The `type` only labels and groups — it never restricts
+what the body can hold and is not a retrieval filter. The body content is
+unconstrained regardless of type.
 
 ### What the agent saves
 
@@ -180,18 +201,25 @@ Scope selection is critical for building knowledge that transfers across project
 
 The full guidance lives in the agent's system prompt; see `internal/agent/prompt.go` for the current copy.
 
-### The four tools
+**Precedence — project shadows user.** If the same memory name exists in both scopes, the project-scope version wins *in that repo*: its body injects and the user-scope twin's body is suppressed (it would otherwise duplicate or contradict). This matches how slash commands and config layering resolve project-over-user. The user file stays on disk and still applies in every other repo, where no project twin shadows it.
 
-The agent has four memory tools, all **silent by default** (no approval modal — they're as ordinary as `read_file`):
+### The five tools
 
-- **`memory_save`** — writes a new memory file or overwrites an existing one with the same name. Updates `MEMORY.md`. Generates a `.vec` sidecar when an embedding model is available.
+The agent has five memory tools, all **silent by default** (no approval modal — they're as ordinary as `read_file`):
+
+- **`memory_save`** — creates a memory file, or updates an existing one of the same name. On a same-name update the prior version is **archived** to `<memdir>/.archive/<name>.<stamp>.md` (recoverable, never silently lost; excluded from the index, retrieval, and `memory list`) and the original `created` timestamp is preserved. The result reports `created` vs `updated` (and whether a version was archived). Updates `MEMORY.md`. Generates a `.vec` sidecar when an embedding model is available; if embedding is unavailable, the save still succeeds and the result notes that the semantic index wasn't updated.
 - **`memory_forget`** — deletes a memory file by name. Updates `MEMORY.md`. Errors when the named memory doesn't exist (so the agent learns the right names).
-- **`memory_search`** — searches across user and/or project memory stores, returning ranked results with relevance scores. The agent uses this to check for duplicates before saving, find related memories when reasoning about a topic, or verify a remembered fact. Accepts `scope` (`all`, `user`, `project`) and `limit` parameters.
+- **`memory_search`** — searches across user and/or project memory stores, returning ranked results with relevance scores (zero-relevance entries are omitted). The agent uses this to check for duplicates before saving, find related memories when reasoning about a topic, or verify a remembered fact. Accepts `scope` (`all`, `user`, `project`) and `limit` parameters.
+- **`memory_get`** — returns the full, untruncated contents (frontmatter + body) of one memory by `scope` + `name`. Used before updating a memory so the agent can preserve the parts it isn't changing, instead of blindly overwriting from the 300-char `memory_search` preview.
 - **`session_recall`** — searches across all past sessions via the FTS5 full-text index. Returns ranked snippets with session metadata (name, date, model). The agent uses this to find prior discussions, check if an issue was already resolved, or pull in context from earlier conversations. Supports FTS5 query syntax (OR, exact phrases in quotes).
 
-The introspection tools (`memory_search`, `session_recall`) are the key to self-learning — they let the agent think based on its own accumulated knowledge rather than relying only on what the retrieval orchestrator injects each turn.
+The introspection tools (`memory_search`, `memory_get`, `session_recall`) are the key to self-learning — they let the agent think based on its own accumulated knowledge rather than relying only on what the retrieval orchestrator injects each turn.
 
-To require approval per save / forget, add an `ask` rule:
+All five tools resolve to the `Memory` permission namespace (save / forget /
+search / get / recall), so a single rule gates every memory operation — every
+read included, `session_recall`'s cross-session search among them.
+
+To require approval per memory operation, add an `ask` rule:
 
 ```json
 { "permissions": { "ask": ["Memory(*)"] } }
@@ -209,13 +237,26 @@ Or block only forgets while leaving saves silent:
 { "permissions": { "deny": ["Memory(forget *)"] } }
 ```
 
+### Durability & concurrency
+
+Every memory write (a `<name>.md`, the regenerated `MEMORY.md`, or a `.vec`
+sidecar) goes through one atomic-write path: stage to a **unique** temp file
+in the same directory, `fsync`, then `rename` onto the destination and
+`fsync` the directory. The unique temp name means two writers — two
+yottacode processes in the same repo, or a parent loop and a background
+subagent — can't interleave bytes into a shared staging file or delete each
+other's in-flight temp; concurrent writes become last-writer-wins on a valid
+file. The `fsync` closes the crash window that a bare `rename` leaves (a file
+coming back zero-length or stale after power loss). Reads are best-effort and
+never block a turn.
+
 ### Per-turn retrieval
 
 Memory grows over time. By the time you have dozens of memories, dumping every body into every prompt is wasteful. The retrieval orchestrator scores each memory body against the current user prompt and injects only the top-K.
 
 What's filtered:
 
-- **Per-entry bodies** under both scopes — scored, ranked, capped at `retrieval.top_k`.
+- **Per-entry bodies** under both scopes — scored, ranked, capped at `retrieval.top_k` and `retrieval.max_bytes`.
 
 What is NOT filtered:
 
@@ -233,9 +274,15 @@ yottacode supports three scoring strategies, selectable via config:
 | `semantic` | BM25 score (60%) + cosine similarity from local Ollama embeddings (40%) | When you want conceptual matching — "error handling philosophy" finds memories about soft failures even without shared keywords |
 | `auto` **(default)** | Probes for a local Ollama embedding model at session start. If found → `semantic`; otherwise → `bm25` | Recommended. Zero config, best available scoring |
 
-**BM25** is the baseline — pure Go, zero dependencies, deterministic. It ships a Porter stemmer and ~15 hand-curated synonym groups for programming/dev vocabulary (test/mock/fake, database/db/sql, deploy/release/ship, auth/login/credential, etc.). This alone is a major upgrade over raw keyword matching.
+**BM25** is the baseline — pure Go, zero dependencies, deterministic. It ships a Porter stemmer and ~15 hand-curated synonym groups for programming/dev vocabulary (test/mock/fake, database/db/sql, deploy/release/ship, auth/login/credential, etc.). This alone is a major upgrade over raw keyword matching. Synonym-derived query terms are scored at a fractional weight (half of an exact term) so a memory that incidentally touches several distinct synonyms of a group can't outrank one that uses the exact term you searched for — recall stays up, exact-match precision wins ties. (The CLI / TUI `/memory search` preview uses equal weights; the agent's retrieval applies the down-weight.)
 
-**Semantic** layers local embeddings on top when a local Ollama server is available with an embedding model installed. Vector sidecars (`.vec` files) are stored alongside memory `.md` files and generated automatically on `memory_save`. The combined score blends BM25 (which excels at exact matches like file paths and function names) with cosine similarity (which captures conceptual relationships).
+**Semantic** layers local embeddings on top when a local Ollama server is available with an embedding model installed. Vector sidecars (`.vec` files) are stored alongside memory `.md` files and generated automatically on `memory_save`. The combined score blends BM25 (which excels at exact matches like file paths and function names) with cosine similarity (which captures conceptual relationships). A sidecar produced by a *different* embedding model than the one in use is skipped for the cosine term (cross-model vectors aren't comparable) — that entry simply ranks on BM25 until `memory reindex` rebuilds it.
+
+**Score normalization & `min_score`.** All strategies normalize their top match to 1.0, so `retrieval.min_score` means the same thing regardless of strategy — and doesn't silently start dropping every memory the moment `auto` resolves to `semantic` (Ollama present).
+
+**Interactive timeout & fallback.** On the per-turn path the embedding call is bounded by a short timeout; if Ollama is slow or goes away mid-session, retrieval falls back to BM25 for that turn rather than blocking the UI. Batch `memory reindex` keeps the longer timeout.
+
+**Caching.** The BM25 corpus (keyed by a content fingerprint of the memory set) and parsed `.vec` vectors (keyed by file mtime + size) are cached across turns, so a steady-state turn re-ranks without re-stemming every body or re-reading every sidecar. The caches self-invalidate when a memory body or its `.vec` changes (the corpus by content fingerprint, vectors by mtime + size).
 
 #### Enabling semantic retrieval
 
@@ -273,14 +320,17 @@ embedding_model = "all-minilm"
 [retrieval]
 enabled         = true              # off → load every entry every turn (no filter)
 top_k           = 10                # cap on memory bodies per turn (shared across user + project)
-min_score       = 0.0               # drop entries scoring below this (0.0–1.0)
+max_bytes       = 24000             # cap on combined injected body bytes per turn (0 = unlimited)
+min_score       = 0.0               # 0.0 = no relevance floor (every entry up to top_k); >0 drops below it
 strategy        = "auto"            # "keyword" | "bm25" | "semantic" | "auto"
 embedding_model = "nomic-embed-text" # Ollama model for semantic retrieval
 ```
 
+`top_k` and `max_bytes` are independent caps applied together: retrieval stops at whichever binds first. The byte cap drops the least-relevant tail (entries are rank-ordered), but the single top-ranked entry is always admitted even if it alone exceeds `max_bytes`.
+
 ### `/memory` picker
 
-The TUI's `/memory` command opens a five-row picker:
+The TUI's `/memory` command opens a five-row picker (plus a conditional sixth row):
 
 | Row | Action |
 |---|---|
@@ -289,6 +339,7 @@ The TUI's `/memory` command opens a five-row picker:
 | Browse user memories | Sub-list of `~/.yottacode/memory/*.md` |
 | Browse project memories | Sub-list of `~/.yottacode/projects/<slug>/memory/*.md` |
 | Reindex embeddings | Generates `.vec` sidecars for semantic retrieval (requires Ollama) |
+| Enable semantic search | Appears only when no embedding model is active (e.g. first run without Ollama); pulls an Ollama embedding model and reindexes |
 
 In the browse sub-lists: `Enter` opens the chosen memory in vim, `d` deletes it (and regenerates `MEMORY.md`), `f` opens the folder in your file manager, `Esc` returns to the root menu.
 
@@ -305,7 +356,7 @@ yottacode memory search <query>                # search memories by query (same 
 
 ### Agent introspection flow
 
-The agent's self-learning loop uses the four tools together:
+The agent's self-learning loop uses these tools together:
 
 ```
   session_recall("was this discussed before?")
@@ -349,22 +400,6 @@ The agent decides autonomously when to search, save, update, or forget — the t
 | "We're mid-refactor of the user model" | Don't save — ephemeral | |
 | "Look up which session we discussed X in" | `/recall <query>` | |
 | "Compress the current transcript" | `/summarize` | |
-
----
-
-## Migration from older yottacode
-
-`PROJECT.md` was renamed to `YOTTACODE.md` in this release. If your repo has `<repo>/.yottacode/PROJECT.md`, rename it by hand:
-
-```
-mv .yottacode/PROJECT.md .yottacode/YOTTACODE.md
-```
-
-The old auto-memory directory at `~/.yottacode/auto/<slug>/` is no longer read or written. The contents are not migrated automatically — paste anything you want preserved into a `memory_save` call in a fresh session.
-
-The `[auto_memory]` section in `~/.yottacode/config.toml` is silently ignored on load, so an upgrade doesn't break first launch. You can delete the block from your config; nothing references its values anymore.
-
-The `--auto-memory` flag and `YOTTACODE_AUTO_MEMORY` environment variable are gone. `yottacode setup` no longer prompts for auto-memory; the agent decides per-conversation what to remember.
 
 ---
 
