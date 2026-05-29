@@ -278,9 +278,15 @@ func TestValidateMemoryType_FreeForm(t *testing.T) {
 		{"user", "user"},
 		{"feedback", "feedback"},
 		{"decision", "decision"},
-		{"  Gotcha ", "gotcha"},   // trimmed + lowercased
+		{"  Gotcha ", "gotcha"}, // trimmed + lowercased
+		// Separator variants all canonicalize to a single-hyphen form so
+		// they group as ONE "## <type>" section in the index, not three.
 		{"API-shape", "api-shape"},
-		{"design note", "design note"},
+		{"api shape", "api-shape"},
+		{"api_shape", "api-shape"},
+		{"design note", "design-note"},
+		{"a  b__c--d", "a-b-c-d"}, // runs of mixed separators collapse
+		{"-leading-trailing-", "leading-trailing"}, // ends trimmed
 	} {
 		got, err := validateMemoryType(c.in)
 		if err != nil {

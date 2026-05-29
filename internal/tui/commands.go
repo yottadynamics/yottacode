@@ -70,7 +70,11 @@ func init() {
 		{Name: "model", Help: "open the model picker (subcommands: list [all], <name>)", Run: cmdModel},
 		{Name: "provider", Help: "select a new provider (subcommands: list, use, add, remove, models)", Run: cmdProviderEntry},
 		{Name: "sessions", Help: "open the sessions menu (or /sessions <id|name> to resume directly)", Run: cmdSessions},
-		{Name: "memory", Help: "open the memory picker (USER.md / YOTTACODE.md / saved memories)", Run: cmdMemory},
+		// No Args: a bare /memory must execute on Enter (one keystroke) to
+		// open the picker. The `search` subcommand is surfaced in Help and
+		// still works when typed manually (`/memory search <query>`) —
+		// same pattern as /plan, /model, /sessions.
+		{Name: "memory", Help: "open the memory picker; `/memory search <q>` ranks saved memories", Run: cmdMemory},
 		{Name: "summarize", Help: "compress session history into a structured summary", Run: cmdSummarize},
 		{Name: "skills", Help: "skills menu; subcommands: install <source>, show <name>, uninstall <name>, check [name], update [name]", Run: cmdSkills, PreservesTurn: true},
 		{Name: "subagents", Help: "open the subagents picker (Enter views · t toggles types · s stops · Esc closes)", Run: cmdSubagents, PreservesTurn: true},

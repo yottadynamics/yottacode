@@ -90,7 +90,7 @@ The two trust anchors are the load-bearing context the agent sees on every singl
 
 `USER.md` holds preferences that travel with you ("prefer table-driven Go tests", "no trailing summaries"). Edit it through `/memory` (which opens vim) or directly — the model never writes there.
 
-`YOTTACODE.md` is the project's brief. `/init` drafts it from the current repo (build commands, layout, conventions, gotchas). After non-trivial work the agent will offer to refresh it through the approval modal. Keep it under ~150 lines; bigger files get a "large memory will impact performance" notice on startup.
+`YOTTACODE.md` is the project's brief. `/init` drafts it from the current repo (build commands, layout, conventions, gotchas) and aims to keep it under ~150 lines. After non-trivial work the agent will offer to refresh it through the approval modal. The startup "large memory will impact performance" notice is keyed on **file size, not line count** — it fires once a curated file exceeds 40k bytes (see [Trust model](#trust-model)).
 
 To make `YOTTACODE.md` human-only on a specific repo, add a deny rule to `.yottacode/permissions.json`:
 
@@ -119,15 +119,23 @@ The agent owns this layer end-to-end. It decides in-conversation what is worth r
       memory/                                 # project-scope (this repo only, private to you)
         MEMORY.md
         <name>.md
+        <name>.vec                            # embedding sidecar (same as user scope)
         .archive/
 ```
 
 The `.archive/` subdirectory holds the prior version of any memory that
-`memory_save` overwrote, so an update can never silently destroy a
-different memory that reused the name. It's a dotted subdir, so the
-scanner skips it — archived versions never appear in the index,
-retrieval, or `memory list`. `memory_forget` does not prune `.archive/`
-yet; remove it by hand (`rm -rf ~/.yottacode/memory/.archive`) if it grows.
+`memory_save` overwrote (named `<name>.<unix-nano>.<rand>.md` — the
+timestamp is for humans, the random suffix guarantees two concurrent
+archivers can't clobber each other), so an update can never silently
+destroy a different memory that reused the name. It's a dotted subdir, so
+the scanner skips it — archived versions never appear in the index,
+retrieval, or `memory list`. There is **no automatic retention policy or
+config knob today**: `memory_forget` deletes the live file and its `.vec`
+but does not prune `.archive/`, and nothing ages archives out. Pruning is
+fully manual (`rm -rf ~/.yottacode/memory/.archive`). Each archived body
+is a small markdown file, so unbounded growth is a housekeeping nit rather
+than a disk concern for a single user — a configurable retention policy is
+a known follow-up, not a shipped feature.
 
 `<project_slug>` is derived from the git remote (`https://github.com/user/repo.git` → `github-com-user-repo`); falls back to `filepath.Base(cwd)` for non-git directories. Slugs are not guaranteed collision-free: two non-git repos can collide on basename, and the remote-derived slug collapses the org/repo boundary (`.` and `/` both become `-`), so distinct remote URLs can also map to the same slug and share a project-memory directory. A collision means one repo's project memories load/edit in the other.
 
@@ -149,6 +157,17 @@ the cache *before* it returns. Tests that mock the cache must seed it
 ahead of the call or the refresh path 401s on the next request.
 ```
 
+The **filename is the memory's identity**, not the frontmatter `name:`
+field — the index links to `<name>.md` and `memory_forget` resolves a
+memory by recomputing `<name>.md`, so the scanner trusts the basename and
+the frontmatter `name:` is human-facing redundancy. `name` must be
+kebab-case (`^[a-z0-9][a-z0-9-]{0,63}$` — lowercase alphanumeric start,
+hyphens, ≤64 chars), and a small set of names is **reserved and rejected**
+(`user`, `project`, `memory`, `index`, `sessions`, `yottacode`,
+`feedback`, `reference`) so a memory file can't collide with a structural
+filename. `memory_save` also refuses path traversal and won't write
+through a symlink.
+
 `MEMORY.md` is auto-generated — a table-of-contents grouped by type, regenerated every time `memory_save` or `memory_forget` runs. Don't edit it; edit individual `<name>.md` files instead.
 
 ### Types — four conventions, free-form underneath
@@ -163,12 +182,22 @@ ahead of the call or the refresh path 401s on the next request.
 
 But the set is **not closed**: when none of the four fit, the agent may coin
 its own short label — e.g. `decision`, `gotcha`, `api-shape`. A custom type
-is validated only as a label (lowercased + trimmed; lowercase letters,
-digits, spaces, hyphens or underscores; ≤32 chars) and renders as its own
+is validated only as a label (lowercased + trimmed, then any run of
+spaces/underscores/hyphens collapsed to a single hyphen; lowercase
+letters, digits, hyphens; ≤32 chars) and renders as its own
 `## <type>` group in the index, after the four conventional ones
 (alphabetically). The `type` only labels and groups — it never restricts
 what the body can hold and is not a retrieval filter. The body content is
 unconstrained regardless of type.
+
+> **Separators are canonicalized.** Validation lowercases, trims, and then
+> collapses any run of spaces, underscores, or hyphens to a single hyphen
+> (trimming the ends), so `api shape`, `api_shape`, and `API-shape` all
+> store as `api-shape` and group under **one** `## api-shape` section
+> rather than fragmenting into three near-duplicate headers. Since `type`
+> is a label and index-grouping key only — never a retrieval filter — this
+> is purely about keeping the index tidy; the body and ranking are
+> unaffected either way.
 
 ### What the agent saves
 
@@ -211,7 +240,7 @@ The agent has five memory tools, all **silent by default** (no approval modal �
 - **`memory_forget`** — deletes a memory file by name. Updates `MEMORY.md`. Errors when the named memory doesn't exist (so the agent learns the right names).
 - **`memory_search`** — searches across user and/or project memory stores, returning ranked results with relevance scores (zero-relevance entries are omitted). The agent uses this to check for duplicates before saving, find related memories when reasoning about a topic, or verify a remembered fact. Accepts `scope` (`all`, `user`, `project`) and `limit` parameters.
 - **`memory_get`** — returns the full, untruncated contents (frontmatter + body) of one memory by `scope` + `name`. Used before updating a memory so the agent can preserve the parts it isn't changing, instead of blindly overwriting from the 300-char `memory_search` preview.
-- **`session_recall`** — searches across all past sessions via the FTS5 full-text index. Returns ranked snippets with session metadata (name, date, model). The agent uses this to find prior discussions, check if an issue was already resolved, or pull in context from earlier conversations. Supports FTS5 query syntax (OR, exact phrases in quotes).
+- **`session_recall`** — searches across all past sessions via the FTS5 full-text index. Returns ranked snippets with session metadata (name, date, model). The agent uses this to find prior discussions, check if an issue was already resolved, or pull in context from earlier conversations. Supports FTS5 query syntax (OR, exact phrases in quotes): the raw query is tried first so operators work, and only if that's a syntax error is a sanitized version retried — so a naive hyphenated or punctuation-heavy query still returns results instead of erroring.
 
 The introspection tools (`memory_search`, `memory_get`, `session_recall`) are the key to self-learning — they let the agent think based on its own accumulated knowledge rather than relying only on what the retrieval orchestrator injects each turn.
 
@@ -239,16 +268,50 @@ Or block only forgets while leaving saves silent:
 
 ### Durability & concurrency
 
-Every memory write (a `<name>.md`, the regenerated `MEMORY.md`, or a `.vec`
-sidecar) goes through one atomic-write path: stage to a **unique** temp file
-in the same directory, `fsync`, then `rename` onto the destination and
-`fsync` the directory. The unique temp name means two writers — two
-yottacode processes in the same repo, or a parent loop and a background
-subagent — can't interleave bytes into a shared staging file or delete each
-other's in-flight temp; concurrent writes become last-writer-wins on a valid
-file. The `fsync` closes the crash window that a bare `rename` leaves (a file
-coming back zero-length or stale after power loss). Reads are best-effort and
-never block a turn.
+**Atomic writes.** Every memory write (a `<name>.md`, the regenerated
+`MEMORY.md`, or a `.vec` sidecar) goes through one atomic-write path: stage
+to a **unique** temp file in the same directory, `fsync`, then `rename` onto
+the destination and `fsync` the directory. The unique temp name means two
+writers can't interleave bytes into a shared staging file or delete each
+other's in-flight temp; the `fsync` closes the crash window that a bare
+`rename` leaves (a file coming back zero-length or stale after power loss).
+Reads are best-effort and never block a turn.
+
+**In-process serialization.** `memory_save` holds a per-path mutex across
+its whole *read → archive → write → regenerate-index* sequence. This
+matters because the same tool instance is shared into detached background
+subagents: without the lock, two concurrent saves to the same name would
+both read the same prior, both archive only that prior, and the second
+`rename` would silently drop the first writer's *new* content. The lock
+makes the sequence serial, so each writer archives the previous writer's
+version and nothing is lost. (`memory_forget` and the TUI delete don't take
+the lock; they're already serialized within a single agent loop because the
+memory tools aren't parallel-safe.)
+
+**Cross-process guarantee.** There is **no OS-level file lock** (no
+`flock`/`fcntl`), so the per-path mutex doesn't reach across processes —
+two separate yottacode processes, or a process plus a concurrent `yottacode
+memory` CLI invocation, share no lock. The exact guarantee that still
+holds:
+
+- **Body files are never lost or corrupted.** Each memory is a distinct
+  path; the atomic rename is last-writer-wins *on a valid file*, and
+  `ArchivePrior` stages through a unique temp so a prior version is never
+  clobbered.
+- **Only `MEMORY.md` can go transiently stale.** Index regeneration is a
+  read-modify-write over the whole directory (scan all `*.md` → render →
+  atomic-write), so an unlucky interleave can let a regen rendered from an
+  older scan land last and drop a just-added entry's *table-of-contents
+  line*. This is **cosmetic and self-healing**: `MEMORY.md` is a rendered
+  convenience index, not the source of truth — retrieval and injection scan
+  the directory directly (`Load` → `scanMemoryDir`), so the dropped entry's
+  body still injects and is still searchable, and the next save/forget
+  rewrites the index from a fresh scan. No memory disappears.
+
+For a single-user desktop tool this residual race is rare (a millisecond
+window needing two simultaneously-mutating processes) and harmless. An
+advisory directory lock around index regeneration would close it; it's an
+accepted, documented gap rather than a shipped guard.
 
 ### Per-turn retrieval
 
@@ -280,9 +343,36 @@ yottacode supports three scoring strategies, selectable via config:
 
 **Score normalization & `min_score`.** All strategies normalize their top match to 1.0, so `retrieval.min_score` means the same thing regardless of strategy — and doesn't silently start dropping every memory the moment `auto` resolves to `semantic` (Ollama present).
 
-**Interactive timeout & fallback.** On the per-turn path the embedding call is bounded by a short timeout; if Ollama is slow or goes away mid-session, retrieval falls back to BM25 for that turn rather than blocking the UI. Batch `memory reindex` keeps the longer timeout.
+**Interactive timeout & fallback.** On the synchronous, user-facing paths — both per-turn retrieval and `memory_save` — the embedding call is bounded by a short ~2s timeout. If Ollama is slow or goes away mid-session, retrieval falls back to BM25 for that turn and `memory_save` still completes (the `.md` is written; only the `.vec` is skipped, with a note to run `memory reindex` later) — neither blocks the UI. Batch `memory reindex` keeps the longer 30s timeout.
 
 **Caching.** The BM25 corpus (keyed by a content fingerprint of the memory set) and parsed `.vec` vectors (keyed by file mtime + size) are cached across turns, so a steady-state turn re-ranks without re-stemming every body or re-reading every sidecar. The caches self-invalidate when a memory body or its `.vec` changes (the corpus by content fingerprint, vectors by mtime + size).
+
+#### Changing the embedding model
+
+Each `.vec` sidecar records **which model produced it**. The file starts
+with a `YVEC` magic header followed by the embedding model name and
+dimension count, then the float32 vector. Two consequences:
+
+- **Retrieval is self-protecting.** `entryCosine` only blends a sidecar's
+  cosine into the score when its recorded model matches the active model.
+  A sidecar from a *different* model — or a pre-header *legacy* sidecar
+  with no model recorded — contributes cosine 0 and the entry ranks on
+  BM25 alone. So switching `embedding_model` never injects garbage
+  similarity; at worst you lose the semantic boost on not-yet-reindexed
+  entries until you rebuild them. (Legacy raw-float32 `.vec` files written
+  before the header existed are still readable and are simply treated as
+  "needs re-embed".)
+- **`memory reindex` is the migration path, and it's incremental.**
+  Reindex calls `NeedsReembed`, which re-embeds only entries whose sidecar
+  is missing, legacy, or from a different model — entries already embedded
+  with the current model are skipped and reported as "up-to-date". So
+  after changing the model you run `yottacode memory reindex` (or `/memory`
+  → **Reindex embeddings**) once and only the stale sidecars are rewritten.
+
+There is **no automatic trigger** that detects a model change and reindexes
+for you — the rebuild is a manual (but cheap and incremental) step. Until
+you run it, affected entries fall back to BM25 rather than producing wrong
+results.
 
 #### Enabling semantic retrieval
 
@@ -294,6 +384,15 @@ To get the full advantage of semantic memory retrieval:
    ollama pull nomic-embed-text
    ```
 3. Restart yottacode — semantic retrieval activates automatically
+
+At session start yottacode runs a short (~800ms) probe against the Ollama
+server (`/api/tags`) that distinguishes three states: server unreachable
+(stay on BM25, silent), server reachable but the configured model missing
+(stay on BM25 and print a one-line `[memory] embedding model … not
+installed — run: ollama pull …` notice), and model present (resolve `auto`
+→ `semantic`). The probe is deliberately separate from the per-turn
+embedding timeout so a missing model surfaces a targeted hint instead of
+silently degrading.
 
 `nomic-embed-text` runs entirely on CPU — no GPU required. The model is small (~270MB) and fast, and it runs locally so no data leaves your machine. Once installed, every `memory_save` generates a vector sidecar alongside the memory file. To generate vectors for existing memories, use `/memory` → **Reindex embeddings** or:
 
@@ -342,6 +441,8 @@ The TUI's `/memory` command opens a five-row picker (plus a conditional sixth ro
 | Enable semantic search | Appears only when no embedding model is active (e.g. first run without Ollama); pulls an Ollama embedding model and reindexes |
 
 In the browse sub-lists: `Enter` opens the chosen memory in vim, `d` deletes it (and regenerates `MEMORY.md`), `f` opens the folder in your file manager, `Esc` returns to the root menu.
+
+`/memory search <query>` skips the picker and ranks your saved memories inline — same BM25 scoring the agent's retrieval uses, printed straight to the transcript with relevance scores. It's a deterministic, zero-token way to see "what do I have stored about X" without spending a model turn (the equivalent of the `yottacode memory search` CLI command, in the TUI). Use `/recall <query>` for the analogous search over past *sessions*.
 
 ### Cobra subcommands (for scripts)
 
@@ -408,4 +509,4 @@ The agent decides autonomously when to search, save, update, or forget — the t
 - **Memory tools run silently by default.** Add `ask: ["Memory(*)"]` to your permissions if you want a modal on every memory write.
 - **Don't put secrets in any memory file.** They get loaded into the system prompt every turn and persist on disk in plaintext.
 - **Project-scope memory is per-user.** Two developers on the same repo see different `~/.yottacode/projects/<slug>/memory/` dirs. Use `YOTTACODE.md` (in the repo) for things the team should share.
-- **The curated layer never gets filtered.** Whatever you write in `USER.md` and `YOTTACODE.md` lands in every system prompt — keep them concise. The "Large file will impact performance" notice fires past 40k chars.
+- **The curated layer never gets filtered.** Whatever you write in `USER.md` and `YOTTACODE.md` lands in every system prompt — keep them concise. The "Large file will impact performance" notice fires past 40k bytes.

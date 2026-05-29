@@ -250,26 +250,40 @@ func (t *MemoryForgetTool) Execute(_ context.Context, argsJSON string) (string, 
 	return fmt.Sprintf("forgot %s memory %q", a.Scope, a.Name), nil
 }
 
-// memoryTypePattern bounds a free-form type label to a short, index-safe
-// token. The type is stored as a frontmatter value, rendered as a
-// "## <type>" group header in MEMORY.md, and shown as a "[<type>]" tag in
-// the prompt, so it must stay single-line and free of characters that
-// would break those surfaces: lowercase letters/digits/space/hyphen/
-// underscore, starting alphanumeric, ≤32 chars.
-var memoryTypePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9 _-]{0,31}$`)
+// memoryTypeSeparators matches a run of the three interchangeable word
+// separators (space, underscore, hyphen). validateMemoryType collapses
+// each run to a single canonical hyphen so labels that differ only by
+// separator — "api shape", "api_shape", "api-shape" — store identically
+// and group as ONE "## <type>" section in MEMORY.md instead of three.
+var memoryTypeSeparators = regexp.MustCompile(`[ _-]+`)
 
-// validateMemoryType normalizes (lowercase + trim) a memory type and
-// checks it's a usable label. Types are FREE-FORM: user / feedback /
-// project / reference are conventions that group together in the index,
-// not a closed set — the agent may coin its own short label when none
-// fit. Returns the normalized value to store.
+// memoryTypePattern bounds the CANONICALIZED type label to a short,
+// index-safe token. The type is stored as a frontmatter value, rendered
+// as a "## <type>" group header in MEMORY.md, and shown as a "[<type>]"
+// tag in the prompt, so it must stay single-line and free of characters
+// that would break those surfaces. After canonicalization a valid label
+// is lowercase letters/digits joined by single hyphens, starting
+// alphanumeric, ≤32 chars.
+var memoryTypePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,31}$`)
+
+// validateMemoryType normalizes a memory type and checks it's a usable
+// label. Normalization is lowercase + trim, then any run of
+// space/underscore/hyphen collapses to a single hyphen (ends trimmed) so
+// separator variants don't fragment the index into near-duplicate groups.
+// Types are FREE-FORM: user / feedback / project / reference are
+// conventions that group together in the index, not a closed set — the
+// agent may coin its own short label when none fit. Returns the canonical
+// value to store.
 func validateMemoryType(t string) (string, error) {
 	norm := strings.ToLower(strings.TrimSpace(t))
 	if norm == "" {
 		return "", fmt.Errorf("memory: type is required (e.g. user, feedback, project, reference, or your own short label)")
 	}
+	// Canonicalize separators so "api shape" / "api_shape" / "api-shape"
+	// all become "api-shape" and group as one type rather than three.
+	norm = strings.Trim(memoryTypeSeparators.ReplaceAllString(norm, "-"), "-")
 	if !memoryTypePattern.MatchString(norm) {
-		return "", fmt.Errorf("memory: invalid type %q (use a short label: lowercase letters, digits, spaces, hyphens or underscores; max 32 chars)", norm)
+		return "", fmt.Errorf("memory: invalid type %q (use a short label: lowercase letters and digits, words separated by spaces, hyphens or underscores; max 32 chars)", norm)
 	}
 	return norm, nil
 }
