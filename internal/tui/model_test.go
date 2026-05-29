@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/charmbracelet/x/ansi"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/yottadynamics/yottacode/internal/adapter"
 	"github.com/yottadynamics/yottacode/internal/agent"
@@ -1157,7 +1157,7 @@ func TestModel_NewSeedsContextTokensFromResumedSession(t *testing.T) {
 	sess, _ := session.New("test-model", "/cwd")
 	sess.Messages = []adapter.Message{
 		{Role: adapter.RoleSystem, Content: "system prompt"},
-		{Role: adapter.RoleUser, Content: strings.Repeat("a", 4000)}, // ~1000 tokens
+		{Role: adapter.RoleUser, Content: strings.Repeat("a", 4000)},      // ~1000 tokens
 		{Role: adapter.RoleAssistant, Content: strings.Repeat("b", 8000)}, // ~2000 tokens
 	}
 	cfg := agent.LoopConfig{Registry: agent.NewRegistry(), MaxIterations: 5}
@@ -1654,9 +1654,9 @@ func TestModel_HistoryDownRespectsTextareaCursorMidDraft(t *testing.T) {
 	}
 	// Prime history so historyForward could fire if the gate let it.
 	m.recordHistory("scratch")
-	m, _ = m.historyBack()                                 // index now pointing inside history
-	m.textInput.SetValue("first line\nsecond line")        // restore the multi-line draft
-	for m.textInput.Line() > 0 {                           // re-anchor cursor on line 0
+	m, _ = m.historyBack()                          // index now pointing inside history
+	m.textInput.SetValue("first line\nsecond line") // restore the multi-line draft
+	for m.textInput.Line() > 0 {                    // re-anchor cursor on line 0
 		var cmd tea.Cmd
 		m.textInput, cmd = m.textInput.Update(tea.KeyMsg{Type: tea.KeyUp})
 		_ = cmd
@@ -1867,18 +1867,56 @@ func TestEmitAssistantProse_ParagraphOpenerNotDoubleIndented(t *testing.T) {
 	}
 }
 
-// System notices like `[queued]` and command-handler error lines now
-// carry the same 2-space left padding as assistant prose, so the
-// conversation gutter stays uniform regardless of which path emitted
-// the line.
-func TestSystemNoticeStyles_AlignWithProse(t *testing.T) {
+// System notices like `[queued]`, `[provider]`, `[model]` and
+// command-handler error lines carry no intrinsic left padding — their
+// 2-space gutter is supplied uniformly by scrollbackLeftMargin at emit
+// time (queuePrintln), so they sit flush with the startup card border
+// and other structural chrome rather than the deeper prose gutter.
+func TestSystemNoticeStyles_NoIntrinsicPadding(t *testing.T) {
 	auto := stripANSI(styleAuto.Render("[queued] check"))
-	if !strings.HasPrefix(auto, "  [queued] check") {
-		t.Errorf("styleAuto should pad system notices with 2 leading spaces: %q", auto)
+	if auto != "[queued] check" {
+		t.Errorf("styleAuto should not add intrinsic padding (gutter comes from scrollbackLeftMargin): %q", auto)
 	}
 	errLine := stripANSI(styleError.Render("[git-commit] failed"))
-	if !strings.HasPrefix(errLine, "  [git-commit] failed") {
-		t.Errorf("styleError should pad error notices with 2 leading spaces: %q", errLine)
+	if errLine != "[git-commit] failed" {
+		t.Errorf("styleError should not add intrinsic padding (gutter comes from scrollbackLeftMargin): %q", errLine)
+	}
+}
+
+// printlnBody executes a queued tea.Println cmd and returns the line text
+// it would emit (bubbletea's unexported printLineMessage.messageBody),
+// with the leading clear-line control prefix stripped. reflect.Value.String()
+// is legal on an unexported string field — unlike .Interface() it does not
+// trip the flag check.
+func printlnBody(t *testing.T, cmd tea.Cmd) string {
+	t.Helper()
+	if cmd == nil {
+		t.Fatal("nil cmd")
+	}
+	v := reflect.ValueOf(cmd())
+	if v.Kind() != reflect.Struct || v.NumField() == 0 {
+		t.Fatalf("not a printLineMessage: %#v", v)
+	}
+	return strings.TrimPrefix(stripANSI(v.Field(0).String()), "\r\x1b[2K")
+}
+
+// The startup identity card emits flush-left (column 0) via queuePrintlnFlush
+// so it aligns with the command-line input frame, while ordinary scrollback
+// (system notices, prose, cards) sits indented at the scrollbackLeftMargin
+// gutter. Regression guard for the flush emit path.
+func TestQueuePrintln_FlushBypassesGutter(t *testing.T) {
+	m := newTestModel(t)
+	m.pendingCmds = nil
+	m.queuePrintln("alpha")
+	m.queuePrintlnFlush("beta")
+	if len(m.pendingCmds) != 2 {
+		t.Fatalf("expected 2 queued cmds, got %d", len(m.pendingCmds))
+	}
+	if got, want := printlnBody(t, m.pendingCmds[0]), strings.Repeat(" ", scrollbackLeftMargin)+"alpha"; got != want {
+		t.Errorf("queuePrintln body = %q, want %q (scrollbackLeftMargin gutter)", got, want)
+	}
+	if got := printlnBody(t, m.pendingCmds[1]); got != "beta" {
+		t.Errorf("queuePrintlnFlush body = %q, want %q (flush column 0)", got, "beta")
 	}
 }
 

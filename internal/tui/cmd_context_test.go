@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/yottadynamics/yottacode/internal/adapter"
@@ -11,8 +12,8 @@ import (
 
 // TestSlash_ContextRendersAllSections fires /context against a stub
 // model and checks the expected section headers + the totals line are
-// present. Asserts on stripped output so style codes don't break the
-// match.
+// present in the overlay body. Asserts on stripped output so style
+// codes don't break the match.
 func TestSlash_ContextRendersAllSections(t *testing.T) {
 	m := newTestModel(t)
 	m.sess.Messages = append(m.sess.Messages,
@@ -20,7 +21,11 @@ func TestSlash_ContextRendersAllSections(t *testing.T) {
 		adapter.Message{Role: adapter.RoleUser, Content: "hello"},
 	)
 	m, _ = typeAndEnter(t, m, "/context")
-	got := ansi.Strip(m.transcript.String())
+
+	if !m.contextReportOpen {
+		t.Fatal("/context should open the inline report overlay")
+	}
+	got := ansi.Strip(m.contextReportBody)
 
 	for _, want := range []string{
 		"Context Usage",
@@ -38,10 +43,26 @@ func TestSlash_ContextRendersAllSections(t *testing.T) {
 		"/memory",
 		"Skills",
 		"/skills",
+		"press any key to exit",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("/context output missing %q\n---\n%s", want, got)
 		}
+	}
+
+	// The report is transient inspection — it must NOT leak into chat
+	// history / the transcript (which feeds /export and resume replay).
+	if tr := ansi.Strip(m.transcript.String()); strings.Contains(tr, "Context Usage") {
+		t.Errorf("/context output leaked into the transcript:\n%s", tr)
+	}
+
+	// Any key dismisses the overlay (mirrors the cheatsheet).
+	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEsc})
+	if m.contextReportOpen {
+		t.Error("esc should dismiss the /context overlay")
+	}
+	if m.contextReportBody != "" {
+		t.Error("dismissing the overlay should release the cached body")
 	}
 }
 

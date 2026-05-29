@@ -14,7 +14,10 @@ the project uses semantic versioning once it's past `1.0.0`.
   skills, messages) plus per-bucket legend and dedicated
   `MCP tools · /mcp`, `Memory files · /memory`, and
   `Skills · /skills · loaded on demand` sections that enumerate
-  individual items with token estimates. `PreservesTurn=true` —
+  individual items with token estimates. Renders as a dismissible
+  inline overlay below the cmdline (any key closes it) rather than
+  in chat history, so the report stays out of scrollback, the
+  transcript, `/export`, and resume replay. `PreservesTurn=true` —
   safe to invoke while a turn is streaming. New helpers
   (`EstimateText`, `EstimateToolSchemas`, `SplitMessages`) live in
   `internal/contextwindow` so the same math drives the status-bar
