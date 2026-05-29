@@ -54,12 +54,42 @@ type skillEntry struct {
 	tokens int
 }
 
-// cmdContext renders the /context breakdown. Read-only inspection;
-// registered with PreservesTurn=true so it's safe to invoke while a
-// turn is streaming.
+// cmdContext renders the /context breakdown onto the inline-overlay
+// surface (below the cmdline + status bar) rather than into chat
+// history — the report is transient inspection, so keeping it out of
+// scrollback / the transcript / resume replay avoids cluttering the
+// conversation record. The body is snapshotted here (it reads memory
+// files from disk and walks the skill set) and held in
+// m.contextReportBody until any key dismisses the overlay; see View()
+// and the KeyMsg handler in Update. Read-only inspection; registered
+// with PreservesTurn=true so it's safe to invoke while a turn is
+// streaming.
 func cmdContext(m Model, _ []string) (Model, tea.Cmd) {
-	m.appendLine(renderContextReport(&m))
+	// Trailing blank line lifts the dismiss hint off the last section,
+	// then a muted "press any key to exit" cues that the overlay owns
+	// input until dismissed (any KeyMsg closes it; see Update).
+	report := renderContextReport(&m) +
+		"\n\n" + stylePaletteEmpty.Render("press any key to exit")
+	// Indent the whole block 2 spaces so every line — headers included,
+	// not just the already-indented legend/detail rows — clears the
+	// overlay's left edge uniformly.
+	m.contextReportBody = indentContextReport(report, "  ")
+	m.contextReportOpen = true
 	return m, nil
+}
+
+// indentContextReport prefixes each non-blank line with pad. Blank
+// lines are left untouched so the block doesn't carry trailing
+// whitespace. ANSI-safe — the pad lands before any style codes at the
+// start of the line.
+func indentContextReport(s, pad string) string {
+	lines := strings.Split(s, "\n")
+	for i, ln := range lines {
+		if ln != "" {
+			lines[i] = pad + ln
+		}
+	}
+	return strings.Join(lines, "\n")
 }
 
 // renderContextReport assembles the full /context view: header,
