@@ -48,6 +48,19 @@ func typeAndEnter(t *testing.T, m Model, input string) (Model, tea.Cmd) {
 	return applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
 }
 
+// allSlash must not register the same name twice — /help and the slash
+// palette both iterate the registry, so a duplicate renders the command
+// twice. Regression guard for the duplicate /plan and /subagents entries.
+func TestAllSlash_NoDuplicateNames(t *testing.T) {
+	seen := map[string]bool{}
+	for _, c := range allSlash {
+		if seen[c.Name] {
+			t.Errorf("duplicate slash command registered: /%s", c.Name)
+		}
+		seen[c.Name] = true
+	}
+}
+
 func TestSlash_HelpListsAllCommands(t *testing.T) {
 	m, _ := typeAndEnter(t, newTestModel(t), "/help")
 	// Check the raw transcript rather than View(): View() runs through the

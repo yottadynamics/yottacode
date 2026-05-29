@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"strings"
 
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/yottadynamics/yottacode/internal/adapter"
@@ -30,66 +31,57 @@ type editorDoneMsg struct {
 // cmdMemory opens the memory picker overlay, or dispatches subcommands.
 func cmdMemory(m Model, args []string) (Model, tea.Cmd) {
 	if len(args) > 0 && args[0] == "search" {
-		query := strings.Join(args[1:], " ")
-		return cmdMemorySearch(m, query)
+		return m.openMemorySearch(strings.Join(args[1:], " "))
 	}
 	m.openMemoryPicker()
 	return m, nil
 }
 
-// cmdMemorySearch scores all memories against the query and displays
-// the ranked results with scores — lets the user see exactly what the
-// agent's retrieval would return.
-func cmdMemorySearch(m Model, query string) (Model, tea.Cmd) {
-	if strings.TrimSpace(query) == "" {
-		m.appendLine(styleError.Render("[memory] usage: /memory search <query>"))
-		return m, nil
+// openMemorySearch scores saved memories against the query and shows the
+// ranked hits in an interactive overlay — scroll with ↑↓, open one with
+// Enter, Esc to go back. Results render in the picker overlay, NOT the
+// session transcript, so a search never pollutes the conversation
+// scrollback. An empty query just opens the picker root menu.
+func (m Model) openMemorySearch(query string) (Model, tea.Cmd) {
+	m.openMemoryPicker()
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return m, nil // no query → land on the picker root menu
 	}
-
-	loaded, err := memory.Load(m.cwd)
+	p := m.memoryPicker
+	p.mode = memorySearchMode
+	p.searchQuery = query
+	hits, err := rankMemories(m.cwd, query)
 	if err != nil {
-		m.appendLine(styleError.Render("[memory] " + err.Error()))
+		p.searchMessage = "load failed: " + err.Error()
 		return m, nil
 	}
+	p.searchResults = hits
+	return m, nil
+}
 
+// rankMemories loads every saved memory and returns the matches (score >
+// 0) for query, ranked by the same BM25 the agent's retrieval uses.
+func rankMemories(cwd, query string) ([]memory.Scored, error) {
+	loaded, err := memory.Load(cwd)
+	if err != nil {
+		return nil, err
+	}
 	var all []memory.MemoryEntry
 	all = append(all, loaded.UserMemories...)
 	all = append(all, loaded.ProjectMemories...)
 	if len(all) == 0 {
-		m.appendLine(styleAuto.Render("[memory] no memories to search"))
-		return m, nil
+		return nil, nil
 	}
-
 	corpus := memory.BuildCorpus(all)
-	qStems := memory.StemExpandTokenize(query)
-	ranked := corpus.Rank(qStems)
-
-	var b strings.Builder
-	b.WriteString(styleAuto.Render(fmt.Sprintf("[memory] search: %q (%d memories)\n", query, len(ranked))))
-	shown := 0
+	ranked := corpus.Rank(memory.StemExpandTokenize(query))
+	var hits []memory.Scored
 	for _, s := range ranked {
-		if s.Score <= 0 {
-			continue
-		}
-		shown++
-		scope := s.Entry.Scope
-		if scope == "" {
-			scope = "?"
-		}
-		line := fmt.Sprintf("  %.3f  %-8s %-10s %s", s.Score, scope, s.Entry.Type, s.Entry.Name)
-		if s.Entry.Description != "" {
-			line += " — " + s.Entry.Description
-		}
-		b.WriteString(line + "\n")
-		if shown >= 10 {
-			break
+		if s.Score > 0 {
+			hits = append(hits, s)
 		}
 	}
-	if shown == 0 {
-		b.WriteString("  (no matches)\n")
-	}
-	m.appendLine(strings.TrimRight(b.String(), "\n"))
-	return m, nil
+	return hits, nil
 }
 
 type memoryPickerMode int
@@ -97,6 +89,8 @@ type memoryPickerMode int
 const (
 	memoryRootMode memoryPickerMode = iota
 	memoryBrowseMode
+	memorySearchInputMode
+	memorySearchMode
 )
 
 type memoryPickerState struct {
@@ -116,11 +110,20 @@ type memoryPickerState struct {
 	entryCursor   int
 	browseMessage string
 
+	// Search: `/memory search <q>` and the in-picker "Search memories" row
+	// both land here. Results render in the overlay (scroll + open), never
+	// the session transcript.
+	searchInput   textinput.Model
+	searchQuery   string
+	searchResults []memory.Scored
+	searchCursor  int
+	searchMessage string
+
 	showEnableSemanticRow bool
 }
 
 func (p *memoryPickerState) rowCount() int {
-	n := 5
+	n := 6
 	if p.showEnableSemanticRow {
 		n++
 	}
@@ -154,6 +157,12 @@ func (m Model) updateMemoryPicker(msg tea.KeyMsg) (Model, tea.Cmd) {
 	p := m.memoryPicker
 	if p.mode == memoryBrowseMode {
 		return m.updateMemoryBrowse(msg)
+	}
+	if p.mode == memorySearchInputMode {
+		return m.updateMemorySearchInput(msg)
+	}
+	if p.mode == memorySearchMode {
+		return m.updateMemorySearch(msg)
 	}
 	switch msg.Type {
 	case tea.KeyEsc:
@@ -207,8 +216,10 @@ func (m Model) commitMemoryPicker() (Model, tea.Cmd) {
 	case 3:
 		return m.enterMemoryBrowse("project", p.projectMemoryDir)
 	case 4:
-		return m.runMemoryReindex()
+		return m.enterMemorySearchInput()
 	case 5:
+		return m.runMemoryReindex()
+	case 6:
 		if p.showEnableSemanticRow {
 			return m.runEmbedSetup()
 		}
@@ -394,7 +405,9 @@ func (m Model) openInVim(path string) (Model, tea.Cmd) {
 		return m, nil
 	}
 	if _, err := os.Stat(path); os.IsNotExist(err) {
-		if err := os.WriteFile(path, []byte{}, 0o644); err != nil {
+		// 0o600 to match tool-written memory files (atomicWrite uses
+		// 0o600); these hold the same user data class.
+		if err := os.WriteFile(path, []byte{}, 0o600); err != nil {
 			m.appendLine(styleError.Render("[memory] create: " + err.Error()))
 			return m, nil
 		}
@@ -430,6 +443,12 @@ func renderMemoryPicker(p *memoryPickerState, _ int) string {
 	if p.mode == memoryBrowseMode {
 		return renderMemoryBrowse(p)
 	}
+	if p.mode == memorySearchInputMode {
+		return renderMemorySearchInput(p)
+	}
+	if p.mode == memorySearchMode {
+		return renderMemorySearch(p)
+	}
 	var b strings.Builder
 	b.WriteString(renderMenuHeader("Memory",
 		"Pick a memory file to edit, or browse agent-managed memories."))
@@ -443,6 +462,7 @@ func renderMemoryPicker(p *memoryPickerState, _ int) string {
 		{"User preferences", memoryRowDesc("Saved at", p.userPath)},
 		{"Browse user memories", memoryDirRowDesc(p.userMemoryDir, "cross-project agent memories")},
 		{"Browse project memories", memoryDirRowDesc(p.projectMemoryDir, "this-repo agent memories")},
+		{"Search memories", "rank saved memories by relevance, then open one"},
 		{"Reindex embeddings", "regenerate .vec sidecars for semantic retrieval"},
 	}
 	if p.showEnableSemanticRow {
@@ -504,6 +524,158 @@ func renderMemoryBrowse(p *memoryPickerState) string {
 	}
 	b.WriteString("\n")
 	b.WriteString(styleFooter.Render("↵ open · d delete · f open folder · esc back · ↑↓ navigate"))
+	return strings.TrimRight(b.String(), "\n")
+}
+
+// enterMemorySearchInput switches the picker into a text-input prompt for
+// a search query (the "Search memories" root row). Reuses the bubbles
+// textinput like the other pickers.
+func (m Model) enterMemorySearchInput() (Model, tea.Cmd) {
+	p := m.memoryPicker
+	if p == nil {
+		return m, nil
+	}
+	in := textinput.New()
+	in.Placeholder = "search saved memories…"
+	in.CharLimit = 128
+	in.Focus()
+	p.searchInput = in
+	p.searchQuery = ""
+	p.searchResults = nil
+	p.searchCursor = 0
+	p.searchMessage = ""
+	p.mode = memorySearchInputMode
+	return m, nil
+}
+
+// updateMemorySearchInput drives the query text box: Enter runs the
+// search and switches to the results list, Esc returns to the root menu,
+// everything else is fed to the textinput.
+func (m Model) updateMemorySearchInput(msg tea.KeyMsg) (Model, tea.Cmd) {
+	p := m.memoryPicker
+	if p == nil {
+		return m, nil
+	}
+	switch msg.Type {
+	case tea.KeyEsc:
+		p.searchInput.Blur()
+		p.mode = memoryRootMode
+		return m, nil
+	case tea.KeyEnter:
+		q := strings.TrimSpace(p.searchInput.Value())
+		if q == "" {
+			p.searchMessage = "type a query, then press enter"
+			return m, nil
+		}
+		p.searchQuery = q
+		p.searchCursor = 0
+		hits, err := rankMemories(m.cwd, q)
+		if err != nil {
+			p.searchMessage = "load failed: " + err.Error()
+		} else {
+			p.searchResults = hits
+			p.searchMessage = ""
+		}
+		p.searchInput.Blur()
+		p.mode = memorySearchMode
+		return m, nil
+	}
+	var cmd tea.Cmd
+	p.searchInput, cmd = p.searchInput.Update(msg)
+	return m, cmd
+}
+
+// updateMemorySearch drives the ranked results list. Enter opens the
+// highlighted memory in the editor but KEEPS the picker open in search
+// mode, so exiting the editor returns to these same results instead of
+// dropping back to the conversation (the query is never lost).
+func (m Model) updateMemorySearch(msg tea.KeyMsg) (Model, tea.Cmd) {
+	p := m.memoryPicker
+	if p == nil {
+		return m, nil
+	}
+	switch msg.Type {
+	case tea.KeyEsc:
+		// Back to the root menu (mirrors browse-mode Esc).
+		p.mode = memoryRootMode
+		p.searchResults = nil
+		p.searchQuery = ""
+		p.searchCursor = 0
+		p.searchMessage = ""
+		return m, nil
+	case tea.KeyUp:
+		if p.searchCursor > 0 {
+			p.searchCursor--
+		}
+		return m, nil
+	case tea.KeyDown:
+		if p.searchCursor < len(p.searchResults)-1 {
+			p.searchCursor++
+		}
+		return m, nil
+	case tea.KeyEnter:
+		if p.searchCursor < len(p.searchResults) {
+			// Do NOT close the picker: editorDoneMsg reloads memory and the
+			// overlay (still in search mode) re-renders these results, so the
+			// user lands back on their search after exiting the editor.
+			return m.openInVim(p.searchResults[p.searchCursor].Entry.Path)
+		}
+	}
+	return m, nil
+}
+
+func renderMemorySearchInput(p *memoryPickerState) string {
+	var b strings.Builder
+	b.WriteString(renderMenuHeader("Search memories",
+		"Type a query and press enter. Esc to go back."))
+	b.WriteString("\n")
+	if p.searchMessage != "" {
+		b.WriteString(styleError.Render("  · " + p.searchMessage))
+		b.WriteString("\n\n")
+	}
+	b.WriteString("  " + p.searchInput.View())
+	b.WriteString("\n\n")
+	b.WriteString(styleFooter.Render("↵ search · esc back"))
+	return strings.TrimRight(b.String(), "\n")
+}
+
+func renderMemorySearch(p *memoryPickerState) string {
+	var b strings.Builder
+	b.WriteString(renderMenuHeader("Search memories",
+		fmt.Sprintf("Results for %q — open one, or Esc to go back.", p.searchQuery)))
+	b.WriteString("\n")
+	if p.searchMessage != "" {
+		b.WriteString(styleError.Render("  · " + p.searchMessage))
+		b.WriteString("\n\n")
+	}
+	if len(p.searchResults) == 0 {
+		b.WriteString(stylePaletteEmpty.Render("  (no matches)"))
+	} else {
+		for i, s := range p.searchResults {
+			e := s.Entry
+			label := e.Name
+			if e.Type != "" {
+				label = e.Name + " [" + e.Type + "]"
+			}
+			scope := e.Scope
+			if scope == "" {
+				scope = "?"
+			}
+			desc := fmt.Sprintf("%s · %.2f", scope, s.Score)
+			if e.Description != "" {
+				desc += " · " + e.Description
+			}
+			b.WriteString(renderMenuItem(menuItemOpts{
+				Label:      label,
+				LabelWidth: 32,
+				Desc:       desc,
+				Cursor:     i == p.searchCursor,
+			}))
+			b.WriteString("\n")
+		}
+	}
+	b.WriteString("\n")
+	b.WriteString(styleFooter.Render("↵ open · esc back · ↑↓ navigate"))
 	return strings.TrimRight(b.String(), "\n")
 }
 

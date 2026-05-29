@@ -19,6 +19,11 @@ import (
 type MemorySearchTool struct {
 	Cwd      *CwdRef
 	Embedder *memory.EmbedClient
+	// Strategy is the configured retrieval strategy (keyword | bm25 |
+	// semantic | auto). Empty falls back to "auto" so the tool keeps
+	// working when constructed without config wired. Threaded so search
+	// ranks the same way injection does instead of always forcing auto.
+	Strategy string
 }
 
 func (t *MemorySearchTool) Name() string { return "memory_search" }
@@ -106,31 +111,52 @@ func (t *MemorySearchTool) Execute(_ context.Context, argsJSON string) (string, 
 		return "no memories found", nil
 	}
 
+	strategy := t.Strategy
+	if strategy == "" {
+		strategy = "auto"
+	}
 	cfg := config.RetrievalConfig{
 		Enabled:  true,
 		TopK:     a.Limit,
 		MinScore: 0.0,
-		Strategy: "auto",
+		Strategy: strategy,
 	}
 
 	scored := memory.SelectWithEmbeddingsScored(entries, a.Query, cfg, t.Embedder)
 
-	if len(scored) == 0 {
+	// Drop zero-relevance entries: with MinScore=0 the selector returns
+	// every memory up to the limit (score 0 included), which would label
+	// irrelevant memories "matching". The CLI and TUI /memory search
+	// surfaces already filter score<=0, so this keeps the agent's view
+	// consistent with the operator's.
+	kept := make([]memory.Scored, 0, len(scored))
+	for _, s := range scored {
+		if s.Score > 0 {
+			kept = append(kept, s)
+		}
+	}
+	if len(kept) == 0 {
 		return "no matching memories found", nil
 	}
 
 	var b strings.Builder
-	fmt.Fprintf(&b, "found %d matching memories:\n", len(scored))
-	for i, s := range scored {
+	fmt.Fprintf(&b, "found %d matching memories:\n", len(kept))
+	for i, s := range kept {
 		fmt.Fprintf(&b, "\n%d. [%s] %s (scope=%s, type=%s, score=%.3f)\n",
 			i+1, s.Entry.Name, s.Entry.Description, s.Entry.Scope, s.Entry.Type, s.Score)
-		body := strings.TrimSpace(s.Entry.Body)
-		if len(body) > 300 {
-			body = body[:300] + "…"
-		}
-		fmt.Fprintf(&b, "   %s\n", body)
+		fmt.Fprintf(&b, "   %s\n", truncateRunes(strings.TrimSpace(s.Entry.Body), 300))
 	}
 	return b.String(), nil
+}
+
+// truncateRunes caps s at max runes (not bytes) so a multibyte rune at
+// the boundary is never split into invalid UTF-8 in the preview.
+func truncateRunes(s string, max int) string {
+	r := []rune(s)
+	if len(r) <= max {
+		return s
+	}
+	return string(r[:max]) + "…"
 }
 
 var (

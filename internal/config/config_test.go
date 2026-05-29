@@ -229,6 +229,39 @@ min_score = 1.5`
 	}
 }
 
+func TestRetrieval_SemanticWeightDefaultAndOverride(t *testing.T) {
+	// Default is 0.4 (the 60/40 BM25/cosine split).
+	if got := Default().Retrieval.SemanticWeight; got != 0.4 {
+		t.Errorf("Default semantic_weight = %.3f, want 0.4", got)
+	}
+	// Unset in config → keeps the default (Load decodes onto Default()).
+	cfg, err := Load(writeFile(t, "[retrieval]\ntop_k = 5\n"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Retrieval.SemanticWeight != 0.4 {
+		t.Errorf("unset semantic_weight = %.3f, want default 0.4", cfg.Retrieval.SemanticWeight)
+	}
+	// Explicitly set 0.0 (pure BM25) → applied, NOT treated as unset.
+	cfg, err = Load(writeFile(t, "[retrieval]\nsemantic_weight = 0.0\n"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Retrieval.SemanticWeight != 0.0 {
+		t.Errorf("explicit semantic_weight=0.0 = %.3f, want 0.0", cfg.Retrieval.SemanticWeight)
+	}
+}
+
+func TestLoad_RejectsOutOfRangeSemanticWeight(t *testing.T) {
+	_, err := Load(writeFile(t, "[retrieval]\nsemantic_weight = 1.5\n"))
+	if err == nil {
+		t.Fatalf("expected error for retrieval.semantic_weight > 1")
+	}
+	if !strings.Contains(err.Error(), "semantic_weight") {
+		t.Errorf("error should mention semantic_weight; got %q", err)
+	}
+}
+
 func TestLoad_RejectsNegativeTopK(t *testing.T) {
 	src := `[retrieval]
 top_k = -1`
@@ -811,10 +844,10 @@ default_model = "claude-haiku-4-5"
 
 func TestParseCandidate(t *testing.T) {
 	tests := []struct {
-		in            string
-		wantProvider  string
-		wantModel     string
-		wantErr       bool
+		in           string
+		wantProvider string
+		wantModel    string
+		wantErr      bool
 	}{
 		{"anthropic", "anthropic", "", false},
 		{"anthropic:claude-haiku-4-5", "anthropic", "claude-haiku-4-5", false},

@@ -30,12 +30,12 @@ import (
 // Config bundles every tunable yottacode reads from disk. Sub-structs map
 // 1:1 to TOML sections so the file shape mirrors the Go shape.
 type Config struct {
-	Context      ContextConfig     `toml:"context"`
-	Retrieval    RetrievalConfig   `toml:"retrieval"`
-	Router       RouterConfig      `toml:"router"`
-	Active       Active            `toml:"active"`
-	Providers    []Provider        `toml:"providers"`
-	Checkpoints  CheckpointsConfig `toml:"checkpoints"`
+	Context     ContextConfig     `toml:"context"`
+	Retrieval   RetrievalConfig   `toml:"retrieval"`
+	Router      RouterConfig      `toml:"router"`
+	Active      Active            `toml:"active"`
+	Providers   []Provider        `toml:"providers"`
+	Checkpoints CheckpointsConfig `toml:"checkpoints"`
 	// MCPServers lists Model Context Protocol servers launched at
 	// session start. Each entry becomes a stdio subprocess whose
 	// advertised tools register into the agent tool registry under
@@ -43,7 +43,7 @@ type Config struct {
 	// only; absence of a `transport` field means adding HTTP/SSE
 	// later is non-breaking.
 	MCPServers []MCPServer `toml:"mcp_servers"`
-	Theme        ThemeConfig       `toml:"theme"`
+	Theme      ThemeConfig `toml:"theme"`
 	// Experimental gates non-default features behind named opt-ins.
 	// Mirrors the --experimental CLI flag and the
 	// $YOTTACODE_EXPERIMENTAL env var. Each entry is a feature name
@@ -93,7 +93,6 @@ type CheckpointsConfig struct {
 // `[checkpoints] retention_days = N` in config.toml.
 const DefaultCheckpointRetentionDays = 30
 
-
 // RouterConfig describes the multi-provider routing policy. When
 // Enabled is false, yottacode dispatches to the single configured
 // provider (the legacy behavior). When true, Candidates names an
@@ -141,13 +140,22 @@ var ValidPolicies = []string{"fallback-chain", "cheap-first"}
 type RetrievalConfig struct {
 	Enabled        bool    `toml:"enabled"`
 	TopK           int     `toml:"top_k"`
+	MaxBytes       int     `toml:"max_bytes"`
 	MinScore       float64 `toml:"min_score"`
 	Strategy       string  `toml:"strategy"`
 	EmbeddingModel string  `toml:"embedding_model"`
+
+	// SemanticWeight is the fraction of the "semantic" blend given to
+	// embedding cosine similarity; BM25 keyword scoring gets the remaining
+	// (1 - SemanticWeight). Range [0,1]; default 0.4 (the classic 60/40
+	// BM25/cosine split). 0 = pure BM25, 1 = pure cosine. Only used when the
+	// effective strategy is "semantic". The blended score is re-normalized
+	// afterward, so only the ratio matters — one knob covers the full space.
+	SemanticWeight float64 `toml:"semantic_weight"`
 }
 
 // ValidStrategies is the whitelist for RetrievalConfig.Strategy.
-// Empty is treated as the default ("bm25") at load time.
+// Empty is coerced to the default ("auto") at load time.
 var ValidStrategies = []string{"keyword", "bm25", "semantic", "auto"}
 
 // ContextConfig governs context-window watermark behavior.
@@ -300,9 +308,11 @@ func Default() Config {
 		Retrieval: RetrievalConfig{
 			Enabled:        true,
 			TopK:           10,
+			MaxBytes:       24000,
 			MinScore:       0.0,
 			Strategy:       "auto",
 			EmbeddingModel: "nomic-embed-text",
+			SemanticWeight: 0.4,
 		},
 		Theme: ThemeConfig{
 			Name: themes.DefaultName,
@@ -426,8 +436,14 @@ func Validate(cfg Config) error {
 	if cfg.Retrieval.TopK < 0 {
 		return fmt.Errorf("retrieval.top_k = %d must be >= 0", cfg.Retrieval.TopK)
 	}
+	if cfg.Retrieval.MaxBytes < 0 {
+		return fmt.Errorf("retrieval.max_bytes = %d must be >= 0 (0 = unlimited)", cfg.Retrieval.MaxBytes)
+	}
 	if cfg.Retrieval.MinScore < 0 || cfg.Retrieval.MinScore > 1 {
 		return fmt.Errorf("retrieval.min_score = %.3f out of range (0.0–1.0)", cfg.Retrieval.MinScore)
+	}
+	if cfg.Retrieval.SemanticWeight < 0 || cfg.Retrieval.SemanticWeight > 1 {
+		return fmt.Errorf("retrieval.semantic_weight = %.3f out of range (0.0–1.0)", cfg.Retrieval.SemanticWeight)
 	}
 	if cfg.Retrieval.Strategy != "" && !inSlice(ValidStrategies, cfg.Retrieval.Strategy) {
 		return fmt.Errorf("retrieval.strategy = %q invalid (expected one of %s)",
@@ -686,14 +702,19 @@ func (c *Config) FindProvider(name string) *Provider {
 // DefaultsTOML is the documented default file written by EnsureDefault.
 const DefaultsTOML = `# yottacode configuration
 #
-# Loaded at session start. Edit and run /memory reload (in the TUI) to
-# apply changes mid-session — no restart required.
+# Loaded at session start. Changes apply on the next session start, or
+# after running /setup in the TUI.
 #
 # Values out of range are rejected at load time, not silently clamped.
 # Unknown sections and keys are also rejected so typos surface
 # immediately.
 
 [context]
+# Context-window watermarks. As the running conversation fills the active
+# model's context window, yottacode first warns (status bar) and then
+# auto-summarizes. All thresholds below are fractions of that window
+# (0.0–1.0).
+#
 # Status bar token counter turns yellow at this fraction of the model's
 # context window; a one-time muted notice fires when first crossed and
 # again on each 5% increment after. Set to 1.0 to disable warnings.
@@ -717,6 +738,12 @@ enabled = true
 # user and project scopes). Set to 0 to remove the bound.
 top_k = 10
 
+# Cap on the combined bytes of injected memory bodies per turn. Applied
+# together with top_k — retrieval stops at whichever binds first — though
+# the single top-ranked memory is always admitted even if it alone exceeds
+# this. Set to 0 for no byte cap.
+max_bytes = 24000
+
 # Minimum relevance score (0.0–1.0) an entry must reach to be
 # injected.
 min_score = 0.0
@@ -729,6 +756,15 @@ strategy = "auto"
 # Embedding model for semantic retrieval. Only used when strategy is
 # "semantic" or "auto". Must be installed in Ollama.
 # embedding_model = "nomic-embed-text"
+
+# How much the semantic blend leans on embeddings vs keywords. It's the
+# weight given to embedding cosine similarity; BM25 keyword scoring gets
+# the rest (1 - semantic_weight). Range 0.0-1.0; default 0.4 (the classic
+# 60% BM25 / 40% cosine split). Raise it to trust meaning-based matches
+# more (helps paraphrased / low-keyword-overlap queries), lower it to lean
+# on exact keywords. 0.0 = pure BM25, 1.0 = pure cosine. Only applies when
+# the effective strategy is "semantic".
+# semantic_weight = 0.4
 
 # ---------------------------------------------------------------------
 # TUI color theme. Uncomment to pin a palette; omit the section to

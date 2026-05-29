@@ -87,6 +87,16 @@ the project uses semantic versioning once it's past `1.0.0`.
   The 512 KiB byte cap is preserved as a defense-in-depth limit on
   pathological files. Breaking: any caller passing byte offsets to
   `read_file` must switch to line numbers.
+- **Flush-left conversation canvas.** The scrollback canvas now shares a
+  single column-0 left edge with the chrome (welcome box, input frame,
+  status bar): tool-card gutters (`╭ │ ╰`), the user-echo chevron (`❯`),
+  banners, and the status line all sit at column 0, with the text they
+  introduce indented two spaces. Previously a global 2-column margin
+  pushed scrollback content right of the box borders (and compounded
+  with per-style padding into a 4-column prose indent), and the status
+  bar carried its own 2-space inset. Card header/body/footer text also
+  align at the same column now — the body gutter was `│ ` + an extra
+  space, leaving body text one column right of the header.
 
 ### Fixed
 
@@ -119,6 +129,26 @@ the project uses semantic versioning once it's past `1.0.0`.
   200 K+ token transcript routinely takes longer than two minutes on
   slow providers; the old limit surfaced as `context deadline
   exceeded` mid-stream.
+- **Scrollback indentation no longer drifts after a terminal resize.**
+  On resize the conversation is replayed into scrollback; that replay
+  emitted each line via a bare `tea.Println`, bypassing the
+  carriage-return/erase-line prefix and width-aware re-wrap that live
+  emission applies. Replayed lines therefore landed at a different
+  column than freshly-emitted ones and stale-width wraps smeared across
+  rows — the "indentation gets shifted at some point" symptom. The
+  replay now goes through the same `queuePrintln` path as live output.
+- **Startup entry banners no longer wrap at 80 columns or interleave with
+  the welcome box.** Mode/permission entry banners (e.g. the
+  `--dangerously-skip-permissions` notice) are emitted at construction
+  time, before the first `WindowSizeMsg` — so the terminal width was
+  still unknown and `queuePrintln` hard-wrapped them at its 80-column
+  fallback, and the construction-time flush raced with the welcome box,
+  interleaving banner fragments between box rows. Construction-time
+  scrollback is now deferred and re-emitted by the startup handler at the
+  real width, below the box. This also makes the banner's position
+  consistent: it previously rendered above the box on first boot but
+  below it after a resize (an above↔below jump that read as "the banner
+  moves around").
 
 ## 0.2.0 — 2026-05-13
 

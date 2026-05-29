@@ -930,11 +930,11 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.WindowSizeMsg:
 		wasReady := m.ready
-		// Reserve scrollbackLeftMargin cols on the left so every emitted
-		// line gets a uniform left margin (added in queuePrintln). All
-		// downstream width math (tool cards, table sizing, prose wrap)
-		// operates on the reduced m.width so content never overflows the
-		// margin we just claimed.
+		// m.width is the full terminal width minus the (now zero)
+		// scrollbackLeftMargin — see the const's note on the flush-left
+		// canvas. The subtraction stays so a future non-zero margin would
+		// flow through every downstream width calc (tool cards, table
+		// sizing, prose wrap) without further changes.
 		m.width = msg.Width - scrollbackLeftMargin
 		if m.width < 20 {
 			m.width = msg.Width // terminal too narrow; bypass the margin
@@ -954,6 +954,17 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// One blank line of breathing room between the card and
 				// the input frame — matches the Phase 2 spacing target.
 				m.queuePrintln("")
+				// Construction-time entry banners (permissions-bypass,
+				// plan/auto mode, custom-command errors) recorded into
+				// historyLines before any width was known — queuePrintln
+				// deferred their emission rather than wrap at the 80-col
+				// fallback (see queuePrintlnIndented). Emit them now at the
+				// real width, below the box, matching the box-then-history
+				// order the resize replay uses so the layout is identical
+				// on first boot and after every resize.
+				for _, line := range m.historyLines {
+					m.queuePrintln(line)
+				}
 				for _, n := range m.pendingStartupNotices {
 					m.appendLine(n)
 				}
@@ -985,20 +996,21 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// the status bar already carries model/provider/cwd, so
 			// re-emitting the card on every resize would be redundant)
 			// → every conversation line emitted so far, in order. Each
-			// replay line is queued as its own per-line tea.Println via
-			// queuePrintln rather than as one multi-line tea.Println —
-			// Bubbletea's renderer in inline mode miscounts the row
-			// delta when a single Println carries multiple
-			// \n-separated lines or a line that auto-wraps, which is
-			// what causes the "clipped/overpainted assistant text
-			// after wrapping changes" symptom.
+			// replay line goes through queuePrintln — the SAME path live
+			// emission uses — so it gets the \r\x1b[2K clear-line prefix
+			// (cursor reset, no column bleed) and is re-wrapped to the
+			// NEW width. Emitting bare tea.Println(line) here instead was
+			// the indentation-drift bug: replayed lines skipped the clear
+			// prefix and the re-wrap, so post-resize content landed at a
+			// different column than live content and stale-width wraps
+			// smeared across rows.
 			m.pendingCmds = append(m.pendingCmds, tea.ClearScreen)
 			if m.shouldShowStartupCard() {
 				m.queuePrintlnFlush(renderStartupBox(m.version, m.commit, m.dirty, m.modelName, m.cwd, m.branch, m.memorySummary, m.providerProfile, m.startupTip(), m.width))
 				m.queuePrintln("")
 			}
 			for _, line := range m.historyLines {
-				m.pendingCmds = append(m.pendingCmds, tea.Println(line))
+				m.queuePrintln(line)
 			}
 			return m, nil
 		}
@@ -2847,7 +2859,12 @@ func (m Model) renderStatus() string {
 		if worktreeSeg != "" {
 			segs = append(segs, worktreeSeg)
 		}
-		return "  " + strings.Join(segs, sep)
+		// Flush-left: the status dot sits at column 0, aligned with the
+		// input frame's left border directly above it (and the flush-left
+		// scrollback canvas). An earlier 2-space inset trailed the old
+		// scrollback margin; with the canvas flush-left it just floated
+		// the bar 2 columns off the box edge.
+		return strings.Join(segs, sep)
 	}
 
 	w := m.width
@@ -3551,14 +3568,20 @@ func (m *Model) handleStreamLine(line string) {
 // cardMaxWidthCap for visual consistency.
 const proseMaxWidth = 120
 
-// scrollbackLeftMargin is the column inset applied to every line emitted
-// to scrollback (cards, prose, user input, system notices, footers).
-// We claim it once in the WindowSizeMsg handler — m.width is the
-// terminal width minus this margin, so every downstream width calc
-// (table sizing, prose wrap, card width) naturally leaves room for it —
-// and prepend the spaces in queuePrintln. One knob shifts the whole
-// conversation canvas without touching individual style padding.
-const scrollbackLeftMargin = 2
+// scrollbackLeftMargin is a global column inset applied to every line
+// emitted to scrollback. It is 0: the conversation canvas is flush-left,
+// sharing a single column-0 edge with the chrome (startup box, input
+// frame, status bar). Structural glyphs — card gutters (╭ │ ╰), the
+// user-echo chevron (❯), banners — sit at column 0; the 2-space text
+// indent users read comes from each element's own structure (the card
+// gutter's trailing space, styleAssistantBody's PaddingLeft(2)), NOT
+// from this margin.
+//
+// Kept as a named constant (rather than deleted) so queuePrintln and its
+// flush variant stay one code path and the width math reads explicitly.
+// A non-zero value would re-inset the whole canvas; doing so reintroduces
+// the chrome-vs-content misalignment that flush-left removed.
+const scrollbackLeftMargin = 0
 
 // emitAssistantProse renders a prose line from the assistant, word-wraps
 // it to a comfortable reading width, and appends the result to scrollback.
@@ -4474,7 +4497,16 @@ func (m *Model) queuePrintlnFlush(s string) {
 func (m *Model) queuePrintlnIndented(s string, leftMargin int) {
 	width := m.width
 	if width <= 0 {
-		width = 80
+		// Before the first WindowSizeMsg the terminal width is unknown.
+		// Emitting now would hard-wrap at the 80-col fallback and the
+		// queued lines would race with the startup box (the entry-banner
+		// "wraps at 80 and interleaves with the welcome box" bug). Callers
+		// at this stage are construction-time appendLine (mode/permission
+		// entry banners, custom-command errors) which have already recorded
+		// s into historyLines and the transcript — the startup handler
+		// re-emits historyLines at the real width once it lands. So defer
+		// rather than emit at the wrong width.
+		return
 	}
 	const clearLine = "\r\x1b[2K"
 	margin := strings.Repeat(" ", leftMargin)

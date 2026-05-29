@@ -579,23 +579,32 @@ func (t *AgentTool) runChild(
 				// no UI changes are needed.
 				decorated := fmt.Sprintf("[subagent:%s] %s", cfg.Name, e.Preview)
 				flushRepeat()
+				// Block on the parent's decisions channel for the answer.
+				// On the serial path the parent loop is blocked in
+				// Agent.Execute waiting for us, so it isn't reading
+				// decisions and we can read freely. But two foreground
+				// subagents can run concurrently in one parallel batch
+				// (AgentTool is ParallelSafe), and either could also be
+				// forwarding an approval — so we take the shared approval
+				// gate around this round-trip to keep the single channel +
+				// single modal serving one request at a time. The gate is
+				// a no-op when this subagent isn't inside a parallel batch.
+				unlock := lockApprovalGate(ctx)
 				emitToParent(ApprovalNeeded{
 					ToolName: e.ToolName,
 					Preview:  decorated,
 					ArgsJSON: e.ArgsJSON,
 				})
 				emitActivity(fmt.Sprintf("waiting for user approval of %s …", e.ToolName))
-				// Block on the parent's decisions channel for the
-				// answer. The parent loop isn't reading it (it's
-				// blocked in Agent.Execute waiting for us) so we
-				// own the channel until we route the verdict.
 				var verdict Decision
 				select {
 				case verdict = <-parentDecisions:
 				case <-ctx.Done():
+					unlock()
 					flushRepeat()
 					return "", true, subagents.TaskCanceled, 0
 				}
+				unlock()
 				select {
 				case childDecisions <- verdict:
 				case <-ctx.Done():

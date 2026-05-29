@@ -127,6 +127,12 @@ func readOptional(path string) (string, error) {
 // section. Each section is framed as background reference — not as a
 // topic to describe.
 func SystemPrompt(base string, l Loaded) string {
+	// Project shadows user: never inject a user-scope body whose name is
+	// owned by a project-scope memory in this repo. The per-turn path
+	// already shadowed before ranking (selectAcrossScopes); this covers
+	// the unfiltered paths (session start, skills change, /memory reload)
+	// and is a no-op when the user list was already shadowed.
+	l.UserMemories = shadowUserByProject(l.UserMemories, l.ProjectMemories)
 	var b strings.Builder
 	b.WriteString(base)
 	wroteSection := false

@@ -24,7 +24,11 @@ func enterYoloMode(m Model) Model {
 		return m
 	}
 	state.Active.Store(true)
-	m.appendLine("")
+	// No leading blank: enterYoloMode runs at startup (before the first
+	// WindowSizeMsg) so these lines are deferred into historyLines and
+	// emitted by the startup handler, which already inserts a blank line
+	// after the welcome box. The trailing blank separates the banner from
+	// whatever follows (startup notices / the live footer).
 	m.appendLine(styleYoloBannerLabel.Render(YoloModeIcon+" permissions bypass active") +
 		" " + styleYoloBannerHint.Render("— every tool auto-runs (NO safety floor) · no iteration cap"))
 	m.appendLine(styleYoloBannerHint.Render("  explicit deny rules in permissions.json still win · restart without --dangerously-skip-permissions to recover"))

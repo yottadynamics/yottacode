@@ -224,9 +224,9 @@ func buildStyles(p themes.Palette) {
 
 	styleStatusModel = lipgloss.NewStyle().Foreground(colorContent)
 	// System notices (`[queued]`, `[mcp]`, `[checkpoints]`, `[provider]`,
-	// `[model]`, …) sit at the bare scrollbackLeftMargin gutter — no extra
-	// PaddingLeft, so they line up flush with the startup card border and
-	// other structural chrome rather than the deeper prose gutter.
+	// `[model]`, …) carry no PaddingLeft, so on the flush-left canvas they
+	// sit at column 0 — lined up with the startup card border and other
+	// structural chrome rather than the 2-space prose gutter.
 	styleAuto = lipgloss.NewStyle().Foreground(colorMuted).Italic(true)
 	styleError = lipgloss.NewStyle().Foreground(colorErr).Bold(true)
 	styleWarnIcon = lipgloss.NewStyle().Foreground(colorWarning).Bold(true)
@@ -266,13 +266,16 @@ func buildStyles(p themes.Palette) {
 
 	styleWatermark = lipgloss.NewStyle().Foreground(colorWarn).Italic(true).PaddingLeft(2)
 	styleWatermarkAlert = lipgloss.NewStyle().Foreground(colorWarn).Bold(true).PaddingLeft(2)
+	// No MarginLeft: the box border sits at column 0, flush-left with the
+	// startup box and input frame (the canvas is flush-left — see
+	// scrollbackLeftMargin). An earlier MarginLeft(2) trailed the old
+	// scrollback margin and now just floats the box off the chrome edge.
 	styleWatermarkBox = lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(colorWarn).
 		Foreground(colorWarn).
 		Bold(true).
-		Padding(0, 1).
-		MarginLeft(2)
+		Padding(0, 1)
 	if hasThemeBackground {
 		styleWatermarkBox = styleWatermarkBox.Background(themeBackground)
 	}
