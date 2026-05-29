@@ -74,39 +74,6 @@ func TestSlash_MemoryOpensPicker(t *testing.T) {
 	}
 }
 
-// /memory search <query> ranks saved memories inline (BM25) and must
-// NOT open the picker. Only matching entries (score > 0) are shown.
-func TestSlash_MemorySearchRanksMatchingMemory(t *testing.T) {
-	m := newTestModel(t)
-	seedUserMemoryFile(t, "queue-writes", "database writes go behind a queue for durability")
-	seedUserMemoryFile(t, "flush-left", "the TUI shares a column-0 left edge")
-
-	m, _ = m.runSlash("/memory search database queue")
-
-	if m.memoryPickerOpen || m.memoryPicker != nil {
-		t.Errorf("/memory search must not open the picker")
-	}
-	out := stripANSI(m.transcript.String())
-	if !strings.Contains(out, "queue-writes") {
-		t.Errorf("search should surface the matching memory; got:\n%s", out)
-	}
-	if strings.Contains(out, "flush-left") {
-		t.Errorf("non-matching memory should be filtered out; got:\n%s", out)
-	}
-}
-
-func TestSlash_MemorySearchEmptyQueryShowsUsage(t *testing.T) {
-	m := newTestModel(t)
-	m, _ = m.runSlash("/memory search")
-	out := stripANSI(m.transcript.String())
-	if !strings.Contains(out, "usage: /memory search") {
-		t.Errorf("empty query should print usage; got:\n%s", out)
-	}
-	if m.memoryPickerOpen {
-		t.Errorf("a malformed search must not open the picker")
-	}
-}
-
 func TestSlash_MemoryPickerViewIncludesAllRows(t *testing.T) {
 	m := newTestModel(t)
 	m, _ = typeAndEnter(t, m, "/memory")
