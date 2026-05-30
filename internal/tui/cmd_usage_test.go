@@ -56,11 +56,10 @@ func TestCmdUsage_AnyKeyDismisses(t *testing.T) {
 	}
 }
 
-// TestRenderSessionUsage_Anthropic exercises the per-session block
-// on a fully-priced model. Locks the per-model breakdown shape
-// (matching Claude Code's /usage) and asserts the cost line
-// includes a "~$" prefix + the catalog version footer.
-func TestRenderSessionUsage_Anthropic(t *testing.T) {
+// TestRenderSessionUsage_TokenBreakdown locks the per-model token
+// breakdown shape (matching Claude Code's /usage) and guards the hard
+// rule that /usage shows NO dollar figure.
+func TestRenderSessionUsage_TokenBreakdown(t *testing.T) {
 	s := &session.Session{
 		ID:    "20260528-120000.000000",
 		Model: "claude-sonnet-4-5",
@@ -79,11 +78,7 @@ func TestRenderSessionUsage_Anthropic(t *testing.T) {
 			},
 		},
 	}
-	profile := adapter.ProviderProfile{
-		Provider:               adapter.ProviderAnthropic,
-		SupportsUsageReporting: true,
-	}
-	got := renderSessionUsage(s, profile)
+	got := renderSessionUsage(s)
 
 	for _, want := range []string{
 		"session  20260528-120000.000000",
@@ -93,62 +88,14 @@ func TestRenderSessionUsage_Anthropic(t *testing.T) {
 		"3,182 output",
 		"44,210 cache read",
 		"1,920 cache write",
-		"total cost  ~$",
-		"prices catalog",
+		"total tokens  61,715", // 12,403 + 3,182 + 1,920 + 44,210
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("missing substring %q in:\n%s", want, got)
 		}
 	}
-}
-
-// TestRenderSessionUsage_SubscriptionProvider asserts the openai-auth
-// path renders the "subscription" label instead of a dollar figure.
-// Tokens still show — users still want to see how much they consumed
-// regardless of whether the call is flat-fee.
-func TestRenderSessionUsage_SubscriptionProvider(t *testing.T) {
-	s := &session.Session{
-		ID:    "20260528-130000.000000",
-		Model: "gpt-5-codex",
-		TotalUsage: adapter.Usage{
-			InputTokens:  5_000,
-			OutputTokens: 1_500,
-		},
-	}
-	profile := adapter.ProviderProfile{
-		Provider:               adapter.ProviderOpenAIAuth,
-		SupportsUsageReporting: true,
-	}
-	got := renderSessionUsage(s, profile)
-
-	if !strings.Contains(got, "subscription — no per-request cost") {
-		t.Errorf("expected subscription label in:\n%s", got)
-	}
 	if strings.Contains(got, "$") {
-		t.Errorf("subscription path must not show a $ figure; got:\n%s", got)
-	}
-}
-
-// TestRenderSessionUsage_FreeOrLocal covers ollama / NIM: the cost
-// line must label them as "free / local" rather than computing a
-// dollar number from an absent catalog entry.
-func TestRenderSessionUsage_FreeOrLocal(t *testing.T) {
-	s := &session.Session{
-		ID:    "20260528-140000.000000",
-		Model: "qwen3.5:latest",
-		TotalUsage: adapter.Usage{
-			InputTokens:  10_000,
-			OutputTokens: 2_000,
-		},
-	}
-	profile := adapter.ProviderProfile{
-		Provider:               adapter.ProviderOllama,
-		SupportsUsageReporting: false,
-	}
-	got := renderSessionUsage(s, profile)
-
-	if !strings.Contains(got, "free / local") {
-		t.Errorf("expected free/local label in:\n%s", got)
+		t.Errorf("/usage must not show a dollar figure; got:\n%s", got)
 	}
 }
 
@@ -158,8 +105,7 @@ func TestRenderSessionUsage_FreeOrLocal(t *testing.T) {
 // row of zeros.
 func TestRenderSessionUsage_NoData(t *testing.T) {
 	s := &session.Session{ID: "20260528-150000.000000", Model: "m"}
-	profile := adapter.ProviderProfile{Provider: adapter.ProviderAnthropic, SupportsUsageReporting: true}
-	got := renderSessionUsage(s, profile)
+	got := renderSessionUsage(s)
 	if !strings.Contains(got, "no token data yet") {
 		t.Errorf("expected zero-usage message in:\n%s", got)
 	}

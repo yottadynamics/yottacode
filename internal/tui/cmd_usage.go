@@ -14,27 +14,30 @@ import (
 	"github.com/yottadynamics/yottacode/internal/session"
 )
 
-// cmdUsage renders per-session token usage in a Claude-style
-// per-model breakdown, plus an account / subscription block that
-// adapts to the active provider:
+// cmdUsage renders per-session token usage in a Claude-style per-model
+// breakdown, plus live rate limits and a provider-aware account block.
+// It deliberately shows NO dollar estimate: providers don't expose a
+// per-model pricing API, so any computed cost would rest on a
+// hand-maintained price table we can't keep accurate. The account
+// block links each provider's billing dashboard instead — that's the
+// authoritative source for spend.
 //
 //   - subscription auth (openai-auth, copilot): plan + reset window
-//     where available, "subscription — no per-request cost" label.
-//     For openai-auth we additionally fire a best-effort backend
-//     probe to surface plan info proactively (the /backend-api/me
-//     endpoint isn't documented; we degrade silently when it
-//     changes shape).
+//     where available. For openai-auth we additionally fire a
+//     best-effort backend probe to surface plan info proactively (the
+//     /backend-api/me endpoint isn't documented; we degrade silently
+//     when it changes shape).
 //   - pay-per-use cloud (anthropic, openai, gemini, xai,
-//     openai-compatible other than NIM): session + today rollup +
-//     a billing-dashboard URL footer.
-//   - free / local (ollama, NIM): tokens only, no $ figure.
+//     openai-compatible): session + today rollup + billing-dashboard
+//     link.
+//   - free / local (ollama, NIM): token counts only.
 //
-// Renders into an inline overlay below the cmdline (like /context's
-// future surface and the cheatsheet) rather than appending to chat
-// scrollback: token tallies are transient inspection, not part of the
-// conversation, so they shouldn't bloat the history the model re-reads.
-// The body is rendered once here so the per-frame redraw doesn't re-fire
-// the openai-auth backend probe; any key dismisses it.
+// Renders into an inline overlay below the cmdline (like the
+// cheatsheet) rather than appending to chat scrollback: token tallies
+// are transient inspection, not part of the conversation, so they
+// shouldn't bloat the history the model re-reads. The body is rendered
+// once here so the per-frame redraw doesn't re-fire the openai-auth
+// backend probe; any key dismisses it.
 //
 // Read-only; safe mid-turn (PreservesTurn=true).
 func cmdUsage(m Model, _ []string) (Model, tea.Cmd) {
@@ -48,7 +51,7 @@ func renderUsagePanel(m Model) string {
 	b.WriteString(styleAssistantHeader.Render("usage"))
 	b.WriteByte('\n')
 
-	b.WriteString(renderSessionUsage(m.sess, m.providerProfile))
+	b.WriteString(renderSessionUsage(m.sess))
 	b.WriteByte('\n')
 
 	if rl := renderRateLimits(m.providerProfile.Provider); rl != "" {
@@ -56,7 +59,7 @@ func renderUsagePanel(m Model) string {
 		b.WriteByte('\n')
 	}
 
-	if rollup := renderTodayRollup(m.providerProfile); rollup != "" {
+	if rollup := renderTodayRollup(); rollup != "" {
 		b.WriteString(rollup)
 		b.WriteByte('\n')
 	}
@@ -69,12 +72,14 @@ func renderUsagePanel(m Model) string {
 	return b.String()
 }
 
-// renderSessionUsage writes "session" header + per-model lines like
-// Claude Code's /usage. Each line is "<model>: <input>k input,
-// <output>k output, <cache_read>k cache read, <cache_write>k cache
-// write ($X.XXXX)". Sessions with no usage yet get a short
+// renderSessionUsage writes the "session" header + per-model token
+// lines like Claude Code's /usage: "<model>: <input> input, <output>
+// output, <cache_read> cache read, ...". No dollar figure — token
+// counts are provider-reported and exact, but cost would require a
+// price table we can't keep accurate (see the billing-dashboard link
+// in the account block). Sessions with no usage yet get a short
 // placeholder.
-func renderSessionUsage(s *session.Session, profile adapter.ProviderProfile) string {
+func renderSessionUsage(s *session.Session) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "session  %s\n", s.ID)
 
@@ -86,14 +91,9 @@ func renderSessionUsage(s *session.Session, profile adapter.ProviderProfile) str
 	models := perModelEntries(s)
 	if len(models) == 0 {
 		// Fall back to the headline Model when no per-model breakdown
-		// was recorded (sessions created before the breakdown
-		// landed).
+		// was recorded (sessions created before the breakdown landed).
 		models = []perModelEntry{{Model: s.Model, Usage: s.TotalUsage}}
 	}
-
-	var totalCost float64
-	costComplete := true
-	costable := !subscriptionProvider(profile.Provider) && profile.SupportsUsageReporting
 
 	b.WriteString("  usage by model:\n")
 	maxModelWidth := 0
@@ -103,46 +103,20 @@ func renderSessionUsage(s *session.Session, profile adapter.ProviderProfile) str
 		}
 	}
 	for _, m := range models {
-		line := formatModelUsageLine(m.Model, m.Usage, profile, maxModelWidth)
 		b.WriteString("    ")
-		b.WriteString(line)
+		b.WriteString(formatModelUsageLine(m.Model, m.Usage, maxModelWidth))
 		b.WriteByte('\n')
-
-		if costable {
-			price, ok := cost.Lookup(profile.Provider, m.Model)
-			if !ok {
-				costComplete = false
-				continue
-			}
-			c := cost.Compute(price, m.Usage)
-			totalCost += c.USD
-			if !c.Complete {
-				costComplete = false
-			}
-		}
 	}
-
-	switch {
-	case subscriptionProvider(profile.Provider):
-		b.WriteString("  cost  subscription — no per-request cost\n")
-	case !profile.SupportsUsageReporting:
-		b.WriteString("  cost  free / local — no per-request cost\n")
-	default:
-		prefix := "~$"
-		if !costComplete {
-			prefix = "≥$"
-		}
-		fmt.Fprintf(&b, "  total cost  %s%.4f   (prices catalog %s)\n", prefix, totalCost, cost.CatalogVersion)
-	}
+	fmt.Fprintf(&b, "  total tokens  %s\n", formatInt(totalTokensFor(s.TotalUsage)))
 
 	return b.String()
 }
 
 // formatModelUsageLine produces a single "model: N input, N output,
-// N cache read, N cache write ($X.XXXX)" line. Cache and reasoning
-// columns are suppressed when zero so a vanilla GPT turn doesn't
-// render "0 cache read, 0 cache write".
-func formatModelUsageLine(model string, u adapter.Usage, profile adapter.ProviderProfile, modelWidth int) string {
+// N cache read, N cache write, N reasoning" token line. Columns are
+// suppressed when zero so a vanilla turn doesn't render "0 cache read,
+// 0 cache write".
+func formatModelUsageLine(model string, u adapter.Usage, modelWidth int) string {
 	var parts []string
 	parts = append(parts, fmt.Sprintf("%s input", formatInt(u.InputTokens)))
 	parts = append(parts, fmt.Sprintf("%s output", formatInt(u.OutputTokens)))
@@ -155,21 +129,7 @@ func formatModelUsageLine(model string, u adapter.Usage, profile adapter.Provide
 	if u.ReasoningTokens > 0 {
 		parts = append(parts, fmt.Sprintf("%s reasoning", formatInt(u.ReasoningTokens)))
 	}
-
-	line := fmt.Sprintf("%-*s:  %s", modelWidth, model, strings.Join(parts, ", "))
-
-	if subscriptionProvider(profile.Provider) || !profile.SupportsUsageReporting {
-		return line
-	}
-	price, ok := cost.Lookup(profile.Provider, model)
-	if !ok {
-		return line + "  (no price data)"
-	}
-	c := cost.Compute(price, u)
-	if !c.Complete {
-		return fmt.Sprintf("%s  (≥$%.4f)", line, c.USD)
-	}
-	return fmt.Sprintf("%s  ($%.4f)", line, c.USD)
+	return fmt.Sprintf("%-*s:  %s", modelWidth, model, strings.Join(parts, ", "))
 }
 
 // perModelEntries returns the per-model breakdown sorted by total
@@ -194,58 +154,25 @@ func perModelEntries(s *session.Session) []perModelEntry {
 	return out
 }
 
-// renderTodayRollup scans every session created since 00:00 local
-// and emits a one-block summary. Skips entirely when only the
+// renderTodayRollup scans every session created since 00:00 local and
+// emits a one-block token summary. Skips entirely when only the
 // current session is in scope (the per-session block above already
-// covers it). The dollar figure is suppressed when the provider is
-// subscription / free.
-func renderTodayRollup(profile adapter.ProviderProfile) string {
+// covers it).
+func renderTodayRollup() string {
 	startOfDay := time.Now().Truncate(24 * time.Hour)
 	summaries, err := session.UsageSince(startOfDay)
 	if err != nil || len(summaries) <= 1 {
 		return ""
 	}
 	var totalTokens int64
-	var totalCost float64
-	costComplete := true
-	costable := !subscriptionProvider(profile.Provider) && profile.SupportsUsageReporting
-
 	for _, s := range summaries {
 		u := s.TotalUsage
 		totalTokens += u.InputTokens + u.OutputTokens + u.CacheCreationTokens + u.CacheReadTokens
-		if !costable {
-			continue
-		}
-		// Per-model price each summary; fall back to s.Model if the
-		// breakdown is empty (legacy sessions).
-		breakdown := s.ModelUsage
-		if len(breakdown) == 0 {
-			breakdown = map[string]adapter.Usage{s.Model: s.TotalUsage}
-		}
-		for model, mu := range breakdown {
-			price, ok := cost.Lookup(profile.Provider, model)
-			if !ok {
-				costComplete = false
-				continue
-			}
-			c := cost.Compute(price, mu)
-			totalCost += c.USD
-			if !c.Complete {
-				costComplete = false
-			}
-		}
 	}
 
 	var b strings.Builder
-	fmt.Fprintf(&b, "today (%d sessions)\n", len(summaries))
+	b.WriteString("today\n")
 	fmt.Fprintf(&b, "  total tokens  %s\n", formatInt(totalTokens))
-	if costable {
-		prefix := "~$"
-		if !costComplete {
-			prefix = "≥$"
-		}
-		fmt.Fprintf(&b, "  total cost    %s%.2f\n", prefix, totalCost)
-	}
 	return b.String()
 }
 
@@ -295,13 +222,16 @@ func formatRateLimitLine(label string, remaining, limit int64, reset time.Time) 
 
 // renderAccountSection prints the provider-aware account block:
 //
-//   - subscription auth: plan / reset window (probe + 429 memo),
-//     subscription dashboard link
-//   - pay-per-use cloud: billing dashboard link
+//   - subscription auth: plan / reset window + signed-in email, all
+//     from the provider's own API (openai-auth's /backend-api/me probe)
+//   - pay-per-use cloud: "pay-per-use API key" line
 //   - free / local: a one-liner explaining no cost is tracked
 //
-// Also surfaces the catalog snapshot date so users know how fresh
-// the dollar figures above are.
+// Account identity comes from each provider's own API, never from
+// config — and only openai-auth currently exposes one (email + plan).
+// API-key providers don't surface the holder's name/email on the
+// inference key, so none is shown for them. For every billable provider
+// it links the billing dashboard.
 func renderAccountSection(m Model) string {
 	var b strings.Builder
 	b.WriteString("account\n")
@@ -320,9 +250,8 @@ func renderAccountSection(m Model) string {
 	}
 
 	if url := cost.BillingDashboardURL(provider); url != "" {
-		fmt.Fprintf(&b, "  billing dashboard: %s\n", url)
+		fmt.Fprintf(&b, "  billing dashboard: %s — the source of truth for spend\n", url)
 	}
-	fmt.Fprintf(&b, "  catalog snapshot: %s — verify against the dashboard for exact figures\n", cost.CatalogVersion)
 	return b.String()
 }
 
@@ -360,21 +289,8 @@ func renderOpenAIAuthAccount(ctx context.Context) string {
 	return b.String()
 }
 
-// subscriptionProvider is the one-stop check for "this provider is
-// flat-fee, not pay-per-use, so don't compute a dollar figure."
-// Centralized so adding a new subscription kind is a one-line edit.
-func subscriptionProvider(p adapter.Provider) bool {
-	switch p {
-	case adapter.ProviderOpenAIAuth, adapter.ProviderCopilot:
-		return true
-	}
-	return false
-}
-
 // totalTokensFor is the per-model sort key for the breakdown table:
-// total billed tokens (input + output + cache writes; cache reads
-// count too because they still draw against quota for subscription
-// providers, even if they're cheap on pay-per-use).
+// total tokens (input + output + cache writes + cache reads).
 func totalTokensFor(u adapter.Usage) int64 {
 	return u.InputTokens + u.OutputTokens + u.CacheCreationTokens + u.CacheReadTokens
 }

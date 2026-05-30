@@ -811,10 +811,10 @@ default_model = "claude-haiku-4-5"
 
 func TestParseCandidate(t *testing.T) {
 	tests := []struct {
-		in            string
-		wantProvider  string
-		wantModel     string
-		wantErr       bool
+		in           string
+		wantProvider string
+		wantModel    string
+		wantErr      bool
 	}{
 		{"anthropic", "anthropic", "", false},
 		{"anthropic:claude-haiku-4-5", "anthropic", "claude-haiku-4-5", false},
