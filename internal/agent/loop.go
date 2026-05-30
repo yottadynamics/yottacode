@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"math"
 	"strings"
 	"sync"
 
@@ -69,11 +68,13 @@ type LoopConfig struct {
 	AutoMode *AutoModeState
 
 	// YoloMode is the unrestricted toggle — auto-approves ALL tool
-	// calls including the safety floor, and removes the iteration
-	// cap entirely. Explicit Deny rules in permissions.json still
-	// win. Intended for unattended long-running implementations
-	// where the user has decided no further oversight is needed.
-	// Mutually exclusive with AutoMode and PlanMode at the TUI layer.
+	// calls including the safety floor, and raises the iteration cap to
+	// a generous but finite budget (see yoloIterationCap) so a runaway
+	// model still terminates instead of looping forever. Explicit Deny
+	// rules in permissions.json still win. Intended for unattended
+	// long-running implementations where the user has decided no further
+	// oversight is needed. Mutually exclusive with AutoMode and PlanMode
+	// at the TUI layer.
 	YoloMode *YoloModeState
 
 	// Checkpoints, when non-nil, receives pre-image snapshot
@@ -155,6 +156,36 @@ const (
 	continueReasonTruncatedOutput = "truncated_output"
 )
 
+const (
+	// yoloIterationMultiplier scales the configured iteration cap for
+	// yolo mode (vs auto mode's 4x). Yolo is meant for long unattended
+	// runs, so the budget is generous — but finite.
+	yoloIterationMultiplier = 20
+	// yoloIterationFloor is the minimum yolo budget, so a small
+	// --max-iterations doesn't starve an unattended run. With the
+	// default cap of 50 this is also the effective ceiling (50*20 ==
+	// 1000), matching a sane "runaway backstop" default.
+	yoloIterationFloor = 1000
+)
+
+// yoloIterationCap returns the finite iteration budget for yolo mode.
+// It scales off the user-configurable maxIterations (so /max-iterations
+// and --max-iterations still tune it) with a high floor, and guards
+// against int overflow on absurd inputs so the loop never wraps to a
+// non-positive cap that would silently run zero iterations.
+func yoloIterationCap(maxIterations int) int {
+	c := yoloIterationFloor
+	if maxIterations > 0 {
+		scaled := maxIterations * yoloIterationMultiplier
+		// scaled/mult == maxIterations only when the multiply didn't
+		// overflow; on overflow keep the floor (a safe finite bound).
+		if scaled/yoloIterationMultiplier == maxIterations && scaled > c {
+			c = scaled
+		}
+	}
+	return c
+}
+
 // Turn drives one user-initiated round: it streams an assistant response
 // (emitting Reasoning/Content tokens), dispatches any tool calls (with
 // approval flow if required), feeds the results back, and loops until the
@@ -177,12 +208,15 @@ func Turn(
 	// Effective cap: auto mode quadruples the configured limit
 	// because the user explicitly opted into "let this run" — most
 	// plan implementations need 100–200 iterations. Yolo mode goes
-	// further still (no cap; MaxInt). Read once at turn start so a
-	// mode toggle mid-turn doesn't change the budget mid-flight.
+	// further still but stays finite — a runaway backstop so a
+	// confused or adversarial model can't loop forever burning the
+	// user's API budget with no escape short of Ctrl+C. Read once at
+	// turn start so a mode toggle mid-turn doesn't change the budget
+	// mid-flight.
 	effectiveCap := cfg.MaxIterations
 	switch {
 	case cfg.YoloMode.IsActive():
-		effectiveCap = math.MaxInt
+		effectiveCap = yoloIterationCap(cfg.MaxIterations)
 	case cfg.AutoMode.IsActive():
 		effectiveCap *= 4
 	}
@@ -559,12 +593,16 @@ func executeToolCallsParallel(
 	// errored. Returning (nil, err) would force a synthetic result for
 	// every parallel call, including ones that finished cleanly before
 	// the cancel landed.
-	select {
-	case err := <-errCh:
-		return results, err
-	default:
-		return results, nil
+	//
+	// Drain every error rather than just the first: a batch can fail in
+	// more than one way (e.g. a real tool error alongside a context
+	// cancellation), and dropping the rest hides diagnostics.
+	close(errCh)
+	var errs []error
+	for err := range errCh {
+		errs = append(errs, err)
 	}
+	return results, errors.Join(errs...)
 }
 
 func appendToolResults(history *[]adapter.Message, calls []adapter.ToolCall, results []toolExecResult) {

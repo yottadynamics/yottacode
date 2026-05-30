@@ -502,7 +502,7 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 		Version:                version.Current,
 		Commit:                 version.Commit(),
 		Dirty:                  version.Dirty(),
-		Branch:                 gitBranch(cwd),
+		Branch:                 gitBranch(ctx, cwd),
 		Worktree:               sess.Worktree,
 		MemorySummary:          mem.Summary().String(),
 		BaseSystemPrompt:       baseSys,
@@ -767,11 +767,16 @@ func hasBuiltin(tools []adapter.BuiltinToolKind, want adapter.BuiltinToolKind) b
 
 // gitBranch reads the current git branch via `git -C <cwd> branch --show-current`.
 // Returns "" if cwd isn't a repo or git isn't installed — both are normal.
-func gitBranch(cwd string) string {
+//
+// The call is bounded by a short timeout (and honors ctx cancellation) so a
+// wedged git — a locked repo, a slow NFS mount — can't hang TUI startup.
+func gitBranch(ctx context.Context, cwd string) string {
 	if _, err := exec.LookPath("git"); err != nil {
 		return ""
 	}
-	out, err := exec.Command("git", "-C", cwd, "branch", "--show-current").Output()
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "git", "-C", cwd, "branch", "--show-current").Output()
 	if err != nil {
 		return ""
 	}

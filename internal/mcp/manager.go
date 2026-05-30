@@ -24,6 +24,13 @@ type Manager struct {
 	clients map[string]Client           // live clients keyed by name
 	order   []string                    // stable iteration order (registration order)
 	status  map[string]StartResult      // most recent Start outcome per name
+	// gen tracks a per-server restart generation. Restart bumps it under
+	// mu at entry and re-checks it before publishing the rebuilt client,
+	// so two concurrent restarts of the same server can't both win: the
+	// latest generation publishes, any superseded restart stops the
+	// client it spawned (so its subprocess doesn't leak) and returns the
+	// winner's result. Keyed by name; missing == 0.
+	gen map[string]uint64
 }
 
 // StartResult is the per-server outcome of Start / Restart. Err is nil
@@ -47,6 +54,7 @@ func NewManager(servers []config.MCPServer) *Manager {
 		configs: make(map[string]config.MCPServer, len(servers)),
 		clients: make(map[string]Client, len(servers)),
 		status:  make(map[string]StartResult, len(servers)),
+		gen:     make(map[string]uint64, len(servers)),
 	}
 	for _, s := range servers {
 		if s.Disabled {
@@ -206,14 +214,24 @@ func (m *Manager) Add(ctx context.Context, cfg config.MCPServer) (StartResult, e
 // Returns the new StartResult. The unknown-server case surfaces as
 // an error rather than a zero StartResult so callers can distinguish
 // "restart failed" from "no such server."
+//
+// Concurrency: a per-server generation counter makes overlapping
+// restarts of the same server safe. Each call claims the next
+// generation under the lock; only the latest generation publishes its
+// rebuilt client. A restart that gets superseded mid-flight stops the
+// client it spawned (so the subprocess doesn't leak) and returns the
+// winner's StartResult instead of clobbering it.
 func (m *Manager) Restart(ctx context.Context, name string) (StartResult, error) {
 	m.mu.Lock()
 	cfg, ok := m.configs[name]
 	old := m.clients[name]
-	m.mu.Unlock()
 	if !ok {
+		m.mu.Unlock()
 		return StartResult{}, fmt.Errorf("mcp: no server named %q", name)
 	}
+	m.gen[name]++
+	myGen := m.gen[name]
+	m.mu.Unlock()
 
 	if old != nil {
 		_ = old.Stop(ctx)
@@ -223,6 +241,15 @@ func (m *Manager) Restart(ctx context.Context, name string) (StartResult, error)
 	result := startOne(ctx, fresh)
 
 	m.mu.Lock()
+	if m.gen[name] != myGen {
+		// A newer restart superseded us while we were (re)starting.
+		// Drop the client we just built so its subprocess doesn't leak,
+		// and let the winner's published client/status stand.
+		winner := m.status[name]
+		m.mu.Unlock()
+		_ = fresh.Stop(ctx)
+		return winner, nil
+	}
 	m.clients[name] = fresh
 	m.status[name] = result
 	m.mu.Unlock()
