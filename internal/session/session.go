@@ -37,6 +37,16 @@ type Session struct {
 	// renamed the repo. Omitted from JSON when empty so existing session
 	// files load unchanged.
 	Worktree string `json:"worktree,omitempty"`
+	// TotalUsage is the cumulative token tally across every assistant
+	// turn in this session. Written by AddUsage on each EventDone.
+	// Omitted from JSON when zero so existing session files load
+	// byte-identical until the first usage is recorded.
+	TotalUsage adapter.Usage `json:"total_usage,omitzero"`
+	// ModelUsage is per-model breakdown — users mix models within a
+	// session (Anthropic for code review, Gemini for grep, etc.) and
+	// the cost calculator needs to know which model produced each
+	// turn. Keyed by model ID exactly as the adapter reported it.
+	ModelUsage map[string]adapter.Usage `json:"model_usage,omitempty"`
 
 	path string // filled by New/Load, not serialized
 }
@@ -238,6 +248,91 @@ type SessionInfo struct {
 	// empty for the main checkout. Surfaced in `yottacode sessions list`
 	// output so users can tell which sessions belong to which worktree.
 	Worktree string
+}
+
+// AddUsage records the per-turn usage that just landed on an
+// assistant message into the session's running totals. Safe to call
+// with a nil receiver or nil usage — both branches no-op. Caller is
+// responsible for Save() if the new totals should be persisted now;
+// most callers persist on the same cadence as Messages.
+func (s *Session) AddUsage(model string, u *adapter.Usage) {
+	if s == nil || u == nil {
+		return
+	}
+	s.TotalUsage.Add(u)
+	if model == "" {
+		return
+	}
+	if s.ModelUsage == nil {
+		s.ModelUsage = map[string]adapter.Usage{}
+	}
+	prev := s.ModelUsage[model]
+	prev.Add(u)
+	s.ModelUsage[model] = prev
+}
+
+// SessionUsageSummary is a stripped per-session view used by the
+// daily-rollup scan. We avoid decoding Messages (the heavy field) so
+// /usage can scan dozens of session files cheaply.
+type SessionUsageSummary struct {
+	ID         string
+	Name       string
+	Model      string
+	Created    time.Time
+	TotalUsage adapter.Usage
+	ModelUsage map[string]adapter.Usage
+}
+
+// UsageSince scans every saved session newer than t and returns a
+// per-session usage summary. Decodes only the lightweight metadata +
+// usage fields — Messages stay on disk, keeping the scan cheap.
+// Sessions older than t are filtered out by Created; sessions with
+// no usage data still appear so the daily rollup can show "N
+// sessions, no token data yet."
+func UsageSince(t time.Time) ([]SessionUsageSummary, error) {
+	dir, err := sessionsDir()
+	if err != nil {
+		return nil, err
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	var out []SessionUsageSummary
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
+			continue
+		}
+		p := filepath.Join(dir, e.Name())
+		b, err := os.ReadFile(p)
+		if err != nil {
+			continue
+		}
+		var stub struct {
+			ID         string                   `json:"id"`
+			Name       string                   `json:"name"`
+			Model      string                   `json:"model"`
+			Created    time.Time                `json:"created"`
+			TotalUsage adapter.Usage            `json:"total_usage"`
+			ModelUsage map[string]adapter.Usage `json:"model_usage"`
+		}
+		if err := json.Unmarshal(b, &stub); err != nil {
+			continue
+		}
+		if stub.Created.Before(t) {
+			continue
+		}
+		out = append(out, SessionUsageSummary{
+			ID:         stub.ID,
+			Name:       stub.Name,
+			Model:      stub.Model,
+			Created:    stub.Created,
+			TotalUsage: stub.TotalUsage,
+			ModelUsage: stub.ModelUsage,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Created.After(out[j].Created) })
+	return out, nil
 }
 
 // Save atomically writes the session to disk.

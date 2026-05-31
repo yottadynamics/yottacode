@@ -202,6 +202,8 @@ This works with many gateways and self-hosted runtimes that expose `/v1/chat/com
 
 Tested examples include NVIDIA NIM, Groq, vLLM, and Llama Stack. Other gateways that speak the same wire protocol should work but are not formally validated.
 
+`/usage` reports token usage for every provider and links the billing dashboard for the paid cloud ones; it does not compute a dollar figure (no provider exposes per-model pricing on the inference key). Ollama and NVIDIA NIM (`openai-compatible` pointed at `integrate.api.nvidia.com`) have no billing dashboard — token counts only. See [cost.md](cost.md).
+
 ## Diagnostics
 
 Inside the TUI:

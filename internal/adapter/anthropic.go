@@ -43,7 +43,12 @@ type anthropicAdapter struct {
 const AnthropicDefaultMaxTokens int64 = 8192
 
 func newAnthropicAdapter(cfg Config) *anthropicAdapter {
-	opts := []option.RequestOption{}
+	profile := buildProfile(cfg, false)
+	opts := []option.RequestOption{
+		// Snapshot rate-limit headers off every response so /usage can
+		// show live per-minute token/request headroom.
+		option.WithMiddleware(recordRateLimitMiddleware(profile.Provider)),
+	}
 	if cfg.BaseURL != "" {
 		opts = append(opts, option.WithBaseURL(cfg.BaseURL))
 	}
@@ -56,7 +61,7 @@ func newAnthropicAdapter(cfg Config) *anthropicAdapter {
 		model:     cfg.Model,
 		maxTokens: AnthropicDefaultMaxTokens,
 		cfg:       cfg,
-		profile:   buildProfile(cfg, false),
+		profile:   profile,
 	}
 }
 
@@ -104,10 +109,26 @@ func (a *anthropicAdapter) ChatStream(ctx context.Context, messages []Message, t
 		var content strings.Builder
 		var toolCalls []ToolCall
 		var stopReason string
+		// usage carries the cumulative token counts as Anthropic
+		// streams them: message_start populates input + cache fields,
+		// message_delta updates output_tokens (and re-asserts the
+		// input/cache numbers, so a late overwrite is safe). Final
+		// snapshot goes onto Message.Usage at EventDone.
+		var usage *Usage
 
 		for stream.Next() {
 			evt := stream.Current()
 			switch evt.Type {
+
+			case "message_start":
+				start := evt.AsMessageStart()
+				u := start.Message.Usage
+				usage = &Usage{
+					InputTokens:         u.InputTokens,
+					OutputTokens:        u.OutputTokens,
+					CacheCreationTokens: u.CacheCreationInputTokens,
+					CacheReadTokens:     u.CacheReadInputTokens,
+				}
 
 			case "content_block_start":
 				start := evt.AsContentBlockStart()
@@ -192,6 +213,18 @@ func (a *anthropicAdapter) ChatStream(ctx context.Context, messages []Message, t
 				if md.Delta.StopReason != "" {
 					stopReason = string(md.Delta.StopReason)
 				}
+				// MessageDeltaUsage carries cumulative counts.
+				// Overwrite — late delta wins. The cache fields can
+				// legitimately go from zero (on message_start without
+				// caching) to nonzero here on retried turns, so don't
+				// gate on "only if larger."
+				if usage == nil {
+					usage = &Usage{}
+				}
+				usage.InputTokens = md.Usage.InputTokens
+				usage.OutputTokens = md.Usage.OutputTokens
+				usage.CacheCreationTokens = md.Usage.CacheCreationInputTokens
+				usage.CacheReadTokens = md.Usage.CacheReadInputTokens
 
 			case "message_stop":
 				// terminal; loop will exit naturally
@@ -221,6 +254,7 @@ func (a *anthropicAdapter) ChatStream(ctx context.Context, messages []Message, t
 			Content:    content.String(),
 			ToolCalls:  toolCalls,
 			StopReason: stopReason,
+			Usage:      usage,
 		}}
 	}()
 	return out

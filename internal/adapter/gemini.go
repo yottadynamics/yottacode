@@ -117,8 +117,23 @@ func (g *geminiAdapter) ChatStream(ctx context.Context, messages []Message, tool
 		var content strings.Builder
 		var toolCalls []ToolCall
 		var stopReason string
+		var usage *Usage
 
 		err = streamGeminiSSE(ctx, resp.Body, func(chunk geminiResponseChunk) error {
+			if chunk.UsageMetadata != nil {
+				um := chunk.UsageMetadata
+				cached := um.CachedContentTokenCount
+				input := um.PromptTokenCount - cached
+				if input < 0 {
+					input = 0
+				}
+				usage = &Usage{
+					InputTokens:     input,
+					OutputTokens:    um.CandidatesTokenCount,
+					CacheReadTokens: cached,
+					ReasoningTokens: um.ThoughtsTokenCount,
+				}
+			}
 			for _, cand := range chunk.Candidates {
 				if cand.FinishReason != "" {
 					stopReason = cand.FinishReason
@@ -166,6 +181,7 @@ func (g *geminiAdapter) ChatStream(ctx context.Context, messages []Message, tool
 			Content:    content.String(),
 			ToolCalls:  toolCalls,
 			StopReason: stopReason,
+			Usage:      usage,
 		}}
 	}()
 	return out
@@ -220,12 +236,25 @@ type geminiFunctionDecl struct {
 // --- response shape (also reuses geminiContent) ---------------------
 
 type geminiResponseChunk struct {
-	Candidates []geminiCandidate `json:"candidates"`
+	Candidates    []geminiCandidate    `json:"candidates"`
+	UsageMetadata *geminiUsageMetadata `json:"usageMetadata,omitempty"`
 }
 
 type geminiCandidate struct {
 	Content      geminiContent `json:"content"`
 	FinishReason string        `json:"finishReason,omitempty"`
+}
+
+// geminiUsageMetadata mirrors the Gemini v1beta usage shape. The
+// streaming SSE may emit multiple chunks; the last one carries the
+// final tally. promptTokenCount is the full input (incl. cached);
+// cachedContentTokenCount is a subset, so subtract for non-cached.
+type geminiUsageMetadata struct {
+	PromptTokenCount        int64 `json:"promptTokenCount,omitempty"`
+	CandidatesTokenCount    int64 `json:"candidatesTokenCount,omitempty"`
+	ThoughtsTokenCount      int64 `json:"thoughtsTokenCount,omitempty"`
+	CachedContentTokenCount int64 `json:"cachedContentTokenCount,omitempty"`
+	TotalTokenCount         int64 `json:"totalTokenCount,omitempty"`
 }
 
 // --- conversion helpers ---------------------------------------------
