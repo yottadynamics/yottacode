@@ -81,7 +81,7 @@ type Config struct {
 	ProviderProfile        adapter.ProviderProfile
 	Cwd                    string
 	// BypassPermissions auto-approves every tool call. DANGEROUS — see
-	// the flag help on --dangerously-skip-permissions. Explicit `deny`
+	// the flag help on --yolo. Explicit `deny`
 	// rules in .yottacode/permissions.json still apply.
 	BypassPermissions bool
 	Version           string // e.g. "0.3.0" — shown in the header

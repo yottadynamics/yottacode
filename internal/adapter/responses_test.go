@@ -395,3 +395,19 @@ func TestResponses_XAIIncludesXSearchConfigAndCapturesCitations(t *testing.T) {
 		}
 	}
 }
+
+// A marshal failure when building a provider-native tool spec must surface as
+// an error rather than panicking on the streaming goroutine (regression for
+// the old mustJSON panic, which would have crashed the whole process).
+func TestOverrideToolUnion_MarshalErrorIsReturned(t *testing.T) {
+	// A channel value is not JSON-marshalable, so json.Marshal returns an
+	// error — the path that previously panicked.
+	if _, err := overrideToolUnion(map[string]any{"bad": make(chan int)}); err == nil {
+		t.Fatal("overrideToolUnion returned nil error for an unmarshalable value")
+	}
+
+	// The happy path still produces a usable tool spec.
+	if _, err := overrideToolUnion(map[string]any{"type": "x_search"}); err != nil {
+		t.Fatalf("overrideToolUnion returned error for a valid spec: %v", err)
+	}
+}

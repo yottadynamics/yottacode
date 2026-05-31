@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"os/signal"
 	"strings"
 	"syscall"
@@ -222,8 +221,9 @@ func maybeStartUpdateCheck(ctx context.Context) <-chan update.Result {
 
 // maybePromptUpgrade consumes the update channel with a short timeout
 // and, if a newer release exists, asks the user whether to install it.
-// On "y" the function shells out to install.sh and exits the process on
-// success — the running binary does not exec the new one. On anything
+// On "y" the function downloads the release, verifies it against the
+// published SHA256SUMS, replaces the running binary, and exits the process
+// on success — the running binary does not exec the new one. On anything
 // else (including timeout, channel close, or "n"), control returns to
 // the caller and the TUI launches normally.
 func maybePromptUpgrade(ctx context.Context, ch <-chan update.Result) {
@@ -257,21 +257,22 @@ func maybePromptUpgrade(ctx context.Context, ch <-chan update.Result) {
 	if answer != "y" && answer != "yes" {
 		return
 	}
-	if err := runInstaller(ctx); err != nil {
-		fmt.Fprintf(os.Stderr, "Upgrade failed (%v). Continuing with current version...\n", err)
+	fmt.Fprintln(os.Stderr, "Downloading and verifying release...")
+	if err := runInstaller(ctx, r.Latest); err != nil {
+		fmt.Fprintf(os.Stderr, "Upgrade failed (%v). Continuing with current version.\n", err)
+		fmt.Fprintln(os.Stderr, "To upgrade manually: curl -fsSL https://raw.githubusercontent.com/yottadynamics/yottacode/main/install.sh | bash")
 		return
 	}
 	fmt.Fprintln(os.Stderr, "yottacode upgraded. Run 'yottacode' again to start with the new version.")
 	os.Exit(0)
 }
 
-func runInstaller(ctx context.Context) error {
-	installCmd := exec.CommandContext(ctx, "bash", "-c",
-		"curl -fsSL https://raw.githubusercontent.com/yottadynamics/yottacode/main/install.sh | bash")
-	installCmd.Stdin = os.Stdin
-	installCmd.Stdout = os.Stdout
-	installCmd.Stderr = os.Stderr
-	return installCmd.Run()
+// runInstaller upgrades in-process: download the release archive for the
+// requested version, verify it against the release's SHA256SUMS, and replace
+// the running binary. Unlike the previous `curl … | bash` path, nothing is
+// piped to a shell and an unverified download is rejected.
+func runInstaller(ctx context.Context, ver string) error {
+	return update.InstallRelease(ctx, ver)
 }
 
 // shouldAutoLaunchSetup reports whether a Resolve failure should
@@ -365,7 +366,7 @@ func newRunCmd(opts *cli.ChatOptions) *cobra.Command {
 The prompt may be passed as an argument or piped via stdin. Reasoning, tool
 status, and errors go to stderr so 'yottacode run "..." > out.md' produces a
 clean file. Tool calls that require approval will fail unless
---dangerously-skip-permissions is set (DANGEROUS — see flag help).
+--yolo is set (DANGEROUS — see flag help).
 
 Configuration (no built-in defaults — must be set via flag or env):
   --model      / $YOTTACODE_MODEL      model tag
@@ -505,7 +506,7 @@ func bindCommonPersistentFlags(cmd *cobra.Command, opts *cli.ChatOptions) {
 	f.StringVar(&opts.SystemPrompt, "system", "", "Override the default system prompt")
 	f.StringVar(&opts.Resume, "resume", "", "Resume a saved session by id or name")
 	f.BoolVarP(&opts.Continue, "continue", "c", false, "Resume the newest session created in this cwd (use --resume for a specific one)")
-	f.BoolVar(&opts.BypassPermissions, "dangerously-skip-permissions", false,
+	f.BoolVar(&opts.BypassPermissions, "yolo", false,
 		"DANGEROUS: auto-approve every tool call (deny rules still apply). For trusted CI only")
 	f.IntVar(&opts.MaxIterations, "max-iterations", 50, "Max tool-call iterations per turn; auto mode raises the effective cap 4×")
 	f.StringVar(&opts.ReasoningEffort, "reasoning-effort", "", "low | medium | high (env: YOTTACODE_REASONING_EFFORT)")

@@ -186,7 +186,7 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 	//     startup flag + plan-card [Y])
 	//   - auto (Shift+Tab cycle + --permission-mode auto startup flag
 	//     + plan-card [Y]; no slash command, mirroring Claude Code)
-	//   - yolo (--dangerously-skip-permissions startup flag only; no
+	//   - yolo (--yolo startup flag only; no
 	//     slash command, no keybinding — opt-in once per process)
 	// Plan and auto are mutually exclusive; yolo is an orthogonal
 	// overlay that stacks with either. Per-session lifetime;
@@ -502,7 +502,7 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 		Version:                version.Current,
 		Commit:                 version.Commit(),
 		Dirty:                  version.Dirty(),
-		Branch:                 gitBranch(cwd),
+		Branch:                 gitBranch(ctx, cwd),
 		Worktree:               sess.Worktree,
 		MemorySummary:          mem.Summary().String(),
 		BaseSystemPrompt:       baseSys,
@@ -557,7 +557,7 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 	// mode before the program starts. The entry log lines land in the
 	// historyLines buffer; tea.Println replays them when the program
 	// boots. --plan-resume wins over --permission-mode (resume implies
-	// plan); --dangerously-skip-permissions is an orthogonal overlay
+	// plan); --yolo is an orthogonal overlay
 	// that stacks with whichever mode (if any) is requested.
 	switch {
 	case opts.PlanResume != "":
@@ -767,11 +767,16 @@ func hasBuiltin(tools []adapter.BuiltinToolKind, want adapter.BuiltinToolKind) b
 
 // gitBranch reads the current git branch via `git -C <cwd> branch --show-current`.
 // Returns "" if cwd isn't a repo or git isn't installed — both are normal.
-func gitBranch(cwd string) string {
+//
+// The call is bounded by a short timeout (and honors ctx cancellation) so a
+// wedged git — a locked repo, a slow NFS mount — can't hang TUI startup.
+func gitBranch(ctx context.Context, cwd string) string {
 	if _, err := exec.LookPath("git"); err != nil {
 		return ""
 	}
-	out, err := exec.Command("git", "-C", cwd, "branch", "--show-current").Output()
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "git", "-C", cwd, "branch", "--show-current").Output()
 	if err != nil {
 		return ""
 	}

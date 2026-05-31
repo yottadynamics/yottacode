@@ -445,7 +445,7 @@ func stream(
 		case agent.ApprovalAuto:
 			fmt.Fprintf(stderr, "[%s] %s\n", e.Source, e.Preview)
 		case agent.ApprovalNeeded:
-			err := fmt.Errorf("tool %q requires approval; add an allow rule to .yottacode/permissions.json, run interactively, or pass --dangerously-skip-permissions (DANGEROUS)", e.ToolName)
+			err := fmt.Errorf("tool %q requires approval; add an allow rule to .yottacode/permissions.json, run interactively, or pass --yolo (DANGEROUS)", e.ToolName)
 			fmt.Fprintf(stderr, "✗ %v\n", err)
 			if firstErr == nil {
 				firstErr = err

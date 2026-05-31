@@ -222,7 +222,7 @@ prefix) because that's safety-floor.
 ### Yolo mode + subagents
 
 `YoloModeState` is process-wide and pointer-shared. Once entered
-(via `--dangerously-skip-permissions` at startup), it applies to all
+(via `--yolo` at startup), it applies to all
 subagents in the session, including background runs. The
 yolo override skips every approval — including the safety floor —
 and removes the iteration cap entirely. Use only in trusted

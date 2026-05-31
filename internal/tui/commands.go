@@ -68,7 +68,7 @@ func init() {
 		// Workflow — most reached-for during active coding.
 		// Auto mode and yolo are intentionally NOT slash-invocable (mirroring
 		// Claude Code): auto via Shift+Tab or --permission-mode auto; yolo only
-		// via --dangerously-skip-permissions at startup.
+		// via --yolo at startup.
 		{Name: "plan", Help: "toggle plan mode — also Shift+Tab. Type `/plan list` to resume an earlier plan.", Run: cmdPlan},
 		{Name: "model", Help: "open the model picker (subcommands: list [all], <name>)", Run: cmdModel},
 		{Name: "provider", Help: "select a new provider (subcommands: list, use, add, remove, models)", Run: cmdProviderEntry},

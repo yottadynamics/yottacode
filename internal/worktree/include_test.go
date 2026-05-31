@@ -125,6 +125,32 @@ func TestCopyIncludedSkipsGitAndWorktrees(t *testing.T) {
 	mustNotExist(t, filepath.Join(wt, ".git", "HEAD"))
 }
 
+func TestCopyIncludedSkipsSymlinks(t *testing.T) {
+	// A symlink whose name matches an include pattern must NOT be
+	// followed: copying through it would pull a file from outside the
+	// repo into the worktree (data leak) — or, pointed at a device/FIFO,
+	// hang io.Copy forever. The symlink is skipped; regular files that
+	// also match still copy normally.
+	repo := t.TempDir()
+	outside := t.TempDir()
+	mustWrite(t, filepath.Join(outside, "secret"), "TOPSECRET\n")
+
+	mustWrite(t, filepath.Join(repo, ".env"), "OK=1\n")
+	// .env.leak -> <outside>/secret. Matches the `.env.*` pattern but
+	// resolves outside the repo.
+	if err := os.Symlink(filepath.Join(outside, "secret"), filepath.Join(repo, ".env.leak")); err != nil {
+		t.Skipf("symlinks unsupported on this platform: %v", err)
+	}
+	mustWrite(t, filepath.Join(repo, IncludeFile), ".env\n.env.*\n")
+
+	wt := t.TempDir()
+	if err := CopyIncluded(repo, wt); err != nil {
+		t.Fatal(err)
+	}
+	mustExist(t, filepath.Join(wt, ".env"))         // regular file copied
+	mustNotExist(t, filepath.Join(wt, ".env.leak")) // symlink skipped, not followed
+}
+
 func mustWrite(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {

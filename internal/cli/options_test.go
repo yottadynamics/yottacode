@@ -583,14 +583,14 @@ func TestResolve_PermissionMode_RejectsInvalid(t *testing.T) {
 	opts := ChatOptions{PermissionMode: "yolo"}
 	err := Resolve(&opts)
 	if err == nil {
-		t.Fatalf("expected error for --permission-mode yolo (yolo enters via --dangerously-skip-permissions)")
+		t.Fatalf("expected error for --permission-mode yolo (yolo enters via --yolo)")
 	}
 	if !strings.Contains(err.Error(), "permission-mode") {
 		t.Errorf("error should mention permission-mode; got %q", err.Error())
 	}
 }
 
-// --dangerously-skip-permissions (BypassPermissions internally) is an
+// --yolo (BypassPermissions internally) is an
 // independent bool flag. The Resolve path does not touch it; this
 // test just locks the field stays untouched and accepts both values.
 func TestResolve_DangerouslySkipPermissions_PassesThrough(t *testing.T) {

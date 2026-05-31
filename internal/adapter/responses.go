@@ -78,7 +78,12 @@ func (a *responsesAdapter) ChatStream(ctx context.Context, messages []Message, t
 		if instructions != "" {
 			params.Instructions = openai.String(instructions)
 		}
-		if responseTools := toResponsesTools(tools, a.cfg, a.profile); len(responseTools) > 0 {
+		responseTools, err := toResponsesTools(tools, a.cfg, a.profile)
+		if err != nil {
+			out <- StreamEvent{Kind: EventErr, Err: err}
+			return
+		}
+		if len(responseTools) > 0 {
 			params.Tools = responseTools
 		}
 
@@ -291,7 +296,7 @@ func splitForResponses(ms []Message) (instructions string, items []responses.Res
 // toResponsesTools maps neutral Tool descriptors to the Responses API's
 // FunctionToolParam (wrapped in the ToolUnionParam variant) plus any enabled
 // provider-native tools supported by the resolved provider profile.
-func toResponsesTools(tools []Tool, cfg Config, profile ProviderProfile) []responses.ToolUnionParam {
+func toResponsesTools(tools []Tool, cfg Config, profile ProviderProfile) ([]responses.ToolUnionParam, error) {
 	out := make([]responses.ToolUnionParam, 0, len(tools)+len(profile.EnabledBuiltinTools))
 	for _, t := range tools {
 		ft := responses.FunctionToolParam{
@@ -305,23 +310,31 @@ func toResponsesTools(tools []Tool, cfg Config, profile ProviderProfile) []respo
 	for _, tool := range profile.EnabledBuiltinTools {
 		switch tool {
 		case BuiltinToolWebSearch:
-			out = append(out, buildWebSearchTool(cfg, profile.Provider))
+			ws, err := buildWebSearchTool(cfg, profile.Provider)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, ws)
 		case BuiltinToolXSearch:
-			out = append(out, buildXSearchTool(cfg))
+			xs, err := buildXSearchTool(cfg)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, xs)
 		case BuiltinToolCodeInterpreter:
 			out = append(out, responses.ToolParamOfCodeInterpreter("auto"))
 		}
 	}
-	return out
+	return out, nil
 }
 
-func buildWebSearchTool(cfg Config, provider Provider) responses.ToolUnionParam {
+func buildWebSearchTool(cfg Config, provider Provider) (responses.ToolUnionParam, error) {
 	if provider == ProviderXAI {
 		raw := map[string]any{"type": "web_search"}
 		if filters := buildXAIWebSearchFilters(cfg); len(filters) > 0 {
 			raw["filters"] = filters
 		}
-		return param.Override[responses.ToolUnionParam](json.RawMessage(mustJSON(raw)))
+		return overrideToolUnion(raw)
 	}
 	toolParam := responses.ToolParamOfWebSearchPreview(responses.WebSearchToolTypeWebSearchPreview2025_03_11)
 	if ws := toolParam.OfWebSearchPreview; ws != nil {
@@ -330,10 +343,10 @@ func buildWebSearchTool(cfg Config, provider Provider) responses.ToolUnionParam 
 			Timezone: param.NewOpt("America/New_York"),
 		}
 	}
-	return toolParam
+	return toolParam, nil
 }
 
-func buildXSearchTool(cfg Config) responses.ToolUnionParam {
+func buildXSearchTool(cfg Config) (responses.ToolUnionParam, error) {
 	raw := map[string]any{"type": "x_search"}
 	if len(cfg.XSearchAllowedHandles) > 0 {
 		raw["allowed_x_handles"] = cfg.XSearchAllowedHandles
@@ -346,7 +359,7 @@ func buildXSearchTool(cfg Config) responses.ToolUnionParam {
 	if cfg.XSearchToDate != "" {
 		raw["to_date"] = cfg.XSearchToDate
 	}
-	return param.Override[responses.ToolUnionParam](json.RawMessage(mustJSON(raw)))
+	return overrideToolUnion(raw)
 }
 
 func buildXAIWebSearchFilters(cfg Config) map[string]any {
@@ -359,12 +372,16 @@ func buildXAIWebSearchFilters(cfg Config) map[string]any {
 	return filters
 }
 
-func mustJSON(v any) string {
-	b, err := json.Marshal(v)
+// overrideToolUnion marshals a provider-native tool spec into the SDK's
+// opaque ToolUnionParam. Marshaling these small string/[]string maps never
+// fails in practice, but returning the error (rather than panicking on the
+// streaming goroutine) keeps a malformed config from crashing the process.
+func overrideToolUnion(raw map[string]any) (responses.ToolUnionParam, error) {
+	b, err := json.Marshal(raw)
 	if err != nil {
-		panic(err)
+		return responses.ToolUnionParam{}, fmt.Errorf("adapter: marshal provider tool spec: %w", err)
 	}
-	return string(b)
+	return param.Override[responses.ToolUnionParam](json.RawMessage(b)), nil
 }
 
 func parseReasoningEffort(s string) (shared.ReasoningEffort, bool) {

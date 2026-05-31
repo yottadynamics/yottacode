@@ -63,7 +63,7 @@ func NewWithConfig(cfg Config) Client {
 	if provider == ProviderGemini || isGeminiModel(cfg.Model) {
 		return newGeminiAdapter(cfg)
 	}
-	if usesResponsesAPI(cfg) {
+	if usesResponsesAPIWithProvider(cfg, provider) {
 		return newResponsesAdapter(cfg)
 	}
 	return newChatAdapter(cfg)
@@ -99,7 +99,13 @@ func isGeminiModel(model string) bool {
 //   - everything else (self-hosted gpt-5 behind a proxy, etc.) stays
 //     on chat-completions.
 func usesResponsesAPI(cfg Config) bool {
-	provider := detectProvider(cfg.BaseURL, cfg.ProviderOverride)
+	return usesResponsesAPIWithProvider(cfg, detectProvider(cfg.BaseURL, cfg.ProviderOverride))
+}
+
+// usesResponsesAPIWithProvider is the body of usesResponsesAPI for callers that
+// have already resolved the provider — NewWithConfig passes its result through
+// so detectProvider runs once per construction instead of twice.
+func usesResponsesAPIWithProvider(cfg Config, provider Provider) bool {
 	if provider == ProviderOpenAIAuth {
 		return true
 	}
