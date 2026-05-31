@@ -75,6 +75,80 @@ Hosted provider tools depend on provider support, not just the model name.
 - xAI: `web_search` default-on; `x_search` and `code_interpreter` optional
 - Ollama/custom OpenAI-compatible: no hosted provider tools; local yottacode tools still work
 
+## Cache-safe task routing
+
+Routing lets yottacode run **isolated, throwaway work** (subagents and
+history compaction) on a cheap **fast** model while your main
+conversation stays on your chosen **smart** model. It is opt-in via the
+`[router]` block in `~/.yottacode/config.toml`:
+
+```toml
+[router]
+  mode        = "auto"                          # off | manual | auto
+  fast_model  = "anthropic:claude-haiku-4-5"
+  smart_model = "anthropic:claude-opus-4-6"
+```
+
+`fast_model` / `smart_model` use the same `"<provider>"` or
+`"<provider>:<model>"` grammar as the multi-provider router's
+`candidates`. Both are required when `mode` is not `off`. Provider names
+refer to your `[[providers]]` blocks, and the model must be listed in
+that provider's `models` (typos are rejected at load time).
+
+### Why this saves money (and never costs more)
+
+In an agentic loop the dominant cost is **re-sending the full context**
+(system prompt + files + history) on every turn. Prompt caching makes
+repeat turns on the *same* model cheap — cache reads are a fraction of
+the input price. Switching the **main-thread** model mid-conversation
+would throw that cache away on *both* models and cost *more*, so
+yottacode never does it.
+
+Routing only ever targets contexts that **never shared the main thread's
+cache** in the first place:
+
+- **Subagents** each build a fresh, isolated context window.
+- **Summarization / compaction** is a single isolated call.
+
+Running those on the fast model is a pure saving with zero cache churn.
+Your interactive turns are untouched.
+
+### Modes
+
+| `mode` | Behavior |
+|---|---|
+| `off` (default) | Routing disabled. Everything runs on your active model. Fully backward compatible. |
+| `manual` | Resolves `fast_model` / `smart_model`, but only routes a subagent when its definition declares an explicit `model:` (see [subagents.md](subagents.md)). Non-annotated agents inherit your active model, exactly as with routing off. |
+| `auto` | Routes by the agent's nature: **read-only / search subagents** (the `Explore` and `Plan` built-ins) and **summarization** → `fast_model`; **everything else** (the `general-purpose` and `verification` built-ins, or any agent that can mutate/run) → `smart_model`. |
+
+The `auto` heuristic is **deterministic and free** — it inspects each
+agent's declared tool allowlist, with no extra model call to classify
+the task. An agent restricted to read-only tools (read_file, grep, glob,
+git read subcommands, etc.) routes to `fast_model`; an agent that can
+mutate the workspace or run commands (`run_bash`, `write_file`, …)
+routes to `smart_model`. An explicit `model:` on an agent definition
+always wins over the heuristic. (Your **main conversation** is never
+affected either way — only subagents and summarization.)
+
+### Seeing what ran where
+
+The model a subagent ran on is shown in the `/subagents` picker and on
+each subagent's completion card (`… · on claude-haiku-4-5`), so you can
+confirm at a glance that a search subagent used the fast model and a
+heavier one used the smart model.
+
+> Note: yottacode does not yet aggregate per-model token totals or cost
+> across a session — token figures shown are per-subagent estimates.
+
+### Relationship to the multi-provider router
+
+The same `[router]` block also hosts the **multi-provider failover
+router** (`enabled`, `candidates`, `policy`, health knobs), which
+dispatches each *main-thread* turn across candidates with fallback. That
+is a separate, orthogonal feature: failover is about resilience across
+providers; task routing (`mode` / `fast_model` / `smart_model`) is about
+spending less on isolated work. They can be configured independently.
+
 ## No silent fallback
 
 If the model or base URL is missing, yottacode exits with a clear error. It does not silently default to localhost or a paid cloud provider.

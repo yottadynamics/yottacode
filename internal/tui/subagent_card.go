@@ -190,7 +190,7 @@ func renderSubagentDone(e agent.SubagentDone) string {
 	if e.Errored {
 		status = styleSubagentErr.Render("errored")
 	}
-	stats := formatSubagentStats(e.Duration, e.ToolCalls, e.TokensUsed)
+	stats := formatSubagentStats(e.Duration, e.ToolCalls, e.TokensUsed, e.Model)
 	return styleSubagentMeta.Render("  └ ") + status + " " +
 		styleSubagentMeta.Render(stats)
 }
@@ -206,7 +206,7 @@ func renderSubagentBackgroundDone(e agent.SubagentBackgroundDone) string {
 	if e.Errored {
 		status = styleSubagentErr.Render("errored")
 	}
-	stats := formatSubagentStats(e.Duration, e.ToolCalls, e.TokensUsed)
+	stats := formatSubagentStats(e.Duration, e.ToolCalls, e.TokensUsed, e.Model)
 	header := styleSubagentLabel.Render("◉ "+e.AgentType) + " " +
 		styleSubagentMeta.Render("· "+e.TaskID[:8]+"  ") +
 		status + " " + styleSubagentMeta.Render(stats)
@@ -220,7 +220,7 @@ func renderSubagentBackgroundDone(e agent.SubagentBackgroundDone) string {
 // deltas from the adapter — when that lands, this renderer will
 // surface them automatically). Tool count is always shown so the
 // user can see how much investigation the child did.
-func formatSubagentStats(duration time.Duration, toolCalls, tokens int) string {
+func formatSubagentStats(duration time.Duration, toolCalls, tokens int, model string) string {
 	parts := []string{"in " + formatDuration(duration)}
 	switch toolCalls {
 	case 0:
@@ -235,9 +235,14 @@ func formatSubagentStats(duration time.Duration, toolCalls, tokens int) string {
 	if tokens > 0 {
 		parts = append(parts, formatTokens(tokens)+" tokens")
 	}
+	// Surface the routed model so the user can see cache-safe routing in
+	// action (e.g. an Explore subagent that ran on the fast model). Empty
+	// when the child inherited the parent's model — no chip then.
+	if model != "" {
+		parts = append(parts, "on "+model)
+	}
 	return strings.Join(parts, " · ")
 }
-
 
 // shortTranscriptPath collapses an absolute transcript path to a
 // terminal-friendly form. We render relative to the user's home dir
@@ -377,4 +382,3 @@ func truncateForRender(s string, n int) string {
 	}
 	return ansi.Truncate(s, n, "…")
 }
-

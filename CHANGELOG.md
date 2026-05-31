@@ -8,6 +8,21 @@ the project uses semantic versioning once it's past `1.0.0`.
 
 ### Added
 
+- **Cache-safe model routing.** New `[router]` knobs `mode`
+  (`off`/`manual`/`auto`), `fast_model`, and `smart_model` route
+  *isolated* work — subagents and history compaction — to a cheap fast
+  model while the main conversation stays on the smart model. The
+  main-thread model is never switched mid-conversation, so the prompt
+  cache stays warm and routing is a pure cost saving (subagents and
+  summarization never shared that cache). `auto` mode routes read-only
+  search subagents (`Explore`, `Plan`) and summarization to `fast_model`
+  via a deterministic, zero-token tool-set heuristic; agents that can
+  mutate or run commands (`general-purpose`, `verification`) route to
+  `smart_model`. A subagent's explicit `model:` frontmatter (previously
+  parsed but ignored) is now honored and always wins over the heuristic.
+  The routed model is surfaced in the `/subagents` picker and on each
+  subagent's completion card. Default `off` — fully backward compatible.
+  See [`docs/models.md`](docs/models.md#cache-safe-task-routing).
 - **`/context` slash command.** New inspection view showing how the
   context window is being spent: a segmented progress bar painted by
   bucket (system prompt, system tools, MCP tools, memory files,

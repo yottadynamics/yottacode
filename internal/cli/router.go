@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/yottadynamics/yottacode/internal/adapter"
+	"github.com/yottadynamics/yottacode/internal/catalog"
 	"github.com/yottadynamics/yottacode/internal/config"
 )
 
@@ -49,6 +50,107 @@ func BuildRouter(cfg config.Config, opts ChatOptions) (adapter.Client, error) {
 		return nil, err
 	}
 	return adapter.NewMultiStreamer(candidates, policy, adapter.WithHealth(healthOptionsFromConfig(cfg.Router)))
+}
+
+// RouterAdapters bundles the resolved fast/smart adapters for cache-safe
+// task routing, plus a resolver for an agent's explicit `model:`
+// frontmatter override. These adapters drive only isolated contexts
+// (subagents, summarization) — never the main-thread model
+// mid-conversation — so swapping a task onto Fast never invalidates the
+// parent's prompt cache.
+type RouterAdapters struct {
+	Fast       adapter.Client
+	Smart      adapter.Client
+	FastModel  string
+	SmartModel string
+	// Resolve returns an adapter for an arbitrary configured model
+	// name, or nil when the name matches no configured provider model
+	// (the caller then inherits the parent/smart adapter). Adapters are
+	// memoized so repeated dispatches of the same agent type reuse one
+	// client.
+	Resolve func(model string) adapter.Streamer
+}
+
+// BuildRouterAdapters resolves the [router].fast_model / smart_model
+// pair and returns their adapters plus an on-demand resolver. Returns
+// (nil, nil) when task routing is disabled (mode "off"/absent). Errors
+// only on misconfiguration Validate didn't catch.
+func BuildRouterAdapters(cfg config.Config, opts ChatOptions) (*RouterAdapters, error) {
+	if !cfg.Router.RoutingEnabled() {
+		return nil, nil
+	}
+	fastRC, smartRC, err := cfg.ResolveRouterModels()
+	if err != nil {
+		return nil, fmt.Errorf("router: %w", err)
+	}
+	built := map[string]adapter.Client{}
+	get := func(rc config.ResolvedCandidate) adapter.Client {
+		if c, ok := built[rc.Model]; ok {
+			return c
+		}
+		c := adapter.NewWithConfig(candidateAdapterConfig(rc, opts))
+		built[rc.Model] = c
+		return c
+	}
+	ra := &RouterAdapters{
+		Fast:       get(fastRC),
+		Smart:      get(smartRC),
+		FastModel:  fastRC.Model,
+		SmartModel: smartRC.Model,
+	}
+	ra.Resolve = func(model string) adapter.Streamer {
+		model = strings.TrimSpace(model)
+		if model == "" {
+			return nil
+		}
+		if c, ok := built[model]; ok {
+			return c
+		}
+		rc, ok := resolveConfiguredModel(cfg, model)
+		if !ok {
+			return nil
+		}
+		return get(rc)
+	}
+	return ra, nil
+}
+
+// resolveConfiguredModel finds the first provider that lists the named
+// model and returns it as a ResolvedCandidate. Mirrors the TUI's
+// /model lookup: curated providers expose the embedded catalog, others
+// expose their hand-curated providers.models list.
+func resolveConfiguredModel(cfg config.Config, model string) (config.ResolvedCandidate, bool) {
+	for i := range cfg.Providers {
+		p := &cfg.Providers[i]
+		if !providerHasModel(p, model) {
+			continue
+		}
+		var tier string
+		for _, mm := range p.Models {
+			if mm.Name == model {
+				tier = mm.Tier
+				break
+			}
+		}
+		return config.ResolvedCandidate{Provider: *p, Model: model, Tier: tier}, true
+	}
+	return config.ResolvedCandidate{}, false
+}
+
+func providerHasModel(p *config.Provider, model string) bool {
+	if catalog.IsCurated(*p) {
+		for _, m := range catalog.Get(p.Kind) {
+			if m.ID == model {
+				return true
+			}
+		}
+	}
+	for _, mm := range p.Models {
+		if mm.Name == model {
+			return true
+		}
+	}
+	return false
 }
 
 // healthOptionsFromConfig translates the config's wire shape into the

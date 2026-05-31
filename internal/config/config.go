@@ -118,6 +118,43 @@ type RouterConfig struct {
 	Candidates             []string `toml:"candidates"`
 	HealthWindowSeconds    int      `toml:"health_window_seconds"`
 	HealthFailureThreshold int      `toml:"health_failure_threshold"`
+
+	// Mode controls cache-safe task routing between a smart and a fast
+	// model. "off" (default) disables it entirely. "manual" resolves the
+	// fast/smart models but only routes when an agent declares an explicit
+	// model. "auto" additionally routes read-only/search subagents and
+	// summarization to FastModel. Routing never touches the main-thread
+	// model mid-conversation (that would invalidate the prompt cache and
+	// cost more) — only isolated contexts are routed.
+	Mode string `toml:"mode"`
+	// FastModel and SmartModel name the cheap and capable models as
+	// "<provider>" or "<provider>:<model>" (same grammar as Candidates).
+	// Required when Mode is not "off".
+	FastModel  string `toml:"fast_model"`
+	SmartModel string `toml:"smart_model"`
+}
+
+// RouterMode values for RouterConfig.Mode.
+const (
+	RouterModeOff    = "off"
+	RouterModeManual = "manual"
+	RouterModeAuto   = "auto"
+)
+
+// ValidRouterModes is the whitelist for RouterConfig.Mode. Empty is
+// treated as the default ("off") at load time.
+var ValidRouterModes = []string{RouterModeOff, RouterModeManual, RouterModeAuto}
+
+// RoutingEnabled reports whether task routing is active (Mode is
+// "manual" or "auto"). Empty/"off" means disabled.
+func (r RouterConfig) RoutingEnabled() bool {
+	return r.Mode == RouterModeManual || r.Mode == RouterModeAuto
+}
+
+// RoutingAuto reports whether automatic (heuristic) routing of
+// subagents and summarization is active.
+func (r RouterConfig) RoutingAuto() bool {
+	return r.Mode == RouterModeAuto
 }
 
 // DefaultRouterHealthWindowSeconds is the sliding-window length the
@@ -593,6 +630,25 @@ func Validate(cfg Config) error {
 			}
 		}
 	}
+
+	if cfg.Router.Mode != "" && !inSlice(ValidRouterModes, cfg.Router.Mode) {
+		return fmt.Errorf("router.mode %q invalid (expected one of %s)",
+			cfg.Router.Mode, strings.Join(ValidRouterModes, ", "))
+	}
+	if cfg.Router.RoutingEnabled() {
+		if strings.TrimSpace(cfg.Router.FastModel) == "" {
+			return fmt.Errorf("router.mode = %q requires router.fast_model", cfg.Router.Mode)
+		}
+		if strings.TrimSpace(cfg.Router.SmartModel) == "" {
+			return fmt.Errorf("router.mode = %q requires router.smart_model", cfg.Router.Mode)
+		}
+		if err := cfg.validateModelRef(cfg.Router.FastModel); err != nil {
+			return fmt.Errorf("router.fast_model: %w", err)
+		}
+		if err := cfg.validateModelRef(cfg.Router.SmartModel); err != nil {
+			return fmt.Errorf("router.smart_model: %w", err)
+		}
+	}
 	return nil
 }
 
@@ -636,27 +692,85 @@ type ResolvedCandidate struct {
 func (c *Config) ResolveCandidates() ([]ResolvedCandidate, error) {
 	out := make([]ResolvedCandidate, 0, len(c.Router.Candidates))
 	for i, raw := range c.Router.Candidates {
-		providerName, model, err := ParseCandidate(raw)
+		rc, err := c.resolveCandidate(raw)
 		if err != nil {
 			return nil, fmt.Errorf("router.candidates[%d]: %w", i, err)
 		}
-		p := c.FindProvider(providerName)
-		if p == nil {
-			return nil, fmt.Errorf("router.candidates[%d]: provider %q not configured", i, providerName)
-		}
-		if model == "" {
-			model = p.DefaultModel
-		}
-		var tier string
-		for _, m := range p.Models {
-			if m.Name == model {
-				tier = m.Tier
-				break
-			}
-		}
-		out = append(out, ResolvedCandidate{Provider: *p, Model: model, Tier: tier})
+		out = append(out, rc)
 	}
 	return out, nil
+}
+
+// resolveCandidate parses one "<provider>" or "<provider>:<model>"
+// string and resolves it to a concrete provider profile + model + tier.
+// Shared by ResolveCandidates and ResolveRouterModels.
+func (c *Config) resolveCandidate(raw string) (ResolvedCandidate, error) {
+	providerName, model, err := ParseCandidate(raw)
+	if err != nil {
+		return ResolvedCandidate{}, err
+	}
+	p := c.FindProvider(providerName)
+	if p == nil {
+		return ResolvedCandidate{}, fmt.Errorf("provider %q not configured", providerName)
+	}
+	if model == "" {
+		model = p.DefaultModel
+	}
+	if model == "" {
+		return ResolvedCandidate{}, fmt.Errorf("provider %q has no default_model; specify <provider>:<model>", providerName)
+	}
+	var tier string
+	for _, m := range p.Models {
+		if m.Name == model {
+			tier = m.Tier
+			break
+		}
+	}
+	return ResolvedCandidate{Provider: *p, Model: model, Tier: tier}, nil
+}
+
+// validateModelRef strictly validates a "<provider>" or
+// "<provider>:<model>" reference: the provider must exist and the model
+// (when given) must be listed in providers.models. Mirrors the
+// router.candidates membership check so router.fast_model / smart_model
+// reject typos at load time rather than silently routing to a model the
+// provider never declared.
+func (c *Config) validateModelRef(raw string) error {
+	provider, model, err := ParseCandidate(raw)
+	if err != nil {
+		return err
+	}
+	p := c.FindProvider(provider)
+	if p == nil {
+		return fmt.Errorf("provider %q not found in [[providers]]", provider)
+	}
+	if model == "" {
+		if p.DefaultModel == "" {
+			return fmt.Errorf("provider %q has no default_model; specify <provider>:<model>", provider)
+		}
+		return nil
+	}
+	for _, m := range p.Models {
+		if m.Name == model {
+			return nil
+		}
+	}
+	return fmt.Errorf("model %q not in providers[%q].models", model, provider)
+}
+
+// ResolveRouterModels resolves the fast and smart models named in the
+// [router] block. Callable only when routing is enabled (Mode != off);
+// Validate has already confirmed both strings resolve.
+func (c *Config) ResolveRouterModels() (fast, smart ResolvedCandidate, err error) {
+	fast, err = c.resolveCandidate(c.Router.FastModel)
+	if err != nil {
+		return ResolvedCandidate{}, ResolvedCandidate{}, fmt.Errorf("router.fast_model: %w", err)
+	}
+	smart, err = c.resolveCandidate(c.Router.SmartModel)
+	if err != nil {
+		return ResolvedCandidate{}, ResolvedCandidate{}, fmt.Errorf("router.smart_model: %w", err)
+	}
+	return fast, smart, nil
 }
 
 // providerKeyEnvHint returns the env var name to suggest in error
@@ -885,4 +999,28 @@ strategy = "auto"
 # candidates               = ["anthropic:claude-haiku-4-5", "openai:gpt-4o"]
 # health_window_seconds    = 60
 # health_failure_threshold = 3
+
+# ---------------------------------------------------------------------
+# Cache-safe task routing (opt-in). Routes ISOLATED contexts — subagents
+# and history compaction — to a cheap "fast" model while your main
+# conversation stays on the "smart" model. This SAVES cost: those
+# contexts never shared the main thread's prompt cache, so routing them
+# costs nothing in cache locality. The main-thread model is never
+# switched mid-conversation (that would invalidate the cache and cost
+# MORE), so routing is purely a saving.
+#
+#   mode = "off"    — disabled (default).
+#   mode = "manual" — resolve fast/smart; route only subagents whose
+#                     definition declares an explicit model: frontmatter.
+#   mode = "auto"   — additionally route read-only/search subagents
+#                     (e.g. Explore, Plan) and summarization to fast_model.
+#
+# fast_model / smart_model use the same "<provider>" or "<provider>:<model>"
+# grammar as candidates above. Both are required when mode != "off".
+# ---------------------------------------------------------------------
+
+# [router]
+# mode        = "auto"
+# fast_model  = "anthropic:claude-haiku-4-5"
+# smart_model = "anthropic:claude-opus-4-6"
 `

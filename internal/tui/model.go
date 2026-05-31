@@ -136,6 +136,14 @@ type Config struct {
 	// /skills picker; the slash command still falls through to the
 	// "unknown command" error in that case.
 	SkillTool *agent.SkillTool
+
+	// SummarizerAdapter routes the /summarize + auto-compaction call to
+	// the fast model under cache-safe routing. nil → New() falls back to
+	// Cfg.Adapter (the legacy single-adapter behavior).
+	SummarizerAdapter agentStreamer
+	// SummarizerModel is the fast model's name for routing telemetry;
+	// empty when summarization isn't routed.
+	SummarizerModel string
 }
 
 // Model is the Bubbletea state for the chat TUI. The TUI runs in inline mode
@@ -184,6 +192,16 @@ type Model struct {
 	memorySummary          string
 	baseSystemPrompt       string // pre-memory prompt; used by /memory reload
 	embedClient            *memory.EmbedClient
+
+	// summarizerAdapter is the streamer the /summarize + auto-compaction
+	// path calls into. When cache-safe routing is on it points at the
+	// fast model (compaction is a single isolated call on a near-full
+	// context — a large, safe saving); otherwise it equals cfg.Adapter.
+	// Never nil after New().
+	summarizerAdapter agentStreamer
+	// summarizerModel is the fast model's name (for routing telemetry /
+	// future per-model usage attribution); empty when not routed.
+	summarizerModel string
 
 	// fileCfg mirrors ~/.yottacode/config.toml. Fields read by the
 	// extractor (confidence threshold, max input) and the watermark
@@ -816,6 +834,8 @@ func New(parent context.Context, c Config) Model {
 		memorySummary:          c.MemorySummary,
 		baseSystemPrompt:       c.BaseSystemPrompt,
 		embedClient:            c.EmbedClient,
+		summarizerAdapter:      summarizerOrDefault(c.SummarizerAdapter, c.Cfg.Adapter),
+		summarizerModel:        c.SummarizerModel,
 		fileCfg:                c.FileCfg,
 		subagentTasks:          c.Subagents,
 		subagentTool:           c.AgentTool,

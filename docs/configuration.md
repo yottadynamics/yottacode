@@ -468,6 +468,47 @@ env      = { GITHUB_PERSONAL_ACCESS_TOKEN = "$GITHUB_PAT" }
 
 `env` values support `$VAR` substitution from yottacode's process environment so secrets stay out of the config file. v1 supports stdio transport only. See [`mcp.md`](mcp.md) for the full reference, including permission rules (`MCP(...)`), the `/mcp` slash command, and a curated server list.
 
+## Model routing
+
+The `[router]` block hosts two independent, opt-in features.
+
+**Cache-safe task routing** runs isolated work (subagents, history
+compaction) on a cheap model while your main conversation stays on your
+chosen model — a pure cost saving with no prompt-cache churn:
+
+```toml
+[router]
+  mode        = "auto"                          # off | manual | auto (default off)
+  fast_model  = "anthropic:claude-haiku-4-5"
+  smart_model = "anthropic:claude-opus-4-6"
+```
+
+- `mode = "off"` (or absent) — disabled; fully backward compatible.
+- `mode = "manual"` — only routes subagents that declare an explicit `model:`.
+- `mode = "auto"` — also routes read-only/search subagents and summarization to `fast_model`.
+
+`fast_model` / `smart_model` are required when `mode` is not `off` and
+use the `"<provider>"` or `"<provider>:<model>"` grammar; the model must
+exist in that provider's `models`. See [`models.md`](models.md#cache-safe-task-routing)
+for the cost rationale and the auto heuristic.
+
+**Multi-provider failover** (separate feature, same block) dispatches
+each main-thread turn across an ordered candidate list, falling through
+on early failure:
+
+```toml
+[router]
+  enabled                  = true
+  policy                   = "fallback-chain"   # fallback-chain | cheap-first
+  candidates               = ["anthropic:claude-haiku-4-5", "openai:gpt-4o"]
+  health_window_seconds    = 60
+  health_failure_threshold = 3
+```
+
+The two are orthogonal: `enabled`/`candidates` control failover across
+providers; `mode`/`fast_model`/`smart_model` control task routing. You
+can set either, both, or neither.
+
 ## Runtime Reconfiguration
 
 The TUI supports changing the active session configuration without restarting:

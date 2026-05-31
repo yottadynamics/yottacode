@@ -148,7 +148,14 @@ func hasSummarizableHistory(messages []adapter.Message) bool {
 // shows them but keeps the original history.
 func (m Model) summarizeCmd(auto bool) tea.Cmd {
 	history := slices.Clone(m.sess.Messages)
-	ad := m.cfg.Adapter
+	// Compaction is a single isolated call on a near-full context — when
+	// cache-safe routing is on this runs on the fast model (a large,
+	// safe saving). summarizerAdapter falls back to the main adapter
+	// when routing is off, or for Models built without New().
+	ad := m.summarizerAdapter
+	if ad == nil {
+		ad = m.cfg.Adapter
+	}
 	parentCtx := m.parentCtx
 	sessID := m.sess.ID
 	tokensBefore := m.contextTokens
@@ -221,6 +228,16 @@ func runSummarization(ctx context.Context, ad agentStreamer, history []adapter.M
 // stub without depending on the agent package.
 type agentStreamer interface {
 	ChatStream(ctx context.Context, messages []adapter.Message, tools []adapter.Tool) <-chan adapter.StreamEvent
+}
+
+// summarizerOrDefault picks the routed summarizer adapter when present,
+// else falls back to the session's main adapter. Keeps New() callers
+// that don't wire routing (tests, oneshot) on the legacy behavior.
+func summarizerOrDefault(routed, fallback agentStreamer) agentStreamer {
+	if routed != nil {
+		return routed
+	}
+	return fallback
 }
 
 // renderHistoryForSummarization flattens the message history into a
@@ -526,9 +543,13 @@ type summarizeDeps struct {
 }
 
 func (m Model) summarizeDeps() summarizeDeps {
+	ad := m.summarizerAdapter
+	if ad == nil {
+		ad = m.cfg.Adapter
+	}
 	return summarizeDeps{
 		ctx:     m.parentCtx,
-		adapter: m.cfg.Adapter,
+		adapter: ad,
 		fileCfg: m.fileCfg,
 	}
 }
