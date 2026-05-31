@@ -54,7 +54,7 @@ calls out the typed-vs-bash trade-off so the model picks correctly.
 | `gh_pr_add_comment` | Posts a conversation comment on a PR | (model-callable) |
 
 Every write goes through the approval modal — the modal renders the
-full title + body before the call lands. `--dangerously-skip-permissions`
+full title + body before the call lands. `--yolo`
 bypasses the modal, but `deny` rules still apply.
 
 ## Slash commands

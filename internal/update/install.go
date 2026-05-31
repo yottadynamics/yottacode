@@ -27,6 +27,12 @@ var releaseDownloadBase = "https://github.com/yottadynamics/yottacode/releases/d
 // binaryName is the name of the executable inside the release archive.
 const binaryName = "yottacode"
 
+// maxDownloadBytes caps each release download so a compromised or
+// misbehaving server can't stream unbounded bytes into memory before the
+// checksum is even checked. Release archives are tens of MB; 256 MiB is
+// generous headroom for both the archive and the (tiny) SHA256SUMS file.
+const maxDownloadBytes = 256 << 20
+
 // InstallRelease upgrades the running binary to the given version by
 // downloading the matching release archive, verifying it against the
 // release's SHA256SUMS file, extracting the binary, and atomically
@@ -34,9 +40,13 @@ const binaryName = "yottacode"
 //
 // This replaces the old `curl … | bash` install path: nothing is piped to
 // a shell, and the download is rejected unless its SHA-256 matches the
-// signed checksum manifest published alongside the release. Any failure —
-// network, checksum mismatch, missing asset — returns an error without
-// touching the installed binary.
+// SHA256SUMS checksum manifest published alongside the release. The
+// manifest is fetched over HTTPS from the same GitHub release, so this
+// verifies integrity (no corrupt or partial download installs) and pins
+// the exact version — it is not an end-to-end signature check, which
+// would require a separately-trusted signing key. Any failure — network,
+// checksum mismatch, missing asset — returns an error without touching
+// the installed binary.
 //
 // ver is the target version without a leading "v" (e.g. "0.3.0"), matching
 // update.Result.Latest.
@@ -187,5 +197,16 @@ func httpGetBytes(ctx context.Context, url string) ([]byte, error) {
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("GET %s: status %d", url, resp.StatusCode)
 	}
-	return io.ReadAll(resp.Body)
+	// Bound the read: a compromised or misbehaving server must not be able
+	// to exhaust memory before the checksum check runs. Read one byte past
+	// the cap so an oversized body surfaces as a clear error rather than a
+	// silently-truncated (and then checksum-mismatching) download.
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxDownloadBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > maxDownloadBytes {
+		return nil, fmt.Errorf("GET %s: response exceeds %d-byte cap", url, maxDownloadBytes)
+	}
+	return data, nil
 }

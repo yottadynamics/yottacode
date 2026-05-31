@@ -42,7 +42,7 @@ type LoopConfig struct {
 	// RequiresApproval policy.
 	Permissions *permissions.Permissions
 	// BypassPermissions is the internal name for the user-facing
-	// --dangerously-skip-permissions flag (mirroring Claude Code).
+	// --yolo flag.
 	// Skip every approval prompt, run silently. DANGEROUS —
 	// model-emitted commands execute without a human in the loop.
 	// Explicit `deny` rules in permissions.json still refuse the call

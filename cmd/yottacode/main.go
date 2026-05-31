@@ -366,7 +366,7 @@ func newRunCmd(opts *cli.ChatOptions) *cobra.Command {
 The prompt may be passed as an argument or piped via stdin. Reasoning, tool
 status, and errors go to stderr so 'yottacode run "..." > out.md' produces a
 clean file. Tool calls that require approval will fail unless
---dangerously-skip-permissions is set (DANGEROUS — see flag help).
+--yolo is set (DANGEROUS — see flag help).
 
 Configuration (no built-in defaults — must be set via flag or env):
   --model      / $YOTTACODE_MODEL      model tag
@@ -506,7 +506,7 @@ func bindCommonPersistentFlags(cmd *cobra.Command, opts *cli.ChatOptions) {
 	f.StringVar(&opts.SystemPrompt, "system", "", "Override the default system prompt")
 	f.StringVar(&opts.Resume, "resume", "", "Resume a saved session by id or name")
 	f.BoolVarP(&opts.Continue, "continue", "c", false, "Resume the newest session created in this cwd (use --resume for a specific one)")
-	f.BoolVar(&opts.BypassPermissions, "dangerously-skip-permissions", false,
+	f.BoolVar(&opts.BypassPermissions, "yolo", false,
 		"DANGEROUS: auto-approve every tool call (deny rules still apply). For trusted CI only")
 	f.IntVar(&opts.MaxIterations, "max-iterations", 50, "Max tool-call iterations per turn; auto mode raises the effective cap 4×")
 	f.StringVar(&opts.ReasoningEffort, "reasoning-effort", "", "low | medium | high (env: YOTTACODE_REASONING_EFFORT)")

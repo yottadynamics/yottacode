@@ -186,7 +186,7 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 	//     startup flag + plan-card [Y])
 	//   - auto (Shift+Tab cycle + --permission-mode auto startup flag
 	//     + plan-card [Y]; no slash command, mirroring Claude Code)
-	//   - yolo (--dangerously-skip-permissions startup flag only; no
+	//   - yolo (--yolo startup flag only; no
 	//     slash command, no keybinding — opt-in once per process)
 	// Plan and auto are mutually exclusive; yolo is an orthogonal
 	// overlay that stacks with either. Per-session lifetime;
@@ -557,7 +557,7 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 	// mode before the program starts. The entry log lines land in the
 	// historyLines buffer; tea.Println replays them when the program
 	// boots. --plan-resume wins over --permission-mode (resume implies
-	// plan); --dangerously-skip-permissions is an orthogonal overlay
+	// plan); --yolo is an orthogonal overlay
 	// that stacks with whichever mode (if any) is requested.
 	switch {
 	case opts.PlanResume != "":

@@ -59,7 +59,7 @@ In addition to the built-ins, **MCP tools** register dynamically when an `[[mcp_
 `N` from the user, unless an `allow` rule in
 `<cwd>/.yottacode/permissions.json` (or its gitignored
 `.local.json` sibling) matches the call, or
-`--dangerously-skip-permissions` is set (DANGEROUS). See
+`--yolo` is set (DANGEROUS). See
 [architecture.md](architecture.md) for the
 approval round-trip and the permissions schema.
 
@@ -804,7 +804,7 @@ The TUI renders the plan inside an approval card with four hotkeys:
 - `[L] later` — exits plan mode but ends the turn; the plan stays on disk for resume via `/plan list` or `--plan-resume`.
 - `[K] keep planning` — stays in plan mode; model receives refinement guidance.
 
-`--dangerously-skip-permissions` does NOT skip this approval — that approval
+`--yolo` does NOT skip this approval — that approval
 is the user-visible signal, not a safety gate.
 
 While `/plan` is active, every other mutating tool is blocked except writes

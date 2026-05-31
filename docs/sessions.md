@@ -51,7 +51,7 @@ In the TUI:
 /sessions <id-or-name>
 ```
 
-Runtime flags like `--max-iterations` and `--dangerously-skip-permissions` are not stored in the session. Pass them again when resuming if you need them. Mode state (auto / plan) is also not persisted: a session that ended in auto mode resumes in normal mode, same as Claude Code — use `Shift+Tab` to re-enter the mode you want.
+Runtime flags like `--max-iterations` and `--yolo` are not stored in the session. Pass them again when resuming if you need them. Mode state (auto / plan) is also not persisted: a session that ended in auto mode resumes in normal mode, same as Claude Code — use `Shift+Tab` to re-enter the mode you want.
 
 ## Summarized resume
 

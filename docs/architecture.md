@@ -112,7 +112,7 @@ Startup flow:
 - Reasoning, tool status, and errors are written to stderr.
 - Approval-required tool calls fail unless an `allow` rule in
   `.yottacode/permissions.json` matches them, or
-  `--dangerously-skip-permissions` is set (DANGEROUS).
+  `--yolo` is set (DANGEROUS).
 
 ## Tools And Safety Layers
 
@@ -167,7 +167,7 @@ on top of the base approval flow:
   State lives on `agent.AutoModeState`.
 - **Permissions-bypass overlay** — drops permission prompts on *all* tools (no
   safety floor) and removes the iteration cap entirely. Entered
-  only via `--dangerously-skip-permissions` at startup (mirroring
+  only via `--yolo` at startup (mirroring
   Claude Code) — no slash command, no keybinding, no in-TUI toggle.
   Sits on top of whichever mode is active; the banner shows the
   mode label with a `⚠ bypass` suffix (the standalone banner reads

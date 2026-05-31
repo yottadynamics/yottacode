@@ -56,8 +56,12 @@ func ReadIncludePatterns(repoRoot string) ([]string, error) {
 //
 // Files that don't exist at the source are silently skipped (the
 // user's .worktreeinclude may list optional files like .env.local).
-// Files that exist but are unreadable cause an error so the user
-// isn't silently shipped a broken worktree.
+// Symlinks and other non-regular files (devices, FIFOs, sockets) are
+// skipped rather than followed: matchPatterns surfaces a symlink as an
+// ordinary entry, and following one could copy a file from outside the
+// repo (e.g. a symlinked ~/.ssh/id_rsa) into the worktree or hang on a
+// device. Files that exist but are unreadable cause an error so the
+// user isn't silently shipped a broken worktree.
 func CopyIncluded(repoRoot, worktreeDir string) error {
 	patterns, err := ReadIncludePatterns(repoRoot)
 	if err != nil {
@@ -166,19 +170,25 @@ func matchSegments(pp, rp []string) (bool, error) {
 }
 
 func copyOne(src, dst string) error {
+	// Lstat (not Stat / Open) so a symlink is inspected as the link
+	// itself, never followed. matchPatterns surfaces a symlink-to-file
+	// as a regular DirEntry, so without this guard copyOne would open
+	// the link target — a file outside the repo (e.g. ~/.ssh/id_rsa) or
+	// a device like /dev/zero that io.Copy would stream forever. Skip
+	// anything that isn't a plain regular file (directories included —
+	// defensive, since matchPatterns only emits files).
+	info, err := os.Lstat(src)
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() {
+		return nil
+	}
 	in, err := os.Open(src)
 	if err != nil {
 		return err
 	}
 	defer in.Close()
-	info, err := in.Stat()
-	if err != nil {
-		return err
-	}
-	if info.IsDir() {
-		// matchPatterns only emits files, so this is defensive.
-		return nil
-	}
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 		return err
 	}

@@ -33,13 +33,12 @@ type ChatOptions struct {
 	// TUI). Defaults to false; only the `resume` subcommand sets it.
 	Summarized             bool
 	// BypassPermissions is the internal name for what the user-facing
-	// CLI exposes as --dangerously-skip-permissions: auto-approve every
+	// CLI exposes as --yolo: auto-approve every
 	// tool call without prompting. DANGEROUS — model-emitted commands
 	// run without a human in the loop. Explicit `deny` rules in
 	// .yottacode/permissions.json are still honored, but every other
 	// approval gate is skipped. Reserved for trusted CI / scripted
-	// contexts; never enable in shared shells. Mirrors Claude Code's
-	// --dangerously-skip-permissions flag.
+	// contexts; never enable in shared shells.
 	BypassPermissions      bool
 	MaxIterations          int
 	Provider               string
