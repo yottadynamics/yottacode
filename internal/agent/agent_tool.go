@@ -83,8 +83,44 @@ type AgentTool struct {
 
 	// Adapter is the streamer the child Turn calls into. Shared with
 	// the parent — adapter calls are stateless per-request and
-	// concurrency-safe by construction.
+	// concurrency-safe by construction. This is the "smart"/default
+	// model; cache-safe routing may swap a child onto FastAdapter.
 	Adapter Streamer
+
+	// FastAdapter is the cheap/fast model's streamer used for
+	// cache-safe task routing. nil when routing is disabled. A
+	// subagent dispatched here runs in its own isolated context, so
+	// routing it costs nothing in main-thread prompt-cache locality —
+	// the saving the whole feature is built around.
+	FastAdapter Streamer
+
+	// FastModel is the fast model's name, recorded on the task +
+	// SubagentDone events so /subagents and the inline card can show
+	// which model handled a delegation. Empty when routing is off.
+	FastModel string
+
+	// SmartAdapter is the capable model's streamer. In auto mode a
+	// subagent that is NOT read-only (general-purpose, verification, or
+	// any agent that can mutate/run) routes here instead of inheriting
+	// the active session model — this is what makes [router].smart_model
+	// meaningful. nil when routing is off, in which case such agents
+	// inherit Adapter (the active model) as before.
+	SmartAdapter Streamer
+
+	// SmartModel is the smart model's name, recorded like FastModel for
+	// the card / task display. Empty when routing is off.
+	SmartModel string
+
+	// RouteAuto enables the heuristic that routes read-only/search
+	// subagents to FastAdapter. False in "manual" mode (only an
+	// explicit `model:` frontmatter routes) and when routing is off.
+	RouteAuto bool
+
+	// ModelResolver resolves an agent's explicit `model:` frontmatter
+	// to a streamer, or returns nil when the name matches no
+	// configured model (the child then inherits Adapter). nil when
+	// routing is disabled.
+	ModelResolver func(model string) Streamer
 
 	// ParentRegistry is the live tool set the parent session is using.
 	// We clone it for the child, dropping the Agent tool itself plus
@@ -321,6 +357,11 @@ func (t *AgentTool) Execute(ctx context.Context, argsJSON string) (string, error
 	taskID := subagents.NewTaskID()
 	transcriptPath := filepath.Join(t.TranscriptDir, fmt.Sprintf("%s-%s.md", cfg.Name, taskID))
 
+	// Cache-safe routing: pick the child's model before it runs. The
+	// child has its own isolated context, so swapping it onto the fast
+	// model never touches the parent's prompt cache.
+	childAdapter, childModel := t.routeChildModel(cfg)
+
 	task := &subagents.Task{
 		ID:             taskID,
 		AgentType:      cfg.Name,
@@ -329,6 +370,7 @@ func (t *AgentTool) Execute(ctx context.Context, argsJSON string) (string, error
 		Status:         subagents.TaskRunning,
 		Background:     a.RunInBackground,
 		TranscriptPath: transcriptPath,
+		Model:          childModel,
 	}
 	t.Tasks.Add(task)
 
@@ -369,7 +411,7 @@ func (t *AgentTool) Execute(ctx context.Context, argsJSON string) (string, error
 			// Background: no live UI to forward to (emitToParent nil)
 			// AND no decisions channel to read from. Approval-needed
 			// events auto-deny inside runChild.
-			result, errored, status, tokens := t.runChild(bgCtx, taskID, cfg, a.Prompt, transcript, nil, nil)
+			result, errored, status, tokens := t.runChild(bgCtx, taskID, cfg, a.Prompt, transcript, nil, nil, childAdapter)
 			t.Tasks.MarkDone(taskID, status, result, errored, tokens)
 			// Read the just-recorded tool-call count off the registry
 			// so the inline card can render accurate stats.
@@ -385,6 +427,7 @@ func (t *AgentTool) Execute(ctx context.Context, argsJSON string) (string, error
 				Duration:   time.Since(task.Started),
 				TokensUsed: tokens,
 				ToolCalls:  toolCalls,
+				Model:      childModel,
 			})
 		}()
 		// Message the model relays back to the user. References the
@@ -404,7 +447,7 @@ func (t *AgentTool) Execute(ctx context.Context, argsJSON string) (string, error
 	// Foreground: pass parent's events + decisions so child
 	// ApprovalNeeded events surface on the parent's modal and the
 	// user's verdict routes back to the child's loop.
-	result, errored, status, tokens := t.runChild(childCtx, taskID, cfg, a.Prompt, transcript, emitToParent, parentDecisions)
+	result, errored, status, tokens := t.runChild(childCtx, taskID, cfg, a.Prompt, transcript, emitToParent, parentDecisions, childAdapter)
 	t.Tasks.MarkDone(taskID, status, result, errored, tokens)
 	// Read the just-recorded tool-call count off the registry so the
 	// done card can render accurate stats.
@@ -420,11 +463,87 @@ func (t *AgentTool) Execute(ctx context.Context, argsJSON string) (string, error
 		Duration:   time.Since(task.Started),
 		TokensUsed: tokens,
 		ToolCalls:  toolCalls,
+		Model:      childModel,
 	})
 	if errored {
 		return result, nil // returned as a tool result so the model sees the failure
 	}
 	return result, nil
+}
+
+// readOnlyChildTools is the set of tools cheap enough that a subagent
+// restricted to them is routed to the fast model in auto mode. Tools
+// that mutate the workspace or execute commands (write_file, edit_file,
+// run_bash, git_commit, …) are deliberately absent — an agent that can
+// reach those inherits the smart model. The set mirrors the tool
+// allowlists of the read-only builtins (Explore, Plan); keep it in sync
+// when adding read-only tools that search agents should use.
+var readOnlyChildTools = map[string]bool{
+	"read_file":              true,
+	"read_many_files":        true,
+	"grep":                   true,
+	"glob":                   true,
+	"list_dir":               true,
+	"list_project_structure": true,
+	"git_log_file":           true,
+	"git_blame_lines":        true,
+	"git_diff_files":         true,
+	"git_show_file_at_rev":   true,
+	"git_branch_status":      true,
+	"list_git_changed_files": true,
+	"git_merge_base":         true,
+	"fetch_url":              true,
+	"todo_write":             true,
+	"session_recall":         true,
+}
+
+// agentIsReadOnly reports whether an agent definition is restricted to
+// the read-only tool set, making it a safe candidate for the fast
+// model. A wildcard / inherit-all allowlist (empty Tools) is NOT
+// read-only — it can reach the full toolset, so it stays on the smart
+// model.
+func agentIsReadOnly(cfg *subagents.AgentConfig) bool {
+	if len(cfg.Tools) == 0 {
+		return false
+	}
+	for _, name := range cfg.Tools {
+		if !readOnlyChildTools[name] {
+			return false
+		}
+	}
+	return true
+}
+
+// routeChildModel picks the streamer + model name for a child subagent.
+// Routing only ever touches isolated child contexts — never the
+// main-thread model mid-conversation — so it never invalidates the
+// parent's prompt cache. Precedence:
+//  1. an explicit `model:` frontmatter resolves via ModelResolver
+//     (manual or auto mode); an unresolvable name falls through so a
+//     typo degrades gracefully rather than erroring;
+//  2. auto mode: a read-only/search agent → the fast model; any other
+//     agent → the smart model (so smart_model is the capable target,
+//     not the active session model);
+//  3. otherwise (manual mode without an explicit model, or routing off)
+//     inherit the parent's active adapter.
+//
+// The returned modelName is "" for the inherit case (the parent's model
+// name lives in the TUI, not here); callers treat "" as "default".
+func (t *AgentTool) routeChildModel(cfg *subagents.AgentConfig) (Streamer, string) {
+	if m := strings.TrimSpace(cfg.Model); m != "" && t.ModelResolver != nil {
+		if s := t.ModelResolver(m); s != nil {
+			return s, m
+		}
+	}
+	if t.RouteAuto {
+		if t.FastAdapter != nil && agentIsReadOnly(cfg) {
+			return t.FastAdapter, t.FastModel
+		}
+		if t.SmartAdapter != nil {
+			return t.SmartAdapter, t.SmartModel
+		}
+	}
+	return t.Adapter, ""
 }
 
 // runChild assembles the child LoopConfig + history, runs agent.Turn,
@@ -452,6 +571,7 @@ func (t *AgentTool) runChild(
 	transcript *transcriptFile,
 	emitToParent func(Event),
 	parentDecisions <-chan Decision,
+	childAdapter Streamer,
 ) (result string, errored bool, status subagents.TaskStatus, tokensUsed int) {
 	childReg := t.buildChildRegistry(cfg)
 
@@ -476,7 +596,7 @@ func (t *AgentTool) runChild(
 		childAutoMode = &AutoModeState{}
 	}
 	childCfg := LoopConfig{
-		Adapter:           t.Adapter,
+		Adapter:           childAdapter,
 		Registry:          childReg,
 		Permissions:       t.Permissions,
 		BypassPermissions: false, // never bypass for child; rely on yolo for true unattended

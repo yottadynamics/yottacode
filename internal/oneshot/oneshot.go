@@ -23,9 +23,9 @@ import (
 	"github.com/yottadynamics/yottacode/internal/agent"
 	"github.com/yottadynamics/yottacode/internal/cli"
 	"github.com/yottadynamics/yottacode/internal/config"
+	"github.com/yottadynamics/yottacode/internal/experimental"
 	"github.com/yottadynamics/yottacode/internal/filerefs"
 	"github.com/yottadynamics/yottacode/internal/memory"
-	"github.com/yottadynamics/yottacode/internal/experimental"
 	"github.com/yottadynamics/yottacode/internal/permissions"
 	"github.com/yottadynamics/yottacode/internal/session"
 	"github.com/yottadynamics/yottacode/internal/skills"
@@ -123,6 +123,13 @@ func Run(ctx context.Context, opts cli.ChatOptions, prompt string) error {
 	// follow-up; in routed mode the router's first attempt surfaces
 	// auth/connection errors via Fallback or ErrorEvent.
 	router, err := cli.BuildRouter(fileCfg, opts)
+	if err != nil {
+		return err
+	}
+	// Cache-safe task routing: resolve fast/smart adapters for subagent
+	// routing (oneshot has no /summarize loop, so only subagents apply).
+	// nil when [router].mode is off.
+	routerAdapters, err := cli.BuildRouterAdapters(fileCfg, opts)
 	if err != nil {
 		return err
 	}
@@ -310,6 +317,12 @@ func Run(ctx context.Context, opts cli.ChatOptions, prompt string) error {
 		Cwd:             cwdRef,
 		TranscriptDir:   transcriptDir,
 		AllowBackground: false,
+		FastAdapter:     oneshotRouterFast(routerAdapters),
+		FastModel:       oneshotRouterFastModel(routerAdapters),
+		SmartAdapter:    oneshotRouterSmart(routerAdapters),
+		SmartModel:      oneshotRouterSmartModel(routerAdapters),
+		RouteAuto:       fileCfg.Router.RoutingAuto(),
+		ModelResolver:   oneshotRouterResolve(routerAdapters),
 	}
 	reg.Register(agentTool)
 	// Even though oneshot rejects background spawns (AllowBackground=
@@ -584,6 +597,50 @@ func appendSkillsSection(base string, loaded []skills.Skill) string {
 		fmt.Fprintf(&b, "- %s: %s\n", sk.Name, sk.Description)
 	}
 	return b.String()
+}
+
+// oneshotRouterFast / oneshotRouterFastModel / oneshotRouterResolve
+// adapt cli.RouterAdapters to the agent.AgentTool fields, nil-safe when
+// routing is disabled. Mirror the TUI's routerFast helpers.
+func oneshotRouterFast(ra *cli.RouterAdapters) agent.Streamer {
+	if ra == nil || ra.Fast == nil {
+		return nil
+	}
+	return ra.Fast
+}
+
+func oneshotRouterFastModel(ra *cli.RouterAdapters) string {
+	if ra == nil {
+		return ""
+	}
+	return ra.FastModel
+}
+
+func oneshotRouterSmart(ra *cli.RouterAdapters) agent.Streamer {
+	if ra == nil || ra.Smart == nil {
+		return nil
+	}
+	return ra.Smart
+}
+
+func oneshotRouterSmartModel(ra *cli.RouterAdapters) string {
+	if ra == nil {
+		return ""
+	}
+	return ra.SmartModel
+}
+
+func oneshotRouterResolve(ra *cli.RouterAdapters) func(string) agent.Streamer {
+	if ra == nil || ra.Resolve == nil {
+		return nil
+	}
+	return func(model string) agent.Streamer {
+		s := ra.Resolve(model)
+		if s == nil {
+			return nil
+		}
+		return s
+	}
 }
 
 func hasBuiltin(tools []adapter.BuiltinToolKind, want adapter.BuiltinToolKind) bool {

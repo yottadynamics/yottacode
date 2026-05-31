@@ -91,14 +91,14 @@ type ApprovalNeeded struct {
 // ApprovalNeeded. Expected replies:
 //
 //   - PathAllowOnce:    consumer added Path to the session allow
-//                       list; loop re-runs Execute once.
+//     list; loop re-runs Execute once.
 //   - PathTrustSession: consumer added filepath.Dir(Path) to the
-//                       session allow list; loop re-runs Execute
-//                       once.
+//     session allow list; loop re-runs Execute
+//     once.
 //   - Deny:             loop surfaces the structured error to the
-//                       model as the tool result (Claude-style
-//                       per-tool deny: descriptive + with a
-//                       recovery hint).
+//     model as the tool result (Claude-style
+//     per-tool deny: descriptive + with a
+//     recovery hint).
 //
 // Cwd and AllowedRoots are echoed so the modal can render the
 // existing trust state next to the new request without re-walking
@@ -243,7 +243,8 @@ type SubagentDone struct {
 	Errored    bool
 	Duration   time.Duration
 	TokensUsed int
-	ToolCalls  int // child's tool-call count, for inline stats rendering
+	ToolCalls  int    // child's tool-call count, for inline stats rendering
+	Model      string // model the child ran on when task-routed; "" = inherited the parent's model
 }
 
 // SubagentBackgroundDone fires asynchronously when a background subagent
@@ -258,29 +259,30 @@ type SubagentBackgroundDone struct {
 	Errored    bool
 	Duration   time.Duration
 	TokensUsed int
-	ToolCalls  int // child's tool-call count, for inline stats rendering
+	ToolCalls  int    // child's tool-call count, for inline stats rendering
+	Model      string // model the child ran on when task-routed; "" = inherited the parent's model
 }
 
-func (ReasoningToken) event()    {}
-func (ContentToken) event()      {}
-func (StreamProgress) event()    {}
-func (ProviderToolCall) event()  {}
-func (IterationStart) event()    {}
-func (IterationContinue) event() {}
+func (ReasoningToken) event()           {}
+func (ContentToken) event()             {}
+func (StreamProgress) event()           {}
+func (ProviderToolCall) event()         {}
+func (IterationStart) event()           {}
+func (IterationContinue) event()        {}
 func (ApprovalAuto) event()             {}
 func (ApprovalNeeded) event()           {}
 func (PathTrustElevationNeeded) event() {}
-func (ToolStart) event()         {}
-func (ToolResult) event()        {}
-func (CwdChanged) event()        {}
-func (TodoUpdate) event()        {}
-func (AssistantMessage) event()  {}
-func (IterCap) event()           {}
-func (ErrorEvent) event()        {}
-func (CheckpointInfo) event()    {}
-func (TurnDone) event()          {}
-func (TurnInterrupted) event()   {}
-func (Fallback) event()          {}
+func (ToolStart) event()                {}
+func (ToolResult) event()               {}
+func (CwdChanged) event()               {}
+func (TodoUpdate) event()               {}
+func (AssistantMessage) event()         {}
+func (IterCap) event()                  {}
+func (ErrorEvent) event()               {}
+func (CheckpointInfo) event()           {}
+func (TurnDone) event()                 {}
+func (TurnInterrupted) event()          {}
+func (Fallback) event()                 {}
 
 func (SubagentStart) event()          {}
 func (SubagentProgress) event()       {}

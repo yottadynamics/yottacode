@@ -108,6 +108,15 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 			XSearchToDate:          strings.TrimSpace(opts.XSearchToDate),
 		})
 	}
+	// Cache-safe task routing: when [router].mode is "manual"/"auto",
+	// resolve the fast/smart model adapters. These drive isolated
+	// contexts only (subagents + summarization), so they never disturb
+	// the main-thread prompt cache. nil when routing is off.
+	routerAdapters, err := cli.BuildRouterAdapters(fileCfg, opts)
+	if err != nil {
+		return err
+	}
+
 	// Load skills early so the resolved set can flow into both the
 	// system prompt (description-matched metadata tier) and the Skill
 	// tool registration below. Loading twice would be wasteful and
@@ -276,7 +285,7 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 	// nil client would skip the lookup silently, but registering
 	// with the shared ghClient gives us the "PR updated: <url>"
 	// footer for free.
-	reg.Register(&agent.GitPushTool{Cwd: cwdRef,GH: ghClient})
+	reg.Register(&agent.GitPushTool{Cwd: cwdRef, GH: ghClient})
 	// gh_pr_update is paired with /git-update-pr. Same Interface
 	// instance as the other PR tools — the v0.5.0 typed client
 	// swap will switch one variable above and pick up all four
@@ -372,12 +381,21 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 		Tasks:          subagentTasks,
 		Adapter:        ad,
 		ParentRegistry: reg,
-		Permissions:    perms,
-		YoloMode:       yoloMode,
-		PlanMode:       planMode,
-		AutoMode:       autoMode,
-		Cwd:            cwdRef,
-		TranscriptDir:  transcriptDir,
+		// Cache-safe routing wiring; zero values (nil/false) when
+		// routing is disabled, so the AgentTool inherits the parent
+		// adapter for every child exactly as before.
+		FastAdapter:   routerFast(routerAdapters),
+		FastModel:     routerFastModel(routerAdapters),
+		SmartAdapter:  routerSmart(routerAdapters),
+		SmartModel:    routerSmartModel(routerAdapters),
+		RouteAuto:     fileCfg.Router.RoutingAuto(),
+		ModelResolver: routerResolve(routerAdapters),
+		Permissions:   perms,
+		YoloMode:      yoloMode,
+		PlanMode:      planMode,
+		AutoMode:      autoMode,
+		Cwd:           cwdRef,
+		TranscriptDir: transcriptDir,
 		// Background subagents are an opt-in experimental feature.
 		// When the gate is off, `run_in_background:true` returns a
 		// recoverable error the model relays to the user (see
@@ -514,6 +532,8 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 		MCPManager:             mcpManager,
 		Skills:                 skillsRes.Skills,
 		SkillTool:              skillTool,
+		SummarizerAdapter:      routerFast(routerAdapters),
+		SummarizerModel:        routerFastModel(routerAdapters),
 	})
 	// Skills onboarding (skills installed but none enabled) is surfaced
 	// inside the welcome card via startupTip() — see welcome.go's
@@ -714,6 +734,57 @@ func splitCSV(s string) []string {
 		}
 	}
 	return out
+}
+
+// routerFast returns the fast-model streamer for subagent routing, or
+// nil when routing is disabled (ra == nil). Returning a typed nil-free
+// interface keeps AgentTool.FastAdapter genuinely nil so routeChildModel
+// falls back to the parent adapter.
+func routerFast(ra *cli.RouterAdapters) agent.Streamer {
+	if ra == nil || ra.Fast == nil {
+		return nil
+	}
+	return ra.Fast
+}
+
+func routerFastModel(ra *cli.RouterAdapters) string {
+	if ra == nil {
+		return ""
+	}
+	return ra.FastModel
+}
+
+// routerSmart returns the smart-model streamer for subagent routing, or
+// nil when routing is disabled (then non-read-only subagents inherit the
+// active model, the pre-routing behavior).
+func routerSmart(ra *cli.RouterAdapters) agent.Streamer {
+	if ra == nil || ra.Smart == nil {
+		return nil
+	}
+	return ra.Smart
+}
+
+func routerSmartModel(ra *cli.RouterAdapters) string {
+	if ra == nil {
+		return ""
+	}
+	return ra.SmartModel
+}
+
+// routerResolve adapts RouterAdapters.Resolve (func → adapter.Streamer)
+// to the agent package's func → agent.Streamer signature the AgentTool
+// expects. Returns nil when routing is disabled.
+func routerResolve(ra *cli.RouterAdapters) func(string) agent.Streamer {
+	if ra == nil || ra.Resolve == nil {
+		return nil
+	}
+	return func(model string) agent.Streamer {
+		s := ra.Resolve(model)
+		if s == nil {
+			return nil
+		}
+		return s
+	}
 }
 
 func composeSystemPrompt(base string, profile adapter.ProviderProfile) string {

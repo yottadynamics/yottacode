@@ -32,10 +32,10 @@ const (
 // don't auto-refresh on a tick because the user reads the overlay
 // statically — a refresh keystroke is enough.
 type subagentsPickerState struct {
-	mode    subagentsPickerMode
-	tasks   []subagents.Task
-	types   []subagents.AgentConfig
-	cursor  int
+	mode   subagentsPickerMode
+	tasks  []subagents.Task
+	types  []subagents.AgentConfig
+	cursor int
 	// status holds a one-line note the picker shows below the list
 	// (e.g. "canceled task abc12345" after pressing `s`). Cleared on
 	// every keystroke that changes the cursor so it doesn't linger.
@@ -215,11 +215,16 @@ func renderSubagentsPickerTasks(state *subagentsPickerState, _ int) string {
 		if t.Background {
 			mode = "bg"
 		}
-		desc := fmt.Sprintf("%s [%s] · %s · %d acts · %s",
+		modelChip := ""
+		if t.Model != "" {
+			modelChip = " · " + truncateForRender(t.Model, 24)
+		}
+		desc := fmt.Sprintf("%s [%s] · %s · %d acts%s · %s",
 			t.Status.String(),
 			mode,
 			relativeAge(t.Started),
 			t.ToolCalls,
+			modelChip,
 			truncateForRender(t.Prompt, 60))
 		body += renderMenuItem(menuItemOpts{
 			Label:      label,
