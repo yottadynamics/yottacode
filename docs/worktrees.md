@@ -79,7 +79,9 @@ Patterns match against repo-relative paths using `filepath.Match`
 semantics, with `**` as a wildcard that spans zero or more path
 segments. Missing files are silently skipped; unreadable files
 return an error so you can fix permissions instead of silently
-shipping a broken worktree.
+shipping a broken worktree. Symlinks (and other non-regular files
+like devices or FIFOs) are skipped, not followed — a matched symlink
+won't copy its target's bytes into the worktree.
 
 Commit `.worktreeinclude` to the repo so every contributor's
 worktrees inherit the same setup.
@@ -150,7 +152,7 @@ with the worktree; user-named branches are left alone.
 
 ## Permission-mode interactions
 
-| Action                                | Plan mode   | Auto mode                          | Normal     | `--dangerously-skip-permissions` |
+| Action                                | Plan mode   | Auto mode                          | Normal     | `--yolo` |
 |---------------------------------------|-------------|------------------------------------|------------|----------------------------------|
 | `enter_worktree`                      | blocked     | **prompts** (safety floor)         | prompts    | bypassed                         |
 | `exit_worktree` (clean)               | blocked     | **prompts** (safety floor) → remove| prompts    | auto-remove                      |

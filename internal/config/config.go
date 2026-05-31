@@ -30,12 +30,12 @@ import (
 // Config bundles every tunable yottacode reads from disk. Sub-structs map
 // 1:1 to TOML sections so the file shape mirrors the Go shape.
 type Config struct {
-	Context      ContextConfig     `toml:"context"`
-	Retrieval    RetrievalConfig   `toml:"retrieval"`
-	Router       RouterConfig      `toml:"router"`
-	Active       Active            `toml:"active"`
-	Providers    []Provider        `toml:"providers"`
-	Checkpoints  CheckpointsConfig `toml:"checkpoints"`
+	Context     ContextConfig     `toml:"context"`
+	Retrieval   RetrievalConfig   `toml:"retrieval"`
+	Router      RouterConfig      `toml:"router"`
+	Active      Active            `toml:"active"`
+	Providers   []Provider        `toml:"providers"`
+	Checkpoints CheckpointsConfig `toml:"checkpoints"`
 	// MCPServers lists Model Context Protocol servers launched at
 	// session start. Each entry becomes a stdio subprocess whose
 	// advertised tools register into the agent tool registry under
@@ -43,7 +43,7 @@ type Config struct {
 	// only; absence of a `transport` field means adding HTTP/SSE
 	// later is non-breaking.
 	MCPServers []MCPServer `toml:"mcp_servers"`
-	Theme        ThemeConfig       `toml:"theme"`
+	Theme      ThemeConfig `toml:"theme"`
 	// Experimental gates non-default features behind named opt-ins.
 	// Mirrors the --experimental CLI flag and the
 	// $YOTTACODE_EXPERIMENTAL env var. Each entry is a feature name
@@ -93,7 +93,6 @@ type CheckpointsConfig struct {
 // `[checkpoints] retention_days = N` in config.toml.
 const DefaultCheckpointRetentionDays = 30
 
-
 // RouterConfig describes the multi-provider routing policy. When
 // Enabled is false, yottacode dispatches to the single configured
 // provider (the legacy behavior). When true, Candidates names an
@@ -119,6 +118,43 @@ type RouterConfig struct {
 	Candidates             []string `toml:"candidates"`
 	HealthWindowSeconds    int      `toml:"health_window_seconds"`
 	HealthFailureThreshold int      `toml:"health_failure_threshold"`
+
+	// Mode controls cache-safe task routing between a smart and a fast
+	// model. "off" (default) disables it entirely. "manual" resolves the
+	// fast/smart models but only routes when an agent declares an explicit
+	// model. "auto" additionally routes read-only/search subagents and
+	// summarization to FastModel. Routing never touches the main-thread
+	// model mid-conversation (that would invalidate the prompt cache and
+	// cost more) — only isolated contexts are routed.
+	Mode string `toml:"mode"`
+	// FastModel and SmartModel name the cheap and capable models as
+	// "<provider>" or "<provider>:<model>" (same grammar as Candidates).
+	// Required when Mode is not "off".
+	FastModel  string `toml:"fast_model"`
+	SmartModel string `toml:"smart_model"`
+}
+
+// RouterMode values for RouterConfig.Mode.
+const (
+	RouterModeOff    = "off"
+	RouterModeManual = "manual"
+	RouterModeAuto   = "auto"
+)
+
+// ValidRouterModes is the whitelist for RouterConfig.Mode. Empty is
+// treated as the default ("off") at load time.
+var ValidRouterModes = []string{RouterModeOff, RouterModeManual, RouterModeAuto}
+
+// RoutingEnabled reports whether task routing is active (Mode is
+// "manual" or "auto"). Empty/"off" means disabled.
+func (r RouterConfig) RoutingEnabled() bool {
+	return r.Mode == RouterModeManual || r.Mode == RouterModeAuto
+}
+
+// RoutingAuto reports whether automatic (heuristic) routing of
+// subagents and summarization is active.
+func (r RouterConfig) RoutingAuto() bool {
+	return r.Mode == RouterModeAuto
 }
 
 // DefaultRouterHealthWindowSeconds is the sliding-window length the
@@ -141,13 +177,22 @@ var ValidPolicies = []string{"fallback-chain", "cheap-first"}
 type RetrievalConfig struct {
 	Enabled        bool    `toml:"enabled"`
 	TopK           int     `toml:"top_k"`
+	MaxBytes       int     `toml:"max_bytes"`
 	MinScore       float64 `toml:"min_score"`
 	Strategy       string  `toml:"strategy"`
 	EmbeddingModel string  `toml:"embedding_model"`
+
+	// SemanticWeight is the fraction of the "semantic" blend given to
+	// embedding cosine similarity; BM25 keyword scoring gets the remaining
+	// (1 - SemanticWeight). Range [0,1]; default 0.4 (the classic 60/40
+	// BM25/cosine split). 0 = pure BM25, 1 = pure cosine. Only used when the
+	// effective strategy is "semantic". The blended score is re-normalized
+	// afterward, so only the ratio matters — one knob covers the full space.
+	SemanticWeight float64 `toml:"semantic_weight"`
 }
 
 // ValidStrategies is the whitelist for RetrievalConfig.Strategy.
-// Empty is treated as the default ("bm25") at load time.
+// Empty is coerced to the default ("auto") at load time.
 var ValidStrategies = []string{"keyword", "bm25", "semantic", "auto"}
 
 // ContextConfig governs context-window watermark behavior.
@@ -300,9 +345,11 @@ func Default() Config {
 		Retrieval: RetrievalConfig{
 			Enabled:        true,
 			TopK:           10,
+			MaxBytes:       24000,
 			MinScore:       0.0,
 			Strategy:       "auto",
 			EmbeddingModel: "nomic-embed-text",
+			SemanticWeight: 0.4,
 		},
 		Theme: ThemeConfig{
 			Name: themes.DefaultName,
@@ -426,8 +473,14 @@ func Validate(cfg Config) error {
 	if cfg.Retrieval.TopK < 0 {
 		return fmt.Errorf("retrieval.top_k = %d must be >= 0", cfg.Retrieval.TopK)
 	}
+	if cfg.Retrieval.MaxBytes < 0 {
+		return fmt.Errorf("retrieval.max_bytes = %d must be >= 0 (0 = unlimited)", cfg.Retrieval.MaxBytes)
+	}
 	if cfg.Retrieval.MinScore < 0 || cfg.Retrieval.MinScore > 1 {
 		return fmt.Errorf("retrieval.min_score = %.3f out of range (0.0–1.0)", cfg.Retrieval.MinScore)
+	}
+	if cfg.Retrieval.SemanticWeight < 0 || cfg.Retrieval.SemanticWeight > 1 {
+		return fmt.Errorf("retrieval.semantic_weight = %.3f out of range (0.0–1.0)", cfg.Retrieval.SemanticWeight)
 	}
 	if cfg.Retrieval.Strategy != "" && !inSlice(ValidStrategies, cfg.Retrieval.Strategy) {
 		return fmt.Errorf("retrieval.strategy = %q invalid (expected one of %s)",
@@ -577,6 +630,25 @@ func Validate(cfg Config) error {
 			}
 		}
 	}
+
+	if cfg.Router.Mode != "" && !inSlice(ValidRouterModes, cfg.Router.Mode) {
+		return fmt.Errorf("router.mode %q invalid (expected one of %s)",
+			cfg.Router.Mode, strings.Join(ValidRouterModes, ", "))
+	}
+	if cfg.Router.RoutingEnabled() {
+		if strings.TrimSpace(cfg.Router.FastModel) == "" {
+			return fmt.Errorf("router.mode = %q requires router.fast_model", cfg.Router.Mode)
+		}
+		if strings.TrimSpace(cfg.Router.SmartModel) == "" {
+			return fmt.Errorf("router.mode = %q requires router.smart_model", cfg.Router.Mode)
+		}
+		if err := cfg.validateModelRef(cfg.Router.FastModel); err != nil {
+			return fmt.Errorf("router.fast_model: %w", err)
+		}
+		if err := cfg.validateModelRef(cfg.Router.SmartModel); err != nil {
+			return fmt.Errorf("router.smart_model: %w", err)
+		}
+	}
 	return nil
 }
 
@@ -620,27 +692,85 @@ type ResolvedCandidate struct {
 func (c *Config) ResolveCandidates() ([]ResolvedCandidate, error) {
 	out := make([]ResolvedCandidate, 0, len(c.Router.Candidates))
 	for i, raw := range c.Router.Candidates {
-		providerName, model, err := ParseCandidate(raw)
+		rc, err := c.resolveCandidate(raw)
 		if err != nil {
 			return nil, fmt.Errorf("router.candidates[%d]: %w", i, err)
 		}
-		p := c.FindProvider(providerName)
-		if p == nil {
-			return nil, fmt.Errorf("router.candidates[%d]: provider %q not configured", i, providerName)
-		}
-		if model == "" {
-			model = p.DefaultModel
-		}
-		var tier string
-		for _, m := range p.Models {
-			if m.Name == model {
-				tier = m.Tier
-				break
-			}
-		}
-		out = append(out, ResolvedCandidate{Provider: *p, Model: model, Tier: tier})
+		out = append(out, rc)
 	}
 	return out, nil
+}
+
+// resolveCandidate parses one "<provider>" or "<provider>:<model>"
+// string and resolves it to a concrete provider profile + model + tier.
+// Shared by ResolveCandidates and ResolveRouterModels.
+func (c *Config) resolveCandidate(raw string) (ResolvedCandidate, error) {
+	providerName, model, err := ParseCandidate(raw)
+	if err != nil {
+		return ResolvedCandidate{}, err
+	}
+	p := c.FindProvider(providerName)
+	if p == nil {
+		return ResolvedCandidate{}, fmt.Errorf("provider %q not configured", providerName)
+	}
+	if model == "" {
+		model = p.DefaultModel
+	}
+	if model == "" {
+		return ResolvedCandidate{}, fmt.Errorf("provider %q has no default_model; specify <provider>:<model>", providerName)
+	}
+	var tier string
+	for _, m := range p.Models {
+		if m.Name == model {
+			tier = m.Tier
+			break
+		}
+	}
+	return ResolvedCandidate{Provider: *p, Model: model, Tier: tier}, nil
+}
+
+// validateModelRef strictly validates a "<provider>" or
+// "<provider>:<model>" reference: the provider must exist and the model
+// (when given) must be listed in providers.models. Mirrors the
+// router.candidates membership check so router.fast_model / smart_model
+// reject typos at load time rather than silently routing to a model the
+// provider never declared.
+func (c *Config) validateModelRef(raw string) error {
+	provider, model, err := ParseCandidate(raw)
+	if err != nil {
+		return err
+	}
+	p := c.FindProvider(provider)
+	if p == nil {
+		return fmt.Errorf("provider %q not found in [[providers]]", provider)
+	}
+	if model == "" {
+		if p.DefaultModel == "" {
+			return fmt.Errorf("provider %q has no default_model; specify <provider>:<model>", provider)
+		}
+		return nil
+	}
+	for _, m := range p.Models {
+		if m.Name == model {
+			return nil
+		}
+	}
+	return fmt.Errorf("model %q not in providers[%q].models", model, provider)
+}
+
+// ResolveRouterModels resolves the fast and smart models named in the
+// [router] block. Callable only when routing is enabled (Mode != off);
+// Validate has already confirmed both strings resolve.
+func (c *Config) ResolveRouterModels() (fast, smart ResolvedCandidate, err error) {
+	fast, err = c.resolveCandidate(c.Router.FastModel)
+	if err != nil {
+		return ResolvedCandidate{}, ResolvedCandidate{}, fmt.Errorf("router.fast_model: %w", err)
+	}
+	smart, err = c.resolveCandidate(c.Router.SmartModel)
+	if err != nil {
+		return ResolvedCandidate{}, ResolvedCandidate{}, fmt.Errorf("router.smart_model: %w", err)
+	}
+	return fast, smart, nil
 }
 
 // providerKeyEnvHint returns the env var name to suggest in error
@@ -686,14 +816,19 @@ func (c *Config) FindProvider(name string) *Provider {
 // DefaultsTOML is the documented default file written by EnsureDefault.
 const DefaultsTOML = `# yottacode configuration
 #
-# Loaded at session start. Edit and run /memory reload (in the TUI) to
-# apply changes mid-session — no restart required.
+# Loaded at session start. Changes apply on the next session start, or
+# after running /setup in the TUI.
 #
 # Values out of range are rejected at load time, not silently clamped.
 # Unknown sections and keys are also rejected so typos surface
 # immediately.
 
 [context]
+# Context-window watermarks. As the running conversation fills the active
+# model's context window, yottacode first warns (status bar) and then
+# auto-summarizes. All thresholds below are fractions of that window
+# (0.0–1.0).
+#
 # Status bar token counter turns yellow at this fraction of the model's
 # context window; a one-time muted notice fires when first crossed and
 # again on each 5% increment after. Set to 1.0 to disable warnings.
@@ -717,6 +852,12 @@ enabled = true
 # user and project scopes). Set to 0 to remove the bound.
 top_k = 10
 
+# Cap on the combined bytes of injected memory bodies per turn. Applied
+# together with top_k — retrieval stops at whichever binds first — though
+# the single top-ranked memory is always admitted even if it alone exceeds
+# this. Set to 0 for no byte cap.
+max_bytes = 24000
+
 # Minimum relevance score (0.0–1.0) an entry must reach to be
 # injected.
 min_score = 0.0
@@ -729,6 +870,15 @@ strategy = "auto"
 # Embedding model for semantic retrieval. Only used when strategy is
 # "semantic" or "auto". Must be installed in Ollama.
 # embedding_model = "nomic-embed-text"
+
+# How much the semantic blend leans on embeddings vs keywords. It's the
+# weight given to embedding cosine similarity; BM25 keyword scoring gets
+# the rest (1 - semantic_weight). Range 0.0-1.0; default 0.4 (the classic
+# 60% BM25 / 40% cosine split). Raise it to trust meaning-based matches
+# more (helps paraphrased / low-keyword-overlap queries), lower it to lean
+# on exact keywords. 0.0 = pure BM25, 1.0 = pure cosine. Only applies when
+# the effective strategy is "semantic".
+# semantic_weight = 0.4
 
 # ---------------------------------------------------------------------
 # TUI color theme. Uncomment to pin a palette; omit the section to
@@ -849,4 +999,28 @@ strategy = "auto"
 # candidates               = ["anthropic:claude-haiku-4-5", "openai:gpt-4o"]
 # health_window_seconds    = 60
 # health_failure_threshold = 3
+
+# ---------------------------------------------------------------------
+# Cache-safe task routing (opt-in). Routes ISOLATED contexts — subagents
+# and history compaction — to a cheap "fast" model while your main
+# conversation stays on the "smart" model. This SAVES cost: those
+# contexts never shared the main thread's prompt cache, so routing them
+# costs nothing in cache locality. The main-thread model is never
+# switched mid-conversation (that would invalidate the cache and cost
+# MORE), so routing is purely a saving.
+#
+#   mode = "off"    — disabled (default).
+#   mode = "manual" — resolve fast/smart; route only subagents whose
+#                     definition declares an explicit model: frontmatter.
+#   mode = "auto"   — additionally route read-only/search subagents
+#                     (e.g. Explore, Plan) and summarization to fast_model.
+#
+# fast_model / smart_model use the same "<provider>" or "<provider>:<model>"
+# grammar as candidates above. Both are required when mode != "off".
+# ---------------------------------------------------------------------
+
+# [router]
+# mode        = "auto"
+# fast_model  = "anthropic:claude-haiku-4-5"
+# smart_model = "anthropic:claude-opus-4-6"
 `

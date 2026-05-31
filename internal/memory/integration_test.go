@@ -110,7 +110,10 @@ func TestIntegration_Semantic_Ollama(t *testing.T) {
 		if err != nil {
 			t.Fatalf("embed %s: %v", e.Name, err)
 		}
-		if err := WriteVec(VecPath(e.Path), vec); err != nil {
+		// Write with the model header so entryCosine's model gate passes
+		// and the cosine term actually contributes — otherwise this test
+		// silently validates BM25 fallback only.
+		if err := WriteVecWithModel(VecPath(e.Path), vec, client.Model); err != nil {
 			t.Fatalf("write vec %s: %v", e.Name, err)
 		}
 	}

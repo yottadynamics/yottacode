@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -38,6 +39,71 @@ func TestNew_CreatesFreshID(t *testing.T) {
 	}
 	if s1.Cwd != "/cwd/a" {
 		t.Errorf("Cwd = %q, want /cwd/a", s1.Cwd)
+	}
+}
+
+// TestSave_ConcurrentSavesNoCorruptionOrTempLeak simulates two
+// yottacode processes editing the same session at once. With the old
+// fixed "<path>.tmp" suffix they raced on one temp file and could
+// rename a half-written or clobbered file into place; the unique-temp
+// scheme makes concurrent saves last-writer-wins on a valid file. We
+// assert: no Save errors, the final file still loads, and no leftover
+// temp files are abandoned in the sessions dir.
+func TestSave_ConcurrentSavesNoCorruptionOrTempLeak(t *testing.T) {
+	home := redirectHome(t)
+	s, err := New("m", "/proj")
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	s.Messages = []adapter.Message{{Role: adapter.RoleUser, Content: "hi"}}
+	if err := s.Save(); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	// Two independent in-memory views of the same on-disk session.
+	a, err := Load(s.ID)
+	if err != nil {
+		t.Fatalf("Load a: %v", err)
+	}
+	b, err := Load(s.ID)
+	if err != nil {
+		t.Fatalf("Load b: %v", err)
+	}
+
+	var wg sync.WaitGroup
+	errs := make(chan error, 64)
+	for range 16 {
+		for _, view := range []*Session{a, b} {
+			wg.Add(1)
+			go func(v *Session) {
+				defer wg.Done()
+				if e := v.Save(); e != nil {
+					errs <- e
+				}
+			}(view)
+		}
+	}
+	wg.Wait()
+	close(errs)
+	for e := range errs {
+		t.Errorf("concurrent Save error: %v", e)
+	}
+
+	// Final file must still be valid, loadable JSON.
+	if _, err := Load(s.ID); err != nil {
+		t.Fatalf("session unreadable after concurrent saves: %v", err)
+	}
+
+	// No abandoned temp files left behind.
+	dir := filepath.Join(home, ".yottacode", "sessions")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("ReadDir: %v", err)
+	}
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".tmp") {
+			t.Errorf("leftover temp file in sessions dir: %s", e.Name())
+		}
 	}
 }
 

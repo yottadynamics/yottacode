@@ -108,6 +108,15 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 			XSearchToDate:          strings.TrimSpace(opts.XSearchToDate),
 		})
 	}
+	// Cache-safe task routing: when [router].mode is "manual"/"auto",
+	// resolve the fast/smart model adapters. These drive isolated
+	// contexts only (subagents + summarization), so they never disturb
+	// the main-thread prompt cache. nil when routing is off.
+	routerAdapters, err := cli.BuildRouterAdapters(fileCfg, opts)
+	if err != nil {
+		return err
+	}
+
 	// Load skills early so the resolved set can flow into both the
 	// system prompt (description-matched metadata tier) and the Skill
 	// tool registration below. Loading twice would be wasteful and
@@ -186,7 +195,7 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 	//     startup flag + plan-card [Y])
 	//   - auto (Shift+Tab cycle + --permission-mode auto startup flag
 	//     + plan-card [Y]; no slash command, mirroring Claude Code)
-	//   - yolo (--dangerously-skip-permissions startup flag only; no
+	//   - yolo (--yolo startup flag only; no
 	//     slash command, no keybinding — opt-in once per process)
 	// Plan and auto are mutually exclusive; yolo is an orthogonal
 	// overlay that stacks with either. Per-session lifetime;
@@ -276,7 +285,7 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 	// nil client would skip the lookup silently, but registering
 	// with the shared ghClient gives us the "PR updated: <url>"
 	// footer for free.
-	reg.Register(&agent.GitPushTool{Cwd: cwdRef,GH: ghClient})
+	reg.Register(&agent.GitPushTool{Cwd: cwdRef, GH: ghClient})
 	// gh_pr_update is paired with /git-update-pr. Same Interface
 	// instance as the other PR tools — the v0.5.0 typed client
 	// swap will switch one variable above and pick up all four
@@ -309,6 +318,10 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 		reachable, installed := ec.Status(ctx)
 		switch {
 		case installed:
+			// Short per-call bound on the interactive path so a
+			// mid-session Ollama hang can't freeze the TUI; reindex uses
+			// its own default-timeout client.
+			ec.Timeout = memory.InteractiveEmbedTimeout
 			embedClient = ec
 		case reachable:
 			// Ollama is up but the configured embedding model isn't
@@ -324,7 +337,8 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 	}
 	reg.Register(&agent.MemorySaveTool{Cwd: cwdRef, Embedder: embedClient})
 	reg.Register(&agent.MemoryForgetTool{Cwd: cwdRef})
-	reg.Register(&agent.MemorySearchTool{Cwd: cwdRef, Embedder: embedClient})
+	reg.Register(&agent.MemorySearchTool{Cwd: cwdRef, Embedder: embedClient, Strategy: fileCfg.Retrieval.Strategy})
+	reg.Register(&agent.MemoryGetTool{Cwd: cwdRef})
 	reg.Register(&agent.GitTool{Cwd: cwdRef})
 	reg.Register(&agent.TodoWriteTool{Store: planStore})
 	// ExitPlanModeTool is registered with a nil Approve callback at
@@ -367,12 +381,21 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 		Tasks:          subagentTasks,
 		Adapter:        ad,
 		ParentRegistry: reg,
-		Permissions:    perms,
-		YoloMode:       yoloMode,
-		PlanMode:       planMode,
-		AutoMode:       autoMode,
-		Cwd:            cwdRef,
-		TranscriptDir:  transcriptDir,
+		// Cache-safe routing wiring; zero values (nil/false) when
+		// routing is disabled, so the AgentTool inherits the parent
+		// adapter for every child exactly as before.
+		FastAdapter:   routerFast(routerAdapters),
+		FastModel:     routerFastModel(routerAdapters),
+		SmartAdapter:  routerSmart(routerAdapters),
+		SmartModel:    routerSmartModel(routerAdapters),
+		RouteAuto:     fileCfg.Router.RoutingAuto(),
+		ModelResolver: routerResolve(routerAdapters),
+		Permissions:   perms,
+		YoloMode:      yoloMode,
+		PlanMode:      planMode,
+		AutoMode:      autoMode,
+		Cwd:           cwdRef,
+		TranscriptDir: transcriptDir,
 		// Background subagents are an opt-in experimental feature.
 		// When the gate is off, `run_in_background:true` returns a
 		// recoverable error the model relays to the user (see
@@ -497,7 +520,7 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 		Version:                version.Current,
 		Commit:                 version.Commit(),
 		Dirty:                  version.Dirty(),
-		Branch:                 gitBranch(cwd),
+		Branch:                 gitBranch(ctx, cwd),
 		Worktree:               sess.Worktree,
 		MemorySummary:          mem.Summary().String(),
 		BaseSystemPrompt:       baseSys,
@@ -509,6 +532,8 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 		MCPManager:             mcpManager,
 		Skills:                 skillsRes.Skills,
 		SkillTool:              skillTool,
+		SummarizerAdapter:      routerFast(routerAdapters),
+		SummarizerModel:        routerFastModel(routerAdapters),
 	})
 	// Skills onboarding (skills installed but none enabled) is surfaced
 	// inside the welcome card via startupTip() — see welcome.go's
@@ -552,7 +577,7 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 	// mode before the program starts. The entry log lines land in the
 	// historyLines buffer; tea.Println replays them when the program
 	// boots. --plan-resume wins over --permission-mode (resume implies
-	// plan); --dangerously-skip-permissions is an orthogonal overlay
+	// plan); --yolo is an orthogonal overlay
 	// that stacks with whichever mode (if any) is requested.
 	switch {
 	case opts.PlanResume != "":
@@ -711,6 +736,57 @@ func splitCSV(s string) []string {
 	return out
 }
 
+// routerFast returns the fast-model streamer for subagent routing, or
+// nil when routing is disabled (ra == nil). Returning a typed nil-free
+// interface keeps AgentTool.FastAdapter genuinely nil so routeChildModel
+// falls back to the parent adapter.
+func routerFast(ra *cli.RouterAdapters) agent.Streamer {
+	if ra == nil || ra.Fast == nil {
+		return nil
+	}
+	return ra.Fast
+}
+
+func routerFastModel(ra *cli.RouterAdapters) string {
+	if ra == nil {
+		return ""
+	}
+	return ra.FastModel
+}
+
+// routerSmart returns the smart-model streamer for subagent routing, or
+// nil when routing is disabled (then non-read-only subagents inherit the
+// active model, the pre-routing behavior).
+func routerSmart(ra *cli.RouterAdapters) agent.Streamer {
+	if ra == nil || ra.Smart == nil {
+		return nil
+	}
+	return ra.Smart
+}
+
+func routerSmartModel(ra *cli.RouterAdapters) string {
+	if ra == nil {
+		return ""
+	}
+	return ra.SmartModel
+}
+
+// routerResolve adapts RouterAdapters.Resolve (func → adapter.Streamer)
+// to the agent package's func → agent.Streamer signature the AgentTool
+// expects. Returns nil when routing is disabled.
+func routerResolve(ra *cli.RouterAdapters) func(string) agent.Streamer {
+	if ra == nil || ra.Resolve == nil {
+		return nil
+	}
+	return func(model string) agent.Streamer {
+		s := ra.Resolve(model)
+		if s == nil {
+			return nil
+		}
+		return s
+	}
+}
+
 func composeSystemPrompt(base string, profile adapter.ProviderProfile) string {
 	if hasBuiltin(profile.EnabledBuiltinTools, adapter.BuiltinToolWebSearch) {
 		return base + "\nFor live or current information, use the provider-native web_search tool when needed."
@@ -762,11 +838,16 @@ func hasBuiltin(tools []adapter.BuiltinToolKind, want adapter.BuiltinToolKind) b
 
 // gitBranch reads the current git branch via `git -C <cwd> branch --show-current`.
 // Returns "" if cwd isn't a repo or git isn't installed — both are normal.
-func gitBranch(cwd string) string {
+//
+// The call is bounded by a short timeout (and honors ctx cancellation) so a
+// wedged git — a locked repo, a slow NFS mount — can't hang TUI startup.
+func gitBranch(ctx context.Context, cwd string) string {
 	if _, err := exec.LookPath("git"); err != nil {
 		return ""
 	}
-	out, err := exec.Command("git", "-C", cwd, "branch", "--show-current").Output()
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "git", "-C", cwd, "branch", "--show-current").Output()
 	if err != nil {
 		return ""
 	}

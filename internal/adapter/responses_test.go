@@ -127,6 +127,32 @@ func TestResponses_StreamsFunctionCall(t *testing.T) {
 	}
 }
 
+// TestResponses_TruncatedFunctionCallErrors guards the truncation fix:
+// a function_call announced via output_item.added whose
+// function_call_arguments.done never arrives before the stream ends must
+// surface an error, not a clean final that silently drops the call.
+func TestResponses_TruncatedFunctionCallErrors(t *testing.T) {
+	body := responsesSSE(
+		`{"type":"response.created","sequence_number":0,"response":{"id":"resp_1"}}`,
+		`{"type":"response.output_item.added","sequence_number":1,"output_index":0,"item":{"id":"fc_1","type":"function_call","call_id":"call_abc","name":"read_file","arguments":""}}`,
+		`{"type":"response.function_call_arguments.delta","sequence_number":2,"item_id":"fc_1","output_index":0,"delta":"{\"path\":"}`,
+		// stream ends here: no function_call_arguments.done, no response.completed
+	)
+	srv := responsesMockServer(t, body)
+
+	ad := newResponsesAdapter(Config{BaseURL: srv.URL, APIKey: "sk-test", Model: "o3"})
+	tools := []Tool{{Name: "read_file", Description: "Read a file", Schema: map[string]any{"type": "object"}}}
+	ch := ad.ChatStream(context.Background(), []Message{{Role: RoleUser, Content: "read x.go"}}, tools)
+	_, _, final, errs := drainEvents(ch)
+
+	if len(errs) == 0 {
+		t.Error("truncated function call should surface an error, not a clean final")
+	}
+	if final != nil && len(final.ToolCalls) > 0 {
+		t.Errorf("must not emit a final carrying the incomplete tool call: %+v", final)
+	}
+}
+
 // TestResponses_EmitsStreamProgressForFunctionCallArgs guards the
 // "0.0 tok/s never moves" fix: when a Responses turn produces only a
 // tool call (no reasoning summary, no body text — common with gpt-5*
@@ -367,5 +393,21 @@ func TestResponses_XAIIncludesXSearchConfigAndCapturesCitations(t *testing.T) {
 		if !strings.Contains(gotBody, want) {
 			t.Fatalf("request body missing %s\nbody=%s", want, gotBody)
 		}
+	}
+}
+
+// A marshal failure when building a provider-native tool spec must surface as
+// an error rather than panicking on the streaming goroutine (regression for
+// the old mustJSON panic, which would have crashed the whole process).
+func TestOverrideToolUnion_MarshalErrorIsReturned(t *testing.T) {
+	// A channel value is not JSON-marshalable, so json.Marshal returns an
+	// error — the path that previously panicked.
+	if _, err := overrideToolUnion(map[string]any{"bad": make(chan int)}); err == nil {
+		t.Fatal("overrideToolUnion returned nil error for an unmarshalable value")
+	}
+
+	// The happy path still produces a usable tool spec.
+	if _, err := overrideToolUnion(map[string]any{"type": "x_search"}); err != nil {
+		t.Fatalf("overrideToolUnion returned error for a valid spec: %v", err)
 	}
 }

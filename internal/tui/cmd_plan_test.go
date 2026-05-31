@@ -83,7 +83,7 @@ func TestCmdPlan_EntersAndPrintsBanner(t *testing.T) {
 // shape — the test pins all three.
 func TestRenderPlanModeEntryCard_HasCardShape(t *testing.T) {
 	out := stripANSI(renderPlanModeEntryCard())
-	for _, glyph := range []string{"╭ ", "│  ", "╰ "} {
+	for _, glyph := range []string{"╭ ", "│ ", "╰ "} {
 		if !strings.Contains(out, glyph) {
 			t.Errorf("entry card missing gutter glyph %q; got:\n%s", glyph, out)
 		}
@@ -522,7 +522,7 @@ func TestCompactPlanBasename(t *testing.T) {
 // Yolo entry is one-way per session: enterYoloMode flips the state on
 // and prints the danger banner. There is no in-TUI exit (no toggle,
 // no slash command, no Shift+Tab) — recovery requires restarting
-// yottacode without --dangerously-skip-permissions.
+// yottacode without --yolo.
 func TestEnterYoloMode_OneWay(t *testing.T) {
 	m, _ := newPlanModeTestModel(t)
 	yoloMode := m.cfg.YoloMode
@@ -547,10 +547,10 @@ func TestEnterYoloMode_OneWay(t *testing.T) {
 	if !strings.Contains(out, "permissions bypass active") {
 		t.Errorf("expected 'permissions bypass active' banner in transcript; got %q", out)
 	}
-	if strings.Contains(out, "yolo") {
+	if strings.Contains(strings.ReplaceAll(out, "--yolo", ""), "yolo") {
 		t.Errorf("entry banner should not surface the internal 'yolo' label to the user; got %q", out)
 	}
-	if !strings.Contains(out, "restart without --dangerously-skip-permissions") {
+	if !strings.Contains(out, "restart without --yolo") {
 		t.Errorf("expected recovery hint pointing at the flag; got %q", out)
 	}
 }
@@ -807,7 +807,7 @@ func TestSlashAuto_NotRegistered(t *testing.T) {
 
 func TestSlashYolo_NotRegistered(t *testing.T) {
 	if findSlash("yolo") != nil {
-		t.Errorf("/yolo must not be a slash command — yolo enters only via --dangerously-skip-permissions at startup")
+		t.Errorf("/yolo must not be a slash command — yolo enters only via --yolo at startup")
 	}
 }
 

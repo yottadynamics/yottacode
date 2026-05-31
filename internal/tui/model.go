@@ -22,8 +22,8 @@ import (
 	"github.com/yottadynamics/yottacode/internal/checkpoint"
 	"github.com/yottadynamics/yottacode/internal/config"
 	"github.com/yottadynamics/yottacode/internal/contextwindow"
-	mcppkg "github.com/yottadynamics/yottacode/internal/mcp"
 	"github.com/yottadynamics/yottacode/internal/filerefs"
+	mcppkg "github.com/yottadynamics/yottacode/internal/mcp"
 	"github.com/yottadynamics/yottacode/internal/memory"
 	"github.com/yottadynamics/yottacode/internal/permissions"
 	"github.com/yottadynamics/yottacode/internal/providerops"
@@ -49,19 +49,18 @@ func worktreeNameFromPath(path string) string {
 	return name
 }
 
-
 // Config carries everything Run needs to build a Model. Bundling these into a
 // struct is just ergonomics — there are too many fields for a positional
 // argument list to stay readable.
 type Config struct {
-	Cfg                    agent.LoopConfig
-	Session                *session.Session
-	Permissions            *permissions.Permissions
-	Recall                 *recall.Index // optional; nil disables /recall
-	ModelName              string
-	BaseURL                string
-	APIKey                 string
-	Provider               string
+	Cfg         agent.LoopConfig
+	Session     *session.Session
+	Permissions *permissions.Permissions
+	Recall      *recall.Index // optional; nil disables /recall
+	ModelName   string
+	BaseURL     string
+	APIKey      string
+	Provider    string
 	// ProviderLabel is the catalog identity ("nvidia-nim", "xai") of
 	// the active profile, surfaced in the status bar instead of the
 	// generic dispatch tag (Provider). Populated by Run() from the
@@ -82,17 +81,17 @@ type Config struct {
 	ProviderProfile        adapter.ProviderProfile
 	Cwd                    string
 	// BypassPermissions auto-approves every tool call. DANGEROUS — see
-	// the flag help on --dangerously-skip-permissions. Explicit `deny`
+	// the flag help on --yolo. Explicit `deny`
 	// rules in .yottacode/permissions.json still apply.
-	BypassPermissions      bool
-	Version                string // e.g. "0.3.0" — shown in the header
-	Commit                 string // short SHA the binary was built from; "" when unknown (go run, tarball)
-	Dirty                  bool   // true when the build had uncommitted changes; renders a "*" beside the commit
-	Branch                 string // current git branch (empty if not in a repo)
-	Worktree               string // yottacode worktree name when running inside one (empty for main checkout); rendered as a status-line chip
-	MemorySummary          string // "USER", "YOTTA", "USER+YOTTA", "UMEM", "USER+UMEM", or "" if none
-	BaseSystemPrompt       string // pre-memory prompt — needed by /memory reload to recompose
-	EmbedClient            *memory.EmbedClient
+	BypassPermissions bool
+	Version           string // e.g. "0.3.0" — shown in the header
+	Commit            string // short SHA the binary was built from; "" when unknown (go run, tarball)
+	Dirty             bool   // true when the build had uncommitted changes; renders a "*" beside the commit
+	Branch            string // current git branch (empty if not in a repo)
+	Worktree          string // yottacode worktree name when running inside one (empty for main checkout); rendered as a status-line chip
+	MemorySummary     string // "USER", "YOTTA", "USER+YOTTA", "UMEM", "USER+UMEM", or "" if none
+	BaseSystemPrompt  string // pre-memory prompt — needed by /memory reload to recompose
+	EmbedClient       *memory.EmbedClient
 
 	// FileCfg holds tunables loaded from ~/.yottacode/config.toml
 	// (context watermarks, retrieval). The TUI reads these at session
@@ -137,6 +136,14 @@ type Config struct {
 	// /skills picker; the slash command still falls through to the
 	// "unknown command" error in that case.
 	SkillTool *agent.SkillTool
+
+	// SummarizerAdapter routes the /summarize + auto-compaction call to
+	// the fast model under cache-safe routing. nil → New() falls back to
+	// Cfg.Adapter (the legacy single-adapter behavior).
+	SummarizerAdapter agentStreamer
+	// SummarizerModel is the fast model's name for routing telemetry;
+	// empty when summarization isn't routed.
+	SummarizerModel string
 }
 
 // Model is the Bubbletea state for the chat TUI. The TUI runs in inline mode
@@ -146,12 +153,12 @@ type Config struct {
 // terminal — not the app — owns history, so native selection, scroll-wheel,
 // and copy work end-to-end.
 type Model struct {
-	parentCtx              context.Context
-	cfg                    agent.LoopConfig
-	modelName              string
-	baseURL                string
-	apiKey                 string
-	provider               string
+	parentCtx context.Context
+	cfg       agent.LoopConfig
+	modelName string
+	baseURL   string
+	apiKey    string
+	provider  string
 	// providerLabel is the human-readable identity shown in the
 	// status bar — typically the catalog entry name ("nvidia-nim",
 	// "xai") rather than the dispatch kind ("openai-compatible").
@@ -185,6 +192,16 @@ type Model struct {
 	memorySummary          string
 	baseSystemPrompt       string // pre-memory prompt; used by /memory reload
 	embedClient            *memory.EmbedClient
+
+	// summarizerAdapter is the streamer the /summarize + auto-compaction
+	// path calls into. When cache-safe routing is on it points at the
+	// fast model (compaction is a single isolated call on a near-full
+	// context — a large, safe saving); otherwise it equals cfg.Adapter.
+	// Never nil after New().
+	summarizerAdapter agentStreamer
+	// summarizerModel is the fast model's name (for routing telemetry /
+	// future per-model usage attribution); empty when not routed.
+	summarizerModel string
 
 	// fileCfg mirrors ~/.yottacode/config.toml. Fields read by the
 	// extractor (confidence threshold, max input) and the watermark
@@ -444,20 +461,20 @@ type Model struct {
 	paragraphStart bool
 
 	// Approval modal state
-	awaitingApproval       bool
-	approvalTool           string
-	approvalPreview        string
-	approvalArgs           string
+	awaitingApproval bool
+	approvalTool     string
+	approvalPreview  string
+	approvalArgs     string
 	// approvalAllowAlwaysOK gates the [a]lways-allow keypress. Set
 	// true when DeriveAllowRule can produce a sensible pattern from
 	// this call; false for compound shell commands and other shapes
 	// where a one-click blanket grant would be a footgun. Recomputed
 	// each time a new ApprovalNeeded event lands.
-	approvalAllowAlwaysOK  bool
+	approvalAllowAlwaysOK bool
 	// approvalDerivedRule is the pattern the modal will save when the
 	// user picks [a]. Shown in the modal so the user knows what
 	// they're committing to.
-	approvalDerivedRule    string
+	approvalDerivedRule string
 
 	// Inline path-trust elevation modal state (Prompt 2 in
 	// yottacode-roadmap/folder-trust.md). When awaitingPathTrust is
@@ -479,6 +496,16 @@ type Model struct {
 	// doesn't re-fire the openai-auth backend probe); any key closes.
 	usageOpen  bool
 	usagePanel string
+	// Context report overlay (/context). Renders the context-window
+	// breakdown on the inline-overlay surface (below the cmdline +
+	// status bar) instead of in chat history, so the report — which is
+	// transient inspection, not conversation — stays out of scrollback,
+	// the transcript, and resume replay. Body is snapshotted at open
+	// time (the report reads memory files from disk and walks the skill
+	// set, too heavy to recompute every frame); any key dismisses it,
+	// mirroring the cheatsheet.
+	contextReportOpen bool
+	contextReportBody string
 
 	// Permissions picker (/permissions). Two-row picker (shared /
 	// local) modelled on /memory's three-row picker — Up/Down
@@ -815,6 +842,8 @@ func New(parent context.Context, c Config) Model {
 		memorySummary:          c.MemorySummary,
 		baseSystemPrompt:       c.BaseSystemPrompt,
 		embedClient:            c.EmbedClient,
+		summarizerAdapter:      summarizerOrDefault(c.SummarizerAdapter, c.Cfg.Adapter),
+		summarizerModel:        c.SummarizerModel,
 		fileCfg:                c.FileCfg,
 		subagentTasks:          c.Subagents,
 		subagentTool:           c.AgentTool,
@@ -929,11 +958,11 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.WindowSizeMsg:
 		wasReady := m.ready
-		// Reserve scrollbackLeftMargin cols on the left so every emitted
-		// line gets a uniform left margin (added in queuePrintln). All
-		// downstream width math (tool cards, table sizing, prose wrap)
-		// operates on the reduced m.width so content never overflows the
-		// margin we just claimed.
+		// m.width is the full terminal width minus the (now zero)
+		// scrollbackLeftMargin — see the const's note on the flush-left
+		// canvas. The subtraction stays so a future non-zero margin would
+		// flow through every downstream width calc (tool cards, table
+		// sizing, prose wrap) without further changes.
 		m.width = msg.Width - scrollbackLeftMargin
 		if m.width < 20 {
 			m.width = msg.Width // terminal too narrow; bypass the margin
@@ -949,10 +978,21 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// don't reprint.
 			if !m.startupPrinted {
 				m.startupPrinted = true
-				m.appendRaw(renderStartupBox(m.version, m.commit, m.dirty, m.modelName, m.cwd, m.branch, m.memorySummary, m.providerProfile, m.startupTip(), m.width))
+				m.appendRawFlush(renderStartupBox(m.version, m.commit, m.dirty, m.modelName, m.cwd, m.branch, m.memorySummary, m.providerProfile, m.startupTip(), m.width))
 				// One blank line of breathing room between the card and
 				// the input frame — matches the Phase 2 spacing target.
 				m.queuePrintln("")
+				// Construction-time entry banners (permissions-bypass,
+				// plan/auto mode, custom-command errors) recorded into
+				// historyLines before any width was known — queuePrintln
+				// deferred their emission rather than wrap at the 80-col
+				// fallback (see queuePrintlnIndented). Emit them now at the
+				// real width, below the box, matching the box-then-history
+				// order the resize replay uses so the layout is identical
+				// on first boot and after every resize.
+				for _, line := range m.historyLines {
+					m.queuePrintln(line)
+				}
 				for _, n := range m.pendingStartupNotices {
 					m.appendLine(n)
 				}
@@ -984,20 +1024,21 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// the status bar already carries model/provider/cwd, so
 			// re-emitting the card on every resize would be redundant)
 			// → every conversation line emitted so far, in order. Each
-			// replay line is queued as its own per-line tea.Println via
-			// queuePrintln rather than as one multi-line tea.Println —
-			// Bubbletea's renderer in inline mode miscounts the row
-			// delta when a single Println carries multiple
-			// \n-separated lines or a line that auto-wraps, which is
-			// what causes the "clipped/overpainted assistant text
-			// after wrapping changes" symptom.
+			// replay line goes through queuePrintln — the SAME path live
+			// emission uses — so it gets the \r\x1b[2K clear-line prefix
+			// (cursor reset, no column bleed) and is re-wrapped to the
+			// NEW width. Emitting bare tea.Println(line) here instead was
+			// the indentation-drift bug: replayed lines skipped the clear
+			// prefix and the re-wrap, so post-resize content landed at a
+			// different column than live content and stale-width wraps
+			// smeared across rows.
 			m.pendingCmds = append(m.pendingCmds, tea.ClearScreen)
 			if m.shouldShowStartupCard() {
-				m.queuePrintln(renderStartupBox(m.version, m.commit, m.dirty, m.modelName, m.cwd, m.branch, m.memorySummary, m.providerProfile, m.startupTip(), m.width))
+				m.queuePrintlnFlush(renderStartupBox(m.version, m.commit, m.dirty, m.modelName, m.cwd, m.branch, m.memorySummary, m.providerProfile, m.startupTip(), m.width))
 				m.queuePrintln("")
 			}
 			for _, line := range m.historyLines {
-				m.pendingCmds = append(m.pendingCmds, tea.Println(line))
+				m.queuePrintln(line)
 			}
 			return m, nil
 		}
@@ -1011,6 +1052,11 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.usageOpen {
 			m.usageOpen = false
 			m.usagePanel = ""
+			return m, nil
+		}
+		if m.contextReportOpen {
+			m.contextReportOpen = false
+			m.contextReportBody = ""
 			return m, nil
 		}
 		if m.permissionsOpen {
@@ -1864,6 +1910,9 @@ func (m Model) View() string {
 	}
 	if m.usageOpen {
 		return m.renderInlineOverlay(m.usagePanel)
+	}
+	if m.contextReportOpen {
+		return m.renderInlineOverlay(m.contextReportBody)
 	}
 	if m.permissionsOpen {
 		return m.renderInlineOverlay(renderPermissionsOverlay(m))
@@ -2846,7 +2895,12 @@ func (m Model) renderStatus() string {
 		if worktreeSeg != "" {
 			segs = append(segs, worktreeSeg)
 		}
-		return "  " + strings.Join(segs, sep)
+		// Flush-left: the status dot sits at column 0, aligned with the
+		// input frame's left border directly above it (and the flush-left
+		// scrollback canvas). An earlier 2-space inset trailed the old
+		// scrollback margin; with the canvas flush-left it just floated
+		// the bar 2 columns off the box edge.
+		return strings.Join(segs, sep)
 	}
 
 	w := m.width
@@ -3556,14 +3610,20 @@ func (m *Model) handleStreamLine(line string) {
 // cardMaxWidthCap for visual consistency.
 const proseMaxWidth = 120
 
-// scrollbackLeftMargin is the column inset applied to every line emitted
-// to scrollback (cards, prose, user input, system notices, footers).
-// We claim it once in the WindowSizeMsg handler — m.width is the
-// terminal width minus this margin, so every downstream width calc
-// (table sizing, prose wrap, card width) naturally leaves room for it —
-// and prepend the spaces in queuePrintln. One knob shifts the whole
-// conversation canvas without touching individual style padding.
-const scrollbackLeftMargin = 2
+// scrollbackLeftMargin is a global column inset applied to every line
+// emitted to scrollback. It is 0: the conversation canvas is flush-left,
+// sharing a single column-0 edge with the chrome (startup box, input
+// frame, status bar). Structural glyphs — card gutters (╭ │ ╰), the
+// user-echo chevron (❯), banners — sit at column 0; the 2-space text
+// indent users read comes from each element's own structure (the card
+// gutter's trailing space, styleAssistantBody's PaddingLeft(2)), NOT
+// from this margin.
+//
+// Kept as a named constant (rather than deleted) so queuePrintln and its
+// flush variant stay one code path and the width math reads explicitly.
+// A non-zero value would re-inset the whole canvas; doing so reintroduces
+// the chrome-vs-content misalignment that flush-left removed.
+const scrollbackLeftMargin = 0
 
 // emitAssistantProse renders a prose line from the assistant, word-wraps
 // it to a comfortable reading width, and appends the result to scrollback.
@@ -4179,8 +4239,8 @@ func renderAssistantBlock(rendered string) string {
 }
 
 var (
-	inlineCodeRE          = regexp.MustCompile("`[^`]+`")
-	boldRE                = regexp.MustCompile(`\*\*([^*]+)\*\*`)
+	inlineCodeRE = regexp.MustCompile("`[^`]+`")
+	boldRE       = regexp.MustCompile(`\*\*([^*]+)\*\*`)
 	// inlinePathRE runs *after* inlineCodeRE has already injected ANSI
 	// escapes into the line, so the character class for the first
 	// alternative must exclude the ESC byte (\x1b) — otherwise the
@@ -4189,7 +4249,7 @@ var (
 	// the chunk with those bytes still inside, and the embedded `[0m`
 	// (with its ESC eaten by adjacent escape sequences) leaks into the
 	// terminal as visible literal text.
-	inlinePathRE = regexp.MustCompile("(^|[\\s(])((?:\\./|\\../|~/|/)[^\\s:;,)\\]\x1b]+|[A-Za-z0-9._/-]+\\.(?:go|md|txt|json|ya?ml|toml|ts|tsx|js|jsx|py|rs|sh|bash|zsh|sql|css|html|xml))")
+	inlinePathRE          = regexp.MustCompile("(^|[\\s(])((?:\\./|\\../|~/|/)[^\\s:;,)\\]\x1b]+|[A-Za-z0-9._/-]+\\.(?:go|md|txt|json|ya?ml|toml|ts|tsx|js|jsx|py|rs|sh|bash|zsh|sql|css|html|xml))")
 	bulletLineRE          = regexp.MustCompile(`^•\s+(.*)$`)
 	markdownBulletLineRE  = regexp.MustCompile(`^(\s*)([-*+])\s+(.*)$`)
 	numberedListLineRE    = regexp.MustCompile(`^(\s*)(\d+[.)])\s+(.*)$`)
@@ -4423,6 +4483,17 @@ func (m *Model) appendRaw(s string) {
 	m.queuePrintln(s)
 }
 
+// appendRawFlush is appendRaw for content that should emit at column 0
+// instead of the scrollbackLeftMargin gutter — currently just the startup
+// identity card, aligned with the flush-left input frame.
+func (m *Model) appendRawFlush(s string) {
+	if m.transcript.Len() > 0 {
+		m.transcript.WriteString("\n\n")
+	}
+	m.transcript.WriteString(s)
+	m.queuePrintlnFlush(s)
+}
+
 // queuePrintln queues s as one or more tea.Println commands — one per
 // terminal-row-sized chunk — without touching the transcript builder.
 // Used by appendRaw and by the resize replay path.
@@ -4453,12 +4524,34 @@ func (m *Model) appendRaw(s string) {
 // already appends `ansi.EraseLineRight` to every short queued
 // message line (standard_renderer.go:202).
 func (m *Model) queuePrintln(s string) {
+	m.queuePrintlnIndented(s, scrollbackLeftMargin)
+}
+
+// queuePrintlnFlush emits s at column 0, bypassing scrollbackLeftMargin.
+// Used for the startup identity card, which is deliberately aligned with
+// the flush-left command-line input frame (also column 0) rather than the
+// inset conversation canvas — the two read as the session's top/bottom
+// chrome bookends.
+func (m *Model) queuePrintlnFlush(s string) {
+	m.queuePrintlnIndented(s, 0)
+}
+
+func (m *Model) queuePrintlnIndented(s string, leftMargin int) {
 	width := m.width
 	if width <= 0 {
-		width = 80
+		// Before the first WindowSizeMsg the terminal width is unknown.
+		// Emitting now would hard-wrap at the 80-col fallback and the
+		// queued lines would race with the startup box (the entry-banner
+		// "wraps at 80 and interleaves with the welcome box" bug). Callers
+		// at this stage are construction-time appendLine (mode/permission
+		// entry banners, custom-command errors) which have already recorded
+		// s into historyLines and the transcript — the startup handler
+		// re-emits historyLines at the real width once it lands. So defer
+		// rather than emit at the wrong width.
+		return
 	}
 	const clearLine = "\r\x1b[2K"
-	margin := strings.Repeat(" ", scrollbackLeftMargin)
+	margin := strings.Repeat(" ", leftMargin)
 	for _, line := range strings.Split(s, "\n") {
 		// Blank rows emit as bare empty lines so visual paragraph
 		// breaks stay clean — no trailing whitespace to scroll past.

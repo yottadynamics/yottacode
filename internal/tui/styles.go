@@ -169,8 +169,8 @@ func buildStyles(p themes.Palette) {
 	colorError = p.Error
 	colorContent = p.Content
 	colorDim = p.Dim
-	colorMuted = p.Dim         // legacy alias: "muted text" maps to Dim
-	colorBrand = p.Success     // legacy alias: brand mark = green/success
+	colorMuted = p.Dim     // legacy alias: "muted text" maps to Dim
+	colorBrand = p.Success // legacy alias: brand mark = green/success
 	colorAssistant = p.Assistant
 	colorWarn = p.Warning
 	colorErr = p.Error
@@ -223,12 +223,12 @@ func buildStyles(p themes.Palette) {
 		PaddingLeft(2)
 
 	styleStatusModel = lipgloss.NewStyle().Foreground(colorContent)
-	// System notices (`[queued]`, `[mcp]`, `[checkpoints]`, …) and
-	// command-handler errors (`[git-commit] …`) get the same 2-col
-	// left padding as assistant prose so the conversation gutter
-	// stays uniform — every line of scrollback sits at column 3.
-	styleAuto = lipgloss.NewStyle().Foreground(colorMuted).Italic(true).PaddingLeft(2)
-	styleError = lipgloss.NewStyle().Foreground(colorErr).Bold(true).PaddingLeft(2)
+	// System notices (`[queued]`, `[mcp]`, `[checkpoints]`, `[provider]`,
+	// `[model]`, …) carry no PaddingLeft, so on the flush-left canvas they
+	// sit at column 0 — lined up with the startup card border and other
+	// structural chrome rather than the 2-space prose gutter.
+	styleAuto = lipgloss.NewStyle().Foreground(colorMuted).Italic(true)
+	styleError = lipgloss.NewStyle().Foreground(colorErr).Bold(true)
 	styleWarnIcon = lipgloss.NewStyle().Foreground(colorWarning).Bold(true)
 	styleApprovalBox = lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
@@ -266,13 +266,16 @@ func buildStyles(p themes.Palette) {
 
 	styleWatermark = lipgloss.NewStyle().Foreground(colorWarn).Italic(true).PaddingLeft(2)
 	styleWatermarkAlert = lipgloss.NewStyle().Foreground(colorWarn).Bold(true).PaddingLeft(2)
+	// No MarginLeft: the box border sits at column 0, flush-left with the
+	// startup box and input frame (the canvas is flush-left — see
+	// scrollbackLeftMargin). An earlier MarginLeft(2) trailed the old
+	// scrollback margin and now just floats the box off the chrome edge.
 	styleWatermarkBox = lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(colorWarn).
 		Foreground(colorWarn).
 		Bold(true).
-		Padding(0, 1).
-		MarginLeft(2)
+		Padding(0, 1)
 	if hasThemeBackground {
 		styleWatermarkBox = styleWatermarkBox.Background(themeBackground)
 	}

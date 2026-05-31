@@ -37,7 +37,7 @@ func (a *AutoModeState) IsActive() bool {
 // hand over shell access or amend git history.
 //
 // To get true blanket auto-approval (including run_bash and commits),
-// launch with --dangerously-skip-permissions; that's the user-explicit
+// launch with --yolo; that's the user-explicit
 // "yolo" path and is intentionally session-wide so it can't be toggled
 // away in the middle of a run (mirroring Claude Code).
 func IsAutoModeSafetyFloor(toolName string) bool {

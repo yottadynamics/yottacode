@@ -136,7 +136,7 @@ Ship your own under `.yottacode/agents/<name>.md` (project) or `~/.yottacode/age
 
 **Auto mode** (`Shift+Tab` from normal, or `--permission-mode auto`) skips approval friction when you trust a multi-step implementation. `run_bash`, `git_commit`, `git_checkpoint`, and `rollback` remain in the safety floor and still prompt. `Shift+Tab` cycles: **normal** → **auto** → **plan** → **normal**.
 
-> The permissions-bypass overlay (`--dangerously-skip-permissions`) is startup-only; there is no in-TUI toggle. See [`docs/tui-slash-commands.md`](docs/tui-slash-commands.md).
+> The permissions-bypass overlay (`--yolo`) is startup-only; there is no in-TUI toggle. See [`docs/tui-slash-commands.md`](docs/tui-slash-commands.md).
 
 ### Per-Prompt Checkpoints
 
@@ -225,7 +225,7 @@ See [`docs/worktrees.md`](docs/worktrees.md).
 **Auto mode** and the **permissions-bypass overlay** are intentionally not slash commands:
 
 - **Auto mode** — `Shift+Tab` from normal mode, or `yottacode --permission-mode auto`
-- **Permissions bypass** — `yottacode --dangerously-skip-permissions` at launch only
+- **Permissions bypass** — `yottacode --yolo` at launch only
 
 ### From the Shell
 

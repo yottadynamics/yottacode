@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 
 	"github.com/anthropics/anthropic-sdk-go"
@@ -233,6 +234,19 @@ func (a *anthropicAdapter) ChatStream(ctx context.Context, messages []Message, t
 		if err := stream.Err(); err != nil {
 			out <- StreamEvent{Kind: EventErr, Err: err}
 			return
+		}
+
+		// A tool_use block is appended to toolCalls only on its
+		// content_block_stop. Any tool_use still open in `blocks` means
+		// the stream ended mid-call (a clean end with no content_block_stop
+		// / message_stop). Emitting EventDone would silently drop that call
+		// and commit an assistant turn missing a tool_use the user saw
+		// streaming — a corrupted history. Surface an error instead.
+		for _, pb := range blocks {
+			if pb.kind == "tool_use" {
+				out <- StreamEvent{Kind: EventErr, Err: fmt.Errorf("anthropic: stream ended with incomplete tool call %q — response truncated", pb.toolName)}
+				return
+			}
 		}
 
 		out <- StreamEvent{Kind: EventDone, Final: &Message{

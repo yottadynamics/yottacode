@@ -88,7 +88,7 @@ const (
 	// normally auto-execute. Useful for things like `Read(.env)`.
 	Ask
 	// Deny means a rule explicitly refuses this call — never execute,
-	// even under --dangerously-skip-permissions. The user wrote the
+	// even under --yolo. The user wrote the
 	// rule on purpose; bypass is a "skip prompts" knob, not an "ignore
 	// my policy" knob.
 	Deny
@@ -121,7 +121,12 @@ type Rule struct {
 // files. Concurrency-safe: the agent goroutine reads via Evaluate while
 // the TUI may write via AddAllow.
 type Permissions struct {
-	mu       sync.RWMutex
+	mu sync.RWMutex
+	// reloadMu serializes Reload end-to-end. mu only guards the in-memory
+	// swap; without reloadMu two concurrent Reload calls could both read
+	// the same on-disk state and then race on the swap, so a reload that
+	// raced a slightly-later one could win and leave stale rules live.
+	reloadMu sync.Mutex
 	cwd      string
 	deny     []Rule
 	allow    []Rule
@@ -222,7 +227,13 @@ func (p *Permissions) loadFile(path, source string) error {
 
 // Reload re-reads both files from disk, replacing the in-memory rule
 // set. Useful after the user edits permissions.json with their editor.
+//
+// reloadMu is held for the whole read+swap so concurrent reloads can't
+// interleave: the disk read and the swap happen as one unit per caller.
+// Evaluate still reads through mu and never blocks on a reload's disk I/O.
 func (p *Permissions) Reload() error {
+	p.reloadMu.Lock()
+	defer p.reloadMu.Unlock()
 	fresh, err := Load(p.cwd)
 	if err != nil {
 		return err
@@ -478,11 +489,31 @@ func matchPattern(pattern, value, cwd string, isPath bool) bool {
 	return stringGlobMatch(pattern, value)
 }
 
+// globRegexCache memoizes the compiled regex for each glob pattern.
+// Evaluate runs on every tool call against every rule, so without this the
+// same handful of patterns recompile hundreds of times per session. A
+// pattern always compiles to the same regex, so the cache never needs
+// invalidation — a plain package-level sync.Map suffices.
+var globRegexCache sync.Map // map[string]*regexp.Regexp
+
 // stringGlobMatch implements `*` (any sequence) and `?` (any one char)
-// semantics for free-form descriptor matching. Compiled to a regex per
-// call — the pattern set is small so the cost is negligible vs adding
-// a cache and the lifecycle pain that comes with one.
+// semantics for free-form descriptor matching. The compiled regex is
+// cached per pattern (see globRegexCache).
 func stringGlobMatch(pattern, value string) bool {
+	re := compileGlob(pattern)
+	if re == nil {
+		return false
+	}
+	return re.MatchString(value)
+}
+
+// compileGlob returns the cached *regexp.Regexp for pattern, compiling and
+// caching it on first use. Returns nil if the pattern can't compile (treated
+// as a non-match by callers).
+func compileGlob(pattern string) *regexp.Regexp {
+	if cached, ok := globRegexCache.Load(pattern); ok {
+		return cached.(*regexp.Regexp)
+	}
 	var sb strings.Builder
 	sb.WriteString(`^`)
 	for _, r := range pattern {
@@ -498,7 +529,8 @@ func stringGlobMatch(pattern, value string) bool {
 	sb.WriteString(`$`)
 	re, err := regexp.Compile(sb.String())
 	if err != nil {
-		return false
+		return nil
 	}
-	return re.MatchString(value)
+	actual, _ := globRegexCache.LoadOrStore(pattern, re)
+	return actual.(*regexp.Regexp)
 }

@@ -95,7 +95,7 @@ Fields:
 - `name` (required) — letters/digits/underscore/hyphen, max 64 chars. Used directly as `subagent_type` in tool calls.
 - `description` (required) — one line shown to the parent model in the `Agent` tool schema.
 - `tools` (optional) — allowlist of tool names. Defaults to "inherit all parent tools (minus `Agent` itself)". Use `*` or `["*"]` to be explicit.
-- `model` (optional) — adapter model override for this agent. Useful for routing search-heavy agents to a cheaper model.
+- `model` (optional) — adapter model override for this agent. Honored when [cache-safe task routing](models.md#cache-safe-task-routing) is enabled (`[router].mode` = `manual` or `auto`); it always wins over the auto heuristic. With routing `off` the field is parsed but inert. Useful for pinning a search-heavy agent to a cheaper model, or a high-stakes agent to a stronger one.
 - `background` (optional) — when `true`, dispatches default to background unless the caller explicitly passes `run_in_background:false`. Falls back to foreground in sessions where background isn't available (oneshot). Use this for slow off-turn checks the parent shouldn't block on (e.g. the `verification` builtin).
 - Body — the agent's system prompt. Be specific about what the parent should expect back.
 
@@ -222,7 +222,7 @@ prefix) because that's safety-floor.
 ### Yolo mode + subagents
 
 `YoloModeState` is process-wide and pointer-shared. Once entered
-(via `--dangerously-skip-permissions` at startup), it applies to all
+(via `--yolo` at startup), it applies to all
 subagents in the session, including background runs. The
 yolo override skips every approval — including the safety floor —
 and removes the iteration cap entirely. Use only in trusted
@@ -374,6 +374,15 @@ Subagents make their own API calls against the same provider key as
 the parent. Token usage rolls into the session's overall counter via
 the shared adapter. Per-subagent token counts are surfaced in the
 `SubagentDone` event and stored in the task registry.
+
+With [cache-safe task routing](models.md#cache-safe-task-routing)
+enabled, read-only/search subagents run on the cheaper `fast_model`,
+heavier ones on `smart_model`, and any agent with an explicit `model:`
+on whatever it names — all in an isolated context that never shared the
+main thread's prompt cache, so routing is a pure saving. The model each
+subagent ran on shows in the `/subagents` picker and on its completion
+card. (Per-subagent token figures are estimates; yottacode does not yet
+aggregate per-model token totals across a session.)
 
 ## Known limitations
 

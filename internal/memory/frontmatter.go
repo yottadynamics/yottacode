@@ -24,13 +24,23 @@ type Frontmatter struct {
 // (no frontmatter at all is fine — caller defaults Type to "reference"
 // and Name to the basename).
 func ParseFrontmatter(data []byte) (fm Frontmatter, body string, ok bool) {
-	s := string(data)
+	// Normalize CRLF first: files hand-edited on Windows / under WSL
+	// otherwise miss the "\n---\n" fence and get treated as headerless,
+	// which silently injects the raw frontmatter as body text.
+	s := strings.ReplaceAll(string(data), "\r\n", "\n")
 	if !strings.HasPrefix(s, "---\n") {
 		return Frontmatter{}, s, false
 	}
 	header, rest, found := strings.Cut(s[4:], "\n---\n")
 	if !found {
-		return Frontmatter{}, s, false
+		// Tolerate a closing fence that is the final line with no trailing
+		// newline ("...\n---" at EOF) — an empty-body memory.
+		if after := s[4:]; strings.HasSuffix(after, "\n---") {
+			header = strings.TrimSuffix(after, "\n---")
+			rest = ""
+		} else {
+			return Frontmatter{}, s, false
+		}
 	}
 	body = rest
 	sc := bufio.NewScanner(strings.NewReader(header))

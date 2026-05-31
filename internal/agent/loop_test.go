@@ -257,7 +257,7 @@ func TestLoop_BypassPermissionsAutoApproves(t *testing.T) {
 
 	events, _ := runTurnSync(t, context.Background(), cfg, &hist, nil)
 	if hasEvent[ApprovalNeeded](events) {
-		t.Errorf("--dangerously-skip-permissions should suppress approval prompt")
+		t.Errorf("--yolo should suppress approval prompt")
 	}
 	var auto *ApprovalAuto
 	for i := range events {
@@ -339,7 +339,7 @@ func TestLoop_PermissionsDenyBlocksEvenUnderBypass(t *testing.T) {
 
 	events, _ := runTurnSync(t, context.Background(), cfg, &hist, nil)
 	if hasEvent[ToolStart](events) {
-		t.Errorf("deny rule should prevent execution even with --dangerously-skip-permissions")
+		t.Errorf("deny rule should prevent execution even with --yolo")
 	}
 	var auto *ApprovalAuto
 	for i := range events {

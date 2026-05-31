@@ -28,7 +28,7 @@ The decision is recorded in `~/.yottacode/trusted-roots.json`. Every subfolder o
 - `--allow-paths <dir>` or `YOTTACODE_ALLOW_PATHS=<dir>` — passing the cwd's tree as an allow-paths root satisfies the gate session-only (no write to `trusted-roots.json`).
 - `YOTTACODE_TRUST_ALL=1` — CI escape hatch. Also session-only.
 - `yottacode run` (non-interactive) — trust verification is skipped entirely, matching Claude Code's `-p` behavior.
-- `--dangerously-skip-permissions` does **not** skip the trust gate on its own. Combine with `YOTTACODE_TRUST_ALL=1` for fully unattended runs.
+- `--yolo` does **not** skip the trust gate on its own. Combine with `YOTTACODE_TRUST_ALL=1` for fully unattended runs.
 
 **Manage trust roots:**
 
@@ -89,14 +89,14 @@ Tool calls flow through layered gates in this order:
 
 1. **`Deny` rules** in `permissions.json` always win.
 2. **Plan-mode gate** (only when plan mode is active) — blocks every mutating tool except `todo_write`, `exit_plan_mode`, and writes to the resolved plan file. Returns a structured error to the model so it can switch to a read-only or plan-file alternative.
-3. **Permissions-bypass auto-allow** (only when `--dangerously-skip-permissions` was passed at startup) — every tool auto-allows silently. No safety floor.
+3. **Permissions-bypass auto-allow** (only when `--yolo` was passed at startup) — every tool auto-allows silently. No safety floor.
 4. **Plan-mode auto-allow** — writes to the resolved plan file are the model's only legitimate mutation surface while planning; they auto-allow without a prompt.
 5. **Auto-mode auto-allow** (only when auto mode is active) — non-safety-floor mutating tools auto-allow. Safety floor (`run_bash`, `git_commit`, `git_checkpoint`, `rollback`) normally still prompts, with one carve-out: `run_bash` calls whose every segment uses a verb from a built-in read-only allowlist (`ls`, `cat`, `head`, `tail`, `wc`, `grep`, `rg`, `find`, `awk`, `cut`, `sort`, `uniq`, `diff`, `cd`, `pwd`, `which`, `echo`, `date`, `tree`, `stat`, `file`, `du`, `df`, …) AND carries no risk flag (no `>` redirects, no pipe-into-shell, no sudo) auto-allow under Source `auto-mode-safe-bash`. The intent: a model's habitual `cd <project> && grep …` chain doesn't break flow, while any mutation (rm, mv, touch, curl, go test, sed -i, …) still prompts.
 6. **`Allow` rules** in `permissions.json` skip the prompt.
 7. **`Ask` rules** force a prompt even on tools that would normally auto-execute.
 8. **Tool-default policy** (the tool's own `RequiresApproval`) prompts mutating tools and auto-executes read-only ones.
 
-`Deny` always wins, including over permissions bypass. `--dangerously-skip-permissions` is "skip prompts," not "ignore my policy."
+`Deny` always wins, including over permissions bypass. `--yolo` is "skip prompts," not "ignore my policy."
 
 Trust controls separate into **modes** (workflow shape, mutually exclusive) and the **permissions-bypass overlay** (orthogonal startup flag):
 
@@ -104,7 +104,7 @@ Trust controls separate into **modes** (workflow shape, mutually exclusive) and 
 |---|---|---|
 | Plan mode | `/plan` · `Shift+Tab` · `--permission-mode plan` | Read-only research; gated to plan file; ends with `exit_plan_mode` |
 | Auto mode | `Shift+Tab` · `--permission-mode auto` (no slash command) | Edits auto, bash/commits prompt, 4× iteration cap |
-| Permissions bypass | `--dangerously-skip-permissions` at startup (no slash, no keybinding) | Drops all prompts, no iteration cap; sits on top of any mode |
+| Permissions bypass | `--yolo` at startup (no slash, no keybinding) | Drops all prompts, no iteration cap; sits on top of any mode |
 
 Mirroring Claude Code, auto mode has no slash command and permissions bypass enters only via the startup flag — these high-autonomy states are intentionally kept off the palette and off the `Shift+Tab` cycle so they can't be triggered by accident. Permissions bypass, once enabled, is one-way per process: restart without the flag to recover. The bypass banner (`⚠ permissions bypass`) takes precedence visually while it's on; when a mode (auto or plan) is also active, the mode banner picks up a `⚠ bypass` suffix.
 
@@ -179,7 +179,7 @@ Add this to `.gitignore`:
 }
 ```
 
-Rules support `allow`, `ask`, and `deny` policy. Explicit deny rules still apply even when `--dangerously-skip-permissions` is set.
+Rules support `allow`, `ask`, and `deny` policy. Explicit deny rules still apply even when `--yolo` is set.
 
 ## Creating allow rules from approvals
 
@@ -197,10 +197,10 @@ Examples:
 ## Permissions bypass (the danger setting)
 
 ```bash
-yottacode --dangerously-skip-permissions
+yottacode --yolo
 ```
 
-This is dangerous. It skips approval prompts for matching operations and removes the iteration cap, but explicit deny rules remain enforced. Use it only in trusted automation or disposable environments. There is no in-TUI toggle — restart without the flag to recover. Mirrors Claude Code's `--dangerously-skip-permissions` flag.
+This is dangerous. It skips approval prompts for matching operations and raises the iteration cap to a high but finite budget, but explicit deny rules remain enforced. Use it only in trusted automation or disposable environments. There is no in-TUI toggle — restart without the flag to recover.
 
 ## Provider-hosted search allow lists
 

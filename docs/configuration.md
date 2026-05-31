@@ -29,8 +29,8 @@ The same provider flags also apply to `yottacode doctor`.
 | `--system` | — | no | Override the default system prompt |
 | `--resume` | — | no | Resume a session by id or name |
 | `--continue` / `-c` | — | no | Resume the most recent session whose cwd matches the current directory. Mirrors Claude Code's `--continue`. Mutually exclusive with `--resume`. |
-| `--dangerously-skip-permissions` | — | no | DANGEROUS: auto-approve every tool call without prompting and remove the iteration cap (`deny` rules in `permissions.json` still apply). Mirrors Claude Code's flag. Launch-only; cannot be toggled mid-run — restart yottacode without the flag to recover. |
-| `--max-iterations` | — | no | Tool-call cap per turn; defaults to `50`. Auto mode raises the effective cap to 4× (200). `--dangerously-skip-permissions` removes it entirely. |
+| `--yolo` | — | no | DANGEROUS: auto-approve every tool call without prompting and remove the iteration cap (`deny` rules in `permissions.json` still apply). Mirrors Claude Code's flag. Launch-only; cannot be toggled mid-run — restart yottacode without the flag to recover. |
+| `--max-iterations` | — | no | Tool-call cap per turn; defaults to `50`. Auto mode raises the effective cap to 4× (200). `--yolo` removes it entirely. |
 | `--allow-paths` | `YOTTACODE_ALLOW_PATHS` | no | Comma-separated extra write roots in addition to the current working directory |
 | `--permission-mode` | — | no | Startup permission mode: `default` (no startup mode), `plan` (read-only research; describe the task as your first message), or `auto` (edits auto-allow; bash & commits still prompt). Mirrors Claude Code's `--permission-mode`. No-op for `yottacode run`. |
 | `--plan-resume` | — | no | Resume an existing plan by slug or substring (matched against `~/.yottacode/plans/`, newest-first). Implies `--permission-mode plan`. No-op for `yottacode run`. |
@@ -467,6 +467,47 @@ env      = { GITHUB_PERSONAL_ACCESS_TOKEN = "$GITHUB_PAT" }
 ```
 
 `env` values support `$VAR` substitution from yottacode's process environment so secrets stay out of the config file. v1 supports stdio transport only. See [`mcp.md`](mcp.md) for the full reference, including permission rules (`MCP(...)`), the `/mcp` slash command, and a curated server list.
+
+## Model routing
+
+The `[router]` block hosts two independent, opt-in features.
+
+**Cache-safe task routing** runs isolated work (subagents, history
+compaction) on a cheap model while your main conversation stays on your
+chosen model — a pure cost saving with no prompt-cache churn:
+
+```toml
+[router]
+  mode        = "auto"                          # off | manual | auto (default off)
+  fast_model  = "anthropic:claude-haiku-4-5"
+  smart_model = "anthropic:claude-opus-4-6"
+```
+
+- `mode = "off"` (or absent) — disabled; fully backward compatible.
+- `mode = "manual"` — only routes subagents that declare an explicit `model:`.
+- `mode = "auto"` — also routes read-only/search subagents and summarization to `fast_model`.
+
+`fast_model` / `smart_model` are required when `mode` is not `off` and
+use the `"<provider>"` or `"<provider>:<model>"` grammar; the model must
+exist in that provider's `models`. See [`models.md`](models.md#cache-safe-task-routing)
+for the cost rationale and the auto heuristic.
+
+**Multi-provider failover** (separate feature, same block) dispatches
+each main-thread turn across an ordered candidate list, falling through
+on early failure:
+
+```toml
+[router]
+  enabled                  = true
+  policy                   = "fallback-chain"   # fallback-chain | cheap-first
+  candidates               = ["anthropic:claude-haiku-4-5", "openai:gpt-4o"]
+  health_window_seconds    = 60
+  health_failure_threshold = 3
+```
+
+The two are orthogonal: `enabled`/`candidates` control failover across
+providers; `mode`/`fast_model`/`smart_model` control task routing. You
+can set either, both, or neither.
 
 ## Runtime Reconfiguration
 

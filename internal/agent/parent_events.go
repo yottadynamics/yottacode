@@ -1,6 +1,9 @@
 package agent
 
-import "context"
+import (
+	"context"
+	"sync"
+)
 
 // parentEventsKey is the context key the loop uses to make the parent's
 // events channel available to tool implementations that need to emit
@@ -40,10 +43,15 @@ func ParentEvents(ctx context.Context) chan<- Event {
 // channel for the user's verdict, then routes the answer to the
 // child's own decisions channel.
 //
-// This is safe because while a tool's Execute is running, the parent
-// loop is itself blocked waiting for Execute to return — it is NOT
-// reading from decisions, so the runner can read freely. Once Execute
-// returns the parent loop resumes ownership of the channel.
+// On the serial execution path this is safe because while a tool's
+// Execute is running, the parent loop is itself blocked waiting for
+// Execute to return — it is NOT reading from decisions, so the runner
+// can read freely. On the PARALLEL path that invariant does not hold:
+// several Execute calls run at once, and more than one may want to read
+// decisions (a forwarded subagent approval, a permission Ask prompt, a
+// path-trust elevation). The approval gate (WithApprovalGate) serializes
+// those round-trips so the single decisions channel + single TUI modal
+// still serve one request at a time. See lockApprovalGate.
 type parentDecisionsKey struct{}
 
 // WithParentDecisions attaches the parent loop's decisions channel
@@ -61,4 +69,46 @@ func WithParentDecisions(ctx context.Context, decisions <-chan Decision) context
 func ParentDecisions(ctx context.Context) <-chan Decision {
 	ch, _ := ctx.Value(parentDecisionsKey{}).(<-chan Decision)
 	return ch
+}
+
+// approvalGateKey is the context key carrying the per-parallel-batch
+// mutex that serializes user-interaction round-trips.
+type approvalGateKey struct{}
+
+// WithApprovalGate attaches a mutex that serializes request→decision
+// round-trips across tools running concurrently in one parallel batch.
+// The parent's decisions channel and the TUI's single approval modal can
+// each serve only one request at a time; without this lock two parallel
+// workers reading decisions would misroute the user's answer (authorize
+// the wrong call) or deadlock (one worker waits forever for a second
+// decision the user never gives). A nil gate — the serial path, where
+// there is no contention — is left unattached and locking becomes a
+// no-op.
+func WithApprovalGate(ctx context.Context, gate *sync.Mutex) context.Context {
+	if gate == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, approvalGateKey{}, gate)
+}
+
+// lockApprovalGate acquires the approval gate from ctx (if one is
+// attached) and returns a function that releases it. The returned
+// unlock func is always safe to call exactly once, whether or not a gate
+// was present, so callers can wrap a single round-trip uniformly:
+//
+//	unlock := lockApprovalGate(ctx)
+//	... emit ApprovalNeeded; receive the decision ...
+//	unlock()
+//
+// Hold the lock only for the duration of one request→decision exchange,
+// never across a tool's full Execute — that would serialize the whole
+// parallel batch instead of just its user-interaction points.
+func lockApprovalGate(ctx context.Context) func() {
+	g, _ := ctx.Value(approvalGateKey{}).(*sync.Mutex)
+	if g == nil {
+		return func() {}
+	}
+	g.Lock()
+	var once sync.Once
+	return func() { once.Do(g.Unlock) }
 }

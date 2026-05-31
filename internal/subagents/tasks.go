@@ -64,6 +64,7 @@ type Task struct {
 	Background     bool
 	TokensUsed     int
 	ToolCalls      int    // count of ToolStart events from the child
+	Model          string // model the child ran on when task-routed; "" = inherited the parent's model
 	TranscriptPath string
 	// CanceledByUser is set when /subagents stop fires for this task.
 	// Lets the runner distinguish "user explicitly stopped me" from

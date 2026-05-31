@@ -1000,6 +1000,19 @@ func (a *openAIAuthAdapter) consumeSSE(ctx context.Context, body io.Reader, out 
 		}
 	}
 
+	// A function_call item is added to `pending` on output_item.added and
+	// removed on function_call_arguments.done. If any remain once the
+	// stream ends, the connection closed mid-tool-call (a clean EOF after
+	// a proxy/provider cut the response short). Emitting EventDone here
+	// would drop those calls silently and hand the model a "successful"
+	// turn whose assistant message is missing tool_use blocks the user
+	// saw streaming — a corrupted history. Surface it as an error so the
+	// loop can retry or report instead of committing the truncated turn.
+	if len(pending) > 0 {
+		out <- StreamEvent{Kind: EventErr, Err: fmt.Errorf("openai-auth: stream ended with %d incomplete tool call(s) — response truncated", len(pending))}
+		return
+	}
+
 	final := Message{
 		Role:      RoleAssistant,
 		Content:   content.String(),

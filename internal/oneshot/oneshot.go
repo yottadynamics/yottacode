@@ -23,9 +23,9 @@ import (
 	"github.com/yottadynamics/yottacode/internal/agent"
 	"github.com/yottadynamics/yottacode/internal/cli"
 	"github.com/yottadynamics/yottacode/internal/config"
+	"github.com/yottadynamics/yottacode/internal/experimental"
 	"github.com/yottadynamics/yottacode/internal/filerefs"
 	"github.com/yottadynamics/yottacode/internal/memory"
-	"github.com/yottadynamics/yottacode/internal/experimental"
 	"github.com/yottadynamics/yottacode/internal/permissions"
 	"github.com/yottadynamics/yottacode/internal/session"
 	"github.com/yottadynamics/yottacode/internal/skills"
@@ -71,6 +71,30 @@ func Run(ctx context.Context, opts cli.ChatOptions, prompt string) error {
 	if err != nil {
 		return err
 	}
+	// Semantic memory retrieval: when the configured strategy wants it
+	// ("semantic" or "auto"), probe the local Ollama embedding endpoint
+	// once at startup and wire the resulting client into memory_save
+	// (so headless saves still get .vec sidecars), memory_search, and
+	// per-turn injection. Mirrors the TUI runner so a memory created or
+	// searched via `yottacode run` ranks identically to the interactive
+	// surface. The probe is bounded (Status uses an 800ms timeout) and
+	// gated on strategy, and it doubles as protection against a slow or
+	// unreachable OLLAMA_HOST hanging the single turn on the query
+	// embed. When the model isn't installed we degrade to BM25 and note
+	// it on stderr (oneshot's diagnostics stream).
+	var embedClient *memory.EmbedClient
+	if s := fileCfg.Retrieval.Strategy; s == "semantic" || s == "auto" {
+		ec := memory.NewEmbedClient("", fileCfg.Retrieval.EmbeddingModel)
+		if reachable, installed := ec.Status(ctx); installed {
+			// Short per-call bound on the interactive path (the single
+			// turn's prompt build + any memory_save); reindex keeps the
+			// default 30s.
+			ec.Timeout = memory.InteractiveEmbedTimeout
+			embedClient = ec
+		} else if reachable {
+			fmt.Fprintf(os.Stderr, "memory: embedding model %q not installed — using BM25 (run: ollama pull %s)\n", ec.Model, ec.Model)
+		}
+	}
 	// AutoMemory: flag > env > config file. cli.Resolve handled the
 	// first two; honor the persistent file toggle here so the wizard's
 	// step isn't a no-op for one-shot runs.
@@ -102,6 +126,13 @@ func Run(ctx context.Context, opts cli.ChatOptions, prompt string) error {
 	if err != nil {
 		return err
 	}
+	// Cache-safe task routing: resolve fast/smart adapters for subagent
+	// routing (oneshot has no /summarize loop, so only subagents apply).
+	// nil when [router].mode is off.
+	routerAdapters, err := cli.BuildRouterAdapters(fileCfg, opts)
+	if err != nil {
+		return err
+	}
 	var profile adapter.ProviderProfile
 	if router != nil {
 		profile = router.Profile()
@@ -127,7 +158,7 @@ func Run(ctx context.Context, opts cli.ChatOptions, prompt string) error {
 			sys = defaultSystemPrompt
 		}
 		composed := appendSkillsSection(composeSystemPrompt(sys, profile), skillsRes.Skills)
-		sys = memory.SystemPromptFor(composed, mem, prompt, fileCfg.Retrieval)
+		sys = memory.SystemPromptForSemantic(composed, mem, prompt, fileCfg.Retrieval, embedClient)
 		sess.Messages = append(sess.Messages, adapter.Message{
 			Role:    adapter.RoleSystem,
 			Content: sys,
@@ -138,7 +169,7 @@ func Run(ctx context.Context, opts cli.ChatOptions, prompt string) error {
 			sys = defaultSystemPrompt
 		}
 		composed := appendSkillsSection(composeSystemPrompt(sys, profile), skillsRes.Skills)
-		recomposeSessionSystemPrompt(sess, memory.SystemPromptFor(composed, mem, prompt, fileCfg.Retrieval))
+		recomposeSessionSystemPrompt(sess, memory.SystemPromptForSemantic(composed, mem, prompt, fileCfg.Retrieval, embedClient))
 	}
 	// Auto-inject @<path> file references found in the prompt into the
 	// system prompt before the turn fires. Mirrors the TUI startTurn
@@ -239,8 +270,7 @@ func Run(ctx context.Context, opts cli.ChatOptions, prompt string) error {
 	reg.Register(&agent.GlobTool{Cwd: cwdRef})
 	reg.Register(&agent.GrepTool{Cwd: cwdRef, DenyReadPaths: denyReads})
 	reg.Register(&agent.FetchURLTool{})
-	reg.Register(&agent.MemorySaveTool{Cwd: cwdRef})
-	reg.Register(&agent.MemoryForgetTool{Cwd: cwdRef})
+	registerMemoryTools(reg, cwdRef, embedClient, fileCfg.Retrieval.Strategy)
 	reg.Register(&agent.GitTool{Cwd: cwdRef})
 	reg.Register(&agent.TodoWriteTool{Store: planStore})
 	// ExitPlanModeTool is registered for schema parity with the TUI
@@ -287,6 +317,12 @@ func Run(ctx context.Context, opts cli.ChatOptions, prompt string) error {
 		Cwd:             cwdRef,
 		TranscriptDir:   transcriptDir,
 		AllowBackground: false,
+		FastAdapter:     oneshotRouterFast(routerAdapters),
+		FastModel:       oneshotRouterFastModel(routerAdapters),
+		SmartAdapter:    oneshotRouterSmart(routerAdapters),
+		SmartModel:      oneshotRouterSmartModel(routerAdapters),
+		RouteAuto:       fileCfg.Router.RoutingAuto(),
+		ModelResolver:   oneshotRouterResolve(routerAdapters),
 	}
 	reg.Register(agentTool)
 	// Even though oneshot rejects background spawns (AllowBackground=
@@ -320,6 +356,23 @@ func Run(ctx context.Context, opts cli.ChatOptions, prompt string) error {
 		fmt.Fprintf(os.Stderr, "⚠ session save failed: %v\n", saveErr)
 	}
 	return turnErr
+}
+
+// registerMemoryTools wires the three agent-managed memory tools onto
+// the registry with the same shape the TUI runner uses: memory_save
+// and memory_search both carry the (possibly nil) embedder so headless
+// saves get .vec sidecars and search ranks semantically when Ollama is
+// available, and the search tool inherits the configured retrieval
+// strategy instead of forcing "auto". Extracted so the registration —
+// and the parity with the TUI surface — is unit-testable without
+// driving a full one-shot run. A nil embedder degrades gracefully:
+// memory_save skips the sidecar, search and injection fall back to
+// BM25.
+func registerMemoryTools(reg *agent.Registry, cwdRef *agent.CwdRef, embedClient *memory.EmbedClient, strategy string) {
+	reg.Register(&agent.MemorySaveTool{Cwd: cwdRef, Embedder: embedClient})
+	reg.Register(&agent.MemoryForgetTool{Cwd: cwdRef})
+	reg.Register(&agent.MemorySearchTool{Cwd: cwdRef, Embedder: embedClient, Strategy: strategy})
+	reg.Register(&agent.MemoryGetTool{Cwd: cwdRef})
 }
 
 // splitAllowPaths is a duplicate of the same helper in tui/run.go,
@@ -405,7 +458,7 @@ func stream(
 		case agent.ApprovalAuto:
 			fmt.Fprintf(stderr, "[%s] %s\n", e.Source, e.Preview)
 		case agent.ApprovalNeeded:
-			err := fmt.Errorf("tool %q requires approval; add an allow rule to .yottacode/permissions.json, run interactively, or pass --dangerously-skip-permissions (DANGEROUS)", e.ToolName)
+			err := fmt.Errorf("tool %q requires approval; add an allow rule to .yottacode/permissions.json, run interactively, or pass --yolo (DANGEROUS)", e.ToolName)
 			fmt.Fprintf(stderr, "✗ %v\n", err)
 			if firstErr == nil {
 				firstErr = err
@@ -544,6 +597,50 @@ func appendSkillsSection(base string, loaded []skills.Skill) string {
 		fmt.Fprintf(&b, "- %s: %s\n", sk.Name, sk.Description)
 	}
 	return b.String()
+}
+
+// oneshotRouterFast / oneshotRouterFastModel / oneshotRouterResolve
+// adapt cli.RouterAdapters to the agent.AgentTool fields, nil-safe when
+// routing is disabled. Mirror the TUI's routerFast helpers.
+func oneshotRouterFast(ra *cli.RouterAdapters) agent.Streamer {
+	if ra == nil || ra.Fast == nil {
+		return nil
+	}
+	return ra.Fast
+}
+
+func oneshotRouterFastModel(ra *cli.RouterAdapters) string {
+	if ra == nil {
+		return ""
+	}
+	return ra.FastModel
+}
+
+func oneshotRouterSmart(ra *cli.RouterAdapters) agent.Streamer {
+	if ra == nil || ra.Smart == nil {
+		return nil
+	}
+	return ra.Smart
+}
+
+func oneshotRouterSmartModel(ra *cli.RouterAdapters) string {
+	if ra == nil {
+		return ""
+	}
+	return ra.SmartModel
+}
+
+func oneshotRouterResolve(ra *cli.RouterAdapters) func(string) agent.Streamer {
+	if ra == nil || ra.Resolve == nil {
+		return nil
+	}
+	return func(model string) agent.Streamer {
+		s := ra.Resolve(model)
+		if s == nil {
+			return nil
+		}
+		return s
+	}
 }
 
 func hasBuiltin(tools []adapter.BuiltinToolKind, want adapter.BuiltinToolKind) bool {

@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/charmbracelet/x/ansi"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/yottadynamics/yottacode/internal/adapter"
 	"github.com/yottadynamics/yottacode/internal/agent"
@@ -57,9 +57,10 @@ func TestModel_WindowSizeMakesItReady(t *testing.T) {
 	if !m.ready {
 		t.Errorf("expected ready=true after WindowSizeMsg")
 	}
-	// m.width is the terminal width minus scrollbackLeftMargin (the
-	// 2-col gutter reserved on every emitted line). newTestModel sends
-	// a WindowSizeMsg of 80, so the available content width is 78.
+	// m.width is the terminal width minus scrollbackLeftMargin. The margin
+	// is 0 (flush-left canvas), so m.width is the full 80 cols newTestModel
+	// sends. The subtraction is kept so a future non-zero margin flows
+	// through unchanged.
 	if want := 80 - scrollbackLeftMargin; m.width != want {
 		t.Errorf("model width = %d, want %d (terminal 80 - margin %d)", m.width, want, scrollbackLeftMargin)
 	}
@@ -1157,7 +1158,7 @@ func TestModel_NewSeedsContextTokensFromResumedSession(t *testing.T) {
 	sess, _ := session.New("test-model", "/cwd")
 	sess.Messages = []adapter.Message{
 		{Role: adapter.RoleSystem, Content: "system prompt"},
-		{Role: adapter.RoleUser, Content: strings.Repeat("a", 4000)}, // ~1000 tokens
+		{Role: adapter.RoleUser, Content: strings.Repeat("a", 4000)},      // ~1000 tokens
 		{Role: adapter.RoleAssistant, Content: strings.Repeat("b", 8000)}, // ~2000 tokens
 	}
 	cfg := agent.LoopConfig{Registry: agent.NewRegistry(), MaxIterations: 5}
@@ -1654,9 +1655,9 @@ func TestModel_HistoryDownRespectsTextareaCursorMidDraft(t *testing.T) {
 	}
 	// Prime history so historyForward could fire if the gate let it.
 	m.recordHistory("scratch")
-	m, _ = m.historyBack()                                 // index now pointing inside history
-	m.textInput.SetValue("first line\nsecond line")        // restore the multi-line draft
-	for m.textInput.Line() > 0 {                           // re-anchor cursor on line 0
+	m, _ = m.historyBack()                          // index now pointing inside history
+	m.textInput.SetValue("first line\nsecond line") // restore the multi-line draft
+	for m.textInput.Line() > 0 {                    // re-anchor cursor on line 0
 		var cmd tea.Cmd
 		m.textInput, cmd = m.textInput.Update(tea.KeyMsg{Type: tea.KeyUp})
 		_ = cmd
@@ -1867,18 +1868,264 @@ func TestEmitAssistantProse_ParagraphOpenerNotDoubleIndented(t *testing.T) {
 	}
 }
 
-// System notices like `[queued]` and command-handler error lines now
-// carry the same 2-space left padding as assistant prose, so the
-// conversation gutter stays uniform regardless of which path emitted
-// the line.
-func TestSystemNoticeStyles_AlignWithProse(t *testing.T) {
+// System notices like `[queued]`, `[provider]`, `[model]` and
+// command-handler error lines carry no intrinsic left padding — on the
+// flush-left canvas they sit at column 0, aligned with the startup card
+// border and other structural chrome rather than the 2-space prose gutter.
+func TestSystemNoticeStyles_NoIntrinsicPadding(t *testing.T) {
 	auto := stripANSI(styleAuto.Render("[queued] check"))
-	if !strings.HasPrefix(auto, "  [queued] check") {
-		t.Errorf("styleAuto should pad system notices with 2 leading spaces: %q", auto)
+	if auto != "[queued] check" {
+		t.Errorf("styleAuto should not add intrinsic padding (flush-left at column 0): %q", auto)
 	}
 	errLine := stripANSI(styleError.Render("[git-commit] failed"))
-	if !strings.HasPrefix(errLine, "  [git-commit] failed") {
-		t.Errorf("styleError should pad error notices with 2 leading spaces: %q", errLine)
+	if errLine != "[git-commit] failed" {
+		t.Errorf("styleError should not add intrinsic padding (flush-left at column 0): %q", errLine)
+	}
+}
+
+// printlnBody executes a queued tea.Println cmd and returns the line text
+// it would emit (bubbletea's unexported printLineMessage.messageBody),
+// with the leading clear-line control prefix stripped. reflect.Value.String()
+// is legal on an unexported string field — unlike .Interface() it does not
+// trip the flag check.
+func printlnBody(t *testing.T, cmd tea.Cmd) string {
+	t.Helper()
+	if cmd == nil {
+		t.Fatal("nil cmd")
+	}
+	v := reflect.ValueOf(cmd())
+	if v.Kind() != reflect.Struct || v.NumField() == 0 {
+		t.Fatalf("not a printLineMessage: %#v", v)
+	}
+	return strings.TrimPrefix(stripANSI(v.Field(0).String()), "\r\x1b[2K")
+}
+
+// printlnRaw is printlnBody without stripping the clear-line prefix — used
+// to assert the \r\x1b[2K invariant is present on the emitted bytes.
+func printlnRaw(t *testing.T, cmd tea.Cmd) string {
+	t.Helper()
+	if cmd == nil {
+		t.Fatal("nil cmd")
+	}
+	v := reflect.ValueOf(cmd())
+	if v.Kind() != reflect.Struct || v.NumField() == 0 {
+		t.Fatalf("not a printLineMessage: %#v", v)
+	}
+	return stripANSI(v.Field(0).String())
+}
+
+// The scrollback canvas is flush-left: with scrollbackLeftMargin == 0,
+// queuePrintln and its flush variant both emit at column 0, aligned with
+// the input frame and startup chrome. Both still carry the leading
+// \r\x1b[2K clear-line prefix (cursor reset + erase) — the load-bearing
+// invariant for inline-mode rendering. Regression guard for the emit path.
+// runeAt returns the rune at visible column col of a stripped (ANSI-free)
+// line, or 0 if the line is shorter. Used to pin column alignment.
+func runeAt(s string, col int) rune {
+	r := []rune(s)
+	if col >= len(r) {
+		return 0
+	}
+	return r[col]
+}
+
+// The flush-left canvas spec, encoded as column assertions: structural
+// glyphs (card gutters ╭ │ ╰, the user-echo chevron ❯, the status dot)
+// sit at column 0; the text they introduce sits at column 2 (glyph +
+// single space). This is the single source of truth for "everything
+// flush-left, text 2-space indented" and guards every renderer at once.
+func TestFlushLeftCanvas_ColumnAlignment(t *testing.T) {
+	// Tool card: ╭/│/╰ at col 0, text at col 2.
+	card := stripANSI(renderToolCard("x", "x()", "", "hi", false, 80, ""))
+	cardLines := strings.Split(card, "\n")
+	if len(cardLines) < 3 {
+		t.Fatalf("expected a 3-line card, got %q", card)
+	}
+	header, body, footer := cardLines[0], cardLines[1], cardLines[len(cardLines)-1]
+	for _, tc := range []struct {
+		name        string
+		line        string
+		glyph, text rune
+	}{
+		{"header", header, '╭', 'x'},
+		{"body", body, '│', 'h'},
+		{"footer", footer, '╰', 'd'}, // "done"
+	} {
+		if got := runeAt(tc.line, 0); got != tc.glyph {
+			t.Errorf("card %s col 0 = %q, want gutter %q (line %q)", tc.name, got, tc.glyph, tc.line)
+		}
+		if got := runeAt(tc.line, 1); got != ' ' {
+			t.Errorf("card %s col 1 = %q, want a single space (line %q)", tc.name, got, tc.line)
+		}
+		if got := runeAt(tc.line, 2); got != tc.text {
+			t.Errorf("card %s text starts at col %d not col 2 (line %q)", tc.name, strings.IndexRune(tc.line, tc.text), tc.line)
+		}
+	}
+
+	// User echo: ❯ at col 0, typed text at col 2.
+	userLines := strings.Split(stripANSI(renderUserBlock("hello", 80)), "\n")
+	var userRow string
+	for _, l := range userLines {
+		if strings.Contains(l, "hello") {
+			userRow = l
+		}
+	}
+	if runeAt(userRow, 0) != '❯' || runeAt(userRow, 2) != 'h' {
+		t.Errorf("user echo should be `❯ hello` (chevron col 0, text col 2), got %q", userRow)
+	}
+
+	// Assistant prose: text at col 2 via styleAssistantBody PaddingLeft(2).
+	prose := stripANSI(highlightInlineText("plain prose"))
+	if runeAt(prose, 0) != ' ' || runeAt(prose, 1) != ' ' || runeAt(prose, 2) != 'p' {
+		t.Errorf("prose should be 2-space indented (text at col 2), got %q", prose)
+	}
+
+	// Status bar: chrome flush-left — the leading rune is the connection
+	// dot at col 0, never a padding space.
+	status := stripANSI(newTestModel(t).renderStatus())
+	if strings.HasPrefix(status, " ") {
+		t.Errorf("status bar should be flush-left (no leading inset), got %q", status)
+	}
+}
+
+func TestQueuePrintln_FlushLeftCanvas(t *testing.T) {
+	m := newTestModel(t)
+	m.pendingCmds = nil
+	m.queuePrintln("alpha")
+	m.queuePrintlnFlush("beta")
+	if len(m.pendingCmds) != 2 {
+		t.Fatalf("expected 2 queued cmds, got %d", len(m.pendingCmds))
+	}
+	// Both land at column 0 — no leading margin spaces on either path.
+	if got := printlnBody(t, m.pendingCmds[0]); got != "alpha" {
+		t.Errorf("queuePrintln body = %q, want %q (flush-left, no margin)", got, "alpha")
+	}
+	if got := printlnBody(t, m.pendingCmds[1]); got != "beta" {
+		t.Errorf("queuePrintlnFlush body = %q, want %q (flush column 0)", got, "beta")
+	}
+	// The clear-line prefix is present on the raw emission.
+	if raw := printlnRaw(t, m.pendingCmds[0]); !strings.HasPrefix(raw, "\r\x1b[2K") {
+		t.Errorf("queuePrintln must carry the \\r\\x1b[2K clear-line prefix, got %q", raw)
+	}
+}
+
+// Regression guard for the scrollback indentation drift: on a genuine
+// resize the conversation is replayed via queuePrintln (the SAME path
+// live emission uses), NOT bare tea.Println. Bare tea.Println dropped the
+// \r\x1b[2K clear-line prefix and the re-wrap, so post-resize lines landed
+// at a different column than freshly-emitted lines — the "indentation gets
+// shifted at some point" symptom. We assert every replayed scrollback line
+// carries the clear-line prefix.
+func TestResizeReplay_RoutesThroughQueuePrintln(t *testing.T) {
+	m := newTestModel(t) // ready, width 80
+	// Emit a multi-line tool card so historyLines holds real content.
+	card := renderToolCard("memory_save", "Memory(save user/x)",
+		`{"scope":"user","name":"x"}`, `saved user memory "x"`, false, m.width, "")
+	m.appendLine(card)
+	if len(m.historyLines) == 0 {
+		t.Fatal("expected history lines after appendLine")
+	}
+	m.pendingCmds = nil
+
+	// Genuine resize (wasReady): triggers tea.ClearScreen + history replay.
+	// Call the inner update directly so pendingCmds aren't drained by
+	// flushPending (which Update does on the way out).
+	out, _ := m.update(tea.WindowSizeMsg{Width: 60, Height: 24})
+	mm := out.(Model)
+
+	sawReplay := false
+	for _, cmd := range mm.pendingCmds {
+		v := reflect.ValueOf(cmd())
+		if v.Kind() != reflect.Struct || v.NumField() == 0 {
+			continue // tea.ClearScreen and other non-print messages
+		}
+		raw := v.Field(0).String() // printLineMessage.messageBody
+		if !strings.HasPrefix(raw, "\r\x1b[2K") {
+			t.Errorf("resize-replayed line missing clear-line prefix "+
+				"(bare tea.Println regressed?): %q", raw)
+		}
+		if strings.Contains(stripANSI(raw), "saved user memory") {
+			sawReplay = true
+		}
+	}
+	if !sawReplay {
+		t.Error("expected the replayed history to carry the card body content")
+	}
+}
+
+// Regression guard for the startup entry-banner bug: banners emitted at
+// construction time (run.go calls enterYoloMode / toggle* before the first
+// WindowSizeMsg) ran with m.width == 0, so queuePrintln wrapped them at the
+// 80-col fallback and the construction-time flush raced with the welcome
+// box — the banner "wraps at 80 and interleaves with the box" symptom. We
+// assert the banner is DEFERRED at width 0 and re-emitted at the real width
+// (one line, not 80-wrapped) below the box once the first size lands.
+func TestStartupBanner_DeferredUntilWidthKnown(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	sess, err := session.New("test-startup", "/cwd")
+	if err != nil {
+		t.Fatalf("session.New: %v", err)
+	}
+	cwd := t.TempDir()
+	m := New(context.Background(), Config{
+		// YoloMode state must be allocated (and inactive) so enterYoloMode
+		// activates it and emits the banner — mirrors production wiring.
+		Cfg:         agent.LoopConfig{Registry: agent.NewRegistry(), MaxIterations: 5, YoloMode: &agent.YoloModeState{}},
+		Session:     sess,
+		Permissions: permissions.LoadEmpty(cwd),
+		ModelName:   "test-model",
+		BaseURL:     "http://test/v1",
+		Cwd:         cwd,
+	})
+	if m.width != 0 {
+		t.Fatalf("expected width 0 before the first WindowSizeMsg, got %d", m.width)
+	}
+
+	// Construction-time emission (as run.go does it) at unknown width.
+	m = enterYoloMode(m)
+	if len(m.pendingCmds) != 0 {
+		t.Errorf("entry banner must be deferred at width 0, got %d queued cmds", len(m.pendingCmds))
+	}
+	if len(m.historyLines) == 0 {
+		t.Fatal("entry banner should still be recorded into historyLines while deferred")
+	}
+
+	// First WindowSizeMsg at a WIDE terminal. Use the inner update so
+	// pendingCmds aren't drained by flushPending before we can inspect.
+	out, _ := m.update(tea.WindowSizeMsg{Width: 120, Height: 24})
+	mm := out.(Model)
+
+	var bodies []string
+	for _, cmd := range mm.pendingCmds {
+		v := reflect.ValueOf(cmd())
+		if v.Kind() != reflect.Struct || v.NumField() == 0 {
+			continue // tea.ClearScreen etc.
+		}
+		bodies = append(bodies, strings.TrimPrefix(stripANSI(v.Field(0).String()), "\r\x1b[2K"))
+	}
+
+	boxIdx, bannerIdx := -1, -1
+	for i, b := range bodies {
+		if strings.Contains(b, "YottaCode by YottaDynamics") {
+			boxIdx = i
+		}
+		if strings.Contains(b, "permissions bypass active") {
+			bannerIdx = i
+			// At width 120 the whole banner fits on one line; an 80-col
+			// wrap would have split "no iteration cap" onto a second row.
+			if !strings.Contains(b, "no iteration cap") {
+				t.Errorf("entry banner wrapped early — emitted at the wrong width: %q", b)
+			}
+		}
+	}
+	if boxIdx < 0 {
+		t.Fatal("welcome box was not emitted on first WindowSizeMsg")
+	}
+	if bannerIdx < 0 {
+		t.Fatal("permission entry banner was not emitted on first WindowSizeMsg")
+	}
+	if bannerIdx < boxIdx {
+		t.Errorf("banner should render after the welcome box (box@%d, banner@%d)", boxIdx, bannerIdx)
 	}
 }
 
@@ -1899,7 +2146,7 @@ func TestModel_ToolResultRendersUnifiedCard(t *testing.T) {
 	if !strings.Contains(v, "╭ x()") {
 		t.Errorf("card header should carry the preview: %q", v)
 	}
-	if !strings.Contains(v, "│  wrote 11 bytes to /tmp/y") {
+	if !strings.Contains(v, "│ wrote 11 bytes to /tmp/y") {
 		t.Errorf("card body should carry the tool output: %q", v)
 	}
 	if !strings.Contains(v, "╰ ") {

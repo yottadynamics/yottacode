@@ -136,6 +136,47 @@ func TestAnthropicAdapter_StreamsTextThinkingAndToolUse(t *testing.T) {
 	}
 }
 
+// TestAnthropicAdapter_TruncatedToolUseErrors guards the truncation fix:
+// a tool_use block that starts and streams input but never receives its
+// content_block_stop before the stream ends must surface an error rather
+// than a clean final that silently drops the call.
+func TestAnthropicAdapter_TruncatedToolUseErrors(t *testing.T) {
+	srv := newAnthropicMockServer(t, anthropicScript{
+		events: []anthropicSSE{
+			{Event: "message_start", Data: `{"type":"message_start","message":{"id":"m","role":"assistant","content":[],"model":"claude-sonnet-4-6"}}`},
+			{Event: "content_block_start", Data: `{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_x","name":"read_file","input":{}}}`},
+			{Event: "content_block_delta", Data: `{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"path\":"}}`},
+			// stream ends mid-tool-call: no content_block_stop, no message_stop
+		},
+	})
+	t.Cleanup(srv.Close)
+
+	a := newAnthropicAdapter(Config{BaseURL: srv.URL, APIKey: "k", Model: "claude-sonnet-4-6"})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	stream := a.ChatStream(ctx, []Message{{Role: RoleUser, Content: "read x"}}, []Tool{{
+		Name: "read_file", Description: "read", Schema: map[string]any{"type": "object"},
+	}})
+
+	var final *Message
+	var seenErr error
+	for ev := range stream {
+		switch ev.Kind {
+		case EventDone:
+			final = ev.Final
+		case EventErr:
+			seenErr = ev.Err
+		}
+	}
+	if seenErr == nil {
+		t.Error("truncated tool_use should surface an error, not a clean final")
+	}
+	if final != nil && len(final.ToolCalls) > 0 {
+		t.Errorf("must not emit a final carrying the incomplete tool call: %+v", final)
+	}
+}
+
 // TestAnthropicAdapter_EmitsStreamProgressForToolUseArgs guards the
 // "0.0 tok/s never moves" fix on the Anthropic side: when a Claude
 // turn produces only a tool_use block (no text, no thinking), the
