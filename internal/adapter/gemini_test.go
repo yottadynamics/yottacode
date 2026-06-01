@@ -1,6 +1,7 @@
 package adapter
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -188,6 +189,59 @@ func TestGemini_LiftsSystemMessageToSystemInstruction(t *testing.T) {
 		if c.Role == "system" {
 			t.Error("system messages must lift to systemInstruction, not stay in contents")
 		}
+	}
+}
+
+func TestGemini_EffortSetsThinkingConfig(t *testing.T) {
+	body := geminiSSEBody(`{"candidates":[{"content":{"parts":[{"text":"ok"}],"role":"model"},"finishReason":"STOP"}]}`)
+	srv, cap := geminiCapturingMockServer(t, body)
+
+	ad := newGeminiAdapter(Config{
+		BaseURL:               srv.URL,
+		APIKey:                "test",
+		Model:                 "gemini-2.5-flash",
+		ReasoningEffort:       "high",
+		ModelSupportsThinking: boolPtr(true),
+	})
+	ch := ad.ChatStream(context.Background(), []Message{{Role: RoleUser, Content: "hi"}}, nil)
+	if _, _, _, errs := drainEvents(ch); len(errs) > 0 {
+		t.Fatalf("errors: %v", errs)
+	}
+
+	cap.mu.Lock()
+	defer cap.mu.Unlock()
+	var req geminiRequest
+	if err := json.Unmarshal(cap.body, &req); err != nil {
+		t.Fatalf("captured body not JSON: %v\nraw: %s", err, cap.body)
+	}
+	if req.GenerationConfig == nil || req.GenerationConfig.ThinkingConfig == nil {
+		t.Fatalf("expected thinkingConfig, got %+v", req.GenerationConfig)
+	}
+	tc := req.GenerationConfig.ThinkingConfig
+	if !tc.IncludeThoughts {
+		t.Error("includeThoughts should be true so the thinking trace streams as reasoning")
+	}
+	if want := geminiThinkingBudget("high", boolPtr(true)); tc.ThinkingBudget != want {
+		t.Errorf("thinkingBudget = %d, want %d", tc.ThinkingBudget, want)
+	}
+}
+
+func TestGemini_NoEffortOmitsThinkingConfig(t *testing.T) {
+	body := geminiSSEBody(`{"candidates":[{"content":{"parts":[{"text":"ok"}],"role":"model"},"finishReason":"STOP"}]}`)
+	srv, cap := geminiCapturingMockServer(t, body)
+
+	// No effort set → generationConfig must not appear at all, so a
+	// default Gemini turn is byte-for-byte what it was before /effort.
+	ad := newGeminiAdapter(Config{BaseURL: srv.URL, APIKey: "test", Model: "gemini-2.5-flash"})
+	ch := ad.ChatStream(context.Background(), []Message{{Role: RoleUser, Content: "hi"}}, nil)
+	if _, _, _, errs := drainEvents(ch); len(errs) > 0 {
+		t.Fatalf("errors: %v", errs)
+	}
+
+	cap.mu.Lock()
+	defer cap.mu.Unlock()
+	if bytes.Contains(cap.body, []byte("generationConfig")) {
+		t.Errorf("generationConfig should be absent when no effort is set: %s", cap.body)
 	}
 }
 

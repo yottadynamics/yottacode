@@ -275,6 +275,79 @@ func TestAdapter_HTTPError(t *testing.T) {
 	}
 }
 
+// captureChatRequest runs one ChatStream turn against a server that
+// records the outbound request body, then returns it parsed. Used to
+// assert what reasoning params the chat adapter put on the wire.
+func captureChatRequest(t *testing.T, cfg Config) map[string]any {
+	t.Helper()
+	captured := make(chan []byte, 1)
+	resp := sseBody(`{"id":"c1","object":"chat.completion.chunk","created":1,"model":"x","choices":[{"index":0,"delta":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		captured <- b
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, resp)
+	}))
+	t.Cleanup(srv.Close)
+
+	cfg.BaseURL = srv.URL
+	if cfg.APIKey == "" {
+		cfg.APIKey = "test"
+	}
+	ad := NewWithConfig(cfg)
+	if _, _, _, errs := drainEvents(ad.ChatStream(context.Background(), []Message{{Role: RoleUser, Content: "hi"}}, nil)); len(errs) > 0 {
+		t.Fatalf("errors: %v", errs)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(<-captured, &got); err != nil {
+		t.Fatalf("request body not JSON: %v", err)
+	}
+	return got
+}
+
+func TestChatAdapter_XAIReasoningEffort(t *testing.T) {
+	// grok-3-mini accepts reasoning_effort; "high" maps straight through.
+	// DisableWebSearch forces the chat-completions path (xAI otherwise
+	// routes through the Responses adapter — see responses_test.go).
+	got := captureChatRequest(t, Config{
+		Model:            "grok-3-mini",
+		ProviderOverride: ProviderXAI,
+		ReasoningEffort:  "high",
+		DisableWebSearch: true,
+	})
+	if got["reasoning_effort"] != "high" {
+		t.Errorf("reasoning_effort = %v, want high", got["reasoning_effort"])
+	}
+}
+
+func TestChatAdapter_XAIReasoningEffortOnlyForMini(t *testing.T) {
+	// grok-4 reasons unconditionally and rejects reasoning_effort, so
+	// the adapter must leave the field off.
+	got := captureChatRequest(t, Config{
+		Model:            "grok-4",
+		ProviderOverride: ProviderXAI,
+		ReasoningEffort:  "high",
+		DisableWebSearch: true,
+	})
+	if _, present := got["reasoning_effort"]; present {
+		t.Errorf("grok-4 must not receive reasoning_effort, got %v", got["reasoning_effort"])
+	}
+}
+
+func TestChatAdapter_ReasoningEffortXAIOnly(t *testing.T) {
+	// A non-xAI OpenAI-compatible endpoint must never get reasoning_effort,
+	// even for a model whose name happens to match — the field is gated
+	// on the resolved provider.
+	got := captureChatRequest(t, Config{
+		Model:            "grok-3-mini",
+		ProviderOverride: ProviderOpenAICompatible,
+		ReasoningEffort:  "high",
+	})
+	if _, present := got["reasoning_effort"]; present {
+		t.Errorf("non-xAI provider must not receive reasoning_effort, got %v", got["reasoning_effort"])
+	}
+}
+
 func TestAdapter_PropagatesLengthFinishReason(t *testing.T) {
 	body := sseBody(
 		`{"id":"c1","object":"chat.completion.chunk","created":1,"model":"test","choices":[{"index":0,"delta":{"role":"assistant","content":"partial"},"finish_reason":null}]}`,

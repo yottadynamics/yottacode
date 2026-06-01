@@ -22,6 +22,7 @@ import (
 type chatAdapter struct {
 	client  openai.Client
 	model   string
+	cfg     Config
 	profile ProviderProfile
 }
 
@@ -61,6 +62,7 @@ func newChatAdapter(cfg Config) *chatAdapter {
 	return &chatAdapter{
 		client:  c,
 		model:   cfg.Model,
+		cfg:     cfg,
 		profile: profile,
 	}
 }
@@ -90,6 +92,15 @@ func (a *chatAdapter) ChatStream(ctx context.Context, messages []Message, tools 
 		}
 		if len(tools) > 0 {
 			params.Tools = toOpenAITools(tools)
+		}
+		// reasoning_effort is xAI-only on this chat-completions path: it's
+		// honored by the grok-*-mini family (low/high) and rejected by
+		// grok-4, so xaiEffort gates on both. Other OpenAI-compatible
+		// endpoints (Ollama, vLLM, …) leave the field unset.
+		if a.profile.Provider == ProviderXAI {
+			if effort, ok := xaiEffort(a.cfg.ReasoningEffort, a.model); ok {
+				params.ReasoningEffort = effort
+			}
 		}
 
 		stream := a.client.Chat.Completions.NewStreaming(ctx, params)

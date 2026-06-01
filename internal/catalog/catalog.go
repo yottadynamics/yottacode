@@ -100,6 +100,36 @@ func All() []Model {
 	return loaded.Models
 }
 
+// FindByID returns the embedded-catalog entry whose ID matches,
+// searching across every provider. Model IDs are effectively globally
+// unique (claude-*, gemini-*, gpt-*, …), so the first match is the
+// right one. ok is false when nothing matches — including for the
+// runtime-sourced openai-auth/copilot sets, which carry no token
+// limits or capability flags worth reasoning over. Callers then leave
+// catalog-derived fields zero/nil.
+func FindByID(id string) (Model, bool) {
+	load()
+	for _, m := range loaded.Models {
+		if m.ID == id {
+			return m, true
+		}
+	}
+	return Model{}, false
+}
+
+// ReasoningInfo returns the two catalog facts the adapter needs to size
+// an extended-thinking budget for budget-based providers (Anthropic,
+// Gemini): the model's max-output tokens and its thinking-capability
+// tristate. Both are zero/nil when the model isn't in the catalog — the
+// adapter then leaves reasoning at the provider default. Cheap enough
+// to call on every adapter (re)build.
+func ReasoningInfo(modelID string) (maxOutput int, supportsThinking *bool) {
+	if m, ok := FindByID(modelID); ok {
+		return m.MaxOutput, m.Capabilities.Thinking
+	}
+	return 0, nil
+}
+
 // GeneratedAt returns the timestamp the embedded catalog was last
 // refreshed. Zero when the catalog is empty or pre-dates the field.
 func GeneratedAt() time.Time {

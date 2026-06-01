@@ -89,6 +89,17 @@ func (a *anthropicAdapter) ChatStream(ctx context.Context, messages []Message, t
 		if anthropicTools := toAnthropicTools(tools, a.cfg, a.profile); len(anthropicTools) > 0 {
 			params.Tools = anthropicTools
 		}
+		// Extended thinking is opt-in: enabled only when the user set an
+		// effort level and the model is known to support it. budget is a
+		// fraction of the model's max-output tokens (from the catalog);
+		// max_tokens covers thinking + the visible answer together, so
+		// raise it to the model's real cap to leave the answer room.
+		if budget := anthropicThinkingBudget(a.cfg.ReasoningEffort, a.cfg.ModelMaxOutput, a.cfg.ModelSupportsThinking); budget > 0 {
+			params.Thinking = anthropic.ThinkingConfigParamOfEnabled(budget)
+			if int64(a.cfg.ModelMaxOutput) > params.MaxTokens {
+				params.MaxTokens = int64(a.cfg.ModelMaxOutput)
+			}
+		}
 
 		stream := a.client.Messages.NewStreaming(ctx, params)
 		defer stream.Close()

@@ -21,6 +21,7 @@ import (
 
 	"github.com/yottadynamics/yottacode/internal/adapter"
 	"github.com/yottadynamics/yottacode/internal/agent"
+	"github.com/yottadynamics/yottacode/internal/catalog"
 	"github.com/yottadynamics/yottacode/internal/cli"
 	"github.com/yottadynamics/yottacode/internal/config"
 	"github.com/yottadynamics/yottacode/internal/experimental"
@@ -98,12 +99,15 @@ func Run(ctx context.Context, opts cli.ChatOptions, prompt string) error {
 	// AutoMemory: flag > env > config file. cli.Resolve handled the
 	// first two; honor the persistent file toggle here so the wizard's
 	// step isn't a no-op for one-shot runs.
+	maxOutput, supportsThinking := catalog.ReasoningInfo(opts.Model)
 	adCfg := adapter.Config{
 		BaseURL:                opts.BaseURL,
 		APIKey:                 opts.APIKey,
 		Model:                  opts.Model,
 		ProviderOverride:       adapter.Provider(strings.TrimSpace(opts.ProviderKind)),
 		ReasoningEffort:        opts.ReasoningEffort,
+		ModelMaxOutput:         maxOutput,
+		ModelSupportsThinking:  supportsThinking,
 		EnableWebSearch:        opts.EnableWebSearch,
 		DisableWebSearch:       opts.DisableWebSearch,
 		EnableXSearch:          opts.EnableXSearch,
