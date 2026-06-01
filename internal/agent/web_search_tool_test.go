@@ -127,6 +127,38 @@ func TestWebSearchTool_ExecuteWithServer(t *testing.T) {
 	}
 }
 
+// TestWebSearchTool_CoercesStringMaxResults locks the reported NVIDIA-NIM
+// Llama bug: max_results arrives as the JSON string "5". The raw call fails
+// strict decode; the schema-driven coercion repairs it before Execute.
+func TestWebSearchTool_CoercesStringMaxResults(t *testing.T) {
+	tool := &WebSearchTool{}
+
+	// Reproduce the bug: the string-encoded arg fails the strict decode.
+	if _, err := tool.Execute(context.Background(), `{"query":"joke","max_results":"5"}`); err == nil {
+		t.Fatal("expected raw string-encoded max_results to fail strict decode")
+	}
+
+	var gotMax int
+	origSearch := ddgSearchFunc
+	ddgSearchFunc = func(ctx context.Context, query string, maxResults int) ([]ddgResult, error) {
+		gotMax = maxResults
+		return []ddgResult{{Title: "Joke Result", URL: "https://example.com"}}, nil
+	}
+	t.Cleanup(func() { ddgSearchFunc = origSearch })
+
+	coerced := coerceArgsToSchema(`{"query":"joke","max_results":"5"}`, tool.Schema())
+	out, err := tool.Execute(context.Background(), coerced)
+	if err != nil {
+		t.Fatalf("Execute after coercion: %v", err)
+	}
+	if gotMax != 5 {
+		t.Errorf("maxResults = %d, want 5", gotMax)
+	}
+	if !strings.Contains(out, "Joke Result") {
+		t.Errorf("output missing result:\n%s", out)
+	}
+}
+
 func TestWebSearchTool_EmptyQuery(t *testing.T) {
 	tool := &WebSearchTool{}
 	_, err := tool.Execute(context.Background(), `{"query":""}`)
