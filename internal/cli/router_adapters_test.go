@@ -3,8 +3,54 @@ package cli
 import (
 	"testing"
 
+	"github.com/yottadynamics/yottacode/internal/adapter"
 	"github.com/yottadynamics/yottacode/internal/config"
 )
+
+func TestBuildRouterAdapters_SingleModelIsPlainClient(t *testing.T) {
+	cfg := routingTestConfig()
+	cfg.Router.Mode = config.RouterModeAuto
+	cfg.Router.FastModel = "anthropic:claude-haiku-4-5"
+	cfg.Router.SmartModel = "anthropic:claude-opus-4-6"
+	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+
+	ra, err := BuildRouterAdapters(cfg, ChatOptions{})
+	if err != nil {
+		t.Fatalf("BuildRouterAdapters: %v", err)
+	}
+	if _, isMulti := ra.Smart.(*adapter.MultiStreamer); isMulti {
+		t.Error("a single-model slot should be a plain client, not a MultiStreamer")
+	}
+}
+
+// TestBuildRouterAdapters_ChainIsMultiStreamer proves a multi-model slot
+// becomes a failover MultiStreamer, transparently dropped into the
+// adapter.Client slot, with the primary name surfaced for display.
+func TestBuildRouterAdapters_ChainIsMultiStreamer(t *testing.T) {
+	cfg := routingTestConfig()
+	cfg.Router.Mode = config.RouterModeAuto
+	cfg.Router.FastModel = "anthropic:claude-haiku-4-5"
+	cfg.Router.SmartModels = []string{"anthropic:claude-opus-4-6", "anthropic:claude-haiku-4-5"}
+	cfg.Router.Policy = "fallback-chain"
+	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+
+	ra, err := BuildRouterAdapters(cfg, ChatOptions{})
+	if err != nil {
+		t.Fatalf("BuildRouterAdapters: %v", err)
+	}
+	if ra.Smart == nil {
+		t.Fatal("smart chain adapter must be non-nil")
+	}
+	if _, isMulti := ra.Smart.(*adapter.MultiStreamer); !isMulti {
+		t.Errorf("a multi-model slot should be a *MultiStreamer, got %T", ra.Smart)
+	}
+	if ra.SmartModel != "claude-opus-4-6" {
+		t.Errorf("SmartModel should be the primary, got %q", ra.SmartModel)
+	}
+	if _, isMulti := ra.Fast.(*adapter.MultiStreamer); isMulti {
+		t.Error("a single fast model should not be wrapped in a MultiStreamer")
+	}
+}
 
 func routingTestConfig() config.Config {
 	cfg := config.Default()
@@ -25,13 +71,36 @@ func routingTestConfig() config.Config {
 }
 
 func TestBuildRouterAdapters_DisabledReturnsNil(t *testing.T) {
-	cfg := routingTestConfig() // Router.Mode unset == off
+	cfg := routingTestConfig() // Router.Mode unset == off, no fast/smart pair
 	ra, err := BuildRouterAdapters(cfg, ChatOptions{})
 	if err != nil {
 		t.Fatalf("BuildRouterAdapters: %v", err)
 	}
 	if ra != nil {
-		t.Errorf("expected nil RouterAdapters when routing off, got %+v", ra)
+		t.Errorf("expected nil RouterAdapters when no pair is configured, got %+v", ra)
+	}
+}
+
+// TestBuildRouterAdapters_BuildsWhenConfiguredEvenIfModeOff proves the
+// build is decoupled from Mode: a configured fast/smart pair resolves its
+// adapters even in "off" mode, so /router can flip routing on live
+// without rebuilding. The caller (run.go) gates *use* via RoutingAuto().
+func TestBuildRouterAdapters_BuildsWhenConfiguredEvenIfModeOff(t *testing.T) {
+	cfg := routingTestConfig()
+	cfg.Router.Mode = config.RouterModeOff
+	cfg.Router.FastModel = "anthropic:claude-haiku-4-5"
+	cfg.Router.SmartModel = "anthropic:claude-opus-4-6"
+	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+
+	ra, err := BuildRouterAdapters(cfg, ChatOptions{})
+	if err != nil {
+		t.Fatalf("BuildRouterAdapters: %v", err)
+	}
+	if ra == nil {
+		t.Fatal("expected adapters built for a configured pair even in off mode")
+	}
+	if ra.Fast == nil || ra.Smart == nil {
+		t.Error("Fast/Smart adapters must be non-nil")
 	}
 }
 
@@ -81,5 +150,48 @@ func TestRouterAdapters_ResolveByName(t *testing.T) {
 	}
 	if got := ra.Resolve(""); got != nil {
 		t.Errorf("Resolve(empty) = %v, want nil", got)
+	}
+}
+
+// TestBuildRouterAdapters_SameModelDifferentProvidersDistinctClients is the
+// regression guard for the memo-key bug: a failover chain naming the SAME
+// model on two providers must build two distinct adapters (one per
+// provider), or the MultiStreamer silently fails over to the same endpoint.
+func TestBuildRouterAdapters_SameModelDifferentProvidersDistinctClients(t *testing.T) {
+	cfg := config.Default()
+	cfg.Providers = []config.Provider{
+		{
+			Name: "prov-a", Kind: "openai-compatible",
+			BaseURL: "http://a.example/v1", APIKeyEnv: "A_KEY",
+			DefaultModel: "shared-model",
+			Models:       []config.Model{{Name: "shared-model"}},
+		},
+		{
+			Name: "prov-b", Kind: "openai-compatible",
+			BaseURL: "http://b.example/v1", APIKeyEnv: "B_KEY",
+			DefaultModel: "shared-model",
+			Models:       []config.Model{{Name: "shared-model"}},
+		},
+	}
+	cfg.Router.Mode = config.RouterModeAuto
+	cfg.Router.FastModel = "prov-a:shared-model"
+	cfg.Router.SmartModels = []string{"prov-a:shared-model", "prov-b:shared-model"}
+	t.Setenv("A_KEY", "k1")
+	t.Setenv("B_KEY", "k2")
+
+	ra, err := BuildRouterAdapters(cfg, ChatOptions{})
+	if err != nil {
+		t.Fatalf("BuildRouterAdapters: %v", err)
+	}
+	ms, ok := ra.Smart.(*adapter.MultiStreamer)
+	if !ok {
+		t.Fatalf("smart slot should be a *MultiStreamer, got %T", ra.Smart)
+	}
+	cands := ms.Candidates()
+	if len(cands) != 2 {
+		t.Fatalf("expected 2 candidates, got %d", len(cands))
+	}
+	if cands[0].Streamer == cands[1].Streamer {
+		t.Error("same-model chain on two providers collapsed to one adapter — failover is a no-op (memo collision)")
 	}
 }

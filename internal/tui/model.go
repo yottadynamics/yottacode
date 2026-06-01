@@ -20,6 +20,7 @@ import (
 	"github.com/yottadynamics/yottacode/internal/agent"
 	openaiauth "github.com/yottadynamics/yottacode/internal/auth/openai"
 	"github.com/yottadynamics/yottacode/internal/checkpoint"
+	"github.com/yottadynamics/yottacode/internal/cli"
 	"github.com/yottadynamics/yottacode/internal/config"
 	"github.com/yottadynamics/yottacode/internal/contextwindow"
 	"github.com/yottadynamics/yottacode/internal/filerefs"
@@ -144,6 +145,18 @@ type Config struct {
 	// SummarizerModel is the fast model's name for routing telemetry;
 	// empty when summarization isn't routed.
 	SummarizerModel string
+	// Router holds the resolved fast/smart adapters, built whenever a
+	// [router].fast_model + smart_model pair is configured regardless of
+	// mode. Lets /router flip routing on/off live without rebuilding
+	// adapters. nil when the pair is unconfigured.
+	Router *cli.RouterAdapters
+	// RouterMode is the configured [router].mode ("off"/"manual"/"auto")
+	// — the session's starting routing state, which /router mutates live.
+	RouterMode string
+	// Opts is the startup ChatOptions (search/reasoning flags, model).
+	// Retained so the /router picker can rebuild the fast/smart adapters
+	// with the same flags after the model pair changes, without a restart.
+	Opts cli.ChatOptions
 }
 
 // Model is the Bubbletea state for the chat TUI. The TUI runs in inline mode
@@ -227,6 +240,12 @@ type Model struct {
 	// the user crosses another threshold while we're working.
 	summarizing bool
 
+	// summarizeFailures counts consecutive failed compaction attempts.
+	// After summarizeDegradeThreshold, summarization degrades from the
+	// fast model to the smart model (a fast provider down for a stretch
+	// would otherwise block compaction). Reset to 0 on a success.
+	summarizeFailures int
+
 	// Cumulative session stats — incremented as events stream in.
 	statsTokens    int
 	statsToolCalls int
@@ -278,6 +297,24 @@ type Model struct {
 	// registry. The TUI uses it to wire the background-done callback
 	// and to introspect the available agent configs from /subagents.
 	subagentTool *agent.AgentTool
+
+	// router holds the fast/smart adapters for cache-safe task routing,
+	// available whenever the [router] pair is configured (even in "off"
+	// mode). /router uses it to flip routing on/off live. nil when the
+	// pair is unconfigured.
+	router *cli.RouterAdapters
+	// routerMode is the live routing state ("off"/"manual"/"auto"),
+	// seeded from config and toggled by /router. Drives the status-bar
+	// routing chip and the /router status view.
+	routerMode string
+	// opts is the startup ChatOptions, retained so the /router picker can
+	// rebuild the fast/smart adapters after a model change. See Config.Opts.
+	opts cli.ChatOptions
+
+	// routerPickerOpen / routerPicker drive the /router inline overlay
+	// (toggle routing + pick fast/smart models from configured models).
+	routerPickerOpen bool
+	routerPicker     *routerPickerState
 
 	// mcpManager owns the lifecycle of every configured MCP client.
 	// Nil when the session has no MCP servers configured. The /mcp
@@ -853,6 +890,9 @@ func New(parent context.Context, c Config) Model {
 		fileCfg:                c.FileCfg,
 		subagentTasks:          c.Subagents,
 		subagentTool:           c.AgentTool,
+		router:                 c.Router,
+		routerMode:             routerModeOrOff(c.RouterMode),
+		opts:                   c.Opts,
 		mcpManager:             c.MCPManager,
 		subagentInbox:          make(chan agent.SubagentBackgroundDone, 32),
 		customSlash:            buildCustomSlash(c.CustomCommands),
@@ -1086,6 +1126,9 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.effortPickerOpen {
 			return m.updateEffortPicker(msg)
+		}
+		if m.routerPickerOpen {
+			return m.updateRouterPicker(msg)
 		}
 		if m.subagentsPickerOpen {
 			return m.updateSubagentsPicker(msg)
@@ -1841,15 +1884,32 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case summaryDoneMsg:
 		m.summarizing = false
+		// Surface any fallover the summarizer's fast_models chain hit
+		// during compaction — otherwise it would be invisible (the
+		// summarizer consumes its stream off-loop).
+		for _, fb := range msg.fallbacks {
+			m.appendLine(renderFallbackLine(agent.Fallback{
+				From:   fb.FallbackFrom,
+				To:     fb.FallbackTo,
+				Reason: fb.FallbackReason,
+				Policy: fb.FallbackPolicy,
+				Agent:  "summarize",
+			}))
+		}
 		if msg.err != nil {
 			// Failed attempts don't count as "already handled at this fill
 			// level" — clearing the watermark lets the next turn-end
 			// retry. Without this the gate in updateContextUsage stays
 			// closed forever and we silently stop attempting compression.
 			m.lastWatermarkPct = 0
+			// Count the miss; after summarizeDegradeThreshold consecutive
+			// failures, chooseSummarizer routes the next attempt to the
+			// smart model so a fast-provider outage can't block compaction.
+			m.summarizeFailures++
 			m.appendLine(styleError.Render("[summarize] " + msg.err.Error()))
 			return m, nil
 		}
+		m.summarizeFailures = 0
 		m.sess.Messages = msg.newMessages
 		m.lastWatermarkPct = 0
 		// Refresh estimated tokens from the new history so the status
@@ -1898,7 +1958,7 @@ func (m Model) anyOverlayOpen() bool {
 		m.embedSetupOpen || m.memoryPickerOpen || m.sessionsPickerOpen ||
 		m.plansPickerOpen || m.checkpointsPickerOpen || m.subagentsPickerOpen ||
 		m.themePickerOpen || m.effortPickerOpen || m.skillsMenuOpen ||
-		m.skillsPickerOpen || m.mcpPickerOpen
+		m.skillsPickerOpen || m.mcpPickerOpen || m.routerPickerOpen
 }
 
 // overlayClosed reports whether the transition from this model (pre-update)
@@ -1964,6 +2024,9 @@ func (m Model) View() string {
 	}
 	if m.effortPickerOpen && m.effortPicker != nil {
 		return m.renderInlineOverlay(renderEffortPicker(m.effortPicker))
+	}
+	if m.routerPickerOpen && m.routerPicker != nil {
+		return m.renderInlineOverlay(renderRouterPicker(m.routerPicker))
 	}
 	if m.skillsMenuOpen && m.skillsMenu != nil {
 		return m.renderInlineOverlay(renderSkillsMenu(m.skillsMenu, m.width))
@@ -2463,7 +2526,11 @@ func renderToolStartLine(toolName, preview string) string {
 // degraded and the router took over. Silent fallback would hide a real
 // provider issue; the design's whole point is to surface it loudly.
 func renderFallbackLine(e agent.Fallback) string {
-	head := fmt.Sprintf("↻ fallback: %s → %s", e.From, e.To)
+	label := "fallback"
+	if e.Agent != "" {
+		label = "fallback [" + e.Agent + "]"
+	}
+	head := fmt.Sprintf("↻ %s: %s → %s", label, e.From, e.To)
 	if e.Policy != "" {
 		head += " [" + e.Policy + "]"
 	}
@@ -2908,6 +2975,24 @@ func (m Model) renderStatus() string {
 		worktreeSeg = lipgloss.NewStyle().Foreground(colorDim).Render("worktree: " + m.worktree)
 	}
 
+	// Routing chip: when cache-safe routing is active (manual/auto),
+	// show a dim plain-text indicator so the user can see delegated work
+	// is being routed off the active model. Auto names the smart model it
+	// delegates subagents to (matching the subagent cards; the fast model
+	// is summarization-only); manual notes the explicit-only mode. No
+	// emoji per the house rule.
+	routingSeg := ""
+	switch routerModeOrOff(m.routerMode) {
+	case config.RouterModeAuto:
+		label := "routing"
+		if m.router != nil {
+			label = "routing: " + shortModelTag(m.router.SmartModel)
+		}
+		routingSeg = lipgloss.NewStyle().Foreground(colorDim).Render(label)
+	case config.RouterModeManual:
+		routingSeg = lipgloss.NewStyle().Foreground(colorDim).Render("routing: manual")
+	}
+
 	build := func(head string) string {
 		segs := []string{head}
 		if ctx != "" {
@@ -2915,6 +3000,9 @@ func (m Model) renderStatus() string {
 		}
 		if worktreeSeg != "" {
 			segs = append(segs, worktreeSeg)
+		}
+		if routingSeg != "" {
+			segs = append(segs, routingSeg)
 		}
 		// Flush-left: the status dot sits at column 0, aligned with the
 		// input frame's left border directly above it (and the flush-left
@@ -2967,6 +3055,17 @@ func renderProviderTag(provider string) string {
 // for the eye.
 func renderModelName(name string) string {
 	return styleStatusModel.Render(name)
+}
+
+// shortModelTag trims a model reference to its last path segment for the
+// status bar's routing chip (e.g. "nvidia/nemotron-…" → "nemotron-…"),
+// keeping the chip compact without losing the identifying tail.
+func shortModelTag(name string) string {
+	name = strings.TrimSpace(name)
+	if idx := strings.LastIndex(name, "/"); idx >= 0 && idx < len(name)-1 {
+		return name[idx+1:]
+	}
+	return name
 }
 
 // renderTurnStatus composes the live thinking-row footer. Format is

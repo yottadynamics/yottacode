@@ -50,8 +50,10 @@ func TestMainThreadDispatch_NoExtraRouterCall(t *testing.T) {
 	}
 }
 
-// readOnlyExplore mirrors the builtin Explore agent's read-only tool set.
-var readOnlyExplore = subagents.AgentConfig{
+// exploreAgent mirrors the builtin Explore agent (read-only tool set).
+// After the smart-default change it routes to the smart model in auto
+// mode like every other delegated agent — read-only no longer means fast.
+var exploreAgent = subagents.AgentConfig{
 	Name:        "Explore",
 	Description: "read-only search",
 	Tools:       []string{"read_file", "grep", "glob", "list_dir"},
@@ -59,79 +61,54 @@ var readOnlyExplore = subagents.AgentConfig{
 	Source:      "test",
 }
 
-func TestAgentIsReadOnly(t *testing.T) {
-	cases := []struct {
-		name  string
-		tools []string
-		want  bool
-	}{
-		{"explore-readonly", []string{"read_file", "grep", "glob"}, true},
-		{"plan-readonly", []string{"read_file", "grep", "todo_write"}, true},
-		{"has-run-bash", []string{"read_file", "grep", "run_bash"}, false},
-		{"has-write", []string{"read_file", "write_file"}, false},
-		{"wildcard-inherit-all", nil, false},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			cfg := subagents.AgentConfig{Name: tc.name, Tools: tc.tools}
-			if got := agentIsReadOnly(&cfg); got != tc.want {
-				t.Errorf("agentIsReadOnly(%v) = %v, want %v", tc.tools, got, tc.want)
-			}
-		})
-	}
-}
-
-func TestRouteChildModel_AutoRoutesReadOnlyToFast(t *testing.T) {
-	smart := &scriptedStreamer{}
-	fast := &scriptedStreamer{}
-	tool, _ := newTestAgentTool(t, []subagents.AgentConfig{readOnlyExplore}, smart, false)
-	tool.FastAdapter = fast
-	tool.FastModel = "fast-1"
-	tool.RouteAuto = true
-
-	got, model := tool.routeChildModel(&readOnlyExplore)
-	if got != Streamer(fast) {
-		t.Errorf("read-only agent in auto mode should route to FastAdapter")
-	}
-	if model != "fast-1" {
-		t.Errorf("model = %q, want fast-1", model)
-	}
-}
-
-func TestRouteChildModel_FullToolsetRoutesToSmartModel(t *testing.T) {
+// TestRouteChildModel_AutoRoutesExploreToSmart locks the smart-default
+// policy: Explore (and any read-only agent) routes to the smart model in
+// auto mode, NOT the fast model. The fast model is summarization-only.
+func TestRouteChildModel_AutoRoutesExploreToSmart(t *testing.T) {
 	active := &scriptedStreamer{}
-	fast := &scriptedStreamer{}
 	smart := &scriptedStreamer{}
-	wildcard := subagents.AgentConfig{Name: "general", Prompt: "x", Source: "test"} // no Tools = inherit all
-	tool, _ := newTestAgentTool(t, []subagents.AgentConfig{wildcard}, active, false)
-	tool.FastAdapter = fast
-	tool.FastModel = "fast-1"
+	tool, _ := newTestAgentTool(t, []subagents.AgentConfig{exploreAgent}, active, false)
 	tool.SmartAdapter = smart
 	tool.SmartModel = "smart-1"
 	tool.RouteAuto = true
 
-	got, model := tool.routeChildModel(&wildcard)
+	got, model := tool.routeChildModel(&exploreAgent)
 	if got != Streamer(smart) {
-		t.Errorf("non-read-only agent in auto mode should route to the configured smart model, not the active model")
+		t.Errorf("Explore in auto mode should route to the smart model, not fast/active")
 	}
 	if model != "smart-1" {
 		t.Errorf("model = %q, want smart-1", model)
 	}
 }
 
-func TestRouteChildModel_FullToolsetInheritsActiveWhenNoSmartConfigured(t *testing.T) {
+func TestRouteChildModel_GeneralRoutesToSmartModel(t *testing.T) {
 	active := &scriptedStreamer{}
-	fast := &scriptedStreamer{}
+	smart := &scriptedStreamer{}
+	wildcard := subagents.AgentConfig{Name: "general", Prompt: "x", Source: "test"} // no Tools = inherit all
+	tool, _ := newTestAgentTool(t, []subagents.AgentConfig{wildcard}, active, false)
+	tool.SmartAdapter = smart
+	tool.SmartModel = "smart-1"
+	tool.RouteAuto = true
+
+	got, model := tool.routeChildModel(&wildcard)
+	if got != Streamer(smart) {
+		t.Errorf("a delegated agent in auto mode should route to the configured smart model, not the active model")
+	}
+	if model != "smart-1" {
+		t.Errorf("model = %q, want smart-1", model)
+	}
+}
+
+func TestRouteChildModel_InheritsActiveWhenNoSmartConfigured(t *testing.T) {
+	active := &scriptedStreamer{}
 	wildcard := subagents.AgentConfig{Name: "general", Prompt: "x", Source: "test"}
 	tool, _ := newTestAgentTool(t, []subagents.AgentConfig{wildcard}, active, false)
-	tool.FastAdapter = fast
-	tool.FastModel = "fast-1"
-	// No SmartAdapter (e.g. only fast configured) → inherit active model.
+	// No SmartAdapter → inherit the active model.
 	tool.RouteAuto = true
 
 	got, model := tool.routeChildModel(&wildcard)
 	if got != Streamer(active) {
-		t.Errorf("with no smart adapter, a non-read-only agent should inherit the active adapter")
+		t.Errorf("with no smart adapter, a delegated agent should inherit the active adapter")
 	}
 	if model != "" {
 		t.Errorf("inherited model name should be empty, got %q", model)
@@ -140,16 +117,13 @@ func TestRouteChildModel_FullToolsetInheritsActiveWhenNoSmartConfigured(t *testi
 
 func TestRouteChildModel_ManualModeSkipsHeuristic(t *testing.T) {
 	active := &scriptedStreamer{}
-	fast := &scriptedStreamer{}
 	smart := &scriptedStreamer{}
-	tool, _ := newTestAgentTool(t, []subagents.AgentConfig{readOnlyExplore}, active, false)
-	tool.FastAdapter = fast
-	tool.FastModel = "fast-1"
+	tool, _ := newTestAgentTool(t, []subagents.AgentConfig{exploreAgent}, active, false)
 	tool.SmartAdapter = smart
 	tool.SmartModel = "smart-1"
-	tool.RouteAuto = false // manual mode: neither fast nor smart heuristic applies
+	tool.RouteAuto = false // manual mode: the smart heuristic does not apply
 
-	got, model := tool.routeChildModel(&readOnlyExplore)
+	got, model := tool.routeChildModel(&exploreAgent)
 	if got != Streamer(active) {
 		t.Errorf("manual mode must not auto-route; a non-explicit agent inherits the active model")
 	}
@@ -158,28 +132,29 @@ func TestRouteChildModel_ManualModeSkipsHeuristic(t *testing.T) {
 	}
 }
 
+// TestRouteChildModel_ExplicitModelWins also proves the fast model is
+// still reachable for a subagent — but only via an explicit `model:`.
 func TestRouteChildModel_ExplicitModelWins(t *testing.T) {
 	smart := &scriptedStreamer{}
-	fast := &scriptedStreamer{}
-	explicit := &scriptedStreamer{}
-	cfg := subagents.AgentConfig{Name: "custom", Model: "my-model", Prompt: "x", Source: "test"}
+	explicitFast := &scriptedStreamer{}
+	cfg := subagents.AgentConfig{Name: "custom", Model: "fast-1", Prompt: "x", Source: "test"}
 	tool, _ := newTestAgentTool(t, []subagents.AgentConfig{cfg}, smart, false)
-	tool.FastAdapter = fast
-	tool.FastModel = "fast-1"
+	tool.SmartAdapter = smart
+	tool.SmartModel = "smart-1"
 	tool.RouteAuto = true
 	tool.ModelResolver = func(name string) Streamer {
-		if name == "my-model" {
-			return explicit
+		if name == "fast-1" {
+			return explicitFast
 		}
 		return nil
 	}
 
 	got, model := tool.routeChildModel(&cfg)
-	if got != Streamer(explicit) {
-		t.Errorf("explicit frontmatter model should win over the heuristic")
+	if got != Streamer(explicitFast) {
+		t.Errorf("explicit frontmatter model should win over the smart heuristic")
 	}
-	if model != "my-model" {
-		t.Errorf("model = %q, want my-model", model)
+	if model != "fast-1" {
+		t.Errorf("model = %q, want fast-1", model)
 	}
 }
 
@@ -200,26 +175,70 @@ func TestRouteChildModel_UnresolvedExplicitModelFallsBack(t *testing.T) {
 }
 
 func TestRouteChildModel_DisabledRoutingInherits(t *testing.T) {
-	smart := &scriptedStreamer{}
-	tool, _ := newTestAgentTool(t, []subagents.AgentConfig{readOnlyExplore}, smart, false)
-	// No FastAdapter, RouteAuto false, no resolver — routing fully off.
-	got, model := tool.routeChildModel(&readOnlyExplore)
-	if got != Streamer(smart) || model != "" {
+	active := &scriptedStreamer{}
+	tool, _ := newTestAgentTool(t, []subagents.AgentConfig{exploreAgent}, active, false)
+	// RouteAuto false, no resolver — routing fully off.
+	got, model := tool.routeChildModel(&exploreAgent)
+	if got != Streamer(active) || model != "" {
 		t.Errorf("with routing off the child must inherit the parent adapter, got model=%q", model)
 	}
 }
 
+// TestAgentTool_SubagentForwardsFallback proves a subagent's model-chain
+// fallover is forwarded to the parent (tagged with the agent type) so the
+// TUI can surface it live, not just bury it in the child transcript.
+func TestAgentTool_SubagentForwardsFallback(t *testing.T) {
+	smart := &scriptedStreamer{turns: [][]adapter.StreamEvent{{
+		{Kind: adapter.EventFallback, FallbackFrom: "anthropic/opus", FallbackTo: "openai/gpt-4o", FallbackReason: "timeout"},
+		sseDone("done after fallover"),
+	}}}
+	tool, _ := newTestAgentTool(t, []subagents.AgentConfig{exploreAgent}, &scriptedStreamer{}, true)
+	tool.SmartAdapter = smart
+	tool.SmartModel = "opus"
+	tool.RouteAuto = true
+
+	parentEvents := make(chan Event, 64)
+	ctx := WithParentEvents(context.Background(), parentEvents)
+
+	args := mustJSON(t, agentArgs{SubagentType: "Explore", Prompt: "go"})
+	done := make(chan string, 1)
+	go func() {
+		out, _ := tool.Execute(ctx, args)
+		done <- out
+		close(parentEvents)
+	}()
+
+	var got *Fallback
+	for ev := range parentEvents {
+		if f, ok := ev.(Fallback); ok {
+			fb := f
+			got = &fb
+		}
+	}
+	<-done
+
+	if got == nil {
+		t.Fatal("expected a Fallback forwarded to the parent")
+	}
+	if got.Agent != "Explore" {
+		t.Errorf("forwarded fallback Agent = %q, want Explore", got.Agent)
+	}
+	if got.To != "openai/gpt-4o" {
+		t.Errorf("forwarded fallback To = %q, want openai/gpt-4o", got.To)
+	}
+}
+
 // TestAgentTool_SubagentDoneCarriesRoutedModel is the end-to-end proof:
-// a read-only Explore subagent dispatched in auto mode actually runs on
-// the fast adapter (its scripted reply is returned) and the SubagentDone
-// + Task record carry the fast model name for /usage + /subagents.
+// an Explore subagent dispatched in auto mode actually runs on the smart
+// adapter (its scripted reply is returned) and the SubagentDone + Task
+// record carry the smart model name for /usage + /subagents.
 func TestAgentTool_SubagentDoneCarriesRoutedModel(t *testing.T) {
-	fast := &scriptedStreamer{turns: [][]adapter.StreamEvent{
-		{sseDone("fast model handled it")},
+	smart := &scriptedStreamer{turns: [][]adapter.StreamEvent{
+		{sseDone("smart model handled it")},
 	}}
-	tool, _ := newTestAgentTool(t, []subagents.AgentConfig{readOnlyExplore}, &scriptedStreamer{}, true)
-	tool.FastAdapter = fast
-	tool.FastModel = "fast-1"
+	tool, _ := newTestAgentTool(t, []subagents.AgentConfig{exploreAgent}, &scriptedStreamer{}, true)
+	tool.SmartAdapter = smart
+	tool.SmartModel = "smart-1"
 	tool.RouteAuto = true
 
 	parentEvents := make(chan Event, 64)
@@ -241,14 +260,14 @@ func TestAgentTool_SubagentDoneCarriesRoutedModel(t *testing.T) {
 	}
 	out := <-done
 
-	if doneModel != "fast-1" {
-		t.Errorf("SubagentDone.Model = %q, want fast-1", doneModel)
+	if doneModel != "smart-1" {
+		t.Errorf("SubagentDone.Model = %q, want smart-1", doneModel)
 	}
-	if out != "fast model handled it" {
-		t.Errorf("result = %q, want the fast adapter's reply (proves it actually dispatched there)", out)
+	if out != "smart model handled it" {
+		t.Errorf("result = %q, want the smart adapter's reply (proves it actually dispatched there)", out)
 	}
 	tasks := tool.Tasks.List()
-	if len(tasks) != 1 || tasks[0].Model != "fast-1" {
+	if len(tasks) != 1 || tasks[0].Model != "smart-1" {
 		t.Errorf("Task.Model not recorded; tasks=%+v", tasks)
 	}
 }

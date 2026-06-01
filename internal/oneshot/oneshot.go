@@ -322,8 +322,6 @@ func Run(ctx context.Context, opts cli.ChatOptions, prompt string) error {
 		Cwd:             cwdRef,
 		TranscriptDir:   transcriptDir,
 		AllowBackground: false,
-		FastAdapter:     oneshotRouterFast(routerAdapters),
-		FastModel:       oneshotRouterFastModel(routerAdapters),
 		SmartAdapter:    oneshotRouterSmart(routerAdapters),
 		SmartModel:      oneshotRouterSmartModel(routerAdapters),
 		RouteAuto:       fileCfg.Router.RoutingAuto(),
@@ -604,23 +602,10 @@ func appendSkillsSection(base string, loaded []skills.Skill) string {
 		"a name that appears there.\n"
 }
 
-// oneshotRouterFast / oneshotRouterFastModel / oneshotRouterResolve
+// oneshotRouterSmart / oneshotRouterSmartModel / oneshotRouterResolve
 // adapt cli.RouterAdapters to the agent.AgentTool fields, nil-safe when
-// routing is disabled. Mirror the TUI's routerFast helpers.
-func oneshotRouterFast(ra *cli.RouterAdapters) agent.Streamer {
-	if ra == nil || ra.Fast == nil {
-		return nil
-	}
-	return ra.Fast
-}
-
-func oneshotRouterFastModel(ra *cli.RouterAdapters) string {
-	if ra == nil {
-		return ""
-	}
-	return ra.FastModel
-}
-
+// routing is disabled. Mirror the TUI's router helpers. The fast model
+// is reserved for summarization, so there's no fast-adapter wiring here.
 func oneshotRouterSmart(ra *cli.RouterAdapters) agent.Streamer {
 	if ra == nil || ra.Smart == nil {
 		return nil

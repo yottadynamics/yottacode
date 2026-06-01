@@ -236,8 +236,9 @@ func formatSubagentStats(duration time.Duration, toolCalls, tokens int, model st
 		parts = append(parts, formatTokens(tokens)+" tokens")
 	}
 	// Surface the routed model so the user can see cache-safe routing in
-	// action (e.g. an Explore subagent that ran on the fast model). Empty
-	// when the child inherited the parent's model — no chip then.
+	// action (e.g. a subagent that ran on the smart model, or one pinned
+	// to another via an explicit model:). Empty when the child inherited
+	// the parent's model — no chip then.
 	if model != "" {
 		parts = append(parts, "on "+model)
 	}

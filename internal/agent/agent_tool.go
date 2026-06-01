@@ -83,37 +83,28 @@ type AgentTool struct {
 
 	// Adapter is the streamer the child Turn calls into. Shared with
 	// the parent — adapter calls are stateless per-request and
-	// concurrency-safe by construction. This is the "smart"/default
-	// model; cache-safe routing may swap a child onto FastAdapter.
+	// concurrency-safe by construction. This is the active session model
+	// that a child inherits when nothing routes it elsewhere.
 	Adapter Streamer
 
-	// FastAdapter is the cheap/fast model's streamer used for
-	// cache-safe task routing. nil when routing is disabled. A
-	// subagent dispatched here runs in its own isolated context, so
-	// routing it costs nothing in main-thread prompt-cache locality —
-	// the saving the whole feature is built around.
-	FastAdapter Streamer
-
-	// FastModel is the fast model's name, recorded on the task +
-	// SubagentDone events so /subagents and the inline card can show
-	// which model handled a delegation. Empty when routing is off.
-	FastModel string
-
-	// SmartAdapter is the capable model's streamer. In auto mode a
-	// subagent that is NOT read-only (general-purpose, verification, or
-	// any agent that can mutate/run) routes here instead of inheriting
-	// the active session model — this is what makes [router].smart_model
-	// meaningful. nil when routing is off, in which case such agents
-	// inherit Adapter (the active model) as before.
+	// SmartAdapter is the capable model's streamer ([router].smart_model).
+	// In auto mode every delegated subagent without an explicit `model:`
+	// routes here instead of inheriting the active session model — so
+	// subagent work runs on the configured smart model, not whatever the
+	// main thread happens to be on. nil when routing is off, in which
+	// case such agents inherit Adapter (the active model). The fast model
+	// is reserved for summarization (wired separately) and is reachable
+	// for a subagent only via an explicit `model:` override.
 	SmartAdapter Streamer
 
-	// SmartModel is the smart model's name, recorded like FastModel for
-	// the card / task display. Empty when routing is off.
+	// SmartModel is the smart model's name, recorded on the task +
+	// SubagentDone events so /subagents and the inline card can show
+	// which model handled a delegation. Empty when routing is off.
 	SmartModel string
 
-	// RouteAuto enables the heuristic that routes read-only/search
-	// subagents to FastAdapter. False in "manual" mode (only an
-	// explicit `model:` frontmatter routes) and when routing is off.
+	// RouteAuto enables the heuristic that routes delegated subagents to
+	// SmartAdapter. False in "manual" mode (only an explicit `model:`
+	// frontmatter routes) and when routing is off.
 	RouteAuto bool
 
 	// ModelResolver resolves an agent's explicit `model:` frontmatter
@@ -471,49 +462,6 @@ func (t *AgentTool) Execute(ctx context.Context, argsJSON string) (string, error
 	return result, nil
 }
 
-// readOnlyChildTools is the set of tools cheap enough that a subagent
-// restricted to them is routed to the fast model in auto mode. Tools
-// that mutate the workspace or execute commands (write_file, edit_file,
-// run_bash, git_commit, …) are deliberately absent — an agent that can
-// reach those inherits the smart model. The set mirrors the tool
-// allowlists of the read-only builtins (Explore, Plan); keep it in sync
-// when adding read-only tools that search agents should use.
-var readOnlyChildTools = map[string]bool{
-	"read_file":              true,
-	"read_many_files":        true,
-	"grep":                   true,
-	"glob":                   true,
-	"list_dir":               true,
-	"list_project_structure": true,
-	"git_log_file":           true,
-	"git_blame_lines":        true,
-	"git_diff_files":         true,
-	"git_show_file_at_rev":   true,
-	"git_branch_status":      true,
-	"list_git_changed_files": true,
-	"git_merge_base":         true,
-	"fetch_url":              true,
-	"todo_write":             true,
-	"session_recall":         true,
-}
-
-// agentIsReadOnly reports whether an agent definition is restricted to
-// the read-only tool set, making it a safe candidate for the fast
-// model. A wildcard / inherit-all allowlist (empty Tools) is NOT
-// read-only — it can reach the full toolset, so it stays on the smart
-// model.
-func agentIsReadOnly(cfg *subagents.AgentConfig) bool {
-	if len(cfg.Tools) == 0 {
-		return false
-	}
-	for _, name := range cfg.Tools {
-		if !readOnlyChildTools[name] {
-			return false
-		}
-	}
-	return true
-}
-
 // routeChildModel picks the streamer + model name for a child subagent.
 // Routing only ever touches isolated child contexts — never the
 // main-thread model mid-conversation — so it never invalidates the
@@ -521,9 +469,10 @@ func agentIsReadOnly(cfg *subagents.AgentConfig) bool {
 //  1. an explicit `model:` frontmatter resolves via ModelResolver
 //     (manual or auto mode); an unresolvable name falls through so a
 //     typo degrades gracefully rather than erroring;
-//  2. auto mode: a read-only/search agent → the fast model; any other
-//     agent → the smart model (so smart_model is the capable target,
-//     not the active session model);
+//  2. auto mode: every delegated subagent → the smart model (the
+//     capable target, not the active session model). The fast model is
+//     reserved for summarization; subagents reach it only via an
+//     explicit `model:` override;
 //  3. otherwise (manual mode without an explicit model, or routing off)
 //     inherit the parent's active adapter.
 //
@@ -535,13 +484,8 @@ func (t *AgentTool) routeChildModel(cfg *subagents.AgentConfig) (Streamer, strin
 			return s, m
 		}
 	}
-	if t.RouteAuto {
-		if t.FastAdapter != nil && agentIsReadOnly(cfg) {
-			return t.FastAdapter, t.FastModel
-		}
-		if t.SmartAdapter != nil {
-			return t.SmartAdapter, t.SmartModel
-		}
+	if t.RouteAuto && t.SmartAdapter != nil {
+		return t.SmartAdapter, t.SmartModel
 	}
 	return t.Adapter, ""
 }
@@ -683,6 +627,17 @@ func (t *AgentTool) runChild(
 			// would just duplicate the verb. Use the preview directly.
 			toolCallCount++
 			emitActivity(truncate(e.Preview, 96))
+		case Fallback:
+			// The subagent's model chain (smart_models) failed over.
+			// writeEvent above already recorded it in the child transcript;
+			// forward it to the parent so the fallover is visible live,
+			// tagged with the agent type to distinguish it from a
+			// main-thread fallback.
+			if emitToParent != nil {
+				flushRepeat()
+				e.Agent = cfg.Name
+				emitToParent(e)
+			}
 		case ApprovalNeeded:
 			// Foreground subagents can forward the approval request
 			// to the parent's modal — the user is actively watching

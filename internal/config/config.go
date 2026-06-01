@@ -122,16 +122,24 @@ type RouterConfig struct {
 	// Mode controls cache-safe task routing between a smart and a fast
 	// model. "off" (default) disables it entirely. "manual" resolves the
 	// fast/smart models but only routes when an agent declares an explicit
-	// model. "auto" additionally routes read-only/search subagents and
-	// summarization to FastModel. Routing never touches the main-thread
-	// model mid-conversation (that would invalidate the prompt cache and
-	// cost more) — only isolated contexts are routed.
+	// model. "auto" routes summarization to FastModel and every delegated
+	// subagent to SmartModel (an explicit agent `model:` overrides this);
+	// the fast model is reserved for summarization. Routing never touches
+	// the main-thread model mid-conversation (that would invalidate the
+	// prompt cache and cost more) — only isolated contexts are routed.
 	Mode string `toml:"mode"`
 	// FastModel and SmartModel name the cheap and capable models as
 	// "<provider>" or "<provider>:<model>" (same grammar as Candidates).
-	// Required when Mode is not "off".
+	// Required when Mode is not "off" (unless the plural form is set).
 	FastModel  string `toml:"fast_model"`
 	SmartModel string `toml:"smart_model"`
+	// FastModels and SmartModels are the failover-chain forms of the two
+	// slots: the first entry is the primary, the rest are fallbacks tried
+	// in order (via the same policy + health knobs as Candidates) when the
+	// primary fails. A slot may set the singular OR the plural form, not
+	// both. Empty plural → the singular is used as a one-element chain.
+	FastModels  []string `toml:"fast_models"`
+	SmartModels []string `toml:"smart_models"`
 }
 
 // RouterMode values for RouterConfig.Mode.
@@ -155,6 +163,29 @@ func (r RouterConfig) RoutingEnabled() bool {
 // subagents and summarization is active.
 func (r RouterConfig) RoutingAuto() bool {
 	return r.Mode == RouterModeAuto
+}
+
+// FastChain returns the fast-model failover chain: the plural FastModels
+// when set, otherwise the singular FastModel as a one-element chain (or
+// empty when neither is set). The first entry is the primary; the rest
+// are fallbacks. SmartChain is the same for the smart slot.
+func (r RouterConfig) FastChain() []string  { return modelChain(r.FastModels, r.FastModel) }
+func (r RouterConfig) SmartChain() []string { return modelChain(r.SmartModels, r.SmartModel) }
+
+// modelChain coalesces the plural/singular forms of a router slot into a
+// single ordered chain, dropping blank entries.
+func modelChain(plural []string, single string) []string {
+	src := plural
+	if len(src) == 0 {
+		src = []string{single}
+	}
+	out := make([]string, 0, len(src))
+	for _, m := range src {
+		if t := strings.TrimSpace(m); t != "" {
+			out = append(out, t)
+		}
+	}
+	return out
 }
 
 // DefaultRouterHealthWindowSeconds is the sliding-window length the
@@ -635,18 +666,31 @@ func Validate(cfg Config) error {
 		return fmt.Errorf("router.mode %q invalid (expected one of %s)",
 			cfg.Router.Mode, strings.Join(ValidRouterModes, ", "))
 	}
+	// A slot uses the singular OR the plural (chain) form, not both.
+	if cfg.Router.FastModel != "" && len(cfg.Router.FastModels) > 0 {
+		return fmt.Errorf("router: set either fast_model or fast_models, not both")
+	}
+	if cfg.Router.SmartModel != "" && len(cfg.Router.SmartModels) > 0 {
+		return fmt.Errorf("router: set either smart_model or smart_models, not both")
+	}
 	if cfg.Router.RoutingEnabled() {
-		if strings.TrimSpace(cfg.Router.FastModel) == "" {
-			return fmt.Errorf("router.mode = %q requires router.fast_model", cfg.Router.Mode)
+		fastChain := cfg.Router.FastChain()
+		smartChain := cfg.Router.SmartChain()
+		if len(fastChain) == 0 {
+			return fmt.Errorf("router.mode = %q requires router.fast_model (or fast_models)", cfg.Router.Mode)
 		}
-		if strings.TrimSpace(cfg.Router.SmartModel) == "" {
-			return fmt.Errorf("router.mode = %q requires router.smart_model", cfg.Router.Mode)
+		if len(smartChain) == 0 {
+			return fmt.Errorf("router.mode = %q requires router.smart_model (or smart_models)", cfg.Router.Mode)
 		}
-		if err := cfg.validateModelRef(cfg.Router.FastModel); err != nil {
-			return fmt.Errorf("router.fast_model: %w", err)
+		for i, ref := range fastChain {
+			if err := cfg.validateModelRef(ref); err != nil {
+				return fmt.Errorf("router.fast_model(s)[%d]: %w", i, err)
+			}
 		}
-		if err := cfg.validateModelRef(cfg.Router.SmartModel); err != nil {
-			return fmt.Errorf("router.smart_model: %w", err)
+		for i, ref := range smartChain {
+			if err := cfg.validateModelRef(ref); err != nil {
+				return fmt.Errorf("router.smart_model(s)[%d]: %w", i, err)
+			}
 		}
 	}
 	return nil
@@ -771,6 +815,33 @@ func (c *Config) ResolveRouterModels() (fast, smart ResolvedCandidate, err error
 		return ResolvedCandidate{}, ResolvedCandidate{}, fmt.Errorf("router.smart_model: %w", err)
 	}
 	return fast, smart, nil
+}
+
+// ResolveRouterChains resolves the fast and smart failover chains
+// (FastChain / SmartChain) to ordered candidate lists — primary first,
+// then fallbacks. Validate has confirmed every entry resolves.
+func (c *Config) ResolveRouterChains() (fast, smart []ResolvedCandidate, err error) {
+	if fast, err = c.resolveChain(c.Router.FastChain()); err != nil {
+		return nil, nil, fmt.Errorf("router.fast_model(s): %w", err)
+	}
+	if smart, err = c.resolveChain(c.Router.SmartChain()); err != nil {
+		return nil, nil, fmt.Errorf("router.smart_model(s): %w", err)
+	}
+	return fast, smart, nil
+}
+
+// resolveChain resolves each ref in a model chain. Mirrors
+// ResolveCandidates but for an arbitrary list.
+func (c *Config) resolveChain(refs []string) ([]ResolvedCandidate, error) {
+	out := make([]ResolvedCandidate, 0, len(refs))
+	for i, raw := range refs {
+		rc, err := c.resolveCandidate(raw)
+		if err != nil {
+			return nil, fmt.Errorf("[%d]: %w", i, err)
+		}
+		out = append(out, rc)
+	}
+	return out, nil
 }
 
 // providerKeyEnvHint returns the env var name to suggest in error
@@ -1012,15 +1083,31 @@ strategy = "auto"
 #   mode = "off"    — disabled (default).
 #   mode = "manual" — resolve fast/smart; route only subagents whose
 #                     definition declares an explicit model: frontmatter.
-#   mode = "auto"   — additionally route read-only/search subagents
-#                     (e.g. Explore, Plan) and summarization to fast_model.
+#   mode = "auto"   — route summarization to fast_model and every
+#                     delegated subagent (Explore, Plan, general-purpose,
+#                     custom, …) to smart_model. The fast model is
+#                     reserved for summarization; a subagent reaches it
+#                     only via an explicit model: override.
 #
 # fast_model / smart_model use the same "<provider>" or "<provider>:<model>"
 # grammar as candidates above. Both are required when mode != "off".
+#
+# Either slot can be a FAILOVER CHAIN instead of a single model via the
+# plural form fast_models / smart_models = ["<primary>", "<fallback>", …]:
+# on failure/timeout the call falls through to the next entry using the
+# same policy + health knobs as candidates above. A slot uses the
+# singular OR the plural form, not both.
+#
+# Toggle routing live with the /router command (off <-> auto); it never
+# switches the main-thread model, so it only ever touches isolated
+# contexts and stays a pure prompt-cache-safe saving. The value here is
+# the session's starting state.
 # ---------------------------------------------------------------------
 
 # [router]
 # mode        = "auto"
 # fast_model  = "anthropic:claude-haiku-4-5"
 # smart_model = "anthropic:claude-opus-4-6"
+# # or a failover chain for a slot:
+# # smart_models = ["anthropic:claude-opus-4-6", "openai:gpt-4o"]
 `

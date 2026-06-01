@@ -8,6 +8,56 @@ the project uses semantic versioning once it's past `1.0.0`.
 
 ### Added
 
+- **Failover chains for the fast/smart routing slots.** Each
+  `[router]` task-routing slot can now be a *chain* instead of a single
+  model via the plural form `fast_models` / `smart_models = ["<primary>",
+  "<fallback>", …]`. On failure or timeout the call falls through primary
+  → fallbacks, reusing the same `policy` + health knobs as the
+  multi-provider `candidates` router — so a subagent or a summarization
+  call survives a smart-model outage instead of failing. This brings the
+  resilience the main thread already had to delegated work; under the
+  hood a multi-model slot is just a `MultiStreamer`, which drops into the
+  existing `adapter.Client` slot transparently (no changes to the agent
+  tool, summarizer, or wiring). A slot uses the singular or the plural
+  form, not both; the `/router` picker gains a **Smart fallback** row
+  (Enter sets a one-model fallback, `d` clears it, longer chains stay in
+  `config.toml` and show `(+N more)`). The fast slot has no fallback row —
+  it's summarization-only, so instead, the moment the fast model fails a
+  compaction the summarizer **degrades to the smart model** for the next
+  attempt (a fast-provider outage can't block compaction; the fast model
+  is re-probed once it recovers). A fallover
+  is surfaced loudly — a warm-yellow `↻ fallback [<where>]: A → B` line in
+  scrollback, tagged with the subagent type or `summarize` (main-thread
+  fallbacks already rendered this way; the summarizer and subagent paths
+  now do too).
+- **`/router` command + picker + status-bar indicator for cache-safe
+  model routing.** Cache-safe task routing between a `fast_model` and a
+  `smart_model` (the `[router]` config block) is now fully controllable
+  from the TUI. Bare **`/router` opens a picker** whose Routing toggle and
+  model selectors all act **in place** (the picker stays open): enable
+  routing first and pick the fast/smart models below — routing turns on
+  once both are set — or pick the models and toggle on. Models come from
+  your configured providers (embedded catalog + `providers.models`).
+  Selections **persist to `config.toml`**
+  and apply live — picking a catalog model also adds it to that
+  provider's `providers.models` so the write validates, and `config`'s
+  renderer now emits the `[router]` `mode`/`fast_model`/`smart_model`
+  fields (previously only the fallback-router fields round-tripped).
+  **Configuring the smart model also switches your active conversation
+  model to it on close** (the smart model is your primary capable model,
+  so it stays in sync — same effect as `/model <smart>`); closing without
+  changing the smart model leaves the active model untouched.
+  `/router on`/`/router off` are quick shortcuts (also persist); `on`
+  always means `auto` — summarization runs on the fast model and every
+  delegated subagent runs on the smart model (an explicit agent `model:`
+  overrides this). Routing never switches the main-thread model mid-conversation,
+  so it stays a pure saving with no prompt-cache cost. A dim `routing:`
+  chip in the status bar shows when routing is active and which fast
+  model it delegates to; `/summarize` notices show `(on <model>)` when
+  compaction is routed. The fast/smart adapters are built whenever the
+  pair is configured (even in `off` mode) so toggling never rebuilds
+  them. `manual` mode (route only subagents with explicit `model:`
+  frontmatter) remains a config-only setting.
 - **New built-in skill: `documentation-and-adrs`.** Captures the *why*
   behind decisions as you ship — ADRs in `docs/decisions/` for choices
   that are expensive to reverse, why-comments for non-obvious code, and
@@ -42,12 +92,13 @@ the project uses semantic versioning once it's past `1.0.0`.
   model while the main conversation stays on the smart model. The
   main-thread model is never switched mid-conversation, so the prompt
   cache stays warm and routing is a pure cost saving (subagents and
-  summarization never shared that cache). `auto` mode routes read-only
-  search subagents (`Explore`, `Plan`) and summarization to `fast_model`
-  via a deterministic, zero-token tool-set heuristic; agents that can
-  mutate or run commands (`general-purpose`, `verification`) route to
-  `smart_model`. A subagent's explicit `model:` frontmatter (previously
-  parsed but ignored) is now honored and always wins over the heuristic.
+  summarization never shared that cache). `auto` mode routes
+  summarization to `fast_model` and every delegated subagent (`Explore`,
+  `Plan`, `general-purpose`, `verification`, custom) to `smart_model` —
+  the capable model, independent of your active model. The fast model is
+  reserved for summarization; a subagent reaches it only via an explicit
+  `model:` frontmatter (previously parsed but ignored, now honored and
+  always wins over the default).
   The routed model is surfaced in the `/subagents` picker and on each
   subagent's completion card. Default `off` — fully backward compatible.
   See [`docs/models.md`](docs/models.md#cache-safe-task-routing).
@@ -154,6 +205,14 @@ the project uses semantic versioning once it's past `1.0.0`.
 
 ### Fixed
 
+- **Manual-mode routing no longer sends summarization to the fast
+  model.** The docs stated summarization is routed to `fast_model` only
+  in `auto` mode, but the wiring routed it whenever routing was *enabled*
+  — so `manual` mode (meant to route only subagents with an explicit
+  `model:` frontmatter) silently compacted on the fast model too.
+  Summarization is now gated behind `auto`, matching the documented
+  behavior: `off` and `manual` keep compaction on the active model; only
+  `auto` routes it to the fast model.
 - **Status bar / input box no longer vanish after closing `/context` or
   the `/skills` menu.** A full-screen overlay renders taller than the
   bare footer, and inline-mode Bubbletea (no alt-screen) doesn't

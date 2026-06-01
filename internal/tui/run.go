@@ -386,15 +386,18 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 		Tasks:          subagentTasks,
 		Adapter:        ad,
 		ParentRegistry: reg,
-		// Cache-safe routing wiring; zero values (nil/false) when
-		// routing is disabled, so the AgentTool inherits the parent
-		// adapter for every child exactly as before.
-		FastAdapter:   routerFast(routerAdapters),
-		FastModel:     routerFastModel(routerAdapters),
+		// Cache-safe routing wiring. The smart adapter is populated
+		// whenever a [router] pair is configured (even in "off" mode, so
+		// /router can flip routing on live), but only takes effect through
+		// RouteAuto (auto) and ModelResolver (manual/auto). In off mode
+		// RouteAuto is false and ModelResolver is nil, so every child
+		// inherits the parent adapter exactly as before. The fast model is
+		// reserved for summarization (SummarizerAdapter below); subagents
+		// reach it only via an explicit `model:` override.
 		SmartAdapter:  routerSmart(routerAdapters),
 		SmartModel:    routerSmartModel(routerAdapters),
 		RouteAuto:     fileCfg.Router.RoutingAuto(),
-		ModelResolver: routerResolve(routerAdapters),
+		ModelResolver: routerModelResolver(routerAdapters, fileCfg.Router.RoutingEnabled()),
 		Permissions:   perms,
 		YoloMode:      yoloMode,
 		PlanMode:      planMode,
@@ -498,6 +501,11 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 		reg.Register(&agent.SessionRecallTool{Searcher: &recallAdapter{idx: idx}})
 	}
 
+	// Summarization auto-routes to the fast model only in "auto" mode;
+	// manual/off keep compaction on the active model (a nil streamer here
+	// makes summarizerOrDefault fall back to the main adapter).
+	sumAdapter, sumModel := routerSummarizer(routerAdapters, fileCfg.Router.RoutingAuto())
+
 	model := New(ctx, Config{
 		Cfg:                    cfg,
 		Session:                sess,
@@ -537,8 +545,11 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 		MCPManager:             mcpManager,
 		Skills:                 skillsRes.Skills,
 		SkillTool:              skillTool,
-		SummarizerAdapter:      routerFast(routerAdapters),
-		SummarizerModel:        routerFastModel(routerAdapters),
+		SummarizerAdapter:      sumAdapter,
+		SummarizerModel:        sumModel,
+		Router:                 routerAdapters,
+		RouterMode:             fileCfg.Router.Mode,
+		Opts:                   opts,
 	})
 	// Skills onboarding (skills installed but none enabled) is surfaced
 	// inside the welcome card via startupTip() — see welcome.go's
@@ -741,10 +752,10 @@ func splitCSV(s string) []string {
 	return out
 }
 
-// routerFast returns the fast-model streamer for subagent routing, or
-// nil when routing is disabled (ra == nil). Returning a typed nil-free
-// interface keeps AgentTool.FastAdapter genuinely nil so routeChildModel
-// falls back to the parent adapter.
+// routerFast returns the fast-model streamer used for summarization, or
+// nil when routing is disabled (ra == nil). The fast model is
+// summarization-only — delegated subagents route to the smart model — so
+// this feeds the summarizer adapter, not the AgentTool.
 func routerFast(ra *cli.RouterAdapters) agent.Streamer {
 	if ra == nil || ra.Fast == nil {
 		return nil
@@ -790,6 +801,28 @@ func routerResolve(ra *cli.RouterAdapters) func(string) agent.Streamer {
 		}
 		return s
 	}
+}
+
+// routerModelResolver returns the explicit-`model:`-frontmatter resolver
+// when the active mode routes at all (manual or auto). Returns nil in off
+// mode so every child inherits the active model even when a fast/smart
+// pair is configured and pre-built for a later `/router on`.
+func routerModelResolver(ra *cli.RouterAdapters, enabled bool) func(string) agent.Streamer {
+	if !enabled {
+		return nil
+	}
+	return routerResolve(ra)
+}
+
+// routerSummarizer returns the fast streamer and its name for the
+// summarizer when the active mode auto-routes summarization. Manual and
+// off keep compaction on the active model (nil streamer →
+// summarizerOrDefault falls back to the main adapter).
+func routerSummarizer(ra *cli.RouterAdapters, auto bool) (agent.Streamer, string) {
+	if !auto {
+		return nil, ""
+	}
+	return routerFast(ra), routerFastModel(ra)
 }
 
 func composeSystemPrompt(base string, profile adapter.ProviderProfile) string {

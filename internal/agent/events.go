@@ -204,6 +204,11 @@ type Fallback struct {
 	To     string
 	Reason string
 	Policy string
+	// Agent names the context the fallback happened in — a subagent type
+	// (e.g. "Explore") or "summarize" — so the TUI can distinguish a
+	// delegated/summarization fallover from a main-thread one. Empty for
+	// the main conversation.
+	Agent string
 }
 
 // SubagentStart fires when the Agent tool begins a child Turn. The

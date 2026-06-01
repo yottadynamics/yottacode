@@ -376,12 +376,12 @@ the shared adapter. Per-subagent token counts are surfaced in the
 `SubagentDone` event and stored in the task registry.
 
 With [cache-safe task routing](models.md#cache-safe-task-routing)
-enabled, read-only/search subagents run on the cheaper `fast_model`,
-heavier ones on `smart_model`, and any agent with an explicit `model:`
-on whatever it names — all in an isolated context that never shared the
-main thread's prompt cache, so routing is a pure saving. The model each
-subagent ran on shows in the `/subagents` picker and on its completion
-card. (Per-subagent token figures are estimates; yottacode does not yet
+enabled (`auto`), every delegated subagent runs on `smart_model`, and any
+agent with an explicit `model:` runs on whatever it names — all in an
+isolated context that never shared the main thread's prompt cache. The
+fast model is reserved for summarization; a subagent reaches it only via
+an explicit `model:`. The model each subagent ran on shows in the
+`/subagents` picker and on its completion card. (Per-subagent token figures are estimates; yottacode does not yet
 aggregate per-model token totals across a session.)
 
 ## Known limitations

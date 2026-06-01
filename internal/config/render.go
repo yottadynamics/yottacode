@@ -80,8 +80,36 @@ func Render(cfg Config) string {
 		b.WriteString("\n")
 	}
 
-	if cfg.Router.Enabled && len(cfg.Router.Candidates) > 0 {
+	// The [router] section carries two independent features: cache-safe
+	// task routing (mode + fast/smart model) and the multi-provider
+	// fallback router (enabled + candidates). Either, both, or neither may
+	// be configured; render a single section when at least one is set.
+	hasTaskRouting := cfg.Router.FastModel != "" || cfg.Router.SmartModel != "" ||
+		len(cfg.Router.FastModels) > 0 || len(cfg.Router.SmartModels) > 0 ||
+		(cfg.Router.Mode != "" && cfg.Router.Mode != RouterModeOff)
+	hasFallback := cfg.Router.Enabled && len(cfg.Router.Candidates) > 0
+	if hasTaskRouting || hasFallback {
 		b.WriteString("[router]\n")
+	}
+	if hasTaskRouting {
+		// %-13s aligns every key's `=` (smart_models is the longest at 12).
+		if cfg.Router.Mode != "" {
+			fmt.Fprintf(&b, "%-13s= %q\n", "mode", cfg.Router.Mode)
+		}
+		if cfg.Router.FastModel != "" {
+			fmt.Fprintf(&b, "%-13s= %q\n", "fast_model", cfg.Router.FastModel)
+		}
+		if cfg.Router.SmartModel != "" {
+			fmt.Fprintf(&b, "%-13s= %q\n", "smart_model", cfg.Router.SmartModel)
+		}
+		if len(cfg.Router.FastModels) > 0 {
+			writeRouterModelList(&b, "fast_models", cfg.Router.FastModels)
+		}
+		if len(cfg.Router.SmartModels) > 0 {
+			writeRouterModelList(&b, "smart_models", cfg.Router.SmartModels)
+		}
+	}
+	if hasFallback {
 		b.WriteString("enabled    = true\n")
 		policy := cfg.Router.Policy
 		if policy == "" {
@@ -102,6 +130,8 @@ func Render(cfg Config) string {
 		if cfg.Router.HealthFailureThreshold > 0 {
 			fmt.Fprintf(&b, "health_failure_threshold = %d\n", cfg.Router.HealthFailureThreshold)
 		}
+	}
+	if hasTaskRouting || hasFallback {
 		b.WriteString("\n")
 	}
 
@@ -154,6 +184,19 @@ func Render(cfg Config) string {
 	}
 
 	return b.String()
+}
+
+// writeRouterModelList renders a [router] string-list assignment
+// (fast_models / smart_models) aligned with the other task-routing keys.
+func writeRouterModelList(b *strings.Builder, key string, items []string) {
+	fmt.Fprintf(b, "%-13s= [", key)
+	for i, m := range items {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		fmt.Fprintf(b, "%q", m)
+	}
+	b.WriteString("]\n")
 }
 
 // Save writes cfg to path atomically (tmp + rename). Creates parent
