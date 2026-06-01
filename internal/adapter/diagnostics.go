@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -45,17 +46,14 @@ func StaticDiagnostics(cfg Config) ProbeResult {
 // widely available on supported endpoints, and enough to distinguish network,
 // auth, and model-visibility failures.
 //
-// Anthropic is skipped: it does expose /v1/models, but with a different
-// auth header shape (`x-api-key` rather than `Authorization: Bearer`)
-// that the OpenAI-compatible probe gets wrong. Until we wire a
-// dedicated Anthropic probe, the static profile is the diagnostic.
+// Anthropic exposes /v1/models like the OpenAI-compatible providers but
+// authenticates with x-api-key + anthropic-version headers rather than a
+// Bearer token, so it gets a dedicated request shape (probeAnthropic)
+// before folding into the shared response handling.
 func Probe(ctx context.Context, cfg Config) ProbeResult {
 	res := StaticDiagnostics(cfg)
 	if strings.TrimSpace(cfg.BaseURL) == "" {
 		res.Issues = uniqueStrings(append(res.Issues, "base URL is empty"))
-		return res
-	}
-	if res.Profile.Provider == ProviderAnthropic {
 		return res
 	}
 	// openai-auth has no /models endpoint — its catalog is locked at
@@ -63,7 +61,9 @@ func Probe(ctx context.Context, cfg Config) ProbeResult {
 	// api_key_env. Probe by checking the token store directly:
 	// non-expired access token + listed allow-list = healthy. Doing a
 	// real /responses POST would work too but burns ChatGPT
-	// subscription quota on every connection check.
+	// subscription quota on every connection check. Copilot is the same
+	// token-store shape. Neither does network I/O, so handle them before
+	// the HTTP deadline setup.
 	if res.Profile.Provider == ProviderOpenAIAuth {
 		return probeOpenAIAuth(res, cfg)
 	}
@@ -80,6 +80,13 @@ func Probe(ctx context.Context, cfg Config) ProbeResult {
 		defer cancel()
 	}
 
+	if res.Profile.Provider == ProviderAnthropic {
+		return probeAnthropic(ctx, res, cfg)
+	}
+	if res.Profile.Provider == ProviderGemini {
+		return probeGemini(ctx, res, cfg)
+	}
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(cfg.BaseURL, "/")+"/models", nil)
 	if err != nil {
 		res.Issues = uniqueStrings(append(res.Issues, fmt.Sprintf("invalid base URL: %v", err)))
@@ -88,7 +95,61 @@ func Probe(ctx context.Context, cfg Config) ProbeResult {
 	if strings.TrimSpace(cfg.APIKey) != "" {
 		req.Header.Set("Authorization", "Bearer "+cfg.APIKey)
 	}
+	return runModelsProbe(req, res, cfg, parseOpenAIModels)
+}
 
+// probeAnthropic builds the Anthropic /v1/models request and folds the
+// response into res via the shared runModelsProbe. Anthropic's base URL
+// omits the version segment (the SDK appends /v1/messages itself), so
+// /v1/models is built off the bare host; a trailing /v1 on a gateway
+// base URL is trimmed first to avoid /v1/v1/models. Mirrors the wizard's
+// key-validation header shape (internal/wizard/probe.go).
+func probeAnthropic(ctx context.Context, res ProbeResult, cfg Config) ProbeResult {
+	base := strings.TrimSuffix(strings.TrimRight(cfg.BaseURL, "/"), "/v1")
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/v1/models", nil)
+	if err != nil {
+		res.Issues = uniqueStrings(append(res.Issues, fmt.Sprintf("invalid base URL: %v", err)))
+		return res
+	}
+	if strings.TrimSpace(cfg.APIKey) != "" {
+		req.Header.Set("x-api-key", cfg.APIKey)
+	}
+	// Required on every Anthropic REST call; 2023-06-01 is the stable
+	// version the wizard's validator also pins.
+	req.Header.Set("anthropic-version", "2023-06-01")
+	return runModelsProbe(req, res, cfg, parseOpenAIModels)
+}
+
+// probeGemini builds the Gemini models request and folds the response
+// into res via the shared runModelsProbe. Gemini differs from the
+// OpenAI-compatible providers twice over: it authenticates with the
+// x-goog-api-key header (not a Bearer token) and its list-models
+// response is shaped {"models":[{"name":"models/<id>"}]} rather than
+// {"data":[{"id":...}]}. We probe /v1beta/models — the same surface the
+// adapter streams against (gemini.go) — so visibility reflects what's
+// actually usable; a trailing version segment on a gateway base URL is
+// trimmed first.
+func probeGemini(ctx context.Context, res ProbeResult, cfg Config) ProbeResult {
+	base := strings.TrimRight(cfg.BaseURL, "/")
+	base = strings.TrimSuffix(base, "/v1beta")
+	base = strings.TrimSuffix(base, "/v1")
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/v1beta/models", nil)
+	if err != nil {
+		res.Issues = uniqueStrings(append(res.Issues, fmt.Sprintf("invalid base URL: %v", err)))
+		return res
+	}
+	if strings.TrimSpace(cfg.APIKey) != "" {
+		req.Header.Set(geminiAPIKeyHeader, cfg.APIKey)
+	}
+	return runModelsProbe(req, res, cfg, parseGeminiModels)
+}
+
+// runModelsProbe executes a prepared list-models request and folds the
+// response into res: reachability, auth, the available-model list, and
+// model visibility. Shared by the OpenAI-compatible, Anthropic, and
+// Gemini paths, which differ in URL shape, auth headers, and response
+// body — the body shape is handled by the supplied parseModels.
+func runModelsProbe(req *http.Request, res ProbeResult, cfg Config, parseModels func(io.Reader) ([]string, error)) ProbeResult {
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		res.Issues = uniqueStrings(append(res.Issues, fmt.Sprintf("endpoint unreachable: %v", err)))
@@ -110,35 +171,69 @@ func Probe(ctx context.Context, cfg Config) ProbeResult {
 
 	res.AuthOK = true
 
-	var payload struct {
-		Data []struct {
-			ID string `json:"id"`
-		} `json:"data"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+	models, err := parseModels(resp.Body)
+	if err != nil {
 		res.Warnings = uniqueStrings(append(res.Warnings, fmt.Sprintf("could not parse /models response: %v", err)))
 		return res
 	}
-
-	if len(payload.Data) == 0 {
+	if len(models) == 0 {
 		res.Warnings = uniqueStrings(append(res.Warnings, "/models returned no models"))
 		return res
 	}
 
-	res.AvailableModels = make([]string, 0, len(payload.Data))
-	for _, model := range payload.Data {
-		if strings.TrimSpace(model.ID) == "" {
-			continue
-		}
-		res.AvailableModels = append(res.AvailableModels, model.ID)
-		if model.ID == cfg.Model {
+	res.AvailableModels = models
+	for _, id := range models {
+		if id == cfg.Model {
 			res.ModelVisible = true
+			break
 		}
 	}
 	if strings.TrimSpace(cfg.Model) != "" && !res.ModelVisible {
 		res.Issues = uniqueStrings(append(res.Issues, fmt.Sprintf("model %q not listed by /models", cfg.Model)))
 	}
 	return res
+}
+
+// parseOpenAIModels reads the OpenAI-compatible (and Anthropic)
+// list-models shape {"data":[{"id":...}]}, returning the non-empty IDs.
+func parseOpenAIModels(r io.Reader) ([]string, error) {
+	var payload struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(r).Decode(&payload); err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, len(payload.Data))
+	for _, m := range payload.Data {
+		if id := strings.TrimSpace(m.ID); id != "" {
+			out = append(out, id)
+		}
+	}
+	return out, nil
+}
+
+// parseGeminiModels reads the Gemini list-models shape
+// {"models":[{"name":"models/<id>"}]}. The bare <id> is what the config
+// and streaming path use, so the "models/" prefix is stripped to make
+// the visibility comparison line up.
+func parseGeminiModels(r io.Reader) ([]string, error) {
+	var payload struct {
+		Models []struct {
+			Name string `json:"name"`
+		} `json:"models"`
+	}
+	if err := json.NewDecoder(r).Decode(&payload); err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, len(payload.Models))
+	for _, m := range payload.Models {
+		if id := strings.TrimSpace(strings.TrimPrefix(m.Name, "models/")); id != "" {
+			out = append(out, id)
+		}
+	}
+	return out, nil
 }
 
 // probeOpenAIAuth checks the OAuth token store for openai-auth.

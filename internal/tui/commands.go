@@ -1225,9 +1225,6 @@ func probeConnectionState(result adapter.ProbeResult) connState {
 	if result.EndpointReachable && result.AuthOK && len(result.Issues) == 0 {
 		return connOK
 	}
-	if result.EndpointReachable {
-		return connDown
-	}
 	return connDown
 }
 

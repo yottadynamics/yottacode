@@ -940,13 +940,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	if probe, ok := msg.(providerProbeMsg); ok {
-		if probe.result.EndpointReachable && probe.result.AuthOK && len(probe.result.Issues) == 0 {
-			m.connection = connOK
-		} else if probe.result.EndpointReachable {
-			m.connection = connDown
-		} else {
-			m.connection = connDown
-		}
+		m.connection = probeConnectionState(probe.result)
 		if probe.result.Profile.Provider != "" {
 			m.providerProfile = probe.result.Profile
 		}
