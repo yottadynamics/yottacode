@@ -778,15 +778,21 @@ func executeToolCall(
 		cwdBefore = cfg.Cwd.Get()
 	}
 
+	// Normalize string-encoded scalar args (e.g. {"max_results":"5"} from
+	// Llama-via-NIM/Ollama) to the types the tool's schema declares. No-op
+	// for compliant providers; fail-open for anything it can't safely fix.
+	// See yottacode-roadmap/tool-arg-coercion.md.
+	argsJSON := coerceArgsToSchema(tc.ArgsJSON, tool.Schema())
+
 	var out string
 	var images []adapter.ImageBlock
 	var err error
 	if mm, ok := tool.(MultimodalTool); ok {
 		var res MultimodalResult
-		res, err = mm.ExecuteMultimodal(toolCtx, tc.ArgsJSON)
+		res, err = mm.ExecuteMultimodal(toolCtx, argsJSON)
 		out, images = res.Content, res.Images
 	} else {
-		out, err = tool.Execute(toolCtx, tc.ArgsJSON)
+		out, err = tool.Execute(toolCtx, argsJSON)
 	}
 	// Inline path-trust elevation: if the write validator rejected
 	// the target as outside the workspace, give the user a chance to
@@ -806,10 +812,10 @@ func executeToolCall(
 			if d != Deny {
 				if mm, ok := tool.(MultimodalTool); ok {
 					var res MultimodalResult
-					res, err = mm.ExecuteMultimodal(toolCtx, tc.ArgsJSON)
+					res, err = mm.ExecuteMultimodal(toolCtx, argsJSON)
 					out, images = res.Content, res.Images
 				} else {
-					out, err = tool.Execute(toolCtx, tc.ArgsJSON)
+					out, err = tool.Execute(toolCtx, argsJSON)
 				}
 			}
 		}

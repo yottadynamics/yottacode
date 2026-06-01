@@ -202,6 +202,16 @@ This works with many gateways and self-hosted runtimes that expose `/v1/chat/com
 
 Tested examples include NVIDIA NIM, Groq, vLLM, and Llama Stack. Other gateways that speak the same wire protocol should work but are not formally validated.
 
+**Tool-argument tolerance.** Some open models on these endpoints emit numeric
+and boolean tool arguments as JSON *strings* — `{"max_results":"5"}` instead of
+`{"max_results":5}`. This is a model trait, not a host one: Meta Llama 3.1/3.3
+instruct do it (on NIM, Ollama, vLLM, etc.), while NVIDIA's own Nemotron, Mistral,
+Qwen, and DeepSeek emit properly-typed JSON. yottacode normalizes these against
+each tool's schema before the tool runs, so affected models work without
+configuration. A model that instead emits the whole tool call as plain text
+(rather than a structured call) is a separate limitation that normalization
+cannot fix.
+
 `/usage` reports token usage for every provider and links the billing dashboard for the paid cloud ones; it does not compute a dollar figure (no provider exposes per-model pricing on the inference key). Ollama and NVIDIA NIM (`openai-compatible` pointed at `integrate.api.nvidia.com`) have no billing dashboard — token counts only. See [cost.md](cost.md).
 
 ## Diagnostics

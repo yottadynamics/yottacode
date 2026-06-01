@@ -154,6 +154,19 @@ the project uses semantic versioning once it's past `1.0.0`.
 
 ### Fixed
 
+- **Tool calls from open models that string-encode arguments now work.**
+  Some OpenAI-compatible models — notably Meta Llama 3.1/3.3 instruct on
+  NVIDIA NIM, Ollama, vLLM — emit numeric and boolean tool arguments as
+  JSON strings (`{"max_results":"5"}`), which Go's strict decoder rejected
+  with `cannot unmarshal string into Go struct field … of type int`,
+  causing the model to loop retrying the same failing call. yottacode now
+  normalizes string-encoded scalars against each tool's schema at the
+  dispatch layer, before the tool runs — covering every built-in and MCP
+  tool. The coercion is conservative (only string→int/number/bool, only
+  when it parses cleanly) and fail-open (unparseable args, no schema, and
+  already-typed values pass through unchanged), so providers that were
+  already correct see no behavior change. See
+  `yottacode-roadmap/tool-arg-coercion.md`.
 - **Status bar / input box no longer vanish after closing `/context` or
   the `/skills` menu.** A full-screen overlay renders taller than the
   bare footer, and inline-mode Bubbletea (no alt-screen) doesn't

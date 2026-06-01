@@ -65,6 +65,21 @@ yottacode --max-iterations 50
 
 Keep the limit finite; it protects you from runaway tool loops.
 
+## `cannot unmarshal string into Go struct field … of type int`
+
+Seen as a repeating tool error (e.g. `web_search: invalid args: json: cannot
+unmarshal string into Go struct field .max_results of type int`) with the model
+retrying the same call. Some open models — notably Meta Llama 3.1/3.3 instruct
+on NVIDIA NIM, Ollama, and vLLM — emit numeric/boolean tool arguments as JSON
+strings (`"5"` instead of `5`).
+
+yottacode now normalizes these against each tool's schema automatically, so
+**upgrading resolves it** with no configuration. If you still see it, the model
+is likely emitting the tool call as plain text rather than a structured call —
+a separate model limitation that argument normalization cannot fix; switch to a
+model that supports structured tool calling (e.g. NVIDIA's Nemotron, Mistral,
+Qwen, or DeepSeek on the same endpoint).
+
 ## The trust prompt fires on every launch
 
 The first-launch trust prompt records cwd in `~/.yottacode/trusted-roots.json` on Yes. If you see it again on a directory you already accepted, the cwd is most likely a fresh path (different absolute path, different worktree, different bind-mount). List and add directly:
