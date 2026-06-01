@@ -799,24 +799,25 @@ func composeSystemPrompt(base string, profile adapter.ProviderProfile) string {
 	return base + "\nFor live or current information, use the web_search tool to search the web via DuckDuckGo, or fetch_url for specific pages or feeds when needed."
 }
 
-// appendSkillsSection adds the description-matched metadata tier of
-// Agent Skills to the system prompt. This is the spec's "always-on,
-// small" tier — names + descriptions only; bodies stay out of the
-// prompt until the model invokes Skill(name=...). The framing mirrors
-// Claude Code's skills system reminder so models that have seen that
-// surface recognize the contract.
+// appendSkillsSection frames the Agent Skills surface in the system
+// prompt: what skills are and how to invoke them. It deliberately does
+// NOT enumerate the skills — that name+description list is the load-
+// bearing content of the `Skill` tool's own schema description (see
+// SkillTool.Description), which is always in the window. Listing it here
+// too would duplicate the metadata tier in every turn (system prompt +
+// tool schema), doubling its token cost for no gain. The framing points
+// the model at the tool's list instead. Empty set → no section at all.
 func appendSkillsSection(base string, loaded []skills.Skill) string {
 	if len(loaded) == 0 {
 		return base
 	}
-	var b strings.Builder
-	b.WriteString(base)
-	b.WriteString("\n\n# Available skills\n\n")
-	b.WriteString("You have access to a set of reusable capability playbooks (Agent Skills). When a user request matches a skill's described scope, invoke it via the `Skill` tool (e.g. `Skill(skill=\"<name>\")`); the tool returns the skill's body so you can apply it in the current turn. Only invoke a skill that appears in the list below — do NOT guess names.\n\n")
-	for _, sk := range loaded {
-		fmt.Fprintf(&b, "- %s: %s\n", sk.Name, sk.Description)
-	}
-	return b.String()
+	return base + "\n\n# Available skills\n\n" +
+		"You have access to reusable capability playbooks (Agent Skills). When a " +
+		"user request matches a skill's described scope, invoke it via the `Skill` " +
+		"tool (e.g. `Skill(skill=\"<name>\")`); the tool returns the skill's body so " +
+		"you can apply it in the current turn. The `Skill` tool's description lists " +
+		"every available skill by name and scope — consult that list and only invoke " +
+		"a name that appears there.\n"
 }
 
 // recomposeSessionSystemPrompt rewrites the session's system message.

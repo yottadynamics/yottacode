@@ -2053,6 +2053,138 @@ func TestResizeReplay_RoutesThroughQueuePrintln(t *testing.T) {
 	}
 }
 
+// flattenCmd executes cmd and recursively flattens tea.Sequence /
+// tea.Batch results (both carry a []tea.Cmd payload) into the leaf
+// messages — so a test can inspect the print lines a sequenced flush
+// command will ultimately emit.
+func flattenCmd(cmd tea.Cmd) []tea.Msg {
+	if cmd == nil {
+		return nil
+	}
+	rv := reflect.ValueOf(cmd())
+	if rv.Kind() == reflect.Slice { // sequenceMsg / batchMsg are []tea.Cmd
+		var out []tea.Msg
+		for i := 0; i < rv.Len(); i++ {
+			if c, ok := rv.Index(i).Interface().(tea.Cmd); ok {
+				out = append(out, flattenCmd(c)...)
+			}
+		}
+		return out
+	}
+	return []tea.Msg{rv.Interface()}
+}
+
+// TestOverlayClosed_Predicate locks the open→closed transition detector the
+// re-anchor guard keys off of.
+func TestOverlayClosed_Predicate(t *testing.T) {
+	m := newTestModel(t)
+	m.openSkillsMenu()
+	open := m
+	closed := open
+	closed.skillsMenuOpen = false
+	closed.skillsMenu = nil
+
+	if !open.overlayClosed(closed) {
+		t.Error("overlay open→closed should report closed")
+	}
+	if open.overlayClosed(open) {
+		t.Error("overlay still open: should not report closed")
+	}
+	if closed.overlayClosed(closed) {
+		t.Error("no overlay was open: should not report closed")
+	}
+}
+
+// TestRepaintViewport_ClearsAndReplaysHistory locks the recovery sequence:
+// a ClearScreen to reset the inline renderer, then the recorded scrollback
+// replayed through queuePrintln so the wiped viewport is restored.
+func TestRepaintViewport_ClearsAndReplaysHistory(t *testing.T) {
+	m := newTestModel(t)
+	m.historyLines = []string{"alpha scrollback", "beta scrollback"}
+	m.pendingCmds = nil
+	m.repaintViewport()
+
+	if len(m.pendingCmds) == 0 {
+		t.Fatal("repaintViewport queued nothing")
+	}
+	// First queued cmd is tea.ClearScreen — an empty-struct message, not a
+	// print line (which carries a non-empty body field).
+	first := reflect.ValueOf(m.pendingCmds[0]())
+	if first.Kind() != reflect.Struct || first.NumField() != 0 {
+		t.Errorf("first queued cmd should be ClearScreen (empty-struct msg), got %#v", first)
+	}
+	var bodies []string
+	for _, msg := range flattenCmd(tea.Sequence(m.pendingCmds...)) {
+		v := reflect.ValueOf(msg)
+		if v.Kind() == reflect.Struct && v.NumField() > 0 {
+			bodies = append(bodies, stripANSI(v.Field(0).String()))
+		}
+	}
+	joined := strings.Join(bodies, "\n")
+	if !strings.Contains(joined, "alpha scrollback") || !strings.Contains(joined, "beta scrollback") {
+		t.Errorf("repaintViewport should replay history lines, got %q", joined)
+	}
+}
+
+// replaysMarker reports whether cmd (and any sequenced children) replays a
+// scrollback line containing marker — i.e. whether a forced repaint fired.
+func replaysMarker(cmd tea.Cmd, marker string) bool {
+	for _, msg := range flattenCmd(cmd) {
+		v := reflect.ValueOf(msg)
+		if v.Kind() == reflect.Struct && v.NumField() > 0 &&
+			strings.Contains(stripANSI(v.Field(0).String()), marker) {
+			return true
+		}
+	}
+	return false
+}
+
+// TestOverlayClose_ReanchorGuard is the end-to-end guard for the missing
+// status-bar bug. A quiet overlay close (Esc, no scrollback emitted) leaves
+// the live footer stranded in inline mode, so it must force a redraw that
+// replays scrollback and re-anchors the frame to the terminal bottom. A
+// close that already emits a line (the menu's Check row) re-anchors via that
+// line, so the guard must NOT pile a second full replay on top.
+func TestOverlayClose_ReanchorGuard(t *testing.T) {
+	const marker = "conversation scrollback marker"
+
+	t.Run("quiet close replays scrollback", func(t *testing.T) {
+		m := newTestModel(t) // height 24 — the menu fits; close still strands the footer
+		m.appendLine(marker)
+		m.openSkillsMenu()
+		m.pendingCmds = nil // drop the appendLine emit; we only want the close's cmds
+
+		out, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+		if out.(Model).skillsMenuOpen {
+			t.Fatal("Esc should have closed the menu")
+		}
+		if !replaysMarker(cmd, marker) {
+			t.Error("a quiet overlay close should replay scrollback to re-anchor the footer")
+		}
+	})
+
+	t.Run("close that emits a line does not double-repaint", func(t *testing.T) {
+		m := newTestModel(t)
+		m.skillTool = &agent.SkillTool{All: nil}
+		m.appendLine(marker)
+		m.openSkillsMenu()
+		// Walk to the Check row (Catalog, Install, Uninstall, Check, Update).
+		m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyDown})
+		m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyDown})
+		m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyDown})
+
+		out, cmd := applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+		if out.skillsMenuOpen {
+			t.Fatal("Check should have closed the menu")
+		}
+		// Check emits its own line, which re-anchors the frame; the guard
+		// must skip the forced replay (no full history dump of the marker).
+		if replaysMarker(cmd, marker) {
+			t.Error("a close that already emits scrollback should not force a second full replay")
+		}
+	})
+}
+
 // Regression guard for the startup entry-banner bug: banners emitted at
 // construction time (run.go calls enterYoloMode / toggle* before the first
 // WindowSizeMsg) ran with m.width == 0, so queuePrintln wrapped them at the

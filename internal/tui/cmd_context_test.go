@@ -8,6 +8,8 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/yottadynamics/yottacode/internal/adapter"
+	"github.com/yottadynamics/yottacode/internal/agent"
+	"github.com/yottadynamics/yottacode/internal/contextwindow"
 	"github.com/yottadynamics/yottacode/internal/skills"
 )
 
@@ -67,19 +69,15 @@ func TestSlash_ContextRendersAllSections(t *testing.T) {
 }
 
 // TestContext_SkillBodiesDoNotCountAgainstWindow is the regression for
-// the /context Skills-bucket bug: skill bodies load on demand and are
-// not in-window, so attaching a large body to a skill must not change
-// the reported window usage. The Skills section still lists the skill
-// as on-disk inventory, tagged "(on demand)".
+// the /context Skills accounting: a skill's body loads on demand and is
+// never in-window, so attaching a 100KB body must not surface that cost
+// anywhere — not the total, not the Skills bucket, not the per-skill row.
+// Only the always-loaded metadata (name + description) counts.
 func TestContext_SkillBodiesDoNotCountAgainstWindow(t *testing.T) {
 	msgs := []adapter.Message{
 		{Role: adapter.RoleSystem, Content: "you are an assistant."},
 		{Role: adapter.RoleUser, Content: "hi"},
 	}
-
-	base := newTestModel(t)
-	base.sess.Messages = msgs
-	base.skills = nil
 
 	withSkill := newTestModel(t)
 	withSkill.sess.Messages = msgs
@@ -90,28 +88,123 @@ func TestContext_SkillBodiesDoNotCountAgainstWindow(t *testing.T) {
 		Source:      skills.ScopeBuiltin,
 	}}
 
-	baseReport := ansi.Strip(renderContextReport(&base))
-	skillReport := ansi.Strip(renderContextReport(&withSkill))
+	report := ansi.Strip(renderContextReport(&withSkill))
 
-	// The 100KB body must not move the window total: the used / window
-	// summary line is identical with and without the skill.
-	if a, b := lineWith(baseReport, " / "), lineWith(skillReport, " / "); a != b {
-		t.Errorf("skill body changed the reported window usage:\n without: %q\n with:    %q", a, b)
+	// The 100KB body's token figure must appear nowhere in the report.
+	bodyTokens := formatTokens(contextwindow.EstimateText(strings.Repeat("B", 100_000)))
+	if strings.Contains(report, bodyTokens) {
+		t.Errorf("skill body (%s tokens) must never be counted in /context:\n%s", bodyTokens, report)
 	}
 
-	// Skills is no longer a counted legend bucket. "Skills:" (with colon)
-	// only ever came from the legend row; the section header is "Skills"
-	// without a colon, so its absence is a clean assertion.
-	if strings.Contains(skillReport, "Skills:") {
-		t.Errorf("Skills must not appear as a counted legend bucket:\n%s", skillReport)
+	// Skills is now a counted legend bucket (carved out of System tools),
+	// valued by the loaded metadata.
+	if !strings.Contains(report, "Skills:") {
+		t.Errorf("Skills should appear as a legend bucket:\n%s", report)
 	}
 
-	// The inventory still lists the skill, tagged on demand.
-	if !strings.Contains(skillReport, "huge-skill") {
-		t.Errorf("Skills inventory should still list the skill:\n%s", skillReport)
+	// The per-skill row shows the loaded metadata cost (name + description),
+	// not the body, and is not tagged on demand.
+	skillLine := lineWith(report, "huge-skill")
+	if skillLine == "" {
+		t.Fatalf("Skills section should list the skill:\n%s", report)
 	}
-	if !strings.Contains(skillReport, "on demand") {
-		t.Errorf("Skills inventory rows should be tagged (on demand):\n%s", skillReport)
+	wantMeta := formatTokens(skillMetadataTokens("huge-skill", "x"))
+	if !strings.Contains(skillLine, wantMeta+" tokens") {
+		t.Errorf("skill row should show loaded metadata cost %q tokens, got %q", wantMeta, skillLine)
+	}
+	if strings.Contains(skillLine, "on demand") {
+		t.Errorf("always-loaded skill metadata should not be tagged on demand: %q", skillLine)
+	}
+}
+
+// TestContext_OnlyEnabledSkillsAreCounted is the regression guard for the
+// "I installed a skill but don't see it in the calculation" report. Skills
+// are off by default and a skill's metadata only enters the window once
+// enabled (it lives in the Skill tool schema, which lists active skills).
+// So the Skills section must show enabled skills with their loaded cost and
+// disabled ones as `off`, never a phantom token figure for a skill that
+// isn't actually loaded.
+func TestContext_OnlyEnabledSkillsAreCounted(t *testing.T) {
+	m := newTestModel(t)
+	m.skills = []skills.Skill{
+		{Name: "on-skill", Description: "loaded this session", Source: skills.ScopeBuiltin},
+		{Name: "off-skill", Description: "not loaded this session", Source: skills.ScopeBuiltin},
+	}
+	m.skillTool = &agent.SkillTool{All: m.skills}
+	m.skillTool.SetEnabled(map[string]bool{"on-skill": true}) // off-skill stays disabled
+
+	report := ansi.Strip(renderContextReport(&m))
+
+	onLine := lineWith(report, "on-skill")
+	if !strings.Contains(onLine, "tokens") || strings.Contains(onLine, "off") {
+		t.Errorf("enabled skill should show its loaded metadata cost, not off: %q", onLine)
+	}
+	offLine := lineWith(report, "off-skill")
+	if !strings.Contains(offLine, "off") || strings.Contains(offLine, "tokens") {
+		t.Errorf("disabled skill should show off / not loaded with no token cost: %q", offLine)
+	}
+}
+
+// legendValue extracts a bucket's rendered token value from a stripped
+// /context report — the text between "<label>:" and the trailing "(pct%)".
+func legendValue(t *testing.T, report, label string) string {
+	t.Helper()
+	line := lineWith(report, label+":")
+	if line == "" {
+		t.Fatalf("legend has no %q row:\n%s", label, report)
+	}
+	rest := strings.TrimSpace(line[strings.Index(line, label+":")+len(label+":"):])
+	if i := strings.Index(rest, "("); i >= 0 {
+		rest = strings.TrimSpace(rest[:i])
+	}
+	return rest
+}
+
+// TestContext_SkillsBucketCarvedFromSystemTools locks the no-double-count
+// invariant: an enabled skill's metadata already rides inside the Skill
+// tool's schema (counted under System tools), so the Skills bucket must be
+// carved OUT of System tools, not added on top. System tools + Skills must
+// still sum to the full tool-schema cost.
+func TestContext_SkillsBucketCarvedFromSystemTools(t *testing.T) {
+	m := newTestModel(t)
+	sk := []skills.Skill{{Name: "alpha", Description: "does alpha things in detail", Source: skills.ScopeBuiltin}}
+	m.skills = sk
+	tool := &agent.SkillTool{All: sk}
+	tool.SetEnabled(map[string]bool{"alpha": true})
+	m.skillTool = tool
+	m.cfg.Registry.Register(tool) // so System tools counts the Skill tool schema (incl. alpha's metadata)
+
+	wantSkill := skillMetadataTokens("alpha", "does alpha things in detail")
+	fullSysTools, _ := contextToolTokens(&m) // includes alpha's metadata, pre-carve
+
+	report := ansi.Strip(renderContextReport(&m))
+
+	if got, want := legendValue(t, report, "Skills"), formatTokens(wantSkill); got != want {
+		t.Errorf("Skills bucket = %s, want %s (alpha's loaded metadata)", got, want)
+	}
+	if got, want := legendValue(t, report, "System tools"), formatTokens(max(fullSysTools-wantSkill, 0)); got != want {
+		t.Errorf("System tools should be carved down to %s (full %d - skill %d), got %s",
+			want, fullSysTools, wantSkill, got)
+	}
+}
+
+// TestContext_CustomCommandsStayOnDemand pins the other side of the split:
+// a custom command contributes nothing to the window until invoked, so its
+// row keeps the "(on demand)" tag that skill rows shed.
+func TestContext_CustomCommandsStayOnDemand(t *testing.T) {
+	m := newTestModel(t)
+	m.customSlash = []slashCommand{{
+		Name:     "deploy",
+		Help:     "ship the current branch",
+		IsCustom: true,
+	}}
+	report := ansi.Strip(renderContextReport(&m))
+	line := lineWith(report, "deploy")
+	if line == "" {
+		t.Fatalf("custom command should appear in the Skills section:\n%s", report)
+	}
+	if !strings.Contains(line, "on demand") {
+		t.Errorf("custom-command row should stay tagged (on demand): %q", line)
 	}
 }
 

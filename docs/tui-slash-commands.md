@@ -226,7 +226,7 @@ Built-in commands like `/help`, `/clear`, `/model`, `/plan` sit above all three 
 
 ## Agent Skills
 
-A **skill** is a reusable capability playbook the agent loads on demand. Names + descriptions are always in the system prompt so the model picks the right skill by keyword match; the body is loaded only when invoked. Skills are spec-compliant with [agentskills.io](https://agentskills.io/specification), so a skill authored for Claude Code drops in without changes.
+A **skill** is a reusable capability playbook the agent loads on demand. Names + descriptions are always in the window — carried by the `Skill` tool's schema so the model picks the right skill by keyword match — while the body is loaded only when invoked. Skills are spec-compliant with [agentskills.io](https://agentskills.io/specification), so a skill authored for Claude Code drops in without changes.
 
 ### Default policy: off
 
