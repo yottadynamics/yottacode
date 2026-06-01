@@ -79,8 +79,9 @@ Hosted provider tools depend on provider support, not just the model name.
 
 Routing lets yottacode run **isolated, throwaway work** (subagents and
 history compaction) on a cheap **fast** model while your main
-conversation stays on your chosen **smart** model. It is opt-in via the
-`[router]` block in `~/.yottacode/config.toml`:
+conversation stays on your chosen **smart** model. It is opt-in,
+configurable from the TUI with **`/router`** (recommended — see below) or
+by hand via the `[router]` block in `~/.yottacode/config.toml`:
 
 ```toml
 [router]
@@ -94,6 +95,73 @@ conversation stays on your chosen **smart** model. It is opt-in via the
 `candidates`. Both are required when `mode` is not `off`. Provider names
 refer to your `[[providers]]` blocks, and the model must be listed in
 that provider's `models` (typos are rejected at load time).
+
+### Failover chains
+
+Each slot can be a **failover chain** instead of a single model — give it
+the plural form with a primary followed by fallbacks:
+
+```toml
+[router]
+  mode         = "auto"
+  fast_model   = "anthropic:claude-haiku-4-5"                   # single is fine
+  smart_models = ["anthropic:claude-opus-4-6", "openai:gpt-4o"] # primary, then fallback
+  policy                   = "fallback-chain"   # reused for the chains
+  health_window_seconds    = 60
+  health_failure_threshold = 3
+```
+
+The first entry is the primary; on failure/timeout the call falls through
+to the next, using the same `policy` + health knobs as the multi-provider
+router (a flapping provider is skipped until it recovers). So a subagent
+or a summarization call survives a smart-model outage instead of failing.
+A slot uses the singular **or** the plural form, not both.
+
+When a fallover happens it's surfaced loudly, the same way main-thread
+fallbacks already are — a warm-yellow line tagged with where it occurred:
+
+```
+↻ fallback [Explore]: anthropic/claude-opus-4-6 → openai/gpt-4o [fallback-chain]: <reason>
+↻ fallback [summarize]: anthropic/claude-haiku-4-5 → openai/gpt-4o-mini: <reason>
+```
+
+The status chip and subagent cards still show the primary. The `/router`
+picker has a **Smart fallback** row: Enter sets it (a one-model
+fallback), `d` clears it. Chains longer than two stay in `config.toml` —
+the picker shows `(+N more)` and preserves them.
+
+The **fast slot has no fallback row** on purpose: it's summarization-only,
+and summarization is non-critical (it retries next turn). Instead of a
+fast chain, **the moment the fast model fails a compaction** the
+summarizer **degrades to the smart model** for the next attempt — so a
+fast-provider outage can't block compaction. The counter resets on a
+success, so the fast model is re-probed once it recovers. (A `fast_models`
+chain set by hand in `config.toml` is still honored; it's just not
+surfaced in the picker.)
+
+### Configuring from the TUI: `/router`
+
+You don't have to edit the file by hand. **`/router`** opens a picker
+with rows — Routing, Smart model, Fast model, Smart fallback — that all
+act in place (the picker stays open). Toggle the Routing row on/off, and
+open the model rows to pick the smart/fast models from your configured
+models (the embedded catalog plus any `providers.models`). You can enable
+routing first and choose the models below — routing turns on once both
+are set — or pick the models and then toggle on. Selections persist to
+`config.toml` and apply live; picking a catalog model also records it in
+that provider's `providers.models` so the write validates. `/router on`
+and `/router off` are quick shortcuts for the toggle.
+
+**Configuring the smart model also switches your active model.** When you
+set (or change) the **Smart model** and close the picker, your main
+conversation switches to that model — the smart model is your primary
+capable model, so this keeps the two in sync (the same as running
+`/model <smart>`). Closing without changing the smart model leaves your
+active model untouched.
+
+While routing is active a `routing: <smart-model>` chip appears in the
+status bar (the model your delegated subagents run on). (`manual` mode
+stays config-only — the picker toggles between `off` and `auto`.)
 
 ### Why this saves money (and never costs more)
 
@@ -110,8 +178,9 @@ cache** in the first place:
 - **Subagents** each build a fresh, isolated context window.
 - **Summarization / compaction** is a single isolated call.
 
-Running those on the fast model is a pure saving with zero cache churn.
-Your interactive turns are untouched.
+Routing either to a *different* model never churns the main thread's
+cache. Summarization runs on the cheaper `fast_model` — a pure saving —
+and subagents run on `smart_model`. Your interactive turns are untouched.
 
 ### Modes
 
@@ -119,16 +188,20 @@ Your interactive turns are untouched.
 |---|---|
 | `off` (default) | Routing disabled. Everything runs on your active model. Fully backward compatible. |
 | `manual` | Resolves `fast_model` / `smart_model`, but only routes a subagent when its definition declares an explicit `model:` (see [subagents.md](subagents.md)). Non-annotated agents inherit your active model, exactly as with routing off. |
-| `auto` | Routes by the agent's nature: **read-only / search subagents** (the `Explore` and `Plan` built-ins) and **summarization** → `fast_model`; **everything else** (the `general-purpose` and `verification` built-ins, or any agent that can mutate/run) → `smart_model`. |
+| `auto` | **Summarization / history compaction** → `fast_model`. **Every delegated subagent** (`Explore`, `Plan`, `general-purpose`, `verification`, and your custom agents) → `smart_model` — the capable model, not your active session model. An explicit `model:` on an agent definition overrides this. |
 
-The `auto` heuristic is **deterministic and free** — it inspects each
-agent's declared tool allowlist, with no extra model call to classify
-the task. An agent restricted to read-only tools (read_file, grep, glob,
-git read subcommands, etc.) routes to `fast_model`; an agent that can
-mutate the workspace or run commands (`run_bash`, `write_file`, …)
-routes to `smart_model`. An explicit `model:` on an agent definition
-always wins over the heuristic. (Your **main conversation** is never
-affected either way — only subagents and summarization.)
+The split is deliberate: summarization is mechanical compression of
+already-decided content, so it's the one place a cheaper model is a safe
+saving. Subagent work — searching, planning, verifying — feeds straight
+back into the main agent's reasoning, so it runs on the capable
+`smart_model` by default; routing it to a weak model risks bad research
+that the main agent then acts on. The fast model is therefore reserved
+for summarization; a subagent reaches it only when you **explicitly** pin
+it with a `model:` frontmatter (which always wins over the default). Your
+**main conversation** is never affected either way. Note that
+`smart_model` is independent of your active model, so you can even
+delegate subagent work to a *stronger* model than the one you're chatting
+on.
 
 ### Seeing what ran where
 
