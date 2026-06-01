@@ -150,7 +150,7 @@ Drop a markdown file into `~/.yottacode/commands/` (user scope) or `.yottacode/c
 
 ### Agent Skills
 
-Reusable capability playbooks the agent loads on demand. 16 built-in skills cover: SSH/remote ops, git investigation, Dockerfile review, TDD, verification, Playwright testing, `diagnose` debugging loop, security audit, plan writing & execution, brainstorming, code review, architecture review, prototyping, session handoff, and performance profiling.
+Reusable capability playbooks the agent loads on demand. 17 built-in skills cover: SSH/remote ops, git investigation, Dockerfile review, TDD, verification, Playwright testing, `diagnose` debugging loop, security audit, plan writing & execution, brainstorming, code review, architecture review, prototyping, session handoff, performance profiling, and documentation & ADRs.
 
 Drop a directory into `~/.yottacode/skills/<slug>/` (user-scope) or `.yottacode/skills/<slug>/` (project-scope) — project shadows user shadows built-in. Format follows the [agentskills.io spec](https://agentskills.io/specification).
 

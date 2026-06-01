@@ -8,6 +8,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/yottadynamics/yottacode/internal/adapter"
+	"github.com/yottadynamics/yottacode/internal/skills"
 )
 
 // TestSlash_ContextRendersAllSections fires /context against a stub
@@ -34,7 +35,6 @@ func TestSlash_ContextRendersAllSections(t *testing.T) {
 		"System tools:",
 		"MCP tools:",
 		"Memory files:",
-		"Skills:",
 		"Messages:",
 		"Free space:",
 		"MCP tools",
@@ -66,6 +66,65 @@ func TestSlash_ContextRendersAllSections(t *testing.T) {
 	}
 }
 
+// TestContext_SkillBodiesDoNotCountAgainstWindow is the regression for
+// the /context Skills-bucket bug: skill bodies load on demand and are
+// not in-window, so attaching a large body to a skill must not change
+// the reported window usage. The Skills section still lists the skill
+// as on-disk inventory, tagged "(on demand)".
+func TestContext_SkillBodiesDoNotCountAgainstWindow(t *testing.T) {
+	msgs := []adapter.Message{
+		{Role: adapter.RoleSystem, Content: "you are an assistant."},
+		{Role: adapter.RoleUser, Content: "hi"},
+	}
+
+	base := newTestModel(t)
+	base.sess.Messages = msgs
+	base.skills = nil
+
+	withSkill := newTestModel(t)
+	withSkill.sess.Messages = msgs
+	withSkill.skills = []skills.Skill{{
+		Name:        "huge-skill",
+		Description: "x",
+		Body:        strings.Repeat("B", 100_000), // ~25K tokens of body
+		Source:      skills.ScopeBuiltin,
+	}}
+
+	baseReport := ansi.Strip(renderContextReport(&base))
+	skillReport := ansi.Strip(renderContextReport(&withSkill))
+
+	// The 100KB body must not move the window total: the used / window
+	// summary line is identical with and without the skill.
+	if a, b := lineWith(baseReport, " / "), lineWith(skillReport, " / "); a != b {
+		t.Errorf("skill body changed the reported window usage:\n without: %q\n with:    %q", a, b)
+	}
+
+	// Skills is no longer a counted legend bucket. "Skills:" (with colon)
+	// only ever came from the legend row; the section header is "Skills"
+	// without a colon, so its absence is a clean assertion.
+	if strings.Contains(skillReport, "Skills:") {
+		t.Errorf("Skills must not appear as a counted legend bucket:\n%s", skillReport)
+	}
+
+	// The inventory still lists the skill, tagged on demand.
+	if !strings.Contains(skillReport, "huge-skill") {
+		t.Errorf("Skills inventory should still list the skill:\n%s", skillReport)
+	}
+	if !strings.Contains(skillReport, "on demand") {
+		t.Errorf("Skills inventory rows should be tagged (on demand):\n%s", skillReport)
+	}
+}
+
+// lineWith returns the first line of s containing sub, or "" if none.
+func lineWith(s, sub string) string {
+	for _, ln := range strings.Split(s, "\n") {
+		if strings.Contains(ln, sub) {
+			return ln
+		}
+	}
+	return ""
+}
+
 // TestSlash_ContextBucketSumLEWindow asserts the underlying invariant
 // that drives the bar: the used buckets never exceed the resolved
 // window, so the bar paint loop can't overrun. We don't render here —
@@ -89,7 +148,8 @@ func TestSlash_ContextBucketSumLEWindow(t *testing.T) {
 	sysTok, convoTok := contextwindow_SplitMessages(t, m)
 	sysTools, mcpTools := contextToolTokens(&m)
 	used := sysTok + sysTools + mcpTools + convoTok
-	// Memory and skills are zero in the test fixture.
+	// Memory is zero in the test fixture; skills are inventory-only and
+	// deliberately not part of `used` (see renderContextReport).
 	if used > window {
 		t.Errorf("sum of used buckets (%d) exceeds window (%d)", used, window)
 	}

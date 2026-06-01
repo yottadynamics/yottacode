@@ -155,7 +155,7 @@ Useful interactive commands:
 - `/model` — open model picker or `/model <name>` to switch directly
 - `/plan` — toggle plan mode (also Shift+Tab) for research before implementation
 - `/theme` — change the color theme
-- `/skills` — enable or disable built-in skills
+- `/skills` — menu to enable/disable, install, uninstall, check, and update skills
 - `/sessions` — resume, rename, or export sessions
 - `/memory` — edit USER.md / YOTTACODE.md or browse agent-managed memories
 - `/doctor` — actively probe the configured endpoint

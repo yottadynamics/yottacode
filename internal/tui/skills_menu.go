@@ -12,6 +12,7 @@ package tui
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/textinput"
@@ -28,6 +29,7 @@ type skillsMenuMode int
 const (
 	skillsMenuSelect skillsMenuMode = iota
 	skillsMenuInstallInput
+	skillsMenuUninstallPick
 )
 
 // skillsMenuItem is one row in the top-level menu. Action is the
@@ -49,6 +51,13 @@ type skillsMenuState struct {
 	mode   skillsMenuMode
 	input  textinput.Model
 	status string
+
+	// uninstallRows is the removable (user-scope) skill set shown while
+	// mode == skillsMenuUninstallPick; uninstallCursor is its focused
+	// row. Rebuilt from the live registry each time the picker opens and
+	// after every removal so the list always reflects disk reality.
+	uninstallRows   []skills.Skill
+	uninstallCursor int
 }
 
 // openSkillsMenu builds the top-level menu and attaches it to the
@@ -66,6 +75,11 @@ func (m *Model) openSkillsMenu() {
 				label:  "Install",
 				desc:   "install from a local path, URL, or owner/repo[/path]",
 				action: skillsMenuStartInstall,
+			},
+			{
+				label:  "Uninstall",
+				desc:   "remove an installed (user-scope) skill",
+				action: skillsMenuStartUninstall,
 			},
 			{
 				label:  "Check",
@@ -93,6 +107,8 @@ func (m Model) updateSkillsMenu(msg tea.KeyMsg) (Model, tea.Cmd) {
 	switch m.skillsMenu.mode {
 	case skillsMenuInstallInput:
 		return updateSkillsMenuInstallInput(m, msg)
+	case skillsMenuUninstallPick:
+		return updateSkillsMenuUninstallPick(m, msg)
 	default:
 		return updateSkillsMenuSelect(m, msg)
 	}
@@ -205,6 +221,115 @@ func commitSkillsMenuInstall(m Model) (Model, tea.Cmd) {
 	return reloadSkillsRegistry(m), nil
 }
 
+// skillsMenuStartUninstall gathers the removable skills and flips the
+// menu into the uninstall picker. Only user-scope skills are listed:
+// built-ins are embedded in the binary and project-scope skills are
+// committed source the user removes via git/rm — neither is removable
+// through skills.Uninstall, so listing them would only offer a button
+// that errors. With nothing removable the menu stays put and explains
+// why rather than opening an empty picker.
+func skillsMenuStartUninstall(m Model) (Model, tea.Cmd) {
+	state := m.skillsMenu
+	if m.skillTool == nil {
+		state.status = "skills are not wired in this session"
+		return m, nil
+	}
+	rows := removableUserSkills(m)
+	if len(rows) == 0 {
+		state.status = "no installed skills to remove (built-ins and project skills aren't removable here)"
+		return m, nil
+	}
+	state.uninstallRows = rows
+	state.uninstallCursor = 0
+	state.mode = skillsMenuUninstallPick
+	state.status = ""
+	return m, nil
+}
+
+// removableUserSkills returns the user-scope subset of the live
+// registry, sorted by name — the set skills.Uninstall can act on.
+func removableUserSkills(m Model) []skills.Skill {
+	if m.skillTool == nil {
+		return nil
+	}
+	var rows []skills.Skill
+	for _, sk := range m.skillTool.All {
+		if sk.Source == skills.ScopeUser {
+			rows = append(rows, sk)
+		}
+	}
+	sort.Slice(rows, func(i, j int) bool { return rows[i].Name < rows[j].Name })
+	return rows
+}
+
+// updateSkillsMenuUninstallPick handles navigation in the uninstall
+// list. Up/Down move within the list, Enter removes the focused skill,
+// Esc returns to the menu without removing anything.
+func updateSkillsMenuUninstallPick(m Model, msg tea.KeyMsg) (Model, tea.Cmd) {
+	state := m.skillsMenu
+	switch msg.Type {
+	case tea.KeyUp:
+		if state.uninstallCursor > 0 {
+			state.uninstallCursor--
+		}
+		return m, nil
+	case tea.KeyDown:
+		if state.uninstallCursor < len(state.uninstallRows)-1 {
+			state.uninstallCursor++
+		}
+		return m, nil
+	case tea.KeyEsc:
+		state.mode = skillsMenuSelect
+		state.status = ""
+		return m, nil
+	case tea.KeyEnter:
+		return commitSkillsMenuUninstall(m)
+	}
+	return m, nil
+}
+
+// commitSkillsMenuUninstall removes the focused skill from
+// ~/.yottacode/skills/, refreshes the in-session registry, and scrubs
+// the name from persisted default_on. This is the same removal +
+// reload + scrub sequence the Catalog `u` path runs
+// (uninstallFromSkillsPicker) so the two surfaces stay in lockstep. On
+// success it stays in the list — rebuilt against the refreshed registry
+// — so several removals in a row don't need re-entry; the list emptying
+// drops back to the menu. Errors stay in the status line.
+func commitSkillsMenuUninstall(m Model) (Model, tea.Cmd) {
+	state := m.skillsMenu
+	if len(state.uninstallRows) == 0 {
+		state.mode = skillsMenuSelect
+		return m, nil
+	}
+	sk := state.uninstallRows[state.uninstallCursor]
+	if _, err := skills.Uninstall(sk.Name); err != nil {
+		state.status = "uninstall failed: " + err.Error()
+		return m, nil
+	}
+	m.appendLine(styleAuto.Render("[skills] removed " + sk.Name))
+	m = reloadSkillsRegistry(m)
+	// Best-effort default_on cleanup: a failure here doesn't undo the
+	// removal (the dir is already gone) — surface it and move on.
+	if err := removeFromDefaultOn(sk.Name); err != nil {
+		m.appendLine(styleError.Render("[skills] persistence scrub failed: " + err.Error()))
+	}
+	// Rebuild the removable list from the refreshed registry so the
+	// just-removed row drops out. An empty list returns to the menu.
+	state = m.skillsMenu
+	state.uninstallRows = removableUserSkills(m)
+	if len(state.uninstallRows) == 0 {
+		state.mode = skillsMenuSelect
+		state.status = "removed " + sk.Name + " (no more installed skills)"
+		return m, nil
+	}
+	if state.uninstallCursor >= len(state.uninstallRows) {
+		state.uninstallCursor = len(state.uninstallRows) - 1
+	}
+	state.status = "removed " + sk.Name
+	return m, nil
+}
+
 // skillsMenuRunCheck dispatches to the existing check helper and
 // closes the menu. The output renders into the transcript exactly
 // like `/skills check` does — same code path, same formatting.
@@ -240,6 +365,37 @@ func renderSkillsMenu(state *skillsMenuState, _ int) string {
 			b.WriteString(styleError.Render("  " + state.status))
 		}
 		return b.String()
+	}
+
+	if state.mode == skillsMenuUninstallPick {
+		b.WriteString(stylePaletteEmpty.Render(
+			"  Remove an installed skill · Up/Down · Enter removes · Esc returns"))
+		b.WriteString("\n\n")
+		if len(state.uninstallRows) == 0 {
+			b.WriteString(stylePaletteEmpty.Render("  (no installed skills)"))
+			return strings.TrimRight(b.String(), "\n")
+		}
+		maxName := 6
+		for _, sk := range state.uninstallRows {
+			if l := len(sk.Name); l > maxName {
+				maxName = l
+			}
+		}
+		for i, sk := range state.uninstallRows {
+			label := sk.Name + strings.Repeat(" ", maxName-len(sk.Name)) +
+				"  [" + string(sk.Source) + "]"
+			b.WriteString(renderMenuItem(menuItemOpts{
+				Label:  label,
+				Desc:   truncateForRender(sk.Description, 80),
+				Cursor: i == state.uninstallCursor,
+			}))
+			b.WriteByte('\n')
+		}
+		if state.status != "" {
+			b.WriteByte('\n')
+			b.WriteString(stylePaletteEmpty.Render("  " + state.status))
+		}
+		return strings.TrimRight(b.String(), "\n")
 	}
 
 	maxLabel := 6
