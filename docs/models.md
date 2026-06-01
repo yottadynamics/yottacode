@@ -159,9 +159,16 @@ capable model, so this keeps the two in sync (the same as running
 `/model <smart>`). Closing without changing the smart model leaves your
 active model untouched.
 
-While routing is active a `routing: <smart-model>` chip appears in the
-status bar (the model your delegated subagents run on). (`manual` mode
-stays config-only — the picker toggles between `off` and `auto`.)
+While routing is active (`auto`) the status bar's primary segment becomes
+the routing pair itself — `<smart>:<fast>` (smart model first, fast
+second, short-tagged, colon-joined), e.g.
+`● claude-opus-4-6:claude-haiku-4-5 · ctx …`. The active session model is
+not shown separately because configuring the smart model also switches
+your active model to it (see above), so the smart half already names what
+your interactive turns run on and the fast half names summarization.
+(`manual` mode keeps the active model and adds a dim `routing: manual`
+note; `off` shows just the active model — the picker toggles between
+`off` and `auto`.)
 
 ### Why this saves money (and never costs more)
 

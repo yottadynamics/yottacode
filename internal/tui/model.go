@@ -2941,59 +2941,31 @@ func (m Model) historyForward() (Model, bool) {
 // strip the vendor prefix on the model name. The status dot, model,
 // and context bar are never dropped — they're the most critical
 // at-a-glance signals.
+//
+// When cache-safe routing is in `auto`, the primary segment is replaced
+// by the routing pair itself — `<smart>:<fast>` (smart model first, fast
+// second), no labels and no provider tag. The active session model is
+// intentionally NOT shown: configuring the smart model in /router also
+// switches the active model to it, so the smart half already names what
+// your interactive turns run on, and the fast half names summarization.
 func (m Model) renderStatus() string {
 	dot := renderConnDot(m.connection)
-	model := renderModelName(m.modelName)
-	tag := m.providerLabel
-	if tag == "" {
-		tag = m.provider
-	}
-	provider := renderProviderTag(tag)
 	ctx := m.renderContextBar()
 
 	sep := lipgloss.NewStyle().Foreground(colorRule).Render("  ·  ")
 	innerSep := lipgloss.NewStyle().Foreground(colorRule).Render(" · ")
 
-	// First segment: dot + model + (optional) provider tag. The provider
-	// is bound to the model so it survives the same narrow-screen
-	// pressure until the explicit drop kicks in.
-	first := dot + "  " + model
-	if provider != "" {
-		first += innerSep + provider
-	}
-	// Plan-mode indication lives in the banner above the cmdline (see
-	// renderPlanModeBanner); we intentionally do NOT duplicate it as a
-	// status-bar chip — one prominent signal beats two competing ones.
-
 	// Worktree chip: when the session runs inside a yottacode-managed
 	// worktree, render "worktree: <name>" AFTER the context counter so
-	// the model+provider cluster stays adjacent to the ctx number on the
-	// left and the worktree label trails on the right where the eye
-	// looks last. Plain text per the no-emoji-in-TUI rule.
+	// the model cluster stays adjacent to the ctx number on the left and
+	// the worktree label trails on the right where the eye looks last.
+	// Plain text per the no-emoji-in-TUI rule.
 	worktreeSeg := ""
 	if m.worktree != "" {
 		worktreeSeg = lipgloss.NewStyle().Foreground(colorDim).Render("worktree: " + m.worktree)
 	}
 
-	// Routing chip: when cache-safe routing is active (manual/auto),
-	// show a dim plain-text indicator so the user can see delegated work
-	// is being routed off the active model. Auto names the smart model it
-	// delegates subagents to (matching the subagent cards; the fast model
-	// is summarization-only); manual notes the explicit-only mode. No
-	// emoji per the house rule.
-	routingSeg := ""
-	switch routerModeOrOff(m.routerMode) {
-	case config.RouterModeAuto:
-		label := "routing"
-		if m.router != nil {
-			label = "routing: " + shortModelTag(m.router.SmartModel)
-		}
-		routingSeg = lipgloss.NewStyle().Foreground(colorDim).Render(label)
-	case config.RouterModeManual:
-		routingSeg = lipgloss.NewStyle().Foreground(colorDim).Render("routing: manual")
-	}
-
-	build := func(head string) string {
+	build := func(head, routingSeg string) string {
 		segs := []string{head}
 		if ctx != "" {
 			segs = append(segs, ctx)
@@ -3006,26 +2978,57 @@ func (m Model) renderStatus() string {
 		}
 		// Flush-left: the status dot sits at column 0, aligned with the
 		// input frame's left border directly above it (and the flush-left
-		// scrollback canvas). An earlier 2-space inset trailed the old
-		// scrollback margin; with the canvas flush-left it just floated
-		// the bar 2 columns off the box edge.
+		// scrollback canvas).
 		return strings.Join(segs, sep)
 	}
+
+	// Auto routing: the primary segment IS the routing pair. Both halves
+	// are short-tagged (vendor prefix stripped) so the pair stays compact;
+	// there's no provider tag and no separate routing chip to drop, so the
+	// narrow-screen cascade below doesn't apply here.
+	if routerModeOrOff(m.routerMode) == config.RouterModeAuto && m.router != nil {
+		pair := shortModelTag(m.router.SmartModel) + ":" + shortModelTag(m.router.FastModel)
+		return build(dot+"  "+renderModelName(pair), "")
+	}
+
+	// off / manual: show the active model (+ provider). Manual mode adds a
+	// dim "routing: manual" note (explicit-`model:`-only routing). The
+	// provider is bound to the model so it survives narrow-screen pressure
+	// until the explicit drop kicks in.
+	model := renderModelName(m.modelName)
+	tag := m.providerLabel
+	if tag == "" {
+		tag = m.provider
+	}
+	provider := renderProviderTag(tag)
+
+	routingSeg := ""
+	if routerModeOrOff(m.routerMode) == config.RouterModeManual {
+		routingSeg = lipgloss.NewStyle().Foreground(colorDim).Render("routing: manual")
+	}
+
+	first := dot + "  " + model
+	if provider != "" {
+		first += innerSep + provider
+	}
+	// Plan-mode indication lives in the banner above the cmdline (see
+	// renderPlanModeBanner); we intentionally do NOT duplicate it as a
+	// status-bar chip — one prominent signal beats two competing ones.
 
 	w := m.width
 	if w <= 0 {
 		// No size info yet — render the full layout; truncation kicks in
 		// once the first WindowSizeMsg lands.
-		return build(first)
+		return build(first, routingSeg)
 	}
 
-	line := build(first)
+	line := build(first, routingSeg)
 	if lipgloss.Width(line) <= w {
 		return line
 	}
 	// Drop the provider tag first.
 	first = dot + "  " + model
-	line = build(first)
+	line = build(first, routingSeg)
 	if lipgloss.Width(line) <= w {
 		return line
 	}
@@ -3034,7 +3037,7 @@ func (m Model) renderStatus() string {
 	if idx := strings.LastIndex(m.modelName, "/"); idx >= 0 && idx < len(m.modelName)-1 {
 		first = dot + "  " + renderModelName(m.modelName[idx+1:])
 	}
-	return build(first)
+	return build(first, routingSeg)
 }
 
 // renderProviderTag styles the provider label that sits next to the

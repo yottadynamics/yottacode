@@ -196,17 +196,27 @@ func TestCmdRouter_BareOpensPicker(t *testing.T) {
 	}
 }
 
-// TestStatusBar_RendersRoutingChip: an active auto router shows a chip
-// naming the smart model it delegates subagents to (the fast model is
-// summarization-only, so the chip tracks the subagent target).
+// TestStatusBar_RendersRoutingChip: an active auto router makes the
+// routing pair the PRIMARY segment — `<smart>:<fast>` (smart first, fast
+// second), short-tagged, with no provider tag and no active-model
+// duplicate. The active session model is intentionally hidden (it tracks
+// the smart model after a /router switch).
 func TestStatusBar_RendersRoutingChip(t *testing.T) {
 	m := newTestModel(t)
-	m, _ = applyMsg(m, tea.WindowSizeMsg{Width: 160, Height: 24})
+	m, _ = applyMsg(m, tea.WindowSizeMsg{Width: 200, Height: 24})
 	m.routerMode = config.RouterModeAuto
-	m.router = &cli.RouterAdapters{FastModel: "claude-haiku-4-5", SmartModel: "claude-opus-4-6"}
+	m.router = &cli.RouterAdapters{FastModel: "anthropic/claude-haiku-4-5", SmartModel: "nvidia/claude-opus-4-6"}
 	plain := stripANSI(m.renderStatus())
-	if !strings.Contains(plain, "routing: claude-opus-4-6") {
-		t.Errorf("status bar should name the smart model in the routing chip: %q", plain)
+	if !strings.Contains(plain, "claude-opus-4-6:claude-haiku-4-5") {
+		t.Errorf("status bar should show <smart>:<fast>, short-tagged: %q", plain)
+	}
+	// Old labeled form must be gone.
+	if strings.Contains(plain, "smart:") || strings.Contains(plain, "fast:") {
+		t.Errorf("status bar should not use the labeled smart:/fast: form: %q", plain)
+	}
+	// Vendor prefixes are stripped on both halves of the pair.
+	if strings.Contains(plain, "nvidia/") || strings.Contains(plain, "anthropic/") {
+		t.Errorf("routing pair should be short-tagged (no vendor prefix): %q", plain)
 	}
 }
 
