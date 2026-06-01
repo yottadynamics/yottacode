@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
@@ -285,6 +286,28 @@ func splitForAnthropic(ms []Message) (system []anthropic.TextBlockParam, out []a
 		switch m.Role {
 		case RoleSystem:
 			if m.Content == "" {
+				continue
+			}
+			// When the composer marks a stable cache prefix
+			// (CacheHeadBytes = the static base prompt, ahead of the
+			// per-turn memory tail), emit the head as its own system
+			// block with a cache breakpoint. The head + tools then
+			// cache-hit across user turns even though the memory tail
+			// churns; the tail block is covered by the end-of-system
+			// breakpoint applyAnthropicCacheControl adds. Splitting the
+			// text into two blocks is transparent to the model —
+			// Anthropic concatenates system blocks.
+			// utf8.RuneStart guards against a byte offset that lands
+			// mid-rune: splitting there would leave each half with a
+			// partial rune, which json.Marshal rewrites to U+FFFD —
+			// silently corrupting the prompt. All current callers set
+			// CacheHeadBytes to len(a complete prefix) so this never
+			// trips; the guard just degrades to a single block if the
+			// invariant is ever violated, rather than mangling text.
+			if hb := m.CacheHeadBytes; hb > 0 && hb < len(m.Content) && utf8.RuneStart(m.Content[hb]) {
+				head := anthropic.TextBlockParam{Text: m.Content[:hb]}
+				head.CacheControl = anthropic.NewCacheControlEphemeralParam()
+				system = append(system, head, anthropic.TextBlockParam{Text: m.Content[hb:]})
 				continue
 			}
 			system = append(system, anthropic.TextBlockParam{Text: m.Content})

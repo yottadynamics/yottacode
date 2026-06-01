@@ -102,6 +102,17 @@ the project uses semantic versioning once it's past `1.0.0`.
 
 ### Changed
 
+- **Anthropic prompt caching now survives per-turn memory churn.** The
+  system prompt is split into a stable head (the static base prompt +
+  tools) and a dynamic tail (the per-turn, query-relevant memory
+  bodies), with a cache breakpoint on the head. Previously the only
+  system breakpoint sat *after* the volatile memory, so the entire
+  `tools + system` prefix cache-missed on the first request of every new
+  user turn; now the large static head keeps hitting the cache across
+  turns while only the small memory tail re-caches. Composer marks the
+  boundary via the new `adapter.Message.CacheHeadBytes`; the Anthropic
+  adapter honors it, other providers (which cache the longest stable
+  prefix automatically) ignore it.
 - Recommended install path moved from `/usr/local/bin/` (manual `sudo
   install`) to `~/.yottacode/bin/` via `install.sh`. The README's old
   manual block is preserved under a collapsed "Manual install" section

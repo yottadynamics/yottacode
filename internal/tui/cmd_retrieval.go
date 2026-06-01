@@ -53,6 +53,11 @@ func (m *Model) rebuildSystemPromptForTurn(query string) {
 		newSys = strings.TrimRight(newSys, "\n") + summaryHeading + summary
 	}
 	m.sess.Messages[0].Content = newSys
+	// composed is the stable head; the memory tail (and any summary /
+	// @-file refs appended later) follow it. Marking the head length
+	// lets the Anthropic adapter cache the static prefix across turns
+	// even as the tail churns. See Message.CacheHeadBytes.
+	m.sess.Messages[0].CacheHeadBytes = len(composed)
 }
 
 // extractSummarySection returns the body (without heading) of the

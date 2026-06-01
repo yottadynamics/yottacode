@@ -46,6 +46,15 @@ type Message struct {
 	Citations  []Citation   `json:"citations,omitempty"`
 	StopReason string       `json:"stop_reason,omitempty"`
 	ToolCallID string       `json:"tool_call_id,omitempty"`
+	// CacheHeadBytes marks how many leading bytes of Content form a
+	// stable, cacheable prefix — set by the composer on the system
+	// message to the length of the static base prompt, ahead of the
+	// per-turn memory tail. The Anthropic adapter splits Content there
+	// and puts a cache breakpoint on the head, so the big static prefix
+	// keeps hitting the prompt cache even when the memory tail changes
+	// between user turns. Other adapters ignore it (their providers
+	// cache the longest stable prefix automatically). 0 = no hint.
+	CacheHeadBytes int `json:"cache_head_bytes,omitempty"`
 	// Usage is the provider-reported token counts for the turn that
 	// produced this message. Pointer so nil ≠ "zero tokens" — adapters
 	// that didn't observe usage data leave it unset, and the /usage

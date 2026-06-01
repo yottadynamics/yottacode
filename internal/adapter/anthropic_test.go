@@ -734,6 +734,94 @@ func TestAnthropicAdapter_AnnotatesPromptCacheBreakpoints(t *testing.T) {
 // no-op behavior on degenerate inputs (no system, no messages, both
 // empty). A panic here would bring down every Anthropic turn —
 // cheap regression coverage for an otherwise tiny function.
+// captureAnthropicSystemBlocks runs one turn with the given system
+// message and returns the decoded `system` block array.
+func captureAnthropicSystemBlocks(t *testing.T, sys Message) []any {
+	t.Helper()
+	captured := make(chan map[string]any, 1)
+	srv := newAnthropicMockServer(t, anthropicScript{
+		captureBody: captured,
+		events: []anthropicSSE{
+			{Event: "message_start", Data: `{"type":"message_start","message":{"id":"m","role":"assistant","content":[],"model":"claude-sonnet-4-6"}}`},
+			{Event: "content_block_start", Data: `{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`},
+			{Event: "content_block_delta", Data: `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"ok"}}`},
+			{Event: "content_block_stop", Data: `{"type":"content_block_stop","index":0}`},
+			{Event: "message_delta", Data: `{"type":"message_delta","delta":{"stop_reason":"end_turn"}}`},
+			{Event: "message_stop", Data: `{"type":"message_stop"}`},
+		},
+	})
+	t.Cleanup(srv.Close)
+	a := newAnthropicAdapter(Config{BaseURL: srv.URL, APIKey: "k", Model: "claude-sonnet-4-6"})
+	for range a.ChatStream(context.Background(), []Message{sys, {Role: RoleUser, Content: "hi"}}, nil) {
+	}
+	body := <-captured
+	blocks, ok := body["system"].([]any)
+	if !ok {
+		t.Fatalf("system blocks missing or wrong shape: %v", body["system"])
+	}
+	return blocks
+}
+
+func TestAnthropicAdapter_SplitsStableCacheHead(t *testing.T) {
+	head := "STATIC BASE PROMPT — large and stable across turns"
+	tail := "\n\n---\nDYNAMIC MEMORY TAIL that changes per turn"
+	full := head + tail
+
+	blocks := captureAnthropicSystemBlocks(t, Message{
+		Role:           RoleSystem,
+		Content:        full,
+		CacheHeadBytes: len(head),
+	})
+	if len(blocks) != 2 {
+		t.Fatalf("want 2 system blocks (head+tail), got %d: %v", len(blocks), blocks)
+	}
+	b0 := blocks[0].(map[string]any)
+	b1 := blocks[1].(map[string]any)
+
+	// Head carries a cache breakpoint — this is the cross-turn stable prefix.
+	if cc, _ := b0["cache_control"].(map[string]any); cc["type"] != "ephemeral" {
+		t.Errorf("head block missing ephemeral cache_control: %v", b0)
+	}
+	// Tail carries the end-of-system breakpoint (within-turn caching).
+	if cc, _ := b1["cache_control"].(map[string]any); cc["type"] != "ephemeral" {
+		t.Errorf("tail block missing ephemeral cache_control: %v", b1)
+	}
+	// The model must see exactly the same prompt — split is lossless.
+	if b0["text"] != head {
+		t.Errorf("head text = %q, want %q", b0["text"], head)
+	}
+	if got := b0["text"].(string) + b1["text"].(string); got != full {
+		t.Errorf("head+tail = %q, want original %q", got, full)
+	}
+}
+
+func TestAnthropicAdapter_NoCacheHeadKeepsSingleBlock(t *testing.T) {
+	full := "just a system prompt, no head marker"
+	// CacheHeadBytes unset (0) → no split; a single system block as before.
+	if blocks := captureAnthropicSystemBlocks(t, Message{Role: RoleSystem, Content: full}); len(blocks) != 1 {
+		t.Fatalf("want 1 system block when CacheHeadBytes is unset, got %d", len(blocks))
+	}
+	// Out-of-range hint (>= len) is ignored rather than producing an empty tail.
+	if blocks := captureAnthropicSystemBlocks(t, Message{Role: RoleSystem, Content: full, CacheHeadBytes: len(full)}); len(blocks) != 1 {
+		t.Fatalf("want 1 system block when CacheHeadBytes == len(content), got %d", len(blocks))
+	}
+}
+
+func TestAnthropicAdapter_CacheHeadMidRuneFallsBack(t *testing.T) {
+	// "café" — 'é' is 2 bytes (0xC3 0xA9). A head offset that lands on
+	// the second byte must NOT split (it would corrupt the rune via
+	// json's U+FFFD replacement); fall back to a single block instead.
+	content := "café tail"
+	midRune := strings.IndexRune(content, 'é') + 1 // points at the continuation byte
+	blocks := captureAnthropicSystemBlocks(t, Message{Role: RoleSystem, Content: content, CacheHeadBytes: midRune})
+	if len(blocks) != 1 {
+		t.Fatalf("mid-rune split must fall back to a single block, got %d", len(blocks))
+	}
+	if b0 := blocks[0].(map[string]any); b0["text"] != content {
+		t.Errorf("content corrupted on fallback: %q != %q", b0["text"], content)
+	}
+}
+
 func TestApplyAnthropicCacheControl_EdgeCases(t *testing.T) {
 	t.Run("both empty does not panic", func(t *testing.T) {
 		applyAnthropicCacheControl(nil, nil)
