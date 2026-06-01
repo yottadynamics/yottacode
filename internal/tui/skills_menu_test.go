@@ -23,11 +23,14 @@ func TestSkillsMenu_OpenAndNavigate(t *testing.T) {
 	if !m.skillsMenuOpen {
 		t.Fatal("menu should be open")
 	}
-	if got, want := len(m.skillsMenu.items), 4; got != want {
+	if got, want := len(m.skillsMenu.items), 5; got != want {
 		t.Fatalf("menu items = %d, want %d", got, want)
 	}
 	if m.skillsMenu.items[0].label != "Catalog" {
 		t.Errorf("first item = %q, want Catalog", m.skillsMenu.items[0].label)
+	}
+	if m.skillsMenu.items[2].label != "Uninstall" {
+		t.Errorf("third item = %q, want Uninstall", m.skillsMenu.items[2].label)
 	}
 	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyDown})
 	if m.skillsMenu.cursor != 1 {
@@ -458,5 +461,80 @@ func TestSkillsMenu_InstallShowsErrorInline(t *testing.T) {
 	}
 	if m.skillsMenu.status == "" {
 		t.Error("status should explain why install was rejected")
+	}
+}
+
+// TestSkillsMenu_UninstallRemovesSkill exercises the top-level
+// Uninstall row: open menu → Uninstall → pick the lone installed skill
+// → Enter. The dir is removed, the in-session registry refreshes, and
+// with nothing left to remove the picker drops back to the menu.
+func TestSkillsMenu_UninstallRemovesSkill(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("YOTTACODE_HOME", home)
+	t.Setenv("HOME", home)
+
+	src := t.TempDir()
+	body := "---\nname: menu-remove\ndescription: menu uninstall fixture\n---\nBody\n"
+	if err := os.WriteFile(filepath.Join(src, "SKILL.md"), []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := skills.Install(skills.InstallOptions{Source: src}); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+
+	m := newTestModel(t)
+	// newTestModel resets HOME to its own tempdir; YOTTACODE_HOME (which
+	// drives UserSkillsDir) persists, but re-pin both so the default_on
+	// scrub path writes where we expect too.
+	t.Setenv("HOME", home)
+	t.Setenv("YOTTACODE_HOME", home)
+	m.skillTool = &agent.SkillTool{All: []skills.Skill{
+		{Name: "menu-remove", Description: "x", Source: skills.ScopeUser},
+	}}
+
+	m, _ = m.runSlash("/skills")
+	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyDown})  // Catalog → Install
+	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyDown})  // Install → Uninstall
+	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter}) // open uninstall picker
+	if m.skillsMenu.mode != skillsMenuUninstallPick {
+		t.Fatalf("expected uninstall-pick mode, got %v", m.skillsMenu.mode)
+	}
+	if len(m.skillsMenu.uninstallRows) != 1 || m.skillsMenu.uninstallRows[0].Name != "menu-remove" {
+		t.Fatalf("uninstall list = %v, want [menu-remove]", m.skillsMenu.uninstallRows)
+	}
+
+	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter}) // remove the focused skill
+
+	if _, err := os.Stat(filepath.Join(home, "skills", "menu-remove")); !os.IsNotExist(err) {
+		t.Errorf("dir should be removed after Enter: err=%v", err)
+	}
+	if skills.Find(m.skillTool.All, "menu-remove") != nil {
+		t.Error("registry should have refreshed after uninstall")
+	}
+	if m.skillsMenu.mode != skillsMenuSelect {
+		t.Errorf("empty list should drop back to the menu, mode=%v", m.skillsMenu.mode)
+	}
+	if !m.skillsMenuOpen {
+		t.Error("menu should stay open after uninstall (not close to transcript)")
+	}
+}
+
+// TestSkillsMenu_UninstallEmptyShowsStatus guards the empty-set path:
+// with no user-scope skills, picking Uninstall must not open an empty
+// picker — it stays on the menu and explains why.
+func TestSkillsMenu_UninstallEmptyShowsStatus(t *testing.T) {
+	m := newTestModel(t)
+	m.skillTool = &agent.SkillTool{All: []skills.Skill{
+		{Name: "alpha", Description: "a", Source: skills.ScopeBuiltin},
+	}}
+	m, _ = m.runSlash("/skills")
+	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyDown})  // → Install
+	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyDown})  // → Uninstall
+	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter}) // attempt to open
+	if m.skillsMenu.mode != skillsMenuSelect {
+		t.Errorf("no removable skills should keep select mode, got %v", m.skillsMenu.mode)
+	}
+	if m.skillsMenu.status == "" {
+		t.Error("status should explain there's nothing to uninstall")
 	}
 }

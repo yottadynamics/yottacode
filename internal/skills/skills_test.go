@@ -184,6 +184,7 @@ func TestLoadBuiltins(t *testing.T) {
 		"prototype":                        true,
 		"handoff":                          true,
 		"performance-profiler":             true,
+		"documentation-and-adrs":           true,
 	}
 	seen := map[string]bool{}
 	for _, sk := range skills {

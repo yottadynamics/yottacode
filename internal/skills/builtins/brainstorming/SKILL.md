@@ -42,13 +42,21 @@ Each question:
 
 End the turn. **Do not write a plan yet.** The plan needs the answers; pre-writing it commits you to a shape the user might redirect.
 
-## 3. Recognize when the user wants to skip
+## 3. Probe past "should-want" answers
+
+Some answers sound sophisticated but name no specifics — "make it scalable", "clean architecture", "the best-practice way". These are usually borrowed goals, not the real one. When a key answer comes back like this, ask one follow-up before accepting it:
+
+> If you didn't have to justify this to anyone, what would you actually want?
+
+The honest answer is the spec. One direct probe, then move on — don't stack more abstractions on top.
+
+## 4. Recognize when the user wants to skip
 
 A user who replies "just do it" or "use your judgment" is opting out. Honor that — proceed to `writing-plans` with your best read, and call out the calls you made so they can intercept if you guessed wrong.
 
 A user who answers some questions and ignores others wants forward motion on the answered parts. Don't re-ask the ignored ones; mark them as your-call and proceed.
 
-## 4. Constraints I'll look for even without asking
+## 5. Constraints I'll look for even without asking
 
 Before asking, scan for constraints already on the table:
 
@@ -59,11 +67,13 @@ Before asking, scan for constraints already on the table:
 
 If a constraint is documented or obvious, don't ask about it. Asking about something the answer is already in the repo costs the user trust.
 
-## 5. The hand-off to plan-writing
+## 6. The hand-off to plan-writing
 
 Once you have enough to commit to a shape, summarize back to the user in 2-4 lines:
 
-> Got it — I'll build the SSH key rotation flow as a CLI subcommand (`yottacode keys rotate`), generating an ed25519 keypair, pushing the new key, and removing the old one after a verification step. No password fallback. Backward-compat for the existing `~/.ssh/yottacode_rsa` file as a one-time migration. Sound right?
+> Got it — I'll build the SSH key rotation flow as a CLI subcommand (`yottacode keys rotate`), generating an ed25519 keypair, pushing the new key, and removing the old one after a verification step. No password fallback. Backward-compat for the existing `~/.ssh/yottacode_rsa` file as a one-time migration. Out of scope: rotating host keys or other users' `authorized_keys`. Sound right?
+
+Always name what you're **not** doing. One out-of-scope line surfaces the silent disagreements about non-goals — they cause half of all misalignments — and it becomes the scope boundary in the eventual plan.
 
 Then either:
 - Wait for confirmation ("yes" / "looks right") → hand off to `writing-plans`.
@@ -71,7 +81,7 @@ Then either:
 
 This summary is the first checkpoint where the user can catch a misread cheaply. It also doubles as the "Context" section of the eventual plan.
 
-## 6. When to refuse to brainstorm
+## 7. When to refuse to brainstorm
 
 Some requests are genuinely simple and brainstorming adds friction:
 
@@ -82,7 +92,7 @@ Some requests are genuinely simple and brainstorming adds friction:
 
 For these, acknowledge and act. Brainstorming a typo wastes a turn and erodes the user's trust that you can tell signal from noise.
 
-## 7. Anti-patterns
+## 8. Anti-patterns
 
 - **Asking too many questions** — 7+ questions in one batch feels like an interrogation. Cap at 6; ask the rest in round 2 if needed.
 - **Asking with no recommendation** — questions like "What should this do?" abdicate. Always offer a default.

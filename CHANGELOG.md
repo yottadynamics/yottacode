@@ -8,6 +8,21 @@ the project uses semantic versioning once it's past `1.0.0`.
 
 ### Added
 
+- **New built-in skill: `documentation-and-adrs`.** Captures the *why*
+  behind decisions as you ship — ADRs in `docs/decisions/` for choices
+  that are expensive to reverse, why-comments for non-obvious code, and
+  keeping the rules files (`CLAUDE.md` / `AGENTS.md` / `YOTTACODE.md`)
+  current. Brings the built-in set to 17. Also sharpened
+  `brainstorming` with a "probe past should-want answers" step and a
+  mandatory out-of-scope line in the hand-off restate.
+- **`/skills` menu gains a top-level Uninstall row.** Removing an
+  installed skill no longer requires knowing the Catalog→Installed-tab
+  `u` shortcut: `/skills` → **Uninstall** opens a focused list of
+  user-scope skills, and Enter removes the selected one. It reuses the
+  same removal + registry-reload + `default_on` scrub as the Catalog
+  path, so the two surfaces stay in lockstep. Built-in (embedded) and
+  project-scope (committed source) skills aren't listed — neither is
+  removable through `skills.Uninstall`.
 - **Reasoning effort across providers.** `--reasoning-effort`
   (`low`/`medium`/`high`) now applies to every provider that supports
   reasoning, each via its native knob: OpenAI / ChatGPT-OAuth
@@ -139,6 +154,16 @@ the project uses semantic versioning once it's past `1.0.0`.
 
 ### Fixed
 
+- **`/context` no longer phantom-charges skill bodies to the window.**
+  The Skills bucket summed every loaded skill's full markdown *body*
+  (~22 K tokens across the built-in set) into the usage total — but
+  skill bodies load on demand via the `Skill` tool and aren't in-window
+  until invoked. The skills' real in-window cost (the name+description
+  metadata tier) is already counted under the System prompt and System
+  tools buckets, so the Skills bucket was double-/phantom-counting and
+  inflating the reported total, percentage, and free-space. Skills is
+  now an inventory-only section (each row tagged `(on demand)`) and no
+  longer feeds the usage total or the segmented bar.
 - **Auto-summarization no longer silently no-ops on agent-heavy sessions.**
   `composeSummarizedHistory` previously retained every turn when the
   session had five or fewer user prompts, so on plan-mode sessions

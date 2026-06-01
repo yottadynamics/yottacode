@@ -107,18 +107,23 @@ func renderContextReport(m *Model) string {
 		memTokens += f.tokens
 	}
 
+	// Skills are deliberately NOT a window bucket. Their in-window cost —
+	// the name+description metadata tier — is already charged elsewhere:
+	// to System prompt (appendSkillsSection bakes the list into the
+	// system message) and to System tools (the Skill tool's schema
+	// description carries the same list). Skill *bodies* load on demand
+	// via the Skill tool, so they're not in-window until invoked.
+	// Summing bodies here previously phantom-charged the window (~22K on
+	// the built-in set) and skewed the total / free-space / percentage.
+	// The Skills section below remains as an on-disk inventory; it does
+	// not feed `used`.
 	skillRows := loadContextSkillEntries(m)
-	skillTokens := 0
-	for _, s := range skillRows {
-		skillTokens += s.tokens
-	}
 
 	buckets := []contextBucket{
 		{"System prompt", sysTok, colorDim, true},
 		{"System tools", sysToolTokens, colorAccent, true},
 		{"MCP tools", mcpToolTokens, colorSuccess, true},
 		{"Memory files", memTokens, colorWarning, true},
-		{"Skills", skillTokens, colorWarm, true},
 		{"Messages", convoTok, colorAssistant, true},
 	}
 
@@ -217,9 +222,12 @@ func loadContextMemoryFiles(cwd string) []memoryFileEntry {
 // loadContextSkillEntries collects every skill + custom command into a
 // flat list with sub-group labels. Built-in / User / Project groups
 // come from m.skills (the loader sets Source); custom commands get
-// their own "Custom" group. Tokens are estimated from each item's
-// markdown body where available, falling back to the help string for
-// items where the body isn't kept in memory.
+// their own "Custom" group. The per-entry token figure is the body's
+// estimated *on-demand* cost — what one Skill invocation would add to
+// the window that turn — falling back to the help string for items
+// where the body isn't kept in memory. It is NOT charged to the live
+// window: the caller renders these as inventory only and excludes them
+// from the usage total (see renderContextReport's bucket comment).
 func loadContextSkillEntries(m *Model) []skillEntry {
 	var out []skillEntry
 	for _, s := range m.skills {
@@ -454,10 +462,13 @@ func renderContextMemorySection(files []memoryFileEntry) string {
 }
 
 // renderContextSkillsSection groups entries by sub-header (Built-in /
-// User / Project / Custom) and lists each with its token estimate.
-// Mirrors Claude's `Skills · /skills` block including the
-// "loaded on demand" hint — skill bodies aren't currently in-window
-// in yottacode; the section is informational.
+// User / Project / Custom) and lists each with its body token estimate.
+// Mirrors Claude's `Skills · /skills` block. This section is purely an
+// on-disk inventory: skill bodies load on demand via the Skill tool, so
+// the per-row figure is the *per-invocation* cost, NOT a slice of the
+// current window — which is why Skills is absent from the bar / legend /
+// total above. Each row is tagged `(on demand)` to make that explicit
+// where the number is shown.
 func renderContextSkillsSection(rows []skillEntry) string {
 	var out strings.Builder
 	out.WriteString(styleSplashTitle.Render("Skills"))
@@ -506,6 +517,7 @@ func renderContextSkillsSection(rows []skillEntry) string {
 				nameWidth = w
 			}
 		}
+		onDemand := stylePaletteEmpty.Render("(on demand)")
 		for i, e := range entries {
 			prefix := "├ "
 			if i == len(entries)-1 {
@@ -513,8 +525,8 @@ func renderContextSkillsSection(rows []skillEntry) string {
 			}
 			out.WriteString("  ")
 			out.WriteString(stylePaletteEmpty.Render(prefix))
-			fmt.Fprintf(&out, "%-*s   %s tokens\n",
-				nameWidth, e.name, formatTokens(e.tokens))
+			fmt.Fprintf(&out, "%-*s   %s tokens   %s\n",
+				nameWidth, e.name, formatTokens(e.tokens), onDemand)
 		}
 	}
 	return strings.TrimRight(out.String(), "\n")

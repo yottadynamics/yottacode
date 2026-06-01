@@ -247,6 +247,7 @@ This trades convenience for context discipline: the model can't ambient-reach fo
 |---|---|
 | `Catalog` | Open the picker; tabs for Built-in vs Installed (user + project). |
 | `Install` | Inline textinput for the source string. Submit with Enter, cancel with Esc. |
+| `Uninstall` | Focused list of installed (user-scope) skills; Enter removes the selected one. Built-in and project skills aren't listed. |
 | `Check` | Run the drift report. Output lands in the transcript. |
 | `Update` | Re-fetch every tracked skill from its recorded source. Output lands in the transcript. |
 
