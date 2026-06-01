@@ -133,11 +133,12 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 	composedBase = appendSkillsSection(composedBase, skillsRes.Skills)
 	if fresh {
 		sess.Messages = append(sess.Messages, adapter.Message{
-			Role:    adapter.RoleSystem,
-			Content: memory.SystemPrompt(composedBase, mem),
+			Role:           adapter.RoleSystem,
+			Content:        memory.SystemPrompt(composedBase, mem),
+			CacheHeadBytes: len(composedBase),
 		})
 	} else {
-		recomposeSessionSystemPrompt(sess, memory.SystemPrompt(composedBase, mem))
+		recomposeSessionSystemPrompt(sess, memory.SystemPrompt(composedBase, mem), len(composedBase))
 	}
 
 	// `--summarized` (only meaningful when resuming): replace the loaded
@@ -818,16 +819,21 @@ func appendSkillsSection(base string, loaded []skills.Skill) string {
 	return b.String()
 }
 
-func recomposeSessionSystemPrompt(sess *session.Session, content string) {
+// recomposeSessionSystemPrompt rewrites the session's system message.
+// headBytes is the length of the stable cache prefix (the static base
+// prompt ahead of the memory tail) — see Message.CacheHeadBytes.
+func recomposeSessionSystemPrompt(sess *session.Session, content string, headBytes int) {
 	for i := range sess.Messages {
 		if sess.Messages[i].Role == adapter.RoleSystem {
 			sess.Messages[i].Content = content
+			sess.Messages[i].CacheHeadBytes = headBytes
 			return
 		}
 	}
 	sess.Messages = append([]adapter.Message{{
-		Role:    adapter.RoleSystem,
-		Content: content,
+		Role:           adapter.RoleSystem,
+		Content:        content,
+		CacheHeadBytes: headBytes,
 	}}, sess.Messages...)
 }
 

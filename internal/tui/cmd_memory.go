@@ -699,10 +699,12 @@ func reloadMemoryNow(m Model, notice string) (Model, tea.Cmd) {
 		m.appendLine(styleError.Render("[memory] reload failed: " + err.Error()))
 		return m, nil
 	}
-	newSys := memory.SystemPrompt(composeSystemPrompt(m.baseSystemPrompt, m.providerProfile), mem)
+	composed := composeSystemPrompt(m.baseSystemPrompt, m.providerProfile)
+	newSys := memory.SystemPrompt(composed, mem)
 	for i := range m.sess.Messages {
 		if m.sess.Messages[i].Role == adapter.RoleSystem {
 			m.sess.Messages[i].Content = newSys
+			m.sess.Messages[i].CacheHeadBytes = len(composed)
 			break
 		}
 	}

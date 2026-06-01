@@ -164,8 +164,9 @@ func Run(ctx context.Context, opts cli.ChatOptions, prompt string) error {
 		composed := appendSkillsSection(composeSystemPrompt(sys, profile), skillsRes.Skills)
 		sys = memory.SystemPromptForSemantic(composed, mem, prompt, fileCfg.Retrieval, embedClient)
 		sess.Messages = append(sess.Messages, adapter.Message{
-			Role:    adapter.RoleSystem,
-			Content: sys,
+			Role:           adapter.RoleSystem,
+			Content:        sys,
+			CacheHeadBytes: len(composed),
 		})
 	} else {
 		sys := opts.SystemPrompt
@@ -173,7 +174,7 @@ func Run(ctx context.Context, opts cli.ChatOptions, prompt string) error {
 			sys = defaultSystemPrompt
 		}
 		composed := appendSkillsSection(composeSystemPrompt(sys, profile), skillsRes.Skills)
-		recomposeSessionSystemPrompt(sess, memory.SystemPromptForSemantic(composed, mem, prompt, fileCfg.Retrieval, embedClient))
+		recomposeSessionSystemPrompt(sess, memory.SystemPromptForSemantic(composed, mem, prompt, fileCfg.Retrieval, embedClient), len(composed))
 	}
 	// Auto-inject @<path> file references found in the prompt into the
 	// system prompt before the turn fires. Mirrors the TUI startTurn
@@ -656,16 +657,21 @@ func hasBuiltin(tools []adapter.BuiltinToolKind, want adapter.BuiltinToolKind) b
 	return false
 }
 
-func recomposeSessionSystemPrompt(sess *session.Session, content string) {
+// recomposeSessionSystemPrompt rewrites the session's system message.
+// headBytes marks the stable cache prefix (the static base prompt ahead
+// of the memory tail) — see adapter.Message.CacheHeadBytes.
+func recomposeSessionSystemPrompt(sess *session.Session, content string, headBytes int) {
 	for i := range sess.Messages {
 		if sess.Messages[i].Role == adapter.RoleSystem {
 			sess.Messages[i].Content = content
+			sess.Messages[i].CacheHeadBytes = headBytes
 			return
 		}
 	}
 	sess.Messages = append([]adapter.Message{{
-		Role:    adapter.RoleSystem,
-		Content: content,
+		Role:           adapter.RoleSystem,
+		Content:        content,
+		CacheHeadBytes: headBytes,
 	}}, sess.Messages...)
 }
 
