@@ -182,12 +182,15 @@ func candidateAdapterConfig(rc config.ResolvedCandidate, opts ChatOptions) adapt
 	if rc.Provider.APIKeyEnv != "" {
 		apiKey = os.Getenv(rc.Provider.APIKeyEnv)
 	}
+	maxOutput, supportsThinking := catalog.ReasoningInfo(rc.Model)
 	return adapter.Config{
 		BaseURL:                rc.Provider.BaseURL,
 		APIKey:                 apiKey,
 		Model:                  rc.Model,
 		ProviderOverride:       adapter.Provider(strings.TrimSpace(rc.Provider.Kind)),
 		ReasoningEffort:        opts.ReasoningEffort,
+		ModelMaxOutput:         maxOutput,
+		ModelSupportsThinking:  supportsThinking,
 		EnableWebSearch:        opts.EnableWebSearch,
 		DisableWebSearch:       opts.DisableWebSearch,
 		EnableXSearch:          opts.EnableXSearch,

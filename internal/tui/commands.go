@@ -72,6 +72,7 @@ func init() {
 		{Name: "plan", Help: "toggle plan mode — also Shift+Tab. Type `/plan list` to resume an earlier plan.", Run: cmdPlan},
 		{Name: "model", Help: "open the model picker (subcommands: list [all], <name>)", Run: cmdModel},
 		{Name: "provider", Help: "select a new provider (subcommands: list, use, add, remove, models)", Run: cmdProviderEntry},
+		{Name: "effort", Help: "set reasoning effort for providers that support it (default · low · medium · high)", Run: cmdEffort},
 		{Name: "sessions", Help: "open the sessions menu (or /sessions <id|name> to resume directly)", Run: cmdSessions},
 		// No Args: a bare /memory must execute on Enter (one keystroke) to
 		// open the picker. The `search` subcommand is surfaced in Help and
@@ -1129,12 +1130,15 @@ func renderConnectionSummary(state connState) string {
 }
 
 func (m Model) adapterConfig(modelName, baseURL string) adapter.Config {
+	maxOutput, supportsThinking := catalog.ReasoningInfo(modelName)
 	return adapter.Config{
 		BaseURL:                baseURL,
 		APIKey:                 m.apiKey,
 		Model:                  modelName,
 		ProviderOverride:       adapter.Provider(strings.TrimSpace(m.provider)),
 		ReasoningEffort:        m.reasoningEffort,
+		ModelMaxOutput:         maxOutput,
+		ModelSupportsThinking:  supportsThinking,
 		EnableWebSearch:        m.enableWebSearch,
 		DisableWebSearch:       m.disableWebSearch,
 		EnableXSearch:          m.enableXSearch,
@@ -1489,4 +1493,3 @@ func formatRecallAge(d time.Duration) string {
 		return fmt.Sprintf("%dd ago", int(d.Hours()/24))
 	}
 }
-

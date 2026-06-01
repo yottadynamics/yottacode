@@ -136,6 +136,85 @@ func TestAnthropicAdapter_StreamsTextThinkingAndToolUse(t *testing.T) {
 	}
 }
 
+// captureAnthropicBody runs one turn against a mock server and returns
+// the decoded request body, so reasoning tests can assert what thinking
+// params landed on the wire.
+func captureAnthropicBody(t *testing.T, cfg Config) map[string]any {
+	t.Helper()
+	cap := make(chan map[string]any, 1)
+	srv := newAnthropicMockServer(t, anthropicScript{
+		captureBody: cap,
+		events: []anthropicSSE{
+			{Event: "message_start", Data: `{"type":"message_start","message":{"id":"m","role":"assistant","content":[],"model":"claude-sonnet-4-6"}}`},
+			{Event: "content_block_start", Data: `{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`},
+			{Event: "content_block_delta", Data: `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}`},
+			{Event: "content_block_stop", Data: `{"type":"content_block_stop","index":0}`},
+			{Event: "message_delta", Data: `{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}`},
+			{Event: "message_stop", Data: `{"type":"message_stop"}`},
+		},
+	})
+	t.Cleanup(srv.Close)
+	cfg.BaseURL = srv.URL
+	if cfg.APIKey == "" {
+		cfg.APIKey = "test-key"
+	}
+	a := newAnthropicAdapter(cfg)
+	if _, _, _, errs := drainEvents(a.ChatStream(context.Background(), []Message{{Role: RoleUser, Content: "hi"}}, nil)); len(errs) > 0 {
+		t.Fatalf("errors: %v", errs)
+	}
+	return <-cap
+}
+
+func TestAnthropicAdapter_EffortEnablesThinking(t *testing.T) {
+	body := captureAnthropicBody(t, Config{
+		Model:                 "claude-sonnet-4-6",
+		ReasoningEffort:       "high",
+		ModelMaxOutput:        64000,
+		ModelSupportsThinking: boolPtr(true),
+	})
+	thinking, ok := body["thinking"].(map[string]any)
+	if !ok {
+		t.Fatalf("thinking block missing: %v", body["thinking"])
+	}
+	if thinking["type"] != "enabled" {
+		t.Errorf("thinking.type = %v, want enabled", thinking["type"])
+	}
+	want := float64(anthropicThinkingBudget("high", 64000, boolPtr(true)))
+	if thinking["budget_tokens"] != want {
+		t.Errorf("budget_tokens = %v, want %v", thinking["budget_tokens"], want)
+	}
+	// max_tokens covers thinking + answer; it must exceed the budget.
+	if mt, _ := body["max_tokens"].(float64); mt <= want {
+		t.Errorf("max_tokens = %v, want > budget %v", body["max_tokens"], want)
+	}
+}
+
+func TestAnthropicAdapter_NoEffortNoThinking(t *testing.T) {
+	// Default (no effort) must not enable thinking — a Claude turn is
+	// unchanged unless the user opts in via /effort.
+	body := captureAnthropicBody(t, Config{
+		Model:          "claude-sonnet-4-6",
+		ModelMaxOutput: 64000,
+	})
+	if _, present := body["thinking"]; present {
+		t.Errorf("thinking must be absent when no effort is set, got %v", body["thinking"])
+	}
+}
+
+func TestAnthropicAdapter_EffortIgnoredWhenUnsupported(t *testing.T) {
+	// Catalog says the model can't think → effort is a no-op rather than
+	// an API error.
+	body := captureAnthropicBody(t, Config{
+		Model:                 "claude-sonnet-4-6",
+		ReasoningEffort:       "high",
+		ModelMaxOutput:        64000,
+		ModelSupportsThinking: boolPtr(false),
+	})
+	if _, present := body["thinking"]; present {
+		t.Errorf("thinking must be absent for a non-thinking model, got %v", body["thinking"])
+	}
+}
+
 // TestAnthropicAdapter_TruncatedToolUseErrors guards the truncation fix:
 // a tool_use block that starts and streams input but never receives its
 // content_block_stop before the stream ends must surface an error rather
@@ -223,7 +302,7 @@ func TestAnthropicAdapter_EmitsStreamProgressForToolUseArgs(t *testing.T) {
 // translate that into:
 //
 //   - an assistant MessageParam with a tool_use ContentBlock (id + name
-//     + input round-tripped back to a JSON object, NOT a stringified
+//   - input round-tripped back to a JSON object, NOT a stringified
 //     args field)
 //   - a user MessageParam with a tool_result ContentBlock keyed on the
 //     same tool_use_id

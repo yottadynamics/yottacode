@@ -15,6 +15,7 @@ Type `/` in the TUI to open the slash-command palette. The palette filters as yo
 | `/sessions` | `[id\|name]` | Open the sessions picker or resume a known session directly |
 | `/model` | `<name>` | Switch the active model for this session |
 | `/provider` | — | Show resolved provider, API style, built-ins, capabilities, and diagnostics |
+| `/effort` | `[default\|low\|medium\|high]` | Set reasoning effort for this session on providers that support it. Bare opens a picker; a positional argument sets it directly. `default` (aliases `off`/`none`) injects no reasoning override — every provider behaves as if `/effort` were never used. Session-only, mirroring `--reasoning-effort`. See [providers.md](providers.md#reasoning-effort). |
 | `/doctor` | — | Probe the provider `/models` endpoint |
 | `/redo` | — | Rewind the last user message and put it back in the input box |
 | `/recall` | `<query>` | Search across saved sessions |

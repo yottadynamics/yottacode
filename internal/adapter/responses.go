@@ -76,7 +76,7 @@ func (a *responsesAdapter) ChatStream(ctx context.Context, messages []Message, t
 			// to the model.
 			Reasoning: shared.ReasoningParam{Summary: shared.ReasoningSummaryAuto},
 		}
-		if effort, ok := parseReasoningEffort(a.cfg.ReasoningEffort); ok && isReasoningModel(a.model) {
+		if effort, ok := responsesReasoningEffort(a.cfg.ReasoningEffort, a.model, a.profile.Provider); ok {
 			params.Reasoning.Effort = effort
 		}
 		if instructions != "" {
@@ -406,19 +406,6 @@ func overrideToolUnion(raw map[string]any) (responses.ToolUnionParam, error) {
 		return responses.ToolUnionParam{}, fmt.Errorf("adapter: marshal provider tool spec: %w", err)
 	}
 	return param.Override[responses.ToolUnionParam](json.RawMessage(b)), nil
-}
-
-func parseReasoningEffort(s string) (shared.ReasoningEffort, bool) {
-	switch strings.TrimSpace(strings.ToLower(s)) {
-	case "low":
-		return shared.ReasoningEffortLow, true
-	case "medium":
-		return shared.ReasoningEffortMedium, true
-	case "high":
-		return shared.ReasoningEffortHigh, true
-	default:
-		return "", false
-	}
 }
 
 func summarizeProviderToolDetail(s string) string {

@@ -537,6 +537,12 @@ type Model struct {
 	themePickerOpen bool
 	themePicker     *themePickerState
 
+	// Reasoning-effort overlay (/effort). Single-column picker over
+	// default/low/medium/high; Enter commits by rebuilding the active
+	// adapter with the new effort, Esc closes without change.
+	effortPickerOpen bool
+	effortPicker     *effortPickerState
+
 	// Provider sub-menu overlay (/provider). Layered state machine:
 	// menu → action sub-pickers (Use, Remove, Add). M6 wires List+Use;
 	// Remove and Add land in M7+M8.
@@ -1090,6 +1096,9 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.themePickerOpen {
 			return m.updateThemePicker(msg)
+		}
+		if m.effortPickerOpen {
+			return m.updateEffortPicker(msg)
 		}
 		if m.subagentsPickerOpen {
 			return m.updateSubagentsPicker(msg)
@@ -1943,6 +1952,9 @@ func (m Model) View() string {
 	}
 	if m.themePickerOpen && m.themePicker != nil {
 		return m.renderInlineOverlay(renderThemePicker(m.themePicker, m.width))
+	}
+	if m.effortPickerOpen && m.effortPicker != nil {
+		return m.renderInlineOverlay(renderEffortPicker(m.effortPicker))
 	}
 	if m.skillsMenuOpen && m.skillsMenu != nil {
 		return m.renderInlineOverlay(renderSkillsMenu(m.skillsMenu, m.width))

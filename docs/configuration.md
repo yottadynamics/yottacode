@@ -15,7 +15,7 @@ The same provider flags also apply to `yottacode doctor`.
 | `--base-url` | `YOTTACODE_BASE_URL` | yes | OpenAI-compatible base URL such as `http://localhost:11434/v1` or `https://api.openai.com/v1` |
 | `--api-key` | `YOTTACODE_API_KEY` | no | Bearer token for authenticated providers |
 | `--provider` | `YOTTACODE_PROVIDER` | no | Provider profile name or provider kind hint |
-| `--reasoning-effort` | `YOTTACODE_REASONING_EFFORT` | no | Hint for supported reasoning models: `low`, `medium`, or `high` |
+| `--reasoning-effort` | `YOTTACODE_REASONING_EFFORT` | no | Reasoning effort for providers that support it: `low`, `medium`, or `high` (unset = provider default). Applies to OpenAI, Anthropic, Gemini, and xAI via each one's native knob — see [providers.md](providers.md#reasoning-effort). Change it mid-session with [`/effort`](tui-slash-commands.md). |
 | `--enable-web-search` | `YOTTACODE_ENABLE_WEB_SEARCH` | no | Enable provider-native web search when supported |
 | `--disable-web-search` | `YOTTACODE_DISABLE_WEB_SEARCH` | no | Disable provider-native web search even when OpenAI/xAI would enable it by default |
 | `--enable-x-search` | `YOTTACODE_ENABLE_X_SEARCH` | no | Enable xAI `x_search` when supported |

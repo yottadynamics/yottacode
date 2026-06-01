@@ -34,7 +34,7 @@ import (
 //   - candidates[].content.parts[].text  (thought=false) → EventTokenDelta
 //   - candidates[].content.parts[].text  (thought=true)  → EventReasoning
 //   - candidates[].content.parts[].functionCall          → ToolCall in
-//                                                          EventDone.Final
+//     EventDone.Final
 //   - candidates[].finishReason                          → Final.StopReason
 //
 // Gemini does not stream tool-call arguments incrementally — function
@@ -81,7 +81,8 @@ func (g *geminiAdapter) ChatStream(ctx context.Context, messages []Message, tool
 	go func() {
 		defer close(out)
 
-		reqBody, err := json.Marshal(buildGeminiRequest(messages, tools))
+		budget := geminiThinkingBudget(g.cfg.ReasoningEffort, g.cfg.ModelSupportsThinking)
+		reqBody, err := json.Marshal(buildGeminiRequest(messages, tools, budget))
 		if err != nil {
 			out <- StreamEvent{Kind: EventErr, Err: fmt.Errorf("gemini: marshal request: %w", err)}
 			return
@@ -190,9 +191,26 @@ func (g *geminiAdapter) ChatStream(ctx context.Context, messages []Message, tool
 // --- request shape --------------------------------------------------
 
 type geminiRequest struct {
-	Contents          []geminiContent `json:"contents"`
-	SystemInstruction *geminiContent  `json:"systemInstruction,omitempty"`
-	Tools             []geminiTool    `json:"tools,omitempty"`
+	Contents          []geminiContent         `json:"contents"`
+	SystemInstruction *geminiContent          `json:"systemInstruction,omitempty"`
+	Tools             []geminiTool            `json:"tools,omitempty"`
+	GenerationConfig  *geminiGenerationConfig `json:"generationConfig,omitempty"`
+}
+
+// geminiGenerationConfig carries optional generation knobs. Only
+// thinkingConfig is populated today (when an effort level is set);
+// omitempty keeps the field — and the whole object — out of the wire
+// shape entirely when reasoning is left at the provider default.
+type geminiGenerationConfig struct {
+	ThinkingConfig *geminiThinkingConfig `json:"thinkingConfig,omitempty"`
+}
+
+// geminiThinkingConfig enables Gemini 2.5 "thinking". includeThoughts
+// surfaces the thinking trace as thought=true parts (rendered as
+// EventReasoning); thinkingBudget caps the thinking tokens.
+type geminiThinkingConfig struct {
+	IncludeThoughts bool  `json:"includeThoughts"`
+	ThinkingBudget  int64 `json:"thinkingBudget"`
 }
 
 type geminiContent struct {
@@ -263,8 +281,16 @@ type geminiUsageMetadata struct {
 // into Gemini's wire shape. System messages lift to systemInstruction;
 // assistant turns become role="model"; tool-result messages become
 // role="user" with a functionResponse part.
-func buildGeminiRequest(messages []Message, tools []Tool) geminiRequest {
+func buildGeminiRequest(messages []Message, tools []Tool, thinkingBudget int64) geminiRequest {
 	req := geminiRequest{}
+	if thinkingBudget > 0 {
+		req.GenerationConfig = &geminiGenerationConfig{
+			ThinkingConfig: &geminiThinkingConfig{
+				IncludeThoughts: true,
+				ThinkingBudget:  thinkingBudget,
+			},
+		}
+	}
 	var sysParts []geminiPart
 	for _, m := range messages {
 		switch m.Role {

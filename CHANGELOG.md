@@ -8,6 +8,19 @@ the project uses semantic versioning once it's past `1.0.0`.
 
 ### Added
 
+- **Reasoning effort across providers.** `--reasoning-effort`
+  (`low`/`medium`/`high`) now applies to every provider that supports
+  reasoning, each via its native knob: OpenAI / ChatGPT-OAuth
+  `reasoning.effort`, xAI `reasoning_effort` (grok-`*`-mini only;
+  `grok-4` left untouched), Anthropic extended-thinking token budget,
+  and Gemini `thinkingConfig.thinkingBudget`. The new `/effort` slash
+  command (picker + `/effort <level>` shortcut) changes it mid-session;
+  `default`/`off` returns to the provider default. Reasoning stays
+  **off by default** — unset injects no reasoning parameter, so existing
+  behavior is unchanged and Anthropic/Gemini thinking is strictly
+  opt-in. Whether a model can think and how large a thinking budget to
+  allow are sourced from the model catalog (no hand-maintained table).
+  See [`docs/providers.md`](docs/providers.md#reasoning-effort).
 - **Cache-safe model routing.** New `[router]` knobs `mode`
   (`off`/`manual`/`auto`), `fast_model`, and `smart_model` route
   *isolated* work — subagents and history compaction — to a cheap fast

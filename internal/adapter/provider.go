@@ -29,11 +29,21 @@ const (
 
 // Config configures adapter construction and provider-native capabilities.
 type Config struct {
-	BaseURL                string
-	APIKey                 string
-	Model                  string
-	ProviderOverride       Provider
-	ReasoningEffort        string
+	BaseURL          string
+	APIKey           string
+	Model            string
+	ProviderOverride Provider
+	ReasoningEffort  string
+	// ModelMaxOutput and ModelSupportsThinking carry catalog-derived
+	// facts about the active model so budget-based reasoning providers
+	// (Anthropic, Gemini) can size a thinking budget without the adapter
+	// package importing catalog (which would cycle:
+	// adapter → catalog → auth/openai → adapter). Callers that have the
+	// catalog handy fill these from catalog.FindByID; both are
+	// zero/nil-safe — an unknown model leaves reasoning at the provider
+	// default. ModelSupportsThinking is a tristate: nil = unknown.
+	ModelMaxOutput         int
+	ModelSupportsThinking  *bool
 	EnableWebSearch        bool
 	DisableWebSearch       bool
 	EnableXSearch          bool
@@ -49,13 +59,13 @@ type Config struct {
 // ProviderProfile is the resolved view of provider capabilities for a given
 // adapter instance.
 type ProviderProfile struct {
-	Provider                Provider          `json:"provider"`
-	UsesResponsesAPI        bool              `json:"uses_responses_api"`
-	SupportsReasoning       bool              `json:"supports_reasoning"`
-	SupportsImages          bool              `json:"supports_images"`
-	SupportsWebSearch       bool              `json:"supports_web_search"`
-	SupportsXSearch         bool              `json:"supports_x_search"`
-	SupportsCodeInterpreter bool              `json:"supports_code_interpreter"`
+	Provider                Provider `json:"provider"`
+	UsesResponsesAPI        bool     `json:"uses_responses_api"`
+	SupportsReasoning       bool     `json:"supports_reasoning"`
+	SupportsImages          bool     `json:"supports_images"`
+	SupportsWebSearch       bool     `json:"supports_web_search"`
+	SupportsXSearch         bool     `json:"supports_x_search"`
+	SupportsCodeInterpreter bool     `json:"supports_code_interpreter"`
 	// SupportsUsageReporting indicates the adapter populates per-turn
 	// Usage on its returned Message. False for local/free providers
 	// (Ollama, NVIDIA NIM) where /usage has no meaningful surface.

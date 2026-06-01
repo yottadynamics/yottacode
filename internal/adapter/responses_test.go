@@ -295,6 +295,68 @@ func TestResponses_IncludesBuiltinToolsAndReasoningEffort(t *testing.T) {
 	}
 }
 
+func TestResponses_XAIReasoningEffortForMini(t *testing.T) {
+	var gotBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b)
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, responsesSSE(
+			`{"type":"response.output_text.delta","sequence_number":1,"item_id":"msg_1","output_index":0,"content_index":0,"delta":"ok"}`,
+			`{"type":"response.completed","sequence_number":2,"response":{"id":"resp_1"}}`,
+		))
+	}))
+	t.Cleanup(srv.Close)
+
+	// xAI defaults to the Responses path (web search on); grok-3-mini
+	// honors reasoning.effort, so "high" must reach the wire.
+	ad := NewWithConfig(Config{
+		BaseURL:          srv.URL,
+		APIKey:           "xai-test",
+		Model:            "grok-3-mini",
+		ProviderOverride: ProviderXAI,
+		ReasoningEffort:  "high",
+	})
+	if !ad.Profile().UsesResponsesAPI {
+		t.Fatalf("xAI should route to the responses path here")
+	}
+	if _, _, _, errs := drainEvents(ad.ChatStream(context.Background(), []Message{{Role: RoleUser, Content: "hi"}}, nil)); len(errs) > 0 {
+		t.Fatalf("errors: %v", errs)
+	}
+	if !strings.Contains(gotBody, `"effort":"high"`) {
+		t.Errorf("grok-3-mini request missing reasoning effort\nbody=%s", gotBody)
+	}
+}
+
+func TestResponses_XAINoReasoningEffortForGrok4(t *testing.T) {
+	var gotBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b)
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, responsesSSE(
+			`{"type":"response.output_text.delta","sequence_number":1,"item_id":"msg_1","output_index":0,"content_index":0,"delta":"ok"}`,
+			`{"type":"response.completed","sequence_number":2,"response":{"id":"resp_1"}}`,
+		))
+	}))
+	t.Cleanup(srv.Close)
+
+	// grok-4 reasons unconditionally and rejects reasoning_effort.
+	ad := NewWithConfig(Config{
+		BaseURL:          srv.URL,
+		APIKey:           "xai-test",
+		Model:            "grok-4",
+		ProviderOverride: ProviderXAI,
+		ReasoningEffort:  "high",
+	})
+	if _, _, _, errs := drainEvents(ad.ChatStream(context.Background(), []Message{{Role: RoleUser, Content: "hi"}}, nil)); len(errs) > 0 {
+		t.Fatalf("errors: %v", errs)
+	}
+	if strings.Contains(gotBody, `"effort"`) {
+		t.Errorf("grok-4 must not send reasoning effort\nbody=%s", gotBody)
+	}
+}
+
 func TestResponses_XAIRoutesBuiltinWebSearchAndEmitsProviderToolEvent(t *testing.T) {
 	var gotBody string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

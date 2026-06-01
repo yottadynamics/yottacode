@@ -12,6 +12,7 @@ import (
 
 	"github.com/yottadynamics/yottacode/internal/adapter"
 	"github.com/yottadynamics/yottacode/internal/agent"
+	"github.com/yottadynamics/yottacode/internal/catalog"
 	"github.com/yottadynamics/yottacode/internal/checkpoint"
 	"github.com/yottadynamics/yottacode/internal/cli"
 	"github.com/yottadynamics/yottacode/internal/config"
@@ -90,12 +91,15 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 	} else if router != nil {
 		ad = router
 	} else {
+		adhocMaxOutput, adhocThinking := catalog.ReasoningInfo(opts.Model)
 		ad = adapter.NewWithConfig(adapter.Config{
 			BaseURL:                opts.BaseURL,
 			APIKey:                 opts.APIKey,
 			Model:                  opts.Model,
 			ProviderOverride:       adapter.Provider(strings.TrimSpace(opts.ProviderKind)),
 			ReasoningEffort:        opts.ReasoningEffort,
+			ModelMaxOutput:         adhocMaxOutput,
+			ModelSupportsThinking:  adhocThinking,
 			EnableWebSearch:        opts.EnableWebSearch,
 			DisableWebSearch:       opts.DisableWebSearch,
 			EnableXSearch:          opts.EnableXSearch,

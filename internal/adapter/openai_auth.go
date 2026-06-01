@@ -148,7 +148,7 @@ func (a *openAIAuthAdapter) ChatStream(ctx context.Context, messages []Message, 
 }
 
 func (a *openAIAuthAdapter) runOnce(ctx context.Context, messages []Message, tools []Tool, out chan<- StreamEvent) {
-	body, err := buildOpenAIAuthRequest(a.model, messages, tools)
+	body, err := buildOpenAIAuthRequest(a.model, a.cfg.ReasoningEffort, messages, tools)
 	if err != nil {
 		out <- StreamEvent{Kind: EventErr, Err: fmt.Errorf("openai-auth: build request: %w", err)}
 		return
@@ -712,7 +712,7 @@ func humanizeDuration(d time.Duration) string {
 // (always, regardless of caller intent) — the backend rejects any
 // other shape with HTTP 400. See project memory
 // `project_chatgpt_codex_api_contract.md` for the full contract.
-func buildOpenAIAuthRequest(model string, messages []Message, tools []Tool) ([]byte, error) {
+func buildOpenAIAuthRequest(model, reasoningEffort string, messages []Message, tools []Tool) ([]byte, error) {
 	instructions, items := splitForOpenAIAuth(messages)
 	if strings.TrimSpace(instructions) == "" {
 		instructions = OpenAIAuthDefaultInstructions
@@ -723,6 +723,13 @@ func buildOpenAIAuthRequest(model string, messages []Message, tools []Tool) ([]b
 		"input":        items,
 		"stream":       true,
 		"store":        false,
+	}
+	// reasoning.effort tunes how hard a Codex reasoning model thinks.
+	// Omitted entirely when unset so the backend stays at its default
+	// (the contract is additive — instructions/store/stream are still
+	// the only required fields; see project_chatgpt_codex_api_contract).
+	if effort, ok := openAIEffort(reasoningEffort); ok && isReasoningModel(model) {
+		body["reasoning"] = map[string]any{"effort": string(effort)}
 	}
 	if functionTools := openAIAuthFunctionTools(tools); len(functionTools) > 0 {
 		body["tools"] = functionTools
