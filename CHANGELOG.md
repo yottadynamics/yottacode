@@ -154,16 +154,61 @@ the project uses semantic versioning once it's past `1.0.0`.
 
 ### Fixed
 
-- **`/context` no longer phantom-charges skill bodies to the window.**
-  The Skills bucket summed every loaded skill's full markdown *body*
-  (~22 K tokens across the built-in set) into the usage total — but
-  skill bodies load on demand via the `Skill` tool and aren't in-window
-  until invoked. The skills' real in-window cost (the name+description
-  metadata tier) is already counted under the System prompt and System
-  tools buckets, so the Skills bucket was double-/phantom-counting and
-  inflating the reported total, percentage, and free-space. Skills is
-  now an inventory-only section (each row tagged `(on demand)`) and no
-  longer feeds the usage total or the segmented bar.
+- **Status bar / input box no longer vanish after closing `/context` or
+  the `/skills` menu.** A full-screen overlay renders taller than the
+  bare footer, and inline-mode Bubbletea (no alt-screen) doesn't
+  re-anchor a shrinking live frame to the terminal bottom — so closing
+  one quietly (Esc / any key, with nothing emitted to scrollback) left
+  the footer stranded mid-screen until the next redraw. Opening another
+  menu or submitting a prompt "fixed" it. Overlays that emit a line on
+  close — `/models` / `/providers` selection — were re-anchored for free
+  by that `tea.Println`, which is why they never showed the bug. Quiet
+  closes now force the same `ClearScreen` + scrollback-replay the resize
+  path uses, re-anchoring the frame so the chrome comes straight back;
+  closes that already emit a line are left untouched (no double redraw).
+- **`/context` now reports each skill's real in-window cost, not its
+  on-disk body.** A skill occupies the window through its
+  name+description *metadata* line — baked into the system prompt
+  (`appendSkillsSection`) and mirrored into the `Skill` tool schema —
+  while the body loads on demand only when the skill is invoked. The
+  Skills section previously listed each row's full body estimate (the
+  on-disk size, ~22 K tokens across the built-in set) tagged
+  `(on demand)`, which is not what's loaded. Each skill row now shows the
+  loaded metadata cost; the body is excluded. Skills still don't feed the
+  usage total or the segmented bar — that metadata is already counted
+  under the System prompt and System tools buckets, so the section
+  attributes it per skill rather than double-counting. Custom commands,
+  which genuinely cost nothing until invoked, keep the `(on demand)` tag.
+- **Skill metadata is no longer duplicated into the system prompt.** The
+  name+description list was emitted both into the system prompt
+  (`appendSkillsSection`) *and* into the `Skill` tool's schema
+  description — so every turn carried it twice. The tool schema is the
+  load-bearing copy (its description tells the model which names are
+  valid to pass), so the system-prompt section now just frames the
+  surface and points at that list instead of re-enumerating it. Halves
+  the always-loaded skill-metadata cost (the system prompt drops it;
+  `Skill` tool schema keeps it) with no change to how the model
+  discovers or invokes skills, and makes `/context`'s per-skill figure
+  the true single-copy in-window cost.
+- **`/context` Skills section is now enablement-aware.** Skills are off by
+  default, and a skill's metadata only enters the window once it's enabled
+  (it lives in the `Skill` tool schema, which lists active skills). The
+  section previously showed a token figure for every loaded skill,
+  implying a cost that disabled skills don't actually incur — so an
+  installed-but-not-counted skill looked like a discrepancy. Enabled
+  skills now show their loaded metadata cost (counted under System tools);
+  disabled skills show `off · not loaded`. Toggle with `/skills`.
+- **`/context` gives Skills its own usage bucket.** "Estimated usage by
+  category" now has a **Skills** row (built-in + user + project, all
+  enabled skills), so the cost is visible at a glance instead of hidden
+  inside System tools. It's carved *out* of System tools rather than added
+  on top — the metadata rides in the `Skill` tool schema, which System
+  tools counts, so the two are split (System tools + Skills = the full
+  schema cost) and the window total is unchanged. The per-skill Skills
+  section below is that bucket's breakdown. Memory files and Messages
+  were also recolored (to the palette's Error/red and Content/near-white)
+  so every legend + bar bucket reads as a distinct hue instead of Memory
+  blurring into Skills and Messages into MCP tools.
 - **Auto-summarization no longer silently no-ops on agent-heavy sessions.**
   `composeSummarizedHistory` previously retained every turn when the
   session had five or fewer user prompts, so on plan-mode sessions

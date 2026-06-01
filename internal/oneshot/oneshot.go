@@ -586,22 +586,22 @@ func composeSystemPrompt(base string, profile adapter.ProviderProfile) string {
 	return base + "\nFor live or current information, use fetch_url for specific pages or feeds when needed."
 }
 
-// appendSkillsSection adds the description-matched metadata tier of
-// Agent Skills to the system prompt. Mirrors tui/run.go's helper of
-// the same name — bodies stay out of the prompt; the model loads them
-// on demand via the Skill tool.
+// appendSkillsSection frames the Agent Skills surface in the system
+// prompt without enumerating the skills — the name+description list lives
+// in the `Skill` tool's schema description (always in the window), so
+// listing it here too would duplicate the metadata tier and double its
+// per-turn cost. Mirrors tui/run.go's helper of the same name.
 func appendSkillsSection(base string, loaded []skills.Skill) string {
 	if len(loaded) == 0 {
 		return base
 	}
-	var b strings.Builder
-	b.WriteString(base)
-	b.WriteString("\n\n# Available skills\n\n")
-	b.WriteString("You have access to a set of reusable capability playbooks (Agent Skills). When a user request matches a skill's described scope, invoke it via the `Skill` tool (e.g. `Skill(skill=\"<name>\")`); the tool returns the skill's body so you can apply it in the current turn. Only invoke a skill that appears in the list below — do NOT guess names.\n\n")
-	for _, sk := range loaded {
-		fmt.Fprintf(&b, "- %s: %s\n", sk.Name, sk.Description)
-	}
-	return b.String()
+	return base + "\n\n# Available skills\n\n" +
+		"You have access to reusable capability playbooks (Agent Skills). When a " +
+		"user request matches a skill's described scope, invoke it via the `Skill` " +
+		"tool (e.g. `Skill(skill=\"<name>\")`); the tool returns the skill's body so " +
+		"you can apply it in the current turn. The `Skill` tool's description lists " +
+		"every available skill by name and scope — consult that list and only invoke " +
+		"a name that appears there.\n"
 }
 
 // oneshotRouterFast / oneshotRouterFastModel / oneshotRouterResolve

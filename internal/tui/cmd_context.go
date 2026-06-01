@@ -48,10 +48,17 @@ type memoryFileEntry struct {
 
 // skillEntry is one row of the Skills section. group is which sub-
 // header it lives under ("Built-in", "User", "Project", "Custom").
+// tokens is the item's in-window cost. onDemand marks rows whose cost is
+// only paid when invoked (custom commands). enabled is whether a skill's
+// metadata is actually loaded this session — disabled skills cost nothing
+// until toggled on via /skills (onDemand rows are always "enabled" since
+// the flag doesn't apply to them).
 type skillEntry struct {
-	group  string
-	name   string
-	tokens int
+	group    string
+	name     string
+	tokens   int
+	onDemand bool
+	enabled  bool
 }
 
 // cmdContext renders the /context breakdown onto the inline-overlay
@@ -107,24 +114,38 @@ func renderContextReport(m *Model) string {
 		memTokens += f.tokens
 	}
 
-	// Skills are deliberately NOT a window bucket. Their in-window cost —
-	// the name+description metadata tier — is already charged elsewhere:
-	// to System prompt (appendSkillsSection bakes the list into the
-	// system message) and to System tools (the Skill tool's schema
-	// description carries the same list). Skill *bodies* load on demand
-	// via the Skill tool, so they're not in-window until invoked.
-	// Summing bodies here previously phantom-charged the window (~22K on
-	// the built-in set) and skewed the total / free-space / percentage.
-	// The Skills section below remains as an on-disk inventory; it does
-	// not feed `used`.
+	// Skills get their own bucket, carved OUT of System tools rather than
+	// added on top. An enabled skill's in-window cost — its name+description
+	// metadata line — rides inside the Skill tool's schema description,
+	// which contextToolTokens counts under System tools. Summing that
+	// metadata into a separate Skills bucket *and* leaving it in System
+	// tools would double-count it, so we subtract it back out. The figure
+	// is the sum of the enabled skill rows (built-in + user + project);
+	// disabled skills aren't in the window (the system prompt no longer
+	// enumerates them — see appendSkillsSection) and contribute 0, and
+	// bodies load on demand so they're never counted here.
 	skillRows := loadContextSkillEntries(m)
+	skillTokens := 0
+	for _, r := range skillRows {
+		if !r.onDemand && r.enabled {
+			skillTokens += r.tokens
+		}
+	}
+	sysToolTokens = max(sysToolTokens-skillTokens, 0)
 
+	// Bucket colors are picked for mutual contrast in the bar + legend.
+	// Memory files (was Warning/yellow) and Messages (was Assistant/teal)
+	// previously read too close to Skills' peach and MCP's green/Accent's
+	// blue respectively, so they take the two otherwise-unused palette
+	// hues — Error (red) and Content (near-white) — which sit clearly apart
+	// from the rest.
 	buckets := []contextBucket{
 		{"System prompt", sysTok, colorDim, true},
 		{"System tools", sysToolTokens, colorAccent, true},
+		{"Skills", skillTokens, colorWarm, true},
 		{"MCP tools", mcpToolTokens, colorSuccess, true},
-		{"Memory files", memTokens, colorWarning, true},
-		{"Messages", convoTok, colorAssistant, true},
+		{"Memory files", memTokens, colorError, true},
+		{"Messages", convoTok, colorContent, true},
 	}
 
 	used := 0
@@ -220,22 +241,36 @@ func loadContextMemoryFiles(cwd string) []memoryFileEntry {
 }
 
 // loadContextSkillEntries collects every skill + custom command into a
-// flat list with sub-group labels. Built-in / User / Project groups
-// come from m.skills (the loader sets Source); custom commands get
-// their own "Custom" group. The per-entry token figure is the body's
-// estimated *on-demand* cost — what one Skill invocation would add to
-// the window that turn — falling back to the help string for items
-// where the body isn't kept in memory. It is NOT charged to the live
-// window: the caller renders these as inventory only and excludes them
-// from the usage total (see renderContextReport's bucket comment).
+// flat list with sub-group labels. Built-in / User / Project groups come
+// from m.skills (the loader sets Source); custom commands get their own
+// "Custom" group.
+//
+// For skills the per-entry figure is the *loaded metadata* cost — the
+// `- name: description` line SkillTool.Description carries into the Skill
+// tool schema, which is what's actually in the window. Only *enabled*
+// skills are in that schema, so a disabled skill is marked enabled=false
+// and contributes 0: it costs nothing until toggled on via /skills. The
+// body always loads on demand, so it is never counted here.
+//
+// Custom commands are different: nothing about them is in the window until
+// the user invokes one (the body is injected as a synthetic user message
+// then), so they're flagged onDemand and sized by their help string — the
+// closest always-available proxy for the per-invocation cost.
 func loadContextSkillEntries(m *Model) []skillEntry {
 	var out []skillEntry
 	for _, s := range m.skills {
-		group := contextSkillGroupLabel(s.Source)
+		// No skillTool wired (test fixtures, headless) → treat as loaded so
+		// the metadata cost still shows rather than collapsing to "off".
+		enabled := m.skillTool == nil || m.skillTool.IsEnabled(s.Name)
+		tokens := 0
+		if enabled {
+			tokens = skillMetadataTokens(s.Name, s.Description)
+		}
 		out = append(out, skillEntry{
-			group:  group,
-			name:   s.Name,
-			tokens: contextwindow.EstimateText(s.Body),
+			group:   contextSkillGroupLabel(s.Source),
+			name:    s.Name,
+			tokens:  tokens,
+			enabled: enabled,
 		})
 	}
 	for _, c := range m.customSlash {
@@ -243,12 +278,24 @@ func loadContextSkillEntries(m *Model) []skillEntry {
 			continue
 		}
 		out = append(out, skillEntry{
-			group:  "Custom",
-			name:   c.Name,
-			tokens: contextwindow.EstimateText(c.Help),
+			group:    "Custom",
+			name:     c.Name,
+			tokens:   contextwindow.EstimateText(c.Help),
+			onDemand: true,
+			enabled:  true,
 		})
 	}
 	return out
+}
+
+// skillMetadataTokens estimates a skill's always-loaded cost: the
+// `- name: description` metadata line, formatted exactly as
+// appendSkillsSection / SkillTool.Description emit it so the figure
+// tracks what the model actually receives. This is the metadata tier of
+// progressive disclosure — small and always present — as opposed to the
+// body, which only enters the window when the skill is invoked.
+func skillMetadataTokens(name, desc string) int {
+	return contextwindow.EstimateText(fmt.Sprintf("- %s: %s\n", name, desc))
 }
 
 func contextSkillGroupLabel(src skills.Scope) string {
@@ -462,17 +509,20 @@ func renderContextMemorySection(files []memoryFileEntry) string {
 }
 
 // renderContextSkillsSection groups entries by sub-header (Built-in /
-// User / Project / Custom) and lists each with its body token estimate.
-// Mirrors Claude's `Skills · /skills` block. This section is purely an
-// on-disk inventory: skill bodies load on demand via the Skill tool, so
-// the per-row figure is the *per-invocation* cost, NOT a slice of the
-// current window — which is why Skills is absent from the bar / legend /
-// total above. Each row is tagged `(on demand)` to make that explicit
-// where the number is shown.
+// User / Project / Custom) and lists each with its in-window token
+// estimate. Mirrors Claude's `Skills · /skills` block. For an *enabled*
+// skill the figure is its loaded metadata line (name + description) — the
+// real slice of the window it occupies via the Skill tool schema; the
+// body isn't counted because it only loads on invocation. A *disabled*
+// skill shows `off` — it costs nothing until toggled on with /skills.
+// Custom-command rows, whose cost is paid only when invoked, are tagged
+// `(on demand)`. The enabled rows sum to the Skills bucket in the legend
+// above (see renderContextReport) — this section is that bucket's per-skill
+// breakdown, not an additional charge.
 func renderContextSkillsSection(rows []skillEntry) string {
 	var out strings.Builder
 	out.WriteString(styleSplashTitle.Render("Skills"))
-	out.WriteString(stylePaletteEmpty.Render("  · /skills · loaded on demand"))
+	out.WriteString(stylePaletteEmpty.Render("  · /skills · enabled rows sum to the Skills bucket above; bodies on demand"))
 	out.WriteString("\n")
 	if len(rows) == 0 {
 		out.WriteString("  ")
@@ -517,7 +567,8 @@ func renderContextSkillsSection(rows []skillEntry) string {
 				nameWidth = w
 			}
 		}
-		onDemand := stylePaletteEmpty.Render("(on demand)")
+		onDemandTag := "  " + stylePaletteEmpty.Render("(on demand)")
+		offValue := stylePaletteEmpty.Render("off · not loaded")
 		for i, e := range entries {
 			prefix := "├ "
 			if i == len(entries)-1 {
@@ -525,8 +576,18 @@ func renderContextSkillsSection(rows []skillEntry) string {
 			}
 			out.WriteString("  ")
 			out.WriteString(stylePaletteEmpty.Render(prefix))
-			fmt.Fprintf(&out, "%-*s   %s tokens   %s\n",
-				nameWidth, e.name, formatTokens(e.tokens), onDemand)
+			// Disabled skill: nothing in the window until /skills toggles it
+			// on, so show its off state instead of a phantom token figure.
+			if !e.onDemand && !e.enabled {
+				fmt.Fprintf(&out, "%-*s   %s\n", nameWidth, e.name, offValue)
+				continue
+			}
+			tag := ""
+			if e.onDemand {
+				tag = onDemandTag
+			}
+			fmt.Fprintf(&out, "%-*s   %s tokens%s\n",
+				nameWidth, e.name, formatTokens(e.tokens), tag)
 		}
 	}
 	return strings.TrimRight(out.String(), "\n")

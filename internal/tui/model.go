@@ -904,6 +904,19 @@ func (m Model) Init() tea.Cmd {
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	out, cmd := m.update(msg)
 	mm := out.(Model)
+	// Inline-mode re-anchor guard. A full-screen overlay (e.g. /context,
+	// the /skills menu) renders taller than the bare footer; in inline mode
+	// Bubbletea doesn't re-anchor a shrinking live frame to the terminal
+	// bottom, so closing one leaves the footer (input box + status bar)
+	// stranded mid-screen until something redraws scrollback. Overlays that
+	// emit a line on close — model/provider selection's `appendLine` — get
+	// re-anchored for free by that tea.Println; the quiet closes (Esc / any
+	// key) don't. So when a key closes an overlay and nothing else queued a
+	// scrollback redraw this tick, force the clean redraw ourselves. Only
+	// key input closes overlays, so other message types skip the check.
+	if _, isKey := msg.(tea.KeyMsg); isKey && m.overlayClosed(mm) && len(mm.pendingCmds) == 0 {
+		mm.repaintViewport()
+	}
 	if flush := mm.flushPending(); flush != nil {
 		if cmd == nil {
 			return mm, flush
@@ -1015,27 +1028,11 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// viewport so the next View() draws clean.
 			//
 			// We then replay the conversation under freshly-rendered
-			// startup chrome at the new width: startup box (only if
-			// the session is still fresh — past the first user message
-			// the status bar already carries model/provider/cwd, so
-			// re-emitting the card on every resize would be redundant)
-			// → every conversation line emitted so far, in order. Each
-			// replay line goes through queuePrintln — the SAME path live
-			// emission uses — so it gets the \r\x1b[2K clear-line prefix
-			// (cursor reset, no column bleed) and is re-wrapped to the
-			// NEW width. Emitting bare tea.Println(line) here instead was
-			// the indentation-drift bug: replayed lines skipped the clear
-			// prefix and the re-wrap, so post-resize content landed at a
-			// different column than live content and stale-width wraps
-			// smeared across rows.
-			m.pendingCmds = append(m.pendingCmds, tea.ClearScreen)
-			if m.shouldShowStartupCard() {
-				m.queuePrintlnFlush(renderStartupBox(m.version, m.commit, m.dirty, m.modelName, m.cwd, m.branch, m.memorySummary, m.providerProfile, m.startupTip(), m.width))
-				m.queuePrintln("")
-			}
-			for _, line := range m.historyLines {
-				m.queuePrintln(line)
-			}
+			// startup chrome at the new width via repaintViewport — see
+			// that helper for why the replay goes through queuePrintln
+			// (clear-line prefix + re-wrap to the new width) rather than
+			// a bare tea.Println.
+			m.repaintViewport()
 			return m, nil
 		}
 		return m, nil
@@ -1886,6 +1883,28 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	}
 	return m, nil
+}
+
+// anyOverlayOpen reports whether a full-screen inline overlay is open —
+// the set of flags that make View() short-circuit into renderInlineOverlay
+// (a single panel that replaces the whole footer). Keep this in sync with
+// the early-return chain at the top of View. The slash/file palettes are
+// deliberately excluded: they render inline *above* the cmdline within the
+// normal footer, not as a replacing overlay, so they don't drive the
+// over-tall collapse this guards.
+func (m Model) anyOverlayOpen() bool {
+	return m.cheatsheetOpen || m.usageOpen || m.contextReportOpen ||
+		m.permissionsOpen || m.modelPickerOpen || m.providerPickerOpen ||
+		m.embedSetupOpen || m.memoryPickerOpen || m.sessionsPickerOpen ||
+		m.plansPickerOpen || m.checkpointsPickerOpen || m.subagentsPickerOpen ||
+		m.themePickerOpen || m.effortPickerOpen || m.skillsMenuOpen ||
+		m.skillsPickerOpen || m.mcpPickerOpen
+}
+
+// overlayClosed reports whether the transition from this model (pre-update)
+// to `after` closed a full-screen inline overlay — open before, gone after.
+func (m Model) overlayClosed(after Model) bool {
+	return m.anyOverlayOpen() && !after.anyOverlayOpen()
 }
 
 // View renders the live footer that redraws in place at the bottom of the
@@ -4569,6 +4588,32 @@ func (m *Model) queuePrintlnIndented(s string, leftMargin int) {
 		for _, row := range strings.Split(wrapped, "\n") {
 			m.pendingCmds = append(m.pendingCmds, tea.Println(clearLine+margin+row))
 		}
+	}
+}
+
+// repaintViewport forces a clean inline redraw: wipe the visible viewport,
+// then replay the startup chrome (fresh sessions only) followed by every
+// recorded conversation line at the current width. Re-emitting the
+// transcript from the top down scrolls the live frame back to the bottom of
+// the terminal — the load-bearing side effect, since inline-mode Bubbletea
+// (no alt-screen) doesn't re-anchor a frame on its own.
+//
+// Two callers need that re-anchor: a genuine resize (the live frame's
+// border smears at the old width) and a quiet overlay close (the shrinking
+// frame strands the footer mid-screen). Routing both here keeps the
+// recovery sequence in one place.
+//
+// Each replay line goes through queuePrintln — the SAME path live emission
+// uses — so it gets the \r\x1b[2K clear-line prefix (cursor reset, no
+// column bleed) and is re-wrapped to the current width.
+func (m *Model) repaintViewport() {
+	m.pendingCmds = append(m.pendingCmds, tea.ClearScreen)
+	if m.shouldShowStartupCard() {
+		m.queuePrintlnFlush(renderStartupBox(m.version, m.commit, m.dirty, m.modelName, m.cwd, m.branch, m.memorySummary, m.providerProfile, m.startupTip(), m.width))
+		m.queuePrintln("")
+	}
+	for _, line := range m.historyLines {
+		m.queuePrintln(line)
 	}
 }
 
