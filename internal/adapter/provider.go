@@ -114,6 +114,26 @@ func detectProvider(baseURL string, override Provider) Provider {
 	}
 }
 
+// resolveProvider is the single source of truth for "which provider does
+// this config actually talk to." It layers the model-tag fallback on top
+// of the base-URL guess: a claude-*/gemini-* model is strong enough
+// evidence to override the URL, because corporate proxies front those
+// APIs at custom hostnames where detectProvider would otherwise guess
+// openai-compatible. Both the adapter router and the diagnostics/profile
+// path go through here so the connection probe can never disagree with
+// the adapter that was actually constructed.
+func resolveProvider(cfg Config) Provider {
+	provider := detectProvider(cfg.BaseURL, cfg.ProviderOverride)
+	switch {
+	case provider == ProviderAnthropic || isAnthropicModel(cfg.Model):
+		return ProviderAnthropic
+	case provider == ProviderGemini || isGeminiModel(cfg.Model):
+		return ProviderGemini
+	default:
+		return provider
+	}
+}
+
 func isReasoningModel(model string) bool {
 	switch {
 	case strings.HasPrefix(model, "o1"),
@@ -163,7 +183,7 @@ func effectiveWebSearchEnabled(cfg Config, provider Provider) bool {
 }
 
 func buildProfile(cfg Config, usesResponses bool) ProviderProfile {
-	provider := detectProvider(cfg.BaseURL, cfg.ProviderOverride)
+	provider := resolveProvider(cfg)
 	enabled := enabledBuiltinTools(cfg, provider)
 	profile := ProviderProfile{
 		Provider:                provider,

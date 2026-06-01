@@ -935,10 +935,6 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.cursorVisible = !m.cursorVisible
 		return m, cursorBlinkCmd()
 	}
-	if probe, ok := msg.(connectionStatusMsg); ok {
-		m.connection = probe.state
-		return m, nil
-	}
 	if probe, ok := msg.(providerProbeMsg); ok {
 		m.connection = probeConnectionState(probe.result)
 		if probe.result.Profile.Provider != "" {

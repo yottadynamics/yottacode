@@ -1222,10 +1222,19 @@ func formatProbeResult(result adapter.ProbeResult) string {
 }
 
 func probeConnectionState(result adapter.ProbeResult) connState {
-	if result.EndpointReachable && result.AuthOK && len(result.Issues) == 0 {
+	switch {
+	case result.EndpointReachable && result.AuthOK && len(result.Issues) == 0:
 		return connOK
+	case result.EndpointReachable && result.AuthOK:
+		// Reachable and the key works, but something's off — typically the
+		// configured model wasn't found in the provider's model list
+		// (pagination, an Ollama :latest tag mismatch, or a stale
+		// allow-list). The connection itself is healthy, so that's
+		// degraded (amber), not down (red).
+		return connDegraded
+	default:
+		return connDown
 	}
-	return connDown
 }
 
 func cmdClear(m Model, _ []string) (Model, tea.Cmd) {

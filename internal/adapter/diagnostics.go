@@ -182,16 +182,38 @@ func runModelsProbe(req *http.Request, res ProbeResult, cfg Config, parseModels 
 	}
 
 	res.AvailableModels = models
-	for _, id := range models {
-		if id == cfg.Model {
-			res.ModelVisible = true
-			break
-		}
-	}
+	res.ModelVisible = modelListed(models, cfg.Model, res.Profile.Provider)
 	if strings.TrimSpace(cfg.Model) != "" && !res.ModelVisible {
 		res.Issues = uniqueStrings(append(res.Issues, fmt.Sprintf("model %q not listed by /models", cfg.Model)))
 	}
 	return res
+}
+
+// modelListed reports whether want appears in the provider's available
+// list. Matching is exact for every provider except Ollama, which lists
+// models with their tag (llama3.2:latest) while configs commonly name the
+// bare model (llama3.2). Ollama resolves the implicit :latest at
+// generation time, so a working local model would otherwise read amber
+// for a tag the user never typed.
+func modelListed(available []string, want string, provider Provider) bool {
+	for _, id := range available {
+		if id == want {
+			return true
+		}
+		if provider == ProviderOllama && withDefaultOllamaTag(id) == withDefaultOllamaTag(want) {
+			return true
+		}
+	}
+	return false
+}
+
+// withDefaultOllamaTag appends Ollama's implicit :latest tag to a bare
+// model name so tagged and untagged forms of the same model compare equal.
+func withDefaultOllamaTag(model string) string {
+	if strings.ContainsRune(model, ':') {
+		return model
+	}
+	return model + ":latest"
 }
 
 // parseOpenAIModels reads the OpenAI-compatible (and Anthropic)

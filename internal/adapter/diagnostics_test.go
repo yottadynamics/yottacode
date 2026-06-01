@@ -114,6 +114,42 @@ func TestProbe_Anthropic_SucceedsAndFindsModel(t *testing.T) {
 	}
 }
 
+// A claude-* model behind a corporate gateway (custom base URL, no
+// ProviderOverride) must still be probed the Anthropic way. The adapter
+// router already routes such configs to the Anthropic adapter via the
+// model-tag fallback; the probe has to agree or the dot goes red for a
+// working gateway. Proven by the server seeing x-api-key (not Bearer)
+// at /v1/models even though the host isn't api.anthropic.com.
+func TestProbe_Anthropic_GatewayByModelTag(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/models" {
+			t.Fatalf("path = %q, want /v1/models (Anthropic probe path)", r.URL.Path)
+		}
+		if r.Header.Get("x-api-key") == "" {
+			t.Fatalf("gateway claude-* config took the wrong probe path: missing x-api-key")
+		}
+		if got := r.Header.Get("Authorization"); got != "" {
+			t.Fatalf("must not send a Bearer token for a claude model, got %q", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"data":[{"id":"claude-opus-4-8"}]}`)
+	}))
+	t.Cleanup(srv.Close)
+
+	got := Probe(context.Background(), Config{
+		BaseURL: srv.URL, // a custom gateway host, NOT api.anthropic.com
+		APIKey:  "sk-ant-test",
+		Model:   "claude-opus-4-8",
+		// no ProviderOverride — resolution must come from the model tag
+	})
+	if !got.EndpointReachable || !got.AuthOK || !got.ModelVisible {
+		t.Fatalf("unexpected probe result: %+v", got)
+	}
+	if got.Profile.Provider != ProviderAnthropic {
+		t.Fatalf("Profile.Provider = %q, want anthropic", got.Profile.Provider)
+	}
+}
+
 // A bad Anthropic key must surface as reachable-but-unauthed, the same
 // shape the OpenAI path produces, so the dot goes red for a real reason.
 func TestProbe_Anthropic_AuthFailure(t *testing.T) {
@@ -220,6 +256,56 @@ func TestProbe_Gemini_AuthFailure(t *testing.T) {
 	}
 	if msg := strings.Join(got.Issues, "\n"); !strings.Contains(msg, "authentication failed (HTTP 403)") {
 		t.Fatalf("issues missing auth failure: %s", msg)
+	}
+}
+
+// Ollama lists models tagged (llama3.2:latest) but configs name the bare
+// model (llama3.2); the two refer to the same model, so visibility must
+// match tag-insensitively for Ollama — and stay exact for everyone else.
+func TestModelListed(t *testing.T) {
+	cases := []struct {
+		name      string
+		available []string
+		want      string
+		provider  Provider
+		listed    bool
+	}{
+		{"ollama bare want, tagged list", []string{"llama3.2:latest"}, "llama3.2", ProviderOllama, true},
+		{"ollama tagged want, bare list", []string{"llama3.2"}, "llama3.2:latest", ProviderOllama, true},
+		{"ollama exact tagged", []string{"llama3.2:latest"}, "llama3.2:latest", ProviderOllama, true},
+		{"ollama different tag does not match", []string{"llama3.2:latest"}, "llama3.2:1b", ProviderOllama, false},
+		{"ollama absent", []string{"qwen2.5:latest"}, "llama3.2", ProviderOllama, false},
+		// The :latest normalization must NOT leak to other providers.
+		{"openai stays exact", []string{"gpt-5:latest"}, "gpt-5", ProviderOpenAI, false},
+		{"anthropic exact match", []string{"claude-opus-4-8"}, "claude-opus-4-8", ProviderAnthropic, true},
+	}
+	for _, tc := range cases {
+		if got := modelListed(tc.available, tc.want, tc.provider); got != tc.listed {
+			t.Errorf("%s: modelListed(%v, %q, %s) = %v, want %v",
+				tc.name, tc.available, tc.want, tc.provider, got, tc.listed)
+		}
+	}
+}
+
+// End-to-end: a bare Ollama model name against a :latest-tagged list must
+// come back visible with no issues, so the dot is green rather than amber.
+func TestProbe_Ollama_BareNameMatchesLatest(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"data":[{"id":"llama3.2:latest"},{"id":"qwen2.5:latest"}]}`)
+	}))
+	t.Cleanup(srv.Close)
+
+	got := Probe(context.Background(), Config{
+		BaseURL:          srv.URL,
+		Model:            "llama3.2",
+		ProviderOverride: ProviderOllama,
+	})
+	if !got.EndpointReachable || !got.AuthOK || !got.ModelVisible {
+		t.Fatalf("unexpected probe result: %+v", got)
+	}
+	if len(got.Issues) != 0 {
+		t.Fatalf("bare Ollama name should match :latest cleanly, got issues: %+v", got.Issues)
 	}
 }
 

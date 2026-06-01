@@ -39,7 +39,7 @@ func New(baseURL, apiKey, model string) Client {
 // if you point at api.openai.com with an o-series or gpt-5 model, you get
 // reasoning streaming for free.
 func NewWithConfig(cfg Config) Client {
-	provider := detectProvider(cfg.BaseURL, cfg.ProviderOverride)
+	provider := resolveProvider(cfg)
 	// openai-auth must branch BEFORE the API-key check: this kind
 	// authenticates via a bearer token loaded from the OAuth store,
 	// not from cfg.APIKey, so the configRequiresAPIKey path would
@@ -57,10 +57,13 @@ func NewWithConfig(cfg Config) Client {
 	if cfg.APIKey == "" && configRequiresAPIKey(cfg, provider) {
 		return newErroredAdapter(cfg, provider, missingAPIKeyError(provider))
 	}
-	if provider == ProviderAnthropic || isAnthropicModel(cfg.Model) {
+	// resolveProvider already folded the claude-*/gemini-* model-tag
+	// fallback into provider, so a bare equality check covers the
+	// gateway-fronted case too.
+	if provider == ProviderAnthropic {
 		return newAnthropicAdapter(cfg)
 	}
-	if provider == ProviderGemini || isGeminiModel(cfg.Model) {
+	if provider == ProviderGemini {
 		return newGeminiAdapter(cfg)
 	}
 	if usesResponsesAPIWithProvider(cfg, provider) {

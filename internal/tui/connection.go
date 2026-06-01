@@ -1,11 +1,6 @@
 package tui
 
 import (
-	"net/http"
-	"strings"
-	"time"
-
-	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
 
@@ -15,11 +10,11 @@ import (
 // Until the first probe returns we render a muted dot so the splash
 // isn't misleading.
 //
-// connDegraded is reserved for future router-health plumbing —
-// when the multi-provider router demotes a candidate but the
-// endpoint is still reachable. No code paths emit it yet; the
-// constant exists so the rendering path is ready when that
-// plumbing lands.
+// connDegraded means the endpoint is reachable and the key is valid but
+// the active diagnostics flagged something non-fatal — most often the
+// configured model wasn't visible in the provider's model list. The
+// connection works; only the model selection is in question. Emitted by
+// probeConnectionState (commands.go).
 type connState int
 
 const (
@@ -28,28 +23,6 @@ const (
 	connDegraded
 	connDown
 )
-
-// connectionStatusMsg is delivered to the Model.Update loop when a probe
-// finishes.
-type connectionStatusMsg struct{ state connState }
-
-// pingEndpoint runs as a tea.Cmd: GET <baseURL>/models with a short timeout.
-// Returns connOK on 2xx, connDown on anything else (including timeout).
-func pingEndpoint(baseURL string) tea.Cmd {
-	return func() tea.Msg {
-		client := &http.Client{Timeout: 2 * time.Second}
-		url := strings.TrimRight(baseURL, "/") + "/models"
-		resp, err := client.Get(url)
-		if err != nil {
-			return connectionStatusMsg{state: connDown}
-		}
-		defer resp.Body.Close()
-		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-			return connectionStatusMsg{state: connOK}
-		}
-		return connectionStatusMsg{state: connDown}
-	}
-}
 
 // renderConnDot returns a single styled `●` whose color reflects state.
 // Maps to the canonical state palette: Success (green) when healthy,

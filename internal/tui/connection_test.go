@@ -1,43 +1,47 @@
 package tui
 
 import (
-	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/yottadynamics/yottacode/internal/adapter"
 )
 
-func TestPingEndpoint_OK(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"data":[]}`))
-	}))
-	t.Cleanup(srv.Close)
-
-	cmd := pingEndpoint(srv.URL)
-	msg := cmd().(connectionStatusMsg)
-	if msg.state != connOK {
-		t.Errorf("state = %v, want connOK", msg.state)
+// probeConnectionState maps an active probe to the dot color. The key
+// rule for production: a reachable, authenticated endpoint whose only
+// problem is model visibility is degraded (amber), NOT down (red) — that
+// was the false-red the Anthropic/Gemini/Ollama probes used to trip.
+func TestProbeConnectionState(t *testing.T) {
+	cases := []struct {
+		name string
+		in   adapter.ProbeResult
+		want connState
+	}{
+		{
+			name: "reachable+authed+clean",
+			in:   adapter.ProbeResult{EndpointReachable: true, AuthOK: true},
+			want: connOK,
+		},
+		{
+			name: "reachable+authed+model-not-visible",
+			in:   adapter.ProbeResult{EndpointReachable: true, AuthOK: true, Issues: []string{`model "x" not listed by /models`}},
+			want: connDegraded,
+		},
+		{
+			name: "reachable+auth-failed",
+			in:   adapter.ProbeResult{EndpointReachable: true, AuthOK: false, Issues: []string{"authentication failed (HTTP 401)"}},
+			want: connDown,
+		},
+		{
+			name: "unreachable",
+			in:   adapter.ProbeResult{EndpointReachable: false, Issues: []string{"endpoint unreachable"}},
+			want: connDown,
+		},
 	}
-}
-
-func TestPingEndpoint_NonOKStatus(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Error(w, "boom", http.StatusInternalServerError)
-	}))
-	t.Cleanup(srv.Close)
-
-	msg := pingEndpoint(srv.URL)().(connectionStatusMsg)
-	if msg.state != connDown {
-		t.Errorf("state = %v, want connDown", msg.state)
-	}
-}
-
-func TestPingEndpoint_Unreachable(t *testing.T) {
-	// Use a bogus address that should fail to connect quickly.
-	msg := pingEndpoint("http://127.0.0.1:1")().(connectionStatusMsg)
-	if msg.state != connDown {
-		t.Errorf("state = %v, want connDown for unreachable host", msg.state)
+	for _, tc := range cases {
+		if got := probeConnectionState(tc.in); got != tc.want {
+			t.Errorf("%s: probeConnectionState = %v, want %v", tc.name, got, tc.want)
+		}
 	}
 }
 
