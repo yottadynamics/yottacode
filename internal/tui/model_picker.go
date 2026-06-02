@@ -276,9 +276,9 @@ func (m Model) updateModelPicker(msg tea.KeyMsg) (Model, tea.Cmd) {
 		// model.
 		if isPerModelKeyProvider(p.provider) {
 			if _, ok := p.configuredModels()[chosen]; !ok {
-				m.appendLine(styleAuto.Render(fmt.Sprintf(
-					"[model] %q has no API key configured — run /provider add to register a new profile (NVIDIA keys are minted per-model at build.nvidia.com)",
-					chosen)))
+				m.appendLine(styleAuto.Render(statusLine("model", fmt.Sprintf(
+					"%q has no API key configured — run /provider add to register a new profile (NVIDIA keys are minted per-model at build.nvidia.com)",
+					chosen))))
 				return m, nil
 			}
 		}
@@ -348,7 +348,7 @@ func (m Model) commitModelChoice(chosen string, window int) (Model, tea.Cmd) {
 
 	updated, err := providerops.SetActiveModel(cfg, chosen)
 	if err != nil {
-		m.appendLine(styleError.Render(fmt.Sprintf("[model] %v", err)))
+		m.appendLine(styleError.Render(statusLine("model", fmt.Sprintf("%v", err))))
 		return m, nil
 	}
 	// Persist the provider-reported context window (if any) to the
@@ -358,11 +358,11 @@ func (m Model) commitModelChoice(chosen string, window int) (Model, tea.Cmd) {
 	// No-op when the provider reported no window.
 	_ = catalog.UpsertWindow(chosen, window)
 	if err := config.Validate(updated); err != nil {
-		m.appendLine(styleError.Render(fmt.Sprintf("[model] config invalid: %v", err)))
+		m.appendLine(styleError.Render(statusLine("model", fmt.Sprintf("config invalid: %v", err))))
 		return m, nil
 	}
 	if err := writeConfig(updated); err != nil {
-		m.appendLine(styleError.Render(fmt.Sprintf("[model] write config: %v", err)))
+		m.appendLine(styleError.Render(statusLine("model", fmt.Sprintf("write config: %v", err))))
 		return m, nil
 	}
 	// Refresh the in-memory config so the status bar + auto-summarize
@@ -392,7 +392,7 @@ func (m Model) commitModelChoice(chosen string, window int) (Model, tea.Cmd) {
 	m.cfg.Adapter = ad
 	m.providerProfile = ad.Profile()
 	m, _ = reloadMemoryNow(m, "")
-	m.appendLine(styleAuto.Render(fmt.Sprintf("[model] default → %s", chosen)))
+	m.appendLine(styleAuto.Render(statusLine("model", fmt.Sprintf("default → %s", chosen))))
 	cmds := []tea.Cmd{runProviderProbe(m.parentCtx, m.adapterConfig(chosen, m.baseURL), false)}
 	// When the picker's list-models row carried no window for this model
 	// (NVIDIA NIM, thin proxies), discover it in the background from the

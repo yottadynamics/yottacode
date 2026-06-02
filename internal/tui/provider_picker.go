@@ -625,7 +625,7 @@ func (m Model) persistProviderAdd(picked wizard.CatalogEntry, name, baseURL, api
 		// the persist on success or drops the stash on failure.
 		cfg := loadConfigForCommand(m)
 		if cfg.FindProvider(add.Name) != nil {
-			m.appendLine(styleError.Render(fmt.Sprintf("[provider] provider %q already exists; remove it first", add.Name)))
+			m.appendLine(styleError.Render(statusLine("provider", fmt.Sprintf("provider %q already exists; remove it first", add.Name))))
 			return m, nil
 		}
 		m.providerPickerOpen = false
@@ -635,14 +635,14 @@ func (m Model) persistProviderAdd(picked wizard.CatalogEntry, name, baseURL, api
 			becomesActive: cfg.Active.Provider == "",
 			fromPicker:    true,
 		}
-		m.appendLine(styleAuto.Render("[provider] openai-auth: starting browser sign-in…"))
+		m.appendLine(styleAuto.Render(statusLine("provider", "openai-auth: starting browser sign-in…")))
 		m.appendLine(styleAuto.Render(fmt.Sprintf("(profile %q will be saved after sign-in completes)", add.Name)))
 		return m, startInlineOpenAIAuthLoginCmd(m.parentCtx)
 	}
 	if picked.Kind == "copilot" {
 		cfg := loadConfigForCommand(m)
 		if cfg.FindProvider(add.Name) != nil {
-			m.appendLine(styleError.Render(fmt.Sprintf("[provider] provider %q already exists; remove it first", add.Name)))
+			m.appendLine(styleError.Render(statusLine("provider", fmt.Sprintf("provider %q already exists; remove it first", add.Name))))
 			return m, nil
 		}
 		m.providerPickerOpen = false
@@ -678,7 +678,7 @@ func commitProviderAddNow(m *Model, add providerops.AddProvider, apiKey string, 
 	cfg := loadConfigForCommand(*m)
 	updated, err := providerops.Add(cfg, add)
 	if err != nil {
-		m.appendLine(styleError.Render(fmt.Sprintf("[provider] %v", err)))
+		m.appendLine(styleError.Render(statusLine("provider", fmt.Sprintf("%v", err))))
 		return cfg, false, false
 	}
 	// Always switch to the newly added provider — if you're adding one,
@@ -689,11 +689,11 @@ func commitProviderAddNow(m *Model, add providerops.AddProvider, apiKey string, 
 	}
 	becameActive := true
 	if err := config.Validate(updated); err != nil {
-		m.appendLine(styleError.Render(fmt.Sprintf("[provider] config invalid: %v", err)))
+		m.appendLine(styleError.Render(statusLine("provider", fmt.Sprintf("config invalid: %v", err))))
 		return cfg, false, false
 	}
 	if err := writeConfig(updated); err != nil {
-		m.appendLine(styleError.Render(fmt.Sprintf("[provider] write config: %v", err)))
+		m.appendLine(styleError.Render(statusLine("provider", fmt.Sprintf("write config: %v", err))))
 		return cfg, false, false
 	}
 	if apiKey != "" && add.APIKeyEnv != "" {
@@ -702,7 +702,7 @@ func commitProviderAddNow(m *Model, add providerops.AddProvider, apiKey string, 
 		// adapter probe right after) reads from os.Getenv.
 		_ = os.Setenv(add.APIKeyEnv, apiKey)
 		if err := writeAPIKeyToEnv(add.APIKeyEnv, apiKey); err != nil {
-			m.appendLine(styleError.Render(fmt.Sprintf("[provider] config saved, but writing .env failed: %v", err)))
+			m.appendLine(styleError.Render(statusLine("provider", fmt.Sprintf("config saved, but writing .env failed: %v", err))))
 		}
 	}
 	if err := ensureGitignoreCoversDotEnv(m.cwd); err != nil {
@@ -718,7 +718,7 @@ func commitProviderAddNow(m *Model, add providerops.AddProvider, apiKey string, 
 	if identity == "" {
 		identity = picked.Kind
 	}
-	m.appendLine(styleAuto.Render(fmt.Sprintf("[provider] added %q (%s)", add.Name, identity)))
+	m.appendLine(styleAuto.Render(statusLine("provider", fmt.Sprintf("added %q (%s)", add.Name, identity))))
 	if cfgPath, err := config.DefaultPath(); err == nil {
 		m.appendLine(styleAuto.Render(fmt.Sprintf("(provider config written to %s)", cfgPath)))
 	}
@@ -758,15 +758,15 @@ func (m Model) commitProviderUse() (Model, tea.Cmd) {
 	cfg := loadConfigForCommand(m)
 	updated, err := providerops.SetActive(cfg, chosen.Name)
 	if err != nil {
-		m.appendLine(styleError.Render(fmt.Sprintf("[provider] %v", err)))
+		m.appendLine(styleError.Render(statusLine("provider", fmt.Sprintf("%v", err))))
 		return m, nil
 	}
 	if err := config.Validate(updated); err != nil {
-		m.appendLine(styleError.Render(fmt.Sprintf("[provider] config invalid: %v", err)))
+		m.appendLine(styleError.Render(statusLine("provider", fmt.Sprintf("config invalid: %v", err))))
 		return m, nil
 	}
 	if err := writeConfig(updated); err != nil {
-		m.appendLine(styleError.Render(fmt.Sprintf("[provider] write config: %v", err)))
+		m.appendLine(styleError.Render(statusLine("provider", fmt.Sprintf("write config: %v", err))))
 		return m, nil
 	}
 	m.providerPickerOpen = false

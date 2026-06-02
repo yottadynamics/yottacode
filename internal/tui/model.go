@@ -1883,9 +1883,9 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if detail == "" {
 				detail = "no window reported"
 			}
-			m.appendLine(styleAuto.Render(fmt.Sprintf(
-				"[model] couldn't auto-detect context window for %s (%s) — using %s; set context_window in config to override",
-				msg.model, detail, formatTokens(m.contextWindow()))))
+			m.appendLine(styleAuto.Render(statusLine("model", fmt.Sprintf(
+				"couldn't auto-detect context window for %s (%s) — using %s; set context_window in config to override",
+				msg.model, detail, formatTokens(m.contextWindow())))))
 			return m, nil
 		}
 		// Persist the discovered window to the file-backed store overlay
@@ -1896,11 +1896,11 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// model and never trips that validation. ResolveWindow reads the
 		// store (via WindowFor), so the bar/threshold pick it up immediately.
 		if err := catalog.UpsertWindow(msg.model, msg.window); err != nil {
-			m.appendLine(styleError.Render(fmt.Sprintf("[model] save context window: %v", err)))
+			m.appendLine(styleError.Render(statusLine("model", fmt.Sprintf("save context window: %v", err))))
 			return m, nil
 		}
-		m.appendLine(styleAuto.Render(fmt.Sprintf(
-			"[model] detected context window for %s: %s (cached)", msg.model, formatTokens(msg.window))))
+		m.appendLine(styleAuto.Render(statusLine("model", fmt.Sprintf(
+			"detected context window for %s: %s (cached)", msg.model, formatTokens(msg.window)))))
 		return m, nil
 
 	case summaryDoneMsg:
