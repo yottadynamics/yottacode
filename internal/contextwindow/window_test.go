@@ -34,42 +34,6 @@ func TestEstimateTokens_CountsToolCalls(t *testing.T) {
 	}
 }
 
-func TestWindowFor_KnownPrefixes(t *testing.T) {
-	cases := []struct {
-		model string
-		want  int
-	}{
-		{"gpt-4o", 128_000},
-		{"gpt-4o-mini", 128_000},
-		{"gpt-5", 400_000},
-		{"o1-pro", 200_000},
-		{"claude-sonnet-4-5", 200_000},
-		{"claude-opus-4-7", 1_000_000},
-		{"qwen3.5:latest", 128_000},
-		{"nvidia/nemotron-3-super-120b-a12b", 262_144},
-		{"nvidia/nemotron-4-340b-instruct", 262_144},
-		{"nvidia/llama-3.1-nemotron-70b-instruct", 128_000},
-		{"nvidia/mistral-some-other", 128_000},
-	}
-	for _, c := range cases {
-		if got := WindowFor(c.model, 99); got != c.want {
-			t.Errorf("WindowFor(%q) = %d, want %d", c.model, got, c.want)
-		}
-	}
-}
-
-func TestWindowFor_UnknownReturnsDefault(t *testing.T) {
-	if got := WindowFor("totally-made-up:7b", 64_000); got != 64_000 {
-		t.Errorf("unknown model should return default 64000, got %d", got)
-	}
-}
-
-func TestWindowFor_EmptyModelReturnsDefault(t *testing.T) {
-	if got := WindowFor("", 32_000); got != 32_000 {
-		t.Errorf("empty model should return default, got %d", got)
-	}
-}
-
 func TestEstimateText_EmptyAndRough(t *testing.T) {
 	if got := EstimateText(""); got != 0 {
 		t.Errorf("empty string = %d, want 0", got)
@@ -120,8 +84,8 @@ func TestEstimateToolSchemas_Empty(t *testing.T) {
 
 func TestSplitMessages_SeparatesSystemFromConversation(t *testing.T) {
 	msgs := []adapter.Message{
-		{Role: adapter.RoleSystem, Content: strings.Repeat("s", 400)},  // ~100 tokens
-		{Role: adapter.RoleUser, Content: strings.Repeat("u", 800)},    // ~200 tokens
+		{Role: adapter.RoleSystem, Content: strings.Repeat("s", 400)},    // ~100 tokens
+		{Role: adapter.RoleUser, Content: strings.Repeat("u", 800)},      // ~200 tokens
 		{Role: adapter.RoleAssistant, Content: strings.Repeat("a", 400)}, // ~100 tokens
 	}
 	sys, convo := SplitMessages(msgs)

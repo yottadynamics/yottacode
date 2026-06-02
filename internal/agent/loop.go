@@ -93,6 +93,38 @@ type LoopConfig struct {
 	// additive instructions ("also check the tests") without
 	// cancelling the active turn.
 	UserMessages <-chan string
+
+	// Compaction, when non-nil, enables in-loop history compaction:
+	// once the running history approaches Window, the loop summarizes
+	// its older middle messages in place and continues with a compacted
+	// history. This is the ONLY context management a subagent has — it
+	// runs Turn directly rather than through the TUI's turn-boundary
+	// summarizer, so without this a long subagent accumulates until the
+	// provider rejects the request. nil disables it; the TUI and oneshot
+	// leave it unset and manage context at their own boundaries.
+	Compaction *CompactionConfig
+}
+
+// CompactionConfig parameterizes in-loop compaction (LoopConfig.Compaction).
+type CompactionConfig struct {
+	// Window is the model's context window in tokens. <=0 disables.
+	Window int
+	// Threshold is the fraction of Window at which compaction fires,
+	// checked at the top of each iteration. <=0 disables.
+	Threshold float64
+	// Summarizer streams the one-shot summary call. nil falls back to
+	// the loop's own Adapter (cache-safe routing can inject a cheaper
+	// model here).
+	Summarizer Streamer
+	// SummarizerWindow is the context window (tokens) of the Summarizer
+	// model. Under cache-safe routing the Summarizer is a cheaper model
+	// that may have a SMALLER window than the loop's own model, so the
+	// summary call's INPUT must be budgeted against whichever window is
+	// smaller — otherwise a middle sized to the (larger) loop window
+	// overflows the summarizer and the summary call fails, defeating
+	// compaction. 0 means "same as Window" (the summarizer is the loop's
+	// own adapter, so the windows match).
+	SummarizerWindow int
 }
 
 // CheckpointWriter is the slice of the checkpoint store the agent loop
@@ -225,6 +257,16 @@ func Turn(
 			Number: state.iteration,
 			Max:    effectiveCap,
 		}); err != nil {
+			return err
+		}
+
+		// Compact older history in place before the next model call when
+		// it approaches the window. The top of the iteration is a clean
+		// point — every prior tool_use already has its matching
+		// tool_result appended — so the rewrite preserves pairing. No-op
+		// unless cfg.Compaction is set (subagents opt in; TUI/oneshot
+		// manage context themselves).
+		if err := maybeCompact(ctx, cfg, state.history, events); err != nil {
 			return err
 		}
 
@@ -367,6 +409,10 @@ func streamIteration(
 			Content: fmt.Sprintf(PlanModeAddendum, cfg.PlanMode.PlanFile, body),
 		}}, history...)
 	}
+	// Defensive normalization: never send two assistant turns in a row
+	// (Gemini rejects it; Claude 4.6+ treats it as prefill). No-op for an
+	// already-alternating history — see mergeAdjacentAssistant.
+	msgs = mergeAdjacentAssistant(msgs)
 	stream := cfg.Adapter.ChatStream(ctx, msgs, tools)
 
 	// Accumulate streamed content tokens into a buffer alongside the

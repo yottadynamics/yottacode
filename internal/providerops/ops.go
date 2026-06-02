@@ -232,6 +232,14 @@ func SetActiveModel(cfg config.Config, modelName string) (config.Config, error) 
 	return cfg, nil
 }
 
+// Note: discovered context windows are persisted to the file-backed window
+// store (catalog.UpsertWindow / ~/.yottacode/context-windows.json), not into
+// config.toml's provider models — auto-writing a non-default model there
+// could leave a free-form provider with a models list that excludes its own
+// default_model, invalidating the config. The per-model context_window in
+// config.toml remains a hand-set USER override (read by
+// config.ContextWindowOverride); nothing writes it programmatically.
+
 func validKind(k string) bool {
 	for _, v := range config.ValidKinds {
 		if v == k {

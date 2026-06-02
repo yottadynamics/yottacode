@@ -18,6 +18,30 @@ import (
 // once crossed, Error red once auto_threshold is crossed). The
 // legacy ▓ glyph rendered inconsistently across fonts; █ + ░ is the
 // chosen pair.
+
+func TestSummaryConverged(t *testing.T) {
+	cases := []struct {
+		name      string
+		tokens    int
+		window    int
+		threshold float64
+		want      bool
+	}{
+		{"under threshold converges", 40_000, 64_000, 0.85, true},
+		{"at threshold does not converge", 54_400, 64_000, 0.85, false},
+		{"over threshold does not converge", 81_000, 64_000, 0.85, false},
+		{"zero window converges (nothing to loop on)", 81_000, 0, 0.85, true},
+		{"disabled threshold (1.0) converges", 999_999, 64_000, 1.0, true},
+		{"disabled threshold (0) converges", 999_999, 64_000, 0, true},
+	}
+	for _, c := range cases {
+		if got := summaryConverged(c.tokens, c.window, c.threshold); got != c.want {
+			t.Errorf("%s: summaryConverged(%d, %d, %.2f) = %v, want %v",
+				c.name, c.tokens, c.window, c.threshold, got, c.want)
+		}
+	}
+}
+
 func TestRenderContextBar_BelowThreshold(t *testing.T) {
 	m := newTestModel(t)
 	m.fileCfg = config.Config{Context: config.ContextConfig{

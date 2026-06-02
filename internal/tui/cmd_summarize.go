@@ -14,6 +14,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/yottadynamics/yottacode/internal/adapter"
+	"github.com/yottadynamics/yottacode/internal/catalog"
 	"github.com/yottadynamics/yottacode/internal/config"
 	"github.com/yottadynamics/yottacode/internal/contextwindow"
 	"github.com/yottadynamics/yottacode/internal/session"
@@ -45,6 +46,17 @@ const maxRetainedToolTokens = 4096
 // truncated by the budget. Distinct from the inline summarize-time
 // truncation marker so an audit can tell the two apart.
 const compactionMarker = "…(truncated by compaction)"
+
+// summaryUserPreamble is a tiny synthetic user turn placed immediately
+// before the assistant summary in a compressed history. A history must not
+// begin (after the system prompt) with an assistant turn: Claude rejects a
+// messages array whose first entry isn't the user role, and Gemini requires
+// strict user-first alternation — only OpenAI-style backends (and NVIDIA
+// NIM) tolerate a leading assistant. The preamble makes the assistant
+// summary a valid reply for every provider, mirroring how the subagent
+// compaction path folds its summary into the task to the same end. Kept
+// terse so it costs almost nothing.
+const summaryUserPreamble = "Summarize our conversation so far so we can continue with bounded context."
 
 // summarizeInputSafety is the absolute token margin held back beyond
 // accounted-for overhead when budgeting the summarize input. Covers
@@ -125,8 +137,11 @@ func cmdSummarize(m Model, _ []string) (Model, tea.Cmd) {
 		return m, nil
 	}
 	m.summarizing = true
+	m.summarizeStart = time.Now()
 	m.appendLine(styleAuto.Render("[summarize] compressing session…"))
-	return m, m.summarizeCmd(false)
+	// Batch the spinner tick so the live summarizing row animates while
+	// the (multi-minute) compression runs between turns.
+	return m, tea.Batch(m.spinner.Tick, m.summarizeCmd(false))
 }
 
 // hasSummarizableHistory reports whether the session has enough
@@ -162,7 +177,7 @@ func (m Model) summarizeCmd(auto bool) tea.Cmd {
 	// Snapshot the window outside the goroutine so we still hold a
 	// stable view of model + fileCfg. Used to budget both the
 	// summarize input and the retained tail.
-	windowTokens := contextwindow.WindowFor(m.modelName, m.fileCfg.Context.DefaultWindow)
+	windowTokens := catalog.ResolveWindow(m.modelName, m.fileCfg.ContextWindowOverride(m.modelName), m.fileCfg.Context.DefaultWindow)
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(parentCtx, summarizeTimeout)
 		defer cancel()
@@ -380,12 +395,17 @@ func composeSummarizedHistory(history []adapter.Message, summary string, windowT
 	// Synthetic summary message — clearly labeled as a compression
 	// artifact so the model knows it isn't its own prior reply. Turn
 	// number is included so the user can correlate to a session
-	// transcript.
+	// transcript. A tiny synthetic user turn precedes it so the
+	// compressed history never opens (after the system prompt) with an
+	// assistant turn — invalid for Claude/Gemini (see summaryUserPreamble).
 	turnLabel := fmt.Sprintf("turn %d", len(userIdxs))
-	out = append(out, adapter.Message{
-		Role:    adapter.RoleAssistant,
-		Content: "[Session summary — compressed at " + turnLabel + "]\n\n" + summary,
-	})
+	out = append(out,
+		adapter.Message{Role: adapter.RoleUser, Content: summaryUserPreamble},
+		adapter.Message{
+			Role:    adapter.RoleAssistant,
+			Content: "[Session summary — compressed at " + turnLabel + "]\n\n" + summary,
+		},
+	)
 
 	if len(userIdxs) == 0 {
 		return out
@@ -566,7 +586,7 @@ func (m Model) summarizeDeps() summarizeDeps {
 // fits.
 func loadSummarizedSession(deps summarizeDeps, loaded *session.Session) (*session.Session, string, string, error) {
 	tokens := contextwindow.EstimateTokens(loaded.Messages)
-	window := contextwindow.WindowFor(loaded.Model, deps.fileCfg.Context.DefaultWindow)
+	window := catalog.ResolveWindow(loaded.Model, deps.fileCfg.ContextWindowOverride(loaded.Model), deps.fileCfg.Context.DefaultWindow)
 	warnThr := deps.fileCfg.Context.WarnThreshold
 	if warnThr <= 0 || warnThr > 1 {
 		warnThr = 0.65
@@ -606,7 +626,7 @@ func findOrComputeSummary(deps summarizeDeps, sess *session.Session) (string, st
 	}
 	ctx, cancel := context.WithTimeout(deps.ctx, summarizeTimeout)
 	defer cancel()
-	windowTokens := contextwindow.WindowFor(sess.Model, deps.fileCfg.Context.DefaultWindow)
+	windowTokens := catalog.ResolveWindow(sess.Model, deps.fileCfg.ContextWindowOverride(sess.Model), deps.fileCfg.Context.DefaultWindow)
 	summary, err := runSummarization(ctx, deps.adapter, sess.Messages, windowTokens)
 	if err != nil {
 		return "", "", fmt.Errorf("on-the-fly summarize: %w", err)
@@ -724,7 +744,8 @@ func (m *Model) startAutoSummarize(pct float64) tea.Cmd {
 		return nil
 	}
 	m.summarizing = true
+	m.summarizeStart = time.Now()
 	m.appendLine(styleWatermarkAlert.Render(
 		fmt.Sprintf("⚡ Context at %d%% — auto-summarizing before next turn…", int(pct*100))))
-	return m.summarizeCmd(true)
+	return tea.Batch(m.spinner.Tick, m.summarizeCmd(true))
 }

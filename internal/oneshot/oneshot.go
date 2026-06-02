@@ -328,6 +328,9 @@ func Run(ctx context.Context, opts cli.ChatOptions, prompt string) error {
 		SmartModel:      oneshotRouterSmartModel(routerAdapters),
 		RouteAuto:       fileCfg.Router.RoutingAuto(),
 		ModelResolver:   oneshotRouterResolve(routerAdapters),
+		ResolveWindow: func(model string) int {
+			return catalog.ResolveWindow(model, fileCfg.ContextWindowOverride(model), fileCfg.Context.DefaultWindow)
+		},
 	}
 	reg.Register(agentTool)
 	// Even though oneshot rejects background spawns (AllowBackground=

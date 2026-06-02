@@ -82,9 +82,9 @@ func modelShortcutSwitch(m Model, newTag string) (Model, tea.Cmd) {
 	m.sess.Model = newTag
 	m, _ = reloadMemoryNow(m, "")
 	if switchedProfile != "" && switchedProfile != strings.TrimSpace(m.provider) {
-		m.appendLine(styleAuto.Render(fmt.Sprintf("[model] switched to %s (provider: %s)", newTag, switchedProfile)))
+		m.appendLine(styleAuto.Render(statusLine("model", fmt.Sprintf("switched to %s (provider: %s)", newTag, switchedProfile))))
 	} else {
-		m.appendLine(styleAuto.Render(fmt.Sprintf("[model] switched to %s", newTag)))
+		m.appendLine(styleAuto.Render(statusLine("model", fmt.Sprintf("switched to %s", newTag))))
 	}
 	return m, runProviderProbe(m.parentCtx, m.adapterConfig(newTag, newBaseURL), false)
 }

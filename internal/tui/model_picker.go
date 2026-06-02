@@ -266,7 +266,8 @@ func (m Model) updateModelPicker(msg tea.KeyMsg) (Model, tea.Cmd) {
 		if !p.loaded || len(p.entries) == 0 {
 			return m, nil
 		}
-		chosen := p.entries[p.cursor].ID
+		chosenEntry := p.entries[p.cursor]
+		chosen := chosenEntry.ID
 		// On per-model-key providers (NVIDIA NIM), reject Enter on
 		// any model that doesn't have a configured profile. Without
 		// the gate the user would commit, the adapter would dispatch
@@ -275,13 +276,13 @@ func (m Model) updateModelPicker(msg tea.KeyMsg) (Model, tea.Cmd) {
 		// model.
 		if isPerModelKeyProvider(p.provider) {
 			if _, ok := p.configuredModels()[chosen]; !ok {
-				m.appendLine(styleAuto.Render(fmt.Sprintf(
-					"[model] %q has no API key configured — run /provider add to register a new profile (NVIDIA keys are minted per-model at build.nvidia.com)",
-					chosen)))
+				m.appendLine(styleAuto.Render(statusLine("model", fmt.Sprintf(
+					"%q has no API key configured — run /provider add to register a new profile (NVIDIA keys are minted per-model at build.nvidia.com)",
+					chosen))))
 				return m, nil
 			}
 		}
-		return m.commitModelChoice(chosen)
+		return m.commitModelChoice(chosen, chosenEntry.ContextWindow)
 	}
 	return m, nil
 }
@@ -312,7 +313,11 @@ func (m Model) handleModelPickerLoaded(msg modelPickerLoadedMsg) (Model, tea.Cmd
 // commitModelChoice persists the user's selection through providerops,
 // closes the picker, and refreshes the active adapter + connection
 // probe so the next turn uses the new model.
-func (m Model) commitModelChoice(chosen string) (Model, tea.Cmd) {
+// window is the chosen model's context window as reported by the
+// provider's list-models endpoint (0 when the provider reported none);
+// it's persisted onto the active provider so the watermark + summarize
+// threshold size against the real window instead of a built-in guess.
+func (m Model) commitModelChoice(chosen string, window int) (Model, tea.Cmd) {
 	cfg := loadConfigForCommand(m)
 
 	// Capture the picker's currently-displayed provider profile
@@ -343,17 +348,28 @@ func (m Model) commitModelChoice(chosen string) (Model, tea.Cmd) {
 
 	updated, err := providerops.SetActiveModel(cfg, chosen)
 	if err != nil {
-		m.appendLine(styleError.Render(fmt.Sprintf("[model] %v", err)))
+		m.appendLine(styleError.Render(statusLine("model", fmt.Sprintf("%v", err))))
 		return m, nil
 	}
+	// Persist the provider-reported context window (if any) to the
+	// file-backed window store, NOT config.toml — writing it into the
+	// provider's models list could exclude the default_model and invalidate
+	// the config. The store is keyed by model and read by ResolveWindow.
+	// No-op when the provider reported no window.
+	_ = catalog.UpsertWindow(chosen, window)
 	if err := config.Validate(updated); err != nil {
-		m.appendLine(styleError.Render(fmt.Sprintf("[model] config invalid: %v", err)))
+		m.appendLine(styleError.Render(statusLine("model", fmt.Sprintf("config invalid: %v", err))))
 		return m, nil
 	}
 	if err := writeConfig(updated); err != nil {
-		m.appendLine(styleError.Render(fmt.Sprintf("[model] write config: %v", err)))
+		m.appendLine(styleError.Render(statusLine("model", fmt.Sprintf("write config: %v", err))))
 		return m, nil
 	}
+	// Refresh the in-memory config so the status bar + auto-summarize
+	// threshold pick up a just-persisted per-model context_window
+	// immediately (otherwise m.fileCfg stays stale until the next
+	// session and the window override looks like a no-op live).
+	m.fileCfg = updated
 	m.modelPickerOpen = false
 	m.modelPicker = nil
 	// Adopt the picker's provider URL + key into the running session
@@ -376,8 +392,95 @@ func (m Model) commitModelChoice(chosen string) (Model, tea.Cmd) {
 	m.cfg.Adapter = ad
 	m.providerProfile = ad.Profile()
 	m, _ = reloadMemoryNow(m, "")
-	m.appendLine(styleAuto.Render(fmt.Sprintf("[model] default → %s", chosen)))
-	return m, runProviderProbe(m.parentCtx, m.adapterConfig(chosen, m.baseURL), false)
+	m.appendLine(styleAuto.Render(statusLine("model", fmt.Sprintf("default → %s", chosen))))
+	cmds := []tea.Cmd{runProviderProbe(m.parentCtx, m.adapterConfig(chosen, m.baseURL), false)}
+	// When the picker's list-models row carried no window for this model
+	// (NVIDIA NIM, thin proxies), discover it in the background from the
+	// live API and persist on return — non-blocking so the picker closes
+	// instantly. Gated through shouldProbeWindow so this site matches the
+	// startup + provider-switch triggers exactly: only openai-compatible
+	// kinds are probeable. Without the kind gate, picking a model on an
+	// openai-auth / copilot / ollama provider (whose catalog rows carry no
+	// window, so window<=0) would fire an overflow probe — a 300K-token
+	// POST /chat/completions — against an endpoint that either speaks a
+	// different API shape (the ChatGPT/Copilot backends) or shouldn't be
+	// overflow-probed at all. shouldProbeWindow also subsumes the window<=0
+	// check: a just-persisted window (window>0, written above) sets the
+	// override, so ContextWindowOverride!=0 and the probe is skipped.
+	if m.shouldProbeWindow(pickerProv.Kind, chosen) {
+		if m.probedModels == nil {
+			m.probedModels = map[string]bool{}
+		}
+		m.probedModels[chosen] = true
+		cmds = append(cmds, discoverWindowCmd(m.parentCtx, pickerProv, m.apiKey, chosen))
+	}
+	return m, tea.Batch(cmds...)
+}
+
+// modelWindowProbedMsg carries the result of a background context-window
+// discovery (live list-models, then overflow probe) kicked off by a model
+// or provider switch. window is 0 when neither source determined a limit
+// (left to default_window).
+type modelWindowProbedMsg struct {
+	provider string
+	model    string
+	window   int
+	detail   string // human-readable: which source answered, or why none did
+}
+
+// discoverWindowCmd resolves a model's context window from the provider's
+// live API off the UI thread (catalog.DiscoverContextWindow: list-models
+// first, overflow probe as fallback) and reports it as a
+// modelWindowProbedMsg. No hardcoded model table — the window is read
+// from the deployment, which is the only place it's authoritative.
+func discoverWindowCmd(ctx context.Context, prov config.Provider, apiKey, model string) tea.Cmd {
+	return func() tea.Msg {
+		w, detail := catalog.DiscoverContextWindow(ctx, prov, apiKey, model)
+		return modelWindowProbedMsg{
+			provider: prov.Name,
+			model:    model,
+			window:   w,
+			detail:   detail,
+		}
+	}
+}
+
+// maybeProbeActiveModelWindowCmd returns a background command that
+// discovers the active model's context window, or nil when there's
+// nothing to do. This is what makes window discovery automatic: a fresh
+// session that boots straight into a windowless model (NVIDIA NIM, custom
+// OpenAI-compatible proxies) self-corrects from default_window to the
+// real, deployment-reported window without the user running any command.
+// It's a no-op once the window is known, so it runs at most once per
+// model — the result is persisted and read back on the next launch.
+//
+// Gated (via shouldProbeWindow) to: a per-model context_window override is
+// NOT already set, and the active provider is a kind live discovery speaks
+// — openai-compatible (list-models / overflow probe) or ollama (/api/show).
+// Anthropic/Gemini carry windows in the curated catalog and use different
+// APIs, so they're skipped.
+func (m Model) maybeProbeActiveModelWindowCmd() tea.Cmd {
+	if strings.TrimSpace(m.baseURL) == "" {
+		return nil
+	}
+	prov := m.fileCfg.FindProvider(m.fileCfg.Active.Provider)
+	if prov == nil || !m.shouldProbeWindow(prov.Kind, m.modelName) {
+		return nil
+	}
+	return discoverWindowCmd(m.parentCtx, *prov, m.apiKey, m.modelName)
+}
+
+// shouldProbeWindow reports whether a model served by a provider of the
+// given kind needs background window discovery: a discoverable kind
+// (openai-compatible via list-models/overflow probe, or ollama via
+// /api/show — see catalog.DiscoverContextWindow), no window override saved
+// yet, and not already attempted this session. Shared by the startup,
+// picker, and provider-switch trigger sites so they gate identically.
+func (m Model) shouldProbeWindow(kind, model string) bool {
+	return (kind == "openai-compatible" || kind == "ollama") &&
+		strings.TrimSpace(model) != "" &&
+		m.fileCfg.ContextWindowOverride(model) == 0 &&
+		!m.probedModels[model]
 }
 
 // renderModelPicker draws the overlay. Drop-down feel: provider tab
@@ -515,9 +618,9 @@ func renderProviderTabStrip(p *modelPickerState) string {
 // renderPickerRow draws one model entry through the shared
 // menuItemOpts helper. Layout:
 //
-//	  ❯ Claude Sonnet 4.6           thinking · vision · pdf · 200k ctx · current
-//	    Claude Haiku 4.5            thinking · 200k ctx
-//	    nvidia/llama-3.1-…          —                          (disabled — needs API key)
+//	❯ Claude Sonnet 4.6           thinking · vision · pdf · 200k ctx · current
+//	  Claude Haiku 4.5            thinking · 200k ctx
+//	  nvidia/llama-3.1-…          —                          (disabled — needs API key)
 //
 // Long names are truncated to LabelWidth with `…` so the desc column
 // lines up regardless of name length. Capability chips show only

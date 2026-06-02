@@ -6,14 +6,33 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/yottadynamics/yottacode/internal/catalog"
 	"github.com/yottadynamics/yottacode/internal/config"
+	"github.com/yottadynamics/yottacode/internal/dotenv"
 	"github.com/yottadynamics/yottacode/internal/providerops"
 )
+
+// loadEnvFiles applies ~/.yottacode/.env and <cwd>/.yottacode/.env into
+// the process environment (already-set vars win) so CLI commands that
+// read provider keys via os.Getenv — like `model fetch`, whose probe
+// needs auth — work the same as the TUI, which loads them via
+// cli.Resolve. Silent on failure; a missing/malformed .env is not fatal.
+func loadEnvFiles() {
+	var paths []string
+	if home, err := os.UserHomeDir(); err == nil {
+		paths = append(paths, filepath.Join(home, ".yottacode", ".env"))
+	}
+	if cwd, err := os.Getwd(); err == nil {
+		paths = append(paths, filepath.Join(cwd, ".yottacode", ".env"))
+	}
+	_, _ = dotenv.LoadAndApply(paths...)
+}
 
 // printAPIKeyStatus writes a one-line "API key" status to out for
 // the given provider: ✔ when the env var is set, ✘ when it's
@@ -46,6 +65,7 @@ func newModelCmd() *cobra.Command {
 		newModelListCmd(),
 		newModelUseCmd(),
 		newModelFetchCmd(),
+		newModelProbeWindowsCmd(),
 	)
 	return cmd
 }
@@ -158,11 +178,14 @@ func newModelUseCmd() *cobra.Command {
 
 func newModelFetchCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "fetch [PROVIDER]",
+		Use:   "fetch [PROVIDER] [MODEL]",
 		Short: "Hit the live /models endpoint for a provider and print the merged list",
-		Long: `Without an argument, fetches the active provider. Useful for verifying
-auth and discovering new models the upstream has shipped.`,
-		Args: cobra.MaximumNArgs(1),
+		Long: `Without arguments, fetches the active provider and probes the active
+model's context window when /models doesn't report one. Pass a PROVIDER to
+target another configured provider, and a MODEL to probe a specific model
+(defaults to the active model for the active provider, else the provider's
+default model).`,
+		Args: cobra.MaximumNArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg, err := config.LoadDefault()
 			if err != nil {
@@ -179,8 +202,23 @@ auth and discovering new models the upstream has shipped.`,
 			if p == nil {
 				return fmt.Errorf("provider %q not configured", name)
 			}
+			// Pick the model to probe for a window: an explicit MODEL arg wins;
+			// otherwise the active model when this is the active provider (the
+			// model you're actually running), else the provider's default. This
+			// avoids probing the wrong model when you've switched models under
+			// the same provider (e.g. running deepseek under an nvidia-nim
+			// provider whose default_model is nemotron).
+			probeModel := p.DefaultModel
+			if name == cfg.Active.Provider && cfg.Active.DefaultModel != "" {
+				probeModel = cfg.Active.DefaultModel
+			}
+			if len(args) >= 2 {
+				probeModel = args[1]
+			}
+			explicitModel := len(args) >= 2
 			ctx, cancel := context.WithTimeout(cmd.Context(), 5*time.Second)
 			defer cancel()
+			loadEnvFiles() // ensure the provider key from .env is available for the probe's auth
 			key := os.Getenv(p.APIKeyEnv)
 			entries, err := catalog.List(ctx, *p, key)
 			if err != nil {
@@ -188,6 +226,9 @@ auth and discovering new models the upstream has shipped.`,
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "%s (%s)\n", p.Name, p.Kind)
 			for _, e := range entries {
+				if explicitModel && e.ID != probeModel {
+					continue
+				}
 				line := e.Label()
 				if e.DisplayName != "" && e.DisplayName != e.ID {
 					line += "  (" + e.ID + ")"
@@ -197,7 +238,194 @@ auth and discovering new models the upstream has shipped.`,
 				}
 				fmt.Fprintf(cmd.OutOrStdout(), "  %s\n", line)
 			}
+			// When the catalog carried no window for this provider's default
+			// model (NVIDIA NIM, thin proxies whose /v1/models lists only ids,
+			// or any Ollama model), discover it and persist so the status bar +
+			// auto-summarize threshold size correctly.
+			//
+			// Gated to openai-compatible + ollama — the only kinds live
+			// discovery speaks (catalog.DiscoverContextWindow: list-models /
+			// models.dev for openai-compatible, /api/show for ollama). Curated
+			// kinds carry windows in the catalog. The result is written to the
+			// file-backed window store (~/.yottacode/context-windows.json), NOT
+			// config.toml, so it can't invalidate a free-form provider's config.
+			if probeModel != "" && (p.Kind == "openai-compatible" || p.Kind == "ollama") && !modelHasWindow(entries, probeModel) {
+				pctx, pcancel := context.WithTimeout(cmd.Context(), 20*time.Second)
+				w, detail := catalog.DiscoverContextWindow(pctx, *p, key, probeModel)
+				pcancel()
+				switch {
+				case w > 0:
+					if err := catalog.UpsertWindow(probeModel, w); err != nil {
+						fmt.Fprintf(cmd.ErrOrStderr(), "  save window warning: %v\n", err)
+					} else {
+						fmt.Fprintf(cmd.OutOrStdout(), "  %s → context_window=%d (cached) [%s]\n", probeModel, w, detail)
+					}
+				default:
+					// Print why so a windowless model isn't a silent no-op.
+					fmt.Fprintf(cmd.OutOrStdout(), "  could not determine a context window for %s [%s]\n", probeModel, detail)
+				}
+			}
 			return nil
 		},
 	}
+}
+
+// modelHasWindow reports whether the live catalog already carries a
+// context window for the given model id.
+func modelHasWindow(entries []catalog.Model, id string) bool {
+	for _, e := range entries {
+		if e.ID == id && e.ContextWindow > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// newModelProbeWindowsCmd fetches each model from a provider's live API and
+// probes its context window, persisting the results to the file-backed
+// window store (~/.yottacode/context-windows.json by default, or a full
+// regenerate of the committed baseline via --output). Only openai-compatible
+// and ollama providers are probed; curated providers carry windows in the
+// embedded catalog.
+func newModelProbeWindowsCmd() *cobra.Command {
+	var all bool
+	var output string
+	var refresh bool
+	cmd := &cobra.Command{
+		Use:   "probe-windows [PROVIDER]",
+		Short: "Probe each model's context window and save it to the window store",
+		Long: `Fetches each model from the provider's live /models endpoint and probes its
+context window (input-overflow probe for openai-compatible, /api/show for
+ollama), then writes the results to ~/.yottacode/context-windows.json so they
+serve as the fallback table in later sessions.
+
+Pass --all to sweep every configured provider, or --output PATH to regenerate
+the committed baseline (internal/catalog/context-windows.json) before
+publishing — existing entries in that file are preserved and updated. Only
+openai-compatible and ollama providers are probed; curated providers
+(Anthropic, OpenAI, Gemini) carry windows in the catalog.`,
+		Args: cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, err := config.LoadDefault()
+			if err != nil {
+				return err
+			}
+			loadEnvFiles() // make provider keys from .env available to the probe
+
+			// Most hosted windows come from the local models.dev copy
+			// (resolved inside DiscoverContextWindow); --refresh forces it
+			// up to date first so the sweep reflects the latest catalog.
+			if refresh {
+				if n, rerr := catalog.RefreshModelsDev(); rerr != nil {
+					fmt.Fprintf(cmd.ErrOrStderr(), "models.dev refresh failed (using cached copy): %v\n", rerr)
+				} else {
+					fmt.Fprintf(cmd.OutOrStdout(), "refreshed models.dev: %d providers\n", n)
+				}
+			}
+
+			var targets []config.Provider
+			if all {
+				targets = append(targets, cfg.Providers...)
+			} else {
+				name := cfg.Active.Provider
+				if len(args) >= 1 {
+					name = args[0]
+				}
+				p := cfg.FindProvider(name)
+				if p == nil {
+					return fmt.Errorf("provider %q not configured", name)
+				}
+				targets = append(targets, *p)
+			}
+
+			out := cmd.OutOrStdout()
+			probed := map[string]int{} // exact model id -> window
+			for _, p := range targets {
+				if p.Kind != "openai-compatible" && p.Kind != "ollama" {
+					fmt.Fprintf(out, "%s (%s): skipped — windows come from the catalog\n", p.Name, p.Kind)
+					continue
+				}
+				key := os.Getenv(p.APIKeyEnv)
+				lctx, lcancel := context.WithTimeout(cmd.Context(), 10*time.Second)
+				entries, lerr := catalog.List(lctx, p, key)
+				lcancel()
+				if lerr != nil {
+					fmt.Fprintf(cmd.ErrOrStderr(), "%s: list models: %v\n", p.Name, lerr)
+					continue
+				}
+				fmt.Fprintf(out, "%s (%s): %d models\n", p.Name, p.Kind, len(entries))
+				for _, e := range entries {
+					if e.ContextWindow > 0 {
+						probed[e.ID] = e.ContextWindow
+						fmt.Fprintf(out, "  %s → %d (from list-models)\n", e.ID, e.ContextWindow)
+						continue
+					}
+					pctx, pcancel := context.WithTimeout(cmd.Context(), 30*time.Second)
+					w, detail := catalog.DiscoverContextWindow(pctx, p, key, e.ID)
+					pcancel()
+					if w > 0 {
+						probed[e.ID] = w
+						fmt.Fprintf(out, "  %s → %d [%s]\n", e.ID, w, detail)
+					} else {
+						fmt.Fprintf(out, "  %s → (undetermined) [%s]\n", e.ID, detail)
+					}
+				}
+			}
+
+			if len(probed) == 0 {
+				fmt.Fprintln(out, "no windows determined; nothing written")
+				return nil
+			}
+
+			if output == "" {
+				// Merge into the runtime overlay, one upsert per model.
+				for id, w := range probed {
+					if err := catalog.UpsertWindow(id, w); err != nil {
+						return fmt.Errorf("write window store: %w", err)
+					}
+				}
+				home, _ := os.UserHomeDir()
+				fmt.Fprintf(out, "saved %d windows to %s\n", len(probed),
+					filepath.Join(home, ".yottacode", "context-windows.json"))
+				return nil
+			}
+
+			// --output: merge probed windows into whatever the target file
+			// already holds (preserving hand-authored family prefixes) and
+			// rewrite it. Intended for regenerating the committed baseline.
+			merged := mergeWindowEntries(catalog.LoadEntriesFromFile(output), probed)
+			comment := "Fallback context-window table, embedded at build time. Regenerate with `yottacode model probe-windows --output internal/catalog/context-windows.json`. Longest matching prefix wins."
+			if err := catalog.WriteWindowStore(output, merged, comment); err != nil {
+				return fmt.Errorf("write %s: %w", output, err)
+			}
+			fmt.Fprintf(out, "wrote %d entries to %s\n", len(merged), output)
+			return nil
+		},
+	}
+	cmd.Flags().BoolVar(&all, "all", false, "probe every configured provider")
+	cmd.Flags().BoolVar(&refresh, "refresh", false, "force-refresh the local models.dev copy before resolving")
+	cmd.Flags().StringVar(&output, "output", "",
+		"write a full window-store file to PATH (e.g. internal/catalog/context-windows.json) instead of the runtime overlay")
+	return cmd
+}
+
+// mergeWindowEntries upserts probed exact-id windows into existing entries,
+// updating a matching prefix or appending a new exact-id row.
+func mergeWindowEntries(existing []catalog.WindowStoreEntry, probed map[string]int) []catalog.WindowStoreEntry {
+	out := append([]catalog.WindowStoreEntry(nil), existing...)
+	for id, w := range probed {
+		lid := strings.ToLower(id)
+		found := false
+		for i := range out {
+			if strings.ToLower(out[i].Prefix) == lid {
+				out[i].Window = w
+				found = true
+				break
+			}
+		}
+		if !found {
+			out = append(out, catalog.WindowStoreEntry{Prefix: id, Window: w})
+		}
+	}
+	return out
 }

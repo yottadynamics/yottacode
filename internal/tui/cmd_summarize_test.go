@@ -75,15 +75,20 @@ func TestComposeSummarizedHistory_PreservesSystemAndRecent(t *testing.T) {
 	if out[0].Role != adapter.RoleSystem || out[0].Content != "SYS" {
 		t.Errorf("system prompt should be preserved; got %+v", out[0])
 	}
-	// Second message must be the synthetic summary, marked as such.
-	if out[1].Role != adapter.RoleAssistant {
-		t.Errorf("expected synthetic assistant summary at index 1; got role %s", out[1].Role)
+	// A synthetic user preamble precedes the summary so the history is
+	// user-first (Claude/Gemini reject a leading assistant turn).
+	if out[1].Role != adapter.RoleUser || out[1].Content != summaryUserPreamble {
+		t.Errorf("expected synthetic user preamble at index 1; got %+v", out[1])
 	}
-	if !strings.HasPrefix(out[1].Content, "[Session summary — compressed at") {
-		t.Errorf("summary message should be marked; got %q", out[1].Content)
+	// The summary follows, marked as such.
+	if out[2].Role != adapter.RoleAssistant {
+		t.Errorf("expected synthetic assistant summary at index 2; got role %s", out[2].Role)
+	}
+	if !strings.HasPrefix(out[2].Content, "[Session summary — compressed at") {
+		t.Errorf("summary message should be marked; got %q", out[2].Content)
 	}
 	// Last 5 user turns × 2 messages each = 10 messages retained.
-	tail := out[2:]
+	tail := out[3:]
 	users := 0
 	for _, m := range tail {
 		if m.Role == adapter.RoleUser {
@@ -103,6 +108,50 @@ func TestComposeSummarizedHistory_PreservesSystemAndRecent(t *testing.T) {
 	}
 	if strings.Contains(tailStr, "QA") {
 		t.Errorf("retention should drop oldest turn; got %q", tailStr)
+	}
+}
+
+// TestComposeSummarizedHistory_ProviderValid guards the compressed history
+// against the shapes strict providers reject: it must not begin (after the
+// system prompt) with an assistant turn (Claude requires a user-first
+// messages array; Gemini requires user-first alternation), and it must
+// never contain two consecutive assistant turns.
+func TestComposeSummarizedHistory_ProviderValid(t *testing.T) {
+	cases := map[string][]adapter.Message{
+		"with_turns": {
+			{Role: adapter.RoleSystem, Content: "SYS"},
+			{Role: adapter.RoleUser, Content: "q1"},
+			{Role: adapter.RoleAssistant, Content: "a1"},
+			{Role: adapter.RoleUser, Content: "q2"},
+			{Role: adapter.RoleAssistant, Content: "a2"},
+		},
+		"no_user_turns": {
+			{Role: adapter.RoleSystem, Content: "SYS"},
+			{Role: adapter.RoleAssistant, Content: "orphan"},
+		},
+	}
+	for name, history := range cases {
+		t.Run(name, func(t *testing.T) {
+			out := composeSummarizedHistory(history, "## Decisions made\n(none)", 128_000)
+			firstNonSystem := -1
+			for i, m := range out {
+				if m.Role != adapter.RoleSystem {
+					firstNonSystem = i
+					break
+				}
+			}
+			if firstNonSystem < 0 {
+				t.Fatal("no non-system message in compressed history")
+			}
+			if out[firstNonSystem].Role != adapter.RoleUser {
+				t.Errorf("first non-system message role = %s, want user (Claude/Gemini reject a leading assistant)", out[firstNonSystem].Role)
+			}
+			for i := 1; i < len(out); i++ {
+				if out[i-1].Role == adapter.RoleAssistant && out[i].Role == adapter.RoleAssistant {
+					t.Errorf("consecutive assistant turns at %d/%d — provider-invalid", i-1, i)
+				}
+			}
+		})
 	}
 }
 
