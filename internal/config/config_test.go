@@ -327,6 +327,46 @@ base_url = "http://localhost:11434/v1"
 	}
 }
 
+func TestContextWindowOverride(t *testing.T) {
+	cfg := Config{
+		Active: Active{Provider: "primary"},
+		Providers: []Provider{
+			{
+				Name: "primary",
+				Models: []Model{
+					{Name: "deepseek-v4-flash", ContextWindow: 128_000},
+					{Name: "no-window-model"}, // ContextWindow defaults to 0
+				},
+			},
+			{
+				Name: "secondary",
+				Models: []Model{
+					// Name collision with the active provider — the active
+					// provider's entry must win.
+					{Name: "deepseek-v4-flash", ContextWindow: 64_000},
+					{Name: "other-model", ContextWindow: 32_000},
+				},
+			},
+		},
+	}
+
+	cases := []struct {
+		model string
+		want  int
+	}{
+		{"deepseek-v4-flash", 128_000}, // active provider wins on collision
+		{"other-model", 32_000},        // only under a non-active provider, still resolves
+		{"no-window-model", 0},         // listed but context_window unset
+		{"nonexistent", 0},             // not listed anywhere
+		{"", 0},                        // empty model name
+	}
+	for _, c := range cases {
+		if got := cfg.ContextWindowOverride(c.model); got != c.want {
+			t.Errorf("ContextWindowOverride(%q) = %d, want %d", c.model, got, c.want)
+		}
+	}
+}
+
 func TestLoad_RejectsInlineAPIKey(t *testing.T) {
 	src := `
 [[providers]]

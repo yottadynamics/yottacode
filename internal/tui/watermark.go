@@ -8,6 +8,9 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/yottadynamics/yottacode/internal/adapter"
+	"github.com/yottadynamics/yottacode/internal/agent"
+	"github.com/yottadynamics/yottacode/internal/catalog"
 	"github.com/yottadynamics/yottacode/internal/contextwindow"
 )
 
@@ -26,7 +29,28 @@ const watermarkStep = 0.05
 // turn and a warn notice mid-stream would land in the middle of
 // the model's reply.
 func (m *Model) refreshContextTokens() {
-	m.contextTokens = contextwindow.EstimateTokens(m.sess.Messages)
+	m.contextTokens = m.estimatedContextTokens(m.sess.Messages)
+}
+
+// estimatedContextTokens approximates the full next-request size: the
+// message history plus the tool schemas advertised on every call.
+// EstimateTokens counts only the message slice, but the tool schemas
+// (easily several thousand tokens once MCP servers attach) ride alongside
+// it on the wire. Routing the status bar, the warn/auto thresholds, and
+// the non-convergence check through one estimate keeps them honest about
+// what the provider actually receives — matching the same overhead the
+// agent loop's compaction trigger now counts.
+func (m Model) estimatedContextTokens(msgs []adapter.Message) int {
+	return contextwindow.EstimateTokens(msgs) + registrySchemaTokens(m.cfg.Registry)
+}
+
+// registrySchemaTokens estimates the token cost of the registry's
+// advertised tool schemas, or 0 when no registry is wired.
+func registrySchemaTokens(reg *agent.Registry) int {
+	if reg == nil {
+		return 0
+	}
+	return contextwindow.EstimateToolSchemas(reg.AsAdapterTools())
 }
 
 // updateContextUsage recomputes context-window usage after each turn,
@@ -81,7 +105,27 @@ func (m *Model) updateContextUsage() tea.Cmd {
 // honoring both yottacode's known-model table and the user's
 // context.default_window override.
 func (m Model) contextWindow() int {
-	return contextwindow.WindowFor(m.modelName, m.fileCfg.Context.DefaultWindow)
+	return catalog.ResolveWindow(
+		m.modelName,
+		m.fileCfg.ContextWindowOverride(m.modelName),
+		m.fileCfg.Context.DefaultWindow,
+	)
+}
+
+// summaryConverged reports whether a just-finished summarization brought
+// the history back under the auto-summarize threshold. When it returns
+// false the caller must NOT re-arm the watermark (lastWatermarkPct = 0)
+// — doing so re-fires auto-summarize every turn against an irreducible
+// floor (system prompt + the summary itself + the retained tail that
+// already exceeds the window), a multi-minute compression each turn that
+// never gets under the line. A non-positive window or a disabled
+// threshold (<=0 or >=1.0) means "no meaningful line to loop on," so it
+// reports converged.
+func summaryConverged(tokens, window int, autoThreshold float64) bool {
+	if window <= 0 || autoThreshold <= 0 || autoThreshold >= 1.0 {
+		return true
+	}
+	return float64(tokens) < autoThreshold*float64(window)
 }
 
 // ctxBarWidth is the cell count of the visual fill bar in the ctx

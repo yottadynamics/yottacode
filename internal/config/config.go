@@ -813,6 +813,54 @@ func (c *Config) FindProvider(name string) *Provider {
 	return nil
 }
 
+// ContextWindowOverride returns the user-configured context_window for
+// the given model, or 0 when no provider entry sets one. The active
+// provider's entry wins when the same model name is listed under more
+// than one provider (e.g. two proxies fronting the same model). 0 means
+// "no override" — the caller then falls back to the model-tag table and
+// default_window via contextwindow.EffectiveWindow.
+//
+// This is the read side of the per-model window override: the wizard's
+// registration probe writes Model.ContextWindow (captured from the
+// provider's list-models endpoint), and this surfaces it to the window
+// math so the status bar and auto-summarize threshold honor the real,
+// provider-reported window instead of a stale built-in guess.
+func (c Config) ContextWindowOverride(model string) int {
+	if model == "" {
+		return 0
+	}
+	// Active provider first — it's the one the running session uses, so
+	// its entry is the authoritative one on a name collision.
+	if c.Active.Provider != "" {
+		for _, p := range c.Providers {
+			if p.Name == c.Active.Provider {
+				if w := modelWindow(p.Models, model); w > 0 {
+					return w
+				}
+			}
+		}
+	}
+	// Fall back to any provider that lists the model with an override —
+	// covers /resume of a session whose provider isn't currently active.
+	for _, p := range c.Providers {
+		if w := modelWindow(p.Models, model); w > 0 {
+			return w
+		}
+	}
+	return 0
+}
+
+// modelWindow returns the first positive ContextWindow among models
+// whose Name matches, or 0.
+func modelWindow(models []Model, name string) int {
+	for _, m := range models {
+		if m.Name == name && m.ContextWindow > 0 {
+			return m.ContextWindow
+		}
+	}
+	return 0
+}
+
 // DefaultsTOML is the documented default file written by EnsureDefault.
 const DefaultsTOML = `# yottacode configuration
 #

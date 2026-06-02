@@ -19,6 +19,7 @@ import (
 	"github.com/yottadynamics/yottacode/internal/adapter"
 	"github.com/yottadynamics/yottacode/internal/agent"
 	openaiauth "github.com/yottadynamics/yottacode/internal/auth/openai"
+	"github.com/yottadynamics/yottacode/internal/catalog"
 	"github.com/yottadynamics/yottacode/internal/checkpoint"
 	"github.com/yottadynamics/yottacode/internal/config"
 	"github.com/yottadynamics/yottacode/internal/contextwindow"
@@ -226,6 +227,19 @@ type Model struct {
 	// running so we don't fire a second one on top of the first if
 	// the user crosses another threshold while we're working.
 	summarizing bool
+
+	// summarizeStart timestamps when the active summarization began, so
+	// the live summarizing row can show elapsed time. Only meaningful
+	// while summarizing is true.
+	summarizeStart time.Time
+
+	// probedModels records models whose context-window probe has already
+	// been attempted this session (success OR failure), so a model whose
+	// probe keeps failing isn't re-probed on every model switch. A
+	// successful probe persists to config and is skipped by the override
+	// check anyway; this guards the failure case. nil-safe to read; the
+	// write site lazily initializes it.
+	probedModels map[string]bool
 
 	// Cumulative session stats — incremented as events stream in.
 	statsTokens    int
@@ -801,7 +815,7 @@ func New(parent context.Context, c Config) Model {
 	// reading scrollback).
 	contextTokensInit := 0
 	if c.Session != nil {
-		contextTokensInit = contextwindow.EstimateTokens(c.Session.Messages)
+		contextTokensInit = contextwindow.EstimateTokens(c.Session.Messages) + registrySchemaTokens(c.Cfg.Registry)
 	}
 
 	// Seed livePlan from the resumed session so the live plan card
@@ -886,7 +900,7 @@ func (m Model) Init() tea.Cmd {
 	// just churns redraws of the live footer. Each redraw emits cursor
 	// and line-clear ANSI which can invalidate active mouse selections
 	// in scrollback on terminals/tmux. startTurn re-arms the tick.
-	return tea.Batch(
+	cmds := []tea.Cmd{
 		textarea.Blink,
 		cursorBlinkCmd(),
 		runProviderProbe(m.parentCtx, m.adapterConfig(m.modelName, m.baseURL), false),
@@ -895,7 +909,20 @@ func (m Model) Init() tea.Cmd {
 		// always allocates it), so we don't guard.
 		waitForSubagentInbox(m.subagentInbox),
 		startMCPServers(m.parentCtx, m.mcpManager),
-	)
+		// Warm the local models.dev copy in the background (TTL-gated: a
+		// no-op when the on-disk cache is fresh, a daily refresh otherwise),
+		// so window lookups for hosted providers (NVIDIA NIM, …) resolve
+		// instantly without waiting on the ~2MB fetch.
+		func() tea.Msg { catalog.WarmModelsDev(); return nil },
+	}
+	// Auto-discover the active model's context window when it's unknown
+	// (windowless OpenAI-compatible endpoint, no override). Background +
+	// at-most-once — so the user never has to run `model fetch` for the
+	// bar/threshold to size correctly.
+	if c := m.maybeProbeActiveModelWindowCmd(); c != nil {
+		cmds = append(cmds, c)
+	}
+	return tea.Batch(cmds...)
 }
 
 // Update is the public Bubbletea entry point. It delegates to update() then
@@ -930,9 +957,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if _, ok := msg.(spinner.TickMsg); ok {
-		if !m.turnActive {
+		if !m.turnActive && !m.summarizing {
 			// Idle: drop the tick so we stop re-scheduling ourselves.
-			// startTurn re-arms m.spinner.Tick when work begins.
+			// startTurn re-arms m.spinner.Tick when work begins; the
+			// summarize commands re-arm it for the summarizing row.
 			return m, nil
 		}
 		var cmd tea.Cmd
@@ -1839,6 +1867,42 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case embedSetupDoneMsg:
 		return m.handleEmbedSetupDone(msg)
 
+	case modelWindowProbedMsg:
+		// Background overflow probe finished (kicked off at session start
+		// or by commitModelChoice). Record the attempt either way so a
+		// model whose probe failed isn't re-probed on every switch.
+		if m.probedModels == nil {
+			m.probedModels = map[string]bool{}
+		}
+		m.probedModels[msg.model] = true
+		if msg.window <= 0 {
+			// Don't leave it a silent fallback — say so once (probedModels
+			// gates re-runs), with the reason, so the user knows detection
+			// ran and how to override.
+			detail := msg.detail
+			if detail == "" {
+				detail = "no window reported"
+			}
+			m.appendLine(styleAuto.Render(fmt.Sprintf(
+				"[model] couldn't auto-detect context window for %s (%s) — using %s; set context_window in config to override",
+				msg.model, detail, formatTokens(m.contextWindow()))))
+			return m, nil
+		}
+		// Persist the discovered window to the file-backed store overlay
+		// (~/.yottacode/context-windows.json), NOT into the user's
+		// config.toml. Auto-writing config.toml's provider models used to
+		// turn a free-form provider into one whose models list excluded its
+		// own default_model, corrupting the config; the store is keyed by
+		// model and never trips that validation. ResolveWindow reads the
+		// store (via WindowFor), so the bar/threshold pick it up immediately.
+		if err := catalog.UpsertWindow(msg.model, msg.window); err != nil {
+			m.appendLine(styleError.Render(fmt.Sprintf("[model] save context window: %v", err)))
+			return m, nil
+		}
+		m.appendLine(styleAuto.Render(fmt.Sprintf(
+			"[model] detected context window for %s: %s (cached)", msg.model, formatTokens(msg.window))))
+		return m, nil
+
 	case summaryDoneMsg:
 		m.summarizing = false
 		if msg.err != nil {
@@ -1851,10 +1915,27 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.sess.Messages = msg.newMessages
-		m.lastWatermarkPct = 0
 		// Refresh estimated tokens from the new history so the status
-		// bar drops immediately.
-		m.contextTokens = contextwindow.EstimateTokens(m.sess.Messages)
+		// bar reflects the compaction immediately.
+		m.contextTokens = m.estimatedContextTokens(m.sess.Messages)
+
+		// Non-convergence guard: when the compacted history is STILL at
+		// or above the auto threshold, the irreducible floor (system
+		// prompt + the summary itself + the retained recent turns)
+		// exceeds what this window holds. Re-arming the watermark to 0
+		// would auto-fire summarize again next turn — a multi-minute
+		// compression every turn that never gets under the line. Leave
+		// the gate closed (record the current fill) and tell the user
+		// once; manual /summarize and /clear still work — they don't
+		// consult this gate.
+		window := m.contextWindow()
+		converged := summaryConverged(m.contextTokens, window, m.fileCfg.Context.AutoThreshold)
+		if converged || window <= 0 {
+			m.lastWatermarkPct = 0
+		} else {
+			m.lastWatermarkPct = float64(m.contextTokens) / float64(window)
+		}
+
 		if err := m.sess.Save(); err != nil {
 			m.appendLine(styleError.Render(fmt.Sprintf("⚠ session save after summarize: %v", err)))
 		}
@@ -1865,11 +1946,16 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.appendLine(styleError.Render(fmt.Sprintf("⚠ recall index after summarize: %v", err)))
 			}
 		}
-		if msg.auto {
+		switch {
+		case !converged:
+			m.appendLine(styleWatermarkBox.Render(fmt.Sprintf(
+				"⚡ Summarized, but context is still at %d%% — the retained history plus tool schemas exceed this model's window, so auto-summarize is paused to avoid re-running every turn.\nFree space with /clear, disable unused MCP tools, set a larger context_window for this model, or switch to a bigger-window model.\nFull history saved to %s",
+				int(m.lastWatermarkPct*100), abbrevHome(msg.snapshotPath))))
+		case msg.auto:
 			m.appendLine(styleWatermarkBox.Render(fmt.Sprintf(
 				"⚡ Context auto-summarized.\nFull history saved to %s\nUse /recall <id> to search the compressed session.",
 				abbrevHome(msg.snapshotPath))))
-		} else {
+		default:
 			m.appendLine(styleAuto.Render(fmt.Sprintf(
 				"[summarize] compressed history (~%d → ~%d tokens). Snapshot: %s",
 				msg.tokensBefore, m.contextTokens, abbrevHome(msg.snapshotPath))))
@@ -2012,6 +2098,8 @@ func (m Model) View() string {
 	}
 	if m.turnActive {
 		parts = append(parts, m.renderThinkingRow(), "")
+	} else if m.summarizing {
+		parts = append(parts, m.renderSummarizingRow(), "")
 	}
 
 	if m.awaitingPathTrust {
@@ -2428,6 +2516,22 @@ func (m Model) renderThinkingRow() string {
 	indicator := styleSpinner.Render(m.renderTurnStatus())
 	hint := lipgloss.NewStyle().Foreground(colorMuted).Render(" · Ctrl+C to cancel")
 	return indicator + hint
+}
+
+// renderSummarizingRow is the live indicator shown between turns while a
+// summarization (manual /summarize or auto) runs. Mirrors the thinking
+// row — same spinner glyph and dim style — so the multi-minute
+// compression no longer looks like a frozen UI. Indeterminate by design:
+// summarization is one streaming call whose length isn't known ahead of
+// time, so we show a spinner + elapsed time rather than a fake progress
+// bar. Empty when not summarizing.
+func (m Model) renderSummarizingRow() string {
+	if !m.summarizing {
+		return ""
+	}
+	status := fmt.Sprintf("%s summarizing context… %s",
+		m.spinner.View(), formatDuration(time.Since(m.summarizeStart)))
+	return styleSpinner.Render(status)
 }
 
 // renderLivePlanCard returns the in-flight todo card for the live

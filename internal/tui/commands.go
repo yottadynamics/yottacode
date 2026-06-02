@@ -435,7 +435,18 @@ func providerUse(m Model, name string) (Model, tea.Cmd) {
 	m.sess.Model = newModel
 	m, _ = reloadMemoryNow(m, "")
 	m.appendLine(styleAuto.Render(fmt.Sprintf("[provider] switched to %s (model: %s)", name, newModel)))
-	return m, runProviderProbe(m.parentCtx, m.adapterConfig(newModel, p.BaseURL), false)
+	cmds := []tea.Cmd{runProviderProbe(m.parentCtx, m.adapterConfig(newModel, p.BaseURL), false)}
+	// A provider switch changes the active model outside the picker path —
+	// discover its window from the live API too (the picker reads it from
+	// the list-models row; this path otherwise never would).
+	if m.shouldProbeWindow(p.Kind, newModel) {
+		if m.probedModels == nil {
+			m.probedModels = map[string]bool{}
+		}
+		m.probedModels[newModel] = true
+		cmds = append(cmds, discoverWindowCmd(m.parentCtx, *p, m.apiKey, newModel))
+	}
+	return m, tea.Batch(cmds...)
 }
 
 // providerAdd appends a new [[providers]] block to ~/.yottacode/config.toml
@@ -1269,6 +1280,12 @@ func cmdClear(m Model, _ []string) (Model, tea.Cmd) {
 	// non-zero number rather than leaving the pre-clear value
 	// stuck on screen.
 	m.refreshContextTokens()
+	// Reset the auto-summarize/warn gate immediately. /clear empties the
+	// history, so the next crossing should fire fresh — without this the
+	// gate self-heals only on the next turn's updateContextUsage, and a
+	// gate left pinned high by a prior non-convergent summarize (see the
+	// summaryDoneMsg handler) would otherwise survive the clear.
+	m.lastWatermarkPct = 0
 	// Wipe the viewport so /clear lands on a clean canvas instead
 	// of tacking a confirmation line under the prior transcript.
 	// Mirrors the resize-replay path: ClearScreen, then re-emit the

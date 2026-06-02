@@ -66,6 +66,27 @@ func refresh(outPath string) error {
 		merged[r.provider] = r.models
 	}
 
+	// Regenerate the embedded models.dev snapshot (sibling of the catalog
+	// file) in the same run, so one `refresh` updates both generated
+	// artifacts. This also warms the in-process models.dev cache, so the
+	// backfill below reuses the fetch instead of downloading again. Soft-
+	// fail: if models.dev is unreachable, keep the existing snapshot and
+	// fall back to it for the backfill.
+	mdevPath := filepath.Join(filepath.Dir(outPath), "models-dev.gen.json")
+	if n, err := catalog.WriteModelsDevSnapshot(mdevPath); err != nil {
+		fmt.Fprintf(os.Stderr, "refresh models.dev snapshot failed: %v (keeping existing)\n", err)
+	} else {
+		fmt.Fprintf(os.Stderr, "wrote %s (%d providers from models.dev)\n", mdevPath, n)
+	}
+
+	// Backfill windows the provider's own list-models API didn't return —
+	// notably OpenAI, whose /v1/models omits context length entirely (so
+	// gpt-5.x land here with ctx=0). Anthropic and Gemini already carry
+	// windows from their APIs, so this is a no-op for them. The source is
+	// the models.dev catalog (just refreshed above); matched by provider
+	// NAME because models.dev's curated-lab entries have no api URL.
+	backfillWindowsFromModelsDev(merged)
+
 	out := catalog.File{
 		GeneratedAt: time.Now().UTC().Truncate(time.Second),
 		Models:      flatten(merged),
@@ -78,6 +99,40 @@ func refresh(outPath string) error {
 		return fmt.Errorf("one or more providers failed")
 	}
 	return nil
+}
+
+// modelsDevProviderID maps a catalog provider name to its models.dev
+// provider id (only "gemini" → "google" differs).
+var modelsDevProviderID = map[string]string{
+	"anthropic": "anthropic",
+	"openai":    "openai",
+	"gemini":    "google",
+}
+
+// backfillWindowsFromModelsDev fills ContextWindow for models that came
+// back with 0 (the provider's API didn't surface it) by looking them up in
+// the models.dev catalog by provider name + model id. Mutates the slices in
+// place.
+func backfillWindowsFromModelsDev(byProv map[string][]catalog.Model) {
+	for prov, ms := range byProv {
+		mdID, ok := modelsDevProviderID[prov]
+		if !ok {
+			continue
+		}
+		filled := 0
+		for i := range ms {
+			if ms[i].ContextWindow > 0 {
+				continue
+			}
+			if w := catalog.ModelsDevWindowByProvider(mdID, ms[i].ID); w > 0 {
+				ms[i].ContextWindow = w
+				filled++
+			}
+		}
+		if filled > 0 {
+			fmt.Fprintf(os.Stderr, "backfilled %d %s windows from models.dev\n", filled, prov)
+		}
+	}
 }
 
 // loadExisting reads the catalog file if present. Errors are tolerated

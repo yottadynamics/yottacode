@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-05-06T20:24:22Z",
+  "generated_at": "2026-06-02T14:29:13Z",
   "models": [
     {
       "id": "claude-opus-4-6",
@@ -46,18 +46,21 @@
     {
       "id": "gpt-5.4",
       "provider": "openai",
+      "context_window": 1050000,
       "released_at": "2026-03-05T06:24:12Z",
       "capabilities": {}
     },
     {
       "id": "gpt-5.4-mini",
       "provider": "openai",
+      "context_window": 400000,
       "released_at": "2026-03-14T01:18:43Z",
       "capabilities": {}
     },
     {
       "id": "gpt-5.5",
       "provider": "openai",
+      "context_window": 1050000,
       "released_at": "2026-04-22T02:27:27Z",
       "capabilities": {}
     }

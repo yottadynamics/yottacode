@@ -122,6 +122,15 @@ type AgentTool struct {
 	// routing is disabled.
 	ModelResolver func(model string) Streamer
 
+	// ResolveWindow returns the context window (tokens) for a child
+	// model, honoring the per-model override + default_window exactly
+	// as the status bar does (contextwindow.EffectiveWindow). It is the
+	// source of the child loop's compaction window: subagents run Turn
+	// directly, so without this they have no context management and a
+	// long run accumulates until the provider rejects it. The TUI and
+	// oneshot both wire it; nil (tests) disables child compaction.
+	ResolveWindow func(model string) int
+
 	// ParentRegistry is the live tool set the parent session is using.
 	// We clone it for the child, dropping the Agent tool itself plus
 	// exit_plan_mode, and intersecting with the agent's `tools:`
@@ -411,7 +420,7 @@ func (t *AgentTool) Execute(ctx context.Context, argsJSON string) (string, error
 			// Background: no live UI to forward to (emitToParent nil)
 			// AND no decisions channel to read from. Approval-needed
 			// events auto-deny inside runChild.
-			result, errored, status, tokens := t.runChild(bgCtx, taskID, cfg, a.Prompt, transcript, nil, nil, childAdapter)
+			result, errored, status, tokens := t.runChild(bgCtx, taskID, cfg, a.Prompt, transcript, nil, nil, childAdapter, childModel)
 			t.Tasks.MarkDone(taskID, status, result, errored, tokens)
 			// Read the just-recorded tool-call count off the registry
 			// so the inline card can render accurate stats.
@@ -447,7 +456,7 @@ func (t *AgentTool) Execute(ctx context.Context, argsJSON string) (string, error
 	// Foreground: pass parent's events + decisions so child
 	// ApprovalNeeded events surface on the parent's modal and the
 	// user's verdict routes back to the child's loop.
-	result, errored, status, tokens := t.runChild(childCtx, taskID, cfg, a.Prompt, transcript, emitToParent, parentDecisions, childAdapter)
+	result, errored, status, tokens := t.runChild(childCtx, taskID, cfg, a.Prompt, transcript, emitToParent, parentDecisions, childAdapter, childModel)
 	t.Tasks.MarkDone(taskID, status, result, errored, tokens)
 	// Read the just-recorded tool-call count off the registry so the
 	// done card can render accurate stats.
@@ -572,6 +581,7 @@ func (t *AgentTool) runChild(
 	emitToParent func(Event),
 	parentDecisions <-chan Decision,
 	childAdapter Streamer,
+	childModel string,
 ) (result string, errored bool, status subagents.TaskStatus, tokensUsed int) {
 	childReg := t.buildChildRegistry(cfg)
 
@@ -605,6 +615,37 @@ func (t *AgentTool) runChild(
 		PlanMode:          childPlanMode,
 		AutoMode:          childAutoMode,
 		YoloMode:          t.YoloMode, // shared (process-wide once entered)
+	}
+
+	// Give the child loop its own context management. A subagent runs
+	// Turn directly — it never passes through the TUI's turn-boundary
+	// summarizer — so without this a long run (e.g. a multi-round
+	// codebase audit) accumulates its isolated history until the
+	// provider rejects the request and the work is lost. When we can
+	// resolve the child model's window, enable in-loop compaction at a
+	// threshold below the window so the summary call still has input
+	// headroom. The progress summary runs on FastAdapter when routing is
+	// on — it's a mechanical compression, not reasoning, so the cheap
+	// model is the right tool and avoids disturbing the child model's
+	// cache prefix; nil falls back to the child's own adapter.
+	//
+	// Only enable below minCompactionWindow: under a too-small window the
+	// input budget (window − output reservation − prompt) goes non-positive
+	// and there's no room to summarize anything, so compaction can't help
+	// — let such a (rare, barely-agentic) tiny-window model degrade to the
+	// provider's own limit instead.
+	if t.ResolveWindow != nil {
+		if w := t.ResolveWindow(childModel); w > 0 {
+			// Resolve the summarizer's own window so the summary call's input
+			// is budgeted to whichever window is smaller (see CompactionConfig
+			// .SummarizerWindow). 0 = "same as child window" (no FastAdapter,
+			// or the fast model's window is unknown — leave it to the child).
+			summarizerWindow := 0
+			if t.FastAdapter != nil && t.FastModel != "" {
+				summarizerWindow = t.ResolveWindow(t.FastModel)
+			}
+			childCfg.Compaction = newChildCompaction(w, t.FastAdapter, summarizerWindow)
+		}
 	}
 
 	systemPrompt := strings.TrimSpace(cfg.Prompt)
@@ -753,6 +794,12 @@ func (t *AgentTool) runChild(
 				return "", true, subagents.TaskCanceled, 0
 			}
 			emitActivity(fmt.Sprintf("auto-denied %s (background subagent cannot prompt; allowlist the tool in permissions.json if needed)", e.ToolName))
+		case ContextCompacted:
+			if e.Err != nil {
+				emitActivity("context compaction skipped (summary failed) — continuing")
+			} else {
+				emitActivity(fmt.Sprintf("compacted context ~%dK → ~%dK tokens", e.Before/1000, e.After/1000))
+			}
 		case IterCap:
 			hitIterCap = true
 		case ErrorEvent:

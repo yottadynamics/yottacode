@@ -52,6 +52,21 @@ type ContentToken struct{ Text string }
 // doesn't sit at "0.0 tok/s" the whole time.
 type StreamProgress struct{}
 
+// ContextCompacted fires when the loop summarized its own older history
+// in place to stay under the model's context window — the self-managed
+// compaction that lets a long-running subagent keep working instead of
+// overflowing the provider. Before/After are the estimated token counts
+// of the history immediately before and after the rewrite. Err is set
+// (with Before==After) when the summary call failed and history was left
+// untouched — a best-effort skip, not a turn-ending error.
+type ContextCompacted struct {
+	Before int
+	After  int
+	Err    error
+}
+
+func (ContextCompacted) event() {}
+
 // ProviderToolCall carries a provider-native tool lifecycle update emitted by
 // the adapter stream itself, e.g. OpenAI/xAI web search or code interpreter.
 type ProviderToolCall struct {

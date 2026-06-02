@@ -1,6 +1,7 @@
 package catalog
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -8,9 +9,9 @@ import (
 	"io"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
-
 )
 
 // Live queries a provider's list-models endpoint at runtime. Used
@@ -68,6 +69,16 @@ func liveOpenAICompatible(ctx context.Context, kind, baseURL, apiKey string) ([]
 	var env struct {
 		Data []struct {
 			ID string `json:"id"`
+			// Context-window field names vary across OpenAI-compatible
+			// servers; we read whichever the provider volunteers. vLLM
+			// emits max_model_len, OpenRouter/Together emit
+			// context_length, some proxies emit context_window. OpenAI
+			// itself and DeepSeek's official API report none — those
+			// rows keep ContextWindow zero and fall back to the
+			// default_window / model-tag table downstream.
+			ContextLength int `json:"context_length"`
+			MaxModelLen   int `json:"max_model_len"`
+			ContextWindow int `json:"context_window"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(body, &env); err != nil {
@@ -79,7 +90,11 @@ func liveOpenAICompatible(ctx context.Context, kind, baseURL, apiKey string) ([]
 		if id == "" {
 			continue
 		}
-		out = append(out, Model{ID: id, Provider: kind})
+		out = append(out, Model{
+			ID:            id,
+			Provider:      kind,
+			ContextWindow: firstPositive(m.ContextLength, m.MaxModelLen, m.ContextWindow),
+		})
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out, nil
@@ -121,6 +136,136 @@ func liveOllama(ctx context.Context, baseURL string) ([]Model, error) {
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out, nil
+}
+
+// ollamaContextWindow resolves a single Ollama model's effective context
+// window from /api/show. Ollama's /api/tags (used by liveOllama) carries
+// no window and Ollama doesn't reject on context overflow, so the
+// openai-compatible overflow probe can't help here — but /api/show does
+// report the model's context length, so we read it directly for the one
+// model. Returns 0 when /api/show is unreachable or reports neither
+// source.
+//
+// Resolution prefers a num_ctx pinned in the model's Modelfile (the
+// "parameters" field) — that's the window Ollama actually serves at
+// runtime — and falls back to the architectural context_length the model
+// was trained with (model_info).
+//
+// Caveat: when num_ctx isn't pinned, Ollama serves at its own server
+// default (commonly 4096), which can be SMALLER than the architectural
+// ceiling returned here. The ceiling is still far better than the blind
+// default_window, but for an exact figure pin `PARAMETER num_ctx` in the
+// Modelfile or set context_window in config.
+//
+// baseURL is the Ollama profile's URL; it usually ends in /v1 (the
+// OpenAI-compatible shim), but /api/show lives at the root, so a trailing
+// /v1 is stripped — mirroring liveOllama.
+func ollamaContextWindow(ctx context.Context, baseURL, model string) int {
+	if strings.TrimSpace(baseURL) == "" || strings.TrimSpace(model) == "" {
+		return 0
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	base := strings.TrimSuffix(strings.TrimRight(baseURL, "/"), "/v1")
+	// Send both "model" (current) and "name" (deprecated alias) so the
+	// request works across Ollama versions; the server reads whichever it
+	// knows and ignores the other.
+	payload, err := json.Marshal(map[string]string{"model": model, "name": model})
+	if err != nil {
+		return 0
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/api/show", bytes.NewReader(payload))
+	if err != nil {
+		return 0
+	}
+	req.Header.Set("Content-Type", "application/json")
+	body, err := doLive(req)
+	if err != nil {
+		return 0
+	}
+	var env struct {
+		Parameters string         `json:"parameters"`
+		ModelInfo  map[string]any `json:"model_info"`
+	}
+	if err := json.Unmarshal(body, &env); err != nil {
+		return 0
+	}
+	if n := parseOllamaNumCtx(env.Parameters); n > 0 {
+		return n
+	}
+	return ollamaArchContextLength(env.ModelInfo)
+}
+
+// parseOllamaNumCtx pulls a `num_ctx <N>` value out of /api/show's
+// newline-separated "parameters" blob (the model's Modelfile PARAMETER
+// lines). Returns 0 when num_ctx isn't pinned.
+func parseOllamaNumCtx(params string) int {
+	for _, line := range strings.Split(params, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 2 && fields[0] == "num_ctx" {
+			if n, err := strconv.Atoi(fields[1]); err == nil && n > 0 {
+				return n
+			}
+		}
+	}
+	return 0
+}
+
+// ollamaArchContextLength reads the architectural context length out of
+// /api/show's model_info map: the value of "<arch>.context_length" where
+// arch is general.architecture (e.g. "llama.context_length"), falling
+// back to any "*.context_length" key. Returns 0 when none is present.
+func ollamaArchContextLength(info map[string]any) int {
+	if info == nil {
+		return 0
+	}
+	if arch, ok := info["general.architecture"].(string); ok && arch != "" {
+		if v := asPositiveInt(info[arch+".context_length"]); v > 0 {
+			return v
+		}
+	}
+	for k, val := range info {
+		if strings.HasSuffix(k, ".context_length") {
+			if v := asPositiveInt(val); v > 0 {
+				return v
+			}
+		}
+	}
+	return 0
+}
+
+// asPositiveInt coerces a JSON-decoded number (float64 from a map[string]any
+// decode, but int / json.Number are handled defensively) to a positive int,
+// or 0.
+func asPositiveInt(v any) int {
+	switch n := v.(type) {
+	case float64:
+		if n > 0 {
+			return int(n)
+		}
+	case int:
+		if n > 0 {
+			return n
+		}
+	case json.Number:
+		if i, err := n.Int64(); err == nil && i > 0 {
+			return int(i)
+		}
+	}
+	return 0
+}
+
+// firstPositive returns the first argument greater than zero, or 0 when
+// none qualify. Used to pick a context-window value from whichever
+// field a given OpenAI-compatible provider populated.
+func firstPositive(vals ...int) int {
+	for _, v := range vals {
+		if v > 0 {
+			return v
+		}
+	}
+	return 0
 }
 
 func doLive(req *http.Request) ([]byte, error) {

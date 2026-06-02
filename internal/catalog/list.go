@@ -123,6 +123,65 @@ func List(ctx context.Context, p config.Provider, apiKey string) ([]Model, error
 	return Live(ctx, p.Kind, p.BaseURL, apiKey)
 }
 
+// DiscoverContextWindow resolves a model's context window from the
+// provider's live API — no hardcoded per-model table. It reads the
+// list-models endpoint first (which surfaces max_model_len /
+// context_length / context_window on the backends that report them —
+// vLLM, many NVIDIA NIM deployments, OpenRouter, Together) and falls
+// back to an overflow probe for endpoints that list no window. Returns 0
+// when neither source yields a positive window, leaving the caller on
+// default_window.
+//
+// The window is a per-DEPLOYMENT fact, not a per-model constant: a NIM
+// can serve a model with a --max-model-len far below the model's
+// architectural maximum to fit GPU memory, and new models ship daily, so
+// it must be read from the live endpoint rather than guessed from the
+// model name. Curated providers (Anthropic, OpenAI-auth, …) carry the
+// window in the embedded catalog and never reach the probe.
+//
+// The second return is a short human-readable diagnostic (which source
+// answered, or why none did) so callers can tell the user what happened
+// instead of silently falling back to default_window.
+func DiscoverContextWindow(ctx context.Context, p config.Provider, apiKey, model string) (int, string) {
+	if model == "" {
+		return 0, "no model"
+	}
+	// Ollama is special: /api/tags lists no window and Ollama doesn't
+	// reject on context overflow, so the openai-compatible overflow probe
+	// can't address it. /api/show, however, reports the model's context
+	// length — query it directly for just this model (cheaper than listing
+	// every model and enriching each).
+	if p.Kind == "ollama" {
+		if w := ollamaContextWindow(ctx, p.BaseURL, model); w > 0 {
+			return w, "from ollama /api/show"
+		}
+		// Fall through to models.dev (covers ollama-cloud); local Ollama
+		// won't host-match, so it just returns 0 below.
+		if w := ModelsDevWindow(p.BaseURL, model); w > 0 {
+			return w, "from models.dev"
+		}
+		return 0, "ollama: no context length in /api/show (pin `num_ctx` in the Modelfile or set context_window in config)"
+	}
+	if entries, err := List(ctx, p, apiKey); err == nil {
+		for _, e := range entries {
+			if e.ID == model && e.ContextWindow > 0 {
+				return e.ContextWindow, "from list-models"
+			}
+		}
+	}
+	// models.dev catalog: the reliable, per-deployment source for hosted
+	// OpenAI-compatible providers (NVIDIA NIM, Together, Fireworks…) whose
+	// /v1/models lists only ids. Matched by base-URL host so we get THIS
+	// deployment's window (NVIDIA serves deepseek-v4-pro at 1M; other hosts
+	// at 64K). This replaces the old overflow probe, which was slow,
+	// regex-brittle, and stalled on large-window models (the server
+	// prefills the oversized prompt instead of rejecting).
+	if w := ModelsDevWindow(p.BaseURL, model); w > 0 {
+		return w, "from models.dev"
+	}
+	return 0, "no window from list-models or models.dev (set a per-model context_window in config to override)"
+}
+
 // IsCurated reports whether p's kind is sourced from the embedded
 // catalog. Useful when callers want to render different empty-state
 // hints ("run `yotta-models refresh`" vs "couldn't reach API").
