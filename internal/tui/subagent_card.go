@@ -222,9 +222,27 @@ func renderSubagentBackgroundDone(e agent.SubagentBackgroundDone) string {
 		status + " " + styleSubagentMeta.Render(stats)
 	if e.Branch != "" {
 		header += styleSubagentMeta.Render(" · " + shortBranch(e.Branch))
+		// Commit state, so the async banner doesn't imply integrate-ready
+		// work on an empty/rejected branch. A committed worker shows its
+		// short SHA; one that produced nothing committable shows the reason.
+		switch {
+		case e.Committed:
+			header += styleSubagentMeta.Render(" · committed " + shortCommit(e.CommitSHA))
+		case e.CommitErr != "":
+			header += styleSubagentErr.Render(" · not committed: " + e.CommitErr)
+		}
 	}
 	footer := styleSubagentMeta.Render("    /subagents — open the picker, then Enter on task " + e.TaskID[:8])
 	return header + "\n" + footer
+}
+
+// shortCommit renders an 8-char commit SHA for the dock banner, matching
+// the dispatch tool's shortSHA so the two surfaces agree.
+func shortCommit(sha string) string {
+	if len(sha) > 8 {
+		return sha[:8]
+	}
+	return sha
 }
 
 // formatSubagentStats composes the duration / tool-count / tokens

@@ -328,6 +328,28 @@ func (r *Registry) Cancel(id string) bool {
 	return true
 }
 
+// CancelAll invokes every running task's cancel func, signaling all
+// in-flight subagents — foreground AND detached background workers — to
+// stop at their next context check. Used on session shutdown so background
+// workers (which run on context.Background() to survive the parent turn)
+// don't leak their goroutines and provider SSE streams past TUI exit.
+// Returns the number of tasks signaled. Like Cancel, it does not mark the
+// tasks done — each goroutine does that when it observes the canceled
+// context; callers that need to wait for the drain can poll ActiveCount.
+func (r *Registry) CancelAll() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	n := 0
+	for _, t := range r.tasks {
+		if t.cancel != nil {
+			t.cancel()
+			t.cancel = nil
+			n++
+		}
+	}
+	return n
+}
+
 // SetContextUsage records the subagent's current context size + window so
 // the live dock can render a fill bar. Called each iteration from the
 // runner as it forwards the child loop's ContextUsage event.

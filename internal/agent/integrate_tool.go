@@ -149,7 +149,58 @@ func (t *IntegrateTool) Execute(ctx context.Context, argsJSON string) (string, e
 		merged = append(merged, branch)
 	}
 
-	return t.successMessage(integBranch, integDir, merged, skipped), nil
+	// Full success: the task branches' work is now captured in the
+	// integration branch, so reclaim their throwaway worktrees + branches
+	// instead of letting them accumulate forever (the old "prune with
+	// git_worktree_prune" advice was a no-op against still-live worktrees).
+	removedWts, keptWts := cleanupSourceWorktrees(ctx, repoRoot, merged, skipped)
+	return t.successMessage(integBranch, integDir, merged, skipped, removedWts, keptWts), nil
+}
+
+// cleanupSourceWorktrees reclaims the per-task worktrees after a clean
+// integration. Merged branches' worktrees (and the worktree-* branches
+// themselves) are force-removed — their commits are safely reachable from
+// the integration branch. Skipped branches contributed nothing to merge:
+// the empty ones are removed too, but any worktree still holding
+// uncommitted/untracked work is KEPT and its path returned, so a worker's
+// partial output is never discarded. Best-effort — a removal failure is
+// reported, never fatal (the integration already succeeded).
+func cleanupSourceWorktrees(ctx context.Context, repoRoot string, merged, skipped []string) (removed, kept []string) {
+	infos, err := worktree.List(ctx, repoRoot)
+	if err != nil {
+		return nil, nil
+	}
+	byBranch := map[string]string{}
+	for _, w := range infos {
+		if w.Branch != "" {
+			byBranch[w.Branch] = w.Path
+		}
+	}
+	for _, br := range merged {
+		if dir, ok := byBranch[br]; ok {
+			if err := worktree.Remove(ctx, repoRoot, dir, true); err == nil {
+				removed = append(removed, br)
+			} else {
+				kept = append(kept, dir)
+			}
+		}
+	}
+	for _, br := range skipped {
+		dir, ok := byBranch[br]
+		if !ok {
+			continue
+		}
+		// Only remove an empty branch's worktree when it holds no unsaved
+		// work; otherwise keep it so the user can recover what's there.
+		if st, e := worktree.DetectState(ctx, dir); e == nil && !st.HasUncommitted && !st.HasUntracked {
+			if err := worktree.Remove(ctx, repoRoot, dir, true); err == nil {
+				removed = append(removed, br)
+				continue
+			}
+		}
+		kept = append(kept, dir)
+	}
+	return removed, kept
 }
 
 // ensureIntegrationWorktree makes sure integDir is a worktree checked out on
@@ -157,7 +208,22 @@ func (t *IntegrateTool) Execute(ctx context.Context, argsJSON string) (string, e
 // success or a recoverable error message.
 func (t *IntegrateTool) ensureIntegrationWorktree(ctx context.Context, repoRoot, integBranch, integDir, base string) string {
 	if isDir(integDir) {
-		return "" // reuse the existing integration worktree
+		// The directory exists — but before piling merges into it, verify it
+		// really is OUR integration worktree: a registered worktree of this
+		// repo, checked out on integBranch. Reusing any directory that merely
+		// sits at this path (a stray dir, a worktree on the wrong branch, a
+		// detached HEAD) would merge branches into the wrong place silently.
+		branch, err := gitOutput(ctx, integDir, "rev-parse", "--abbrev-ref", "HEAD")
+		if err != nil {
+			return fmt.Sprintf("error: %s exists but is not a usable git worktree (%v); remove it or pass a different integration_branch", integDir, err)
+		}
+		if got := strings.TrimSpace(branch); got != integBranch {
+			return fmt.Sprintf("error: %s is checked out on %q, not the integration branch %q; remove it or pass a different integration_branch", integDir, got, integBranch)
+		}
+		if !isRegisteredWorktree(ctx, repoRoot, integDir) {
+			return fmt.Sprintf("error: %s is on branch %q but is not a registered worktree of this repo; remove it or pass a different integration_branch", integDir, integBranch)
+		}
+		return "" // verified — reuse the existing integration worktree
 	}
 	branchExists := false
 	if _, e := gitOutput(ctx, repoRoot, "rev-parse", "--verify", "refs/heads/"+integBranch); e == nil {
@@ -194,10 +260,17 @@ func (t *IntegrateTool) conflictMessage(integBranch, integDir, branch string, co
 		b.WriteString(" and branches=[] to finalize")
 	}
 	b.WriteString(".\n")
+	// Alternative: skip this branch for now rather than resolving in place.
+	fmt.Fprintf(&b, "Or to drop %s from this round, run `git merge --abort` in %s and call integrate again with integration_branch=%q",
+		branch, integDir, integBranch)
+	if len(remaining) > 0 {
+		fmt.Fprintf(&b, " and branches=[%s]", strings.Join(remaining, ", "))
+	}
+	fmt.Fprintf(&b, " (re-include %s in a later call once it's fixed).\n", branch)
 	return b.String()
 }
 
-func (t *IntegrateTool) successMessage(integBranch, integDir string, merged, skipped []string) string {
+func (t *IntegrateTool) successMessage(integBranch, integDir string, merged, skipped, removedWts, keptWts []string) string {
 	var b strings.Builder
 	if len(merged) == 0 {
 		fmt.Fprintf(&b, "Integration branch %s is up to date — nothing new to merge", integBranch)
@@ -212,8 +285,13 @@ func (t *IntegrateTool) successMessage(integBranch, integDir string, merged, ski
 		}
 	}
 	fmt.Fprintf(&b, "Integration worktree: %s\n", integDir)
-	fmt.Fprintf(&b, "Open a PR from branch %q (e.g. push it and use /create-pr). ", integBranch)
-	b.WriteString("The per-task worktrees are left in place; prune them with git_worktree_prune once you're satisfied.\n")
+	fmt.Fprintf(&b, "Open a PR from branch %q (e.g. push it and use /create-pr).\n", integBranch)
+	if len(removedWts) > 0 {
+		fmt.Fprintf(&b, "Reclaimed %d task worktree(s) + branch(es) now that their work is integrated.\n", len(removedWts))
+	}
+	if len(keptWts) > 0 {
+		fmt.Fprintf(&b, "Kept %d task worktree(s) that still hold uncommitted work — recover or discard manually: %s.\n", len(keptWts), strings.Join(keptWts, ", "))
+	}
 	return b.String()
 }
 
@@ -232,4 +310,21 @@ func branchHasUniqueCommits(ctx context.Context, integDir, branch string) bool {
 func isDir(p string) bool {
 	info, err := os.Stat(p)
 	return err == nil && info.IsDir()
+}
+
+// isRegisteredWorktree reports whether dir is a worktree of repoRoot
+// according to `git worktree list` — the guard against reusing a directory
+// that sits at the integration path but isn't actually one of this repo's
+// worktrees.
+func isRegisteredWorktree(ctx context.Context, repoRoot, dir string) bool {
+	infos, err := worktree.List(ctx, repoRoot)
+	if err != nil {
+		return false
+	}
+	for _, w := range infos {
+		if worktree.SamePath(w.Path, dir) {
+			return true
+		}
+	}
+	return false
 }

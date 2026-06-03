@@ -157,12 +157,20 @@ type dispatchChild struct {
 	isWrite  bool
 	branch   string // write only
 	worktree string // write only
+	repoRoot string // write only: the main repo the worktree belongs to
+	base     string // write only: the base commit the worktree branched from
 	// filled after the run
 	status  subagents.TaskStatus
 	result  string
 	errored bool
 	tokens  int
-	commit  string
+	commit  string // branch tip SHA when the worker produced commits, else ""
+	// commitErr explains why a write worker's branch has no committable
+	// work when that's worth surfacing — a hook/lint rejection, a staging
+	// failure, or an errored worker that left uncommitted work in its
+	// worktree. Empty when commit presence is unambiguous (committed, or a
+	// clean no-op). Cleared once commit presence is confirmed via rev-list.
+	commitErr string
 }
 
 func (t *DispatchTool) Execute(ctx context.Context, argsJSON string) (string, error) {
@@ -240,6 +248,25 @@ func (t *DispatchTool) Execute(ctx context.Context, argsJSON string) (string, er
 
 	batchID := subagents.NewTaskID()[:8]
 
+	// Mode: background (non-blocking) for write-capable batches by default —
+	// they're long-running parallel implementation; foreground (blocking,
+	// assemble-now) for all-read research batches. An explicit `background`
+	// overrides. Falls back to foreground where the session can't host
+	// detached workers (oneshot). Decided here, before any worktree is
+	// created, so the background cap can fail fast and leak nothing.
+	runBackground, bgNote := t.resolveBackground(a.Background, hasWrite)
+
+	// Background cap: each detached worker holds a slot until it finishes, and
+	// repeated background dispatch calls would otherwise stack unbounded
+	// workers (provider streams + goroutines). Reject when this batch would
+	// push the live count past the cap — mirrors the Agent tool's own gate.
+	if runBackground {
+		if active := t.Agent.Tasks.ActiveCount(); active+len(children) > MaxBackgroundSubagents {
+			return fmt.Sprintf("error: dispatching %d background workers would exceed the cap of %d concurrent background subagents (currently %d running); wait for some to finish or stop them with /subagents stop, then retry",
+				len(children), MaxBackgroundSubagents, active), nil
+		}
+	}
+
 	// Create worktrees for write subtasks. On any failure, clean up what
 	// we created so a half-built batch doesn't leak worktrees.
 	var created []string // worktree dirs, for cleanup on error
@@ -266,14 +293,9 @@ func (t *DispatchTool) Execute(ctx context.Context, argsJSON string) (string, er
 		created = append(created, wtDir)
 		c.branch = branch
 		c.worktree = wtDir
+		c.repoRoot = repoRoot
+		c.base = baseSHA
 	}
-
-	// Mode: background (non-blocking) for write-capable batches by
-	// default — they're long-running parallel implementation; foreground
-	// (blocking, assemble-now) for all-read research batches. An explicit
-	// `background` overrides. Falls back to foreground where the session
-	// can't host detached workers (oneshot).
-	runBackground, bgNote := t.resolveBackground(a.Background, hasWrite)
 
 	if runBackground {
 		// Detach each worker from the parent turn (context.Background) so
@@ -360,15 +382,10 @@ func (t *DispatchTool) runDispatchChild(ctx context.Context, c *dispatchChild, b
 	var emitToParent func(Event)
 	var decisions <-chan Decision
 	if !background {
-		emitToParent = func(ev Event) {
-			if parentEvents == nil {
-				return
-			}
-			select {
-			case parentEvents <- ev:
-			default:
-			}
-		}
+		// Critical events the child blocks on (ApprovalNeeded /
+		// PathTrustElevationNeeded) are delivered with a blocking send;
+		// progress stays lossy. See forwardToParent.
+		emitToParent = func(ev Event) { forwardToParent(ctx, parentEvents, ev) }
 		decisions = parentDecisions
 		emitToParent(SubagentStart{
 			TaskID:         c.taskID,
@@ -404,19 +421,57 @@ func (t *DispatchTool) runDispatchChild(ctx context.Context, c *dispatchChild, b
 		emitToParent, decisions, childAdapter, childModel, opts,
 	)
 
-	// Auto-commit the worktree to its branch so integrate has something to
-	// merge — independent of whether the model remembered to commit. This
-	// runs BEFORE MarkDone so anyone observing the task as finished (a
-	// parent blocked in get_subagent_result, the integrate step, the dock)
-	// already sees the committed branch — no race where "done" precedes the
-	// commit. Uses context.WithoutCancel so a just-finished foreground run
-	// whose parent turn is being canceled still commits its work.
-	if c.isWrite && !errored && gitWorktreeDirty(ctx, c.worktree) {
+	// Commit + classify the worker's output. Runs BEFORE MarkDone so anyone
+	// observing the task as finished (a parent blocked in get_subagent_result,
+	// the integrate step, the dock) already sees an accurate commit state —
+	// no race where "done" precedes the commit. Uses context.WithoutCancel so
+	// a just-finished foreground run whose parent turn is being canceled still
+	// commits its work.
+	//
+	// Three things this gets right that the naive "dirty → commit, else clean"
+	// path did not (the P1 silent-failure cluster):
+	//   1. A SUCCESSFUL worker's dirty tree is auto-committed; if that commit
+	//      is rejected (pre-commit hook, lint, validation) or staging fails,
+	//      the *reason* is captured in c.commitErr instead of the branch being
+	//      reported as a clean "no changes".
+	//   2. An errored/iter-capped worker's tree is NOT auto-committed (its
+	//      partial work may be broken — folding it into the integrate set
+	//      silently would be worse than surfacing it); its worktree path is
+	//      surfaced so the user can recover it.
+	//   3. Commit PRESENCE is derived from the branch itself (rev-list
+	//      base..HEAD), not end-of-run dirtiness — so a worker that committed
+	//      its own work and left a clean tree is still recognized.
+	if c.isWrite {
+		// Use commitCtx (cancellation-detached) for the dirtiness checks too,
+		// not just the add/commit — otherwise a just-finished foreground worker
+		// whose parent turn is being canceled would see gitWorktreeDirty error
+		// out (canceled ctx) → false → skip its own commit, defeating the
+		// commit-on-cancel intent this block exists for.
 		commitCtx := context.WithoutCancel(ctx)
-		if _, err := gitOutput(commitCtx, c.worktree, "add", "-A"); err == nil {
-			msg := commitSubject(c.cfg.Name, c.spec.Description)
-			if res, cErr := ApplyCommit(commitCtx, c.worktree, msg); cErr == nil && res.Committed {
-				c.commit = res.SHA
+		if !errored && gitWorktreeDirty(commitCtx, c.worktree) {
+			if _, err := gitOutput(commitCtx, c.worktree, "add", "-A"); err != nil {
+				c.commitErr = "staging changes failed: " + err.Error()
+			} else {
+				msg := commitSubject(c.cfg.Name, c.spec.Description)
+				res, cErr := ApplyCommit(commitCtx, c.worktree, msg)
+				switch {
+				case cErr != nil:
+					c.commitErr = "commit failed: " + cErr.Error()
+				case res.HookError != "":
+					c.commitErr = "pre-commit hook rejected the commit — " + firstLine(res.HookError)
+				case res.ValidationErr != "":
+					c.commitErr = "commit validation failed — " + res.ValidationErr
+				}
+			}
+		}
+		// Authoritative presence check, however the commit got there
+		// (auto-committed above, or the worker committed its own work).
+		if c.branch != "" {
+			if sha := branchTip(commitCtx, c.worktree, c.base); sha != "" {
+				c.commit = sha
+				c.commitErr = "" // the branch has commits after all
+			} else if errored && gitWorktreeDirty(commitCtx, c.worktree) {
+				c.commitErr = "ended without committing; uncommitted work left in " + c.worktree
 			}
 		}
 	}
@@ -447,7 +502,20 @@ func (t *DispatchTool) runDispatchChild(ctx context.Context, c *dispatchChild, b
 			Model:      childModel,
 			Branch:     c.branch,
 			BatchID:    batchID,
+			Committed:  c.commit != "",
+			CommitSHA:  c.commit,
+			CommitErr:  c.commitErr,
 		})
+		// Best-effort: a background write worker that produced no commits and
+		// left a clean tree has an empty throwaway worktree+branch — reclaim
+		// it so no-op batches don't accumulate. Errored or dirty worktrees are
+		// kept; the done event surfaced their path for recovery (P1).
+		if c.isWrite && c.worktree != "" && c.repoRoot != "" && c.commit == "" && !errored {
+			cleanupCtx := context.WithoutCancel(ctx)
+			if !gitWorktreeDirty(cleanupCtx, c.worktree) {
+				_ = worktree.Remove(cleanupCtx, c.repoRoot, c.worktree, true)
+			}
+		}
 		return
 	}
 	emitToParent(SubagentDone{
@@ -576,7 +644,12 @@ func (t *DispatchTool) formatBackgroundResult(goal, batchID string, children []*
 	b.WriteString("\nFollow progress in the live dock (pinned above the status bar) or with /subagents. ")
 	b.WriteString("Each worker auto-approves within its own isolated worktree and is committed to its branch when it finishes.\n")
 	if len(branches) > 0 {
-		fmt.Fprintf(&b, "When the workers are done, call integrate with branches [%s] to merge them into one branch for your PR.\n", strings.Join(branches, ", "))
+		// Don't over-promise: at dispatch time we don't yet know which
+		// workers will actually produce commits (a hook rejection, an empty
+		// change, or an iter-cap can leave a branch with nothing). integrate
+		// skips empty branches, and the dock shows each worker's commit
+		// status as it lands — so phrase this as "merge whatever committed".
+		fmt.Fprintf(&b, "When the workers finish (watch the dock for each one's commit status), call integrate with branches [%s]; it merges whatever committed cleanly and skips any branch a worker left empty.\n", strings.Join(branches, ", "))
 	}
 	return b.String()
 }
@@ -603,10 +676,13 @@ func (t *DispatchTool) formatResult(goal, batchID string, children []*dispatchCh
 		fmt.Fprintf(&b, "status: %s", c.status)
 		if c.branch != "" {
 			fmt.Fprintf(&b, " · branch: %s", c.branch)
-			if c.commit != "" {
+			switch {
+			case c.commit != "":
 				fmt.Fprintf(&b, " · committed %s", shortSHA(c.commit))
-			} else {
-				b.WriteString(" · (no changes committed)")
+			case c.commitErr != "":
+				fmt.Fprintf(&b, " · NOT committed (%s)", c.commitErr)
+			default:
+				b.WriteString(" · (no changes to commit)")
 			}
 		}
 		fmt.Fprintln(&b)
@@ -646,4 +722,31 @@ func shortSHA(sha string) string {
 		return sha[:8]
 	}
 	return sha
+}
+
+// branchTip returns the worktree branch's HEAD sha when it has at least one
+// commit beyond base, or "" when the branch added nothing (or the query
+// fails). This is the authoritative "did this worker produce committable
+// work?" signal — independent of end-of-run worktree dirtiness, so it
+// recognizes a worker that committed its own changes and left a clean tree.
+func branchTip(ctx context.Context, worktreeDir, base string) string {
+	if base == "" {
+		return ""
+	}
+	out, err := gitOutput(ctx, worktreeDir, "rev-list", "-1", base+"..HEAD")
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(out)
+}
+
+// firstLine returns the first non-empty line of s, trimmed — used to fold a
+// multi-line hook/validation error into a one-line reason for the dispatch
+// result without dumping the whole stderr into the parent's context.
+func firstLine(s string) string {
+	s = strings.TrimSpace(s)
+	if before, _, found := strings.Cut(s, "\n"); found {
+		return strings.TrimSpace(before)
+	}
+	return s
 }

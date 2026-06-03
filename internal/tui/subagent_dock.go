@@ -41,6 +41,14 @@ func renderSubagentDock(tasks []subagents.Task, width int, defaultModel string, 
 	if len(running) == 0 {
 		return ""
 	}
+	// Clamp the focus cursor defensively: a subagent may have finished since
+	// the last keystroke, leaving the cursor past the end of the running set.
+	if cursor >= len(running) {
+		cursor = len(running) - 1
+	}
+	if cursor < 0 {
+		cursor = 0
+	}
 
 	// Header: count + (when the whole set shares one dispatch batch) the
 	// batch id, so a fan-out reads as one unit. A dim hint trails it: how

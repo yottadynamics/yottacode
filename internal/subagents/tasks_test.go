@@ -1,10 +1,39 @@
 package subagents
 
 import (
+	"context"
 	"sync"
 	"testing"
 	"time"
 )
+
+// TestRegistry_CancelAll is the P3 shutdown regression: CancelAll must fire
+// every running task's attached cancel func (so detached background workers
+// don't leak past session exit) and be idempotent.
+func TestRegistry_CancelAll(t *testing.T) {
+	r := NewRegistry()
+	ctxA, cancelA := context.WithCancel(context.Background())
+	ctxB, cancelB := context.WithCancel(context.Background())
+	r.Add(&Task{ID: "aaaa1111", Status: TaskRunning})
+	r.Add(&Task{ID: "bbbb2222", Status: TaskRunning})
+	r.AttachCancel("aaaa1111", cancelA)
+	r.AttachCancel("bbbb2222", cancelB)
+
+	if n := r.CancelAll(); n != 2 {
+		t.Fatalf("CancelAll signaled %d, want 2", n)
+	}
+	for name, ctx := range map[string]context.Context{"a": ctxA, "b": ctxB} {
+		select {
+		case <-ctx.Done():
+		default:
+			t.Errorf("task %s context was not canceled by CancelAll", name)
+		}
+	}
+	// Idempotent: the cancel funcs are cleared, so a second call is a no-op.
+	if n := r.CancelAll(); n != 0 {
+		t.Errorf("second CancelAll signaled %d, want 0", n)
+	}
+}
 
 func TestRegistry_AddGetList(t *testing.T) {
 	r := NewRegistry()

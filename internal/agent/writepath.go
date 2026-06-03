@@ -343,6 +343,21 @@ func DefaultDenyPaths(cwd string) []string {
 			filepath.Join(cwd, ".git", "packed-refs"),
 			filepath.Join(cwd, ".git", "objects"),
 		)
+		// In a *linked git worktree* (what dispatch's write subtasks run
+		// in), `.git` is a pointer FILE — `gitdir: …/.git/worktrees/<name>`
+		// — not a directory. Rewriting it repoints the worktree at another
+		// gitdir and escapes the per-worktree isolation dispatch relies on,
+		// so deny the pointer file specifically. We deliberately do NOT add
+		// `.git` unconditionally: in the main repo `.git` is a directory,
+		// and matchesAny treats every deny entry as a directory prefix, so
+		// listing it would also re-deny `.git/hooks/` — which the deny list
+		// intentionally leaves writable (model hook authoring is allowed,
+		// see above). Gating on "is a non-directory" targets exactly the
+		// worktree pointer-file case and leaves the main repo untouched.
+		gitPath := filepath.Join(cwd, ".git")
+		if info, err := os.Lstat(gitPath); err == nil && !info.IsDir() {
+			out = append(out, gitPath)
+		}
 	}
 	return out
 }

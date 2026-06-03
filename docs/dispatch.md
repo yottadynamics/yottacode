@@ -10,10 +10,25 @@ single integration branch you open a PR from.
 This is the building block for "decompose a large PR into smaller
 independent tasks, implement them in parallel, assemble the result."
 
-> Experimental — gated behind the `dispatch` feature flag. Enable with
-> `--experimental dispatch`, `YOTTACODE_EXPERIMENTAL=dispatch`, or
-> `[experimental]\ndispatch = true` in `~/.yottacode/config.toml`. See
-> [experimental.md](experimental.md).
+> **Status: experimental beta — opt-in, and we want your feedback.** The
+> feature is merged and tested, but the UX and model behavior are still
+> settling. Enable it (for the full background experience, turn on both flags):
+>
+> ```bash
+> yottacode --experimental dispatch --experimental background_subagents
+> ```
+>
+> (or `YOTTACODE_EXPERIMENTAL=dispatch,background_subagents`, or set both under
+> `[experimental]` in `~/.yottacode/config.toml`.) `dispatch` alone is enough
+> for the `dispatch`/`integrate` tools; `background_subagents` additionally
+> enables `run_in_background:true` on the standalone `Agent` tool. See
+> [experimental.md](experimental.md) for every way to enable.
+>
+> **Hit a bug or a rough edge?** Please file it on GitHub Issues with the
+> **`dispatch-beta`** label — include what you dispatched, what happened, and
+> the relevant transcript (open `/subagents`, press Enter on the task). Skim
+> the **[Known limitations (beta)](#known-limitations-beta)** at the bottom
+> first — a few sharp edges are known and listed there.
 
 ## The model
 
@@ -77,18 +92,25 @@ learned.
 dispatch({
   "goal": "add a /health endpoint with config + tests",
   "tasks": [
-    { "subagent_type": "general-purpose", "description": "handler",
+    { "subagent_type": "implement", "description": "handler",
       "prompt": "Add a GET /health handler returning {status:\"ok\"}.",
       "files": ["internal/api/health.go", "internal/api/routes.go"] },
-    { "subagent_type": "general-purpose", "description": "config flag",
+    { "subagent_type": "implement", "description": "config flag",
       "prompt": "Add a HealthEnabled config flag, default true.",
       "files": ["internal/config/config.go"] },
-    { "subagent_type": "general-purpose", "description": "tests",
+    { "subagent_type": "test", "description": "tests",
       "prompt": "Add a table test for the /health handler.",
       "files": ["internal/api/health_test.go"] }
   ]
 })
 ```
+
+The `implement` / `test` / `docs` roles are write-capable and
+background-by-default — they're built for exactly this fan-out (each owns a
+disjoint file set). A common full arc is **`Plan`** (design the split) →
+**`[implement, test, docs]`** (build in parallel) → **`review`** +
+**`verification`** (read-only critique + adversarial build/test). See
+[subagents.md](subagents.md) for the full roster.
 
 This is a write batch, so it runs in the **background**: the call returns
 immediately with a batch id and the three worker branches, and the workers
@@ -121,11 +143,14 @@ on the mode:
   - **File writes/edits** — allowed; the worktree child registry confines them
     to the worker's own worktree, so the blast radius is its branch.
   - **`run_tests`** — allowed, so a worker can verify its change.
-  - **`run_bash`** — allowed only for **read-only** commands (the same
-    allowlisted verbs + risk classifier auto-mode uses); any mutating or
-    dangerous shell (`rm`, `git push -f`, `curl|sh`, `go build`, …) is
-    **denied**. So "confined to the worktree" is now true — a worker can't run
-    arbitrary shell unattended. No `--yolo` is required for background fan-out.
+  - **`run_bash`** — **disabled** for unattended workers in the beta. The
+    "read-only shell" classifier is a first-token check that can be bypassed
+    (e.g. `env`/`command` wrappers, process substitution) and `run_bash` isn't
+    path-confined once allowed, so auto-allowing it would be an arbitrary-code-
+    execution surface for a worker nobody is watching. A task that genuinely
+    needs shell must run in the **foreground** (where a human approves each
+    call), or use **`run_tests`**. (A token-aware classifier that re-enables
+    safe read-only shell is tracked as dispatch-v3 Layer 0.)
   - Everything else (the commit happens via dispatch's own auto-commit).
 - **Foreground children forward approvals to your modal** (serialized across
   the batch), so you see and answer each one. Pair with **auto** mode to skip
@@ -151,6 +176,26 @@ path. Resolve the conflict there (edit, `git add`, commit the merge), then
 call `integrate` again with the **same** `integration_branch` and the
 **remaining** branches to continue.
 
+Alternatively, to drop the conflicting branch from this round instead of
+resolving it in place, run `git merge --abort` in the integration worktree
+and call `integrate` again with the same `integration_branch` and just the
+remaining branches — then re-include the dropped branch in a later call once
+it's fixed. The conflict report spells out both options.
+
+## Commit reporting
+
+Each write worker is auto-committed to its branch when it finishes, but the
+result doesn't assume that always succeeds. A worker's branch state is
+derived from the branch itself (`git rev-list base..branch`), so a worker
+that committed its own work and left a clean tree is still recognized as
+having produced commits. When a worker produces **nothing committable** —
+an empty change, a **pre-commit hook / lint rejection**, or an errored run
+that left uncommitted work — that's reported with the reason (and the
+worktree path for an errored worker), instead of a misleading "no changes".
+For a background batch the per-worker commit status (committed SHA, or the
+not-committed reason) lands on the dock banner as each worker finishes, and
+`integrate` simply skips any branch that ended up empty.
+
 ## Watching it run
 
 While subagents run, a **live dock** appears just above the status bar —
@@ -167,5 +212,48 @@ lists every task and opens each one's full transcript.
   writes) — read-only dispatch is fine.
 - Child subagents cannot dispatch further (no recursion): `dispatch`,
   `integrate`, and `Agent` are stripped from every child's toolset.
-- The per-task worktrees are left in place after `integrate` for
-  inspection; prune them with `git_worktree_prune` when you're done.
+- At most 8 **background** workers run concurrently across the whole
+  session — repeated background dispatch calls are rejected once the live
+  count would exceed the cap (wait for some to finish, or `/subagents stop`).
+- On a clean `integrate`, the merged task worktrees **and** their
+  `worktree-dispatch-*` branches are reclaimed automatically (their work is
+  safely on the integration branch). Empty skipped branches are removed too;
+  a worktree still holding *uncommitted* work is kept and its path reported
+  so nothing is discarded. (There's no more "prune later with
+  `git_worktree_prune`" step — that was a no-op against live worktrees.)
+- Background workers are bound to the session: quitting yottacode cancels
+  any still-running workers (and tears down their provider streams) rather
+  than leaking them.
+
+## Known limitations (beta)
+
+Sharp edges we know about — read these before filing a `dispatch-beta` issue:
+
+- **The sandbox is not a container.** Worktree write-confinement + the
+  deterministic shell floor are guardrails, not isolation. For untrusted or
+  high-stakes work, run yottacode itself inside a VM/container.
+- **Unattended `run_bash` is disabled.** Background workers can write files
+  and `run_tests`, but cannot run arbitrary shell (the read-only classifier is
+  bypassable and `run_bash` isn't path-confined). A task that needs shell must
+  run in the foreground, where you approve each call. Safe read-only shell for
+  background workers returns once the token-aware classifier lands.
+- **Worktrees accumulate outside the clean-merge path.** `integrate` reclaims
+  what it merges, and empty background worktrees are reclaimed on finish — but
+  a foreground write batch, an abandoned (never-integrated) background batch, a
+  conflicted integrate, or a crashed session can leave worktrees behind. There
+  is no startup garbage-collection yet. Clean them up yourself:
+
+  ```bash
+  yottacode worktree list      # see what's there
+  yottacode worktree prune     # remove worktrees whose dirs are gone
+  yottacode worktree remove <path>   # remove a specific one
+  ```
+
+- **The concurrency cap is per session, not per task tree.** The 8-background
+  limit is a flat cap; there's no tree-wide budget yet, so deeply nested or
+  rapid-fire dispatching is bounded only coarsely.
+- **A shutdown mid-commit can leave a stale `index.lock`.** Rare, and the next
+  `git` op in that worktree will tell you; clear the lock and retry.
+
+These are tracked for the next iteration in
+`yottacode-roadmap/dispatch-v3-collaboration.md` (Layer 0).

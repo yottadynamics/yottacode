@@ -14,7 +14,7 @@ tool is exposed to the parent model; the model dispatches by
 
 ## Built-in agents
 
-Four agent types ship with the binary:
+Eight agent types ship with the binary:
 
 | Name | Tools | Purpose |
 | --- | --- | --- |
@@ -22,6 +22,15 @@ Four agent types ship with the binary:
 | `Explore` | read-only (read_file, grep, glob, list_*, git read subcommands, fetch_url) | Fast code search and location lookup. |
 | `Plan` | Explore's tools + `todo_write` | Produce a written plan for a coding task. Ends with a `### Critical Files for Implementation` trailer. |
 | `verification` | Explore's tools + `run_bash` | Adversarially verify a change: run builds / tests / probes, try to break it, end with a `VERDICT: PASS\|FAIL\|PARTIAL` line. Background-by-default. |
+| `implement` | read + full write set + `run_tests` + `run_bash` | Build one well-scoped component end-to-end, staying inside its owned files. Write-capable, **background-by-default** — the workhorse write task in a `dispatch` fan-out. |
+| `test` | read + write + `run_tests` + `run_bash` | Write/update and run tests for a component, owning the test files only. Write-capable, **background-by-default** — pairs with `implement` on disjoint files. |
+| `docs` | read + `write_file`/`edit_file` + git read + `fetch_url` | Update documentation and comments for a change, owning the doc files only. Write-capable, **background-by-default**. |
+| `review` | read-only (Explore's tools + more git read) | Read-only critique of a diff — findings ranked by severity (file:line + scenario). Cannot edit; complements `verification`. Foreground. |
+
+The `implement` / `test` / `docs` / `review` roster rounds out the
+**parallel-implementation** story behind `dispatch`: a typical fan-out is
+`Plan` → `[implement, test, docs]` (disjoint files, in parallel) → `review`
++ `verification`. See [dispatch.md](dispatch.md).
 
 The built-in definitions live in `internal/subagents/builtins/*.md`
 and are embedded in the binary — they ship without any setup.

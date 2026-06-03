@@ -168,6 +168,12 @@ func Run(ctx context.Context, opts cli.ChatOptions, prompt string) error {
 	for _, name := range opts.Experimental {
 		expSet.Enable(name)
 	}
+	// Warn (don't fail) on unrecognized --experimental names so a typo or a
+	// graduated/removed feature surfaces instead of silently no-op'ing —
+	// mirrors the TUI launch path.
+	for _, unknown := range expSet.UnknownNames() {
+		fmt.Fprintf(os.Stderr, "warning: --experimental %q is not a recognized feature (typo? graduated? see docs/experimental.md)\n", unknown)
+	}
 	baseSys := opts.SystemPrompt
 	if baseSys == "" {
 		baseSys = defaultSystemPrompt

@@ -298,6 +298,16 @@ type SubagentBackgroundDone struct {
 	// Branch / BatchID are populated for dispatch background workers.
 	Branch  string
 	BatchID string
+	// Committed / CommitSHA / CommitErr report what the worker left on its
+	// branch — so the async banner doesn't imply integrate-ready work when
+	// the branch is empty or the commit was rejected. Committed is true when
+	// CommitSHA is set (base..branch has commits). CommitErr carries a
+	// one-line reason when a write worker produced no committable branch
+	// (hook/lint rejection, staging failure, or an errored worker that left
+	// uncommitted work in its worktree). All empty for read-only workers.
+	Committed bool
+	CommitSHA string
+	CommitErr string
 }
 
 func (ReasoningToken) event()           {}

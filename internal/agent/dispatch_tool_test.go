@@ -274,6 +274,238 @@ func TestDispatch_EndToEnd_TwoWriteTasks(t *testing.T) {
 	}
 }
 
+// TestDispatch_Background_DoneCallbackCarriesCommitStatus is the P1
+// regression for the async path: the background-done callback must report
+// whether the worker actually committed (Committed + CommitSHA), not fire a
+// no-op. Before the fix the event carried no commit status at all, so a
+// banner could imply integrate-ready work on an empty branch.
+func TestDispatch_Background_DoneCallbackCarriesCommitStatus(t *testing.T) {
+	repoRoot := dispatchTestRepo(t)
+	d := newDispatchToolE2E(t, repoRoot)
+	d.SupportsBackground = true
+
+	done := make(chan SubagentBackgroundDone, 8)
+	d.Agent.SetBackgroundDoneCallback(func(e SubagentBackgroundDone) { done <- e })
+
+	_, err := d.Execute(context.Background(), `{"goal":"two files","tasks":[
+		{"subagent_type":"writer","description":"a","prompt":"TESTWRITE:alpha.txt","files":["alpha.txt"]},
+		{"subagent_type":"writer","description":"b","prompt":"TESTWRITE:beta.txt","files":["beta.txt"]}
+	]}`)
+	if err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+
+	got := map[string]SubagentBackgroundDone{}
+	timeout := time.After(5 * time.Second)
+	for len(got) < 2 {
+		select {
+		case e := <-done:
+			got[e.TaskID] = e
+		case <-timeout:
+			t.Fatalf("only %d/2 background-done callbacks fired", len(got))
+		}
+	}
+	for _, e := range got {
+		if !e.Committed || e.CommitSHA == "" {
+			t.Errorf("worker %s should report Committed with a SHA, got %+v", e.TaskID[:8], e)
+		}
+		if e.CommitErr != "" {
+			t.Errorf("clean worker %s should have no CommitErr, got %q", e.TaskID[:8], e.CommitErr)
+		}
+	}
+}
+
+// TestDispatch_Foreground_HookRejectionSurfacesReason is the P1 regression
+// for silent commit failures: a pre-commit hook rejecting the auto-commit
+// must be reported as a reason (NOT a clean "no changes"), and such a branch
+// must be excluded from the integrate hint.
+func TestDispatch_Foreground_HookRejectionSurfacesReason(t *testing.T) {
+	repoRoot := dispatchTestRepo(t)
+	// A pre-commit hook that always fails. Linked worktrees share the main
+	// repo's hooks dir, so this fires for every worker's commit.
+	hookDir := filepath.Join(repoRoot, ".git", "hooks")
+	if err := os.MkdirAll(hookDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(hookDir, "pre-commit"),
+		[]byte("#!/bin/sh\necho 'lint failed: forbidden token'\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	d := newDispatchToolE2E(t, repoRoot)
+
+	out, err := d.Execute(context.Background(), `{"goal":"x","background":false,"tasks":[
+		{"subagent_type":"writer","description":"a","prompt":"TESTWRITE:alpha.txt","files":["alpha.txt"]},
+		{"subagent_type":"writer","description":"b","prompt":"TESTWRITE:beta.txt","files":["beta.txt"]}
+	]}`)
+	if err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	if !strings.Contains(out, "NOT committed") {
+		t.Errorf("expected a NOT committed reason, got:\n%s", out)
+	}
+	if !strings.Contains(strings.ToLower(out), "hook") {
+		t.Errorf("expected the hook rejection surfaced as the reason, got:\n%s", out)
+	}
+	if !strings.Contains(out, "nothing to integrate") {
+		t.Errorf("expected 'nothing to integrate' when every commit was rejected, got:\n%s", out)
+	}
+}
+
+// TestBranchTip is the P1 regression for commit-presence derivation: a
+// branch with a commit beyond base reports its tip SHA (so a worker that
+// committed its own work and left a clean tree is recognized as having
+// produced commits, instead of being judged by end-of-run dirtiness); a
+// branch even with base reports "".
+func TestBranchTip(t *testing.T) {
+	ctx := context.Background()
+	repo := dispatchTestRepo(t)
+	base, err := gitOutput(ctx, repo, "rev-parse", "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	base = strings.TrimSpace(base)
+
+	// A branch with no commits beyond base → "".
+	if tip := branchTip(ctx, repo, base); tip != "" {
+		t.Errorf("branch even with base should report no tip, got %q", tip)
+	}
+
+	// Add a commit (a "self-committed worker" leaving a clean tree), then the
+	// tip is reported even though the worktree is clean.
+	if err := os.WriteFile(filepath.Join(repo, "self.txt"), []byte("self\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"add", "-A"}, {"commit", "-m", "self-committed"}} {
+		if _, err := gitOutput(ctx, repo, args...); err != nil {
+			t.Fatalf("git %v: %v", args, err)
+		}
+	}
+	if gitWorktreeDirty(ctx, repo) {
+		t.Fatal("tree should be clean after the worker's own commit")
+	}
+	tip := branchTip(ctx, repo, base)
+	if tip == "" {
+		t.Fatal("a committed-but-clean branch must still report its tip (P1 presence derivation)")
+	}
+	head, _ := gitOutput(ctx, repo, "rev-parse", "HEAD")
+	if tip != strings.TrimSpace(head) {
+		t.Errorf("branchTip = %q, want HEAD %q", tip, strings.TrimSpace(head))
+	}
+
+	// Empty base → "" (guards the no-base path).
+	if tip := branchTip(ctx, repo, ""); tip != "" {
+		t.Errorf("empty base should report no tip, got %q", tip)
+	}
+}
+
+// TestDispatch_Background_EnforcesMaxConcurrent is the P3 regression: a
+// background dispatch must respect MaxBackgroundSubagents (repeated calls
+// would otherwise stack unbounded detached workers), and a rejected batch
+// must leak no worktrees.
+func TestDispatch_Background_EnforcesMaxConcurrent(t *testing.T) {
+	repoRoot := dispatchTestRepo(t)
+	d := newDispatchToolE2E(t, repoRoot)
+	d.SupportsBackground = true
+
+	// Saturate the background cap with already-running tasks.
+	for i := 0; i < MaxBackgroundSubagents; i++ {
+		d.Agent.Tasks.Add(&subagents.Task{
+			ID:         subagents.NewTaskID(),
+			Status:     subagents.TaskRunning,
+			Background: true,
+		})
+	}
+
+	out, err := d.Execute(context.Background(), `{"goal":"x","tasks":[
+		{"subagent_type":"writer","description":"a","prompt":"TESTWRITE:alpha.txt","files":["alpha.txt"]},
+		{"subagent_type":"writer","description":"b","prompt":"TESTWRITE:beta.txt","files":["beta.txt"]}
+	]}`)
+	if err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	if !strings.Contains(out, "exceed") {
+		t.Errorf("expected the background cap to reject the batch, got:\n%s", out)
+	}
+	// The rejection must happen before any worktree is created.
+	if branches := gitListBranches(t, repoRoot, "worktree-dispatch-*"); len(branches) != 0 {
+		t.Errorf("rejected batch leaked worktree branches: %v", branches)
+	}
+}
+
+// TestDispatch_Background_OutOfWorktreeWriteDoesNotHang is the P3.8
+// regression: a background worker that tries to write outside its worktree
+// trips PathTrustElevationNeeded. With no human to prompt, the drain loop
+// must auto-deny and FEED the decision so the worker finishes — before the
+// fix it blocked forever on the unfed decisions channel (the iteration cap
+// can't fire mid-tool), wedging the slot. The test would time out if the
+// worker hung.
+func TestDispatch_Background_OutOfWorktreeWriteDoesNotHang(t *testing.T) {
+	repoRoot := dispatchTestRepo(t)
+	d := newDispatchToolE2E(t, repoRoot)
+	d.SupportsBackground = true
+
+	// Absolute path OUTSIDE any worktree — the write must be refused.
+	escape := filepath.Join(t.TempDir(), "escape.txt")
+	args := fmt.Sprintf(`{"goal":"escape attempt","tasks":[
+		{"subagent_type":"writer","description":"in","prompt":"TESTWRITE:inside.txt","files":["inside.txt"]},
+		{"subagent_type":"writer","description":"out","prompt":"TESTWRITE:%s","files":["out.txt"]}
+	]}`, escape)
+	if _, err := d.Execute(context.Background(), args); err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+
+	// Joins the detached workers; fails the test if the escaping worker hung.
+	waitForTasksDone(t, d.Agent.Tasks, 2, 5*time.Second)
+
+	if _, err := os.Stat(escape); err == nil {
+		t.Errorf("out-of-worktree write should have been denied, but %s exists", escape)
+	}
+}
+
+// TestDispatch_Foreground_OutOfWorktreeWrite_NoDeadlock is the E2E regression
+// for the approval-gate deadlock, through the real dispatch foreground path.
+// Foreground dispatch installs its own approval gate; a write worker that
+// targets a path outside its worktree trips PathTrustElevationNeeded, whose
+// handler holds the gate across blocking on the decision. Before the fix the
+// child's own loop and the drain-loop forwarder contended on that same gate and
+// hung. With the fix it returns quickly (the escaping write denied).
+func TestDispatch_Foreground_OutOfWorktreeWrite_NoDeadlock(t *testing.T) {
+	repoRoot := dispatchTestRepo(t)
+	d := newDispatchToolE2E(t, repoRoot)
+	d.SupportsBackground = false // force foreground
+
+	escape := filepath.Join(t.TempDir(), "escape.txt")
+	args := fmt.Sprintf(`{"goal":"fg escape","background":false,"tasks":[
+		{"subagent_type":"writer","description":"in","prompt":"TESTWRITE:inside.txt","files":["inside.txt"]},
+		{"subagent_type":"writer","description":"out","prompt":"TESTWRITE:%s","files":["out.txt"]}
+	]}`, escape)
+
+	// Wire parent events + decisions so the foreground forward path (which takes
+	// the gate) is exercised; answer Deny to the path-trust modal like a real UI.
+	events := make(chan Event, 64)
+	decisions := make(chan Decision, 1)
+	ctx := WithParentDecisions(WithParentEvents(context.Background(), events), decisions)
+	go func() {
+		for ev := range events {
+			if _, ok := ev.(PathTrustElevationNeeded); ok {
+				decisions <- Deny
+			}
+		}
+	}()
+
+	done := make(chan struct{})
+	go func() {
+		_, _ = d.Execute(ctx, args)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(30 * time.Second):
+		t.Fatal("DEADLOCK: foreground dispatch hung on the approval gate for an out-of-worktree write")
+	}
+}
+
 func TestDispatch_ResolveBackground(t *testing.T) {
 	bp := func(b bool) *bool { return &b }
 	cases := []struct {

@@ -1146,6 +1146,14 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// but ONLY when no completion palette is active (palette owns Tab)
 		// and a subagent is actually running, so normal typing/Tab is
 		// untouched the rest of the time.
+		// Drop stale focus if every subagent finished while the dock was
+		// focused — otherwise this keypress would be swallowed by
+		// updateDockFocus just to clear the flag, and the dock (which renders
+		// nothing with no running tasks) can't show focus anyway.
+		if m.dockFocused && !m.hasRunningSubagents() {
+			m.dockFocused = false
+			m.dockCursor = 0
+		}
 		if m.dockFocused {
 			return m.updateDockFocus(msg)
 		}

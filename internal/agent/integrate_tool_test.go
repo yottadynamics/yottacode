@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/yottadynamics/yottacode/internal/worktree"
 )
 
 // gitListBranches returns short branch names matching a glob.
@@ -98,6 +100,95 @@ func TestIntegrate_CleanMerge(t *testing.T) {
 		if strings.TrimSpace(content) != "hello from "+f {
 			t.Errorf("%s content = %q", f, content)
 		}
+	}
+}
+
+// TestIntegrate_CleansUpMergedWorktrees is the P3 regression: after a clean
+// integration the merged task worktrees AND their worktree-* branches are
+// reclaimed (they used to accumulate forever), while the integration branch
+// still carries every merged file.
+func TestIntegrate_CleansUpMergedWorktrees(t *testing.T) {
+	ctx := context.Background()
+	repoRoot := dispatchTestRepo(t)
+	d := newDispatchToolE2E(t, repoRoot)
+
+	_, err := d.Execute(ctx, `{"goal":"two files","tasks":[
+		{"subagent_type":"writer","description":"a","prompt":"TESTWRITE:alpha.txt","files":["alpha.txt"]},
+		{"subagent_type":"writer","description":"b","prompt":"TESTWRITE:beta.txt","files":["beta.txt"]}
+	]}`)
+	if err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	branches := gitListBranches(t, repoRoot, "worktree-dispatch-*")
+	if len(branches) != 2 {
+		t.Fatalf("expected 2 dispatch branches, got %v", branches)
+	}
+
+	// Record the source worktree dirs so we can assert they're gone.
+	srcDirs := map[string]string{}
+	infos, _ := worktree.List(ctx, repoRoot)
+	for _, w := range infos {
+		if strings.HasPrefix(w.Branch, "worktree-dispatch-") {
+			srcDirs[w.Branch] = w.Path
+		}
+	}
+	if len(srcDirs) != 2 {
+		t.Fatalf("expected 2 source worktrees, got %v", srcDirs)
+	}
+
+	it := &IntegrateTool{Cwd: NewCwdRef(repoRoot), Enabled: true}
+	out, err := it.Execute(ctx, `{"branches":["`+branches[0]+`","`+branches[1]+`"]}`)
+	if err != nil {
+		t.Fatalf("integrate: %v", err)
+	}
+	if !strings.Contains(out, "Reclaimed 2 task worktree") {
+		t.Errorf("expected the cleanup note, got:\n%s", out)
+	}
+	// Source branches gone…
+	if remain := gitListBranches(t, repoRoot, "worktree-dispatch-*"); len(remain) != 0 {
+		t.Errorf("merged source branches should be deleted, still present: %v", remain)
+	}
+	// …and so are their worktree dirs.
+	for br, dir := range srcDirs {
+		if _, err := os.Stat(dir); err == nil {
+			t.Errorf("worktree dir for %s should be removed: %s", br, dir)
+		}
+	}
+	// The integration branch still carries both files.
+	integ := gitListBranches(t, repoRoot, "dispatch-integration-*")
+	if len(integ) != 1 {
+		t.Fatalf("expected 1 integration branch, got %v", integ)
+	}
+	for _, f := range []string{"alpha.txt", "beta.txt"} {
+		if _, e := gitOutput(ctx, repoRoot, "show", integ[0]+":"+f); e != nil {
+			t.Errorf("integration branch missing %s after cleanup: %v", f, e)
+		}
+	}
+}
+
+// TestIntegrate_RejectsReusedDirOnWrongBranch is the P3 regression for the
+// isDir fast-path: a directory at the integration path that is a worktree on
+// the WRONG branch must be rejected, not silently reused as the integration
+// target.
+func TestIntegrate_RejectsReusedDirOnWrongBranch(t *testing.T) {
+	ctx := context.Background()
+	repoRoot := dispatchTestRepo(t)
+	it := &IntegrateTool{Cwd: NewCwdRef(repoRoot), Enabled: true}
+
+	integBranch := "dispatch-integration-x"
+	integDir := worktree.Dir(repoRoot, integBranch)
+	// A worktree sits exactly at the integration path but on a different branch.
+	if _, err := gitOutput(ctx, repoRoot, "worktree", "add", "-b", "stale-other", integDir, "HEAD"); err != nil {
+		t.Fatalf("setup worktree: %v", err)
+	}
+	gitCommitFileOnBranch(t, repoRoot, "feat-z", "z.txt", "z\n", "main")
+
+	out, err := it.Execute(ctx, `{"branches":["feat-z"],"integration_branch":"`+integBranch+`"}`)
+	if err != nil {
+		t.Fatalf("integrate: %v", err)
+	}
+	if !strings.Contains(out, "stale-other") || !strings.Contains(out, "not the integration branch") {
+		t.Errorf("expected reuse verification to reject the wrong-branch dir, got:\n%s", out)
 	}
 }
 

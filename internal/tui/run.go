@@ -644,6 +644,19 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 	if _, err := prog.Run(); err != nil {
 		return fmt.Errorf("tui: %w", err)
 	}
+	// Cancel any still-running subagents before we tear the session down.
+	// Background dispatch/Agent workers run on context.Background() so they
+	// survive the parent turn — but they must NOT survive the session: their
+	// goroutines and provider SSE streams (no client-side timeout) would leak
+	// past TUI exit. CancelAll signals them; we wait a bounded moment for the
+	// streams to unwind before exiting (best-effort — the OS reaps the rest).
+	if n := subagentTasks.CancelAll(); n > 0 {
+		drainDeadline := time.Now().Add(3 * time.Second)
+		for subagentTasks.ActiveCount() > 0 && time.Now().Before(drainDeadline) {
+			time.Sleep(20 * time.Millisecond)
+		}
+	}
+
 	// Tear down MCP subprocesses before the index/session close so a
 	// slow shutdown can't leak servers past yottacode's lifetime. The
 	// context here is short-bounded; the SDK's CommandTransport.Close
