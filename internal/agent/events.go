@@ -36,6 +36,17 @@ type IterationContinue struct {
 	ToolCalls int
 }
 
+// ContextUsage reports a loop's current context size against its window,
+// emitted at the top of each iteration. Subagent child loops (which set
+// Compaction with a known window) emit it; the runner forwards it to the
+// task registry so the live dock can render a per-subagent context-fill
+// bar. The main TUI/oneshot loops don't set Compaction, so they don't emit
+// it — their own status bar tracks context separately.
+type ContextUsage struct {
+	Tokens int
+	Window int
+}
+
 // ReasoningToken carries one chunk of "thinking" output from a reasoning
 // model (Qwen 3, DeepSeek R1). Render dimmed.
 type ReasoningToken struct{ Text string }
@@ -231,6 +242,11 @@ type SubagentStart struct {
 	Prompt         string
 	Background     bool
 	TranscriptPath string
+	// Branch / BatchID are populated for dispatch worktree-subtasks: the
+	// git branch the child commits to, and the id grouping a dispatch
+	// batch's children. Empty for standalone Agent dispatches.
+	Branch  string
+	BatchID string
 }
 
 // SubagentProgress is the parent-visible activity stream for a running
@@ -260,6 +276,9 @@ type SubagentDone struct {
 	TokensUsed int
 	ToolCalls  int    // child's tool-call count, for inline stats rendering
 	Model      string // model the child ran on when task-routed; "" = inherited the parent's model
+	// Branch / BatchID mirror SubagentStart for dispatch worktree-subtasks.
+	Branch  string
+	BatchID string
 }
 
 // SubagentBackgroundDone fires asynchronously when a background subagent
@@ -276,6 +295,9 @@ type SubagentBackgroundDone struct {
 	TokensUsed int
 	ToolCalls  int    // child's tool-call count, for inline stats rendering
 	Model      string // model the child ran on when task-routed; "" = inherited the parent's model
+	// Branch / BatchID are populated for dispatch background workers.
+	Branch  string
+	BatchID string
 }
 
 func (ReasoningToken) event()           {}
@@ -283,6 +305,7 @@ func (ContentToken) event()             {}
 func (StreamProgress) event()           {}
 func (ProviderToolCall) event()         {}
 func (IterationStart) event()           {}
+func (ContextUsage) event()             {}
 func (IterationContinue) event()        {}
 func (ApprovalAuto) event()             {}
 func (ApprovalNeeded) event()           {}

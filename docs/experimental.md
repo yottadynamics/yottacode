@@ -19,6 +19,7 @@ one release so existing configs don't break.
 | Name | Status | What it enables |
 | --- | --- | --- |
 | `background_subagents` | experimental | `run_in_background:true` on the Agent tool — fire-and-forget subagent dispatch with `get_subagent_result` for fetching. Foreground subagents are always available; this gate only controls the bg variant. |
+| `dispatch` | experimental | The `dispatch` + `integrate` tools — fan a batch of subtasks out to concurrent subagents (write-capable ones in isolated git worktrees, partitioned by file ownership), then merge their branches into one integration branch for a PR. See [dispatch.md](dispatch.md). |
 
 (Adding a feature here is a one-constant change in
 `internal/experimental/features.go`. See that file's package doc

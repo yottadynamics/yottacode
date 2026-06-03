@@ -59,6 +59,15 @@ func (t *RunBashTool) Execute(ctx context.Context, argsJSON string) (string, err
 	if a.Command == "" {
 		return "", fmt.Errorf("run_bash: command is required")
 	}
+	// Hardline floor: a handful of catastrophic commands are refused
+	// here, at the execution chokepoint, regardless of approval mode —
+	// even under --yolo / BypassPermissions / background auto-approval.
+	// Returned as a recoverable tool result (nil error) so the model sees
+	// the refusal and can adapt; mirrors hermes's hardline blocklist and
+	// Claude Code's rm -rf / circuit breaker.
+	if blocked, reason := IsHardlineCommand(a.Command); blocked {
+		return fmt.Sprintf("BLOCKED (hardline): %s. This command is on the unconditional blocklist and cannot be run through the agent — not even with --yolo. If you genuinely need it, run it yourself in a terminal outside the agent.", reason), nil
+	}
 	c := exec.CommandContext(ctx, "/bin/sh", "-c", a.Command)
 	c.Dir = t.Cwd.Get()
 	var stdout, stderr bytes.Buffer

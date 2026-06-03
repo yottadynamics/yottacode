@@ -268,6 +268,21 @@ Inside the picker:
 Task ids are 16-char hex; the first 8 chars are usually unique
 enough for the `/subagents stop` cmdline form.
 
+`/subagents` is the **after-the-fact** browser. While subagents are
+running, a **live dock** sits at the bottom, a blank line **below the
+status bar**. Each running subagent is one aligned row — agent type ·
+latest activity · short model name · live context (`128K (1%)` = window +
+percent used) · and a trailing identifier (`dispatch-<id>` for a dispatch
+task, else `<type>-<id>`, matching the scrollback cards and `/subagents`).
+It updates on each redraw (and keeps refreshing while background workers
+run) and collapses to nothing when nothing is running.
+
+Press **Tab** to focus the dock (when no completion palette is open and a
+subagent is running): `↑`/`↓` (or `k`/`j`) move between subagents, `Enter`
+opens the selected one's transcript in the pager, `Esc` returns to the
+cmdline. It's keyboard-only by design — yottacode doesn't capture the mouse,
+so terminal text selection / copy-paste keeps working.
+
 ## Transcripts
 
 Every subagent run writes its full transcript (every event, every
@@ -384,10 +399,41 @@ subagent ran on shows in the `/subagents` picker and on its completion
 card. (Per-subagent token figures are estimates; yottacode does not yet
 aggregate per-model token totals across a session.)
 
+## Dispatch & integrate (experimental)
+
+Where a single `Agent` call delegates one subtask, **`dispatch`** fans a
+whole batch out at once: each subtask runs as a concurrent subagent, and
+write-capable ones run in their own git worktree + branch so they never
+clobber each other. **`integrate`** then merges those branches into one
+integration branch for a PR. Subtasks are partitioned by declared file
+ownership so the merge stays clean by construction.
+
+Write/implementation batches run in the **background** by default
+(non-blocking — returns a batch handle immediately, workers auto-approve
+within their worktree, you `integrate` when done); all-read/research batches
+run in the **foreground** (blocking) and return every subtask's findings
+together for the main agent to assemble right away.
+
+This is gated behind the `dispatch` experimental feature and is the path
+for "decompose a large PR into independent parallel tasks." Full guide:
+[dispatch.md](dispatch.md).
+
 ## Known limitations
 
 Things that are imperfect but not bugs — worth knowing about so the
 behavior doesn't surprise you.
+
+### Concurrent shared-cwd write children have no stale-read guard
+
+`dispatch` write subtasks are physically isolated (each in its own git
+worktree), so they cannot clobber each other. But two concurrent
+**standalone `Agent`** write-capable children (spawned in one parallel
+batch) share the parent's working directory, and there is no guard that
+warns when one writes a file another had read. The clean path for parallel
+*writes* is `dispatch` (worktree-isolated); concurrent shared-cwd write
+children are the un-guarded case. A cross-task stale-read warning is
+deferred — doing it correctly needs per-task file-access tracking threaded
+through the fs tools, which is more than a quick advisory check.
 
 ### Multi-line tool cards can interleave with other output
 

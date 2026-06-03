@@ -72,9 +72,9 @@ func SplitCommand(cmd string) []CommandSegment {
 // that preceded each (empty for the first).
 func splitOnSeparators(s string) []CommandSegment {
 	var (
-		out     []CommandSegment
-		current strings.Builder
-		sep     = "" // the separator that came before `current`
+		out      []CommandSegment
+		current  strings.Builder
+		sep      = "" // the separator that came before `current`
 		inSingle bool
 		inDouble bool
 		escape   bool
@@ -173,8 +173,26 @@ var destructiveRe = []struct {
 	{regexp.MustCompile(`\bdd\s+if=`), "dd"},
 	{regexp.MustCompile(`\bmkfs\b`), "mkfs"},
 	{regexp.MustCompile(`>\s*/(etc|dev|var|usr|sys|proc|boot)\b`), "redirect to system path"},
-	{regexp.MustCompile(`\bchmod\s+777\b`), "chmod 777"},
+	{regexp.MustCompile(`(?i)\bchmod\s+(-[^\s]*\s+)*(777|666|o\+[rwx]*w|a\+[rwx]*w)\b`), "chmod world-writable"},
 	{regexp.MustCompile(`\bsudo\s+rm\b`), "sudo rm"},
+	// Arbitrary-code execution that bypasses verb-level inspection: a
+	// single shell/interpreter invocation can carry anything.
+	{regexp.MustCompile(`(?i)\b(bash|sh|zsh|ksh)\s+-[^\s]*c(\s|$)`), "arbitrary code via shell -c"},
+	{regexp.MustCompile(`(?i)\b(python[23]?|perl|ruby|node)\s+-[ec]\b`), "code via interpreter -e/-c"},
+	{regexp.MustCompile(`(?i)\b(python[23]?|perl|ruby|node)\s+<<`), "code via interpreter heredoc"},
+	{regexp.MustCompile(`(?i)\b(bash|sh|zsh)\s+<\s*\(\s*(curl|wget)\b`), "execute remote script via process substitution"},
+	// Sneaky deletes that the plain rm pattern misses.
+	{regexp.MustCompile(`(?i)\bfind\b.*-delete\b`), "find -delete"},
+	{regexp.MustCompile(`(?i)\bfind\b.*-exec\s+(\S*/)?rm\b`), "find -exec rm"},
+	{regexp.MustCompile(`(?i)\bxargs\b.*\brm\b`), "xargs rm"},
+	// Writes into system config.
+	{regexp.MustCompile(`(?i)\b(cp|mv|install)\s+.*\s/etc/`), "write into /etc"},
+	{regexp.MustCompile(`(?i)\bsed\s+(-[^\s]*i|--in-place)\b.*\s/etc/`), "in-place edit of /etc"},
+	// Git operations that lose uncommitted work or rewrite shared history.
+	{regexp.MustCompile(`(?i)\bgit\s+reset\s+--hard\b`), "git reset --hard"},
+	{regexp.MustCompile(`(?i)\bgit\s+push\b.*(--force|-f)\b`), "git force push"},
+	{regexp.MustCompile(`(?i)\bgit\s+clean\s+-[^\s]*f`), "git clean (force)"},
+	{regexp.MustCompile(`(?i)\bgit\s+branch\s+-D\b`), "git branch force delete"},
 }
 
 // cautionRe matches patterns that aren't outright destructive but
@@ -194,6 +212,71 @@ var cautionRe = []struct {
 	{regexp.MustCompile(`\beval\b`), "eval"},
 	{regexp.MustCompile(`\$\(`), "command substitution"},
 	{regexp.MustCompile("`"), "backtick substitution"},
+	{regexp.MustCompile(`(?i)\bsystemctl\s+(-[^\s]+\s+)*(stop|restart|disable|mask)\b`), "stop/restart system service"},
+	{regexp.MustCompile(`(?i)\bkill\s+-9\s+-1\b`), "kill all processes (-9 -1)"},
+	{regexp.MustCompile(`(?i)\bpkill\s+-9\b`), "force kill (pkill -9)"},
+	{regexp.MustCompile(`(?i)\bDROP\s+(TABLE|DATABASE)\b`), "SQL DROP"},
+	{regexp.MustCompile(`(?i)\bTRUNCATE\s+(TABLE\s+)?\w`), "SQL TRUNCATE"},
+	{regexp.MustCompile(`(?i)\bDELETE\s+FROM\b`), "SQL DELETE"},
+}
+
+// cmdStart anchors a hardline pattern to the start of an (already-split)
+// command segment, tolerating leading sudo / env VAR=… / exec|nohup|setsid|
+// time wrappers — so "sudo reboot" and "env X=1 shutdown" still match a
+// command-position pattern without false-positiving on "echo reboot" or
+// "grep shutdown /var/log". The leading (?i) makes the whole compiled
+// pattern case-insensitive.
+const cmdStart = `(?i)^\s*(sudo\s+(-[^\s]+\s+)*|env\s+(\S+=\S*\s+)*|exec\s+|nohup\s+|setsid\s+|time\s+)*`
+
+// hardlineRe matches catastrophic, ~never-legitimate-via-an-agent commands.
+// Unlike destructiveRe (which flows through the normal approval path and
+// can be allowed by the user / auto-mode / yolo), a hardline match is
+// refused at the run_bash execution chokepoint UNCONDITIONALLY — even under
+// --yolo, BypassPermissions, or background auto-approval. Mirrors hermes's
+// HARDLINE_PATTERNS and Claude Code's rm -rf / circuit breaker. Kept
+// deliberately tight (exact root/system/home targets, raw block-device
+// writes, fork bomb, power-off) so ordinary destructive work is NOT blocked
+// here — it still flows through the normal RiskDestructive approval path.
+var hardlineRe = []struct {
+	re     *regexp.Regexp
+	reason string
+}{
+	{regexp.MustCompile(`(?i)\brm\s+(-[^\s]*\s+)*(/|/\*)(\s|$)`), "recursive delete of the root filesystem"},
+	{regexp.MustCompile(`(?i)\brm\s+(-[^\s]*\s+)*/(home|root|etc|usr|var|bin|sbin|boot|lib)(/\*)?(\s|$)`), "delete of a system directory"},
+	{regexp.MustCompile(`(?i)\brm\s+(-[^\s]*\s+)*(~|\$HOME)(/\*)?(\s|$)`), "delete of the home directory"},
+	{regexp.MustCompile(`(?i)\bmkfs(\.[a-z0-9]+)?\b`), "format filesystem (mkfs)"},
+	{regexp.MustCompile(`(?i)\bdd\b[^\n]*\bof=/dev/(sd|nvme|hd|mmcblk|vd|xvd)`), "dd to a raw block device"},
+	{regexp.MustCompile(`(?i)>\s*/dev/(sd|nvme|hd|mmcblk|vd|xvd)`), "redirect to a raw block device"},
+	{regexp.MustCompile(`:\(\)\s*\{\s*:\s*\|\s*:?\s*&\s*\}\s*;\s*:`), "fork bomb"},
+	{regexp.MustCompile(`(?i)\bkill\s+(-[^\s]+\s+)*-1\b`), "kill all processes"},
+	{regexp.MustCompile(cmdStart + `(shutdown|reboot|halt|poweroff)\b`), "system shutdown/reboot"},
+	{regexp.MustCompile(cmdStart + `init\s+[06]\b`), "init 0/6 (shutdown/reboot)"},
+	{regexp.MustCompile(cmdStart + `systemctl\s+(poweroff|reboot|halt|kexec)\b`), "systemctl poweroff/reboot"},
+	{regexp.MustCompile(cmdStart + `telinit\s+[06]\b`), "telinit 0/6 (shutdown/reboot)"},
+}
+
+// IsHardlineCommand reports whether any segment of cmd matches the
+// unconditional hardline blocklist, with a human-readable reason. The
+// run_bash execution floor calls this to refuse catastrophic commands
+// regardless of approval mode. Compound commands are split first so a
+// hardline segment anywhere in a `a && b ; c` chain is caught.
+func IsHardlineCommand(cmd string) (bool, string) {
+	// Check the FULL command (catches patterns that span separators — the
+	// fork bomb's `:|:& };:` is split apart by SplitCommand) AND each
+	// segment (so a command-position pattern like `… && reboot` matches at
+	// the start of its own segment, not just the start of the whole line).
+	candidates := []string{cmd}
+	for _, seg := range SplitCommand(cmd) {
+		candidates = append(candidates, seg.Text)
+	}
+	for _, s := range candidates {
+		for _, p := range hardlineRe {
+			if p.re.MatchString(s) {
+				return true, p.reason
+			}
+		}
+	}
+	return false, ""
 }
 
 // AssessRisk classifies a single segment. Returns RiskNone for

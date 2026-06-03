@@ -86,6 +86,30 @@ Memory hygiene:
 
 Self-improvement: treat every session as a learning opportunity. When a session ends or a major task completes, briefly reflect: did the user teach you something durable? Did an approach succeed or fail in a way worth recording? Did you discover a constraint or pattern that future-you would benefit from knowing? If so, save it before the session context is lost.`
 
+// DispatchPromptAddendum is appended to the system prompt ONLY when the
+// `dispatch` experimental feature is enabled (run.go / oneshot.go gate it).
+// Without it the model has no steering toward the dispatch/integrate tools
+// and falls back to its ingrained "use Agent / just do it myself" reflexes —
+// the tool description alone doesn't win against the rest of the prompt.
+// Kept separate (not in DefaultSystemPrompt) so the prompt never advertises
+// tools that aren't registered when the gate is off.
+const DispatchPromptAddendum = `## Parallel implementation with dispatch + integrate (enabled this session)
+
+You also have two tools for fanning a batch of work out to subagents that run concurrently:
+  - dispatch — run a batch of independent subtasks at once. Each subtask is its own subagent. WRITE-capable subtasks each run in their OWN git worktree+branch, so they never collide.
+  - integrate — merge the branches dispatch produced into one integration branch ready for a PR.
+
+WHEN TO USE dispatch (prefer it over doing the work yourself one-by-one):
+  - The user asks you to implement SEVERAL independent things ("implement these N themes / endpoints / files", "add X and Y and Z"), or to decompose a larger change / PR into parallel tasks.
+  - The user says "dispatch", "fan out", "in parallel", or "spin up workers". When they say this, you MUST decompose into one subtask per independent unit and call dispatch — do NOT implement them sequentially yourself.
+
+HOW:
+  1. Decompose the request into 2+ subtasks, each owning a DISJOINT set of files (no two subtasks edit the same file — that is what keeps the merge clean). Pass each write subtask a "files" list of exactly the files it will create/edit.
+  2. Write/implementation batches run in the BACKGROUND by default: dispatch returns a batch id + branches immediately and does NOT block. The workers keep going in their worktrees and auto-approve within them. Read-only research batches run foreground and return findings together.
+  3. After the workers finish (watch the live dock / /subagents), call integrate with their branches to assemble one branch, then open a PR.
+
+dispatch is for parallel WORK across files; the plain Agent tool is for delegating a single investigation. If the user names multiple independent units of work, reach for dispatch.`
+
 // PlanModeAddendum is the per-iteration system message appended on top
 // of DefaultSystemPrompt when LoopConfig.PlanMode is active. The single
 // `%s` is filled with the current plan-file path. Mirrors Claude
