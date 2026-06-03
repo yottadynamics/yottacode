@@ -66,6 +66,23 @@ type Task struct {
 	ToolCalls      int    // count of ToolStart events from the child
 	Model          string // model the child ran on when task-routed; "" = inherited the parent's model
 	TranscriptPath string
+	// Branch / Worktree are set for dispatch write-subtasks that run in
+	// their own git worktree+branch. Empty for ordinary (shared-cwd)
+	// subagents. The integrate tool merges Branch into the integration
+	// branch; the TUI shows it per task.
+	Branch   string
+	Worktree string
+	// BatchID groups the children of one dispatch call so the TUI can
+	// render them together and the parent can refer to the batch. Empty
+	// for standalone Agent dispatches.
+	BatchID string
+	// CtxTokens / CtxWindow track the subagent's live context usage,
+	// updated each iteration from the child loop's ContextUsage event.
+	// CtxWindow is 0 until the first update (and for child models whose
+	// window couldn't be resolved); the dock shows a fill bar only when
+	// CtxWindow > 0.
+	CtxTokens int
+	CtxWindow int
 	// CanceledByUser is set when /subagents stop fires for this task.
 	// Lets the runner distinguish "user explicitly stopped me" from
 	// "parent turn was canceled" / "context deadline" in the outcome
@@ -309,6 +326,40 @@ func (r *Registry) Cancel(id string) bool {
 	t.cancel()
 	t.cancel = nil
 	return true
+}
+
+// CancelAll invokes every running task's cancel func, signaling all
+// in-flight subagents — foreground AND detached background workers — to
+// stop at their next context check. Used on session shutdown so background
+// workers (which run on context.Background() to survive the parent turn)
+// don't leak their goroutines and provider SSE streams past TUI exit.
+// Returns the number of tasks signaled. Like Cancel, it does not mark the
+// tasks done — each goroutine does that when it observes the canceled
+// context; callers that need to wait for the drain can poll ActiveCount.
+func (r *Registry) CancelAll() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	n := 0
+	for _, t := range r.tasks {
+		if t.cancel != nil {
+			t.cancel()
+			t.cancel = nil
+			n++
+		}
+	}
+	return n
+}
+
+// SetContextUsage records the subagent's current context size + window so
+// the live dock can render a fill bar. Called each iteration from the
+// runner as it forwards the child loop's ContextUsage event.
+func (r *Registry) SetContextUsage(id string, tokens, window int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if t, ok := r.tasks[id]; ok {
+		t.CtxTokens = tokens
+		t.CtxWindow = window
+	}
 }
 
 // SetToolCalls records the final tool-call count for a task. Called

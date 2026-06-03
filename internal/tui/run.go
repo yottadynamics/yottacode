@@ -129,6 +129,26 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 	for _, w := range skillsRes.Warnings {
 		fmt.Fprintln(os.Stderr, "skills: "+w)
 	}
+	// Resolve experimental features up front (CLI > env > config) so the
+	// dispatch steering can be baked into the system prompt below — without
+	// it the model has no nudge toward the dispatch/integrate tools and
+	// falls back to implementing serially itself. Reused for tool gating
+	// further down so we resolve the Set exactly once.
+	expSet := experimental.NewSet()
+	for name, on := range fileCfg.Experimental {
+		if on {
+			expSet.Enable(name)
+		}
+	}
+	for _, name := range opts.Experimental {
+		expSet.Enable(name)
+	}
+	for _, unknown := range expSet.UnknownNames() {
+		fmt.Fprintf(os.Stderr, "warning: --experimental %q is not a recognized feature (typo? graduated? see docs/experimental.md)\n", unknown)
+	}
+	if expSet.IsEnabled(experimental.Dispatch) {
+		baseSys += "\n\n" + agent.DispatchPromptAddendum
+	}
 	composedBase := composeSystemPrompt(baseSys, ad.Profile())
 	composedBase = appendSkillsSection(composedBase, skillsRes.Skills)
 	if fresh {
@@ -210,23 +230,17 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 	yoloMode := &agent.YoloModeState{}
 
 	reg := agent.NewRegistry()
-	reg.Register(&agent.ReadFileTool{Cwd: cwdRef, DenyReadPaths: denyReads, SupportsImages: ad.Profile().SupportsImages})
-	reg.Register(&agent.ReadManyFilesTool{Cwd: cwdRef, DenyReadPaths: denyReads})
-	reg.Register(&agent.WriteFileTool{Cwd: cwdRef, WriteOpts: writeOpts})
-	reg.Register(&agent.EditFileTool{Cwd: cwdRef, WriteOpts: writeOpts})
-	reg.Register(&agent.ApplyDiffTool{Cwd: cwdRef, WriteOpts: writeOpts})
-	reg.Register(&agent.MkdirTool{Cwd: cwdRef, WriteOpts: writeOpts})
-	reg.Register(&agent.CopyFileTool{Cwd: cwdRef, WriteOpts: writeOpts})
-	reg.Register(&agent.MoveFileTool{Cwd: cwdRef, WriteOpts: writeOpts})
-	reg.Register(&agent.DeleteFileTool{Cwd: cwdRef, WriteOpts: writeOpts})
-	reg.Register(&agent.ListGitChangedFilesTool{Cwd: cwdRef})
-	reg.Register(&agent.GitBranchStatusTool{Cwd: cwdRef})
-	reg.Register(&agent.GitShowFileAtRevTool{Cwd: cwdRef})
-	reg.Register(&agent.GitDiffFilesTool{Cwd: cwdRef})
-	reg.Register(&agent.GitStageFilesTool{Cwd: cwdRef})
-	reg.Register(&agent.GitUnstageFilesTool{Cwd: cwdRef})
-	reg.Register(&agent.GitCreateBranchTool{Cwd: cwdRef})
-	reg.Register(&agent.GitCommitTool{Cwd: cwdRef})
+	// Core cwd-bound tools (file read/write/edit, search, git-read/stage/
+	// commit, checkpoints, run_bash/run_tests). Extracted into a shared
+	// builder so the dispatch subagent path can register the identical
+	// toolset against an isolated worktree CwdRef. The session-scoped
+	// extras (worktree-admin, commit-workflow composites, GH/PR, memory,
+	// web, todo, plan) stay registered inline below.
+	agent.RegisterCoreCwdTools(reg, cwdRef, agent.CoreToolDeps{
+		WriteOpts:      writeOpts,
+		DenyReads:      denyReads,
+		SupportsImages: ad.Profile().SupportsImages,
+	})
 	// Git worktree tools. Layer 1 (enter/exit/status) are the agent-
 	// friendly entry points; Layer 2 (the git_worktree_* wrappers) sit
 	// underneath for finer-grained admin. enter_worktree and
@@ -301,17 +315,6 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 	// cross-linking related issues, post-review follow-ups, and
 	// structured summaries the model wants public on the PR.
 	reg.Register(&agent.GHPRAddCommentTool{Cwd: cwdRef, GH: ghClient})
-	reg.Register(&agent.GitLogFileTool{Cwd: cwdRef})
-	reg.Register(&agent.GitBlameLinesTool{Cwd: cwdRef})
-	reg.Register(&agent.GitMergeBaseTool{Cwd: cwdRef})
-	reg.Register(&agent.GitCheckpointTool{Cwd: cwdRef})
-	reg.Register(&agent.RollbackTool{Cwd: cwdRef})
-	reg.Register(&agent.RunTestsTool{Cwd: cwdRef})
-	reg.Register(&agent.RunBashTool{Cwd: cwdRef})
-	reg.Register(&agent.ListDirTool{Cwd: cwdRef})
-	reg.Register(&agent.ListProjectStructureTool{Cwd: cwdRef})
-	reg.Register(&agent.GlobTool{Cwd: cwdRef})
-	reg.Register(&agent.GrepTool{Cwd: cwdRef, DenyReadPaths: denyReads})
 	reg.Register(&agent.FetchURLTool{})
 	if !hasBuiltin(ad.Profile().EnabledBuiltinTools, adapter.BuiltinToolWebSearch) {
 		reg.Register(&agent.WebSearchTool{})
@@ -363,23 +366,9 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 	}
 	transcriptDir, _ := subagents.EnsureTranscriptDir(cwd)
 	subagentTasks := subagents.NewRegistry()
-	// Resolve experimental features. CLI > env > config; the cli
-	// package already merged CLI flags + env into opts.Experimental.
-	// Here we layer the [experimental] config section underneath
-	// (later additions wouldn't override earlier ones — we use the
-	// Set's Enable as the union operator).
-	expSet := experimental.NewSet()
-	for name, on := range fileCfg.Experimental {
-		if on {
-			expSet.Enable(name)
-		}
-	}
-	for _, name := range opts.Experimental {
-		expSet.Enable(name)
-	}
-	for _, unknown := range expSet.UnknownNames() {
-		fmt.Fprintf(os.Stderr, "warning: --experimental %q is not a recognized feature (typo? graduated? see docs/experimental.md)\n", unknown)
-	}
+	// experimental.Set (expSet) was resolved earlier, before prompt
+	// composition, so the dispatch steering could be baked into the
+	// system prompt. Reuse it here for tool gating.
 
 	agentTool := &agent.AgentTool{
 		Configs:        subRes.Configs,
@@ -422,6 +411,24 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 	// back into the conversation. With it, "what did the background
 	// subagent find?" becomes one tool call.
 	reg.Register(&agent.GetSubagentResultTool{Tasks: subagentTasks})
+
+	// Dispatch + integrate: fan a batch of subtasks out to concurrent
+	// subagents (write-capable ones in isolated git worktrees, partitioned
+	// by file ownership) and merge their branches into one integration
+	// branch. Gated behind the `dispatch` experimental feature; when off,
+	// each tool returns a recoverable error the model relays to the user.
+	// dispatch reuses the AgentTool for routing/transcripts/runChild.
+	dispatchEnabled := expSet.IsEnabled(experimental.Dispatch)
+	reg.Register(&agent.DispatchTool{
+		Agent:          agentTool,
+		SupportsImages: ad.Profile().SupportsImages,
+		// The TUI is a long-running session that can host detached
+		// background workers and surface their completion via the
+		// subagent inbox, so background dispatch is available here.
+		SupportsBackground: true,
+		Enabled:            dispatchEnabled,
+	})
+	reg.Register(&agent.IntegrateTool{Cwd: cwdRef, Enabled: dispatchEnabled})
 
 	// MCP client setup: construct the manager now but defer Start to
 	// the Bubble Tea Init cmd so the TUI renders immediately. Servers
@@ -637,6 +644,19 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 	if _, err := prog.Run(); err != nil {
 		return fmt.Errorf("tui: %w", err)
 	}
+	// Cancel any still-running subagents before we tear the session down.
+	// Background dispatch/Agent workers run on context.Background() so they
+	// survive the parent turn — but they must NOT survive the session: their
+	// goroutines and provider SSE streams (no client-side timeout) would leak
+	// past TUI exit. CancelAll signals them; we wait a bounded moment for the
+	// streams to unwind before exiting (best-effort — the OS reaps the rest).
+	if n := subagentTasks.CancelAll(); n > 0 {
+		drainDeadline := time.Now().Add(3 * time.Second)
+		for subagentTasks.ActiveCount() > 0 && time.Now().Before(drainDeadline) {
+			time.Sleep(20 * time.Millisecond)
+		}
+	}
+
 	// Tear down MCP subprocesses before the index/session close so a
 	// slow shutdown can't leak servers past yottacode's lifetime. The
 	// context here is short-bounded; the SDK's CommandTransport.Close

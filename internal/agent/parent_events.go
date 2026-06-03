@@ -112,3 +112,21 @@ func lockApprovalGate(ctx context.Context) func() {
 	var once sync.Once
 	return func() { once.Do(g.Unlock) }
 }
+
+// withoutApprovalGate returns a ctx with any approval gate DETACHED, so code
+// running under it treats lockApprovalGate as a no-op.
+//
+// A subagent's own loop must run under such a ctx. The parent batch's gate may
+// only be held by the parent-side forwarder (the runChild drain loop) during a
+// forwarded approval round-trip. If the child's own loop also acquired the same
+// gate, it would lock the gate and then block waiting for its decision — while
+// the drain loop, the only thing that can feed that decision, blocks trying to
+// lock the same gate. Deadlock. Detaching the gate from the child loop leaves
+// only the forwarder holding it, which is exactly the serialization the gate is
+// for.
+func withoutApprovalGate(ctx context.Context) context.Context {
+	if ctx.Value(approvalGateKey{}) == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, approvalGateKey{}, (*sync.Mutex)(nil))
+}

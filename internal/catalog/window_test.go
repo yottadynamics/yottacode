@@ -1,8 +1,16 @@
 package catalog
 
-import "testing"
+import (
+	"fmt"
+	"testing"
+)
 
 func TestWindowFor_KnownPrefixes(t *testing.T) {
+	// override windowStorePathFn to avoid loading the user's overlay
+	old := windowStorePathFn
+	windowStorePathFn = func() (string, error) { return "", fmt.Errorf("override for test") }
+	defer func() { windowStorePathFn = old }()
+
 	cases := []struct {
 		model string
 		want  int

@@ -40,6 +40,14 @@ const (
 	// work itself. Gated until prompt steering reliably produces
 	// the intended workflow.
 	BackgroundSubagents Feature = "background_subagents"
+
+	// Dispatch enables the `dispatch` + `integrate` tools: fan a batch
+	// of subtasks out to subagents that run concurrently (write-capable
+	// ones in isolated git worktrees), then merge their branches into one
+	// integration branch. Distinct from BackgroundSubagents — dispatch
+	// children run foreground/blocking, not fire-and-forget. Gated while
+	// the decomposition + partition + merge UX settles.
+	Dispatch Feature = "dispatch"
 )
 
 // All returns every recognized feature name in deterministic order.
@@ -48,6 +56,7 @@ const (
 func All() []Feature {
 	return []Feature{
 		BackgroundSubagents,
+		Dispatch,
 	}
 }
 
@@ -59,6 +68,8 @@ func Description(f Feature) string {
 	switch f {
 	case BackgroundSubagents:
 		return "Background subagents (run_in_background:true). Async fire-and-forget delegation paired with get_subagent_result for fetching. Foreground subagents are always available; this gate only controls the bg variant."
+	case Dispatch:
+		return "Dispatch + integrate tools. Fan a batch of subtasks out to concurrent subagents (write-capable ones in isolated git worktrees, partitioned by file ownership), then merge their branches into one integration branch for a PR."
 	default:
 		return ""
 	}

@@ -156,24 +156,41 @@ func Run(ctx context.Context, opts cli.ChatOptions, prompt string) error {
 	for _, w := range skillsRes.Warnings {
 		fmt.Fprintln(os.Stderr, "skills: "+w)
 	}
-	if fresh {
-		sys := opts.SystemPrompt
-		if sys == "" {
-			sys = defaultSystemPrompt
+	// Resolve experimental features before composing the prompt so the
+	// dispatch steering can be baked in (the model needs it to reach for
+	// dispatch/integrate). Reused for tool gating below.
+	expSet := experimental.NewSet()
+	for name, on := range fileCfg.Experimental {
+		if on {
+			expSet.Enable(name)
 		}
-		composed := appendSkillsSection(composeSystemPrompt(sys, profile), skillsRes.Skills)
-		sys = memory.SystemPromptForSemantic(composed, mem, prompt, fileCfg.Retrieval, embedClient)
+	}
+	for _, name := range opts.Experimental {
+		expSet.Enable(name)
+	}
+	// Warn (don't fail) on unrecognized --experimental names so a typo or a
+	// graduated/removed feature surfaces instead of silently no-op'ing —
+	// mirrors the TUI launch path.
+	for _, unknown := range expSet.UnknownNames() {
+		fmt.Fprintf(os.Stderr, "warning: --experimental %q is not a recognized feature (typo? graduated? see docs/experimental.md)\n", unknown)
+	}
+	baseSys := opts.SystemPrompt
+	if baseSys == "" {
+		baseSys = defaultSystemPrompt
+	}
+	if expSet.IsEnabled(experimental.Dispatch) {
+		baseSys += "\n\n" + agent.DispatchPromptAddendum
+	}
+	if fresh {
+		composed := appendSkillsSection(composeSystemPrompt(baseSys, profile), skillsRes.Skills)
+		sys := memory.SystemPromptForSemantic(composed, mem, prompt, fileCfg.Retrieval, embedClient)
 		sess.Messages = append(sess.Messages, adapter.Message{
 			Role:           adapter.RoleSystem,
 			Content:        sys,
 			CacheHeadBytes: len(composed),
 		})
 	} else {
-		sys := opts.SystemPrompt
-		if sys == "" {
-			sys = defaultSystemPrompt
-		}
-		composed := appendSkillsSection(composeSystemPrompt(sys, profile), skillsRes.Skills)
+		composed := appendSkillsSection(composeSystemPrompt(baseSys, profile), skillsRes.Skills)
 		recomposeSessionSystemPrompt(sess, memory.SystemPromptForSemantic(composed, mem, prompt, fileCfg.Retrieval, embedClient), len(composed))
 	}
 	// Auto-inject @<path> file references found in the prompt into the
@@ -235,30 +252,13 @@ func Run(ctx context.Context, opts cli.ChatOptions, prompt string) error {
 	}
 
 	reg := agent.NewRegistry()
-	reg.Register(&agent.ReadFileTool{Cwd: cwdRef, DenyReadPaths: denyReads})
-	reg.Register(&agent.ReadManyFilesTool{Cwd: cwdRef, DenyReadPaths: denyReads})
-	reg.Register(&agent.WriteFileTool{Cwd: cwdRef, WriteOpts: writeOpts})
-	reg.Register(&agent.EditFileTool{Cwd: cwdRef, WriteOpts: writeOpts})
-	reg.Register(&agent.ApplyDiffTool{Cwd: cwdRef, WriteOpts: writeOpts})
-	reg.Register(&agent.MkdirTool{Cwd: cwdRef, WriteOpts: writeOpts})
-	reg.Register(&agent.CopyFileTool{Cwd: cwdRef, WriteOpts: writeOpts})
-	reg.Register(&agent.MoveFileTool{Cwd: cwdRef, WriteOpts: writeOpts})
-	reg.Register(&agent.DeleteFileTool{Cwd: cwdRef, WriteOpts: writeOpts})
-	reg.Register(&agent.ListGitChangedFilesTool{Cwd: cwdRef})
-	reg.Register(&agent.GitBranchStatusTool{Cwd: cwdRef})
-	reg.Register(&agent.GitShowFileAtRevTool{Cwd: cwdRef})
-	reg.Register(&agent.GitDiffFilesTool{Cwd: cwdRef})
-	reg.Register(&agent.GitStageFilesTool{Cwd: cwdRef})
-	reg.Register(&agent.GitUnstageFilesTool{Cwd: cwdRef})
-	reg.Register(&agent.GitCreateBranchTool{Cwd: cwdRef})
-	reg.Register(&agent.GitCommitTool{Cwd: cwdRef})
-	reg.Register(&agent.GitLogFileTool{Cwd: cwdRef})
-	reg.Register(&agent.GitBlameLinesTool{Cwd: cwdRef})
-	reg.Register(&agent.GitMergeBaseTool{Cwd: cwdRef})
-	reg.Register(&agent.GitCheckpointTool{Cwd: cwdRef})
-	reg.Register(&agent.RollbackTool{Cwd: cwdRef})
-	reg.Register(&agent.RunTestsTool{Cwd: cwdRef})
-	reg.Register(&agent.RunBashTool{Cwd: cwdRef})
+	// Core cwd-bound tools — shared with the TUI build and the dispatch
+	// worktree-child registry via RegisterCoreCwdTools. Oneshot's extras
+	// (worktree-admin, memory, git escape-hatch, todo, plan) stay inline.
+	agent.RegisterCoreCwdTools(reg, cwdRef, agent.CoreToolDeps{
+		WriteOpts: writeOpts,
+		DenyReads: denyReads,
+	})
 	// Git worktree tools. enter_worktree / exit_worktree always prompt
 	// (auto-mode safety floor); see IsAutoModeSafetyFloor.
 	reg.Register(&agent.EnterWorktreeTool{Cwd: cwdRef})
@@ -270,10 +270,6 @@ func Run(ctx context.Context, opts cli.ChatOptions, prompt string) error {
 	reg.Register(&agent.GitWorktreeLockTool{Cwd: cwdRef})
 	reg.Register(&agent.GitWorktreeUnlockTool{Cwd: cwdRef})
 	reg.Register(&agent.GitWorktreePruneTool{Cwd: cwdRef})
-	reg.Register(&agent.ListDirTool{Cwd: cwdRef})
-	reg.Register(&agent.ListProjectStructureTool{Cwd: cwdRef})
-	reg.Register(&agent.GlobTool{Cwd: cwdRef})
-	reg.Register(&agent.GrepTool{Cwd: cwdRef, DenyReadPaths: denyReads})
 	reg.Register(&agent.FetchURLTool{})
 	registerMemoryTools(reg, cwdRef, embedClient, fileCfg.Retrieval.Strategy)
 	reg.Register(&agent.GitTool{Cwd: cwdRef})
@@ -303,12 +299,11 @@ func Run(ctx context.Context, opts cli.ChatOptions, prompt string) error {
 	parentAutoMode := &agent.AutoModeState{}
 	parentYoloMode := &agent.YoloModeState{}
 
-	// Background subagents stay disabled in oneshot regardless of
-	// experimental flag — there's no long-running session to host
-	// async completion notifications, so honoring `run_in_background`
-	// would silently lose results. Foreground subagents work in
-	// oneshot whether or not the experimental gate is on.
-	_ = experimental.BackgroundSubagents // referenced to document the link
+	// expSet was resolved earlier (before prompt composition) so the
+	// dispatch steering could be baked into the system prompt; reuse it.
+	// Note: background subagents stay disabled in oneshot regardless of
+	// the gate (no long-running session to host async completions);
+	// dispatch is foreground-blocking here and honors the gate.
 
 	agentTool := &agent.AgentTool{
 		Configs:         subRes.Configs,
@@ -340,6 +335,12 @@ func Run(ctx context.Context, opts cli.ChatOptions, prompt string) error {
 	// turn. Rare workflow in oneshot, but keeping the surface
 	// symmetric with the TUI is worth the one extra line.
 	reg.Register(&agent.GetSubagentResultTool{Tasks: tasks})
+
+	// Dispatch + integrate (foreground, so usable in oneshot). Gated by
+	// the `dispatch` experimental feature like the TUI.
+	dispatchEnabled := expSet.IsEnabled(experimental.Dispatch)
+	reg.Register(&agent.DispatchTool{Agent: agentTool, Enabled: dispatchEnabled})
+	reg.Register(&agent.IntegrateTool{Cwd: cwdRef, Enabled: dispatchEnabled})
 
 	// Skill tool: reuses the set loaded above for system-prompt
 	// composition so the model's view stays consistent across both

@@ -164,7 +164,13 @@ func renderSubagentStart(e agent.SubagentStart) string {
 	idTag := styleSubagentMeta.Render("· " + e.TaskID[:8])
 	prompt := styleSubagentActivity.Render(truncateForRender(e.Prompt, 60))
 	transcript := styleSubagentMeta.Render("  " + shortTranscriptPath(e.TranscriptPath))
-	return tag + " " + mode + " " + idTag + "  " + prompt + "\n" + transcript
+	header := tag + " " + mode + " " + idTag
+	if e.Branch != "" {
+		// Dispatch worktree task: show the branch it commits to.
+		header += " " + styleSubagentMeta.Render("· "+shortBranch(e.Branch))
+	}
+	header += "  " + prompt
+	return header + "\n" + transcript
 }
 
 // renderSubagentProgress is a one-line activity tick. The header
@@ -191,8 +197,12 @@ func renderSubagentDone(e agent.SubagentDone) string {
 		status = styleSubagentErr.Render("errored")
 	}
 	stats := formatSubagentStats(e.Duration, e.ToolCalls, e.TokensUsed, e.Model)
-	return styleSubagentMeta.Render("  └ ") + status + " " +
+	line := styleSubagentMeta.Render("  └ ") + status + " " +
 		styleSubagentMeta.Render(stats)
+	if e.Branch != "" {
+		line += styleSubagentMeta.Render(" · " + shortBranch(e.Branch))
+	}
+	return line
 }
 
 // renderSubagentBackgroundDone is the asynchronous completion banner
@@ -210,8 +220,29 @@ func renderSubagentBackgroundDone(e agent.SubagentBackgroundDone) string {
 	header := styleSubagentLabel.Render("◉ "+e.AgentType) + " " +
 		styleSubagentMeta.Render("· "+e.TaskID[:8]+"  ") +
 		status + " " + styleSubagentMeta.Render(stats)
+	if e.Branch != "" {
+		header += styleSubagentMeta.Render(" · " + shortBranch(e.Branch))
+		// Commit state, so the async banner doesn't imply integrate-ready
+		// work on an empty/rejected branch. A committed worker shows its
+		// short SHA; one that produced nothing committable shows the reason.
+		switch {
+		case e.Committed:
+			header += styleSubagentMeta.Render(" · committed " + shortCommit(e.CommitSHA))
+		case e.CommitErr != "":
+			header += styleSubagentErr.Render(" · not committed: " + e.CommitErr)
+		}
+	}
 	footer := styleSubagentMeta.Render("    /subagents — open the picker, then Enter on task " + e.TaskID[:8])
 	return header + "\n" + footer
+}
+
+// shortCommit renders an 8-char commit SHA for the dock banner, matching
+// the dispatch tool's shortSHA so the two surfaces agree.
+func shortCommit(sha string) string {
+	if len(sha) > 8 {
+		return sha[:8]
+	}
+	return sha
 }
 
 // formatSubagentStats composes the duration / tool-count / tokens

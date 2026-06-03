@@ -206,6 +206,55 @@ func TestDefaultDenyPaths_ExcludesGitHooks(t *testing.T) {
 	}
 }
 
+// TestDefaultDenyPaths_GitPointerFile is the P2 regression: in a linked
+// worktree `.git` is a pointer FILE, and a worker rewriting it could
+// repoint the worktree at another gitdir and escape isolation. The deny
+// list must cover that pointer file — but only when `.git` is a file, so
+// the main repo's `.git/` directory (and the writable `.git/hooks/`) is
+// left alone.
+func TestDefaultDenyPaths_GitPointerFile(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	t.Run("worktree pointer file is denied", func(t *testing.T) {
+		wt := t.TempDir()
+		gitPointer := filepath.Join(wt, ".git")
+		if err := os.WriteFile(gitPointer, []byte("gitdir: /somewhere/.git/worktrees/x\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		err := ValidateWritePath(gitPointer, WritePathOptions{
+			Cwd:           NewCwdRef(wt),
+			DenyExact:     DefaultDenyPaths(wt),
+			AllowSymlinks: true, // so the deny list, not the symlink guard, is what trips
+		})
+		if err == nil {
+			t.Fatal("write to the .git pointer file should be denied (isolation escape)")
+		}
+		if !strings.Contains(err.Error(), "deny list") {
+			t.Errorf("expected deny-list rejection, got: %v", err)
+		}
+	})
+
+	t.Run("main repo .git directory keeps hooks writable", func(t *testing.T) {
+		repo := t.TempDir()
+		if err := os.MkdirAll(filepath.Join(repo, ".git", "hooks"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		deny := DefaultDenyPaths(repo)
+		// `.git` itself must NOT be in the deny list when it's a directory —
+		// otherwise the directory-prefix match would re-deny .git/hooks/.
+		for _, p := range deny {
+			if p == filepath.Join(repo, ".git") {
+				t.Fatalf("the .git directory must not be denied wholesale: %v", deny)
+			}
+		}
+		// And a hook write is still permitted.
+		hook := filepath.Join(repo, ".git", "hooks", "pre-commit")
+		if err := ValidateWritePath(hook, WritePathOptions{Cwd: NewCwdRef(repo), DenyExact: deny}); err != nil {
+			t.Errorf(".git/hooks authoring should remain allowed: %v", err)
+		}
+	})
+}
+
 func TestValidateWritePath_AppStateDeniedEvenInsideHome(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

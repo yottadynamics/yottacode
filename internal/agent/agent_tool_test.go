@@ -5,12 +5,186 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/yottadynamics/yottacode/internal/adapter"
 	"github.com/yottadynamics/yottacode/internal/subagents"
 )
+
+// TestAgentTool_ForegroundApprovalUnderGate_NoDeadlock is the regression for
+// the approval-gate self-deadlock: when an approval gate is installed (as the
+// parallel Agent batch and foreground dispatch both do), a foreground child
+// that needs approval must still complete. Before the fix the child's own loop
+// and the drain-loop forwarder contended on the same gate mutex and hung.
+func TestAgentTool_ForegroundApprovalUnderGate_NoDeadlock(t *testing.T) {
+	streamer := &scriptedStreamer{turns: [][]adapter.StreamEvent{
+		{sseDone("", adapter.ToolCall{ID: "1", Name: "run_bash", ArgsJSON: `{"command":"ls"}`})},
+		{sseDone("ran with approval")},
+	}}
+	cfg := subagents.AgentConfig{Name: "fg", Description: "x", Prompt: "x", Source: "test"}
+	tool, _ := newTestAgentTool(t, []subagents.AgentConfig{cfg}, streamer, false)
+
+	parentEvents := make(chan Event, 64)
+	parentDecisions := make(chan Decision, 1)
+	// Install the approval gate exactly as a parallel batch / foreground
+	// dispatch does — this is what used to trigger the deadlock.
+	ctx := WithApprovalGate(context.Background(), &sync.Mutex{})
+	ctx = WithParentDecisions(WithParentEvents(ctx, parentEvents), parentDecisions)
+
+	go func() {
+		for ev := range parentEvents {
+			if _, ok := ev.(ApprovalNeeded); ok {
+				parentDecisions <- AllowOnce
+			}
+		}
+	}()
+
+	done := make(chan string, 1)
+	go func() {
+		out, err := tool.Execute(ctx, mustJSON(t, agentArgs{SubagentType: "fg", Prompt: "p"}))
+		if err != nil {
+			t.Errorf("Execute: %v", err)
+		}
+		done <- out
+	}()
+
+	select {
+	case out := <-done:
+		close(parentEvents)
+		if !strings.Contains(out, "ran with approval") {
+			t.Errorf("child reply not surfaced; got: %q", out)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("deadlock: foreground approval under an installed gate did not complete")
+	}
+}
+
+// TestBuiltinRoles_DispatchClassification asserts the new built-in roles
+// classify the way dispatch relies on: implement/test/docs are write-capable
+// (→ isolated worktree) and background-by-default; review is read-only
+// (→ shared cwd, no worktree) and foreground.
+func TestBuiltinRoles_DispatchClassification(t *testing.T) {
+	byName := map[string]subagents.AgentConfig{}
+	for _, c := range subagents.LoadBuiltins() {
+		byName[c.Name] = c
+	}
+	cases := []struct {
+		name         string
+		wantReadOnly bool
+		wantBg       bool
+	}{
+		{"implement", false, true},
+		{"test", false, true},
+		{"docs", false, true},
+		{"review", true, false},
+	}
+	for _, tc := range cases {
+		c, ok := byName[tc.name]
+		if !ok {
+			t.Errorf("builtin %q not loaded", tc.name)
+			continue
+		}
+		cfg := c
+		if got := agentIsReadOnly(&cfg); got != tc.wantReadOnly {
+			t.Errorf("%q agentIsReadOnly = %v, want %v", tc.name, got, tc.wantReadOnly)
+		}
+		if c.Background != tc.wantBg {
+			t.Errorf("%q Background = %v, want %v", tc.name, c.Background, tc.wantBg)
+		}
+	}
+}
+
+// TestForwardToParent_CriticalBlocksLossyDrops is the P4 regression: a
+// forwarded ApprovalNeeded must never be dropped under event-buffer
+// pressure (dropping it deadlocks the child on the decisions channel and,
+// for a foreground batch, hangs the parent's wg.Wait), while progress
+// events stay best-effort.
+func TestForwardToParent_CriticalBlocksLossyDrops(t *testing.T) {
+	t.Run("lossy event is dropped when the buffer is full", func(t *testing.T) {
+		ch := make(chan Event, 1)
+		ch <- ToolStart{} // fill the buffer
+		done := make(chan struct{})
+		go func() {
+			forwardToParent(context.Background(), ch, SubagentProgress{Activity: "x"})
+			close(done)
+		}()
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+			t.Fatal("best-effort forward blocked on a full buffer")
+		}
+		if len(ch) != 1 {
+			t.Fatalf("expected the progress event to be dropped, buffer len=%d", len(ch))
+		}
+	})
+
+	t.Run("ApprovalNeeded blocks until drained, never dropped", func(t *testing.T) {
+		ch := make(chan Event, 1)
+		ch <- ToolStart{} // fill the buffer
+		done := make(chan struct{})
+		go func() {
+			forwardToParent(context.Background(), ch, ApprovalNeeded{ToolName: "write_file"})
+			close(done)
+		}()
+		// While the buffer is full the critical send must still be pending.
+		select {
+		case <-done:
+			t.Fatal("ApprovalNeeded returned while buffer full — it was dropped, not delivered")
+		case <-time.After(50 * time.Millisecond):
+		}
+		if _, ok := (<-ch).(ToolStart); !ok {
+			t.Fatal("expected the filler event first")
+		}
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+			t.Fatal("ApprovalNeeded never delivered after the buffer drained")
+		}
+		if _, ok := (<-ch).(ApprovalNeeded); !ok {
+			t.Fatal("expected ApprovalNeeded to be delivered")
+		}
+	})
+
+	t.Run("PathTrustElevationNeeded is also blocking", func(t *testing.T) {
+		ch := make(chan Event, 1)
+		ch <- ToolStart{}
+		done := make(chan struct{})
+		go func() {
+			forwardToParent(context.Background(), ch, PathTrustElevationNeeded{ToolName: "write_file"})
+			close(done)
+		}()
+		select {
+		case <-done:
+			t.Fatal("PathTrustElevationNeeded was dropped under buffer pressure")
+		case <-time.After(50 * time.Millisecond):
+		}
+		<-ch
+		<-done
+	})
+
+	t.Run("ctx cancel unblocks a stuck critical send", func(t *testing.T) {
+		ch := make(chan Event, 1)
+		ch <- ToolStart{} // filled and never drained
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan struct{})
+		go func() {
+			forwardToParent(ctx, ch, ApprovalNeeded{})
+			close(done)
+		}()
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+			t.Fatal("ctx cancel did not unblock the critical send")
+		}
+	})
+
+	t.Run("nil parent channel is a no-op", func(t *testing.T) {
+		forwardToParent(context.Background(), nil, ApprovalNeeded{}) // must not panic or block
+	})
+}
 
 func newTestAgentTool(t *testing.T, configs []subagents.AgentConfig, streamer Streamer, allowBackground bool) (*AgentTool, *Registry) {
 	t.Helper()

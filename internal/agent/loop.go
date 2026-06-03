@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	"github.com/yottadynamics/yottacode/internal/adapter"
+	"github.com/yottadynamics/yottacode/internal/contextwindow"
 	"github.com/yottadynamics/yottacode/internal/permissions"
 	"github.com/yottadynamics/yottacode/internal/worktree"
 )
@@ -76,6 +77,18 @@ type LoopConfig struct {
 	// oversight is needed. Mutually exclusive with AutoMode and PlanMode
 	// at the TUI layer.
 	YoloMode *YoloModeState
+
+	// FixedIterationCap pins the effective iteration budget to
+	// MaxIterations exactly, bypassing the auto-mode 4× multiplier and
+	// the yolo expansion. Subagents set this: a child inherits the
+	// parent's AutoMode/YoloMode pointers so its *approval* behavior
+	// matches the parent (writes don't block under auto, etc.), but its
+	// iteration budget must stay bounded — the user opted into "let the
+	// parent run unattended," not "let the parent spawn child loops with
+	// 4×/unbounded budgets." Without this the shared mode pointers leak
+	// the multiplier into children (see childIterationCap). Default
+	// false: top-level loops keep the mode-scaled budget.
+	FixedIterationCap bool
 
 	// Checkpoints, when non-nil, receives pre-image snapshot
 	// requests for every Mutator tool call. nil disables checkpoint
@@ -247,6 +260,11 @@ func Turn(
 	// mid-flight.
 	effectiveCap := cfg.MaxIterations
 	switch {
+	case cfg.FixedIterationCap:
+		// Subagents: keep MaxIterations exactly, even when the parent's
+		// shared AutoMode/YoloMode pointers are active. The mode still
+		// governs approvals for the child; only the budget is pinned.
+		effectiveCap = cfg.MaxIterations
 	case cfg.YoloMode.IsActive():
 		effectiveCap = yoloIterationCap(cfg.MaxIterations)
 	case cfg.AutoMode.IsActive():
@@ -258,6 +276,24 @@ func Turn(
 			Max:    effectiveCap,
 		}); err != nil {
 			return err
+		}
+
+		// Report live context usage for loops that know their window
+		// (subagents set Compaction). The runner forwards this to the task
+		// registry so the live dock can show each subagent's context fill.
+		// The main TUI/oneshot loops leave Compaction nil and skip this —
+		// their status bar tracks context on its own.
+		//
+		// Include the tool-schema overhead (the cloned toolset rides on
+		// every request but isn't in the message slice) so the dock's
+		// reported fill matches what the compaction trigger actually
+		// measures — otherwise compaction could fire while the dock still
+		// looked well under the window.
+		if cfg.Compaction != nil && cfg.Compaction.Window > 0 {
+			_ = send(ctx, events, ContextUsage{
+				Tokens: contextwindow.EstimateTokens(*history) + toolSchemaTokens(cfg.Registry),
+				Window: cfg.Compaction.Window,
+			})
 		}
 
 		// Compact older history in place before the next model call when

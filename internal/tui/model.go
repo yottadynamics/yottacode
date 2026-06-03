@@ -288,6 +288,15 @@ type Model struct {
 	// (tests).
 	subagentTasks *subagents.Registry
 
+	// dockFocused + dockCursor drive keyboard navigation of the live
+	// subagent dock: Tab (when no palette is open and subagents are
+	// running) focuses it, up/down move dockCursor among the running
+	// subagents, Enter opens the selected one's transcript, Esc exits.
+	// No mouse capture — keyboard-only keeps terminal text selection
+	// intact.
+	dockFocused bool
+	dockCursor  int
+
 	// subagentTool is the live AgentTool registered on the loop's
 	// registry. The TUI uses it to wire the background-done callback
 	// and to introspect the available agent configs from /subagents.
@@ -957,10 +966,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if _, ok := msg.(spinner.TickMsg); ok {
-		if !m.turnActive && !m.summarizing {
+		if !m.turnActive && !m.summarizing && !m.hasRunningSubagents() {
 			// Idle: drop the tick so we stop re-scheduling ourselves.
 			// startTurn re-arms m.spinner.Tick when work begins; the
 			// summarize commands re-arm it for the summarizing row.
+			// We also keep ticking while background subagents run so the
+			// live dock's elapsed times + latest activity refresh after
+			// the parent turn has ended (a background dispatch detaches
+			// its workers; nothing else would drive a redraw until they
+			// complete).
 			return m, nil
 		}
 		var cmd tea.Cmd
@@ -1126,6 +1140,27 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.mcpPickerOpen {
 			return m.updateMCPPicker(msg)
+		}
+		// Live-dock keyboard navigation. When focused, the dock consumes
+		// keys (up/down/enter/esc) ahead of the cmdline. Tab focuses it —
+		// but ONLY when no completion palette is active (palette owns Tab)
+		// and a subagent is actually running, so normal typing/Tab is
+		// untouched the rest of the time.
+		// Drop stale focus if every subagent finished while the dock was
+		// focused — otherwise this keypress would be swallowed by
+		// updateDockFocus just to clear the flag, and the dock (which renders
+		// nothing with no running tasks) can't show focus anyway.
+		if m.dockFocused && !m.hasRunningSubagents() {
+			m.dockFocused = false
+			m.dockCursor = 0
+		}
+		if m.dockFocused {
+			return m.updateDockFocus(msg)
+		}
+		if msg.Type == tea.KeyTab && !m.paletteOpen && !m.filePaletteOpen && m.hasRunningSubagents() {
+			m.dockFocused = true
+			m.dockCursor = 0
+			return m, nil
 		}
 		// Intercept image pastes before any other handling. Terminals
 		// paste image paths as file:/// URLs or raw paths — detect
@@ -1993,6 +2028,14 @@ func (m Model) overlayClosed(after Model) bool {
 	return m.anyOverlayOpen() && !after.anyOverlayOpen()
 }
 
+// hasRunningSubagents reports whether any subagent task is currently
+// running. Used to keep the spinner tick alive (driving live-dock redraws)
+// after the parent turn ends, since a background dispatch detaches its
+// workers and nothing else would trigger a redraw until they finish.
+func (m Model) hasRunningSubagents() bool {
+	return m.subagentTasks != nil && m.subagentTasks.ActiveCount() > 0
+}
+
 // View renders the live footer that redraws in place at the bottom of the
 // terminal. Conversation history is NOT in here — those lines live in
 // terminal scrollback courtesy of tea.Println from appendLine.
@@ -2153,12 +2196,25 @@ func (m Model) View() string {
 		parts = append(parts, m.renderInputFrame())
 	}
 
-	// Status bar tucks immediately below the bottom rule. Earlier
-	// versions inserted a blank line for breathing room — turned out
-	// to leave the bar looking detached and floating; cuddling it
-	// against the rule reads as "this is the chrome below the
-	// cmdline" without ambiguity.
+	// Status bar sits directly below the cmdline. Earlier versions
+	// inserted a blank line for breathing room — turned out to leave the
+	// bar looking detached and floating; cuddling it against the rule
+	// reads as "this is the chrome below the cmdline" without ambiguity.
 	parts = append(parts, m.renderStatus())
+
+	// Live subagent dock: rendered BELOW the status bar (the status bar is
+	// the session's own chrome; the dock is the per-subagent fan-out under
+	// it). Lists currently-running subagents (a dispatch fan-out, or any
+	// in-flight Agent run) with model + context + activity, updating on
+	// each spinner tick. Collapses to nothing when none are running, so it
+	// costs zero rows on an idle/solo session.
+	if m.subagentTasks != nil {
+		if dock := renderSubagentDock(m.subagentTasks.List(), m.width, m.modelName, m.dockFocused, m.dockCursor); dock != "" {
+			// Blank line between the status bar and the dock so the
+			// per-subagent fan-out reads as its own region.
+			parts = append(parts, "", dock)
+		}
+	}
 	return lipgloss.JoinVertical(lipgloss.Left, parts...)
 }
 

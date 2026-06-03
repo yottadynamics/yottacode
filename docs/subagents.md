@@ -14,7 +14,7 @@ tool is exposed to the parent model; the model dispatches by
 
 ## Built-in agents
 
-Four agent types ship with the binary:
+Eight agent types ship with the binary:
 
 | Name | Tools | Purpose |
 | --- | --- | --- |
@@ -22,6 +22,15 @@ Four agent types ship with the binary:
 | `Explore` | read-only (read_file, grep, glob, list_*, git read subcommands, fetch_url) | Fast code search and location lookup. |
 | `Plan` | Explore's tools + `todo_write` | Produce a written plan for a coding task. Ends with a `### Critical Files for Implementation` trailer. |
 | `verification` | Explore's tools + `run_bash` | Adversarially verify a change: run builds / tests / probes, try to break it, end with a `VERDICT: PASS\|FAIL\|PARTIAL` line. Background-by-default. |
+| `implement` | read + full write set + `run_tests` + `run_bash` | Build one well-scoped component end-to-end, staying inside its owned files. Write-capable, **background-by-default** — the workhorse write task in a `dispatch` fan-out. |
+| `test` | read + write + `run_tests` + `run_bash` | Write/update and run tests for a component, owning the test files only. Write-capable, **background-by-default** — pairs with `implement` on disjoint files. |
+| `docs` | read + `write_file`/`edit_file` + git read + `fetch_url` | Update documentation and comments for a change, owning the doc files only. Write-capable, **background-by-default**. |
+| `review` | read-only (Explore's tools + more git read) | Read-only critique of a diff — findings ranked by severity (file:line + scenario). Cannot edit; complements `verification`. Foreground. |
+
+The `implement` / `test` / `docs` / `review` roster rounds out the
+**parallel-implementation** story behind `dispatch`: a typical fan-out is
+`Plan` → `[implement, test, docs]` (disjoint files, in parallel) → `review`
++ `verification`. See [dispatch.md](dispatch.md).
 
 The built-in definitions live in `internal/subagents/builtins/*.md`
 and are embedded in the binary — they ship without any setup.
@@ -268,6 +277,21 @@ Inside the picker:
 Task ids are 16-char hex; the first 8 chars are usually unique
 enough for the `/subagents stop` cmdline form.
 
+`/subagents` is the **after-the-fact** browser. While subagents are
+running, a **live dock** sits at the bottom, a blank line **below the
+status bar**. Each running subagent is one aligned row — agent type ·
+latest activity · short model name · live context (`128K (1%)` = window +
+percent used) · and a trailing identifier (`dispatch-<id>` for a dispatch
+task, else `<type>-<id>`, matching the scrollback cards and `/subagents`).
+It updates on each redraw (and keeps refreshing while background workers
+run) and collapses to nothing when nothing is running.
+
+Press **Tab** to focus the dock (when no completion palette is open and a
+subagent is running): `↑`/`↓` (or `k`/`j`) move between subagents, `Enter`
+opens the selected one's transcript in the pager, `Esc` returns to the
+cmdline. It's keyboard-only by design — yottacode doesn't capture the mouse,
+so terminal text selection / copy-paste keeps working.
+
 ## Transcripts
 
 Every subagent run writes its full transcript (every event, every
@@ -384,10 +408,41 @@ subagent ran on shows in the `/subagents` picker and on its completion
 card. (Per-subagent token figures are estimates; yottacode does not yet
 aggregate per-model token totals across a session.)
 
+## Dispatch & integrate (experimental)
+
+Where a single `Agent` call delegates one subtask, **`dispatch`** fans a
+whole batch out at once: each subtask runs as a concurrent subagent, and
+write-capable ones run in their own git worktree + branch so they never
+clobber each other. **`integrate`** then merges those branches into one
+integration branch for a PR. Subtasks are partitioned by declared file
+ownership so the merge stays clean by construction.
+
+Write/implementation batches run in the **background** by default
+(non-blocking — returns a batch handle immediately, workers auto-approve
+within their worktree, you `integrate` when done); all-read/research batches
+run in the **foreground** (blocking) and return every subtask's findings
+together for the main agent to assemble right away.
+
+This is gated behind the `dispatch` experimental feature and is the path
+for "decompose a large PR into independent parallel tasks." Full guide:
+[dispatch.md](dispatch.md).
+
 ## Known limitations
 
 Things that are imperfect but not bugs — worth knowing about so the
 behavior doesn't surprise you.
+
+### Concurrent shared-cwd write children have no stale-read guard
+
+`dispatch` write subtasks are physically isolated (each in its own git
+worktree), so they cannot clobber each other. But two concurrent
+**standalone `Agent`** write-capable children (spawned in one parallel
+batch) share the parent's working directory, and there is no guard that
+warns when one writes a file another had read. The clean path for parallel
+*writes* is `dispatch` (worktree-isolated); concurrent shared-cwd write
+children are the un-guarded case. A cross-task stale-read warning is
+deferred — doing it correctly needs per-task file-access tracking threaded
+through the fs tools, which is more than a quick advisory check.
 
 ### Multi-line tool cards can interleave with other output
 

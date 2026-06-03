@@ -385,19 +385,7 @@ func (t *AgentTool) Execute(ctx context.Context, argsJSON string) (string, error
 
 	parentEvents := ParentEvents(ctx)
 	parentDecisions := ParentDecisions(ctx)
-	emitToParent := func(ev Event) {
-		if parentEvents == nil {
-			return
-		}
-		select {
-		case parentEvents <- ev:
-		default:
-			// Non-blocking: the events channel is buffered at 64; if
-			// we'd block, the consumer is far behind and we'd rather
-			// drop a Subagent* event than stall the loop. The
-			// transcript still captures the activity.
-		}
-	}
+	emitToParent := func(ev Event) { forwardToParent(ctx, parentEvents, ev) }
 
 	emitToParent(SubagentStart{
 		TaskID:         taskID,
@@ -420,7 +408,7 @@ func (t *AgentTool) Execute(ctx context.Context, argsJSON string) (string, error
 			// Background: no live UI to forward to (emitToParent nil)
 			// AND no decisions channel to read from. Approval-needed
 			// events auto-deny inside runChild.
-			result, errored, status, tokens := t.runChild(bgCtx, taskID, cfg, a.Prompt, transcript, nil, nil, childAdapter, childModel)
+			result, errored, status, tokens := t.runChild(bgCtx, taskID, cfg, a.Prompt, transcript, nil, nil, childAdapter, childModel, childRunOpts{})
 			t.Tasks.MarkDone(taskID, status, result, errored, tokens)
 			// Read the just-recorded tool-call count off the registry
 			// so the inline card can render accurate stats.
@@ -456,7 +444,7 @@ func (t *AgentTool) Execute(ctx context.Context, argsJSON string) (string, error
 	// Foreground: pass parent's events + decisions so child
 	// ApprovalNeeded events surface on the parent's modal and the
 	// user's verdict routes back to the child's loop.
-	result, errored, status, tokens := t.runChild(childCtx, taskID, cfg, a.Prompt, transcript, emitToParent, parentDecisions, childAdapter, childModel)
+	result, errored, status, tokens := t.runChild(childCtx, taskID, cfg, a.Prompt, transcript, emitToParent, parentDecisions, childAdapter, childModel, childRunOpts{})
 	t.Tasks.MarkDone(taskID, status, result, errored, tokens)
 	// Read the just-recorded tool-call count off the registry so the
 	// done card can render accurate stats.
@@ -572,6 +560,36 @@ func (t *AgentTool) routeChildModel(cfg *subagents.AgentConfig) (Streamer, strin
 //     — surfacing a modal hours after spawn-time is bad UX. The
 //     escape valve is permissions.json (allowlist the tool the
 //     subagent needs).
+//
+// childRunOpts carries the optional overrides dispatch needs without
+// turning runChild into a positional-argument soup. The zero value
+// reproduces the standard Agent-tool behavior (shared cwd, registry built
+// from the agent config, no extra prompt), so existing call sites pass
+// childRunOpts{}.
+type childRunOpts struct {
+	// reg, when non-nil, is the child's tool registry. nil → built from
+	// the agent config via buildChildRegistry (the shared-cwd path).
+	// dispatch passes a worktree-isolated registry here.
+	reg *Registry
+	// cwd, when non-nil, is the child loop's working directory. nil →
+	// the parent's shared CwdRef (t.Cwd). dispatch passes a fresh ref
+	// pinned to the child's git worktree.
+	cwd *CwdRef
+	// extraSystemPrompt is appended to the child's system prompt (after
+	// the agent body + SystemPromptSuffix, before the no-delegation
+	// rule). dispatch uses it to declare the task's file ownership.
+	extraSystemPrompt string
+	// bgPolicy makes a background (no-UI) child apply a deterministic
+	// allow/deny policy to approval requests instead of the default
+	// blanket auto-deny: worktree-confined file writes + run_tests are
+	// allowed; run_bash (all shell) and other floor tools are denied
+	// (see backgroundWorkerDecision). Dispatch background workers set this.
+	// The child does NOT bypass permissions — explicit `deny` rules still
+	// win, the run_bash hardline floor still applies, and writes stay
+	// confined to the worktree by the child registry's WriteOpts.
+	bgPolicy bool
+}
+
 func (t *AgentTool) runChild(
 	ctx context.Context,
 	taskID string,
@@ -582,8 +600,12 @@ func (t *AgentTool) runChild(
 	parentDecisions <-chan Decision,
 	childAdapter Streamer,
 	childModel string,
+	opts childRunOpts,
 ) (result string, errored bool, status subagents.TaskStatus, tokensUsed int) {
-	childReg := t.buildChildRegistry(cfg)
+	childReg := opts.reg
+	if childReg == nil {
+		childReg = t.buildChildRegistry(cfg)
+	}
 
 	// Mode propagation: the child runs under the same mode as the
 	// parent. If parent is in plan mode, the child also enters plan
@@ -605,13 +627,27 @@ func (t *AgentTool) runChild(
 	if childAutoMode == nil {
 		childAutoMode = &AutoModeState{}
 	}
+	// Child cwd: the parent's shared CwdRef by default (so an
+	// enter_worktree mid-conversation propagates), OR a dispatch-supplied
+	// ref pinned to this child's isolated git worktree.
+	childCwd := opts.cwd
+	if childCwd == nil {
+		childCwd = t.Cwd
+	}
 	childCfg := LoopConfig{
 		Adapter:           childAdapter,
 		Registry:          childReg,
 		Permissions:       t.Permissions,
-		BypassPermissions: false, // never bypass for child; rely on yolo for true unattended
-		Cwd:               t.Cwd, // shared CwdRef — enter_worktree mid-conversation propagates to child loops
+		BypassPermissions: false, // children never blanket-bypass; background workers gate via bgPolicy (see runChild's ApprovalNeeded handler), and the run_bash hardline floor + worktree write-confinement still apply
+		Cwd:               childCwd,
 		MaxIterations:     childIterationCap,
+		// Pin the child's iteration budget to childIterationCap. The
+		// child inherits the parent's AutoMode/YoloMode pointers for
+		// approval behavior, but FixedIterationCap stops loop.go from
+		// applying the 4×/yolo multiplier to the child's budget — see
+		// the childIterationCap doc comment for why children must stay
+		// bounded even under an auto/yolo parent.
+		FixedIterationCap: true,
 		PlanMode:          childPlanMode,
 		AutoMode:          childAutoMode,
 		YoloMode:          t.YoloMode, // shared (process-wide once entered)
@@ -652,6 +688,9 @@ func (t *AgentTool) runChild(
 	if t.SystemPromptSuffix != "" {
 		systemPrompt += "\n\n" + t.SystemPromptSuffix
 	}
+	if opts.extraSystemPrompt != "" {
+		systemPrompt += "\n\n" + opts.extraSystemPrompt
+	}
 	// Hard-rule prohibition: children cannot delegate. Belt and
 	// suspenders with the recursion guard in buildChildRegistry.
 	systemPrompt += "\n\nYou cannot delegate further. The `Agent` tool is unavailable to you; produce your final answer directly."
@@ -665,8 +704,13 @@ func (t *AgentTool) runChild(
 	childDecisions := make(chan Decision, 1)
 	errCh := make(chan error, 1)
 
+	// Run the child's own loop with the parent batch's approval gate DETACHED.
+	// Only this drain loop (the forwarder) may hold that gate during a
+	// forwarded approval; if the child loop also acquired it, the child would
+	// block on its decision while we block on the gate. See withoutApprovalGate.
+	turnCtx := withoutApprovalGate(ctx)
 	go func() {
-		err := Turn(ctx, childCfg, &history, childEvents, childDecisions)
+		err := Turn(turnCtx, childCfg, &history, childEvents, childDecisions)
 		close(childEvents)
 		errCh <- err
 	}()
@@ -785,21 +829,88 @@ func (t *AgentTool) runChild(
 				}
 				continue
 			}
-			// Background path: nobody's watching, auto-deny so the
-			// child model can adapt or give up gracefully.
+			// Background path: nobody's watching. Dispatch's unattended
+			// workers (bgPolicy) apply a deterministic allow/deny policy —
+			// worktree-confined writes + tests + read-only shell allowed,
+			// dangerous/mutating shell + other floor tools denied. Other
+			// background subagents auto-deny everything (the conservative
+			// default; allowlist via permissions.json to loosen).
+			verdict := Deny
+			note := fmt.Sprintf("auto-denied %s (background subagent cannot prompt; allowlist the tool in permissions.json if needed)", e.ToolName)
+			if opts.bgPolicy {
+				verdict, note = backgroundWorkerDecision(e.ToolName, e.ArgsJSON)
+			}
+			select {
+			case childDecisions <- verdict:
+			case <-ctx.Done():
+				flushRepeat()
+				return "", true, subagents.TaskCanceled, 0
+			}
+			emitActivity(note)
+		case PathTrustElevationNeeded:
+			// A mutating tool tried to write outside the child's workspace
+			// (for a dispatch worker, outside its isolated worktree). The
+			// child's Turn is now BLOCKED on the decisions channel — we MUST
+			// feed it a verdict here, or the worker hangs forever (the
+			// iteration cap can't fire mid-tool, and a background worker has
+			// no other path out).
+			canForward := emitToParent != nil && parentDecisions != nil
+			if canForward {
+				// Foreground: forward to the parent's path-trust modal so the
+				// user can allow-once / trust-for-session, serialized across a
+				// parallel batch by the shared approval gate.
+				flushRepeat()
+				unlock := lockApprovalGate(ctx)
+				emitToParent(PathTrustElevationNeeded{
+					ToolName:     e.ToolName,
+					Path:         e.Path,
+					Cwd:          e.Cwd,
+					AllowedRoots: e.AllowedRoots,
+					ArgsJSON:     e.ArgsJSON,
+				})
+				emitActivity(fmt.Sprintf("waiting for path-trust approval of %s …", e.Path))
+				var verdict Decision
+				select {
+				case verdict = <-parentDecisions:
+				case <-ctx.Done():
+					unlock()
+					flushRepeat()
+					return "", true, subagents.TaskCanceled, 0
+				}
+				unlock()
+				select {
+				case childDecisions <- verdict:
+				case <-ctx.Done():
+					flushRepeat()
+					return "", true, subagents.TaskCanceled, 0
+				}
+				if verdict == PathAllowOnce || verdict == PathTrustSession {
+					emitActivity(fmt.Sprintf("path-trust granted for %s", e.Path))
+				} else {
+					emitActivity(fmt.Sprintf("path-trust denied for %s", e.Path))
+				}
+				continue
+			}
+			// Background: an unattended worker must stay in its sandbox.
+			// Auto-deny — and feed the decision so the blocked child unblocks
+			// (this is the fix for the forever-hang on the unfed channel).
 			select {
 			case childDecisions <- Deny:
 			case <-ctx.Done():
 				flushRepeat()
 				return "", true, subagents.TaskCanceled, 0
 			}
-			emitActivity(fmt.Sprintf("auto-denied %s (background subagent cannot prompt; allowlist the tool in permissions.json if needed)", e.ToolName))
+			emitActivity(fmt.Sprintf("auto-denied out-of-workspace write to %s (unattended worker is sandboxed; it cannot escape its worktree)", e.Path))
 		case ContextCompacted:
 			if e.Err != nil {
 				emitActivity("context compaction skipped (summary failed) — continuing")
 			} else {
 				emitActivity(fmt.Sprintf("compacted context ~%dK → ~%dK tokens", e.Before/1000, e.After/1000))
 			}
+		case ContextUsage:
+			// Live context fill for the dock. Recorded regardless of
+			// foreground/background (the dock reads the registry).
+			t.Tasks.SetContextUsage(taskID, e.Tokens, e.Window)
 		case IterCap:
 			hitIterCap = true
 		case ErrorEvent:
@@ -877,6 +988,40 @@ func (t *AgentTool) runChild(
 	return result, errored, status, tokensUsed
 }
 
+// backgroundWorkerDecision is the deterministic approval policy for an
+// unattended (background dispatch) worker that can't prompt a human. It
+// mirrors how hermes and Claude Code gate unattended subagents: allow the
+// safe, contained operations; deny everything that needs human judgment —
+// deterministically, never via an LLM. Returns the verdict + an activity
+// note for the transcript/dock.
+//
+//   - File-mutation tools are allowed: the worktree child registry confines
+//     their writes to the isolated worktree via WriteOpts, so the blast
+//     radius is the worker's own branch.
+//   - run_tests is allowed so a worker can verify its change.
+//   - run_bash is DENIED for unattended workers (beta posture). The
+//     "read-only shell" classifier (IsAutoModeSafeBash) is a first-token
+//     check that is bypassable (env/command wrappers, process substitution),
+//     and run_bash isn't path-confined once allowed — so auto-allowing it is
+//     an arbitrary-code-execution surface for a worker nobody is watching.
+//     A task that genuinely needs shell must run in the foreground (a human
+//     approves) until the token-aware classifier lands (dispatch-v3 Layer 0d).
+//   - Everything else (git_commit, the unified git tool, fetch, …) is denied;
+//     the worker's commit happens via dispatch's own auto-commit.
+func backgroundWorkerDecision(toolName, argsJSON string) (Decision, string) {
+	_ = argsJSON // reserved for a future token-aware shell classifier
+	switch toolName {
+	case "write_file", "edit_file", "apply_diff", "mkdir", "copy_file", "move_file", "delete_file":
+		return AllowOnce, "allowed " + toolName + " (worktree-confined write)"
+	case "run_tests":
+		return AllowOnce, "allowed run_tests"
+	case "run_bash":
+		return Deny, "denied run_bash (shell is disabled for unattended background workers; use run_tests, or run this task in the foreground)"
+	default:
+		return Deny, "denied " + toolName + " (not auto-allowed for unattended workers; needs a human)"
+	}
+}
+
 // buildChildRegistry clones the parent registry into a new one,
 // stripping Agent (recursion guard) and exit_plan_mode (never useful in
 // a child), and applying the agent config's tools allowlist when one
@@ -904,6 +1049,36 @@ func (t *AgentTool) unknownSubagentError(name string) string {
 	}
 	sort.Strings(available)
 	return fmt.Sprintf("error: unknown subagent_type %q (available: %s)", name, strings.Join(available, ", "))
+}
+
+// forwardToParent delivers a child event to the parent's event channel.
+// Most events are best-effort — dropped under buffer pressure rather than
+// stalling the child loop (a chatty child must not be able to wedge the
+// parent). But events the child then BLOCKS on a decision for —
+// ApprovalNeeded and PathTrustElevationNeeded — must never be dropped: a
+// lost request leaves the child parked on the decisions channel with no
+// feeder, and for a foreground batch the parent's wg.Wait never returns
+// (frozen UI). For those we use a blocking, ctx-aware send so the request
+// is delivered as soon as the consumer drains (e.g. after the user answers
+// a parent-level modal), unblocking only if the turn itself is canceled.
+func forwardToParent(ctx context.Context, parentEvents chan<- Event, ev Event) {
+	if parentEvents == nil {
+		return
+	}
+	switch ev.(type) {
+	case ApprovalNeeded, PathTrustElevationNeeded:
+		select {
+		case parentEvents <- ev:
+		case <-ctx.Done():
+		}
+	default:
+		select {
+		case parentEvents <- ev:
+		default:
+			// Buffer full and consumer behind — drop this best-effort
+			// event rather than stall. The transcript still captures it.
+		}
+	}
 }
 
 func (t *AgentTool) fireBackgroundDone(ev SubagentBackgroundDone) {
@@ -967,7 +1142,7 @@ func openTranscript(path string, cfg *subagents.AgentConfig, a agentArgs) *trans
 	if a.RunInBackground {
 		fmt.Fprint(f, "**Background**: yes\n")
 	}
-	fmt.Fprintf(f, "\n## Prompt\n\n%s\n\n## Events\n\n", a.Prompt)
+	fmt.Fprintf(f, "\n## Task\n\n%s\n\n## Events\n\n", a.Prompt)
 	return &transcriptFile{f: f}
 }
 
