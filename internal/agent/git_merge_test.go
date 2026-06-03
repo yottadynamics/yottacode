@@ -8,21 +8,24 @@ import (
 )
 
 // gitMergeTestRepo creates a throwaway git repo with an initial commit on
-// the default branch and returns its path. Commits use -c identity so the
-// test doesn't depend on the developer's global git config.
+// the default branch and returns its path. Identity and gpgsign are written
+// into the repo-local config (not just -c flags on our own commits) so the
+// production gitMerge — which runs `git merge` without -c identity flags —
+// can create its merge commit on a CI runner that has no global git config.
 func gitMergeTestRepo(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
 	ctx := context.Background()
 	run := func(args ...string) {
 		t.Helper()
-		full := append([]string{"-c", "user.email=t@t", "-c", "user.name=t",
-			"-c", "commit.gpgsign=false", "-c", "init.defaultBranch=main"}, args...)
-		if _, err := gitOutput(ctx, dir, full...); err != nil {
+		if _, err := gitOutput(ctx, dir, args...); err != nil {
 			t.Fatalf("git %v: %v", args, err)
 		}
 	}
-	run("init")
+	run("-c", "init.defaultBranch=main", "init")
+	run("config", "user.email", "t@t")
+	run("config", "user.name", "t")
+	run("config", "commit.gpgsign", "false")
 	if err := os.WriteFile(filepath.Join(dir, "base.txt"), []byte("base\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -36,8 +39,7 @@ func gitMergeCommitFile(t *testing.T, dir, branch, file, content, base string) {
 	ctx := context.Background()
 	run := func(args ...string) {
 		t.Helper()
-		full := append([]string{"-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false"}, args...)
-		if _, err := gitOutput(ctx, dir, full...); err != nil {
+		if _, err := gitOutput(ctx, dir, args...); err != nil {
 			t.Fatalf("git %v: %v", args, err)
 		}
 	}
