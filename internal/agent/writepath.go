@@ -156,7 +156,12 @@ func ValidateWritePath(path string, opts WritePathOptions) error {
 		}
 	}
 	return &ErrPathOutsideWorkspace{
-		Path:         abs,
+		// Report the lexical path the model/user actually specified, not the
+		// symlink-resolved `abs` used for the containment check — Cwd is
+		// lexical too, and on macOS a resolved /etc -> /private/etc (or a
+		// /var/folders tempdir) would otherwise surface a confusing path in
+		// the trust modal and the --allow-paths hint.
+		Path:         lexicalAbs,
 		Cwd:          cwd,
 		AllowedRoots: append([]string(nil), opts.AllowedPaths...),
 	}
@@ -343,10 +348,32 @@ func ValidateReadPath(path string, deny []string) error {
 	// innocuously-named symlink can point straight at a credential store.
 	// Re-check the deny list against the resolved real path so
 	// `ln -s ~/.ssh/id_rsa ./notes` then reading ./notes is still blocked.
-	if resolved := canonicalExisting(abs); resolved != abs && matchesAny(resolved, deny) {
-		return fmt.Errorf("path %q resolves to %q, which is in the read deny list (credential-bearing); use run_bash if you really need the contents", abs, resolved)
+	// Compare in a single real-filesystem frame: the resolved candidate is
+	// canonical, so the deny entries must be canonicalized too — otherwise a
+	// symlinked workspace root (macOS /tmp -> /private/tmp, /var/folders ->
+	// /private/var/folders) leaves the two sides in different frames and the
+	// check silently misses (it did, on macOS CI).
+	if resolved := canonicalExisting(abs); resolved != abs {
+		if matchesAny(resolved, deny) || matchesAny(resolved, canonicalizeDeny(deny)) {
+			return fmt.Errorf("path %q resolves to %q, which is in the read deny list (credential-bearing); use run_bash if you really need the contents", abs, resolved)
+		}
 	}
 	return nil
+}
+
+// canonicalizeDeny resolves every deny entry's symlinks (via
+// canonicalExisting) so a resolved candidate path can be compared against the
+// deny list in one real-filesystem frame. Entries that don't exist on disk
+// fall back to their lexical absolute form, matching matchesAny's behavior.
+func canonicalizeDeny(deny []string) []string {
+	out := make([]string, 0, len(deny))
+	for _, d := range deny {
+		if d == "" {
+			continue
+		}
+		out = append(out, canonicalExisting(d))
+	}
+	return out
 }
 
 // DefaultDenyReadPaths returns the hardcoded list of paths the agent's
