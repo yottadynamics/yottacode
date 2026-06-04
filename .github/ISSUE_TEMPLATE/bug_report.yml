@@ -1,0 +1,74 @@
+name: Bug report
+description: Report a problem with yottacode
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug. Please search
+        [existing issues](https://github.com/yottadynamics/yottacode/issues)
+        first to avoid duplicates.
+  - type: input
+    id: version
+    attributes:
+      label: yottacode version
+      description: Output of `yottacode --version`.
+      placeholder: "v0.2.0"
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      description: yottacode supports Linux and macOS. Windows is supported only through WSL.
+      options:
+        - Linux
+        - macOS (Apple Silicon / arm64)
+        - macOS (Intel / amd64)
+        - WSL (Windows Subsystem for Linux)
+    validations:
+      required: true
+  - type: input
+    id: provider
+    attributes:
+      label: Provider and model
+      description: Which provider and model were you using?
+      placeholder: "anthropic / claude-..., openai / gpt-..., ollama, ..."
+    validations:
+      required: false
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: A clear description of the bug, including what you expected to happen instead.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: Exact steps, commands, or prompts that trigger the bug.
+      placeholder: |
+        1. Run `yottacode ...`
+        2. Type ...
+        3. See error
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs and output
+      description: Relevant terminal output or stderr. Redact API keys and any secrets.
+      render: shell
+    validations:
+      required: false
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Pre-submission checklist
+      options:
+        - label: I searched existing issues and did not find a duplicate.
+          required: true
+        - label: I removed any secrets (API keys, tokens) from the logs above.
+          required: true

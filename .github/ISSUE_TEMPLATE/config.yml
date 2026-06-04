@@ -1,0 +1,14 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Documentation
+    url: https://yottacode.ai/docs/
+    about: Read the docs first — your question may already be answered.
+  - name: Questions and discussions
+    url: https://github.com/yottadynamics/yottacode/discussions
+    about: Ask questions, share ideas, and discuss usage here.
+  - name: Contributing guide
+    url: https://github.com/yottadynamics/yottacode/blob/main/CONTRIBUTING.md
+    about: Setup, conventions, and what a good issue or pull request looks like.
+  - name: Report a security vulnerability
+    url: https://github.com/yottadynamics/yottacode/security/advisories/new
+    about: Do not open public issues for vulnerabilities. Report privately here.
