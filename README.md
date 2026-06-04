@@ -10,8 +10,10 @@ A single Go binary. Multi-provider. Multi-session. Memory that persists.
 [![Go](https://img.shields.io/badge/Go-1.26+-00ADD8?logo=go&logoColor=white)](https://go.dev)
 [![Release](https://img.shields.io/github/v/release/yottadynamics/yottacode?color=green)](https://github.com/yottadynamics/yottacode/releases)
 [![CI](https://github.com/yottadynamics/yottacode/actions/workflows/go.yml/badge.svg)](https://github.com/yottadynamics/yottacode/actions/workflows/go.yml)
+[![Docs](https://img.shields.io/badge/Docs-yottacode.ai-1f6feb)](https://yottacode.ai/docs/)
 
-<img src="assets/yottacode.png" alt="yottacode TUI demo" width="700">
+[Getting Started](https://yottacode.ai/docs/get-started/) •  [Agent Core](https://yottacode.ai/docs/core/) •  [Memory](https://yottacode.ai/docs/memory/) •  [Providers](https://yottacode.ai/docs/providers/) •  [Models](https://yottacode.ai/docs/models-mcp/) •  [Workflow](https://yottacode.ai/docs/workflow/) •  [Reference](https://yottacode.ai/docs/reference/)
+
 
 </div>
 
@@ -20,18 +22,6 @@ A single Go binary. Multi-provider. Multi-session. Memory that persists.
 `yottacode` gives you an interactive terminal UI for coding, a scriptable one-shot mode for automation, structured tools for inspecting and editing real repositories, durable sessions, cross-session recall, and explicit memory — all without tying your workflow to one model provider.
 
 > **Status:** pre-1.0 (`v0.2.0`). The CLI, configuration, and on-disk formats are stabilizing. Pin a tag if you depend on yottacode from scripts.
-
----
-
-## Table of Contents
-
-- [Quick Start](#quick-start)
-- [Features](#features)
-- [Common Commands](#common-commands)
-- [Documentation](#documentation)
-- [Development](#development)
-- [Contributing](#contributing)
-- [License](#license)
 
 ---
 
@@ -50,8 +40,6 @@ yottacode setup
 ```
 
 The installer drops `yottacode` into `~/.yottacode/bin/` (no `sudo`), verifies the release archive against published SHA256 sums, and offers to add the directory to your shell `PATH` (creating a timestamped backup of the rc file before any edit). Pass `--no-modify-rc` to skip the rc edit, or `--yes` to accept it non-interactively.
-
-After install, yottacode checks GitHub for a newer release once a day on startup (cached at `~/.yottacode/cache/update-check.json`) and offers to upgrade before the TUI starts. Set `YOTTACODE_NO_UPDATE_CHECK=1` to disable.
 
 > Windows users should run yottacode under WSL.
 
@@ -247,6 +235,8 @@ Full references: [`docs/cli.md`](docs/cli.md) and [`docs/tui-slash-commands.md`]
 
 ## Documentation
 
+Browse the full documentation online at **[yottacode.ai/docs](https://yottacode.ai/docs/)**. The guides below are the in-repo copies.
+
 | Guide | Description |
 |:------|:------------|
 | [`docs/quickstart.md`](docs/quickstart.md) | First successful session |
@@ -284,7 +274,9 @@ See [`docs/development.md`](docs/development.md) for build, test, and adapter-ex
 
 ## Contributing
 
-Issues and pull requests are welcome at [github.com/yottadynamics/yottacode](https://github.com/yottadynamics/yottacode). New capabilities should include tests and docs. Before opening a PR:
+Issues and pull requests are welcome. See **[CONTRIBUTING.md](CONTRIBUTING.md)** for development setup, the test rules, and the PR workflow, and use the [issue templates](https://github.com/yottadynamics/yottacode/issues/new/choose) to file a bug or request a feature.
+
+New capabilities should include tests and docs. Before opening a PR:
 
 ```bash
 go test ./...
