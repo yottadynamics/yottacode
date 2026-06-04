@@ -136,6 +136,60 @@ func TestAnthropicAdapter_StreamsTextThinkingAndToolUse(t *testing.T) {
 	}
 }
 
+// TestAnthropicAdapter_PreservesInputCacheUsage guards the message_delta
+// handler. Anthropic reports input + cache token counts once at
+// message_start and re-sends only the cumulative output_tokens on
+// message_delta; the input/cache fields are absent there and decode to
+// 0. The delta must NOT overwrite the message_start figures with those
+// zeros — doing so undercounts every Anthropic turn's input cost and
+// reports zero cache reads. Regression for the release audit's
+// anthropic-message-delta-zeroes-input-cache-usage finding.
+func TestAnthropicAdapter_PreservesInputCacheUsage(t *testing.T) {
+	srv := newAnthropicMockServer(t, anthropicScript{
+		events: []anthropicSSE{
+			{Event: "message_start", Data: `{"type":"message_start","message":{"id":"msg_u","role":"assistant","content":[],"model":"claude-sonnet-4-6","usage":{"input_tokens":1500,"cache_creation_input_tokens":200,"cache_read_input_tokens":800,"output_tokens":0}}}`},
+			{Event: "content_block_start", Data: `{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`},
+			{Event: "content_block_delta", Data: `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}`},
+			{Event: "content_block_stop", Data: `{"type":"content_block_stop","index":0}`},
+			// The real-world final delta: only output_tokens. input_tokens
+			// and the cache fields are omitted and decode to 0.
+			{Event: "message_delta", Data: `{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":50}}`},
+			{Event: "message_stop", Data: `{"type":"message_stop"}`},
+		},
+	})
+	t.Cleanup(srv.Close)
+
+	a := newAnthropicAdapter(Config{BaseURL: srv.URL, APIKey: "test-key", Model: "claude-sonnet-4-6"})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var final *Message
+	for ev := range a.ChatStream(ctx, []Message{{Role: RoleUser, Content: "hi"}}, nil) {
+		switch ev.Kind {
+		case EventDone:
+			final = ev.Final
+		case EventErr:
+			t.Fatalf("stream errored: %v", ev.Err)
+		}
+	}
+	if final == nil || final.Usage == nil {
+		t.Fatal("expected final EventDone carrying usage")
+	}
+	u := final.Usage
+	if u.InputTokens != 1500 {
+		t.Errorf("InputTokens = %d, want 1500 (message_delta zeroed message_start's input count)", u.InputTokens)
+	}
+	if u.CacheCreationTokens != 200 {
+		t.Errorf("CacheCreationTokens = %d, want 200 (zeroed by message_delta)", u.CacheCreationTokens)
+	}
+	if u.CacheReadTokens != 800 {
+		t.Errorf("CacheReadTokens = %d, want 800 (zeroed by message_delta)", u.CacheReadTokens)
+	}
+	if u.OutputTokens != 50 {
+		t.Errorf("OutputTokens = %d, want 50 (cumulative from message_delta)", u.OutputTokens)
+	}
+}
+
 // captureAnthropicBody runs one turn against a mock server and returns
 // the decoded request body, so reasoning tests can assert what thinking
 // params landed on the wire.

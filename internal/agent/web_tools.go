@@ -13,7 +13,19 @@ import (
 // FetchURLTool retrieves a single URL over HTTP(S) and returns capped textual
 // content. This is the local-network fallback for models that do not have
 // provider-native web search.
-type FetchURLTool struct{}
+type FetchURLTool struct {
+	// Client overrides the HTTP client. nil (the production default) uses
+	// the SSRF-guarded client; tests inject a permissive client to reach a
+	// loopback httptest server.
+	Client *http.Client
+}
+
+func (t *FetchURLTool) httpClient() *http.Client {
+	if t.Client != nil {
+		return t.Client
+	}
+	return ssrfSafeHTTPClient
+}
 
 func (t *FetchURLTool) Name() string { return "fetch_url" }
 
@@ -79,7 +91,11 @@ func (t *FetchURLTool) Execute(ctx context.Context, argsJSON string) (string, er
 	}
 	req.Header.Set("User-Agent", "yottacode/1.0")
 
-	resp, err := http.DefaultClient.Do(req)
+	// fetch_url auto-executes (no approval) on a model-supplied URL, so it
+	// goes through the SSRF-guarded client: the dialer refuses loopback,
+	// link-local/metadata, and private addresses at connect time (after DNS
+	// resolution and across redirects).
+	resp, err := t.httpClient().Do(req)
 	if err != nil {
 		return "", fmt.Errorf("fetch_url: %w", err)
 	}

@@ -630,11 +630,17 @@ func recomposeSystemPromptWithSkills(m Model, active []skills.Skill) (Model, tea
 	}
 	base := appendSkillsSection(composeSystemPrompt(m.baseSystemPrompt, m.providerProfile), active)
 	newSys := memory.SystemPrompt(base, mem)
+	// /skills is PreservesTurn, so this can run while a turn's agent
+	// goroutine is appending to sess.Messages. Hold histMu across the
+	// element write — an in-flight append that reallocates copies every
+	// element, which would race this Content assignment.
+	m.histMu.Lock()
 	for i := range m.sess.Messages {
 		if m.sess.Messages[i].Role == adapter.RoleSystem {
 			m.sess.Messages[i].Content = newSys
 			break
 		}
 	}
+	m.histMu.Unlock()
 	return m, nil
 }

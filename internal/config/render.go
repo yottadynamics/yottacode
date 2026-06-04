@@ -80,27 +80,46 @@ func Render(cfg Config) string {
 		b.WriteString("\n")
 	}
 
-	if cfg.Router.Enabled && len(cfg.Router.Candidates) > 0 {
+	// Two independent features share the [router] table: the
+	// multi-provider fallback router (enabled/policy/candidates/health)
+	// and cache-safe task routing (mode/fast_model/smart_model). Emit the
+	// table when EITHER is configured — gating only on the multi-provider
+	// router silently dropped a user's /router mode + fast/smart choice on
+	// every save, so the feature evaporated on the next restart.
+	multiProvider := cfg.Router.Enabled && len(cfg.Router.Candidates) > 0
+	routing := cfg.Router.RoutingEnabled()
+	if multiProvider || routing {
 		b.WriteString("[router]\n")
-		b.WriteString("enabled    = true\n")
-		policy := cfg.Router.Policy
-		if policy == "" {
-			policy = "fallback-chain"
-		}
-		fmt.Fprintf(&b, "policy     = %q\n", policy)
-		b.WriteString("candidates = [")
-		for i, c := range cfg.Router.Candidates {
-			if i > 0 {
-				b.WriteString(", ")
+		if multiProvider {
+			b.WriteString("enabled    = true\n")
+			policy := cfg.Router.Policy
+			if policy == "" {
+				policy = "fallback-chain"
 			}
-			fmt.Fprintf(&b, "%q", c)
+			fmt.Fprintf(&b, "policy     = %q\n", policy)
+			b.WriteString("candidates = [")
+			for i, c := range cfg.Router.Candidates {
+				if i > 0 {
+					b.WriteString(", ")
+				}
+				fmt.Fprintf(&b, "%q", c)
+			}
+			b.WriteString("]\n")
+			if cfg.Router.HealthWindowSeconds > 0 {
+				fmt.Fprintf(&b, "health_window_seconds    = %d\n", cfg.Router.HealthWindowSeconds)
+			}
+			if cfg.Router.HealthFailureThreshold > 0 {
+				fmt.Fprintf(&b, "health_failure_threshold = %d\n", cfg.Router.HealthFailureThreshold)
+			}
 		}
-		b.WriteString("]\n")
-		if cfg.Router.HealthWindowSeconds > 0 {
-			fmt.Fprintf(&b, "health_window_seconds    = %d\n", cfg.Router.HealthWindowSeconds)
-		}
-		if cfg.Router.HealthFailureThreshold > 0 {
-			fmt.Fprintf(&b, "health_failure_threshold = %d\n", cfg.Router.HealthFailureThreshold)
+		if routing {
+			fmt.Fprintf(&b, "mode        = %q\n", cfg.Router.Mode)
+			if cfg.Router.FastModel != "" {
+				fmt.Fprintf(&b, "fast_model  = %q\n", cfg.Router.FastModel)
+			}
+			if cfg.Router.SmartModel != "" {
+				fmt.Fprintf(&b, "smart_model = %q\n", cfg.Router.SmartModel)
+			}
 		}
 		b.WriteString("\n")
 	}

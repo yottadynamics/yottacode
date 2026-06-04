@@ -376,6 +376,46 @@ func (t *DispatchTool) runDispatchChild(ctx context.Context, c *dispatchChild, b
 	}
 	t.Agent.Tasks.Add(task)
 
+	// A panic in this child's orchestration must not crash the user's
+	// session (background workers are detached; a foreground panic also
+	// skips wg.Done and would hang the batch). Convert it to an errored,
+	// done task. Panics inside the child's own runChild/turn are already
+	// caught there; this covers this function's own commit/merge logic.
+	defer func() {
+		if r := recover(); r != nil {
+			c.errored, c.status = true, subagents.TaskErrored
+			c.result = "error: " + panicToError("dispatch subagent "+c.cfg.Name, r).Error()
+			t.Agent.Tasks.MarkDone(c.taskID, c.status, c.result, c.errored, c.tokens)
+			// A background worker's completion is surfaced ONLY via the
+			// async callback (the normal-return branch below). Without
+			// firing it here too, a panic in this function's own
+			// orchestration leaves the inbox/dock waiting forever and
+			// integrate is never prompted. Foreground workers don't need
+			// it — their result is read from c after the batch's wg.Wait.
+			if background {
+				toolCalls := 0
+				if snap, ok := t.Agent.Tasks.Get(c.taskID); ok {
+					toolCalls = snap.ToolCalls
+				}
+				t.Agent.fireBackgroundDone(SubagentBackgroundDone{
+					TaskID:     c.taskID,
+					AgentType:  c.cfg.Name,
+					Result:     c.result,
+					Errored:    true,
+					Duration:   time.Since(task.Started),
+					TokensUsed: c.tokens,
+					ToolCalls:  toolCalls,
+					Model:      childModel,
+					Branch:     c.branch,
+					BatchID:    batchID,
+					Committed:  c.commit != "",
+					CommitSHA:  c.commit,
+					CommitErr:  c.commitErr,
+				})
+			}
+		}
+	}()
+
 	// Foreground forwards events/approvals to the parent; background runs
 	// silent (nil emit + nil decisions): no inline card spam, and the
 	// child auto-approves within its worktree so it never needs to prompt.

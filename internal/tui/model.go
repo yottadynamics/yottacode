@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/charmbracelet/bubbles/key"
@@ -361,6 +362,15 @@ type Model struct {
 
 	// Persistent session
 	sess *session.Session
+
+	// histMu serializes access to sess.Messages between the agent Turn
+	// goroutine (which appends during a turn) and this bubbletea Update
+	// goroutine (live token estimate, /context, system-prompt edits).
+	// Handed to the loop as cfg.HistoryLock and held around this model's
+	// own Messages reads/writes. A pointer so value-copies of Model share
+	// one lock (a sync.Mutex value field would trip copylocks). Allocated
+	// in New.
+	histMu *sync.Mutex
 
 	// UI components
 	textInput textarea.Model
@@ -883,6 +893,7 @@ func New(parent context.Context, c Config) Model {
 		skills:                 c.Skills,
 		skillTool:              c.SkillTool,
 		sess:                   c.Session,
+		histMu:                 &sync.Mutex{},
 		textInput:              ti,
 		spinner:                sp,
 		md:                     newMarkdownRenderer(80),
@@ -1739,6 +1750,14 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if input == "" {
 				return m, nil
 			}
+			// Block starting a new turn (but not slash commands) while a
+			// summarize is running: the turn's user message + reply would
+			// be silently dropped when summaryDoneMsg replaces history with
+			// the pre-summarize snapshot. Return before clearing the box so
+			// the typed text is preserved and sends once compression ends.
+			if m.summarizing && !strings.HasPrefix(input, "/") {
+				return m, nil
+			}
 			m.textInput.SetValue("")
 			m.paletteOpen = false
 			m.paletteIndex = 0
@@ -1899,6 +1918,25 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case inlineCopilotAuthDoneMsg:
 		return handleInlineCopilotAuthDone(m, msg)
 
+	case mcpServerStartedMsg:
+		// Off-thread /mcp Add finished (see startMCPServerCmd) — tools are
+		// already registered; just render the result lines.
+		for _, line := range msg.lines {
+			m.appendLine(styleAuto.Render(line))
+		}
+		return m, nil
+
+	case memoryReindexDoneMsg:
+		// Off-thread memory reindex finished (see memoryReindexCmd).
+		style := styleAuto
+		if msg.isError {
+			style = styleError
+		}
+		for _, line := range msg.lines {
+			m.appendLine(style.Render(line))
+		}
+		return m, nil
+
 	case embedSetupDoneMsg:
 		return m.handleEmbedSetupDone(msg)
 
@@ -1930,12 +1968,18 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// own default_model, corrupting the config; the store is keyed by
 		// model and never trips that validation. ResolveWindow reads the
 		// store (via WindowFor), so the bar/threshold pick it up immediately.
-		if err := catalog.UpsertWindow(msg.model, msg.window); err != nil {
+		changed, err := catalog.UpsertWindow(msg.model, msg.window)
+		if err != nil {
 			m.appendLine(styleError.Render(statusLine("model", fmt.Sprintf("save context window: %v", err))))
 			return m, nil
 		}
-		m.appendLine(styleAuto.Render(statusLine("model", fmt.Sprintf(
-			"detected context window for %s: %s (cached)", msg.model, formatTokens(msg.window)))))
+		// Only announce a genuinely NEW (or changed) discovery. Re-probing a
+		// model whose window is already cached told the user nothing new, so
+		// stay quiet rather than printing the same line every session.
+		if changed {
+			m.appendLine(styleAuto.Render(statusLine("model", fmt.Sprintf(
+				"detected context window for %s: %s", msg.model, formatTokens(msg.window)))))
+		}
 		return m, nil
 
 	case summaryDoneMsg:
@@ -3301,8 +3345,23 @@ func (m Model) startTurnWithDisplay(input, displayLabel string) (tea.Model, tea.
 	m.turnErrCh = make(chan error, 1)
 	m.userMsgCh = make(chan string, 1)
 	m.cfg.UserMessages = m.userMsgCh
+	// Serialize the agent goroutine's history appends against this Update
+	// goroutine's reads of sess.Messages (token estimate, /context,
+	// system-prompt edits). Subagents leave this nil — their history is a
+	// private slice owned by one goroutine.
+	m.cfg.HistoryLock = m.histMu
 
 	go func(ev chan agent.Event, dec chan agent.Decision, errCh chan error) {
+		defer func() {
+			if r := recover(); r != nil {
+				// A panic inside the turn would otherwise crash the whole
+				// TUI and leave ev unclosed, hanging waitForEvent forever.
+				// Close the channel and report the panic as the turn error
+				// so the session ends the turn gracefully and survives.
+				close(ev)
+				errCh <- fmt.Errorf("agent turn panicked: %v", r)
+			}
+		}()
 		err := agent.Turn(turnCtx, m.cfg, &m.sess.Messages, ev, dec)
 		close(ev)
 		errCh <- err

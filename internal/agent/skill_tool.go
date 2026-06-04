@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/yottadynamics/yottacode/internal/skills"
 )
@@ -26,15 +27,35 @@ const SkillToolName = "Skill"
 // project shadows user shadows built-in) and the slice is stable for
 // the session. A `/skills` reload command is a v1.1 follow-up.
 type SkillTool struct {
+	// mu guards All + enabled. The agent goroutine reads them every
+	// turn (Description/Active/Execute) while the TUI goroutine mutates
+	// them from the /skills picker + install/uninstall reloads
+	// (SetEnabled/Enable/SetAll). Without it, a /skills action mid-turn
+	// is a concurrent map read+write → fatal, uncatchable runtime panic
+	// that crashes the CLI and loses the in-flight conversation.
+	mu sync.RWMutex
+
 	// All is the full resolved set loaded at session start (built-in +
-	// user + project). Never mutated after construction; the TUI's
-	// /skills picker uses this as the universe to render rows against.
+	// user + project). Reassigned only by SetAll (install/uninstall
+	// reload). The TUI's /skills picker uses this as the universe to
+	// render rows against. Read it through the SetAll lock when on a
+	// goroutine other than the one that owns the field.
 	All []skills.Skill
 
 	// enabled tracks which entries from All are exposed to the model
 	// in the current session. Nil means "all enabled" — the default
-	// for fresh sessions. Mutated by SetEnabled (driven by /skills).
+	// for fresh sessions. Mutated by SetEnabled/Enable (driven by /skills).
 	enabled map[string]bool
+}
+
+// SetAll replaces the resolved skill universe under the write lock. The
+// install/uninstall reload path calls this from the TUI goroutine while
+// the agent goroutine may be reading All via Active(); a direct field
+// write would race that read.
+func (t *SkillTool) SetAll(all []skills.Skill) {
+	t.mu.Lock()
+	t.All = all
+	t.mu.Unlock()
 }
 
 // SetEnabled installs the per-session enablement set. Passing nil
@@ -42,6 +63,8 @@ type SkillTool struct {
 // SkillTool's Description() reads through this filter so the model
 // only sees the active skills on each turn.
 func (t *SkillTool) SetEnabled(names map[string]bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	if names == nil {
 		t.enabled = nil
 		return
@@ -58,6 +81,8 @@ func (t *SkillTool) SetEnabled(names map[string]bool) {
 // IsEnabled reports whether the named skill is currently exposed. A
 // nil enablement map means everything is enabled (the default).
 func (t *SkillTool) IsEnabled(name string) bool {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
 	if t.enabled == nil {
 		return true
 	}
@@ -70,6 +95,8 @@ func (t *SkillTool) IsEnabled(name string) bool {
 // strongly implies "I want to use this," and forcing a second trip
 // through the picker for a checkbox was its own usability bug.
 func (t *SkillTool) Enable(name string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	if t.enabled == nil {
 		// Nil meant "all enabled" — adding to a nil map would be a
 		// no-op against the "everything is on" baseline, so we
@@ -83,6 +110,8 @@ func (t *SkillTool) Enable(name string) {
 // Used by callers that need to recompute prompt sections or slash
 // dispatch around the active set.
 func (t *SkillTool) Active() []skills.Skill {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
 	if t.enabled == nil {
 		out := make([]skills.Skill, len(t.All))
 		copy(out, t.All)

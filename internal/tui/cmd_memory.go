@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -230,49 +231,63 @@ func (m Model) commitMemoryPicker() (Model, tea.Cmd) {
 func (m Model) runMemoryReindex() (Model, tea.Cmd) {
 	m.memoryPickerOpen = false
 	m.memoryPicker = nil
+	// The Available probe and per-memory Embed calls are blocking HTTP to
+	// Ollama — running them on the Update goroutine froze the whole UI
+	// (seconds to minutes). Do them in a tea.Cmd and render the result via
+	// memoryReindexDoneMsg.
+	m.appendLine(styleAuto.Render("[memory] reindexing embeddings…"))
+	return m, memoryReindexCmd(m.parentCtx, m.embedClient, m.fileCfg.Retrieval.EmbeddingModel, m.cwd)
+}
 
-	client := m.embedClient
-	if client == nil {
-		client = memory.NewEmbedClient("", m.fileCfg.Retrieval.EmbeddingModel)
-		if !client.Available(m.parentCtx) {
-			m.appendLine(styleError.Render(fmt.Sprintf(
-				"[memory] embedding model %q not available — is Ollama running with the model installed?  Try: ollama pull %s",
-				client.Model, client.Model)))
-			return m, nil
-		}
-	}
+// memoryReindexDoneMsg carries the result lines from an off-thread memory
+// reindex back to the Update goroutine.
+type memoryReindexDoneMsg struct {
+	lines   []string
+	isError bool
+}
 
-	loaded, err := memory.Load(m.cwd)
-	if err != nil {
-		m.appendLine(styleError.Render("[memory] " + err.Error()))
-		return m, nil
-	}
-	var all []memory.MemoryEntry
-	all = append(all, loaded.UserMemories...)
-	all = append(all, loaded.ProjectMemories...)
-	if len(all) == 0 {
-		m.appendLine(styleAuto.Render("[memory] no memories to index"))
-		return m, nil
-	}
-	var indexed, skipped int
-	for _, e := range all {
-		vecPath := memory.VecPath(e.Path)
-		if !memory.NeedsReembed(vecPath, client.Model) {
-			skipped++
-			continue
+// memoryReindexCmd runs the embedding-availability probe and the
+// per-memory embed/write loop off the Update goroutine so a slow Ollama
+// doesn't freeze the TUI.
+func memoryReindexCmd(ctx context.Context, client *memory.EmbedClient, model, cwd string) tea.Cmd {
+	return func() tea.Msg {
+		if client == nil {
+			client = memory.NewEmbedClient("", model)
+			if !client.Available(ctx) {
+				return memoryReindexDoneMsg{isError: true, lines: []string{fmt.Sprintf(
+					"[memory] embedding model %q not available — is Ollama running with the model installed?  Try: ollama pull %s",
+					client.Model, client.Model)}}
+			}
 		}
-		text := e.Name + " " + e.Description + " " + e.Body
-		vec, err := client.Embed(m.parentCtx, text)
+		loaded, err := memory.Load(cwd)
 		if err != nil {
-			continue
+			return memoryReindexDoneMsg{isError: true, lines: []string{"[memory] " + err.Error()}}
 		}
-		if err := memory.WriteVecWithModel(vecPath, vec, client.Model); err != nil {
-			continue
+		var all []memory.MemoryEntry
+		all = append(all, loaded.UserMemories...)
+		all = append(all, loaded.ProjectMemories...)
+		if len(all) == 0 {
+			return memoryReindexDoneMsg{lines: []string{"[memory] no memories to index"}}
 		}
-		indexed++
+		var indexed, skipped int
+		for _, e := range all {
+			vecPath := memory.VecPath(e.Path)
+			if !memory.NeedsReembed(vecPath, client.Model) {
+				skipped++
+				continue
+			}
+			text := e.Name + " " + e.Description + " " + e.Body
+			vec, err := client.Embed(ctx, text)
+			if err != nil {
+				continue
+			}
+			if err := memory.WriteVecWithModel(vecPath, vec, client.Model); err != nil {
+				continue
+			}
+			indexed++
+		}
+		return memoryReindexDoneMsg{lines: []string{fmt.Sprintf("[memory] reindex: %d embedded, %d up-to-date", indexed, skipped)}}
 	}
-	m.appendLine(styleAuto.Render(fmt.Sprintf("[memory] reindex: %d embedded, %d up-to-date", indexed, skipped)))
-	return m, nil
 }
 
 func (m Model) enterMemoryBrowse(scope, dir string) (Model, tea.Cmd) {
@@ -701,6 +716,12 @@ func reloadMemoryNow(m Model, notice string) (Model, tea.Cmd) {
 	}
 	composed := composeSystemPrompt(m.baseSystemPrompt, m.providerProfile)
 	newSys := memory.SystemPrompt(composed, mem)
+	// Hold histMu across the system-message rewrite: reloadMemoryNow can run
+	// (via /model, /memory) while a just-cancelled turn's agent goroutine is
+	// still appending to sess.Messages under the same lock. An append that
+	// reallocates copies every element, racing this Content/CacheHeadBytes
+	// write. Mirrors recomposeSystemPromptWithSkills (skills_picker.go).
+	m.histMu.Lock()
 	for i := range m.sess.Messages {
 		if m.sess.Messages[i].Role == adapter.RoleSystem {
 			m.sess.Messages[i].Content = newSys
@@ -708,6 +729,7 @@ func reloadMemoryNow(m Model, notice string) (Model, tea.Cmd) {
 			break
 		}
 	}
+	m.histMu.Unlock()
 	m.memorySummary = mem.Summary().String()
 	if notice != "" {
 		summary := m.memorySummary

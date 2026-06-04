@@ -2,7 +2,8 @@ package agent
 
 import (
 	"regexp"
-	"strings"
+
+	"github.com/yottadynamics/yottacode/internal/shellseg"
 )
 
 // Risk classifies how dangerous a command segment looks at a glance.
@@ -49,115 +50,17 @@ type CommandSegment struct {
 // execution semantics. We're trying to surface what a tired human
 // might miss, not reproduce a real shell parser.
 func SplitCommand(cmd string) []CommandSegment {
-	if strings.TrimSpace(cmd) == "" {
-		return nil
-	}
-	segments := splitOnSeparators(cmd)
-	for i := range segments {
-		segments[i].Text = strings.TrimSpace(segments[i].Text)
-		segments[i].Risk, segments[i].Reason = AssessRisk(segments[i].Text)
-	}
-	// Drop empty segments that can result from `;;` or trailing operators.
-	out := segments[:0]
-	for _, s := range segments {
-		if s.Text != "" {
-			out = append(out, s)
-		}
-	}
-	return out
-}
-
-// splitOnSeparators is the actual tokenizer. Single-pass char scan with
-// quote and escape state tracking. Returns segments with the separator
-// that preceded each (empty for the first).
-func splitOnSeparators(s string) []CommandSegment {
-	var (
-		out      []CommandSegment
-		current  strings.Builder
-		sep      = "" // the separator that came before `current`
-		inSingle bool
-		inDouble bool
-		escape   bool
-		// substitution depth — `$(...)` and backtick blocks are kept
-		// intact so nested && etc. inside them don't split.
-		parenDepth int
-		inBack     bool
-	)
-	push := func() {
+	segs := shellseg.Split(cmd)
+	out := make([]CommandSegment, 0, len(segs))
+	for _, s := range segs {
+		risk, reason := AssessRisk(s.Text)
 		out = append(out, CommandSegment{
-			Text:      current.String(),
-			Separator: sep,
+			Text:      s.Text,
+			Separator: s.Separator,
+			Risk:      risk,
+			Reason:    reason,
 		})
-		current.Reset()
 	}
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if escape {
-			current.WriteByte(c)
-			escape = false
-			continue
-		}
-		if c == '\\' {
-			current.WriteByte(c)
-			escape = true
-			continue
-		}
-		if !inSingle && !inDouble && !inBack && parenDepth == 0 {
-			// Look for two-char separators first.
-			if c == '&' && i+1 < len(s) && s[i+1] == '&' {
-				push()
-				sep = "&&"
-				i++
-				continue
-			}
-			if c == '|' && i+1 < len(s) && s[i+1] == '|' {
-				push()
-				sep = "||"
-				i++
-				continue
-			}
-			if c == ';' {
-				push()
-				sep = ";"
-				continue
-			}
-			if c == '|' {
-				push()
-				sep = "|"
-				continue
-			}
-			if c == '$' && i+1 < len(s) && s[i+1] == '(' {
-				parenDepth++
-				current.WriteByte(c)
-				current.WriteByte(s[i+1])
-				i++
-				continue
-			}
-			if c == '`' {
-				inBack = true
-				current.WriteByte(c)
-				continue
-			}
-		}
-		if parenDepth > 0 {
-			if c == '(' {
-				parenDepth++
-			} else if c == ')' {
-				parenDepth--
-			}
-		}
-		if inBack && c == '`' {
-			inBack = false
-		}
-		if !inDouble && !inBack && parenDepth == 0 && c == '\'' {
-			inSingle = !inSingle
-		}
-		if !inSingle && !inBack && parenDepth == 0 && c == '"' {
-			inDouble = !inDouble
-		}
-		current.WriteByte(c)
-	}
-	push()
 	return out
 }
 
@@ -212,6 +115,18 @@ var cautionRe = []struct {
 	{regexp.MustCompile(`\beval\b`), "eval"},
 	{regexp.MustCompile(`\$\(`), "command substitution"},
 	{regexp.MustCompile("`"), "backtick substitution"},
+	// Process substitution `<(cmd)` embeds a sub-command the leading-verb
+	// check never inspects — `cat <(curl evil)` looks like a plain `cat`.
+	// (`>(cmd)` is already caught by the redirect-to-file rule above.)
+	{regexp.MustCompile(`<\s*\(`), "process substitution"},
+	// Bash's /dev/tcp|udp pseudo-devices open a raw network socket —
+	// `cat </dev/tcp/host/port` is network I/O dressed as a file read.
+	{regexp.MustCompile(`(?i)/dev/(tcp|udp)/`), "network via /dev/tcp"},
+	// `sort -o`/`--output` writes a file despite sort being a "read-only"
+	// verb in the auto-mode allowlist. Match the attached-argument form too:
+	// GNU sort accepts `-ofile` (no space, word char after -o), which the
+	// old `-o\b` missed — letting a file-clobbering `sort -ofile` through.
+	{regexp.MustCompile(`(?i)\bsort\b.*\s(-o|--output)`), "sort writes a file (-o)"},
 	{regexp.MustCompile(`(?i)\bsystemctl\s+(-[^\s]+\s+)*(stop|restart|disable|mask)\b`), "stop/restart system service"},
 	{regexp.MustCompile(`(?i)\bkill\s+-9\s+-1\b`), "kill all processes (-9 -1)"},
 	{regexp.MustCompile(`(?i)\bpkill\s+-9\b`), "force kill (pkill -9)"},

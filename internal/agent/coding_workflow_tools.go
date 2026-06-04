@@ -106,9 +106,7 @@ func (t *ApplyDiffTool) Execute(ctx context.Context, argsJSON string) (string, e
 	}
 	patchPath := patch.Name()
 	defer os.Remove(patchPath)
-	if strings.Contains(a.Diff, `\\n`) {
-		a.Diff = strings.ReplaceAll(a.Diff, `\\n`, "\n")
-	}
+	a.Diff = repairFullyEscapedDiff(a.Diff)
 	if _, err := patch.WriteString(a.Diff); err != nil {
 		patch.Close()
 		return "", fmt.Errorf("apply_diff: write temp patch: %w", err)
@@ -126,6 +124,21 @@ func (t *ApplyDiffTool) Execute(ctx context.Context, argsJSON string) (string, e
 		return "", fmt.Errorf("apply_diff: %w; stderr=%q patch=%q", err, stderr.String(), string(body))
 	}
 	return "applied diff", nil
+}
+
+// repairFullyEscapedDiff repairs a diff that arrived fully JSON-escaped:
+// a single line whose newlines were rendered as the literal 3-character
+// sequence `\\n`. It only fires when the diff contains NO real newlines,
+// which is the unambiguous signature of a mangled single-line diff. A
+// genuine multi-line diff is returned untouched — its content lines may
+// legitimately contain `\\n` (e.g. patching a `"\\n"` string/regex
+// literal), and the previous unconditional ReplaceAll corrupted exactly
+// those patches by splitting their content on a fabricated newline.
+func repairFullyEscapedDiff(diff string) string {
+	if strings.Contains(diff, "\n") {
+		return diff
+	}
+	return strings.ReplaceAll(diff, `\\n`, "\n")
 }
 
 type ListGitChangedFilesTool struct{ Cwd *CwdRef }

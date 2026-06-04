@@ -255,7 +255,7 @@ default model).`,
 				pcancel()
 				switch {
 				case w > 0:
-					if err := catalog.UpsertWindow(probeModel, w); err != nil {
+					if _, err := catalog.UpsertWindow(probeModel, w); err != nil {
 						fmt.Fprintf(cmd.ErrOrStderr(), "  save window warning: %v\n", err)
 					} else {
 						fmt.Fprintf(cmd.OutOrStdout(), "  %s → context_window=%d (cached) [%s]\n", probeModel, w, detail)
@@ -380,7 +380,7 @@ openai-compatible and ollama providers are probed; curated providers
 			if output == "" {
 				// Merge into the runtime overlay, one upsert per model.
 				for id, w := range probed {
-					if err := catalog.UpsertWindow(id, w); err != nil {
+					if _, err := catalog.UpsertWindow(id, w); err != nil {
 						return fmt.Errorf("write window store: %w", err)
 					}
 				}

@@ -122,10 +122,13 @@ func (a *anthropicAdapter) ChatStream(ctx context.Context, messages []Message, t
 		var toolCalls []ToolCall
 		var stopReason string
 		// usage carries the cumulative token counts as Anthropic
-		// streams them: message_start populates input + cache fields,
-		// message_delta updates output_tokens (and re-asserts the
-		// input/cache numbers, so a late overwrite is safe). Final
-		// snapshot goes onto Message.Usage at EventDone.
+		// streams them: message_start populates the input + cache
+		// fields (authoritative — they don't change over the turn),
+		// message_delta carries the cumulative output_tokens. The
+		// input/cache fields are NOT re-sent on every message_delta;
+		// when absent the SDK surfaces them as 0, so they must not be
+		// overwritten unconditionally here. Final snapshot goes onto
+		// Message.Usage at EventDone.
 		var usage *Usage
 
 		for stream.Next() {
@@ -225,18 +228,30 @@ func (a *anthropicAdapter) ChatStream(ctx context.Context, messages []Message, t
 				if md.Delta.StopReason != "" {
 					stopReason = string(md.Delta.StopReason)
 				}
-				// MessageDeltaUsage carries cumulative counts.
-				// Overwrite — late delta wins. The cache fields can
-				// legitimately go from zero (on message_start without
-				// caching) to nonzero here on retried turns, so don't
-				// gate on "only if larger."
+				// message_delta authoritatively carries the cumulative
+				// output_tokens — take it unconditionally. The
+				// input/cache counts were captured at message_start and
+				// are not re-sent on every message_delta; the SDK
+				// surfaces the missing fields as 0, so overwriting
+				// unconditionally would zero the real figures (and with
+				// them every Anthropic turn's input-token cost and cache
+				// accounting). Only adopt a delta's input/cache value
+				// when it is actually populated (>0) — covering the rare
+				// retried-turn case where the cache numbers genuinely
+				// arrive late — otherwise keep message_start's values.
 				if usage == nil {
 					usage = &Usage{}
 				}
-				usage.InputTokens = md.Usage.InputTokens
 				usage.OutputTokens = md.Usage.OutputTokens
-				usage.CacheCreationTokens = md.Usage.CacheCreationInputTokens
-				usage.CacheReadTokens = md.Usage.CacheReadInputTokens
+				if md.Usage.InputTokens > 0 {
+					usage.InputTokens = md.Usage.InputTokens
+				}
+				if md.Usage.CacheCreationInputTokens > 0 {
+					usage.CacheCreationTokens = md.Usage.CacheCreationInputTokens
+				}
+				if md.Usage.CacheReadInputTokens > 0 {
+					usage.CacheReadTokens = md.Usage.CacheReadInputTokens
+				}
 
 			case "message_stop":
 				// terminal; loop will exit naturally

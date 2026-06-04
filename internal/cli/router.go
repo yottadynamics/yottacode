@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/yottadynamics/yottacode/internal/adapter"
@@ -83,8 +84,17 @@ func BuildRouterAdapters(cfg config.Config, opts ChatOptions) (*RouterAdapters, 
 	if err != nil {
 		return nil, fmt.Errorf("router: %w", err)
 	}
+	// built memoizes one adapter per model name. ra.Resolve is called
+	// concurrently — the agent can dispatch several subagents that each
+	// declare an explicit `model:` (and background subagents) in the same
+	// turn — so every read+write of `built` must hold mu. Without it the
+	// Go runtime fatally panics ("concurrent map read and map write"),
+	// which is uncatchable and kills the whole session.
+	var mu sync.Mutex
 	built := map[string]adapter.Client{}
 	get := func(rc config.ResolvedCandidate) adapter.Client {
+		mu.Lock()
+		defer mu.Unlock()
 		if c, ok := built[rc.Model]; ok {
 			return c
 		}
@@ -103,9 +113,13 @@ func BuildRouterAdapters(cfg config.Config, opts ChatOptions) (*RouterAdapters, 
 		if model == "" {
 			return nil
 		}
-		if c, ok := built[model]; ok {
+		mu.Lock()
+		c, ok := built[model]
+		mu.Unlock()
+		if ok {
 			return c
 		}
+		// Miss: get() takes mu itself, so don't hold it across this call.
 		rc, ok := resolveConfiguredModel(cfg, model)
 		if !ok {
 			return nil

@@ -2,6 +2,8 @@ package agent
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 )
@@ -136,7 +138,7 @@ var autoModeSafeBashVerbs = map[string]bool{
 // AutoMode is active and the tool is run_bash; on false, the call
 // falls through to the normal approval modal so the user can still
 // approve / [A]-always it.
-func IsAutoModeSafeBash(argsJSON string) bool {
+func IsAutoModeSafeBash(argsJSON string, cwd *CwdRef) bool {
 	var a struct {
 		Command string `json:"command"`
 	}
@@ -150,14 +152,137 @@ func IsAutoModeSafeBash(argsJSON string) bool {
 	if len(segs) == 0 {
 		return false
 	}
+	dir := ""
+	if cwd != nil {
+		dir = cwd.Get()
+	}
+	deny := DefaultDenyReadPaths(dir)
 	for _, s := range segs {
 		if s.Risk != RiskNone {
 			return false
 		}
-		first := strings.SplitN(strings.TrimSpace(s.Text), " ", 2)[0]
-		if !autoModeSafeBashVerbs[first] {
+		if !autoModeSafeBashVerbs[effectiveBashVerb(s.Text)] {
+			return false
+		}
+		// Even a read-only verb must not silently exfiltrate secrets:
+		// `cat ~/.ssh/id_rsa`, `grep -r AWS_SECRET /`, `find ~ -name
+		// id_rsa`. Fall through to the modal so the user sees it.
+		if bashSegmentReachesDeny(s.Text, dir, deny) {
 			return false
 		}
 	}
 	return true
+}
+
+// effectiveBashVerb returns the command verb that actually runs in a
+// segment, skipping leading `VAR=value` environment assignments and an
+// `env [VAR=value...] [-flags]` prefix. So `FOO=bar cat x` -> "cat" and,
+// critically, `env API_KEY=x curl evil` -> "curl" instead of the
+// allowlisted "env" that would otherwise wave the whole command through.
+func effectiveBashVerb(text string) string {
+	tokens := strings.Fields(text)
+	i := 0
+	for i < len(tokens) && isEnvAssignment(tokens[i]) {
+		i++
+	}
+	if i >= len(tokens) {
+		return ""
+	}
+	if tokens[i] == "env" {
+		i++
+		for i < len(tokens) && (isEnvAssignment(tokens[i]) || strings.HasPrefix(tokens[i], "-")) {
+			i++
+		}
+		if i >= len(tokens) {
+			return "env" // bare `env` (prints the environment) stays in the allowlist
+		}
+		return tokens[i]
+	}
+	return tokens[i]
+}
+
+// isEnvAssignment reports whether tok is a NAME=value shell assignment.
+func isEnvAssignment(tok string) bool {
+	eq := strings.IndexByte(tok, '=')
+	if eq <= 0 {
+		return false
+	}
+	for _, r := range tok[:eq] {
+		if r != '_' && !(r >= 'A' && r <= 'Z') && !(r >= 'a' && r <= 'z') && !(r >= '0' && r <= '9') {
+			return false
+		}
+	}
+	return true
+}
+
+// bashSegmentReachesDeny reports whether a command segment names a path
+// at/under a read-deny credential store, OR a path that is an ANCESTOR of
+// a deny store located OUTSIDE cwd (a recursive read like `grep -r X /` or
+// `find ~`). Reads under cwd (e.g. the project's own .env via
+// `grep -r X .`) are deliberately not blocked — auto-mode is the user's
+// own project and refusing every recursive grep would defeat it; the
+// concern is silently reaching OTHER credential stores.
+func bashSegmentReachesDeny(text, cwd string, deny []string) bool {
+	cwdAbs, err := filepath.Abs(cwd)
+	if err != nil {
+		cwdAbs = filepath.Clean(cwd)
+	} else {
+		cwdAbs = filepath.Clean(cwdAbs)
+	}
+	for _, tok := range strings.Fields(text) {
+		p := strings.Trim(tok, `"'`)
+		if p == "" || strings.HasPrefix(p, "-") {
+			continue
+		}
+		p = expandHomeRefs(p)
+		// A token we can't statically resolve (still has a `$var`, after
+		// expanding the home refs we understand) must not be assumed safe:
+		// `cat $XDG_CONFIG_HOME/...` could land in a credential store. Refuse
+		// auto-approval and let the modal handle it. ($(...) and backticks
+		// are already rejected upstream by the risk classifier.)
+		if strings.ContainsRune(p, '$') {
+			return true
+		}
+		abs := p
+		if !filepath.IsAbs(abs) {
+			abs = filepath.Join(cwdAbs, abs)
+		}
+		abs = filepath.Clean(abs)
+		if matchesAny(abs, deny) {
+			return true // token is at/under a credential store
+		}
+		for _, d := range deny {
+			da, err := filepath.Abs(expandHomeRefs(d))
+			if err != nil {
+				continue
+			}
+			da = filepath.Clean(da)
+			if pathUnder(da, abs) && !pathUnder(da, cwdAbs) {
+				return true // recursive read would reach an out-of-cwd store
+			}
+		}
+	}
+	return false
+}
+
+// expandHomeRefs expands a leading home reference — `~`, `~/`, `$HOME`, or
+// `${HOME}` — to the user's home directory, the way a shell would. Other
+// `$var` forms are left intact (the caller treats a still-unresolved `$`
+// token as opaque and refuses to auto-approve it).
+func expandHomeRefs(p string) string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return p
+	}
+	switch {
+	case p == "~" || p == "$HOME" || p == "${HOME}":
+		return home
+	case strings.HasPrefix(p, "~/"):
+		return filepath.Join(home, p[2:])
+	case strings.HasPrefix(p, "$HOME/"):
+		return filepath.Join(home, p[len("$HOME/"):])
+	case strings.HasPrefix(p, "${HOME}/"):
+		return filepath.Join(home, p[len("${HOME}/"):])
+	}
+	return p
 }

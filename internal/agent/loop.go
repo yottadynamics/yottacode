@@ -107,6 +107,19 @@ type LoopConfig struct {
 	// cancelling the active turn.
 	UserMessages <-chan string
 
+	// HistoryLock, when non-nil, serializes this loop's mutations and
+	// snapshots of the history slice against concurrent reads on another
+	// goroutine. The TUI sets it to the session's lock: its bubbletea
+	// Update goroutine reads m.sess.Messages (live token estimate,
+	// /context, system-prompt edits) while this loop appends to the same
+	// slice on its own goroutine — without it that's a data race that can
+	// torn-read or, on an append-triggered reallocation, crash. nil
+	// (oneshot, subagents, tests) means the history is owned by a single
+	// goroutine and needs no locking. The lock is only ever held across
+	// in-memory slice work — never across a network or channel op — so it
+	// cannot stall the turn.
+	HistoryLock *sync.Mutex
+
 	// Compaction, when non-nil, enables in-loop history compaction:
 	// once the running history approaches Window, the loop summarizes
 	// its older middle messages in place and continues with a compacted
@@ -306,7 +319,7 @@ func Turn(
 			return err
 		}
 
-		final, err := streamIteration(ctx, cfg, *state.history, events)
+		final, err := streamIteration(ctx, cfg, snapshotHistory(cfg, state.history), events)
 		if err != nil {
 			// Distinguish a user-initiated cancel (Enter / Esc / Ctrl+C
 			// fired the parent's turnCancel) from a real adapter error.
@@ -318,7 +331,7 @@ func Turn(
 			// per-turn timeout is added.
 			if isCancelErr(err) {
 				if final != nil {
-					*state.history = append(*state.history, *final)
+					appendHistory(cfg, state.history, *final)
 				}
 				partialContent := ""
 				if final != nil {
@@ -333,7 +346,7 @@ func Turn(
 			return err
 		}
 
-		*state.history = append(*state.history, *final)
+		appendHistory(cfg, state.history, *final)
 		if err := send(ctx, events, AssistantMessage{Message: *final}); err != nil {
 			if isCancelErr(err) {
 				_ = send(context.Background(), events, TurnInterrupted{
@@ -358,7 +371,7 @@ func Turn(
 					// returning, so history is valid. Count how many of
 					// the call slice landed as synthetic so the UI can
 					// render "N tool calls cancelled."
-					orphans := countOrphanedToolResults(*history, final.ToolCalls)
+					orphans := countOrphanedToolResults(snapshotHistory(cfg, history), final.ToolCalls)
 					_ = send(context.Background(), events, TurnInterrupted{
 						PartialContent: final.Content,
 						OrphanedCalls:  orphans,
@@ -377,7 +390,7 @@ func Turn(
 				select {
 				case msg := <-cfg.UserMessages:
 					if msg != "" {
-						*state.history = append(*state.history, adapter.Message{
+						appendHistory(cfg, state.history, adapter.Message{
 							Role:    adapter.RoleUser,
 							Content: msg,
 						})
@@ -399,7 +412,7 @@ func Turn(
 			}); err != nil {
 				return err
 			}
-			*state.history = append(*state.history, adapter.Message{
+			appendHistory(cfg, state.history, adapter.Message{
 				Role:    adapter.RoleUser,
 				Content: "Continue exactly where you left off. No recap. No apology.",
 			})
@@ -549,12 +562,12 @@ func executeToolCalls(
 					// call after this batch (none started) gets the
 					// marker too. History must end with a tool_result
 					// for every tool_use in the assistant message.
-					appendToolResultsWithInterrupts(history, calls[:batch], results)
-					appendSyntheticInterrupts(history, calls[batch:])
+					appendToolResultsWithInterrupts(cfg, history, calls[:batch], results)
+					appendSyntheticInterrupts(cfg, history, calls[batch:])
 				}
 				return err
 			}
-			appendToolResults(history, calls[:batch], results)
+			appendToolResults(cfg, history, calls[:batch], results)
 			calls = calls[batch:]
 			continue
 		}
@@ -562,11 +575,11 @@ func executeToolCalls(
 		result, images, denied, err := executeToolCall(ctx, cfg, tc, events, decisions)
 		if err != nil {
 			if isCancelErr(err) {
-				appendSyntheticInterrupts(history, calls)
+				appendSyntheticInterrupts(cfg, history, calls)
 			}
 			return err
 		}
-		*history = append(*history, adapter.Message{
+		appendHistory(cfg, history, adapter.Message{
 			Role:       adapter.RoleTool,
 			Content:    result,
 			Images:     images,
@@ -586,14 +599,16 @@ func executeToolCalls(
 // not yet had a real result appended (the serial path's
 // `calls = calls[1:]` shrinks the slice after each real append, and the
 // parallel path passes `calls[batch:]` for batches that never started).
-func appendSyntheticInterrupts(history *[]adapter.Message, calls []adapter.ToolCall) {
-	for _, tc := range calls {
-		*history = append(*history, adapter.Message{
-			Role:       adapter.RoleTool,
-			Content:    interruptedToolResult,
-			ToolCallID: tc.ID,
-		})
-	}
+func appendSyntheticInterrupts(cfg LoopConfig, history *[]adapter.Message, calls []adapter.ToolCall) {
+	withHistoryLock(cfg, func() {
+		for _, tc := range calls {
+			*history = append(*history, adapter.Message{
+				Role:       adapter.RoleTool,
+				Content:    interruptedToolResult,
+				ToolCallID: tc.ID,
+			})
+		}
+	})
 }
 
 // appendToolResultsWithInterrupts is the cancel-aware companion to
@@ -604,18 +619,20 @@ func appendSyntheticInterrupts(history *[]adapter.Message, calls []adapter.ToolC
 // before it produced any output but after recording err. Pairs every
 // tool_call with exactly one tool_result so the assistant message
 // invariant holds.
-func appendToolResultsWithInterrupts(history *[]adapter.Message, calls []adapter.ToolCall, results []toolExecResult) {
-	for i, tc := range calls {
-		content := results[i].content
-		if results[i].err != nil || content == "" {
-			content = interruptedToolResult
+func appendToolResultsWithInterrupts(cfg LoopConfig, history *[]adapter.Message, calls []adapter.ToolCall, results []toolExecResult) {
+	withHistoryLock(cfg, func() {
+		for i, tc := range calls {
+			content := results[i].content
+			if results[i].err != nil || content == "" {
+				content = interruptedToolResult
+			}
+			*history = append(*history, adapter.Message{
+				Role:       adapter.RoleTool,
+				Content:    content,
+				ToolCallID: tc.ID,
+			})
 		}
-		*history = append(*history, adapter.Message{
-			Role:       adapter.RoleTool,
-			Content:    content,
-			ToolCallID: tc.ID,
-		})
-	}
+	})
 }
 
 func parallelBatchSize(cfg LoopConfig, calls []adapter.ToolCall) int {
@@ -687,15 +704,17 @@ func executeToolCallsParallel(
 	return results, errors.Join(errs...)
 }
 
-func appendToolResults(history *[]adapter.Message, calls []adapter.ToolCall, results []toolExecResult) {
-	for i, tc := range calls {
-		*history = append(*history, adapter.Message{
-			Role:       adapter.RoleTool,
-			Content:    results[i].content,
-			Images:     results[i].images,
-			ToolCallID: tc.ID,
-		})
-	}
+func appendToolResults(cfg LoopConfig, history *[]adapter.Message, calls []adapter.ToolCall, results []toolExecResult) {
+	withHistoryLock(cfg, func() {
+		for i, tc := range calls {
+			*history = append(*history, adapter.Message{
+				Role:       adapter.RoleTool,
+				Content:    results[i].content,
+				Images:     results[i].images,
+				ToolCallID: tc.ID,
+			})
+		}
+	})
 }
 
 func shouldContinueIncomplete(final *adapter.Message) bool {
@@ -724,7 +743,35 @@ func shouldContinueIncomplete(final *adapter.Message) bool {
 // Returns (result, denied, fatalErr). A user-denied call is not a
 // fatal error — "denied by user" is reported back to the model so it
 // can recover.
+// executeToolCall wraps executeToolCallImpl with panic recovery so a bug
+// in any tool (or in the approval/permission plumbing around it) degrades
+// to a recoverable error result the model can react to, instead of an
+// uncaught panic that crashes the whole process — taking every concurrent
+// tool call and subagent down with it. This is the single chokepoint for
+// every tool invocation: both the serial and parallel paths, on the main
+// agent and on every subagent, route through here.
 func executeToolCall(
+	ctx context.Context,
+	cfg LoopConfig,
+	tc adapter.ToolCall,
+	events chan<- Event,
+	decisions <-chan Decision,
+) (out string, images []adapter.ImageBlock, denied bool, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			// Mirror the normal tool-error path (see below): surface the
+			// failure as the tool_result content with a nil error so the
+			// loop continues, and emit the ToolResult event so the TUI
+			// closes out the tool card instead of leaving it "running".
+			msg := "error: " + panicToError("tool "+tc.Name, r).Error()
+			_ = send(ctx, events, ToolResult{ToolName: tc.Name, Output: msg, Errored: true})
+			out, images, denied, err = msg, nil, false, nil
+		}
+	}()
+	return executeToolCallImpl(ctx, cfg, tc, events, decisions)
+}
+
+func executeToolCallImpl(
 	ctx context.Context,
 	cfg LoopConfig,
 	tc adapter.ToolCall,
@@ -785,7 +832,7 @@ func executeToolCall(
 		}); err != nil {
 			return "", nil, false, err
 		}
-	case cfg.AutoMode.IsActive() && tool.Name() == "run_bash" && IsAutoModeSafeBash(tc.ArgsJSON):
+	case cfg.AutoMode.IsActive() && tool.Name() == "run_bash" && IsAutoModeSafeBash(tc.ArgsJSON, cfg.Cwd):
 		if err := send(ctx, events, ApprovalAuto{
 			ToolName: tool.Name(), Preview: preview, Source: "auto-mode-safe-bash",
 		}); err != nil {

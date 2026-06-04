@@ -46,7 +46,7 @@ func RegisterCoreCwdTools(reg *Registry, cwd *CwdRef, deps CoreToolDeps) {
 	reg.Register(&EditFileTool{Cwd: cwd, WriteOpts: wo})
 	reg.Register(&ApplyDiffTool{Cwd: cwd, WriteOpts: wo})
 	reg.Register(&MkdirTool{Cwd: cwd, WriteOpts: wo})
-	reg.Register(&CopyFileTool{Cwd: cwd, WriteOpts: wo})
+	reg.Register(&CopyFileTool{Cwd: cwd, WriteOpts: wo, DenyReadPaths: deps.DenyReads})
 	reg.Register(&MoveFileTool{Cwd: cwd, WriteOpts: wo})
 	reg.Register(&DeleteFileTool{Cwd: cwd, WriteOpts: wo})
 

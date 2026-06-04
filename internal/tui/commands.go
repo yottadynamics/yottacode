@@ -374,7 +374,7 @@ func cmdMaxIterations(m Model, args []string) (Model, tea.Cmd) {
 
 func cmdSystem(m Model, _ []string) (Model, tea.Cmd) {
 	var sys string
-	for _, msg := range m.sess.Messages {
+	for _, msg := range m.lockedMessages() {
 		if msg.Role == adapter.RoleSystem {
 			sys = msg.Content
 			break

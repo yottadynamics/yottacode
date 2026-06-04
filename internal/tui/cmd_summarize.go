@@ -162,7 +162,14 @@ func hasSummarizableHistory(messages []adapter.Message) bool {
 // /recall, and returns a summaryDoneMsg. Errors are soft — the caller
 // shows them but keeps the original history.
 func (m Model) summarizeCmd(auto bool) tea.Cmd {
+	// Snapshot under histMu: /summarize is PreservesTurn=false, so it
+	// cancels the active turn and then runs here while that turn's agent
+	// goroutine may still be unwinding and appending to sess.Messages under
+	// the same lock. An unlocked clone races the append's slice-header
+	// reassignment (and can crash on an append-triggered realloc).
+	m.histMu.Lock()
 	history := slices.Clone(m.sess.Messages)
+	m.histMu.Unlock()
 	// Compaction is a single isolated call on a near-full context — when
 	// cache-safe routing is on this runs on the fast model (a large,
 	// safe saving). summarizerAdapter falls back to the main adapter

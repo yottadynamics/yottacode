@@ -602,6 +602,17 @@ func (t *AgentTool) runChild(
 	childModel string,
 	opts childRunOpts,
 ) (result string, errored bool, status subagents.TaskStatus, tokensUsed int) {
+	// A panic anywhere in the child's orchestration (drain loop, approval
+	// forwarding) must not crash the parent's interactive session — degrade
+	// it to an errored subagent the model/dock can see. Tool panics inside
+	// the child's own turn are already caught at executeToolCall; the child
+	// Turn goroutine below has its own recover for panics in its loop logic.
+	defer func() {
+		if r := recover(); r != nil {
+			result = "error: " + panicToError("subagent "+cfg.Name, r).Error()
+			errored, status = true, subagents.TaskErrored
+		}
+	}()
 	childReg := opts.reg
 	if childReg == nil {
 		childReg = t.buildChildRegistry(cfg)
@@ -710,6 +721,16 @@ func (t *AgentTool) runChild(
 	// block on its decision while we block on the gate. See withoutApprovalGate.
 	turnCtx := withoutApprovalGate(ctx)
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				// Without this, a panic in the child turn crashes the whole
+				// process AND leaves childEvents unclosed, hanging the drain
+				// loop below forever. Close the channel and report the panic
+				// as the turn error so the parent unblocks cleanly.
+				close(childEvents)
+				errCh <- panicToError("subagent "+cfg.Name+" turn", r)
+			}
+		}()
 		err := Turn(turnCtx, childCfg, &history, childEvents, childDecisions)
 		close(childEvents)
 		errCh <- err
