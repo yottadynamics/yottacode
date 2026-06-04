@@ -125,5 +125,18 @@ func PromptInteractive(cwd string) (PromptResult, error) {
 	if !ok {
 		return PromptNo, errTrustPromptAborted
 	}
-	return m.result, nil
+	return resolveTrustResult(m), nil
+}
+
+// resolveTrustResult maps the picker's final state to a decision, failing
+// CLOSED. PromptResult's zero value is PromptYes (iota), and m.result is
+// only set on an explicit Enter/Esc — so a program that exits without the
+// user actually answering (a signal, a future bubbletea teardown path)
+// would otherwise silently grant, and persist, trust for an unreviewed
+// workspace. Only an explicit answer counts.
+func resolveTrustResult(m trustPickerModel) PromptResult {
+	if !m.answered {
+		return PromptNo
+	}
+	return m.result
 }

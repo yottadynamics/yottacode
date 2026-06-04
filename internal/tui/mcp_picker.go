@@ -356,45 +356,62 @@ func commitMCPAdd(m *Model) (Model, tea.Cmd) {
 		return *m, nil
 	}
 
-	m.appendLine(styleAuto.Render("[mcp] starting server..."))
-	startCtx, startCancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer startCancel()
-	result, err := mgr.Add(startCtx, server)
-	if err != nil {
-		_ = mgr.Remove(startCtx, name)
-		result, err = mgr.Add(startCtx, server)
-	}
-	if err != nil {
-		m.appendLine(styleAuto.Render(fmt.Sprintf("[mcp] failed to start %q: %v", name, err)))
-		return *m, nil
-	}
-	if result.Err != nil {
-		m.appendLine(styleAuto.Render(fmt.Sprintf("[mcp] server %q failed to start: %v", name, result.Err)))
-		m.appendLine(styleAuto.Render("[mcp] check /mcp logs " + name + " for details"))
-		return *m, nil
-	}
+	// Start the server OFF the Update goroutine: mgr.Add + ListTools can
+	// block up to the 30s start timeout on a slow/hung server, which would
+	// otherwise freeze the entire TUI right after the user pressed Enter.
+	// registry.Register is mutex-guarded, so registering from the command
+	// goroutine can't race the agent goroutine's reads.
+	m.appendLine(styleAuto.Render("[mcp] starting server…"))
+	return *m, startMCPServerCmd(mgr, server, m.cfg.Registry)
+}
 
-	fresh := mgr.Client(name)
-	tools, err := fresh.ListTools(startCtx)
-	if err != nil {
-		m.appendLine(styleAuto.Render(fmt.Sprintf("[mcp] %s: list tools: %v", name, err)))
-		return *m, nil
-	}
-	registry := m.cfg.Registry
-	if registry != nil {
-		for _, td := range tools {
-			registry.Register(&agent.MCPTool{
-				Server:      name,
-				ToolName:    td.Name,
-				Desc:        td.Description,
-				InputSchema: td.InputSchema,
-				ReadOnly:    td.ReadOnlyHint,
-				Client:      fresh,
-			})
+// mcpServerStartedMsg carries the result lines from an off-thread MCP
+// server start back to the Update goroutine for rendering.
+type mcpServerStartedMsg struct {
+	lines []string
+}
+
+// startMCPServerCmd starts an MCP server, lists its tools, and registers
+// them — all in a tea.Cmd goroutine so a slow server doesn't freeze the
+// UI. Returns the lines to append once it completes.
+func startMCPServerCmd(mgr *mcp.Manager, server config.MCPServer, registry *agent.Registry) tea.Cmd {
+	name := server.Name
+	return func() tea.Msg {
+		startCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		result, err := mgr.Add(startCtx, server)
+		if err != nil {
+			_ = mgr.Remove(startCtx, name)
+			result, err = mgr.Add(startCtx, server)
 		}
+		if err != nil {
+			return mcpServerStartedMsg{lines: []string{fmt.Sprintf("[mcp] failed to start %q: %v", name, err)}}
+		}
+		if result.Err != nil {
+			return mcpServerStartedMsg{lines: []string{
+				fmt.Sprintf("[mcp] server %q failed to start: %v", name, result.Err),
+				"[mcp] check /mcp logs " + name + " for details",
+			}}
+		}
+		fresh := mgr.Client(name)
+		tools, err := fresh.ListTools(startCtx)
+		if err != nil {
+			return mcpServerStartedMsg{lines: []string{fmt.Sprintf("[mcp] %s: list tools: %v", name, err)}}
+		}
+		if registry != nil {
+			for _, td := range tools {
+				registry.Register(&agent.MCPTool{
+					Server:      name,
+					ToolName:    td.Name,
+					Desc:        td.Description,
+					InputSchema: td.InputSchema,
+					ReadOnly:    td.ReadOnlyHint,
+					Client:      fresh,
+				})
+			}
+		}
+		return mcpServerStartedMsg{lines: []string{fmt.Sprintf("[mcp] server %q started — %d tools registered", name, len(tools))}}
 	}
-	m.appendLine(styleAuto.Render(fmt.Sprintf("[mcp] server %q started — %d tools registered", name, len(tools))))
-	return *m, nil
 }
 
 func commitMCPRemove(m *Model) (Model, tea.Cmd) {

@@ -252,7 +252,9 @@ func reloadSkillsRegistry(m Model) Model {
 		m.appendLine(styleError.Render("[skills] " + w))
 	}
 	if m.skillTool != nil {
-		m.skillTool.All = res.Skills
+		// SetAll, not a direct field write: the agent goroutine may be
+		// reading All via Active() while this reload runs.
+		m.skillTool.SetAll(res.Skills)
 	}
 	m.skills = res.Skills
 	m.skillSlash = buildSkillSlash(res.Skills)

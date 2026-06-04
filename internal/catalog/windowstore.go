@@ -150,14 +150,19 @@ func windowStoreLookup(tag string) (int, bool) {
 // a no-op. This is the write side used by the TUI's background probe (so a
 // discovered window persists for later sessions) and by `model
 // probe-windows` without an explicit output path.
-func UpsertWindow(model string, window int) error {
+//
+// changed reports whether the store actually changed: false when the model
+// was already recorded with this exact window (a re-probe of an already-
+// cached value), so callers can stay quiet about a discovery that told them
+// nothing new. When unchanged, the file is left untouched (no rewrite).
+func UpsertWindow(model string, window int) (changed bool, err error) {
 	id := strings.TrimSpace(model)
 	if id == "" || window <= 0 {
-		return nil
+		return false, nil
 	}
 	path, err := windowStorePathFn()
 	if err != nil {
-		return err
+		return false, err
 	}
 
 	windowStoreMu.Lock()
@@ -174,20 +179,27 @@ func UpsertWindow(model string, window int) error {
 	found := false
 	for i := range f.Entries {
 		if strings.ToLower(f.Entries[i].Prefix) == lid {
-			f.Entries[i].Window = window
+			if f.Entries[i].Window != window {
+				f.Entries[i].Window = window
+				changed = true
+			}
 			found = true
 			break
 		}
 	}
 	if !found {
 		f.Entries = append(f.Entries, WindowStoreEntry{Prefix: id, Window: window})
+		changed = true
+	}
+	if !changed {
+		return false, nil // already cached with this value — nothing to write
 	}
 	f.GeneratedAt = time.Now().UTC()
 	if err := writeWindowStoreFile(path, f); err != nil {
-		return err
+		return false, err
 	}
 	windowStoreLoaded = false // invalidate so the next lookup re-reads
-	return nil
+	return true, nil
 }
 
 // LoadEntriesFromFile reads and parses the window entries from a specific

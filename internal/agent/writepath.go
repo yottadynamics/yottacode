@@ -79,20 +79,34 @@ func ValidateWritePath(path string, opts WritePathOptions) error {
 	if strings.ContainsRune(path, 0) {
 		return errors.New("write path contains NUL byte")
 	}
-	abs, err := filepath.Abs(path)
+	lexicalAbs, err := filepath.Abs(path)
 	if err != nil {
 		return fmt.Errorf("resolve write path: %w", err)
 	}
-	abs = filepath.Clean(abs)
+	lexicalAbs = filepath.Clean(lexicalAbs)
+	abs := lexicalAbs
 
-	if matchesAny(abs, opts.DenyExact) {
-		return fmt.Errorf("path %q is in the deny list (yottacode-managed state, git internals)", abs)
+	// Symlink handling (default; --allow-symlinks opts out). First reject a
+	// symlinked LEAF (the classic "symlink to /etc/passwd" trick), then
+	// resolve symlinks in the PARENT chain so the deny-list and containment
+	// checks run on the real destination — a symlinked parent dir must not
+	// launder a lexically-in-cwd path into a write outside the workspace.
+	if !opts.AllowSymlinks {
+		if info, err := os.Lstat(lexicalAbs); err == nil && info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("path %q is a symlink; refusing to follow (pass --allow-symlinks to override)", lexicalAbs)
+		}
+		abs = resolveWriteTarget(lexicalAbs)
 	}
 
-	if !opts.AllowSymlinks {
-		if info, err := os.Lstat(abs); err == nil && info.Mode()&os.ModeSymlink != 0 {
-			return fmt.Errorf("path %q is a symlink; refusing to follow (pass --allow-symlinks to override)", abs)
-		}
+	// Deny-list check in BOTH frames. DefaultDenyPaths entries are built
+	// from the cwd string as given, so when cwd traverses a symlink (macOS
+	// /tmp -> /private/tmp, a symlinked home) they're in the lexical frame
+	// while `abs` is resolved — checking only one frame lets a write to
+	// e.g. .yottacode/permissions.json slip through and self-grant. Match
+	// the lexical path (direct writes) AND the resolved path (symlinked
+	// path -> deny target).
+	if matchesAny(lexicalAbs, opts.DenyExact) || matchesAny(abs, opts.DenyExact) {
+		return fmt.Errorf("path %q is in the deny list (yottacode-managed state, git internals)", abs)
 	}
 
 	// Plan-mode short-circuit: an exact match against the
@@ -104,24 +118,40 @@ func ValidateWritePath(path string, opts WritePathOptions) error {
 	// deny list).
 	if opts.PlanModeAllowedFile != "" {
 		allowedAbs, err := filepath.Abs(opts.PlanModeAllowedFile)
-		if err == nil && filepath.Clean(allowedAbs) == abs {
-			return nil
+		if err == nil {
+			allowedAbs = filepath.Clean(allowedAbs)
+			if !opts.AllowSymlinks {
+				allowedAbs = resolveWriteTarget(allowedAbs)
+			}
+			if allowedAbs == abs {
+				return nil
+			}
 		}
 	}
 
+	// Containment: compare the (resolved) target against the workspace
+	// roots in the same real-filesystem frame. canonicalExisting resolves
+	// the roots too, so a symlinked cwd (macOS /tmp -> /private/tmp) and
+	// the resolved target line up instead of spuriously mismatching.
+	container := func(root string) string {
+		if opts.AllowSymlinks {
+			a, err := filepath.Abs(root)
+			if err != nil {
+				return ""
+			}
+			return filepath.Clean(a)
+		}
+		return canonicalExisting(root)
+	}
 	cwd := opts.Cwd.Get()
-	if pathUnder(abs, cwd) {
+	if pathUnder(abs, container(cwd)) {
 		return nil
 	}
 	for _, root := range opts.AllowedPaths {
 		if root == "" {
 			continue
 		}
-		rootAbs, err := filepath.Abs(root)
-		if err != nil {
-			continue
-		}
-		if pathUnder(abs, rootAbs) {
+		if pathUnder(abs, container(root)) {
 			return nil
 		}
 	}
@@ -160,6 +190,55 @@ func (e *ErrPathOutsideWorkspace) Error() string {
 		"write to %q denied: outside session workspace %q. Choose a target under %q, or stop and ask the user to relaunch with --allow-paths %q.",
 		e.Path, e.Cwd, e.Cwd, filepath.Dir(e.Path),
 	)
+}
+
+// canonicalExisting resolves every symlink in p when p exists on disk,
+// returning the cleaned, absolute real path; otherwise it returns the
+// lexically-cleaned abs of p. Used to put a candidate path and the
+// workspace roots into the same real-filesystem frame before a
+// containment check, so a symlinked cwd (e.g. macOS /tmp -> /private/tmp)
+// doesn't cause false rejections.
+func canonicalExisting(p string) string {
+	abs, err := filepath.Abs(p)
+	if err != nil {
+		return filepath.Clean(p)
+	}
+	abs = filepath.Clean(abs)
+	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
+		return resolved
+	}
+	return abs
+}
+
+// resolveWriteTarget canonicalizes a write target's PARENT chain
+// (resolving symlinks in the existing ancestors) while leaving the final
+// component unresolved — the leaf may not exist yet, and its own
+// symlink-ness is checked separately by the caller. Non-existent trailing
+// components (the file being created, new intermediate dirs) are
+// re-appended after resolving the deepest existing ancestor. This stops a
+// symlinked parent directory from laundering an otherwise-in-cwd path
+// into a write outside the workspace.
+func resolveWriteTarget(abs string) string {
+	dir := filepath.Dir(abs)
+	leaf := filepath.Base(abs)
+	var missing []string
+	cur := dir
+	for {
+		if resolved, err := filepath.EvalSymlinks(cur); err == nil {
+			parts := []string{resolved}
+			for i := len(missing) - 1; i >= 0; i-- {
+				parts = append(parts, missing[i])
+			}
+			parts = append(parts, leaf)
+			return filepath.Clean(filepath.Join(parts...))
+		}
+		parent := filepath.Dir(cur)
+		if parent == cur {
+			return abs // reached the root without resolving; fall back to lexical
+		}
+		missing = append(missing, filepath.Base(cur))
+		cur = parent
+	}
 }
 
 // pathUnder reports whether descendant is at or below ancestor on the
@@ -259,6 +338,13 @@ func ValidateReadPath(path string, deny []string) error {
 	abs = filepath.Clean(abs)
 	if matchesAny(abs, deny) {
 		return fmt.Errorf("path %q is in the read deny list (credential-bearing); use run_bash if you really need the contents", abs)
+	}
+	// read_file / read_many_files open() FOLLOWS symlinks, so an
+	// innocuously-named symlink can point straight at a credential store.
+	// Re-check the deny list against the resolved real path so
+	// `ln -s ~/.ssh/id_rsa ./notes` then reading ./notes is still blocked.
+	if resolved := canonicalExisting(abs); resolved != abs && matchesAny(resolved, deny) {
+		return fmt.Errorf("path %q resolves to %q, which is in the read deny list (credential-bearing); use run_bash if you really need the contents", abs, resolved)
 	}
 	return nil
 }

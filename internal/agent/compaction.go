@@ -169,7 +169,11 @@ func maybeCompact(ctx context.Context, cfg LoopConfig, history *[]adapter.Messag
 	}
 
 	out := assembleCompacted(h, firstUser, tailStart, summary)
-	*history = out
+	// Whole-slice replacement under the history lock. Today only subagents
+	// compact (cfg.HistoryLock nil → a plain assignment), but routing it
+	// through setHistory keeps it correct if the main TUI loop ever enables
+	// compaction, where another goroutine reads the same slice.
+	setHistory(cfg, history, out)
 	return send(ctx, events, ContextCompacted{Before: before, After: contextwindow.EstimateTokens(out)})
 }
 

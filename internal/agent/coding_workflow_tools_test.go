@@ -28,6 +28,49 @@ func TestApplyDiffTool_AppliesPatch(t *testing.T) {
 	}
 }
 
+// TestRepairFullyEscapedDiff guards the apply_diff repair heuristic.
+// Regression for the release audit's
+// apply-diff-global-backslash-n-replacement-corrupts-patch finding.
+func TestRepairFullyEscapedDiff(t *testing.T) {
+	// A genuine multi-line diff whose content legitimately contains the
+	// 3-char sequence \\n (patching a "\\n" string literal) must be
+	// returned untouched — the old unconditional ReplaceAll split that
+	// content line on a fabricated newline and corrupted the patch.
+	multiline := "--- a/x.go\n+++ b/x.go\n@@ -1 +1 @@\n-old\n" + `+s := "\\n"` + "\n"
+	if got := repairFullyEscapedDiff(multiline); got != multiline {
+		t.Errorf("multi-line diff was mutated:\n got=%q\nwant=%q", got, multiline)
+	}
+
+	// A fully JSON-escaped single-line diff (no real newlines) IS
+	// repaired: the literal \\n sequences become real newlines.
+	escaped := `--- a/x\\n+++ b/x\\n@@ -1 +1 @@\\n-old\\n+new`
+	want := "--- a/x\n+++ b/x\n@@ -1 +1 @@\n-old\n+new"
+	if got := repairFullyEscapedDiff(escaped); got != want {
+		t.Errorf("escaped diff not repaired:\n got=%q\nwant=%q", got, want)
+	}
+}
+
+// TestApplyDiffTool_PreservesBackslashEscapesInContent applies a real
+// diff whose replacement line contains a literal \\n and verifies the
+// file ends up with that literal text, not a corrupted newline split.
+func TestApplyDiffTool_PreservesBackslashEscapesInContent(t *testing.T) {
+	tmp := gitInit(t)
+	writeFile(t, tmp, "a.txt", "one\ntwo\n")
+	tool := &ApplyDiffTool{Cwd: NewCwdRef(tmp), WriteOpts: WritePathOptions{Cwd: NewCwdRef(tmp)}}
+	diff := "--- a/a.txt\n+++ b/a.txt\n@@ -1,2 +1,2 @@\n one\n-two\n" + `+two\\nthree` + "\n"
+	b, err := json.Marshal(map[string]string{"diff": diff})
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+	if _, err := tool.Execute(context.Background(), string(b)); err != nil {
+		t.Fatalf("Execute: %v (diff=%q)", err, diff)
+	}
+	got, _ := os.ReadFile(filepath.Join(tmp, "a.txt"))
+	if want := "one\n" + `two\\nthree` + "\n"; string(got) != want {
+		t.Errorf("file = %q, want %q", string(got), want)
+	}
+}
+
 func TestApplyDiffTool_RequiresDiff(t *testing.T) {
 	tmp := t.TempDir()
 	tool := &ApplyDiffTool{Cwd: NewCwdRef(tmp), WriteOpts: WritePathOptions{Cwd: NewCwdRef(tmp)}}

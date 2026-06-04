@@ -258,7 +258,7 @@ func (t *GrepTool) Execute(ctx context.Context, argsJSON string) (string, error)
 		return "", fmt.Errorf("grep: %w", err)
 	}
 
-	cmd, err := buildGrepCmd(ctx, a, root)
+	cmd, err := buildGrepCmd(ctx, a, root, t.DenyReadPaths)
 	if err != nil {
 		return "", err
 	}
@@ -282,7 +282,8 @@ func (t *GrepTool) Execute(ctx context.Context, argsJSON string) (string, error)
 	return strings.Join(lines, "\n") + "\n", nil
 }
 
-func buildGrepCmd(ctx context.Context, a grepArgs, root string) (*exec.Cmd, error) {
+func buildGrepCmd(ctx context.Context, a grepArgs, root string, deny []string) (*exec.Cmd, error) {
+	rgExcludes, grepExcludes := grepDenyExcludes(root, deny)
 	if _, err := exec.LookPath("rg"); err == nil {
 		args := []string{"-n", "--no-heading", "--color=never"}
 		if !a.Regex {
@@ -291,6 +292,7 @@ func buildGrepCmd(ctx context.Context, a grepArgs, root string) (*exec.Cmd, erro
 		if a.IgnoreCase {
 			args = append(args, "-i")
 		}
+		args = append(args, rgExcludes...)
 		args = append(args, "--", a.Pattern, root)
 		return exec.CommandContext(ctx, "rg", args...), nil
 	}
@@ -307,8 +309,45 @@ func buildGrepCmd(ctx context.Context, a grepArgs, root string) (*exec.Cmd, erro
 	if a.IgnoreCase {
 		args = append(args, "-i")
 	}
+	args = append(args, grepExcludes...)
 	args = append(args, "--", a.Pattern, root)
 	return exec.CommandContext(ctx, "grep", args...), nil
+}
+
+// grepDenyExcludes returns the exclude arguments that keep a recursive
+// grep from descending INTO a credential store that happens to live under
+// the search root — the gap ValidateReadPath(root) can't close, since it
+// only checks the root itself, not what the recursion reaches. For each
+// deny path at/under root: rg gets a path-relative glob exclude (precise),
+// and GNU grep gets a basename exclude (the most it can express). The
+// basename excludes can over-skip a same-named file elsewhere in the tree,
+// but erring toward not-searching-a-secret is the right default — and they
+// only apply to deny paths the chosen root would actually reach.
+func grepDenyExcludes(root string, deny []string) (rgArgs, grepArgs []string) {
+	rootAbs, err := filepath.Abs(root)
+	if err != nil {
+		return nil, nil
+	}
+	rootAbs = filepath.Clean(rootAbs)
+	for _, d := range deny {
+		da, err := filepath.Abs(d)
+		if err != nil {
+			continue
+		}
+		da = filepath.Clean(da)
+		if da == rootAbs || !pathUnder(da, rootAbs) {
+			continue // root==deny is already blocked by ValidateReadPath; non-descendants aren't reached
+		}
+		rel, err := filepath.Rel(rootAbs, da)
+		if err != nil || strings.HasPrefix(rel, "..") {
+			continue
+		}
+		rel = filepath.ToSlash(rel)
+		rgArgs = append(rgArgs, "-g", "!"+rel, "-g", "!"+rel+"/**")
+		base := filepath.Base(da)
+		grepArgs = append(grepArgs, "--exclude-dir="+base, "--exclude="+base)
+	}
+	return rgArgs, grepArgs
 }
 
 // capped accumulates bytes up to a hard ceiling, then drops the rest.

@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 )
 
@@ -118,6 +119,14 @@ func (g *geminiAdapter) ChatStream(ctx context.Context, messages []Message, tool
 		var content strings.Builder
 		var toolCalls []ToolCall
 		var stopReason string
+		// Gemini has no native tool-call IDs, so we synthesize them. Seed
+		// the counter ABOVE any call_N already in the history: a plain
+		// per-turn `call_0` recurs every turn and makes lookupToolName
+		// (first-ID-match across all history) bind a later turn's function
+		// response to an earlier turn's call. Seeding from the history keeps
+		// IDs unique across the whole conversation — and is robust even if
+		// the adapter is recreated mid-session (e.g. a /model switch).
+		toolCallSeq := maxGeminiToolCallSeq(messages)
 		var usage *Usage
 
 		err = streamGeminiSSE(ctx, resp.Body, func(chunk geminiResponseChunk) error {
@@ -149,8 +158,9 @@ func (g *geminiAdapter) ChatStream(ctx context.Context, messages []Message, tool
 								argsJSON = string(b)
 							}
 						}
+						toolCallSeq++
 						toolCalls = append(toolCalls, ToolCall{
-							ID:       fmt.Sprintf("call_%d", len(toolCalls)),
+							ID:       fmt.Sprintf("call_%d", toolCallSeq),
 							Name:     part.FunctionCall.Name,
 							ArgsJSON: argsJSON,
 						})
@@ -370,6 +380,34 @@ func buildGeminiRequest(messages []Message, tools []Tool, thinkingBudget int64) 
 // IDs alone. Returns "" if no match — Gemini will reject the request
 // with a clear error in that case, which is better than silently
 // dropping a tool result.
+// maxGeminiToolCallSeq returns the highest N among the synthesized
+// `call_N` IDs already present in the conversation, or 0 when there are
+// none. ChatStream seeds its per-turn ID counter from this so newly
+// synthesized IDs never collide with ones still referenced in history.
+func maxGeminiToolCallSeq(messages []Message) int {
+	max := 0
+	for _, m := range messages {
+		for _, tc := range m.ToolCalls {
+			if n, ok := parseGeminiCallSeq(tc.ID); ok && n > max {
+				max = n
+			}
+		}
+	}
+	return max
+}
+
+func parseGeminiCallSeq(id string) (int, bool) {
+	const prefix = "call_"
+	if !strings.HasPrefix(id, prefix) {
+		return 0, false
+	}
+	n, err := strconv.Atoi(id[len(prefix):])
+	if err != nil || n < 0 {
+		return 0, false
+	}
+	return n, true
+}
+
 func lookupToolName(messages []Message, callID string) string {
 	for _, m := range messages {
 		if m.Role != RoleAssistant {

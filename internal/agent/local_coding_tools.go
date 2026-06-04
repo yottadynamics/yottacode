@@ -211,6 +211,12 @@ func (t *MkdirTool) Execute(ctx context.Context, argsJSON string) (string, error
 type CopyFileTool struct {
 	Cwd       *CwdRef
 	WriteOpts WritePathOptions
+	// DenyReadPaths gates the SOURCE against the credential read deny-list,
+	// the same list read_file/read_many_files/grep use. copy_file is an
+	// auto-approved read+write, so without this it would be a back door
+	// around the read guard: copy ~/.ssh/id_rsa into a readable file, then
+	// read that.
+	DenyReadPaths []string
 }
 
 func (t *CopyFileTool) Name() string { return "copy_file" }
@@ -262,8 +268,14 @@ func (t *CopyFileTool) Execute(ctx context.Context, argsJSON string) (string, er
 	}
 	src := resolvePath(t.Cwd.Get(), a.Src)
 	dst := resolvePath(t.Cwd.Get(), a.Dst)
-	// Only the destination is being written; source is read-only here so
-	// we don't validate it (lets users copy from outside cwd into cwd).
+	// Source may live outside cwd (copying in is legitimate), but it must
+	// still clear the credential read deny-list — otherwise copy_file is a
+	// back door that reads ~/.ssh/id_rsa into a readable destination.
+	// ValidateReadPath also resolves symlinks, so a symlinked source is
+	// caught too.
+	if err := ValidateReadPath(src, t.DenyReadPaths); err != nil {
+		return "", fmt.Errorf("copy_file: source: %w", err)
+	}
 	if err := ValidateWritePath(dst, t.WriteOpts); err != nil {
 		return "", fmt.Errorf("copy_file: destination: %w", err)
 	}
@@ -375,11 +387,11 @@ func (t *ReadManyFilesTool) Execute(ctx context.Context, argsJSON string) (strin
 		switch err {
 		case nil:
 		case io.EOF:
-			if a.Offset > 0 {
-				n = 0
-			} else {
-				return "", fmt.Errorf("read_many_files: %s: %w", p, err)
-			}
+			// Zero bytes read: an empty file, or an offset at/after EOF.
+			// That's empty content, not an error — read_file returns
+			// empty content for an empty file, so match it here. Erroring
+			// would abort the whole batch over a single empty file.
+			n = 0
 		case io.ErrUnexpectedEOF:
 		default:
 			return "", fmt.Errorf("read_many_files: %s: %w", p, err)
@@ -395,9 +407,6 @@ func (t *ReadManyFilesTool) Execute(ctx context.Context, argsJSON string) (strin
 		b.Write(buf[:n])
 		if truncated {
 			b.WriteString("\n…[truncated]")
-		}
-		if n == 0 && a.Offset > 0 {
-			b.WriteString("")
 		}
 	}
 	return b.String(), nil

@@ -122,6 +122,27 @@ func TestCopyFileTool_CopiesFile(t *testing.T) {
 	}
 }
 
+// TestCopyFileTool_RejectsDeniedSource is a regression for the release
+// follow-up: copy_file is an auto-approved read+write, so its SOURCE must
+// clear the credential read deny-list — otherwise it's a back door that
+// copies ~/.ssh/id_rsa into a readable file.
+func TestCopyFileTool_RejectsDeniedSource(t *testing.T) {
+	tmp := t.TempDir()
+	writeFile(t, tmp, "secret.key", "PRIVATE KEY")
+	secret := filepath.Join(tmp, "secret.key")
+	tool := &CopyFileTool{
+		Cwd:           NewCwdRef(tmp),
+		WriteOpts:     WritePathOptions{Cwd: NewCwdRef(tmp)},
+		DenyReadPaths: []string{secret},
+	}
+	if _, err := tool.Execute(context.Background(), `{"src":"secret.key","dst":"exfil.txt"}`); err == nil {
+		t.Fatal("copy_file copied a deny-listed source")
+	}
+	if _, err := os.Stat(filepath.Join(tmp, "exfil.txt")); err == nil {
+		t.Error("copy_file wrote the destination despite a denied source")
+	}
+}
+
 func TestCopyFileTool_RejectsDirectorySource(t *testing.T) {
 	tmp := t.TempDir()
 	if err := os.Mkdir(filepath.Join(tmp, "dirsrc"), 0o755); err != nil {
@@ -150,6 +171,28 @@ func TestReadManyFilesTool_ReadsMultipleFiles(t *testing.T) {
 	}
 	if strings.Index(out, "==> a.txt <==") > strings.Index(out, "==> b.txt <==") {
 		t.Errorf("paths should be sorted for stable output: %q", out)
+	}
+}
+
+// TestReadManyFilesTool_EmptyFileInBatch is a regression for the release
+// audit's read-many-files-empty-file-aborts-batch finding: io.ReadFull
+// returns io.EOF for an empty file, and the old code turned that into a
+// hard error that aborted the entire batch — losing every other file's
+// content. An empty file must read as an empty section, like read_file.
+func TestReadManyFilesTool_EmptyFileInBatch(t *testing.T) {
+	tmp := t.TempDir()
+	writeFile(t, tmp, "empty.txt", "")
+	writeFile(t, tmp, "full.txt", "hello")
+	tool := &ReadManyFilesTool{Cwd: NewCwdRef(tmp)}
+	out, err := tool.Execute(context.Background(), `{"paths":["empty.txt","full.txt"]}`)
+	if err != nil {
+		t.Fatalf("Execute aborted the batch over an empty file: %v", err)
+	}
+	if !strings.Contains(out, "==> empty.txt <==") {
+		t.Errorf("missing empty.txt section: %q", out)
+	}
+	if !strings.Contains(out, "==> full.txt <==") || !strings.Contains(out, "hello") {
+		t.Errorf("non-empty file dropped from batch: %q", out)
 	}
 }
 

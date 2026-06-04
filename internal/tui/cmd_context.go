@@ -104,7 +104,7 @@ func indentContextReport(s, pad string) string {
 // breakdown sections (MCP / Memory / Skills).
 func renderContextReport(m *Model) string {
 	window := m.contextWindow()
-	sysTok, convoTok := contextwindow.SplitMessages(m.sess.Messages)
+	sysTok, convoTok := contextwindow.SplitMessages(m.lockedMessages())
 
 	sysToolTokens, mcpToolTokens := contextToolTokens(m)
 

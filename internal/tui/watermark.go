@@ -29,7 +29,9 @@ const watermarkStep = 0.05
 // turn and a warn notice mid-stream would land in the middle of
 // the model's reply.
 func (m *Model) refreshContextTokens() {
-	m.contextTokens = m.estimatedContextTokens(m.sess.Messages)
+	// Read the history under the lock: this fires on every IterationStart,
+	// concurrently with the agent goroutine appending to the same slice.
+	m.contextTokens = m.estimatedContextTokens(m.lockedMessages())
 }
 
 // estimatedContextTokens approximates the full next-request size: the
@@ -42,6 +44,19 @@ func (m *Model) refreshContextTokens() {
 // agent loop's compaction trigger now counts.
 func (m Model) estimatedContextTokens(msgs []adapter.Message) int {
 	return contextwindow.EstimateTokens(msgs) + registrySchemaTokens(m.cfg.Registry)
+}
+
+// lockedMessages reads sess.Messages under histMu so a concurrent agent
+// append (which reassigns the slice header on the Turn goroutine) can't be
+// observed mid-write. The returned header is safe to range afterward: an
+// append either writes only beyond the snapshot's length or reallocates to
+// a fresh array, and the agent never rewrites existing elements' contents.
+// Use it for any read of sess.Messages on the Update goroutine that can run
+// while a turn is active.
+func (m Model) lockedMessages() []adapter.Message {
+	m.histMu.Lock()
+	defer m.histMu.Unlock()
+	return m.sess.Messages
 }
 
 // registrySchemaTokens estimates the token cost of the registry's

@@ -74,24 +74,35 @@ func TestWindowStore_OverlayOverridesBaseline(t *testing.T) {
 
 func TestUpsertWindow_PersistsAndUpdates(t *testing.T) {
 	useTempOverlay(t)
-	if err := UpsertWindow("deepseek-ai/deepseek-v4-pro", 262_144); err != nil {
+	// First insert is a NEW value -> changed=true.
+	if changed, err := UpsertWindow("deepseek-ai/deepseek-v4-pro", 262_144); err != nil {
 		t.Fatalf("upsert: %v", err)
+	} else if !changed {
+		t.Error("first upsert of a new model should report changed=true")
 	}
 	if got := WindowFor("deepseek-ai/deepseek-v4-pro", 0); got != 262_144 {
 		t.Errorf("after upsert = %d, want 262144 (overlay should beat the deepseek- baseline 64000)", got)
 	}
-	// Re-upsert updates in place (no duplicate).
-	if err := UpsertWindow("deepseek-ai/deepseek-v4-pro", 131_072); err != nil {
+	// Re-upsert the SAME value -> changed=false (already cached).
+	if changed, err := UpsertWindow("deepseek-ai/deepseek-v4-pro", 262_144); err != nil {
+		t.Fatalf("re-upsert same: %v", err)
+	} else if changed {
+		t.Error("re-upsert of the same window should report changed=false")
+	}
+	// Re-upsert a DIFFERENT value updates in place and reports changed=true.
+	if changed, err := UpsertWindow("deepseek-ai/deepseek-v4-pro", 131_072); err != nil {
 		t.Fatalf("re-upsert: %v", err)
+	} else if !changed {
+		t.Error("re-upsert of a changed window should report changed=true")
 	}
 	if got := WindowFor("deepseek-ai/deepseek-v4-pro", 0); got != 131_072 {
 		t.Errorf("after re-upsert = %d, want 131072", got)
 	}
 	// No-ops.
-	if err := UpsertWindow("", 1000); err != nil {
-		t.Errorf("empty model should be a no-op, got %v", err)
+	if changed, err := UpsertWindow("", 1000); err != nil || changed {
+		t.Errorf("empty model should be a no-op, got changed=%v err=%v", changed, err)
 	}
-	if err := UpsertWindow("x", 0); err != nil {
-		t.Errorf("non-positive window should be a no-op, got %v", err)
+	if changed, err := UpsertWindow("x", 0); err != nil || changed {
+		t.Errorf("non-positive window should be a no-op, got changed=%v err=%v", changed, err)
 	}
 }

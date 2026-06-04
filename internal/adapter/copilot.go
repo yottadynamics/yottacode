@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -389,10 +390,36 @@ func (a *copilotAdapter) consumeSSE(ctx context.Context, body io.Reader, origToo
 		return
 	}
 
-	for i := 0; i < len(toolCallsByIndex); i++ {
-		if tc, ok := toolCallsByIndex[i]; ok {
-			tc.Name = copilotUnsanitizeName(tc.Name, origToolNames)
-			finalCalls = append(finalCalls, *tc)
+	// Iterate the ACTUAL indices in order, not 0..len-1: a stream can
+	// deliver non-contiguous tool-call indices (e.g. 0, 2, 3), and the
+	// dense loop silently dropped any call at or past the first gap.
+	indices := make([]int, 0, len(toolCallsByIndex))
+	for idx := range toolCallsByIndex {
+		indices = append(indices, idx)
+	}
+	sort.Ints(indices)
+	for _, idx := range indices {
+		tc := toolCallsByIndex[idx]
+		tc.Name = copilotUnsanitizeName(tc.Name, origToolNames)
+		finalCalls = append(finalCalls, *tc)
+	}
+
+	// Truncation guard, matching the other streaming adapters: if the
+	// stream ended mid-tool-call, the accumulated arguments are
+	// incomplete, and committing them would run a tool against garbage
+	// (or unparseable) input. Surface an error instead of silently
+	// emitting EventDone with a broken call.
+	if len(finalCalls) > 0 {
+		if finishReason == "length" || finishReason == "content_filter" {
+			out <- StreamEvent{Kind: EventErr, Err: fmt.Errorf("copilot: stream ended with an incomplete tool call (finish_reason=%q) — response truncated", finishReason)}
+			return
+		}
+		for _, tc := range finalCalls {
+			args := strings.TrimSpace(tc.ArgsJSON)
+			if args != "" && !json.Valid([]byte(args)) {
+				out <- StreamEvent{Kind: EventErr, Err: fmt.Errorf("copilot: tool call %q has incomplete/unparseable arguments — response truncated", tc.Name)}
+				return
+			}
 		}
 	}
 

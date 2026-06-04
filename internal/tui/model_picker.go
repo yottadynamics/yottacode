@@ -356,7 +356,7 @@ func (m Model) commitModelChoice(chosen string, window int) (Model, tea.Cmd) {
 	// provider's models list could exclude the default_model and invalidate
 	// the config. The store is keyed by model and read by ResolveWindow.
 	// No-op when the provider reported no window.
-	_ = catalog.UpsertWindow(chosen, window)
+	_, _ = catalog.UpsertWindow(chosen, window)
 	if err := config.Validate(updated); err != nil {
 		m.appendLine(styleError.Render(statusLine("model", fmt.Sprintf("config invalid: %v", err))))
 		return m, nil
