@@ -461,6 +461,10 @@ func providerUse(m Model, name string) (Model, tea.Cmd) {
 	m.providerLabel = wizard.CatalogIdentity(p.Name)
 	ad := adapter.NewWithConfig(m.adapterConfig(newModel, p.BaseURL))
 	m.cfg.Adapter = ad
+	// Also update the AgentTool's Adapter so subagents inherit the new provider
+	if m.subagentTool != nil {
+		m.subagentTool.Adapter = ad
+	}
 	m.providerProfile = ad.Profile()
 	m.sess.Model = newModel
 	m, _ = reloadMemoryNow(m, "")
@@ -728,6 +732,10 @@ func applyProviderRemove(m Model, name string) (Model, tea.Cmd) {
 // /provider add.
 func invalidateAdapter(m Model) Model {
 	m.cfg.Adapter = nil
+	// Also clear the AgentTool's Adapter so subagents don't use stale config
+	if m.subagentTool != nil {
+		m.subagentTool.Adapter = nil
+	}
 	m.modelName = ""
 	m.baseURL = ""
 	m.apiKey = ""

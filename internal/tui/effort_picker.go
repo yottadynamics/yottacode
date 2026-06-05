@@ -133,6 +133,10 @@ func commitEffortChoice(m Model, level string) (Model, tea.Cmd) {
 	cfg := m.adapterConfig(m.modelName, m.baseURL)
 	ad := adapter.NewWithConfig(cfg)
 	m.cfg.Adapter = ad
+	// Also update the AgentTool's Adapter so subagents inherit the new provider
+	if m.subagentTool != nil {
+		m.subagentTool.Adapter = ad
+	}
 	m.providerProfile = ad.Profile()
 
 	display := level

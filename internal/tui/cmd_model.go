@@ -77,6 +77,10 @@ func modelShortcutSwitch(m Model, newTag string) (Model, tea.Cmd) {
 	m.baseURL = newBaseURL
 	ad := adapter.NewWithConfig(m.adapterConfig(newTag, newBaseURL))
 	m.cfg.Adapter = ad
+	// Also update the AgentTool's Adapter so subagents inherit the new provider
+	if m.subagentTool != nil {
+		m.subagentTool.Adapter = ad
+	}
 	m.providerProfile = ad.Profile()
 	m.modelName = newTag
 	m.sess.Model = newTag
