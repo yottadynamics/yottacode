@@ -390,6 +390,10 @@ func (m Model) commitModelChoice(chosen string, window int) (Model, tea.Cmd) {
 	m.sess.Model = chosen
 	ad := adapter.NewWithConfig(m.adapterConfig(chosen, m.baseURL))
 	m.cfg.Adapter = ad
+	// Also update the AgentTool's Adapter so subagents inherit the new provider
+	if m.subagentTool != nil {
+		m.subagentTool.Adapter = ad
+	}
 	m.providerProfile = ad.Profile()
 	m, _ = reloadMemoryNow(m, "")
 	m.appendLine(styleAuto.Render(statusLine("model", fmt.Sprintf("default → %s", chosen))))

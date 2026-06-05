@@ -2258,6 +2258,9 @@ func (m Model) View() string {
 			// Blank line between the status bar and the dock so the
 			// per-subagent fan-out reads as its own region.
 			parts = append(parts, "", dock)
+			// Trailing blank line so the last dock row doesn't sit flush
+			// against the terminal bottom (prevents cutoff on some terminals).
+			parts = append(parts, "")
 		}
 	}
 	return lipgloss.JoinVertical(lipgloss.Left, parts...)
