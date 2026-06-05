@@ -216,6 +216,50 @@ func TestHandleInlineOpenAIAuthDone_SuccessPersistsPendingAdd(t *testing.T) {
 	}
 }
 
+func TestHandleInlineOpenAIAuthScanDone_RefreshesActiveAdapter(t *testing.T) {
+	m := newTestModel(t)
+	seedConfigTOML(t, `
+[active]
+provider      = "chatgpt"
+default_model = "gpt-5.5"
+
+[[providers]]
+name          = "chatgpt"
+kind          = "openai-auth"
+base_url      = "https://chatgpt.com/backend-api/codex"
+default_model = "gpt-5.5"
+`)
+
+	m, _ = providerUse(m, "chatgpt")
+	events := m.cfg.Adapter.ChatStream(m.parentCtx, nil, nil)
+	first := <-events
+	if first.Err == nil || !strings.Contains(first.Err.Error(), "no models discovered yet") {
+		t.Fatalf("setup should start with the pre-scan errored adapter, got %#v", first.Err)
+	}
+
+	modelsPath, err := openaiauth.DefaultModelsPath()
+	if err != nil {
+		t.Fatalf("DefaultModelsPath: %v", err)
+	}
+	if err := openaiauth.SaveModels(modelsPath, openaiauth.ModelsFile{Models: []string{"gpt-5.5", "gpt-5.4-mini"}}); err != nil {
+		t.Fatalf("SaveModels: %v", err)
+	}
+
+	m, cmd := handleInlineOpenAIAuthScanDone(m, inlineOpenAIAuthScanDoneMsg{models: []string{"gpt-5.5", "gpt-5.4-mini"}})
+	if cmd == nil {
+		t.Fatalf("active openai-auth scan success should refresh the provider")
+	}
+	events = m.cfg.Adapter.ChatStream(m.parentCtx, nil, nil)
+	first = <-events
+	if first.Err != nil && strings.Contains(first.Err.Error(), "no models discovered yet") {
+		t.Fatalf("adapter was not rebuilt after scan success: %v", first.Err)
+	}
+	out := stripANSI(m.transcript.String())
+	if !strings.Contains(out, "switched to chatgpt") {
+		t.Errorf("transcript should show provider refresh; got:\n%s", out)
+	}
+}
+
 // URL-ready failure (port bind / browser launch fails) must also
 // drop the pending-add stash. Without this, a port-bind failure on
 // the first add leaves the unsaved profile lingering on the Model

@@ -3472,7 +3472,7 @@ func (m Model) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 		if i := strings.Index(summary, "\n"); i >= 0 {
 			summary = summary[:i]
 		}
-		m.appendLine(styleAuto.Render(fmt.Sprintf("[%s] %s", e.Source, summary)))
+		m.appendLine(styleAuto.Render(statusOKLine(e.Source, summary)))
 	case agent.ApprovalNeeded:
 		m.commitStreaming()
 		// exit_plan_mode reads the plan from the resolved plan file

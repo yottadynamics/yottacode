@@ -881,7 +881,7 @@ func TestModel_ApprovalAutoRendersSingleLineSummary(t *testing.T) {
 		Source:   "permissions",
 	}})
 	v := m.transcript.String()
-	if !strings.Contains(v, "[permissions] write_file(main.go, 1234 bytes)") {
+	if !strings.Contains(v, "✓ permissions: write_file(main.go, 1234 bytes)") {
 		t.Errorf("expected one-line auto-approval summary; got %q", v)
 	}
 	if strings.Contains(v, "│ package main") || strings.Contains(v, "func main()") {
