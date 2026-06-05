@@ -635,8 +635,8 @@ func (m Model) persistProviderAdd(picked wizard.CatalogEntry, name, baseURL, api
 			becomesActive: cfg.Active.Provider == "",
 			fromPicker:    true,
 		}
-		m.appendLine(styleAuto.Render(statusLine("provider", "openai-auth: starting browser sign-in…")))
-		m.appendLine(styleAuto.Render(fmt.Sprintf("(profile %q will be saved after sign-in completes)", add.Name)))
+		m.appendLine(styleAuto.Render(statusActionLine("openai-auth", "starting browser sign-in…")))
+		m.appendLine(styleAuto.Render(statusHintLine(fmt.Sprintf("profile %q will be saved after sign-in", add.Name))))
 		return m, startInlineOpenAIAuthLoginCmd(m.parentCtx)
 	}
 	if picked.Kind == "copilot" {
@@ -652,8 +652,8 @@ func (m Model) persistProviderAdd(picked wizard.CatalogEntry, name, baseURL, api
 			becomesActive: cfg.Active.Provider == "",
 			fromPicker:    true,
 		}
-		m.appendLine(styleAuto.Render("[copilot] starting device code sign-in..."))
-		m.appendLine(styleAuto.Render(fmt.Sprintf("(profile %q will be saved after sign-in completes)", add.Name)))
+		m.appendLine(styleAuto.Render(statusActionLine("copilot", "starting device code sign-in…")))
+		m.appendLine(styleAuto.Render(statusHintLine(fmt.Sprintf("profile %q will be saved after sign-in", add.Name))))
 		return m, startInlineCopilotAuthCmd(m.parentCtx)
 	}
 	updated, becameActive, ok := commitProviderAddNow(&m, add, apiKey, picked)
@@ -718,18 +718,18 @@ func commitProviderAddNow(m *Model, add providerops.AddProvider, apiKey string, 
 	if identity == "" {
 		identity = picked.Kind
 	}
-	m.appendLine(styleAuto.Render(statusLine("provider", fmt.Sprintf("added %q (%s)", add.Name, identity))))
+	m.appendLine(styleAuto.Render(statusOKLine("provider", fmt.Sprintf("added %q (%s)", add.Name, identity))))
 	if cfgPath, err := config.DefaultPath(); err == nil {
-		m.appendLine(styleAuto.Render(fmt.Sprintf("(provider config written to %s)", cfgPath)))
+		m.appendLine(styleAuto.Render(statusHintLine("config saved to " + displayPath(cfgPath, m.cwd))))
 	}
 	if apiKey != "" && add.APIKeyEnv != "" {
 		if home, err := os.UserHomeDir(); err == nil {
-			m.appendLine(styleAuto.Render(fmt.Sprintf("(API key written to %s as %s)",
-				filepath.Join(home, ".yottacode", ".env"), add.APIKeyEnv)))
+			m.appendLine(styleAuto.Render(statusHintLine(fmt.Sprintf("API key saved to %s as %s",
+				displayPath(filepath.Join(home, ".yottacode", ".env"), m.cwd), add.APIKeyEnv))))
 		}
 	}
 	if add.APIKeyEnv != "" && apiKey == "" {
-		m.appendLine(styleAuto.Render(fmt.Sprintf("(using existing %s from environment)", add.APIKeyEnv)))
+		m.appendLine(styleAuto.Render(statusHintLine(fmt.Sprintf("using existing %s from environment", add.APIKeyEnv))))
 	}
 	return updated, becameActive, true
 }

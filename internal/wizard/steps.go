@@ -1124,8 +1124,14 @@ func (m wizardModel) viewProviders() string {
 			}
 			b.WriteString(m.renderRowBar(content) + "\n")
 		} else {
-			marker := styleDim.Render("·")
-			nameStyle := styleMuted
+			// Bullet and "absent" badges render muted (not dim) so the
+			// whole row stays legible. The present/ready states keep their
+			// green (styleOK), so muted-vs-green still signals set/unset.
+			marker := styleMuted.Render("·")
+			// Unconfigured names render in the terminal default
+			// foreground (bright, like the Welcome page) so the provider
+			// list is easy to scan; configured rows stay accented.
+			nameStyle := lipgloss.NewStyle()
 			if configured {
 				marker = styleOK.Render("✓")
 				nameStyle = styleSelected
@@ -1134,14 +1140,14 @@ func (m wizardModel) viewProviders() string {
 			if envHas {
 				envBadge = " " + styleOK.Render("[$"+e.APIKeyEnv+"]")
 			} else if e.APIKeyEnv != "" {
-				envBadge = " " + styleDim.Render("[$"+e.APIKeyEnv+"]")
+				envBadge = " " + styleMuted.Render("[$"+e.APIKeyEnv+"]")
 			}
 			ollamaBadge := ""
 			if e.Name == "ollama" {
 				if ollamaReach {
 					ollamaBadge = " " + styleOK.Render(fmt.Sprintf("[%d %s]", ollamaModels, pluralModels(ollamaModels)))
 				} else {
-					ollamaBadge = " " + styleDim.Render("[not running]")
+					ollamaBadge = " " + styleMuted.Render("[not running]")
 				}
 			}
 			firstRowFixed := lipgloss.Width("  "+marker+" ") + lipgloss.Width(envBadge)
@@ -1158,11 +1164,11 @@ func (m wizardModel) viewProviders() string {
 					marker, nameStyle.Render(truncate(e.Name, firstRowBudget)), envBadge)
 			}
 		}
-		// Second row: 8-char indent, note text only. Stays dim
-		// regardless of cursor — descriptive subtext shouldn't compete
-		// with the bar above.
+		// Second row: 8-char indent, note text only. Muted (not dim)
+		// regardless of cursor — readable as a description, but still a
+		// step below the name above so it doesn't compete with the bar.
 		noteW := w - 8
-		fmt.Fprintf(&b, "        %s\n", styleDim.Render(truncate(e.Note, noteW)))
+		fmt.Fprintf(&b, "        %s\n", styleMuted.Render(truncate(e.Note, noteW)))
 	}
 	// Continue sentinel row. Always rendered, but the label and
 	// cursor styling change based on whether anything's configured —
@@ -1682,10 +1688,10 @@ func (m wizardModel) viewConfigure() string {
 				name := lipgloss.NewStyle().Width(nameW).Render(label)
 				line := name
 				if chips != "" {
-					line += "  " + styleDim.Render(chips)
+					line += "  " + styleMuted.Render(chips)
 				}
 				if ctxLabel != "" {
-					line += "  " + styleDim.Render(ctxLabel)
+					line += "  " + styleMuted.Render(ctxLabel)
 				}
 				b.WriteString("  " + truncate(line, lineWidthFor(m.width)) + "\n")
 			}
@@ -1840,12 +1846,15 @@ func (m wizardModel) viewEmbedSubStep() string {
 	}
 	for i, r := range rows {
 		cursor := "  "
-		labelStyle := styleMuted
+		// Non-cursor labels render in the terminal default foreground
+		// (bright, like the Welcome page) so every option is easy to
+		// spot — a dim label here was getting overlooked entirely.
+		labelStyle := lipgloss.NewStyle()
 		if i == m.embedCursor {
 			cursor = styleSelected.Render("> ")
 			labelStyle = styleSelected
 		}
-		line := cursor + labelStyle.Render(r.label) + "  " + styleDim.Render(r.desc)
+		line := cursor + labelStyle.Render(r.label) + "  " + styleMuted.Render(r.desc)
 		b.WriteString(truncate(line, w) + "\n")
 	}
 	return b.String()
@@ -2069,9 +2078,11 @@ func (m wizardModel) viewRouter() string {
 		if i == m.routerCursor {
 			b.WriteString(m.renderRowBar(o.label+pad+"  "+desc) + "\n")
 		} else {
+			// Default-foreground label (bright, like the Welcome page);
+			// muted — not dim — description so both stay legible.
 			fmt.Fprintf(&b, "  %s%s  %s\n",
-				styleMuted.Render(o.label), pad,
-				styleDim.Render(desc))
+				o.label, pad,
+				styleMuted.Render(desc))
 		}
 	}
 	return b.String()

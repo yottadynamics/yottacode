@@ -8,6 +8,8 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
 
 	"github.com/yottadynamics/yottacode/internal/catalog"
 )
@@ -1071,4 +1073,67 @@ func TestOptionSelector_NoTriangleCursor(t *testing.T) {
 			t.Errorf("%s: ▸ cursor should be replaced by the highlight bar; got:\n%s", name, got)
 		}
 	}
+}
+
+// TestPickerOptionsAreLegible guards the readability fix for the wizard
+// pickers (the "Enable semantic memory search?" step is the one a user
+// reported missing entirely). Non-cursor option labels must render in
+// the terminal default foreground — bright, like the Welcome page — and
+// descriptions in muted, never the dim shade that made option text easy
+// to overlook.
+func TestPickerOptionsAreLegible(t *testing.T) {
+	// Under `go test` lipgloss renders plain ASCII; force truecolor so
+	// the style escapes we assert on are actually emitted. Restore the
+	// previous profile afterward so other tests see the default.
+	prev := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	t.Cleanup(func() { lipgloss.SetColorProfile(prev) })
+
+	// dimFg is the opening escape styleDim emits — the shade the fix
+	// removed from option text. Deriving it from the style (rather than
+	// hardcoding the RGB) keeps the test correct if the palette shifts.
+	dimFg, _, _ := strings.Cut(styleDim.Render("x"), "x")
+
+	t.Run("embed picker", func(t *testing.T) {
+		m := newWizardModel(context.Background(), Options{})
+		m.width = 100 // picker mode: no embedding model chosen yet
+		out := m.viewEmbedSubStep()
+		if !strings.Contains(stripANSI(out), "all-minilm") {
+			t.Fatalf("expected option-picker mode; got:\n%s", stripANSI(out))
+		}
+		if strings.Contains(out, dimFg) {
+			t.Errorf("embed picker uses the dim foreground; option text must be default or muted")
+		}
+		if strings.Contains(out, styleMuted.Render("all-minilm")) {
+			t.Errorf("the %q label is muted gray; it should be the terminal default foreground", "all-minilm")
+		}
+	})
+
+	t.Run("provider list", func(t *testing.T) {
+		m := newWizardModel(context.Background(), Options{})
+		m.width = 100
+		m.providerCursor = len(Catalog) // park cursor off the rows
+		out := m.viewProviders()
+		// An unconfigured, non-cursor provider name renders default-fg.
+		if strings.Contains(out, styleMuted.Render("anthropic")) {
+			t.Errorf("the %q name is muted gray; unconfigured names should be the terminal default foreground", "anthropic")
+		}
+		// Bullets and "absent" badges are muted, not dim.
+		if strings.Contains(out, styleDim.Render("·")) {
+			t.Errorf("provider bullets render dim; they should be muted so the row stays legible")
+		}
+		if strings.Contains(out, styleDim.Render("[$ANTHROPIC_API_KEY]")) {
+			t.Errorf("the absent env badge renders dim; it should be muted")
+		}
+	})
+
+	t.Run("router", func(t *testing.T) {
+		m := newWizardModel(context.Background(), Options{})
+		m.width = 100
+		m.routerCursor = 0 // cursor on "Off"; "Cheap first" is non-cursor
+		out := m.viewRouter()
+		if strings.Contains(out, styleMuted.Render("Cheap first")) {
+			t.Errorf("the %q label is muted gray; non-cursor labels should be the terminal default foreground", "Cheap first")
+		}
+	})
 }
