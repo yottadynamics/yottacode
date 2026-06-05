@@ -1221,36 +1221,33 @@ func TestPalette_EnterPassesThroughTypedArgs(t *testing.T) {
 	}
 }
 
-func TestStatusLine_AlignsProseAcrossTags(t *testing.T) {
-	// A run of provider/model/env notices should line up their prose in a
-	// single column regardless of tag width — that's the whole point of the
-	// helper. Assert the message starts at the same byte offset for each.
-	want := -1
-	for _, tag := range []string{"provider", "model", "env"} {
-		line := statusLine(tag, "MARK")
-		at := strings.Index(line, "MARK")
-		if at == -1 {
-			t.Fatalf("statusLine(%q): message missing from %q", tag, line)
-		}
-		if want == -1 {
-			want = at
-		} else if at != want {
-			t.Errorf("statusLine(%q): prose starts at col %d, want %d (line %q)", tag, at, want, line)
-		}
-		if !strings.HasPrefix(line, "["+tag+"]") {
-			t.Errorf("statusLine(%q): missing bracketed tag; got %q", tag, line)
-		}
-	}
-	if want != statusTagWidth {
-		t.Errorf("prose column = %d, want statusTagWidth %d", want, statusTagWidth)
+func TestStatusLine_RendersCompactPrefix(t *testing.T) {
+	line := statusLine("provider", "switched to openai")
+	if line != "provider: switched to openai" {
+		t.Fatalf("statusLine rendered %q", line)
 	}
 }
 
-func TestStatusLine_OverWideTagKeepsGutter(t *testing.T) {
-	// A tag that meets or exceeds the column width must still leave a single
-	// space so prose never butts against the closing bracket.
-	line := statusLine("a-very-long-subsystem", "msg")
-	if !strings.Contains(line, "] msg") {
-		t.Errorf("over-wide tag should fall back to single-space gutter; got %q", line)
+func TestStatusHelpers_RenderSymbolsAndHints(t *testing.T) {
+	cases := map[string]string{
+		statusOKLine("provider", "added openai"):       "✓ provider: added openai",
+		statusWarnLine("model", "context unknown"):     "⚠ model: context unknown",
+		statusActionLine("openai-auth", "signing in"):  "→ openai-auth: signing in",
+		statusHintLine("set context_window in config"): "  hint: set context_window in config",
+	}
+	for got, want := range cases {
+		if got != want {
+			t.Errorf("got %q, want %q", got, want)
+		}
+	}
+}
+
+func TestShortenMiddle(t *testing.T) {
+	got := shortenMiddle("nvidia/nemotron-3-ultra-550b-a55b", 24)
+	if got != "nvidia/nem...a-550b-a55b" {
+		t.Fatalf("shortenMiddle = %q", got)
+	}
+	if got := shortenMiddle("short", 24); got != "short" {
+		t.Fatalf("short input changed to %q", got)
 	}
 }

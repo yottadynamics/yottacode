@@ -70,6 +70,7 @@ var (
 	styleLogo             lipgloss.Style
 	styleSplashTitle      lipgloss.Style
 	styleSplashInfo       lipgloss.Style
+	styleSplashLabel      lipgloss.Style
 	styleSeparator        lipgloss.Style
 	styleFooter           lipgloss.Style
 	styleUserHeader       lipgloss.Style
@@ -186,12 +187,17 @@ func buildStyles(p themes.Palette) {
 	styleLogo = lipgloss.NewStyle().Foreground(colorBrand).Bold(true)
 	styleSplashTitle = lipgloss.NewStyle().Foreground(colorBrand).Bold(true)
 	styleSplashInfo = lipgloss.NewStyle().Foreground(colorMuted)
+	// styleSplashLabel is the startup card's bright text — labels,
+	// version, provider, and the tip. The card is a one-time orientation
+	// surface, so its rows render in Content (not the usual Dim labels)
+	// to stay easy to read at a glance.
+	styleSplashLabel = lipgloss.NewStyle().Foreground(colorContent)
 	styleSeparator = lipgloss.NewStyle().Foreground(colorMuted)
 	styleFooter = lipgloss.NewStyle().Foreground(colorMuted)
 	styleUserHeader = lipgloss.NewStyle().Bold(true).Foreground(colorAccent)
 	styleAssistantHeader = lipgloss.NewStyle().Bold(true).Foreground(colorAssistant)
 	styleUserBar = lipgloss.NewStyle().Foreground(colorRule).Bold(true)
-	styleUserBody = lipgloss.NewStyle().Foreground(colorDim)
+	styleUserBody = lipgloss.NewStyle().Foreground(colorContent)
 	styleAssistantBody = lipgloss.NewStyle().Foreground(colorContent).PaddingLeft(2)
 	styleAssistantProse = lipgloss.NewStyle().Foreground(colorContent)
 	styleAssistantBold = lipgloss.NewStyle().Foreground(colorContent).Bold(true)
@@ -227,7 +233,7 @@ func buildStyles(p themes.Palette) {
 	// `[model]`, …) carry no PaddingLeft, so on the flush-left canvas they
 	// sit at column 0 — lined up with the startup card border and other
 	// structural chrome rather than the 2-space prose gutter.
-	styleAuto = lipgloss.NewStyle().Foreground(colorMuted).Italic(true)
+	styleAuto = lipgloss.NewStyle().Foreground(colorDim)
 	styleError = lipgloss.NewStyle().Foreground(colorErr).Bold(true)
 	styleWarnIcon = lipgloss.NewStyle().Foreground(colorWarning).Bold(true)
 	styleApprovalBox = lipgloss.NewStyle().
@@ -247,7 +253,7 @@ func buildStyles(p themes.Palette) {
 	}
 	stylePaletteBox = paletteBox
 
-	stylePaletteItem = lipgloss.NewStyle().Foreground(colorMuted)
+	stylePaletteItem = lipgloss.NewStyle().Foreground(colorContent)
 	stylePaletteSelected = lipgloss.NewStyle().
 		Background(colorBrand).
 		Foreground(lipgloss.Color("0")).
@@ -259,9 +265,12 @@ func buildStyles(p themes.Palette) {
 	stylePathHeader = lipgloss.NewStyle().Foreground(colorAccent).Bold(true)
 	styleSpinner = lipgloss.NewStyle().Foreground(colorBrand).Bold(true)
 
-	styleInputPrompt = lipgloss.NewStyle().Foreground(colorRule).Bold(true)
-	styleInputPlaceholder = lipgloss.NewStyle().Foreground(colorDim).Italic(true)
-	styleInputHint = lipgloss.NewStyle().Foreground(colorDim)
+	// Cmdline box reads in Content (bright) rather than the dimmer
+	// Rule/Dim it used before — the prompt, placeholder, and hint row
+	// should all be easy to spot.
+	styleInputPrompt = lipgloss.NewStyle().Foreground(colorContent).Bold(true)
+	styleInputPlaceholder = lipgloss.NewStyle().Foreground(colorContent).Italic(true)
+	styleInputHint = lipgloss.NewStyle().Foreground(colorContent)
 	styleOverlayRule = lipgloss.NewStyle().Foreground(colorRule).Faint(true)
 
 	styleWatermark = lipgloss.NewStyle().Foreground(colorWarn).Italic(true).PaddingLeft(2)
@@ -313,7 +322,7 @@ func buildStyles(p themes.Palette) {
 	styleApprovalToast = lipgloss.NewStyle().Foreground(colorSuccess)
 
 	// Tool card + todo rows (tool_card.go)
-	styleCardGutter = lipgloss.NewStyle().Foreground(colorRule)
+	styleCardGutter = lipgloss.NewStyle().Foreground(colorDim)
 	styleCardHeader = lipgloss.NewStyle().Foreground(colorContent).Bold(true)
 	styleCardBody = lipgloss.NewStyle().Foreground(colorContent)
 	styleCardMeta = lipgloss.NewStyle().Foreground(colorDim)

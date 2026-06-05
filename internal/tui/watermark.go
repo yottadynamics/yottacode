@@ -156,10 +156,10 @@ const ctxBarWidth = 6
 //
 // Returns "" when the model's context window is unknown — the
 // percentage would be misleading without a denominator. Threshold
-// tiers paint the BAR (and the percentage) with: Dim under
+// tiers paint the BAR (and the percentage) with: Content under
 // warn_threshold, Warning amber once it crosses, Error red once it
-// crosses auto_threshold. The `ctx` label stays Dim regardless
-// (it's a label, not a value). Threshold knobs come from
+// crosses auto_threshold. The `ctx` label renders in Content too so
+// the whole status bar reads bright. Threshold knobs come from
 // m.fileCfg.Context — same source the auto-summarize watermark
 // reads, so the visual signal moves in lockstep with behavior.
 func (m Model) renderContextBar() string {
@@ -176,7 +176,7 @@ func (m Model) renderContextBar() string {
 		pct = 100
 	}
 
-	color := colorDim
+	color := colorContent
 	switch {
 	case m.fileCfg.Context.AutoThreshold < 1.0 && pctFloat >= m.fileCfg.Context.AutoThreshold:
 		color = colorError
@@ -193,7 +193,7 @@ func (m Model) renderContextBar() string {
 	}
 	bar := strings.Repeat("█", filled) + strings.Repeat("░", ctxBarWidth-filled)
 
-	label := lipgloss.NewStyle().Foreground(colorDim).Render("ctx ")
+	label := lipgloss.NewStyle().Foreground(colorContent).Render("ctx ")
 	graph := lipgloss.NewStyle().Foreground(color).Render(
 		bar + " " + formatTokens(m.contextTokens) + " / " + formatTokens(window) +
 			fmt.Sprintf(" (%d%%)", pct))

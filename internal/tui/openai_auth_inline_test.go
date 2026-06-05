@@ -66,7 +66,7 @@ func TestHandleInlineOpenAIAuthDone_Success(t *testing.T) {
 		t.Errorf("expected scan cmd after successful login")
 	}
 	out := stripANSI(m.transcript.String())
-	for _, want := range []string{"signed in", "scanning available models"} {
+	for _, want := range []string{"signed in", "scanning models"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("transcript missing %q:\n%s", want, out)
 		}

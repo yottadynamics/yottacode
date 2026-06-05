@@ -401,25 +401,34 @@ func cmdSessions(m Model, args []string) (Model, tea.Cmd) {
 	return m, nil
 }
 
-// statusTagWidth is the column where status-notice prose begins. It's
-// sized so the widest tag in the provider/model/env flow ("[provider]",
-// 10 cols) clears it with a 3-space gutter; shorter tags ("[model]",
-// "[env]") pad out to the same column so a run of notices forms a clean
-// left-aligned text column rather than ragged-right after each "]".
-const statusTagWidth = 13
-
-// statusLine renders a bracketed status notice as "[tag]   message" with
-// message left-aligned to statusTagWidth regardless of tag length. Callers
-// still wrap the result in styleAuto/styleError for color; this only owns
-// the "[tag] " prefix and the alignment padding. A tag at or past the
-// column width falls back to a single-space gutter so prose never butts
-// against the closing "]".
+// statusLine keeps transcript notices compact and grep-friendly.
 func statusLine(tag, msg string) string {
-	label := "[" + tag + "]"
-	if len(label)+1 > statusTagWidth {
-		return label + " " + msg
+	return tag + ": " + msg
+}
+
+func statusOKLine(tag, msg string) string {
+	return "✓ " + statusLine(tag, msg)
+}
+
+func statusWarnLine(tag, msg string) string {
+	return "⚠ " + statusLine(tag, msg)
+}
+
+func statusActionLine(tag, msg string) string {
+	return "→ " + statusLine(tag, msg)
+}
+
+func statusHintLine(msg string) string {
+	return "  hint: " + msg
+}
+
+func shortenMiddle(s string, max int) string {
+	if max <= 3 || len(s) <= max {
+		return s
 	}
-	return fmt.Sprintf("%-*s%s", statusTagWidth, label, msg)
+	left := (max - 3) / 2
+	right := max - 3 - left
+	return s[:left] + "..." + s[len(s)-right:]
 }
 
 // providerUse switches the active provider profile, adopts its
@@ -455,7 +464,7 @@ func providerUse(m Model, name string) (Model, tea.Cmd) {
 	m.providerProfile = ad.Profile()
 	m.sess.Model = newModel
 	m, _ = reloadMemoryNow(m, "")
-	m.appendLine(styleAuto.Render(statusLine("provider", fmt.Sprintf("switched to %s (model: %s)", name, newModel))))
+	m.appendLine(styleAuto.Render(statusOKLine("provider", fmt.Sprintf("switched to %s (model: %s)", name, newModel))))
 	cmds := []tea.Cmd{runProviderProbe(m.parentCtx, m.adapterConfig(newModel, p.BaseURL), false)}
 	// A provider switch changes the active model outside the picker path —
 	// discover its window from the live API too (the picker reads it from
@@ -546,8 +555,8 @@ func providerAdd(m Model, args []string) (Model, tea.Cmd) {
 			becomesActive: cfg.Active.Provider == "",
 			fromPicker:    false,
 		}
-		m.appendLine(styleAuto.Render(statusLine("provider", "openai-auth: starting browser sign-in…")))
-		m.appendLine(styleAuto.Render(fmt.Sprintf("(profile %q will be saved after sign-in completes)", p.Name)))
+		m.appendLine(styleAuto.Render(statusActionLine("openai-auth", "starting browser sign-in…")))
+		m.appendLine(styleAuto.Render(statusHintLine(fmt.Sprintf("profile %q will be saved after sign-in", p.Name))))
 		return m, startInlineOpenAIAuthLoginCmd(m.parentCtx)
 	}
 	if p.Kind == "copilot" {
@@ -563,8 +572,8 @@ func providerAdd(m Model, args []string) (Model, tea.Cmd) {
 			becomesActive: cfg.Active.Provider == "",
 			fromPicker:    false,
 		}
-		m.appendLine(styleAuto.Render("[copilot] starting device code sign-in..."))
-		m.appendLine(styleAuto.Render(fmt.Sprintf("(profile %q will be saved after sign-in completes)", p.Name)))
+		m.appendLine(styleAuto.Render(statusActionLine("copilot", "starting device code sign-in…")))
+		m.appendLine(styleAuto.Render(statusHintLine(fmt.Sprintf("profile %q will be saved after sign-in", p.Name))))
 		return m, startInlineCopilotAuthCmd(m.parentCtx)
 	}
 	cfg.Providers = append(cfg.Providers, p)
@@ -605,7 +614,7 @@ func providerAdd(m Model, args []string) (Model, tea.Cmd) {
 	if id := wizard.CatalogIdentity(p.Name); id != "" {
 		identity = id
 	}
-	m.appendLine(styleAuto.Render(statusLine("provider", fmt.Sprintf("added %q (%s)%s", name, identity, hint))))
+	m.appendLine(styleAuto.Render(statusOKLine("provider", fmt.Sprintf("added %q (%s)%s", name, identity, hint))))
 	// First-add (or empty-state recovery): rebuild the in-memory
 	// adapter so the next chat turn doesn't hit the nil-adapter
 	// guard. providerUse loads cfg fresh from disk (we just wrote
@@ -677,7 +686,7 @@ func applyProviderRemove(m Model, name string) (Model, tea.Cmd) {
 		return m, nil
 	}
 
-	m.appendLine(styleAuto.Render(statusLine("provider", fmt.Sprintf("removed %q", name))))
+	m.appendLine(styleAuto.Render(statusOKLine("provider", fmt.Sprintf("removed %q", name))))
 	if removedKind == "openai-auth" {
 		m = cleanupOpenAIAuthTokenStore(m)
 	}
@@ -744,7 +753,7 @@ func cleanupOpenAIAuthTokenStore(m Model) Model {
 		return m
 	}
 	if removeErr := os.Remove(path); removeErr == nil {
-		m.appendLine(styleAuto.Render(statusLine("provider", "openai-auth: token store deleted (logged out)")))
+		m.appendLine(styleAuto.Render(statusOKLine("openai-auth", "token store deleted; logged out")))
 	} else if !errors.Is(removeErr, os.ErrNotExist) {
 		m.appendLine(styleError.Render(statusLine("provider", fmt.Sprintf("openai-auth: could not delete token store: %v", removeErr))))
 		return m
@@ -768,7 +777,7 @@ func cleanupCopilotTokenStore(m Model) Model {
 		return m
 	}
 	if removeErr := os.Remove(path); removeErr == nil {
-		m.appendLine(styleAuto.Render(statusLine("provider", "copilot: token store deleted (logged out)")))
+		m.appendLine(styleAuto.Render(statusOKLine("copilot", "token store deleted; logged out")))
 	} else if !errors.Is(removeErr, os.ErrNotExist) {
 		m.appendLine(styleError.Render(statusLine("provider", fmt.Sprintf("copilot: could not delete token store: %v", removeErr))))
 	}

@@ -30,7 +30,7 @@ import (
 // first WindowSizeMsg, test fixtures).
 func renderStartupBox(version, commit string, dirty bool, modelName, dir, branch, memorySummary string, profile adapter.ProviderProfile, tip string, termWidth int) string {
 	title := styleSplashTitle.Render(">_ YottaCode by YottaDynamics ") +
-		styleSplashInfo.Render(fmt.Sprintf("(%s)", buildLabel(version, commit, dirty)))
+		styleSplashLabel.Render(fmt.Sprintf("(%s)", buildLabel(version, commit, dirty)))
 
 	items := []startupInfoRow{
 		{Key: "model", Value: modelName},
@@ -46,7 +46,7 @@ func renderStartupBox(version, commit string, dirty bool, modelName, dir, branch
 	rows := []string{title, ""}
 	rows = append(rows, renderStartupRows(items)...)
 	if tip != "" {
-		rows = append(rows, "", styleSplashInfo.Render("tip:")+" "+renderInlineCodeSpans(tip, styleFooter))
+		rows = append(rows, "", styleSplashLabel.Render("tip:")+" "+renderInlineCodeSpans(tip, styleSplashLabel))
 	}
 
 	if cap := termWidth - 4; cap > 0 {
@@ -63,7 +63,7 @@ func renderStartupBox(version, commit string, dirty bool, modelName, dir, branch
 
 	return lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
-		BorderForeground(colorRule).
+		BorderForeground(colorDim). // Dim (not Rule) so the card frame reads brightly
 		Padding(0, 1).
 		Render(strings.Join(rows, "\n"))
 }
@@ -124,7 +124,7 @@ func renderStartupRows(rows []startupInfoRow) []string {
 // a single trailing space separates the (padded) label from the value.
 func labelRow(key string, keyWidth int, value string) string {
 	label := fmt.Sprintf("%-*s", keyWidth, key)
-	return styleSplashInfo.Render(label) + "  " + value
+	return styleSplashLabel.Render(label) + "  " + value
 }
 
 func renderProviderSummary(profile adapter.ProviderProfile) string {
@@ -138,9 +138,9 @@ func renderProviderSummary(profile adapter.ProviderProfile) string {
 		name += " ?"
 	}
 	if profile.UsesResponsesAPI {
-		return styleSplashInfo.Render(name + " · responses")
+		return styleSplashLabel.Render(name + " · responses")
 	}
-	return styleSplashInfo.Render(name)
+	return styleSplashLabel.Render(name)
 }
 
 func renderBuiltinTools(profile adapter.ProviderProfile) string {

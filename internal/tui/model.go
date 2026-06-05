@@ -1956,9 +1956,10 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if detail == "" {
 				detail = "no window reported"
 			}
-			m.appendLine(styleAuto.Render(statusLine("model", fmt.Sprintf(
-				"couldn't auto-detect context window for %s (%s) — using %s; set context_window in config to override",
-				msg.model, detail, formatTokens(m.contextWindow())))))
+			m.appendLine(styleAuto.Render(statusWarnLine("model", fmt.Sprintf(
+				"context window unknown for %s; using %s",
+				shortenMiddle(msg.model, 42), formatTokens(m.contextWindow())))))
+			m.appendLine(styleAuto.Render(statusHintLine(detail)))
 			return m, nil
 		}
 		// Persist the discovered window to the file-backed store overlay
@@ -2309,13 +2310,13 @@ func (m Model) renderInputBox() string {
 
 // renderInputFrame wraps the cmdline body in a closed bordered box with
 // rounded corners (╭/╮/╰/╯) and side borders (│) that spans the full
-// terminal width. The border uses colorRule (dim gray) so it reads as
-// chrome, not content — same visual family as the welcome card border.
+// terminal width. The border uses colorDim (mid-gray) so the frame reads
+// brightly — same visual family as the welcome card border.
 func (m Model) renderInputFrame() string {
 	if m.width <= 0 {
 		return m.textInput.View()
 	}
-	ruleStyle := lipgloss.NewStyle().Foreground(colorRule)
+	ruleStyle := lipgloss.NewStyle().Foreground(colorDim)
 	boxW := m.width
 	innerW := boxW - 4 // space inside "│ " ... " │"
 	if innerW < 1 {
@@ -2337,15 +2338,16 @@ func (m Model) renderInputFrame() string {
 	return top + "\n" + strings.Join(bordered, "\n") + "\n" + bot
 }
 
-// renderInputRule paints a single dim horizontal `─` line spanning
-// the full terminal width. Used by the inline overlay layout where
-// the full-width divider is still appropriate.
+// renderInputRule paints a single horizontal `─` line spanning the full
+// terminal width. Used by the inline overlay layout where the full-width
+// divider is still appropriate. colorDim (mid-gray) so it reads as
+// brightly as the cmdline box frame it stands in for.
 func (m Model) renderInputRule() string {
 	w := m.width
 	if w < 1 {
 		w = 1
 	}
-	return lipgloss.NewStyle().Foreground(colorRule).Render(strings.Repeat("─", w))
+	return lipgloss.NewStyle().Foreground(colorDim).Render(strings.Repeat("─", w))
 }
 
 // renderEmptyCursor returns a single-cell cursor block for the empty
@@ -3065,10 +3067,12 @@ func (m Model) historyForward() (Model, bool) {
 //
 //	● model · provider   ·   ctx ████░░ 4.3K / 128K (28%)
 //
-// Segment 1 carries the connection-state dot (the only saturated
-// element on the bar), the model name in Content, and the provider
-// profile name in Dim (sub-separator). Segment 2 is the visual
-// context-window indicator — see renderContextBar for thresholds.
+// Segment 1 carries the connection-state dot (the saturated state
+// signal), the model name and the provider profile name both in
+// Content (bright). Segment 2 is the visual context-window indicator —
+// see renderContextBar for thresholds. The middle dots render in Dim —
+// brighter than before, but a step below the Content segments so they
+// still read as dividers rather than content.
 //
 // The working directory is intentionally NOT shown here — it ate too
 // much horizontal space relative to its at-a-glance value, and the
@@ -3088,8 +3092,8 @@ func (m Model) renderStatus() string {
 	provider := renderProviderTag(tag)
 	ctx := m.renderContextBar()
 
-	sep := lipgloss.NewStyle().Foreground(colorRule).Render("  ·  ")
-	innerSep := lipgloss.NewStyle().Foreground(colorRule).Render(" · ")
+	sep := lipgloss.NewStyle().Foreground(colorDim).Render("  ·  ")
+	innerSep := lipgloss.NewStyle().Foreground(colorDim).Render(" · ")
 
 	// First segment: dot + model + (optional) provider tag. The provider
 	// is bound to the model so it survives the same narrow-screen
@@ -3109,7 +3113,7 @@ func (m Model) renderStatus() string {
 	// looks last. Plain text per the no-emoji-in-TUI rule.
 	worktreeSeg := ""
 	if m.worktree != "" {
-		worktreeSeg = lipgloss.NewStyle().Foreground(colorDim).Render("worktree: " + m.worktree)
+		worktreeSeg = lipgloss.NewStyle().Foreground(colorContent).Render("worktree: " + m.worktree)
 	}
 
 	build := func(head string) string {
@@ -3154,15 +3158,16 @@ func (m Model) renderStatus() string {
 }
 
 // renderProviderTag styles the provider label that sits next to the
-// model name in the status bar. Dim — the model is the primary
-// signal; provider is supporting context. Empty string when the
-// provider is unknown so the status bar can omit it cleanly.
+// model name in the status bar. Content — the status bar reads bright
+// so every segment is easy to spot; the connection dot and threshold
+// colors still carry the saturated "state" signal. Empty string when
+// the provider is unknown so the status bar can omit it cleanly.
 func renderProviderTag(provider string) string {
 	provider = strings.TrimSpace(provider)
 	if provider == "" {
 		return ""
 	}
-	return lipgloss.NewStyle().Foreground(colorDim).Render(provider)
+	return lipgloss.NewStyle().Foreground(colorContent).Render(provider)
 }
 
 // renderModelName styles the model-name segment of the status bar.

@@ -88,17 +88,17 @@ func scanInlineOpenAIAuthCmd(ctx context.Context, accessToken string) tea.Cmd {
 // never lands in config.toml.
 func handleInlineOpenAIAuthURL(m Model, msg inlineOpenAIAuthURLMsg) (Model, tea.Cmd) {
 	if msg.err != nil {
-		m.appendLine(styleError.Render("[openai-auth] sign-in failed to start: " + msg.err.Error()))
+		m.appendLine(styleError.Render(statusLine("openai-auth", "sign-in failed to start: "+msg.err.Error())))
 		if m.openAIAuthPendingAdd != nil {
-			m.appendLine(styleAuto.Render(fmt.Sprintf("(profile %q was not saved — retry /provider add to try again)",
-				m.openAIAuthPendingAdd.add.Name)))
+			m.appendLine(styleAuto.Render(statusHintLine(fmt.Sprintf("profile %q was not saved; retry /provider add",
+				m.openAIAuthPendingAdd.add.Name))))
 			m.openAIAuthPendingAdd = nil
 		}
-		m.appendLine(styleAuto.Render("[openai-auth] run `yottacode openai-auth login` to retry"))
+		m.appendLine(styleAuto.Render(statusHintLine("run `yottacode openai-auth login` to retry")))
 		return m, nil
 	}
 	m.openAIAuthPending = msg.pending
-	m.appendLine(styleAuto.Render("[openai-auth] browser opened — sign in to complete setup"))
+	m.appendLine(styleAuto.Render(statusActionLine("openai-auth", "browser opened; sign in to finish")))
 	return m, waitInlineOpenAIAuthLoginCmd(m.parentCtx, msg.pending)
 }
 
@@ -112,16 +112,16 @@ func handleInlineOpenAIAuthURL(m Model, msg inlineOpenAIAuthURLMsg) (Model, tea.
 func handleInlineOpenAIAuthDone(m Model, msg inlineOpenAIAuthDoneMsg) (Model, tea.Cmd) {
 	m.openAIAuthPending = nil
 	if msg.err != nil {
-		m.appendLine(styleError.Render("[openai-auth] sign-in failed: " + msg.err.Error()))
+		m.appendLine(styleError.Render(statusLine("openai-auth", "sign-in failed: "+msg.err.Error())))
 		if m.openAIAuthPendingAdd != nil {
-			m.appendLine(styleAuto.Render(fmt.Sprintf("(profile %q was not saved — retry /provider add to try again)",
-				m.openAIAuthPendingAdd.add.Name)))
+			m.appendLine(styleAuto.Render(statusHintLine(fmt.Sprintf("profile %q was not saved; retry /provider add",
+				m.openAIAuthPendingAdd.add.Name))))
 			m.openAIAuthPendingAdd = nil
 		}
-		m.appendLine(styleAuto.Render("[openai-auth] run `yottacode openai-auth login` to retry"))
+		m.appendLine(styleAuto.Render(statusHintLine("run `yottacode openai-auth login` to retry")))
 		return m, nil
 	}
-	m.appendLine(styleAuto.Render("[openai-auth] ✓ signed in — token saved; scanning available models..."))
+	m.appendLine(styleAuto.Render(statusOKLine("openai-auth", "signed in; token saved; scanning models…")))
 	scanCmd := scanInlineOpenAIAuthCmd(m.parentCtx, msg.accessToken)
 	// Persist the deferred profile now that the OAuth token is on
 	// disk. Reuses commitProviderAddNow so the success transcript
@@ -160,10 +160,10 @@ func handleInlineOpenAIAuthDone(m Model, msg inlineOpenAIAuthDoneMsg) (Model, te
 // file is at issue.
 func handleInlineOpenAIAuthScanDone(m Model, msg inlineOpenAIAuthScanDoneMsg) (Model, tea.Cmd) {
 	if msg.err != nil {
-		m.appendLine(styleError.Render("[openai-auth] ⚠ model scan failed: " + msg.err.Error()))
-		m.appendLine(styleAuto.Render("[openai-auth] tokens saved; rerun `yottacode openai-auth login` to retry"))
+		m.appendLine(styleError.Render(statusWarnLine("openai-auth", "model scan failed: "+msg.err.Error())))
+		m.appendLine(styleAuto.Render(statusHintLine("tokens saved; rerun `yottacode openai-auth login` to retry")))
 		return m, nil
 	}
-	m.appendLine(styleAuto.Render(fmt.Sprintf("[openai-auth] ✓ %d models available: %s", len(msg.models), strings.Join(msg.models, ", "))))
+	m.appendLine(styleAuto.Render(statusOKLine("openai-auth", fmt.Sprintf("%d models available: %s", len(msg.models), strings.Join(msg.models, ", ")))))
 	return m, nil
 }
