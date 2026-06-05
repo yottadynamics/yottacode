@@ -165,5 +165,10 @@ func handleInlineOpenAIAuthScanDone(m Model, msg inlineOpenAIAuthScanDoneMsg) (M
 		return m, nil
 	}
 	m.appendLine(styleAuto.Render(statusOKLine("openai-auth", fmt.Sprintf("%d models available: %s", len(msg.models), strings.Join(msg.models, ", ")))))
-	return m, nil
+	cfg := loadConfigForCommand(m)
+	active := cfg.FindProvider(cfg.Active.Provider)
+	if active == nil || active.Kind != "openai-auth" {
+		return m, nil
+	}
+	return providerUse(m, active.Name)
 }
