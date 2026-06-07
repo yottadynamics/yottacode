@@ -230,6 +230,10 @@ func renderSubagentBackgroundDone(e agent.SubagentBackgroundDone) string {
 			header += styleSubagentMeta.Render(" · committed " + shortCommit(e.CommitSHA))
 		case e.CommitErr != "":
 			header += styleSubagentErr.Render(" · not committed: " + e.CommitErr)
+		case e.Reclaimed:
+			// The branch named above no longer exists — the worker produced
+			// nothing, so its empty worktree+branch were removed on finish.
+			header += styleSubagentMeta.Render(" · no changes — worktree reclaimed")
 		}
 	}
 	footer := styleSubagentMeta.Render("    /subagents — open the picker, then Enter on task " + e.TaskID[:8])

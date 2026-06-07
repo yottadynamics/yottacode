@@ -308,6 +308,11 @@ type SubagentBackgroundDone struct {
 	Committed bool
 	CommitSHA string
 	CommitErr string
+	// Reclaimed is true when the worker's worktree+branch were removed at
+	// the end of its run because they held nothing (no commits beyond the
+	// dispatch base, clean tree) — so the banner can explain why the named
+	// branch no longer exists.
+	Reclaimed bool
 }
 
 func (ReasoningToken) event()           {}

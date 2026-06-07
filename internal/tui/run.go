@@ -659,6 +659,16 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 			time.Sleep(20 * time.Millisecond)
 		}
 	}
+	// Final sweep over this session's dispatch worktrees: workers that
+	// unwound in time already reclaimed their own empty worktree; this
+	// catches the ones the bounded drain gave up on (stuck mid-run when the
+	// session died). Same keep rules as the per-worker path — committed
+	// (awaiting integrate) and dirty (recoverable work) worktrees survive,
+	// only provably-empty ones are removed. Bounded so a wedged git can't
+	// stall exit.
+	sweepCtx, sweepCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	agent.ReclaimEmptyDispatchWorktrees(sweepCtx, subagentTasks)
+	sweepCancel()
 
 	// Tear down MCP subprocesses before the index/session close so a
 	// slow shutdown can't leak servers past yottacode's lifetime. The

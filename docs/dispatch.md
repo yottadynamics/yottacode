@@ -215,15 +215,22 @@ lists every task and opens each one's full transcript.
 - At most 8 **background** workers run concurrently across the whole
   session — repeated background dispatch calls are rejected once the live
   count would exceed the cap (wait for some to finish, or `/subagents stop`).
+- Every worker reclaims its own worktree+branch the moment it finishes if
+  they hold nothing — no commits beyond the dispatch base and a clean tree —
+  whatever the outcome (completed, errored, canceled, iter-capped) and in
+  both foreground and background batches. Worktrees with commits are kept
+  for `integrate`; one still holding *uncommitted* work is kept and its
+  path reported so partial output is never discarded.
 - On a clean `integrate`, the merged task worktrees **and** their
   `worktree-dispatch-*` branches are reclaimed automatically (their work is
-  safely on the integration branch). Empty skipped branches are removed too;
-  a worktree still holding *uncommitted* work is kept and its path reported
-  so nothing is discarded. (There's no more "prune later with
+  safely on the integration branch). Empty skipped branches are removed too,
+  under the same keep rules as above. (There's no more "prune later with
   `git_worktree_prune`" step — that was a no-op against live worktrees.)
 - Background workers are bound to the session: quitting yottacode cancels
   any still-running workers (and tears down their provider streams) rather
-  than leaking them.
+  than leaking them, then sweeps the session's dispatch worktrees one last
+  time so workers the bounded drain gave up on don't leak empty worktrees
+  either. The sweep keeps committed and dirty worktrees, same as above.
 
 ## Known limitations (beta)
 
@@ -237,11 +244,15 @@ Sharp edges we know about — read these before filing a `dispatch-beta` issue:
   bypassable and `run_bash` isn't path-confined). A task that needs shell must
   run in the foreground, where you approve each call. Safe read-only shell for
   background workers returns once the token-aware classifier lands.
-- **Worktrees accumulate outside the clean-merge path.** `integrate` reclaims
-  what it merges, and empty background worktrees are reclaimed on finish — but
-  a foreground write batch, an abandoned (never-integrated) background batch, a
-  conflicted integrate, or a crashed session can leave worktrees behind. There
-  is no startup garbage-collection yet. Clean them up yourself:
+- **Kept worktrees accumulate until you integrate or discard them.** Empty
+  worktrees are reclaimed automatically (per worker on finish, any outcome,
+  foreground and background, plus the session-exit sweep), and `integrate`
+  reclaims what it merges — but everything that's *deliberately* kept can
+  still pile up: branches with commits you never integrate, worktrees holding
+  an errored worker's uncommitted output, and a conflicted integration
+  worktree awaiting resolution. A crashed session (kill -9, power loss) also
+  skips all cleanup — there is no startup garbage-collection yet. Clean
+  these up yourself:
 
   ```bash
   yottacode worktree list      # see what's there

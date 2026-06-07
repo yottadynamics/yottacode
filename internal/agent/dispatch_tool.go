@@ -171,6 +171,10 @@ type dispatchChild struct {
 	// worktree. Empty when commit presence is unambiguous (committed, or a
 	// clean no-op). Cleared once commit presence is confirmed via rev-list.
 	commitErr string
+	// reclaimed is true when the worker's empty worktree+branch were
+	// removed at the end of its run (no commits, clean tree — nothing to
+	// keep), so the result can explain why the branch no longer exists.
+	reclaimed bool
 }
 
 func (t *DispatchTool) Execute(ctx context.Context, argsJSON string) (string, error) {
@@ -372,6 +376,7 @@ func (t *DispatchTool) runDispatchChild(ctx context.Context, c *dispatchChild, b
 		Model:          childModel,
 		Branch:         c.branch,
 		Worktree:       c.worktree,
+		Base:           c.base,
 		BatchID:        batchID,
 	}
 	t.Agent.Tasks.Add(task)
@@ -385,6 +390,15 @@ func (t *DispatchTool) runDispatchChild(ctx context.Context, c *dispatchChild, b
 		if r := recover(); r != nil {
 			c.errored, c.status = true, subagents.TaskErrored
 			c.result = "error: " + panicToError("dispatch subagent "+c.cfg.Name, r).Error()
+			// Even a panicked worker must not leak an empty worktree. The
+			// helper re-derives emptiness itself (the panic may have struck
+			// before commit classification ran) and keeps anything it can't
+			// affirmatively prove is empty+clean. context.Background(), not
+			// WithoutCancel(ctx): the recover must never re-panic, and ctx
+			// itself may be the poison that got us here (e.g. nil).
+			if !c.reclaimed {
+				c.reclaimed = reclaimEmptyWorktree(context.Background(), c.repoRoot, c.worktree, c.base)
+			}
 			t.Agent.Tasks.MarkDone(c.taskID, c.status, c.result, c.errored, c.tokens)
 			// A background worker's completion is surfaced ONLY via the
 			// async callback (the normal-return branch below). Without
@@ -411,6 +425,7 @@ func (t *DispatchTool) runDispatchChild(ctx context.Context, c *dispatchChild, b
 					Committed:  c.commit != "",
 					CommitSHA:  c.commit,
 					CommitErr:  c.commitErr,
+					Reclaimed:  c.reclaimed,
 				})
 			}
 		}
@@ -514,6 +529,17 @@ func (t *DispatchTool) runDispatchChild(ctx context.Context, c *dispatchChild, b
 				c.commitErr = "ended without committing; uncommitted work left in " + c.worktree
 			}
 		}
+		// Reclaim an empty worktree — EVERY outcome (completed, errored,
+		// canceled, iter-capped) and both postures (foreground and
+		// background): a worker that produced no commits and left a clean
+		// tree has nothing worth keeping, so its worktree+branch go now
+		// instead of accumulating. Committed worktrees stay for integrate;
+		// dirty ones stay for recovery (the helper re-verifies both).
+		// Positioned BEFORE MarkDone so session teardown's bounded drain
+		// (which waits on ActiveCount) covers the cleanup as well.
+		if c.commit == "" {
+			c.reclaimed = reclaimEmptyWorktree(commitCtx, c.repoRoot, c.worktree, c.base)
+		}
 	}
 
 	t.Agent.Tasks.MarkDone(c.taskID, status, result, errored, tokens)
@@ -530,7 +556,9 @@ func (t *DispatchTool) runDispatchChild(ctx context.Context, c *dispatchChild, b
 	if background {
 		// Async completion: route through the session-level callback (the
 		// long-lived inbox), the same path AgentTool background runs use,
-		// so it surfaces after the parent turn has ended.
+		// so it surfaces after the parent turn has ended. The empty-worktree
+		// reclaim already happened above (before MarkDone), uniformly with
+		// the foreground path.
 		t.Agent.fireBackgroundDone(SubagentBackgroundDone{
 			TaskID:     c.taskID,
 			AgentType:  c.cfg.Name,
@@ -545,17 +573,8 @@ func (t *DispatchTool) runDispatchChild(ctx context.Context, c *dispatchChild, b
 			Committed:  c.commit != "",
 			CommitSHA:  c.commit,
 			CommitErr:  c.commitErr,
+			Reclaimed:  c.reclaimed,
 		})
-		// Best-effort: a background write worker that produced no commits and
-		// left a clean tree has an empty throwaway worktree+branch — reclaim
-		// it so no-op batches don't accumulate. Errored or dirty worktrees are
-		// kept; the done event surfaced their path for recovery (P1).
-		if c.isWrite && c.worktree != "" && c.repoRoot != "" && c.commit == "" && !errored {
-			cleanupCtx := context.WithoutCancel(ctx)
-			if !gitWorktreeDirty(cleanupCtx, c.worktree) {
-				_ = worktree.Remove(cleanupCtx, c.repoRoot, c.worktree, true)
-			}
-		}
 		return
 	}
 	emitToParent(SubagentDone{
@@ -721,6 +740,8 @@ func (t *DispatchTool) formatResult(goal, batchID string, children []*dispatchCh
 				fmt.Fprintf(&b, " · committed %s", shortSHA(c.commit))
 			case c.commitErr != "":
 				fmt.Fprintf(&b, " · NOT committed (%s)", c.commitErr)
+			case c.reclaimed:
+				b.WriteString(" · (no changes — empty worktree and branch reclaimed)")
 			default:
 				b.WriteString(" · (no changes to commit)")
 			}
