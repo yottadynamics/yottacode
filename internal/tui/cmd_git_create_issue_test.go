@@ -52,6 +52,7 @@ func TestGitCreateIssueDirective_TemplateHandling(t *testing.T) {
 	d := gitCreateIssueDirective("")
 	for _, want := range []string{
 		"template.content",
+		"template.choices",
 		"default skeleton",
 		"Summary",
 		"Details",
@@ -89,5 +90,20 @@ func TestSlash_GitCreateIssueAcceptsTitleArg(t *testing.T) {
 	// Should not show usage error
 	if strings.Contains(out.transcript.String(), "usage:") {
 		t.Errorf("should not show usage error for valid title arg")
+	}
+}
+
+func TestSlash_GitCreateIssueJoinsMultiWordTitle(t *testing.T) {
+	// runSlash tokenizes the input line on whitespace, so
+	// "/git-create-issue Fix crash on resize" reaches the handler as
+	// four args. Regression: the title is their joined form — an
+	// earlier version read args[0] and silently truncated the title
+	// to its first word.
+	got := issueTitleFromArgs([]string{"Fix", "crash", "on", "resize"})
+	if got != "Fix crash on resize" {
+		t.Errorf("issueTitleFromArgs = %q; want %q", got, "Fix crash on resize")
+	}
+	if issueTitleFromArgs(nil) != "" {
+		t.Errorf("nil args should produce an empty title, got %q", issueTitleFromArgs(nil))
 	}
 }

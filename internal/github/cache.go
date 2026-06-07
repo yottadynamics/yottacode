@@ -305,8 +305,18 @@ func (c *CachingClient) AddPRComment(ctx context.Context, req AddPRCommentReques
 	return c.Inner.AddPRComment(ctx, req)
 }
 
-// CreateIssue is a write — passes through. A newly opened issue
-// didn't exist before so there's no stale entry to evict.
+// CreateIssue is a write — passes through, then drops the cached
+// issue lists: the new issue belongs in any matching filter's
+// results, so every cached list is now stale. Per-issue reads stay
+// cached — an issue that existed before the create is unchanged
+// by it.
 func (c *CachingClient) CreateIssue(ctx context.Context, req CreateIssueRequest) (CreateIssueResult, error) {
-	return c.Inner.CreateIssue(ctx, req)
+	res, err := c.Inner.CreateIssue(ctx, req)
+	if err != nil {
+		return res, err
+	}
+	c.mu.Lock()
+	c.issueLists = map[string][]IssueSummary{}
+	c.mu.Unlock()
+	return res, nil
 }

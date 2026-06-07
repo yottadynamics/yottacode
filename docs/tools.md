@@ -38,7 +38,7 @@ In addition to the built-ins, **MCP tools** register dynamically when an `[[mcp_
 | [`gh_pr_add_comment`](#gh_pr_add_comment) | required | Post a top-level conversation comment on a PR; body capped, approval-gated |
 | [`gh_issue_read`](#gh_issue_read) | none | Fetch issue metadata + comments (use instead of `run_bash gh issue view --json …`) |
 | [`gh_issue_list`](#gh_issue_list) | none | List open issues matching label/assignee/milestone filters |
-| [`gh_issue_context`](#gh_issue_context) | none | Typed snapshot for opening an issue (repo detection, template, labels, assignees) |
+| [`gh_issue_context`](#gh_issue_context) | none | Typed snapshot for opening an issue (repo detection, gh availability, template discovery) |
 | [`gh_issue_create`](#gh_issue_create) | required | Validate title and open an issue via the `internal/github.Interface` adapter with typed result envelope |
 | [`git_push`](#git_push) | required | Push the current branch to origin with deterministic upstream detection; surfaces the PR URL when one exists |
 | [`git_log_file`](#git_log_file) | none | Show history for one file |
@@ -871,10 +871,18 @@ Mirrors Claude Code's `Agent` / `Task` tool surface.
 Composite read-only snapshot used to open an issue without parsing
 bash output. Returns labeled sections under `## state` and `## template`.
 The `## state` block carries deterministic fields: `owner=`, `repo=`,
-`available_labels=` (comma-separated), `available_assignees=` (comma-separated).
+`gh_available=` (whether the GitHub auth token chain resolves — the
+`/git-create-issue` directive branches to draft-only when `false`).
 The `## template` block carries `path=` and `content=` when an issue
-template is found in the repo (`.github/ISSUE_TEMPLATE/config.yml`,
-`.github/ISSUE_TEMPLATE.md`, `ISSUE_TEMPLATE.md`, `docs/issue_template.md`).
+template is found. Discovery order matches GitHub's own precedence:
+`.github/ISSUE_TEMPLATE/*.md` first (alphabetical pick; with several
+templates the names are listed on a `choices=` line and any YAML
+frontmatter is stripped from the loaded one), then the legacy
+single-file locations (`ISSUE_TEMPLATE.md` in `.github/`, the repo
+root, or `docs/`, either casing). YAML issue forms (`*.yml`) and the
+chooser `config.yml` are not fillable markdown and are skipped — a
+forms-only repo falls through to the directive's default body
+skeleton.
 
 Pair with [`gh_issue_create`](#gh_issue_create) — context tool gathers
 state, create tool validates the title and opens the issue.

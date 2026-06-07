@@ -374,28 +374,32 @@ func formatIssueSummaryLine(i github.IssueSummary) string {
 	return b.String()
 }
 
-// issueTemplateCandidates is the lookup order for a repo-local issue
-// template. Matches the conventions GitHub itself honors.
+// issueTemplateCandidates is the lookup order for a repo-local
+// single-file issue template — the legacy convention GitHub still
+// honors in `.github/`, the repo root, and `docs/`. GitHub matches
+// these case-insensitively; both casings are listed because most
+// hosts yottacode runs on have case-sensitive filesystems. The
+// modern multi-template directory (`.github/ISSUE_TEMPLATE/*.md`)
+// is globbed separately by loadIssueTemplate and takes precedence,
+// matching GitHub's own chooser.
 var issueTemplateCandidates = []string{
-	".github/ISSUE_TEMPLATE/config.yml",
 	".github/ISSUE_TEMPLATE.md",
+	".github/issue_template.md",
 	"ISSUE_TEMPLATE.md",
+	"issue_template.md",
+	"docs/ISSUE_TEMPLATE.md",
 	"docs/issue_template.md",
 }
 
 // GHIssueContextTool produces the read-only snapshot a caller needs to
-// draft an issue title + body and decide on labels/assignees. Mirrors
-// GHPRContextTool for issues.
-type GHIssueContextTool struct {
-	Cwd *CwdRef
-	GH  github.Interface
-}
+// draft an issue title + body. Mirrors GHPRContextTool for issues.
+type GHIssueContextTool struct{ Cwd *CwdRef }
 
 func (t *GHIssueContextTool) Name() string { return "gh_issue_context" }
 
 func (t *GHIssueContextTool) Description() string {
 	return "Gather the read-only context needed to open a GitHub issue: " +
-		"resolved repo (owner/repo), available labels, available assignees, " +
+		"resolved repo (owner/repo), whether GitHub auth is available, " +
 		"and the contents of a local issue template if one exists. " +
 		"Returns a structured snapshot keyed by section headers. " +
 		"Pair with gh_issue_create to open the issue."
@@ -403,7 +407,7 @@ func (t *GHIssueContextTool) Description() string {
 
 func (t *GHIssueContextTool) Schema() map[string]any {
 	return map[string]any{
-		"type": "object",
+		"type":       "object",
 		"properties": map[string]any{},
 	}
 }
@@ -415,10 +419,7 @@ func (t *GHIssueContextTool) PreviewCall(argsJSON string) string {
 }
 
 func (t *GHIssueContextTool) Execute(ctx context.Context, argsJSON string) (string, error) {
-	if t.GH == nil {
-		return "", errors.New("gh_issue_context: no GitHub adapter configured")
-	}
-	snap, err := BuildIssueContext(ctx, t.GH, t.Cwd.Get())
+	snap, err := BuildIssueContext(ctx, t.Cwd.Get())
 	if err != nil {
 		return "", fmt.Errorf("gh_issue_context: %w", err)
 	}
@@ -427,17 +428,23 @@ func (t *GHIssueContextTool) Execute(ctx context.Context, argsJSON string) (stri
 
 // IssueContext is the typed snapshot BuildIssueContext returns.
 type IssueContext struct {
-	Owner        string
-	Repo         string
-	Labels       []string // available labels in the repo
-	Assignees    []string // available assignees (collaborators)
-	IssueTemplate string
-	IssueTemplatePath string
+	Owner                string
+	Repo                 string
+	GhAvailable          bool
+	IssueTemplate        string
+	IssueTemplatePath    string   // relative to cwd
+	IssueTemplateChoices []string // all *.md names when the template dir offers several
 }
 
-func BuildIssueContext(ctx context.Context, client github.Interface, cwd string) (IssueContext, error) {
+// BuildIssueContext is the deterministic core of gh_issue_context.
+// Owner/repo come from the cwd's origin remote, GhAvailable reports
+// whether the GitHub auth token chain resolves (same signal
+// BuildPRContext exposes — the /git-create-issue directive branches
+// to draft-only on gh_available=false), and the template fields
+// carry a repo-local issue template when one exists.
+func BuildIssueContext(ctx context.Context, cwd string) (IssueContext, error) {
 	var snap IssueContext
-	
+
 	// Get owner/repo from git remote
 	owner, repo, err := github.DetectRepo(ctx, cwd)
 	if err != nil {
@@ -445,36 +452,88 @@ func BuildIssueContext(ctx context.Context, client github.Interface, cwd string)
 	}
 	snap.Owner = owner
 	snap.Repo = repo
-	
-	// Look for issue template
-	for _, candidate := range issueTemplateCandidates {
-		path := filepath.Join(cwd, candidate)
-		content, err := os.ReadFile(path)
-		if err == nil {
-			snap.IssueTemplate = string(content)
-			snap.IssueTemplatePath = candidate
-			break
+
+	snap.GhAvailable = github.IsGhAvailable(ctx)
+
+	snap.IssueTemplatePath, snap.IssueTemplate, snap.IssueTemplateChoices =
+		loadIssueTemplate(cwd)
+
+	return snap, nil
+}
+
+// loadIssueTemplate finds a repo-local issue template. The modern
+// multi-template directory (`.github/ISSUE_TEMPLATE/*.md`) takes
+// precedence over the legacy single-file locations, matching
+// GitHub's own chooser. When the directory offers several
+// templates the first alphabetically is loaded and every name is
+// returned as a choice so the caller can surface the alternatives.
+//
+// YAML issue forms (`*.yml` / `*.yaml`) and the chooser
+// `config.yml` are deliberately not template sources: forms are a
+// field-spec format, not fillable markdown, and config.yml only
+// configures GitHub's template chooser UI. A forms-only repo falls
+// through to the legacy candidates and then to no template at all
+// (the /git-create-issue directive composes its default skeleton).
+func loadIssueTemplate(cwd string) (path, content string, choices []string) {
+	// os.ReadDir returns entries sorted by filename, so the first
+	// .md hit is already the alphabetical pick.
+	entries, _ := os.ReadDir(filepath.Join(cwd, ".github", "ISSUE_TEMPLATE"))
+	var mds []string
+	for _, e := range entries {
+		if e.Type().IsRegular() && strings.HasSuffix(strings.ToLower(e.Name()), ".md") {
+			mds = append(mds, e.Name())
 		}
 	}
-	
-	return snap, nil
+	for _, name := range mds {
+		rel := filepath.Join(".github", "ISSUE_TEMPLATE", name)
+		raw, err := os.ReadFile(filepath.Join(cwd, rel))
+		if err != nil {
+			continue
+		}
+		return rel, stripTemplateFrontmatter(string(raw)), mds
+	}
+
+	for _, candidate := range issueTemplateCandidates {
+		raw, err := os.ReadFile(filepath.Join(cwd, candidate))
+		if err != nil {
+			continue
+		}
+		return candidate, stripTemplateFrontmatter(string(raw)), nil
+	}
+	return "", "", nil
+}
+
+// stripTemplateFrontmatter removes a leading YAML frontmatter block
+// (`--- ... ---`) from a directory-style issue template. GitHub
+// uses the frontmatter only to seed title/labels in its own UI —
+// just the markdown body below it pre-fills the issue text, so
+// that's what the composition step should see. Returns the input
+// unchanged when no complete frontmatter block is present (safer
+// to show extra metadata than to over-strip a body).
+func stripTemplateFrontmatter(s string) string {
+	rest, ok := strings.CutPrefix(s, "---\n")
+	if !ok {
+		return s
+	}
+	_, body, found := strings.Cut(rest, "\n---\n")
+	if !found {
+		return s
+	}
+	return strings.TrimLeft(body, "\n")
 }
 
 func renderIssueContext(s IssueContext) string {
 	var b strings.Builder
-	
-	fmt.Fprintf(&b, "## state\nowner=%s\nrepo=%s\n", s.Owner, s.Repo)
-	
-	if len(s.Labels) > 0 {
-		fmt.Fprintf(&b, "available_labels=%s\n", strings.Join(s.Labels, ","))
-	}
-	if len(s.Assignees) > 0 {
-		fmt.Fprintf(&b, "available_assignees=%s\n", strings.Join(s.Assignees, ","))
-	}
-	
+
+	fmt.Fprintf(&b, "## state\nowner=%s\nrepo=%s\ngh_available=%v\n",
+		s.Owner, s.Repo, s.GhAvailable)
+
 	if s.IssueTemplate != "" {
 		b.WriteString("\n## template\n")
 		b.WriteString("path=" + s.IssueTemplatePath + "\n")
+		if len(s.IssueTemplateChoices) > 1 {
+			b.WriteString("choices=" + strings.Join(s.IssueTemplateChoices, ",") + "\n")
+		}
 		b.WriteString("content=|\n")
 		for _, line := range strings.Split(s.IssueTemplate, "\n") {
 			b.WriteString("  ")
@@ -482,14 +541,14 @@ func renderIssueContext(s IssueContext) string {
 			b.WriteString("\n")
 		}
 	}
-	
+
 	return strings.TrimRight(b.String(), "\n") + "\n"
 }
 
 // GHIssueCreateTool is the typed mutator that opens the issue. Validates
-// title and required fields in Go *before* invoking
-// github.Interface.CreateIssue; oversize titles, missing bodies, and
-// blank repos can't reach the network.
+// the title in Go *before* invoking github.Interface.CreateIssue;
+// empty, multi-line, oversize, and trailing-period titles can't
+// reach the network.
 type GHIssueCreateTool struct {
 	Cwd *CwdRef
 	GH  github.Interface
@@ -628,17 +687,31 @@ func CreateIssue(ctx context.Context, client github.Interface, req github.Create
 	return res, nil
 }
 
-func renderIssueCreateResult(res IssueCreateResult) string {
+// renderIssueCreateResult shapes the result envelope for the model.
+// Same layout as renderPRCreateResult so the two create flows are
+// directive-compatible: the model branches on the same
+// `created=false reason=<...>` discriminators in both.
+func renderIssueCreateResult(r IssueCreateResult) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "created=%v\n", res.Created)
-	if res.Created {
-		fmt.Fprintf(&b, "url=%s\nnumber=%d\n", res.URL, res.Number)
-	} else if res.ValidationErr != "" {
-		fmt.Fprintf(&b, "validation_error=%s\n", res.ValidationErr)
-	} else if res.GhUnavailable {
-		b.WriteString("gh_unavailable=true\n")
-	} else if res.GhError != "" {
-		fmt.Fprintf(&b, "gh_error=%s\n", res.GhError)
+	switch {
+	case r.ValidationErr != "":
+		fmt.Fprintf(&b, "created=false reason=validation\nerror=%s\n", r.ValidationErr)
+	case r.GhUnavailable:
+		b.WriteString("created=false reason=gh_unavailable\n")
+		b.WriteString("Hint: install gh and run `gh auth login`, or surface the drafted title + body to the user so they can paste them into GitHub manually.\n")
+	case r.GhError != "":
+		b.WriteString("created=false reason=gh_error\n")
+		b.WriteString("--- gh output ---\n")
+		b.WriteString(r.GhError)
+		if !strings.HasSuffix(r.GhError, "\n") {
+			b.WriteString("\n")
+		}
+		b.WriteString("--- end gh output ---\n")
+		b.WriteString("Do NOT auto-retry, auto-edit, or auto-assign. Surface the error and stop.\n")
+	case r.Created:
+		fmt.Fprintf(&b, "created=true url=%s number=%d\n", r.URL, r.Number)
+	default:
+		b.WriteString("created=false reason=unknown\n")
 	}
-	return strings.TrimRight(b.String(), "\n") + "\n"
+	return b.String()
 }

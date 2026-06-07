@@ -3,6 +3,8 @@ package agent
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -290,4 +292,356 @@ func sliceEqual(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+// --- /git-create-issue: BuildIssueContext + CreateIssue -------------
+
+func TestBuildIssueContext_LoadsIssueTemplate(t *testing.T) {
+	tmp := gitInit(t)
+	writeFile(t, tmp, "f.txt", "v1\n")
+	gitCommit(t, tmp, "base")
+	gitRun(t, tmp, "remote", "add", "origin", "git@github.com:octo/widgets.git")
+	if err := os.MkdirAll(filepath.Join(tmp, ".github"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	template := "## Summary\n\n## Checklist\n"
+	if err := os.WriteFile(filepath.Join(tmp, ".github", "ISSUE_TEMPLATE.md"), []byte(template), 0o644); err != nil {
+		t.Fatalf("write template: %v", err)
+	}
+
+	snap, err := BuildIssueContext(context.Background(), tmp)
+	if err != nil {
+		t.Fatalf("BuildIssueContext: %v", err)
+	}
+	if snap.Owner != "octo" || snap.Repo != "widgets" {
+		t.Errorf("owner/repo = %q/%q; want octo/widgets", snap.Owner, snap.Repo)
+	}
+	if snap.IssueTemplatePath != ".github/ISSUE_TEMPLATE.md" {
+		t.Errorf("template path = %q", snap.IssueTemplatePath)
+	}
+	if !strings.Contains(snap.IssueTemplate, "## Checklist") {
+		t.Errorf("expected template body in snapshot: %q", snap.IssueTemplate)
+	}
+	// GhAvailable is intentionally not asserted — it reflects the
+	// host's token chain, which varies across dev machines and CI.
+}
+
+func TestBuildIssueContext_NoTemplate(t *testing.T) {
+	tmp := gitInit(t)
+	writeFile(t, tmp, "f.txt", "v1\n")
+	gitCommit(t, tmp, "base")
+	gitRun(t, tmp, "remote", "add", "origin", "git@github.com:octo/widgets.git")
+
+	snap, err := BuildIssueContext(context.Background(), tmp)
+	if err != nil {
+		t.Fatalf("BuildIssueContext: %v", err)
+	}
+	if snap.IssueTemplate != "" || snap.IssueTemplatePath != "" {
+		t.Errorf("expected empty template fields: %+v", snap)
+	}
+}
+
+func TestBuildIssueContext_NoOriginErrors(t *testing.T) {
+	// Unlike BuildPRContext (which degrades informationally), issue
+	// context is meaningless without owner/repo — a missing origin
+	// remote is a hard error the tool surfaces directly.
+	tmp := gitInit(t)
+	writeFile(t, tmp, "f.txt", "v1\n")
+	gitCommit(t, tmp, "base")
+
+	if _, err := BuildIssueContext(context.Background(), tmp); err == nil {
+		t.Errorf("expected error with no origin remote")
+	}
+}
+
+func TestRenderIssueContext_StateAndTemplate(t *testing.T) {
+	out := renderIssueContext(IssueContext{
+		Owner: "octo", Repo: "widgets", GhAvailable: false,
+		IssueTemplate: "## Summary\nbody", IssueTemplatePath: ".github/ISSUE_TEMPLATE/bug_report.md",
+		IssueTemplateChoices: []string{"bug_report.md", "feature_request.md"},
+	})
+	for _, want := range []string{
+		"## state",
+		"owner=octo",
+		"repo=widgets",
+		"gh_available=false", // the flag the directive's draft-only branch reads
+		"## template",
+		"path=.github/ISSUE_TEMPLATE/bug_report.md",
+		"choices=bug_report.md,feature_request.md",
+		"  ## Summary",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("render missing %q\nfull:\n%s", want, out)
+		}
+	}
+}
+
+func TestRenderIssueContext_SingleTemplateNoChoicesLine(t *testing.T) {
+	out := renderIssueContext(IssueContext{
+		Owner: "octo", Repo: "widgets",
+		IssueTemplate: "body", IssueTemplatePath: "ISSUE_TEMPLATE.md",
+		IssueTemplateChoices: []string{"ISSUE_TEMPLATE.md"},
+	})
+	if strings.Contains(out, "choices=") {
+		t.Errorf("choices= must only render when there are alternatives:\n%s", out)
+	}
+}
+
+func TestLoadIssueTemplate_PrefersTemplateDirOverLegacy(t *testing.T) {
+	tmp := t.TempDir()
+	dir := filepath.Join(tmp, ".github", "ISSUE_TEMPLATE")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	writeFile(t, dir, "bug_report.md", "## Bug body\n")
+	writeFile(t, filepath.Join(tmp, ".github"), "ISSUE_TEMPLATE.md", "## Legacy body\n")
+
+	path, content, _ := loadIssueTemplate(tmp)
+	if path != filepath.Join(".github", "ISSUE_TEMPLATE", "bug_report.md") {
+		t.Errorf("path = %q; want the template-dir file", path)
+	}
+	if !strings.Contains(content, "Bug body") {
+		t.Errorf("content = %q; want the template-dir body", content)
+	}
+}
+
+func TestLoadIssueTemplate_AlphabeticalPickListsChoices(t *testing.T) {
+	tmp := t.TempDir()
+	dir := filepath.Join(tmp, ".github", "ISSUE_TEMPLATE")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	writeFile(t, dir, "feature_request.md", "## Feature\n")
+	writeFile(t, dir, "bug_report.md", "## Bug\n")
+
+	path, _, choices := loadIssueTemplate(tmp)
+	if path != filepath.Join(".github", "ISSUE_TEMPLATE", "bug_report.md") {
+		t.Errorf("path = %q; want alphabetical first (bug_report.md)", path)
+	}
+	if !sliceEqual(choices, []string{"bug_report.md", "feature_request.md"}) {
+		t.Errorf("choices = %v", choices)
+	}
+}
+
+func TestLoadIssueTemplate_SkipsConfigAndForms(t *testing.T) {
+	// Regression: yottacode's own .github/ISSUE_TEMPLATE/ holds
+	// config.yml (chooser config) and *.yml issue forms — none of
+	// which are fillable markdown. An earlier candidate list grabbed
+	// config.yml as the "template" and the directive told the model
+	// to fill chooser YAML as the issue body. A forms-only layout
+	// must yield no template (→ the directive's default skeleton).
+	tmp := t.TempDir()
+	dir := filepath.Join(tmp, ".github", "ISSUE_TEMPLATE")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	writeFile(t, dir, "config.yml", "blank_issues_enabled: false\n")
+	writeFile(t, dir, "bug_report.yml", "name: Bug report\nbody: []\n")
+	writeFile(t, dir, "feature_request.yml", "name: Feature\nbody: []\n")
+
+	path, content, choices := loadIssueTemplate(tmp)
+	if path != "" || content != "" || choices != nil {
+		t.Errorf("forms-only layout must yield no template; got path=%q content=%q choices=%v",
+			path, content, choices)
+	}
+}
+
+func TestLoadIssueTemplate_LowercaseLegacyPath(t *testing.T) {
+	// Regression: GitHub matches legacy template filenames
+	// case-insensitively; on case-sensitive filesystems the lookup
+	// must try both casings.
+	tmp := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(tmp, ".github"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	writeFile(t, filepath.Join(tmp, ".github"), "issue_template.md", "## Lowercase body\n")
+
+	path, content, _ := loadIssueTemplate(tmp)
+	if path != ".github/issue_template.md" {
+		t.Errorf("path = %q; want .github/issue_template.md", path)
+	}
+	if !strings.Contains(content, "Lowercase body") {
+		t.Errorf("content = %q", content)
+	}
+}
+
+func TestStripTemplateFrontmatter(t *testing.T) {
+	cases := []struct {
+		name, in, want string
+	}{
+		{"strips block",
+			"---\nname: Bug report\nlabels: [bug]\n---\n\n## Describe the bug\n",
+			"## Describe the bug\n"},
+		{"no frontmatter untouched",
+			"## Describe the bug\n",
+			"## Describe the bug\n"},
+		{"unterminated block untouched",
+			"---\nname: Bug report\n",
+			"---\nname: Bug report\n"},
+		{"horizontal rule mid-body untouched",
+			"intro\n---\nrest\n",
+			"intro\n---\nrest\n"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := stripTemplateFrontmatter(tc.in); got != tc.want {
+				t.Errorf("got %q; want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestCreateIssue_ValidationFailsBeforeNetwork(t *testing.T) {
+	gh := &fakeGH{}
+	res, err := CreateIssue(context.Background(), gh, github.CreateIssueRequest{Title: "fix."})
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	if res.Created {
+		t.Errorf("must not be created on validation failure: %+v", res)
+	}
+	if res.ValidationErr == "" {
+		t.Errorf("expected validation error")
+	}
+	// Critical: the client was NEVER dialed. Validation failure must
+	// not produce a network call.
+	if gh.createIssueCalls != 0 {
+		t.Errorf("expected 0 client calls on validation fail; got %d", gh.createIssueCalls)
+	}
+}
+
+func TestCreateIssue_HappyPath(t *testing.T) {
+	gh := &fakeGH{createIssueRes: github.CreateIssueResult{URL: "https://github.com/o/r/issues/7", Number: 7}}
+	res, err := CreateIssue(context.Background(), gh, github.CreateIssueRequest{
+		Title: "add caching", Body: "details",
+		Labels: []string{"bug"}, Assignees: []string{"octocat"},
+	})
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	if !res.Created {
+		t.Errorf("expected Created=true: %+v", res)
+	}
+	if res.URL != "https://github.com/o/r/issues/7" || res.Number != 7 {
+		t.Errorf("URL/Number = %q/%d", res.URL, res.Number)
+	}
+	// Request fields must reach the adapter unmodified.
+	req := gh.createIssueReq
+	if req.Title != "add caching" || req.Body != "details" ||
+		!sliceEqual(req.Labels, []string{"bug"}) ||
+		!sliceEqual(req.Assignees, []string{"octocat"}) {
+		t.Errorf("request not propagated: %+v", req)
+	}
+}
+
+func TestCreateIssue_GhUnavailableSurfaced(t *testing.T) {
+	gh := &fakeGH{createIssueErr: github.ErrGhUnavailable}
+	res, err := CreateIssue(context.Background(), gh, github.CreateIssueRequest{Title: "add caching"})
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	if !res.GhUnavailable {
+		t.Errorf("expected GhUnavailable=true: %+v", res)
+	}
+	if res.Created {
+		t.Errorf("must not be Created when gh unavailable: %+v", res)
+	}
+}
+
+func TestCreateIssue_GenericGhErrorSurfaced(t *testing.T) {
+	gh := &fakeGH{createIssueErr: errors.New("rate limited")}
+	res, err := CreateIssue(context.Background(), gh, github.CreateIssueRequest{Title: "add caching"})
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	if !strings.Contains(res.GhError, "rate limited") {
+		t.Errorf("GhError should carry the message; got %q", res.GhError)
+	}
+	if res.Created || res.GhUnavailable {
+		t.Errorf("generic error must not flip other flags: %+v", res)
+	}
+}
+
+func TestRenderIssueCreateResult_Envelopes(t *testing.T) {
+	// The directive branches on these exact discriminators; they
+	// must stay in lockstep with renderPRCreateResult's shape.
+	cases := []struct {
+		name string
+		res  IssueCreateResult
+		want []string
+	}{
+		{"created", IssueCreateResult{Created: true, URL: "https://github.com/o/r/issues/7", Number: 7},
+			[]string{"created=true url=https://github.com/o/r/issues/7 number=7"}},
+		{"validation", IssueCreateResult{ValidationErr: "title is empty"},
+			[]string{"created=false reason=validation", "error=title is empty"}},
+		{"gh_unavailable", IssueCreateResult{GhUnavailable: true},
+			[]string{"created=false reason=gh_unavailable"}},
+		{"gh_error", IssueCreateResult{GhError: "api: 502"},
+			[]string{"created=false reason=gh_error", "--- gh output ---", "api: 502"}},
+		{"unknown", IssueCreateResult{},
+			[]string{"created=false reason=unknown"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			out := renderIssueCreateResult(tc.res)
+			for _, want := range tc.want {
+				if !strings.Contains(out, want) {
+					t.Errorf("envelope missing %q\nfull:\n%s", want, out)
+				}
+			}
+		})
+	}
+}
+
+func TestGHIssueCreateTool_RoundsThroughTool(t *testing.T) {
+	gh := &fakeGH{createIssueRes: github.CreateIssueResult{URL: "https://github.com/o/r/issues/3", Number: 3}}
+	tool := &GHIssueCreateTool{Cwd: NewCwdRef(t.TempDir()), GH: gh}
+	out, err := tool.Execute(context.Background(),
+		`{"title":"add caching","body":"why","labels":["bug"],"assignees":["octocat"]}`)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	for _, want := range []string{"created=true", "url=https://github.com/o/r/issues/3", "number=3"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output missing %q\nfull:\n%s", want, out)
+		}
+	}
+	if gh.createIssueReq.Title != "add caching" || !sliceEqual(gh.createIssueReq.Labels, []string{"bug"}) {
+		t.Errorf("args not propagated to request: %+v", gh.createIssueReq)
+	}
+}
+
+func TestGHIssueCreateTool_RequiresApproval(t *testing.T) {
+	tool := &GHIssueCreateTool{}
+	if !tool.RequiresApproval("{}") {
+		t.Errorf("gh_issue_create must always require approval")
+	}
+}
+
+func TestGHIssueCreateTool_PreviewCall(t *testing.T) {
+	tool := &GHIssueCreateTool{}
+	got := tool.PreviewCall(`{"title":"add caching","labels":["bug","ui"]}`)
+	if !strings.Contains(got, `title="add caching"`) || !strings.Contains(got, "labels=bug+ui") {
+		t.Errorf("preview = %q", got)
+	}
+}
+
+func TestGHIssueContextTool_RoundsThroughTool(t *testing.T) {
+	tmp := gitInit(t)
+	writeFile(t, tmp, "f.txt", "v1\n")
+	gitCommit(t, tmp, "base")
+	gitRun(t, tmp, "remote", "add", "origin", "git@github.com:octo/widgets.git")
+
+	tool := &GHIssueContextTool{Cwd: NewCwdRef(tmp)}
+	out, err := tool.Execute(context.Background(), "{}")
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	// gh_available's value depends on the host's token chain, so
+	// assert only that the field is present.
+	for _, want := range []string{"## state", "owner=octo", "repo=widgets", "gh_available="} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output missing %q\nfull:\n%s", want, out)
+		}
+	}
 }

@@ -17,9 +17,8 @@ import (
 // Same shape as cmdGitCreatePR: the slash handler is a thin wrapper
 // that composes a narrow directive naming the two composite tools
 // (gh_issue_context + gh_issue_create) and submits via startTurn. The
-// reliability work — template detection, label/assignee availability,
-// gh-unavailable fall-through, title validation — lives in Go inside
-// those tools, not in the prompt.
+// reliability work — template detection, gh-unavailable fall-through,
+// title validation — lives in Go inside those tools, not in the prompt.
 //
 // One optional arg: `/git-create-issue <title>` pins the issue title.
 // With no arg, the workflow starts with context gathering and lets the
@@ -29,10 +28,7 @@ func cmdGitCreateIssue(m Model, args []string) (Model, tea.Cmd) {
 		m.appendLine(styleError.Render("[git-create-issue] a turn is already running — wait for it to finish or press Esc to cancel"))
 		return m, nil
 	}
-	title := ""
-	if len(args) > 0 {
-		title = strings.TrimSpace(args[0])
-	}
+	title := issueTitleFromArgs(args)
 	display := "/git-create-issue"
 	if title != "" {
 		display += " " + title
@@ -40,6 +36,14 @@ func cmdGitCreateIssue(m Model, args []string) (Model, tea.Cmd) {
 	prompt := gitCreateIssueDirective(title)
 	out, cmd := m.startTurnWithDisplay(prompt, display)
 	return out.(Model), cmd
+}
+
+// issueTitleFromArgs rejoins the whitespace-tokenized slash args into
+// the issue title. runSlash splits the input line on whitespace, so
+// "/git-create-issue Fix crash on resize" arrives as four fields —
+// the title is their space-joined form, not args[0].
+func issueTitleFromArgs(args []string) string {
+	return strings.TrimSpace(strings.Join(args, " "))
 }
 
 // gitCreateIssueDirective is the prompt the /git-create-issue handler
@@ -72,7 +76,9 @@ Step 3 — compose a title and body using the snapshot:
 - Title: ≤72 chars, imperative mood, no trailing period. Describe
   the outcome, not the mechanics.
 - Body: if ## template.content exists, fill that template
-  preserving its section order and headers. Otherwise use this
+  preserving its section order and headers. If ## template.choices
+  lists alternatives, note them in your final summary so the user
+  can re-run with a different template. Otherwise use this
   default skeleton:
 
   ## Summary

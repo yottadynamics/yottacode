@@ -15,15 +15,15 @@ import (
 type countingInner struct {
 	mu sync.Mutex
 
-	readPRCount        int
-	readPRDiffCount    int
-	listChecksCount    int
-	updatePRCount      int
-	createPRCount      int
-	readIssueCount     int
-	listIssuesCount    int
-	addCommentCount    int
-	createIssueCount   int
+	readPRCount      int
+	readPRDiffCount  int
+	listChecksCount  int
+	updatePRCount    int
+	createPRCount    int
+	readIssueCount   int
+	listIssuesCount  int
+	addCommentCount  int
+	createIssueCount int
 
 	prRes          PRDetails
 	prErr          error
@@ -211,6 +211,29 @@ func TestCachingClient_IssueListLabelOrderIndependent(t *testing.T) {
 	})
 	if inner.listIssuesCount != 1 {
 		t.Errorf("label order should not affect caching; got %d calls", inner.listIssuesCount)
+	}
+}
+
+func TestCachingClient_CreateIssueInvalidatesIssueLists(t *testing.T) {
+	// A successful create makes every cached issue list stale — the
+	// new issue belongs in any matching filter's results. The next
+	// list call must go back to the API, not serve the cached list.
+	inner := &countingInner{issuesRes: []IssueSummary{{Number: 1}}}
+	c := NewCachingClient(inner)
+	_, _ = c.ListOpenIssues(context.Background(), ListIssuesRequest{})
+	_, _ = c.ListOpenIssues(context.Background(), ListIssuesRequest{})
+	if inner.listIssuesCount != 1 {
+		t.Fatalf("expected list cached after first call; got %d calls", inner.listIssuesCount)
+	}
+	if _, err := c.CreateIssue(context.Background(), CreateIssueRequest{Title: "t"}); err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	_, _ = c.ListOpenIssues(context.Background(), ListIssuesRequest{})
+	if inner.listIssuesCount != 2 {
+		t.Errorf("expected list re-fetched after CreateIssue; got %d calls", inner.listIssuesCount)
+	}
+	if inner.createIssueCount != 1 {
+		t.Errorf("expected exactly 1 CreateIssue call; got %d", inner.createIssueCount)
 	}
 }
 
