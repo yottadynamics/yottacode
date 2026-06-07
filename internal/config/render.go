@@ -198,16 +198,21 @@ func Save(cfg Config, path string) error {
 	return os.Rename(tmp, path)
 }
 
-// encodeTunables renders only the [context] and [retrieval] sections
-// via the BurntSushi encoder. We marshal a trimmed struct so the
-// encoder doesn't try to emit [active], [[providers]], or [router].
+// encodeTunables renders only the [context], [retrieval], and [memory]
+// sections via the BurntSushi encoder. We marshal a trimmed struct so
+// the encoder doesn't try to emit [active], [[providers]], or [router].
+// Memory must be included: Render rebuilds the file from the struct, so
+// any section left out of this list is silently DROPPED from disk the
+// next time a picker or wizard saves the config.
 func encodeTunables(cfg Config) (string, error) {
 	var trimmed = struct {
 		Context   ContextConfig   `toml:"context"`
 		Retrieval RetrievalConfig `toml:"retrieval"`
+		Memory    MemoryConfig    `toml:"memory"`
 	}{
 		Context:   cfg.Context,
 		Retrieval: cfg.Retrieval,
+		Memory:    cfg.Memory,
 	}
 	var b strings.Builder
 	enc := toml.NewEncoder(&b)

@@ -221,7 +221,7 @@ Most state lives under `~/.yottacode/`:
   memory/<name>.md               agent-managed user-scope memories
   memory/MEMORY.md               auto-generated index of user-scope memories
   projects/<slug>/memory/        agent-managed project-scope memories (per-user)
-  config.toml                    tunables (context watermarks, retrieval, checkpoints)
+  config.toml                    tunables (context watermarks, retrieval, memory, checkpoints)
 ```
 
 ### Checkpoints retention
@@ -234,6 +234,17 @@ retention_days = 30   # set to 0 to fall back to the 30-day default; smaller val
 ```
 
 See [`tui-slash-commands.md`](tui-slash-commands.md#checkpoints---checkpoints--esc-esc) for the full feature.
+
+### Final memory turn on quit
+
+A graceful exit (`/quit` or `Ctrl+D` while idle) runs one last agent turn prompting the model to persist durable learnings via `memory_save` before the session context is gone. The turn renders in the transcript like any other; `Esc` or `Ctrl+C` skips it and completes the quit, and `Ctrl+C` as the quit gesture itself always exits immediately. Sessions with fewer than two turns started this launch quit instantly. Disable for always-instant exits:
+
+```toml
+[memory]
+final_turn_on_quit = false
+```
+
+See [`memory.md`](memory.md#proactive-saving--reinforcement-points) for the other proactive-save reinforcement points.
 
 ### Theme
 

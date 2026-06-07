@@ -32,6 +32,7 @@ import (
 type Config struct {
 	Context     ContextConfig     `toml:"context"`
 	Retrieval   RetrievalConfig   `toml:"retrieval"`
+	Memory      MemoryConfig      `toml:"memory"`
 	Router      RouterConfig      `toml:"router"`
 	Active      Active            `toml:"active"`
 	Providers   []Provider        `toml:"providers"`
@@ -195,6 +196,19 @@ type RetrievalConfig struct {
 // Empty is coerced to the default ("auto") at load time.
 var ValidStrategies = []string{"keyword", "bm25", "semantic", "auto"}
 
+// MemoryConfig governs proactive agent-managed memory behavior beyond
+// retrieval (which has its own [retrieval] section).
+type MemoryConfig struct {
+	// FinalTurnOnQuit, when true, runs one last agent turn on a
+	// graceful exit (/quit or Ctrl+D while idle) prompting the model
+	// to persist durable learnings via memory_save before the session
+	// context is gone. The turn renders in the transcript like any
+	// other and is skippable (Ctrl+C / Esc cancels it and quits).
+	// Ctrl+C as the quit gesture always exits immediately without the
+	// final turn. Default true; set false to make every exit immediate.
+	FinalTurnOnQuit bool `toml:"final_turn_on_quit"`
+}
+
 // ContextConfig governs context-window watermark behavior.
 type ContextConfig struct {
 	WarnThreshold float64 `toml:"warn_threshold"`
@@ -350,6 +364,9 @@ func Default() Config {
 			Strategy:       "auto",
 			EmbeddingModel: "nomic-embed-text",
 			SemanticWeight: 0.4,
+		},
+		Memory: MemoryConfig{
+			FinalTurnOnQuit: true,
 		},
 		Theme: ThemeConfig{
 			Name: themes.DefaultName,
@@ -927,6 +944,16 @@ strategy = "auto"
 # on exact keywords. 0.0 = pure BM25, 1.0 = pure cosine. Only applies when
 # the effective strategy is "semantic".
 # semantic_weight = 0.4
+
+[memory]
+# Run one final agent turn on a graceful exit (/quit or Ctrl+D while
+# idle) prompting the model to persist durable learnings via memory_save
+# before the session context is gone. The turn is visible in the
+# transcript and skippable (Esc or Ctrl+C cancels it and completes the
+# quit); Ctrl+C as the quit gesture itself always exits immediately.
+# Sessions with fewer than two turns started this launch skip it. Set to
+# false for instant exits.
+final_turn_on_quit = true
 
 # ---------------------------------------------------------------------
 # TUI color theme. Uncomment to pin a palette; omit the section to

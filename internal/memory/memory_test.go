@@ -116,9 +116,19 @@ func TestSystemPrompt_AppendsLabeledSections(t *testing.T) {
 }
 
 func TestSystemPrompt_NoSectionsWhenEmpty(t *testing.T) {
+	// Cold start: no memory sources on disk. No background framing may
+	// appear — but the save nudge MUST: a store that never receives its
+	// first save never bootstraps, so the cold-start prompt is exactly
+	// where proactive-save steering matters most.
 	got := SystemPrompt("just the base", Loaded{})
-	if got != "just the base" {
-		t.Errorf("got %q, want unchanged base", got)
+	if !strings.HasPrefix(got, "just the base") {
+		t.Errorf("output should start with base prompt; got %q", got)
+	}
+	if strings.Contains(got, "BACKGROUND REFERENCE") || strings.Contains(got, "End of background") {
+		t.Errorf("empty Loaded must not produce background framing; got %q", got)
+	}
+	if !strings.Contains(got, saveNudge) {
+		t.Errorf("cold-start prompt must carry the save nudge; got %q", got)
 	}
 }
 
@@ -159,8 +169,15 @@ func TestSystemPrompt_AppendsActionDirective(t *testing.T) {
 					t.Errorf("opening directive must precede section %q (got open=%d, header=%d)", header, openIdx, h)
 				}
 			}
-			if !strings.HasSuffix(strings.TrimRight(got, "\n"), "Do not narrate or describe how the agent works.") {
-				t.Errorf("closing directive must end the prompt; got tail: %q", got[max(0, len(got)-160):])
+			if !strings.Contains(got, "Do not narrate or describe how the agent works.") {
+				t.Errorf("narrate directive missing from closing; got tail: %q", got[max(0, len(got)-300):])
+			}
+			// The save nudge owns the final words of the prompt — the
+			// most-attended instruction position. Ending on pure
+			// act-on-the-request framing is the regression that taught
+			// models to treat memory_save as out of scope.
+			if !strings.HasSuffix(strings.TrimRight(got, "\n"), saveNudge) {
+				t.Errorf("save nudge must end the prompt; got tail: %q", got[max(0, len(got)-300):])
 			}
 		})
 	}

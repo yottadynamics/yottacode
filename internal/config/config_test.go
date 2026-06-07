@@ -1026,3 +1026,39 @@ func writeFile(t *testing.T, body string) string {
 	}
 	return path
 }
+
+// TestLoad_MemoryFinalTurnOnQuit locks the [memory] block schema and its
+// default-on behavior: absent section keeps the default (true), an
+// explicit false disables, and the key survives a Render round-trip —
+// encodeTunables must include [memory] or a picker/wizard save would
+// silently drop the user's opt-out from disk.
+func TestLoad_MemoryFinalTurnOnQuit(t *testing.T) {
+	if !Default().Memory.FinalTurnOnQuit {
+		t.Fatalf("final_turn_on_quit should default to true")
+	}
+
+	cfg, err := Load(writeFile(t, "[context]\nwarn_threshold = 0.5\n"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.Memory.FinalTurnOnQuit {
+		t.Errorf("absent [memory] section should keep the default (true)")
+	}
+
+	cfg, err = Load(writeFile(t, "[memory]\nfinal_turn_on_quit = false\n"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Memory.FinalTurnOnQuit {
+		t.Errorf("explicit final_turn_on_quit = false should disable")
+	}
+
+	// Render → Load round-trip preserves the opt-out.
+	cfg2, err := Load(writeFile(t, Render(cfg)))
+	if err != nil {
+		t.Fatalf("Load(Render): %v", err)
+	}
+	if cfg2.Memory.FinalTurnOnQuit {
+		t.Errorf("Render must persist [memory] — opt-out lost in round-trip:\n%s", Render(cfg))
+	}
+}

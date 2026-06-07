@@ -154,6 +154,17 @@ the project uses semantic versioning once it's past `1.0.0`.
 
 ### Fixed
 
+- **Multi-line pastes no longer corrupt the transcript echo.** Terminals
+  transmit bracketed-paste line breaks as carriage returns (CR), not
+  newlines — so a pasted list arrived `\r`-separated, slipped past the
+  `\n`-based multi-line checks, and went into the input buffer with raw
+  CRs. On submit, each CR returned the cursor to column 0 while the
+  transcript echoed the message, overprinting every pasted line onto the
+  previous one — a 31-package list rendered as the chimera
+  `skillsegopslwmponent`. Paste content is now normalized (CR / CRLF →
+  LF) at the key-event boundary before any routing, so multi-line pastes
+  take the `[Pasted text #N: …]` marker detour and round-trip with clean
+  line breaks.
 - **Tool calls from open models that string-encode arguments now work.**
   Some OpenAI-compatible models — notably Meta Llama 3.1/3.3 instruct on
   NVIDIA NIM, Ollama, vLLM — emit numeric and boolean tool arguments as

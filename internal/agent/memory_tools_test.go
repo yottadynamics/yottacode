@@ -285,7 +285,7 @@ func TestValidateMemoryType_FreeForm(t *testing.T) {
 		{"api shape", "api-shape"},
 		{"api_shape", "api-shape"},
 		{"design note", "design-note"},
-		{"a  b__c--d", "a-b-c-d"}, // runs of mixed separators collapse
+		{"a  b__c--d", "a-b-c-d"},                  // runs of mixed separators collapse
 		{"-leading-trailing-", "leading-trailing"}, // ends trimmed
 	} {
 		got, err := validateMemoryType(c.in)
@@ -399,5 +399,24 @@ func TestMemoryTools_NotParallelSafe(t *testing.T) {
 	}
 	if (&MemoryForgetTool{}).ParallelSafe("") {
 		t.Errorf("MemoryForgetTool should not be parallel-safe (rewrites index)")
+	}
+}
+
+// TestMemorySave_DescriptionIsProactive pins the proactive framing of the
+// tool description. The description is what the model reads at
+// call-decision time, and the original reactive wording ("use this when
+// the user states a durable preference") trained models to save only on
+// explicit request — the exact under-saving bug the rewrite fixed. A
+// regression back to reactive phrasing would silently kill proactive
+// memory, so the framing is gated here.
+func TestMemorySave_DescriptionIsProactive(t *testing.T) {
+	desc := (&MemorySaveTool{}).Description()
+	for _, want := range []string{"PROACTIVELY", "Don't wait"} {
+		if !strings.Contains(desc, want) {
+			t.Errorf("memory_save description lost proactive framing: missing %q in %q", want, desc)
+		}
+	}
+	if strings.Contains(desc, "when the user states") {
+		t.Errorf("memory_save description regressed to reactive framing (%q)", desc)
 	}
 }
