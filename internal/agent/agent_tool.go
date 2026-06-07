@@ -133,8 +133,9 @@ type AgentTool struct {
 
 	// ParentRegistry is the live tool set the parent session is using.
 	// We clone it for the child, dropping the Agent tool itself plus
-	// exit_plan_mode, and intersecting with the agent's `tools:`
-	// allowlist when one is configured. The clone is a single-pass
+	// the plan-mode boundary tools (enter/exit_plan_mode), and
+	// intersecting with the agent's `tools:` allowlist when one is
+	// configured. The clone is a single-pass
 	// snapshot — runtime changes to the parent registry don't
 	// propagate into in-flight children, which keeps semantics easy
 	// to reason about.
@@ -1044,15 +1045,18 @@ func backgroundWorkerDecision(toolName, argsJSON string) (Decision, string) {
 }
 
 // buildChildRegistry clones the parent registry into a new one,
-// stripping Agent (recursion guard) and exit_plan_mode (never useful in
-// a child), and applying the agent config's tools allowlist when one
-// is set. The recursion guard is unconditional — even a config that
-// names Agent in its allowlist cannot reintroduce it.
+// stripping Agent (recursion guard) and the plan-mode boundary tools
+// (children inherit the parent's plan-mode state by pointer; only the
+// top-level loop may transition it — a child flipping the shared mode
+// mid-flight would yank the parent's gates out from under it), and
+// applying the agent config's tools allowlist when one is set. The
+// recursion guard is unconditional — even a config that names Agent
+// in its allowlist cannot reintroduce it.
 func (t *AgentTool) buildChildRegistry(cfg *subagents.AgentConfig) *Registry {
 	out := NewRegistry()
 	for _, tool := range t.ParentRegistry.Tools() {
 		name := tool.Name()
-		if name == agentToolName || name == "exit_plan_mode" {
+		if name == agentToolName || isPlanBoundaryTool(name) {
 			continue
 		}
 		if !cfg.ToolAllowed(name) {

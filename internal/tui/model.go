@@ -1312,6 +1312,21 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.textInput.InsertString(m.killRing)
 				m.fitTextareaHeight()
 				return m, nil
+			case tea.KeyShiftTab:
+				// Mode cycling works mid-turn (mirrors Claude Code):
+				// the loop reads the mode atomics on every tool
+				// dispatch and rebuilds the plan addendum per
+				// iteration, so the flip applies from the agent's next
+				// tool call — flip auto on to stop babysitting a long
+				// implementation, or plan on to pull the agent back to
+				// read-only without killing the turn. This branch
+				// already excludes awaitingApproval/awaitingPathTrust,
+				// so a pending decision the loop is blocked on can't
+				// be yanked; palettes keep ownership of the keyboard.
+				if m.paletteOpen || m.filePaletteOpen {
+					return m, nil
+				}
+				return cycleAgentMode(m)
 			case tea.KeyEnter:
 				input := strings.TrimSpace(m.textInput.Value())
 				// Palette selection: resolve the highlighted entry
@@ -1534,6 +1549,36 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				return m, nil
 			}
+			// enter_plan_mode is the mirror handshake: [Y] flips the
+			// shared plan-mode state (and derives the plan file from
+			// the in-flight user message) BEFORE forwarding AllowOnce,
+			// so the tool's Execute — and every later gate decision in
+			// this turn — sees the mode genuinely on. No "always
+			// allow": a derived rule would silently auto-flip modes on
+			// every future request, defeating the confirmation.
+			if m.approvalTool == "enter_plan_mode" {
+				answered := false
+				switch msg.String() {
+				case "y", "Y", "enter":
+					enterPlanModeFromTool(&m)
+					m.decisions <- agent.AllowOnce
+					m.awaitingApproval = false
+					answered = true
+				case "n", "N", "esc":
+					// The loop returns EnterPlanModeRefusalMessage so
+					// the model continues in the current mode instead
+					// of re-requesting.
+					m.appendLine(stylePlanBannerLabel.Render(PlanModeIcon+" plan mode declined") +
+						" " + stylePlanBannerHint.Render("— continuing in the current mode"))
+					m.decisions <- agent.Deny
+					m.awaitingApproval = false
+					answered = true
+				}
+				if answered {
+					return m, waitForEvent(m.eventsCh, m.turnErrCh)
+				}
+				return m, nil
+			}
 			answered := false
 			switch msg.String() {
 			case "y", "Y":
@@ -1700,13 +1745,18 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case tea.KeyShiftTab:
 			// Cycle through normal → auto → plan → normal. Mirrors
-			// Claude Code's Shift+Tab. Suppressed while a palette
-			// overlay is open (the slash/file palette branch above
-			// intercepts navigation keys but lets unknown keys fall
-			// through to here) or mid-turn (flipping while the
-			// in-flight iteration's gate decisions are in motion
-			// would be confusing).
-			if m.turnActive || m.paletteOpen || m.filePaletteOpen {
+			// Claude Code's Shift+Tab, INCLUDING mid-turn: the loop
+			// reads the mode atomics on every tool dispatch and
+			// rebuilds the plan addendum per iteration, so a flip
+			// while the agent is working takes effect on its very
+			// next tool call — flip auto on to stop babysitting a
+			// long implementation, or flip plan on to pull the agent
+			// back to read-only without killing the turn. Suppressed
+			// while a palette overlay is open (those own the
+			// keyboard); a pending approval/path-trust modal consumes
+			// keys in its own branch above, so a decision the loop is
+			// blocked on can never be yanked out from under it.
+			if m.paletteOpen || m.filePaletteOpen {
 				return m, nil
 			}
 			return cycleAgentMode(m)
@@ -2196,14 +2246,18 @@ func (m Model) View() string {
 		// awaitingPathTrust / awaitingApproval is ever true.
 		parts = append(parts, renderPathTrustModal(m))
 	} else if m.awaitingApproval {
-		// exit_plan_mode gets its own decision card — just the four
-		// hotkeys in a bordered box. The plan body itself is emitted
-		// to scrollback above this box when ApprovalNeeded fires (see
-		// handleAgentEvent), so the body persists naturally after the
-		// modal dismisses and isn't cramped inside the box.
-		if m.approvalTool == "exit_plan_mode" {
+		// The plan-mode boundary tools get their own decision cards —
+		// just the hotkeys in a bordered box, never the generic
+		// always-allow modal. For exit, the plan body itself is
+		// emitted to scrollback above the box when ApprovalNeeded
+		// fires (see handleAgentEvent), so the body persists naturally
+		// after the modal dismisses and isn't cramped inside the box.
+		switch m.approvalTool {
+		case "exit_plan_mode":
 			parts = append(parts, renderPlanApprovalCard(m.width))
-		} else {
+		case "enter_plan_mode":
+			parts = append(parts, renderEnterPlanApprovalCard(m.width))
+		default:
 			parts = append(parts, renderApprovalModal(m))
 		}
 	} else {

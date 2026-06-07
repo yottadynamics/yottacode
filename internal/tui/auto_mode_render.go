@@ -11,11 +11,20 @@ import (
 // PlanModeIcon (◈) so users glance and know which mode is on.
 const AutoModeIcon = "▸"
 
+// autoCycleKeysHint is the "how do I leave" copy on the persistent
+// auto banner. Shift+Tab from auto moves onward to plan (not straight
+// to normal), so the honest verb is "cycles", matching the entry log's
+// "Shift+Tab cycles onward: auto → plan → normal".
+const autoCycleKeysHint = "Shift+Tab cycles"
+
 // renderAutoModeBanner is the one-line indicator above the cmdline
 // while auto mode is active. The optional yolo suffix means the
 // permissions-bypass overlay is also on; in that case we drop the
 // activity detail (bypass overrides it — bash auto-allows too) so the
-// banner doesn't say something misleading.
+// banner doesn't say something misleading. The cycle-keys hint rides
+// along whenever there's room (mirrors Claude Code's persistent
+// "shift+tab to cycle" indicator) and is the first segment dropped on
+// narrow terminals.
 //
 // Activity wording reflects the safe-bash carve-out: read-only shell
 // commands (cd, ls, cat, grep, find, …) auto-allow alongside edits;
@@ -23,27 +32,33 @@ const AutoModeIcon = "▸"
 // "bash & commits prompt" wording was a footgun once that bypass
 // landed — it implied every shell call interrupted the flow.
 //
-//	▸ auto mode · edits + read-only bash auto-allow; commits prompt   (no bypass)
-//	▸ auto mode · ⚠ bypass                                            (bypass on)
+//	▸ auto mode · edits + read-only bash auto-allow; commits prompt · Shift+Tab cycles   (no bypass)
+//	▸ auto mode · ⚠ bypass · Shift+Tab cycles                                            (bypass on)
 func renderAutoModeBanner(yoloOn bool, width int) string {
 	if width <= 0 {
 		width = 80
 	}
 	label := styleAutoBannerLabel.Render(AutoModeIcon + " auto mode")
 	dot := styleAutoBannerSep.Render(" · ")
+	hint := dot + styleAutoBannerHint.Render(autoCycleKeysHint)
 
 	if yoloOn {
-		out := label + dot + renderYoloTag()
-		if ansi.StringWidth(out) <= width {
-			return out
+		core := label + dot + renderYoloTag()
+		if ansi.StringWidth(core+hint) <= width {
+			return core + hint
+		}
+		if ansi.StringWidth(core) <= width {
+			return core
 		}
 		return label
 	}
 
-	mid := styleAutoBannerActivity.Render("edits + read-only bash auto-allow; commits prompt")
-	out := label + dot + mid
-	if ansi.StringWidth(out) <= width {
-		return out
+	core := label + dot + styleAutoBannerActivity.Render("edits + read-only bash auto-allow; commits prompt")
+	if ansi.StringWidth(core+hint) <= width {
+		return core + hint
+	}
+	if ansi.StringWidth(core) <= width {
+		return core
 	}
 	tight := label + dot + styleAutoBannerActivity.Render("edits auto-allow")
 	if ansi.StringWidth(tight) <= width {

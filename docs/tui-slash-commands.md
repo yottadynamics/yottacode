@@ -390,9 +390,11 @@ A skill may ship `scripts/`, `references/`, `assets/` subdirectories. The body r
 - `todo_write` works normally.
 - `write_file` / `edit_file` / `apply_diff` are blocked except when writing to the resolved plan file — writes to the plan file auto-allow without a prompt (it's the only legitimate mutation surface during planning).
 - Every other mutating tool (`run_bash`, `git_commit`, `git_stage_files`, …) returns a "tool unavailable in plan mode" message to the model.
-- A one-line banner immediately above the cmdline shows the mode, the plan file name (or "pending" before the file exists), and the current agent activity during a turn.
+- A one-line banner immediately above the cmdline shows the mode, the plan file name (or "pending" before the file exists), and the exit keys (`exit with /plan or Shift+Tab`) — so how to leave the mode stays visible after the entry card scrolls away. The same keys are echoed on the entry card's footer and (as re-entry keys) on the exit log line.
 
 `/plan` and `Shift+Tab` take no arguments — the plan slug is derived from the first user message of the plan-mode session. The banner shows "ready — your next message names the plan" until that message arrives. You can also launch directly into plan mode with `yottacode --permission-mode plan`.
+
+**Model-requested entry.** Asking the agent to plan in natural language ("make a plan first", "drop into plan mode") makes it call the `enter_plan_mode` tool, which renders a `[Y]/[N]` confirmation card. `[Y]` runs the same entry sequence as `/plan` and derives the plan file from the message you just sent — the agent can start writing the plan in the same turn. `[N]` declines; the agent continues in the current mode. This entry request never auto-approves — not in auto mode, not under `--yolo` — and there is no model-side equivalent for auto mode: the agent cannot escalate its own permissions, only ask to restrict them.
 
 If the model surfaces material ambiguity during investigation — questions whose answers would change the plan's scope, approach, or target files — it is instructed to ask in its reply and end the turn *without* calling `exit_plan_mode`, so you can answer in your next message. The approval modal is hotkey-only ([A]/[M]/[L]/[K]); putting dangling questions next to it would leave you with no way to type answers. Trivia that doesn't change the plan's shape can still live in the plan's "Open questions" section.
 
@@ -424,9 +426,11 @@ Auto mode and plan mode are mutually exclusive — entering one exits the other.
 Shift+Tab cycle:  normal → auto → plan → normal
 ```
 
+The chord works mid-turn too: the loop reads the mode flags on every tool dispatch, so the new mode applies from the agent's next tool call. Flip auto on partway through a long implementation to stop approving every edit, or flip plan on to pull the agent back to read-only — all without cancelling the turn. The chord is consumed by an open palette, and while an approval modal is pending its own hotkeys own the keyboard.
+
 The plan-approval card's `[A]` auto-approval hotkey is a shortcut: it approves the plan AND enters auto mode in one keystroke, so the agent can implement the approved plan with minimal friction. (Pick `[M]` instead if you want plan mode to exit but keep per-tool prompts.)
 
-Auto mode persists across turns until you toggle it off. The banner above the cmdline (`▸ auto mode · edits + read-only bash auto-allow; commits prompt`) is always visible while active so the state isn't easy to forget.
+Auto mode persists across turns until you toggle it off. The banner above the cmdline (`▸ auto mode · edits + read-only bash auto-allow; commits prompt · Shift+Tab cycles`) is always visible while active so the state isn't easy to forget — the trailing `Shift+Tab cycles` hint is how you leave (it drops first on narrow terminals). The entry log shows the full cycle (`auto → plan → normal`); the exit log shows the re-enter key.
 
 The default per-turn iteration cap is 50; auto mode raises the effective cap to 200 (4×). If you still hit the cap on long implementations, run `/max-iterations 500` (sanity ceiling) or relaunch with `--yolo` (raises the cap to `max-iterations × 20`, at least 1000; see [Permissions bypass](#permissions-bypass)).
 

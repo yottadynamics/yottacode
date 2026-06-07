@@ -5,7 +5,7 @@ import (
 )
 
 // toggleAutoMode is the entry/exit helper used by the Shift+Tab cycle,
-// the plan-card [Y] hotkey, and the --permission-mode auto startup
+// the plan-card [A] hotkey, and the --permission-mode auto startup
 // flag. Mirroring Claude Code, there is no /auto slash command —
 // users enter auto only via the keybinding or the startup flag.
 // Idempotent at the boundaries. Entering auto turns plan off
@@ -29,7 +29,7 @@ func toggleAutoMode(m Model) (Model, tea.Cmd) {
 	state.Active.Store(true)
 	m.appendLine(styleAutoBannerLabel.Render(AutoModeIcon+" auto mode active") +
 		" " + styleAutoBannerHint.Render("— edits auto-allow; run_bash, git_commit, git_checkpoint, rollback still prompt"))
-	m.appendLine(styleAutoBannerHint.Render("  exit with /auto or Shift+Tab"))
+	m.appendLine(styleAutoBannerHint.Render("  Shift+Tab cycles onward: auto → plan → normal"))
 	// Visual breather between the entry log and the live banner.
 	m.appendLine("")
 	return m, nil
@@ -47,13 +47,14 @@ func exitAutoMode(m *Model) {
 	if !wasActive {
 		return
 	}
-	m.appendLine(styleAutoBannerLabel.Render(AutoModeIcon + " auto mode exited"))
+	m.appendLine(styleAutoBannerLabel.Render(AutoModeIcon+" auto mode exited") +
+		" " + styleAutoBannerHint.Render("— re-enter with Shift+Tab"))
 }
 
 // cycleAgentMode cycles through normal → auto → plan → normal. The
 // three states the Shift+Tab chord traverses. Each transition reuses
 // the existing toggle helpers so the entry/exit log lines stay
-// consistent with /auto and /plan invocations.
+// consistent with /plan invocations and the startup flags.
 func cycleAgentMode(m Model) (Model, tea.Cmd) {
 	autoOn := m.cfg.AutoMode.IsActive()
 	planOn := m.cfg.PlanMode.IsActive()

@@ -82,7 +82,7 @@ func TestCmdPlan_EntersAndPrintsBanner(t *testing.T) {
 // If any of these disappear we've regressed to the older two-line
 // shape — the test pins all three.
 func TestRenderPlanModeEntryCard_HasCardShape(t *testing.T) {
-	out := stripANSI(renderPlanModeEntryCard())
+	out := stripANSI(renderPlanModeEntryCard(planEntryHintUserToggled))
 	for _, glyph := range []string{"╭ ", "│ ", "╰ "} {
 		if !strings.Contains(out, glyph) {
 			t.Errorf("entry card missing gutter glyph %q; got:\n%s", glyph, out)
@@ -158,6 +158,11 @@ func TestCmdPlan_ToggleExits(t *testing.T) {
 	// needs to match against the abbreviated form (~/...).
 	if !strings.Contains(out, filepath.Base(first)) {
 		t.Errorf("exit log should mention the previous plan file basename %q; got %q", filepath.Base(first), out)
+	}
+	// Exit log answers "how do I get back" — the enter/exit keys are
+	// shown on both ends of the mode's lifetime.
+	if !strings.Contains(out, "re-enter with /plan or Shift+Tab") {
+		t.Errorf("exit log should carry the re-enter keys; got %q", out)
 	}
 }
 
@@ -275,6 +280,46 @@ func TestShiftTab_BlockedWhilePalettesOpen(t *testing.T) {
 	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyShiftTab})
 	if planMode.IsActive() {
 		t.Errorf("Shift+Tab should not toggle plan mode while the slash palette is open")
+	}
+}
+
+// Shift+Tab works MID-TURN (mirrors Claude Code): the loop reads the
+// mode atomics on every tool dispatch, so flipping auto on partway
+// through a long implementation (or plan on, to pull the agent back to
+// read-only) applies from the agent's next tool call without killing
+// the turn. This used to be suppressed by a turnActive guard.
+func TestShiftTab_CyclesMidTurn(t *testing.T) {
+	m, planMode := newPlanModeTestModel(t)
+	autoMode := m.cfg.AutoMode
+	m.turnActive = true
+
+	// normal → auto, while the turn is running.
+	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyShiftTab})
+	if !autoMode.IsActive() || planMode.IsActive() {
+		t.Errorf("mid-turn step 1 (normal → auto): autoMode=%v planMode=%v", autoMode.IsActive(), planMode.IsActive())
+	}
+	// auto → plan.
+	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyShiftTab})
+	if autoMode.IsActive() || !planMode.IsActive() {
+		t.Errorf("mid-turn step 2 (auto → plan): autoMode=%v planMode=%v", autoMode.IsActive(), planMode.IsActive())
+	}
+	// plan → normal.
+	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyShiftTab})
+	if autoMode.IsActive() || planMode.IsActive() {
+		t.Errorf("mid-turn step 3 (plan → normal): autoMode=%v planMode=%v", autoMode.IsActive(), planMode.IsActive())
+	}
+}
+
+// A pending approval modal still owns the keyboard mid-turn: Shift+Tab
+// must not flip modes out from under a decision the loop is blocked on.
+func TestShiftTab_BlockedWhileApprovalPending(t *testing.T) {
+	m, planMode := newPlanModeTestModel(t)
+	m.turnActive = true
+	m.awaitingApproval = true
+	m.approvalTool = "write_file"
+	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyShiftTab})
+	if m.cfg.AutoMode.IsActive() || planMode.IsActive() {
+		t.Errorf("Shift+Tab should not cycle modes while an approval modal is pending")
 	}
 }
 
@@ -451,8 +496,11 @@ func TestPlanModeBanner_ShowsBasenameOnceResolved(t *testing.T) {
 	if !strings.Contains(rendered, ".md") {
 		t.Errorf("banner should mention the plan file basename; got %q", rendered)
 	}
-	if strings.Contains(rendered, "exit") {
-		t.Errorf("banner should NOT include the exit hint; got %q", rendered)
+	// The exit keys ride along on the persistent banner (mirrors
+	// Claude Code's "shift+tab to cycle" indicator) — mid-session this
+	// is where the user looks to remember how to leave the mode.
+	if !strings.Contains(rendered, planExitKeysHint) {
+		t.Errorf("banner should carry the exit keys %q; got %q", planExitKeysHint, rendered)
 	}
 	if strings.Contains(rendered, "PLAN MODE") {
 		t.Errorf("banner label should be lowercase; got %q", rendered)
@@ -494,10 +542,49 @@ func TestPlanModeBanner_TwoStates(t *testing.T) {
 			if !strings.Contains(got, "plan mode") {
 				t.Errorf("banner missing plan-mode label; got %q", got)
 			}
-			if strings.Contains(got, "exit") {
-				t.Errorf("banner should NOT carry the exit hint; got %q", got)
+			if !strings.Contains(got, planExitKeysHint) {
+				t.Errorf("banner should carry the exit keys %q; got %q", planExitKeysHint, got)
 			}
 		})
+	}
+}
+
+// The exit-keys hint is the banner's lowest-priority segment — on a
+// narrow terminal it drops first, before the basename and the mode
+// label.
+func TestPlanModeBanner_DropsExitKeysWhenNarrow(t *testing.T) {
+	info := planBannerInfo{PlanFileBasename: "my-plan-abc.md"}
+	got := stripANSI(renderPlanModeBanner(info, false, 30))
+	if strings.Contains(got, planExitKeysHint) {
+		t.Errorf("narrow banner should drop the exit keys first; got %q", got)
+	}
+	if !strings.Contains(got, "plan mode") {
+		t.Errorf("narrow banner must keep the mode label; got %q", got)
+	}
+}
+
+// Auto banner carries the cycle keys whenever there's room, and drops
+// them first when narrow — same priority rule as the plan banner.
+func TestAutoModeBanner_ShowsCycleKeys(t *testing.T) {
+	wide := stripANSI(renderAutoModeBanner(false, 200))
+	if !strings.Contains(wide, autoCycleKeysHint) {
+		t.Errorf("auto banner should carry the cycle keys %q; got %q", autoCycleKeysHint, wide)
+	}
+	if !strings.Contains(wide, "auto mode") {
+		t.Errorf("auto banner missing label; got %q", wide)
+	}
+	// Bypass variant keeps the hint too — Shift+Tab still cycles modes
+	// under the overlay.
+	bypass := stripANSI(renderAutoModeBanner(true, 200))
+	if !strings.Contains(bypass, autoCycleKeysHint) {
+		t.Errorf("auto+bypass banner should carry the cycle keys; got %q", bypass)
+	}
+	narrow := stripANSI(renderAutoModeBanner(false, 40))
+	if strings.Contains(narrow, autoCycleKeysHint) {
+		t.Errorf("narrow auto banner should drop the cycle keys first; got %q", narrow)
+	}
+	if !strings.Contains(narrow, "auto mode") {
+		t.Errorf("narrow auto banner must keep the mode label; got %q", narrow)
 	}
 }
 
@@ -672,6 +759,15 @@ func TestToggleAutoMode_Toggles(t *testing.T) {
 	m, _ = toggleAutoMode(m)
 	if autoMode.IsActive() {
 		t.Errorf("second toggleAutoMode should exit auto mode")
+	}
+	// Both ends of the mode's lifetime show the keys: entry says how
+	// to move on, exit says how to get back.
+	out := stripANSI(m.transcript.String())
+	if !strings.Contains(out, "Shift+Tab cycles onward: auto → plan → normal") {
+		t.Errorf("entry log should carry the cycle keys; got %q", out)
+	}
+	if !strings.Contains(out, "auto mode exited") || !strings.Contains(out, "re-enter with Shift+Tab") {
+		t.Errorf("exit log should carry the re-enter keys; got %q", out)
 	}
 }
 
@@ -1023,3 +1119,143 @@ func TestPlansPicker_EscClosesWithoutResuming(t *testing.T) {
 
 // Avoid unused-import alarm if a future trim removes adapter usage.
 var _ = adapter.RoleSystem
+
+// --- enter_plan_mode approval card -----------------------------------------
+
+// [Y] is the full handshake: flip the shared state, derive the plan
+// file from the turn's triggering user message (unlike /plan, there IS
+// a current message to slug), apply the write-tool allowance, THEN
+// forward AllowOnce so the tool's Execute sees the mode genuinely on.
+func TestEnterPlanModeApprovalCard_YEntersAndDerivesPlanFile(t *testing.T) {
+	m, planMode := newPlanModeTestModel(t)
+	m.sess.Messages = append(m.sess.Messages, adapter.Message{
+		Role: adapter.RoleUser, Content: "Refactor the cache layer",
+	})
+	m.eventsCh = make(chan agent.Event, 4)
+	m.decisions = make(chan agent.Decision, 1)
+	m.turnErrCh = make(chan error, 1)
+	m, _ = m.handleAgentEventTea(agent.ApprovalNeeded{
+		ToolName: "enter_plan_mode",
+		Preview:  "enter_plan_mode (read-only planning until the plan is approved)",
+		ArgsJSON: `{}`,
+	})
+	if !m.awaitingApproval {
+		t.Fatalf("ApprovalNeeded for enter_plan_mode should set awaitingApproval")
+	}
+	view := stripANSI(m.View())
+	for _, want := range []string{"Enter plan mode?", "enter plan mode", "stay in current mode"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("enter card missing %q; got %q", want, view)
+		}
+	}
+	// The generic always-allow modal must not render for this tool.
+	if strings.Contains(view, "always") {
+		t.Errorf("enter card must not offer always-allow; got %q", view)
+	}
+
+	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+	select {
+	case d := <-m.decisions:
+		if d != agent.AllowOnce {
+			t.Errorf("expected AllowOnce on [Y]; got %v", d)
+		}
+	default:
+		t.Errorf("no decision sent on [Y]")
+	}
+	if !planMode.IsActive() {
+		t.Errorf("plan mode should be active after [Y]")
+	}
+	if !strings.Contains(planMode.PlanFile, "refactor-the-cache-layer") {
+		t.Errorf("plan file should derive from the turn's user message; got %q", planMode.PlanFile)
+	}
+	tool, _ := m.cfg.Registry.Get("write_file")
+	if tool.(*agent.WriteFileTool).WriteOpts.PlanModeAllowedFile != planMode.PlanFile {
+		t.Errorf("write_file allowance not applied on [Y]")
+	}
+	out := stripANSI(m.transcript.String())
+	if !strings.Contains(out, "plan mode active") {
+		t.Errorf("entry card missing from scrollback; got %q", out)
+	}
+	if !strings.Contains(out, planEntryHintModelRequested) {
+		t.Errorf("tool-path entry card should use the model-requested hint; got %q", out)
+	}
+	if strings.Contains(out, "describe what you'd like planned") {
+		t.Errorf("tool-path entry must not ask for a next message — the plan file is already resolved; got %q", out)
+	}
+}
+
+func TestEnterPlanModeApprovalCard_NDeclines(t *testing.T) {
+	m, planMode := newPlanModeTestModel(t)
+	m.eventsCh = make(chan agent.Event, 4)
+	m.decisions = make(chan agent.Decision, 1)
+	m.turnErrCh = make(chan error, 1)
+	m, _ = m.handleAgentEventTea(agent.ApprovalNeeded{
+		ToolName: "enter_plan_mode",
+		ArgsJSON: `{}`,
+	})
+	if !m.awaitingApproval {
+		t.Fatalf("test setup: ApprovalNeeded should open the modal")
+	}
+	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+	select {
+	case d := <-m.decisions:
+		if d != agent.Deny {
+			t.Errorf("expected Deny on [N]; got %v", d)
+		}
+	default:
+		t.Errorf("no decision sent on [N]")
+	}
+	if planMode.IsActive() {
+		t.Errorf("plan mode must stay off after [N]")
+	}
+	out := stripANSI(m.transcript.String())
+	if !strings.Contains(out, "plan mode declined") {
+		t.Errorf("expected decline notice in scrollback; got %q", out)
+	}
+}
+
+// Entering plan mode via the tool exits auto mode first — plan and
+// auto stay mutually exclusive on every entry path.
+func TestEnterPlanModeApprovalCard_YExitsAutoMode(t *testing.T) {
+	m, planMode := newPlanModeTestModel(t)
+	m, _ = toggleAutoMode(m)
+	if !m.cfg.AutoMode.IsActive() {
+		t.Fatalf("test setup: auto mode should be active")
+	}
+	m.sess.Messages = append(m.sess.Messages, adapter.Message{
+		Role: adapter.RoleUser, Content: "plan the migration",
+	})
+	m.eventsCh = make(chan agent.Event, 4)
+	m.decisions = make(chan agent.Decision, 1)
+	m.turnErrCh = make(chan error, 1)
+	m, _ = m.handleAgentEventTea(agent.ApprovalNeeded{ToolName: "enter_plan_mode", ArgsJSON: `{}`})
+	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	if m.cfg.AutoMode.IsActive() {
+		t.Errorf("auto mode should exit when plan mode enters via the tool")
+	}
+	if !planMode.IsActive() {
+		t.Errorf("plan mode should be active after Enter (defaults to [Y])")
+	}
+}
+
+// Idempotent on the already-active edge (stale-schema call approved
+// after a mid-turn Shift+Tab entry): keep the existing plan file, no
+// duplicate entry card.
+func TestEnterPlanModeFromTool_IdempotentWhenAlreadyActive(t *testing.T) {
+	m, planMode := newPlanModeTestModel(t)
+	m, _ = cmdPlan(m, nil)
+	maybeFillPlanFile(&m, "existing topic")
+	existing := planMode.PlanFile
+	if existing == "" {
+		t.Fatalf("test setup: plan file should be resolved")
+	}
+	before := strings.Count(stripANSI(m.transcript.String()), "plan mode active")
+	enterPlanModeFromTool(&m)
+	if planMode.PlanFile != existing {
+		t.Errorf("already-active entry must keep the existing plan file; got %q", planMode.PlanFile)
+	}
+	after := strings.Count(stripANSI(m.transcript.String()), "plan mode active")
+	if after != before {
+		t.Errorf("already-active entry must not emit a duplicate entry card (%d → %d)", before, after)
+	}
+}

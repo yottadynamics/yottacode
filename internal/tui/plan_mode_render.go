@@ -29,18 +29,28 @@ type planBannerInfo struct {
 // is warning (orange). Saves the user from learning two glyphs.
 const PlanModeIcon = "▸"
 
+// planExitKeysHint is the "how do I leave" copy shared by the entry
+// card's footer, the persistent banner, and (re-phrased as re-entry)
+// the exit log — one vocabulary across every plan-mode surface.
+const planExitKeysHint = "exit with /plan or Shift+Tab"
+
 // renderPlanModeBanner is the one-line indicator rendered immediately
 // above the cmdline while plan mode is active. Two states + an
-// optional yolo suffix when the yolo overlay is on:
+// optional yolo suffix when the yolo overlay is on, with the exit
+// keys riding along whenever there's room (mirrors Claude Code's
+// persistent "shift+tab to cycle" indicator — mid-session, the banner
+// is where the user looks to remember how to leave the mode):
 //
-//	◈ plan mode · i-want-to-imple…0dae3.md
-//	◈ plan mode · awaiting your message
-//	◈ plan mode · i-want-to-imple…0dae3.md · ⚠ yolo
+//	◈ plan mode · i-want-to-imple…0dae3.md · exit with /plan or Shift+Tab
+//	◈ plan mode · exit with /plan or Shift+Tab
+//	◈ plan mode · i-want-to-imple…0dae3.md · ⚠ yolo · exit with /plan or Shift+Tab
 //
 // Lowercase label is intentional — quieter than shouting PLAN MODE,
 // matches the surrounding "plan mode active" / "plan resumed"
 // entry-log voice. The plan-file basename (truncated) is the
-// persistent middle text once the slug is resolved.
+// persistent middle text once the slug is resolved. The exit-keys
+// hint is the lowest-priority segment: first to drop on narrow
+// terminals.
 func renderPlanModeBanner(info planBannerInfo, yoloOn bool, width int) string {
 	if width <= 0 {
 		width = 80
@@ -49,15 +59,18 @@ func renderPlanModeBanner(info planBannerInfo, yoloOn bool, width int) string {
 	dot := stylePlanBannerSep.Render(" · ")
 
 	mid := planBannerMiddleText(info)
-	out := label
+	core := label
 	if mid != "" {
-		out += dot + stylePlanBannerActivity.Render(mid)
+		core += dot + stylePlanBannerActivity.Render(mid)
 	}
 	if yoloOn {
-		out += dot + renderYoloTag()
+		core += dot + renderYoloTag()
 	}
-	if ansi.StringWidth(out) <= width {
-		return out
+	if withHint := core + dot + stylePlanBannerHint.Render(planExitKeysHint); ansi.StringWidth(withHint) <= width {
+		return withHint
+	}
+	if ansi.StringWidth(core) <= width {
+		return core
 	}
 	// Narrow terminal: drop the mid segment; keep label + (optional)
 	// yolo so the warning never disappears.
@@ -109,19 +122,29 @@ func compactPlanBasename(planPath string) string {
 	return truncateSlug(slug, maxBasenameWidth-3) + ".md"
 }
 
+// Entry-card body hints, one per entry path. The /plan and Shift+Tab
+// paths defer the plan file to the user's NEXT message, so the card
+// asks for one; the enter_plan_mode tool path derives the file from
+// the message that's already in flight, so asking again would be
+// wrong.
+const (
+	planEntryHintUserToggled    = "read-only research; describe what you'd like planned in your next message"
+	planEntryHintModelRequested = "read-only research; planning the current request"
+)
+
 // renderPlanModeEntryCard renders the on-entry log entry as a
 // tool-card-shaped block: header carries the ▸ icon + "plan mode
-// active" label, body explains the read-only research framing, footer
-// shows how to exit. Reuses styleCardGutter / styleCardHeader so the
-// surface reads as part of the same visual family as the tool-output
-// cards in scrollback.
-func renderPlanModeEntryCard() string {
+// active" label, body carries the path-specific hint (see the
+// planEntryHint* consts), footer shows how to exit. Reuses
+// styleCardGutter / styleCardHeader so the surface reads as part of
+// the same visual family as the tool-output cards in scrollback.
+func renderPlanModeEntryCard(hint string) string {
 	header := styleCardGutter.Render("╭ ") +
 		stylePlanBannerLabel.Render(PlanModeIcon+" plan mode active")
 	body := styleCardGutter.Render("│ ") +
-		stylePlanBannerHint.Render("read-only research; describe what you'd like planned in your next message")
+		stylePlanBannerHint.Render(hint)
 	footer := styleCardGutter.Render("╰ ") +
-		stylePlanBannerHint.Render("exit with /plan or Shift+Tab")
+		stylePlanBannerHint.Render(planExitKeysHint)
 	return strings.Join([]string{header, body, footer}, "\n")
 }
 
@@ -156,7 +179,28 @@ func renderPlanApprovalCard(width int) string {
 		"\n" +
 		stylePlanApprovalHotkey.Render("[K]") + " " +
 		stylePlanApprovalChoice.Render("keep planning")
+	return renderPlanDecisionCard(PlanModeIcon+" Approve plan?", "exit_plan_mode", hotkeys, width)
+}
 
+// renderEnterPlanApprovalCard renders the decision UI for an
+// enter_plan_mode approval — the model requested plan mode and the
+// user picks whether the session actually switches. Two choices only;
+// deliberately no "always allow" (a derived rule would silently flip
+// modes on every future request, which defeats the handshake).
+func renderEnterPlanApprovalCard(width int) string {
+	hotkeys := stylePlanApprovalHotkey.Render("[Y]") + " " +
+		stylePlanApprovalChoice.Render("enter plan mode") +
+		"\n" +
+		stylePlanApprovalHotkey.Render("[N]") + " " +
+		stylePlanApprovalChoice.Render("stay in current mode")
+	return renderPlanDecisionCard(PlanModeIcon+" Enter plan mode?", "enter_plan_mode", hotkeys, width)
+}
+
+// renderPlanDecisionCard is the shared bordered-box builder behind the
+// plan-mode decision cards: title on the top-left of the frame, tool
+// name on the top-right, hotkey rows in the body. Kept generic over
+// (title, toolName, hotkeys) so enter and exit render identically.
+func renderPlanDecisionCard(title, toolName, hotkeys string, width int) string {
 	const sideIndent = "  "
 	const sideIndentW = 2
 	cap := width - 4
@@ -186,8 +230,8 @@ func renderPlanApprovalCard(width int) string {
 	}
 	bodyLines = append(bodyLines, "")
 
-	leftLabel := " " + stylePlanApprovalTitle.Render(PlanModeIcon+" Approve plan?") + " "
-	rightLabel := " " + stylePlanApprovalTool.Render("exit_plan_mode") + " "
+	leftLabel := " " + stylePlanApprovalTitle.Render(title) + " "
+	rightLabel := " " + stylePlanApprovalTool.Render(toolName) + " "
 
 	innerW := 0
 	for _, line := range bodyLines {

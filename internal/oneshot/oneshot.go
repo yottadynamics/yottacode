@@ -278,7 +278,10 @@ func Run(ctx context.Context, opts cli.ChatOptions, prompt string) error {
 	// build. The adapter-tools filter in the loop hides it whenever
 	// PlanMode is inactive (which is always, in oneshot v1) so the
 	// model never sees it. Plan mode itself is not yet exposed via
-	// any oneshot flag.
+	// any oneshot flag. EnterPlanModeTool is deliberately NOT
+	// registered here: entering plan mode requires the TUI's
+	// confirmation card + state handshake, and oneshot has no
+	// interactive approval surface to host it.
 	reg.Register(&agent.ExitPlanModeTool{})
 
 	// Subagents: load definitions (built-in + ~/.yottacode/agents +
