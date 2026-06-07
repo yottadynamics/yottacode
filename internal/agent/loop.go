@@ -108,6 +108,16 @@ type LoopConfig struct {
 	// cancelling the active turn.
 	UserMessages <-chan string
 
+	// QuestionAnswers, when non-nil, is the TUI's reply channel for
+	// ask_user_question round-trips. The loop injects it into each
+	// tool ctx (WithQuestionnaireAnswers); AskUserQuestionTool.Execute
+	// emits UserQuestionsNeeded on the events channel and blocks here
+	// for the user's structured answers. Per-turn and buffered (cap 1)
+	// like the decisions channel. nil (oneshot, subagent child loops,
+	// tests) makes the tool return an instructive error instead of
+	// hanging.
+	QuestionAnswers <-chan QuestionnaireAnswers
+
 	// HistoryLock, when non-nil, serializes this loop's mutations and
 	// snapshots of the history slice against concurrent reads on another
 	// goroutine. The TUI sets it to the session's lock: its bubbletea
@@ -899,6 +909,11 @@ func executeToolCallImpl(
 	// parent loop is blocked on its return, so neither channel has a
 	// competing reader/writer.
 	toolCtx := WithParentDecisions(WithParentEvents(ctx, events), decisions)
+	// Same seam for ask_user_question: its Execute emits
+	// UserQuestionsNeeded and blocks on this channel for the TUI's
+	// structured answers. nil (oneshot, child loops, tests) is fine —
+	// WithQuestionnaireAnswers no-ops and the tool errors instructively.
+	toolCtx = WithQuestionnaireAnswers(toolCtx, cfg.QuestionAnswers)
 	// Snapshot pre-images for Mutator tools before they run. Soft-fail:
 	// a snapshot error must not block the user's tool call — surface it
 	// as a scrollback event but let the tool proceed.

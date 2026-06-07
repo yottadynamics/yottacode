@@ -71,6 +71,32 @@ func ParentDecisions(ctx context.Context) <-chan Decision {
 	return ch
 }
 
+// questionnaireAnswersKey is the context key exposing the per-turn
+// LoopConfig.QuestionAnswers channel to AskUserQuestionTool.Execute.
+// Mirrors the decisions seam: the tool emits UserQuestionsNeeded on
+// the parent events channel and blocks here for the TUI's structured
+// reply. Nil (oneshot, subagent child loops, tests) means no
+// interactive user is attached — the tool returns an instructive
+// error instead of hanging.
+type questionnaireAnswersKey struct{}
+
+// WithQuestionnaireAnswers attaches the questionnaire reply channel to
+// ctx. Tools other than ask_user_question should ignore this seam.
+func WithQuestionnaireAnswers(ctx context.Context, answers <-chan QuestionnaireAnswers) context.Context {
+	if answers == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, questionnaireAnswersKey{}, answers)
+}
+
+// QuestionnaireAnswersChan recovers the channel attached by
+// WithQuestionnaireAnswers, or nil when no interactive consumer is on
+// the stack.
+func QuestionnaireAnswersChan(ctx context.Context) <-chan QuestionnaireAnswers {
+	ch, _ := ctx.Value(questionnaireAnswersKey{}).(<-chan QuestionnaireAnswers)
+	return ch
+}
+
 // approvalGateKey is the context key carrying the per-parallel-batch
 // mutex that serializes user-interaction round-trips.
 type approvalGateKey struct{}

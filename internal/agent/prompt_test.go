@@ -55,6 +55,7 @@ var canonicalTools = []string{
 	"todo_write",
 	"enter_plan_mode",
 	"exit_plan_mode",
+	"ask_user_question",
 	"Skill",
 }
 
@@ -99,6 +100,17 @@ func TestDefaultSystemPrompt_KeepsActionDirectives(t *testing.T) {
 		// on a file that fits in a single read.
 		"prefer ONE read_file call with a generous limit",
 		"stop — grep for the symbol you're actually hunting instead",
+		// Structured questions: at genuine forks the model should
+		// raise the questionnaire, not guess or stall in prose — and
+		// never use it as a permission prompt. Timing is load-bearing:
+		// research comes first, the questionnaire last (the screenshot
+		// failure mode was a model opening a planning session with a
+		// "what should I plan?" questionnaire).
+		"Asking the user",
+		"call ask_user_question instead of guessing",
+		"Investigate FIRST, ask LAST",
+		"never open a task or a planning session with the questionnaire",
+		"Do NOT use it to ask permission to run a tool",
 	} {
 		if !strings.Contains(DefaultSystemPrompt, want) {
 			t.Errorf("DefaultSystemPrompt is missing required directive %q", want)
@@ -128,12 +140,28 @@ func TestPlanModeAddendum_KeepsCoreDirectives(t *testing.T) {
 		"answer DIRECTLY from this body",
 		"Do NOT call read_file on the plan file",
 		// Open-questions invariant: material ambiguity must be
-		// resolved BEFORE exit_plan_mode. The approval modal is
-		// hotkey-only — a plan with dangling open questions next to
-		// it is a UX dead-end (the user can't type answers there).
+		// resolved BEFORE exit_plan_mode — via the ask_user_question
+		// questionnaire, since the approval modal is hotkey-only and
+		// a plan with dangling open questions next to it is a UX
+		// dead-end (the user can't type answers there). And the
+		// questionnaire itself comes at the END of planning: the gate
+		// blocks it until the plan file has content, so the addendum
+		// must spell out the investigate → draft → ask order.
 		"Resolve material ambiguity BEFORE calling exit_plan_mode",
-		"END THE TURN. Do NOT call exit_plan_mode in the same turn",
+		"AFTER your investigation, never before it",
+		"investigate → draft the plan → ask",
+		"Do NOT open a planning session with the questionnaire",
+		"Call ask_user_question with the open questions",
+		"Fold the user's answers into the plan file",
 		"approval modal accepts hotkeys only",
+		// The Open-questions section is banned from final plans — the
+		// gate blocks exit_plan_mode while one exists with content, so
+		// the addendum must both prohibit it and explain the block
+		// (prompt and gate telling different stories confuses the
+		// model into retry loops).
+		`Do NOT include an "Open questions" section`,
+		"exit_plan_mode is BLOCKED while one exists",
+		"state the assumption you're proceeding with inline",
 		// Foreground-subagent nudge: plan-mode research benefits from
 		// same-turn findings, so the addendum steers the parent toward
 		// run_in_background:false when dispatching subagents.

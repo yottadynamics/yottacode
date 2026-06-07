@@ -535,6 +535,16 @@ type Model struct {
 	awaitingPathTrust bool
 	pathTrustReq      agent.PathTrustElevationNeeded
 
+	// Questionnaire state (ask_user_question). Non-nil while the agent
+	// goroutine is blocked inside the tool's Execute waiting on
+	// answersCh. The tool is not ParallelSafe, so it runs on the
+	// serial path — never concurrent with awaitingApproval /
+	// awaitingPathTrust. answersCh is the per-turn reply channel
+	// (LoopConfig.QuestionAnswers), buffered cap 1 like decisions so
+	// the TUI's send never blocks even if the turn died mid-question.
+	questionnaire *questionnaireState
+	answersCh     chan agent.QuestionnaireAnswers
+
 	// Cheatsheet overlay
 	cheatsheetOpen bool
 
@@ -1177,6 +1187,14 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.mcpPickerOpen {
 			return m.updateMCPPicker(msg)
+		}
+		// ask_user_question questionnaire owns the keyboard while the
+		// agent goroutine is blocked on its answer. Routed ahead of the
+		// dock/paste/mid-turn blocks below so Esc declines the questions
+		// (unblocking the tool) instead of cancelling the turn, and
+		// option digits never leak into the textarea.
+		if m.questionnaire != nil {
+			return m.updateQuestionnaire(msg)
 		}
 		// Live-dock keyboard navigation. When focused, the dock consumes
 		// keys (up/down/enter/esc) ahead of the cmdline. Tab focuses it —
@@ -1908,6 +1926,11 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.turnCancel()
 			m.turnCancel = nil
 		}
+		// Defensive: a turn that dies while the questionnaire is up
+		// (parent-ctx cancel, quit) must not leave a dead overlay
+		// owning the keyboard. The blocked Execute unwinds via
+		// ctx.Done on its own.
+		m.questionnaire = nil
 		m.commitStreaming()
 		// turnEndedMsg.err is intentionally NOT rendered here. agent.Turn
 		// emits ErrorEvent for every user-visible error before returning,
@@ -2283,6 +2306,12 @@ func (m Model) View() string {
 		// exclusive with the regular approval modal — only one of
 		// awaitingPathTrust / awaitingApproval is ever true.
 		parts = append(parts, renderPathTrustModal(m))
+	} else if m.questionnaire != nil {
+		// ask_user_question questionnaire replaces the input frame
+		// while the tool waits for answers. Picker-style body (tab
+		// strip + menu rows), not a bordered modal — see
+		// questionnaire.go.
+		parts = append(parts, renderQuestionnaire(m.questionnaire, m.width))
 	} else if m.awaitingApproval {
 		// The plan-mode boundary tools get their own decision cards —
 		// just the hotkeys in a bordered box, never the generic
@@ -3475,6 +3504,10 @@ func (m Model) startTurnWithDisplay(input, displayLabel string) (tea.Model, tea.
 	m.turnErrCh = make(chan error, 1)
 	m.userMsgCh = make(chan string, 1)
 	m.cfg.UserMessages = m.userMsgCh
+	// ask_user_question reply channel: per-turn like decisions, buffered
+	// so submitQuestionnaire's send can't block the Update goroutine.
+	m.answersCh = make(chan agent.QuestionnaireAnswers, 1)
+	m.cfg.QuestionAnswers = m.answersCh
 	// Serialize the agent goroutine's history appends against this Update
 	// goroutine's reads of sess.Messages (token estimate, /context,
 	// system-prompt edits). Subagents leave this nil — their history is a
@@ -3661,6 +3694,16 @@ func (m Model) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 		m.commitStreaming()
 		m.awaitingPathTrust = true
 		m.pathTrustReq = e
+		return m, nil
+	case agent.UserQuestionsNeeded:
+		// ask_user_question round-trip: park the questionnaire; the
+		// tool's Execute is blocked on m.answersCh until the user
+		// submits or declines. Questions arrive pre-validated and
+		// header-clamped (ParseUserQuestions). Don't queue another
+		// waitForEvent until the user answers — submitQuestionnaire
+		// re-issues it, same contract as ApprovalNeeded.
+		m.commitStreaming()
+		m.questionnaire = newQuestionnaireState(e.Questions)
 		return m, nil
 	case agent.ToolStart:
 		// Reasoning ended and a tool fires — clear the live reasoning

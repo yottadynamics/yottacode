@@ -1045,18 +1045,20 @@ func backgroundWorkerDecision(toolName, argsJSON string) (Decision, string) {
 }
 
 // buildChildRegistry clones the parent registry into a new one,
-// stripping Agent (recursion guard) and the plan-mode boundary tools
+// stripping Agent (recursion guard), the plan-mode boundary tools
 // (children inherit the parent's plan-mode state by pointer; only the
 // top-level loop may transition it — a child flipping the shared mode
 // mid-flight would yank the parent's gates out from under it), and
-// applying the agent config's tools allowlist when one is set. The
-// recursion guard is unconditional — even a config that names Agent
-// in its allowlist cannot reintroduce it.
+// ask_user_question (a child has no interactive user — its LoopConfig
+// carries no QuestionAnswers channel, so the tool could only error),
+// then applying the agent config's tools allowlist when one is set.
+// These exclusions are unconditional — even a config that names Agent
+// or ask_user_question in its allowlist cannot reintroduce them.
 func (t *AgentTool) buildChildRegistry(cfg *subagents.AgentConfig) *Registry {
 	out := NewRegistry()
 	for _, tool := range t.ParentRegistry.Tools() {
 		name := tool.Name()
-		if name == agentToolName || isPlanBoundaryTool(name) {
+		if name == agentToolName || isPlanBoundaryTool(name) || name == askUserQuestionToolName {
 			continue
 		}
 		if !cfg.ToolAllowed(name) {

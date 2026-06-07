@@ -94,7 +94,7 @@ Inline rendering keeps your scrollback intact. Markdown-rendered assistant outpu
 
 ### Repo-Aware Tool Surface
 
-Forty built-in tools spanning reads, writes, filesystem, search, git helpers (status / diff / blame / log / commit / checkpoints / rollback / file-at-revision), bash, tests, the `todo_write` working-plan tracker, and the `enter_plan_mode` / `exit_plan_mode` plan-mode surface — each with explicit approval policy.
+Forty-one built-in tools spanning reads, writes, filesystem, search, git helpers (status / diff / blame / log / commit / checkpoints / rollback / file-at-revision), bash, tests, the `todo_write` working-plan tracker, the `enter_plan_mode` / `exit_plan_mode` plan-mode surface, and the `ask_user_question` tabbed questionnaire for structured clarifying questions — each with explicit approval policy.
 
 See [`docs/tools.md`](docs/tools.md) for the full list.
 
@@ -117,7 +117,7 @@ Ship your own under `.yottacode/agents/<name>.md` (project) or `~/.yottacode/age
 
 ### Plan Mode + Auto Mode
 
-**Plan mode** (`/plan`, `Shift+Tab`, or `--permission-mode plan`) toggles a read-only research mode: the agent investigates, asks clarifying questions, writes a plan file under `~/.yottacode/plans/<slug>.md`, then presents it in an approval card.
+**Plan mode** (`/plan`, `Shift+Tab`, or `--permission-mode plan`) toggles a read-only research mode: the agent investigates, drafts a plan file under `~/.yottacode/plans/<slug>.md`, resolves any remaining open questions through the `ask_user_question` tabbed questionnaire (answer with arrows/digits, or pick **Other** and type your own — the questionnaire is gated to the end of planning, after the draft exists), then presents the plan in an approval card.
 
 - **`[A]`** Approve — enter auto mode, skip per-tool prompts during implementation
 - **`[M]`** Manual — plan mode exits, per-tool prompts continue as normal

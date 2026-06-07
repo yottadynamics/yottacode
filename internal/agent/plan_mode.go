@@ -291,10 +291,20 @@ func planModeSchemaFilter(planActive bool) func(string) bool {
 // read-only or plan-file alternative on the next iteration.
 //
 // Allowlist:
-//   - exit_plan_mode: the only way out of plan mode.
+//   - exit_plan_mode: the only way out of plan mode — but blocked
+//     while the plan file still contains a non-empty "Open questions"
+//     section. Unasked questions next to the hotkey-only approval card
+//     are a UX dead-end; the gate forces the ask_user_question →
+//     fold-answers → exit order deterministically (prompt steering
+//     alone proved insufficient on weaker models).
 //   - todo_write: progress tracking, no side effects.
 //   - write_file/edit_file/apply_diff: only when the target path equals
 //     planFile. Any other write target is blocked.
+//   - ask_user_question: only at the END of a planning session — the
+//     plan file must already have content. Blocked before that so the
+//     model can't open a planning session with the questionnaire
+//     instead of investigating (the right opening for "what should I
+//     even plan?" is a prose question that ends the turn).
 //   - any tool whose RequiresApproval returns false: the implicit
 //     "read-only" classification (read_file, grep, glob, list_*,
 //     git_log_file, fetch_url, …). New read-only tools auto-classify.
@@ -305,7 +315,12 @@ func planModeSchemaFilter(planActive bool) func(string) bool {
 func PlanModeGate(tool Tool, argsJSON, planFile string) (string, bool) {
 	name := tool.Name()
 	switch name {
-	case "exit_plan_mode", "todo_write":
+	case "exit_plan_mode":
+		if planHasOpenQuestions(planFile) {
+			return exitPlanModeOpenQuestionsMessage, true
+		}
+		return "", false
+	case "todo_write":
 		return "", false
 	case "write_file", "edit_file", "apply_diff":
 		if planFile != "" {
@@ -315,12 +330,81 @@ func PlanModeGate(tool Tool, argsJSON, planFile string) (string, bool) {
 			}
 		}
 		return planModeBlockMessage(name, planFile), true
+	case askUserQuestionToolName:
+		if planDrafted(planFile) {
+			return "", false
+		}
+		return askUserQuestionTooEarlyMessage, true
 	default:
 		if !tool.RequiresApproval(argsJSON) {
 			return "", false
 		}
 	}
 	return planModeBlockMessage(name, planFile), true
+}
+
+// askUserQuestionTooEarlyMessage is the gate's refusal when the model
+// reaches for the questionnaire before drafting a plan. Questions
+// belong at the END of planning — after investigation, when only
+// material ambiguity the codebase can't answer remains. Phrased as
+// actionable guidance so the model recovers on the next iteration.
+const askUserQuestionTooEarlyMessage = "error: ask_user_question is reserved for the END of a planning session — " +
+	"investigate the codebase and draft your plan to the plan file FIRST, then ask only the questions whose answers would change the drafted plan " +
+	"(fold the answers in and call exit_plan_mode). " +
+	"If you don't yet know what the user wants planned, ask them in prose and END THE TURN — do not use the questionnaire for that."
+
+// planDrafted reports whether the plan file exists with non-whitespace
+// content — the gate's proxy for "the planning session has reached its
+// end stage". Until then ask_user_question stays blocked in plan mode.
+func planDrafted(planFile string) bool {
+	if planFile == "" {
+		return false
+	}
+	body, err := os.ReadFile(planFile)
+	if err != nil {
+		return false
+	}
+	return strings.TrimSpace(string(body)) != ""
+}
+
+// exitPlanModeOpenQuestionsMessage is the gate's refusal when the
+// model tries to present a plan that still carries an unresolved
+// "Open questions" section. Phrased as the exact recovery recipe —
+// the model is one ask_user_question call away from a valid exit.
+const exitPlanModeOpenQuestionsMessage = "error: exit_plan_mode blocked — the plan file still contains a non-empty \"Open questions\" section. " +
+	"The user cannot answer questions at the approval card (hotkeys only). " +
+	"Call ask_user_question NOW with those questions (1-4 questions, 2-4 concrete options each, your recommendation first), " +
+	"fold the user's answers into the plan body, DELETE the Open questions section, and then call exit_plan_mode."
+
+// openQuestionsHeading matches a markdown heading introducing an
+// open-questions section, e.g. "## Open questions", "### Open
+// Questions:". Case-insensitive; any heading level.
+var openQuestionsHeading = regexp.MustCompile(`(?i)^#+\s*open\s+questions\b`)
+
+// planHasOpenQuestions reports whether the plan file contains an
+// "Open questions" heading with non-whitespace content beneath it
+// (anything before the next heading or EOF). An empty section — the
+// heading alone — does not block; only actual unasked questions do.
+func planHasOpenQuestions(planFile string) bool {
+	if planFile == "" {
+		return false
+	}
+	body, err := os.ReadFile(planFile)
+	if err != nil {
+		return false
+	}
+	inSection := false
+	for line := range strings.SplitSeq(string(body), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "#") {
+			inSection = openQuestionsHeading.MatchString(trimmed)
+			continue
+		}
+		if inSection && trimmed != "" {
+			return true
+		}
+	}
+	return false
 }
 
 func planModeBlockMessage(name, planFile string) string {

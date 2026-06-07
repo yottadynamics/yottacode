@@ -1,7 +1,7 @@
 # Built-in tools
 
-Forty tools ship in `internal/agent` (thirty-seven always-on plus `todo_write`
-and the `enter_plan_mode` / `exit_plan_mode` pair). The model sees their JSON-schema parameters via the
+Forty-one tools ship in `internal/agent` (thirty-seven always-on plus `todo_write`,
+the `enter_plan_mode` / `exit_plan_mode` pair, and the TUI-only `ask_user_question`). The model sees their JSON-schema parameters via the
 OpenAI tools API; the TUI renders each invocation as a bordered card with a
 verb-style header (see [How tool calls render in the TUI](#how-tool-calls-render-in-the-tui)).
 All paths are resolved against the agent's working directory (absolute paths
@@ -54,6 +54,7 @@ In addition to the built-ins, **MCP tools** register dynamically when an `[[mcp_
 | [`todo_write`](#todo_write) | none | Maintain the agent's working task plan, rendered as a card |
 | [`enter_plan_mode`](#enter_plan_mode) | required | Only callable OUTSIDE plan mode; requests the read-only planning state via a [Y]/[N] card |
 | [`exit_plan_mode`](#exit_plan_mode) | required | Only callable in `/plan` mode; presents the plan for user approval |
+| [`ask_user_question`](#ask_user_question) | none | Ask the user 1-4 multiple-choice questions via a tabbed questionnaire; TUI-only |
 | [`Agent`](#agent) | none | Dispatch a typed subagent that runs in its own context window; see [subagents.md](subagents.md) |
 
 "Approval = required" means the tool always pauses for a `y` / `a` /
@@ -831,6 +832,14 @@ If the plan file doesn't exist or is empty when `exit_plan_mode` is called,
 the TUI auto-denies the call with a console notice — the model is expected
 to write the plan to the file first, then call this tool.
 
+The call is also **blocked while the plan file contains a non-empty "Open
+questions" section**: unasked questions next to a hotkey-only approval card
+would be unanswerable. The model gets a recoverable error steering it to ask
+those questions via [`ask_user_question`](#ask_user_question), fold the
+answers into the plan body, delete the section, and only then re-call
+`exit_plan_mode`. Final plans state assumptions inline instead of carrying an
+open-questions section.
+
 The TUI renders the plan inside an approval card with four hotkeys:
 
 - `[A] auto-approval` — exits plan mode AND turns on auto mode for the implementation, so mutating tools auto-allow without per-call prompts (safety floor still applies: `run_bash`, `git_commit`, `git_checkpoint`, `rollback`).
@@ -847,6 +856,53 @@ tools auto-allow as usual; writes to the plan file auto-allow too (no per-edit
 prompt — the plan file is the model's only legitimate mutation surface during
 planning). See [tui-slash-commands.md#plan-mode](tui-slash-commands.md#plan-mode)
 for the full plan-mode flow.
+
+## ask_user_question
+
+Pause the turn and ask the user 1-4 structured multiple-choice questions.
+Mirrors Claude Code's `AskUserQuestion` surface: each question renders as a
+tab in a picker-style questionnaire (same visual language as the `/model`
+picker), with 2-4 options per question plus an automatic free-text **Other**
+row the UI appends — models must never include an "Other" option themselves.
+
+| Param | Type | Default | Notes |
+|---|---|---|---|
+| `questions` | array (required, 1-4 items) | — | The questions to ask now. |
+| `questions[].question` | string (required) | — | Full question text shown to the user. |
+| `questions[].header` | string (required) | — | Short tab label; clamped to 12 characters. |
+| `questions[].options` | array (required, 2-4 items) | — | Each option is `{label, description}`. |
+| `questions[].multiSelect` | boolean (required) | `false` | `true` lets the user toggle multiple options (Space) before confirming (Enter). |
+
+Questionnaire keys: `↑↓` move, `Enter` select/confirm, `1-9` jump-select,
+`←/→` (or `Tab`) switch question tabs, `Space` toggles on multi-select
+questions. Answering a question auto-advances to the next unanswered tab;
+answering the last one submits the whole set. Picking **Other** opens an
+inline text input (`Enter` commits, `Esc` backs out). `Esc` on the option
+list declines the entire set — the model receives a "user declined" result
+and continues on its own judgment; the turn is NOT cancelled.
+
+Approval is "none" by design: the questionnaire IS the tool's function, not a
+permission gate. Auto mode and `--yolo` only skip approvals, so they never
+bypass the questionnaire.
+
+In plan mode the tool is an **end-of-planning** surface: the gate blocks it
+until the resolved plan file has content, enforcing the order *investigate →
+draft the plan → ask → fold answers in → `exit_plan_mode`*. A model that
+opens a planning session with the questionnaire (e.g. "what should I plan
+for?") gets a recoverable error steering it to investigate first — or, when
+the user gave no task at all, to ask in prose and end the turn. Resolving the
+drafted plan's open questions right before `exit_plan_mode` is the tool's
+primary use case, and the flow is enforced from both sides: `exit_plan_mode`
+is itself blocked while the plan file still carries a non-empty "Open
+questions" section, so unresolved questions can never reach the approval
+card.
+
+Interactive sessions only: `oneshot` does not register it (a model that
+hallucinates the name gets a recoverable unknown-tool error), and subagent
+child registries exclude it unconditionally — a background worker has no
+user to ask. The user's answers come back as the tool result in plain
+`Q:` / `A:` lines (`A (other):` for free text; multi-select labels joined
+with `;`).
 
 ## Agent
 

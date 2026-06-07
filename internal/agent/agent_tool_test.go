@@ -262,6 +262,28 @@ func TestAgentTool_ExcludesPlanBoundaryTools(t *testing.T) {
 	}
 }
 
+func TestAgentTool_ExcludesAskUserQuestion(t *testing.T) {
+	// Subagents have no interactive user — their LoopConfig carries no
+	// QuestionAnswers channel — so ask_user_question must never reach a
+	// child registry, even when a config allowlists it explicitly.
+	cfg := subagents.AgentConfig{
+		Name:        "curious",
+		Description: "tries to ask the user",
+		Tools:       []string{"read_file", "ask_user_question"},
+		Prompt:      "x",
+		Source:      "test",
+	}
+	tool, parent := newTestAgentTool(t, []subagents.AgentConfig{cfg}, nil, false)
+	parent.Register(&AskUserQuestionTool{})
+	child := tool.buildChildRegistry(&cfg)
+	if _, ok := child.Get(askUserQuestionToolName); ok {
+		t.Errorf("child registry should not contain ask_user_question")
+	}
+	if _, ok := child.Get("read_file"); !ok {
+		t.Errorf("child registry missing read_file (should be inherited)")
+	}
+}
+
 func TestAgentTool_AppliesToolAllowlist(t *testing.T) {
 	cfg := subagents.AgentConfig{
 		Name:        "readonly",

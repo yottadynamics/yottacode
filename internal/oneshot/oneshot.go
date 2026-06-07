@@ -281,7 +281,10 @@ func Run(ctx context.Context, opts cli.ChatOptions, prompt string) error {
 	// any oneshot flag. EnterPlanModeTool is deliberately NOT
 	// registered here: entering plan mode requires the TUI's
 	// confirmation card + state handshake, and oneshot has no
-	// interactive approval surface to host it.
+	// interactive approval surface to host it. AskUserQuestionTool is
+	// deliberately omitted for the same reason — the questionnaire
+	// needs an interactive user; a model that hallucinates the name
+	// gets a recoverable unknown-tool error.
 	reg.Register(&agent.ExitPlanModeTool{})
 
 	// Subagents: load definitions (built-in + ~/.yottacode/agents +

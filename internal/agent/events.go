@@ -107,6 +107,17 @@ type ApprovalNeeded struct {
 	ArgsJSON string
 }
 
+// UserQuestionsNeeded is the request half of an ask_user_question
+// round-trip. Unlike ApprovalNeeded it is emitted from inside the
+// tool's own Execute (via the ParentEvents ctx seam), and the reply
+// travels on the dedicated LoopConfig.QuestionAnswers channel rather
+// than the decisions channel — the answer is structured data, not a
+// Decision. Questions are already validated and header-clamped by
+// ParseUserQuestions; consumers render them as-is.
+type UserQuestionsNeeded struct {
+	Questions []UserQuestion
+}
+
 // PathTrustElevationNeeded fires when a mutating tool's
 // ValidateWritePath rejects a target as outside the workspace
 // (Cwd + AllowedPaths). The TUI catches this via its existing
@@ -319,6 +330,7 @@ func (ContextUsage) event()             {}
 func (IterationContinue) event()        {}
 func (ApprovalAuto) event()             {}
 func (ApprovalNeeded) event()           {}
+func (UserQuestionsNeeded) event()      {}
 func (PathTrustElevationNeeded) event() {}
 func (ToolStart) event()                {}
 func (ToolResult) event()               {}

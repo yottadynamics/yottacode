@@ -358,6 +358,14 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 	// Execute can report the resolved plan-file path to the model.
 	reg.Register(&agent.ExitPlanModeTool{})
 	reg.Register(&agent.EnterPlanModeTool{State: planMode})
+	// ask_user_question is TUI-only: the questionnaire IS the tool's
+	// function, so it needs the interactive surface (oneshot omits it,
+	// and buildChildRegistry strips it from every subagent). Available
+	// in ALL modes — RequiresApproval=false means auto/yolo (which only
+	// skip approvals) never bypass the questionnaire, and PlanModeGate
+	// passes it so plan mode can resolve open questions before
+	// exit_plan_mode.
+	reg.Register(&agent.AskUserQuestionTool{})
 
 	// Subagents: load definitions (built-in + ~/.yottacode/agents +
 	// .yottacode/agents) and register the Agent dispatch tool. The
