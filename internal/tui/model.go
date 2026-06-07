@@ -476,6 +476,23 @@ type Model struct {
 	eventsCh   chan agent.Event
 	turnErrCh  chan error
 	decisions  chan agent.Decision
+	// memoryNudgePending arms the pre-compaction memory reminder: set
+	// when the context watermark first crosses the warn threshold
+	// (updateContextUsage), consumed by the next startTurnWithDisplay,
+	// which appends preCompactionMemoryReminder to the outgoing user
+	// message (history only — the transcript shows the user's own
+	// text). Cleared when usage drops back below the warn threshold,
+	// alongside the lastWatermarkPct reset.
+	memoryNudgePending bool
+	// exitSavePending marks the in-flight final memory turn started by
+	// maybeStartExitSaveTurn. When the turn ends (or is cancelled), the
+	// turnEndedMsg handler completes the quit instead of idling.
+	exitSavePending bool
+	// userTurnsThisLaunch counts turns started since THIS process
+	// launched — unlike firstMessageSent it ignores user turns carried
+	// in by --resume, so the exit-save activity bar
+	// (exitSaveMinUserTurns) measures fresh interaction only.
+	userTurnsThisLaunch int
 	// pendingInputAfterTurn captures a user message that couldn't be
 	// delivered mid-turn (model finished without a tool round, or the
 	// userMsgCh buffer was full and we fell back to cancel+resubmit).
@@ -1091,6 +1108,15 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
+		// Bracketed pastes arrive with terminal line breaks — CR (or
+		// CRLF), not LF. Normalize before ANY routing so every consumer
+		// (pickers, tryImagePaste's multi-line rejection, the
+		// large-paste detour, the textarea) sees the single '\n'
+		// convention. A raw CR that survives to submit overprints the
+		// transcript echo from column 0, mangling the line into garbage.
+		if msg.Paste {
+			msg.Runes = normalizePasteLineBreaks(msg.Runes)
+		}
 		if m.cheatsheetOpen {
 			m.cheatsheetOpen = false
 			return m, nil
@@ -1726,9 +1752,13 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.turnCancel()
 				return m, nil
 			}
+			// Ctrl+C is the "get me out NOW" gesture — always an
+			// immediate quit, never the final memory turn.
 			return m, tea.Quit
 		case tea.KeyCtrlD:
-			return m, tea.Quit
+			// Deliberate idle exit — same graceful path as /quit (final
+			// memory turn when warranted).
+			return maybeStartExitSaveTurn(m)
 		case tea.KeyEsc:
 			// Esc-Esc within escChordWindow opens the /checkpoints picker
 			// — mirrors Claude Code's double-escape. Single Esc has no
@@ -1892,6 +1922,14 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if err := m.recall.IndexSession(m.sess); err != nil {
 				m.appendLine(styleError.Render(fmt.Sprintf("⚠ recall index failed: %v", err)))
 			}
+		}
+		// The final memory turn on quit just ended (completed or
+		// cancelled via Esc/Ctrl+C — both land here): finish the quit.
+		// Session save + recall indexing above already ran, so the exit
+		// turn itself is persisted; watermark checks and queued-input
+		// resubmission are pointless on the way out.
+		if m.exitSavePending {
+			return m, tea.Quit
 		}
 		// Watermark check: post-turn, before the next prompt is
 		// accepted. Either fires a yellow notice (warn threshold) or
@@ -2858,6 +2896,23 @@ func (m Model) activatePaletteSelection() (Model, tea.Cmd) {
 // between "small enough to read inline" and "annoying."
 const pasteThreshold = 200
 
+// normalizePasteLineBreaks rewrites the CR and CRLF line breaks of a
+// bracketed paste to LF. Terminals transmit paste line breaks as
+// carriage returns, so a multi-line paste arrives "\r"-separated: raw
+// CRs slip past every '\n' check downstream and, once submitted, each
+// CR returns the terminal cursor to column 0 when the transcript echoes
+// the message — every pasted line overprints the previous one into an
+// unreadable chimera. Applied once at the KeyMsg boundary (update)
+// before any paste routing.
+func normalizePasteLineBreaks(rs []rune) []rune {
+	if !strings.ContainsRune(string(rs), '\r') {
+		return rs
+	}
+	s := strings.ReplaceAll(string(rs), "\r\n", "\n")
+	s = strings.ReplaceAll(s, "\r", "\n")
+	return []rune(s)
+}
+
 // handleLargePaste swaps a big bracketed paste for a short placeholder
 // marker. The original content is stashed in m.pastes keyed by the
 // marker text; expandPastes() puts it back on submit.
@@ -3368,11 +3423,24 @@ func (m Model) startTurnWithDisplay(input, displayLabel string) (tea.Model, tea.
 	} else {
 		m.pastedImages = nil
 	}
+	// Consume a pending pre-compaction memory reminder: it rides the
+	// HISTORY copy of this message only — the checkpoint label, input
+	// history, and transcript rendering below all keep the user's own
+	// text. Appended after fileref rewriting so the reminder can't
+	// interfere with @path resolution, and after
+	// rebuildSystemPromptForTurn(input) so its wording doesn't skew
+	// memory retrieval scoring for the turn.
+	content := input
+	if m.memoryNudgePending {
+		m.memoryNudgePending = false
+		content += "\n\n" + preCompactionMemoryReminder
+	}
 	m.sess.Messages = append(m.sess.Messages, adapter.Message{
 		Role:    adapter.RoleUser,
-		Content: input,
+		Content: content,
 		Images:  userImages,
 	})
+	m.userTurnsThisLaunch++
 	// First user submission this launch — drops the onboarding hint
 	// footer below the input from now on.
 	m.firstMessageSent = true

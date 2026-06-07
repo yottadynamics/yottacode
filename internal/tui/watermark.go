@@ -104,14 +104,29 @@ func (m *Model) updateContextUsage() tea.Cmd {
 		// Fire if we've never warned, or if we've crossed another
 		// 5% step since the last notice.
 		if m.lastWatermarkPct == 0 || pct >= m.lastWatermarkPct+watermarkStep {
+			// First crossing also arms the pre-compaction memory
+			// reminder for the next turn: auto-summarization is now on
+			// the horizon, and anything durable the model hasn't saved
+			// will be compacted away with the older turns. Warn-level
+			// only — once the AUTO threshold branch above fires, the
+			// details are already being summarized and a reminder
+			// would arrive too late.
+			if m.lastWatermarkPct == 0 && !m.memoryNudgePending {
+				m.memoryNudgePending = true
+				m.appendLine(styleWatermark.Render(
+					"· memory: the model will be reminded to save durable memories on its next turn"))
+			}
 			m.lastWatermarkPct = pct
 			m.appendLine(styleWatermark.Render(
 				fmt.Sprintf("· context at %d%% — consider /summarize", int(pct*100))))
 		}
 	} else if warnThr < 1.0 && pct < warnThr {
 		// Below threshold (after /summarize, /clear, or a /sessions
-		// Resume): reset so the next crossing fires fresh.
+		// Resume): reset so the next crossing fires fresh. A still-armed
+		// reminder disarms with it — post-shrink, the context it was
+		// protecting has already been summarized or discarded.
 		m.lastWatermarkPct = 0
+		m.memoryNudgePending = false
 	}
 	return nil
 }

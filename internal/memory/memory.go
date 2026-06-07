@@ -156,10 +156,26 @@ func SystemPrompt(base string, l Loaded) string {
 	writeMemorySection(&b, "User memory index (background — do not narrate)", l.UserMemoryIndex, l.UserMemories, maybeOpenBackground)
 	writeMemorySection(&b, "Project memory index (background — do not narrate)", l.ProjectMemoryIndex, l.ProjectMemories, maybeOpenBackground)
 	if wroteSection {
-		b.WriteString("\n\n---\nEnd of background. Take the user's request and act on it with the tools available. Do not narrate or describe how the agent works.")
+		b.WriteString("\n\n---\nEnd of background. Take the user's request and act on it with the tools available. Do not narrate or describe how the agent works. ")
+		b.WriteString(saveNudge)
+	} else {
+		// Cold start: no USER.md, no YOTTACODE.md, no saved memories.
+		// This is when the nudge matters MOST — a store that never
+		// receives its first save never bootstraps — so the save nudge
+		// is appended even when there is no background block to close.
+		b.WriteString("\n\n")
+		b.WriteString(saveNudge)
 	}
 	return b.String()
 }
+
+// saveNudge is the proactive-memory closing line of the composed system
+// prompt. It sits at the very end on purpose: the closing words are the
+// most-attended instruction real estate in the prompt, and ending on
+// pure act-on-the-request framing taught models to treat memory_save as
+// out of scope for the turn. Appended both after the background block
+// and on cold start (see SystemPrompt).
+const saveNudge = "If this turn taught you something durable about the user or project — a preference, a correction, a validated approach, a fact you'd otherwise re-derive — persist it with memory_save before ending the turn."
 
 // writeMemorySection appends one scope's index + per-entry bodies.
 func writeMemorySection(b *strings.Builder, header, indexText string, entries []MemoryEntry, openBackground func()) {

@@ -219,6 +219,43 @@ Don't save:
 - One-off task instructions.
 - Anything sensitive (API keys, internal URLs, PII).
 
+### Proactive saving — reinforcement points
+
+Standing guidance in a system prompt loses the model's attention over a
+long agentic session — by the time something durable surfaces, the
+"when to save" section is thousands of tokens back. Three reinforcement
+points re-surface the capability at the moments that matter. All three
+are **reminders, not extractors**: the harness only picks the moment;
+whether and what to save stays the model's in-band judgment, and every
+reminder carries an explicit "if nothing qualifies, save nothing" out so
+models don't compliance-save junk.
+
+1. **Closing nudge (every turn).** The composed system prompt *ends* on
+   the save nudge — the most-attended instruction position — instead of
+   pure act-on-the-request framing. It appears even on a cold start with
+   zero memory sources on disk: a store that never receives its first
+   save never bootstraps.
+2. **Pre-compaction reminder.** When context usage first crosses
+   `context.warn_threshold`, the next user message carries a one-line
+   reminder to persist anything durable *before* auto-summarization
+   compacts the older turns away. The transcript shows a muted notice
+   when it arms; the reminder itself is model-facing only. It disarms
+   when usage drops back below the threshold.
+3. **Final turn on quit** (`[memory] final_turn_on_quit`, default
+   `true`). A graceful exit — `/quit` or `Ctrl+D` while idle — runs one
+   last visible turn prompting the model to save unsaved durable
+   learnings, then completes the quit when the turn ends. `Esc` or
+   `Ctrl+C` during the turn skips it (cancels and quits); `Ctrl+C` *as*
+   the quit gesture always exits immediately, no final turn. Sessions
+   with fewer than two turns started this launch quit instantly.
+
+The save-side behavior is gated by an eval mirroring the retrieval one:
+`go test ./internal/agent -run Proactivity -v` runs fixture turns that
+state durable facts mid-task against a local Ollama chat model (skipped
+when no tool-calling-capable model is available; deterministic
+prompt-content pins always run). See
+`internal/agent/memory_proactivity_eval_test.go`.
+
 ### Scope selection — cross-project learning
 
 Scope selection is critical for building knowledge that transfers across projects:

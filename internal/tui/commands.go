@@ -338,7 +338,11 @@ func isPathContinuation(c byte) bool {
 }
 
 func cmdQuit(m Model, _ []string) (Model, tea.Cmd) {
-	return m, tea.Quit
+	// Graceful exit: give the model one final turn to persist durable
+	// memories before the session context is gone (config
+	// [memory] final_turn_on_quit; skipped for low-activity sessions).
+	out, cmd := maybeStartExitSaveTurn(m)
+	return out.(Model), cmd
 }
 
 // cmdMaxIterations adjusts the runaway-loop guard mid-session. With no

@@ -49,7 +49,7 @@ type MemorySaveTool struct {
 func (t *MemorySaveTool) Name() string { return "memory_save" }
 
 func (t *MemorySaveTool) Description() string {
-	return "Persist a typed memory file under the user-scope or project-scope memory directory. If a memory with the same name already exists this updates it in place (the prior version is archived, never silently lost) — use memory_get first if you want to preserve parts you aren't changing. Updates the MEMORY.md index. Use this when the user states a durable preference, correction, or project fact you should remember in future sessions."
+	return "Persist a typed memory file under the user-scope or project-scope memory directory. Use this PROACTIVELY whenever you learn something durable — a user preference or correction, a validated approach, a project fact you'd otherwise re-derive, a hard-won debugging insight, a recurring pattern. Don't wait for the user to say \"remember this\": if future-you would want it in a later session, save it now, before the task moves on. If a memory with the same name already exists this updates it in place (the prior version is archived, never silently lost) — use memory_get first if you want to preserve parts you aren't changing. Updates the MEMORY.md index."
 }
 
 func (t *MemorySaveTool) Schema() map[string]any {
