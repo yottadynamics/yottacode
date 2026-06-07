@@ -183,7 +183,7 @@ func Run(ctx context.Context, opts cli.ChatOptions, prompt string) error {
 	}
 	if fresh {
 		composed := appendSkillsSection(composeSystemPrompt(baseSys, profile), skillsRes.Skills)
-		sys := memory.SystemPromptForSemantic(composed, mem, prompt, fileCfg.Retrieval, embedClient)
+		sys := memory.SystemPromptForSemantic(ctx, composed, mem, prompt, fileCfg.Retrieval, embedClient)
 		sess.Messages = append(sess.Messages, adapter.Message{
 			Role:           adapter.RoleSystem,
 			Content:        sys,
@@ -191,7 +191,7 @@ func Run(ctx context.Context, opts cli.ChatOptions, prompt string) error {
 		})
 	} else {
 		composed := appendSkillsSection(composeSystemPrompt(baseSys, profile), skillsRes.Skills)
-		recomposeSessionSystemPrompt(sess, memory.SystemPromptForSemantic(composed, mem, prompt, fileCfg.Retrieval, embedClient), len(composed))
+		recomposeSessionSystemPrompt(sess, memory.SystemPromptForSemantic(ctx, composed, mem, prompt, fileCfg.Retrieval, embedClient), len(composed))
 	}
 	// Auto-inject @<path> file references found in the prompt into the
 	// system prompt before the turn fires. Mirrors the TUI startTurn

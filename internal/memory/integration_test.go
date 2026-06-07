@@ -138,7 +138,7 @@ func TestIntegration_Semantic_Ollama(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.query, func(t *testing.T) {
-			out := SelectWithEmbeddings(entries, tc.query, cfg, client)
+			out := SelectWithEmbeddings(context.Background(), entries, tc.query, cfg, client)
 			if len(out) == 0 {
 				t.Fatalf("no results for %q", tc.query)
 			}

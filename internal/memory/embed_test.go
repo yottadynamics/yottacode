@@ -41,6 +41,27 @@ func TestEmbed_Success(t *testing.T) {
 	}
 }
 
+// TestEmbed_SendsKeepAlive pins the keep_alive request hint: without
+// it Ollama evicts the embedding model after ~5min idle, and the next
+// per-turn retrieval pays a multi-second cold load (the source of the
+// "first Enter after a pause" stall the retrieval move fixed).
+func TestEmbed_SendsKeepAlive(t *testing.T) {
+	var got embedRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewDecoder(r.Body).Decode(&got)
+		json.NewEncoder(w).Encode(embedResponse{Embedding: []float32{1}})
+	}))
+	defer srv.Close()
+
+	client := NewEmbedClient(srv.URL, "m")
+	if _, err := client.Embed(context.Background(), "text"); err != nil {
+		t.Fatalf("Embed: %v", err)
+	}
+	if got.KeepAlive != embedKeepAlive {
+		t.Errorf("keep_alive = %q, want %q", got.KeepAlive, embedKeepAlive)
+	}
+}
+
 func TestEmbed_HTTPError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)

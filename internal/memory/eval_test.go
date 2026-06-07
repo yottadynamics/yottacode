@@ -114,7 +114,7 @@ func buildEvalEntries(dir string) []MemoryEntry {
 // ranking and can score the expected memory's true position.
 func evalRankNames(entries []MemoryEntry, query, strategy string, client *EmbedClient) []string {
 	cfg := config.RetrievalConfig{Enabled: true, TopK: 0, MaxBytes: 0, MinScore: 0, Strategy: strategy, SemanticWeight: 0.4}
-	scored := SelectWithEmbeddingsScored(entries, query, cfg, client)
+	scored := SelectWithEmbeddingsScored(context.Background(), entries, query, cfg, client)
 	names := make([]string, len(scored))
 	for i, s := range scored {
 		names[i] = s.Entry.Name

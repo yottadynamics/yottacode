@@ -1,6 +1,7 @@
 package memory
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -254,7 +255,7 @@ func TestSelectAcrossScopes_SharedBudget(t *testing.T) {
 		{Scope: "project", Name: "p-other", Type: "reference", Body: "kubernetes notes"},
 	}
 	cfg := keywordCfg(2, 0)
-	gotUser, gotProject := selectAcrossScopes(user, project, "tests", cfg, nil)
+	gotUser, gotProject := selectAcrossScopes(context.Background(), user, project, "tests", cfg, nil)
 	if len(gotUser) != 1 || gotUser[0].Name != "u-prefs" {
 		t.Errorf("user-scope test entry should win one of the two slots; got %+v", gotUser)
 	}
@@ -383,7 +384,7 @@ func TestSelect_BM25_ScoresNormalizedToUnitRange(t *testing.T) {
 		entry("none", "kubernetes cluster configuration"),
 	}
 	cfg := bm25Cfg(0, 0)
-	scored := SelectWithEmbeddingsScored(in, "needle search", cfg, nil)
+	scored := SelectWithEmbeddingsScored(context.Background(), in, "needle search", cfg, nil)
 	if len(scored) == 0 {
 		t.Fatal("expected scored results")
 	}
@@ -533,7 +534,7 @@ func TestSystemPrompt_ProjectShadowsUser(t *testing.T) {
 func TestSelectAcrossScopes_ProjectShadowsUser(t *testing.T) {
 	user := []MemoryEntry{{Scope: "user", Name: "dup", Body: "u"}, {Scope: "user", Name: "u-only", Body: "x"}}
 	project := []MemoryEntry{{Scope: "project", Name: "dup", Body: "p"}}
-	gotUser, _ := selectAcrossScopes(user, project, "dup", keywordCfg(10, 0), nil)
+	gotUser, _ := selectAcrossScopes(context.Background(), user, project, "dup", keywordCfg(10, 0), nil)
 	for _, e := range gotUser {
 		if e.Name == "dup" {
 			t.Error("user 'dup' should be shadowed out by the project twin before ranking")
@@ -550,7 +551,7 @@ func TestSelect_Keyword_ScoresNormalizedToUnitRange(t *testing.T) {
 		entry("none", "kubernetes cluster configuration"),
 	}
 	cfg := keywordCfg(0, 0)
-	scored := SelectWithEmbeddingsScored(in, "needle search", cfg, nil)
+	scored := SelectWithEmbeddingsScored(context.Background(), in, "needle search", cfg, nil)
 	if len(scored) == 0 {
 		t.Fatal("expected scored results")
 	}
@@ -601,7 +602,7 @@ func TestScoreSemantic_BlendIsLive(t *testing.T) {
 
 	client := &EmbedClient{BaseURL: srv.URL, Model: "test-model", Timeout: 5 * time.Second}
 	cfg := config.RetrievalConfig{Enabled: true, TopK: 0, MinScore: 0, Strategy: "semantic", SemanticWeight: 0.4}
-	scored := SelectWithEmbeddingsScored(in, "needle", cfg, client)
+	scored := SelectWithEmbeddingsScored(context.Background(), in, "needle", cfg, client)
 
 	byName := map[string]float64{}
 	for _, s := range scored {
@@ -651,7 +652,7 @@ func TestScoreSemantic_WeightTunable(t *testing.T) {
 
 	score := func(weight float64, name string) float64 {
 		cfg := config.RetrievalConfig{Enabled: true, TopK: 0, MinScore: 0, Strategy: "semantic", SemanticWeight: weight}
-		for _, s := range SelectWithEmbeddingsScored(in, "needle", cfg, client) {
+		for _, s := range SelectWithEmbeddingsScored(context.Background(), in, "needle", cfg, client) {
 			if s.Entry.Name == name {
 				return s.Score
 			}
@@ -696,12 +697,54 @@ func TestScoreSemantic_HangingEmbedderBoundedByTimeout(t *testing.T) {
 	cfg := config.RetrievalConfig{Enabled: true, TopK: 0, MinScore: 0, Strategy: "semantic"}
 
 	start := time.Now()
-	scored := SelectWithEmbeddingsScored(in, "needle search", cfg, client)
+	scored := SelectWithEmbeddingsScored(context.Background(), in, "needle search", cfg, client)
 	if elapsed := time.Since(start); elapsed > 2*time.Second {
 		t.Fatalf("semantic retrieval blocked %v on a hanging embedder — must bound at the client timeout and fall back to BM25", elapsed)
 	}
 	if len(scored) == 0 || scored[0].Score != 1.0 {
 		t.Errorf("expected normalized BM25 fallback ranking; got %+v", scored)
+	}
+}
+
+// TestScoreSemantic_CanceledContextAbortsEmbed proves the turn-context
+// plumb behind the Enter-latency fix: retrieval now runs inside the
+// turn goroutine with the turn's cancelable context, so Esc must abort
+// an in-flight embed immediately — NOT wait out the client timeout —
+// and fall back to normalized BM25. The client timeout here is
+// deliberately huge so only ctx cancellation can unblock the call;
+// pre-fix (context.Background()) this test would hang ~30s and trip
+// the elapsed guard.
+func TestScoreSemantic_CanceledContextAbortsEmbed(t *testing.T) {
+	done := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-done:
+		case <-r.Context().Done():
+		}
+	}))
+	t.Cleanup(srv.Close)
+	t.Cleanup(func() { close(done) })
+
+	client := &EmbedClient{BaseURL: srv.URL, Model: "x", Timeout: 30 * time.Second}
+	in := []MemoryEntry{
+		entry("strong", "needle needle search index lookup"),
+		entry("weak", "needle once"),
+	}
+	cfg := config.RetrievalConfig{Enabled: true, TopK: 0, MinScore: 0, Strategy: "semantic"}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		cancel() // the Esc press
+	}()
+
+	start := time.Now()
+	scored := SelectWithEmbeddingsScored(ctx, in, "needle search", cfg, client)
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("canceled ctx must abort the embed immediately, not block %v", elapsed)
+	}
+	if len(scored) == 0 || scored[0].Score != 1.0 {
+		t.Errorf("expected normalized BM25 fallback after cancel; got %+v", scored)
 	}
 }
 
@@ -716,7 +759,7 @@ func TestSelect_Semantic_FallbackNormalized(t *testing.T) {
 	}
 	cfg := config.RetrievalConfig{Enabled: true, TopK: 0, MinScore: 0, Strategy: "semantic"}
 	dead := &EmbedClient{BaseURL: "http://127.0.0.1:1", Model: "x", Timeout: 200 * time.Millisecond}
-	scored := SelectWithEmbeddingsScored(in, "needle search", cfg, dead)
+	scored := SelectWithEmbeddingsScored(context.Background(), in, "needle search", cfg, dead)
 	if len(scored) == 0 {
 		t.Fatal("expected scored results")
 	}
