@@ -449,7 +449,12 @@ func TestLoadIssueTemplate_SkipsConfigAndForms(t *testing.T) {
 func TestLoadIssueTemplate_LowercaseLegacyPath(t *testing.T) {
 	// Regression: GitHub matches legacy template filenames
 	// case-insensitively; on case-sensitive filesystems the lookup
-	// must try both casings.
+	// must try both casings. The path is asserted case-insensitively
+	// because on a case-insensitive filesystem (macOS APFS — the CI
+	// runners) the uppercase candidate probe legitimately opens this
+	// lowercase file first, so the reported casing differs by OS. A
+	// single-casing candidate list would return "" on Linux, which
+	// still fails this assertion — the regression stays covered.
 	tmp := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(tmp, ".github"), 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
@@ -457,8 +462,8 @@ func TestLoadIssueTemplate_LowercaseLegacyPath(t *testing.T) {
 	writeFile(t, filepath.Join(tmp, ".github"), "issue_template.md", "## Lowercase body\n")
 
 	path, content, _ := loadIssueTemplate(tmp)
-	if path != ".github/issue_template.md" {
-		t.Errorf("path = %q; want .github/issue_template.md", path)
+	if !strings.EqualFold(path, ".github/issue_template.md") {
+		t.Errorf("path = %q; want .github/issue_template.md (any casing)", path)
 	}
 	if !strings.Contains(content, "Lowercase body") {
 		t.Errorf("content = %q", content)
