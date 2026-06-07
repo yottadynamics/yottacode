@@ -72,6 +72,11 @@ type Task struct {
 	// branch; the TUI shows it per task.
 	Branch   string
 	Worktree string
+	// Base is the commit SHA the dispatch worktree branched from. The
+	// session-exit sweep uses it to decide whether Branch ever gained
+	// commits (base..HEAD) before reclaiming an empty worktree. Empty for
+	// non-worktree subagents.
+	Base string
 	// BatchID groups the children of one dispatch call so the TUI can
 	// render them together and the parent can refer to the batch. Empty
 	// for standalone Agent dispatches.
