@@ -299,6 +299,10 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 	// as the PR tools.
 	reg.Register(&agent.GHIssueReadTool{Cwd: cwdRef, GH: ghClient})
 	reg.Register(&agent.GHIssueListTool{Cwd: cwdRef, GH: ghClient})
+	// gh_issue_context + gh_issue_create pair for /git-create-issue.
+	// Share the same github.Interface instance as the other issue tools.
+	reg.Register(&agent.GHIssueContextTool{Cwd: cwdRef, GH: ghClient})
+	reg.Register(&agent.GHIssueCreateTool{Cwd: cwdRef, GH: ghClient})
 	// git_push is paired with /git-push. The GH dependency is for
 	// the best-effort PR-URL lookup after a successful push — a
 	// nil client would skip the lookup silently, but registering

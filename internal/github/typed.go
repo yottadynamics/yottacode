@@ -509,6 +509,38 @@ func (c *TypedClient) AddPRComment(ctx context.Context, req AddPRCommentRequest)
 	return res, nil
 }
 
+// CreateIssue opens a new issue via REST.
+func (c *TypedClient) CreateIssue(ctx context.Context, req CreateIssueRequest) (CreateIssueResult, error) {
+	var res CreateIssueResult
+	cl, err := c.init(ctx)
+	if err != nil {
+		return res, err
+	}
+	owner, repo, err := c.resolveOwnerRepo(ctx, req.Owner, req.Repo)
+	if err != nil {
+		return res, err
+	}
+
+	newIssue := &gogithub.IssueRequest{
+		Title:     gogithub.String(req.Title),
+		Body:      gogithub.String(req.Body),
+		Labels:    &req.Labels,
+		Assignees: &req.Assignees,
+	}
+	created, resp, err := cl.Issues.Create(ctx, owner, repo, newIssue)
+	c.recordRate(resp)
+	if err != nil {
+		return res, fmt.Errorf("create issue: %w", classifyAPIError(err))
+	}
+	if created.HTMLURL != nil {
+		res.URL = *created.HTMLURL
+	}
+	if created.Number != nil {
+		res.Number = *created.Number
+	}
+	return res, nil
+}
+
 // resolvePRNumber turns Ref (number or branch name) into a PR
 // number int. Numeric refs short-circuit without an API call;
 // branch refs trigger PullRequests.List filtered by head and

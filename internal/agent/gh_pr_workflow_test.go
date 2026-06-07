@@ -56,6 +56,10 @@ type fakeGH struct {
 	addPRCommentErr   error
 	addPRCommentReq   github.AddPRCommentRequest
 	addPRCommentCalls int
+	createIssueRes    github.CreateIssueResult
+	createIssueErr    error
+	createIssueReq    github.CreateIssueRequest
+	createIssueCalls  int
 }
 
 func (f *fakeGH) CreatePR(_ context.Context, req github.CreatePRRequest) (github.CreatePRResult, error) {
@@ -98,6 +102,12 @@ func (f *fakeGH) AddPRComment(_ context.Context, req github.AddPRCommentRequest)
 	f.addPRCommentCalls++
 	f.addPRCommentReq = req
 	return f.addPRCommentRes, f.addPRCommentErr
+}
+
+func (f *fakeGH) CreateIssue(_ context.Context, req github.CreateIssueRequest) (github.CreateIssueResult, error) {
+	f.createIssueCalls++
+	f.createIssueReq = req
+	return f.createIssueRes, f.createIssueErr
 }
 
 func (f *fakeGH) RateLimit() github.RateLimitSnapshot {

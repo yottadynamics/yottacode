@@ -23,20 +23,22 @@ type countingInner struct {
 	readIssueCount     int
 	listIssuesCount    int
 	addCommentCount    int
+	createIssueCount   int
 
-	prRes        PRDetails
-	prErr        error
-	diffRes      string
-	diffErr      error
-	checksRes    []CheckRun
-	checksErr    error
-	updatePRRes  UpdatePRResult
-	createPRRes  CreatePRResult
-	issueRes     IssueDetails
-	issueErr     error
-	issuesRes    []IssueSummary
-	issuesErr    error
-	commentRes   AddPRCommentResult
+	prRes          PRDetails
+	prErr          error
+	diffRes        string
+	diffErr        error
+	checksRes      []CheckRun
+	checksErr      error
+	updatePRRes    UpdatePRResult
+	createPRRes    CreatePRResult
+	issueRes       IssueDetails
+	issueErr       error
+	issuesRes      []IssueSummary
+	issuesErr      error
+	commentRes     AddPRCommentResult
+	createIssueRes CreateIssueResult
 }
 
 func (c *countingInner) ReadPR(_ context.Context, req ReadPRRequest) (PRDetails, error) {
@@ -93,6 +95,13 @@ func (c *countingInner) AddPRComment(_ context.Context, req AddPRCommentRequest)
 	c.addCommentCount++
 	c.mu.Unlock()
 	return c.commentRes, nil
+}
+
+func (c *countingInner) CreateIssue(_ context.Context, req CreateIssueRequest) (CreateIssueResult, error) {
+	c.mu.Lock()
+	c.createIssueCount++
+	c.mu.Unlock()
+	return c.createIssueRes, nil
 }
 
 func (c *countingInner) RateLimit() RateLimitSnapshot {

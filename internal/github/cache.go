@@ -304,3 +304,9 @@ func (c *CachingClient) RateLimit() RateLimitSnapshot {
 func (c *CachingClient) AddPRComment(ctx context.Context, req AddPRCommentRequest) (AddPRCommentResult, error) {
 	return c.Inner.AddPRComment(ctx, req)
 }
+
+// CreateIssue is a write — passes through. A newly opened issue
+// didn't exist before so there's no stale entry to evict.
+func (c *CachingClient) CreateIssue(ctx context.Context, req CreateIssueRequest) (CreateIssueResult, error) {
+	return c.Inner.CreateIssue(ctx, req)
+}
