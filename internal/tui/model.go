@@ -3367,13 +3367,12 @@ func (m Model) startTurnWithDisplay(input, displayLabel string) (tea.Model, tea.
 			"no provider configured — run /provider add or /provider use to set one up"))
 		return m, nil
 	}
-	// Per-turn retrieval: re-render the system prompt with memory
-	// bodies scored against this turn's user input. USER.md /
-	// YOTTACODE.md and both MEMORY.md indexes always inject in full;
-	// only per-entry memory bodies are filtered. See cmd_retrieval.go
-	// for the rebuild logic. Soft on failure — a disk error leaves
-	// the existing prompt intact and the turn proceeds.
-	m.rebuildSystemPromptForTurn(input)
+	// NOTE: the per-turn system-prompt rebuild (memory retrieval) runs
+	// inside the turn goroutine below, not here. The semantic strategy
+	// embeds the query via Ollama, and a cold model load can block for
+	// the full embed timeout — run synchronously on Enter, that froze
+	// the whole UI until the user's message echoed. See the goroutine
+	// body and rebuildSystemPromptForTurn for the ordering contract.
 
 	// Detect @<path> tokens in the user input and inject the resolved
 	// file contents into the system prompt before the turn fires. The
@@ -3427,9 +3426,9 @@ func (m Model) startTurnWithDisplay(input, displayLabel string) (tea.Model, tea.
 	// HISTORY copy of this message only — the checkpoint label, input
 	// history, and transcript rendering below all keep the user's own
 	// text. Appended after fileref rewriting so the reminder can't
-	// interfere with @path resolution, and after
-	// rebuildSystemPromptForTurn(input) so its wording doesn't skew
-	// memory retrieval scoring for the turn.
+	// interfere with @path resolution. Retrieval scoring is immune to
+	// its wording: the turn goroutine's rebuild scores against the
+	// `input` parameter, never this content string.
 	content := input
 	if m.memoryNudgePending {
 		m.memoryNudgePending = false
@@ -3491,6 +3490,25 @@ func (m Model) startTurnWithDisplay(input, displayLabel string) (tea.Model, tea.
 				close(ev)
 				errCh <- fmt.Errorf("agent turn panicked: %v", r)
 			}
+		}()
+		// Per-turn retrieval: re-render the system prompt with memory
+		// bodies scored against this turn's user input. USER.md /
+		// YOTTACODE.md and both MEMORY.md indexes always inject in
+		// full; only per-entry memory bodies are filtered. Soft on
+		// failure — a disk error leaves the existing prompt intact.
+		//
+		// Runs HERE — off the Update goroutine — because the semantic
+		// strategy's Ollama embed can block 1-2s on a cold model load;
+		// under the spinner that cost reads as ordinary turn latency
+		// instead of frozen input, and turnCtx lets Esc abort the
+		// embed. histMu serializes the Messages[0] rewrite against
+		// Update-goroutine reads (watermark, /context, pickers); the
+		// inner closure guarantees the unlock even if the rebuild
+		// panics, so the outer recover can't strand a dead lock.
+		func() {
+			m.histMu.Lock()
+			defer m.histMu.Unlock()
+			m.rebuildSystemPromptForTurn(turnCtx, input)
 		}()
 		err := agent.Turn(turnCtx, m.cfg, &m.sess.Messages, ev, dec)
 		close(ev)

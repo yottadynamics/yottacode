@@ -77,6 +77,8 @@ The agent reads from four distinct on-disk locations every turn. Two are unfilte
 
 The rebuild runs at the start of every turn (`internal/tui/cmd_retrieval.go`), so a `memory_save` mid-conversation lands in the next turn's prompt without an explicit reload. Disk errors leave the previous prompt in place — they don't fail the turn.
 
+It executes inside the turn goroutine, not on the input thread: the `semantic` strategy embeds the query via a local Ollama call, and a cold model load can take seconds — running it before the turn used to freeze the input until the user's message echoed. Off the input thread the cost reads as ordinary model latency under the spinner, and Esc cancels an in-flight embed along with the rest of the turn. Embed requests also send `keep_alive: 30m` so Ollama keeps the model resident between turns instead of evicting it after its default ~5 minutes (each successful call re-extends the lease; an active session pays the cold load at most once).
+
 ---
 
 ## Layer 1 — Trust anchors
