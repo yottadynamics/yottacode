@@ -7,6 +7,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/yottadynamics/yottacode/internal/adapter"
 	"github.com/yottadynamics/yottacode/internal/agent"
 )
 
@@ -111,16 +112,63 @@ func togglePlanMode(m Model) (Model, tea.Cmd) {
 	state.PlanFile = ""
 	applyPlanFileToWriteTools(m.cfg.Registry, "")
 	state.Active.Store(true)
-	// Two-line entry: bold headline carries the mode + the prompt;
 	// Card-shaped entry: header + body + footer in the gutter style
-	// shared with tool-output cards. The exit hint lives in the footer
-	// (not in the persistent banner) so it surfaces once on entry
-	// without crowding the cmdline frame on every redraw. Trailing
-	// blank line separates the card from the live banner that renders
-	// immediately below it.
-	m.appendLine(renderPlanModeEntryCard())
+	// shared with tool-output cards. The footer carries the exit keys;
+	// the persistent banner repeats them (width permitting) so the
+	// "how do I leave" answer survives once the card scrolls away.
+	// Trailing blank line separates the card from the live banner that
+	// renders immediately below it.
+	m.appendLine(renderPlanModeEntryCard(planEntryHintUserToggled))
 	m.appendLine("")
 	return m, nil
+}
+
+// enterPlanModeFromTool is the approve path of the enter_plan_mode
+// card — the model requested plan mode and the user pressed [Y]. Runs
+// the same entry sequence as togglePlanMode (exit auto, clear stale
+// allowances, flip the shared flag) and then immediately derives the
+// plan file from the turn's triggering user message, since unlike the
+// /plan path there IS a current message to slug — the model should be
+// able to start writing the plan this turn, not after the next one.
+//
+// Idempotent on the already-active edge (a stale-schema call approved
+// after a mid-turn Shift+Tab entry): keeps the existing plan file and
+// emits no duplicate entry card.
+func enterPlanModeFromTool(m *Model) {
+	state := m.cfg.PlanMode
+	if state == nil {
+		return
+	}
+	if !state.IsActive() {
+		if m.cfg.AutoMode.IsActive() {
+			exitAutoMode(m)
+		}
+		state.PlanFile = ""
+		applyPlanFileToWriteTools(m.cfg.Registry, "")
+		state.Active.Store(true)
+		m.appendLine(renderPlanModeEntryCard(planEntryHintModelRequested))
+		m.appendLine("")
+	}
+	if state.PlanFile == "" {
+		maybeFillPlanFile(m, m.lastUserMessage())
+	}
+}
+
+// lastUserMessage returns the most recent user-role message in the
+// session — the message that triggered the in-flight turn. Used to
+// derive the plan-file slug when the model enters plan mode mid-turn
+// via enter_plan_mode. "" when no user message exists yet (the gate's
+// "no plan file resolved yet" copy covers that edge).
+func (m *Model) lastUserMessage() string {
+	if m.sess == nil {
+		return ""
+	}
+	for i := len(m.sess.Messages) - 1; i >= 0; i-- {
+		if m.sess.Messages[i].Role == adapter.RoleUser {
+			return m.sess.Messages[i].Content
+		}
+	}
+	return ""
 }
 
 // exitPlanMode is the cleanup half of togglePlanMode, also reused on
@@ -142,9 +190,10 @@ func exitPlanMode(m *Model) {
 	}
 	if planFile != "" {
 		m.appendLine(stylePlanBannerLabel.Render(PlanModeIcon+" plan mode exited") +
-			" " + stylePlanBannerHint.Render("— plan file kept at "+abbrevHome(planFile)))
+			" " + stylePlanBannerHint.Render("— plan file kept at "+abbrevHome(planFile)+" · re-enter with /plan or Shift+Tab"))
 	} else {
-		m.appendLine(stylePlanBannerLabel.Render(PlanModeIcon + " plan mode exited"))
+		m.appendLine(stylePlanBannerLabel.Render(PlanModeIcon+" plan mode exited") +
+			" " + stylePlanBannerHint.Render("— re-enter with /plan or Shift+Tab"))
 	}
 }
 

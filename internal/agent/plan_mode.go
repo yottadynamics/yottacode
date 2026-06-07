@@ -249,6 +249,40 @@ func IsPlanFileWrite(name, argsJSON, planFile string) bool {
 	return false
 }
 
+// isPlanBoundaryTool reports whether this tool transitions plan mode
+// itself (enter_plan_mode / exit_plan_mode). Boundary tools NEVER
+// auto-approve — not under yolo, not under auto mode, not under
+// --yolo's BypassPermissions, not via a permissions Allow rule —
+// because the approval round-trip IS the handshake in which the TUI
+// flips the shared mode state before forwarding the decision. Any
+// auto-approval path would skip that flip: the tool would report a
+// mode change the session never made, and the model would plan
+// against gates that aren't there (or implement against gates that
+// still are).
+func isPlanBoundaryTool(name string) bool {
+	return name == "enter_plan_mode" || name == "exit_plan_mode"
+}
+
+// planModeSchemaFilter returns the adapter-tools filter streamIteration
+// applies per iteration: exit_plan_mode is advertised only while plan
+// mode is active; enter_plan_mode only while it is NOT. Everything
+// else always passes. A flip mid-turn (Shift+Tab, or the enter/exit
+// handshake itself) takes effect on the next iteration's schema; a
+// stale-schema call that slips through in between is still caught by
+// PlanModeGate (enter_plan_mode is not in its allowlist) or is a
+// harmless no-op the TUI handles idempotently.
+func planModeSchemaFilter(planActive bool) func(string) bool {
+	return func(name string) bool {
+		switch name {
+		case "exit_plan_mode":
+			return planActive
+		case "enter_plan_mode":
+			return !planActive
+		}
+		return true
+	}
+}
+
 // PlanModeGate is the read/write classifier the loop consults before
 // every tool call when plan mode is active. Returns ("", false) when
 // the call may proceed, or (errorString, true) when the call must be

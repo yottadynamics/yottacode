@@ -13,8 +13,9 @@ import "sync/atomic"
 // entering yolo turns the other two off. The loop-level gate doesn't
 // enforce this on its own; the TUI does.
 //
-// Intentionally NOT in the Shift+Tab mode cycle — you have to type
-// /yolo to enter so it can't be reached by accident.
+// Intentionally NOT in the Shift+Tab mode cycle and not slash-invocable
+// — the only way in is launching with --yolo, so it can't be reached
+// by accident mid-session.
 type YoloModeState struct {
 	Active atomic.Bool
 }

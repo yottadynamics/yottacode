@@ -94,7 +94,7 @@ Inline rendering keeps your scrollback intact. Markdown-rendered assistant outpu
 
 ### Repo-Aware Tool Surface
 
-Thirty built-in tools spanning reads, writes, filesystem, search, git helpers (status / diff / blame / log / commit / checkpoints / rollback / file-at-revision), bash, tests, the `todo_write` working-plan tracker, and the `exit_plan_mode` plan-approval surface — each with explicit approval policy.
+Forty built-in tools spanning reads, writes, filesystem, search, git helpers (status / diff / blame / log / commit / checkpoints / rollback / file-at-revision), bash, tests, the `todo_write` working-plan tracker, and the `enter_plan_mode` / `exit_plan_mode` plan-mode surface — each with explicit approval policy.
 
 See [`docs/tools.md`](docs/tools.md) for the full list.
 
@@ -122,7 +122,9 @@ Ship your own under `.yottacode/agents/<name>.md` (project) or `~/.yottacode/age
 - **`[A]`** Approve — enter auto mode, skip per-tool prompts during implementation
 - **`[M]`** Manual — plan mode exits, per-tool prompts continue as normal
 
-**Auto mode** (`Shift+Tab` from normal, or `--permission-mode auto`) skips approval friction when you trust a multi-step implementation. `run_bash`, `git_commit`, `git_checkpoint`, and `rollback` remain in the safety floor and still prompt. `Shift+Tab` cycles: **normal** → **auto** → **plan** → **normal**.
+You can also just ask for it: "make a plan first" / "drop into plan mode" makes the agent call `enter_plan_mode`, which shows a `[Y]/[N]` confirmation card — on `[Y]` the session switches to plan mode and the plan file is derived from your request. The agent cannot enable auto mode or skip approvals by itself; permission escalation always goes through your keys or startup flags.
+
+**Auto mode** (`Shift+Tab` from normal, or `--permission-mode auto`) skips approval friction when you trust a multi-step implementation. `run_bash`, `git_commit`, `git_checkpoint`, and `rollback` remain in the safety floor and still prompt. `Shift+Tab` cycles: **normal** → **auto** → **plan** → **normal**, and works mid-turn — the new mode applies from the agent's next tool call, so you can flip auto on partway through a long implementation (or drop back to read-only plan mode) without killing the turn.
 
 > The permissions-bypass overlay (`--yolo`) is startup-only; there is no in-TUI toggle. See [`docs/tui-slash-commands.md`](docs/tui-slash-commands.md).
 

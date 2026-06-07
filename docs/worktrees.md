@@ -113,11 +113,11 @@ disposable on the way out:
 1. yottacode --worktree feature-x   # cwd = ~/.yottacode/worktrees/<slug>/feature-x/, branch = worktree-feature-x
                                     # (or: agent calls enter_worktree, you approve once)
 2. /plan                            # still in worktree, read-only gate on
+                                    # (or: ask the agent to plan — it calls enter_plan_mode, you approve)
 3. (write plan)                     # plan file lands in ~/.yottacode/plans/
-4. ExitPlanMode                     # still in worktree, normal mode
-5. /auto                            # still in worktree, auto mode active
-6. (agent executes the plan)        # edits land inside the worktree only
-7. agent calls exit_worktree        # clean: auto-remove; dirty: keep/remove prompt
+4. exit_plan_mode → press [A]       # still in worktree; plan approved, auto mode active
+5. (agent executes the plan)        # edits land inside the worktree only
+6. agent calls exit_worktree        # clean: auto-remove; dirty: keep/remove prompt
 ```
 
 Three independent safety layers stacked:
@@ -133,8 +133,8 @@ Three independent safety layers stacked:
 
 **Persistence:** worktree state is filesystem + git; mode is a
 permission policy. They're orthogonal — a mode flip never touches
-the worktree. Switching between `/plan`, `/auto`, and the default
-mode while you're inside a worktree leaves you in the same
+the worktree. Cycling plan/auto/normal with `Shift+Tab` (or `/plan`)
+while you're inside a worktree leaves you in the same
 worktree, on the same branch, with the same uncommitted state.
 Concurrent yottacode in two worktrees of the same repo is safe —
 distinct cwds, distinct session records.

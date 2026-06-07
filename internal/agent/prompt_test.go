@@ -53,6 +53,7 @@ var canonicalTools = []string{
 	"run_bash",
 	"git",
 	"todo_write",
+	"enter_plan_mode",
 	"exit_plan_mode",
 	"Skill",
 }
@@ -84,6 +85,15 @@ func TestDefaultSystemPrompt_KeepsActionDirectives(t *testing.T) {
 		"Multi-step planning",
 		"call todo_write BEFORE you start work",
 		"Do NOT call todo_write for trivial single-step requests",
+		// Mode-switching honesty: the model may REQUEST plan mode via
+		// enter_plan_mode but can never self-escalate to auto/yolo,
+		// and must never claim a mode changed when it didn't. This
+		// copy is what stops the "Okay, I'm in plan mode now"
+		// role-play failure.
+		"Mode switching",
+		"You can REQUEST plan mode yourself",
+		"You can NOT enable auto mode",
+		"NEVER claim a mode changed",
 		// Large-file read guidance: discourages the chunked-pagination
 		// reflex (L0+100, L100+100, …) that wastes turns and context
 		// on a file that fits in a single read.

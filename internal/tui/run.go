@@ -217,9 +217,9 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 
 	// Mode flags shared between LoopConfig and the TUI Model:
 	//   - plan (Shift+Tab cycle + /plan slash + --permission-mode plan
-	//     startup flag + plan-card [Y])
+	//     startup flag + model-requested enter_plan_mode)
 	//   - auto (Shift+Tab cycle + --permission-mode auto startup flag
-	//     + plan-card [Y]; no slash command, mirroring Claude Code)
+	//     + plan-card [A]; no slash command, mirroring Claude Code)
 	//   - yolo (--yolo startup flag only; no
 	//     slash command, no keybinding — opt-in once per process)
 	// Plan and auto are mutually exclusive; yolo is an orthogonal
@@ -349,12 +349,15 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 	reg.Register(&agent.MemoryGetTool{Cwd: cwdRef})
 	reg.Register(&agent.GitTool{Cwd: cwdRef})
 	reg.Register(&agent.TodoWriteTool{Store: planStore})
-	// ExitPlanModeTool is registered with a nil Approve callback at
-	// startup; cmdPlan wires the callback (and the plan-file slug)
-	// on /plan entry. The adapter-tools filter in the loop hides
-	// this tool from the model's schema until plan mode is active,
-	// so the nil-callback path is unreachable from the model.
+	// The plan-mode boundary pair. The loop's schema filter advertises
+	// exit_plan_mode only while plan mode is active and enter_plan_mode
+	// only while it is NOT, and both always route through the approval
+	// modal — the TUI's [Y]/[N] / [A][M][L][K] handlers are what
+	// actually flip the shared PlanModeState before forwarding the
+	// decision. EnterPlanModeTool carries the state pointer so its
+	// Execute can report the resolved plan-file path to the model.
 	reg.Register(&agent.ExitPlanModeTool{})
+	reg.Register(&agent.EnterPlanModeTool{State: planMode})
 
 	// Subagents: load definitions (built-in + ~/.yottacode/agents +
 	// .yottacode/agents) and register the Agent dispatch tool. The

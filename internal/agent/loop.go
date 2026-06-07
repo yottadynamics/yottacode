@@ -60,10 +60,11 @@ type LoopConfig struct {
 	// flip takes effect on the next iteration with no reconfiguration.
 	PlanMode *PlanModeState
 
-	// AutoMode is the shared auto-mode flag the TUI flips via /auto,
-	// Shift+Tab, or the plan-card [Y] hotkey. When active, the loop
-	// auto-approves non-safety-floor tool calls (no modal) so the
-	// model can implement a multi-step plan without per-edit friction.
+	// AutoMode is the shared auto-mode flag the TUI flips via
+	// Shift+Tab, the plan-card [A] hotkey, or the --permission-mode
+	// auto startup flag. When active, the loop auto-approves
+	// non-safety-floor tool calls (no modal) so the model can
+	// implement a multi-step plan without per-edit friction.
 	// run_bash and git mutations remain in the safety floor — see
 	// IsAutoModeSafetyFloor.
 	AutoMode *AutoModeState
@@ -433,15 +434,11 @@ func streamIteration(
 	history []adapter.Message,
 	events chan<- Event,
 ) (*adapter.Message, error) {
-	// Hide exit_plan_mode from the schema when plan mode is off — the
-	// model should never see (or invent) the call outside of /plan.
+	// Gate the plan-mode boundary tools by the live mode — the model
+	// should never see (or invent) exit_plan_mode outside of plan mode,
+	// nor enter_plan_mode while it's already in it.
 	planActive := cfg.PlanMode.IsActive()
-	tools := cfg.Registry.AsAdapterToolsFiltered(func(name string) bool {
-		if name == "exit_plan_mode" {
-			return planActive
-		}
-		return true
-	})
+	tools := cfg.Registry.AsAdapterToolsFiltered(planModeSchemaFilter(planActive))
 	// When plan mode is active, prepend a fresh system message carrying
 	// the plan-mode addendum (path + current contents of the plan
 	// file). Re-read on every iteration so the model always sees the
@@ -815,11 +812,25 @@ func executeToolCallImpl(
 	}
 
 	// Mode-priority approval chain. Order matters:
-	//   1. Yolo: auto-allow every tool (no safety floor).
+	//   0. Plan-mode boundary tools: always prompt (the approval is
+	//      the TUI's mode-flip handshake — see isPlanBoundaryTool).
+	//   1. Yolo: auto-allow every other tool (no safety floor).
 	//   2. Plan-mode auto-allow for the plan file.
 	//   3. Auto-mode auto-allow for non-floor tools.
 	//   4. Default: permissions verdict → tool's own RequiresApproval.
 	switch {
+	case isPlanBoundaryTool(tool.Name()):
+		// Without this case, yolo / auto / bypass / a permissions
+		// Allow rule would ApprovalAuto an enter/exit_plan_mode call:
+		// Execute would report "mode changed" while the TUI never
+		// flipped the shared state — the model then plans with no
+		// read-only gate behind it, or "implements" while every write
+		// is still being blocked. The card is also where the user
+		// picks HOW to proceed ([A]uto vs [M]anual on exit), which no
+		// auto-approval source can answer.
+		if denied, savedForLater, err := promptForApproval(ctx, cfg, tool, tc, preview, events, decisions); err != nil || denied || savedForLater {
+			return deniedResultForMultimodal(tool.Name(), denied, savedForLater, err)
+		}
 	case cfg.YoloMode.IsActive():
 		if err := send(ctx, events, ApprovalAuto{
 			ToolName: tool.Name(), Preview: preview, Source: "yolo-mode",
@@ -858,7 +869,10 @@ func executeToolCallImpl(
 			}
 		default:
 			if tool.RequiresApproval(tc.ArgsJSON) {
-				if cfg.BypassPermissions && tool.Name() != "exit_plan_mode" {
+				// No boundary-tool carve-out needed here: case 0 of the
+				// mode-priority switch catches enter/exit_plan_mode
+				// before bypass is ever consulted.
+				if cfg.BypassPermissions {
 					if err := send(ctx, events, ApprovalAuto{
 						ToolName: tool.Name(), Preview: preview, Source: "bypass-permissions",
 					}); err != nil {
@@ -1127,8 +1141,13 @@ func deniedResultFor(toolName string, denied, savedForLater bool, err error) (st
 		return "user deferred this action", true, nil
 	}
 	if denied {
-		if toolName == "exit_plan_mode" {
+		switch toolName {
+		case "exit_plan_mode":
 			return ExitPlanModeRefusalMessage, true, nil
+		case "enter_plan_mode":
+			// "Denied" here means the user wants to stay in the
+			// current mode — steer the model to continue, not retry.
+			return EnterPlanModeRefusalMessage, true, nil
 		}
 		return "denied by user", true, nil
 	}

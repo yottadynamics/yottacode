@@ -1,7 +1,7 @@
 # Built-in tools
 
-Thirty-nine tools ship in `internal/agent` (thirty-seven always-on plus `todo_write`
-and `exit_plan_mode`). The model sees their JSON-schema parameters via the
+Forty tools ship in `internal/agent` (thirty-seven always-on plus `todo_write`
+and the `enter_plan_mode` / `exit_plan_mode` pair). The model sees their JSON-schema parameters via the
 OpenAI tools API; the TUI renders each invocation as a bordered card with a
 verb-style header (see [How tool calls render in the TUI](#how-tool-calls-render-in-the-tui)).
 All paths are resolved against the agent's working directory (absolute paths
@@ -52,6 +52,7 @@ In addition to the built-ins, **MCP tools** register dynamically when an `[[mcp_
 | [`run_bash`](#run_bash) | required | Shell command via `/bin/sh -c` |
 | [`git`](#git) | varies | Unified git invocation; read-only auto-runs, mutations prompt |
 | [`todo_write`](#todo_write) | none | Maintain the agent's working task plan, rendered as a card |
+| [`enter_plan_mode`](#enter_plan_mode) | required | Only callable OUTSIDE plan mode; requests the read-only planning state via a [Y]/[N] card |
 | [`exit_plan_mode`](#exit_plan_mode) | required | Only callable in `/plan` mode; presents the plan for user approval |
 | [`Agent`](#agent) | none | Dispatch a typed subagent that runs in its own context window; see [subagents.md](subagents.md) |
 
@@ -781,6 +782,39 @@ todos are only added in a follow-up `todo_write` call after the user has
 explicitly agreed to the design, so the plan never pre-stages unapproved
 work. Pass an empty list to clear the plan; the live card disappears and
 no end-of-turn snapshot is emitted.
+
+## enter_plan_mode
+
+The model's request to switch the session into plan mode — the surface behind
+"make a plan first" / "drop into plan mode" asked in natural language. Mirrors
+Claude Code's `EnterPlanMode`. Only advertised while plan mode is OFF (the
+schema filter is the inverse of `exit_plan_mode`'s), and registered in the
+TUI build only — oneshot has no approval surface to host the handshake.
+
+| Param | Type | Default | Notes |
+|---|---|---|---|
+| _(none)_ | — | — | The plan topic comes from the conversation; the plan file is derived from the turn's user message |
+
+The call renders a two-hotkey confirmation card:
+
+- `[Y] enter plan mode` (also `Enter`) — runs the same entry sequence as `/plan`
+  (exits auto mode if on, flips the shared state), then derives the plan file
+  from the message that triggered the turn — so the agent can start writing
+  the plan in the same turn instead of waiting for your next message.
+- `[N] stay in current mode` — declines; the model is steered to continue in
+  the current mode and not re-request.
+
+`enter_plan_mode` NEVER auto-approves — not in auto mode, not under `--yolo`,
+not via a permissions Allow rule. The approval round-trip is the handshake in
+which the TUI actually flips the mode state; skipping it would tell the model
+"entered plan mode" while the session never moved. The same guard applies to
+`exit_plan_mode`. There is deliberately no model-side way to enter auto mode
+or bypass: the agent can ask to *restrict* its own permissions, never to
+escalate them.
+
+Subagents never see this tool (or `exit_plan_mode`) — children inherit the
+parent's plan-mode state by pointer, and only the top-level loop may
+transition it.
 
 ## exit_plan_mode
 

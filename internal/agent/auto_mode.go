@@ -19,9 +19,11 @@ import (
 // their own — they just observe whichever flag is set.
 //
 // The pointer is shared between LoopConfig and the TUI Model so a
-// flip from /auto, Shift+Tab, or the plan-card [Y] hotkey takes
-// effect on the next iteration with no reconstruction. atomic.Bool
-// keeps that benign race detector-clean.
+// flip from Shift+Tab, the plan-card [A] hotkey, or the
+// --permission-mode auto startup flag takes effect on the next
+// iteration with no reconstruction. atomic.Bool keeps that benign
+// race detector-clean. (There is deliberately no /auto slash command
+// — see the registry comment in tui/commands.go.)
 type AutoModeState struct {
 	Active atomic.Bool
 }

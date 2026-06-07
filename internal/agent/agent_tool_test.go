@@ -240,7 +240,7 @@ func TestAgentTool_ParallelSafe(t *testing.T) {
 	}
 }
 
-func TestAgentTool_ExcludesExitPlanMode(t *testing.T) {
+func TestAgentTool_ExcludesPlanBoundaryTools(t *testing.T) {
 	cfg := subagents.AgentConfig{
 		Name:        "x",
 		Description: "x",
@@ -249,9 +249,16 @@ func TestAgentTool_ExcludesExitPlanMode(t *testing.T) {
 	}
 	tool, parent := newTestAgentTool(t, []subagents.AgentConfig{cfg}, nil, false)
 	parent.Register(&ExitPlanModeTool{})
+	parent.Register(&EnterPlanModeTool{State: &PlanModeState{}})
 	child := tool.buildChildRegistry(&cfg)
+	// Children share the parent's plan-mode state by pointer; only the
+	// top-level loop may transition it, so neither boundary tool may
+	// reach a child.
 	if _, ok := child.Get("exit_plan_mode"); ok {
 		t.Errorf("child registry should not contain exit_plan_mode")
+	}
+	if _, ok := child.Get("enter_plan_mode"); ok {
+		t.Errorf("child registry should not contain enter_plan_mode")
 	}
 }
 
