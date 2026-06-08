@@ -11,6 +11,7 @@ import (
 
 	"github.com/yottadynamics/yottacode/internal/adapter"
 	"github.com/yottadynamics/yottacode/internal/agent"
+	"github.com/yottadynamics/yottacode/internal/subagents"
 )
 
 func redirectHome(t *testing.T) string {
@@ -219,6 +220,34 @@ func TestSaveLoad_TodosRoundtrip(t *testing.T) {
 	}
 	if loaded.Todos[1].Status != agent.TodoInProgress || loaded.Todos[1].Content != "edit file" {
 		t.Errorf("middle Todo did not round-trip: %+v", loaded.Todos[1])
+	}
+}
+
+// TestSaveLoad_SubagentTasksRoundtrip: the persisted subagent task index
+// survives Save/Load so its task-ids resolve on a later resume.
+func TestSaveLoad_SubagentTasksRoundtrip(t *testing.T) {
+	redirectHome(t)
+	s, err := New("m", "/proj")
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	s.SubagentTasks = []subagents.TaskRecord{
+		{ID: "task0000000000a1", AgentType: "review", Status: subagents.TaskCompleted, Result: "found 2 bugs", Background: true, TokensUsed: 4096},
+		{ID: "task0000000000b2", AgentType: "code-verifier", Status: subagents.TaskErrored, Errored: true, Result: "could not refute"},
+	}
+	if err := s.Save(); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	loaded, err := Load(s.ID)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(loaded.SubagentTasks) != 2 {
+		t.Fatalf("SubagentTasks len = %d, want 2", len(loaded.SubagentTasks))
+	}
+	got := loaded.SubagentTasks[0]
+	if got.ID != "task0000000000a1" || got.Status != subagents.TaskCompleted || got.Result != "found 2 bugs" || got.TokensUsed != 4096 {
+		t.Errorf("first record did not round-trip: %+v", got)
 	}
 }
 

@@ -295,6 +295,10 @@ type SubagentBackgroundDone struct {
 	TokensUsed int
 	ToolCalls  int    // child's tool-call count, for inline stats rendering
 	Model      string // model the child ran on when task-routed; "" = inherited the parent's model
+	// NotifyOnDone mirrors the spawning Agent call's notify_on_done: when
+	// true the TUI wakes the model with this result (starts a turn that
+	// injects it) instead of only painting the completion banner.
+	NotifyOnDone bool
 	// Branch / BatchID are populated for dispatch background workers.
 	Branch  string
 	BatchID string

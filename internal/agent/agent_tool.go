@@ -184,6 +184,15 @@ type AgentTool struct {
 	// nobody will see.
 	AllowBackground bool
 
+	// MaxSessionTokens caps the cumulative ESTIMATED tokens spent across
+	// all subagent runs this session. A new spawn is rejected (with a
+	// recoverable error the model relays) once the registry's
+	// TotalTokensUsed reaches this ceiling — the session-wide backstop the
+	// per-child iteration cap and the concurrency cap can't provide. 0
+	// disables the budget (unbounded). Wired from
+	// config.SubagentSessionTokenBudget by the TUI/oneshot setup.
+	MaxSessionTokens int
+
 	// SystemPromptSuffix is appended to the agent definition's body
 	// when building the child's system prompt. Used to inject runtime
 	// context the static config can't know (currently empty; reserved
@@ -250,6 +259,10 @@ func (t *AgentTool) Schema() map[string]any {
 				"type":        "boolean",
 				"description": "If true, return immediately with a task id; the subagent runs to completion in the background and the result is available via /subagents. Default: false.",
 			},
+			"notify_on_done": map[string]any{
+				"type":        "boolean",
+				"description": "Background only. If true, you are automatically re-prompted with the subagent's result when it finishes (even after this turn ends) so you can act on it — true fire-and-forget delegation. If false (default), the result is silent until you fetch it with get_subagent_result. Do NOT set this when you intend to collect the result yourself with get_subagent_result in the same turn (e.g. a fan-out you immediately wait on) — that would double up. Ignored for foreground.",
+			},
 		},
 		"required": []string{"subagent_type", "prompt"},
 	}
@@ -299,6 +312,7 @@ type agentArgs struct {
 	Description     string `json:"description"`
 	Prompt          string `json:"prompt"`
 	RunInBackground bool   `json:"run_in_background"`
+	NotifyOnDone    bool   `json:"notify_on_done"`
 }
 
 func parseAgentArgs(argsJSON string) agentArgs {
@@ -356,15 +370,28 @@ func (t *AgentTool) Execute(ctx context.Context, argsJSON string) (string, error
 			"or `[experimental]\\nbackground_subagents = true` in ~/.yottacode/config.toml. " +
 			"See docs/experimental.md for details.", nil
 	}
-	if a.RunInBackground && t.Tasks.ActiveCount() >= MaxBackgroundSubagents {
-		return fmt.Sprintf("error: at most %d background subagents may run concurrently (current: %d); wait for one to finish or stop it with /subagents stop <id>",
-			MaxBackgroundSubagents, t.Tasks.ActiveCount()), nil
-	}
-	if !a.RunInBackground && t.Tasks.ActiveForegroundCount() >= MaxForegroundSubagents {
-		return fmt.Sprintf("error: at most %d foreground subagents may run concurrently (current: %d); wait for one of the in-flight subagents to finish before dispatching more",
-			MaxForegroundSubagents, t.Tasks.ActiveForegroundCount()), nil
+	// Session-wide token budget: a backstop against an enthusiastic or
+	// adversarial prompt fanning out unbounded child loops on the user's
+	// key. The per-child iteration cap and the concurrency cap bound one
+	// wave; this bounds the session total. Estimated tokens are recorded at
+	// MarkDone, so this counts COMPLETED spend (running children contribute
+	// 0 until they finish) — which combined with the concurrency cap keeps
+	// the overshoot to at most one in-flight wave. Recoverable error the
+	// model relays so the user can raise the budget or wrap up.
+	if t.MaxSessionTokens > 0 {
+		if used := t.Tasks.TotalTokensUsed(); used >= t.MaxSessionTokens {
+			return fmt.Sprintf("error: this session's subagent token budget (~%d estimated tokens) is exhausted (used ~%d); wait for nothing in particular — the budget is cumulative for the session. Raise it with `[subagents]` `session_token_budget = N` in ~/.yottacode/config.toml, or finish the remaining work without further delegation.",
+				t.MaxSessionTokens, used), nil
+		}
 	}
 
+	// The concurrency cap is enforced atomically at reservation time
+	// (t.Tasks.TryReserve below), NOT with a check-then-Add here: AgentTool
+	// is ParallelSafe, so a parent that emits N Agent calls in one assistant
+	// message runs N Execute goroutines concurrently, and a separate
+	// check-then-Add would let all N observe "under cap" before any inserted
+	// and overshoot the ceiling. Build the task first, then reserve-or-reject
+	// in one locked step.
 	taskID := subagents.NewTaskID()
 	transcriptPath := filepath.Join(t.TranscriptDir, fmt.Sprintf("%s-%s.md", cfg.Name, taskID))
 
@@ -380,10 +407,25 @@ func (t *AgentTool) Execute(ctx context.Context, argsJSON string) (string, error
 		Started:        time.Now(),
 		Status:         subagents.TaskRunning,
 		Background:     a.RunInBackground,
+		NotifyOnDone:   a.RunInBackground && a.NotifyOnDone,
 		TranscriptPath: transcriptPath,
 		Model:          childModel,
 	}
-	t.Tasks.Add(task)
+	// Atomic reserve-or-reject: insert the task only if its class is under
+	// cap, counting + inserting under one registry lock. Background bounds
+	// TOTAL running concurrency (countForegroundOnly=false, matching the old
+	// ActiveCount check); foreground bounds only foreground running tasks.
+	if a.RunInBackground {
+		if !t.Tasks.TryReserve(task, MaxBackgroundSubagents, false) {
+			return fmt.Sprintf("error: at most %d background subagents may run concurrently (current: %d); wait for one to finish or stop it with /subagents stop <id>",
+				MaxBackgroundSubagents, t.Tasks.ActiveCount()), nil
+		}
+	} else {
+		if !t.Tasks.TryReserve(task, MaxForegroundSubagents, true) {
+			return fmt.Sprintf("error: at most %d foreground subagents may run concurrently (current: %d); wait for one of the in-flight subagents to finish before dispatching more",
+				MaxForegroundSubagents, t.Tasks.ActiveForegroundCount()), nil
+		}
+	}
 
 	parentEvents := ParentEvents(ctx)
 	parentDecisions := ParentDecisions(ctx)
@@ -407,6 +449,24 @@ func (t *AgentTool) Execute(ctx context.Context, argsJSON string) (string, error
 		t.Tasks.AttachCancel(taskID, cancel)
 		go func() {
 			defer cancel()
+			// This is a bare detached goroutine: a panic anywhere in its
+			// orchestration AROUND runChild — MarkDone, the registry read,
+			// fireBackgroundDone, or the onBackgroundDone callback that runs
+			// TUI code — has no parent frame to catch it and would crash the
+			// whole interactive session. (runChild has its own internal
+			// recovers for the child turn + drain loop; this guards the rest.)
+			// Degrade to an errored terminal task so the slot frees and the
+			// dock stops showing it running — but only if the run hadn't
+			// already reached a terminal state, so a panic in the post-run
+			// notification can't clobber a result the child actually produced.
+			defer func() {
+				if r := recover(); r != nil {
+					err := panicToError("background subagent "+cfg.Name+" goroutine", r)
+					if snap, ok := t.Tasks.Get(taskID); ok && snap.Status == subagents.TaskRunning {
+						t.Tasks.MarkDone(taskID, subagents.TaskErrored, "error: "+err.Error(), true, 0)
+					}
+				}
+			}()
 			// Background: forward informational progress (SubagentStart
 			// already fired above; the ticks below stream into the same
 			// inline card + the dock) so a background subagent reads like
@@ -430,14 +490,15 @@ func (t *AgentTool) Execute(ctx context.Context, argsJSON string) (string, error
 				toolCalls = snap.ToolCalls
 			}
 			t.fireBackgroundDone(SubagentBackgroundDone{
-				TaskID:     taskID,
-				AgentType:  cfg.Name,
-				Result:     result,
-				Errored:    errored,
-				Duration:   time.Since(task.Started),
-				TokensUsed: tokens,
-				ToolCalls:  toolCalls,
-				Model:      childModel,
+				TaskID:       taskID,
+				AgentType:    cfg.Name,
+				Result:       result,
+				Errored:      errored,
+				Duration:     time.Since(task.Started),
+				TokensUsed:   tokens,
+				ToolCalls:    toolCalls,
+				Model:        childModel,
+				NotifyOnDone: a.RunInBackground && a.NotifyOnDone,
 			})
 		}()
 		// Message the model relays back to the user. References the

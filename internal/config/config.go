@@ -58,6 +58,36 @@ type Config struct {
 	// session start. Absent block keeps the default-off behavior so
 	// users without preferences see today's small-prompt experience.
 	Skills SkillsConfig `toml:"skills"`
+	// Subagents tunes the subagent subsystem (the Agent tool + background
+	// runs). Absent block falls through to the defaults below.
+	Subagents SubagentsConfig `toml:"subagents"`
+}
+
+// SubagentsConfig tunes the subagent subsystem. SessionTokenBudget caps
+// the cumulative ESTIMATED tokens spent across ALL subagent runs in one
+// session — a backstop against an enthusiastic or adversarial prompt
+// fanning out unbounded child loops on the user's API key (the per-child
+// iteration cap and the concurrency cap bound one wave, not the session
+// total). <=0 falls through to DefaultSubagentSessionTokenBudget.
+type SubagentsConfig struct {
+	SessionTokenBudget int `toml:"session_token_budget"`
+}
+
+// DefaultSubagentSessionTokenBudget bounds cumulative subagent spend per
+// session. Generous — a normal session's delegations sum well under it —
+// but it stops a runaway fan-out from issuing unbounded provider calls on
+// the user's key. Override via `[subagents] session_token_budget = N`
+// (or 0 in code paths that want it unbounded). The figure is in estimated
+// tokens (the same 4-chars-per-token heuristic the status bar uses).
+const DefaultSubagentSessionTokenBudget = 8_000_000
+
+// SubagentSessionTokenBudget resolves the configured cap, applying the
+// generous default when unset (<=0).
+func (c Config) SubagentSessionTokenBudget() int {
+	if c.Subagents.SessionTokenBudget > 0 {
+		return c.Subagents.SessionTokenBudget
+	}
+	return DefaultSubagentSessionTokenBudget
 }
 
 // SkillsConfig declares persistent Agent Skills behavior. DefaultOn

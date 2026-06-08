@@ -384,6 +384,37 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 	// leaves no empty ~/.yottacode/memory/projects/<slug>/ behind.
 	transcriptDir, _ := subagents.TranscriptDirFor(cwd)
 	subagentTasks := subagents.NewRegistry()
+	// Subagent teardown is DEFERRED (not inline after prog.Run) so it runs
+	// even when prog.Run returns an error or panics: background workers run on
+	// context.Background() and must never outlive the session (their
+	// goroutines + provider SSE streams would leak), and empty dispatch
+	// worktrees must be reclaimed regardless of how we exit. SIGKILL is still
+	// uncatchable — nothing can defer through it — but error-returns and
+	// panics, which previously skipped this entirely, are now covered.
+	defer func() {
+		if n := subagentTasks.CancelAll(); n > 0 {
+			drainDeadline := time.Now().Add(3 * time.Second)
+			for subagentTasks.ActiveCount() > 0 && time.Now().Before(drainDeadline) {
+				time.Sleep(20 * time.Millisecond)
+			}
+		}
+		sweepCtx, sweepCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		agent.ReclaimEmptyDispatchWorktrees(sweepCtx, subagentTasks)
+		sweepCancel()
+	}()
+	// Rehydrate the prior session's subagent task index so task-ids the model
+	// wrote into the conversation still resolve (get_subagent_result /
+	// subagents) after a restart; tasks that were running when that session
+	// ended come back marked orphaned. Then sweep any empty dispatch worktrees
+	// a crashed session leaked — the rehydrated records carry the worktree +
+	// base the reclaim check needs (the at-exit defer above couldn't run if
+	// the previous process was SIGKILLed or power-lost).
+	subagentTasks.Import(sess.SubagentTasks)
+	{
+		startupSweepCtx, startupSweepCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		agent.ReclaimEmptyDispatchWorktrees(startupSweepCtx, subagentTasks)
+		startupSweepCancel()
+	}
 	// experimental.Set (expSet) was resolved earlier, before prompt
 	// composition, so the dispatch steering could be baked into the
 	// system prompt. Reuse it here for tool gating.
@@ -414,6 +445,9 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 		AutoMode:      autoMode,
 		Cwd:           cwdRef,
 		TranscriptDir: transcriptDir,
+		// Session-wide subagent token backstop (config-driven, generous
+		// default). Bounds cumulative fan-out spend the per-wave caps can't.
+		MaxSessionTokens: fileCfg.SubagentSessionTokenBudget(),
 		// Background subagents are an opt-in experimental feature.
 		// When the gate is off, `run_in_background:true` returns a
 		// recoverable error the model relays to the user (see
@@ -543,6 +577,7 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 	model := New(ctx, Config{
 		Cfg:                    cfg,
 		Session:                sess,
+		ExperimentalEnabled:    expSet.EnabledNames(),
 		Permissions:            perms,
 		Recall:                 idx,
 		ModelName:              opts.Model,
@@ -608,6 +643,13 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 		}
 		model.appendLine(rendered)
 	}
+	// Confirm at startup which experimental features are on — without this
+	// the gate left no in-session signal it was enabled. /experimental shows
+	// the full catalog and detail.
+	if names := expSet.EnabledNames(); len(names) > 0 {
+		model.pendingStartupNotices = append(model.pendingStartupNotices,
+			styleAuto.Render("experimental enabled: "+strings.Join(names, ", ")+" — /experimental for details"))
+	}
 	// Wire the AgentTool's background-completion callback into the
 	// Model's long-lived inbox. The callback runs from a detached
 	// goroutine when a background subagent finishes; non-blocking
@@ -663,28 +705,9 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 	if _, err := prog.Run(); err != nil {
 		return fmt.Errorf("tui: %w", err)
 	}
-	// Cancel any still-running subagents before we tear the session down.
-	// Background dispatch/Agent workers run on context.Background() so they
-	// survive the parent turn — but they must NOT survive the session: their
-	// goroutines and provider SSE streams (no client-side timeout) would leak
-	// past TUI exit. CancelAll signals them; we wait a bounded moment for the
-	// streams to unwind before exiting (best-effort — the OS reaps the rest).
-	if n := subagentTasks.CancelAll(); n > 0 {
-		drainDeadline := time.Now().Add(3 * time.Second)
-		for subagentTasks.ActiveCount() > 0 && time.Now().Before(drainDeadline) {
-			time.Sleep(20 * time.Millisecond)
-		}
-	}
-	// Final sweep over this session's dispatch worktrees: workers that
-	// unwound in time already reclaimed their own empty worktree; this
-	// catches the ones the bounded drain gave up on (stuck mid-run when the
-	// session died). Same keep rules as the per-worker path — committed
-	// (awaiting integrate) and dirty (recoverable work) worktrees survive,
-	// only provably-empty ones are removed. Bounded so a wedged git can't
-	// stall exit.
-	sweepCtx, sweepCancel := context.WithTimeout(context.Background(), 5*time.Second)
-	agent.ReclaimEmptyDispatchWorktrees(sweepCtx, subagentTasks)
-	sweepCancel()
+	// Subagent cancel + drain + worktree sweep now run in the deferred
+	// teardown registered right after subagentTasks was created, so an
+	// error-return or panic from prog.Run can't skip them.
 
 	// Tear down MCP subprocesses before the index/session close so a
 	// slow shutdown can't leak servers past yottacode's lifetime. The
@@ -696,6 +719,11 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 	if idx != nil {
 		_ = idx.Close()
 	}
+	// Persist the subagent task index alongside the session so its task-ids
+	// resolve on a later resume. (The deferred teardown's CancelAll runs after
+	// this save, so a task still running at exit persists as "running" and
+	// rehydrates as orphaned next launch.)
+	sess.SubagentTasks = subagentTasks.Export()
 	if err := sess.Save(); err != nil {
 		return err
 	}

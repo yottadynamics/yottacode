@@ -199,6 +199,19 @@ func (t *GetSubagentResultTool) Execute(ctx context.Context, argsJSON string) (s
 		// bounded.
 		b.WriteString("--- Status: still running ---\n")
 		b.WriteString("Call this tool again later to fetch the final result. ")
+		// Staleness signal: a long gap since the last activity on a still-
+		// running task is how the model distinguishes steady progress from a
+		// subagent wedged on a slow/hung tool call — without it, "still
+		// running" looks the same whether it ticked a second ago or stalled
+		// minutes ago.
+		if !task.LastActivityAt.IsZero() {
+			idle := time.Since(task.LastActivityAt).Round(time.Second)
+			fmt.Fprintf(&b, "Last activity: %s ago.", idle)
+			if idle > 90*time.Second {
+				b.WriteString(" No progress for a while — the subagent may be stuck on a slow tool or wedged; consider stopping it (/subagents stop) instead of waiting indefinitely.")
+			}
+			b.WriteString("\n")
+		}
 		b.WriteString("Recent activity (oldest first):\n")
 		if len(task.Activities) == 0 {
 			b.WriteString("  (no tool calls yet)\n")

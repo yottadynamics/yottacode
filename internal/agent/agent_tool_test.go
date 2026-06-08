@@ -776,6 +776,191 @@ func TestAgentTool_BackgroundSurvivesClosedTurnChannel(t *testing.T) {
 	}
 }
 
+// TestAgentTool_BackgroundGoroutineRecoversPanic: a panic in the detached
+// background goroutine's POST-run orchestration (here the onBackgroundDone
+// callback, which in the TUI runs UI code) must be recovered, not crash the
+// whole process. The run already reached its terminal state before the
+// notification, so the result is preserved (TaskCompleted, not clobbered).
+func TestAgentTool_BackgroundGoroutineRecoversPanic(t *testing.T) {
+	streamer := &scriptedStreamer{turns: [][]adapter.StreamEvent{
+		{sseDone("done reviewing")},
+	}}
+	cfg := subagents.AgentConfig{Name: "review", Description: "x", Prompt: "x", Source: "test"}
+	tool, _ := newTestAgentTool(t, []subagents.AgentConfig{cfg}, streamer, true)
+
+	// A completion callback that panics simulates a fault in the post-run
+	// notification path (e.g. a TUI render on the inbox). Without the
+	// goroutine-level recover this crashes the whole `go test` process.
+	fired := make(chan struct{}, 1)
+	tool.SetBackgroundDoneCallback(func(ev SubagentBackgroundDone) {
+		select {
+		case fired <- struct{}{}:
+		default:
+		}
+		panic("boom in onBackgroundDone")
+	})
+
+	ctx := WithParentEvents(context.Background(), make(chan Event, 64))
+	if _, err := tool.Execute(ctx, mustJSON(t, agentArgs{SubagentType: "review", Prompt: "p", RunInBackground: true})); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	select {
+	case <-fired:
+	case <-time.After(5 * time.Second):
+		t.Fatal("background completion callback never fired")
+	}
+
+	// Process survived (we're still running). The task reached its real
+	// terminal state before the notification panicked, so the panic did not
+	// clobber the result.
+	var final subagents.Task
+	for range 100 {
+		tasks := tool.Tasks.List()
+		if len(tasks) > 0 && tasks[0].Status != subagents.TaskRunning {
+			final = tasks[0]
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if final.Status != subagents.TaskCompleted {
+		t.Errorf("task should be TaskCompleted despite the callback panic; got %v", final.Status)
+	}
+}
+
+// TestAgentTool_BackgroundSurvivesParentCtxCancel: a background subagent
+// detaches onto context.Background(), so cancelling the PARENT turn's ctx
+// (the spawning turn ending) must NOT kill it — the completion still fires
+// with a real result. This is the detachment guarantee the whole
+// fire-and-forget model rests on.
+func TestAgentTool_BackgroundSurvivesParentCtxCancel(t *testing.T) {
+	streamer := &scriptedStreamer{turns: [][]adapter.StreamEvent{{sseDone("done reviewing")}}}
+	cfg := subagents.AgentConfig{Name: "review", Description: "x", Prompt: "x", Source: "test"}
+	tool, _ := newTestAgentTool(t, []subagents.AgentConfig{cfg}, streamer, true)
+
+	fired := make(chan SubagentBackgroundDone, 1)
+	tool.SetBackgroundDoneCallback(func(ev SubagentBackgroundDone) {
+		select {
+		case fired <- ev:
+		default:
+		}
+	})
+
+	ctx, cancel := context.WithCancel(WithParentEvents(context.Background(), make(chan Event, 64)))
+	if _, err := tool.Execute(ctx, mustJSON(t, agentArgs{SubagentType: "review", Prompt: "p", RunInBackground: true})); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	cancel() // the spawning turn ends immediately after dispatch
+
+	select {
+	case ev := <-fired:
+		if ev.Errored {
+			t.Errorf("detached bg subagent must complete after parent ctx cancel, not error")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("background completion did not fire after parent ctx cancel — detachment is broken")
+	}
+}
+
+// TestAgentTool_NotifyOnDonePropagates: a background spawn with
+// notify_on_done:true records the flag on the task AND on the fired
+// SubagentBackgroundDone event, so the TUI knows to wake the model with the
+// result rather than only painting a banner.
+func TestAgentTool_NotifyOnDonePropagates(t *testing.T) {
+	streamer := &scriptedStreamer{turns: [][]adapter.StreamEvent{{sseDone("result body")}}}
+	cfg := subagents.AgentConfig{Name: "review", Description: "x", Prompt: "x", Source: "test"}
+	tool, _ := newTestAgentTool(t, []subagents.AgentConfig{cfg}, streamer, true)
+
+	got := make(chan SubagentBackgroundDone, 1)
+	tool.SetBackgroundDoneCallback(func(ev SubagentBackgroundDone) {
+		select {
+		case got <- ev:
+		default:
+		}
+	})
+
+	ctx := WithParentEvents(context.Background(), make(chan Event, 64))
+	if _, err := tool.Execute(ctx, mustJSON(t, agentArgs{SubagentType: "review", Prompt: "p", RunInBackground: true, NotifyOnDone: true})); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	select {
+	case ev := <-got:
+		if !ev.NotifyOnDone {
+			t.Error("fired SubagentBackgroundDone must carry NotifyOnDone=true")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("background completion never fired")
+	}
+	if tasks := tool.Tasks.List(); len(tasks) == 0 || !tasks[0].NotifyOnDone {
+		t.Error("task must record NotifyOnDone=true")
+	}
+}
+
+// TestAgentTool_NotifyOnDoneIgnoredForeground: notify_on_done is a
+// background-only affordance (foreground returns its result inline), so a
+// foreground spawn must not record it — otherwise the TUI could try to wake
+// the model for a result it already has.
+func TestAgentTool_NotifyOnDoneIgnoredForeground(t *testing.T) {
+	streamer := &scriptedStreamer{turns: [][]adapter.StreamEvent{{sseDone("done")}}}
+	cfg := subagents.AgentConfig{Name: "fg", Description: "x", Prompt: "x", Source: "test"}
+	tool, _ := newTestAgentTool(t, []subagents.AgentConfig{cfg}, streamer, true)
+
+	ctx := WithParentEvents(context.Background(), make(chan Event, 64))
+	if _, err := tool.Execute(ctx, mustJSON(t, agentArgs{SubagentType: "fg", Prompt: "p", RunInBackground: false, NotifyOnDone: true})); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if tasks := tool.Tasks.List(); len(tasks) == 0 || tasks[0].NotifyOnDone {
+		t.Error("foreground task must NOT record NotifyOnDone (background-only flag)")
+	}
+}
+
+// TestAgentTool_SessionTokenBudgetRejects: once cumulative subagent spend
+// reaches MaxSessionTokens, a new spawn is rejected with a recoverable
+// error and no task is reserved.
+func TestAgentTool_SessionTokenBudgetRejects(t *testing.T) {
+	streamer := &scriptedStreamer{turns: [][]adapter.StreamEvent{{sseDone("done")}}}
+	cfg := subagents.AgentConfig{Name: "review", Description: "x", Prompt: "x", Source: "test"}
+	tool, _ := newTestAgentTool(t, []subagents.AgentConfig{cfg}, streamer, true)
+	tool.MaxSessionTokens = 1000
+
+	// Pre-load the registry with recorded spend over the cap.
+	done := &subagents.Task{ID: subagents.NewTaskID(), AgentType: "review", Status: subagents.TaskRunning}
+	tool.Tasks.Add(done)
+	tool.Tasks.MarkDone(done.ID, subagents.TaskCompleted, "r", false, 1500)
+
+	out, err := tool.Execute(context.Background(), mustJSON(t, agentArgs{SubagentType: "review", Prompt: "p"}))
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if !strings.Contains(out, "token budget") {
+		t.Errorf("expected a budget-exhausted rejection; got: %q", out)
+	}
+	if n := len(tool.Tasks.List()); n != 1 {
+		t.Errorf("a rejected spawn must not reserve a task; have %d tasks (want 1)", n)
+	}
+}
+
+// TestAgentTool_SessionTokenBudgetUnlimitedWhenZero: MaxSessionTokens=0
+// disables the budget — a spawn proceeds regardless of prior spend.
+func TestAgentTool_SessionTokenBudgetUnlimitedWhenZero(t *testing.T) {
+	streamer := &scriptedStreamer{turns: [][]adapter.StreamEvent{{sseDone("done")}}}
+	cfg := subagents.AgentConfig{Name: "review", Description: "x", Prompt: "x", Source: "test"}
+	tool, _ := newTestAgentTool(t, []subagents.AgentConfig{cfg}, streamer, true)
+	tool.MaxSessionTokens = 0 // unlimited
+
+	done := &subagents.Task{ID: subagents.NewTaskID(), AgentType: "review", Status: subagents.TaskRunning}
+	tool.Tasks.Add(done)
+	tool.Tasks.MarkDone(done.ID, subagents.TaskCompleted, "r", false, 9_000_000)
+
+	out, err := tool.Execute(context.Background(), mustJSON(t, agentArgs{SubagentType: "review", Prompt: "p"}))
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if strings.Contains(out, "token budget") {
+		t.Errorf("budget must be disabled when MaxSessionTokens=0; got rejection: %q", out)
+	}
+}
+
 // TestAgentTool_ForegroundForwardsApproval verifies the foreground
 // path forwards a child's ApprovalNeeded event to the parent's events
 // channel and reads the user's verdict back from the parent's

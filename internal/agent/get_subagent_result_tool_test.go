@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -76,6 +77,59 @@ func TestGetSubagentResultTool_RunningTaskReturnsStatusHint(t *testing.T) {
 	}
 	if !strings.Contains(out, "list_dir(.)") || !strings.Contains(out, "grep") {
 		t.Errorf("expected the recent activity to be surfaced; got: %q", out)
+	}
+}
+
+// TestGetSubagentResultTool_StallSignal: a still-running task whose last
+// activity was long ago surfaces a stall hint, so the model can stop waiting
+// on a wedged subagent instead of treating "still running" as healthy.
+func TestGetSubagentResultTool_StallSignal(t *testing.T) {
+	reg := subagents.NewRegistry()
+	reg.Add(&subagents.Task{
+		ID:             "stalledtask00001",
+		AgentType:      "review",
+		Status:         subagents.TaskRunning,
+		Started:        time.Now().Add(-5 * time.Minute),
+		Activities:     []string{`grep("foo" in .)`},
+		LastActivityAt: time.Now().Add(-3 * time.Minute),
+	})
+	tool := &GetSubagentResultTool{Tasks: reg}
+
+	args, _ := json.Marshal(map[string]any{"task_id": "stalledtask00001", "wait_seconds": 1})
+	out, err := tool.Execute(context.Background(), string(args))
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if !strings.Contains(out, "Last activity:") {
+		t.Errorf("expected a last-activity staleness line; got: %q", out)
+	}
+	if !strings.Contains(out, "may be stuck") {
+		t.Errorf("a 3-minute-idle running task must surface the stall hint; got: %q", out)
+	}
+}
+
+// TestGetSubagentResultTool_CtxCancelDuringWait: cancelling the calling
+// turn's ctx while the tool is blocked waiting on a never-completing task
+// must unblock it with the ctx error (the Esc-cancels-the-turn path), not
+// hang for the full wait_seconds.
+func TestGetSubagentResultTool_CtxCancelDuringWait(t *testing.T) {
+	reg := subagents.NewRegistry()
+	reg.Add(&subagents.Task{ID: "runningforever01", AgentType: "review", Status: subagents.TaskRunning, Started: time.Now()})
+	tool := &GetSubagentResultTool{Tasks: reg}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		cancel()
+	}()
+
+	args, _ := json.Marshal(map[string]any{"task_id": "runningforever01", "wait_seconds": 600})
+	_, err := tool.Execute(ctx, string(args))
+	if err == nil {
+		t.Fatal("expected a ctx-cancel error while waiting on a never-completing task")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("expected context.Canceled; got: %v", err)
 	}
 }
 

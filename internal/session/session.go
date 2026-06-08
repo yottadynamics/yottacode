@@ -12,6 +12,7 @@ import (
 
 	"github.com/yottadynamics/yottacode/internal/adapter"
 	"github.com/yottadynamics/yottacode/internal/agent"
+	"github.com/yottadynamics/yottacode/internal/subagents"
 )
 
 // Session is one resumable conversation persisted as JSON in
@@ -47,6 +48,14 @@ type Session struct {
 	// the cost calculator needs to know which model produced each
 	// turn. Keyed by model ID exactly as the adapter reported it.
 	ModelUsage map[string]adapter.Usage `json:"model_usage,omitempty"`
+	// SubagentTasks is the persisted index of this session's subagent runs.
+	// The live registry (internal/subagents) is in-memory and rebuilt empty
+	// each launch; persisting a summary lets get_subagent_result and
+	// /subagents resolve task-ids the model wrote into the conversation in a
+	// prior session, and lets a startup sweep reclaim a crashed session's
+	// empty dispatch worktrees. Omitted when empty so existing session files
+	// load unchanged.
+	SubagentTasks []subagents.TaskRecord `json:"subagent_tasks,omitempty"`
 
 	path string // filled by New/Load, not serialized
 }
@@ -390,4 +399,3 @@ func (s *Session) Save() error {
 	}
 	return nil
 }
-

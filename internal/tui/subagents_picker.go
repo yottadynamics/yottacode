@@ -161,6 +161,21 @@ func (m Model) updateSubagentsPicker(msg tea.KeyMsg) (Model, tea.Cmd) {
 				p.cursor = max(0, rc-1)
 			}
 			return m, nil
+		case "i":
+			// Inject: feed the selected finished task's result to the model
+			// as a new turn — the user-driven re-entry that complements the
+			// Agent tool's notify_on_done. Tasks-mode only.
+			if p.mode != subagentsPickerModeTasks || len(p.tasks) == 0 {
+				return m, nil
+			}
+			next, cmd, status := m.injectSubagentResult(p.tasks[p.cursor])
+			if status != "" {
+				p.status = status
+				return m, nil
+			}
+			m.subagentsPickerOpen = false
+			m.subagentsPicker = nil
+			return next.(Model), cmd
 		}
 	}
 	return m, nil
@@ -191,7 +206,7 @@ func renderSubagentsPicker(state *subagentsPickerState, width int) string {
 func renderSubagentsPickerTasks(state *subagentsPickerState, _ int) string {
 	header := renderMenuHeader(
 		"Subagents — tasks",
-		"Enter views · s stops · r refreshes · t shows types · Esc closes",
+		"Enter views · i injects result · s stops · r refreshes · t shows types · Esc closes",
 	)
 	if len(state.tasks) == 0 {
 		return header + "\n" +
