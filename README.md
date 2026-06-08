@@ -76,9 +76,9 @@ Memory is plain text, grep-able, and split across a handful of files. **You own 
 | Path | Scope | Maintained by |
 |:-----|:------|:--------------|
 | `~/.yottacode/USER.md` | User preferences | **You** — human-edited only |
-| `~/.yottacode/memory/` | Global (cross-project) | Agent — auto-curated |
+| `~/.yottacode/memory/user/` | Global (cross-project) | Agent — auto-curated |
 | `./.yottacode/YOTTACODE.md` | Project | You seed it (or run `/init`); agent edits go through the approval modal |
-| `~/.yottacode/projects/<slug>/memory/` | Project | Agent — auto-curated |
+| `~/.yottacode/memory/projects/<slug>/` | Project | Agent — auto-curated |
 
 ### Built-in Security & Approval Layer
 

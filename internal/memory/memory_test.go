@@ -20,6 +20,7 @@ func writeFile(t *testing.T, path, body string) {
 func TestLoad_NeitherFile(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("YOTTACODE_HOME", "")
 	cwd := t.TempDir()
 
 	got, err := Load(cwd)
@@ -34,6 +35,7 @@ func TestLoad_NeitherFile(t *testing.T) {
 func TestLoad_UserOnly(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("YOTTACODE_HOME", "")
 	writeFile(t, filepath.Join(home, ".yottacode", "USER.md"), "prefer table-driven tests")
 
 	got, err := Load(t.TempDir())
@@ -54,6 +56,7 @@ func TestLoad_UserOnly(t *testing.T) {
 func TestLoad_ProjectOnly(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("YOTTACODE_HOME", "")
 	cwd := t.TempDir()
 	writeFile(t, filepath.Join(cwd, ".yottacode", "YOTTACODE.md"), "this repo is yottacode")
 
@@ -72,6 +75,7 @@ func TestLoad_ProjectOnly(t *testing.T) {
 func TestLoad_BothTrustAnchors(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("YOTTACODE_HOME", "")
 	cwd := t.TempDir()
 	writeFile(t, filepath.Join(home, ".yottacode", "USER.md"), "USER content")
 	writeFile(t, filepath.Join(cwd, ".yottacode", "YOTTACODE.md"), "YOTTACODE content")
@@ -227,7 +231,8 @@ func TestSummary_StringForms(t *testing.T) {
 func TestLoad_UserMemoriesFromNewDir(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	memDir := filepath.Join(home, ".yottacode", "memory")
+	t.Setenv("YOTTACODE_HOME", "")
+	memDir := filepath.Join(home, ".yottacode", "memory", "user")
 	writeFile(t, filepath.Join(memDir, "code-style.md"),
 		"---\nname: code-style\ntype: user\ndescription: prefers table-driven tests\ncreated: 2026-05-08T00:00:00Z\n---\nUse table-driven Go tests.\n")
 	writeFile(t, filepath.Join(memDir, "tooling.md"),
@@ -252,9 +257,35 @@ func TestLoad_UserMemoriesFromNewDir(t *testing.T) {
 	}
 }
 
+func TestLoad_SkipsSubagentTranscriptsDir(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("YOTTACODE_HOME", "")
+	cwd := filepath.Join(t.TempDir(), "demo")
+	if err := os.MkdirAll(cwd, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	projDir := filepath.Join(home, ".yottacode", "memory", "projects", ProjectSlug(cwd))
+	writeFile(t, filepath.Join(projDir, "real-memory.md"),
+		"---\nname: real-memory\ntype: project\ndescription: real\n---\nreal body\n")
+	// Subagent run transcripts cohabit the project memory dir as a
+	// subdirectory of .md files. The scanner must never ingest them.
+	writeFile(t, filepath.Join(projDir, "subagents", "Explore-0123abcd.md"),
+		"# transcript\nnot a memory\n")
+
+	got, err := Load(cwd)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(got.ProjectMemories) != 1 || got.ProjectMemories[0].Name != "real-memory" {
+		t.Errorf("transcripts dir should be invisible to the loader; got %+v", got.ProjectMemories)
+	}
+}
+
 func TestLoad_ProjectMemoriesIsolatedAcrossProjects(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("YOTTACODE_HOME", "")
 	cwdA := filepath.Join(t.TempDir(), "alpha")
 	cwdB := filepath.Join(t.TempDir(), "beta")
 	if err := os.MkdirAll(cwdA, 0o755); err != nil {
@@ -264,10 +295,10 @@ func TestLoad_ProjectMemoriesIsolatedAcrossProjects(t *testing.T) {
 		t.Fatalf("mkdir B: %v", err)
 	}
 	writeFile(t,
-		filepath.Join(home, ".yottacode", "projects", ProjectSlug(cwdA), "memory", "alpha-fact.md"),
+		filepath.Join(home, ".yottacode", "memory", "projects", ProjectSlug(cwdA), "alpha-fact.md"),
 		"---\nname: alpha-fact\ntype: project\ndescription: alpha\n---\nalpha body\n")
 	writeFile(t,
-		filepath.Join(home, ".yottacode", "projects", ProjectSlug(cwdB), "memory", "beta-fact.md"),
+		filepath.Join(home, ".yottacode", "memory", "projects", ProjectSlug(cwdB), "beta-fact.md"),
 		"---\nname: beta-fact\ntype: project\ndescription: beta\n---\nbeta body\n")
 
 	gotA, err := Load(cwdA)
@@ -316,7 +347,8 @@ func TestRenderMemoryIndex_FreeFormTypesRendered(t *testing.T) {
 func TestScanMemoryDir_FilenameIsAuthoritativeOverFrontmatterName(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	memDir := filepath.Join(home, ".yottacode", "memory")
+	t.Setenv("YOTTACODE_HOME", "")
+	memDir := filepath.Join(home, ".yottacode", "memory", "user")
 	// Hand-edited divergence: the file is bar.md but its frontmatter
 	// claims name: foo. The filename must win — otherwise the index
 	// would link to a non-existent foo.md and memory_forget("bar")
@@ -347,7 +379,8 @@ func TestScanMemoryDir_FilenameIsAuthoritativeOverFrontmatterName(t *testing.T) 
 func TestLoad_MemorySkipsSymlinks(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	memDir := filepath.Join(home, ".yottacode", "memory")
+	t.Setenv("YOTTACODE_HOME", "")
+	memDir := filepath.Join(home, ".yottacode", "memory", "user")
 	if err := os.MkdirAll(memDir, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
@@ -369,7 +402,8 @@ func TestLoad_MemorySkipsSymlinks(t *testing.T) {
 func TestLoad_PrefersOnDiskIndex(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	memDir := filepath.Join(home, ".yottacode", "memory")
+	t.Setenv("YOTTACODE_HOME", "")
+	memDir := filepath.Join(home, ".yottacode", "memory", "user")
 	writeFile(t, filepath.Join(memDir, "a.md"),
 		"---\nname: a\ntype: user\ndescription: x\n---\nbody\n")
 	writeFile(t, filepath.Join(memDir, "MEMORY.md"), "# CUSTOM INDEX TEXT\n")
@@ -386,7 +420,8 @@ func TestLoad_PrefersOnDiskIndex(t *testing.T) {
 func TestLoad_GeneratesIndexWhenMissing(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	memDir := filepath.Join(home, ".yottacode", "memory")
+	t.Setenv("YOTTACODE_HOME", "")
+	memDir := filepath.Join(home, ".yottacode", "memory", "user")
 	writeFile(t, filepath.Join(memDir, "a.md"),
 		"---\nname: a\ntype: user\ndescription: alpha\n---\nbody\n")
 

@@ -15,7 +15,8 @@ import (
 func TestMemoryGetTool_ReturnsFullUntruncatedBody(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	memDir := filepath.Join(home, ".yottacode", "memory")
+	t.Setenv("YOTTACODE_HOME", "")
+	memDir := filepath.Join(home, ".yottacode", "memory", "user")
 	if err := os.MkdirAll(memDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -46,6 +47,7 @@ func TestMemoryGetTool_ReturnsFullUntruncatedBody(t *testing.T) {
 func TestMemoryGetTool_MissingErrorsCleanly(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("YOTTACODE_HOME", "")
 	cwdRef := &CwdRef{}
 	cwdRef.Set(t.TempDir())
 	tool := &MemoryGetTool{Cwd: cwdRef}

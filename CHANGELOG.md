@@ -117,6 +117,19 @@ the project uses semantic versioning once it's past `1.0.0`.
 
 ### Changed
 
+- **BREAKING: agent memory and subagent transcripts moved under one
+  `~/.yottacode/memory/` tree.** User-scope memories now live in
+  `memory/user/`, project-scope memories in `memory/projects/<slug>/`,
+  and each project's subagent run transcripts nest at
+  `memory/projects/<slug>/subagents/`. The legacy locations
+  (`~/.yottacode/memory/*.md` flat files and the entire
+  `~/.yottacode/projects/` tree) are no longer read or written — there
+  is no migration; the new tree is created fresh on first run. The
+  whole memory tree now also honors the `$YOTTACODE_HOME` override,
+  matching skills, plans, and agent definitions. `memory_save` steers
+  scope choice toward `user` (portable learnings) by default and
+  appends a scope-check reminder when a portable-typed memory is filed
+  project-scope.
 - **Anthropic prompt caching now survives per-turn memory churn.** The
   system prompt is split into a stable head (the static base prompt +
   tools) and a dynamic tail (the per-turn, query-relevant memory

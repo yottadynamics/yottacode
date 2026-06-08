@@ -74,7 +74,7 @@ When to save:
 Do NOT save: code patterns derivable from a quick grep, ephemeral state ("we're mid-refactor"), git-derivable info (current branch, last commit), one-off task instructions, or anything sensitive (keys, internal URLs, PII).
 
 Scope selection — this is critical for cross-project learning:
-  - scope=user (stored in ~/.yottacode/memory/, loaded in EVERY project): use for anything about the person, not the repo. Coding style, communication preferences, tool preferences, workflow patterns, feedback corrections, debugging approaches, domain expertise areas. Ask yourself: "would this help me in a completely different repo for this user?" If yes, it's user-scope.
+  - scope=user (stored in ~/.yottacode/memory/user/, loaded in EVERY project): use for anything about the person, not the repo. Coding style, communication preferences, tool preferences, workflow patterns, feedback corrections, debugging approaches, domain expertise areas. Ask yourself: "would this help me in a completely different repo for this user?" If yes, it's user-scope.
   - scope=project (stored per-repo, loaded only in that repo): use ONLY for facts that are meaningless outside this specific codebase — architecture decisions, naming conventions unique to this repo, team-specific processes, deployment targets.
   - Default to user-scope. Most things you learn about how someone works, thinks, and prefers are portable. Only use project-scope when the memory is genuinely repo-specific.
   - When you save a project-scope memory, briefly consider: is the underlying principle user-scope? E.g., "user wants table-driven tests in this Go repo" is really "user prefers table-driven tests" (user-scope) — the Go repo is just where you learned it.

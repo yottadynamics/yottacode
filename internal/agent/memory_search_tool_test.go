@@ -24,8 +24,9 @@ func writeTestMemory(t *testing.T, dir, name, memType, desc, body string) {
 func TestMemorySearchTool_FindsRelevantMemory(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("YOTTACODE_HOME", "")
 
-	memDir := filepath.Join(home, ".yottacode", "memory")
+	memDir := filepath.Join(home, ".yottacode", "memory", "user")
 	if err := os.MkdirAll(memDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -58,6 +59,7 @@ func TestMemorySearchTool_FindsRelevantMemory(t *testing.T) {
 func TestMemorySearchTool_EmptyStore(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("YOTTACODE_HOME", "")
 
 	cwd := t.TempDir()
 	cwdRef := &CwdRef{}
@@ -92,8 +94,9 @@ func TestMemorySearchTool_EmptyQuery(t *testing.T) {
 func TestMemorySearchTool_HonorsConfiguredStrategy(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("YOTTACODE_HOME", "")
 
-	memDir := filepath.Join(home, ".yottacode", "memory")
+	memDir := filepath.Join(home, ".yottacode", "memory", "user")
 	if err := os.MkdirAll(memDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -150,8 +153,9 @@ func TestTruncateRunes_NeverSplitsMultibyte(t *testing.T) {
 func TestMemorySearchTool_ScopeFilter(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("YOTTACODE_HOME", "")
 
-	userDir := filepath.Join(home, ".yottacode", "memory")
+	userDir := filepath.Join(home, ".yottacode", "memory", "user")
 	if err := os.MkdirAll(userDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -160,7 +164,7 @@ func TestMemorySearchTool_ScopeFilter(t *testing.T) {
 		"Keep answers concise.")
 
 	cwd := t.TempDir()
-	projDir := filepath.Join(home, ".yottacode", "projects", filepath.Base(cwd), "memory")
+	projDir := filepath.Join(home, ".yottacode", "memory", "projects", filepath.Base(cwd))
 	if err := os.MkdirAll(projDir, 0o700); err != nil {
 		t.Fatal(err)
 	}

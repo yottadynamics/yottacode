@@ -218,9 +218,10 @@ Most state lives under `~/.yottacode/`:
   checkpoints/<session>/         /checkpoints + Esc Esc snapshot store
   index.sqlite                   FTS5 index for /recall
   USER.md                        optional global user memory (human-only)
-  memory/<name>.md               agent-managed user-scope memories
-  memory/MEMORY.md               auto-generated index of user-scope memories
-  projects/<slug>/memory/        agent-managed project-scope memories (per-user)
+  memory/user/<name>.md          agent-managed user-scope memories
+  memory/user/MEMORY.md          auto-generated index of user-scope memories
+  memory/projects/<slug>/        agent-managed project-scope memories (per-user);
+                                 subagent run transcripts nest in subagents/
   config.toml                    tunables (context watermarks, retrieval, memory, checkpoints)
 ```
 

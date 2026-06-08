@@ -29,6 +29,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/yottadynamics/yottacode/internal/memory"
 )
 
 // WritePathOptions configures the validator for a single tool. Build it
@@ -437,13 +439,20 @@ func DefaultDenyPaths(cwd string) []string {
 		yc := filepath.Join(home, ".yottacode")
 		out = append(out,
 			filepath.Join(yc, "sessions"),
-			filepath.Join(yc, "memory"),   // user-scope memories — only memory_save / memory_forget write here
-			filepath.Join(yc, "projects"), // project-scope memories — same
-			filepath.Join(yc, "auth"),     // OAuth tokens — only the login flow writes here
+			filepath.Join(yc, "auth"), // OAuth tokens — only the login flow writes here
 			filepath.Join(yc, "index.sqlite"),
 			filepath.Join(yc, "USER.md"),
 			filepath.Join(yc, "trusted-roots.json"), // folder-trust store — only the trust prompt / `yottacode trust` writes here
 		)
+	}
+	// The whole memory tree: memory/user/, memory/projects/<slug>/, and
+	// the per-project subagents/ transcript dirs nested inside. Only
+	// memory_save / memory_forget write memories (the harness writes
+	// transcripts directly, which bypasses this list). Resolved via
+	// memory.MemoryRoot rather than ~/.yottacode so the $YOTTACODE_HOME
+	// override stays covered.
+	if root, err := memory.MemoryRoot(); err == nil {
+		out = append(out, root)
 	}
 	if cwd != "" {
 		out = append(out,
