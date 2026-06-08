@@ -225,7 +225,15 @@ func renderSubagentsPickerTasks(state *subagentsPickerState, _ int) string {
 			relativeAge(t.Started),
 			t.ToolCalls,
 			modelChip,
-			truncateForRender(t.Prompt, 60))
+			truncateForRender(t.Prompt, 45))
+		// For a running task, append what it's doing right now — the
+		// latest activity tick (the same source the dock shows) — so the
+		// picker is a snapshot of *state*, not just status. Running-only:
+		// a terminal task's last tick is noise next to its status. Static
+		// like the rest of the row; `r` re-snapshots it.
+		if t.Status == subagents.TaskRunning {
+			desc += " · " + truncateForRender(latestActivity(t), 40)
+		}
 		body += renderMenuItem(menuItemOpts{
 			Label:      label,
 			LabelWidth: labelWidth,

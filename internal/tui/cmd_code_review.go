@@ -1,0 +1,257 @@
+package tui
+
+import (
+	"strings"
+
+	tea "github.com/charmbracelet/bubbletea"
+)
+
+// cmdCodeReview handles `/code-review [low|medium|high]` — the
+// multi-agent diff-review flow modeled on Anthropic Claude Code's
+// /code-review. The orchestrator reads the local diff via the
+// code_review_context composite tool, crafts review "angles" from it,
+// fans them out to read-only background subagents, dedups their
+// candidate findings, verifies them (effort-gated), and emits one
+// structured report.
+//
+// Unlike /git-review-pr (which reviews an existing PR through the
+// github.Interface), this reviews the LOCAL diff and needs no GitHub
+// access. Its phase-2 fan-out is data-dependent (one verifier per
+// deduped finding, a count unknown until runtime), so the
+// orchestration lives in the directive rather than in Go — the main
+// agent runs that loop itself.
+//
+// The command REQUIRES the background_subagents experimental feature:
+// the whole point is firing read-only finders in the background while
+// the dock shows them live. When the feature is off we refuse with an
+// enable-hint rather than silently degrading to a foreground crawl.
+func cmdCodeReview(m Model, args []string) (Model, tea.Cmd) {
+	if m.turnActive {
+		m.appendLine(styleError.Render("[code-review] a turn is already running — wait for it to finish or press Esc to cancel"))
+		return m, nil
+	}
+	// Background gate, checked in Go so we refuse deterministically
+	// before burning a model turn. m.subagentTool is the live
+	// AgentTool registered on the loop; AllowBackground mirrors the
+	// background_subagents experimental flag (set in run.go).
+	if m.subagentTool == nil || !m.subagentTool.AllowBackground {
+		m.appendLine(styleError.Render("[code-review] needs the background_subagents experimental feature — " +
+			"it fans out to background review subagents. Enable it with `--experimental background_subagents` " +
+			"at startup, `YOTTACODE_EXPERIMENTAL=background_subagents`, or `[experimental]` `background_subagents = true` " +
+			"in ~/.yottacode/config.toml."))
+		return m, nil
+	}
+	effort, notice := parseEffort(args)
+	if notice != "" {
+		m.appendLine(styleAuto.Render(notice))
+	}
+	display := "/code-review " + effort
+	prompt := codeReviewDirective(effort)
+	out, cmd := m.startTurnWithDisplay(prompt, display)
+	return out.(Model), cmd
+}
+
+// parseEffort folds the optional first arg to one of low|medium|high,
+// defaulting to medium. An unrecognized non-empty value still maps to
+// medium but returns a one-line notice so the user knows their token
+// was ignored rather than silently honored.
+func parseEffort(args []string) (effort, notice string) {
+	if len(args) == 0 || strings.TrimSpace(args[0]) == "" {
+		return "medium", ""
+	}
+	raw := strings.TrimSpace(args[0])
+	switch strings.ToLower(raw) {
+	case "low":
+		return "low", ""
+	case "medium":
+		return "medium", ""
+	case "high":
+		return "high", ""
+	default:
+		return "medium", "[code-review] unknown effort " + raw + " — using medium (valid: low, medium, high)"
+	}
+}
+
+// codeReviewDirective is the prompt /code-review hands the
+// orchestrator. Same shape as the other procedural directives: short,
+// names the one composite tool the model invokes, surfaces the typed
+// flags it branches on, and pins the output structure. The effort
+// argument is already normalized (low|medium|high) by the handler; it
+// swaps the finder set (Step 3) and the verification clause
+// (Steps 7-8), and stamps the report header.
+func codeReviewDirective(effort string) string {
+	return `Run a multi-agent code review of the current local diff at effort "` + effort + `".
+You are the ORCHESTRATOR: you read the diff, craft review angles, fan
+them out to read-only background subagents, dedup their candidate
+findings, verify them, and synthesize one structured report. You do not
+review the code yourself — you coordinate.
+
+Step 1 — call code_review_context with effort="` + effort + `". It returns a
+typed snapshot under section headers (## state, ## changed-files,
+## diff, ## commit-log, ## style-context).
+
+Step 2 — read ## state FIRST and handle the STOP cases before anything
+else (spawn no subagents in either):
+- not_found_base=true → surface "[code-review] could not resolve a base
+  branch to diff against (no origin/HEAD and no main/master/develop)."
+  and STOP.
+- diff_empty=true → surface "[code-review] no changes to review (diff is
+  empty against <resolved_base>)." and STOP.
+
+Step 3 — read ## changed-files and ## diff and craft your angle set.
+Two kinds of angle:
+  Fixed quality lenses (what each means):
+    - correctness — logic bugs, missed edge/error cases, off-by-one,
+      nil/empty, races, resource leaks, and removed/changed behavior
+      that breaks existing callers. The only lens that may yield a
+      Blocker.
+    - reuse — reimplements something the codebase already provides;
+      duplicated logic that should call an existing helper.
+    - simplification — needless complexity, dead branches, redundant
+      state, control flow that can collapse.
+    - efficiency — needless allocations, quadratic loops, N+1, repeated
+      work that can be hoisted — hot paths only.
+    - altitude — a change made at the wrong layer/abstraction boundary.
+  Diff-specific angles you craft from the snapshot (examples):
+    - removed-behavior audit (when the diff deletes/replaces logic),
+    - cross-file tracer (when a signature/field/constant changed — trace
+      every call site), and/or
+    - test-coverage gap (when behavior changed without test changes).
+  ` + finderClause(effort) + `
+
+Step 4 — spawn ALL finders in ONE assistant message (one batched
+parallel wave, at most 8). For each angle call the Agent tool with
+subagent_type="review", run_in_background:true, a 3-5 word description,
+and a SELF-CONTAINED prompt — the subagent cannot see this conversation,
+so each prompt MUST state: the lens, the resolved base branch
+(<resolved_base> from ## state), and the file area to focus on. Tell it
+to derive the change itself with git_diff_files / list_git_changed_files
+against the base and to read the surrounding code, not just the diff
+lines. End each finder prompt with: "Output a CANDIDATE LIST of
+findings, one per line as ` + "`file:line — claim — severity(blocker|suggestion|nit) — confidence(high|uncertain)`" + `.
+No prose, no narration. If you find nothing substantive, reply exactly:
+NO FINDINGS." Record the task id each Agent call returns.
+
+Step 5 — collect. In ONE assistant message, issue one
+get_subagent_result call per finder task id (they run as a concurrent
+parallel batch), each with wait_seconds=600. For any task that returns
+"still running", re-issue get_subagent_result for just those ids in the
+next message; do at most 2 re-collect rounds, then proceed without the
+stragglers and mark their angle "timed out" in the report.
+
+Step 6 — dedup in-context. Merge candidate findings that name the same
+file:line and same root cause. Drop any finding whose file:line is not
+present in ## changed-files / ## diff — a finder that cites a location
+the diff doesn't touch is out of scope. Keep, per finding, its claim,
+severity, and confidence.
+
+` + verifyClause(effort) + `
+
+Step 9 — emit the report to scrollback in exactly this structure:
+
+  ## Code Review: <current_branch> (effort: ` + effort + `)
+  <one line: N files changed vs <resolved_base>; F finders run;
+   C confirmed / R refuted / U unverified>
+
+  ### Angles run
+  | angle | candidates | confirmed |
+  | correctness | 3 | 2 |
+  | ... one row per finder; note "timed out" for any that didn't return |
+
+  ### Blockers
+  <confirmed correctness findings that must be fixed. Each:
+   file:line — claim — 1-2 sentence why it breaks. "(none)" if empty.>
+
+  ### Suggestions
+  <confirmed reuse / simplification / efficiency / altitude findings
+   worth acting on. Same format. "(none)" if empty.>
+
+  ### Nits
+  <minor / cosmetic. "(none)" if empty.>
+
+  ### Refuted / dropped
+  <count, then one line each: claim → why (verifier refuted it /
+   out-of-diff location / duplicate). "(0)" if none.>
+
+Hard constraints:
+- This is a REVIEW, not a fix. Do NOT call write_file / edit_file /
+  apply_diff, and do NOT instruct any subagent to. The author owns the
+  changes.
+- Output to scrollback ONLY. Do NOT post the review to GitHub or
+  anywhere else.
+- Do NOT fabricate file:line refs. Cite only locations the ## diff /
+  ## changed-files snapshot shows, or that a finder substantiated and
+  you could corroborate against the snapshot. Drop the rest.
+- Never run more than 8 background subagents at once. Spawn in batched
+  waves; collect a wave (freeing its slots) before spawning the next.
+- Every subagent prompt is self-contained — the subagent has no access
+  to this conversation. Embed the base branch, file scope, and (for
+  verifiers) the exact claim.`
+}
+
+// finderClause is the per-effort Step-3 instruction for how many
+// finders to run and how to group the lenses. Kept separate from the
+// shared lens definitions so the effort levels only differ in the
+// fan-out width, not in what each lens means.
+func finderClause(effort string) string {
+	switch effort {
+	case "low":
+		return `For this effort run exactly 2 finders: (1) correctness,
+  (2) reuse+simplification (merged). No diff-specific angles.`
+	case "high":
+		return `For this effort run up to 8 finders: one per fixed lens
+  (correctness, reuse, simplification, efficiency, altitude) plus up to
+  3 diff-specific angles you craft from the snapshot. Choose angles that
+  fit THIS diff; total at most 8 finders.`
+	default: // medium
+		return `For this effort run exactly 4 finders: (1) correctness,
+  (2) reuse+simplification, (3) efficiency+altitude, plus (4) one
+  diff-specific angle you craft from the snapshot. Total 4 finders.`
+	}
+}
+
+// verifyClause is the per-effort Steps 7-8 instruction. low skips
+// verification; medium verifies only low-confidence findings; high
+// verifies every deduped finding. Verifiers dispatch to the dedicated
+// read-only `code-verifier` vessel (it has no run_bash/write tools, so
+// nothing it does gets auto-denied in the background and its persona is
+// "refute one finding from the code" — no run-the-tests instinct to
+// override in the prompt).
+func verifyClause(effort string) string {
+	const collect = `Step 8 — collect verdicts the same way as Step 5 (one
+get_subagent_result per verifier id in one message, wait_seconds=600,
+re-collect stragglers ≤2 rounds). A finding is CONFIRMED on
+VERDICT: PASS, REFUTED on VERDICT: FAIL; on VERDICT: PARTIAL or a
+timed-out verifier, keep the finding but tag it "unverified".`
+
+	const verifierPrompt = `For each finding call Agent with
+subagent_type="code-verifier", run_in_background:true, and a
+self-contained prompt: "A reviewer claims: <file:line — claim>. Try to
+REFUTE it by reading that location and the surrounding code and tracing
+callers. End with the verdict line VERDICT: PASS (claim stands),
+FAIL (claim refuted), or PARTIAL." The code-verifier is read-only and
+owns the verdict contract; you only supply the claim.`
+
+	switch effort {
+	case "low":
+		return `Step 7 — skip verification entirely. Every surviving deduped
+finding is a candidate finding; carry it straight to the report (tagged
+"unverified").`
+	case "high":
+		return `Step 7 — verify. Spawn one verifier per deduped finding, but in
+WAVES OF AT MOST 8. The finder subagents must already be collected
+(Step 5) so their background slots are free — never have finders and
+verifiers running at once beyond 8 total. ` + verifierPrompt + ` If a
+wave would exceed 8 concurrent background subagents, collect the current
+wave fully (Step 8) before spawning the next.
+
+` + collect
+	default: // medium
+		return `Step 7 — verify ONLY the deduped findings whose confidence is
+"uncertain"; findings marked high-confidence skip verification. Spawn
+verifiers in waves of at most 8, collecting each wave before the next.
+` + verifierPrompt + `
+
+` + collect
+	}
+}

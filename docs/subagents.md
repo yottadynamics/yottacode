@@ -26,6 +26,7 @@ Eight agent types ship with the binary:
 | `test` | read + write + `run_tests` + `run_bash` | Write/update and run tests for a component, owning the test files only. Write-capable, **background-by-default** — pairs with `implement` on disjoint files. |
 | `docs` | read + `write_file`/`edit_file` + git read + `fetch_url` | Update documentation and comments for a change, owning the doc files only. Write-capable, **background-by-default**. |
 | `review` | read-only (Explore's tools + more git read) | Read-only critique of a diff — findings ranked by severity (file:line + scenario). Cannot edit; complements `verification`. Foreground. |
+| `code-verifier` | read-only (same set as `review`) | Read-only adversarial check of a **single** review finding: given one `file:line` + claim, try to refute it from the code, end with `VERDICT: PASS\|FAIL\|PARTIAL`. The read-only counterpart to `verification` (which runs builds/tests). Foreground; used by `/code-review`'s verification pass. |
 
 The `implement` / `test` / `docs` / `review` roster rounds out the
 **parallel-implementation** story behind `dispatch`: a typical fan-out is
@@ -127,6 +128,17 @@ The `Agent` tool accepts `run_in_background: true`:
   `oneshot` rejects background calls because it has no long-running
   session to host them. Use when the parent can keep working
   without the answer.
+
+  Background subagents stream the **same live progress card** as
+  foreground ones — a start header followed by `├` activity ticks —
+  for as long as the spawning turn stays active (the spawn-then-wait
+  case, e.g. spawn several background subagents and then collect them
+  in the same turn). The forward is best-effort: once the spawning
+  turn ends, interim ticks are dropped (a later turn never inherits a
+  stale child's ticks) and the live view falls back to the bottom
+  dock, which tracks every running subagent from the task registry.
+  Approvals are still auto-denied for background subagents regardless —
+  nobody is watching to answer a modal.
 
   Background subagents are **gated behind the
   `background_subagents` experimental feature**. Without the gate,

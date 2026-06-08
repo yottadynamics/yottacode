@@ -79,6 +79,10 @@ func TestBuiltinRoles_DispatchClassification(t *testing.T) {
 		{"test", false, true},
 		{"docs", false, true},
 		{"review", true, false},
+		// code-verifier is read-only (→ shared cwd, no worktree) and
+		// foreground-default, like review — it reads and reasons to
+		// refute a finding; it never runs or edits.
+		{"code-verifier", true, false},
 	}
 	for _, tc := range cases {
 		c, ok := byName[tc.name]
@@ -326,9 +330,9 @@ func TestAgentTool_ForegroundCapEnforced(t *testing.T) {
 	tool, _ := newTestAgentTool(t, []subagents.AgentConfig{cfg}, nil, false)
 	for i := 0; i < MaxForegroundSubagents; i++ {
 		tool.Tasks.Add(&subagents.Task{
-			ID:        subagents.NewTaskID(),
-			AgentType: "x",
-			Status:    subagents.TaskRunning,
+			ID:         subagents.NewTaskID(),
+			AgentType:  "x",
+			Status:     subagents.TaskRunning,
 			Background: false,
 		})
 	}
@@ -641,6 +645,73 @@ func TestAgentTool_BackgroundAutoDeniesApproval(t *testing.T) {
 	// auto-deny lets the model adapt and produce a final reply.
 	if tasks[0].Errored {
 		t.Errorf("expected non-errored completion after auto-deny adapt; got Result=%q", tasks[0].Result)
+	}
+}
+
+// TestAgentTool_BackgroundForwardsProgress locks the live-card behavior
+// for background subagents: a background child's SubagentProgress ticks
+// must reach the parent's event stream (so the inline card + dock stay
+// live while the spawning turn is active), alongside the SubagentStart
+// that already fired. Before this wiring the background goroutine passed
+// nil for emitToParent and no progress reached the parent — only the
+// dock (registry) updated. Approvals stay auto-denied regardless; see
+// TestAgentTool_BackgroundAutoDeniesApproval.
+func TestAgentTool_BackgroundForwardsProgress(t *testing.T) {
+	// Child turn 1 calls read_file (a no-approval tool → emits a
+	// ToolStart → progress tick); turn 2 emits the final reply.
+	streamer := &scriptedStreamer{turns: [][]adapter.StreamEvent{
+		{sseDone("", adapter.ToolCall{ID: "1", Name: "read_file", ArgsJSON: `{"path":"x"}`})},
+		{sseDone("done reviewing")},
+	}}
+	cfg := subagents.AgentConfig{Name: "review", Description: "x", Tools: []string{"read_file"}, Prompt: "x", Source: "test"}
+	tool, _ := newTestAgentTool(t, []subagents.AgentConfig{cfg}, streamer, true)
+
+	// Keep the parent event stream attached and alive for the whole run
+	// (the orchestration case: spawning turn stays active).
+	parentEvents := make(chan Event, 64)
+	ctx := WithParentEvents(context.Background(), parentEvents)
+
+	out, err := tool.Execute(ctx, mustJSON(t, agentArgs{SubagentType: "review", Prompt: "p", RunInBackground: true}))
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if !strings.Contains(out, "background subagent") {
+		t.Fatalf("expected immediate background handle, got: %q", out)
+	}
+
+	// Wait for the detached child to finish; all parentEvents sends
+	// happen inside runChild, before MarkDone flips the status.
+	for range 100 {
+		tasks := tool.Tasks.List()
+		if len(tasks) > 0 && tasks[0].Status != subagents.TaskRunning {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	// Drain the buffered events the run forwarded (non-blocking — the
+	// run is over, so the buffer holds everything; nothing is still
+	// sending, so we never close the channel out from under a sender).
+	var starts, progress int
+	for done := false; !done; {
+		select {
+		case ev := <-parentEvents:
+			switch ev.(type) {
+			case SubagentStart:
+				starts++
+			case SubagentProgress:
+				progress++
+			}
+		default:
+			done = true
+		}
+	}
+
+	if starts == 0 {
+		t.Errorf("expected a SubagentStart forwarded for the background run")
+	}
+	if progress == 0 {
+		t.Errorf("expected at least one SubagentProgress forwarded for the background run — background should stream live ticks, not just update the dock")
 	}
 }
 

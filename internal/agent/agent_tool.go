@@ -407,10 +407,17 @@ func (t *AgentTool) Execute(ctx context.Context, argsJSON string) (string, error
 		t.Tasks.AttachCancel(taskID, cancel)
 		go func() {
 			defer cancel()
-			// Background: no live UI to forward to (emitToParent nil)
-			// AND no decisions channel to read from. Approval-needed
-			// events auto-deny inside runChild.
-			result, errored, status, tokens := t.runChild(bgCtx, taskID, cfg, a.Prompt, transcript, nil, nil, childAdapter, childModel, childRunOpts{})
+			// Background: forward informational progress (SubagentStart
+			// already fired above; the ticks below stream into the same
+			// inline card + the dock) so a background subagent reads like
+			// a foreground one WHILE its spawning turn is still active.
+			// forwardToParent drops these non-blockingly once the turn's
+			// event channel stops draining, so a detached child never
+			// stalls and can't leak into a later turn (each turn gets a
+			// fresh channel). decisions stays nil: with no one watching,
+			// approval-needed events still auto-deny inside runChild
+			// (the forward path requires BOTH emitToParent and decisions).
+			result, errored, status, tokens := t.runChild(bgCtx, taskID, cfg, a.Prompt, transcript, emitToParent, nil, childAdapter, childModel, childRunOpts{})
 			t.Tasks.MarkDone(taskID, status, result, errored, tokens)
 			// Read the just-recorded tool-call count off the registry
 			// so the inline card can render accurate stats.
@@ -548,20 +555,25 @@ func (t *AgentTool) routeChildModel(cfg *subagents.AgentConfig) (Streamer, strin
 // runChild assembles the child LoopConfig + history, runs agent.Turn,
 // translates its events through the in-process translator, and
 // captures the final assistant content for return to the parent.
-// emitToParent may be nil for background runs (no live UI to update);
-// the transcript captures everything either way.
+// emitToParent forwards informational progress (SubagentProgress) to
+// the parent's live event stream; it is non-nil for both foreground
+// and background runs (background passes a non-blocking forwarder so a
+// detached child can't stall — see the spawn site). The transcript
+// captures everything regardless.
 //
-// Approval policy is foreground/background dependent:
+// Approval policy is foreground/background dependent and keys on the
+// DECISIONS channel, not on emitToParent:
 //   - Foreground (emitToParent != nil AND parentDecisions != nil): a
 //     child's ApprovalNeeded forwards through to the parent's modal
 //     so the user can answer it. The verdict routes back to the
 //     child's own decisions channel. The Preview is prefixed with
 //     "[subagent:<type>]" so the user knows which agent wants what.
-//   - Background (emitToParent == nil OR parentDecisions == nil):
-//     auto-deny with a steering message. Nobody's actively watching
-//     — surfacing a modal hours after spawn-time is bad UX. The
-//     escape valve is permissions.json (allowlist the tool the
-//     subagent needs).
+//   - Background (parentDecisions == nil): auto-deny with a steering
+//     message. Nobody's actively watching — surfacing a modal hours
+//     after spawn-time is bad UX. Progress still streams (emitToParent
+//     is set) so the inline card + dock stay live while the spawning
+//     turn is active. The escape valve is permissions.json (allowlist
+//     the tool the subagent needs).
 //
 // childRunOpts carries the optional overrides dispatch needs without
 // turning runChild into a positional-argument soup. The zero value
