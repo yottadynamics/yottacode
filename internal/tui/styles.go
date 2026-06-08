@@ -342,6 +342,5 @@ func buildStyles(p themes.Palette) {
 	styleSubagentOK = lipgloss.NewStyle().Foreground(colorSuccess)
 	styleSubagentErr = lipgloss.NewStyle().Foreground(colorError)
 	styleSubagentRunning = lipgloss.NewStyle().Foreground(colorAccent).Bold(true)
-	styleSubagentCanceled = lipgloss.NewStyle().Foreground(colorMuted).Italic(true)
 	styleSubagentTableHeader = lipgloss.NewStyle().Foreground(colorMuted).Bold(true)
 }

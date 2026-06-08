@@ -285,6 +285,12 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 	// gh_pr_create so the v0.5.0 swap to a typed go-github client
 	// changes one variable above instead of two registration sites.
 	reg.Register(&agent.GHPRReviewContextTool{Cwd: cwdRef, GH: ghClient})
+	// code_review_context is the local-diff counterpart to
+	// gh_pr_review_context, paired with the /code-review slash
+	// command. Read-only and Cwd-only (no github.Interface): it
+	// reviews the branch-vs-base diff, or the uncommitted working
+	// tree when there are no commits ahead.
+	reg.Register(&agent.CodeReviewContextTool{Cwd: cwdRef})
 	// gh_pr_read is the lightweight metadata-only sibling — one
 	// API call vs. review_context's three. The model picks between
 	// them based on whether it needs the diff + checks (review) or
