@@ -410,12 +410,16 @@ func (t *AgentTool) Execute(ctx context.Context, argsJSON string) (string, error
 			// already fired above; the ticks below stream into the same
 			// inline card + the dock) so a background subagent reads like
 			// a foreground one WHILE its spawning turn is still active.
-			// forwardToParent drops these non-blockingly once the turn's
-			// event channel stops draining, so a detached child never
-			// stalls and can't leak into a later turn (each turn gets a
-			// fresh channel). decisions stays nil: with no one watching,
-			// approval-needed events still auto-deny inside runChild
-			// (the forward path requires BOTH emitToParent and decisions).
+			// Once that turn ends the TUI CLOSES this per-turn event
+			// channel, but the detached child (on context.Background())
+			// keeps emitting — forwardToParent routes those ticks through
+			// trySend, which drops on a closed/full channel instead of
+			// panicking, so a post-turn tick is a no-op rather than a crash
+			// that the runChild recover would turn into a failed run. The
+			// dock keeps updating from the registry's activity ring either
+			// way. decisions stays nil: with no one watching, approval-needed
+			// events still auto-deny inside runChild (the forward path
+			// requires BOTH emitToParent and decisions).
 			result, errored, status, tokens := t.runChild(bgCtx, taskID, cfg, a.Prompt, transcript, emitToParent, nil, childAdapter, childModel, childRunOpts{})
 			t.Tasks.MarkDone(taskID, status, result, errored, tokens)
 			// Read the just-recorded tool-call count off the registry
@@ -1089,15 +1093,21 @@ func (t *AgentTool) unknownSubagentError(name string) string {
 }
 
 // forwardToParent delivers a child event to the parent's event channel.
-// Most events are best-effort — dropped under buffer pressure rather than
-// stalling the child loop (a chatty child must not be able to wedge the
-// parent). But events the child then BLOCKS on a decision for —
-// ApprovalNeeded and PathTrustElevationNeeded — must never be dropped: a
-// lost request leaves the child parked on the decisions channel with no
-// feeder, and for a foreground batch the parent's wg.Wait never returns
-// (frozen UI). For those we use a blocking, ctx-aware send so the request
-// is delivered as soon as the consumer drains (e.g. after the user answers
-// a parent-level modal), unblocking only if the turn itself is canceled.
+// Most events are best-effort — dropped (via trySend) under buffer pressure
+// OR after the per-turn channel is closed, rather than stalling or crashing
+// the child loop (a chatty child must not be able to wedge the parent, and a
+// detached background child outlives the turn that owns this channel). But
+// events the child then BLOCKS on a decision for — ApprovalNeeded and
+// PathTrustElevationNeeded — must never be dropped: a lost request leaves the
+// child parked on the decisions channel with no feeder, and for a foreground
+// batch the parent's wg.Wait never returns (frozen UI). For those we use a
+// blocking, ctx-aware send so the request is delivered as soon as the consumer
+// drains (e.g. after the user answers a parent-level modal), unblocking only
+// if the turn itself is canceled. Those blocking sends are only ever reached
+// on the FOREGROUND path (the background spawn passes decisions=nil, so an
+// approval-needed event auto-denies inside runChild and never forwards), where
+// the parent goroutine is blocked in Execute and the channel stays open — so
+// the closed-channel race is confined to the best-effort default branch.
 func forwardToParent(ctx context.Context, parentEvents chan<- Event, ev Event) {
 	if parentEvents == nil {
 		return
@@ -1109,12 +1119,42 @@ func forwardToParent(ctx context.Context, parentEvents chan<- Event, ev Event) {
 		case <-ctx.Done():
 		}
 	default:
-		select {
-		case parentEvents <- ev:
-		default:
-			// Buffer full and consumer behind — drop this best-effort
-			// event rather than stall. The transcript still captures it.
+		// Best-effort: drop when the consumer is behind (full buffer) OR
+		// when the per-turn channel has already been CLOSED because the
+		// spawning turn ended. A detached background subagent runs on
+		// context.Background() and keeps emitting progress after its
+		// spawning turn closed this channel (the TUI closes the per-turn
+		// events channel the moment agent.Turn returns). A plain
+		// select-with-default still PANICS on a send to a closed channel —
+		// the default guards only a *full* channel, never a *closed* one —
+		// so trySend wraps the send to turn that end-of-turn race into a
+		// clean drop. The registry's activity ring + the transcript remain
+		// the durable record, so a dropped inline tick costs nothing.
+		trySend(parentEvents, ev)
+	}
+}
+
+// trySend performs a non-blocking, panic-safe send of ev on ch, returning
+// false (dropping ev) when the channel is full OR closed. The closed case
+// is the normal end-of-turn state for the per-turn event stream: a plain
+// select-with-default is not enough on its own because a send to a closed
+// channel panics even when a default case is present (the send case counts
+// as "ready"). See forwardToParent's default branch for why a detached
+// background child hits this.
+func trySend(ch chan<- Event, ev Event) (sent bool) {
+	defer func() {
+		// A send on a closed channel panics from inside the select below;
+		// recover degrades it to a dropped event rather than a crash that
+		// the runChild recover would turn into a failed background run.
+		if recover() != nil {
+			sent = false
 		}
+	}()
+	select {
+	case ch <- ev:
+		return true
+	default:
+		return false
 	}
 }
 
