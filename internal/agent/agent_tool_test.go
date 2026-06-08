@@ -715,6 +715,67 @@ func TestAgentTool_BackgroundForwardsProgress(t *testing.T) {
 	}
 }
 
+// TestAgentTool_BackgroundSurvivesClosedTurnChannel is the regression
+// test for the closed-per-turn-channel panic: a background subagent
+// outlives its spawning turn, which CLOSES the per-turn event channel,
+// yet the detached child keeps emitting SubagentStart/SubagentProgress.
+// Forwarding those onto the closed channel must degrade to a dropped
+// tick (via trySend), NOT a "send on closed channel" panic that the
+// runChild recover would turn into a failed (errored) run.
+//
+// An already-closed channel reproduces the post-turn-end state
+// deterministically: the SubagentStart forwarded synchronously inside
+// Execute (parent goroutine) AND every SubagentProgress forwarded from
+// the detached child goroutine both target a closed channel. Before the
+// fix the first send panicked; after it, the run completes cleanly.
+func TestAgentTool_BackgroundSurvivesClosedTurnChannel(t *testing.T) {
+	// Turn 1 calls read_file (a no-approval tool → a ToolStart → a
+	// progress tick); turn 2 emits the final reply.
+	streamer := &scriptedStreamer{turns: [][]adapter.StreamEvent{
+		{sseDone("", adapter.ToolCall{ID: "1", Name: "read_file", ArgsJSON: `{"path":"x"}`})},
+		{sseDone("done reviewing")},
+	}}
+	cfg := subagents.AgentConfig{Name: "review", Description: "x", Tools: []string{"read_file"}, Prompt: "x", Source: "test"}
+	tool, _ := newTestAgentTool(t, []subagents.AgentConfig{cfg}, streamer, true)
+
+	// A per-turn channel that is ALREADY closed — i.e. the spawning turn
+	// has ended. Every forwarded event targets a closed channel.
+	parentEvents := make(chan Event, 64)
+	close(parentEvents)
+	ctx := WithParentEvents(context.Background(), parentEvents)
+
+	// Execute forwards a SubagentStart synchronously (parent goroutine)
+	// before detaching — that send must not panic, so Execute returns the
+	// handle normally.
+	out, err := tool.Execute(ctx, mustJSON(t, agentArgs{SubagentType: "review", Prompt: "p", RunInBackground: true}))
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if !strings.Contains(out, "background subagent") {
+		t.Fatalf("expected immediate background handle, got: %q", out)
+	}
+
+	// The detached child forwards SubagentProgress onto the closed channel
+	// from its own goroutine; the run must still finish cleanly — completed,
+	// not errored by a recovered send-on-closed-channel panic.
+	var final subagents.Task
+	for range 200 {
+		tasks := tool.Tasks.List()
+		if len(tasks) > 0 && tasks[0].Status != subagents.TaskRunning {
+			final = tasks[0]
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if final.Status != subagents.TaskCompleted {
+		t.Fatalf("expected TaskCompleted despite the closed turn channel, got status=%v errored=%v result=%q",
+			final.Status, final.Errored, final.Result)
+	}
+	if final.Errored {
+		t.Errorf("a background run must not be errored by a forward onto a closed channel")
+	}
+}
+
 // TestAgentTool_ForegroundForwardsApproval verifies the foreground
 // path forwards a child's ApprovalNeeded event to the parent's events
 // channel and reads the user's verdict back from the parent's
