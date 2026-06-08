@@ -3,7 +3,10 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"os"
+	"os/exec"
 	"strconv"
 	"strings"
 )
@@ -156,15 +159,41 @@ type CodeReviewContext struct {
 	ResolvedBase   string
 	BaseResolution string // "origin-head" | "fallback:<name>" | "unresolved"
 	NotFoundBase   bool   // BaseResolution == "unresolved"
+	EmptyRepo      bool   // repo has no commits yet (unborn HEAD) — a STOP flag, like NotFoundBase
 	DiffSource     string // "branch-vs-base" | "working-tree"
 	AheadCount     int
+	AheadCountErr  bool // rev-list --count errored; AheadCount unreliable (0 may not mean "not ahead")
 	DiffEmpty      bool
+	DiffErr        bool // a `git diff` call failed — distinct from a genuinely empty diff (must NOT read as "no changes")
+
+	// MergeBase is the merge-base SHA of ResolvedBase and HEAD for the
+	// branch-vs-base source (empty for working-tree, or when the two
+	// histories share no common ancestor — see NoMergeBase). The diff is
+	// built as MergeBase..HEAD (two-dot), identical to the three-dot
+	// ResolvedBase...HEAD "Files changed" view, but resolving the
+	// merge-base ourselves lets us (a) hand finders the exact base SHA so
+	// they review the same range, and (b) detect the no-merge-base case
+	// instead of letting three-dot's `fatal: no merge base` masquerade as
+	// an empty diff.
+	MergeBase   string
+	NoMergeBase bool // ResolvedBase and HEAD share no common ancestor (orphan/grafted/unrelated history)
+	// DiffBase is the left side of the two-dot range the snapshot was built
+	// from — the ref finders must diff against (git_diff_files base=<DiffBase>,
+	// head=HEAD) so their change set matches this snapshot exactly. MergeBase
+	// for a normal branch, ResolvedBase when there is no merge-base, "HEAD"
+	// for the working-tree source.
+	DiffBase string
 
 	ChangedFiles  string // name-status, capped
 	ChangedCapped bool
 	Diff          string // unified diff, capped to effortDiffCap(effort)
 	DiffCap       int
 	DiffCapped    bool
+	// UntrackedFiles are new (untracked, non-ignored) files folded into the
+	// working-tree review — `git diff HEAD` never shows them, so without this
+	// a brand-new module would be invisible (and an untracked-only tree would
+	// look empty). Empty for the branch-vs-base source.
+	UntrackedFiles []string
 
 	CommitLog     []string // "<short-sha> <subject>"; empty for working-tree source
 	DetectedStyle string
@@ -178,6 +207,23 @@ type CodeReviewContext struct {
 // gitOutput call.
 func BuildCodeReviewContext(ctx context.Context, cwd, effort string) (CodeReviewContext, error) {
 	snap := CodeReviewContext{Effort: effort, DiffCap: effortDiffCap(effort)}
+
+	// A brand-new repo with no commits has an "unborn" HEAD, on which
+	// `git rev-parse --abbrev-ref HEAD` below exits 128 with a raw git
+	// fatal. Detect it first and surface a typed empty-repo STOP flag
+	// instead of failing the whole call with raw git text. We only treat
+	// it as empty-repo inside a genuine git work tree, so a non-repo cwd
+	// still falls through to the hard error from the branch lookup
+	// (preserving the "not a repo" failure path).
+	if _, err := gitOutput(ctx, cwd, "rev-parse", "--verify", "--quiet", "HEAD"); err != nil {
+		if _, repoErr := gitOutput(ctx, cwd, "rev-parse", "--is-inside-work-tree"); repoErr == nil {
+			snap.EmptyRepo = true
+			if b, err := gitOutput(ctx, cwd, "branch", "--show-current"); err == nil {
+				snap.CurrentBranch = strings.TrimSpace(b)
+			}
+			return snap, nil
+		}
+	}
 
 	branch, err := gitOutput(ctx, cwd, "rev-parse", "--abbrev-ref", "HEAD")
 	if err != nil {
@@ -194,41 +240,88 @@ func BuildCodeReviewContext(ctx context.Context, cwd, effort string) (CodeReview
 	}
 
 	// Pick the diff source. When the branch has commits ahead of its
-	// base, review that range (three-dot, matching what a PR's
-	// "Files changed" shows). Otherwise fall back to the working tree
-	// so "review my pending work before I commit" also works.
+	// base, review that range. Otherwise fall back to the working tree
+	// so "review my pending work before I commit" also works. A rev-list
+	// error is recorded (AheadCountErr) rather than swallowed — otherwise
+	// a failed count reads as "0 ahead" and silently mislabels the source
+	// as working-tree.
 	if cnt, err := gitOutput(ctx, cwd, "rev-list", "--count", snap.ResolvedBase+"..HEAD"); err == nil {
 		snap.AheadCount, _ = strconv.Atoi(strings.TrimSpace(cnt))
+	} else {
+		snap.AheadCountErr = true
 	}
 
 	var changedRange, diffRange string
 	if snap.AheadCount > 0 {
 		snap.DiffSource = "branch-vs-base"
-		changedRange = snap.ResolvedBase + "...HEAD"
-		diffRange = snap.ResolvedBase + "...HEAD"
+		// Build the diff from the merge-base (two-dot), NOT three-dot.
+		// `git diff base...HEAD` is FATAL when base and HEAD share no
+		// common ancestor (orphan/grafted/force-pushed/shallow history),
+		// and that fatal was best-effort-swallowed below, masquerading as
+		// an empty diff ("nothing to review"). Resolving the merge-base
+		// ourselves lets us diff the equivalent mergeBase..HEAD, hand
+		// finders that exact SHA so they review the same change set, and
+		// fall back cleanly to base..HEAD (which needs no common ancestor)
+		// when there is no merge-base at all.
+		if mb, err := gitOutput(ctx, cwd, "merge-base", snap.ResolvedBase, "HEAD"); err == nil {
+			snap.MergeBase = strings.TrimSpace(mb)
+			snap.DiffBase = snap.MergeBase
+		} else {
+			snap.NoMergeBase = true
+			snap.DiffBase = snap.ResolvedBase
+		}
+		changedRange = snap.DiffBase + "..HEAD"
+		diffRange = snap.DiffBase + "..HEAD"
 	} else {
 		snap.DiffSource = "working-tree"
+		snap.DiffBase = "HEAD"
 		changedRange = "HEAD"
 		diffRange = "HEAD"
 	}
 
-	// Changed files (name-status) and the diff body. Both git calls
-	// are best-effort: an unusual repo state yields an empty section
-	// rather than failing the whole snapshot.
+	// Changed files (name-status) and the diff body. A git error here is
+	// recorded in DiffErr — NOT swallowed into a false-empty — so a range
+	// git refuses to diff is never reported to the orchestrator as
+	// "no changes to review".
 	if names, err := gitOutput(ctx, cwd, "diff", "--name-status", changedRange); err == nil {
 		snap.ChangedFiles, snap.ChangedCapped = capString(strings.TrimRight(names, "\n"), codeReviewChangedFilesCap)
+	} else {
+		snap.DiffErr = true
 	}
 	if diff, err := gitOutput(ctx, cwd, "diff", diffRange); err == nil {
 		snap.Diff, snap.DiffCapped = capString(diff, snap.DiffCap)
+	} else {
+		snap.DiffErr = true
 	}
-	snap.DiffEmpty = strings.TrimSpace(snap.Diff) == ""
+
+	// Working-tree review must include brand-new (untracked, non-ignored)
+	// files: `git diff HEAD` only shows TRACKED changes, so a new module
+	// not yet `git add`ed would be invisible and an untracked-only tree
+	// would look empty. Fold each untracked file into ## changed-files (as
+	// an added entry) and its content into the diff (as a new-file hunk).
+	// Read-only: foldUntracked synthesizes the per-file diff via
+	// `git diff --no-index` and never touches the index (no `git add -N`).
+	if snap.DiffSource == "working-tree" {
+		if others, err := gitOutput(ctx, cwd, "ls-files", "--others", "--exclude-standard"); err == nil {
+			snap.UntrackedFiles = splitNonEmptyLines(strings.TrimRight(others, "\n"))
+		}
+		snap.foldUntracked(ctx, cwd)
+	}
+
+	// diff_empty means "genuinely nothing to review" — NOT a diff that
+	// errored (DiffErr) and NOT a tree whose only changes are untracked
+	// new files (UntrackedFiles). Either of those would otherwise STOP the
+	// review with a false "no changes".
+	snap.DiffEmpty = !snap.DiffErr && strings.TrimSpace(snap.Diff) == "" && len(snap.UntrackedFiles) == 0
 
 	// Commit log + style detection only make sense for the
 	// branch-vs-base source; working-tree changes aren't committed yet.
+	// Use DiffBase..HEAD so the log lists exactly the branch's own commits
+	// (the same range the diff was built from).
 	if snap.DiffSource == "branch-vs-base" {
 		if logOut, err := gitOutput(ctx, cwd, "log",
 			fmt.Sprintf("-%d", codeReviewLogCommits),
-			"--format=%h %s", snap.ResolvedBase+"..HEAD"); err == nil {
+			"--format=%h %s", snap.DiffBase+"..HEAD"); err == nil {
 			snap.CommitLog = splitNonEmptyLines(logOut)
 		}
 	}
@@ -244,21 +337,91 @@ func BuildCodeReviewContext(ctx context.Context, cwd, effort string) (CodeReview
 	return snap, nil
 }
 
+// foldUntracked appends each untracked file to the changed-files list (as
+// an added entry) and its content to the diff body (as a synthesized
+// new-file hunk), bounded by the same caps. Read-only: the per-file diff
+// comes from `git diff --no-index`, which never touches the repo index.
+// Best-effort per file — a file that can't be diffed (binary, unreadable)
+// is still listed in changed-files but contributes no hunk. Called only on
+// the working-tree source (UntrackedFiles is empty otherwise).
+func (snap *CodeReviewContext) foldUntracked(ctx context.Context, cwd string) {
+	if len(snap.UntrackedFiles) == 0 {
+		return
+	}
+	// changed-files: append an "A\t<path>" entry per untracked file.
+	var cf strings.Builder
+	cf.WriteString(strings.TrimRight(snap.ChangedFiles, "\n"))
+	for _, f := range snap.UntrackedFiles {
+		if cf.Len() > 0 {
+			cf.WriteString("\n")
+		}
+		fmt.Fprintf(&cf, "A\t%s", f)
+	}
+	snap.ChangedFiles, snap.ChangedCapped = capString(cf.String(), codeReviewChangedFilesCap)
+
+	// diff body: append a synthesized new-file hunk per untracked file,
+	// stopping once we'd exceed the effort diff cap.
+	var db strings.Builder
+	db.WriteString(snap.Diff)
+	truncated := snap.DiffCapped
+	for _, f := range snap.UntrackedFiles {
+		if db.Len() >= snap.DiffCap {
+			truncated = true
+			break
+		}
+		hunk, err := gitDiffNoIndex(ctx, cwd, f)
+		if err != nil || strings.TrimSpace(hunk) == "" {
+			continue
+		}
+		if db.Len() > 0 && !strings.HasSuffix(db.String(), "\n") {
+			db.WriteString("\n")
+		}
+		db.WriteString(hunk)
+	}
+	var capped bool
+	snap.Diff, capped = capString(db.String(), snap.DiffCap)
+	snap.DiffCapped = truncated || capped
+}
+
+// gitDiffNoIndex synthesizes the added-file unified diff for a path that
+// is not tracked by git (an untracked file), via `git diff --no-index
+// /dev/null <path>`. That command exits 1 when the two inputs differ —
+// always the case here — so exit 1 is treated as success and only a higher
+// exit code is a real error. Read-only: --no-index never touches the repo
+// or its index. The /dev/null left side is POSIX-only, which matches
+// yottacode's supported platforms (linux + darwin).
+func gitDiffNoIndex(ctx context.Context, cwd, path string) (string, error) {
+	cmd := exec.CommandContext(ctx, "git", "diff", "--no-index", "--", os.DevNull, path)
+	cmd.Dir = cwd
+	out, err := cmd.Output()
+	if err != nil {
+		var ee *exec.ExitError
+		if errors.As(err, &ee) && ee.ExitCode() == 1 {
+			return string(out), nil
+		}
+		return "", err
+	}
+	return string(out), nil
+}
+
 // renderCodeReviewContext flattens the snapshot into the labeled
 // sections the tool returns. ## state goes first so the orchestrator
 // branches on the typed flags before reading anything else, and the
-// render short-circuits after ## state on the two STOP conditions
+// render short-circuits after ## state on the STOP conditions
 // (mirrors renderPRReviewContext).
 func renderCodeReviewContext(s CodeReviewContext) string {
 	var b strings.Builder
 
-	fmt.Fprintf(&b, "## state\neffort=%s\ncurrent_branch=%s\nresolved_base=%s\nbase_resolution=%s\nnot_found_base=%v\ndiff_empty=%v\ndiff_source=%s\nahead_count=%d\ndiff_cap_bytes=%d\n",
+	fmt.Fprintf(&b, "## state\neffort=%s\ncurrent_branch=%s\nresolved_base=%s\nbase_resolution=%s\nnot_found_base=%v\nempty_repo=%v\ndiff_empty=%v\ndiff_err=%v\ndiff_source=%s\nahead_count=%d\nahead_count_err=%v\nmerge_base=%s\ndiff_base=%s\nno_merge_base=%v\ndiff_cap_bytes=%d\n",
 		s.Effort, s.CurrentBranch, s.ResolvedBase, s.BaseResolution,
-		s.NotFoundBase, s.DiffEmpty, s.DiffSource, s.AheadCount, s.DiffCap)
+		s.NotFoundBase, s.EmptyRepo, s.DiffEmpty, s.DiffErr, s.DiffSource,
+		s.AheadCount, s.AheadCountErr, s.MergeBase, s.DiffBase, s.NoMergeBase, s.DiffCap)
 
-	if s.NotFoundBase || s.DiffEmpty {
-		// Nothing more to render — the orchestrator surfaces the
-		// "no base" / "no changes" message and stops.
+	// STOP conditions — render only ## state and let the orchestrator
+	// surface the message. diff_err with an empty diff is a STOP too: a
+	// git range failure must not fall through to an empty review that
+	// reads as "looks good".
+	if s.NotFoundBase || s.EmptyRepo || s.DiffEmpty || (s.DiffErr && strings.TrimSpace(s.Diff) == "") {
 		return strings.TrimRight(b.String(), "\n") + "\n"
 	}
 

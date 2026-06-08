@@ -151,8 +151,14 @@ func (m Model) updateSubagentsPicker(msg tea.KeyMsg) (Model, tea.Cmd) {
 				p.types = m.subagentTool.AgentConfigs()
 			}
 			p.status = "refreshed"
-			if p.cursor >= rowCount {
-				p.cursor = max(0, rowCount-1)
+			// Clamp against the POST-refresh row count, not the stale
+			// rowCount snapshotted at the top of the handler before this
+			// re-snapshot — if either list shrank, the stale value would
+			// leave the cursor past the end and the next Enter/s would
+			// index out of range. (Matches the fresh-length clamp the
+			// `s` case already uses.)
+			if rc := p.rowCount(); p.cursor >= rc {
+				p.cursor = max(0, rc-1)
 			}
 			return m, nil
 		}

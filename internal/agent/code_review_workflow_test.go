@@ -152,6 +152,142 @@ func TestCodeReviewContext_WorkingTreeFallback(t *testing.T) {
 	}
 }
 
+// TestCodeReviewContext_EmptyRepo: a brand-new repo with no commits
+// (unborn HEAD) must surface a typed empty_repo STOP flag, not fail the
+// whole call with a raw `git rev-parse` fatal. (BUG 4)
+func TestCodeReviewContext_EmptyRepo(t *testing.T) {
+	tmp := gitInit(t) // init -b main, NO commit → unborn HEAD
+
+	snap, err := BuildCodeReviewContext(context.Background(), tmp, "medium")
+	if err != nil {
+		t.Fatalf("BuildCodeReviewContext must not error on an empty repo; got: %v", err)
+	}
+	if !snap.EmptyRepo {
+		t.Errorf("expected EmptyRepo=true on a repo with no commits")
+	}
+	out := renderCodeReviewContext(snap)
+	if !strings.Contains(out, "empty_repo=true") {
+		t.Errorf("render must flag empty_repo=true; got:\n%s", out)
+	}
+	if strings.Contains(out, "## diff") {
+		t.Errorf("render must short-circuit after ## state on an empty repo; got:\n%s", out)
+	}
+}
+
+// TestCodeReviewContext_NoMergeBase: a branch with commits ahead but NO
+// merge-base with the resolved base (orphan history) must NOT be reported
+// as diff_empty. Before the fix, three-dot `base...HEAD` exited fatal and
+// the swallowed error masqueraded as "no changes to review". (BUG 2)
+func TestCodeReviewContext_NoMergeBase(t *testing.T) {
+	tmp := gitInit(t)
+	writeFile(t, tmp, "f.txt", "v1\n")
+	gitCommit(t, tmp, "base on main")
+	// An orphan branch shares no history with main.
+	gitRun(t, tmp, "checkout", "-q", "--orphan", "feature/orphan")
+	gitRun(t, tmp, "rm", "-q", "-f", "f.txt")
+	writeFile(t, tmp, "g.txt", "orphan content\n")
+	gitCommit(t, tmp, "orphan root")
+
+	snap, err := BuildCodeReviewContext(context.Background(), tmp, "medium")
+	if err != nil {
+		t.Fatalf("BuildCodeReviewContext: %v", err)
+	}
+	if snap.DiffSource != "branch-vs-base" {
+		t.Fatalf("DiffSource = %q, want branch-vs-base (AheadCount=%d)", snap.DiffSource, snap.AheadCount)
+	}
+	if !snap.NoMergeBase {
+		t.Errorf("expected NoMergeBase=true for an orphan branch vs main")
+	}
+	if snap.DiffEmpty {
+		t.Errorf("a branch with real changes but no merge-base must NOT be reported diff_empty; diff=%q", snap.Diff)
+	}
+	out := renderCodeReviewContext(snap)
+	if strings.Contains(out, "diff_empty=true") {
+		t.Errorf("render must not flag diff_empty on a no-merge-base branch; got:\n%s", out)
+	}
+	if !strings.Contains(out, "g.txt") {
+		t.Errorf("render must include the orphan branch's change (g.txt); got:\n%s", out)
+	}
+}
+
+// TestCodeReviewContext_WorkingTreeUntracked: untracked (brand-new) files
+// must appear in a working-tree review. `git diff HEAD` omits them, so
+// before the fix a new module was invisible and an untracked-only tree was
+// reported diff_empty. (BUG 3)
+func TestCodeReviewContext_WorkingTreeUntracked(t *testing.T) {
+	tmp := gitInit(t)
+	writeFile(t, tmp, "f.txt", "v1\n")
+	gitCommit(t, tmp, "base") // on main, 0 ahead, clean tracked tree
+	// A brand-new file, never `git add`ed — the "review before I commit" case.
+	writeFile(t, tmp, "newmod.go", "package x\n\nfunc New() int { return 1 }\n")
+
+	snap, err := BuildCodeReviewContext(context.Background(), tmp, "medium")
+	if err != nil {
+		t.Fatalf("BuildCodeReviewContext: %v", err)
+	}
+	if snap.DiffSource != "working-tree" {
+		t.Fatalf("DiffSource = %q, want working-tree", snap.DiffSource)
+	}
+	if snap.DiffEmpty {
+		t.Errorf("an untracked-only tree must NOT be reported diff_empty")
+	}
+	found := false
+	for _, f := range snap.UntrackedFiles {
+		if f == "newmod.go" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("UntrackedFiles must include newmod.go; got %v", snap.UntrackedFiles)
+	}
+	out := renderCodeReviewContext(snap)
+	if !strings.Contains(out, "newmod.go") {
+		t.Errorf("## changed-files must list the untracked file; got:\n%s", out)
+	}
+	if !strings.Contains(out, "func New") {
+		t.Errorf("## diff must include the untracked file's content; got:\n%s", out)
+	}
+}
+
+// TestCodeReviewContext_MergeBaseSurfacedExcludesBaseOnly: the snapshot
+// diffs merge-base..HEAD (not base-tip), so commits that landed on the
+// base AFTER divergence are excluded, and the merge-base SHA is surfaced
+// in ## state so finders can diff the exact same range. (BUG 1)
+func TestCodeReviewContext_MergeBaseSurfacedExcludesBaseOnly(t *testing.T) {
+	tmp := gitInit(t)
+	writeFile(t, tmp, "f.txt", "v1\n")
+	gitCommit(t, tmp, "base0") // the eventual merge-base
+	gitRun(t, tmp, "checkout", "-q", "-b", "feature/x")
+	writeFile(t, tmp, "g.txt", "branch change\n")
+	gitCommit(t, tmp, "feat: add g")
+	// main advances with its own commit AFTER the branch diverged.
+	gitRun(t, tmp, "checkout", "-q", "main")
+	writeFile(t, tmp, "h.txt", "base-only change\n")
+	gitCommit(t, tmp, "main advances with h")
+	gitRun(t, tmp, "checkout", "-q", "feature/x")
+
+	snap, err := BuildCodeReviewContext(context.Background(), tmp, "medium")
+	if err != nil {
+		t.Fatalf("BuildCodeReviewContext: %v", err)
+	}
+	if snap.MergeBase == "" {
+		t.Errorf("expected a non-empty MergeBase for a normal branch")
+	}
+	if snap.DiffBase != snap.MergeBase {
+		t.Errorf("DiffBase = %q, want it to equal MergeBase %q", snap.DiffBase, snap.MergeBase)
+	}
+	out := renderCodeReviewContext(snap)
+	if !strings.Contains(out, "merge_base=") || !strings.Contains(out, "diff_base=") {
+		t.Errorf("render must surface merge_base and diff_base in ## state; got:\n%s", out)
+	}
+	if !strings.Contains(out, "g.txt") {
+		t.Errorf("render must include the branch's own change (g.txt); got:\n%s", out)
+	}
+	if strings.Contains(out, "h.txt") {
+		t.Errorf("render must EXCLUDE the base-only post-divergence change (h.txt) — merge-base..HEAD, not base-tip; got:\n%s", out)
+	}
+}
+
 // TestCodeReviewContext_DiffTruncation: a diff larger than the (low)
 // cap is truncated with a marker.
 func TestCodeReviewContext_DiffTruncation(t *testing.T) {

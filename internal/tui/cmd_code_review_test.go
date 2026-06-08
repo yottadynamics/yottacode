@@ -107,14 +107,68 @@ func TestCodeReviewDirective_PinsConcurrencyDiscipline(t *testing.T) {
 	}
 }
 
-// TestCodeReviewDirective_PinsStopCases pins the two typed STOP flags
-// the orchestrator branches on before spawning anything.
+// TestCodeReviewDirective_PinsStopCases pins the typed STOP flags the
+// orchestrator branches on before spawning anything — including the
+// empty_repo and diff_err cases added so a no-commit repo / a git range
+// failure are not reviewed as "looks good".
 func TestCodeReviewDirective_PinsStopCases(t *testing.T) {
 	got := codeReviewDirective("medium")
-	for _, frag := range []string{"not_found_base", "diff_empty"} {
+	for _, frag := range []string{"not_found_base", "diff_empty", "empty_repo=true", "diff_err=true"} {
 		if !strings.Contains(got, frag) {
 			t.Errorf("codeReviewDirective must handle the %q STOP case; got:\n%s", frag, got)
 		}
+	}
+}
+
+// TestCodeReviewDirective_FinderDiffRangeMatchesSnapshot pins that finders
+// are directed to diff the SAME range the snapshot used — base=<diff_base>
+// (the merge-base SHA) head="HEAD", a two-dot range identical to the
+// snapshot's. Before this, finders were told to diff "against the base"
+// (a different two-dot view against the base tip), so Step 6 silently
+// dropped their findings as out-of-scope whenever the base had advanced.
+func TestCodeReviewDirective_FinderDiffRangeMatchesSnapshot(t *testing.T) {
+	got := codeReviewDirective("medium")
+	for _, frag := range []string{`base="<diff_base>"`, `head="HEAD"`, "merge-base SHA"} {
+		if !strings.Contains(got, frag) {
+			t.Errorf("finder directive must pin the merge-base range %q; got:\n%s", frag, got)
+		}
+	}
+	// list_git_changed_files must no longer be named as a way to diff
+	// against a base (it has no base param) — only for working-tree work.
+	if strings.Contains(got, "list_git_changed_files / git_diff_files\nagainst the base") {
+		t.Errorf("directive must not tell finders to diff a base with list_git_changed_files; got:\n%s", got)
+	}
+}
+
+// TestCodeReviewDirective_ScopeCheckIsFileGranular pins that the dedup
+// scope check gates on the FILE being in ## changed-files, not on the
+// exact line surviving the truncated ## diff — otherwise real findings
+// past the diff cap are wrongly dropped.
+func TestCodeReviewDirective_ScopeCheckIsFileGranular(t *testing.T) {
+	got := codeReviewDirective("medium")
+	if !strings.Contains(got, "FILE granularity") {
+		t.Errorf("Step 6 must scope-check at FILE granularity; got:\n%s", got)
+	}
+	if !strings.Contains(got, "truncated") {
+		t.Errorf("Step 6 must acknowledge the ## diff is truncated when scoping; got:\n%s", got)
+	}
+}
+
+// TestCodeReviewDirective_VerifierWavesAreSlotSized pins that verifier
+// waves are sized to the FREE background slots (abandoned finder
+// stragglers still hold their slots), so the wave can't overshoot the
+// 8-cap and get spawns rejected.
+func TestCodeReviewDirective_VerifierWavesAreSlotSized(t *testing.T) {
+	for _, effort := range []string{"medium", "high"} {
+		got := codeReviewDirective(effort)
+		if !strings.Contains(got, "slot-sized") {
+			t.Errorf("%s directive must size verifier waves to free slots (slot-sized); got:\n%s", effort, got)
+		}
+	}
+	// The hard constraints must explain that an abandoned straggler still
+	// occupies a slot (the root cause of the overflow).
+	if !strings.Contains(codeReviewDirective("medium"), "holds a slot") {
+		t.Errorf("directive must note that an abandoned straggler still holds a background slot")
 	}
 }
 

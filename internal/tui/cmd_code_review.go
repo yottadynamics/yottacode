@@ -91,12 +91,20 @@ typed snapshot under section headers (## state, ## changed-files,
 ## diff, ## commit-log, ## style-context).
 
 Step 2 — read ## state FIRST and handle the STOP cases before anything
-else (spawn no subagents in either):
+else (spawn no subagents in any of them):
 - not_found_base=true → surface "[code-review] could not resolve a base
   branch to diff against (no origin/HEAD and no main/master/develop)."
   and STOP.
+- empty_repo=true → surface "[code-review] this repository has no commits
+  yet — nothing to review." and STOP.
 - diff_empty=true → surface "[code-review] no changes to review (diff is
   empty against <resolved_base>)." and STOP.
+- diff_err=true AND the ## diff section is absent → surface "[code-review]
+  could not compute the diff against <resolved_base> (git error)." and
+  STOP. (A git range failure must never be reviewed as if it were clean.)
+- no_merge_base=true is NOT a stop: it means <resolved_base> and this
+  branch share no common ancestor, so the diff is base-tip..HEAD (broader
+  than a normal PR view). Note it in the report header and review on.
 
 Step 3 — read ## changed-files and ## diff and craft your angle set.
 Two kinds of angle:
@@ -123,11 +131,20 @@ Step 4 — spawn ALL finders in ONE assistant message (one batched
 parallel wave, at most 8). For each angle call the Agent tool with
 subagent_type="review", run_in_background:true, a 3-5 word description,
 and a SELF-CONTAINED prompt — the subagent cannot see this conversation,
-so each prompt MUST state: the lens, the resolved base branch
-(<resolved_base> from ## state), and the file area to focus on. Tell it
-to derive the change itself with git_diff_files / list_git_changed_files
-against the base and to read the surrounding code, not just the diff
-lines. End each finder prompt with: "Output a CANDIDATE LIST of
+so each prompt MUST state: the lens, the EXACT diff range, and the file
+area to focus on. For the range, read diff_source from ## state:
+  - branch-vs-base → tell the finder to call git_diff_files with
+    base="<diff_base>" (the merge-base SHA from ## state) and head="HEAD".
+    base..HEAD against that merge-base is the EXACT range this snapshot was
+    built from. Do NOT tell it to diff the raw <resolved_base> branch tip,
+    and do NOT name list_git_changed_files (it has no base and only sees
+    uncommitted work — it returns nothing for an already-committed branch);
+    either gives the finder a DIFFERENT change set than the snapshot, and
+    Step 6 would then drop its findings as out-of-scope.
+  - working-tree → tell the finder to use list_git_changed_files and
+    git_diff_files with no base to see the uncommitted + untracked work.
+Tell it to read the surrounding code in the changed files, not just the
+diff lines. End each finder prompt with: "Output a CANDIDATE LIST of
 findings, one per line as ` + "`file:line — claim — severity(blocker|suggestion|nit) — confidence(high|uncertain)`" + `.
 No prose, no narration. If you find nothing substantive, reply exactly:
 NO FINDINGS." Record the task id each Agent call returns.
@@ -140,10 +157,14 @@ next message; do at most 2 re-collect rounds, then proceed without the
 stragglers and mark their angle "timed out" in the report.
 
 Step 6 — dedup in-context. Merge candidate findings that name the same
-file:line and same root cause. Drop any finding whose file:line is not
-present in ## changed-files / ## diff — a finder that cites a location
-the diff doesn't touch is out of scope. Keep, per finding, its claim,
-severity, and confidence.
+file:line and same root cause. Scope check at FILE granularity: keep a
+finding only if its FILE appears in ## changed-files. Do NOT require the
+exact line to be present in the ## diff text — that section is truncated
+to diff_cap_bytes, so a real finding in a changed file beyond the cap (or
+one a finder found by reading the full file, as Step 4 directs) would be
+wrongly dropped if you gated on the diff body. Drop only findings whose
+file is absent from ## changed-files entirely. Keep, per finding, its
+claim, severity, and confidence.
 
 ` + verifyClause(effort) + `
 
@@ -179,11 +200,18 @@ Hard constraints:
   changes.
 - Output to scrollback ONLY. Do NOT post the review to GitHub or
   anywhere else.
-- Do NOT fabricate file:line refs. Cite only locations the ## diff /
-  ## changed-files snapshot shows, or that a finder substantiated and
-  you could corroborate against the snapshot. Drop the rest.
-- Never run more than 8 background subagents at once. Spawn in batched
-  waves; collect a wave (freeing its slots) before spawning the next.
+- Do NOT fabricate file:line refs. Cite only files the ## changed-files
+  snapshot lists (a finder may legitimately cite a line beyond the
+  truncated ## diff, as long as the FILE is in scope). Drop the rest.
+- Never have more than 8 background subagents running at once — and a
+  finder straggler you abandoned in Step 5 is STILL RUNNING and STILL
+  holds a slot (you cannot free it; only the user can /subagents stop).
+  Before each verifier wave, count everything still running (abandoned
+  stragglers included) and size the wave to (8 − that count); if 0 slots
+  are free, skip verifying the rest and tag those findings "unverified"
+  rather than spawning Agent calls that get rejected. If any Agent call
+  returns an "at most 8 … concurrent" error, you overshot — collect a
+  wave to free slots before retrying.
 - Every subagent prompt is self-contained — the subagent has no access
   to this conversation. Embed the base branch, file scope, and (for
   verifiers) the exact claim.`
@@ -238,18 +266,21 @@ owns the verdict contract; you only supply the claim.`
 finding is a candidate finding; carry it straight to the report (tagged
 "unverified").`
 	case "high":
-		return `Step 7 — verify. Spawn one verifier per deduped finding, but in
-WAVES OF AT MOST 8. The finder subagents must already be collected
-(Step 5) so their background slots are free — never have finders and
-verifiers running at once beyond 8 total. ` + verifierPrompt + ` If a
-wave would exceed 8 concurrent background subagents, collect the current
-wave fully (Step 8) before spawning the next.
+		return `Step 7 — verify. Spawn one verifier per deduped finding, in
+slot-sized WAVES: a wave is at most (8 − finders still running). Any
+finder straggler you abandoned in Step 5 is still running and still holds
+a background slot, so if K stragglers remain a verifier wave is at most
+(8 − K); if 0 slots are free, skip verifying the rest and tag those
+findings "unverified". ` + verifierPrompt + ` Collect each wave fully
+(Step 8), which frees its slots, before spawning the next.
 
 ` + collect
 	default: // medium
 		return `Step 7 — verify ONLY the deduped findings whose confidence is
 "uncertain"; findings marked high-confidence skip verification. Spawn
-verifiers in waves of at most 8, collecting each wave before the next.
+verifiers in slot-sized waves — at most (8 − any finder stragglers still
+running from Step 5) — and collect each wave (freeing its slots) before
+the next.
 ` + verifierPrompt + `
 
 ` + collect
