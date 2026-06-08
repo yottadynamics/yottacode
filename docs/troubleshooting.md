@@ -80,6 +80,24 @@ a separate model limitation that argument normalization cannot fix; switch to a
 model that supports structured tool calling (e.g. NVIDIA's Nemotron, Mistral,
 Qwen, or DeepSeek on the same endpoint).
 
+## `unexpected end of JSON input`, or a provider 400 that repeats every turn
+
+Two linked symptoms from one cause — a tool call that arrived with empty or
+truncated JSON arguments:
+
+- `write_file: invalid args: unexpected end of JSON input` (a tool ran against
+  an empty argument string), or
+- a strict provider (notably NVIDIA NIM) returning `400 Bad Request` with
+  `Expecting ',' delimiter …` on **every** turn — including unrelated prompts,
+  and even after switching models — because the malformed call was replayed
+  from conversation history into each request body.
+
+yottacode now normalizes an empty arguments payload to `{}`, rejects a genuinely
+truncated call before it runs or enters history, and re-sanitizes replayed
+history when building each request, so a bad call can no longer wedge the
+session. **Upgrading resolves it.** If a session started on an older build is
+still stuck, begin a new session to drop the already-poisoned history.
+
 ## The trust prompt fires on every launch
 
 The first-launch trust prompt records cwd in `~/.yottacode/trusted-roots.json` on Yes. If you see it again on a directory you already accepted, the cwd is most likely a fresh path (different absolute path, different worktree, different bind-mount). List and add directly:

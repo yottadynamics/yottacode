@@ -171,6 +171,23 @@ the project uses semantic versioning once it's past `1.0.0`.
 
 ### Fixed
 
+- **A malformed tool call from an OpenAI-compatible provider no longer
+  wedges the whole session.** Some models (and truncated streams) emit a
+  tool call with empty or incomplete JSON arguments. The empty case ran
+  the tool against `""` — `write_file: invalid args: unexpected end of
+  JSON input` — and, worse, the malformed call was recorded into history
+  and replayed verbatim on every later request, so strict providers like
+  NVIDIA NIM rejected *every* subsequent turn with a 400 (`Expecting ','
+  delimiter`), surviving "continue", a new prompt, and even a model
+  switch. yottacode now normalizes an empty arguments payload to `{}` at
+  the dispatch layer, so no-argument tools like `exit_plan_mode` /
+  `git_push` run on every provider instead of erroring; the Chat
+  Completions adapter additionally rejects a genuinely truncated or
+  unparseable call — including one cut off with `finish_reason:
+  length`/`content_filter` — before it reaches a tool or enters history.
+  As a backstop, replayed history is re-sanitized when each request is
+  built, so any malformed call recorded earlier (or produced by another
+  adapter) is sent as `{}` instead of bricking the conversation.
 - **Multi-line pastes no longer corrupt the transcript echo.** Terminals
   transmit bracketed-paste line breaks as carriage returns (CR), not
   newlines — so a pasted list arrived `\r`-separated, slipped past the

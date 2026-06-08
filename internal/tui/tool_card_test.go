@@ -288,13 +288,20 @@ func TestToolHeader_RewritesPerToolPreviews(t *testing.T) {
 		{"run_tests", `{"command":"go test ./..."}`, "run_tests(go test ./... in .)", "Test(go test ./...)"},
 		{"memory_save", `{"scope":"user","name":"foo"}`, "memory_save(...)", "Memory(save user/foo)"},
 		{"unknown_tool", `{"x":1}`, "unknown_tool(x=1)", "unknown_tool(x=1)"}, // fallback path
-		{"run_bash", ``, "run_bash: ls", "run_bash: ls"},                     // empty argsJSON → fallback
+		{"run_bash", ``, "run_bash: ls", "run_bash: ls"},                      // empty argsJSON → fallback
 	}
 	for _, tc := range cases {
 		got := toolHeader(tc.tool, tc.args, tc.fallback, 120, "")
 		if got != tc.want {
 			t.Errorf("%s: got %q, want %q", tc.tool, got, tc.want)
 		}
+	}
+}
+
+func TestToolHeader_MalformedWriteFileArgsFallsBackToPreview(t *testing.T) {
+	got := toolHeader("write_file", `{"path":`, "write_file(, 0 bytes)", 120, "")
+	if got != "write_file(, 0 bytes)" {
+		t.Errorf("malformed args should use preview fallback, got %q", got)
 	}
 }
 
@@ -568,4 +575,3 @@ func TestRenderToolCard_TruncatesLongBody(t *testing.T) {
 		t.Errorf("card should signal truncation past cardBodyLineCap: %q", got)
 	}
 }
-

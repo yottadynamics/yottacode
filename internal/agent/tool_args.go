@@ -22,11 +22,26 @@ import (
 // compliant provider therefore sees no behavior change, and a genuinely
 // malformed call still reaches the tool's own validation with a real error.
 //
+// One structural normalization is applied first, independent of the schema: an
+// empty arguments payload ("" or whitespace — some OpenAI-compatible models
+// emit it for a no-argument call, or drop the args on a truncated stream)
+// becomes "{}". That lets the tool decode a valid object instead of failing
+// with "unexpected end of JSON input", and keeps the call valid JSON if it is
+// replayed into a later request.
+//
 // Coercion is driven by the local tool Schema(), not by anything the model
 // sends, so it is provider- and model-agnostic. It is the type-normalization
 // step that first-party stacks (e.g. OpenAI's schema-constrained decoding)
 // perform internally but the NIM+Llama path skips.
 func coerceArgsToSchema(argsJSON string, schema map[string]any) string {
+	// Empty/whitespace args normalize to an empty JSON object so the tool
+	// decodes a valid {} (reaching its own required-field validation with a
+	// recoverable error) instead of failing its arg parse outright, and a
+	// replayed call stays valid JSON. Done before the schema fast path so it
+	// also covers no-argument tools, whose schema has no coercible field.
+	if strings.TrimSpace(argsJSON) == "" {
+		return "{}"
+	}
 	// Fast path: if the schema declares no coercible scalar anywhere there is
 	// nothing to do. This covers every compliant provider and most calls
 	// without parsing the args at all.
