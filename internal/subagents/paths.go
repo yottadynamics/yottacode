@@ -8,26 +8,22 @@ package subagents
 
 import (
 	"fmt"
-	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/yottadynamics/yottacode/internal/memory"
+	"github.com/yottadynamics/yottacode/internal/ychome"
 )
 
 // UserAgentsDir returns the global agents dir: $YOTTACODE_HOME/agents
-// (when the env var is set) or ~/.yottacode/agents otherwise. Mirrors
-// the resolution agent.PlansDir uses so all global state lives under
-// the same root regardless of override.
+// (when the env var is set) or ~/.yottacode/agents otherwise — the
+// shared ychome.Dir resolution, so all global state lives under the
+// same root regardless of override.
 func UserAgentsDir() (string, error) {
-	if home := strings.TrimSpace(os.Getenv("YOTTACODE_HOME")); home != "" {
-		return filepath.Join(home, "agents"), nil
-	}
-	home, err := os.UserHomeDir()
+	dir, err := ychome.Dir("agents")
 	if err != nil {
-		return "", fmt.Errorf("subagents: resolve home dir: %w", err)
+		return "", fmt.Errorf("subagents: %w", err)
 	}
-	return filepath.Join(home, ".yottacode", "agents"), nil
+	return dir, nil
 }
 
 // ProjectAgentsDir returns the per-project agents dir: <cwd>/.yottacode/agents.
@@ -39,31 +35,17 @@ func ProjectAgentsDir(cwd string) string {
 }
 
 // TranscriptDirFor resolves where subagent run transcripts get
-// persisted: ~/.yottacode/projects/<slug>/subagents/. The slug is the
-// same one internal/memory uses for project-scoped memory, so all
-// per-project agent state lives under one root.
+// persisted: <project memory dir>/subagents/ — i.e.
+// ~/.yottacode/memory/projects/<slug>/subagents/. Transcripts nest
+// inside the project's memory dir so every per-project artifact is
+// discoverable from one `ls ~/.yottacode/memory` tree; the memory
+// loader skips subdirectories, so transcript .md files never load as
+// memories. Root resolution (incl. the $YOTTACODE_HOME override) is
+// owned by memory.ProjectMemoryDir.
 func TranscriptDirFor(cwd string) (string, error) {
-	if home := strings.TrimSpace(os.Getenv("YOTTACODE_HOME")); home != "" {
-		return filepath.Join(home, "projects", memory.ProjectSlug(cwd), "subagents"), nil
-	}
-	home, err := os.UserHomeDir()
+	dir, err := memory.ProjectMemoryDir(cwd)
 	if err != nil {
-		return "", fmt.Errorf("subagents: resolve home dir: %w", err)
+		return "", fmt.Errorf("subagents: resolve transcript dir: %w", err)
 	}
-	return filepath.Join(home, ".yottacode", "projects", memory.ProjectSlug(cwd), "subagents"), nil
-}
-
-// EnsureTranscriptDir creates the transcript dir if missing. Returns the
-// absolute path on success. The agent tool opens transcript files
-// lazily; the dir creation happens up-front so the first write doesn't
-// stall on MkdirAll inside a hot path.
-func EnsureTranscriptDir(cwd string) (string, error) {
-	dir, err := TranscriptDirFor(cwd)
-	if err != nil {
-		return "", err
-	}
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return "", fmt.Errorf("subagents: create %q: %w", dir, err)
-	}
-	return dir, nil
+	return filepath.Join(dir, memory.SubagentsDirName), nil
 }

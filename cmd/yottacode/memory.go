@@ -82,8 +82,8 @@ func newMemoryForgetCmd() *cobra.Command {
 		Use:   "forget <name>",
 		Short: "Delete a saved memory by name",
 		Long: `Forget removes the memory file at
-~/.yottacode/memory/<name>.md (user scope) or
-~/.yottacode/projects/<project_slug>/memory/<name>.md (project scope).
+~/.yottacode/memory/user/<name>.md (user scope) or
+~/.yottacode/memory/projects/<project_slug>/<name>.md (project scope).
 The MEMORY.md index for the chosen scope is regenerated.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {

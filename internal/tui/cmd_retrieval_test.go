@@ -27,9 +27,10 @@ func writeUnderDir(t *testing.T, path, body string) {
 func TestRebuildSystemPromptForTurn_AppliesRetrieval(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("YOTTACODE_HOME", "")
 	cwd := t.TempDir()
 	writeUnderDir(t, filepath.Join(home, ".yottacode", "USER.md"), "be terse")
-	memDir := filepath.Join(home, ".yottacode", "memory")
+	memDir := filepath.Join(home, ".yottacode", "memory", "user")
 	writeUnderDir(t, filepath.Join(memDir, "ripgrep.md"),
 		"---\nname: ripgrep\ntype: reference\ndescription: prefers ripgrep\n---\nProject prefers ripgrep for code search.\n")
 	writeUnderDir(t, filepath.Join(memDir, "kubernetes.md"),
@@ -67,6 +68,7 @@ func TestRebuildSystemPromptForTurn_AppliesRetrieval(t *testing.T) {
 func TestRebuildSystemPromptForTurn_PreservesSummarySection(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("YOTTACODE_HOME", "")
 	cwd := t.TempDir()
 
 	prior := "BASE\n\n## Prior session context (summarized)\nshipped feature X yesterday"
@@ -103,6 +105,7 @@ func TestRebuildSystemPromptForTurn_PreservesSummarySection(t *testing.T) {
 func TestRebuildSystemPromptForTurn_PreservesFileRefsBlock(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("YOTTACODE_HOME", "")
 	cwd := t.TempDir()
 
 	prior := "BASE\n\n## Prior session context (summarized)\nshipped feature X" +
@@ -169,6 +172,7 @@ func TestExtractFileRefsBlock(t *testing.T) {
 // serialize with it via histMu. Run with -race.
 func TestRebuildSystemPrompt_TurnGoroutineWritesUnderLock(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
+	t.Setenv("YOTTACODE_HOME", "")
 	m := newTestModel(t)
 	m.sess.Messages = append([]adapter.Message{{Role: adapter.RoleSystem, Content: "sys"}}, m.sess.Messages...)
 

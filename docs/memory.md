@@ -28,13 +28,14 @@ The agent reads from four distinct on-disk locations every turn. Two are unfilte
        │   AGENT-MANAGED  (index in full · per-entry bodies filtered)   │
        │   ──────────────────────────────────────────────────────────   │
        │                                                                │
-       │   ③ ~/.yottacode/memory/                  user-scope           │
+       │   ③ ~/.yottacode/memory/user/             user-scope           │
        │      ├── MEMORY.md    auto-generated table of contents         │
        │      └── <name>.md    typed memories (one file each)           │
        │                                                                │
-       │   ④ ~/.yottacode/projects/<slug>/memory/  project-scope        │
+       │   ④ ~/.yottacode/memory/projects/<slug>/  project-scope        │
        │      ├── MEMORY.md    auto-generated table of contents         │
-       │      └── <name>.md    typed memories (one file each)           │
+       │      ├── <name>.md    typed memories (one file each)           │
+       │      └── subagents/   that project's subagent transcripts      │
        │                                                                │
        │   ③ + ④ are written by memory_save, deleted by memory_forget   │
        │                                                                │
@@ -110,19 +111,21 @@ The agent owns this layer end-to-end. It decides in-conversation what is worth r
 
 ```
 ~/.yottacode/
-  memory/                                     # user-scope (cross-project)
-    MEMORY.md                                 # auto-generated index
-    <name>.md                                 # one file per memory
-    <name>.vec                                # embedding sidecar (semantic mode)
-    .archive/                                 # prior versions kept on overwrite (see below)
-      <name>.<stamp>.md
-  projects/
-    <project_slug>/
-      memory/                                 # project-scope (this repo only, private to you)
+  memory/
+    user/                                     # user-scope (cross-project)
+      MEMORY.md                               # auto-generated index
+      <name>.md                               # one file per memory
+      <name>.vec                              # embedding sidecar (semantic mode)
+      .archive/                               # prior versions kept on overwrite (see below)
+        <name>.<stamp>.md
+    projects/
+      <project_slug>/                         # project-scope (this repo only, private to you)
         MEMORY.md
         <name>.md
         <name>.vec                            # embedding sidecar (same as user scope)
         .archive/
+        subagents/                            # that project's subagent run transcripts
+                                              #   (skipped by the memory scanner)
 ```
 
 The `.archive/` subdirectory holds the prior version of any memory that
@@ -134,7 +137,8 @@ the scanner skips it — archived versions never appear in the index,
 retrieval, or `memory list`. There is **no automatic retention policy or
 config knob today**: `memory_forget` deletes the live file and its `.vec`
 but does not prune `.archive/`, and nothing ages archives out. Pruning is
-fully manual (`rm -rf ~/.yottacode/memory/.archive`). Each archived body
+fully manual (`rm -rf ~/.yottacode/memory/user/.archive`, and likewise
+under each `~/.yottacode/memory/projects/<slug>/`). Each archived body
 is a small markdown file, so unbounded growth is a housekeeping nit rather
 than a disk concern for a single user — a configurable retention policy is
 a known follow-up, not a shipped feature.
@@ -165,9 +169,9 @@ memory by recomputing `<name>.md`, so the scanner trusts the basename and
 the frontmatter `name:` is human-facing redundancy. `name` must be
 kebab-case (`^[a-z0-9][a-z0-9-]{0,63}$` — lowercase alphanumeric start,
 hyphens, ≤64 chars), and a small set of names is **reserved and rejected**
-(`user`, `project`, `memory`, `index`, `sessions`, `yottacode`,
-`feedback`, `reference`) so a memory file can't collide with a structural
-filename. `memory_save` also refuses path traversal and won't write
+(`user`, `project`, `projects`, `memory`, `index`, `sessions`,
+`subagents`, `yottacode`, `feedback`, `reference`) so a memory file can't
+collide with a structural filename or layout directory. `memory_save` also refuses path traversal and won't write
 through a symlink.
 
 `MEMORY.md` is auto-generated — a table-of-contents grouped by type, regenerated every time `memory_save` or `memory_forget` runs. Don't edit it; edit individual `<name>.md` files instead.
@@ -255,17 +259,21 @@ The save-side behavior is gated by an eval mirroring the retrieval one:
 `go test ./internal/agent -run Proactivity -v` runs fixture turns that
 state durable facts mid-task against a local Ollama chat model (skipped
 when no tool-calling-capable model is available; deterministic
-prompt-content pins always run). See
+prompt-content pins always run). Each fixture carries a scope ground
+truth, so the eval measures both *whether* the model saves unprompted
+and *where* the save lands (user vs project scope) — including a trap
+fixture stating a portable preference mid-repo-work. See
 `internal/agent/memory_proactivity_eval_test.go`.
 
 ### Scope selection — cross-project learning
 
 Scope selection is critical for building knowledge that transfers across projects:
 
-- **`scope=user`** (stored in `~/.yottacode/memory/`, loaded in **every** project): anything about the person, not the repo. Coding style, communication preferences, tool preferences, workflow patterns, feedback corrections, debugging approaches, domain expertise areas. The test: "would this help me in a completely different repo for this user?" If yes, it's user-scope.
+- **`scope=user`** (stored in `~/.yottacode/memory/user/`, loaded in **every** project): anything about the person, not the repo. Coding style, communication preferences, tool preferences, workflow patterns, feedback corrections, debugging approaches, domain expertise areas. The test: "would this help me in a completely different repo for this user?" If yes, it's user-scope.
 - **`scope=project`** (stored per-repo, loaded only in that repo): **only** for facts that are meaningless outside this specific codebase — architecture decisions, naming conventions unique to this repo, team-specific processes, deployment targets.
 - **Default to user-scope.** Most things the agent learns about how someone works, thinks, and prefers are portable. Project-scope is the exception, not the default.
 - When saving a project-scope memory, the agent considers: is the underlying principle user-scope? E.g., "user wants table-driven tests in this Go repo" is really "user prefers table-driven tests" (user-scope) — the Go repo is just where it was learned.
+- As a backstop, a save that pairs `scope=project` with a portable type (`user` or `feedback`) gets a **scope-check reminder appended to the tool result** — a preference or correction that's repo-only is a near-contradiction, so the agent is prompted (but never forced) to re-save it as user-scope and forget the project copy. Repo-bound `type=project` facts and free-form labels never trigger it.
 
 The full guidance lives in the agent's system prompt; see `internal/agent/prompt.go` for the current copy.
 
@@ -488,8 +496,8 @@ The TUI's `/memory` command opens a six-row picker (plus a conditional seventh r
 |---|---|
 | Project context | Edits `<repo>/.yottacode/YOTTACODE.md` in vim |
 | User preferences | Edits `~/.yottacode/USER.md` in vim |
-| Browse user memories | Sub-list of `~/.yottacode/memory/*.md` |
-| Browse project memories | Sub-list of `~/.yottacode/projects/<slug>/memory/*.md` |
+| Browse user memories | Sub-list of `~/.yottacode/memory/user/*.md` |
+| Browse project memories | Sub-list of `~/.yottacode/memory/projects/<slug>/*.md` |
 | Search memories | Opens a query box; ranks saved memories and lets you open one (see below) |
 | Reindex embeddings | Generates `.vec` sidecars for semantic retrieval (requires Ollama) |
 | Enable semantic search | Appears only when no embedding model is active (e.g. first run without Ollama); pulls an Ollama embedding model and reindexes |
@@ -562,5 +570,5 @@ The agent decides autonomously when to search, save, update, or forget — the t
 
 - **Memory tools run silently by default.** Add `ask: ["Memory(*)"]` to your permissions if you want a modal on every memory write.
 - **Don't put secrets in any memory file.** They get loaded into the system prompt every turn and persist on disk in plaintext.
-- **Project-scope memory is per-user.** Two developers on the same repo see different `~/.yottacode/projects/<slug>/memory/` dirs. Use `YOTTACODE.md` (in the repo) for things the team should share.
+- **Project-scope memory is per-user.** Two developers on the same repo see different `~/.yottacode/memory/projects/<slug>/` dirs. Use `YOTTACODE.md` (in the repo) for things the team should share.
 - **The curated layer never gets filtered.** Whatever you write in `USER.md` and `YOTTACODE.md` lands in every system prompt — keep them concise. The "Large file will impact performance" notice fires past 40k bytes.

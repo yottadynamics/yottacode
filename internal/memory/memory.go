@@ -5,8 +5,11 @@
 //
 //	~/.yottacode/USER.md                                      — global preferences (curated, human-only)
 //	<cwd>/.yottacode/YOTTACODE.md                             — per-repo context (curated, agent-writable)
-//	~/.yottacode/memory/<name>.md                             — user-scope agent-managed memories
-//	~/.yottacode/projects/<project_slug>/memory/<name>.md     — project-scope agent-managed memories
+//	~/.yottacode/memory/user/<name>.md                        — user-scope agent-managed memories
+//	~/.yottacode/memory/projects/<project_slug>/<name>.md     — project-scope agent-managed memories
+//	~/.yottacode/memory/projects/<project_slug>/subagents/    — that project's subagent run transcripts
+//	                                                            (owned by internal/subagents; subdirs are
+//	                                                            invisible to scanMemoryDir)
 //
 // USER.md and YOTTACODE.md are the trust anchor: they always inject in
 // full. The agent-managed memory dirs are managed via the memory_save /

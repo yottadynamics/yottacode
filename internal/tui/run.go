@@ -367,7 +367,10 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 	for _, w := range subRes.Warnings {
 		fmt.Fprintln(os.Stderr, "subagents: "+w)
 	}
-	transcriptDir, _ := subagents.EnsureTranscriptDir(cwd)
+	// Resolve the transcript dir but don't create it: openTranscript
+	// MkdirAlls on the first dispatch, so a session with no subagent run
+	// leaves no empty ~/.yottacode/memory/projects/<slug>/ behind.
+	transcriptDir, _ := subagents.TranscriptDirFor(cwd)
 	subagentTasks := subagents.NewRegistry()
 	// experimental.Set (expSet) was resolved earlier, before prompt
 	// composition, so the dispatch steering could be baked into the

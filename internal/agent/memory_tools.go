@@ -34,8 +34,8 @@ func lockMemoryPath(path string) func() {
 }
 
 // MemorySaveTool persists a typed memory file under either the
-// user-scope (~/.yottacode/memory/) or project-scope
-// (~/.yottacode/projects/<slug>/memory/) directory and refreshes the
+// user-scope (~/.yottacode/memory/user/) or project-scope
+// (~/.yottacode/memory/projects/<slug>/) directory and refreshes the
 // MEMORY.md index for that scope. Replaces the post-turn extractor —
 // the agent now decides in-band when something is worth remembering.
 //
@@ -57,9 +57,15 @@ func (t *MemorySaveTool) Schema() map[string]any {
 		"type": "object",
 		"properties": map[string]any{
 			"scope": map[string]any{
-				"type":        "string",
-				"enum":        []string{"user", "project"},
-				"description": "user = applies across every project; project = scoped to this repo",
+				"type": "string",
+				"enum": []string{"user", "project"},
+				// Steering lives HERE, not only in the system prompt: the
+				// schema is what the model reads at the moment it fills the
+				// enum, and mid-repo work pulls everything toward "project"
+				// otherwise. Wording mirrors the prompt's scope-selection
+				// section on purpose — paraphrase drift teaches models to
+				// hedge. Pinned by TestMemorySaveTool_ScopeSteeringPinned.
+				"description": "user = loaded in EVERY project (DEFAULT — most learnings about how the person works, thinks, and prefers are portable); project = ONLY for facts meaningless outside this repo. The test: would this help in a completely different repo? If yes → user",
 			},
 			"type": map[string]any{
 				"type":        "string",
@@ -97,6 +103,17 @@ type memorySaveArgs struct {
 	Name        string `json:"name"`
 	Description string `json:"description"`
 	Content     string `json:"content"`
+}
+
+// portableMemoryTypes are the conventional memory types that are about
+// the person rather than the repo — the canonical user-scope material
+// (mirrors the scope guidance in prompt.go and the schema description).
+// The scope-check reflection in Execute fires when one of these is
+// filed project-scope; extend this set if a new portable convention
+// joins the type vocabulary.
+var portableMemoryTypes = map[string]bool{
+	"user":     true,
+	"feedback": true,
 }
 
 func (t *MemorySaveTool) Execute(_ context.Context, argsJSON string) (string, error) {
@@ -180,6 +197,18 @@ func (t *MemorySaveTool) Execute(_ context.Context, argsJSON string) (string, er
 	if archived {
 		msg += " (previous version archived to .archive/)"
 	}
+	// Scope reflection: a portable-typed memory saved to project scope
+	// is usually a portability miss — preferences and corrections
+	// travel with the person, not the repo. Surface the mismatch in the
+	// tool result, the one moment correction is a single tool call away,
+	// and leave the call to the agent (informational only; the harness
+	// never performs a memory op itself). The trigger is narrow on
+	// purpose: it must never fire on legitimately repo-bound
+	// type=project facts or free-form labels, or the model learns to
+	// ignore it.
+	if a.Scope == "project" && portableMemoryTypes[memType] {
+		msg += fmt.Sprintf(" (scope check: a %s-typed memory is usually portable across repos — if it isn't specific to this one, re-save it with scope=user and memory_forget the project-scope copy)", memType)
+	}
 	return msg + note, nil
 }
 
@@ -237,6 +266,14 @@ func (t *MemoryForgetTool) Execute(_ context.Context, argsJSON string) (string, 
 	if err != nil {
 		return "", err
 	}
+	// Hold the same per-path lock memory_save takes: forget shares
+	// RegenerateMemoryIndex, and both tools' pointers are reachable from
+	// background subagents (detached goroutines). Without this, a
+	// concurrent save+forget (or two forgets) on the same name can
+	// interleave the remove and the index regeneration, leaving MEMORY.md
+	// transiently listing a deleted memory or dropping a live one.
+	unlock := lockMemoryPath(path)
+	defer unlock()
 	if err := os.Remove(path); err != nil {
 		if os.IsNotExist(err) {
 			return "", fmt.Errorf("memory_forget: no %s memory named %q", a.Scope, a.Name)

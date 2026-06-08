@@ -57,8 +57,8 @@ Beyond the built-ins, you can ship your own slash commands by dropping markdown 
 
 - Project context: `./.yottacode/YOTTACODE.md`
 - User preferences: `~/.yottacode/USER.md`
-- Browse user memories (`~/.yottacode/memory/`)
-- Browse project memories (`~/.yottacode/projects/<slug>/memory/`)
+- Browse user memories (`~/.yottacode/memory/user/`)
+- Browse project memories (`~/.yottacode/memory/projects/<slug>/`)
 
 Opening a curated memory file (`USER.md`, `YOTTACODE.md`) suspends the TUI to `vim`; on exit, yottacode reloads memory and patches the active system prompt so the next turn sees your edits. The browse rows drop into a sub-list of agent-managed memories where `Enter` opens an entry in `vim`, `d` deletes it, `f` opens the folder in your file manager, and `Esc` returns to the root menu.
 

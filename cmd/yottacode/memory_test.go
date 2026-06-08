@@ -10,7 +10,7 @@ import (
 )
 
 // seedProjectMemory plants
-// ~/.yottacode/projects/<slug(cwd)>/memory/<name>.md.
+// ~/.yottacode/memory/projects/<slug(cwd)>/<name>.md.
 func seedProjectMemory(t *testing.T, cwd, name, body string) string {
 	t.Helper()
 	dir, err := memory.ProjectMemoryDir(cwd)
@@ -31,6 +31,9 @@ func seedProjectMemory(t *testing.T, cwd, name, body string) string {
 func withCwdAndHome(t *testing.T) string {
 	t.Helper()
 	t.Setenv("HOME", t.TempDir())
+	// Memory paths now honor $YOTTACODE_HOME; clear it so a developer/CI
+	// with the override exported doesn't read or mutate the real store.
+	t.Setenv("YOTTACODE_HOME", "")
 	cwd := t.TempDir()
 	prev, err := os.Getwd()
 	if err != nil {
