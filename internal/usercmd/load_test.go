@@ -7,17 +7,27 @@ import (
 	"testing"
 )
 
-// userScopeDir returns the path the loader will read for user-scope
-// commands inside the test's isolated HOME. Test setup that writes to
-// this path must also t.Setenv("HOME", ...) so the loader resolves
-// the same directory.
+// TestMain clears $YOTTACODE_HOME for the whole package. UserCommandsDir
+// now resolves the user-scope dir through ychome.Dir, which honors the
+// override; clearing it once keeps every test hermetic (reading/writing
+// the isolated HOME) regardless of a developer's or CI's environment.
+// Individual tests still set HOME via t.Setenv.
+func TestMain(m *testing.M) {
+	os.Unsetenv("YOTTACODE_HOME")
+	os.Exit(m.Run())
+}
+
+// userScopeDir returns the path the loader reads for user-scope commands,
+// resolved through the production UserCommandsDir so the test seeds
+// exactly where Load() looks. With $YOTTACODE_HOME cleared (TestMain) and
+// HOME set per-test, this lands in the test's isolated HOME.
 func userScopeDir(t *testing.T) string {
 	t.Helper()
-	home, err := os.UserHomeDir()
+	dir, err := UserCommandsDir()
 	if err != nil {
-		t.Fatalf("UserHomeDir: %v", err)
+		t.Fatalf("UserCommandsDir: %v", err)
 	}
-	return filepath.Join(home, ".yottacode", "commands")
+	return dir
 }
 
 func writeCmd(t *testing.T, path, body string) {

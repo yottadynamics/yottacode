@@ -292,7 +292,10 @@ func Run(ctx context.Context, opts cli.ChatOptions, prompt string) error {
 	for _, w := range subRes.Warnings {
 		fmt.Fprintln(os.Stderr, "subagents: "+w)
 	}
-	transcriptDir, _ := subagents.EnsureTranscriptDir(cwd)
+	// Resolve the transcript dir but don't create it: openTranscript
+	// MkdirAlls on the first dispatch, so a run with no subagent leaves
+	// no empty ~/.yottacode/memory/projects/<slug>/ behind.
+	transcriptDir, _ := subagents.TranscriptDirFor(cwd)
 	tasks := subagents.NewRegistry()
 	// Oneshot doesn't expose plan/auto modes (no UI surface), so
 	// the parent's mode states are inactive instances. Subagents

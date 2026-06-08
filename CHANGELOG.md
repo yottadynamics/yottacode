@@ -130,6 +130,10 @@ the project uses semantic versioning once it's past `1.0.0`.
   scope choice toward `user` (portable learnings) by default and
   appends a scope-check reminder when a portable-typed memory is filed
   project-scope.
+- **User slash commands now honor `$YOTTACODE_HOME`.** The global
+  custom-command dir resolves through the same root rule as skills,
+  plans, agents, and the memory tree, so `commands/` follows the
+  override when it is set (previously always `~/.yottacode/commands`).
 - **Anthropic prompt caching now survives per-turn memory churn.** The
   system prompt is split into a stable head (the static base prompt +
   tools) and a dynamic tail (the per-turn, query-relevant memory

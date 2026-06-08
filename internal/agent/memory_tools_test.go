@@ -37,6 +37,11 @@ func TestMemorySave_ScopeReflectionHint(t *testing.T) {
 	}{
 		{"project scope + user type fires", "project", "user", true},
 		{"project scope + feedback type fires", "project", "feedback", true},
+		// Non-canonical input: the hint depends on validateMemoryType
+		// lowercasing "Feedback" -> "feedback" BEFORE the portableMemoryTypes
+		// lookup. Pins that the reflection keys on the normalized type, not
+		// the raw arg — a regression that looked up a.Type would miss this.
+		{"project scope + non-canonical Feedback fires", "project", "Feedback", true},
 		{"project scope + project type silent", "project", "project", false},
 		{"project scope + free-form type silent", "project", "gotcha", false},
 		{"user scope + feedback type silent", "user", "feedback", false},

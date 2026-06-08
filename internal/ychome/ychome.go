@@ -1,10 +1,11 @@
 // Package ychome resolves the root directory for yottacode's global
 // state: $YOTTACODE_HOME when the override is set, ~/.yottacode
 // otherwise. Every feature dir that follows the override (skills,
-// plans, agent definitions, the memory tree) resolves through Dir so
-// the rule lives in exactly one place; state that deliberately ignores
-// the override (sessions, auth, checkpoints, config.toml) builds its
-// path from os.UserHomeDir directly.
+// plans, agent definitions, user slash commands, and the memory tree)
+// resolves through Dir so the rule lives in exactly one place; state
+// that deliberately ignores the override (sessions, auth, checkpoints,
+// config.toml, and the home-anchored USER.md) builds its path from
+// os.UserHomeDir directly.
 package ychome
 
 import (

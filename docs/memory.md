@@ -111,19 +111,21 @@ The agent owns this layer end-to-end. It decides in-conversation what is worth r
 
 ```
 ~/.yottacode/
-  memory/                                     # user-scope (cross-project)
-    MEMORY.md                                 # auto-generated index
-    <name>.md                                 # one file per memory
-    <name>.vec                                # embedding sidecar (semantic mode)
-    .archive/                                 # prior versions kept on overwrite (see below)
-      <name>.<stamp>.md
-  projects/
-    <project_slug>/
-      memory/                                 # project-scope (this repo only, private to you)
+  memory/
+    user/                                     # user-scope (cross-project)
+      MEMORY.md                               # auto-generated index
+      <name>.md                               # one file per memory
+      <name>.vec                              # embedding sidecar (semantic mode)
+      .archive/                               # prior versions kept on overwrite (see below)
+        <name>.<stamp>.md
+    projects/
+      <project_slug>/                         # project-scope (this repo only, private to you)
         MEMORY.md
         <name>.md
         <name>.vec                            # embedding sidecar (same as user scope)
         .archive/
+        subagents/                            # that project's subagent run transcripts
+                                              #   (skipped by the memory scanner)
 ```
 
 The `.archive/` subdirectory holds the prior version of any memory that
@@ -167,9 +169,9 @@ memory by recomputing `<name>.md`, so the scanner trusts the basename and
 the frontmatter `name:` is human-facing redundancy. `name` must be
 kebab-case (`^[a-z0-9][a-z0-9-]{0,63}$` — lowercase alphanumeric start,
 hyphens, ≤64 chars), and a small set of names is **reserved and rejected**
-(`user`, `project`, `memory`, `index`, `sessions`, `yottacode`,
-`feedback`, `reference`) so a memory file can't collide with a structural
-filename. `memory_save` also refuses path traversal and won't write
+(`user`, `project`, `projects`, `memory`, `index`, `sessions`,
+`subagents`, `yottacode`, `feedback`, `reference`) so a memory file can't
+collide with a structural filename or layout directory. `memory_save` also refuses path traversal and won't write
 through a symlink.
 
 `MEMORY.md` is auto-generated — a table-of-contents grouped by type, regenerated every time `memory_save` or `memory_forget` runs. Don't edit it; edit individual `<name>.md` files instead.

@@ -184,12 +184,14 @@ func TestDefaultDenyPaths_IncludesYottacodeState(t *testing.T) {
 }
 
 // TestDefaultDenyPaths_HonorsYottacodeHomeForMemory pins the override
-// case: with $YOTTACODE_HOME set, the deny list must protect the
-// override-rooted memory tree (not the home-anchored one) — the exact
-// property the memory.MemoryRoot() wiring exists to provide. Without
-// this pin, a refactor that re-anchors the entry to os.UserHomeDir
-// would pass the cleared-override test above and silently strip write
-// protection from the real memory store.
+// case: with $YOTTACODE_HOME set, the deny list must protect BOTH the
+// override-rooted memory tree (where this session writes) AND the
+// home-anchored ~/.yottacode/memory. The home copy stays denied because
+// an override-less session loads memories from there regardless of what
+// some other session set $YOTTACODE_HOME to — dropping that protection
+// would let a write under the override plant a file a later default
+// session injects into its system prompt. Without this pin a refactor
+// that denied only the override root would silently reopen that channel.
 func TestDefaultDenyPaths_HonorsYottacodeHomeForMemory(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -198,22 +200,19 @@ func TestDefaultDenyPaths_HonorsYottacodeHomeForMemory(t *testing.T) {
 	cwd := t.TempDir()
 
 	got := DefaultDenyPaths(cwd)
-	want := filepath.Join(override, "memory")
-	found := false
-	for _, p := range got {
-		if p == want {
-			found = true
-			break
+	for _, want := range []string{
+		filepath.Join(override, "memory"),           // where this session writes
+		filepath.Join(home, ".yottacode", "memory"), // loaded by override-less sessions
+	} {
+		found := false
+		for _, p := range got {
+			if p == want {
+				found = true
+				break
+			}
 		}
-	}
-	if !found {
-		t.Errorf("DefaultDenyPaths missing override memory root %q in %v", want, got)
-	}
-	// The entry must FOLLOW the override, not be duplicated at home.
-	stale := filepath.Join(home, ".yottacode", "memory")
-	for _, p := range got {
-		if p == stale {
-			t.Errorf("DefaultDenyPaths still denies home-anchored memory %q while override is set; entry should follow $YOTTACODE_HOME", stale)
+		if !found {
+			t.Errorf("DefaultDenyPaths missing memory root %q in %v", want, got)
 		}
 	}
 }
@@ -322,6 +321,40 @@ func TestValidateWritePath_AppStateDeniedEvenInsideHome(t *testing.T) {
 	})
 	if err == nil {
 		t.Errorf("expected deny-list error for .yottacode/permissions.json (model self-grant)")
+	}
+}
+
+// TestValidateWritePath_OverrideMemoryDeniedEndToEnd drives a write into
+// the memory store all the way through the validator with $YOTTACODE_HOME
+// set, proving FIX-1's protection at the enforcement layer (not just
+// deny-list membership). BOTH the override-rooted store (where the active
+// session writes) AND the home-anchored store (loaded by override-less
+// sessions) must be refused — each tested with a cwd that contains the
+// target, so it is the deny list, not containment, that blocks the write.
+func TestValidateWritePath_OverrideMemoryDeniedEndToEnd(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	override := t.TempDir()
+	t.Setenv("YOTTACODE_HOME", override)
+
+	cases := []struct {
+		name string
+		cwd  string
+		path string
+	}{
+		{"override-rooted store", override, filepath.Join(override, "memory", "user", "evil.md")},
+		{"home-anchored store", home, filepath.Join(home, ".yottacode", "memory", "user", "evil.md")},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			err := ValidateWritePath(c.path, WritePathOptions{
+				Cwd:       NewCwdRef(c.cwd),
+				DenyExact: DefaultDenyPaths(c.cwd),
+			})
+			if err == nil {
+				t.Errorf("expected deny-list error for %q under $YOTTACODE_HOME=%q", c.path, override)
+			}
+		})
 	}
 }
 

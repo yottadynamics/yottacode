@@ -8,7 +8,6 @@ package subagents
 
 import (
 	"fmt"
-	"os"
 	"path/filepath"
 
 	"github.com/yottadynamics/yottacode/internal/memory"
@@ -49,19 +48,4 @@ func TranscriptDirFor(cwd string) (string, error) {
 		return "", fmt.Errorf("subagents: resolve transcript dir: %w", err)
 	}
 	return filepath.Join(dir, memory.SubagentsDirName), nil
-}
-
-// EnsureTranscriptDir creates the transcript dir if missing. Returns the
-// absolute path on success. The agent tool opens transcript files
-// lazily; the dir creation happens up-front so the first write doesn't
-// stall on MkdirAll inside a hot path.
-func EnsureTranscriptDir(cwd string) (string, error) {
-	dir, err := TranscriptDirFor(cwd)
-	if err != nil {
-		return "", err
-	}
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return "", fmt.Errorf("subagents: create %q: %w", dir, err)
-	}
-	return dir, nil
 }

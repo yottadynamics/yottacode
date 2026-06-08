@@ -266,6 +266,14 @@ func (t *MemoryForgetTool) Execute(_ context.Context, argsJSON string) (string, 
 	if err != nil {
 		return "", err
 	}
+	// Hold the same per-path lock memory_save takes: forget shares
+	// RegenerateMemoryIndex, and both tools' pointers are reachable from
+	// background subagents (detached goroutines). Without this, a
+	// concurrent save+forget (or two forgets) on the same name can
+	// interleave the remove and the index regeneration, leaving MEMORY.md
+	// transiently listing a deleted memory or dropping a live one.
+	unlock := lockMemoryPath(path)
+	defer unlock()
 	if err := os.Remove(path); err != nil {
 		if os.IsNotExist(err) {
 			return "", fmt.Errorf("memory_forget: no %s memory named %q", a.Scope, a.Name)
