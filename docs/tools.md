@@ -4,6 +4,12 @@ Forty tools ship in `internal/agent` (thirty-seven always-on plus `todo_write`
 and the `enter_plan_mode` / `exit_plan_mode` pair). The model sees their JSON-schema parameters via the
 OpenAI tools API; the TUI renders each invocation as a bordered card with a
 verb-style header (see [How tool calls render in the TUI](#how-tool-calls-render-in-the-tui)).
+OpenAI-compatible provider tool calls are validated and normalized before local
+execution: an empty arguments payload becomes `{}` (so no-argument tools such as
+`exit_plan_mode` still run), while a truncated or otherwise-unparseable payload
+is reported as an adapter error instead of being run locally. Arguments are also
+re-sanitized when replaying history to the provider, so a malformed call
+recorded earlier can't wedge every later request with a 400.
 All paths are resolved against the agent's working directory (absolute paths
 are also accepted).
 

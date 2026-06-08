@@ -97,6 +97,31 @@ func TestCoerceArgs_FastPathNoCoercibleField(t *testing.T) {
 	}
 }
 
+func TestCoerceArgs_EmptyBecomesObject(t *testing.T) {
+	// Empty / whitespace args normalize to "{}" so a tool decodes a valid
+	// object — and a replayed call stays valid JSON — instead of failing with
+	// "unexpected end of JSON input". This runs before the schema fast path,
+	// so it also covers no-argument tools whose schema has no coercible field.
+	schema := objSchema(map[string]any{
+		"max_results": map[string]any{"type": "integer"},
+	})
+	for _, tc := range []struct{ name, in string }{
+		{"empty", ""},
+		{"spaces", "   "},
+		{"newline tab", "\n\t"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if out := coerceArgsToSchema(tc.in, schema); out != "{}" {
+				t.Errorf("coerceArgsToSchema(%q) = %q, want {}", tc.in, out)
+			}
+		})
+	}
+	// nil schema (a no-argument tool) also normalizes empty → "{}".
+	if out := coerceArgsToSchema("", nil); out != "{}" {
+		t.Errorf("empty args, nil schema = %q, want {}", out)
+	}
+}
+
 func TestCoerceArgs_UnknownFieldUntouched(t *testing.T) {
 	schema := objSchema(map[string]any{
 		"max_results": map[string]any{"type": "integer"},

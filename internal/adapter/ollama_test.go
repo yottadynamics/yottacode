@@ -193,6 +193,150 @@ func TestAdapter_ToolCall(t *testing.T) {
 	}
 }
 
+func TestAdapter_SplitToolCallArgumentsSucceeds(t *testing.T) {
+	body := sseBody(
+		`{"id":"c1","object":"chat.completion.chunk","created":1,"model":"test","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"call_x","type":"function","function":{"name":"read_file","arguments":""}}]},"finish_reason":null}]}`,
+		`{"id":"c1","object":"chat.completion.chunk","created":1,"model":"test","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"path\":"}}]},"finish_reason":null}]}`,
+		`{"id":"c1","object":"chat.completion.chunk","created":1,"model":"test","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"x.go\"}"}}]},"finish_reason":null}]}`,
+		`{"id":"c1","object":"chat.completion.chunk","created":1,"model":"test","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`,
+	)
+	srv := mockServer(t, body)
+
+	ad := New(srv.URL, "", "test")
+	_, _, final, errs := drainEvents(ad.ChatStream(context.Background(), []Message{{Role: RoleUser, Content: "read"}}, nil))
+	if len(errs) > 0 {
+		t.Fatalf("unexpected errors: %v", errs)
+	}
+	if final == nil || len(final.ToolCalls) != 1 {
+		t.Fatalf("tool_calls = %+v, want 1", final)
+	}
+	if got := final.ToolCalls[0].ArgsJSON; got != `{"path":"x.go"}` {
+		t.Errorf("ArgsJSON = %q, want path object", got)
+	}
+}
+
+func TestAdapter_RejectsMalformedToolCalls(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		want string
+	}{
+		{
+			name: "truncated arguments",
+			body: sseBody(
+				`{"id":"c1","object":"chat.completion.chunk","created":1,"model":"test","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"call_x","type":"function","function":{"name":"write_file","arguments":"{\"path\":"}}]},"finish_reason":null}]}`,
+				`{"id":"c1","object":"chat.completion.chunk","created":1,"model":"test","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`,
+			),
+			want: "invalid tool call write_file arguments",
+		},
+		{
+			name: "missing function name",
+			body: sseBody(
+				`{"id":"c1","object":"chat.completion.chunk","created":1,"model":"test","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"call_x","type":"function","function":{"arguments":"{}"}}]},"finish_reason":null}]}`,
+				`{"id":"c1","object":"chat.completion.chunk","created":1,"model":"test","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`,
+			),
+			want: "function name is required",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := mockServer(t, tc.body)
+			ad := New(srv.URL, "", "test")
+			_, _, final, errs := drainEvents(ad.ChatStream(context.Background(), []Message{{Role: RoleUser, Content: "read"}}, nil))
+			if final != nil {
+				t.Fatalf("final should be nil on malformed tool call, got %+v", final)
+			}
+			if len(errs) == 0 {
+				t.Fatalf("expected error containing %q", tc.want)
+			}
+			if !strings.Contains(errs[0].Error(), tc.want) {
+				t.Fatalf("error = %q, want contains %q", errs[0], tc.want)
+			}
+		})
+	}
+}
+
+// TestAdapter_NormalizesEmptyToolCallArguments locks the no-argument-tool
+// regression: a tool like exit_plan_mode / git_push / worktree_status can
+// arrive with an empty arguments payload, which must normalize to "{}" and
+// succeed — not hard-error the turn — so the call still runs and serializes as
+// valid JSON on replay.
+func TestAdapter_NormalizesEmptyToolCallArguments(t *testing.T) {
+	body := sseBody(
+		`{"id":"c1","object":"chat.completion.chunk","created":1,"model":"test","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"call_x","type":"function","function":{"name":"exit_plan_mode","arguments":""}}]},"finish_reason":null}]}`,
+		`{"id":"c1","object":"chat.completion.chunk","created":1,"model":"test","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`,
+	)
+	srv := mockServer(t, body)
+
+	ad := New(srv.URL, "", "test")
+	_, _, final, errs := drainEvents(ad.ChatStream(context.Background(), []Message{{Role: RoleUser, Content: "go"}}, nil))
+	if len(errs) > 0 {
+		t.Fatalf("unexpected errors: %v", errs)
+	}
+	if final == nil || len(final.ToolCalls) != 1 {
+		t.Fatalf("tool_calls = %+v, want 1", final)
+	}
+	if got := final.ToolCalls[0].ArgsJSON; got != "{}" {
+		t.Errorf("ArgsJSON = %q, want {}", got)
+	}
+}
+
+// TestAdapter_RejectsLengthTruncatedToolCall guards the finish_reason
+// truncation tell: a tool call cut off by "length" is rejected even when the
+// partial arguments happen to parse, so a truncated call never reaches a tool
+// or poisons replayed history.
+func TestAdapter_RejectsLengthTruncatedToolCall(t *testing.T) {
+	body := sseBody(
+		`{"id":"c1","object":"chat.completion.chunk","created":1,"model":"test","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"call_x","type":"function","function":{"name":"write_file","arguments":"{\"path\":\"x.go\"}"}}]},"finish_reason":null}]}`,
+		`{"id":"c1","object":"chat.completion.chunk","created":1,"model":"test","choices":[{"index":0,"delta":{},"finish_reason":"length"}]}`,
+	)
+	srv := mockServer(t, body)
+
+	ad := New(srv.URL, "", "test")
+	_, _, final, errs := drainEvents(ad.ChatStream(context.Background(), []Message{{Role: RoleUser, Content: "write"}}, nil))
+	if final != nil {
+		t.Fatalf("final should be nil on truncated tool call, got %+v", final)
+	}
+	if len(errs) == 0 || !strings.Contains(errs[0].Error(), "response truncated") {
+		t.Fatalf("errs = %v, want 'response truncated'", errs)
+	}
+}
+
+// TestToOpenAIMessages_SanitizesReplayedToolCallArgs locks the replay defense:
+// history persisted before validation existed — or produced by another adapter
+// — can carry an assistant tool_call with empty or truncated arguments.
+// Re-serializing it verbatim makes the whole request invalid JSON for strict
+// providers (NVIDIA NIM then 400s every later turn). The builder substitutes
+// "{}" so the request always parses; well-formed args pass through untouched.
+func TestToOpenAIMessages_SanitizesReplayedToolCallArgs(t *testing.T) {
+	msgs := []Message{
+		{Role: RoleUser, Content: "hi"},
+		{Role: RoleAssistant, ToolCalls: []ToolCall{
+			{ID: "a", Name: "write_file", ArgsJSON: ""},             // empty
+			{ID: "b", Name: "read_file", ArgsJSON: `{"path":`},      // truncated
+			{ID: "c", Name: "glob", ArgsJSON: `{"pattern":"*.go"}`}, // valid
+		}},
+	}
+	out := toOpenAIMessages(msgs)
+	var got []string
+	for i := range out {
+		if a := out[i].OfAssistant; a != nil {
+			for _, tc := range a.ToolCalls {
+				got = append(got, tc.Function.Arguments)
+			}
+		}
+	}
+	want := []string{"{}", "{}", `{"pattern":"*.go"}`}
+	if len(got) != len(want) {
+		t.Fatalf("replayed args = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("tool call %d args = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
 // TestAdapter_EmitsStreamProgressForToolCallDeltas guards the "0.0
 // tok/s never moves" fix on the Chat Completions side: when a turn
 // produces only a tool call (no content, no reasoning), the

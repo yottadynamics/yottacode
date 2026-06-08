@@ -636,7 +636,11 @@ func parallelBatchSize(cfg LoopConfig, calls []adapter.ToolCall) int {
 	n := 0
 	for _, tc := range calls {
 		tool, ok := cfg.Registry.Get(tc.Name)
-		if !ok || tool.RequiresApproval(tc.ArgsJSON) || !toolParallelSafe(tool, tc.ArgsJSON) {
+		if !ok {
+			break
+		}
+		argsJSON := coerceArgsToSchema(tc.ArgsJSON, tool.Schema())
+		if tool.RequiresApproval(argsJSON) || !toolParallelSafe(tool, argsJSON) {
 			break
 		}
 		// In plan mode, blocked calls must hit the serial path so the
@@ -645,7 +649,7 @@ func parallelBatchSize(cfg LoopConfig, calls []adapter.ToolCall) int {
 		// branch goes straight to Execute via the read-only fast
 		// path).
 		if cfg.PlanMode.IsActive() {
-			if _, blocked := PlanModeGate(tool, tc.ArgsJSON, cfg.PlanMode.PlanFile); blocked {
+			if _, blocked := PlanModeGate(tool, argsJSON, cfg.PlanMode.PlanFile); blocked {
 				break
 			}
 		}
@@ -779,7 +783,10 @@ func executeToolCallImpl(
 	if !ok {
 		return fmt.Sprintf("error: unknown tool %q", tc.Name), nil, false, nil
 	}
-	preview := tool.PreviewCall(tc.ArgsJSON)
+	argsJSON := coerceArgsToSchema(tc.ArgsJSON, tool.Schema())
+	normalizedTC := tc
+	normalizedTC.ArgsJSON = argsJSON
+	preview := tool.PreviewCall(argsJSON)
 
 	// Plan-mode gate runs BEFORE permissions evaluation: explicit deny
 	// rules still beat the gate (the model never gets to call a denied
@@ -788,7 +795,7 @@ func executeToolCallImpl(
 	// tool result lets the model recover by switching to a read-only
 	// or plan-file alternative on the next iteration.
 	if cfg.PlanMode.IsActive() {
-		if msg, blocked := PlanModeGate(tool, tc.ArgsJSON, cfg.PlanMode.PlanFile); blocked {
+		if msg, blocked := PlanModeGate(tool, argsJSON, cfg.PlanMode.PlanFile); blocked {
 			_ = send(ctx, events, ApprovalAuto{
 				ToolName: tool.Name(), Preview: preview, Source: "plan-mode-block",
 			})
@@ -798,7 +805,7 @@ func executeToolCallImpl(
 
 	verdict := permissions.Default
 	if cfg.Permissions != nil {
-		verdict = cfg.Permissions.Evaluate(tool.Name(), tc.ArgsJSON)
+		verdict = cfg.Permissions.Evaluate(tool.Name(), argsJSON)
 	}
 
 	// Permission Deny always wins, even over plan-mode auto-allow. A
@@ -828,7 +835,7 @@ func executeToolCallImpl(
 		// is still being blocked. The card is also where the user
 		// picks HOW to proceed ([A]uto vs [M]anual on exit), which no
 		// auto-approval source can answer.
-		if denied, savedForLater, err := promptForApproval(ctx, cfg, tool, tc, preview, events, decisions); err != nil || denied || savedForLater {
+		if denied, savedForLater, err := promptForApproval(ctx, cfg, tool, normalizedTC, preview, events, decisions); err != nil || denied || savedForLater {
 			return deniedResultForMultimodal(tool.Name(), denied, savedForLater, err)
 		}
 	case cfg.YoloMode.IsActive():
@@ -837,13 +844,13 @@ func executeToolCallImpl(
 		}); err != nil {
 			return "", nil, false, err
 		}
-	case cfg.PlanMode.IsActive() && IsPlanFileWrite(tool.Name(), tc.ArgsJSON, cfg.PlanMode.PlanFile):
+	case cfg.PlanMode.IsActive() && IsPlanFileWrite(tool.Name(), argsJSON, cfg.PlanMode.PlanFile):
 		if err := send(ctx, events, ApprovalAuto{
 			ToolName: tool.Name(), Preview: preview, Source: "plan-mode-allow",
 		}); err != nil {
 			return "", nil, false, err
 		}
-	case cfg.AutoMode.IsActive() && tool.Name() == "run_bash" && IsAutoModeSafeBash(tc.ArgsJSON, cfg.Cwd):
+	case cfg.AutoMode.IsActive() && tool.Name() == "run_bash" && IsAutoModeSafeBash(argsJSON, cfg.Cwd):
 		if err := send(ctx, events, ApprovalAuto{
 			ToolName: tool.Name(), Preview: preview, Source: "auto-mode-safe-bash",
 		}); err != nil {
@@ -864,11 +871,11 @@ func executeToolCallImpl(
 				return "", nil, false, err
 			}
 		case permissions.Ask:
-			if denied, savedForLater, err := promptForApproval(ctx, cfg, tool, tc, preview, events, decisions); err != nil || denied || savedForLater {
+			if denied, savedForLater, err := promptForApproval(ctx, cfg, tool, normalizedTC, preview, events, decisions); err != nil || denied || savedForLater {
 				return deniedResultForMultimodal(tool.Name(), denied, savedForLater, err)
 			}
 		default:
-			if tool.RequiresApproval(tc.ArgsJSON) {
+			if tool.RequiresApproval(argsJSON) {
 				// No boundary-tool carve-out needed here: case 0 of the
 				// mode-priority switch catches enter/exit_plan_mode
 				// before bypass is ever consulted.
@@ -879,7 +886,7 @@ func executeToolCallImpl(
 						return "", nil, false, err
 					}
 				} else {
-					if denied, savedForLater, err := promptForApproval(ctx, cfg, tool, tc, preview, events, decisions); err != nil || denied || savedForLater {
+					if denied, savedForLater, err := promptForApproval(ctx, cfg, tool, normalizedTC, preview, events, decisions); err != nil || denied || savedForLater {
 						return deniedResultForMultimodal(tool.Name(), denied, savedForLater, err)
 					}
 				}
@@ -887,7 +894,7 @@ func executeToolCallImpl(
 		}
 	}
 
-	if err := send(ctx, events, ToolStart{ToolName: tool.Name(), Preview: preview, ArgsJSON: tc.ArgsJSON}); err != nil {
+	if err := send(ctx, events, ToolStart{ToolName: tool.Name(), Preview: preview, ArgsJSON: argsJSON}); err != nil {
 		return "", nil, false, err
 	}
 	// Attach the parent's events + decisions channels so tools that
@@ -904,7 +911,7 @@ func executeToolCallImpl(
 	// as a scrollback event but let the tool proceed.
 	if cfg.Checkpoints != nil {
 		if sessionID, cpID := CheckpointFromContext(ctx); cpID != "" {
-			for _, p := range ToolPathsToSnapshot(tool, cfg.Cwd.Get(), tc.ArgsJSON) {
+			for _, p := range ToolPathsToSnapshot(tool, cfg.Cwd.Get(), argsJSON) {
 				if err := cfg.Checkpoints.SnapshotPath(sessionID, cpID, p); err != nil {
 					_ = send(ctx, events, CheckpointInfo{Message: fmt.Sprintf("snapshot %s: %v", p, err)})
 				}
@@ -920,12 +927,6 @@ func executeToolCallImpl(
 	if cfg.Cwd != nil {
 		cwdBefore = cfg.Cwd.Get()
 	}
-
-	// Normalize string-encoded scalar args (e.g. {"max_results":"5"} from
-	// Llama-via-NIM/Ollama) to the types the tool's schema declares. No-op
-	// for compliant providers; fail-open for anything it can't safely fix.
-	// See yottacode-roadmap/tool-arg-coercion.md.
-	argsJSON := coerceArgsToSchema(tc.ArgsJSON, tool.Schema())
 
 	var out string
 	var images []adapter.ImageBlock
@@ -948,7 +949,7 @@ func executeToolCallImpl(
 	// yottacode-roadmap/folder-trust.md "Prompt 2."
 	if err != nil {
 		if elev, ok := pathElevation(err); ok {
-			d, derr := promptForPathElevation(ctx, tool.Name(), elev, tc.ArgsJSON, events, decisions)
+			d, derr := promptForPathElevation(ctx, tool.Name(), elev, argsJSON, events, decisions)
 			if derr != nil {
 				return "", nil, false, derr
 			}
