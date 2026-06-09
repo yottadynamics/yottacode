@@ -8,14 +8,16 @@ Building, testing, and extending yottacode.
 go build -o yottacode ./cmd/yottacode
 ```
 
-Requirements: Go 1.25+. The module is pure Go, so cross-compilation is
+Requirements: Go 1.26+. The module is pure Go, so cross-compilation is
 straightforward:
 
 ```bash
 GOOS=darwin  GOARCH=arm64 go build -o yottacode-darwin-arm64  ./cmd/yottacode
 GOOS=linux   GOARCH=amd64 go build -o yottacode-linux-amd64   ./cmd/yottacode
-GOOS=windows GOARCH=amd64 go build -o yottacode-windows.exe   ./cmd/yottacode
 ```
+
+Supported platforms are Linux and macOS (amd64 and arm64). There is no native
+Windows build — Windows contributors should work inside WSL.
 
 ## Test
 
@@ -175,13 +177,22 @@ the consumers that need to display it.
 ## Project Layout Reminder
 
 ```text
-cmd/yottacode/                cobra root
+cmd/yottacode/                cobra root command
+cmd/yotta-models/             model-catalog refresh tool
 internal/cli/                 option resolution
 internal/adapter/             provider streaming layer
 internal/agent/               turn loop, tools, approvals
-internal/session/             saved conversations
-internal/memory/              prompt memory composer and agent-managed memory store
+internal/permissions/         allow / ask / deny rules
+internal/github/              typed go-github adapter and PR/issue tools
+internal/mcp/                 Model Context Protocol clients
+internal/skills/              agent skills loader
+internal/subagents/           typed subagent runner
+internal/catalog/             embedded + live model catalog
+internal/checkpoint/          per-prompt checkpoints
+internal/memory/              prompt memory composer and agent-managed store
 internal/recall/              FTS5 session search
+internal/session/             saved conversations
+internal/worktree/            git worktree sessions
 internal/tui/                 interactive terminal UI
 internal/oneshot/             one-shot runner
 internal/version/             version string
@@ -192,7 +203,7 @@ internal/version/             version string
 The release number lives in [`internal/version/version.go`](../internal/version/version.go):
 
 ```go
-const Current = "0.1.0"
+const Current = "0.2.0"
 ```
 
 Use semantic versioning: `MAJOR.MINOR.PATCH`.
