@@ -783,10 +783,11 @@ so it never prompts for approval.
 The model is instructed to call `todo_write` proactively for any task with
 three or more distinct steps and to update it as soon as each step finishes.
 When work has both a design/research phase and an execution phase, the
-todo list must end at the design-presentation step — implementation
-todos are only added in a follow-up `todo_write` call after the user has
-explicitly agreed to the design, so the plan never pre-stages unapproved
-work. Pass an empty list to clear the plan; the live card disappears and
+model should ask for user agreement before implementation only when the user
+explicitly requested a plan first, the session is in plan mode, or the next
+step is risky/destructive/ambiguous. Routine todo-card creation is not a
+permission gate; the approval policy still lives on the mutating tools
+themselves. Pass an empty list to clear the plan; the live card disappears and
 no end-of-turn snapshot is emitted.
 
 ## enter_plan_mode

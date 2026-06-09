@@ -196,7 +196,7 @@ func buildStyles(p themes.Palette) {
 	styleFooter = lipgloss.NewStyle().Foreground(colorMuted)
 	styleUserHeader = lipgloss.NewStyle().Bold(true).Foreground(colorAccent)
 	styleAssistantHeader = lipgloss.NewStyle().Bold(true).Foreground(colorAssistant)
-	styleUserBar = lipgloss.NewStyle().Foreground(colorRule).Bold(true)
+	styleUserBar = lipgloss.NewStyle().Foreground(colorContent).Bold(true)
 	styleUserBody = lipgloss.NewStyle().Foreground(colorContent)
 	styleAssistantBody = lipgloss.NewStyle().Foreground(colorContent).PaddingLeft(2)
 	styleAssistantProse = lipgloss.NewStyle().Foreground(colorContent)
