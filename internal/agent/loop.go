@@ -199,8 +199,9 @@ func CheckpointFromContext(ctx context.Context) (sessionID, cpID string) {
 }
 
 type loopState struct {
-	iteration int
-	history   *[]adapter.Message
+	iteration    int
+	history      *[]adapter.Message
+	toolFailures map[string]int
 }
 
 type toolExecResult struct {
@@ -214,6 +215,45 @@ const (
 	continueReasonToolCalls       = "tool_calls"
 	continueReasonTruncatedOutput = "truncated_output"
 )
+
+const repeatedToolFailureThreshold = 3
+
+func repeatedToolFailureKey(toolName, output string) (string, bool) {
+	if !strings.HasPrefix(output, "error:") {
+		return "", false
+	}
+	line := output
+	if i := strings.IndexAny(line, "\n\r"); i >= 0 {
+		line = line[:i]
+	}
+	return toolName + "\x00" + strings.TrimSpace(line), true
+}
+
+func repeatedToolFailureMessage(toolName, output string, count int) string {
+	guidance := "change strategy before retrying"
+	switch toolName {
+	case "edit_file":
+		guidance = "read the current file contents and retry with an exact old_string, or use apply_diff with fresh context"
+	case "apply_diff":
+		guidance = "rebuild a valid unified diff with correct file headers and hunk ranges, or make a smaller edit_file change"
+	}
+	return fmt.Sprintf("%s\n\nrepeated tool failure (%d×): %s", output, count, guidance)
+}
+
+func applyRepeatedToolFailureGuard(toolName, output string, failures map[string]int) string {
+	if failures == nil {
+		return output
+	}
+	key, ok := repeatedToolFailureKey(toolName, output)
+	if !ok {
+		return output
+	}
+	failures[key]++
+	if failures[key] < repeatedToolFailureThreshold {
+		return output
+	}
+	return repeatedToolFailureMessage(toolName, output, failures[key])
+}
 
 const (
 	// yoloIterationMultiplier scales the configured iteration cap for
@@ -263,7 +303,7 @@ func Turn(
 	events chan<- Event,
 	decisions <-chan Decision,
 ) error {
-	state := loopState{history: history}
+	state := loopState{history: history, toolFailures: map[string]int{}}
 	// Effective cap: auto mode quadruples the configured limit
 	// because the user explicitly opted into "let this run" — most
 	// plan implementations need 100–200 iterations. Yolo mode goes
@@ -347,6 +387,15 @@ func Turn(
 			return err
 		}
 
+		// Normalize tool-call arguments before persisting the assistant turn. The
+		// execution path also normalizes, but history is replayed into the next
+		// provider request; malformed function-call JSON there can make Responses
+		// providers reject the follow-up before the model sees the tool result.
+		for i := range final.ToolCalls {
+			if tool, ok := cfg.Registry.Get(final.ToolCalls[i].Name); ok {
+				final.ToolCalls[i].ArgsJSON = coerceArgsToSchema(final.ToolCalls[i].ArgsJSON, tool.Schema())
+			}
+		}
 		appendHistory(cfg, state.history, *final)
 		if err := send(ctx, events, AssistantMessage{Message: *final}); err != nil {
 			if isCancelErr(err) {
@@ -365,7 +414,7 @@ func Turn(
 			}); err != nil {
 				return err
 			}
-			if err := executeToolCalls(ctx, cfg, final.ToolCalls, history, events, decisions); err != nil {
+			if err := executeToolCalls(ctx, cfg, final.ToolCalls, history, events, decisions, state.toolFailures); err != nil {
 				if isCancelErr(err) {
 					// executeToolCalls has already appended synthetic
 					// tool_result entries for any orphaned calls before
@@ -547,6 +596,7 @@ func executeToolCalls(
 	history *[]adapter.Message,
 	events chan<- Event,
 	decisions <-chan Decision,
+	toolFailures map[string]int,
 ) error {
 	for len(calls) > 0 {
 		if batch := parallelBatchSize(cfg, calls); batch > 1 {
@@ -564,7 +614,7 @@ func executeToolCalls(
 				}
 				return err
 			}
-			appendToolResults(cfg, history, calls[:batch], results)
+			appendToolResults(cfg, history, calls[:batch], results, toolFailures)
 			calls = calls[batch:]
 			continue
 		}
@@ -576,6 +626,7 @@ func executeToolCalls(
 			}
 			return err
 		}
+		result = applyRepeatedToolFailureGuard(tc.Name, result, toolFailures)
 		appendHistory(cfg, history, adapter.Message{
 			Role:       adapter.RoleTool,
 			Content:    result,
@@ -705,12 +756,13 @@ func executeToolCallsParallel(
 	return results, errors.Join(errs...)
 }
 
-func appendToolResults(cfg LoopConfig, history *[]adapter.Message, calls []adapter.ToolCall, results []toolExecResult) {
+func appendToolResults(cfg LoopConfig, history *[]adapter.Message, calls []adapter.ToolCall, results []toolExecResult, toolFailures map[string]int) {
 	withHistoryLock(cfg, func() {
 		for i, tc := range calls {
+			content := applyRepeatedToolFailureGuard(tc.Name, results[i].content, toolFailures)
 			*history = append(*history, adapter.Message{
 				Role:       adapter.RoleTool,
-				Content:    results[i].content,
+				Content:    content,
 				Images:     results[i].images,
 				ToolCallID: tc.ID,
 			})
@@ -1053,7 +1105,10 @@ func promptForPathElevation(
 	select {
 	case <-ctx.Done():
 		return Deny, ctx.Err()
-	case d := <-decisions:
+	case d, ok := <-decisions:
+		if !ok {
+			return Deny, errors.New("agent: decisions channel closed while waiting for path-trust response")
+		}
 		return d, nil
 	}
 }
@@ -1087,7 +1142,11 @@ func promptForApproval(
 	select {
 	case <-ctx.Done():
 		return false, false, ctx.Err()
-	case d = <-decisions:
+	case got, ok := <-decisions:
+		if !ok {
+			return false, false, errors.New("agent: decisions channel closed while waiting for approval response")
+		}
+		d = got
 	}
 	if d == Deny {
 		return true, false, nil

@@ -203,14 +203,20 @@ func (a *responsesAdapter) ChatStream(ctx context.Context, messages []Message, t
 				}
 
 			case "response.function_call_arguments.done":
-				// The .done event carries the full arguments string; we
-				// don't need to accumulate the .delta events.
+				// The .done event carries the full arguments string; validate it before
+				// committing the call to history so a truncated fragment cannot poison
+				// every later Responses request.
 				if pc := pending[evt.ItemID]; pc != nil {
-					finalCalls = append(finalCalls, ToolCall{
+					tc := ToolCall{
 						ID:       pc.id,
 						Name:     pc.name,
 						ArgsJSON: evt.Arguments,
-					})
+					}
+					if err := validateToolCallForHistory(&tc); err != nil {
+						out <- StreamEvent{Kind: EventErr, Err: err}
+						return
+					}
+					finalCalls = append(finalCalls, tc)
 					delete(pending, evt.ItemID)
 				}
 
@@ -308,7 +314,7 @@ func splitForResponses(ms []Message) (instructions string, items []responses.Res
 				items = append(items, responses.ResponseInputItemParamOfMessage(m.Content, responses.EasyInputMessageRoleAssistant))
 			}
 			for _, tc := range m.ToolCalls {
-				items = append(items, responses.ResponseInputItemParamOfFunctionCall(tc.ArgsJSON, tc.ID, tc.Name))
+				items = append(items, responses.ResponseInputItemParamOfFunctionCall(safeToolArgsJSON(tc.ArgsJSON), tc.ID, tc.Name))
 			}
 		case RoleTool:
 			items = append(items, responses.ResponseInputItemParamOfFunctionCallOutput(m.ToolCallID, m.Content))

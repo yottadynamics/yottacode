@@ -245,23 +245,7 @@ func (a *chatAdapter) ChatStream(ctx context.Context, messages []Message, tools 
 // invalid JSON for providers such as NVIDIA NIM, which the model can no longer
 // recover from.
 func normalizeChatToolCalls(calls []ToolCall) error {
-	for i := range calls {
-		if strings.TrimSpace(calls[i].Name) == "" {
-			return fmt.Errorf("adapter: invalid tool call %d: function name is required", i)
-		}
-		if strings.TrimSpace(calls[i].ArgsJSON) == "" {
-			calls[i].ArgsJSON = "{}"
-			continue
-		}
-		var obj map[string]json.RawMessage
-		if err := json.Unmarshal([]byte(calls[i].ArgsJSON), &obj); err != nil {
-			return fmt.Errorf("adapter: invalid tool call %s arguments: %w", calls[i].Name, err)
-		}
-		if obj == nil {
-			return fmt.Errorf("adapter: invalid tool call %s arguments: expected JSON object", calls[i].Name)
-		}
-	}
-	return nil
+	return validateToolCallsForHistory(calls)
 }
 
 func toOpenAIMessages(ms []Message) []openai.ChatCompletionMessageParamUnion {
@@ -292,17 +276,10 @@ func toOpenAIMessages(ms []Message) []openai.ChatCompletionMessageParamUnion {
 			if len(m.ToolCalls) > 0 {
 				tcs := make([]openai.ChatCompletionMessageToolCallParam, 0, len(m.ToolCalls))
 				for _, tc := range m.ToolCalls {
-					// Replay guard: a tool_call whose arguments are empty or
-					// not valid JSON — one persisted before validation existed,
-					// or emitted by another adapter — would make the whole
-					// request body invalid for strict providers like NVIDIA
-					// NIM, which then 400s every subsequent turn (not just the
-					// one that produced it). Substitute "{}" so the request
-					// always parses and the session can recover.
-					args := tc.ArgsJSON
-					if strings.TrimSpace(args) == "" || !json.Valid([]byte(args)) {
-						args = "{}"
-					}
+					// Replay guard: a malformed historic tool_call should not poison the
+					// next Chat Completions request. Providers expect arguments to be a
+					// JSON object encoded as a string.
+					args := safeToolArgsJSON(tc.ArgsJSON)
 					tcs = append(tcs, openai.ChatCompletionMessageToolCallParam{
 						ID: tc.ID,
 						Function: openai.ChatCompletionMessageToolCallFunctionParam{

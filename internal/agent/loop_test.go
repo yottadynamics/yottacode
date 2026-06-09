@@ -339,6 +339,33 @@ func TestLoop_EmptyToolArgsNormalizedToObject(t *testing.T) {
 	}
 }
 
+func TestLoop_RepeatedToolFailureAddsStrategyGuidance(t *testing.T) {
+	failure := errors.New("old_string not found in ./x.go")
+	streamer := &scriptedStreamer{turns: [][]adapter.StreamEvent{
+		{sseDone("", adapter.ToolCall{ID: "c1", Name: "edit_file", ArgsJSON: `{}`})},
+		{sseDone("", adapter.ToolCall{ID: "c2", Name: "edit_file", ArgsJSON: `{}`})},
+		{sseDone("", adapter.ToolCall{ID: "c3", Name: "edit_file", ArgsJSON: `{}`})},
+		{sseToken("done"), sseDone("done")},
+	}}
+	reg := NewRegistry()
+	reg.Register(&mockTool{name: "edit_file", execErr: failure})
+	cfg := LoopConfig{Adapter: streamer, Registry: reg, MaxIterations: 6}
+	hist := []adapter.Message{{Role: adapter.RoleUser, Content: "go"}}
+
+	if _, err := runTurnSync(t, context.Background(), cfg, &hist, nil); err != nil {
+		t.Fatalf("Turn: %v", err)
+	}
+	var guided bool
+	for _, m := range hist {
+		if m.Role == adapter.RoleTool && strings.Contains(m.Content, "repeated tool failure (3×)") && strings.Contains(m.Content, "read the current file contents") {
+			guided = true
+		}
+	}
+	if !guided {
+		t.Fatalf("expected repeated failure guidance in history: %+v", hist)
+	}
+}
+
 func TestLoop_BypassPermissionsAutoApproves(t *testing.T) {
 	streamer := &scriptedStreamer{turns: [][]adapter.StreamEvent{
 		{sseDone("", adapter.ToolCall{ID: "c1", Name: "run_bash", ArgsJSON: `{"command":"echo hi"}`})},

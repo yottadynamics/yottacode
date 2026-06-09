@@ -789,7 +789,7 @@ func splitForOpenAIAuth(ms []Message) (instructions string, items []inputItem) {
 					Type:      "function_call",
 					CallID:    tc.ID,
 					Name:      tc.Name,
-					Arguments: tc.ArgsJSON,
+					Arguments: safeToolArgsJSON(tc.ArgsJSON),
 				})
 			}
 		case RoleTool:
@@ -956,7 +956,12 @@ func (a *openAIAuthAdapter) consumeSSE(ctx context.Context, body io.Reader, out 
 			}
 			_ = json.Unmarshal(ev.Data, &d)
 			if pc := pending[d.ItemID]; pc != nil {
-				finalCalls = append(finalCalls, ToolCall{ID: pc.id, Name: pc.name, ArgsJSON: d.Arguments})
+				tc := ToolCall{ID: pc.id, Name: pc.name, ArgsJSON: d.Arguments}
+				if err := validateToolCallForHistory(&tc); err != nil {
+					out <- StreamEvent{Kind: EventErr, Err: err}
+					return
+				}
+				finalCalls = append(finalCalls, tc)
 				delete(pending, d.ItemID)
 			}
 

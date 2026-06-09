@@ -444,6 +444,12 @@ func stream(
 	turnStart := time.Now()
 
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				close(events)
+				errCh <- fmt.Errorf("agent turn panicked: %v", r)
+			}
+		}()
 		err := agent.Turn(ctx, cfg, history, events, decisions)
 		close(events)
 		errCh <- err
