@@ -570,7 +570,7 @@ type Model struct {
 	// Model-picker overlay (/model). pickerList is the model-list
 	// source; nil in production (defaults to catalog.List), tests
 	// inject a fake to exercise the picker without a network round-
-	// trip. Curated providers (anthropic/openai/gemini) read from
+	// trip. Curated providers (anthropic/openai/gemini/xai) read from
 	// the embedded catalog instantly; openai-compatible / ollama
 	// providers fetch live each open.
 	pickerList      pickerListFn
@@ -2774,20 +2774,120 @@ func renderFallbackLine(e agent.Fallback) string {
 	return lipgloss.NewStyle().Foreground(colorWarm).Bold(true).Render(head)
 }
 
-func renderProviderToolLine(toolName, phase, detail string) string {
-	head := fmt.Sprintf("▸ %s", toolName)
-	switch phase {
-	case "searching", "interpreting", "in_progress":
-		head += " [" + phase + "]"
+func renderProviderToolCard(toolName, phase, detail string, termWidth int) string {
+	width := cardMaxWidthCap
+	if termWidth > 0 && termWidth-4 < width {
+		width = termWidth - 4
+	}
+	if width < cardMinUsefulCols {
+		width = cardMinUsefulCols
+	}
+
+	// Provider-hosted tools are lifecycle events, not local yottacode tool
+	// calls with args/output. Render them with the same modern card gutters as
+	// local tools, but keep the copy terse and action-oriented.
+	header := renderCardHeader(providerToolHeader(toolName))
+	body := providerToolBody(toolName, phase, detail)
+	gutter := styleCardGutter.Render("│ ")
+	gutterWidth := ansi.StringWidth(gutter)
+	bodyWidth := width - gutterWidth
+	if bodyWidth < 20 {
+		bodyWidth = 20
+	}
+
+	out := []string{header}
+	appendBodyLine := func(line string) {
+		styled := styleCardBody.Render(line)
+		if ansi.StringWidth(styled) <= bodyWidth {
+			out = append(out, gutter+styled)
+			return
+		}
+		wrapped := ansi.Wrap(styled, bodyWidth, "")
+		for _, row := range strings.Split(wrapped, "\n") {
+			out = append(out, gutter+row)
+		}
+	}
+	for _, line := range body {
+		appendBodyLine(line)
+	}
+	footer := styleCardMeta.Render(providerToolFooter(toolName, phase))
+	return strings.Join(append(out, styleCardGutter.Render("╰ ")+footer), "\n")
+}
+
+func providerToolBody(toolName, phase, detail string) []string {
+	line := providerToolActivity(toolName, phase)
+	if detail == "" {
+		return []string{line}
+	}
+	return []string{line, detail}
+}
+
+func providerToolActivity(toolName, phase string) string {
+	status := providerToolStatus(phase)
+	switch strings.TrimSpace(toolName) {
+	case "web_search":
+		if status == "done" {
+			return "web search complete"
+		}
+		return "searching the web…"
+	case "x_search":
+		if status == "done" {
+			return "X search complete"
+		}
+		return "searching X…"
+	case "code_interpreter":
+		if status == "done" {
+			return "code interpreter complete"
+		}
+		return "running code interpreter…"
+	default:
+		if status == "done" {
+			return "hosted tool complete"
+		}
+		return "hosted tool " + status + "…"
+	}
+}
+
+func providerToolHeader(toolName string) string {
+	switch strings.TrimSpace(toolName) {
+	case "web_search":
+		return "xAI Web Search"
+	case "x_search":
+		return "xAI X Search"
+	case "code_interpreter":
+		return "xAI Code Interpreter"
+	case "":
+		return "Hosted tool"
+	default:
+		return fmt.Sprintf("Hosted(%s)", toolName)
+	}
+}
+
+func providerToolStatus(phase string) string {
+	switch strings.TrimSpace(phase) {
 	case "completed":
-		head += " [done]"
-	case "code":
-		head += " [code]"
+		return "done"
+	case "":
+		return "running"
+	default:
+		return phase
 	}
-	if detail != "" {
-		head += ": " + detail
+}
+
+func providerToolFooter(toolName, phase string) string {
+	status := providerToolStatus(phase)
+	switch strings.TrimSpace(toolName) {
+	case "web_search":
+		return "hosted web search"
+	case "x_search":
+		return "hosted X search"
+	case "code_interpreter":
+		return "hosted code interpreter"
 	}
-	return styleToolCall.Render(head)
+	if status == "done" {
+		return "provider tool completed"
+	}
+	return "provider tool " + status
 }
 
 func renderToolResultLine(summary string, errored bool) string {
@@ -3601,7 +3701,7 @@ func (m Model) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 	case agent.ProviderToolCall:
 		m.reasoning.Reset()
 		m.appendLine("")
-		m.appendLine(renderProviderToolLine(e.ToolName, e.Phase, e.Detail))
+		m.appendLine(renderProviderToolCard(e.ToolName, e.Phase, e.Detail, m.width))
 	case agent.Fallback:
 		m.appendLine(renderFallbackLine(e))
 	case agent.ApprovalAuto:

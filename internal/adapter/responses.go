@@ -323,6 +323,15 @@ func splitForResponses(ms []Message) (instructions string, items []responses.Res
 func toResponsesTools(tools []Tool, cfg Config, profile ProviderProfile) ([]responses.ToolUnionParam, error) {
 	out := make([]responses.ToolUnionParam, 0, len(tools)+len(profile.EnabledBuiltinTools))
 	for _, t := range tools {
+		// Prefer provider-native search over yottacode's local web_search
+		// function when the upstream exposes one. xAI rejects a request that
+		// contains both its hosted {"type":"web_search"} tool and a custom
+		// function named "web_search" as duplicate tool names; skipping the
+		// local function also steers the model toward richer hosted search
+		// results and citations.
+		if t.Name == "web_search" && hasBuiltinTool(profile.EnabledBuiltinTools, BuiltinToolWebSearch) {
+			continue
+		}
 		ft := responses.FunctionToolParam{
 			Name:        t.Name,
 			Description: openai.String(t.Description),

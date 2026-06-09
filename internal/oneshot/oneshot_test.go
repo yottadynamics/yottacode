@@ -224,6 +224,21 @@ func TestOneshot_PropagatesAdapterError(t *testing.T) {
 	}
 }
 
+func TestComposeSystemPrompt_XAIPrefersXSearch(t *testing.T) {
+	got := composeSystemPrompt("base", adapter.ProviderProfile{
+		Provider: adapter.ProviderXAI,
+		EnabledBuiltinTools: []adapter.BuiltinToolKind{
+			adapter.BuiltinToolWebSearch,
+			adapter.BuiltinToolXSearch,
+		},
+	})
+	for _, want := range []string{"use x_search, not web_search", "X/Twitter posts", "Use web_search only for general web pages"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("xAI prompt guidance missing %q:\n%s", want, got)
+		}
+	}
+}
+
 func TestPreflight_AuthFailure(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "nope", http.StatusUnauthorized)

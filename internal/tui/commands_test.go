@@ -242,6 +242,21 @@ func TestSlash_ModelSwitches(t *testing.T) {
 	}
 }
 
+func TestComposeSystemPrompt_XAIPrefersXSearch(t *testing.T) {
+	got := composeSystemPrompt("base", adapter.ProviderProfile{
+		Provider: adapter.ProviderXAI,
+		EnabledBuiltinTools: []adapter.BuiltinToolKind{
+			adapter.BuiltinToolWebSearch,
+			adapter.BuiltinToolXSearch,
+		},
+	})
+	for _, want := range []string{"use x_search, not web_search", "X/Twitter posts", "Use web_search only for general web pages"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("xAI prompt guidance missing %q:\n%s", want, got)
+		}
+	}
+}
+
 // Bare /model now opens the picker overlay (Phase 1A default UX).
 // The flat-text list is reachable via /model list — covered in
 // TestSlash_ModelListAllGroupsByProvider — so we just confirm the

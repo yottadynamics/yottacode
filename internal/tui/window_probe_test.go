@@ -36,7 +36,7 @@ func TestMaybeProbeActiveModelWindowCmd_Gating(t *testing.T) {
 	// carries windows in the curated catalog or speaks an API live
 	// discovery can't address. Without the kind gate the picker would fire a
 	// 300K-token /chat/completions probe at the ChatGPT/Copilot backends.
-	for _, kind := range []string{"anthropic", "openai", "gemini", "openai-auth", "copilot"} {
+	for _, kind := range []string{"anthropic", "openai", "gemini", "xai", "openai-auth", "copilot"} {
 		if build(kind, nil).maybeProbeActiveModelWindowCmd() != nil {
 			t.Errorf("should not probe non-discoverable provider kind %q", kind)
 		}

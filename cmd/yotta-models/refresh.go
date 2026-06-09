@@ -50,6 +50,12 @@ func refresh(outPath string) error {
 	} else {
 		fmt.Fprintln(os.Stderr, "skip gemini: GEMINI_API_KEY not set")
 	}
+	if k := os.Getenv("XAI_API_KEY"); k != "" {
+		ms, err := fetchXAI(ctx, k)
+		results = append(results, fetchResult{"xai", ms, err})
+	} else {
+		fmt.Fprintln(os.Stderr, "skip xai: XAI_API_KEY not set")
+	}
 
 	merged := make(map[string][]catalog.Model)
 	for _, m := range existing.Models {
@@ -107,6 +113,7 @@ var modelsDevProviderID = map[string]string{
 	"anthropic": "anthropic",
 	"openai":    "openai",
 	"gemini":    "google",
+	"xai":       "xai",
 }
 
 // backfillWindowsFromModelsDev fills ContextWindow for models that came

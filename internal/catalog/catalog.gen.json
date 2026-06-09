@@ -1,6 +1,20 @@
 {
-  "generated_at": "2026-06-02T14:29:13Z",
+  "generated_at": "2026-06-09T19:00:32Z",
   "models": [
+    {
+      "id": "claude-fable-5",
+      "display_name": "Claude Fable 5",
+      "provider": "anthropic",
+      "context_window": 1000000,
+      "max_output": 128000,
+      "released_at": "2026-06-07T00:00:00Z",
+      "capabilities": {
+        "thinking": true,
+        "vision": true,
+        "pdf": true,
+        "structured_outputs": true
+      }
+    },
     {
       "id": "claude-opus-4-6",
       "display_name": "Claude Opus 4.6",
@@ -30,6 +44,20 @@
       }
     },
     {
+      "id": "claude-opus-4-8",
+      "display_name": "Claude Opus 4.8",
+      "provider": "anthropic",
+      "context_window": 1000000,
+      "max_output": 128000,
+      "released_at": "2026-05-28T00:00:00Z",
+      "capabilities": {
+        "thinking": true,
+        "vision": true,
+        "pdf": true,
+        "structured_outputs": true
+      }
+    },
+    {
       "id": "claude-sonnet-4-6",
       "display_name": "Claude Sonnet 4.6",
       "provider": "anthropic",
@@ -42,6 +70,13 @@
         "pdf": true,
         "structured_outputs": true
       }
+    },
+    {
+      "id": "gpt-5.3-codex",
+      "provider": "openai",
+      "context_window": 400000,
+      "released_at": "2026-02-08T08:05:15Z",
+      "capabilities": {}
     },
     {
       "id": "gpt-5.4",
@@ -62,6 +97,41 @@
       "provider": "openai",
       "context_window": 1050000,
       "released_at": "2026-04-22T02:27:27Z",
+      "capabilities": {}
+    },
+    {
+      "id": "grok-4.20-0309-non-reasoning",
+      "provider": "xai",
+      "context_window": 1000000,
+      "released_at": "2026-03-09T00:00:00Z",
+      "capabilities": {}
+    },
+    {
+      "id": "grok-4.20-0309-reasoning",
+      "provider": "xai",
+      "context_window": 1000000,
+      "released_at": "2026-03-09T00:00:00Z",
+      "capabilities": {}
+    },
+    {
+      "id": "grok-4.20-multi-agent-0309",
+      "provider": "xai",
+      "context_window": 1000000,
+      "released_at": "2026-03-09T00:00:00Z",
+      "capabilities": {}
+    },
+    {
+      "id": "grok-4.3",
+      "provider": "xai",
+      "context_window": 1000000,
+      "released_at": "2026-04-17T00:00:00Z",
+      "capabilities": {}
+    },
+    {
+      "id": "grok-build-0.1",
+      "provider": "xai",
+      "context_window": 256000,
+      "released_at": "2026-04-16T00:00:00Z",
       "capabilities": {}
     }
   ]

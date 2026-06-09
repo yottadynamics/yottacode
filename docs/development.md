@@ -62,13 +62,13 @@ the command prefix instead of executing it immediately.
 
 ## Refreshing The Embedded Model Catalog
 
-The cloud provider model lists for Anthropic, OpenAI, and Gemini live
+The cloud provider model lists for Anthropic, OpenAI, Gemini, and xAI live
 in [`internal/catalog/catalog.gen.json`](../internal/catalog/catalog.gen.json),
 embedded into the binary at build time. When a provider ships new
 models (or deprecates old ones), regenerate the file:
 
 ```bash
-ANTHROPIC_API_KEY=… OPENAI_API_KEY=… GEMINI_API_KEY=… \
+ANTHROPIC_API_KEY=… OPENAI_API_KEY=… GEMINI_API_KEY=… XAI_API_KEY=… \
   go run ./cmd/yotta-models refresh
 ```
 
@@ -85,11 +85,15 @@ can refresh one provider at a time.
 The script:
 
 - Calls each provider's list-models endpoint (Anthropic
-  `/v1/models`, OpenAI `/v1/models`, Gemini `/v1beta/models`).
+  `/v1/models`, OpenAI `/v1/models`, Gemini `/v1beta/models`, xAI
+  `/v1/models`).
 - Filters OpenAI to chat-completions models via prefix regex
   ([`fetch_openai.go`](../cmd/yotta-models/fetch_openai.go)) — drop
   embeddings/tts/audio/realtime/image variants. Widening for new
   families (e.g. `gpt-6`, `o5`) is a one-line PR.
+- Filters xAI to Grok chat models via prefix regex
+  ([`fetch_xai.go`](../cmd/yotta-models/fetch_xai.go)) — drop image
+  and video generation surfaces that are not chat turn-taking models.
 - Filters Gemini to entries whose `supportedGenerationMethods`
   contains `"generateContent"` — drops embedding-only and
   countTokens-only models.
@@ -101,8 +105,8 @@ The script:
   minimal.
 
 Commit the refreshed `catalog.gen.json` like any other source file.
-There is no runtime equivalent — users can't refresh locally because
-they don't necessarily have keys for all three providers, and the
+There is no runtime equivalent for curated providers — users can't refresh locally because
+they don't necessarily have keys for all four providers, and the
 embedded catalog keeps offline-first ergonomics. Anything else
 (Ollama, openai-compatible endpoints) is fetched live at picker-open
 time via [`catalog.Live`](../internal/catalog/live.go).

@@ -387,7 +387,13 @@ func TestResponses_XAIRoutesBuiltinWebSearchAndEmitsProviderToolEvent(t *testing
 	if !ad.Profile().UsesResponsesAPI {
 		t.Fatalf("xAI with built-in web search should route to responses")
 	}
-	ch := ad.ChatStream(context.Background(), []Message{{Role: RoleUser, Content: "hi"}}, nil)
+	// Include a local function with the same name to prove xAI hosted
+	// web_search wins and avoids the provider's duplicate-tool-name error.
+	ch := ad.ChatStream(context.Background(), []Message{{Role: RoleUser, Content: "hi"}}, []Tool{{
+		Name:        "web_search",
+		Description: "local fallback search",
+		Schema:      map[string]any{"type": "object"},
+	}})
 	var providerPhases []string
 	for ev := range ch {
 		if ev.Kind == EventProviderTool {
@@ -402,6 +408,9 @@ func TestResponses_XAIRoutesBuiltinWebSearchAndEmitsProviderToolEvent(t *testing
 	}
 	if !strings.Contains(gotBody, `"type":"web_search"`) {
 		t.Fatalf("xAI request body missing web_search tool: %s", gotBody)
+	}
+	if strings.Contains(gotBody, `"type":"function","description":"local fallback search"`) {
+		t.Fatalf("xAI request body should not include duplicate local web_search function: %s", gotBody)
 	}
 }
 

@@ -104,7 +104,7 @@ type providerPickerState struct {
 
 	// addCuratedModels is the embedded catalog snapshot for the
 	// picked entry's kind, when that kind is curated
-	// (anthropic/openai/gemini) AND the catalog is non-empty. When
+	// (anthropic/openai/gemini/xai) AND the catalog is non-empty. When
 	// populated, the form renders a list under "Default model" and
 	// Up/Down on that field navigates the list (mirrors the wizard's
 	// stepConfigure picker). When empty, the form falls back to the
@@ -431,7 +431,7 @@ func populateAddFields(p *providerPickerState, e wizard.CatalogEntry, inputWidth
 		p.addLabels = append(p.addLabels, "API key")
 	}
 
-	// Default model. For curated kinds (anthropic/openai/gemini) we
+	// Default model. For curated kinds (anthropic/openai/gemini/xai) we
 	// load the embedded catalog and let the user pick a model with
 	// Up/Down — same UX the wizard's stepConfigure offers, so a user
 	// adding a provider mid-session doesn't have to remember the
@@ -466,15 +466,17 @@ func populateAddFields(p *providerPickerState, e wizard.CatalogEntry, inputWidth
 		model.SetValue("gpt-5.5")
 	case e.Kind == "copilot":
 		model.SetValue("claude-haiku-4.5")
+	case e.Kind == "xai":
+		// xAI has a stable hosted default we can safely pre-fill in the TUI
+		// Add form. Keep the curated catalog loaded too, when present, so the
+		// user can still arrow-pick another Grok model instead of typing it.
+		model.SetValue("grok-4.20-0309-non-reasoning")
+		p.addCuratedModels = catalog.Get(e.Kind)
 	case catalog.IsCuratedKind(e.Kind):
 		p.addCuratedModels = catalog.Get(e.Kind)
 	}
-	// Always start the model field empty for non-openai-auth — even
-	// when the curated catalog is populated, we want the user to make
-	// an explicit pick (Up/Down to choose from the list, or type a
-	// tag). The commitProviderAdd guard refuses to save with an empty
-	// value, so this both surfaces the catalog (so the user knows
-	// what's available) and forces a deliberate choice.
+	// xAI has a stable default; other curated cloud providers still start
+	// empty so the user deliberately chooses from the embedded list.
 	if model.Value() == "" {
 		model.Placeholder = wizard.FreeFormModelPlaceholder(e.Name)
 	}

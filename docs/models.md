@@ -72,7 +72,7 @@ Use `--reasoning-effort low|medium|high` when the selected provider/model suppor
 Hosted provider tools depend on provider support, not just the model name.
 
 - OpenAI: `web_search` default-on; `code_interpreter` optional
-- xAI: `web_search` default-on; `x_search` and `code_interpreter` optional
+- xAI: `web_search` and `x_search` default-on; `code_interpreter` optional
 - Ollama/custom OpenAI-compatible: no hosted provider tools; local yottacode tools still work
 
 ## Cache-safe task routing

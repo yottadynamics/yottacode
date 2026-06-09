@@ -51,6 +51,38 @@ func TestOpenAIChatModelRegex(t *testing.T) {
 	}
 }
 
+// TestXAIChatModelFilter keeps the xAI refresh focused on Grok chat models.
+// xAI's /models endpoint can also advertise image/video surfaces, which the
+// chat adapter cannot use as turn-taking models.
+func TestXAIChatModelFilter(t *testing.T) {
+	cases := []struct {
+		id   string
+		keep bool
+	}{
+		// Keep — text/chat Grok families.
+		{"grok-3", true},
+		{"grok-3-mini", true},
+		{"grok-4", true},
+		{"grok-4-fast-reasoning", true},
+		{"grok-code-fast-1", true},
+
+		// Drop — non-chat media endpoints or unrelated ids.
+		{"grok-imagine-image", false},
+		{"grok-imagine-video", false},
+		{"grok-image", false},
+		{"grok-video", false},
+		{"image-generation-1", false},
+		{"not-grok", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.id, func(t *testing.T) {
+			if got := isXAIChatModel(tc.id); got != tc.keep {
+				t.Errorf("isXAIChatModel(%q) = %v, want %v", tc.id, got, tc.keep)
+			}
+		})
+	}
+}
+
 // TestSupportsGenerate covers the Gemini filter we apply on the
 // supportedGenerationMethods array. Models without "generateContent"
 // (embedding-only, countTokens-only) are dropped.

@@ -13,7 +13,7 @@ import (
 // `go run ./cmd/yotta-models refresh`). Anything else falls through
 // to a live HTTP fetch — necessary for Ollama (locally-installed
 // models are runtime state) and for openai-compatible endpoints
-// (xAI, NVIDIA NIM, custom proxies — too varied to script-curate).
+// (NVIDIA NIM, custom proxies — too varied to script-curate).
 //
 // openai-auth is curated but separate from openai: its allow-list is
 // per-user (depends on the user's ChatGPT plan) and discovered by a
@@ -26,6 +26,7 @@ var curatedKinds = map[string]bool{
 	"openai-auth": true,
 	"copilot":     true,
 	"gemini":      true,
+	"xai":         true,
 }
 
 // openAIAuthLabels maps the known openai-auth model IDs to friendly

@@ -957,7 +957,7 @@ func formatProviderList(cfg config.Config, activeName string) string {
 }
 
 // formatProviderModels lists one profile's catalog. For curated
-// providers (anthropic/openai/gemini) it reads the embedded catalog;
+// providers (anthropic/openai/gemini/xai) it reads the embedded catalog;
 // for everything else it shows the configured default + API-key
 // status and points the user at /model for the live picker. /model
 // list is sync (writes to the transcript directly) so we can't do a
@@ -1095,6 +1095,8 @@ func detectKindAsProvider(kind string) adapter.Provider {
 		return adapter.ProviderCopilot
 	case "gemini":
 		return adapter.ProviderGemini
+	case "xai":
+		return adapter.ProviderXAI
 	case "ollama":
 		return adapter.ProviderOllama
 	default:

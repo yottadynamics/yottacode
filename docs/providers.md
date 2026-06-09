@@ -172,10 +172,12 @@ export YOTTACODE_BASE_URL=https://api.x.ai/v1
 export YOTTACODE_API_KEY=xai-...
 ```
 
+`xai` uses the embedded model catalog; maintainers refresh that catalog with `XAI_API_KEY` in `cmd/yotta-models`.
+
 xAI hosted tools:
 
 - `web_search` is enabled by default
-- `x_search` can be enabled with `YOTTACODE_ENABLE_X_SEARCH=1`
+- `x_search` is enabled by default for X posts, users, and threads
 - `code_interpreter` can be enabled when supported
 
 Optional filters:
