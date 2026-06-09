@@ -282,4 +282,6 @@ Set how hard a reasoning-capable model thinks with [`--reasoning-effort`](config
 
 **Default is unchanged.** When effort is unset, yottacode injects no reasoning parameter at all — every provider behaves exactly as it does without the setting. In particular, Anthropic and Gemini do **not** get extended thinking unless you ask for it (it costs extra tokens). `/effort default` (or `off`/`none`) returns to this state mid-session.
 
+The TUI status bar shows `effort: default|low|medium|high` only when the active provider/model accepts the effort option; unsupported models omit the chip instead of advertising a no-op setting.
+
 **No per-model table to maintain.** Whether a model supports thinking, and how big a thinking budget to allow, come from the model catalog (`Capabilities.Thinking` and `MaxOutput`, fetched from each provider's list-models endpoint via `yotta-models refresh`) — not a hand-maintained list. A model the catalog doesn't describe still works: enum providers (OpenAI/xAI) are gated on model-name prefixes, and Anthropic/Gemini fall back to a conservative thinking budget. If the catalog explicitly marks a model as non-thinking, the effort is a no-op rather than an error (surfaced as a `/effort` hint).
