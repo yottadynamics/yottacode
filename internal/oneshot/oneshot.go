@@ -590,6 +590,9 @@ func preflight(ctx context.Context, cfg adapter.Config) error {
 }
 
 func composeSystemPrompt(base string, profile adapter.ProviderProfile) string {
+	if profile.Provider == adapter.ProviderXAI && hasBuiltin(profile.EnabledBuiltinTools, adapter.BuiltinToolXSearch) {
+		return base + "\nFor live or current information, use provider-native tools when needed. For X/Twitter posts, users, threads, trends, sentiment, or anything happening on X, use x_search, not web_search. Use web_search only for general web pages, news sites, docs, or pages outside X."
+	}
 	if hasBuiltin(profile.EnabledBuiltinTools, adapter.BuiltinToolWebSearch) {
 		return base + "\nFor live or current information, use the provider-native web_search tool when needed."
 	}

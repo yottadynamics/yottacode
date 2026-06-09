@@ -11,6 +11,7 @@
 //	ANTHROPIC_API_KEY
 //	OPENAI_API_KEY
 //	GEMINI_API_KEY
+//	XAI_API_KEY
 //
 // This is a maintainer tool, not user-facing. Run it when a provider
 // announces new models; commit the diff. CI may eventually run it on
@@ -71,6 +72,7 @@ Required env vars for refresh (one or more):
   ANTHROPIC_API_KEY    Anthropic Console key
   OPENAI_API_KEY       OpenAI platform key
   GEMINI_API_KEY       Google AI Studio key
+  XAI_API_KEY          xAI Console key
 
 A missing key skips that provider with a warning; existing entries
 for that provider in the output file are preserved untouched.

@@ -234,8 +234,8 @@ func TestProviderPicker_MenuRendersClaudeCodeStyle(t *testing.T) {
 	m, _ = typeAndEnter(t, m, "/provider")
 	got := stripANSI(m.View())
 	for _, want := range []string{
-		"❯",      // cursor glyph
-		"Use",    // labels (no leading numbers per Phase 5b)
+		"❯",   // cursor glyph
+		"Use", // labels (no leading numbers per Phase 5b)
 		"Add",
 		"Remove",
 	} {
@@ -812,15 +812,15 @@ func TestProviderPicker_AddFreeFormRejectsBlankModel(t *testing.T) {
 		m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyDown})
 	}
 	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter}) // → addKindMode
-	// Every catalog entry is now free-form (the curated list moved to
+	// Every catalog entry without an embedded model list is free-form (the curated list lives in
 	// internal/catalog/catalog.gen.json). Pick the first non-curated
 	// kind so the test exercises the "default model required" path
-	// without depending on catalog state. Ollama / xai / nvidia-nim
-	// all qualify; we look for any non-anthropic/openai/gemini kind.
+	// without depending on catalog state. Ollama / nvidia-nim / custom
+	// all qualify; curated cloud kinds do not.
 	target := -1
 	for i, e := range m.providerPicker.addCatalog {
 		switch e.Kind {
-		case "anthropic", "openai", "gemini", "openai-auth", "copilot":
+		case "anthropic", "openai", "gemini", "xai", "openai-auth", "copilot":
 			// openai-auth and copilot are excluded too: their model
 			// fields are pre-filled since per-user lists are only
 			// populated post-login.
@@ -1297,7 +1297,11 @@ func TestProviderPicker_AddFormContract_AllCloudProviders(t *testing.T) {
 			if keyIdx < 0 {
 				t.Errorf("%s: form missing API key field — every cloud provider needs one", tc.kindName)
 			}
-			if v := strings.TrimSpace(m.providerPicker.addFields[modelIdx].Value()); v != "" {
+			if v := strings.TrimSpace(m.providerPicker.addFields[modelIdx].Value()); tc.kindName == "xai" {
+				if v != "grok-4.20-0309-non-reasoning" {
+					t.Errorf("xai: model field default = %q, want grok-4.20-0309-non-reasoning", v)
+				}
+			} else if v != "" {
 				t.Errorf("%s: model field should start empty (no auto-prefill); got %q",
 					tc.kindName, v)
 			}
@@ -1311,6 +1315,9 @@ func TestProviderPicker_AddFormContract_AllCloudProviders(t *testing.T) {
 			// catalog is populated for this kind.
 			if keyIdx >= 0 {
 				m.providerPicker.addFields[keyIdx].SetValue("test-key-" + tc.kindName)
+			}
+			if tc.kindName == "xai" {
+				m.providerPicker.addFields[modelIdx].SetValue("")
 			}
 			m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
 			if !m.providerPickerOpen {

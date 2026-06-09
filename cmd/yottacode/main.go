@@ -536,11 +536,15 @@ func bindCommonPersistentFlags(cmd *cobra.Command, opts *cli.ChatOptions) {
 }
 
 func adapterConfigFromOptions(opts cli.ChatOptions) adapter.Config {
+	providerOverride := strings.TrimSpace(opts.ProviderKind)
+	if providerOverride == "" {
+		providerOverride = strings.TrimSpace(opts.Provider)
+	}
 	return adapter.Config{
 		BaseURL:                opts.BaseURL,
 		APIKey:                 opts.APIKey,
 		Model:                  opts.Model,
-		ProviderOverride:       adapter.Provider(strings.TrimSpace(opts.Provider)),
+		ProviderOverride:       adapter.Provider(providerOverride),
 		ReasoningEffort:        opts.ReasoningEffort,
 		EnableWebSearch:        opts.EnableWebSearch,
 		DisableWebSearch:       opts.DisableWebSearch,

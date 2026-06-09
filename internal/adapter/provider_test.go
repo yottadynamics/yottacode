@@ -50,6 +50,15 @@ func TestBuildProfile_WarnsOnRemoteMissingAPIKeyAndModelMismatch(t *testing.T) {
 	}
 }
 
+func TestBuildProfile_DefaultsHostedSearchOnForXAI(t *testing.T) {
+	profile := buildProfile(Config{BaseURL: "https://api.x.ai/v1", Model: "grok-4"}, usesResponsesAPI(Config{BaseURL: "https://api.x.ai/v1", Model: "grok-4"}))
+	for _, want := range []BuiltinToolKind{BuiltinToolWebSearch, BuiltinToolXSearch} {
+		if !hasBuiltinTool(profile.EnabledBuiltinTools, want) {
+			t.Fatalf("expected default %s for xAI: %+v", want, profile.EnabledBuiltinTools)
+		}
+	}
+}
+
 func TestBuildProfile_DefaultsWebSearchOnForOpenAIAndXAI(t *testing.T) {
 	for _, cfg := range []Config{
 		{BaseURL: "https://api.openai.com/v1", Model: "gpt-4.1"},

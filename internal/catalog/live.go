@@ -16,8 +16,8 @@ import (
 
 // Live queries a provider's list-models endpoint at runtime. Used
 // for non-curated providers — Ollama (lists locally-installed models,
-// genuinely runtime state) and openai-compatible endpoints (xAI,
-// NVIDIA NIM, custom proxies — too varied to script-curate).
+// genuinely runtime state) and openai-compatible endpoints (NVIDIA NIM,
+// custom proxies — too varied to script-curate).
 //
 // The response is mapped onto our common Model schema, but most
 // fields stay zero/nil because these list endpoints return only the

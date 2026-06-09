@@ -249,6 +249,8 @@ default model).`,
 			// kinds carry windows in the catalog. The result is written to the
 			// file-backed window store (~/.yottacode/context-windows.json), NOT
 			// config.toml, so it can't invalidate a free-form provider's config.
+			// Probe only runtime-discovered providers. Curated kinds, including xai,
+			// already carry catalog/backfilled windows from yotta-models refresh.
 			if probeModel != "" && (p.Kind == "openai-compatible" || p.Kind == "ollama") && !modelHasWindow(entries, probeModel) {
 				pctx, pcancel := context.WithTimeout(cmd.Context(), 20*time.Second)
 				w, detail := catalog.DiscoverContextWindow(pctx, *p, key, probeModel)

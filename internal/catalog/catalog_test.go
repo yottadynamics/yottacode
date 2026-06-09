@@ -7,6 +7,7 @@ import (
 	"time"
 
 	openaiauth "github.com/yottadynamics/yottacode/internal/auth/openai"
+	"github.com/yottadynamics/yottacode/internal/config"
 )
 
 func TestEmbeddedCatalogParses(t *testing.T) {
@@ -21,6 +22,13 @@ func TestEmbeddedCatalogParses(t *testing.T) {
 	}
 	if Get("anthropic") == nil {
 		t.Fatal("Get(anthropic) returned nil; expected empty slice")
+	}
+}
+
+func TestXAIIsCurated(t *testing.T) {
+	p := config.Provider{Kind: "xai", BaseURL: "https://api.x.ai/v1"}
+	if !IsCurated(p) {
+		t.Fatal("xai should use the embedded catalog, not the generic live fetch path")
 	}
 }
 

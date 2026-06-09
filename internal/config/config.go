@@ -249,7 +249,8 @@ type Provider struct {
 	//                         gpt-5*)
 	//   openai-compatible   — anything that speaks /v1/chat/completions
 	//                         (vLLM, Llama Stack, OpenRouter, Together,
-	//                         xAI, NVIDIA NIM, Groq, …)
+	//                         NVIDIA NIM, Groq, …)
+	//   xai                 — xAI's OpenAI-compatible Grok endpoint
 	//   ollama              — Ollama's local server (OpenAI-shim variant)
 	Kind string `toml:"kind"`
 
@@ -346,7 +347,7 @@ func MCPNameValid(name string) bool { return mcpNameRE.MatchString(name) }
 var ValidTiers = []string{"cheap", "balanced", "expensive"}
 
 // ValidKinds is the whitelist for Provider.Kind.
-var ValidKinds = []string{"anthropic", "openai", "openai-auth", "copilot", "openai-compatible", "ollama", "gemini"}
+var ValidKinds = []string{"anthropic", "openai", "openai-auth", "copilot", "openai-compatible", "ollama", "gemini", "xai"}
 
 // Default returns a Config populated with the documented defaults.
 func Default() Config {
@@ -804,6 +805,8 @@ func providerKeyEnvHint(p *Provider) string {
 		return "OPENAI_API_KEY"
 	case "gemini":
 		return "GEMINI_API_KEY"
+	case "xai":
+		return "XAI_API_KEY"
 	default:
 		return strings.ToUpper(strings.ReplaceAll(p.Name, "-", "_")) + "_API_KEY"
 	}
