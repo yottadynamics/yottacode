@@ -280,6 +280,22 @@ func TestPreflight_ModelInvisible(t *testing.T) {
 	}
 }
 
+func TestOneshot_StreamRecoversTurnPanic(t *testing.T) {
+	cfg := agent.LoopConfig{Adapter: panicStreamer{}, Registry: agent.NewRegistry(), MaxIterations: 3}
+	hist := []adapter.Message{{Role: adapter.RoleUser, Content: "x"}}
+	var stdout, stderr bytes.Buffer
+	err := stream(context.Background(), cfg, &hist, &stdout, &stderr)
+	if err == nil || !strings.Contains(err.Error(), "agent turn panicked") {
+		t.Fatalf("expected panic error, got %v", err)
+	}
+}
+
+type panicStreamer struct{}
+
+func (panicStreamer) ChatStream(context.Context, []adapter.Message, []adapter.Tool) <-chan adapter.StreamEvent {
+	panic("boom")
+}
+
 // fakeApprovalTool: a Tool that always requires approval but is never executed
 // in these tests (the loop never reaches Execute when ApprovalNeeded is denied).
 type fakeApprovalTool struct{ name string }

@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
@@ -1060,6 +1061,20 @@ func TestModel_ApprovalKeyPressNoEmitsDeny(t *testing.T) {
 		}
 	default:
 		t.Errorf("expected a Decision on the channel")
+	}
+}
+
+func TestModel_TurnEndedClearsStaleApprovalAndRendersError(t *testing.T) {
+	m := newTestModel(t)
+	m.turnActive = true
+	m.awaitingApproval = true
+	m.approvalTool = "write_file"
+	m, _ = applyMsg(m, turnEndedMsg{err: errors.New("agent turn panicked: boom")})
+	if m.awaitingApproval || m.approvalTool != "" {
+		t.Fatalf("turn end should clear stale approval modal")
+	}
+	if !strings.Contains(m.transcript.String(), "agent turn panicked: boom") {
+		t.Fatalf("turn terminal error not rendered: %q", m.transcript.String())
 	}
 }
 

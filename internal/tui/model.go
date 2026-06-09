@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -930,6 +931,41 @@ func New(parent context.Context, c Config) Model {
 	}
 }
 
+func (m *Model) clearPendingDecisionUI() {
+	m.awaitingApproval = false
+	m.approvalTool = ""
+	m.approvalPreview = ""
+	m.approvalArgs = ""
+	m.approvalAllowAlwaysOK = false
+	m.approvalDerivedRule = ""
+	m.awaitingPathTrust = false
+	m.pathTrustReq = agent.PathTrustElevationNeeded{}
+}
+
+func (m *Model) sendDecision(d agent.Decision) bool {
+	if m.decisions == nil {
+		m.clearPendingDecisionUI()
+		m.appendLine(styleError.Render("✗ turn already ended; decision ignored"))
+		return false
+	}
+	select {
+	case m.decisions <- d:
+		return true
+	default:
+		m.clearPendingDecisionUI()
+		m.appendLine(styleError.Render("✗ turn already ended; decision ignored"))
+		return false
+	}
+}
+
+func (m *Model) finishDecisionUI() tea.Cmd {
+	m.clearPendingDecisionUI()
+	if m.turnActive {
+		return waitForEvent(m.eventsCh, m.turnErrCh)
+	}
+	return nil
+}
+
 func (m Model) Init() tea.Cmd {
 	// Deliberately do NOT start m.spinner.Tick here. The spinner's
 	// thinking indicator is only visible during a turn (renderThinkingRow
@@ -1486,25 +1522,28 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			switch msg.String() {
 			case "1", "o", "O":
 				addAllowedPathToWriteTools(m.cfg.Registry, m.pathTrustReq.Path)
-				m.decisions <- agent.PathAllowOnce
+				if !m.sendDecision(agent.PathAllowOnce) {
+					return m, nil
+				}
 				m.appendLine(stylePathTrustAccept.Render("trusted for this write: ") + m.pathTrustReq.Path)
-				m.awaitingPathTrust = false
 				answered = true
 			case "2", "t", "T":
 				dir := filepath.Dir(m.pathTrustReq.Path)
 				addAllowedPathToWriteTools(m.cfg.Registry, dir)
-				m.decisions <- agent.PathTrustSession
+				if !m.sendDecision(agent.PathTrustSession) {
+					return m, nil
+				}
 				m.appendLine(stylePathTrustAccept.Render("trusted for this session: ") + dir)
-				m.awaitingPathTrust = false
 				answered = true
 			case "3", "n", "N", "esc":
-				m.decisions <- agent.Deny
+				if !m.sendDecision(agent.Deny) {
+					return m, nil
+				}
 				m.appendLine(stylePathTrustReject.Render("path trust denied — model sees error"))
-				m.awaitingPathTrust = false
 				answered = true
 			}
 			if answered {
-				return m, waitForEvent(m.eventsCh, m.turnErrCh)
+				return m, m.finishDecisionUI()
 			}
 			return m, nil
 		}
@@ -1531,8 +1570,9 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.appendLine(styleAutoBannerLabel.Render(AutoModeIcon+" auto mode active") +
 							" " + styleAutoBannerHint.Render("— implementing the approved plan; bash & commits still prompt"))
 					}
-					m.decisions <- agent.AllowOnce
-					m.awaitingApproval = false
+					if !m.sendDecision(agent.AllowOnce) {
+						return m, nil
+					}
 					answered = true
 				case "m", "M":
 					// Manual approval: flip plan mode off BEFORE
@@ -1542,8 +1582,9 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					// per-tool approval prompts continue for the
 					// implementation turn — user reviews each step.
 					exitPlanMode(&m)
-					m.decisions <- agent.AllowOnce
-					m.awaitingApproval = false
+					if !m.sendDecision(agent.AllowOnce) {
+						return m, nil
+					}
 					answered = true
 				case "l", "L":
 					// Save and implement later: flip plan mode off
@@ -1556,8 +1597,9 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					exitPlanMode(&m)
 					m.appendLine(stylePlanBannerLabel.Render(PlanModeIcon+" plan saved for later") +
 						" " + stylePlanBannerHint.Render("— resume via /plan list or `yottacode --plan-resume <slug>`"))
-					m.decisions <- agent.SaveForLater
-					m.awaitingApproval = false
+					if !m.sendDecision(agent.SaveForLater) {
+						return m, nil
+					}
 					answered = true
 				case "k", "K", "n", "N", "esc":
 					// Keep planning: log a dismissal header so the
@@ -1566,12 +1608,13 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					// emitPlanBodyToScrollback (above the modal).
 					m.appendLine(stylePlanBannerLabel.Render(PlanModeIcon+" plan kept") +
 						" " + stylePlanBannerHint.Render("— revise and call exit_plan_mode again when ready"))
-					m.decisions <- agent.Deny
-					m.awaitingApproval = false
+					if !m.sendDecision(agent.Deny) {
+						return m, nil
+					}
 					answered = true
 				}
 				if answered {
-					return m, waitForEvent(m.eventsCh, m.turnErrCh)
+					return m, m.finishDecisionUI()
 				}
 				return m, nil
 			}
@@ -1587,8 +1630,9 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				switch msg.String() {
 				case "y", "Y", "enter":
 					enterPlanModeFromTool(&m)
-					m.decisions <- agent.AllowOnce
-					m.awaitingApproval = false
+					if !m.sendDecision(agent.AllowOnce) {
+						return m, nil
+					}
 					answered = true
 				case "n", "N", "esc":
 					// The loop returns EnterPlanModeRefusalMessage so
@@ -1596,26 +1640,29 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					// of re-requesting.
 					m.appendLine(stylePlanBannerLabel.Render(PlanModeIcon+" plan mode declined") +
 						" " + stylePlanBannerHint.Render("— continuing in the current mode"))
-					m.decisions <- agent.Deny
-					m.awaitingApproval = false
+					if !m.sendDecision(agent.Deny) {
+						return m, nil
+					}
 					answered = true
 				}
 				if answered {
-					return m, waitForEvent(m.eventsCh, m.turnErrCh)
+					return m, m.finishDecisionUI()
 				}
 				return m, nil
 			}
 			answered := false
 			switch msg.String() {
 			case "y", "Y":
-				m.decisions <- agent.AllowOnce
-				m.awaitingApproval = false
+				if !m.sendDecision(agent.AllowOnce) {
+					return m, nil
+				}
 				answered = true
 			case "a", "A":
 				if m.approvalAllowAlwaysOK {
 					rule := m.approvalDerivedRule
-					m.decisions <- agent.AllowAlways
-					m.awaitingApproval = false
+					if !m.sendDecision(agent.AllowAlways) {
+						return m, nil
+					}
 					answered = true
 					// Toast — keeps the modal itself focused on
 					// the immediate decision; the receipt of what
@@ -1626,12 +1673,13 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 				}
 			case "n", "N", "esc":
-				m.decisions <- agent.Deny
-				m.awaitingApproval = false
+				if !m.sendDecision(agent.Deny) {
+					return m, nil
+				}
 				answered = true
 			}
 			if answered {
-				return m, waitForEvent(m.eventsCh, m.turnErrCh)
+				return m, m.finishDecisionUI()
 			}
 			return m, nil
 		}
@@ -1904,17 +1952,17 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case turnEndedMsg:
 		m.turnActive = false
+		m.clearPendingDecisionUI()
 		if m.turnCancel != nil {
 			m.turnCancel()
 			m.turnCancel = nil
 		}
 		m.commitStreaming()
-		// turnEndedMsg.err is intentionally NOT rendered here. agent.Turn
-		// emits ErrorEvent for every user-visible error before returning,
-		// so this path would duplicate the message. The only errors that
-		// bypass ErrorEvent are ctx.Err() from internal send() failures —
-		// those are user-initiated cancellations and don't warrant a red
-		// "✗ context canceled" line.
+		if msg.err != nil && !errors.Is(msg.err, context.Canceled) && !errors.Is(msg.err, context.DeadlineExceeded) {
+			for _, line := range strings.Split(strings.TrimRight(msg.err.Error(), "\n"), "\n") {
+				m.appendLine(styleError.Render("✗ " + line))
+			}
+		}
 		if err := m.sess.Save(); err != nil {
 			m.appendLine(styleError.Render(fmt.Sprintf("⚠ session save failed: %v", err)))
 		}
@@ -3733,12 +3781,10 @@ func (m Model) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 			body, denyReason := loadPlanForApproval(m.cfg.PlanMode)
 			if denyReason != "" {
 				m.appendLine(styleError.Render("[plan] " + denyReason + " — refusing exit_plan_mode"))
-				// The decision channel may not have a slot yet — the
-				// loop sends ApprovalNeeded and then reads from
-				// decisions. We're synchronous in Update; the receiver
-				// is already blocking. Sending here is safe.
-				m.decisions <- agent.Deny
-				return m, waitForEvent(m.eventsCh, m.turnErrCh)
+				if !m.sendDecision(agent.Deny) {
+					return m, nil
+				}
+				return m, m.finishDecisionUI()
 			}
 			emitPlanBodyToScrollback(&m, body)
 		}

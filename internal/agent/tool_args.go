@@ -19,8 +19,11 @@ import (
 // sent a JSON string that cleanly parses to that type. Anything else — args
 // that aren't a JSON object, an absent/empty schema, values already the right
 // type, or strings that don't parse — is returned byte-for-byte unchanged. A
-// compliant provider therefore sees no behavior change, and a genuinely
-// malformed call still reaches the tool's own validation with a real error.
+// compliant provider therefore sees no behavior change. A malformed or
+// non-object argument payload is normalized to {} instead of being replayed
+// verbatim: tools then return their normal "missing required field" error, and
+// the next provider request does not contain invalid function-call JSON that can
+// poison the conversation.
 //
 // One structural normalization is applied first, independent of the schema: an
 // empty arguments payload ("" or whitespace — some OpenAI-compatible models
@@ -34,12 +37,21 @@ import (
 // step that first-party stacks (e.g. OpenAI's schema-constrained decoding)
 // perform internally but the NIM+Llama path skips.
 func coerceArgsToSchema(argsJSON string, schema map[string]any) string {
-	// Empty/whitespace args normalize to an empty JSON object so the tool
-	// decodes a valid {} (reaching its own required-field validation with a
-	// recoverable error) instead of failing its arg parse outright, and a
-	// replayed call stays valid JSON. Done before the schema fast path so it
-	// also covers no-argument tools, whose schema has no coercible field.
+	// Empty/whitespace args normalize to an empty JSON object so the tool decodes a
+	// valid {} (reaching its own required-field validation with a recoverable
+	// error) instead of failing its arg parse outright, and a replayed call stays
+	// valid JSON. Done before the schema fast path so it also covers no-argument
+	// tools, whose schema has no coercible field.
 	if strings.TrimSpace(argsJSON) == "" {
+		return "{}"
+	}
+	// Tool arguments are always schema objects. If a provider streams a partial
+	// JSON fragment or a scalar/array where an object is required, normalize to {}
+	// before the value is stored in history. Leaving malformed JSON in an
+	// assistant tool_call makes Responses-style providers reject the follow-up
+	// request before the model can recover from the tool's validation error.
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(argsJSON), &obj); err != nil || obj == nil {
 		return "{}"
 	}
 	// Fast path: if the schema declares no coercible scalar anywhere there is
@@ -47,10 +59,6 @@ func coerceArgsToSchema(argsJSON string, schema map[string]any) string {
 	// without parsing the args at all.
 	if !schemaHasCoercibleField(schema) {
 		return argsJSON
-	}
-	var obj map[string]json.RawMessage
-	if err := json.Unmarshal([]byte(argsJSON), &obj); err != nil {
-		return argsJSON // not a JSON object we understand — leave it untouched
 	}
 	if coerceObject(obj, schema) == 0 {
 		return argsJSON // nothing changed — avoid re-marshal churn

@@ -27,13 +27,10 @@ func waitForEvent(ch <-chan agent.Event, errCh <-chan error) tea.Cmd {
 		if ok {
 			return agentEventMsg{ev: ev}
 		}
-		// channel closed — surface the turn's terminal error if any
-		select {
-		case err := <-errCh:
-			return turnEndedMsg{err: err}
-		default:
-			return turnEndedMsg{}
-		}
+		// channel closed — the owner sends exactly one terminal error value after
+		// closing the event stream. Block here so a close/send race cannot drop a
+		// panic or internal-send failure on the floor.
+		return turnEndedMsg{err: <-errCh}
 	}
 }
 
