@@ -570,6 +570,7 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 		SummarizerAdapter:      routerFast(routerAdapters),
 		SummarizerModel:        routerFastModel(routerAdapters),
 	})
+	model.githubClient = ghClient
 	// Skills onboarding (skills installed but none enabled) is surfaced
 	// inside the welcome card via startupTip() — see welcome.go's
 	// memory > skills > rotating-pool priority. Emitting it as a

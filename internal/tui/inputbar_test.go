@@ -6,6 +6,8 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+
+	"github.com/yottadynamics/yottacode/internal/adapter"
 )
 
 // The input is borderless. The earlier design wrapped it in a
@@ -156,6 +158,43 @@ func TestStatusBar_NoWorktreeChipOnMainCheckout(t *testing.T) {
 	}
 }
 
+// When the current branch has an open PR, the status bar shows the PR
+// number as a compact chip so users know which review thread edits target.
+func TestStatusBar_RendersCurrentPRChip(t *testing.T) {
+	m := newTestModel(t)
+	m.currentPR = 13
+	m, _ = applyMsg(m, tea.WindowSizeMsg{Width: 120, Height: 24})
+	plain := stripANSI(m.renderStatus())
+	if !strings.Contains(plain, "PR #13") {
+		t.Errorf("status bar should include current PR chip: %q", plain)
+	}
+}
+
+func TestStatusBar_NoCurrentPRChipWhenUndetected(t *testing.T) {
+	m := newTestModel(t)
+	m.currentPR = 0
+	m, _ = applyMsg(m, tea.WindowSizeMsg{Width: 120, Height: 24})
+	plain := stripANSI(m.renderStatus())
+	if strings.Contains(plain, "PR #") {
+		t.Errorf("status bar should hide PR chip when no PR is detected: %q", plain)
+	}
+}
+
+// The PR chip is lower priority than the model and context counter, so
+// narrow terminals drop it before sacrificing the core status signals.
+func TestStatusBar_NarrowTerminalDropsPRBeforeCoreSignals(t *testing.T) {
+	m := newTestModel(t)
+	m.currentPR = 13
+	m, _ = applyMsg(m, tea.WindowSizeMsg{Width: 40, Height: 24})
+	plain := stripANSI(m.renderStatus())
+	if strings.Contains(plain, "PR #") {
+		t.Errorf("narrow status bar should drop PR chip: %q", plain)
+	}
+	if !strings.Contains(plain, "test-model") || !strings.Contains(plain, "ctx ") {
+		t.Errorf("narrow status bar should keep model and ctx: %q", plain)
+	}
+}
+
 // On a narrow-enough terminal that even "model · ctx" won't fit, the
 // vendor prefix on the model name (e.g. `nvidia/`) is stripped.
 func TestStatusBar_VeryNarrowTrimsVendorPrefix(t *testing.T) {
@@ -169,6 +208,63 @@ func TestStatusBar_VeryNarrowTrimsVendorPrefix(t *testing.T) {
 	// The base name should still be present.
 	if !strings.Contains(plain, "nemotron") {
 		t.Errorf("status bar should keep base model name: %q", plain)
+	}
+}
+
+// Reasoning-capable models show the current effort level inline so the
+// user can see whether the session is on provider default or an explicit
+// low/medium/high override.
+func TestStatusBar_RendersEffortForReasoningModel(t *testing.T) {
+	m := newTestModel(t)
+	m.provider = "openai"
+	m.providerProfile.Provider = adapter.ProviderOpenAI
+	m.modelName = "gpt-5"
+	m, _ = applyMsg(m, tea.WindowSizeMsg{Width: 120, Height: 24})
+
+	plain := stripANSI(m.renderStatus())
+	if !strings.Contains(plain, "effort: default") {
+		t.Errorf("status bar should show default effort for reasoning model: %q", plain)
+	}
+
+	m.reasoningEffort = "high"
+	plain = stripANSI(m.renderStatus())
+	if !strings.Contains(plain, "effort: high") {
+		t.Errorf("status bar should show explicit effort for reasoning model: %q", plain)
+	}
+}
+
+// Non-reasoning or unsupported models must not show an effort chip, even
+// if the session has a stored level, because the adapter would ignore it.
+func TestStatusBar_HidesEffortForUnsupportedModel(t *testing.T) {
+	m := newTestModel(t)
+	m.provider = "openai"
+	m.providerProfile.Provider = adapter.ProviderOpenAI
+	m.modelName = "gpt-4o"
+	m.reasoningEffort = "high"
+	m, _ = applyMsg(m, tea.WindowSizeMsg{Width: 120, Height: 24})
+
+	plain := stripANSI(m.renderStatus())
+	if strings.Contains(plain, "effort:") {
+		t.Errorf("status bar should hide effort for unsupported model: %q", plain)
+	}
+}
+
+// The effort chip is useful but lower priority than model and context;
+// narrow terminals drop it before they drop the irreducible signals.
+func TestStatusBar_NarrowTerminalDropsEffortBeforeCoreSignals(t *testing.T) {
+	m := newTestModel(t)
+	m.provider = "openai"
+	m.providerProfile.Provider = adapter.ProviderOpenAI
+	m.modelName = "gpt-5"
+	m.reasoningEffort = "high"
+	m, _ = applyMsg(m, tea.WindowSizeMsg{Width: 40, Height: 24})
+
+	plain := stripANSI(m.renderStatus())
+	if strings.Contains(plain, "effort:") {
+		t.Errorf("narrow status bar should drop effort chip first: %q", plain)
+	}
+	if !strings.Contains(plain, "gpt-5") || !strings.Contains(plain, "ctx ") {
+		t.Errorf("narrow status bar should keep model and ctx: %q", plain)
 	}
 }
 

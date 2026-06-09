@@ -2,8 +2,11 @@ package tui
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -26,6 +29,7 @@ import (
 	"github.com/yottadynamics/yottacode/internal/config"
 	"github.com/yottadynamics/yottacode/internal/contextwindow"
 	"github.com/yottadynamics/yottacode/internal/filerefs"
+	githubapi "github.com/yottadynamics/yottacode/internal/github"
 	mcppkg "github.com/yottadynamics/yottacode/internal/mcp"
 	"github.com/yottadynamics/yottacode/internal/memory"
 	"github.com/yottadynamics/yottacode/internal/permissions"
@@ -192,9 +196,16 @@ type Model struct {
 	dirty                  bool
 	branch                 string
 	worktree               string // yottacode worktree name when session runs inside one
-	memorySummary          string
-	baseSystemPrompt       string // pre-memory prompt; used by /memory reload
-	embedClient            *memory.EmbedClient
+	// currentPR is the open pull request number for the current branch.
+	// Zero means no PR has been detected (or GitHub/auth was unavailable).
+	currentPR int
+	// githubClient is the typed GitHub client shared with PR tools. The
+	// startup/status probe uses it when run.go wires one in; tests may leave
+	// it nil and still exercise the pure rendering path.
+	githubClient     githubapi.Interface
+	memorySummary    string
+	baseSystemPrompt string // pre-memory prompt; used by /memory reload
+	embedClient      *memory.EmbedClient
 
 	// summarizerAdapter is the streamer the /summarize + auto-compaction
 	// path calls into. When cache-safe routing is on it points at the
@@ -748,6 +759,10 @@ type providerProbeMsg struct {
 	announce bool
 }
 
+type prStatusMsg struct {
+	number int
+}
+
 // cursorBlinkMsg ticks the manually-rendered cmdline cursor on/off at
 // the standard 530ms cadence. We can't piggyback on bubbles' textarea
 // blink because the input is rendered by hand (renderInputBody) — the
@@ -982,6 +997,7 @@ func (m Model) Init() tea.Cmd {
 		// always allocates it), so we don't guard.
 		waitForSubagentInbox(m.subagentInbox),
 		startMCPServers(m.parentCtx, m.mcpManager),
+		resolveCurrentPRCmd(m.parentCtx, m.githubClient, m.cwd),
 		// Warm the local models.dev copy in the background (TTL-gated: a
 		// no-op when the on-disk cache is fresh, a daily refresh otherwise),
 		// so window lookups for hosted providers (NVIDIA NIM, …) resolve
@@ -1062,6 +1078,10 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if probe.announce {
 			m.appendLine(formatProbeResult(probe.result))
 		}
+		return m, nil
+	}
+	if pr, ok := msg.(prStatusMsg); ok {
+		m.currentPR = pr.number
 		return m, nil
 	}
 	if done, ok := msg.(mcpStartupDoneMsg); ok {
@@ -3351,6 +3371,8 @@ func (m Model) renderStatus() string {
 	}
 	provider := renderProviderTag(tag)
 	ctx := m.renderContextBar()
+	pr := m.renderPRStatus()
+	effort := m.renderEffortStatus()
 
 	sep := lipgloss.NewStyle().Foreground(colorDim).Render("  ·  ")
 	innerSep := lipgloss.NewStyle().Foreground(colorDim).Render(" · ")
@@ -3376,10 +3398,16 @@ func (m Model) renderStatus() string {
 		worktreeSeg = lipgloss.NewStyle().Foreground(colorContent).Render("worktree: " + m.worktree)
 	}
 
-	build := func(head string) string {
+	build := func(head string, includePR, includeEffort bool) string {
 		segs := []string{head}
 		if ctx != "" {
 			segs = append(segs, ctx)
+		}
+		if includePR && pr != "" {
+			segs = append(segs, pr)
+		}
+		if includeEffort && effort != "" {
+			segs = append(segs, effort)
 		}
 		if worktreeSeg != "" {
 			segs = append(segs, worktreeSeg)
@@ -3396,16 +3424,27 @@ func (m Model) renderStatus() string {
 	if w <= 0 {
 		// No size info yet — render the full layout; truncation kicks in
 		// once the first WindowSizeMsg lands.
-		return build(first)
+		return build(first, true, true)
 	}
 
-	line := build(first)
+	line := build(first, true, true)
 	if lipgloss.Width(line) <= w {
 		return line
 	}
 	// Drop the provider tag first.
 	first = dot + "  " + model
-	line = build(first)
+	line = build(first, true, true)
+	if lipgloss.Width(line) <= w {
+		return line
+	}
+	// Drop optional chips under pressure before touching the core model
+	// and context signals. PR is more workflow-critical than effort, so
+	// effort disappears first, then PR if space is still tight.
+	line = build(first, true, false)
+	if lipgloss.Width(line) <= w {
+		return line
+	}
+	line = build(first, false, false)
 	if lipgloss.Width(line) <= w {
 		return line
 	}
@@ -3414,7 +3453,143 @@ func (m Model) renderStatus() string {
 	if idx := strings.LastIndex(m.modelName, "/"); idx >= 0 && idx < len(m.modelName)-1 {
 		first = dot + "  " + renderModelName(m.modelName[idx+1:])
 	}
-	return build(first)
+	return build(first, false, false)
+}
+
+func (m Model) renderPRStatus() string {
+	if m.currentPR <= 0 {
+		return ""
+	}
+	return lipgloss.NewStyle().Foreground(colorContent).Render(fmt.Sprintf("PR #%d", m.currentPR))
+}
+
+// renderEffortStatus renders the current reasoning-effort level only
+// when the active provider/model would actually accept an effort option.
+// The applicability probe forces a representative non-default level:
+// adapter.EffortInapplicableReason intentionally treats empty/default as
+// never worth warning about, but the status bar needs to know whether the
+// option would apply if the user picked low/medium/high.
+func (m Model) renderEffortStatus() string {
+	cfg := m.adapterConfig(m.modelName, m.baseURL)
+	cfg.ReasoningEffort = "high"
+	provider := m.providerProfile.Provider
+	if provider == "" {
+		provider = adapter.Provider(strings.TrimSpace(m.provider))
+	}
+	if adapter.EffortInapplicableReason(cfg, provider) != "" {
+		return ""
+	}
+
+	level := normalizedEffort(m.reasoningEffort)
+	if level == "" {
+		level = "default"
+	}
+	return lipgloss.NewStyle().Foreground(colorContent).Render("effort: " + level)
+}
+
+func resolveCurrentPRCmd(ctx context.Context, gh githubapi.Interface, cwd string) tea.Cmd {
+	return func() tea.Msg {
+		probeCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+		defer cancel()
+		if gh != nil {
+			pr, err := gh.ReadPR(probeCtx, githubapi.ReadPRRequest{})
+			if err == nil {
+				return prStatusMsg{number: pr.Number}
+			}
+		}
+		if n := currentPRNumberFromGitHubEnv(probeCtx, cwd); n > 0 {
+			return prStatusMsg{number: n}
+		}
+		return prStatusMsg{}
+	}
+}
+
+func currentPRNumberFromGitHubEnv(ctx context.Context, cwd string) int {
+	owner, repo, err := githubapi.DetectRepo(ctx, cwd)
+	if err != nil {
+		return 0
+	}
+	branch := gitBranch(ctx, cwd)
+	if branch == "" {
+		return 0
+	}
+	token, _, err := githubapi.NewTokenResolver().Resolve(ctx)
+	if err != nil || strings.TrimSpace(token) == "" {
+		return 0
+	}
+
+	apiURL := fmt.Sprintf("https://api.github.com/repos/%s/%s/pulls?state=open&head=%s", owner, repo, url.QueryEscape(owner+":"+branch))
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiURL, nil)
+	if err != nil {
+		return 0
+	}
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return 0
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return 0
+	}
+	var pulls []struct {
+		Number int `json:"number"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&pulls); err != nil || len(pulls) == 0 {
+		return 0
+	}
+	return pulls[0].Number
+}
+
+func prNumberFromToolOutput(output string) int {
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "number=") {
+			if n, err := parsePositiveDecimal(strings.TrimPrefix(line, "number=")); err == nil {
+				return n
+			}
+		}
+		if strings.HasPrefix(line, "pr_number=") {
+			if n, err := parsePositiveDecimal(strings.TrimPrefix(line, "pr_number=")); err == nil {
+				return n
+			}
+		}
+		if !strings.HasPrefix(line, "created=true") && !strings.HasPrefix(line, "updated=true") {
+			continue
+		}
+		for _, part := range strings.Fields(line) {
+			if strings.HasPrefix(part, "number=") {
+				if n, err := parsePositiveDecimal(strings.TrimPrefix(part, "number=")); err == nil {
+					return n
+				}
+			}
+			if strings.HasPrefix(part, "pr_number=") {
+				if n, err := parsePositiveDecimal(strings.TrimPrefix(part, "pr_number=")); err == nil {
+					return n
+				}
+			}
+		}
+	}
+	return 0
+}
+
+func parsePositiveDecimal(s string) (int, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0, fmt.Errorf("empty number")
+	}
+	var n int
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return 0, fmt.Errorf("non-decimal number")
+		}
+		n = n*10 + int(r-'0')
+	}
+	if n <= 0 {
+		return 0, fmt.Errorf("non-positive number")
+	}
+	return n, nil
 }
 
 // renderProviderTag styles the provider label that sits next to the
@@ -3841,6 +4016,14 @@ func (m Model) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 		m.toolsStarted++
 		m.turnToolCalls++
 	case agent.ToolResult:
+		if e.ToolName == "gh_pr_read" || e.ToolName == "gh_pr_review_context" {
+			m.currentPR = prNumberFromToolOutput(e.Output)
+		}
+		if e.ToolName == "gh_pr_create" || e.ToolName == "git_push" {
+			if n := prNumberFromToolOutput(e.Output); n > 0 {
+				m.currentPR = n
+			}
+		}
 		// The Agent tool already gets its own visualization via the
 		// SubagentStart / SubagentProgress / SubagentDone events that
 		// fired while the child was running (the ▶/├/└ card). Rendering
@@ -3897,6 +4080,7 @@ func (m Model) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 		// process cwd are already in sync — the tool that emitted the
 		// event handled both.
 		m.cwd = e.NewCwd
+		m.currentPR = 0
 		// Compute the worktree name from the new path: any path under
 		// <some-repo>/.yottacode/worktrees/<name>/ identifies the name
 		// without needing to re-resolve the repo root.
@@ -3905,6 +4089,7 @@ func (m Model) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 			m.sess.Cwd = e.NewCwd
 			m.sess.Worktree = m.worktree
 		}
+		return m, tea.Batch(resolveCurrentPRCmd(m.parentCtx, m.githubClient, m.cwd), waitForEvent(m.eventsCh, m.turnErrCh))
 	case agent.TodoUpdate:
 		// Drive the live plan card in View(): livePlan is what
 		// renderLivePlanCard reads on every redraw, livePlanTouched

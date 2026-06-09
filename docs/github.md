@@ -67,6 +67,8 @@ bypasses the modal, but `deny` rules still apply.
 | `/git-push` | Pushes the current branch (sets upstream on first push; surfaces the PR URL when one exists). |
 | `/git-implement-issue <n>` | End-to-end: fetch issue → research → plan mode → branch → implement → tests → commit → push → draft PR. |
 
+When the current branch has an open GitHub pull request, the TUI status bar shows a compact `PR #<number>` chip. The lookup is best-effort: missing GitHub auth, non-GitHub remotes, or branches without an open PR simply omit the chip.
+
 `/git-implement-issue` is the largest of the bunch. Spec:
 [`yottacode-roadmap/git-fix-issue.md`](../yottacode-roadmap/git-fix-issue.md)
 (the design doc was written under the older `/git-fix-issue` name;
