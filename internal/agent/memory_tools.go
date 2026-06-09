@@ -80,8 +80,14 @@ func (t *MemorySaveTool) Schema() map[string]any {
 				"description": "one-line summary shown in the MEMORY.md index",
 			},
 			"content": map[string]any{
-				"type":        "string",
-				"description": "the memory body in markdown — concise, written for a future agent",
+				"type": "string",
+				// The body is where "vague memory" failures live: the model
+				// tends to echo the one-line description here and stop. Steer
+				// HARD for substance — this is read at save time, so it's the
+				// strongest lever on body quality. "concise" used to live here
+				// and was actively producing terse, worthless echoes; pinned by
+				// TestMemorySaveTool_ContentQualityPinned.
+				"description": "the memory body in markdown, written for a future agent who has NONE of this conversation's context. Be specific and self-contained: capture the concrete particulars — names, file paths, the decision AND why, the exact value or constraint — so future-you can act on it without re-deriving anything. The body MUST add detail beyond the one-line description; a body that merely restates the description is worthless. A few specific sentences beat one vague line. State durable facts declaratively, not as instructions to yourself.",
 			},
 		},
 		"required": []string{"scope", "type", "name", "description", "content"},

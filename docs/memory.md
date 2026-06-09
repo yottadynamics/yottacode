@@ -224,6 +224,16 @@ Don't save:
 - Git-derivable info (current branch, last commit message).
 - One-off task instructions.
 - Anything sensitive (API keys, internal URLs, PII).
+- **Work-log artifacts that fail the staleness test.** If a fact will be stale in a week it doesn't belong in memory: PR/issue numbers, commit SHAs, "shipped X in PR #N", "Phase N done", file counts. Record the durable thing learned, not that a task happened.
+
+#### What a good memory looks like
+
+The body is where the value lives — and where "vague memory" failures show up. The guidance (in `prompt.go` and the `memory_save` `content` schema) steers the agent to write each memory for a future agent with **none** of the current session's context:
+
+- **Specific and self-contained.** Concrete particulars — names, file paths, the decision *and its rationale*, the exact constraint or value — so future-you can act without re-deriving anything.
+- **The body must add substance beyond the one-line description, never restate it.** A memory whose body echoes its description (description `X shipped in PR #75` / body `X shipped in PR #75`) carries zero information and is delete-grade. The description is the headline; the body is the story.
+- **Declarative facts, not self-instructions.** `User prefers table-driven Go tests` ✓ — `Always write table-driven tests` ✗. Imperative phrasing gets re-read next session as a standing order and can override the user's actual request.
+- **Prioritize what reduces future steering** — the most valuable memory is one that stops the user from having to correct or remind the agent about the same thing again.
 
 ### Proactive saving — reinforcement points
 

@@ -60,10 +60,50 @@ func TestDefaultSystemPrompt_ProactiveMemorySteering(t *testing.T) {
 		// pinned by TestMemorySaveTool_ScopeSteeringPinned — both copies
 		// must survive edits or they drift apart.
 		"Default to user-scope",
+		// Content-quality steering — the fix for "vague, few" memories.
+		// The body-echo failure mode (content == description) and the
+		// staleness filter must stay in the prompt or the model drifts
+		// back to one-line restatements and work-log junk.
+		"What makes a good memory",
+		"must ADD substance beyond the one-line description",
+		"State durable facts declaratively",
+		"stale in a week",
 	} {
 		if !strings.Contains(DefaultSystemPrompt, want) {
 			t.Errorf("DefaultSystemPrompt lost proactive-memory steering: missing %q", want)
 		}
+	}
+}
+
+// TestMemorySaveTool_ContentQualityPinned is the deterministic pin for
+// the content parameter's substance steering. Like the scope pin, the
+// schema description is the strongest lever (read at tool-call time, the
+// moment the body is written), so a copy-edit that re-introduces
+// "concise" or drops the no-echo rule would silently regress body
+// quality back to vague one-line restatements — the exact failure this
+// guidance exists to stop.
+func TestMemorySaveTool_ContentQualityPinned(t *testing.T) {
+	schema := (&MemorySaveTool{}).Schema()
+	props, ok := schema["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("schema has no properties map: %v", schema)
+	}
+	content, ok := props["content"].(map[string]any)
+	if !ok {
+		t.Fatalf("schema has no content property: %v", props)
+	}
+	desc, _ := content["description"].(string)
+	for _, want := range []string{
+		"Be specific and self-contained",
+		"add detail beyond the one-line description",
+		"restates the description is worthless",
+	} {
+		if !strings.Contains(desc, want) {
+			t.Errorf("memory_save content description lost substance steering: missing %q in %q", want, desc)
+		}
+	}
+	if strings.Contains(desc, "concise") {
+		t.Errorf("memory_save content description re-introduced \"concise\" — it produces terse, vague echoes: %q", desc)
 	}
 }
 
