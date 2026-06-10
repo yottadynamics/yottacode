@@ -140,6 +140,34 @@ func TestCodeReviewDirective_FinderDiffRangeMatchesSnapshot(t *testing.T) {
 	}
 }
 
+// TestCodeReviewDirective_WorkingTreeFindersSeeStagedWork pins the
+// working-tree leg of the same range bug: the snapshot is built from
+// `git diff HEAD` (staged + unstaged, diff_base=HEAD), but finders were
+// told to call git_diff_files "with no base" — plain `git diff`,
+// unstaged-only. For the advertised "review before I commit" flow,
+// where work is typically already staged, every finder saw an empty
+// diff and reported NO FINDINGS against a snapshot full of changes.
+func TestCodeReviewDirective_WorkingTreeFindersSeeStagedWork(t *testing.T) {
+	got := codeReviewDirective("medium")
+	for _, frag := range []string{
+		"staged + unstaged",
+		"read any untracked files",
+	} {
+		if !strings.Contains(got, frag) {
+			t.Errorf("working-tree finder clause must pin the snapshot range (missing %q); got:\n%s", frag, got)
+		}
+	}
+	if strings.Contains(got, "git_diff_files with no base") {
+		t.Errorf("directive must not tell working-tree finders to diff with no base (unstaged-only); got:\n%s", got)
+	}
+	// The clause must direct finders at the published diff_base for the
+	// working-tree source too, not just the branch-vs-base source.
+	if !strings.Contains(got, `working-tree → tell the finder to call git_diff_files with
+    base="<diff_base>"`) {
+		t.Errorf("working-tree finders must diff base=\"<diff_base>\" (HEAD); got:\n%s", got)
+	}
+}
+
 // TestCodeReviewDirective_ScopeCheckIsFileGranular pins that the dedup
 // scope check gates on the FILE being in ## changed-files, not on the
 // exact line surviving the truncated ## diff — otherwise real findings

@@ -141,8 +141,13 @@ area to focus on. For the range, read diff_source from ## state:
     uncommitted work — it returns nothing for an already-committed branch);
     either gives the finder a DIFFERENT change set than the snapshot, and
     Step 6 would then drop its findings as out-of-scope.
-  - working-tree → tell the finder to use list_git_changed_files and
-    git_diff_files with no base to see the uncommitted + untracked work.
+  - working-tree → tell the finder to call git_diff_files with
+    base="<diff_base>" (HEAD for this source — staged + unstaged, the
+    EXACT range this snapshot was built from; git_diff_files with NO
+    base shows unstaged-only, so staged work would be invisible and its
+    findings dropped), plus list_git_changed_files to enumerate the
+    work, and to read any untracked files it names with read_file
+    (untracked content appears in no git diff).
 Tell it to read the surrounding code in the changed files, not just the
 diff lines. End each finder prompt with: "Output a CANDIDATE LIST of
 findings, one per line as ` + "`file:line — claim — severity(blocker|suggestion|nit) — confidence(high|uncertain)`" + `.

@@ -14,7 +14,7 @@ tool is exposed to the parent model; the model dispatches by
 
 ## Built-in agents
 
-Eight agent types ship with the binary:
+Nine agent types ship with the binary:
 
 | Name | Tools | Purpose |
 | --- | --- | --- |
@@ -26,7 +26,7 @@ Eight agent types ship with the binary:
 | `test` | read + write + `run_tests` + `run_bash` | Write/update and run tests for a component, owning the test files only. Write-capable, **background-by-default** — pairs with `implement` on disjoint files. |
 | `docs` | read + `write_file`/`edit_file` + git read + `fetch_url` | Update documentation and comments for a change, owning the doc files only. Write-capable, **background-by-default**. |
 | `review` | read-only (Explore's tools + more git read) | Read-only critique of a diff — findings ranked by severity (file:line + scenario). Cannot edit; complements `verification`. Foreground. |
-| `code-verifier` | read-only (same set as `review`) | Read-only adversarial check of a **single** review finding: given one `file:line` + claim, try to refute it from the code, end with `VERDICT: PASS\|FAIL\|PARTIAL`. The read-only counterpart to `verification` (which runs builds/tests). Foreground; used by `/code-review`'s verification pass. |
+| `code-verifier` | read-only (`review`'s set plus `git_merge_base`) | Read-only adversarial check of a **single** review finding: given one `file:line` + claim, try to refute it from the code, end with `VERDICT: PASS\|FAIL\|PARTIAL`. The read-only counterpart to `verification` (which runs builds/tests). Foreground; used by `/code-review`'s verification pass. |
 
 The `implement` / `test` / `docs` / `review` roster rounds out the
 **parallel-implementation** story behind `dispatch`: a typical fan-out is
