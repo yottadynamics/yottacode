@@ -192,3 +192,67 @@ func TestOpenAIAuthLabelsCoverDefaultCandidates(t *testing.T) {
 		}
 	}
 }
+
+func TestList_GeminiMergesLocalModelsDevCatalog(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	got, err := List(t.Context(), config.Provider{Kind: "gemini"}, "")
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	ids := map[string]Model{}
+	for _, m := range got {
+		ids[m.ID] = m
+	}
+	if _, ok := ids["gemini-2.5-pro"]; !ok {
+		t.Fatalf("embedded Gemini model missing after merge")
+	}
+	m, ok := ids["gemini-3.1-pro-preview"]
+	if !ok {
+		t.Fatalf("models.dev Gemini model missing after merge")
+	}
+	if m.ContextWindow == 0 || m.MaxOutput == 0 {
+		t.Errorf("models.dev Gemini entry should carry limits, got %+v", m)
+	}
+}
+
+// TestCurated_GeminiMergesModelsDev pins the contract every picker
+// surface (wizard, /provider add, /model) relies on: Curated("gemini")
+// is the embedded catalog plus the models.dev augmentation, with the
+// embedded entries preserved (first occurrence wins in MergeModels).
+func TestCurated_GeminiMergesModelsDev(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	embedded := Get("gemini")
+	curated := Curated("gemini")
+	ids := map[string]bool{}
+	for _, m := range curated {
+		ids[m.ID] = true
+	}
+	for _, m := range embedded {
+		if !ids[m.ID] {
+			t.Errorf("embedded gemini model %s missing from Curated", m.ID)
+		}
+	}
+	if len(curated) <= len(embedded) {
+		t.Errorf("Curated(gemini) should augment the embedded catalog from models.dev; embedded=%d curated=%d",
+			len(embedded), len(curated))
+	}
+}
+
+// TestCurated_NonGeminiMatchesGet verifies Curated is a pure
+// passthrough for the other curated kinds — only Gemini gets the
+// models.dev augmentation.
+func TestCurated_NonGeminiMatchesGet(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	for _, kind := range []string{"anthropic", "openai", "openai-auth", "copilot"} {
+		got, want := Curated(kind), Get(kind)
+		if len(got) != len(want) {
+			t.Errorf("Curated(%s) len=%d, want %d (passthrough to Get)", kind, len(got), len(want))
+			continue
+		}
+		for i := range got {
+			if got[i].ID != want[i].ID {
+				t.Errorf("Curated(%s)[%d] = %s, want %s", kind, i, got[i].ID, want[i].ID)
+			}
+		}
+	}
+}

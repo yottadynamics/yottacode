@@ -304,3 +304,19 @@ func (c *CachingClient) RateLimit() RateLimitSnapshot {
 func (c *CachingClient) AddPRComment(ctx context.Context, req AddPRCommentRequest) (AddPRCommentResult, error) {
 	return c.Inner.AddPRComment(ctx, req)
 }
+
+// CreateIssue is a write — passes through, then drops the cached
+// issue lists: the new issue belongs in any matching filter's
+// results, so every cached list is now stale. Per-issue reads stay
+// cached — an issue that existed before the create is unchanged
+// by it.
+func (c *CachingClient) CreateIssue(ctx context.Context, req CreateIssueRequest) (CreateIssueResult, error) {
+	res, err := c.Inner.CreateIssue(ctx, req)
+	if err != nil {
+		return res, err
+	}
+	c.mu.Lock()
+	c.issueLists = map[string][]IssueSummary{}
+	c.mu.Unlock()
+	return res, nil
+}

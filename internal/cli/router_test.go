@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/yottadynamics/yottacode/internal/adapter"
+	"github.com/yottadynamics/yottacode/internal/catalog"
 	"github.com/yottadynamics/yottacode/internal/config"
 )
 
@@ -195,5 +196,38 @@ func TestHealthOptionsFromConfig_DisabledWhenWindowZero(t *testing.T) {
 	}
 	if got.Threshold != 5 {
 		t.Errorf("Threshold = %d, want 5 (preserved)", got.Threshold)
+	}
+}
+
+// TestResolveConfiguredModel_GeminiIncludesModelsDevMerge guards the
+// router's model→provider resolution: a Gemini model present only via
+// the models.dev augmentation (not the embedded catalog) must still
+// resolve to the gemini profile, since the /model picker offers it
+// and the user can persist it as the default.
+func TestResolveConfiguredModel_GeminiIncludesModelsDevMerge(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	embedded := map[string]bool{}
+	for _, m := range catalog.Get("gemini") {
+		embedded[m.ID] = true
+	}
+	var merged string
+	for _, m := range catalog.Curated("gemini") {
+		if !embedded[m.ID] {
+			merged = m.ID
+			break
+		}
+	}
+	if merged == "" {
+		t.Fatalf("models.dev snapshot should add gemini models beyond the embedded catalog")
+	}
+
+	cfg := config.Default()
+	cfg.Providers = []config.Provider{{Name: "gemini", Kind: "gemini"}}
+	rc, ok := resolveConfiguredModel(cfg, merged)
+	if !ok {
+		t.Fatalf("resolveConfiguredModel(%q) not found; merged gemini models must resolve", merged)
+	}
+	if rc.Provider.Name != "gemini" || rc.Model != merged {
+		t.Errorf("resolved %s/%s, want gemini/%s", rc.Provider.Name, rc.Model, merged)
 	}
 }

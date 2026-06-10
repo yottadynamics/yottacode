@@ -1,20 +1,6 @@
 {
-  "generated_at": "2026-06-09T19:00:32Z",
+  "generated_at": "2026-06-10T18:33:37Z",
   "models": [
-    {
-      "id": "claude-fable-5",
-      "display_name": "Claude Fable 5",
-      "provider": "anthropic",
-      "context_window": 1000000,
-      "max_output": 128000,
-      "released_at": "2026-06-07T00:00:00Z",
-      "capabilities": {
-        "thinking": true,
-        "vision": true,
-        "pdf": true,
-        "structured_outputs": true
-      }
-    },
     {
       "id": "claude-opus-4-6",
       "display_name": "Claude Opus 4.6",
@@ -44,20 +30,6 @@
       }
     },
     {
-      "id": "claude-opus-4-8",
-      "display_name": "Claude Opus 4.8",
-      "provider": "anthropic",
-      "context_window": 1000000,
-      "max_output": 128000,
-      "released_at": "2026-05-28T00:00:00Z",
-      "capabilities": {
-        "thinking": true,
-        "vision": true,
-        "pdf": true,
-        "structured_outputs": true
-      }
-    },
-    {
       "id": "claude-sonnet-4-6",
       "display_name": "Claude Sonnet 4.6",
       "provider": "anthropic",
@@ -72,11 +44,112 @@
       }
     },
     {
-      "id": "gpt-5.3-codex",
-      "provider": "openai",
-      "context_window": 400000,
-      "released_at": "2026-02-08T08:05:15Z",
-      "capabilities": {}
+      "id": "gemini-2.0-flash",
+      "display_name": "Gemini 2.0 Flash",
+      "provider": "gemini",
+      "context_window": 1048576,
+      "max_output": 8192,
+      "released_at": "0001-01-01T00:00:00Z",
+      "description": "Gemini 2.0 Flash",
+      "capabilities": {
+        "thinking": false
+      }
+    },
+    {
+      "id": "gemini-2.5-flash",
+      "display_name": "Gemini 2.5 Flash",
+      "provider": "gemini",
+      "context_window": 1048576,
+      "max_output": 65536,
+      "released_at": "0001-01-01T00:00:00Z",
+      "description": "Stable version of Gemini 2.5 Flash, our mid-size multimodal model that supports up to 1 million tokens, released in June of 2025.",
+      "capabilities": {
+        "thinking": true
+      }
+    },
+    {
+      "id": "gemini-2.5-pro",
+      "display_name": "Gemini 2.5 Pro",
+      "provider": "gemini",
+      "context_window": 1048576,
+      "max_output": 65536,
+      "released_at": "0001-01-01T00:00:00Z",
+      "description": "Stable release (June 17th, 2025) of Gemini 2.5 Pro",
+      "capabilities": {
+        "thinking": true
+      }
+    },
+    {
+      "id": "gemini-3-pro-image",
+      "display_name": "Nano Banana Pro",
+      "provider": "gemini",
+      "context_window": 131072,
+      "max_output": 32768,
+      "released_at": "0001-01-01T00:00:00Z",
+      "description": "Gemini 3 Pro Image",
+      "capabilities": {
+        "thinking": true
+      }
+    },
+    {
+      "id": "gemini-3.5-flash",
+      "display_name": "Gemini 3.5 Flash",
+      "provider": "gemini",
+      "context_window": 1048576,
+      "max_output": 65536,
+      "released_at": "0001-01-01T00:00:00Z",
+      "description": "Gemini 3.5 Flash",
+      "capabilities": {
+        "thinking": true
+      }
+    },
+    {
+      "id": "gemini-pro-latest",
+      "display_name": "Gemini Pro Latest",
+      "provider": "gemini",
+      "context_window": 1048576,
+      "max_output": 65536,
+      "released_at": "0001-01-01T00:00:00Z",
+      "description": "Latest release of Gemini Pro",
+      "capabilities": {
+        "thinking": true
+      }
+    },
+    {
+      "id": "gemma-4-26b-a4b-it",
+      "display_name": "Gemma 4 26B A4B IT",
+      "provider": "gemini",
+      "context_window": 262144,
+      "max_output": 32768,
+      "released_at": "0001-01-01T00:00:00Z",
+      "description": "Gemma 4 26B A4B IT",
+      "capabilities": {
+        "thinking": true
+      }
+    },
+    {
+      "id": "gemma-4-31b-it",
+      "display_name": "Gemma 4 31B IT",
+      "provider": "gemini",
+      "context_window": 262144,
+      "max_output": 32768,
+      "released_at": "0001-01-01T00:00:00Z",
+      "description": "Gemma 4 31B IT",
+      "capabilities": {
+        "thinking": true
+      }
+    },
+    {
+      "id": "nano-banana-pro-preview",
+      "display_name": "Nano Banana Pro",
+      "provider": "gemini",
+      "context_window": 131072,
+      "max_output": 32768,
+      "released_at": "0001-01-01T00:00:00Z",
+      "description": "Gemini 3 Pro Image Preview",
+      "capabilities": {
+        "thinking": true
+      }
     },
     {
       "id": "gpt-5.4",
@@ -97,41 +170,6 @@
       "provider": "openai",
       "context_window": 1050000,
       "released_at": "2026-04-22T02:27:27Z",
-      "capabilities": {}
-    },
-    {
-      "id": "grok-4.20-0309-non-reasoning",
-      "provider": "xai",
-      "context_window": 1000000,
-      "released_at": "2026-03-09T00:00:00Z",
-      "capabilities": {}
-    },
-    {
-      "id": "grok-4.20-0309-reasoning",
-      "provider": "xai",
-      "context_window": 1000000,
-      "released_at": "2026-03-09T00:00:00Z",
-      "capabilities": {}
-    },
-    {
-      "id": "grok-4.20-multi-agent-0309",
-      "provider": "xai",
-      "context_window": 1000000,
-      "released_at": "2026-03-09T00:00:00Z",
-      "capabilities": {}
-    },
-    {
-      "id": "grok-4.3",
-      "provider": "xai",
-      "context_window": 1000000,
-      "released_at": "2026-04-17T00:00:00Z",
-      "capabilities": {}
-    },
-    {
-      "id": "grok-build-0.1",
-      "provider": "xai",
-      "context_window": 256000,
-      "released_at": "2026-04-16T00:00:00Z",
       "capabilities": {}
     }
   ]

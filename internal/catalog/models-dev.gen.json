@@ -1,5 +1,5 @@
 {
-  "fetched_at": "2026-06-09T19:00:32.852377846Z",
+  "fetched_at": "2026-06-10T18:33:37.138215586Z",
   "catalog": {
     "302ai": {
       "id": "302ai",
@@ -1604,7 +1604,7 @@
         "qwen3.7-plus": {
           "limit": {
             "context": 1000000,
-            "output": 16384
+            "output": 65536
           }
         },
         "qwq-plus": {
@@ -3455,6 +3455,12 @@
       "id": "azure",
       "api": "",
       "models": {
+        "claude-fable-5": {
+          "limit": {
+            "context": 1000000,
+            "output": 128000
+          }
+        },
         "claude-haiku-4-5": {
           "limit": {
             "context": 200000,
@@ -3573,6 +3579,18 @@
           "limit": {
             "context": 128000,
             "output": 128000
+          }
+        },
+        "deepseek-v4-flash": {
+          "limit": {
+            "context": 1000000,
+            "output": 384000
+          }
+        },
+        "deepseek-v4-pro": {
+          "limit": {
+            "context": 1000000,
+            "output": 384000
           }
         },
         "gpt-3.5-turbo-0125": {
@@ -7439,6 +7457,12 @@
       "id": "freemodel",
       "api": "https://cc.freemodel.dev/v1",
       "models": {
+        "claude-fable-5": {
+          "limit": {
+            "context": 1000000,
+            "output": 128000
+          }
+        },
         "claude-haiku-4-5-20251001": {
           "limit": {
             "context": 200000,
@@ -8177,6 +8201,12 @@
       "id": "gitlab",
       "api": "",
       "models": {
+        "duo-chat-fable-5": {
+          "limit": {
+            "context": 1000000,
+            "output": 128000
+          }
+        },
         "duo-chat-gpt-5-1": {
           "limit": {
             "context": 400000,
@@ -8765,12 +8795,6 @@
       "id": "groq",
       "api": "",
       "models": {
-        "allam-2-7b": {
-          "limit": {
-            "context": 4096,
-            "output": 4096
-          }
-        },
         "canopylabs/orpheus-arabic-saudi": {
           "limit": {
             "context": 4000,
@@ -8781,18 +8805,6 @@
           "limit": {
             "context": 4000,
             "output": 50000
-          }
-        },
-        "deepseek-r1-distill-llama-70b": {
-          "limit": {
-            "context": 131072,
-            "output": 8192
-          }
-        },
-        "gemma2-9b-it": {
-          "limit": {
-            "context": 8192,
-            "output": 8192
           }
         },
         "groq/compound": {
@@ -8819,40 +8831,10 @@
             "output": 32768
           }
         },
-        "llama-guard-3-8b": {
-          "limit": {
-            "context": 8192,
-            "output": 8192
-          }
-        },
-        "llama3-70b-8192": {
-          "limit": {
-            "context": 8192,
-            "output": 8192
-          }
-        },
-        "llama3-8b-8192": {
-          "limit": {
-            "context": 8192,
-            "output": 8192
-          }
-        },
-        "meta-llama/llama-4-maverick-17b-128e-instruct": {
-          "limit": {
-            "context": 131072,
-            "output": 8192
-          }
-        },
         "meta-llama/llama-4-scout-17b-16e-instruct": {
           "limit": {
             "context": 131072,
             "output": 8192
-          }
-        },
-        "meta-llama/llama-guard-4-12b": {
-          "limit": {
-            "context": 131072,
-            "output": 1024
           }
         },
         "meta-llama/llama-prompt-guard-2-22m": {
@@ -8865,24 +8847,6 @@
           "limit": {
             "context": 512,
             "output": 512
-          }
-        },
-        "mistral-saba-24b": {
-          "limit": {
-            "context": 32768,
-            "output": 32768
-          }
-        },
-        "moonshotai/kimi-k2-instruct": {
-          "limit": {
-            "context": 131072,
-            "output": 16384
-          }
-        },
-        "moonshotai/kimi-k2-instruct-0905": {
-          "limit": {
-            "context": 262144,
-            "output": 16384
           }
         },
         "openai/gpt-oss-120b": {
@@ -8903,12 +8867,6 @@
             "output": 65536
           }
         },
-        "qwen-qwq-32b": {
-          "limit": {
-            "context": 131072,
-            "output": 16384
-          }
-        },
         "qwen/qwen3-32b": {
           "limit": {
             "context": 131072,
@@ -8917,14 +8875,14 @@
         },
         "whisper-large-v3": {
           "limit": {
-            "context": 448,
-            "output": 448
+            "context": 0,
+            "output": 0
           }
         },
         "whisper-large-v3-turbo": {
           "limit": {
-            "context": 448,
-            "output": 448
+            "context": 0,
+            "output": 0
           }
         }
       }
@@ -19478,7 +19436,7 @@
         "moonshotai/kimi-k2-instruct": {
           "limit": {
             "context": 131072,
-            "output": 131072
+            "output": 32768
           }
         },
         "moonshotai/kimi-k2-thinking": {
@@ -19847,18 +19805,6 @@
             "output": 262000
           }
         },
-        "deepseek-ai/deepseek-v3.1-terminus": {
-          "limit": {
-            "context": 128000,
-            "output": 8192
-          }
-        },
-        "deepseek-ai/deepseek-v3.2": {
-          "limit": {
-            "context": 163840,
-            "output": 65536
-          }
-        },
         "deepseek-ai/deepseek-v4-flash": {
           "limit": {
             "context": 1048576,
@@ -19875,12 +19821,6 @@
           "limit": {
             "context": 128000,
             "output": 4096
-          }
-        },
-        "google/gemma-3-27b-it": {
-          "limit": {
-            "context": 131072,
-            "output": 8192
           }
         },
         "google/gemma-3n-e2b-it": {
@@ -19985,22 +19925,10 @@
             "output": 16384
           }
         },
-        "minimaxai/minimax-m2.5": {
-          "limit": {
-            "context": 204800,
-            "output": 131072
-          }
-        },
         "minimaxai/minimax-m2.7": {
           "limit": {
             "context": 204800,
             "output": 131072
-          }
-        },
-        "mistralai/devstral-2-123b-instruct-2512": {
-          "limit": {
-            "context": 262144,
-            "output": 262144
           }
         },
         "mistralai/magistral-small-2506": {
@@ -20051,19 +19979,7 @@
             "output": 16384
           }
         },
-        "moonshotai/kimi-k2-instruct": {
-          "limit": {
-            "context": 128000,
-            "output": 8192
-          }
-        },
         "moonshotai/kimi-k2-instruct-0905": {
-          "limit": {
-            "context": 262144,
-            "output": 262144
-          }
-        },
-        "moonshotai/kimi-k2-thinking": {
           "limit": {
             "context": 262144,
             "output": 262144
@@ -20121,18 +20037,6 @@
           "limit": {
             "context": 32768,
             "output": 2048
-          }
-        },
-        "nvidia/llama-3_3-nemotron-super-49b-v1": {
-          "limit": {
-            "context": 131072,
-            "output": 131072
-          }
-        },
-        "nvidia/llama-3_3-nemotron-super-49b-v1_5": {
-          "limit": {
-            "context": 131072,
-            "output": 131072
           }
         },
         "nvidia/llama-nemotron-embed-vl-1b-v2": {
@@ -20315,12 +20219,6 @@
             "output": 16384
           }
         },
-        "qwen/qwen3-next-80b-a3b-thinking": {
-          "limit": {
-            "context": 262144,
-            "output": 16384
-          }
-        },
         "qwen/qwen3.5-122b-a10b": {
           "limit": {
             "context": 262144,
@@ -20360,12 +20258,6 @@
         "z-ai/glm-5.1": {
           "limit": {
             "context": 131072,
-            "output": 131072
-          }
-        },
-        "z-ai/glm4.7": {
-          "limit": {
-            "context": 204800,
             "output": 131072
           }
         }
@@ -20945,6 +20837,12 @@
             "output": 8192
           }
         },
+        "claude-fable-5": {
+          "limit": {
+            "context": 1000000,
+            "output": 128000
+          }
+        },
         "claude-haiku-4-5": {
           "limit": {
             "context": 200000,
@@ -21009,6 +20907,12 @@
           "limit": {
             "context": 200000,
             "output": 128000
+          }
+        },
+        "deepseek-v4-pro": {
+          "limit": {
+            "context": 1000000,
+            "output": 384000
           }
         },
         "gemini-3-flash": {
@@ -21539,6 +21443,12 @@
             "output": 8192
           }
         },
+        "anthropic/claude-fable-5": {
+          "limit": {
+            "context": 1000000,
+            "output": 128000
+          }
+        },
         "anthropic/claude-haiku-4.5": {
           "limit": {
             "context": 200000,
@@ -21621,12 +21531,6 @@
           "limit": {
             "context": 32768,
             "output": 32768
-          }
-        },
-        "arcee-ai/maestro-reasoning": {
-          "limit": {
-            "context": 131072,
-            "output": 32000
           }
         },
         "arcee-ai/trinity-large-thinking": {
@@ -22177,8 +22081,8 @@
         },
         "minimax/minimax-m2.7": {
           "limit": {
-            "context": 196608,
-            "output": 196608
+            "context": 204800,
+            "output": 131072
           }
         },
         "minimax/minimax-m3": {
@@ -23375,12 +23279,6 @@
             "output": 131072
           }
         },
-        "z-ai/glm-4-32b": {
-          "limit": {
-            "context": 128000,
-            "output": 128000
-          }
-        },
         "z-ai/glm-4.5": {
           "limit": {
             "context": 131072,
@@ -23391,12 +23289,6 @@
           "limit": {
             "context": 131070,
             "output": 131070
-          }
-        },
-        "z-ai/glm-4.5-air:free": {
-          "limit": {
-            "context": 131072,
-            "output": 96000
           }
         },
         "z-ai/glm-4.5v": {
@@ -23414,7 +23306,7 @@
         "z-ai/glm-4.6v": {
           "limit": {
             "context": 131072,
-            "output": 24000
+            "output": 32768
           }
         },
         "z-ai/glm-4.7": {
@@ -23437,7 +23329,7 @@
         },
         "z-ai/glm-5-turbo": {
           "limit": {
-            "context": 202752,
+            "context": 262144,
             "output": 131072
           }
         },
@@ -23447,10 +23339,10 @@
             "output": 131072
           }
         },
-        "z-ai/glm-5v-turbo": {
+        "~anthropic/claude-fable-latest": {
           "limit": {
-            "context": 202752,
-            "output": 131072
+            "context": 1000000,
+            "output": 128000
           }
         },
         "~anthropic/claude-haiku-latest": {
@@ -28241,6 +28133,12 @@
             "output": 65536
           }
         },
+        "claude-fable-5": {
+          "limit": {
+            "context": 1000000,
+            "output": 128000
+          }
+        },
         "claude-opus-4-5": {
           "limit": {
             "context": 198000,
@@ -28605,6 +28503,12 @@
           "limit": {
             "context": 256000,
             "output": 16384
+          }
+        },
+        "tencent-hy3-preview": {
+          "limit": {
+            "context": 256000,
+            "output": 32768
           }
         },
         "venice-uncensored-1-2": {
@@ -29655,12 +29559,6 @@
           "limit": {
             "context": 128000,
             "output": 128000
-          }
-        },
-        "moonshotai/kimi-k2": {
-          "limit": {
-            "context": 131072,
-            "output": 16384
           }
         },
         "moonshotai/kimi-k2-thinking": {
@@ -30742,6 +30640,12 @@
             "context": 1048576,
             "output": 131072
           }
+        },
+        "mimo-v2.5-pro-ultraspeed": {
+          "limit": {
+            "context": 1048576,
+            "output": 131072
+          }
         }
       }
     },
@@ -31059,6 +30963,12 @@
           "limit": {
             "context": 200000,
             "output": 64000
+          }
+        },
+        "anthropic/claude-fable-5": {
+          "limit": {
+            "context": 1000000,
+            "output": 128000
           }
         },
         "anthropic/claude-haiku-4.5": {

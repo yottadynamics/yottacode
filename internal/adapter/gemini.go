@@ -111,8 +111,8 @@ func (g *geminiAdapter) ChatStream(ctx context.Context, messages []Message, tool
 
 		if resp.StatusCode >= 400 {
 			body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-			out <- StreamEvent{Kind: EventErr, Err: fmt.Errorf("gemini: HTTP %d: %s",
-				resp.StatusCode, strings.TrimSpace(string(body)))}
+			out <- StreamEvent{Kind: EventErr, Err: fmt.Errorf("gemini: %s",
+				formatGeminiHTTPError(resp.StatusCode, body))}
 			return
 		}
 
@@ -160,9 +160,10 @@ func (g *geminiAdapter) ChatStream(ctx context.Context, messages []Message, tool
 						}
 						toolCallSeq++
 						toolCalls = append(toolCalls, ToolCall{
-							ID:       fmt.Sprintf("call_%d", toolCallSeq),
-							Name:     part.FunctionCall.Name,
-							ArgsJSON: argsJSON,
+							ID:               fmt.Sprintf("call_%d", toolCallSeq),
+							Name:             part.FunctionCall.Name,
+							ArgsJSON:         argsJSON,
+							ThoughtSignature: part.ThoughtSignature,
 						})
 					case part.Text != "":
 						kind := EventTokenDelta
@@ -198,6 +199,79 @@ func (g *geminiAdapter) ChatStream(ctx context.Context, messages []Message, tool
 	return out
 }
 
+// geminiErrorResponse is the documented Google API error envelope. We
+// parse only the stable, user-facing fields; details can be enormous
+// quota/debug payloads and should not be dumped into the chat transcript.
+type geminiErrorResponse struct {
+	Error struct {
+		Code    int    `json:"code"`
+		Message string `json:"message"`
+		Status  string `json:"status"`
+	} `json:"error"`
+}
+
+// formatGeminiHTTPError turns Google's verbose JSON error envelope into
+// a concise line for users. Quota failures often include repeated metric
+// dumps in details; the useful parts are the HTTP status, RESOURCE_EXHAUSTED,
+// a de-duplicated first sentence, and any retry hint embedded in the message.
+func formatGeminiHTTPError(statusCode int, body []byte) string {
+	raw := strings.TrimSpace(string(body))
+	if raw == "" {
+		return fmt.Sprintf("HTTP %d", statusCode)
+	}
+
+	var er geminiErrorResponse
+	if err := json.Unmarshal(body, &er); err != nil || er.Error.Message == "" {
+		return fmt.Sprintf("HTTP %d: %s", statusCode, truncateGeminiError(raw, 240))
+	}
+
+	label := http.StatusText(statusCode)
+	if er.Error.Status != "" {
+		label = er.Error.Status
+	}
+	msg := conciseGeminiMessage(er.Error.Message)
+	if msg == "" {
+		msg = http.StatusText(statusCode)
+	}
+	return fmt.Sprintf("HTTP %d %s: %s", statusCode, label, msg)
+}
+
+func conciseGeminiMessage(msg string) string {
+	msg = strings.TrimSpace(strings.ReplaceAll(msg, "\r\n", "\n"))
+	if msg == "" {
+		return ""
+	}
+
+	lines := strings.Split(msg, "\n")
+	first := strings.TrimSpace(lines[0])
+	if i := strings.Index(first, ". "); i >= 0 {
+		first = strings.TrimSpace(first[:i+1])
+	}
+
+	retry := ""
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "Please retry in ") {
+			retry = strings.TrimSuffix(line, ".")
+			break
+		}
+	}
+	if retry != "" {
+		first += " " + retry + "."
+	}
+	return truncateGeminiError(first, 240)
+}
+
+func truncateGeminiError(s string, max int) string {
+	if max < 8 {
+		max = 8
+	}
+	if len(s) <= max {
+		return s
+	}
+	return strings.TrimSpace(s[:max-1]) + "…"
+}
+
 // --- request shape --------------------------------------------------
 
 type geminiRequest struct {
@@ -231,6 +305,7 @@ type geminiContent struct {
 type geminiPart struct {
 	Text             string                  `json:"text,omitempty"`
 	Thought          bool                    `json:"thought,omitempty"`
+	ThoughtSignature string                  `json:"thoughtSignature,omitempty"`
 	InlineData       *geminiInlineData       `json:"inlineData,omitempty"`
 	FunctionCall     *geminiFunctionCall     `json:"functionCall,omitempty"`
 	FunctionResponse *geminiFunctionResponse `json:"functionResponse,omitempty"`
@@ -287,6 +362,17 @@ type geminiUsageMetadata struct {
 
 // --- conversion helpers ---------------------------------------------
 
+// geminiDummyThoughtSignature is Google's documented bypass token for
+// replayed functionCall parts whose real thought signature is
+// unavailable — history recorded before signatures were captured, or a
+// conversation migrated from another provider mid-session (/model
+// switch). Thinking models hard-reject histories whose functionCall
+// parts carry no signature ("Function call is missing a
+// thought_signature in functionCall parts"); the documented dummy
+// passes that validation, and models that don't validate signatures
+// ignore the field. Real signatures always take precedence.
+const geminiDummyThoughtSignature = "context_engineering_is_the_way_to_go"
+
 // buildGeminiRequest converts the neutral []Message + []Tool surface
 // into Gemini's wire shape. System messages lift to systemInstruction;
 // assistant turns become role="model"; tool-result messages become
@@ -329,7 +415,12 @@ func buildGeminiRequest(messages []Message, tools []Tool, thinkingBudget int64) 
 				parts = append(parts, geminiPart{Text: m.Content})
 			}
 			for _, tc := range m.ToolCalls {
+				sig := tc.ThoughtSignature
+				if sig == "" {
+					sig = geminiDummyThoughtSignature
+				}
 				parts = append(parts, geminiPart{
+					ThoughtSignature: sig,
 					FunctionCall: &geminiFunctionCall{
 						Name: tc.Name,
 						Args: unmarshalGeminiArgs(tc.ArgsJSON),

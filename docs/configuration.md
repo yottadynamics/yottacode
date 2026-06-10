@@ -339,6 +339,7 @@ roadmap's `Github(read_*)` style works):
 | `gh_pr_add_comment` | `add_pr_comment` |
 | `gh_issue_read` | `read_issue` |
 | `gh_issue_list` | `list_open_issues` |
+| `gh_issue_create` | `create_issue` |
 
 Wildcards work as in any other rule, so:
 
@@ -391,7 +392,9 @@ to taste. Decision precedence is `Deny > Allow > Ask > Default`, so the
       "Bash(gh pr create *)",
       "Bash(gh pr merge *)",
       "Bash(gh pr close *)",
+      "Bash(gh issue create *)",
       "Github(create_pr)",
+      "Github(create_issue)",
       "Github(update_pr)",
       "Github(add_pr_comment)",
       "Bash(gh release *)",

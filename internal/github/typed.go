@@ -39,8 +39,8 @@ type TypedClient struct {
 	Cwd      string
 	Resolver *TokenResolver
 
-	once   sync.Once
-	client *gogithub.Client
+	once    sync.Once
+	client  *gogithub.Client
 	initErr error
 
 	// HTTPClient is an optional injection point for tests. When
@@ -505,6 +505,49 @@ func (c *TypedClient) AddPRComment(ctx context.Context, req AddPRCommentRequest)
 	}
 	if created.ID != nil {
 		res.ID = *created.ID
+	}
+	return res, nil
+}
+
+// CreateIssue opens a new issue via REST.
+func (c *TypedClient) CreateIssue(ctx context.Context, req CreateIssueRequest) (CreateIssueResult, error) {
+	var res CreateIssueResult
+	cl, err := c.init(ctx)
+	if err != nil {
+		return res, err
+	}
+	owner, repo, err := c.resolveOwnerRepo(ctx, req.Owner, req.Repo)
+	if err != nil {
+		return res, err
+	}
+
+	// Labels/Assignees must be omitted entirely when unset: their
+	// IssueRequest fields are *[]string with omitempty, which only
+	// drops a nil POINTER — `&req.Labels` on an empty slice
+	// serializes as `"labels":null`, and GitHub's schema validation
+	// 422s null where it wants an array. Same trap for assignees.
+	newIssue := &gogithub.IssueRequest{
+		Title: gogithub.String(req.Title),
+	}
+	if req.Body != "" {
+		newIssue.Body = gogithub.String(req.Body)
+	}
+	if len(req.Labels) > 0 {
+		newIssue.Labels = &req.Labels
+	}
+	if len(req.Assignees) > 0 {
+		newIssue.Assignees = &req.Assignees
+	}
+	created, resp, err := cl.Issues.Create(ctx, owner, repo, newIssue)
+	c.recordRate(resp)
+	if err != nil {
+		return res, fmt.Errorf("create issue: %w", classifyAPIError(err))
+	}
+	if created.HTMLURL != nil {
+		res.URL = *created.HTMLURL
+	}
+	if created.Number != nil {
+		res.Number = *created.Number
 	}
 	return res, nil
 }

@@ -103,6 +103,12 @@ type Interface interface {
 	// different scope).
 	AddPRComment(ctx context.Context, req AddPRCommentRequest) (AddPRCommentResult, error)
 
+	// CreateIssue opens a new issue. Returns ErrGhUnavailable when
+	// the local environment can't make the call (no gh, no auth)
+	// so callers can fall back gracefully rather than reporting a
+	// generic execution failure.
+	CreateIssue(ctx context.Context, req CreateIssueRequest) (CreateIssueResult, error)
+
 	// RateLimit returns the most recent rate-limit snapshot the
 	// implementation has observed. Snapshot.IsSet() is false when
 	// no API call has populated the tracker yet. Used by the doctor
@@ -309,4 +315,27 @@ type AddPRCommentRequest struct {
 type AddPRCommentResult struct {
 	URL string
 	ID  int64
+}
+
+// CreateIssueRequest is the typed payload for Interface.CreateIssue.
+//
+// Owner and Repo are optional: when both are empty, the underlying
+// implementation infers them from the working directory's git
+// remote (the gh CLI's default behavior). Setting them explicitly
+// is what the future cloud bot will need (it can't rely on cwd) and
+// the local CLI can always use it for cross-repo cases.
+type CreateIssueRequest struct {
+	Owner     string   // repo owner (optional; inferred from cwd when empty)
+	Repo      string   // repo name  (optional; inferred from cwd when empty)
+	Title     string   // issue title (required)
+	Body      string   // issue body / description (optional)
+	Labels    []string // labels to apply (optional)
+	Assignees []string // assignees to assign (optional)
+}
+
+// CreateIssueResult is the typed envelope CreateIssue returns on success.
+// Number is the GitHub issue number. URL is the canonical https://github.com/... issue URL.
+type CreateIssueResult struct {
+	URL    string
+	Number int
 }

@@ -166,6 +166,8 @@ func targetFor(toolName, argsJSON, cwd string) Target {
 		return Target{PermName: "Github", Descriptor: "read_issue"}
 	case "gh_issue_list":
 		return Target{PermName: "Github", Descriptor: "list_open_issues"}
+	case "gh_issue_create":
+		return Target{PermName: "Github", Descriptor: "create_issue"}
 	}
 	return Target{}
 }

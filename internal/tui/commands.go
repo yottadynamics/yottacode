@@ -92,6 +92,7 @@ func init() {
 		{Name: "git-push", Help: "push the current branch to origin (sets upstream on first push; surfaces the PR URL when one exists)", Run: cmdGitPush},
 		{Name: "git-create-pr", Args: "[base]", Help: "open a pull request for the current branch", Run: cmdGitCreatePR},
 		{Name: "git-update-pr", Args: "[ref]", Help: "refresh a PR's title and body to match the current commit list", Run: cmdGitUpdatePR},
+		{Name: "git-create-issue", Args: "[title]", Help: "create a GitHub issue in the current repo", Run: cmdGitCreateIssue},
 		{Name: "git-review-pr", Args: "[ref]", Help: "review a pull request (number or branch; defaults to current branch's PR)", Run: cmdGitReviewPR},
 		{Name: "git-implement-issue", Args: "<n>", Help: "implement a GitHub issue end-to-end: fetch → plan → branch → code → tests → commit → push → draft PR", Run: cmdGitImplementIssue},
 		// /mcp inspects the live MCP server manager: list configured
@@ -896,8 +897,9 @@ func parseProviderFlags(args []string) providerAddFlags {
 }
 
 // formatProviderModels lists one profile's catalog. For curated
-// providers (anthropic/openai/gemini/xai) it reads the embedded catalog;
-// for everything else it shows the configured default + API-key
+// providers (anthropic/openai/gemini/xai) it reads the curated catalog
+// (embedded, plus the local models.dev snapshot for Gemini); for
+// everything else it shows the configured default + API-key
 // status and points the user at /model for the live picker. /model
 // list is sync (writes to the transcript directly) so we can't do a
 // network round-trip here — that's the picker's job.
@@ -906,7 +908,7 @@ func formatProviderModels(p *config.Provider, activeModel string) string {
 	fmt.Fprintf(&b, "models for %s (%s):\n", p.Name, p.Kind)
 
 	if catalog.IsCurated(*p) {
-		models := catalog.Get(p.Kind)
+		models := catalog.Curated(p.Kind)
 		if len(models) == 0 {
 			if p.Kind == "openai-auth" {
 				fmt.Fprintln(&b, "  (no models discovered yet — run `yottacode openai-auth login` to populate)")

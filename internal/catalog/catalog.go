@@ -92,6 +92,20 @@ func Get(provider string) []Model {
 	return []Model{}
 }
 
+// Curated returns the offline model catalog for a curated provider kind.
+// Gemini is augmented from the local models.dev snapshot so the picker can
+// offer newly published Gemini IDs even when catalog.gen.json lags. This is
+// the entry point every picker surface (wizard, /provider add, /model) and
+// model-ownership lookup should use for curated kinds; reach for Get only
+// when the raw embedded catalog is specifically wanted.
+func Curated(provider string) []Model {
+	models := Get(provider)
+	if provider == "gemini" {
+		models = MergeModels(models, ModelsDevModelsByProvider("google", "gemini"))
+	}
+	return models
+}
+
 // All returns every model across every provider. Useful for the
 // debug `/doctor` view; not used by the picker (which is always
 // scoped to one provider). The returned slice is shared — callers
@@ -99,6 +113,26 @@ func Get(provider string) []Model {
 func All() []Model {
 	load()
 	return loaded.Models
+}
+
+// MergeModels appends models from extra that are not already present in base.
+// The first occurrence of an ID wins, preserving the embedded catalog's
+// display names and ordering while allowing runtime/local catalogs to backfill
+// newer provider models for picker use.
+func MergeModels(base, extra []Model) []Model {
+	out := append([]Model(nil), base...)
+	seen := make(map[string]struct{}, len(out))
+	for _, m := range out {
+		seen[m.ID] = struct{}{}
+	}
+	for _, m := range extra {
+		if _, ok := seen[m.ID]; ok {
+			continue
+		}
+		seen[m.ID] = struct{}{}
+		out = append(out, m)
+	}
+	return out
 }
 
 // FindByID returns the embedded-catalog entry whose ID matches,

@@ -119,7 +119,7 @@ func copilotCachedModels() []Model {
 // with no error.
 func List(ctx context.Context, p config.Provider, apiKey string) ([]Model, error) {
 	if curatedKinds[p.Kind] {
-		return Get(p.Kind), nil
+		return Curated(p.Kind), nil
 	}
 	return Live(ctx, p.Kind, p.BaseURL, apiKey)
 }

@@ -1,6 +1,6 @@
 # Built-in tools
 
-Forty-eight tools ship in `internal/agent` (forty-five always-on plus `todo_write`
+Fifty tools ship in `internal/agent` (forty-seven always-on plus `todo_write`
 and the `enter_plan_mode` / `exit_plan_mode` pair). The model sees their JSON-schema parameters via the
 OpenAI tools API; the TUI renders each invocation as a bordered card with a
 verb-style header (see [How tool calls render in the TUI](#how-tool-calls-render-in-the-tui)).
@@ -44,6 +44,8 @@ In addition to the built-ins, **MCP tools** register dynamically when an `[[mcp_
 | [`gh_pr_add_comment`](#gh_pr_add_comment) | required | Post a top-level conversation comment on a PR; body capped, approval-gated |
 | [`gh_issue_read`](#gh_issue_read) | none | Fetch issue metadata + comments (use instead of `run_bash gh issue view --json …`) |
 | [`gh_issue_list`](#gh_issue_list) | none | List open issues matching label/assignee/milestone filters |
+| [`gh_issue_context`](#gh_issue_context) | none | Typed snapshot for opening an issue (repo detection, gh availability, template discovery) |
+| [`gh_issue_create`](#gh_issue_create) | required | Validate title and open an issue via the `internal/github.Interface` adapter with typed result envelope |
 | [`git_push`](#git_push) | required | Push the current branch to origin with deterministic upstream detection; surfaces the PR URL when one exists |
 | [`git_log_file`](#git_log_file) | none | Show history for one file |
 | [`git_blame_lines`](#git_blame_lines) | none | Blame a line range in a file |
@@ -998,6 +1000,71 @@ Mirrors Claude Code's `Agent` / `Task` tool surface.
 | `prompt` | string (required) | — | The task for the subagent. The subagent has no access to the parent conversation, so be self-contained. |
 | `description` | string | "" | A 3-5 word label shown to the user while the subagent runs. |
 | `run_in_background` | boolean | `false` | If true (TUI only), return immediately with a task id; the subagent runs to completion in the background. `oneshot` rejects this with a recoverable error so the model can retry without the flag. |
+
+## gh_issue_context
+
+Composite read-only snapshot used to open an issue without parsing
+bash output. Returns labeled sections under `## state` and `## template`.
+The `## state` block carries deterministic fields: `owner=`, `repo=`,
+`gh_available=` (whether the GitHub auth token chain resolves — the
+`/git-create-issue` directive branches to draft-only when `false`).
+The `## template` block carries `path=` and `content=` when an issue
+template is found. Discovery order matches GitHub's own precedence:
+`.github/ISSUE_TEMPLATE/*.md` first (alphabetical pick; with several
+templates the names are listed on a `choices=` line and any YAML
+frontmatter is stripped from the loaded one), then the legacy
+single-file locations (`ISSUE_TEMPLATE.md` in `.github/`, the repo
+root, or `docs/`, either casing). YAML issue forms (`*.yml`) and the
+chooser `config.yml` are not fillable markdown and are skipped — a
+forms-only repo falls through to the directive's default body
+skeleton.
+
+Pair with [`gh_issue_create`](#gh_issue_create) — context tool gathers
+state, create tool validates the title and opens the issue.
+
+| Param | Type | Default |
+|---|---|---|
+| _(none)_ | | |
+
+No approval. Parallel-safe.
+
+## gh_issue_create
+
+Composite mutator that validates an issue title and opens the issue
+through the typed `internal/github.Interface` adapter. The following
+rejections fire **before** dialing the adapter (deterministic Go, not
+model judgment):
+
+- empty title (`created=false reason=validation`)
+- multi-line title
+- title longer than 72 characters
+- title ending in a period
+
+Returns a typed envelope. On success: `created=true url=<url>
+number=<n>`. On a missing or unauthenticated `gh` CLI:
+`created=false reason=gh_unavailable` so the procedural `/git-create-issue`
+can fall through to draft-only output without surfacing an opaque
+exec failure. On other gh errors: `created=false reason=gh_error`
+followed by the gh output verbatim. The tool never auto-retries,
+auto-edits, or auto-assigns labels beyond what the user explicitly provided.
+
+The adapter behind this tool is `internal/github.TypedClient`,
+backed by the `go-github/v66` REST client. Auth resolves through a
+three-tier precedence chain: `$GITHUB_TOKEN` env var →
+`gh auth token` shell-out (one-shot, cached for the session) →
+`~/.yottacode/github.json` (yottacode-native PAT, written by a
+future `yottacode setup github` flow). The `gh` CLI is no longer
+required for API calls — only optionally used to source the token
+when `$GITHUB_TOKEN` isn't set.
+
+| Param | Type | Default |
+|---|---|---|
+| `title` | string | — |
+| `body` | string | — |
+| `labels` | []string | — |
+| `assignees` | []string | — |
+
+Always prompts for approval.
 
 The full documentation — file format for custom agents, the `/subagents`
 command, transcript layout, and the recursion + iteration safeguards — is

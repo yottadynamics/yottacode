@@ -26,11 +26,11 @@ func seed(t *testing.T, path string, allow, ask, deny []string) {
 
 func TestParseRule_OK(t *testing.T) {
 	cases := map[string]Rule{
-		"Bash(go test *)":        {Tool: "Bash", Pattern: "go test *"},
-		"Edit(internal/**)":      {Tool: "Edit", Pattern: "internal/**"},
-		"Read(.env)":             {Tool: "Read", Pattern: ".env"},
-		"Bash(curl * | bash)":    {Tool: "Bash", Pattern: "curl * | bash"},
-		"  Bash(  trimmed  )  ":  {Tool: "Bash", Pattern: "  trimmed  "},
+		"Bash(go test *)":       {Tool: "Bash", Pattern: "go test *"},
+		"Edit(internal/**)":     {Tool: "Edit", Pattern: "internal/**"},
+		"Read(.env)":            {Tool: "Read", Pattern: ".env"},
+		"Bash(curl * | bash)":   {Tool: "Bash", Pattern: "curl * | bash"},
+		"  Bash(  trimmed  )  ": {Tool: "Bash", Pattern: "  trimmed  "},
 	}
 	for raw, want := range cases {
 		got, err := parseRule(raw, "test")
@@ -274,11 +274,28 @@ func TestEvaluate_GithubCatchAllWildcard(t *testing.T) {
 	seed(t, filepath.Join(cwd, ".yottacode", "permissions.json"),
 		[]string{"Github(*)"}, nil, nil)
 	p, _ := Load(cwd)
-	for _, tool := range []string{"gh_pr_read", "gh_pr_create", "gh_pr_update", "gh_pr_add_comment", "gh_issue_read", "gh_issue_list", "gh_pr_review_context"} {
+	for _, tool := range []string{"gh_pr_read", "gh_pr_create", "gh_pr_update", "gh_pr_add_comment", "gh_issue_read", "gh_issue_list", "gh_issue_create", "gh_pr_review_context"} {
 		got := p.Evaluate(tool, `{}`)
 		if got != Allow {
 			t.Errorf("Github(*) should match %s; got %v", tool, got)
 		}
+	}
+}
+
+// Regression: gh_issue_create shipped with docs advertising
+// Github(create_issue) rules but no targetFor mapping, so the tool fell
+// through to Target{} and allow/ask/deny rules — including a Deny under
+// --yolo, the one gate yolo still honors — never bound to it.
+func TestEvaluate_GithubCreateIssueRulesBind(t *testing.T) {
+	cwd := t.TempDir()
+	seed(t, filepath.Join(cwd, ".yottacode", "permissions.json"),
+		[]string{"Github(*)"}, nil, []string{"Github(create_issue)"})
+	p, _ := Load(cwd)
+	if got := p.Evaluate("gh_issue_create", `{"title":"t"}`); got != Deny {
+		t.Errorf("Github(create_issue) deny must bind to gh_issue_create; got %v", got)
+	}
+	if got := p.Evaluate("gh_issue_list", `{}`); got != Allow {
+		t.Errorf("sibling read verb should still allow; got %v", got)
 	}
 }
 
@@ -343,6 +360,7 @@ func TestTargetFor_GithubVerbMapping(t *testing.T) {
 		{"gh_pr_add_comment", "add_pr_comment"},
 		{"gh_issue_read", "read_issue"},
 		{"gh_issue_list", "list_open_issues"},
+		{"gh_issue_create", "create_issue"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.toolName, func(t *testing.T) {
