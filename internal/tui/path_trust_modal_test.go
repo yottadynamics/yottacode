@@ -4,9 +4,43 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/yottadynamics/yottacode/internal/agent"
+	"github.com/yottadynamics/yottacode/internal/tui/themes"
 )
+
+// Regression: the path-trust styles were declared with var-block
+// initializers carrying hardcoded 256-color indices, so the modal
+// ignored the active theme and never rebuilt on ApplyTheme. They now
+// live in buildStyles like every other late-bound style — verify they
+// track the palette's semantic roles across a theme swap.
+func TestPathTrustStyles_FollowTheme(t *testing.T) {
+	t.Cleanup(func() { ApplyTheme(themes.DefaultName) })
+
+	for _, name := range []string{themes.DefaultName, "nord"} {
+		if !ApplyTheme(name) {
+			t.Fatalf("ApplyTheme(%q) reported unknown theme", name)
+		}
+		p, _ := themes.Get(name)
+		checks := []struct {
+			label string
+			got   lipgloss.TerminalColor
+			want  lipgloss.AdaptiveColor
+		}{
+			{"border", stylePathTrustBorder.GetBorderTopForeground(), p.Warning},
+			{"title", stylePathTrustTitle.GetForeground(), p.Warning},
+			{"hint", stylePathTrustBodyHint.GetForeground(), p.Dim},
+			{"accept", stylePathTrustAccept.GetForeground(), p.Success},
+			{"reject", stylePathTrustReject.GetForeground(), p.Error},
+		}
+		for _, c := range checks {
+			if c.got != lipgloss.TerminalColor(c.want) {
+				t.Errorf("theme %s: %s = %v, want palette role %v", name, c.label, c.got, c.want)
+			}
+		}
+	}
+}
 
 // Regression: while the path-trust elevation modal is up, the "1" /
 // "2" / "3" / Esc keystrokes must reach its handler — NOT get

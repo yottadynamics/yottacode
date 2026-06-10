@@ -131,10 +131,14 @@ malformed arg can never break the card's box shape. Long bash
 commands are clipped to fit the terminal width with a `…)` tail.
 
 **Body.** Carries the tool's interesting output: directory entries,
-grep matches, command stdout, diff hunks. Capped at 10 visible lines
-with a trailing `…N more line(s)` notice — the model still receives
-the full output via the agent's tool-result event. A few tools have
-card-specific body shapes:
+grep matches, command stdout, diff hunks. Capped at 10 visible lines —
+the model still receives the full output via the agent's tool-result
+event. Listing-shaped tools keep the first 10 lines with a trailing
+`…N more line(s)` notice; command-envelope tools (`run_bash`,
+`run_tests`, `git`) keep the **last** 10 lines behind a leading
+`…N earlier line(s)` notice, because the verdict of a command — the
+test summary, the final compiler error — lives at the end of its
+output. A few tools have card-specific body shapes:
 
 - **`run_bash` / `run_tests` / `git`** split their output into stdout,
   a `── stderr ──` separator, and stderr. The footer carries the

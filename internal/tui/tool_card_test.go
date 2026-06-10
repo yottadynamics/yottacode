@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -573,5 +574,43 @@ func TestRenderToolCard_TruncatesLongBody(t *testing.T) {
 	got := stripANSI(renderToolCard("list_dir", "list_dir(.)", "", out, false, 80, ""))
 	if !strings.Contains(got, "…15 more line(s)") {
 		t.Errorf("card should signal truncation past cardBodyLineCap: %q", got)
+	}
+	// Listing output keeps the HEAD: the first entry survives, the
+	// last is elided.
+	if !strings.Contains(got, "file\n") && !strings.Contains(got, "file ") {
+		t.Errorf("head-truncated card should keep the first entry: %q", got)
+	}
+	if strings.Contains(got, "file"+strings.Repeat("x", 24)) {
+		t.Errorf("head-truncated card should elide the last entry: %q", got)
+	}
+}
+
+// Command-envelope tools (run_bash, run_tests, git) keep the TAIL of
+// an overflowing body — the test summary / final error lives in the
+// last lines, and showing lines 1-10 of a 200-line test run hid the
+// verdict. The elision marker moves to the top of the body.
+func TestRenderToolCard_RunBashKeepsTailOnOverflow(t *testing.T) {
+	var lines []string
+	for i := 1; i <= 25; i++ {
+		lines = append(lines, fmt.Sprintf("step %d", i))
+	}
+	lines = append(lines, "FAIL: TestSomething (0.03s)")
+	out := "exit=1\n--- stdout ---\n" + strings.Join(lines, "\n") + "\n--- stderr ---\n"
+	got := stripANSI(renderToolCard("run_bash", "run_bash: go test ./...", "", out, false, 80, ""))
+
+	if !strings.Contains(got, "…16 earlier line(s)") {
+		t.Errorf("tail-truncated card should elide the head with an 'earlier' marker: %q", got)
+	}
+	if !strings.Contains(got, "FAIL: TestSomething") {
+		t.Errorf("tail-truncated card must keep the final verdict line: %q", got)
+	}
+	if strings.Contains(got, "step 1\n") || strings.Contains(got, "│ step 1 ") {
+		t.Errorf("tail-truncated card should drop the earliest lines: %q", got)
+	}
+	// Marker sits above the surviving body lines, not below.
+	markerIdx := strings.Index(got, "earlier line(s)")
+	verdictIdx := strings.Index(got, "FAIL: TestSomething")
+	if markerIdx == -1 || verdictIdx == -1 || markerIdx > verdictIdx {
+		t.Errorf("elision marker should precede the kept tail: %q", got)
 	}
 }

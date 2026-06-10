@@ -2688,9 +2688,17 @@ func inputContentWidth(terminalWidth int) int {
 
 // liveContentWidth is the inner content width for a bordered live-frame
 // element given the current terminal width: terminal width minus the box's
-// border (2) and padding (2). No cap — the box stretches to the terminal edge.
+// border (2) and padding (2), capped at 120 like every other content
+// surface (docs/TUI.md Phase 6: min(120, width-4) for cards, code
+// blocks, and modals). Callers — the textarea, palettes, the path-trust
+// modal, the streaming preview — previously stretched to the terminal
+// edge on ultrawide displays while tool cards, prose, and the input row
+// stopped at 120, leaving the chrome visibly wider than the content.
 func liveContentWidth(terminalWidth int) int {
 	w := terminalWidth - 4
+	if w > 120 {
+		w = 120
+	}
 	if w < 1 {
 		w = 1
 	}
