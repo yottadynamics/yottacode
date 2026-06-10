@@ -4881,9 +4881,12 @@ func isUnicodeTableLine(line string) bool {
 	return unicodeTableRE.MatchString(line)
 }
 
-// renderUserBlock formats a user message for scrollback emission. Each
+// renderUserBlock formats a user message for scrollback emission. The first
 // line gets the same chevron prompt (❯) used by the live input bar, so
 // scrollback echoes look like the text the user typed into the cmdline.
+// Continuation rows — whether from hard newlines or wrapping a large paste —
+// hang-indent under the prompt instead of repeating another chevron. This keeps
+// pasted multi-line text from looking like multiple separate submissions.
 // Leading and trailing "\n" give the block one blank line of separation
 // on each side, so the user echo sits as a clear divider between the
 // previous assistant/tool output and whatever follows it (the next tool
@@ -4891,11 +4894,10 @@ func isUnicodeTableLine(line string) bool {
 // horizontal rule above: the chevron is enough of an anchor, and the rule
 // fought with content on either side.
 //
-// Long lines are hard-wrapped at width-barWidth and every wrapped row
-// gets the bar re-applied, so a multi-line paste reads as one continuous
-// quoted block instead of letting the terminal auto-wrap continuation
-// rows to column 0 (which made the second line look detached from the
-// quote and lose its left-margin alignment).
+// Long lines are hard-wrapped at width-barWidth and continuation rows are
+// hang-indented under the prompt, so a multi-line paste reads as one continuous
+// quoted block instead of looking like a separate user submission on every
+// pasted line.
 func renderUserBlock(content string, width int) string {
 	const prefix = "❯ "
 	prefixWidth := ansi.StringWidth(prefix)
@@ -4903,22 +4905,29 @@ func renderUserBlock(content string, width int) string {
 	indent := strings.Repeat(" ", prefixWidth)
 	bodyWidth := width - prefixWidth
 	var lines []string
+	firstLine := true
 	for _, line := range strings.Split(content, "\n") {
 		// Width <= prefix means the terminal is too narrow to host the
 		// bar plus any content; fall back to the un-wrapped render
 		// rather than producing zero-width rows.
 		if bodyWidth <= 0 || ansi.StringWidth(line) <= bodyWidth {
-			lines = append(lines, bar+styleUserBody.Render(line))
+			prefixText := indent
+			if firstLine {
+				prefixText = bar
+			}
+			lines = append(lines, prefixText+styleUserBody.Render(line))
+			firstLine = false
 			continue
 		}
 		wrapped := ansi.Hardwrap(line, bodyWidth, true)
 		rows := strings.Split(wrapped, "\n")
-		for i, row := range rows {
-			if i == 0 {
-				lines = append(lines, bar+styleUserBody.Render(row))
-			} else {
-				lines = append(lines, indent+styleUserBody.Render(row))
+		for _, row := range rows {
+			prefixText := indent
+			if firstLine {
+				prefixText = bar
 			}
+			lines = append(lines, prefixText+styleUserBody.Render(row))
+			firstLine = false
 		}
 	}
 	return "\n" + strings.Join(lines, "\n") + "\n"

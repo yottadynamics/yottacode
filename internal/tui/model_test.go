@@ -2395,24 +2395,28 @@ func TestModel_MouseEventDoesNotPanic(t *testing.T) {
 	})
 }
 
-// User block renders with the same chevron prompt as the live input bar.
-// Multi-line input gets the marker on every wrapped row.
-func TestModel_UserBlockUsesInputChevron(t *testing.T) {
+// User block renders with the same chevron prompt as the live input bar on
+// the first row. Hard-newline continuations indent under that prompt so a
+// paste does not look like several independent submissions.
+func TestModel_UserBlockUsesSingleInputChevron(t *testing.T) {
 	m := newTestModel(t)
 	m.appendLine(renderUserBlock("hello\nworld", m.width))
 	v := stripANSI(m.transcript.String())
-	if !strings.Contains(v, "❯ hello") || !strings.Contains(v, "❯ world") {
-		t.Errorf("user block should render with ❯ prompt marker: %q", v)
+	if !strings.Contains(v, "❯ hello") || !strings.Contains(v, "  world") {
+		t.Errorf("user block should render first-row chevron and continuation indent: %q", v)
+	}
+	if strings.Contains(v, "❯ world") {
+		t.Errorf("user block should not repeat ❯ prompt marker on pasted continuation: %q", v)
 	}
 	if strings.Contains(v, "▎ hello") {
 		t.Errorf("user block should not use the old ▎ marker: %q", v)
 	}
 }
 
-// A user input longer than the terminal width must be hard-wrapped
-// and every wrapped row must carry the ❯ prompt prefix. Without this,
-// the terminal auto-wraps continuation rows to column 0 and the quoted
-// block loses its left-margin alignment partway through.
+// A user input longer than the terminal width must be hard-wrapped with a
+// hanging indent under the single ❯ prompt. Without this, the terminal
+// auto-wraps continuation rows to column 0 or repeats the prompt, making one
+// pasted message look detached or split into multiple submissions.
 func TestRenderUserBlock_LongLineHangIndentsUnderPrompt(t *testing.T) {
 	long := "Can you scan the current codebase and identify any gaps in the core components such as memory, permissions, models, providers, any of the Github integrations etc"
 	out := stripANSI(renderUserBlock(long, 80))

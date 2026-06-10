@@ -53,6 +53,7 @@ func TestChromeReadsBright(t *testing.T) {
 		"styleInputPrompt":      styleInputPrompt,
 		"styleInputPlaceholder": styleInputPlaceholder,
 		"styleInputHint":        styleInputHint,
+		"styleUserBar":          styleUserBar,
 	} {
 		if got := style.GetForeground(); got != lipgloss.TerminalColor(colorContent) {
 			t.Errorf("%s: foreground = %v, want Content (%v)", name, got, colorContent)

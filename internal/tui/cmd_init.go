@@ -104,7 +104,9 @@ restate the README; link to it instead.
 
 When you have the draft, write the whole file in one write_file call. The
 user will see the approval modal and either accept or edit before it lands
-on disk.`, mode, target, stance)
+on disk. Do not stop after creating a todo card just to ask whether to
+proceed; todo cards are progress trackers, and write_file provides the
+approval gate for the actual file change.`, mode, target, stance)
 }
 
 // projectMdRelPath is the canonical relative path the agent should
