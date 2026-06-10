@@ -4,6 +4,9 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
 )
 
 // ansiRe strips terminal color codes from highlighter output so tests
@@ -46,17 +49,109 @@ func TestRenderEditDiff_MultiLine(t *testing.T) {
 }
 
 func TestRenderEditDiff_AppliesSyntaxHighlighting(t *testing.T) {
-	// Go source should pick up keyword coloring. We don't pin the
-	// exact color codes — chroma's output may evolve — but the diff
-	// should contain at least one ANSI escape, indicating tokens were
-	// highlighted rather than streamed plain.
-	args := `{"path":"x.go","old_string":"package foo","new_string":"package bar"}`
+	// Go source should pick up keyword coloring on the asymmetric
+	// (chroma fallback) path — same-line-count edits take the
+	// intraline path instead, which deliberately skips chroma. We
+	// don't pin the exact color codes — chroma's output may evolve —
+	// but the diff should contain at least one ANSI escape,
+	// indicating tokens were highlighted rather than streamed plain.
+	args := `{"path":"x.go","old_string":"package foo","new_string":"package bar\nfunc x() {}"}`
 	got, ok := renderEditDiff(args)
 	if !ok {
 		t.Fatalf("expected ok")
 	}
 	if !strings.Contains(got, "\x1b[") {
 		t.Errorf("highlighted output should contain ANSI escapes: %q", got)
+	}
+}
+
+func TestIntralineSpan(t *testing.T) {
+	cases := []struct {
+		name             string
+		oldLine, newLine string
+		ds, de, as, ae   int
+		ok               bool
+	}{
+		{"middle change", "count := 1", "count := 2", 9, 10, 9, 10, true},
+		{"insertion", "foo()", "foo(bar)", 4, 4, 4, 7, true},
+		{"deletion", "foo(bar)", "foo()", 4, 7, 4, 4, true},
+		{"identical", "same", "same", 0, 0, 0, 0, false},
+		{"full rewrite", "alpha", "omega-zulu", 0, 0, 0, 0, false},
+		{"multibyte", "x = \"日本\"", "x = \"日本語\"", 7, 7, 7, 8, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ds, de, as, ae, ok := intralineSpan(tc.oldLine, tc.newLine)
+			if ok != tc.ok {
+				t.Fatalf("ok = %v, want %v", ok, tc.ok)
+			}
+			if !ok {
+				return
+			}
+			if ds != tc.ds || de != tc.de || as != tc.as || ae != tc.ae {
+				t.Errorf("spans = del[%d:%d] add[%d:%d], want del[%d:%d] add[%d:%d]",
+					ds, de, as, ae, tc.ds, tc.de, tc.as, tc.ae)
+			}
+		})
+	}
+}
+
+// Intraline emphasis: a same-line-count replacement renders the
+// changed span in the reverse-video emphasis style and the unchanged
+// context in the plain state color. Forced color profile — under `go
+// test` lipgloss renders plain ASCII, which would make every style
+// indistinguishable.
+func TestRenderEditDiff_IntralineEmphasis(t *testing.T) {
+	prevProfile := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	lipgloss.SetHasDarkBackground(true)
+	t.Cleanup(func() { lipgloss.SetColorProfile(prevProfile) })
+
+	args := `{"path":"x.go","old_string":"count := 1","new_string":"count := 2"}`
+	got, ok := renderEditDiff(args)
+	if !ok {
+		t.Fatalf("expected ok")
+	}
+	if want := styleDiffDelEmph.Render("1"); !strings.Contains(got, want) {
+		t.Errorf("deleted span %q not emphasized; got %q", want, got)
+	}
+	if want := styleDiffAddEmph.Render("2"); !strings.Contains(got, want) {
+		t.Errorf("added span %q not emphasized; got %q", want, got)
+	}
+	// Content fidelity survives the styling.
+	plain := stripANSI(got)
+	for _, want := range []string{"- count := 1", "+ count := 2"} {
+		if !strings.Contains(plain, want) {
+			t.Errorf("missing %q in diff: %q", want, plain)
+		}
+	}
+}
+
+// The card-body variant takes the same intraline path for paired
+// replacements and keeps the marker + gutter chrome.
+func TestEditFileDiffRows_IntralinePairing(t *testing.T) {
+	prevProfile := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	lipgloss.SetHasDarkBackground(true)
+	t.Cleanup(func() { lipgloss.SetColorProfile(prevProfile) })
+
+	args := `{"path":"x.go","old_string":"limit = 10","new_string":"limit = 99"}`
+	rows, ok := editFileDiffRows(args, 80)
+	if !ok {
+		t.Fatalf("expected ok")
+	}
+	joined := strings.Join(rows, "\n")
+	if want := styleDiffDelEmph.Render("10"); !strings.Contains(joined, want) {
+		t.Errorf("deleted span %q not emphasized; got %q", want, joined)
+	}
+	if want := styleDiffAddEmph.Render("99"); !strings.Contains(joined, want) {
+		t.Errorf("added span %q not emphasized; got %q", want, joined)
+	}
+	plain := stripANSI(joined)
+	for _, want := range []string{"│ - limit = 10", "│ + limit = 99"} {
+		if !strings.Contains(plain, want) {
+			t.Errorf("missing %q in rows: %q", want, plain)
+		}
 	}
 }
 

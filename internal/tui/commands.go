@@ -13,7 +13,6 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 
 	"github.com/yottadynamics/yottacode/internal/adapter"
 	copilotauth "github.com/yottadynamics/yottacode/internal/auth/copilot"
@@ -892,68 +891,6 @@ func parseProviderFlags(args []string) providerAddFlags {
 		}
 	}
 	return f
-}
-
-// formatProviderList renders the configured-profile dump. As of
-// the List/Use combine, the inline picker handles the typed
-// `/provider list` shortcut directly — this helper is kept for
-// callers (e.g. tests, future scripting paths) that want the
-// flat-text shape. Visual language matches the inline pickers:
-// title via renderMenuHeader, an "Active:" status row mirroring
-// the picker's "Auto-memory: on/off" line, and one renderMenuItem
-// row per provider with `✔` on whichever profile is currently
-// driving the running session (which may differ from
-// cfg.Active.Provider when the user mid-session swapped via
-// /provider use without persisting).
-//
-// activeName is the profile whose base_url matches the session's
-// current base_url; cfg.Active.Provider is the persisted default.
-// Both are surfaced — ✔ tracks the live state, the Active row tracks
-// what the next yottacode invocation will pick up.
-func formatProviderList(cfg config.Config, activeName string) string {
-	var b strings.Builder
-	b.WriteString(renderMenuHeader("Configured providers",
-		"Pick one to switch with /provider use <name>."))
-	b.WriteString("\n")
-
-	if cfg.Active.Provider != "" {
-		b.WriteString("  ")
-		b.WriteString(stylePaletteEmpty.Render("Active: "))
-		b.WriteString(lipgloss.NewStyle().Bold(true).Render(cfg.Active.Provider))
-		if cfg.Active.Model != "" {
-			b.WriteString(stylePaletteEmpty.Render(" · model " + cfg.Active.Model))
-		}
-		b.WriteString("\n\n")
-	}
-
-	// Column-align the name field so kind/base-url line up across
-	// rows. 12 is a sane floor (matches "anthropic" width plus a
-	// pad); we widen if any configured name is longer.
-	maxName := 12
-	for _, p := range cfg.Providers {
-		if len(p.Name) > maxName {
-			maxName = len(p.Name)
-		}
-	}
-
-	for i, p := range cfg.Providers {
-		desc := p.Kind
-		if p.BaseURL != "" {
-			desc += " · " + p.BaseURL
-		}
-		if p.DefaultModel != "" {
-			desc += " · default=" + p.DefaultModel
-		}
-		b.WriteString(renderMenuItem(menuItemOpts{
-			Number:     i + 1,
-			Label:      p.Name,
-			LabelWidth: maxName,
-			Desc:       desc,
-			Checked:    p.Name == activeName,
-		}))
-		b.WriteString("\n")
-	}
-	return strings.TrimRight(b.String(), "\n")
 }
 
 // formatProviderModels lists one profile's catalog. For curated

@@ -6,6 +6,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/yottadynamics/yottacode/internal/tui/themes"
 )
 
 func TestDefault_IsValid(t *testing.T) {
@@ -1060,5 +1062,43 @@ func TestLoad_MemoryFinalTurnOnQuit(t *testing.T) {
 	}
 	if cfg2.Memory.FinalTurnOnQuit {
 		t.Errorf("Render must persist [memory] — opt-out lost in round-trip:\n%s", Render(cfg))
+	}
+}
+
+// NO_COLOR (https://no-color.org/) selects the monochrome theme, but
+// only when the user hasn't configured one — explicit configuration
+// overrides the env var, exactly as the convention specifies, and an
+// empty value does not count as set.
+func TestThemeName_HonorsNoColorEnv(t *testing.T) {
+	dir := t.TempDir()
+
+	t.Setenv("NO_COLOR", "1")
+	cfg, err := Load(filepath.Join(dir, "missing.toml"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Theme.Name != "no-color" {
+		t.Errorf("NO_COLOR set + no config: theme = %q, want no-color", cfg.Theme.Name)
+	}
+
+	path := filepath.Join(dir, "config.toml")
+	if err := os.WriteFile(path, []byte("[theme]\nname = \"nord\"\n"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	cfg, err = Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Theme.Name != "nord" {
+		t.Errorf("explicit [theme] must override NO_COLOR; got %q", cfg.Theme.Name)
+	}
+
+	t.Setenv("NO_COLOR", "")
+	cfg, err = Load(filepath.Join(dir, "missing.toml"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Theme.Name != themes.DefaultName {
+		t.Errorf("empty NO_COLOR must not trigger monochrome; got %q", cfg.Theme.Name)
 	}
 }

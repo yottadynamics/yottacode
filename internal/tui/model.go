@@ -2658,18 +2658,6 @@ func insertCursor(row string, col int, visible bool) string {
 	return string(rs[:col]) + cur.Render(string(rs[col])) + string(rs[col+1:])
 }
 
-// inputBoxFrameWidth is retained for any caller that still needs the
-// outer-frame width of a hypothetical bordered cmdline (overlays size
-// themselves relative to it). The live cmdline render no longer paints a
-// border, so this is purely a sizing helper now.
-func inputBoxFrameWidth(terminalWidth int) int {
-	w := terminalWidth - 2
-	if w < 1 {
-		w = 1
-	}
-	return w
-}
-
 // inputContentWidth caps the input row's wrap width at min(120, w-4). On
 // a wide terminal the full-width input reads as an empty runway; capping
 // it at 120 columns focuses attention on the typed text and matches the
@@ -2688,17 +2676,15 @@ func inputContentWidth(terminalWidth int) int {
 
 // liveContentWidth is the inner content width for a bordered live-frame
 // element given the current terminal width: terminal width minus the box's
-// border (2) and padding (2), capped at 120 like every other content
-// surface (docs/TUI.md Phase 6: min(120, width-4) for cards, code
-// blocks, and modals). Callers — the textarea, palettes, the path-trust
-// modal, the streaming preview — previously stretched to the terminal
-// edge on ultrawide displays while tool cards, prose, and the input row
-// stopped at 120, leaving the chrome visibly wider than the content.
+// border (2) and padding (2). Deliberately UNCAPPED: its callers (the
+// textarea, the slash/file palettes, the streaming preview) are chrome
+// that must share a right edge with the full-width input frame directly
+// below them — a 120-capped palette over a full-width cmdline box reads
+// as a rendering bug (user call, 2026-06-10). The Phase 6 120-column cap
+// applies to content surfaces (tool cards, prose) and true modals, which
+// cap at their own call sites.
 func liveContentWidth(terminalWidth int) int {
 	w := terminalWidth - 4
-	if w > 120 {
-		w = 120
-	}
 	if w < 1 {
 		w = 1
 	}
@@ -2966,13 +2952,6 @@ func providerToolFooter(toolName, phase string) string {
 	return "provider tool " + status
 }
 
-func renderToolResultLine(summary string, errored bool) string {
-	if errored {
-		return styleError.Render("  ↳ " + summary)
-	}
-	return styleToolMeta.Render("  ↳ " + summary)
-}
-
 func renderCitations(citations []adapter.Citation) string {
 	if len(citations) == 0 {
 		return ""
@@ -3042,26 +3021,6 @@ func abbrevHome(p string) string {
 		return "~" + strings.TrimPrefix(p, home)
 	}
 	return p
-}
-
-func (m Model) activatePaletteSelection() (Model, tea.Cmd) {
-	if len(m.paletteFiltered) == 0 {
-		return m, nil
-	}
-	chosen := m.paletteFiltered[m.paletteIndex]
-	if chosen.Args != "" {
-		m.textInput.SetValue("/" + chosen.Name + " ")
-		m.textInput.CursorEnd()
-		m.paletteOpen = false
-		m.paletteIndex = 0
-		m.paletteOffset = 0
-		return m, nil
-	}
-	m.textInput.SetValue("")
-	m.paletteOpen = false
-	m.paletteIndex = 0
-	m.paletteOffset = 0
-	return m.runSlash("/" + chosen.Name)
 }
 
 // pasteThreshold is the byte count above which a bracketed paste gets
@@ -5160,22 +5119,6 @@ func looksLikeShellCommand(line string) bool {
 		}
 	}
 	return false
-}
-
-func guessInlineCodeLanguage(line string) string {
-	trim := strings.TrimSpace(line)
-	switch {
-	case looksLikeShellCommand(trim):
-		return "bash"
-	case strings.HasPrefix(trim, "func ") || strings.HasPrefix(trim, "package ") || strings.Contains(trim, ":="):
-		return "go"
-	case strings.HasPrefix(trim, "def ") || strings.HasPrefix(trim, "import "):
-		return "python"
-	case strings.HasPrefix(trim, "SELECT ") || strings.HasPrefix(trim, "INSERT ") || strings.HasPrefix(trim, "UPDATE ") || strings.HasPrefix(trim, "DELETE "):
-		return "sql"
-	default:
-		return ""
-	}
 }
 
 // appendLine emits a conversation line to terminal scrollback (via
