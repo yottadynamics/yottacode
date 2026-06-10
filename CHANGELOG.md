@@ -4,10 +4,157 @@ All notable changes to yottacode will be documented in this file. The
 format roughly follows [Keep a Changelog](https://keepachangelog.com/);
 the project uses semantic versioning once it's past `1.0.0`.
 
-## Unreleased
+## 0.3.0 — 2026-06-10
+
+> Memory + ecosystem — persistent agent memory with semantic recall,
+> installable skills, an MCP client, typed git/GitHub workflow commands,
+> worktrees, themes, and a one-line installer.
 
 ### Added
 
+- **Persistent agent memory (`/memory`, `/recall`).** Five tools —
+  `memory_save`, `memory_search`, `memory_get`, `memory_forget`, and
+  `session_recall` — let the agent file and retrieve durable memories
+  across sessions; relevant memories are retrieved and injected each
+  turn. Three retrieval strategies: `keyword`, `bm25` (Porter stemming +
+  synonym expansion), and `semantic` (local Ollama embeddings blended
+  with BM25); the default `auto` probes for a local embedding model at
+  session start and falls back to `bm25`. Retrieval runs in the turn
+  goroutine, so a slow embed reads as ordinary model latency and Esc
+  cancels it; embed requests send `keep_alive: 30m` so Ollama keeps the
+  model resident between turns. `/memory` opens a picker over the
+  curated files (USER.md, YOTTACODE.md) and agent-managed memories;
+  `/recall <query>` searches past sessions. Tunables live under
+  `[retrieval]`: `strategy`, `top_k`, `max_bytes`, `min_score`,
+  `embedding_model`, `semantic_weight`. See
+  [`docs/memory.md`](docs/memory.md).
+- **Agent skills (`/skills`).** Reusable capability playbooks the model
+  invokes on demand via the `Skill` tool. 17 built-in skills ship
+  embedded in the binary (test-driven-development, diagnose,
+  writing-plans, security-auditor, performance-profiler, …); user
+  skills live in `~/.yottacode/skills/`, project skills in
+  `.yottacode/skills/`, with project > user > built-in shadowing. Only
+  a skill's name+description metadata rides in the context window — the
+  body loads when invoked. Built-ins respect the `[skills] default_on`
+  config block; `/skills` toggles enablement per session.
+- **Install skills from the TUI.** `/skills` grew a management menu:
+  **Catalog** (Built-in / Installed tabs; Space toggles enablement,
+  Enter previews the body in `$PAGER`), **Install** (local path,
+  `https://…/SKILL.md` URL, or GitHub `owner/repo` shorthand — repo
+  installs walk sub-assets like `scripts/` and `references/`),
+  **Check** (drift report against the lockfile), and **Update**
+  (re-fetch from the recorded source). Provenance — source, hash,
+  install time — is recorded in `~/.yottacode/skills/.lock.json`.
+- **Typed git/GitHub workflow commands.** Six procedural slash
+  commands — `/git-commit`, `/git-push`, `/git-create-pr`,
+  `/git-update-pr`, `/git-review-pr`, `/git-create-issue` — replace the
+  markdown starter-kit directives (`/git:commit-message`,
+  `/git:create-pr`) with typed composite tools: read-only context
+  snapshots (`git_commit_context`, `gh_pr_context`, `gh_issue_context`)
+  feed validated, approval-gated apply tools (`git_commit_apply`,
+  `gh_pr_create`, `gh_pr_update`, `gh_issue_create`), so base
+  resolution, title validation, ahead-count gating, and hook-failure
+  detection are deterministic code instead of prose inference.
+  `/git-review-pr` renders a structured review (failing checks /
+  blockers / suggestions / nits) into scrollback.
+- **GitHub integration via typed client — no more `gh` CLI
+  dependency.** All GitHub traffic goes through a typed `go-github`
+  REST client with token discovery across `$GITHUB_TOKEN`,
+  `gh auth token`, and `~/.yottacode/github.json` (written by
+  `yottacode setup github`). Read tools return typed snapshots, write
+  tools validate before dialing and return structured result envelopes,
+  identical in-session reads are served from cache, and permission
+  rules use the `Github(<action>)` shape. `doctor` gains a GitHub
+  section with rate-limit state and a `--no-github` opt-out for
+  token-less CI. See [`docs/github.md`](docs/github.md).
+- **Folder trust.** First launch in an unfamiliar directory asks
+  whether you trust it; decisions persist to
+  `~/.yottacode/trusted-roots.json` and subfolders inherit the answer.
+  `yottacode trust list|add|remove|clear` manages roots;
+  `--allow-paths`, `$YOTTACODE_ALLOW_PATHS`, and `YOTTACODE_TRUST_ALL=1`
+  are session-scoped overrides. Writes outside the workspace pop an
+  inline elevation prompt (allow once / trust for session / reject).
+  See [`docs/security-and-allow-lists.md`](docs/security-and-allow-lists.md).
+- **Worktrees (`--worktree <name>`).** Run parallel sessions against
+  the same repo without collisions: each worktree materializes under
+  `~/.yottacode/worktrees/<repo-slug>/<name>/` on branch
+  `worktree-<name>`. Agent tools `enter_worktree` / `exit_worktree` /
+  `worktree_status` manage them mid-session — exit auto-removes clean
+  worktrees and prompts on dirty ones — and a `.worktreeinclude` file
+  (gitignore syntax) copies gitignored files like `.env` into fresh
+  worktrees. Worktree sessions inherit trust from the originating
+  repo. See [`docs/worktrees.md`](docs/worktrees.md).
+- **Dispatch fan-out (experimental: `dispatch`).** The `dispatch` tool
+  fans a batch of up to 8 independent subtasks out to concurrent
+  subagent workers — each write task in its own worktree + branch,
+  partitioned by file ownership — and `integrate` merges the worker
+  branches into one integration branch, stopping on conflicts for
+  manual resolution. Background batches run unattended with file
+  writes auto-allowed and `run_bash` disabled; catastrophic commands
+  are refused unconditionally, even under `--yolo`. Worktrees and
+  branches are reclaimed on worker exit and at session teardown.
+  Requires the `dispatch` and `background_subagents` experimental
+  flags. See [`docs/dispatch.md`](docs/dispatch.md).
+- **Background subagents: live dock + completion cards.** A live dock
+  above the status bar shows each running subagent's type, latest
+  activity, model, and context fill; Tab focuses the dock, Enter opens
+  a transcript. Background completions surface a card in scrollback on
+  the next render. Foreground subagent batches now fan out
+  concurrently as well.
+- **GitHub Copilot provider (`copilot`).** `yottacode copilot-auth
+  login` runs GitHub's device-code flow and stores tokens under
+  `~/.yottacode/auth/`; `/provider add` runs the same flow inline in
+  the TUI. The `/model` picker lists the account's available models
+  and marks plan-gated ones. `copilot-auth status|models|logout`
+  manage the token lifecycle. See
+  [`docs/providers.md`](docs/providers.md).
+- **`web_search` tool.** DuckDuckGo-backed web search (titles, URLs,
+  snippets; `max_results` up to 20) for providers without hosted
+  search — Ollama, NVIDIA NIM, and other OpenAI-compatible endpoints.
+  Providers with native hosted search keep their own tools.
+- **Themes (`/theme`).** Eleven built-in palettes (catppuccin,
+  gruvbox, nord, one-dark, solarized-dark, tokyo-night, terminal,
+  dimmed, high-contrast, low-contrast, no-color) with a live two-pane
+  preview picker; Enter persists to `[theme] name` in `config.toml`,
+  `/theme set <name>` scripts it. When `NO_COLOR` is set and no theme
+  is configured, the monochrome `no-color` palette auto-activates per
+  the no-color.org convention. See [`docs/themes.md`](docs/themes.md).
+- **`/usage` command.** Per-session token totals by model, a rolling
+  today total, live rate-limit headroom where available, and
+  provider-specific account blocks (plan + reset windows for
+  subscription auth; billing links for pay-per-use). No dollar
+  estimates — providers don't expose stable pricing APIs, and
+  hand-maintained price tables drift. Renders as an inline overlay;
+  safe mid-turn.
+- **Provider health checks in `doctor`.** `yottacode doctor` (and
+  `/doctor`) now actively probes the configured provider — endpoint
+  reachability, auth validity, model visibility — distinguishing
+  network, auth, and model-visibility failures instead of echoing
+  static config. Token-store providers (`openai-auth`, `copilot`) are
+  probed without spending API quota.
+- **Context windows resolved from the models.dev catalog.** The
+  embedded model catalog is augmented by a local snapshot of the
+  public models.dev registry, so newly released models resolve a
+  correct window before the embedded catalog is regenerated. Windows
+  resolve per provider *kind* — `openai-auth/gpt-5` can pin a smaller
+  limit than the same model id on `api.openai.com` (the Codex backend
+  enforces ~272 K where the API allows 1 M+). Live traffic passively
+  corrects drift: an overflow-rejected turn shrinks the stored window,
+  a provider-reported input above the resolved window raises it, and
+  corrections persist to `~/.yottacode/context-windows.json` with
+  longest-prefix matching. See [`docs/models.md`](docs/models.md).
+- **`enter_plan_mode` tool.** When you ask for a plan in natural
+  language, the model can now genuinely enter plan mode instead of
+  role-playing it: the call renders a `[Y]/[N]` confirmation card that
+  runs the same entry sequence as `/plan`. Never auto-approved — not
+  in auto mode, not under `--yolo`, not via Allow rules — because the
+  approval handshake is what flips the shared mode state; the same
+  guard `exit_plan_mode` already had.
+- **Status bar effort + PR chips.** An `effort:` chip appears on
+  reasoning-capable models when a reasoning level is set, and a
+  `PR #N` chip appears when the current branch has an open pull
+  request (best-effort; omitted without GitHub auth). Both drop first
+  on narrow terminals.
 - **New built-in skill: `documentation-and-adrs`.** Captures the *why*
   behind decisions as you ship — ADRs in `docs/decisions/` for choices
   that are expensive to reverse, why-comments for non-obvious code, and
@@ -130,6 +277,37 @@ the project uses semantic versioning once it's past `1.0.0`.
   scope choice toward `user` (portable learnings) by default and
   appends a scope-check reminder when a portable-typed memory is filed
   project-scope.
+- **`git` tool: flag-aware read-only policy + risk-tiered approvals.**
+  Read-only subcommands (status, diff, log, show, blame, grep, …)
+  auto-run; ambiguous ones (branch, tag, stash, remote) classify by
+  their flags, so `git branch --list` auto-runs while `git branch -d`
+  prompts, and `--output` on an otherwise read-only command falls back
+  to approval because it writes a file. High-risk mutations
+  (`reset --hard`, `clean -f`, `push --force`, history rewrites)
+  replace the default approval preview with a bolded, risk-specific
+  warning so they can't be approved by reflex. Six new read-only
+  review surfaces (`git_diff_stat`, `git_diff_staged`,
+  `git_diff_unstaged`, `git_commits_between`,
+  `git_branch_ahead_behind`, `git_branch_diff`) and two commit helpers
+  (`git_commit_amend`, `git_commit_fixup`) round out branch review and
+  fixup flows. See [`docs/tools.md`](docs/tools.md).
+- **Gemini provider polish.** The model pickers (`/model`,
+  `/model list`, `/provider add`) read the embedded Gemini catalog
+  plus the models.dev snapshot, so new Gemini models appear without a
+  binary update; API errors are summarized to HTTP status, Google
+  status, primary message, and retry hint instead of the full JSON
+  error envelope.
+- **xAI provider polish.** Hosted `web_search` is on by default
+  (domain filters via `$YOTTACODE_SEARCH_ALLOWED_DOMAINS`), `x_search`
+  covers X posts/users/threads with handle and date filters, and
+  `code_interpreter` is available opt-in; `grok-*-mini` models accept
+  `reasoning_effort`. Model catalog refreshed.
+- **TUI contrast + polish.** Palette role mapping and width alignment
+  tightened across cards and chrome; `edit_file` approval diffs
+  highlight the changed span within a line (reverse video) for
+  same-shape replacements; the input prompt and user-echo chevrons
+  render in brand green; auto-approval lines carry the status-OK
+  prefix.
 - **User slash commands now honor `$YOTTACODE_HOME`.** The global
   custom-command dir resolves through the same root rule as skills,
   plans, agents, and the memory tree, so `commands/` follows the
@@ -171,6 +349,30 @@ the project uses semantic versioning once it's past `1.0.0`.
 
 ### Fixed
 
+- **Mid-turn failures no longer corrupt the conversation.** User
+  interrupts (Esc, Ctrl+C) inject synthetic `tool_result` entries for
+  orphaned tool calls so replayed history stays valid; tool-argument
+  parse failures surface to the model as recoverable errors instead of
+  killing the turn; failed parallel tool batches drain every error
+  rather than reporting only the first.
+- **Subagents now follow provider/model switches.** The `Agent` tool's
+  adapter went stale after `/provider`, `/model`, or effort changes —
+  a subagent spawned after switching away from `openai-auth` failed
+  with "no token file". The adapter is now synced on every switch.
+- **Gemini thinking models: tool calling fixed.** Gemini 3-era models
+  attach a `thoughtSignature` to each function call and require it
+  back on history replay; the adapter now round-trips it, substituting
+  Google's documented bypass token for history recorded before the
+  upgrade so existing sessions keep working.
+- **ChatGPT-account sessions no longer overrun the Codex input
+  limit.** The `openai-auth` provider resolved context windows from
+  the api.openai.com catalog numbers, so the usage bar and
+  auto-summarize thresholds sat ~4× too high and long sessions hit
+  hard 400s instead of summarizing. Per-provider-kind window
+  resolution (see the models.dev entry above) pins the Codex backend's
+  real limits, and a window shrink re-runs the context check in the
+  same turn, so an over-window session summarizes instead of failing
+  again.
 - **A malformed tool call from an OpenAI-compatible provider no longer
   wedges the whole session.** Some models (and truncated streams) emit a
   tool call with empty or incomplete JSON arguments. The empty case ran
