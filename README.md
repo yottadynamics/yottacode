@@ -19,7 +19,7 @@
 
 `yottacode` is an autonomous, self-learning coding agent. Give it a goal in plain language and it plans the work, reads and edits real repositories, runs commands and tests, drives git, and iterates until the task is done — all from your terminal. It's model-agnostic by design: bring your own provider and swap models mid-session without changing how you work. As it goes, a self-learning memory layer captures what it discovers about you and your codebase and surfaces the most relevant pieces back into every turn, so it gets sharper the more you use it — while a built-in security policy of layered approvals and path validation gates every edit and shell command, keeping that autonomy under your control. Around the core loop you get an interactive terminal UI, a scriptable one-shot mode for automation, durable sessions, and cross-session recall.
 
-> **Status:** pre-1.0 (`v0.2.0`). The CLI, configuration, and on-disk formats are stabilizing. Pin a tag if you depend on yottacode from scripts.
+> **Status:** pre-1.0 (`v0.3.0`). The CLI, configuration, and on-disk formats are stabilizing. Pin a tag if you depend on yottacode from scripts.
 
 ---
 
@@ -42,7 +42,7 @@ yottacode setup
 <details><summary><b>Manual install (pinned version, no installer script)</b></summary>
 
 ```bash
-export VERSION=0.2.0
+export VERSION=0.3.0
 # Swap linux/darwin and amd64/arm64 to match your machine
 curl -fsSL https://github.com/yottadynamics/yottacode/releases/download/v${VERSION}/yottacode_${VERSION}_linux_amd64.tar.gz \
   | tar -xz
