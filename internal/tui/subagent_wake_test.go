@@ -90,3 +90,90 @@ func TestShortTaskID(t *testing.T) {
 		t.Errorf("shortTaskID(short) = %q, want abc", got)
 	}
 }
+
+// TestInboxEventAfterReconcileIsNoOp pins the dedup guard on the
+// SubagentBackgroundDone inbox arm. MarkDone lands in the registry
+// strictly before the inbox send, so a completion racing a turn
+// boundary can be bannered + wake-queued by reconcileSubagentCompletions
+// BEFORE the delivered event is processed; without the guard the same
+// task double-bannered and queued a second wake turn (duplicate spend,
+// possibly duplicate actions).
+func TestInboxEventAfterReconcileIsNoOp(t *testing.T) {
+	reg := subagents.NewRegistry()
+	reg.Add(&subagents.Task{ID: "feedfacefeedface", AgentType: "review", Status: subagents.TaskRunning, Background: true, NotifyOnDone: true})
+	reg.MarkDone("feedfacefeedface", subagents.TaskCompleted, "the result", false, 0)
+
+	tr := &strings.Builder{}
+	m := Model{
+		subagentTasks:        reg,
+		banneredSubagentDone: map[string]bool{},
+		transcript:           tr,
+		subagentInbox:        make(chan agent.SubagentBackgroundDone, 1),
+	}
+	if !m.reconcileSubagentCompletions() {
+		t.Fatal("reconcile should banner + queue the wake first")
+	}
+	bannerLen := tr.Len()
+	if len(m.pendingSubagentWakes) != 1 {
+		t.Fatalf("reconcile should queue exactly one wake; got %d", len(m.pendingSubagentWakes))
+	}
+
+	// The still-queued inbox event for the same task arrives next.
+	m.turnActive = true // hold the wake at the boundary, as in the real race
+	next, _ := m.handleAgentEvent(agent.SubagentBackgroundDone{
+		TaskID: "feedfacefeedface", AgentType: "review", Result: "the result", NotifyOnDone: true,
+	})
+	nm := next.(Model)
+	if tr.Len() != bannerLen {
+		t.Errorf("duplicate inbox event must not re-banner; transcript grew:\n%s", tr.String())
+	}
+	if len(nm.pendingSubagentWakes) != 1 {
+		t.Errorf("duplicate inbox event must not queue a second wake; got %d", len(nm.pendingSubagentWakes))
+	}
+}
+
+// TestCanceledTaskBannersButNeverWakes covers both wake paths: a task
+// the user killed via /subagents stop still banners (the cancellation
+// is acknowledged on screen) but must NOT wake the model — the wake
+// message nudges "decide whether to retry", and re-running work the
+// user deliberately killed is the wrong default.
+func TestCanceledTaskBannersButNeverWakes(t *testing.T) {
+	// Reconcile path.
+	reg := subagents.NewRegistry()
+	tk := &subagents.Task{ID: "cancelcancel0001", AgentType: "review", Status: subagents.TaskRunning, Background: true, NotifyOnDone: true}
+	reg.Add(tk)
+	tk.CanceledByUser = true // what Registry.Cancel sets for /subagents stop
+	reg.MarkDone("cancelcancel0001", subagents.TaskCanceled, "", true, 0)
+
+	m := Model{subagentTasks: reg, banneredSubagentDone: map[string]bool{}, transcript: &strings.Builder{}}
+	if !m.reconcileSubagentCompletions() {
+		t.Fatal("canceled completion should still banner via reconcile")
+	}
+	if len(m.pendingSubagentWakes) != 0 {
+		t.Errorf("user-canceled task must not queue a wake via reconcile; got %v", m.pendingSubagentWakes)
+	}
+
+	// Inbox path.
+	reg2 := subagents.NewRegistry()
+	tk2 := &subagents.Task{ID: "cancelcancel0002", AgentType: "review", Status: subagents.TaskRunning, Background: true, NotifyOnDone: true}
+	reg2.Add(tk2)
+	tk2.CanceledByUser = true
+	reg2.MarkDone("cancelcancel0002", subagents.TaskCanceled, "", true, 0)
+	m2 := Model{
+		subagentTasks:        reg2,
+		banneredSubagentDone: map[string]bool{},
+		transcript:           &strings.Builder{},
+		subagentInbox:        make(chan agent.SubagentBackgroundDone, 1),
+		turnActive:           true,
+	}
+	next, _ := m2.handleAgentEvent(agent.SubagentBackgroundDone{
+		TaskID: "cancelcancel0002", AgentType: "review", Errored: true, NotifyOnDone: true,
+	})
+	nm := next.(Model)
+	if !nm.banneredSubagentDone["cancelcancel0002"] {
+		t.Error("canceled completion should still banner via the inbox arm")
+	}
+	if len(nm.pendingSubagentWakes) != 0 {
+		t.Errorf("user-canceled task must not queue a wake via the inbox arm; got %v", nm.pendingSubagentWakes)
+	}
+}

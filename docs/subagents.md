@@ -154,6 +154,30 @@ The `Agent` tool accepts `run_in_background: true`:
   duplicate the work itself, producing slow or contradictory
   results. Foreground delegation is the stable surface.
 
+### `notify_on_done` — async re-entry
+
+A background spawn can additionally pass `notify_on_done: true`. When
+that child finishes, its completion doesn't just banner — once the
+parent is idle (immediately, or at the next turn boundary if a turn is
+in flight), the TUI starts a **wake turn** that injects the full result
+as a clearly-labeled async completion, so the model can act on work it
+dispatched fire-and-forget without the user prompting again. Multiple
+completions queued during one turn collapse into a single wake turn.
+Two deliberate exceptions:
+
+- a queued **user message always wins** the turn boundary — wakes wait;
+- a task the user killed via `/subagents stop` banners but **never
+  wakes** the model (a wake would invite retrying work the user
+  deliberately canceled).
+
+Dropped completion events self-heal: the registry is reconciled at
+every turn boundary, so a completion that raced a busy UI still
+banners and (when requested) wakes. The user-driven counterpart is the
+`i` key in `/subagents` — inject any finished task's result on your
+own terms. Session-wide subagent spend is bounded by
+`[subagents] session_token_budget` (see
+[configuration.md](configuration.md#subagents)).
+
 The trade is between **context isolation** (both variants give it),
 **parallelism** (both variants now — foreground subagents emitted in
 the same assistant message fan out concurrently via the loop's

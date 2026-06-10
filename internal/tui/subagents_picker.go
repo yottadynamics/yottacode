@@ -173,9 +173,15 @@ func (m Model) updateSubagentsPicker(msg tea.KeyMsg) (Model, tea.Cmd) {
 				p.status = status
 				return m, nil
 			}
-			m.subagentsPickerOpen = false
-			m.subagentsPicker = nil
-			return next.(Model), cmd
+			// Close the picker on the model we RETURN. injectSubagentResult
+			// has a value receiver, so `next` was copied from m before any
+			// assignment here — clearing the fields on the local `m` after
+			// the copy was a dead store that left the picker open, swallowing
+			// keys while the wake turn streamed underneath it.
+			nm := next.(Model)
+			nm.subagentsPickerOpen = false
+			nm.subagentsPicker = nil
+			return nm, cmd
 		}
 	}
 	return m, nil

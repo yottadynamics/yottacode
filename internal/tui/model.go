@@ -3768,12 +3768,26 @@ func (m *Model) reconcileSubagentCompletions() bool {
 		}
 		m.appendLine("")
 		m.appendLine(renderSubagentBackgroundDone(done))
-		if t.NotifyOnDone {
+		// Same rule as the inbox arm: user-canceled tasks banner but
+		// never wake — the wake prompt invites a retry of work the
+		// user deliberately killed.
+		if t.NotifyOnDone && !t.CanceledByUser {
 			m.pendingSubagentWakes = append(m.pendingSubagentWakes, done)
 		}
 		healed = true
 	}
 	return healed
+}
+
+// subagentCanceledByUser reports whether a background task was killed
+// via /subagents stop. The SubagentBackgroundDone event doesn't carry
+// the flag, so wake gating consults the registry record.
+func (m Model) subagentCanceledByUser(taskID string) bool {
+	if m.subagentTasks == nil {
+		return false
+	}
+	t, ok := m.subagentTasks.Get(taskID)
+	return ok && t.CanceledByUser
 }
 
 // buildSubagentWakeMessage renders one or more finished background subagents
@@ -4377,15 +4391,33 @@ func (m Model) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 		// parent turn ends. Always re-arm the inbox listener so the
 		// next completion lands without delay; pair with the turn
 		// listener when a turn is active so both streams stay drained.
+		//
+		// Dedup against reconcileSubagentCompletions first: MarkDone
+		// lands in the registry strictly BEFORE the inbox send, and the
+		// inbox message races the turnEndedMsg drain — so a completion
+		// arriving at a turn boundary can be bannered (and its wake
+		// queued) by the reconcile pass before this delivered event is
+		// processed. Without the guard the same result double-banners
+		// and fires a SECOND wake turn (duplicate spend, possibly
+		// duplicate actions).
+		if m.banneredSubagentDone[e.TaskID] {
+			if m.turnActive {
+				return m, tea.Batch(waitForSubagentInbox(m.subagentInbox), waitForEvent(m.eventsCh, m.turnErrCh))
+			}
+			return m, waitForSubagentInbox(m.subagentInbox)
+		}
 		m.appendLine("")
 		m.appendLine(renderSubagentBackgroundDone(e))
 		m.banneredSubagentDone[e.TaskID] = true
-		if e.NotifyOnDone {
+		if e.NotifyOnDone && !m.subagentCanceledByUser(e.TaskID) {
 			// The spawner asked to be re-prompted with this result
 			// (notify_on_done). Queue it; if the model is idle, wake it
 			// now with a turn that injects the result so it can act —
 			// otherwise the turnEndedMsg drain starts that turn when the
 			// in-flight one finishes (a wake can't interrupt a live turn).
+			// User-canceled tasks are bannered but never wake the model:
+			// the wake message nudges "decide whether to retry", and
+			// re-running work the user just killed is the wrong default.
 			m.pendingSubagentWakes = append(m.pendingSubagentWakes, e)
 			if !m.turnActive {
 				next, cmd := m.startSubagentWakeTurn()
