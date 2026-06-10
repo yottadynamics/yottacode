@@ -51,10 +51,12 @@ the project uses semantic versioning once it's past `1.0.0`.
   always means `auto` — summarization runs on the fast model and every
   delegated subagent runs on the smart model (an explicit agent `model:`
   overrides this). Routing never switches the main-thread model mid-conversation,
-  so it stays a pure saving with no prompt-cache cost. A dim `routing:`
-  chip in the status bar shows when routing is active and which fast
-  model it delegates to; `/summarize` notices show `(on <model>)` when
-  compaction is routed. The fast/smart adapters are built whenever the
+  so it stays a pure saving with no prompt-cache cost. In auto the status
+  bar's primary segment becomes the short-tagged `<smart>:<fast>` pair
+  while the active model matches the smart slot (a later `/model` switch
+  shows the real active model with a dim `routing: auto (…)` note);
+  manual mode shows a dim `routing: manual` note. `/summarize` notices
+  show `(on <model>)` when compaction is routed. The fast/smart adapters are built whenever the
   pair is configured (even in `off` mode) so toggling never rebuilds
   them. `manual` mode (route only subagents with explicit `model:`
   frontmatter) remains a config-only setting.

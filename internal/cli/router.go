@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/yottadynamics/yottacode/internal/adapter"
@@ -94,9 +95,18 @@ func BuildRouterAdapters(cfg config.Config, opts ChatOptions) (*RouterAdapters, 
 	// the SAME model on two providers (e.g. "openai:gpt-4o",
 	// "azure:gpt-4o") — keying on the model name only would collapse them
 	// to one adapter and silently defeat the failover.
+	//
+	// Mutex-guarded: the build-time calls below are sequential, but the
+	// map outlives this function inside ra.Resolve, which runs on
+	// concurrent subagent goroutines (parallel foreground batches,
+	// background children). An unguarded map there is a fatal
+	// concurrent-read-write crash, not a recoverable race.
+	var builtMu sync.Mutex
 	built := map[string]adapter.Client{}
 	get := func(rc config.ResolvedCandidate) adapter.Client {
 		key := rc.Provider.Name + ":" + rc.Model
+		builtMu.Lock()
+		defer builtMu.Unlock()
 		if c, ok := built[key]; ok {
 			return c
 		}
@@ -106,6 +116,14 @@ func BuildRouterAdapters(cfg config.Config, opts ChatOptions) (*RouterAdapters, 
 	}
 	// buildChain returns a plain client for a one-model chain, or a
 	// failover MultiStreamer (primary first, fallbacks after) otherwise.
+	//
+	// Slot chains always dispatch in WRITTEN order (FallbackChain): entry
+	// 0 is the primary the user picked, the rest are fallbacks. The
+	// [router].policy knob applies to the candidates router (BuildRouter)
+	// only — applying cheap-first here would dispatch a cheap FALLBACK
+	// before the configured primary, contradicting the docs ("the first
+	// entry is the primary") and the FastModel/SmartModel labels the UI
+	// derives from chain[0].
 	buildChain := func(chain []config.ResolvedCandidate) (adapter.Client, error) {
 		if len(chain) == 1 {
 			return get(chain[0]), nil
@@ -120,11 +138,7 @@ func BuildRouterAdapters(cfg config.Config, opts ChatOptions) (*RouterAdapters, 
 				Profile:  client.Profile(),
 			})
 		}
-		policy, perr := pickPolicy(cfg.Router.Policy)
-		if perr != nil {
-			return nil, perr
-		}
-		return adapter.NewMultiStreamer(cands, policy, adapter.WithHealth(healthOptionsFromConfig(cfg.Router)))
+		return adapter.NewMultiStreamer(cands, adapter.FallbackChain{}, adapter.WithHealth(healthOptionsFromConfig(cfg.Router)))
 	}
 	fastClient, err := buildChain(fastChain)
 	if err != nil {

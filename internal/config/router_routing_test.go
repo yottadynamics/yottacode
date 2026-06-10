@@ -234,3 +234,42 @@ smart_model = "anthropic:claude-opus-4-6"
 		t.Fatalf("expected fast_model resolution error, got %v", err)
 	}
 }
+
+// TestRouter_RenderKeepsPolicyAndHealthForChains pins the config-clobber
+// regression: policy and the health knobs used to render only when the
+// CANDIDATES router was enabled, so a chain-only config (smart_models +
+// policy + health, exactly what docs/models.md's failover example shows)
+// lost all three keys on every /router picker write.
+func TestRouter_RenderKeepsPolicyAndHealthForChains(t *testing.T) {
+	cfg, err := Load(writeFile(t, routingConfigSrc))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	cfg.Router.Mode = RouterModeAuto
+	cfg.Router.FastModels = []string{"anthropic:claude-haiku-4-5"}
+	cfg.Router.SmartModels = []string{"anthropic:claude-opus-4-6", "anthropic:claude-haiku-4-5"}
+	cfg.Router.Policy = "fallback-chain"
+	cfg.Router.HealthWindowSeconds = 90
+	cfg.Router.HealthFailureThreshold = 3
+
+	rendered := Render(cfg)
+	for _, want := range []string{
+		`policy`,
+		`health_window_seconds    = 90`,
+		`health_failure_threshold = 3`,
+	} {
+		if !strings.Contains(rendered, want) {
+			t.Errorf("Render dropped %q from a chain-only config\n--- got ---\n%s", want, rendered)
+		}
+	}
+
+	reloaded, err := Load(writeFile(t, rendered))
+	if err != nil {
+		t.Fatalf("reload rendered config: %v", err)
+	}
+	if reloaded.Router.Policy != "fallback-chain" ||
+		reloaded.Router.HealthWindowSeconds != 90 ||
+		reloaded.Router.HealthFailureThreshold != 3 {
+		t.Errorf("round-trip lost policy/health: %+v", reloaded.Router)
+	}
+}

@@ -2982,13 +2982,26 @@ func (m Model) renderStatus() string {
 		return strings.Join(segs, sep)
 	}
 
-	// Auto routing: the primary segment IS the routing pair. Both halves
-	// are short-tagged (vendor prefix stripped) so the pair stays compact;
+	// Auto routing: the primary segment IS the routing pair — but only
+	// while the ACTIVE model still matches the smart slot. Configuring
+	// the smart model switches the active model on picker close, so the
+	// two normally agree; a later /model or /provider switch breaks that,
+	// and the pair display would then claim interactive turns run on the
+	// smart model when they don't. In the diverged case, fall through to
+	// the normal active-model segment with a dim routing note so the bar
+	// never lies about what the conversation runs on. Both halves are
+	// short-tagged (vendor prefix stripped) so the pair stays compact;
 	// there's no provider tag and no separate routing chip to drop, so the
 	// narrow-screen cascade below doesn't apply here.
 	if routerModeOrOff(m.routerMode) == config.RouterModeAuto && m.router != nil {
-		pair := shortModelTag(m.router.SmartModel) + ":" + shortModelTag(m.router.FastModel)
-		return build(dot+"  "+renderModelName(pair), "")
+		if m.modelName == m.router.SmartModel {
+			pair := shortModelTag(m.router.SmartModel) + ":" + shortModelTag(m.router.FastModel)
+			return build(dot+"  "+renderModelName(pair), "")
+		}
+		model := renderModelName(m.modelName)
+		routingSeg := lipgloss.NewStyle().Foreground(colorDim).Render(
+			"routing: auto (" + shortModelTag(m.router.SmartModel) + ":" + shortModelTag(m.router.FastModel) + ")")
+		return build(dot+"  "+model, routingSeg)
 	}
 
 	// off / manual: show the active model (+ provider). Manual mode adds a

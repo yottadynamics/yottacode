@@ -494,10 +494,12 @@ TUI with the **`/router`** picker, which persists them here.
 
 Either slot can be a **failover chain** via the plural form
 `fast_models` / `smart_models = ["<primary>", "<fallback>", …]`, which
-fails over primary → fallbacks (using `policy` + the health knobs) when
-the primary errors or times out. A slot uses the singular or the plural
-form, not both. See [`models.md`](models.md#cache-safe-task-routing) for
-the cost rationale, the auto heuristic, the picker, and failover chains.
+fails over primary → fallbacks in written order (sharing the health
+knobs; `policy` orders the multi-provider candidates router only) when
+the primary errors before producing output. A slot uses the singular or
+the plural form, not both. See
+[`models.md`](models.md#cache-safe-task-routing) for the cost
+rationale, the auto heuristic, the picker, and failover chains.
 
 **Multi-provider failover** (separate feature, same block) dispatches
 each main-thread turn across an ordered candidate list, falling through

@@ -115,10 +115,19 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 	// Cache-safe task routing: when [router].mode is "manual"/"auto",
 	// resolve the fast/smart model adapters. These drive isolated
 	// contexts only (subagents + summarization), so they never disturb
-	// the main-thread prompt cache. nil when routing is off.
+	// the main-thread prompt cache. nil when no pair is configured.
 	routerAdapters, err := cli.BuildRouterAdapters(fileCfg, opts)
 	if err != nil {
-		return err
+		if fileCfg.Router.RoutingEnabled() {
+			return err
+		}
+		// Routing is OFF: a stale pair (e.g. the provider it referenced
+		// was removed after the models were picked) must not stop the
+		// session — pre-router builds started fine without any pair.
+		// Warn and run unrouted; /router will re-surface the error if
+		// the user tries to turn it back on.
+		fmt.Fprintln(os.Stderr, "warning: [router] pair unresolved (routing is off, continuing without it): "+err.Error())
+		routerAdapters = nil
 	}
 
 	// Load skills early so the resolved set can flow into both the

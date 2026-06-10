@@ -124,14 +124,26 @@ func Render(cfg Config) string {
 			fmt.Fprintf(&b, "%q", c)
 		}
 		b.WriteString("]\n")
+	} else if hasTaskRouting && cfg.Router.Policy != "" {
+		// A chain-only config can still carry a policy key (the failover
+		// docs name it right next to smart_models). It must survive a
+		// rewrite: every /router picker commit goes through here, and
+		// silently stripping user-set keys is the config-clobber class
+		// this project has been bitten by before.
+		fmt.Fprintf(&b, "%-13s= %q\n", "policy", cfg.Router.Policy)
+	}
+	// Health knobs apply to ANY failover surface — the candidates router
+	// and fast/smart slot chains both feed healthOptionsFromConfig — so
+	// they render whenever set, not only when the candidates router is
+	// enabled (which used to drop them from chain-only configs on every
+	// picker write).
+	if hasTaskRouting || hasFallback {
 		if cfg.Router.HealthWindowSeconds > 0 {
 			fmt.Fprintf(&b, "health_window_seconds    = %d\n", cfg.Router.HealthWindowSeconds)
 		}
 		if cfg.Router.HealthFailureThreshold > 0 {
 			fmt.Fprintf(&b, "health_failure_threshold = %d\n", cfg.Router.HealthFailureThreshold)
 		}
-	}
-	if hasTaskRouting || hasFallback {
 		b.WriteString("\n")
 	}
 

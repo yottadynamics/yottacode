@@ -457,14 +457,16 @@ func TestSwitchActiveModelToRef(t *testing.T) {
 	if err != nil {
 		t.Fatalf("session: %v", err)
 	}
+	staleAdapter := &scriptedAdapter{}
 	m := Model{
-		parentCtx:  context.Background(),
-		modelName:  "claude-haiku-4-5",
-		baseURL:    "https://api.anthropic.com",
-		provider:   "anthropic",
-		cfg:        agent.LoopConfig{Adapter: &scriptedAdapter{}},
-		sess:       sess,
-		transcript: &strings.Builder{},
+		parentCtx:    context.Background(),
+		modelName:    "claude-haiku-4-5",
+		baseURL:      "https://api.anthropic.com",
+		provider:     "anthropic",
+		cfg:          agent.LoopConfig{Adapter: staleAdapter},
+		subagentTool: &agent.AgentTool{Adapter: staleAdapter},
+		sess:         sess,
+		transcript:   &strings.Builder{},
 	}
 
 	m, _ = m.switchActiveModelToRef("anthropic:claude-opus-4-6")
@@ -473,6 +475,15 @@ func TestSwitchActiveModelToRef(t *testing.T) {
 	}
 	if m.sess.Model != "claude-opus-4-6" {
 		t.Errorf("session model = %q, want claude-opus-4-6", m.sess.Model)
+	}
+	// The shared AgentTool must follow the conversation adapter — every
+	// other model/provider switch path syncs it; without this, subagents
+	// spawned after a /router close-switch run on the stale adapter.
+	if m.subagentTool.Adapter == agent.Streamer(staleAdapter) {
+		t.Error("switchActiveModelToRef must sync subagentTool.Adapter off the stale adapter")
+	}
+	if m.subagentTool.Adapter != agent.Streamer(m.cfg.Adapter) {
+		t.Error("subagentTool.Adapter and cfg.Adapter must point at the same rebuilt adapter")
 	}
 }
 

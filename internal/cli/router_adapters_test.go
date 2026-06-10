@@ -195,3 +195,41 @@ func TestBuildRouterAdapters_SameModelDifferentProvidersDistinctClients(t *testi
 		t.Error("same-model chain on two providers collapsed to one adapter — failover is a no-op (memo collision)")
 	}
 }
+
+// A stale pair (provider removed after the models were picked) errors
+// out of BuildRouterAdapters regardless of mode — the run.go/oneshot.go
+// callers degrade that to a warning when routing is OFF (a session that
+// doesn't route must not refuse to start over a leftover pair), and
+// abort only when routing is enabled.
+func TestBuildRouterAdapters_StalePairErrorsEvenWhenOff(t *testing.T) {
+	cfg := routingTestConfig()
+	cfg.Router.Mode = config.RouterModeOff
+	cfg.Router.FastModel = "ghost-provider:claude-haiku-4-5"
+	cfg.Router.SmartModel = "anthropic:claude-opus-4-6"
+	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+
+	if _, err := BuildRouterAdapters(cfg, ChatOptions{}); err == nil {
+		t.Fatal("expected an error for a pair referencing an unknown provider")
+	}
+}
+
+// Slot chains dispatch in WRITTEN order and ignore [router].policy —
+// that knob orders the candidates router only. Pinned by building with
+// a policy name pickPolicy rejects: chains must succeed anyway (they
+// no longer consult it); the candidates router still validates it.
+func TestBuildRouterAdapters_ChainsIgnoreCandidatesPolicy(t *testing.T) {
+	cfg := routingTestConfig()
+	cfg.Router.Mode = config.RouterModeAuto
+	cfg.Router.Policy = "bogus-policy"
+	cfg.Router.FastModels = []string{"anthropic:claude-haiku-4-5"}
+	cfg.Router.SmartModels = []string{"anthropic:claude-opus-4-6", "anthropic:claude-haiku-4-5"}
+	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+
+	ra, err := BuildRouterAdapters(cfg, ChatOptions{})
+	if err != nil {
+		t.Fatalf("chains must not consult the candidates policy; got %v", err)
+	}
+	if ra.SmartModel != "claude-opus-4-6" {
+		t.Errorf("SmartModel = %q, want the chain's written primary", ra.SmartModel)
+	}
+}

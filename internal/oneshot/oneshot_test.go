@@ -13,6 +13,7 @@ import (
 
 	"github.com/yottadynamics/yottacode/internal/adapter"
 	"github.com/yottadynamics/yottacode/internal/agent"
+	"github.com/yottadynamics/yottacode/internal/cli"
 	"github.com/yottadynamics/yottacode/internal/memory"
 )
 
@@ -276,4 +277,22 @@ func (m *fakeApprovalTool) RequiresApproval(string) bool { return true }
 func (m *fakeApprovalTool) PreviewCall(string) string    { return m.name + "()" }
 func (m *fakeApprovalTool) Execute(_ context.Context, _ string) (string, error) {
 	return "should not run", nil
+}
+
+// oneshotRouterResolve must be nil in mode off even when a pair is
+// configured: adapters build regardless of mode (so /router can toggle
+// live), but "off" promises every agent — including ones with explicit
+// model: frontmatter — runs on the active model. The TUI gates its
+// resolver the same way; this pins oneshot parity.
+func TestOneshotRouterResolve_GatedOnMode(t *testing.T) {
+	ra := &cli.RouterAdapters{Resolve: func(string) adapter.Streamer { return nil }}
+	if got := oneshotRouterResolve(ra, false); got != nil {
+		t.Error("resolver must be nil when routing is off")
+	}
+	if got := oneshotRouterResolve(ra, true); got == nil {
+		t.Error("resolver must be wired when routing is enabled")
+	}
+	if got := oneshotRouterResolve(nil, true); got != nil {
+		t.Error("nil adapters must yield a nil resolver")
+	}
 }

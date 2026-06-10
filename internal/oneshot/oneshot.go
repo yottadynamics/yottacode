@@ -132,10 +132,16 @@ func Run(ctx context.Context, opts cli.ChatOptions, prompt string) error {
 	}
 	// Cache-safe task routing: resolve fast/smart adapters for subagent
 	// routing (oneshot has no /summarize loop, so only subagents apply).
-	// nil when [router].mode is off.
+	// nil when no pair is configured.
 	routerAdapters, err := cli.BuildRouterAdapters(fileCfg, opts)
 	if err != nil {
-		return err
+		if fileCfg.Router.RoutingEnabled() {
+			return err
+		}
+		// Routing OFF + stale pair: degrade to unrouted instead of
+		// refusing to run — mirrors the TUI's startup behavior.
+		fmt.Fprintln(os.Stderr, "warning: [router] pair unresolved (routing is off, continuing without it): "+err.Error())
+		routerAdapters = nil
 	}
 	var profile adapter.ProviderProfile
 	if router != nil {
@@ -325,7 +331,7 @@ func Run(ctx context.Context, opts cli.ChatOptions, prompt string) error {
 		SmartAdapter:    oneshotRouterSmart(routerAdapters),
 		SmartModel:      oneshotRouterSmartModel(routerAdapters),
 		RouteAuto:       fileCfg.Router.RoutingAuto(),
-		ModelResolver:   oneshotRouterResolve(routerAdapters),
+		ModelResolver:   oneshotRouterResolve(routerAdapters, fileCfg.Router.RoutingEnabled()),
 	}
 	reg.Register(agentTool)
 	// Even though oneshot rejects background spawns (AllowBackground=
@@ -620,8 +626,14 @@ func oneshotRouterSmartModel(ra *cli.RouterAdapters) string {
 	return ra.SmartModel
 }
 
-func oneshotRouterResolve(ra *cli.RouterAdapters) func(string) agent.Streamer {
-	if ra == nil || ra.Resolve == nil {
+// oneshotRouterResolve is gated on the active mode, mirroring the TUI's
+// routerModelResolver: in mode "off" the resolver must be nil even when
+// a pair is configured (adapters build regardless of mode so /router
+// can toggle live), otherwise an off-mode run would still route agents
+// with explicit `model:` frontmatter — "off" promises everything runs
+// on the active model.
+func oneshotRouterResolve(ra *cli.RouterAdapters, enabled bool) func(string) agent.Streamer {
+	if ra == nil || ra.Resolve == nil || !enabled {
 		return nil
 	}
 	return func(model string) agent.Streamer {
