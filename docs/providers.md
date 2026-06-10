@@ -161,7 +161,7 @@ export YOTTACODE_BASE_URL=https://generativelanguage.googleapis.com
 export YOTTACODE_API_KEY=...
 ```
 
-The native Gemini adapter uses Google's HTTP API. The model picker uses yottacode's embedded Gemini catalog plus the local models.dev snapshot, so newly listed Gemini models can appear in `/model` before the generated provider catalog is refreshed. Gemini API errors are summarized to the HTTP status, Google status, primary message, and retry hint instead of dumping the full JSON error envelope.
+The native Gemini adapter uses Google's HTTP API. Gemini is a curated provider: the default-model picker in the first-run wizard and `/provider add`, the `/model` picker, and `/model list` all read yottacode's embedded Gemini catalog plus the local models.dev snapshot, so newly listed Gemini models can appear before the generated provider catalog is refreshed. Gemini API errors are summarized to the HTTP status, Google status, primary message, and retry hint instead of dumping the full JSON error envelope.
 
 ## xAI
 

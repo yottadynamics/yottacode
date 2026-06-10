@@ -325,9 +325,19 @@ func (m wizardModel) configuredCount() int {
 	return n
 }
 
-// Init starts the spinner ticker for the live validation glyph.
+// Init starts the spinner ticker for the live validation glyph and
+// warms the models.dev cache in the background. The warm matters
+// here: stepConfigure reads catalog.Curated synchronously when
+// building the Gemini model picker, and on a fresh install (no disk
+// cache yet) a cold read could block the UI on the one-shot network
+// fetch. Warming at Init makes that read an in-memory hit by the
+// time the user reaches the configure step; offline, the embedded
+// snapshot floor keeps the picker populated either way.
 func (m wizardModel) Init() tea.Cmd {
-	return m.spin.Tick
+	return tea.Batch(
+		m.spin.Tick,
+		func() tea.Msg { catalog.WarmModelsDev(); return nil },
+	)
 }
 
 // validationDoneMsg is sent when an async key validation completes.
@@ -1266,19 +1276,22 @@ func (m wizardModel) newProviderInputs(e CatalogEntry) providerInputs {
 		in.chosenModel = copilotDefault
 	}
 	// For curated kinds (anthropic/openai/gemini), source the model
-	// list from the embedded catalog. Empty when the maintainer hasn't
-	// run `go run ./cmd/yotta-models refresh` yet — in that case we
+	// list from the curated catalog — the embedded catalog.gen.json,
+	// augmented for Gemini from the local models.dev snapshot so the
+	// picker offers newly published IDs even when the generated
+	// catalog lags. Empty when the maintainer hasn't run
+	// `go run ./cmd/yotta-models refresh` yet — in that case we
 	// fall back to the free-form textinput so the wizard remains
 	// usable without a populated catalog.
 	//
 	// openai-auth is curated but its model list is per-user and only
 	// populated after the post-login scan — so the catalog is
-	// intentionally empty here. We deliberately skip Get() so the UI
-	// renders the textinput (pre-filled with gpt-5.5) plus the
+	// intentionally empty here. We deliberately skip Curated() so the
+	// UI renders the textinput (pre-filled with gpt-5.5) plus the
 	// "discovered after sign-in" hint instead of the misleading
 	// "yotta-models refresh" suggestion.
 	if catalog.IsCuratedKind(e.Kind) && e.Kind != "openai-auth" && e.Kind != "copilot" {
-		in.curatedModels = catalog.Get(e.Kind)
+		in.curatedModels = catalog.Curated(e.Kind)
 		if len(in.curatedModels) > 0 {
 			in.chosenModel = in.curatedModels[0].ID
 		}

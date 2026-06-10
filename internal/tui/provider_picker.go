@@ -432,15 +432,16 @@ func populateAddFields(p *providerPickerState, e wizard.CatalogEntry, inputWidth
 	}
 
 	// Default model. For curated kinds (anthropic/openai/gemini) we
-	// load the embedded catalog and let the user pick a model with
-	// Up/Down — same UX the wizard's stepConfigure offers, so a user
-	// adding a provider mid-session doesn't have to remember the
-	// current model tag. The textinput is still kept (pre-filled with
-	// the catalog default and editable) so the user can still type in
-	// a non-catalog tag — useful when our embedded list lags a vendor
-	// release. When the catalog is empty for a curated kind (Gemini
-	// today, anything pre-refresh) we fall back to the free-form
-	// placeholder; the renderer surfaces a "(catalog empty — run
+	// load the curated catalog (embedded catalog.gen.json, plus the
+	// local models.dev snapshot for Gemini) and let the user pick a
+	// model with Up/Down — same UX the wizard's stepConfigure offers,
+	// so a user adding a provider mid-session doesn't have to remember
+	// the current model tag. The textinput is still kept (pre-filled
+	// with the catalog default and editable) so the user can still
+	// type in a non-catalog tag — useful when our list lags a vendor
+	// release. When the catalog is empty for a curated kind (anything
+	// pre-refresh) we fall back to the free-form placeholder; the
+	// renderer surfaces a "(catalog empty — run
 	// `go run ./cmd/yotta-models refresh`)" hint, matching the
 	// wizard's wording so the operator knows the fix.
 	model := textinput.New()
@@ -467,7 +468,7 @@ func populateAddFields(p *providerPickerState, e wizard.CatalogEntry, inputWidth
 	case e.Kind == "copilot":
 		model.SetValue("claude-haiku-4.5")
 	case catalog.IsCuratedKind(e.Kind):
-		p.addCuratedModels = catalog.Get(e.Kind)
+		p.addCuratedModels = catalog.Curated(e.Kind)
 	}
 	// Always start the model field empty for non-openai-auth — even
 	// when the curated catalog is populated, we want the user to make

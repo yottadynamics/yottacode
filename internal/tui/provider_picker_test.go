@@ -8,6 +8,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/yottadynamics/yottacode/internal/catalog"
 	"github.com/yottadynamics/yottacode/internal/wizard"
 )
 
@@ -1665,5 +1666,38 @@ func TestProviderPicker_AddOpenAIAuthStartsInlineLogin(t *testing.T) {
 	}
 	if cmd == nil {
 		t.Errorf("expected a tea.Cmd to drive StartLogin from picker path; got nil")
+	}
+}
+
+// TestProviderPicker_GeminiAddFormUsesCuratedCatalog verifies the
+// /provider Add form's "Default model" picker for Gemini shows the
+// curated catalog — embedded entries plus the models.dev merge — the
+// same list the /model picker overlay offers. Guards against the form
+// regressing to the raw embedded catalog (catalog.Get), which would
+// hide newly published Gemini IDs from the default-model pick.
+func TestProviderPicker_GeminiAddFormUsesCuratedCatalog(t *testing.T) {
+	m := newTestModel(t)
+	seedProviderConfig(t)
+	m, _ = typeAndEnter(t, m, "/provider")
+	m = navigateToMenuItem(t, m, "Add")
+	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter}) // → addKindMode
+	m = navigateToKind(t, m, "gemini")
+	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter}) // → addFieldsMode
+
+	got := m.providerPicker.addCuratedModels
+	if len(got) == 0 {
+		t.Fatalf("gemini add form should populate the curated model picker")
+	}
+	ids := map[string]bool{}
+	for _, mm := range got {
+		ids[mm.ID] = true
+	}
+	for _, mm := range catalog.Get("gemini") {
+		if !ids[mm.ID] {
+			t.Errorf("embedded gemini model %s missing from add-form picker", mm.ID)
+		}
+	}
+	if merged := modelsDevOnlyGeminiID(t); !ids[merged] {
+		t.Errorf("add-form picker missing models.dev-merged model %s", merged)
 	}
 }

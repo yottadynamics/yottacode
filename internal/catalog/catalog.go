@@ -93,7 +93,10 @@ func Get(provider string) []Model {
 
 // Curated returns the offline model catalog for a curated provider kind.
 // Gemini is augmented from the local models.dev snapshot so the picker can
-// offer newly published Gemini IDs even when catalog.gen.json lags.
+// offer newly published Gemini IDs even when catalog.gen.json lags. This is
+// the entry point every picker surface (wizard, /provider add, /model) and
+// model-ownership lookup should use for curated kinds; reach for Get only
+// when the raw embedded catalog is specifically wanted.
 func Curated(provider string) []Model {
 	models := Get(provider)
 	if provider == "gemini" {

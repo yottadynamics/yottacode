@@ -958,8 +958,9 @@ func formatProviderList(cfg config.Config, activeName string) string {
 }
 
 // formatProviderModels lists one profile's catalog. For curated
-// providers (anthropic/openai/gemini) it reads the embedded catalog;
-// for everything else it shows the configured default + API-key
+// providers (anthropic/openai/gemini) it reads the curated catalog
+// (embedded, plus the local models.dev snapshot for Gemini); for
+// everything else it shows the configured default + API-key
 // status and points the user at /model for the live picker. /model
 // list is sync (writes to the transcript directly) so we can't do a
 // network round-trip here — that's the picker's job.
@@ -968,7 +969,7 @@ func formatProviderModels(p *config.Provider, activeModel string) string {
 	fmt.Fprintf(&b, "models for %s (%s):\n", p.Name, p.Kind)
 
 	if catalog.IsCurated(*p) {
-		models := catalog.Get(p.Kind)
+		models := catalog.Curated(p.Kind)
 		if len(models) == 0 {
 			if p.Kind == "openai-auth" {
 				fmt.Fprintln(&b, "  (no models discovered yet — run `yottacode openai-auth login` to populate)")
