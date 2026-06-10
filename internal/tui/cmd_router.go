@@ -96,7 +96,12 @@ func applyRoutingOff(m *Model) {
 		m.subagentTool.RouteAuto = false
 		m.subagentTool.ModelResolver = nil
 	}
-	m.summarizerAdapter = m.cfg.Adapter
+	// nil, NOT a snapshot of m.cfg.Adapter: chooseSummarizer falls
+	// through to the LIVE m.cfg.Adapter when no summarizer is pinned.
+	// Snapshotting the adapter here froze compaction onto whatever
+	// model was active at /router off — a later /model switch kept
+	// summarizing on the old endpoint.
+	m.summarizerAdapter = nil
 	m.summarizerModel = ""
 	m.routerMode = config.RouterModeOff
 }

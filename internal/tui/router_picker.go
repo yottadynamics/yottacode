@@ -536,6 +536,14 @@ func (m Model) switchActiveModelToRef(ref string) (Model, tea.Cmd) {
 	}
 	ad := adapter.NewWithConfig(m.adapterConfig(model, m.baseURL))
 	m.cfg.Adapter = ad
+	// Keep the shared AgentTool on the same adapter as the conversation —
+	// the same sync every other model/provider switch path does. Without
+	// it, subagents spawned after a /router close-switch inherit the
+	// STALE adapter (in off/manual modes, and in auto's no-SmartAdapter
+	// fallback) and silently run on the previous model/endpoint.
+	if m.subagentTool != nil {
+		m.subagentTool.Adapter = ad
+	}
 	m.providerProfile = ad.Profile()
 	m.modelName = model
 	if m.sess != nil {

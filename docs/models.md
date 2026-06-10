@@ -106,16 +106,19 @@ the plural form with a primary followed by fallbacks:
   mode         = "auto"
   fast_model   = "anthropic:claude-haiku-4-5"                   # single is fine
   smart_models = ["anthropic:claude-opus-4-6", "openai:gpt-4o"] # primary, then fallback
-  policy                   = "fallback-chain"   # reused for the chains
   health_window_seconds    = 60
   health_failure_threshold = 3
 ```
 
-The first entry is the primary; on failure/timeout the call falls through
-to the next, using the same `policy` + health knobs as the multi-provider
-router (a flapping provider is skipped until it recovers). So a subagent
-or a summarization call survives a smart-model outage instead of failing.
-A slot uses the singular **or** the plural form, not both.
+The first entry is always the primary — chains dispatch in written
+order (the `policy` knob orders the multi-provider candidates router
+only, not these slots). On an error before any output the call falls
+through to the next entry, sharing the health knobs with the
+multi-provider router (a flapping provider is skipped until it
+recovers). There is no router-level timeout — a hung call is bounded
+by the underlying adapter/provider timeouts, not by the chain. So a
+subagent or a summarization call survives a smart-model outage instead
+of failing. A slot uses the singular **or** the plural form, not both.
 
 When a fallover happens it's surfaced loudly, the same way main-thread
 fallbacks already are — a warm-yellow line tagged with where it occurred:
