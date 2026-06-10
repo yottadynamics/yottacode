@@ -288,6 +288,112 @@ func TestGemini_RoundTripsToolResultAsFunctionResponse(t *testing.T) {
 	}
 }
 
+// TestGemini_CapturesThoughtSignatureFromFunctionCall verifies the
+// stream parser lifts thoughtSignature off functionCall parts into the
+// neutral ToolCall. Thinking models (Gemini 3) attach it and demand it
+// back on the next turn; dropping it here is what produced "HTTP 400
+// INVALID_ARGUMENT: Function call is missing a thought_signature in
+// functionCall parts" after every tool execution.
+func TestGemini_CapturesThoughtSignatureFromFunctionCall(t *testing.T) {
+	body := geminiSSEBody(
+		`{"candidates":[{"content":{"parts":[{"functionCall":{"name":"read_file","args":{"path":"main.go"}},"thoughtSignature":"sig-abc123"}],"role":"model"},"finishReason":"STOP"}]}`,
+	)
+	srv, _ := geminiCapturingMockServer(t, body)
+
+	ad := newGeminiAdapter(Config{BaseURL: srv.URL, APIKey: "test", Model: "gemini-pro-latest"})
+	ch := ad.ChatStream(context.Background(), []Message{{Role: RoleUser, Content: "read main.go"}}, []Tool{
+		{Name: "read_file", Description: "read a file", Schema: map[string]any{"type": "object"}},
+	})
+
+	_, _, final, errs := drainEvents(ch)
+	if len(errs) > 0 {
+		t.Fatalf("errors: %v", errs)
+	}
+	if final == nil || len(final.ToolCalls) != 1 {
+		t.Fatalf("final = %+v, want one ToolCall", final)
+	}
+	if got := final.ToolCalls[0].ThoughtSignature; got != "sig-abc123" {
+		t.Errorf("ToolCall.ThoughtSignature = %q, want sig-abc123", got)
+	}
+}
+
+// TestGemini_ReplaysThoughtSignatureOnHistory verifies the captured
+// signature is sent back on the history's functionCall part on the
+// next turn of the tool loop — the round-trip thinking models require.
+func TestGemini_ReplaysThoughtSignatureOnHistory(t *testing.T) {
+	body := geminiSSEBody(`{"candidates":[{"content":{"parts":[{"text":"done"}],"role":"model"},"finishReason":"STOP"}]}`)
+	srv, cap := geminiCapturingMockServer(t, body)
+
+	ad := newGeminiAdapter(Config{BaseURL: srv.URL, APIKey: "test", Model: "gemini-pro-latest"})
+	history := []Message{
+		{Role: RoleUser, Content: "read main.go"},
+		{Role: RoleAssistant, ToolCalls: []ToolCall{
+			{ID: "call_1", Name: "read_file", ArgsJSON: `{"path":"main.go"}`, ThoughtSignature: "sig-abc123"},
+		}},
+		{Role: RoleTool, ToolCallID: "call_1", Content: "package main"},
+	}
+	ch := ad.ChatStream(context.Background(), history, nil)
+	_, _, _, errs := drainEvents(ch)
+	if len(errs) > 0 {
+		t.Fatalf("errors: %v", errs)
+	}
+
+	cap.mu.Lock()
+	defer cap.mu.Unlock()
+	var req geminiRequest
+	if err := json.Unmarshal(cap.body, &req); err != nil {
+		t.Fatalf("captured body not JSON: %v", err)
+	}
+	if len(req.Contents) != 3 {
+		t.Fatalf("Contents len = %d, want 3", len(req.Contents))
+	}
+	model := req.Contents[1]
+	if len(model.Parts) != 1 || model.Parts[0].FunctionCall == nil {
+		t.Fatalf("model turn parts = %+v, want one functionCall", model.Parts)
+	}
+	if got := model.Parts[0].ThoughtSignature; got != "sig-abc123" {
+		t.Errorf("replayed thoughtSignature = %q, want sig-abc123", got)
+	}
+}
+
+// TestGemini_InjectsDummySignatureWhenHistoryLacksOne covers histories
+// with signature-less functionCalls: turns recorded before signatures
+// were captured, or migrated from another provider via a mid-session
+// /model switch. Google documents a bypass token for exactly this
+// case; without it the whole session bricks on the next request.
+func TestGemini_InjectsDummySignatureWhenHistoryLacksOne(t *testing.T) {
+	body := geminiSSEBody(`{"candidates":[{"content":{"parts":[{"text":"done"}],"role":"model"},"finishReason":"STOP"}]}`)
+	srv, cap := geminiCapturingMockServer(t, body)
+
+	ad := newGeminiAdapter(Config{BaseURL: srv.URL, APIKey: "test", Model: "gemini-pro-latest"})
+	history := []Message{
+		{Role: RoleUser, Content: "read main.go"},
+		{Role: RoleAssistant, ToolCalls: []ToolCall{
+			{ID: "call_1", Name: "read_file", ArgsJSON: `{"path":"main.go"}`},
+		}},
+		{Role: RoleTool, ToolCallID: "call_1", Content: "package main"},
+	}
+	ch := ad.ChatStream(context.Background(), history, nil)
+	_, _, _, errs := drainEvents(ch)
+	if len(errs) > 0 {
+		t.Fatalf("errors: %v", errs)
+	}
+
+	cap.mu.Lock()
+	defer cap.mu.Unlock()
+	var req geminiRequest
+	if err := json.Unmarshal(cap.body, &req); err != nil {
+		t.Fatalf("captured body not JSON: %v", err)
+	}
+	model := req.Contents[1]
+	if len(model.Parts) != 1 || model.Parts[0].FunctionCall == nil {
+		t.Fatalf("model turn parts = %+v, want one functionCall", model.Parts)
+	}
+	if got := model.Parts[0].ThoughtSignature; got != geminiDummyThoughtSignature {
+		t.Errorf("thoughtSignature = %q, want documented dummy %q", got, geminiDummyThoughtSignature)
+	}
+}
+
 func TestGemini_TranslatesToolsToFunctionDeclarations(t *testing.T) {
 	body := geminiSSEBody(`{"candidates":[{"content":{"parts":[{"text":"ok"}],"role":"model"},"finishReason":"STOP"}]}`)
 	srv, cap := geminiCapturingMockServer(t, body)

@@ -163,6 +163,8 @@ export YOTTACODE_API_KEY=...
 
 The native Gemini adapter uses Google's HTTP API. Gemini is a curated provider: the default-model picker in the first-run wizard and `/provider add`, the `/model` picker, and `/model list` all read yottacode's embedded Gemini catalog plus the local models.dev snapshot, so newly listed Gemini models can appear before the generated provider catalog is refreshed. Gemini API errors are summarized to the HTTP status, Google status, primary message, and retry hint instead of dumping the full JSON error envelope.
 
+Thinking Gemini models (Gemini 3 era) attach an opaque `thoughtSignature` to each function call and require it back when the conversation history is replayed; the adapter round-trips it automatically. For history that carries no signature — turns recorded by older yottacode versions, or a session switched to Gemini from another provider mid-conversation — the adapter substitutes Google's documented bypass token so the session keeps working.
+
 ## xAI
 
 ```bash

@@ -16,6 +16,14 @@ type ToolCall struct {
 	ID       string `json:"id"`
 	Name     string `json:"name"`
 	ArgsJSON string `json:"args_json"`
+	// ThoughtSignature is Gemini's opaque reasoning-continuity token.
+	// Thinking models (Gemini 3, and 2.5 with thinking enabled) attach
+	// it to functionCall parts and REQUIRE it to be replayed on those
+	// parts when the history goes back — otherwise the API rejects the
+	// next turn with "Function call is missing a thought_signature in
+	// functionCall parts." Empty for every other provider; omitempty
+	// keeps it out of their persisted transcripts.
+	ThoughtSignature string `json:"thought_signature,omitempty"`
 }
 
 // Citation is a source reference attached to an assistant message by a

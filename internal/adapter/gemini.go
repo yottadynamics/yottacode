@@ -160,9 +160,10 @@ func (g *geminiAdapter) ChatStream(ctx context.Context, messages []Message, tool
 						}
 						toolCallSeq++
 						toolCalls = append(toolCalls, ToolCall{
-							ID:       fmt.Sprintf("call_%d", toolCallSeq),
-							Name:     part.FunctionCall.Name,
-							ArgsJSON: argsJSON,
+							ID:               fmt.Sprintf("call_%d", toolCallSeq),
+							Name:             part.FunctionCall.Name,
+							ArgsJSON:         argsJSON,
+							ThoughtSignature: part.ThoughtSignature,
 						})
 					case part.Text != "":
 						kind := EventTokenDelta
@@ -304,6 +305,7 @@ type geminiContent struct {
 type geminiPart struct {
 	Text             string                  `json:"text,omitempty"`
 	Thought          bool                    `json:"thought,omitempty"`
+	ThoughtSignature string                  `json:"thoughtSignature,omitempty"`
 	InlineData       *geminiInlineData       `json:"inlineData,omitempty"`
 	FunctionCall     *geminiFunctionCall     `json:"functionCall,omitempty"`
 	FunctionResponse *geminiFunctionResponse `json:"functionResponse,omitempty"`
@@ -360,6 +362,17 @@ type geminiUsageMetadata struct {
 
 // --- conversion helpers ---------------------------------------------
 
+// geminiDummyThoughtSignature is Google's documented bypass token for
+// replayed functionCall parts whose real thought signature is
+// unavailable — history recorded before signatures were captured, or a
+// conversation migrated from another provider mid-session (/model
+// switch). Thinking models hard-reject histories whose functionCall
+// parts carry no signature ("Function call is missing a
+// thought_signature in functionCall parts"); the documented dummy
+// passes that validation, and models that don't validate signatures
+// ignore the field. Real signatures always take precedence.
+const geminiDummyThoughtSignature = "context_engineering_is_the_way_to_go"
+
 // buildGeminiRequest converts the neutral []Message + []Tool surface
 // into Gemini's wire shape. System messages lift to systemInstruction;
 // assistant turns become role="model"; tool-result messages become
@@ -402,7 +415,12 @@ func buildGeminiRequest(messages []Message, tools []Tool, thinkingBudget int64) 
 				parts = append(parts, geminiPart{Text: m.Content})
 			}
 			for _, tc := range m.ToolCalls {
+				sig := tc.ThoughtSignature
+				if sig == "" {
+					sig = geminiDummyThoughtSignature
+				}
 				parts = append(parts, geminiPart{
+					ThoughtSignature: sig,
 					FunctionCall: &geminiFunctionCall{
 						Name: tc.Name,
 						Args: unmarshalGeminiArgs(tc.ArgsJSON),
