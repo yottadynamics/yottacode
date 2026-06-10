@@ -341,6 +341,13 @@ func (m Model) resumeSession(id string, summarized bool) (Model, tea.Cmd) {
 	rebuildTranscript(&m)
 	m.refreshContextTokens()
 	m.appendLine(styleAuto.Render(fmt.Sprintf("[resume] loaded %s (%d msgs)", loaded.ID, len(loaded.Messages))))
+	// A resumed transcript can already sit past the auto threshold —
+	// run the watermark check now so an over-window session heals
+	// before the first send instead of after a context-overflow
+	// failure (the check is otherwise bound to turn ends).
+	if ctxCmd := m.updateContextUsage(true); ctxCmd != nil {
+		return m, ctxCmd
+	}
 	return m, nil
 }
 

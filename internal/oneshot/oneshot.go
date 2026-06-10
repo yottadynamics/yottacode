@@ -330,7 +330,7 @@ func Run(ctx context.Context, opts cli.ChatOptions, prompt string) error {
 		RouteAuto:       fileCfg.Router.RoutingAuto(),
 		ModelResolver:   oneshotRouterResolve(routerAdapters),
 		ResolveWindow: func(model string) int {
-			return catalog.ResolveWindow(model, fileCfg.ContextWindowOverride(model), fileCfg.Context.DefaultWindow)
+			return catalog.ResolveWindowForProvider(fileCfg.ProviderKindForModel(model), model, fileCfg.ContextWindowOverride(model), fileCfg.Context.DefaultWindow)
 		},
 	}
 	reg.Register(agentTool)

@@ -316,6 +316,46 @@ func errorDetailFromBytes(raw []byte) string {
 	return strings.TrimSpace(string(raw))
 }
 
+// sseErrorDetail extracts the human-readable detail from a mid-stream
+// SSE `error` event. The Codex backend nests it — `{"error":{"code":...,
+// "message":...}}`, verified by probe 2026-06-10 — while api.openai.com's
+// canonical stream error carries a top-level `message`. Unknown envelopes
+// fall back to the raw payload (truncated) so a shape drift still
+// surfaces something actionable instead of a blind placeholder.
+func sseErrorDetail(raw []byte) string {
+	var p struct {
+		Detail  string `json:"detail"`
+		Message string `json:"message"`
+		Error   struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(raw, &p); err == nil {
+		msg := p.Message
+		if msg == "" {
+			msg = p.Error.Message
+		}
+		if msg == "" {
+			msg = p.Detail
+		}
+		if msg != "" {
+			if c := p.Error.Code; c != "" && !strings.Contains(msg, c) {
+				msg = c + ": " + msg
+			}
+			return msg
+		}
+	}
+	if s := strings.TrimSpace(string(raw)); s != "" {
+		const maxRaw = 512
+		if len(s) > maxRaw {
+			s = s[:maxRaw] + "…"
+		}
+		return s
+	}
+	return "stream error"
+}
+
 // formatRateLimitHint extracts a "when can I retry" hint from a 429
 // response. The Codex backend's actual shape (verified by probe):
 //
@@ -999,16 +1039,39 @@ func (a *openAIAuthAdapter) consumeSSE(ctx context.Context, body io.Reader, out 
 			}
 
 		case "error":
+			out <- StreamEvent{Kind: EventErr, Err: errors.New("openai-auth: " + sseErrorDetail(ev.Data))}
+			return
+
+		case "response.failed":
+			// Terminal failure. The backend usually sends an `error`
+			// event first (handled above), but a failure that arrives
+			// only as response.failed must not fall through to a clean
+			// EventDone carrying whatever partial content streamed.
 			var d struct {
-				Message string `json:"message"`
+				Response struct {
+					Error struct {
+						Code    string `json:"code"`
+						Message string `json:"message"`
+					} `json:"error"`
+				} `json:"response"`
 			}
 			_ = json.Unmarshal(ev.Data, &d)
-			msg := d.Message
+			msg := d.Response.Error.Message
 			if msg == "" {
-				msg = "stream error"
+				msg = "response failed"
+			}
+			if c := d.Response.Error.Code; c != "" && !strings.Contains(msg, c) {
+				msg = c + ": " + msg
 			}
 			out <- StreamEvent{Kind: EventErr, Err: errors.New("openai-auth: " + msg)}
 			return
+
+		case "response.incomplete":
+			// Generation stopped early (incomplete_details.reason, e.g.
+			// "max_output_tokens") but the partial output is valid —
+			// reuse the incomplete stop-reason path rather than erroring
+			// so the loop keeps the content the user already saw.
+			messageStatus = "incomplete"
 		}
 	}
 

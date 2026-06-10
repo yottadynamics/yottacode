@@ -59,6 +59,14 @@ func (m Model) lockedMessages() []adapter.Message {
 	return m.sess.Messages
 }
 
+// resumeWatermarkCheckMsg fires once from Init when the program starts
+// with a resumed (non-empty) session: the transcript may already sit
+// past the auto threshold, and the watermark check is otherwise bound
+// to turn ends — without this, the first send of a too-full resumed
+// session fails with the provider's context-overflow error before
+// anything heals it.
+type resumeWatermarkCheckMsg struct{}
+
 // registrySchemaTokens estimates the token cost of the registry's
 // advertised tool schemas, or 0 when no registry is wired.
 func registrySchemaTokens(reg *agent.Registry) int {
@@ -76,8 +84,15 @@ func registrySchemaTokens(reg *agent.Registry) int {
 //
 // Returns a non-nil tea.Cmd when auto-summarization should fire — the
 // caller must sequence it after any other commands queued for this
-// tick (typically session-save and recall-index).
-func (m *Model) updateContextUsage() tea.Cmd {
+// tick (typically session-save and recall-index). allowAuto=false
+// suppresses the auto branch for callers about to start a queued turn;
+// the returned Cmd must then never be needed. Suppression has to
+// happen here rather than by discarding the returned Cmd:
+// startAutoSummarize prints its banner and flips m.summarizing as side
+// effects BEFORE the Cmd runs, so a discarded Cmd leaves the UI
+// announcing a summarization that never starts and wedges the
+// m.summarizing gate shut for the rest of the session.
+func (m *Model) updateContextUsage(allowAuto bool) tea.Cmd {
 	m.refreshContextTokens()
 	tokens := m.contextTokens
 
@@ -96,6 +111,14 @@ func (m *Model) updateContextUsage() tea.Cmd {
 	// haven't already auto-summarized at this fill level (tracked via
 	// lastWatermarkPct).
 	if autoThr < 1.0 && pct >= autoThr && m.lastWatermarkPct < autoThr {
+		if !allowAuto {
+			// A queued user message is about to start a fresh turn:
+			// compressing now would yank context out from under it.
+			// Return without touching the watermark (the warn branch
+			// below would record pct ≥ auto_threshold and close the
+			// auto gate) so the check re-arms at the queued turn's end.
+			return nil
+		}
 		m.lastWatermarkPct = pct
 		return m.startAutoSummarize(pct)
 	}
@@ -132,10 +155,12 @@ func (m *Model) updateContextUsage() tea.Cmd {
 }
 
 // contextWindow returns the resolved capacity for the current model,
-// honoring both yottacode's known-model table and the user's
-// context.default_window override.
+// honoring yottacode's known-model table, the serving provider's kind
+// (a namesake model behind a different backend can have a smaller real
+// window), and the user's context.default_window override.
 func (m Model) contextWindow() int {
-	return catalog.ResolveWindow(
+	return catalog.ResolveWindowForProvider(
+		m.fileCfg.ProviderKindForModel(m.modelName),
 		m.modelName,
 		m.fileCfg.ContextWindowOverride(m.modelName),
 		m.fileCfg.Context.DefaultWindow,

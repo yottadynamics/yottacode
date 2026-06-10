@@ -394,7 +394,7 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 		// status bar does, so subagents size context against the real
 		// (override- and default_window-aware) window.
 		ResolveWindow: func(model string) int {
-			return catalog.ResolveWindow(model, fileCfg.ContextWindowOverride(model), fileCfg.Context.DefaultWindow)
+			return catalog.ResolveWindowForProvider(fileCfg.ProviderKindForModel(model), model, fileCfg.ContextWindowOverride(model), fileCfg.Context.DefaultWindow)
 		},
 		Permissions:   perms,
 		YoloMode:      yoloMode,

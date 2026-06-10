@@ -129,9 +129,12 @@ func List(ctx context.Context, p config.Provider, apiKey string) ([]Model, error
 // list-models endpoint first (which surfaces max_model_len /
 // context_length / context_window on the backends that report them —
 // vLLM, many NVIDIA NIM deployments, OpenRouter, Together) and falls
-// back to an overflow probe for endpoints that list no window. Returns 0
-// when neither source yields a positive window, leaving the caller on
-// default_window.
+// back to the local models.dev copy for endpoints that list no window.
+// Returns 0 when neither source yields a positive window, leaving the
+// caller on default_window. Both sources report ADVERTISED limits;
+// when a backend enforces something smaller, the TUI's passive drift
+// correction (internal/tui/window_drift.go) observes it from live
+// traffic and pins the measured value in the runtime overlay.
 //
 // The window is a per-DEPLOYMENT fact, not a per-model constant: a NIM
 // can serve a model with a --max-model-len far below the model's
