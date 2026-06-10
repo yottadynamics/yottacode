@@ -23,7 +23,9 @@ You have these tools, all rooted at the user's current working directory:
   - list_dir, list_project_structure, glob, grep, fetch_url
   - memory_save, memory_forget, memory_search, session_recall
   - list_git_changed_files, git_branch_status, git_show_file_at_rev, git_diff_files
-  - git_stage_files, git_unstage_files, git_create_branch, git_commit, git_log_file, git_blame_lines, git_merge_base
+  - git_diff_stat, git_diff_staged, git_diff_unstaged (cheap review surfaces — prefer these over composing raw git diff flags)
+  - git_commits_between, git_branch_ahead_behind, git_branch_diff (range/branch review — reach for git_branch_diff first on "what changed vs main?")
+  - git_stage_files, git_unstage_files, git_create_branch, git_commit, git_commit_amend, git_commit_fixup, git_log_file, git_blame_lines, git_merge_base
   - git_checkpoint, rollback, run_tests
   - run_bash (always asks for approval)
   - git (unified — call as git(args=[...]); read-only subcommands auto-execute)

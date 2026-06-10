@@ -143,8 +143,10 @@ func targetFor(toolName, argsJSON, cwd string) Target {
 		return Target{PermName: "Tests", Descriptor: cmd}
 	case "list_git_changed_files",
 		"git_branch_status", "git_show_file_at_rev", "git_diff_files",
+		"git_diff_stat", "git_diff_staged", "git_diff_unstaged",
+		"git_commits_between", "git_branch_ahead_behind", "git_branch_diff",
 		"git_stage_files", "git_unstage_files", "git_create_branch",
-		"git_commit",
+		"git_commit", "git_commit_amend", "git_commit_fixup",
 		"git_log_file", "git_blame_lines", "git_merge_base":
 		// Discrete git_* helpers. Surfaced under Git so a single
 		// `Git(commit *)` style rule covers the unified tool too.
