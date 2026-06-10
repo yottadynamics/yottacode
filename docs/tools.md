@@ -1,6 +1,6 @@
 # Built-in tools
 
-Forty tools ship in `internal/agent` (thirty-seven always-on plus `todo_write`
+Forty-eight tools ship in `internal/agent` (forty-five always-on plus `todo_write`
 and the `enter_plan_mode` / `exit_plan_mode` pair). The model sees their JSON-schema parameters via the
 OpenAI tools API; the TUI renders each invocation as a bordered card with a
 verb-style header (see [How tool calls render in the TUI](#how-tool-calls-render-in-the-tui)).
@@ -122,6 +122,9 @@ tool-call log; the TUI renames it for readability. Mapping:
 | `git_log_file` | `Git(log <path>)` |
 | `git_blame_lines` | `Git(blame <path>:L<a>-L<b>)` |
 | `git_merge_base` | `Git(merge-base <base>..<head>)` |
+| `git_diff_stat` / `git_diff_staged` / `git_diff_unstaged` | `Git(diff_stat …)` / `Git(diff_staged …)` / `Git(diff_unstaged …)` |
+| `git_commits_between` / `git_branch_ahead_behind` / `git_branch_diff` | `Git(commits_between …)` / `Git(branch_ahead_behind …)` / `Git(branch_diff …)` |
+| `git_commit_amend` / `git_commit_fixup` | `Git(commit_amend …)` / `Git(commit_fixup …)` |
 | `git_checkpoint` | `Git(checkpoint)` |
 | `list_git_changed_files` | `Git(list changed)` |
 
@@ -352,6 +355,44 @@ Examples:
 
 No approval.
 
+## git_diff_stat
+
+Compact diffstat — files touched plus line counts, no hunks. The cheap
+first-pass review surface: call it before pulling full diffs so the
+context budget goes to the files that matter.
+
+| Param | Type | Default | Notes |
+|---|---|---|---|
+| `base` | string | working tree | Optional base revision |
+| `head` | string | — | Optional head revision (requires `base`) |
+| `paths` | []string | — | Optional path filter |
+
+No approval.
+
+## git_diff_staged
+
+Diff of the staged changes — exactly what `git commit` would record.
+The dedicated surface for `/git-commit`-style flows, so nothing has to
+infer `--cached` by hand.
+
+| Param | Type | Default |
+|---|---|---|
+| `paths` | []string | — |
+
+No approval.
+
+## git_diff_unstaged
+
+Diff of the unstaged tracked edits (work not yet `git add`-ed).
+Untracked files appear in no diff — enumerate those with
+`list_git_changed_files`.
+
+| Param | Type | Default |
+|---|---|---|
+| `paths` | []string | — |
+
+No approval.
+
 ## git_stage_files
 
 Stage specific files (`git add -- ...`) or all changes (`git add -A`).
@@ -402,6 +443,31 @@ Create a commit from the currently staged changes.
 | Param | Type | Default |
 |---|---|---|
 | `message` | string | — |
+
+Always prompts for approval.
+
+## git_commit_amend
+
+Amend the last commit: fold the staged changes into it, optionally
+replacing the message (empty keeps it). Rewrites that commit — the
+approval preview carries a `⚠ rewrites the last commit` line, and the
+tool description warns against amending already-pushed commits.
+
+| Param | Type | Default | Notes |
+|---|---|---|---|
+| `message` | string | keep current | Replacement message; empty → `--amend --no-edit` |
+
+Always prompts for approval.
+
+## git_commit_fixup
+
+Create a `fixup!` commit from the staged changes targeting an earlier
+commit (`git commit --fixup=<commit>`). The history rewrite happens at
+the user's later `git rebase --autosquash`, not here.
+
+| Param | Type | Default |
+|---|---|---|
+| `commit` | string | — |
 
 Always prompts for approval.
 
@@ -642,6 +708,48 @@ Find the merge base between two refs.
 
 No approval.
 
+## git_commits_between
+
+One-line commit summaries in `base..head` (commits reachable from
+`head` but not `base`), newest first. The range view for review and PR
+explanation.
+
+| Param | Type | Default |
+|---|---|---|
+| `base` | string | — |
+| `head` | string | `HEAD` |
+| `limit` | integer | 20 |
+
+No approval.
+
+## git_branch_ahead_behind
+
+Branch relationship in one call: `ahead=N behind=M` between `head` and
+`base`, plus their merge base — replaces composing `merge-base` +
+`rev-list --left-right --count` by hand.
+
+| Param | Type | Default |
+|---|---|---|
+| `base` | string | — |
+| `head` | string | `HEAD` |
+
+No approval.
+
+## git_branch_diff
+
+One-stop branch review summary against a base branch: `## state`
+(branch, merge base, ahead/behind), `## commits` (newest first, capped
+at 30), `## changed-files` (name + status), and `## diffstat` —
+everything except the hunks. The backbone for "what changed vs main?";
+pull actual diffs afterwards with `git_diff_files` for just the files
+that matter.
+
+| Param | Type | Default |
+|---|---|---|
+| `base` | string | — |
+
+No approval.
+
 ## git_checkpoint
 
 Create a local checkpoint commit from all current changes.
@@ -754,16 +862,32 @@ shell, so there's nothing to escape and nothing to inject.
 |---|---|---|---|
 | `args` | []string | — | e.g. `["status"]`, `["log", "--oneline", "-n", "5"]` |
 
-Approval policy is **based on the first arg**:
+Approval policy is **allowlist-shaped and flag-aware**, in three tiers:
 
-- **Auto-execute** (read-only): `status`, `diff`, `log`, `show`, `blame`,
-  `grep`, `ls-files`, `rev-parse`, `branch --show-current`, etc.
+- **Auto-execute — unconditionally read-only subcommands**: `status`,
+  `diff`, `log`, `show`, `blame`, `grep`, `ls-files`, `rev-parse`,
+  `merge-base`, `describe`, etc. (One guard: `--output[=<file>]` turns
+  these into a file write, so it always prompts.)
+- **Auto-execute — read spellings of ambiguous subcommands**: listings
+  like bare `branch` / `branch --list` / `branch --show-current`, bare
+  `tag` / `tag -l`, bare `remote` / `remote -v` / `remote get-url`,
+  `stash list` / `stash show`, and bare `reflog` / `reflog show`. The
+  mutating spellings of the same subcommands (`branch -d`, `tag v1.0`,
+  `remote add`, bare `stash` — which pushes! — `reflog expire`) prompt.
+  Unknown flags fall through to a prompt; the policy never guesses.
 - **Prompt for approval** for everything else (`commit`, `push`, `pull`,
-  `branch -D`, `checkout`, `reset`, `rebase`, `merge`, …).
+  `checkout`, `reset`, `rebase`, `merge`, …). Global pre-subcommand
+  flags (`-c`, `-C`, `--git-dir`, …) always prompt — they can
+  reconfigure git underneath the subcommand check.
 
-Destructive flags (`--force`, `-f`, `-D`, `--hard`, `--delete`, …) are
-called out in the approval preview with a `⚠ DESTRUCTIVE FLAG(S):` prefix
-so you don't `y` past them by reflex.
+Approval previews carry **risk-tiered warning copy**. History-rewriting
+or working-tree-destructive invocations get a specific
+`⚠ HIGH RISK: <what it destroys>` line — `reset --hard` ("discards
+every uncommitted change"), `clean -f`, `rebase`, `checkout --
+<paths>`, `restore` (worktree), `branch -D`, `tag -d`,
+`push --force[-with-lease]`, `reflog expire` — so they can't be
+approved with the same reflex as an `add`. Dangerous flags outside the
+classified set keep the generic `⚠ DESTRUCTIVE FLAG(S):` line.
 
 Stdout is capped at 1 MiB; stderr at 64 KiB.
 

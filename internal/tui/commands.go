@@ -86,12 +86,14 @@ func init() {
 		{Name: "theme", Help: "change the theme", Run: cmdThemes, PreservesTurn: true},
 
 		// Git workflow.
+		// Palette order mirrors the daily flow: commit → push →
+		// create PR → update PR, then the review/implement pair.
 		{Name: "git-commit", Help: "compose and run a one-line git commit", Run: cmdGitCommit},
+		{Name: "git-push", Help: "push the current branch to origin (sets upstream on first push; surfaces the PR URL when one exists)", Run: cmdGitPush},
 		{Name: "git-create-pr", Args: "[base]", Help: "open a pull request for the current branch", Run: cmdGitCreatePR},
+		{Name: "git-update-pr", Args: "[ref]", Help: "refresh a PR's title and body to match the current commit list", Run: cmdGitUpdatePR},
 		{Name: "git-review-pr", Args: "[ref]", Help: "review a pull request (number or branch; defaults to current branch's PR)", Run: cmdGitReviewPR},
 		{Name: "git-implement-issue", Args: "<n>", Help: "implement a GitHub issue end-to-end: fetch → plan → branch → code → tests → commit → push → draft PR", Run: cmdGitImplementIssue},
-		{Name: "git-push", Help: "push the current branch to origin (sets upstream on first push; surfaces the PR URL when one exists)", Run: cmdGitPush},
-		{Name: "git-update-pr", Args: "[ref]", Help: "refresh a PR's title and body to match the current commit list", Run: cmdGitUpdatePR},
 		// /mcp inspects the live MCP server manager: list configured
 		// servers, their start status + tool counts, and dump stderr
 		// from a misbehaving one. PreservesTurn=true: read-only on
