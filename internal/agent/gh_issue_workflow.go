@@ -562,7 +562,9 @@ func (t *GHIssueCreateTool) Description() string {
 		"characters with no trailing period. " +
 		"Returns a typed result with the issue URL and number on success, " +
 		"or a gh_unavailable / validation / gh_error reason on failure. " +
-		"The approval modal fires once showing the full title + body + labels before the call lands."
+		"The approval modal shows only the invocation summary (title, labels, assignees) — " +
+		"NOT the body. Print the full drafted title and body as plain text BEFORE calling " +
+		"this tool, so the user approves what will actually be posted."
 }
 
 func (t *GHIssueCreateTool) Schema() map[string]any {

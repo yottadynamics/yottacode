@@ -337,7 +337,6 @@ roadmap's `Github(read_*)` style works):
 | `gh_pr_add_comment` | `add_pr_comment` |
 | `gh_issue_read` | `read_issue` |
 | `gh_issue_list` | `list_open_issues` |
-| `gh_issue_context` | `read_issue_context` |
 | `gh_issue_create` | `create_issue` |
 
 Wildcards work as in any other rule, so:

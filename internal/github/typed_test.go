@@ -1,8 +1,12 @@
 package github
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -338,5 +342,91 @@ func TestClassifyAPIError_NonAPIError(t *testing.T) {
 	got := classifyAPIError(plain)
 	if got != plain {
 		t.Errorf("plain error should pass through unchanged; got %v", got)
+	}
+}
+
+// captureIssueRT records the CreateIssue request body and returns a
+// canned 201 so tests can assert the wire-level JSON shape.
+type captureIssueRT struct {
+	body []byte
+	path string
+}
+
+func (rt *captureIssueRT) RoundTrip(r *http.Request) (*http.Response, error) {
+	rt.body, _ = io.ReadAll(r.Body)
+	rt.path = r.URL.Path
+	return &http.Response{
+		StatusCode: http.StatusCreated,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(`{"number":7,"html_url":"https://github.com/o/r/issues/7"}`)),
+		Request:    r,
+	}, nil
+}
+
+// Regression: a label-less / assignee-less CreateIssue must omit the
+// "labels" and "assignees" keys entirely. IssueRequest carries them as
+// *[]string with omitempty — taking &req.Labels on an empty slice
+// serialized `"labels":null`, which GitHub's schema validation rejects
+// with a 422 ("nil is not an array"), breaking the default
+// /git-create-issue flow. The fakeGH-based agent tests bypass
+// serialization, so this pins the contract at the HTTP layer.
+func TestCreateIssue_OmitsUnsetLabelsAndAssignees(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "test-token")
+	rt := &captureIssueRT{}
+	c := &TypedClient{
+		Cwd:        t.TempDir(),
+		HTTPClient: &http.Client{Transport: rt},
+	}
+	res, err := c.CreateIssue(context.Background(), CreateIssueRequest{
+		Owner: "o", Repo: "r", Title: "Fix crash on resize",
+	})
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	if res.Number != 7 || res.URL != "https://github.com/o/r/issues/7" {
+		t.Errorf("result = %+v; want number 7 and the html_url decoded", res)
+	}
+	if got, want := rt.path, "/repos/o/r/issues"; got != want {
+		t.Errorf("POST path = %q; want %q", got, want)
+	}
+	var wire map[string]any
+	if err := json.Unmarshal(rt.body, &wire); err != nil {
+		t.Fatalf("request body not JSON: %v\n%s", err, rt.body)
+	}
+	if _, ok := wire["labels"]; ok {
+		t.Errorf(`"labels" present in wire body (%s); must be omitted when unset — GitHub 422s "labels":null`, rt.body)
+	}
+	if _, ok := wire["assignees"]; ok {
+		t.Errorf(`"assignees" present in wire body (%s); must be omitted when unset`, rt.body)
+	}
+	if wire["title"] != "Fix crash on resize" {
+		t.Errorf("title = %v; want the request title", wire["title"])
+	}
+}
+
+// Populated labels/assignees still go out as real arrays, and the body
+// field is carried when non-empty.
+func TestCreateIssue_SendsLabelsWhenSet(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "test-token")
+	rt := &captureIssueRT{}
+	c := &TypedClient{Cwd: t.TempDir(), HTTPClient: &http.Client{Transport: rt}}
+	_, err := c.CreateIssue(context.Background(), CreateIssueRequest{
+		Owner: "o", Repo: "r", Title: "t", Body: "b",
+		Labels: []string{"bug"}, Assignees: []string{"octocat"},
+	})
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	var wire struct {
+		Body      string   `json:"body"`
+		Labels    []string `json:"labels"`
+		Assignees []string `json:"assignees"`
+	}
+	if err := json.Unmarshal(rt.body, &wire); err != nil {
+		t.Fatalf("request body not JSON: %v", err)
+	}
+	if wire.Body != "b" || len(wire.Labels) != 1 || wire.Labels[0] != "bug" ||
+		len(wire.Assignees) != 1 || wire.Assignees[0] != "octocat" {
+		t.Errorf("wire body = %s; want body, labels, assignees carried through", rt.body)
 	}
 }

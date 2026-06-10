@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -51,14 +52,14 @@ func issueTitleFromArgs(args []string) string {
 // own the state machine: the directive only describes the three-step
 // shape and the surfacing rules for each typed result branch.
 //
-// The title argument, when supplied, is splice-injected into the
-// gh_issue_context call so the model doesn't have to thread it as a
-// string parameter through prose interpretation.
+// The title argument, when supplied, is pinned in the directive for
+// the gh_issue_create step (gh_issue_context takes no arguments), so
+// the model doesn't have to thread it through prose interpretation.
 func gitCreateIssueDirective(title string) string {
 	titleLine := `Step 1 — call gh_issue_context with no arguments. It returns a typed snapshot
 under section headers (## state, ## template).`
 	if title != "" {
-		titleLine = "Step 1 — call gh_issue_context with no arguments. You will use title=" + title + " in the create step."
+		titleLine = fmt.Sprintf("Step 1 — call gh_issue_context with no arguments. You will use title=%q in the create step.", title)
 	}
 
 	return `Create a GitHub issue in the current repository.
@@ -92,9 +93,12 @@ Step 3 — compose a title and body using the snapshot:
 
   Cap the body at ~80 lines.
 
-Step 4 — call gh_issue_create with title / body / labels / assignees.
-The approval modal fires showing the full title + body inline; the user
-approves or denies.
+Step 4 — print the exact title and body you are about to post as
+plain scrollback text, THEN call gh_issue_create with title / body /
+labels / assignees. The approval modal shows only the invocation
+summary (title + labels + assignees), not the body — the text you
+just printed is what the user is actually approving. Never call
+gh_issue_create with a body the user has not seen.
 
 Step 5 — surface the result envelope verbatim:
 - "created=true url=... number=..." → emit a "Issue created: <url>"

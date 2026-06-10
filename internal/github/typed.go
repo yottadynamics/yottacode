@@ -39,8 +39,8 @@ type TypedClient struct {
 	Cwd      string
 	Resolver *TokenResolver
 
-	once   sync.Once
-	client *gogithub.Client
+	once    sync.Once
+	client  *gogithub.Client
 	initErr error
 
 	// HTTPClient is an optional injection point for tests. When
@@ -521,11 +521,22 @@ func (c *TypedClient) CreateIssue(ctx context.Context, req CreateIssueRequest) (
 		return res, err
 	}
 
+	// Labels/Assignees must be omitted entirely when unset: their
+	// IssueRequest fields are *[]string with omitempty, which only
+	// drops a nil POINTER — `&req.Labels` on an empty slice
+	// serializes as `"labels":null`, and GitHub's schema validation
+	// 422s null where it wants an array. Same trap for assignees.
 	newIssue := &gogithub.IssueRequest{
-		Title:     gogithub.String(req.Title),
-		Body:      gogithub.String(req.Body),
-		Labels:    &req.Labels,
-		Assignees: &req.Assignees,
+		Title: gogithub.String(req.Title),
+	}
+	if req.Body != "" {
+		newIssue.Body = gogithub.String(req.Body)
+	}
+	if len(req.Labels) > 0 {
+		newIssue.Labels = &req.Labels
+	}
+	if len(req.Assignees) > 0 {
+		newIssue.Assignees = &req.Assignees
 	}
 	created, resp, err := cl.Issues.Create(ctx, owner, repo, newIssue)
 	c.recordRate(resp)
