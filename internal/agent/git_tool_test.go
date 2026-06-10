@@ -124,6 +124,48 @@ func TestGit_RequiresApproval(t *testing.T) {
 		{`{"args":["reset","--hard"]}`, true, "reset prompts"},
 		{`{"args":[]}`, true, "empty args prompts (safe default)"},
 		{`malformed`, true, "malformed prompts (safe default)"},
+
+		// Flag-aware read-only tier: listings auto-execute…
+		{`{"args":["branch"]}`, false, "bare branch lists"},
+		{`{"args":["branch","--show-current"]}`, false, "branch --show-current reads"},
+		{`{"args":["branch","--list"]}`, false, "branch --list reads"},
+		{`{"args":["branch","--list","feat/*"]}`, false, "branch --list with pattern reads"},
+		{`{"args":["branch","-vv"]}`, false, "branch -vv lists verbose"},
+		{`{"args":["branch","-a","--sort=-committerdate"]}`, false, "branch -a sorted lists"},
+		{`{"args":["branch","--contains","HEAD~3"]}`, false, "branch --contains reads"},
+		{`{"args":["tag"]}`, false, "bare tag lists"},
+		{`{"args":["tag","-l","v1.*"]}`, false, "tag -l with pattern reads"},
+		{`{"args":["tag","-n5"]}`, false, "tag -n5 lists with annotations"},
+		{`{"args":["remote"]}`, false, "bare remote lists"},
+		{`{"args":["remote","-v"]}`, false, "remote -v reads"},
+		{`{"args":["remote","get-url","origin"]}`, false, "remote get-url reads"},
+		{`{"args":["stash","list"]}`, false, "stash list reads"},
+		{`{"args":["stash","show","-p","stash@{0}"]}`, false, "stash show reads"},
+		{`{"args":["reflog"]}`, false, "bare reflog reads"},
+		{`{"args":["reflog","show"]}`, false, "reflog show reads"},
+
+		// …while the mutating spellings of the same subcommands still prompt.
+		{`{"args":["branch","-d","old"]}`, true, "branch -d prompts"},
+		{`{"args":["branch","-D","old"]}`, true, "branch -D prompts"},
+		{`{"args":["branch","-m","a","b"]}`, true, "branch rename prompts"},
+		{`{"args":["branch","--set-upstream-to=origin/main"]}`, true, "branch upstream change prompts"},
+		{`{"args":["tag","v1.0"]}`, true, "tag creation prompts"},
+		{`{"args":["tag","-d","v1.0"]}`, true, "tag deletion prompts"},
+		{`{"args":["tag","-a","v1.0","-m","x"]}`, true, "annotated tag creation prompts"},
+		{`{"args":["remote","add","origin","u"]}`, true, "remote add prompts"},
+		{`{"args":["remote","show","origin"]}`, true, "remote show (network) prompts"},
+		{`{"args":["stash"]}`, true, "bare stash is a push — prompts"},
+		{`{"args":["stash","pop"]}`, true, "stash pop prompts"},
+		{`{"args":["stash","drop"]}`, true, "stash drop prompts"},
+		{`{"args":["reflog","expire","--expire=now","--all"]}`, true, "reflog expire prompts"},
+		{`{"args":["reflog","delete","HEAD@{1}"]}`, true, "reflog delete prompts"},
+
+		// Guards that close auto-exec side doors.
+		{`{"args":["diff","--output=/tmp/x"]}`, true, "diff --output writes a file — prompts"},
+		{`{"args":["log","--output","x"]}`, true, "log --output writes a file — prompts"},
+		{`{"args":["stash","list","--output=x"]}`, true, "stash list --output prompts"},
+		{`{"args":["-c","core.pager=evil","status"]}`, true, "global -c flag prompts"},
+		{`{"args":["-C","/elsewhere","status"]}`, true, "global -C flag prompts"},
 	}
 	for _, c := range cases {
 		t.Run(c.desc, func(t *testing.T) {
@@ -136,12 +178,62 @@ func TestGit_RequiresApproval(t *testing.T) {
 
 func TestGit_PreviewSurfacesDestructiveFlags(t *testing.T) {
 	tool := &GitTool{}
+	// push --force is in the classified high-risk set now — it gets the
+	// specific reason line, which is a strictly stronger warning.
 	out := tool.PreviewCall(`{"args":["push","--force","origin","main"]}`)
-	if !strings.Contains(out, "DESTRUCTIVE") {
-		t.Errorf("preview missed destructive flag: %q", out)
+	if !strings.Contains(out, "HIGH RISK") || !strings.Contains(out, "rewrites remote history") {
+		t.Errorf("force-push should carry the high-risk reason: %q", out)
 	}
-	if !strings.Contains(out, "--force") {
-		t.Errorf("preview missed --force annotation: %q", out)
+	// A dangerous flag outside the classified set still falls back to
+	// the generic flag-highlight line.
+	out = tool.PreviewCall(`{"args":["fetch","--prune"]}`)
+	if !strings.Contains(out, "DESTRUCTIVE") || !strings.Contains(out, "--prune") {
+		t.Errorf("unclassified dangerous flag should keep the flag-list warning: %q", out)
+	}
+}
+
+// TestGit_PreviewHighRiskReasons pins the per-invocation classification:
+// history-rewriting / worktree-destructive commands carry a specific
+// "what this destroys" line; ordinary mutations carry no warning at all.
+func TestGit_PreviewHighRiskReasons(t *testing.T) {
+	tool := &GitTool{}
+	high := []struct{ argsJSON, wantFrag string }{
+		{`{"args":["reset","--hard","HEAD~1"]}`, "discards every uncommitted change"},
+		{`{"args":["clean","-fd"]}`, "deletes untracked files"},
+		{`{"args":["clean","--force"]}`, "deletes untracked files"},
+		{`{"args":["rebase","-i","main"]}`, "rewrites commit history"},
+		{`{"args":["filter-branch","--all"]}`, "rewrites commit history"},
+		{`{"args":["checkout","--","."]}`, "overwrites working-tree files"},
+		{`{"args":["checkout","-f","main"]}`, "discards local changes"},
+		{`{"args":["switch","--discard-changes","main"]}`, "discards local changes"},
+		{`{"args":["restore","main.go"]}`, "overwrites uncommitted file contents"},
+		{`{"args":["restore","--staged","--worktree","main.go"]}`, "overwrites uncommitted file contents"},
+		{`{"args":["branch","-D","old"]}`, "force-deletes a branch"},
+		{`{"args":["tag","-d","v1.0"]}`, "deletes tag"},
+		{`{"args":["push","--force-with-lease"]}`, "rewrites remote history"},
+		{`{"args":["push","origin",":dead-branch"]}`, "deletes a remote ref"},
+		{`{"args":["reflog","expire","--expire=now"]}`, "destroys reflog"},
+	}
+	for _, c := range high {
+		out := tool.PreviewCall(c.argsJSON)
+		if !strings.Contains(out, "HIGH RISK") || !strings.Contains(out, c.wantFrag) {
+			t.Errorf("PreviewCall(%s) = %q, want HIGH RISK + %q", c.argsJSON, out, c.wantFrag)
+		}
+	}
+	ordinary := []string{
+		`{"args":["add","-A"]}`,
+		`{"args":["commit","-m","x"]}`,
+		`{"args":["push"]}`,
+		`{"args":["restore","--staged","main.go"]}`,
+		`{"args":["branch","-d","merged-branch"]}`,
+		`{"args":["checkout","main"]}`,
+		`{"args":["merge","feature/x"]}`,
+	}
+	for _, argsJSON := range ordinary {
+		out := tool.PreviewCall(argsJSON)
+		if strings.Contains(out, "HIGH RISK") {
+			t.Errorf("ordinary mutation flagged high-risk: PreviewCall(%s) = %q", argsJSON, out)
+		}
 	}
 }
 

@@ -11,6 +11,7 @@
 # Built binaries
 /yottacode
 /yotta-models
+/echo_server
 
 # Test binary, built with `go test -c`
 *.test

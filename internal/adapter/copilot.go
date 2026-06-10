@@ -26,11 +26,11 @@ const (
 // a long-lived GitHub OAuth token exchanges for a short-lived Copilot
 // API token via the TokenSource.
 type copilotAdapter struct {
-	tokens   *copilotauth.TokenSource
-	client   *http.Client
-	model    string
-	cfg      Config
-	profile  ProviderProfile
+	tokens  *copilotauth.TokenSource
+	client  *http.Client
+	model   string
+	cfg     Config
+	profile ProviderProfile
 }
 
 func newCopilotAdapter(cfg Config) Client {
@@ -230,7 +230,7 @@ func buildCopilotRequest(model string, messages []Message, tools []Tool) ([]byte
 					"type": "function",
 					"function": map[string]any{
 						"name":      copilotSanitizeName(tc.Name),
-						"arguments": tc.ArgsJSON,
+						"arguments": safeToolArgsJSON(tc.ArgsJSON),
 					},
 				})
 			}
@@ -285,6 +285,7 @@ func (a *copilotAdapter) consumeSSE(ctx context.Context, body io.Reader, origToo
 	// Track in-progress tool calls by index
 	toolCallsByIndex := map[int]*ToolCall{}
 
+	sawDone := false
 	scanner := bufio.NewScanner(body)
 	scanner.Buffer(make([]byte, 64*1024), 256*1024)
 	for scanner.Scan() {
@@ -294,6 +295,7 @@ func (a *copilotAdapter) consumeSSE(ctx context.Context, body io.Reader, origToo
 		}
 		data := strings.TrimPrefix(line, "data: ")
 		if data == "[DONE]" {
+			sawDone = true
 			break
 		}
 
@@ -390,6 +392,11 @@ func (a *copilotAdapter) consumeSSE(ctx context.Context, body io.Reader, origToo
 		return
 	}
 
+	if !sawDone {
+		out <- StreamEvent{Kind: EventErr, Err: errors.New("copilot: stream ended before [DONE] — response truncated")}
+		return
+	}
+
 	// Iterate the ACTUAL indices in order, not 0..len-1: a stream can
 	// deliver non-contiguous tool-call indices (e.g. 0, 2, 3), and the
 	// dense loop silently dropped any call at or past the first gap.
@@ -414,10 +421,9 @@ func (a *copilotAdapter) consumeSSE(ctx context.Context, body io.Reader, origToo
 			out <- StreamEvent{Kind: EventErr, Err: fmt.Errorf("copilot: stream ended with an incomplete tool call (finish_reason=%q) — response truncated", finishReason)}
 			return
 		}
-		for _, tc := range finalCalls {
-			args := strings.TrimSpace(tc.ArgsJSON)
-			if args != "" && !json.Valid([]byte(args)) {
-				out <- StreamEvent{Kind: EventErr, Err: fmt.Errorf("copilot: tool call %q has incomplete/unparseable arguments — response truncated", tc.Name)}
+		for i := range finalCalls {
+			if err := validateToolCallForHistory(&finalCalls[i]); err != nil {
+				out <- StreamEvent{Kind: EventErr, Err: err}
 				return
 			}
 		}

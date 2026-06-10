@@ -2,9 +2,7 @@
 
 # yottacode
 
-**Open-source terminal coding agent for your day-to-day engineering work.**
-
-A single Go binary. Multi-provider. Multi-session. Memory that persists.
+**An autonomous, self-learning AI coding agent that handles complex, multi-step development tasks — directly from your terminal, with the model of your choice.**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Go](https://img.shields.io/badge/Go-1.26+-00ADD8?logo=go&logoColor=white)](https://go.dev)
@@ -19,7 +17,7 @@ A single Go binary. Multi-provider. Multi-session. Memory that persists.
 
 ---
 
-`yottacode` gives you an interactive terminal UI for coding, a scriptable one-shot mode for automation, structured tools for inspecting and editing real repositories, durable sessions, cross-session recall, and explicit memory — all without tying your workflow to one model provider.
+`yottacode` is an autonomous, self-learning coding agent. Give it a goal in plain language and it plans the work, reads and edits real repositories, runs commands and tests, drives git, and iterates until the task is done — all from your terminal. It's model-agnostic by design: bring your own provider and swap models mid-session without changing how you work. As it goes, a self-learning memory layer captures what it discovers about you and your codebase and surfaces the most relevant pieces back into every turn, so it gets sharper the more you use it — while a built-in security policy of layered approvals and path validation gates every edit and shell command, keeping that autonomy under your control. Around the core loop you get an interactive terminal UI, a scriptable one-shot mode for automation, durable sessions, and cross-session recall.
 
 > **Status:** pre-1.0 (`v0.2.0`). The CLI, configuration, and on-disk formats are stabilizing. Pin a tag if you depend on yottacode from scripts.
 
@@ -27,7 +25,7 @@ A single Go binary. Multi-provider. Multi-session. Memory that persists.
 
 ## Quick Start
 
-**One-liner install** (Linux + macOS, amd64 + arm64):
+**One-liner install** (Linux + macOS):
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/yottadynamics/yottacode/main/install.sh | bash
@@ -38,8 +36,6 @@ Then launch the interactive setup wizard:
 ```bash
 yottacode setup
 ```
-
-The installer drops `yottacode` into `~/.yottacode/bin/` (no `sudo`), verifies the release archive against published SHA256 sums, and offers to add the directory to your shell `PATH` (creating a timestamped backup of the rc file before any edit). Pass `--no-modify-rc` to skip the rc edit, or `--yes` to accept it non-interactively.
 
 > Windows users should run yottacode under WSL.
 
@@ -61,175 +57,75 @@ For build-from-source, cross-compilation, manual provider configuration, and oth
 
 ---
 
-## Features
+## Why yottacode
 
-### Multi-Provider Support
+- **Memory that learns you.** Memory is plain text and grep-able: you own `USER.md`, and the agent curates everything else through `memory_save` / `memory_forget` (project writes to `YOTTACODE.md` are approval-gated). A per-turn retrieval engine surfaces only what's relevant, so yottacode gets sharper about you and your codebase the more you use it. See [`docs/memory.md`](docs/memory.md).
 
-Native adapters for **OpenAI**, **Anthropic**, **Google Gemini**, **xAI** (Grok), **local Ollama** (no API key needed), and **ChatGPT OAuth** ("Sign in with ChatGPT"). A generic OpenAI-compatible adapter covers **NVIDIA NIM**, **Groq**, **vLLM**, **Llama Stack**, and any custom `/v1` gateway.
+- **Use any model, switch any time.** Native adapters for **OpenAI**, **Anthropic**, **Google Gemini**, **xAI** (Grok), **local Ollama** (no API key), and **ChatGPT OAuth**, plus a generic OpenAI-compatible adapter for **NVIDIA NIM**, **Groq**, **vLLM**, **Llama Stack**, or any custom `/v1` gateway. Swap provider or model mid-session with `/provider use` and `/model` — no lock-in, and no hidden default that silently bills you.
 
-Swap providers and models mid-session via `/provider use` and `/model`.
+- **A built-in security policy.** A first-launch trust prompt scopes each workspace, mutating tools pause for approval with a syntax-highlighted diff, and project rules support `allow` / `ask` / `deny` (deny wins) for team-shared pre-approvals. Write-path validation confines edits to the working tree, blocks symlink writes, and firewalls secret-bearing paths (`.env`, `~/.ssh`, cloud credentials) from both reads and writes. Tools run on the host with no in-process sandbox — containerize for stronger isolation. See [`docs/security-and-allow-lists.md`](docs/security-and-allow-lists.md).
 
-### Self-Learning Memory Layer
+- **Deep GitHub integration.** A typed `go-github` adapter (no shelling out to the `gh` CLI) gives the agent first-class pull-request and issue tools — read and review PRs, open and update them, post review comments, and triage issues — plus slash commands like `/git-create-pr`, `/git-review-pr`, and `/git-implement-issue`, which takes an issue end-to-end: research → plan → branch → implement → tests → commit → push → draft PR. See [`docs/github.md`](docs/github.md).
 
-Memory is plain text, grep-able, and split across a handful of files. **You own `USER.md`** — anything you want yottacode to remember about you globally goes there. **Everything else is curated by the agent** through `memory_save` / `memory_forget` in-conversation, with approval-gated writes for `YOTTACODE.md`.
+- **A deep, repo-aware tool surface.** Forty built-in tools span reads, writes, search, a full git suite (status / diff / blame / log / commit / checkpoint / rollback / file-at-revision), bash, tests, the `todo_write` working-plan tracker, and the plan-mode tools — each with an explicit approval policy. See [`docs/tools.md`](docs/tools.md).
 
-| Path | Scope | Maintained by |
-|:-----|:------|:--------------|
-| `~/.yottacode/USER.md` | User preferences | **You** — human-edited only |
-| `~/.yottacode/memory/` | Global (cross-project) | Agent — auto-curated |
-| `./.yottacode/YOTTACODE.md` | Project | You seed it (or run `/init`); agent edits go through the approval modal |
-| `~/.yottacode/projects/<slug>/memory/` | Project | Agent — auto-curated |
+- **Plan first, then let it run.** Plan mode (`/plan`, `Shift+Tab`, or `--permission-mode plan`) investigates read-only and drafts a plan you approve; approving drops into auto mode so implementation skips per-tool prompts, while `run_bash`, `git_commit`, `git_checkpoint`, and `rollback` stay in the safety floor. `Shift+Tab` cycles **normal → auto → plan** mid-turn, and the agent can never escalate its own permissions.
 
-### Built-in Security & Approval Layer
+- **Delegate to typed subagents.** Hand research, code search, planning, and verification to subagents that run in their own context window, so the parent only sees the final answer. Four ship built-in — `Explore`, `Plan`, `general-purpose`, and `verification` — and you can add your own under `.yottacode/agents/`.
 
-First-launch trust prompt on each new workspace records consent at `~/.yottacode/trusted-roots.json`; subfolders of a trusted root inherit trust automatically. Manage roots with `yottacode trust list/add/remove/clear`.
+- **Reusable skills, loaded on demand.** 17 built-in skill playbooks (SSH/remote ops, git investigation, TDD, security audit, code review, performance profiling, and more) load only when relevant, and you can install your own from a path, URL, or GitHub shorthand. Skills stay off until you enable them each session, following the [agentskills.io spec](https://agentskills.io/specification).
 
-Mutating tools (writes, edits, shell, git mutations) ask before running, with a syntax-highlighted diff for edits. Project rules support `allow` / `ask` / `deny` (deny wins) for team-shared pre-approvals. Write-path validation confines writes to the working tree, blocks symlink writes, and firewalls secret-bearing paths (`.env`, `~/.ssh`, cloud credentials, auth stores) from both reads and writes.
+- **Undo any step.** Every message is auto-checkpointed with the conversation and the pre-edit contents of the files about to change, so `/checkpoints` (or a double-tap of `Esc`) rolls back conversation, files, or both — with a configurable 30-day TTL.
 
-> Tools run on the host — there is no in-process sandbox. For stronger isolation, run yottacode inside a container or devcontainer. See [`docs/security-and-allow-lists.md`](docs/security-and-allow-lists.md).
+- **Never lose a session.** Per-turn atomic saves survive crashed terminals, `/recall` runs local full-text search across every saved session, and `/summarize` compacts long histories after snapshotting the original transcript.
 
-### Polished Terminal UX
+- **Work in parallel.** `yottacode --worktree <name>` runs a session in its own git worktree so two agents can edit the same repo without colliding, and a per-repo `.worktreeinclude` copies gitignored configs into each one. See [`docs/worktrees.md`](docs/worktrees.md).
 
-Inline rendering keeps your scrollback intact. Markdown-rendered assistant output, slash-command palette with Tab completion, multi-line input via `Ctrl+J`, input history, image paste support (paste a screenshot path or `file:///` URL and the model sees it), and a `?` cheatsheet overlay.
+- **Make it your own.** Add `/your-command` by dropping a markdown file into `~/.yottacode/commands/` or `.yottacode/commands/`, with `$ARGUMENTS` substitution, optional frontmatter, and `@<path>` file references.
 
-### Repo-Aware Tool Surface
-
-Forty built-in tools spanning reads, writes, filesystem, search, git helpers (status / diff / blame / log / commit / checkpoints / rollback / file-at-revision), bash, tests, the `todo_write` working-plan tracker, and the `enter_plan_mode` / `exit_plan_mode` plan-mode surface — each with explicit approval policy.
-
-See [`docs/tools.md`](docs/tools.md) for the full list.
-
-### Typed Subagents
-
-Delegate research, code search, planning, and verification to typed subagents that run in their own context window — the parent only sees the final answer, never the child's tool calls or reasoning.
-
-Four built-ins ship:
-
-| Subagent | Purpose |
-|:---------|:--------|
-| **`Explore`** | Read-only code search |
-| **`Plan`** | Drafts an implementation plan |
-| **`general-purpose`** | Open-ended research |
-| **`verification`** | Adversarial PASS/FAIL/PARTIAL verdict (background-by-default) |
-
-Ship your own under `.yottacode/agents/<name>.md` (project) or `~/.yottacode/agents/<name>.md` (global) with YAML frontmatter declaring tools, an optional model override, and an optional `background: true` default. `/subagents` opens an inline picker; `Enter` views any task's transcript in `$PAGER`.
-
-> Background subagents (`run_in_background:true` for fire-and-forget delegation) are an opt-in experimental feature. Enable with `yottacode --experimental background_subagents`, `YOTTACODE_EXPERIMENTAL=background_subagents`, or `[experimental]` in `~/.yottacode/config.toml`. Foreground delegation is default-on. See [`docs/experimental.md`](docs/experimental.md).
-
-### Plan Mode + Auto Mode
-
-**Plan mode** (`/plan`, `Shift+Tab`, or `--permission-mode plan`) toggles a read-only research mode: the agent investigates, asks clarifying questions, writes a plan file under `~/.yottacode/plans/<slug>.md`, then presents it in an approval card.
-
-- **`[A]`** Approve — enter auto mode, skip per-tool prompts during implementation
-- **`[M]`** Manual — plan mode exits, per-tool prompts continue as normal
-
-You can also just ask for it: "make a plan first" / "drop into plan mode" makes the agent call `enter_plan_mode`, which shows a `[Y]/[N]` confirmation card — on `[Y]` the session switches to plan mode and the plan file is derived from your request. The agent cannot enable auto mode or skip approvals by itself; permission escalation always goes through your keys or startup flags.
-
-**Auto mode** (`Shift+Tab` from normal, or `--permission-mode auto`) skips approval friction when you trust a multi-step implementation. `run_bash`, `git_commit`, `git_checkpoint`, and `rollback` remain in the safety floor and still prompt. `Shift+Tab` cycles: **normal** → **auto** → **plan** → **normal**, and works mid-turn — the new mode applies from the agent's next tool call, so you can flip auto on partway through a long implementation (or drop back to read-only plan mode) without killing the turn.
-
-> The permissions-bypass overlay (`--yolo`) is startup-only; there is no in-TUI toggle. See [`docs/tui-slash-commands.md`](docs/tui-slash-commands.md).
-
-### Per-Prompt Checkpoints
-
-Every user message gets an automatic checkpoint capturing the conversation plus the pre-edit contents of any files the agent is about to touch.
-
-`/checkpoints` or double-tap `Esc` opens a picker over past prompts; pick one and choose to restore conversation, files, or both — the original prompt reappears in the input box so you can edit and resend. 30-day TTL by default, configurable in `config.toml`.
-
-### Custom Slash Commands
-
-Drop a markdown file into `~/.yottacode/commands/` (user scope) or `.yottacode/commands/` (project scope, committable) and it shows up as `/<name>` in the palette. Bodies support `$ARGUMENTS` / `$1`..`$9` argument substitution, optional YAML frontmatter (`description`, `argument-hint`), and `@<path>` file references. Subdirectories namespace commands as `/ns:name`.
-
-### Agent Skills
-
-Reusable capability playbooks the agent loads on demand. 17 built-in skills cover: SSH/remote ops, git investigation, Dockerfile review, TDD, verification, Playwright testing, `diagnose` debugging loop, security audit, plan writing & execution, brainstorming, code review, architecture review, prototyping, session handoff, performance profiling, and documentation & ADRs.
-
-Drop a directory into `~/.yottacode/skills/<slug>/` (user-scope) or `.yottacode/skills/<slug>/` (project-scope) — project shadows user shadows built-in. Format follows the [agentskills.io spec](https://agentskills.io/specification).
-
-Install from a path, URL, or GitHub shorthand:
-
-```bash
-yottacode skills install ./my-skill/                       # local dir
-yottacode skills install https://example.com/SKILL.md      # single-file URL
-yottacode skills install obra/superpowers/skills/test-driven-development
-yottacode skills list
-yottacode skills check                                     # report drift vs lockfile
-yottacode skills update [name] [--force]                   # refetch from recorded source
-yottacode skills uninstall <name>
-yottacode skills new <slug>                                # scaffold a starter SKILL.md
-yottacode skills validate <path>                           # lint a SKILL.md (file or dir)
-```
-
-Every install records source + content-hash in `~/.yottacode/skills/.lock.json` so `check` can flag hand-edits and `update` can refresh in place without clobbering them (use `--force` to override).
-
-The same surface is mirrored in the TUI as `/skills install|list|show|uninstall|check|update`.
-
-> Skills are **off by default each session** — the model sees no skill list until you open `/skills` and pick which ones to enable. Slash-form invocations (e.g. `/diagnose`) bypass the enablement gate because typing the slash IS the selection.
-
-### Cross-Session Recall
-
-`/recall <query>` runs local SQLite FTS5 search across every saved session. `/summarize` compacts long sessions after snapshotting the full pre-summary transcript. Per-turn atomic save means crashed terminals don't lose work.
-
-### Scriptable One-Shot Mode
-
-```bash
-yottacode run "explain this repository"
-```
-
-`stdout` = answer, `stderr` = reasoning + tool status. Composes cleanly with pipes and CI logs.
-
-### Parallel Sessions via Worktrees
-
-`yottacode --worktree <name>` (or `-w <name>`) runs the session in a fresh git worktree at `~/.yottacode/worktrees/<repo-slug>/<name>/` on branch `worktree-<name>`. Two yottacode sessions can edit the same repo in parallel without colliding.
-
-A per-repo `.worktreeinclude` file copies gitignored configs (`.env`, IDE settings) into each new worktree so the agent doesn't trip over missing setup. The agent can spin its own worktrees via the `enter_worktree` / `exit_worktree` tools. Manage via `yottacode worktree list / remove / prune / status`.
-
-See [`docs/worktrees.md`](docs/worktrees.md).
+- **Built for the terminal.** Inline rendering keeps your scrollback intact, with markdown-rendered output, a Tab-completing slash palette, multi-line input, image paste, and a `?` cheatsheet. Run it interactively, or script the same core in one-shot mode — `yottacode run "…"` puts the answer on `stdout` and reasoning on `stderr` — all from a single static Go binary.
 
 ---
 
-## Common Commands
+## Commands
 
-### In the TUI
+Type `/` in the TUI to open the command palette — it filters as you type and supports Tab completion.
 
 | Command | Description |
 |:--------|:------------|
-| `/help` | Show the command list |
-| `/quit` | Exit yottacode |
-| `/clear` | Start a fresh session (current is saved) |
-| `/permissions` | Show where permissions are configured |
-| `/system` | Show the active system prompt |
-| `/context` | Show context window usage breakdown (bar + per-bucket legend + MCP/Memory/Skills sections) |
-| `/sessions` | Open the sessions menu (or `/sessions <id\|name>` to resume) |
-| `/model` | Open the model picker (`list [all]`, `<name>`) |
-| `/provider` | Open the provider menu (`list`, `use`, `add`, `remove`, `models`) |
-| `/doctor` | Probe provider auth and model access |
+| `/help` | List all commands with help text |
+| `/clear` | Start a fresh session (the current one is saved) |
+| `/sessions [id\|name]` | Open the sessions menu, or resume a session directly |
+| `/recall <query>` | Full-text search across every saved session |
+| `/summarize` | Compress session history into a structured summary |
+| `/checkpoints` | Restore conversation and/or files to a prior prompt (also `Esc` `Esc`) |
 | `/redo` | Edit and re-run the most recent message |
-| `/recall <query>` | Full-text search across saved sessions |
-| `/summarize` | Compress session history into a summary |
-| `/memory` | Open the memory picker |
-| `/max-iteration <N>` | Cap tool-call iterations per turn (default: 50) |
-| `/setup` | Re-run the setup wizard |
+| `/usage` | Per-session token usage, today's rollup, and estimated cost |
+| `/context` | Show the context-window usage breakdown |
+| `/model [name]` | Open the model picker, or switch the active model |
+| `/provider` | Select or inspect a provider (`list`, `use`, `add`, `remove`, `models`) |
+| `/effort [level]` | Set reasoning effort where supported (`default` · `low` · `medium` · `high`) |
+| `/doctor` | Probe provider auth and model access |
+| `/memory` | Open the memory picker (`/memory search <q>` ranks saved memories) |
+| `/system` | Show the active system prompt, including injected memory |
 | `/init` | Draft `.yottacode/YOTTACODE.md` from the current repo |
-| `/plan` | Toggle plan mode (also `Shift+Tab`) |
-| `/plan list` | Resume an earlier plan |
+| `/permissions` | Show where permissions are configured |
+| `/max-iterations <N>` | Cap tool-call iterations per turn (default 50; auto mode doubles) |
+| `/plan` | Toggle plan mode (`/plan list` resumes a saved plan; also `Shift+Tab`) |
+| `/subagents` | Open the subagents picker — view, stop, or list agent types |
+| `/skills` | Open the skills menu (`install`, `show`, `uninstall`, `check`, `update`) |
+| `/git-commit` | Compose and run a one-line commit on the staged changes |
+| `/git-create-pr [base]` | Open a pull request for the current branch |
+| `/git-update-pr [ref]` | Refresh a PR's title and body to match the commit list |
+| `/git-review-pr [ref]` | Self-review a PR: failing checks, blockers, suggestions, nits |
+| `/git-push` | Push the current branch to origin (sets upstream on first push) |
+| `/git-implement-issue <n>` | Implement a GitHub issue end-to-end: fetch → plan → branch → code → tests → commit → push → draft PR |
+| `/mcp` | Manage MCP servers (`/mcp logs <name>` dumps recent stderr) |
+| `/theme [name]` | Change the color theme (live preview; persists to config) |
+| `/setup` | Re-run the setup wizard (reloads config on return) |
+| `/quit` | Exit yottacode |
 
-**Auto mode** and the **permissions-bypass overlay** are intentionally not slash commands:
-
-- **Auto mode** — `Shift+Tab` from normal mode, or `yottacode --permission-mode auto`
-- **Permissions bypass** — `yottacode --yolo` at launch only
-
-### From the Shell
-
-```bash
-yottacode doctor                            # probe provider auth
-yottacode provider list                     # list configured providers
-yottacode provider use openai               # switch default provider
-yottacode model list                        # list available models
-yottacode sessions list                     # list saved sessions
-yottacode sessions resume <id-or-name>      # resume a session
-yottacode --continue                        # resume most recent session
-yottacode memory list                       # list memory entries
-yottacode run "explain this repository"     # one-shot mode
-```
+> Auto mode and the permissions-bypass overlay are intentionally not slash commands: enter auto mode with `Shift+Tab` (or `--permission-mode auto`), and the bypass overlay only via `yottacode --yolo` at launch.
 
 Full references: [`docs/cli.md`](docs/cli.md) and [`docs/tui-slash-commands.md`](docs/tui-slash-commands.md).
 
@@ -239,8 +135,8 @@ Full references: [`docs/cli.md`](docs/cli.md) and [`docs/tui-slash-commands.md`]
 
 Browse the full documentation online at **[yottacode.ai/docs](https://yottacode.ai/docs/)**. The guides below are the in-repo copies.
 
-| Guide | Description |
-|:------|:------------|
+| Section | Description |
+|:--------|:------------|
 | [`docs/quickstart.md`](docs/quickstart.md) | First successful session |
 | [`docs/installation.md`](docs/installation.md) | Build and install options |
 | [`docs/configuration.md`](docs/configuration.md) | Flags, env vars, config file, diagnostics |
@@ -261,29 +157,55 @@ Browse the full documentation online at **[yottacode.ai/docs](https://yottacode.
 
 ---
 
-## Development
+## Contributing
 
-```bash
-go test ./...                    # unit tests
-go test -tags=integration ./...  # live-provider integration tests
-go test -race ./...              # race detector
-go test -cover ./...             # coverage
-```
+yottacode is built in the open and contributions are very welcome — from typo fixes to new tools and provider adapters. The full guide lives in **[CONTRIBUTING.md](CONTRIBUTING.md)**; here's the short version.
 
-See [`docs/development.md`](docs/development.md) for build, test, and adapter-extension guidance.
+**Ways to contribute**
+
+- **Report a bug** or **request a feature** with the [issue templates](https://github.com/yottadynamics/yottacode/issues/new/choose).
+- **Improve the docs** — the in-repo [`docs/`](docs/) guides or the published site at [yottacode.ai/docs](https://yottacode.ai/docs/).
+- **Open a pull request** for a fix or feature. Planning something big? File an issue first so we can align on the approach.
+
+**Before you open a PR**
+
+- Keep it focused — one logical change, with a clear description and the issue it closes (`Closes #123`).
+- Ship **code, tests, and docs together**: every feature needs tests, every bug fix needs a regression test that fails before and passes after, and behavior changes update the matching `docs/` guide.
+- Make sure `go test ./...` and `go vet ./...` pass — CI runs build, vet, and tests on every PR and must be green before merge.
+
+**Where things plug in** — adding a built-in tool, a slash command, or a model adapter is a well-defined seam; see the [Development](#development) section and [`docs/development.md`](docs/development.md) for build, test, and extension details.
+
+**Security** — please don't file public issues for vulnerabilities. Use GitHub's "Report a vulnerability" button under the repository's **Security** tab, or contact the maintainers directly.
 
 ---
 
-## Contributing
+## Development
 
-Issues and pull requests are welcome. See **[CONTRIBUTING.md](CONTRIBUTING.md)** for development setup, the test rules, and the PR workflow, and use the [issue templates](https://github.com/yottadynamics/yottacode/issues/new/choose) to file a bug or request a feature.
+yottacode is a single, pure-Go binary (no CGo) targeting **Go 1.26+** on Linux and macOS (amd64/arm64).
 
-New capabilities should include tests and docs. Before opening a PR:
+**Build**
 
 ```bash
-go test ./...
-go vet ./...
+go build -o yottacode ./cmd/yottacode
 ```
+
+**Test**
+
+```bash
+go test ./...                    # unit tests — fast, no network
+go vet ./...                     # static checks
+go test -race ./...              # race detector
+go test -cover ./...             # coverage
+go test -tags=integration ./...  # live-provider tests (needs API keys)
+```
+
+**Where to extend** — most feature work lands on a well-defined seam:
+
+- **A built-in tool** — implement `agent.Tool` and register it in `internal/tui/run.go` and `internal/oneshot/oneshot.go`.
+- **A slash command** — add an entry in `internal/tui/commands.go`.
+- **A provider adapter** — extend `internal/adapter`; the agent loop depends only on the streaming interface.
+
+See [`docs/development.md`](docs/development.md) for the full guide — project layout, the model-catalog refresh, provider diagnostics, and release versioning.
 
 ---
 

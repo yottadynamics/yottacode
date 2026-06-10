@@ -12,9 +12,10 @@ package usercmd
 
 import (
 	"fmt"
-	"os"
 	"path/filepath"
 	"regexp"
+
+	"github.com/yottadynamics/yottacode/internal/ychome"
 )
 
 // nameSegmentPattern restricts each path segment (between subdirectory
@@ -31,11 +32,11 @@ var nameSegmentPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
 // custom-command directory. Commands here apply to every yottacode
 // session for this user.
 func UserCommandsDir() (string, error) {
-	home, err := os.UserHomeDir()
+	dir, err := ychome.Dir("commands")
 	if err != nil {
-		return "", fmt.Errorf("usercmd: resolve home dir: %w", err)
+		return "", fmt.Errorf("usercmd: %w", err)
 	}
-	return filepath.Join(home, ".yottacode", "commands"), nil
+	return dir, nil
 }
 
 // ProjectCommandsDir returns <cwd>/.yottacode/commands/ — the per-repo

@@ -69,8 +69,6 @@ func TestCoerceArgs_PassthroughUnchanged(t *testing.T) {
 		{"loose bool", `{"regex":"yes"}`},
 		// null is preserved.
 		{"null value", `{"max_results":null}`},
-		// Invalid JSON is returned verbatim (fail-open).
-		{"invalid json", `not json at all`},
 		// String field that happens to look numeric stays a string.
 		{"numeric-looking string field", `{"query":"5"}`},
 	}
@@ -94,6 +92,51 @@ func TestCoerceArgs_FastPathNoCoercibleField(t *testing.T) {
 	// nil schema → unchanged.
 	if out := coerceArgsToSchema(in, nil); out != in {
 		t.Errorf("nil schema mutated input: %s", out)
+	}
+}
+
+func TestCoerceArgs_EmptyBecomesObject(t *testing.T) {
+	// Empty / whitespace args normalize to "{}" so a tool decodes a valid
+	// object — and a replayed call stays valid JSON — instead of failing with
+	// "unexpected end of JSON input". This runs before the schema fast path,
+	// so it also covers no-argument tools whose schema has no coercible field.
+	schema := objSchema(map[string]any{
+		"max_results": map[string]any{"type": "integer"},
+	})
+	for _, tc := range []struct{ name, in string }{
+		{"empty", ""},
+		{"spaces", "   "},
+		{"newline tab", "\n\t"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if out := coerceArgsToSchema(tc.in, schema); out != "{}" {
+				t.Errorf("coerceArgsToSchema(%q) = %q, want {}", tc.in, out)
+			}
+		})
+	}
+	// nil schema (a no-argument tool) also normalizes empty → "{}".
+	if out := coerceArgsToSchema("", nil); out != "{}" {
+		t.Errorf("empty args, nil schema = %q, want {}", out)
+	}
+}
+
+func TestCoerceArgs_MalformedBecomesObject(t *testing.T) {
+	// A partial tool-argument fragment must not be replayed into history as-is.
+	// Tools will report their ordinary missing-field error from {}, and the next
+	// Responses/openai-auth request remains valid instead of failing provider-side
+	// on malformed function_call arguments.
+	schema := objSchema(map[string]any{"path": map[string]any{"type": "string"}})
+	for _, tc := range []struct{ name, in string }{
+		{"partial object", `{"path":`},
+		{"scalar", `"path"`},
+		{"array", `["path"]`},
+		{"null", `null`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if out := coerceArgsToSchema(tc.in, schema); out != "{}" {
+				t.Errorf("coerceArgsToSchema(%q) = %q, want {}", tc.in, out)
+			}
+		})
 	}
 }
 
@@ -180,6 +223,35 @@ func TestLoop_CoercesStringEncodedArgs(t *testing.T) {
 	}
 	if rec.gotArgs != `{"n":5}` {
 		t.Errorf("Execute received %q, want %q (coercion before dispatch)", rec.gotArgs, `{"n":5}`)
+	}
+}
+
+func TestLoop_MalformedToolArgsNormalizedBeforeHistory(t *testing.T) {
+	// Regression for provider freezes after a tool arg stream produced malformed
+	// JSON: the tool may still fail validation, but the assistant tool_call saved
+	// in history must carry valid object JSON so the follow-up provider request can
+	// continue instead of rejecting the conversation.
+	streamer := &scriptedStreamer{turns: [][]adapter.StreamEvent{
+		{sseDone("", adapter.ToolCall{ID: "c1", Name: "rec", ArgsJSON: `{"path":`})},
+		{sseToken("done"), sseDone("done")},
+	}}
+	rec := &recordingTool{schema: objSchema(map[string]any{"path": map[string]any{"type": "string"}})}
+	reg := NewRegistry()
+	reg.Register(rec)
+	cfg := LoopConfig{Adapter: streamer, Registry: reg, MaxIterations: 5}
+	hist := []adapter.Message{{Role: adapter.RoleUser, Content: "go"}}
+
+	if _, err := runTurnSync(t, context.Background(), cfg, &hist, nil); err != nil {
+		t.Fatalf("Turn: %v", err)
+	}
+	if rec.gotArgs != "{}" {
+		t.Fatalf("Execute received %q, want {}", rec.gotArgs)
+	}
+	if len(hist) < 2 || len(hist[1].ToolCalls) != 1 {
+		t.Fatalf("history missing assistant tool call: %+v", hist)
+	}
+	if got := hist[1].ToolCalls[0].ArgsJSON; got != "{}" {
+		t.Fatalf("history tool args = %q, want {}", got)
 	}
 }
 

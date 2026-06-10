@@ -28,6 +28,17 @@ func seedUserFile(t *testing.T, name, body string) string {
 	return path
 }
 
+// newMemoryTestModel is newTestModel with $YOTTACODE_HOME cleared, so the
+// memory pickers and seed helpers resolve to the temp HOME and never read,
+// write, or delete the developer's real ~/.yottacode/memory. The clear
+// lives here rather than in the shared newTestModel because skills tests
+// deliberately set the override to point installs at a temp dir.
+func newMemoryTestModel(t *testing.T) Model {
+	t.Helper()
+	t.Setenv("YOTTACODE_HOME", "")
+	return newTestModel(t)
+}
+
 func seedUserMemoryFile(t *testing.T, name, body string) string {
 	t.Helper()
 	dir, err := memory.UserMemoryDir()
@@ -63,7 +74,7 @@ func seedProjectMemoryFile(t *testing.T, cwd, name, body string) string {
 }
 
 func TestSlash_MemoryOpensPicker(t *testing.T) {
-	m := newTestModel(t)
+	m := newMemoryTestModel(t)
 	m, _ = typeAndEnter(t, m, "/memory")
 	if !m.memoryPickerOpen || m.memoryPicker == nil {
 		t.Fatalf("/memory should open the picker; open=%v picker=%v",
@@ -78,7 +89,7 @@ func TestSlash_MemoryOpensPicker(t *testing.T) {
 // interactive overlay (scroll + open) — results render in the overlay,
 // NOT the session transcript. Only matching entries (score > 0) appear.
 func TestSlash_MemorySearchOpensInteractiveResults(t *testing.T) {
-	m := newTestModel(t)
+	m := newMemoryTestModel(t)
 	seedUserMemoryFile(t, "queue-writes", "database writes go behind a queue for durability")
 	seedUserMemoryFile(t, "flush-left", "the TUI shares a column-0 left edge")
 
@@ -106,7 +117,7 @@ func TestSlash_MemorySearchOpensInteractiveResults(t *testing.T) {
 // Enter on a result opens the editor but keeps the picker open in search
 // mode, so exiting the editor returns to the same results (query kept).
 func TestSlash_MemorySearchEnterKeepsPickerOpen(t *testing.T) {
-	m := newTestModel(t)
+	m := newMemoryTestModel(t)
 	seedUserMemoryFile(t, "queue-writes", "database writes go behind a queue")
 	m, _ = m.runSlash("/memory search queue")
 	if m.memoryPicker == nil || len(m.memoryPicker.searchResults) == 0 {
@@ -123,7 +134,7 @@ func TestSlash_MemorySearchEnterKeepsPickerOpen(t *testing.T) {
 
 // Esc from the results list returns to the picker root menu.
 func TestSlash_MemorySearchEscReturnsToRoot(t *testing.T) {
-	m := newTestModel(t)
+	m := newMemoryTestModel(t)
 	seedUserMemoryFile(t, "queue-writes", "database writes go behind a queue")
 	m, _ = m.runSlash("/memory search queue")
 	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEsc})
@@ -134,7 +145,7 @@ func TestSlash_MemorySearchEscReturnsToRoot(t *testing.T) {
 
 // An empty query opens the picker root rather than printing to the session.
 func TestSlash_MemorySearchEmptyQueryOpensPicker(t *testing.T) {
-	m := newTestModel(t)
+	m := newMemoryTestModel(t)
 	m, _ = m.runSlash("/memory search")
 	if !m.memoryPickerOpen || m.memoryPicker == nil {
 		t.Fatalf("empty search query should open the picker")
@@ -150,7 +161,7 @@ func TestSlash_MemorySearchEmptyQueryOpensPicker(t *testing.T) {
 // The in-picker "Search memories" row (index 4) opens a query box; typing
 // a query and pressing Enter shows the ranked results overlay.
 func TestSlash_MemoryPickerSearchRowRunsSearch(t *testing.T) {
-	m := newTestModel(t)
+	m := newMemoryTestModel(t)
 	seedUserMemoryFile(t, "queue-writes", "database writes go behind a queue")
 
 	m, _ = typeAndEnter(t, m, "/memory")
@@ -175,7 +186,7 @@ func TestSlash_MemoryPickerSearchRowRunsSearch(t *testing.T) {
 }
 
 func TestSlash_MemoryPickerViewIncludesAllRows(t *testing.T) {
-	m := newTestModel(t)
+	m := newMemoryTestModel(t)
 	m, _ = typeAndEnter(t, m, "/memory")
 	v := stripANSI(m.View())
 	for _, want := range []string{
@@ -192,7 +203,7 @@ func TestSlash_MemoryPickerViewIncludesAllRows(t *testing.T) {
 }
 
 func TestSlash_MemoryPickerEscClosesPicker(t *testing.T) {
-	m := newTestModel(t)
+	m := newMemoryTestModel(t)
 	m, _ = typeAndEnter(t, m, "/memory")
 	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEsc})
 	if m.memoryPickerOpen {
@@ -204,7 +215,7 @@ func TestSlash_MemoryPickerEscClosesPicker(t *testing.T) {
 }
 
 func TestSlash_MemoryPickerArrowKeysClampToRange(t *testing.T) {
-	m := newTestModel(t)
+	m := newMemoryTestModel(t)
 	m, _ = typeAndEnter(t, m, "/memory")
 
 	rowCount := m.memoryPicker.rowCount()
@@ -225,7 +236,7 @@ func TestSlash_MemoryPickerArrowKeysClampToRange(t *testing.T) {
 }
 
 func TestSlash_MemoryPickerProjectRowOpensFile(t *testing.T) {
-	m := newTestModel(t)
+	m := newMemoryTestModel(t)
 	m, _ = typeAndEnter(t, m, "/memory")
 	m, cmd := applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
 	if m.memoryPickerOpen {
@@ -241,7 +252,7 @@ func TestSlash_MemoryPickerProjectRowOpensFile(t *testing.T) {
 }
 
 func TestSlash_MemoryPickerBrowseUserRow(t *testing.T) {
-	m := newTestModel(t)
+	m := newMemoryTestModel(t)
 	seedUserMemoryFile(t, "alpha", "fact 1")
 	seedUserMemoryFile(t, "bravo", "fact 2")
 
@@ -271,7 +282,7 @@ func TestSlash_MemoryPickerBrowseUserRow(t *testing.T) {
 }
 
 func TestSlash_MemoryPickerBrowseProjectRow(t *testing.T) {
-	m := newTestModel(t)
+	m := newMemoryTestModel(t)
 	seedProjectMemoryFile(t, m.cwd, "p-fact", "project fact")
 
 	m, _ = typeAndEnter(t, m, "/memory")
@@ -292,7 +303,7 @@ func TestSlash_MemoryPickerBrowseProjectRow(t *testing.T) {
 }
 
 func TestMemoryPicker_BrowseDeleteRemovesFile(t *testing.T) {
-	m := newTestModel(t)
+	m := newMemoryTestModel(t)
 	m.baseSystemPrompt = "BASE"
 	path := seedUserMemoryFile(t, "drop-me", "fact")
 
@@ -321,7 +332,7 @@ func TestMemoryPicker_BrowseDeleteRemovesFile(t *testing.T) {
 }
 
 func TestMemoryPicker_BrowseEscReturnsToRoot(t *testing.T) {
-	m := newTestModel(t)
+	m := newMemoryTestModel(t)
 	seedUserMemoryFile(t, "alpha", "fact")
 
 	m, _ = typeAndEnter(t, m, "/memory")
@@ -341,7 +352,7 @@ func TestMemoryPicker_BrowseEscReturnsToRoot(t *testing.T) {
 }
 
 func TestEmitMemorySizeWarnings_FiresAboveThreshold(t *testing.T) {
-	m := newTestModel(t)
+	m := newMemoryTestModel(t)
 	dir := filepath.Join(m.cwd, ".yottacode")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
@@ -366,7 +377,7 @@ func TestEmitMemorySizeWarnings_FiresAboveThreshold(t *testing.T) {
 }
 
 func TestEmitMemorySizeWarnings_SilentBelowThreshold(t *testing.T) {
-	m := newTestModel(t)
+	m := newMemoryTestModel(t)
 	dir := filepath.Join(m.cwd, ".yottacode")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)

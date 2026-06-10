@@ -296,7 +296,10 @@ so terminal text selection / copy-paste keeps working.
 
 Every subagent run writes its full transcript (every event, every
 tool call) to
-`~/.yottacode/projects/<slug>/subagents/<agent>-<id>.md`. The
+`~/.yottacode/memory/projects/<slug>/subagents/<agent>-<id>.md` —
+inside the project's memory dir, so all per-project agent state is
+one `ls` away (the memory loader skips subdirectories, so transcripts
+never load as memories). The
 parent's context never includes this content, but the user can
 inspect it through the `/subagents` picker (Enter on a row) or by
 opening the file directly.

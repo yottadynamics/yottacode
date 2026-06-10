@@ -34,7 +34,7 @@ type modelPickerState struct {
 	activeModel string
 
 	// entries is the model list for the provider currently being
-	// displayed. For curated providers (anthropic/openai/gemini) this
+	// displayed. For curated providers (anthropic/openai/gemini/xai) this
 	// comes from the embedded catalog and is populated near-instantly.
 	// For openai-compatible / ollama it's the result of a live HTTP
 	// fetch.

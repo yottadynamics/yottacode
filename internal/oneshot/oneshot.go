@@ -183,7 +183,7 @@ func Run(ctx context.Context, opts cli.ChatOptions, prompt string) error {
 	}
 	if fresh {
 		composed := appendSkillsSection(composeSystemPrompt(baseSys, profile), skillsRes.Skills)
-		sys := memory.SystemPromptForSemantic(composed, mem, prompt, fileCfg.Retrieval, embedClient)
+		sys := memory.SystemPromptForSemantic(ctx, composed, mem, prompt, fileCfg.Retrieval, embedClient)
 		sess.Messages = append(sess.Messages, adapter.Message{
 			Role:           adapter.RoleSystem,
 			Content:        sys,
@@ -191,7 +191,7 @@ func Run(ctx context.Context, opts cli.ChatOptions, prompt string) error {
 		})
 	} else {
 		composed := appendSkillsSection(composeSystemPrompt(baseSys, profile), skillsRes.Skills)
-		recomposeSessionSystemPrompt(sess, memory.SystemPromptForSemantic(composed, mem, prompt, fileCfg.Retrieval, embedClient), len(composed))
+		recomposeSessionSystemPrompt(sess, memory.SystemPromptForSemantic(ctx, composed, mem, prompt, fileCfg.Retrieval, embedClient), len(composed))
 	}
 	// Auto-inject @<path> file references found in the prompt into the
 	// system prompt before the turn fires. Mirrors the TUI startTurn
@@ -292,7 +292,10 @@ func Run(ctx context.Context, opts cli.ChatOptions, prompt string) error {
 	for _, w := range subRes.Warnings {
 		fmt.Fprintln(os.Stderr, "subagents: "+w)
 	}
-	transcriptDir, _ := subagents.EnsureTranscriptDir(cwd)
+	// Resolve the transcript dir but don't create it: openTranscript
+	// MkdirAlls on the first dispatch, so a run with no subagent leaves
+	// no empty ~/.yottacode/memory/projects/<slug>/ behind.
+	transcriptDir, _ := subagents.TranscriptDirFor(cwd)
 	tasks := subagents.NewRegistry()
 	// Oneshot doesn't expose plan/auto modes (no UI surface), so
 	// the parent's mode states are inactive instances. Subagents
@@ -327,7 +330,7 @@ func Run(ctx context.Context, opts cli.ChatOptions, prompt string) error {
 		RouteAuto:       fileCfg.Router.RoutingAuto(),
 		ModelResolver:   oneshotRouterResolve(routerAdapters),
 		ResolveWindow: func(model string) int {
-			return catalog.ResolveWindow(model, fileCfg.ContextWindowOverride(model), fileCfg.Context.DefaultWindow)
+			return catalog.ResolveWindowForProvider(fileCfg.ProviderKindForModel(model), model, fileCfg.ContextWindowOverride(model), fileCfg.Context.DefaultWindow)
 		},
 	}
 	reg.Register(agentTool)
@@ -441,6 +444,12 @@ func stream(
 	turnStart := time.Now()
 
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				close(events)
+				errCh <- fmt.Errorf("agent turn panicked: %v", r)
+			}
+		}()
 		err := agent.Turn(ctx, cfg, history, events, decisions)
 		close(events)
 		errCh <- err
@@ -587,6 +596,9 @@ func preflight(ctx context.Context, cfg adapter.Config) error {
 }
 
 func composeSystemPrompt(base string, profile adapter.ProviderProfile) string {
+	if profile.Provider == adapter.ProviderXAI && hasBuiltin(profile.EnabledBuiltinTools, adapter.BuiltinToolXSearch) {
+		return base + "\nFor live or current information, use provider-native tools when needed. For X/Twitter posts, users, threads, trends, sentiment, or anything happening on X, use x_search, not web_search. Use web_search only for general web pages, news sites, docs, or pages outside X."
+	}
 	if hasBuiltin(profile.EnabledBuiltinTools, adapter.BuiltinToolWebSearch) {
 		return base + "\nFor live or current information, use the provider-native web_search tool when needed."
 	}

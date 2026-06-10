@@ -50,12 +50,24 @@ func TestChromeReadsBright(t *testing.T) {
 	// --- built styles: cmdline box + splash label use Content --------
 	for name, style := range map[string]lipgloss.Style{
 		"styleSplashLabel":      styleSplashLabel,
-		"styleInputPrompt":      styleInputPrompt,
 		"styleInputPlaceholder": styleInputPlaceholder,
 		"styleInputHint":        styleInputHint,
 	} {
 		if got := style.GetForeground(); got != lipgloss.TerminalColor(colorContent) {
 			t.Errorf("%s: foreground = %v, want Content (%v)", name, got, colorContent)
+		}
+	}
+	// The two chevrons (live prompt + scrollback user echo) render in
+	// the brand green — maintainer call: no blue on the prompt; green
+	// matches the rest of the brand chrome while keeping the anchor
+	// role. Equally bright as Content, never Dim/Rule; they must stay
+	// identical so the echo mirrors the live bar.
+	for name, style := range map[string]lipgloss.Style{
+		"styleInputPrompt": styleInputPrompt,
+		"styleUserBar":     styleUserBar,
+	} {
+		if got := style.GetForeground(); got != lipgloss.TerminalColor(colorBrand) {
+			t.Errorf("%s: foreground = %v, want brand green (%v)", name, got, colorBrand)
 		}
 	}
 

@@ -231,6 +231,159 @@ func TestConsumeSSE_CompleteToolCallSucceeds(t *testing.T) {
 	}
 }
 
+// TestSSEErrorDetail covers the envelope shapes a mid-stream `error`
+// event can carry. The nested case is the Codex backend's real shape
+// (verified by probe 2026-06-10); regression: it used to fall through
+// to the bare "stream error" placeholder.
+func TestSSEErrorDetail(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{
+			name: "codex nested envelope with code",
+			raw:  `{"type":"error","error":{"type":"invalid_request_error","code":"context_length_exceeded","message":"Your input exceeds the context window of this model. Please adjust your input and try again.","param":"input"},"sequence_number":2}`,
+			want: "context_length_exceeded: Your input exceeds the context window of this model. Please adjust your input and try again.",
+		},
+		{
+			name: "top-level message",
+			raw:  `{"type":"error","message":"boom"}`,
+			want: "boom",
+		},
+		{
+			name: "detail envelope",
+			raw:  `{"detail":"Instructions are required"}`,
+			want: "Instructions are required",
+		},
+		{
+			name: "code already inside message is not double-prefixed",
+			raw:  `{"error":{"code":"rate_limited","message":"rate_limited by upstream"}}`,
+			want: "rate_limited by upstream",
+		},
+		{
+			name: "unknown shape falls back to raw payload",
+			raw:  `{"weird":true}`,
+			want: `{"weird":true}`,
+		},
+		{
+			name: "empty payload falls back to placeholder",
+			raw:  ``,
+			want: "stream error",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := sseErrorDetail([]byte(tc.raw)); got != tc.want {
+				t.Errorf("sseErrorDetail(%q) = %q, want %q", tc.raw, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestSSEErrorDetailTruncatesHugeRawFallback(t *testing.T) {
+	raw := `{"x":"` + strings.Repeat("a", 4096) + `"}`
+	got := sseErrorDetail([]byte(raw))
+	if len(got) > 600 {
+		t.Errorf("raw fallback not truncated: %d chars", len(got))
+	}
+}
+
+// TestConsumeSSE_ErrorEventSurfacesNestedDetail replays the exact event
+// the Codex backend sends on context overflow: the error detail must
+// reach the user, and the stream must not also emit EventDone.
+func TestConsumeSSE_ErrorEventSurfacesNestedDetail(t *testing.T) {
+	a := &openAIAuthAdapter{}
+	stream := "event: error\n" +
+		`data: {"type":"error","error":{"type":"invalid_request_error","code":"context_length_exceeded","message":"Your input exceeds the context window of this model. Please adjust your input and try again.","param":"input"},"sequence_number":2}` + "\n\n"
+	out := make(chan StreamEvent, 16)
+	go func() {
+		a.consumeSSE(context.Background(), strings.NewReader(stream), out)
+		close(out)
+	}()
+	var errMsg string
+	var sawDone bool
+	for ev := range out {
+		switch ev.Kind {
+		case EventErr:
+			errMsg = ev.Err.Error()
+		case EventDone:
+			sawDone = true
+		}
+	}
+	if !strings.Contains(errMsg, "context_length_exceeded") || !strings.Contains(errMsg, "exceeds the context window") {
+		t.Errorf("error event detail lost: %q", errMsg)
+	}
+	if sawDone {
+		t.Error("must not emit EventDone after a terminal error event")
+	}
+}
+
+// TestConsumeSSE_ResponseFailedSurfacesError guards the case where the
+// backend signals failure only via response.failed (no preceding error
+// event) — previously ignored, committing a truncated turn as success.
+func TestConsumeSSE_ResponseFailedSurfacesError(t *testing.T) {
+	a := &openAIAuthAdapter{}
+	stream := "event: response.failed\n" +
+		`data: {"type":"response.failed","response":{"status":"failed","error":{"code":"context_length_exceeded","message":"Your input exceeds the context window of this model. Please adjust your input and try again."}}}` + "\n\n"
+	out := make(chan StreamEvent, 16)
+	go func() {
+		a.consumeSSE(context.Background(), strings.NewReader(stream), out)
+		close(out)
+	}()
+	var errMsg string
+	var sawDone bool
+	for ev := range out {
+		switch ev.Kind {
+		case EventErr:
+			errMsg = ev.Err.Error()
+		case EventDone:
+			sawDone = true
+		}
+	}
+	if !strings.Contains(errMsg, "context_length_exceeded") {
+		t.Errorf("response.failed detail lost: %q", errMsg)
+	}
+	if sawDone {
+		t.Error("must not emit EventDone after response.failed")
+	}
+}
+
+// TestConsumeSSE_ResponseIncompleteKeepsPartialContent: an early stop
+// (e.g. max_output_tokens) is not an error — the partial text must land
+// in a final message carrying the incomplete stop reason.
+func TestConsumeSSE_ResponseIncompleteKeepsPartialContent(t *testing.T) {
+	a := &openAIAuthAdapter{}
+	stream := "event: response.output_text.delta\n" +
+		`data: {"delta":"partial answer"}` + "\n\n" +
+		"event: response.incomplete\n" +
+		`data: {"type":"response.incomplete","response":{"status":"incomplete","incomplete_details":{"reason":"max_output_tokens"}}}` + "\n\n"
+	out := make(chan StreamEvent, 16)
+	go func() {
+		a.consumeSSE(context.Background(), strings.NewReader(stream), out)
+		close(out)
+	}()
+	var final *Message
+	var sawErr bool
+	for ev := range out {
+		switch ev.Kind {
+		case EventErr:
+			sawErr = true
+		case EventDone:
+			final = ev.Final
+		}
+	}
+	if sawErr {
+		t.Fatal("response.incomplete should not surface as an error")
+	}
+	if final == nil || final.Content != "partial answer" {
+		t.Fatalf("partial content lost: %+v", final)
+	}
+	if final.StopReason != "incomplete" {
+		t.Errorf("StopReason = %q, want \"incomplete\"", final.StopReason)
+	}
+}
+
 func TestSSEReaderSimple(t *testing.T) {
 	stream := "event: foo\ndata: {\"a\":1}\n\nevent: bar\ndata: {\"b\":2}\n\n"
 	r := newSSEReader(strings.NewReader(stream))

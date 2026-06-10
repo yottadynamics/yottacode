@@ -150,7 +150,7 @@ func enabledBuiltinTools(cfg Config, provider Provider) []BuiltinToolKind {
 	if effectiveWebSearchEnabled(cfg, provider) {
 		out = append(out, BuiltinToolWebSearch)
 	}
-	if provider == ProviderXAI && cfg.EnableXSearch {
+	if provider == ProviderXAI {
 		out = append(out, BuiltinToolXSearch)
 	}
 	if (provider == ProviderOpenAI || provider == ProviderXAI) && cfg.EnableCodeInterpreter {

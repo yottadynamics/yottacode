@@ -175,15 +175,19 @@ func StemExpandTokenize(s string) []string {
 // scoring algorithm: "keyword" uses the legacy exact-token scorer,
 // "bm25" (default) uses BM25 with stemming and synonyms.
 func Select(entries []MemoryEntry, query string, cfg config.RetrievalConfig) []MemoryEntry {
-	return SelectWithEmbeddings(entries, query, cfg, nil)
+	// nil client → the embed path can't fire, so no caller-supplied ctx
+	// is needed; Background keeps the legacy signature stable.
+	return SelectWithEmbeddings(context.Background(), entries, query, cfg, nil)
 }
 
 // SelectWithEmbeddings is like Select but accepts an optional
 // EmbedClient for semantic scoring. When embedClient is non-nil and
 // strategy is "semantic", BM25 scores are combined with cosine
-// similarity from vector embeddings.
-func SelectWithEmbeddings(entries []MemoryEntry, query string, cfg config.RetrievalConfig, embedClient *EmbedClient) []MemoryEntry {
-	scored := SelectWithEmbeddingsScored(entries, query, cfg, embedClient)
+// similarity from vector embeddings. ctx bounds the embed call: the
+// TUI passes the turn context so Esc cancels an in-flight embed
+// instead of waiting out its timeout.
+func SelectWithEmbeddings(ctx context.Context, entries []MemoryEntry, query string, cfg config.RetrievalConfig, embedClient *EmbedClient) []MemoryEntry {
+	scored := SelectWithEmbeddingsScored(ctx, entries, query, cfg, embedClient)
 	if scored == nil {
 		return nil
 	}
@@ -197,7 +201,7 @@ func SelectWithEmbeddings(entries []MemoryEntry, query string, cfg config.Retrie
 // SelectWithEmbeddingsScored is like SelectWithEmbeddings but returns
 // Scored entries with their relevance scores preserved. Used by
 // memory_search so the agent can see how well each memory matched.
-func SelectWithEmbeddingsScored(entries []MemoryEntry, query string, cfg config.RetrievalConfig, embedClient *EmbedClient) []Scored {
+func SelectWithEmbeddingsScored(ctx context.Context, entries []MemoryEntry, query string, cfg config.RetrievalConfig, embedClient *EmbedClient) []Scored {
 	if entries == nil {
 		return nil
 	}
@@ -230,7 +234,7 @@ func SelectWithEmbeddingsScored(entries []MemoryEntry, query string, cfg config.
 		// raw top is usually well below 1.0.
 		normalizeByMax(scored)
 	case "semantic":
-		scored = scoreSemantic(entries, query, embedClient, cfg.SemanticWeight)
+		scored = scoreSemantic(ctx, entries, query, embedClient, cfg.SemanticWeight)
 	default:
 		scored = scoreBM25(entries, query)
 	}
@@ -288,7 +292,7 @@ func resolveStrategy(strategy string, embedClient *EmbedClient) string {
 // (clamped to [0,1]): 0 = pure BM25, 1 = pure cosine, 0.4 = the default
 // 60/40 split. Entries without a matching-model .vec sidecar score on
 // BM25 alone.
-func scoreSemantic(entries []MemoryEntry, query string, client *EmbedClient, cosineWeight float64) []Scored {
+func scoreSemantic(ctx context.Context, entries []MemoryEntry, query string, client *EmbedClient, cosineWeight float64) []Scored {
 	if cosineWeight < 0 {
 		cosineWeight = 0
 	}
@@ -301,7 +305,7 @@ func scoreSemantic(entries []MemoryEntry, query string, client *EmbedClient, cos
 		return bm25Scored
 	}
 
-	queryVec, err := client.Embed(context.Background(), query)
+	queryVec, err := client.Embed(ctx, query)
 	if err != nil {
 		return bm25Scored
 	}
@@ -365,14 +369,17 @@ func entryCosine(queryVec []float32, vecPath, currentModel string) float64 {
 // inject in full (they're the table of contents), and per-entry
 // bodies pass through Select(query, cfg) first.
 func SystemPromptFor(base string, l Loaded, query string, cfg config.RetrievalConfig) string {
-	return SystemPromptForSemantic(base, l, query, cfg, nil)
+	// nil client → no embed call possible; Background is inert here.
+	return SystemPromptForSemantic(context.Background(), base, l, query, cfg, nil)
 }
 
 // SystemPromptForSemantic is like SystemPromptFor but accepts an
 // optional EmbedClient for semantic retrieval. Pass nil to use
-// keyword/bm25 scoring only.
-func SystemPromptForSemantic(base string, l Loaded, query string, cfg config.RetrievalConfig, embedClient *EmbedClient) string {
-	user, project := selectAcrossScopes(l.UserMemories, l.ProjectMemories, query, cfg, embedClient)
+// keyword/bm25 scoring only. ctx bounds the embed call — callers on
+// an interactive path should pass a cancelable context (the TUI uses
+// the turn context) so retrieval never outlives the work it serves.
+func SystemPromptForSemantic(ctx context.Context, base string, l Loaded, query string, cfg config.RetrievalConfig, embedClient *EmbedClient) string {
+	user, project := selectAcrossScopes(ctx, l.UserMemories, l.ProjectMemories, query, cfg, embedClient)
 	filtered := Loaded{
 		UserPath:           l.UserPath,
 		UserText:           l.UserText,
@@ -416,7 +423,7 @@ func shadowUserByProject(user, project []MemoryEntry) []MemoryEntry {
 
 // selectAcrossScopes ranks both pools jointly under one cfg.TopK
 // budget, then partitions the result back into per-scope slices.
-func selectAcrossScopes(user, project []MemoryEntry, query string, cfg config.RetrievalConfig, embedClient *EmbedClient) ([]MemoryEntry, []MemoryEntry) {
+func selectAcrossScopes(ctx context.Context, user, project []MemoryEntry, query string, cfg config.RetrievalConfig, embedClient *EmbedClient) ([]MemoryEntry, []MemoryEntry) {
 	// Project shadows user before ranking, so a shadowed user twin never
 	// consumes a TopK slot or injects its body.
 	user = shadowUserByProject(user, project)
@@ -426,7 +433,7 @@ func selectAcrossScopes(user, project []MemoryEntry, query string, cfg config.Re
 	combined := make([]MemoryEntry, 0, len(user)+len(project))
 	combined = append(combined, user...)
 	combined = append(combined, project...)
-	winners := SelectWithEmbeddings(combined, query, cfg, embedClient)
+	winners := SelectWithEmbeddings(ctx, combined, query, cfg, embedClient)
 	wantUser := make(map[string]bool, len(winners))
 	wantProject := make(map[string]bool, len(winners))
 	for _, w := range winners {

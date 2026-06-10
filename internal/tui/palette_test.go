@@ -3,6 +3,8 @@ package tui
 import (
 	"strings"
 	"testing"
+
+	"github.com/charmbracelet/lipgloss"
 )
 
 func TestFilterPalette_EmptyShowsAll(t *testing.T) {
@@ -14,8 +16,13 @@ func TestFilterPalette_EmptyShowsAll(t *testing.T) {
 
 func TestFilterPalette_PrefixMatch(t *testing.T) {
 	got := filterPalette("/mo")
-	if len(got) != 1 || got[0].Name != "model" {
-		t.Errorf("/mo should match only /model; got %+v", got)
+	if len(got) == 0 || got[0].Name != "model" {
+		t.Errorf("/mo should rank the prefix match /model first; got %+v", got)
+	}
+	for _, c := range got {
+		if !strings.Contains(c.Name, "mo") {
+			t.Errorf("/mo matched %q, which does not contain 'mo'", c.Name)
+		}
 	}
 }
 
@@ -33,10 +40,97 @@ func TestFilterPalette_CaseInsensitive(t *testing.T) {
 	}
 }
 
+// Substring matching: the verb the user thinks in is often mid-name
+// ("review" for /git-review-pr). Prefix-only matching made every
+// /git-* command invisible to its verb.
+func TestFilterPalette_SubstringFindsMidName(t *testing.T) {
+	got := filterPalette("/review")
+	found := false
+	for _, c := range got {
+		if c.Name == "git-review-pr" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("/review should surface /git-review-pr via substring match; got %+v", got)
+	}
+}
+
+// Ranking: every prefix match precedes every substring-only match, so
+// muscle-memory completions keep their position at the top.
+func TestFilterPalette_PrefixRanksAboveSubstring(t *testing.T) {
+	got := filterPalette("/pr")
+	if len(got) < 2 {
+		t.Fatalf("/pr should match several commands (provider, git-*-pr); got %+v", got)
+	}
+	if got[0].Name != "provider" {
+		t.Errorf("/pr should rank the prefix match /provider first; got %+v", got)
+	}
+	seenSubstr := false
+	for _, c := range got {
+		isPrefix := strings.HasPrefix(c.Name, "pr")
+		if !isPrefix {
+			seenSubstr = true
+		}
+		if isPrefix && seenSubstr {
+			t.Errorf("prefix match %q appeared after a substring match; order: %+v", c.Name, got)
+		}
+	}
+}
+
+// The Model-bound variant applies the same ranking across built-ins +
+// custom commands: a custom prefix match outranks a built-in
+// substring match.
+func TestFilterPaletteAll_RanksAcrossCustomCommands(t *testing.T) {
+	m := Model{customSlash: []slashCommand{{Name: "pretty-print", Help: "custom"}}}
+	got := m.filterPaletteAll("/pr")
+	idxCustom, idxSubstr := -1, -1
+	for i, c := range got {
+		if c.Name == "pretty-print" {
+			idxCustom = i
+		}
+		if idxSubstr == -1 && !strings.HasPrefix(c.Name, "pr") {
+			idxSubstr = i
+		}
+	}
+	if idxCustom == -1 {
+		t.Fatalf("custom command should match /pr; got %+v", got)
+	}
+	if idxSubstr != -1 && idxCustom > idxSubstr {
+		t.Errorf("custom prefix match (idx %d) should rank above built-in substring matches (first at %d)", idxCustom, idxSubstr)
+	}
+}
+
 func TestFilterPalette_LeadingSlashOptional(t *testing.T) {
 	got := filterPalette("perm")
 	if len(got) != 1 || got[0].Name != "permissions" {
 		t.Errorf("'perm' (without slash) should still match /permissions; got %+v", got)
+	}
+}
+
+// Both palettes hover directly above the full-width input frame; their
+// right edges must align with it at EVERY terminal width. Two past
+// bugs pinned here: a 120-column cap on liveContentWidth left the
+// boxes ~26 columns short of the cmdline box on wide terminals, and
+// before that the border-exclusive lipgloss Width made them overflow
+// the terminal by two columns.
+func TestRenderPalette_MatchesInputFrameWidth(t *testing.T) {
+	files := []fileEntry{{Path: "main.go"}, {Path: "docs", IsDir: true}}
+	for _, width := range []int{80, 124, 150, 200} {
+		m := newTestModel(t)
+		m.width = width
+		frameW := lipgloss.Width(strings.Split(m.renderInputFrame(), "\n")[0])
+
+		slash := strings.Split(renderPalette(allSlash, 0, 0, liveContentWidth(m.width)+4), "\n")[0]
+		if got := lipgloss.Width(slash); got != frameW {
+			t.Errorf("width %d: slash palette box is %d cols, input frame is %d — right edges must align",
+				width, got, frameW)
+		}
+		file := strings.Split(renderFilePalette(files, 0, 0, liveContentWidth(m.width)+4), "\n")[0]
+		if got := lipgloss.Width(file); got != frameW {
+			t.Errorf("width %d: file palette box is %d cols, input frame is %d — right edges must align",
+				width, got, frameW)
+		}
 	}
 }
 

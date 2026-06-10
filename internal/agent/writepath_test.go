@@ -142,13 +142,15 @@ func TestValidateWritePath_RejectsEmptyAndNUL(t *testing.T) {
 func TestDefaultDenyPaths_IncludesYottacodeState(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("YOTTACODE_HOME", "")
 	cwd := t.TempDir()
 
 	got := DefaultDenyPaths(cwd)
 	mustHave := []string{
 		filepath.Join(home, ".yottacode", "sessions"),
+		// The single memory root covers both scopes and the nested
+		// subagent transcript dirs.
 		filepath.Join(home, ".yottacode", "memory"),
-		filepath.Join(home, ".yottacode", "projects"),
 		filepath.Join(home, ".yottacode", "USER.md"),
 		filepath.Join(home, ".yottacode", "trusted-roots.json"),
 		filepath.Join(cwd, ".yottacode", "permissions.json"),
@@ -181,9 +183,44 @@ func TestDefaultDenyPaths_IncludesYottacodeState(t *testing.T) {
 	}
 }
 
+// TestDefaultDenyPaths_HonorsYottacodeHomeForMemory pins the override
+// case: with $YOTTACODE_HOME set, the deny list must protect BOTH the
+// override-rooted memory tree (where this session writes) AND the
+// home-anchored ~/.yottacode/memory. The home copy stays denied because
+// an override-less session loads memories from there regardless of what
+// some other session set $YOTTACODE_HOME to — dropping that protection
+// would let a write under the override plant a file a later default
+// session injects into its system prompt. Without this pin a refactor
+// that denied only the override root would silently reopen that channel.
+func TestDefaultDenyPaths_HonorsYottacodeHomeForMemory(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	override := t.TempDir()
+	t.Setenv("YOTTACODE_HOME", override)
+	cwd := t.TempDir()
+
+	got := DefaultDenyPaths(cwd)
+	for _, want := range []string{
+		filepath.Join(override, "memory"),           // where this session writes
+		filepath.Join(home, ".yottacode", "memory"), // loaded by override-less sessions
+	} {
+		found := false
+		for _, p := range got {
+			if p == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("DefaultDenyPaths missing memory root %q in %v", want, got)
+		}
+	}
+}
+
 func TestDefaultDenyPaths_AllowsProjectMd(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("YOTTACODE_HOME", "")
 	cwd := t.TempDir()
 
 	target := filepath.Join(cwd, ".yottacode", "YOTTACODE.md")
@@ -198,6 +235,7 @@ func TestDefaultDenyPaths_AllowsProjectMd(t *testing.T) {
 
 func TestDefaultDenyPaths_ExcludesGitHooks(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
+	t.Setenv("YOTTACODE_HOME", "")
 	got := DefaultDenyPaths("/repo")
 	for _, p := range got {
 		if strings.HasSuffix(p, "/.git/hooks") {
@@ -214,6 +252,7 @@ func TestDefaultDenyPaths_ExcludesGitHooks(t *testing.T) {
 // left alone.
 func TestDefaultDenyPaths_GitPointerFile(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
+	t.Setenv("YOTTACODE_HOME", "")
 
 	t.Run("worktree pointer file is denied", func(t *testing.T) {
 		wt := t.TempDir()
@@ -258,6 +297,7 @@ func TestDefaultDenyPaths_GitPointerFile(t *testing.T) {
 func TestValidateWritePath_AppStateDeniedEvenInsideHome(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("YOTTACODE_HOME", "")
 	cwd := home // user runs yottacode from $HOME
 
 	// Self-grant via the user-scope memory/ dir is the canonical
@@ -265,13 +305,13 @@ func TestValidateWritePath_AppStateDeniedEvenInsideHome(t *testing.T) {
 	// write_file tool" target. Per-project permissions.json /
 	// permissions.local.json are also covered (see the cwd-scoped
 	// case below).
-	target := filepath.Join(home, ".yottacode", "memory", "evil.md")
+	target := filepath.Join(home, ".yottacode", "memory", "user", "evil.md")
 	err := ValidateWritePath(target, WritePathOptions{
 		Cwd:       NewCwdRef(cwd),
 		DenyExact: DefaultDenyPaths(cwd),
 	})
 	if err == nil {
-		t.Errorf("expected deny-list error for ~/.yottacode/memory/evil.md even when cwd=$HOME")
+		t.Errorf("expected deny-list error for ~/.yottacode/memory/user/evil.md even when cwd=$HOME")
 	}
 
 	permsTarget := filepath.Join(cwd, ".yottacode", "permissions.json")
@@ -284,6 +324,40 @@ func TestValidateWritePath_AppStateDeniedEvenInsideHome(t *testing.T) {
 	}
 }
 
+// TestValidateWritePath_OverrideMemoryDeniedEndToEnd drives a write into
+// the memory store all the way through the validator with $YOTTACODE_HOME
+// set, proving FIX-1's protection at the enforcement layer (not just
+// deny-list membership). BOTH the override-rooted store (where the active
+// session writes) AND the home-anchored store (loaded by override-less
+// sessions) must be refused — each tested with a cwd that contains the
+// target, so it is the deny list, not containment, that blocks the write.
+func TestValidateWritePath_OverrideMemoryDeniedEndToEnd(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	override := t.TempDir()
+	t.Setenv("YOTTACODE_HOME", override)
+
+	cases := []struct {
+		name string
+		cwd  string
+		path string
+	}{
+		{"override-rooted store", override, filepath.Join(override, "memory", "user", "evil.md")},
+		{"home-anchored store", home, filepath.Join(home, ".yottacode", "memory", "user", "evil.md")},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			err := ValidateWritePath(c.path, WritePathOptions{
+				Cwd:       NewCwdRef(c.cwd),
+				DenyExact: DefaultDenyPaths(c.cwd),
+			})
+			if err == nil {
+				t.Errorf("expected deny-list error for %q under $YOTTACODE_HOME=%q", c.path, override)
+			}
+		})
+	}
+}
+
 // ~/.yottacode/auth/ holds OAuth bearer + refresh tokens. Reads
 // would let the model exfiltrate them; writes would let the model
 // corrupt the OAuth flow's exclusive ownership. Both deny lists
@@ -292,6 +366,7 @@ func TestValidateWritePath_AppStateDeniedEvenInsideHome(t *testing.T) {
 func TestDefaultDenyReadPaths_IncludesAuthDir(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("YOTTACODE_HOME", "")
 	got := DefaultDenyReadPaths("")
 	want := filepath.Join(home, ".yottacode", "auth")
 	for _, p := range got {
@@ -305,6 +380,7 @@ func TestDefaultDenyReadPaths_IncludesAuthDir(t *testing.T) {
 func TestDefaultDenyPaths_IncludesAuthDir(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("YOTTACODE_HOME", "")
 	got := DefaultDenyPaths("")
 	want := filepath.Join(home, ".yottacode", "auth")
 	for _, p := range got {

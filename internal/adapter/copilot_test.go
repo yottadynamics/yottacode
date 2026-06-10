@@ -376,3 +376,45 @@ func TestCopilotChatStreamToolCalls(t *testing.T) {
 		t.Errorf("tool call args = %q", tc.ArgsJSON)
 	}
 }
+
+func TestCopilotChatStreamRequiresDoneSentinel(t *testing.T) {
+	var backendURL string
+	tokenSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"token":      "tid_test",
+			"expires_at": time.Now().Add(30 * time.Minute).Unix(),
+			"endpoints":  map[string]string{"api": backendURL},
+		})
+	}))
+	defer tokenSrv.Close()
+
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		io.WriteString(w, fmt.Sprintf("data: %s\n\n", toJSON(map[string]any{
+			"choices": []map[string]any{{
+				"index":         0,
+				"delta":         map[string]any{"content": "partial"},
+				"finish_reason": "stop",
+			}},
+		})))
+		// No data: [DONE] sentinel: EOF must be treated as truncation.
+	}))
+	defer backend.Close()
+	backendURL = backend.URL
+
+	dir := t.TempDir()
+	storePath := writeCopilotStore(t, dir, copilotauth.TokenSet{GitHubToken: "gho_test"})
+	src := copilotauth.NewTokenSource(storePath)
+	src.SetHTTPClient(tokenSrv.Client())
+	src.SetTokenEndpoint(tokenSrv.URL)
+
+	a := newCopilotAdapterFor(Config{Model: "gpt-4o", ProviderOverride: ProviderCopilot}, src)
+	_, _, final, errs := drainEvents(a.ChatStream(context.Background(), []Message{{Role: RoleUser, Content: "hi"}}, nil))
+	if len(errs) == 0 {
+		t.Fatal("missing [DONE] should surface an error")
+	}
+	if final != nil {
+		t.Fatalf("missing [DONE] must not emit final: %+v", final)
+	}
+}

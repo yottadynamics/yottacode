@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -146,6 +147,34 @@ func FindByID(id string) (Model, bool) {
 	for _, m := range loaded.Models {
 		if m.ID == id {
 			return m, true
+		}
+	}
+	return Model{}, false
+}
+
+// FindByProviderID returns the catalog entry for id owned by the given
+// provider. Unlike FindByID it never crosses provider namespaces: the
+// same model id served through a different backend (gpt-5.5 via the
+// ChatGPT Codex backend vs api.openai.com) is a different deployment
+// with different limits, so a namesake's facts must not leak.
+//
+// For the runtime-sourced kinds the per-user scan set stands in for
+// the embedded catalog — copilot's scan captures real per-backend
+// token limits that exist nowhere else (openai-auth's scan carries
+// bare ids, so its entries simply never satisfy window>0 checks).
+func FindByProviderID(provider, id string) (Model, bool) {
+	load()
+	for _, m := range loaded.Models {
+		if m.ID == id && strings.EqualFold(m.Provider, provider) {
+			return m, true
+		}
+	}
+	switch p := strings.ToLower(provider); p {
+	case "copilot", "openai-auth":
+		for _, m := range Get(p) {
+			if m.ID == id {
+				return m, true
+			}
 		}
 	}
 	return Model{}, false

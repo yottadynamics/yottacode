@@ -6,6 +6,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/yottadynamics/yottacode/internal/tui/themes"
 )
 
 func TestDefault_IsValid(t *testing.T) {
@@ -324,6 +326,46 @@ base_url = "http://localhost:11434/v1"
 	}
 	if p := cfg.FindProvider("ollama"); p == nil || p.Models[0].Name != "llama3.1:8b" {
 		t.Errorf("FindProvider(ollama) = %+v", p)
+	}
+}
+
+func TestProviderKindForModel(t *testing.T) {
+	cfg := Config{
+		Active: Active{Provider: "codex"},
+		Providers: []Provider{
+			// Namesake collision: the API-key provider also lists the
+			// active provider's model.
+			{Name: "api-openai", Kind: "openai", Models: []Model{{Name: "gpt-5.5"}}},
+			{Name: "codex", Kind: "openai-auth", DefaultModel: "gpt-5.5"},
+			{Name: "local", Kind: "ollama", DefaultModel: "qwen3.5:9b"},
+		},
+	}
+
+	// The active provider wins the namesake collision.
+	if got := cfg.ProviderKindForModel("gpt-5.5"); got != "openai-auth" {
+		t.Errorf("collision: got %q, want openai-auth", got)
+	}
+	// A non-active provider that explicitly names the model.
+	if got := cfg.ProviderKindForModel("qwen3.5:9b"); got != "ollama" {
+		t.Errorf("listed elsewhere: got %q, want ollama", got)
+	}
+	// A model no entry names (openai-auth's scanned set, ollama's local
+	// tags) falls back to the active provider's kind.
+	if got := cfg.ProviderKindForModel("gpt-5.4-mini"); got != "openai-auth" {
+		t.Errorf("unlisted: got %q, want active kind openai-auth", got)
+	}
+	if got := cfg.ProviderKindForModel(""); got != "" {
+		t.Errorf("empty model: got %q, want empty", got)
+	}
+
+	// Without an active provider there is no fallback kind.
+	cfg.Active.Provider = ""
+	if got := cfg.ProviderKindForModel("gpt-5.4-mini"); got != "" {
+		t.Errorf("no active provider: got %q, want empty", got)
+	}
+	// …but explicit listings still resolve.
+	if got := cfg.ProviderKindForModel("gpt-5.5"); got != "openai" {
+		t.Errorf("no active provider, listed: got %q, want openai", got)
 	}
 }
 
@@ -1060,5 +1102,43 @@ func TestLoad_MemoryFinalTurnOnQuit(t *testing.T) {
 	}
 	if cfg2.Memory.FinalTurnOnQuit {
 		t.Errorf("Render must persist [memory] — opt-out lost in round-trip:\n%s", Render(cfg))
+	}
+}
+
+// NO_COLOR (https://no-color.org/) selects the monochrome theme, but
+// only when the user hasn't configured one — explicit configuration
+// overrides the env var, exactly as the convention specifies, and an
+// empty value does not count as set.
+func TestThemeName_HonorsNoColorEnv(t *testing.T) {
+	dir := t.TempDir()
+
+	t.Setenv("NO_COLOR", "1")
+	cfg, err := Load(filepath.Join(dir, "missing.toml"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Theme.Name != "no-color" {
+		t.Errorf("NO_COLOR set + no config: theme = %q, want no-color", cfg.Theme.Name)
+	}
+
+	path := filepath.Join(dir, "config.toml")
+	if err := os.WriteFile(path, []byte("[theme]\nname = \"nord\"\n"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	cfg, err = Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Theme.Name != "nord" {
+		t.Errorf("explicit [theme] must override NO_COLOR; got %q", cfg.Theme.Name)
+	}
+
+	t.Setenv("NO_COLOR", "")
+	cfg, err = Load(filepath.Join(dir, "missing.toml"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Theme.Name != themes.DefaultName {
+		t.Errorf("empty NO_COLOR must not trigger monochrome; got %q", cfg.Theme.Name)
 	}
 }

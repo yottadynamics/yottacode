@@ -3,6 +3,7 @@ package catalog
 import (
 	"encoding/json"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -22,6 +23,36 @@ func TestEmbeddedCatalogParses(t *testing.T) {
 	}
 	if Get("anthropic") == nil {
 		t.Fatal("Get(anthropic) returned nil; expected empty slice")
+	}
+}
+
+// TestFindByProviderID_NoCrossProviderLeak: provider-scoped lookup must
+// never hand one backend's facts to a namesake model behind another
+// kind (gpt-5.5 via openai-auth vs api.openai.com).
+func TestFindByProviderID_NoCrossProviderLeak(t *testing.T) {
+	// Empty home: no runtime scan files, so the runtime-sourced
+	// fall-through can't satisfy the lookup — embedded catalog only.
+	t.Setenv("HOME", t.TempDir())
+	m, ok := FindByID("gpt-5.5")
+	if !ok {
+		t.Skip("gpt-5.5 not in embedded catalog")
+	}
+	got, ok := FindByProviderID(m.Provider, "gpt-5.5")
+	if !ok || got.ID != "gpt-5.5" {
+		t.Fatalf("same-provider lookup failed: ok=%v got=%+v", ok, got)
+	}
+	if _, ok := FindByProviderID("openai-auth", "gpt-5.5"); ok {
+		t.Error("openai-auth must not see another provider's catalog entry")
+	}
+	if _, ok := FindByProviderID(strings.ToUpper(m.Provider), "gpt-5.5"); !ok {
+		t.Error("provider match should be case-insensitive")
+	}
+}
+
+func TestXAIIsCurated(t *testing.T) {
+	p := config.Provider{Kind: "xai", BaseURL: "https://api.x.ai/v1"}
+	if !IsCurated(p) {
+		t.Fatal("xai should use the embedded catalog, not the generic live fetch path")
 	}
 }
 

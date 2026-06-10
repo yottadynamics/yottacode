@@ -117,6 +117,23 @@ the project uses semantic versioning once it's past `1.0.0`.
 
 ### Changed
 
+- **BREAKING: agent memory and subagent transcripts moved under one
+  `~/.yottacode/memory/` tree.** User-scope memories now live in
+  `memory/user/`, project-scope memories in `memory/projects/<slug>/`,
+  and each project's subagent run transcripts nest at
+  `memory/projects/<slug>/subagents/`. The legacy locations
+  (`~/.yottacode/memory/*.md` flat files and the entire
+  `~/.yottacode/projects/` tree) are no longer read or written — there
+  is no migration; the new tree is created fresh on first run. The
+  whole memory tree now also honors the `$YOTTACODE_HOME` override,
+  matching skills, plans, and agent definitions. `memory_save` steers
+  scope choice toward `user` (portable learnings) by default and
+  appends a scope-check reminder when a portable-typed memory is filed
+  project-scope.
+- **User slash commands now honor `$YOTTACODE_HOME`.** The global
+  custom-command dir resolves through the same root rule as skills,
+  plans, agents, and the memory tree, so `commands/` follows the
+  override when it is set (previously always `~/.yottacode/commands`).
 - **Anthropic prompt caching now survives per-turn memory churn.** The
   system prompt is split into a stable head (the static base prompt +
   tools) and a dynamic tail (the per-turn, query-relevant memory
@@ -154,6 +171,23 @@ the project uses semantic versioning once it's past `1.0.0`.
 
 ### Fixed
 
+- **A malformed tool call from an OpenAI-compatible provider no longer
+  wedges the whole session.** Some models (and truncated streams) emit a
+  tool call with empty or incomplete JSON arguments. The empty case ran
+  the tool against `""` — `write_file: invalid args: unexpected end of
+  JSON input` — and, worse, the malformed call was recorded into history
+  and replayed verbatim on every later request, so strict providers like
+  NVIDIA NIM rejected *every* subsequent turn with a 400 (`Expecting ','
+  delimiter`), surviving "continue", a new prompt, and even a model
+  switch. yottacode now normalizes an empty arguments payload to `{}` at
+  the dispatch layer, so no-argument tools like `exit_plan_mode` /
+  `git_push` run on every provider instead of erroring; the Chat
+  Completions adapter additionally rejects a genuinely truncated or
+  unparseable call — including one cut off with `finish_reason:
+  length`/`content_filter` — before it reaches a tool or enters history.
+  As a backstop, replayed history is re-sanitized when each request is
+  built, so any malformed call recorded earlier (or produced by another
+  adapter) is sent as `{}` instead of bricking the conversation.
 - **Multi-line pastes no longer corrupt the transcript echo.** Terminals
   transmit bracketed-paste line breaks as carriage returns (CR), not
   newlines — so a pasted list arrived `\r`-separated, slipped past the

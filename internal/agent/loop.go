@@ -199,8 +199,9 @@ func CheckpointFromContext(ctx context.Context) (sessionID, cpID string) {
 }
 
 type loopState struct {
-	iteration int
-	history   *[]adapter.Message
+	iteration    int
+	history      *[]adapter.Message
+	toolFailures map[string]int
 }
 
 type toolExecResult struct {
@@ -214,6 +215,45 @@ const (
 	continueReasonToolCalls       = "tool_calls"
 	continueReasonTruncatedOutput = "truncated_output"
 )
+
+const repeatedToolFailureThreshold = 3
+
+func repeatedToolFailureKey(toolName, output string) (string, bool) {
+	if !strings.HasPrefix(output, "error:") {
+		return "", false
+	}
+	line := output
+	if i := strings.IndexAny(line, "\n\r"); i >= 0 {
+		line = line[:i]
+	}
+	return toolName + "\x00" + strings.TrimSpace(line), true
+}
+
+func repeatedToolFailureMessage(toolName, output string, count int) string {
+	guidance := "change strategy before retrying"
+	switch toolName {
+	case "edit_file":
+		guidance = "read the current file contents and retry with an exact old_string, or use apply_diff with fresh context"
+	case "apply_diff":
+		guidance = "rebuild a valid unified diff with correct file headers and hunk ranges, or make a smaller edit_file change"
+	}
+	return fmt.Sprintf("%s\n\nrepeated tool failure (%d×): %s", output, count, guidance)
+}
+
+func applyRepeatedToolFailureGuard(toolName, output string, failures map[string]int) string {
+	if failures == nil {
+		return output
+	}
+	key, ok := repeatedToolFailureKey(toolName, output)
+	if !ok {
+		return output
+	}
+	failures[key]++
+	if failures[key] < repeatedToolFailureThreshold {
+		return output
+	}
+	return repeatedToolFailureMessage(toolName, output, failures[key])
+}
 
 const (
 	// yoloIterationMultiplier scales the configured iteration cap for
@@ -263,7 +303,7 @@ func Turn(
 	events chan<- Event,
 	decisions <-chan Decision,
 ) error {
-	state := loopState{history: history}
+	state := loopState{history: history, toolFailures: map[string]int{}}
 	// Effective cap: auto mode quadruples the configured limit
 	// because the user explicitly opted into "let this run" — most
 	// plan implementations need 100–200 iterations. Yolo mode goes
@@ -347,6 +387,15 @@ func Turn(
 			return err
 		}
 
+		// Normalize tool-call arguments before persisting the assistant turn. The
+		// execution path also normalizes, but history is replayed into the next
+		// provider request; malformed function-call JSON there can make Responses
+		// providers reject the follow-up before the model sees the tool result.
+		for i := range final.ToolCalls {
+			if tool, ok := cfg.Registry.Get(final.ToolCalls[i].Name); ok {
+				final.ToolCalls[i].ArgsJSON = coerceArgsToSchema(final.ToolCalls[i].ArgsJSON, tool.Schema())
+			}
+		}
 		appendHistory(cfg, state.history, *final)
 		if err := send(ctx, events, AssistantMessage{Message: *final}); err != nil {
 			if isCancelErr(err) {
@@ -365,7 +414,7 @@ func Turn(
 			}); err != nil {
 				return err
 			}
-			if err := executeToolCalls(ctx, cfg, final.ToolCalls, history, events, decisions); err != nil {
+			if err := executeToolCalls(ctx, cfg, final.ToolCalls, history, events, decisions, state.toolFailures); err != nil {
 				if isCancelErr(err) {
 					// executeToolCalls has already appended synthetic
 					// tool_result entries for any orphaned calls before
@@ -547,6 +596,7 @@ func executeToolCalls(
 	history *[]adapter.Message,
 	events chan<- Event,
 	decisions <-chan Decision,
+	toolFailures map[string]int,
 ) error {
 	for len(calls) > 0 {
 		if batch := parallelBatchSize(cfg, calls); batch > 1 {
@@ -564,7 +614,7 @@ func executeToolCalls(
 				}
 				return err
 			}
-			appendToolResults(cfg, history, calls[:batch], results)
+			appendToolResults(cfg, history, calls[:batch], results, toolFailures)
 			calls = calls[batch:]
 			continue
 		}
@@ -576,6 +626,7 @@ func executeToolCalls(
 			}
 			return err
 		}
+		result = applyRepeatedToolFailureGuard(tc.Name, result, toolFailures)
 		appendHistory(cfg, history, adapter.Message{
 			Role:       adapter.RoleTool,
 			Content:    result,
@@ -636,7 +687,11 @@ func parallelBatchSize(cfg LoopConfig, calls []adapter.ToolCall) int {
 	n := 0
 	for _, tc := range calls {
 		tool, ok := cfg.Registry.Get(tc.Name)
-		if !ok || tool.RequiresApproval(tc.ArgsJSON) || !toolParallelSafe(tool, tc.ArgsJSON) {
+		if !ok {
+			break
+		}
+		argsJSON := coerceArgsToSchema(tc.ArgsJSON, tool.Schema())
+		if tool.RequiresApproval(argsJSON) || !toolParallelSafe(tool, argsJSON) {
 			break
 		}
 		// In plan mode, blocked calls must hit the serial path so the
@@ -645,7 +700,7 @@ func parallelBatchSize(cfg LoopConfig, calls []adapter.ToolCall) int {
 		// branch goes straight to Execute via the read-only fast
 		// path).
 		if cfg.PlanMode.IsActive() {
-			if _, blocked := PlanModeGate(tool, tc.ArgsJSON, cfg.PlanMode.PlanFile); blocked {
+			if _, blocked := PlanModeGate(tool, argsJSON, cfg.PlanMode.PlanFile); blocked {
 				break
 			}
 		}
@@ -701,12 +756,13 @@ func executeToolCallsParallel(
 	return results, errors.Join(errs...)
 }
 
-func appendToolResults(cfg LoopConfig, history *[]adapter.Message, calls []adapter.ToolCall, results []toolExecResult) {
+func appendToolResults(cfg LoopConfig, history *[]adapter.Message, calls []adapter.ToolCall, results []toolExecResult, toolFailures map[string]int) {
 	withHistoryLock(cfg, func() {
 		for i, tc := range calls {
+			content := applyRepeatedToolFailureGuard(tc.Name, results[i].content, toolFailures)
 			*history = append(*history, adapter.Message{
 				Role:       adapter.RoleTool,
-				Content:    results[i].content,
+				Content:    content,
 				Images:     results[i].images,
 				ToolCallID: tc.ID,
 			})
@@ -779,7 +835,10 @@ func executeToolCallImpl(
 	if !ok {
 		return fmt.Sprintf("error: unknown tool %q", tc.Name), nil, false, nil
 	}
-	preview := tool.PreviewCall(tc.ArgsJSON)
+	argsJSON := coerceArgsToSchema(tc.ArgsJSON, tool.Schema())
+	normalizedTC := tc
+	normalizedTC.ArgsJSON = argsJSON
+	preview := tool.PreviewCall(argsJSON)
 
 	// Plan-mode gate runs BEFORE permissions evaluation: explicit deny
 	// rules still beat the gate (the model never gets to call a denied
@@ -788,7 +847,7 @@ func executeToolCallImpl(
 	// tool result lets the model recover by switching to a read-only
 	// or plan-file alternative on the next iteration.
 	if cfg.PlanMode.IsActive() {
-		if msg, blocked := PlanModeGate(tool, tc.ArgsJSON, cfg.PlanMode.PlanFile); blocked {
+		if msg, blocked := PlanModeGate(tool, argsJSON, cfg.PlanMode.PlanFile); blocked {
 			_ = send(ctx, events, ApprovalAuto{
 				ToolName: tool.Name(), Preview: preview, Source: "plan-mode-block",
 			})
@@ -798,7 +857,7 @@ func executeToolCallImpl(
 
 	verdict := permissions.Default
 	if cfg.Permissions != nil {
-		verdict = cfg.Permissions.Evaluate(tool.Name(), tc.ArgsJSON)
+		verdict = cfg.Permissions.Evaluate(tool.Name(), argsJSON)
 	}
 
 	// Permission Deny always wins, even over plan-mode auto-allow. A
@@ -828,7 +887,7 @@ func executeToolCallImpl(
 		// is still being blocked. The card is also where the user
 		// picks HOW to proceed ([A]uto vs [M]anual on exit), which no
 		// auto-approval source can answer.
-		if denied, savedForLater, err := promptForApproval(ctx, cfg, tool, tc, preview, events, decisions); err != nil || denied || savedForLater {
+		if denied, savedForLater, err := promptForApproval(ctx, cfg, tool, normalizedTC, preview, events, decisions); err != nil || denied || savedForLater {
 			return deniedResultForMultimodal(tool.Name(), denied, savedForLater, err)
 		}
 	case cfg.YoloMode.IsActive():
@@ -837,13 +896,13 @@ func executeToolCallImpl(
 		}); err != nil {
 			return "", nil, false, err
 		}
-	case cfg.PlanMode.IsActive() && IsPlanFileWrite(tool.Name(), tc.ArgsJSON, cfg.PlanMode.PlanFile):
+	case cfg.PlanMode.IsActive() && IsPlanFileWrite(tool.Name(), argsJSON, cfg.PlanMode.PlanFile):
 		if err := send(ctx, events, ApprovalAuto{
 			ToolName: tool.Name(), Preview: preview, Source: "plan-mode-allow",
 		}); err != nil {
 			return "", nil, false, err
 		}
-	case cfg.AutoMode.IsActive() && tool.Name() == "run_bash" && IsAutoModeSafeBash(tc.ArgsJSON, cfg.Cwd):
+	case cfg.AutoMode.IsActive() && tool.Name() == "run_bash" && IsAutoModeSafeBash(argsJSON, cfg.Cwd):
 		if err := send(ctx, events, ApprovalAuto{
 			ToolName: tool.Name(), Preview: preview, Source: "auto-mode-safe-bash",
 		}); err != nil {
@@ -864,11 +923,11 @@ func executeToolCallImpl(
 				return "", nil, false, err
 			}
 		case permissions.Ask:
-			if denied, savedForLater, err := promptForApproval(ctx, cfg, tool, tc, preview, events, decisions); err != nil || denied || savedForLater {
+			if denied, savedForLater, err := promptForApproval(ctx, cfg, tool, normalizedTC, preview, events, decisions); err != nil || denied || savedForLater {
 				return deniedResultForMultimodal(tool.Name(), denied, savedForLater, err)
 			}
 		default:
-			if tool.RequiresApproval(tc.ArgsJSON) {
+			if tool.RequiresApproval(argsJSON) {
 				// No boundary-tool carve-out needed here: case 0 of the
 				// mode-priority switch catches enter/exit_plan_mode
 				// before bypass is ever consulted.
@@ -879,7 +938,7 @@ func executeToolCallImpl(
 						return "", nil, false, err
 					}
 				} else {
-					if denied, savedForLater, err := promptForApproval(ctx, cfg, tool, tc, preview, events, decisions); err != nil || denied || savedForLater {
+					if denied, savedForLater, err := promptForApproval(ctx, cfg, tool, normalizedTC, preview, events, decisions); err != nil || denied || savedForLater {
 						return deniedResultForMultimodal(tool.Name(), denied, savedForLater, err)
 					}
 				}
@@ -887,7 +946,7 @@ func executeToolCallImpl(
 		}
 	}
 
-	if err := send(ctx, events, ToolStart{ToolName: tool.Name(), Preview: preview, ArgsJSON: tc.ArgsJSON}); err != nil {
+	if err := send(ctx, events, ToolStart{ToolName: tool.Name(), Preview: preview, ArgsJSON: argsJSON}); err != nil {
 		return "", nil, false, err
 	}
 	// Attach the parent's events + decisions channels so tools that
@@ -904,7 +963,7 @@ func executeToolCallImpl(
 	// as a scrollback event but let the tool proceed.
 	if cfg.Checkpoints != nil {
 		if sessionID, cpID := CheckpointFromContext(ctx); cpID != "" {
-			for _, p := range ToolPathsToSnapshot(tool, cfg.Cwd.Get(), tc.ArgsJSON) {
+			for _, p := range ToolPathsToSnapshot(tool, cfg.Cwd.Get(), argsJSON) {
 				if err := cfg.Checkpoints.SnapshotPath(sessionID, cpID, p); err != nil {
 					_ = send(ctx, events, CheckpointInfo{Message: fmt.Sprintf("snapshot %s: %v", p, err)})
 				}
@@ -920,12 +979,6 @@ func executeToolCallImpl(
 	if cfg.Cwd != nil {
 		cwdBefore = cfg.Cwd.Get()
 	}
-
-	// Normalize string-encoded scalar args (e.g. {"max_results":"5"} from
-	// Llama-via-NIM/Ollama) to the types the tool's schema declares. No-op
-	// for compliant providers; fail-open for anything it can't safely fix.
-	// See yottacode-roadmap/tool-arg-coercion.md.
-	argsJSON := coerceArgsToSchema(tc.ArgsJSON, tool.Schema())
 
 	var out string
 	var images []adapter.ImageBlock
@@ -948,7 +1001,7 @@ func executeToolCallImpl(
 	// yottacode-roadmap/folder-trust.md "Prompt 2."
 	if err != nil {
 		if elev, ok := pathElevation(err); ok {
-			d, derr := promptForPathElevation(ctx, tool.Name(), elev, tc.ArgsJSON, events, decisions)
+			d, derr := promptForPathElevation(ctx, tool.Name(), elev, argsJSON, events, decisions)
 			if derr != nil {
 				return "", nil, false, derr
 			}
@@ -1052,7 +1105,10 @@ func promptForPathElevation(
 	select {
 	case <-ctx.Done():
 		return Deny, ctx.Err()
-	case d := <-decisions:
+	case d, ok := <-decisions:
+		if !ok {
+			return Deny, errors.New("agent: decisions channel closed while waiting for path-trust response")
+		}
 		return d, nil
 	}
 }
@@ -1086,7 +1142,11 @@ func promptForApproval(
 	select {
 	case <-ctx.Done():
 		return false, false, ctx.Err()
-	case d = <-decisions:
+	case got, ok := <-decisions:
+		if !ok {
+			return false, false, errors.New("agent: decisions channel closed while waiting for approval response")
+		}
+		d = got
 	}
 	if d == Deny {
 		return true, false, nil

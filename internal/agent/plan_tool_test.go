@@ -27,16 +27,16 @@ func TestTodoWriteTool_StaticMetadata(t *testing.T) {
 	}
 }
 
-// TestTodoWriteDescription_RequiresDesignBoundary guards the directive
-// that keeps the agent from queueing implementation work as todos
-// before the user has reviewed the design. The wording check is loose
-// (substring match) but pins the two load-bearing phrases — drift on
-// either is a behavior regression worth surfacing in CI.
-func TestTodoWriteDescription_RequiresDesignBoundary(t *testing.T) {
+// TestTodoWriteDescription_DoesNotGateImplementation guards the directive
+// that todo cards are progress trackers, not a separate permission prompt.
+// Mutating tools still own approval, so the model should not stop after every
+// todo_write call just to ask whether implementation may continue.
+func TestTodoWriteDescription_DoesNotGateImplementation(t *testing.T) {
 	desc := newTodoWriteTool().Description()
 	for _, want := range []string{
-		"MUST end at the design-presentation step",
-		"explicit agreement",
+		"Use todo lists for execution tracking, not as permission gates",
+		"Do not pause after creating a todo list just because implementation steps are present",
+		"Real safety gates live on mutating tools",
 	} {
 		if !strings.Contains(desc, want) {
 			t.Errorf("Description missing required directive %q", want)
@@ -167,4 +167,3 @@ func TestTodoWriteTool_NoStoreErrors(t *testing.T) {
 		t.Errorf("expected error when Store is nil")
 	}
 }
-

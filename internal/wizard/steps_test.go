@@ -748,7 +748,7 @@ func TestFreeFormModelPlaceholder(t *testing.T) {
 		{"anthropic", "claude-sonnet-4-6"},
 		{"openai", "gpt-4o"},
 		{"gemini", "gemini-2.5-flash"},
-		{"xai", "grok-3"},
+		{"xai", "grok-4.20-0309-non-reasoning"},
 		// Always-free-form providers.
 		{"ollama", "llama3.1:8b"},
 		{"nvidia-nim", "nvidia/nemotron-3-super-120b-a12b"},

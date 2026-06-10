@@ -130,12 +130,21 @@ func renderToolCard(toolName, preview, argsJSON, output string, errored bool, te
 		}
 	}
 	if len(body) > cardBodyLineCap {
-		visible := body[:cardBodyLineCap]
 		hidden := len(body) - cardBodyLineCap
-		for _, line := range visible {
-			appendBodyLine(line)
+		if tailTruncatedTool(toolName) {
+			// Command output reads bottom-up: the verdict (test
+			// summary, final error, exit message) sits in the last
+			// lines, so overflow keeps the tail and elides the head.
+			out = append(out, gutter+styleCardMeta.Render(fmt.Sprintf("…%d earlier line(s)", hidden)))
+			for _, line := range body[hidden:] {
+				appendBodyLine(line)
+			}
+		} else {
+			for _, line := range body[:cardBodyLineCap] {
+				appendBodyLine(line)
+			}
+			out = append(out, gutter+styleCardMeta.Render(fmt.Sprintf("…%d more line(s)", hidden)))
 		}
-		out = append(out, gutter+styleCardMeta.Render(fmt.Sprintf("…%d more line(s)", hidden)))
 	} else {
 		for _, line := range body {
 			appendBodyLine(line)
@@ -143,6 +152,20 @@ func renderToolCard(toolName, preview, argsJSON, output string, errored bool, te
 	}
 	out = append(out, styleCardGutter.Render("╰ ")+footer)
 	return strings.Join(out, "\n")
+}
+
+// tailTruncatedTool reports whether a tool's overflowing body should
+// keep its LAST cardBodyLineCap lines instead of the first ones.
+// Applies to command-envelope tools whose interesting output lands at
+// the end (test summaries, final compiler error, exit diagnostics).
+// Listing-shaped tools (list_dir, glob, grep) stay head-truncated —
+// their output ranks top-down.
+func tailTruncatedTool(toolName string) bool {
+	switch toolName {
+	case "run_bash", "run_tests", "git":
+		return true
+	}
+	return false
 }
 
 // renderCardHeader composes "╭ <preview>". The trailing duration tag

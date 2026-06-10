@@ -95,7 +95,7 @@ func modelShortcutSwitch(m Model, newTag string) (Model, tea.Cmd) {
 
 // providerOwnsModel reports whether p's model surface contains tag.
 // Sources searched, in order: (1) the curated catalog for curated
-// kinds (anthropic/openai/gemini — embedded, plus the local
+// kinds (anthropic/openai/gemini/xai — embedded, plus the local
 // models.dev snapshot for Gemini), (2) p.Models from config.toml
 // (legacy hand-curated lists). Returns false for non-curated kinds
 // without an explicit p.Models entry — the shortcut then falls back

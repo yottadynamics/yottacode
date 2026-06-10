@@ -101,6 +101,12 @@ yottacode openai-auth logout
 
 Tokens and scanned model lists live in `~/.yottacode/auth/` with restrictive file permissions. That directory is denied to model read and write tools.
 
+**Context window.** The Codex backend enforces a much smaller input limit than the same model ids have on `api.openai.com`: gpt-5.5 accepts roughly 272k input tokens here (measured 2026-06-10: 264,995 accepted, ~281k rejected) versus the 1.05M the catalog lists for the API-key provider. Window-derived behavior — the usage bar, the compaction watermark, auto-summarize — therefore resolves windows per provider *kind*: a provider-qualified entry (`openai-auth/gpt-5`, shipped at the verified-safe 264000) outranks the catalog's per-model number, so facts from one backend never leak to a namesake model behind another. To pin a different value for an exact model, add an entry like `{"prefix": "openai-auth/gpt-5.5", "window": 250000}` to `~/.yottacode/context-windows.json` — the longest matching prefix wins.
+
+The backend also rejects `max_output_tokens` (`Unsupported parameter`), and mid-stream failures arrive as an SSE `error` event with the detail nested under `error.message` (followed by a `response.failed` event); the adapter surfaces that message verbatim, so an input-too-large turn reports `context_length_exceeded` instead of a generic stream error.
+
+**Passive drift correction.** Advertised limits and enforced limits drift apart (the 272K-vs-1.05M case above), so yottacode also corrects windows from live traffic, for every provider kind: a turn rejected for context overflow that the local estimator thought would fit shrinks the window pin (estimate × 0.9, geometrically on repeat), and a completed turn whose exact provider-reported input exceeds the resolved window raises it to the proven value. Corrections are written as `<kind>/<model>` entries in `~/.yottacode/context-windows.json` with a `[window]` notice in the transcript, and a shrink immediately re-runs the context check — so an over-window session auto-summarizes in the same turn instead of failing again. config.toml is never touched.
+
 ## GitHub Copilot (`copilot`)
 
 ```bash
@@ -112,6 +118,8 @@ export YOTTACODE_BASE_URL=https://api.githubcopilot.com
 ```
 
 `copilot` uses GitHub's device code flow to authenticate. Model calls bill against the user's GitHub Copilot subscription. Available models depend on the subscription tier (Free, Pro, Pro+); the model picker marks plan-gated models with "upgrade plan".
+
+**Context window.** Copilot fronts other vendors' models at its own (smaller) token limits — gpt-5.5 via Copilot is 400K, not the 1.05M the same id has on `api.openai.com`. The login scan captures each model's real limit from GitHub's models API, and window resolution reads it per provider kind, so a namesake model never inherits another backend's number. The same overlay pinning described for `openai-auth` above (`copilot/<model-id>` entries in `~/.yottacode/context-windows.json`) works here too.
 
 Lifecycle commands:
 
@@ -174,10 +182,12 @@ export YOTTACODE_BASE_URL=https://api.x.ai/v1
 export YOTTACODE_API_KEY=xai-...
 ```
 
+`xai` uses the embedded model catalog; maintainers refresh that catalog with `XAI_API_KEY` in `cmd/yotta-models`.
+
 xAI hosted tools:
 
 - `web_search` is enabled by default
-- `x_search` can be enabled with `YOTTACODE_ENABLE_X_SEARCH=1`
+- `x_search` is enabled by default for X posts, users, and threads
 - `code_interpreter` can be enabled when supported
 
 Optional filters:
@@ -281,5 +291,7 @@ Set how hard a reasoning-capable model thinks with [`--reasoning-effort`](config
 | xAI (Grok) | `reasoning_effort` enum | Only `grok-*-mini` accepts it (`low`/`high`; `medium` folds to `high`). `grok-4` reasons unconditionally and is left untouched. |
 
 **Default is unchanged.** When effort is unset, yottacode injects no reasoning parameter at all — every provider behaves exactly as it does without the setting. In particular, Anthropic and Gemini do **not** get extended thinking unless you ask for it (it costs extra tokens). `/effort default` (or `off`/`none`) returns to this state mid-session.
+
+The TUI status bar shows `effort: default|low|medium|high` only when the active provider/model accepts the effort option; unsupported models omit the chip instead of advertising a no-op setting.
 
 **No per-model table to maintain.** Whether a model supports thinking, and how big a thinking budget to allow, come from the model catalog (`Capabilities.Thinking` and `MaxOutput`, fetched from each provider's list-models endpoint via `yotta-models refresh`) — not a hand-maintained list. A model the catalog doesn't describe still works: enum providers (OpenAI/xAI) are gated on model-name prefixes, and Anthropic/Gemini fall back to a conservative thinking budget. If the catalog explicitly marks a model as non-thinking, the effort is a no-op rather than an error (surfaced as a `/effort` hint).

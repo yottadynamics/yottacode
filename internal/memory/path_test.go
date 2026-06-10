@@ -115,19 +115,48 @@ func TestSlugify_Idempotent(t *testing.T) {
 func TestUserMemoryDir_RootedUnderHome(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("YOTTACODE_HOME", "")
 	got, err := UserMemoryDir()
 	if err != nil {
 		t.Fatalf("UserMemoryDir: %v", err)
 	}
-	want := filepath.Join(home, ".yottacode", "memory")
+	want := filepath.Join(home, ".yottacode", "memory", "user")
 	if got != want {
 		t.Errorf("UserMemoryDir = %q, want %q", got, want)
+	}
+}
+
+func TestMemoryRoot_HonorsYottacodeHome(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("YOTTACODE_HOME", "")
+	override := t.TempDir()
+	t.Setenv("YOTTACODE_HOME", override)
+
+	user, err := UserMemoryDir()
+	if err != nil {
+		t.Fatalf("UserMemoryDir: %v", err)
+	}
+	if want := filepath.Join(override, "memory", "user"); user != want {
+		t.Errorf("UserMemoryDir = %q, want %q", user, want)
+	}
+
+	cwd := filepath.Join(t.TempDir(), "myapp")
+	if err := os.MkdirAll(cwd, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	proj, err := ProjectMemoryDir(cwd)
+	if err != nil {
+		t.Fatalf("ProjectMemoryDir: %v", err)
+	}
+	if want := filepath.Join(override, "memory", "projects", "myapp"); proj != want {
+		t.Errorf("ProjectMemoryDir = %q, want %q", proj, want)
 	}
 }
 
 func TestProjectMemoryDir_UsesProjectSlug(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("YOTTACODE_HOME", "")
 	cwd := filepath.Join(t.TempDir(), "myapp")
 	if err := os.MkdirAll(cwd, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
@@ -136,7 +165,7 @@ func TestProjectMemoryDir_UsesProjectSlug(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ProjectMemoryDir: %v", err)
 	}
-	want := filepath.Join(home, ".yottacode", "projects", "myapp", "memory")
+	want := filepath.Join(home, ".yottacode", "memory", "projects", "myapp")
 	if got != want {
 		t.Errorf("ProjectMemoryDir = %q, want %q", got, want)
 	}
@@ -144,30 +173,33 @@ func TestProjectMemoryDir_UsesProjectSlug(t *testing.T) {
 
 func TestMemoryFilePath_ValidUserScope(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
+	t.Setenv("YOTTACODE_HOME", "")
 	got, err := MemoryFilePath("user", "code-style", "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !strings.HasSuffix(got, "/memory/code-style.md") {
-		t.Errorf("MemoryFilePath = %q, want suffix /memory/code-style.md", got)
+	if !strings.HasSuffix(got, "/memory/user/code-style.md") {
+		t.Errorf("MemoryFilePath = %q, want suffix /memory/user/code-style.md", got)
 	}
 }
 
 func TestMemoryFilePath_ValidProjectScope(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
+	t.Setenv("YOTTACODE_HOME", "")
 	cwd := filepath.Join(t.TempDir(), "demo")
 	_ = os.MkdirAll(cwd, 0o755)
 	got, err := MemoryFilePath("project", "tooling", cwd)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !strings.HasSuffix(got, "/projects/demo/memory/tooling.md") {
-		t.Errorf("MemoryFilePath = %q, want suffix /projects/demo/memory/tooling.md", got)
+	if !strings.HasSuffix(got, "/memory/projects/demo/tooling.md") {
+		t.Errorf("MemoryFilePath = %q, want suffix /memory/projects/demo/tooling.md", got)
 	}
 }
 
 func TestMemoryFilePath_RejectsBadNames(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
+	t.Setenv("YOTTACODE_HOME", "")
 	bad := []string{
 		"",                      // empty
 		"Foo",                   // uppercase
@@ -187,7 +219,8 @@ func TestMemoryFilePath_RejectsBadNames(t *testing.T) {
 
 func TestMemoryFilePath_RejectsReservedNames(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	for _, name := range []string{"user", "project", "memory", "index", "sessions", "yottacode", "feedback", "reference"} {
+	t.Setenv("YOTTACODE_HOME", "")
+	for _, name := range []string{"user", "project", "projects", "memory", "index", "sessions", "subagents", "yottacode", "feedback", "reference"} {
 		if _, err := MemoryFilePath("user", name, ""); err == nil {
 			t.Errorf("MemoryFilePath(user, %q) should have errored on reserved name", name)
 		}
@@ -196,6 +229,7 @@ func TestMemoryFilePath_RejectsReservedNames(t *testing.T) {
 
 func TestMemoryFilePath_RejectsBadScope(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
+	t.Setenv("YOTTACODE_HOME", "")
 	if _, err := MemoryFilePath("global", "ok", ""); err == nil {
 		t.Errorf("MemoryFilePath(global, ...) should reject unknown scope")
 	}
@@ -204,7 +238,8 @@ func TestMemoryFilePath_RejectsBadScope(t *testing.T) {
 func TestMemoryFilePath_RejectsSymlink(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	memDir := filepath.Join(home, ".yottacode", "memory")
+	t.Setenv("YOTTACODE_HOME", "")
+	memDir := filepath.Join(home, ".yottacode", "memory", "user")
 	if err := os.MkdirAll(memDir, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
@@ -220,11 +255,12 @@ func TestMemoryFilePath_RejectsSymlink(t *testing.T) {
 func TestEnsureUserMemoryDir_Idempotent(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("YOTTACODE_HOME", "")
 	got, err := EnsureUserMemoryDir()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	want := filepath.Join(home, ".yottacode", "memory")
+	want := filepath.Join(home, ".yottacode", "memory", "user")
 	if got != want {
 		t.Errorf("EnsureUserMemoryDir = %q, want %q", got, want)
 	}
@@ -236,6 +272,7 @@ func TestEnsureUserMemoryDir_Idempotent(t *testing.T) {
 func TestEnsureProjectMemoryDir_Idempotent(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("YOTTACODE_HOME", "")
 	cwd := filepath.Join(t.TempDir(), "demo")
 	if err := os.MkdirAll(cwd, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
@@ -244,7 +281,7 @@ func TestEnsureProjectMemoryDir_Idempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	want := filepath.Join(home, ".yottacode", "projects", "demo", "memory")
+	want := filepath.Join(home, ".yottacode", "memory", "projects", "demo")
 	if got != want {
 		t.Errorf("EnsureProjectMemoryDir = %q, want %q", got, want)
 	}
@@ -252,4 +289,3 @@ func TestEnsureProjectMemoryDir_Idempotent(t *testing.T) {
 		t.Errorf("second call errored: %v", err)
 	}
 }
-

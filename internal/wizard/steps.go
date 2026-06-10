@@ -101,7 +101,7 @@ type providerInputs struct {
 	baseURL     textinput.Model
 	customModel textinput.Model
 	// curatedModels is the embedded catalog for curated kinds
-	// (anthropic/openai/gemini). Empty when the kind isn't curated
+	// (anthropic/openai/gemini/xai). Empty when the kind isn't curated
 	// or the catalog hasn't been refreshed yet — in either case the
 	// wizard falls back to the customModel textinput. modelCursor
 	// indexes into this slice when non-empty.
@@ -189,7 +189,7 @@ type wizardModel struct {
 	// finished configuring Ollama and the wizard asks about semantic
 	// search.
 	embedSubStep     bool
-	embedCursor      int    // 0=nomic-embed-text, 1=all-minilm, 2=skip
+	embedCursor      int // 0=nomic-embed-text, 1=all-minilm, 2=skip
 	embedPulling     bool
 	embedPullErr     error
 	embedChosenModel string // set on success (auto-detected or pulled)
@@ -243,13 +243,13 @@ func newWizardModel(ctx context.Context, opts Options) wizardModel {
 	sp.Spinner = spinner.Dot
 
 	m := wizardModel{
-		ctx:              ctx,
-		opts:             opts,
-		envSnap:          envSnap,
-		ollamaProbe:      probe,
-		existingCfg:      exists,
-		step:             stepWelcome,
-		spin:             sp,
+		ctx:          ctx,
+		opts:         opts,
+		envSnap:      envSnap,
+		ollamaProbe:  probe,
+		existingCfg:  exists,
+		step:         stepWelcome,
+		spin:         sp,
 		routerCursor: 1, // fallback-chain default
 		routerPolicy: "fallback-chain",
 	}
@@ -1275,11 +1275,11 @@ func (m wizardModel) newProviderInputs(e CatalogEntry) providerInputs {
 		in.customModel.SetValue(copilotDefault)
 		in.chosenModel = copilotDefault
 	}
-	// For curated kinds (anthropic/openai/gemini), source the model
-	// list from the curated catalog — the embedded catalog.gen.json,
-	// augmented for Gemini from the local models.dev snapshot so the
-	// picker offers newly published IDs even when the generated
-	// catalog lags. Empty when the maintainer hasn't run
+	// For curated kinds (anthropic/openai/gemini/xai), source the
+	// model list from the curated catalog — the embedded
+	// catalog.gen.json, augmented for Gemini from the local models.dev
+	// snapshot so the picker offers newly published IDs even when the
+	// generated catalog lags. Empty when the maintainer hasn't run
 	// `go run ./cmd/yotta-models refresh` yet — in that case we
 	// fall back to the free-form textinput so the wizard remains
 	// usable without a populated catalog.
@@ -1318,7 +1318,7 @@ func FreeFormModelPlaceholder(name string) string {
 	case "gemini":
 		return "gemini-2.5-flash"
 	case "xai":
-		return "grok-3"
+		return "grok-4.20-0309-non-reasoning"
 	case "ollama":
 		return "llama3.1:8b"
 	case "nvidia-nim":

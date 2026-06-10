@@ -8,8 +8,8 @@ import (
 )
 
 func TestVecPath(t *testing.T) {
-	got := VecPath("/home/user/.yottacode/memory/feedback_testing.md")
-	want := "/home/user/.yottacode/memory/feedback_testing.vec"
+	got := VecPath("/home/user/.yottacode/memory/user/feedback_testing.md")
+	want := "/home/user/.yottacode/memory/user/feedback_testing.vec"
 	if got != want {
 		t.Errorf("VecPath = %q, want %q", got, want)
 	}

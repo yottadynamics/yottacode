@@ -15,7 +15,7 @@ Type `/` in the TUI to open the slash-command palette. The palette filters as yo
 | `/sessions` | `[id\|name]` | Open the sessions picker or resume a known session directly |
 | `/model` | `<name>` | Switch the active model for this session |
 | `/provider` | — | Show resolved provider, API style, built-ins, capabilities, and diagnostics |
-| `/effort` | `[default\|low\|medium\|high]` | Set reasoning effort for this session on providers that support it. Bare opens a picker; a positional argument sets it directly. `default` (aliases `off`/`none`) injects no reasoning override — every provider behaves as if `/effort` were never used. Session-only, mirroring `--reasoning-effort`. See [providers.md](providers.md#reasoning-effort). |
+| `/effort` | `[default\|low\|medium\|high]` | Set reasoning effort for this session on providers that support it. Bare opens a picker; a positional argument sets it directly. `default` (aliases `off`/`none`) injects no reasoning override — every provider behaves as if `/effort` were never used. Supported active models show the current level in the status bar. Session-only, mirroring `--reasoning-effort`. See [providers.md](providers.md#reasoning-effort). |
 | `/doctor` | — | Probe the provider `/models` endpoint |
 | `/redo` | — | Rewind the last user message and put it back in the input box |
 | `/recall` | `<query>` | Search across saved sessions |
@@ -25,11 +25,11 @@ Type `/` in the TUI to open the slash-command palette. The palette filters as yo
 | `/setup` | — | Suspend the TUI and rerun setup |
 | `/init` | — | Ask the agent to draft or refresh `.yottacode/YOTTACODE.md` |
 | `/git-commit` | — | Compose and run a one-line commit on the staged changes. Procedural: control flow is in Go, the model only synthesizes the subject. Replaces the legacy markdown `/git:commit-message`. |
+| `/git-push` | — | Push the current branch to origin. Procedural: deterministic upstream detection (adds `-u origin HEAD` only on first push), detached-HEAD early exit, no force-push surface. Surfaces "PR updated: `<url>`" when a PR exists for the branch, or points at `/git-create-pr` when one doesn't. |
 | `/git-create-pr` | `[base]` | Open a pull request for the current branch. Procedural: base resolution, ahead-count gating, push-state detection, title validation, and gh-unavailable fall-through all live in Go. Replaces the legacy markdown `/git:create-pr`. |
+| `/git-update-pr` | `[ref]` | Refresh an existing PR's title and body to match the current commit list. Ref is a number or branch; empty defaults to the current branch's PR. Keeps the existing title verbatim when scope hasn't materially changed (no cosmetic title churn); regenerates the body from the full commit log. Scope-pinned: only edits title and body — labels, reviewers, base, draft state are off-limits. |
 | `/git-create-issue` | `[title]` | Create a GitHub issue in the current repo. Optional title arg; interactively composes if omitted. Uses `gh_issue_context` + `gh_issue_create` tools for template detection, validation, and creation. |
 | `/git-review-pr` | `[ref]` | Self-review an existing pull request. Ref is a number (`17`) or branch (`feature/x`); empty defaults to the current branch's PR. Fetches PR metadata + diff + check rollup via the typed `internal/github.Interface`, surfaces failing CI at the top, emits a structured review (Failing checks / Blockers / Suggestions / Nits). Output to scrollback only — posting back to GitHub is deferred to a future `--post` flag. |
-| `/git-push` | — | Push the current branch to origin. Procedural: deterministic upstream detection (adds `-u origin HEAD` only on first push), detached-HEAD early exit, no force-push surface. Surfaces "PR updated: `<url>`" when a PR exists for the branch, or points at `/git-create-pr` when one doesn't. |
-| `/git-update-pr` | `[ref]` | Refresh an existing PR's title and body to match the current commit list. Ref is a number or branch; empty defaults to the current branch's PR. Keeps the existing title verbatim when scope hasn't materially changed (no cosmetic title churn); regenerates the body from the full commit log. Scope-pinned: only edits title and body — labels, reviewers, base, draft state are off-limits. |
 | `/plan` | — | Toggle plan mode (also `Shift+Tab`). Type `/plan list` to open a picker and resume an earlier plan. |
 | `/subagents` | `[list \| view <id> \| stop <id> \| types]` | List subagent runs, view a transcript, stop a running task, or list available agent types. See [subagents.md](subagents.md). |
 | `/mcp` | `[logs <name>]` | List configured MCP servers (status + tool count), or dump a server's recent stderr with `logs <name>`. See [mcp.md](mcp.md). |
@@ -58,8 +58,8 @@ Beyond the built-ins, you can ship your own slash commands by dropping markdown 
 
 - Project context: `./.yottacode/YOTTACODE.md`
 - User preferences: `~/.yottacode/USER.md`
-- Browse user memories (`~/.yottacode/memory/`)
-- Browse project memories (`~/.yottacode/projects/<slug>/memory/`)
+- Browse user memories (`~/.yottacode/memory/user/`)
+- Browse project memories (`~/.yottacode/memory/projects/<slug>/`)
 
 Opening a curated memory file (`USER.md`, `YOTTACODE.md`) suspends the TUI to `vim`; on exit, yottacode reloads memory and patches the active system prompt so the next turn sees your edits. The browse rows drop into a sub-list of agent-managed memories where `Enter` opens an entry in `vim`, `d` deletes it, `f` opens the folder in your file manager, and `Esc` returns to the root menu.
 

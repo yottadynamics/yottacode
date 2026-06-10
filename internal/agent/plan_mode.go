@@ -13,6 +13,8 @@ import (
 	"sync/atomic"
 	"time"
 	"unicode"
+
+	"github.com/yottadynamics/yottacode/internal/ychome"
 )
 
 // PlanModeState is the per-session, runtime-mutable plan-mode flag the
@@ -82,18 +84,11 @@ func kebabFromPrompt(s string) string {
 }
 
 // PlansDir returns the directory plan files live under:
-// $YOTTACODE_HOME/plans (when set) or ~/.yottacode/plans otherwise.
-// Does not create the directory — write_file's MkdirAll handles that
-// lazily on first write.
+// $YOTTACODE_HOME/plans (when set) or ~/.yottacode/plans otherwise,
+// via the shared ychome.Dir resolution. Does not create the directory
+// — write_file's MkdirAll handles that lazily on first write.
 func PlansDir() (string, error) {
-	if home := strings.TrimSpace(os.Getenv("YOTTACODE_HOME")); home != "" {
-		return filepath.Join(home, "plans"), nil
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("resolve home dir: %w", err)
-	}
-	return filepath.Join(home, ".yottacode", "plans"), nil
+	return ychome.Dir("plans")
 }
 
 // PlanEntry describes one plan file on disk for the picker + CLI

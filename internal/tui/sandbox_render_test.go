@@ -60,9 +60,18 @@ func TestRenderStartupBox_OmitsSandboxAndChecks(t *testing.T) {
 	}
 }
 
-func TestRenderProviderToolLine(t *testing.T) {
-	got := renderProviderToolLine("web_search", "searching", "")
-	if !strings.Contains(got, "web_search") || !strings.Contains(got, "[searching]") {
-		t.Errorf("provider tool line should show tool name and phase: %q", got)
+func TestRenderProviderToolCard(t *testing.T) {
+	got := stripANSI(renderProviderToolCard("web_search", "searching", "", 80))
+	for _, want := range []string{"╭ xAI Web Search", "│ searching the web…", "╰ hosted web search"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("provider tool card missing %q:\n%s", want, got)
+		}
+	}
+
+	got = stripANSI(renderProviderToolCard("x_search", "in_progress", "", 80))
+	for _, want := range []string{"╭ xAI X Search", "│ searching X…", "╰ hosted X search"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("provider tool card missing %q:\n%s", want, got)
+		}
 	}
 }

@@ -13,7 +13,6 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 
 	"github.com/yottadynamics/yottacode/internal/adapter"
 	copilotauth "github.com/yottadynamics/yottacode/internal/auth/copilot"
@@ -87,13 +86,15 @@ func init() {
 		{Name: "theme", Help: "change the theme", Run: cmdThemes, PreservesTurn: true},
 
 		// Git workflow.
+		// Palette order mirrors the daily flow: commit → push →
+		// create PR → update PR, then the review/implement pair.
 		{Name: "git-commit", Help: "compose and run a one-line git commit", Run: cmdGitCommit},
+		{Name: "git-push", Help: "push the current branch to origin (sets upstream on first push; surfaces the PR URL when one exists)", Run: cmdGitPush},
 		{Name: "git-create-pr", Args: "[base]", Help: "open a pull request for the current branch", Run: cmdGitCreatePR},
+		{Name: "git-update-pr", Args: "[ref]", Help: "refresh a PR's title and body to match the current commit list", Run: cmdGitUpdatePR},
 		{Name: "git-create-issue", Args: "[title]", Help: "create a GitHub issue in the current repo", Run: cmdGitCreateIssue},
 		{Name: "git-review-pr", Args: "[ref]", Help: "review a pull request (number or branch; defaults to current branch's PR)", Run: cmdGitReviewPR},
 		{Name: "git-implement-issue", Args: "<n>", Help: "implement a GitHub issue end-to-end: fetch → plan → branch → code → tests → commit → push → draft PR", Run: cmdGitImplementIssue},
-		{Name: "git-push", Help: "push the current branch to origin (sets upstream on first push; surfaces the PR URL when one exists)", Run: cmdGitPush},
-		{Name: "git-update-pr", Args: "[ref]", Help: "refresh a PR's title and body to match the current commit list", Run: cmdGitUpdatePR},
 		// /mcp inspects the live MCP server manager: list configured
 		// servers, their start status + tool counts, and dump stderr
 		// from a misbehaving one. PreservesTurn=true: read-only on
@@ -895,70 +896,8 @@ func parseProviderFlags(args []string) providerAddFlags {
 	return f
 }
 
-// formatProviderList renders the configured-profile dump. As of
-// the List/Use combine, the inline picker handles the typed
-// `/provider list` shortcut directly — this helper is kept for
-// callers (e.g. tests, future scripting paths) that want the
-// flat-text shape. Visual language matches the inline pickers:
-// title via renderMenuHeader, an "Active:" status row mirroring
-// the picker's "Auto-memory: on/off" line, and one renderMenuItem
-// row per provider with `✔` on whichever profile is currently
-// driving the running session (which may differ from
-// cfg.Active.Provider when the user mid-session swapped via
-// /provider use without persisting).
-//
-// activeName is the profile whose base_url matches the session's
-// current base_url; cfg.Active.Provider is the persisted default.
-// Both are surfaced — ✔ tracks the live state, the Active row tracks
-// what the next yottacode invocation will pick up.
-func formatProviderList(cfg config.Config, activeName string) string {
-	var b strings.Builder
-	b.WriteString(renderMenuHeader("Configured providers",
-		"Pick one to switch with /provider use <name>."))
-	b.WriteString("\n")
-
-	if cfg.Active.Provider != "" {
-		b.WriteString("  ")
-		b.WriteString(stylePaletteEmpty.Render("Active: "))
-		b.WriteString(lipgloss.NewStyle().Bold(true).Render(cfg.Active.Provider))
-		if cfg.Active.Model != "" {
-			b.WriteString(stylePaletteEmpty.Render(" · model " + cfg.Active.Model))
-		}
-		b.WriteString("\n\n")
-	}
-
-	// Column-align the name field so kind/base-url line up across
-	// rows. 12 is a sane floor (matches "anthropic" width plus a
-	// pad); we widen if any configured name is longer.
-	maxName := 12
-	for _, p := range cfg.Providers {
-		if len(p.Name) > maxName {
-			maxName = len(p.Name)
-		}
-	}
-
-	for i, p := range cfg.Providers {
-		desc := p.Kind
-		if p.BaseURL != "" {
-			desc += " · " + p.BaseURL
-		}
-		if p.DefaultModel != "" {
-			desc += " · default=" + p.DefaultModel
-		}
-		b.WriteString(renderMenuItem(menuItemOpts{
-			Number:     i + 1,
-			Label:      p.Name,
-			LabelWidth: maxName,
-			Desc:       desc,
-			Checked:    p.Name == activeName,
-		}))
-		b.WriteString("\n")
-	}
-	return strings.TrimRight(b.String(), "\n")
-}
-
 // formatProviderModels lists one profile's catalog. For curated
-// providers (anthropic/openai/gemini) it reads the curated catalog
+// providers (anthropic/openai/gemini/xai) it reads the curated catalog
 // (embedded, plus the local models.dev snapshot for Gemini); for
 // everything else it shows the configured default + API-key
 // status and points the user at /model for the live picker. /model
@@ -1097,6 +1036,8 @@ func detectKindAsProvider(kind string) adapter.Provider {
 		return adapter.ProviderCopilot
 	case "gemini":
 		return adapter.ProviderGemini
+	case "xai":
+		return adapter.ProviderXAI
 	case "ollama":
 		return adapter.ProviderOllama
 	default:

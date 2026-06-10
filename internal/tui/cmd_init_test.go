@@ -27,6 +27,12 @@ func TestBuildInitPrompt_DraftMode(t *testing.T) {
 	if strings.Contains(prompt, "already exists") {
 		t.Errorf("prompt should not mention 'already exists' when file is absent; got: %q", prompt)
 	}
+	if !strings.Contains(prompt, "Do not stop after creating a todo card") {
+		t.Errorf("prompt should prevent todo-card approval handshakes; got: %q", prompt)
+	}
+	if strings.Contains(prompt, "Proceed with implementation?") {
+		t.Errorf("prompt should not trigger a separate implementation confirmation; got: %q", prompt)
+	}
 }
 
 // TestBuildInitPrompt_ScopesToCwd guards against the regression that

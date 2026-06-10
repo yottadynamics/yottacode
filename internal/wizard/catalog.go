@@ -33,10 +33,10 @@ type CatalogEntry struct {
 	Name string
 
 	// Kind is the adapter family. Must be one of
-	// internal/config.ValidKinds (anthropic | openai | gemini | ollama
+	// internal/config.ValidKinds (anthropic | openai | gemini | xai | ollama
 	// | openai-compatible). Drives both adapter dispatch and whether
 	// the wizard's stepConfigure pulls a curated model list from
-	// internal/catalog (anthropic/openai/gemini) or falls back to
+	// internal/catalog (anthropic/openai/gemini/xai) or falls back to
 	// free-form text input (ollama, openai-compatible).
 	Kind string
 
@@ -97,10 +97,10 @@ var Catalog = []CatalogEntry{
 	},
 	{
 		Name:      "xai",
-		Kind:      "openai-compatible",
+		Kind:      "xai",
 		BaseURL:   "https://api.x.ai/v1",
 		APIKeyEnv: "XAI_API_KEY",
-		Note:      "Grok (xAI) — model names from console.x.ai",
+		Note:      "Grok (xAI) — model list from internal/catalog",
 	},
 	{
 		Name:      "nvidia-nim",
