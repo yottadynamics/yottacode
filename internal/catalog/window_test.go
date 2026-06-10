@@ -2,6 +2,8 @@ package catalog
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -66,6 +68,102 @@ func TestEffectiveWindow_NoOverrideFallsThrough(t *testing.T) {
 	}
 	if got := EffectiveWindow("gpt-4o", -5, 999); got != 128_000 {
 		t.Errorf("negative override should be treated as unset, got %d", got)
+	}
+}
+
+// TestResolveWindowForProvider_SeparatesNamesakeModels is the
+// regression test for the 2026-06-10 openai-auth context overflow:
+// gpt-5.5 through the ChatGPT Codex backend must resolve to the
+// measured per-backend window, never the namesake's 1.05M
+// api.openai.com catalog number.
+func TestResolveWindowForProvider_SeparatesNamesakeModels(t *testing.T) {
+	useTempOverlay(t)
+
+	// The provider-qualified baseline entry (openai-auth/gpt-5)
+	// outranks the catalog…
+	if got := ResolveWindowForProvider("openai-auth", "gpt-5.5", 0, 999); got != 264_000 {
+		t.Errorf("openai-auth/gpt-5.5 = %d, want measured 264000", got)
+	}
+	// …and covers the whole scanned gpt-5 family behind that backend.
+	if got := ResolveWindowForProvider("openai-auth", "gpt-5.4-mini", 0, 999); got != 264_000 {
+		t.Errorf("openai-auth/gpt-5.4-mini = %d, want 264000", got)
+	}
+
+	// The same id behind its own provider keeps its own catalog number.
+	if m, ok := FindByProviderID("openai", "gpt-5.5"); ok && m.ContextWindow > 0 {
+		if got := ResolveWindowForProvider("openai", "gpt-5.5", 0, 999); got != m.ContextWindow {
+			t.Errorf("openai/gpt-5.5 = %d, want catalog %d", got, m.ContextWindow)
+		}
+	}
+}
+
+func TestResolveWindowForProvider_OverrideStillWins(t *testing.T) {
+	useTempOverlay(t)
+	if got := ResolveWindowForProvider("openai-auth", "gpt-5.5", 77_777, 999); got != 77_777 {
+		t.Errorf("override = %d, want 77777", got)
+	}
+}
+
+// TestResolveWindowForProvider_NoQualifiedFactsKeepsLegacyResolution:
+// an empty kind and a kind with no provider-qualified entries (e.g. a
+// proxy fronting the real API) must behave exactly like ResolveWindow.
+func TestResolveWindowForProvider_NoQualifiedFactsKeepsLegacyResolution(t *testing.T) {
+	useTempOverlay(t)
+	for _, kind := range []string{"", "openai-compatible"} {
+		for _, model := range []string{"gpt-5.5", "nvidia/nemotron-9-future", "totally-unknown-xyz-7b"} {
+			want := ResolveWindow(model, 0, 4242)
+			if got := ResolveWindowForProvider(kind, model, 0, 4242); got != want {
+				t.Errorf("kind %q model %q = %d, want ResolveWindow's %d", kind, model, got, want)
+			}
+		}
+	}
+}
+
+// TestResolveWindowForProvider_OverlayPinBeatsBaselineFamily: users can
+// pin a per-backend window for an exact id in the runtime overlay; the
+// longer qualified prefix wins over the shipped family entry, siblings
+// keep the family value.
+func TestResolveWindowForProvider_OverlayPinBeatsBaselineFamily(t *testing.T) {
+	useTempOverlay(t)
+	if changed, err := UpsertWindow("openai-auth/gpt-5.5", 250_000); err != nil || !changed {
+		t.Fatalf("UpsertWindow: changed=%v err=%v", changed, err)
+	}
+	if got := ResolveWindowForProvider("openai-auth", "gpt-5.5", 0, 999); got != 250_000 {
+		t.Errorf("pinned = %d, want 250000", got)
+	}
+	if got := ResolveWindowForProvider("openai-auth", "gpt-5.4", 0, 999); got != 264_000 {
+		t.Errorf("sibling = %d, want family 264000", got)
+	}
+}
+
+// TestResolveWindowForProvider_CopilotUsesScannedWindows: copilot's
+// models are runtime-scanned and the scan captures real per-backend
+// token limits — resolution must use them instead of falling through
+// to a namesake's embedded-catalog number (gpt-5.5 via Copilot is
+// 400K, not api.openai.com's 1.05M).
+func TestResolveWindowForProvider_CopilotUsesScannedWindows(t *testing.T) {
+	useTempOverlay(t)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	authDir := filepath.Join(home, ".yottacode", "auth")
+	if err := os.MkdirAll(authDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	payload := `{"cached_at":"2026-06-10T00:00:00Z","models":[
+		{"id":"gpt-5.5","name":"GPT-5.5","context_window":400000,"max_output":128000},
+		{"id":"no-window-model","name":"NW"}
+	]}`
+	if err := os.WriteFile(filepath.Join(authDir, "copilot-models.json"), []byte(payload), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := ResolveWindowForProvider("copilot", "gpt-5.5", 0, 999); got != 400_000 {
+		t.Errorf("copilot/gpt-5.5 = %d, want scanned 400000", got)
+	}
+	// A scanned entry without a window falls through to the legacy
+	// layers (prefix table → default) rather than resolving to zero.
+	if got := ResolveWindowForProvider("copilot", "no-window-model", 0, 4242); got != 4242 {
+		t.Errorf("copilot/no-window-model = %d, want default 4242", got)
 	}
 }
 

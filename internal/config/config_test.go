@@ -329,6 +329,46 @@ base_url = "http://localhost:11434/v1"
 	}
 }
 
+func TestProviderKindForModel(t *testing.T) {
+	cfg := Config{
+		Active: Active{Provider: "codex"},
+		Providers: []Provider{
+			// Namesake collision: the API-key provider also lists the
+			// active provider's model.
+			{Name: "api-openai", Kind: "openai", Models: []Model{{Name: "gpt-5.5"}}},
+			{Name: "codex", Kind: "openai-auth", DefaultModel: "gpt-5.5"},
+			{Name: "local", Kind: "ollama", DefaultModel: "qwen3.5:9b"},
+		},
+	}
+
+	// The active provider wins the namesake collision.
+	if got := cfg.ProviderKindForModel("gpt-5.5"); got != "openai-auth" {
+		t.Errorf("collision: got %q, want openai-auth", got)
+	}
+	// A non-active provider that explicitly names the model.
+	if got := cfg.ProviderKindForModel("qwen3.5:9b"); got != "ollama" {
+		t.Errorf("listed elsewhere: got %q, want ollama", got)
+	}
+	// A model no entry names (openai-auth's scanned set, ollama's local
+	// tags) falls back to the active provider's kind.
+	if got := cfg.ProviderKindForModel("gpt-5.4-mini"); got != "openai-auth" {
+		t.Errorf("unlisted: got %q, want active kind openai-auth", got)
+	}
+	if got := cfg.ProviderKindForModel(""); got != "" {
+		t.Errorf("empty model: got %q, want empty", got)
+	}
+
+	// Without an active provider there is no fallback kind.
+	cfg.Active.Provider = ""
+	if got := cfg.ProviderKindForModel("gpt-5.4-mini"); got != "" {
+		t.Errorf("no active provider: got %q, want empty", got)
+	}
+	// …but explicit listings still resolve.
+	if got := cfg.ProviderKindForModel("gpt-5.5"); got != "openai" {
+		t.Errorf("no active provider, listed: got %q, want openai", got)
+	}
+}
+
 func TestContextWindowOverride(t *testing.T) {
 	cfg := Config{
 		Active: Active{Provider: "primary"},

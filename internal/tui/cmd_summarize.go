@@ -184,7 +184,7 @@ func (m Model) summarizeCmd(auto bool) tea.Cmd {
 	// Snapshot the window outside the goroutine so we still hold a
 	// stable view of model + fileCfg. Used to budget both the
 	// summarize input and the retained tail.
-	windowTokens := catalog.ResolveWindow(m.modelName, m.fileCfg.ContextWindowOverride(m.modelName), m.fileCfg.Context.DefaultWindow)
+	windowTokens := catalog.ResolveWindowForProvider(m.fileCfg.ProviderKindForModel(m.modelName), m.modelName, m.fileCfg.ContextWindowOverride(m.modelName), m.fileCfg.Context.DefaultWindow)
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(parentCtx, summarizeTimeout)
 		defer cancel()
@@ -593,7 +593,7 @@ func (m Model) summarizeDeps() summarizeDeps {
 // fits.
 func loadSummarizedSession(deps summarizeDeps, loaded *session.Session) (*session.Session, string, string, error) {
 	tokens := contextwindow.EstimateTokens(loaded.Messages)
-	window := catalog.ResolveWindow(loaded.Model, deps.fileCfg.ContextWindowOverride(loaded.Model), deps.fileCfg.Context.DefaultWindow)
+	window := catalog.ResolveWindowForProvider(deps.fileCfg.ProviderKindForModel(loaded.Model), loaded.Model, deps.fileCfg.ContextWindowOverride(loaded.Model), deps.fileCfg.Context.DefaultWindow)
 	warnThr := deps.fileCfg.Context.WarnThreshold
 	if warnThr <= 0 || warnThr > 1 {
 		warnThr = 0.65
@@ -633,7 +633,7 @@ func findOrComputeSummary(deps summarizeDeps, sess *session.Session) (string, st
 	}
 	ctx, cancel := context.WithTimeout(deps.ctx, summarizeTimeout)
 	defer cancel()
-	windowTokens := catalog.ResolveWindow(sess.Model, deps.fileCfg.ContextWindowOverride(sess.Model), deps.fileCfg.Context.DefaultWindow)
+	windowTokens := catalog.ResolveWindowForProvider(deps.fileCfg.ProviderKindForModel(sess.Model), sess.Model, deps.fileCfg.ContextWindowOverride(sess.Model), deps.fileCfg.Context.DefaultWindow)
 	summary, err := runSummarization(ctx, deps.adapter, sess.Messages, windowTokens)
 	if err != nil {
 		return "", "", fmt.Errorf("on-the-fly summarize: %w", err)

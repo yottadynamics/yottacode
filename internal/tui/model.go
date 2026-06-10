@@ -1011,6 +1011,14 @@ func (m Model) Init() tea.Cmd {
 	if c := m.maybeProbeActiveModelWindowCmd(); c != nil {
 		cmds = append(cmds, c)
 	}
+	// A session resumed at startup can already exceed the auto
+	// threshold; check once now (handled as resumeWatermarkCheckMsg,
+	// since Init's receiver is a copy and can't mutate watermark
+	// state) so it heals before the first send. Fresh sessions carry
+	// at most the system prompt and skip the no-op.
+	if len(m.sess.Messages) > 1 {
+		cmds = append(cmds, func() tea.Msg { return resumeWatermarkCheckMsg{} })
+	}
 	return tea.Batch(cmds...)
 }
 
@@ -1999,25 +2007,19 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.exitSavePending {
 			return m, tea.Quit
 		}
-		// Watermark check: post-turn, before the next prompt is
-		// accepted. Either fires a yellow notice (warn threshold) or
-		// returns a Cmd that runs auto-summarization (auto threshold).
-		ctxCmd := m.updateContextUsage()
-		// If the user interrupted mid-turn by hitting Enter on a
-		// non-empty message, agent.Turn has already preserved history
-		// with synthetic tool_result entries — submit the queued
-		// message now as a fresh turn so the model sees the feedback.
-		// Run after sess.Save / index / watermark so any post-turn
-		// warning lands above the new user block. Watermark Cmd is
-		// dropped here: the queued submission is the user's explicit
-		// next-turn intent, and stacking an auto-summarize Cmd in
-		// front would yank context out from under the very message
-		// they just sent. If watermark guidance matters, the user
-		// will see it after the followup turn ends.
+		// Window-drift shrink: a context-overflow rejection the
+		// estimator didn't see coming means the resolved window is
+		// bigger than what the provider enforces. Pinning the
+		// corrected value BEFORE the watermark check below is the
+		// recovery path — the check re-resolves the now-smaller window
+		// and fires auto-summarize in this same tick, so the session
+		// heals instead of failing again on the next send.
+		m.noteWindowOverflow(msg.err)
 		// Drain any user message that was queued but never consumed
 		// by the agent loop (the model finished without a tool round).
 		// Move it to pendingInputAfterTurn so the existing auto-submit
-		// path handles it as a new turn.
+		// path handles it as a new turn. Drained BEFORE the watermark
+		// check so the check knows whether a queued turn is imminent.
 		select {
 		case undelivered := <-m.userMsgCh:
 			if undelivered != "" && m.pendingInputAfterTurn == "" {
@@ -2025,6 +2027,20 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		default:
 		}
+		// Watermark check: post-turn, before the next prompt is
+		// accepted. Either fires a yellow notice (warn threshold) or
+		// returns a Cmd that runs auto-summarization (auto threshold).
+		// When a queued message is about to start a fresh turn, the
+		// auto branch is suppressed inside the check (allowAuto=false):
+		// the queued submission is the user's explicit next-turn
+		// intent, and compressing now would yank context out from
+		// under the very message they just sent. The warn notice still
+		// prints here so it lands above the new user block.
+		ctxCmd := m.updateContextUsage(m.pendingInputAfterTurn == "")
+		// If the user interrupted mid-turn by hitting Enter on a
+		// non-empty message, agent.Turn has already preserved history
+		// with synthetic tool_result entries — submit the queued
+		// message now as a fresh turn so the model sees the feedback.
 		if queued := m.pendingInputAfterTurn; queued != "" {
 			m.pendingInputAfterTurn = ""
 			next, cmd := m.startTurn(queued)
@@ -2136,6 +2152,13 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if changed {
 			m.appendLine(styleAuto.Render(statusLine("model", fmt.Sprintf(
 				"detected context window for %s: %s", msg.model, formatTokens(msg.window)))))
+		}
+		return m, nil
+
+	case resumeWatermarkCheckMsg:
+		// Startup watermark pass for a resumed session (see Init).
+		if ctxCmd := m.updateContextUsage(true); ctxCmd != nil {
+			return m, ctxCmd
 		}
 		return m, nil
 
@@ -3888,6 +3911,9 @@ func (m Model) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 		// via /provider use; the per-model breakdown wants the model
 		// that actually produced the turn.
 		m.sess.AddUsage(m.modelName, e.Message.Usage)
+		// Window-drift raise: the provider's exact input count proving
+		// the resolved window too small (see window_drift.go).
+		m.noteWindowUsage(e.Message.Usage)
 	case agent.ProviderToolCall:
 		m.reasoning.Reset()
 		m.appendLine("")

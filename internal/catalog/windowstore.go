@@ -214,6 +214,23 @@ func LoadEntriesFromFile(path string) []WindowStoreEntry {
 	return parseWindowEntries(raw)
 }
 
+// StoreComment returns the _comment of the window-store file at path,
+// or "" for a missing or malformed file. Regeneration tooling uses it
+// to carry the existing comment forward — the committed baseline's
+// comment documents the entry conventions (provider-qualified
+// prefixes, measurement provenance) and must survive a rewrite.
+func StoreComment(path string) string {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	var f windowStoreFile
+	if err := json.Unmarshal(raw, &f); err != nil {
+		return ""
+	}
+	return f.Comment
+}
+
 // WriteWindowStore replaces a window-store file at path with the given
 // entries (full rewrite, not an upsert) — used by `model probe-windows` to
 // (re)generate either the runtime overlay or, with --output, the committed

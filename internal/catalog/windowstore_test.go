@@ -31,6 +31,24 @@ func useTempOverlay(t *testing.T) string {
 	return path
 }
 
+// TestStoreCommentSurvivesRegeneration: probe-windows --output carries
+// the existing _comment forward; losing it would erase the documented
+// entry conventions (provider-qualified prefixes, measurement
+// provenance) on every regeneration.
+func TestStoreCommentSurvivesRegeneration(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "store.json")
+	const comment = "conventions live here — do not lose on regen"
+	if err := WriteWindowStore(path, []WindowStoreEntry{{Prefix: "x", Window: 1}}, comment); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if got := StoreComment(path); got != comment {
+		t.Errorf("StoreComment = %q, want %q", got, comment)
+	}
+	if got := StoreComment(filepath.Join(t.TempDir(), "missing.json")); got != "" {
+		t.Errorf("missing file should yield empty comment, got %q", got)
+	}
+}
+
 func TestWindowStore_EmbeddedBaselineLoads(t *testing.T) {
 	useTempOverlay(t) // overlay points at a non-existent temp file → embedded only
 	// Values from the committed/embedded context-windows.json.

@@ -395,8 +395,14 @@ openai-compatible and ollama providers are probed; curated providers
 			// --output: merge probed windows into whatever the target file
 			// already holds (preserving hand-authored family prefixes) and
 			// rewrite it. Intended for regenerating the committed baseline.
+			// The existing file's _comment is carried forward — it documents
+			// entry conventions (provider-qualified prefixes, measurement
+			// provenance) that a regeneration must not erase.
 			merged := mergeWindowEntries(catalog.LoadEntriesFromFile(output), probed)
-			comment := "Fallback context-window table, embedded at build time. Regenerate with `yottacode model probe-windows --output internal/catalog/context-windows.json`. Longest matching prefix wins."
+			comment := catalog.StoreComment(output)
+			if comment == "" {
+				comment = "Fallback context-window table, embedded at build time. Regenerate with `yottacode model probe-windows --output internal/catalog/context-windows.json`. Longest matching prefix wins."
+			}
 			if err := catalog.WriteWindowStore(output, merged, comment); err != nil {
 				return fmt.Errorf("write %s: %w", output, err)
 			}
