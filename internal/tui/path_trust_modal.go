@@ -13,13 +13,19 @@ import (
 // confirmation that lands in scrollback when the user grants the
 // elevation, and a "reject" tone for the deny acknowledgment.
 // Both stay plain text per [[feedback_no_emoji_in_ui]].
+//
+// Bare declarations — see approval_modal.go's note: initializers
+// here would freeze colors at package init and skip every
+// ApplyTheme rebuild. (The originals hardcoded 256-color indices,
+// so this modal ignored /themes entirely.) Construction lives in
+// buildStyles (styles.go).
 var (
-	stylePathTrustBorder    = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("214")).Padding(0, 1)
-	stylePathTrustTitle     = lipgloss.NewStyle().Foreground(lipgloss.Color("214")).Bold(true)
-	stylePathTrustBodyKey   = lipgloss.NewStyle().Bold(true)
-	stylePathTrustBodyHint  = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
-	stylePathTrustAccept    = lipgloss.NewStyle().Foreground(lipgloss.Color("78"))
-	stylePathTrustReject    = lipgloss.NewStyle().Foreground(lipgloss.Color("203"))
+	stylePathTrustBorder   lipgloss.Style
+	stylePathTrustTitle    lipgloss.Style
+	stylePathTrustBodyKey  lipgloss.Style
+	stylePathTrustBodyHint lipgloss.Style
+	stylePathTrustAccept   lipgloss.Style
+	stylePathTrustReject   lipgloss.Style
 )
 
 // renderPathTrustModal builds the inline elevation prompt
