@@ -37,13 +37,6 @@ type providerMenuItem struct {
 	Key      string             // tag for the inline-action dispatcher
 }
 
-// providerMenuActionList was the inline tag for the standalone
-// "List" entry. List + Use collapsed into a single "Use" action
-// (the use-list already shows the providers + lets you switch);
-// this constant remains here only to break a stale reference if a
-// branch carried the old code, and is unused by the current menu.
-const providerMenuActionList = "list"
-
 // providerPickerState holds the in-flight Bubbletea overlay for
 // /provider. Layered state machine: menu → action-specific picker.
 // The picker stays open across mode transitions so Esc can pop

@@ -350,6 +350,19 @@ var ValidTiers = []string{"cheap", "balanced", "expensive"}
 var ValidKinds = []string{"anthropic", "openai", "openai-auth", "copilot", "openai-compatible", "ollama", "gemini", "xai"}
 
 // Default returns a Config populated with the documented defaults.
+// defaultThemeName resolves the theme used when the user hasn't
+// configured one: the monochrome palette when the NO_COLOR convention
+// (https://no-color.org/) is active in the environment — present and
+// non-empty, per the spec — and the standard default otherwise. An
+// explicit [theme] name in config.toml always wins; no-color.org
+// states that user-level configuration overrides the env var.
+func defaultThemeName() string {
+	if os.Getenv("NO_COLOR") != "" {
+		return "no-color"
+	}
+	return themes.DefaultName
+}
+
 func Default() Config {
 	return Config{
 		Context: ContextConfig{
@@ -370,7 +383,7 @@ func Default() Config {
 			FinalTurnOnQuit: true,
 		},
 		Theme: ThemeConfig{
-			Name: themes.DefaultName,
+			Name: defaultThemeName(),
 		},
 	}
 }
@@ -416,7 +429,7 @@ func Load(path string) (Config, error) {
 	}
 	cfg.Active.normalize()
 	if strings.TrimSpace(cfg.Theme.Name) == "" {
-		cfg.Theme.Name = themes.DefaultName
+		cfg.Theme.Name = defaultThemeName()
 	}
 	if strings.TrimSpace(cfg.Retrieval.Strategy) == "" {
 		cfg.Retrieval.Strategy = "auto"

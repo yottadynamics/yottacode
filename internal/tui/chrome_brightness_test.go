@@ -58,15 +58,16 @@ func TestChromeReadsBright(t *testing.T) {
 		}
 	}
 	// The two chevrons (live prompt + scrollback user echo) render in
-	// Accent — the palette's "prompts" role and the docs/TUI.md Phase 4
-	// user-prompt anchor. Equally bright as Content, never Dim/Rule;
-	// they must stay identical so the echo mirrors the live bar.
+	// the brand green — maintainer call: no blue on the prompt; green
+	// matches the rest of the brand chrome while keeping the anchor
+	// role. Equally bright as Content, never Dim/Rule; they must stay
+	// identical so the echo mirrors the live bar.
 	for name, style := range map[string]lipgloss.Style{
 		"styleInputPrompt": styleInputPrompt,
 		"styleUserBar":     styleUserBar,
 	} {
-		if got := style.GetForeground(); got != lipgloss.TerminalColor(colorAccent) {
-			t.Errorf("%s: foreground = %v, want Accent (%v)", name, got, colorAccent)
+		if got := style.GetForeground(); got != lipgloss.TerminalColor(colorBrand) {
+			t.Errorf("%s: foreground = %v, want brand green (%v)", name, got, colorBrand)
 		}
 	}
 

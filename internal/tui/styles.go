@@ -103,6 +103,10 @@ var (
 	stylePaletteEmpty     lipgloss.Style
 	styleDiffAdd          lipgloss.Style
 	styleDiffDel          lipgloss.Style
+	styleDiffAddBody      lipgloss.Style
+	styleDiffDelBody      lipgloss.Style
+	styleDiffAddEmph      lipgloss.Style
+	styleDiffDelEmph      lipgloss.Style
 	stylePathHeader       lipgloss.Style
 	styleSpinner          lipgloss.Style
 	styleInputPrompt      lipgloss.Style
@@ -196,12 +200,13 @@ func buildStyles(p themes.Palette) {
 	styleFooter = lipgloss.NewStyle().Foreground(colorMuted)
 	styleUserHeader = lipgloss.NewStyle().Bold(true).Foreground(colorAccent)
 	styleAssistantHeader = lipgloss.NewStyle().Bold(true).Foreground(colorAssistant)
-	// User chevron in Accent per the palette role ("prompts, active
-	// selection, focus") and docs/TUI.md Phase 4: accent chevron +
-	// Content body. The accent anchor is what makes user prompts
-	// findable when scanning back through a long session; the body
-	// stays Content so the typed text reads bright.
-	styleUserBar = lipgloss.NewStyle().Foreground(colorAccent).Bold(true)
+	// User chevron in the brand green, NOT Accent — maintainer call
+	// (2026-06-10): the accent cyan/blue reads wrong on the prompt;
+	// green matches the rest of the brand chrome (logo, spinner,
+	// status dot) while still giving user prompts a colored anchor
+	// that's findable when scanning back through a long session. The
+	// body stays Content so the typed text reads bright.
+	styleUserBar = lipgloss.NewStyle().Foreground(colorBrand).Bold(true)
 	styleUserBody = lipgloss.NewStyle().Foreground(colorContent)
 	styleAssistantBody = lipgloss.NewStyle().Foreground(colorContent).PaddingLeft(2)
 	styleAssistantProse = lipgloss.NewStyle().Foreground(colorContent)
@@ -274,15 +279,25 @@ func buildStyles(p themes.Palette) {
 
 	styleDiffAdd = lipgloss.NewStyle().Foreground(colorSuccess).Bold(true)
 	styleDiffDel = lipgloss.NewStyle().Foreground(colorError).Bold(true)
+	// Intraline (paired-replacement) diff bodies: unchanged context in
+	// the plain state color, the changed span in reverse video — state
+	// color as background, terminal bg as text, the same
+	// contrast-by-construction trick the palette selection uses. Only
+	// the span pops; the rest of the line still reads as added/removed.
+	styleDiffAddBody = lipgloss.NewStyle().Foreground(colorSuccess)
+	styleDiffDelBody = lipgloss.NewStyle().Foreground(colorError)
+	styleDiffAddEmph = lipgloss.NewStyle().Foreground(colorSuccess).Reverse(true)
+	styleDiffDelEmph = lipgloss.NewStyle().Foreground(colorError).Reverse(true)
 	stylePathHeader = lipgloss.NewStyle().Foreground(colorAccent).Bold(true)
 	styleSpinner = lipgloss.NewStyle().Foreground(colorBrand).Bold(true)
 
 	// Cmdline box reads bright rather than the dimmer Rule/Dim it
 	// used before — the prompt, placeholder, and hint row should all
-	// be easy to spot. The prompt chevron specifically renders in
-	// Accent (the palette's "prompts" role), matching the scrollback
-	// user-echo chevron so the live bar and its echo look identical.
-	styleInputPrompt = lipgloss.NewStyle().Foreground(colorAccent).Bold(true)
+	// be easy to spot. The prompt chevron renders in the brand green
+	// (same maintainer call as styleUserBar above — no blue here),
+	// matching the scrollback user-echo chevron so the live bar and
+	// its echo look identical.
+	styleInputPrompt = lipgloss.NewStyle().Foreground(colorBrand).Bold(true)
 	styleInputPlaceholder = lipgloss.NewStyle().Foreground(colorContent).Italic(true)
 	styleInputHint = lipgloss.NewStyle().Foreground(colorContent)
 	styleOverlayRule = lipgloss.NewStyle().Foreground(colorRule).Faint(true)

@@ -104,13 +104,6 @@ func (m *Model) acceptFilePaletteChoice() {
 	m.filePaletteFiltered = nil
 }
 
-// invalidateFilePaletteCache forces the next @-trigger to re-walk the
-// cwd. Called from /clear and any state transition that may have
-// added/removed files since the cache was built.
-func (m *Model) invalidateFilePaletteCache() {
-	m.filePaletteEntries = nil
-}
-
 // dropFilePalette is the unconditional close — used when the user
 // submits a turn or runs a slash command, so a stray palette doesn't
 // hang around after the input clears.
