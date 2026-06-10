@@ -118,7 +118,11 @@ func copilotCachedModels() []Model {
 // with no error.
 func List(ctx context.Context, p config.Provider, apiKey string) ([]Model, error) {
 	if curatedKinds[p.Kind] {
-		return Get(p.Kind), nil
+		models := Get(p.Kind)
+		if p.Kind == "gemini" {
+			models = MergeModels(models, ModelsDevModelsByProvider("google", "gemini"))
+		}
+		return models, nil
 	}
 	return Live(ctx, p.Kind, p.BaseURL, apiKey)
 }

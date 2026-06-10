@@ -369,10 +369,17 @@ func TestGemini_PutsModelAndStreamPathInURL(t *testing.T) {
 	}
 }
 
-func TestGemini_HTTPErrorSurfaces(t *testing.T) {
+func TestGemini_HTTPErrorSurfacesConciseGoogleEnvelope(t *testing.T) {
 	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusTooManyRequests)
-		fmt.Fprint(w, `{"error":{"message":"rate limited"}}`)
+		fmt.Fprint(w, `{
+			"error": {
+				"code": 429,
+				"message": "You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: https://ai.google.dev/gemini-api/docs/rate-limits.\n* Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_input_token_count, limit: 0, model: gemini-3.1-pro\n* Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 0, model: gemini-3.1-pro\nPlease retry in 41.132443092s.",
+				"status": "RESOURCE_EXHAUSTED",
+				"details": [{"@type":"type.googleapis.com/google.rpc.QuotaFailure","violations":[{"quotaMetric":"generativelanguage.googleapis.com/generate_content_free_tier_input_token_count"}]}]
+			}
+		}`)
 	})
 	srv := httptest.NewServer(h)
 	t.Cleanup(srv.Close)
@@ -383,8 +390,15 @@ func TestGemini_HTTPErrorSurfaces(t *testing.T) {
 	if len(errs) == 0 {
 		t.Fatal("expected error from 429, got none")
 	}
-	if !strings.Contains(errs[0].Error(), "429") {
-		t.Errorf("error should mention status code 429, got %v", errs[0])
+	got := errs[0].Error()
+	if !strings.Contains(got, "gemini: HTTP 429 RESOURCE_EXHAUSTED: You exceeded your current quota") {
+		t.Errorf("error should include concise status/message, got %v", errs[0])
+	}
+	if !strings.Contains(got, "Please retry in 41.132443092s") {
+		t.Errorf("error should include retry hint, got %v", errs[0])
+	}
+	if strings.Contains(got, "QuotaFailure") || strings.Contains(got, "quotaMetric") {
+		t.Errorf("error should not dump details JSON, got %v", errs[0])
 	}
 	if final != nil {
 		t.Errorf("expected no final message on error, got %+v", final)

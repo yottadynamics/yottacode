@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -283,6 +284,54 @@ func ModelsDevWindowByProvider(providerID, model string) int {
 		return 0
 	}
 	return modelWindowFrom(prov, model)
+}
+
+// ModelsDevModelsByProvider returns model IDs from the local models.dev
+// snapshot for a provider, filtered by prefix. This backs picker lists with
+// a fresh offline catalog when the generated provider catalog lags a vendor
+// release; it never touches the network beyond the normal models.dev cache.
+func ModelsDevModelsByProvider(providerID, prefix string) []Model {
+	if strings.TrimSpace(providerID) == "" {
+		return nil
+	}
+	cat := loadModelsDev()
+	if cat == nil {
+		return nil
+	}
+	prov, ok := cat[providerID]
+	if !ok {
+		return nil
+	}
+	out := make([]Model, 0, len(prov.Models))
+	for id, m := range prov.Models {
+		if prefix != "" && !strings.HasPrefix(id, prefix) {
+			continue
+		}
+		out = append(out, Model{
+			ID:            id,
+			DisplayName:   titleModelID(id),
+			Provider:      providerID,
+			ContextWindow: m.Limit.Context,
+			MaxOutput:     m.Limit.Output,
+		})
+	}
+	sortModelsByID(out)
+	return out
+}
+
+func sortModelsByID(ms []Model) {
+	sort.SliceStable(ms, func(i, j int) bool { return ms[i].ID < ms[j].ID })
+}
+
+func titleModelID(id string) string {
+	parts := strings.FieldsFunc(id, func(r rune) bool { return r == '-' || r == '_' || r == '/' })
+	for i, p := range parts {
+		if p == "" {
+			continue
+		}
+		parts[i] = strings.ToUpper(p[:1]) + p[1:]
+	}
+	return strings.Join(parts, " ")
 }
 
 // ModelsDevWindow returns the context window for a model on the provider

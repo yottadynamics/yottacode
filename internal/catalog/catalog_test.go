@@ -7,6 +7,7 @@ import (
 	"time"
 
 	openaiauth "github.com/yottadynamics/yottacode/internal/auth/openai"
+	"github.com/yottadynamics/yottacode/internal/config"
 )
 
 func TestEmbeddedCatalogParses(t *testing.T) {
@@ -158,5 +159,27 @@ func TestOpenAIAuthLabelsCoverDefaultCandidates(t *testing.T) {
 		if _, ok := openAIAuthLabels[id]; !ok {
 			t.Errorf("openAIAuthLabels missing entry for default candidate %q", id)
 		}
+	}
+}
+
+func TestList_GeminiMergesLocalModelsDevCatalog(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	got, err := List(t.Context(), config.Provider{Kind: "gemini"}, "")
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	ids := map[string]Model{}
+	for _, m := range got {
+		ids[m.ID] = m
+	}
+	if _, ok := ids["gemini-2.5-pro"]; !ok {
+		t.Fatalf("embedded Gemini model missing after merge")
+	}
+	m, ok := ids["gemini-3.1-pro-preview"]
+	if !ok {
+		t.Fatalf("models.dev Gemini model missing after merge")
+	}
+	if m.ContextWindow == 0 || m.MaxOutput == 0 {
+		t.Errorf("models.dev Gemini entry should carry limits, got %+v", m)
 	}
 }

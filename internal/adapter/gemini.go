@@ -111,8 +111,8 @@ func (g *geminiAdapter) ChatStream(ctx context.Context, messages []Message, tool
 
 		if resp.StatusCode >= 400 {
 			body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-			out <- StreamEvent{Kind: EventErr, Err: fmt.Errorf("gemini: HTTP %d: %s",
-				resp.StatusCode, strings.TrimSpace(string(body)))}
+			out <- StreamEvent{Kind: EventErr, Err: fmt.Errorf("gemini: %s",
+				formatGeminiHTTPError(resp.StatusCode, body))}
 			return
 		}
 
@@ -196,6 +196,79 @@ func (g *geminiAdapter) ChatStream(ctx context.Context, messages []Message, tool
 		}}
 	}()
 	return out
+}
+
+// geminiErrorResponse is the documented Google API error envelope. We
+// parse only the stable, user-facing fields; details can be enormous
+// quota/debug payloads and should not be dumped into the chat transcript.
+type geminiErrorResponse struct {
+	Error struct {
+		Code    int    `json:"code"`
+		Message string `json:"message"`
+		Status  string `json:"status"`
+	} `json:"error"`
+}
+
+// formatGeminiHTTPError turns Google's verbose JSON error envelope into
+// a concise line for users. Quota failures often include repeated metric
+// dumps in details; the useful parts are the HTTP status, RESOURCE_EXHAUSTED,
+// a de-duplicated first sentence, and any retry hint embedded in the message.
+func formatGeminiHTTPError(statusCode int, body []byte) string {
+	raw := strings.TrimSpace(string(body))
+	if raw == "" {
+		return fmt.Sprintf("HTTP %d", statusCode)
+	}
+
+	var er geminiErrorResponse
+	if err := json.Unmarshal(body, &er); err != nil || er.Error.Message == "" {
+		return fmt.Sprintf("HTTP %d: %s", statusCode, truncateGeminiError(raw, 240))
+	}
+
+	label := http.StatusText(statusCode)
+	if er.Error.Status != "" {
+		label = er.Error.Status
+	}
+	msg := conciseGeminiMessage(er.Error.Message)
+	if msg == "" {
+		msg = http.StatusText(statusCode)
+	}
+	return fmt.Sprintf("HTTP %d %s: %s", statusCode, label, msg)
+}
+
+func conciseGeminiMessage(msg string) string {
+	msg = strings.TrimSpace(strings.ReplaceAll(msg, "\r\n", "\n"))
+	if msg == "" {
+		return ""
+	}
+
+	lines := strings.Split(msg, "\n")
+	first := strings.TrimSpace(lines[0])
+	if i := strings.Index(first, ". "); i >= 0 {
+		first = strings.TrimSpace(first[:i+1])
+	}
+
+	retry := ""
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "Please retry in ") {
+			retry = strings.TrimSuffix(line, ".")
+			break
+		}
+	}
+	if retry != "" {
+		first += " " + retry + "."
+	}
+	return truncateGeminiError(first, 240)
+}
+
+func truncateGeminiError(s string, max int) string {
+	if max < 8 {
+		max = 8
+	}
+	if len(s) <= max {
+		return s
+	}
+	return strings.TrimSpace(s[:max-1]) + "…"
 }
 
 // --- request shape --------------------------------------------------
