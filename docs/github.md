@@ -62,7 +62,7 @@ bypasses the modal, but `deny` rules still apply.
 | Command | Flow |
 |---|---|
 | `/git-create-pr [base]` | Validates current branch + opens a PR. Default base is the repo's default branch. |
-| `/git-create-issue [title]` | Creates a GitHub issue in the current repo. Optional title arg; interactively composes if omitted. |
+| `/git-create-issue [title]` | Creates a GitHub issue in the current repo. Optional title arg; interactively composes if omitted. Detects Markdown templates, renders YAML issue forms into Markdown bodies, applies template-declared labels/assignees, and surfaces contact links instead of creating public issues for docs/discussions/security targets. |
 | `/git-update-pr [ref]` | Refreshes title/body to match the current commit list. |
 | `/git-review-pr [ref]` | Structured PR review: failing-checks summary, blockers, suggestions, nits. Output is local scrollback only. |
 | `/git-push` | Pushes the current branch (sets upstream on first push; surfaces the PR URL when one exists). |

@@ -423,26 +423,104 @@ func TestLoadIssueTemplate_AlphabeticalPickListsChoices(t *testing.T) {
 	}
 }
 
-func TestLoadIssueTemplate_SkipsConfigAndForms(t *testing.T) {
-	// Regression: yottacode's own .github/ISSUE_TEMPLATE/ holds
-	// config.yml (chooser config) and *.yml issue forms — none of
-	// which are fillable markdown. An earlier candidate list grabbed
-	// config.yml as the "template" and the directive told the model
-	// to fill chooser YAML as the issue body. A forms-only layout
-	// must yield no template (→ the directive's default skeleton).
+func TestLoadIssueTemplate_SupportsMarkdownAndYAMLForms(t *testing.T) {
+	// GitHub's chooser can mix Markdown templates and YAML issue forms. The
+	// context tool must expose both as selectable issue-creation targets instead
+	// of silently dropping the forms.
+	tmp := t.TempDir()
+	dir := filepath.Join(tmp, ".github", "ISSUE_TEMPLATE")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	writeFile(t, dir, "bug_report.yml", "name: Bug report\ndescription: Report a bug\ntitle: '[Bug]: '\nlabels: [bug]\nbody:\n  - type: textarea\n    id: what-happened\n    attributes:\n      label: What happened?\n      description: Tell us what broke.\n    validations:\n      required: true\n")
+	writeFile(t, dir, "feature_request.md", "---\nname: Feature\n---\n\n## Feature body\n")
+
+	templates, _, _ := loadIssueTemplates(tmp)
+	if len(templates) != 2 {
+		t.Fatalf("expected 2 templates; got %d: %+v", len(templates), templates)
+	}
+	if templates[0].Kind != "issue_form" || templates[0].Name != "Bug report" {
+		t.Errorf("first template = %+v; want rendered YAML bug form", templates[0])
+	}
+	if !sliceEqual(templates[0].Labels, []string{"bug"}) {
+		t.Errorf("labels = %v", templates[0].Labels)
+	}
+	if !strings.Contains(templates[0].Content, "## What happened?") || !strings.Contains(templates[0].Content, "Required") {
+		t.Errorf("YAML form was not rendered into useful Markdown:\n%s", templates[0].Content)
+	}
+	if templates[1].Kind != "markdown" || !strings.Contains(templates[1].Content, "Feature body") {
+		t.Errorf("second template = %+v; want Markdown feature template", templates[1])
+	}
+}
+
+func TestLoadIssueTemplate_ConfigContactLinksAndBlankIssuePolicy(t *testing.T) {
+	tmp := t.TempDir()
+	dir := filepath.Join(tmp, ".github", "ISSUE_TEMPLATE")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	writeFile(t, dir, "config.yml", "blank_issues_enabled: false\ncontact_links:\n  - name: Documentation\n    url: https://example.com/docs\n    about: Read first\n")
+
+	templates, links, blank := loadIssueTemplates(tmp)
+	if len(templates) != 0 {
+		t.Errorf("config-only layout should not create templates: %+v", templates)
+	}
+	if blank {
+		t.Errorf("blank issues should be disabled by config")
+	}
+	if len(links) != 1 || links[0].Name != "Documentation" || links[0].URL != "https://example.com/docs" {
+		t.Errorf("contact links not parsed: %+v", links)
+	}
+}
+
+func TestLoadIssueTemplate_YAMLFormsOnlyNowYieldTemplate(t *testing.T) {
+	// GitHub issue forms are field specs, but yottacode can render them into
+	// Markdown and pass that body through the normal Create Issue API.
 	tmp := t.TempDir()
 	dir := filepath.Join(tmp, ".github", "ISSUE_TEMPLATE")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
 	writeFile(t, dir, "config.yml", "blank_issues_enabled: false\n")
-	writeFile(t, dir, "bug_report.yml", "name: Bug report\nbody: []\n")
-	writeFile(t, dir, "feature_request.yml", "name: Feature\nbody: []\n")
+	writeFile(t, dir, "bug_report.yml", "name: Bug report\nbody:\n  - type: input\n    id: version\n    attributes:\n      label: Version\n")
+	writeFile(t, dir, "feature_request.yml", "name: Feature\nlabels: enhancement\nbody:\n  - type: dropdown\n    id: contribute\n    attributes:\n      label: Contribute?\n      options:\n        - Yes\n        - No\n")
 
 	path, content, choices := loadIssueTemplate(tmp)
-	if path != "" || content != "" || choices != nil {
-		t.Errorf("forms-only layout must yield no template; got path=%q content=%q choices=%v",
-			path, content, choices)
+	if path != filepath.Join(".github", "ISSUE_TEMPLATE", "bug_report.yml") {
+		t.Errorf("path = %q; want first YAML form", path)
+	}
+	if !strings.Contains(content, "## Version") {
+		t.Errorf("content = %q; want rendered YAML form", content)
+	}
+	if !sliceEqual(choices, []string{"bug_report.yml", "feature_request.yml"}) {
+		t.Errorf("choices = %v", choices)
+	}
+}
+
+func TestRenderIssueContext_RendersTemplatesAndContactLinks(t *testing.T) {
+	out := renderIssueContext(IssueContext{
+		Owner: "octo", Repo: "widgets", GhAvailable: true,
+		IssueTemplates: []IssueTemplate{{
+			Name: "Bug report", Kind: "issue_form", Path: ".github/ISSUE_TEMPLATE/bug_report.yml",
+			Description: "Report a bug", TitlePrefix: "[Bug]: ", Labels: []string{"bug"}, Content: "## What happened?\n",
+		}},
+		BlankIssuesEnabled: false,
+		ContactLinks:       []IssueContactLink{{Name: "Security", URL: "https://example.com/security", About: "Report privately"}},
+	})
+	for _, want := range []string{
+		"## templates",
+		"name=Bug report",
+		"kind=issue_form",
+		"title_prefix=[Bug]: ",
+		"labels=bug",
+		"## blank_issue",
+		"enabled=false",
+		"## contact_links",
+		"Report privately",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("render missing %q\nfull:\n%s", want, out)
+		}
 	}
 }
 

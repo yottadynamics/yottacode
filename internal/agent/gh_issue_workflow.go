@@ -20,6 +20,7 @@ import (
 	"strings"
 
 	"github.com/yottadynamics/yottacode/internal/github"
+	"gopkg.in/yaml.v3"
 )
 
 // GHIssueReadTool wraps Interface.ReadIssue. Single API call (plus
@@ -433,7 +434,34 @@ type IssueContext struct {
 	GhAvailable          bool
 	IssueTemplate        string
 	IssueTemplatePath    string   // relative to cwd
-	IssueTemplateChoices []string // all *.md names when the template dir offers several
+	IssueTemplateChoices []string // all issue template names when the template dir offers several
+	IssueTemplates       []IssueTemplate
+	ContactLinks         []IssueContactLink
+	BlankIssuesEnabled   bool
+}
+
+// IssueTemplate is a normalized issue-creation target discovered from
+// `.github/ISSUE_TEMPLATE`. Markdown templates keep their fillable body;
+// YAML issue forms are rendered into an equivalent Markdown body because
+// GitHub's public issue API creates normal issue bodies, not form submissions.
+type IssueTemplate struct {
+	Name        string
+	Description string
+	Path        string
+	Kind        string
+	TitlePrefix string
+	Labels      []string
+	Assignees   []string
+	Content     string
+}
+
+// IssueContactLink mirrors GitHub chooser contact links. These are not
+// issue-creation targets, but surfacing them keeps `/git-create-issue` from
+// trying to turn docs, discussions, or security reports into public issues.
+type IssueContactLink struct {
+	Name  string `yaml:"name"`
+	URL   string `yaml:"url"`
+	About string `yaml:"about"`
 }
 
 // BuildIssueContext is the deterministic core of gh_issue_context.
@@ -455,42 +483,75 @@ func BuildIssueContext(ctx context.Context, cwd string) (IssueContext, error) {
 
 	snap.GhAvailable = github.IsGhAvailable(ctx)
 
-	snap.IssueTemplatePath, snap.IssueTemplate, snap.IssueTemplateChoices =
-		loadIssueTemplate(cwd)
+	snap.BlankIssuesEnabled = true
+	snap.IssueTemplates, snap.ContactLinks, snap.BlankIssuesEnabled = loadIssueTemplates(cwd)
+	if len(snap.IssueTemplates) > 0 {
+		// Preserve the legacy fields so older prompt text and tests still see
+		// the default template while newer flows can inspect all choices under
+		// the richer ## templates section.
+		first := snap.IssueTemplates[0]
+		snap.IssueTemplatePath = first.Path
+		snap.IssueTemplate = first.Content
+		for _, tmpl := range snap.IssueTemplates {
+			snap.IssueTemplateChoices = append(snap.IssueTemplateChoices, filepath.Base(tmpl.Path))
+		}
+	}
 
 	return snap, nil
 }
 
-// loadIssueTemplate finds a repo-local issue template. The modern
-// multi-template directory (`.github/ISSUE_TEMPLATE/*.md`) takes
-// precedence over the legacy single-file locations, matching
-// GitHub's own chooser. When the directory offers several
-// templates the first alphabetically is loaded and every name is
-// returned as a choice so the caller can surface the alternatives.
-//
-// YAML issue forms (`*.yml` / `*.yaml`) and the chooser
-// `config.yml` are deliberately not template sources: forms are a
-// field-spec format, not fillable markdown, and config.yml only
-// configures GitHub's template chooser UI. A forms-only repo falls
-// through to the legacy candidates and then to no template at all
-// (the /git-create-issue directive composes its default skeleton).
+// loadIssueTemplate keeps the old single-template helper shape for tests and
+// compatibility. New callers should use loadIssueTemplates so they can choose
+// among Markdown templates, YAML issue forms, blank issues, and contact links.
 func loadIssueTemplate(cwd string) (path, content string, choices []string) {
-	// os.ReadDir returns entries sorted by filename, so the first
-	// .md hit is already the alphabetical pick.
-	entries, _ := os.ReadDir(filepath.Join(cwd, ".github", "ISSUE_TEMPLATE"))
-	var mds []string
-	for _, e := range entries {
-		if e.Type().IsRegular() && strings.HasSuffix(strings.ToLower(e.Name()), ".md") {
-			mds = append(mds, e.Name())
-		}
+	templates, _, _ := loadIssueTemplates(cwd)
+	if len(templates) == 0 {
+		return "", "", nil
 	}
-	for _, name := range mds {
+	for _, tmpl := range templates {
+		choices = append(choices, filepath.Base(tmpl.Path))
+	}
+	return templates[0].Path, templates[0].Content, choices
+}
+
+// loadIssueTemplates finds repo-local issue creation targets. Directory-style
+// templates take precedence over legacy single-file templates, matching
+// GitHub's chooser. Both Markdown templates and YAML issue forms are returned;
+// config.yml contributes blank-issue policy and contact links only.
+func loadIssueTemplates(cwd string) ([]IssueTemplate, []IssueContactLink, bool) {
+	blankIssuesEnabled := true
+	var contactLinks []IssueContactLink
+	configPath := filepath.Join(cwd, ".github", "ISSUE_TEMPLATE", "config.yml")
+	if raw, err := os.ReadFile(configPath); err == nil {
+		blankIssuesEnabled, contactLinks = parseIssueTemplateConfig(raw)
+	}
+
+	// os.ReadDir returns entries sorted by filename, so the first supported hit
+	// is already the alphabetical pick.
+	entries, _ := os.ReadDir(filepath.Join(cwd, ".github", "ISSUE_TEMPLATE"))
+	var templates []IssueTemplate
+	for _, e := range entries {
+		if !e.Type().IsRegular() {
+			continue
+		}
+		name := e.Name()
+		lower := strings.ToLower(name)
 		rel := filepath.Join(".github", "ISSUE_TEMPLATE", name)
 		raw, err := os.ReadFile(filepath.Join(cwd, rel))
 		if err != nil {
 			continue
 		}
-		return rel, stripTemplateFrontmatter(string(raw)), mds
+		switch {
+		case strings.HasSuffix(lower, ".md"):
+			templates = append(templates, markdownIssueTemplate(rel, raw))
+		case lower != "config.yml" && (strings.HasSuffix(lower, ".yml") || strings.HasSuffix(lower, ".yaml")):
+			if tmpl, ok := yamlIssueTemplate(rel, raw); ok {
+				templates = append(templates, tmpl)
+			}
+		}
+	}
+	if len(templates) > 0 {
+		return templates, contactLinks, blankIssuesEnabled
 	}
 
 	for _, candidate := range issueTemplateCandidates {
@@ -498,9 +559,178 @@ func loadIssueTemplate(cwd string) (path, content string, choices []string) {
 		if err != nil {
 			continue
 		}
-		return candidate, stripTemplateFrontmatter(string(raw)), nil
+		return []IssueTemplate{markdownIssueTemplate(candidate, raw)}, contactLinks, blankIssuesEnabled
 	}
-	return "", "", nil
+	return nil, contactLinks, blankIssuesEnabled
+}
+
+func markdownIssueTemplate(path string, raw []byte) IssueTemplate {
+	return IssueTemplate{
+		Name:    strings.TrimSuffix(filepath.Base(path), filepath.Ext(path)),
+		Path:    path,
+		Kind:    "markdown",
+		Content: stripTemplateFrontmatter(string(raw)),
+	}
+}
+
+type issueTemplateConfigYAML struct {
+	BlankIssuesEnabled *bool              `yaml:"blank_issues_enabled"`
+	ContactLinks       []IssueContactLink `yaml:"contact_links"`
+}
+
+func parseIssueTemplateConfig(raw []byte) (bool, []IssueContactLink) {
+	cfg := issueTemplateConfigYAML{BlankIssuesEnabled: boolPtr(true)}
+	if err := yaml.Unmarshal(raw, &cfg); err != nil {
+		return true, nil
+	}
+	return *cfg.BlankIssuesEnabled, cfg.ContactLinks
+}
+
+func boolPtr(v bool) *bool { return &v }
+
+type issueFormYAML struct {
+	Name        string          `yaml:"name"`
+	Description string          `yaml:"description"`
+	Title       string          `yaml:"title"`
+	Labels      yamlStringList  `yaml:"labels"`
+	Assignees   yamlStringList  `yaml:"assignees"`
+	Body        []issueFormItem `yaml:"body"`
+}
+
+type issueFormItem struct {
+	Type       string `yaml:"type"`
+	ID         string `yaml:"id"`
+	Attributes struct {
+		Label       string         `yaml:"label"`
+		Description string         `yaml:"description"`
+		Placeholder string         `yaml:"placeholder"`
+		Value       string         `yaml:"value"`
+		Render      string         `yaml:"render"`
+		Options     []checkboxItem `yaml:"options"`
+	} `yaml:"attributes"`
+	Validations struct {
+		Required bool `yaml:"required"`
+	} `yaml:"validations"`
+}
+
+type checkboxItem struct {
+	Label    string `yaml:"label"`
+	Required bool   `yaml:"required"`
+}
+
+func (i *checkboxItem) UnmarshalYAML(value *yaml.Node) error {
+	if value.Kind == yaml.ScalarNode {
+		i.Label = strings.TrimSpace(value.Value)
+		return nil
+	}
+	type alias checkboxItem
+	var out alias
+	if err := value.Decode(&out); err != nil {
+		return err
+	}
+	*i = checkboxItem(out)
+	return nil
+}
+
+// yamlStringList accepts GitHub's common `labels: [bug]` form and the string
+// shorthand `labels: bug, needs-triage` used by some issue templates.
+type yamlStringList []string
+
+func (l *yamlStringList) UnmarshalYAML(value *yaml.Node) error {
+	switch value.Kind {
+	case yaml.SequenceNode:
+		for _, node := range value.Content {
+			*l = append(*l, strings.TrimSpace(node.Value))
+		}
+	case yaml.ScalarNode:
+		for _, part := range strings.Split(value.Value, ",") {
+			if s := strings.TrimSpace(part); s != "" {
+				*l = append(*l, s)
+			}
+		}
+	}
+	return nil
+}
+
+func yamlIssueTemplate(path string, raw []byte) (IssueTemplate, bool) {
+	var form issueFormYAML
+	if err := yaml.Unmarshal(raw, &form); err != nil || strings.TrimSpace(form.Name) == "" {
+		return IssueTemplate{}, false
+	}
+	return IssueTemplate{
+		Name:        form.Name,
+		Description: form.Description,
+		Path:        path,
+		Kind:        "issue_form",
+		TitlePrefix: form.Title,
+		Labels:      []string(form.Labels),
+		Assignees:   []string(form.Assignees),
+		Content:     renderIssueFormMarkdown(form),
+	}, true
+}
+
+func renderIssueFormMarkdown(form issueFormYAML) string {
+	var b strings.Builder
+	for _, item := range form.Body {
+		label := strings.TrimSpace(item.Attributes.Label)
+		switch item.Type {
+		case "markdown":
+			if value := strings.TrimSpace(item.Attributes.Value); value != "" {
+				b.WriteString(value)
+				b.WriteString("\n\n")
+			}
+		case "checkboxes":
+			if label != "" {
+				fmt.Fprintf(&b, "## %s\n\n", label)
+			}
+			for _, opt := range item.Attributes.Options {
+				marker := " "
+				if opt.Required {
+					marker = "!"
+				}
+				fmt.Fprintf(&b, "- [%s] %s\n", marker, opt.Label)
+			}
+			b.WriteString("\n")
+		default:
+			if label == "" {
+				label = item.ID
+			}
+			if label == "" {
+				continue
+			}
+			fmt.Fprintf(&b, "## %s\n\n", label)
+			writeIssueFormHint(&b, item)
+			if item.Attributes.Render != "" {
+				fmt.Fprintf(&b, "```%s\n\n```\n\n", item.Attributes.Render)
+			} else {
+				b.WriteString("\n")
+			}
+		}
+	}
+	return strings.TrimSpace(b.String()) + "\n"
+}
+
+func writeIssueFormHint(b *strings.Builder, item issueFormItem) {
+	var hints []string
+	if item.Validations.Required {
+		hints = append(hints, "Required")
+	}
+	if item.Attributes.Description != "" {
+		hints = append(hints, item.Attributes.Description)
+	}
+	if item.Attributes.Placeholder != "" {
+		hints = append(hints, "Placeholder: "+strings.ReplaceAll(item.Attributes.Placeholder, "\n", " "))
+	}
+	if len(item.Attributes.Options) > 0 {
+		var opts []string
+		for _, opt := range item.Attributes.Options {
+			opts = append(opts, opt.Label)
+		}
+		hints = append(hints, "Options: "+strings.Join(opts, "; "))
+	}
+	if len(hints) > 0 {
+		fmt.Fprintf(b, "<!-- %s -->\n\n", strings.Join(hints, " | "))
+	}
 }
 
 // stripTemplateFrontmatter removes a leading YAML frontmatter block
@@ -539,6 +769,43 @@ func renderIssueContext(s IssueContext) string {
 			b.WriteString("  ")
 			b.WriteString(line)
 			b.WriteString("\n")
+		}
+	}
+
+	if len(s.IssueTemplates) > 0 {
+		b.WriteString("\n## templates\n")
+		for i, tmpl := range s.IssueTemplates {
+			fmt.Fprintf(&b, "- index=%d name=%s kind=%s path=%s\n", i+1, tmpl.Name, tmpl.Kind, tmpl.Path)
+			if tmpl.Description != "" {
+				fmt.Fprintf(&b, "  description=%s\n", tmpl.Description)
+			}
+			if tmpl.TitlePrefix != "" {
+				fmt.Fprintf(&b, "  title_prefix=%s\n", tmpl.TitlePrefix)
+			}
+			if len(tmpl.Labels) > 0 {
+				fmt.Fprintf(&b, "  labels=%s\n", strings.Join(tmpl.Labels, ","))
+			}
+			if len(tmpl.Assignees) > 0 {
+				fmt.Fprintf(&b, "  assignees=%s\n", strings.Join(tmpl.Assignees, ","))
+			}
+			b.WriteString("  content=|\n")
+			for _, line := range strings.Split(tmpl.Content, "\n") {
+				b.WriteString("    ")
+				b.WriteString(line)
+				b.WriteString("\n")
+			}
+		}
+	}
+	if !s.BlankIssuesEnabled {
+		b.WriteString("\n## blank_issue\nenabled=false\n")
+	}
+	if len(s.ContactLinks) > 0 {
+		b.WriteString("\n## contact_links\n")
+		for _, link := range s.ContactLinks {
+			fmt.Fprintf(&b, "- name=%s url=%s\n", link.Name, link.URL)
+			if link.About != "" {
+				fmt.Fprintf(&b, "  about=%s\n", link.About)
+			}
 		}
 	}
 
