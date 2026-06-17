@@ -51,8 +51,12 @@ func TestGitCreateIssueDirective_BranchesOnStateFlags(t *testing.T) {
 func TestGitCreateIssueDirective_TemplateHandling(t *testing.T) {
 	d := gitCreateIssueDirective("")
 	for _, want := range []string{
-		"template.content",
-		"template.choices",
+		"templates",
+		"contact_links",
+		"title_prefix",
+		"template content",
+		"selected issue template declares",
+		"security links",
 		"default skeleton",
 		"Summary",
 		"Details",

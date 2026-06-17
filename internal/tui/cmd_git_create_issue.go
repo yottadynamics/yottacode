@@ -74,13 +74,21 @@ composing anything:
   UI manually. STOP. Do not attempt the create call.
 
 Step 3 — compose a title and body using the snapshot:
+- If ## templates lists more than one issue-creation target, ask the
+  user which template to use unless the requested title/body clearly
+  matches one option. Use template names/descriptions in the prompt.
+- Use ## contact_links only as guidance. Documentation, discussions,
+  contributing, and security links are not GitHub issues; for security
+  reports, refuse public issue creation and point at the private URL.
 - Title: ≤72 chars, imperative mood, no trailing period. Describe
-  the outcome, not the mechanics.
-- Body: if ## template.content exists, fill that template
-  preserving its section order and headers. If ## template.choices
-  lists alternatives, note them in your final summary so the user
-  can re-run with a different template. Otherwise use this
-  default skeleton:
+  the outcome, not the mechanics. If the chosen template has
+  title_prefix, preserve it when it helps the repo triage the issue.
+- Body: use the chosen template content, preserving its section order
+  and headers. YAML issue forms are already rendered as Markdown under
+  content; fill required sections and remove placeholder comments that
+  are not useful in the final issue. Use the template's labels and
+  assignees only when the snapshot explicitly provides them. If no
+  template is selected, use this default skeleton:
 
   ## Summary
   <1-3 bullets, the "why">
@@ -118,6 +126,6 @@ composite tools, but the model must not invoke them via other
 tools either:
 - Do NOT run gh issue edit — this command creates new issues only.
 - Do NOT auto-assign labels, projects, or milestones beyond what
-  the user explicitly provided.
+  the user explicitly provided or the selected issue template declares.
 - Do NOT invent checklist items the diff cannot support.`
 }

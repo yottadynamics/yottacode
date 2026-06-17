@@ -1004,20 +1004,28 @@ Mirrors Claude Code's `Agent` / `Task` tool surface.
 ## gh_issue_context
 
 Composite read-only snapshot used to open an issue without parsing
-bash output. Returns labeled sections under `## state` and `## template`.
-The `## state` block carries deterministic fields: `owner=`, `repo=`,
-`gh_available=` (whether the GitHub auth token chain resolves — the
-`/git-create-issue` directive branches to draft-only when `false`).
-The `## template` block carries `path=` and `content=` when an issue
-template is found. Discovery order matches GitHub's own precedence:
-`.github/ISSUE_TEMPLATE/*.md` first (alphabetical pick; with several
-templates the names are listed on a `choices=` line and any YAML
-frontmatter is stripped from the loaded one), then the legacy
-single-file locations (`ISSUE_TEMPLATE.md` in `.github/`, the repo
-root, or `docs/`, either casing). YAML issue forms (`*.yml`) and the
-chooser `config.yml` are not fillable markdown and are skipped — a
-forms-only repo falls through to the directive's default body
-skeleton.
+bash output. Returns labeled sections under `## state`, `## template`,
+`## templates`, `## blank_issue`, and `## contact_links`. The `## state`
+block carries deterministic fields: `owner=`, `repo=`, `gh_available=`
+(whether the GitHub auth token chain resolves — the `/git-create-issue`
+directive branches to draft-only when `false`).
+
+`## template` preserves the legacy single-template view (`path=`, optional
+`choices=`, and `content=`). `## templates` is the richer chooser view:
+each entry has an index, name, kind (`markdown` or `issue_form`), path,
+optional description/title prefix/labels/assignees, and rendered Markdown
+content. Discovery order matches GitHub's own precedence: directory-style
+`.github/ISSUE_TEMPLATE/*.{md,yml,yaml}` first in filename order, then the
+legacy single-file locations (`ISSUE_TEMPLATE.md` in `.github/`, the repo
+root, or `docs/`, either casing). Markdown frontmatter is stripped. YAML
+issue forms are parsed and rendered into Markdown sections because GitHub's
+public create-issue API accepts a normal issue body, not a submitted form
+payload.
+
+`config.yml` is not treated as a template. Its `blank_issues_enabled` flag is
+reported under `## blank_issue`, and `contact_links` are reported under
+`## contact_links` so documentation, discussions, and security-report links
+can be surfaced without creating public issues for them.
 
 Pair with [`gh_issue_create`](#gh_issue_create) — context tool gathers
 state, create tool validates the title and opens the issue.
@@ -1046,7 +1054,8 @@ number=<n>`. On a missing or unauthenticated `gh` CLI:
 can fall through to draft-only output without surfacing an opaque
 exec failure. On other gh errors: `created=false reason=gh_error`
 followed by the gh output verbatim. The tool never auto-retries,
-auto-edits, or auto-assigns labels beyond what the user explicitly provided.
+auto-edits, or auto-assigns labels beyond what the user explicitly provided
+or the selected issue template declares.
 
 The adapter behind this tool is `internal/github.TypedClient`,
 backed by the `go-github/v66` REST client. Auth resolves through a
