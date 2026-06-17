@@ -33,6 +33,41 @@ func ResolveWindow(model string, override, defaultWindow int) int {
 	return EffectiveWindow(model, override, defaultWindow)
 }
 
+// ResolveWindowForProvider is ResolveWindow for callers that know which
+// provider kind serves the model. The same model id can have different
+// real limits per backend — gpt-5.5 is 1.05M-context on api.openai.com
+// but ~272k-input through the ChatGPT Codex backend (measured
+// 2026-06-10: 264,995 input tokens accepted, ~281k rejected) — so two
+// provider-scoped layers run ahead of ResolveWindow's per-model-id
+// layers, after the override:
+//
+//  1. the window store under "<kind>/<model id>" — provider-qualified
+//     entries (embedded baseline or the ~/.yottacode overlay, where
+//     users can pin their own) carrying per-backend measurements the
+//     per-model catalog cannot express;
+//  2. the catalog entry for this exact (provider, id) pair — a curated
+//     provider's number applies on its own backend only and never
+//     leaks to a namesake model behind a different kind.
+//
+// When neither provider-scoped layer answers — openai-compatible
+// proxies, an empty kind, models with no qualified facts — resolution
+// degrades to ResolveWindow unchanged.
+func ResolveWindowForProvider(provider, model string, override, defaultWindow int) int {
+	if override <= 0 {
+		kind := strings.ToLower(strings.TrimSpace(provider))
+		tag := strings.ToLower(strings.TrimSpace(model))
+		if kind != "" && tag != "" {
+			if w, ok := windowStoreLookup(kind + "/" + tag); ok {
+				return w
+			}
+			if m, ok := FindByProviderID(provider, model); ok && m.ContextWindow > 0 {
+				return m.ContextWindow
+			}
+		}
+	}
+	return ResolveWindow(model, override, defaultWindow)
+}
+
 // EffectiveWindow resolves the context window from an explicit override
 // and the built-in model-tag table only (no catalog lookup) — the lower
 // two layers of ResolveWindow. An explicit per-model override (override >

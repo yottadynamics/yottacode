@@ -224,6 +224,21 @@ func TestOneshot_PropagatesAdapterError(t *testing.T) {
 	}
 }
 
+func TestComposeSystemPrompt_XAIPrefersXSearch(t *testing.T) {
+	got := composeSystemPrompt("base", adapter.ProviderProfile{
+		Provider: adapter.ProviderXAI,
+		EnabledBuiltinTools: []adapter.BuiltinToolKind{
+			adapter.BuiltinToolWebSearch,
+			adapter.BuiltinToolXSearch,
+		},
+	})
+	for _, want := range []string{"use x_search, not web_search", "X/Twitter posts", "Use web_search only for general web pages"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("xAI prompt guidance missing %q:\n%s", want, got)
+		}
+	}
+}
+
 func TestPreflight_AuthFailure(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "nope", http.StatusUnauthorized)
@@ -263,6 +278,22 @@ func TestPreflight_ModelInvisible(t *testing.T) {
 	if !strings.Contains(err.Error(), `model "gpt-5" not listed by /models`) {
 		t.Fatalf("unexpected error: %v", err)
 	}
+}
+
+func TestOneshot_StreamRecoversTurnPanic(t *testing.T) {
+	cfg := agent.LoopConfig{Adapter: panicStreamer{}, Registry: agent.NewRegistry(), MaxIterations: 3}
+	hist := []adapter.Message{{Role: adapter.RoleUser, Content: "x"}}
+	var stdout, stderr bytes.Buffer
+	err := stream(context.Background(), cfg, &hist, &stdout, &stderr)
+	if err == nil || !strings.Contains(err.Error(), "agent turn panicked") {
+		t.Fatalf("expected panic error, got %v", err)
+	}
+}
+
+type panicStreamer struct{}
+
+func (panicStreamer) ChatStream(context.Context, []adapter.Message, []adapter.Tool) <-chan adapter.StreamEvent {
+	panic("boom")
 }
 
 // fakeApprovalTool: a Tool that always requires approval but is never executed

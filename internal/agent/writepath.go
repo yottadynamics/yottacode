@@ -2,14 +2,14 @@
 // edit_file, mkdir, copy_file, move_file, delete_file). Three layers of
 // defense:
 //
-//   1. Cwd confinement — paths must resolve under the session's cwd, or
-//      under one of the user-provided AllowedPaths roots.
-//   2. Symlink rejection — symlinked write targets are refused unless the
-//      user explicitly opts in. Stops the "symlink to /etc/passwd" trick.
-//   3. Deny list — yottacode's own state directories (sessions, auto/,
-//      permissions.json, permissions.local.json) and git-internal paths
-//      are off-limits regardless of approval. Self-grants and memory
-//      injection don't go through the tool surface.
+//  1. Cwd confinement — paths must resolve under the session's cwd, or
+//     under one of the user-provided AllowedPaths roots.
+//  2. Symlink rejection — symlinked write targets are refused unless the
+//     user explicitly opts in. Stops the "symlink to /etc/passwd" trick.
+//  3. Deny list — yottacode's own state directories (sessions, auto/,
+//     permissions.json, permissions.local.json) and git-internal paths
+//     are off-limits regardless of approval. Self-grants and memory
+//     injection don't go through the tool surface.
 //
 // Reads run through a narrower validator (ValidateReadPath) gated by a
 // targeted deny list of credential-bearing paths
@@ -29,6 +29,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/yottadynamics/yottacode/internal/memory"
 )
 
 // WritePathOptions configures the validator for a single tool. Build it
@@ -303,7 +305,11 @@ func matchesAny(path string, patterns []string) bool {
 //     memory_forget); the generic write_file / edit_file surface
 //     must not be a back door. USER.md is global preferences — the
 //     agent's project-scope view doesn't have enough signal to
-//     curate cross-project preferences.
+//     curate cross-project preferences. The home-anchored memory/ and
+//     projects/ trees are denied unconditionally; when $YOTTACODE_HOME
+//     redirects the memory tree off ~/.yottacode, that override root is
+//     denied too (so neither the active store nor an override-less
+//     session's store is writable via the tool surface).
 //   - Project-scope yottacode state under <cwd>/.yottacode/
 //     (permissions.json, permissions.local.json). The permissions
 //     files are the user's policy surface — letting the model edit
@@ -433,17 +439,37 @@ func DefaultDenyReadPaths(cwd string) []string {
 
 func DefaultDenyPaths(cwd string) []string {
 	out := []string{}
-	if home, err := os.UserHomeDir(); err == nil {
+	home, homeErr := os.UserHomeDir()
+	if homeErr == nil {
 		yc := filepath.Join(home, ".yottacode")
 		out = append(out,
 			filepath.Join(yc, "sessions"),
-			filepath.Join(yc, "memory"),   // user-scope memories — only memory_save / memory_forget write here
-			filepath.Join(yc, "projects"), // project-scope memories — same
-			filepath.Join(yc, "auth"),     // OAuth tokens — only the login flow writes here
+			filepath.Join(yc, "auth"), // OAuth tokens — only the login flow writes here
 			filepath.Join(yc, "index.sqlite"),
 			filepath.Join(yc, "USER.md"),
 			filepath.Join(yc, "trusted-roots.json"), // folder-trust store — only the trust prompt / `yottacode trust` writes here
+			// Home-anchored memory tree (memory/user/, memory/projects/<slug>/,
+			// nested subagents/ transcripts): always denied, because an
+			// override-less session loads memories from here regardless of
+			// whether some *other* session ran with $YOTTACODE_HOME set —
+			// otherwise a write under the override could plant a file that a
+			// later default session injects into its system prompt.
+			filepath.Join(yc, "memory"),
+			// Legacy pre-merge project tree (old project memories + subagent
+			// transcripts). The merge stopped reading it, but the
+			// no-migration policy leaves the data on disk; keep the generic
+			// write/delete tools from clobbering the only copy.
+			filepath.Join(yc, "projects"),
 		)
+	}
+	// When $YOTTACODE_HOME redirects the memory tree off ~/.yottacode,
+	// deny that root too (the home-anchored copy above still applies to
+	// override-less sessions). memory.MemoryRoot honors the override; skip
+	// the append when it resolves to the already-denied home path.
+	if root, err := memory.MemoryRoot(); err == nil {
+		if homeErr != nil || root != filepath.Join(home, ".yottacode", "memory") {
+			out = append(out, root)
+		}
 	}
 	if cwd != "" {
 		out = append(out,

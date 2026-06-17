@@ -103,6 +103,10 @@ var (
 	stylePaletteEmpty     lipgloss.Style
 	styleDiffAdd          lipgloss.Style
 	styleDiffDel          lipgloss.Style
+	styleDiffAddBody      lipgloss.Style
+	styleDiffDelBody      lipgloss.Style
+	styleDiffAddEmph      lipgloss.Style
+	styleDiffDelEmph      lipgloss.Style
 	stylePathHeader       lipgloss.Style
 	styleSpinner          lipgloss.Style
 	styleInputPrompt      lipgloss.Style
@@ -196,7 +200,13 @@ func buildStyles(p themes.Palette) {
 	styleFooter = lipgloss.NewStyle().Foreground(colorMuted)
 	styleUserHeader = lipgloss.NewStyle().Bold(true).Foreground(colorAccent)
 	styleAssistantHeader = lipgloss.NewStyle().Bold(true).Foreground(colorAssistant)
-	styleUserBar = lipgloss.NewStyle().Foreground(colorRule).Bold(true)
+	// User chevron in the brand green, NOT Accent — maintainer call
+	// (2026-06-10): the accent cyan/blue reads wrong on the prompt;
+	// green matches the rest of the brand chrome (logo, spinner,
+	// status dot) while still giving user prompts a colored anchor
+	// that's findable when scanning back through a long session. The
+	// body stays Content so the typed text reads bright.
+	styleUserBar = lipgloss.NewStyle().Foreground(colorBrand).Bold(true)
 	styleUserBody = lipgloss.NewStyle().Foreground(colorContent)
 	styleAssistantBody = lipgloss.NewStyle().Foreground(colorContent).PaddingLeft(2)
 	styleAssistantProse = lipgloss.NewStyle().Foreground(colorContent)
@@ -254,21 +264,40 @@ func buildStyles(p themes.Palette) {
 	stylePaletteBox = paletteBox
 
 	stylePaletteItem = lipgloss.NewStyle().Foreground(colorContent)
+	// Selected row: reverse video on the brand color, i.e. brand
+	// background with the terminal's own background color as text.
+	// Brand is legible against the terminal background everywhere
+	// else, so the reversed pair keeps that same contrast — unlike
+	// the previous hardcoded black foreground, which went unreadable
+	// on themes whose Success role resolves dark (light-mode
+	// palettes, no-color).
 	stylePaletteSelected = lipgloss.NewStyle().
-		Background(colorBrand).
-		Foreground(lipgloss.Color("0")).
+		Foreground(colorBrand).
+		Reverse(true).
 		Bold(true)
 	stylePaletteEmpty = lipgloss.NewStyle().Foreground(colorMuted).Italic(true)
 
 	styleDiffAdd = lipgloss.NewStyle().Foreground(colorSuccess).Bold(true)
 	styleDiffDel = lipgloss.NewStyle().Foreground(colorError).Bold(true)
+	// Intraline (paired-replacement) diff bodies: unchanged context in
+	// the plain state color, the changed span in reverse video — state
+	// color as background, terminal bg as text, the same
+	// contrast-by-construction trick the palette selection uses. Only
+	// the span pops; the rest of the line still reads as added/removed.
+	styleDiffAddBody = lipgloss.NewStyle().Foreground(colorSuccess)
+	styleDiffDelBody = lipgloss.NewStyle().Foreground(colorError)
+	styleDiffAddEmph = lipgloss.NewStyle().Foreground(colorSuccess).Reverse(true)
+	styleDiffDelEmph = lipgloss.NewStyle().Foreground(colorError).Reverse(true)
 	stylePathHeader = lipgloss.NewStyle().Foreground(colorAccent).Bold(true)
 	styleSpinner = lipgloss.NewStyle().Foreground(colorBrand).Bold(true)
 
-	// Cmdline box reads in Content (bright) rather than the dimmer
-	// Rule/Dim it used before — the prompt, placeholder, and hint row
-	// should all be easy to spot.
-	styleInputPrompt = lipgloss.NewStyle().Foreground(colorContent).Bold(true)
+	// Cmdline box reads bright rather than the dimmer Rule/Dim it
+	// used before — the prompt, placeholder, and hint row should all
+	// be easy to spot. The prompt chevron renders in the brand green
+	// (same maintainer call as styleUserBar above — no blue here),
+	// matching the scrollback user-echo chevron so the live bar and
+	// its echo look identical.
+	styleInputPrompt = lipgloss.NewStyle().Foreground(colorBrand).Bold(true)
 	styleInputPlaceholder = lipgloss.NewStyle().Foreground(colorContent).Italic(true)
 	styleInputHint = lipgloss.NewStyle().Foreground(colorContent)
 	styleOverlayRule = lipgloss.NewStyle().Foreground(colorRule).Faint(true)
@@ -334,6 +363,18 @@ func buildStyles(p themes.Palette) {
 	styleTodoCheckDone = lipgloss.NewStyle().Foreground(colorSuccess).Bold(true)
 	styleTodoArrow = lipgloss.NewStyle().Foreground(colorSuccess).Bold(true)
 	styleTodoBullet = lipgloss.NewStyle().Foreground(colorDim)
+
+	// Path-trust elevation modal (path_trust_modal.go). Same warning
+	// surface as the approval box: Warning border + title, Dim hints,
+	// Success/Error for the accept/reject acknowledgments. Previously
+	// hardcoded 256-color indices (214/245/78/203), which ignored the
+	// theme and never rebuilt on ApplyTheme.
+	stylePathTrustBorder = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(colorWarning).Padding(0, 1)
+	stylePathTrustTitle = lipgloss.NewStyle().Foreground(colorWarning).Bold(true)
+	stylePathTrustBodyKey = lipgloss.NewStyle().Foreground(colorContent).Bold(true)
+	stylePathTrustBodyHint = lipgloss.NewStyle().Foreground(colorDim)
+	stylePathTrustAccept = lipgloss.NewStyle().Foreground(colorSuccess)
+	stylePathTrustReject = lipgloss.NewStyle().Foreground(colorError)
 
 	// Subagent card (subagent_card.go)
 	styleSubagentLabel = lipgloss.NewStyle().Foreground(colorAccent).Bold(true)

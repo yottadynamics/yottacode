@@ -288,6 +288,112 @@ func TestGemini_RoundTripsToolResultAsFunctionResponse(t *testing.T) {
 	}
 }
 
+// TestGemini_CapturesThoughtSignatureFromFunctionCall verifies the
+// stream parser lifts thoughtSignature off functionCall parts into the
+// neutral ToolCall. Thinking models (Gemini 3) attach it and demand it
+// back on the next turn; dropping it here is what produced "HTTP 400
+// INVALID_ARGUMENT: Function call is missing a thought_signature in
+// functionCall parts" after every tool execution.
+func TestGemini_CapturesThoughtSignatureFromFunctionCall(t *testing.T) {
+	body := geminiSSEBody(
+		`{"candidates":[{"content":{"parts":[{"functionCall":{"name":"read_file","args":{"path":"main.go"}},"thoughtSignature":"sig-abc123"}],"role":"model"},"finishReason":"STOP"}]}`,
+	)
+	srv, _ := geminiCapturingMockServer(t, body)
+
+	ad := newGeminiAdapter(Config{BaseURL: srv.URL, APIKey: "test", Model: "gemini-pro-latest"})
+	ch := ad.ChatStream(context.Background(), []Message{{Role: RoleUser, Content: "read main.go"}}, []Tool{
+		{Name: "read_file", Description: "read a file", Schema: map[string]any{"type": "object"}},
+	})
+
+	_, _, final, errs := drainEvents(ch)
+	if len(errs) > 0 {
+		t.Fatalf("errors: %v", errs)
+	}
+	if final == nil || len(final.ToolCalls) != 1 {
+		t.Fatalf("final = %+v, want one ToolCall", final)
+	}
+	if got := final.ToolCalls[0].ThoughtSignature; got != "sig-abc123" {
+		t.Errorf("ToolCall.ThoughtSignature = %q, want sig-abc123", got)
+	}
+}
+
+// TestGemini_ReplaysThoughtSignatureOnHistory verifies the captured
+// signature is sent back on the history's functionCall part on the
+// next turn of the tool loop — the round-trip thinking models require.
+func TestGemini_ReplaysThoughtSignatureOnHistory(t *testing.T) {
+	body := geminiSSEBody(`{"candidates":[{"content":{"parts":[{"text":"done"}],"role":"model"},"finishReason":"STOP"}]}`)
+	srv, cap := geminiCapturingMockServer(t, body)
+
+	ad := newGeminiAdapter(Config{BaseURL: srv.URL, APIKey: "test", Model: "gemini-pro-latest"})
+	history := []Message{
+		{Role: RoleUser, Content: "read main.go"},
+		{Role: RoleAssistant, ToolCalls: []ToolCall{
+			{ID: "call_1", Name: "read_file", ArgsJSON: `{"path":"main.go"}`, ThoughtSignature: "sig-abc123"},
+		}},
+		{Role: RoleTool, ToolCallID: "call_1", Content: "package main"},
+	}
+	ch := ad.ChatStream(context.Background(), history, nil)
+	_, _, _, errs := drainEvents(ch)
+	if len(errs) > 0 {
+		t.Fatalf("errors: %v", errs)
+	}
+
+	cap.mu.Lock()
+	defer cap.mu.Unlock()
+	var req geminiRequest
+	if err := json.Unmarshal(cap.body, &req); err != nil {
+		t.Fatalf("captured body not JSON: %v", err)
+	}
+	if len(req.Contents) != 3 {
+		t.Fatalf("Contents len = %d, want 3", len(req.Contents))
+	}
+	model := req.Contents[1]
+	if len(model.Parts) != 1 || model.Parts[0].FunctionCall == nil {
+		t.Fatalf("model turn parts = %+v, want one functionCall", model.Parts)
+	}
+	if got := model.Parts[0].ThoughtSignature; got != "sig-abc123" {
+		t.Errorf("replayed thoughtSignature = %q, want sig-abc123", got)
+	}
+}
+
+// TestGemini_InjectsDummySignatureWhenHistoryLacksOne covers histories
+// with signature-less functionCalls: turns recorded before signatures
+// were captured, or migrated from another provider via a mid-session
+// /model switch. Google documents a bypass token for exactly this
+// case; without it the whole session bricks on the next request.
+func TestGemini_InjectsDummySignatureWhenHistoryLacksOne(t *testing.T) {
+	body := geminiSSEBody(`{"candidates":[{"content":{"parts":[{"text":"done"}],"role":"model"},"finishReason":"STOP"}]}`)
+	srv, cap := geminiCapturingMockServer(t, body)
+
+	ad := newGeminiAdapter(Config{BaseURL: srv.URL, APIKey: "test", Model: "gemini-pro-latest"})
+	history := []Message{
+		{Role: RoleUser, Content: "read main.go"},
+		{Role: RoleAssistant, ToolCalls: []ToolCall{
+			{ID: "call_1", Name: "read_file", ArgsJSON: `{"path":"main.go"}`},
+		}},
+		{Role: RoleTool, ToolCallID: "call_1", Content: "package main"},
+	}
+	ch := ad.ChatStream(context.Background(), history, nil)
+	_, _, _, errs := drainEvents(ch)
+	if len(errs) > 0 {
+		t.Fatalf("errors: %v", errs)
+	}
+
+	cap.mu.Lock()
+	defer cap.mu.Unlock()
+	var req geminiRequest
+	if err := json.Unmarshal(cap.body, &req); err != nil {
+		t.Fatalf("captured body not JSON: %v", err)
+	}
+	model := req.Contents[1]
+	if len(model.Parts) != 1 || model.Parts[0].FunctionCall == nil {
+		t.Fatalf("model turn parts = %+v, want one functionCall", model.Parts)
+	}
+	if got := model.Parts[0].ThoughtSignature; got != geminiDummyThoughtSignature {
+		t.Errorf("thoughtSignature = %q, want documented dummy %q", got, geminiDummyThoughtSignature)
+	}
+}
+
 func TestGemini_TranslatesToolsToFunctionDeclarations(t *testing.T) {
 	body := geminiSSEBody(`{"candidates":[{"content":{"parts":[{"text":"ok"}],"role":"model"},"finishReason":"STOP"}]}`)
 	srv, cap := geminiCapturingMockServer(t, body)
@@ -369,10 +475,17 @@ func TestGemini_PutsModelAndStreamPathInURL(t *testing.T) {
 	}
 }
 
-func TestGemini_HTTPErrorSurfaces(t *testing.T) {
+func TestGemini_HTTPErrorSurfacesConciseGoogleEnvelope(t *testing.T) {
 	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusTooManyRequests)
-		fmt.Fprint(w, `{"error":{"message":"rate limited"}}`)
+		fmt.Fprint(w, `{
+			"error": {
+				"code": 429,
+				"message": "You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: https://ai.google.dev/gemini-api/docs/rate-limits.\n* Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_input_token_count, limit: 0, model: gemini-3.1-pro\n* Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 0, model: gemini-3.1-pro\nPlease retry in 41.132443092s.",
+				"status": "RESOURCE_EXHAUSTED",
+				"details": [{"@type":"type.googleapis.com/google.rpc.QuotaFailure","violations":[{"quotaMetric":"generativelanguage.googleapis.com/generate_content_free_tier_input_token_count"}]}]
+			}
+		}`)
 	})
 	srv := httptest.NewServer(h)
 	t.Cleanup(srv.Close)
@@ -383,8 +496,15 @@ func TestGemini_HTTPErrorSurfaces(t *testing.T) {
 	if len(errs) == 0 {
 		t.Fatal("expected error from 429, got none")
 	}
-	if !strings.Contains(errs[0].Error(), "429") {
-		t.Errorf("error should mention status code 429, got %v", errs[0])
+	got := errs[0].Error()
+	if !strings.Contains(got, "gemini: HTTP 429 RESOURCE_EXHAUSTED: You exceeded your current quota") {
+		t.Errorf("error should include concise status/message, got %v", errs[0])
+	}
+	if !strings.Contains(got, "Please retry in 41.132443092s") {
+		t.Errorf("error should include retry hint, got %v", errs[0])
+	}
+	if strings.Contains(got, "QuotaFailure") || strings.Contains(got, "quotaMetric") {
+		t.Errorf("error should not dump details JSON, got %v", errs[0])
 	}
 	if final != nil {
 		t.Errorf("expected no final message on error, got %+v", final)

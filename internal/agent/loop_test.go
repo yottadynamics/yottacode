@@ -60,15 +60,31 @@ type mockTool struct {
 	output           string
 	execErr          error
 	delay            time.Duration
+	schema           map[string]any
+	previewArgs      string
+	requiresArgs     string
+	executeArgs      string
 }
 
-func (m *mockTool) Name() string                 { return m.name }
-func (m *mockTool) Description() string          { return "test " + m.name }
-func (m *mockTool) Schema() map[string]any       { return map[string]any{"type": "object"} }
-func (m *mockTool) RequiresApproval(string) bool { return m.requiresApproval }
-func (m *mockTool) ParallelSafe(string) bool     { return m.parallelSafe }
-func (m *mockTool) PreviewCall(string) string    { return m.name + "()" }
-func (m *mockTool) Execute(_ context.Context, _ string) (string, error) {
+func (m *mockTool) Name() string        { return m.name }
+func (m *mockTool) Description() string { return "test " + m.name }
+func (m *mockTool) Schema() map[string]any {
+	if m.schema != nil {
+		return m.schema
+	}
+	return map[string]any{"type": "object"}
+}
+func (m *mockTool) RequiresApproval(argsJSON string) bool {
+	m.requiresArgs = argsJSON
+	return m.requiresApproval
+}
+func (m *mockTool) ParallelSafe(string) bool { return m.parallelSafe }
+func (m *mockTool) PreviewCall(argsJSON string) string {
+	m.previewArgs = argsJSON
+	return m.name + "()"
+}
+func (m *mockTool) Execute(_ context.Context, argsJSON string) (string, error) {
+	m.executeArgs = argsJSON
 	if m.delay > 0 {
 		time.Sleep(m.delay)
 	}
@@ -242,6 +258,111 @@ func TestLoop_ToolCallNoApproval(t *testing.T) {
 	// History should now have user + assistant(toolcall) + tool(result) + assistant(final).
 	if len(hist) != 4 {
 		t.Errorf("history len = %d, want 4 (user, assistant+toolcall, tool, assistant)", len(hist))
+	}
+}
+
+func TestLoop_ToolArgsCoercedBeforePreviewApprovalAndExecute(t *testing.T) {
+	streamer := &scriptedStreamer{turns: [][]adapter.StreamEvent{
+		{sseDone("", adapter.ToolCall{ID: "c1", Name: "lookup", ArgsJSON: `{"max_results":"5"}`})},
+		{sseToken("ok"), sseDone("ok")},
+	}}
+	tool := &mockTool{
+		name:             "lookup",
+		requiresApproval: true,
+		output:           "value",
+		schema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"max_results": map[string]any{"type": "integer"},
+			},
+		},
+	}
+	reg := NewRegistry()
+	reg.Register(tool)
+	cfg := LoopConfig{Adapter: streamer, Registry: reg, MaxIterations: 5}
+	hist := []adapter.Message{{Role: adapter.RoleUser, Content: "look"}}
+
+	events, err := runTurnSync(t, context.Background(), cfg, &hist, func(a ApprovalNeeded) Decision {
+		if !strings.Contains(a.ArgsJSON, `"max_results":5`) {
+			t.Fatalf("ApprovalNeeded.ArgsJSON = %q, want coerced integer", a.ArgsJSON)
+		}
+		return AllowOnce
+	})
+	if err != nil {
+		t.Fatalf("Turn: %v", err)
+	}
+	want := `{"max_results":5}`
+	for label, got := range map[string]string{
+		"PreviewCall":      tool.previewArgs,
+		"RequiresApproval": tool.requiresArgs,
+		"Execute":          tool.executeArgs,
+	} {
+		if got != want {
+			t.Errorf("%s args = %q, want %q", label, got, want)
+		}
+	}
+	var start *ToolStart
+	for i := range events {
+		if ev, ok := events[i].(ToolStart); ok {
+			start = &ev
+			break
+		}
+	}
+	if start == nil {
+		t.Fatalf("expected ToolStart")
+	}
+	if start.ArgsJSON != want {
+		t.Errorf("ToolStart.ArgsJSON = %q, want %q", start.ArgsJSON, want)
+	}
+}
+
+func TestLoop_EmptyToolArgsNormalizedToObject(t *testing.T) {
+	// Dispatch-layer guard that keeps the empty-args repair provider-agnostic:
+	// the chat adapter repairs its own calls, but a tool call arriving empty
+	// from any adapter must still reach Execute as "{}", not "", so the tool
+	// decodes a valid object instead of "unexpected end of JSON input".
+	streamer := &scriptedStreamer{turns: [][]adapter.StreamEvent{
+		{sseDone("", adapter.ToolCall{ID: "c1", Name: "noarg", ArgsJSON: ""})},
+		{sseToken("done"), sseDone("done")},
+	}}
+	tool := &mockTool{name: "noarg", output: "ok"}
+	reg := NewRegistry()
+	reg.Register(tool)
+	cfg := LoopConfig{Adapter: streamer, Registry: reg, MaxIterations: 5}
+	hist := []adapter.Message{{Role: adapter.RoleUser, Content: "go"}}
+
+	if _, err := runTurnSync(t, context.Background(), cfg, &hist, nil); err != nil {
+		t.Fatalf("Turn: %v", err)
+	}
+	if tool.executeArgs != "{}" {
+		t.Errorf("Execute args = %q, want {}", tool.executeArgs)
+	}
+}
+
+func TestLoop_RepeatedToolFailureAddsStrategyGuidance(t *testing.T) {
+	failure := errors.New("old_string not found in ./x.go")
+	streamer := &scriptedStreamer{turns: [][]adapter.StreamEvent{
+		{sseDone("", adapter.ToolCall{ID: "c1", Name: "edit_file", ArgsJSON: `{}`})},
+		{sseDone("", adapter.ToolCall{ID: "c2", Name: "edit_file", ArgsJSON: `{}`})},
+		{sseDone("", adapter.ToolCall{ID: "c3", Name: "edit_file", ArgsJSON: `{}`})},
+		{sseToken("done"), sseDone("done")},
+	}}
+	reg := NewRegistry()
+	reg.Register(&mockTool{name: "edit_file", execErr: failure})
+	cfg := LoopConfig{Adapter: streamer, Registry: reg, MaxIterations: 6}
+	hist := []adapter.Message{{Role: adapter.RoleUser, Content: "go"}}
+
+	if _, err := runTurnSync(t, context.Background(), cfg, &hist, nil); err != nil {
+		t.Fatalf("Turn: %v", err)
+	}
+	var guided bool
+	for _, m := range hist {
+		if m.Role == adapter.RoleTool && strings.Contains(m.Content, "repeated tool failure (3×)") && strings.Contains(m.Content, "read the current file contents") {
+			guided = true
+		}
+	}
+	if !guided {
+		t.Fatalf("expected repeated failure guidance in history: %+v", hist)
 	}
 }
 

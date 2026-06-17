@@ -53,9 +53,18 @@ func NewEmbedClient(baseURL, model string) *EmbedClient {
 	}
 }
 
+// embedKeepAlive asks Ollama to keep the embedding model resident
+// after the call. Ollama's default keep_alive is ~5 minutes, so every
+// pause longer than that used to force a cold model load on the next
+// per-turn retrieval — seconds of latency for a model that embeds in
+// milliseconds once resident. Each successful call re-extends the
+// lease, so an active session never pays the cold start twice.
+const embedKeepAlive = "30m"
+
 type embedRequest struct {
-	Model  string `json:"model"`
-	Prompt string `json:"prompt"`
+	Model     string `json:"model"`
+	Prompt    string `json:"prompt"`
+	KeepAlive string `json:"keep_alive,omitempty"`
 }
 
 type embedResponse struct {
@@ -71,7 +80,7 @@ func (c *EmbedClient) Embed(ctx context.Context, text string) ([]float32, error)
 		defer cancel()
 	}
 
-	body, err := json.Marshal(embedRequest{Model: c.Model, Prompt: text})
+	body, err := json.Marshal(embedRequest{Model: c.Model, Prompt: text, KeepAlive: embedKeepAlive})
 	if err != nil {
 		return nil, fmt.Errorf("embed: marshal: %w", err)
 	}

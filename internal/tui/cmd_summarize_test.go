@@ -478,7 +478,7 @@ func TestUpdateContextUsage_FiresWarningAtThreshold(t *testing.T) {
 	m.sess.Messages = []adapter.Message{
 		{Role: adapter.RoleUser, Content: huge},
 	}
-	cmd := m.updateContextUsage()
+	cmd := m.updateContextUsage(true)
 	if cmd != nil {
 		t.Errorf("warning crossing should NOT trigger auto-summarize: %v", cmd)
 	}
@@ -496,12 +496,76 @@ func TestUpdateContextUsage_BelowThresholdIsSilent(t *testing.T) {
 	m.fileCfg = config.Default()
 	m.modelName = "gpt-4o"
 	m.sess.Messages = []adapter.Message{{Role: adapter.RoleUser, Content: "hi"}}
-	cmd := m.updateContextUsage()
+	cmd := m.updateContextUsage(true)
 	if cmd != nil {
 		t.Errorf("below threshold should not fire any cmd")
 	}
 	if strings.Contains(m.transcript.String(), "context at") {
 		t.Errorf("no notice expected; got %q", m.transcript.String())
+	}
+}
+
+// TestUpdateContextUsage_QueuedTurnSuppressesAuto is the regression
+// test for the queued-input wedge: with a queued message about to
+// start a turn (allowAuto=false), the auto branch must not fire at all
+// — no banner, no summarizing flag — and the watermark gate must stay
+// open so the suppressed check re-arms at the queued turn's end.
+// Previously the caller discarded the returned Cmd instead, leaving
+// the banner printed and m.summarizing wedged true with no
+// summarization running.
+func TestUpdateContextUsage_QueuedTurnSuppressesAuto(t *testing.T) {
+	m := newTestModel(t)
+	m.fileCfg = config.Default()
+	m.fileCfg.Context.WarnThreshold = 0.05
+	m.fileCfg.Context.AutoThreshold = 0.1
+	m.modelName = "gpt-4o"
+	huge := strings.Repeat("x", 60_000) // ~15K tokens ≥ 10% of 128K
+	m.sess.Messages = []adapter.Message{{Role: adapter.RoleUser, Content: huge}}
+
+	if cmd := m.updateContextUsage(false); cmd != nil {
+		t.Fatal("allowAuto=false must not return a Cmd")
+	}
+	if m.summarizing {
+		t.Error("allowAuto=false must not flip m.summarizing")
+	}
+	if strings.Contains(m.transcript.String(), "auto-summarizing") {
+		t.Errorf("no auto banner expected; got %q", m.transcript.String())
+	}
+	if m.lastWatermarkPct != 0 {
+		t.Errorf("watermark gate must stay open, got lastWatermarkPct=%f", m.lastWatermarkPct)
+	}
+
+	// The next unsuppressed check (the queued turn's end) fires normally.
+	if cmd := m.updateContextUsage(true); cmd == nil {
+		t.Fatal("follow-up unsuppressed check should fire auto-summarize")
+	}
+	if !m.summarizing {
+		t.Error("follow-up check should flip m.summarizing")
+	}
+}
+
+// TestResumeWatermarkCheck_HealsOversizedSession: a session resumed
+// already past the auto threshold must start compressing at load time
+// — not after the first send fails with the provider's
+// context-overflow error.
+func TestResumeWatermarkCheck_HealsOversizedSession(t *testing.T) {
+	m := newTestModel(t)
+	m.fileCfg = config.Default()
+	m.fileCfg.Context.AutoThreshold = 0.1
+	m.modelName = "gpt-4o"
+	huge := strings.Repeat("x", 60_000)
+	m.sess.Messages = []adapter.Message{{Role: adapter.RoleUser, Content: huge}}
+
+	out, cmd := m.update(resumeWatermarkCheckMsg{})
+	mm := out.(Model)
+	if cmd == nil {
+		t.Fatal("resume check over auto threshold should return the summarize Cmd")
+	}
+	if !mm.summarizing {
+		t.Error("resume check should flip summarizing")
+	}
+	if !strings.Contains(mm.transcript.String(), "auto-summarizing") {
+		t.Errorf("expected auto-summarize banner; got %q", mm.transcript.String())
 	}
 }
 
@@ -513,7 +577,7 @@ func TestUpdateContextUsage_DisabledByThreshold1(t *testing.T) {
 	m.modelName = "gpt-4o"
 	huge := strings.Repeat("x", 60_000)
 	m.sess.Messages = []adapter.Message{{Role: adapter.RoleUser, Content: huge}}
-	cmd := m.updateContextUsage()
+	cmd := m.updateContextUsage(true)
 	if cmd != nil {
 		t.Errorf("threshold=1.0 should disable auto-summarize")
 	}

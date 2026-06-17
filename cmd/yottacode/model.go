@@ -249,6 +249,8 @@ default model).`,
 			// kinds carry windows in the catalog. The result is written to the
 			// file-backed window store (~/.yottacode/context-windows.json), NOT
 			// config.toml, so it can't invalidate a free-form provider's config.
+			// Probe only runtime-discovered providers. Curated kinds, including xai,
+			// already carry catalog/backfilled windows from yotta-models refresh.
 			if probeModel != "" && (p.Kind == "openai-compatible" || p.Kind == "ollama") && !modelHasWindow(entries, probeModel) {
 				pctx, pcancel := context.WithTimeout(cmd.Context(), 20*time.Second)
 				w, detail := catalog.DiscoverContextWindow(pctx, *p, key, probeModel)
@@ -393,8 +395,14 @@ openai-compatible and ollama providers are probed; curated providers
 			// --output: merge probed windows into whatever the target file
 			// already holds (preserving hand-authored family prefixes) and
 			// rewrite it. Intended for regenerating the committed baseline.
+			// The existing file's _comment is carried forward — it documents
+			// entry conventions (provider-qualified prefixes, measurement
+			// provenance) that a regeneration must not erase.
 			merged := mergeWindowEntries(catalog.LoadEntriesFromFile(output), probed)
-			comment := "Fallback context-window table, embedded at build time. Regenerate with `yottacode model probe-windows --output internal/catalog/context-windows.json`. Longest matching prefix wins."
+			comment := catalog.StoreComment(output)
+			if comment == "" {
+				comment = "Fallback context-window table, embedded at build time. Regenerate with `yottacode model probe-windows --output internal/catalog/context-windows.json`. Longest matching prefix wins."
+			}
 			if err := catalog.WriteWindowStore(output, merged, comment); err != nil {
 				return fmt.Errorf("write %s: %w", output, err)
 			}

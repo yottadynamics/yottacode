@@ -74,11 +74,15 @@ func (t *RunBashTool) Execute(ctx context.Context, argsJSON string) (string, err
 	c.Stdout = &cappedWriter{buf: &stdout}
 	c.Stderr = &cappedWriter{buf: &stderr}
 	err := c.Run()
-	exit := c.ProcessState.ExitCode()
 	var exitErr *exec.ExitError
 	if err != nil && !errors.As(err, &exitErr) {
+		// Start-failure path (shell missing, cwd deleted, fd exhaustion):
+		// the process never ran, so ProcessState is nil — reading the
+		// exit code here would panic. Past this check the command either
+		// succeeded or exited nonzero, and ProcessState is always set.
 		return "", fmt.Errorf("run_bash: %w", err)
 	}
+	exit := c.ProcessState.ExitCode()
 	return fmt.Sprintf("exit=%d\n--- stdout ---\n%s\n--- stderr ---\n%s",
 		exit, stdout.String(), stderr.String()), nil
 }

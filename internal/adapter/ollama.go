@@ -215,9 +215,37 @@ func (a *chatAdapter) ChatStream(ctx context.Context, messages []Message, tools 
 		for _, idx := range toolCallOrder {
 			final.ToolCalls = append(final.ToolCalls, *toolCallByIdx[idx])
 		}
+		// A tool call that arrives with finish_reason "length"/"content_filter"
+		// was cut off mid-emission: even when the partial arguments happen to
+		// parse, they're incomplete. Reject rather than run a tool against a
+		// truncated payload or replay it. Content-only truncation is fine — the
+		// loop continues it — so this gates on a tool call being present.
+		if len(final.ToolCalls) > 0 && (finishReason == "length" || finishReason == "content_filter") {
+			out <- StreamEvent{Kind: EventErr, Err: fmt.Errorf("adapter: stream ended with an incomplete tool call (finish_reason=%q) — response truncated", finishReason)}
+			return
+		}
+		if err := normalizeChatToolCalls(final.ToolCalls); err != nil {
+			out <- StreamEvent{Kind: EventErr, Err: err}
+			return
+		}
 		out <- StreamEvent{Kind: EventDone, Final: &final}
 	}()
 	return out
+}
+
+// normalizeChatToolCalls repairs and validates provider-emitted tool calls
+// before they enter conversation history. An empty arguments payload is
+// normalized to "{}" so no-argument tools (exit_plan_mode, git_push,
+// worktree_status, …) and otherwise-recoverable calls survive: the model
+// reaches the tool's own validation instead of a hard turn error, and the call
+// serializes as valid JSON on replay. A missing function name, or a NON-EMPTY
+// arguments payload that isn't a JSON object (a truncated stream), is still
+// rejected — OpenAI-compatible providers replay assistant tool_call messages
+// verbatim, so committing a truncated payload makes the NEXT request itself
+// invalid JSON for providers such as NVIDIA NIM, which the model can no longer
+// recover from.
+func normalizeChatToolCalls(calls []ToolCall) error {
+	return validateToolCallsForHistory(calls)
 }
 
 func toOpenAIMessages(ms []Message) []openai.ChatCompletionMessageParamUnion {
@@ -248,11 +276,15 @@ func toOpenAIMessages(ms []Message) []openai.ChatCompletionMessageParamUnion {
 			if len(m.ToolCalls) > 0 {
 				tcs := make([]openai.ChatCompletionMessageToolCallParam, 0, len(m.ToolCalls))
 				for _, tc := range m.ToolCalls {
+					// Replay guard: a malformed historic tool_call should not poison the
+					// next Chat Completions request. Providers expect arguments to be a
+					// JSON object encoded as a string.
+					args := safeToolArgsJSON(tc.ArgsJSON)
 					tcs = append(tcs, openai.ChatCompletionMessageToolCallParam{
 						ID: tc.ID,
 						Function: openai.ChatCompletionMessageToolCallFunctionParam{
 							Name:      tc.Name,
-							Arguments: tc.ArgsJSON,
+							Arguments: args,
 						},
 						Type: constant.ValueOf[constant.Function](),
 					})

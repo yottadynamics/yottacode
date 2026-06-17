@@ -2,7 +2,11 @@ package tui
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -25,6 +29,7 @@ import (
 	"github.com/yottadynamics/yottacode/internal/config"
 	"github.com/yottadynamics/yottacode/internal/contextwindow"
 	"github.com/yottadynamics/yottacode/internal/filerefs"
+	githubapi "github.com/yottadynamics/yottacode/internal/github"
 	mcppkg "github.com/yottadynamics/yottacode/internal/mcp"
 	"github.com/yottadynamics/yottacode/internal/memory"
 	"github.com/yottadynamics/yottacode/internal/permissions"
@@ -191,9 +196,16 @@ type Model struct {
 	dirty                  bool
 	branch                 string
 	worktree               string // yottacode worktree name when session runs inside one
-	memorySummary          string
-	baseSystemPrompt       string // pre-memory prompt; used by /memory reload
-	embedClient            *memory.EmbedClient
+	// currentPR is the open pull request number for the current branch.
+	// Zero means no PR has been detected (or GitHub/auth was unavailable).
+	currentPR int
+	// githubClient is the typed GitHub client shared with PR tools. The
+	// startup/status probe uses it when run.go wires one in; tests may leave
+	// it nil and still exercise the pure rendering path.
+	githubClient     githubapi.Interface
+	memorySummary    string
+	baseSystemPrompt string // pre-memory prompt; used by /memory reload
+	embedClient      *memory.EmbedClient
 
 	// summarizerAdapter is the streamer the /summarize + auto-compaction
 	// path calls into. When cache-safe routing is on it points at the
@@ -570,7 +582,7 @@ type Model struct {
 	// Model-picker overlay (/model). pickerList is the model-list
 	// source; nil in production (defaults to catalog.List), tests
 	// inject a fake to exercise the picker without a network round-
-	// trip. Curated providers (anthropic/openai/gemini) read from
+	// trip. Curated providers (anthropic/openai/gemini/xai) read from
 	// the embedded catalog instantly; openai-compatible / ollama
 	// providers fetch live each open.
 	pickerList      pickerListFn
@@ -745,6 +757,10 @@ type textareaSyncMsg struct{}
 type providerProbeMsg struct {
 	result   adapter.ProbeResult
 	announce bool
+}
+
+type prStatusMsg struct {
+	number int
 }
 
 // cursorBlinkMsg ticks the manually-rendered cmdline cursor on/off at
@@ -930,6 +946,41 @@ func New(parent context.Context, c Config) Model {
 	}
 }
 
+func (m *Model) clearPendingDecisionUI() {
+	m.awaitingApproval = false
+	m.approvalTool = ""
+	m.approvalPreview = ""
+	m.approvalArgs = ""
+	m.approvalAllowAlwaysOK = false
+	m.approvalDerivedRule = ""
+	m.awaitingPathTrust = false
+	m.pathTrustReq = agent.PathTrustElevationNeeded{}
+}
+
+func (m *Model) sendDecision(d agent.Decision) bool {
+	if m.decisions == nil {
+		m.clearPendingDecisionUI()
+		m.appendLine(styleError.Render("✗ turn already ended; decision ignored"))
+		return false
+	}
+	select {
+	case m.decisions <- d:
+		return true
+	default:
+		m.clearPendingDecisionUI()
+		m.appendLine(styleError.Render("✗ turn already ended; decision ignored"))
+		return false
+	}
+}
+
+func (m *Model) finishDecisionUI() tea.Cmd {
+	m.clearPendingDecisionUI()
+	if m.turnActive {
+		return waitForEvent(m.eventsCh, m.turnErrCh)
+	}
+	return nil
+}
+
 func (m Model) Init() tea.Cmd {
 	// Deliberately do NOT start m.spinner.Tick here. The spinner's
 	// thinking indicator is only visible during a turn (renderThinkingRow
@@ -946,6 +997,7 @@ func (m Model) Init() tea.Cmd {
 		// always allocates it), so we don't guard.
 		waitForSubagentInbox(m.subagentInbox),
 		startMCPServers(m.parentCtx, m.mcpManager),
+		resolveCurrentPRCmd(m.parentCtx, m.githubClient, m.cwd),
 		// Warm the local models.dev copy in the background (TTL-gated: a
 		// no-op when the on-disk cache is fresh, a daily refresh otherwise),
 		// so window lookups for hosted providers (NVIDIA NIM, …) resolve
@@ -958,6 +1010,14 @@ func (m Model) Init() tea.Cmd {
 	// bar/threshold to size correctly.
 	if c := m.maybeProbeActiveModelWindowCmd(); c != nil {
 		cmds = append(cmds, c)
+	}
+	// A session resumed at startup can already exceed the auto
+	// threshold; check once now (handled as resumeWatermarkCheckMsg,
+	// since Init's receiver is a copy and can't mutate watermark
+	// state) so it heals before the first send. Fresh sessions carry
+	// at most the system prompt and skip the no-op.
+	if len(m.sess.Messages) > 1 {
+		cmds = append(cmds, func() tea.Msg { return resumeWatermarkCheckMsg{} })
 	}
 	return tea.Batch(cmds...)
 }
@@ -1026,6 +1086,10 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if probe.announce {
 			m.appendLine(formatProbeResult(probe.result))
 		}
+		return m, nil
+	}
+	if pr, ok := msg.(prStatusMsg); ok {
+		m.currentPR = pr.number
 		return m, nil
 	}
 	if done, ok := msg.(mcpStartupDoneMsg); ok {
@@ -1486,25 +1550,28 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			switch msg.String() {
 			case "1", "o", "O":
 				addAllowedPathToWriteTools(m.cfg.Registry, m.pathTrustReq.Path)
-				m.decisions <- agent.PathAllowOnce
+				if !m.sendDecision(agent.PathAllowOnce) {
+					return m, nil
+				}
 				m.appendLine(stylePathTrustAccept.Render("trusted for this write: ") + m.pathTrustReq.Path)
-				m.awaitingPathTrust = false
 				answered = true
 			case "2", "t", "T":
 				dir := filepath.Dir(m.pathTrustReq.Path)
 				addAllowedPathToWriteTools(m.cfg.Registry, dir)
-				m.decisions <- agent.PathTrustSession
+				if !m.sendDecision(agent.PathTrustSession) {
+					return m, nil
+				}
 				m.appendLine(stylePathTrustAccept.Render("trusted for this session: ") + dir)
-				m.awaitingPathTrust = false
 				answered = true
 			case "3", "n", "N", "esc":
-				m.decisions <- agent.Deny
+				if !m.sendDecision(agent.Deny) {
+					return m, nil
+				}
 				m.appendLine(stylePathTrustReject.Render("path trust denied — model sees error"))
-				m.awaitingPathTrust = false
 				answered = true
 			}
 			if answered {
-				return m, waitForEvent(m.eventsCh, m.turnErrCh)
+				return m, m.finishDecisionUI()
 			}
 			return m, nil
 		}
@@ -1531,8 +1598,9 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.appendLine(styleAutoBannerLabel.Render(AutoModeIcon+" auto mode active") +
 							" " + styleAutoBannerHint.Render("— implementing the approved plan; bash & commits still prompt"))
 					}
-					m.decisions <- agent.AllowOnce
-					m.awaitingApproval = false
+					if !m.sendDecision(agent.AllowOnce) {
+						return m, nil
+					}
 					answered = true
 				case "m", "M":
 					// Manual approval: flip plan mode off BEFORE
@@ -1542,8 +1610,9 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					// per-tool approval prompts continue for the
 					// implementation turn — user reviews each step.
 					exitPlanMode(&m)
-					m.decisions <- agent.AllowOnce
-					m.awaitingApproval = false
+					if !m.sendDecision(agent.AllowOnce) {
+						return m, nil
+					}
 					answered = true
 				case "l", "L":
 					// Save and implement later: flip plan mode off
@@ -1556,8 +1625,9 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					exitPlanMode(&m)
 					m.appendLine(stylePlanBannerLabel.Render(PlanModeIcon+" plan saved for later") +
 						" " + stylePlanBannerHint.Render("— resume via /plan list or `yottacode --plan-resume <slug>`"))
-					m.decisions <- agent.SaveForLater
-					m.awaitingApproval = false
+					if !m.sendDecision(agent.SaveForLater) {
+						return m, nil
+					}
 					answered = true
 				case "k", "K", "n", "N", "esc":
 					// Keep planning: log a dismissal header so the
@@ -1566,12 +1636,13 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					// emitPlanBodyToScrollback (above the modal).
 					m.appendLine(stylePlanBannerLabel.Render(PlanModeIcon+" plan kept") +
 						" " + stylePlanBannerHint.Render("— revise and call exit_plan_mode again when ready"))
-					m.decisions <- agent.Deny
-					m.awaitingApproval = false
+					if !m.sendDecision(agent.Deny) {
+						return m, nil
+					}
 					answered = true
 				}
 				if answered {
-					return m, waitForEvent(m.eventsCh, m.turnErrCh)
+					return m, m.finishDecisionUI()
 				}
 				return m, nil
 			}
@@ -1587,8 +1658,9 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				switch msg.String() {
 				case "y", "Y", "enter":
 					enterPlanModeFromTool(&m)
-					m.decisions <- agent.AllowOnce
-					m.awaitingApproval = false
+					if !m.sendDecision(agent.AllowOnce) {
+						return m, nil
+					}
 					answered = true
 				case "n", "N", "esc":
 					// The loop returns EnterPlanModeRefusalMessage so
@@ -1596,26 +1668,29 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					// of re-requesting.
 					m.appendLine(stylePlanBannerLabel.Render(PlanModeIcon+" plan mode declined") +
 						" " + stylePlanBannerHint.Render("— continuing in the current mode"))
-					m.decisions <- agent.Deny
-					m.awaitingApproval = false
+					if !m.sendDecision(agent.Deny) {
+						return m, nil
+					}
 					answered = true
 				}
 				if answered {
-					return m, waitForEvent(m.eventsCh, m.turnErrCh)
+					return m, m.finishDecisionUI()
 				}
 				return m, nil
 			}
 			answered := false
 			switch msg.String() {
 			case "y", "Y":
-				m.decisions <- agent.AllowOnce
-				m.awaitingApproval = false
+				if !m.sendDecision(agent.AllowOnce) {
+					return m, nil
+				}
 				answered = true
 			case "a", "A":
 				if m.approvalAllowAlwaysOK {
 					rule := m.approvalDerivedRule
-					m.decisions <- agent.AllowAlways
-					m.awaitingApproval = false
+					if !m.sendDecision(agent.AllowAlways) {
+						return m, nil
+					}
 					answered = true
 					// Toast — keeps the modal itself focused on
 					// the immediate decision; the receipt of what
@@ -1626,12 +1701,13 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 				}
 			case "n", "N", "esc":
-				m.decisions <- agent.Deny
-				m.awaitingApproval = false
+				if !m.sendDecision(agent.Deny) {
+					return m, nil
+				}
 				answered = true
 			}
 			if answered {
-				return m, waitForEvent(m.eventsCh, m.turnErrCh)
+				return m, m.finishDecisionUI()
 			}
 			return m, nil
 		}
@@ -1904,17 +1980,17 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case turnEndedMsg:
 		m.turnActive = false
+		m.clearPendingDecisionUI()
 		if m.turnCancel != nil {
 			m.turnCancel()
 			m.turnCancel = nil
 		}
 		m.commitStreaming()
-		// turnEndedMsg.err is intentionally NOT rendered here. agent.Turn
-		// emits ErrorEvent for every user-visible error before returning,
-		// so this path would duplicate the message. The only errors that
-		// bypass ErrorEvent are ctx.Err() from internal send() failures —
-		// those are user-initiated cancellations and don't warrant a red
-		// "✗ context canceled" line.
+		if msg.err != nil && !errors.Is(msg.err, context.Canceled) && !errors.Is(msg.err, context.DeadlineExceeded) {
+			for _, line := range strings.Split(strings.TrimRight(msg.err.Error(), "\n"), "\n") {
+				m.appendLine(styleError.Render("✗ " + line))
+			}
+		}
 		if err := m.sess.Save(); err != nil {
 			m.appendLine(styleError.Render(fmt.Sprintf("⚠ session save failed: %v", err)))
 		}
@@ -1931,25 +2007,19 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.exitSavePending {
 			return m, tea.Quit
 		}
-		// Watermark check: post-turn, before the next prompt is
-		// accepted. Either fires a yellow notice (warn threshold) or
-		// returns a Cmd that runs auto-summarization (auto threshold).
-		ctxCmd := m.updateContextUsage()
-		// If the user interrupted mid-turn by hitting Enter on a
-		// non-empty message, agent.Turn has already preserved history
-		// with synthetic tool_result entries — submit the queued
-		// message now as a fresh turn so the model sees the feedback.
-		// Run after sess.Save / index / watermark so any post-turn
-		// warning lands above the new user block. Watermark Cmd is
-		// dropped here: the queued submission is the user's explicit
-		// next-turn intent, and stacking an auto-summarize Cmd in
-		// front would yank context out from under the very message
-		// they just sent. If watermark guidance matters, the user
-		// will see it after the followup turn ends.
+		// Window-drift shrink: a context-overflow rejection the
+		// estimator didn't see coming means the resolved window is
+		// bigger than what the provider enforces. Pinning the
+		// corrected value BEFORE the watermark check below is the
+		// recovery path — the check re-resolves the now-smaller window
+		// and fires auto-summarize in this same tick, so the session
+		// heals instead of failing again on the next send.
+		m.noteWindowOverflow(msg.err)
 		// Drain any user message that was queued but never consumed
 		// by the agent loop (the model finished without a tool round).
 		// Move it to pendingInputAfterTurn so the existing auto-submit
-		// path handles it as a new turn.
+		// path handles it as a new turn. Drained BEFORE the watermark
+		// check so the check knows whether a queued turn is imminent.
 		select {
 		case undelivered := <-m.userMsgCh:
 			if undelivered != "" && m.pendingInputAfterTurn == "" {
@@ -1957,6 +2027,20 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		default:
 		}
+		// Watermark check: post-turn, before the next prompt is
+		// accepted. Either fires a yellow notice (warn threshold) or
+		// returns a Cmd that runs auto-summarization (auto threshold).
+		// When a queued message is about to start a fresh turn, the
+		// auto branch is suppressed inside the check (allowAuto=false):
+		// the queued submission is the user's explicit next-turn
+		// intent, and compressing now would yank context out from
+		// under the very message they just sent. The warn notice still
+		// prints here so it lands above the new user block.
+		ctxCmd := m.updateContextUsage(m.pendingInputAfterTurn == "")
+		// If the user interrupted mid-turn by hitting Enter on a
+		// non-empty message, agent.Turn has already preserved history
+		// with synthetic tool_result entries — submit the queued
+		// message now as a fresh turn so the model sees the feedback.
 		if queued := m.pendingInputAfterTurn; queued != "" {
 			m.pendingInputAfterTurn = ""
 			next, cmd := m.startTurn(queued)
@@ -2068,6 +2152,13 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if changed {
 			m.appendLine(styleAuto.Render(statusLine("model", fmt.Sprintf(
 				"detected context window for %s: %s", msg.model, formatTokens(msg.window)))))
+		}
+		return m, nil
+
+	case resumeWatermarkCheckMsg:
+		// Startup watermark pass for a resumed session (see Init).
+		if ctxCmd := m.updateContextUsage(true); ctxCmd != nil {
+			return m, ctxCmd
 		}
 		return m, nil
 
@@ -2590,18 +2681,6 @@ func insertCursor(row string, col int, visible bool) string {
 	return string(rs[:col]) + cur.Render(string(rs[col])) + string(rs[col+1:])
 }
 
-// inputBoxFrameWidth is retained for any caller that still needs the
-// outer-frame width of a hypothetical bordered cmdline (overlays size
-// themselves relative to it). The live cmdline render no longer paints a
-// border, so this is purely a sizing helper now.
-func inputBoxFrameWidth(terminalWidth int) int {
-	w := terminalWidth - 2
-	if w < 1 {
-		w = 1
-	}
-	return w
-}
-
 // inputContentWidth caps the input row's wrap width at min(120, w-4). On
 // a wide terminal the full-width input reads as an empty runway; capping
 // it at 120 columns focuses attention on the typed text and matches the
@@ -2620,7 +2699,13 @@ func inputContentWidth(terminalWidth int) int {
 
 // liveContentWidth is the inner content width for a bordered live-frame
 // element given the current terminal width: terminal width minus the box's
-// border (2) and padding (2). No cap — the box stretches to the terminal edge.
+// border (2) and padding (2). Deliberately UNCAPPED: its callers (the
+// textarea, the slash/file palettes, the streaming preview) are chrome
+// that must share a right edge with the full-width input frame directly
+// below them — a 120-capped palette over a full-width cmdline box reads
+// as a rendering bug (user call, 2026-06-10). The Phase 6 120-column cap
+// applies to content surfaces (tool cards, prose) and true modals, which
+// cap at their own call sites.
 func liveContentWidth(terminalWidth int) int {
 	w := terminalWidth - 4
 	if w < 1 {
@@ -2774,27 +2859,120 @@ func renderFallbackLine(e agent.Fallback) string {
 	return lipgloss.NewStyle().Foreground(colorWarm).Bold(true).Render(head)
 }
 
-func renderProviderToolLine(toolName, phase, detail string) string {
-	head := fmt.Sprintf("▸ %s", toolName)
-	switch phase {
-	case "searching", "interpreting", "in_progress":
-		head += " [" + phase + "]"
-	case "completed":
-		head += " [done]"
-	case "code":
-		head += " [code]"
+func renderProviderToolCard(toolName, phase, detail string, termWidth int) string {
+	width := cardMaxWidthCap
+	if termWidth > 0 && termWidth-4 < width {
+		width = termWidth - 4
 	}
-	if detail != "" {
-		head += ": " + detail
+	if width < cardMinUsefulCols {
+		width = cardMinUsefulCols
 	}
-	return styleToolCall.Render(head)
+
+	// Provider-hosted tools are lifecycle events, not local yottacode tool
+	// calls with args/output. Render them with the same modern card gutters as
+	// local tools, but keep the copy terse and action-oriented.
+	header := renderCardHeader(providerToolHeader(toolName))
+	body := providerToolBody(toolName, phase, detail)
+	gutter := styleCardGutter.Render("│ ")
+	gutterWidth := ansi.StringWidth(gutter)
+	bodyWidth := width - gutterWidth
+	if bodyWidth < 20 {
+		bodyWidth = 20
+	}
+
+	out := []string{header}
+	appendBodyLine := func(line string) {
+		styled := styleCardBody.Render(line)
+		if ansi.StringWidth(styled) <= bodyWidth {
+			out = append(out, gutter+styled)
+			return
+		}
+		wrapped := ansi.Wrap(styled, bodyWidth, "")
+		for _, row := range strings.Split(wrapped, "\n") {
+			out = append(out, gutter+row)
+		}
+	}
+	for _, line := range body {
+		appendBodyLine(line)
+	}
+	footer := styleCardMeta.Render(providerToolFooter(toolName, phase))
+	return strings.Join(append(out, styleCardGutter.Render("╰ ")+footer), "\n")
 }
 
-func renderToolResultLine(summary string, errored bool) string {
-	if errored {
-		return styleError.Render("  ↳ " + summary)
+func providerToolBody(toolName, phase, detail string) []string {
+	line := providerToolActivity(toolName, phase)
+	if detail == "" {
+		return []string{line}
 	}
-	return styleToolMeta.Render("  ↳ " + summary)
+	return []string{line, detail}
+}
+
+func providerToolActivity(toolName, phase string) string {
+	status := providerToolStatus(phase)
+	switch strings.TrimSpace(toolName) {
+	case "web_search":
+		if status == "done" {
+			return "web search complete"
+		}
+		return "searching the web…"
+	case "x_search":
+		if status == "done" {
+			return "X search complete"
+		}
+		return "searching X…"
+	case "code_interpreter":
+		if status == "done" {
+			return "code interpreter complete"
+		}
+		return "running code interpreter…"
+	default:
+		if status == "done" {
+			return "hosted tool complete"
+		}
+		return "hosted tool " + status + "…"
+	}
+}
+
+func providerToolHeader(toolName string) string {
+	switch strings.TrimSpace(toolName) {
+	case "web_search":
+		return "xAI Web Search"
+	case "x_search":
+		return "xAI X Search"
+	case "code_interpreter":
+		return "xAI Code Interpreter"
+	case "":
+		return "Hosted tool"
+	default:
+		return fmt.Sprintf("Hosted(%s)", toolName)
+	}
+}
+
+func providerToolStatus(phase string) string {
+	switch strings.TrimSpace(phase) {
+	case "completed":
+		return "done"
+	case "":
+		return "running"
+	default:
+		return phase
+	}
+}
+
+func providerToolFooter(toolName, phase string) string {
+	status := providerToolStatus(phase)
+	switch strings.TrimSpace(toolName) {
+	case "web_search":
+		return "hosted web search"
+	case "x_search":
+		return "hosted X search"
+	case "code_interpreter":
+		return "hosted code interpreter"
+	}
+	if status == "done" {
+		return "provider tool completed"
+	}
+	return "provider tool " + status
 }
 
 func renderCitations(citations []adapter.Citation) string {
@@ -2866,26 +3044,6 @@ func abbrevHome(p string) string {
 		return "~" + strings.TrimPrefix(p, home)
 	}
 	return p
-}
-
-func (m Model) activatePaletteSelection() (Model, tea.Cmd) {
-	if len(m.paletteFiltered) == 0 {
-		return m, nil
-	}
-	chosen := m.paletteFiltered[m.paletteIndex]
-	if chosen.Args != "" {
-		m.textInput.SetValue("/" + chosen.Name + " ")
-		m.textInput.CursorEnd()
-		m.paletteOpen = false
-		m.paletteIndex = 0
-		m.paletteOffset = 0
-		return m, nil
-	}
-	m.textInput.SetValue("")
-	m.paletteOpen = false
-	m.paletteIndex = 0
-	m.paletteOffset = 0
-	return m.runSlash("/" + chosen.Name)
 }
 
 // pasteThreshold is the byte count above which a bracketed paste gets
@@ -3203,6 +3361,8 @@ func (m Model) renderStatus() string {
 	}
 	provider := renderProviderTag(tag)
 	ctx := m.renderContextBar()
+	pr := m.renderPRStatus()
+	effort := m.renderEffortStatus()
 
 	sep := lipgloss.NewStyle().Foreground(colorDim).Render("  ·  ")
 	innerSep := lipgloss.NewStyle().Foreground(colorDim).Render(" · ")
@@ -3228,10 +3388,16 @@ func (m Model) renderStatus() string {
 		worktreeSeg = lipgloss.NewStyle().Foreground(colorContent).Render("worktree: " + m.worktree)
 	}
 
-	build := func(head string) string {
+	build := func(head string, includePR, includeEffort bool) string {
 		segs := []string{head}
 		if ctx != "" {
 			segs = append(segs, ctx)
+		}
+		if includePR && pr != "" {
+			segs = append(segs, pr)
+		}
+		if includeEffort && effort != "" {
+			segs = append(segs, effort)
 		}
 		if worktreeSeg != "" {
 			segs = append(segs, worktreeSeg)
@@ -3248,16 +3414,27 @@ func (m Model) renderStatus() string {
 	if w <= 0 {
 		// No size info yet — render the full layout; truncation kicks in
 		// once the first WindowSizeMsg lands.
-		return build(first)
+		return build(first, true, true)
 	}
 
-	line := build(first)
+	line := build(first, true, true)
 	if lipgloss.Width(line) <= w {
 		return line
 	}
 	// Drop the provider tag first.
 	first = dot + "  " + model
-	line = build(first)
+	line = build(first, true, true)
+	if lipgloss.Width(line) <= w {
+		return line
+	}
+	// Drop optional chips under pressure before touching the core model
+	// and context signals. PR is more workflow-critical than effort, so
+	// effort disappears first, then PR if space is still tight.
+	line = build(first, true, false)
+	if lipgloss.Width(line) <= w {
+		return line
+	}
+	line = build(first, false, false)
 	if lipgloss.Width(line) <= w {
 		return line
 	}
@@ -3266,7 +3443,143 @@ func (m Model) renderStatus() string {
 	if idx := strings.LastIndex(m.modelName, "/"); idx >= 0 && idx < len(m.modelName)-1 {
 		first = dot + "  " + renderModelName(m.modelName[idx+1:])
 	}
-	return build(first)
+	return build(first, false, false)
+}
+
+func (m Model) renderPRStatus() string {
+	if m.currentPR <= 0 {
+		return ""
+	}
+	return lipgloss.NewStyle().Foreground(colorContent).Render(fmt.Sprintf("PR #%d", m.currentPR))
+}
+
+// renderEffortStatus renders the current reasoning-effort level only
+// when the active provider/model would actually accept an effort option.
+// The applicability probe forces a representative non-default level:
+// adapter.EffortInapplicableReason intentionally treats empty/default as
+// never worth warning about, but the status bar needs to know whether the
+// option would apply if the user picked low/medium/high.
+func (m Model) renderEffortStatus() string {
+	cfg := m.adapterConfig(m.modelName, m.baseURL)
+	cfg.ReasoningEffort = "high"
+	provider := m.providerProfile.Provider
+	if provider == "" {
+		provider = adapter.Provider(strings.TrimSpace(m.provider))
+	}
+	if adapter.EffortInapplicableReason(cfg, provider) != "" {
+		return ""
+	}
+
+	level := normalizedEffort(m.reasoningEffort)
+	if level == "" {
+		level = "default"
+	}
+	return lipgloss.NewStyle().Foreground(colorContent).Render("effort: " + level)
+}
+
+func resolveCurrentPRCmd(ctx context.Context, gh githubapi.Interface, cwd string) tea.Cmd {
+	return func() tea.Msg {
+		probeCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+		defer cancel()
+		if gh != nil {
+			pr, err := gh.ReadPR(probeCtx, githubapi.ReadPRRequest{})
+			if err == nil {
+				return prStatusMsg{number: pr.Number}
+			}
+		}
+		if n := currentPRNumberFromGitHubEnv(probeCtx, cwd); n > 0 {
+			return prStatusMsg{number: n}
+		}
+		return prStatusMsg{}
+	}
+}
+
+func currentPRNumberFromGitHubEnv(ctx context.Context, cwd string) int {
+	owner, repo, err := githubapi.DetectRepo(ctx, cwd)
+	if err != nil {
+		return 0
+	}
+	branch := gitBranch(ctx, cwd)
+	if branch == "" {
+		return 0
+	}
+	token, _, err := githubapi.NewTokenResolver().Resolve(ctx)
+	if err != nil || strings.TrimSpace(token) == "" {
+		return 0
+	}
+
+	apiURL := fmt.Sprintf("https://api.github.com/repos/%s/%s/pulls?state=open&head=%s", owner, repo, url.QueryEscape(owner+":"+branch))
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiURL, nil)
+	if err != nil {
+		return 0
+	}
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return 0
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return 0
+	}
+	var pulls []struct {
+		Number int `json:"number"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&pulls); err != nil || len(pulls) == 0 {
+		return 0
+	}
+	return pulls[0].Number
+}
+
+func prNumberFromToolOutput(output string) int {
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "number=") {
+			if n, err := parsePositiveDecimal(strings.TrimPrefix(line, "number=")); err == nil {
+				return n
+			}
+		}
+		if strings.HasPrefix(line, "pr_number=") {
+			if n, err := parsePositiveDecimal(strings.TrimPrefix(line, "pr_number=")); err == nil {
+				return n
+			}
+		}
+		if !strings.HasPrefix(line, "created=true") && !strings.HasPrefix(line, "updated=true") {
+			continue
+		}
+		for _, part := range strings.Fields(line) {
+			if strings.HasPrefix(part, "number=") {
+				if n, err := parsePositiveDecimal(strings.TrimPrefix(part, "number=")); err == nil {
+					return n
+				}
+			}
+			if strings.HasPrefix(part, "pr_number=") {
+				if n, err := parsePositiveDecimal(strings.TrimPrefix(part, "pr_number=")); err == nil {
+					return n
+				}
+			}
+		}
+	}
+	return 0
+}
+
+func parsePositiveDecimal(s string) (int, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0, fmt.Errorf("empty number")
+	}
+	var n int
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return 0, fmt.Errorf("non-decimal number")
+		}
+		n = n*10 + int(r-'0')
+	}
+	if n <= 0 {
+		return 0, fmt.Errorf("non-positive number")
+	}
+	return n, nil
 }
 
 // renderProviderTag styles the provider label that sits next to the
@@ -3367,13 +3680,12 @@ func (m Model) startTurnWithDisplay(input, displayLabel string) (tea.Model, tea.
 			"no provider configured — run /provider add or /provider use to set one up"))
 		return m, nil
 	}
-	// Per-turn retrieval: re-render the system prompt with memory
-	// bodies scored against this turn's user input. USER.md /
-	// YOTTACODE.md and both MEMORY.md indexes always inject in full;
-	// only per-entry memory bodies are filtered. See cmd_retrieval.go
-	// for the rebuild logic. Soft on failure — a disk error leaves
-	// the existing prompt intact and the turn proceeds.
-	m.rebuildSystemPromptForTurn(input)
+	// NOTE: the per-turn system-prompt rebuild (memory retrieval) runs
+	// inside the turn goroutine below, not here. The semantic strategy
+	// embeds the query via Ollama, and a cold model load can block for
+	// the full embed timeout — run synchronously on Enter, that froze
+	// the whole UI until the user's message echoed. See the goroutine
+	// body and rebuildSystemPromptForTurn for the ordering contract.
 
 	// Detect @<path> tokens in the user input and inject the resolved
 	// file contents into the system prompt before the turn fires. The
@@ -3427,9 +3739,9 @@ func (m Model) startTurnWithDisplay(input, displayLabel string) (tea.Model, tea.
 	// HISTORY copy of this message only — the checkpoint label, input
 	// history, and transcript rendering below all keep the user's own
 	// text. Appended after fileref rewriting so the reminder can't
-	// interfere with @path resolution, and after
-	// rebuildSystemPromptForTurn(input) so its wording doesn't skew
-	// memory retrieval scoring for the turn.
+	// interfere with @path resolution. Retrieval scoring is immune to
+	// its wording: the turn goroutine's rebuild scores against the
+	// `input` parameter, never this content string.
 	content := input
 	if m.memoryNudgePending {
 		m.memoryNudgePending = false
@@ -3491,6 +3803,25 @@ func (m Model) startTurnWithDisplay(input, displayLabel string) (tea.Model, tea.
 				close(ev)
 				errCh <- fmt.Errorf("agent turn panicked: %v", r)
 			}
+		}()
+		// Per-turn retrieval: re-render the system prompt with memory
+		// bodies scored against this turn's user input. USER.md /
+		// YOTTACODE.md and both MEMORY.md indexes always inject in
+		// full; only per-entry memory bodies are filtered. Soft on
+		// failure — a disk error leaves the existing prompt intact.
+		//
+		// Runs HERE — off the Update goroutine — because the semantic
+		// strategy's Ollama embed can block 1-2s on a cold model load;
+		// under the spinner that cost reads as ordinary turn latency
+		// instead of frozen input, and turnCtx lets Esc abort the
+		// embed. histMu serializes the Messages[0] rewrite against
+		// Update-goroutine reads (watermark, /context, pickers); the
+		// inner closure guarantees the unlock even if the rebuild
+		// panics, so the outer recover can't strand a dead lock.
+		func() {
+			m.histMu.Lock()
+			defer m.histMu.Unlock()
+			m.rebuildSystemPromptForTurn(turnCtx, input)
 		}()
 		err := agent.Turn(turnCtx, m.cfg, &m.sess.Messages, ev, dec)
 		close(ev)
@@ -3580,10 +3911,13 @@ func (m Model) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 		// via /provider use; the per-model breakdown wants the model
 		// that actually produced the turn.
 		m.sess.AddUsage(m.modelName, e.Message.Usage)
+		// Window-drift raise: the provider's exact input count proving
+		// the resolved window too small (see window_drift.go).
+		m.noteWindowUsage(e.Message.Usage)
 	case agent.ProviderToolCall:
 		m.reasoning.Reset()
 		m.appendLine("")
-		m.appendLine(renderProviderToolLine(e.ToolName, e.Phase, e.Detail))
+		m.appendLine(renderProviderToolCard(e.ToolName, e.Phase, e.Detail, m.width))
 	case agent.Fallback:
 		m.appendLine(renderFallbackLine(e))
 	case agent.ApprovalAuto:
@@ -3615,12 +3949,10 @@ func (m Model) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 			body, denyReason := loadPlanForApproval(m.cfg.PlanMode)
 			if denyReason != "" {
 				m.appendLine(styleError.Render("[plan] " + denyReason + " — refusing exit_plan_mode"))
-				// The decision channel may not have a slot yet — the
-				// loop sends ApprovalNeeded and then reads from
-				// decisions. We're synchronous in Update; the receiver
-				// is already blocking. Sending here is safe.
-				m.decisions <- agent.Deny
-				return m, waitForEvent(m.eventsCh, m.turnErrCh)
+				if !m.sendDecision(agent.Deny) {
+					return m, nil
+				}
+				return m, m.finishDecisionUI()
 			}
 			emitPlanBodyToScrollback(&m, body)
 		}
@@ -3677,6 +4009,14 @@ func (m Model) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 		m.toolsStarted++
 		m.turnToolCalls++
 	case agent.ToolResult:
+		if e.ToolName == "gh_pr_read" || e.ToolName == "gh_pr_review_context" {
+			m.currentPR = prNumberFromToolOutput(e.Output)
+		}
+		if e.ToolName == "gh_pr_create" || e.ToolName == "git_push" {
+			if n := prNumberFromToolOutput(e.Output); n > 0 {
+				m.currentPR = n
+			}
+		}
 		// The Agent tool already gets its own visualization via the
 		// SubagentStart / SubagentProgress / SubagentDone events that
 		// fired while the child was running (the ▶/├/└ card). Rendering
@@ -3733,6 +4073,7 @@ func (m Model) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 		// process cwd are already in sync — the tool that emitted the
 		// event handled both.
 		m.cwd = e.NewCwd
+		m.currentPR = 0
 		// Compute the worktree name from the new path: any path under
 		// <some-repo>/.yottacode/worktrees/<name>/ identifies the name
 		// without needing to re-resolve the repo root.
@@ -3741,6 +4082,7 @@ func (m Model) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 			m.sess.Cwd = e.NewCwd
 			m.sess.Worktree = m.worktree
 		}
+		return m, tea.Batch(resolveCurrentPRCmd(m.parentCtx, m.githubClient, m.cwd), waitForEvent(m.eventsCh, m.turnErrCh))
 	case agent.TodoUpdate:
 		// Drive the live plan card in View(): livePlan is what
 		// renderLivePlanCard reads on every redraw, livePlanTouched
@@ -4532,9 +4874,12 @@ func isUnicodeTableLine(line string) bool {
 	return unicodeTableRE.MatchString(line)
 }
 
-// renderUserBlock formats a user message for scrollback emission. Each
+// renderUserBlock formats a user message for scrollback emission. The first
 // line gets the same chevron prompt (❯) used by the live input bar, so
 // scrollback echoes look like the text the user typed into the cmdline.
+// Continuation rows — whether from hard newlines or wrapping a large paste —
+// hang-indent under the prompt instead of repeating another chevron. This keeps
+// pasted multi-line text from looking like multiple separate submissions.
 // Leading and trailing "\n" give the block one blank line of separation
 // on each side, so the user echo sits as a clear divider between the
 // previous assistant/tool output and whatever follows it (the next tool
@@ -4542,11 +4887,10 @@ func isUnicodeTableLine(line string) bool {
 // horizontal rule above: the chevron is enough of an anchor, and the rule
 // fought with content on either side.
 //
-// Long lines are hard-wrapped at width-barWidth and every wrapped row
-// gets the bar re-applied, so a multi-line paste reads as one continuous
-// quoted block instead of letting the terminal auto-wrap continuation
-// rows to column 0 (which made the second line look detached from the
-// quote and lose its left-margin alignment).
+// Long lines are hard-wrapped at width-barWidth and continuation rows are
+// hang-indented under the prompt, so a multi-line paste reads as one continuous
+// quoted block instead of looking like a separate user submission on every
+// pasted line.
 func renderUserBlock(content string, width int) string {
 	const prefix = "❯ "
 	prefixWidth := ansi.StringWidth(prefix)
@@ -4554,22 +4898,29 @@ func renderUserBlock(content string, width int) string {
 	indent := strings.Repeat(" ", prefixWidth)
 	bodyWidth := width - prefixWidth
 	var lines []string
+	firstLine := true
 	for _, line := range strings.Split(content, "\n") {
 		// Width <= prefix means the terminal is too narrow to host the
 		// bar plus any content; fall back to the un-wrapped render
 		// rather than producing zero-width rows.
 		if bodyWidth <= 0 || ansi.StringWidth(line) <= bodyWidth {
-			lines = append(lines, bar+styleUserBody.Render(line))
+			prefixText := indent
+			if firstLine {
+				prefixText = bar
+			}
+			lines = append(lines, prefixText+styleUserBody.Render(line))
+			firstLine = false
 			continue
 		}
 		wrapped := ansi.Hardwrap(line, bodyWidth, true)
 		rows := strings.Split(wrapped, "\n")
-		for i, row := range rows {
-			if i == 0 {
-				lines = append(lines, bar+styleUserBody.Render(row))
-			} else {
-				lines = append(lines, indent+styleUserBody.Render(row))
+		for _, row := range rows {
+			prefixText := indent
+			if firstLine {
+				prefixText = bar
 			}
+			lines = append(lines, prefixText+styleUserBody.Render(row))
+			firstLine = false
 		}
 	}
 	return "\n" + strings.Join(lines, "\n") + "\n"
@@ -4794,22 +5145,6 @@ func looksLikeShellCommand(line string) bool {
 		}
 	}
 	return false
-}
-
-func guessInlineCodeLanguage(line string) string {
-	trim := strings.TrimSpace(line)
-	switch {
-	case looksLikeShellCommand(trim):
-		return "bash"
-	case strings.HasPrefix(trim, "func ") || strings.HasPrefix(trim, "package ") || strings.Contains(trim, ":="):
-		return "go"
-	case strings.HasPrefix(trim, "def ") || strings.HasPrefix(trim, "import "):
-		return "python"
-	case strings.HasPrefix(trim, "SELECT ") || strings.HasPrefix(trim, "INSERT ") || strings.HasPrefix(trim, "UPDATE ") || strings.HasPrefix(trim, "DELETE "):
-		return "sql"
-	default:
-		return ""
-	}
 }
 
 // appendLine emits a conversation line to terminal scrollback (via

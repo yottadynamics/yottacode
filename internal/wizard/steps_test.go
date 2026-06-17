@@ -246,6 +246,38 @@ func TestFocusActiveConfigField_CuratedPicker(t *testing.T) {
 	}
 }
 
+// TestNewProviderInputs_GeminiCuratedPickerMergesModelsDev verifies
+// the wizard's configure step sources Gemini's default-model picker
+// from the curated catalog — embedded catalog.gen.json plus the
+// models.dev merge — not the raw embedded list. The first entry also
+// becomes the pre-selected default, same as the other curated kinds.
+func TestNewProviderInputs_GeminiCuratedPickerMergesModelsDev(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	gem := *FindCatalogEntry("gemini")
+	m := newWizardModel(context.Background(), Options{})
+	in := m.newProviderInputs(gem)
+	if len(in.curatedModels) == 0 {
+		t.Fatalf("gemini configure step should offer the curated model picker")
+	}
+	embedded := map[string]bool{}
+	for _, mm := range catalog.Get("gemini") {
+		embedded[mm.ID] = true
+	}
+	extra := 0
+	for _, mm := range in.curatedModels {
+		if !embedded[mm.ID] {
+			extra++
+		}
+	}
+	if extra == 0 {
+		t.Errorf("picker should include models.dev-merged gemini models beyond the embedded catalog (%d entries)",
+			len(in.curatedModels))
+	}
+	if in.chosenModel != in.curatedModels[0].ID {
+		t.Errorf("chosenModel = %q, want first picker entry %q", in.chosenModel, in.curatedModels[0].ID)
+	}
+}
+
 // TestUpdateConfigure_DownArrowDrivesCuratedPicker is a regression
 // test for the scroll bug where Down/Up keystrokes were intercepted
 // at the top of updateConfigure for field navigation (key → baseURL
@@ -716,7 +748,7 @@ func TestFreeFormModelPlaceholder(t *testing.T) {
 		{"anthropic", "claude-sonnet-4-6"},
 		{"openai", "gpt-4o"},
 		{"gemini", "gemini-2.5-flash"},
-		{"xai", "grok-3"},
+		{"xai", "grok-4.20-0309-non-reasoning"},
 		// Always-free-form providers.
 		{"ollama", "llama3.1:8b"},
 		{"nvidia-nim", "nvidia/nemotron-3-super-120b-a12b"},

@@ -8,25 +8,41 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+
+	"github.com/yottadynamics/yottacode/internal/ychome"
 )
 
-// Memory layout:
+// Memory layout — one feature-major tree, fully discoverable from
+// `ls ~/.yottacode/memory`:
 //
 //	~/.yottacode/USER.md                                  — global preferences (curated, human-only)
 //	<cwd>/.yottacode/YOTTACODE.md                         — per-repo context (curated, agent-writable)
-//	~/.yottacode/memory/<name>.md                         — user-scope agent-managed memories
-//	~/.yottacode/projects/<slug>/memory/<name>.md         — project-scope agent-managed memories
+//	~/.yottacode/memory/user/<name>.md                    — user-scope agent-managed memories
+//	~/.yottacode/memory/projects/<slug>/<name>.md         — project-scope agent-managed memories
+//	~/.yottacode/memory/projects/<slug>/subagents/        — that project's subagent run transcripts
+//	                                                        (owned by internal/subagents; scanMemoryDir
+//	                                                        skips subdirectories, so transcripts never
+//	                                                        load as memories)
 
-// subdirProjects is the top-level dir under ~/.yottacode/ that holds
-// per-project agent-managed memory. Each project gets its own subdir
-// keyed by ProjectSlug(cwd).
+// subdirMemory is the root dir under ~/.yottacode/ (or $YOTTACODE_HOME)
+// that holds ALL agent-managed memory, both scopes.
+const subdirMemory = "memory"
+
+// subdirUser is the scope dir inside the memory root that holds
+// cross-project (user-scope) memories.
+const subdirUser = "user"
+
+// subdirProjects is the scope dir inside the memory root that holds
+// per-project memories. Each project gets its own subdir keyed by
+// ProjectSlug(cwd).
 const subdirProjects = "projects"
 
-// subdirMemory is the dir name used inside both ~/.yottacode/memory/
-// (user scope) and ~/.yottacode/projects/<slug>/memory/ (project
-// scope). Naming is symmetric on purpose so the two layouts read the
-// same way.
-const subdirMemory = "memory"
+// SubagentsDirName is the directory inside each project memory dir
+// that holds that project's subagent run transcripts. Exported (like
+// ArchiveDirName) because internal/subagents joins it in
+// TranscriptDirFor and the save-proactivity eval skips it when
+// counting memories — one const keeps every site in agreement.
+const SubagentsDirName = "subagents"
 
 // topicNamePattern allows lowercase letters, digits, and hyphens, starting
 // with a letter or digit. Conservative on purpose — topic slugs become
@@ -39,14 +55,21 @@ var topicNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,63}$`)
 // Reserving them prevents memory_save from accidentally clobbering
 // them.
 var reservedTopicNames = map[string]bool{
-	"user":      true,
-	"project":   true,
-	"memory":    true,
-	"index":     true,
-	"sessions":  true,
-	"yottacode": true,
-	"feedback":  true,
-	"reference": true,
+	"user":         true,
+	"project":      true,
+	subdirProjects: true, // memory-tree layout dir name — see SubagentsDirName below
+	subdirMemory:   true,
+	"index":        true,
+	"sessions":     true,
+	// Layout dir names are reserved for clarity, not collision: a memory
+	// named "subagents" would create subagents.md, which CAN coexist with
+	// the subagents/ transcripts dir beside it — but a look-alike file
+	// sitting next to the dir it's named after reads as infrastructure
+	// and invites mistakes. Same rationale for the layout names above.
+	SubagentsDirName: true,
+	"yottacode":      true,
+	"feedback":       true,
+	"reference":      true,
 }
 
 // projectSlugPattern keeps a slug to lowercase letters / digits /
@@ -209,25 +232,42 @@ func slugify(s string) string {
 	return s
 }
 
-// UserMemoryDir returns ~/.yottacode/memory/ — the cross-project
+// MemoryRoot returns the root of the agent-managed memory tree:
+// $YOTTACODE_HOME/memory when the override is set — the shared
+// ychome.Dir resolution skills, plans, and agent definitions also use,
+// so all global state follows the same root — or ~/.yottacode/memory
+// otherwise.
+func MemoryRoot() (string, error) {
+	root, err := ychome.Dir(subdirMemory)
+	if err != nil {
+		return "", fmt.Errorf("memory: %w", err)
+	}
+	return root, nil
+}
+
+// UserMemoryDir returns ~/.yottacode/memory/user/ — the cross-project
 // agent-managed memory directory. Memories saved here apply to every
 // session for this user.
 func UserMemoryDir() (string, error) {
-	home, err := os.UserHomeDir()
+	root, err := MemoryRoot()
 	if err != nil {
-		return "", fmt.Errorf("memory: resolve home dir: %w", err)
+		return "", err
 	}
-	return filepath.Join(home, ".yottacode", subdirMemory), nil
+	return filepath.Join(root, subdirUser), nil
 }
 
-// ProjectMemoryDir returns ~/.yottacode/projects/<slug>/memory/ — the
-// per-project, per-user agent-managed memory directory.
+// ProjectMemoryDir returns ~/.yottacode/memory/projects/<slug>/ — the
+// per-project, per-user agent-managed memory directory. The project's
+// subagent transcripts nest under <dir>/subagents (see
+// internal/subagents.TranscriptDirFor); scanMemoryDir ignores
+// subdirectories, so the two cohabit without the loader seeing
+// transcript files.
 func ProjectMemoryDir(cwd string) (string, error) {
-	home, err := os.UserHomeDir()
+	root, err := MemoryRoot()
 	if err != nil {
-		return "", fmt.Errorf("memory: resolve home dir: %w", err)
+		return "", err
 	}
-	return filepath.Join(home, ".yottacode", subdirProjects, ProjectSlug(cwd), subdirMemory), nil
+	return filepath.Join(root, subdirProjects, ProjectSlug(cwd)), nil
 }
 
 // EnsureUserMemoryDir creates the user-scope memory directory if missing.
@@ -289,4 +329,3 @@ func MemoryFilePath(scope, name, cwd string) (string, error) {
 	}
 	return clean, nil
 }
-

@@ -37,7 +37,7 @@ func TestUpdateContextUsage_WarnCrossingArmsMemoryNudge(t *testing.T) {
 	if m.memoryNudgePending {
 		t.Fatalf("nudge must start disarmed")
 	}
-	_ = m.updateContextUsage()
+	_ = m.updateContextUsage(true)
 	if !m.memoryNudgePending {
 		t.Errorf("crossing the warn threshold must arm the pre-compaction memory nudge")
 	}
@@ -48,13 +48,13 @@ func TestUpdateContextUsage_WarnCrossingArmsMemoryNudge(t *testing.T) {
 
 func TestUpdateContextUsage_BelowWarnDisarmsMemoryNudge(t *testing.T) {
 	m := watermarkTestModel(t, 4000)
-	_ = m.updateContextUsage()
+	_ = m.updateContextUsage(true)
 	if !m.memoryNudgePending {
 		t.Fatalf("precondition: nudge armed after warn crossing")
 	}
 	// Context shrinks back under the threshold (post-/summarize, /clear).
 	m.sess.Messages = nil
-	_ = m.updateContextUsage()
+	_ = m.updateContextUsage(true)
 	if m.memoryNudgePending {
 		t.Errorf("dropping below the warn threshold must disarm the nudge")
 	}
@@ -65,7 +65,7 @@ func TestUpdateContextUsage_BelowWarnDisarmsMemoryNudge(t *testing.T) {
 
 func TestUpdateContextUsage_BelowWarnNeverArms(t *testing.T) {
 	m := watermarkTestModel(t, 100) // ~25 tokens, far below warn
-	_ = m.updateContextUsage()
+	_ = m.updateContextUsage(true)
 	if m.memoryNudgePending {
 		t.Errorf("usage below the warn threshold must not arm the nudge")
 	}

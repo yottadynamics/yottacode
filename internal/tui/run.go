@@ -373,7 +373,10 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 	for _, w := range subRes.Warnings {
 		fmt.Fprintln(os.Stderr, "subagents: "+w)
 	}
-	transcriptDir, _ := subagents.EnsureTranscriptDir(cwd)
+	// Resolve the transcript dir but don't create it: openTranscript
+	// MkdirAlls on the first dispatch, so a session with no subagent run
+	// leaves no empty ~/.yottacode/memory/projects/<slug>/ behind.
+	transcriptDir, _ := subagents.TranscriptDirFor(cwd)
 	subagentTasks := subagents.NewRegistry()
 	// experimental.Set (expSet) was resolved earlier, before prompt
 	// composition, so the dispatch steering could be baked into the
@@ -397,7 +400,7 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 		// status bar does, so subagents size context against the real
 		// (override- and default_window-aware) window.
 		ResolveWindow: func(model string) int {
-			return catalog.ResolveWindow(model, fileCfg.ContextWindowOverride(model), fileCfg.Context.DefaultWindow)
+			return catalog.ResolveWindowForProvider(fileCfg.ProviderKindForModel(model), model, fileCfg.ContextWindowOverride(model), fileCfg.Context.DefaultWindow)
 		},
 		Permissions:   perms,
 		YoloMode:      yoloMode,
@@ -573,6 +576,7 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 		SummarizerAdapter:      routerFast(routerAdapters),
 		SummarizerModel:        routerFastModel(routerAdapters),
 	})
+	model.githubClient = ghClient
 	// Skills onboarding (skills installed but none enabled) is surfaced
 	// inside the welcome card via startupTip() — see welcome.go's
 	// memory > skills > rotating-pool priority. Emitting it as a
@@ -849,6 +853,9 @@ func routerResolve(ra *cli.RouterAdapters) func(string) agent.Streamer {
 }
 
 func composeSystemPrompt(base string, profile adapter.ProviderProfile) string {
+	if profile.Provider == adapter.ProviderXAI && hasBuiltin(profile.EnabledBuiltinTools, adapter.BuiltinToolXSearch) {
+		return base + "\nFor live or current information, use provider-native tools when needed. For X/Twitter posts, users, threads, trends, sentiment, or anything happening on X, use x_search, not web_search. Use web_search only for general web pages, news sites, docs, or pages outside X."
+	}
 	if hasBuiltin(profile.EnabledBuiltinTools, adapter.BuiltinToolWebSearch) {
 		return base + "\nFor live or current information, use the provider-native web_search tool when needed."
 	}

@@ -170,10 +170,11 @@ type AgentTool struct {
 	// swap (enter_worktree) flows to the spawned subagent.
 	Cwd *CwdRef
 
-	// TranscriptDir is the directory background-task transcripts get
-	// persisted under. Must exist at Execute time; the caller (TUI
-	// or oneshot wiring) creates it via subagents.EnsureTranscriptDir
-	// at startup.
+	// TranscriptDir is the directory subagent transcripts get persisted
+	// under, resolved at startup by the caller (TUI or oneshot wiring)
+	// via subagents.TranscriptDirFor. It need NOT exist yet — openTranscript
+	// MkdirAlls it lazily on the first dispatch, so a session that never
+	// runs a subagent leaves no empty project-memory dir behind.
 	TranscriptDir string
 
 	// AllowBackground controls whether `run_in_background: true` is

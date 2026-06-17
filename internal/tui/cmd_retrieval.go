@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"strings"
 
 	"github.com/yottadynamics/yottacode/internal/adapter"
@@ -20,37 +21,52 @@ const summaryHeading = "\n\n## Prior session context (summarized)\n"
 // MEMORY.md indexes inject in full, while per-entry agent-managed
 // memory bodies are filtered against the supplied query.
 //
-// Order of operations (matches startTurn):
+// Runs inside the turn goroutine (under histMu), NOT on the Update
+// goroutine: the semantic strategy embeds the query via Ollama, and a
+// cold model load can block for the full embed timeout — long enough
+// to freeze input when this ran synchronously on Enter. ctx is the
+// turn context, so Esc aborts an in-flight embed.
+//
+// Order of operations (startTurn appends the user message and injects
+// @-file refs on the Update goroutine BEFORE the turn goroutine calls
+// this):
 //
 //  1. Read the current system content.
 //  2. Extract the "Prior session context (summarized)" block if any
 //     (must survive the rebuild — that block is the only memory of
-//     the prior session when --summarized was used).
+//     the prior session when --summarized was used), and the
+//     "Referenced files" block startTurn just injected (it would
+//     otherwise be silently dropped by the recompose, breaking the
+//     @-refs of the very turn being started).
 //  3. Re-Load memory from disk so mid-session edits to USER.md /
 //     YOTTACODE.md and memory_save / memory_forget writes show up
 //     immediately. A load error is non-fatal — we keep the existing
 //     prompt so the turn can still fire.
 //  4. Compose [provider hint + memory] via SystemPromptFor, filtering
 //     per-entry bodies down to the relevant subset.
-//  5. Re-append the preserved summary block, if any.
-//  6. Write back. The downstream filerefs.Inject pass in startTurn
-//     handles the @-file references on its own — we deliberately
-//     don't include them here.
-func (m *Model) rebuildSystemPromptForTurn(query string) {
+//  5. Re-append the preserved summary block, then the preserved
+//     file-refs block (canonical order: base → memory → summary →
+//     refs, matching extractSummarySection's boundary assumption).
+//  6. Write back.
+func (m *Model) rebuildSystemPromptForTurn(ctx context.Context, query string) {
 	if len(m.sess.Messages) == 0 || m.sess.Messages[0].Role != adapter.RoleSystem {
 		return
 	}
 	cur := m.sess.Messages[0].Content
 	summary := extractSummarySection(cur)
+	refsBlock := extractFileRefsBlock(cur)
 
 	mem, err := memory.Load(m.cwd)
 	if err != nil {
 		return
 	}
 	composed := composeSystemPrompt(m.baseSystemPrompt, m.providerProfile)
-	newSys := memory.SystemPromptForSemantic(composed, mem, query, m.fileCfg.Retrieval, m.embedClient)
+	newSys := memory.SystemPromptForSemantic(ctx, composed, mem, query, m.fileCfg.Retrieval, m.embedClient)
 	if summary != "" {
 		newSys = strings.TrimRight(newSys, "\n") + summaryHeading + summary
+	}
+	if refsBlock != "" {
+		newSys = strings.TrimRight(newSys, "\n") + "\n\n" + refsBlock
 	}
 	m.sess.Messages[0].Content = newSys
 	// composed is the stable head; the memory tail (and any summary /
@@ -76,4 +92,16 @@ func extractSummarySection(content string) string {
 		body = body[:r]
 	}
 	return strings.TrimSpace(body)
+}
+
+// extractFileRefsBlock returns the auto-injected "Referenced files"
+// block (marker heading included) from the system prompt, or "" if
+// absent. filerefs.Inject always appends the block as the prompt's
+// tail (StripSection + append), so marker-to-end is the whole block.
+func extractFileRefsBlock(content string) string {
+	idx := strings.Index(content, filerefs.Marker)
+	if idx < 0 {
+		return ""
+	}
+	return strings.TrimSpace(content[idx:])
 }

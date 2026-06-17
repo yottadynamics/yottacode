@@ -1,6 +1,8 @@
 {
-  "_comment": "Fallback context-window table, embedded at build time (like catalog.gen.json). Regenerate with `yottacode model probe-windows --output internal/catalog/context-windows.json` before publishing. Entries match the model id by lowercase prefix; the LONGEST matching prefix wins, so a specific id overrides a broad family entry regardless of order. This is the LAST-resort fallback: a user override (config.toml), the curated catalog, and the live probe all take precedence, so values here lean conservative.",
+  "_comment": "Fallback context-window table, embedded at build time (like catalog.gen.json). Regenerate with `yottacode model probe-windows --output internal/catalog/context-windows.json` before publishing. Entries match the model id by lowercase prefix; the LONGEST matching prefix wins, so a specific id overrides a broad family entry regardless of order. This is the LAST-resort fallback: a user override (config.toml), the curated catalog, and the live probe all take precedence, so values here lean conservative. Entries with a '<kind>/' prefix are provider-qualified per-backend measurements, consulted by ResolveWindowForProvider AHEAD of the catalog — the same model id can have a smaller real window behind a different backend. openai-auth/gpt-5: ChatGPT Codex backend accepts ~272k input tokens regardless of the catalog's 1.05M (measured 2026-06-10: 264,995 accepted, ~281k rejected); 264000 is the verified-safe floor.",
   "entries": [
+    {"prefix": "openai-auth/gpt-5", "window": 264000},
+
     {"prefix": "o1", "window": 200000},
     {"prefix": "o3", "window": 200000},
     {"prefix": "o4", "window": 200000},

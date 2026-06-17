@@ -11,6 +11,8 @@ package agent
 //   - TestDefaultSystemPrompt_ProactiveMemorySteering is the
 //     deterministic, dependency-free pin: the prompt sections that
 //     steer proactive saving must survive prompt edits.
+//   - TestMemorySaveTool_ScopeSteeringPinned pins the schema-level
+//     default-to-user scope steering the same way.
 //   - TestMemorySaveProactivity_LiveEval drives the REAL composed
 //     system prompt + memory_save tool through agent.Turn against a
 //     local Ollama chat model (skipped when unavailable, mirroring
@@ -20,6 +22,16 @@ package agent
 //     deliberately loose — zero saves across ALL fixtures — so a weak
 //     local model doesn't flake CI while a real steering regression
 //     (e.g. reverting the proactive wording) still fails.
+//
+//     The eval also measures WHERE saves land: each fixture carries a
+//     wantScope ground truth (the saved file's path prefix —
+//     memory/user/ vs memory/projects/ — is the scope), and a second
+//     loose gate fails only on the unambiguous regression signature:
+//     saves on ≥2 distinct user-truth fixtures with zero fixtures
+//     choosing scope=user, i.e. the steering is not reaching the model.
+//     Scope accuracy is logged either way; the project-truth fixture
+//     doubles as the over-rotation canary (everything-becomes-user
+//     shows up in its log line).
 //
 // Run with a local model:
 //
@@ -44,9 +56,81 @@ func TestDefaultSystemPrompt_ProactiveMemorySteering(t *testing.T) {
 		"Don't wait for explicit \"remember this\"",
 		"Self-improvement:",
 		"memory_save",
+		// Scope steering: the prompt-side twin of the schema description
+		// pinned by TestMemorySaveTool_ScopeSteeringPinned — both copies
+		// must survive edits or they drift apart.
+		"Default to user-scope",
+		// Content-quality steering — the fix for "vague, few" memories.
+		// The body-echo failure mode (content == description) and the
+		// staleness filter must stay in the prompt or the model drifts
+		// back to one-line restatements and work-log junk.
+		"What makes a good memory",
+		"must ADD substance beyond the one-line description",
+		"State durable facts declaratively",
+		"stale in a week",
 	} {
 		if !strings.Contains(DefaultSystemPrompt, want) {
 			t.Errorf("DefaultSystemPrompt lost proactive-memory steering: missing %q", want)
+		}
+	}
+}
+
+// TestMemorySaveTool_ContentQualityPinned is the deterministic pin for
+// the content parameter's substance steering. Like the scope pin, the
+// schema description is the strongest lever (read at tool-call time, the
+// moment the body is written), so a copy-edit that re-introduces
+// "concise" or drops the no-echo rule would silently regress body
+// quality back to vague one-line restatements — the exact failure this
+// guidance exists to stop.
+func TestMemorySaveTool_ContentQualityPinned(t *testing.T) {
+	schema := (&MemorySaveTool{}).Schema()
+	props, ok := schema["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("schema has no properties map: %v", schema)
+	}
+	content, ok := props["content"].(map[string]any)
+	if !ok {
+		t.Fatalf("schema has no content property: %v", props)
+	}
+	desc, _ := content["description"].(string)
+	for _, want := range []string{
+		"Be specific and self-contained",
+		"add detail beyond the one-line description",
+		"restates the description is worthless",
+	} {
+		if !strings.Contains(desc, want) {
+			t.Errorf("memory_save content description lost substance steering: missing %q in %q", want, desc)
+		}
+	}
+	if strings.Contains(desc, "concise") {
+		t.Errorf("memory_save content description re-introduced \"concise\" — it produces terse, vague echoes: %q", desc)
+	}
+}
+
+// TestMemorySaveTool_ScopeSteeringPinned is the deterministic pin for
+// the scope parameter's default-to-user steering. The schema
+// description is the strongest lever on scope choice (it's read at
+// tool-call time, where the prompt's scope section is ~80 lines
+// upstream); a copy-edit that drops the DEFAULT marker or the
+// portability test would silently regress user-scope saving.
+func TestMemorySaveTool_ScopeSteeringPinned(t *testing.T) {
+	schema := (&MemorySaveTool{}).Schema()
+	props, ok := schema["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("schema has no properties map: %v", schema)
+	}
+	scope, ok := props["scope"].(map[string]any)
+	if !ok {
+		t.Fatalf("schema has no scope property: %v", props)
+	}
+	desc, _ := scope["description"].(string)
+	for _, want := range []string{
+		"DEFAULT",
+		"ONLY for facts meaningless outside this repo",
+		"completely different repo",
+	} {
+		if !strings.Contains(desc, want) {
+			t.Errorf("memory_save scope description lost default-to-user steering: missing %q in %q", want, desc)
 		}
 	}
 }
@@ -100,13 +184,21 @@ const proactivityControl = "Use the memory_save tool right now to save this fact
 // task so the model has a primary request to satisfy. They map to the
 // prompt's "When to save" triggers: a stated preference, a correction,
 // and a project fact.
+//
+// wantScope is the ground-truth scope a well-steered model should
+// choose. The first two are portable (about the person), the third is
+// repo-bound, and the fourth is the trap case this eval exists to
+// catch: a portable preference stated mid-repo-work, where repo
+// gravity pulls the save toward scope=project.
 var proactivityFixtures = []struct {
-	name string
-	turn string
+	name      string
+	turn      string
+	wantScope string
 }{
-	{"stated preference", "By the way, I always want Go tests written as table-driven cases with subtests — keep that in mind going forward. Now, what does the acronym CLI stand for? One sentence."},
-	{"correction", "Stop pasting full stack traces into your answers — from now on just summarize the root cause in a sentence. Anyway: what's 17 + 25? Reply with just the number."},
-	{"project fact", "For context you'll need in every future session: this project must build with Go 1.22 and CI runs `make ci`, never plain `go build`. Now name one common HTTP status code for success. One sentence."},
+	{"stated preference", "By the way, I always want Go tests written as table-driven cases with subtests — keep that in mind going forward. Now, what does the acronym CLI stand for? One sentence.", "user"},
+	{"correction", "Stop pasting full stack traces into your answers — from now on just summarize the root cause in a sentence. Anyway: what's 17 + 25? Reply with just the number.", "user"},
+	{"project fact", "For context you'll need in every future session: this project must build with Go 1.22 and CI runs `make ci`, never plain `go build`. Now name one common HTTP status code for success. One sentence.", "project"},
+	{"portable preference amid repo work", "I'm deep in this repo's Makefile today, but here's something that applies to every project we ever work on: never use emojis in anything you write for me. Now, what is 9 × 6? Just the number.", "user"},
 }
 
 // evalTrunc clips s for one-line eval logs.
@@ -118,42 +210,67 @@ func evalTrunc(s string, n int) string {
 	return s
 }
 
-// countSavedMemories walks every agent-managed memory location under
-// home and returns the saved memory files (MEMORY.md indexes and
-// .archive copies excluded).
+// countSavedMemories walks the agent-managed memory tree under home
+// (both scopes live under ~/.yottacode/memory/) and returns the saved
+// memory files (MEMORY.md indexes, .archive copies, and subagent
+// transcripts excluded).
 func countSavedMemories(t *testing.T, home string) []string {
 	t.Helper()
 	var saved []string
-	for _, dir := range []string{
-		filepath.Join(home, ".yottacode", "memory"),
-		filepath.Join(home, ".yottacode", "projects"),
-	} {
-		_ = filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
-			if err != nil || info.IsDir() {
-				return nil
-			}
-			if filepath.Ext(path) != ".md" || filepath.Base(path) == "MEMORY.md" {
-				return nil
-			}
-			if strings.Contains(path, ".archive") {
-				return nil
-			}
-			saved = append(saved, path)
+	dir := filepath.Join(home, ".yottacode", "memory")
+	_ = filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() {
 			return nil
-		})
-	}
+		}
+		if filepath.Ext(path) != ".md" || filepath.Base(path) == "MEMORY.md" {
+			return nil
+		}
+		if strings.Contains(path, ".archive") {
+			return nil
+		}
+		// Subagent run transcripts nest inside the project memory dir
+		// (memory/projects/<slug>/subagents/) and are not memories.
+		if strings.Contains(path, string(filepath.Separator)+memory.SubagentsDirName+string(filepath.Separator)) {
+			return nil
+		}
+		saved = append(saved, path)
+		return nil
+	})
 	return saved
+}
+
+// savedMemoryRecord is one memory file a fixture turn saved. Scope is
+// derived from the on-disk location — under the merged layout the path
+// prefix IS the scope (memory/user/ vs memory/projects/<slug>/), so no
+// extra plumbing through the tool layer is needed.
+type savedMemoryRecord struct {
+	Name  string
+	Scope string // "user" | "project"
+}
+
+// scopeOfSavedPath classifies a saved memory file by its location in
+// the memory tree.
+func scopeOfSavedPath(path string) string {
+	sep := string(filepath.Separator)
+	if strings.Contains(path, sep+"memory"+sep+"user"+sep) {
+		return "user"
+	}
+	if strings.Contains(path, sep+"memory"+sep+"projects"+sep) {
+		return "project"
+	}
+	return "unknown"
 }
 
 // runProactivityFixture drives one user turn through agent.Turn with
 // the REAL shipped steering (identity prompt + cold-start memory
 // composition, which ends with the save nudge) and the real memory
-// tools rooted in throwaway dirs. Returns the basenames of the memory
-// files the turn saved.
-func runProactivityFixture(t *testing.T, model, turn string) []string {
+// tools rooted in throwaway dirs. Returns a record per memory file the
+// turn saved, with the scope it landed in.
+func runProactivityFixture(t *testing.T, model, turn string) []savedMemoryRecord {
 	t.Helper()
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("YOTTACODE_HOME", "")
 	cwd := t.TempDir() // no git remote — slug falls back to basename
 
 	reg := NewRegistry()
@@ -195,11 +312,14 @@ func runProactivityFixture(t *testing.T, model, turn string) []string {
 	}
 
 	saved := countSavedMemories(t, home)
-	names := make([]string, len(saved))
+	records := make([]savedMemoryRecord, len(saved))
 	for i, p := range saved {
-		names[i] = filepath.Base(p)
+		records[i] = savedMemoryRecord{
+			Name:  filepath.Base(p),
+			Scope: scopeOfSavedPath(p),
+		}
 	}
-	return names
+	return records
 }
 
 func TestMemorySaveProactivity_LiveEval(t *testing.T) {
@@ -219,22 +339,48 @@ func TestMemorySaveProactivity_LiveEval(t *testing.T) {
 	}
 
 	totalSaves := 0
+	// Distinct user-truth FIXTURES, not saves: two saves from one turn
+	// are a single model decision context, so only multiple independent
+	// turns constitute the multi-fluke signal the scope gate wants.
+	userTruthFixturesSaved, userTruthFixturesUserScoped := 0, 0
 	for _, fx := range proactivityFixtures {
 		t.Run(fx.name, func(t *testing.T) {
 			saved := runProactivityFixture(t, model, fx.turn)
 			totalSaves += len(saved)
-			t.Logf("model=%s fixture=%q → %d save(s) %v", model, fx.name, len(saved), saved)
+			if fx.wantScope == "user" && len(saved) > 0 {
+				userTruthFixturesSaved++
+				for _, s := range saved {
+					if s.Scope == "user" {
+						userTruthFixturesUserScoped++
+						break
+					}
+				}
+			}
+			t.Logf("model=%s fixture=%q wantScope=%s → %d save(s) %v", model, fx.name, fx.wantScope, len(saved), saved)
 		})
 	}
 
 	// Loose hard gate: a model that handles explicit saves (control
 	// passed) and is steered by the shipped prompts should save on at
-	// least ONE blatant fixture. Zero across all three means the
+	// least ONE blatant fixture. Zero across all of them means the
 	// proactive steering is not reaching the model — the exact
 	// regression this eval exists to catch.
 	if totalSaves == 0 {
 		t.Errorf("0 proactive saves across %d fixtures (control saved fine) — proactive-memory steering regressed (tool description, save nudge, or prompt section)", len(proactivityFixtures))
 	} else {
 		t.Logf("proactive saves: %d across %d fixtures", totalSaves, len(proactivityFixtures))
+	}
+
+	// Scope gate, same loose philosophy: fail only on the unambiguous
+	// signature — saves landed on ≥2 DISTINCT portable-truth fixtures
+	// (independent turns, so one flaky turn can't trip it) yet not one
+	// fixture produced a scope=user save. That means the default-to-user
+	// steering (scope schema description + prompt scope section) is not
+	// reaching the model. Anything softer is logged, not failed, so weak
+	// local models don't flake CI.
+	if userTruthFixturesSaved >= 2 && userTruthFixturesUserScoped == 0 {
+		t.Errorf("saves landed on %d user-truth fixtures, none chose scope=user — default-to-user scope steering regressed (memory_save scope description or prompt scope section)", userTruthFixturesSaved)
+	} else if userTruthFixturesSaved > 0 {
+		t.Logf("scope accuracy on user-truth fixtures: %d/%d fixtures chose scope=user", userTruthFixturesUserScoped, userTruthFixturesSaved)
 	}
 }

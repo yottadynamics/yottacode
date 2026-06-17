@@ -8,14 +8,16 @@ Building, testing, and extending yottacode.
 go build -o yottacode ./cmd/yottacode
 ```
 
-Requirements: Go 1.25+. The module is pure Go, so cross-compilation is
+Requirements: Go 1.26+. The module is pure Go, so cross-compilation is
 straightforward:
 
 ```bash
 GOOS=darwin  GOARCH=arm64 go build -o yottacode-darwin-arm64  ./cmd/yottacode
 GOOS=linux   GOARCH=amd64 go build -o yottacode-linux-amd64   ./cmd/yottacode
-GOOS=windows GOARCH=amd64 go build -o yottacode-windows.exe   ./cmd/yottacode
 ```
+
+Supported platforms are Linux and macOS (amd64 and arm64). There is no native
+Windows build — Windows contributors should work inside WSL.
 
 ## Test
 
@@ -60,13 +62,13 @@ the command prefix instead of executing it immediately.
 
 ## Refreshing The Embedded Model Catalog
 
-The cloud provider model lists for Anthropic, OpenAI, and Gemini live
+The cloud provider model lists for Anthropic, OpenAI, Gemini, and xAI live
 in [`internal/catalog/catalog.gen.json`](../internal/catalog/catalog.gen.json),
 embedded into the binary at build time. When a provider ships new
 models (or deprecates old ones), regenerate the file:
 
 ```bash
-ANTHROPIC_API_KEY=… OPENAI_API_KEY=… GEMINI_API_KEY=… \
+ANTHROPIC_API_KEY=… OPENAI_API_KEY=… GEMINI_API_KEY=… XAI_API_KEY=… \
   go run ./cmd/yotta-models refresh
 ```
 
@@ -83,11 +85,15 @@ can refresh one provider at a time.
 The script:
 
 - Calls each provider's list-models endpoint (Anthropic
-  `/v1/models`, OpenAI `/v1/models`, Gemini `/v1beta/models`).
+  `/v1/models`, OpenAI `/v1/models`, Gemini `/v1beta/models`, xAI
+  `/v1/models`).
 - Filters OpenAI to chat-completions models via prefix regex
   ([`fetch_openai.go`](../cmd/yotta-models/fetch_openai.go)) — drop
   embeddings/tts/audio/realtime/image variants. Widening for new
   families (e.g. `gpt-6`, `o5`) is a one-line PR.
+- Filters xAI to Grok chat models via prefix regex
+  ([`fetch_xai.go`](../cmd/yotta-models/fetch_xai.go)) — drop image
+  and video generation surfaces that are not chat turn-taking models.
 - Filters Gemini to entries whose `supportedGenerationMethods`
   contains `"generateContent"` — drops embedding-only and
   countTokens-only models.
@@ -99,8 +105,8 @@ The script:
   minimal.
 
 Commit the refreshed `catalog.gen.json` like any other source file.
-There is no runtime equivalent — users can't refresh locally because
-they don't necessarily have keys for all three providers, and the
+There is no runtime equivalent for curated providers — users can't refresh locally because
+they don't necessarily have keys for all four providers, and the
 embedded catalog keeps offline-first ergonomics. Anything else
 (Ollama, openai-compatible endpoints) is fetched live at picker-open
 time via [`catalog.Live`](../internal/catalog/live.go).
@@ -175,13 +181,22 @@ the consumers that need to display it.
 ## Project Layout Reminder
 
 ```text
-cmd/yottacode/                cobra root
+cmd/yottacode/                cobra root command
+cmd/yotta-models/             model-catalog refresh tool
 internal/cli/                 option resolution
 internal/adapter/             provider streaming layer
 internal/agent/               turn loop, tools, approvals
-internal/session/             saved conversations
-internal/memory/              prompt memory composer and agent-managed memory store
+internal/permissions/         allow / ask / deny rules
+internal/github/              typed go-github adapter and PR/issue tools
+internal/mcp/                 Model Context Protocol clients
+internal/skills/              agent skills loader
+internal/subagents/           typed subagent runner
+internal/catalog/             embedded + live model catalog
+internal/checkpoint/          per-prompt checkpoints
+internal/memory/              prompt memory composer and agent-managed store
 internal/recall/              FTS5 session search
+internal/session/             saved conversations
+internal/worktree/            git worktree sessions
 internal/tui/                 interactive terminal UI
 internal/oneshot/             one-shot runner
 internal/version/             version string
@@ -192,7 +207,7 @@ internal/version/             version string
 The release number lives in [`internal/version/version.go`](../internal/version/version.go):
 
 ```go
-const Current = "0.1.0"
+const Current = "0.2.0"
 ```
 
 Use semantic versioning: `MAJOR.MINOR.PATCH`.

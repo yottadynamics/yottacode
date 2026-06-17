@@ -20,7 +20,52 @@ func memTestSetup(t *testing.T) (home, cwd string) {
 	home = t.TempDir()
 	cwd = t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("YOTTACODE_HOME", "")
 	return home, cwd
+}
+
+// TestMemorySave_ScopeReflectionHint pins the scope-check reflection:
+// it must fire on the one suspicious combination (a portable-typed
+// memory filed as project scope) and stay silent everywhere else, or
+// the model learns to ignore it.
+func TestMemorySave_ScopeReflectionHint(t *testing.T) {
+	cases := []struct {
+		name     string
+		scope    string
+		memType  string
+		wantHint bool
+	}{
+		{"project scope + user type fires", "project", "user", true},
+		{"project scope + feedback type fires", "project", "feedback", true},
+		// Non-canonical input: the hint depends on validateMemoryType
+		// lowercasing "Feedback" -> "feedback" BEFORE the portableMemoryTypes
+		// lookup. Pins that the reflection keys on the normalized type, not
+		// the raw arg — a regression that looked up a.Type would miss this.
+		{"project scope + non-canonical Feedback fires", "project", "Feedback", true},
+		{"project scope + project type silent", "project", "project", false},
+		{"project scope + free-form type silent", "project", "gotcha", false},
+		{"user scope + feedback type silent", "user", "feedback", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			_, cwd := memTestSetup(t)
+			tool := &MemorySaveTool{Cwd: NewCwdRef(cwd)}
+			out, err := tool.Execute(context.Background(), fmt.Sprintf(`{
+				"scope": %q,
+				"type": %q,
+				"name": "scope-hint-probe",
+				"description": "x",
+				"content": "x"
+			}`, c.scope, c.memType))
+			if err != nil {
+				t.Fatalf("Execute: %v", err)
+			}
+			if got := strings.Contains(out, "scope check:"); got != c.wantHint {
+				t.Errorf("scope=%s type=%s: hint present = %v, want %v; result: %q",
+					c.scope, c.memType, got, c.wantHint, out)
+			}
+		})
+	}
 }
 
 func TestMemorySave_WritesFileAndIndex(t *testing.T) {
@@ -39,7 +84,7 @@ func TestMemorySave_WritesFileAndIndex(t *testing.T) {
 	if !strings.Contains(out, "created user memory") {
 		t.Errorf("expected create confirmation, got %q", out)
 	}
-	path := filepath.Join(home, ".yottacode", "memory", "verbose-output.md")
+	path := filepath.Join(home, ".yottacode", "memory", "user", "verbose-output.md")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("memory file missing: %v", err)
@@ -57,7 +102,7 @@ func TestMemorySave_WritesFileAndIndex(t *testing.T) {
 			t.Errorf("memory file missing %q\n--- file ---\n%s", want, body)
 		}
 	}
-	indexPath := filepath.Join(home, ".yottacode", "memory", "MEMORY.md")
+	indexPath := filepath.Join(home, ".yottacode", "memory", "user", "MEMORY.md")
 	idx, err := os.ReadFile(indexPath)
 	if err != nil {
 		t.Fatalf("index missing: %v", err)
@@ -78,7 +123,7 @@ func TestMemorySave_OverwritesExisting(t *testing.T) {
 	if _, err := tool.Execute(context.Background(), args2); err != nil {
 		t.Fatalf("second save: %v", err)
 	}
-	data, err := os.ReadFile(filepath.Join(home, ".yottacode", "memory", "prefs.md"))
+	data, err := os.ReadFile(filepath.Join(home, ".yottacode", "memory", "user", "prefs.md"))
 	if err != nil {
 		t.Fatalf("read after overwrite: %v", err)
 	}
@@ -92,7 +137,7 @@ func TestMemorySave_OverwritesExisting(t *testing.T) {
 	if !strings.Contains(body, "description: new") {
 		t.Errorf("description should be overwritten; got:\n%s", body)
 	}
-	idx, err := os.ReadFile(filepath.Join(home, ".yottacode", "memory", "MEMORY.md"))
+	idx, err := os.ReadFile(filepath.Join(home, ".yottacode", "memory", "user", "MEMORY.md"))
 	if err != nil {
 		t.Fatalf("read index: %v", err)
 	}
@@ -114,7 +159,7 @@ func TestMemorySave_OverwritesExisting(t *testing.T) {
 // RFC3339 string and so passed even with the fix removed.)
 func TestMemorySave_OverwriteArchivesAndPreservesCreated(t *testing.T) {
 	home, cwd := memTestSetup(t)
-	memDir := filepath.Join(home, ".yottacode", "memory")
+	memDir := filepath.Join(home, ".yottacode", "memory", "user")
 	if err := os.MkdirAll(memDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -198,7 +243,7 @@ func TestMemorySave_ConcurrentSameNameNoSilentLoss(t *testing.T) {
 	}
 	wg.Wait()
 
-	memDir := filepath.Join(home, ".yottacode", "memory")
+	memDir := filepath.Join(home, ".yottacode", "memory", "user")
 	seen := map[int]bool{}
 	collect := func(b []byte) {
 		for i := 0; i < n; i++ {
@@ -229,11 +274,11 @@ func TestMemorySave_RoutesScopes(t *testing.T) {
 	if _, err := tool.Execute(context.Background(), `{"scope":"project","type":"project","name":"layout","description":"x","content":"x"}`); err != nil {
 		t.Fatalf("project-scope save: %v", err)
 	}
-	userPath := filepath.Join(home, ".yottacode", "memory", "prefs.md")
+	userPath := filepath.Join(home, ".yottacode", "memory", "user", "prefs.md")
 	if _, err := os.Stat(userPath); err != nil {
 		t.Errorf("user-scope file missing at %s: %v", userPath, err)
 	}
-	projects := filepath.Join(home, ".yottacode", "projects")
+	projects := filepath.Join(home, ".yottacode", "memory", "projects")
 	infos, err := os.ReadDir(projects)
 	if err != nil {
 		t.Fatalf("projects dir missing: %v", err)
@@ -241,7 +286,7 @@ func TestMemorySave_RoutesScopes(t *testing.T) {
 	if len(infos) != 1 {
 		t.Fatalf("expected exactly one project subdir under %s, got %d", projects, len(infos))
 	}
-	projectMemPath := filepath.Join(projects, infos[0].Name(), "memory", "layout.md")
+	projectMemPath := filepath.Join(projects, infos[0].Name(), "layout.md")
 	if _, err := os.Stat(projectMemPath); err != nil {
 		t.Errorf("project-scope file missing at %s: %v", projectMemPath, err)
 	}
@@ -312,7 +357,7 @@ func TestMemorySave_FreeFormTypeRoundtripsAndIndexes(t *testing.T) {
 		t.Fatalf("save with custom type: %v", err)
 	}
 	// Frontmatter stores the normalized custom type.
-	data, err := os.ReadFile(filepath.Join(home, ".yottacode", "memory", "queue-writes.md"))
+	data, err := os.ReadFile(filepath.Join(home, ".yottacode", "memory", "user", "queue-writes.md"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -320,7 +365,7 @@ func TestMemorySave_FreeFormTypeRoundtripsAndIndexes(t *testing.T) {
 		t.Errorf("custom type not stored normalized; got:\n%s", data)
 	}
 	// The custom type appears as its own group in the index.
-	idx, err := os.ReadFile(filepath.Join(home, ".yottacode", "memory", "MEMORY.md"))
+	idx, err := os.ReadFile(filepath.Join(home, ".yottacode", "memory", "user", "MEMORY.md"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -342,10 +387,10 @@ func TestMemoryForget_DeletesAndUpdatesIndex(t *testing.T) {
 	if _, err := forget.Execute(context.Background(), `{"scope":"user","name":"a"}`); err != nil {
 		t.Fatalf("forget a: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(home, ".yottacode", "memory", "a.md")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(home, ".yottacode", "memory", "user", "a.md")); !os.IsNotExist(err) {
 		t.Errorf("expected a.md gone, stat err = %v", err)
 	}
-	idx, err := os.ReadFile(filepath.Join(home, ".yottacode", "memory", "MEMORY.md"))
+	idx, err := os.ReadFile(filepath.Join(home, ".yottacode", "memory", "user", "MEMORY.md"))
 	if err != nil {
 		t.Fatalf("index missing: %v", err)
 	}
@@ -367,7 +412,7 @@ func TestMemoryForget_RemovesIndexWhenEmpty(t *testing.T) {
 	if _, err := forget.Execute(context.Background(), `{"scope":"user","name":"only"}`); err != nil {
 		t.Fatalf("forget: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(home, ".yottacode", "memory", "MEMORY.md")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(home, ".yottacode", "memory", "user", "MEMORY.md")); !os.IsNotExist(err) {
 		t.Errorf("expected MEMORY.md gone after last forget, stat err = %v", err)
 	}
 }

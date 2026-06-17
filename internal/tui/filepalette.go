@@ -209,6 +209,11 @@ const filePaletteVisible = 8
 // with one entry per line, the highlighted entry styled. Empty list
 // shows a hint instead of a blank box.
 //
+// width is the TOTAL box width including the border, same contract as
+// renderPalette — the -2 at the render calls converts to lipgloss's
+// border-exclusive Style.Width so the box's right edge lands exactly
+// on the input frame's.
+//
 // When the filtered list is longer than filePaletteVisible, we render
 // only the window [offset, offset+filePaletteVisible) and add muted
 // `↑ N more` / `↓ N more` hints above/below to make the hidden
@@ -217,7 +222,7 @@ const filePaletteVisible = 8
 // view as the user arrows past the window edge.
 func renderFilePalette(items []fileEntry, idx, offset, width int) string {
 	if len(items) == 0 {
-		return stylePaletteBox.Width(width).Render(stylePaletteEmpty.Render("(no matching files)"))
+		return stylePaletteBox.Width(width - 2).Render(stylePaletteEmpty.Render("(no matching files)"))
 	}
 	end := offset + filePaletteVisible
 	if end > len(items) {
@@ -247,7 +252,7 @@ func renderFilePalette(items []fileEntry, idx, offset, width int) string {
 	if remaining := len(items) - end; remaining > 0 {
 		lines = append(lines, stylePaletteEmpty.Render(fmt.Sprintf(" ↓ %d more", remaining)))
 	}
-	return stylePaletteBox.Width(width).Render(strings.Join(lines, "\n"))
+	return stylePaletteBox.Width(width - 2).Render(strings.Join(lines, "\n"))
 }
 
 // extractFileQuery scans value for an active `@<query>` token whose

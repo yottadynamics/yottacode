@@ -94,15 +94,16 @@ func modelShortcutSwitch(m Model, newTag string) (Model, tea.Cmd) {
 }
 
 // providerOwnsModel reports whether p's model surface contains tag.
-// Sources searched, in order: (1) the embedded catalog for curated
-// kinds (anthropic/openai/gemini), (2) p.Models from config.toml
+// Sources searched, in order: (1) the curated catalog for curated
+// kinds (anthropic/openai/gemini/xai — embedded, plus the local
+// models.dev snapshot for Gemini), (2) p.Models from config.toml
 // (legacy hand-curated lists). Returns false for non-curated kinds
 // without an explicit p.Models entry — the shortcut then falls back
 // to "switch model on current provider," matching pre-catalog
 // muscle memory.
 func providerOwnsModel(p *config.Provider, tag string) bool {
 	if catalog.IsCurated(*p) {
-		for _, m := range catalog.Get(p.Kind) {
+		for _, m := range catalog.Curated(p.Kind) {
 			if m.ID == tag {
 				return true
 			}

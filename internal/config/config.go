@@ -249,7 +249,8 @@ type Provider struct {
 	//                         gpt-5*)
 	//   openai-compatible   — anything that speaks /v1/chat/completions
 	//                         (vLLM, Llama Stack, OpenRouter, Together,
-	//                         xAI, NVIDIA NIM, Groq, …)
+	//                         NVIDIA NIM, Groq, …)
+	//   xai                 — xAI's OpenAI-compatible Grok endpoint
 	//   ollama              — Ollama's local server (OpenAI-shim variant)
 	Kind string `toml:"kind"`
 
@@ -346,9 +347,22 @@ func MCPNameValid(name string) bool { return mcpNameRE.MatchString(name) }
 var ValidTiers = []string{"cheap", "balanced", "expensive"}
 
 // ValidKinds is the whitelist for Provider.Kind.
-var ValidKinds = []string{"anthropic", "openai", "openai-auth", "copilot", "openai-compatible", "ollama", "gemini"}
+var ValidKinds = []string{"anthropic", "openai", "openai-auth", "copilot", "openai-compatible", "ollama", "gemini", "xai"}
 
 // Default returns a Config populated with the documented defaults.
+// defaultThemeName resolves the theme used when the user hasn't
+// configured one: the monochrome palette when the NO_COLOR convention
+// (https://no-color.org/) is active in the environment — present and
+// non-empty, per the spec — and the standard default otherwise. An
+// explicit [theme] name in config.toml always wins; no-color.org
+// states that user-level configuration overrides the env var.
+func defaultThemeName() string {
+	if os.Getenv("NO_COLOR") != "" {
+		return "no-color"
+	}
+	return themes.DefaultName
+}
+
 func Default() Config {
 	return Config{
 		Context: ContextConfig{
@@ -369,7 +383,7 @@ func Default() Config {
 			FinalTurnOnQuit: true,
 		},
 		Theme: ThemeConfig{
-			Name: themes.DefaultName,
+			Name: defaultThemeName(),
 		},
 	}
 }
@@ -415,7 +429,7 @@ func Load(path string) (Config, error) {
 	}
 	cfg.Active.normalize()
 	if strings.TrimSpace(cfg.Theme.Name) == "" {
-		cfg.Theme.Name = themes.DefaultName
+		cfg.Theme.Name = defaultThemeName()
 	}
 	if strings.TrimSpace(cfg.Retrieval.Strategy) == "" {
 		cfg.Retrieval.Strategy = "auto"
@@ -804,6 +818,8 @@ func providerKeyEnvHint(p *Provider) string {
 		return "OPENAI_API_KEY"
 	case "gemini":
 		return "GEMINI_API_KEY"
+	case "xai":
+		return "XAI_API_KEY"
 	default:
 		return strings.ToUpper(strings.ReplaceAll(p.Name, "-", "_")) + "_API_KEY"
 	}
@@ -876,6 +892,54 @@ func modelWindow(models []Model, name string) int {
 		}
 	}
 	return 0
+}
+
+// ProviderKindForModel returns the Kind of the provider entry that
+// serves the given model: the active provider when it explicitly names
+// the model (models list or default_model), then any provider that
+// does, then — for models config never enumerates, like openai-auth's
+// scanned set or ollama's local tags — the active provider's Kind.
+// Empty only when nothing matches and no provider is active.
+//
+// Keying per-backend facts on Kind is what keeps namesake models
+// separated: gpt-5.5 served through "openai-auth" must not inherit
+// numbers from gpt-5.5 served through "openai" (see
+// catalog.ResolveWindowForProvider).
+func (c Config) ProviderKindForModel(model string) string {
+	if model == "" {
+		return ""
+	}
+	var activeKind string
+	if c.Active.Provider != "" {
+		for _, p := range c.Providers {
+			if p.Name == c.Active.Provider {
+				activeKind = p.Kind
+				if providerServesModel(p, model) {
+					return p.Kind
+				}
+			}
+		}
+	}
+	for _, p := range c.Providers {
+		if providerServesModel(p, model) {
+			return p.Kind
+		}
+	}
+	return activeKind
+}
+
+// providerServesModel reports whether the provider entry explicitly
+// names the model, in its models list or as its default_model.
+func providerServesModel(p Provider, model string) bool {
+	if p.DefaultModel == model {
+		return true
+	}
+	for _, m := range p.Models {
+		if m.Name == model {
+			return true
+		}
+	}
+	return false
 }
 
 // DefaultsTOML is the documented default file written by EnsureDefault.

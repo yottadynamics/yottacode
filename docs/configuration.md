@@ -18,7 +18,7 @@ The same provider flags also apply to `yottacode doctor`.
 | `--reasoning-effort` | `YOTTACODE_REASONING_EFFORT` | no | Reasoning effort for providers that support it: `low`, `medium`, or `high` (unset = provider default). Applies to OpenAI, Anthropic, Gemini, and xAI via each one's native knob — see [providers.md](providers.md#reasoning-effort). Change it mid-session with [`/effort`](tui-slash-commands.md). |
 | `--enable-web-search` | `YOTTACODE_ENABLE_WEB_SEARCH` | no | Enable provider-native web search when supported |
 | `--disable-web-search` | `YOTTACODE_DISABLE_WEB_SEARCH` | no | Disable provider-native web search even when OpenAI/xAI would enable it by default |
-| `--enable-x-search` | `YOTTACODE_ENABLE_X_SEARCH` | no | Enable xAI `x_search` when supported |
+| `--enable-x-search` | `YOTTACODE_ENABLE_X_SEARCH` | no | Enable xAI `x_search` when supported (xAI enables it by default; kept for explicit opt-in on older configs) |
 | `--enable-code-interpreter` | `YOTTACODE_ENABLE_CODE_INTERPRETER` | no | Enable provider-native code interpreter when supported |
 | `--search-allowed-domains` | `YOTTACODE_SEARCH_ALLOWED_DOMAINS` | no | Comma-separated allowlist for provider-native web search |
 | `--search-excluded-domains` | `YOTTACODE_SEARCH_EXCLUDED_DOMAINS` | no | Comma-separated blocklist for provider-native web search |
@@ -82,13 +82,12 @@ export YOTTACODE_BASE_URL=https://api.anthropic.com
 export YOTTACODE_API_KEY=sk-ant-...
 yottacode
 
-# xAI with default web_search + explicit x_search
+# xAI with default web_search + x_search
 export YOTTACODE_PROVIDER=xai
 export YOTTACODE_MODEL=<your-model-id>
 export YOTTACODE_BASE_URL=https://api.x.ai/v1
 export YOTTACODE_API_KEY=xai-...
 export YOTTACODE_SEARCH_ALLOWED_DOMAINS=docs.x.ai,arxiv.org
-export YOTTACODE_ENABLE_X_SEARCH=1
 export YOTTACODE_X_SEARCH_ALLOWED_HANDLES=xai
 yottacode
 
@@ -137,7 +136,9 @@ active `/models` probe against the configured endpoint.
 - xAI
 
 That default can be disabled with `--disable-web-search` or
-`YOTTACODE_DISABLE_WEB_SEARCH=1`.
+`YOTTACODE_DISABLE_WEB_SEARCH=1`. xAI also enables provider-native
+`x_search` by default so Grok can search X posts, users, and threads; use the
+`YOTTACODE_X_SEARCH_*` filters below to narrow that surface.
 
 For Ollama and generic OpenAI-compatible endpoints, hosted provider tools stay
 off by default. Those models can use the local `fetch_url` tool instead.
@@ -218,9 +219,10 @@ Most state lives under `~/.yottacode/`:
   checkpoints/<session>/         /checkpoints + Esc Esc snapshot store
   index.sqlite                   FTS5 index for /recall
   USER.md                        optional global user memory (human-only)
-  memory/<name>.md               agent-managed user-scope memories
-  memory/MEMORY.md               auto-generated index of user-scope memories
-  projects/<slug>/memory/        agent-managed project-scope memories (per-user)
+  memory/user/<name>.md          agent-managed user-scope memories
+  memory/user/MEMORY.md          auto-generated index of user-scope memories
+  memory/projects/<slug>/        agent-managed project-scope memories (per-user);
+                                 subagent run transcripts nest in subagents/
   config.toml                    tunables (context watermarks, retrieval, memory, checkpoints)
 ```
 

@@ -23,6 +23,33 @@ func newTestTranscript(t *testing.T, agentName string) (*transcriptFile, string)
 	return tr, path
 }
 
+// TestOpenTranscript_CreatesMissingParentDir pins the lazy-creation the
+// startup wiring now relies on: TranscriptDir is resolved (not created)
+// at session start, so the first dispatch's openTranscript must MkdirAll
+// the missing parent itself. If this regressed, a subagent run would
+// silently lose its transcript (openTranscript swallows the open error
+// and returns a no-op writer).
+func TestOpenTranscript_CreatesMissingParentDir(t *testing.T) {
+	// Path two levels below a dir that does not exist yet — mirrors a
+	// fresh project whose memory/projects/<slug>/subagents/ tree was
+	// never created at startup.
+	parent := filepath.Join(t.TempDir(), "projects", "demo", "subagents")
+	path := filepath.Join(parent, "Explore-abc123.md")
+	cfg := &subagents.AgentConfig{Name: "Explore", Source: "test"}
+	tr := openTranscript(path, cfg, agentArgs{Prompt: "do the thing"})
+	t.Cleanup(func() { tr.close() })
+
+	if tr.f == nil {
+		t.Fatal("openTranscript returned a no-op writer; parent dir was not created")
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("transcript file not created at %q: %v", path, err)
+	}
+	if !strings.Contains(readTranscript(t, path), "do the thing") {
+		t.Errorf("transcript missing the task prompt; header not written")
+	}
+}
+
 func readTranscript(t *testing.T, path string) string {
 	t.Helper()
 	b, err := os.ReadFile(path)

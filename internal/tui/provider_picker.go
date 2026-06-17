@@ -37,13 +37,6 @@ type providerMenuItem struct {
 	Key      string             // tag for the inline-action dispatcher
 }
 
-// providerMenuActionList was the inline tag for the standalone
-// "List" entry. List + Use collapsed into a single "Use" action
-// (the use-list already shows the providers + lets you switch);
-// this constant remains here only to break a stale reference if a
-// branch carried the old code, and is unused by the current menu.
-const providerMenuActionList = "list"
-
 // providerPickerState holds the in-flight Bubbletea overlay for
 // /provider. Layered state machine: menu → action-specific picker.
 // The picker stays open across mode transitions so Esc can pop
@@ -104,7 +97,7 @@ type providerPickerState struct {
 
 	// addCuratedModels is the embedded catalog snapshot for the
 	// picked entry's kind, when that kind is curated
-	// (anthropic/openai/gemini) AND the catalog is non-empty. When
+	// (anthropic/openai/gemini/xai) AND the catalog is non-empty. When
 	// populated, the form renders a list under "Default model" and
 	// Up/Down on that field navigates the list (mirrors the wizard's
 	// stepConfigure picker). When empty, the form falls back to the
@@ -431,16 +424,17 @@ func populateAddFields(p *providerPickerState, e wizard.CatalogEntry, inputWidth
 		p.addLabels = append(p.addLabels, "API key")
 	}
 
-	// Default model. For curated kinds (anthropic/openai/gemini) we
-	// load the embedded catalog and let the user pick a model with
-	// Up/Down — same UX the wizard's stepConfigure offers, so a user
-	// adding a provider mid-session doesn't have to remember the
-	// current model tag. The textinput is still kept (pre-filled with
-	// the catalog default and editable) so the user can still type in
-	// a non-catalog tag — useful when our embedded list lags a vendor
-	// release. When the catalog is empty for a curated kind (Gemini
-	// today, anything pre-refresh) we fall back to the free-form
-	// placeholder; the renderer surfaces a "(catalog empty — run
+	// Default model. For curated kinds (anthropic/openai/gemini/xai)
+	// we load the curated catalog (embedded catalog.gen.json, plus the
+	// local models.dev snapshot for Gemini) and let the user pick a
+	// model with Up/Down — same UX the wizard's stepConfigure offers,
+	// so a user adding a provider mid-session doesn't have to remember
+	// the current model tag. The textinput is still kept (pre-filled
+	// with the catalog default and editable) so the user can still
+	// type in a non-catalog tag — useful when our list lags a vendor
+	// release. When the catalog is empty for a curated kind (anything
+	// pre-refresh) we fall back to the free-form placeholder; the
+	// renderer surfaces a "(catalog empty — run
 	// `go run ./cmd/yotta-models refresh`)" hint, matching the
 	// wizard's wording so the operator knows the fix.
 	model := textinput.New()
@@ -466,15 +460,17 @@ func populateAddFields(p *providerPickerState, e wizard.CatalogEntry, inputWidth
 		model.SetValue("gpt-5.5")
 	case e.Kind == "copilot":
 		model.SetValue("claude-haiku-4.5")
-	case catalog.IsCuratedKind(e.Kind):
+	case e.Kind == "xai":
+		// xAI has a stable hosted default we can safely pre-fill in the TUI
+		// Add form. Keep the curated catalog loaded too, when present, so the
+		// user can still arrow-pick another Grok model instead of typing it.
+		model.SetValue("grok-4.20-0309-non-reasoning")
 		p.addCuratedModels = catalog.Get(e.Kind)
+	case catalog.IsCuratedKind(e.Kind):
+		p.addCuratedModels = catalog.Curated(e.Kind)
 	}
-	// Always start the model field empty for non-openai-auth — even
-	// when the curated catalog is populated, we want the user to make
-	// an explicit pick (Up/Down to choose from the list, or type a
-	// tag). The commitProviderAdd guard refuses to save with an empty
-	// value, so this both surfaces the catalog (so the user knows
-	// what's available) and forces a deliberate choice.
+	// xAI has a stable default; other curated cloud providers still start
+	// empty so the user deliberately chooses from the embedded list.
 	if model.Value() == "" {
 		model.Placeholder = wizard.FreeFormModelPlaceholder(e.Name)
 	}

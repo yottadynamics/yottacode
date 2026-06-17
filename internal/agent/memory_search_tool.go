@@ -73,7 +73,7 @@ type memorySearchArgs struct {
 	Limit int    `json:"limit"`
 }
 
-func (t *MemorySearchTool) Execute(_ context.Context, argsJSON string) (string, error) {
+func (t *MemorySearchTool) Execute(ctx context.Context, argsJSON string) (string, error) {
 	var a memorySearchArgs
 	if err := json.Unmarshal([]byte(argsJSON), &a); err != nil {
 		return "", fmt.Errorf("memory_search: invalid args: %w", err)
@@ -122,7 +122,7 @@ func (t *MemorySearchTool) Execute(_ context.Context, argsJSON string) (string, 
 		Strategy: strategy,
 	}
 
-	scored := memory.SelectWithEmbeddingsScored(entries, a.Query, cfg, t.Embedder)
+	scored := memory.SelectWithEmbeddingsScored(ctx, entries, a.Query, cfg, t.Embedder)
 
 	// Drop zero-relevance entries: with MinScore=0 the selector returns
 	// every memory up to the limit (score 0 included), which would label

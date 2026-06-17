@@ -8,6 +8,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/yottadynamics/yottacode/internal/catalog"
 	"github.com/yottadynamics/yottacode/internal/wizard"
 )
 
@@ -234,8 +235,8 @@ func TestProviderPicker_MenuRendersClaudeCodeStyle(t *testing.T) {
 	m, _ = typeAndEnter(t, m, "/provider")
 	got := stripANSI(m.View())
 	for _, want := range []string{
-		"❯",      // cursor glyph
-		"Use",    // labels (no leading numbers per Phase 5b)
+		"❯",   // cursor glyph
+		"Use", // labels (no leading numbers per Phase 5b)
 		"Add",
 		"Remove",
 	} {
@@ -812,15 +813,15 @@ func TestProviderPicker_AddFreeFormRejectsBlankModel(t *testing.T) {
 		m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyDown})
 	}
 	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter}) // → addKindMode
-	// Every catalog entry is now free-form (the curated list moved to
+	// Every catalog entry without an embedded model list is free-form (the curated list lives in
 	// internal/catalog/catalog.gen.json). Pick the first non-curated
 	// kind so the test exercises the "default model required" path
-	// without depending on catalog state. Ollama / xai / nvidia-nim
-	// all qualify; we look for any non-anthropic/openai/gemini kind.
+	// without depending on catalog state. Ollama / nvidia-nim / custom
+	// all qualify; curated cloud kinds do not.
 	target := -1
 	for i, e := range m.providerPicker.addCatalog {
 		switch e.Kind {
-		case "anthropic", "openai", "gemini", "openai-auth", "copilot":
+		case "anthropic", "openai", "gemini", "xai", "openai-auth", "copilot":
 			// openai-auth and copilot are excluded too: their model
 			// fields are pre-filled since per-user lists are only
 			// populated post-login.
@@ -1297,7 +1298,11 @@ func TestProviderPicker_AddFormContract_AllCloudProviders(t *testing.T) {
 			if keyIdx < 0 {
 				t.Errorf("%s: form missing API key field — every cloud provider needs one", tc.kindName)
 			}
-			if v := strings.TrimSpace(m.providerPicker.addFields[modelIdx].Value()); v != "" {
+			if v := strings.TrimSpace(m.providerPicker.addFields[modelIdx].Value()); tc.kindName == "xai" {
+				if v != "grok-4.20-0309-non-reasoning" {
+					t.Errorf("xai: model field default = %q, want grok-4.20-0309-non-reasoning", v)
+				}
+			} else if v != "" {
 				t.Errorf("%s: model field should start empty (no auto-prefill); got %q",
 					tc.kindName, v)
 			}
@@ -1311,6 +1316,9 @@ func TestProviderPicker_AddFormContract_AllCloudProviders(t *testing.T) {
 			// catalog is populated for this kind.
 			if keyIdx >= 0 {
 				m.providerPicker.addFields[keyIdx].SetValue("test-key-" + tc.kindName)
+			}
+			if tc.kindName == "xai" {
+				m.providerPicker.addFields[modelIdx].SetValue("")
 			}
 			m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
 			if !m.providerPickerOpen {
@@ -1665,5 +1673,38 @@ func TestProviderPicker_AddOpenAIAuthStartsInlineLogin(t *testing.T) {
 	}
 	if cmd == nil {
 		t.Errorf("expected a tea.Cmd to drive StartLogin from picker path; got nil")
+	}
+}
+
+// TestProviderPicker_GeminiAddFormUsesCuratedCatalog verifies the
+// /provider Add form's "Default model" picker for Gemini shows the
+// curated catalog — embedded entries plus the models.dev merge — the
+// same list the /model picker overlay offers. Guards against the form
+// regressing to the raw embedded catalog (catalog.Get), which would
+// hide newly published Gemini IDs from the default-model pick.
+func TestProviderPicker_GeminiAddFormUsesCuratedCatalog(t *testing.T) {
+	m := newTestModel(t)
+	seedProviderConfig(t)
+	m, _ = typeAndEnter(t, m, "/provider")
+	m = navigateToMenuItem(t, m, "Add")
+	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter}) // → addKindMode
+	m = navigateToKind(t, m, "gemini")
+	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter}) // → addFieldsMode
+
+	got := m.providerPicker.addCuratedModels
+	if len(got) == 0 {
+		t.Fatalf("gemini add form should populate the curated model picker")
+	}
+	ids := map[string]bool{}
+	for _, mm := range got {
+		ids[mm.ID] = true
+	}
+	for _, mm := range catalog.Get("gemini") {
+		if !ids[mm.ID] {
+			t.Errorf("embedded gemini model %s missing from add-form picker", mm.ID)
+		}
+	}
+	if merged := modelsDevOnlyGeminiID(t); !ids[merged] {
+		t.Errorf("add-form picker missing models.dev-merged model %s", merged)
 	}
 }

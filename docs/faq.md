@@ -68,7 +68,7 @@ Repo-specific context: architecture, commands, conventions, gotchas, and project
 
 ## How does the agent remember things across sessions?
 
-The agent has two tools — `memory_save` and `memory_forget` — that let it write and delete typed markdown memories during a conversation. Memories live under `~/.yottacode/memory/` (user scope) and `~/.yottacode/projects/<slug>/memory/` (per-repo scope). See [Memory](memory.md) for details.
+The agent has two tools — `memory_save` and `memory_forget` — that let it write and delete typed markdown memories during a conversation. Memories live under `~/.yottacode/memory/user/` (user scope) and `~/.yottacode/memory/projects/<slug>/` (per-repo scope). See [Memory](memory.md) for details.
 
 ## How do I delete a memory?
 

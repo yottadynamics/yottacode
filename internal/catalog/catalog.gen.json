@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-06-02T14:29:13Z",
+  "generated_at": "2026-06-10T18:33:37Z",
   "models": [
     {
       "id": "claude-opus-4-6",
@@ -41,6 +41,114 @@
         "vision": true,
         "pdf": true,
         "structured_outputs": true
+      }
+    },
+    {
+      "id": "gemini-2.0-flash",
+      "display_name": "Gemini 2.0 Flash",
+      "provider": "gemini",
+      "context_window": 1048576,
+      "max_output": 8192,
+      "released_at": "0001-01-01T00:00:00Z",
+      "description": "Gemini 2.0 Flash",
+      "capabilities": {
+        "thinking": false
+      }
+    },
+    {
+      "id": "gemini-2.5-flash",
+      "display_name": "Gemini 2.5 Flash",
+      "provider": "gemini",
+      "context_window": 1048576,
+      "max_output": 65536,
+      "released_at": "0001-01-01T00:00:00Z",
+      "description": "Stable version of Gemini 2.5 Flash, our mid-size multimodal model that supports up to 1 million tokens, released in June of 2025.",
+      "capabilities": {
+        "thinking": true
+      }
+    },
+    {
+      "id": "gemini-2.5-pro",
+      "display_name": "Gemini 2.5 Pro",
+      "provider": "gemini",
+      "context_window": 1048576,
+      "max_output": 65536,
+      "released_at": "0001-01-01T00:00:00Z",
+      "description": "Stable release (June 17th, 2025) of Gemini 2.5 Pro",
+      "capabilities": {
+        "thinking": true
+      }
+    },
+    {
+      "id": "gemini-3-pro-image",
+      "display_name": "Nano Banana Pro",
+      "provider": "gemini",
+      "context_window": 131072,
+      "max_output": 32768,
+      "released_at": "0001-01-01T00:00:00Z",
+      "description": "Gemini 3 Pro Image",
+      "capabilities": {
+        "thinking": true
+      }
+    },
+    {
+      "id": "gemini-3.5-flash",
+      "display_name": "Gemini 3.5 Flash",
+      "provider": "gemini",
+      "context_window": 1048576,
+      "max_output": 65536,
+      "released_at": "0001-01-01T00:00:00Z",
+      "description": "Gemini 3.5 Flash",
+      "capabilities": {
+        "thinking": true
+      }
+    },
+    {
+      "id": "gemini-pro-latest",
+      "display_name": "Gemini Pro Latest",
+      "provider": "gemini",
+      "context_window": 1048576,
+      "max_output": 65536,
+      "released_at": "0001-01-01T00:00:00Z",
+      "description": "Latest release of Gemini Pro",
+      "capabilities": {
+        "thinking": true
+      }
+    },
+    {
+      "id": "gemma-4-26b-a4b-it",
+      "display_name": "Gemma 4 26B A4B IT",
+      "provider": "gemini",
+      "context_window": 262144,
+      "max_output": 32768,
+      "released_at": "0001-01-01T00:00:00Z",
+      "description": "Gemma 4 26B A4B IT",
+      "capabilities": {
+        "thinking": true
+      }
+    },
+    {
+      "id": "gemma-4-31b-it",
+      "display_name": "Gemma 4 31B IT",
+      "provider": "gemini",
+      "context_window": 262144,
+      "max_output": 32768,
+      "released_at": "0001-01-01T00:00:00Z",
+      "description": "Gemma 4 31B IT",
+      "capabilities": {
+        "thinking": true
+      }
+    },
+    {
+      "id": "nano-banana-pro-preview",
+      "display_name": "Nano Banana Pro",
+      "provider": "gemini",
+      "context_window": 131072,
+      "max_output": 32768,
+      "released_at": "0001-01-01T00:00:00Z",
+      "description": "Gemini 3 Pro Image Preview",
+      "capabilities": {
+        "thinking": true
       }
     },
     {

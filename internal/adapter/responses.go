@@ -203,14 +203,20 @@ func (a *responsesAdapter) ChatStream(ctx context.Context, messages []Message, t
 				}
 
 			case "response.function_call_arguments.done":
-				// The .done event carries the full arguments string; we
-				// don't need to accumulate the .delta events.
+				// The .done event carries the full arguments string; validate it before
+				// committing the call to history so a truncated fragment cannot poison
+				// every later Responses request.
 				if pc := pending[evt.ItemID]; pc != nil {
-					finalCalls = append(finalCalls, ToolCall{
+					tc := ToolCall{
 						ID:       pc.id,
 						Name:     pc.name,
 						ArgsJSON: evt.Arguments,
-					})
+					}
+					if err := validateToolCallForHistory(&tc); err != nil {
+						out <- StreamEvent{Kind: EventErr, Err: err}
+						return
+					}
+					finalCalls = append(finalCalls, tc)
 					delete(pending, evt.ItemID)
 				}
 
@@ -308,7 +314,7 @@ func splitForResponses(ms []Message) (instructions string, items []responses.Res
 				items = append(items, responses.ResponseInputItemParamOfMessage(m.Content, responses.EasyInputMessageRoleAssistant))
 			}
 			for _, tc := range m.ToolCalls {
-				items = append(items, responses.ResponseInputItemParamOfFunctionCall(tc.ArgsJSON, tc.ID, tc.Name))
+				items = append(items, responses.ResponseInputItemParamOfFunctionCall(safeToolArgsJSON(tc.ArgsJSON), tc.ID, tc.Name))
 			}
 		case RoleTool:
 			items = append(items, responses.ResponseInputItemParamOfFunctionCallOutput(m.ToolCallID, m.Content))
@@ -323,6 +329,15 @@ func splitForResponses(ms []Message) (instructions string, items []responses.Res
 func toResponsesTools(tools []Tool, cfg Config, profile ProviderProfile) ([]responses.ToolUnionParam, error) {
 	out := make([]responses.ToolUnionParam, 0, len(tools)+len(profile.EnabledBuiltinTools))
 	for _, t := range tools {
+		// Prefer provider-native search over yottacode's local web_search
+		// function when the upstream exposes one. xAI rejects a request that
+		// contains both its hosted {"type":"web_search"} tool and a custom
+		// function named "web_search" as duplicate tool names; skipping the
+		// local function also steers the model toward richer hosted search
+		// results and citations.
+		if t.Name == "web_search" && hasBuiltinTool(profile.EnabledBuiltinTools, BuiltinToolWebSearch) {
+			continue
+		}
 		ft := responses.FunctionToolParam{
 			Name:        t.Name,
 			Description: openai.String(t.Description),
