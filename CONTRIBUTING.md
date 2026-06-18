@@ -109,11 +109,14 @@ adapter, or refreshing the embedded model catalog — see
 
 Please do **not** open public issues for security vulnerabilities. Report them
 privately through GitHub's "Report a vulnerability" button under the
-repository's **Security** tab, or contact the maintainers directly. For
-background on yottacode's approval and path-safety model, see
+repository's **Security** tab, or follow the private reporting path in
+[`SECURITY.md`](SECURITY.md). For background on yottacode's approval and
+path-safety model, see
 [`docs/security-and-allow-lists.md`](docs/security-and-allow-lists.md).
 
 ## Code of conduct
 
 Be respectful, constructive, and patient. We want yottacode to be a welcoming
-project for contributors of all backgrounds.
+project for contributors of all backgrounds. See
+[`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md) for the community standards and
+private reporting path.
