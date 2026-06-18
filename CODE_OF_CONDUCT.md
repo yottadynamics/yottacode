@@ -62,7 +62,7 @@ protecting the community.
 ## Reporting
 
 If you experience or witness unacceptable behavior, report it privately to the
-maintainers at `conduct@yottadynamics.com`.
+maintainers at `hello@yottadynamics.com`.
 
 Include as much context as you can safely share: links, screenshots, timestamps,
 and any prior related interactions. Maintainers will review reports as quickly

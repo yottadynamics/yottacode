@@ -637,6 +637,55 @@ func TestAdapter_SetsDefaultMaxTokens(t *testing.T) {
 	}
 }
 
+// captureChatRequestWithUsageProfile records one chat-completions request from
+// an adapter whose usage-support flag has been forced for the test. The real
+// NVIDIA NIM profile disables usage reporting, but the server must remain an
+// httptest URL so the test never reaches the network.
+func captureChatRequestWithUsageProfile(t *testing.T, supportsUsage bool) map[string]any {
+	t.Helper()
+	var gotBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(raw, &gotBody)
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, sseBody(
+			`{"id":"c","object":"chat.completion.chunk","created":1,"model":"t","choices":[{"index":0,"delta":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`,
+		))
+	}))
+	t.Cleanup(srv.Close)
+
+	ad := newChatAdapter(Config{BaseURL: srv.URL, APIKey: "test", Model: "test"})
+	ad.profile.SupportsUsageReporting = supportsUsage
+	_, _, _, errs := drainEvents(ad.ChatStream(context.Background(), []Message{{Role: RoleUser, Content: "ping"}}, nil))
+	if len(errs) > 0 {
+		t.Fatalf("unexpected errors: %v", errs)
+	}
+	return gotBody
+}
+
+func TestAdapter_OmitsStreamOptionsWhenUsageUnsupported(t *testing.T) {
+	// NVIDIA NIM and local/free endpoints do not expose meaningful usage
+	// reporting in yottacode; omitting stream_options avoids an optional
+	// compatibility surface that has produced empty NIM completions.
+	got := captureChatRequestWithUsageProfile(t, false)
+	if _, ok := got["stream_options"]; ok {
+		t.Fatalf("stream_options should be omitted when usage is unsupported; got %+v", got["stream_options"])
+	}
+}
+
+func TestAdapter_SendsUsageStreamOptionsWhenUsageSupported(t *testing.T) {
+	// Paid remote OpenAI-compatible providers still get streaming usage so
+	// final messages can populate /usage with provider-reported token counts.
+	got := captureChatRequestWithUsageProfile(t, true)
+	streamOptions, ok := got["stream_options"].(map[string]any)
+	if !ok {
+		t.Fatalf("stream_options should be an object when usage is supported; got %+v", got["stream_options"])
+	}
+	if streamOptions["include_usage"] != true {
+		t.Fatalf("include_usage = %v, want true", streamOptions["include_usage"])
+	}
+}
+
 func TestAdapter_ProfileDetection(t *testing.T) {
 	cases := []struct {
 		name string

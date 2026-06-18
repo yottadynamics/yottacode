@@ -224,7 +224,7 @@ configuration. A model that instead emits the whole tool call as plain text
 (rather than a structured call) is a separate limitation that normalization
 cannot fix.
 
-`/usage` reports token usage for every provider and links the billing dashboard for the paid cloud ones; it does not compute a dollar figure (no provider exposes per-model pricing on the inference key). Ollama and NVIDIA NIM (`openai-compatible` pointed at `integrate.api.nvidia.com`) have no billing dashboard — token counts only. See [cost.md](cost.md).
+`/usage` reports token usage for every provider and links the billing dashboard for the paid cloud ones; it does not compute a dollar figure (no provider exposes per-model pricing on the inference key). Ollama and NVIDIA NIM (`openai-compatible` pointed at `integrate.api.nvidia.com`) have no billing dashboard — token counts only — and yottacode omits optional streaming usage probes for them to stay compatible with stricter OpenAI-compatible gateways. See [cost.md](cost.md).
 
 ## Diagnostics
 
