@@ -82,13 +82,19 @@ func (a *chatAdapter) ChatStream(ctx context.Context, messages []Message, tools 
 			Model:     a.model,
 			Messages:  toOpenAIMessages(messages),
 			MaxTokens: openai.Int(ChatDefaultMaxTokens),
-			// IncludeUsage gives us a final chunk with token counts
-			// (choices empty, usage populated). Harmless for providers
-			// that ignore the flag (Ollama returns zero-valued usage,
-			// which the /usage renderer treats as "no data").
-			StreamOptions: openai.ChatCompletionStreamOptionsParam{
+		}
+		// IncludeUsage gives us a final chunk with token counts
+		// (choices empty, usage populated), but only request it from
+		// providers where yottacode can surface meaningful usage. Some
+		// free/local OpenAI-compatible endpoints — notably NVIDIA NIM's
+		// hosted integrate.api.nvidia.com pool — have returned empty
+		// completions when this optional flag is present, so omit it for
+		// those endpoints instead of spending compatibility on data the UI
+		// intentionally ignores.
+		if a.profile.SupportsUsageReporting {
+			params.StreamOptions = openai.ChatCompletionStreamOptionsParam{
 				IncludeUsage: openai.Bool(true),
-			},
+			}
 		}
 		if len(tools) > 0 {
 			params.Tools = toOpenAITools(tools)

@@ -80,6 +80,15 @@ a separate model limitation that argument normalization cannot fix; switch to a
 model that supports structured tool calling (e.g. NVIDIA's Nemotron, Mistral,
 Qwen, or DeepSeek on the same endpoint).
 
+## `adapter: empty completion` on NVIDIA NIM
+
+Some NVIDIA NIM models have returned an empty streaming response when optional
+streaming usage reporting is requested. yottacode omits that optional usage
+probe for NVIDIA NIM and other local/free OpenAI-compatible endpoints, so
+**upgrading resolves it**. If the error persists, run `yottacode doctor` to
+verify the model id and endpoint, then try a fresh session to rule out a stale
+provider-side stream or over-large context.
+
 ## `unexpected end of JSON input`, or a provider 400 that repeats every turn
 
 Two linked symptoms from one cause — a tool call that arrived with empty or
