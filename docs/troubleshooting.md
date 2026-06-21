@@ -181,6 +181,12 @@ Large pastes are shown as a short marker to keep the input line usable. The full
 
 The TUI uses inline rendering so your terminal owns scrollback. If rendering becomes messy after a resize, clear the terminal or restart yottacode; the saved session can be resumed.
 
+## ChatGPT OAuth: callback port already in use
+
+`openai-auth` uses a fixed loopback callback port required by the OAuth redirect allow-list. If sign-in says the callback port is already in use, another sign-in is still holding it — often an abandoned browser flow in this or another yottacode instance.
+
+Retrying inline now closes any pending sign-in in the current TUI before starting a new one. If the holder is a different process or user, free that process and retry; on Unix-like systems, `sudo lsof -i :1455` shows the owner when permissions allow it.
+
 ## ChatGPT OAuth: `Missing required parameter: 'input[n].output'`
 
 This is not usually a login failure. It means the `openai-auth` backend rejected the conversation history because one prior tool-result item was missing the required `output` field. Common causes are a saved/resumed session with an interrupted tool call, or an adapter history-conversion bug exposed by the stricter Responses/Codex payload validator.

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"syscall"
 )
 
 // CallbackResult is what the loopback handler delivered: either the
@@ -70,6 +71,18 @@ func NewCallbackServer(redirectURI string) (*CallbackServer, error) {
 func (c *CallbackServer) Start() error {
 	l, err := net.Listen("tcp", c.Addr)
 	if err != nil {
+		// EADDRINUSE here almost always means an earlier sign-in is
+		// still holding the loopback port. The redirect port is fixed
+		// by OpenAI's allow-list, so it can't be sidestepped with a
+		// different one — surface something the user can act on instead
+		// of the raw "bind: address already in use".
+		if errors.Is(err, syscall.EADDRINUSE) {
+			_, port, _ := net.SplitHostPort(c.Addr)
+			return fmt.Errorf("callback: port %s is already in use — an earlier openai sign-in may "+
+				"still be running (in another yottacode instance, possibly under a different user); "+
+				"free it and retry. Find the holder with `sudo lsof -i :%s` (root is needed to see a "+
+				"socket another user owns): %w", port, port, err)
+		}
 		return fmt.Errorf("callback: listen %s: %w", c.Addr, err)
 	}
 	c.listener = l

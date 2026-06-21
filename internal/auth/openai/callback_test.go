@@ -110,6 +110,37 @@ func TestCallbackServerWaitContextCancel(t *testing.T) {
 	}
 }
 
+// TestCallbackServerStartPortInUse covers the case the user actually
+// hits: the loopback port is already bound (an abandoned sign-in, or a
+// second instance). Start must fail with an actionable message that
+// names the port, not the raw "bind: address already in use".
+func TestCallbackServerStartPortInUse(t *testing.T) {
+	occupied, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer occupied.Close()
+	_, port, err := net.SplitHostPort(occupied.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	srv, err := NewCallbackServer("http://127.0.0.1:" + port + "/auth/callback")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.Start(); err == nil {
+		srv.Close()
+		t.Fatal("Start should fail when the port is already bound")
+	} else {
+		for _, want := range []string{"already in use", port, "lsof"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("Start error = %q, want it to contain %q", err.Error(), want)
+			}
+		}
+	}
+}
+
 // freePort grabs a random free port by binding to :0 and immediately
 // closing. Inevitably racy in theory, fine in practice for a test.
 func freePort(t *testing.T) string {
