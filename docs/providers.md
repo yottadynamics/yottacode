@@ -35,7 +35,7 @@ yottacode --model <your-model-id> --base-url https://api.openai.com/v1 --api-key
 yottacode setup
 ```
 
-The wizard writes provider profiles to `~/.yottacode/config.toml`.
+The wizard writes provider profiles to `~/.yottacode/config.toml`. When Ollama is running, setup probes the local server, shows detected model tags in a picker, and can enable semantic memory search with a detected or newly pulled local embedding model.
 
 ## Provider profiles
 

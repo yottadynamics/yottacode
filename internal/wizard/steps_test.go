@@ -332,6 +332,78 @@ func TestUpdateConfigure_DownArrowDrivesCuratedPicker(t *testing.T) {
 	}
 }
 
+// TestUpdateConfigure_OllamaDetectedModelsUsePicker verifies that a
+// reachable Ollama instance with detected models gets the same picker
+// UX as curated providers instead of a text box plus passive
+// "installed:" hint. Arrow keys move through the detected local
+// models, and Enter commits the highlighted model.
+func TestUpdateConfigure_OllamaDetectedModelsUsePicker(t *testing.T) {
+	ollama := *FindCatalogEntry("ollama")
+	m := newWizardModel(context.Background(), Options{})
+	in := m.newProviderInputs(ollama)
+	in.field = 2
+	in.modelCursor = 0
+	m.inputs = []providerInputs{in}
+	m.configIdx = 0
+	m.step = stepConfigure
+	m.ollamaProbe = OllamaProbeResult{
+		Reachable: true,
+		BaseURL:   "http://localhost:11434/v1",
+		Models:    []string{"all-minilm:latest", "qwen3.5:latest", "qwen3.5:9b"},
+	}
+
+	out := stripANSI(m.viewConfigure())
+	if !strings.Contains(out, "all-minilm:latest") || !strings.Contains(out, "qwen3.5:9b") {
+		t.Fatalf("Ollama picker should list detected models; got:\n%s", out)
+	}
+	if strings.Contains(out, "installed:") {
+		t.Fatalf("Ollama detected models should be picker rows, not an installed hint; got:\n%s", out)
+	}
+	if m.focusActiveConfigField() != nil {
+		t.Fatalf("Ollama picker should not focus the free-form model input")
+	}
+
+	updated, _ := m.updateConfigure(tea.KeyMsg{Type: tea.KeyDown})
+	wm := updated.(wizardModel)
+	if wm.inputs[0].modelCursor != 1 {
+		t.Fatalf("Down should select the second Ollama model; got cursor %d", wm.inputs[0].modelCursor)
+	}
+	updated, _ = wm.updateConfigure(tea.KeyMsg{Type: tea.KeyEnter})
+	wm = updated.(wizardModel)
+	if wm.inputs[0].chosenModel != "qwen3.5:latest" {
+		t.Errorf("Enter should commit highlighted Ollama model; got %q", wm.inputs[0].chosenModel)
+	}
+}
+
+// TestEmbedDetectedModelUsesPicker locks in the semantic-memory
+// follow-up screen: a detected embedding model still asks whether to
+// enable semantic search, but offers a Yes/Skip picker rather than a
+// one-line y/n prompt.
+func TestEmbedDetectedModelUsesPicker(t *testing.T) {
+	m := newWizardModel(context.Background(), Options{})
+	m.width = 100
+	m.step = stepConfigure
+	m.embedSubStep = true
+	m.embedChosenModel = "all-minilm:latest"
+	m.embedCursor = 1
+
+	if got := m.configHeading(); got != "Configure semantic memory" {
+		t.Fatalf("config heading = %q, want semantic memory heading", got)
+	}
+	out := stripANSI(m.viewEmbedSubStep())
+	if !strings.Contains(out, "Enable semantic memory search?") || !strings.Contains(out, "Yes") || !strings.Contains(out, "Skip") {
+		t.Fatalf("detected embedding screen should render Yes/Skip picker; got:\n%s", out)
+	}
+	if strings.Contains(out, "y/enter") {
+		t.Fatalf("detected embedding screen should not render legacy y/n hint; got:\n%s", out)
+	}
+	updated, _ := m.updateEmbedSubStep(tea.KeyMsg{Type: tea.KeyEnter})
+	wm := updated.(wizardModel)
+	if wm.embedChosenModel != "" {
+		t.Errorf("Skip row should clear detected embedding model; got %q", wm.embedChosenModel)
+	}
+}
+
 // TestFocusActiveConfigField_SecondProviderFreeForm replays the
 // reported bug: first provider non-free-form (anthropic), second
 // free-form (custom). After advancing configIdx, the customModel
