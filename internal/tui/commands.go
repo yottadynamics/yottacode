@@ -567,6 +567,9 @@ func providerAdd(m Model, args []string) (Model, tea.Cmd) {
 		}
 		m.appendLine(styleAuto.Render(statusActionLine("openai-auth", "starting browser sign-in…")))
 		m.appendLine(styleAuto.Render(statusHintLine(fmt.Sprintf("profile %q will be saved after sign-in", p.Name))))
+		// Reclaim the loopback port from any sign-in the user abandoned
+		// (e.g. closed the browser) so this retry can bind.
+		m.closePendingOpenAIAuthLogin()
 		return m, startInlineOpenAIAuthLoginCmd(m.parentCtx)
 	}
 	if p.Kind == "copilot" {

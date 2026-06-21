@@ -1,7 +1,9 @@
 package tui
 
 import (
+	"context"
 	"errors"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -57,7 +59,7 @@ func TestHandleInlineOpenAIAuthURL_Error(t *testing.T) {
 func TestHandleInlineOpenAIAuthDone_Success(t *testing.T) {
 	m := newTestModel(t)
 	m.openAIAuthPending = &openaiauth.PendingLogin{}
-	m, cmd := handleInlineOpenAIAuthDone(m, inlineOpenAIAuthDoneMsg{err: nil, accessToken: "tkn"})
+	m, cmd := handleInlineOpenAIAuthDone(m, inlineOpenAIAuthDoneMsg{pending: m.openAIAuthPending, err: nil, accessToken: "tkn"})
 
 	if m.openAIAuthPending != nil {
 		t.Errorf("openAIAuthPending should be cleared on completion")
@@ -113,7 +115,7 @@ func TestHandleInlineOpenAIAuthScanDone_Failure(t *testing.T) {
 func TestHandleInlineOpenAIAuthDone_Failure(t *testing.T) {
 	m := newTestModel(t)
 	m.openAIAuthPending = &openaiauth.PendingLogin{}
-	m, cmd := handleInlineOpenAIAuthDone(m, inlineOpenAIAuthDoneMsg{err: errors.New("user cancelled")})
+	m, cmd := handleInlineOpenAIAuthDone(m, inlineOpenAIAuthDoneMsg{pending: m.openAIAuthPending, err: errors.New("user cancelled")})
 
 	if m.openAIAuthPending != nil {
 		t.Errorf("openAIAuthPending should be cleared even on failure")
@@ -151,7 +153,7 @@ func TestHandleInlineOpenAIAuthDone_FailureDropsPendingAdd(t *testing.T) {
 		becomesActive: true,
 		fromPicker:    true,
 	}
-	m, _ = handleInlineOpenAIAuthDone(m, inlineOpenAIAuthDoneMsg{err: errors.New("user cancelled")})
+	m, _ = handleInlineOpenAIAuthDone(m, inlineOpenAIAuthDoneMsg{pending: m.openAIAuthPending, err: errors.New("user cancelled")})
 
 	if m.openAIAuthPendingAdd != nil {
 		t.Errorf("pendingAdd stash should be dropped on failure")
@@ -192,7 +194,7 @@ func TestHandleInlineOpenAIAuthDone_SuccessPersistsPendingAdd(t *testing.T) {
 		becomesActive: true,
 		fromPicker:    true,
 	}
-	m, cmd := handleInlineOpenAIAuthDone(m, inlineOpenAIAuthDoneMsg{err: nil, accessToken: "tkn"})
+	m, cmd := handleInlineOpenAIAuthDone(m, inlineOpenAIAuthDoneMsg{pending: m.openAIAuthPending, err: nil, accessToken: "tkn"})
 
 	if m.openAIAuthPendingAdd != nil {
 		t.Errorf("pendingAdd stash should be cleared after persist")
@@ -277,5 +279,76 @@ func TestHandleInlineOpenAIAuthURL_DropsPendingAddOnError(t *testing.T) {
 	out := stripANSI(m.transcript.String())
 	if !strings.Contains(out, `"chatgpt" was not saved`) {
 		t.Errorf("transcript should explain the profile wasn't saved; got:\n%s", out)
+	}
+}
+
+// TestClosePendingOpenAIAuthLoginReclaimsPort reproduces the
+// closed-the-browser-can't-retry case: an abandoned sign-in leaves its
+// callback server bound (the inline flow has no timeout, so Wait never
+// returns). Closing the pending login must release the port so the
+// next sign-in can bind it.
+func TestClosePendingOpenAIAuthLoginReclaimsPort(t *testing.T) {
+	// Grab a free loopback port, then stand up a real pending login on
+	// it — the same machinery the trigger sites use, minus the browser.
+	probe, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, port, err := net.SplitHostPort(probe.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	probe.Close()
+
+	pending, err := openaiauth.StartLogin(context.Background(), openaiauth.LoginOptions{
+		RedirectURI: "http://127.0.0.1:" + port + "/auth/callback",
+		OpenBrowser: func(string) error { return nil },
+	})
+	if err != nil {
+		t.Fatalf("StartLogin: %v", err)
+	}
+
+	m := newTestModel(t)
+	m.openAIAuthPending = pending
+	m.closePendingOpenAIAuthLogin()
+
+	if m.openAIAuthPending != nil {
+		t.Error("openAIAuthPending should be nil after close")
+	}
+	// The listener must be gone — a fresh bind on the same port proves
+	// the abandoned sign-in no longer holds it.
+	l, err := net.Listen("tcp", "127.0.0.1:"+port)
+	if err != nil {
+		t.Fatalf("port %s still held after close: %v", port, err)
+	}
+	l.Close()
+}
+
+// TestHandleInlineOpenAIAuthDone_IgnoresStaleCompletion guards the race
+// a superseded sign-in opens: an abandoned login's Wait stays parked
+// until its timeout, and when that finally fires its stale result must
+// NOT tear down the current attempt — otherwise the live login saves
+// tokens but its provider profile is silently dropped.
+func TestHandleInlineOpenAIAuthDone_IgnoresStaleCompletion(t *testing.T) {
+	m := newTestModel(t)
+	current := &openaiauth.PendingLogin{}
+	m.openAIAuthPending = current
+	m.openAIAuthPendingAdd = &pendingOpenAIAuthAdd{
+		add: providerops.AddProvider{Name: "chatgpt", Kind: "openai-auth"},
+	}
+
+	// A different, superseded login reports completion (here its Wait
+	// timed out). The pointer mismatch must make the handler a no-op.
+	stale := &openaiauth.PendingLogin{}
+	m, cmd := handleInlineOpenAIAuthDone(m, inlineOpenAIAuthDoneMsg{pending: stale, err: errors.New("context deadline exceeded")})
+
+	if m.openAIAuthPending != current {
+		t.Errorf("current pending login must be untouched by a stale completion")
+	}
+	if m.openAIAuthPendingAdd == nil {
+		t.Errorf("pending provider-add must NOT be dropped by a stale completion")
+	}
+	if cmd != nil {
+		t.Errorf("stale completion should produce no follow-up cmd")
 	}
 }

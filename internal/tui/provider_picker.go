@@ -633,6 +633,9 @@ func (m Model) persistProviderAdd(picked wizard.CatalogEntry, name, baseURL, api
 		}
 		m.appendLine(styleAuto.Render(statusActionLine("openai-auth", "starting browser sign-in…")))
 		m.appendLine(styleAuto.Render(statusHintLine(fmt.Sprintf("profile %q will be saved after sign-in", add.Name))))
+		// Reclaim the loopback port from any sign-in the user abandoned
+		// (e.g. closed the browser) so this retry can bind.
+		m.closePendingOpenAIAuthLogin()
 		return m, startInlineOpenAIAuthLoginCmd(m.parentCtx)
 	}
 	if picked.Kind == "copilot" {
