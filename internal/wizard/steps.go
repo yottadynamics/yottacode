@@ -1333,6 +1333,9 @@ func FreeFormModelPlaceholder(name string) string {
 
 // configHeading builds the per-provider configure header.
 func (m wizardModel) configHeading() string {
+	if m.embedSubStep {
+		return "Configure semantic memory"
+	}
 	if m.configIdx >= len(m.inputs) {
 		return "Configure provider"
 	}
@@ -1362,11 +1365,10 @@ func (m *wizardModel) focusActiveConfigField() tea.Cmd {
 	case "baseURL":
 		return in.baseURL.Focus()
 	case "model":
-		// Curated providers with a populated catalog (anthropic/
-		// openai/gemini after a refresh) drive the picker via arrow
-		// keys, so no textinput needs focus. Everything else takes a
-		// model tag through customModel.
-		if len(in.curatedModels) == 0 {
+		// Model pickers drive selection via arrow keys, so no
+		// textinput needs focus. Free-form providers still focus
+		// customModel so typed model tags are accepted.
+		if !m.modelPickerActive(*in) {
 			return in.customModel.Focus()
 		}
 	}
@@ -1408,12 +1410,11 @@ func (m wizardModel) updateConfigure(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	in := &m.inputs[m.configIdx]
-	// When the curated picker is active (model field on a curated kind
-	// with a populated catalog), Down/Up navigate the model list rather
+	// When a picker is active (curated cloud providers, or Ollama with
+	// detected local models), Down/Up navigate the model list rather
 	// than switching wizard fields. Tab/Shift+Tab still switch fields
-	// in that case so the user can jump back to key without leaving
-	// the screen.
-	curatedPickerActive := m.fieldKind() == "model" && len(in.curatedModels) > 0
+	// so the user can jump back to key without leaving the screen.
+	modelPickerActive := m.modelPickerActive(*in)
 	switch msg.String() {
 	case "tab":
 		in.field = nextField(*in)
@@ -1422,8 +1423,8 @@ func (m wizardModel) updateConfigure(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		in.field = prevField(*in)
 		return m, m.focusActiveConfigField()
 	case "down":
-		if curatedPickerActive {
-			if in.modelCursor < len(in.curatedModels)-1 {
+		if modelPickerActive {
+			if in.modelCursor < len(m.modelPickerIDs(*in))-1 {
 				in.modelCursor++
 			}
 			return m, nil
@@ -1431,7 +1432,7 @@ func (m wizardModel) updateConfigure(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		in.field = nextField(*in)
 		return m, m.focusActiveConfigField()
 	case "up":
-		if curatedPickerActive {
+		if modelPickerActive {
 			if in.modelCursor > 0 {
 				in.modelCursor--
 			}
@@ -1504,14 +1505,13 @@ func (m wizardModel) updateConfigure(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				in.field = 0
 				return m, m.focusActiveConfigField()
 			}
-			// Validate model. Curated kinds with a populated catalog
-			// commit the highlighted catalog row; everything else takes
-			// the textinput value.
-			if len(in.curatedModels) > 0 {
-				if in.modelCursor < 0 || in.modelCursor >= len(in.curatedModels) {
+			// Validate model. Providers with a picker commit the
+			// highlighted row; everything else takes the textinput value.
+			if ids := m.modelPickerIDs(*in); len(ids) > 0 {
+				if in.modelCursor < 0 || in.modelCursor >= len(ids) {
 					in.modelCursor = 0
 				}
-				in.chosenModel = in.curatedModels[in.modelCursor].ID
+				in.chosenModel = ids[in.modelCursor]
 			} else {
 				name := strings.TrimSpace(in.customModel.Value())
 				if name == "" {
@@ -1553,18 +1553,18 @@ func (m wizardModel) updateConfigure(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "baseURL":
 		in.baseURL, cmd = in.baseURL.Update(msg)
 	case "model":
-		// Curated picker handles Up/Down at the top of updateConfigure
+		// Model pickers handle Up/Down at the top of updateConfigure
 		// (so they don't fall through to nextField); j/k vim-style
 		// keystrokes still arrive here and drive the cursor too. Free-
 		// form providers route everything to customModel.
-		if len(in.curatedModels) > 0 {
+		if m.modelPickerActive(*in) {
 			switch msg.String() {
 			case "k":
 				if in.modelCursor > 0 {
 					in.modelCursor--
 				}
 			case "j":
-				if in.modelCursor < len(in.curatedModels)-1 {
+				if in.modelCursor < len(m.modelPickerIDs(*in))-1 {
 					in.modelCursor++
 				}
 			}
@@ -1573,6 +1573,31 @@ func (m wizardModel) updateConfigure(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 	return m, cmd
+}
+
+// modelPickerActive reports whether the current model field is driven
+// by arrow-key selection instead of a textinput. Ollama joins curated
+// providers here only when the probe returned concrete local models.
+func (m wizardModel) modelPickerActive(in providerInputs) bool {
+	return m.fieldKind() == "model" && len(m.modelPickerIDs(in)) > 0
+}
+
+// modelPickerIDs returns the model IDs currently shown in the default
+// model picker. Curated providers use the catalog; Ollama uses the
+// live probe so detected local models are selectable instead of being
+// hidden in a passive hint below a free-form input.
+func (m wizardModel) modelPickerIDs(in providerInputs) []string {
+	if len(in.curatedModels) > 0 {
+		ids := make([]string, 0, len(in.curatedModels))
+		for _, model := range in.curatedModels {
+			ids = append(ids, model.ID)
+		}
+		return ids
+	}
+	if in.entry.Name == "ollama" && len(m.ollamaProbe.Models) > 0 {
+		return m.ollamaProbe.Models
+	}
+	return nil
 }
 
 func nextField(in providerInputs) int {
@@ -1709,13 +1734,20 @@ func (m wizardModel) viewConfigure() string {
 				b.WriteString("  " + truncate(line, lineWidthFor(m.width)) + "\n")
 			}
 		}
+	} else if in.entry.Name == "ollama" && len(m.ollamaProbe.Models) > 0 {
+		for i, model := range m.ollamaProbe.Models {
+			selected := i == in.modelCursor && m.fieldKind() == "model"
+			label := truncate(model, w-2)
+			if selected {
+				b.WriteString(m.renderRowBar(label) + "\n")
+				continue
+			}
+			b.WriteString("  " + label + "\n")
+		}
 	} else {
 		b.WriteString("  ")
 		b.WriteString(in.customModel.View())
 		switch {
-		case in.entry.Name == "ollama" && len(m.ollamaProbe.Models) > 0:
-			b.WriteString("\n  ")
-			b.WriteString(styleHint.Render("installed: " + strings.Join(m.ollamaProbe.Models, ", ")))
 		case in.entry.Kind == "openai-auth":
 			b.WriteString("\n  ")
 			b.WriteString(styleHint.Render("(your full model list is discovered after browser sign-in below — gpt-5.5 is the universal default)"))
@@ -1739,10 +1771,22 @@ func (m wizardModel) updateEmbedSubStep(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	// Auto-detected: show confirmation (y/enter = accept, n/esc = decline).
+	// Detected mode: let the same picker choose whether to enable the
+	// already-installed embedding model or skip semantic search.
 	if m.embedChosenModel != "" && m.embedPullErr == nil {
 		switch msg.String() {
+		case "up", "k":
+			if m.embedCursor > 0 {
+				m.embedCursor--
+			}
+		case "down", "j":
+			if m.embedCursor < 1 {
+				m.embedCursor++
+			}
 		case "enter", "y":
+			if m.embedCursor == 1 {
+				m.embedChosenModel = ""
+			}
 			m.embedSubStep = false
 			m.providerCursor = m.configIdx
 			m.step = stepProviders
@@ -1836,8 +1880,26 @@ func (m wizardModel) viewEmbedSubStep() string {
 		b.WriteString("\n  ")
 		b.WriteString(styleOK.Render("found: ") + truncate(m.embedChosenModel, w-10))
 		b.WriteString("\n\n  ")
-		b.WriteString(truncate("Enable semantic memory search?  y/enter = yes, n = skip", w-2))
-		b.WriteString("\n")
+		b.WriteString(truncate("Enable semantic memory search?", w-2))
+		b.WriteString("\n  ")
+		b.WriteString(styleHint.Render(truncate("Uses the detected local embedding model for relevance-scored memory.", w-2)))
+		b.WriteString("\n\n")
+		rows := []struct {
+			label string
+			desc  string
+		}{
+			{"Yes", m.embedChosenModel},
+			{"Skip", "use keyword search only (BM25)"},
+		}
+		for i, r := range rows {
+			labelStyle := lipgloss.NewStyle()
+			if i == m.embedCursor {
+				b.WriteString(m.renderRowBar(r.label+"  "+r.desc) + "\n")
+				continue
+			}
+			line := labelStyle.Render(r.label) + "  " + styleMuted.Render(r.desc)
+			b.WriteString("  " + truncate(line, w-2) + "\n")
+		}
 		return b.String()
 	}
 
