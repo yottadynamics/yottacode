@@ -2090,7 +2090,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// user input above takes priority; the wake fires once nothing the
 		// user explicitly typed is pending. Like that path, the watermark
 		// ctxCmd is dropped — the wake is the next intended turn.
-		if len(m.pendingSubagentWakes) > 0 {
+		if len(m.pendingSubagentWakes) > 0 && !m.summarizing {
 			next, cmd := m.startSubagentWakeTurn()
 			return next, cmd
 		}
@@ -2269,6 +2269,13 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.appendLine(styleAuto.Render(fmt.Sprintf(
 				"[summarize] compressed history (~%d → ~%d tokens). Snapshot: %s",
 				msg.tokensBefore, m.contextTokens, abbrevHome(msg.snapshotPath))))
+		}
+		if len(m.pendingSubagentWakes) > 0 {
+			// A notify_on_done completion may have arrived while summarization
+			// was running. Start it only after the compacted session has been
+			// saved and recall-indexed so the two flows cannot race writes.
+			next, cmd := m.startSubagentWakeTurn()
+			return next, cmd
 		}
 		return m, nil
 	}
@@ -3717,6 +3724,12 @@ func (m Model) startTurn(input string) (tea.Model, tea.Cmd) {
 // Returns (m, nil) when nothing is queued. Caller must ensure no turn is
 // active (the idle inbox path, or the turnEndedMsg drain).
 func (m Model) startSubagentWakeTurn() (tea.Model, tea.Cmd) {
+	if m.summarizing {
+		// Summarization owns a session save + recall index at completion. Keep
+		// notify_on_done wakes queued until the compacted snapshot lands so wake
+		// turns cannot overlap or out-order those writes.
+		return m, nil
+	}
 	wakes := m.pendingSubagentWakes
 	m.pendingSubagentWakes = nil
 	if len(wakes) == 0 {
@@ -3841,6 +3854,9 @@ func (m Model) injectSubagentResult(task subagents.Task) (tea.Model, tea.Cmd, st
 	}
 	if m.turnActive {
 		return m, nil, "a turn is running — wait for it to finish, then inject"
+	}
+	if m.summarizing {
+		return m, nil, "context summarization is running — wait for it to finish, then inject"
 	}
 	m.pendingSubagentWakes = append(m.pendingSubagentWakes, agent.SubagentBackgroundDone{
 		TaskID:    task.ID,

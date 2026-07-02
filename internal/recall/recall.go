@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -41,10 +42,21 @@ CREATE VIRTUAL TABLE IF NOT EXISTS messages USING fts5(
 );
 `
 
+const (
+	// indexSessionBusyAttempts bounds the retry loop for transient SQLite
+	// writer contention. The sleep schedule is short enough for the TUI to
+	// stay responsive, but long enough to ride out overlapping turn-end,
+	// summarize, and startup backfill writes.
+	indexSessionBusyAttempts = 6
+	indexSessionBusyDelay    = 50 * time.Millisecond
+)
+
 // Index is the writable handle on the FTS5 database. Safe to share across
-// goroutines because database/sql serializes operations.
+// goroutines; writes through one Index are serialized, and transient SQLite
+// writer contention from other handles/processes is retried.
 type Index struct {
-	db *sql.DB
+	db      *sql.DB
+	writeMu sync.Mutex
 }
 
 // Open returns the index living at ~/.yottacode/index.sqlite, creating the
@@ -68,11 +80,15 @@ func openAt(path string) (*Index, error) {
 	if err != nil {
 		return nil, err
 	}
-	// WAL mode allows concurrent reads during writes; busy_timeout
-	// retries for 5 s instead of failing immediately with SQLITE_BUSY
-	// when Backfill and the TUI goroutine write at the same time.
+	// SQLite permits only one writer at a time. Keep this handle on a single
+	// connection so its PRAGMA settings apply consistently and database/sql
+	// cannot start two concurrent writer connections behind this Index.
+	db.SetMaxOpenConns(1)
+	// WAL mode allows concurrent reads during writes; busy_timeout gives
+	// each attempt a short in-driver wait before IndexSession's retry loop
+	// decides whether to back off and try again.
 	db.Exec("PRAGMA journal_mode=WAL")
-	db.Exec("PRAGMA busy_timeout=5000")
+	db.Exec("PRAGMA busy_timeout=1000")
 	if _, err := db.Exec(schema); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("recall: ensure schema: %w", err)
@@ -91,6 +107,26 @@ func (idx *Index) IndexSession(s *session.Session) error {
 	if s == nil || s.ID == "" {
 		return errors.New("recall: nil or empty-id session")
 	}
+
+	// Serialize writes issued through this Index so turn-end saves, summarize
+	// completion, and background backfill cannot overlap inside one handle. A
+	// separate process or separately-opened handle can still hold SQLite's writer
+	// lock, so the retry loop below handles SQLITE_BUSY from outside this mutex.
+	idx.writeMu.Lock()
+	defer idx.writeMu.Unlock()
+
+	var err error
+	for attempt := 0; attempt < indexSessionBusyAttempts; attempt++ {
+		err = idx.indexSessionOnce(s)
+		if err == nil || !isSQLiteBusy(err) {
+			return err
+		}
+		time.Sleep(time.Duration(attempt+1) * indexSessionBusyDelay)
+	}
+	return err
+}
+
+func (idx *Index) indexSessionOnce(s *session.Session) error {
 	tx, err := idx.db.Begin()
 	if err != nil {
 		return err
@@ -129,6 +165,13 @@ func (idx *Index) IndexSession(s *session.Session) error {
 		}
 	}
 	return tx.Commit()
+}
+
+// isSQLiteBusy recognizes modernc SQLite writer-contention errors after they
+// have been wrapped with operation context by IndexSession.
+func isSQLiteBusy(err error) bool {
+	s := err.Error()
+	return strings.Contains(s, "SQLITE_BUSY") || strings.Contains(s, "database is locked")
 }
 
 // Hit is one search result: the message that matched plus the surrounding
@@ -235,7 +278,10 @@ func (idx *Index) searchRaw(query string, limit int) ([]Hit, error) {
 // package's tests. Panics on failure (which would mean the test fixture
 // itself is broken). Lives in the production file so it's exported, but
 // is only intended to be called from *_test.go.
-func MustOpenForTest(t interface{ TempDir() string; Fatalf(string, ...any) }) *Index {
+func MustOpenForTest(t interface {
+	TempDir() string
+	Fatalf(string, ...any)
+}) *Index {
 	idx, err := openAt(filepath.Join(t.TempDir(), "test.sqlite"))
 	if err != nil {
 		t.Fatalf("recall.MustOpenForTest: %v", err)
