@@ -245,10 +245,11 @@ When the parent is in auto mode (entered via `Shift+Tab`,
   subcommands silently auto-execute; the safety floor (`run_bash`,
   `git_commit`, `git_checkpoint`, `rollback`) still triggers
   approval.
-- The child's iteration budget is `childIterationCap × 4` = **160**
-  iterations (vs. the standard 40), inherited from auto mode's
-  multiplier. A child that runs deeper than 40 model→tool round-trips
-  is rare but legitimate for "do all this work unattended" workflows.
+- The child's iteration budget is fixed at **100** iterations. The
+  parent's auto-mode 4× multiplier and yolo's uncapped budget do not
+  apply to children; the cap stays bounded, but gives read-heavy flows
+  like `/code-review` enough room to finish instead of burning tokens
+  and returning `iter-cap`.
 - Foreground subagent + safety-floor tool → child's `ApprovalNeeded`
   forwards to the parent's modal (per the approval-flow rule below).
   The `[subagent:<type>]` badge makes it clear which agent is asking
@@ -425,11 +426,11 @@ allowlist filter, every time. Subagents cannot spawn subagents.
 
 ## Iteration cap
 
-Child subagents always run under the standard `MaxIterations` cap (40
-in the current build). The parent's auto-mode 4× multiplier and yolo's
-uncapped budget do **not** apply to children. A subagent that needs
-more than 40 model→tool round-trips is almost certainly stuck — split
-the work into separate subagent calls instead.
+Child subagents always run under a fixed **100-iteration** cap. The
+parent's auto-mode 4× multiplier and yolo's uncapped budget do **not**
+apply to children. This keeps delegated loops bounded while giving
+read-heavy jobs like `/code-review` enough room to finish; if a child
+still hits the cap, split the work into smaller subagent calls.
 
 ## Token cost
 
@@ -647,35 +648,23 @@ composing. The user sees the merged result.
 subagent invocations to see whether the current shared-file behavior
 causes real friction.
 
-### Should auto-mode subagents get the full 4× iteration budget?
+### Should subagents get a higher fixed iteration budget?
 
-**Current behavior**: a child under an auto-mode parent gets
-`childIterationCap × 4` = **160 iterations**. The 4× multiplier
-matches what the parent gets under auto mode.
+**Current behavior**: every child runs with a fixed **100-iteration**
+cap. The parent's auto-mode 4× multiplier and yolo's uncapped budget do
+not apply to children, so subagent loops remain bounded regardless of
+parent mode.
 
-**Concern**: 160 iterations of unattended, auto-approving mutations
-is a lot. A subagent that legitimately needs more than the standard
-40 iterations is rare; one that needs more than 80 is almost
-certainly stuck. The current cap optimizes for the rare "let it run"
-case at the cost of much wider blast radius for stuck runs.
+**Decision**: raised the fixed child cap from 40 to 100 after real
+`/code-review` finder runs hit `iter-cap`. A finder that exhausts its
+budget wastes the tokens it already spent and drops review coverage, so
+for review/research workflows a too-low cap is worse UX than a slower
+successful run. The existing concurrency cap and session token budget
+remain the backstops against runaway fan-out.
 
-**Proposed alternatives:**
-
-1. **Tighter ceiling for children regardless of parent mode**:
-   `childIterationCap = 40` always, no multiplier. The "let it run"
-   intent applies to the parent, not transitively. Conservative.
-2. **Scaled multiplier**: `childIterationCap × 2` under auto mode =
-   80 iterations. Recognizes auto mode's intent without going as wide
-   as the parent's 4×. Middle ground.
-3. **Per-foreground-vs-background ceiling**: foreground children
-   inherit 4× (user is watching); background children stay at 40
-   regardless (unattended → bound tighter). Honors the foreground/
-   background symmetry already at play in the approval-flow design.
-
-**Decision deferred**: revisit once we've observed real subagent
-runs hitting the cap. If `runner_iter_cap` outcomes are common,
-that's evidence the current 160 is reasonable; if they're never
-hit, evidence the lower cap would suffice.
+**Future option**: add a per-call or per-agent `max_iterations` override
+so `/code-review` can tune low/medium/high separately without making the
+same cap apply to every subagent type.
 
 ### Should auto-mode subagent mutations be visible in scrollback?
 

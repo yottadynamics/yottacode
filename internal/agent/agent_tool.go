@@ -55,9 +55,10 @@ const MaxForegroundSubagents = 8
 // or the yolo uncapped path: subagent runs should bound themselves,
 // even when the parent session is in auto/yolo. The user opted into
 // "let the parent run unattended" — they did not opt into "let the
-// parent spawn unbounded child loops." A child that needs more than
-// this many iterations is almost certainly stuck.
-const childIterationCap = 40
+// parent spawn unbounded child loops." The cap is still high enough
+// for read-heavy workflows like /code-review, where an iter-cap wastes
+// the child's tokens and drops review coverage.
+const childIterationCap = 100
 
 // childActivityTranscriptHeader is the literal header prefixing every
 // subagent transcript file. The visible separator makes it obvious

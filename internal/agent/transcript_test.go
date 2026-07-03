@@ -140,13 +140,13 @@ func TestTranscript_ErroredFooterTag(t *testing.T) {
 func TestTranscript_TurnDoneAndIterCapBecomeRules(t *testing.T) {
 	tr, path := newTestTranscript(t, "Explore")
 	tr.writeEvent(TurnDone{})
-	tr.writeEvent(IterCap{Max: 40})
+	tr.writeEvent(IterCap{Max: 100})
 	tr.close()
 	got := readTranscript(t, path)
 	if !strings.Contains(got, "---") {
 		t.Errorf("TurnDone / IterCap should emit a horizontal rule; got:\n%s", got)
 	}
-	if !strings.Contains(got, "iteration cap hit (max 40)") {
+	if !strings.Contains(got, "iteration cap hit (max 100)") {
 		t.Errorf("IterCap should mention the cap value; got:\n%s", got)
 	}
 	if strings.Contains(got, "turn_done") {
