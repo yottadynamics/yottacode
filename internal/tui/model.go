@@ -3,7 +3,6 @@ package tui
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -110,6 +109,12 @@ type Config struct {
 	// registration; nil disables /subagents (tests that don't wire
 	// subagents in are still valid).
 	Subagents *subagents.Registry
+
+	// ExperimentalEnabled is the sorted list of experimental feature
+	// names switched on this session (experimental.Set.EnabledNames).
+	// The /experimental overlay renders the full catalog and marks these
+	// on; empty means none are enabled.
+	ExperimentalEnabled []string
 
 	// AgentTool is the dispatch tool registered on Cfg.Registry. The
 	// TUI keeps a typed reference so the slash command can introspect
@@ -315,6 +320,11 @@ type Model struct {
 	// and to introspect the available agent configs from /subagents.
 	subagentTool *agent.AgentTool
 
+	// experimentalEnabled lists the experimental feature names switched on
+	// this session (sorted). The /experimental overlay renders the full
+	// catalog and marks these on.
+	experimentalEnabled []string
+
 	// mcpManager owns the lifecycle of every configured MCP client.
 	// Nil when the session has no MCP servers configured. The /mcp
 	// slash command reads from it; run.go invokes Stop on shutdown.
@@ -371,6 +381,20 @@ type Model struct {
 	// without waiting for the next user input. Buffer is generous
 	// (32) so a flurry of completions can't block the goroutines.
 	subagentInbox chan agent.SubagentBackgroundDone
+
+	// pendingSubagentWakes queues background completions whose spawner set
+	// notify_on_done while a turn is in flight (a wake can't interrupt a
+	// live turn). The turnEndedMsg drain starts a single wake turn from the
+	// whole queue once the in-flight turn finishes; an idle completion
+	// wakes the model immediately instead of queueing.
+	pendingSubagentWakes []agent.SubagentBackgroundDone
+
+	// banneredSubagentDone records every background task id we've already
+	// painted a completion banner for, so the self-healing reconciliation
+	// (reconcileSubagentCompletions) can detect terminal registry tasks
+	// whose SubagentBackgroundDone event was dropped on a full inbox and
+	// surface them rather than losing the completion (and any wake) silently.
+	banneredSubagentDone map[string]bool
 
 	// Persistent session
 	sess *session.Session
@@ -919,8 +943,10 @@ func New(parent context.Context, c Config) Model {
 		fileCfg:                c.FileCfg,
 		subagentTasks:          c.Subagents,
 		subagentTool:           c.AgentTool,
+		experimentalEnabled:    c.ExperimentalEnabled,
 		mcpManager:             c.MCPManager,
 		subagentInbox:          make(chan agent.SubagentBackgroundDone, 32),
+		banneredSubagentDone:   map[string]bool{},
 		customSlash:            buildCustomSlash(c.CustomCommands),
 		skillSlash:             buildSkillSlash(c.Skills),
 		skills:                 c.Skills,
@@ -1986,10 +2012,16 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.turnCancel = nil
 		}
 		m.commitStreaming()
-		if msg.err != nil && !errors.Is(msg.err, context.Canceled) && !errors.Is(msg.err, context.DeadlineExceeded) {
-			for _, line := range strings.Split(strings.TrimRight(msg.err.Error(), "\n"), "\n") {
-				m.appendLine(styleError.Render("✗ " + line))
-			}
+		// turnEndedMsg.err is intentionally NOT rendered here. agent.Turn
+		// emits ErrorEvent for every user-visible error before returning,
+		// so this path would duplicate the message. The only errors that
+		// bypass ErrorEvent are ctx.Err() from internal send() failures —
+		// those are user-initiated cancellations and don't warrant a red
+		// "✗ context canceled" line.
+		// Persist the subagent task index with the session so its task-ids
+		// resolve on a later resume.
+		if m.subagentTasks != nil {
+			m.sess.SubagentTasks = m.subagentTasks.Export()
 		}
 		if err := m.sess.Save(); err != nil {
 			m.appendLine(styleError.Render(fmt.Sprintf("⚠ session save failed: %v", err)))
@@ -2015,6 +2047,13 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// and fires auto-summarize in this same tick, so the session
 		// heals instead of failing again on the next send.
 		m.noteWindowOverflow(msg.err)
+
+		// Self-healing: surface any background completion whose inbox event
+		// was dropped (non-blocking send under burst, or while the loop was
+		// suspended in the pager) by reconciling against the durable registry
+		// state. Runs before the wake drain below so a recovered
+		// notify_on_done task still gets its wake turn.
+		m.reconcileSubagentCompletions()
 		// Drain any user message that was queued but never consumed
 		// by the agent loop (the model finished without a tool round).
 		// Move it to pendingInputAfterTurn so the existing auto-submit
@@ -2044,6 +2083,15 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if queued := m.pendingInputAfterTurn; queued != "" {
 			m.pendingInputAfterTurn = ""
 			next, cmd := m.startTurn(queued)
+			return next, cmd
+		}
+		// Background completions that asked to wake the model (notify_on_done)
+		// and landed while this turn was running now get their turn. Queued
+		// user input above takes priority; the wake fires once nothing the
+		// user explicitly typed is pending. Like that path, the watermark
+		// ctxCmd is dropped — the wake is the next intended turn.
+		if len(m.pendingSubagentWakes) > 0 && !m.summarizing {
+			next, cmd := m.startSubagentWakeTurn()
 			return next, cmd
 		}
 		if ctxCmd != nil {
@@ -2195,6 +2243,9 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.lastWatermarkPct = float64(m.contextTokens) / float64(window)
 		}
 
+		if m.subagentTasks != nil {
+			m.sess.SubagentTasks = m.subagentTasks.Export()
+		}
 		if err := m.sess.Save(); err != nil {
 			m.appendLine(styleError.Render(fmt.Sprintf("⚠ session save after summarize: %v", err)))
 		}
@@ -2218,6 +2269,13 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.appendLine(styleAuto.Render(fmt.Sprintf(
 				"[summarize] compressed history (~%d → ~%d tokens). Snapshot: %s",
 				msg.tokensBefore, m.contextTokens, abbrevHome(msg.snapshotPath))))
+		}
+		if len(m.pendingSubagentWakes) > 0 {
+			// A notify_on_done completion may have arrived while summarization
+			// was running. Start it only after the compacted session has been
+			// saved and recall-indexed so the two flows cannot race writes.
+			next, cmd := m.startSubagentWakeTurn()
+			return next, cmd
 		}
 		return m, nil
 	}
@@ -3658,6 +3716,158 @@ func (m Model) startTurn(input string) (tea.Model, tea.Cmd) {
 	return m.startTurnWithDisplay(input, "")
 }
 
+// startSubagentWakeTurn drains the pending background-completion wakes
+// (notify_on_done) into a single turn that injects their results, so the
+// model is re-prompted to act on work it dispatched fire-and-forget. The
+// scrollback completion banner already showed each result to the user, so
+// the turn renders a compact display label rather than re-dumping the body.
+// Returns (m, nil) when nothing is queued. Caller must ensure no turn is
+// active (the idle inbox path, or the turnEndedMsg drain).
+func (m Model) startSubagentWakeTurn() (tea.Model, tea.Cmd) {
+	if m.summarizing {
+		// Summarization owns a session save + recall index at completion. Keep
+		// notify_on_done wakes queued until the compacted snapshot lands so wake
+		// turns cannot overlap or out-order those writes.
+		return m, nil
+	}
+	wakes := m.pendingSubagentWakes
+	m.pendingSubagentWakes = nil
+	if len(wakes) == 0 {
+		return m, nil
+	}
+	input := buildSubagentWakeMessage(wakes)
+	var label string
+	if len(wakes) == 1 {
+		label = fmt.Sprintf("↩ background subagent %s (%s) finished — acting on its result",
+			wakes[0].AgentType, shortTaskID(wakes[0].TaskID))
+	} else {
+		label = fmt.Sprintf("↩ %d background subagents finished — acting on their results", len(wakes))
+	}
+	return m.startTurnWithDisplay(input, label)
+}
+
+// reconcileSubagentCompletions is the self-healing safety net for the
+// background-completion inbox. SubagentBackgroundDone is delivered by a
+// non-blocking send (run.go), so under a burst — or while the Update loop is
+// suspended in the system pager — an event can be dropped and its banner (and
+// any notify_on_done wake) lost. The registry records every task's terminal
+// state durably, so this scans for terminal background tasks we never
+// bannered, paints a banner for each, and queues a wake for any that asked
+// for notify_on_done. Called at each turn boundary so a dropped completion
+// self-heals rather than vanishing. Returns true if it surfaced anything.
+func (m *Model) reconcileSubagentCompletions() bool {
+	if m.subagentTasks == nil {
+		return false
+	}
+	healed := false
+	for _, t := range m.subagentTasks.List() {
+		// Historical tasks are rehydrated from a PRIOR session — they were
+		// surfaced (or not) then; re-bannering or re-waking on them at this
+		// session's first turn boundary would be noise.
+		if !t.Background || t.Historical || t.Status == subagents.TaskRunning || m.banneredSubagentDone[t.ID] {
+			continue
+		}
+		m.banneredSubagentDone[t.ID] = true
+		done := agent.SubagentBackgroundDone{
+			TaskID:       t.ID,
+			AgentType:    t.AgentType,
+			Result:       t.Result,
+			Errored:      t.Errored,
+			Duration:     t.Duration(),
+			TokensUsed:   t.TokensUsed,
+			ToolCalls:    t.ToolCalls,
+			Model:        t.Model,
+			NotifyOnDone: t.NotifyOnDone,
+		}
+		m.appendLine("")
+		m.appendLine(renderSubagentBackgroundDone(done))
+		// Same rule as the inbox arm: user-canceled tasks banner but
+		// never wake — the wake prompt invites a retry of work the
+		// user deliberately killed.
+		if t.NotifyOnDone && !t.CanceledByUser {
+			m.pendingSubagentWakes = append(m.pendingSubagentWakes, done)
+		}
+		healed = true
+	}
+	return healed
+}
+
+// subagentCanceledByUser reports whether a background task was killed
+// via /subagents stop. The SubagentBackgroundDone event doesn't carry
+// the flag, so wake gating consults the registry record.
+func (m Model) subagentCanceledByUser(taskID string) bool {
+	if m.subagentTasks == nil {
+		return false
+	}
+	t, ok := m.subagentTasks.Get(taskID)
+	return ok && t.CanceledByUser
+}
+
+// buildSubagentWakeMessage renders one or more finished background subagents
+// into the user-role message the wake turn injects. It states plainly that
+// these are async completions (not the user typing) and carries each full
+// result so the model can act without a separate get_subagent_result call.
+func buildSubagentWakeMessage(wakes []agent.SubagentBackgroundDone) string {
+	var b strings.Builder
+	if len(wakes) == 1 {
+		b.WriteString("A background subagent you dispatched has finished.\n\n")
+	} else {
+		fmt.Fprintf(&b, "%d background subagents you dispatched have finished.\n\n", len(wakes))
+	}
+	for i, w := range wakes {
+		if i > 0 {
+			b.WriteString("\n---\n\n")
+		}
+		status := "completed"
+		if w.Errored {
+			status = "errored"
+		}
+		fmt.Fprintf(&b, "Subagent: %s (task %s) — %s\n\nResult:\n%s\n",
+			w.AgentType, shortTaskID(w.TaskID), status, strings.TrimRight(w.Result, "\n"))
+	}
+	b.WriteString("\nReview the result(s) above and continue the work they were part of, or report back to the user as appropriate. If a result is empty or errored, decide whether to retry or move on.")
+	return b.String()
+}
+
+// shortTaskID renders the 8-char task-id prefix used across the subagent
+// surfaces, tolerating ids shorter than 8 chars (test fixtures).
+func shortTaskID(id string) string {
+	if len(id) > 8 {
+		return id[:8]
+	}
+	return id
+}
+
+// injectSubagentResult is the user-driven counterpart to notify_on_done:
+// it starts a turn that feeds a finished subagent's result to the model so
+// the user can pull a completed investigation into the conversation on their
+// own terms (the /subagents picker's `i` key). Returns a non-empty status
+// string (and no turn) when it can't inject — still running, no result, or a
+// turn already in flight — for the caller to surface; otherwise it returns
+// the started turn and an empty status.
+func (m Model) injectSubagentResult(task subagents.Task) (tea.Model, tea.Cmd, string) {
+	if task.Status == subagents.TaskRunning {
+		return m, nil, fmt.Sprintf("task %s is still running — wait for it to finish", shortTaskID(task.ID))
+	}
+	if strings.TrimSpace(task.Result) == "" {
+		return m, nil, fmt.Sprintf("task %s has no result to inject", shortTaskID(task.ID))
+	}
+	if m.turnActive {
+		return m, nil, "a turn is running — wait for it to finish, then inject"
+	}
+	if m.summarizing {
+		return m, nil, "context summarization is running — wait for it to finish, then inject"
+	}
+	m.pendingSubagentWakes = append(m.pendingSubagentWakes, agent.SubagentBackgroundDone{
+		TaskID:    task.ID,
+		AgentType: task.AgentType,
+		Result:    task.Result,
+		Errored:   task.Errored,
+	})
+	next, cmd := m.startSubagentWakeTurn()
+	return next, cmd, ""
+}
+
 // startTurnWithDisplay sends `input` to the agent as a user message
 // but renders `displayLabel` (when non-empty) in the transcript
 // instead of the full input. Custom slash commands use this to show
@@ -4197,8 +4407,39 @@ func (m Model) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 		// parent turn ends. Always re-arm the inbox listener so the
 		// next completion lands without delay; pair with the turn
 		// listener when a turn is active so both streams stay drained.
+		//
+		// Dedup against reconcileSubagentCompletions first: MarkDone
+		// lands in the registry strictly BEFORE the inbox send, and the
+		// inbox message races the turnEndedMsg drain — so a completion
+		// arriving at a turn boundary can be bannered (and its wake
+		// queued) by the reconcile pass before this delivered event is
+		// processed. Without the guard the same result double-banners
+		// and fires a SECOND wake turn (duplicate spend, possibly
+		// duplicate actions).
+		if m.banneredSubagentDone[e.TaskID] {
+			if m.turnActive {
+				return m, tea.Batch(waitForSubagentInbox(m.subagentInbox), waitForEvent(m.eventsCh, m.turnErrCh))
+			}
+			return m, waitForSubagentInbox(m.subagentInbox)
+		}
 		m.appendLine("")
 		m.appendLine(renderSubagentBackgroundDone(e))
+		m.banneredSubagentDone[e.TaskID] = true
+		if e.NotifyOnDone && !m.subagentCanceledByUser(e.TaskID) {
+			// The spawner asked to be re-prompted with this result
+			// (notify_on_done). Queue it; if the model is idle, wake it
+			// now with a turn that injects the result so it can act —
+			// otherwise the turnEndedMsg drain starts that turn when the
+			// in-flight one finishes (a wake can't interrupt a live turn).
+			// User-canceled tasks are bannered but never wake the model:
+			// the wake message nudges "decide whether to retry", and
+			// re-running work the user just killed is the wrong default.
+			m.pendingSubagentWakes = append(m.pendingSubagentWakes, e)
+			if !m.turnActive {
+				next, cmd := m.startSubagentWakeTurn()
+				return next, tea.Batch(cmd, waitForSubagentInbox(m.subagentInbox))
+			}
+		}
 		if m.turnActive {
 			return m, tea.Batch(waitForSubagentInbox(m.subagentInbox), waitForEvent(m.eventsCh, m.turnErrCh))
 		}

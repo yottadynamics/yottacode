@@ -55,9 +55,10 @@ const MaxForegroundSubagents = 8
 // or the yolo uncapped path: subagent runs should bound themselves,
 // even when the parent session is in auto/yolo. The user opted into
 // "let the parent run unattended" — they did not opt into "let the
-// parent spawn unbounded child loops." A child that needs more than
-// this many iterations is almost certainly stuck.
-const childIterationCap = 40
+// parent spawn unbounded child loops." The cap is still high enough
+// for read-heavy workflows like /code-review, where an iter-cap wastes
+// the child's tokens and drops review coverage.
+const childIterationCap = 100
 
 // childActivityTranscriptHeader is the literal header prefixing every
 // subagent transcript file. The visible separator makes it obvious
@@ -184,6 +185,15 @@ type AgentTool struct {
 	// nobody will see.
 	AllowBackground bool
 
+	// MaxSessionTokens caps the cumulative ESTIMATED tokens spent across
+	// all subagent runs this session. A new spawn is rejected (with a
+	// recoverable error the model relays) once the registry's
+	// TotalTokensUsed reaches this ceiling — the session-wide backstop the
+	// per-child iteration cap and the concurrency cap can't provide. 0
+	// disables the budget (unbounded). Wired from
+	// config.SubagentSessionTokenBudget by the TUI/oneshot setup.
+	MaxSessionTokens int
+
 	// SystemPromptSuffix is appended to the agent definition's body
 	// when building the child's system prompt. Used to inject runtime
 	// context the static config can't know (currently empty; reserved
@@ -250,6 +260,10 @@ func (t *AgentTool) Schema() map[string]any {
 				"type":        "boolean",
 				"description": "If true, return immediately with a task id; the subagent runs to completion in the background and the result is available via /subagents. Default: false.",
 			},
+			"notify_on_done": map[string]any{
+				"type":        "boolean",
+				"description": "Background only. If true, you are automatically re-prompted with the subagent's result when it finishes (even after this turn ends) so you can act on it — true fire-and-forget delegation. If false (default), the result is silent until you fetch it with get_subagent_result. Do NOT set this when you intend to collect the result yourself with get_subagent_result in the same turn (e.g. a fan-out you immediately wait on) — that would double up. Ignored for foreground.",
+			},
 		},
 		"required": []string{"subagent_type", "prompt"},
 	}
@@ -299,6 +313,7 @@ type agentArgs struct {
 	Description     string `json:"description"`
 	Prompt          string `json:"prompt"`
 	RunInBackground bool   `json:"run_in_background"`
+	NotifyOnDone    bool   `json:"notify_on_done"`
 }
 
 func parseAgentArgs(argsJSON string) agentArgs {
@@ -356,15 +371,28 @@ func (t *AgentTool) Execute(ctx context.Context, argsJSON string) (string, error
 			"or `[experimental]\\nbackground_subagents = true` in ~/.yottacode/config.toml. " +
 			"See docs/experimental.md for details.", nil
 	}
-	if a.RunInBackground && t.Tasks.ActiveCount() >= MaxBackgroundSubagents {
-		return fmt.Sprintf("error: at most %d background subagents may run concurrently (current: %d); wait for one to finish or stop it with /subagents stop <id>",
-			MaxBackgroundSubagents, t.Tasks.ActiveCount()), nil
-	}
-	if !a.RunInBackground && t.Tasks.ActiveForegroundCount() >= MaxForegroundSubagents {
-		return fmt.Sprintf("error: at most %d foreground subagents may run concurrently (current: %d); wait for one of the in-flight subagents to finish before dispatching more",
-			MaxForegroundSubagents, t.Tasks.ActiveForegroundCount()), nil
+	// Session-wide token budget: a backstop against an enthusiastic or
+	// adversarial prompt fanning out unbounded child loops on the user's
+	// key. The per-child iteration cap and the concurrency cap bound one
+	// wave; this bounds the session total. Estimated tokens are recorded at
+	// MarkDone, so this counts COMPLETED spend (running children contribute
+	// 0 until they finish) — which combined with the concurrency cap keeps
+	// the overshoot to at most one in-flight wave. Recoverable error the
+	// model relays so the user can raise the budget or wrap up.
+	if t.MaxSessionTokens > 0 {
+		if used := t.Tasks.TotalTokensUsed(); used >= t.MaxSessionTokens {
+			return fmt.Sprintf("error: this session's subagent token budget (~%d estimated tokens) is exhausted (used ~%d); wait for nothing in particular — the budget is cumulative for the session. Raise it with `[subagents]` `session_token_budget = N` in ~/.yottacode/config.toml, or finish the remaining work without further delegation.",
+				t.MaxSessionTokens, used), nil
+		}
 	}
 
+	// The concurrency cap is enforced atomically at reservation time
+	// (t.Tasks.TryReserve below), NOT with a check-then-Add here: AgentTool
+	// is ParallelSafe, so a parent that emits N Agent calls in one assistant
+	// message runs N Execute goroutines concurrently, and a separate
+	// check-then-Add would let all N observe "under cap" before any inserted
+	// and overshoot the ceiling. Build the task first, then reserve-or-reject
+	// in one locked step.
 	taskID := subagents.NewTaskID()
 	transcriptPath := filepath.Join(t.TranscriptDir, fmt.Sprintf("%s-%s.md", cfg.Name, taskID))
 
@@ -380,10 +408,25 @@ func (t *AgentTool) Execute(ctx context.Context, argsJSON string) (string, error
 		Started:        time.Now(),
 		Status:         subagents.TaskRunning,
 		Background:     a.RunInBackground,
+		NotifyOnDone:   a.RunInBackground && a.NotifyOnDone,
 		TranscriptPath: transcriptPath,
 		Model:          childModel,
 	}
-	t.Tasks.Add(task)
+	// Atomic reserve-or-reject: insert the task only if its class is under
+	// cap, counting + inserting under one registry lock. Background bounds
+	// TOTAL running concurrency (countForegroundOnly=false, matching the old
+	// ActiveCount check); foreground bounds only foreground running tasks.
+	if a.RunInBackground {
+		if !t.Tasks.TryReserve(task, MaxBackgroundSubagents, false) {
+			return fmt.Sprintf("error: at most %d background subagents may run concurrently (current: %d); wait for one to finish or stop it with /subagents stop <id>",
+				MaxBackgroundSubagents, t.Tasks.ActiveCount()), nil
+		}
+	} else {
+		if !t.Tasks.TryReserve(task, MaxForegroundSubagents, true) {
+			return fmt.Sprintf("error: at most %d foreground subagents may run concurrently (current: %d); wait for one of the in-flight subagents to finish before dispatching more",
+				MaxForegroundSubagents, t.Tasks.ActiveForegroundCount()), nil
+		}
+	}
 
 	parentEvents := ParentEvents(ctx)
 	parentDecisions := ParentDecisions(ctx)
@@ -407,10 +450,39 @@ func (t *AgentTool) Execute(ctx context.Context, argsJSON string) (string, error
 		t.Tasks.AttachCancel(taskID, cancel)
 		go func() {
 			defer cancel()
-			// Background: no live UI to forward to (emitToParent nil)
-			// AND no decisions channel to read from. Approval-needed
-			// events auto-deny inside runChild.
-			result, errored, status, tokens := t.runChild(bgCtx, taskID, cfg, a.Prompt, transcript, nil, nil, childAdapter, childModel, childRunOpts{})
+			// This is a bare detached goroutine: a panic anywhere in its
+			// orchestration AROUND runChild — MarkDone, the registry read,
+			// fireBackgroundDone, or the onBackgroundDone callback that runs
+			// TUI code — has no parent frame to catch it and would crash the
+			// whole interactive session. (runChild has its own internal
+			// recovers for the child turn + drain loop; this guards the rest.)
+			// Degrade to an errored terminal task so the slot frees and the
+			// dock stops showing it running — but only if the run hadn't
+			// already reached a terminal state, so a panic in the post-run
+			// notification can't clobber a result the child actually produced.
+			defer func() {
+				if r := recover(); r != nil {
+					err := panicToError("background subagent "+cfg.Name+" goroutine", r)
+					if snap, ok := t.Tasks.Get(taskID); ok && snap.Status == subagents.TaskRunning {
+						t.Tasks.MarkDone(taskID, subagents.TaskErrored, "error: "+err.Error(), true, 0)
+					}
+				}
+			}()
+			// Background: forward informational progress (SubagentStart
+			// already fired above; the ticks below stream into the same
+			// inline card + the dock) so a background subagent reads like
+			// a foreground one WHILE its spawning turn is still active.
+			// Once that turn ends the TUI CLOSES this per-turn event
+			// channel, but the detached child (on context.Background())
+			// keeps emitting — forwardToParent routes those ticks through
+			// trySend, which drops on a closed/full channel instead of
+			// panicking, so a post-turn tick is a no-op rather than a crash
+			// that the runChild recover would turn into a failed run. The
+			// dock keeps updating from the registry's activity ring either
+			// way. decisions stays nil: with no one watching, approval-needed
+			// events still auto-deny inside runChild (the forward path
+			// requires BOTH emitToParent and decisions).
+			result, errored, status, tokens := t.runChild(bgCtx, taskID, cfg, a.Prompt, transcript, emitToParent, nil, childAdapter, childModel, childRunOpts{})
 			t.Tasks.MarkDone(taskID, status, result, errored, tokens)
 			// Read the just-recorded tool-call count off the registry
 			// so the inline card can render accurate stats.
@@ -419,14 +491,15 @@ func (t *AgentTool) Execute(ctx context.Context, argsJSON string) (string, error
 				toolCalls = snap.ToolCalls
 			}
 			t.fireBackgroundDone(SubagentBackgroundDone{
-				TaskID:     taskID,
-				AgentType:  cfg.Name,
-				Result:     result,
-				Errored:    errored,
-				Duration:   time.Since(task.Started),
-				TokensUsed: tokens,
-				ToolCalls:  toolCalls,
-				Model:      childModel,
+				TaskID:       taskID,
+				AgentType:    cfg.Name,
+				Result:       result,
+				Errored:      errored,
+				Duration:     time.Since(task.Started),
+				TokensUsed:   tokens,
+				ToolCalls:    toolCalls,
+				Model:        childModel,
+				NotifyOnDone: a.RunInBackground && a.NotifyOnDone,
 			})
 		}()
 		// Message the model relays back to the user. References the
@@ -548,20 +621,25 @@ func (t *AgentTool) routeChildModel(cfg *subagents.AgentConfig) (Streamer, strin
 // runChild assembles the child LoopConfig + history, runs agent.Turn,
 // translates its events through the in-process translator, and
 // captures the final assistant content for return to the parent.
-// emitToParent may be nil for background runs (no live UI to update);
-// the transcript captures everything either way.
+// emitToParent forwards informational progress (SubagentProgress) to
+// the parent's live event stream; it is non-nil for both foreground
+// and background runs (background passes a non-blocking forwarder so a
+// detached child can't stall — see the spawn site). The transcript
+// captures everything regardless.
 //
-// Approval policy is foreground/background dependent:
+// Approval policy is foreground/background dependent and keys on the
+// DECISIONS channel, not on emitToParent:
 //   - Foreground (emitToParent != nil AND parentDecisions != nil): a
 //     child's ApprovalNeeded forwards through to the parent's modal
 //     so the user can answer it. The verdict routes back to the
 //     child's own decisions channel. The Preview is prefixed with
 //     "[subagent:<type>]" so the user knows which agent wants what.
-//   - Background (emitToParent == nil OR parentDecisions == nil):
-//     auto-deny with a steering message. Nobody's actively watching
-//     — surfacing a modal hours after spawn-time is bad UX. The
-//     escape valve is permissions.json (allowlist the tool the
-//     subagent needs).
+//   - Background (parentDecisions == nil): auto-deny with a steering
+//     message. Nobody's actively watching — surfacing a modal hours
+//     after spawn-time is bad UX. Progress still streams (emitToParent
+//     is set) so the inline card + dock stay live while the spawning
+//     turn is active. The escape valve is permissions.json (allowlist
+//     the tool the subagent needs).
 //
 // childRunOpts carries the optional overrides dispatch needs without
 // turning runChild into a positional-argument soup. The zero value
@@ -1078,15 +1156,21 @@ func (t *AgentTool) unknownSubagentError(name string) string {
 }
 
 // forwardToParent delivers a child event to the parent's event channel.
-// Most events are best-effort — dropped under buffer pressure rather than
-// stalling the child loop (a chatty child must not be able to wedge the
-// parent). But events the child then BLOCKS on a decision for —
-// ApprovalNeeded and PathTrustElevationNeeded — must never be dropped: a
-// lost request leaves the child parked on the decisions channel with no
-// feeder, and for a foreground batch the parent's wg.Wait never returns
-// (frozen UI). For those we use a blocking, ctx-aware send so the request
-// is delivered as soon as the consumer drains (e.g. after the user answers
-// a parent-level modal), unblocking only if the turn itself is canceled.
+// Most events are best-effort — dropped (via trySend) under buffer pressure
+// OR after the per-turn channel is closed, rather than stalling or crashing
+// the child loop (a chatty child must not be able to wedge the parent, and a
+// detached background child outlives the turn that owns this channel). But
+// events the child then BLOCKS on a decision for — ApprovalNeeded and
+// PathTrustElevationNeeded — must never be dropped: a lost request leaves the
+// child parked on the decisions channel with no feeder, and for a foreground
+// batch the parent's wg.Wait never returns (frozen UI). For those we use a
+// blocking, ctx-aware send so the request is delivered as soon as the consumer
+// drains (e.g. after the user answers a parent-level modal), unblocking only
+// if the turn itself is canceled. Those blocking sends are only ever reached
+// on the FOREGROUND path (the background spawn passes decisions=nil, so an
+// approval-needed event auto-denies inside runChild and never forwards), where
+// the parent goroutine is blocked in Execute and the channel stays open — so
+// the closed-channel race is confined to the best-effort default branch.
 func forwardToParent(ctx context.Context, parentEvents chan<- Event, ev Event) {
 	if parentEvents == nil {
 		return
@@ -1098,12 +1182,42 @@ func forwardToParent(ctx context.Context, parentEvents chan<- Event, ev Event) {
 		case <-ctx.Done():
 		}
 	default:
-		select {
-		case parentEvents <- ev:
-		default:
-			// Buffer full and consumer behind — drop this best-effort
-			// event rather than stall. The transcript still captures it.
+		// Best-effort: drop when the consumer is behind (full buffer) OR
+		// when the per-turn channel has already been CLOSED because the
+		// spawning turn ended. A detached background subagent runs on
+		// context.Background() and keeps emitting progress after its
+		// spawning turn closed this channel (the TUI closes the per-turn
+		// events channel the moment agent.Turn returns). A plain
+		// select-with-default still PANICS on a send to a closed channel —
+		// the default guards only a *full* channel, never a *closed* one —
+		// so trySend wraps the send to turn that end-of-turn race into a
+		// clean drop. The registry's activity ring + the transcript remain
+		// the durable record, so a dropped inline tick costs nothing.
+		trySend(parentEvents, ev)
+	}
+}
+
+// trySend performs a non-blocking, panic-safe send of ev on ch, returning
+// false (dropping ev) when the channel is full OR closed. The closed case
+// is the normal end-of-turn state for the per-turn event stream: a plain
+// select-with-default is not enough on its own because a send to a closed
+// channel panics even when a default case is present (the send case counts
+// as "ready"). See forwardToParent's default branch for why a detached
+// background child hits this.
+func trySend(ch chan<- Event, ev Event) (sent bool) {
+	defer func() {
+		// A send on a closed channel panics from inside the select below;
+		// recover degrades it to a dropped event rather than a crash that
+		// the runChild recover would turn into a failed background run.
+		if recover() != nil {
+			sent = false
 		}
+	}()
+	select {
+	case ch <- ev:
+		return true
+	default:
+		return false
 	}
 }
 

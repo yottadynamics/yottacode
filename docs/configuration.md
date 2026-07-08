@@ -484,6 +484,30 @@ env      = { GITHUB_PERSONAL_ACCESS_TOKEN = "$GITHUB_PAT" }
 
 `env` values support `$VAR` substitution from yottacode's process environment so secrets stay out of the config file. v1 supports stdio transport only. See [`mcp.md`](mcp.md) for the full reference, including permission rules (`MCP(...)`), the `/mcp` slash command, and a curated server list.
 
+## Subagents
+
+The `[subagents]` block bounds cumulative subagent spend per session —
+a backstop against an enthusiastic (or adversarial) prompt fanning out
+unbounded child loops on your API key. The per-child iteration cap and
+the concurrency cap bound one wave; this bounds the session total.
+
+```toml
+[subagents]
+session_token_budget = 8000000   # estimated tokens; default 8M
+```
+
+The figure is in **estimated** tokens (the same 4-chars-per-token
+heuristic the status bar uses), counted across every finished subagent
+in the session. Once the budget is exhausted, new spawns return a
+recoverable error to the model instead of running. The cap is always
+on: values `<= 0` fall back to the 8M default rather than disabling it
+— a deliberate floor, since the budget exists precisely for sessions
+nobody is watching. Completed spend is counted, so one in-flight wave
+can overshoot by at most the concurrency cap.
+
+See [subagents.md](subagents.md) for the agent types, background
+dispatch, and `notify_on_done` wake semantics this budget guards.
+
 ## Model routing
 
 The `[router]` block hosts two independent, opt-in features.

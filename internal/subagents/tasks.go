@@ -53,15 +53,21 @@ const activityRingSize = 64
 // snapshot-friendly (no live channels) so List() can return a copy
 // without holding the registry lock while the caller renders.
 type Task struct {
-	ID             string
-	AgentType      string
-	Prompt         string
-	Started        time.Time
-	Finished       time.Time
-	Status         TaskStatus
-	Result         string
-	Errored        bool
-	Background     bool
+	ID         string
+	AgentType  string
+	Prompt     string
+	Started    time.Time
+	Finished   time.Time
+	Status     TaskStatus
+	Result     string
+	Errored    bool
+	Background bool
+	// NotifyOnDone records that the spawner asked to be re-prompted with
+	// this task's result when it finishes (the Agent tool's
+	// notify_on_done). The TUI reads it to decide whether a background
+	// completion should wake the model with the result, vs. stay silent
+	// until fetched. Always false for foreground tasks.
+	NotifyOnDone   bool
 	TokensUsed     int
 	ToolCalls      int    // count of ToolStart events from the child
 	Model          string // model the child ran on when task-routed; "" = inherited the parent's model
@@ -95,7 +101,20 @@ type Task struct {
 	// snapshots via Get().
 	CanceledByUser bool
 	Activities     []string
-	cancel         context.CancelFunc
+	// LastActivityAt is when the most recent activity was appended. Lets
+	// the dock and get_subagent_result distinguish a subagent making steady
+	// progress from one wedged on a single tool call: a long gap since the
+	// last activity on a still-Running task is the stall signal. Zero until
+	// the first activity.
+	LastActivityAt time.Time
+	// Historical marks a task rehydrated from a prior session (via Import):
+	// a resolvable record of past work, not live this-session activity. The
+	// session-token budget (TotalTokensUsed) skips these, and the TUI's
+	// dropped-completion reconciliation skips them too, so resuming a session
+	// neither starts with a drained budget nor re-banners/re-wakes on old
+	// background results.
+	Historical bool
+	cancel     context.CancelFunc
 }
 
 // Duration returns how long the task ran. For still-running tasks,
@@ -139,6 +158,121 @@ func (r *Registry) Add(t *Task) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.tasks[t.ID] = t
+}
+
+// TaskRecord is the JSON-serializable summary of a Task persisted in the
+// session file so subagent task-ids survive a restart. The live cancel func,
+// the activity ring, and live-context gauges are intentionally dropped — a
+// rehydrated task is a historical record, not a re-attachable run. The
+// Worktree/Base/Branch fields are kept so a startup sweep can reclaim a
+// crashed session's empty dispatch worktrees.
+type TaskRecord struct {
+	ID             string     `json:"id"`
+	AgentType      string     `json:"agent_type"`
+	Prompt         string     `json:"prompt,omitempty"`
+	Status         TaskStatus `json:"status"`
+	Result         string     `json:"result,omitempty"`
+	Errored        bool       `json:"errored,omitempty"`
+	Background     bool       `json:"background,omitempty"`
+	NotifyOnDone   bool       `json:"notify_on_done,omitempty"`
+	TranscriptPath string     `json:"transcript_path,omitempty"`
+	Started        time.Time  `json:"started,omitzero"`
+	Finished       time.Time  `json:"finished,omitzero"`
+	TokensUsed     int        `json:"tokens_used,omitempty"`
+	ToolCalls      int        `json:"tool_calls,omitempty"`
+	Model          string     `json:"model,omitempty"`
+	Branch         string     `json:"branch,omitempty"`
+	Worktree       string     `json:"worktree,omitempty"`
+	Base           string     `json:"base,omitempty"`
+	BatchID        string     `json:"batch_id,omitempty"`
+}
+
+// Export returns a serializable snapshot of every task for persistence in the
+// session file, oldest-first. Taken under the read lock so it's safe to call
+// alongside live registry mutation.
+func (r *Registry) Export() []TaskRecord {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	out := make([]TaskRecord, 0, len(r.tasks))
+	for _, t := range r.tasks {
+		out = append(out, TaskRecord{
+			ID: t.ID, AgentType: t.AgentType, Prompt: t.Prompt, Status: t.Status,
+			Result: t.Result, Errored: t.Errored, Background: t.Background,
+			NotifyOnDone: t.NotifyOnDone, TranscriptPath: t.TranscriptPath,
+			Started: t.Started, Finished: t.Finished, TokensUsed: t.TokensUsed,
+			ToolCalls: t.ToolCalls, Model: t.Model, Branch: t.Branch,
+			Worktree: t.Worktree, Base: t.Base, BatchID: t.BatchID,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Started.Before(out[j].Started) })
+	return out
+}
+
+// Import rehydrates persisted task records as HISTORICAL entries so a prior
+// session's task-ids resolve (get_subagent_result, /subagents) after a
+// restart. A record still Running when its session ended is unattachable —
+// it's marked errored-orphaned so it reads as "didn't finish" rather than a
+// phantom live task. Existing tasks with the same id are not overwritten, and
+// the records don't count toward this session's concurrency cap (terminal) or
+// token budget (historical). Typically called once at startup on an empty
+// registry.
+func (r *Registry) Import(records []TaskRecord) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, rec := range records {
+		if rec.ID == "" {
+			continue
+		}
+		if _, exists := r.tasks[rec.ID]; exists {
+			continue
+		}
+		status, result, errored := rec.Status, rec.Result, rec.Errored
+		if status == TaskRunning {
+			status, errored = TaskErrored, true
+			if result == "" {
+				result = "orphaned: the session that started this subagent ended while it was still running; re-run if you still need it"
+			}
+		}
+		r.tasks[rec.ID] = &Task{
+			ID: rec.ID, AgentType: rec.AgentType, Prompt: rec.Prompt, Status: status,
+			Result: result, Errored: errored, Background: rec.Background,
+			NotifyOnDone: rec.NotifyOnDone, TranscriptPath: rec.TranscriptPath,
+			Started: rec.Started, Finished: rec.Finished, TokensUsed: rec.TokensUsed,
+			ToolCalls: rec.ToolCalls, Model: rec.Model, Branch: rec.Branch,
+			Worktree: rec.Worktree, Base: rec.Base, BatchID: rec.BatchID,
+			Historical: true,
+		}
+	}
+}
+
+// TryReserve atomically inserts t only if the relevant Running count is
+// still below max, doing the count AND the insert under a single lock — so
+// concurrent reservations (e.g. N parallel Agent calls in one assistant
+// message) cannot each pass a separate check-then-Add and overshoot the
+// cap. Returns false WITHOUT inserting when the class is already at/over max.
+//
+// countForegroundOnly selects the class: true counts only foreground Running
+// tasks (the foreground cap); false counts ALL Running tasks (the background
+// cap, which bounds total concurrency — matching the historical
+// ActiveCount()-based check). t.Status should be TaskRunning.
+func (r *Registry) TryReserve(t *Task, max int, countForegroundOnly bool) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	n := 0
+	for _, e := range r.tasks {
+		if e.Status != TaskRunning {
+			continue
+		}
+		if countForegroundOnly && e.Background {
+			continue
+		}
+		n++
+	}
+	if n >= max {
+		return false
+	}
+	r.tasks[t.ID] = t
+	return true
 }
 
 // Get returns a snapshot of the named task or (nil, false). The returned
@@ -214,6 +348,24 @@ func (r *Registry) ActiveCount() int {
 		}
 	}
 	return n
+}
+
+// TotalTokensUsed sums the estimated TokensUsed across every task in the
+// session (running tasks contribute 0 until MarkDone records their estimate).
+// The Agent tool reads this to enforce a session-wide subagent token budget —
+// a backstop against unbounded fan-out spend that the per-wave concurrency
+// cap can't bound. O(n) over the task set, called once per spawn; n is small.
+func (r *Registry) TotalTokensUsed() int {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	total := 0
+	for _, t := range r.tasks {
+		if t.Historical {
+			continue // prior-session spend doesn't deplete this session's budget
+		}
+		total += t.TokensUsed
+	}
+	return total
 }
 
 // ActiveForegroundCount returns the number of foreground tasks
@@ -308,6 +460,7 @@ func (r *Registry) AppendActivity(id, line string) {
 		return
 	}
 	t.Activities = append(t.Activities, line)
+	t.LastActivityAt = time.Now()
 	if len(t.Activities) > activityRingSize {
 		t.Activities = t.Activities[len(t.Activities)-activityRingSize:]
 	}

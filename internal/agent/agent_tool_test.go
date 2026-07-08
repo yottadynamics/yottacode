@@ -79,6 +79,10 @@ func TestBuiltinRoles_DispatchClassification(t *testing.T) {
 		{"test", false, true},
 		{"docs", false, true},
 		{"review", true, false},
+		// code-verifier is read-only (→ shared cwd, no worktree) and
+		// foreground-default, like review — it reads and reasons to
+		// refute a finding; it never runs or edits.
+		{"code-verifier", true, false},
 	}
 	for _, tc := range cases {
 		c, ok := byName[tc.name]
@@ -326,9 +330,9 @@ func TestAgentTool_ForegroundCapEnforced(t *testing.T) {
 	tool, _ := newTestAgentTool(t, []subagents.AgentConfig{cfg}, nil, false)
 	for i := 0; i < MaxForegroundSubagents; i++ {
 		tool.Tasks.Add(&subagents.Task{
-			ID:        subagents.NewTaskID(),
-			AgentType: "x",
-			Status:    subagents.TaskRunning,
+			ID:         subagents.NewTaskID(),
+			AgentType:  "x",
+			Status:     subagents.TaskRunning,
 			Background: false,
 		})
 	}
@@ -641,6 +645,319 @@ func TestAgentTool_BackgroundAutoDeniesApproval(t *testing.T) {
 	// auto-deny lets the model adapt and produce a final reply.
 	if tasks[0].Errored {
 		t.Errorf("expected non-errored completion after auto-deny adapt; got Result=%q", tasks[0].Result)
+	}
+}
+
+// TestAgentTool_BackgroundForwardsProgress locks the live-card behavior
+// for background subagents: a background child's SubagentProgress ticks
+// must reach the parent's event stream (so the inline card + dock stay
+// live while the spawning turn is active), alongside the SubagentStart
+// that already fired. Before this wiring the background goroutine passed
+// nil for emitToParent and no progress reached the parent — only the
+// dock (registry) updated. Approvals stay auto-denied regardless; see
+// TestAgentTool_BackgroundAutoDeniesApproval.
+func TestAgentTool_BackgroundForwardsProgress(t *testing.T) {
+	// Child turn 1 calls read_file (a no-approval tool → emits a
+	// ToolStart → progress tick); turn 2 emits the final reply.
+	streamer := &scriptedStreamer{turns: [][]adapter.StreamEvent{
+		{sseDone("", adapter.ToolCall{ID: "1", Name: "read_file", ArgsJSON: `{"path":"x"}`})},
+		{sseDone("done reviewing")},
+	}}
+	cfg := subagents.AgentConfig{Name: "review", Description: "x", Tools: []string{"read_file"}, Prompt: "x", Source: "test"}
+	tool, _ := newTestAgentTool(t, []subagents.AgentConfig{cfg}, streamer, true)
+
+	// Keep the parent event stream attached and alive for the whole run
+	// (the orchestration case: spawning turn stays active).
+	parentEvents := make(chan Event, 64)
+	ctx := WithParentEvents(context.Background(), parentEvents)
+
+	out, err := tool.Execute(ctx, mustJSON(t, agentArgs{SubagentType: "review", Prompt: "p", RunInBackground: true}))
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if !strings.Contains(out, "background subagent") {
+		t.Fatalf("expected immediate background handle, got: %q", out)
+	}
+
+	// Wait for the detached child to finish; all parentEvents sends
+	// happen inside runChild, before MarkDone flips the status.
+	for range 100 {
+		tasks := tool.Tasks.List()
+		if len(tasks) > 0 && tasks[0].Status != subagents.TaskRunning {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	// Drain the buffered events the run forwarded (non-blocking — the
+	// run is over, so the buffer holds everything; nothing is still
+	// sending, so we never close the channel out from under a sender).
+	var starts, progress int
+	for done := false; !done; {
+		select {
+		case ev := <-parentEvents:
+			switch ev.(type) {
+			case SubagentStart:
+				starts++
+			case SubagentProgress:
+				progress++
+			}
+		default:
+			done = true
+		}
+	}
+
+	if starts == 0 {
+		t.Errorf("expected a SubagentStart forwarded for the background run")
+	}
+	if progress == 0 {
+		t.Errorf("expected at least one SubagentProgress forwarded for the background run — background should stream live ticks, not just update the dock")
+	}
+}
+
+// TestAgentTool_BackgroundSurvivesClosedTurnChannel is the regression
+// test for the closed-per-turn-channel panic: a background subagent
+// outlives its spawning turn, which CLOSES the per-turn event channel,
+// yet the detached child keeps emitting SubagentStart/SubagentProgress.
+// Forwarding those onto the closed channel must degrade to a dropped
+// tick (via trySend), NOT a "send on closed channel" panic that the
+// runChild recover would turn into a failed (errored) run.
+//
+// An already-closed channel reproduces the post-turn-end state
+// deterministically: the SubagentStart forwarded synchronously inside
+// Execute (parent goroutine) AND every SubagentProgress forwarded from
+// the detached child goroutine both target a closed channel. Before the
+// fix the first send panicked; after it, the run completes cleanly.
+func TestAgentTool_BackgroundSurvivesClosedTurnChannel(t *testing.T) {
+	// Turn 1 calls read_file (a no-approval tool → a ToolStart → a
+	// progress tick); turn 2 emits the final reply.
+	streamer := &scriptedStreamer{turns: [][]adapter.StreamEvent{
+		{sseDone("", adapter.ToolCall{ID: "1", Name: "read_file", ArgsJSON: `{"path":"x"}`})},
+		{sseDone("done reviewing")},
+	}}
+	cfg := subagents.AgentConfig{Name: "review", Description: "x", Tools: []string{"read_file"}, Prompt: "x", Source: "test"}
+	tool, _ := newTestAgentTool(t, []subagents.AgentConfig{cfg}, streamer, true)
+
+	// A per-turn channel that is ALREADY closed — i.e. the spawning turn
+	// has ended. Every forwarded event targets a closed channel.
+	parentEvents := make(chan Event, 64)
+	close(parentEvents)
+	ctx := WithParentEvents(context.Background(), parentEvents)
+
+	// Execute forwards a SubagentStart synchronously (parent goroutine)
+	// before detaching — that send must not panic, so Execute returns the
+	// handle normally.
+	out, err := tool.Execute(ctx, mustJSON(t, agentArgs{SubagentType: "review", Prompt: "p", RunInBackground: true}))
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if !strings.Contains(out, "background subagent") {
+		t.Fatalf("expected immediate background handle, got: %q", out)
+	}
+
+	// The detached child forwards SubagentProgress onto the closed channel
+	// from its own goroutine; the run must still finish cleanly — completed,
+	// not errored by a recovered send-on-closed-channel panic.
+	var final subagents.Task
+	for range 200 {
+		tasks := tool.Tasks.List()
+		if len(tasks) > 0 && tasks[0].Status != subagents.TaskRunning {
+			final = tasks[0]
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if final.Status != subagents.TaskCompleted {
+		t.Fatalf("expected TaskCompleted despite the closed turn channel, got status=%v errored=%v result=%q",
+			final.Status, final.Errored, final.Result)
+	}
+	if final.Errored {
+		t.Errorf("a background run must not be errored by a forward onto a closed channel")
+	}
+}
+
+// TestAgentTool_BackgroundGoroutineRecoversPanic: a panic in the detached
+// background goroutine's POST-run orchestration (here the onBackgroundDone
+// callback, which in the TUI runs UI code) must be recovered, not crash the
+// whole process. The run already reached its terminal state before the
+// notification, so the result is preserved (TaskCompleted, not clobbered).
+func TestAgentTool_BackgroundGoroutineRecoversPanic(t *testing.T) {
+	streamer := &scriptedStreamer{turns: [][]adapter.StreamEvent{
+		{sseDone("done reviewing")},
+	}}
+	cfg := subagents.AgentConfig{Name: "review", Description: "x", Prompt: "x", Source: "test"}
+	tool, _ := newTestAgentTool(t, []subagents.AgentConfig{cfg}, streamer, true)
+
+	// A completion callback that panics simulates a fault in the post-run
+	// notification path (e.g. a TUI render on the inbox). Without the
+	// goroutine-level recover this crashes the whole `go test` process.
+	fired := make(chan struct{}, 1)
+	tool.SetBackgroundDoneCallback(func(ev SubagentBackgroundDone) {
+		select {
+		case fired <- struct{}{}:
+		default:
+		}
+		panic("boom in onBackgroundDone")
+	})
+
+	ctx := WithParentEvents(context.Background(), make(chan Event, 64))
+	if _, err := tool.Execute(ctx, mustJSON(t, agentArgs{SubagentType: "review", Prompt: "p", RunInBackground: true})); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	select {
+	case <-fired:
+	case <-time.After(5 * time.Second):
+		t.Fatal("background completion callback never fired")
+	}
+
+	// Process survived (we're still running). The task reached its real
+	// terminal state before the notification panicked, so the panic did not
+	// clobber the result.
+	var final subagents.Task
+	for range 100 {
+		tasks := tool.Tasks.List()
+		if len(tasks) > 0 && tasks[0].Status != subagents.TaskRunning {
+			final = tasks[0]
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if final.Status != subagents.TaskCompleted {
+		t.Errorf("task should be TaskCompleted despite the callback panic; got %v", final.Status)
+	}
+}
+
+// TestAgentTool_BackgroundSurvivesParentCtxCancel: a background subagent
+// detaches onto context.Background(), so cancelling the PARENT turn's ctx
+// (the spawning turn ending) must NOT kill it — the completion still fires
+// with a real result. This is the detachment guarantee the whole
+// fire-and-forget model rests on.
+func TestAgentTool_BackgroundSurvivesParentCtxCancel(t *testing.T) {
+	streamer := &scriptedStreamer{turns: [][]adapter.StreamEvent{{sseDone("done reviewing")}}}
+	cfg := subagents.AgentConfig{Name: "review", Description: "x", Prompt: "x", Source: "test"}
+	tool, _ := newTestAgentTool(t, []subagents.AgentConfig{cfg}, streamer, true)
+
+	fired := make(chan SubagentBackgroundDone, 1)
+	tool.SetBackgroundDoneCallback(func(ev SubagentBackgroundDone) {
+		select {
+		case fired <- ev:
+		default:
+		}
+	})
+
+	ctx, cancel := context.WithCancel(WithParentEvents(context.Background(), make(chan Event, 64)))
+	if _, err := tool.Execute(ctx, mustJSON(t, agentArgs{SubagentType: "review", Prompt: "p", RunInBackground: true})); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	cancel() // the spawning turn ends immediately after dispatch
+
+	select {
+	case ev := <-fired:
+		if ev.Errored {
+			t.Errorf("detached bg subagent must complete after parent ctx cancel, not error")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("background completion did not fire after parent ctx cancel — detachment is broken")
+	}
+}
+
+// TestAgentTool_NotifyOnDonePropagates: a background spawn with
+// notify_on_done:true records the flag on the task AND on the fired
+// SubagentBackgroundDone event, so the TUI knows to wake the model with the
+// result rather than only painting a banner.
+func TestAgentTool_NotifyOnDonePropagates(t *testing.T) {
+	streamer := &scriptedStreamer{turns: [][]adapter.StreamEvent{{sseDone("result body")}}}
+	cfg := subagents.AgentConfig{Name: "review", Description: "x", Prompt: "x", Source: "test"}
+	tool, _ := newTestAgentTool(t, []subagents.AgentConfig{cfg}, streamer, true)
+
+	got := make(chan SubagentBackgroundDone, 1)
+	tool.SetBackgroundDoneCallback(func(ev SubagentBackgroundDone) {
+		select {
+		case got <- ev:
+		default:
+		}
+	})
+
+	ctx := WithParentEvents(context.Background(), make(chan Event, 64))
+	if _, err := tool.Execute(ctx, mustJSON(t, agentArgs{SubagentType: "review", Prompt: "p", RunInBackground: true, NotifyOnDone: true})); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	select {
+	case ev := <-got:
+		if !ev.NotifyOnDone {
+			t.Error("fired SubagentBackgroundDone must carry NotifyOnDone=true")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("background completion never fired")
+	}
+	if tasks := tool.Tasks.List(); len(tasks) == 0 || !tasks[0].NotifyOnDone {
+		t.Error("task must record NotifyOnDone=true")
+	}
+}
+
+// TestAgentTool_NotifyOnDoneIgnoredForeground: notify_on_done is a
+// background-only affordance (foreground returns its result inline), so a
+// foreground spawn must not record it — otherwise the TUI could try to wake
+// the model for a result it already has.
+func TestAgentTool_NotifyOnDoneIgnoredForeground(t *testing.T) {
+	streamer := &scriptedStreamer{turns: [][]adapter.StreamEvent{{sseDone("done")}}}
+	cfg := subagents.AgentConfig{Name: "fg", Description: "x", Prompt: "x", Source: "test"}
+	tool, _ := newTestAgentTool(t, []subagents.AgentConfig{cfg}, streamer, true)
+
+	ctx := WithParentEvents(context.Background(), make(chan Event, 64))
+	if _, err := tool.Execute(ctx, mustJSON(t, agentArgs{SubagentType: "fg", Prompt: "p", RunInBackground: false, NotifyOnDone: true})); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if tasks := tool.Tasks.List(); len(tasks) == 0 || tasks[0].NotifyOnDone {
+		t.Error("foreground task must NOT record NotifyOnDone (background-only flag)")
+	}
+}
+
+// TestAgentTool_SessionTokenBudgetRejects: once cumulative subagent spend
+// reaches MaxSessionTokens, a new spawn is rejected with a recoverable
+// error and no task is reserved.
+func TestAgentTool_SessionTokenBudgetRejects(t *testing.T) {
+	streamer := &scriptedStreamer{turns: [][]adapter.StreamEvent{{sseDone("done")}}}
+	cfg := subagents.AgentConfig{Name: "review", Description: "x", Prompt: "x", Source: "test"}
+	tool, _ := newTestAgentTool(t, []subagents.AgentConfig{cfg}, streamer, true)
+	tool.MaxSessionTokens = 1000
+
+	// Pre-load the registry with recorded spend over the cap.
+	done := &subagents.Task{ID: subagents.NewTaskID(), AgentType: "review", Status: subagents.TaskRunning}
+	tool.Tasks.Add(done)
+	tool.Tasks.MarkDone(done.ID, subagents.TaskCompleted, "r", false, 1500)
+
+	out, err := tool.Execute(context.Background(), mustJSON(t, agentArgs{SubagentType: "review", Prompt: "p"}))
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if !strings.Contains(out, "token budget") {
+		t.Errorf("expected a budget-exhausted rejection; got: %q", out)
+	}
+	if n := len(tool.Tasks.List()); n != 1 {
+		t.Errorf("a rejected spawn must not reserve a task; have %d tasks (want 1)", n)
+	}
+}
+
+// TestAgentTool_SessionTokenBudgetUnlimitedWhenZero: MaxSessionTokens=0
+// disables the budget — a spawn proceeds regardless of prior spend.
+func TestAgentTool_SessionTokenBudgetUnlimitedWhenZero(t *testing.T) {
+	streamer := &scriptedStreamer{turns: [][]adapter.StreamEvent{{sseDone("done")}}}
+	cfg := subagents.AgentConfig{Name: "review", Description: "x", Prompt: "x", Source: "test"}
+	tool, _ := newTestAgentTool(t, []subagents.AgentConfig{cfg}, streamer, true)
+	tool.MaxSessionTokens = 0 // unlimited
+
+	done := &subagents.Task{ID: subagents.NewTaskID(), AgentType: "review", Status: subagents.TaskRunning}
+	tool.Tasks.Add(done)
+	tool.Tasks.MarkDone(done.ID, subagents.TaskCompleted, "r", false, 9_000_000)
+
+	out, err := tool.Execute(context.Background(), mustJSON(t, agentArgs{SubagentType: "review", Prompt: "p"}))
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if strings.Contains(out, "token budget") {
+		t.Errorf("budget must be disabled when MaxSessionTokens=0; got rejection: %q", out)
 	}
 }
 

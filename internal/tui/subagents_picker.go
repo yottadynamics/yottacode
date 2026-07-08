@@ -151,10 +151,37 @@ func (m Model) updateSubagentsPicker(msg tea.KeyMsg) (Model, tea.Cmd) {
 				p.types = m.subagentTool.AgentConfigs()
 			}
 			p.status = "refreshed"
-			if p.cursor >= rowCount {
-				p.cursor = max(0, rowCount-1)
+			// Clamp against the POST-refresh row count, not the stale
+			// rowCount snapshotted at the top of the handler before this
+			// re-snapshot — if either list shrank, the stale value would
+			// leave the cursor past the end and the next Enter/s would
+			// index out of range. (Matches the fresh-length clamp the
+			// `s` case already uses.)
+			if rc := p.rowCount(); p.cursor >= rc {
+				p.cursor = max(0, rc-1)
 			}
 			return m, nil
+		case "i":
+			// Inject: feed the selected finished task's result to the model
+			// as a new turn — the user-driven re-entry that complements the
+			// Agent tool's notify_on_done. Tasks-mode only.
+			if p.mode != subagentsPickerModeTasks || len(p.tasks) == 0 {
+				return m, nil
+			}
+			next, cmd, status := m.injectSubagentResult(p.tasks[p.cursor])
+			if status != "" {
+				p.status = status
+				return m, nil
+			}
+			// Close the picker on the model we RETURN. injectSubagentResult
+			// has a value receiver, so `next` was copied from m before any
+			// assignment here — clearing the fields on the local `m` after
+			// the copy was a dead store that left the picker open, swallowing
+			// keys while the wake turn streamed underneath it.
+			nm := next.(Model)
+			nm.subagentsPickerOpen = false
+			nm.subagentsPicker = nil
+			return nm, cmd
 		}
 	}
 	return m, nil
@@ -185,7 +212,7 @@ func renderSubagentsPicker(state *subagentsPickerState, width int) string {
 func renderSubagentsPickerTasks(state *subagentsPickerState, _ int) string {
 	header := renderMenuHeader(
 		"Subagents — tasks",
-		"Enter views · s stops · r refreshes · t shows types · Esc closes",
+		"Enter views · i injects result · s stops · r refreshes · t shows types · Esc closes",
 	)
 	if len(state.tasks) == 0 {
 		return header + "\n" +
@@ -225,7 +252,15 @@ func renderSubagentsPickerTasks(state *subagentsPickerState, _ int) string {
 			relativeAge(t.Started),
 			t.ToolCalls,
 			modelChip,
-			truncateForRender(t.Prompt, 60))
+			truncateForRender(t.Prompt, 45))
+		// For a running task, append what it's doing right now — the
+		// latest activity tick (the same source the dock shows) — so the
+		// picker is a snapshot of *state*, not just status. Running-only:
+		// a terminal task's last tick is noise next to its status. Static
+		// like the rest of the row; `r` re-snapshots it.
+		if t.Status == subagents.TaskRunning {
+			desc += " · " + truncateForRender(latestActivity(t), 40)
+		}
 		body += renderMenuItem(menuItemOpts{
 			Label:      label,
 			LabelWidth: labelWidth,

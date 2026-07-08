@@ -11,7 +11,6 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/yottadynamics/yottacode/internal/agent"
-	"github.com/yottadynamics/yottacode/internal/subagents"
 )
 
 // Subagent styles use the canonical palette from styles.go so the
@@ -27,28 +26,8 @@ var (
 	styleSubagentOK          lipgloss.Style
 	styleSubagentErr         lipgloss.Style
 	styleSubagentRunning     lipgloss.Style
-	styleSubagentCanceled    lipgloss.Style
 	styleSubagentTableHeader lipgloss.Style
 )
-
-// statusStyleFor returns the per-row color for a task's status —
-// brighter for running so eye catches the live work, dim for
-// terminal states, red for errors. Each branch renders the literal
-// status word so callers can compose the styled label inline.
-func statusStyleFor(s subagents.TaskStatus) lipgloss.Style {
-	switch s {
-	case subagents.TaskRunning:
-		return styleSubagentRunning
-	case subagents.TaskCompleted:
-		return styleSubagentOK
-	case subagents.TaskErrored, subagents.TaskIterCapped:
-		return styleSubagentErr
-	case subagents.TaskCanceled:
-		return styleSubagentCanceled
-	default:
-		return styleSubagentMeta
-	}
-}
 
 // padRight pads s with trailing spaces to width n. Used for the
 // /subagents table so colored cells still align under their headers —
@@ -61,47 +40,6 @@ func padRight(s string, n int) string {
 		return s
 	}
 	return s + strings.Repeat(" ", n-w)
-}
-
-// wrapWithHangingIndent word-wraps text so each line fits within
-// lineWidth visible chars, and prefixes every continuation line
-// (lines 2..N) with `indent` spaces so they hang neatly under the
-// first line's start column. Used by /subagents types to keep long
-// agent descriptions readable when they exceed the terminal width.
-//
-// Pure word-wrap on whitespace boundaries; words longer than
-// lineWidth get their own line uncut (better than mid-word chops
-// that fight syntax highlighting). Returns "" for empty input.
-func wrapWithHangingIndent(text string, lineWidth, indent int) string {
-	if strings.TrimSpace(text) == "" {
-		return ""
-	}
-	if lineWidth < 10 {
-		lineWidth = 10
-	}
-	words := strings.Fields(text)
-	if len(words) == 0 {
-		return ""
-	}
-	var lines []string
-	cur := words[0]
-	for _, w := range words[1:] {
-		if ansi.StringWidth(cur)+1+ansi.StringWidth(w) > lineWidth {
-			lines = append(lines, cur)
-			cur = w
-			continue
-		}
-		cur += " " + w
-	}
-	lines = append(lines, cur)
-	if len(lines) == 1 {
-		return lines[0]
-	}
-	pad := strings.Repeat(" ", indent)
-	for i := 1; i < len(lines); i++ {
-		lines[i] = pad + lines[i]
-	}
-	return strings.Join(lines, "\n")
 }
 
 // relativeAge formats a start time as a compact "Ns ago" / "Nm ago" /
@@ -291,120 +229,6 @@ func shortTranscriptPath(abs string) string {
 		return "transcript: ~" + abs[len(home):]
 	}
 	return "transcript: " + filepath.Base(abs)
-}
-
-// renderSubagentList renders the table the /subagents command prints.
-// Designed to be terminal-friendly — fixed-width columns, sorted
-// newest-first by Registry.List, with column headers, colored
-// per-row status, and per-row counts (activities executed, tokens
-// when known). The Prompt column dynamically expands to consume the
-// remaining width so a wide terminal shows more of the question.
-func renderSubagentList(tasks []subagents.Task) string {
-	if len(tasks) == 0 {
-		return styleSubagentMeta.Render(
-			"no subagent tasks this session — call the Agent tool to spawn one " +
-				"(see /subagents types for the available subagent_type values)")
-	}
-
-	const (
-		idW     = 8
-		statusW = 8
-		typeW   = 16
-		modeW   = 4 // "fg" / "bg" + slack
-		ageW    = 9
-		durW    = 7
-		actsW   = 5
-	)
-	// Padding between columns: 8 single-space gaps (one per pair of
-	// adjacent cells, since we now have 8 columns).
-	const fixedW = idW + statusW + typeW + modeW + ageW + durW + actsW + 8
-	// 100 is a reasonable fallback; the model is rendered via
-	// appendLine which doesn't get a width plumbed in (the live
-	// footer owns terminal width tracking, not card renderers).
-	// The width-aware list could be a follow-up — for now we pick
-	// a generous wrap target that fits modern terminals.
-	promptW := 120 - fixedW
-	if promptW < 20 {
-		promptW = 20
-	}
-
-	var b strings.Builder
-	// Header line: bolded title with summary counts so the user
-	// gets a glanceable status before scanning the table.
-	var running, done, errored, canceled, capped int
-	for _, t := range tasks {
-		switch t.Status {
-		case subagents.TaskRunning:
-			running++
-		case subagents.TaskCompleted:
-			done++
-		case subagents.TaskErrored:
-			errored++
-		case subagents.TaskCanceled:
-			canceled++
-		case subagents.TaskIterCapped:
-			capped++
-		}
-	}
-	summary := []string{
-		fmt.Sprintf("%d total", len(tasks)),
-	}
-	if running > 0 {
-		summary = append(summary, styleSubagentLabel.Render(fmt.Sprintf("%d running", running)))
-	}
-	if done > 0 {
-		summary = append(summary, styleSubagentOK.Render(fmt.Sprintf("%d done", done)))
-	}
-	if errored > 0 {
-		summary = append(summary, styleSubagentErr.Render(fmt.Sprintf("%d errored", errored)))
-	}
-	if canceled > 0 {
-		summary = append(summary, styleSubagentMeta.Render(fmt.Sprintf("%d canceled", canceled)))
-	}
-	if capped > 0 {
-		summary = append(summary, styleSubagentErr.Render(fmt.Sprintf("%d iter-cap", capped)))
-	}
-	b.WriteString(styleSubagentLabel.Render("Subagents") + "  " +
-		styleSubagentMeta.Render("("+strings.Join(summary, " · ")+")") + "\n\n")
-
-	// Column header row: bold + uppercase so it reads as a label,
-	// not data. Width strings match the row format string below.
-	header := fmt.Sprintf("  %-*s  %-*s  %-*s  %-*s  %-*s  %-*s  %-*s  %s",
-		idW, "ID",
-		statusW, "STATUS",
-		typeW, "AGENT",
-		modeW, "MODE",
-		ageW, "STARTED",
-		durW, "DURATION",
-		actsW, "ACTS",
-		"PROMPT")
-	b.WriteString(styleSubagentTableHeader.Render(header) + "\n")
-	b.WriteString(styleSubagentMeta.Render("  "+strings.Repeat("─", len(header)-2)) + "\n")
-
-	// Body rows.
-	for _, t := range tasks {
-		statusCell := statusStyleFor(t.Status).Render(padRight(t.Status.String(), statusW))
-		typeCell := styleSubagentActivity.Render(padRight(truncateForRender(t.AgentType, typeW), typeW))
-		mode := "fg"
-		if t.Background {
-			mode = "bg"
-		}
-		modeCell := styleSubagentMeta.Render(padRight(mode, modeW))
-		idCell := styleSubagentLabel.Render(t.ID[:idW])
-		ageCell := styleSubagentMeta.Render(padRight(relativeAge(t.Started), ageW))
-		durCell := styleSubagentMeta.Render(padRight(formatDuration(t.Duration()), durW))
-		actsCell := styleSubagentMeta.Render(padRight(fmt.Sprintf("%d", len(t.Activities)), actsW))
-		promptCell := styleSubagentActivity.Render(truncateForRender(t.Prompt, promptW))
-
-		b.WriteString(fmt.Sprintf("  %s  %s  %s  %s  %s  %s  %s  %s\n",
-			idCell, statusCell, typeCell, modeCell, ageCell, durCell, actsCell, promptCell))
-	}
-
-	// Footer: command hints for next actions, dimmed so the table
-	// itself stays the focal point.
-	b.WriteString("\n")
-	b.WriteString(styleSubagentMeta.Render("  /subagents — open picker  · /subagents stop <id>  · /subagents types"))
-	return b.String()
 }
 
 // truncateForRender returns at most n chars with an ellipsis when

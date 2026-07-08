@@ -323,12 +323,15 @@ func Run(ctx context.Context, opts cli.ChatOptions, prompt string) error {
 		Cwd:             cwdRef,
 		TranscriptDir:   transcriptDir,
 		AllowBackground: false,
-		FastAdapter:     oneshotRouterFast(routerAdapters),
-		FastModel:       oneshotRouterFastModel(routerAdapters),
-		SmartAdapter:    oneshotRouterSmart(routerAdapters),
-		SmartModel:      oneshotRouterSmartModel(routerAdapters),
-		RouteAuto:       fileCfg.Router.RoutingAuto(),
-		ModelResolver:   oneshotRouterResolve(routerAdapters),
+		// Foreground subagent spend is still bounded session-wide (oneshot
+		// can fan out foreground children), same backstop as the TUI.
+		MaxSessionTokens: fileCfg.SubagentSessionTokenBudget(),
+		FastAdapter:      oneshotRouterFast(routerAdapters),
+		FastModel:        oneshotRouterFastModel(routerAdapters),
+		SmartAdapter:     oneshotRouterSmart(routerAdapters),
+		SmartModel:       oneshotRouterSmartModel(routerAdapters),
+		RouteAuto:        fileCfg.Router.RoutingAuto(),
+		ModelResolver:    oneshotRouterResolve(routerAdapters),
 		ResolveWindow: func(model string) int {
 			return catalog.ResolveWindowForProvider(fileCfg.ProviderKindForModel(model), model, fileCfg.ContextWindowOverride(model), fileCfg.Context.DefaultWindow)
 		},

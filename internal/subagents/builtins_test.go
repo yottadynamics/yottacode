@@ -37,6 +37,7 @@ func TestLoadBuiltins_NewRoles(t *testing.T) {
 		{"test", true, true},
 		{"docs", true, true},
 		{"review", false, false},
+		{"code-verifier", false, false},
 	}
 	for _, tc := range cases {
 		c, ok := byName[tc.name]

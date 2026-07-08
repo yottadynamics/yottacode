@@ -44,6 +44,16 @@ jobs:
         # in internal/tui/). Real tests do not opt into -short.
         run: go test -short -v ./...
 
+      - name: Test (race detector)
+        # The subagent/registry concurrency suites (background-subagent
+        # lifecycle, the task Registry, the parallel approval gate, the
+        # atomic spawn cap) only catch data races under -race; without
+        # this step they run but detect nothing. Kept as a separate step
+        # (not folded into the run above) so the fast -v run still gates
+        # logic failures cleanly and the race report stands on its own.
+        # -short keeps the demo/visualization tests out, same as above.
+        run: go test -short -race ./...
+
   shellcheck:
     runs-on: ubuntu-latest
     steps:
