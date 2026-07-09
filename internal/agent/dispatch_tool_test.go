@@ -274,6 +274,32 @@ func TestDispatch_EndToEnd_TwoWriteTasks(t *testing.T) {
 	}
 }
 
+func TestDispatch_Foreground_OutOfScopeWriteIsNotCommitted(t *testing.T) {
+	repoRoot := dispatchTestRepo(t)
+	d := newDispatchToolE2E(t, repoRoot)
+
+	out, err := d.Execute(context.Background(), `{"goal":"stay scoped","background":false,"tasks":[
+		{"subagent_type":"writer","description":"a","prompt":"TESTWRITE:beta.txt","files":["alpha.txt"]},
+		{"subagent_type":"writer","description":"b","prompt":"TESTWRITE:gamma.txt","files":["gamma.txt"]}
+	]}`)
+	if err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	if strings.Contains(out, "beta.txt") && strings.Contains(out, "committed") {
+		t.Fatalf("out-of-scope beta.txt should not be committed, got:\n%s", out)
+	}
+
+	branchOut, gErr := gitOutput(context.Background(), repoRoot, "branch", "--list", "worktree-dispatch-*", "--format=%(refname:short)")
+	if gErr != nil {
+		t.Fatalf("git branch: %v", gErr)
+	}
+	for _, br := range nonEmptyLines(branchOut) {
+		if _, e := gitOutput(context.Background(), repoRoot, "show", br+":beta.txt"); e == nil {
+			t.Fatalf("out-of-scope beta.txt was committed on %s", br)
+		}
+	}
+}
+
 // TestDispatch_Background_DoneCallbackCarriesCommitStatus is the P1
 // regression for the async path: the background-done callback must report
 // whether the worker actually committed (Committed + CommitSHA), not fire a

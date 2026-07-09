@@ -20,25 +20,9 @@ import (
 // deduped finding, a count unknown until runtime), so the
 // orchestration lives in the directive rather than in Go — the main
 // agent runs that loop itself.
-//
-// The command REQUIRES the background_subagents experimental feature:
-// the whole point is firing read-only finders in the background while
-// the dock shows them live. When the feature is off we refuse with an
-// enable-hint rather than silently degrading to a foreground crawl.
 func cmdCodeReview(m Model, args []string) (Model, tea.Cmd) {
 	if m.turnActive {
 		m.appendLine(styleError.Render("[code-review] a turn is already running — wait for it to finish or press Esc to cancel"))
-		return m, nil
-	}
-	// Background gate, checked in Go so we refuse deterministically
-	// before burning a model turn. m.subagentTool is the live
-	// AgentTool registered on the loop; AllowBackground mirrors the
-	// background_subagents experimental flag (set in run.go).
-	if m.subagentTool == nil || !m.subagentTool.AllowBackground {
-		m.appendLine(styleError.Render("[code-review] needs the background_subagents experimental feature — " +
-			"it fans out to background review subagents. Enable it with `--experimental background_subagents` " +
-			"at startup, `YOTTACODE_EXPERIMENTAL=background_subagents`, or `[experimental]` `background_subagents = true` " +
-			"in ~/.yottacode/config.toml."))
 		return m, nil
 	}
 	effort, notice := parseEffort(args)

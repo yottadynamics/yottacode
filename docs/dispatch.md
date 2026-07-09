@@ -12,16 +12,15 @@ independent tasks, implement them in parallel, assemble the result."
 
 > **Status: experimental beta — opt-in, and we want your feedback.** The
 > feature is merged and tested, but the UX and model behavior are still
-> settling. Enable it (for the full background experience, turn on both flags):
+> settling. Enable the `dispatch` feature:
 >
 > ```bash
-> yottacode --experimental dispatch --experimental background_subagents
+> yottacode --experimental dispatch
 > ```
 >
-> (or `YOTTACODE_EXPERIMENTAL=dispatch,background_subagents`, or set both under
-> `[experimental]` in `~/.yottacode/config.toml`.) `dispatch` alone is enough
-> for the `dispatch`/`integrate` tools; `background_subagents` additionally
-> enables `run_in_background:true` on the standalone `Agent` tool. See
+> (or `YOTTACODE_EXPERIMENTAL=dispatch`, or set it under
+> `[experimental]` in `~/.yottacode/config.toml`.) Background subagents are
+> now GA in the interactive TUI — no separate flag needed. See
 > [experimental.md](experimental.md) for every way to enable.
 >
 > **Hit a bug or a rough edge?** Please file it on GitHub Issues with the

@@ -140,19 +140,13 @@ The `Agent` tool accepts `run_in_background: true`:
   Approvals are still auto-denied for background subagents regardless —
   nobody is watching to answer a modal.
 
-  Background subagents are **gated behind the
-  `background_subagents` experimental feature**. Without the gate,
-  the model's `run_in_background:true` calls return a recoverable
-  error pointing at how to enable. Enable with any of:
-  - `yottacode --experimental background_subagents`
-  - `YOTTACODE_EXPERIMENTAL=background_subagents`
-  - `[experimental]\nbackground_subagents = true` in `~/.yottacode/config.toml`
-
-  See [experimental.md](experimental.md) for the broader system.
-  The gate exists because the model's reflexes around background
-  subagents need more iteration — it tends to spawn one and then
-  duplicate the work itself, producing slow or contradictory
-  results. Foreground delegation is the stable surface.
+  Background subagents are **generally available** in the
+  interactive TUI. `run_in_background:true` dispatches a
+  fire-and-forget child the parent can collect later via
+  `get_subagent_result`. (Oneshot / noninteractive sessions reject
+  detached runs — there is no long-lived UI to host the task — and
+  fall back to foreground.) Foreground delegation is still the
+  stable surface when the parent needs the answer in the same turn.
 
 ### `notify_on_done` — async re-entry
 
@@ -510,20 +504,19 @@ Workaround: name the agent explicitly in your prompt ("Use the
 is what you get. Prompt steering in `DefaultSystemPrompt` nudges
 toward correct selection but isn't enforcement.
 
-### Background subagents need babysitting
+### Background subagents are read-only by default
 
-Even with `background_subagents` enabled, the parent's reflexes
-around fire-and-forget delegation are uneven:
+Standalone `Agent(run_in_background:true)` runs are **read-only by
+default**: the background approval policy denies every
+approval-requiring tool before parent auto/yolo modes can approve
+it, so an unattended child cannot write to disk, run shell, or
+mutate git. Read-only tools (read_file, grep, etc.) still execute
+normally.
 
-- It may spawn a background subagent and then duplicate the work
-  itself with `find` / `list_project_structure` / `bash`,
-  reporting its own answer instead of the subagent's.
-- It may pick `general-purpose` for a read-only count (slow + may
-  trip the auto-deny on `run_bash`).
-
-Foreground delegation is the stable, recommended surface today.
-Background is gated experimental — opt in for parallel
-investigations where you're willing to manage the workflow.
+Write-capable unattended work belongs to **dispatch** — dispatch
+workers run in isolated git worktrees with file-scope ownership
+enforced at the write-path layer, so their writes are bounded to
+the worker's declared files. See [dispatch.md](dispatch.md).
 
 ### Background subagents don't survive process restart
 
@@ -543,9 +536,10 @@ can't touch git"); not yet implemented.
 
 Foreground subagents forward approval requests to the parent's
 modal. Background subagents auto-deny — there's no live UI to
-prompt against. Pre-authorize the tools the subagent needs in
-`permissions.json` (`allow` rules) if your background workflow
-needs mutations.
+prompt against. Standalone background `Agent` runs are read-only by
+default (see above). Dispatch background workers apply a
+deterministic policy that allows worktree-confined writes and
+`run_tests`, but denies shell, git mutations, and network tools.
 
 ## Why this design
 
@@ -564,36 +558,15 @@ the choice gets made deliberately rather than via silent scope creep.
 
 ### Should background subagents be hard-restricted to read-only tools?
 
-**Current behavior**: background subagents can be configured with any
-tools (per agent definition). Mutating tools auto-deny at runtime
-because no UI is attached, but they remain *present in the child's
-tool schema*. A user can opt mutating tools back in by allowlisting
-them in `.yottacode/permissions.json`, after which the auto-deny is
-bypassed and a background subagent can write to disk unattended.
-
-**Proposed alternative**: in `buildChildRegistry`, when constructing
-the child for a background run, strip any tool whose
-`RequiresApproval("")` returns true. The child's model would never
-see mutating tools in its schema and cannot call them at all. The
-schema-level enforcement removes both the auto-deny path AND the
-`permissions.json` escape valve for background subagents.
-
-**Trade-offs:**
-
-| | Keep current | Hard-strip in background |
-| --- | --- | --- |
-| Background can write disk under user-allowlist? | Yes (via `permissions.json`) | No (schema-strip is unconditional) |
-| Model wastes turns calling tools that auto-deny? | Sometimes | Never |
-| Safety of unattended runs | Depends on `permissions.json` discipline | Always read-only |
-| Power-user "background formatter" workflow | Possible | Not possible |
-| Implementation cost | 0 (current) | ~15 LOC |
-| Diverges from "foreground = write-capable" symmetry | No | Yes (asymmetric) |
-
-**Decision deferred to**: a future session once we have more usage
-data on whether anyone actually relies on writable-via-allowlist
-background subagents. Until then, foreground forwards approvals,
-background auto-denies, both keep their full configured toolset
-in-schema.
+**Resolved (GA)**: standalone background `Agent(run_in_background:true)`
+runs are read-only by default. The background approval policy
+(`standaloneBackgroundApprovalPolicy`) denies every
+approval-requiring tool before parent auto/yolo modes can approve
+it. Write-capable unattended work goes through **dispatch**, where
+worktree isolation and file-scope ownership make unattended writes
+safe. The `permissions.json` escape valve no longer applies to
+standalone background runs — use dispatch for unattended write
+fan-out.
 
 ### Should ALL subagents (foreground + background) be hard-restricted to read-only?
 

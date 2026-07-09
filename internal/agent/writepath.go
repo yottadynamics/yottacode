@@ -58,6 +58,15 @@ type WritePathOptions struct {
 	// Default false — symlinks are a known exfil vector.
 	AllowSymlinks bool
 
+	// OwnedPaths optionally narrows writes to the file/directory set a dispatch
+	// worker owns. Paths may be absolute or relative to Cwd. When non-empty, a
+	// write must pass the normal workspace/deny-list checks AND land inside one
+	// of these owned paths. This turns dispatch's "partition by files" contract
+	// from a prompt instruction into an enforcement boundary. Directory-style
+	// ownership is explicit: list an existing directory or a path ending in a
+	// path separator; otherwise an owned path is treated as one file.
+	OwnedPaths []string
+
 	// PlanModeAllowedFile is the absolute path of the single plan file
 	// the agent is permitted to write to while plan mode is active.
 	// When non-empty, ValidateWritePath short-circuits to nil for an
@@ -135,6 +144,12 @@ func ValidateWritePath(path string, opts WritePathOptions) error {
 	// roots in the same real-filesystem frame. canonicalExisting resolves
 	// the roots too, so a symlinked cwd (macOS /tmp -> /private/tmp) and
 	// the resolved target line up instead of spuriously mismatching.
+	//
+	// When OwnedPaths is set, workspace containment is necessary but not
+	// sufficient: dispatch workers must also stay inside their declared file
+	// ownership. Keep the generic workspace check first so outside-workspace
+	// writes still get the familiar path-trust error, then return a narrower
+	// ownership error for in-worktree but out-of-partition writes.
 	container := func(root string) string {
 		if opts.AllowSymlinks {
 			a, err := filepath.Abs(root)
@@ -146,27 +161,68 @@ func ValidateWritePath(path string, opts WritePathOptions) error {
 		return canonicalExisting(root)
 	}
 	cwd := opts.Cwd.Get()
-	if pathUnder(abs, container(cwd)) {
-		return nil
+	insideWorkspace := pathUnder(abs, container(cwd))
+	if !insideWorkspace {
+		for _, root := range opts.AllowedPaths {
+			if root == "" {
+				continue
+			}
+			if pathUnder(abs, container(root)) {
+				insideWorkspace = true
+				break
+			}
+		}
 	}
-	for _, root := range opts.AllowedPaths {
-		if root == "" {
+	if !insideWorkspace {
+		return &ErrPathOutsideWorkspace{
+			// Report the lexical path the model/user actually specified, not the
+			// symlink-resolved `abs` used for the containment check — Cwd is
+			// lexical too, and on macOS a resolved /etc -> /private/etc (or a
+			// /var/folders tempdir) would otherwise surface a confusing path in
+			// the trust modal and the --allow-paths hint.
+			Path:         lexicalAbs,
+			Cwd:          cwd,
+			AllowedRoots: append([]string(nil), opts.AllowedPaths...),
+		}
+	}
+	if len(opts.OwnedPaths) > 0 && !pathWithinOwnedScope(abs, opts) {
+		return fmt.Errorf("write to %q denied: outside dispatch worker owned files (%s)", lexicalAbs, strings.Join(opts.OwnedPaths, ", "))
+	}
+	return nil
+}
+
+// pathWithinOwnedScope reports whether abs is covered by a dispatch worker's
+// declared ownership set. File ownership is exact; directory ownership is
+// explicit via a trailing separator or an existing directory.
+func pathWithinOwnedScope(abs string, opts WritePathOptions) bool {
+	cwd := opts.Cwd.Get()
+	for _, raw := range opts.OwnedPaths {
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
 			continue
 		}
-		if pathUnder(abs, container(root)) {
-			return nil
+		owned := raw
+		if !filepath.IsAbs(owned) {
+			owned = filepath.Join(cwd, owned)
+		}
+		ownedAbs, err := filepath.Abs(owned)
+		if err != nil {
+			continue
+		}
+		ownedAbs = filepath.Clean(ownedAbs)
+		if !opts.AllowSymlinks {
+			ownedAbs = resolveWriteTarget(ownedAbs)
+		}
+		if abs == ownedAbs {
+			return true
+		}
+		if strings.HasSuffix(raw, "/") || strings.HasSuffix(raw, string(filepath.Separator)) || isDir(ownedAbs) {
+			if pathUnder(abs, ownedAbs) {
+				return true
+			}
 		}
 	}
-	return &ErrPathOutsideWorkspace{
-		// Report the lexical path the model/user actually specified, not the
-		// symlink-resolved `abs` used for the containment check — Cwd is
-		// lexical too, and on macOS a resolved /etc -> /private/etc (or a
-		// /var/folders tempdir) would otherwise surface a confusing path in
-		// the trust modal and the --allow-paths hint.
-		Path:         lexicalAbs,
-		Cwd:          cwd,
-		AllowedRoots: append([]string(nil), opts.AllowedPaths...),
-	}
+	return false
 }
 
 // ErrPathOutsideWorkspace is the structured error ValidateWritePath

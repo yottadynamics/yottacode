@@ -466,7 +466,7 @@ func (t *DispatchTool) runDispatchChild(ctx context.Context, c *dispatchChild, b
 	opts := childRunOpts{bgPolicy: background}
 	if c.isWrite {
 		childCwd := NewCwdRef(c.worktree)
-		opts.reg = t.buildWorktreeChildRegistry(c.cfg, childCwd, c.worktree)
+		opts.reg = t.buildWorktreeChildRegistry(c.cfg, childCwd, c.worktree, c.spec.Files)
 		opts.cwd = childCwd
 		opts.extraSystemPrompt = writeScopePrompt(c.branch, c.spec.Files)
 	}
@@ -504,7 +504,15 @@ func (t *DispatchTool) runDispatchChild(ctx context.Context, c *dispatchChild, b
 		// commit-on-cancel intent this block exists for.
 		commitCtx := context.WithoutCancel(ctx)
 		if !errored && gitWorktreeDirty(commitCtx, c.worktree) {
-			if _, err := gitOutput(commitCtx, c.worktree, "add", "-A"); err != nil {
+			if outside := outOfScopeWorkerChanges(commitCtx, c.worktree, c.spec.Files); len(outside) > 0 {
+				c.commitErr = "out-of-scope changes left uncommitted: " + strings.Join(outside, ", ")
+				errored = true
+				status = subagents.TaskErrored
+				if strings.TrimSpace(result) != "" {
+					result += "\n\n"
+				}
+				result += c.commitErr
+			} else if _, err := gitOutput(commitCtx, c.worktree, "add", "-A"); err != nil {
 				c.commitErr = "staging changes failed: " + err.Error()
 			} else {
 				msg := commitSubject(c.cfg.Name, c.spec.Description)
@@ -525,8 +533,10 @@ func (t *DispatchTool) runDispatchChild(ctx context.Context, c *dispatchChild, b
 			if sha := branchTip(commitCtx, c.worktree, c.base); sha != "" {
 				c.commit = sha
 				c.commitErr = "" // the branch has commits after all
-			} else if errored && gitWorktreeDirty(commitCtx, c.worktree) {
-				c.commitErr = "ended without committing; uncommitted work left in " + c.worktree
+			} else if gitWorktreeDirty(commitCtx, c.worktree) {
+				if c.commitErr == "" {
+					c.commitErr = "ended without committing; uncommitted work left in " + c.worktree
+				}
 			}
 		}
 		// Reclaim an empty worktree — EVERY outcome (completed, errored,
@@ -595,10 +605,10 @@ func (t *DispatchTool) runDispatchChild(ctx context.Context, c *dispatchChild, b
 // child's worktree, then narrows it to the agent config's allowlist. The
 // core set already excludes the delegation tools (Agent/dispatch/integrate)
 // and exit_plan_mode, so a worker can't recurse.
-func (t *DispatchTool) buildWorktreeChildRegistry(cfg *subagents.AgentConfig, cwd *CwdRef, wtDir string) *Registry {
+func (t *DispatchTool) buildWorktreeChildRegistry(cfg *subagents.AgentConfig, cwd *CwdRef, wtDir string, ownedFiles []string) *Registry {
 	core := NewRegistry()
 	RegisterCoreCwdTools(core, cwd, CoreToolDeps{
-		WriteOpts:      WritePathOptions{Cwd: cwd, DenyExact: DefaultDenyPaths(wtDir)},
+		WriteOpts:      WritePathOptions{Cwd: cwd, DenyExact: DefaultDenyPaths(wtDir), OwnedPaths: append([]string(nil), ownedFiles...)},
 		DenyReads:      DefaultDenyReadPaths(wtDir),
 		SupportsImages: t.SupportsImages,
 	})
@@ -783,6 +793,61 @@ func shortSHA(sha string) string {
 		return sha[:8]
 	}
 	return sha
+}
+
+// outOfScopeWorkerChanges returns changed paths that are not covered by the
+// dispatch worker's declared ownership. The write tools enforce this at call
+// time, but this commit-time guard catches indirect mutations (for example a
+// test command or a tool bug writing generated files) before dispatch commits
+// another worker's files.
+func outOfScopeWorkerChanges(ctx context.Context, worktreeDir string, owned []string) []string {
+	out, err := gitOutput(ctx, worktreeDir, "status", "--porcelain")
+	if err != nil {
+		return []string{"<could not inspect worktree status: " + firstLine(err.Error()) + ">"}
+	}
+	var outside []string
+	for _, line := range splitNonEmptyLines(out) {
+		path := statusPath(line)
+		if path == "" {
+			continue
+		}
+		if !pathOwned(path, owned, worktreeDir) {
+			outside = append(outside, path)
+		}
+	}
+	return outside
+}
+
+func statusPath(line string) string {
+	if len(line) < 4 {
+		return ""
+	}
+	p := strings.TrimSpace(line[3:])
+	if before, after, ok := strings.Cut(p, " -> "); ok {
+		_ = before
+		p = after
+	}
+	return strings.Trim(p, `"`)
+}
+
+func pathOwned(path string, owned []string, worktreeDir string) bool {
+	for _, raw := range owned {
+		original := strings.TrimSpace(raw)
+		raw = filepath.Clean(original)
+		if raw == "" || raw == "." {
+			continue
+		}
+		if path == raw {
+			return true
+		}
+		candidate := filepath.Join(worktreeDir, raw)
+		if strings.HasSuffix(original, "/") || strings.HasSuffix(original, string(filepath.Separator)) || isDir(candidate) {
+			if pathUnder(filepath.Join(worktreeDir, path), candidate) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // branchTip returns the worktree branch's HEAD sha when it has at least one
