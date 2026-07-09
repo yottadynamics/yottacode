@@ -91,6 +91,21 @@ type LoopConfig struct {
 	// false: top-level loops keep the mode-scaled budget.
 	FixedIterationCap bool
 
+	// BackgroundApprovalPolicy, when non-nil, is the deterministic approval
+	// policy for an unattended background child. It runs before yolo / auto /
+	// permissions Allow can auto-approve a tool, so background workers cannot
+	// inherit the parent's broad approval modes by accident. The policy returns
+	// (decision, note, handled). handled=false means "not a background-gated
+	// tool; continue with the normal approval chain". handled=true with Deny
+	// returns note as the tool result; handled=true with AllowOnce emits an
+	// ApprovalAuto event using note as the Source and executes the tool.
+	//
+	// Dispatch supplies a scoped policy that allows worktree-confined file
+	// writes and run_tests while denying shell/git/network mutations. Standalone
+	// background Agent runs use a conservative policy that denies every tool
+	// requiring approval, keeping GA background delegation read-only by default.
+	BackgroundApprovalPolicy func(tool Tool, argsJSON string) (Decision, string, bool)
+
 	// Checkpoints, when non-nil, receives pre-image snapshot
 	// requests for every Mutator tool call. nil disables checkpoint
 	// capture entirely — oneshot and tests pass nil. The TUI builds
@@ -870,6 +885,25 @@ func executeToolCallImpl(
 		return "denied by permissions.json deny rule", nil, true, nil
 	}
 
+	// Background policy runs before the mode chain so unattended children cannot
+	// inherit broad parent auto/yolo approvals. handled=false means the policy has
+	// no opinion (typically a read-only tool) and the normal chain below applies.
+	if cfg.BackgroundApprovalPolicy != nil {
+		if decision, note, handled := cfg.BackgroundApprovalPolicy(tool, argsJSON); handled {
+			if decision == Deny {
+				_ = send(ctx, events, ApprovalAuto{ToolName: tool.Name(), Preview: preview, Source: note})
+				return note, nil, true, nil
+			}
+			if decision == AllowOnce || decision == AllowAlways {
+				if err := send(ctx, events, ApprovalAuto{ToolName: tool.Name(), Preview: preview, Source: note}); err != nil {
+					return "", nil, false, err
+				}
+				goto approved
+			}
+			return fmt.Sprintf("invalid background approval decision for %s", tool.Name()), nil, true, nil
+		}
+	}
+
 	// Mode-priority approval chain. Order matters:
 	//   0. Plan-mode boundary tools: always prompt (the approval is
 	//      the TUI's mode-flip handshake — see isPlanBoundaryTool).
@@ -946,6 +980,7 @@ func executeToolCallImpl(
 		}
 	}
 
+approved:
 	if err := send(ctx, events, ToolStart{ToolName: tool.Name(), Preview: preview, ArgsJSON: argsJSON}); err != nil {
 		return "", nil, false, err
 	}

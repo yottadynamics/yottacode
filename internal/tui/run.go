@@ -448,11 +448,10 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 		// Session-wide subagent token backstop (config-driven, generous
 		// default). Bounds cumulative fan-out spend the per-wave caps can't.
 		MaxSessionTokens: fileCfg.SubagentSessionTokenBudget(),
-		// Background subagents are an opt-in experimental feature.
-		// When the gate is off, `run_in_background:true` returns a
-		// recoverable error the model relays to the user (see
-		// AgentTool.Execute). Foreground subagents are always on.
-		AllowBackground: expSet.IsEnabled(experimental.BackgroundSubagents),
+		// Background subagents are GA in the interactive TUI. Oneshot still
+		// leaves AllowBackground=false because there is no long-lived UI or
+		// /subagents picker to host detached work.
+		AllowBackground: true,
 	}
 	reg.Register(agentTool)
 	// Pair with the Agent tool: lets the parent fetch a previously-

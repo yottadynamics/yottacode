@@ -239,34 +239,17 @@ func TestSlash_CodeReviewBailsWhenTurnActive(t *testing.T) {
 	}
 }
 
-// TestSlash_CodeReviewRefusesWithoutBackgroundFlag pins the
-// deterministic Go-side gate: with background_subagents off (or no
-// subagent tool wired), the command refuses with an enable-hint and
-// starts no turn.
-func TestSlash_CodeReviewRefusesWithoutBackgroundFlag(t *testing.T) {
+// TestSlash_CodeReviewStartsWithoutBackgroundFlag proves /code-review is GA:
+// it no longer refuses on a background_subagents experimental gate and reaches
+// startTurnWithDisplay (which, with the test harness's nil adapter, surfaces
+// the "no provider configured" bail).
+func TestSlash_CodeReviewStartsWithoutBackgroundFlag(t *testing.T) {
 	m := newTestModel(t)
 	m.subagentTool = &agent.AgentTool{AllowBackground: false}
-	out, cmd := cmdCodeReview(m, nil)
-	if cmd != nil {
-		t.Errorf("cmdCodeReview should refuse (no turn) when background_subagents is off")
-	}
-	if !strings.Contains(out.transcript.String(), "background_subagents") {
-		t.Errorf("expected an enable-hint naming background_subagents; got: %q", out.transcript.String())
-	}
-}
-
-// TestSlash_CodeReviewPassesGateWithBackgroundFlag proves the gate
-// lets the command through when the flag is on: it does NOT emit the
-// enable-hint and reaches startTurnWithDisplay (which, with the test
-// harness's nil adapter, surfaces the "no provider configured" bail —
-// evidence the gate passed).
-func TestSlash_CodeReviewPassesGateWithBackgroundFlag(t *testing.T) {
-	m := newTestModel(t)
-	m.subagentTool = &agent.AgentTool{AllowBackground: true}
 	out, _ := cmdCodeReview(m, nil)
 	got := out.transcript.String()
 	if strings.Contains(got, "background_subagents") {
-		t.Errorf("gate should pass with the flag on (no enable-hint); got: %q", got)
+		t.Errorf("/code-review should not mention the removed experimental gate; got: %q", got)
 	}
 	if !strings.Contains(got, "no provider configured") {
 		t.Errorf("expected the command to reach startTurnWithDisplay; got: %q", got)

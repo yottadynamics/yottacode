@@ -93,8 +93,9 @@ the project uses semantic versioning once it's past `1.0.0`.
   writes auto-allowed and `run_bash` disabled; catastrophic commands
   are refused unconditionally, even under `--yolo`. Worktrees and
   branches are reclaimed on worker exit and at session teardown.
-  Requires the `dispatch` and `background_subagents` experimental
-  flags. See [`docs/dispatch.md`](docs/dispatch.md).
+  Requires the `dispatch` experimental flag (`background_subagents`
+  has graduated — see Changed below). See
+  [`docs/dispatch.md`](docs/dispatch.md).
 - **Background subagents: live dock + completion cards.** A live dock
   above the status bar shows each running subagent's type, latest
   activity, model, and context fill; Tab focuses the dock, Enter opens
@@ -264,6 +265,17 @@ the project uses semantic versioning once it's past `1.0.0`.
 
 ### Changed
 
+- **Background subagents graduated to GA (read-only by default).**
+  `run_in_background:true` on the `Agent` tool is now generally
+  available in the interactive TUI — no experimental flag required.
+  Standalone background runs are read-only: a deterministic background
+  approval policy denies every approval-requiring tool before parent
+  auto/yolo modes can leak in. Write-capable unattended work goes
+  through `dispatch`, where worktree isolation and file-scope
+  ownership make unattended writes safe. The `/code-review` slash
+  command is unblocked (it no longer requires the experimental gate).
+  The `background_subagents` feature flag remains recognized as a
+  no-op for one release so existing configs don't break.
 - **BREAKING: agent memory and subagent transcripts moved under one
   `~/.yottacode/memory/` tree.** User-scope memories now live in
   `memory/user/`, project-scope memories in `memory/projects/<slug>/`,

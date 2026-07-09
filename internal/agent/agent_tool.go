@@ -348,28 +348,20 @@ func (t *AgentTool) Execute(ctx context.Context, argsJSON string) (string, error
 		return t.unknownSubagentError(a.SubagentType), nil
 	}
 	// An agent definition can declare `background: true` so callers
-	// don't have to remember the flag (the verification agent uses
-	// this: it's slow and the parent shouldn't block on it). An
-	// explicit caller-supplied `run_in_background:true` is still
-	// honored; the config only flips the *default* when the field is
-	// absent. If background isn't available in this session (oneshot
-	// mode), we silently fall back to foreground — the alternative
-	// (erroring) would make the verification agent unreachable from
-	// oneshot, which defeats the point.
-	if !a.RunInBackground && cfg.Background && t.AllowBackground {
+	// don't have to remember the flag for safe read-only background agents.
+	// Write-capable builtins keep this frontmatter for dispatch fan-out, but
+	// standalone Agent calls do not auto-background them: ordinary GA background
+	// delegation is read-only by default, while write-capable unattended work
+	// belongs to dispatch's worktree/file-scoped worker path.
+	if !a.RunInBackground && cfg.Background && t.AllowBackground && agentIsReadOnly(cfg) {
 		a.RunInBackground = true
 	}
 	if a.RunInBackground && !t.AllowBackground {
-		// The model relays this message to the user verbatim, so
-		// it has to be both informative and actionable: name the
-		// gate, name the env var / config key / flag, and clarify
-		// that foreground delegation still works fine.
-		return "error: background subagents are an experimental feature and are not enabled in this session. " +
-			"Re-run without run_in_background:true to dispatch a foreground subagent (which always works), " +
-			"OR enable the feature with `--experimental background_subagents` at startup, " +
-			"`YOTTACODE_EXPERIMENTAL=background_subagents` in the environment, " +
-			"or `[experimental]\\nbackground_subagents = true` in ~/.yottacode/config.toml. " +
-			"See docs/experimental.md for details.", nil
+		// Oneshot/noninteractive sessions have no long-lived UI, dock, or
+		// /subagents picker to host detached work. The model can retry the same
+		// task as a foreground subagent, which always works.
+		return "error: background subagents are only available in interactive TUI sessions. " +
+			"Re-run without run_in_background:true to dispatch a foreground subagent (which always works).", nil
 	}
 	// Session-wide token budget: a backstop against an enthusiastic or
 	// adversarial prompt fanning out unbounded child loops on the user's
@@ -482,7 +474,7 @@ func (t *AgentTool) Execute(ctx context.Context, argsJSON string) (string, error
 			// way. decisions stays nil: with no one watching, approval-needed
 			// events still auto-deny inside runChild (the forward path
 			// requires BOTH emitToParent and decisions).
-			result, errored, status, tokens := t.runChild(bgCtx, taskID, cfg, a.Prompt, transcript, emitToParent, nil, childAdapter, childModel, childRunOpts{})
+			result, errored, status, tokens := t.runChild(bgCtx, taskID, cfg, a.Prompt, transcript, emitToParent, nil, childAdapter, childModel, childRunOpts{standaloneBackgroundPolicy: true})
 			t.Tasks.MarkDone(taskID, status, result, errored, tokens)
 			// Read the just-recorded tool-call count off the registry
 			// so the inline card can render accurate stats.
@@ -659,15 +651,18 @@ type childRunOpts struct {
 	// the agent body + SystemPromptSuffix, before the no-delegation
 	// rule). dispatch uses it to declare the task's file ownership.
 	extraSystemPrompt string
-	// bgPolicy makes a background (no-UI) child apply a deterministic
-	// allow/deny policy to approval requests instead of the default
-	// blanket auto-deny: worktree-confined file writes + run_tests are
-	// allowed; run_bash (all shell) and other floor tools are denied
-	// (see backgroundWorkerDecision). Dispatch background workers set this.
-	// The child does NOT bypass permissions — explicit `deny` rules still
-	// win, the run_bash hardline floor still applies, and writes stay
-	// confined to the worktree by the child registry's WriteOpts.
+	// bgPolicy makes a dispatch background worker apply a deterministic
+	// allow/deny policy: owned-file writes + run_tests are allowed; shell and
+	// approval-requiring git/network tools are denied. The child does NOT
+	// bypass permissions — explicit deny rules still win, the run_bash
+	// hardline floor still applies, and writes stay confined to the worktree
+	// by the child registry's WriteOpts.
 	bgPolicy bool
+	// standaloneBackgroundPolicy makes ordinary Agent(run_in_background:true)
+	// runs deny approval-requiring tools before parent auto/yolo modes can approve
+	// them. Read-only/no-approval tools still execute normally. Dispatch
+	// background workers use bgPolicy instead; foreground runs leave both false.
+	standaloneBackgroundPolicy bool
 }
 
 func (t *AgentTool) runChild(
@@ -729,7 +724,7 @@ func (t *AgentTool) runChild(
 		Adapter:           childAdapter,
 		Registry:          childReg,
 		Permissions:       t.Permissions,
-		BypassPermissions: false, // children never blanket-bypass; background workers gate via bgPolicy (see runChild's ApprovalNeeded handler), and the run_bash hardline floor + worktree write-confinement still apply
+		BypassPermissions: false, // children never blanket-bypass; background workers gate via BackgroundApprovalPolicy (see below), and the run_bash hardline floor + worktree write-confinement still apply
 		Cwd:               childCwd,
 		MaxIterations:     childIterationCap,
 		// Pin the child's iteration budget to childIterationCap. The
@@ -742,6 +737,11 @@ func (t *AgentTool) runChild(
 		PlanMode:          childPlanMode,
 		AutoMode:          childAutoMode,
 		YoloMode:          t.YoloMode, // shared (process-wide once entered)
+	}
+	if opts.bgPolicy {
+		childCfg.BackgroundApprovalPolicy = dispatchBackgroundApprovalPolicy
+	} else if opts.standaloneBackgroundPolicy {
+		childCfg.BackgroundApprovalPolicy = standaloneBackgroundApprovalPolicy
 	}
 
 	// Give the child loop its own context management. A subagent runs
@@ -1089,38 +1089,73 @@ func (t *AgentTool) runChild(
 	return result, errored, status, tokensUsed
 }
 
-// backgroundWorkerDecision is the deterministic approval policy for an
-// unattended (background dispatch) worker that can't prompt a human. It
-// mirrors how hermes and Claude Code gate unattended subagents: allow the
-// safe, contained operations; deny everything that needs human judgment —
-// deterministically, never via an LLM. Returns the verdict + an activity
-// note for the transcript/dock.
+// standaloneBackgroundApprovalPolicy is the GA safety policy for ordinary
+// Agent(run_in_background:true) runs. Background delegation is available by
+// default in the TUI, but unattended children still cannot answer approval
+// modals, so any approval-requiring tool is denied before parent auto/yolo or
+// permissions Allow can auto-approve it. No-approval tools fall through to
+// normal execution. Write-capable parallel implementation belongs to dispatch, which
+// supplies dispatchBackgroundApprovalPolicy with worktree/file-scope guards.
+func standaloneBackgroundApprovalPolicy(tool Tool, argsJSON string) (Decision, string, bool) {
+	if tool.RequiresApproval(argsJSON) {
+		return Deny, "denied " + tool.Name() + " (standalone background subagents are read-only; use dispatch for worktree-isolated write fan-out, or run this subagent in the foreground)", true
+	}
+	return Deny, "", false
+}
+
+// dispatchBackgroundApprovalPolicy is the deterministic approval policy for an
+// unattended dispatch worker that can't prompt a human. It mirrors how hermes
+// and Claude Code gate unattended subagents: allow the safe, contained
+// operations; deny everything that needs human judgment — deterministically,
+// never via an LLM. Returns the verdict + an activity note for the
+// transcript/dock.
 //
 //   - File-mutation tools are allowed: the worktree child registry confines
-//     their writes to the isolated worktree via WriteOpts, so the blast
-//     radius is the worker's own branch.
+//     their writes to the isolated worktree AND to the dispatch worker's owned
+//     file set via WriteOpts, so the blast radius is the worker's branch.
 //   - run_tests is allowed so a worker can verify its change.
-//   - run_bash is DENIED for unattended workers (beta posture). The
+//   - run_bash is DENIED for unattended workers (GA posture). The
 //     "read-only shell" classifier (IsAutoModeSafeBash) is a first-token
 //     check that is bypassable (env/command wrappers, process substitution),
 //     and run_bash isn't path-confined once allowed — so auto-allowing it is
 //     an arbitrary-code-execution surface for a worker nobody is watching.
 //     A task that genuinely needs shell must run in the foreground (a human
-//     approves) until the token-aware classifier lands (dispatch-v3 Layer 0d).
+//     approves) until the token-aware classifier lands.
 //   - Everything else (git_commit, the unified git tool, fetch, …) is denied;
 //     the worker's commit happens via dispatch's own auto-commit.
-func backgroundWorkerDecision(toolName, argsJSON string) (Decision, string) {
+func dispatchBackgroundApprovalPolicy(tool Tool, argsJSON string) (Decision, string, bool) {
 	_ = argsJSON // reserved for a future token-aware shell classifier
-	switch toolName {
+	switch tool.Name() {
 	case "write_file", "edit_file", "apply_diff", "mkdir", "copy_file", "move_file", "delete_file":
-		return AllowOnce, "allowed " + toolName + " (worktree-confined write)"
+		return AllowOnce, "allowed " + tool.Name() + " (dispatch worktree + owned-file scoped write)", true
 	case "run_tests":
-		return AllowOnce, "allowed run_tests"
+		return AllowOnce, "allowed run_tests (dispatch background worker)", true
 	case "run_bash":
-		return Deny, "denied run_bash (shell is disabled for unattended background workers; use run_tests, or run this task in the foreground)"
+		return Deny, "denied run_bash (shell is disabled for unattended dispatch workers; use run_tests, or run this task in the foreground)", true
 	default:
-		return Deny, "denied " + toolName + " (not auto-allowed for unattended workers; needs a human)"
+		if tool.RequiresApproval(argsJSON) {
+			return Deny, "denied " + tool.Name() + " (not auto-allowed for unattended dispatch workers; needs a human)", true
+		}
+		return Deny, "", false
 	}
+}
+
+// backgroundWorkerDecision preserves the older test/helper surface for the
+// dispatch unattended-worker policy.
+func backgroundWorkerDecision(toolName, argsJSON string) (Decision, string) {
+	decision, note, _ := dispatchBackgroundApprovalPolicy(namedApprovalTool{name: toolName}, argsJSON)
+	return decision, note
+}
+
+type namedApprovalTool struct{ name string }
+
+func (t namedApprovalTool) Name() string                 { return t.name }
+func (t namedApprovalTool) Description() string          { return "" }
+func (t namedApprovalTool) Schema() map[string]any       { return nil }
+func (t namedApprovalTool) RequiresApproval(string) bool { return true }
+func (t namedApprovalTool) PreviewCall(string) string    { return t.name }
+func (t namedApprovalTool) Execute(context.Context, string) (string, error) {
+	return "", nil
 }
 
 // buildChildRegistry clones the parent registry into a new one,

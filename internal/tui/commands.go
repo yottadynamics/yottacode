@@ -94,7 +94,7 @@ func init() {
 		{Name: "git-update-pr", Args: "[ref]", Help: "refresh a PR's title and body to match the current commit list", Run: cmdGitUpdatePR},
 		{Name: "git-create-issue", Args: "[title]", Help: "create a GitHub issue in the current repo", Run: cmdGitCreateIssue},
 		{Name: "git-review-pr", Args: "[ref]", Help: "review a pull request (number or branch; defaults to current branch's PR)", Run: cmdGitReviewPR},
-		{Name: "code-review", Help: "multi-agent review of the current diff — effort low · medium · high (needs --experimental background_subagents)", Run: cmdCodeReview},
+		{Name: "code-review", Help: "multi-agent review of the current diff — effort low · medium · high (background subagents GA)", Run: cmdCodeReview},
 		{Name: "git-implement-issue", Args: "<n>", Help: "implement a GitHub issue end-to-end: fetch → plan → branch → code → tests → commit → push → draft PR", Run: cmdGitImplementIssue},
 		// /mcp inspects the live MCP server manager: list configured
 		// servers, their start status + tool counts, and dump stderr

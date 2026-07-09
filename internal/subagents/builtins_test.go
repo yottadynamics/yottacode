@@ -6,9 +6,10 @@ import (
 )
 
 // TestLoadBuiltins_NewRoles asserts the implementation roster added for the
-// dispatch/background beta loads with the right defaults: implement/test/docs
-// are write-capable and background-by-default; review is read-only and
-// foreground. Each must declare an explicit tools list and a non-empty prompt.
+// dispatch/background beta loads with the right dispatch defaults:
+// implement/test/docs are write-capable and background-capable for dispatch;
+// review is read-only and foreground. Each must declare an explicit tools list
+// and a non-empty prompt.
 func TestLoadBuiltins_NewRoles(t *testing.T) {
 	byName := map[string]AgentConfig{}
 	for _, c := range LoadBuiltins() {
