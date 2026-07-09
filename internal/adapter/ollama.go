@@ -83,14 +83,13 @@ func (a *chatAdapter) ChatStream(ctx context.Context, messages []Message, tools 
 			Messages:  toOpenAIMessages(messages),
 			MaxTokens: openai.Int(ChatDefaultMaxTokens),
 		}
-		// prompt_cache_key pins this session to a stable server-side cache
-		// shard so the stable prompt prefix keeps hitting the provider's
-		// prompt cache across turns (real OpenAI bills cached input at a
-		// steep discount; gpt-4o/4.1 route here rather than the Responses
-		// path). Harmless for OpenAI-compatible endpoints that ignore the
-		// field (Ollama, vLLM, …); empty for session-less callers → the
-		// SDK omits it.
-		if a.cfg.CacheKey != "" {
+		// prompt_cache_key pins real OpenAI Chat-Completions sessions to a
+		// stable server-side cache shard so the stable prompt prefix keeps
+		// hitting the provider's prompt cache across turns (gpt-4o/4.1
+		// route here rather than the Responses path). Keep this OpenAI-only:
+		// many OpenAI-compatible endpoints reject unknown request fields
+		// instead of ignoring them.
+		if a.cfg.CacheKey != "" && a.profile.Provider == ProviderOpenAI {
 			params.PromptCacheKey = openai.String(a.cfg.CacheKey)
 		}
 		// IncludeUsage gives us a final chunk with token counts
