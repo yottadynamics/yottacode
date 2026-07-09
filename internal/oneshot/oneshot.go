@@ -61,6 +61,9 @@ func Run(ctx context.Context, opts cli.ChatOptions, prompt string) error {
 	if err != nil {
 		return err
 	}
+	// Derive the Responses-API prompt_cache_key from the session id so
+	// every turn of this run shares one server-side cache shard.
+	opts.CacheKey = sess.ID
 	mem, err := memory.Load(cwd)
 	if err != nil {
 		return err
@@ -106,6 +109,7 @@ func Run(ctx context.Context, opts cli.ChatOptions, prompt string) error {
 		Model:                  opts.Model,
 		ProviderOverride:       adapter.Provider(strings.TrimSpace(opts.ProviderKind)),
 		ReasoningEffort:        opts.ReasoningEffort,
+		CacheKey:               opts.CacheKey,
 		ModelMaxOutput:         maxOutput,
 		ModelSupportsThinking:  supportsThinking,
 		EnableWebSearch:        opts.EnableWebSearch,

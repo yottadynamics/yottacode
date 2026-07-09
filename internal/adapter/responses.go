@@ -82,6 +82,14 @@ func (a *responsesAdapter) ChatStream(ctx context.Context, messages []Message, t
 		if instructions != "" {
 			params.Instructions = openai.String(instructions)
 		}
+		// prompt_cache_key pins this session to a stable server-side cache
+		// shard so the long, stable prompt prefix keeps hitting OpenAI's
+		// prompt cache across turns (cached input is billed at a steep
+		// discount) instead of oscillating across load-balanced shards.
+		// Empty for session-less callers → the SDK omits the field.
+		if a.cfg.CacheKey != "" {
+			params.PromptCacheKey = openai.String(a.cfg.CacheKey)
+		}
 		responseTools, err := toResponsesTools(tools, a.cfg, a.profile)
 		if err != nil {
 			out <- StreamEvent{Kind: EventErr, Err: err}

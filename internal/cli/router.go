@@ -203,6 +203,7 @@ func candidateAdapterConfig(rc config.ResolvedCandidate, opts ChatOptions) adapt
 		Model:                  rc.Model,
 		ProviderOverride:       adapter.Provider(strings.TrimSpace(rc.Provider.Kind)),
 		ReasoningEffort:        opts.ReasoningEffort,
+		CacheKey:               opts.CacheKey,
 		ModelMaxOutput:         maxOutput,
 		ModelSupportsThinking:  supportsThinking,
 		EnableWebSearch:        opts.EnableWebSearch,

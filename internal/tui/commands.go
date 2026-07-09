@@ -1130,6 +1130,17 @@ func renderConnectionSummary(state connState) string {
 	}
 }
 
+// sessionCacheKey returns the stable prompt_cache_key for this session
+// (its id), or "" when there is no session. Mirrors how the TUI/oneshot
+// runners seed opts.CacheKey so a mid-session model switch keeps the
+// same server-side cache shard.
+func (m Model) sessionCacheKey() string {
+	if m.sess == nil {
+		return ""
+	}
+	return m.sess.ID
+}
+
 func (m Model) adapterConfig(modelName, baseURL string) adapter.Config {
 	maxOutput, supportsThinking := catalog.ReasoningInfo(modelName)
 	return adapter.Config{
@@ -1138,6 +1149,7 @@ func (m Model) adapterConfig(modelName, baseURL string) adapter.Config {
 		Model:                  modelName,
 		ProviderOverride:       adapter.Provider(strings.TrimSpace(m.provider)),
 		ReasoningEffort:        m.reasoningEffort,
+		CacheKey:               m.sessionCacheKey(),
 		ModelMaxOutput:         maxOutput,
 		ModelSupportsThinking:  supportsThinking,
 		EnableWebSearch:        m.enableWebSearch,

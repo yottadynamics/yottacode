@@ -148,7 +148,7 @@ func (a *openAIAuthAdapter) ChatStream(ctx context.Context, messages []Message, 
 }
 
 func (a *openAIAuthAdapter) runOnce(ctx context.Context, messages []Message, tools []Tool, out chan<- StreamEvent) {
-	body, err := buildOpenAIAuthRequest(a.model, a.cfg.ReasoningEffort, messages, tools)
+	body, err := buildOpenAIAuthRequest(a.model, a.cfg.ReasoningEffort, a.cfg.CacheKey, messages, tools)
 	if err != nil {
 		out <- StreamEvent{Kind: EventErr, Err: fmt.Errorf("openai-auth: build request: %w", err)}
 		return
@@ -752,7 +752,7 @@ func humanizeDuration(d time.Duration) string {
 // (always, regardless of caller intent) — the backend rejects any
 // other shape with HTTP 400. See project memory
 // `project_chatgpt_codex_api_contract.md` for the full contract.
-func buildOpenAIAuthRequest(model, reasoningEffort string, messages []Message, tools []Tool) ([]byte, error) {
+func buildOpenAIAuthRequest(model, reasoningEffort, cacheKey string, messages []Message, tools []Tool) ([]byte, error) {
 	instructions, items := splitForOpenAIAuth(messages)
 	if strings.TrimSpace(instructions) == "" {
 		instructions = OpenAIAuthDefaultInstructions
@@ -763,6 +763,15 @@ func buildOpenAIAuthRequest(model, reasoningEffort string, messages []Message, t
 		"input":        items,
 		"stream":       true,
 		"store":        false,
+	}
+	// prompt_cache_key pins this conversation to one server-side cache
+	// shard so the stable prompt prefix keeps hitting the backend KV
+	// cache across turns instead of oscillating across load-balanced
+	// shards. The official Codex CLI sets it to the conversation id on
+	// every request; we use the session id. Omitted when empty so a
+	// session-less caller sends the pre-existing body shape unchanged.
+	if cacheKey != "" {
+		body["prompt_cache_key"] = cacheKey
 	}
 	// reasoning.effort tunes how hard a Codex reasoning model thinks.
 	// Omitted entirely when unset so the backend stays at its default
