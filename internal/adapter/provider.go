@@ -34,6 +34,19 @@ type Config struct {
 	Model            string
 	ProviderOverride Provider
 	ReasoningEffort  string
+	// CacheKey is the stable per-conversation identifier sent as OpenAI's
+	// `prompt_cache_key`. It pins every turn of a session to the same
+	// server-side prompt-cache shard so the (byte-identical) prompt prefix
+	// keeps hitting the KV cache instead of oscillating across
+	// load-balanced shards — the same lever the official Codex CLI pulls,
+	// which sets it to the conversation id. Populated from
+	// session.Session.ID at construction. Empty omits the field, so a
+	// session-less caller (e.g. the connection probe) sends the same
+	// request shape as before. Consumed by real OpenAI adapters only:
+	// OpenAI Responses, openai-auth, and api.openai.com Chat Completions.
+	// OpenAI-compatible providers intentionally do not receive it because
+	// some reject unknown request fields.
+	CacheKey string
 	// ModelMaxOutput and ModelSupportsThinking carry catalog-derived
 	// facts about the active model so budget-based reasoning providers
 	// (Anthropic, Gemini) can size a thinking budget without the adapter

@@ -32,13 +32,9 @@ import (
 type Feature string
 
 const (
-	// BackgroundSubagents enables `run_in_background:true` on the
-	// Agent tool. The async machinery is wired through (registry,
-	// transcripts, get_subagent_result, completion notification),
-	// but the model's reflexes around using bg subagents need
-	// more polish — it tends to spawn one and then duplicate the
-	// work itself. Gated until prompt steering reliably produces
-	// the intended workflow.
+	// BackgroundSubagents is a graduated no-op flag kept recognized for one
+	// release so old configs don't warn or break. Background subagents are now
+	// GA in the interactive TUI; the flag no longer gates behavior.
 	BackgroundSubagents Feature = "background_subagents"
 
 	// Dispatch enables the `dispatch` + `integrate` tools: fan a batch
@@ -67,7 +63,7 @@ func All() []Feature {
 func Description(f Feature) string {
 	switch f {
 	case BackgroundSubagents:
-		return "Background subagents (run_in_background:true). Async fire-and-forget delegation paired with get_subagent_result for fetching. Foreground subagents are always available; this gate only controls the bg variant."
+		return "Background subagents have graduated to GA in the interactive TUI; this flag is recognized as a no-op for compatibility."
 	case Dispatch:
 		return "Dispatch + integrate tools. Fan a batch of subtasks out to concurrent subagents (write-capable ones in isolated git worktrees, partitioned by file ownership), then merge their branches into one integration branch for a PR."
 	default:

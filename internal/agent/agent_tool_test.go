@@ -91,9 +91,9 @@ func TestAgentTool_ForegroundApprovalUnderGate_NoDeadlock(t *testing.T) {
 	}
 }
 
-// TestBuiltinRoles_DispatchClassification asserts the new built-in roles
-// classify the way dispatch relies on: implement/test/docs are write-capable
-// (→ isolated worktree) and background-by-default; review is read-only
+// TestBuiltinRoles_DispatchClassification asserts the built-in roles classify
+// the way dispatch relies on: implement/test/docs are write-capable (→ isolated
+// worktree) and carry dispatch background defaults; review is read-only
 // (→ shared cwd, no worktree) and foreground.
 func TestBuiltinRoles_DispatchClassification(t *testing.T) {
 	byName := map[string]subagents.AgentConfig{}
@@ -327,11 +327,9 @@ func TestAgentTool_UnknownSubagentTypeReturnsRecoverableError(t *testing.T) {
 }
 
 func TestAgentTool_BackgroundRejectedWhenDisabled(t *testing.T) {
-	// AllowBackground=false models two cases: oneshot (where it's
-	// always false) AND the TUI without the experimental gate
-	// enabled. Either way, the error message must be recoverable
-	// (so the model adapts to foreground) and must mention the
-	// experimental gate so the user knows how to enable it.
+	// AllowBackground=false now models oneshot/noninteractive sessions only. The
+	// TUI enables background subagents by default, but oneshot still rejects an
+	// explicit detached run because there is no long-lived /subagents UI.
 	cfg := subagents.AgentConfig{Name: "x", Description: "x", Prompt: "x", Source: "test"}
 	tool, _ := newTestAgentTool(t, []subagents.AgentConfig{cfg}, nil, false /* AllowBackground=false */)
 	args := mustJSON(t, agentArgs{SubagentType: "x", Prompt: "hello", RunInBackground: true})
@@ -339,14 +337,11 @@ func TestAgentTool_BackgroundRejectedWhenDisabled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Execute err = %v, want nil", err)
 	}
-	if !strings.Contains(out, "background") {
-		t.Errorf("output should mention 'background'; got %q", out)
+	if !strings.Contains(out, "background") || !strings.Contains(out, "interactive TUI") {
+		t.Errorf("output should explain that background requires an interactive TUI; got %q", out)
 	}
-	if !strings.Contains(out, "experimental") {
-		t.Errorf("output should mention the experimental gate so users know how to enable; got %q", out)
-	}
-	if !strings.Contains(out, "background_subagents") {
-		t.Errorf("output should name the specific feature flag; got %q", out)
+	if strings.Contains(out, "background_subagents") || strings.Contains(out, "experimental") {
+		t.Errorf("background is GA in TUI; rejection should not mention an experimental flag: %q", out)
 	}
 }
 
@@ -379,23 +374,24 @@ func TestAgentTool_ForegroundCapEnforced(t *testing.T) {
 	}
 }
 
-// An agent definition with `background: true` should dispatch as
-// background even when the caller omits run_in_background. This is the
-// surface the verification agent leans on — callers shouldn't have to
-// remember to pass the flag for a slow off-turn check.
-func TestAgentTool_ConfigBackgroundDefaultsToBackground(t *testing.T) {
+// A read-only agent definition with `background: true` should dispatch as
+// background even when the caller omits run_in_background. Write-capable
+// background-default builtins are reserved for dispatch, where worktree/file
+// scope makes unattended writes safe.
+func TestAgentTool_ConfigBackgroundDefaultsToBackgroundForReadOnly(t *testing.T) {
 	streamer := &scriptedStreamer{turns: [][]adapter.StreamEvent{
 		{sseDone("verdict: pass")},
 	}}
 	cfg := subagents.AgentConfig{
-		Name:        "verification",
+		Name:        "reviewer",
 		Description: "x",
 		Prompt:      "verify",
+		Tools:       []string{"read_file"},
 		Background:  true,
 		Source:      "test",
 	}
 	tool, _ := newTestAgentTool(t, []subagents.AgentConfig{cfg}, streamer, true /* AllowBackground */)
-	args := mustJSON(t, agentArgs{SubagentType: "verification", Prompt: "go"})
+	args := mustJSON(t, agentArgs{SubagentType: "reviewer", Prompt: "go"})
 	out, err := tool.Execute(context.Background(), args)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -424,21 +420,22 @@ func TestAgentTool_ConfigBackgroundDefaultsToBackground(t *testing.T) {
 
 // When AllowBackground is false (oneshot mode), a config-level
 // `background: true` must silently fall back to foreground rather
-// than rejecting the call. Otherwise the verification agent becomes
-// unreachable from oneshot, which defeats the point of shipping it.
+// than rejecting the call. Otherwise read-only background-default agents become
+// unreachable from oneshot, which has no detached-task UI.
 func TestAgentTool_ConfigBackgroundFallsBackToForegroundWhenDisabled(t *testing.T) {
 	streamer := &scriptedStreamer{turns: [][]adapter.StreamEvent{
 		{sseDone("verdict: pass")},
 	}}
 	cfg := subagents.AgentConfig{
-		Name:        "verification",
+		Name:        "reviewer",
 		Description: "x",
 		Prompt:      "verify",
+		Tools:       []string{"read_file"},
 		Background:  true,
 		Source:      "test",
 	}
 	tool, _ := newTestAgentTool(t, []subagents.AgentConfig{cfg}, streamer, false /* AllowBackground */)
-	args := mustJSON(t, agentArgs{SubagentType: "verification", Prompt: "go"})
+	args := mustJSON(t, agentArgs{SubagentType: "reviewer", Prompt: "go"})
 	out, err := tool.Execute(context.Background(), args)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -635,11 +632,10 @@ func TestAgentTool_AutoModePropagatesToChild(t *testing.T) {
 	}
 }
 
-// TestAgentTool_BackgroundAutoDeniesApproval verifies the hybrid
-// approval rule: background subagents auto-deny ApprovalNeeded
-// because there's no UI attached. The child should get a Deny
-// verdict back from runChild on its own decisions channel.
-func TestAgentTool_BackgroundAutoDeniesApproval(t *testing.T) {
+// TestAgentTool_BackgroundDeniesApprovalBeforeAutoMode verifies standalone
+// background subagents are read-only even when the parent is in auto mode: the
+// background approval policy must run before auto/yolo approvals can leak in.
+func TestAgentTool_BackgroundDeniesApprovalBeforeAutoMode(t *testing.T) {
 	// Script the child to: (1) call a tool that requires approval,
 	// (2) after that returns "denied by user", emit a final reply.
 	streamer := &scriptedStreamer{turns: [][]adapter.StreamEvent{
@@ -648,6 +644,7 @@ func TestAgentTool_BackgroundAutoDeniesApproval(t *testing.T) {
 	}}
 	cfg := subagents.AgentConfig{Name: "x", Description: "x", Prompt: "x", Source: "test"}
 	tool, _ := newTestAgentTool(t, []subagents.AgentConfig{cfg}, streamer, true)
+	tool.AutoMode.Active.Store(true)
 
 	args := mustJSON(t, agentArgs{SubagentType: "x", Prompt: "p", RunInBackground: true})
 	out, err := tool.Execute(context.Background(), args)
@@ -671,10 +668,14 @@ func TestAgentTool_BackgroundAutoDeniesApproval(t *testing.T) {
 	if len(tasks) == 0 {
 		t.Fatalf("no task recorded")
 	}
-	// The child should have completed (not errored) because the
-	// auto-deny lets the model adapt and produce a final reply.
+	// The child should have completed (not errored) because the denial lets the
+	// model adapt and produce a final reply. The result also proves run_bash was
+	// denied by background policy instead of auto-approved by parent auto mode.
 	if tasks[0].Errored {
-		t.Errorf("expected non-errored completion after auto-deny adapt; got Result=%q", tasks[0].Result)
+		t.Errorf("expected non-errored completion after background denial adapt; got Result=%q", tasks[0].Result)
+	}
+	if !strings.Contains(tasks[0].Result, "adapted after denial") {
+		t.Errorf("expected model to adapt after denied run_bash; got Result=%q", tasks[0].Result)
 	}
 }
 

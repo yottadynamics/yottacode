@@ -18,7 +18,7 @@ one release so existing configs don't break.
 
 | Name | Status | What it enables |
 | --- | --- | --- |
-| `background_subagents` | experimental | `run_in_background:true` on the Agent tool — fire-and-forget subagent dispatch with `get_subagent_result` for fetching. Foreground subagents are always available; this gate only controls the bg variant. |
+| `background_subagents` | **graduated** (GA) | `run_in_background:true` on the Agent tool — fire-and-forget subagent dispatch with `get_subagent_result` for fetching. **Now generally available in the interactive TUI**; the flag is a no-op kept for one release so existing configs don't break. Foreground subagents are always available; background is read-only by default (standalone), with write-capable unattended work routed through dispatch. |
 | `dispatch` | experimental · **beta** | The `dispatch` + `integrate` tools — fan a batch of subtasks out to concurrent subagents (write-capable ones in isolated git worktrees, partitioned by file ownership), then merge their branches into one integration branch for a PR. **In beta — feedback wanted; file issues with the `dispatch-beta` label.** See [dispatch.md](dispatch.md), incl. its Known Limitations. |
 
 (Adding a feature here is a one-constant change in

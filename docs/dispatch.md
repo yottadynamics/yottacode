@@ -12,16 +12,15 @@ independent tasks, implement them in parallel, assemble the result."
 
 > **Status: experimental beta — opt-in, and we want your feedback.** The
 > feature is merged and tested, but the UX and model behavior are still
-> settling. Enable it (for the full background experience, turn on both flags):
+> settling. Enable the `dispatch` feature:
 >
 > ```bash
-> yottacode --experimental dispatch --experimental background_subagents
+> yottacode --experimental dispatch
 > ```
 >
-> (or `YOTTACODE_EXPERIMENTAL=dispatch,background_subagents`, or set both under
-> `[experimental]` in `~/.yottacode/config.toml`.) `dispatch` alone is enough
-> for the `dispatch`/`integrate` tools; `background_subagents` additionally
-> enables `run_in_background:true` on the standalone `Agent` tool. See
+> (or `YOTTACODE_EXPERIMENTAL=dispatch`, or set it under
+> `[experimental]` in `~/.yottacode/config.toml`.) Background subagents are
+> now GA in the interactive TUI — no separate flag needed. See
 > [experimental.md](experimental.md) for every way to enable.
 >
 > **Hit a bug or a rough edge?** Please file it on GitHub Issues with the
@@ -58,9 +57,9 @@ integrate({ branches:[...] })
   **not** block the main agent — the workers keep implementing in parallel
   in their worktrees. You watch the live dock, then call `integrate` once
   they finish. This is the path for "implement a large PR in parallel
-  without tying up the session." Background workers **auto-approve their own
-  tool calls within their isolated worktree** (they have no UI to prompt;
-  file writes are confined to the worktree, and the review gate is the PR).
+  without tying up the session." Background workers apply a fixed unattended
+  policy: owned-file writes and `run_tests` are auto-approved; shell and other
+  approval-requiring tools are denied because there is no UI to prompt.
 - **Foreground** (default for an **all-read / research** batch): the call
   **blocks**, runs the subtasks concurrently, and returns every subtask's
   findings together for the main agent to assemble right away. No worktrees.
@@ -106,7 +105,7 @@ dispatch({
 ```
 
 The `implement` / `test` / `docs` roles are write-capable and
-background-by-default — they're built for exactly this fan-out (each owns a
+background-capable in dispatch — they're built for exactly this fan-out (each owns a
 disjoint file set). A common full arc is **`Plan`** (design the split) →
 **`[implement, test, docs]`** (build in parallel) → **`review`** +
 **`verification`** (read-only critique + adversarial build/test). See
@@ -140,10 +139,11 @@ on the mode:
 
 - **Background workers** can't prompt, so they apply a fixed policy instead of
   blanket auto-approval:
-  - **File writes/edits** — allowed; the worktree child registry confines them
-    to the worker's own worktree, so the blast radius is its branch.
+  - **File writes/edits** — allowed only inside the worker's own worktree and
+    declared `files` ownership, so the blast radius is its branch and its file
+    partition.
   - **`run_tests`** — allowed, so a worker can verify its change.
-  - **`run_bash`** — **disabled** for unattended workers in the beta. The
+  - **`run_bash`** — **disabled** for unattended workers. The
     "read-only shell" classifier is a first-token check that can be bypassed
     (e.g. `env`/`command` wrappers, process substitution) and `run_bash` isn't
     path-confined once allowed, so auto-allowing it would be an arbitrary-code-
@@ -151,7 +151,8 @@ on the mode:
     needs shell must run in the **foreground** (where a human approves each
     call), or use **`run_tests`**. (A token-aware classifier that re-enables
     safe read-only shell is tracked as dispatch-v3 Layer 0.)
-  - Everything else (the commit happens via dispatch's own auto-commit).
+  - Other approval-requiring tools (git mutations, GitHub writes, etc.) are
+    denied; the commit happens via dispatch's own auto-commit.
 - **Foreground children forward approvals to your modal** (serialized across
   the batch), so you see and answer each one. Pair with **auto** mode to skip
   per-edit prompts on the path-confined file writes.

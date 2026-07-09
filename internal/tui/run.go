@@ -58,6 +58,10 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 	if err != nil {
 		return err
 	}
+	// Derive the Responses-API prompt_cache_key from the session id so
+	// every turn this run makes shares one server-side cache shard. Set
+	// before the adapters (single + router candidates) are built below.
+	opts.CacheKey = sess.ID
 	mem, err := memory.Load(cwd)
 	if err != nil {
 		return err
@@ -98,6 +102,7 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 			Model:                  opts.Model,
 			ProviderOverride:       adapter.Provider(strings.TrimSpace(opts.ProviderKind)),
 			ReasoningEffort:        opts.ReasoningEffort,
+			CacheKey:               opts.CacheKey,
 			ModelMaxOutput:         adhocMaxOutput,
 			ModelSupportsThinking:  adhocThinking,
 			EnableWebSearch:        opts.EnableWebSearch,
@@ -448,11 +453,10 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 		// Session-wide subagent token backstop (config-driven, generous
 		// default). Bounds cumulative fan-out spend the per-wave caps can't.
 		MaxSessionTokens: fileCfg.SubagentSessionTokenBudget(),
-		// Background subagents are an opt-in experimental feature.
-		// When the gate is off, `run_in_background:true` returns a
-		// recoverable error the model relays to the user (see
-		// AgentTool.Execute). Foreground subagents are always on.
-		AllowBackground: expSet.IsEnabled(experimental.BackgroundSubagents),
+		// Background subagents are GA in the interactive TUI. Oneshot still
+		// leaves AllowBackground=false because there is no long-lived UI or
+		// /subagents picker to host detached work.
+		AllowBackground: true,
 	}
 	reg.Register(agentTool)
 	// Pair with the Agent tool: lets the parent fetch a previously-
