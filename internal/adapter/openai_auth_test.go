@@ -19,7 +19,7 @@ import (
 // --- request builder ----------------------------------------------------
 
 func TestBuildRequestForcesContract(t *testing.T) {
-	body, err := buildOpenAIAuthRequest("gpt-5.5", "",
+	body, err := buildOpenAIAuthRequest("gpt-5.5", "", "",
 		[]Message{
 			{Role: RoleSystem, Content: "stay concise"},
 			{Role: RoleUser, Content: "hi"},
@@ -51,7 +51,7 @@ func TestBuildRequestReasoningEffort(t *testing.T) {
 	msgs := []Message{{Role: RoleUser, Content: "hi"}}
 
 	// Effort set on a reasoning model → reasoning.effort in the body.
-	body, err := buildOpenAIAuthRequest("gpt-5.5", "high", msgs, nil)
+	body, err := buildOpenAIAuthRequest("gpt-5.5", "high", "", msgs, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,7 +68,7 @@ func TestBuildRequestReasoningEffort(t *testing.T) {
 	}
 
 	// No effort → no reasoning key (stay at the backend default).
-	body, _ = buildOpenAIAuthRequest("gpt-5.5", "", msgs, nil)
+	body, _ = buildOpenAIAuthRequest("gpt-5.5", "", "", msgs, nil)
 	var unset map[string]any
 	_ = json.Unmarshal(body, &unset)
 	if _, present := unset["reasoning"]; present {
@@ -77,7 +77,7 @@ func TestBuildRequestReasoningEffort(t *testing.T) {
 }
 
 func TestBuildRequestSynthesizesInstructions(t *testing.T) {
-	body, _ := buildOpenAIAuthRequest("gpt-5.5", "",
+	body, _ := buildOpenAIAuthRequest("gpt-5.5", "", "",
 		[]Message{{Role: RoleUser, Content: "hi"}},
 		nil,
 	)
@@ -89,7 +89,7 @@ func TestBuildRequestSynthesizesInstructions(t *testing.T) {
 }
 
 func TestBuildRequestJoinsMultipleSystemMessages(t *testing.T) {
-	body, _ := buildOpenAIAuthRequest("gpt-5.5", "",
+	body, _ := buildOpenAIAuthRequest("gpt-5.5", "", "",
 		[]Message{
 			{Role: RoleSystem, Content: "rule one"},
 			{Role: RoleSystem, Content: "rule two"},
@@ -111,7 +111,7 @@ func TestBuildRequestJoinsMultipleSystemMessages(t *testing.T) {
 // `Output string` + `omitempty` silently dropped the field for
 // tools that completed with no stdout/stderr.
 func TestBuildRequestKeepsEmptyToolOutput(t *testing.T) {
-	body, err := buildOpenAIAuthRequest("gpt-5.5", "",
+	body, err := buildOpenAIAuthRequest("gpt-5.5", "", "",
 		[]Message{
 			{Role: RoleUser, Content: "run the tool"},
 			{Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "call_1", Name: "write_file", ArgsJSON: "{}"}}},
@@ -152,7 +152,7 @@ func TestBuildRequestMapsTools(t *testing.T) {
 		Description: "read a file",
 		Schema:      map[string]any{"type": "object"},
 	}}
-	body, _ := buildOpenAIAuthRequest("gpt-5.5", "",
+	body, _ := buildOpenAIAuthRequest("gpt-5.5", "", "",
 		[]Message{{Role: RoleUser, Content: "hi"}},
 		tools,
 	)
@@ -165,6 +165,33 @@ func TestBuildRequestMapsTools(t *testing.T) {
 	tool := rawTools[0].(map[string]any)
 	if tool["name"] != "read_file" || tool["type"] != "function" {
 		t.Errorf("tool = %+v", tool)
+	}
+}
+
+// A non-empty cache key must ride the wire as prompt_cache_key so the
+// Codex backend routes successive turns to the same prompt-cache shard;
+// an empty key must omit the field so a session-less caller sends the
+// pre-existing body shape unchanged.
+func TestBuildRequestPromptCacheKey(t *testing.T) {
+	msgs := []Message{{Role: RoleUser, Content: "hi"}}
+
+	body, err := buildOpenAIAuthRequest("gpt-5.5", "", "sess-20260709-abc", msgs, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["prompt_cache_key"] != "sess-20260709-abc" {
+		t.Errorf("prompt_cache_key = %v, want sess-20260709-abc", got["prompt_cache_key"])
+	}
+
+	body, _ = buildOpenAIAuthRequest("gpt-5.5", "", "", msgs, nil)
+	var unset map[string]any
+	_ = json.Unmarshal(body, &unset)
+	if _, present := unset["prompt_cache_key"]; present {
+		t.Errorf("prompt_cache_key should be absent when the cache key is empty, got %v", unset["prompt_cache_key"])
 	}
 }
 

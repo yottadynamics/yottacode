@@ -58,6 +58,10 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 	if err != nil {
 		return err
 	}
+	// Derive the Responses-API prompt_cache_key from the session id so
+	// every turn this run makes shares one server-side cache shard. Set
+	// before the adapters (single + router candidates) are built below.
+	opts.CacheKey = sess.ID
 	mem, err := memory.Load(cwd)
 	if err != nil {
 		return err
@@ -98,6 +102,7 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 			Model:                  opts.Model,
 			ProviderOverride:       adapter.Provider(strings.TrimSpace(opts.ProviderKind)),
 			ReasoningEffort:        opts.ReasoningEffort,
+			CacheKey:               opts.CacheKey,
 			ModelMaxOutput:         adhocMaxOutput,
 			ModelSupportsThinking:  adhocThinking,
 			EnableWebSearch:        opts.EnableWebSearch,

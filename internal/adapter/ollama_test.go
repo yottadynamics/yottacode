@@ -94,6 +94,38 @@ func TestAdapter_StreamsContent(t *testing.T) {
 	}
 }
 
+// A non-empty Config.CacheKey must ride the wire as prompt_cache_key on
+// the Chat-Completions path (real OpenAI gpt-4o/4.1 route here, not the
+// Responses path) so the stable prefix keeps hitting the prompt cache;
+// an empty key must omit the field so nothing changes for the many
+// OpenAI-compatible endpoints that ignore it.
+func TestAdapter_IncludesPromptCacheKey(t *testing.T) {
+	newBody := func(cacheKey string) string {
+		var gotBody string
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			b, _ := io.ReadAll(r.Body)
+			gotBody = string(b)
+			w.Header().Set("Content-Type", "text/event-stream")
+			fmt.Fprint(w, sseBody(
+				`{"id":"c1","object":"chat.completion.chunk","created":1,"model":"test","choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":"stop"}]}`,
+			))
+		}))
+		defer srv.Close()
+		ad := NewWithConfig(Config{BaseURL: srv.URL, Model: "test", CacheKey: cacheKey})
+		if _, _, _, errs := drainEvents(ad.ChatStream(context.Background(), []Message{{Role: RoleUser, Content: "hi"}}, nil)); len(errs) > 0 {
+			t.Fatalf("unexpected errors: %v", errs)
+		}
+		return gotBody
+	}
+
+	if body := newBody("sess-20260709-abc"); !strings.Contains(body, `"prompt_cache_key":"sess-20260709-abc"`) {
+		t.Errorf("request body missing prompt_cache_key\nbody=%s", body)
+	}
+	if body := newBody(""); strings.Contains(body, "prompt_cache_key") {
+		t.Errorf("prompt_cache_key must be omitted when CacheKey is empty\nbody=%s", body)
+	}
+}
+
 func TestAdapter_StreamsReasoningThenContent(t *testing.T) {
 	body := sseBody(
 		`{"id":"c1","object":"chat.completion.chunk","created":1,"model":"test","choices":[{"index":0,"delta":{"role":"assistant","content":"","reasoning":"Think"},"finish_reason":null}]}`,

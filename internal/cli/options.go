@@ -15,23 +15,23 @@ import (
 // Lives in this package because both internal/tui and internal/oneshot
 // consume it.
 type ChatOptions struct {
-	Model                  string
-	BaseURL                string
-	APIKey                 string
-	SystemPrompt           string
-	Resume                 string
+	Model        string
+	BaseURL      string
+	APIKey       string
+	SystemPrompt string
+	Resume       string
 	// Continue requests that, when set, the CLI resume the most recent
 	// session in the current working directory (mirroring Claude
 	// Code's --continue / -c flag). Mutually exclusive with Resume:
 	// passing both is a user error and main.go errors out before
 	// either path runs. The cwd lookup happens at command-dispatch
 	// time, not in Resolve, because Resolve doesn't know cwd.
-	Continue               bool
+	Continue bool
 	// Summarized requests that, when Resume is non-empty, the session
 	// be loaded with its prior transcript replaced by a structured
 	// summary (the same path /resume --summarized takes inside the
 	// TUI). Defaults to false; only the `resume` subcommand sets it.
-	Summarized             bool
+	Summarized bool
 	// BypassPermissions is the internal name for what the user-facing
 	// CLI exposes as --yolo: auto-approve every
 	// tool call without prompting. DANGEROUS — model-emitted commands
@@ -39,9 +39,9 @@ type ChatOptions struct {
 	// .yottacode/permissions.json are still honored, but every other
 	// approval gate is skipped. Reserved for trusted CI / scripted
 	// contexts; never enable in shared shells.
-	BypassPermissions      bool
-	MaxIterations          int
-	Provider               string
+	BypassPermissions bool
+	MaxIterations     int
+	Provider          string
 	// ProviderKind is the adapter kind (e.g. "copilot") resolved from
 	// the config profile. May differ from Provider (the profile name,
 	// e.g. "copilot-auth"). Set by applyProviderProfile; used by the
@@ -110,6 +110,15 @@ type ChatOptions struct {
 	// fatal errors — so a typo or graduated feature doesn't lock
 	// the user out.
 	Experimental []string
+
+	// CacheKey is the stable per-conversation identifier used as the
+	// Responses-API prompt_cache_key (see adapter.Config.CacheKey). It
+	// is NOT a flag or env var — the TUI and oneshot runners populate
+	// it from session.Session.ID after the session opens, then it flows
+	// into every adapter.Config built for the run (single adapter and
+	// router candidates) so all turns share one cache shard. Empty until
+	// set (e.g. the connection probe never sets it).
+	CacheKey string
 }
 
 // ValidPermissionModes is the closed set the --permission-mode flag
@@ -389,4 +398,3 @@ func applyProviderProfile(opts *ChatOptions) {
 		opts.APIKey = os.Getenv(p.APIKeyEnv)
 	}
 }
-

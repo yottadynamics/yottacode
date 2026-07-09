@@ -295,6 +295,44 @@ func TestResponses_IncludesBuiltinToolsAndReasoningEffort(t *testing.T) {
 	}
 }
 
+// A non-empty Config.CacheKey must surface as prompt_cache_key on the
+// api.openai.com Responses request so OpenAI's prompt cache routes the
+// session's stable prefix to one shard (cached input is billed at a
+// steep discount). Empty CacheKey must omit the field entirely.
+func TestResponses_IncludesPromptCacheKey(t *testing.T) {
+	newBody := func(cacheKey string) string {
+		var gotBody string
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			b, _ := io.ReadAll(r.Body)
+			gotBody = string(b)
+			w.Header().Set("Content-Type", "text/event-stream")
+			fmt.Fprint(w, responsesSSE(
+				`{"type":"response.output_text.delta","sequence_number":1,"item_id":"msg_1","output_index":0,"content_index":0,"delta":"ok"}`,
+				`{"type":"response.completed","sequence_number":2,"response":{"id":"resp_1"}}`,
+			))
+		}))
+		defer srv.Close()
+		ad := NewWithConfig(Config{
+			BaseURL:          srv.URL,
+			APIKey:           "sk-test",
+			Model:            "gpt-5",
+			ProviderOverride: ProviderOpenAI,
+			CacheKey:         cacheKey,
+		})
+		if _, _, _, errs := drainEvents(ad.ChatStream(context.Background(), []Message{{Role: RoleUser, Content: "hi"}}, nil)); len(errs) > 0 {
+			t.Fatalf("unexpected errors: %v", errs)
+		}
+		return gotBody
+	}
+
+	if body := newBody("sess-20260709-xyz"); !strings.Contains(body, `"prompt_cache_key":"sess-20260709-xyz"`) {
+		t.Errorf("request body missing prompt_cache_key\nbody=%s", body)
+	}
+	if body := newBody(""); strings.Contains(body, "prompt_cache_key") {
+		t.Errorf("prompt_cache_key must be omitted when CacheKey is empty\nbody=%s", body)
+	}
+}
+
 func TestResponses_XAIReasoningEffortForMini(t *testing.T) {
 	var gotBody string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
