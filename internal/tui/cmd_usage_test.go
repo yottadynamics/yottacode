@@ -10,6 +10,7 @@ import (
 
 	"github.com/yottadynamics/yottacode/internal/adapter"
 	"github.com/yottadynamics/yottacode/internal/session"
+	"github.com/yottadynamics/yottacode/internal/subagents"
 )
 
 // TestCmdUsage_OpensOverlayNotHistory locks the core behavior: /usage
@@ -96,6 +97,67 @@ func TestRenderSessionUsage_TokenBreakdown(t *testing.T) {
 	}
 	if strings.Contains(got, "$") {
 		t.Errorf("/usage must not show a dollar figure; got:\n%s", got)
+	}
+}
+
+// TestRenderSessionUsage_FoldsSubagents: subagent spend is folded into the
+// per-model rows AND the session total — each subagent attributed to its own
+// model, inherited-model runs to the session's headline model. The rows sum
+// to the total (no separate subagents block; per-task detail lives inline).
+func TestRenderSessionUsage_FoldsSubagents(t *testing.T) {
+	s := &session.Session{
+		ID:         "20260709-120000.000000",
+		Model:      "claude-sonnet-4-5",
+		TotalUsage: adapter.Usage{InputTokens: 10_000, OutputTokens: 2_000},
+		ModelUsage: map[string]adapter.Usage{
+			"claude-sonnet-4-5": {InputTokens: 10_000, OutputTokens: 2_000},
+		},
+		SubagentTasks: []subagents.TaskRecord{
+			{ID: "s1", AgentType: "Explore", Model: "claude-haiku-4-5", Usage: adapter.Usage{InputTokens: 5_000, OutputTokens: 500}},
+			{ID: "s2", AgentType: "Explore", Model: "", Usage: adapter.Usage{InputTokens: 3_000, OutputTokens: 300}}, // inherits sonnet
+		},
+	}
+	got := renderSessionUsage(s)
+
+	for _, want := range []string{
+		"usage by model:",
+		// sonnet row folds main (10,000/2,000) + inherited subagent (3,000/300)
+		"claude-sonnet-4-5:",
+		"13,000 input",
+		"2,300 output",
+		// haiku row is the routed subagent
+		"claude-haiku-4-5:",
+		"5,000 input",
+		// total: 12,000 (main) + 8,800 (subagents) = 20,800
+		"total tokens  20,800",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing substring %q in:\n%s", want, got)
+		}
+	}
+	// Folded, not a separate section: no "subagents" header, no qualifier.
+	if strings.Contains(got, "subagents") {
+		t.Errorf("subagent spend must be folded in, not shown as a section; got:\n%s", got)
+	}
+	if strings.Contains(got, "$") {
+		t.Errorf("/usage must not show a dollar figure; got:\n%s", got)
+	}
+}
+
+// TestRenderTurnFooter: the end-of-turn footer shows the turn's exact token
+// total when usage was reported, and stays duration-only when it wasn't.
+func TestRenderTurnFooter(t *testing.T) {
+	withUsage := renderTurnFooter(12*time.Second, adapter.Usage{InputTokens: 3_000, OutputTokens: 200, CacheReadTokens: 40_000})
+	if !strings.Contains(withUsage, "Thought for") {
+		t.Errorf("footer must keep the duration receipt; got %q", withUsage)
+	}
+	if !strings.Contains(withUsage, "tokens") {
+		t.Errorf("footer must show tokens when usage is reported; got %q", withUsage)
+	}
+
+	noUsage := renderTurnFooter(5*time.Second, adapter.Usage{})
+	if strings.Contains(noUsage, "tokens") {
+		t.Errorf("footer must omit tokens when usage is zero; got %q", noUsage)
 	}
 }
 

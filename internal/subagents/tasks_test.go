@@ -7,6 +7,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/yottadynamics/yottacode/internal/adapter"
 )
 
 // TestRegistry_CancelAll is the P3 shutdown regression: CancelAll must fire
@@ -260,6 +262,58 @@ func TestRegistry_ImportDoesNotOverwriteLiveTask(t *testing.T) {
 	got, _ := r.Get("livetask00000001")
 	if got.Status != TaskRunning || got.Result == "stale" {
 		t.Errorf("Import must not overwrite a live task; got %+v", got)
+	}
+}
+
+// TestRegistry_AddUsage: per-subagent usage accumulates across the child's
+// turns from the exact provider-reported Usage, is nil-safe (a turn whose
+// adapter reported nothing is a no-op), and no-ops on an unknown id. This is
+// the capture the dock and /usage read — it mirrors how the main loop tallies
+// the session.
+func TestRegistry_AddUsage(t *testing.T) {
+	r := NewRegistry()
+	r.Add(&Task{ID: "sub1", Status: TaskRunning})
+
+	r.AddUsage("sub1", &adapter.Usage{InputTokens: 100, OutputTokens: 40, CacheReadTokens: 500})
+	r.AddUsage("sub1", &adapter.Usage{InputTokens: 30, OutputTokens: 10, ReasoningTokens: 5})
+	r.AddUsage("sub1", nil)                               // no-usage turn: no-op
+	r.AddUsage("ghost", &adapter.Usage{InputTokens: 999}) // unknown id: no panic, no leak
+
+	got, ok := r.Get("sub1")
+	if !ok {
+		t.Fatal("task sub1 missing")
+	}
+	if got.Usage.InputTokens != 130 || got.Usage.OutputTokens != 50 {
+		t.Errorf("accumulated in/out = %d/%d, want 130/50", got.Usage.InputTokens, got.Usage.OutputTokens)
+	}
+	if got.Usage.CacheReadTokens != 500 || got.Usage.ReasoningTokens != 5 {
+		t.Errorf("accumulated cache/reasoning = %d/%d, want 500/5", got.Usage.CacheReadTokens, got.Usage.ReasoningTokens)
+	}
+	// UsageTokens is the inline-receipt basis: input + output + cache,
+	// reasoning excluded. 130 + 50 + 500 = 680.
+	if tok := got.UsageTokens(); tok != 680 {
+		t.Errorf("UsageTokens = %d, want 680 (input+output+cache; reasoning excluded)", tok)
+	}
+}
+
+// TestRegistry_ExportImportRoundTrip_Usage: a subagent's exact Usage survives
+// the Export→session-file→Import cycle, so /usage still attributes subagent
+// spend after a session resume (not just the ~4-char/token estimate).
+func TestRegistry_ExportImportRoundTrip_Usage(t *testing.T) {
+	r := NewRegistry()
+	r.Add(&Task{ID: "usagetask0000001", AgentType: "Explore", Status: TaskRunning})
+	r.AddUsage("usagetask0000001", &adapter.Usage{InputTokens: 1200, OutputTokens: 340, CacheReadTokens: 9000})
+	r.MarkDone("usagetask0000001", TaskCompleted, "done", false, 111)
+
+	r2 := NewRegistry()
+	r2.Import(r.Export())
+
+	got, ok := r2.Get("usagetask0000001")
+	if !ok {
+		t.Fatal("task did not round-trip")
+	}
+	if got.Usage.InputTokens != 1200 || got.Usage.OutputTokens != 340 || got.Usage.CacheReadTokens != 9000 {
+		t.Errorf("Usage did not round-trip: got %+v", got.Usage)
 	}
 }
 

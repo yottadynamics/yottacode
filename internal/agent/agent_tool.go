@@ -487,8 +487,12 @@ func (t *AgentTool) Execute(ctx context.Context, argsJSON string) (string, error
 			// Read the just-recorded tool-call count off the registry
 			// so the inline card can render accurate stats.
 			toolCalls := 0
+			tokensUsed := tokens // rough estimate; prefer the exact provider usage below
 			if snap, ok := t.Tasks.Get(taskID); ok {
 				toolCalls = snap.ToolCalls
+				if rt := snap.UsageTokens(); rt > 0 {
+					tokensUsed = rt
+				}
 			}
 			t.fireBackgroundDone(SubagentBackgroundDone{
 				TaskID:       taskID,
@@ -496,7 +500,7 @@ func (t *AgentTool) Execute(ctx context.Context, argsJSON string) (string, error
 				Result:       result,
 				Errored:      errored,
 				Duration:     time.Since(task.Started),
-				TokensUsed:   tokens,
+				TokensUsed:   tokensUsed,
 				ToolCalls:    toolCalls,
 				Model:        childModel,
 				NotifyOnDone: a.RunInBackground && a.NotifyOnDone,
@@ -524,8 +528,12 @@ func (t *AgentTool) Execute(ctx context.Context, argsJSON string) (string, error
 	// Read the just-recorded tool-call count off the registry so the
 	// done card can render accurate stats.
 	toolCalls := 0
+	tokensUsed := tokens // rough estimate; prefer the exact provider usage below
 	if snap, ok := t.Tasks.Get(taskID); ok {
 		toolCalls = snap.ToolCalls
+		if rt := snap.UsageTokens(); rt > 0 {
+			tokensUsed = rt
+		}
 	}
 	emitToParent(SubagentDone{
 		TaskID:     taskID,
@@ -533,7 +541,7 @@ func (t *AgentTool) Execute(ctx context.Context, argsJSON string) (string, error
 		Result:     result,
 		Errored:    errored,
 		Duration:   time.Since(task.Started),
-		TokensUsed: tokens,
+		TokensUsed: tokensUsed,
 		ToolCalls:  toolCalls,
 		Model:      childModel,
 	})
@@ -860,6 +868,12 @@ func (t *AgentTool) runChild(
 		transcript.writeEvent(ev)
 		switch e := ev.(type) {
 		case AssistantMessage:
+			// Capture this turn's exact provider usage onto the task, the
+			// same way the main TUI loop accumulates it on the session. This
+			// is the per-subagent token tally the dock and /usage read; it's
+			// live (updated each turn), unlike the ~4-char/token estimate
+			// computed once at the end. AddUsage is nil-safe.
+			t.Tasks.AddUsage(taskID, e.Message.Usage)
 			if len(e.Message.ToolCalls) == 0 && strings.TrimSpace(e.Message.Content) != "" {
 				final = e.Message.Content
 			}

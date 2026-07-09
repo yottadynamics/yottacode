@@ -408,8 +408,12 @@ func (t *DispatchTool) runDispatchChild(ctx context.Context, c *dispatchChild, b
 			// it — their result is read from c after the batch's wg.Wait.
 			if background {
 				toolCalls := 0
+				tokensUsed := c.tokens // rough estimate; prefer the exact provider usage below
 				if snap, ok := t.Agent.Tasks.Get(c.taskID); ok {
 					toolCalls = snap.ToolCalls
+					if rt := snap.UsageTokens(); rt > 0 {
+						tokensUsed = rt
+					}
 				}
 				t.Agent.fireBackgroundDone(SubagentBackgroundDone{
 					TaskID:     c.taskID,
@@ -417,7 +421,7 @@ func (t *DispatchTool) runDispatchChild(ctx context.Context, c *dispatchChild, b
 					Result:     c.result,
 					Errored:    true,
 					Duration:   time.Since(task.Started),
-					TokensUsed: c.tokens,
+					TokensUsed: tokensUsed,
 					ToolCalls:  toolCalls,
 					Model:      childModel,
 					Branch:     c.branch,
@@ -550,8 +554,12 @@ func (t *DispatchTool) runDispatchChild(ctx context.Context, c *dispatchChild, b
 	c.tokens = tokens
 
 	toolCalls := 0
+	tokensUsed := tokens // rough estimate; prefer the exact provider usage below
 	if snap, ok := t.Agent.Tasks.Get(c.taskID); ok {
 		toolCalls = snap.ToolCalls
+		if rt := snap.UsageTokens(); rt > 0 {
+			tokensUsed = rt
+		}
 	}
 	if background {
 		// Async completion: route through the session-level callback (the
@@ -565,7 +573,7 @@ func (t *DispatchTool) runDispatchChild(ctx context.Context, c *dispatchChild, b
 			Result:     result,
 			Errored:    errored,
 			Duration:   time.Since(task.Started),
-			TokensUsed: tokens,
+			TokensUsed: tokensUsed,
 			ToolCalls:  toolCalls,
 			Model:      childModel,
 			Branch:     c.branch,

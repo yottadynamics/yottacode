@@ -188,11 +188,12 @@ func shortCommit(sha string) string {
 }
 
 // formatSubagentStats composes the duration / tool-count / tokens
-// receipt rendered inline on every subagent completion card. Tokens
-// are omitted when zero (we don't yet propagate real per-turn token
-// deltas from the adapter — when that lands, this renderer will
-// surface them automatically). Tool count is always shown so the
-// user can see how much investigation the child did.
+// receipt rendered inline on every subagent completion card. Tokens are
+// the child's exact provider-reported total (input + output + cache),
+// captured live per turn on the task; they fall back to the ~4-char/token
+// estimate only when the provider reported no usage, and are omitted when
+// both are zero. Tool count is always shown so the user can see how much
+// investigation the child did.
 func formatSubagentStats(duration time.Duration, toolCalls, tokens int, model string) string {
 	parts := []string{"in " + formatDuration(duration)}
 	switch toolCalls {

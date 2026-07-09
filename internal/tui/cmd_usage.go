@@ -41,6 +41,12 @@ import (
 //
 // Read-only; safe mid-turn (PreservesTurn=true).
 func cmdUsage(m Model, _ []string) (Model, tea.Cmd) {
+	// Snapshot the live subagent registry onto the session so /usage folds
+	// in this session's subagent spend (session.AddUsage only ever tallies
+	// the main thread). Export is lock-guarded and returns a copy.
+	if m.subagentTasks != nil && m.sess != nil {
+		m.sess.SubagentTasks = m.subagentTasks.Export()
+	}
 	m.usagePanel = renderUsagePanel(m)
 	m.usageOpen = true
 	return m, nil
@@ -72,44 +78,78 @@ func renderUsagePanel(m Model) string {
 	return b.String()
 }
 
-// renderSessionUsage writes the "session" header + per-model token
-// lines like Claude Code's /usage: "<model>: <input> input, <output>
-// output, <cache_read> cache read, ...". No dollar figure — token
-// counts are provider-reported and exact, but cost would require a
-// price table we can't keep accurate (see the billing-dashboard link
-// in the account block). Sessions with no usage yet get a short
-// placeholder.
+// renderSessionUsage writes the "session" block: a per-model token
+// breakdown and a single session total. Subagent spend is folded into both —
+// each model row and the total reflect everything this session spent on that
+// model (main thread + any subagents that ran on it), so /usage answers
+// "what did this whole conversation cost." Per-turn and per-task granularity
+// live inline instead (the "Thought for …" footer and the subagent cards).
+// Token counts are provider-reported and exact. No dollar figure — cost
+// would require a price table we can't keep accurate (see the
+// billing-dashboard link in the account block). Sessions with no usage yet
+// get a short placeholder.
 func renderSessionUsage(s *session.Session) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "session  %s\n", s.ID)
 
-	if s.TotalUsage.IsZero() {
+	sub := s.SubagentUsage()
+	if s.TotalUsage.IsZero() && sub.Total.IsZero() {
 		b.WriteString("  no token data yet — records after the next assistant turn\n")
 		return b.String()
 	}
 
-	models := perModelEntries(s)
-	if len(models) == 0 {
-		// Fall back to the headline Model when no per-model breakdown
-		// was recorded (sessions created before the breakdown landed).
-		models = []perModelEntry{{Model: s.Model, Usage: s.TotalUsage}}
+	models := combinedModelUsage(s, sub)
+	modelWidth := 0
+	for _, m := range models {
+		modelWidth = max(modelWidth, len(m.Model))
 	}
 
 	b.WriteString("  usage by model:\n")
-	maxModelWidth := 0
-	for _, m := range models {
-		if w := len(m.Model); w > maxModelWidth {
-			maxModelWidth = w
-		}
-	}
 	for _, m := range models {
 		b.WriteString("    ")
-		b.WriteString(formatModelUsageLine(m.Model, m.Usage, maxModelWidth))
+		b.WriteString(formatModelUsageLine(m.Model, m.Usage, modelWidth))
 		b.WriteByte('\n')
 	}
-	fmt.Fprintf(&b, "  total tokens  %s\n", formatInt(totalTokensFor(s.TotalUsage)))
+
+	var total adapter.Usage
+	total.Add(&s.TotalUsage)
+	total.Add(&sub.Total)
+	fmt.Fprintf(&b, "  total tokens  %s\n", formatInt(totalTokensFor(total)))
 
 	return b.String()
+}
+
+// combinedModelUsage merges the main-thread per-model breakdown with the
+// subagent rollup (each subagent attributed to its own model, inherited runs
+// to the session's headline model), sorted highest-spender-first. Folding
+// them here keeps the rows and the session total consistent — the rows sum
+// to the total.
+func combinedModelUsage(s *session.Session, sub session.SubagentUsageRollup) []perModelEntry {
+	merged := map[string]adapter.Usage{}
+	add := func(model string, u adapter.Usage) {
+		prev := merged[model]
+		prev.Add(&u)
+		merged[model] = prev
+	}
+	for model, u := range s.ModelUsage {
+		add(model, u)
+	}
+	// Fallback: a main-thread total with no per-model breakdown (sessions
+	// created before ModelUsage landed) attributes to the headline model.
+	if len(s.ModelUsage) == 0 && !s.TotalUsage.IsZero() {
+		add(s.Model, s.TotalUsage)
+	}
+	for model, u := range sub.ByModel {
+		add(model, u)
+	}
+	out := make([]perModelEntry, 0, len(merged))
+	for model, u := range merged {
+		out = append(out, perModelEntry{Model: model, Usage: u})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return totalTokensFor(out[i].Usage) > totalTokensFor(out[j].Usage)
+	})
+	return out
 }
 
 // formatModelUsageLine produces a single "model: N input, N output,
@@ -129,29 +169,17 @@ func formatModelUsageLine(model string, u adapter.Usage, modelWidth int) string 
 	if u.ReasoningTokens > 0 {
 		parts = append(parts, fmt.Sprintf("%s reasoning", formatInt(u.ReasoningTokens)))
 	}
-	return fmt.Sprintf("%-*s:  %s", modelWidth, model, strings.Join(parts, ", "))
+	// Pad the "model:" label as a unit so the colon hugs each model name
+	// and the token columns still line up under one another.
+	label := model + ":"
+	return fmt.Sprintf("%-*s  %s", modelWidth+1, label, strings.Join(parts, ", "))
 }
 
-// perModelEntries returns the per-model breakdown sorted by total
-// tokens descending (highest spender first — matches what Claude
-// Code's /usage shows).
+// perModelEntry is one row of the /usage per-model breakdown (highest
+// spender first — matching Claude Code's /usage). Built by combinedModelUsage.
 type perModelEntry struct {
 	Model string
 	Usage adapter.Usage
-}
-
-func perModelEntries(s *session.Session) []perModelEntry {
-	if len(s.ModelUsage) == 0 {
-		return nil
-	}
-	out := make([]perModelEntry, 0, len(s.ModelUsage))
-	for model, u := range s.ModelUsage {
-		out = append(out, perModelEntry{Model: model, Usage: u})
-	}
-	sort.Slice(out, func(i, j int) bool {
-		return totalTokensFor(out[i].Usage) > totalTokensFor(out[j].Usage)
-	})
-	return out
 }
 
 // renderTodayRollup scans every session created since 00:00 local and
@@ -166,13 +194,14 @@ func renderTodayRollup() string {
 	}
 	var totalTokens int64
 	for _, s := range summaries {
-		u := s.TotalUsage
-		totalTokens += u.InputTokens + u.OutputTokens + u.CacheCreationTokens + u.CacheReadTokens
+		// Main thread + this session's subagent spend, so the daily tally
+		// matches the per-session block's combined total.
+		totalTokens += totalTokensFor(s.TotalUsage) + totalTokensFor(s.SubagentUsage().Total)
 	}
 
 	var b strings.Builder
 	b.WriteString("today\n")
-	fmt.Fprintf(&b, "  total tokens  %s\n", formatInt(totalTokens))
+	fmt.Fprintf(&b, "  %d sessions · %s total tokens\n", len(summaries), formatInt(totalTokens))
 	return b.String()
 }
 
@@ -293,6 +322,21 @@ func renderOpenAIAuthAccount(ctx context.Context) string {
 // total tokens (input + output + cache writes + cache reads).
 func totalTokensFor(u adapter.Usage) int64 {
 	return u.InputTokens + u.OutputTokens + u.CacheCreationTokens + u.CacheReadTokens
+}
+
+// renderTurnFooter composes the quiet end-of-turn receipt — how long the
+// turn took, plus this turn's exact token total when the provider reported
+// usage. The token clause is dropped when usage is zero (providers that
+// don't report it) so the line stays "› Thought for 12s" unchanged. Uses
+// the same total-tokens basis as /usage and the subagent cards, so every
+// surface counts tokens the same way. Compact k/M formatting (formatTokens)
+// keeps it glanceable, unlike /usage's exact comma counts.
+func renderTurnFooter(elapsed time.Duration, turnUsage adapter.Usage) string {
+	s := "› Thought for " + formatDuration(elapsed)
+	if tok := int(totalTokensFor(turnUsage)); tok > 0 {
+		s += " · " + formatTokens(tok) + " tokens"
+	}
+	return s
 }
 
 // formatInt renders an int64 with thousands separators. /usage uses
