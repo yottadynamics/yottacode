@@ -486,14 +486,7 @@ func (t *AgentTool) Execute(ctx context.Context, argsJSON string) (string, error
 			t.Tasks.MarkDone(taskID, status, result, errored, tokens)
 			// Read the just-recorded tool-call count off the registry
 			// so the inline card can render accurate stats.
-			toolCalls := 0
-			tokensUsed := tokens // rough estimate; prefer the exact provider usage below
-			if snap, ok := t.Tasks.Get(taskID); ok {
-				toolCalls = snap.ToolCalls
-				if rt := snap.UsageTokens(); rt > 0 {
-					tokensUsed = rt
-				}
-			}
+			tokensUsed, toolCalls := doneTokensAndCalls(t.Tasks, taskID, tokens)
 			t.fireBackgroundDone(SubagentBackgroundDone{
 				TaskID:       taskID,
 				AgentType:    cfg.Name,
@@ -527,14 +520,7 @@ func (t *AgentTool) Execute(ctx context.Context, argsJSON string) (string, error
 	t.Tasks.MarkDone(taskID, status, result, errored, tokens)
 	// Read the just-recorded tool-call count off the registry so the
 	// done card can render accurate stats.
-	toolCalls := 0
-	tokensUsed := tokens // rough estimate; prefer the exact provider usage below
-	if snap, ok := t.Tasks.Get(taskID); ok {
-		toolCalls = snap.ToolCalls
-		if rt := snap.UsageTokens(); rt > 0 {
-			tokensUsed = rt
-		}
-	}
+	tokensUsed, toolCalls := doneTokensAndCalls(t.Tasks, taskID, tokens)
 	emitToParent(SubagentDone{
 		TaskID:     taskID,
 		AgentType:  cfg.Name,
@@ -1101,6 +1087,25 @@ func (t *AgentTool) runChild(
 	transcript.writeOutcome(outcome, result)
 	transcript.close()
 	return result, errored, status, tokensUsed
+}
+
+// doneTokensAndCalls resolves the completion-card stats for a finished
+// subagent: its tool-call count and token total. Tokens are the child's
+// EXACT provider-reported tally (Task.UsageTokens) when it reported usage,
+// falling back to the passed rough ~4-char/token estimate only when it
+// didn't. Centralized so every completion-event site — foreground and
+// background, Agent tool and dispatch — reports identically; the per-site
+// duplication this replaces once let the dispatch foreground path drift onto
+// the estimate. Returns (estimate, 0) for an unknown id.
+func doneTokensAndCalls(reg *subagents.Registry, taskID string, estimate int) (tokens, toolCalls int) {
+	tokens = estimate
+	if snap, ok := reg.Get(taskID); ok {
+		toolCalls = snap.ToolCalls
+		if exact := snap.UsageTokens(); exact > 0 {
+			tokens = exact
+		}
+	}
+	return tokens, toolCalls
 }
 
 // backgroundWorkerDecision is the deterministic approval policy for an
