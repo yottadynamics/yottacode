@@ -141,6 +141,60 @@ func TestCallbackServerStartPortInUse(t *testing.T) {
 	}
 }
 
+// TestCallbackServerStartServeSurvivesCloseNil is the regression for the
+// nil-server SIGSEGV. Start's serve goroutine must not read the mutable
+// c.server field: if Close nils it before the goroutine is scheduled, a
+// field read calls (*http.Server)(nil).Serve and the resulting panic in
+// a background goroutine is unrecovered — it crashes the whole test
+// binary (in CI it surfaced as an unrelated internal/tui panic). The
+// serveHook seam parks the goroutine until the field has been nil'd,
+// forcing the losing ordering deterministically; a plain stress loop
+// almost never hits this window.
+func TestCallbackServerStartServeSurvivesCloseNil(t *testing.T) {
+	port := freePort(t)
+	redirect := "http://127.0.0.1:" + port + "/auth/callback"
+	c, err := NewCallbackServer(redirect)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Park the serve goroutine before it touches the server so the nil
+	// assignment below is guaranteed to land first.
+	release := make(chan struct{})
+	serveHook = func() { <-release }
+	t.Cleanup(func() { serveHook = nil })
+
+	if err := c.Start(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Simulate Close winning the race: the field is cleared before the
+	// goroutine reads it. Keep a handle to shut the server down, since
+	// Close is a no-op once the field is nil.
+	srv := c.server
+	c.server = nil
+	t.Cleanup(func() { _ = srv.Close() })
+
+	// Release the goroutine. Pre-fix it dereferenced the nil field here
+	// and SIGSEGV'd; post-fix it serves the captured srv.
+	close(release)
+
+	// Prove the server is genuinely serving the captured listener: a real
+	// callback still round-trips even though c.server is nil.
+	q := url.Values{}
+	q.Set("code", "AUTHCODE")
+	q.Set("state", "S")
+	client := &http.Client{Timeout: 2 * time.Second}
+	resp, err := client.Get(redirect + "?" + q.Encode())
+	if err != nil {
+		t.Fatalf("callback request failed — serve goroutine did not survive the close race: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("callback status = %d, want 200", resp.StatusCode)
+	}
+}
+
 // freePort grabs a random free port by binding to :0 and immediately
 // closing. Inevitably racy in theory, fine in practice for a test.
 func freePort(t *testing.T) string {

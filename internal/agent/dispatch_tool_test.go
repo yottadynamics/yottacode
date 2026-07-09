@@ -182,6 +182,12 @@ func dispatchTestRepo(t *testing.T) string {
 		{"config", "user.email", "t@t"},
 		{"config", "user.name", "t"},
 		{"config", "commit.gpgsign", "false"},
+		// Auto-gc off: a commit otherwise spawns a detached `git gc
+		// --auto` that keeps writing to .git after the command returns.
+		// On a loaded runner it's still active when t.TempDir()'s
+		// RemoveAll runs, and the concurrent writes make the final rmdir
+		// fail with "directory not empty" (intermittent macOS CI flake).
+		{"config", "gc.auto", "0"},
 	} {
 		if _, err := gitOutput(ctx, dir, args...); err != nil {
 			t.Fatalf("git %v: %v", args, err)

@@ -64,6 +64,12 @@ func NewCallbackServer(redirectURI string) (*CallbackServer, error) {
 	}, nil
 }
 
+// serveHook, when non-nil, runs at the top of Start's serve goroutine
+// just before it calls Serve. It is nil in production; the nil-server
+// race regression test sets it to park the goroutine and force the
+// Close-before-serve ordering deterministically.
+var serveHook func()
+
 // Start binds the listener and begins serving. Bind is synchronous
 // so callers know whether the port was free before they open the
 // browser — racing the bind would surface as a confusing
@@ -88,8 +94,21 @@ func (c *CallbackServer) Start() error {
 	c.listener = l
 	mux := http.NewServeMux()
 	mux.HandleFunc(c.Path, c.handle)
-	c.server = &http.Server{Handler: mux}
-	go func() { _ = c.server.Serve(l) }()
+	srv := &http.Server{Handler: mux}
+	c.server = srv
+	// Serve the captured srv, never the c.server field. Close may nil
+	// the field — from Wait's deferred Close on the cancel/timeout path,
+	// or an abandoned sign-in's teardown — before this goroutine is
+	// scheduled, and (*http.Server)(nil).Serve dereferences nil: an
+	// unrecovered SIGSEGV in a background goroutine that crashes the whole
+	// process. The captured pointer is immune, and Close still stops it
+	// via the same object, so Serve returns http.ErrServerClosed cleanly.
+	go func() {
+		if serveHook != nil {
+			serveHook()
+		}
+		_ = srv.Serve(l)
+	}()
 	return nil
 }
 
