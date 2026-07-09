@@ -402,11 +402,6 @@ that only `Ctrl+C` exits. The `r` refresh workflow covers the same
 "see new lines" need without the dance.
 
 **Pager resolution order**: `$YOTTACODE_PAGER` → `$PAGER` →
-`less -RF` → `more` → inline scrollback fallback. If `$PAGER` is
-set, we honor it verbatim — `$PAGER=less -FRSX` keeps your flags
-untouched, no injection.
-
-**Pager resolution order**: `$YOTTACODE_PAGER` → `$PAGER` →
 `less -RF` (with our keys-hint prompt) → `more` → inline scrollback
 fallback. If `$PAGER` is set, we honor it verbatim — your
 `$PAGER=less -FRSX` keeps your flags untouched and our key hint is
