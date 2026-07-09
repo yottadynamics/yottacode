@@ -137,8 +137,8 @@ func TestBackgroundWorkerDecision(t *testing.T) {
 	allow("apply_diff", `{}`)
 	allow("delete_file", `{}`)
 	allow("run_tests", `{}`)
-	// Shell is disabled for unattended workers in the beta — even a plainly
-	// read-only command is denied (the classifier is bypassable and run_bash
+	// Shell is disabled for unattended workers — even a plainly read-only
+	// command is denied (the classifier is bypassable and run_bash
 	// isn't path-confined). Use run_tests, or run the task in the foreground.
 	deny("run_bash", `{"command":"ls -la"}`)
 	deny("run_bash", `{"command":"grep -rn foo internal"}`)

@@ -21,10 +21,10 @@ Nine agent types ship with the binary:
 | `general-purpose` | all parent tools (except `Agent` itself) | Answer open-ended questions. Falls back to writing if the task demands it. |
 | `Explore` | read-only (read_file, grep, glob, list_*, git read subcommands, fetch_url) | Fast code search and location lookup. |
 | `Plan` | Explore's tools + `todo_write` | Produce a written plan for a coding task. Ends with a `### Critical Files for Implementation` trailer. |
-| `verification` | Explore's tools + `run_bash` | Adversarially verify a change: run builds / tests / probes, try to break it, end with a `VERDICT: PASS\|FAIL\|PARTIAL` line. Background-by-default. |
-| `implement` | read + full write set + `run_tests` + `run_bash` | Build one well-scoped component end-to-end, staying inside its owned files. Write-capable, **background-by-default** — the workhorse write task in a `dispatch` fan-out. |
-| `test` | read + write + `run_tests` + `run_bash` | Write/update and run tests for a component, owning the test files only. Write-capable, **background-by-default** — pairs with `implement` on disjoint files. |
-| `docs` | read + `write_file`/`edit_file` + git read + `fetch_url` | Update documentation and comments for a change, owning the doc files only. Write-capable, **background-by-default**. |
+| `verification` | Explore's tools + `run_bash` | Adversarially verify a change: run builds / tests / probes, try to break it, end with a `VERDICT: PASS\|FAIL\|PARTIAL` line. Runs foreground by default in standalone `Agent` calls because it needs `run_bash`; use foreground when command execution is required. |
+| `implement` | read + full write set + `run_tests` + `run_bash` | Build one well-scoped component end-to-end, staying inside its owned files. Write-capable; in `dispatch` fan-out it runs in an isolated background worktree with owned-file enforcement. |
+| `test` | read + write + `run_tests` + `run_bash` | Write/update and run tests for a component, owning the test files only. Write-capable; in `dispatch` fan-out it runs in an isolated background worktree and pairs with `implement` on disjoint files. |
+| `docs` | read + `write_file`/`edit_file` + git read + `fetch_url` | Update documentation and comments for a change, owning the doc files only. Write-capable; in `dispatch` fan-out it runs in an isolated background worktree. |
 | `review` | read-only (Explore's tools + more git read) | Read-only critique of a diff — findings ranked by severity (file:line + scenario). Cannot edit; complements `verification`. Foreground. |
 | `code-verifier` | read-only (`review`'s set plus `git_merge_base`) | Read-only adversarial check of a **single** review finding: given one `file:line` + claim, try to refute it from the code, end with `VERDICT: PASS\|FAIL\|PARTIAL`. The read-only counterpart to `verification` (which runs builds/tests). Foreground; used by `/code-review`'s verification pass. |
 
@@ -67,13 +67,13 @@ ephemeral test scripts to `/tmp` via `run_bash` but cannot edit,
 create, or delete project files, install dependencies, or run git
 write operations.
 
-**Background-by-default**: the agent's frontmatter declares
-`background: true`, so dispatches default to a detached background
-task even when the caller omits `run_in_background`. The parent gets
-a task id back and can keep working; the verdict surfaces via the
-`SubagentBackgroundDone` event. In oneshot mode (where background
-isn't available), the dispatch silently falls back to foreground so
-the verdict still lands inline.
+**Standalone execution**: `verification` runs foreground by default for
+ordinary `Agent` calls because it needs `run_bash` for builds, tests,
+and probes. Standalone background subagents are read-only by default,
+so `run_in_background:true` will deny `run_bash` and cannot perform
+full verification. Dispatch-aware verification remains useful after
+parallel work: run it foreground when command execution is required,
+or use dispatch's controlled worker path for write-capable fan-out.
 
 ## Custom agents
 
@@ -121,7 +121,7 @@ The `Agent` tool accepts `run_in_background: true`:
   lands directly in the parent's message history as a single `tool`
   role message. Use when the parent needs the answer to decide its
   next step in the same turn.
-- **Background** (**experimental — see [experimental.md](experimental.md)**):
+- **Background** (**GA in the interactive TUI**):
   the call returns immediately with a task id. The child runs to
   completion in a detached goroutine. The TUI surfaces completion
   via a `SubagentBackgroundDone` card on the next render cycle;
@@ -282,9 +282,10 @@ Two cases, governed by foreground vs background:
   channel has no competing reader.
 - **Background subagent** + child tool needs approval → **auto-denied**
   with a steering message. The parent's turn may have ended hours
-  ago; a surprise modal arriving long after spawn is bad UX. Pre-authorize
-  via `permissions.json` if the background subagent genuinely needs
-  mutating tools.
+  ago; a surprise modal arriving long after spawn is bad UX. Standalone
+  background `Agent` runs remain read-only by default; write-capable
+  unattended work should use `dispatch`, where worker writes are
+  constrained to isolated worktrees and declared owned files.
 
 ## /subagents command
 
@@ -538,8 +539,8 @@ Foreground subagents forward approval requests to the parent's
 modal. Background subagents auto-deny — there's no live UI to
 prompt against. Standalone background `Agent` runs are read-only by
 default (see above). Dispatch background workers apply a
-deterministic policy that allows worktree-confined writes and
-`run_tests`, but denies shell, git mutations, and network tools.
+deterministic policy that allows owned-file writes and `run_tests`,
+but denies shell and approval-requiring tools such as git mutations.
 
 ## Why this design
 

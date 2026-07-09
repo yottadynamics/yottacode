@@ -61,9 +61,9 @@ func TestAgentTool_ForegroundApprovalUnderGate_NoDeadlock(t *testing.T) {
 	}
 }
 
-// TestBuiltinRoles_DispatchClassification asserts the new built-in roles
-// classify the way dispatch relies on: implement/test/docs are write-capable
-// (→ isolated worktree) and background-by-default; review is read-only
+// TestBuiltinRoles_DispatchClassification asserts the built-in roles classify
+// the way dispatch relies on: implement/test/docs are write-capable (→ isolated
+// worktree) and carry dispatch background defaults; review is read-only
 // (→ shared cwd, no worktree) and foreground.
 func TestBuiltinRoles_DispatchClassification(t *testing.T) {
 	byName := map[string]subagents.AgentConfig{}

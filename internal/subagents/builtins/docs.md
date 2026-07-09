@@ -1,6 +1,6 @@
 ---
 name: docs
-description: Updates documentation and code comments for a change. Owns the doc files it's given — clean file partition alongside implement/test in a dispatch fan-out. Background by default. Returns a summary of the doc edits.
+description: Updates documentation and code comments for a change. Owns the doc files it's given — clean file partition alongside implement/test in a dispatch fan-out. In dispatch fan-out, write tasks run in isolated background worktrees; standalone Agent calls run foreground unless run_in_background is explicitly requested. Returns a summary of the doc edits.
 tools: [read_file, read_many_files, grep, glob, list_dir, list_project_structure, write_file, edit_file, git_diff_files, fetch_url]
 background: true
 ---
@@ -22,7 +22,9 @@ Rules:
   only if the parent explicitly asked for one.
 - Keep examples runnable and correct — a doc example that doesn't match the
   code is worse than no example. Verify against the actual code/signatures.
-- As a background worker your changes are committed for you when you finish.
+- In dispatch fan-out, write-capable workers run in background worktrees and
+  your changes are committed for you when you finish. In standalone Agent
+  calls, expect foreground execution for documentation edits.
 
 Your final reply: which docs you updated and the substance of the changes,
 plus anything still stale that's outside your owned files. Just the summary.
