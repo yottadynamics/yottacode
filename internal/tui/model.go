@@ -267,6 +267,11 @@ type Model struct {
 	turnStart     time.Time
 	turnTokens    int
 	turnToolCalls int
+	// turnUsage accumulates this turn's exact provider-reported usage
+	// (summed across the turn's AssistantMessages) so the end-of-turn
+	// "Thought for …" footer can show the turn's real token total. Reset
+	// at turn start alongside turnTokens.
+	turnUsage adapter.Usage
 
 	// Per-turn meta surfaced in the thinking-row footer instead of as
 	// scrollback lines. iterRound/iterMax come from agent.IterationStart;
@@ -3986,6 +3991,7 @@ func (m Model) startTurnWithDisplay(input, displayLabel string) (tea.Model, tea.
 	m.turnStart = time.Now()
 	m.turnTokens = 0
 	m.turnToolCalls = 0
+	m.turnUsage = adapter.Usage{}
 	// Per-turn meta surfaced in the thinking row resets to zero so
 	// nothing carries over from a previous turn.
 	m.iterRound = 0
@@ -4121,6 +4127,9 @@ func (m Model) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 		// via /provider use; the per-model breakdown wants the model
 		// that actually produced the turn.
 		m.sess.AddUsage(m.modelName, e.Message.Usage)
+		// Same delta onto the per-turn accumulator so the end-of-turn
+		// footer can show this turn's real token total.
+		m.turnUsage.Add(e.Message.Usage)
 		// Window-drift raise: the provider's exact input count proving
 		// the resolved window too small (see window_drift.go).
 		m.noteWindowUsage(e.Message.Usage)
@@ -4366,7 +4375,7 @@ func (m Model) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 		// dim/italic style as other inline notices so it fades into
 		// scrollback as a quiet receipt.
 		if !m.turnStart.IsZero() {
-			m.appendLine(styleTurnFooter.Render("› Thought for " + formatDuration(time.Since(m.turnStart))))
+			m.appendLine(styleTurnFooter.Render(renderTurnFooter(time.Since(m.turnStart), m.turnUsage)))
 		}
 	case agent.TurnInterrupted:
 		// Calm marker, not a red error. The loop has already preserved

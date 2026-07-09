@@ -407,17 +407,14 @@ func (t *DispatchTool) runDispatchChild(ctx context.Context, c *dispatchChild, b
 			// integrate is never prompted. Foreground workers don't need
 			// it — their result is read from c after the batch's wg.Wait.
 			if background {
-				toolCalls := 0
-				if snap, ok := t.Agent.Tasks.Get(c.taskID); ok {
-					toolCalls = snap.ToolCalls
-				}
+				tokensUsed, toolCalls := doneTokensAndCalls(t.Agent.Tasks, c.taskID, c.tokens)
 				t.Agent.fireBackgroundDone(SubagentBackgroundDone{
 					TaskID:     c.taskID,
 					AgentType:  c.cfg.Name,
 					Result:     c.result,
 					Errored:    true,
 					Duration:   time.Since(task.Started),
-					TokensUsed: c.tokens,
+					TokensUsed: tokensUsed,
 					ToolCalls:  toolCalls,
 					Model:      childModel,
 					Branch:     c.branch,
@@ -559,10 +556,7 @@ func (t *DispatchTool) runDispatchChild(ctx context.Context, c *dispatchChild, b
 	c.errored = errored
 	c.tokens = tokens
 
-	toolCalls := 0
-	if snap, ok := t.Agent.Tasks.Get(c.taskID); ok {
-		toolCalls = snap.ToolCalls
-	}
+	tokensUsed, toolCalls := doneTokensAndCalls(t.Agent.Tasks, c.taskID, tokens)
 	if background {
 		// Async completion: route through the session-level callback (the
 		// long-lived inbox), the same path AgentTool background runs use,
@@ -575,7 +569,7 @@ func (t *DispatchTool) runDispatchChild(ctx context.Context, c *dispatchChild, b
 			Result:     result,
 			Errored:    errored,
 			Duration:   time.Since(task.Started),
-			TokensUsed: tokens,
+			TokensUsed: tokensUsed,
 			ToolCalls:  toolCalls,
 			Model:      childModel,
 			Branch:     c.branch,
@@ -593,7 +587,7 @@ func (t *DispatchTool) runDispatchChild(ctx context.Context, c *dispatchChild, b
 		Result:     result,
 		Errored:    errored,
 		Duration:   time.Since(task.Started),
-		TokensUsed: tokens,
+		TokensUsed: tokensUsed,
 		ToolCalls:  toolCalls,
 		Model:      childModel,
 		Branch:     c.branch,

@@ -408,6 +408,39 @@ func TestLatestInCwd_EmptyDirReturnsSentinel(t *testing.T) {
 	}
 }
 
+// TestSubagentUsage_Rollup: the session folds per-subagent Usage into a
+// DISTINCT rollup (kept separate from TotalUsage/ModelUsage, which track only
+// the main thread). It sums the total, attributes inherited-model runs (empty
+// Model) to the session's headline model, keeps explicit-model runs under
+// their own model, and skips — and does not count — subagents that reported
+// no usage.
+func TestSubagentUsage_Rollup(t *testing.T) {
+	s := &Session{
+		Model: "parent-model",
+		SubagentTasks: []subagents.TaskRecord{
+			{ID: "a", Model: "", Usage: adapter.Usage{InputTokens: 100, OutputTokens: 20}},           // inherits parent-model
+			{ID: "b", Model: "child-model", Usage: adapter.Usage{InputTokens: 40, OutputTokens: 10}}, // explicit model
+			{ID: "c", Model: "parent-model", Usage: adapter.Usage{InputTokens: 5, OutputTokens: 1}},  // explicit, == parent
+			{ID: "d", Model: "child-model"}, // no usage → skipped
+		},
+	}
+	roll := s.SubagentUsage()
+
+	if roll.AgentCount != 3 {
+		t.Errorf("AgentCount = %d, want 3 (zero-usage task d skipped)", roll.AgentCount)
+	}
+	if roll.Total.InputTokens != 145 || roll.Total.OutputTokens != 31 {
+		t.Errorf("Total in/out = %d/%d, want 145/31", roll.Total.InputTokens, roll.Total.OutputTokens)
+	}
+	// Inherited-model run (a) + same-model run (c) both land under parent-model.
+	if got := roll.ByModel["parent-model"]; got.InputTokens != 105 || got.OutputTokens != 21 {
+		t.Errorf("parent-model rollup = %+v, want in=105 out=21", got)
+	}
+	if got := roll.ByModel["child-model"]; got.InputTokens != 40 || got.OutputTokens != 10 {
+		t.Errorf("child-model rollup = %+v, want in=40 out=10", got)
+	}
+}
+
 // TestSaveLoad_UsageRoundtrip locks the per-session usage
 // accumulation pipeline: AddUsage must sum into TotalUsage +
 // ModelUsage, and a Save/Load cycle must preserve every field. This

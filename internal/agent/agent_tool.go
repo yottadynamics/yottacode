@@ -478,17 +478,14 @@ func (t *AgentTool) Execute(ctx context.Context, argsJSON string) (string, error
 			t.Tasks.MarkDone(taskID, status, result, errored, tokens)
 			// Read the just-recorded tool-call count off the registry
 			// so the inline card can render accurate stats.
-			toolCalls := 0
-			if snap, ok := t.Tasks.Get(taskID); ok {
-				toolCalls = snap.ToolCalls
-			}
+			tokensUsed, toolCalls := doneTokensAndCalls(t.Tasks, taskID, tokens)
 			t.fireBackgroundDone(SubagentBackgroundDone{
 				TaskID:       taskID,
 				AgentType:    cfg.Name,
 				Result:       result,
 				Errored:      errored,
 				Duration:     time.Since(task.Started),
-				TokensUsed:   tokens,
+				TokensUsed:   tokensUsed,
 				ToolCalls:    toolCalls,
 				Model:        childModel,
 				NotifyOnDone: a.RunInBackground && a.NotifyOnDone,
@@ -515,17 +512,14 @@ func (t *AgentTool) Execute(ctx context.Context, argsJSON string) (string, error
 	t.Tasks.MarkDone(taskID, status, result, errored, tokens)
 	// Read the just-recorded tool-call count off the registry so the
 	// done card can render accurate stats.
-	toolCalls := 0
-	if snap, ok := t.Tasks.Get(taskID); ok {
-		toolCalls = snap.ToolCalls
-	}
+	tokensUsed, toolCalls := doneTokensAndCalls(t.Tasks, taskID, tokens)
 	emitToParent(SubagentDone{
 		TaskID:     taskID,
 		AgentType:  cfg.Name,
 		Result:     result,
 		Errored:    errored,
 		Duration:   time.Since(task.Started),
-		TokensUsed: tokens,
+		TokensUsed: tokensUsed,
 		ToolCalls:  toolCalls,
 		Model:      childModel,
 	})
@@ -860,6 +854,12 @@ func (t *AgentTool) runChild(
 		transcript.writeEvent(ev)
 		switch e := ev.(type) {
 		case AssistantMessage:
+			// Capture this turn's exact provider usage onto the task, the
+			// same way the main TUI loop accumulates it on the session. This
+			// is the per-subagent token tally the dock and /usage read; it's
+			// live (updated each turn), unlike the ~4-char/token estimate
+			// computed once at the end. AddUsage is nil-safe.
+			t.Tasks.AddUsage(taskID, e.Message.Usage)
 			if len(e.Message.ToolCalls) == 0 && strings.TrimSpace(e.Message.Content) != "" {
 				final = e.Message.Content
 			}
@@ -1087,6 +1087,25 @@ func (t *AgentTool) runChild(
 	transcript.writeOutcome(outcome, result)
 	transcript.close()
 	return result, errored, status, tokensUsed
+}
+
+// doneTokensAndCalls resolves the completion-card stats for a finished
+// subagent: its tool-call count and token total. Tokens are the child's
+// EXACT provider-reported tally (Task.UsageTokens) when it reported usage,
+// falling back to the passed rough ~4-char/token estimate only when it
+// didn't. Centralized so every completion-event site — foreground and
+// background, Agent tool and dispatch — reports identically; the per-site
+// duplication this replaces once let the dispatch foreground path drift onto
+// the estimate. Returns (estimate, 0) for an unknown id.
+func doneTokensAndCalls(reg *subagents.Registry, taskID string, estimate int) (tokens, toolCalls int) {
+	tokens = estimate
+	if snap, ok := reg.Get(taskID); ok {
+		toolCalls = snap.ToolCalls
+		if exact := snap.UsageTokens(); exact > 0 {
+			tokens = exact
+		}
+	}
+	return tokens, toolCalls
 }
 
 // standaloneBackgroundApprovalPolicy is the GA safety policy for ordinary

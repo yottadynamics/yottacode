@@ -280,16 +280,69 @@ func (s *Session) AddUsage(model string, u *adapter.Usage) {
 	s.ModelUsage[model] = prev
 }
 
+// SubagentUsageRollup aggregates a session's subagent token spend from its
+// persisted SubagentTasks index. It is kept DISTINCT from TotalUsage /
+// ModelUsage — those track only the main assistant thread (session.AddUsage
+// is called solely from the main loop) — so /usage can attribute spend to
+// subagents separately and still present a combined total. Subagent turns
+// that inherited the parent's model (empty Model on the record) are
+// attributed to parentModel so the per-model breakdown stays meaningful.
+type SubagentUsageRollup struct {
+	Total      adapter.Usage
+	ByModel    map[string]adapter.Usage
+	AgentCount int // number of subagents that reported non-zero usage
+}
+
+// subagentUsageRollup sums the exact per-task Usage across records, skipping
+// tasks that never reported usage (IsZero) so a provider that doesn't emit
+// usage doesn't inflate the agent count with phantom zero rows.
+func subagentUsageRollup(records []subagents.TaskRecord, parentModel string) SubagentUsageRollup {
+	r := SubagentUsageRollup{ByModel: map[string]adapter.Usage{}}
+	for i := range records {
+		u := records[i].Usage
+		if u.IsZero() {
+			continue
+		}
+		model := records[i].Model
+		if model == "" {
+			model = parentModel
+		}
+		r.Total.Add(&u)
+		prev := r.ByModel[model]
+		prev.Add(&u)
+		r.ByModel[model] = prev
+		r.AgentCount++
+	}
+	return r
+}
+
+// SubagentUsage returns this session's subagent token rollup, attributing
+// inherited-model runs to the session's headline model. Nil-safe.
+func (s *Session) SubagentUsage() SubagentUsageRollup {
+	if s == nil {
+		return SubagentUsageRollup{ByModel: map[string]adapter.Usage{}}
+	}
+	return subagentUsageRollup(s.SubagentTasks, s.Model)
+}
+
 // SessionUsageSummary is a stripped per-session view used by the
 // daily-rollup scan. We avoid decoding Messages (the heavy field) so
 // /usage can scan dozens of session files cheaply.
 type SessionUsageSummary struct {
-	ID         string
-	Name       string
-	Model      string
-	Created    time.Time
-	TotalUsage adapter.Usage
-	ModelUsage map[string]adapter.Usage
+	ID            string
+	Name          string
+	Model         string
+	Created       time.Time
+	TotalUsage    adapter.Usage
+	ModelUsage    map[string]adapter.Usage
+	SubagentTasks []subagents.TaskRecord
+}
+
+// SubagentUsage returns the subagent token rollup for this summary — the
+// daily rollup adds it to TotalUsage so cross-session tallies include
+// subagent spend, not just the main thread.
+func (s SessionUsageSummary) SubagentUsage() SubagentUsageRollup {
+	return subagentUsageRollup(s.SubagentTasks, s.Model)
 }
 
 // UsageSince scans every saved session newer than t and returns a
@@ -318,12 +371,13 @@ func UsageSince(t time.Time) ([]SessionUsageSummary, error) {
 			continue
 		}
 		var stub struct {
-			ID         string                   `json:"id"`
-			Name       string                   `json:"name"`
-			Model      string                   `json:"model"`
-			Created    time.Time                `json:"created"`
-			TotalUsage adapter.Usage            `json:"total_usage"`
-			ModelUsage map[string]adapter.Usage `json:"model_usage"`
+			ID            string                   `json:"id"`
+			Name          string                   `json:"name"`
+			Model         string                   `json:"model"`
+			Created       time.Time                `json:"created"`
+			TotalUsage    adapter.Usage            `json:"total_usage"`
+			ModelUsage    map[string]adapter.Usage `json:"model_usage"`
+			SubagentTasks []subagents.TaskRecord   `json:"subagent_tasks"`
 		}
 		if err := json.Unmarshal(b, &stub); err != nil {
 			continue
@@ -332,12 +386,13 @@ func UsageSince(t time.Time) ([]SessionUsageSummary, error) {
 			continue
 		}
 		out = append(out, SessionUsageSummary{
-			ID:         stub.ID,
-			Name:       stub.Name,
-			Model:      stub.Model,
-			Created:    stub.Created,
-			TotalUsage: stub.TotalUsage,
-			ModelUsage: stub.ModelUsage,
+			ID:            stub.ID,
+			Name:          stub.Name,
+			Model:         stub.Model,
+			Created:       stub.Created,
+			TotalUsage:    stub.TotalUsage,
+			ModelUsage:    stub.ModelUsage,
+			SubagentTasks: stub.SubagentTasks,
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Created.After(out[j].Created) })

@@ -13,6 +13,36 @@ import (
 	"github.com/yottadynamics/yottacode/internal/subagents"
 )
 
+// TestDoneTokensAndCalls is the regression for the completion-stats gap: the
+// child's exact provider tally must win over the rough estimate at EVERY
+// emission site. This logic previously lived as duplicated per-site glue, and
+// the dispatch FOREGROUND path drifted onto the estimate; centralizing it in
+// doneTokensAndCalls means all five sites (Agent + dispatch, foreground +
+// background) share this one code path.
+func TestDoneTokensAndCalls(t *testing.T) {
+	reg := subagents.NewRegistry()
+
+	// Provider reported usage → exact tally wins over the estimate.
+	reg.Add(&subagents.Task{ID: "withusage", Status: subagents.TaskRunning})
+	reg.SetToolCalls("withusage", 5)
+	reg.AddUsage("withusage", &adapter.Usage{InputTokens: 100, OutputTokens: 50, CacheReadTokens: 300}) // UsageTokens = 450
+	if tok, calls := doneTokensAndCalls(reg, "withusage", 999); tok != 450 || calls != 5 {
+		t.Errorf("with usage: got (%d tokens, %d calls), want (450, 5) — exact tally must beat estimate 999", tok, calls)
+	}
+
+	// Provider reported no usage → fall back to the estimate.
+	reg.Add(&subagents.Task{ID: "noreport", Status: subagents.TaskRunning})
+	reg.SetToolCalls("noreport", 2)
+	if tok, calls := doneTokensAndCalls(reg, "noreport", 777); tok != 777 || calls != 2 {
+		t.Errorf("no usage: got (%d tokens, %d calls), want (777, 2) — estimate fallback", tok, calls)
+	}
+
+	// Unknown id → estimate, zero calls, no panic.
+	if tok, calls := doneTokensAndCalls(reg, "ghost", 42); tok != 42 || calls != 0 {
+		t.Errorf("unknown id: got (%d, %d), want (42, 0)", tok, calls)
+	}
+}
+
 // TestAgentTool_ForegroundApprovalUnderGate_NoDeadlock is the regression for
 // the approval-gate self-deadlock: when an approval gate is installed (as the
 // parallel Agent batch and foreground dispatch both do), a foreground child

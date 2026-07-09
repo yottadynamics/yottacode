@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/yottadynamics/yottacode/internal/adapter"
 )
 
 // TaskStatus is the lifecycle phase of a subagent run. The four
@@ -67,8 +69,16 @@ type Task struct {
 	// notify_on_done). The TUI reads it to decide whether a background
 	// completion should wake the model with the result, vs. stay silent
 	// until fetched. Always false for foreground tasks.
-	NotifyOnDone   bool
-	TokensUsed     int
+	NotifyOnDone bool
+	TokensUsed   int
+	// Usage is the exact, provider-reported token tally accumulated across
+	// the child's assistant turns (input/output/cache/reasoning). Unlike
+	// TokensUsed — a single ~4-chars/token estimate stamped at MarkDone and
+	// used only for the session budget backstop — Usage is updated live each
+	// turn from the child loop's AssistantMessage event, and is the number
+	// /usage folds into the session total. Zero (IsZero) for providers that
+	// don't report usage; readers fall back to the TokensUsed estimate there.
+	Usage          adapter.Usage
 	ToolCalls      int    // count of ToolStart events from the child
 	Model          string // model the child ran on when task-routed; "" = inherited the parent's model
 	TranscriptPath string
@@ -126,6 +136,16 @@ func (t Task) Duration() time.Duration {
 	return t.Finished.Sub(t.Started)
 }
 
+// UsageTokens returns the exact provider-reported total this subagent
+// consumed (input + output + cache read + cache write), matching the
+// "total tokens" basis /usage uses so every surface tells the same story.
+// Returns 0 when the provider never reported usage (Usage.IsZero) — callers
+// fall back to the ~4-char/token estimate then.
+func (t Task) UsageTokens() int {
+	u := t.Usage
+	return int(u.InputTokens + u.OutputTokens + u.CacheReadTokens + u.CacheCreationTokens)
+}
+
 // Registry tracks active and historical subagent tasks for the current
 // session. Mutex-guarded so the agent goroutine, the TUI render path,
 // and slash commands can all touch it safely. Snapshots returned by
@@ -167,24 +187,25 @@ func (r *Registry) Add(t *Task) {
 // Worktree/Base/Branch fields are kept so a startup sweep can reclaim a
 // crashed session's empty dispatch worktrees.
 type TaskRecord struct {
-	ID             string     `json:"id"`
-	AgentType      string     `json:"agent_type"`
-	Prompt         string     `json:"prompt,omitempty"`
-	Status         TaskStatus `json:"status"`
-	Result         string     `json:"result,omitempty"`
-	Errored        bool       `json:"errored,omitempty"`
-	Background     bool       `json:"background,omitempty"`
-	NotifyOnDone   bool       `json:"notify_on_done,omitempty"`
-	TranscriptPath string     `json:"transcript_path,omitempty"`
-	Started        time.Time  `json:"started,omitzero"`
-	Finished       time.Time  `json:"finished,omitzero"`
-	TokensUsed     int        `json:"tokens_used,omitempty"`
-	ToolCalls      int        `json:"tool_calls,omitempty"`
-	Model          string     `json:"model,omitempty"`
-	Branch         string     `json:"branch,omitempty"`
-	Worktree       string     `json:"worktree,omitempty"`
-	Base           string     `json:"base,omitempty"`
-	BatchID        string     `json:"batch_id,omitempty"`
+	ID             string        `json:"id"`
+	AgentType      string        `json:"agent_type"`
+	Prompt         string        `json:"prompt,omitempty"`
+	Status         TaskStatus    `json:"status"`
+	Result         string        `json:"result,omitempty"`
+	Errored        bool          `json:"errored,omitempty"`
+	Background     bool          `json:"background,omitempty"`
+	NotifyOnDone   bool          `json:"notify_on_done,omitempty"`
+	TranscriptPath string        `json:"transcript_path,omitempty"`
+	Started        time.Time     `json:"started,omitzero"`
+	Finished       time.Time     `json:"finished,omitzero"`
+	TokensUsed     int           `json:"tokens_used,omitempty"`
+	Usage          adapter.Usage `json:"usage,omitzero"`
+	ToolCalls      int           `json:"tool_calls,omitempty"`
+	Model          string        `json:"model,omitempty"`
+	Branch         string        `json:"branch,omitempty"`
+	Worktree       string        `json:"worktree,omitempty"`
+	Base           string        `json:"base,omitempty"`
+	BatchID        string        `json:"batch_id,omitempty"`
 }
 
 // Export returns a serializable snapshot of every task for persistence in the
@@ -200,6 +221,7 @@ func (r *Registry) Export() []TaskRecord {
 			Result: t.Result, Errored: t.Errored, Background: t.Background,
 			NotifyOnDone: t.NotifyOnDone, TranscriptPath: t.TranscriptPath,
 			Started: t.Started, Finished: t.Finished, TokensUsed: t.TokensUsed,
+			Usage:     t.Usage,
 			ToolCalls: t.ToolCalls, Model: t.Model, Branch: t.Branch,
 			Worktree: t.Worktree, Base: t.Base, BatchID: t.BatchID,
 		})
@@ -238,6 +260,7 @@ func (r *Registry) Import(records []TaskRecord) {
 			Result: result, Errored: errored, Background: rec.Background,
 			NotifyOnDone: rec.NotifyOnDone, TranscriptPath: rec.TranscriptPath,
 			Started: rec.Started, Finished: rec.Finished, TokensUsed: rec.TokensUsed,
+			Usage:     rec.Usage,
 			ToolCalls: rec.ToolCalls, Model: rec.Model, Branch: rec.Branch,
 			Worktree: rec.Worktree, Base: rec.Base, BatchID: rec.BatchID,
 			Historical: true,
@@ -517,6 +540,23 @@ func (r *Registry) SetContextUsage(id string, tokens, window int) {
 	if t, ok := r.tasks[id]; ok {
 		t.CtxTokens = tokens
 		t.CtxWindow = window
+	}
+}
+
+// AddUsage accumulates one assistant turn's exact provider-reported token
+// usage onto the task's running Usage total. Called each turn from the
+// runner as it forwards the child loop's AssistantMessage event — mirroring
+// what the main TUI loop does with session.AddUsage for the parent thread,
+// so subagent spend is captured with the same fidelity. Nil-safe (a turn
+// whose adapter reported no usage is a no-op) and a no-op for unknown ids.
+func (r *Registry) AddUsage(id string, u *adapter.Usage) {
+	if u == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if t, ok := r.tasks[id]; ok {
+		t.Usage.Add(u)
 	}
 }
 
