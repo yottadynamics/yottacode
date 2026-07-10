@@ -187,7 +187,8 @@ through a symlink.
 - **`reference`** — material to look back at. (API shapes, command incantations, "what does `make ship` actually do".)
 
 But the set is **not closed**: when none of the four fit, the agent may coin
-its own short label — e.g. `decision`, `gotcha`, `api-shape`. A custom type
+its own short label — e.g. `decision`, `gotcha`, `architecture`,
+`constraint`, `pattern`, `security`, `ops`, or `api-shape`. A custom type
 is validated only as a label (lowercased + trimmed, then any run of
 spaces/underscores/hyphens collapsed to a single hyphen; lowercase
 letters, digits, hyphens; ≤32 chars) and renders as its own
@@ -207,24 +208,31 @@ unconstrained regardless of type.
 
 ### What the agent saves
 
-The agent is designed to be **self-learning** — it actively builds its understanding of you and your work across sessions and projects, so every future conversation starts smarter than the last.
+The agent is designed to be **self-learning** — it actively builds its understanding of you and your work across sessions and projects, so every future conversation starts smarter than the last. Agent-managed memory is a durable knowledge base, not only a sparse preference list. The save bias intentionally leans toward recall: an unsaved insight disappears when session context is gone, while a marginal note is cheap because only its one-line index entry is always loaded and the body is retrieved on demand.
 
 Save when:
 
 - The user states a durable preference, correction, or project fact.
 - The user **confirms or validates** a non-obvious approach — save what worked and why.
+- A design or architecture **decision and the reason for it** emerges, including alternatives rejected and why.
+- The agent reverse-engineers **how a subsystem works** and would otherwise have to rediscover it later.
+- The session exposes a non-obvious **constraint, invariant, or gotcha**.
+- The code relies on a durable **security or permission assumption**.
+- The work surfaces an **ops or release fact** — how something deploys, what CI enforces, or what release tooling requires — that is durable rather than one-off status.
 - The user supplies a reference you'd otherwise re-derive every turn.
 - The agent observes a **recurring pattern**: the user always approves a certain style, always rejects a certain approach, always asks for the same thing. The agent doesn't wait for "remember this" — if it sees a pattern twice, it saves it.
 - A task outcome teaches something: an approach that failed and why, a subtle constraint discovered, a debugging technique that cracked a hard problem.
 
 Don't save:
 
-- Code patterns derivable from a quick grep.
-- Ephemeral state ("we're mid-refactor of the user model").
-- Git-derivable info (current branch, last commit message).
+- Secrets, tokens, credentials, internal URLs, or PII.
+- Ephemeral in-flight task state ("we're mid-refactor of the user model").
+- Git-derivable info (current branch, last commit SHA).
 - One-off task instructions.
-- Anything sensitive (API keys, internal URLs, PII).
-- **Work-log artifacts that fail the staleness test.** If a fact will be stale in a week it doesn't belong in memory: PR/issue numbers, commit SHAs, "shipped X in PR #N", "Phase N done", file counts. Record the durable thing learned, not that a task happened.
+- Code facts trivially derivable from a quick grep.
+- **Work-log artifacts that go stale within days.** A specific PR/issue number as the headline fact, a commit SHA, "Phase N done", file counts, and similar status notes do not belong in memory.
+
+The boundary is durable knowledge vs. task log. Do save the durable knowledge even when the surrounding task is transient: the decision, rationale, gotcha, constraint, or way the system actually works. Don't save merely that a task happened.
 
 #### What a good memory looks like
 
@@ -243,8 +251,10 @@ long agentic session — by the time something durable surfaces, the
 points re-surface the capability at the moments that matter. All three
 are **reminders, not extractors**: the harness only picks the moment;
 whether and what to save stays the model's in-band judgment, and every
-reminder carries an explicit "if nothing qualifies, save nothing" out so
-models don't compliance-save junk.
+reminder carries an explicit "if genuinely nothing durable is unsaved, save nothing" out so
+models don't compliance-save junk. The escape hatch is a floor, not the
+bias: reminders ask the model to capture anything durable it has not
+saved yet, including decisions, rationale, gotchas, and how things work.
 
 1. **Closing nudge (every turn).** The composed system prompt *ends* on
    the save nudge — the most-attended instruction position — instead of
@@ -253,14 +263,17 @@ models don't compliance-save junk.
    save never bootstraps.
 2. **Pre-compaction reminder.** When context usage first crosses
    `context.warn_threshold`, the next user message carries a one-line
-   reminder to persist anything durable *before* auto-summarization
-   compacts the older turns away. The transcript shows a muted notice
-   when it arms; the reminder itself is model-facing only. It disarms
-   when usage drops back below the threshold.
+   reminder to persist anything durable — preferences, corrections,
+   decisions and their rationale, gotchas, how things work, and project
+   facts — *before* auto-summarization compacts the older turns away.
+   The transcript shows a muted notice when it arms; the reminder itself
+   is model-facing only. It disarms when usage drops back below the
+   threshold.
 3. **Final turn on quit** (`[memory] final_turn_on_quit`, default
    `true`). A graceful exit — `/quit` or `Ctrl+D` while idle — runs one
    last visible turn prompting the model to save unsaved durable
-   learnings, then completes the quit when the turn ends. `Esc` or
+   learnings — including decisions, rationale, gotchas, and subsystem
+   knowledge — then completes the quit when the turn ends. `Esc` or
    `Ctrl+C` during the turn skips it (cancels and quits); `Ctrl+C` *as*
    the quit gesture always exits immediately, no final turn. Sessions
    with fewer than two turns started this launch quit instantly.

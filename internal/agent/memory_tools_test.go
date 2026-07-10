@@ -456,7 +456,7 @@ func TestMemoryTools_NotParallelSafe(t *testing.T) {
 // memory, so the framing is gated here.
 func TestMemorySave_DescriptionIsProactive(t *testing.T) {
 	desc := (&MemorySaveTool{}).Description()
-	for _, want := range []string{"PROACTIVELY", "Don't wait"} {
+	for _, want := range []string{"PROACTIVELY", "Don't wait", "When in doubt, save"} {
 		if !strings.Contains(desc, want) {
 			t.Errorf("memory_save description lost proactive framing: missing %q in %q", want, desc)
 		}
