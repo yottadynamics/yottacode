@@ -56,18 +56,23 @@ func TestDefaultSystemPrompt_ProactiveMemorySteering(t *testing.T) {
 		"Don't wait for explicit \"remember this\"",
 		"Self-improvement:",
 		"memory_save",
+		// Recall-bias steering: memory should act like a knowledge base,
+		// not only a sparse preference store.
+		"When unsure whether something is worth saving, save it",
+		"decision",
+		"gotcha",
 		// Scope steering: the prompt-side twin of the schema description
 		// pinned by TestMemorySaveTool_ScopeSteeringPinned — both copies
 		// must survive edits or they drift apart.
 		"Default to user-scope",
 		// Content-quality steering — the fix for "vague, few" memories.
-		// The body-echo failure mode (content == description) and the
-		// staleness filter must stay in the prompt or the model drifts
-		// back to one-line restatements and work-log junk.
+		// The body-echo failure mode and durable-vs-work-log boundary must
+		// stay in the prompt or the model drifts back to one-line
+		// restatements and task-log junk.
 		"What makes a good memory",
 		"must ADD substance beyond the one-line description",
 		"State durable facts declaratively",
-		"stale in a week",
+		"stale within days",
 	} {
 		if !strings.Contains(DefaultSystemPrompt, want) {
 			t.Errorf("DefaultSystemPrompt lost proactive-memory steering: missing %q", want)
@@ -97,6 +102,7 @@ func TestMemorySaveTool_ContentQualityPinned(t *testing.T) {
 		"Be specific and self-contained",
 		"add detail beyond the one-line description",
 		"restates the description is worthless",
+		"Knowledge, decisions, gotchas, how-it-works notes, and rationale are in scope",
 	} {
 		if !strings.Contains(desc, want) {
 			t.Errorf("memory_save content description lost substance steering: missing %q in %q", want, desc)

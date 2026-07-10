@@ -19,15 +19,18 @@ import (
 //
 // Both are reminders, not extractors: the harness only picks the moment;
 // whether and what to save stays the model's judgment in-band. The
-// "nothing qualifies" escape hatch in each text is load-bearing — without
-// it, weaker models compliance-save junk to satisfy the instruction.
+// "nothing to save" escape hatch in each text is load-bearing — without
+// it, weaker models compliance-save junk to satisfy the instruction. The
+// wording still biases toward recall: capture anything durable you have
+// not saved yet, and use the escape hatch only when there is genuinely
+// nothing durable to persist.
 
 // preCompactionMemoryReminder is appended (with a blank line) to the
 // outgoing user message of the first turn after the warn watermark is
 // crossed. History-only: the transcript renders the user's own text
 // without it (see startTurnWithDisplay). Worded for the message TAIL —
 // it refers to "the request above".
-const preCompactionMemoryReminder = "[system reminder — not from the user] Context is approaching the auto-summarize threshold; older turns will soon be compacted away. If this session has surfaced durable user preferences, corrections, validated approaches, or project facts that are not yet saved, persist them with memory_save now — check the MEMORY.md indexes in your context first and update or consolidate rather than duplicate. If nothing durable is unsaved, save nothing. Either way, proceed with the user's request above without mentioning this reminder."
+const preCompactionMemoryReminder = "[system reminder — not from the user] Context is approaching the auto-summarize threshold; older turns will soon be compacted away. If this session has surfaced durable preferences, corrections, decisions and their rationale, gotchas, how things work, or project facts that are not yet saved, persist them with memory_save now — check the MEMORY.md indexes in your context first and update or consolidate rather than duplicate. Capture anything durable you haven't saved yet; if genuinely nothing durable is unsaved, save nothing. Either way, proceed with the user's request above without mentioning this reminder."
 
 // exitSaveMinUserTurns is the minimum number of user turns STARTED THIS
 // LAUNCH (resumed history doesn't count — it already had its own exit
@@ -40,7 +43,7 @@ const exitSaveMinUserTurns = 2
 // exitSavePrompt is the synthetic user message driving the final turn on
 // quit. Memory tools only — the session is ending and file mutations at
 // quit time would be unreviewable surprise.
-const exitSavePrompt = "The session is ending now. Review this conversation: if it surfaced durable user preferences, corrections, validated approaches, or project facts that are not yet in your memory, persist them with memory_save before the context is gone. Check the MEMORY.md indexes in your context first — update or consolidate existing memories rather than creating near-duplicates, and memory_forget any now known to be stale. Use memory tools only; do not modify project files. If nothing durable is unsaved, reply exactly: nothing to save."
+const exitSavePrompt = "The session is ending now. Review this conversation: if it surfaced durable preferences, corrections, decisions and their rationale, gotchas, how things work, or project facts that are not yet in your memory, persist them with memory_save before the context is gone. Check the MEMORY.md indexes in your context first — update or consolidate existing memories rather than creating near-duplicates, and memory_forget any now known to be stale. Use memory tools only; do not modify project files. Capture anything durable you haven't saved yet. If genuinely nothing durable is unsaved, reply exactly: nothing to save."
 
 // exitSaveDisplayLabel is what the transcript shows instead of the full
 // exitSavePrompt body.

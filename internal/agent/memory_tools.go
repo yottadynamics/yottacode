@@ -49,7 +49,7 @@ type MemorySaveTool struct {
 func (t *MemorySaveTool) Name() string { return "memory_save" }
 
 func (t *MemorySaveTool) Description() string {
-	return "Persist a typed memory file under the user-scope or project-scope memory directory. Use this PROACTIVELY whenever you learn something durable — a user preference or correction, a validated approach, a project fact you'd otherwise re-derive, a hard-won debugging insight, a recurring pattern. Don't wait for the user to say \"remember this\": if future-you would want it in a later session, save it now, before the task moves on. If a memory with the same name already exists this updates it in place (the prior version is archived, never silently lost) — use memory_get first if you want to preserve parts you aren't changing. Updates the MEMORY.md index."
+	return "Persist a typed memory file under the user-scope or project-scope memory directory. Use this PROACTIVELY whenever you learn something durable — a user preference or correction, a validated approach, a decision and rationale, how a subsystem works, a project fact you'd otherwise re-derive, a hard-won debugging insight, a recurring pattern. Don't wait for the user to say \"remember this\": if future-you would want it in a later session, save it now, before the task moves on. When in doubt, save — a marginal note is cheap; a lost insight isn't. If a memory with the same name already exists this updates it in place (the prior version is archived, never silently lost) — use memory_get first if you want to preserve parts you aren't changing. Updates the MEMORY.md index."
 }
 
 func (t *MemorySaveTool) Schema() map[string]any {
@@ -69,7 +69,7 @@ func (t *MemorySaveTool) Schema() map[string]any {
 			},
 			"type": map[string]any{
 				"type":        "string",
-				"description": "a short lowercase label categorizing the memory. Conventional labels — user (preferences), feedback (corrections), project (repo facts), reference (material to look back at) — group together in the index; use one when it fits, or your own short label (e.g. \"decision\", \"gotcha\") when none do.",
+				"description": "a short lowercase label categorizing the memory. Conventional labels — user (preferences), feedback (corrections), project (repo facts), reference (material to look back at) — group together in the index; use one when it fits, or your own short label (e.g. \"decision\", \"gotcha\", \"architecture\", \"constraint\", \"pattern\", \"security\", \"ops\") when none do.",
 			},
 			"name": map[string]any{
 				"type":        "string",
@@ -87,7 +87,7 @@ func (t *MemorySaveTool) Schema() map[string]any {
 				// strongest lever on body quality. "concise" used to live here
 				// and was actively producing terse, worthless echoes; pinned by
 				// TestMemorySaveTool_ContentQualityPinned.
-				"description": "the memory body in markdown, written for a future agent who has NONE of this conversation's context. Be specific and self-contained: capture the concrete particulars — names, file paths, the decision AND why, the exact value or constraint — so future-you can act on it without re-deriving anything. The body MUST add detail beyond the one-line description; a body that merely restates the description is worthless. A few specific sentences beat one vague line. State durable facts declaratively, not as instructions to yourself.",
+				"description": "the memory body in markdown, written for a future agent who has NONE of this conversation's context. Be specific and self-contained: capture the concrete particulars — names, file paths, the decision AND why, how a subsystem works, the rationale, the exact value or constraint — so future-you can act on it without re-deriving anything. Knowledge, decisions, gotchas, how-it-works notes, and rationale are in scope — not only preferences. The body MUST add detail beyond the one-line description; a body that merely restates the description is worthless. A few specific sentences beat one vague line. State durable facts declaratively, not as instructions to yourself.",
 			},
 		},
 		"required": []string{"scope", "type", "name", "description", "content"},

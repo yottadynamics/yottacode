@@ -112,6 +112,28 @@ func TestStartTurn_NoPendingNudgeLeavesMessageUntouched(t *testing.T) {
 	}
 }
 
+func TestMemoryNudgeTextPinsRecallBiasAndEscapeHatch(t *testing.T) {
+	for name, text := range map[string]string{
+		"pre-compaction": preCompactionMemoryReminder,
+		"exit-save":      exitSavePrompt,
+	} {
+		t.Run(name, func(t *testing.T) {
+			for _, want := range []string{
+				"decisions and their rationale",
+				"gotchas",
+				"how things work",
+				"project facts",
+				"Capture anything durable",
+				"nothing durable is unsaved",
+			} {
+				if !strings.Contains(text, want) {
+					t.Errorf("memory nudge lost recall-bias wording: missing %q in %q", want, text)
+				}
+			}
+		})
+	}
+}
+
 // --- final memory turn on quit ---
 
 // exitReadyModel returns a model that satisfies every exit-save gate:
