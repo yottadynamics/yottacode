@@ -15,22 +15,33 @@ each provider's billing dashboard, the authoritative source for spend.
 ## What `/usage` shows
 
 ```
-session  20260530-153012.482917
-  usage by model:
-    claude-opus-4-7:    265 input, 103,432 output, 22,503,118 cache read, 457,012 cache write
-    claude-haiku-4-5:   1,200 input, 10,712 output, 1,310,484 cache read, 117,933 cache write
-  total tokens  24,504,156
+Usage
 
-rate limits  (live, from last response)
+session      3:30 PM today  (20260530-153012.482917)
+metrics      42 turns · 17 tools · 6 subagents · 2 models
+
+claude-opus-4-7   input         265
+                  output    103,432
+                  cache read 22,503,118
+                  cache write   457,012
+                  ─────────────────────
+                  total     23,063,827
+claude-haiku-4-5  input       1,200
+                  output     10,712
+                  cache read 1,310,484
+                  cache write  117,933
+                  ────────────────────
+                  total      1,440,329
+session total 24,504,156 tokens
+
+rate limits  live, from last response
   tokens    1,824,000 / 2,000,000 remaining · resets in 41s
   requests  3,998 / 4,000 remaining · resets in 41s
 
-today
-  total tokens  213,891
+today        15 sessions · 20.8M tokens
 
-account
-  provider: openai (pay-per-use API key)
-  billing dashboard: https://platform.openai.com/usage — the source of truth for spend
+account      openai (pay-per-use API key)
+             billing → platform.openai.com/usage
 ```
 
 The block renders in an inline overlay below the cmdline (the same
@@ -43,7 +54,13 @@ doesn't cancel a streaming response.
 The per-model breakdown is sorted by total tokens (highest first) and
 reuses the session's `ModelUsage` map. Sessions that mixed providers
 or models (Claude for code review, Gemini for grep) show each model's
-tokens separately.
+tokens separately. Each model renders as a small ledger: input and
+output always appear, cache read/write and reasoning appear only when
+non-zero, and the `session total` line sums all model rows. A lightweight
+`metrics` row shows the current session's assistant turns, tool calls,
+subagents, and model count when those counts are non-zero; one-model
+sessions with only input/output rows skip the per-model `total` separator
+so the explicit `session total` is not repeated back-to-back.
 
 ### Live rate limits
 

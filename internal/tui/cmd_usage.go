@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"sort"
 	"strings"
 	"time"
@@ -54,28 +55,28 @@ func cmdUsage(m Model, _ []string) (Model, tea.Cmd) {
 
 func renderUsagePanel(m Model) string {
 	var b strings.Builder
-	b.WriteString(styleAssistantHeader.Render("usage"))
-	b.WriteByte('\n')
+	b.WriteString(styleSplashTitle.Render("Usage"))
+	b.WriteString("\n\n")
 
 	b.WriteString(renderSessionUsage(m.sess))
-	b.WriteByte('\n')
+	b.WriteString("\n\n")
 
 	if rl := renderRateLimits(m.providerProfile.Provider); rl != "" {
 		b.WriteString(rl)
-		b.WriteByte('\n')
+		b.WriteString("\n\n")
 	}
 
 	if rollup := renderTodayRollup(); rollup != "" {
 		b.WriteString(rollup)
-		b.WriteByte('\n')
+		b.WriteString("\n\n")
 	}
 
 	b.WriteString(renderAccountSection(m))
 
-	b.WriteByte('\n')
-	b.WriteString(styleFooter.Render("press any key to close"))
+	b.WriteString("\n\n")
+	b.WriteString(stylePaletteEmpty.Render("press any key to close"))
 
-	return b.String()
+	return indentContextReport(strings.TrimRight(b.String(), "\n"), "  ")
 }
 
 // renderSessionUsage writes the "session" block: a per-model token
@@ -90,33 +91,96 @@ func renderUsagePanel(m Model) string {
 // get a short placeholder.
 func renderSessionUsage(s *session.Session) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "session  %s\n", s.ID)
+	fmt.Fprintf(&b, "%-13s%s  (%s)\n", "session", formatSessionUsageTime(s.Created), s.ID)
 
 	sub := s.SubagentUsage()
 	if s.TotalUsage.IsZero() && sub.Total.IsZero() {
-		b.WriteString("  no token data yet — records after the next assistant turn\n")
+		b.WriteByte('\n')
+		b.WriteString(stylePaletteEmpty.Render("no token data yet — records after the next assistant turn"))
 		return b.String()
 	}
 
 	models := combinedModelUsage(s, sub)
+	if metrics := renderSessionMetrics(s, len(models)); metrics != "" {
+		b.WriteByte('\n')
+		b.WriteString(metrics)
+		b.WriteByte('\n')
+	}
+	b.WriteByte('\n')
+
 	modelWidth := 0
 	for _, m := range models {
 		modelWidth = max(modelWidth, len(m.Model))
 	}
 
-	b.WriteString("  usage by model:\n")
 	for _, m := range models {
-		b.WriteString("    ")
-		b.WriteString(formatModelUsageLine(m.Model, m.Usage, modelWidth))
+		showModelTotal := len(models) > 1 || usageHasDetailRows(m.Usage)
+		b.WriteString(formatModelUsageBlock(m.Model, m.Usage, modelWidth, showModelTotal))
 		b.WriteByte('\n')
 	}
 
 	var total adapter.Usage
 	total.Add(&s.TotalUsage)
 	total.Add(&sub.Total)
-	fmt.Fprintf(&b, "  total tokens  %s\n", formatInt(totalTokensFor(total)))
+	fmt.Fprintf(&b, "%-13s  %s tokens\n", "session total", formatInt(totalTokensFor(total)))
 
-	return b.String()
+	return strings.TrimRight(b.String(), "\n")
+}
+
+// renderSessionMetrics prints lightweight current-session shape data beside
+// the token ledger. These counts come from the session and subagent index only;
+// they avoid provider calls and stay cheap enough for an always-on /usage row.
+func renderSessionMetrics(s *session.Session, modelCount int) string {
+	if s == nil {
+		return ""
+	}
+	turns, tools := 0, 0
+	for _, msg := range s.Messages {
+		if msg.Role != adapter.RoleAssistant {
+			continue
+		}
+		turns++
+		tools += len(msg.ToolCalls)
+	}
+	parts := make([]string, 0, 4)
+	if turns > 0 {
+		parts = append(parts, fmt.Sprintf("%d %s", turns, usagePluralize("turn", turns)))
+	}
+	if tools > 0 {
+		parts = append(parts, fmt.Sprintf("%d %s", tools, usagePluralize("tool", tools)))
+	}
+	if n := len(s.SubagentTasks); n > 0 {
+		parts = append(parts, fmt.Sprintf("%d %s", n, usagePluralize("subagent", n)))
+	}
+	if modelCount > 1 {
+		parts = append(parts, fmt.Sprintf("%d models", modelCount))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return fmt.Sprintf("%-13s%s", "metrics", strings.Join(parts, " · "))
+}
+
+func usagePluralize(word string, n int) string {
+	if n == 1 {
+		return word
+	}
+	return word + "s"
+}
+
+// formatSessionUsageTime renders the session timestamp in local time for the
+// terminal while keeping the full session id beside it as the durable handle.
+func formatSessionUsageTime(t time.Time) string {
+	if t.IsZero() {
+		return "unknown time"
+	}
+	local := t.Local()
+	label := local.Format("3:04 PM")
+	now := time.Now()
+	if local.Year() == now.Year() && local.YearDay() == now.YearDay() {
+		return label + " today"
+	}
+	return label + " " + local.Format("2006-01-02")
 }
 
 // combinedModelUsage merges the main-thread per-model breakdown with the
@@ -152,27 +216,63 @@ func combinedModelUsage(s *session.Session, sub session.SubagentUsageRollup) []p
 	return out
 }
 
-// formatModelUsageLine produces a single "model: N input, N output,
-// N cache read, N cache write, N reasoning" token line. Columns are
-// suppressed when zero so a vanilla turn doesn't render "0 cache read,
-// 0 cache write".
-func formatModelUsageLine(model string, u adapter.Usage, modelWidth int) string {
-	var parts []string
-	parts = append(parts, fmt.Sprintf("%s input", formatInt(u.InputTokens)))
-	parts = append(parts, fmt.Sprintf("%s output", formatInt(u.OutputTokens)))
+// formatModelUsageBlock renders a per-model ledger. Input/output are always
+// shown; cache and reasoning rows appear only when non-zero so ordinary turns
+// stay compact while cache-heavy sessions remain explainable. The total uses
+// the same non-reasoning basis as the footer and session total because several
+// providers report reasoning as a detail of output tokens rather than an
+// additive bucket.
+func formatModelUsageBlock(model string, u adapter.Usage, modelWidth int, showTotal bool) string {
+	labelWidth := max(modelWidth, len("session total"))
+	metricWidth := 11
+	valueWidth := maxUsageValueWidth(u)
+
+	rows := []usageMetricRow{
+		{"input", u.InputTokens},
+		{"output", u.OutputTokens},
+	}
 	if u.CacheReadTokens > 0 {
-		parts = append(parts, fmt.Sprintf("%s cache read", formatInt(u.CacheReadTokens)))
+		rows = append(rows, usageMetricRow{"cache read", u.CacheReadTokens})
 	}
 	if u.CacheCreationTokens > 0 {
-		parts = append(parts, fmt.Sprintf("%s cache write", formatInt(u.CacheCreationTokens)))
+		rows = append(rows, usageMetricRow{"cache write", u.CacheCreationTokens})
 	}
 	if u.ReasoningTokens > 0 {
-		parts = append(parts, fmt.Sprintf("%s reasoning", formatInt(u.ReasoningTokens)))
+		rows = append(rows, usageMetricRow{"reasoning", u.ReasoningTokens})
 	}
-	// Pad the "model:" label as a unit so the colon hugs each model name
-	// and the token columns still line up under one another.
-	label := model + ":"
-	return fmt.Sprintf("%-*s  %s", modelWidth+1, label, strings.Join(parts, ", "))
+
+	var b strings.Builder
+	for i, row := range rows {
+		label := ""
+		if i == 0 {
+			label = model
+		}
+		fmt.Fprintf(&b, "%-*s  %-*s %*s\n", labelWidth, label, metricWidth, row.label, valueWidth, formatInt(row.value))
+	}
+	if showTotal {
+		fmt.Fprintf(&b, "%-*s  %s\n", labelWidth, "", strings.Repeat("─", metricWidth+1+valueWidth))
+		fmt.Fprintf(&b, "%-*s  %-*s %*s\n", labelWidth, "", metricWidth, "total", valueWidth, formatInt(totalTokensFor(u)))
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+type usageMetricRow struct {
+	label string
+	value int64
+}
+
+func maxUsageValueWidth(u adapter.Usage) int {
+	width := len(formatInt(totalTokensFor(u)))
+	for _, v := range []int64{u.InputTokens, u.OutputTokens, u.CacheReadTokens, u.CacheCreationTokens, u.ReasoningTokens} {
+		if v > 0 {
+			width = max(width, len(formatInt(v)))
+		}
+	}
+	return width
+}
+
+func usageHasDetailRows(u adapter.Usage) bool {
+	return u.CacheReadTokens > 0 || u.CacheCreationTokens > 0 || u.ReasoningTokens > 0
 }
 
 // perModelEntry is one row of the /usage per-model breakdown (highest
@@ -200,8 +300,7 @@ func renderTodayRollup() string {
 	}
 
 	var b strings.Builder
-	b.WriteString("today\n")
-	fmt.Fprintf(&b, "  %d sessions · %s total tokens\n", len(summaries), formatInt(totalTokens))
+	fmt.Fprintf(&b, "%-13s%d sessions · %s tokens", "today", len(summaries), formatTokens(int(totalTokens)))
 	return b.String()
 }
 
@@ -218,7 +317,7 @@ func renderRateLimits(provider adapter.Provider) string {
 		return ""
 	}
 	var b strings.Builder
-	b.WriteString("rate limits  (live, from last response)\n")
+	b.WriteString("rate limits  live, from last response\n")
 	if snap.HasTokens {
 		b.WriteString("  ")
 		b.WriteString(formatRateLimitLine("tokens", snap.TokensRemaining, snap.TokensLimit, snap.TokensReset))
@@ -263,25 +362,26 @@ func formatRateLimitLine(label string, remaining, limit int64, reset time.Time) 
 // it links the billing dashboard.
 func renderAccountSection(m Model) string {
 	var b strings.Builder
-	b.WriteString("account\n")
 
 	provider := m.providerProfile.Provider
 	switch {
 	case provider == adapter.ProviderOpenAIAuth:
 		b.WriteString(renderOpenAIAuthAccount(m.parentCtx))
 	case provider == adapter.ProviderCopilot:
-		b.WriteString("  copilot (github subscription) — token counts only; no public quota endpoint\n")
+		fmt.Fprintf(&b, "%-13s%s\n", "account", "copilot (github subscription)")
+		fmt.Fprintf(&b, "%-13s%s\n", "", "token counts only; no public quota endpoint")
 	case m.providerProfile.SupportsUsageReporting:
 		// Pay-per-use cloud.
-		fmt.Fprintf(&b, "  provider: %s (pay-per-use API key)\n", provider)
+		fmt.Fprintf(&b, "%-13s%s (pay-per-use API key)\n", "account", provider)
 	default:
-		b.WriteString("  free / local provider — no per-request cost tracked\n")
+		fmt.Fprintf(&b, "%-13s%s\n", "account", "free / local provider")
+		fmt.Fprintf(&b, "%-13s%s\n", "", "no per-request cost tracked")
 	}
 
 	if url := cost.BillingDashboardURL(provider); url != "" {
-		fmt.Fprintf(&b, "  billing dashboard: %s — the source of truth for spend\n", url)
+		fmt.Fprintf(&b, "%-13sbilling → %s\n", "", shortUsageURL(url))
 	}
-	return b.String()
+	return strings.TrimRight(b.String(), "\n")
 }
 
 // renderOpenAIAuthAccount handles the ChatGPT-subscription branch.
@@ -293,29 +393,39 @@ func renderOpenAIAuthAccount(ctx context.Context) string {
 	var b strings.Builder
 	acct := adapter.ProbeOpenAIAuthAccount(ctx)
 	memo := adapter.LastOpenAIAuthRateLimit()
+	label := "openai-auth (chatgpt subscription)"
 
 	switch {
 	case acct != nil && acct.Plan != "" && memo != nil && !memo.ResetsAt.IsZero():
-		fmt.Fprintf(&b, "  openai-auth (chatgpt %s plan) — resets in %s\n",
-			acct.Plan, humanizeUsageDuration(time.Until(memo.ResetsAt)))
+		fmt.Fprintf(&b, "%-13sopenai-auth (chatgpt %s plan)\n", "account", acct.Plan)
+		fmt.Fprintf(&b, "%-13sresets in %s\n", "", humanizeUsageDuration(time.Until(memo.ResetsAt)))
 	case acct != nil && acct.Plan != "":
-		fmt.Fprintf(&b, "  openai-auth (chatgpt %s plan)\n", acct.Plan)
+		fmt.Fprintf(&b, "%-13sopenai-auth (chatgpt %s plan)\n", "account", acct.Plan)
 	case memo != nil && memo.PlanType != "" && !memo.ResetsAt.IsZero():
-		fmt.Fprintf(&b, "  openai-auth (chatgpt %s plan) — resets in %s\n",
-			memo.PlanType, humanizeUsageDuration(time.Until(memo.ResetsAt)))
+		fmt.Fprintf(&b, "%-13sopenai-auth (chatgpt %s plan)\n", "account", memo.PlanType)
+		fmt.Fprintf(&b, "%-13sresets in %s\n", "", humanizeUsageDuration(time.Until(memo.ResetsAt)))
 	case memo != nil && memo.PlanType != "":
-		fmt.Fprintf(&b, "  openai-auth (chatgpt %s plan)\n", memo.PlanType)
+		fmt.Fprintf(&b, "%-13sopenai-auth (chatgpt %s plan)\n", "account", memo.PlanType)
 	case memo != nil && !memo.ResetsAt.IsZero():
-		fmt.Fprintf(&b, "  openai-auth (chatgpt subscription) — resets in %s\n",
-			humanizeUsageDuration(time.Until(memo.ResetsAt)))
+		fmt.Fprintf(&b, "%-13s%s\n", "account", label)
+		fmt.Fprintf(&b, "%-13sresets in %s\n", "", humanizeUsageDuration(time.Until(memo.ResetsAt)))
 	default:
-		b.WriteString("  openai-auth (chatgpt subscription) — token counts only; quota visible only after a 429\n")
+		fmt.Fprintf(&b, "%-13s%s\n", "account", label)
+		fmt.Fprintf(&b, "%-13s%s\n", "", "quota shown only after a 429")
 	}
 	if acct != nil && acct.Email != "" {
-		fmt.Fprintf(&b, "  signed in as: %s\n", acct.Email)
+		fmt.Fprintf(&b, "%-13ssigned in as %s\n", "", acct.Email)
 	}
-	b.WriteString("  no per-request cost (subscription)\n")
+	fmt.Fprintf(&b, "%-13s✓ no per-request cost — subscription\n", "")
 	return b.String()
+}
+
+func shortUsageURL(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return raw
+	}
+	return u.Host + u.EscapedPath()
 }
 
 // totalTokensFor is the per-model sort key for the breakdown table:

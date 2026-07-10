@@ -89,7 +89,11 @@ func (c *CallbackServer) Start() error {
 	mux := http.NewServeMux()
 	mux.HandleFunc(c.Path, c.handle)
 	c.server = &http.Server{Handler: mux}
-	go func() { _ = c.server.Serve(l) }()
+	// Capture the server pointer before the goroutine starts. Close may run
+	// immediately in tests or failed browser-launch paths and nil c.server;
+	// the goroutine must still call Serve on the server it was created with.
+	server := c.server
+	go func() { _ = server.Serve(l) }()
 	return nil
 }
 
