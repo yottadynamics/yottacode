@@ -35,7 +35,7 @@ func TestCmdUsage_OpensOverlayNotHistory(t *testing.T) {
 	}
 
 	v := m.View()
-	if !strings.Contains(v, "usage") {
+	if !strings.Contains(v, "Usage") {
 		t.Errorf("View should render the usage overlay: %q", v)
 	}
 }
@@ -82,14 +82,20 @@ func TestRenderSessionUsage_TokenBreakdown(t *testing.T) {
 	got := renderSessionUsage(s)
 
 	for _, want := range []string{
-		"session  20260528-120000.000000",
-		"usage by model:",
-		"claude-sonnet-4-5:",
-		"12,403 input",
-		"3,182 output",
-		"44,210 cache read",
-		"1,920 cache write",
-		"total tokens  61,715", // 12,403 + 3,182 + 1,920 + 44,210
+		"session",
+		"20260528-120000.000000",
+		"claude-sonnet-4-5",
+		"input",
+		"12,403",
+		"output",
+		"3,182",
+		"cache read",
+		"44,210",
+		"cache write",
+		"1,920",
+		"total",
+		"session total",
+		"61,715 tokens", // 12,403 + 3,182 + 1,920 + 44,210
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("missing substring %q in:\n%s", want, got)
@@ -97,6 +103,46 @@ func TestRenderSessionUsage_TokenBreakdown(t *testing.T) {
 	}
 	if strings.Contains(got, "$") {
 		t.Errorf("/usage must not show a dollar figure; got:\n%s", got)
+	}
+}
+
+// TestRenderSessionUsage_MetricsAndSimpleSingleModelTotal keeps the polished
+// /usage layout from repeating a model total when the session has a single
+// plain input/output model row; the explicit session total is the useful
+// summary. It also locks the lightweight metrics row.
+func TestRenderSessionUsage_MetricsAndSimpleSingleModelTotal(t *testing.T) {
+	s := &session.Session{
+		ID:         "20260710-003122.173234",
+		Model:      "gpt-5.5",
+		TotalUsage: adapter.Usage{InputTokens: 33_782, OutputTokens: 66},
+		ModelUsage: map[string]adapter.Usage{
+			"gpt-5.5": {InputTokens: 33_782, OutputTokens: 66},
+		},
+		Messages: []adapter.Message{
+			{Role: adapter.RoleAssistant, ToolCalls: []adapter.ToolCall{{Name: "read_file"}, {Name: "grep"}}},
+			{Role: adapter.RoleAssistant},
+		},
+		SubagentTasks: []subagents.TaskRecord{{ID: "sub1"}},
+	}
+
+	got := renderSessionUsage(s)
+	for _, want := range []string{
+		"metrics",
+		"2 turns",
+		"2 tools",
+		"1 subagent",
+		"gpt-5.5",
+		"33,782",
+		"66",
+		"session total",
+		"33,848 tokens",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing substring %q in:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "────────────────") || strings.Contains(got, "total       33,848") {
+		t.Errorf("single plain model should not repeat a model total before session total; got:\n%s", got)
 	}
 }
 
@@ -120,23 +166,24 @@ func TestRenderSessionUsage_FoldsSubagents(t *testing.T) {
 	got := renderSessionUsage(s)
 
 	for _, want := range []string{
-		"usage by model:",
 		// sonnet row folds main (10,000/2,000) + inherited subagent (3,000/300)
-		"claude-sonnet-4-5:",
-		"13,000 input",
-		"2,300 output",
+		"claude-sonnet-4-5",
+		"13,000",
+		"2,300",
 		// haiku row is the routed subagent
-		"claude-haiku-4-5:",
-		"5,000 input",
+		"claude-haiku-4-5",
+		"5,000",
 		// total: 12,000 (main) + 8,800 (subagents) = 20,800
-		"total tokens  20,800",
+		"session total",
+		"20,800 tokens",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("missing substring %q in:\n%s", want, got)
 		}
 	}
-	// Folded, not a separate section: no "subagents" header, no qualifier.
-	if strings.Contains(got, "subagents") {
+	// Folded, not a separate section: metrics may mention the subagent count,
+	// but there should not be a standalone subagents spending block.
+	if strings.Contains(got, "subagents\n") {
 		t.Errorf("subagent spend must be folded in, not shown as a section; got:\n%s", got)
 	}
 	if strings.Contains(got, "$") {
