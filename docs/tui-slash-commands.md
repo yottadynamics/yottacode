@@ -36,6 +36,7 @@ Type `/` in the TUI to open the slash-command palette. The palette filters as yo
 | `/experimental` | — | List experimental features and which are enabled this session (`dispatch`, …). `background_subagents` has graduated to GA — the flag is now a recognized no-op. Read-only; enabling happens via `--experimental <name>`, `YOTTACODE_EXPERIMENTAL`, or the `[experimental]` config block — see [experimental.md](experimental.md). |
 | `/mcp` | `[logs <name>]` | List configured MCP servers (status + tool count), or dump a server's recent stderr with `logs <name>`. See [mcp.md](mcp.md). |
 | `/theme` | `[set <name> \| <name>]` | Change the theme — opens the picker with arrow-key live preview across every registered palette (`terminal`, `catppuccin`, `dimmed`, `gruvbox`, `high-contrast`, `low-contrast`, `no-color`, `nord`, `one-dark`, `solarized-dark`, `tokyo-night`). Enter applies and persists to `~/.yottacode/config.toml`; Esc reverts. Scriptable shortcuts: `/theme set <name>` and `/theme <name>` bypass the picker. See [themes.md](themes.md). |
+| `/loop` | `[interval] <prompt>` | Repeat a prompt or slash command on a repeat. `/loop 5m <prompt>` fires every 5 minutes; `/loop /git-review-pr` re-runs when the previous turn ends; `/loop 3x <prompt>` runs three times then stops; `/loop stop` (or `Esc` / `Ctrl+C`) ends it. Each iteration is an ordinary turn — output streams to scrollback and is saved to the session, and the standard per-tool approval gates apply. In-memory only (ends on quit). See [Recurring loops](#recurring-loops-loop). |
 
 Beyond the built-ins, you can ship your own slash commands by dropping markdown files in a `commands/` directory — see [Custom commands](#custom-commands).
 
@@ -483,6 +484,31 @@ Press **Esc** or **Ctrl+C** while a turn is running to cancel without submitting
 
 Slash commands typed mid-turn (e.g. `/clear`, `/model`) follow the same rule they always have — they cancel the turn and execute immediately. Slash commands that the codebase marks `PreservesTurn=true` (`/subagents`, `/help`) inspect without cancelling. Either way, a slash command mid-turn discards any plain-text message that was queued by an earlier Enter, so a `/clear` doesn't resurrect a stale follow-up message into a wiped session.
 
+## Recurring loops (`/loop`)
+
+`/loop` re-runs a prompt or slash command on a repeat until you stop it. It's a **scheduler over the normal turn loop, not a background worker** — it spawns no goroutine of its own, never runs more than one turn at a time, and each iteration is an ordinary turn (output streams to scrollback and is saved to the session; the standard per-tool approval gates apply). There is no separate "job" store — a loop iteration is just a turn.
+
+Forms:
+
+| Form | Behavior |
+|---|---|
+| `/loop 5m <prompt>` | Every 5 minutes, dispatch `<prompt>`. Any Go duration works (`30s`, `5m`, `1h`); the minimum interval is 5s. |
+| `/loop 5m /git-review-pr` | Run a slash command on the interval instead of a prose prompt. |
+| `/loop <prompt>` | Self-paced: re-fire the moment the previous turn ends — a "keep refining until done" loop. |
+| `/loop 3x <prompt>` | Bounded: run three iterations, then disarm. Combine with an interval: `/loop 30s 3x <prompt>`. |
+| `/loop stop` | Disarm the loop (also `Esc` or `Ctrl+C` while a loop is armed). |
+| `/loop` | Show the current loop's status. |
+
+Behavior notes:
+
+- **One at a time.** If an iteration's turn is still running when the next interval fires, that tick is skipped (not queued) — cadence holds without stacking turns.
+- **Always visible.** While a loop is armed, a `loop · every 5m · /loop stop to end` banner sits above the cmdline (like the auto/plan/yolo banners), so you can't forget one is running. Bounded loops also print a `[loop] iteration 2/3` line each cycle.
+- **Stopping.** `Esc`, `Ctrl+C`, or `/loop stop` disarms the loop; a turn that's mid-flight is cancelled too. A first `Ctrl+C` stops an armed loop rather than quitting yottacode. Starting a fresh session with `/clear`, or switching sessions, also disarms the loop (it was armed against that conversation).
+- **Permissions are not bypassed.** An iteration that hits an un-allowlisted git command (or any gated tool) pauses on the normal approval prompt and waits — nothing runs unattended that wouldn't prompt interactively. To make a loop hands-off, pick "always allow" once, add an `.yottacode/permissions.json` allow rule, or run under `--yolo`.
+- **In-memory only.** The loop lives on the session in memory; quitting yottacode ends it (the output already streamed is still saved). It does not persist across restarts.
+- **Guarded payloads.** `/loop`, `/quit`, and `/clear` are refused as payloads — a loop must not re-arm, exit, or reset the very session it runs in — and an unknown slash command is rejected at arm time rather than looping "unknown command" forever.
+- **Self-paced needs a turn.** A self-paced (no-interval) loop whose payload starts no turn — e.g. an informational slash like `/context` — disarms itself rather than spin. Add an interval for those.
+
 ## Palette behavior
 
 - Choosing a command with no args executes it immediately.
@@ -493,9 +519,9 @@ Slash commands typed mid-turn (e.g. `/clear`, `/model`) follow the same rule the
 
 - `Enter` submits (mid-turn: interrupt and queue the new message)
 - `Ctrl+J` inserts a newline
-- `Esc` cancels the current turn (alias for Ctrl+C, mirrors Claude Code)
+- `Esc` cancels the current turn (alias for Ctrl+C, mirrors Claude Code); also stops an armed `/loop`
 - `Esc Esc` (idle, tapped within 500ms) opens the `/checkpoints` picker
-- `Ctrl+C` cancels the current turn; quits when no turn is running
+- `Ctrl+C` cancels the current turn; stops an armed `/loop`; quits when neither is active
 - `Ctrl+D` exits when input is empty
 - `?` opens the cheatsheet when input is empty
 - `Shift+Tab` cycles agent modes: normal → auto → plan → normal

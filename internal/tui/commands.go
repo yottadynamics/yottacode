@@ -84,6 +84,7 @@ func init() {
 		{Name: "init", Help: "draft .yottacode/YOTTACODE.md from the current repo", Run: cmdInit},
 		{Name: "permissions", Help: "show where permissions are configured", Run: cmdPermissions, PreservesTurn: true},
 		{Name: "theme", Help: "change the theme", Run: cmdThemes, PreservesTurn: true},
+		{Name: "loop", Args: "[interval] <prompt>", Help: "repeat a prompt or command on an interval or self-paced (also Nx count); 'stop' to end", Run: cmdLoop, PreservesTurn: true},
 
 		// Git workflow.
 		// Palette order mirrors the daily flow: commit → push →
@@ -159,10 +160,10 @@ func (m *Model) findSlash(name string) *slashCommand {
 	return nil
 }
 
-// runSlash dispatches based on an input line ("/foo arg1 arg2").
+// runSlash dispatches based on an input line ("/foo arg1 arg2"), recording
+// it in input history first. This is the user-typed entry point.
 func (m Model) runSlash(input string) (Model, tea.Cmd) {
-	fields := strings.Fields(input)
-	if len(fields) == 0 || !strings.HasPrefix(fields[0], "/") {
+	if fields := strings.Fields(input); len(fields) == 0 || !strings.HasPrefix(fields[0], "/") {
 		return m, nil
 	}
 	// Record the slash invocation in input history so ↑ recalls it on
@@ -171,6 +172,18 @@ func (m Model) runSlash(input string) (Model, tea.Cmd) {
 	// before dispatch covers unknown commands (typos) as well — the
 	// user usually wants to recall and fix them.
 	m.recordHistory(input)
+	return m.dispatchSlash(input)
+}
+
+// dispatchSlash resolves and runs a "/foo arg1 arg2" line WITHOUT recording
+// it in input history. runSlash wraps this for user-typed commands; the
+// /loop scheduler calls it directly so a repeating loop doesn't stuff the
+// same command into ↑-history on every iteration.
+func (m Model) dispatchSlash(input string) (Model, tea.Cmd) {
+	fields := strings.Fields(input)
+	if len(fields) == 0 || !strings.HasPrefix(fields[0], "/") {
+		return m, nil
+	}
 	name := strings.TrimPrefix(fields[0], "/")
 	cmd := m.findSlash(name)
 	if cmd == nil {
@@ -1299,6 +1312,10 @@ func cmdClear(m Model, _ []string) (Model, tea.Cmd) {
 		m.queuePrintln("")
 	}
 	m.appendLine(styleAuto.Render(fmt.Sprintf("[clear] new session %s", newSess.ID)))
+	// A /clear starts a fresh conversation, so an armed /loop from the old
+	// session must not bleed into it (and its arm line was just wiped, so
+	// the user couldn't see it anyway). Disarm and drop its pending tick.
+	m.disarmLoop("[loop] stopped — session cleared")
 	return m, nil
 }
 

@@ -547,6 +547,12 @@ type Model struct {
 	// falls back to the old cancel+resubmit path.
 	userMsgCh chan string
 
+	// loop holds the recurring /loop command's control state — whether a
+	// repeat is armed, what it re-dispatches, and its generation counter.
+	// Mutated only from the Update goroutine, so it needs no mutex. See
+	// cmd_loop.go.
+	loop loopState
+
 	// paragraphStart tracks blank-line boundaries so the first line
 	// of each new prose paragraph gets 2 extra spaces of indent.
 	paragraphStart bool
@@ -812,6 +818,37 @@ func cursorBlinkCmd() tea.Cmd {
 	return tea.Tick(cursorBlinkInterval, func(time.Time) tea.Msg {
 		return cursorBlinkMsg{}
 	})
+}
+
+// loopState drives the /loop recurring command. When active, each
+// iteration re-dispatches payload: interval>0 loops are driven by
+// loopTickMsg on a tea.Tick heartbeat; interval==0 (self-paced) loops
+// re-fire from the turnEndedMsg handler when the previous turn unwinds.
+// gen invalidates ticks scheduled before a stop/restart (the stale-tick
+// guard). All fields are touched only from the Update goroutine.
+type loopState struct {
+	active    bool          // a repeat is armed
+	payload   string        // prose prompt OR a "/cmd args" line
+	isSlash   bool          // route payload through runSlash, not startTurnWithDisplay
+	interval  time.Duration // 0 => self-paced (re-fire on turn end)
+	remaining int           // >0 bounded (Nx), decremented each fire; -1 unbounded
+	total     int           // original bounded count (0 for unbounded); drives K/N progress
+	gen       int           // generation; a loopTickMsg with a stale gen is dropped
+}
+
+// loopTickMsg is the /loop heartbeat for interval loops. gen is the loop
+// generation this tick was scheduled under; the handler drops the tick
+// when it no longer matches m.loop.gen (loop stopped or replaced).
+type loopTickMsg struct{ gen int }
+
+// loopMinInterval is the sanity floor for /loop intervals: faster than
+// this hammers the provider and reads as a runaway.
+const loopMinInterval = 5 * time.Second
+
+// loopTickCmd schedules the next /loop heartbeat, stamping it with the
+// generation so a stale tick from a stopped loop can be dropped.
+func loopTickCmd(d time.Duration, gen int) tea.Cmd {
+	return tea.Tick(d, func(time.Time) tea.Msg { return loopTickMsg{gen: gen} })
 }
 
 // New builds a Model wired with the given config.
@@ -1410,6 +1447,10 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.turnCancel()
 				}
 				m.pendingInputAfterTurn = ""
+				// Esc/Ctrl+C also disarms a running /loop — otherwise the
+				// turn cancel above fires turnEndedMsg and a self-paced loop
+				// would immediately re-fire, defeating the stop.
+				m.disarmLoop("[loop] stopped")
 				// Drain any queued-but-undelivered append message.
 				select {
 				case <-m.userMsgCh:
@@ -1857,6 +1898,13 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case tea.KeyCtrlC:
 			if m.turnActive && m.turnCancel != nil {
 				m.turnCancel()
+				m.disarmLoop("[loop] stopped")
+				return m, nil
+			}
+			// A first Ctrl+C stops an armed /loop instead of quitting; a
+			// second (loop now disarmed) quits as usual.
+			if m.loop.active {
+				m.disarmLoop("[loop] stopped")
 				return m, nil
 			}
 			// Ctrl+C is the "get me out NOW" gesture — always an
@@ -1867,6 +1915,12 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// memory turn when warranted).
 			return maybeStartExitSaveTurn(m)
 		case tea.KeyEsc:
+			// A single Esc stops an armed /loop, before the esc-esc chord
+			// gets a chance to open /checkpoints.
+			if m.loop.active {
+				m.disarmLoop("[loop] stopped")
+				return m, nil
+			}
 			// Esc-Esc within escChordWindow opens the /checkpoints picker
 			// — mirrors Claude Code's double-escape. Single Esc has no
 			// other meaning here (no overlay, no turn, no palette — those
@@ -2009,6 +2063,29 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// the terminal owns it.
 		return m, nil
 
+	case loopTickMsg:
+		// The /loop heartbeat (interval loops only). Drop stale ticks from
+		// a stopped or replaced loop, and any tick that outlived its loop.
+		if !m.loop.active || msg.gen != m.loop.gen {
+			return m, nil
+		}
+		// A turn (or summarize) is still running — skip this cycle and
+		// re-arm the next interval so cadence holds without stacking turns.
+		if m.turnActive || m.summarizing {
+			return m, loopTickCmd(m.loop.interval, m.loop.gen)
+		}
+		next, tickCmd := m.fireLoopIteration()
+		m = next
+		var loopCmds []tea.Cmd
+		if tickCmd != nil {
+			loopCmds = append(loopCmds, tickCmd)
+		}
+		// Re-arm unless the final bounded iteration just disarmed the loop.
+		if m.loop.active && m.loop.interval > 0 {
+			loopCmds = append(loopCmds, loopTickCmd(m.loop.interval, m.loop.gen))
+		}
+		return m, tea.Batch(loopCmds...)
+
 	case turnEndedMsg:
 		m.turnActive = false
 		m.clearPendingDecisionUI()
@@ -2098,6 +2175,18 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if len(m.pendingSubagentWakes) > 0 && !m.summarizing {
 			next, cmd := m.startSubagentWakeTurn()
 			return next, cmd
+		}
+		// Self-paced /loop: the previous turn finished, so re-fire the next
+		// iteration. Gate on ctxCmd==nil so a pending auto-summarize/watermark
+		// isn't starved — after compaction runs, summaryDoneMsg re-fires the
+		// loop via the same helper so it doesn't silently stall.
+		if ctxCmd == nil {
+			if next, cmd, fired := m.refireSelfPacedLoop(); fired {
+				m = next
+				if cmd != nil {
+					return m, cmd
+				}
+			}
 		}
 		if ctxCmd != nil {
 			return m, ctxCmd
@@ -2281,6 +2370,16 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// saved and recall-indexed so the two flows cannot race writes.
 			next, cmd := m.startSubagentWakeTurn()
 			return next, cmd
+		}
+		// A self-paced /loop pauses across an auto-summarize (turnEndedMsg
+		// returns the summarize cmd instead of firing). Now that compaction
+		// is done and the model is idle, re-fire it — otherwise the loop
+		// would silently stall with its banner still showing "armed".
+		if next, cmd, fired := m.refireSelfPacedLoop(); fired {
+			m = next
+			if cmd != nil {
+				return m, cmd
+			}
 		}
 		return m, nil
 	}
@@ -2483,6 +2582,13 @@ func (m Model) View() string {
 			parts = append(parts, renderAutoModeBanner(yoloOn, m.width))
 		case yoloOn:
 			parts = append(parts, renderYoloStandaloneBanner(m.width))
+		}
+		// Loop banner is additive — a /loop can be armed in any mode, so it
+		// stacks below the mode banner (if any) rather than replacing it.
+		// Suppressed with the mode banners while a palette owns the
+		// above-cmdline space.
+		if m.loop.active && !m.paletteOpen && !m.filePaletteOpen {
+			parts = append(parts, renderLoopBanner(m.loop, m.width))
 		}
 		parts = append(parts, m.renderInputFrame())
 	}

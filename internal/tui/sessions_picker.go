@@ -341,6 +341,9 @@ func (m Model) resumeSession(id string, summarized bool) (Model, tea.Cmd) {
 	rebuildTranscript(&m)
 	m.refreshContextTokens()
 	m.appendLine(styleAuto.Render(fmt.Sprintf("[resume] loaded %s (%d msgs)", loaded.ID, len(loaded.Messages))))
+	// Switching sessions must not carry an armed /loop into the loaded one —
+	// it was armed against the old conversation's context.
+	m.disarmLoop("[loop] stopped — switched session")
 	// A resumed transcript can already sit past the auto threshold —
 	// run the watermark check now so an over-window session heals
 	// before the first send instead of after a context-overflow

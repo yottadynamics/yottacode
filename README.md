@@ -111,6 +111,7 @@ Type `/` in the TUI to open the command palette — it filters as you type and s
 | `/init` | Draft `.yottacode/YOTTACODE.md` from the current repo |
 | `/permissions` | Show where permissions are configured |
 | `/max-iterations <N>` | Cap tool-call iterations per turn (default 50; auto mode doubles) |
+| `/loop [interval] <prompt>` | Repeat a prompt or slash command on an interval or self-paced (`5m`, `3x`, `/loop stop`) |
 | `/plan` | Toggle plan mode (`/plan list` resumes a saved plan; also `Shift+Tab`) |
 | `/subagents` | Open the subagents picker — view, stop, or list agent types |
 | `/skills` | Open the skills menu (`install`, `show`, `uninstall`, `check`, `update`) |
