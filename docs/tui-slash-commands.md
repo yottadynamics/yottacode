@@ -36,7 +36,7 @@ Type `/` in the TUI to open the slash-command palette. The palette filters as yo
 | `/experimental` | — | List experimental features and which are enabled this session (`dispatch`, …). `background_subagents` has graduated to GA — the flag is now a recognized no-op. Read-only; enabling happens via `--experimental <name>`, `YOTTACODE_EXPERIMENTAL`, or the `[experimental]` config block — see [experimental.md](experimental.md). |
 | `/mcp` | `[logs <name>]` | List configured MCP servers (status + tool count), or dump a server's recent stderr with `logs <name>`. See [mcp.md](mcp.md). |
 | `/theme` | `[set <name> \| <name>]` | Change the theme — opens the picker with arrow-key live preview across every registered palette (`terminal`, `catppuccin`, `dimmed`, `gruvbox`, `high-contrast`, `low-contrast`, `no-color`, `nord`, `one-dark`, `solarized-dark`, `tokyo-night`). Enter applies and persists to `~/.yottacode/config.toml`; Esc reverts. Scriptable shortcuts: `/theme set <name>` and `/theme <name>` bypass the picker. See [themes.md](themes.md). |
-| `/loop` | `[interval] <prompt>` | Repeat a prompt or slash command on a repeat. `/loop 5m <prompt>` fires every 5 minutes; `/loop /git-review-pr` re-runs when the previous turn ends; `/loop 3x <prompt>` runs three times then stops; `/loop stop` (or `Esc` / `Ctrl+C`) ends it. Each iteration is an ordinary turn — output streams to scrollback and is saved to the session, and the standard per-tool approval gates apply. In-memory only (ends on quit). See [Recurring loops](#recurring-loops-loop). |
+| `/loop` | `<interval> [Nx] <prompt>` | Repeat a prompt or slash command on an explicit interval. `/loop 5m <prompt>` fires every 5 minutes; `/loop 30s /context` runs a slash command every 30 seconds; `/loop 3x <prompt>` is rejected because the interval is required; `/loop stop` (or `Esc` / `Ctrl+C`) ends it. Each iteration is an ordinary turn — output streams to scrollback and is saved to the session, and the standard per-tool approval gates apply. In-memory only (ends on quit). See [Recurring loops](#recurring-loops-loop). |
 
 Beyond the built-ins, you can ship your own slash commands by dropping markdown files in a `commands/` directory — see [Custom commands](#custom-commands).
 
@@ -486,28 +486,42 @@ Slash commands typed mid-turn (e.g. `/clear`, `/model`) follow the same rule the
 
 ## Recurring loops (`/loop`)
 
-`/loop` re-runs a prompt or slash command on a repeat until you stop it. It's a **scheduler over the normal turn loop, not a background worker** — it spawns no goroutine of its own, never runs more than one turn at a time, and each iteration is an ordinary turn (output streams to scrollback and is saved to the session; the standard per-tool approval gates apply). There is no separate "job" store — a loop iteration is just a turn.
+`/loop` re-runs a prompt or slash command on an explicit interval until you stop it or it expires. It's a **scheduler over the normal turn loop, not a cloud/background worker** — it spawns no durable job, never runs more than one agent turn at a time, and each iteration is an ordinary turn (output streams to scrollback and is saved to the session; the standard per-tool approval gates apply). Multiple loops can be active in one terminal session, each with a `loop-...` ID. Loops are local/in-memory: quitting yottacode stops them, and graceful exit shows a warning first.
 
 Forms:
 
 | Form | Behavior |
 |---|---|
 | `/loop 5m <prompt>` | Every 5 minutes, dispatch `<prompt>`. Any Go duration works (`30s`, `5m`, `1h`); the minimum interval is 5s. |
-| `/loop 5m /git-review-pr` | Run a slash command on the interval instead of a prose prompt. |
-| `/loop <prompt>` | Self-paced: re-fire the moment the previous turn ends — a "keep refining until done" loop. |
-| `/loop 3x <prompt>` | Bounded: run three iterations, then disarm. Combine with an interval: `/loop 30s 3x <prompt>`. |
-| `/loop stop` | Disarm the loop (also `Esc` or `Ctrl+C` while a loop is armed). |
-| `/loop` | Show the current loop's status. |
+| `/loop 2m check current PR CI and stop when all checks are green` | Run a prose agent turn on an interval. Useful for polling CI or external state and stopping once the condition is met. |
+| `/loop 30s /context` | Run a slash command on the interval instead of a prose prompt. |
+| `/loop 30s 3x <prompt>` | Bounded: run three iterations, then disarm. |
+| `/loop stop <id>` | Disarm one loop by ID, e.g. `/loop stop loop-a1b2c3`. |
+| `/loop stop all` | Disarm every active loop. |
+| `/loop` | Show active loop IDs, intervals, remaining count, expiry, and payloads. |
 
 Behavior notes:
 
-- **One at a time.** If an iteration's turn is still running when the next interval fires, that tick is skipped (not queued) — cadence holds without stacking turns.
-- **Always visible.** While a loop is armed, a `loop · every 5m · /loop stop to end` banner sits above the cmdline (like the auto/plan/yolo banners), so you can't forget one is running. Bounded loops also print a `[loop] iteration 2/3` line each cycle.
-- **Stopping.** `Esc`, `Ctrl+C`, or `/loop stop` disarms the loop; a turn that's mid-flight is cancelled too. A first `Ctrl+C` stops an armed loop rather than quitting yottacode. Starting a fresh session with `/clear`, or switching sessions, also disarms the loop (it was armed against that conversation).
+- **One agent turn at a time.** If an iteration's turn is still running when another loop's interval fires, that tick is skipped (not queued) and that loop re-arms its next interval — cadence holds without stacking turns.
+- **Multiple local loops.** A terminal session can have multiple active loops. Each loop gets a `loop-...` ID; use `/loop` to list them. Loops are in-memory only and stop on quit, `/clear`, or session switch.
+- **Default expiry.** Every loop auto-expires after 5 days. This is a safety cap for local loops, not durable cloud scheduling.
+- **Always visible.** While loops are armed, a `loop · loop-a1b2c3 · every 5m` or `loops · 3 active` banner sits above the cmdline (like the auto/plan/yolo banners), so you can't forget one is running. Bounded loops also print a `[loop] loop-a1b2c3 iteration 2/3` line each cycle.
+- **Stopping.** Use `/loop stop <id>` to stop one loop, `/loop stop all` to stop every loop, or `/loop stop` when exactly one loop is active. `Esc` or a first `Ctrl+C` also stops all active loops; if a turn is mid-flight it is cancelled too. Graceful `/quit` or `Ctrl+D` warns before stopping active loops.
 - **Permissions are not bypassed.** An iteration that hits an un-allowlisted git command (or any gated tool) pauses on the normal approval prompt and waits — nothing runs unattended that wouldn't prompt interactively. To make a loop hands-off, pick "always allow" once, add an `.yottacode/permissions.json` allow rule, or run under `--yolo`.
 - **In-memory only.** The loop lives on the session in memory; quitting yottacode ends it (the output already streamed is still saved). It does not persist across restarts.
 - **Guarded payloads.** `/loop`, `/quit`, and `/clear` are refused as payloads — a loop must not re-arm, exit, or reset the very session it runs in — and an unknown slash command is rejected at arm time rather than looping "unknown command" forever.
-- **Self-paced needs a turn.** A self-paced (no-interval) loop whose payload starts no turn — e.g. an informational slash like `/context` — disarms itself rather than spin. Add an interval for those.
+- **Payloads that start no turn.** Interval prose loops disarm when the prose can't start an agent turn, such as when no provider is configured. Interval slash loops may be informational and are allowed to repeat.
+- **No background handoff.** yottacode does not move local loops to a background/cloud scheduler on exit. If loops are active, exit shows the loops that will stop and asks whether to exit anyway or stay.
+
+Examples:
+
+| Use case | Command | Notes |
+|---|---|---|
+| Watch CI until it settles | `/loop 2m check current PR CI and stop when all checks are green` | Runs a normal agent turn every 2 minutes. The agent can inspect the current PR/checks, explain failures, and stop once the condition is satisfied. |
+| Keep nudging on a task at a safe cadence | `/loop 2m keep fixing the current test failure, run focused tests, and stop when green` | Each iteration starts on the interval only if the prior turn is idle. Stop one loop with `/loop stop <id>` or all loops with `/loop stop all`. |
+| Poll status without starting an agent turn | `/loop 30s /context` | Interval slash commands can be informational/status checks and are allowed to repeat. |
+| Run a bounded check | `/loop 30s 3x /git-review-pr` | Runs at most three iterations, then disarms automatically. |
+| Periodically ask for a lightweight repo health check | `/loop 10m check git status, summarize risky changes, and do not edit files` | Use prose when you want an agent turn. Permission prompts still gate tools; add allow rules only for commands you intentionally want hands-off. |
 
 ## Palette behavior
 

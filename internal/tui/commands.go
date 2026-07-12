@@ -84,7 +84,7 @@ func init() {
 		{Name: "init", Help: "draft .yottacode/YOTTACODE.md from the current repo", Run: cmdInit},
 		{Name: "permissions", Help: "show where permissions are configured", Run: cmdPermissions, PreservesTurn: true},
 		{Name: "theme", Help: "change the theme", Run: cmdThemes, PreservesTurn: true},
-		{Name: "loop", Args: "[interval] <prompt>", Help: "repeat a prompt or command on an interval or self-paced (also Nx count); 'stop' to end", Run: cmdLoop, PreservesTurn: true},
+		{Name: "loop", Args: "<dur> [Nx] <prompt>", Help: "repeat on interval; stop <id> or stop all", Run: cmdLoop, PreservesTurn: true},
 
 		// Git workflow.
 		// Palette order mirrors the daily flow: commit → push →
@@ -358,7 +358,7 @@ func cmdQuit(m Model, _ []string) (Model, tea.Cmd) {
 	// Graceful exit: give the model one final turn to persist durable
 	// memories before the session context is gone (config
 	// [memory] final_turn_on_quit; skipped for low-activity sessions).
-	out, cmd := maybeStartExitSaveTurn(m)
+	out, cmd := requestGracefulExit(m)
 	return out.(Model), cmd
 }
 
@@ -1315,7 +1315,7 @@ func cmdClear(m Model, _ []string) (Model, tea.Cmd) {
 	// A /clear starts a fresh conversation, so an armed /loop from the old
 	// session must not bleed into it (and its arm line was just wiped, so
 	// the user couldn't see it anyway). Disarm and drop its pending tick.
-	m.disarmLoop("[loop] stopped — session cleared")
+	m.disarmAllLoops("[loop] stopped — session cleared")
 	return m, nil
 }
 

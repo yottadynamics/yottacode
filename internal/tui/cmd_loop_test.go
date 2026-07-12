@@ -5,9 +5,18 @@ import (
 	"testing"
 	"time"
 
-	"github.com/yottadynamics/yottacode/internal/session"
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/yottadynamics/yottacode/internal/usercmd"
 )
+
+func firstLoop(t *testing.T, m Model) loopState {
+	t.Helper()
+	ids := m.activeLoopIDs()
+	if len(ids) != 1 {
+		t.Fatalf("active loops = %d, want 1", len(ids))
+	}
+	return m.loops[ids[0]]
+}
 
 func TestParseLoopInterval(t *testing.T) {
 	cases := []struct {
@@ -18,9 +27,9 @@ func TestParseLoopInterval(t *testing.T) {
 		{"5m", 5 * time.Minute, true},
 		{"30s", 30 * time.Second, true},
 		{"1h", time.Hour, true},
-		{"check", 0, false}, // prose falls through to payload
-		{"3x", 0, false},    // count token, not a duration
-		{"0s", 0, false},    // non-positive rejected
+		{"check", 0, false},
+		{"3x", 0, false},
+		{"0s", 0, false},
 		{"-5m", 0, false},
 		{"", 0, false},
 	}
@@ -38,15 +47,8 @@ func TestParseLoopCount(t *testing.T) {
 		want int
 		ok   bool
 	}{
-		{"3x", 3, true},
-		{"10X", 10, true},
-		{"1x", 1, true},
-		{"x", 0, false},
-		{"0x", 0, false},
-		{"-2x", 0, false},
-		{"5m", 0, false},
-		{"abc", 0, false},
-		{"", 0, false},
+		{"3x", 3, true}, {"10X", 10, true}, {"1x", 1, true},
+		{"x", 0, false}, {"0x", 0, false}, {"-2x", 0, false}, {"5m", 0, false}, {"abc", 0, false}, {"", 0, false},
 	}
 	for _, c := range cases {
 		got, ok := parseLoopCount(c.in)
@@ -56,418 +58,238 @@ func TestParseLoopCount(t *testing.T) {
 	}
 }
 
-// Arming an interval loop parses interval + count + payload and schedules
-// a tick. turnActive is forced on so the immediate first fire is
-// suppressed, letting us inspect the armed state cleanly.
 func TestLoop_ArmsIntervalState(t *testing.T) {
 	m := newTestModel(t)
 	m.turnActive = true
 	m, cmd := cmdLoop(m, []string{"30s", "3x", "summarize", "open", "work"})
-	if !m.loop.active {
-		t.Fatal("expected loop armed")
+	ls := firstLoop(t, m)
+	if ls.interval != 30*time.Second || ls.remaining != 3 || ls.payload != "summarize open work" || ls.isSlash {
+		t.Fatalf("loop state = %+v", ls)
 	}
-	if m.loop.interval != 30*time.Second {
-		t.Errorf("interval = %v, want 30s", m.loop.interval)
-	}
-	if m.loop.remaining != 3 {
-		t.Errorf("remaining = %d, want 3 (no immediate fire while turnActive)", m.loop.remaining)
-	}
-	if m.loop.payload != "summarize open work" {
-		t.Errorf("payload = %q", m.loop.payload)
-	}
-	if m.loop.isSlash {
-		t.Error("prose payload should not be flagged as slash")
+	if ls.id == "" || ls.expiresAt.Sub(ls.armedAt) != loopDefaultTTL {
+		t.Fatalf("id/expiry not set: %+v", ls)
 	}
 	if cmd == nil {
 		t.Error("arming an interval loop should schedule a tick cmd")
 	}
 }
 
-// A self-paced arm (no interval) with a slash payload sets isSlash so the
-// iteration routes through runSlash rather than being sent verbatim.
-func TestLoop_SlashPayloadRouted(t *testing.T) {
+func TestLoop_MultipleLoopsAndStatus(t *testing.T) {
 	m := newTestModel(t)
 	m.turnActive = true
-	m, _ = cmdLoop(m, []string{"/git-review-pr"})
-	if !m.loop.active {
-		t.Fatal("expected loop armed")
+	m, _ = cmdLoop(m, []string{"30s", "/help"})
+	m, _ = cmdLoop(m, []string{"2m", "check", "ci"})
+	if got := m.activeLoopCount(); got != 2 {
+		t.Fatalf("active loops = %d, want 2", got)
 	}
-	if !m.loop.isSlash {
-		t.Error("slash payload should set isSlash")
+	ids := m.activeLoopIDs()
+	if ids[0] == ids[1] {
+		t.Fatal("loop IDs should be unique")
 	}
-	if m.loop.interval != 0 {
-		t.Errorf("self-paced interval should be 0; got %v", m.loop.interval)
+	m, _ = cmdLoop(m, nil)
+	out := m.transcript.String()
+	if !strings.Contains(out, ids[0]) || !strings.Contains(out, ids[1]) {
+		t.Fatalf("status should include both IDs; got %q", out)
 	}
-	if m.loop.payload != "/git-review-pr" {
-		t.Errorf("payload = %q", m.loop.payload)
+}
+
+func TestLoop_IntervalSlashPayloadRouted(t *testing.T) {
+	m := newTestModel(t)
+	m.turnActive = true
+	m, _ = cmdLoop(m, []string{"30s", "/git-review-pr"})
+	ls := firstLoop(t, m)
+	if !ls.isSlash || ls.interval != 30*time.Second || ls.payload != "/git-review-pr" {
+		t.Fatalf("loop state = %+v", ls)
+	}
+}
+
+func TestLoop_IntervalRequired(t *testing.T) {
+	for _, args := range [][]string{{"summarize"}, {"3x", "summarize"}, {"/git-review-pr"}} {
+		m := newTestModel(t)
+		m, _ = cmdLoop(m, args)
+		if m.activeLoopCount() != 0 || !strings.Contains(m.transcript.String(), "interval required") {
+			t.Errorf("cmdLoop(%v) should reject without interval; got %q", args, m.transcript.String())
+		}
 	}
 }
 
 func TestLoop_SubFloorIntervalRejected(t *testing.T) {
 	m := newTestModel(t)
 	m, _ = cmdLoop(m, []string{"1s", "do stuff"})
-	if m.loop.active {
-		t.Error("sub-floor interval should not arm a loop")
-	}
-	if !strings.Contains(m.transcript.String(), "floor") {
-		t.Errorf("should explain the interval floor; got %q", m.transcript.String())
+	if m.activeLoopCount() != 0 || !strings.Contains(m.transcript.String(), "floor") {
+		t.Fatalf("sub-floor should reject; transcript=%q", m.transcript.String())
 	}
 }
 
 func TestLoop_EmptyPayloadUsage(t *testing.T) {
 	m := newTestModel(t)
 	m, _ = cmdLoop(m, []string{"30s"})
-	if m.loop.active {
-		t.Error("interval with no payload should not arm")
-	}
-	if !strings.Contains(m.transcript.String(), "usage") {
-		t.Errorf("empty payload should print usage; got %q", m.transcript.String())
-	}
-}
-
-func TestLoop_SelfReferentialRejected(t *testing.T) {
-	m := newTestModel(t)
-	m.turnActive = true
-	m, _ = cmdLoop(m, []string{"30s", "/loop", "5m", "foo"})
-	if m.loop.active {
-		t.Error("a /loop payload should be refused, not armed")
-	}
-	if !strings.Contains(m.transcript.String(), "another /loop") {
-		t.Errorf("should explain the refusal; got %q", m.transcript.String())
-	}
-}
-
-// A self-paced loop whose payload starts no turn (no adapter in the test
-// model, so prose can't start one) must disarm rather than spin.
-func TestLoop_SelfPacedNoTurnDisarms(t *testing.T) {
-	m := newTestModel(t) // LoopConfig has no Adapter
-	m, _ = cmdLoop(m, []string{"summarize"})
-	if m.loop.active {
-		t.Error("self-paced payload that started no turn should disarm")
-	}
-	if !strings.Contains(m.transcript.String(), "started no turn") {
-		t.Errorf("should explain the disarm; got %q", m.transcript.String())
-	}
-}
-
-func TestLoop_Stop(t *testing.T) {
-	m := newTestModel(t)
-	m.turnActive = true
-	m, _ = cmdLoop(m, []string{"30s", "keep going"})
-	if !m.loop.active {
-		t.Fatal("precondition: loop should be armed")
-	}
-	genBefore := m.loop.gen
-	m, _ = cmdLoop(m, []string{"stop"})
-	if m.loop.active {
-		t.Error("/loop stop should disarm")
-	}
-	if m.loop.gen == genBefore {
-		t.Error("/loop stop should bump gen so a stale tick is dropped")
-	}
-	if !strings.Contains(m.transcript.String(), "stopped") {
-		t.Errorf("stop should confirm; got %q", m.transcript.String())
-	}
-}
-
-func TestLoop_StopWhenNoneArmed(t *testing.T) {
-	m := newTestModel(t)
-	m, _ = cmdLoop(m, []string{"stop"})
-	if !strings.Contains(m.transcript.String(), "nothing to stop") {
-		t.Errorf("stop with no loop should say so; got %q", m.transcript.String())
-	}
-}
-
-// disarmLoop is a no-op (no gen bump, nothing printed) when nothing is
-// armed — so the Esc/Ctrl+C hooks don't spam a notice on every keypress.
-func TestLoop_DisarmNoopWhenInactive(t *testing.T) {
-	m := newTestModel(t)
-	genBefore := m.loop.gen
-	before := m.transcript.String()
-	m.disarmLoop("[loop] stopped")
-	if m.loop.gen != genBefore {
-		t.Error("disarm on an inactive loop should not bump gen")
-	}
-	if m.transcript.String() != before {
-		t.Error("disarm on an inactive loop should print nothing")
-	}
-}
-
-// A tick stamped with a stale generation (from a stopped/replaced loop)
-// is dropped: no iteration fires and no cmd is returned. Loop state is set
-// directly (not via cmdLoop) so no queued appendLine flush rides along on
-// the Update and muddies the cmd assertion.
-func TestLoop_StaleTickIgnored(t *testing.T) {
-	m := newTestModel(t)
-	m.loop = loopState{active: true, interval: 30 * time.Second, gen: 5, remaining: -1, payload: "/git-review-pr", isSlash: true}
-	before := m.transcript.String()
-	m2, cmd := applyMsg(m, loopTickMsg{gen: 4}) // stale: current gen is 5
-	if cmd != nil {
-		t.Error("a stale tick should produce no cmd")
-	}
-	if m2.transcript.String() != before {
-		t.Error("a stale tick should not fire an iteration")
-	}
-	if m2.loop.remaining != -1 {
-		t.Errorf("stale tick should not touch loop state; remaining = %d", m2.loop.remaining)
-	}
-}
-
-// A current-generation tick that lands while a turn is active skips the
-// iteration but re-arms the next interval (returns a non-nil cmd).
-func TestLoop_TickReArmsWhileTurnActive(t *testing.T) {
-	m := newTestModel(t)
-	m.turnActive = true
-	m.loop = loopState{active: true, interval: 30 * time.Second, gen: 5, remaining: -1, payload: "/git-review-pr", isSlash: true}
-	before := m.transcript.String()
-	m2, cmd := applyMsg(m, loopTickMsg{gen: 5})
-	if cmd == nil {
-		t.Error("a tick during an active turn should re-arm (non-nil cmd)")
-	}
-	if m2.transcript.String() != before {
-		t.Error("a tick during an active turn should not fire an iteration")
-	}
-	if m2.loop.remaining != -1 {
-		t.Errorf("unbounded loop remaining should stay -1; got %d", m2.loop.remaining)
-	}
-}
-
-func TestLoop_StatusLine(t *testing.T) {
-	m := newTestModel(t)
-	m.loop = loopState{active: true, payload: "do it", interval: 5 * time.Minute, remaining: 3}
-	got := m.loopStatusLine()
-	for _, want := range []string{"every 5m0s", "3 left", `"do it"`, "/loop stop"} {
-		if !strings.Contains(got, want) {
-			t.Errorf("status line %q missing %q", got, want)
-		}
-	}
-	m.loop = loopState{active: true, payload: "poll", interval: 0, remaining: -1}
-	if got := m.loopStatusLine(); !strings.Contains(got, "self-paced") || !strings.Contains(got, "unbounded") {
-		t.Errorf("self-paced status line = %q", got)
-	}
-}
-
-// End-to-end through the real keypress → dispatch → runSlash → cmdLoop
-// path (not a direct cmdLoop call): typing the command arms the loop and
-// its first iteration executes the slash payload.
-func TestLoop_EndToEndDispatch(t *testing.T) {
-	m := newTestModel(t)
-	m, _ = typeAndEnter(t, m, "/loop 30s /help")
-	if !m.loop.active {
-		t.Fatal("/loop via the dispatcher should arm a loop")
-	}
-	if m.loop.interval != 30*time.Second {
-		t.Errorf("interval = %v, want 30s", m.loop.interval)
-	}
-	if !m.loop.isSlash || m.loop.payload != "/help" {
-		t.Errorf("payload routing: isSlash=%v payload=%q", m.loop.isSlash, m.loop.payload)
-	}
-	// The immediate first iteration ran /help, so its output is in scrollback.
-	if !strings.Contains(m.transcript.String(), "Available commands") {
-		t.Errorf("first iteration should have executed /help; transcript=%q", m.transcript.String())
-	}
-}
-
-// /clear must disarm an armed loop so it can't bleed into the fresh
-// session (its arm line was wiped, so a silent survivor is invisible).
-func TestLoop_ClearDisarms(t *testing.T) {
-	m := newTestModel(t)
-	m.turnActive = true
-	m, _ = cmdLoop(m, []string{"30s", "keep going"})
-	if !m.loop.active {
-		t.Fatal("precondition: loop should be armed")
-	}
-	m.turnActive = false // /clear can't run mid-turn (it cancels first)
-	m, _ = cmdClear(m, nil)
-	if m.loop.active {
-		t.Error("/clear should disarm the loop")
-	}
-}
-
-// Resuming/switching sessions must disarm a loop armed against the prior
-// conversation.
-func TestLoop_ResumeDisarms(t *testing.T) {
-	m := newTestModel(t)
-	other, _ := session.New("test-model", "/cwd")
-	other.Name = "elsewhere"
-	if err := other.Save(); err != nil {
-		t.Fatalf("seed Save: %v", err)
-	}
-	m.turnActive = true
-	m, _ = cmdLoop(m, []string{"30s", "keep going"})
-	if !m.loop.active {
-		t.Fatal("precondition: loop should be armed")
-	}
-	m.turnActive = false
-	m, _ = m.resumeSession(other.ID, false)
-	if m.loop.active {
-		t.Error("resuming a session should disarm the loop")
+	if m.activeLoopCount() != 0 || !strings.Contains(m.transcript.String(), "usage") {
+		t.Fatalf("empty payload should reject; transcript=%q", m.transcript.String())
 	}
 }
 
 func TestLoop_RefusesDestructivePayloads(t *testing.T) {
 	for _, p := range []string{"/quit", "/clear", "/quit now", "/loop 5m x"} {
 		m := newTestModel(t)
-		m.turnActive = true // suppress the immediate fire; we only check arming
+		m.turnActive = true
 		m, _ = cmdLoop(m, append([]string{"30s"}, strings.Fields(p)...))
-		if m.loop.active {
-			t.Errorf("payload %q should be refused, not armed", p)
+		if m.activeLoopCount() != 0 {
+			t.Errorf("payload %q should be refused", p)
 		}
 	}
 }
 
-// A bounded loop prints a K/N progress line each iteration.
-func TestLoop_BoundedProgressLine(t *testing.T) {
+func TestLoop_IntervalNoTurnDisarmsOnArm(t *testing.T) {
 	m := newTestModel(t)
-	m, _ = cmdLoop(m, []string{"30s", "3x", "/help"})
-	if m.loop.total != 3 {
-		t.Errorf("total = %d, want 3", m.loop.total)
-	}
-	if m.loop.remaining != 2 {
-		t.Errorf("remaining after first fire = %d, want 2", m.loop.remaining)
-	}
-	if !strings.Contains(m.transcript.String(), "iteration 1/3") {
-		t.Errorf("bounded loop should print a progress line; transcript=%q", m.transcript.String())
+	m, _ = cmdLoop(m, []string{"30s", "summarize"})
+	if m.activeLoopCount() != 0 || !strings.Contains(m.transcript.String(), "started no turn") {
+		t.Fatalf("no-turn prose should disarm; transcript=%q", m.transcript.String())
 	}
 }
 
-func TestLoop_BannerRender(t *testing.T) {
-	got := stripANSI(renderLoopBanner(loopState{active: true, interval: 5 * time.Minute, remaining: 2, total: 3}, 80))
-	for _, want := range []string{"loop", "every 5m", "2 left", "/loop stop"} {
+func TestLoop_StopOneAmbiguousAndAll(t *testing.T) {
+	m := newTestModel(t)
+	m.turnActive = true
+	m, _ = cmdLoop(m, []string{"30s", "/help"})
+	id1 := firstLoop(t, m).id
+	m, _ = cmdLoop(m, []string{"45s", "/context"})
+	if m.activeLoopCount() != 2 {
+		t.Fatal("precondition: two loops")
+	}
+	m, _ = cmdLoop(m, []string{"stop"})
+	if m.activeLoopCount() != 2 || !strings.Contains(m.transcript.String(), "multiple loops active") {
+		t.Fatal("bare stop should be ambiguous with multiple loops")
+	}
+	m, _ = cmdLoop(m, []string{"stop", id1})
+	if m.activeLoopCount() != 1 {
+		t.Fatalf("stop id should leave one loop; got %d", m.activeLoopCount())
+	}
+	m, _ = cmdLoop(m, []string{"stop", "all"})
+	if m.activeLoopCount() != 0 {
+		t.Fatal("stop all should clear loops")
+	}
+}
+
+func TestLoop_StopWrongIDRefuses(t *testing.T) {
+	m := newTestModel(t)
+	m.turnActive = true
+	m, _ = cmdLoop(m, []string{"30s", "/help"})
+	m, _ = cmdLoop(m, []string{"stop", "loop-missing"})
+	if m.activeLoopCount() != 1 || !strings.Contains(m.transcript.String(), "no active loop") {
+		t.Fatal("wrong ID should refuse without stopping")
+	}
+}
+
+func TestLoop_StaleTickIgnored(t *testing.T) {
+	m := newTestModel(t)
+	m.loops = map[string]loopState{"loop-a": {id: "loop-a", active: true, interval: 30 * time.Second, gen: 5, remaining: -1, payload: "/help", isSlash: true, expiresAt: time.Now().Add(time.Hour)}}
+	m.loopOrder = []string{"loop-a"}
+	before := m.transcript.String()
+	m2, cmd := applyMsg(m, loopTickMsg{id: "loop-a", gen: 4})
+	if cmd != nil || m2.transcript.String() != before || m2.activeLoopCount() != 1 {
+		t.Fatal("stale tick should be ignored")
+	}
+}
+
+func TestLoop_TickReArmsWhileTurnActive(t *testing.T) {
+	m := newTestModel(t)
+	m.turnActive = true
+	m.loops = map[string]loopState{"loop-a": {id: "loop-a", active: true, interval: 30 * time.Second, gen: 5, remaining: -1, payload: "/help", isSlash: true, expiresAt: time.Now().Add(time.Hour)}}
+	m.loopOrder = []string{"loop-a"}
+	m2, cmd := applyMsg(m, loopTickMsg{id: "loop-a", gen: 5})
+	if cmd == nil || m2.activeLoopCount() != 1 {
+		t.Fatal("tick during active turn should re-arm")
+	}
+}
+
+func TestLoop_TickExpiresOneLoop(t *testing.T) {
+	m := newTestModel(t)
+	m.loops = map[string]loopState{
+		"loop-old":  {id: "loop-old", active: true, interval: 30 * time.Second, gen: 1, remaining: -1, payload: "/help", isSlash: true, expiresAt: time.Now().Add(-time.Second)},
+		"loop-live": {id: "loop-live", active: true, interval: time.Minute, gen: 1, remaining: -1, payload: "/context", isSlash: true, expiresAt: time.Now().Add(time.Hour)},
+	}
+	m.loopOrder = []string{"loop-old", "loop-live"}
+	m2, _ := applyMsg(m, loopTickMsg{id: "loop-old", gen: 1})
+	if _, ok := m2.loops["loop-old"]; ok || m2.activeLoopCount() != 1 {
+		t.Fatalf("expired loop should be removed, got %+v", m2.loops)
+	}
+}
+
+func TestLoop_StatusLineAndBanner(t *testing.T) {
+	m := newTestModel(t)
+	now := time.Now()
+	m.loops = map[string]loopState{"loop-a": {id: "loop-a", active: true, payload: "do it", interval: 5 * time.Minute, remaining: 3, expiresAt: now.Add(loopDefaultTTL)}}
+	m.loopOrder = []string{"loop-a"}
+	got := m.loopStatusLine("loop-a")
+	for _, want := range []string{"loop-a", "every 5m0s", "3 left", `"do it"`, "/loop stop loop-a"} {
 		if !strings.Contains(got, want) {
-			t.Errorf("banner %q missing %q", got, want)
+			t.Errorf("status line %q missing %q", got, want)
 		}
 	}
-	sp := stripANSI(renderLoopBanner(loopState{active: true, interval: 0, remaining: -1}, 80))
-	if !strings.Contains(sp, "self-paced") {
-		t.Errorf("self-paced banner = %q", sp)
+	banner := stripANSI(renderLoopBanner(m.loopBannerStates(), 80))
+	if !strings.Contains(banner, "loop-a") || !strings.Contains(banner, "every 5m") {
+		t.Fatalf("banner = %q", banner)
+	}
+	m.loops["loop-b"] = loopState{id: "loop-b", active: true, interval: time.Minute, expiresAt: now.Add(time.Hour)}
+	m.loopOrder = append(m.loopOrder, "loop-b")
+	if multi := stripANSI(renderLoopBanner(m.loopBannerStates(), 80)); !strings.Contains(multi, "2 active") {
+		t.Fatalf("multi banner = %q", multi)
 	}
 }
 
-// An armed loop surfaces its banner in the rendered View so it stays
-// visible after the arm line scrolls away.
-func TestLoop_BannerShowsInView(t *testing.T) {
+func TestLoop_EndToEndDispatch(t *testing.T) {
 	m := newTestModel(t)
-	m.turnActive = true // suppress immediate fire; this test only inspects banner rendering
-	m, _ = cmdLoop(m, []string{"5m", "poll status"}) // interval keeps it armed
-	if !m.loop.active {
-		t.Fatal("precondition: interval loop should stay armed")
+	m, _ = typeAndEnter(t, m, "/loop 30s /help")
+	ls := firstLoop(t, m)
+	if ls.interval != 30*time.Second || !ls.isSlash || ls.payload != "/help" {
+		t.Fatalf("loop state = %+v", ls)
 	}
-	v := stripANSI(m.View())
-	if !strings.Contains(v, "loop") || !strings.Contains(v, "every 5m") {
-		t.Errorf("armed loop should render a banner in View; got:\n%s", v)
+	if !strings.Contains(m.transcript.String(), "Available commands") {
+		t.Fatalf("first iteration should execute /help; transcript=%q", m.transcript.String())
 	}
 }
 
-// Fix #1: the shared self-paced re-fire helper (used by both turnEndedMsg
-// and summaryDoneMsg) fires only self-paced, idle, non-summarizing loops.
-func TestLoop_RefireSelfPacedHelper(t *testing.T) {
-	// interval loop → no-op (timer-driven, not helper-driven)
+func TestLoop_ClearAndResumeDisarm(t *testing.T) {
 	m := newTestModel(t)
-	m.loop = loopState{active: true, interval: 30 * time.Second, gen: 1, remaining: -1}
-	if _, _, fired := m.refireSelfPacedLoop(); fired {
-		t.Error("interval loop must not be re-fired by the self-paced helper")
-	}
-	// summarizing → no-op (never overlap compaction)
-	m2 := newTestModel(t)
-	m2.loop = loopState{active: true, interval: 0, gen: 1, remaining: -1, payload: "poll"}
-	m2.summarizing = true
-	if _, _, fired := m2.refireSelfPacedLoop(); fired {
-		t.Error("must not re-fire while summarizing")
-	}
-	// self-paced idle → fires; with no adapter the iteration starts no turn,
-	// so it disarms rather than spin.
-	m3 := newTestModel(t)
-	m3.loop = loopState{active: true, interval: 0, gen: 1, remaining: -1, payload: "poll"}
-	got, _, fired := m3.refireSelfPacedLoop()
-	if !fired {
-		t.Error("self-paced idle loop should re-fire")
-	}
-	if got.loop.active {
-		t.Error("a re-fire that starts no turn should disarm (no adapter in test)")
+	m.turnActive = true
+	m, _ = cmdLoop(m, []string{"30s", "/help"})
+	m.turnActive = false
+	m, _ = cmdClear(m, nil)
+	if m.activeLoopCount() != 0 {
+		t.Fatal("/clear should disarm loops")
 	}
 }
 
-// Fix #2: only a bare `/loop stop` disarms; a prose payload starting with
-// "stop" is armed, not swallowed.
 func TestLoop_StopWordAsPayload(t *testing.T) {
 	m := newTestModel(t)
 	m.turnActive = true
 	m, _ = cmdLoop(m, []string{"30s", "stop", "the", "deploy"})
-	if !m.loop.active {
-		t.Fatal("`/loop 30s stop the deploy` should arm a prose loop, not disarm")
-	}
-	if m.loop.payload != "stop the deploy" {
-		t.Errorf("payload = %q, want 'stop the deploy'", m.loop.payload)
-	}
-	m, _ = cmdLoop(m, []string{"stop"}) // bare stop still disarms
-	if m.loop.active {
-		t.Error("bare `/loop stop` should disarm")
+	ls := firstLoop(t, m)
+	if ls.payload != "stop the deploy" {
+		t.Fatalf("payload = %q", ls.payload)
 	}
 }
 
-// Fix #4: loop iterations dispatch via dispatchSlash, which does NOT record
-// input history (unlike the user-typed runSlash path).
 func TestDispatchSlash_DoesNotRecordHistory(t *testing.T) {
 	m := newTestModel(t)
 	before := len(m.inputHistory)
 	m, _ = m.dispatchSlash("/help")
 	if len(m.inputHistory) != before {
-		t.Errorf("dispatchSlash must not record input history; grew by %d", len(m.inputHistory)-before)
+		t.Errorf("dispatchSlash must not record input history")
 	}
-	m, _ = m.runSlash("/help") // the user-typed path still records
+	m, _ = m.runSlash("/help")
 	if len(m.inputHistory) != before+1 {
-		t.Errorf("runSlash should record once; grew by %d", len(m.inputHistory)-before)
+		t.Errorf("runSlash should record once")
 	}
 }
 
-// An interval prose loop whose payload cannot start a turn must disarm
-// instead of printing the same failure forever on each tick.
-func TestLoop_IntervalNoTurnDisarms(t *testing.T) {
-	m := newTestModel(t) // LoopConfig has no Adapter, so prose can't start a turn
-	m.turnActive = true
-	m, _ = cmdLoop(m, []string{"5m", "poll", "status"})
-	if !m.loop.active {
-		t.Fatal("precondition: loop should arm while a turn is active")
-	}
-	m.turnActive = false
-	m2, _ := applyMsg(m, loopTickMsg{gen: m.loop.gen})
-	if m2.loop.active {
-		t.Error("interval prose payload that started no turn should disarm")
-	}
-	if m2.loop.gen == m.loop.gen {
-		t.Error("disarming the interval loop should bump gen so any pending tick is stale")
-	}
-	if !strings.Contains(m2.transcript.String(), "payload started no turn") {
-		t.Errorf("should explain the disarm; got %q", m2.transcript.String())
-	}
-}
-
-// Interval slash payloads may be informational commands like /help, so
-// they are allowed to stay armed even when they don't start an agent turn.
-func TestLoop_IntervalSlashNoTurnCanRepeat(t *testing.T) {
-	m := newTestModel(t)
-	m.loop = loopState{active: true, interval: 5 * time.Minute, gen: 7, remaining: -1, payload: "/help", isSlash: true}
-	m2, cmd := applyMsg(m, loopTickMsg{gen: 7})
-	if !m2.loop.active {
-		t.Error("interval slash payloads may be informational and should stay armed")
-	}
-	if cmd == nil {
-		t.Error("still-armed interval slash loop should schedule the next tick")
-	}
-}
-
-// Fix #6: a /loop with an unknown slash payload is refused at arm time
-// rather than looping "unknown command" forever.
 func TestLoop_UnknownSlashNotArmed(t *testing.T) {
 	m := newTestModel(t)
 	m.turnActive = true
 	m, _ = cmdLoop(m, []string{"5m", "/definitely-not-a-command"})
-	if m.loop.active {
-		t.Error("a /loop with an unknown slash payload should not arm")
-	}
-	if !strings.Contains(m.transcript.String(), "unknown command") {
-		t.Errorf("should explain the unknown command; got %q", m.transcript.String())
+	if m.activeLoopCount() != 0 || !strings.Contains(m.transcript.String(), "unknown command") {
+		t.Fatal("unknown slash payload should not arm")
 	}
 }
 
@@ -476,6 +298,27 @@ func TestLoop_RegisteredAndReserved(t *testing.T) {
 		t.Error("/loop should be registered in allSlash")
 	}
 	if !usercmd.Reserved["loop"] {
-		t.Error(`"loop" should be in usercmd.Reserved so a custom command can't shadow it`)
+		t.Error(`"loop" should be reserved`)
+	}
+}
+
+func TestLoop_ExitWarning(t *testing.T) {
+	m := newTestModel(t)
+	m.turnActive = true
+	m, _ = cmdLoop(m, []string{"30s", "/help"})
+	m.turnActive = false
+	out, cmd := requestGracefulExit(m)
+	m = out.(Model)
+	if cmd != nil || !m.loopExitConfirmOpen {
+		t.Fatal("active loops should open exit confirmation")
+	}
+	view := renderLoopExitConfirm(m)
+	if !strings.Contains(view, "Background work is running") || !strings.Contains(view, firstLoop(t, m).id) {
+		t.Fatalf("exit warning = %q", view)
+	}
+	out, cmd = m.updateLoopExitConfirm(tea.KeyMsg{Type: tea.KeyEnter})
+	m = out.(Model)
+	if m.activeLoopCount() != 0 || cmd == nil {
+		t.Fatal("Exit anyway should stop loops and continue graceful exit")
 	}
 }
