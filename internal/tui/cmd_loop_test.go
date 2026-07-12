@@ -348,6 +348,7 @@ func TestLoop_BannerRender(t *testing.T) {
 // visible after the arm line scrolls away.
 func TestLoop_BannerShowsInView(t *testing.T) {
 	m := newTestModel(t)
+	m.turnActive = true // suppress immediate fire; this test only inspects banner rendering
 	m, _ = cmdLoop(m, []string{"5m", "poll status"}) // interval keeps it armed
 	if !m.loop.active {
 		t.Fatal("precondition: interval loop should stay armed")
@@ -417,6 +418,42 @@ func TestDispatchSlash_DoesNotRecordHistory(t *testing.T) {
 	m, _ = m.runSlash("/help") // the user-typed path still records
 	if len(m.inputHistory) != before+1 {
 		t.Errorf("runSlash should record once; grew by %d", len(m.inputHistory)-before)
+	}
+}
+
+// An interval prose loop whose payload cannot start a turn must disarm
+// instead of printing the same failure forever on each tick.
+func TestLoop_IntervalNoTurnDisarms(t *testing.T) {
+	m := newTestModel(t) // LoopConfig has no Adapter, so prose can't start a turn
+	m.turnActive = true
+	m, _ = cmdLoop(m, []string{"5m", "poll", "status"})
+	if !m.loop.active {
+		t.Fatal("precondition: loop should arm while a turn is active")
+	}
+	m.turnActive = false
+	m2, _ := applyMsg(m, loopTickMsg{gen: m.loop.gen})
+	if m2.loop.active {
+		t.Error("interval prose payload that started no turn should disarm")
+	}
+	if m2.loop.gen == m.loop.gen {
+		t.Error("disarming the interval loop should bump gen so any pending tick is stale")
+	}
+	if !strings.Contains(m2.transcript.String(), "payload started no turn") {
+		t.Errorf("should explain the disarm; got %q", m2.transcript.String())
+	}
+}
+
+// Interval slash payloads may be informational commands like /help, so
+// they are allowed to stay armed even when they don't start an agent turn.
+func TestLoop_IntervalSlashNoTurnCanRepeat(t *testing.T) {
+	m := newTestModel(t)
+	m.loop = loopState{active: true, interval: 5 * time.Minute, gen: 7, remaining: -1, payload: "/help", isSlash: true}
+	m2, cmd := applyMsg(m, loopTickMsg{gen: 7})
+	if !m2.loop.active {
+		t.Error("interval slash payloads may be informational and should stay armed")
+	}
+	if cmd == nil {
+		t.Error("still-armed interval slash loop should schedule the next tick")
 	}
 }
 

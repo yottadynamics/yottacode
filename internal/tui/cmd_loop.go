@@ -123,6 +123,13 @@ func cmdLoop(m Model, args []string) (Model, tea.Cmd) {
 		if cmd != nil {
 			cmds = append(cmds, cmd)
 		}
+		// Prose payloads must start a turn; if they don't (for example,
+		// no provider is configured), stop instead of printing the same
+		// error forever on each interval tick. Slash payloads may be
+		// informational/status commands, so they are allowed to return idle.
+		if m.loop.active && m.loop.interval > 0 && !m.loop.isSlash && !m.turnActive && !m.summarizing {
+			m.disarmLoop("[loop] stopped — payload started no turn")
+		}
 		if m.loop.active && m.loop.interval == 0 && !m.turnActive {
 			m.disarmLoop("[loop] stopped — payload started no turn (self-paced needs a turn to re-fire; add an interval)")
 		}

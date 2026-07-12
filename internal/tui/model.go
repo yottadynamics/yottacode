@@ -2081,6 +2081,13 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			loopCmds = append(loopCmds, tickCmd)
 		}
 		// Re-arm unless the final bounded iteration just disarmed the loop.
+		// Prose payloads must start a turn; if they don't (for example,
+		// no provider is configured), stop instead of printing the same
+		// error forever on each interval tick. Slash payloads may be
+		// informational/status commands, so they are allowed to return idle.
+		if m.loop.active && !m.loop.isSlash && !m.turnActive && !m.summarizing {
+			m.disarmLoop("[loop] stopped — payload started no turn")
+		}
 		if m.loop.active && m.loop.interval > 0 {
 			loopCmds = append(loopCmds, loopTickCmd(m.loop.interval, m.loop.gen))
 		}
