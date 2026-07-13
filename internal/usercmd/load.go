@@ -81,6 +81,7 @@ var Reserved = map[string]bool{
 	"setup":          true,
 	"init":           true,
 	"plan":           true,
+	"loop":           true,
 	"subagents":      true,
 	"skills":         true,
 	"git-commit":     true,
@@ -241,8 +242,8 @@ func loadScope(dir string, scope Scope) (byName map[string]Command, dup map[stri
 		// rather than follow — same conservative stance memory takes.
 		if info.Mode()&os.ModeSymlink != 0 {
 			errs = append(errs, LoadError{
-				Path: dir,
-				Err:  errors.New("commands path is a symlink; refusing to follow"),
+				Path:  dir,
+				Err:   errors.New("commands path is a symlink; refusing to follow"),
 				Level: LevelError,
 			})
 		}
