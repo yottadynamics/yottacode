@@ -273,6 +273,56 @@ top_k = -1`
 	}
 }
 
+func TestSessionRecall_Defaults(t *testing.T) {
+	sr := Default().Retrieval.SessionRecall
+	if !sr.Auto {
+		t.Error("session_recall.auto default = false, want true (on with opt-out)")
+	}
+	if sr.Scope != "project" {
+		t.Errorf("session_recall.scope default = %q, want project", sr.Scope)
+	}
+	if sr.TopK != 3 || sr.MinScore != 0.6 || sr.MaxBytes != 2000 {
+		t.Errorf("session_recall defaults = {TopK:%d MinScore:%.2f MaxBytes:%d}, want {3 0.6 2000}",
+			sr.TopK, sr.MinScore, sr.MaxBytes)
+	}
+	// The documented embedded config must parse and preserve the defaults.
+	cfg, err := Load(writeFile(t, DefaultsTOML))
+	if err != nil {
+		t.Fatalf("Load(DefaultsTOML): %v", err)
+	}
+	if !cfg.Retrieval.SessionRecall.Auto || cfg.Retrieval.SessionRecall.Scope != "project" {
+		t.Errorf("DefaultsTOML session_recall = %+v, want auto+project", cfg.Retrieval.SessionRecall)
+	}
+}
+
+func TestSessionRecall_EmptyScopeDefaultsAndExplicitAuto(t *testing.T) {
+	// Section present without scope → coerced to project.
+	cfg, err := Load(writeFile(t, "[retrieval.session_recall]\ntop_k = 5\n"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Retrieval.SessionRecall.Scope != "project" {
+		t.Errorf("empty scope = %q, want project", cfg.Retrieval.SessionRecall.Scope)
+	}
+	// Explicit auto=false is honored (not treated as unset).
+	cfg, err = Load(writeFile(t, "[retrieval.session_recall]\nauto = false\n"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Retrieval.SessionRecall.Auto {
+		t.Error("explicit auto=false not honored")
+	}
+}
+
+func TestSessionRecall_RejectsBadScopeAndMinScore(t *testing.T) {
+	if _, err := Load(writeFile(t, "[retrieval.session_recall]\nscope = \"galaxy\"\n")); err == nil {
+		t.Error("expected error for invalid session_recall.scope")
+	}
+	if _, err := Load(writeFile(t, "[retrieval.session_recall]\nmin_score = 1.5\n")); err == nil {
+		t.Error("expected error for out-of-range session_recall.min_score")
+	}
+}
+
 func TestLoad_ParsesProvidersWithModels(t *testing.T) {
 	src := `
 [active]

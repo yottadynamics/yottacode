@@ -572,8 +572,19 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 	// runs in a goroutine so a large session corpus doesn't delay the UI.
 	idx, recallErr := recall.Open()
 	if recallErr == nil {
+		// Backfill the FTS index first (so message rows exist), then embed any
+		// messages lacking a current vector for auto-recall. Both run in one
+		// background goroutine so a large corpus never delays the UI; vector
+		// backfill is skipped when embeddings are unavailable or auto-recall is
+		// off, and resumes across restarts since already-embedded messages are
+		// skipped. ctx cancellation (app exit) stops it promptly.
+		ec := embedClient
+		autoRecall := fileCfg.Retrieval.SessionRecall.Auto
 		go func() {
 			_ = recall.Backfill(idx)
+			if ec != nil && autoRecall {
+				_ = idx.BackfillVectors(ctx, ec, ec.Model)
+			}
 		}()
 		reg.Register(&agent.SessionRecallTool{Searcher: &recallAdapter{idx: idx}})
 	}

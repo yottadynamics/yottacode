@@ -62,6 +62,14 @@ func (m *Model) rebuildSystemPromptForTurn(ctx context.Context, query string) {
 	}
 	composed := composeSystemPrompt(m.baseSystemPrompt, m.providerProfile)
 	newSys := memory.SystemPromptForSemantic(ctx, composed, mem, query, m.fileCfg.Retrieval, m.embedClient)
+	// Auto-recall: inject relevant excerpts from past sessions after the memory
+	// tail and before the preserved summary/refs blocks, keeping the canonical
+	// order base → memory → prior-convos → summary → refs. Regenerated fresh
+	// each turn (like the memory tail), so it is dropped and recomputed on the
+	// next rebuild rather than preserved. "" when nothing is relevant.
+	if block := m.priorConversationsBlock(ctx, query); block != "" {
+		newSys = strings.TrimRight(newSys, "\n") + priorConvosHeading + block
+	}
 	if summary != "" {
 		newSys = strings.TrimRight(newSys, "\n") + summaryHeading + summary
 	}
