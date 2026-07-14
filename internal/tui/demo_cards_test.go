@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 	"testing"
+	"time"
 )
 
 // TestDemo_CardOutput is a throwaway visualization that renders every
@@ -10,7 +11,7 @@ import (
 // Run with: go test ./internal/tui/ -run TestDemo_CardOutput -v
 //
 // Skipped under -short (which CI uses) because the rendered output
-// contains lines like "╰ edited /abs/main.go: 1 replacement(s)" that
+// contains lines like "└ edited /abs/main.go: 1 replacement(s)" that
 // GitHub Actions' Go problem-matcher heuristically parses as compile
 // errors (path.go:line:message) and surfaces as spurious "Error:" PR
 // annotations. The test still passes — it's just noise in CI. Run
@@ -119,7 +120,22 @@ func TestDemo_CardOutput(t *testing.T) {
 	fmt.Println()
 	for _, tc := range cases {
 		fmt.Printf("─── %s ───\n", tc.label)
-		fmt.Println(stripANSI(renderToolCard(tc.toolName, tc.preview, tc.args, tc.output, tc.errored, width, "")))
+		// Duration 0: these render the common fast-call shape (no header tag).
+		fmt.Println(stripANSI(renderToolCard(tc.toolName, tc.preview, tc.args, tc.output, tc.errored, width, "", 0)))
 		fmt.Println()
 	}
+
+	// Error-tinted gutter + slow-call header tag. Rendered WITH color
+	// (no stripANSI) so the red error frame and the right-aligned duration
+	// are visible when eyeballing the demo. Clean cards stay neutral Dim.
+	fmt.Println("─── Slow call (duration tag) ───")
+	fmt.Println(renderToolCard("run_bash", "run_bash: go build ./...",
+		`{"command":"go build ./..."}`,
+		"exit=0\n--- stdout ---\n\n--- stderr ---\n", false, width, "", 4*time.Second))
+	fmt.Println()
+	fmt.Println("─── Failed call (red ┌ │ └ frame) ───")
+	fmt.Println(renderToolCard("run_bash", "run_bash: ./flaky.sh",
+		`{"command":"./flaky.sh"}`,
+		"exit=1\n--- stdout ---\n--- stderr ---\nboom: exit status 1\n", true, width, "", 12*time.Second))
+	fmt.Println()
 }

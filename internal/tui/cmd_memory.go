@@ -517,7 +517,7 @@ func renderMemoryBrowse(p *memoryPickerState) string {
 		b.WriteString("\n\n")
 	}
 	if len(p.entries) == 0 {
-		b.WriteString(stylePaletteEmpty.Render("  (no memories)"))
+		b.WriteString(styleEmpty.Render("  (no memories)"))
 	} else {
 		for i, e := range p.entries {
 			label := e.Name
@@ -664,7 +664,7 @@ func renderMemorySearch(p *memoryPickerState) string {
 		b.WriteString("\n\n")
 	}
 	if len(p.searchResults) == 0 {
-		b.WriteString(stylePaletteEmpty.Render("  (no matches)"))
+		b.WriteString(styleEmpty.Render("  (no matches)"))
 	} else {
 		for i, s := range p.searchResults {
 			e := s.Entry

@@ -23,11 +23,11 @@ func samplePlan() []agent.Todo {
 func TestRenderTodoCardFromTodos_HeaderBodyFooter(t *testing.T) {
 	got := stripANSI(renderTodoCardFromTodos(samplePlan(), 80))
 	for _, want := range []string{
-		"╭ Plan: 3 items (1 done)",
+		"┌ Plan: 3 items (1 done)",
 		"✓ design",
 		"▸ review",
 		"· ship",
-		"╰ plan updated: 3 items (1 done)",
+		"└ plan updated: 3 items (1 done)",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("rendered card missing %q\nfull output:\n%s", want, got)
@@ -38,9 +38,9 @@ func TestRenderTodoCardFromTodos_HeaderBodyFooter(t *testing.T) {
 func TestRenderTodoCardFromTodos_EmptyShowsClearedFooter(t *testing.T) {
 	got := stripANSI(renderTodoCardFromTodos(nil, 80))
 	for _, want := range []string{
-		"╭ Plan: 0 items (0 done)",
+		"┌ Plan: 0 items (0 done)",
 		"(empty plan)",
-		"╰ plan cleared",
+		"└ plan cleared",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("empty-plan card missing %q\nfull output:\n%s", want, got)

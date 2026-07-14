@@ -359,7 +359,7 @@ func renderSkillsMenu(state *skillsMenuState, _ int) string {
 	if state.mode == skillsMenuInstallInput {
 		b.WriteString(state.input.View())
 		b.WriteString("\n\n")
-		b.WriteString(stylePaletteEmpty.Render("  Enter installs · Esc returns to the menu"))
+		b.WriteString(styleHint.Render("  Enter installs · Esc returns to the menu"))
 		if state.status != "" {
 			b.WriteString("\n")
 			b.WriteString(styleError.Render("  " + state.status))
@@ -368,11 +368,11 @@ func renderSkillsMenu(state *skillsMenuState, _ int) string {
 	}
 
 	if state.mode == skillsMenuUninstallPick {
-		b.WriteString(stylePaletteEmpty.Render(
+		b.WriteString(styleMeta.Render(
 			"  Remove an installed skill · Up/Down · Enter removes · Esc returns"))
 		b.WriteString("\n\n")
 		if len(state.uninstallRows) == 0 {
-			b.WriteString(stylePaletteEmpty.Render("  (no installed skills)"))
+			b.WriteString(styleEmpty.Render("  (no installed skills)"))
 			return strings.TrimRight(b.String(), "\n")
 		}
 		maxName := 6
@@ -393,7 +393,7 @@ func renderSkillsMenu(state *skillsMenuState, _ int) string {
 		}
 		if state.status != "" {
 			b.WriteByte('\n')
-			b.WriteString(stylePaletteEmpty.Render("  " + state.status))
+			b.WriteString(styleMeta.Render("  " + state.status))
 		}
 		return strings.TrimRight(b.String(), "\n")
 	}
@@ -415,7 +415,7 @@ func renderSkillsMenu(state *skillsMenuState, _ int) string {
 	}
 	if state.status != "" {
 		b.WriteByte('\n')
-		b.WriteString(stylePaletteEmpty.Render("  " + state.status))
+		b.WriteString(styleMeta.Render("  " + state.status))
 	}
 	return strings.TrimRight(b.String(), "\n")
 }

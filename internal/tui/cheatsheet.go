@@ -39,7 +39,7 @@ func renderCheatsheet(width int) string {
 		b.WriteString("  " + padded + " " + e.Action + "\n")
 	}
 	b.WriteString("\n")
-	b.WriteString(styleFooter.Render("  press any key to close"))
+	b.WriteString(styleFooter.Render("  esc to close"))
 
 	box := stylePaletteBox.Render(b.String())
 	if width > 0 {

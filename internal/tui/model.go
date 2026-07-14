@@ -288,10 +288,12 @@ type Model struct {
 	// In-flight tool-call buffer. The unified tool card is rendered on
 	// ToolResult — until then we hold the start metadata so the card
 	// header can carry the original preview + duration. Cleared on
-	// every ToolResult.
+	// every ToolResult. pendingToolStart is stamped on ToolStart so the
+	// card header can show how long a slow call took (see slowDurationTag).
 	pendingToolName    string
 	pendingToolPreview string
 	pendingToolArgs    string
+	pendingToolStart   time.Time
 
 	// Input history (Up/Down when palette is closed)
 	inputHistory    []string
@@ -1235,7 +1237,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Genuine resize (not the initial size on startup). Bubbletea's
 			// inline-mode renderer can't reliably clean up a bordered live
 			// frame when the width changes — the previous frame's border
-			// characters smear into scrollback as stair-step "╭───" ghosts
+			// characters smear into scrollback as stair-step "┌───" ghosts
 			// at every prior width. tea.ClearScreen wipes the visible
 			// viewport so the next View() draws clean.
 			//
@@ -2044,7 +2046,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// Clamp offset against the new filtered length so a
 				// narrower match-set doesn't leave the window stuck
 				// past the end of the list (would render an empty
-				// box with just the ↑ N more hint).
+				// box with just the ▲ N more hint).
 				if m.paletteOffset > len(m.paletteFiltered)-slashPaletteVisible {
 					m.paletteOffset = 0
 				}
@@ -2521,7 +2523,7 @@ func (m Model) View() string {
 	if card := m.renderLivePlanCard(); card != "" {
 		// Trailing blank gives the card breathing room from the
 		// thinking row below (during a turn) or the input box
-		// (between turns). Without it the card's `╰ plan updated`
+		// (between turns). Without it the card's `└ plan updated`
 		// footer sits flush against the spinner row.
 		parts = append(parts, card, "")
 	}
@@ -2666,7 +2668,7 @@ func (m Model) renderInputBox() string {
 }
 
 // renderInputFrame wraps the cmdline body in a closed bordered box with
-// rounded corners (╭/╮/╰/╯) and side borders (│) that spans the full
+// rounded corners (┌/┐/└/┘) and side borders (│) that spans the full
 // terminal width. The border uses colorDim (mid-gray) so the frame reads
 // brightly — same visual family as the welcome card border.
 func (m Model) renderInputFrame() string {
@@ -2679,8 +2681,8 @@ func (m Model) renderInputFrame() string {
 	if innerW < 1 {
 		innerW = 1
 	}
-	top := ruleStyle.Render("╭" + strings.Repeat("─", boxW-2) + "╮")
-	bot := ruleStyle.Render("╰" + strings.Repeat("─", boxW-2) + "╯")
+	top := ruleStyle.Render("┌" + strings.Repeat("─", boxW-2) + "┐")
+	bot := ruleStyle.Render("└" + strings.Repeat("─", boxW-2) + "┘")
 	body := m.renderInputBody(innerW)
 	border := ruleStyle.Render("│")
 	var bordered []string
@@ -3041,8 +3043,10 @@ func renderProviderToolCard(toolName, phase, detail string, termWidth int) strin
 
 	// Provider-hosted tools are lifecycle events, not local yottacode tool
 	// calls with args/output. Render them with the same modern card gutters as
-	// local tools, but keep the copy terse and action-oriented.
-	header := renderCardHeader(providerToolHeader(toolName))
+	// local tools, but keep the copy terse and action-oriented. Neutral gutter
+	// + no duration tag: there's no pass/fail result or measured elapsed to
+	// tint or time here.
+	header := renderCardHeader(providerToolHeader(toolName), neutralGutter(), 0, width)
 	body := providerToolBody(toolName, phase, detail)
 	gutter := styleCardGutter.Render("│ ")
 	gutterWidth := ansi.StringWidth(gutter)
@@ -3067,7 +3071,7 @@ func renderProviderToolCard(toolName, phase, detail string, termWidth int) strin
 		appendBodyLine(line)
 	}
 	footer := styleCardMeta.Render(providerToolFooter(toolName, phase))
-	return strings.Join(append(out, styleCardGutter.Render("╰ ")+footer), "\n")
+	return strings.Join(append(out, styleCardGutter.Render("└ ")+footer), "\n")
 }
 
 func providerToolBody(toolName, phase, detail string) []string {
@@ -3215,6 +3219,34 @@ func abbrevHome(p string) string {
 		return "~" + strings.TrimPrefix(p, home)
 	}
 	return p
+}
+
+// lastPathSegments returns the final n components of a slash path joined
+// by "/", e.g. lastPathSegments("/home/me/go/src/foo/bar", 2) == "foo/bar".
+// A path with n or fewer real components returns all of them; an empty
+// path or the root returns "". The status-bar location chip uses it to
+// show the working directory compactly — the full absolute path is too
+// wide for the footer, but the trailing "foo/bar" is enough to orient
+// which project you're in. Home abbreviation isn't applied: two trailing
+// segments are already short, and a leading "~" would just consume one.
+func lastPathSegments(p string, n int) string {
+	p = strings.TrimRight(p, "/")
+	if p == "" {
+		return ""
+	}
+	kept := make([]string, 0, strings.Count(p, "/")+1)
+	for _, s := range strings.Split(p, "/") {
+		if s != "" {
+			kept = append(kept, s)
+		}
+	}
+	if len(kept) == 0 {
+		return ""
+	}
+	if n > 0 && n < len(kept) {
+		kept = kept[len(kept)-n:]
+	}
+	return strings.Join(kept, "/")
 }
 
 // pasteThreshold is the byte count above which a bracketed paste gets
@@ -3515,14 +3547,18 @@ func (m Model) historyForward() (Model, bool) {
 // brighter than before, but a step below the Content segments so they
 // still read as dividers rather than content.
 //
-// The working directory is intentionally NOT shown here — it ate too
-// much horizontal space relative to its at-a-glance value, and the
-// splash header still surfaces it once at startup.
+// A location chip trails the context bar: the working directory's last
+// two path segments (e.g. "foo/bar") plus the git branch in parens
+// ("foo/bar (main)"). The full absolute path is too wide for the footer,
+// but the trailing two segments are enough to orient which project you're
+// in — and the branch answers "where am I committing" at a glance.
 //
-// On a narrow terminal the cascade is: drop the provider tag, then
-// strip the vendor prefix on the model name. The status dot, model,
-// and context bar are never dropped — they're the most critical
-// at-a-glance signals.
+// On a narrow terminal the cascade drops chips in ascending order of
+// at-a-glance value: provider tag, then the location chip (ambient — the
+// splash header showed dir+branch once at startup), then effort, then PR,
+// and finally the model's vendor prefix is stripped. The status dot,
+// model, and context bar are never dropped — they're the most critical
+// signals.
 func (m Model) renderStatus() string {
 	dot := renderConnDot(m.connection)
 	model := renderModelName(m.modelName)
@@ -3559,10 +3595,26 @@ func (m Model) renderStatus() string {
 		worktreeSeg = lipgloss.NewStyle().Foreground(colorContent).Render("worktree: " + m.worktree)
 	}
 
-	build := func(head string, includePR, includeEffort bool) string {
+	// Location chip: cwd's last two segments + git branch, e.g.
+	// "foo/bar (main)". Content-colored like the other trailing chips;
+	// plain text, no glyphs, per the no-emoji-in-TUI rule. Empty when the
+	// cwd is unknown (no chip rendered).
+	locSeg := ""
+	if dir := lastPathSegments(m.cwd, 2); dir != "" {
+		label := dir
+		if m.branch != "" {
+			label += " (" + m.branch + ")"
+		}
+		locSeg = lipgloss.NewStyle().Foreground(colorContent).Render(label)
+	}
+
+	build := func(head string, includeLoc, includePR, includeEffort bool) string {
 		segs := []string{head}
 		if ctx != "" {
 			segs = append(segs, ctx)
+		}
+		if includeLoc && locSeg != "" {
+			segs = append(segs, locSeg)
 		}
 		if includePR && pr != "" {
 			segs = append(segs, pr)
@@ -3585,27 +3637,34 @@ func (m Model) renderStatus() string {
 	if w <= 0 {
 		// No size info yet — render the full layout; truncation kicks in
 		// once the first WindowSizeMsg lands.
-		return build(first, true, true)
+		return build(first, true, true, true)
 	}
 
-	line := build(first, true, true)
+	line := build(first, true, true, true)
 	if lipgloss.Width(line) <= w {
 		return line
 	}
 	// Drop the provider tag first.
 	first = dot + "  " + model
-	line = build(first, true, true)
+	line = build(first, true, true, true)
 	if lipgloss.Width(line) <= w {
 		return line
 	}
-	// Drop optional chips under pressure before touching the core model
-	// and context signals. PR is more workflow-critical than effort, so
-	// effort disappears first, then PR if space is still tight.
-	line = build(first, true, false)
+	// Drop the location chip next — dir + branch is ambient orientation
+	// (the splash header already showed it once), so it yields before the
+	// workflow chips.
+	line = build(first, false, true, true)
 	if lipgloss.Width(line) <= w {
 		return line
 	}
-	line = build(first, false, false)
+	// Then the workflow chips, before touching the core model and context
+	// signals. PR is more workflow-critical than effort, so effort
+	// disappears first, then PR if space is still tight.
+	line = build(first, false, true, false)
+	if lipgloss.Width(line) <= w {
+		return line
+	}
+	line = build(first, false, false, false)
 	if lipgloss.Width(line) <= w {
 		return line
 	}
@@ -3614,7 +3673,7 @@ func (m Model) renderStatus() string {
 	if idx := strings.LastIndex(m.modelName, "/"); idx >= 0 && idx < len(m.modelName)-1 {
 		first = dot + "  " + renderModelName(m.modelName[idx+1:])
 	}
-	return build(first, false, false)
+	return build(first, false, false, false)
 }
 
 func (m Model) renderPRStatus() string {
@@ -4332,6 +4391,7 @@ func (m Model) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 		m.pendingToolName = e.ToolName
 		m.pendingToolPreview = e.Preview
 		m.pendingToolArgs = e.ArgsJSON
+		m.pendingToolStart = time.Now()
 		m.statsToolCalls++
 		m.toolsStarted++
 		m.turnToolCalls++
@@ -4380,17 +4440,26 @@ func (m Model) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 		if preview == "" {
 			preview = e.ToolName
 		}
-		m.appendLine(renderToolCard(e.ToolName, preview, m.pendingToolArgs, e.Output, e.Errored, m.width, m.cwd))
+		// Elapsed since ToolStart — the card header shows it only when the
+		// call was slow (see slowDurationTag). Guard the zero start (a
+		// ToolResult with no matching ToolStart shouldn't happen, but a
+		// huge bogus duration would be worse than none).
+		var toolDur time.Duration
+		if !m.pendingToolStart.IsZero() {
+			toolDur = time.Since(m.pendingToolStart)
+		}
+		m.appendLine(renderToolCard(e.ToolName, preview, m.pendingToolArgs, e.Output, e.Errored, m.width, m.cwd, toolDur))
 		m.pendingToolName = ""
 		m.pendingToolPreview = ""
 		m.pendingToolArgs = ""
+		m.pendingToolStart = time.Time{}
 		// Reset streamingMode so the next ContentToken's "first content
 		// after non-content" branch fires and inserts a blank line
 		// between the just-rendered tool card and the resumed
 		// assistant body. Without this, streamingMode stays at
 		// streamContent from before the tool call, the blank-line
 		// guard is skipped, and the assistant's content lands tight
-		// against the card's `╰ done` footer with no breathing room.
+		// against the card's `└ done` footer with no breathing room.
 		m.streamingMode = streamIdle
 	case agent.CwdChanged:
 		// enter_worktree / exit_worktree swapped the session's working
@@ -4683,7 +4752,7 @@ const proseMaxWidth = 120
 // scrollbackLeftMargin is a global column inset applied to every line
 // emitted to scrollback. It is 0: the conversation canvas is flush-left,
 // sharing a single column-0 edge with the chrome (startup box, input
-// frame, status bar). Structural glyphs — card gutters (╭ │ ╰), the
+// frame, status bar). Structural glyphs — card gutters (┌ │ └), the
 // user-echo chevron (❯), banners — sit at column 0; the 2-space text
 // indent users read comes from each element's own structure (the card
 // gutter's trailing space, styleAssistantBody's PaddingLeft(2)), NOT

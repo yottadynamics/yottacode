@@ -241,7 +241,7 @@ func cmdHelp(m Model, _ []string) (Model, tea.Cmd) {
 		for _, c := range m.customSlash {
 			line := fmt.Sprintf("  %-*s   %s", width, leftFor(c), c.Help)
 			if c.Source != "" {
-				line += stylePaletteEmpty.Render("  ·  " + displayPath(c.Source, m.cwd))
+				line += styleMeta.Render("  ·  " + displayPath(c.Source, m.cwd))
 			}
 			b.WriteString(line + "\n")
 		}
@@ -251,7 +251,7 @@ func cmdHelp(m Model, _ []string) (Model, tea.Cmd) {
 		for _, c := range m.skillSlash {
 			line := fmt.Sprintf("  %-*s   %s", width, leftFor(c), c.Help)
 			if c.Source != "" {
-				line += stylePaletteEmpty.Render("  ·  " + displayPath(c.Source, m.cwd))
+				line += styleMeta.Render("  ·  " + displayPath(c.Source, m.cwd))
 			}
 			b.WriteString(line + "\n")
 		}
@@ -974,9 +974,9 @@ func formatProviderModels(p *config.Provider, activeModel string) string {
 	case p.APIKeyEnv == "":
 		fmt.Fprintln(&b, "  API key: not required")
 	case os.Getenv(p.APIKeyEnv) != "":
-		fmt.Fprintf(&b, "  API key: ✔ %s set\n", p.APIKeyEnv)
+		fmt.Fprintf(&b, "  API key: ✓ %s set\n", p.APIKeyEnv)
 	default:
-		fmt.Fprintf(&b, "  API key: ✘ %s missing — run /provider add or set in ~/.yottacode/.env\n", p.APIKeyEnv)
+		fmt.Fprintf(&b, "  API key: ✗ %s missing — run /provider add or set in ~/.yottacode/.env\n", p.APIKeyEnv)
 	}
 	return strings.TrimRight(b.String(), "\n")
 }
@@ -1328,7 +1328,7 @@ func cmdClear(m Model, _ []string) (Model, tea.Cmd) {
 //
 // Tool calls are rendered via renderToolCard — the same path the live
 // transcript uses on agent.ToolResult — so a resumed session shows
-// proper ╭/│/╰ cards instead of a bare orange "▸ name(...)" one-liner.
+// proper ┌/│/└ cards instead of a bare orange "▸ name(...)" one-liner.
 // Tools missing from the registry (renamed, removed, or registered
 // only in a different binary) fall back to a one-line preview so the
 // rebuild never crashes on an unknown name.
@@ -1368,7 +1368,7 @@ func toolResultsByCallID(msgs []adapter.Message) map[string]string {
 // during a session replay. Resolves the tool via the registry to call
 // PreviewCall (matching the live header), then runs the full
 // renderToolCard with the persisted tool result as the output —
-// reproducing the canonical ╭ header / │ body / ╰ footer shape live
+// reproducing the canonical ┌ header / │ body / └ footer shape live
 // execution emits on agent.ToolResult.
 //
 // write_file is special-cased to reproduce the live two-card stack:
@@ -1397,7 +1397,10 @@ func renderRebuiltToolCard(m *Model, tc adapter.ToolCall, result string) string 
 			return styleToolCall.Render("[tool] " + tc.Name + "(...)")
 		}
 	}
-	summary := renderToolCard(tc.Name, preview, tc.ArgsJSON, result, false, m.width, m.cwd)
+	// Duration 0: replayed cards carry no timing — the persisted tool
+	// message stores only the result content, not how long the call took
+	// (same reason errored is hard-coded false above). No tag renders.
+	summary := renderToolCard(tc.Name, preview, tc.ArgsJSON, result, false, m.width, m.cwd, 0)
 	if tc.Name == "write_file" {
 		if body, ok := renderRebuiltWriteFileBodyCard(tc.ArgsJSON, result); ok {
 			return body + "\n\n" + summary
@@ -1407,7 +1410,7 @@ func renderRebuiltToolCard(m *Model, tc adapter.ToolCall, result string) string 
 }
 
 // renderRebuiltWriteFileBodyCard renders the replay equivalent of the
-// pre-approval body emit: same ╭/│/╰ shape (header + highlighted
+// pre-approval body emit: same ┌/│/└ shape (header + highlighted
 // content + footer) as emitWriteFileBodyToScrollback, but the footer
 // reflects the actual decision recorded in the session ("approved"
 // when the file was written, "denied" when the agent recorded
@@ -1428,7 +1431,7 @@ func renderRebuiltWriteFileBodyCard(argsJSON, result string) (string, bool) {
 		footer = "denied"
 	}
 	rows := []string{
-		styleCardGutter.Render("╭ ") +
+		styleCardGutter.Render("┌ ") +
 			styleCardHeader.Render("Write("+a.Path+")") + " " +
 			styleCardMeta.Render(fmt.Sprintf("(%d bytes · %d lines)", len(a.Content), lines)),
 	}
@@ -1438,7 +1441,7 @@ func renderRebuiltWriteFileBodyCard(argsJSON, result string) (string, bool) {
 	for _, line := range strings.Split(highlighted, "\n") {
 		rows = append(rows, gutter+line)
 	}
-	rows = append(rows, styleCardGutter.Render("╰ ")+styleCardMeta.Render(footer))
+	rows = append(rows, styleCardGutter.Render("└ ")+styleCardMeta.Render(footer))
 	return strings.Join(rows, "\n"), true
 }
 

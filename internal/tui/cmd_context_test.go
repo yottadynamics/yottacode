@@ -45,7 +45,7 @@ func TestSlash_ContextRendersAllSections(t *testing.T) {
 		"/memory",
 		"Skills",
 		"/skills",
-		"press any key to exit",
+		"esc to close",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("/context output missing %q\n---\n%s", want, got)

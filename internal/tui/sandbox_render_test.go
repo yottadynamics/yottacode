@@ -62,14 +62,14 @@ func TestRenderStartupBox_OmitsSandboxAndChecks(t *testing.T) {
 
 func TestRenderProviderToolCard(t *testing.T) {
 	got := stripANSI(renderProviderToolCard("web_search", "searching", "", 80))
-	for _, want := range []string{"╭ xAI Web Search", "│ searching the web…", "╰ hosted web search"} {
+	for _, want := range []string{"┌ xAI Web Search", "│ searching the web…", "└ hosted web search"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("provider tool card missing %q:\n%s", want, got)
 		}
 	}
 
 	got = stripANSI(renderProviderToolCard("x_search", "in_progress", "", 80))
-	for _, want := range []string{"╭ xAI X Search", "│ searching X…", "╰ hosted X search"} {
+	for _, want := range []string{"┌ xAI X Search", "│ searching X…", "└ hosted X search"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("provider tool card missing %q:\n%s", want, got)
 		}

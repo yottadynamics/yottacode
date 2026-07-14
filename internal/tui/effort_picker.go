@@ -147,7 +147,7 @@ func commitEffortChoice(m Model, level string) (Model, tea.Cmd) {
 	// Warn when the chosen level won't actually do anything on this
 	// model, so a no-op isn't mistaken for "applied."
 	if reason := adapter.EffortInapplicableReason(cfg, m.providerProfile.Provider); reason != "" {
-		m.appendLine(stylePaletteEmpty.Render("  (no-op on this model — " + reason + ")"))
+		m.appendLine(styleMeta.Render("  (no-op on this model — " + reason + ")"))
 	}
 	return m, nil
 }
@@ -180,7 +180,7 @@ func renderEffortPicker(p *effortPickerState) string {
 			marker = cursorArrow
 			label = stylePaletteSelected.Render(padOrTruncate(e.label, 8))
 		case e.level == p.current:
-			marker = stylePaletteEmpty.Render("· ")
+			marker = styleMeta.Render("· ")
 			label = stylePaletteItem.Render(padOrTruncate(e.label, 8))
 		default:
 			marker = "  "
@@ -189,12 +189,12 @@ func renderEffortPicker(p *effortPickerState) string {
 		b.WriteString(marker)
 		b.WriteString(label)
 		b.WriteString("  ")
-		b.WriteString(stylePaletteEmpty.Render(e.desc))
+		b.WriteString(styleMeta.Render(e.desc))
 		b.WriteByte('\n')
 	}
 	if p.note != "" {
 		b.WriteByte('\n')
-		b.WriteString(stylePaletteEmpty.Render("note: " + p.note))
+		b.WriteString(styleMeta.Render("note: " + p.note))
 		b.WriteByte('\n')
 	}
 	return strings.TrimRight(b.String(), "\n")

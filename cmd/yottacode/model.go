@@ -35,7 +35,7 @@ func loadEnvFiles() {
 }
 
 // printAPIKeyStatus writes a one-line "API key" status to out for
-// the given provider: ✔ when the env var is set, ✘ when it's
+// the given provider: ✓ when the env var is set, ✗ when it's
 // missing, or "not required" for providers like Ollama that don't
 // declare an api_key_env. Used by `model list` so users can see
 // whether a configured provider is wired up end-to-end without
@@ -45,9 +45,9 @@ func printAPIKeyStatus(out io.Writer, p config.Provider) {
 	case p.APIKeyEnv == "":
 		fmt.Fprintln(out, "  API key: not required")
 	case os.Getenv(p.APIKeyEnv) != "":
-		fmt.Fprintf(out, "  API key: ✔ %s set\n", p.APIKeyEnv)
+		fmt.Fprintf(out, "  API key: ✓ %s set\n", p.APIKeyEnv)
 	default:
-		fmt.Fprintf(out, "  API key: ✘ %s missing — run `yottacode provider add` or set in ~/.yottacode/.env\n", p.APIKeyEnv)
+		fmt.Fprintf(out, "  API key: ✗ %s missing — run `yottacode provider add` or set in ~/.yottacode/.env\n", p.APIKeyEnv)
 	}
 }
 

@@ -73,10 +73,11 @@ type skillEntry struct {
 // streaming.
 func cmdContext(m Model, _ []string) (Model, tea.Cmd) {
 	// Trailing blank line lifts the dismiss hint off the last section,
-	// then a muted "press any key to exit" cues that the overlay owns
-	// input until dismissed (any KeyMsg closes it; see Update).
+	// then a muted "esc to close" cues that the overlay owns input until
+	// dismissed (any KeyMsg closes it, but the hint names esc — the key
+	// people reach for — matching /usage and the cheatsheet; see Update).
 	report := renderContextReport(&m) +
-		"\n\n" + stylePaletteEmpty.Render("press any key to exit")
+		"\n\n" + styleHint.Render("esc to close")
 	// Indent the whole block 2 spaces so every line — headers included,
 	// not just the already-indented legend/detail rows — clears the
 	// overlay's left edge uniformly.
@@ -161,12 +162,12 @@ func renderContextReport(m *Model) string {
 
 	out.WriteString(renderContextSegmentedBar(buckets, window, m.width))
 	out.WriteString("  ")
-	out.WriteString(stylePaletteEmpty.Render(contextPercentLabel(used, window)))
+	out.WriteString(styleMeta.Render(contextPercentLabel(used, window)))
 	out.WriteString("\n")
-	out.WriteString(stylePaletteEmpty.Render(contextSummaryLine(used, window, m.modelName)))
+	out.WriteString(styleMeta.Render(contextSummaryLine(used, window, m.modelName)))
 	out.WriteString("\n\n")
 
-	out.WriteString(stylePaletteEmpty.Render("Estimated usage by category"))
+	out.WriteString(styleMeta.Render("Estimated usage by category"))
 	out.WriteString("\n")
 	out.WriteString(renderContextLegend(buckets, window))
 
@@ -432,18 +433,18 @@ func contextPercentLabel(used, window int) string {
 func renderContextMCPSection(m *Model) string {
 	var out strings.Builder
 	out.WriteString(styleSplashTitle.Render("MCP tools"))
-	out.WriteString(stylePaletteEmpty.Render("  · /mcp"))
+	out.WriteString(styleMeta.Render("  · /mcp"))
 	out.WriteString("\n")
 	if m.mcpManager == nil {
 		out.WriteString("  ")
-		out.WriteString(stylePaletteEmpty.Render(
+		out.WriteString(styleMeta.Render(
 			"(no MCP servers configured — run /mcp add)"))
 		return out.String()
 	}
 	statuses := m.mcpManager.Statuses()
 	if len(statuses) == 0 {
 		out.WriteString("  ")
-		out.WriteString(stylePaletteEmpty.Render(
+		out.WriteString(styleMeta.Render(
 			"(no MCP servers configured — run /mcp add)"))
 		return out.String()
 	}
@@ -460,13 +461,13 @@ func renderContextMCPSection(m *Model) string {
 			prefix = "└ "
 		}
 		out.WriteString("  ")
-		out.WriteString(stylePaletteEmpty.Render(prefix))
+		out.WriteString(styleMeta.Render(prefix))
 		var statusTag string
 		switch {
 		case s.Err != nil:
 			statusTag = styleError.Render("error")
 		default:
-			statusTag = stylePaletteEmpty.Render(
+			statusTag = styleMeta.Render(
 				fmt.Sprintf("%d tools", s.ToolCount))
 		}
 		fmt.Fprintf(&out, "%-*s   %s\n", nameWidth, s.Name, statusTag)
@@ -481,11 +482,11 @@ func renderContextMCPSection(m *Model) string {
 func renderContextMemorySection(files []memoryFileEntry) string {
 	var out strings.Builder
 	out.WriteString(styleSplashTitle.Render("Memory files"))
-	out.WriteString(stylePaletteEmpty.Render("  · /memory"))
+	out.WriteString(styleMeta.Render("  · /memory"))
 	out.WriteString("\n")
 	if len(files) == 0 {
 		out.WriteString("  ")
-		out.WriteString(stylePaletteEmpty.Render(
+		out.WriteString(styleMeta.Render(
 			"(no memory files — USER.md, YOTTACODE.md, or MEMORY.md will appear here)"))
 		return out.String()
 	}
@@ -501,7 +502,7 @@ func renderContextMemorySection(files []memoryFileEntry) string {
 			prefix = "└ "
 		}
 		out.WriteString("  ")
-		out.WriteString(stylePaletteEmpty.Render(prefix))
+		out.WriteString(styleMeta.Render(prefix))
 		fmt.Fprintf(&out, "%-*s   %s tokens\n",
 			pathWidth, f.label, formatTokens(f.tokens))
 	}
@@ -522,11 +523,11 @@ func renderContextMemorySection(files []memoryFileEntry) string {
 func renderContextSkillsSection(rows []skillEntry) string {
 	var out strings.Builder
 	out.WriteString(styleSplashTitle.Render("Skills"))
-	out.WriteString(stylePaletteEmpty.Render("  · /skills · enabled rows sum to the Skills bucket above; bodies on demand"))
+	out.WriteString(styleMeta.Render("  · /skills · enabled rows sum to the Skills bucket above; bodies on demand"))
 	out.WriteString("\n")
 	if len(rows) == 0 {
 		out.WriteString("  ")
-		out.WriteString(stylePaletteEmpty.Render(
+		out.WriteString(styleMeta.Render(
 			"(no skills loaded — place SKILL.md under ~/.yottacode/skills/ or .yottacode/skills/)"))
 		return out.String()
 	}
@@ -558,7 +559,7 @@ func renderContextSkillsSection(rows []skillEntry) string {
 			out.WriteString("\n")
 		}
 		out.WriteString("  ")
-		out.WriteString(stylePaletteEmpty.Render(g))
+		out.WriteString(styleMeta.Render(g))
 		out.WriteString("\n")
 		entries := groups[g]
 		nameWidth := 0
@@ -567,15 +568,15 @@ func renderContextSkillsSection(rows []skillEntry) string {
 				nameWidth = w
 			}
 		}
-		onDemandTag := "  " + stylePaletteEmpty.Render("(on demand)")
-		offValue := stylePaletteEmpty.Render("off · not loaded")
+		onDemandTag := "  " + styleMeta.Render("(on demand)")
+		offValue := styleEmpty.Render("off · not loaded")
 		for i, e := range entries {
 			prefix := "├ "
 			if i == len(entries)-1 {
 				prefix = "└ "
 			}
 			out.WriteString("  ")
-			out.WriteString(stylePaletteEmpty.Render(prefix))
+			out.WriteString(styleMeta.Render(prefix))
 			// Disabled skill: nothing in the window until /skills toggles it
 			// on, so show its off state instead of a phantom token figure.
 			if !e.onDemand && !e.enabled {

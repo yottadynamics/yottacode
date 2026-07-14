@@ -467,7 +467,7 @@ func renderMCPPicker(p *mcpPickerState, width int) string {
 	case mcpLogsMode:
 		body = renderMCPServerList(p, "View server logs", false)
 	default:
-		body = stylePaletteEmpty.Render("(unknown picker state)")
+		body = styleEmpty.Render("(unknown picker state)")
 	}
 	footerText := "enter confirm · esc back · up/down navigate"
 	if p.mode == mcpAddMode {
@@ -505,7 +505,7 @@ func renderMCPServerList(p *mcpPickerState, title string, isRemove bool) string 
 	b.WriteString(renderMenuHeader(title, desc))
 	b.WriteString("\n")
 	if len(p.servers) == 0 {
-		b.WriteString(stylePaletteEmpty.Render("  no MCP servers configured"))
+		b.WriteString(styleEmpty.Render("  no MCP servers configured"))
 		return b.String()
 	}
 	for i, srv := range p.servers {

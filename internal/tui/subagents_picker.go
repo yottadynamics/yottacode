@@ -216,7 +216,7 @@ func renderSubagentsPickerTasks(state *subagentsPickerState, _ int) string {
 	)
 	if len(state.tasks) == 0 {
 		return header + "\n" +
-			stylePaletteEmpty.Render("  no subagent tasks this session — call the Agent tool from your next prompt to spawn one") +
+			styleEmpty.Render("  no subagent tasks this session — call the Agent tool from your next prompt to spawn one") +
 			"\n" + renderSubagentsPickerFooter()
 	}
 
@@ -269,7 +269,7 @@ func renderSubagentsPickerTasks(state *subagentsPickerState, _ int) string {
 		}) + "\n"
 	}
 	if state.status != "" {
-		body += "\n" + stylePaletteEmpty.Render("  "+state.status)
+		body += "\n" + styleMeta.Render("  "+state.status)
 	}
 	body += "\n" + renderSubagentsPickerFooter()
 	return body
@@ -289,7 +289,7 @@ func renderSubagentsPickerTypes(state *subagentsPickerState, _ int) string {
 	)
 	if len(state.types) == 0 {
 		return header + "\n" +
-			stylePaletteEmpty.Render("  no agent types registered") +
+			styleEmpty.Render("  no agent types registered") +
 			"\n" + renderSubagentsPickerFooter()
 	}
 	// Compute label width from the longest agent name + source tag.
@@ -321,7 +321,7 @@ func renderSubagentsPickerTypes(state *subagentsPickerState, _ int) string {
 		}) + "\n"
 	}
 	if state.status != "" {
-		body += "\n" + stylePaletteEmpty.Render("  "+state.status)
+		body += "\n" + styleMeta.Render("  "+state.status)
 	}
 	body += "\n" + renderSubagentsPickerFooter()
 	return body

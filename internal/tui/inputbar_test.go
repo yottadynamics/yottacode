@@ -11,14 +11,15 @@ import (
 )
 
 // The input is borderless. The earlier design wrapped it in a
-// brand-colored rounded box that drowned out everything inside; the
-// chevron + placeholder/content carry the focal weight on their own.
-// Catches regressions that re-add a rounded-frame border.
-func TestInput_HasNoRoundedBorder(t *testing.T) {
+// brand-colored box that drowned out everything inside; the chevron +
+// placeholder/content carry the focal weight on their own. Catches
+// regressions that re-add a frame border — rounded (╭╮╰╯) or sharp
+// (┌┐└┘).
+func TestInput_HasNoBorder(t *testing.T) {
 	m := newTestModel(t)
 	view := m.renderInputBox()
-	if strings.ContainsAny(view, "╭╮╯╰│") {
-		t.Errorf("input should be borderless; rounded-frame chars found: %q", view)
+	if strings.ContainsAny(view, "╭╮╯╰┌┐└┘│") {
+		t.Errorf("input should be borderless; frame chars found: %q", view)
 	}
 }
 
@@ -158,6 +159,54 @@ func TestStatusBar_NoWorktreeChipOnMainCheckout(t *testing.T) {
 	}
 }
 
+// The status bar shows a compact location chip — the working directory's
+// last two path segments plus the git branch in parens — so users see at
+// a glance which project and branch edits land in, without the full
+// absolute path eating the footer.
+func TestStatusBar_RendersLocationChip(t *testing.T) {
+	m := newTestModel(t)
+	m.cwd = "/home/me/go/src/foo/bar"
+	m.branch = "main"
+	m, _ = applyMsg(m, tea.WindowSizeMsg{Width: 120, Height: 24})
+	plain := stripANSI(m.renderStatus())
+	if !strings.Contains(plain, "foo/bar (main)") {
+		t.Errorf("status bar should include the location chip 'foo/bar (main)': %q", plain)
+	}
+}
+
+// With no branch (detached / not a repo) the chip still shows the dir,
+// but drops the empty parens.
+func TestStatusBar_LocationChipShowsDirWithoutBranch(t *testing.T) {
+	m := newTestModel(t)
+	m.cwd = "/home/me/go/src/foo/bar"
+	m.branch = ""
+	m, _ = applyMsg(m, tea.WindowSizeMsg{Width: 120, Height: 24})
+	plain := stripANSI(m.renderStatus())
+	if !strings.Contains(plain, "foo/bar") {
+		t.Errorf("location chip should still show the dir when no branch: %q", plain)
+	}
+	if strings.Contains(plain, "foo/bar (") {
+		t.Errorf("no branch → no parens: %q", plain)
+	}
+}
+
+// Under narrow-terminal pressure the location chip drops early (it's
+// ambient orientation), but the model name and ctx segment — the critical
+// signals — must survive every width.
+func TestStatusBar_LocationChipDropsOnNarrow(t *testing.T) {
+	m := newTestModel(t)
+	m.cwd = "/home/me/go/src/some-long-project/deeply-nested-dir"
+	m.branch = "feature-really-long-branch-name"
+	m, _ = applyMsg(m, tea.WindowSizeMsg{Width: 44, Height: 24})
+	plain := stripANSI(m.renderStatus())
+	if strings.Contains(plain, "feature-really-long-branch-name") {
+		t.Errorf("narrow status bar should drop the location chip: %q", plain)
+	}
+	if !strings.Contains(plain, "test-model") || !strings.Contains(plain, "ctx ") {
+		t.Errorf("narrow status bar must keep model + ctx: %q", plain)
+	}
+}
+
 // When the current branch has an open PR, the status bar shows the PR
 // number as a compact chip so users know which review thread edits target.
 func TestStatusBar_RendersCurrentPRChip(t *testing.T) {
@@ -290,11 +339,11 @@ func TestInput_EnclosedInBorderedBox(t *testing.T) {
 	}
 	above := strings.TrimSpace(lines[cmdIdx-1])
 	below := strings.TrimSpace(lines[cmdIdx+1])
-	if !strings.HasPrefix(above, "╭") || !strings.HasSuffix(above, "╮") {
-		t.Errorf("top border should be ╭...╮; got %q", above)
+	if !strings.HasPrefix(above, "┌") || !strings.HasSuffix(above, "┐") {
+		t.Errorf("top border should be ┌...┐; got %q", above)
 	}
-	if !strings.HasPrefix(below, "╰") || !strings.HasSuffix(below, "╯") {
-		t.Errorf("bottom border should be ╰...╯; got %q", below)
+	if !strings.HasPrefix(below, "└") || !strings.HasSuffix(below, "┘") {
+		t.Errorf("bottom border should be └...┘; got %q", below)
 	}
 	cmdRow := strings.TrimSpace(lines[cmdIdx])
 	if !strings.HasPrefix(cmdRow, "│") || !strings.HasSuffix(cmdRow, "│") {

@@ -4,6 +4,10 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
 )
 
 // list_project_structure emits "marker\tsize\tmtime\trelpath" lines.
@@ -177,8 +181,8 @@ func TestToolCard_ErroredOutputRendersRaw(t *testing.T) {
 	}
 }
 
-// renderToolCard composes the full card. The header gutter (╭),
-// per-line body gutter (│), and footer gutter (╰) all need to be
+// renderToolCard composes the full card. The header gutter (┌),
+// per-line body gutter (│), and footer gutter (└) all need to be
 // present so the user gets the unified shape.
 func TestRenderToolCard_StructureInvariants(t *testing.T) {
 	got := stripANSI(renderToolCard(
@@ -189,14 +193,15 @@ func TestRenderToolCard_StructureInvariants(t *testing.T) {
 		false,
 		80,
 		"",
+		0,
 	))
-	if !strings.HasPrefix(got, "╭ list_dir(.)") {
-		t.Errorf("card should open with `╭ <preview>`: %q", got)
+	if !strings.HasPrefix(got, "┌ list_dir(.)") {
+		t.Errorf("card should open with `┌ <preview>`: %q", got)
 	}
 	if !strings.Contains(got, "│ bin/") || !strings.Contains(got, "│ main.go") {
 		t.Errorf("card body should carry list_dir entries: %q", got)
 	}
-	if !strings.Contains(got, "╰ 2 entries") {
+	if !strings.Contains(got, "└ 2 entries") {
 		t.Errorf("card footer should show entry count: %q", got)
 	}
 }
@@ -216,12 +221,13 @@ func TestRenderToolCard_EditFileRendersDiffBody(t *testing.T) {
 		false,
 		80,
 		"",
+		0,
 	))
 	// Header: single line with the invocation, no embedded `-`/`+` rows.
 	// toolHeader rewrites the raw preview into "Edit(path, scope)" once
 	// argsJSON is available; the diff still goes in the body.
 	header := strings.SplitN(got, "\n", 2)[0]
-	if !strings.HasPrefix(header, "╭ Edit(main.go, single)") {
+	if !strings.HasPrefix(header, "┌ Edit(main.go, single)") {
 		t.Errorf("header should be the invocation only: %q", header)
 	}
 	if strings.Contains(header, "- package") || strings.Contains(header, "+ package") {
@@ -235,7 +241,7 @@ func TestRenderToolCard_EditFileRendersDiffBody(t *testing.T) {
 		t.Errorf("body should carry the gutter-prefixed `+ new` row: %q", got)
 	}
 	// Footer: the result message comes through unchanged.
-	if !strings.Contains(got, "╰ edited /abs/main.go: 1 replacement(s)") {
+	if !strings.Contains(got, "└ edited /abs/main.go: 1 replacement(s)") {
 		t.Errorf("footer should carry the edit result: %q", got)
 	}
 }
@@ -252,11 +258,12 @@ func TestRenderToolCard_EditFileFallsBackWhenArgsMissing(t *testing.T) {
 		false,
 		80,
 		"",
+		0,
 	))
-	if !strings.HasPrefix(got, "╭ edit_file(main.go, single)") {
+	if !strings.HasPrefix(got, "┌ edit_file(main.go, single)") {
 		t.Errorf("header should still render: %q", got)
 	}
-	if !strings.Contains(got, "╰ edited /abs/main.go: 1 replacement(s)") {
+	if !strings.Contains(got, "└ edited /abs/main.go: 1 replacement(s)") {
 		t.Errorf("footer should still render: %q", got)
 	}
 }
@@ -383,7 +390,7 @@ func TestGitDestructiveWarning_Extraction(t *testing.T) {
 }
 
 // End-to-end: a destructive git invocation renders with a single-line
-// `╭ Git(...)` header AND a "⚠ DESTRUCTIVE FLAG(S)" body row sitting
+// `┌ Git(...)` header AND a "⚠ DESTRUCTIVE FLAG(S)" body row sitting
 // under the gutter — the failure mode we're avoiding is the warning
 // floating above the body without a `│` prefix.
 func TestRenderToolCard_GitDestructiveWarningInBody(t *testing.T) {
@@ -397,14 +404,15 @@ func TestRenderToolCard_GitDestructiveWarningInBody(t *testing.T) {
 		false,
 		80,
 		"",
+		0,
 	))
-	if !strings.Contains(got, "╭ Git(push --force origin main)") {
-		t.Errorf("header should be single-line `╭ Git(...)`, got: %q", got)
+	if !strings.Contains(got, "┌ Git(push --force origin main)") {
+		t.Errorf("header should be single-line `┌ Git(...)`, got: %q", got)
 	}
 	if !strings.Contains(got, "│ ⚠ DESTRUCTIVE FLAG(S): --force") {
 		t.Errorf("warning should render as a body row with the gutter prefix, got: %q", got)
 	}
-	if !strings.Contains(got, "╰ exit 0") {
+	if !strings.Contains(got, "└ exit 0") {
 		t.Errorf("footer should surface the exit code, got: %q", got)
 	}
 }
@@ -412,7 +420,7 @@ func TestRenderToolCard_GitDestructiveWarningInBody(t *testing.T) {
 // Regression: if the agent submits an arg with an embedded newline
 // (`{"path":".\n"}` was observed in the wild for list_dir), the
 // header used to render across two rows and the second row had no
-// `╭ ` gutter — the card's box shape collapsed. clipHeader strips
+// `┌ ` gutter — the card's box shape collapsed. clipHeader strips
 // ASCII control chars so any tool's header stays single-row.
 func TestToolHeader_StripsControlCharsInArgs(t *testing.T) {
 	cases := []struct {
@@ -571,7 +579,7 @@ func TestRenderToolCard_TruncatesLongBody(t *testing.T) {
 		entries = append(entries, "f\tfile"+strings.Repeat("x", i))
 	}
 	out := strings.Join(entries, "\n") + "\n"
-	got := stripANSI(renderToolCard("list_dir", "list_dir(.)", "", out, false, 80, ""))
+	got := stripANSI(renderToolCard("list_dir", "list_dir(.)", "", out, false, 80, "", 0))
 	if !strings.Contains(got, "…15 more line(s)") {
 		t.Errorf("card should signal truncation past cardBodyLineCap: %q", got)
 	}
@@ -596,7 +604,7 @@ func TestRenderToolCard_RunBashKeepsTailOnOverflow(t *testing.T) {
 	}
 	lines = append(lines, "FAIL: TestSomething (0.03s)")
 	out := "exit=1\n--- stdout ---\n" + strings.Join(lines, "\n") + "\n--- stderr ---\n"
-	got := stripANSI(renderToolCard("run_bash", "run_bash: go test ./...", "", out, false, 80, ""))
+	got := stripANSI(renderToolCard("run_bash", "run_bash: go test ./...", "", out, false, 80, "", 0))
 
 	if !strings.Contains(got, "…16 earlier line(s)") {
 		t.Errorf("tail-truncated card should elide the head with an 'earlier' marker: %q", got)
@@ -612,5 +620,92 @@ func TestRenderToolCard_RunBashKeepsTailOnOverflow(t *testing.T) {
 	verdictIdx := strings.Index(got, "FAIL: TestSomething")
 	if markerIdx == -1 || verdictIdx == -1 || markerIdx > verdictIdx {
 		t.Errorf("elision marker should precede the kept tail: %q", got)
+	}
+}
+
+// A failed tool call tints the whole ┌ │ └ frame Error red so a bad card
+// is findable at a glance while scanning back. Forced color profile —
+// under `go test` lipgloss renders plain ASCII, which would make the
+// tinted and neutral gutters indistinguishable.
+func TestRenderToolCard_ErroredGutterTintsFrameRed(t *testing.T) {
+	prevProfile := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	lipgloss.SetHasDarkBackground(true)
+	t.Cleanup(func() { lipgloss.SetColorProfile(prevProfile) })
+
+	got := renderToolCard("run_bash", "run_bash: ./x", `{"command":"./x"}`,
+		"exit=1\n--- stdout ---\n--- stderr ---\nboom\n", true, 80, "", 0)
+
+	for _, glyph := range []string{"┌ ", "│ ", "└ "} {
+		if want := styleCardErrGutter.Render(glyph); !strings.Contains(got, want) {
+			t.Errorf("errored card should tint %q Error-red; not found in:\n%q", glyph, got)
+		}
+	}
+	if strings.Contains(got, styleCardGutter.Render("└ ")) {
+		t.Errorf("errored card's └ must be Error-red, not neutral:\n%q", got)
+	}
+}
+
+// A clean tool call keeps the whole frame neutral Dim — no state color.
+// (The closing └ used to tint Success green, but a green corner on nearly
+// every card was too much green; the red error frame carries the signal.)
+func TestRenderToolCard_SuccessGutterIsNeutral(t *testing.T) {
+	prevProfile := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	lipgloss.SetHasDarkBackground(true)
+	t.Cleanup(func() { lipgloss.SetColorProfile(prevProfile) })
+
+	got := renderToolCard("list_dir", "list_dir(.)", "", "d\tbin\nf\tmain.go\n", false, 80, "", 0)
+
+	for _, glyph := range []string{"┌ ", "│ ", "└ "} {
+		if want := styleCardGutter.Render(glyph); !strings.Contains(got, want) {
+			t.Errorf("clean card should keep %q neutral Dim; not found in:\n%q", glyph, got)
+		}
+	}
+	if strings.Contains(got, styleCardErrGutter.Render("└ ")) {
+		t.Errorf("clean card must not use the Error-red corner:\n%q", got)
+	}
+}
+
+// A slow call (≥ slowCallThreshold) surfaces a right-aligned duration tag
+// in the header; the tag is padded toward the card's right edge rather
+// than butted against the invocation text.
+func TestRenderToolCard_SlowCallShowsDurationTag(t *testing.T) {
+	got := stripANSI(renderToolCard("run_bash", "run_bash: go build", `{"command":"go build"}`,
+		"exit=0\n--- stdout ---\n--- stderr ---\n", false, 80, "", 4*time.Second))
+	header := strings.SplitN(got, "\n", 2)[0]
+	if !strings.Contains(header, "4s") {
+		t.Errorf("slow call (4s ≥ threshold) should show a duration tag; header = %q", header)
+	}
+	if !strings.HasSuffix(strings.TrimRight(header, " "), "4s") {
+		t.Errorf("duration tag should sit at the right edge of the header; header = %q", header)
+	}
+	if strings.Contains(header, "build 4s") {
+		t.Errorf("duration tag should be right-aligned, not adjacent to the invocation; header = %q", header)
+	}
+}
+
+// A sub-second call (the common case) renders no duration tag — the
+// header ends with the invocation's closing paren, no timing noise.
+func TestRenderToolCard_FastCallHidesDurationTag(t *testing.T) {
+	got := stripANSI(renderToolCard("run_bash", "run_bash: echo hi", `{"command":"echo hi"}`,
+		"exit=0\n--- stdout ---\nhi\n--- stderr ---\n", false, 80, "", 200*time.Millisecond))
+	header := strings.SplitN(got, "\n", 2)[0]
+	if !strings.HasSuffix(strings.TrimRight(header, " "), ")") {
+		t.Errorf("sub-second call header should end with the invocation, no tag; header = %q", header)
+	}
+}
+
+// slowDurationTag is silent below the threshold and speaks formatDuration's
+// vocabulary at or above it.
+func TestSlowDurationTag_Threshold(t *testing.T) {
+	if got := slowDurationTag(999 * time.Millisecond); got != "" {
+		t.Errorf("just under 1s should be silent; got %q", got)
+	}
+	if got := slowDurationTag(time.Second); got == "" {
+		t.Errorf("exactly 1s should render a tag; got empty")
+	}
+	if got := slowDurationTag(4 * time.Second); got != "4s" {
+		t.Errorf("4s tag = %q, want %q", got, "4s")
 	}
 }

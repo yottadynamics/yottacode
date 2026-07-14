@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
@@ -21,11 +22,11 @@ import (
 // Once the user learns this shape they can scan a long conversation
 // by skimming card headers.
 //
-//	╭ list_dir(.)                                                 9ms
+//	┌ list_dir(.)                                                 9ms
 //	│ bin/
 //	│ pkg/
 //	│ src/
-//	╰ 3 entries
+//	└ 3 entries
 //
 // Per-tool customizers (toolBodyLines, toolFooter) extract a
 // readable body + footer summary from the raw tool output. Falls
@@ -37,6 +38,12 @@ const (
 	cardMaxWidthCap   = 120 // hard cap; finer cap is terminalWidth - 4
 	cardMinUsefulCols = 40  // width below which we don't bother padding the duration
 )
+
+// slowCallThreshold hides the header duration tag for calls that finish
+// faster than this. Sub-second calls dominate and their timing is noise;
+// the tag surfaces only once a call is slow enough that "how long did
+// that take?" becomes a real question. See slowDurationTag.
+const slowCallThreshold = time.Second
 
 // renderToolCard renders a complete tool-call card from the tool's
 // invocation preview, output, and error state. termWidth is the
@@ -51,7 +58,7 @@ const (
 // grep/glob body lines, and footers that bake in absolute paths all
 // collapse the cwd prefix to `.` for readability. Pass "" to disable
 // shortening (test fixtures, replays without a known cwd).
-func renderToolCard(toolName, preview, argsJSON, output string, errored bool, termWidth int, cwd string) string {
+func renderToolCard(toolName, preview, argsJSON, output string, errored bool, termWidth int, cwd string, dur time.Duration) string {
 	width := cardMaxWidthCap
 	if termWidth > 0 && termWidth-4 < width {
 		width = termWidth - 4
@@ -60,7 +67,8 @@ func renderToolCard(toolName, preview, argsJSON, output string, errored bool, te
 		width = cardMinUsefulCols
 	}
 
-	header := renderCardHeader(toolHeader(toolName, argsJSON, preview, width, cwd))
+	g := gutterFor(errored)
+	header := renderCardHeader(toolHeader(toolName, argsJSON, preview, width, cwd), g, dur, width)
 	footer := toolFooter(toolName, output, errored, cwd)
 
 	out := []string{header}
@@ -71,7 +79,7 @@ func renderToolCard(toolName, preview, argsJSON, output string, errored bool, te
 	if !errored && toolName == "edit_file" {
 		if rows, ok := editFileDiffRows(argsJSON, width); ok {
 			out = append(out, rows...)
-			out = append(out, styleCardGutter.Render("╰ ")+footer)
+			out = append(out, g.bottom.Render("└ ")+footer)
 			return strings.Join(out, "\n")
 		}
 	}
@@ -82,7 +90,7 @@ func renderToolCard(toolName, preview, argsJSON, output string, errored bool, te
 	if !errored && toolName == "write_file" {
 		if rows, ok := writeFileBodyRows(argsJSON, width); ok {
 			out = append(out, rows...)
-			out = append(out, styleCardGutter.Render("╰ ")+footer)
+			out = append(out, g.bottom.Render("└ ")+footer)
 			return strings.Join(out, "\n")
 		}
 	}
@@ -108,11 +116,11 @@ func renderToolCard(toolName, preview, argsJSON, output string, errored bool, te
 	// the invocation.
 	if !errored && toolName == "git" {
 		if w := gitDestructiveWarning(preview); w != "" {
-			out = append(out, styleCardGutter.Render("│ ")+styleCardErrFooter.Render(w))
+			out = append(out, g.side.Render("│ ")+styleCardErrFooter.Render(w))
 		}
 	}
 	body := toolBodyLines(toolName, output, errored, cwd)
-	gutter := styleCardGutter.Render("│ ")
+	gutter := g.side.Render("│ ")
 	gutterWidth := ansi.StringWidth(gutter)
 	bodyWidth := width - gutterWidth
 	if bodyWidth < 20 {
@@ -150,8 +158,48 @@ func renderToolCard(toolName, preview, argsJSON, output string, errored bool, te
 			appendBodyLine(line)
 		}
 	}
-	out = append(out, styleCardGutter.Render("╰ ")+footer)
+	out = append(out, g.bottom.Render("└ ")+footer)
 	return strings.Join(out, "\n")
+}
+
+// cardGutter carries the three box-drawing glyph styles for one tool
+// card: the opening ┌ (top), the side │, and the closing └ (bottom).
+// Bundling them lets renderToolCard tint the whole frame by result in
+// one place instead of threading three styles through every branch.
+type cardGutter struct {
+	top, side, bottom lipgloss.Style
+}
+
+// gutterFor picks a card's gutter styling from its result. A failed call
+// paints every edge Error red so it stands out in a screenful of cards; a
+// clean call stays neutral Dim on every edge. (An earlier version tinted
+// the closing └ Success green on clean calls, but a green corner on nearly
+// every card was too much green in a long transcript — the red error frame
+// carries the whole scannability signal.)
+func gutterFor(errored bool) cardGutter {
+	if errored {
+		return cardGutter{top: styleCardErrGutter, side: styleCardErrGutter, bottom: styleCardErrGutter}
+	}
+	return neutralGutter()
+}
+
+// neutralGutter is the all-Dim frame for cards that are neither a success
+// nor a failure — today the todo/plan snapshot, whose └ footer reports a
+// plan update rather than a tool result.
+func neutralGutter() cardGutter {
+	return cardGutter{top: styleCardGutter, side: styleCardGutter, bottom: styleCardGutter}
+}
+
+// slowDurationTag returns the compact duration shown on a slow tool
+// card's header, or "" for calls faster than slowCallThreshold (the
+// common case — no tag, no noise). It reuses formatDuration so a slow
+// call's tag ("4s", "1m 03s") speaks the same vocabulary as the turn
+// footer's "Thought for …".
+func slowDurationTag(d time.Duration) string {
+	if d < slowCallThreshold {
+		return ""
+	}
+	return formatDuration(d)
 }
 
 // tailTruncatedTool reports whether a tool's overflowing body should
@@ -168,13 +216,32 @@ func tailTruncatedTool(toolName string) bool {
 	return false
 }
 
-// renderCardHeader composes "╭ <preview>". The trailing duration tag
-// that used to right-align here was removed — fast tool calls
-// dominate (sub-second), and the live thinking row already shows
-// elapsed time during long ones, so the per-card timestamp was just
-// chrome.
-func renderCardHeader(preview string) string {
-	return styleCardGutter.Render("╭ ") + styleCardHeader.Render(preview)
+// renderCardHeader composes "┌ <preview>", tinting the opening glyph via
+// the card's gutter (Error red on a failed call, else neutral Dim), and
+// right-aligns a duration tag to the card's `width` edge when the call
+// was slow enough to warrant one (dur ≥ slowCallThreshold).
+//
+//	┌ Bash(go test ./...)                                          4s
+//
+// The tag is silent on the sub-second calls that dominate — it appears
+// only when "how long did that take?" is a live question. On a narrow
+// card (< cardMinUsefulCols) the padding would be more gap than signal,
+// so we skip it and keep the bare header.
+func renderCardHeader(preview string, g cardGutter, dur time.Duration, width int) string {
+	head := g.top.Render("┌ ") + styleCardHeader.Render(preview)
+	tag := slowDurationTag(dur)
+	if tag == "" || width < cardMinUsefulCols {
+		return head
+	}
+	styledTag := styleCardMeta.Render(tag)
+	// Right-align the tag to the notional card edge (`width`). A single-
+	// space floor keeps it off the header text when a long preview nearly
+	// fills the row.
+	gap := width - ansi.StringWidth(head) - ansi.StringWidth(styledTag)
+	if gap < 1 {
+		gap = 1
+	}
+	return head + strings.Repeat(" ", gap) + styledTag
 }
 
 // toolBodyLines extracts the displayable body for a given tool. Returns
@@ -575,7 +642,7 @@ func toolHeader(toolName, argsJSON, preview string, maxWidth int, cwd string) st
 	if argsJSON == "" {
 		return preview
 	}
-	headerBudget := maxWidth - 2 // "╭ " gutter
+	headerBudget := maxWidth - 2 // "┌ " gutter
 	if headerBudget < 20 {
 		headerBudget = 20
 	}
@@ -880,7 +947,7 @@ func gitDestructiveWarning(preview string) string {
 // within `max` rune-width columns. ASCII control characters are
 // stripped first — a stray newline in an arg (e.g., an agent sending
 // {"path":".\n"}) would otherwise break the card's box shape because
-// only the first row gets the `╭ ` gutter. Truncation replaces the
+// only the first row gets the `┌ ` gutter. Truncation replaces the
 // tail with `…)` so the closing paren stays as the visible
 // end-of-args marker.
 //
@@ -910,7 +977,7 @@ func clipHeader(s string, max int) string {
 // etc.) from a header string. The agent can submit args with embedded
 // whitespace; without this, a `\n` inside a path would split the header
 // across two terminal rows and the second row would render without the
-// `╭ ` gutter, collapsing the card's shape.
+// `┌ ` gutter, collapsing the card's shape.
 func stripControlChars(s string) string {
 	needsClean := false
 	for _, r := range s {
@@ -951,7 +1018,7 @@ func pluralize(noun string, n int) string {
 	return noun + "s"
 }
 
-// Card-specific styles. The gutter (╭ │ ╰) renders Muted (decorative);
+// Card-specific styles. The gutter (┌ │ └) renders Muted (decorative);
 // the header preview is Content (the value the user cares about);
 // metadata (duration, footer) renders Dim by default with state
 // colors for OK / Error footers.
@@ -966,6 +1033,7 @@ func pluralize(noun string, n int) string {
 // in_progress (bold content), dim · for pending.
 var (
 	styleCardGutter    lipgloss.Style
+	styleCardErrGutter lipgloss.Style
 	styleCardHeader    lipgloss.Style
 	styleCardBody      lipgloss.Style
 	styleCardMeta      lipgloss.Style
@@ -1007,7 +1075,9 @@ func todoRow(td agent.Todo) string {
 // through to render correctly.
 func renderTodoCardFromTodos(todos []agent.Todo, termWidth int) string {
 	_ = termWidth // reserved for future row-truncation; todo content is the user's signal, never clipped today
-	out := []string{renderCardHeader(todoCardHeaderText(todos))}
+	// Neutral gutter, no duration: a plan snapshot is neither a pass nor a
+	// fail, and it carries no measured elapsed to tag.
+	out := []string{renderCardHeader(todoCardHeaderText(todos), neutralGutter(), 0, termWidth)}
 	if len(todos) == 0 {
 		out = append(out, styleCardGutter.Render("│ ")+styleCardMeta.Render("(empty plan)"))
 	} else {
@@ -1015,7 +1085,7 @@ func renderTodoCardFromTodos(todos []agent.Todo, termWidth int) string {
 			out = append(out, styleCardGutter.Render("│ ")+todoRow(td))
 		}
 	}
-	out = append(out, styleCardGutter.Render("╰ ")+styleCardMeta.Render(todoCardFooterText(todos)))
+	out = append(out, styleCardGutter.Render("└ ")+styleCardMeta.Render(todoCardFooterText(todos)))
 	return strings.Join(out, "\n")
 }
 

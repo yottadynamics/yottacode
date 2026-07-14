@@ -20,7 +20,7 @@ func TestCheatsheet_RendersAllEntries(t *testing.T) {
 
 func TestCheatsheet_ShowsDismissHint(t *testing.T) {
 	out := renderCheatsheet(80)
-	if !strings.Contains(out, "press any key to close") {
+	if !strings.Contains(out, "esc to close") {
 		t.Errorf("dismiss hint missing: %q", out)
 	}
 }

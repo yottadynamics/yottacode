@@ -74,7 +74,7 @@ func renderUsagePanel(m Model) string {
 	b.WriteString(renderAccountSection(m))
 
 	b.WriteString("\n\n")
-	b.WriteString(stylePaletteEmpty.Render("press any key to close"))
+	b.WriteString(styleHint.Render("esc to close"))
 
 	return indentContextReport(strings.TrimRight(b.String(), "\n"), "  ")
 }
@@ -96,7 +96,7 @@ func renderSessionUsage(s *session.Session) string {
 	sub := s.SubagentUsage()
 	if s.TotalUsage.IsZero() && sub.Total.IsZero() {
 		b.WriteByte('\n')
-		b.WriteString(stylePaletteEmpty.Render("no token data yet — records after the next assistant turn"))
+		b.WriteString(styleEmpty.Render("no token data yet — records after the next assistant turn"))
 		return b.String()
 	}
 

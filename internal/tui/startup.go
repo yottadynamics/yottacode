@@ -62,7 +62,7 @@ func renderStartupBox(version, commit string, dirty bool, modelName, dir, branch
 	}
 
 	return lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
+		Border(lipgloss.NormalBorder()).
 		BorderForeground(colorDim). // Dim (not Rule) so the card frame reads brightly
 		Padding(0, 1).
 		Render(strings.Join(rows, "\n"))

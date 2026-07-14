@@ -10,7 +10,7 @@ import (
 // menu_render.go centralizes the picker overlay layout so the model
 // and provider pickers share a single visual language: a title block,
 // optional description, numbered (or unnumbered) item rows with a
-// `❯ ` cursor prefix, an optional `✔ ` checkmark on the
+// `❯ ` cursor prefix, an optional `✓ ` checkmark on the
 // "currently-active" row, and a muted/italic style for disabled
 // rows. The pattern follows Claude Code's "Select model" picker so
 // users coming from there have the same affordances available.
@@ -39,7 +39,7 @@ type menuItemOpts struct {
 	// brand color.
 	Cursor bool
 
-	// Checked adds a `✔ ` marker between the label and the
+	// Checked adds a `✓ ` marker between the label and the
 	// description, used to mark the row that's currently
 	// in-effect (active provider, current default model, etc.).
 	Checked bool
@@ -62,7 +62,7 @@ func renderMenuHeader(title, description string) string {
 		// Wrap description at ~80 cols for readability when the
 		// terminal is wide. Lipgloss handles this for us via the
 		// styled writer; we just trim trailing whitespace.
-		b.WriteString(stylePaletteEmpty.Render(strings.TrimSpace(description)))
+		b.WriteString(styleMeta.Render(strings.TrimSpace(description)))
 		b.WriteString("\n")
 	}
 	return b.String()
@@ -70,7 +70,7 @@ func renderMenuHeader(title, description string) string {
 
 // renderMenuItem returns one formatted picker row. The layout:
 //
-//	  ❯ claude-sonnet-4-6        ✔ balanced · ctx=200k
+//	  ❯ claude-sonnet-4-6        ✓ balanced · ctx=200k
 //	    claude-haiku-4-5            cheap · ctx=200k
 //
 // Cursor and check markers reserve their column whether or not
@@ -89,7 +89,7 @@ func renderMenuItem(o menuItemOpts) string {
 	}
 	check := "  "
 	if o.Checked {
-		check = "✔ "
+		check = "✓ "
 	}
 	label := o.Label
 	if o.LabelWidth > 0 {
@@ -105,7 +105,7 @@ func renderMenuItem(o menuItemOpts) string {
 		// the parent dispatcher.
 		return lipgloss.NewStyle().Foreground(colorMuted).Italic(true).Underline(true).Render(body)
 	case o.Disabled:
-		return stylePaletteEmpty.Render(body)
+		return styleEmpty.Render(body)
 	case o.Cursor:
 		return lipgloss.NewStyle().Foreground(colorSuccess).Bold(true).Render(body)
 	default:

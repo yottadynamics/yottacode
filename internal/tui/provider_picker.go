@@ -525,7 +525,7 @@ func uniqueProviderName(base string) string {
 // default model required), and persists. There's no live key/model
 // health check — the provider's /models endpoint authenticates
 // inconsistently across vendors (NVIDIA NIM accepts any bearer
-// token there), so a "verified ✔" message would over-promise. A
+// token there), so a "verified ✓" message would over-promise. A
 // real auth issue surfaces as 401 from the first chat call, which
 // is unambiguous.
 func (m Model) commitProviderAdd() (Model, tea.Cmd) {
@@ -808,7 +808,7 @@ func renderProviderPicker(p *providerPickerState, width int) string {
 	case providerAddFieldsMode:
 		body = renderProviderAddFields(p)
 	default:
-		body = stylePaletteEmpty.Render("(unknown picker state)")
+		body = styleEmpty.Render("(unknown picker state)")
 	}
 	footerText := "↵ confirm · esc back · ↑↓ navigate"
 	if p.mode == providerAddFieldsMode {
@@ -877,7 +877,7 @@ func renderProviderAddFields(p *providerPickerState) string {
 	b.WriteString(renderMenuHeader(title, desc))
 	b.WriteString("\n")
 	if p.addInputErr != "" {
-		b.WriteString(styleError.Render("✘ " + p.addInputErr))
+		b.WriteString(styleError.Render("✗ " + p.addInputErr))
 		b.WriteString("\n\n")
 	}
 	for i, label := range p.addLabels {
@@ -893,7 +893,7 @@ func renderProviderAddFields(p *providerPickerState) string {
 	if p.addPicked != nil && p.addPicked.APIKeyEnv != "" {
 		b.WriteString("\n")
 		hint := fmt.Sprintf("(API key written to ~/.yottacode/.env as %s)", p.addPicked.APIKeyEnv)
-		b.WriteString(stylePaletteEmpty.Render(hint))
+		b.WriteString(styleMeta.Render(hint))
 	}
 	return strings.TrimRight(b.String(), "\n")
 }
@@ -917,34 +917,34 @@ func renderProviderAddModelExtras(p *providerPickerState) string {
 			if model.ContextWindow > 0 {
 				line += fmt.Sprintf("  (ctx %dK)", model.ContextWindow/1000)
 			}
-			b.WriteString(stylePaletteEmpty.Render(line))
+			b.WriteString(styleMeta.Render(line))
 			b.WriteString("\n")
 		}
 		switch {
 		case !active:
 			b.WriteString("  ")
-			b.WriteString(stylePaletteEmpty.Render("(focus this row with Tab, then ↑↓ to pick from the catalog)"))
+			b.WriteString(styleHint.Render("(focus this row with Tab, then ↑↓ to pick from the catalog)"))
 			b.WriteString("\n")
 		case p.addModelCursor < 0:
 			// Field is focused but the user hasn't arrowed yet —
 			// nudge them so save doesn't fail with the generic
 			// "default model is required" without a path forward.
 			b.WriteString("  ")
-			b.WriteString(stylePaletteEmpty.Render("(↑↓ to pick a model from the list above, or type a tag to override)"))
+			b.WriteString(styleHint.Render("(↑↓ to pick a model from the list above, or type a tag to override)"))
 			b.WriteString("\n")
 		}
 		return b.String()
 	}
 	if p.addPicked != nil && catalog.IsCuratedKind(p.addPicked.Kind) {
 		if p.addPicked.Kind == "openai-auth" {
-			return "  " + stylePaletteEmpty.Render(
+			return "  " + styleMeta.Render(
 				"(your full model list is discovered after browser sign-in — gpt-5.5 is the universal default)") + "\n"
 		}
 		if p.addPicked.Kind == "copilot" {
-			return "  " + stylePaletteEmpty.Render(
+			return "  " + styleMeta.Render(
 				"(your model list is cached after device code sign-in — claude-haiku-4.5 is a safe default)") + "\n"
 		}
-		return "  " + stylePaletteEmpty.Render(
+		return "  " + styleMeta.Render(
 			"(catalog empty — run `go run ./cmd/yotta-models refresh` to populate)") + "\n"
 	}
 	return ""
@@ -959,7 +959,7 @@ func renderProviderUseList(p *providerPickerState, title string) string {
 	b.WriteString(renderMenuHeader(title, desc))
 	b.WriteString("\n")
 	if len(p.providers) == 0 {
-		b.WriteString(stylePaletteEmpty.Render("  no providers configured — try /provider add"))
+		b.WriteString(styleEmpty.Render("  no providers configured — try /provider add"))
 		return strings.TrimRight(b.String(), "\n")
 	}
 	for i, prov := range p.providers {

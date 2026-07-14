@@ -221,7 +221,7 @@ func renderThemePickerNarrow(p *themePickerState) string {
 	b.WriteString("\n")
 	b.WriteString(renderThemeList(p, 24))
 	b.WriteString("\n")
-	b.WriteString(stylePaletteEmpty.Render("  (widen terminal for live preview)"))
+	b.WriteString(styleHint.Render("  (widen terminal for live preview)"))
 	return strings.TrimRight(b.String(), "\n")
 }
 
@@ -251,7 +251,7 @@ func renderThemeList(p *themePickerState, width int) string {
 			// Marker for the theme that's active on disk — helps
 			// the user spot "where I am now" without it stealing
 			// focus from the cursor.
-			marker = stylePaletteEmpty.Render("· ")
+			marker = styleMeta.Render("· ")
 			body = stylePaletteItem.Render(padOrTruncate(name, width-3))
 		default:
 			marker = "  "
