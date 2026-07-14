@@ -40,6 +40,15 @@ CREATE VIRTUAL TABLE IF NOT EXISTS messages USING fts5(
     content,
     tokenize = 'porter unicode61'
 );
+
+CREATE TABLE IF NOT EXISTS message_vectors (
+    session_id   TEXT    NOT NULL,
+    msg_index    INTEGER NOT NULL,
+    model        TEXT    NOT NULL,
+    content_hash INTEGER NOT NULL,
+    vec          BLOB    NOT NULL,
+    PRIMARY KEY (session_id, msg_index)
+);
 `
 
 const (

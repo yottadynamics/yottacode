@@ -4,7 +4,7 @@ yottacode keeps three kinds of memory, each with one job:
 
 - **Trust anchors** — the curated files (`USER.md`, `YOTTACODE.md`) injected verbatim into every turn's system prompt.
 - **Agent-managed typed memories** — markdown files the agent writes via dedicated tools (`memory_save`, `memory_forget`) when something is worth remembering across sessions.
-- **Recall + summarization** — full-text search across past sessions plus on-demand compression of long histories.
+- **Recall + summarization** — search across past sessions (manual `/recall`, the agent's `session_recall` tool, and **automatic per-turn semantic recall**) plus on-demand compression of long histories.
 
 The system is offline-first, deterministic, and entirely file-based. Every memory is a markdown file you can read, edit, or delete with your editor. The TUI's `/memory` picker is a convenience for the same on-disk state.
 
@@ -79,6 +79,8 @@ The agent reads from four distinct on-disk locations every turn. Two are unfilte
 The rebuild runs at the start of every turn (`internal/tui/cmd_retrieval.go`), so a `memory_save` mid-conversation lands in the next turn's prompt without an explicit reload. Disk errors leave the previous prompt in place — they don't fail the turn.
 
 It executes inside the turn goroutine, not on the input thread: the `semantic` strategy embeds the query via a local Ollama call, and a cold model load can take seconds — running it before the turn used to freeze the input until the user's message echoed. Off the input thread the cost reads as ordinary model latency under the spinner, and Esc cancels an in-flight embed along with the rest of the turn. Embed requests also send `keep_alive: 30m` so Ollama keeps the model resident between turns instead of evicting it after its default ~5 minutes (each successful call re-extends the lease; an active session pays the cold load at most once).
+
+> **Beyond the four sources above.** When automatic session recall is enabled, this same per-turn rebuild also appends a `## Prior conversations` block after the memory tail. It is **not** one of the four memory sources — it comes from the session index (`~/.yottacode/index.sqlite`), not the memory store, and is reads-only. See [Layer 3 — Recall + summarization](#layer-3--recall--summarization).
 
 ---
 
@@ -396,6 +398,8 @@ What is NOT filtered:
 - `USER.md`, `YOTTACODE.md` — always in full.
 - Both `MEMORY.md` indexes — always in full. The model needs to know which files exist even when their bodies aren't injected.
 
+The same rebuild also injects an **episodic** counterpart to this semantic retrieval: relevant excerpts from your past *conversations*, found by semantic search over the session index. See [Automatic recall of prior conversations](sessions.md#automatic-recall-of-prior-conversations). It reads sessions only — it never writes memory — and is configured separately under `[retrieval.session_recall]`.
+
 #### Retrieval strategies
 
 yottacode supports three scoring strategies, selectable via config:
@@ -564,9 +568,13 @@ The agent decides autonomously when to search, save, update, or forget — the t
 
 ## Layer 3 — Recall + summarization
 
-`/recall` remains available as a user-initiated slash command. The agent can now also search past sessions proactively via the `session_recall` tool — same FTS5 index, same ranked results, but the agent decides when to look.
+Past sessions are searchable **three ways**, all over the same SQLite index at `~/.yottacode/index.sqlite`:
 
-`/recall <query>` searches every saved session in `~/.yottacode/sessions/` via an SQLite FTS5 index at `~/.yottacode/index.sqlite`. Useful for "I remember we discussed X — which session was that in?" The index is rebuilt incrementally on every session save and backfilled at TUI startup.
+- **`/recall <query>`** — user-initiated FTS5 full-text search across every saved session in `~/.yottacode/sessions/`. Useful for "I remember we discussed X — which session was that in?"
+- **`session_recall` tool** — the agent runs the same FTS5 search proactively when it suspects a topic came up before, without you asking.
+- **Automatic recall (semantic)** — each turn, yottacode embeds your message, semantically searches past sessions, and injects the most relevant excerpts into the system prompt **on its own** — the episodic counterpart to the per-turn memory retrieval above. Reads-only (it never writes memory), project-scoped by default, and requires a local embedding model (falls back to the manual tool when unavailable). Configured under `[retrieval.session_recall]`; full details in [Automatic recall of prior conversations](sessions.md#automatic-recall-of-prior-conversations).
+
+The FTS index is rebuilt incrementally on every session save and backfilled at startup. When semantic recall is on, message embeddings live in a `message_vectors` table in that same index — backfilled in the background at startup and incrementally after each turn (so a conversation is recallable in later sessions without a restart) — and the thinking-row footer shows `recalled N conversations` when a turn pulls prior context in. Set `YOTTACODE_RECALL_DEBUG=1` to log each firing's cosine scores to `~/.yottacode/recall-debug.log` for tuning `min_score`.
 
 `/summarize` compresses the active session's transcript when context is filling up. Replaces the message history with a synopsis injected into the system prompt under `## Prior session context (summarized)`. Auto-summarization fires automatically before the next turn at `context.auto_threshold` (default 0.85 — 85% of the model's window).
 

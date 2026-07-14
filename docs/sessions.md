@@ -97,6 +97,29 @@ Recall uses a local SQLite FTS5 index at:
 
 The index is rebuilt/backfilled automatically from saved session files.
 
+## Automatic recall of prior conversations
+
+Beyond the manual `/recall` command and the agent's `session_recall` tool, yottacode can bring relevant past conversations back **on its own**, so the agent picks up where you left off without being asked.
+
+At the start of each turn it embeds your message, semantically searches your earlier sessions, and injects the most relevant excerpts into the system prompt as a short background block. Only conversations that clear a similarity threshold are injected — when nothing is relevant, nothing is added.
+
+This is the episodic counterpart to memory retrieval, and it is **reads-only**: it never writes memory. It requires a local embedding model (Ollama, same one used for semantic memory retrieval); when that is unavailable it silently falls back to the manual `session_recall` tool. Session embeddings are stored alongside the FTS5 index in `~/.yottacode/index.sqlite` (a `message_vectors` table), backfilled in the background at startup and incrementally after each turn — so a conversation becomes recallable in later sessions without restarting.
+
+When a turn pulls in prior conversations, the thinking-row footer shows `recalled N conversations`, so the injection is visible rather than silent. To tune `min_score` against real usage, set `YOTTACODE_RECALL_DEBUG=1` and each firing is logged with its cosine scores to `~/.yottacode/recall-debug.log`.
+
+Configure it under `[retrieval.session_recall]` in `config.toml`:
+
+```toml
+[retrieval.session_recall]
+auto = true          # per-turn injection on/off (manual session_recall stays available either way)
+scope = "project"    # "project" = only sessions in the current directory (never mixes projects); "user"/"all" = whole store
+top_k = 3            # max excerpts injected per turn
+min_score = 0.6      # cosine-similarity floor (0.0–1.0), calibrated for nomic-embed-text — only on-topic history surfaces
+max_bytes = 2000     # size cap on the injected block (0 = no byte bound)
+```
+
+`scope = "project"` is the default and never surfaces another project's conversations. To turn the behavior off entirely, set `auto = false`.
+
 ## Clear vs delete
 
 `/clear` saves the current session, then starts a new session with the same system prompt and memory. It does not delete anything.

@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/charmbracelet/bubbles/key"
@@ -414,6 +415,15 @@ type Model struct {
 	// one lock (a sync.Mutex value field would trip copylocks). Allocated
 	// in New.
 	histMu *sync.Mutex
+
+	// recalledCount is how many prior conversations auto-recall injected into
+	// the current turn's system prompt. Written by the turn goroutine during
+	// the per-turn prompt rebuild, read by this Update goroutine's thinking-row
+	// render — so it's an atomic behind a pointer (shared across value-copies
+	// of Model, like histMu; a bare atomic value field would trip copylocks).
+	// Reset each rebuild; 0 means no "recalled N" segment is shown. Allocated
+	// in New.
+	recalledCount *atomic.Int32
 
 	// UI components
 	textInput textarea.Model
@@ -1007,6 +1017,7 @@ func New(parent context.Context, c Config) Model {
 		skillTool:              c.SkillTool,
 		sess:                   c.Session,
 		histMu:                 &sync.Mutex{},
+		recalledCount:          &atomic.Int32{},
 		textInput:              ti,
 		spinner:                sp,
 		md:                     newMarkdownRenderer(80),
@@ -2136,6 +2147,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if err := m.recall.IndexSession(m.sess); err != nil {
 				m.appendLine(styleError.Render(fmt.Sprintf("⚠ recall index failed: %v", err)))
 			}
+			m.embedCurrentSessionAsync()
 		}
 		// The final memory turn on quit just ended (completed or
 		// cancelled via Esc/Ctrl+C — both land here): finish the quit.
@@ -2361,6 +2373,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if err := m.recall.IndexSession(m.sess); err != nil {
 				m.appendLine(styleError.Render(fmt.Sprintf("⚠ recall index after summarize: %v", err)))
 			}
+			m.embedCurrentSessionAsync()
 		}
 		switch {
 		case !converged:
@@ -3856,6 +3869,17 @@ func (m Model) renderTurnStatus() string {
 	}
 	elapsed := time.Since(m.turnStart)
 	parts := []string{"thinking"}
+	// Auto-recall: surface how many prior conversations were pulled into this
+	// turn's context, so the injection is legible rather than invisible.
+	if m.recalledCount != nil {
+		if n := m.recalledCount.Load(); n > 0 {
+			noun := "conversations"
+			if n == 1 {
+				noun = "conversation"
+			}
+			parts = append(parts, fmt.Sprintf("recalled %d %s", n, noun))
+		}
+	}
 	if queued := m.toolsRequested - m.toolsStarted; queued > 0 {
 		noun := "tools"
 		if queued == 1 {

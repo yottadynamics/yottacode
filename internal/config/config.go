@@ -220,11 +220,55 @@ type RetrievalConfig struct {
 	// effective strategy is "semantic". The blended score is re-normalized
 	// afterward, so only the ratio matters — one knob covers the full space.
 	SemanticWeight float64 `toml:"semantic_weight"`
+
+	// SessionRecall governs automatic recall of prior conversations — the
+	// episodic counterpart to the memory retrieval above. When enabled, each
+	// turn semantically searches past sessions and injects the most relevant
+	// excerpts into the system prompt, so the agent "remembers" earlier
+	// discussions without the model having to call session_recall itself.
+	SessionRecall SessionRecallConfig `toml:"session_recall"`
+}
+
+// SessionRecallConfig governs automatic injection of relevant past-conversation
+// excerpts each turn. Requires semantic embeddings (Ollama), so it is inert
+// when the embedding model is unavailable — retrieval degrades to the manual
+// session_recall tool. Only reads past sessions; it never writes memory.
+type SessionRecallConfig struct {
+	// Auto enables per-turn injection. Default true. Set to false to keep the
+	// manual session_recall tool but stop automatic injection.
+	Auto bool `toml:"auto"`
+
+	// Scope restricts which sessions are searched: "project" (only sessions
+	// whose cwd matches the current one — the safe default that never mixes
+	// projects), "user"/"all" (the whole local store). Empty defaults to
+	// "project".
+	Scope string `toml:"scope"`
+
+	// TopK caps how many prior-conversation excerpts are injected per turn.
+	// Default 3.
+	TopK int `toml:"top_k"`
+
+	// MinScore is the cosine-similarity floor (0.0–1.0) an excerpt must clear
+	// to be injected. Default 0.6 — calibrated for nomic-embed-text, whose
+	// cosines are compressed (a strongly on-topic paraphrase lands ~0.65,
+	// unrelated text ~0.37). High enough that only genuinely relevant prior
+	// conversations surface, so the block stays empty when nothing matches
+	// rather than padding the prompt with noise.
+	MinScore float64 `toml:"min_score"`
+
+	// MaxBytes caps the combined size of the injected block. Default 2000.
+	// 0 removes the byte bound (TopK still applies).
+	MaxBytes int `toml:"max_bytes"`
 }
 
 // ValidStrategies is the whitelist for RetrievalConfig.Strategy.
 // Empty is coerced to the default ("auto") at load time.
 var ValidStrategies = []string{"keyword", "bm25", "semantic", "auto"}
+
+// ValidSessionRecallScopes is the whitelist for SessionRecallConfig.Scope.
+// Empty is coerced to the default ("project") at load time. "user" and "all"
+// both search the whole local store (it is already per-user).
+var ValidSessionRecallScopes = []string{"project", "user", "all"}
 
 // MemoryConfig governs proactive agent-managed memory behavior beyond
 // retrieval (which has its own [retrieval] section).
@@ -408,6 +452,13 @@ func Default() Config {
 			Strategy:       "auto",
 			EmbeddingModel: "nomic-embed-text",
 			SemanticWeight: 0.4,
+			SessionRecall: SessionRecallConfig{
+				Auto:     true,
+				Scope:    "project",
+				TopK:     3,
+				MinScore: 0.6,
+				MaxBytes: 2000,
+			},
 		},
 		Memory: MemoryConfig{
 			FinalTurnOnQuit: true,
@@ -466,6 +517,9 @@ func Load(path string) (Config, error) {
 	}
 	if strings.TrimSpace(cfg.Retrieval.EmbeddingModel) == "" {
 		cfg.Retrieval.EmbeddingModel = "nomic-embed-text"
+	}
+	if strings.TrimSpace(cfg.Retrieval.SessionRecall.Scope) == "" {
+		cfg.Retrieval.SessionRecall.Scope = "project"
 	}
 	if err := Validate(cfg); err != nil {
 		return Default(), fmt.Errorf("config: %s: %w", path, err)
@@ -546,6 +600,19 @@ func Validate(cfg Config) error {
 	if cfg.Retrieval.Strategy != "" && !inSlice(ValidStrategies, cfg.Retrieval.Strategy) {
 		return fmt.Errorf("retrieval.strategy = %q invalid (expected one of %s)",
 			cfg.Retrieval.Strategy, strings.Join(ValidStrategies, ", "))
+	}
+	if sr := cfg.Retrieval.SessionRecall; sr.Scope != "" && !inSlice(ValidSessionRecallScopes, sr.Scope) {
+		return fmt.Errorf("retrieval.session_recall.scope = %q invalid (expected one of %s)",
+			sr.Scope, strings.Join(ValidSessionRecallScopes, ", "))
+	}
+	if cfg.Retrieval.SessionRecall.TopK < 0 {
+		return fmt.Errorf("retrieval.session_recall.top_k = %d must be >= 0", cfg.Retrieval.SessionRecall.TopK)
+	}
+	if cfg.Retrieval.SessionRecall.MaxBytes < 0 {
+		return fmt.Errorf("retrieval.session_recall.max_bytes = %d must be >= 0 (0 = unlimited)", cfg.Retrieval.SessionRecall.MaxBytes)
+	}
+	if cfg.Retrieval.SessionRecall.MinScore < 0 || cfg.Retrieval.SessionRecall.MinScore > 1 {
+		return fmt.Errorf("retrieval.session_recall.min_score = %.3f out of range (0.0–1.0)", cfg.Retrieval.SessionRecall.MinScore)
 	}
 
 	if name := strings.TrimSpace(cfg.Theme.Name); name != "" && !themes.IsValid(name) {
@@ -1038,6 +1105,33 @@ strategy = "auto"
 # on exact keywords. 0.0 = pure BM25, 1.0 = pure cosine. Only applies when
 # the effective strategy is "semantic".
 # semantic_weight = 0.4
+
+# Automatic recall of prior conversations — the episodic counterpart to the
+# memory scoring above. When enabled, each turn semantically searches your past
+# sessions and injects the most relevant excerpts into the system prompt, so the
+# agent "remembers" earlier discussions without having to be asked. Requires a
+# local embedding model (Ollama); when unavailable it silently falls back to the
+# manual session_recall tool. Reads past sessions only — never writes memory.
+[retrieval.session_recall]
+# Turn per-turn injection on/off. The manual session_recall tool stays available
+# either way.
+auto = true
+
+# Which sessions to search: "project" (only sessions in the current working
+# directory — never mixes projects), or "user"/"all" (the whole local store).
+scope = "project"
+
+# Max prior-conversation excerpts injected per turn.
+top_k = 3
+
+# Cosine-similarity floor (0.0–1.0) an excerpt must clear to be injected.
+# Calibrated for nomic-embed-text (a strongly on-topic paraphrase lands ~0.65,
+# unrelated text ~0.37): only genuinely relevant conversations surface, and the
+# block stays empty when nothing matches. Raise it to be stricter.
+min_score = 0.6
+
+# Cap on the combined size of the injected block. 0 removes the byte bound.
+max_bytes = 2000
 
 [memory]
 # Run one final agent turn on a graceful exit (/quit or Ctrl+D while
