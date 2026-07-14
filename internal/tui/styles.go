@@ -100,7 +100,15 @@ var (
 	stylePaletteBox       lipgloss.Style
 	stylePaletteItem      lipgloss.Style
 	stylePaletteSelected  lipgloss.Style
-	stylePaletteEmpty     lipgloss.Style
+	// Three intent-named styles for the dim secondary text that used to
+	// all share one overloaded style. styleEmpty — soft "nothing here"
+	// placeholders + disabled rows (italic). styleHint — actionable
+	// guidance the user should read (upright). styleMeta — functional
+	// secondary text: scroll counts, source paths, section subtitles,
+	// descriptions (upright). See buildStyles for the exact treatment.
+	styleEmpty            lipgloss.Style
+	styleHint             lipgloss.Style
+	styleMeta             lipgloss.Style
 	styleDiffAdd          lipgloss.Style
 	styleDiffDel          lipgloss.Style
 	styleDiffAddBody      lipgloss.Style
@@ -247,7 +255,7 @@ func buildStyles(p themes.Palette) {
 	styleError = lipgloss.NewStyle().Foreground(colorErr).Bold(true)
 	styleWarnIcon = lipgloss.NewStyle().Foreground(colorWarning).Bold(true)
 	styleApprovalBox = lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
+		Border(lipgloss.NormalBorder()).
 		BorderForeground(colorWarn).
 		Padding(0, 1)
 	if hasThemeBackground {
@@ -255,7 +263,7 @@ func buildStyles(p themes.Palette) {
 	}
 
 	paletteBox := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
+		Border(lipgloss.NormalBorder()).
 		BorderForeground(colorBrand).
 		Padding(0, 1)
 	if hasThemeBackground {
@@ -275,7 +283,16 @@ func buildStyles(p themes.Palette) {
 		Foreground(colorBrand).
 		Reverse(true).
 		Bold(true)
-	stylePaletteEmpty = lipgloss.NewStyle().Foreground(colorMuted).Italic(true)
+	// styleEmpty keeps the soft italic-dim look for "nothing here"
+	// placeholders and disabled rows. styleHint and styleMeta render
+	// upright (dropping the italic) so functional secondary text —
+	// dismiss hints, key guidance, scroll counts, source paths, section
+	// subtitles — reads cleanly instead of looking soft/absent. All three
+	// share the Dim foreground; the split is by intent so each can be
+	// tuned independently later (e.g. brightening hints toward Content).
+	styleEmpty = lipgloss.NewStyle().Foreground(colorDim).Italic(true)
+	styleHint = lipgloss.NewStyle().Foreground(colorDim)
+	styleMeta = lipgloss.NewStyle().Foreground(colorDim)
 
 	styleDiffAdd = lipgloss.NewStyle().Foreground(colorSuccess).Bold(true)
 	styleDiffDel = lipgloss.NewStyle().Foreground(colorError).Bold(true)
@@ -309,7 +326,7 @@ func buildStyles(p themes.Palette) {
 	// scrollbackLeftMargin). An earlier MarginLeft(2) trailed the old
 	// scrollback margin and now just floats the box off the chrome edge.
 	styleWatermarkBox = lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
+		Border(lipgloss.NormalBorder()).
 		BorderForeground(colorWarn).
 		Foreground(colorWarn).
 		Bold(true).
@@ -352,6 +369,12 @@ func buildStyles(p themes.Palette) {
 
 	// Tool card + todo rows (tool_card.go)
 	styleCardGutter = lipgloss.NewStyle().Foreground(colorDim)
+	// Error-tinted gutter: a failed call turns its whole ┌ │ └ frame Error
+	// red so a bad card is findable at a glance while scanning back through
+	// a long transcript. Clean and todo cards stay on the neutral
+	// styleCardGutter (Dim) — no green, which read as too much color when it
+	// landed on nearly every card.
+	styleCardErrGutter = lipgloss.NewStyle().Foreground(colorError)
 	styleCardHeader = lipgloss.NewStyle().Foreground(colorContent).Bold(true)
 	styleCardBody = lipgloss.NewStyle().Foreground(colorContent)
 	styleCardMeta = lipgloss.NewStyle().Foreground(colorDim)
@@ -369,7 +392,7 @@ func buildStyles(p themes.Palette) {
 	// Success/Error for the accept/reject acknowledgments. Previously
 	// hardcoded 256-color indices (214/245/78/203), which ignored the
 	// theme and never rebuilt on ApplyTheme.
-	stylePathTrustBorder = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(colorWarning).Padding(0, 1)
+	stylePathTrustBorder = lipgloss.NewStyle().Border(lipgloss.NormalBorder()).BorderForeground(colorWarning).Padding(0, 1)
 	stylePathTrustTitle = lipgloss.NewStyle().Foreground(colorWarning).Bold(true)
 	stylePathTrustBodyKey = lipgloss.NewStyle().Foreground(colorContent).Bold(true)
 	stylePathTrustBodyHint = lipgloss.NewStyle().Foreground(colorDim)

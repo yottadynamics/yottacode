@@ -74,7 +74,7 @@ func TestRenderStartupBox_DropsInlineCommandHints(t *testing.T) {
 // On a narrow terminal the box must stay within termWidth — the long
 // rotating tip used to extend the auto-sized box past the terminal
 // width, and the bordered output then wrapped in scrollback as
-// stair-step "─────╮" ghosts on every resize. Guards against a
+// stair-step "─────┐" ghosts on every resize. Guards against a
 // regression where the tip (or any other row) is rendered without
 // being wrapped to the available inner width.
 func TestRenderStartupBox_WrapsToTerminalWidth(t *testing.T) {

@@ -14,14 +14,14 @@ import (
 // right (Dim), and hotkeys are scannable as a grid with brackets
 // first (`[Y] yes  [N] no`, `[A] always — adds Bash(go *)`).
 //
-//	╭─ Approval needed ───────────────────────── run_bash ─╮
+//	┌─ Approval needed ───────────────────────── run_bash ─┐
 //	│                                                      │
 //	│   $ go run hello.go                                  │
 //	│                                                      │
 //	│   [Y] yes              [N] no                        │
 //	│   [A] always — adds Bash(go *)                       │
 //	│                                                      │
-//	╰──────────────────────────────────────────────────────╯
+//	└──────────────────────────────────────────────────────┘
 //
 // The detail about `permissions.local.json` no longer appears in the
 // prompt itself — after the user picks `[A]` we emit a toast
@@ -103,7 +103,7 @@ func renderApprovalModal(m Model) string {
 	}
 
 	border := lipgloss.NewStyle().Foreground(colorWarning)
-	// Top width = "╭─" + leftLabel + ─×fill + rightLabel + "─╮" =
+	// Top width = "┌─" + leftLabel + ─×fill + rightLabel + "─┐" =
 	// leftW + rightW + fill + 4. Body/bottom rows are innerW + 4. So
 	// fill = innerW - leftW - rightW keeps the top border flush with
 	// the right edge of the box.
@@ -111,9 +111,9 @@ func renderApprovalModal(m Model) string {
 	if fill < 1 {
 		fill = 1
 	}
-	top := border.Render("╭─") + leftLabel +
+	top := border.Render("┌─") + leftLabel +
 		border.Render(strings.Repeat("─", fill)) +
-		rightLabel + border.Render("─╮")
+		rightLabel + border.Render("─┐")
 
 	sideL := border.Render("│ ")
 	sideR := border.Render(" │")
@@ -125,7 +125,7 @@ func renderApprovalModal(m Model) string {
 		}
 		rows = append(rows, sideL+line+strings.Repeat(" ", pad)+sideR)
 	}
-	rows = append(rows, border.Render("╰"+strings.Repeat("─", innerW+2)+"╯"))
+	rows = append(rows, border.Render("└"+strings.Repeat("─", innerW+2)+"┘"))
 	return strings.Join(rows, "\n")
 }
 

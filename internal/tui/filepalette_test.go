@@ -127,21 +127,21 @@ func TestRenderFilePalette_ShowsOverflowHints(t *testing.T) {
 	for i := 0; i < filePaletteVisible*2; i++ {
 		items = append(items, fileEntry{Path: fmt.Sprintf("file_%02d.go", i)})
 	}
-	// Window at the top: only "↓ N more" appears.
+	// Window at the top: only "▼ N more" appears.
 	out := renderFilePalette(items, 0, 0, 80)
-	if !strings.Contains(out, "more") || strings.Contains(out, "↑") {
-		t.Fatalf("top window: want ↓ overflow only, got:\n%s", out)
+	if !strings.Contains(out, "more") || strings.Contains(out, "▲") {
+		t.Fatalf("top window: want ▼ overflow only, got:\n%s", out)
 	}
 	// Window in the middle: both arrows should appear.
 	out = renderFilePalette(items, filePaletteVisible, filePaletteVisible-2, 80)
-	if !strings.Contains(out, "↑") || !strings.Contains(out, "↓") {
+	if !strings.Contains(out, "▲") || !strings.Contains(out, "▼") {
 		t.Fatalf("middle window: want both arrows, got:\n%s", out)
 	}
-	// Window at the bottom: only "↑ N more" appears.
+	// Window at the bottom: only "▲ N more" appears.
 	bottomOffset := len(items) - filePaletteVisible
 	out = renderFilePalette(items, len(items)-1, bottomOffset, 80)
-	if !strings.Contains(out, "↑") || strings.Contains(out, "↓") {
-		t.Fatalf("bottom window: want ↑ overflow only, got:\n%s", out)
+	if !strings.Contains(out, "▲") || strings.Contains(out, "▼") {
+		t.Fatalf("bottom window: want ▲ overflow only, got:\n%s", out)
 	}
 	// Short list: no overflow hints.
 	out = renderFilePalette(items[:3], 0, 0, 80)

@@ -3,6 +3,7 @@ package tui
 import (
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -23,11 +24,11 @@ func samplePlan() []agent.Todo {
 func TestRenderTodoCardFromTodos_HeaderBodyFooter(t *testing.T) {
 	got := stripANSI(renderTodoCardFromTodos(samplePlan(), 80))
 	for _, want := range []string{
-		"╭ Plan: 3 items (1 done)",
+		"┌ Plan: 3 items (1 done)",
 		"✓ design",
 		"▸ review",
 		"· ship",
-		"╰ plan updated: 3 items (1 done)",
+		"└ plan updated: 3 items (1 done)",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("rendered card missing %q\nfull output:\n%s", want, got)
@@ -38,9 +39,9 @@ func TestRenderTodoCardFromTodos_HeaderBodyFooter(t *testing.T) {
 func TestRenderTodoCardFromTodos_EmptyShowsClearedFooter(t *testing.T) {
 	got := stripANSI(renderTodoCardFromTodos(nil, 80))
 	for _, want := range []string{
-		"╭ Plan: 0 items (0 done)",
+		"┌ Plan: 0 items (0 done)",
 		"(empty plan)",
-		"╰ plan cleared",
+		"└ plan cleared",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("empty-plan card missing %q\nfull output:\n%s", want, got)
@@ -112,9 +113,64 @@ func TestModel_ToolResultForTodoWrite_DoesNotEmitScrollbackCard(t *testing.T) {
 	if got := m.transcript.String(); got != "" {
 		t.Errorf("ToolResult for todo_write should not emit a scrollback card; transcript = %q", got)
 	}
-	if m.pendingToolName != "" || m.pendingToolPreview != "" || m.pendingToolArgs != "" {
-		t.Errorf("ToolResult should still clear pendingTool* state; got name=%q preview=%q args=%q",
-			m.pendingToolName, m.pendingToolPreview, m.pendingToolArgs)
+	if m.pendingToolName != "" || m.pendingToolPreview != "" || m.pendingToolArgs != "" || !m.pendingToolStart.IsZero() {
+		t.Errorf("ToolResult should still clear pendingTool* state; got name=%q preview=%q args=%q start=%v",
+			m.pendingToolName, m.pendingToolPreview, m.pendingToolArgs, m.pendingToolStart)
+	}
+}
+
+func TestModel_SuppressedToolResultClearsPendingStart(t *testing.T) {
+	cases := []struct {
+		name     string
+		toolName string
+	}{
+		{name: "agent", toolName: agent.AgentToolName},
+		{name: "todo_write", toolName: "todo_write"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := newTestModel(t)
+			// A suppressed result must clear the timestamp too; otherwise a
+			// later result without a fresh start could inherit this stale time
+			// and render a bogus slow-call duration tag on the wrong card.
+			m.pendingToolName = tc.toolName
+			m.pendingToolPreview = tc.toolName + " preview"
+			m.pendingToolArgs = `{}`
+			m.pendingToolStart = time.Now().Add(-2 * time.Minute)
+
+			m, _ = applyMsg(m, agentEventMsg{ev: agent.ToolResult{ToolName: tc.toolName}})
+
+			if !m.pendingToolStart.IsZero() {
+				t.Fatalf("suppressed %s result left stale pendingToolStart: %v", tc.toolName, m.pendingToolStart)
+			}
+		})
+	}
+}
+
+func TestModel_StaleSuppressedToolStartDoesNotTagNextResult(t *testing.T) {
+	m := newTestModel(t)
+	// Simulate the risky interleaving from parallel tool execution: a
+	// suppressed Agent result clears the pending buffer, then an ordinary
+	// ToolResult arrives without a matching fresh ToolStart. The fallback
+	// card should render without inheriting Agent's old duration.
+	m.pendingToolName = agent.AgentToolName
+	m.pendingToolPreview = "Agent: review"
+	m.pendingToolArgs = `{}`
+	m.pendingToolStart = time.Now().Add(-2 * time.Minute)
+	m, _ = applyMsg(m, agentEventMsg{ev: agent.ToolResult{ToolName: agent.AgentToolName}})
+
+	m.transcript.Reset()
+	m, _ = applyMsg(m, agentEventMsg{ev: agent.ToolResult{
+		ToolName: "read_file",
+		Output:   "hello",
+	}})
+
+	got := stripANSI(m.transcript.String())
+	if strings.Contains(got, "2m") {
+		t.Fatalf("ordinary card inherited stale suppressed-tool duration:\n%s", got)
+	}
+	if !strings.Contains(got, "┌ read_file") || !strings.Contains(got, "└ 1 line · 5 bytes") {
+		t.Fatalf("ordinary card should still render from fallback state; got:\n%s", got)
 	}
 }
 

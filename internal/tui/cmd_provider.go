@@ -67,7 +67,7 @@ func cmdProviderEntry(m Model, args []string) (Model, tea.Cmd) {
 
 // providerListShortcut handles `/provider list`. Now opens the
 // picker directly into the Use sub-screen (the "Switch provider"
-// list with ✔ on the active row + Enter-to-switch) rather than
+// list with ✓ on the active row + Enter-to-switch) rather than
 // dumping a flat-text table to scrollback. The shortcut name still
 // reads as "list" for muscle-memory parity, but List + Use have
 // collapsed into one inline screen — the user-facing affordance is

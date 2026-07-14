@@ -79,7 +79,7 @@ type sessionsPickerState struct {
 	summarized bool
 
 	// activeID is the running session id at the time the picker
-	// opens. List rows matching it get a ✔ marker so the user can
+	// opens. List rows matching it get a ✓ marker so the user can
 	// see "this is the one I'm in right now."
 	activeID string
 }
@@ -521,20 +521,20 @@ func renderSessionsPicker(p *sessionsPickerState, width int) string {
 		footerText = fmt.Sprintf("↵ resume · ctrl+s toggle summarized (%s) · esc back", state)
 	case sessionsRenameListMode:
 		body = renderSessionsList(p, "Rename session",
-			"Pick a session to label. The current session is marked ✔.")
+			"Pick a session to label. The current session is marked ✓.")
 		footerText = "↵ rename · esc back · ↑↓ navigate"
 	case sessionsRenameInputMode:
 		body = renderSessionsRenameInput(p)
 		footerText = "↵ save · esc back"
 	case sessionsExportListMode:
 		body = renderSessionsList(p, "Export session",
-			"Pick a session to export as Markdown. The current session is marked ✔.")
+			"Pick a session to export as Markdown. The current session is marked ✓.")
 		footerText = "↵ export · esc back · ↑↓ navigate"
 	case sessionsExportInputMode:
 		body = renderSessionsExportInput(p)
 		footerText = "↵ write · esc back"
 	default:
-		body = stylePaletteEmpty.Render("(unknown picker state)")
+		body = styleEmpty.Render("(unknown picker state)")
 		footerText = "esc cancel"
 	}
 	footer := styleFooter.Render(footerText)
@@ -579,7 +579,7 @@ func renderSessionsList(p *sessionsPickerState, title, description string) strin
 	b.WriteString(renderMenuHeader(title, description))
 	b.WriteString("\n")
 	if len(p.sessions) == 0 {
-		b.WriteString(stylePaletteEmpty.Render("  (no saved sessions yet)"))
+		b.WriteString(styleEmpty.Render("  (no saved sessions yet)"))
 		return strings.TrimRight(b.String(), "\n")
 	}
 	for i, s := range p.sessions {
@@ -593,7 +593,7 @@ func renderSessionsList(p *sessionsPickerState, title, description string) strin
 		b.WriteString("\n")
 	}
 	b.WriteString("\n")
-	b.WriteString(stylePaletteEmpty.Render(
+	b.WriteString(styleMeta.Render(
 		fmt.Sprintf("  showing the %d most recent · use /recall <query> to search older sessions",
 			len(p.sessions))))
 	return strings.TrimRight(b.String(), "\n")
@@ -628,7 +628,7 @@ func renderSessionsResumeInput(p *sessionsPickerState) string {
 		"Type a session id (e.g. 2026-04-29T14-22-08) or a name set via /sessions Rename."))
 	b.WriteString("\n")
 	if p.inputErr != "" {
-		b.WriteString(styleError.Render("✘ " + p.inputErr))
+		b.WriteString(styleError.Render("✗ " + p.inputErr))
 		b.WriteString("\n\n")
 	}
 	fmt.Fprintf(&b, "❯ %-14s %s", "Ref:", p.input.View())
@@ -647,7 +647,7 @@ func renderSessionsRenameInput(p *sessionsPickerState) string {
 		"Type a label and press Enter. Names are not unique; the canonical key is the session id."))
 	b.WriteString("\n")
 	if p.inputErr != "" {
-		b.WriteString(styleError.Render("✘ " + p.inputErr))
+		b.WriteString(styleError.Render("✗ " + p.inputErr))
 		b.WriteString("\n\n")
 	}
 	fmt.Fprintf(&b, "❯ %-14s %s", "Name:", p.input.View())
@@ -666,7 +666,7 @@ func renderSessionsExportInput(p *sessionsPickerState) string {
 		"Confirm or edit the path. Relative paths resolve against the current directory."))
 	b.WriteString("\n")
 	if p.inputErr != "" {
-		b.WriteString(styleError.Render("✘ " + p.inputErr))
+		b.WriteString(styleError.Render("✗ " + p.inputErr))
 		b.WriteString("\n\n")
 	}
 	fmt.Fprintf(&b, "❯ %-14s %s", "Path:", p.input.View())

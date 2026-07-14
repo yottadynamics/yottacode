@@ -1944,13 +1944,13 @@ func runeAt(s string, col int) rune {
 }
 
 // The flush-left canvas spec, encoded as column assertions: structural
-// glyphs (card gutters ╭ │ ╰, the user-echo chevron ❯, the status dot)
+// glyphs (card gutters ┌ │ └, the user-echo chevron ❯, the status dot)
 // sit at column 0; the text they introduce sits at column 2 (glyph +
 // single space). This is the single source of truth for "everything
 // flush-left, text 2-space indented" and guards every renderer at once.
 func TestFlushLeftCanvas_ColumnAlignment(t *testing.T) {
-	// Tool card: ╭/│/╰ at col 0, text at col 2.
-	card := stripANSI(renderToolCard("x", "x()", "", "hi", false, 80, ""))
+	// Tool card: ┌/│/└ at col 0, text at col 2.
+	card := stripANSI(renderToolCard("x", "x()", "", "hi", false, 80, "", 0))
 	cardLines := strings.Split(card, "\n")
 	if len(cardLines) < 3 {
 		t.Fatalf("expected a 3-line card, got %q", card)
@@ -1961,9 +1961,9 @@ func TestFlushLeftCanvas_ColumnAlignment(t *testing.T) {
 		line        string
 		glyph, text rune
 	}{
-		{"header", header, '╭', 'x'},
+		{"header", header, '┌', 'x'},
 		{"body", body, '│', 'h'},
-		{"footer", footer, '╰', 'd'}, // "done"
+		{"footer", footer, '└', 'd'}, // "done"
 	} {
 		if got := runeAt(tc.line, 0); got != tc.glyph {
 			t.Errorf("card %s col 0 = %q, want gutter %q (line %q)", tc.name, got, tc.glyph, tc.line)
@@ -2034,7 +2034,7 @@ func TestResizeReplay_RoutesThroughQueuePrintln(t *testing.T) {
 	m := newTestModel(t) // ready, width 80
 	// Emit a multi-line tool card so historyLines holds real content.
 	card := renderToolCard("memory_save", "Memory(save user/x)",
-		`{"scope":"user","name":"x"}`, `saved user memory "x"`, false, m.width, "")
+		`{"scope":"user","name":"x"}`, `saved user memory "x"`, false, m.width, "", 0)
 	m.appendLine(card)
 	if len(m.historyLines) == 0 {
 		t.Fatal("expected history lines after appendLine")
@@ -2277,7 +2277,7 @@ func TestStartupBanner_DeferredUntilWidthKnown(t *testing.T) {
 
 // ToolResult emits the unified tool card. Header carries the preview
 // and duration; body / footer depend on the tool. We assert
-// structural invariants here: the rounded-corner gutter chars (╭ ╰)
+// structural invariants here: the sharp-corner gutter chars (┌ └)
 // appear, the preview is in the header, and the output ends up
 // somewhere in the card.
 func TestModel_ToolResultRendersUnifiedCard(t *testing.T) {
@@ -2289,14 +2289,14 @@ func TestModel_ToolResultRendersUnifiedCard(t *testing.T) {
 		Output:   "wrote 11 bytes to /tmp/y",
 	}})
 	v := stripANSI(m.transcript.String())
-	if !strings.Contains(v, "╭ x()") {
+	if !strings.Contains(v, "┌ x()") {
 		t.Errorf("card header should carry the preview: %q", v)
 	}
 	if !strings.Contains(v, "│ wrote 11 bytes to /tmp/y") {
 		t.Errorf("card body should carry the tool output: %q", v)
 	}
-	if !strings.Contains(v, "╰ ") {
-		t.Errorf("card should end with a footer gutter `╰`: %q", v)
+	if !strings.Contains(v, "└ ") {
+		t.Errorf("card should end with a footer gutter `└`: %q", v)
 	}
 }
 
@@ -2362,8 +2362,8 @@ func TestModel_InputBoxRespectsWidthCap(t *testing.T) {
 		if got := lipgloss.Width(line); got > cap {
 			t.Errorf("input row width = %d, want ≤ cap %d: %q", got, cap, line)
 		}
-		if strings.ContainsAny(line, "╭╮╯╰│") {
-			t.Errorf("input should be borderless; rounded-frame chars found: %q", line)
+		if strings.ContainsAny(line, "╭╮╯╰┌┐└┘│") {
+			t.Errorf("input should be borderless; frame chars found: %q", line)
 		}
 	}
 }
@@ -2559,5 +2559,32 @@ func TestModel_CtrlUThenYankRoundTripWithUnicode(t *testing.T) {
 	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyCtrlY})
 	if got := m.textInput.Value(); got != "héllo ✓ 漢字" {
 		t.Errorf("round-trip should preserve unicode; got %q", got)
+	}
+}
+
+// lastPathSegments keeps the trailing n components so the status-bar
+// location chip can show "foo/bar" instead of a full absolute path.
+func TestLastPathSegments(t *testing.T) {
+	cases := []struct {
+		in   string
+		n    int
+		want string
+	}{
+		{"/home/ppetkov/go/src/github.com/yottadynamics/yottacode", 2, "yottadynamics/yottacode"},
+		{"foo/bar", 2, "foo/bar"},
+		{"/foo/bar", 2, "foo/bar"},
+		{"/a/b/c/d", 2, "c/d"},
+		{"/a/b/c/d", 3, "b/c/d"},
+		{"a/b/c", 1, "c"},
+		{"/only", 2, "only"},
+		{"single", 2, "single"},
+		{"/home/me/proj/", 2, "me/proj"}, // trailing slash trimmed
+		{"", 2, ""},
+		{"/", 2, ""},
+	}
+	for _, tc := range cases {
+		if got := lastPathSegments(tc.in, tc.n); got != tc.want {
+			t.Errorf("lastPathSegments(%q, %d) = %q, want %q", tc.in, tc.n, got, tc.want)
+		}
 	}
 }

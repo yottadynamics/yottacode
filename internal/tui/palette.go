@@ -106,11 +106,11 @@ const slashPaletteVisible = 12
 // through used to make the box overflow the terminal by two columns.
 //
 // When the filtered list is longer than slashPaletteVisible, we render
-// only the window and add muted `↑ N more` / `↓ N more` hints above and
+// only the window and add muted `▲ N more` / `▼ N more` hints above and
 // below so the user knows there's more to scroll to.
 func renderPalette(items []slashCommand, idx, offset, width int) string {
 	if len(items) == 0 {
-		return stylePaletteBox.Width(width - 2).Render(stylePaletteEmpty.Render("(no matching commands)"))
+		return stylePaletteBox.Width(width - 2).Render(styleEmpty.Render("(no matching commands)"))
 	}
 	// Compute column width from the visible items so the help text
 	// always aligns regardless of which subset matched the prefix.

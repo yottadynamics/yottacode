@@ -28,7 +28,7 @@ func emitPlanBodyToScrollback(m *Model, body string) {
 	}
 	// Leading blank line separates the header from whatever came
 	// before (typically the model's write_file card finishing with
-	// "╰ wrote N bytes") so the two don't visually butt up against
+	// "└ wrote N bytes") so the two don't visually butt up against
 	// each other.
 	m.appendLine("")
 	m.appendLine(stylePlanBannerLabel.Render(PlanModeIcon+" plan ready for review:") +

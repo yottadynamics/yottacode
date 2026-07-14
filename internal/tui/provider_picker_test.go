@@ -130,7 +130,7 @@ func TestSlash_ProviderListShortcutOpensUsePicker(t *testing.T) {
 		t.Errorf("expected use-picker mode; got %v", m.providerPicker.mode)
 	}
 	got := stripANSI(m.View())
-	for _, want := range []string{"Switch provider", "anthropic", "openai", "✔"} {
+	for _, want := range []string{"Switch provider", "anthropic", "openai", "✓"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("view missing %q; got:\n%s", want, got)
 		}
@@ -261,7 +261,7 @@ func TestProviderPicker_MenuRendersClaudeCodeStyle(t *testing.T) {
 	}
 }
 
-// In the Use sub-picker, the active provider gets a `✔` marker so
+// In the Use sub-picker, the active provider gets a `✓` marker so
 // users see at a glance which one is currently in effect. Use is
 // the first menu item — Enter from index 0 enters the sub-picker.
 func TestProviderPicker_UseListMarksActiveWithCheckmark(t *testing.T) {
@@ -271,8 +271,8 @@ func TestProviderPicker_UseListMarksActiveWithCheckmark(t *testing.T) {
 	m = navigateToMenuItem(t, m, "Use")
 	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
 	got := stripANSI(m.View())
-	if !strings.Contains(got, "✔") {
-		t.Errorf("Use sub-picker should mark the active provider with ✔; got:\n%s", got)
+	if !strings.Contains(got, "✓") {
+		t.Errorf("Use sub-picker should mark the active provider with ✓; got:\n%s", got)
 	}
 }
 

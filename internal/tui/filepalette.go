@@ -216,13 +216,13 @@ const filePaletteVisible = 8
 //
 // When the filtered list is longer than filePaletteVisible, we render
 // only the window [offset, offset+filePaletteVisible) and add muted
-// `↑ N more` / `↓ N more` hints above/below to make the hidden
+// `▲ N more` / `▼ N more` hints above/below to make the hidden
 // entries discoverable. The caller (Model navigation) is responsible
 // for keeping `offset` in sync with `idx` so the selection stays in
 // view as the user arrows past the window edge.
 func renderFilePalette(items []fileEntry, idx, offset, width int) string {
 	if len(items) == 0 {
-		return stylePaletteBox.Width(width - 2).Render(stylePaletteEmpty.Render("(no matching files)"))
+		return stylePaletteBox.Width(width - 2).Render(styleEmpty.Render("(no matching files)"))
 	}
 	end := offset + filePaletteVisible
 	if end > len(items) {
@@ -233,7 +233,7 @@ func renderFilePalette(items []fileEntry, idx, offset, width int) string {
 	}
 	var lines []string
 	if offset > 0 {
-		lines = append(lines, stylePaletteEmpty.Render(fmt.Sprintf(" ↑ %d more", offset)))
+		lines = append(lines, styleMeta.Render(fmt.Sprintf(" ▲ %d more", offset)))
 	}
 	for i := offset; i < end; i++ {
 		e := items[i]
@@ -250,7 +250,7 @@ func renderFilePalette(items []fileEntry, idx, offset, width int) string {
 		lines = append(lines, line)
 	}
 	if remaining := len(items) - end; remaining > 0 {
-		lines = append(lines, stylePaletteEmpty.Render(fmt.Sprintf(" ↓ %d more", remaining)))
+		lines = append(lines, styleMeta.Render(fmt.Sprintf(" ▼ %d more", remaining)))
 	}
 	return stylePaletteBox.Width(width - 2).Render(strings.Join(lines, "\n"))
 }

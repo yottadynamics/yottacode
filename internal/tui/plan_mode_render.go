@@ -139,11 +139,11 @@ const (
 // styleCardGutter / styleCardHeader so the surface reads as part of
 // the same visual family as the tool-output cards in scrollback.
 func renderPlanModeEntryCard(hint string) string {
-	header := styleCardGutter.Render("╭ ") +
+	header := styleCardGutter.Render("┌ ") +
 		stylePlanBannerLabel.Render(PlanModeIcon+" plan mode active")
 	body := styleCardGutter.Render("│ ") +
 		stylePlanBannerHint.Render(hint)
-	footer := styleCardGutter.Render("╰ ") +
+	footer := styleCardGutter.Render("└ ") +
 		stylePlanBannerHint.Render(planExitKeysHint)
 	return strings.Join([]string{header, body, footer}, "\n")
 }
@@ -153,9 +153,9 @@ func renderPlanModeEntryCard(hint string) string {
 // abbreviated path. Emitted from maybeFillPlanFile the first time a
 // plan-mode session resolves its slug from the user's opening message.
 func renderPlanFileCard(planPath string) string {
-	header := styleCardGutter.Render("╭ ") +
+	header := styleCardGutter.Render("┌ ") +
 		stylePlanBannerLabel.Render(PlanModeIcon+" plan file")
-	footer := styleCardGutter.Render("╰ ") +
+	footer := styleCardGutter.Render("└ ") +
 		stylePlanBannerActivity.Render(abbrevHome(planPath))
 	return strings.Join([]string{header, footer}, "\n")
 }
@@ -252,9 +252,9 @@ func renderPlanDecisionCard(title, toolName, hotkeys string, width int) string {
 	if fill < 1 {
 		fill = 1
 	}
-	top := border.Render("╭─") + leftLabel +
+	top := border.Render("┌─") + leftLabel +
 		border.Render(strings.Repeat("─", fill)) +
-		rightLabel + border.Render("─╮")
+		rightLabel + border.Render("─┐")
 	sideL := border.Render("│ ")
 	sideR := border.Render(" │")
 	rows := []string{top}
@@ -265,7 +265,7 @@ func renderPlanDecisionCard(title, toolName, hotkeys string, width int) string {
 		}
 		rows = append(rows, sideL+line+strings.Repeat(" ", pad)+sideR)
 	}
-	rows = append(rows, border.Render("╰"+strings.Repeat("─", innerW+2)+"╯"))
+	rows = append(rows, border.Render("└"+strings.Repeat("─", innerW+2)+"┘"))
 	return strings.Join(rows, "\n")
 }
 

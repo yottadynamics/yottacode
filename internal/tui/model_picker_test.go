@@ -542,7 +542,7 @@ default_model = "meta/llama-3.1-405b-instruct"
 	}
 }
 
-// The new menu rendering uses a `❯` cursor prefix and a `✔`
+// The new menu rendering uses a `❯` cursor prefix and a `✓`
 // checkmark on the current-default row (Claude Code "Select model"
 // pattern). Verify both glyphs appear in the rendered View.
 func TestModelPicker_RendersClaudeCodeStyleCursorAndCheck(t *testing.T) {
@@ -562,8 +562,8 @@ func TestModelPicker_RendersClaudeCodeStyleCursorAndCheck(t *testing.T) {
 	if !strings.Contains(got, "❯") {
 		t.Errorf("View should include ❯ cursor; got:\n%s", got)
 	}
-	if !strings.Contains(got, "✔") {
-		t.Errorf("View should include ✔ on current-default row; got:\n%s", got)
+	if !strings.Contains(got, "✓") {
+		t.Errorf("View should include ✓ on current-default row; got:\n%s", got)
 	}
 }
 

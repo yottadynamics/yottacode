@@ -78,12 +78,12 @@ func TestCmdPlan_EntersAndPrintsBanner(t *testing.T) {
 }
 
 // Entry card uses the same gutter glyphs as the tool-output cards
-// (╭ / │ / ╰) so the surface reads as part of the same visual family.
+// (┌ / │ / └) so the surface reads as part of the same visual family.
 // If any of these disappear we've regressed to the older two-line
 // shape — the test pins all three.
 func TestRenderPlanModeEntryCard_HasCardShape(t *testing.T) {
 	out := stripANSI(renderPlanModeEntryCard(planEntryHintUserToggled))
-	for _, glyph := range []string{"╭ ", "│ ", "╰ "} {
+	for _, glyph := range []string{"┌ ", "│ ", "└ "} {
 		if !strings.Contains(out, glyph) {
 			t.Errorf("entry card missing gutter glyph %q; got:\n%s", glyph, out)
 		}
@@ -104,7 +104,7 @@ func TestRenderPlanModeEntryCard_HasCardShape(t *testing.T) {
 // header + footer only (no body).
 func TestRenderPlanFileCard_HasCardShape(t *testing.T) {
 	out := stripANSI(renderPlanFileCard("/home/u/.yottacode/plans/foo-bar-deadbeef.md"))
-	for _, glyph := range []string{"╭ ", "╰ "} {
+	for _, glyph := range []string{"┌ ", "└ "} {
 		if !strings.Contains(out, glyph) {
 			t.Errorf("plan-file card missing gutter glyph %q; got:\n%s", glyph, out)
 		}
@@ -803,7 +803,7 @@ func TestAutoModeBanner_RendersWhenActive(t *testing.T) {
 }
 
 // rebuildTranscript replays a session's prior tool calls into
-// scrollback as full ╭/│/╰ tool cards — same shape live execution
+// scrollback as full ┌/│/└ tool cards — same shape live execution
 // emits — so a resumed session reads like the live one. write_file
 // gets the live two-card stack reproduced: a body card (header +
 // highlighted body + approved/denied footer) plus the post-execution
@@ -830,14 +830,14 @@ func TestRebuildTranscript_RendersWriteFileTwoCardStack(t *testing.T) {
 	if !strings.Contains(out, "package main") || !strings.Contains(out, "func main()") {
 		t.Errorf("body card should include the full file content; got %q", out)
 	}
-	if !strings.Contains(out, "╰ approved") {
+	if !strings.Contains(out, "└ approved") {
 		t.Errorf("body card footer should read 'approved' on a successful write; got %q", out)
 	}
-	// Summary card: separate ╭ Write(...) / ╰ wrote N bytes block.
-	if strings.Count(out, "╭ Write(hello.go)") < 2 {
+	// Summary card: separate ┌ Write(...) / └ wrote N bytes block.
+	if strings.Count(out, "┌ Write(hello.go)") < 2 {
 		t.Errorf("rebuild should emit both a body card and a summary card; got %q", out)
 	}
-	if !strings.Contains(out, "╰ wrote 28 bytes") {
+	if !strings.Contains(out, "└ wrote 28 bytes") {
 		t.Errorf("summary card footer should carry the persisted result; got %q", out)
 	}
 	if strings.Contains(out, "wrote 28 bytes to") {
@@ -866,10 +866,10 @@ func TestRebuildTranscript_WriteFileDenied(t *testing.T) {
 	if !strings.Contains(out, "sample text") {
 		t.Errorf("denied body card should still show the rejected content; got %q", out)
 	}
-	if !strings.Contains(out, "╰ denied") {
+	if !strings.Contains(out, "└ denied") {
 		t.Errorf("denied body card footer should read 'denied'; got %q", out)
 	}
-	if !strings.Contains(out, "╰ denied by user") {
+	if !strings.Contains(out, "└ denied by user") {
 		t.Errorf("summary card should carry the raw 'denied by user' string; got %q", out)
 	}
 }

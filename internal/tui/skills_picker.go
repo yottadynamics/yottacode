@@ -473,7 +473,7 @@ func renderSkillsPicker(state *skillsPickerState, _ int) string {
 	// because the rule is identical for built-ins and installed
 	// skills. The checkbox is the model-autonomy gate; disk
 	// presence alone keeps the slash invocation alive either way.
-	tabIntro := stylePaletteEmpty.Render(
+	tabIntro := styleMeta.Render(
 		"  Selected skills are exposed to the model; unselected stay invokable via /<name>.")
 	body := header + "\n" + tabIntro + "\n\n" + renderSkillsTabs(state.tab) + "\n"
 	if state.filter != "" || state.filterMode {
@@ -483,7 +483,7 @@ func renderSkillsPicker(state *skillsPickerState, _ int) string {
 			// focus. Plain text only (no emoji per UI convention).
 			filterLine += "_"
 		}
-		body += stylePaletteEmpty.Render(filterLine) + "\n"
+		body += styleMeta.Render(filterLine) + "\n"
 	}
 	body += "\n"
 
@@ -493,9 +493,9 @@ func renderSkillsPicker(state *skillsPickerState, _ int) string {
 		if state.tab == catalogTabInstalled {
 			empty = "  no installed skills — try /skills install <source> or `yottacode skills install`"
 		}
-		body += stylePaletteEmpty.Render(empty) + "\n"
+		body += styleEmpty.Render(empty) + "\n"
 		if state.status != "" {
-			body += "\n" + stylePaletteEmpty.Render("  "+state.status)
+			body += "\n" + styleMeta.Render("  "+state.status)
 		}
 		return body
 	}
@@ -538,7 +538,7 @@ func renderSkillsPicker(state *skillsPickerState, _ int) string {
 		}) + "\n"
 	}
 	if state.status != "" {
-		body += "\n" + stylePaletteEmpty.Render("  "+state.status)
+		body += "\n" + styleMeta.Render("  "+state.status)
 	}
 	return body
 }
@@ -559,7 +559,7 @@ func renderSkillsTabs(active skillsCatalogTab) string {
 		if t.tab == active {
 			parts = append(parts, lipgloss.NewStyle().Foreground(colorSuccess).Bold(true).Render("["+t.label+"]"))
 		} else {
-			parts = append(parts, stylePaletteEmpty.Render(" "+t.label+" "))
+			parts = append(parts, styleMeta.Render(" "+t.label+" "))
 		}
 	}
 	return "  " + strings.Join(parts, "  ")

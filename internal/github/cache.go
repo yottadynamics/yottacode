@@ -34,7 +34,6 @@ type CachingClient struct {
 	mu         sync.Mutex
 	prs        map[string]PRDetails
 	prDiffs    map[string]string
-	checks     map[string][]CheckRun
 	issues     map[string]IssueDetails
 	issueLists map[string][]IssueSummary
 }
@@ -48,7 +47,6 @@ func NewCachingClient(inner Interface) *CachingClient {
 		Inner:      inner,
 		prs:        map[string]PRDetails{},
 		prDiffs:    map[string]string{},
-		checks:     map[string][]CheckRun{},
 		issues:     map[string]IssueDetails{},
 		issueLists: map[string][]IssueSummary{},
 	}
@@ -71,7 +69,7 @@ func (c *CachingClient) Stats() CacheStats {
 	return CacheStats{
 		PRs:        len(c.prs),
 		PRDiffs:    len(c.prDiffs),
-		Checks:     len(c.checks),
+		Checks:     0,
 		Issues:     len(c.issues),
 		IssueLists: len(c.issueLists),
 	}
@@ -85,7 +83,6 @@ func (c *CachingClient) Reset() {
 	defer c.mu.Unlock()
 	c.prs = map[string]PRDetails{}
 	c.prDiffs = map[string]string{}
-	c.checks = map[string][]CheckRun{}
 	c.issues = map[string]IssueDetails{}
 	c.issueLists = map[string][]IssueSummary{}
 }
@@ -204,33 +201,20 @@ func (c *CachingClient) ReadPRDiff(ctx context.Context, req ReadPRRequest) (stri
 	return res, nil
 }
 
-// ListPRChecks is cached. Like the diff, checks lag head SHA
-// updates, but within a single session turn the cache hit is
-// always correct.
+// ListPRChecks is intentionally NOT cached. Check runs transition from
+// queued/in-progress to completed without a PR metadata or head-SHA change,
+// and users often ask repeatedly whether CI has passed. Serving a session-
+// cached pending result would make yottacode lie until restart, so every
+// call goes to the inner client for a live CI snapshot.
 func (c *CachingClient) ListPRChecks(ctx context.Context, req ReadPRRequest) ([]CheckRun, error) {
-	key := prKey(req.Owner, req.Repo, req.Ref)
-
-	c.mu.Lock()
-	if hit, ok := c.checks[key]; ok {
-		c.mu.Unlock()
-		return hit, nil
-	}
-	c.mu.Unlock()
-
-	res, err := c.Inner.ListPRChecks(ctx, req)
-	if err != nil {
-		return res, err
-	}
-	c.mu.Lock()
-	c.checks[key] = res
-	c.mu.Unlock()
-	return res, nil
+	return c.Inner.ListPRChecks(ctx, req)
 }
 
 // UpdatePR rewrites title/body — the next ReadPR must see fresh
 // data, so we evict the matching ReadPR entry before passing
-// through. Diff and checks are unaffected (the head SHA hasn't
-// moved), so those caches stay.
+// through. Diff is unaffected (the head SHA hasn't moved), so that
+// cache stays. Checks are not cached because CI state changes while a
+// head SHA is stable.
 func (c *CachingClient) UpdatePR(ctx context.Context, req UpdatePRRequest) (UpdatePRResult, error) {
 	res, err := c.Inner.UpdatePR(ctx, req)
 	if err != nil {

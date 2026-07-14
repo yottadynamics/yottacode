@@ -142,14 +142,34 @@ func TestCachingClient_DuplicateReadPRDiff_OneCall(t *testing.T) {
 	}
 }
 
-func TestCachingClient_DuplicateListPRChecks_OneCall(t *testing.T) {
+func TestCachingClient_ListPRChecksEveryCall(t *testing.T) {
 	inner := &countingInner{checksRes: []CheckRun{{Name: "ci"}}}
 	c := NewCachingClient(inner)
 	for i := 0; i < 3; i++ {
 		_, _ = c.ListPRChecks(context.Background(), ReadPRRequest{Ref: "29"})
 	}
-	if inner.listChecksCount != 1 {
-		t.Errorf("expected 1 inner call; got %d", inner.listChecksCount)
+	if inner.listChecksCount != 3 {
+		t.Errorf("checks must be fetched live every time; got %d calls", inner.listChecksCount)
+	}
+}
+
+func TestCachingClient_ListPRChecksPendingThenSuccess(t *testing.T) {
+	// CI checks can complete while the PR head SHA is unchanged. The cache layer
+	// must not pin the earlier pending result for the rest of the session.
+	inner := &countingInner{checksRes: []CheckRun{{Name: "ci", State: "IN_PROGRESS"}}}
+	c := NewCachingClient(inner)
+	first, _ := c.ListPRChecks(context.Background(), ReadPRRequest{Ref: "29"})
+	if got := first[0].State; got != "IN_PROGRESS" {
+		t.Fatalf("first check state = %q, want IN_PROGRESS", got)
+	}
+
+	inner.checksRes = []CheckRun{{Name: "ci", State: "COMPLETED", Conclusion: "SUCCESS"}}
+	second, _ := c.ListPRChecks(context.Background(), ReadPRRequest{Ref: "29"})
+	if got := second[0].Conclusion; got != "SUCCESS" {
+		t.Fatalf("second check conclusion = %q, want SUCCESS", got)
+	}
+	if inner.listChecksCount != 2 {
+		t.Errorf("expected two live check fetches; got %d", inner.listChecksCount)
 	}
 }
 

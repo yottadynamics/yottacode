@@ -509,14 +509,14 @@ func renderModelPicker(p *modelPickerState, width int) string {
 		// Single-provider open: no strip needed, but show which
 		// provider's catalog is being browsed so the title still
 		// orients the user.
-		b.WriteString(stylePaletteEmpty.Render("  " + p.provider.Name))
+		b.WriteString(styleMeta.Render("  " + p.provider.Name))
 		b.WriteString("\n")
 	}
 	b.WriteString("\n")
 
 	switch {
 	case !p.loaded:
-		b.WriteString(stylePaletteEmpty.Render("loading model list…"))
+		b.WriteString(styleEmpty.Render("loading model list…"))
 	case len(p.entries) == 0:
 		emptyHint := "no models available"
 		switch {
@@ -527,7 +527,7 @@ func renderModelPicker(p *modelPickerState, width int) string {
 		case catalog.IsCurated(p.provider):
 			emptyHint += " — run `go run ./cmd/yotta-models refresh` to populate the catalog"
 		}
-		b.WriteString(stylePaletteEmpty.Render(emptyHint))
+		b.WriteString(styleEmpty.Render(emptyHint))
 		if p.loadErr != nil {
 			b.WriteString("\n")
 			b.WriteString(styleError.Render(truncateErr(p.loadErr.Error(), width-4)))
@@ -546,7 +546,7 @@ func renderModelPicker(p *modelPickerState, width int) string {
 			end = len(p.entries)
 		}
 		if p.windowTop > 0 {
-			above := stylePaletteEmpty.Render(fmt.Sprintf("  ▲ %d more above", p.windowTop))
+			above := styleMeta.Render(fmt.Sprintf("  ▲ %d more above", p.windowTop))
 			b.WriteString(above)
 			b.WriteString("\n")
 		}
@@ -570,18 +570,18 @@ func renderModelPicker(p *modelPickerState, width int) string {
 			b.WriteString("\n")
 		}
 		if end < len(p.entries) {
-			below := stylePaletteEmpty.Render(fmt.Sprintf("  ▼ %d more below", len(p.entries)-end))
+			below := styleMeta.Render(fmt.Sprintf("  ▼ %d more below", len(p.entries)-end))
 			b.WriteString(below)
 			b.WriteString("\n")
 		}
 		if perModel {
 			b.WriteString("\n")
-			b.WriteString(stylePaletteEmpty.Render(
+			b.WriteString(styleMeta.Render(
 				"per-model API keys: greyed rows need a separate /provider add"))
 		}
 		if p.loadErr != nil {
 			b.WriteString("\n")
-			b.WriteString(stylePaletteEmpty.Render("(live fetch failed: " +
+			b.WriteString(styleEmpty.Render("(live fetch failed: " +
 				truncateErr(p.loadErr.Error(), width-40) + ")"))
 		}
 	}

@@ -150,7 +150,7 @@ func TestRenderPalette_EmptyShowsHint(t *testing.T) {
 }
 
 // When the filtered list is longer than slashPaletteVisible, the
-// rendered palette must window the items and surface ↑/↓ overflow hints
+// rendered palette must window the items and surface ▲/▼ overflow hints
 // so the user knows there's more to scroll to. Mirrors the file palette
 // behavior so both pickers feel the same.
 // When the filtered list is longer than slashPaletteVisible, the
