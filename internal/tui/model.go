@@ -4417,6 +4417,7 @@ func (m Model) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 			m.pendingToolName = ""
 			m.pendingToolPreview = ""
 			m.pendingToolArgs = ""
+			m.pendingToolStart = time.Time{}
 			break
 		}
 		// todo_write fires its visualization through a different path:
@@ -4430,6 +4431,7 @@ func (m Model) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 			m.pendingToolName = ""
 			m.pendingToolPreview = ""
 			m.pendingToolArgs = ""
+			m.pendingToolStart = time.Time{}
 			break
 		}
 		// Render the buffered start info + this result as a unified
