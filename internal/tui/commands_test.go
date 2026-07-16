@@ -1018,7 +1018,7 @@ func TestSlash_RecallWithoutIndexErrors(t *testing.T) {
 func TestSlash_RecallReturnsHits(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	m := newTestModel(t)
-	// Open an index, seed it with a session, and attach to the model.
+	// Open an index, seed it with a session, and attach it to the model.
 	idx := recall.MustOpenForTest(t)
 	t.Cleanup(func() { _ = idx.Close() })
 	seed := &session.Session{
@@ -1036,15 +1036,112 @@ func TestSlash_RecallReturnsHits(t *testing.T) {
 	m.recall = idx
 
 	m, _ = typeAndEnter(t, m, "/recall authentication")
-	v := m.transcript.String()
-	if !strings.Contains(v, "[recall]") {
-		t.Errorf("expected [recall] header: %q", v)
+	if !m.recallPickerOpen || m.recallPicker == nil {
+		t.Fatalf("/recall hits should open the picker; open=%v picker=%v",
+			m.recallPickerOpen, m.recallPicker != nil)
 	}
-	if !strings.Contains(v, "seed-1") {
-		t.Errorf("expected seed session id in hits: %q", v)
+	view := stripANSI(m.View())
+	for _, want := range []string{"Recall", "1 session(s), 2 hit(s)", "seed-1", "2 hits", "↵ preview"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("recall picker view missing %q:\n%s", want, view)
+		}
 	}
-	if !strings.Contains(v, "/sessions") {
-		t.Errorf("expected /sessions hint to be shown: %q", v)
+	if strings.Count(view, "seed-1") < 1 || strings.Count(view, "seed-1") > 3 {
+		t.Errorf("recall picker should group duplicate session hits; got view:\n%s", view)
+	}
+	transcript := stripANSI(m.transcript.String())
+	for _, banned := range []string{"[recall]", "seed-1", "Authentication via JWT"} {
+		if strings.Contains(transcript, banned) {
+			t.Errorf("recall hits should not be appended to transcript; found %q in:\n%s", banned, transcript)
+		}
+	}
+}
+
+func TestSlash_RecallPickerEnterPreviewsThenResumesSelectedSession(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	m := newTestModel(t)
+	idx := recall.MustOpenForTest(t)
+	t.Cleanup(func() { _ = idx.Close() })
+
+	seed, err := session.New("qwen3.5", m.cwd)
+	if err != nil {
+		t.Fatalf("session.New: %v", err)
+	}
+	seed.Messages = []adapter.Message{
+		{Role: adapter.RoleAssistant, Content: "previous context before auth"},
+		{Role: adapter.RoleUser, Content: "authentication picker resume target"},
+		{Role: adapter.RoleAssistant, Content: "next context after auth"},
+	}
+	if err := seed.Save(); err != nil {
+		t.Fatalf("seed Save: %v", err)
+	}
+	if err := idx.IndexSession(seed); err != nil {
+		t.Fatalf("IndexSession: %v", err)
+	}
+	m.recall = idx
+
+	m, _ = typeAndEnter(t, m, "/recall authentication")
+	if !m.recallPickerOpen || m.recallPicker == nil || len(m.recallPicker.groups) == 0 {
+		t.Fatalf("/recall should open picker with grouped hits")
+	}
+	selectedID := m.recallPicker.groups[m.recallPicker.cursor].SessionID
+	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	if !m.recallPickerOpen || m.recallPicker == nil || !m.recallPicker.preview {
+		t.Fatalf("first Enter should preview without closing picker")
+	}
+	if m.sess.ID == selectedID {
+		t.Fatalf("first Enter should not resume the session yet")
+	}
+	if view := stripANSI(m.View()); !strings.Contains(view, "Recall preview") || !strings.Contains(view, "previous context before auth") || !strings.Contains(view, "authentication picker resume target") || !strings.Contains(view, "next context after auth") {
+		t.Fatalf("preview should show selected session snippets; got:\n%s", view)
+	}
+	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	if m.recallPickerOpen {
+		t.Errorf("second Enter should close recall picker")
+	}
+	if m.sess.ID != selectedID {
+		t.Errorf("second Enter should resume selected hit; got session %q want %q", m.sess.ID, selectedID)
+	}
+}
+
+func TestSlash_RecallPreviewScrollsAndTogglesSummarized(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	m := newTestModel(t)
+	idx := recall.MustOpenForTest(t)
+	t.Cleanup(func() { _ = idx.Close() })
+
+	seed := &session.Session{ID: "seed-scroll", Model: "qwen3.5", Created: m.sess.Created}
+	for i := 0; i < recallPreviewPageSize+2; i++ {
+		seed.Messages = append(seed.Messages, adapter.Message{Role: adapter.RoleUser, Content: fmt.Sprintf("authentication scroll target %d", i)})
+	}
+	if err := idx.IndexSession(seed); err != nil {
+		t.Fatalf("IndexSession: %v", err)
+	}
+	m.recall = idx
+
+	m, _ = typeAndEnter(t, m, "/recall authentication")
+	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	if !m.recallPicker.preview {
+		t.Fatalf("Enter should open recall preview")
+	}
+	view := stripANSI(m.View())
+	if !strings.Contains(view, "showing hits 1-5") || strings.Contains(view, "target 6") {
+		t.Fatalf("preview should start on the first bounded page; got:\n%s", view)
+	}
+	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyPgDown})
+	if m.recallPicker.previewOffset != recallPreviewPageSize {
+		t.Fatalf("PgDown previewOffset = %d, want %d", m.recallPicker.previewOffset, recallPreviewPageSize)
+	}
+	view = stripANSI(m.View())
+	if !strings.Contains(view, "showing hits 6-7") || !strings.Contains(view, "target 6") {
+		t.Fatalf("PgDown should show the next preview page; got:\n%s", view)
+	}
+	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
+	if !m.recallPicker.summarized {
+		t.Fatalf("s should toggle summarized resume on")
+	}
+	if view := stripANSI(m.View()); !strings.Contains(view, "summarized (on)") {
+		t.Fatalf("preview footer should show summarized state; got:\n%s", view)
 	}
 }
 

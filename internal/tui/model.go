@@ -670,6 +670,12 @@ type Model struct {
 	memoryPickerOpen bool
 	memoryPicker     *memoryPickerState
 
+	// Recall picker overlay (/recall <query>). Search results are transient
+	// navigation context, rendered below the cmdline instead of being appended
+	// to the session transcript. Enter resumes the selected session.
+	recallPickerOpen bool
+	recallPicker     *recallPickerState
+
 	// Embed setup overlay — opened from /memory "Enable semantic search".
 	embedSetupOpen    bool
 	embedSetupCursor  int
@@ -1308,6 +1314,9 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.memoryPickerOpen {
 			return m.updateMemoryPicker(msg)
+		}
+		if m.recallPickerOpen {
+			return m.updateRecallPicker(msg)
 		}
 		if m.sessionsPickerOpen {
 			return m.updateSessionsPicker(msg)
@@ -2417,7 +2426,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m Model) anyOverlayOpen() bool {
 	return m.cheatsheetOpen || m.usageOpen || m.contextReportOpen ||
 		m.permissionsOpen || m.modelPickerOpen || m.providerPickerOpen ||
-		m.embedSetupOpen || m.memoryPickerOpen || m.sessionsPickerOpen ||
+		m.embedSetupOpen || m.memoryPickerOpen || m.recallPickerOpen || m.sessionsPickerOpen ||
 		m.plansPickerOpen || m.checkpointsPickerOpen || m.subagentsPickerOpen ||
 		m.themePickerOpen || m.effortPickerOpen || m.skillsMenuOpen ||
 		m.skillsPickerOpen || m.mcpPickerOpen
@@ -2476,6 +2485,9 @@ func (m Model) View() string {
 	}
 	if m.memoryPickerOpen && m.memoryPicker != nil {
 		return m.renderInlineOverlay(renderMemoryPicker(m.memoryPicker, m.width))
+	}
+	if m.recallPickerOpen && m.recallPicker != nil {
+		return m.renderInlineOverlay(renderRecallPicker(m.recallPicker, m.width))
 	}
 	if m.sessionsPickerOpen && m.sessionsPicker != nil {
 		return m.renderInlineOverlay(renderSessionsPicker(m.sessionsPicker, m.width))
