@@ -566,10 +566,21 @@ type Model struct {
 	loops     map[string]loopState
 	loopOrder []string
 
+	// currentLoopTurnID names the loop whose prose iteration owns the active
+	// turn (empty for user turns and slash loops). Set when fireLoopIteration
+	// starts the turn and read at turnEndedMsg so a loop_control{stop} from the
+	// agent disarms the right loop. See consumeLoopControl.
+	currentLoopTurnID string
+
 	// loopExitConfirmOpen shows a graceful-exit warning when local loops would
 	// stop on quit. The cursor picks Exit anyway vs Stay.
 	loopExitConfirmOpen   bool
 	loopExitConfirmCursor int
+
+	// loopListOpen shows the active-loop panel (bare `/loop`) as a dismissable
+	// inline overlay below the cmdline, instead of writing loop cards into the
+	// session transcript. Any key closes it.
+	loopListOpen bool
 
 	// paragraphStart tracks blank-line boundaries so the first line
 	// of each new prose paragraph gets 2 extra spaces of indent.
@@ -839,9 +850,8 @@ func cursorBlinkCmd() tea.Cmd {
 }
 
 // loopState drives the /loop recurring command. Each iteration
-// re-dispatches payload on a tea.Tick heartbeat. gen invalidates ticks
-// scheduled before a stop/restart (the stale-tick guard). All fields are
-// touched only from the Update goroutine.
+// re-dispatches payload on a tea.Tick heartbeat. All fields are touched only
+// from the Update goroutine.
 type loopState struct {
 	id        string        // user-visible loop ID
 	active    bool          // a repeat is armed
@@ -850,27 +860,24 @@ type loopState struct {
 	interval  time.Duration // required repeat cadence
 	remaining int           // >0 bounded (Nx), decremented each fire; -1 unbounded
 	total     int           // original bounded count (0 for unbounded); drives K/N progress
-	gen       int           // generation; a loopTickMsg with a stale gen is dropped
 	armedAt   time.Time     // when this loop was created
 	expiresAt time.Time     // default five-day expiry for local loops
 }
 
-// loopTickMsg is the /loop heartbeat for one interval loop. id and gen target
-// the exact loop generation this tick was scheduled under; the handler drops
-// ticks when the loop was stopped, expired, or replaced.
+// loopTickMsg is the /loop heartbeat for one interval loop. A pending tick is
+// invalidated by removing the loop from m.loops: the handler drops any tick
+// whose id is no longer an active loop (stopped, expired, or reset).
 type loopTickMsg struct {
-	id  string
-	gen int
+	id string
 }
 
 // loopMinInterval is the sanity floor for /loop intervals: faster than
 // this hammers the provider and reads as a runaway.
 const loopMinInterval = 5 * time.Second
 
-// loopTickCmd schedules the next /loop heartbeat, stamping it with the
-// generation so a stale tick from a stopped loop can be dropped.
-func loopTickCmd(d time.Duration, id string, gen int) tea.Cmd {
-	return tea.Tick(d, func(time.Time) tea.Msg { return loopTickMsg{id: id, gen: gen} })
+// loopTickCmd schedules the next /loop heartbeat for a loop id.
+func loopTickCmd(d time.Duration, id string) tea.Cmd {
+	return tea.Tick(d, func(time.Time) tea.Msg { return loopTickMsg{id: id} })
 }
 
 // New builds a Model wired with the given config.
@@ -1277,6 +1284,13 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.cheatsheetOpen {
 			m.cheatsheetOpen = false
+			return m, nil
+		}
+		if m.loopListOpen {
+			// Any key dismisses the bare-/loop status panel (mirrors the
+			// cheatsheet). Intercepted here, ahead of the Esc/Ctrl+C
+			// loop-stop handlers, so closing the panel never disarms loops.
+			m.loopListOpen = false
 			return m, nil
 		}
 		if m.usageOpen {
@@ -2093,7 +2107,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// The /loop heartbeat targets one active local loop. Drop stale ticks from
 		// stopped, expired, or replaced loops.
 		ls, ok := m.loops[msg.id]
-		if !ok || !ls.active || msg.gen != ls.gen {
+		if !ok || !ls.active {
 			return m, nil
 		}
 		if !ls.expiresAt.IsZero() && time.Now().After(ls.expiresAt) {
@@ -2103,7 +2117,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// A turn (or summarize) is still running — skip this cycle and re-arm
 		// only this loop's next interval so cadence holds without stacking turns.
 		if m.turnActive || m.summarizing {
-			return m, loopTickCmd(ls.interval, msg.id, ls.gen)
+			return m, loopTickCmd(ls.interval, msg.id)
 		}
 		next, tickCmd := m.fireLoopIteration(msg.id)
 		m = next
@@ -2117,12 +2131,16 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.disarmLoop(msg.id, "[loop] "+msg.id+" stopped — payload started no turn")
 		}
 		if ls, ok := m.loops[msg.id]; ok && ls.active {
-			loopCmds = append(loopCmds, loopTickCmd(ls.interval, msg.id, ls.gen))
+			loopCmds = append(loopCmds, loopTickCmd(ls.interval, msg.id))
 		}
 		return m, tea.Batch(loopCmds...)
 
 	case turnEndedMsg:
 		m.turnActive = false
+		// If this turn was a /loop prose iteration and the agent called
+		// loop_control{stop}, disarm that loop now that the turn is over. Also
+		// clears the per-turn loop-control flag so the tool is hidden again.
+		m.consumeLoopControl()
 		m.clearPendingDecisionUI()
 		if m.turnCancel != nil {
 			m.turnCancel()
@@ -2415,7 +2433,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // normal footer, not as a replacing overlay, so they don't drive the
 // over-tall collapse this guards.
 func (m Model) anyOverlayOpen() bool {
-	return m.cheatsheetOpen || m.usageOpen || m.contextReportOpen ||
+	return m.cheatsheetOpen || m.loopListOpen || m.usageOpen || m.contextReportOpen ||
 		m.permissionsOpen || m.modelPickerOpen || m.providerPickerOpen ||
 		m.embedSetupOpen || m.memoryPickerOpen || m.sessionsPickerOpen ||
 		m.plansPickerOpen || m.checkpointsPickerOpen || m.subagentsPickerOpen ||
@@ -2455,6 +2473,9 @@ func (m Model) View() string {
 	// model, token count) without leaving the picker.
 	if m.cheatsheetOpen {
 		return m.renderInlineOverlay(renderCheatsheet(m.width))
+	}
+	if m.loopListOpen && m.activeLoopCount() > 0 {
+		return m.renderInlineOverlay(m.renderLoopListPanel())
 	}
 	if m.usageOpen {
 		return m.renderInlineOverlay(m.usagePanel)

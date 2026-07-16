@@ -486,7 +486,7 @@ Slash commands typed mid-turn (e.g. `/clear`, `/model`) follow the same rule the
 
 ## Recurring loops (`/loop`)
 
-`/loop` re-runs a prompt or slash command on an explicit interval until you stop it or it expires. It's a **scheduler over the normal turn loop, not a cloud/background worker** — it spawns no durable job, never runs more than one agent turn at a time, and each iteration is an ordinary turn (output streams to scrollback and is saved to the session; the standard per-tool approval gates apply). Multiple loops can be active in one terminal session, each with a `loop-...` ID. Loops are local/in-memory: quitting yottacode stops them, and graceful exit shows a warning first.
+`/loop` re-runs a prompt or slash command on an explicit interval until you stop it, the agent stops it (a prose loop can end itself via the `loop_control` tool once its goal is met — see below), or it expires. It's a **scheduler over the normal turn loop, not a cloud/background worker** — it spawns no durable job, never runs more than one agent turn at a time, and each iteration is an ordinary turn (output streams to scrollback and is saved to the session; the standard per-tool approval gates apply). Multiple loops can be active in one terminal session, each with a `loop-...` ID. Loops are local/in-memory: quitting yottacode stops them, and graceful exit shows a warning first.
 
 Forms:
 
@@ -498,7 +498,7 @@ Forms:
 | `/loop 30s 3x <prompt>` | Bounded: run three iterations, then disarm. |
 | `/loop stop <id>` | Disarm one loop by ID, e.g. `/loop stop loop-a1b2c3`. |
 | `/loop stop all` | Disarm every active loop. |
-| `/loop` | Show active loop IDs, intervals, remaining count, expiry, and payloads. |
+| `/loop` | Open a dismissable panel below the cmdline listing active loops (IDs, intervals, remaining count, expiry, payloads). Any key closes it; the loops keep running. |
 
 Behavior notes:
 
@@ -506,7 +506,18 @@ Behavior notes:
 - **Multiple local loops.** A terminal session can have multiple active loops. Each loop gets a `loop-...` ID; use `/loop` to list them. Loops are in-memory only and stop on quit, `/clear`, or session switch.
 - **Default expiry.** Every loop auto-expires after 5 days. This is a safety cap for local loops, not durable cloud scheduling.
 - **Always visible.** While loops are armed, a `loop · loop-a1b2c3 · every 5m` or `loops · 3 active` banner sits above the cmdline (like the auto/plan/yolo banners), so you can't forget one is running. Bounded loops also print a `[loop] loop-a1b2c3 iteration 2/3` line each cycle.
-- **Stopping.** Use `/loop stop <id>` to stop one loop, `/loop stop all` to stop every loop, or `/loop stop` when exactly one loop is active. `Esc` or a first `Ctrl+C` also stops all active loops; if a turn is mid-flight it is cancelled too. Graceful `/quit` or `Ctrl+D` warns before stopping active loops.
+- **Arm card.** Arming a loop prints a gutter card to scrollback with the ID, cadence, remaining count, expiry, and the full payload, so a long prose prompt stays readable instead of being crammed onto one line:
+
+  ```
+  ╭ loop · loop-y7j152
+  │ every 2m · unbounded · expires in 4d
+  │ Research accountants in Apex and Cary. I need a good accountant for my
+  │ personal taxes
+  ╰ /loop stop loop-y7j152
+  ```
+- **Status panel.** Bare `/loop` (no args) opens a dismissable **menu below the cmdline** — one compact row per loop (`<id>   every 1m · unbounded · expires in 4d · <payload…>`), in the same picker style as `/model`, with a `2 active loops` header and the stop/dismiss hint. It does **not** write to the session/transcript, so checking your loops never clutters scrollback. Any key dismisses it (the loops keep running). With nothing armed, `/loop` just prints a one-line hint.
+- **Stopping.** Use `/loop stop <id>` to stop one loop, `/loop stop all` to stop every loop, or `/loop stop` when exactly one loop is active. If the stopped loop is the one whose iteration is running, its turn is cancelled too; stopping a *different* loop leaves the running turn alone. `Esc` or a first `Ctrl+C` stops **all** active loops (and cancels a mid-flight turn). Graceful `/quit` or `Ctrl+D` warns before stopping active loops.
+- **The loop assesses itself and can stop.** During a **prose** iteration the agent is offered a `loop_control` tool **and** a system addendum that tells it to evaluate, every iteration, whether the loop should keep running. It stops when the loop's stated stop-condition is met (e.g. `/loop 2m check CI and stop when green` and CI is now green) **or** when the request is effectively a one-off it has already answered and repeating would only reproduce the same result — it calls `loop_control` with `action: "stop"` and a one-line reason, the loop disarms after that turn, and prints `[loop] <id> stopped by the agent: <reason>`. It deliberately keeps running when you're *polling* for a change that hasn't happened yet (CI still red, deploy still running), so a monitor doesn't quit just because nothing changed this tick. The tool + addendum are present **only** during a prose loop iteration — hidden from ordinary turns and from slash-command loops, so the model can't stop a loop that isn't running. (Note: an open-ended payload with no goal, like `check for accountants in Apex`, is treated as a one-off — it answers once and stops rather than re-answering forever.)
 - **Permissions are not bypassed.** An iteration that hits an un-allowlisted git command (or any gated tool) pauses on the normal approval prompt and waits — nothing runs unattended that wouldn't prompt interactively. To make a loop hands-off, pick "always allow" once, add an `.yottacode/permissions.json` allow rule, or run under `--yolo`.
 - **In-memory only.** The loop lives on the session in memory; quitting yottacode ends it (the output already streamed is still saved). It does not persist across restarts.
 - **Guarded payloads.** `/loop`, `/quit`, and `/clear` are refused as payloads — a loop must not re-arm, exit, or reset the very session it runs in — and an unknown slash command is rejected at arm time rather than looping "unknown command" forever.
@@ -517,7 +528,7 @@ Examples:
 
 | Use case | Command | Notes |
 |---|---|---|
-| Watch CI until it settles | `/loop 2m check current PR CI and stop when all checks are green` | Runs a normal agent turn every 2 minutes. The agent can inspect the current PR/checks, explain failures, and stop once the condition is satisfied. |
+| Watch CI until it settles | `/loop 2m check current PR CI and stop when all checks are green` | Runs a normal agent turn every 2 minutes. The agent inspects the PR/checks, explains failures, and — once all checks are green — calls `loop_control{stop}` so the loop disarms itself instead of polling forever. |
 | Keep nudging on a task at a safe cadence | `/loop 2m keep fixing the current test failure, run focused tests, and stop when green` | Each iteration starts on the interval only if the prior turn is idle. Stop one loop with `/loop stop <id>` or all loops with `/loop stop all`. |
 | Poll status without starting an agent turn | `/loop 30s /context` | Interval slash commands can be informational/status checks and are allowed to repeat. |
 | Run a bounded check | `/loop 30s 3x /git-review-pr` | Runs at most three iterations, then disarms automatically. |
