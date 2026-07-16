@@ -233,6 +233,9 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 	planMode := &agent.PlanModeState{}
 	autoMode := &agent.AutoModeState{}
 	yoloMode := &agent.YoloModeState{}
+	// Shared /loop self-stop signal: the loop_control tool (registered below)
+	// writes a stop request through it; the TUI Model consumes it at turn end.
+	loopControl := &agent.LoopControlState{}
 
 	reg := agent.NewRegistry()
 	// Core cwd-bound tools (file read/write/edit, search, git-read/stage/
@@ -375,6 +378,12 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 	// Execute can report the resolved plan-file path to the model.
 	reg.Register(&agent.ExitPlanModeTool{})
 	reg.Register(&agent.EnterPlanModeTool{State: planMode})
+
+	// loop_control lets a /loop prose iteration end its own loop once the
+	// model judges the loop's goal met (e.g. "…and stop when CI is green").
+	// Gated to loop turns in iterationToolFilter via the shared state below,
+	// so it's hidden from ordinary turns.
+	reg.Register(&agent.LoopControlTool{State: loopControl})
 
 	// Subagents: load definitions (built-in + ~/.yottacode/agents +
 	// .yottacode/agents) and register the Agent dispatch tool. The
@@ -549,6 +558,7 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 		PlanMode:          planMode,
 		AutoMode:          autoMode,
 		YoloMode:          yoloMode,
+		LoopControl:       loopControl,
 	}
 
 	// Checkpoint store powers /checkpoints + Esc Esc. Failure here is

@@ -197,3 +197,20 @@ Looping exit_plan_mode without user feedback in between is a regression — the 
 Do NOT call exit_plan_mode for pure research tasks (gathering info, summarizing code, answering questions). Only call it when the work involves writing code AND you have a complete plan written to the file.
 
 If a tool call is blocked, the result will tell you so; switch to a read-only or plan-file alternative and continue.`
+
+// LoopIterationAddendum is the per-iteration system message prepended when the
+// current turn is a /loop prose iteration (LoopConfig.LoopControl active). The
+// single `%s` is filled with a one-line descriptor of the loop (cadence,
+// bounded/unbounded). It gives the model the judgment to end the loop with the
+// loop_control tool once the goal is met — without it the model runs the same
+// prompt every interval forever, even when it has nothing new to do. Prepended
+// to the per-iteration message slice only, so the persisted history stays clean
+// (same approach as PlanModeAddendum).
+const LoopIterationAddendum = `This turn is one automatic iteration of a recurring /loop: the same prompt runs again on the loop's interval unless the loop is stopped. %s
+
+You have a loop_control tool for exactly this. Before you finish, decide whether the loop should keep running:
+  - GOAL MET: if the prompt states a stop-condition and it is now satisfied (e.g. "…and stop when CI is green" and every check is green), call loop_control with action "stop" and a one-line reason.
+  - ALREADY ANSWERED: if this is effectively a one-off request that you have already fully answered, and running again would only reproduce the same result with no new information, call loop_control with action "stop". Do NOT keep repeating an identical answer every interval.
+  - STILL POLLING: if you are deliberately watching for a condition that has NOT happened yet (waiting for CI to turn green, a deploy to finish, a file/PR/ticket to change), do NOT stop just because nothing changed this time — let the loop run again next interval.
+
+Calling loop_control does not end this turn; finish your reply as usual and the loop disarms once the turn completes. If you call nothing, the loop simply continues.`

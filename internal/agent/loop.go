@@ -60,6 +60,14 @@ type LoopConfig struct {
 	// flip takes effect on the next iteration with no reconfiguration.
 	PlanMode *PlanModeState
 
+	// LoopControl is the shared signal for the /loop self-stop tool. When set
+	// and IsActive (the current turn is a /loop prose iteration), the loop
+	// advertises the loop_control tool so the model can end its own loop once
+	// the loop's stated goal is met. nil disables the tool entirely (oneshot;
+	// subagents; tests). Pointer-shared with the TUI, which sets the per-turn
+	// active flag and consumes a stop request at turn end.
+	LoopControl *LoopControlState
+
 	// AutoMode is the shared auto-mode flag the TUI flips via
 	// Shift+Tab, the plan-card [A] hotkey, or the --permission-mode
 	// auto startup flag. When active, the loop auto-approves
@@ -498,11 +506,12 @@ func streamIteration(
 	history []adapter.Message,
 	events chan<- Event,
 ) (*adapter.Message, error) {
-	// Gate the plan-mode boundary tools by the live mode — the model
-	// should never see (or invent) exit_plan_mode outside of plan mode,
-	// nor enter_plan_mode while it's already in it.
+	// Gate per-iteration tools by live mode — the model should never see
+	// (or invent) exit_plan_mode outside of plan mode, nor enter_plan_mode
+	// while it's already in it, nor loop_control outside a /loop iteration.
 	planActive := cfg.PlanMode.IsActive()
-	tools := cfg.Registry.AsAdapterToolsFiltered(planModeSchemaFilter(planActive))
+	loopActive := cfg.LoopControl.IsActive()
+	tools := cfg.Registry.AsAdapterToolsFiltered(iterationToolFilter(planActive, loopActive))
 	// When plan mode is active, prepend a fresh system message carrying
 	// the plan-mode addendum (path + current contents of the plan
 	// file). Re-read on every iteration so the model always sees the
@@ -518,6 +527,16 @@ func streamIteration(
 			Role:    adapter.RoleSystem,
 			Content: fmt.Sprintf(PlanModeAddendum, cfg.PlanMode.PlanFile, body),
 		}}, history...)
+	}
+	// When this turn is a /loop prose iteration, prepend the loop-assessment
+	// addendum so the model evaluates whether the loop's goal is met and ends it
+	// via loop_control instead of re-running the same prompt forever. Local
+	// slice only — never persisted (same as the plan addendum).
+	if loopActive {
+		msgs = append([]adapter.Message{{
+			Role:    adapter.RoleSystem,
+			Content: fmt.Sprintf(LoopIterationAddendum, cfg.LoopControl.Context()),
+		}}, msgs...)
 	}
 	// Defensive normalization: never send two assistant turns in a row
 	// (Gemini rejects it; Claude 4.6+ treats it as prefill). No-op for an

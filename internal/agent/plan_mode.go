@@ -278,6 +278,21 @@ func planModeSchemaFilter(planActive bool) func(string) bool {
 	}
 }
 
+// iterationToolFilter is the per-iteration schema gate streamIteration applies.
+// It composes planModeSchemaFilter (the enter/exit_plan_mode gating) with the
+// loop_control gate: loop_control is advertised only while a /loop prose
+// iteration owns the turn, so the model can't stop a loop that isn't running.
+// Everything else passes.
+func iterationToolFilter(planActive, loopActive bool) func(string) bool {
+	plan := planModeSchemaFilter(planActive)
+	return func(name string) bool {
+		if name == "loop_control" {
+			return loopActive
+		}
+		return plan(name)
+	}
+}
+
 // PlanModeGate is the read/write classifier the loop consults before
 // every tool call when plan mode is active. Returns ("", false) when
 // the call may proceed, or (errorString, true) when the call must be
