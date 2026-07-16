@@ -1480,14 +1480,13 @@ func cmdRedo(m Model, _ []string) (Model, tea.Cmd) {
 	return m, nil
 }
 
-// cmdRecall queries the FTS5 index for matches across every saved session
-// and renders the ranked snippets into the transcript. The footer hint
-// points users at the two ways to reopen a hit: the positional shortcut
-// `/sessions <id|name>` (fastest when you just copy/paste the id from
-// the snippet line), or the picker's Resume action where you can type
-// or paste the ref into a textinput. With no recall index attached
-// (e.g., index init failed at startup), reports a friendly error instead of
-// silently doing nothing.
+// cmdRecall queries the FTS5 index for matches across every saved session.
+// Non-empty results open a transient picker below the cmdline instead of
+// writing search/navigation output into the persistent session transcript. The
+// picker points users at the same resume flow as /sessions: Enter resumes the
+// highlighted hit; Esc closes back to the slash palette. With no recall index
+// attached (e.g., index init failed at startup), reports a friendly error
+// instead of silently doing nothing.
 func cmdRecall(m Model, args []string) (Model, tea.Cmd) {
 	if len(args) == 0 {
 		m.appendLine(styleError.Render("usage: /recall <query>"))
@@ -1507,21 +1506,7 @@ func cmdRecall(m Model, args []string) (Model, tea.Cmd) {
 		m.appendLine(styleAuto.Render(fmt.Sprintf("[recall] no matches for %q", query)))
 		return m, nil
 	}
-	var b strings.Builder
-	fmt.Fprintf(&b, "[recall] %d hit(s) for %q:\n", len(hits), query)
-	for _, h := range hits {
-		tag := h.SessionID
-		if h.SessionName != "" {
-			tag = fmt.Sprintf("%s (%s)", h.SessionID, h.SessionName)
-		}
-		age := formatRecallAge(time.Since(h.Created))
-		fmt.Fprintf(&b, "\n  %s · %s · %s · %s\n",
-			styleUserHeader.Render(string(h.Role)), tag, age, h.Model)
-		fmt.Fprintf(&b, "    %s\n", strings.ReplaceAll(h.Snippet, "\n", " "))
-	}
-	b.WriteString("\n")
-	b.WriteString(styleAuto.Render("/sessions <id|name> to resume directly · or /sessions → Resume to type the ref"))
-	m.appendLine(b.String())
+	m.openRecallPicker(query, hits)
 	return m, nil
 }
 

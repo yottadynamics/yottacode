@@ -18,7 +18,7 @@ Type `/` in the TUI to open the slash-command palette. The palette filters as yo
 | `/effort` | `[default\|low\|medium\|high]` | Set reasoning effort for this session on providers that support it. Bare opens a picker; a positional argument sets it directly. `default` (aliases `off`/`none`) injects no reasoning override — every provider behaves as if `/effort` were never used. Supported active models show the current level in the status bar. Session-only, mirroring `--reasoning-effort`. See [providers.md](providers.md#reasoning-effort). |
 | `/doctor` | — | Probe the provider `/models` endpoint |
 | `/redo` | — | Rewind the last user message and put it back in the input box |
-| `/recall` | `<query>` | Search across saved sessions |
+| `/recall` | `<query>` | Search saved sessions in an interactive results overlay |
 | `/summarize` | — | Compress the current session after snapshotting it |
 | `/checkpoints` | — | Open the checkpoints picker — also `Esc Esc`. Restore conversation, files, or both to any prior prompt |
 | `/memory` | — | Edit curated memory or browse agent-managed memories |
@@ -46,7 +46,7 @@ Beyond the built-ins, you can ship your own slash commands by dropping markdown 
 
 `/provider` shows the resolved provider profile and diagnostics. `/provider use <name>` switches to a configured provider directly. The provider picker also supports adding and removing profiles; adding `openai-auth` starts the browser OAuth flow inline, and adding `copilot-auth` starts the GitHub device code flow inline. Both store account-specific model lists after login.
 
-## Sessions picker
+## Sessions and recall pickers
 
 `/sessions` opens a picker with actions for loading, resuming, renaming, and exporting sessions.
 
@@ -54,6 +54,8 @@ Beyond the built-ins, you can ship your own slash commands by dropping markdown 
 - `/sessions <id-or-name>` resumes directly.
 - Press `s` in the list, or `Ctrl+S` in the resume input, to toggle summarized resume for large transcripts.
 - Export writes a Markdown transcript suitable for sharing or archiving.
+
+`/recall <query>` searches older saved sessions by content and opens a transient results overlay below the cmdline. Results are grouped by session with a hit count, so one noisy conversation does not fill the whole list. Use `↑`/`↓` to select a session, `Enter` to preview matches with the neighboring turn before and after each hit, `↑`/`↓` or `PgUp`/`PgDn` to scroll long previews, `s` to toggle summarized resume, `Enter` again to resume it, and `Esc` to go back or close. Results are not appended to the conversation transcript, so recall searches do not pollute session scrollback.
 
 ## Memory picker
 

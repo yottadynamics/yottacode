@@ -89,6 +89,8 @@ Export writes a readable Markdown transcript with turns, tool calls, and tool ou
 /recall authentication
 ```
 
+In the TUI, recall opens an interactive results overlay below the cmdline instead of printing hits into the conversation transcript. Results are grouped by session so repeated matches from one conversation appear as a single row with a hit count. Use `↑`/`↓` to pick a session, `Enter` to preview its matches with the neighboring turn before and after each hit, `↑`/`↓` or `PgUp`/`PgDn` to scroll long previews, `s` to toggle summarized resume, `Enter` again to resume that session, and `Esc` to go back or close the overlay without changing sessions. Search results are navigation context, so they are not saved as chat history unless you explicitly resume a selected session.
+
 Recall uses a local SQLite FTS5 index at:
 
 ```text
