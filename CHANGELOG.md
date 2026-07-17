@@ -4,6 +4,76 @@ All notable changes to yottacode will be documented in this file. The
 format roughly follows [Keep a Changelog](https://keepachangelog.com/);
 the project uses semantic versioning once it's past `1.0.0`.
 
+## Unreleased
+
+### Added
+
+- **Google Vertex AI support** — two provider kinds serving models from your
+  own GCP project, billed to your Google Cloud account: `vertex-anthropic`
+  (Claude, via `:streamRawPredict`) and `vertex` (Gemini, via the project's
+  OpenAI-compatible chat shim). Both authenticate with Application Default
+  Credentials (`gcloud auth application-default login`) and mint a fresh
+  access token per request, so sessions no longer die when a manually
+  exported token expires. Project and location live in `base_url`; there is
+  no `api_key_env`. Claude defaults to `locations/global`; Gemini uses the
+  regional OpenAI-compatible shim. Claude ids take Vertex's `@version` suffix
+  (`claude-sonnet-4-5@20250929`), Gemini ids are publisher-namespaced
+  (`google/gemini-2.5-pro`).
+  Model lists are curated from the local models.dev snapshot, filtered to
+  the family each kind can drive. `/effort` steers both families — Claude
+  via the extended-thinking budget, Gemini via the shim's
+  `reasoning_effort` enum. See [docs/providers.md](docs/providers.md).
+
+### Fixed
+
+- `[[providers.models]]` is no longer silently ignored for non-curated
+  provider kinds. `catalog.List` went straight to the live `/models` fetch
+  and never read the declared list, so endpoints that implement
+  `chat/completions` but no `/models` route left the picker empty even
+  when the user had written out their models by hand. Declared models are
+  now merged in for every kind and stand in when a live fetch fails; the
+  fetch error still surfaces so an unreachable endpoint can't look healthy.
+- The model picker no longer offers embedding and text-to-speech models as
+  chat models. The models.dev family filter selects on an id prefix
+  (`gemini`), which swept in `gemini-embedding-001` and the `-tts`
+  variants. Image models are deliberately kept — they take a chat-shaped
+  request.
+- `yotta-models refresh` now backfills `max_output` from models.dev, not
+  just `context_window`. A vendor API that reports neither (OpenAI's
+  `/v1/models`) left every one of its models with `max_output: 0`, which
+  reads as "unknown" and downgrades budget-based reasoning to a
+  conservative default. First-party values are still never overwritten —
+  models.dev only fills what the vendor omitted.
+- Context windows now resolve for host-qualified model ids.
+  `ResolveWindowForProvider` consulted only the generated catalog, which
+  carries no rows for kinds sourced from the models.dev snapshot and
+  matches ids verbatim — so a `vertex` profile serving
+  `google/gemini-2.5-pro` missed every layer and landed on
+  `context.default_window`, reporting 128k for a 1M-context model and
+  firing auto-summarize at an eighth of the real budget. Resolution now
+  falls back to the provider's own curated list, which is host-scoped:
+  the same id legitimately differs per backend (`gemini-2.5-pro` is 1M on
+  Vertex, 128k through Copilot), and that distinction is exactly what a
+  per-model-id lookup destroys.
+- `catalog.ReasoningInfo` now resolves host-qualified model ids. Vertex and
+  resellers qualify the vendor's id three ways, and none of them matched
+  the catalog before: a publisher prefix (`google/gemini-2.5-pro`,
+  OpenRouter's `anthropic/claude-*`), an `@default` suffix meaning "latest"
+  (`claude-opus-4-8@default`), and an `@date` snapshot pin
+  (`claude-sonnet-4-5@20250929`) that the vendor's own catalog spells with
+  a dash (`claude-sonnet-4-5-20250929`). Such models read as uncatalogued
+  and silently lost their extended-thinking budget, falling back to a
+  conservative cap instead of the model's real max-output scaling.
+
+- Provider resolution no longer lets the `claude-*` / `gemini-*` model-tag
+  fallback override an explicitly configured provider. The fallback exists to
+  recognize corporate gateways at unknown hostnames, but it fired even when
+  the provider was already known — which would have routed a Vertex config to
+  `api.anthropic.com` with a credential that host rejects.
+- `catalog.ReasoningInfo` now falls back to the base id when a model carries a
+  version suffix (`claude-opus-4-8@default`). Such models previously read as
+  uncatalogued and silently lost their extended-thinking budget.
+
 ## 0.3.0 — 2026-06-10
 
 > Memory + ecosystem — persistent agent memory with semantic recall,

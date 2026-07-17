@@ -92,18 +92,107 @@ func Get(provider string) []Model {
 	return []Model{}
 }
 
+// modelsDevAugment maps a curated provider kind onto the models.dev
+// provider whose list backfills it, plus the model-id prefix worth
+// keeping. The snapshot is the only source for the vertex kinds — there
+// is no fetchVertex in cmd/yotta-models, because Vertex publishes the
+// same models Google and Anthropic already do.
+//
+// The prefix is load-bearing, not cosmetic. models.dev's google-vertex is
+// a superset: Gemini plus Claude plus third-party *-maas entries that
+// Vertex only serves after you deploy them yourself. Listing those would
+// offer models that cannot be called.
+var modelsDevAugment = map[string]struct{ providerID, prefix string }{
+	"gemini":           {providerID: "google", prefix: "gemini"},
+	"vertex":           {providerID: "google-vertex", prefix: "gemini"},
+	"vertex-anthropic": {providerID: "google-vertex-anthropic", prefix: "claude"},
+}
+
 // Curated returns the offline model catalog for a curated provider kind.
-// Gemini is augmented from the local models.dev snapshot so the picker can
-// offer newly published Gemini IDs even when catalog.gen.json lags. This is
-// the entry point every picker surface (wizard, /provider add, /model) and
-// model-ownership lookup should use for curated kinds; reach for Get only
-// when the raw embedded catalog is specifically wanted.
+// Kinds in modelsDevAugment are backfilled from the local models.dev
+// snapshot so the picker can offer newly published IDs even when
+// catalog.gen.json lags. This is the entry point every picker surface
+// (wizard, /provider add, /model) and model-ownership lookup should use
+// for curated kinds; reach for Get only when the raw embedded catalog is
+// specifically wanted.
 func Curated(provider string) []Model {
 	models := Get(provider)
+	src, ok := modelsDevAugment[provider]
+	if !ok {
+		return models
+	}
+	dev := chatModelsOnly(ModelsDevModelsByProvider(src.providerID, src.prefix))
+	// Gemini's generated catalog can lag models.dev limits even when it
+	// already knows the ID. Merge with models.dev first for this provider
+	// so current context/max-output values win, while still appending any
+	// embedded-only display names below.
 	if provider == "gemini" {
-		models = MergeModels(models, ModelsDevModelsByProvider("google", "gemini"))
+		models = MergeModels(dev, models)
+	} else {
+		// MergeModels copies, so the writes below can't reach the shared
+		// slice Get handed back.
+		models = MergeModels(models, dev)
+	}
+	if provider == "vertex" {
+		models = qualifyVertexGeminiModels(models)
+	}
+	// ModelsDevModelsByProvider stamps entries with the models.dev
+	// provider id ("google-vertex"), not our kind. Nothing reads .Provider
+	// off a Curated result today, but leaving two namespaces mixed in one
+	// slice is a trap for whoever does first.
+	for i := range models {
+		models[i].Provider = provider
 	}
 	return models
+}
+
+func qualifyVertexGeminiModels(models []Model) []Model {
+	out := append([]Model(nil), models...)
+	for i := range out {
+		if strings.HasPrefix(out[i].ID, "gemini") {
+			out[i].ID = "google/" + out[i].ID
+		}
+	}
+	return out
+}
+
+// chatModelsOnly drops models.dev entries that share a family prefix
+// with the chat models but cannot hold a conversation, so the picker
+// stops offering them as if they could.
+//
+// The prefix filter in modelsDevAugment selects a family ("gemini",
+// "claude"); it can't tell a chat model from its speech or embedding
+// siblings, and models.dev carries no modality field to ask. (The
+// generated catalog has no such problem: cmd/yotta-models filters on
+// Gemini's supportedGenerationMethods at fetch time.) So this matches on
+// the only signals available.
+//
+// Deliberately narrow. Image models stay: they take a chat-shaped
+// request and return a message, so choosing one is a real if unusual
+// choice, not a broken one.
+func chatModelsOnly(models []Model) []Model {
+	out := models[:0:0]
+	for _, m := range models {
+		if isNonChatModel(m) {
+			continue
+		}
+		out = append(out, m)
+	}
+	return out
+}
+
+func isNonChatModel(m Model) bool {
+	id := strings.ToLower(m.ID)
+	switch {
+	// Embedding models return vectors. models.dev reports their output
+	// limit as 1 token, which is the giveaway when the name isn't.
+	case strings.Contains(id, "embedding"), m.MaxOutput == 1:
+		return true
+	// Text-to-speech returns audio.
+	case strings.HasSuffix(id, "-tts"), strings.Contains(id, "-tts-"):
+		return true
+	}
+	return false
 }
 
 // All returns every model across every provider. Useful for the
@@ -116,8 +205,8 @@ func All() []Model {
 }
 
 // MergeModels appends models from extra that are not already present in base.
-// The first occurrence of an ID wins, preserving the embedded catalog's
-// display names and ordering while allowing runtime/local catalogs to backfill
+// The first occurrence of an ID wins, preserving the caller's preferred
+// ordering and metadata while allowing runtime/local catalogs to backfill
 // newer provider models for picker use.
 func MergeModels(base, extra []Model) []Model {
 	out := append([]Model(nil), base...)
@@ -187,10 +276,79 @@ func FindByProviderID(provider, id string) (Model, bool) {
 // adapter then leaves reasoning at the provider default. Cheap enough
 // to call on every adapter (re)build.
 func ReasoningInfo(modelID string) (maxOutput int, supportsThinking *bool) {
-	if m, ok := FindByID(modelID); ok {
-		return m.MaxOutput, m.Capabilities.Thinking
+	for _, id := range lookupIDVariants(modelID) {
+		if m, ok := FindByID(id); ok {
+			return m.MaxOutput, m.Capabilities.Thinking
+		}
 	}
 	return 0, nil
+}
+
+// lookupIDVariants returns modelID followed by the progressively
+// unqualified forms worth trying against the catalog, most specific
+// first.
+//
+// Hosts that resell someone else's model qualify the id, and the
+// embedded catalog only ever carries the bare one. Two qualifiers show
+// up in practice, and both can appear together:
+//
+//   - a publisher prefix — Vertex's google/gemini-2.5-pro, OpenRouter's
+//     anthropic/claude-sonnet-4-5
+//   - an @version suffix — Vertex's claude-sonnet-4-5@20250929, or
+//     @default for "track the latest snapshot"
+//
+// Neither changes which model you are talking to, so the catalog's
+// facts about the bare id apply. Without this the model reads as
+// uncatalogued and silently loses its thinking budget — a capability
+// downgrade with no error to notice.
+//
+// Stripping is safe here because FindByID is already deliberately
+// global (see its doc): model ids are effectively unique across
+// vendors, so an unqualified id resolves to the same model whoever is
+// hosting it. Callers that must not cross a namespace use
+// FindByProviderID instead.
+func lookupIDVariants(modelID string) []string {
+	modelID = strings.TrimSpace(modelID)
+	if modelID == "" {
+		return nil
+	}
+	out := []string{modelID}
+	add := func(id string) {
+		if id == "" {
+			return
+		}
+		for _, seen := range out {
+			if seen == id {
+				return
+			}
+		}
+		out = append(out, id)
+	}
+
+	unversioned := modelID
+	if base, version, ok := strings.Cut(modelID, "@"); ok {
+		unversioned = base
+		// Vertex spells a pinned snapshot model@20250929 where the
+		// vendor's own catalog spells it model-20250929 — same model,
+		// same date, different separator. Try that before dropping the
+		// version, since the dated entry is the exact match and the bare
+		// one may not exist at all (Anthropic lists
+		// claude-sonnet-4-5-20250929 but no bare claude-sonnet-4-5).
+		if version != "" && version != "default" {
+			add(base + "-" + version)
+			if i := strings.LastIndex(base, "/"); i >= 0 {
+				add(base[i+1:] + "-" + version)
+			}
+		}
+		// @default means "track the latest", which is what the bare id is.
+		add(base)
+	}
+	// Only the last path segment is the model; a publisher prefix may
+	// itself contain slashes on some hosts.
+	if i := strings.LastIndex(unversioned, "/"); i >= 0 {
+		add(unversioned[i+1:])
+	}
+	return out
 }
 
 // GeneratedAt returns the timestamp the embedded catalog was last

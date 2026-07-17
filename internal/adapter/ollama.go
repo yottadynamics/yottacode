@@ -45,20 +45,26 @@ const ChatDefaultMaxTokens int64 = 8192
 // newChatAdapter builds a chatAdapter. apiKey is sent as Authorization:
 // Bearer; Ollama and Llama Stack ignore it, but the SDK requires a
 // non-empty value.
-func newChatAdapter(cfg Config) *chatAdapter {
+//
+// extra options are applied last, so they win over the defaults above.
+// Vertex uses this to overwrite the static bearer with a per-request ADC
+// token (see vertexAuthMiddleware); every other caller passes none.
+func newChatAdapter(cfg Config, extra ...option.RequestOption) *chatAdapter {
 	apiKey := cfg.APIKey
 	if apiKey == "" {
 		apiKey = "local-no-auth"
 	}
 	profile := buildProfile(cfg, false)
-	c := openai.NewClient(
+	opts := []option.RequestOption{
 		option.WithBaseURL(cfg.BaseURL),
 		option.WithAPIKey(apiKey),
 		// Snapshot rate-limit headers off every response so /usage can
 		// show live per-minute token/request headroom. Local providers
 		// (Ollama) don't emit these; recordRateLimit no-ops there.
 		option.WithMiddleware(recordRateLimitMiddleware(profile.Provider)),
-	)
+	}
+	opts = append(opts, extra...)
+	c := openai.NewClient(opts...)
 	return &chatAdapter{
 		client:  c,
 		model:   cfg.Model,
@@ -108,12 +114,22 @@ func (a *chatAdapter) ChatStream(ctx context.Context, messages []Message, tools 
 		if len(tools) > 0 {
 			params.Tools = toOpenAITools(tools)
 		}
-		// reasoning_effort is xAI-only on this chat-completions path: it's
-		// honored by the grok-*-mini family (low/high) and rejected by
-		// grok-4, so xaiEffort gates on both. Other OpenAI-compatible
-		// endpoints (Ollama, vLLM, …) leave the field unset.
-		if a.profile.Provider == ProviderXAI {
+		// reasoning_effort is sent only to the two providers on this
+		// chat-completions path that document and honor it. Other
+		// OpenAI-compatible endpoints (Ollama, vLLM, …) leave the field
+		// unset: some reason unconditionally, some reject unknown fields.
+		switch a.profile.Provider {
+		case ProviderXAI:
+			// Honored by the grok-*-mini family (low/high) and rejected
+			// by grok-4, so xaiEffort gates on the model too.
 			if effort, ok := xaiEffort(a.cfg.ReasoningEffort, a.model); ok {
+				params.ReasoningEffort = effort
+			}
+		case ProviderVertex:
+			// Vertex's Gemini shim validates and honors the enum on
+			// every chat model it serves; the gate is capability, not
+			// model name.
+			if effort, ok := vertexEffort(a.cfg.ReasoningEffort, a.cfg.ModelSupportsThinking); ok {
 				params.ReasoningEffort = effort
 			}
 		}

@@ -173,6 +173,59 @@ The native Gemini adapter uses Google's HTTP API. Gemini is a curated provider: 
 
 Thinking Gemini models (Gemini 3 era) attach an opaque `thoughtSignature` to each function call and require it back when the conversation history is replayed; the adapter round-trips it automatically. For history that carries no signature — turns recorded by older yottacode versions, or a session switched to Gemini from another provider mid-conversation — the adapter substitutes Google's documented bypass token so the session keeps working.
 
+## Google Vertex AI
+
+Vertex serves Gemini and Claude from **your own GCP project**, so tokens bill to your Google Cloud account and traffic stays inside your project's IAM and VPC-SC boundary. There is no API key: yottacode authenticates with [Application Default Credentials](https://cloud.google.com/docs/authentication/application-default-credentials) and mints a fresh access token for every request.
+
+```bash
+gcloud auth application-default login
+```
+
+Vertex serves the two model families over different surfaces, so yottacode keeps two provider kinds internally while setup and `/provider add` show one **Google Vertex AI** row with a Gemini/Claude family dropdown plus a GCP project field. The full Vertex `base_url` is derived from that project and family so you do not have to edit the long endpoint by hand:
+
+| Kind | Models | Surface |
+|---|---|---|
+| `vertex` | Gemini | the project's OpenAI-compatible chat shim |
+| `vertex-anthropic` | Claude | `:streamRawPredict` (native Messages API) |
+
+Both carry the GCP project and location inside `base_url` rather than in separate fields:
+
+```toml
+[[providers]]
+name          = "vertex-claude"
+kind          = "vertex-anthropic"
+base_url      = "https://aiplatform.googleapis.com/v1/projects/YOUR-PROJECT/locations/global"
+default_model = "claude-sonnet-4-5@20250929"
+
+[[providers]]
+name          = "vertex-gemini"
+kind          = "vertex"
+base_url      = "https://us-central1-aiplatform.googleapis.com/v1/projects/YOUR-PROJECT/locations/us-central1/endpoints/openapi"
+default_model = "google/gemini-2.5-pro"
+```
+
+No `api_key_env` — ADC supplies the credential. `GOOGLE_APPLICATION_CREDENTIALS` may point at a service-account key instead of a user login.
+
+Three things about model names and locations catch people out:
+
+- **Claude ids need Vertex's version suffix** — `claude-sonnet-4-5@20250929`, not `claude-sonnet-4-5`. A bare id is not servable. Ids ending `@default` track the latest snapshot.
+- **Gemini ids are publisher-namespaced** on the shim — `google/gemini-2.5-pro`.
+- **Location matters** — Claude is safest on `locations/global`; Gemini's OpenAI-compatible shim is regional in practice. The Gemini URL must keep the hostname and path location in sync, for example `https://us-central1-aiplatform.googleapis.com/v1/projects/P/locations/us-central1/endpoints/openapi`.
+
+Both kinds are curated: the `/model` picker reads yottacode's local models.dev snapshot, filtered to the family each kind can actually drive. Vertex has no list-models endpoint worth reading — the chat shim doesn't implement one, and the publisher-model endpoint returns the whole Model Garden (image classifiers, deploy-it-yourself entries, and models your region won't serve). Add anything the picker lacks under `[[providers.models]]`.
+
+Vertex access is project-specific, so a model can appear in the public catalog but still 404 for your project/location until access is granted in Vertex Model Garden. Run an access scan after configuring a Vertex provider:
+
+```bash
+yottacode provider scan vertex-claude
+# or, for the Gemini family
+yottacode provider scan vertex-gemini
+```
+
+The scan sends tiny test requests with ADC, writes the result under `~/.yottacode/auth/vertex-models/<project>/<location>/`, and the `/model` picker greys out scanned models your project cannot call with `no access`. Re-run the scan after enabling new Vertex models or changing the provider's location.
+
+Both families reason, both report thinking tokens to `/usage`, and [`/effort`](tui-slash-commands.md) steers both. Claude uses the same extended-thinking budget as the direct Anthropic provider. Gemini goes through the shim's `reasoning_effort` enum — note this is the shim's own knob, not Gemini's native `thinkingBudget`, which the shim does not expose.
+
 ## xAI
 
 ```bash
@@ -270,6 +323,7 @@ Image support varies by provider. Two capabilities matter:
 | ChatGPT OAuth (`openai-auth`) | yes | no |
 | GitHub Copilot | yes | no |
 | Gemini | yes | no |
+| Vertex AI (`vertex`, `vertex-anthropic`) | yes | no |
 | xAI | yes | no |
 | Ollama | no | no |
 | OpenAI-compatible (NVIDIA NIM, etc.) | no | no |
@@ -288,6 +342,8 @@ Set how hard a reasoning-capable model thinks with [`--reasoning-effort`](config
 | ChatGPT OAuth (`openai-auth`) | `reasoning.effort` enum | Same as OpenAI, on the Codex backend. |
 | Anthropic (Claude) | extended-thinking token budget | Enables thinking with a budget sized as a fraction of the model's max-output tokens (low ≈ 25%, high ≈ 75%); `max_tokens` is raised to leave room for the answer. A model the catalog doesn't know falls back to a conservative budget so effort still engages — refresh the catalog (`yotta-models refresh`) for the full model-scaled budget. |
 | Gemini (2.5) | `thinkingConfig.thinkingBudget` | Enables thinking with a budget scaled per level, capped to the Gemini 2.5 family's valid range. |
+| Vertex AI — Claude (`vertex-anthropic`) | extended-thinking token budget | Same as Anthropic. The `@version` suffix is stripped for the catalog lookup, so a pinned snapshot gets the same model-scaled budget as the bare id. |
+| Vertex AI — Gemini (`vertex`) | `reasoning_effort` enum | The chat shim's own knob (`low`/`medium`/`high` map 1:1), not Gemini's native `thinkingBudget`, which the shim doesn't expose. Measured: `gemini-2.5-pro` spends ~800 thinking tokens at `low` against ~7,600 at `high`. |
 | xAI (Grok) | `reasoning_effort` enum | Only `grok-*-mini` accepts it (`low`/`high`; `medium` folds to `high`). `grok-4` reasons unconditionally and is left untouched. |
 
 **Default is unchanged.** When effort is unset, yottacode injects no reasoning parameter at all — every provider behaves exactly as it does without the setting. In particular, Anthropic and Gemini do **not** get extended thinking unless you ask for it (it costs extra tokens). `/effort default` (or `off`/`none`) returns to this state mid-session.

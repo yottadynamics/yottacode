@@ -33,6 +33,11 @@ type modelPickerState struct {
 	// actual config write happens after Enter).
 	activeModel string
 
+	// activeProvider is the profile whose model is currently running in
+	// the session. When the picker browses a different provider, rows are
+	// checked against that provider's saved default_model instead.
+	activeProvider string
+
 	// entries is the model list for the provider currently being
 	// displayed. For curated providers (anthropic/openai/gemini/xai) this
 	// comes from the embedded catalog and is populated near-instantly.
@@ -122,12 +127,13 @@ func (m *Model) openModelPicker(activeProvider config.Provider) tea.Cmd {
 	}
 
 	m.modelPicker = &modelPickerState{
-		provider:     activeProvider,
-		apiKey:       apiKey,
-		activeModel:  m.modelName,
-		allProviders: all,
-		providerIdx:  idx,
-		visibleRows:  modelPickerVisibleRows(m.height),
+		provider:       activeProvider,
+		apiKey:         apiKey,
+		activeModel:    m.modelName,
+		activeProvider: activeProvider.Name,
+		allProviders:   all,
+		providerIdx:    idx,
+		visibleRows:    modelPickerVisibleRows(m.height),
 	}
 	m.modelPickerOpen = true
 	return m.fetchPickerModels(activeProvider, apiKey)
@@ -267,6 +273,11 @@ func (m Model) updateModelPicker(msg tea.KeyMsg) (Model, tea.Cmd) {
 			return m, nil
 		}
 		chosenEntry := p.entries[p.cursor]
+		if chosenEntry.Disabled {
+			m.appendLine(styleAuto.Render(statusLine("model", fmt.Sprintf(
+				"%q is marked unavailable for this provider — run `yottacode provider scan %s` to refresh access", chosenEntry.ID, p.provider.Name))))
+			return m, nil
+		}
 		chosen := chosenEntry.ID
 		// On per-model-key providers (NVIDIA NIM), reject Enter on
 		// any model that doesn't have a configured profile. Without
@@ -297,11 +308,14 @@ func (m Model) handleModelPickerLoaded(msg modelPickerLoadedMsg) (Model, tea.Cmd
 	p.entries = msg.entries
 	p.loadErr = msg.err
 	p.loaded = true
-	// Default the cursor to the currently-active model so the user
-	// can hit Enter without arrowing if they opened the picker by
-	// accident or to confirm.
+	// Default the cursor to the model saved for the provider being
+	// browsed. For the active provider this is the running model; for a
+	// provider reached with ←/→ it is that provider's default_model.
+	// Without this, browsing from Vertex Gemini to Vertex Claude keeps
+	// looking for google/gemini-* in the Claude list and lands on row 0.
+	current := p.currentModel()
 	for i, e := range p.entries {
-		if e.ID == p.activeModel {
+		if e.ID == current {
 			p.cursor = i
 			break
 		}
@@ -487,7 +501,21 @@ func (m Model) shouldProbeWindow(kind, model string) bool {
 		!m.probedModels[model]
 }
 
-// renderModelPicker draws the overlay. Drop-down feel: provider tab
+// currentModel returns the model that should be treated as current in
+// the picker for the provider being displayed. The active provider uses
+// the live session model because the user may have just switched models;
+// inactive providers use their saved default_model so cross-provider
+// browsing highlights the row Enter would naturally confirm.
+func (p *modelPickerState) currentModel() string {
+	if p == nil {
+		return ""
+	}
+	if p.provider.Name != "" && p.provider.Name != p.activeProvider && p.provider.DefaultModel != "" {
+		return p.provider.DefaultModel
+	}
+	return p.activeModel
+}
+
 // strip sits below the title when more than one provider is
 // configured — the active tab is bracketed + accent-bold so users
 // see the ←/→ cycling affordance instantly without reading prose.
@@ -565,7 +593,15 @@ func renderModelPicker(p *modelPickerState, width int) string {
 			if perModel {
 				_, enabled = configured[p.entries[i].ID]
 			}
-			line := renderPickerRow(p.entries[i], i == p.cursor, p.activeModel, enabled, p.entries[i].Disabled)
+			// Default the cursor to the displayed provider's saved
+			// default_model, not just the session's active model. The
+			// picker can browse across providers with ←/→; when the user
+			// cycles from Vertex Gemini to Vertex Claude, the running
+			// active model is still google/gemini-*, but the Claude tab's
+			// natural default is its own claude-* model. Landing there lets
+			// Enter confirm or switch cleanly instead of starting at row 0.
+			activeModel := p.currentModel()
+			line := renderPickerRow(p.entries[i], i == p.cursor, activeModel, enabled, p.entries[i].Disabled)
 			b.WriteString(line)
 			b.WriteString("\n")
 		}
@@ -635,7 +671,7 @@ func renderPickerRow(e catalog.Model, isCursor bool, activeModel string, enabled
 	if !enabled {
 		savedFor = " · needs API key"
 	} else if planDisabled {
-		savedFor = " · upgrade plan"
+		savedFor = " · no access"
 		enabled = false
 	}
 	chips := capabilityChips(e.Capabilities)

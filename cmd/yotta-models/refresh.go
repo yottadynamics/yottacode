@@ -126,18 +126,32 @@ func backfillWindowsFromModelsDev(byProv map[string][]catalog.Model) {
 		if !ok {
 			continue
 		}
-		filled := 0
+		var windows, outputs int
 		for i := range ms {
-			if ms[i].ContextWindow > 0 {
+			// Only fill what the vendor didn't tell us. A provider's own
+			// API is authoritative about its own models; models.dev is a
+			// third party and must never overwrite a first-party number.
+			if ms[i].ContextWindow > 0 && ms[i].MaxOutput > 0 {
 				continue
 			}
-			if w := catalog.ModelsDevWindowByProvider(mdID, ms[i].ID); w > 0 {
-				ms[i].ContextWindow = w
-				filled++
+			ctx, out := catalog.ModelsDevLimitsByProvider(mdID, ms[i].ID)
+			if ms[i].ContextWindow == 0 && ctx > 0 {
+				ms[i].ContextWindow = ctx
+				windows++
+			}
+			// MaxOutput is as often missing as ContextWindow and matters
+			// just as much: it sizes the extended-thinking budget for
+			// budget-based providers, and a zero there silently downgrades
+			// the model to a conservative default. OpenAI's /v1/models
+			// reports neither.
+			if ms[i].MaxOutput == 0 && out > 0 {
+				ms[i].MaxOutput = out
+				outputs++
 			}
 		}
-		if filled > 0 {
-			fmt.Fprintf(os.Stderr, "backfilled %d %s windows from models.dev\n", filled, prov)
+		if windows > 0 || outputs > 0 {
+			fmt.Fprintf(os.Stderr, "backfilled %s from models.dev: %d windows, %d max-outputs\n",
+				prov, windows, outputs)
 		}
 	}
 }

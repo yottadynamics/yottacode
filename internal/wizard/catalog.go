@@ -60,69 +60,52 @@ type CatalogEntry struct {
 // Order matters: it's the screen order in the multi-select. Most-loved
 // providers go first; "custom" lands at the bottom for power users.
 var Catalog = []CatalogEntry{
-	{
-		Name:      "openai-auth",
-		Kind:      "openai-auth",
-		BaseURL:   "https://chatgpt.com/backend-api/codex",
-		APIKeyEnv: "",
-		Note:      "OpenAI via ChatGPT login (browser OAuth)",
-	},
-	{
-		Name:      "copilot-auth",
-		Kind:      "copilot",
-		BaseURL:   "https://api.githubcopilot.com",
-		APIKeyEnv: "",
-		Note:      "GitHub Copilot (device code OAuth)",
-	},
-	{
-		Name:      "anthropic",
-		Kind:      "anthropic",
-		BaseURL:   "https://api.anthropic.com",
-		APIKeyEnv: "ANTHROPIC_API_KEY",
-		Note:      "Claude (Anthropic) — model list from internal/catalog (refresh via cmd/yotta-models)",
-	},
-	{
-		Name:      "openai",
-		Kind:      "openai",
-		BaseURL:   "https://api.openai.com/v1",
-		APIKeyEnv: "OPENAI_API_KEY",
-		Note:      "GPT + o-series (OpenAI) — model list from internal/catalog",
-	},
-	{
-		Name:      "gemini",
-		Kind:      "gemini",
-		BaseURL:   "https://generativelanguage.googleapis.com",
-		APIKeyEnv: "GEMINI_API_KEY",
-		Note:      "Gemini (Google) — model list from internal/catalog",
-	},
-	{
-		Name:      "xai",
-		Kind:      "xai",
-		BaseURL:   "https://api.x.ai/v1",
-		APIKeyEnv: "XAI_API_KEY",
-		Note:      "Grok (xAI) — model list from internal/catalog",
-	},
-	{
-		Name:      "nvidia-nim",
-		Kind:      "openai-compatible",
-		BaseURL:   "https://integrate.api.nvidia.com/v1",
-		APIKeyEnv: "NVIDIA_API_KEY",
-		Note:      "NVIDIA NIM — OpenAI-compatible endpoint at build.nvidia.com",
-	},
-	{
-		Name:      "ollama",
-		Kind:      "ollama",
-		BaseURL:   "http://localhost:11434/v1",
-		APIKeyEnv: "",
-		Note:      "local models via Ollama (auto-probed on localhost:11434)",
-	},
-	{
-		Name:      "custom",
-		Kind:      "openai-compatible",
-		BaseURL:   "",
-		APIKeyEnv: "",
-		Note:      "Custom OpenAI-compatible endpoint (vLLM, Llama Stack, Groq, Fireworks, OpenRouter, Together, ...)",
-	},
+	{Name: "openai-auth", Kind: "openai-auth", BaseURL: "https://chatgpt.com/backend-api/codex", APIKeyEnv: "", Note: "OpenAI via ChatGPT login (browser OAuth)"},
+	{Name: "copilot-auth", Kind: "copilot", BaseURL: "https://api.githubcopilot.com", APIKeyEnv: "", Note: "GitHub Copilot (device code OAuth)"},
+	{Name: "anthropic", Kind: "anthropic", BaseURL: "https://api.anthropic.com", APIKeyEnv: "ANTHROPIC_API_KEY", Note: "Claude (Anthropic) — model list from internal/catalog (refresh via cmd/yotta-models)"},
+	{Name: "openai", Kind: "openai", BaseURL: "https://api.openai.com/v1", APIKeyEnv: "OPENAI_API_KEY", Note: "GPT + o-series (OpenAI) — model list from internal/catalog"},
+	{Name: "gemini", Kind: "gemini", BaseURL: "https://generativelanguage.googleapis.com", APIKeyEnv: "GEMINI_API_KEY", Note: "Gemini (Google) — model list from internal/catalog"},
+	{Name: "xai", Kind: "xai", BaseURL: "https://api.x.ai/v1", APIKeyEnv: "XAI_API_KEY", Note: "Grok (xAI) — model list from internal/catalog"},
+	// Google Vertex AI is one UX row. The configure screen asks for the
+	// family and then writes one of the protocol-specific provider kinds.
+	{Name: "google-vertex", Kind: "vertex", BaseURL: "https://us-central1-aiplatform.googleapis.com/v1/projects/PROJECT/locations/us-central1/endpoints/openapi", APIKeyEnv: "", Note: "Google Vertex AI (choose Gemini or Claude; gcloud ADC)"},
+	{Name: "nvidia-nim", Kind: "openai-compatible", BaseURL: "https://integrate.api.nvidia.com/v1", APIKeyEnv: "NVIDIA_API_KEY", Note: "NVIDIA NIM — OpenAI-compatible endpoint at build.nvidia.com"},
+	{Name: "ollama", Kind: "ollama", BaseURL: "http://localhost:11434/v1", APIKeyEnv: "", Note: "local models via Ollama (auto-probed on localhost:11434)"},
+	{Name: "custom", Kind: "openai-compatible", BaseURL: "", APIKeyEnv: "", Note: "Custom OpenAI-compatible endpoint (vLLM, Llama Stack, Groq, Fireworks, OpenRouter, Together, ...)"},
+}
+
+// VertexFamily identifies which concrete Vertex API surface the combined
+// Google Vertex AI picker row should configure. The public UX is one
+// provider choice; the config still writes a protocol-specific kind.
+type VertexFamily int
+
+const (
+	VertexFamilyGemini VertexFamily = iota
+	VertexFamilyClaude
+)
+
+func (f VertexFamily) Label() string {
+	if f == VertexFamilyClaude {
+		return "Claude"
+	}
+	return "Gemini"
+}
+
+func (f VertexFamily) CatalogEntry() CatalogEntry {
+	if f == VertexFamilyClaude {
+		return CatalogEntry{Name: "vertex-claude", Kind: "vertex-anthropic", BaseURL: VertexBaseURL(f, "PROJECT"), APIKeyEnv: "", Note: "Claude on Google Vertex AI (gcloud ADC — set your GCP project in the URL)"}
+	}
+	return CatalogEntry{Name: "vertex-gemini", Kind: "vertex", BaseURL: VertexBaseURL(f, "PROJECT"), APIKeyEnv: "", Note: "Gemini on Google Vertex AI (gcloud ADC — set your GCP project in the URL)"}
+}
+
+func VertexBaseURL(f VertexFamily, project string) string {
+	if project == "" {
+		project = "PROJECT"
+	}
+	if f == VertexFamilyClaude {
+		return "https://aiplatform.googleapis.com/v1/projects/" + project + "/locations/global"
+	}
+	return "https://us-central1-aiplatform.googleapis.com/v1/projects/" + project + "/locations/us-central1/endpoints/openapi"
 }
 
 // FindCatalogEntry returns the catalog entry with the given name, or
@@ -132,6 +115,12 @@ func FindCatalogEntry(name string) *CatalogEntry {
 	for i := range Catalog {
 		if Catalog[i].Name == name {
 			return &Catalog[i]
+		}
+	}
+	for _, f := range []VertexFamily{VertexFamilyGemini, VertexFamilyClaude} {
+		e := f.CatalogEntry()
+		if e.Name == name {
+			return &e
 		}
 	}
 	return nil
@@ -154,6 +143,9 @@ func FindCatalogEntry(name string) *CatalogEntry {
 func CatalogIdentity(profileName string) string {
 	if profileName == "" {
 		return ""
+	}
+	if profileName == "vertex-gemini" || profileName == "vertex-claude" {
+		return "google-vertex"
 	}
 	if FindCatalogEntry(profileName) != nil {
 		return profileName

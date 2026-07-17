@@ -824,6 +824,8 @@ func TestFreeFormModelPlaceholder(t *testing.T) {
 		// Always-free-form providers.
 		{"ollama", "llama3.1:8b"},
 		{"nvidia-nim", "nvidia/nemotron-3-super-120b-a12b"},
+		{"vertex-claude", "claude-sonnet-4-5@20250929"},
+		{"vertex-gemini", "google/gemini-2.5-pro"},
 		{"custom", "your-model-name"},
 		{"unknown-future-provider", "model tag"}, // generic fallback
 	}
@@ -834,7 +836,84 @@ func TestFreeFormModelPlaceholder(t *testing.T) {
 	}
 }
 
-// TestValidationDoneMsg_SetsNotice guards Pass 1 #7 — a successful
+func TestWizard_VertexUsesProjectFieldForBaseURL(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	m := newWizardModel(context.Background(), Options{})
+	entry := *FindCatalogEntry("vertex-claude")
+	in := m.newProviderInputs(entry)
+	m.inputs = []providerInputs{in}
+	m.configIdx = 0
+	m.step = stepConfigure
+
+	if got := m.fieldKind(); got != "family" {
+		t.Fatalf("initial fieldKind = %q, want family so the user can choose Gemini or Claude", got)
+	}
+	m.inputs[0].vertexFamily = VertexFamilyClaude
+	updated, _ := m.updateConfigure(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(wizardModel)
+	if got := m.fieldKind(); got != "project" {
+		t.Fatalf("after choosing family, fieldKind = %q, want project", got)
+	}
+	if cmd := m.focusActiveConfigField(); cmd == nil {
+		t.Fatal("Vertex project field should receive focus")
+	}
+	if !m.inputs[0].project.Focused() {
+		t.Error("project textinput is not focused for Vertex configuration")
+	}
+	view := stripANSI(m.viewConfigure())
+	if !strings.Contains(view, "GCP project") || !strings.Contains(view, "full URL:") {
+		t.Errorf("Vertex configure view should show project field and derived URL; got:\n%s", view)
+	}
+
+	m.inputs[0].project.SetValue("my-project")
+	updated, _ = m.updateConfigure(tea.KeyMsg{Type: tea.KeyEnter})
+	wm := updated.(wizardModel)
+	if got := wm.fieldKind(); got != "model" {
+		t.Fatalf("after entering project, fieldKind = %q, want model", got)
+	}
+	if got := wm.inputs[0].baseURL.Value(); !strings.Contains(got, "/projects/my-project/") {
+		t.Fatalf("derived base URL = %q, want project substituted", got)
+	}
+	if len(wm.inputs[0].curatedModels) == 0 {
+		t.Fatal("Vertex Claude should use a curated model list in setup")
+	}
+	// Saving from the model field must still fail if the project field was
+	// skipped or cleared after navigation.
+	wm.inputs[0].project.SetValue("")
+	updated, _ = wm.updateConfigure(tea.KeyMsg{Type: tea.KeyEnter})
+	wm = updated.(wizardModel)
+	if got := wm.fieldKind(); got != "project" {
+		t.Fatalf("saving Vertex without project should return to project field; got %q", got)
+	}
+	if wm.err == nil || !strings.Contains(wm.err.Error(), "GCP project") {
+		t.Fatalf("saving Vertex without project should report project error; got %v", wm.err)
+	}
+}
+
+func TestWizard_VertexUsesEffectiveProviderNameInPlan(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	m := newWizardModel(context.Background(), Options{})
+	in := m.newProviderInputs(*FindCatalogEntry("google-vertex"))
+	in.configured = true
+	in.vertexFamily = VertexFamilyGemini
+	in.chosenModel = "google/gemini-2.5-pro"
+	in.baseURL.SetValue(VertexBaseURL(VertexFamilyGemini, "my-project"))
+	m.inputs = []providerInputs{in}
+	m.activeCursor = 0
+	m.routerEnabled = true
+
+	plan := m.assemblePlan()
+	if got := plan.Providers[0].Name; got != "vertex-gemini" {
+		t.Fatalf("provider name = %q, want vertex-gemini", got)
+	}
+	if got := plan.ActiveProvider; got != "vertex-gemini" {
+		t.Fatalf("active provider = %q, want vertex-gemini", got)
+	}
+	if len(plan.RouterCandList) != 1 || !strings.HasPrefix(plan.RouterCandList[0], "vertex-gemini:") {
+		t.Fatalf("router candidates = %#v, want vertex-gemini entry", plan.RouterCandList)
+	}
+}
+
 // validation lifts a "✓ key valid" banner into m.notice so the
 // confirmation is visible even after the user has tabbed away from
 // the key field. Failures don't set the banner (the per-field glyph

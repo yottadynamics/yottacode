@@ -107,6 +107,15 @@ type providerPickerState struct {
 	// addModelCursor is the highlighted row inside addCuratedModels.
 	// Only meaningful when addCuratedModels is non-empty.
 	addModelCursor int
+
+	// addVertexFamily stores the Gemini/Claude choice for the combined
+	// Google Vertex AI catalog row. The picker writes a concrete provider
+	// kind after this choice, keeping runtime adapters separate.
+	addVertexFamily      wizard.VertexFamily
+	addVertexModelCursor map[wizard.VertexFamily]int
+	// addVertexModelText remembers manually typed model IDs per family so
+	// switching Gemini ↔ Claude and back does not discard non-catalog tags.
+	addVertexModelText map[wizard.VertexFamily]string
 }
 
 // openProviderPicker installs a fresh sub-menu picker on m. The
@@ -189,7 +198,10 @@ func (m Model) updateProviderPicker(msg tea.KeyMsg) (Model, tea.Cmd) {
 				p.addKindCursor--
 			}
 		case providerAddFieldsMode:
-			if p.curatedPickerActive() && p.addModelCursor > 0 {
+			if p.familyPickerActive() {
+				p.setVertexFamily(wizard.VertexFamilyGemini)
+			} else if p.curatedPickerActive() && p.addModelCursor > 0 {
+				p.rememberVertexModelCursor()
 				p.addModelCursor--
 				p.syncModelTextinputToCursor()
 			}
@@ -210,12 +222,25 @@ func (m Model) updateProviderPicker(msg tea.KeyMsg) (Model, tea.Cmd) {
 				p.addKindCursor++
 			}
 		case providerAddFieldsMode:
-			if p.curatedPickerActive() && p.addModelCursor < len(p.addCuratedModels)-1 {
+			if p.familyPickerActive() {
+				p.setVertexFamily(wizard.VertexFamilyClaude)
+			} else if p.curatedPickerActive() && p.addModelCursor < len(p.addCuratedModels)-1 {
+				p.rememberVertexModelCursor()
 				p.addModelCursor++
 				p.syncModelTextinputToCursor()
 			}
 		}
 		return m, nil
+	case tea.KeyLeft:
+		if p.mode == providerAddFieldsMode && p.familyPickerActive() {
+			p.setVertexFamily(wizard.VertexFamilyGemini)
+			return m, nil
+		}
+	case tea.KeyRight:
+		if p.mode == providerAddFieldsMode && p.familyPickerActive() {
+			p.setVertexFamily(wizard.VertexFamilyClaude)
+			return m, nil
+		}
 	case tea.KeyTab:
 		if p.mode == providerAddFieldsMode {
 			cycleAddFocus(p, 1)
@@ -243,6 +268,9 @@ func (m Model) updateProviderPicker(msg tea.KeyMsg) (Model, tea.Cmd) {
 	// In the form, forward keystrokes to the focused textinput so
 	// typing actually fills the fields.
 	if p.mode == providerAddFieldsMode && p.addFocused < len(p.addFields) {
+		if p.familyPickerActive() {
+			return m, nil
+		}
 		var cmd tea.Cmd
 		p.addFields[p.addFocused], cmd = p.addFields[p.addFocused].Update(msg)
 		return m, cmd
@@ -260,6 +288,89 @@ func (p *providerPickerState) curatedPickerActive() bool {
 		return false
 	}
 	return p.addLabels[p.addFocused] == "Default model"
+}
+
+// familyPickerActive reports whether the focused form row is the Vertex
+// family dropdown. It must not key off addPicked.Name because choosing a
+// family rewrites addPicked to vertex-gemini or vertex-claude.
+func (p *providerPickerState) familyPickerActive() bool {
+	if p.addFocused >= len(p.addLabels) {
+		return false
+	}
+	return p.addLabels[p.addFocused] == "Model family"
+}
+
+func (p *providerPickerState) rememberVertexModelCursor() {
+	if p.addVertexModelCursor == nil {
+		return
+	}
+	if p.addModelCursor >= 0 {
+		p.addVertexModelCursor[p.addVertexFamily] = p.addModelCursor
+	}
+	if p.addVertexModelText != nil {
+		for i, label := range p.addLabels {
+			if label == "Default model" {
+				p.addVertexModelText[p.addVertexFamily] = strings.TrimSpace(p.addFields[i].Value())
+				return
+			}
+		}
+	}
+}
+
+func (p *providerPickerState) setVertexFamily(f wizard.VertexFamily) {
+	p.rememberVertexModelCursor()
+	p.addVertexFamily = f
+	entry := f.CatalogEntry()
+	if p.addPicked != nil {
+		*p.addPicked = entry
+	}
+	for i, label := range p.addLabels {
+		switch label {
+		case "Model family":
+			p.addFields[i].SetValue(vertexFamilyDropdownValue(f))
+		case "Name":
+			v := strings.TrimSpace(p.addFields[i].Value())
+			if v == "" || v == "google-vertex" || v == "vertex-gemini" || v == "vertex-claude" {
+				p.addFields[i].SetValue(uniqueProviderName(entry.Name))
+			}
+		case "GCP project":
+			project := strings.TrimSpace(p.addFields[i].Value())
+			p.addFields[i].SetValue(project)
+		case "Base URL":
+			p.addFields[i].SetValue(entry.BaseURL)
+		case "Default model":
+			p.addFields[i].SetValue("")
+		}
+	}
+	p.addCuratedModels = catalog.Curated(entry.Kind)
+	p.addModelCursor = -1
+	if p.addVertexModelCursor != nil {
+		if saved, ok := p.addVertexModelCursor[f]; ok && saved >= 0 && saved < len(p.addCuratedModels) {
+			p.addModelCursor = saved
+		}
+	}
+	if p.addModelCursor >= 0 {
+		if p.addVertexModelText != nil {
+			if saved := p.addVertexModelText[f]; saved != "" {
+				for i, label := range p.addLabels {
+					if label == "Default model" {
+						p.addFields[i].SetValue(saved)
+						return
+					}
+				}
+			}
+		}
+		p.syncModelTextinputToCursor()
+	} else if p.addVertexModelText != nil {
+		if saved := p.addVertexModelText[f]; saved != "" {
+			for i, label := range p.addLabels {
+				if label == "Default model" {
+					p.addFields[i].SetValue(saved)
+					break
+				}
+			}
+		}
+	}
 }
 
 // syncModelTextinputToCursor copies the cursor's catalog ID into the
@@ -384,6 +495,31 @@ func populateAddFields(p *providerPickerState, e wizard.CatalogEntry, inputWidth
 	p.addFields = append(p.addFields, name)
 	p.addLabels = append(p.addLabels, "Name")
 
+	if e.Name == "google-vertex" {
+		family := textinput.New()
+		family.Prompt = ""
+		family.SetValue(vertexFamilyDropdownValue(wizard.VertexFamilyGemini))
+		family.Width = inputWidth
+		p.addFields = append(p.addFields, family)
+		p.addLabels = append(p.addLabels, "Model family")
+		p.addVertexFamily = wizard.VertexFamilyGemini
+		p.addVertexModelCursor = map[wizard.VertexFamily]int{}
+		p.addVertexModelText = map[wizard.VertexFamily]string{}
+
+		project := textinput.New()
+		project.Prompt = ""
+		project.Placeholder = "your-gcp-project-id"
+		project.CharLimit = 128
+		project.Width = inputWidth
+		p.addFields = append(p.addFields, project)
+		p.addLabels = append(p.addLabels, "GCP project")
+
+		e = p.addVertexFamily.CatalogEntry()
+		if p.addPicked != nil {
+			*p.addPicked = e
+		}
+	}
+
 	// Base URL — pre-fill from the catalog when present (cloud
 	// providers always have one; free-form catalog entries like
 	// NVIDIA NIM also ship with a known integrate.api URL). The
@@ -391,17 +527,19 @@ func populateAddFields(p *providerPickerState, e wizard.CatalogEntry, inputWidth
 	// self-hosted endpoint can override. The "custom" catch-all
 	// is the only entry with an empty catalog URL — that one gets
 	// a placeholder hint instead.
-	baseURL := textinput.New()
-	if strings.TrimSpace(e.BaseURL) != "" {
-		baseURL.SetValue(e.BaseURL)
-	} else {
-		baseURL.Placeholder = "https://your-endpoint.example/v1"
+	if e.Kind != "vertex" && e.Kind != "vertex-anthropic" {
+		baseURL := textinput.New()
+		if strings.TrimSpace(e.BaseURL) != "" {
+			baseURL.SetValue(e.BaseURL)
+		} else {
+			baseURL.Placeholder = "https://your-endpoint.example/v1"
+		}
+		baseURL.Prompt = ""
+		baseURL.CharLimit = 200
+		baseURL.Width = inputWidth
+		p.addFields = append(p.addFields, baseURL)
+		p.addLabels = append(p.addLabels, "Base URL")
 	}
-	baseURL.Prompt = ""
-	baseURL.CharLimit = 200
-	baseURL.Width = inputWidth
-	p.addFields = append(p.addFields, baseURL)
-	p.addLabels = append(p.addLabels, "Base URL")
 
 	// API key — for Ollama (FreeForm + no APIKeyEnv) we omit the
 	// field entirely. For everything else, we collect it; it's
@@ -541,14 +679,36 @@ func (m Model) commitProviderAdd() (Model, tea.Cmd) {
 
 	name := values["name"]
 	baseURL := values["base url"]
+	if picked.Kind == "vertex" || picked.Kind == "vertex-anthropic" {
+		project := strings.TrimSpace(values["gcp project"])
+		if project == "" {
+			p.addInputErr = "GCP project ID is required"
+			return m, nil
+		}
+		baseURL = wizard.VertexBaseURL(p.addVertexFamily, project)
+	}
 	apiKey := values["api key"]
 	defaultModel := values["default model"]
+	if len(p.addCuratedModels) > 0 && defaultModel == "" {
+		p.addInputErr = "default model is required"
+		for i, label := range p.addLabels {
+			if label == "Default model" {
+				if p.addFocused < len(p.addFields) {
+					p.addFields[p.addFocused].Blur()
+				}
+				p.addFocused = i
+				p.addFields[i].Focus()
+				break
+			}
+		}
+		return m, nil
+	}
 
 	if name == "" {
 		p.addInputErr = "name is required"
 		return m, nil
 	}
-	if baseURL == "" {
+	if baseURL == "" && picked.Kind != "vertex" && picked.Kind != "vertex-anthropic" {
 		p.addInputErr = "base URL is required"
 		return m, nil
 	}
@@ -886,6 +1046,15 @@ func renderProviderAddFields(p *providerPickerState) string {
 			marker = "❯ "
 		}
 		fmt.Fprintf(&b, "%s%-14s %s\n", marker, label+":", p.addFields[i].View())
+		if label == "Model family" {
+			b.WriteString(renderProviderAddFamilyExtras(p))
+		}
+		if label == "GCP project" {
+			project := strings.TrimSpace(p.addFields[i].Value())
+			b.WriteString("  ")
+			b.WriteString(styleMeta.Render("full URL: " + wizard.VertexBaseURL(p.addVertexFamily, project)))
+			b.WriteString("\n")
+		}
 		if label == "Default model" {
 			b.WriteString(renderProviderAddModelExtras(p))
 		}
@@ -896,6 +1065,36 @@ func renderProviderAddFields(p *providerPickerState) string {
 		b.WriteString(styleMeta.Render(hint))
 	}
 	return strings.TrimRight(b.String(), "\n")
+}
+
+func vertexFamilyDropdownValue(f wizard.VertexFamily) string {
+	return "▾ " + f.Label()
+}
+
+func renderProviderAddFamilyExtras(p *providerPickerState) string {
+	families := []wizard.VertexFamily{wizard.VertexFamilyGemini, wizard.VertexFamilyClaude}
+	active := p.familyPickerActive()
+	var b strings.Builder
+	for _, f := range families {
+		cursor := "    "
+		if active && p.addVertexFamily == f {
+			cursor = "  ▸ "
+		}
+		label := cursor + f.Label()
+		if p.addVertexFamily == f {
+			label += " ✓"
+		}
+		b.WriteString(styleMeta.Render(label))
+		b.WriteString("\n")
+	}
+	b.WriteString("  ")
+	if active {
+		b.WriteString(styleHint.Render("(↑↓ choose Gemini or Claude, Enter/Tab to continue)"))
+	} else {
+		b.WriteString(styleHint.Render("(focus this row with Tab to choose Gemini or Claude)"))
+	}
+	b.WriteString("\n")
+	return b.String()
 }
 
 // renderProviderAddModelExtras draws the catalog list (when curated
