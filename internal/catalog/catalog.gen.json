@@ -1,6 +1,20 @@
 {
-  "generated_at": "2026-06-10T18:33:37Z",
+  "generated_at": "2026-07-16T20:40:51Z",
   "models": [
+    {
+      "id": "claude-fable-5",
+      "display_name": "Claude Fable 5",
+      "provider": "anthropic",
+      "context_window": 1000000,
+      "max_output": 128000,
+      "released_at": "2026-06-07T00:00:00Z",
+      "capabilities": {
+        "thinking": true,
+        "vision": true,
+        "pdf": true,
+        "structured_outputs": true
+      }
+    },
     {
       "id": "claude-opus-4-6",
       "display_name": "Claude Opus 4.6",
@@ -30,12 +44,40 @@
       }
     },
     {
+      "id": "claude-opus-4-8",
+      "display_name": "Claude Opus 4.8",
+      "provider": "anthropic",
+      "context_window": 1000000,
+      "max_output": 128000,
+      "released_at": "2026-05-28T00:00:00Z",
+      "capabilities": {
+        "thinking": true,
+        "vision": true,
+        "pdf": true,
+        "structured_outputs": true
+      }
+    },
+    {
       "id": "claude-sonnet-4-6",
       "display_name": "Claude Sonnet 4.6",
       "provider": "anthropic",
       "context_window": 1000000,
       "max_output": 128000,
       "released_at": "2026-02-17T00:00:00Z",
+      "capabilities": {
+        "thinking": true,
+        "vision": true,
+        "pdf": true,
+        "structured_outputs": true
+      }
+    },
+    {
+      "id": "claude-sonnet-5",
+      "display_name": "Claude Sonnet 5",
+      "provider": "anthropic",
+      "context_window": 1000000,
+      "max_output": 128000,
+      "released_at": "2026-06-29T00:00:00Z",
       "capabilities": {
         "thinking": true,
         "vision": true,
@@ -75,18 +117,6 @@
       "max_output": 65536,
       "released_at": "0001-01-01T00:00:00Z",
       "description": "Stable release (June 17th, 2025) of Gemini 2.5 Pro",
-      "capabilities": {
-        "thinking": true
-      }
-    },
-    {
-      "id": "gemini-3-pro-image",
-      "display_name": "Nano Banana Pro",
-      "provider": "gemini",
-      "context_window": 131072,
-      "max_output": 32768,
-      "released_at": "0001-01-01T00:00:00Z",
-      "description": "Gemini 3 Pro Image",
       "capabilities": {
         "thinking": true
       }
@@ -152,6 +182,62 @@
       }
     },
     {
+      "id": "gpt-4",
+      "provider": "openai",
+      "context_window": 8192,
+      "released_at": "2023-06-27T16:13:31Z",
+      "capabilities": {}
+    },
+    {
+      "id": "gpt-4-turbo",
+      "provider": "openai",
+      "context_window": 128000,
+      "released_at": "2024-04-05T23:57:21Z",
+      "capabilities": {}
+    },
+    {
+      "id": "gpt-4o",
+      "provider": "openai",
+      "context_window": 128000,
+      "released_at": "2024-05-10T18:50:49Z",
+      "capabilities": {}
+    },
+    {
+      "id": "gpt-4o-mini",
+      "provider": "openai",
+      "context_window": 128000,
+      "released_at": "2024-07-16T23:32:21Z",
+      "capabilities": {}
+    },
+    {
+      "id": "gpt-5",
+      "provider": "openai",
+      "context_window": 400000,
+      "released_at": "2025-08-05T20:29:37Z",
+      "capabilities": {}
+    },
+    {
+      "id": "gpt-5-codex",
+      "provider": "openai",
+      "context_window": 400000,
+      "released_at": "2025-09-10T18:10:18Z",
+      "capabilities": {}
+    },
+    {
+      "id": "gpt-5-mini",
+      "provider": "openai",
+      "context_window": 400000,
+      "released_at": "2025-08-05T20:32:08Z",
+      "capabilities": {}
+    },
+    {
+      "id": "gpt-5-pro",
+      "provider": "openai",
+      "context_window": 400000,
+      "released_at": "2025-10-03T05:37:02Z",
+      "capabilities": {}
+    },
+    {
       "id": "gpt-5.4",
       "provider": "openai",
       "context_window": 1050000,
@@ -166,10 +252,37 @@
       "capabilities": {}
     },
     {
+      "id": "gpt-5.4-pro",
+      "provider": "openai",
+      "context_window": 1050000,
+      "released_at": "2026-03-04T21:26:41Z",
+      "capabilities": {}
+    },
+    {
       "id": "gpt-5.5",
       "provider": "openai",
       "context_window": 1050000,
       "released_at": "2026-04-22T02:27:27Z",
+      "capabilities": {}
+    },
+    {
+      "id": "gpt-5.5-pro",
+      "provider": "openai",
+      "context_window": 1050000,
+      "released_at": "2026-04-22T21:45:49Z",
+      "capabilities": {}
+    },
+    {
+      "id": "o4-mini-deep-research",
+      "provider": "openai",
+      "context_window": 200000,
+      "released_at": "2025-06-11T23:44:45Z",
+      "capabilities": {}
+    },
+    {
+      "id": "o4-mini-deep-research-2025-06-26",
+      "provider": "openai",
+      "released_at": "2025-06-25T15:42:01Z",
       "capabilities": {}
     }
   ]

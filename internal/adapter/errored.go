@@ -79,6 +79,12 @@ func configRequiresAPIKey(cfg Config, provider Provider) bool {
 	if provider == ProviderCopilot {
 		return false
 	}
+	// Vertex authenticates with an Application Default Credentials access
+	// token minted per request, not with cfg.APIKey — which is always
+	// empty for these kinds by design, exactly like openai-auth.
+	if provider == ProviderVertex || provider == ProviderVertexAnthropic {
+		return false
+	}
 	if isLoopbackURL(cfg.BaseURL) {
 		return false
 	}

@@ -50,6 +50,17 @@ func NewWithConfig(cfg Config) Client {
 	if provider == ProviderCopilot {
 		return newCopilotAdapter(cfg)
 	}
+	// Vertex belongs with the branches above rather than below the
+	// API-key check: its credential is an ADC token source, so cfg.APIKey
+	// is empty by design. configRequiresAPIKey exempts both kinds, but
+	// keeping them grouped here keeps the "auth is a token source" family
+	// in one place.
+	if provider == ProviderVertex {
+		return newVertexAdapter(cfg)
+	}
+	if provider == ProviderVertexAnthropic {
+		return newVertexAnthropicAdapter(cfg)
+	}
 	// Static configuration check: cloud providers all need an API key,
 	// and silently substituting the "local-no-auth" sentinel just
 	// pushes the failure upstream as a confusing 401. Fail fast with

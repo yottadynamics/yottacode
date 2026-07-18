@@ -12,6 +12,7 @@ import (
 
 	copilotauth "github.com/yottadynamics/yottacode/internal/auth/copilot"
 	openaiauth "github.com/yottadynamics/yottacode/internal/auth/openai"
+	vertexauth "github.com/yottadynamics/yottacode/internal/auth/vertex"
 )
 
 // ProbeResult is the active diagnostics result for one provider config.
@@ -85,6 +86,9 @@ func Probe(ctx context.Context, cfg Config) ProbeResult {
 	}
 	if res.Profile.Provider == ProviderGemini {
 		return probeGemini(ctx, res, cfg)
+	}
+	if res.Profile.Provider == ProviderVertex || res.Profile.Provider == ProviderVertexAnthropic {
+		return probeVertex(ctx, res, cfg)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(cfg.BaseURL, "/")+"/models", nil)
@@ -307,6 +311,38 @@ func probeOpenAIAuth(res ProbeResult, cfg Config) ProbeResult {
 			fmt.Sprintf("model %q not in your account's discovered set (available: %s) — re-run %s to refresh",
 				cfg.Model, strings.Join(allow, ", "), openAIAuthLoginHint)))
 	}
+	return res
+}
+
+// probeVertex checks the credential instead of a /models surface,
+// because neither Vertex kind has one worth probing. The Gemini shim
+// implements chat/completions and nothing else, so a /models GET 404s;
+// the publisher-list endpoint needs an x-goog-user-project header and
+// answers with the entire Model Garden — image classifiers and
+// deploy-it-yourself entries included — which says nothing about what
+// this project can actually serve. Both kinds take their model list from
+// the embedded catalog instead, so there is no live set to cross-check
+// cfg.Model against and ModelVisible stays informational.
+//
+// Unlike the openai-auth and copilot probes this does one network round
+// trip. Resolving Application Default Credentials only parses a file;
+// minting a token is what proves the refresh credential still works,
+// which is the failure users actually hit ("I logged in last week").
+// Probe is only ever called from user-initiated paths — `run` preflight,
+// /doctor, the connection check — so the round trip is affordable.
+//
+// newVertexTokenSource is a seam: tests exercise the probe without real
+// Application Default Credentials.
+var newVertexTokenSource = func() vertexTokenSource { return vertexauth.NewTokenSource() }
+
+func probeVertex(ctx context.Context, res ProbeResult, cfg Config) ProbeResult {
+	if _, err := newVertexTokenSource().Token(ctx); err != nil {
+		res.Issues = uniqueStrings(append(res.Issues, err.Error()))
+		return res
+	}
+	res.EndpointReachable = true
+	res.AuthOK = true
+	res.ModelVisible = strings.TrimSpace(cfg.Model) != ""
 	return res
 }
 

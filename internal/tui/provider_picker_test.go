@@ -820,11 +820,10 @@ func TestProviderPicker_AddFreeFormRejectsBlankModel(t *testing.T) {
 	// all qualify; curated cloud kinds do not.
 	target := -1
 	for i, e := range m.providerPicker.addCatalog {
-		switch e.Kind {
-		case "anthropic", "openai", "gemini", "xai", "openai-auth", "copilot":
-			// openai-auth and copilot are excluded too: their model
-			// fields are pre-filled since per-user lists are only
-			// populated post-login.
+		switch e.Name {
+		case "ollama", "nvidia-nim", "custom":
+			// These are free-form model entries without the Vertex project field.
+		default:
 			continue
 		}
 		target = i
@@ -966,6 +965,88 @@ func TestProviderPicker_AddRejectsMissingKey_AllCloudProviders(t *testing.T) {
 				t.Errorf("%s: error should reference env var %q; got %q", tc.kindName, tc.envVar, m.providerPicker.addInputErr)
 			}
 		})
+	}
+}
+
+func TestProviderPicker_VertexPreservesTypedModelPerFamily(t *testing.T) {
+	m := newTestModel(t)
+	seedConfigTOML(t, "")
+	m, _ = typeAndEnter(t, m, "/provider")
+	for _, item := range m.providerPicker.menuItems {
+		if item.Label == "Add" {
+			break
+		}
+		m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyDown})
+	}
+	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	m = navigateToKind(t, m, "vertex")
+	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+
+	modelIdx := -1
+	familyIdx := -1
+	for i, lbl := range m.providerPicker.addLabels {
+		switch lbl {
+		case "Model family":
+			familyIdx = i
+		case "Default model":
+			modelIdx = i
+		}
+	}
+	if familyIdx < 0 || modelIdx < 0 {
+		t.Fatalf("vertex form missing family/default model fields: %#v", m.providerPicker.addLabels)
+	}
+	m.providerPicker.addFields[modelIdx].SetValue("google/gemini-custom")
+	m.providerPicker.setVertexFamily(wizard.VertexFamilyClaude)
+	m.providerPicker.addFields[modelIdx].SetValue("claude-custom@default")
+	m.providerPicker.setVertexFamily(wizard.VertexFamilyGemini)
+	if got := strings.TrimSpace(m.providerPicker.addFields[modelIdx].Value()); got != "google/gemini-custom" {
+		t.Fatalf("Gemini typed model after family round-trip = %q", got)
+	}
+	m.providerPicker.setVertexFamily(wizard.VertexFamilyClaude)
+	if got := strings.TrimSpace(m.providerPicker.addFields[modelIdx].Value()); got != "claude-custom@default" {
+		t.Fatalf("Claude typed model after family round-trip = %q", got)
+	}
+}
+
+func TestProviderPicker_VertexPreservesEditedModelAfterCatalogPick(t *testing.T) {
+	m := newTestModel(t)
+	seedConfigTOML(t, "")
+	m, _ = typeAndEnter(t, m, "/provider")
+	for _, item := range m.providerPicker.menuItems {
+		if item.Label == "Add" {
+			break
+		}
+		m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyDown})
+	}
+	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	m = navigateToKind(t, m, "vertex")
+	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+
+	modelIdx := -1
+	for i, lbl := range m.providerPicker.addLabels {
+		if lbl == "Default model" {
+			modelIdx = i
+			break
+		}
+	}
+	if modelIdx < 0 || len(m.providerPicker.addCuratedModels) == 0 {
+		t.Fatalf("vertex form missing model field or catalog entries")
+	}
+
+	// First choose from the catalog so this family has a saved cursor.
+	m.providerPicker.addModelCursor = 0
+	m.providerPicker.syncModelTextinputToCursor()
+	if catalogPick := strings.TrimSpace(m.providerPicker.addFields[modelIdx].Value()); catalogPick == "" {
+		t.Fatal("catalog pick did not populate the model field")
+	}
+
+	// Then type a future/manual model ID. Switching family and back must
+	// keep the typed value, not restore the old catalog cursor.
+	m.providerPicker.addFields[modelIdx].SetValue("google/gemini-from-the-future")
+	m.providerPicker.setVertexFamily(wizard.VertexFamilyClaude)
+	m.providerPicker.setVertexFamily(wizard.VertexFamilyGemini)
+	if got := strings.TrimSpace(m.providerPicker.addFields[modelIdx].Value()); got != "google/gemini-from-the-future" {
+		t.Fatalf("Gemini edited model after family round-trip = %q", got)
 	}
 }
 

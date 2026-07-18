@@ -1058,6 +1058,10 @@ func detectKindAsProvider(kind string) adapter.Provider {
 		return adapter.ProviderXAI
 	case "ollama":
 		return adapter.ProviderOllama
+	case "vertex":
+		return adapter.ProviderVertex
+	case "vertex-anthropic":
+		return adapter.ProviderVertexAnthropic
 	default:
 		return adapter.ProviderOpenAICompatible
 	}

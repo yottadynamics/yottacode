@@ -99,6 +99,7 @@ type providerInputs struct {
 	entry       CatalogEntry
 	key         textinput.Model
 	baseURL     textinput.Model
+	project     textinput.Model
 	customModel textinput.Model
 	// curatedModels is the embedded catalog for curated kinds
 	// (anthropic/openai/gemini/xai). Empty when the kind isn't curated
@@ -116,7 +117,11 @@ type providerInputs struct {
 	// inclusion test for activeChoices / assemblePlan.
 	validation ValidationResult
 	validating bool
-	field      int // 0=key, 1=baseURL (custom only), 2=model
+	field      int // 0=key/family, 1=baseURL (custom/vertex only), 2=model
+	// vertexFamily stores the Gemini/Claude choice for the combined
+	// Google Vertex AI setup row. The selected family rewrites entry to
+	// the concrete provider kind before config is assembled.
+	vertexFamily VertexFamily
 }
 
 // wizardModel is the Bubbletea state. Keeps every screen's data so
@@ -1239,6 +1244,11 @@ func (m wizardModel) newProviderInputs(e CatalogEntry) providerInputs {
 	in.baseURL.CharLimit = 256
 	in.baseURL.Width = w
 
+	in.project = textinput.New()
+	in.project.Placeholder = "your-gcp-project-id"
+	in.project.CharLimit = 128
+	in.project.Width = w
+
 	in.customModel = textinput.New()
 	in.customModel.Placeholder = FreeFormModelPlaceholder(e.Name)
 	in.customModel.CharLimit = 128
@@ -1325,6 +1335,14 @@ func FreeFormModelPlaceholder(name string) string {
 		return "nvidia/nemotron-3-super-120b-a12b"
 	case "copilot-auth":
 		return "claude-haiku-4.5"
+	case "vertex-claude":
+		// Vertex qualifies Claude ids with a version suffix; the bare id
+		// is not servable.
+		return "claude-sonnet-4-5@20250929"
+	case "vertex-gemini":
+		// The adapter also accepts bare gemini-* for older configs and
+		// normalizes it at request time.
+		return "google/gemini-2.5-pro"
 	case "custom":
 		return "your-model-name"
 	}
@@ -1358,12 +1376,15 @@ func (m *wizardModel) focusActiveConfigField() tea.Cmd {
 	in := &m.inputs[m.configIdx]
 	in.key.Blur()
 	in.baseURL.Blur()
+	in.project.Blur()
 	in.customModel.Blur()
 	switch m.fieldKind() {
 	case "key":
 		return in.key.Focus()
 	case "baseURL":
 		return in.baseURL.Focus()
+	case "project":
+		return in.project.Focus()
 	case "model":
 		// Model pickers drive selection via arrow keys, so no
 		// textinput needs focus. Free-form providers still focus
@@ -1386,14 +1407,30 @@ func (m wizardModel) fieldKind() string {
 	in := m.inputs[m.configIdx]
 	switch in.field {
 	case 0:
-		// No key for Ollama; skip if env already has it.
+		if isCombinedVertexEntry(in.entry) || in.entry.Kind == "vertex" || in.entry.Kind == "vertex-anthropic" {
+			return "family"
+		}
+		// Providers without API keys usually jump straight to model
+		// selection. Vertex is the exception: it has no API key, but
+		// the project/location live inside base_url and the catalog
+		// entry is only a PROJECT template, so setup must stop on the
+		// Base URL field.
 		if in.entry.APIKeyEnv == "" || in.envHas {
-			return "model" // jump to model
+			if in.entry.Kind == "vertex" || in.entry.Kind == "vertex-anthropic" {
+				return "project"
+			}
+			if providerNeedsBaseURLInput(in.entry) {
+				return "baseURL"
+			}
+			return "model"
 		}
 		return "key"
 	case 1:
 		if in.entry.Name == "custom" {
 			return "baseURL"
+		}
+		if isCombinedVertexEntry(in.entry) || in.entry.Kind == "vertex" || in.entry.Kind == "vertex-anthropic" {
+			return "project"
 		}
 		return "model"
 	case 2:
@@ -1414,6 +1451,7 @@ func (m wizardModel) updateConfigure(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// detected local models), Down/Up navigate the model list rather
 	// than switching wizard fields. Tab/Shift+Tab still switch fields
 	// so the user can jump back to key without leaving the screen.
+	familyPickerActive := m.familyPickerActive(*in)
 	modelPickerActive := m.modelPickerActive(*in)
 	switch msg.String() {
 	case "tab":
@@ -1423,6 +1461,11 @@ func (m wizardModel) updateConfigure(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		in.field = prevField(*in)
 		return m, m.focusActiveConfigField()
 	case "down":
+		if familyPickerActive {
+			in.vertexFamily = VertexFamilyClaude
+			m.applyVertexFamily(in.vertexFamily)
+			return m, nil
+		}
 		if modelPickerActive {
 			if in.modelCursor < len(m.modelPickerIDs(*in))-1 {
 				in.modelCursor++
@@ -1432,6 +1475,11 @@ func (m wizardModel) updateConfigure(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		in.field = nextField(*in)
 		return m, m.focusActiveConfigField()
 	case "up":
+		if familyPickerActive {
+			in.vertexFamily = VertexFamilyGemini
+			m.applyVertexFamily(in.vertexFamily)
+			return m, nil
+		}
 		if modelPickerActive {
 			if in.modelCursor > 0 {
 				in.modelCursor--
@@ -1445,7 +1493,7 @@ func (m wizardModel) updateConfigure(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// in env at runtime even though it isn't right now.
 		in.skipKey = true
 		in.field = 1
-		if in.entry.Name != "custom" {
+		if in.entry.Name != "custom" && !providerNeedsBaseURLInput(in.entry) {
 			in.field = 2
 		}
 		return m, m.focusActiveConfigField()
@@ -1454,6 +1502,11 @@ func (m wizardModel) updateConfigure(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// and move to next field. If on last field (model), advance
 		// to next provider or step.
 		switch m.fieldKind() {
+		case "family":
+			m.applyVertexFamily(in.vertexFamily)
+			m.err = nil
+			in.field = 1
+			return m, m.focusActiveConfigField()
 		case "key":
 			if in.entry.APIKeyEnv != "" && !in.envHas && !in.skipKey {
 				if strings.TrimSpace(in.key.Value()) == "" {
@@ -1463,8 +1516,8 @@ func (m wizardModel) updateConfigure(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			m.err = nil
 			in.field = 1
-			if in.entry.Name != "custom" {
-				in.field = 2 // skip baseURL for non-custom
+			if in.entry.Name != "custom" && !providerNeedsBaseURLInput(in.entry) {
+				in.field = 2 // skip baseURL/project for non-custom providers that do not need it
 			}
 			focusCmd := m.focusActiveConfigField()
 			// Kick off async validation if we got a key. Clear the
@@ -1483,15 +1536,34 @@ func (m wizardModel) updateConfigure(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				})
 			}
 			return m, focusCmd
+		case "project":
+			project := strings.TrimSpace(in.project.Value())
+			if project == "" {
+				m.err = errors.New("GCP project ID is required")
+				return m, nil
+			}
+			in.baseURL.SetValue(VertexBaseURL(in.vertexFamily, project))
+			m.err = nil
+			in.field = 2
+			return m, m.focusActiveConfigField()
 		case "baseURL":
 			if strings.TrimSpace(in.baseURL.Value()) == "" {
-				m.err = errors.New("base URL is required for custom provider")
+				m.err = errors.New("base URL is required")
 				return m, nil
 			}
 			m.err = nil
 			in.field = 2
 			return m, m.focusActiveConfigField()
 		case "model":
+			if in.entry.Kind == "vertex" || in.entry.Kind == "vertex-anthropic" {
+				project := strings.TrimSpace(in.project.Value())
+				if project == "" {
+					m.err = errors.New("GCP project ID is required before saving")
+					in.field = 1
+					return m, m.focusActiveConfigField()
+				}
+				in.baseURL.SetValue(VertexBaseURL(in.vertexFamily, project))
+			}
 			// Refuse to mark a provider configured if its API key isn't
 			// available somewhere — env, .env via in.key, or explicit
 			// Ctrl+S skip. Without this guard the user can Tab past
@@ -1528,6 +1600,15 @@ func (m wizardModel) updateConfigure(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			// list so the user can pick another or hit Continue. No
 			// more auto-advance to the next provider in a hard-coded
 			// loop — the user chooses pace and order.
+			if in.entry.Kind == "vertex" || in.entry.Kind == "vertex-anthropic" {
+				project := strings.TrimSpace(in.project.Value())
+				if project == "" {
+					m.err = errors.New("GCP project ID is required before saving")
+					in.field = 1
+					return m, m.focusActiveConfigField()
+				}
+				in.baseURL.SetValue(VertexBaseURL(in.vertexFamily, project))
+			}
 			m.inputs[m.configIdx].configured = true
 			if in.entry.Kind == "ollama" && m.ollamaProbe.Reachable {
 				detected := DetectEmbeddingModels(m.ollamaProbe.Models)
@@ -1548,8 +1629,19 @@ func (m wizardModel) updateConfigure(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// Per-field updates.
 	var cmd tea.Cmd
 	switch m.fieldKind() {
+	case "family":
+		switch msg.String() {
+		case "left", "h", "up", "k":
+			in.vertexFamily = VertexFamilyGemini
+			m.applyVertexFamily(in.vertexFamily)
+		case "right", "l", "down", "j":
+			in.vertexFamily = VertexFamilyClaude
+			m.applyVertexFamily(in.vertexFamily)
+		}
 	case "key":
 		in.key, cmd = in.key.Update(msg)
+	case "project":
+		in.project, cmd = in.project.Update(msg)
 	case "baseURL":
 		in.baseURL, cmd = in.baseURL.Update(msg)
 	case "model":
@@ -1573,6 +1665,30 @@ func (m wizardModel) updateConfigure(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 	return m, cmd
+}
+
+func (m *wizardModel) applyVertexFamily(f VertexFamily) {
+	if m.configIdx >= len(m.inputs) {
+		return
+	}
+	in := &m.inputs[m.configIdx]
+	in.vertexFamily = f
+	entry := f.CatalogEntry()
+	in.entry = entry
+	in.baseURL.SetValue(VertexBaseURL(f, strings.TrimSpace(in.project.Value())))
+	in.curatedModels = nil
+	in.modelCursor = 0
+	in.chosenModel = ""
+	if catalog.IsCuratedKind(entry.Kind) {
+		in.curatedModels = catalog.Curated(entry.Kind)
+		if len(in.curatedModels) > 0 {
+			in.chosenModel = in.curatedModels[0].ID
+		}
+	}
+}
+
+func (m wizardModel) familyPickerActive(in providerInputs) bool {
+	return m.fieldKind() == "family" && (isCombinedVertexEntry(in.entry) || in.entry.Kind == "vertex" || in.entry.Kind == "vertex-anthropic")
 }
 
 // modelPickerActive reports whether the current model field is driven
@@ -1600,10 +1716,25 @@ func (m wizardModel) modelPickerIDs(in providerInputs) []string {
 	return nil
 }
 
+func effectiveProviderEntry(in providerInputs) CatalogEntry {
+	if isCombinedVertexEntry(in.entry) || in.entry.Kind == "vertex" || in.entry.Kind == "vertex-anthropic" {
+		return in.vertexFamily.CatalogEntry()
+	}
+	return in.entry
+}
+
+func isCombinedVertexEntry(e CatalogEntry) bool {
+	return e.Name == "google-vertex"
+}
+
+func providerNeedsBaseURLInput(e CatalogEntry) bool {
+	return e.Kind == "vertex" || e.Kind == "vertex-anthropic" || isCombinedVertexEntry(e)
+}
+
 func nextField(in providerInputs) int {
 	switch in.field {
 	case 0:
-		if in.entry.Name == "custom" {
+		if in.entry.Name == "custom" || providerNeedsBaseURLInput(in.entry) {
 			return 1
 		}
 		return 2
@@ -1622,7 +1753,7 @@ func prevField(in providerInputs) int {
 	case 1:
 		return 0
 	case 2:
-		if in.entry.Name == "custom" {
+		if in.entry.Name == "custom" || providerNeedsBaseURLInput(in.entry) {
 			return 1
 		}
 		return 0
@@ -1650,6 +1781,28 @@ func (m wizardModel) viewConfigure() string {
 		b.WriteString(urlLabel + stylePathHL.Render(truncate(in.entry.BaseURL, w-lipgloss.Width(urlLabel))) + "\n")
 	}
 	b.WriteString("\n")
+
+	// Vertex family row.
+	if isCombinedVertexEntry(in.entry) || strings.HasPrefix(in.entry.Name, "vertex-") {
+		b.WriteString("  " + fieldHeading("Model family", m.fieldKind() == "family"))
+		b.WriteString("\n")
+		families := []VertexFamily{VertexFamilyGemini, VertexFamilyClaude}
+		for _, family := range families {
+			cursor := "    "
+			if m.fieldKind() == "family" && in.vertexFamily == family {
+				cursor = "  ▸ "
+			}
+			label := cursor + family.Label()
+			if in.vertexFamily == family {
+				label += " ✓"
+			}
+			b.WriteString(styleDim.Render(truncate(label, w-2)))
+			b.WriteString("\n")
+		}
+		b.WriteString("  ")
+		b.WriteString(styleDim.Render(truncate("↑↓ choose Gemini or Claude; each uses a different Vertex API", w-2)))
+		b.WriteString("\n\n")
+	}
 
 	// Key row.
 	if in.entry.APIKeyEnv != "" {
@@ -1683,7 +1836,22 @@ func (m wizardModel) viewConfigure() string {
 		b.WriteString("\n\n")
 	}
 
-	// Custom base URL row.
+	// Project row for Vertex. The full base_url is derived from the
+	// project id and selected family so users do not have to edit a long
+	// endpoint by hand.
+	if in.entry.Kind == "vertex" || in.entry.Kind == "vertex-anthropic" {
+		b.WriteString("  " + fieldHeading("GCP project", m.fieldKind() == "project"))
+		b.WriteString("\n  ")
+		b.WriteString(in.project.View())
+		b.WriteString("\n")
+		project := strings.TrimSpace(in.project.Value())
+		b.WriteString("  ")
+		b.WriteString(styleDim.Render(truncate("full URL: "+VertexBaseURL(in.vertexFamily, project), w-2)))
+		b.WriteString("\n\n")
+	}
+
+	// Custom base URL row. Vertex derives its full URL from the GCP
+	// project field above, so users do not edit the raw endpoint.
 	if in.entry.Name == "custom" {
 		b.WriteString("  " + fieldHeading("Base URL", m.fieldKind() == "baseURL"))
 		b.WriteString("\n  ")
@@ -2053,7 +2221,8 @@ func (m wizardModel) activeChoices() [][2]string {
 		// per Catalog entry, so iterating without the filter would
 		// surface providers the user hasn't touched.
 		if in.configured && in.chosenModel != "" {
-			out = append(out, [2]string{in.entry.Name, in.chosenModel})
+			entry := effectiveProviderEntry(in)
+			out = append(out, [2]string{entry.Name, in.chosenModel})
 		}
 	}
 	return out
@@ -2380,15 +2549,18 @@ func (m wizardModel) assemblePlan() Plan {
 		if !in.configured {
 			continue
 		}
+		entry := effectiveProviderEntry(in)
 		pp := PlanProvider{
-			Name:         in.entry.Name,
-			Kind:         in.entry.Kind,
-			BaseURL:      in.entry.BaseURL,
-			APIKeyEnv:    in.entry.APIKeyEnv,
+			Name:         entry.Name,
+			Kind:         entry.Kind,
+			BaseURL:      entry.BaseURL,
+			APIKeyEnv:    entry.APIKeyEnv,
 			DefaultModel: in.chosenModel,
 		}
-		// Custom: take the user-entered base URL.
-		if in.entry.Name == "custom" && strings.TrimSpace(in.baseURL.Value()) != "" {
+		// Custom and Vertex providers derive their base URL from fields the
+		// user controls in setup. Custom uses the raw URL field; Vertex uses
+		// the GCP project field plus the selected Gemini/Claude family.
+		if (entry.Name == "custom" || entry.Kind == "vertex" || entry.Kind == "vertex-anthropic") && strings.TrimSpace(in.baseURL.Value()) != "" {
 			pp.BaseURL = strings.TrimSpace(in.baseURL.Value())
 		}
 		// pp.Models intentionally not populated. The interactive
@@ -2399,9 +2571,9 @@ func (m wizardModel) assemblePlan() Plan {
 		// Promote env presence.
 		pp.EnvAlreadySet = in.envHas
 		// Persist key only when the user actually entered one.
-		if in.entry.APIKeyEnv != "" && !in.envHas && !in.skipKey {
+		if entry.APIKeyEnv != "" && !in.envHas && !in.skipKey {
 			if v := strings.TrimSpace(in.key.Value()); v != "" {
-				plan.EnvKeys[in.entry.APIKeyEnv] = v
+				plan.EnvKeys[entry.APIKeyEnv] = v
 			}
 		}
 		plan.Providers = append(plan.Providers, pp)
@@ -2415,8 +2587,9 @@ func (m wizardModel) assemblePlan() Plan {
 		plan.RouterPolicy = m.routerPolicy
 		for _, in := range m.inputs {
 			if in.configured && in.chosenModel != "" {
+				entry := effectiveProviderEntry(in)
 				plan.RouterCandList = append(plan.RouterCandList,
-					in.entry.Name+":"+in.chosenModel)
+					entry.Name+":"+in.chosenModel)
 			}
 		}
 	}

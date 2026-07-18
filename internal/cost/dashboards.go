@@ -28,6 +28,11 @@ func BillingDashboardURL(p adapter.Provider) string {
 		return "https://aistudio.google.com/app/billing"
 	case adapter.ProviderXAI:
 		return "https://console.x.ai/team"
+	case adapter.ProviderVertex, adapter.ProviderVertexAnthropic:
+		// Vertex bills to the user's own GCP project, so this is the
+		// generic console entry point rather than a per-vendor page —
+		// we don't know their billing account from here.
+		return "https://console.cloud.google.com/billing"
 	}
 	return ""
 }

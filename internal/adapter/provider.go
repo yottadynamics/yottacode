@@ -15,6 +15,17 @@ const (
 	ProviderAnthropic        Provider = "anthropic"
 	ProviderGemini           Provider = "gemini"
 	ProviderOpenAICompatible Provider = "openai-compatible"
+	// ProviderVertex and ProviderVertexAnthropic are Google Vertex AI:
+	// Gemini and Claude served from the user's own GCP project. They are
+	// separate providers from gemini/anthropic because the credential is
+	// a ~1h Application Default Credentials access token rather than an
+	// API key — the same reason openai-auth and copilot are separate from
+	// openai. They are separate from *each other* because Vertex serves
+	// the two model families over different surfaces: Gemini via an
+	// OpenAI-compatible chat shim, Claude via :streamRawPredict speaking
+	// the native Anthropic Messages API.
+	ProviderVertex          Provider = "vertex"
+	ProviderVertexAnthropic Provider = "vertex-anthropic"
 )
 
 // BuiltinToolKind is a provider-native capability exposed directly by the
@@ -118,6 +129,19 @@ func detectProvider(baseURL string, override Provider) Provider {
 		return ProviderXAI
 	case strings.Contains(baseURL, "generativelanguage.googleapis.com"):
 		return ProviderGemini
+	case strings.Contains(baseURL, "aiplatform.googleapis.com"):
+		// Both Vertex kinds live on this host, so the host alone can't
+		// tell them apart — the path can. The OpenAI-compatible chat
+		// shim is mounted at .../endpoints/openapi and serves Gemini
+		// only; anything else under aiplatform is the publisher-model
+		// surface, which for us means Claude via :streamRawPredict.
+		// A config.toml `kind` arrives as ProviderOverride and short-
+		// circuits this above, so this only has to carry the env-var
+		// (YOTTACODE_BASE_URL) case.
+		if strings.Contains(baseURL, "/endpoints/openapi") {
+			return ProviderVertex
+		}
+		return ProviderVertexAnthropic
 	case strings.Contains(baseURL, "localhost:11434"),
 		strings.Contains(baseURL, "127.0.0.1:11434"),
 		strings.Contains(baseURL, "ollama"):
@@ -138,6 +162,15 @@ func detectProvider(baseURL string, override Provider) Provider {
 func resolveProvider(cfg Config) Provider {
 	provider := detectProvider(cfg.BaseURL, cfg.ProviderOverride)
 	switch {
+	case provider == ProviderVertex || provider == ProviderVertexAnthropic:
+		// Vertex must win before the model-tag fallback below, which is
+		// otherwise unconditional. Vertex serves claude-*/gemini-* models
+		// under Google's own auth and URLs, so letting the model tag
+		// decide would silently reroute a Vertex config to
+		// api.anthropic.com / generativelanguage.googleapis.com with a
+		// credential those hosts reject. The tag is evidence about the
+		// API *shape*; here we already know the shape AND the host.
+		return provider
 	case provider == ProviderAnthropic || isAnthropicModel(cfg.Model):
 		return ProviderAnthropic
 	case provider == ProviderGemini || isGeminiModel(cfg.Model):
@@ -201,8 +234,8 @@ func buildProfile(cfg Config, usesResponses bool) ProviderProfile {
 	profile := ProviderProfile{
 		Provider:                provider,
 		UsesResponsesAPI:        usesResponses,
-		SupportsReasoning:       provider == ProviderOpenAI || provider == ProviderOpenAIAuth || provider == ProviderCopilot || provider == ProviderXAI || provider == ProviderOllama || provider == ProviderAnthropic || provider == ProviderGemini,
-		SupportsImages:          provider == ProviderAnthropic || provider == ProviderOpenAI || provider == ProviderOpenAIAuth || provider == ProviderCopilot || provider == ProviderGemini || provider == ProviderXAI,
+		SupportsReasoning:       provider == ProviderOpenAI || provider == ProviderOpenAIAuth || provider == ProviderCopilot || provider == ProviderXAI || provider == ProviderOllama || provider == ProviderAnthropic || provider == ProviderGemini || provider == ProviderVertex || provider == ProviderVertexAnthropic,
+		SupportsImages:          provider == ProviderAnthropic || provider == ProviderOpenAI || provider == ProviderOpenAIAuth || provider == ProviderCopilot || provider == ProviderGemini || provider == ProviderXAI || provider == ProviderVertex || provider == ProviderVertexAnthropic,
 		SupportsWebSearch:       provider == ProviderOpenAI || provider == ProviderXAI || provider == ProviderAnthropic,
 		SupportsXSearch:         provider == ProviderXAI,
 		SupportsCodeInterpreter: provider == ProviderOpenAI || provider == ProviderXAI,

@@ -74,6 +74,24 @@ func xaiEffort(level, model string) (shared.ReasoningEffort, bool) {
 	return "", false
 }
 
+// vertexEffort maps the uniform level onto the reasoning_effort enum
+// Vertex's Gemini chat shim accepts. The shim validates the field
+// (minimal | low | medium | high) and honors it: on a hard prompt,
+// gemini-2.5-pro spends ~800 thinking tokens at low against ~7,600 at
+// high, so this is a real knob rather than an accepted no-op.
+//
+// Unlike xAI's enum the levels map 1:1, and unlike Gemini's native API
+// there is no thinkingBudget to derive — the shim exposes only the enum,
+// so it reuses openAIEffort. Every Gemini chat model the shim serves
+// accepts the field, so the only gate is an explicit can't-think from the
+// catalog; nil (unknown) tries anyway, matching the native Gemini path.
+func vertexEffort(level string, supportsThinking *bool) (shared.ReasoningEffort, bool) {
+	if thinkingExplicitlyUnsupported(supportsThinking) {
+		return "", false
+	}
+	return openAIEffort(level)
+}
+
 // isXAIMiniModel reports whether the model is an xAI grok mini variant
 // (grok-3-mini, grok-3-mini-fast, …) — the only xAI models that accept
 // reasoning_effort.
@@ -199,7 +217,7 @@ func EffortInapplicableReason(cfg Config, provider Provider) string {
 		if !isXAIMiniModel(model) {
 			return fmt.Sprintf("%s ignores reasoning effort — only grok-*-mini models accept it", model)
 		}
-	case ProviderAnthropic:
+	case ProviderAnthropic, ProviderVertexAnthropic:
 		// A model not in the catalog still gets a (conservative) budget
 		// via the fallback, so the only true no-op is an explicit
 		// can't-think from the catalog.
@@ -208,6 +226,10 @@ func EffortInapplicableReason(cfg Config, provider Provider) string {
 		}
 	case ProviderGemini:
 		if geminiThinkingBudget(cfg.ReasoningEffort, cfg.ModelSupportsThinking) == 0 {
+			return fmt.Sprintf("%s doesn't support thinking", model)
+		}
+	case ProviderVertex:
+		if _, ok := vertexEffort(cfg.ReasoningEffort, cfg.ModelSupportsThinking); !ok {
 			return fmt.Sprintf("%s doesn't support thinking", model)
 		}
 	default:

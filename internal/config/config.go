@@ -326,6 +326,14 @@ type Provider struct {
 	//                         NVIDIA NIM, Groq, …)
 	//   xai                 — xAI's OpenAI-compatible Grok endpoint
 	//   ollama              — Ollama's local server (OpenAI-shim variant)
+	//   vertex              — Gemini on Google Vertex AI, via the
+	//                         project's OpenAI-compatible chat shim
+	//   vertex-anthropic    — Claude on Google Vertex AI, via
+	//                         :streamRawPredict (native Messages API)
+	//
+	// The two vertex kinds authenticate with Application Default
+	// Credentials rather than an api_key_env, and carry their GCP project
+	// and location inside base_url.
 	Kind string `toml:"kind"`
 
 	// BaseURL is the HTTPS endpoint for the API. For Anthropic this is
@@ -421,7 +429,7 @@ func MCPNameValid(name string) bool { return mcpNameRE.MatchString(name) }
 var ValidTiers = []string{"cheap", "balanced", "expensive"}
 
 // ValidKinds is the whitelist for Provider.Kind.
-var ValidKinds = []string{"anthropic", "openai", "openai-auth", "copilot", "openai-compatible", "ollama", "gemini", "xai"}
+var ValidKinds = []string{"anthropic", "openai", "openai-auth", "copilot", "openai-compatible", "ollama", "gemini", "xai", "vertex", "vertex-anthropic"}
 
 // Default returns a Config populated with the documented defaults.
 // defaultThemeName resolves the theme used when the user hasn't

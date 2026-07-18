@@ -101,7 +101,82 @@ func TestModelPicker_LoadDefaultsCursorToActiveModel(t *testing.T) {
 	}
 }
 
-// Picker open + render produces a non-empty View() containing the
+// When browsing across providers, the highlighted/current row should be
+// scoped to the provider being displayed. This is especially visible for
+// Vertex: a session may be running vertex-gemini while the user cycles to
+// vertex-claude to pick a Claude model, and the Claude tab should land on
+// its own default_model instead of searching for the Gemini active model.
+func TestModelPicker_CycledProviderUsesOwnDefaultModel(t *testing.T) {
+	m := newTestModel(t)
+	dir := filepath.Join(os.Getenv("HOME"), ".yottacode")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	body := `
+[active]
+provider      = "vertex-gemini"
+default_model = "google/gemini-2.5-pro"
+
+[[providers]]
+name = "vertex-gemini"
+kind = "vertex"
+base_url = "https://us-central1-aiplatform.googleapis.com/v1/projects/p/locations/us-central1/endpoints/openapi"
+default_model = "google/gemini-2.5-pro"
+
+[[providers]]
+name = "vertex-claude"
+kind = "vertex-anthropic"
+base_url = "https://aiplatform.googleapis.com/v1/projects/p/locations/global"
+default_model = "claude-sonnet-4-5@20250929"
+`
+	if err := os.WriteFile(filepath.Join(dir, "config.toml"), []byte(body), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	cfg, err := config.LoadDefault()
+	if err != nil {
+		t.Fatalf("LoadDefault: %v", err)
+	}
+	gemini := *cfg.FindProvider("vertex-gemini")
+	m.modelName = "google/gemini-2.5-pro"
+	m.pickerList = func(ctx context.Context, p config.Provider, apiKey string) ([]catalog.Model, error) {
+		switch p.Name {
+		case "vertex-gemini":
+			return []catalog.Model{
+				{ID: "google/gemini-2.5-flash", Provider: p.Kind},
+				{ID: "google/gemini-2.5-pro", Provider: p.Kind},
+			}, nil
+		case "vertex-claude":
+			return []catalog.Model{
+				{ID: "claude-opus-4-8@default", Provider: p.Kind},
+				{ID: "claude-sonnet-4-5@20250929", Provider: p.Kind},
+			}, nil
+		default:
+			return nil, fmt.Errorf("unexpected provider %q", p.Name)
+		}
+	}
+
+	cmd := m.openModelPicker(gemini)
+	m, _ = applyMsg(m, cmd())
+	if got := m.modelPicker.entries[m.modelPicker.cursor].ID; got != "google/gemini-2.5-pro" {
+		t.Fatalf("active provider cursor = %q, want Gemini active model", got)
+	}
+
+	m, fetchCmd := applyMsg(m, tea.KeyMsg{Type: tea.KeyRight})
+	if fetchCmd == nil {
+		t.Fatal("provider cycle returned no fetch command")
+	}
+	m, _ = applyMsg(m, fetchCmd())
+	if got := m.modelPicker.provider.Name; got != "vertex-claude" {
+		t.Fatalf("provider = %q, want vertex-claude", got)
+	}
+	if got := m.modelPicker.entries[m.modelPicker.cursor].ID; got != "claude-sonnet-4-5@20250929" {
+		t.Fatalf("cycled provider cursor = %q, want the Claude provider default_model", got)
+	}
+	if view := stripANSI(m.View()); !strings.Contains(view, "✓ —") {
+		t.Errorf("view should mark the Claude provider default row; got:\n%s", view)
+	}
+}
+
 // picker banner. The banner is just "Model" — the previous "Model —
 // <provider>" form was redundant once the provider tab strip below
 // the title carries the same information visually.
@@ -594,8 +669,10 @@ func TestModelPicker_LongNamesTruncateForAlignment(t *testing.T) {
 // session must align m.baseURL / m.apiKey with that provider's
 // values. Without this, the adapter rebuild fires the next chat
 // call at the SESSION's (now-stale) URL, which surfaces as
-//   POST "http://localhost:11434/v1/chat/completions": 404
-//   model 'nvidia/nemotron-...' not found
+//
+//	POST "http://localhost:11434/v1/chat/completions": 404
+//	model 'nvidia/nemotron-...' not found
+//
 // when the session opened on Ollama and the user cycled the
 // picker to NVIDIA before picking.
 func TestModelPicker_SelectingFromDifferentProviderUpdatesBaseURL(t *testing.T) {

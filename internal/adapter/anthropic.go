@@ -56,9 +56,17 @@ func newAnthropicAdapter(cfg Config) *anthropicAdapter {
 	if cfg.APIKey != "" {
 		opts = append(opts, option.WithAPIKey(cfg.APIKey))
 	}
-	c := anthropic.NewClient(opts...)
+	return newAnthropicAdapterWith(cfg, profile, opts...)
+}
+
+// newAnthropicAdapterWith builds the adapter over a caller-supplied SDK
+// option set. Vertex uses it to assemble a different client entirely —
+// Google's host, an ADC bearer, and a request rewrite — while reusing
+// every line of the streaming, tool, image, and usage mapping below,
+// because Vertex serves Claude over the identical Messages wire format.
+func newAnthropicAdapterWith(cfg Config, profile ProviderProfile, opts ...option.RequestOption) *anthropicAdapter {
 	return &anthropicAdapter{
-		client:    c,
+		client:    anthropic.NewClient(opts...),
 		model:     cfg.Model,
 		maxTokens: AnthropicDefaultMaxTokens,
 		cfg:       cfg,

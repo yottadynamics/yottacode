@@ -11,6 +11,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	vertexauth "github.com/yottadynamics/yottacode/internal/auth/vertex"
 	"github.com/yottadynamics/yottacode/internal/catalog"
 	"github.com/yottadynamics/yottacode/internal/config"
 	"github.com/yottadynamics/yottacode/internal/dotenv"
@@ -37,6 +38,7 @@ Inside the TUI, /provider opens the same operations as a sub-menu.`,
 		newProviderAddCmd(),
 		newProviderRemoveCmd(),
 		newProviderRefreshCmd(),
+		newProviderScanCmd(),
 	)
 	return cmd
 }
@@ -333,7 +335,71 @@ func newProviderRefreshCmd() *cobra.Command {
 	}
 }
 
-// mergeAPIKeyIntoEnvFile is a thin wrapper over dotenv.SetKey. The
+func newProviderScanCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "scan NAME",
+		Short: "Probe project-specific model access for a Vertex provider",
+		Long: `Scans a configured Vertex provider and writes a local access cache.
+
+Vertex model access is project/location-specific. The static catalog can list
+models that exist on Vertex, but only a probe against your configured base_url
+can tell which models your GCP project may call. The /model picker greys out
+models marked unavailable by this scan.`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, err := config.LoadDefault()
+			if err != nil {
+				return err
+			}
+			p := cfg.FindProvider(args[0])
+			if p == nil {
+				return fmt.Errorf("provider %q not configured", args[0])
+			}
+			if p.Kind != vertexauth.ProviderVertex && p.Kind != vertexauth.ProviderVertexAnthropic {
+				return fmt.Errorf("provider %q has kind %q; scan currently supports vertex and vertex-anthropic", p.Name, p.Kind)
+			}
+			entries := catalog.Curated(p.Kind)
+			candidates := make([]string, 0, len(entries))
+			for _, e := range entries {
+				if strings.TrimSpace(e.ID) != "" {
+					candidates = append(candidates, e.ID)
+				}
+			}
+			if len(candidates) == 0 {
+				return fmt.Errorf("provider %q has no curated Vertex models to scan", p.Name)
+			}
+			ctx, cancel := context.WithTimeout(cmd.Context(), time.Duration(len(candidates))*30*time.Second)
+			defer cancel()
+			fmt.Fprintf(cmd.OutOrStdout(), "scanning %d models for %s (%s)\n", len(candidates), p.Name, p.BaseURL)
+			mf, path, err := vertexauth.ScanAndPersist(ctx, vertexauth.ScanOptions{
+				Provider:   p.Kind,
+				BaseURL:    p.BaseURL,
+				Candidates: candidates,
+			})
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "available: %d/%d\n", len(mf.Models), len(mf.Candidates))
+			for _, r := range mf.Results {
+				mark := "?"
+				switch r.EffectiveAccess() {
+				case vertexauth.AccessAvailable:
+					mark = "✓"
+				case vertexauth.AccessDenied:
+					mark = "✗"
+				}
+				detail := ""
+				if r.Detail != "" {
+					detail = " — " + r.Detail
+				}
+				fmt.Fprintf(cmd.OutOrStdout(), "  %s %s (%s)%s\n", mark, r.Name, r.Status, detail)
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "saved: %s\n", path)
+			return nil
+		},
+	}
+}
+
 // merge-and-write logic was duplicated across cmd/ and tui/ until
 // the third caller (provider remove cleanup) made the case for
 // lifting it; both call sites now go through internal/dotenv.
@@ -378,4 +444,3 @@ func cleanupRemovedAPIKey(keyEnv string, remaining config.Config) string {
 	}
 	return ""
 }
-

@@ -47,11 +47,13 @@ func ResolveWindow(model string, override, defaultWindow int) int {
 //     per-model catalog cannot express;
 //  2. the catalog entry for this exact (provider, id) pair — a curated
 //     provider's number applies on its own backend only and never
-//     leaks to a namesake model behind a different kind.
+//     leaks to a namesake model behind a different kind;
+//  3. the provider's curated list, matched against the host-qualified
+//     forms of the id (see curatedWindowForProvider).
 //
-// When neither provider-scoped layer answers — openai-compatible
-// proxies, an empty kind, models with no qualified facts — resolution
-// degrades to ResolveWindow unchanged.
+// When no provider-scoped layer answers — openai-compatible proxies, an
+// empty kind, models with no qualified facts — resolution degrades to
+// ResolveWindow unchanged.
 func ResolveWindowForProvider(provider, model string, override, defaultWindow int) int {
 	if override <= 0 {
 		kind := strings.ToLower(strings.TrimSpace(provider))
@@ -63,9 +65,50 @@ func ResolveWindowForProvider(provider, model string, override, defaultWindow in
 			if m, ok := FindByProviderID(provider, model); ok && m.ContextWindow > 0 {
 				return m.ContextWindow
 			}
+			if w, ok := curatedWindowForProvider(provider, model); ok {
+				return w
+			}
 		}
 	}
 	return ResolveWindow(model, override, defaultWindow)
+}
+
+// curatedWindowForProvider answers from the provider's own curated list —
+// the layer above (FindByProviderID) reads only the generated catalog,
+// which carries no rows for kinds sourced from the models.dev snapshot,
+// and matches the id verbatim.
+//
+// Both gaps bite the same model. A vertex profile serving
+// google/gemini-2.5-pro found nothing at any layer: the generated catalog
+// has no `vertex` provider, the publisher-qualified id matches no catalog
+// row, and the model-tag store is keyed on `gemini-*`, not
+// `google/gemini-*`. Resolution fell all the way through to
+// context.default_window — reporting 128k for a 1M-context model, which
+// silently fires auto-summarize at an eighth of the real budget.
+//
+// Curated() is the right source because it is already host-scoped: the
+// same id carries different limits per backend (gemini-2.5-pro is 1M on
+// Vertex and 128k through Copilot), which is exactly the distinction the
+// models.dev snapshot preserves and a per-model-id lookup destroys.
+func curatedWindowForProvider(provider, model string) (int, bool) {
+	models := Curated(provider)
+	if len(models) == 0 {
+		return 0, false
+	}
+	// Most specific id form first, so a pinned snapshot never resolves to
+	// a sibling's window.
+	ids := lookupIDVariants(model)
+	if provider == "vertex" && strings.HasPrefix(strings.TrimSpace(model), "gemini") {
+		ids = append([]string{"google/" + strings.TrimSpace(model)}, ids...)
+	}
+	for _, id := range ids {
+		for _, m := range models {
+			if m.ID == id && m.ContextWindow > 0 {
+				return m.ContextWindow, true
+			}
+		}
+	}
+	return 0, false
 }
 
 // EffectiveWindow resolves the context window from an explicit override

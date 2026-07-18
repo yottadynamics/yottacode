@@ -82,6 +82,19 @@ export YOTTACODE_BASE_URL=https://api.anthropic.com
 export YOTTACODE_API_KEY=sk-ant-...
 yottacode
 
+# Claude on Google Vertex AI (first run: gcloud auth application-default login)
+# No API key — Application Default Credentials mint a fresh token per request.
+export YOTTACODE_PROVIDER=vertex-anthropic
+export YOTTACODE_MODEL=claude-sonnet-4-5@20250929   # Vertex needs the @version suffix
+export YOTTACODE_BASE_URL=https://aiplatform.googleapis.com/v1/projects/<your-project>/locations/global
+yottacode
+
+# Gemini on Google Vertex AI (same credentials, different surface)
+export YOTTACODE_PROVIDER=vertex
+export YOTTACODE_MODEL=google/gemini-2.5-pro        # publisher-namespaced on the shim
+export YOTTACODE_BASE_URL=https://us-central1-aiplatform.googleapis.com/v1/projects/<your-project>/locations/us-central1/endpoints/openapi
+yottacode
+
 # xAI with default web_search + x_search
 export YOTTACODE_PROVIDER=xai
 export YOTTACODE_MODEL=<your-model-id>

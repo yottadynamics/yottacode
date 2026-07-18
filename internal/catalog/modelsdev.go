@@ -272,18 +272,31 @@ func RefreshModelsDev() (int, error) {
 // windows a provider's own API omits (notably OpenAI, whose /v1/models
 // returns no context length).
 func ModelsDevWindowByProvider(providerID, model string) int {
+	ctx, _ := ModelsDevLimitsByProvider(providerID, model)
+	return ctx
+}
+
+// ModelsDevLimitsByProvider returns both limits models.dev records for a
+// model under a specific provider id: the context window and the
+// max-output cap, either of which is 0 when unknown.
+//
+// Output matters as much as context and is just as often missing from a
+// vendor's own API — OpenAI's /v1/models reports neither, and MaxOutput
+// is what sizes an extended-thinking budget. Returning the pair keeps
+// both backfills on one snapshot lookup.
+func ModelsDevLimitsByProvider(providerID, model string) (contextWindow, maxOutput int) {
 	if strings.TrimSpace(providerID) == "" || strings.TrimSpace(model) == "" {
-		return 0
+		return 0, 0
 	}
 	cat := loadModelsDev()
 	if cat == nil {
-		return 0
+		return 0, 0
 	}
 	prov, ok := cat[providerID]
 	if !ok {
-		return 0
+		return 0, 0
 	}
-	return modelWindowFrom(prov, model)
+	return modelLimitsFrom(prov, model)
 }
 
 // ModelsDevModelsByProvider returns model IDs from the local models.dev
@@ -304,7 +317,7 @@ func ModelsDevModelsByProvider(providerID, prefix string) []Model {
 	}
 	out := make([]Model, 0, len(prov.Models))
 	for id, m := range prov.Models {
-		if prefix != "" && !strings.HasPrefix(id, prefix) {
+		if prefix != "" && !strings.HasPrefix(id, prefix) && !strings.HasPrefix(id, "google/"+prefix) {
 			continue
 		}
 		out = append(out, Model{
@@ -363,16 +376,27 @@ func ModelsDevWindow(baseURL, model string) int {
 // case-insensitive (provider model keys and our ids are usually identical,
 // but casing varies across hosts — e.g. DeepSeek-V4-Pro vs deepseek-v4-pro).
 func modelWindowFrom(prov modelsDevProvider, model string) int {
-	if m, ok := prov.Models[model]; ok && m.Limit.Context > 0 {
-		return m.Limit.Context
+	ctx, _ := modelLimitsFrom(prov, model)
+	return ctx
+}
+
+// modelLimitsFrom resolves a model's limits within one provider: exact id
+// first, then case-insensitively. Both limits come from the same entry —
+// looking them up separately could pair one model's context with
+// another's output if the two matches ever disagreed.
+func modelLimitsFrom(prov modelsDevProvider, model string) (contextWindow, maxOutput int) {
+	// An entry carrying neither limit is no better than no entry, so keep
+	// looking — the case-insensitive pass may find a populated twin.
+	if m, ok := prov.Models[model]; ok && (m.Limit.Context > 0 || m.Limit.Output > 0) {
+		return m.Limit.Context, m.Limit.Output
 	}
 	lm := strings.ToLower(model)
 	for id, m := range prov.Models {
-		if strings.ToLower(id) == lm && m.Limit.Context > 0 {
-			return m.Limit.Context
+		if strings.ToLower(id) == lm && (m.Limit.Context > 0 || m.Limit.Output > 0) {
+			return m.Limit.Context, m.Limit.Output
 		}
 	}
-	return 0
+	return 0, 0
 }
 
 // hostname returns the lowercased host of a URL, tolerating a bare host or
