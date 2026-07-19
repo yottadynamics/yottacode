@@ -251,7 +251,7 @@ This trades convenience for context discipline: the model can't ambient-reach fo
 
 | Item | What it does |
 |---|---|
-| `Catalog` | Open the picker; tabs for Built-in vs Installed (user + project). |
+| `Catalog` | Open the picker; tabs for Official and Bundled fallback. Official is the default browse/install view and marks already-installed rows inline. |
 | `Install` | Inline textinput for the source string. Submit with Enter, cancel with Esc. |
 | `Uninstall` | Focused list of installed (user-scope) skills; Enter removes the selected one. Built-in and project skills aren't listed. |
 | `Check` | Run the drift report. Output lands in the transcript. |
@@ -262,17 +262,19 @@ Inside the Catalog picker:
 | Key | Action |
 |---|---|
 | `Up` / `Down` | Move cursor within the active tab |
-| `Left` / `Right` / `Tab` | Cycle Built-in ↔ Installed (cursor resets) |
+| `Left` / `Right` / `Tab` | Cycle Official ↔ Bundled (cursor resets) |
 | `/` | Filter rows by substring (matches name + description) |
-| `Space` | Toggle the cursor row's enablement |
-| `a` / `n` | Enable / disable all in the current tab |
-| `Enter` | Open the cursor row's body in `$PAGER` (for review) |
-| `u` | Uninstall the cursor row (Installed tab only; built-ins are embedded) |
+| `Space` | Installed catalog rows: toggle enablement. Not-yet-installed catalog rows: shows the install hint. Bundled rows: toggle enablement |
+| `a` / `n` | Enable / disable all toggleable rows in the current tab |
+| `Enter` | Official row: install if not installed, otherwise open the installed body in `$PAGER`. Bundled row: open the body in `$PAGER` |
+| `u` | Uninstall the cursor row when it is an installed user-scope Official skill |
+| `r` | Refresh the offline Official catalog metadata from `yottadynamics/yottacode-skills` |
 | `Esc` | Save enablement toggles and close (writes the enabled set to `[skills] default_on` so it survives restart; uninstalls already took effect) |
 
 While the filter is active: type to narrow rows, `Backspace` edits, `Enter` keeps the filter and resumes row navigation, `Esc` clears the filter and exits filter mode.
 
-The Catalog shows every loaded skill in the active tab with its source tag and description. On commit, the system prompt is recomposed so the next turn sees the updated "Available skills" section.
+The Catalog shows every row with a status column. Official rows show `[not installed]`, `[installed]`, or `[installed/enabled]`; `installed/enabled` means the skill is available to the model this session. Bundled rows show `[ ]` / `[x]` for model access. On commit, the system prompt is recomposed so the next turn sees the updated "Available skills" section.
+
 
 ### Persistent default-on set
 
@@ -287,7 +289,7 @@ default_on = ["test-driven-development", "diagnose"]
 
 Either way, names that don't match any loaded skill produce a stderr warning at startup so a typo surfaces immediately. Without this block (or after un-toggling everything), sessions start with nothing enabled (the small-prompt default).
 
-Uninstalling a skill from the Catalog (Installed tab → `u`) also scrubs its name from `default_on` so the startup warning doesn't fire for an entry the picker itself just removed.
+Uninstalling a user-scope official skill from the Catalog (`u` on an installed Official row) also scrubs its name from `default_on` so the startup warning doesn't fire for an entry the picker itself just removed.
 
 ### Install, list, show, uninstall
 
@@ -295,7 +297,9 @@ Uninstalling a skill from the Catalog (Installed tab → `u`) also scrubs its na
 
 | Form | What it does |
 |---|---|
-| `/skills install <source> [--force]` | Install a skill from a local path, `https://.../SKILL.md` URL, or `owner/repo[/path]` GitHub shorthand. Refuses to overwrite an existing slug unless `--force` is set. |
+| `/skills install <source> [--force]` | Install a skill from `official/<name>`, a local path, `https://.../SKILL.md` URL, or `owner/repo[/path]` GitHub shorthand. Refuses to overwrite an existing slug unless `--force` is set. |
+| `/skills official <name>` | Shortcut for installing from the public `yottadynamics/yottacode-skills` catalog. Equivalent to `/skills install official/<name>`. |
+| `/skills catalog refresh` | Refresh the offline Official catalog metadata cache from `yottadynamics/yottacode-skills`. Browsing the Catalog itself never contacts GitHub; installs still fetch the selected skill. |
 | `/skills show <name>` | Print one skill's full body — the same bytes the model receives when it calls `Skill(skill="<name>")`. |
 | `/skills uninstall <name>` | Remove a user-scope skill from `~/.yottacode/skills/`. Built-in and project-scope skills are out of scope (project skills are committed source — remove via git/rm; built-ins are embedded in the binary). |
 | `/skills check [name]` | Report drift between the installed bytes and `~/.yottacode/skills/.lock.json`. Statuses: `ok`, `modified`, `missing-lock`, `orphaned-lock`, `hash-error`. Read-only. |
@@ -304,17 +308,20 @@ Uninstalling a skill from the Catalog (Installed tab → `u`) also scrubs its na
 Source shapes:
 
 ```text
+official/<name>            public yottacode-skills catalog
+https://www.skills.sh/<owner>/<repo>/<skill>
+                            skills.sh page URL; copies scripts/, references/, assets/
 ./path/to/skill           local directory containing SKILL.md
-./path/to/skill/SKILL.md  local SKILL.md file (no resources copied)
-https://.../SKILL.md      single-file fetch — URL must end in /SKILL.md
-owner/repo                GitHub repo root (must contain SKILL.md)
-owner/repo/path/to/skill  GitHub subpath; scripts/, references/, assets/
-                          are walked via the Contents API
+./path/to/skill/SKILL.md  local SKILL.md file; copies sibling resources
+https://.../SKILL.md      non-GitHub single-file fetch — URL must end in /SKILL.md
+owner/repo/path/to/skill  GitHub shorthand; copies resources from archive
+https://github.com/owner/repo/tree/<ref>/path/to/skill
+https://github.com/owner/repo/blob/<ref>/path/to/skill/SKILL.md
+https://raw.githubusercontent.com/owner/repo/<ref>/path/to/skill/SKILL.md
+                            GitHub URLs; copies resources from archive
 ```
 
-The installer writes into `~/.yottacode/skills/<slug>/` where `<slug>` is taken from the SKILL.md frontmatter `name` — so a source dir named `weird-name` whose frontmatter says `name: sample` lands at `~/.yottacode/skills/sample/`. The on-disk dir name is always the canonical slug.
-
-Authenticated GitHub fetches: set `GITHUB_TOKEN` to lift the 60-req/hr unauthenticated rate limit on the Contents API. Only sent to `api.github.com` hosts.
+GitHub-backed installs use repository archives rather than the GitHub Contents API, so they avoid the low unauthenticated REST rate limit while still copying full skill resource directories. Non-GitHub direct `SKILL.md` URLs remain single-file because plain HTTP has no standard directory listing for sibling resources.
 
 ### Provenance and updates
 
@@ -326,8 +333,8 @@ Every install records a row in `~/.yottacode/skills/.lock.json`:
   "entries": {
     "remote-ops": {
       "name": "remote-ops",
-      "source_type": "github",
-      "source": "obra/superpowers/skills/remote-ops",
+      "source_type": "official",
+      "source": "official/remote-ops",
       "hash": "sha256:…",
       "installed_at": "2026-05-27T12:00:00Z",
       "trust": "unverified"
@@ -345,8 +352,8 @@ The lockfile is dot-prefixed so the skill loader skips it. `trust` is reserved f
 Three tiers, project wins:
 
 1. **Project scope** — `<cwd>/.yottacode/skills/<slug>/SKILL.md` (committable)
-2. **User scope** — `~/.yottacode/skills/<slug>/SKILL.md`
-3. **Built-in** — 16 skills compiled into the binary:
+2. **User scope** — `~/.yottacode/skills/<slug>/SKILL.md`, including official catalog installs from `yottadynamics/yottacode-skills`
+3. **Bundled fallback** — skills compiled into the binary so yottacode has an offline starter set:
    - **Engineering loop**: `test-driven-development`, `verification-before-completion`, `diagnose`, `writing-plans`, `executing-plans`, `brainstorming`, `receiving-code-review`, `handoff`
    - **Architecture & perf**: `improve-codebase-architecture`, `prototype`, `performance-profiler`
    - **Targeted reviews**: `dockerfile-review`, `security-auditor`, `webapp-testing`
@@ -386,7 +393,7 @@ A skill may ship `scripts/`, `references/`, `assets/` subdirectories. The body r
 ### Out of scope (for now)
 
 - `allowed-tools` enforcement — landing alongside the broader per-tool sandbox work.
-- Ed25519-signed skills + a public registry — post-v0.4.0 per the roadmap. The lockfile's `trust` field is reserved for this.
+- Ed25519-signed skills + a richer public registry/search API — post-v0.4.0 per the roadmap. The public `yottadynamics/yottacode-skills` repo is the official free catalog; paid/private skills and future runtime plugins intentionally live in separate repositories with their own access, signing, and compatibility rules.
 
 ## Plan mode
 

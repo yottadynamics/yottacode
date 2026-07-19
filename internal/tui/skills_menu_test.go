@@ -1,6 +1,10 @@
 package tui
 
 import (
+	"archive/zip"
+	"bytes"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,6 +15,39 @@ import (
 	"github.com/yottadynamics/yottacode/internal/agent"
 	"github.com/yottadynamics/yottacode/internal/skills"
 )
+
+func withOfficialCatalogStub(t *testing.T, rows []skills.Skill) {
+	t.Helper()
+	old := loadOfficialSkillsCatalog
+	loadOfficialSkillsCatalog = func() ([]skills.Skill, error) { return rows, nil }
+	t.Cleanup(func() { loadOfficialSkillsCatalog = old })
+}
+
+func newFakeCodeloadForTUI(t *testing.T, files map[string]string) *httptest.Server {
+	t.Helper()
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	for name, body := range files {
+		w, err := zw.Create("repo-main/" + name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := w.Write([]byte(body)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/zip/refs/heads/main") {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/zip")
+		_, _ = w.Write(buf.Bytes())
+	}))
+}
 
 // TestSkillsMenu_OpenAndNavigate locks the menu's basic shape: four
 // rows, Down moves the cursor, Up retreats, Esc closes. Without this
@@ -46,6 +83,7 @@ func TestSkillsMenu_OpenAndNavigate(t *testing.T) {
 // menu→catalog hand-off. The picker is now a child of the menu —
 // users reach it by picking Catalog, not by typing /skills.
 func TestSkillsMenu_CatalogOpensPicker(t *testing.T) {
+	withOfficialCatalogStub(t, nil)
 	m := newTestModel(t)
 	m.skillTool = &agent.SkillTool{All: nil}
 	m, _ = m.runSlash("/skills")
@@ -58,10 +96,11 @@ func TestSkillsMenu_CatalogOpensPicker(t *testing.T) {
 	}
 }
 
-// TestCatalogPicker_TabCycles confirms Tab flips between Built-in
-// and Installed and resets the cursor. Without the reset, the user
-// can sit on a row index past the end of the new tab's visible set.
+// TestCatalogPicker_TabCycles confirms Tab flips between Official and Bundled
+// and resets the cursor. Without the reset, the user can sit on a row index past
+// the end of the new tab's visible set.
 func TestCatalogPicker_TabCycles(t *testing.T) {
+	withOfficialCatalogStub(t, []skills.Skill{{Name: "official-alpha", Description: "o", Source: skills.ScopeOfficial}})
 	m := newTestModel(t)
 	m.skillTool = &agent.SkillTool{All: []skills.Skill{
 		{Name: "alpha", Description: "a", Source: skills.ScopeBuiltin},
@@ -69,35 +108,35 @@ func TestCatalogPicker_TabCycles(t *testing.T) {
 	}}
 	m, _ = m.runSlash("/skills")
 	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter}) // Catalog
-	if m.skillsPicker.tab != catalogTabBuiltin {
-		t.Fatalf("initial tab = %v, want built-in", m.skillsPicker.tab)
+	if m.skillsPicker.tab != catalogTabOfficial {
+		t.Fatalf("initial tab = %v, want official", m.skillsPicker.tab)
 	}
-	if visible := m.skillsPicker.visibleRows(); len(visible) != 1 || visible[0].Name != "alpha" {
-		t.Errorf("built-in visible rows = %v, want [alpha]", visible)
+	if visible := m.skillsPicker.visibleRows(); len(visible) != 1 || visible[0].Name != "official-alpha" {
+		t.Errorf("official visible rows = %v, want [official-alpha]", visible)
 	}
 	// Move cursor forward so the post-Tab reset is observable.
 	m.skillsPicker.cursor = 0
 	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyTab})
-	if m.skillsPicker.tab != catalogTabInstalled {
-		t.Errorf("after Tab tab = %v, want installed", m.skillsPicker.tab)
+	if m.skillsPicker.tab != catalogTabBundled {
+		t.Errorf("after Tab tab = %v, want bundled", m.skillsPicker.tab)
 	}
-	if visible := m.skillsPicker.visibleRows(); len(visible) != 1 || visible[0].Name != "beta" {
-		t.Errorf("installed visible rows = %v, want [beta]", visible)
+	if visible := m.skillsPicker.visibleRows(); len(visible) != 1 || visible[0].Name != "alpha" {
+		t.Errorf("bundled visible rows = %v, want [alpha]", visible)
 	}
 	if m.skillsPicker.cursor != 0 {
 		t.Errorf("Tab should reset cursor to 0, got %d", m.skillsPicker.cursor)
 	}
 	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyTab})
-	if m.skillsPicker.tab != catalogTabBuiltin {
-		t.Errorf("second Tab should cycle back to built-in")
+	if m.skillsPicker.tab != catalogTabOfficial {
+		t.Errorf("second Tab should cycle to official")
 	}
 }
 
-// TestCatalogPicker_ArrowKeysSwitchTabs verifies Left/Right cycle
-// between Built-in and Installed alongside Tab. Up/Down must stay
-// row navigation so there's no accidental tab switch from cursor
-// movement near the edges of a list.
+// TestCatalogPicker_ArrowKeysSwitchTabs verifies Left/Right cycle between
+// Official and Bundled. Up/Down must stay row navigation so there's no accidental
+// tab switch from cursor movement near the edges of a list.
 func TestCatalogPicker_ArrowKeysSwitchTabs(t *testing.T) {
+	withOfficialCatalogStub(t, nil)
 	m := newTestModel(t)
 	m.skillTool = &agent.SkillTool{All: []skills.Skill{
 		{Name: "alpha", Description: "a", Source: skills.ScopeBuiltin},
@@ -107,30 +146,65 @@ func TestCatalogPicker_ArrowKeysSwitchTabs(t *testing.T) {
 	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter}) // Catalog
 
 	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyRight})
-	if m.skillsPicker.tab != catalogTabInstalled {
-		t.Errorf("Right should switch to Installed; got %v", m.skillsPicker.tab)
+	if m.skillsPicker.tab != catalogTabBundled {
+		t.Errorf("Right should switch to Bundled; got %v", m.skillsPicker.tab)
 	}
 	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyLeft})
-	if m.skillsPicker.tab != catalogTabBuiltin {
-		t.Errorf("Left should switch back to Built-in; got %v", m.skillsPicker.tab)
+	if m.skillsPicker.tab != catalogTabOfficial {
+		t.Errorf("Left should switch back to Official; got %v", m.skillsPicker.tab)
 	}
 
 	// Up/Down at the edges must not flip tabs.
 	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyUp})
-	if m.skillsPicker.tab != catalogTabBuiltin {
+	if m.skillsPicker.tab != catalogTabOfficial {
 		t.Error("Up at row 0 should not switch tabs")
 	}
 	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyDown})
-	if m.skillsPicker.tab != catalogTabBuiltin {
+	if m.skillsPicker.tab != catalogTabOfficial {
 		t.Error("Down past last row should not switch tabs")
 	}
 }
 
-// TestCatalogPicker_UninstallOnInstalledTab verifies the per-row
-// uninstall on the Installed tab. Setup mirrors the install path so
-// the lockfile entry exists; after `u` the dir + entry are gone and
-// the row vanishes from the picker.
+// TestCatalogPicker_OfficialAlreadyInstalledIsNoop keeps the Catalog UX
+// idempotent: already-installed official rows show installed status and can be
+// toggled without contacting GitHub or surfacing the CLI overwrite error.
+func TestCatalogPicker_OfficialAlreadyInstalledIsNoop(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("YOTTACODE_HOME", home)
+	t.Setenv("HOME", home)
+
+	src := t.TempDir()
+	body := "---\nname: already-there\ndescription: already installed fixture\n---\nBody\n"
+	if err := os.WriteFile(filepath.Join(src, "SKILL.md"), []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := skills.Install(skills.InstallOptions{Source: src}); err != nil {
+		t.Fatalf("install fixture: %v", err)
+	}
+	withOfficialCatalogStub(t, []skills.Skill{{Name: "already-there", Description: "official", Source: skills.ScopeOfficial}})
+
+	m := newTestModel(t)
+	t.Setenv("YOTTACODE_HOME", home)
+	t.Setenv("HOME", home)
+	m.skillTool = &agent.SkillTool{All: []skills.Skill{{Name: "already-there", Description: "x", Source: skills.ScopeUser}}}
+	m, _ = m.runSlash("/skills")
+	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter}) // Catalog
+
+	out := renderSkillsPicker(m.skillsPicker, 80)
+	if !strings.Contains(out, "[installed]") && !strings.Contains(out, "[installed/enabled]") {
+		t.Fatalf("render should mark installed official row: %q", out)
+	}
+	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeySpace}) // toggle installed row disabled
+	if m.skillsPicker.enabled["already-there"] {
+		t.Fatalf("Space should toggle installed official rows")
+	}
+}
+
+// TestCatalogPicker_UninstallOnInstalledTab verifies per-row uninstall from an
+// installed Official row. Setup mirrors the install path so the lockfile entry
+// exists; after `u` the dir + entry are gone.
 func TestCatalogPicker_UninstallOnInstalledTab(t *testing.T) {
+	withOfficialCatalogStub(t, []skills.Skill{{Name: "removeme", Description: "official", Source: skills.ScopeOfficial}})
 	home := t.TempDir()
 	t.Setenv("YOTTACODE_HOME", home)
 	t.Setenv("HOME", home)
@@ -149,8 +223,7 @@ func TestCatalogPicker_UninstallOnInstalledTab(t *testing.T) {
 		{Name: "removeme", Description: "x", Source: skills.ScopeUser},
 	}}
 	m, _ = m.runSlash("/skills")
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})     // Catalog
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyTab})       // Built-in → Installed
+	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter}) // Catalog
 	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("u")})
 
 	if _, err := os.Stat(filepath.Join(home, "skills", "removeme")); !os.IsNotExist(err) {
@@ -165,12 +238,14 @@ func TestCatalogPicker_UninstallOnInstalledTab(t *testing.T) {
 // can't uninstall a built-in" rule. The status line carries the
 // hint; the dir (well, the embedded skill) stays intact.
 func TestCatalogPicker_UninstallOnBuiltinTabRefuses(t *testing.T) {
+	withOfficialCatalogStub(t, nil)
 	m := newTestModel(t)
 	m.skillTool = &agent.SkillTool{All: []skills.Skill{
 		{Name: "alpha", Description: "a", Source: skills.ScopeBuiltin},
 	}}
 	m, _ = m.runSlash("/skills")
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter}) // Catalog (built-in)
+	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter}) // Catalog
+	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyRight}) // Official → Bundled
 	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("u")})
 	if m.skillsPicker.status == "" {
 		t.Error("expected a status hint when u is pressed on built-in tab")
@@ -241,21 +316,45 @@ func TestSkillsMenu_InstallAutoEnablesSkill(t *testing.T) {
 	}
 }
 
+func TestSkillsMenu_ExternalInstallStaysDisabled(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("YOTTACODE_HOME", home)
+	t.Setenv("HOME", home)
+
+	srv := newFakeCodeloadForTUI(t, map[string]string{
+		"skills/external-skill/SKILL.md": "---\nname: external-skill\ndescription: external disabled regression\n---\nBody\n",
+	})
+	defer srv.Close()
+	t.Setenv("YOTTACODE_GITHUB_CODELOAD_URL", srv.URL)
+
+	m := newTestModel(t)
+	t.Setenv("YOTTACODE_HOME", home)
+	t.Setenv("HOME", home)
+	m.skillTool = &agent.SkillTool{All: nil}
+
+	m, _ = m.runSlash("/skills install owner/repo/skills/external-skill")
+	if m.skillTool.IsEnabled("external-skill") {
+		t.Fatal("external GitHub installs should land disabled until reviewed")
+	}
+}
+
 // TestCatalogPicker_EscCommits is the regression test for the
 // "checkmark doesn't persist" bug. Users naturally hit Esc to exit;
 // the old two-phase model dropped their toggles on Esc, which was
 // surprising. Esc now commits and closes — `c` still works as an
 // alias for back-compat.
 func TestCatalogPicker_EscCommits(t *testing.T) {
+	withOfficialCatalogStub(t, nil)
 	m := newTestModel(t)
 	m.skillTool = &agent.SkillTool{All: []skills.Skill{
 		{Name: "alpha", Description: "a", Source: skills.ScopeBuiltin},
 	}}
 	m.skillTool.SetEnabled(map[string]bool{})
 	m, _ = m.runSlash("/skills")
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})        // Catalog
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeySpace})        // toggle alpha on
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEsc})          // expect: commits + returns to menu
+	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter}) // Catalog
+	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyRight}) // Official → Bundled
+	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeySpace}) // toggle alpha on
+	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEsc})   // expect: commits + returns to menu
 	if !m.skillTool.IsEnabled("alpha") {
 		t.Error("Esc should commit the toggle to SkillTool.enabled")
 	}
@@ -271,6 +370,7 @@ func TestCatalogPicker_EscCommits(t *testing.T) {
 // the / filter affordance. Typing into the buffer must narrow the
 // visible set live and Esc must clear without leaving stale state.
 func TestCatalogPicker_FilterNarrowsRows(t *testing.T) {
+	withOfficialCatalogStub(t, nil)
 	m := newTestModel(t)
 	m.skillTool = &agent.SkillTool{All: []skills.Skill{
 		{Name: "alpha", Description: "first", Source: skills.ScopeBuiltin},
@@ -279,6 +379,7 @@ func TestCatalogPicker_FilterNarrowsRows(t *testing.T) {
 	}}
 	m, _ = m.runSlash("/skills")
 	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter}) // Catalog
+	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyRight}) // Official → Bundled
 
 	if got := len(m.skillsPicker.visibleRows()); got != 3 {
 		t.Fatalf("pre-filter rows = %d, want 3", got)
@@ -348,6 +449,7 @@ func TestRenderSkillForTranscript_AuthorAndSource(t *testing.T) {
 // user editing TOML manually. Matches Claude Code's auto-persisting
 // /skills menu and Hermes Agent's saved enablement.
 func TestCatalogPicker_EscPersistsToConfig(t *testing.T) {
+	withOfficialCatalogStub(t, nil)
 	// newTestModel calls t.Setenv("HOME", t.TempDir()) internally,
 	// so we have to override HOME *after* it runs — otherwise the
 	// commit writes to the helper's tempdir, not ours.
@@ -364,6 +466,7 @@ func TestCatalogPicker_EscPersistsToConfig(t *testing.T) {
 
 	m, _ = m.runSlash("/skills")
 	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter}) // Catalog
+	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyRight}) // Official → Bundled
 	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeySpace}) // toggle alpha on
 	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEsc})   // commit + save
 
@@ -387,6 +490,7 @@ func TestCatalogPicker_EscPersistsToConfig(t *testing.T) {
 // "default_on references unknown skill X" warning for an entry the
 // TUI itself just removed.
 func TestCatalogPicker_UninstallScrubsDefaultOn(t *testing.T) {
+	withOfficialCatalogStub(t, nil)
 	// HOME redirection must happen *after* newTestModel — see the
 	// EscPersistsToConfig test's note. We can't call newTestModel
 	// first here though because we need to seed disk state before
@@ -427,11 +531,11 @@ func TestCatalogPicker_UninstallScrubsDefaultOn(t *testing.T) {
 		{Name: "temp-skill", Description: "x", Source: skills.ScopeUser},
 	}}
 	m.skillTool.SetEnabled(map[string]bool{"temp-skill": true})
+	withOfficialCatalogStub(t, []skills.Skill{{Name: "temp-skill", Description: "official", Source: skills.ScopeOfficial}})
 
 	m, _ = m.runSlash("/skills")
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})                       // Catalog
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyTab})                         // → Installed tab
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("u")})   // uninstall
+	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})                     // Catalog
+	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("u")}) // uninstall
 
 	got, err := os.ReadFile(cfgPath)
 	if err != nil {

@@ -23,13 +23,15 @@ func newSkillsCmd() *cobra.Command {
 		Long: `Manage SKILL.md-format Agent Skills stored under
 ~/.yottacode/skills/. Run without a subcommand for help.
 
-  install <source>   install from a local path, https://.../SKILL.md URL,
-                     or owner/repo[/path] (GitHub Contents API)
+  install <source>   install from official/<name>, a skills.sh page,
+                     a GitHub URL/shorthand, a local path, or
+                     https://.../SKILL.md URL
   list               list every loaded skill (built-in + user + project)
   show <name>        print the body of a loaded skill
   uninstall <name>   remove a user-installed skill from ~/.yottacode/skills/
   check [name]       compare installed bytes against ~/.yottacode/skills/.lock.json
   update [name]      re-fetch installed skills from their recorded source
+  catalog refresh    refresh the offline official catalog metadata cache
   new <slug>         scaffold a starter SKILL.md under ~/.yottacode/skills/<slug>/
   validate <path>    parse a SKILL.md (or skill dir) and report errors`,
 		Args: cobra.NoArgs,
@@ -41,6 +43,7 @@ func newSkillsCmd() *cobra.Command {
 		newSkillsUninstallCmd(),
 		newSkillsCheckCmd(),
 		newSkillsUpdateCmd(),
+		newSkillsCatalogCmd(),
 		newSkillsNewCmd(),
 		newSkillsValidateCmd(),
 	)
@@ -51,18 +54,23 @@ func newSkillsInstallCmd() *cobra.Command {
 	var force bool
 	c := &cobra.Command{
 		Use:   "install <source>",
-		Short: "Install a SKILL.md from a local path, URL, or GitHub shorthand",
+		Short: "Install a SKILL.md from official/<name>, a local path, URL, or GitHub shorthand",
 		Long: `Install one Agent Skill into ~/.yottacode/skills/<slug>/, where
 <slug> is taken from the SKILL.md frontmatter ` + "`name`" + `.
 
 Accepted source shapes:
 
+  official/<name>            public official yottacode-skills catalog
+  https://www.skills.sh/<owner>/<repo>/<skill>
+                              skills.sh page URL (copies resources)
   ./path/to/skill           local directory containing SKILL.md
-  ./path/to/skill/SKILL.md  local SKILL.md file (no resources)
-  https://.../SKILL.md      single-file fetch; resources are NOT walked
-  owner/repo                GitHub repo root (must contain SKILL.md)
-  owner/repo/path/to/skill  GitHub subpath (Contents API; copies
-                            scripts/, references/, assets/)
+  ./path/to/skill/SKILL.md  local SKILL.md file (copies sibling resources)
+  https://.../SKILL.md      non-GitHub single-file fetch
+  owner/repo/path/to/skill  GitHub shorthand (copies resources from archive)
+  https://github.com/owner/repo/tree/<ref>/path/to/skill
+  https://github.com/owner/repo/blob/<ref>/path/to/skill/SKILL.md
+  https://raw.githubusercontent.com/owner/repo/<ref>/path/to/skill/SKILL.md
+                              GitHub URLs (copies resources from archive)
 
 Refuses to overwrite an existing install unless --force is set.`,
 		Args: cobra.ExactArgs(1),
@@ -337,6 +345,28 @@ file, the name/dir match is skipped (CI / authoring use case).`,
 			return nil
 		},
 	}
+}
+
+func newSkillsCatalogCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "catalog",
+		Short: "Manage the offline official skills catalog metadata",
+		Args:  cobra.NoArgs,
+	}
+	cmd.AddCommand(&cobra.Command{
+		Use:   "refresh",
+		Short: "Refresh official catalog metadata from yottacode-skills",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			rows, err := skills.RefreshOfficialCatalog(skills.OfficialCatalogOptions{})
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "refreshed official catalog (%d skills)\n", len(rows))
+			return nil
+		},
+	})
+	return cmd
 }
 
 // newSkillsUpdateCmd re-fetches installed skills from their recorded

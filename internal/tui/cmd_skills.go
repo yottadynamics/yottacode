@@ -23,6 +23,8 @@ func cmdSkills(m Model, args []string) (Model, tea.Cmd) {
 	switch args[0] {
 	case "install":
 		return cmdSkillsInstall(m, args[1:])
+	case "official":
+		return cmdSkillsInstallOfficial(m, args[1:])
 	case "list", "ls":
 		// Catalog covers what "list" used to do (loaded skills with
 		// source + description) and adds tabs + filter + per-row
@@ -32,6 +34,8 @@ func cmdSkills(m Model, args []string) (Model, tea.Cmd) {
 		// memory while routing them to the better view. The CLI
 		// `yottacode skills list` remains for scripting use.
 		return skillsMenuOpenCatalog(m)
+	case "catalog":
+		return cmdSkillsCatalog(m, args[1:])
 	case "show":
 		return cmdSkillsShow(m, args[1:])
 	case "uninstall", "remove", "rm":
@@ -43,7 +47,7 @@ func cmdSkills(m Model, args []string) (Model, tea.Cmd) {
 	default:
 		m.appendLine(styleError.Render(
 			"[skills] unknown subcommand " + args[0] +
-				" (try: install <source> [--force], show <name>, uninstall <name>, check [name], update [name] [--force])"))
+				" (try: install <source> [--force], official <name>, show <name>, uninstall <name>, check [name], update [name] [--force])"))
 		return m, nil
 	}
 }
@@ -79,14 +83,30 @@ func cmdSkillsInstall(m Model, args []string) (Model, tea.Cmd) {
 	for _, w := range res.Warnings {
 		m.appendLine(styleError.Render("[skills] warning: " + w))
 	}
-	// Auto-enable the just-installed skill so it's immediately
-	// visible with a checkmark in the picker and exposed to the
-	// model on the next turn. reloadSkillsRegistry's recompose call
-	// picks up the new enablement.
-	if m.skillTool != nil {
+	// Auto-enable trusted/local installs. External URL/GitHub installs may include
+	// scripts, so they land installed-but-disabled until the user reviews and
+	// enables them from the Catalog.
+	m = reloadSkillsRegistry(m)
+	if m.skillTool != nil && (res.SourceType == skills.SourceOfficial || res.SourceType == skills.SourceLocal) {
 		m.skillTool.Enable(res.Skill.Name)
+		m, _ = recomposeSystemPromptWithSkills(m, m.skillTool.Active())
+	} else if m.skillTool != nil && (res.SourceType == skills.SourceGitHub || res.SourceType == skills.SourceURL) {
+		m.skillTool.Disable(res.Skill.Name)
+		m, _ = recomposeSystemPromptWithSkills(m, m.skillTool.Active())
+		m.appendLine(styleMeta.Render("[skills] external skill installed disabled; enable it from /skills Catalog after review"))
 	}
-	return reloadSkillsRegistry(m), nil
+	return m, nil
+}
+
+// cmdSkillsInstallOfficial installs a public official skill by slug. It is a
+// terse alias for `/skills install official/<slug>` so the shortcut remains
+// discoverable without overloading the generic source parser in help text.
+func cmdSkillsInstallOfficial(m Model, args []string) (Model, tea.Cmd) {
+	if len(args) == 0 {
+		m.appendLine(styleError.Render("usage: /skills official <name>"))
+		return m, nil
+	}
+	return cmdSkillsInstall(m, []string{skills.OfficialPrefix + strings.TrimPrefix(args[0], skills.OfficialPrefix)})
 }
 
 // cmdSkillsCheck runs the drift check and dumps one line per skill.
@@ -167,6 +187,23 @@ func cmdSkillsUpdate(m Model, args []string) (Model, tea.Cmd) {
 	}
 	m.appendLine(strings.TrimRight(b.String(), "\n"))
 	return reloadSkillsRegistry(m), nil
+}
+
+// cmdSkillsCatalog handles catalog maintenance subcommands. Browsing the
+// catalog is offline; refresh is the explicit network operation that updates
+// the local metadata cache.
+func cmdSkillsCatalog(m Model, args []string) (Model, tea.Cmd) {
+	if len(args) == 0 || args[0] != "refresh" {
+		m.appendLine(styleError.Render("usage: /skills catalog refresh"))
+		return m, nil
+	}
+	rows, err := skills.RefreshOfficialCatalog(skills.OfficialCatalogOptions{})
+	if err != nil {
+		m.appendLine(styleError.Render("[skills] catalog refresh: " + err.Error()))
+		return m, nil
+	}
+	m.appendLine(styleAuto.Render(fmt.Sprintf("[skills] refreshed official catalog (%d skills)", len(rows))))
+	return m, nil
 }
 
 // cmdSkillsShow prints the full body of one skill to the transcript.
