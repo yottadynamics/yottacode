@@ -68,7 +68,7 @@ func (m *Model) openSkillsMenu() {
 		items: []skillsMenuItem{
 			{
 				label:  "Catalog",
-				desc:   "browse + enable skills (tabs: built-in / installed)",
+				desc:   "browse official skills, installed skills, and bundled fallback",
 				action: skillsMenuOpenCatalog,
 			},
 			{
@@ -212,13 +212,16 @@ func commitSkillsMenuInstall(m Model) (Model, tea.Cmd) {
 	for _, w := range res.Warnings {
 		m.appendLine(styleError.Render("[skills] warning: " + w))
 	}
-	// Auto-enable so the next picker open shows [x] and the next
-	// turn sees the skill in its tool list. Same reasoning as the
-	// slash-form install path.
-	if m.skillTool != nil {
+	m = reloadSkillsRegistry(m)
+	if m.skillTool != nil && (res.SourceType == skills.SourceOfficial || res.SourceType == skills.SourceLocal) {
 		m.skillTool.Enable(res.Skill.Name)
+		m, _ = recomposeSystemPromptWithSkills(m, m.skillTool.Active())
+	} else if m.skillTool != nil && (res.SourceType == skills.SourceGitHub || res.SourceType == skills.SourceURL) {
+		m.skillTool.Disable(res.Skill.Name)
+		m, _ = recomposeSystemPromptWithSkills(m, m.skillTool.Active())
+		m.appendLine(styleMeta.Render("[skills] external skill installed disabled; enable it from /skills Catalog after review"))
 	}
-	return reloadSkillsRegistry(m), nil
+	return m, nil
 }
 
 // skillsMenuStartUninstall gathers the removable skills and flips the
@@ -398,7 +401,7 @@ func renderSkillsMenu(state *skillsMenuState, _ int) string {
 		return strings.TrimRight(b.String(), "\n")
 	}
 
-	maxLabel := 6
+	maxLabel := 16
 	for _, it := range state.items {
 		if l := len(it.label); l > maxLabel {
 			maxLabel = l

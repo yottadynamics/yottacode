@@ -106,6 +106,25 @@ func (t *SkillTool) Enable(name string) {
 	t.enabled[name] = true
 }
 
+// Disable marks the named skill as not exposed without disturbing the rest of
+// the enablement set. If the tool is still in the nil "all enabled" state, it
+// first materializes every current skill except name as explicitly enabled so the
+// disable survives future prompt recomposition.
+func (t *SkillTool) Disable(name string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.enabled == nil {
+		t.enabled = map[string]bool{}
+		for _, sk := range t.All {
+			if sk.Name != name {
+				t.enabled[sk.Name] = true
+			}
+		}
+		return
+	}
+	delete(t.enabled, name)
+}
+
 // Active returns the subset of All currently enabled, in input order.
 // Used by callers that need to recompute prompt sections or slash
 // dispatch around the active set.

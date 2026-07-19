@@ -1,6 +1,8 @@
 package skills
 
 import (
+	"archive/zip"
+	"bytes"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -208,21 +210,13 @@ func TestInstall_URL_RejectsNonSkillMd(t *testing.T) {
 // scripts/ resource dir enumeration + per-file download, and the
 // owner/repo/path → contents-API URL translation.
 func TestInstall_GitHub_Shorthand(t *testing.T) {
-	srv := newFakeGitHub(t, map[string]any{
-		"skills/sample": []ghContent{
-			{Name: "SKILL.md", Path: "skills/sample/SKILL.md", Type: "file"},
-			{Name: "scripts", Path: "skills/sample/scripts", Type: "dir"},
-		},
-		"skills/sample/scripts": []ghContent{
-			{Name: "run.sh", Path: "skills/sample/scripts/run.sh", Type: "file"},
-		},
-	}, map[string]string{
-		"skills/sample/SKILL.md":         sampleSkillBody,
-		"skills/sample/scripts/run.sh":   "#!/bin/sh\necho hi\n",
+	srv := newFakeCodeload(t, map[string]string{
+		"skills/sample/SKILL.md":       sampleSkillBody,
+		"skills/sample/scripts/run.sh": "#!/bin/sh\necho hi\n",
 	})
 	defer srv.Close()
 
-	t.Setenv("YOTTACODE_GITHUB_API_URL", srv.URL)
+	t.Setenv("YOTTACODE_GITHUB_CODELOAD_URL", srv.URL)
 	dest := t.TempDir()
 	res, err := Install(InstallOptions{
 		Source:     "owner/repo/skills/sample",
@@ -243,20 +237,134 @@ func TestInstall_GitHub_Shorthand(t *testing.T) {
 	}
 }
 
+func newFakeCodeload(t *testing.T, files map[string]string) *httptest.Server {
+	t.Helper()
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	for name, body := range files {
+		w, err := zw.Create("repo-main/" + name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := w.Write([]byte(body)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/zip/refs/heads/main") {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/zip")
+		_, _ = w.Write(buf.Bytes())
+	}))
+}
+
+// TestInstall_OfficialShortcut expands official/<slug> to the public
+// yottacode-skills GitHub path while recording the shortcut as official
+// provenance in the lockfile.
+func TestInstall_OfficialShortcut(t *testing.T) {
+	srv := newFakeCodeload(t, map[string]string{
+		"skills/sample/SKILL.md":       sampleSkillBody,
+		"skills/sample/scripts/run.sh": "#!/bin/sh\necho hi\n",
+	})
+	defer srv.Close()
+
+	t.Setenv("YOTTACODE_GITHUB_CODELOAD_URL", srv.URL)
+	dest := t.TempDir()
+	res, err := Install(InstallOptions{
+		Source:     "official/sample",
+		DestRoot:   dest,
+		HTTPClient: srv.Client(),
+	})
+	if err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	if res.SourceType != SourceOfficial {
+		t.Errorf("source type = %q, want official", res.SourceType)
+	}
+	if res.Lock.Source != "official/sample" {
+		t.Errorf("lock source = %q, want official/sample", res.Lock.Source)
+	}
+	if res.Lock.SourceType != SourceOfficial {
+		t.Errorf("lock source type = %q, want official", res.Lock.SourceType)
+	}
+	if _, err := os.Stat(filepath.Join(dest, "sample", "SKILL.md")); err != nil {
+		t.Errorf("SKILL.md missing: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dest, "sample", "scripts", "run.sh")); err != nil {
+		t.Errorf("official resource missing: %v", err)
+	}
+}
+
+func TestInstall_SkillsSHURL(t *testing.T) {
+	srv := newFakeCodeload(t, map[string]string{
+		"skills/find-skills/SKILL.md":           strings.Replace(sampleSkillBody, "name: sample", "name: find-skills", 1),
+		"skills/find-skills/assets/example.txt": "asset",
+	})
+	defer srv.Close()
+	t.Setenv("YOTTACODE_GITHUB_CODELOAD_URL", srv.URL)
+
+	dest := t.TempDir()
+	res, err := Install(InstallOptions{
+		Source:     "https://www.skills.sh/vercel-labs/skills/find-skills",
+		DestRoot:   dest,
+		HTTPClient: srv.Client(),
+	})
+	if err != nil {
+		t.Fatalf("install skills.sh URL: %v", err)
+	}
+	if res.SourceType != SourceGitHub {
+		t.Errorf("source type = %q, want github", res.SourceType)
+	}
+	if res.Lock.Source != "https://www.skills.sh/vercel-labs/skills/find-skills" {
+		t.Errorf("lock source = %q", res.Lock.Source)
+	}
+	if _, err := os.Stat(filepath.Join(dest, "find-skills", "assets", "example.txt")); err != nil {
+		t.Errorf("asset missing: %v", err)
+	}
+}
+
+func TestInstall_GitHubURLForms(t *testing.T) {
+	srv := newFakeCodeload(t, map[string]string{
+		"skills/sample/SKILL.md":            sampleSkillBody,
+		"skills/sample/references/guide.md": "guide",
+	})
+	defer srv.Close()
+	t.Setenv("YOTTACODE_GITHUB_CODELOAD_URL", srv.URL)
+
+	cases := []string{
+		"https://github.com/owner/repo/tree/main/skills/sample",
+		"https://github.com/owner/repo/blob/main/skills/sample/SKILL.md",
+		"https://raw.githubusercontent.com/owner/repo/refs/heads/main/skills/sample/SKILL.md",
+		"https://raw.githubusercontent.com/owner/repo/main/skills/sample/SKILL.md",
+	}
+	for _, src := range cases {
+		t.Run(src, func(t *testing.T) {
+			dest := t.TempDir()
+			if _, err := Install(InstallOptions{Source: src, DestRoot: dest, HTTPClient: srv.Client()}); err != nil {
+				t.Fatalf("install: %v", err)
+			}
+			if _, err := os.Stat(filepath.Join(dest, "sample", "references", "guide.md")); err != nil {
+				t.Errorf("reference missing: %v", err)
+			}
+		})
+	}
+}
+
 // TestInstall_GitHub_TrimsTrailingSkillMd tolerates the user pasting
 // the path with a trailing /SKILL.md. Same install result as the
 // directory form.
 func TestInstall_GitHub_TrimsTrailingSkillMd(t *testing.T) {
-	srv := newFakeGitHub(t, map[string]any{
-		"skills/sample": []ghContent{
-			{Name: "SKILL.md", Path: "skills/sample/SKILL.md", Type: "file"},
-		},
-	}, map[string]string{
+	srv := newFakeCodeload(t, map[string]string{
 		"skills/sample/SKILL.md": sampleSkillBody,
 	})
 	defer srv.Close()
 
-	t.Setenv("YOTTACODE_GITHUB_API_URL", srv.URL)
+	t.Setenv("YOTTACODE_GITHUB_CODELOAD_URL", srv.URL)
 	dest := t.TempDir()
 	if _, err := Install(InstallOptions{
 		Source:     "owner/repo/skills/sample/SKILL.md",
@@ -331,9 +439,15 @@ func newFakeGitHub(t *testing.T, dirListings map[string]any, fileBodies map[stri
 	t.Helper()
 	mux := http.NewServeMux()
 	var server *httptest.Server
-	mux.HandleFunc("/repos/owner/repo/contents/", func(w http.ResponseWriter, r *http.Request) {
-		key := strings.TrimPrefix(r.URL.Path, "/repos/owner/repo/contents/")
-		key = strings.Trim(key, "/")
+	mux.HandleFunc("/repos/", func(w http.ResponseWriter, r *http.Request) {
+		prefix := "/repos/"
+		rest := strings.TrimPrefix(r.URL.Path, prefix)
+		parts := strings.SplitN(rest, "/contents/", 2)
+		if len(parts) != 2 || strings.Count(parts[0], "/") != 1 {
+			http.NotFound(w, r)
+			return
+		}
+		key := strings.Trim(parts[1], "/")
 		listing, ok := dirListings[key]
 		if !ok {
 			http.NotFound(w, r)

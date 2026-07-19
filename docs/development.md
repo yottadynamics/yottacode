@@ -189,7 +189,7 @@ internal/agent/               turn loop, tools, approvals
 internal/permissions/         allow / ask / deny rules
 internal/github/              typed go-github adapter and PR/issue tools
 internal/mcp/                 Model Context Protocol clients
-internal/skills/              agent skills loader
+internal/skills/              agent skills loader, installer, and official catalog shortcuts
 internal/subagents/           typed subagent runner
 internal/catalog/             embedded + live model catalog
 internal/checkpoint/          per-prompt checkpoints

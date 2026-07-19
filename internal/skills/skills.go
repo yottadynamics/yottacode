@@ -28,9 +28,10 @@ import (
 type Scope string
 
 const (
-	ScopeBuiltin Scope = "built-in"
-	ScopeUser    Scope = "user"
-	ScopeProject Scope = "project"
+	ScopeOfficial Scope = "official"
+	ScopeBuiltin  Scope = "bundled"
+	ScopeUser     Scope = "user"
+	ScopeProject  Scope = "project"
 )
 
 // Skill is one parsed SKILL.md plus the directory it lives in. Body is

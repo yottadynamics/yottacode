@@ -4,8 +4,9 @@ package skills
 // from one of three source shapes:
 //
 //   1. local path        ./remote-ops/ or /abs/path/SKILL.md
-//   2. URL               https://.../SKILL.md (single-file fetch only)
-//   3. GitHub shorthand  owner/repo[/path/to/skill] (Contents API)
+//   2. URL               https://.../SKILL.md (single-file for non-GitHub)
+//   3. GitHub source     owner/repo[/path], github.com URLs, raw GitHub URLs
+//   4. skills.sh page    https://www.skills.sh/<owner>/<repo>/<skill>
 //
 // The installer stages every fetched file in a sibling tempdir, parses
 // the SKILL.md to derive the canonical slug, then atomically renames
@@ -20,6 +21,8 @@ package skills
 // deliberately stops at "bytes are on disk and parseable."
 
 import (
+	"archive/zip"
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -41,9 +44,10 @@ import (
 type SourceType string
 
 const (
-	SourceLocal  SourceType = "local"
-	SourceURL    SourceType = "url"
-	SourceGitHub SourceType = "github"
+	SourceLocal    SourceType = "local"
+	SourceURL      SourceType = "url"
+	SourceGitHub   SourceType = "github"
+	SourceOfficial SourceType = "official"
 )
 
 // InstallOptions configures one install attempt.
@@ -82,6 +86,27 @@ type InstallResult struct {
 	Warnings   []string
 }
 
+// AlreadyInstalledError reports that an install target already exists. CLI callers
+// surface this as a hard error, while interactive Catalog installs can treat it
+// as an idempotent no-op.
+type AlreadyInstalledError struct {
+	Name string
+	Dir  string
+}
+
+func (e *AlreadyInstalledError) Error() string {
+	return fmt.Sprintf("skill %q is already installed at %s — pass --force to overwrite", e.Name, e.Dir)
+}
+
+// IsAlreadyInstalled reports whether err came from the install overwrite guard.
+func IsAlreadyInstalled(err error) (*AlreadyInstalledError, bool) {
+	var already *AlreadyInstalledError
+	if errors.As(err, &already) {
+		return already, true
+	}
+	return nil, false
+}
+
 // Install resolves Source, validates its SKILL.md via ParseSkillFile,
 // stages a copy in a tempdir, then atomic-renames into
 // <DestRoot>/<slug>. Refuses to overwrite an existing slug unless
@@ -89,6 +114,16 @@ type InstallResult struct {
 func Install(opts InstallOptions) (InstallResult, error) {
 	if strings.TrimSpace(opts.Source) == "" {
 		return InstallResult{}, errors.New("source is required")
+	}
+	installSource := opts.Source
+	lockSource := opts.Source
+	official := false
+	if expanded, ok, err := NormalizeOfficialSource(opts.Source); err != nil {
+		return InstallResult{}, err
+	} else if ok {
+		installSource = expanded
+		lockSource = opts.Source
+		official = true
 	}
 	destRoot := opts.DestRoot
 	if destRoot == "" {
@@ -105,9 +140,13 @@ func Install(opts InstallOptions) (InstallResult, error) {
 	if client == nil {
 		client = &http.Client{Timeout: 30 * time.Second}
 	}
-	typ := classifySource(opts.Source)
+	typ := classifySource(installSource)
 	if typ == "" {
-		return InstallResult{}, fmt.Errorf("unrecognized source %q (want a local path, https://... URL, or owner/repo[/path])", opts.Source)
+		return InstallResult{}, fmt.Errorf("unrecognized source %q (want official/<name>, skills.sh URL, GitHub URL/shorthand, a local path, or https://.../SKILL.md)", opts.Source)
+	}
+	lockType := typ
+	if official {
+		lockType = SourceOfficial
 	}
 
 	tempDir, err := os.MkdirTemp(destRoot, ".staging-")
@@ -124,11 +163,15 @@ func Install(opts InstallOptions) (InstallResult, error) {
 	var sk Skill
 	switch typ {
 	case SourceLocal:
-		sk, err = stageLocal(opts.Source, tempDir)
+		sk, err = stageLocal(installSource, tempDir)
 	case SourceURL:
-		sk, err = stageURL(opts.Source, tempDir, client)
+		sk, err = stageURL(installSource, tempDir, client)
 	case SourceGitHub:
-		sk, err = stageGitHub(opts.Source, tempDir, client)
+		if official {
+			sk, err = stageOfficialZip(opts.Source, tempDir, client)
+		} else {
+			sk, err = stageGitHubArchiveSource(installSource, tempDir, client)
+		}
 	}
 	if err != nil {
 		return InstallResult{}, err
@@ -137,7 +180,7 @@ func Install(opts InstallOptions) (InstallResult, error) {
 	destDir := filepath.Join(destRoot, sk.Name)
 	if _, statErr := os.Stat(destDir); statErr == nil {
 		if !opts.Force {
-			return InstallResult{}, fmt.Errorf("skill %q is already installed at %s — pass --force to overwrite", sk.Name, destDir)
+			return InstallResult{}, &AlreadyInstalledError{Name: sk.Name, Dir: destDir}
 		}
 		if err := os.RemoveAll(destDir); err != nil {
 			return InstallResult{}, fmt.Errorf("remove existing %s: %w", destDir, err)
@@ -161,8 +204,8 @@ func Install(opts InstallOptions) (InstallResult, error) {
 	// succeeded; the user loses update-tracking but the skill works.
 	entry := LockEntry{
 		Name:        sk.Name,
-		SourceType:  typ,
-		Source:      opts.Source,
+		SourceType:  lockType,
+		Source:      lockSource,
 		InstalledAt: time.Now().UTC(),
 		Trust:       TrustUnverified,
 	}
@@ -184,7 +227,7 @@ func Install(opts InstallOptions) (InstallResult, error) {
 	return InstallResult{
 		Skill:      sk,
 		Dir:        destDir,
-		SourceType: typ,
+		SourceType: lockType,
 		Lock:       entry,
 		Warnings:   warnings,
 	}, nil
@@ -238,6 +281,9 @@ func Uninstall(name string) (string, error) {
 func classifySource(src string) SourceType {
 	src = strings.TrimSpace(src)
 	if strings.HasPrefix(src, "http://") || strings.HasPrefix(src, "https://") {
+		if isGitHubLikeURL(src) || isSkillsSHURL(src) {
+			return SourceGitHub
+		}
 		return SourceURL
 	}
 	if strings.HasPrefix(src, "/") || strings.HasPrefix(src, "./") ||
@@ -301,6 +347,160 @@ func stageLocal(src, tempDir string) (Skill, error) {
 	return sk, nil
 }
 
+// githubArchiveSource identifies one skill directory inside a GitHub repository
+// archive. RefKind is "heads" or "tags", matching GitHub codeload paths.
+type githubArchiveSource struct {
+	Owner   string
+	Repo    string
+	RefKind string
+	Ref     string
+	Subpath string
+}
+
+func isGitHubLikeURL(src string) bool {
+	u, err := url.Parse(src)
+	if err != nil {
+		return false
+	}
+	host := strings.ToLower(u.Hostname())
+	return host == "github.com" || host == "www.github.com" || host == "raw.githubusercontent.com"
+}
+
+func isSkillsSHURL(src string) bool {
+	u, err := url.Parse(src)
+	if err != nil {
+		return false
+	}
+	host := strings.ToLower(u.Hostname())
+	return host == "skills.sh" || host == "www.skills.sh"
+}
+
+func parseGitHubArchiveSource(src string) (githubArchiveSource, error) {
+	trimmed := strings.TrimSpace(src)
+	if isSkillsSHURL(trimmed) {
+		return parseSkillsSHSource(trimmed)
+	}
+	if isGitHubLikeURL(trimmed) {
+		return parseGitHubURLSource(trimmed)
+	}
+	return parseGitHubShorthandSource(trimmed)
+}
+
+func parseSkillsSHSource(src string) (githubArchiveSource, error) {
+	u, err := url.Parse(src)
+	if err != nil {
+		return githubArchiveSource{}, fmt.Errorf("parse skills.sh URL: %w", err)
+	}
+	parts := pathParts(u.Path)
+	if len(parts) != 3 {
+		return githubArchiveSource{}, fmt.Errorf("skills.sh URL must identify one skill as /<owner>/<repo>/<skill>")
+	}
+	if !githubNameRE.MatchString(parts[0]) || !githubNameRE.MatchString(parts[1]) || !skillNamePattern.MatchString(parts[2]) {
+		return githubArchiveSource{}, fmt.Errorf("invalid skills.sh skill URL %q", src)
+	}
+	return githubArchiveSource{Owner: parts[0], Repo: parts[1], RefKind: "heads", Ref: "main", Subpath: "skills/" + parts[2]}, nil
+}
+
+func parseGitHubShorthandSource(src string) (githubArchiveSource, error) {
+	parts := strings.SplitN(strings.Trim(src, "/"), "/", 3)
+	if len(parts) < 2 || !githubNameRE.MatchString(parts[0]) || !githubNameRE.MatchString(parts[1]) {
+		return githubArchiveSource{}, fmt.Errorf("github shorthand needs owner/repo[/path]")
+	}
+	subpath := ""
+	if len(parts) == 3 {
+		subpath = cleanSkillSubpath(parts[2])
+	}
+	if subpath == "" {
+		return githubArchiveSource{}, fmt.Errorf("github source must include a skill path, e.g. %s/%s/skills/<name>", parts[0], parts[1])
+	}
+	return githubArchiveSource{Owner: parts[0], Repo: parts[1], RefKind: "heads", Ref: "main", Subpath: subpath}, nil
+}
+
+func parseGitHubURLSource(src string) (githubArchiveSource, error) {
+	u, err := url.Parse(src)
+	if err != nil {
+		return githubArchiveSource{}, fmt.Errorf("parse GitHub URL: %w", err)
+	}
+	host := strings.ToLower(u.Hostname())
+	parts := pathParts(u.Path)
+	if host == "raw.githubusercontent.com" {
+		return parseRawGitHubURLParts(src, parts)
+	}
+	if len(parts) < 5 || !githubNameRE.MatchString(parts[0]) || !githubNameRE.MatchString(parts[1]) {
+		return githubArchiveSource{}, fmt.Errorf("GitHub URL must identify a skill path")
+	}
+	kind := parts[2]
+	if kind != "tree" && kind != "blob" {
+		return githubArchiveSource{}, fmt.Errorf("GitHub URL must use /tree/<ref>/<path> or /blob/<ref>/<path>/SKILL.md")
+	}
+	ref, subparts := splitGitHubRefAndPath(parts[3:])
+	if ref == "" || len(subparts) == 0 {
+		return githubArchiveSource{}, fmt.Errorf("GitHub URL must include a ref and skill path")
+	}
+	subpath := cleanSkillSubpath(strings.Join(subparts, "/"))
+	if kind == "blob" && !strings.HasSuffix(strings.Join(subparts, "/"), "/SKILL.md") {
+		return githubArchiveSource{}, fmt.Errorf("GitHub blob URL must point at SKILL.md")
+	}
+	return githubArchiveSource{Owner: parts[0], Repo: parts[1], RefKind: "heads", Ref: ref, Subpath: subpath}, nil
+}
+
+func parseRawGitHubURLParts(src string, parts []string) (githubArchiveSource, error) {
+	if len(parts) < 5 || !githubNameRE.MatchString(parts[0]) || !githubNameRE.MatchString(parts[1]) {
+		return githubArchiveSource{}, fmt.Errorf("raw GitHub URL must identify a SKILL.md file")
+	}
+	if parts[len(parts)-1] != "SKILL.md" {
+		return githubArchiveSource{}, fmt.Errorf("raw GitHub URL must point at SKILL.md")
+	}
+	owner, repo := parts[0], parts[1]
+	if len(parts) >= 6 && parts[2] == "refs" && (parts[3] == "heads" || parts[3] == "tags") {
+		ref, rest := splitGitHubRefAndPath(parts[4:])
+		if ref == "" || len(rest) == 0 {
+			return githubArchiveSource{}, fmt.Errorf("raw GitHub URL must include a ref and SKILL.md path")
+		}
+		return githubArchiveSource{Owner: owner, Repo: repo, RefKind: parts[3], Ref: ref, Subpath: cleanSkillSubpath(strings.Join(rest, "/"))}, nil
+	}
+	ref, rest := splitGitHubRefAndPath(parts[2:])
+	if ref == "" || len(rest) == 0 {
+		return githubArchiveSource{}, fmt.Errorf("raw GitHub URL must include a ref and SKILL.md path")
+	}
+	return githubArchiveSource{Owner: owner, Repo: repo, RefKind: "heads", Ref: ref, Subpath: cleanSkillSubpath(strings.Join(rest, "/"))}, nil
+}
+
+func splitGitHubRefAndPath(parts []string) (string, []string) {
+	for i := 1; i < len(parts); i++ {
+		candidatePath := strings.Join(parts[i:], "/")
+		base := path.Base(candidatePath)
+		if base == "SKILL.md" || strings.HasPrefix(candidatePath, "skills/") {
+			return strings.Join(parts[:i], "/"), parts[i:]
+		}
+	}
+	if len(parts) >= 2 {
+		return parts[0], parts[1:]
+	}
+	return "", nil
+}
+
+func cleanSkillSubpath(p string) string {
+	p = strings.Trim(strings.TrimSpace(p), "/")
+	p = strings.TrimSuffix(p, "/SKILL.md")
+	if p == "SKILL.md" {
+		return ""
+	}
+	return path.Clean(p)
+}
+
+func pathParts(p string) []string {
+	var out []string
+	for _, part := range strings.Split(strings.Trim(p, "/"), "/") {
+		if part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
+}
+
+var githubNameRE = regexp.MustCompile(`^[A-Za-z0-9_.-]+$`)
+
 // stageURL fetches a single SKILL.md from an HTTPS URL. Arbitrary URLs
 // cannot enumerate sibling directories, so resource dirs are not
 // attempted — body-only install. Use the GitHub shorthand or a local
@@ -327,11 +527,115 @@ func stageURL(src, tempDir string, client *http.Client) (Skill, error) {
 	return sk, nil
 }
 
+// stageOfficialZip installs official skills through the generic GitHub archive
+// path while preserving the public official/<slug> source contract.
+func stageOfficialZip(src, tempDir string, client *http.Client) (Skill, error) {
+	slug := strings.TrimPrefix(strings.TrimSpace(src), OfficialPrefix)
+	if !skillNamePattern.MatchString(slug) {
+		return Skill{}, fmt.Errorf("invalid official skill %q", slug)
+	}
+	return stageGitHubArchive(githubArchiveSource{Owner: OfficialSkillsOwner, Repo: OfficialSkillsRepo, RefKind: "heads", Ref: "main", Subpath: "skills/" + slug}, tempDir, client)
+}
+
+func stageGitHubArchiveSource(src, tempDir string, client *http.Client) (Skill, error) {
+	parsed, err := parseGitHubArchiveSource(src)
+	if err != nil {
+		return Skill{}, err
+	}
+	return stageGitHubArchive(parsed, tempDir, client)
+}
+
+// stageGitHubArchive downloads a GitHub repository archive and extracts exactly
+// one skill directory from it. This supports skills.sh and Vercel-style repos
+// without using GitHub's rate-limited Contents API.
+func stageGitHubArchive(src githubArchiveSource, tempDir string, client *http.Client) (Skill, error) {
+	if src.RefKind == "" {
+		src.RefKind = "heads"
+	}
+	if src.Ref == "" {
+		src.Ref = "main"
+	}
+	subpath := cleanSkillSubpath(src.Subpath)
+	if subpath == "" {
+		return Skill{}, fmt.Errorf("github source must include a skill path")
+	}
+	zipURL := githubCodeloadURL(src.Owner, src.Repo, src.RefKind, src.Ref)
+	body, err := httpGet(client, zipURL, "application/zip")
+	if err != nil {
+		return Skill{}, err
+	}
+	zr, err := zip.NewReader(bytes.NewReader(body), int64(len(body)))
+	if err != nil {
+		return Skill{}, fmt.Errorf("read GitHub archive: %w", err)
+	}
+	prefix := "/" + strings.Trim(subpath, "/") + "/"
+	found := false
+	for _, f := range zr.File {
+		idx := strings.Index(f.Name, prefix)
+		if idx < 0 {
+			continue
+		}
+		rel := f.Name[idx+len(prefix):]
+		if rel == "" || strings.Contains(rel, "..") || filepath.IsAbs(rel) {
+			continue
+		}
+		top := strings.Split(filepath.ToSlash(rel), "/")[0]
+		if rel != "SKILL.md" && !isResourceDir(top) {
+			continue
+		}
+		found = true
+		if f.FileInfo().IsDir() {
+			if err := os.MkdirAll(filepath.Join(tempDir, rel), 0o700); err != nil {
+				return Skill{}, err
+			}
+			continue
+		}
+		rc, err := f.Open()
+		if err != nil {
+			return Skill{}, err
+		}
+		data, readErr := io.ReadAll(io.LimitReader(rc, 5*1024*1024))
+		closeErr := rc.Close()
+		if readErr != nil {
+			return Skill{}, readErr
+		}
+		if closeErr != nil {
+			return Skill{}, closeErr
+		}
+		mode := os.FileMode(0o600)
+		if isUnderScripts(rel) {
+			mode = 0o755
+		}
+		if err := writeFile(filepath.Join(tempDir, rel), data, mode); err != nil {
+			return Skill{}, err
+		}
+	}
+	if !found {
+		return Skill{}, fmt.Errorf("skill path %q not found in %s/%s archive", subpath, src.Owner, src.Repo)
+	}
+	skillBody, err := os.ReadFile(filepath.Join(tempDir, "SKILL.md"))
+	if err != nil {
+		return Skill{}, fmt.Errorf("skill path %q has no SKILL.md: %w", subpath, err)
+	}
+	sk, err := ParseSkillFile(skillBody, path.Base(subpath))
+	if err != nil {
+		return Skill{}, fmt.Errorf("parse %s/SKILL.md: %w", subpath, err)
+	}
+	return sk, nil
+}
+
+func githubCodeloadURL(owner, repo, refKind, ref string) string {
+	base := "https://codeload.github.com"
+	if v := strings.TrimSpace(os.Getenv("YOTTACODE_GITHUB_CODELOAD_URL")); v != "" {
+		base = strings.TrimRight(v, "/")
+	}
+	return base + "/" + owner + "/" + repo + "/zip/refs/" + refKind + "/" + ref
+}
+
 // stageGitHub walks owner/repo[/path] via the GitHub Contents API and
-// downloads SKILL.md plus the spec's three optional resource dirs.
-// Trailing /SKILL.md in the user-supplied path is stripped so both
-// "owner/repo/skills/foo" and "owner/repo/skills/foo/SKILL.md" install
-// the same thing.
+// downloads SKILL.md plus the spec's three optional resource dirs. It remains as
+// a legacy helper for tests/future fallbacks; user-facing GitHub installs prefer
+// archive extraction to avoid REST API rate limits.
 func stageGitHub(src, tempDir string, client *http.Client) (Skill, error) {
 	parts := strings.SplitN(src, "/", 3)
 	if len(parts) < 2 {

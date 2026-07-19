@@ -1,10 +1,17 @@
 package main
 
 import (
+	"archive/zip"
+	"bytes"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/yottadynamics/yottacode/internal/skills"
 )
 
 // sampleSkillBody mirrors the fixture used in internal/skills tests so
@@ -135,6 +142,138 @@ func TestSkillsCLI_InstallRefusesOverwrite(t *testing.T) {
 	}
 	if _, err := runSkillsCmd(t, "install", src, "--force"); err != nil {
 		t.Errorf("--force should succeed: %v", err)
+	}
+}
+
+// TestSkillsCLI_InstallOfficialShortcut verifies the public catalog shortcut
+// reaches the official yottacode-skills GitHub path and records official
+// provenance in user-visible output.
+func TestSkillsCLI_InstallOfficialShortcut(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("YOTTACODE_HOME", home)
+	t.Setenv("HOME", home)
+
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/yottadynamics/yottacode-skills/zip/refs/heads/main" {
+			http.NotFound(w, r)
+			return
+		}
+		var buf bytes.Buffer
+		zw := zip.NewWriter(&buf)
+		file, err := zw.Create("repo-main/skills/sample/SKILL.md")
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _ = file.Write([]byte(sampleSkillBody))
+		if err := zw.Close(); err != nil {
+			t.Fatal(err)
+		}
+		w.Header().Set("Content-Type", "application/zip")
+		_, _ = w.Write(buf.Bytes())
+	}))
+	defer srv.Close()
+	t.Setenv("YOTTACODE_GITHUB_CODELOAD_URL", srv.URL)
+
+	out, err := runSkillsCmd(t, "install", "official/sample")
+	if err != nil {
+		t.Fatalf("install official: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "installed sample (official)") {
+		t.Errorf("install output missing official source: %q", out)
+	}
+	if _, err := os.Stat(filepath.Join(home, "skills", "sample", "SKILL.md")); err != nil {
+		t.Errorf("official skill not installed: %v", err)
+	}
+}
+
+// TestSkillsCLI_InstallSkillsSHURL verifies skills.sh page URLs install via the
+// archive-backed GitHub path and keep the original page URL in the lockfile.
+func TestSkillsCLI_InstallSkillsSHURL(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("YOTTACODE_HOME", home)
+	t.Setenv("HOME", home)
+
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/vercel-labs/skills/zip/refs/heads/main" {
+			http.NotFound(w, r)
+			return
+		}
+		var buf bytes.Buffer
+		zw := zip.NewWriter(&buf)
+		file, err := zw.Create("repo-main/skills/sample/SKILL.md")
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _ = file.Write([]byte(sampleSkillBody))
+		if err := zw.Close(); err != nil {
+			t.Fatal(err)
+		}
+		w.Header().Set("Content-Type", "application/zip")
+		_, _ = w.Write(buf.Bytes())
+	}))
+	defer srv.Close()
+	t.Setenv("YOTTACODE_GITHUB_CODELOAD_URL", srv.URL)
+
+	source := "https://www.skills.sh/vercel-labs/skills/sample"
+	out, err := runSkillsCmd(t, "install", source)
+	if err != nil {
+		t.Fatalf("install skills.sh: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "installed sample (github)") {
+		t.Fatalf("unexpected output: %q", out)
+	}
+	data, err := os.ReadFile(filepath.Join(home, "skills", skills.LockfileName))
+	if err != nil {
+		t.Fatalf("read lockfile: %v", err)
+	}
+	if !strings.Contains(string(data), source) {
+		t.Fatalf("lockfile should preserve skills.sh source: %s", data)
+	}
+}
+
+// TestSkillsCLI_CatalogRefresh writes the offline official catalog cache from
+// an explicit network request. Plain Catalog browsing uses this cache later and
+// never reaches GitHub on open.
+func TestSkillsCLI_CatalogRefresh(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("YOTTACODE_HOME", home)
+	t.Setenv("HOME", home)
+
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/yottadynamics/yottacode-skills/contents/skills":
+			_ = json.NewEncoder(w).Encode([]map[string]string{{"name": "sample", "type": "dir"}})
+		case "/repos/yottadynamics/yottacode-skills/contents/skills/sample":
+			_ = json.NewEncoder(w).Encode([]map[string]string{{
+				"name":         "SKILL.md",
+				"type":         "file",
+				"download_url": srv.URL + "/raw/skills/sample/SKILL.md",
+			}})
+		case "/raw/skills/sample/SKILL.md":
+			_, _ = w.Write([]byte(sampleSkillBody))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	t.Setenv("YOTTACODE_GITHUB_API_URL", srv.URL)
+
+	out, err := runSkillsCmd(t, "catalog", "refresh")
+	if err != nil {
+		t.Fatalf("catalog refresh: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "refreshed official catalog (1 skills)") {
+		t.Fatalf("unexpected output: %q", out)
+	}
+	data, err := os.ReadFile(filepath.Join(home, "skills", skills.OfficialCatalogCacheName))
+	if err != nil {
+		t.Fatalf("cache missing: %v", err)
+	}
+	if !strings.Contains(string(data), "sample") || strings.Contains(string(data), "Body\": \"Body content") {
+		t.Fatalf("cache should contain metadata only: %s", data)
 	}
 }
 
