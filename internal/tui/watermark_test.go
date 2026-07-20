@@ -42,6 +42,37 @@ func TestSummaryConverged(t *testing.T) {
 	}
 }
 
+// TestAutoSuppressedByNonConvergence guards the fix for the gate that used
+// to latch shut for the whole session: after a summarize failed to
+// converge, auto-summarize was disabled until /clear. The suppressor must
+// hold back a pointless re-run at the same fill+window, but release when
+// fill grows or the window changes.
+func TestAutoSuppressedByNonConvergence(t *testing.T) {
+	const window = 32_000
+	cases := []struct {
+		name                string
+		pct                 float64
+		window              int
+		nonConvergentAt     float64
+		nonConvergentWindow int
+		want                bool
+	}{
+		{"no record — never suppresses", 0.95, window, 0, 0, false},
+		{"same fill+window — suppresses", 0.91, window, 0.91, window, true},
+		{"tiny growth within step — still suppresses", 0.93, window, 0.91, window, true},
+		{"grew a full step past — releases (retry)", 0.97, window, 0.91, window, false},
+		{"window changed (bigger) — releases", 0.91, 200_000, 0.91, window, false},
+		{"window changed (drift-shrunk) — releases", 0.95, 24_000, 0.91, window, false},
+	}
+	for _, c := range cases {
+		got := autoSuppressedByNonConvergence(c.pct, c.window, c.nonConvergentAt, c.nonConvergentWindow)
+		if got != c.want {
+			t.Errorf("%s: autoSuppressedByNonConvergence(%.2f, %d, %.2f, %d) = %v, want %v",
+				c.name, c.pct, c.window, c.nonConvergentAt, c.nonConvergentWindow, got, c.want)
+		}
+	}
+}
+
 func TestRenderContextBar_BelowThreshold(t *testing.T) {
 	m := newTestModel(t)
 	m.fileCfg = config.Config{Context: config.ContextConfig{

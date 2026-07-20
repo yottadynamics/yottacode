@@ -71,9 +71,12 @@ type StreamProgress struct{}
 // (with Before==After) when the summary call failed and history was left
 // untouched — a best-effort skip, not a turn-ending error.
 type ContextCompacted struct {
-	Before int
-	After  int
-	Err    error
+	Before       int
+	After        int
+	Err          error
+	SnapshotPath string
+	SnapshotErr  error
+	Forced       bool
 }
 
 func (ContextCompacted) event() {}

@@ -371,6 +371,14 @@ func Run(ctx context.Context, opts cli.ChatOptions, prompt string) error {
 		AutoMode:          parentAutoMode,
 		YoloMode:          parentYoloMode,
 	}
+	if w := catalog.ResolveWindowForProvider(fileCfg.ProviderKindForModel(opts.Model), opts.Model, fileCfg.ContextWindowOverride(opts.Model), fileCfg.Context.DefaultWindow); w > 0 {
+		// Oneshot has no turn boundary, so only provider-overflow recovery
+		// is enabled here (Threshold 0 disables preemptive compaction). It
+		// intentionally omits PreCompact for now: the saved oneshot session
+		// may contain the compacted transcript, but the command has no
+		// interactive /recall workflow to preserve mid-turn.
+		cfg.Compaction = &agent.CompactionConfig{Window: w, Threshold: 0}
+	}
 
 	turnErr := stream(ctx, cfg, &sess.Messages, os.Stdout, os.Stderr)
 	sess.Todos = planStore.Snapshot()

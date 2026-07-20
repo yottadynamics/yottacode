@@ -285,9 +285,10 @@ type MemoryConfig struct {
 
 // ContextConfig governs context-window watermark behavior.
 type ContextConfig struct {
-	WarnThreshold float64 `toml:"warn_threshold"`
-	AutoThreshold float64 `toml:"auto_threshold"`
-	DefaultWindow int     `toml:"default_window"`
+	WarnThreshold       float64 `toml:"warn_threshold"`
+	AutoThreshold       float64 `toml:"auto_threshold"`
+	CompactionThreshold float64 `toml:"compaction_threshold"`
+	DefaultWindow       int     `toml:"default_window"`
 }
 
 // Active selects which configured provider + model is the session
@@ -448,9 +449,10 @@ func defaultThemeName() string {
 func Default() Config {
 	return Config{
 		Context: ContextConfig{
-			WarnThreshold: 0.65,
-			AutoThreshold: 0.85,
-			DefaultWindow: 128000,
+			WarnThreshold:       0.65,
+			AutoThreshold:       0.85,
+			CompactionThreshold: 0.90,
+			DefaultWindow:       128000,
 		},
 		Retrieval: RetrievalConfig{
 			Enabled:        true,
@@ -586,12 +588,19 @@ func Validate(cfg Config) error {
 	if cfg.Context.AutoThreshold < 0 || cfg.Context.AutoThreshold > 1 {
 		return fmt.Errorf("context.auto_threshold = %.3f out of range (0.0–1.0)", cfg.Context.AutoThreshold)
 	}
+	if cfg.Context.CompactionThreshold < 0 || cfg.Context.CompactionThreshold > 1 {
+		return fmt.Errorf("context.compaction_threshold = %.3f out of range (0.0–1.0)", cfg.Context.CompactionThreshold)
+	}
 	if cfg.Context.DefaultWindow < 1024 {
 		return fmt.Errorf("context.default_window = %d too small (minimum 1024)", cfg.Context.DefaultWindow)
 	}
-	if cfg.Context.WarnThreshold > cfg.Context.AutoThreshold {
-		return fmt.Errorf("context.warn_threshold (%.3f) must be <= context.auto_threshold (%.3f)",
+	if cfg.Context.AutoThreshold < 1.0 && cfg.Context.WarnThreshold > cfg.Context.AutoThreshold {
+		return fmt.Errorf("context.warn_threshold (%.3f) must be <= context.auto_threshold (%.3f) when auto-summarization is enabled",
 			cfg.Context.WarnThreshold, cfg.Context.AutoThreshold)
+	}
+	if cfg.Context.AutoThreshold < 1.0 && cfg.Context.CompactionThreshold < 1.0 && cfg.Context.CompactionThreshold < cfg.Context.AutoThreshold {
+		return fmt.Errorf("context.compaction_threshold (%.3f) must be >= context.auto_threshold (%.3f) when both are enabled",
+			cfg.Context.CompactionThreshold, cfg.Context.AutoThreshold)
 	}
 	if cfg.Retrieval.TopK < 0 {
 		return fmt.Errorf("retrieval.top_k = %d must be >= 0", cfg.Retrieval.TopK)
@@ -1069,8 +1078,15 @@ const DefaultsTOML = `# yottacode configuration
 warn_threshold = 0.65
 
 # Auto-summarization fires before the next turn at this fraction. Must
-# be >= warn_threshold. Set to 1.0 to disable auto-summarization.
+# be >= warn_threshold when enabled. Set to 1.0 to disable auto-summarization.
 auto_threshold = 0.85
+
+# Mid-turn in-loop compaction fires at this fraction while a single long
+# turn is still running. It is a safety net above auto_threshold; the
+# turn-boundary summarizer remains the normal path. Set to 1.0 to disable
+# preemptive mid-turn compaction; provider-overflow recovery can still
+# force one compaction attempt.
+compaction_threshold = 0.90
 
 # Fallback context-window size (tokens) for models yottacode does not
 # know.

@@ -122,6 +122,9 @@ type summaryDoneMsg struct {
 	tokensBefore int
 	tokensAfter  int
 	err          error
+	// compactionSeq is the mid-turn compaction generation captured when
+	// summarizeCmd cloned history; a changed value makes the result stale.
+	compactionSeq int
 }
 
 // cmdSummarize is the /summarize handler. Kicks off summarizeCmd and
@@ -180,6 +183,7 @@ func (m Model) summarizeCmd(auto bool) tea.Cmd {
 	}
 	parentCtx := m.parentCtx
 	sessID := m.sess.ID
+	seq := m.compactionSeq
 	tokensBefore := m.contextTokens
 	// Snapshot the window outside the goroutine so we still hold a
 	// stable view of model + fileCfg. Used to budget both the
@@ -200,10 +204,11 @@ func (m Model) summarizeCmd(auto bool) tea.Cmd {
 
 		newHistory := composeSummarizedHistory(history, summary, windowTokens)
 		return summaryDoneMsg{
-			auto:         auto,
-			newMessages:  newHistory,
-			snapshotPath: snapshotPath,
-			tokensBefore: tokensBefore,
+			auto:          auto,
+			newMessages:   newHistory,
+			snapshotPath:  snapshotPath,
+			tokensBefore:  tokensBefore,
+			compactionSeq: seq,
 		}
 	}
 }
@@ -535,7 +540,7 @@ func writePreSummarySnapshot(sessionID string, history []adapter.Message) (strin
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", err
 	}
-	stamp := time.Now().UTC().Format("20060102-150405")
+	stamp := time.Now().UTC().Format("20060102-150405.000000000")
 	path := filepath.Join(dir, fmt.Sprintf("%s-pre-summary-%s.json", sessionID, stamp))
 	payload := struct {
 		SessionID string            `json:"session_id"`

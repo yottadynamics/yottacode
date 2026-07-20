@@ -1305,6 +1305,8 @@ func cmdClear(m Model, _ []string) (Model, tea.Cmd) {
 	// gate left pinned high by a prior non-convergent summarize (see the
 	// summaryDoneMsg handler) would otherwise survive the clear.
 	m.lastWatermarkPct = 0
+	m.nonConvergentAt = 0
+	m.nonConvergentWindow = 0
 	// Wipe the viewport so /clear lands on a clean canvas instead
 	// of tacking a confirmation line under the prior transcript.
 	// Mirrors the resize-replay path: ClearScreen, then re-emit the

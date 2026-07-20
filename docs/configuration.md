@@ -239,6 +239,29 @@ Most state lives under `~/.yottacode/`:
   config.toml                    tunables (context watermarks, retrieval, memory, checkpoints)
 ```
 
+### Context watermarks
+
+The `[context]` block controls how aggressively yottacode reacts as the active model's context window fills:
+
+```toml
+[context]
+warn_threshold = 0.65
+                         # status-bar warning + reminder
+
+auto_threshold = 0.85
+                         # turn-boundary auto-summarize; 1.0 disables
+
+compaction_threshold = 0.90
+                         # mid-turn in-loop compaction safety net; 1.0 disables
+
+default_window = 128000
+                         # fallback tokens for unknown models
+```
+
+`auto_threshold` runs between turns and writes a pre-summary snapshot before replacing old conversation with a summary. `compaction_threshold` is a higher mid-turn safety net for long auto/yolo turns that would otherwise hit the provider limit before the next boundary; if a provider still rejects a request for context length before any assistant content streams, yottacode force-compacts once and retries. Interactive mid-turn compaction also writes a `~/.yottacode/sessions/<id>-pre-summary-*.json` snapshot before rewriting history.
+
+Set a threshold to `1.0` to disable that preemptive behavior. If both auto-summarization and mid-turn compaction are enabled, `compaction_threshold` must be at or above `auto_threshold` so the turn-boundary summarizer remains the normal path. `/recall` indexes the compacted session slice, not compacted-away messages; the pre-summary snapshot is the recovery record for full history.
+
 ### Checkpoints retention
 
 `/checkpoints` and `Esc Esc` capture a per-prompt snapshot under `~/.yottacode/checkpoints/`. By default, snapshots expire 30 days after creation; the sweep runs opportunistically when a session opens. Override the window in `~/.yottacode/config.toml`:

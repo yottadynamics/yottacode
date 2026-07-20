@@ -242,6 +242,27 @@ type Model struct {
 	// constant in watermark.go gates re-notification.
 	lastWatermarkPct float64
 
+	// nonConvergentAt records the fill ratio at which the last
+	// auto-summarize failed to converge (compacted history still ≥
+	// auto_threshold — the irreducible floor of system prompt + tool
+	// schemas + retained tail exceeds this window). While set, the auto
+	// gate suppresses re-runs at ~this fill against ~this window so it
+	// doesn't burn a multi-minute compression every turn to land in the
+	// same place. It is NOT a permanent latch: the gate re-arms once fill
+	// grows a step past this point or the window changes (a /model switch
+	// or a drift pin makes the verdict stale). 0 means "no stuck
+	// summarize on record." nonConvergentWindow is the resolved window at
+	// the time, so a window change invalidates the record even when the
+	// fill ratio lands back in the suppressed band.
+	nonConvergentAt     float64
+	nonConvergentWindow int
+
+	// compactionSeq increments after any successful mid-turn compaction.
+	// Manual/auto summarize captures it when cloning history; if it moves
+	// before summaryDoneMsg lands, the summary result is stale and must not
+	// overwrite the compactor's newer history.
+	compactionSeq int
+
 	// summarizing flips true while /summarize (manual or auto) is
 	// running so we don't fire a second one on top of the first if
 	// the user crosses another threshold while we're working.
@@ -2357,6 +2378,14 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case summaryDoneMsg:
 		m.summarizing = false
+		if msg.compactionSeq != m.compactionSeq {
+			// A mid-turn compaction rewrote history after summarizeCmd took
+			// its clone. Discard this stale result rather than overwriting
+			// the newer compacted history; clear the watermark so a future
+			// boundary check can retry if context is still high.
+			m.lastWatermarkPct = 0
+			return m, nil
+		}
 		if msg.err != nil {
 			// Failed attempts don't count as "already handled at this fill
 			// level" — clearing the watermark lets the next turn-end
@@ -2366,26 +2395,41 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.appendLine(styleError.Render("[summarize] " + msg.err.Error()))
 			return m, nil
 		}
+		// Guard the slice write under histMu: /summarize is
+		// PreservesTurn=false so the turn it cancelled may still be
+		// unwinding on the Turn goroutine (which appends to this same
+		// field), and mid-turn compaction now writes it too. estimated
+		// tokens are computed from the value we own (msg.newMessages), not
+		// a re-read of the field, so no lock is needed for that.
+		m.histMu.Lock()
 		m.sess.Messages = msg.newMessages
+		m.histMu.Unlock()
 		// Refresh estimated tokens from the new history so the status
 		// bar reflects the compaction immediately.
-		m.contextTokens = m.estimatedContextTokens(m.sess.Messages)
+		m.contextTokens = m.estimatedContextTokens(msg.newMessages)
 
 		// Non-convergence guard: when the compacted history is STILL at
 		// or above the auto threshold, the irreducible floor (system
 		// prompt + the summary itself + the retained recent turns)
-		// exceeds what this window holds. Re-arming the watermark to 0
-		// would auto-fire summarize again next turn — a multi-minute
-		// compression every turn that never gets under the line. Leave
-		// the gate closed (record the current fill) and tell the user
-		// once; manual /summarize and /clear still work — they don't
-		// consult this gate.
+		// exceeds what this window holds. Re-firing auto-summarize every
+		// turn would burn a multi-minute compression that never gets under
+		// the line — but latching lastWatermarkPct high (the old behavior)
+		// disabled auto for the ENTIRE session, so the user had to run
+		// /summarize by hand forever. Instead re-arm lastWatermarkPct and
+		// record the non-convergence per (fill, window): the gate in
+		// updateContextUsage suppresses only re-runs at ~this fill, and
+		// releases once fill grows or the window changes.
 		window := m.contextWindow()
 		converged := summaryConverged(m.contextTokens, window, m.fileCfg.Context.AutoThreshold)
+		nonConvergentPct := 0.0
+		m.lastWatermarkPct = 0
 		if converged || window <= 0 {
-			m.lastWatermarkPct = 0
+			m.nonConvergentAt = 0
+			m.nonConvergentWindow = 0
 		} else {
-			m.lastWatermarkPct = float64(m.contextTokens) / float64(window)
+			nonConvergentPct = float64(m.contextTokens) / float64(window)
+			m.nonConvergentAt = nonConvergentPct
+			m.nonConvergentWindow = window
 		}
 
 		if m.subagentTasks != nil {
@@ -2404,9 +2448,10 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		switch {
 		case !converged:
+			culprit, culpritTok := m.dominantContextBucket()
 			m.appendLine(styleWatermarkBox.Render(fmt.Sprintf(
-				"⚡ Summarized, but context is still at %d%% — the retained history plus tool schemas exceed this model's window, so auto-summarize is paused to avoid re-running every turn.\nFree space with /clear, disable unused MCP tools, set a larger context_window for this model, or switch to a bigger-window model.\nFull history saved to %s",
-				int(m.lastWatermarkPct*100), abbrevHome(msg.snapshotPath))))
+				"⚡ Summarized, but context is still at %d%% — the biggest consumer is %s (~%s), which alone won't fit under the limit, so auto-summarize is paused to avoid re-running every turn (it resumes if context grows further or you switch models).\nFree space with /clear, disable unused MCP tools, set a larger context_window for this model, or switch to a bigger-window model.\nFull history saved to %s",
+				int(nonConvergentPct*100), culprit, formatTokens(culpritTok), abbrevHome(msg.snapshotPath))))
 		case msg.auto:
 			m.appendLine(styleWatermarkBox.Render(fmt.Sprintf(
 				"⚡ Context auto-summarized.\nFull history saved to %s\nUse /recall <id> to search the compressed session.",
@@ -4263,6 +4308,7 @@ func (m Model) startTurnWithDisplay(input, displayLabel string) (tea.Model, tea.
 			defer m.histMu.Unlock()
 			m.rebuildSystemPromptForTurn(turnCtx, input)
 		}()
+		m.refreshTurnCompactionConfig()
 		err := agent.Turn(turnCtx, m.cfg, &m.sess.Messages, ev, dec)
 		close(ev)
 		errCh <- err
@@ -4567,6 +4613,25 @@ func (m Model) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 		m.appendLine(styleAuto.Render(fmt.Sprintf(
 			"  raise with `/max-iterations %d` and ask me to continue, or pass --max-iterations %d at launch",
 			suggest, suggest)))
+	case agent.ContextCompacted:
+		if e.Err != nil {
+			m.appendLine(styleAuto.Render(fmt.Sprintf("[context] compaction skipped: %v", e.Err)))
+			break
+		}
+		kind := "compacted"
+		if e.Forced {
+			kind = "force-compacted"
+		}
+		line := fmt.Sprintf("[context] %s mid-turn ~%s → ~%s tokens", kind, formatTokens(e.Before), formatTokens(e.After))
+		if e.SnapshotPath != "" {
+			line += " · snapshot " + abbrevHome(e.SnapshotPath)
+		}
+		if e.SnapshotErr != nil {
+			line += fmt.Sprintf(" · snapshot failed: %v", e.SnapshotErr)
+		}
+		m.appendLine(styleAuto.Render(line))
+		m.refreshContextTokens()
+		m.compactionSeq++
 	case agent.ErrorEvent:
 		m.commitStreaming()
 		// Multi-line errors (e.g. 429 with retry-after hint) render

@@ -123,6 +123,63 @@ auto_threshold = 0.7`
 	}
 }
 
+func TestLoad_ContextCompactionThreshold(t *testing.T) {
+	cases := []struct {
+		name    string
+		src     string
+		wantErr bool
+	}{
+		{
+			name: "below auto rejected when both enabled",
+			src: `[context]
+warn_threshold = 0.5
+auto_threshold = 0.85
+compaction_threshold = 0.80`,
+			wantErr: true,
+		},
+		{
+			name: "equal auto accepted",
+			src: `[context]
+warn_threshold = 0.5
+auto_threshold = 0.85
+compaction_threshold = 0.85`,
+		},
+		{
+			name: "auto disabled with compaction enabled accepted",
+			src: `[context]
+warn_threshold = 0.5
+auto_threshold = 1.0
+compaction_threshold = 0.90`,
+		},
+		{
+			name: "compaction disabled accepted",
+			src: `[context]
+warn_threshold = 0.5
+auto_threshold = 0.85
+compaction_threshold = 1.0`,
+		},
+		{
+			name: "out of range rejected",
+			src: `[context]
+warn_threshold = 0.5
+auto_threshold = 0.85
+compaction_threshold = 1.2`,
+			wantErr: true,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			_, err := Load(writeFile(t, c.src))
+			if c.wantErr && err == nil {
+				t.Fatal("expected error")
+			}
+			if !c.wantErr && err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
 func TestLoad_UnknownKeyErrors(t *testing.T) {
 	src := `[context]
 mystery_key = 1`
