@@ -44,6 +44,7 @@ func lockMemoryPath(path string) func() {
 type MemorySaveTool struct {
 	Cwd      *CwdRef
 	Embedder *memory.EmbedClient
+	Source   memory.Source
 }
 
 func (t *MemorySaveTool) Name() string { return "memory_save" }
@@ -183,6 +184,45 @@ var portableMemoryTypes = map[string]bool{
 	"feedback": true,
 }
 
+// memorySaveChangeSummary returns a compact, model-readable description of
+// what an update changed. The archive keeps recovery possible; this summary
+// makes accidental overwrites visible immediately in the tool result.
+func memorySaveChangeSummary(existing []byte, newType, newDescription string, newSource memory.Source, newBody string) string {
+	fm, oldBody, ok := memory.ParseFrontmatter(existing)
+	if !ok {
+		return "changes: replaced headerless memory file"
+	}
+	var changes []string
+	if fm.Type != newType {
+		changes = append(changes, fmt.Sprintf("type %q→%q", fm.Type, newType))
+	}
+	if fm.Description != newDescription {
+		changes = append(changes, "description changed")
+	}
+	oldSource := memory.Source{Session: fm.SourceSession, Turn: fm.SourceTurn}
+	if oldSource != newSource {
+		changes = append(changes, formatMemorySourceChange(oldSource, newSource))
+	}
+	if oldBody != newBody {
+		changes = append(changes, fmt.Sprintf("body changed (%d→%d bytes)", len(oldBody), len(newBody)))
+	}
+	if len(changes) == 0 {
+		return "changes: none"
+	}
+	return "changes: " + strings.Join(changes, "; ")
+}
+
+func formatMemorySourceChange(oldSource, newSource memory.Source) string {
+	switch {
+	case oldSource.Session == "" && newSource.Session != "":
+		return "source added"
+	case oldSource.Session != "" && newSource.Session == "":
+		return "source removed"
+	default:
+		return "source changed"
+	}
+}
+
 func (t *MemorySaveTool) Execute(_ context.Context, argsJSON string) (string, error) {
 	var a memorySaveArgs
 	if err := json.Unmarshal([]byte(argsJSON), &a); err != nil {
@@ -215,12 +255,21 @@ func (t *MemorySaveTool) Execute(_ context.Context, argsJSON string) (string, er
 	// version on any content change — recoverable, never lost.
 	existing, _ := os.ReadFile(path) // nil when absent
 	created := time.Now()
+	source := t.Source
 	verb := "created"
 	if len(existing) > 0 {
 		verb = "updated"
-		if fm, _, ok := memory.ParseFrontmatter(existing); ok && fm.Created != "" {
-			if ts, perr := time.Parse(time.RFC3339, fm.Created); perr == nil {
-				created = ts
+		if fm, _, ok := memory.ParseFrontmatter(existing); ok {
+			if fm.Created != "" {
+				if ts, perr := time.Parse(time.RFC3339, fm.Created); perr == nil {
+					created = ts
+				}
+			}
+			if source.Session == "" {
+				source.Session = fm.SourceSession
+			}
+			if source.Turn == "" {
+				source.Turn = fm.SourceTurn
 			}
 		}
 	}
@@ -229,9 +278,13 @@ func (t *MemorySaveTool) Execute(_ context.Context, argsJSON string) (string, er
 	if !strings.HasSuffix(body, "\n") {
 		body += "\n"
 	}
-	full := memory.RenderFrontmatter(a.Name, memType, desc, created) + body
+	full := memory.RenderFrontmatterWithSource(a.Name, memType, desc, created, source) + body
 
 	archived := false
+	changeSummary := ""
+	if len(existing) > 0 {
+		changeSummary = memorySaveChangeSummary(existing, memType, desc, source, body)
+	}
 	if len(existing) > 0 && string(existing) != full {
 		// Content actually changes — archive the prior version first.
 		// Soft on failure: better to complete the save the agent asked
@@ -266,6 +319,16 @@ func (t *MemorySaveTool) Execute(_ context.Context, argsJSON string) (string, er
 	msg := fmt.Sprintf("%s %s memory %q", verb, a.Scope, a.Name)
 	if archived {
 		msg += " (previous version archived to .archive/)"
+	}
+	if changeSummary != "" {
+		msg += " (" + changeSummary + ")"
+	}
+	if source.Session != "" {
+		msg += fmt.Sprintf(" (source: session %s", source.Session)
+		if source.Turn != "" {
+			msg += fmt.Sprintf(", turn %s", source.Turn)
+		}
+		msg += ")"
 	}
 	// Scope reflection: a portable-typed memory saved to project scope
 	// is usually a portability miss — preferences and corrections

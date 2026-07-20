@@ -12,10 +12,12 @@ import (
 // key:value scanner keeps the writer one-line-per-field and the
 // reader tiny.
 type Frontmatter struct {
-	Name        string
-	Type        string
-	Description string
-	Created     string
+	Name          string
+	Type          string
+	Description   string
+	Created       string
+	SourceSession string
+	SourceTurn    string
 }
 
 // ParseFrontmatter splits frontmatter from body. Returns ok=false when
@@ -61,16 +63,43 @@ func ParseFrontmatter(data []byte) (fm Frontmatter, body string, ok bool) {
 			fm.Description = val
 		case "created":
 			fm.Created = val
+		case "source_session":
+			fm.SourceSession = val
+		case "source_turn":
+			fm.SourceTurn = val
 		}
 	}
 	return fm, body, true
 }
 
-// RenderFrontmatter writes the four-field header. Description is
+// Source records optional provenance for a memory save. It is intentionally
+// lightweight frontmatter metadata, not an embedded transcript: session recall
+// remains the path for full source context.
+type Source struct {
+	Session string
+	Turn    string
+}
+
+// RenderFrontmatter writes the base header. Description is
 // expected to already be one line (caller strips newlines before
 // passing); the writer doesn't re-validate. Created is rendered as
 // RFC3339 in UTC.
 func RenderFrontmatter(name, memType, description string, created time.Time) string {
-	return fmt.Sprintf("---\nname: %s\ntype: %s\ndescription: %s\ncreated: %s\n---\n",
+	return RenderFrontmatterWithSource(name, memType, description, created, Source{})
+}
+
+// RenderFrontmatterWithSource writes the memory header and includes source
+// provenance fields when they are available.
+func RenderFrontmatterWithSource(name, memType, description string, created time.Time, source Source) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "---\nname: %s\ntype: %s\ndescription: %s\ncreated: %s\n",
 		name, memType, description, created.UTC().Format(time.RFC3339))
+	if source.Session != "" {
+		fmt.Fprintf(&b, "source_session: %s\n", source.Session)
+	}
+	if source.Turn != "" {
+		fmt.Fprintf(&b, "source_turn: %s\n", source.Turn)
+	}
+	b.WriteString("---\n")
+	return b.String()
 }

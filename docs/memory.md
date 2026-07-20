@@ -153,12 +153,20 @@ Per-project memories live in your home directory, not in the repo. They're priva
 
 Every memory file has YAML frontmatter plus a markdown body:
 
+`source_session` and `source_turn` are optional provenance fields written by
+the TUI and one-shot runners when session metadata is available. They identify
+where the memory was captured without embedding transcript text into the memory
+file; use session recall or the saved session file when you need the full source
+conversation. Hand-written memories and older files may omit these fields.
+
 ```
 ---
 name: jwt-refresh-flow
 type: project
 description: How auth refresh interacts with the token cache
 created: 2026-05-08T12:34:56Z
+source_session: 20260508-123456.000000
+source_turn: 7
 ---
 The refresh handler in pkg/auth/refresh.go writes the new token to
 the cache *before* it returns. Tests that mock the cache must seed it
@@ -321,7 +329,7 @@ The full guidance lives in the agent's system prompt; see `internal/agent/prompt
 
 The agent has five memory tools, all **silent by default** (no approval modal — they're as ordinary as `read_file`):
 
-- **`memory_save`** — creates a memory file, or updates an existing one of the same name. Only `name` and `content` are required: the five-field form competes with the primary task at exactly the moment something durable surfaces, which is when capture gets skipped. Omitted fields default — `scope` to `user` (baking in the default-to-user steering), `type` to `note` (so quick captures group under one index section, a natural queue for later curation), and `description` to the first non-empty line of the body. The schema still asks for all five and the model should fill them when it can; the defaults are a floor, not a target. On a same-name update the prior version is **archived** to `<memdir>/.archive/<name>.<stamp>.md` (recoverable, never silently lost; excluded from the index, retrieval, and `memory list`) and the original `created` timestamp is preserved. The result reports `created` vs `updated` (and whether a version was archived). Updates `MEMORY.md`. Generates a `.vec` sidecar when an embedding model is available; if embedding is unavailable, the save still succeeds and the result notes that the semantic index wasn't updated.
+- **`memory_save`** — creates a memory file, or updates an existing one of the same name. Only `name` and `content` are required: the five-field form competes with the primary task at exactly the moment something durable surfaces, which is when capture gets skipped. Omitted fields default — `scope` to `user` (baking in the default-to-user steering), `type` to `note` (so quick captures group under one index section, a natural queue for later curation), and `description` to the first non-empty line of the body. The schema still asks for all five and the model should fill them when it can; the defaults are a floor, not a target. On a same-name update the prior version is **archived** to `<memdir>/.archive/<name>.<stamp>.md` (recoverable, never silently lost; excluded from the index, retrieval, and `memory list`) and the original `created` timestamp is preserved. The result reports `created` vs `updated`, whether a version was archived, and for updates a compact changed-fields summary (`type`, `description`, `source`, and body byte-count changes, or `changes: none`). Updates `MEMORY.md`. Generates a `.vec` sidecar when an embedding model is available; if embedding is unavailable, the save still succeeds and the result notes that the semantic index wasn't updated.
 - **`memory_forget`** — deletes a memory file by name. Updates `MEMORY.md`. Errors when the named memory doesn't exist (so the agent learns the right names).
 - **`memory_search`** — searches across user and/or project memory stores, returning ranked results with relevance scores (zero-relevance entries are omitted). The agent uses this to check for duplicates before saving, find related memories when reasoning about a topic, or verify a remembered fact. Accepts `scope` (`all`, `user`, `project`) and `limit` parameters.
 - **`memory_get`** — returns the full, untruncated contents (frontmatter + body) of one memory by `scope` + `name`. Used before updating a memory so the agent can preserve the parts it isn't changing, instead of blindly overwriting from the 300-char `memory_search` preview.
@@ -557,9 +565,17 @@ yottacode memory reindex                       # generate .vec sidecars for all 
 yottacode memory search <query>                # search memories by query (same as memory_search tool)
 yottacode memory audit                         # read-only curation report for notes/duplicates/scope/body issues
 yottacode memory audit --plan                  # group issues into a read-only curation plan
+yottacode memory audit --propose               # draft subjective curation proposals without applying them
+yottacode memory health                        # show compact read-only memory health counts
 ```
 
-`memory audit` is Memory Curation Phase 1: it is deliberately read-only and surfaces the queue a human-like agent needs to consolidate over time — quick-capture `type=note` entries, duplicate descriptions, empty or description-only bodies, and portable `user`/`feedback` memories that landed in project scope. Memory Curation Phase 2 exposes the same report to the agent as `memory_audit`, so an explicit curation turn can inspect the queue, fetch full entries with `memory_get`, then apply each decision with `memory_save` and `memory_forget` instead of relying on shell commands. Memory Curation Phase 3 makes the report actionable: every issue includes a suggested next step such as `memory_get` both duplicates, `memory_save` a consolidated durable entry, then `memory_forget` stale notes. Memory Curation Phase 4 adds provenance and age: audit output includes each memory's `created` date, age in days, and highlights quick notes older than 30 days as priority curation candidates. Memory Curation Phase 5 adds `--plan` / `{"plan":true}` mode, which groups issues into read-only batches such as duplicate merges, quick-note promotion, portable scope moves, and empty-entry cleanup. Memory Curation Phase 6 adds the approval-gated `memory_curate_apply` agent tool for strictly mechanical fixes only: deleting entries that still have an `empty-body` audit issue, or moving `portable-in-project` user/feedback memories to user scope when no user memory with that name exists. It does not rewrite, merge, or promote notes automatically. The audit surfaces remain read-only; all apply operations route through the normal approval modal.
+`memory health` and `memory_audit({"summary":true})` expose the compact
+health layer: total memories, total issues, quick notes, old quick notes,
+duplicate descriptions, vague bodies, empty bodies, and portable scope mistakes.
+Use this when the agent only needs to know whether memory needs attention, not
+the full curation queue.
+
+`memory audit` is Memory Curation Phase 1: it is deliberately read-only and surfaces the queue a human-like agent needs to consolidate over time — quick-capture `type=note` entries, duplicate descriptions, empty or description-only bodies, and portable `user`/`feedback` memories that landed in project scope. Memory Curation Phase 2 exposes the same report to the agent as `memory_audit`, so an explicit curation turn can inspect the queue, fetch full entries with `memory_get`, then apply each decision with `memory_save` and `memory_forget` instead of relying on shell commands. Memory Curation Phase 3 makes the report actionable: every issue includes a suggested next step such as `memory_get` both duplicates, `memory_save` a consolidated durable entry, then `memory_forget` stale notes. Memory Curation Phase 4 adds provenance and age: audit output includes each memory's `created` date, age in days, and highlights quick notes older than 30 days as priority curation candidates. Memory Curation Phase 5 adds `--plan` / `{"plan":true}` mode, which groups issues into read-only batches such as duplicate merges, quick-note promotion, portable scope moves, and empty-entry cleanup. Memory Curation Phase 6 adds the approval-gated `memory_curate_apply` agent tool for strictly mechanical fixes only: deleting entries that still have an `empty-body` audit issue, or moving `portable-in-project` user/feedback memories to user scope when no user memory with that name exists. Memory Curation Phase 7 adds `--propose` / `{"propose":true}` mode for subjective cases: it drafts merge, rewrite, promote, or forget suggestions with source excerpts and explicit uncertainty, but does not apply them. It does not rewrite, merge, or promote notes automatically. The audit surfaces remain read-only; all apply operations route through explicit tools.
 
 ### Agent introspection flow
 
