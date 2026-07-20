@@ -34,6 +34,34 @@ func (m *Model) refreshContextTokens() {
 	m.contextTokens = m.estimatedContextTokens(m.lockedMessages())
 }
 
+func (m *Model) refreshTurnCompactionConfig() {
+	if m.cfg.Compaction == nil {
+		return
+	}
+	window := m.contextWindow()
+	if window <= 0 {
+		m.cfg.Compaction.Window = 0
+		return
+	}
+	m.cfg.Compaction.Window = window
+	m.cfg.Compaction.Threshold = m.fileCfg.Context.CompactionThreshold
+	if m.cfg.Compaction.Threshold >= 1.0 {
+		// Threshold 1.0 disables preemptive compaction but keeps the
+		// Window populated so provider-overflow recovery can still force a
+		// single compaction attempt.
+		return
+	}
+	msgs := m.lockedMessages()
+	systemTokens, _ := contextwindow.SplitMessages(msgs)
+	schemaTokens := registrySchemaTokens(m.cfg.Registry)
+	retainBudget := int(compactionRetainFractionForTUI * float64(window))
+	if window-systemTokens-schemaTokens-retainBudget <= 0 {
+		m.cfg.Compaction.Window = 0
+	}
+}
+
+const compactionRetainFractionForTUI = 0.35
+
 // estimatedContextTokens approximates the full next-request size: the
 // message history plus the tool schemas advertised on every call.
 // EstimateTokens counts only the message slice, but the tool schemas
@@ -111,6 +139,18 @@ func (m *Model) updateContextUsage(allowAuto bool) tea.Cmd {
 	// haven't already auto-summarized at this fill level (tracked via
 	// lastWatermarkPct).
 	if autoThr < 1.0 && pct >= autoThr && m.lastWatermarkPct < autoThr {
+		// Suppress a re-attempt when a prior summarize already failed to
+		// converge at ~this fill against ~this window: re-running burns
+		// minutes to land at the same irreducible floor. Unlike the old
+		// behavior (which latched lastWatermarkPct high and disabled auto
+		// for the rest of the session), this re-arms once the situation
+		// changes — fill grew past the stuck point by a step, or the
+		// window changed. Return before the warn branch so it can't record
+		// a ≥ auto_threshold fill and re-close the gate through the back
+		// door.
+		if autoSuppressedByNonConvergence(pct, window, m.nonConvergentAt, m.nonConvergentWindow) {
+			return nil
+		}
 		if !allowAuto {
 			// A queued user message is about to start a fresh turn:
 			// compressing now would yank context out from under it.
@@ -147,9 +187,12 @@ func (m *Model) updateContextUsage(allowAuto bool) tea.Cmd {
 		// Below threshold (after /summarize, /clear, or a /sessions
 		// Resume): reset so the next crossing fires fresh. A still-armed
 		// reminder disarms with it — post-shrink, the context it was
-		// protecting has already been summarized or discarded.
+		// protecting has already been summarized or discarded. A recorded
+		// non-convergence is stale too: we've dropped well under the line.
 		m.lastWatermarkPct = 0
 		m.memoryNudgePending = false
+		m.nonConvergentAt = 0
+		m.nonConvergentWindow = 0
 	}
 	return nil
 }
@@ -169,18 +212,56 @@ func (m Model) contextWindow() int {
 
 // summaryConverged reports whether a just-finished summarization brought
 // the history back under the auto-summarize threshold. When it returns
-// false the caller must NOT re-arm the watermark (lastWatermarkPct = 0)
-// — doing so re-fires auto-summarize every turn against an irreducible
-// floor (system prompt + the summary itself + the retained tail that
-// already exceeds the window), a multi-minute compression each turn that
-// never gets under the line. A non-positive window or a disabled
-// threshold (<=0 or >=1.0) means "no meaningful line to loop on," so it
-// reports converged.
+// false the caller records the non-convergence (nonConvergentAt) rather
+// than re-arming the auto gate outright — otherwise auto-summarize re-fires
+// every turn against an irreducible floor (system prompt + the summary
+// itself + the retained tail that already exceeds the window), a
+// multi-minute compression each turn that never gets under the line. The
+// record is per (fill, window), so it suppresses only pointless re-runs at
+// the same fill and releases once the situation changes. A non-positive
+// window or a disabled threshold (<=0 or >=1.0) means "no meaningful line
+// to loop on," so it reports converged.
 func summaryConverged(tokens, window int, autoThreshold float64) bool {
 	if window <= 0 || autoThreshold <= 0 || autoThreshold >= 1.0 {
 		return true
 	}
 	return float64(tokens) < autoThreshold*float64(window)
+}
+
+// autoSuppressedByNonConvergence reports whether auto-summarize should be
+// held back because a prior summarize already failed to converge at ~this
+// fill against ~this window. It is deliberately NOT a permanent latch (the
+// bug it replaces): it releases once fill grows a step past the recorded
+// stuck point — meaning the history kept growing and a fresh summary now
+// has different material to work with — or once the window changes, which
+// a /model switch or a drift pin can do and which makes the old verdict
+// stale. nonConvergentAt <= 0 means "nothing on record."
+func autoSuppressedByNonConvergence(pct float64, window int, nonConvergentAt float64, nonConvergentWindow int) bool {
+	if nonConvergentAt <= 0 || window != nonConvergentWindow {
+		return false
+	}
+	return pct < nonConvergentAt+watermarkStep
+}
+
+// dominantContextBucket names the largest of three coarse context
+// consumers — the system prompt (incl. injected memory/skills text), the
+// advertised tool schemas (incl. MCP), and the conversation history — so a
+// non-convergence notice can point the user at what to trim instead of
+// just reporting a percentage. It reuses the same primitives as /context
+// (SplitMessages + registrySchemaTokens) rather than the full per-file
+// breakdown, which is enough to choose the actionable advice. Returns the
+// bucket label and its estimated tokens.
+func (m Model) dominantContextBucket() (string, int) {
+	sysTok, convoTok := contextwindow.SplitMessages(m.lockedMessages())
+	schemaTok := registrySchemaTokens(m.cfg.Registry)
+	name, tokens := "system prompt", sysTok
+	if schemaTok > tokens {
+		name, tokens = "tool schemas", schemaTok
+	}
+	if convoTok > tokens {
+		name, tokens = "retained conversation", convoTok
+	}
+	return name, tokens
 }
 
 // ctxBarWidth is the cell count of the visual fill bar in the ctx

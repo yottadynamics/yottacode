@@ -537,17 +537,19 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 	skillTool.SetEnabled(defaultOn)
 	reg.Register(skillTool)
 
-	// Compaction is deliberately left unset for the interactive session.
-	// In-loop compaction (which subagents use) rewrites history in place
-	// and discards the summarized middle — fine for a subagent's
-	// ephemeral, isolated history, but for the main session it would
-	// silently drop the user's own conversation mid-turn, bypassing the
-	// turn-boundary summarizer that first snapshots the full history to
-	// disk and rebuilds the /recall index. The interactive session manages
-	// context at the turn boundary instead (see updateContextUsage /
-	// startAutoSummarize). The known gap — a single turn that balloons past
-	// the window before it ends — degrades to the provider's own limit and
-	// /clear, which is preferable to losing history without a snapshot.
+	// Mid-turn compaction can safely rewrite interactive history because
+	// every rewrite first snapshots the full pre-compaction transcript to
+	// disk. It intentionally sits above the turn-boundary auto-summarizer:
+	// normal sessions still use the richer boundary summary, while a single
+	// long auto/yolo turn gets an in-loop safety net before the provider
+	// limit. The exact Window is refreshed again inside each turn after the
+	// system prompt is rebuilt with current memory/skills.
+	compactionWindow := catalog.ResolveWindowForProvider(fileCfg.ProviderKindForModel(opts.Model), opts.Model, fileCfg.ContextWindowOverride(opts.Model), fileCfg.Context.DefaultWindow)
+	compactionThreshold := fileCfg.Context.CompactionThreshold
+	var summarizerWindow int
+	if fastModel := routerFastModel(routerAdapters); fastModel != "" {
+		summarizerWindow = catalog.ResolveWindowForProvider(fileCfg.ProviderKindForModel(fastModel), fastModel, fileCfg.ContextWindowOverride(fastModel), fileCfg.Context.DefaultWindow)
+	}
 	cfg := agent.LoopConfig{
 		Adapter:           ad,
 		Registry:          reg,
@@ -559,6 +561,15 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 		AutoMode:          autoMode,
 		YoloMode:          yoloMode,
 		LoopControl:       loopControl,
+		Compaction: &agent.CompactionConfig{
+			Window:           compactionWindow,
+			Threshold:        compactionThreshold,
+			Summarizer:       routerFast(routerAdapters),
+			SummarizerWindow: summarizerWindow,
+			PreCompact: func(history []adapter.Message) (string, error) {
+				return writePreSummarySnapshot(sess.ID, history)
+			},
+		},
 	}
 
 	// Checkpoint store powers /checkpoints + Esc Esc. Failure here is

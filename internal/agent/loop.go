@@ -175,6 +175,12 @@ type CompactionConfig struct {
 	// compaction. 0 means "same as Window" (the summarizer is the loop's
 	// own adapter, so the windows match).
 	SummarizerWindow int
+	// PreCompact snapshots the exact pre-rewrite history. It is called
+	// after compaction has proven it can change history but before the
+	// replacement is installed. Snapshot failures are reported on the
+	// ContextCompacted event and do not block compaction: provider-limit
+	// recovery must still work on a full or unavailable disk.
+	PreCompact func([]adapter.Message) (string, error)
 }
 
 // CheckpointWriter is the slice of the checkpoint store the agent loop
@@ -222,9 +228,10 @@ func CheckpointFromContext(ctx context.Context) (sessionID, cpID string) {
 }
 
 type loopState struct {
-	iteration    int
-	history      *[]adapter.Message
-	toolFailures map[string]int
+	iteration                int
+	history                  *[]adapter.Message
+	toolFailures             map[string]int
+	overflowRecoveryAttempts int
 }
 
 type toolExecResult struct {
@@ -383,7 +390,28 @@ func Turn(
 			return err
 		}
 
-		final, err := streamIteration(ctx, cfg, snapshotHistory(cfg, state.history), events)
+		var final *adapter.Message
+		var err error
+		for {
+			final, err = streamIteration(ctx, cfg, snapshotHistory(cfg, state.history), events)
+			// Provider context-limit errors are normally pre-stream HTTP
+			// rejections. Retry only when no assistant content reached the UI;
+			// otherwise a second stream would duplicate already-rendered text.
+			// Marker coverage is conservative (OpenAI-compatible/Codex/
+			// Anthropic today; Gemini/Ollama may need more strings), and router
+			// fallback can surface only the final candidate's error.
+			if err != nil && adapter.IsContextOverflow(err) && final == nil && cfg.Compaction != nil && state.overflowRecoveryAttempts < 1 {
+				changed, compactErr := compact(ctx, cfg, state.history, events, true)
+				if compactErr != nil {
+					return compactErr
+				}
+				state.overflowRecoveryAttempts++
+				if changed {
+					continue
+				}
+			}
+			break
+		}
 		if err != nil {
 			// Distinguish a user-initiated cancel (Enter / Esc / Ctrl+C
 			// fired the parent's turnCancel) from a real adapter error.

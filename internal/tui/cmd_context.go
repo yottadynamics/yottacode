@@ -101,11 +101,12 @@ func indentContextReport(s, pad string) string {
 }
 
 // renderContextReport assembles the full /context view: header,
-// segmented bar, totals line, category legend, and the three
-// breakdown sections (MCP / Memory / Skills).
+// segmented bar, totals line, operational diagnostics, category legend,
+// and the breakdown sections (MCP / Memory / Skills).
 func renderContextReport(m *Model) string {
 	window := m.contextWindow()
-	sysTok, convoTok := contextwindow.SplitMessages(m.lockedMessages())
+	msgs := m.lockedMessages()
+	sysTok, convoTok := contextwindow.SplitMessages(msgs)
 
 	sysToolTokens, mcpToolTokens := contextToolTokens(m)
 
@@ -167,6 +168,9 @@ func renderContextReport(m *Model) string {
 	out.WriteString(styleMeta.Render(contextSummaryLine(used, window, m.modelName)))
 	out.WriteString("\n\n")
 
+	out.WriteString(renderContextDiagnostics(m, buckets, used, window, sysTok, sysToolTokens+skillTokens+mcpToolTokens, convoTok))
+	out.WriteString("\n\n")
+
 	out.WriteString(styleMeta.Render("Estimated usage by category"))
 	out.WriteString("\n")
 	out.WriteString(renderContextLegend(buckets, window))
@@ -181,6 +185,91 @@ func renderContextReport(m *Model) string {
 	out.WriteString(renderContextSkillsSection(skillRows))
 
 	return strings.TrimRight(out.String(), "\n")
+}
+
+// renderContextDiagnostics explains the control-plane decisions behind the
+// usage bar: which thresholds are active, whether mid-turn compaction can run,
+// and what recent compaction/summarization did. This is deliberately textual
+// rather than another graph so users can paste it into bug reports.
+func renderContextDiagnostics(m *Model, buckets []contextBucket, used, window, systemTokens, toolTokens, messageTokens int) string {
+	var out strings.Builder
+	out.WriteString(styleSplashTitle.Render("Diagnostics"))
+	out.WriteString("\n")
+
+	warn := thresholdStatus("warn", m.fileCfg.Context.WarnThreshold)
+	auto := thresholdStatus("auto", m.fileCfg.Context.AutoThreshold)
+	compact := thresholdStatus("compaction", m.fileCfg.Context.CompactionThreshold)
+	fmt.Fprintf(&out, "  Window: %s · %s\n", formatTokens(window), contextWindowSource(m))
+	fmt.Fprintf(&out, "  Thresholds: %s · %s · %s\n", warn, auto, compact)
+	fmt.Fprintf(&out, "  Tool schema overhead: %s tokens\n", formatTokens(toolTokens))
+	name, tokens := largestContextBucket(buckets)
+	fmt.Fprintf(&out, "  Largest bucket: %s (%s tokens)\n", name, formatTokens(tokens))
+	fmt.Fprintf(&out, "  Compaction: %s\n", contextCompactionStatus(m, used, window, systemTokens, toolTokens, messageTokens))
+	fmt.Fprintf(&out, "  Last summarize: %s\n", emptyDash(m.lastContextSummary))
+	fmt.Fprintf(&out, "  Last mid-turn compaction: %s", emptyDash(m.lastContextCompaction))
+	return out.String()
+}
+
+func thresholdStatus(name string, value float64) string {
+	if value <= 0 || value >= 1.0 {
+		return name + " off"
+	}
+	return fmt.Sprintf("%s %.0f%%", name, value*100)
+}
+
+func contextWindowSource(m *Model) string {
+	if m.modelName == "" {
+		return "no active model"
+	}
+	if override := m.fileCfg.ContextWindowOverride(m.modelName); override > 0 {
+		return "configured/scanned window"
+	}
+	if key := m.driftKey(); key != "" {
+		return "provider/catalog window for " + key
+	}
+	return "catalog/default window for " + m.modelName
+}
+
+func largestContextBucket(buckets []contextBucket) (string, int) {
+	name := "none"
+	tokens := 0
+	for _, b := range buckets {
+		if !b.used || b.tokens <= tokens {
+			continue
+		}
+		name, tokens = b.label, b.tokens
+	}
+	return name, tokens
+}
+
+func contextCompactionStatus(m *Model, used, window, systemTokens, toolTokens, messageTokens int) string {
+	cc := m.cfg.Compaction
+	if cc == nil {
+		return "disabled (not wired)"
+	}
+	if window <= 0 || cc.Window <= 0 {
+		return "disabled (window unavailable or irreducible floor too high)"
+	}
+	threshold := m.fileCfg.Context.CompactionThreshold
+	if threshold >= 1.0 || threshold <= 0 {
+		return "preemptive off; provider-overflow recovery can force one attempt"
+	}
+	parts := []string{fmt.Sprintf("fires at %.0f%% (%s)", threshold*100, formatTokens(int(threshold*float64(window))))}
+	if used >= int(threshold*float64(window)) {
+		parts = append(parts, "currently eligible")
+	} else {
+		parts = append(parts, fmt.Sprintf("%s until trigger", formatTokens(max(int(threshold*float64(window))-used, 0))))
+	}
+	floor := systemTokens + toolTokens + int(compactionRetainFractionForTUI*float64(window))
+	parts = append(parts, fmt.Sprintf("floor≈%s + messages %s", formatTokens(floor), formatTokens(messageTokens)))
+	return strings.Join(parts, "; ")
+}
+
+func emptyDash(s string) string {
+	if strings.TrimSpace(s) == "" {
+		return "—"
+	}
+	return s
 }
 
 // contextToolTokens splits the registry's advertised tools into built-

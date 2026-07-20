@@ -99,11 +99,23 @@ func newChildCompaction(childWindow int, summarizer Streamer, summarizerWindow i
 // rather than aborting the turn. The only error maybeCompact returns is
 // a context cancellation observed while emitting the success event.
 func maybeCompact(ctx context.Context, cfg LoopConfig, history *[]adapter.Message, events chan<- Event) error {
+	_, err := compact(ctx, cfg, history, events, false)
+	return err
+}
+
+// compact is maybeCompact's worker. When force is true it skips the
+// threshold/convergence gates and may shrink only the retained tail by
+// capping oversized tool results; that cap-only path is what lets a
+// provider-limit rejection recover even when there is no older middle to
+// summarize. The changed result lets callers decide whether a retry can
+// make progress.
+func compact(ctx context.Context, cfg LoopConfig, history *[]adapter.Message, events chan<- Event, force bool) (bool, error) {
 	cc := cfg.Compaction
-	if cc == nil || cc.Window <= 0 || cc.Threshold <= 0 {
-		return nil
+	if cc == nil || cc.Window <= 0 || (!force && cc.Threshold <= 0) {
+		return false, nil
 	}
-	h := *history
+	h := snapshotHistory(cfg, history)
+	original := h
 	before := contextwindow.EstimateTokens(h)
 	// Tool schemas ride on every request but aren't part of the message
 	// slice, so EstimateTokens omits them. Count them toward the trigger —
@@ -111,33 +123,42 @@ func maybeCompact(ctx context.Context, cfg LoopConfig, history *[]adapter.Messag
 	// compaction fires against the real on-wire size, not an undercount.
 	overhead := toolSchemaTokens(cfg.Registry)
 	threshold := cc.Threshold * float64(cc.Window)
-	if float64(before+overhead) < threshold {
-		return nil
+	if !force && float64(before+overhead) < threshold {
+		return false, nil
 	}
 	firstUser := firstUserIndex(h)
 	if firstUser < 0 {
-		return nil // no task anchor — nothing sensible to compact
+		return false, nil // no task anchor — nothing sensible to compact
 	}
 	tailStart := chooseCompactionTailStart(h, firstUser, int(compactionRetainFraction*float64(cc.Window)))
+	capped, cappedChanged := capRetainedToolMessages(h, tailStart)
+	if cappedChanged {
+		h = capped
+	}
 	middle := h[firstUser+1 : tailStart]
 	if len(middle) == 0 {
+		if force && cappedChanged {
+			path, snapErr := preCompactSnapshot(cc, original)
+			setHistory(cfg, history, h)
+			after := contextwindow.EstimateTokens(h)
+			return true, send(ctx, events, ContextCompacted{Before: before, After: after, SnapshotPath: path, SnapshotErr: snapErr, Forced: true})
+		}
 		// The anchors + retained tail already span everything; there's
 		// no older middle to summarize. Can't make progress this round —
 		// leave history alone and let the turn proceed.
-		return nil
+		return false, nil
 	}
 	// Convergence guard: if dropping the entire middle still wouldn't get
 	// the request under the threshold, the irreducible floor (system +
 	// task anchor + the retained tail + tool schemas) already exceeds it —
 	// e.g. a single tool result larger than the retain budget. Summarizing
 	// can't win, so skip rather than spend a summary call every iteration
-	// that never gets under the line. The turn proceeds and, if it truly
-	// overflows, hits the provider's own limit (the pre-compaction
-	// behavior). overage is how far over we are; the middle has to be
-	// worth more than that to be worth compacting.
+	// that never gets under the line. Force skips this because the provider
+	// has already proven the current request is too large, and capping the
+	// retained tail may have lowered the floor.
 	overage := float64(before+overhead) - threshold
-	if float64(contextwindow.EstimateTokens(middle)) <= overage {
-		return nil
+	if !force && float64(contextwindow.EstimateTokens(middle)) <= overage {
+		return false, nil
 	}
 
 	summarizer := cc.Summarizer
@@ -148,8 +169,8 @@ func maybeCompact(ctx context.Context, cfg LoopConfig, history *[]adapter.Messag
 		// No summarizer wired (neither an injected Summarizer nor the
 		// loop's own Adapter). Can't compact; soft-skip so the turn still
 		// proceeds rather than nil-derefing on the ChatStream call.
-		_ = send(ctx, events, ContextCompacted{Before: before, After: before, Err: errEmptyCompactionSummarizer})
-		return nil
+		_ = send(ctx, events, ContextCompacted{Before: before, After: before, Err: errEmptyCompactionSummarizer, Forced: force})
+		return false, nil
 	}
 	// Budget the summary INPUT against the SMALLER of the loop window and
 	// the summarizer's own window: under cache-safe routing the summary
@@ -164,17 +185,62 @@ func maybeCompact(ctx context.Context, cfg LoopConfig, history *[]adapter.Messag
 		// Best-effort: keep history, record the attempt. The turn
 		// continues and may hit the provider's own context limit, which
 		// is the pre-existing (pre-compaction) behavior.
-		_ = send(ctx, events, ContextCompacted{Before: before, After: before, Err: err})
-		return nil
+		_ = send(ctx, events, ContextCompacted{Before: before, After: before, Err: err, Forced: force})
+		return false, nil
 	}
 
 	out := assembleCompacted(h, firstUser, tailStart, summary)
+	path, snapErr := preCompactSnapshot(cc, original)
 	// Whole-slice replacement under the history lock. Today only subagents
 	// compact (cfg.HistoryLock nil → a plain assignment), but routing it
 	// through setHistory keeps it correct if the main TUI loop ever enables
 	// compaction, where another goroutine reads the same slice.
 	setHistory(cfg, history, out)
-	return send(ctx, events, ContextCompacted{Before: before, After: contextwindow.EstimateTokens(out)})
+	return true, send(ctx, events, ContextCompacted{Before: before, After: contextwindow.EstimateTokens(out), SnapshotPath: path, SnapshotErr: snapErr, Forced: force})
+}
+
+func preCompactSnapshot(cc *CompactionConfig, history []adapter.Message) (string, error) {
+	if cc == nil || cc.PreCompact == nil {
+		return "", nil
+	}
+	return cc.PreCompact(history)
+}
+
+const (
+	maxRetainedToolTokens        = 4096
+	retainedToolCompactionMarker = "…(truncated by compaction)"
+)
+
+func capRetainedToolMessages(h []adapter.Message, tailStart int) ([]adapter.Message, bool) {
+	if tailStart < 0 {
+		tailStart = 0
+	}
+	if tailStart > len(h) {
+		tailStart = len(h)
+	}
+	var out []adapter.Message
+	changed := false
+	for i := tailStart; i < len(h); i++ {
+		m := h[i]
+		if m.Role != adapter.RoleTool || estimateMsgTokens(m) <= maxRetainedToolTokens {
+			continue
+		}
+		if out == nil {
+			out = append([]adapter.Message(nil), h...)
+		}
+		maxChars := maxRetainedToolTokens * 4
+		if maxChars <= len(retainedToolCompactionMarker) {
+			m.Content = retainedToolCompactionMarker
+		} else {
+			m.Content = m.Content[:maxChars-len(retainedToolCompactionMarker)] + retainedToolCompactionMarker
+		}
+		out[i] = m
+		changed = true
+	}
+	if !changed {
+		return h, false
+	}
+	return out, true
 }
 
 // toolSchemaTokens estimates the token cost of the tool schemas the
