@@ -1521,6 +1521,36 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.turnActive && !m.awaitingApproval && !m.awaitingPathTrust {
 			switch msg.Type {
+			case tea.KeyUp:
+				// Up while the active-turn textarea is empty is the edit handle for
+				// a queued-but-undelivered user message. Draining userMsgCh removes
+				// the pending delivery; pressing Enter after editing will enqueue the
+				// revised text through the normal mid-turn path below.
+				if strings.TrimSpace(m.textInput.Value()) == "" {
+					select {
+					case queued := <-m.userMsgCh:
+						if queued != "" {
+							m.textInput.SetValue(queued)
+							m.textInput.CursorEnd()
+							m.appendLine(styleAuto.Render("[queued] recalled for editing"))
+							return m, nil
+						}
+					default:
+					}
+					if m.pendingInputAfterTurn != "" {
+						queued := m.pendingInputAfterTurn
+						m.pendingInputAfterTurn = ""
+						m.textInput.SetValue(queued)
+						m.textInput.CursorEnd()
+						m.appendLine(styleAuto.Render("[queued] recalled for editing"))
+						return m, nil
+					}
+				}
+				m.preGrowTextarea()
+				var cmd tea.Cmd
+				m.textInput, cmd = m.textInput.Update(msg)
+				m.fitTextareaHeight()
+				return m, cmd
 			case tea.KeyCtrlC, tea.KeyEsc:
 				// Esc mirrors Claude Code's cancel feel — same effect
 				// as Ctrl+C while a turn is running: kill the
