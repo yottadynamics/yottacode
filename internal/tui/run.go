@@ -22,6 +22,7 @@ import (
 	"github.com/yottadynamics/yottacode/internal/memory"
 	"github.com/yottadynamics/yottacode/internal/permissions"
 	"github.com/yottadynamics/yottacode/internal/recall"
+	"github.com/yottadynamics/yottacode/internal/sensitive"
 	"github.com/yottadynamics/yottacode/internal/session"
 	"github.com/yottadynamics/yottacode/internal/skills"
 	"github.com/yottadynamics/yottacode/internal/subagents"
@@ -366,6 +367,7 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 	reg.Register(&agent.MemorySaveTool{Cwd: cwdRef, Embedder: embedClient})
 	reg.Register(&agent.MemoryForgetTool{Cwd: cwdRef})
 	reg.Register(&agent.MemorySearchTool{Cwd: cwdRef, Embedder: embedClient, Strategy: fileCfg.Retrieval.Strategy})
+	reg.Register(&agent.MemoryAuditTool{Cwd: cwdRef})
 	reg.Register(&agent.MemoryGetTool{Cwd: cwdRef})
 	reg.Register(&agent.GitTool{Cwd: cwdRef})
 	reg.Register(&agent.TodoWriteTool{Store: planStore})
@@ -611,6 +613,17 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 		reg.Register(&agent.SessionRecallTool{Searcher: &recallAdapter{idx: idx}})
 	}
 
+	// Resolve the project once, then decide the sensitivity posture from it.
+	// Both feed auto-recall: projectRoots scopes what this project may pull
+	// in, sensitiveRoots bounds what any quarantined project may ever emit.
+	// Sensitivity keys off the repo root — the first entry — because that is
+	// the path the user marks with `yottacode sensitive add`.
+	projectRoots := sessionProjectRoots(ctx, cwd)
+	sensitiveProject, sensitiveRoots, err := sensitivePosture(projectRoots[0])
+	if err != nil {
+		return err
+	}
+
 	model := New(ctx, Config{
 		Cfg:                    cfg,
 		Session:                sess,
@@ -640,6 +653,9 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 		Commit:                 version.Commit(),
 		Dirty:                  version.Dirty(),
 		Branch:                 gitBranch(ctx, cwd),
+		ProjectRoots:           projectRoots,
+		SensitiveProject:       sensitiveProject,
+		SensitiveRoots:         sensitiveRoots,
 		Worktree:               sess.Worktree,
 		MemorySummary:          mem.Summary().String(),
 		BaseSystemPrompt:       baseSys,
@@ -679,6 +695,14 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 			rendered = styleError.Render(fmt.Sprintf("[commands] %s", e.Error()))
 		}
 		model.appendLine(rendered)
+	}
+	// Say so when this project is quarantined. A protection that engages
+	// silently is one the user can't verify is on — and the visible absence of
+	// "recalled N" is indistinguishable from simply having no relevant history.
+	if sensitiveProject {
+		model.pendingStartupNotices = append(model.pendingStartupNotices,
+			styleAuto.Render("sensitive project: automatic session recall is off, and this project's "+
+				"conversations are excluded from every other project's recall — `yottacode sensitive` to manage"))
 	}
 	// Confirm at startup which experimental features are on — without this
 	// the gate left no in-session signal it was enabled. /experimental shows
@@ -997,6 +1021,89 @@ func gitBranch(ctx context.Context, cwd string) string {
 		return ""
 	}
 	return strings.TrimSpace(string(out))
+}
+
+// sessionProjectRoots resolves every directory tree that counts as "this
+// project", once, at startup. Auto-recall's project scope matches session cwds
+// against them (see recall.projectScopeClause), and resolving here keeps a git
+// subprocess off the per-turn path.
+//
+// The first entry is always the repo root and is what the sensitivity gate
+// keys off. ResolveRepoRoot walks back to the *main* repo even from inside a
+// yottacode worktree, so a worktree session recalls the whole repo's history
+// rather than only its own.
+//
+// The second entry is the repo's worktree container,
+// ~/.yottacode/worktrees/<repo-slug>/. Worktrees live outside the repo tree
+// entirely, so without it two worktrees of one repo — or a worktree and the
+// main checkout — could never recall each other despite being the same work.
+// The slug embeds a hash of the repo root, so this can't pull in another
+// repo's worktrees.
+//
+// Not a git repo, or git missing, yields just the plain cwd — reproducing the
+// exact-match behaviour recall had before any of this.
+func sessionProjectRoots(ctx context.Context, cwd string) []string {
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	root, err := worktree.ResolveRepoRoot(ctx, cwd)
+	if err != nil || strings.TrimSpace(root) == "" {
+		return []string{cwd}
+	}
+	return []string{root, worktree.SlugDir(root)}
+}
+
+// sensitivePosture reports whether projectRoot is a sensitive project, and
+// returns every directory tree that should be excluded for sensitive projects.
+//
+// Both halves matter and they are not the same question. The bool gates
+// auto-recall *into* this project; the slice bounds what any sensitive project
+// — including ones unrelated to this session — may emit into this project's
+// recall, which is why the whole list is needed rather than just this repo's
+// status. Each marked root expands to its managed-worktree container too: a
+// session launched from ~/.yottacode/worktrees/<repo-slug>/... carries the same
+// sensitive content as the main checkout and must not bypass the outbound gate.
+//
+// A malformed store is a hard startup error rather than a degrade-to-empty.
+// Treating an unreadable sensitivity list as "nothing is sensitive" would turn
+// a typo into a silent loss of PHI protection — the one failure mode this
+// feature exists to prevent. Same stance config.LoadDefault takes.
+func sensitivePosture(projectRoot string) (bool, []string, error) {
+	path, err := sensitive.DefaultStorePath()
+	if err != nil {
+		return false, nil, err
+	}
+	store, err := sensitive.Load(path)
+	if err != nil {
+		return false, nil, err
+	}
+	return store.Contains(projectRoot), sensitiveRecallRoots(store.Paths()), nil
+}
+
+// sensitiveRecallRoots expands user-marked sensitive roots into every path tree
+// auto-recall must suppress. Marking the main repo root covers both sessions
+// recorded under that checkout and sessions recorded under yottacode-managed
+// worktrees for the same repo.
+func sensitiveRecallRoots(roots []string) []string {
+	out := make([]string, 0, len(roots)*2)
+	seen := make(map[string]struct{}, len(roots)*2)
+	for _, root := range roots {
+		root = strings.TrimSpace(root)
+		if root == "" {
+			continue
+		}
+		for _, candidate := range []string{root, worktree.SlugDir(root)} {
+			candidate = strings.TrimSpace(candidate)
+			if candidate == "" {
+				continue
+			}
+			if _, ok := seen[candidate]; ok {
+				continue
+			}
+			seen[candidate] = struct{}{}
+			out = append(out, candidate)
+		}
+	}
+	return out
 }
 
 func openSession(opts cli.ChatOptions, cwd string) (*session.Session, bool, error) {

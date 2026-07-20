@@ -249,8 +249,8 @@ The body is where the value lives — and where "vague memory" failures show up.
 
 Standing guidance in a system prompt loses the model's attention over a
 long agentic session — by the time something durable surfaces, the
-"when to save" section is thousands of tokens back. Three reinforcement
-points re-surface the capability at the moments that matter. All three
+"when to save" section is thousands of tokens back. Four reinforcement
+points re-surface the capability at the moments that matter. All four
 are **reminders, not extractors**: the harness only picks the moment;
 whether and what to save stays the model's in-band judgment, and every
 reminder carries an explicit "if genuinely nothing durable is unsaved, save nothing" out so
@@ -271,14 +271,27 @@ saved yet, including decisions, rationale, gotchas, and how things work.
    The transcript shows a muted notice when it arms; the reminder itself
    is model-facing only. It disarms when usage drops back below the
    threshold.
-3. **Final turn on quit** (`[memory] final_turn_on_quit`, default
+3. **Periodic capture reminder** (`[memory] capture_reminder_every_turns`,
+   default `6`). Every Nth user message carries a mid-session checkpoint
+   asking the model to persist anything durable it hasn't saved yet. This
+   exists because the other two mid-session points have narrow triggers:
+   the pre-compaction reminder only fires if a session crosses the
+   summarize watermark (most never do), and the final turn needs a
+   graceful quit — so a medium session ended with `Ctrl+C` previously got
+   no reinforcement at all beyond the standing prompt. It rides a message
+   you were sending anyway (history copy only, like the pre-compaction
+   reminder), so it costs no extra turn, and it stands down when a
+   pre-compaction reminder is already pending — that one is more urgent
+   and asks for the same thing. Set to `0` to disable.
+4. **Final turn on quit** (`[memory] final_turn_on_quit`, default
    `true`). A graceful exit — `/quit` or `Ctrl+D` while idle — runs one
    last visible turn prompting the model to save unsaved durable
    learnings — including decisions, rationale, gotchas, and subsystem
    knowledge — then completes the quit when the turn ends. `Esc` or
    `Ctrl+C` during the turn skips it (cancels and quits); `Ctrl+C` *as*
-   the quit gesture always exits immediately, no final turn. Sessions
-   with fewer than two turns started this launch quit instantly.
+   the quit gesture always exits immediately, no final turn — those
+   sessions are covered by the periodic reminder above. A session with no
+   turns started this launch quits instantly.
 
 The save-side behavior is gated by an eval mirroring the retrieval one:
 `go test ./internal/agent -run Proactivity -v` runs fixture turns that
@@ -308,7 +321,7 @@ The full guidance lives in the agent's system prompt; see `internal/agent/prompt
 
 The agent has five memory tools, all **silent by default** (no approval modal — they're as ordinary as `read_file`):
 
-- **`memory_save`** — creates a memory file, or updates an existing one of the same name. On a same-name update the prior version is **archived** to `<memdir>/.archive/<name>.<stamp>.md` (recoverable, never silently lost; excluded from the index, retrieval, and `memory list`) and the original `created` timestamp is preserved. The result reports `created` vs `updated` (and whether a version was archived). Updates `MEMORY.md`. Generates a `.vec` sidecar when an embedding model is available; if embedding is unavailable, the save still succeeds and the result notes that the semantic index wasn't updated.
+- **`memory_save`** — creates a memory file, or updates an existing one of the same name. Only `name` and `content` are required: the five-field form competes with the primary task at exactly the moment something durable surfaces, which is when capture gets skipped. Omitted fields default — `scope` to `user` (baking in the default-to-user steering), `type` to `note` (so quick captures group under one index section, a natural queue for later curation), and `description` to the first non-empty line of the body. The schema still asks for all five and the model should fill them when it can; the defaults are a floor, not a target. On a same-name update the prior version is **archived** to `<memdir>/.archive/<name>.<stamp>.md` (recoverable, never silently lost; excluded from the index, retrieval, and `memory list`) and the original `created` timestamp is preserved. The result reports `created` vs `updated` (and whether a version was archived). Updates `MEMORY.md`. Generates a `.vec` sidecar when an embedding model is available; if embedding is unavailable, the save still succeeds and the result notes that the semantic index wasn't updated.
 - **`memory_forget`** — deletes a memory file by name. Updates `MEMORY.md`. Errors when the named memory doesn't exist (so the agent learns the right names).
 - **`memory_search`** — searches across user and/or project memory stores, returning ranked results with relevance scores (zero-relevance entries are omitted). The agent uses this to check for duplicates before saving, find related memories when reasoning about a topic, or verify a remembered fact. Accepts `scope` (`all`, `user`, `project`) and `limit` parameters.
 - **`memory_get`** — returns the full, untruncated contents (frontmatter + body) of one memory by `scope` + `name`. Used before updating a memory so the agent can preserve the parts it isn't changing, instead of blindly overwriting from the 300-char `memory_search` preview.
@@ -535,14 +548,18 @@ In the browse sub-lists: `Enter` opens the chosen memory in vim, `d` deletes it 
 
 ### Cobra subcommands (for scripts)
 
-The same actions are exposed as non-interactive subcommands so CI or one-off shells can list, delete, and reindex memories without launching the TUI:
+The same actions are exposed as non-interactive subcommands so CI or one-off shells can list, delete, audit, and reindex memories without launching the TUI:
 
 ```
 yottacode memory list [--scope user|project]   # default: project
 yottacode memory forget --scope <s> <name>
 yottacode memory reindex                       # generate .vec sidecars for all memories
 yottacode memory search <query>                # search memories by query (same as memory_search tool)
+yottacode memory audit                         # read-only curation report for notes/duplicates/scope/body issues
+yottacode memory audit --plan                  # group issues into a read-only curation plan
 ```
+
+`memory audit` is Memory Curation Phase 1: it is deliberately read-only and surfaces the queue a human-like agent needs to consolidate over time — quick-capture `type=note` entries, duplicate descriptions, empty or description-only bodies, and portable `user`/`feedback` memories that landed in project scope. Memory Curation Phase 2 exposes the same report to the agent as `memory_audit`, so an explicit curation turn can inspect the queue, fetch full entries with `memory_get`, then apply each decision with `memory_save` and `memory_forget` instead of relying on shell commands. Memory Curation Phase 3 makes the report actionable: every issue includes a suggested next step such as `memory_get` both duplicates, `memory_save` a consolidated durable entry, then `memory_forget` stale notes. Memory Curation Phase 4 adds provenance and age: audit output includes each memory's `created` date, age in days, and highlights quick notes older than 30 days as priority curation candidates. Memory Curation Phase 5 adds `--plan` / `{"plan":true}` mode, which groups issues into read-only batches such as duplicate merges, quick-note promotion, portable scope moves, and empty-entry cleanup. The suggestions are guidance only; the audit still never mutates memory.
 
 ### Agent introspection flow
 
@@ -560,9 +577,14 @@ The agent's self-learning loop uses these tools together:
                 │
                 ├── memory_save(scope=user, ...) for portable knowledge
                 └── memory_save(scope=project, ...) for repo-specific facts
+
+  memory_audit(scope=all)
+        │
+        └── explicit curation pass → memory_get full entries, then
+            memory_save consolidated facts and memory_forget stale notes
 ```
 
-The agent decides autonomously when to search, save, update, or forget — the tools give it the capability, but the LLM owns the judgment about when and what to remember.
+The agent decides autonomously when to search, save, update, or forget — the tools give it the capability, but the LLM owns the judgment about when and what to remember. `memory_audit` is the read-only trigger for deliberate curation: it finds the rough edges, but every write still goes through the normal memory tools so the transcript shows what changed.
 
 ---
 
@@ -572,9 +594,9 @@ Past sessions are searchable **three ways**, all over the same SQLite index at `
 
 - **`/recall <query>`** — user-initiated FTS5 full-text search across every saved session in `~/.yottacode/sessions/`. Useful for "I remember we discussed X — which session was that in?"
 - **`session_recall` tool** — the agent runs the same FTS5 search proactively when it suspects a topic came up before, without you asking.
-- **Automatic recall (semantic)** — each turn, yottacode embeds your message, semantically searches past sessions, and injects the most relevant excerpts into the system prompt **on its own** — the episodic counterpart to the per-turn memory retrieval above. Reads-only (it never writes memory), project-scoped by default, and requires a local embedding model (falls back to the manual tool when unavailable). Configured under `[retrieval.session_recall]`; full details in [Automatic recall of prior conversations](sessions.md#automatic-recall-of-prior-conversations).
+- **Automatic recall (semantic)** — each turn, yottacode embeds your message, semantically searches past sessions, and injects the most relevant excerpts into the system prompt **on its own** — the episodic counterpart to the per-turn memory retrieval above. Reads-only (it never writes memory), project-scoped by default (the repo root and everything under it), and requires a local embedding model (falls back to the manual tool when unavailable). Repos marked with `yottacode sensitive add` are excluded in both directions — see [Sensitive projects](sessions.md#sensitive-projects). Configured under `[retrieval.session_recall]`; full details in [Automatic recall of prior conversations](sessions.md#automatic-recall-of-prior-conversations).
 
-The FTS index is rebuilt incrementally on every session save and backfilled at startup. When semantic recall is on, message embeddings live in a `message_vectors` table in that same index — backfilled in the background at startup and incrementally after each turn (so a conversation is recallable in later sessions without a restart) — and the thinking-row footer shows `recalled N conversations` when a turn pulls prior context in. Set `YOTTACODE_RECALL_DEBUG=1` to log each firing's cosine scores to `~/.yottacode/recall-debug.log` for tuning `min_score`.
+The FTS index is rebuilt incrementally on every session save and backfilled at startup. When semantic recall is on, message embeddings live in a `message_vectors` table in that same index — backfilled in the background at startup and incrementally after each turn (so a conversation is recallable in later sessions without a restart) — and the thinking-row footer shows `recalled N conversations` when a turn pulls prior context in. Set `YOTTACODE_RECALL_DEBUG=1` to log every candidate — its cosine score and whether it was injected or dropped, including on turns that inject nothing — to `~/.yottacode/recall-debug.log` for tuning `min_score`. The log records a short query digest, not the raw prompt text, so debug tuning does not create a second on-disk copy of secrets or PHI.
 
 `/summarize` compresses the active session's transcript when context is filling up. Replaces the message history with a synopsis injected into the system prompt under `## Prior session context (summarized)`. Auto-summarization fires automatically before the next turn at `context.auto_threshold` (default 0.85 — 85% of the model's window).
 

@@ -504,6 +504,10 @@ func DefaultDenyPaths(cwd string) []string {
 			filepath.Join(yc, "index.sqlite"),
 			filepath.Join(yc, "USER.md"),
 			filepath.Join(yc, "trusted-roots.json"), // folder-trust store — only the trust prompt / `yottacode trust` writes here
+			// Sensitive-project store. Denied for the same reason as trust:
+			// the model must not be able to un-mark a PHI repo and thereby
+			// re-enable automatic recall egress for it.
+			filepath.Join(yc, "sensitive-roots.json"),
 			// Home-anchored memory tree (memory/user/, memory/projects/<slug>/,
 			// nested subagents/ transcripts): always denied, because an
 			// override-less session loads memories from here regardless of

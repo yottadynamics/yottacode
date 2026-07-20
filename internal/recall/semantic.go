@@ -6,22 +6,24 @@ import (
 	"fmt"
 	"hash/fnv"
 	"math"
+	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/yottadynamics/yottacode/internal/adapter"
 )
 
-// Scope values for SearchSemantic. "project" restricts recall to sessions
-// whose cwd matches the caller's; "user"/"all" (and anything else) search the
-// whole store. The store is already per-user under ~/.yottacode, so "user" and
-// "all" are equivalent today — both are accepted so the config vocabulary in
-// the plan stays intact.
+// Scope values for SearchSemantic. "project" restricts recall to sessions in
+// the caller's project (see projectScopeClause); "user"/"all" (and anything
+// else) search the whole store. The store is already per-user under
+// ~/.yottacode, so "user" and "all" are equivalent today — both are accepted so
+// the config vocabulary in the plan stays intact. There is no "off" scope:
+// auto-recall is switched off with `auto = false`.
 const (
 	ScopeProject = "project"
 	ScopeUser    = "user"
 	ScopeAll     = "all"
-	ScopeOff     = "off"
 )
 
 // Embedder is the narrow slice of memory.EmbedClient that vector backfill
@@ -48,12 +50,14 @@ type ScoredHit struct {
 
 // SemanticSearchOpts parameterizes SearchSemantic.
 type SemanticSearchOpts struct {
-	Model          string // embed model; only vectors from this model are ranked
-	Scope          string // ScopeProject | ScopeUser | ScopeAll
-	Cwd            string // used when Scope == ScopeProject
-	ExcludeSession string // session id to omit (usually the live session)
-	Limit          int    // max hits; defaults to 10 when <= 0
-	MinScore       float64 // cosine floor; hits below this are dropped
+	Model          string   // embed model; only vectors from this model are ranked
+	Scope          string   // ScopeProject | ScopeUser | ScopeAll
+	Cwd            string   // used when Scope == ScopeProject
+	ProjectRoots   []string // roots that count as "this project" for ScopeProject; sessions at or below any of them match. Empty → exact Cwd only
+	ExcludeRoots   []string // sensitive project roots; sessions at or below any of them never match, whatever the Scope
+	ExcludeSession string   // session id to omit (usually the live session)
+	Limit          int      // max hits; defaults to 10 when <= 0
+	MinScore       float64  // cosine floor; hits below this are dropped
 }
 
 // contentHash is a cheap, stable fingerprint of a message body. Stored
@@ -251,9 +255,23 @@ func (idx *Index) SearchSemantic(queryVec []float32, opts SemanticSearchOpts) ([
 
 	where := "v.model = ?"
 	args := []any{opts.Model}
-	if opts.Scope == ScopeProject && opts.Cwd != "" {
-		where += " AND s.cwd = ?"
-		args = append(args, opts.Cwd)
+	if opts.Scope == ScopeProject {
+		if clause, clauseArgs := projectScopeClause(opts); clause != "" {
+			where += " AND " + clause
+			args = append(args, clauseArgs...)
+		}
+	}
+	// Sensitive projects are excluded unconditionally — deliberately outside
+	// the Scope branch above. Scope decides what this project may *pull in*;
+	// this decides what a sensitive project may ever *emit*, and a user who
+	// widens scope to "user"/"all" must not thereby start pulling PHI from a
+	// quarantined repo into an unrelated turn.
+	for _, root := range opts.ExcludeRoots {
+		if root == "" {
+			continue
+		}
+		where += ` AND NOT (s.cwd = ? OR s.cwd LIKE ? ESCAPE '\')`
+		args = append(args, root, likePrefixPattern(root))
 	}
 	if opts.ExcludeSession != "" {
 		where += " AND m.session_id != ?"
@@ -315,6 +333,69 @@ func (idx *Index) SearchSemantic(queryVec []float32, opts SemanticSearchOpts) ([
 		hits = hits[:limit]
 	}
 	return hits, nil
+}
+
+// projectScopeClause builds the sessions.cwd predicate for ScopeProject.
+//
+// A session records the directory it ran in, which may be any directory inside
+// the project — so matching cwd exactly silently hides a session started in a
+// subdirectory, and hides the whole repo from a session started in one. Match
+// the project root and everything beneath it instead.
+//
+// A project is more than one directory tree. ProjectRoots carries every root
+// that counts as the same project — the repo itself, plus the container its
+// yottacode worktrees live in (~/.yottacode/worktrees/<repo-slug>/), which
+// sits outside the repo entirely. Without that second root, sessions run in a
+// worktree and sessions run in the main checkout could never see each other
+// even though they are the same work.
+//
+// The caller's literal Cwd stays in the OR as well, so the match is never
+// *narrower* than the exact equality this replaced, even if root resolution
+// fails or a session ran somewhere unanticipated.
+//
+// With no anchors at all the whole store is searched, exactly as before.
+func projectScopeClause(opts SemanticSearchOpts) (string, []any) {
+	var terms []string
+	var args []any
+	if opts.Cwd != "" {
+		terms = append(terms, "s.cwd = ?")
+		args = append(args, opts.Cwd)
+	}
+	for _, root := range opts.ProjectRoots {
+		if root == "" {
+			continue
+		}
+		terms = append(terms, "s.cwd = ?", `s.cwd LIKE ? ESCAPE '\'`)
+		args = append(args, root, likePrefixPattern(root))
+	}
+	if len(terms) == 0 {
+		return "", nil
+	}
+	return "(" + strings.Join(terms, " OR ") + ")", args
+}
+
+// likePrefixPattern turns a literal directory path into a LIKE pattern
+// matching that directory's descendants. Appending the separator before the
+// wildcard is what keeps the match on a path boundary — without it, root
+// "/proj" would also match the unrelated sibling "/proj-other".
+//
+// The separator is escaped along with the path because on Windows it *is* the
+// escape character; appending a raw separator after escaping would turn
+// `<root>\%` into a literal-percent match.
+func likePrefixPattern(root string) string {
+	return escapeLike(filepath.Clean(root)+string(filepath.Separator)) + "%"
+}
+
+// escapeLike escapes SQL LIKE wildcards so a literal path can be used inside a
+// pattern. `_` is the one that bites in practice: it is legal and common in
+// real paths (my_project) and would otherwise match any single character,
+// pulling a neighbouring project's sessions into "project" scope.
+//
+// Note ASCII LIKE is case-insensitive in SQLite, so two paths differing only in
+// case would match. Harmless here — same user, same machine, and impossible on
+// a case-insensitive filesystem anyway.
+func escapeLike(s string) string {
+	return strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(s)
 }
 
 // excerptMaxRunes bounds a rendered excerpt so a single long message can't

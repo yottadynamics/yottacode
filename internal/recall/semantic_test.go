@@ -3,6 +3,7 @@ package recall
 import (
 	"context"
 	"math"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -37,6 +38,15 @@ func mustEmbed(t *testing.T, text string) []float32 {
 		t.Fatalf("embed %q: %v", text, err)
 	}
 	return v
+}
+
+// rootsOf builds a ProjectRoots slice from a single root, treating "" as
+// "no root resolved" (the not-a-git-repo case) rather than an empty entry.
+func rootsOf(root string) []string {
+	if root == "" {
+		return nil
+	}
+	return []string{root}
 }
 
 // indexSessionAt indexes a session with the given id, cwd, and message bodies.
@@ -238,6 +248,251 @@ func TestSearchSemantic_ProjectScopeAndExcludeSession(t *testing.T) {
 	}
 	if len(all) != 2 {
 		t.Fatalf("all scope hits = %+v, want s-here and s-there", sessionIDs(all))
+	}
+}
+
+// searchProject runs a project-scoped search over the shared "auth jwt" query
+// and returns the matching session ids, sorted for stable comparison.
+func searchProject(t *testing.T, idx *Index, cwd string, roots []string) []string {
+	t.Helper()
+	hits, err := idx.SearchSemantic(mustEmbed(t, "auth jwt"), SemanticSearchOpts{
+		Model: "test-model", Scope: ScopeProject, Cwd: cwd, ProjectRoots: roots,
+		Limit: 50, MinScore: 0.1,
+	})
+	if err != nil {
+		t.Fatalf("SearchSemantic: %v", err)
+	}
+	ids := sessionIDs(hits)
+	slices.Sort(ids)
+	return ids
+}
+
+// A session started anywhere inside the project must be recallable from
+// anywhere else inside it. Exact cwd equality — the pre-hardening behaviour —
+// hid every subdirectory session from the repo root and vice versa.
+func TestSearchSemantic_ProjectRootMatchesSubdirectories(t *testing.T) {
+	idx := newIndex(t)
+	indexSessionAt(t, idx, "s-root", "/proj", "auth jwt discussion")
+	indexSessionAt(t, idx, "s-sub", "/proj/sub", "auth jwt discussion")
+	indexSessionAt(t, idx, "s-deep", "/proj/sub/deep", "auth jwt discussion")
+	// A sibling whose path shares the root's prefix but not its boundary. This
+	// is the decoy: a naive LIKE '/proj%' would wrongly admit it.
+	indexSessionAt(t, idx, "s-sibling", "/proj-other", "auth jwt discussion")
+	indexSessionAt(t, idx, "s-elsewhere", "/elsewhere", "auth jwt discussion")
+	if err := idx.BackfillVectors(context.Background(), testEmbedder(), "test-model"); err != nil {
+		t.Fatalf("backfill: %v", err)
+	}
+
+	got := searchProject(t, idx, "/proj/sub", rootsOf("/proj"))
+	want := []string{"s-deep", "s-root", "s-sub"}
+	if !slices.Equal(got, want) {
+		t.Errorf("project scope from a subdirectory = %v, want %v", got, want)
+	}
+}
+
+// `_` is a LIKE wildcard and is legal — and common — in real directory names.
+// Unescaped, "my_project" would also match "myXproject".
+func TestSearchSemantic_ProjectRootEscapesLikeMetacharacters(t *testing.T) {
+	idx := newIndex(t)
+	indexSessionAt(t, idx, "s-mine", "/home/u/my_project/sub", "auth jwt discussion")
+	indexSessionAt(t, idx, "s-other", "/home/u/myXproject/sub", "auth jwt discussion")
+	if err := idx.BackfillVectors(context.Background(), testEmbedder(), "test-model"); err != nil {
+		t.Fatalf("backfill: %v", err)
+	}
+
+	got := searchProject(t, idx, "/home/u/my_project", rootsOf("/home/u/my_project"))
+	if !slices.Equal(got, []string{"s-mine"}) {
+		t.Errorf("escaped-underscore scope = %v, want [s-mine]", got)
+	}
+}
+
+// Backward compatibility: with no ProjectRoot resolved (not a git repo, or git
+// missing) the predicate must collapse to the exact-cwd match it always was.
+func TestSearchSemantic_ProjectScopeWithoutRootIsExactCwd(t *testing.T) {
+	idx := newIndex(t)
+	indexSessionAt(t, idx, "s-exact", "/proj-A", "auth jwt discussion")
+	indexSessionAt(t, idx, "s-sub", "/proj-A/sub", "auth jwt discussion")
+	if err := idx.BackfillVectors(context.Background(), testEmbedder(), "test-model"); err != nil {
+		t.Fatalf("backfill: %v", err)
+	}
+
+	got := searchProject(t, idx, "/proj-A", rootsOf(""))
+	if !slices.Equal(got, []string{"s-exact"}) {
+		t.Errorf("scope without ProjectRoot = %v, want [s-exact] (exact cwd only)", got)
+	}
+}
+
+// yottacode's own worktrees live outside the repo root that ResolveRepoRoot
+// returns, so the literal-Cwd term in the OR is what keeps a worktree session's
+// own history visible. Without it this change would be a regression.
+func TestSearchSemantic_ProjectScopeKeepsCwdOutsideRoot(t *testing.T) {
+	idx := newIndex(t)
+	wt := "/home/u/.yottacode/worktrees/repo-abc123/feature"
+	indexSessionAt(t, idx, "s-worktree", wt, "auth jwt discussion")
+	indexSessionAt(t, idx, "s-repo", "/repo/sub", "auth jwt discussion")
+	indexSessionAt(t, idx, "s-unrelated", "/somewhere/else", "auth jwt discussion")
+	if err := idx.BackfillVectors(context.Background(), testEmbedder(), "test-model"); err != nil {
+		t.Fatalf("backfill: %v", err)
+	}
+
+	got := searchProject(t, idx, wt, rootsOf("/repo"))
+	want := []string{"s-repo", "s-worktree"}
+	if !slices.Equal(got, want) {
+		t.Errorf("worktree cwd + repo root scope = %v, want %v", got, want)
+	}
+}
+
+// yottacode worktrees live under ~/.yottacode/worktrees/<repo-slug>/, outside
+// the repo tree entirely. Passing that container as a second project root is
+// what lets a worktree session and a main-checkout session recall each other —
+// they are the same work.
+func TestSearchSemantic_ProjectRootsUnifyWorktreesWithRepo(t *testing.T) {
+	idx := newIndex(t)
+	slug := "/home/u/.yottacode/worktrees/repo-abc123"
+	indexSessionAt(t, idx, "s-main", "/repo/sub", "auth jwt discussion")
+	indexSessionAt(t, idx, "s-wt-a", slug+"/feature-a", "auth jwt discussion")
+	indexSessionAt(t, idx, "s-wt-b", slug+"/feature-b", "auth jwt discussion")
+	// Another repo's worktree container — the slug embeds a hash of that
+	// repo's root, so it must not be pulled in.
+	indexSessionAt(t, idx, "s-other", "/home/u/.yottacode/worktrees/other-def456/x", "auth jwt discussion")
+	if err := idx.BackfillVectors(context.Background(), testEmbedder(), "test-model"); err != nil {
+		t.Fatalf("backfill: %v", err)
+	}
+
+	roots := []string{"/repo", slug}
+	want := []string{"s-main", "s-wt-a", "s-wt-b"}
+
+	// From inside one worktree: sees the repo and its sibling worktree.
+	got := searchProject(t, idx, slug+"/feature-a", roots)
+	if !slices.Equal(got, want) {
+		t.Errorf("from a worktree = %v, want %v", got, want)
+	}
+	// From the main checkout: sees both worktrees.
+	got = searchProject(t, idx, "/repo/sub", roots)
+	if !slices.Equal(got, want) {
+		t.Errorf("from the main checkout = %v, want %v", got, want)
+	}
+}
+
+func TestSearchSemantic_ProjectScopeNoAnchorsSearchesAll(t *testing.T) {
+	idx := newIndex(t)
+	indexSessionAt(t, idx, "s-one", "/proj-A", "auth jwt discussion")
+	indexSessionAt(t, idx, "s-two", "/proj-B", "auth jwt discussion")
+	if err := idx.BackfillVectors(context.Background(), testEmbedder(), "test-model"); err != nil {
+		t.Fatalf("backfill: %v", err)
+	}
+
+	got := searchProject(t, idx, "", rootsOf(""))
+	if !slices.Equal(got, []string{"s-one", "s-two"}) {
+		t.Errorf("project scope with no anchors = %v, want every session", got)
+	}
+}
+
+// searchWithExcludes runs an all-scope search with sensitive roots excluded.
+func searchWithExcludes(t *testing.T, idx *Index, scope, cwd, root string, excludes []string) []string {
+	t.Helper()
+	hits, err := idx.SearchSemantic(mustEmbed(t, "auth jwt"), SemanticSearchOpts{
+		Model: "test-model", Scope: scope, Cwd: cwd, ProjectRoots: rootsOf(root),
+		ExcludeRoots: excludes, Limit: 50, MinScore: 0.1,
+	})
+	if err != nil {
+		t.Fatalf("SearchSemantic: %v", err)
+	}
+	ids := sessionIDs(hits)
+	slices.Sort(ids)
+	return ids
+}
+
+// A sensitive project's sessions must never surface in another project's
+// recall — including under scope "user"/"all", which is exactly the
+// configuration where the leak would otherwise happen.
+func TestSearchSemantic_ExcludeRootsAppliesRegardlessOfScope(t *testing.T) {
+	idx := newIndex(t)
+	indexSessionAt(t, idx, "s-phi", "/repo/phi", "auth jwt discussion")
+	indexSessionAt(t, idx, "s-phi-sub", "/repo/phi/sub", "auth jwt discussion")
+	indexSessionAt(t, idx, "s-open", "/repo/open", "auth jwt discussion")
+	if err := idx.BackfillVectors(context.Background(), testEmbedder(), "test-model"); err != nil {
+		t.Fatalf("backfill: %v", err)
+	}
+
+	excludes := []string{"/repo/phi"}
+	for _, scope := range []string{ScopeAll, ScopeUser, ScopeProject} {
+		t.Run(scope, func(t *testing.T) {
+			// Project scope is anchored wide enough to see all three, so any
+			// survivor of the exclusion is a genuine leak rather than a
+			// scope artifact.
+			got := searchWithExcludes(t, idx, scope, "/repo", "/repo", excludes)
+			if !slices.Equal(got, []string{"s-open"}) {
+				t.Errorf("scope %s returned %v, want only [s-open] — sensitive sessions leaked", scope, got)
+			}
+		})
+	}
+}
+
+func TestSearchSemantic_ExcludeRootsEscapesMetacharacters(t *testing.T) {
+	idx := newIndex(t)
+	indexSessionAt(t, idx, "s-phi", "/repo/my_phi/sub", "auth jwt discussion")
+	indexSessionAt(t, idx, "s-open", "/repo/myXphi/sub", "auth jwt discussion")
+	if err := idx.BackfillVectors(context.Background(), testEmbedder(), "test-model"); err != nil {
+		t.Fatalf("backfill: %v", err)
+	}
+
+	// An unescaped `_` would match myXphi too and over-exclude.
+	got := searchWithExcludes(t, idx, ScopeAll, "", "", []string{"/repo/my_phi"})
+	if !slices.Equal(got, []string{"s-open"}) {
+		t.Errorf("exclusion = %v, want only [s-open]", got)
+	}
+}
+
+// A prefix sibling of a sensitive root is a different project and must stay
+// visible — over-exclusion is a silent loss of recall.
+func TestSearchSemantic_ExcludeRootsRespectsPathBoundary(t *testing.T) {
+	idx := newIndex(t)
+	indexSessionAt(t, idx, "s-phi", "/repo/phi", "auth jwt discussion")
+	indexSessionAt(t, idx, "s-sibling", "/repo/phi-notes", "auth jwt discussion")
+	if err := idx.BackfillVectors(context.Background(), testEmbedder(), "test-model"); err != nil {
+		t.Fatalf("backfill: %v", err)
+	}
+
+	got := searchWithExcludes(t, idx, ScopeAll, "", "", []string{"/repo/phi"})
+	if !slices.Equal(got, []string{"s-sibling"}) {
+		t.Errorf("exclusion = %v, want only [s-sibling]", got)
+	}
+}
+
+func TestSearchSemantic_ExcludeRootsEmptyIsNoop(t *testing.T) {
+	idx := newIndex(t)
+	indexSessionAt(t, idx, "s-one", "/repo/a", "auth jwt discussion")
+	indexSessionAt(t, idx, "s-two", "/repo/b", "auth jwt discussion")
+	if err := idx.BackfillVectors(context.Background(), testEmbedder(), "test-model"); err != nil {
+		t.Fatalf("backfill: %v", err)
+	}
+
+	// Nil, empty slice, and a slice holding an empty string must all be inert
+	// — an empty root would otherwise build a prefix pattern matching "/%".
+	for name, ex := range map[string][]string{
+		"nil": nil, "empty": {}, "blank entry": {""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got := searchWithExcludes(t, idx, ScopeAll, "", "", ex)
+			if !slices.Equal(got, []string{"s-one", "s-two"}) {
+				t.Errorf("exclusion %v dropped sessions: got %v", ex, got)
+			}
+		})
+	}
+}
+
+func TestEscapeLike(t *testing.T) {
+	for _, tc := range []struct{ in, want string }{
+		{"a_b", `a\_b`},
+		{"100%", `100\%`},
+		{`a\b`, `a\\b`},
+		{"plain", "plain"},
+		{`m_i%x\ed`, `m\_i\%x\\ed`},
+	} {
+		if got := escapeLike(tc.in); got != tc.want {
+			t.Errorf("escapeLike(%q) = %q, want %q", tc.in, got, tc.want)
+		}
 	}
 }
 

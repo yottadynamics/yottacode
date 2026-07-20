@@ -2,6 +2,8 @@ package tui
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -61,6 +63,21 @@ func (m *Model) priorConversationsBlock(ctx context.Context, query string) strin
 	if !sr.Auto || m.recall == nil || m.embedClient == nil {
 		return ""
 	}
+	// top_k = 0 means inject nothing. Enforced here rather than left to
+	// SearchSemantic, whose non-positive-limit default is 10 — a sensible
+	// library default, but as a *config* value it made `top_k = 0` inject
+	// MORE than the default of 3, which is the opposite of what the knob
+	// reads like.
+	if sr.TopK <= 0 {
+		return ""
+	}
+	// Sensitive project: never inject automatically. Checked before the embed
+	// so a quarantined repo does no recall work at all. The manual
+	// session_recall tool is unaffected — the gate is about what leaves on its
+	// own, not about making your own history unreachable when you ask for it.
+	if m.sensitiveProject {
+		return ""
+	}
 	if strings.TrimSpace(query) == "" {
 		return ""
 	}
@@ -74,33 +91,99 @@ func (m *Model) priorConversationsBlock(ctx context.Context, query string) strin
 	if m.sess != nil {
 		exclude = m.sess.ID
 	}
-	hits, err := m.recall.SearchSemantic(queryVec, recall.SemanticSearchOpts{
+	opts := recall.SemanticSearchOpts{
 		Model:          m.embedClient.Model,
 		Scope:          sr.Scope,
 		Cwd:            m.cwd,
+		ProjectRoots:   m.projectRoots,
+		ExcludeRoots:   m.sensitiveRoots,
 		ExcludeSession: exclude,
 		Limit:          sr.TopK,
 		MinScore:       sr.MinScore,
-	})
-	if err != nil || len(hits) == 0 {
+	}
+	// Under YOTTACODE_RECALL_DEBUG, search without the floor and with a wider
+	// cap so the log can show what *nearly* made it, then re-apply the real
+	// gate in Go. applyRecallGate is behaviour-identical to the filtering
+	// SearchSemantic would have done, so the injected block is the same either
+	// way — telemetry observes the decision, it never changes it. With the env
+	// var unset none of this runs and the query is exactly as before.
+	debug := recallDebugEnabled()
+	if debug {
+		opts.MinScore = 0
+		opts.Limit = max(opts.Limit, recallDebugLimit)
+	}
+	hits, err := m.recall.SearchSemantic(queryVec, opts)
+	if err != nil {
 		return ""
 	}
-	logRecallDebug(query, hits)
+	if debug {
+		gated := applyRecallGate(hits, sr.MinScore, sr.TopK)
+		logRecallCandidates(query, hits, len(gated), sr.MinScore)
+		hits = gated
+	}
+	if len(hits) == 0 {
+		return ""
+	}
 	if m.recalledCount != nil {
 		m.recalledCount.Store(int32(len(hits)))
 	}
 	return renderPriorConversations(hits, sr.MaxBytes)
 }
 
-// logRecallDebug appends one line per auto-recall firing to
+// recallDebugLimit is how many candidates the YOTTACODE_RECALL_DEBUG pass pulls
+// back so near-misses are visible. Wide enough to show what sat just under the
+// floor, and never narrower than the configured top_k, so the Go-side gate
+// applied afterwards still sees everything the ungated search would have.
+const recallDebugLimit = 20
+
+// recallDebugEnabled reports whether near-miss telemetry is on.
+func recallDebugEnabled() bool { return os.Getenv("YOTTACODE_RECALL_DEBUG") != "" }
+
+// applyRecallGate reproduces the floor-and-cap the search would have applied,
+// for the debug path where it deliberately ran without them. What gets
+// injected must not depend on whether telemetry is switched on.
+//
+// A non-positive topK yields nothing, matching the config-level meaning of
+// top_k = 0 that priorConversationsBlock enforces — NOT SearchSemantic's
+// library-level "unspecified limit defaults to 10".
+//
+// hits arrive sorted by score descending, so the floor keeps a prefix and the
+// cap keeps a prefix of that. That is what lets logRecallCandidates mark hit i
+// as injected purely by index.
+func applyRecallGate(hits []recall.ScoredHit, minScore float64, topK int) []recall.ScoredHit {
+	if topK <= 0 {
+		return nil
+	}
+	out := hits
+	for i, h := range hits {
+		if h.Score < minScore {
+			out = hits[:i]
+			break
+		}
+	}
+	if len(out) > topK {
+		out = out[:topK]
+	}
+	return out
+}
+
+// logRecallCandidates appends one line per auto-recall search to
 // ~/.yottacode/recall-debug.log when YOTTACODE_RECALL_DEBUG is set. It exists
-// to calibrate min_score against real usage — the line records the query and
-// each injected hit's session id and cosine score. Only injected (above-floor)
-// hits are logged, so it confirms where real scores land rather than analyzing
-// near-misses. Best-effort: any error is swallowed so telemetry never affects a
-// turn.
-func logRecallDebug(query string, hits []recall.ScoredHit) {
-	if os.Getenv("YOTTACODE_RECALL_DEBUG") == "" {
+// to calibrate min_score against real usage, so it records *every* candidate the
+// search returned — including the ones the floor dropped, and including turns
+// where nothing scored at all. Logging only the injected hits could never
+// answer "is 0.6 too high?", because the hits that would answer it are exactly
+// the ones that never appear.
+//
+// The raw query is deliberately not written: debug logs live on disk after the
+// turn, and user prompts can contain secrets or PHI. A short digest keeps lines
+// correlatable while avoiding a second copy of sensitive text.
+//
+// injected is the count applyRecallGate kept; since candidates are sorted
+// descending and the gate keeps a prefix, index < injected is the marker.
+// Best-effort: every error is swallowed so telemetry never affects a turn.
+func logRecallCandidates(query string, candidates []recall.ScoredHit, injected int, minScore float64) {
+	if !recallDebugEnabled() {
 		return
 	}
 	home, err := os.UserHomeDir()
@@ -115,12 +198,24 @@ func logRecallDebug(query string, hits []recall.ScoredHit) {
 	defer f.Close()
 
 	var b strings.Builder
-	fmt.Fprintf(&b, "%s query=%q hits=%d", time.Now().Format(time.RFC3339), query, len(hits))
-	for _, h := range hits {
-		fmt.Fprintf(&b, " [%s %.3f]", h.SessionID, h.Score)
+	fmt.Fprintf(&b, "%s query_sha256=%s candidates=%d injected=%d min_score=%.3f",
+		time.Now().Format(time.RFC3339), recallQueryDigest(query), len(candidates), injected, minScore)
+	for i, h := range candidates {
+		state := "dropped"
+		if i < injected {
+			state = "injected"
+		}
+		fmt.Fprintf(&b, " [%s %.3f %s]", h.SessionID, h.Score, state)
 	}
 	b.WriteByte('\n')
 	_, _ = f.WriteString(b.String())
+}
+
+// recallQueryDigest returns a short stable digest for debug-log correlation
+// without persisting the raw user prompt.
+func recallQueryDigest(query string) string {
+	sum := sha256.Sum256([]byte(query))
+	return hex.EncodeToString(sum[:])[:16]
 }
 
 // renderPriorConversations formats semantic hits into the injected block body

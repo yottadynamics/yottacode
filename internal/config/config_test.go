@@ -1228,6 +1228,52 @@ func TestLoad_MemoryFinalTurnOnQuit(t *testing.T) {
 	}
 }
 
+// TestLoad_MemoryCaptureReminderEveryTurns locks the periodic capture
+// reminder cadence. The load-bearing case is explicit 0: it means DISABLED,
+// so it must survive both Load and a Render round-trip rather than being
+// coerced back to the default the way an absent key is.
+func TestLoad_MemoryCaptureReminderEveryTurns(t *testing.T) {
+	if got := Default().Memory.CaptureReminderEveryTurns; got != 6 {
+		t.Fatalf("capture_reminder_every_turns should default to 6, got %d", got)
+	}
+
+	cfg, err := Load(writeFile(t, "[context]\nwarn_threshold = 0.5\n"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Memory.CaptureReminderEveryTurns != 6 {
+		t.Errorf("absent [memory] section should keep the default 6, got %d", cfg.Memory.CaptureReminderEveryTurns)
+	}
+
+	cfg, err = Load(writeFile(t, "[memory]\ncapture_reminder_every_turns = 3\n"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Memory.CaptureReminderEveryTurns != 3 {
+		t.Errorf("explicit cadence = %d, want 3", cfg.Memory.CaptureReminderEveryTurns)
+	}
+
+	off, err := Load(writeFile(t, "[memory]\ncapture_reminder_every_turns = 0\n"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if off.Memory.CaptureReminderEveryTurns != 0 {
+		t.Errorf("explicit 0 must stay 0 (disabled), got %d", off.Memory.CaptureReminderEveryTurns)
+	}
+	roundTripped, err := Load(writeFile(t, Render(off)))
+	if err != nil {
+		t.Fatalf("Load(Render): %v", err)
+	}
+	if roundTripped.Memory.CaptureReminderEveryTurns != 0 {
+		t.Errorf("Render round-trip resurrected the reminder: got %d, want 0:\n%s",
+			roundTripped.Memory.CaptureReminderEveryTurns, Render(off))
+	}
+
+	if _, err := Load(writeFile(t, "[memory]\ncapture_reminder_every_turns = -1\n")); err == nil {
+		t.Error("negative cadence should be rejected")
+	}
+}
+
 // NO_COLOR (https://no-color.org/) selects the monochrome theme, but
 // only when the user hasn't configured one — explicit configuration
 // overrides the env var, exactly as the convention specifies, and an

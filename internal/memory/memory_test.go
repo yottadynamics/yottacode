@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func writeFile(t *testing.T, path, body string) {
@@ -373,6 +374,27 @@ func TestScanMemoryDir_FilenameIsAuthoritativeOverFrontmatterName(t *testing.T) 
 	}
 	if strings.Contains(idx, "(foo.md)") {
 		t.Errorf("index must not link to the non-existent foo.md; got:\n%s", idx)
+	}
+}
+
+func TestLoad_MemoryParsesCreatedFrontmatter(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("YOTTACODE_HOME", "")
+	memDir := filepath.Join(home, ".yottacode", "memory", "user")
+	writeFile(t, filepath.Join(memDir, "dated.md"),
+		"---\nname: dated\ntype: user\ndescription: x\ncreated: 2026-07-20T12:34:56Z\n---\nbody\n")
+
+	got, err := Load(t.TempDir())
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(got.UserMemories) != 1 {
+		t.Fatalf("want 1 memory, got %d", len(got.UserMemories))
+	}
+	created := got.UserMemories[0].Created
+	if created.IsZero() || created.Format(time.RFC3339) != "2026-07-20T12:34:56Z" {
+		t.Errorf("Created = %v, want parsed RFC3339 timestamp", created)
 	}
 }
 

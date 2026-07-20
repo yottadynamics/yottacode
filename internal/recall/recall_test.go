@@ -1,7 +1,10 @@
 package recall
 
 import (
+	"context"
+	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -222,5 +225,210 @@ func TestBackfill_IndexesEverySession(t *testing.T) {
 	}
 	if hits, _ := idx.Search("giraffes", 10); len(hits) == 0 {
 		t.Errorf("session b not indexed by backfill")
+	}
+}
+
+// Deleting a session's JSON must eventually evict it from the index too —
+// otherwise /recall and semantic search keep surfacing a conversation whose
+// transcript is gone, and the rows accumulate forever.
+func TestBackfill_PrunesDeletedSessions(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+
+	keep, _ := session.New("qwen3.5", "/x")
+	keep.Messages = []adapter.Message{{Role: adapter.RoleUser, Content: "message about elephants"}}
+	if err := keep.Save(); err != nil {
+		t.Fatalf("Save keep: %v", err)
+	}
+	gone, _ := session.New("qwen3.5", "/x")
+	gone.Messages = []adapter.Message{{Role: adapter.RoleUser, Content: "message about giraffes"}}
+	if err := gone.Save(); err != nil {
+		t.Fatalf("Save gone: %v", err)
+	}
+
+	idx, err := openAt(filepath.Join(tmp, "ix.sqlite"))
+	if err != nil {
+		t.Fatalf("openAt: %v", err)
+	}
+	defer idx.Close()
+	if err := Backfill(idx); err != nil {
+		t.Fatalf("Backfill: %v", err)
+	}
+	embedAll(t, idx)
+	if hits, _ := idx.Search("giraffes", 10); len(hits) == 0 {
+		t.Fatal("precondition: both sessions should be indexed")
+	}
+	if got := vectorIndices(t, idx, gone.ID); len(got) == 0 {
+		t.Fatal("precondition: deleted-to-be session should have vectors")
+	}
+
+	// The user deletes the session file.
+	if err := os.Remove(filepath.Join(tmp, ".yottacode", "sessions", gone.ID+".json")); err != nil {
+		t.Fatalf("remove session file: %v", err)
+	}
+	if err := Backfill(idx); err != nil {
+		t.Fatalf("Backfill after delete: %v", err)
+	}
+
+	if hits, _ := idx.Search("giraffes", 10); len(hits) != 0 {
+		t.Errorf("deleted session still searchable: %+v", hits)
+	}
+	if got := vectorIndices(t, idx, gone.ID); len(got) != 0 {
+		t.Errorf("deleted session left %v vector rows behind", got)
+	}
+	var n int
+	if err := idx.db.QueryRow(`SELECT COUNT(*) FROM sessions WHERE id = ?`, gone.ID).Scan(&n); err != nil {
+		t.Fatalf("count sessions: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("deleted session row survived in sessions table")
+	}
+
+	// The surviving session is untouched.
+	if hits, _ := idx.Search("elephants", 10); len(hits) == 0 {
+		t.Errorf("pruning removed the session that still exists")
+	}
+	if got := vectorIndices(t, idx, keep.ID); len(got) == 0 {
+		t.Errorf("pruning removed the surviving session's vectors")
+	}
+}
+
+// vectorIndices returns the msg_index values that currently have a stored
+// vector for the session, ascending. Same package, so it reads idx.db directly.
+func vectorIndices(t *testing.T, idx *Index, sessionID string) []int {
+	t.Helper()
+	rows, err := idx.db.Query(
+		`SELECT msg_index FROM message_vectors WHERE session_id = ? ORDER BY msg_index`, sessionID)
+	if err != nil {
+		t.Fatalf("query vectors: %v", err)
+	}
+	defer rows.Close()
+	var out []int
+	for rows.Next() {
+		var i int
+		if err := rows.Scan(&i); err != nil {
+			t.Fatalf("scan msg_index: %v", err)
+		}
+		out = append(out, i)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows: %v", err)
+	}
+	return out
+}
+
+// embedAll vectors every currently-indexed message with the shared test
+// embedder, so the orphan-cleanup tests start from a fully-vectored index.
+func embedAll(t *testing.T, idx *Index) {
+	t.Helper()
+	if err := idx.BackfillVectors(context.Background(), testEmbedder(), "test-model"); err != nil {
+		t.Fatalf("BackfillVectors: %v", err)
+	}
+}
+
+// Re-indexing an unchanged session must leave its vectors alone. This is the
+// guard for the CAST in indexSessionOnce's orphan cleanup: messages is an FTS5
+// virtual table that returns msg_index as TEXT, so without the cast the NOT IN
+// matches nothing and every vector is deleted on every turn-end re-index.
+func TestIndexSession_ReindexUnchangedKeepsVectors(t *testing.T) {
+	idx := newIndex(t)
+	s := fakeSession("sess-keep", "auth question", "jwt answer", "docker follow-up")
+	if err := idx.IndexSession(s); err != nil {
+		t.Fatalf("IndexSession: %v", err)
+	}
+	embedAll(t, idx)
+	if got := vectorIndices(t, idx, "sess-keep"); !slices.Equal(got, []int{0, 1, 2}) {
+		t.Fatalf("after initial embed, vector indices = %v, want [0 1 2]", got)
+	}
+
+	if err := idx.IndexSession(s); err != nil {
+		t.Fatalf("re-IndexSession: %v", err)
+	}
+	if got := vectorIndices(t, idx, "sess-keep"); !slices.Equal(got, []int{0, 1, 2}) {
+		t.Errorf("re-indexing an unchanged session dropped vectors: got %v, want [0 1 2]", got)
+	}
+	// The stronger statement: nothing needs re-embedding, so the next backfill
+	// is a no-op. A broken cast would surface here as three stale messages.
+	refs, err := idx.UnvectoredMessages("test-model")
+	if err != nil {
+		t.Fatalf("UnvectoredMessages: %v", err)
+	}
+	if len(refs) != 0 {
+		t.Errorf("unchanged re-index left %d messages needing re-embedding, want 0", len(refs))
+	}
+}
+
+func TestIndexSession_DeletesOrphanedVectorsOnShrink(t *testing.T) {
+	idx := newIndex(t)
+	if err := idx.IndexSession(fakeSession("sess-shrink", "auth", "jwt", "docker")); err != nil {
+		t.Fatalf("IndexSession: %v", err)
+	}
+	embedAll(t, idx)
+
+	if err := idx.IndexSession(fakeSession("sess-shrink", "auth")); err != nil {
+		t.Fatalf("shrink to one: %v", err)
+	}
+	if got := vectorIndices(t, idx, "sess-shrink"); !slices.Equal(got, []int{0}) {
+		t.Errorf("after shrinking to one message, vector indices = %v, want [0]", got)
+	}
+
+	if err := idx.IndexSession(fakeSession("sess-shrink")); err != nil {
+		t.Fatalf("shrink to zero: %v", err)
+	}
+	if got := vectorIndices(t, idx, "sess-shrink"); len(got) != 0 {
+		t.Errorf("after shrinking to zero messages, vector indices = %v, want none", got)
+	}
+}
+
+// msg_index is the position in Session.Messages, and system/tool messages are
+// skipped — so the indexed set has gaps. Cleanup must match the surviving
+// index set, not a count: here one message survives but its index is 1.
+func TestIndexSession_OrphanCleanupHandlesSparseIndices(t *testing.T) {
+	idx := newIndex(t)
+	full := &session.Session{ID: "sess-sparse", Model: "test-model", Created: time.Now(), Cwd: "/tmp"}
+	full.Messages = []adapter.Message{
+		{Role: adapter.RoleSystem, Content: "system preamble"},
+		{Role: adapter.RoleUser, Content: "auth question"},
+		{Role: adapter.RoleTool, Content: "tool output", ToolCallID: "t1"},
+		{Role: adapter.RoleAssistant, Content: "jwt answer"},
+	}
+	if err := idx.IndexSession(full); err != nil {
+		t.Fatalf("IndexSession: %v", err)
+	}
+	embedAll(t, idx)
+	if got := vectorIndices(t, idx, "sess-sparse"); !slices.Equal(got, []int{1, 3}) {
+		t.Fatalf("sparse indexing produced vector indices %v, want [1 3]", got)
+	}
+
+	// Drop the trailing assistant turn; the user message at index 1 survives.
+	shrunk := &session.Session{ID: "sess-sparse", Model: "test-model", Created: full.Created, Cwd: "/tmp"}
+	shrunk.Messages = full.Messages[:3]
+	if err := idx.IndexSession(shrunk); err != nil {
+		t.Fatalf("re-IndexSession: %v", err)
+	}
+	// A count-based delete ("drop msg_index >= 1") would wrongly clear this.
+	if got := vectorIndices(t, idx, "sess-sparse"); !slices.Equal(got, []int{1}) {
+		t.Errorf("sparse orphan cleanup left %v, want [1]", got)
+	}
+}
+
+func TestIndexSession_OrphanCleanupLeavesOtherSessions(t *testing.T) {
+	idx := newIndex(t)
+	if err := idx.IndexSession(fakeSession("sess-a", "auth", "jwt")); err != nil {
+		t.Fatalf("IndexSession a: %v", err)
+	}
+	if err := idx.IndexSession(fakeSession("sess-b", "docker", "kubernetes")); err != nil {
+		t.Fatalf("IndexSession b: %v", err)
+	}
+	embedAll(t, idx)
+
+	if err := idx.IndexSession(fakeSession("sess-a")); err != nil {
+		t.Fatalf("shrink a: %v", err)
+	}
+	if got := vectorIndices(t, idx, "sess-a"); len(got) != 0 {
+		t.Errorf("sess-a vectors = %v, want none", got)
+	}
+	if got := vectorIndices(t, idx, "sess-b"); !slices.Equal(got, []int{0, 1}) {
+		t.Errorf("shrinking sess-a disturbed sess-b: got %v, want [0 1]", got)
 	}
 }

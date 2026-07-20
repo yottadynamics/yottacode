@@ -280,11 +280,20 @@ See [`tui-slash-commands.md`](tui-slash-commands.md#checkpoints---checkpoints--e
 
 ### Final memory turn on quit
 
-A graceful exit (`/quit` or `Ctrl+D` while idle) runs one last agent turn prompting the model to persist durable learnings via `memory_save` before the session context is gone. The turn renders in the transcript like any other; `Esc` or `Ctrl+C` skips it and completes the quit, and `Ctrl+C` as the quit gesture itself always exits immediately. Sessions with fewer than two turns started this launch quit instantly. Disable for always-instant exits:
+A graceful exit (`/quit` or `Ctrl+D` while idle) runs one last agent turn prompting the model to persist durable learnings via `memory_save` before the session context is gone. The turn renders in the transcript like any other; `Esc` or `Ctrl+C` skips it and completes the quit, and `Ctrl+C` as the quit gesture itself always exits immediately. A session with no turns started this launch quits instantly. Disable for always-instant exits:
 
 ```toml
 [memory]
 final_turn_on_quit = false
+```
+
+### Periodic capture reminder
+
+Every Nth user message carries a mid-session reminder to persist anything durable the model hasn't saved yet. It covers the sessions the other reinforcement points miss: those that never reach the auto-summarize watermark, and those ended with `Ctrl+C` (which never runs the final turn above). It is appended to a message you were sending anyway — not an extra turn, and not a per-turn nudge — and it stands down when a pre-compaction reminder is already pending.
+
+```toml
+[memory]
+capture_reminder_every_turns = 6   # 0 disables
 ```
 
 See [`memory.md`](memory.md#proactive-saving--reinforcement-points) for the other proactive-save reinforcement points.

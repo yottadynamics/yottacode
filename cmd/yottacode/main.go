@@ -68,6 +68,7 @@ func newCLI() *cobra.Command {
 		newOpenAIAuthCmd(),
 		newCopilotAuthCmd(),
 		newTrustCmd(),
+		newSensitiveCmd(),
 		newWorktreeCmd(),
 		newMcpCmd(),
 		newSkillsCmd(),
