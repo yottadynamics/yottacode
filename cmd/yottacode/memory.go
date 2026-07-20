@@ -23,6 +23,8 @@ func newMemoryCmd() *cobra.Command {
 into non-interactive cobra subcommands.
 
   list     list saved memories (defaults to project scope)
+  search   search memories using BM25 scoring
+  audit    report memories that need curation
   forget   delete a saved memory by name`,
 		Args: cobra.NoArgs,
 	}
@@ -31,6 +33,7 @@ into non-interactive cobra subcommands.
 		newMemoryForgetCmd(),
 		newMemoryReindexCmd(),
 		newMemorySearchCmd(),
+		newMemoryAuditCmd(),
 	)
 	return cmd
 }
@@ -245,4 +248,72 @@ per-turn retrieval would return.`,
 			return nil
 		},
 	}
+}
+
+func renderAuditPlan(report memory.AuditReport) string {
+	plan := memory.PlanCuration(report)
+	var b strings.Builder
+	fmt.Fprintf(&b, "curation plan: %d issue(s), %d batch(es)\n", plan.TotalIssues, len(plan.Batches))
+	if len(plan.Batches) == 0 {
+		b.WriteString("memory store looks curated")
+		return b.String()
+	}
+	for i, batch := range plan.Batches {
+		fmt.Fprintf(&b, "\n%d. %s (%d issue(s))\n", i+1, batch.Title, len(batch.Issues))
+		fmt.Fprintf(&b, "   action: %s\n", batch.Action)
+		for _, issue := range batch.Issues {
+			fmt.Fprintf(&b, "   - %s/%s [%s] %s, created %s (%s old)\n",
+				issue.Scope, issue.Name, issue.Type, issue.Problem,
+				memory.FormatAuditCreated(issue.Created), memory.FormatAuditAge(issue.AgeDays))
+		}
+	}
+	return b.String()
+}
+
+// newMemoryAuditCmd reports memory entries that should be curated. It is
+// read-only: humans or agents can use the queue to merge quick captures,
+// correct scope, or delete stale entries without the command silently changing
+// long-term context.
+func newMemoryAuditCmd() *cobra.Command {
+	var plan bool
+	c := &cobra.Command{
+		Use:   "audit",
+		Short: "Report memories that need curation",
+		Long: `Audit scans user-scope and project-scope memories for curation issues:
+quick-capture notes, duplicate descriptions, empty or description-only bodies,
+and portable user/feedback memories saved to project scope.
+
+It never edits memory files. Use the report as a queue for memory_save /
+memory_forget curation or for a later curator-agent pass.`,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cwd, err := os.Getwd()
+			if err != nil {
+				return err
+			}
+			loaded, err := memory.Load(cwd)
+			if err != nil {
+				return err
+			}
+			report := memory.Audit(loaded)
+			out := cmd.OutOrStdout()
+			if plan {
+				fmt.Fprintln(out, renderAuditPlan(report))
+				return nil
+			}
+			fmt.Fprintf(out, "memories: %d total, %d quick note(s), %d issue(s)\n", report.Total, report.QuickNotes, len(report.Issues))
+			if len(report.Issues) == 0 {
+				fmt.Fprintln(out, "memory store looks curated")
+				return nil
+			}
+			fmt.Fprintln(out)
+			fmt.Fprintln(out, "scope\ttype\tname\tcreated\tage\tissue\tdetail\taction")
+			for _, issue := range report.Issues {
+				fmt.Fprintf(out, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", issue.Scope, issue.Type, issue.Name, memory.FormatAuditCreated(issue.Created), memory.FormatAuditAge(issue.AgeDays), issue.Problem, issue.Detail, issue.Action)
+			}
+			return nil
+		},
+	}
+	c.Flags().BoolVar(&plan, "plan", false, "group audit issues into a read-only curation plan")
+	return c
 }

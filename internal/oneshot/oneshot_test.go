@@ -73,7 +73,7 @@ func TestRegisterMemoryTools_ParityWithTUI(t *testing.T) {
 
 	registerMemoryTools(reg, cwdRef, client, "bm25")
 
-	for _, name := range []string{"memory_save", "memory_forget", "memory_search"} {
+	for _, name := range []string{"memory_save", "memory_forget", "memory_search", "memory_audit", "memory_get"} {
 		if _, ok := reg.Get(name); !ok {
 			t.Errorf("memory tool %q not registered", name)
 		}
@@ -107,7 +107,7 @@ func TestRegisterMemoryTools_ParityWithTUI(t *testing.T) {
 func TestRegisterMemoryTools_NilEmbedderOK(t *testing.T) {
 	reg := agent.NewRegistry()
 	registerMemoryTools(reg, agent.NewCwdRef("/tmp"), nil, "auto")
-	for _, name := range []string{"memory_save", "memory_forget", "memory_search"} {
+	for _, name := range []string{"memory_save", "memory_forget", "memory_search", "memory_audit", "memory_get"} {
 		if _, ok := reg.Get(name); !ok {
 			t.Errorf("memory tool %q not registered with nil embedder", name)
 		}

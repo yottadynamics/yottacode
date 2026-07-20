@@ -153,6 +153,9 @@ func TestDefaultDenyPaths_IncludesYottacodeState(t *testing.T) {
 		filepath.Join(home, ".yottacode", "memory"),
 		filepath.Join(home, ".yottacode", "USER.md"),
 		filepath.Join(home, ".yottacode", "trusted-roots.json"),
+		// The model must not be able to un-mark a sensitive project and
+		// re-enable automatic recall egress for it.
+		filepath.Join(home, ".yottacode", "sensitive-roots.json"),
 		filepath.Join(cwd, ".yottacode", "permissions.json"),
 		filepath.Join(cwd, ".yottacode", "permissions.local.json"),
 		filepath.Join(cwd, ".git", "HEAD"),

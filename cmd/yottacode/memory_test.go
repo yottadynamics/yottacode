@@ -157,3 +157,84 @@ func TestMemoryList_UserScope(t *testing.T) {
 		t.Errorf("user-scope list should include u-fact; got %q", out.String())
 	}
 }
+
+func TestMemoryAudit_ReportsCurationQueue(t *testing.T) {
+	cwd := withCwdAndHome(t)
+	seedProjectMemory(t, cwd, "raw-note", "User prefers concise answers")
+	path, err := memory.MemoryFilePath("project", "raw-note", cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	contents := strings.Replace(mustReadFile(t, path), "type: project", "type: note", 1)
+	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := newCLI()
+	var out strings.Builder
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{"memory", "audit"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	body := out.String()
+	for _, want := range []string{"memories: 1 total", "quick-note", "raw-note", "action", "memory_get"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("audit output missing %q: %q", want, body)
+		}
+	}
+}
+
+func TestMemoryAuditPlan_GroupsCurationQueue(t *testing.T) {
+	cwd := withCwdAndHome(t)
+	seedProjectMemory(t, cwd, "raw-note", "User prefers concise answers")
+	path, err := memory.MemoryFilePath("project", "raw-note", cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	contents := strings.Replace(mustReadFile(t, path), "type: project", "type: note", 1)
+	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := newCLI()
+	var out strings.Builder
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{"memory", "audit", "--plan"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	body := out.String()
+	for _, want := range []string{"curation plan:", "Promote or delete quick notes", "project/raw-note"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("plan output missing %q: %q", want, body)
+		}
+	}
+}
+
+func TestMemoryAudit_CleanStore(t *testing.T) {
+	withCwdAndHome(t)
+
+	cmd := newCLI()
+	var out strings.Builder
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{"memory", "audit"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if !strings.Contains(out.String(), "memory store looks curated") {
+		t.Errorf("clean audit should say store looks curated; got %q", out.String())
+	}
+}
+
+func mustReadFile(t *testing.T, path string) string {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}

@@ -91,13 +91,16 @@ type Config struct {
 	// the flag help on --yolo. Explicit `deny`
 	// rules in .yottacode/permissions.json still apply.
 	BypassPermissions bool
-	Version           string // e.g. "0.3.0" — shown in the header
-	Commit            string // short SHA the binary was built from; "" when unknown (go run, tarball)
-	Dirty             bool   // true when the build had uncommitted changes; renders a "*" beside the commit
-	Branch            string // current git branch (empty if not in a repo)
-	Worktree          string // yottacode worktree name when running inside one (empty for main checkout); rendered as a status-line chip
-	MemorySummary     string // "USER", "YOTTA", "USER+YOTTA", "UMEM", "USER+UMEM", or "" if none
-	BaseSystemPrompt  string // pre-memory prompt — needed by /memory reload to recompose
+	Version           string   // e.g. "0.3.0" — shown in the header
+	Commit            string   // short SHA the binary was built from; "" when unknown (go run, tarball)
+	Dirty             bool     // true when the build had uncommitted changes; renders a "*" beside the commit
+	Branch            string   // current git branch (empty if not in a repo)
+	ProjectRoots      []string // roots counting as this project (repo root + its worktree container); auto-recall's project scope matches them and everything below
+	SensitiveProject  bool     // this project is marked sensitive: no automatic recall injection at all
+	SensitiveRoots    []string // every sensitive root; their sessions never surface in any project's recall
+	Worktree          string   // yottacode worktree name when running inside one (empty for main checkout); rendered as a status-line chip
+	MemorySummary     string   // "USER", "YOTTA", "USER+YOTTA", "UMEM", "USER+UMEM", or "" if none
+	BaseSystemPrompt  string   // pre-memory prompt — needed by /memory reload to recompose
 	EmbedClient       *memory.EmbedClient
 
 	// FileCfg holds tunables loaded from ~/.yottacode/config.toml
@@ -195,6 +198,9 @@ type Model struct {
 	providerProfile        adapter.ProviderProfile
 	bypassPermissions      bool
 	cwd                    string
+	projectRoots           []string // roots counting as this project, resolved once at startup; scopes auto-recall
+	sensitiveProject       bool     // auto-recall suppressed entirely for this project
+	sensitiveRoots         []string // sensitive roots excluded from every recall search
 	perms                  *permissions.Permissions
 	recall                 *recall.Index
 	version                string
@@ -1038,6 +1044,9 @@ func New(parent context.Context, c Config) Model {
 		commit:                 c.Commit,
 		dirty:                  c.Dirty,
 		branch:                 c.Branch,
+		projectRoots:           c.ProjectRoots,
+		sensitiveProject:       c.SensitiveProject,
+		sensitiveRoots:         c.SensitiveRoots,
 		worktree:               c.Worktree,
 		memorySummary:          c.MemorySummary,
 		baseSystemPrompt:       c.BaseSystemPrompt,
@@ -1984,7 +1993,10 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			// Ctrl+C is the "get me out NOW" gesture — always an
-			// immediate quit, never the final memory turn.
+			// immediate quit, never the final memory turn. Sessions
+			// ending this way are covered mid-flight by the periodic
+			// capture reminder (captureReminderDue), not by
+			// overloading this key with a model call.
 			return m, tea.Quit
 		case tea.KeyCtrlD:
 			// Deliberate idle exit — same graceful path as /quit (final
@@ -4237,10 +4249,17 @@ func (m Model) startTurnWithDisplay(input, displayLabel string) (tea.Model, tea.
 	// interfere with @path resolution. Retrieval scoring is immune to
 	// its wording: the turn goroutine's rebuild scores against the
 	// `input` parameter, never this content string.
+	// At most one memory reminder rides a given message. The
+	// pre-compaction one wins when both are due: it is the more urgent
+	// trigger (context is about to be compacted away) and asks for the
+	// same thing, so appending both would just repeat itself.
 	content := input
-	if m.memoryNudgePending {
+	switch {
+	case m.memoryNudgePending:
 		m.memoryNudgePending = false
 		content += "\n\n" + preCompactionMemoryReminder
+	case m.captureReminderDue():
+		content += "\n\n" + captureReminderPrompt
 	}
 	m.sess.Messages = append(m.sess.Messages, adapter.Message{
 		Role:    adapter.RoleUser,
@@ -4584,6 +4603,11 @@ func (m Model) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 		// new value on the next render. The agent-level cwdRef and the
 		// process cwd are already in sync — the tool that emitted the
 		// event handled both.
+		// projectRoot deliberately does NOT move with it: entering or
+		// leaving a worktree stays within the same repository identity,
+		// which is exactly what auto-recall scopes on, and recomputing
+		// would put a git subprocess on the event path. m.cwd still
+		// updates, so the literal-cwd arm of the scope match follows.
 		m.cwd = e.NewCwd
 		m.currentPR = 0
 		// Compute the worktree name from the new path: any path under

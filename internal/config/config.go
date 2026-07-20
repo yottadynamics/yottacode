@@ -238,14 +238,17 @@ type SessionRecallConfig struct {
 	// manual session_recall tool but stop automatic injection.
 	Auto bool `toml:"auto"`
 
-	// Scope restricts which sessions are searched: "project" (only sessions
-	// whose cwd matches the current one — the safe default that never mixes
-	// projects), "user"/"all" (the whole local store). Empty defaults to
+	// Scope restricts which sessions are searched: "project" (sessions from
+	// the current repository — its root and everything below it, so a session
+	// started in a subdirectory still counts; the safe default that never
+	// mixes projects), "user"/"all" (the whole local store). Empty defaults to
 	// "project".
 	Scope string `toml:"scope"`
 
 	// TopK caps how many prior-conversation excerpts are injected per turn.
-	// Default 3.
+	// Default 3; 0 injects nothing (unlike max_bytes below, where 0 means
+	// "no bound" — a cap of zero excerpts reads as none, so that is what it
+	// does).
 	TopK int `toml:"top_k"`
 
 	// MinScore is the cosine-similarity floor (0.0–1.0) an excerpt must clear
@@ -281,6 +284,14 @@ type MemoryConfig struct {
 	// Ctrl+C as the quit gesture always exits immediately without the
 	// final turn. Default true; set false to make every exit immediate.
 	FinalTurnOnQuit bool `toml:"final_turn_on_quit"`
+
+	// CaptureReminderEveryTurns rides a memory-capture reminder on every
+	// Nth user message (history-only, like the pre-compaction reminder)
+	// so sessions that never hit the summarize watermark still get
+	// periodic reinforcement to persist durable learnings. It is not an
+	// extra turn and not a per-turn nudge — it appends to a message the
+	// user was sending anyway. 0 disables. Default 6.
+	CaptureReminderEveryTurns int `toml:"capture_reminder_every_turns"`
 }
 
 // ContextConfig governs context-window watermark behavior.
@@ -473,7 +484,8 @@ func Default() Config {
 			},
 		},
 		Memory: MemoryConfig{
-			FinalTurnOnQuit: true,
+			FinalTurnOnQuit:           true,
+			CaptureReminderEveryTurns: 6,
 		},
 		Theme: ThemeConfig{
 			Name: defaultThemeName(),
@@ -631,6 +643,10 @@ func Validate(cfg Config) error {
 	}
 	if cfg.Retrieval.SessionRecall.MinScore < 0 || cfg.Retrieval.SessionRecall.MinScore > 1 {
 		return fmt.Errorf("retrieval.session_recall.min_score = %.3f out of range (0.0–1.0)", cfg.Retrieval.SessionRecall.MinScore)
+	}
+	if cfg.Memory.CaptureReminderEveryTurns < 0 {
+		return fmt.Errorf("memory.capture_reminder_every_turns = %d must be >= 0 (0 = disabled)",
+			cfg.Memory.CaptureReminderEveryTurns)
 	}
 
 	if name := strings.TrimSpace(cfg.Theme.Name); name != "" && !themes.IsValid(name) {
@@ -1148,11 +1164,13 @@ strategy = "auto"
 # either way.
 auto = true
 
-# Which sessions to search: "project" (only sessions in the current working
-# directory — never mixes projects), or "user"/"all" (the whole local store).
+# Which sessions to search: "project" (sessions from the current repository —
+# its root and every subdirectory below it, so a session you started deeper in
+# the tree still counts; never mixes projects), or "user"/"all" (the whole
+# local store).
 scope = "project"
 
-# Max prior-conversation excerpts injected per turn.
+# Max prior-conversation excerpts injected per turn. 0 injects nothing.
 top_k = 3
 
 # Cosine-similarity floor (0.0–1.0) an excerpt must clear to be injected.
@@ -1170,9 +1188,16 @@ max_bytes = 2000
 # before the session context is gone. The turn is visible in the
 # transcript and skippable (Esc or Ctrl+C cancels it and completes the
 # quit); Ctrl+C as the quit gesture itself always exits immediately.
-# Sessions with fewer than two turns started this launch skip it. Set to
-# false for instant exits.
+# A session with no turns started this launch skips it. Set to false for
+# instant exits.
 final_turn_on_quit = true
+
+# Ride a memory-capture reminder on every Nth user message, so sessions
+# that never reach the auto-summarize watermark (and end on Ctrl+C, which
+# never runs the final turn above) still get periodic reinforcement to
+# persist what they learned. It is appended to a message you were sending
+# anyway — not an extra turn, and not a per-turn nudge. 0 disables.
+capture_reminder_every_turns = 6
 
 # ---------------------------------------------------------------------
 # TUI color theme. Uncomment to pin a palette; omit the section to

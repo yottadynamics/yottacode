@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 )
 
 // MemoryEntry is one parsed memory file: enough to render the prompt
@@ -17,6 +18,7 @@ type MemoryEntry struct {
 	Name        string // basename without .md
 	Type        string // user | feedback | project | reference
 	Description string
+	Created     time.Time // zero when frontmatter omitted or held an invalid timestamp
 	Body        string
 }
 
@@ -59,6 +61,12 @@ func scanMemoryDir(dir, scope string) ([]MemoryEntry, error) {
 		if typ == "" {
 			typ = "reference"
 		}
+		created := time.Time{}
+		if fm.Created != "" {
+			if ts, err := time.Parse(time.RFC3339, fm.Created); err == nil {
+				created = ts
+			}
+		}
 		// The filename is the entry's identity, not the frontmatter
 		// `name:` field. The index renders links as [Name](Name.md) and
 		// memory_forget resolves a memory by computing <Name>.md, so Name
@@ -74,6 +82,7 @@ func scanMemoryDir(dir, scope string) ([]MemoryEntry, error) {
 			Name:        base,
 			Type:        typ,
 			Description: fm.Description,
+			Created:     created,
 			Body:        strings.TrimRight(body, "\n"),
 		})
 	}

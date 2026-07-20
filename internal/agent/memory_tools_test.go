@@ -305,7 +305,8 @@ func TestMemorySave_RejectsBadName(t *testing.T) {
 		{"reserved2", `{"scope":"user","type":"user","name":"yottacode","description":"x","content":"x"}`},
 		{"empty", `{"scope":"user","type":"user","name":"","description":"x","content":"x"}`},
 		{"badscope", `{"scope":"global","type":"user","name":"foo","description":"x","content":"x"}`},
-		{"emptytype", `{"scope":"user","type":"","name":"foo","description":"x","content":"x"}`},
+		// An EMPTY type is no longer an error — it defaults to "note", see
+		// TestMemorySave_QuickCaptureDefaults. A malformed one still is.
 		{"badtypechars", `{"scope":"user","type":"a/b","name":"foo","description":"x","content":"x"}`},
 	}
 	for _, c := range cases {
@@ -314,6 +315,105 @@ func TestMemorySave_RejectsBadName(t *testing.T) {
 				t.Errorf("expected error for %s, got nil", c.name)
 			}
 		})
+	}
+}
+
+// P3 — a name+content quick capture must persist with sensible defaults
+// rather than erroring on the three now-optional fields.
+func TestMemorySave_QuickCaptureDefaults(t *testing.T) {
+	home, cwd := memTestSetup(t)
+	tool := &MemorySaveTool{Cwd: NewCwdRef(cwd)}
+
+	out, err := tool.Execute(context.Background(),
+		`{"name":"jwt-rotation","content":"## Key rotation\nTokens rotate every 90 days; the cron lives in ops/rotate.sh."}`)
+	if err != nil {
+		t.Fatalf("minimal save errored: %v", err)
+	}
+	if out == "" {
+		t.Error("minimal save produced no result text")
+	}
+
+	// scope defaults to user, so it lands in the user tree.
+	body, err := os.ReadFile(filepath.Join(home, ".yottacode", "memory", "user", "jwt-rotation.md"))
+	if err != nil {
+		t.Fatalf("expected a user-scope memory file: %v", err)
+	}
+	got := string(body)
+	if !strings.Contains(got, "type: note") {
+		t.Errorf("omitted type should default to note; got:\n%s", got)
+	}
+	// The description is derived from the first non-empty content line with
+	// the markdown heading marker stripped.
+	if !strings.Contains(got, "description: Key rotation") {
+		t.Errorf("description should be derived from the first content line; got:\n%s", got)
+	}
+	if !strings.Contains(got, "rotate every 90 days") {
+		t.Errorf("body should be preserved; got:\n%s", got)
+	}
+}
+
+// The full five-field form must keep working exactly as before — P3 widens
+// what is accepted, it does not change what an explicit save does.
+func TestMemorySave_FullFormUnchanged(t *testing.T) {
+	home, cwd := memTestSetup(t)
+	tool := &MemorySaveTool{Cwd: NewCwdRef(cwd)}
+
+	if _, err := tool.Execute(context.Background(),
+		`{"scope":"user","type":"feedback","name":"tabs","description":"prefers tabs","content":"User prefers tabs over spaces in Go."}`); err != nil {
+		t.Fatalf("full-form save errored: %v", err)
+	}
+	body, err := os.ReadFile(filepath.Join(home, ".yottacode", "memory", "user", "tabs.md"))
+	if err != nil {
+		t.Fatalf("read saved memory: %v", err)
+	}
+	got := string(body)
+	for _, want := range []string{"type: feedback", "description: prefers tabs", "tabs over spaces"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("full form lost %q; got:\n%s", want, got)
+		}
+	}
+}
+
+func TestDeriveDescription(t *testing.T) {
+	for _, tc := range []struct{ name, in, want string }{
+		{"first line", "the fact\nmore detail", "the fact"},
+		{"skips blanks", "\n\n  \nthe fact", "the fact"},
+		{"strips heading", "## Heading here\nbody", "Heading here"},
+		{"strips bullet", "- a bullet point\nmore", "a bullet point"},
+		{"strips quote", "> quoted line", "quoted line"},
+		// Only the first line is taken, so CRLF input yields just that line
+		// — the trailing \r is flattened away rather than leaking into the
+		// index entry.
+		{"crlf strips carriage return", "first\r\nsecond", "first"},
+		{"empty content", "", ""},
+		{"only markers", "###\n---\nreal text", "real text"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := deriveDescription(tc.in); got != tc.want {
+				t.Errorf("deriveDescription(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+
+	// A long opening line is truncated so it can't dominate the
+	// always-loaded MEMORY.md index.
+	long := strings.Repeat("word ", 100)
+	got := deriveDescription(long)
+	if len([]rune(got)) > quickCaptureDescMaxRunes+1 {
+		t.Errorf("derived description is %d runes, want <= %d", len([]rune(got)), quickCaptureDescMaxRunes+1)
+	}
+	if !strings.HasSuffix(got, "…") {
+		t.Errorf("truncated description should be elided; got %q", got)
+	}
+}
+
+// The preview must show the values that will actually be written, or a quick
+// capture would render as landing in scope="" type="".
+func TestMemorySave_PreviewShowsDerivedValues(t *testing.T) {
+	tool := &MemorySaveTool{Cwd: NewCwdRef(t.TempDir())}
+	got := tool.PreviewCall(`{"name":"foo","content":"a fact"}`)
+	if !strings.Contains(got, "scope=user") || !strings.Contains(got, "type=note") {
+		t.Errorf("preview = %q, want derived scope=user and type=note", got)
 	}
 }
 

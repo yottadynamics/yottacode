@@ -90,7 +90,14 @@ func (t *MemorySaveTool) Schema() map[string]any {
 				"description": "the memory body in markdown, written for a future agent who has NONE of this conversation's context. Be specific and self-contained: capture the concrete particulars — names, file paths, the decision AND why, how a subsystem works, the rationale, the exact value or constraint — so future-you can act on it without re-deriving anything. Knowledge, decisions, gotchas, how-it-works notes, and rationale are in scope — not only preferences. The body MUST add detail beyond the one-line description; a body that merely restates the description is worthless. A few specific sentences beat one vague line. State durable facts declaratively, not as instructions to yourself.",
 			},
 		},
-		"required": []string{"scope", "type", "name", "description", "content"},
+		// Only name + content are required. The five-field ceremony was a
+		// real suppressor: it competes with the primary task at exactly the
+		// moment something durable surfaces, which is when capture is most
+		// likely to be skipped. scope/type/description keep their full
+		// steering descriptions above — they still render whenever the model
+		// chooses to fill them — but omitting them now yields sensible
+		// defaults (see applyMemorySaveDefaults) instead of a hard error.
+		"required": []string{"name", "content"},
 	}
 }
 
@@ -100,6 +107,10 @@ func (t *MemorySaveTool) ParallelSafe(string) bool     { return false }
 func (t *MemorySaveTool) PreviewCall(argsJSON string) string {
 	var a memorySaveArgs
 	_ = json.Unmarshal([]byte(argsJSON), &a)
+	// Preview the values that will actually be written, not the raw args —
+	// a quick capture omits scope/type, and showing them blank would
+	// misrepresent where the memory is about to land.
+	a.applyDefaults()
 	return fmt.Sprintf("memory_save(scope=%s, type=%s, name=%s)", a.Scope, a.Type, a.Name)
 }
 
@@ -109,6 +120,56 @@ type memorySaveArgs struct {
 	Name        string `json:"name"`
 	Description string `json:"description"`
 	Content     string `json:"content"`
+}
+
+// quickCaptureType is the type assigned when the model omits one. Grouping
+// every quick capture under a single visible index section makes them a
+// natural queue for a later curation pass, rather than scattering
+// unclassified notes through the index.
+const quickCaptureType = "note"
+
+// quickCaptureDescMaxRunes bounds a derived description so one long opening
+// sentence can't dominate the always-loaded MEMORY.md index line.
+const quickCaptureDescMaxRunes = 120
+
+// applyDefaults fills the three optional fields so a name+content quick
+// capture behaves like a full save.
+//
+// scope defaults to user rather than project deliberately: it bakes in the
+// documented default-to-user steering, and most of what is learned about how
+// someone works is portable. The scope-check reflection in Execute still
+// fires for portable types filed to project, so the steering isn't lost.
+func (a *memorySaveArgs) applyDefaults() {
+	if strings.TrimSpace(a.Scope) == "" {
+		a.Scope = "user"
+	}
+	if strings.TrimSpace(a.Type) == "" {
+		a.Type = quickCaptureType
+	}
+	if strings.TrimSpace(a.Description) == "" {
+		a.Description = deriveDescription(a.Content)
+	}
+}
+
+// deriveDescription builds a one-line index summary from the body's first
+// non-empty line. A graceful fallback, not a replacement: the schema still
+// asks for a real description, and the model can always do better than this.
+// Markdown heading markers and list bullets are stripped so the index line
+// reads as prose rather than as "## Some heading".
+func deriveDescription(content string) string {
+	for line := range strings.SplitSeq(content, "\n") {
+		s := strings.TrimSpace(line)
+		s = strings.TrimLeft(s, "#>-*+ \t")
+		s = flatten(s)
+		if s == "" {
+			continue
+		}
+		if r := []rune(s); len(r) > quickCaptureDescMaxRunes {
+			return strings.TrimSpace(string(r[:quickCaptureDescMaxRunes])) + "…"
+		}
+		return s
+	}
+	return ""
 }
 
 // portableMemoryTypes are the conventional memory types that are about
@@ -127,6 +188,9 @@ func (t *MemorySaveTool) Execute(_ context.Context, argsJSON string) (string, er
 	if err := json.Unmarshal([]byte(argsJSON), &a); err != nil {
 		return "", fmt.Errorf("memory_save: invalid args: %w", err)
 	}
+	// scope/type/description are optional in the schema — fill them before
+	// validation so a quick capture takes the same path as a full save.
+	a.applyDefaults()
 	memType, err := validateMemoryType(a.Type)
 	if err != nil {
 		return "", err

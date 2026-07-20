@@ -34,16 +34,58 @@ const preCompactionMemoryReminder = "[system reminder — not from the user] Con
 
 // exitSaveMinUserTurns is the minimum number of user turns STARTED THIS
 // LAUNCH (resumed history doesn't count — it already had its own exit
-// pass) before a graceful quit runs the final memory turn. Below the
-// bar, quit stays instant: zero- and one-turn sessions rarely teach
-// anything durable, and an exit delay on trivial sessions is how a
-// feature like this gets switched off.
-const exitSaveMinUserTurns = 2
+// pass) before a graceful quit runs the final memory turn. A zero-turn
+// session still skips it: there is nothing to review, and an exit delay
+// on a session you opened and closed is how a feature like this gets
+// switched off.
+//
+// One turn is enough. The bar used to be two, on the theory that short
+// sessions rarely teach anything durable — but a single exchange
+// routinely carries a correction or a decision-and-why, and under the
+// recall bias (see prompt.go) those are exactly what should be captured.
+// Silently skipping the pass on every one-turn session dropped them.
+const exitSaveMinUserTurns = 1
 
 // exitSavePrompt is the synthetic user message driving the final turn on
 // quit. Memory tools only — the session is ending and file mutations at
 // quit time would be unreviewable surprise.
 const exitSavePrompt = "The session is ending now. Review this conversation: if it surfaced durable preferences, corrections, decisions and their rationale, gotchas, how things work, or project facts that are not yet in your memory, persist them with memory_save before the context is gone. Check the MEMORY.md indexes in your context first — update or consolidate existing memories rather than creating near-duplicates, and memory_forget any now known to be stale. Use memory tools only; do not modify project files. Capture anything durable you haven't saved yet. If genuinely nothing durable is unsaved, reply exactly: nothing to save."
+
+// captureReminderPrompt is the periodic mid-session checkpoint. Same
+// mechanism as preCompactionMemoryReminder — appended to the HISTORY
+// copy of an ordinary user message, never an extra turn — so it costs
+// one paragraph of context and no round trip. Worded for the message
+// TAIL: it refers to "the request above".
+const captureReminderPrompt = "[system reminder — not from the user] Checkpoint: if anything durable has surfaced since your last save — a decision and why, a gotcha, how something works, a preference or correction — and it isn't in memory yet, persist it with memory_save now (check your MEMORY.md indexes first; update or consolidate rather than duplicate). If nothing durable is unsaved, save nothing. Either way, proceed with the request above without mentioning this reminder."
+
+// captureReminderDue reports whether this turn should carry the periodic
+// capture reminder.
+//
+// Why this exists: the other two reinforcement points both have narrow
+// triggers. preCompactionMemoryReminder only fires if a session crosses
+// the summarize watermark, which most never do, and the exit-save turn
+// needs a graceful /quit — so a medium session ended with Ctrl+C got
+// ZERO reinforcement beyond the standing prompt it stopped attending to
+// thousands of tokens ago. This covers those sessions mid-flight.
+//
+// Deliberately NOT a per-turn reminder (that variant was considered and
+// rejected as too noisy): it fires on a turn cadence, defaults to every
+// 6th turn, and rides an existing message rather than adding a turn.
+//
+// Suppressed while summarizing or during the exit-save turn, and it
+// yields to a pending pre-compaction reminder — that one is strictly
+// more urgent (context is about to be destroyed) and asks for the same
+// thing, so doubling up would just repeat itself.
+func (m Model) captureReminderDue() bool {
+	n := m.fileCfg.Memory.CaptureReminderEveryTurns
+	if n <= 0 || m.summarizing || m.exitSavePending || m.memoryNudgePending {
+		return false
+	}
+	// userTurnsThisLaunch is incremented after this check runs, so the
+	// turn being started is number userTurnsThisLaunch+1. With n=6 that
+	// puts the reminder on turns 6, 12, 18…
+	return (m.userTurnsThisLaunch+1)%n == 0
+}
 
 // exitSaveDisplayLabel is what the transcript shows instead of the full
 // exitSavePrompt body.

@@ -24,7 +24,83 @@ the project uses semantic versioning once it's past `1.0.0`.
   via the extended-thinking budget, Gemini via the shim's
   `reasoning_effort` enum. See [docs/providers.md](docs/providers.md).
 
+- **Periodic memory-capture reminder** — every Nth user message (default 6,
+  `[memory] capture_reminder_every_turns`, `0` disables) now carries a
+  mid-session reminder to persist durable learnings. It closes a real gap: the
+  pre-compaction reminder only fires if a session crosses the summarize
+  watermark, and the final-turn-on-quit pass needs a graceful exit — so a
+  medium session ended with `Ctrl+C` previously got no reinforcement at all.
+  The reminder rides a message you were already sending (history copy only, so
+  the transcript is unchanged), costs no extra turn, and stands down when a
+  pre-compaction reminder is already pending. The exit-save activity bar also
+  dropped from two turns to one: a single exchange routinely carries a
+  correction or a decision-and-why, and the old bar silently skipped it.
+
+- **`memory_save` quick capture** — `scope`, `type`, and `description` are now
+  optional; only `name` and `content` are required. The five-field ceremony
+  competed with the primary task at exactly the moment something durable
+  surfaced. Omitted fields default to `user` scope, type `note`, and a
+  description derived from the body's first line. The full form is unchanged.
+
+- **Sensitive projects** — `yottacode sensitive add [path]` marks a repository
+  as excluded from automatic session recall, for PHI/medical and similarly
+  regulated work. Everything about recall is local except the one thing that
+  matters: an injected excerpt egresses to the cloud LLM with the turn. A
+  marked project is quarantined in **both** directions — nothing is
+  auto-injected into its prompts, and its conversations never surface in any
+  other project's recall regardless of `retrieval.session_recall.scope`, so
+  widening scope to `"user"` can't carry PHI into an unrelated repo. Sessions
+  are still indexed and the manual `session_recall` tool still reaches them;
+  the gate is about what leaves automatically. Marking covers every subfolder,
+  is announced at session start, and lives in
+  `~/.yottacode/sensitive-roots.json` — deny-listed like `trusted-roots.json`
+  so the model can't un-mark a repo. `list`/`add`/`remove`/`clear` subcommands.
+  See [docs/security-and-allow-lists.md](docs/security-and-allow-lists.md#sensitive-projects).
+
+- **`memory audit` / `memory_audit`** — the CLI command and agent tool now share
+  the same read-only curation report. The command is for humans and scripts; the
+  tool lets an explicit curation turn inspect the queue, fetch full entries with
+  `memory_get`, then consolidate with ordinary `memory_save`/`memory_forget`
+  calls. Every issue includes created-date provenance, age, and an action hint;
+  quick-capture notes older than 30 days are marked as priority curation work.
+  `--plan` / `{"plan":true}` groups issues into read-only curation batches so
+  humans or agents can work through duplicates, note promotion, scope moves, and
+  cleanup in a safer order. No audit path mutates memory on its own.
+
 ### Fixed
+
+- **`retrieval.session_recall.top_k = 0` now injects nothing.** It fell through
+  to an internal default of ten, so the value you'd set to turn injection off
+  delivered more than the default of three.
+- **Deleted sessions are evicted from the recall index.** Removing a session's
+  JSON left its rows behind forever, so `/recall` and semantic search kept
+  surfacing conversations whose transcript was gone. The startup backfill now
+  prunes them.
+- **Worktrees share their repository's recall.** yottacode worktrees live
+  outside the repo tree, so a worktree session and a main-checkout session
+  could never recall each other despite being the same work. Project scope now
+  covers the repo root and its worktree container both.
+- **Automatic session recall now covers the whole repository.** Project scope
+  matched `cwd` by exact string equality, so a session started in any
+  subdirectory was silently invisible to recall — and from a subdirectory the
+  repo's own history was invisible too. The repo root is now resolved once at
+  startup and scope matches it plus everything below it. Sessions recorded
+  outside that root (yottacode worktrees) still match on their exact path, so
+  nothing that worked before stops working. Other projects are still never
+  injected.
+- **Session-recall vectors no longer leak.** Re-indexing a session rewrote its
+  FTS rows but left `message_vectors` rows behind for messages that had
+  disappeared — after auto-summarize replaced the transcript with a synopsis,
+  for instance. They were inert for search but accumulated forever and were
+  re-scanned by every semantic query. Cleanup now runs in the same transaction
+  as the re-index.
+- **`YOTTACODE_RECALL_DEBUG` now logs near-misses.** It previously recorded only
+  excerpts that had already cleared `min_score`, and nothing at all on a turn
+  that injected nothing — so it could never answer the question it exists for,
+  "is the threshold too high?". Each search now logs every candidate with its
+  cosine score marked `injected` or `dropped`, including zero-hit turns. The
+  debug pass searches wider but re-applies the real threshold before injecting,
+  so enabling it never changes what the model sees.
 
 - `[[providers.models]]` is no longer silently ignored for non-curated
   provider kinds. `catalog.List` went straight to the live `/models` fetch

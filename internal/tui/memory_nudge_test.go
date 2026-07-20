@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -134,6 +135,122 @@ func TestMemoryNudgeTextPinsRecallBiasAndEscapeHatch(t *testing.T) {
 	}
 }
 
+// --- periodic capture reminder (P2.2) ---
+
+// captureModel returns a model with the periodic reminder set to cadence n
+// and userTurnsThisLaunch positioned so the NEXT turn is number `turn`.
+func captureModel(t *testing.T, n, turn int) Model {
+	t.Helper()
+	m := newTestModel(t)
+	m.cfg.Adapter = stubAdapterNoStream{}
+	m.fileCfg.Memory.CaptureReminderEveryTurns = n
+	m.userTurnsThisLaunch = turn - 1
+	return m
+}
+
+// startAndLastContent runs one turn and returns the history copy of the
+// message it appended.
+func startAndLastContent(t *testing.T, m Model, input string) (Model, string) {
+	t.Helper()
+	out, _ := m.startTurn(input)
+	m2 := out.(Model)
+	t.Cleanup(func() {
+		if m2.turnCancel != nil {
+			m2.turnCancel()
+		}
+	})
+	return m2, m2.sess.Messages[len(m2.sess.Messages)-1].Content
+}
+
+func TestCaptureReminder_FiresOnCadence(t *testing.T) {
+	// With n=6 the reminder rides turns 6, 12, 18 — and no others.
+	for turn, want := range map[int]bool{
+		1: false, 5: false, 6: true, 7: false, 11: false, 12: true, 18: true,
+	} {
+		t.Run(fmt.Sprintf("turn%d", turn), func(t *testing.T) {
+			m := captureModel(t, 6, turn)
+			if got := m.captureReminderDue(); got != want {
+				t.Errorf("turn %d: captureReminderDue = %v, want %v", turn, got, want)
+			}
+		})
+	}
+}
+
+func TestCaptureReminder_RidesHistoryCopyOnly(t *testing.T) {
+	m, content := startAndLastContent(t, captureModel(t, 6, 6), "hello there")
+
+	want := "hello there\n\n" + captureReminderPrompt
+	if content != want {
+		t.Errorf("reminder must ride the history copy;\ngot:  %q\nwant: %q", content, want)
+	}
+	// Model-facing only: the transcript keeps the user's own words.
+	if got := m.transcript.String(); strings.Contains(got, "system reminder") {
+		t.Errorf("reminder leaked into the rendered transcript: %q", got)
+	}
+}
+
+func TestCaptureReminder_DisabledWhenZero(t *testing.T) {
+	m := captureModel(t, 0, 6)
+	if m.captureReminderDue() {
+		t.Error("cadence 0 must disable the reminder entirely")
+	}
+	_, content := startAndLastContent(t, m, "plain message")
+	if content != "plain message" {
+		t.Errorf("disabled reminder must leave the message verbatim; got %q", content)
+	}
+}
+
+// The pre-compaction reminder is the more urgent trigger and asks for the
+// same thing, so exactly one reminder rides a message — never both.
+func TestCaptureReminder_YieldsToPreCompaction(t *testing.T) {
+	m := captureModel(t, 6, 6)
+	m.memoryNudgePending = true
+
+	if m.captureReminderDue() {
+		t.Error("capture reminder must stand down while a pre-compaction nudge is pending")
+	}
+
+	m2, content := startAndLastContent(t, m, "hello there")
+	if !strings.Contains(content, preCompactionMemoryReminder) {
+		t.Errorf("pre-compaction reminder should win; got %q", content)
+	}
+	if strings.Contains(content, captureReminderPrompt) {
+		t.Errorf("both reminders rode the same message; got %q", content)
+	}
+	if m2.memoryNudgePending {
+		t.Error("pre-compaction nudge must still be consumed")
+	}
+}
+
+func TestCaptureReminder_SuppressedDuringSummarizeAndExitSave(t *testing.T) {
+	for name, mut := range map[string]func(Model) Model{
+		"summarizing": func(m Model) Model { m.summarizing = true; return m },
+		"exit-saving": func(m Model) Model { m.exitSavePending = true; return m },
+	} {
+		t.Run(name, func(t *testing.T) {
+			if mut(captureModel(t, 6, 6)).captureReminderDue() {
+				t.Errorf("capture reminder must be suppressed while %s", name)
+			}
+		})
+	}
+}
+
+func TestCaptureReminderTextPinsRecallBiasAndEscapeHatch(t *testing.T) {
+	for _, want := range []string{
+		"system reminder — not from the user",
+		"a decision and why",
+		"a gotcha",
+		"memory_save",
+		"update or consolidate rather than duplicate",
+		"If nothing durable is unsaved, save nothing",
+		"without mentioning this reminder",
+	} {
+		if !strings.Contains(captureReminderPrompt, want) {
+			t.Errorf("capture reminder lost wording: missing %q", want)
+		}
+	}
+}
+
 // --- final memory turn on quit ---
 
 // exitReadyModel returns a model that satisfies every exit-save gate:
@@ -183,6 +300,31 @@ func TestExitSave_GatesQuitImmediately(t *testing.T) {
 				t.Errorf("gated path must not start a turn")
 			}
 		})
+	}
+}
+
+// P2.1 — the activity bar dropped from two turns to one. A single exchange
+// routinely carries a correction or a decision-and-why, and the old bar
+// silently skipped the exit pass on every one-turn session.
+func TestExitSave_AdmitsSingleTurnSession(t *testing.T) {
+	m := exitReadyModel(t)
+	m.userTurnsThisLaunch = 1
+
+	out, cmd := maybeStartExitSaveTurn(m)
+	if cmd == nil {
+		t.Fatal("a one-turn session should now run the final memory turn")
+	}
+	if !out.(Model).exitSavePending {
+		t.Error("exitSavePending should be set for a one-turn session")
+	}
+
+	// A zero-turn session still skips — there is nothing to review.
+	m0 := exitReadyModel(t)
+	m0.userTurnsThisLaunch = 0
+	out0, cmd0 := maybeStartExitSaveTurn(m0)
+	assertQuits(t, cmd0, "zero-turn session")
+	if out0.(Model).exitSavePending {
+		t.Error("zero-turn session must not start the final turn")
 	}
 }
 

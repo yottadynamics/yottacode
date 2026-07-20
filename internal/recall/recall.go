@@ -173,6 +173,33 @@ func (idx *Index) indexSessionOnce(s *session.Session) error {
 			return fmt.Errorf("recall: insert message %d: %w", i, err)
 		}
 	}
+
+	// Drop vectors whose message no longer exists. The rewrite above is
+	// DELETE+INSERT, so a session that shrank — auto-summarize replacing
+	// Session.Messages with a synopsis, an edited session file — leaves
+	// message_vectors rows with nothing to join. They are inert for search
+	// (SearchSemantic inner-joins through messages) but accumulate forever and
+	// are re-scanned by every semantic query.
+	//
+	// msg_index is sparse: system/tool messages and empty bodies are skipped
+	// above, so indices have gaps and "delete everything at or past the new
+	// message count" would be wrong. Match the surviving index set instead.
+	//
+	// The CAST is belt-and-braces. FTS5 columns have no declared affinity —
+	// each value keeps the storage class it was bound with — and the insert
+	// above binds a Go int, so msg_index does come back as INTEGER and the
+	// comparison already matches. The cast keeps that true if the insert ever
+	// starts binding a string, where an affinity mismatch would silently match
+	// nothing and delete *every* vector for the session on each re-index.
+	// TestIndexSession_ReindexUnchangedKeepsVectors is what would catch it.
+	if _, err := tx.Exec(`
+		DELETE FROM message_vectors
+		WHERE session_id = ?
+		  AND msg_index NOT IN (
+		      SELECT CAST(msg_index AS INTEGER) FROM messages WHERE session_id = ?
+		  )`, s.ID, s.ID); err != nil {
+		return fmt.Errorf("recall: clear orphaned vectors: %w", err)
+	}
 	return tx.Commit()
 }
 
@@ -306,7 +333,9 @@ func Backfill(idx *Index) error {
 	if err != nil {
 		return err
 	}
+	live := make(map[string]bool, len(infos))
 	for _, info := range infos {
+		live[info.ID] = true
 		s, err := session.Load(info.ID)
 		if err != nil {
 			continue // skip corrupted/unreadable sessions silently
@@ -315,5 +344,88 @@ func Backfill(idx *Index) error {
 			return fmt.Errorf("recall: backfill %s: %w", info.ID, err)
 		}
 	}
+	// Sessions the user deleted are still in the index: this loop only
+	// visits files that exist, so nothing else would ever remove their
+	// rows. Left alone they accumulate forever, keep answering /recall and
+	// semantic searches with conversations whose transcript is gone, and
+	// make every cosine scan wider. Prune them here — the full session list
+	// is already in hand, which is the one place that knows what "deleted"
+	// means.
+	//
+	// Note live is built from every info returned above, including ones
+	// whose Load failed: a session that is present but temporarily
+	// unreadable must not be mistaken for a deleted one and dropped.
+	if err := idx.pruneMissingSessions(live); err != nil {
+		return fmt.Errorf("recall: prune deleted sessions: %w", err)
+	}
 	return nil
+}
+
+// pruneMissingSessions deletes every indexed row belonging to a session id
+// not present in live. Rows are removed from all three tables together,
+// under the same write mutex and BUSY retry as IndexSession.
+func (idx *Index) pruneMissingSessions(live map[string]bool) error {
+	rows, err := idx.db.Query(`SELECT id FROM sessions`)
+	if err != nil {
+		return err
+	}
+	var stale []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return err
+		}
+		if !live[id] {
+			stale = append(stale, id)
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if len(stale) == 0 {
+		return nil
+	}
+
+	idx.writeMu.Lock()
+	defer idx.writeMu.Unlock()
+	for _, id := range stale {
+		if err := idx.deleteSessionRows(id); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// deleteSessionRows removes one session from all three tables in a single
+// transaction, retried on transient writer contention. Caller holds writeMu.
+func (idx *Index) deleteSessionRows(sessionID string) error {
+	var err error
+	for attempt := 0; attempt < indexSessionBusyAttempts; attempt++ {
+		err = idx.deleteSessionRowsOnce(sessionID)
+		if err == nil || !isSQLiteBusy(err) {
+			return err
+		}
+		time.Sleep(time.Duration(attempt+1) * indexSessionBusyDelay)
+	}
+	return err
+}
+
+func (idx *Index) deleteSessionRowsOnce(sessionID string) error {
+	tx, err := idx.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	for _, stmt := range []string{
+		`DELETE FROM message_vectors WHERE session_id = ?`,
+		`DELETE FROM messages WHERE session_id = ?`,
+		`DELETE FROM sessions WHERE id = ?`,
+	} {
+		if _, err := tx.Exec(stmt, sessionID); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }

@@ -107,20 +107,34 @@ At the start of each turn it embeds your message, semantically searches your ear
 
 This is the episodic counterpart to memory retrieval, and it is **reads-only**: it never writes memory. It requires a local embedding model (Ollama, same one used for semantic memory retrieval); when that is unavailable it silently falls back to the manual `session_recall` tool. Session embeddings are stored alongside the FTS5 index in `~/.yottacode/index.sqlite` (a `message_vectors` table), backfilled in the background at startup and incrementally after each turn — so a conversation becomes recallable in later sessions without restarting.
 
-When a turn pulls in prior conversations, the thinking-row footer shows `recalled N conversations`, so the injection is visible rather than silent. To tune `min_score` against real usage, set `YOTTACODE_RECALL_DEBUG=1` and each firing is logged with its cosine scores to `~/.yottacode/recall-debug.log`.
+"Project" means the whole repository, not just the directory you launched from: the repo root is resolved once at startup, and any session started at that root or in any subdirectory below it counts as the same project. Sessions from other projects are never injected.
+
+When a turn pulls in prior conversations, the thinking-row footer shows `recalled N conversations`, so the injection is visible rather than silent. To tune `min_score` against real usage, set `YOTTACODE_RECALL_DEBUG=1`: every candidate the search returned is appended to `~/.yottacode/recall-debug.log` with its cosine score and whether it was `injected` or `dropped`, including on turns where nothing cleared the floor. Those near-misses are what tell you whether the floor sits too high. The debug pass searches wider than normal but re-applies the real threshold before injecting, so turning it on never changes what the model sees. The log stores a short query digest instead of the raw prompt text, avoiding a second persisted copy of secrets or PHI.
 
 Configure it under `[retrieval.session_recall]` in `config.toml`:
 
 ```toml
 [retrieval.session_recall]
 auto = true          # per-turn injection on/off (manual session_recall stays available either way)
-scope = "project"    # "project" = only sessions in the current directory (never mixes projects); "user"/"all" = whole store
-top_k = 3            # max excerpts injected per turn
+scope = "project"    # "project" = sessions from the current repo, its root and everything below it (never mixes projects); "user"/"all" = whole store
+top_k = 3            # max excerpts injected per turn; 0 injects nothing
 min_score = 0.6      # cosine-similarity floor (0.0–1.0), calibrated for nomic-embed-text — only on-topic history surfaces
 max_bytes = 2000     # size cap on the injected block (0 = no byte bound)
 ```
 
-`scope = "project"` is the default and never surfaces another project's conversations. To turn the behavior off entirely, set `auto = false`.
+`scope = "project"` is the default and never surfaces another project's conversations — and a session you started in a subdirectory of the repo still counts as the same project. To turn the behavior off entirely, set `auto = false`.
+
+### Sensitive projects
+
+`auto = false` is a global switch. For a PHI/medical or otherwise regulated repository you usually want recall everywhere *except* there, which is what `yottacode sensitive add` does:
+
+```bash
+yottacode sensitive add            # mark the current repo (covers every subfolder)
+yottacode sensitive list
+yottacode sensitive remove <path>
+```
+
+A sensitive project is excluded in both directions: nothing is auto-injected into its prompts, and its conversations never surface in any other project's recall — even under `scope = "user"`/`"all"`. Sessions are still indexed and the manual `session_recall` tool still reaches them; the gate is about what leaves automatically. The session says so at startup, so you can confirm it is on. Full details in [security-and-allow-lists.md](security-and-allow-lists.md#sensitive-projects).
 
 ## Clear vs delete
 

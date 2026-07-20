@@ -11,6 +11,7 @@ import (
 	"github.com/yottadynamics/yottacode/internal/adapter"
 	"github.com/yottadynamics/yottacode/internal/config"
 	"github.com/yottadynamics/yottacode/internal/filerefs"
+	"github.com/yottadynamics/yottacode/internal/recall"
 	"github.com/yottadynamics/yottacode/internal/session"
 )
 
@@ -138,6 +139,102 @@ func TestRebuildSystemPromptForTurn_PreservesFileRefsBlock(t *testing.T) {
 	}
 	if sumIdx > refsIdx {
 		t.Errorf("canonical order is summary before refs (extractSummarySection bounds on the refs marker); got summary@%d refs@%d", sumIdx, refsIdx)
+	}
+}
+
+// recallRebuildModel builds a Model wired for auto-recall with one on-topic
+// prior session already indexed and embedded, plus a summary and file-refs
+// block in the system prompt so their preservation can be contrasted against
+// the prior-conversations block.
+func recallRebuildModel(t *testing.T) Model {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("YOTTACODE_HOME", "")
+	cwd := t.TempDir()
+
+	idx := recall.MustOpenForTest(t)
+	ec := fakeEmbedServer(t, false)
+	seedRecall(t, idx, ec, "past-auth", cwd, "we decided to use jwt auth everywhere")
+
+	prior := "BASE\n\n## Prior session context (summarized)\nshipped feature X" +
+		"\n\n" + filerefs.Marker + "\n\n### @docs/foo.md\n```\nfoo body\n```"
+	return Model{
+		cwd:              cwd,
+		projectRoots:     rootsOf(cwd),
+		recall:           idx,
+		embedClient:      ec,
+		baseSystemPrompt: "BASE",
+		fileCfg: config.Config{
+			Retrieval: config.RetrievalConfig{
+				Enabled: true, TopK: 0,
+				SessionRecall: defaultSR(),
+			},
+		},
+		sess: &session.Session{
+			ID: "live",
+			Messages: []adapter.Message{
+				{Role: adapter.RoleSystem, Content: prior},
+			},
+		},
+	}
+}
+
+// The prior-conversations block is the one auto-injected block that is
+// deliberately NOT preserved across rebuilds: it is regenerated from the
+// current turn's query each time. Pin both halves — it must not accumulate
+// when it keeps matching, and it must disappear when the new query matches
+// nothing — while the summary and file-refs blocks beside it do survive.
+func TestRebuildSystemPromptForTurn_DropsPriorConversationsBlock(t *testing.T) {
+	m := recallRebuildModel(t)
+	heading := strings.TrimSpace(priorConvosHeading)
+
+	for i := range 2 {
+		m.rebuildSystemPromptForTurn(context.Background(), "auth jwt")
+		got := m.sess.Messages[0].Content
+		if n := strings.Count(got, heading); n != 1 {
+			t.Fatalf("rebuild %d: prior-conversations heading appears %d times, want exactly 1", i+1, n)
+		}
+	}
+
+	// An off-topic query clears nothing, so the block must vanish entirely.
+	m.rebuildSystemPromptForTurn(context.Background(), "docker kubernetes")
+	got := m.sess.Messages[0].Content
+	if strings.Contains(got, heading) {
+		t.Errorf("prior-conversations block survived a non-matching turn: %q", got)
+	}
+	// The contrast that makes the invariant meaningful: the other tail blocks
+	// are carried across the very same rebuild.
+	if !strings.Contains(got, "shipped feature X") {
+		t.Errorf("summary block should still survive; got %q", got)
+	}
+	if !strings.Contains(got, "foo body") {
+		t.Errorf("file-refs block should still survive; got %q", got)
+	}
+}
+
+// Recall churns every turn, so it must live strictly beyond the cached prompt
+// head or it would bust the provider prompt cache on each request.
+func TestRebuildSystemPromptForTurn_CacheHeadBytesExcludesPriorConversations(t *testing.T) {
+	m := recallRebuildModel(t)
+
+	m.rebuildSystemPromptForTurn(context.Background(), "auth jwt")
+	got := m.sess.Messages[0].Content
+	head := m.sess.Messages[0].CacheHeadBytes
+	if !strings.Contains(got, strings.TrimSpace(priorConvosHeading)) {
+		t.Fatalf("expected recall to fire for this fixture; got %q", got)
+	}
+	if want := len(composeSystemPrompt(m.baseSystemPrompt, m.providerProfile)); head != want {
+		t.Errorf("CacheHeadBytes = %d, want %d (the composed base head)", head, want)
+	}
+	if at := strings.Index(got, priorConvosHeading); at < head {
+		t.Errorf("prior-conversations block starts at %d, inside the cached head (%d)", at, head)
+	}
+
+	// The cache head must not move just because recall did or didn't fire.
+	m.rebuildSystemPromptForTurn(context.Background(), "docker kubernetes")
+	if got := m.sess.Messages[0].CacheHeadBytes; got != head {
+		t.Errorf("CacheHeadBytes moved with recall: %d then %d", head, got)
 	}
 }
 

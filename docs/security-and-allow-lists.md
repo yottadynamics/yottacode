@@ -52,6 +52,30 @@ inside its own cwd normally; write validation reads cwd dynamically
 so an in-session `enter_worktree` swap doesn't leave the validator
 locked to the pre-swap perimeter. See [worktrees.md](worktrees.md).
 
+## Sensitive projects
+
+Folder trust governs what yottacode may *write*. Sensitive projects govern what leaves the machine *on their own* — specifically, automatic session recall.
+
+Everything about recall is local: embedding, storage, and cosine similarity all run against `~/.yottacode/index.sqlite`. The exposure is narrower than that and easy to miss: an excerpt that gets **injected** travels to the cloud LLM with the turn. For a PHI/medical or otherwise regulated repository, that is not acceptable, so those repos can be quarantined:
+
+```bash
+yottacode sensitive list              # show every sensitive root + marking timestamp
+yottacode sensitive add [path]        # default: cwd
+yottacode sensitive remove <path>     # exact-path match
+yottacode sensitive clear             # remove every entry
+```
+
+The marking is recorded in `~/.yottacode/sensitive-roots.json` and covers every subfolder, so marking the repository root is enough regardless of which subdirectory a session started in. It takes effect on the next launch — the posture is resolved once at startup — and the session announces it, so you can confirm the protection is live rather than inferring it from an absence.
+
+**It cuts both ways**, which is the part worth being explicit about:
+
+- **Inbound** — automatic recall is off inside a sensitive project. Nothing is swept into its prompts.
+- **Outbound** — a sensitive project's conversations are never candidates for *any other* project's recall, whatever `retrieval.session_recall.scope` is set to. Without this half, setting `scope = "user"` would quietly carry PHI into an unrelated repo's turn — the same leak facing the other direction.
+
+**What it deliberately does not do.** Sessions are still saved, indexed, and embedded, and the manual `session_recall` tool still reaches them. The gate is about what leaves *automatically*, not about making your own history unreachable when you deliberately ask for it. It also does not touch semantic memory retrieval — memories are things the agent chose to write down, a different trust model from an automatic sweep over raw transcripts.
+
+Like `trusted-roots.json`, the store is on the agent's deny-list, so the model cannot un-mark a project and re-enable egress for it.
+
 **Out-of-workspace writes.** When the model tries to write a file outside cwd + `--allow-paths` roots, yottacode shows an inline elevation prompt:
 
 ```
