@@ -184,14 +184,19 @@ decision, not a key chord away.
 
 Mid-turn user input is a first-class flow, not a blocked interaction:
 pressing **Enter** while the agent is thinking (streaming, calling a
-tool, or running a foreground subagent) captures the new message,
-cancels the in-flight iteration via the turn's context, and queues
-the message for auto-submission as soon as `agent.Turn` unwinds. The
-TUI's `pendingInputAfterTurn` field carries the queue across the
-cancel; `turnEndedMsg` consumes it and calls `startTurn` so the agent
-sees the user's feedback without the operator needing to retype
-anything. Behaves identically across normal, plan, and auto modes —
-the loop is mode-agnostic about interrupts.
+tool, or running a foreground subagent) captures the new message and
+queues it for delivery at the next tool round without cancelling the
+active turn. The TUI sends the message through the per-turn `userMsgCh`;
+`agent.Turn` checks that channel between tool-call batches and appends
+any delivered text to history as another user message. If the model
+finishes before a tool-round injection point, or if the one-message
+channel is already full, the TUI falls back to `pendingInputAfterTurn` so
+`turnEndedMsg` can auto-submit the message as the next turn.
+
+Before a queued message is delivered, pressing **Up** on an empty
+mid-turn textarea recalls it into the editor and drains it from the
+queue. Pressing Enter after editing requeues the revised text through the
+same path; Esc/Ctrl+C still drop it instead of sending.
 
 **Esc** and **Ctrl+C** are the explicit "stop without sending"
 surface: they cancel the turn and drop any queued message, but leave
@@ -217,11 +222,11 @@ next request fails. The agent loop handles this in three places:
    never started. Parallel workers that completed cleanly before
    the cancel keep their real result.
 
-Once history is repaired, the loop emits a `TurnInterrupted` event
-(distinct from `ErrorEvent` so consumers render it as a calm
-`↩ interrupted` line, not a red error) and returns. The TUI's
-auto-submit then fires the queued message into a fresh turn that
-sees the partial assistant content + synthetic tool results in
+When a queued message must fall back to cancellation, history is repaired,
+the loop emits a `TurnInterrupted` event (distinct from `ErrorEvent` so
+consumers render it as a calm `↩ interrupted` line, not a red error), and
+returns. The TUI's auto-submit then fires the queued message into a fresh
+turn that sees the partial assistant content + synthetic tool results in
 history.
 
 **Background subagents are exempt.** Their context is detached from

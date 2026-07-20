@@ -56,6 +56,62 @@ func TestInterrupt_EnterMidTurnQueuesOnChannel(t *testing.T) {
 	}
 }
 
+// TestInterrupt_UpMidTurnRecallsQueuedMessageForEditing covers the edit-
+// before-delivery path: after a mid-turn Enter queues a message, Up pulls it
+// back into the textarea and removes it from the delivery channel.
+func TestInterrupt_UpMidTurnRecallsQueuedMessageForEditing(t *testing.T) {
+	m := newTestModel(t)
+	cancels := installFakeTurn(t, &m)
+
+	for _, r := range "follow up" {
+		m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyUp})
+
+	if got := m.textInput.Value(); got != "follow up" {
+		t.Fatalf("Up should recall queued text into textarea; got %q", got)
+	}
+	select {
+	case got := <-m.userMsgCh:
+		t.Fatalf("Up should drain queued delivery; still had %q", got)
+	default:
+	}
+	if got := cancels.Load(); got != 0 {
+		t.Fatalf("recalling queued text must not cancel turn; got %d calls", got)
+	}
+	if !strings.Contains(m.transcript.String(), "[queued] recalled for editing") {
+		t.Fatalf("expected recall notice in transcript; got %q", m.transcript.String())
+	}
+}
+
+// TestInterrupt_UpMidTurnCanReviseAndRequeueQueuedMessage verifies that the
+// recalled text can be edited and submitted again through the same queue path.
+func TestInterrupt_UpMidTurnCanReviseAndRequeueQueuedMessage(t *testing.T) {
+	m := newTestModel(t)
+	_ = installFakeTurn(t, &m)
+
+	for _, r := range "follow" {
+		m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyUp})
+	m.textInput.SetValue("follow up revised")
+	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+
+	select {
+	case got := <-m.userMsgCh:
+		if got != "follow up revised" {
+			t.Fatalf("requeued message = %q, want revised text", got)
+		}
+	default:
+		t.Fatalf("revised message should be queued")
+	}
+	if got := m.textInput.Value(); got != "" {
+		t.Fatalf("textarea should clear after requeue; got %q", got)
+	}
+}
+
 // TestInterrupt_EnterMidTurnFallsBackOnOverflow verifies that when the
 // userMsgCh buffer is full (a second Enter before the first was consumed),
 // the handler falls back to the old cancel+resubmit path.
