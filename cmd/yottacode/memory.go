@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -35,6 +36,7 @@ into non-interactive cobra subcommands.
 		newMemorySearchCmd(),
 		newMemoryAuditCmd(),
 		newMemoryHealthCmd(),
+		newMemoryArchiveCmd(),
 	)
 	return cmd
 }
@@ -356,6 +358,94 @@ vague bodies, empty bodies, and portable scope mistakes.`,
 			return nil
 		},
 	}
+}
+
+func newMemoryArchiveCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "archive",
+		Short: "Inspect and prune archived memory versions",
+		Args:  cobra.NoArgs,
+	}
+	cmd.AddCommand(newMemoryArchiveListCmd(), newMemoryArchivePruneCmd())
+	return cmd
+}
+
+func newMemoryArchiveListCmd() *cobra.Command {
+	var scope string
+	c := &cobra.Command{
+		Use:   "list",
+		Short: "List archived memory versions by memory name",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cwd, err := os.Getwd()
+			if err != nil {
+				return err
+			}
+			summaries, err := memory.ListArchiveSummaries(scope, cwd)
+			if err != nil {
+				return err
+			}
+			out := cmd.OutOrStdout()
+			if len(summaries) == 0 {
+				fmt.Fprintln(out, "(no archived memories)")
+				return nil
+			}
+			fmt.Fprintln(out, "scope\tmemory\tarchives\toldest\tnewest\tbytes")
+			for _, s := range summaries {
+				fmt.Fprintf(out, "%s\t%s\t%d\t%s\t%s\t%d\n", s.Scope, s.Memory, s.Count, formatArchiveTime(s.Oldest), formatArchiveTime(s.Newest), s.Bytes)
+			}
+			return nil
+		},
+	}
+	c.Flags().StringVar(&scope, "scope", "all", "memory scope (all, user, or project)")
+	return c
+}
+
+func newMemoryArchivePruneCmd() *cobra.Command {
+	var scope string
+	var olderThanDays int
+	var keepLatest int
+	var dryRun bool
+	c := &cobra.Command{
+		Use:   "prune",
+		Short: "Prune archived memory versions with explicit retention flags",
+		Long: `Prune deletes only files under memory .archive directories. It never deletes live
+memory files. By default it is a dry run; pass --dry-run=false to delete the
+selected archive files after reviewing the output.`,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if olderThanDays <= 0 && keepLatest <= 0 {
+				return fmt.Errorf("memory archive prune requires --older-than-days or --keep-latest")
+			}
+			cwd, err := os.Getwd()
+			if err != nil {
+				return err
+			}
+			res, err := memory.PruneArchives(cwd, memory.ArchivePruneOptions{Scope: scope, OlderThanDays: olderThanDays, KeepLatest: keepLatest, DryRun: dryRun})
+			if err != nil {
+				return err
+			}
+			out := cmd.OutOrStdout()
+			verb := "would delete"
+			if !dryRun {
+				verb = "deleted"
+			}
+			fmt.Fprintf(out, "%s %d archive file(s), %d bytes\n", verb, res.Matched, res.Bytes)
+			for _, e := range res.Entries {
+				fmt.Fprintf(out, "- %s/%s %s %d bytes %s\n", e.Scope, e.Memory, formatArchiveTime(e.ModTime), e.Size, e.Path)
+			}
+			return nil
+		},
+	}
+	c.Flags().StringVar(&scope, "scope", "all", "memory scope (all, user, or project)")
+	c.Flags().IntVar(&olderThanDays, "older-than-days", 0, "select archives older than this many days")
+	c.Flags().IntVar(&keepLatest, "keep-latest", 0, "keep this many newest archives per memory")
+	c.Flags().BoolVar(&dryRun, "dry-run", true, "show what would be deleted without removing files")
+	return c
+}
+
+func formatArchiveTime(t time.Time) string {
+	return memory.FormatArchiveTime(t)
 }
 
 // newMemoryAuditCmd reports memory entries that should be curated. It is

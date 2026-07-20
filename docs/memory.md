@@ -136,14 +136,20 @@ timestamp is for humans, the random suffix guarantees two concurrent
 archivers can't clobber each other), so an update can never silently
 destroy a different memory that reused the name. It's a dotted subdir, so
 the scanner skips it — archived versions never appear in the index,
-retrieval, or `memory list`. There is **no automatic retention policy or
-config knob today**: `memory_forget` deletes the live file and its `.vec`
-but does not prune `.archive/`, and nothing ages archives out. Pruning is
-fully manual (`rm -rf ~/.yottacode/memory/user/.archive`, and likewise
-under each `~/.yottacode/memory/projects/<slug>/`). Each archived body
-is a small markdown file, so unbounded growth is a housekeeping nit rather
-than a disk concern for a single user — a configurable retention policy is
-a known follow-up, not a shipped feature.
+retrieval, or `memory list`.
+
+Archive maintenance is explicit. `yottacode memory archive list` shows archive
+counts, oldest/newest timestamps, and byte totals by memory. `yottacode memory
+archive prune` deletes only files inside `.archive/`, never live memory files;
+it defaults to dry-run and requires retention flags such as `--older-than-days`
+or `--keep-latest`. The agent-facing `memory_archive_prune` tool follows the
+same model: dry runs are read-only, while actual deletion (`dry_run:false`) is
+approval-gated.
+
+Mechanical curation actions also record a compact JSONL history under
+`.history/<name>.jsonl`, for example when `memory_curate_apply` deletes an empty
+entry or moves a portable project memory to user scope. History files are not
+scanned as memories and do not enter retrieval.
 
 `<project_slug>` is derived from the git remote (`https://github.com/user/repo.git` → `github-com-user-repo`); falls back to `filepath.Base(cwd)` for non-git directories. Slugs are not guaranteed collision-free: two non-git repos can collide on basename, and the remote-derived slug collapses the org/repo boundary (`.` and `/` both become `-`), so distinct remote URLs can also map to the same slug and share a project-memory directory. A collision means one repo's project memories load/edit in the other.
 
@@ -327,18 +333,20 @@ The full guidance lives in the agent's system prompt; see `internal/agent/prompt
 
 ### The five tools
 
-The agent has five memory tools, all **silent by default** (no approval modal — they're as ordinary as `read_file`):
+The agent has seven memory tools. Most are silent by default (no approval modal — they're as ordinary as `read_file`); destructive archive pruning is the exception and requires approval when `dry_run:false`:
 
 - **`memory_save`** — creates a memory file, or updates an existing one of the same name. Only `name` and `content` are required: the five-field form competes with the primary task at exactly the moment something durable surfaces, which is when capture gets skipped. Omitted fields default — `scope` to `user` (baking in the default-to-user steering), `type` to `note` (so quick captures group under one index section, a natural queue for later curation), and `description` to the first non-empty line of the body. The schema still asks for all five and the model should fill them when it can; the defaults are a floor, not a target. On a same-name update the prior version is **archived** to `<memdir>/.archive/<name>.<stamp>.md` (recoverable, never silently lost; excluded from the index, retrieval, and `memory list`) and the original `created` timestamp is preserved. The result reports `created` vs `updated`, whether a version was archived, and for updates a compact changed-fields summary (`type`, `description`, `source`, and body byte-count changes, or `changes: none`). Updates `MEMORY.md`. Generates a `.vec` sidecar when an embedding model is available; if embedding is unavailable, the save still succeeds and the result notes that the semantic index wasn't updated.
 - **`memory_forget`** — deletes a memory file by name. Updates `MEMORY.md`. Errors when the named memory doesn't exist (so the agent learns the right names).
 - **`memory_search`** — searches across user and/or project memory stores, returning ranked results with relevance scores (zero-relevance entries are omitted). The agent uses this to check for duplicates before saving, find related memories when reasoning about a topic, or verify a remembered fact. Accepts `scope` (`all`, `user`, `project`) and `limit` parameters.
 - **`memory_get`** — returns the full, untruncated contents (frontmatter + body) of one memory by `scope` + `name`. Used before updating a memory so the agent can preserve the parts it isn't changing, instead of blindly overwriting from the 300-char `memory_search` preview.
+- **`memory_audit`** — read-only curation report with issue-list, plan, proposal, and summary modes.
+- **`memory_archive_prune`** — inventories or prunes archived prior versions. Omitted `dry_run` defaults to true and is read-only; `dry_run:false` deletes only selected `.archive/` files and requires approval.
 - **`session_recall`** — searches across all past sessions via the FTS5 full-text index. Returns ranked snippets with session metadata (name, date, model). The agent uses this to find prior discussions, check if an issue was already resolved, or pull in context from earlier conversations. Supports FTS5 query syntax (OR, exact phrases in quotes): the raw query is tried first so operators work, and only if that's a syntax error is a sanitized version retried — so a naive hyphenated or punctuation-heavy query still returns results instead of erroring.
 
 The introspection tools (`memory_search`, `memory_get`, `session_recall`) are the key to self-learning — they let the agent think based on its own accumulated knowledge rather than relying only on what the retrieval orchestrator injects each turn.
 
-All five tools resolve to the `Memory` permission namespace (save / forget /
-search / get / recall), so a single rule gates every memory operation — every
+All memory tools resolve to the `Memory` permission namespace (save / forget /
+search / get / audit / archive prune / recall), so a single rule gates every memory operation — every
 read included, `session_recall`'s cross-session search among them.
 
 To require approval per memory operation, add an `ask` rule:
@@ -567,6 +575,8 @@ yottacode memory audit                         # read-only curation report for n
 yottacode memory audit --plan                  # group issues into a read-only curation plan
 yottacode memory audit --propose               # draft subjective curation proposals without applying them
 yottacode memory health                        # show compact read-only memory health counts
+yottacode memory archive list                  # summarize archived prior memory versions
+yottacode memory archive prune --dry-run       # preview explicit archive pruning
 ```
 
 `memory health` and `memory_audit({"summary":true})` expose the compact

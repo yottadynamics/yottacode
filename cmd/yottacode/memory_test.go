@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/yottadynamics/yottacode/internal/memory"
 )
@@ -267,6 +268,46 @@ func TestMemoryHealth_RendersCompactCounts(t *testing.T) {
 		if !strings.Contains(body, want) {
 			t.Errorf("health output missing %q: %q", want, body)
 		}
+	}
+}
+
+func TestMemoryArchiveListAndPrune(t *testing.T) {
+	cwd := withCwdAndHome(t)
+	path := seedProjectMemory(t, cwd, "archived", "v1")
+	archivePath, err := memory.ArchivePrior(path, "100")
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().AddDate(0, 0, -120)
+	if err := os.Chtimes(archivePath, old, old); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := newCLI()
+	var out strings.Builder
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{"memory", "archive", "list", "--scope", "project"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("list execute: %v", err)
+	}
+	if !strings.Contains(out.String(), "project\tarchived\t1") {
+		t.Fatalf("archive list output = %q", out.String())
+	}
+
+	cmd = newCLI()
+	out.Reset()
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{"memory", "archive", "prune", "--scope", "project", "--older-than-days", "90"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("dry-run prune execute: %v", err)
+	}
+	if !strings.Contains(out.String(), "would delete 1 archive") {
+		t.Fatalf("dry-run output = %q", out.String())
+	}
+	if _, err := os.Stat(archivePath); err != nil {
+		t.Fatalf("dry-run should keep archive: %v", err)
 	}
 }
 
