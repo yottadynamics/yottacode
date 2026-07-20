@@ -260,6 +260,8 @@ default_window = 128000
 
 `auto_threshold` runs between turns and writes a pre-summary snapshot before replacing old conversation with a summary. `compaction_threshold` is a higher mid-turn safety net for long auto/yolo turns that would otherwise hit the provider limit before the next boundary; if a provider still rejects a request for context length before any assistant content streams, yottacode force-compacts once and retries. Interactive mid-turn compaction also writes a `~/.yottacode/sessions/<id>-pre-summary-*.json` snapshot before rewriting history.
 
+Use `/context` in the TUI to inspect the active state: resolved model window, configured thresholds, tool-schema overhead, largest context buckets, compaction enabled/disabled reason, and the latest summarize/compaction outcome.
+
 Set a threshold to `1.0` to disable that preemptive behavior. If both auto-summarization and mid-turn compaction are enabled, `compaction_threshold` must be at or above `auto_threshold` so the turn-boundary summarizer remains the normal path. `/recall` indexes the compacted session slice, not compacted-away messages; the pre-summary snapshot is the recovery record for full history.
 
 ### Checkpoints retention

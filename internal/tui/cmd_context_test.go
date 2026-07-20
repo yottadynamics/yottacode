@@ -32,6 +32,14 @@ func TestSlash_ContextRendersAllSections(t *testing.T) {
 
 	for _, want := range []string{
 		"Context Usage",
+		"Diagnostics",
+		"Window:",
+		"Thresholds:",
+		"Tool schema overhead:",
+		"Largest bucket:",
+		"Compaction:",
+		"Last summarize:",
+		"Last mid-turn compaction:",
 		"Estimated usage by category",
 		"System prompt:",
 		"System tools:",
@@ -205,6 +213,43 @@ func TestContext_CustomCommandsStayOnDemand(t *testing.T) {
 	}
 	if !strings.Contains(line, "on demand") {
 		t.Errorf("custom-command row should stay tagged (on demand): %q", line)
+	}
+}
+
+func TestContextDiagnosticsExplainCompactionState(t *testing.T) {
+	m := newTestModel(t)
+	m.cfg.Compaction = &agent.CompactionConfig{Window: 1000, Threshold: 0.9}
+	m.fileCfg.Context.CompactionThreshold = 0.9
+	m.lastContextSummary = "auto summarized 9K → 2K"
+	m.lastContextCompaction = "force-compacted 12K → 8K"
+
+	report := ansi.Strip(renderContextReport(&m))
+	for _, want := range []string{
+		"Diagnostics",
+		"compaction 90%",
+		"Tool schema overhead:",
+		"Largest bucket:",
+		"Compaction:",
+		"Last summarize: auto summarized 9K → 2K",
+		"Last mid-turn compaction: force-compacted 12K → 8K",
+	} {
+		if !strings.Contains(report, want) {
+			t.Errorf("diagnostics missing %q\n---\n%s", want, report)
+		}
+	}
+}
+
+func TestContextDiagnosticsPreemptiveCompactionOff(t *testing.T) {
+	m := newTestModel(t)
+	m.cfg.Compaction = &agent.CompactionConfig{Window: 1000, Threshold: 1.0}
+	m.fileCfg.Context.CompactionThreshold = 1.0
+
+	report := ansi.Strip(renderContextReport(&m))
+	if !strings.Contains(report, "compaction off") {
+		t.Fatalf("threshold line should show compaction off:\n%s", report)
+	}
+	if !strings.Contains(report, "preemptive off; provider-overflow recovery can force one attempt") {
+		t.Fatalf("compaction status should explain recovery-only mode:\n%s", report)
 	}
 }
 

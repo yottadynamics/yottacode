@@ -263,6 +263,12 @@ type Model struct {
 	// overwrite the compactor's newer history.
 	compactionSeq int
 
+	// lastContextSummary and lastContextCompaction are short diagnostic
+	// breadcrumbs shown by /context. They stay in memory only because
+	// scrollback already contains the user-visible status lines.
+	lastContextSummary    string
+	lastContextCompaction string
+
 	// summarizing flips true while /summarize (manual or auto) is
 	// running so we don't fire a second one on top of the first if
 	// the user crosses another threshold while we're working.
@@ -2384,6 +2390,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// the newer compacted history; clear the watermark so a future
 			// boundary check can retry if context is still high.
 			m.lastWatermarkPct = 0
+			m.lastContextSummary = "stale result discarded after mid-turn compaction"
 			return m, nil
 		}
 		if msg.err != nil {
@@ -2392,6 +2399,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// retry. Without this the gate in updateContextUsage stays
 			// closed forever and we silently stop attempting compression.
 			m.lastWatermarkPct = 0
+			m.lastContextSummary = "failed: " + msg.err.Error()
 			m.appendLine(styleError.Render("[summarize] " + msg.err.Error()))
 			return m, nil
 		}
@@ -2449,14 +2457,17 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch {
 		case !converged:
 			culprit, culpritTok := m.dominantContextBucket()
+			m.lastContextSummary = fmt.Sprintf("non-convergent at %d%%; largest bucket %s (~%s)", int(nonConvergentPct*100), culprit, formatTokens(culpritTok))
 			m.appendLine(styleWatermarkBox.Render(fmt.Sprintf(
 				"⚡ Summarized, but context is still at %d%% — the biggest consumer is %s (~%s), which alone won't fit under the limit, so auto-summarize is paused to avoid re-running every turn (it resumes if context grows further or you switch models).\nFree space with /clear, disable unused MCP tools, set a larger context_window for this model, or switch to a bigger-window model.\nFull history saved to %s",
 				int(nonConvergentPct*100), culprit, formatTokens(culpritTok), abbrevHome(msg.snapshotPath))))
 		case msg.auto:
+			m.lastContextSummary = fmt.Sprintf("auto summarized %s → %s", formatTokens(msg.tokensBefore), formatTokens(m.contextTokens))
 			m.appendLine(styleWatermarkBox.Render(fmt.Sprintf(
 				"⚡ Context auto-summarized.\nFull history saved to %s\nUse /recall <id> to search the compressed session.",
 				abbrevHome(msg.snapshotPath))))
 		default:
+			m.lastContextSummary = fmt.Sprintf("manual summarized %s → %s", formatTokens(msg.tokensBefore), formatTokens(m.contextTokens))
 			m.appendLine(styleAuto.Render(fmt.Sprintf(
 				"[summarize] compressed history (~%d → ~%d tokens). Snapshot: %s",
 				msg.tokensBefore, m.contextTokens, abbrevHome(msg.snapshotPath))))
@@ -4615,6 +4626,7 @@ func (m Model) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 			suggest, suggest)))
 	case agent.ContextCompacted:
 		if e.Err != nil {
+			m.lastContextCompaction = "skipped: " + e.Err.Error()
 			m.appendLine(styleAuto.Render(fmt.Sprintf("[context] compaction skipped: %v", e.Err)))
 			break
 		}
@@ -4628,6 +4640,13 @@ func (m Model) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 		}
 		if e.SnapshotErr != nil {
 			line += fmt.Sprintf(" · snapshot failed: %v", e.SnapshotErr)
+		}
+		m.lastContextCompaction = fmt.Sprintf("%s %s → %s", kind, formatTokens(e.Before), formatTokens(e.After))
+		if e.SnapshotPath != "" {
+			m.lastContextCompaction += " · snapshot " + abbrevHome(e.SnapshotPath)
+		}
+		if e.SnapshotErr != nil {
+			m.lastContextCompaction += fmt.Sprintf(" · snapshot failed: %v", e.SnapshotErr)
 		}
 		m.appendLine(styleAuto.Render(line))
 		m.refreshContextTokens()
