@@ -508,7 +508,7 @@ func bindCommonPersistentFlags(cmd *cobra.Command, opts *cli.ChatOptions) {
 	f.BoolVarP(&opts.Continue, "continue", "c", false, "Resume the newest session created in this cwd (use --resume for a specific one)")
 	f.BoolVar(&opts.BypassPermissions, "yolo", false,
 		"DANGEROUS: auto-approve every tool call (deny rules still apply). For trusted CI only")
-	f.IntVar(&opts.MaxIterations, "max-iterations", 50, "Max tool-call iterations per turn; auto mode raises the effective cap 4×")
+	f.IntVar(&opts.MaxIterations, "max-iterations", 100, "Max tool-call iterations per turn; auto mode raises the effective cap 4×")
 	f.StringVar(&opts.ReasoningEffort, "reasoning-effort", "", "low | medium | high (env: YOTTACODE_REASONING_EFFORT)")
 	f.BoolVar(&opts.EnableWebSearch, "enable-web-search", false, "Enable provider-native web search (on by default for OpenAI/xAI)")
 	f.BoolVar(&opts.DisableWebSearch, "disable-web-search", false, "Force-disable provider-native web search")

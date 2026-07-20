@@ -113,7 +113,7 @@ func init() {
 		{Name: "redo", Help: "edit and re-run the most recent message", Run: cmdRedo},
 		{Name: "recall", Args: "<query>", Help: "full-text search across every saved session", Run: cmdRecall, PreservesTurn: true},
 		{Name: "checkpoints", Help: "open the checkpoints picker — also Esc Esc", Run: cmdCheckpoints},
-		{Name: "max-iterations", Args: "<N>", Help: "cap tool-call iterations per turn (default: 50; auto mode doubles)", Run: cmdMaxIterations},
+		{Name: "max-iterations", Args: "<N>", Help: "cap tool-call iterations per turn (default: 100; auto mode 4×)", Run: cmdMaxIterations},
 		{Name: "setup", Help: "re-run the setup wizard (reloads config on return)", Run: cmdSetup},
 
 		// Meta — always last.
