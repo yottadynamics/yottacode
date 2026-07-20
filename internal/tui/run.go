@@ -368,6 +368,7 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 	reg.Register(&agent.MemoryForgetTool{Cwd: cwdRef})
 	reg.Register(&agent.MemorySearchTool{Cwd: cwdRef, Embedder: embedClient, Strategy: fileCfg.Retrieval.Strategy})
 	reg.Register(&agent.MemoryAuditTool{Cwd: cwdRef})
+	reg.Register(&agent.MemoryCurateApplyTool{Cwd: cwdRef})
 	reg.Register(&agent.MemoryGetTool{Cwd: cwdRef})
 	reg.Register(&agent.GitTool{Cwd: cwdRef})
 	reg.Register(&agent.TodoWriteTool{Store: planStore})

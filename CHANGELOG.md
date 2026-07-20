@@ -65,7 +65,10 @@ the project uses semantic versioning once it's past `1.0.0`.
   quick-capture notes older than 30 days are marked as priority curation work.
   `--plan` / `{"plan":true}` groups issues into read-only curation batches so
   humans or agents can work through duplicates, note promotion, scope moves, and
-  cleanup in a safer order. No audit path mutates memory on its own.
+  cleanup in a safer order. `memory_curate_apply` can apply only mechanical,
+  approval-gated fixes for empty entries and portable project memories; subjective
+  rewrites, merges, and note promotion still require explicit memory saves. No
+  audit path mutates memory on its own.
 
 ### Fixed
 
