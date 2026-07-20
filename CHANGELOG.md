@@ -67,8 +67,17 @@ the project uses semantic versioning once it's past `1.0.0`.
   humans or agents can work through duplicates, note promotion, scope moves, and
   cleanup in a safer order. `memory_curate_apply` can apply only mechanical,
   approval-gated fixes for empty entries and portable project memories; subjective
-  rewrites, merges, and note promotion still require explicit memory saves. No
-  audit path mutates memory on its own.
+  rewrites, merges, and note promotion still require explicit memory saves.
+  `--propose` / `{"propose":true}` drafts source-backed proposals for those
+  subjective cases without applying them. New `memory_save` writes also carry
+  optional `source_session` / `source_turn` provenance when session metadata is
+  available, and audit/proposal output renders that source for later trust checks.
+  Same-name `memory_save` updates now also report a compact changed-fields
+  summary for type, description, source, and body changes, making recoverable
+  archive-backed overwrites visible immediately. `memory health` and
+  `memory_audit({"summary":true})` expose aggregate health counts so humans and
+  agents can see whether memory needs attention without dumping the full audit
+  queue. No audit path mutates memory on its own.
 
 ### Fixed
 

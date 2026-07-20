@@ -214,6 +214,62 @@ func TestMemoryAuditPlan_GroupsCurationQueue(t *testing.T) {
 	}
 }
 
+func TestMemoryAuditPropose_DraftsSubjectiveCuration(t *testing.T) {
+	cwd := withCwdAndHome(t)
+	seedProjectMemory(t, cwd, "raw-note", "User prefers concise answers")
+	path, err := memory.MemoryFilePath("project", "raw-note", cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	contents := strings.Replace(mustReadFile(t, path), "type: project", "type: note", 1)
+	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := newCLI()
+	var out strings.Builder
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{"memory", "audit", "--propose"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	body := out.String()
+	for _, want := range []string{"curation proposals:", "not applied", "project/raw-note", "promote-candidate"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("proposal output missing %q: %q", want, body)
+		}
+	}
+}
+
+func TestMemoryHealth_RendersCompactCounts(t *testing.T) {
+	cwd := withCwdAndHome(t)
+	seedProjectMemory(t, cwd, "raw-note", "User prefers concise answers")
+	path, err := memory.MemoryFilePath("project", "raw-note", cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	contents := strings.Replace(mustReadFile(t, path), "type: project", "type: note", 1)
+	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := newCLI()
+	var out strings.Builder
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{"memory", "health"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	body := out.String()
+	for _, want := range []string{"memory health: 1 memories", "quick notes: 1", "vague bodies: 0", "duplicates: 0"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("health output missing %q: %q", want, body)
+		}
+	}
+}
+
 func TestMemoryAudit_CleanStore(t *testing.T) {
 	withCwdAndHome(t)
 

@@ -11,14 +11,16 @@ import (
 // read-only: it gives humans and future curator agents a queue of memories to
 // merge, promote, or delete without changing long-term context silently.
 type AuditIssue struct {
-	Scope   string
-	Name    string
-	Type    string
-	Created time.Time
-	AgeDays int
-	Problem string
-	Detail  string
-	Action  string
+	Scope         string
+	Name          string
+	Type          string
+	Created       time.Time
+	AgeDays       int
+	SourceSession string
+	SourceTurn    string
+	Problem       string
+	Detail        string
+	Action        string
 }
 
 // AuditReport summarizes memory-store quality. QuickNotes are type=note
@@ -28,6 +30,21 @@ type AuditReport struct {
 	Total      int
 	QuickNotes int
 	Issues     []AuditIssue
+	Health     AuditHealth
+}
+
+// AuditHealth is a compact read-only summary of memory-store quality. It is
+// intentionally aggregate-only so status surfaces can show memory health without
+// dumping every curation issue into context.
+type AuditHealth struct {
+	TotalMemories         int
+	TotalIssues           int
+	QuickNotes            int
+	OldQuickNotes         int
+	DuplicateDescriptions int
+	VagueBodies           int
+	EmptyBodies           int
+	PortableScopeMistakes int
 }
 
 // CurationBatch is one read-only group of related audit issues. It gives the
@@ -69,7 +86,7 @@ func AuditAt(l Loaded, now time.Time) AuditReport {
 				detail += "; old note should be prioritized"
 			}
 			report.Issues = append(report.Issues, AuditIssue{
-				Scope: e.Scope, Name: e.Name, Type: e.Type, Created: e.Created, AgeDays: ageDays,
+				Scope: e.Scope, Name: e.Name, Type: e.Type, Created: e.Created, AgeDays: ageDays, SourceSession: e.SourceSession, SourceTurn: e.SourceTurn,
 				Problem: "quick-note",
 				Detail:  detail,
 				Action:  "memory_get this note; if durable, memory_save a consolidated user/project memory with a specific type and memory_forget the note",
@@ -77,7 +94,7 @@ func AuditAt(l Loaded, now time.Time) AuditReport {
 		}
 		if e.Scope == "project" && (e.Type == "user" || e.Type == "feedback") {
 			report.Issues = append(report.Issues, AuditIssue{
-				Scope: e.Scope, Name: e.Name, Type: e.Type, Created: e.Created, AgeDays: ageDays,
+				Scope: e.Scope, Name: e.Name, Type: e.Type, Created: e.Created, AgeDays: ageDays, SourceSession: e.SourceSession, SourceTurn: e.SourceTurn,
 				Problem: "portable-in-project",
 				Detail:  "user/feedback memories are usually portable; move to user scope unless this is repo-specific",
 				Action:  "if the fact is about the person, memory_save it to user scope and memory_forget the project copy",
@@ -85,7 +102,7 @@ func AuditAt(l Loaded, now time.Time) AuditReport {
 		}
 		if strings.TrimSpace(e.Body) == "" {
 			report.Issues = append(report.Issues, AuditIssue{
-				Scope: e.Scope, Name: e.Name, Type: e.Type, Created: e.Created, AgeDays: ageDays,
+				Scope: e.Scope, Name: e.Name, Type: e.Type, Created: e.Created, AgeDays: ageDays, SourceSession: e.SourceSession, SourceTurn: e.SourceTurn,
 				Problem: "empty-body",
 				Detail:  "memory has no body for future agents to act on",
 				Action:  "memory_get any archived/source context if available; otherwise memory_forget this empty entry",
@@ -93,7 +110,7 @@ func AuditAt(l Loaded, now time.Time) AuditReport {
 		}
 		if sameText(e.Body, e.Description) && strings.TrimSpace(e.Description) != "" {
 			report.Issues = append(report.Issues, AuditIssue{
-				Scope: e.Scope, Name: e.Name, Type: e.Type, Created: e.Created, AgeDays: ageDays,
+				Scope: e.Scope, Name: e.Name, Type: e.Type, Created: e.Created, AgeDays: ageDays, SourceSession: e.SourceSession, SourceTurn: e.SourceTurn,
 				Problem: "body-echoes-description",
 				Detail:  "body repeats the index line instead of adding concrete context",
 				Action:  "rewrite with memory_save so the body adds concrete context, rationale, paths, or constraints beyond the description",
@@ -103,7 +120,7 @@ func AuditAt(l Loaded, now time.Time) AuditReport {
 		if key != "" {
 			if prior, ok := seenDescriptions[key]; ok {
 				report.Issues = append(report.Issues, AuditIssue{
-					Scope: e.Scope, Name: e.Name, Type: e.Type, Created: e.Created, AgeDays: ageDays,
+					Scope: e.Scope, Name: e.Name, Type: e.Type, Created: e.Created, AgeDays: ageDays, SourceSession: e.SourceSession, SourceTurn: e.SourceTurn,
 					Problem: "duplicate-description",
 					Detail:  "same description as " + prior.Scope + "/" + prior.Name + "; consider consolidating",
 					Action:  "memory_get both entries; merge the durable parts into one memory_save call, then memory_forget the duplicate",
@@ -125,7 +142,34 @@ func AuditAt(l Loaded, now time.Time) AuditReport {
 		}
 		return report.Issues[i].Name < report.Issues[j].Name
 	})
+	report.Health = SummarizeAuditHealth(report)
 	return report
+}
+
+// SummarizeAuditHealth derives aggregate issue counts for compact status views.
+func SummarizeAuditHealth(report AuditReport) AuditHealth {
+	health := AuditHealth{
+		TotalMemories: report.Total,
+		TotalIssues:   len(report.Issues),
+		QuickNotes:    report.QuickNotes,
+	}
+	for _, issue := range report.Issues {
+		switch issue.Problem {
+		case "quick-note":
+			if issue.AgeDays >= oldNoteDays {
+				health.OldQuickNotes++
+			}
+		case "duplicate-description":
+			health.DuplicateDescriptions++
+		case "body-echoes-description":
+			health.VagueBodies++
+		case "empty-body":
+			health.EmptyBodies++
+		case "portable-in-project":
+			health.PortableScopeMistakes++
+		}
+	}
+	return health
 }
 
 // PlanCuration groups a report's issues into read-only batches. The plan is

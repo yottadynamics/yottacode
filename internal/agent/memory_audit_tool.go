@@ -40,6 +40,14 @@ func (t *MemoryAuditTool) Schema() map[string]any {
 				"type":        "boolean",
 				"description": "return a grouped read-only curation plan instead of the issue list",
 			},
+			"summary": map[string]any{
+				"type":        "boolean",
+				"description": "return compact memory health counts instead of the issue list",
+			},
+			"propose": map[string]any{
+				"type":        "boolean",
+				"description": "return read-only proposals for subjective curation issues instead of the issue list",
+			},
 		},
 	}
 }
@@ -54,13 +62,15 @@ func (t *MemoryAuditTool) PreviewCall(argsJSON string) string {
 	if scope == "" {
 		scope = "all"
 	}
-	return fmt.Sprintf("memory_audit(scope=%s, plan=%t)", scope, a.Plan)
+	return fmt.Sprintf("memory_audit(scope=%s, plan=%t, propose=%t, summary=%t)", scope, a.Plan, a.Propose, a.Summary)
 }
 
 type memoryAuditArgs struct {
-	Scope string `json:"scope"`
-	Limit int    `json:"limit"`
-	Plan  bool   `json:"plan"`
+	Scope   string `json:"scope"`
+	Limit   int    `json:"limit"`
+	Plan    bool   `json:"plan"`
+	Propose bool   `json:"propose"`
+	Summary bool   `json:"summary"`
 }
 
 func (t *MemoryAuditTool) Execute(_ context.Context, argsJSON string) (string, error) {
@@ -84,8 +94,14 @@ func (t *MemoryAuditTool) Execute(_ context.Context, argsJSON string) (string, e
 		return "", err
 	}
 	report := memory.Audit(loaded)
+	if a.Summary {
+		return renderMemoryAuditHealth(report.Health), nil
+	}
 	if a.Plan {
 		return renderMemoryAuditPlan(report), nil
+	}
+	if a.Propose {
+		return renderMemoryAuditProposals(loaded, report), nil
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "memories: %d total, %d quick note(s), %d issue(s)\n", report.Total, report.QuickNotes, len(report.Issues))
@@ -102,9 +118,72 @@ func (t *MemoryAuditTool) Execute(_ context.Context, argsJSON string) (string, e
 	}
 	for i := 0; i < maxIssues; i++ {
 		issue := report.Issues[i]
-		fmt.Fprintf(&b, "\n%d. %s/%s [%s] %s\n   created: %s (%s old)\n   detail: %s\n   action: %s", i+1, issue.Scope, issue.Name, issue.Type, issue.Problem, memory.FormatAuditCreated(issue.Created), memory.FormatAuditAge(issue.AgeDays), issue.Detail, issue.Action)
+		fmt.Fprintf(&b, "\n%d. %s/%s [%s] %s\n   created: %s (%s old)%s\n   detail: %s\n   action: %s", i+1, issue.Scope, issue.Name, issue.Type, issue.Problem, memory.FormatAuditCreated(issue.Created), memory.FormatAuditAge(issue.AgeDays), formatMemoryAuditIssueSource(issue), issue.Detail, issue.Action)
 	}
 	return b.String(), nil
+}
+
+func renderMemoryAuditHealth(health memory.AuditHealth) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "memory health: %d memories, %d issue(s)\n", health.TotalMemories, health.TotalIssues)
+	fmt.Fprintf(&b, "quick notes: %d (%d old)\n", health.QuickNotes, health.OldQuickNotes)
+	fmt.Fprintf(&b, "duplicates: %d\n", health.DuplicateDescriptions)
+	fmt.Fprintf(&b, "vague bodies: %d\n", health.VagueBodies)
+	fmt.Fprintf(&b, "empty bodies: %d\n", health.EmptyBodies)
+	fmt.Fprintf(&b, "portable scope mistakes: %d", health.PortableScopeMistakes)
+	return b.String()
+}
+
+func formatMemoryAuditIssueSource(issue memory.AuditIssue) string {
+	if issue.SourceSession == "" {
+		return ""
+	}
+	if issue.SourceTurn != "" {
+		return fmt.Sprintf(" session %s turn %s", issue.SourceSession, issue.SourceTurn)
+	}
+	return " session " + issue.SourceSession
+}
+
+func formatMemoryProposalSource(src memory.ProposalSource) string {
+	base := fmt.Sprintf("%s/%s [%s] — %s", src.Scope, src.Name, src.Type, src.Excerpt)
+	if src.SourceSession == "" {
+		return base
+	}
+	if src.SourceTurn != "" {
+		return fmt.Sprintf("%s (source: session %s turn %s)", base, src.SourceSession, src.SourceTurn)
+	}
+	return fmt.Sprintf("%s (source: session %s)", base, src.SourceSession)
+}
+
+func renderMemoryAuditProposals(loaded memory.Loaded, report memory.AuditReport) string {
+	proposals := memory.ProposeCuration(loaded, report)
+	var b strings.Builder
+	fmt.Fprintf(&b, "curation proposals: %d proposal(s)\n", len(proposals))
+	if len(proposals) == 0 {
+		b.WriteString("no subjective curation proposals; memory store looks curated or only mechanical fixes remain")
+		return b.String()
+	}
+	b.WriteString("not applied: review proposals, then use memory_get/memory_save/memory_forget or memory_curate_apply explicitly")
+	for i, p := range proposals {
+		fmt.Fprintf(&b, "\n\n%d. %s: %s\n", i+1, p.Problem, p.Action)
+		fmt.Fprintf(&b, "   rationale: %s", p.Rationale)
+		if p.Uncertainty != "" {
+			fmt.Fprintf(&b, "\n   uncertainty: %s", p.Uncertainty)
+		}
+		for _, src := range p.Sources {
+			fmt.Fprintf(&b, "\n   source: %s", formatMemoryProposalSource(src))
+		}
+		if p.ProposedMemory != nil {
+			m := p.ProposedMemory
+			fmt.Fprintf(&b, "\n   proposed memory_save: scope=%s type=%s name=%s", m.Scope, m.Type, m.Name)
+			fmt.Fprintf(&b, "\n   description: %s", m.Description)
+			fmt.Fprintf(&b, "\n   content: %s", strings.ReplaceAll(m.Content, "\n", "\\n"))
+		}
+		for _, f := range p.Forget {
+			fmt.Fprintf(&b, "\n   proposed forget after save: %s/%s", f.Scope, f.Name)
+		}
+	}
+	return b.String()
 }
 
 func renderMemoryAuditPlan(report memory.AuditReport) string {
@@ -119,9 +198,9 @@ func renderMemoryAuditPlan(report memory.AuditReport) string {
 		fmt.Fprintf(&b, "\n%d. %s (%d issue(s))\n", i+1, batch.Title, len(batch.Issues))
 		fmt.Fprintf(&b, "   action: %s", batch.Action)
 		for _, issue := range batch.Issues {
-			fmt.Fprintf(&b, "\n   - %s/%s [%s] %s, created %s (%s old)",
+			fmt.Fprintf(&b, "\n   - %s/%s [%s] %s, created %s (%s old)%s",
 				issue.Scope, issue.Name, issue.Type, issue.Problem,
-				memory.FormatAuditCreated(issue.Created), memory.FormatAuditAge(issue.AgeDays))
+				memory.FormatAuditCreated(issue.Created), memory.FormatAuditAge(issue.AgeDays), formatMemoryAuditIssueSource(issue))
 		}
 	}
 	return b.String()

@@ -474,6 +474,77 @@ func TestMemorySave_FreeFormTypeRoundtripsAndIndexes(t *testing.T) {
 	}
 }
 
+func TestMemorySave_UpdateReportsChangeSummary(t *testing.T) {
+	_, cwd := memTestSetup(t)
+	tool := &MemorySaveTool{Cwd: NewCwdRef(cwd), Source: memory.Source{Session: "session-a"}}
+	if _, err := tool.Execute(context.Background(), `{"scope":"user","type":"user","name":"prefs","description":"old desc","content":"old body"}`); err != nil {
+		t.Fatalf("first save: %v", err)
+	}
+	out, err := tool.Execute(context.Background(), `{"scope":"user","type":"feedback","name":"prefs","description":"new desc","content":"new body with more detail"}`)
+	if err != nil {
+		t.Fatalf("second save: %v", err)
+	}
+	for _, want := range []string{"updated user memory", "previous version archived", "changes:", "type \"user\"→\"feedback\"", "description changed", "body changed"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("update output missing %q: %q", want, out)
+		}
+	}
+}
+
+func TestMemorySave_NoOpUpdateReportsNoChanges(t *testing.T) {
+	_, cwd := memTestSetup(t)
+	tool := &MemorySaveTool{Cwd: NewCwdRef(cwd), Source: memory.Source{Session: "session-a"}}
+	args := `{"scope":"user","type":"user","name":"prefs","description":"same desc","content":"same body"}`
+	if _, err := tool.Execute(context.Background(), args); err != nil {
+		t.Fatalf("first save: %v", err)
+	}
+	out, err := tool.Execute(context.Background(), args)
+	if err != nil {
+		t.Fatalf("second save: %v", err)
+	}
+	if !strings.Contains(out, "changes: none") {
+		t.Errorf("no-op update should report no changes: %q", out)
+	}
+	if strings.Contains(out, "archived") {
+		t.Errorf("no-op update should not archive: %q", out)
+	}
+}
+
+func TestMemorySave_CreateDoesNotReportChangeSummary(t *testing.T) {
+	_, cwd := memTestSetup(t)
+	tool := &MemorySaveTool{Cwd: NewCwdRef(cwd)}
+	out, err := tool.Execute(context.Background(), `{"scope":"user","type":"user","name":"prefs","description":"desc","content":"body"}`)
+	if err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	if strings.Contains(out, "changes:") {
+		t.Errorf("create should not report update changes: %q", out)
+	}
+}
+
+func TestMemorySave_WritesSourceMetadata(t *testing.T) {
+	_, cwd := memTestSetup(t)
+	tool := &MemorySaveTool{Cwd: NewCwdRef(cwd), Source: memory.Source{Session: "20260720-120000.000000", Turn: "2"}}
+	if _, err := tool.Execute(context.Background(), `{"scope":"user","type":"reference","name":"source-test","description":"Has source","content":"Source-backed body."}`); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	path, err := memory.MemoryFilePath("user", "source-test", cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fm, _, ok := memory.ParseFrontmatter(data)
+	if !ok {
+		t.Fatal("missing frontmatter")
+	}
+	if fm.SourceSession != "20260720-120000.000000" || fm.SourceTurn != "2" {
+		t.Fatalf("source = %q/%q", fm.SourceSession, fm.SourceTurn)
+	}
+}
+
 func TestMemoryForget_DeletesAndUpdatesIndex(t *testing.T) {
 	home, cwd := memTestSetup(t)
 	save := &MemorySaveTool{Cwd: NewCwdRef(cwd)}

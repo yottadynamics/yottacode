@@ -1,6 +1,9 @@
 package memory
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestParseFrontmatter_Standard(t *testing.T) {
 	data := []byte("---\nname: x\ntype: user\ndescription: d\n---\nbody text\n")
@@ -43,6 +46,21 @@ func TestParseFrontmatter_ClosingFenceAtEOF(t *testing.T) {
 	}
 	if body != "" {
 		t.Errorf("body = %q, want empty", body)
+	}
+}
+
+func TestFrontmatterSourceRoundTrip(t *testing.T) {
+	created := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
+	header := RenderFrontmatterWithSource("source-test", "reference", "has source", created, Source{Session: "20260720-120000.000000", Turn: "3"})
+	fm, body, ok := ParseFrontmatter([]byte(header + "body\n"))
+	if !ok {
+		t.Fatal("ParseFrontmatter ok=false")
+	}
+	if body != "body\n" {
+		t.Fatalf("body = %q", body)
+	}
+	if fm.SourceSession != "20260720-120000.000000" || fm.SourceTurn != "3" {
+		t.Fatalf("source = %q/%q", fm.SourceSession, fm.SourceTurn)
 	}
 }
 

@@ -37,6 +37,26 @@ func TestMemoryAuditTool_ReportsIssuesAndScopes(t *testing.T) {
 		}
 	}
 
+	out, err = tool.Execute(context.Background(), `{"scope":"all","propose":true}`)
+	if err != nil {
+		t.Fatalf("propose Execute: %v", err)
+	}
+	for _, want := range []string{"curation proposals:", "not applied", "project/raw-note", "rewrite-needs-context"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("proposal output missing %q: %s", want, out)
+		}
+	}
+
+	out, err = tool.Execute(context.Background(), `{"scope":"all","summary":true}`)
+	if err != nil {
+		t.Fatalf("summary Execute: %v", err)
+	}
+	for _, want := range []string{"memory health: 2 memories", "quick notes: 1", "vague bodies: 1"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("summary output missing %q: %s", want, out)
+		}
+	}
+
 	out, err = tool.Execute(context.Background(), `{"scope":"user"}`)
 	if err != nil {
 		t.Fatalf("user Execute: %v", err)

@@ -364,7 +364,7 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 			embedMissingLine2 = fmt.Sprintf("Run: ollama pull %s", ec.Model)
 		}
 	}
-	reg.Register(&agent.MemorySaveTool{Cwd: cwdRef, Embedder: embedClient})
+	reg.Register(&agent.MemorySaveTool{Cwd: cwdRef, Embedder: embedClient, Source: memory.Source{Session: sess.ID}})
 	reg.Register(&agent.MemoryForgetTool{Cwd: cwdRef})
 	reg.Register(&agent.MemorySearchTool{Cwd: cwdRef, Embedder: embedClient, Strategy: fileCfg.Retrieval.Strategy})
 	reg.Register(&agent.MemoryAuditTool{Cwd: cwdRef})

@@ -13,13 +13,15 @@ import (
 // and the MEMORY.md index. Body is raw markdown (frontmatter
 // stripped).
 type MemoryEntry struct {
-	Path        string
-	Scope       string // "user" | "project"
-	Name        string // basename without .md
-	Type        string // user | feedback | project | reference
-	Description string
-	Created     time.Time // zero when frontmatter omitted or held an invalid timestamp
-	Body        string
+	Path          string
+	Scope         string // "user" | "project"
+	Name          string // basename without .md
+	Type          string // user | feedback | project | reference
+	Description   string
+	Created       time.Time // zero when frontmatter omitted or held an invalid timestamp
+	SourceSession string
+	SourceTurn    string
+	Body          string
 }
 
 // scanMemoryDir reads every *.md file in dir (skipping MEMORY.md),
@@ -77,13 +79,15 @@ func scanMemoryDir(dir, scope string) ([]MemoryEntry, error) {
 		// un-forgettable memory. Trusting the basename closes that gap;
 		// the frontmatter `name:` stays as human-facing redundancy.
 		entries = append(entries, MemoryEntry{
-			Path:        full,
-			Scope:       scope,
-			Name:        base,
-			Type:        typ,
-			Description: fm.Description,
-			Created:     created,
-			Body:        strings.TrimRight(body, "\n"),
+			Path:          full,
+			Scope:         scope,
+			Name:          base,
+			Type:          typ,
+			Description:   fm.Description,
+			Created:       created,
+			SourceSession: fm.SourceSession,
+			SourceTurn:    fm.SourceTurn,
+			Body:          strings.TrimRight(body, "\n"),
 		})
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Name < entries[j].Name })

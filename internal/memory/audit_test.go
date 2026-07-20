@@ -26,6 +26,15 @@ func TestAudit_FlagsCurationIssues(t *testing.T) {
 	if report.QuickNotes != 1 {
 		t.Fatalf("QuickNotes = %d, want 1", report.QuickNotes)
 	}
+	if report.Health.TotalMemories != 4 || report.Health.TotalIssues != len(report.Issues) {
+		t.Fatalf("Health totals = %+v, issues=%d", report.Health, len(report.Issues))
+	}
+	if report.Health.QuickNotes != 1 || report.Health.OldQuickNotes != 1 {
+		t.Errorf("quick note health = %+v", report.Health)
+	}
+	if report.Health.DuplicateDescriptions != 1 || report.Health.VagueBodies != 1 || report.Health.EmptyBodies != 1 || report.Health.PortableScopeMistakes != 1 {
+		t.Errorf("issue health counts = %+v", report.Health)
+	}
 	want := map[string]bool{
 		"quick-note/raw-capture":              false,
 		"body-echoes-description/raw-capture": false,
