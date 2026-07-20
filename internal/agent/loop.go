@@ -162,6 +162,10 @@ type CompactionConfig struct {
 	// Threshold is the fraction of Window at which compaction fires,
 	// checked at the top of each iteration. <=0 disables.
 	Threshold float64
+	// TargetRatio is the share of Window retained verbatim as the recent
+	// tail. <=0 uses defaultCompactionTargetRatio; callers should validate
+	// user-configured values before building the LoopConfig.
+	TargetRatio float64
 	// Summarizer streams the one-shot summary call. nil falls back to
 	// the loop's own Adapter (cache-safe routing can inject a cheaper
 	// model here).

@@ -230,7 +230,7 @@ func TestNewChildCompaction(t *testing.T) {
 		t.Fatal("expected a CompactionConfig at/above the floor")
 	}
 	if got.Window != 200_000 || got.SummarizerWindow != 32_000 ||
-		got.Threshold != subagentCompactionThreshold || got.Summarizer != s {
+		got.Threshold != subagentCompactionThreshold || got.TargetRatio != defaultCompactionTargetRatio || got.Summarizer != s {
 		t.Errorf("unexpected config: %+v", got)
 	}
 	// nil summarizer is preserved (maybeCompact falls back to the loop's

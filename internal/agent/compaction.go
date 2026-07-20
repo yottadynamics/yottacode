@@ -10,13 +10,20 @@ import (
 	"github.com/yottadynamics/yottacode/internal/contextwindow"
 )
 
-// compactionRetainFraction is the share of the context window kept
-// verbatim as the recent tail after a compaction. The rest of the
-// budget covers the system prompt, the original task, the synthetic
-// progress summary, and the next turn's output. 0.35 leaves enough
-// headroom that compaction drops well below the trigger threshold, so
-// it won't re-fire until the history grows back near the window.
-const compactionRetainFraction = 0.35
+// defaultCompactionTargetRatio is the share of the context window kept
+// verbatim as the recent tail after a compaction. The rest of the budget
+// covers the system prompt, the original task, the synthetic progress
+// summary, and the next turn's output. 0.35 leaves enough headroom that
+// compaction drops well below the trigger threshold, so it won't re-fire
+// until the history grows back near the window.
+const defaultCompactionTargetRatio = 0.35
+
+func compactionTargetRatio(cc *CompactionConfig) float64 {
+	if cc == nil || cc.TargetRatio <= 0 {
+		return defaultCompactionTargetRatio
+	}
+	return cc.TargetRatio
+}
 
 // subagentCompactionThreshold is the fraction of the window at which a
 // subagent's in-loop compaction fires. Set below the TUI's 0.85
@@ -74,6 +81,7 @@ func newChildCompaction(childWindow int, summarizer Streamer, summarizerWindow i
 	return &CompactionConfig{
 		Window:           childWindow,
 		Threshold:        subagentCompactionThreshold,
+		TargetRatio:      defaultCompactionTargetRatio,
 		Summarizer:       summarizer,
 		SummarizerWindow: summarizerWindow,
 	}
@@ -130,7 +138,7 @@ func compact(ctx context.Context, cfg LoopConfig, history *[]adapter.Message, ev
 	if firstUser < 0 {
 		return false, nil // no task anchor — nothing sensible to compact
 	}
-	tailStart := chooseCompactionTailStart(h, firstUser, int(compactionRetainFraction*float64(cc.Window)))
+	tailStart := chooseCompactionTailStart(h, firstUser, int(compactionTargetRatio(cc)*float64(cc.Window)))
 	capped, cappedChanged := capRetainedToolMessages(h, tailStart)
 	if cappedChanged {
 		h = capped

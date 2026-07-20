@@ -51,6 +51,8 @@ func TestLoad_AppliesOverrides(t *testing.T) {
 [context]
 warn_threshold = 0.5
 auto_threshold = 0.9
+	compaction_threshold = 0.6
+	compaction_target_ratio = 0.25
 
 [retrieval]
 top_k = 5
@@ -65,6 +67,12 @@ top_k = 5
 	}
 	if cfg.Context.AutoThreshold != 0.9 {
 		t.Errorf("auto = %.2f, want 0.9", cfg.Context.AutoThreshold)
+	}
+	if cfg.Context.CompactionThreshold != 0.6 {
+		t.Errorf("compaction = %.2f, want 0.6", cfg.Context.CompactionThreshold)
+	}
+	if cfg.Context.CompactionTargetRatio != 0.25 {
+		t.Errorf("target_ratio = %.2f, want 0.25", cfg.Context.CompactionTargetRatio)
 	}
 	if cfg.Retrieval.TopK != 5 {
 		t.Errorf("top_k = %d, want 5", cfg.Retrieval.TopK)
@@ -130,12 +138,11 @@ func TestLoad_ContextCompactionThreshold(t *testing.T) {
 		wantErr bool
 	}{
 		{
-			name: "below auto rejected when both enabled",
+			name: "below auto accepted for busy-turn compaction",
 			src: `[context]
 warn_threshold = 0.5
 auto_threshold = 0.85
-compaction_threshold = 0.80`,
-			wantErr: true,
+compaction_threshold = 0.70`,
 		},
 		{
 			name: "equal auto accepted",
@@ -164,6 +171,15 @@ compaction_threshold = 1.0`,
 warn_threshold = 0.5
 auto_threshold = 0.85
 compaction_threshold = 1.2`,
+			wantErr: true,
+		},
+		{
+			name: "target ratio out of range rejected",
+			src: `[context]
+warn_threshold = 0.5
+auto_threshold = 0.85
+compaction_threshold = 0.70
+compaction_target_ratio = 0.90`,
 			wantErr: true,
 		},
 	}

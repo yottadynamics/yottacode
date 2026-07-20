@@ -45,6 +45,7 @@ func (m *Model) refreshTurnCompactionConfig() {
 	}
 	m.cfg.Compaction.Window = window
 	m.cfg.Compaction.Threshold = m.fileCfg.Context.CompactionThreshold
+	m.cfg.Compaction.TargetRatio = contextCompactionTargetRatio(m.fileCfg.Context.CompactionTargetRatio)
 	if m.cfg.Compaction.Threshold >= 1.0 {
 		// Threshold 1.0 disables preemptive compaction but keeps the
 		// Window populated so provider-overflow recovery can still force a
@@ -54,13 +55,18 @@ func (m *Model) refreshTurnCompactionConfig() {
 	msgs := m.lockedMessages()
 	systemTokens, _ := contextwindow.SplitMessages(msgs)
 	schemaTokens := registrySchemaTokens(m.cfg.Registry)
-	retainBudget := int(compactionRetainFractionForTUI * float64(window))
+	retainBudget := int(contextCompactionTargetRatio(m.fileCfg.Context.CompactionTargetRatio) * float64(window))
 	if window-systemTokens-schemaTokens-retainBudget <= 0 {
 		m.cfg.Compaction.Window = 0
 	}
 }
 
-const compactionRetainFractionForTUI = 0.35
+func contextCompactionTargetRatio(configured float64) float64 {
+	if configured <= 0 {
+		return 0.35
+	}
+	return configured
+}
 
 // estimatedContextTokens approximates the full next-request size: the
 // message history plus the tool schemas advertised on every call.
