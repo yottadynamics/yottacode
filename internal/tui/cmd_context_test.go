@@ -9,6 +9,7 @@ import (
 
 	"github.com/yottadynamics/yottacode/internal/adapter"
 	"github.com/yottadynamics/yottacode/internal/agent"
+	"github.com/yottadynamics/yottacode/internal/config"
 	"github.com/yottadynamics/yottacode/internal/contextwindow"
 	"github.com/yottadynamics/yottacode/internal/skills"
 )
@@ -250,6 +251,27 @@ func TestContextDiagnosticsPreemptiveCompactionOff(t *testing.T) {
 	}
 	if !strings.Contains(report, "preemptive off; provider-overflow recovery can force one attempt") {
 		t.Fatalf("compaction status should explain recovery-only mode:\n%s", report)
+	}
+}
+
+func TestContextWindowSourceWording(t *testing.T) {
+	m := newTestModel(t)
+	m.modelName = "gpt-test"
+	m.fileCfg.Providers = []config.Provider{{
+		Name: "openai-auth",
+		Kind: "openai-auth",
+		Models: []config.Model{{
+			Name:          "gpt-test",
+			ContextWindow: 12345,
+		}},
+	}}
+	if got := contextWindowSource(&m); got != "configured/scanned window" {
+		t.Fatalf("source with configured window = %q", got)
+	}
+	m.fileCfg.Providers[0].Models[0].ContextWindow = 0
+	m.fileCfg.Active.Provider = "openai-auth"
+	if got := contextWindowSource(&m); !strings.Contains(got, "provider/catalog window") {
+		t.Fatalf("source = %q, want provider/catalog wording", got)
 	}
 }
 

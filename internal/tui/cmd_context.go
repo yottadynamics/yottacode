@@ -222,10 +222,10 @@ func contextWindowSource(m *Model) string {
 		return "no active model"
 	}
 	if override := m.fileCfg.ContextWindowOverride(m.modelName); override > 0 {
-		return "configured override"
+		return "configured/scanned window"
 	}
 	if key := m.driftKey(); key != "" {
-		return "provider-qualified window for " + key
+		return "provider/catalog window for " + key
 	}
 	return "catalog/default window for " + m.modelName
 }
