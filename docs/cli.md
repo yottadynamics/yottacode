@@ -24,7 +24,7 @@ These work for the TUI and `run` mode.
 | `--enable-code-interpreter` | `YOTTACODE_ENABLE_CODE_INTERPRETER` | no | Enable hosted code interpreter when supported |
 | `--allow-paths` | `YOTTACODE_ALLOW_PATHS` | no | Extra write roots |
 | `--yolo` | — | no | Dangerous: skip approval prompts and remove iteration cap (permissions-bypass overlay). Explicit deny rules still apply. Launch-only. |
-| `--max-iterations` | — | no | Tool-call cap per turn; default `50` (auto raises to `200`; `--yolo` removes the cap) |
+| `--max-iterations` | — | no | Tool-call cap per turn; default `100` (auto raises to `400`; `--yolo` removes the cap) |
 | `--permission-mode` | — | no | TUI only — startup mode: `default` \| `plan` \| `auto`. Mirrors Claude Code's `--permission-mode`. |
 | `--plan-resume` | — | no | TUI only — resume a saved plan by slug/substring (implies `--permission-mode plan`) |
 | `--resume` | — | no | Resume a session by id or name |

@@ -127,6 +127,17 @@ func TestVersionCmd(t *testing.T) {
 	}
 }
 
+func TestMaxIterationsDefault(t *testing.T) {
+	cmd := newCLI()
+	flag := cmd.PersistentFlags().Lookup("max-iterations")
+	if flag == nil {
+		t.Fatalf("max-iterations flag is not registered")
+	}
+	if flag.DefValue != "100" {
+		t.Fatalf("max-iterations default = %q, want 100", flag.DefValue)
+	}
+}
+
 // shouldRunUpdateCheck has three skip paths. The tty check naturally
 // returns false under `go test` (stdin is a pipe), which gives us the
 // "non-tty" branch coverage for free; t.Setenv covers the env-var

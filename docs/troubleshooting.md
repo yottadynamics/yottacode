@@ -57,10 +57,10 @@ Common causes:
 
 ## Tool call loop hits max iterations
 
-Default max iterations is `25`. Increase it for larger tasks:
+Default max iterations is `100`. Raise it for unusually large tasks:
 
 ```bash
-yottacode --max-iterations 50
+yottacode --max-iterations 300
 ```
 
 Keep the limit finite; it protects you from runaway tool loops.

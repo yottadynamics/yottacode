@@ -446,7 +446,7 @@ The plan-approval card's `[A]` auto-approval hotkey is a shortcut: it approves t
 
 Auto mode persists across turns until you toggle it off. The banner above the cmdline (`▸ auto mode · edits + read-only bash auto-allow; commits prompt · Shift+Tab cycles`) is always visible while active so the state isn't easy to forget — the trailing `Shift+Tab cycles` hint is how you leave (it drops first on narrow terminals). The entry log shows the full cycle (`auto → plan → normal`); the exit log shows the re-enter key.
 
-The default per-turn iteration cap is 50; auto mode raises the effective cap to 200 (4×). If you still hit the cap on long implementations, run `/max-iterations 500` (sanity ceiling) or relaunch with `--yolo` (raises the cap to `max-iterations × 20`, at least 1000; see [Permissions bypass](#permissions-bypass)).
+The default per-turn iteration cap is 100; auto mode raises the effective cap to 400 (4×). If you still hit the cap on long implementations, run `/max-iterations 500` (sanity ceiling) or relaunch with `--yolo` (raises the cap to `max-iterations × 20`, at least 1000; see [Permissions bypass](#permissions-bypass)).
 
 ## Permissions bypass
 
