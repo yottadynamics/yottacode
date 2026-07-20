@@ -251,18 +251,21 @@ warn_threshold = 0.65
 auto_threshold = 0.85
                          # turn-boundary auto-summarize; 1.0 disables
 
-compaction_threshold = 0.90
-                         # mid-turn in-loop compaction safety net; 1.0 disables
+compaction_threshold = 0.70
+                         # mid-turn busy-loop compaction safety net; 1.0 disables
+
+compaction_target_ratio = 0.35
+                         # recent-tail share retained after mid-turn compaction
 
 default_window = 128000
                          # fallback tokens for unknown models
 ```
 
-`auto_threshold` runs between turns and writes a pre-summary snapshot before replacing old conversation with a summary. `compaction_threshold` is a higher mid-turn safety net for long auto/yolo turns that would otherwise hit the provider limit before the next boundary; if a provider still rejects a request for context length before any assistant content streams, yottacode force-compacts once and retries. Interactive mid-turn compaction also writes a `~/.yottacode/sessions/<id>-pre-summary-*.json` snapshot before rewriting history.
+`auto_threshold` runs between turns and writes a pre-summary snapshot before replacing old conversation with a summary. `compaction_threshold` runs inside a long busy turn at clean loop boundaries, after tool results have landed and before the next model request. It intentionally defaults below `auto_threshold` so long-running tool loops compact before provider hard limits rather than waiting for post-turn recovery. If a provider still rejects a request for context length before any assistant content streams, yottacode force-compacts once and retries. Interactive mid-turn compaction also writes a `~/.yottacode/sessions/<id>-pre-summary-*.json` snapshot before rewriting history.
 
 Use `/context` in the TUI to inspect the active state: resolved model window, configured thresholds, tool-schema overhead, largest context buckets, compaction enabled/disabled reason, and the latest summarize/compaction outcome.
 
-Set a threshold to `1.0` to disable that preemptive behavior. If both auto-summarization and mid-turn compaction are enabled, `compaction_threshold` must be at or above `auto_threshold` so the turn-boundary summarizer remains the normal path. `/recall` indexes the compacted session slice, not compacted-away messages; the pre-summary snapshot is the recovery record for full history.
+Set a threshold to `1.0` to disable that preemptive behavior. `compaction_target_ratio` controls how much of the active window is kept verbatim as the recent tail after mid-turn compaction; the rest is reserved for the system prompt, original task, compacted progress note, tool schemas, and the next model response. `/recall` indexes the compacted session slice, not compacted-away messages; the pre-summary snapshot is the recovery record for full history.
 
 ### Checkpoints retention
 

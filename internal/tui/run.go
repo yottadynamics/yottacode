@@ -564,6 +564,7 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 		Compaction: &agent.CompactionConfig{
 			Window:           compactionWindow,
 			Threshold:        compactionThreshold,
+			TargetRatio:      contextCompactionTargetRatio(fileCfg.Context.CompactionTargetRatio),
 			Summarizer:       routerFast(routerAdapters),
 			SummarizerWindow: summarizerWindow,
 			PreCompact: func(history []adapter.Message) (string, error) {

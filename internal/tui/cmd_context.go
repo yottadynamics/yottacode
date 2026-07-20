@@ -260,7 +260,7 @@ func contextCompactionStatus(m *Model, used, window, systemTokens, toolTokens, m
 	} else {
 		parts = append(parts, fmt.Sprintf("%s until trigger", formatTokens(max(int(threshold*float64(window))-used, 0))))
 	}
-	floor := systemTokens + toolTokens + int(compactionRetainFractionForTUI*float64(window))
+	floor := systemTokens + toolTokens + int(contextCompactionTargetRatio(m.fileCfg.Context.CompactionTargetRatio)*float64(window))
 	parts = append(parts, fmt.Sprintf("floor≈%s + messages %s", formatTokens(floor), formatTokens(messageTokens)))
 	return strings.Join(parts, "; ")
 }
