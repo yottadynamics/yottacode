@@ -13,7 +13,7 @@ type cheatsheetEntry struct {
 
 var cheatsheet = []cheatsheetEntry{
 	{"Enter", "submit message · execute slash command"},
-	{"↑ / ↓", "browse input history at edge of textarea (cursor moves between lines mid-draft) · navigate palette when open"},
+	{"↑ / ↓", "browse input history at edge of textarea; ↑ edits queued mid-turn input before delivery; navigate palette when open"},
 	{"Tab", "complete highlighted slash command"},
 	{"/", "open the slash command palette"},
 	{"/loop", "repeat a prompt or slash command (e.g. /loop 5m …); /loop stop to end"},
