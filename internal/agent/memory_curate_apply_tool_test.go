@@ -61,6 +61,13 @@ func TestMemoryCurateApplyTool_MovePortableProjectMemory(t *testing.T) {
 	if _, err := os.Stat(projectPath); !os.IsNotExist(err) {
 		t.Fatalf("project memory should be removed, stat err = %v", err)
 	}
+	projectDir, err := memory.ProjectMemoryDir(cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(projectDir, memory.HistoryDirName, "portable.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("move history should be written under destination user scope only, stat err = %v", err)
+	}
 	userPath, err := memory.MemoryFilePath("user", "portable", cwd)
 	if err != nil {
 		t.Fatal(err)
@@ -71,6 +78,17 @@ func TestMemoryCurateApplyTool_MovePortableProjectMemory(t *testing.T) {
 	}
 	if !strings.Contains(string(data), "The user prefers concise answers.") {
 		t.Fatalf("moved memory lost body: %s", data)
+	}
+	userDir, err := memory.UserMemoryDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	history, err := os.ReadFile(filepath.Join(userDir, memory.HistoryDirName, "portable.jsonl"))
+	if err != nil {
+		t.Fatalf("read move history: %v", err)
+	}
+	if !strings.Contains(string(history), "move-portable") || !strings.Contains(string(history), "portable-in-project") {
+		t.Fatalf("move history missing action/reason: %s", history)
 	}
 }
 

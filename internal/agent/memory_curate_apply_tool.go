@@ -139,6 +139,10 @@ func (t *MemoryCurateApplyTool) applyDeleteEmpty(a memoryCurateApplyArgs) (strin
 	if err := memory.RegenerateMemoryIndex(a.Scope, t.Cwd.Get()); err != nil {
 		return "", fmt.Errorf("memory_curate_apply: regenerate index: %w", err)
 	}
+	_ = memory.RecordCurationHistory(a.Scope, a.Name, t.Cwd.Get(), memory.CurationHistoryRecord{
+		Action: "delete-empty",
+		Reason: "audit issue empty-body",
+	})
 	return fmt.Sprintf("deleted empty %s memory %q", a.Scope, a.Name), nil
 }
 
@@ -187,6 +191,12 @@ func (t *MemoryCurateApplyTool) applyMovePortable(a memoryCurateApplyArgs) (stri
 	if err := memory.RegenerateMemoryIndex("project", cwd); err != nil {
 		return "", fmt.Errorf("memory_curate_apply: regenerate project index: %w", err)
 	}
+	_ = memory.RecordCurationHistory("user", a.Name, cwd, memory.CurationHistoryRecord{
+		Action: "move-portable",
+		From:   "project/" + a.Name,
+		To:     "user/" + a.Name,
+		Reason: "audit issue portable-in-project",
+	})
 	return fmt.Sprintf("moved project memory %q to user scope", a.Name), nil
 }
 

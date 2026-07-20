@@ -77,7 +77,11 @@ the project uses semantic versioning once it's past `1.0.0`.
   archive-backed overwrites visible immediately. `memory health` and
   `memory_audit({"summary":true})` expose aggregate health counts so humans and
   agents can see whether memory needs attention without dumping the full audit
-  queue. No audit path mutates memory on its own.
+  queue. `memory archive list` and dry-run-first `memory archive prune` provide
+  explicit archive retention, with an approval-gated `memory_archive_prune` tool
+  for actual deletion. Mechanical `memory_curate_apply` actions now append JSONL
+  curation history under `.history/` so later agents can see why a memory was
+  moved or removed. No audit path mutates memory on its own.
 
 ### Fixed
 

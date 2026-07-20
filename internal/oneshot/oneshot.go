@@ -404,6 +404,7 @@ func registerMemoryTools(reg *agent.Registry, cwdRef *agent.CwdRef, embedClient 
 	reg.Register(&agent.MemorySearchTool{Cwd: cwdRef, Embedder: embedClient, Strategy: strategy})
 	reg.Register(&agent.MemoryAuditTool{Cwd: cwdRef})
 	reg.Register(&agent.MemoryCurateApplyTool{Cwd: cwdRef})
+	reg.Register(&agent.MemoryArchivePruneTool{Cwd: cwdRef})
 	reg.Register(&agent.MemoryGetTool{Cwd: cwdRef})
 }
 

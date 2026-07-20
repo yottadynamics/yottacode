@@ -334,7 +334,7 @@ func TestEvaluate_GithubAskForWrites(t *testing.T) {
 // session_recall was the gap: it had no targetFor case, so it fell to
 // Default and ran unconditionally despite the docs promising coverage.
 func TestTargetFor_MemoryToolsAllGated(t *testing.T) {
-	for _, tool := range []string{"memory_save", "memory_forget", "memory_search", "memory_get", "session_recall"} {
+	for _, tool := range []string{"memory_save", "memory_forget", "memory_search", "memory_get", "memory_archive_prune", "session_recall"} {
 		t.Run(tool, func(t *testing.T) {
 			got := targetFor(tool, `{"scope":"user","name":"x","query":"q"}`, "")
 			if got.PermName != "Memory" {

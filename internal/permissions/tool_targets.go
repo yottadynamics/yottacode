@@ -123,6 +123,8 @@ func targetFor(toolName, argsJSON, cwd string) Target {
 		return Target{PermName: "Memory", Descriptor: "search " + extractField(argsJSON, "query")}
 	case "memory_get":
 		return Target{PermName: "Memory", Descriptor: "get " + extractField(argsJSON, "scope") + ":" + extractField(argsJSON, "name")}
+	case "memory_archive_prune":
+		return Target{PermName: "Memory", Descriptor: "archive_prune " + extractField(argsJSON, "scope")}
 	case "session_recall":
 		// session_recall is the broadest read surface — FTS5 over EVERY
 		// past session in EVERY project, no cwd filter. It belongs under
