@@ -306,9 +306,104 @@ func TestRecordOpenAIAuthRateLimit_ExtractsPlanAndReset(t *testing.T) {
 	if got.PlanType != "pro" {
 		t.Errorf("PlanType = %q, want pro", got.PlanType)
 	}
+	// The body names a reset without saying which window tripped, so it
+	// is attributed to primary.
+	if !got.Primary.Has {
+		t.Fatal("Primary.Has = false; body reset not attributed to a window")
+	}
 	// resets_in_seconds = 3600 → reset is ~1h from now; allow 5s tolerance.
-	diff := time.Until(got.ResetsAt) - time.Hour
+	diff := time.Until(got.Primary.ResetsAt) - time.Hour
 	if diff > 5*time.Second || diff < -5*time.Second {
-		t.Errorf("ResetsAt ≈ now+1h ± 5s; got %v (diff %v)", got.ResetsAt, diff)
+		t.Errorf("Primary.ResetsAt ≈ now+1h ± 5s; got %v (diff %v)", got.Primary.ResetsAt, diff)
+	}
+}
+
+// TestRecordOpenAIAuthRateLimit_ParsesBothWindowsFromHeaders locks the
+// live-capture path: a response carrying both x-codex-* header families
+// (and no body, as on the success path) must populate both windows with
+// percent, width, and reset. This is what lets /usage report standing
+// headroom instead of only what the last 429 said.
+func TestRecordOpenAIAuthRateLimit_ParsesBothWindowsFromHeaders(t *testing.T) {
+	openAIAuthRateLimitMu.Lock()
+	openAIAuthRateLimit = nil
+	openAIAuthRateLimitMu.Unlock()
+
+	hdr := http.Header{}
+	hdr.Set("x-codex-plan-type", "prolite")
+	hdr.Set("x-codex-primary-used-percent", "12")
+	hdr.Set("x-codex-primary-window-minutes", "300")
+	hdr.Set("x-codex-primary-reset-after-seconds", "3600")
+	hdr.Set("x-codex-secondary-used-percent", "97.5")
+	hdr.Set("x-codex-secondary-window-minutes", "10080")
+	hdr.Set("x-codex-secondary-reset-after-seconds", "561600")
+
+	recordOpenAIAuthRateLimit(hdr, nil)
+
+	got := LastOpenAIAuthRateLimit()
+	if got == nil {
+		t.Fatal("LastOpenAIAuthRateLimit() = nil; header-only capture did not record")
+	}
+	if got.PlanType != "prolite" {
+		t.Errorf("PlanType = %q, want prolite", got.PlanType)
+	}
+	if !got.Primary.HasPercent || got.Primary.UsedPercent != 12 {
+		t.Errorf("Primary percent = %v (has=%v), want 12", got.Primary.UsedPercent, got.Primary.HasPercent)
+	}
+	if got.Primary.WindowMinutes != 300 {
+		t.Errorf("Primary.WindowMinutes = %d, want 300", got.Primary.WindowMinutes)
+	}
+	if !got.Secondary.HasPercent || got.Secondary.UsedPercent != 97.5 {
+		t.Errorf("Secondary percent = %v (has=%v), want 97.5", got.Secondary.UsedPercent, got.Secondary.HasPercent)
+	}
+	if got.Secondary.WindowMinutes != 10080 {
+		t.Errorf("Secondary.WindowMinutes = %d, want 10080", got.Secondary.WindowMinutes)
+	}
+	// 561600s ≈ 6d12h out; just confirm it landed in the future.
+	if !got.Secondary.ResetsAt.After(time.Now().Add(6 * 24 * time.Hour)) {
+		t.Errorf("Secondary.ResetsAt = %v, want ~6d12h out", got.Secondary.ResetsAt)
+	}
+}
+
+// TestRecordOpenAIAuthRateLimit_QuotaLessResponseKeepsMemo guards the
+// don't-clobber rule. Capture now runs on every response, including ones
+// from endpoints that emit no quota headers at all — those must leave the
+// last real observation standing rather than blanking it.
+func TestRecordOpenAIAuthRateLimit_QuotaLessResponseKeepsMemo(t *testing.T) {
+	openAIAuthRateLimitMu.Lock()
+	openAIAuthRateLimit = nil
+	openAIAuthRateLimitMu.Unlock()
+
+	hdr := http.Header{}
+	hdr.Set("x-codex-primary-used-percent", "42")
+	hdr.Set("x-codex-primary-window-minutes", "300")
+	recordOpenAIAuthRateLimit(hdr, nil)
+
+	// A response with nothing quota-shaped on it.
+	recordOpenAIAuthRateLimit(http.Header{}, nil)
+
+	got := LastOpenAIAuthRateLimit()
+	if got == nil {
+		t.Fatal("memo was cleared by a quota-less response")
+	}
+	if got.Primary.UsedPercent != 42 {
+		t.Errorf("Primary.UsedPercent = %v, want the retained 42", got.Primary.UsedPercent)
+	}
+}
+
+// TestFormatQuotaWindowLabel covers the width→name mapping the renderer
+// uses so windows are never mislabelled from a hardcoded guess.
+func TestFormatQuotaWindowLabel(t *testing.T) {
+	for minutes, want := range map[int]string{
+		300:   "5h window",
+		60:    "1h window",
+		10080: "weekly",
+		1440:  "daily",
+		90:    "90m window",
+		0:     "",
+		-5:    "",
+	} {
+		if got := FormatQuotaWindowLabel(minutes); got != want {
+			t.Errorf("FormatQuotaWindowLabel(%d) = %q, want %q", minutes, got, want)
+		}
 	}
 }
