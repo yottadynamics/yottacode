@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -765,9 +766,21 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 	// place. This makes selection, scroll-wheel, and copy "just work" via
 	// the terminal — see model.go for the appendLine emit path.
 	prog := tea.NewProgram(model)
-	if _, err := prog.Run(); err != nil {
-		return fmt.Errorf("tui: %w", err)
-	}
+	_, runErr := prog.Run()
+	// Everything below is shutdown, and it must run on EVERY exit path.
+	// This used to be `if err != nil { return }`, which was wrong: Ctrl+C
+	// does not always reach us as a keystroke. Bubbletea only sees ^C as a
+	// KeyCtrlC (-> tea.Quit -> nil) while the terminal is in raw mode; a
+	// real SIGINT — stdin isn't a TTY, ^C lands during startup before raw
+	// mode is set or after it's restored, or someone sends kill -INT —
+	// hits bubbletea's own signal handler and comes back as
+	// ErrInterrupted/ErrProgramKilled. The old early return then skipped
+	// the sess.Save + resumeHint below, so the user got "error: program
+	// was killed: program was interrupted" and no "sessions resume <id>"
+	// line to get back in. Interrupts are an ordinary way to leave
+	// yottacode, not a TUI failure — only a genuine failure propagates.
+	normalExit := isNormalExit(runErr)
+
 	// Subagent cancel + drain + worktree sweep now run in the deferred
 	// teardown registered right after subagentTasks was created, so an
 	// error-return or panic from prog.Run can't skip them.
@@ -787,13 +800,48 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 	// this save, so a task still running at exit persists as "running" and
 	// rehydrates as orphaned next launch.)
 	sess.SubagentTasks = subagentTasks.Export()
-	if err := sess.Save(); err != nil {
-		return err
+	// Only sessions that actually held a conversation get written. session.New
+	// doesn't touch the disk, so this at-exit Save is what creates the file —
+	// and saving unconditionally meant every "open yottacode, change my mind,
+	// quit" left a ~48KB system-prompt-only shell behind. Those shells then
+	// showed up as resumable in /sessions and could be picked by --continue,
+	// where they open with an empty transcript and read as lost history.
+	// Skipping the write is what keeps them out of the store; List and
+	// LatestInCwd filter the ones older builds already wrote.
+	var saveErr error
+	if sess.HasExchange() {
+		saveErr = sess.Save()
 	}
-	if hint := resumeHint(sess); hint != "" {
-		fmt.Fprintln(os.Stderr, hint)
+	// Only advertise a resume once the transcript is actually on disk —
+	// pointing the user at an id that failed to persist is worse than
+	// staying quiet.
+	if saveErr == nil {
+		if hint := resumeHint(sess); hint != "" {
+			fmt.Fprintln(os.Stderr, hint)
+		}
+	}
+	switch {
+	case !normalExit:
+		return fmt.Errorf("tui: %w", runErr)
+	case saveErr != nil:
+		return saveErr
 	}
 	return nil
+}
+
+// isNormalExit reports whether a bubbletea Program.Run error represents an
+// ordinary way of leaving yottacode rather than a TUI failure.
+//
+// Run returns ErrInterrupted when it takes a SIGINT (the ^C the terminal
+// couldn't hand us as a keystroke because it wasn't in raw mode) and
+// ErrProgramKilled when the program is killed or its context is cancelled;
+// both wrap through to the caller, so errors.Is is required rather than ==.
+// Treating these as failures is what used to cost an interrupted session its
+// save and its resume hint.
+func isNormalExit(err error) bool {
+	return err == nil ||
+		errors.Is(err, tea.ErrInterrupted) ||
+		errors.Is(err, tea.ErrProgramKilled)
 }
 
 // resumeHint returns the one-line "how to come back to this session"
@@ -821,13 +869,12 @@ func resumeHint(sess *session.Session) string {
 // user or assistant message. System-only sessions don't count — those
 // are the empty shells produced by `yottacode` → quit, with no actual
 // conversation to resume.
+//
+// Delegates to session.HasExchange rather than re-implementing it: the same
+// predicate decides whether to persist the session at exit and whether
+// LatestInCwd/List will offer it later, and those answers must not diverge.
 func sessionHasExchange(sess *session.Session) bool {
-	for _, msg := range sess.Messages {
-		if msg.Role == adapter.RoleUser || msg.Role == adapter.RoleAssistant {
-			return true
-		}
-	}
-	return false
+	return sess.HasExchange()
 }
 
 // splitAllowPaths splits a comma-separated --allow-paths value into a

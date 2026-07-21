@@ -17,7 +17,23 @@ import (
 // sessions. The picker is for the just-here-recently case; reaching
 // further back is /recall's job. The list footer tells users this so
 // older sessions don't feel hidden.
-const sessionsRecentLimit = 10
+const sessionsRecentLimit = 15
+
+// Session-row layout. sessionsLabelWidth is the id/name column; the gist
+// column takes what's left after the trailing metadata, clamped to
+// [minSummaryWidth, maxSummaryWidth]. When that leaves less than the
+// minimum, sessionsRowLayout first drops the model name from the metadata
+// to buy the gist its column, and only gives up on the gist entirely when
+// even that doesn't fit — a stub of six characters of prompt helps nobody.
+const (
+	sessionsLabelWidth = 28
+	minSummaryWidth    = 16
+	maxSummaryWidth    = 72
+	summarySep         = "  ·  "
+	// defaultPickerWidth stands in before the first WindowSizeMsg lands,
+	// when m.width is still 0.
+	defaultPickerWidth = 100
+)
 
 // sessionsPickerMode is the picker's screen. The state machine starts
 // in sessionsMenuMode (Load/Resume/Rename/Export). Load drops into a
@@ -214,7 +230,9 @@ func (m Model) dispatchSessionsMenu() (Model, tea.Cmd) {
 	if item.Action == sessionsResumeInputMode {
 		return m.enterSessionsResumeInput()
 	}
-	p.sessions = loadRecentSessions()
+	// Rename is the one list action an archive can't serve — see
+	// loadRecentSessions.
+	p.sessions = loadRecentSessions(item.Action != sessionsRenameListMode)
 	if len(p.sessions) == 0 {
 		m.sessionsPickerOpen = false
 		m.sessionsPicker = nil
@@ -240,10 +258,20 @@ func (m Model) dispatchSessionsMenu() (Model, tea.Cmd) {
 }
 
 // loadRecentSessions returns up to sessionsRecentLimit metadata rows,
-// newest first. Wraps session.List with the truncation so callers
+// newest first. Wraps session.ListWith with the truncation so callers
 // don't have to remember the cap. Returns nil on error or empty.
-func loadRecentSessions() []session.SessionInfo {
-	all, err := session.List()
+//
+// includeArchived is per-mode rather than global, because an archive is only
+// meaningful for some actions:
+//
+//   - Load / Export: yes. The archive is frequently the only surviving copy
+//     of pre-compaction history, so both opening and exporting it are the
+//     point of surfacing it at all.
+//   - Rename: no. An archive has no persisted Name field to set — renaming
+//     one resolves the id through loadSnapshot and would write a brand-new
+//     duplicate session instead of labelling anything.
+func loadRecentSessions(includeArchived bool) []session.SessionInfo {
+	all, err := session.ListWith(session.ListOptions{IncludeArchived: includeArchived})
 	if err != nil {
 		return nil
 	}
@@ -315,8 +343,16 @@ func (m Model) commitSessionsResume() (Model, tea.Cmd) {
 // the pre-load value. Used by both the picker commit path and the
 // /sessions <id|name> shortcut.
 func (m Model) resumeSession(id string, summarized bool) (Model, tea.Cmd) {
-	if err := m.sess.Save(); err != nil {
-		m.appendLine(styleError.Render(fmt.Sprintf("⚠ saving current: %v", err)))
+	// Same rule as the at-exit save and /clear: a session with no exchange
+	// is a system-prompt-only shell, and persisting it here would undo the
+	// whole point of not creating them. This site matters most of the three
+	// — "launch yottacode, open /sessions, load a previous conversation" is
+	// the picker's most common flow, and the session being replaced is
+	// almost always empty.
+	if m.sess.HasExchange() {
+		if err := m.sess.Save(); err != nil {
+			m.appendLine(styleError.Render(fmt.Sprintf("⚠ saving current: %v", err)))
+		}
 	}
 	loaded, err := session.Load(id)
 	if err != nil {
@@ -340,7 +376,17 @@ func (m Model) resumeSession(id string, summarized bool) (Model, tea.Cmd) {
 	m.streamingMode = streamIdle
 	rebuildTranscript(&m)
 	m.refreshContextTokens()
-	m.appendLine(styleAuto.Render(fmt.Sprintf("[resume] loaded %s (%d msgs)", loaded.ID, len(loaded.Messages))))
+	// Restoring an archive is reported differently on purpose: the id the
+	// user picked is NOT the id they're now in. loadSnapshot mints a fresh
+	// session so continuing can't overwrite the archive — which for most
+	// snapshots is the only surviving copy of that history.
+	if session.IsSnapshotID(id) {
+		m.appendLine(styleAuto.Render(fmt.Sprintf(
+			"[restore] archived history from %s → new session %s (%d msgs); the archive is unchanged",
+			id, loaded.ID, len(loaded.Messages))))
+	} else {
+		m.appendLine(styleAuto.Render(fmt.Sprintf("[resume] loaded %s (%d msgs)", loaded.ID, len(loaded.Messages))))
+	}
 	// Switching sessions must not carry an armed /loop into the loaded one —
 	// it was armed against the old conversation's context.
 	m.disarmAllLoops("[loop] stopped — switched session")
@@ -397,9 +443,16 @@ func (m Model) commitSessionsRename() (Model, tea.Cmd) {
 		// (the on-exit "Session saved. Resume with: …" line) uses
 		// the friendly form.
 		m.sess.Name = name
-		if err := m.sess.Save(); err != nil {
-			m.appendLine(styleError.Render(fmt.Sprintf("✗ %v", err)))
-			return m, nil
+		// Only flush it if there's a conversation to attach the name to.
+		// Naming an empty session would write a shell that List then
+		// filters back out — an on-disk file the picker never shows, which
+		// reads as "the rename did nothing". The name is live on the
+		// in-memory session either way, so the first real turn persists it.
+		if m.sess.HasExchange() {
+			if err := m.sess.Save(); err != nil {
+				m.appendLine(styleError.Render(fmt.Sprintf("✗ %v", err)))
+				return m, nil
+			}
 		}
 	} else {
 		loaded, err := session.Load(target.ID)
@@ -452,6 +505,13 @@ func defaultExportPath(cwd string, info session.SessionInfo) string {
 	if info.Name != "" {
 		base = fmt.Sprintf("%s-%s", info.Name, info.ID)
 	}
+	// An archive's own id is the recognizable one. Exporting it goes through
+	// Load, which mints a fresh session, so naming the file after the loaded
+	// session would produce a timestamp the user has never seen and cannot
+	// tie back to anything.
+	if info.Archived {
+		base = info.ID
+	}
 	return filepath.Join(cwd, base+".md")
 }
 
@@ -499,14 +559,13 @@ func (m Model) commitSessionsExport() (Model, tea.Cmd) {
 // stitches the footer. Mirrors renderProviderPicker's layout so the
 // two pickers feel like the same UI.
 func renderSessionsPicker(p *sessionsPickerState, width int) string {
-	_ = width
 	var body, footerText string
 	switch p.mode {
 	case sessionsMenuMode:
 		body = renderSessionsMenu(p)
 		footerText = "↵ confirm · esc cancel · ↑↓ navigate"
 	case sessionsLoadListMode:
-		body = renderSessionsList(p, "Load session", loadListDescription(p))
+		body = renderSessionsList(p, "Load session", loadListDescription(p), width)
 		state := "off"
 		if p.summarized {
 			state = "on"
@@ -521,14 +580,14 @@ func renderSessionsPicker(p *sessionsPickerState, width int) string {
 		footerText = fmt.Sprintf("↵ resume · ctrl+s toggle summarized (%s) · esc back", state)
 	case sessionsRenameListMode:
 		body = renderSessionsList(p, "Rename session",
-			"Pick a session to label. The current session is marked ✓.")
+			"Pick a session to label. The current session is marked ✓.", width)
 		footerText = "↵ rename · esc back · ↑↓ navigate"
 	case sessionsRenameInputMode:
 		body = renderSessionsRenameInput(p)
 		footerText = "↵ save · esc back"
 	case sessionsExportListMode:
 		body = renderSessionsList(p, "Export session",
-			"Pick a session to export as Markdown. The current session is marked ✓.")
+			"Pick a session to export as Markdown. The current session is marked ✓.", width)
 		footerText = "↵ export · esc back · ↑↓ navigate"
 	case sessionsExportInputMode:
 		body = renderSessionsExportInput(p)
@@ -574,7 +633,7 @@ func loadListDescription(p *sessionsPickerState) string {
 // N msgs · relative age. The footer note "showing the N most
 // recent" sits under the rows so users know /recall is the path for
 // older sessions.
-func renderSessionsList(p *sessionsPickerState, title, description string) string {
+func renderSessionsList(p *sessionsPickerState, title, description string, width int) string {
 	var b strings.Builder
 	b.WriteString(renderMenuHeader(title, description))
 	b.WriteString("\n")
@@ -582,11 +641,12 @@ func renderSessionsList(p *sessionsPickerState, title, description string) strin
 		b.WriteString(styleEmpty.Render("  (no saved sessions yet)"))
 		return strings.TrimRight(b.String(), "\n")
 	}
+	layout := sessionsRowLayout(p.sessions, width)
 	for i, s := range p.sessions {
 		b.WriteString(renderMenuItem(menuItemOpts{
 			Label:      sessionPickerLabel(s),
-			LabelWidth: 28,
-			Desc:       sessionPickerDesc(s),
+			LabelWidth: sessionsLabelWidth,
+			Desc:       sessionPickerDesc(s, layout),
 			Cursor:     i == p.listCursor,
 			Checked:    s.ID == p.activeID,
 		}))
@@ -607,19 +667,117 @@ func sessionPickerLabel(s session.SessionInfo) string {
 	if s.Name != "" {
 		return s.Name
 	}
+	// An archive is labelled with the conversation it came from, not its own
+	// (much longer) snapshot id. Since ids sort so an archive lands directly
+	// under its parent, the pair reads as "this session, and its archived
+	// pre-compaction history" — with the metadata column saying which is which.
+	if s.Archived {
+		return s.ArchivedOf
+	}
 	return s.ID
 }
 
-// sessionPickerDesc is the right-column metadata: model · N msgs ·
-// age. Age is computed from time.Since(s.Created) at render time so
-// the picker reads correctly even after sitting open for a while.
-func sessionPickerDesc(s session.SessionInfo) string {
-	age := formatRecallAge(time.Since(s.Created))
+// sessionPickerDesc is the right-hand column: the session's one-line gist
+// followed by model · N msgs · age. Age is computed from
+// time.Since(s.Created) at render time so the picker reads correctly even
+// after sitting open for a while.
+//
+// The gist leads because it's the thing that actually answers "which one do
+// I want?" — a timestamp id and a model name don't. It's padded to a fixed
+// column so the metadata still lines up down the list, and it's dropped
+// entirely on a narrow terminal rather than squeezing the metadata out.
+func sessionPickerDesc(s session.SessionInfo, lay sessionRowLayout) string {
+	meta := sessionPickerMeta(s, lay.compactMeta)
+	if lay.gistWidth <= 0 {
+		return meta
+	}
+	// Pad even when this row has no gist, so the metadata column stays
+	// aligned with the rows that do.
+	return fmt.Sprintf("%-*s%s%s", lay.gistWidth, truncateLabel(s.Summary, lay.gistWidth), summarySep, meta)
+}
+
+// maxModelWidth caps the model name inside the metadata. Without it a single
+// outlier ("nvidia/nemotron-3-ultra-550b-a55b") sets the column width for the
+// whole list and can squeeze the gist out entirely.
+const maxModelWidth = 22
+
+// sessionPickerMeta is the trailing metadata: model · N msgs · age, or just
+// N msgs · age when compact. Age is computed from time.Since(s.Created) at
+// render time so the picker reads correctly even after sitting open a while.
+func sessionPickerMeta(s session.SessionInfo, compact bool) string {
 	plural := "msgs"
 	if s.Messages == 1 {
 		plural = "msg"
 	}
-	return fmt.Sprintf("%s · %d %s · %s", s.Model, s.Messages, plural, age)
+	age := formatRecallAge(time.Since(s.Created))
+	// Archived rows say so where the model would go. The model matters less
+	// for an archive than the fact that it IS one — these restore into a new
+	// session rather than reopening the one named in the label.
+	lead := truncateLabel(s.Model, maxModelWidth)
+	if s.Archived {
+		lead = "archived"
+	}
+	// Assembled from parts rather than a fixed format so an absent model
+	// drops its segment instead of rendering an empty one ("·   · 12 msgs").
+	// Model is genuinely empty for a session restored from an ORPHANED
+	// archive: loadSnapshot inherits model/cwd from the parent, and an
+	// orphan has no parent left to inherit from.
+	parts := make([]string, 0, 3)
+	if compact {
+		if s.Archived {
+			parts = append(parts, "archived")
+		}
+	} else if lead != "" {
+		parts = append(parts, lead)
+	}
+	parts = append(parts, fmt.Sprintf("%d %s", s.Messages, plural), age)
+	return strings.Join(parts, " · ")
+}
+
+// sessionRowLayout is the column plan for one render of the list. Computed
+// once for the whole list, never per row: sizing per row would let each
+// row's model name shift its own gist column, leaving the list ragged and
+// harder to scan — the opposite of what the gist is for.
+type sessionRowLayout struct {
+	gistWidth   int  // 0 = no room, render metadata only
+	compactMeta bool // drop the model name to buy the gist its column
+}
+
+// sessionsRowLayout budgets the row. The gist is what actually answers
+// "which session is this?", so when space is tight the model name is
+// sacrificed for it before the gist is dropped: full → drop model → gist
+// only as a last resort.
+func sessionsRowLayout(sessions []session.SessionInfo, width int) sessionRowLayout {
+	anyGist := false
+	for _, s := range sessions {
+		if s.Summary != "" {
+			anyGist = true
+			break
+		}
+	}
+	if !anyGist {
+		return sessionRowLayout{}
+	}
+	if width <= 0 {
+		width = defaultPickerWidth
+	}
+	// Row overhead ahead of Desc, per renderMenuItem's layout:
+	// cursor(2) + label column + gap(1) + check(2).
+	const rowOverhead = 2 + sessionsLabelWidth + 1 + 2
+	budget := func(compact bool) int {
+		metaWidth := 0
+		for _, s := range sessions {
+			metaWidth = max(metaWidth, runeLen(sessionPickerMeta(s, compact)))
+		}
+		return min(width-rowOverhead-metaWidth-runeLen(summarySep)-1, maxSummaryWidth)
+	}
+	if b := budget(false); b >= minSummaryWidth {
+		return sessionRowLayout{gistWidth: b}
+	}
+	if b := budget(true); b >= minSummaryWidth {
+		return sessionRowLayout{gistWidth: b, compactMeta: true}
+	}
+	return sessionRowLayout{}
 }
 
 func renderSessionsResumeInput(p *sessionsPickerState) string {

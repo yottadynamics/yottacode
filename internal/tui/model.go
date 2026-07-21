@@ -1261,7 +1261,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// don't reprint.
 			if !m.startupPrinted {
 				m.startupPrinted = true
-				m.appendRawFlush(renderStartupBox(m.version, m.commit, m.dirty, m.modelName, m.cwd, m.branch, m.memorySummary, m.providerProfile, m.startupTip(), m.width))
+				m.appendRawFlush(renderStartupBox(m.version, m.commit, m.dirty, m.modelName, m.cwd, m.sess.ID, m.branch, m.memorySummary, m.providerProfile, m.startupTip(), m.width))
 				// One blank line of breathing room between the card and
 				// the input frame — matches the Phase 2 spacing target.
 				m.queuePrintln("")
@@ -5917,7 +5917,7 @@ func (m *Model) queuePrintlnIndented(s string, leftMargin int) {
 func (m *Model) repaintViewport() {
 	m.pendingCmds = append(m.pendingCmds, tea.ClearScreen)
 	if m.shouldShowStartupCard() {
-		m.queuePrintlnFlush(renderStartupBox(m.version, m.commit, m.dirty, m.modelName, m.cwd, m.branch, m.memorySummary, m.providerProfile, m.startupTip(), m.width))
+		m.queuePrintlnFlush(renderStartupBox(m.version, m.commit, m.dirty, m.modelName, m.cwd, m.sess.ID, m.branch, m.memorySummary, m.providerProfile, m.startupTip(), m.width))
 		m.queuePrintln("")
 	}
 	for _, line := range m.historyLines {

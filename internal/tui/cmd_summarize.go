@@ -56,7 +56,7 @@ const compactionMarker = "…(truncated by compaction)"
 // summary a valid reply for every provider, mirroring how the subagent
 // compaction path folds its summary into the task to the same end. Kept
 // terse so it costs almost nothing.
-const summaryUserPreamble = "Summarize our conversation so far so we can continue with bounded context."
+const summaryUserPreamble = session.SummaryPreamble
 
 // summarizeInputSafety is the absolute token margin held back beyond
 // accounted-for overhead when budgeting the summarize input. Covers
@@ -514,18 +514,13 @@ func capRetainedToolContent(m adapter.Message) adapter.Message {
 	return m
 }
 
-// estimateMessageTokens estimates the token count of a single
-// message using the same 4-chars-per-token heuristic as
-// contextwindow.EstimateTokens. Pulled inline rather than calling
-// the contextwindow helper to avoid the per-call slice allocation —
-// chooseRetainStart can call this hundreds of times for a long
-// history.
+// estimateMessageTokens estimates the token count of a single message.
+// Delegates to contextwindow.EstimateMessage, which is the per-message
+// (non-slice) form — so chooseRetainStart can still call this hundreds of
+// times for a long history without a per-call allocation, while image cost
+// stays accounted for identically everywhere.
 func estimateMessageTokens(m adapter.Message) int {
-	chars := len(m.Content)
-	for _, tc := range m.ToolCalls {
-		chars += len(tc.Name) + len(tc.ArgsJSON)
-	}
-	return (chars + 3) / 4
+	return contextwindow.EstimateMessage(m)
 }
 
 // writePreSummarySnapshot writes the pre-compression history to
@@ -541,7 +536,7 @@ func writePreSummarySnapshot(sessionID string, history []adapter.Message) (strin
 		return "", err
 	}
 	stamp := time.Now().UTC().Format("20060102-150405.000000000")
-	path := filepath.Join(dir, fmt.Sprintf("%s-pre-summary-%s.json", sessionID, stamp))
+	path := filepath.Join(dir, sessionID+session.SnapshotMarker+stamp+".json")
 	payload := struct {
 		SessionID string            `json:"session_id"`
 		Captured  time.Time         `json:"captured"`
@@ -670,7 +665,7 @@ func readNewestSnapshot(sessionID string) (string, error) {
 		}
 		return "", err
 	}
-	prefix := sessionID + "-pre-summary-"
+	prefix := sessionID + session.SnapshotMarker
 	var newest string
 	for _, e := range entries {
 		if e.IsDir() {

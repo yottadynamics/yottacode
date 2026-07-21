@@ -145,6 +145,14 @@ resume <name>'.`,
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			id, newName := args[0], args[1]
+			// An archived snapshot has no persisted Name to set: Load
+			// resolves its id into a freshly-minted session, so saving that
+			// would write a brand-new duplicate of the archived history
+			// under the requested name and report an id the user never
+			// typed — while renaming nothing.
+			if session.IsSnapshotID(id) {
+				return fmt.Errorf("%q is an archived snapshot, not a session; archives cannot be renamed (resume it to continue the conversation, or use `sessions export` to write it out)", id)
+			}
 			loaded, err := session.Load(id)
 			if err != nil {
 				return err
@@ -200,6 +208,13 @@ passed.`,
 				base := loaded.ID
 				if loaded.Name != "" {
 					base = fmt.Sprintf("%s-%s", loaded.Name, loaded.ID)
+				}
+				// Exporting an archive goes through Load, which mints a
+				// fresh session — naming the file after it would produce a
+				// timestamp the user has never seen. Use the id they asked
+				// for instead.
+				if session.IsSnapshotID(id) {
+					base = id
 				}
 				path = filepath.Join(cwd, base+".md")
 			} else if !filepath.IsAbs(path) {

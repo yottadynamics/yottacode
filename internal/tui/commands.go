@@ -201,7 +201,7 @@ func (m Model) dispatchSlash(input string) (Model, tea.Cmd) {
 // returns "" past the first user message), so on resumed sessions
 // /help shows just the bare context summary above the help list.
 func cmdHelp(m Model, _ []string) (Model, tea.Cmd) {
-	m.appendLine(renderStartupBox(m.version, m.commit, m.dirty, m.modelName, m.cwd, m.branch, m.memorySummary, m.providerProfile, m.startupTip(), m.width))
+	m.appendLine(renderStartupBox(m.version, m.commit, m.dirty, m.modelName, m.cwd, m.sess.ID, m.branch, m.memorySummary, m.providerProfile, m.startupTip(), m.width))
 
 	// Compute one shared column width across BOTH built-ins and custom
 	// commands so the help text dashes line up across the two
@@ -1268,8 +1268,15 @@ func probeConnectionState(result adapter.ProbeResult) connState {
 }
 
 func cmdClear(m Model, _ []string) (Model, tea.Cmd) {
-	if err := m.sess.Save(); err != nil {
-		m.appendLine(styleError.Render(fmt.Sprintf("⚠ saving old session: %v", err)))
+	// Preserve the outgoing conversation before starting a fresh one — but
+	// only if there was one. /clear on a session that never got a turn
+	// (launch, then immediately clear) would otherwise persist a
+	// system-prompt-only shell that shows up as resumable in /sessions and
+	// opens with an empty transcript. Same rule as the at-exit save.
+	if m.sess.HasExchange() {
+		if err := m.sess.Save(); err != nil {
+			m.appendLine(styleError.Render(fmt.Sprintf("⚠ saving old session: %v", err)))
+		}
 	}
 	var sysContent string
 	for _, msg := range m.sess.Messages {
@@ -1314,7 +1321,7 @@ func cmdClear(m Model, _ []string) (Model, tea.Cmd) {
 	// only a system prompt, so isFreshSession() is true).
 	m.pendingCmds = append(m.pendingCmds, tea.ClearScreen)
 	if m.shouldShowStartupCard() {
-		m.appendRaw(renderStartupBox(m.version, m.commit, m.dirty, m.modelName, m.cwd, m.branch, m.memorySummary, m.providerProfile, m.startupTip(), m.width))
+		m.appendRaw(renderStartupBox(m.version, m.commit, m.dirty, m.modelName, m.cwd, m.sess.ID, m.branch, m.memorySummary, m.providerProfile, m.startupTip(), m.width))
 		m.queuePrintln("")
 	}
 	m.appendLine(styleAuto.Render(fmt.Sprintf("[clear] new session %s", newSess.ID)))

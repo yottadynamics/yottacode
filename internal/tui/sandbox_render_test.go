@@ -34,7 +34,7 @@ func TestRenderToolStartLine_RunBashPlainPassthrough(t *testing.T) {
 // `!`/`?` suffix and in the live status bar). This guards against
 // regressions that would re-add either row.
 func TestRenderStartupBox_OmitsSandboxAndChecks(t *testing.T) {
-	got := stripANSI(renderStartupBox("0.4.0", "abc1234", false, "gpt-4o", "/repo", "main", "USER", adapter.ProviderProfile{
+	got := stripANSI(renderStartupBox("0.4.0", "abc1234", false, "gpt-4o", "/repo", "20260721-000000.000000", "main", "USER", adapter.ProviderProfile{
 		Provider:                adapter.ProviderOpenAI,
 		UsesResponsesAPI:        true,
 		EnabledBuiltinTools:     []adapter.BuiltinToolKind{adapter.BuiltinToolWebSearch},

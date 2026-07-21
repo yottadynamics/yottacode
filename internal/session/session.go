@@ -56,6 +56,10 @@ type Session struct {
 	// empty dispatch worktrees. Omitted when empty so existing session files
 	// load unchanged.
 	SubagentTasks []subagents.TaskRecord `json:"subagent_tasks,omitempty"`
+	// RestoredFrom records the archived snapshot this session was seeded
+	// from, when it was restored rather than started fresh. Provenance only
+	// — the restored session is a full independent session from here on.
+	RestoredFrom string `json:"restored_from,omitempty"`
 
 	path string // filled by New/Load, not serialized
 }
@@ -88,6 +92,170 @@ func New(model, cwd string) (*Session, error) {
 	}, nil
 }
 
+// SnapshotMarker tags the pre-compaction history dumps written alongside
+// sessions as "<id>-pre-summary-<stamp>.json". Those files live in the
+// sessions directory but are NOT sessions: their payload is keyed
+// session_id/captured/messages, so decoding one into a Session yields an
+// empty ID and a zero Created while still populating Messages.
+//
+// Exported so the writer (internal/tui's writePreSummarySnapshot) and the
+// directory scans here name the pattern once. When they disagreed, every
+// snapshot showed up in `sessions list` and the /sessions picker as a
+// blank-id row — and selecting one called Load(""), which fell through to
+// a name lookup that matched the first unnamed session on disk and
+// silently resumed the wrong conversation.
+const SnapshotMarker = "-pre-summary-"
+
+// isSessionFile reports whether a directory entry is an actual session
+// file rather than a snapshot or some other stray .json.
+func isSessionFile(name string) bool {
+	return strings.HasSuffix(name, ".json") && !strings.Contains(name, SnapshotMarker)
+}
+
+// isSnapshotFile / IsSnapshotID recognize the archive form. A snapshot's id
+// is simply its filename without the .json — unique already, and it means
+// loadByID's direct path join addresses one without any synthetic scheme.
+func isSnapshotFile(name string) bool {
+	return strings.HasSuffix(name, ".json") && strings.Contains(name, SnapshotMarker)
+}
+
+// IsSnapshotID reports whether a reference names an archived snapshot
+// rather than a live session. Exported so the TUI can label what it loaded.
+func IsSnapshotID(id string) bool { return strings.Contains(id, SnapshotMarker) }
+
+// snapshotPayload is the on-disk shape written by the compaction flow.
+// Note it has no id/cwd/model — only session_id, captured, messages — which
+// is why decoding one straight into a Session yields a blank-id row.
+type snapshotPayload struct {
+	SessionID string            `json:"session_id"`
+	Captured  time.Time         `json:"captured"`
+	Messages  []adapter.Message `json:"messages"`
+}
+
+// snapshotParentID maps a snapshot filename/id back to the session it was
+// captured from.
+func snapshotParentID(name string) string {
+	name = strings.TrimSuffix(name, ".json")
+	if i := strings.Index(name, SnapshotMarker); i >= 0 {
+		return name[:i]
+	}
+	return name
+}
+
+// loadSnapshot builds a NEW live session seeded from an archived snapshot.
+//
+// The returned session deliberately carries a fresh id and a fresh path: a
+// snapshot is the ONLY surviving copy of the pre-compaction history (the
+// live session kept just the summary), so resuming one must never be able
+// to write back over it. Continuing the restored conversation saves to the
+// new file and leaves the archive untouched.
+//
+// Model and Cwd are inherited from the parent session when it still exists,
+// so provider routing and cwd-scoped features keep working; an orphaned
+// snapshot restores with those empty.
+func loadSnapshot(dir, id string) (*Session, error) {
+	p, err := safePath(dir, id)
+	if err != nil {
+		return nil, err
+	}
+	b, err := os.ReadFile(p)
+	if err != nil {
+		return nil, err
+	}
+	var payload snapshotPayload
+	if err := json.Unmarshal(b, &payload); err != nil {
+		return nil, fmt.Errorf("snapshot parse %s: %w", id, err)
+	}
+	model, cwd := "", ""
+	if parent, perr := loadByID(dir, snapshotParentID(id)); perr == nil {
+		model, cwd = parent.Model, parent.Cwd
+	}
+	fresh, err := New(model, cwd)
+	if err != nil {
+		return nil, err
+	}
+	fresh.Messages = payload.Messages
+	fresh.RestoredFrom = id
+	return fresh, nil
+}
+
+// SummaryPreamble is the synthetic user turn that a compacted history opens
+// with, standing in for the real conversation the summary replaced. Defined
+// here (and referenced by the compaction code that writes it) so Summary can
+// recognize and skip it: it's identical in every compacted session, so using
+// it as a session's description would label them all the same.
+const SummaryPreamble = "Summarize our conversation so far so we can continue with bounded context."
+
+// summaryCap bounds the stored description. Well above any sane display
+// width, but it keeps List from holding a whole prompt in memory per
+// session — first messages in a real store reach 160KB.
+const summaryCap = 160
+
+// Summary returns a one-line gist of what the session is about, taken from
+// the first real user prompt. Empty when there's nothing usable.
+//
+// Derived rather than stored, so it works on every session already on disk
+// with no migration, and it costs nothing extra: List already decodes the
+// full message log.
+//
+// Skips the synthetic compaction preamble, and collapses all whitespace so
+// a multi-line prompt renders as a single scannable line.
+func (s *Session) Summary() string {
+	if s == nil {
+		return ""
+	}
+	for _, m := range s.Messages {
+		if m.Role != adapter.RoleUser {
+			continue
+		}
+		line := strings.Join(strings.Fields(m.Content), " ")
+		if line == "" || strings.HasPrefix(line, SummaryPreamble) {
+			continue
+		}
+		return truncateRunes(line, summaryCap)
+	}
+	return ""
+}
+
+// truncateRunes cuts to max RUNES with a trailing ellipsis. Rune-based
+// rather than byte-based: prompts are arbitrary user text, and slicing
+// mid-rune emits invalid UTF-8 that renders as garbage in the terminal.
+func truncateRunes(s string, max int) string {
+	if max < 1 {
+		return ""
+	}
+	r := []rune(s)
+	if len(r) <= max {
+		return s
+	}
+	return string(r[:max-1]) + "…"
+}
+
+// HasExchange reports whether the session holds at least one user or
+// assistant message — i.e. whether there is any conversation to come back
+// to. System-only sessions don't count: launching yottacode composes a
+// system prompt immediately, so a session that was opened and closed
+// without a single turn is a ~48KB shell whose entire content is the
+// system prompt.
+//
+// This is the "is this worth persisting / worth offering as resumable"
+// predicate, and it gates three places: the at-exit save (don't create
+// shells), LatestInCwd (`--continue` must not land on one), and List (the
+// /sessions picker must not offer one). Resuming a shell looks like data
+// loss to the user — the picker says "1 msgs" and the history is simply
+// gone — so the fix is to never create or offer them.
+func (s *Session) HasExchange() bool {
+	if s == nil {
+		return false
+	}
+	for _, msg := range s.Messages {
+		if msg.Role == adapter.RoleUser || msg.Role == adapter.RoleAssistant {
+			return true
+		}
+	}
+	return false
+}
+
 // Load reads a stored session by id (filename match) or name (Name
 // field match). The legacy "last" keyword shortcut was retired
 // alongside the /resume slash command — the /sessions picker (and the
@@ -95,9 +263,33 @@ func New(model, cwd string) (*Session, error) {
 // path for "load the most recent" now, with the picker defaulting
 // the cursor to the newest entry.
 func Load(id string) (*Session, error) {
+	// An empty ref must never resolve. loadByName matches on s.Name == name,
+	// and every session that was never renamed has Name == "" — so an empty
+	// id would match the first unnamed session in readdir order and return
+	// someone else's conversation with no error. Callers reach here with ""
+	// whenever a picker row carries no id (see SnapshotMarker).
+	if strings.TrimSpace(id) == "" {
+		return nil, errors.New("session load: empty session id")
+	}
+	// A session id is a plain filename stem — never a path. Refusing any
+	// separator here closes the loadByID/loadSnapshot read primitive,
+	// which used filepath.Join(dir, id+".json") and would have resolved
+	// "../foo" up out of the sessions directory (filepath.Join Clean's
+	// ".." forward, it doesn't neutralize it). The picker only ever
+	// offers ids it read off disk, but --resume and oneshot take an
+	// arbitrary string, so the guard belongs here, not at the callers.
+	if strings.ContainsAny(id, `/\`) {
+		return nil, fmt.Errorf("session load: id must not contain a path separator: %q", id)
+	}
 	dir, err := sessionsDir()
 	if err != nil {
 		return nil, err
+	}
+	// An archived snapshot restores into a fresh session rather than
+	// resolving to itself — see loadSnapshot on why it must never be
+	// opened in place.
+	if IsSnapshotID(id) {
+		return loadSnapshot(dir, id)
 	}
 	if s, err := loadByID(dir, id); err == nil {
 		return s, nil
@@ -108,8 +300,33 @@ func Load(id string) (*Session, error) {
 	return nil, fmt.Errorf("session load: no session with id or name %q", id)
 }
 
-func loadByID(dir, id string) (*Session, error) {
+// safePath builds <dir>/<id>.json and asserts the resolved path stays
+// inside dir. id reaches here from user-controlled sources (--resume,
+// oneshot, picker text input), and filepath.Join Clean's ".." forward
+// rather than stripping it — so without this guard a payload like
+// "../../.ssh/config" would resolve to ~/.ssh/config.json and, if it
+// was valid JSON, decode into a Session. The separator check at Load
+// is the primary defense; this is belt-and-braces for any future caller
+// that reaches loadByID or loadSnapshot without going through Load.
+func safePath(dir, id string) (string, error) {
 	p := filepath.Join(dir, id+".json")
+	// filepath.Rel expresses the resolved path as seen from dir; a leading
+	// ".." path ELEMENT is the unambiguous "escaped the directory" signal.
+	// Compare against the element, not the prefix: a bare HasPrefix("..")
+	// also rejects legitimate names that merely start with dots, e.g. an id
+	// of "..foo" resolves to "<dir>/..foo.json" and never leaves dir.
+	rel, err := filepath.Rel(dir, p)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("session path escapes sessions directory: %q", id)
+	}
+	return p, nil
+}
+
+func loadByID(dir, id string) (*Session, error) {
+	p, err := safePath(dir, id)
+	if err != nil {
+		return nil, err
+	}
 	b, err := os.ReadFile(p)
 	if err != nil {
 		return nil, err
@@ -123,12 +340,17 @@ func loadByID(dir, id string) (*Session, error) {
 }
 
 func loadByName(dir, name string) (*Session, error) {
+	// Defense in depth alongside the Load guard: an empty name matches every
+	// unnamed session, so refuse it here too rather than relying on callers.
+	if name == "" {
+		return nil, errors.New("not found by name")
+	}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, err
 	}
 	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
+		if e.IsDir() || !isSessionFile(e.Name()) {
 			continue
 		}
 		p := filepath.Join(dir, e.Name())
@@ -171,7 +393,7 @@ func LatestInCwd(cwd string) (*Session, error) {
 	}
 	var matches []Session
 	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
+		if e.IsDir() || !isSessionFile(e.Name()) {
 			continue
 		}
 		p := filepath.Join(dir, e.Name())
@@ -184,6 +406,12 @@ func LatestInCwd(cwd string) (*Session, error) {
 			continue
 		}
 		if s.Cwd != cwd {
+			continue
+		}
+		// Skip system-only shells: `--continue` means "pick up where I left
+		// off", and resuming a session with no exchange drops the user into
+		// an empty transcript that looks like their history vanished.
+		if !s.HasExchange() {
 			continue
 		}
 		s.path = p
@@ -208,9 +436,29 @@ func LatestInCwd(cwd string) (*Session, error) {
 // error without string matching.
 var ErrNoSessionInCwd = errors.New("no saved session in this directory")
 
-// List returns every saved session's metadata, newest first. Doesn't load the
-// full message log to keep this cheap for the /sessions slash command.
+// ListOptions tunes what List returns.
+//
+// IncludeArchived adds one row per snapshotted session for its richest
+// pre-compaction archive. It is OPT-IN because an archived row is not an
+// ordinary session: its id resolves through loadSnapshot, so Load returns a
+// freshly-minted session rather than the row you asked for. Callers that
+// treat List output as "the set of live sessions" — recall.Backfill keying
+// its index and prune by id, `yottacode sessions list` feeding scripts —
+// break subtly when handed archives. Only the /sessions picker, which knows
+// to render and resume them differently, asks for them.
+type ListOptions struct {
+	IncludeArchived bool
+}
+
+// List returns every saved live session's metadata, newest first. Doesn't
+// load the full message log to keep this cheap for the /sessions slash
+// command. Archived snapshots are excluded — see ListWith.
 func List() ([]SessionInfo, error) {
+	return ListWith(ListOptions{})
+}
+
+// ListWith is List with explicit options.
+func ListWith(opts ListOptions) ([]SessionInfo, error) {
 	dir, err := sessionsDir()
 	if err != nil {
 		return nil, err
@@ -220,8 +468,9 @@ func List() ([]SessionInfo, error) {
 		return nil, err
 	}
 	var out []SessionInfo
+	models := map[string]string{} // session id -> model, for labelling archives
 	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
+		if e.IsDir() || !isSessionFile(e.Name()) {
 			continue
 		}
 		p := filepath.Join(dir, e.Name())
@@ -233,6 +482,13 @@ func List() ([]SessionInfo, error) {
 		if err := json.Unmarshal(b, &s); err != nil {
 			continue
 		}
+		models[s.ID] = s.Model
+		// Shells have nothing to resume, so they'd be dead entries in the
+		// /sessions picker and in `sessions list`. Newer builds no longer
+		// write them, but a store built by older builds still holds them.
+		if !s.HasExchange() {
+			continue
+		}
 		out = append(out, SessionInfo{
 			ID:       s.ID,
 			Name:     s.Name,
@@ -240,10 +496,67 @@ func List() ([]SessionInfo, error) {
 			Created:  s.Created,
 			Messages: len(s.Messages),
 			Worktree: s.Worktree,
+			Summary:  s.Summary(),
 		})
+	}
+	if opts.IncludeArchived {
+		out = append(out, listSnapshots(dir, entries, models)...)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID > out[j].ID })
 	return out, nil
+}
+
+// listSnapshots returns one row per snapshotted session: the archive that
+// holds the MOST history for that parent.
+//
+// Compaction rewrites the live session down to a summary, so for most
+// snapshotted sessions the archive is the only surviving copy of the
+// pre-compaction detail — measured across a real store, 14 of 21 snapshots
+// held more messages than the session they came from, several by hundreds.
+// That's why these are worth surfacing at all.
+//
+// One row per parent, not one per file: compaction fires repeatedly, so
+// sessions accumulate 2-3 archives that are prefixes of each other. Listing
+// them all would fill the picker with near-duplicates of one conversation
+// and crowd out distinct sessions.
+func listSnapshots(dir string, entries []os.DirEntry, models map[string]string) []SessionInfo {
+	best := map[string]SessionInfo{}
+	for _, e := range entries {
+		if e.IsDir() || !isSnapshotFile(e.Name()) {
+			continue
+		}
+		b, err := os.ReadFile(filepath.Join(dir, e.Name()))
+		if err != nil {
+			continue
+		}
+		var payload snapshotPayload
+		if err := json.Unmarshal(b, &payload); err != nil {
+			continue
+		}
+		id := strings.TrimSuffix(e.Name(), ".json")
+		parent := snapshotParentID(id)
+		probe := Session{Messages: payload.Messages}
+		if !probe.HasExchange() {
+			continue
+		}
+		if cur, ok := best[parent]; ok && cur.Messages >= len(payload.Messages) {
+			continue
+		}
+		best[parent] = SessionInfo{
+			ID:         id,
+			Model:      models[parent],
+			Created:    payload.Captured,
+			Messages:   len(payload.Messages),
+			Summary:    probe.Summary(),
+			Archived:   true,
+			ArchivedOf: parent,
+		}
+	}
+	out := make([]SessionInfo, 0, len(best))
+	for _, in := range best {
+		out = append(out, in)
+	}
+	return out
 }
 
 // SessionInfo is a metadata-only view returned by List.
@@ -257,6 +570,16 @@ type SessionInfo struct {
 	// empty for the main checkout. Surfaced in `yottacode sessions list`
 	// output so users can tell which sessions belong to which worktree.
 	Worktree string
+	// Summary is the one-line gist from the session's first real user
+	// prompt — the "what was this one about?" that an id and a timestamp
+	// can't answer. See Session.Summary. Empty when nothing usable.
+	Summary string
+	// Archived marks a pre-compaction snapshot rather than a live session.
+	// Loading one restores its history into a NEW session; the archive
+	// itself is never written to. ArchivedOf names the session it was
+	// captured from (which may no longer exist).
+	Archived   bool
+	ArchivedOf string
 }
 
 // AddUsage records the per-turn usage that just landed on an
@@ -362,7 +685,7 @@ func UsageSince(t time.Time) ([]SessionUsageSummary, error) {
 	}
 	var out []SessionUsageSummary
 	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
+		if e.IsDir() || !isSessionFile(e.Name()) {
 			continue
 		}
 		p := filepath.Join(dir, e.Name())
