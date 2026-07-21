@@ -44,16 +44,6 @@ account      openai (pay-per-use API key)
              billing → platform.openai.com/usage
 ```
 
-On a ChatGPT-subscription (`openai-auth`) session the account block
-instead reports the Codex quota windows, refreshed off every response:
-
-```
-account      openai-auth (chatgpt prolite plan)
-             5h window    12% used · resets in 3h 41m
-             weekly       97% used · resets in 6d 12h
-             ✓ no per-request cost — subscription
-```
-
 The block renders in an inline overlay below the cmdline (the same
 surface the cheatsheet and the pickers use), not in chat scrollback —
 token tallies are transient inspection, not part of the conversation,
@@ -82,27 +72,6 @@ block: remaining/limit token and request headroom for the current
 window, with a reset countdown. The snapshot is in-memory and reflects
 the most recent response, so the block only appears after the first
 turn of a session and disappears on restart until the next turn.
-
-ChatGPT-subscription sessions (`openai-auth`) get the same treatment
-through a different header family. The Codex backend enforces **two**
-quota windows concurrently — a short rolling one and a weekly one — and
-reports each as `x-codex-{primary,secondary}-*`
-(`used-percent`, `window-minutes`, `reset-at` / `reset-after-seconds`).
-The adapter snapshots both off every response in `runOnce`, so `/usage`
-shows standing headroom rather than a post-mortem of the last 429.
-
-Two rules keep that block honest. Each window is **labelled from its own
-`window-minutes`**, never a hardcoded guess — otherwise a user bounced off
-the short window would read the weekly number and conclude they were
-locked out for days. And a window whose reset instant has **already
-passed is dropped**, not shown as `resets in now`: the quota it described
-has since refilled, so displaying it would assert a limit that no longer
-applies.
-
-Only the `primary` family is confirmed against a live backend;
-`secondary` is inferred from the same shape. If the real names differ,
-parsing simply finds nothing and the verbatim header dump on the next 429
-surfaces the actual fields.
 
 This is the one quota signal the providers *do* return on the
 inference key. The per-account **cost / spend** APIs (OpenAI's
@@ -135,7 +104,7 @@ have) plus a link to where the real dollars live.
 | Provider | What `/usage` shows |
 |---|---|
 | `anthropic`, `openai`, `gemini`, `xai`, `openai-compatible` (OpenRouter, Groq, …) | Per-model token counts + billing-dashboard link |
-| `openai-auth` (ChatGPT subscription) | Per-model token counts + plan (best-effort `/backend-api/me` probe) + both Codex quota windows, percent-used and reset, captured live off every response |
+| `openai-auth` (ChatGPT subscription) | Per-model token counts + plan/reset (best-effort `/backend-api/me` probe, 429-memo fallback) |
 | `copilot` (GitHub Copilot subscription) | Per-model token counts; no public quota endpoint |
 | `ollama` (local) | Token counts when the runtime reports them; no billing dashboard |
 | `openai-compatible` → NVIDIA NIM (`integrate.api.nvidia.com`) | Token counts only — local / credit-based |
