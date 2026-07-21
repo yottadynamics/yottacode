@@ -11,7 +11,7 @@ Type `/` in the TUI to open the slash-command palette. The palette filters as yo
 | `/clear` | — | Save the current session and start a fresh one |
 | `/permissions` | — | Print shared and local permission file paths |
 | `/system` | — | Show the active system prompt, including injected memory |
-| `/usage` | — | Show per-session token totals, today's rolling total, live rate-limit headroom, and a per-provider billing-dashboard link. No dollar estimate — token counts are exact, but cost would need an unmaintainable price table. See [cost.md](cost.md). |
+| `/usage` | — | Show per-session token totals, today's rolling total, live rate-limit headroom (including both Codex quota windows on a ChatGPT subscription), and a per-provider billing-dashboard link. No dollar estimate — token counts are exact, but cost would need an unmaintainable price table. See [cost.md](cost.md). |
 | `/sessions` | `[id\|name]` | Open the sessions picker or resume a known session directly |
 | `/model` | `<name>` | Switch the active model for this session |
 | `/provider` | — | Show resolved provider, API style, built-ins, capabilities, and diagnostics |

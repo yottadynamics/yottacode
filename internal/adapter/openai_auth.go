@@ -182,6 +182,12 @@ func (a *openAIAuthAdapter) runOnce(ctx context.Context, messages []Message, too
 	}
 	defer resp.Body.Close()
 
+	// Snapshot quota headers off every response, success included — this
+	// is the only place they're reachable (consumeSSE takes an io.Reader,
+	// not the response). Doing it here is what lets /usage report standing
+	// headroom instead of only what the last 429 happened to say.
+	recordOpenAIAuthRateLimit(resp.Header, nil)
+
 	if resp.StatusCode != http.StatusOK {
 		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		msg := errorDetailFromBytes(raw)
@@ -460,15 +466,43 @@ func formatRateLimitHint(h http.Header, body []byte) string {
 	return ""
 }
 
-// OpenAIAuthRateLimit captures the last 429 the openai-auth adapter
-// saw. Populated as a side effect of formatRateLimitHint parsing and
-// exposed via LastOpenAIAuthRateLimit() so the /usage command can
-// surface plan + reset metadata for the subscription-based provider
-// (no quota query endpoint exists; the 429 is the only public signal).
+// OpenAIAuthWindow is one Codex quota window. The backend enforces two
+// concurrently — a short rolling window and a weekly one — and reports
+// each as its own x-codex-<family>-* header family.
+//
+// The Has flags distinguish "header absent" from "header present and
+// zero" so the /usage renderer can omit a window entirely rather than
+// claim a misleading 0% used or a reset that never was.
+type OpenAIAuthWindow struct {
+	Has         bool
+	HasPercent  bool
+	UsedPercent float64
+	// WindowMinutes is the window's width as reported by the backend
+	// (300 for the 5-hour window, 10080 for the weekly one). Zero when
+	// the header is absent, in which case the window renders unlabelled
+	// rather than mislabelled.
+	WindowMinutes int
+	ResetsAt      time.Time
+}
+
+// OpenAIAuthRateLimit captures the quota state the openai-auth adapter
+// last observed. It is refreshed off the headers of EVERY response —
+// not just 429s — so /usage reports standing headroom rather than a
+// post-mortem of the last time we got blocked. Exposed via
+// LastOpenAIAuthRateLimit() for the /usage command; no quota query
+// endpoint exists for subscription accounts, so response headers are
+// the only public signal.
 type OpenAIAuthRateLimit struct {
-	Observed time.Time
-	PlanType string
-	ResetsAt time.Time
+	Observed  time.Time
+	PlanType  string
+	Primary   OpenAIAuthWindow
+	Secondary OpenAIAuthWindow
+}
+
+// HasWindow reports whether either family carried usable data, which is
+// what the renderer keys on to decide the block is worth printing.
+func (r *OpenAIAuthRateLimit) HasWindow() bool {
+	return r != nil && (r.Primary.Has || r.Secondary.Has)
 }
 
 var (
@@ -663,10 +697,14 @@ func ProbeOpenAIAuthAccount(ctx context.Context) *OpenAIAuthAccount {
 	return &c
 }
 
-// recordOpenAIAuthRateLimit parses plan + reset metadata out of a 429
-// response and stashes it for the /usage command. Best-effort: a 429
-// without a parseable shape clears nothing (the previous memo, if any,
-// stays — better than dropping the only signal we have).
+// recordOpenAIAuthRateLimit parses plan + quota metadata off a response
+// and stashes it for the /usage command. Called on EVERY response, so
+// `body` is nil on the success path — the header families carry the
+// same facts and are the only source available there.
+//
+// Best-effort: a response without a parseable shape clears nothing (the
+// previous memo, if any, stays — better than dropping the only signal we
+// have to an unrelated endpoint that emits no quota headers).
 func recordOpenAIAuthRateLimit(h http.Header, body []byte) {
 	var p struct {
 		Error struct {
@@ -675,9 +713,12 @@ func recordOpenAIAuthRateLimit(h http.Header, body []byte) {
 			ResetsInSeconds float64 `json:"resets_in_seconds"`
 		} `json:"error"`
 	}
-	_ = json.Unmarshal(body, &p)
+	if len(body) > 0 {
+		_ = json.Unmarshal(body, &p)
+	}
 
-	memo := &OpenAIAuthRateLimit{Observed: time.Now()}
+	now := time.Now()
+	memo := &OpenAIAuthRateLimit{Observed: now}
 
 	switch plan := strings.TrimSpace(p.Error.PlanType); {
 	case plan != "":
@@ -686,32 +727,94 @@ func recordOpenAIAuthRateLimit(h http.Header, body []byte) {
 		memo.PlanType = strings.TrimSpace(h.Get("x-codex-plan-type"))
 	}
 
-	switch {
-	case p.Error.ResetsAt > 0:
-		memo.ResetsAt = time.Unix(p.Error.ResetsAt, 0)
-	case p.Error.ResetsInSeconds > 0:
-		memo.ResetsAt = time.Now().Add(time.Duration(p.Error.ResetsInSeconds * float64(time.Second)))
-	default:
-		if v := strings.TrimSpace(h.Get("x-codex-primary-reset-at")); v != "" {
-			if ts, err := strconv.ParseInt(v, 10, 64); err == nil && ts > 0 {
-				memo.ResetsAt = time.Unix(ts, 0)
-			}
-		}
-		if memo.ResetsAt.IsZero() {
-			if v := strings.TrimSpace(h.Get("x-codex-primary-reset-after-seconds")); v != "" {
-				if secs, err := strconv.ParseFloat(v, 64); err == nil && secs > 0 {
-					memo.ResetsAt = time.Now().Add(time.Duration(secs * float64(time.Second)))
-				}
-			}
+	memo.Primary = parseCodexWindow(h, "primary", now)
+	memo.Secondary = parseCodexWindow(h, "secondary", now)
+
+	// The 429 body names a reset without saying which window tripped.
+	// Attribute it to primary only when the headers left that window
+	// blank, so a body value never overwrites a header we did parse.
+	if !memo.Primary.Has {
+		switch {
+		case p.Error.ResetsAt > 0:
+			memo.Primary.Has = true
+			memo.Primary.ResetsAt = time.Unix(p.Error.ResetsAt, 0)
+		case p.Error.ResetsInSeconds > 0:
+			memo.Primary.Has = true
+			memo.Primary.ResetsAt = now.Add(time.Duration(p.Error.ResetsInSeconds * float64(time.Second)))
 		}
 	}
 
-	if memo.PlanType == "" && memo.ResetsAt.IsZero() {
+	if memo.PlanType == "" && !memo.HasWindow() {
 		return
 	}
 	openAIAuthRateLimitMu.Lock()
 	openAIAuthRateLimit = memo
 	openAIAuthRateLimitMu.Unlock()
+}
+
+// parseCodexWindow reads one x-codex-<family>-* header family into a
+// window. Mirrors parseOpenAIRateFamily / parseAnthropicRateFamily in
+// ratelimit.go, which do the same job for the pay-per-use providers.
+//
+// `reset-after-seconds` is relative, so it is converted to an absolute
+// instant at capture time — that way the countdown /usage renders stays
+// correct however long after the response it is read.
+//
+// Only the "primary" family is confirmed against a live backend (see the
+// probe transcript on formatRateLimitHint). "secondary" is inferred from
+// the same shape; if the real names differ, this simply finds nothing and
+// the verbatim header dump in formatRateLimitHint still surfaces them on
+// the next 429.
+func parseCodexWindow(h http.Header, family string, now time.Time) OpenAIAuthWindow {
+	var w OpenAIAuthWindow
+	prefix := "x-codex-" + family + "-"
+
+	if v := strings.TrimSpace(h.Get(prefix + "used-percent")); v != "" {
+		if pct, err := strconv.ParseFloat(v, 64); err == nil && pct >= 0 {
+			w.Has, w.HasPercent, w.UsedPercent = true, true, pct
+		}
+	}
+	if v := strings.TrimSpace(h.Get(prefix + "window-minutes")); v != "" {
+		if mins, err := strconv.Atoi(v); err == nil && mins > 0 {
+			w.Has, w.WindowMinutes = true, mins
+		}
+	}
+	if v := strings.TrimSpace(h.Get(prefix + "reset-at")); v != "" {
+		if ts, err := strconv.ParseInt(v, 10, 64); err == nil && ts > 0 {
+			w.Has, w.ResetsAt = true, time.Unix(ts, 0)
+		}
+	}
+	if w.ResetsAt.IsZero() {
+		if v := strings.TrimSpace(h.Get(prefix + "reset-after-seconds")); v != "" {
+			if secs, err := strconv.ParseFloat(v, 64); err == nil && secs > 0 {
+				w.Has, w.ResetsAt = true, now.Add(time.Duration(secs*float64(time.Second)))
+			}
+		}
+	}
+	return w
+}
+
+// FormatQuotaWindowLabel names a quota window from its width in minutes.
+// Exported so the /usage renderer can label rows without duplicating the
+// backend's window vocabulary. Empty for an unknown width — the renderer
+// falls back to a generic label rather than inventing a duration.
+func FormatQuotaWindowLabel(minutes int) string {
+	switch {
+	case minutes <= 0:
+		return ""
+	case minutes%(60*24*7) == 0 && minutes/(60*24*7) == 1:
+		return "weekly"
+	case minutes%(60*24) == 0:
+		days := minutes / (60 * 24)
+		if days == 1 {
+			return "daily"
+		}
+		return fmt.Sprintf("%dd window", days)
+	case minutes%60 == 0:
+		return fmt.Sprintf("%dh window", minutes/60)
+	default:
+		return fmt.Sprintf("%dm window", minutes)
+	}
 }
 
 // humanizeDuration renders a positive duration in the most readable
