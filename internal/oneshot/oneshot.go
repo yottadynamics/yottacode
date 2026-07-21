@@ -260,8 +260,10 @@ func Run(ctx context.Context, opts cli.ChatOptions, prompt string) error {
 	// worktree-child registry via RegisterCoreCwdTools. Oneshot's extras
 	// (worktree-admin, memory, git escape-hatch, todo, plan) stay inline.
 	agent.RegisterCoreCwdTools(reg, cwdRef, agent.CoreToolDeps{
-		WriteOpts: writeOpts,
-		DenyReads: denyReads,
+		WriteOpts:  writeOpts,
+		DenyReads:  denyReads,
+		EnableLSP:  expSet.IsEnabled(experimental.LSPCodeIntelligence),
+		LSPServers: fileCfg.LSP.Servers,
 	})
 	// Git worktree tools. enter_worktree / exit_worktree always prompt
 	// (auto-mode safety floor); see IsAutoModeSafetyFloor.

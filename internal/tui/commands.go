@@ -84,6 +84,10 @@ func init() {
 		{Name: "init", Help: "draft .yottacode/YOTTACODE.md from the current repo", Run: cmdInit},
 		{Name: "permissions", Help: "show where permissions are configured", Run: cmdPermissions, PreservesTurn: true},
 		{Name: "theme", Help: "change the theme", Run: cmdThemes, PreservesTurn: true},
+		{Name: "lsp", Args: "[path]", Help: "show LSP language detection, server status, and install hints", Run: cmdLSP, PreservesTurn: true},
+		{Name: "health", Help: "show repo, provider, memory, LSP, MCP, and experimental state", Run: cmdHealth, PreservesTurn: true},
+		{Name: "handoff", Help: "print a concise session handoff note template", Run: cmdHandoff, PreservesTurn: true},
+		{Name: "config-doctor", Help: "validate local config dependencies: LSP, MCP, and memory embeddings", Run: cmdConfigDoctor, PreservesTurn: true},
 		{Name: "loop", Args: "<dur> [Nx] <prompt>", Help: "repeat on interval; stop <id> or stop all", Run: cmdLoop, PreservesTurn: true},
 
 		// Git workflow.

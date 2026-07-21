@@ -599,6 +599,45 @@ The two are orthogonal: `enabled`/`candidates` control failover across
 providers; `mode`/`fast_model`/`smart_model` control task routing. You
 can set either, both, or neither.
 
+## LSP code intelligence
+
+The experimental `lsp_code_intelligence` feature adds read-only LSP-backed code
+navigation tools for Go, TypeScript/JavaScript, Python, and Rust. yottacode
+detects supported files in the workspace and tells the user exactly which server
+binary is missing, but it does **not** install language servers automatically.
+Enable it explicitly:
+
+```toml
+[experimental]
+lsp_code_intelligence = true
+```
+
+Then install the servers for the languages you use:
+
+- Go: `go install golang.org/x/tools/gopls@latest` and put `$(go env GOPATH)/bin` on `PATH`
+- TypeScript/JavaScript: `npm install -g typescript typescript-language-server`
+- Python: `npm install -g pyright`
+- Rust: install `rust-analyzer` through rustup, your package manager, or upstream docs
+
+Use the `lsp_status` tool in-session to see detected languages, installed/missing
+servers, and the same install hints. See [tools.md](tools.md#lsp_status) for the
+full tool reference. Use `/lsp` for the same status directly from the TUI, and
+customize commands when needed:
+
+```toml
+[lsp.servers]
+go = ["/nix/store/.../bin/gopls"]
+typescript = ["typescript-language-server", "--stdio"]
+python = ["pyright-langserver", "--stdio"]
+rust = ["rust-analyzer"]
+```
+
+Additional workspace readiness commands:
+
+- `/health` shows git/provider/memory/LSP/MCP/experimental state.
+- `/handoff` prints a concise session-state handoff note template.
+- `/config-doctor` validates local dependencies such as LSP/MCP commands and memory embeddings.
+
 ## Runtime Reconfiguration
 
 The TUI supports changing the active session configuration without restarting:

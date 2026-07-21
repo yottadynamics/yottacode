@@ -249,6 +249,8 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 		WriteOpts:      writeOpts,
 		DenyReads:      denyReads,
 		SupportsImages: ad.Profile().SupportsImages,
+		EnableLSP:      expSet.IsEnabled(experimental.LSPCodeIntelligence),
+		LSPServers:     fileCfg.LSP.Servers,
 	})
 	// Git worktree tools. Layer 1 (enter/exit/status) are the agent-
 	// friendly entry points; Layer 2 (the git_worktree_* wrappers) sit
@@ -300,6 +302,7 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 	// reviews the branch-vs-base diff, or the uncommitted working
 	// tree when there are no commits ahead.
 	reg.Register(&agent.CodeReviewContextTool{Cwd: cwdRef})
+	reg.Register(&agent.PRReadinessContextTool{Cwd: cwdRef})
 	// gh_pr_read is the lightweight metadata-only sibling — one
 	// API call vs. review_context's three. The model picks between
 	// them based on whether it needs the diff + checks (review) or

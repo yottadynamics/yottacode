@@ -1,6 +1,6 @@
 # Built-in tools
 
-Fifty tools ship in `internal/agent` (forty-seven always-on plus `todo_write`
+Fifty-four tools ship in `internal/agent` (forty-seven always-on, four experimental LSP tools, plus `todo_write`
 and the `enter_plan_mode` / `exit_plan_mode` pair). The model sees their JSON-schema parameters via the
 OpenAI tools API; the TUI renders each invocation as a bordered card with a
 verb-style header (see [How tool calls render in the TUI](#how-tool-calls-render-in-the-tui)).
@@ -56,6 +56,15 @@ In addition to the built-ins, **MCP tools** register dynamically when an `[[mcp_
 | [`list_dir`](#list_dir) | none | One-line-per-entry directory listing |
 | [`glob`](#glob) | none | Doublestar pattern match |
 | [`grep`](#grep) | none | Ripgrep (or GNU grep fallback) |
+| [`lsp_status`](#lsp_status) | none | Detect supported workspace languages and report missing LSP servers with install hints |
+| [`lsp_symbols`](#lsp_symbols) | none | Search workspace symbols through an installed language server |
+| [`lsp_definition`](#lsp_definition) | none | Find definition locations for a source position through an installed language server |
+| [`lsp_references`](#lsp_references) | none | Find reference locations for a source position through an installed language server |
+| [`lsp_diagnostics`](#lsp_diagnostics) | none | Return compile/type diagnostics from an installed language server |
+| [`lsp_hover`](#lsp_hover) | none | Show hover/type/docs information at a source position |
+| [`lsp_code_actions`](#lsp_code_actions) | none | List quick fixes/refactors for a range without applying them |
+| [`lsp_call_hierarchy`](#lsp_call_hierarchy) | none | Show incoming/outgoing calls for a source position |
+| [`pr_readiness_context`](#pr_readiness_context) | none | Gather a local PR readiness snapshot before opening or updating a PR |
 | [`fetch_url`](#fetch_url) | none | Fetch a single HTTP(S) URL and return capped textual content |
 | [`run_bash`](#run_bash) | required | Shell command via `/bin/sh -c` |
 | [`git`](#git) | varies | Unified git invocation; read-only auto-runs, mutations prompt |
@@ -119,6 +128,10 @@ tool-call log; the TUI renames it for readability. Mapping:
 | `list_dir` | `List(<path>)` |
 | `glob` | `Glob(<pattern>)` or `Glob(<pattern> in <root>)` |
 | `grep` | `Grep("<pattern>" in <path>)` |
+| `lsp_status` | `LSP(status <path>)` |
+| `lsp_symbols` | `LSP(symbols "<query>")` or `LSP(symbols "<query>" in <path>)` |
+| `lsp_definition` | `LSP(definition <path>:<line>:<character>)` |
+| `lsp_references` | `LSP(references <path>:<line>:<character>)` |
 | `fetch_url` | `Fetch(<url>)` |
 | `run_tests` | `Test(<command>)` |
 | `rollback` | `Rollback(<target>)` |
@@ -832,6 +845,133 @@ Output is capped at 256 KiB. Exit code 1 (no matches) is treated as
 "no results", not as an error.
 
 No approval.
+
+## lsp_status
+
+Detect supported source languages in the workspace and report whether the
+matching language server command is installed on `PATH`. This tool is available
+only when `lsp_code_intelligence` is enabled. It never installs anything; when a
+server is missing it includes a concise install hint.
+
+Supported language servers:
+
+| Language | Server command | Install hint |
+|---|---|---|
+| Go | `gopls` | `go install golang.org/x/tools/gopls@latest` and ensure `$(go env GOPATH)/bin` is on `PATH` |
+| TypeScript/JavaScript | `typescript-language-server --stdio` | `npm install -g typescript typescript-language-server` |
+| Python | `pyright-langserver --stdio` | `npm install -g pyright` |
+| Rust | `rust-analyzer` | install through rustup, your package manager, or rust-analyzer's upstream docs |
+
+| Param | Type | Default | Notes |
+|---|---|---|---|
+| `path` | string | `.` | Workspace path to scan |
+
+No approval.
+
+## lsp_symbols
+
+Search workspace symbols through an installed language server. If `path` points
+to a source file, its extension selects the language. If `path` is omitted or a
+directory, yottacode scans the workspace and picks the first detected language
+with an available server. Missing servers return `unavailable: ...` plus the
+same install hint as `lsp_status`.
+
+| Param | Type | Default | Notes |
+|---|---|---|---|
+| `query` | string | — | Required symbol query |
+| `path` | string | `.` | File or workspace path used for language detection |
+| `max_results` | int | `50` | Clamped to `500` |
+
+No approval.
+
+## lsp_definition
+
+Find definition locations for a source position through the matching language
+server. `line` and `character` are zero-based LSP positions; returned locations
+are one-based `path:line:column` rows for terminal readability.
+
+| Param | Type | Default | Notes |
+|---|---|---|---|
+| `path` | string | — | Required source file |
+| `line` | int | — | Zero-based line |
+| `character` | int | — | Zero-based UTF-16 character offset |
+
+No approval.
+
+## lsp_references
+
+Find reference locations for a source position through the matching language
+server. Like `lsp_definition`, inputs are zero-based and output locations are
+one-based.
+
+| Param | Type | Default | Notes |
+|---|---|---|---|
+| `path` | string | — | Required source file |
+| `line` | int | — | Zero-based line |
+| `character` | int | — | Zero-based UTF-16 character offset |
+| `include_declaration` | bool | `false` | Include the declaration in references |
+| `max_results` | int | `50` | Clamped to `500` |
+
+No approval.
+
+## lsp_diagnostics
+
+Return compile/type diagnostics for a source file by opening it in the matching
+language server and reading `publishDiagnostics`. Missing servers return an
+`unavailable` result with install hints.
+
+| Param | Type | Default | Notes |
+|---|---|---|---|
+| `path` | string | — | Required source file |
+
+No approval.
+
+## lsp_hover
+
+Show hover/type/documentation information for a source position.
+
+| Param | Type | Default | Notes |
+|---|---|---|---|
+| `path` | string | — | Required source file |
+| `line` | int | — | Zero-based line |
+| `character` | int | — | Zero-based UTF-16 character offset |
+
+No approval.
+
+## lsp_code_actions
+
+List language-server code actions and quick fixes for a range without applying
+them. This is intentionally read-only; an apply variant would need approval.
+
+| Param | Type | Default | Notes |
+|---|---|---|---|
+| `path` | string | — | Required source file |
+| `line` | int | — | Zero-based start line |
+| `character` | int | — | Zero-based start character |
+| `end_line` | int | `line` | Zero-based end line |
+| `end_character` | int | `character` | Zero-based end character |
+
+No approval.
+
+## lsp_call_hierarchy
+
+Show incoming and outgoing call hierarchy entries for a source position.
+
+| Param | Type | Default | Notes |
+|---|---|---|---|
+| `path` | string | — | Required source file |
+| `line` | int | — | Zero-based line |
+| `character` | int | — | Zero-based UTF-16 character offset |
+
+No approval.
+
+## pr_readiness_context
+
+Gather a cheap local PR-readiness snapshot: branch, dirty state, changed files,
+and whether docs/tests were touched. It is read-only and does not contact
+GitHub.
+
+No parameters. No approval.
 
 ## fetch_url
 
