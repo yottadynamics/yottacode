@@ -377,11 +377,7 @@ func joinAssistantContent(a, b string) string {
 // contextwindow uses, inlined to avoid a per-call slice allocation when
 // chooseCompactionTailStart walks a long history.
 func estimateMsgTokens(m adapter.Message) int {
-	chars := len(m.Content)
-	for _, tc := range m.ToolCalls {
-		chars += len(tc.Name) + len(tc.ArgsJSON)
-	}
-	return (chars + 3) / 4
+	return contextwindow.EstimateMessage(m)
 }
 
 // summarizeForCompaction renders the dropped middle to a text body

@@ -36,6 +36,13 @@ func seedSessions(t *testing.T) []*session.Session {
 	if err != nil {
 		t.Fatalf("New b: %v", err)
 	}
+	// Needs a real exchange like a: `sessions list` is sourced from
+	// session.List, which skips system-only shells because there's
+	// nothing in them to resume.
+	b.Messages = []adapter.Message{
+		{Role: adapter.RoleUser, Content: "hello from beta"},
+		{Role: adapter.RoleAssistant, Content: "hi beta"},
+	}
 	if err := b.Save(); err != nil {
 		t.Fatalf("Save b: %v", err)
 	}

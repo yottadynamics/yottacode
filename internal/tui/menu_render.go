@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/charmbracelet/lipgloss"
 )
@@ -70,8 +71,8 @@ func renderMenuHeader(title, description string) string {
 
 // renderMenuItem returns one formatted picker row. The layout:
 //
-//	  ❯ claude-sonnet-4-6        ✓ balanced · ctx=200k
-//	    claude-haiku-4-5            cheap · ctx=200k
+//	❯ claude-sonnet-4-6        ✓ balanced · ctx=200k
+//	  claude-haiku-4-5            cheap · ctx=200k
 //
 // Cursor and check markers reserve their column whether or not
 // they're present, so unchecked rows align with checked ones and
@@ -118,12 +119,18 @@ func renderMenuItem(o menuItemOpts) string {
 // budget (e.g. "nvidia/llama-3.1-nemotron-safety-guard-8b-v3" is
 // 46 chars and would otherwise push the description column out of
 // alignment).
+// Counts runes, not bytes: labels and session gists are arbitrary user text,
+// and slicing mid-rune emits invalid UTF-8 that renders as garbage.
 func truncateLabel(s string, max int) string {
 	if max < 1 {
 		return ""
 	}
-	if len(s) <= max {
+	if runeLen(s) <= max {
 		return s
 	}
-	return s[:max-1] + "…"
+	return string([]rune(s)[:max-1]) + "…"
 }
+
+// runeLen is the display-width proxy used by the menu column math —
+// character count rather than byte count.
+func runeLen(s string) int { return utf8.RuneCountInString(s) }

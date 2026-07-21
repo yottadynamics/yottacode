@@ -59,7 +59,7 @@ func TestLabelRow_NoColonRightPaddedLabel(t *testing.T) {
 // `/provider for details` suffixes — Phase 1 dropped them. Catches
 // regressions where someone re-adds them.
 func TestRenderStartupBox_DropsInlineCommandHints(t *testing.T) {
-	got := renderStartupBox("0.1.0", "abc1234", false, "gpt-4o", "/repo", "main", "USER", adapter.ProviderProfile{
+	got := renderStartupBox("0.1.0", "abc1234", false, "gpt-4o", "/repo", "20260721-000000.000000", "main", "USER", adapter.ProviderProfile{
 		Provider: adapter.ProviderOpenAI,
 	}, "", 0)
 	plain := stripANSI(got)
@@ -80,7 +80,7 @@ func TestRenderStartupBox_DropsInlineCommandHints(t *testing.T) {
 func TestRenderStartupBox_WrapsToTerminalWidth(t *testing.T) {
 	longTip := "`/sessions` opens the picker (Load / Resume / Rename / Export); Load shows recent sessions, Resume takes an id or name directly."
 	const termWidth = 80
-	got := renderStartupBox("0.1.0", "abc1234", false, "gpt-4o", "/repo", "main", "USER", adapter.ProviderProfile{
+	got := renderStartupBox("0.1.0", "abc1234", false, "gpt-4o", "/repo", "20260721-000000.000000", "main", "USER", adapter.ProviderProfile{
 		Provider: adapter.ProviderOpenAI,
 	}, longTip, termWidth)
 	for _, line := range strings.Split(got, "\n") {
@@ -93,7 +93,7 @@ func TestRenderStartupBox_WrapsToTerminalWidth(t *testing.T) {
 // On fresh sessions the tip is folded into the card as a dim footer
 // line. Empty tip omits the footer.
 func TestRenderStartupBox_TipFooter(t *testing.T) {
-	withTip := renderStartupBox("0.1.0", "abc1234", false, "gpt-4o", "/repo", "main", "USER", adapter.ProviderProfile{
+	withTip := renderStartupBox("0.1.0", "abc1234", false, "gpt-4o", "/repo", "20260721-000000.000000", "main", "USER", adapter.ProviderProfile{
 		Provider: adapter.ProviderOpenAI,
 	}, "drop preferences into ~/.yottacode/USER.md", 0)
 	if !strings.Contains(stripANSI(withTip), "tip:") {
@@ -102,7 +102,7 @@ func TestRenderStartupBox_TipFooter(t *testing.T) {
 	if !strings.Contains(stripANSI(withTip), "USER.md") {
 		t.Errorf("card should render the tip body: %q", stripANSI(withTip))
 	}
-	noTip := renderStartupBox("0.1.0", "abc1234", false, "gpt-4o", "/repo", "main", "USER", adapter.ProviderProfile{
+	noTip := renderStartupBox("0.1.0", "abc1234", false, "gpt-4o", "/repo", "20260721-000000.000000", "main", "USER", adapter.ProviderProfile{
 		Provider: adapter.ProviderOpenAI,
 	}, "", 0)
 	if strings.Contains(stripANSI(noTip), "tip:") {
@@ -110,3 +110,29 @@ func TestRenderStartupBox_TipFooter(t *testing.T) {
 	}
 }
 
+// TestStartupBox_ShowsSessionID: the id is the handle for `sessions resume`,
+// and the exit hint only prints it on the way out (and only once the session
+// has a turn). Showing it up front makes it available mid-session.
+func TestStartupBox_ShowsSessionID(t *testing.T) {
+	got := stripANSI(renderStartupBox("0.1.0", "abc1234", false, "gpt-4o", "/repo",
+		"20260721-024553.488321", "main", "USER", adapter.ProviderProfile{
+			Provider: adapter.ProviderOpenAI,
+		}, "", 0))
+	if !strings.Contains(got, "session") || !strings.Contains(got, "20260721-024553.488321") {
+		t.Errorf("startup card should carry the session id:\n%s", got)
+	}
+}
+
+// TestStartupBox_OmitsEmptySessionID keeps the card clean when no id is
+// available (early frames, fixtures) rather than printing a blank row.
+func TestStartupBox_OmitsEmptySessionID(t *testing.T) {
+	got := stripANSI(renderStartupBox("0.1.0", "abc1234", false, "gpt-4o", "/repo",
+		"", "main", "USER", adapter.ProviderProfile{
+			Provider: adapter.ProviderOpenAI,
+		}, "", 0))
+	for _, line := range strings.Split(got, "\n") {
+		if strings.Contains(line, "session") {
+			t.Errorf("empty id should render no session row, got %q", line)
+		}
+	}
+}

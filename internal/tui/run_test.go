@@ -1,8 +1,12 @@
 package tui
 
 import (
+	"errors"
+	"fmt"
 	"strings"
 	"testing"
+
+	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/yottadynamics/yottacode/internal/adapter"
 	"github.com/yottadynamics/yottacode/internal/agent"
@@ -102,5 +106,34 @@ func TestResumeHint_PrefersNameOverID(t *testing.T) {
 	}
 	if strings.Contains(got, "20260101") {
 		t.Fatalf("hint should not include id when name is set, got %q", got)
+	}
+}
+
+// TestIsNormalExit_InterruptIsNotAFailure is the regression guard for the
+// Ctrl+C bug: Run used to bail on any non-nil error from prog.Run, which
+// skipped the session save and the resume hint whenever ^C arrived as a real
+// SIGINT (non-TTY stdin, ^C outside raw mode, kill -INT) instead of as a
+// keystroke. Interrupt and kill must both read as ordinary exits so shutdown
+// still persists the session and prints "yottacode sessions resume <id>".
+func TestIsNormalExit_InterruptIsNotAFailure(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"clean quit", nil, true},
+		{"sigint", tea.ErrInterrupted, true},
+		{"killed", tea.ErrProgramKilled, true},
+		// bubbletea wraps: a SIGINT surfaces as "program was killed:
+		// program was interrupted", so == comparison would miss it.
+		{"wrapped sigint", fmt.Errorf("%w: %w", tea.ErrProgramKilled, tea.ErrInterrupted), true},
+		{"wrapped by caller", fmt.Errorf("tui: %w", tea.ErrInterrupted), true},
+		{"real failure", errors.New("could not open tty"), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isNormalExit(tc.err); got != tc.want {
+				t.Fatalf("isNormalExit(%v) = %v, want %v", tc.err, got, tc.want)
+			}
+		})
 	}
 }

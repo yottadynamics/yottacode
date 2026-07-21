@@ -22,6 +22,19 @@ Each user message in a session also gets a per-prompt checkpoint capturing the c
 
 Token usage (input, output, and any prompt-cache hits) is recorded per turn alongside the assistant message and accumulated into per-model totals on the session. See [`/usage`](cost.md) for how those totals surface.
 
+## Leaving a session
+
+However you leave — `/quit`, **Ctrl+D**, **Ctrl+C**, or a `kill` from another terminal — the session is saved on the way out and yottacode prints the command that brings it back:
+
+```text
+To resume this session, run:
+yottacode sessions resume 20260426-150100.123456
+```
+
+**Ctrl+C** is the "get me out now" gesture: it quits immediately, skipping the closing memory turn that `/quit` and **Ctrl+D** take. It still saves. If a turn is in flight, the first **Ctrl+C** cancels that turn and the second quits.
+
+A session is only written to disk once it holds at least one real turn. Opening yottacode and quitting straight away saves nothing and prints no hint — there is nothing to resume, and a system prompt on its own is not a conversation. `--continue` and the `/sessions` picker likewise only offer sessions with an actual exchange, so they can never drop you into an empty transcript.
+
 ## List sessions
 
 ```bash
@@ -34,6 +47,15 @@ In the TUI:
 ```text
 /sessions
 ```
+
+Each row in the `/sessions` picker carries a one-line gist of what the session was about, taken from its first prompt:
+
+```text
+❯ 20260721-120951.089901    add retry logic to the fetcher      ·  gpt-5.5 · 12 msgs · 1h ago
+  20260721-033419.065349    why is the build flaky?             ·  gpt-5.5 · 40 msgs · 9h ago
+```
+
+The gist is read from the session's own transcript — nothing is generated and no model is called, so it costs nothing and applies to sessions you already have. Sessions renamed via **Rename** show the name in the left column instead of the id. On a narrow terminal the model name drops out first to keep the gist visible; narrower still, rows fall back to metadata only.
 
 ## Resume a session
 
@@ -155,3 +177,27 @@ rm ~/.yottacode/sessions/<id>.json
 ```
 
 Keep these files if you may need to inspect or restore pre-summary history.
+
+Compaction rewrites the live session down to a summary, so a snapshot often holds history the session itself no longer has — sometimes hundreds of messages more. The `/sessions` picker therefore lists the richest snapshot per session as its own row, marked `archived`:
+
+```text
+  20260721-024553.488321    Should we implement LSP Code Intelligence…  ·  archived · 227 msgs · 10h ago
+  20260721-022229.093514    Should we implement LSP Code Intelligence…  ·  gpt-5.5 · 298 msgs · 10h ago
+```
+
+Loading an archived row **restores its history into a new session** and leaves the snapshot file untouched — for most snapshots it is the only surviving copy of that history, so it is never opened in place or written back to. The restored session records where it came from in `restored_from`.
+
+Only the largest snapshot per session is offered; compaction can fire several times and the rest are prefixes of it.
+
+Archives are surfaced **only** where they mean something:
+
+| Surface | Archives shown | Why |
+| --- | --- | --- |
+| `/sessions` → Load, Export | yes | the archive is often the only copy of that history |
+| `/sessions` → Rename | no | an archive has no stored name to set |
+| `yottacode sessions list` | no | scripts read this as the set of live sessions |
+| `yottacode sessions rename` | refused | would duplicate the history instead of renaming |
+| `yottacode sessions export` | yes | writes the archived transcript, named after the archive |
+| `--continue` | no | resumes the last live session |
+
+Snapshots are never pruned automatically, so they accumulate — delete old ones yourself if the directory grows.

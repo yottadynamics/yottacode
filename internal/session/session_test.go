@@ -8,6 +8,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/yottadynamics/yottacode/internal/adapter"
 	"github.com/yottadynamics/yottacode/internal/agent"
@@ -19,6 +20,17 @@ func redirectHome(t *testing.T) string {
 	tmp := t.TempDir()
 	t.Setenv("HOME", tmp)
 	return tmp
+}
+
+// withExchange gives a session the minimum content that makes it resumable.
+// List and LatestInCwd deliberately skip system-only shells, so any test that
+// expects a saved session to be offered back has to put a real turn in it.
+func withExchange(s *Session) *Session {
+	s.Messages = append(s.Messages,
+		adapter.Message{Role: adapter.RoleUser, Content: "hi"},
+		adapter.Message{Role: adapter.RoleAssistant, Content: "hello"},
+	)
+	return s
 }
 
 func TestNew_CreatesFreshID(t *testing.T) {
@@ -308,11 +320,11 @@ func TestSave_OmitsEmptyTodos(t *testing.T) {
 func TestList_NewestFirst(t *testing.T) {
 	redirectHome(t)
 	first, _ := New("m", "/x")
-	first.Save()
+	withExchange(first).Save()
 	time.Sleep(2 * time.Millisecond)
 	second, _ := New("m", "/x")
 	second.Name = "labelled"
-	second.Save()
+	withExchange(second).Save()
 
 	infos, err := List()
 	if err != nil {
@@ -344,7 +356,7 @@ func TestLatestInCwd_PicksNewestMatch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	if err := older.Save(); err != nil {
+	if err := withExchange(older).Save(); err != nil {
 		t.Fatalf("Save older: %v", err)
 	}
 	time.Sleep(2 * time.Millisecond)
@@ -352,7 +364,7 @@ func TestLatestInCwd_PicksNewestMatch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	if err := other.Save(); err != nil {
+	if err := withExchange(other).Save(); err != nil {
 		t.Fatalf("Save other: %v", err)
 	}
 	time.Sleep(2 * time.Millisecond)
@@ -360,7 +372,7 @@ func TestLatestInCwd_PicksNewestMatch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	if err := newer.Save(); err != nil {
+	if err := withExchange(newer).Save(); err != nil {
 		t.Fatalf("Save newer: %v", err)
 	}
 
@@ -387,13 +399,379 @@ func TestLatestInCwd_NoMatchReturnsSentinel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	if err := s.Save(); err != nil {
+	if err := withExchange(s).Save(); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
 	if _, err := LatestInCwd("/proj/elsewhere"); err == nil {
 		t.Fatalf("expected error for non-matching cwd")
 	} else if !errorsIs(err, ErrNoSessionInCwd) {
 		t.Errorf("expected ErrNoSessionInCwd sentinel; got %v", err)
+	}
+}
+
+// TestHasExchange_OnlyCountsUserOrAssistant pins the predicate that decides
+// whether a session is worth persisting and worth offering as resumable.
+func TestHasExchange_OnlyCountsUserOrAssistant(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		msgs []adapter.Message
+		want bool
+	}{
+		{"nil session", nil, false},
+		{"system only", []adapter.Message{{Role: adapter.RoleSystem, Content: "sys"}}, false},
+		{"has user", []adapter.Message{
+			{Role: adapter.RoleSystem, Content: "sys"},
+			{Role: adapter.RoleUser, Content: "hi"},
+		}, true},
+		{"has assistant", []adapter.Message{
+			{Role: adapter.RoleSystem, Content: "sys"},
+			{Role: adapter.RoleAssistant, Content: "hello"},
+		}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := &Session{Messages: tc.msgs}
+			if got := s.HasExchange(); got != tc.want {
+				t.Fatalf("HasExchange() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+	var nilSess *Session
+	if nilSess.HasExchange() {
+		t.Errorf("nil session should report no exchange")
+	}
+}
+
+// TestLatestInCwd_SkipsSystemOnlyShells is the regression guard for "I
+// resumed and my history was gone". Older builds saved a session even when
+// it held nothing but the system prompt, so `--continue` could pick that
+// shell over the real conversation that came before it and open an empty
+// transcript.
+func TestLatestInCwd_SkipsSystemOnlyShells(t *testing.T) {
+	redirectHome(t)
+	real, err := New("m", "/proj/a")
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := withExchange(real).Save(); err != nil {
+		t.Fatalf("Save real: %v", err)
+	}
+	time.Sleep(2 * time.Millisecond)
+	// Newer, but nothing in it but a system prompt — exactly the shell an
+	// "open yottacode, quit straight away" launch used to leave behind.
+	shell, err := New("m", "/proj/a")
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	shell.Messages = []adapter.Message{{Role: adapter.RoleSystem, Content: "sys"}}
+	if err := shell.Save(); err != nil {
+		t.Fatalf("Save shell: %v", err)
+	}
+
+	got, err := LatestInCwd("/proj/a")
+	if err != nil {
+		t.Fatalf("LatestInCwd: %v", err)
+	}
+	if got.ID != real.ID {
+		t.Errorf("--continue picked %q; want the real conversation %q", got.ID, real.ID)
+	}
+}
+
+// TestList_SkipsSystemOnlyShells keeps shells written by older builds out of
+// the /sessions picker — every entry it offers must have something to resume.
+func TestList_SkipsSystemOnlyShells(t *testing.T) {
+	redirectHome(t)
+	real, _ := New("m", "/x")
+	if err := withExchange(real).Save(); err != nil {
+		t.Fatalf("Save real: %v", err)
+	}
+	shell, _ := New("m", "/x")
+	shell.Messages = []adapter.Message{{Role: adapter.RoleSystem, Content: "sys"}}
+	if err := shell.Save(); err != nil {
+		t.Fatalf("Save shell: %v", err)
+	}
+
+	infos, err := List()
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(infos) != 1 {
+		t.Fatalf("List returned %d entries, want only the resumable one", len(infos))
+	}
+	if infos[0].ID != real.ID {
+		t.Errorf("List returned %q, want %q", infos[0].ID, real.ID)
+	}
+}
+
+// writeSnapshot drops a pre-compaction snapshot next to the sessions, in
+// the exact shape writePreSummarySnapshot produces: keyed session_id (not
+// id), so decoding it as a Session yields an empty ID with real messages.
+func writeSnapshot(t *testing.T, home, sessionID string) string {
+	t.Helper()
+	return writeSnapshotN(t, home, sessionID, "20260721-101010.000000000", 2)
+}
+
+// writeSnapshotN writes a snapshot with n messages at the given stamp, so
+// tests can build several archives of differing richness for one parent.
+func writeSnapshotN(t *testing.T, home, sessionID, stamp string, n int) string {
+	t.Helper()
+	msgs := make([]adapter.Message, 0, n)
+	for i := range n {
+		role := adapter.RoleUser
+		content := "pre-compaction turn"
+		if i%2 == 1 {
+			role, content = adapter.RoleAssistant, "pre-compaction reply"
+		}
+		msgs = append(msgs, adapter.Message{Role: role, Content: content})
+	}
+	dir := filepath.Join(home, ".yottacode", "sessions")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatalf("mkdir sessions: %v", err)
+	}
+	p := filepath.Join(dir, sessionID+SnapshotMarker+stamp+".json")
+	body, err := json.Marshal(map[string]any{
+		"session_id": sessionID,
+		"captured":   time.Now().UTC(),
+		"messages":   msgs,
+	})
+	if err != nil {
+		t.Fatalf("marshal snapshot: %v", err)
+	}
+	if err := os.WriteFile(p, body, 0o600); err != nil {
+		t.Fatalf("write snapshot: %v", err)
+	}
+	return p
+}
+
+// TestList_SurfacesSnapshotsAsArchived: snapshots appear as their own
+// clearly-marked rows, because compaction leaves them holding history the
+// live session no longer has. What must never come back is the blank-id row
+// they used to produce — that one resolved to an arbitrary other session.
+func TestList_SurfacesSnapshotsAsArchived(t *testing.T) {
+	home := redirectHome(t)
+	real, _ := New("m", "/x")
+	if err := withExchange(real).Save(); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	writeSnapshot(t, home, real.ID)
+
+	infos, err := ListWith(ListOptions{IncludeArchived: true})
+	if err != nil {
+		t.Fatalf("ListWith: %v", err)
+	}
+	if len(infos) != 2 {
+		t.Fatalf("ListWith returned %d entries, want the session + its archive", len(infos))
+	}
+	var archived *SessionInfo
+	for i, in := range infos {
+		if in.ID == "" {
+			t.Fatalf("blank-id row is back — that silently resolved to the wrong session: %+v", in)
+		}
+		if in.Archived {
+			archived = &infos[i]
+		}
+	}
+	if archived == nil {
+		t.Fatal("no archived row surfaced for the snapshot")
+	}
+	if archived.ArchivedOf != real.ID {
+		t.Errorf("ArchivedOf = %q, want parent %q", archived.ArchivedOf, real.ID)
+	}
+	if !IsSnapshotID(archived.ID) {
+		t.Errorf("archived row id %q should be addressable as a snapshot", archived.ID)
+	}
+	if archived.Summary == "" {
+		t.Error("archived row should carry a gist like any other row")
+	}
+}
+
+// TestList_OneArchivePerSession: compaction fires repeatedly, so a session
+// accumulates several archives that are prefixes of each other. Only the
+// richest is offered — listing every one would fill the picker with
+// near-duplicates of a single conversation.
+func TestList_OneArchivePerSession(t *testing.T) {
+	home := redirectHome(t)
+	real, _ := New("m", "/x")
+	if err := withExchange(real).Save(); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	small := writeSnapshotN(t, home, real.ID, "20260721-101010.000000000", 2)
+	big := writeSnapshotN(t, home, real.ID, "20260721-111111.000000000", 6)
+	_ = small
+
+	infos, err := ListWith(ListOptions{IncludeArchived: true})
+	if err != nil {
+		t.Fatalf("ListWith: %v", err)
+	}
+	var archives []SessionInfo
+	for _, in := range infos {
+		if in.Archived {
+			archives = append(archives, in)
+		}
+	}
+	if len(archives) != 1 {
+		t.Fatalf("got %d archive rows, want exactly 1 (the richest)", len(archives))
+	}
+	if archives[0].Messages != 6 {
+		t.Errorf("kept the %d-message archive; want the 6-message one (%s)", archives[0].Messages, big)
+	}
+}
+
+// TestLoadSnapshot_RestoresIntoFreshSession is the archive-integrity
+// guarantee: a snapshot is usually the ONLY copy of its pre-compaction
+// history, so opening one must produce a NEW session. If it resolved to
+// itself, the first save of the continued conversation would overwrite the
+// archive — unrecoverably.
+func TestLoadSnapshot_RestoresIntoFreshSession(t *testing.T) {
+	home := redirectHome(t)
+	parent, _ := New("gpt-5.5", "/proj/x")
+	if err := withExchange(parent).Save(); err != nil {
+		t.Fatalf("Save parent: %v", err)
+	}
+	snapPath := writeSnapshot(t, home, parent.ID)
+	snapID := strings.TrimSuffix(filepath.Base(snapPath), ".json")
+	before, err := os.ReadFile(snapPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	restored, err := Load(snapID)
+	if err != nil {
+		t.Fatalf("Load(snapshot): %v", err)
+	}
+	if restored.ID == snapID {
+		t.Error("restored session must not adopt the snapshot's id")
+	}
+	if restored.RestoredFrom != snapID {
+		t.Errorf("RestoredFrom = %q, want %q", restored.RestoredFrom, snapID)
+	}
+	if len(restored.Messages) != 2 {
+		t.Errorf("restored %d messages, want the snapshot's 2", len(restored.Messages))
+	}
+	// Inherited from the parent so provider routing and cwd features work.
+	if restored.Model != "gpt-5.5" || restored.Cwd != "/proj/x" {
+		t.Errorf("model/cwd not inherited: %q %q", restored.Model, restored.Cwd)
+	}
+
+	// The critical assertion: continuing the restored session leaves the
+	// archive byte-identical.
+	restored.Messages = append(restored.Messages, adapter.Message{Role: adapter.RoleUser, Content: "carry on"})
+	if err := restored.Save(); err != nil {
+		t.Fatalf("Save restored: %v", err)
+	}
+	after, err := os.ReadFile(snapPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(before) != string(after) {
+		t.Error("saving the restored session modified the archive — that history is unrecoverable")
+	}
+	if _, err := Load(parent.ID); err != nil {
+		t.Errorf("parent session should be untouched: %v", err)
+	}
+}
+
+// TestLoadSnapshot_OrphanRestoresWithoutParent covers the case that motivated
+// this: the parent session is gone, so the archive is the only copy.
+func TestLoadSnapshot_OrphanRestoresWithoutParent(t *testing.T) {
+	home := redirectHome(t)
+	snapPath := writeSnapshot(t, home, "20260721-024553.488321")
+	snapID := strings.TrimSuffix(filepath.Base(snapPath), ".json")
+
+	restored, err := Load(snapID)
+	if err != nil {
+		t.Fatalf("orphaned archive must still restore: %v", err)
+	}
+	if len(restored.Messages) != 2 {
+		t.Errorf("restored %d messages, want 2", len(restored.Messages))
+	}
+}
+
+// TestLatestInCwd_SkipsPreSummarySnapshots keeps --continue off snapshots.
+// A snapshot decodes with a zero Created, but it still carries an exchange,
+// so only the filename check keeps it out.
+func TestLatestInCwd_SkipsPreSummarySnapshots(t *testing.T) {
+	home := redirectHome(t)
+	real, _ := New("m", "/proj/a")
+	real.Cwd = "/proj/a"
+	if err := withExchange(real).Save(); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	writeSnapshot(t, home, real.ID)
+
+	got, err := LatestInCwd("/proj/a")
+	if err != nil {
+		t.Fatalf("LatestInCwd: %v", err)
+	}
+	if got.ID != real.ID {
+		t.Errorf("LatestInCwd = %q, want %q", got.ID, real.ID)
+	}
+}
+
+// TestLoad_EmptyIDNeverResolves is the guard for the silent wrong-session
+// resume. loadByName matches on Name == name, and every un-renamed session
+// has Name == "", so Load("") used to return the first unnamed session on
+// disk with no error — the user got somebody else's conversation.
+func TestLoad_EmptyIDNeverResolves(t *testing.T) {
+	redirectHome(t)
+	for _, cwd := range []string{"/a", "/b", "/c"} {
+		s, _ := New("m", cwd)
+		if err := withExchange(s).Save(); err != nil {
+			t.Fatalf("Save: %v", err)
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	for _, ref := range []string{"", "   ", "\t"} {
+		got, err := Load(ref)
+		if err == nil {
+			t.Fatalf("Load(%q) resolved to session %q; must error instead", ref, got.ID)
+		}
+	}
+}
+
+// TestLoad_RejectsPathSeparators is the path-traversal guard. loadByID and
+// loadSnapshot build <dir>/<id>.json via filepath.Join, which Clean's ".."
+// forward rather than neutralizing it — so without a separator check at
+// Load a payload like "../../.ssh/config" would resolve to a file outside
+// the sessions directory and, if it was valid JSON, decode into a Session.
+// This test pins both the Load-level guard (separator rejected before any
+// file is touched) and the safePath belt-and-braces (a relative path that
+// escapes dir is refused even if the guard were bypassed).
+func TestLoad_RejectsPathSeparators(t *testing.T) {
+	redirectHome(t)
+	// Seed one real session so the directory exists.
+	real, _ := New("m", "/x")
+	if err := withExchange(real).Save(); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	// Every form of separator-bearing id is rejected at Load, and crucially
+	// is rejected BEFORE a file is read — verified by pointing at a sibling
+	// .json that does exist. A pre-traversal Load would have read it.
+	for _, ref := range []string{"../" + real.ID, "../../" + real.ID, "sub/" + real.ID} {
+		got, err := Load(ref)
+		if err == nil {
+			t.Fatalf("Load(%q) resolved to session %q; must reject the separator", ref, got.ID)
+		}
+		if got != nil {
+			t.Fatalf("Load(%q) returned a non-nil session %q alongside the error", ref, got.ID)
+		}
+	}
+
+	// safePath is the belt-and-braces layer. Verify it directly so a future
+	// caller that reaches loadByID/loadSnapshot without Load still can't
+	// escape: a ".." id must produce a path error, never a sibling read.
+	dir, err := sessionsDir()
+	if err != nil {
+		t.Fatalf("sessionsDir: %v", err)
+	}
+	for _, id := range []string{"../" + real.ID, "../../" + real.ID} {
+		if p, err := safePath(dir, id); err == nil {
+			t.Errorf("safePath(%q) returned %q; must reject ids that escape the sessions dir", id, p)
+		}
+	}
+	// Sanity: a plain id resolves to <dir>/<id>.json.
+	if p, err := safePath(dir, real.ID); err != nil || p != filepath.Join(dir, real.ID+".json") {
+		t.Errorf("safePath(plain) = %q, %v; want %q, nil", p, err, filepath.Join(dir, real.ID+".json"))
 	}
 }
 
@@ -617,4 +995,175 @@ func errorsIs(err, target error) bool {
 		cur = u.Unwrap()
 	}
 	return false
+}
+
+// TestSummary_UsesFirstUserPrompt: the picker's "what was this about?"
+// line comes from the session's own data — no model call, no stored field.
+func TestSummary_UsesFirstUserPrompt(t *testing.T) {
+	s := &Session{Messages: []adapter.Message{
+		{Role: adapter.RoleSystem, Content: "you are helpful"},
+		{Role: adapter.RoleUser, Content: "add retry logic to the fetcher"},
+		{Role: adapter.RoleAssistant, Content: "sure"},
+	}}
+	if got := s.Summary(); got != "add retry logic to the fetcher" {
+		t.Errorf("Summary() = %q", got)
+	}
+}
+
+// TestSummary_CollapsesWhitespace: prompts are multi-line; the picker row
+// is one line.
+func TestSummary_CollapsesWhitespace(t *testing.T) {
+	s := &Session{Messages: []adapter.Message{
+		{Role: adapter.RoleUser, Content: "  fix the\n\n  parser   bug\t\tplease  "},
+	}}
+	if got := s.Summary(); got != "fix the parser bug please" {
+		t.Errorf("Summary() = %q, want whitespace collapsed to single spaces", got)
+	}
+}
+
+// TestSummary_SkipsCompactionPreamble: a compacted history opens with a
+// synthetic user turn that is byte-identical in every compacted session.
+// Using it would label them all the same, so Summary looks past it.
+func TestSummary_SkipsCompactionPreamble(t *testing.T) {
+	s := &Session{Messages: []adapter.Message{
+		{Role: adapter.RoleSystem, Content: "sys"},
+		{Role: adapter.RoleUser, Content: SummaryPreamble},
+		{Role: adapter.RoleAssistant, Content: "## Decisions made ..."},
+		{Role: adapter.RoleUser, Content: "now wire it into the CLI"},
+	}}
+	if got := s.Summary(); got != "now wire it into the CLI" {
+		t.Errorf("Summary() = %q, want the real prompt after the preamble", got)
+	}
+}
+
+// TestSummary_TruncatesOnRuneBoundary: first prompts reach 160KB in a real
+// store, and slicing mid-rune would emit invalid UTF-8 to the terminal.
+func TestSummary_TruncatesOnRuneBoundary(t *testing.T) {
+	s := &Session{Messages: []adapter.Message{
+		{Role: adapter.RoleUser, Content: strings.Repeat("héllo wörld ", 500)},
+	}}
+	got := s.Summary()
+	if r := []rune(got); len(r) != summaryCap {
+		t.Errorf("Summary() is %d runes, want %d", len(r), summaryCap)
+	}
+	if !utf8.ValidString(got) {
+		t.Errorf("Summary() produced invalid UTF-8: %q", got)
+	}
+	if !strings.HasSuffix(got, "…") {
+		t.Errorf("truncated Summary should end in an ellipsis: %q", got)
+	}
+}
+
+// TestSummary_EmptyWhenNothingUsable covers the shell/system-only case and
+// a nil receiver.
+func TestSummary_EmptyWhenNothingUsable(t *testing.T) {
+	var nilSess *Session
+	if nilSess.Summary() != "" {
+		t.Error("nil session should have no summary")
+	}
+	s := &Session{Messages: []adapter.Message{
+		{Role: adapter.RoleSystem, Content: "sys"},
+		{Role: adapter.RoleUser, Content: "   \n\t  "},
+	}}
+	if got := s.Summary(); got != "" {
+		t.Errorf("blank prompt should yield no summary, got %q", got)
+	}
+}
+
+// TestList_PopulatesSummary wires it end to end through the picker's source.
+func TestList_PopulatesSummary(t *testing.T) {
+	redirectHome(t)
+	s, _ := New("m", "/x")
+	s.Messages = []adapter.Message{
+		{Role: adapter.RoleSystem, Content: "sys"},
+		{Role: adapter.RoleUser, Content: "why is the build flaky?"},
+		{Role: adapter.RoleAssistant, Content: "looking"},
+	}
+	if err := s.Save(); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	infos, err := List()
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(infos) != 1 {
+		t.Fatalf("got %d infos", len(infos))
+	}
+	if infos[0].Summary != "why is the build flaky?" {
+		t.Errorf("SessionInfo.Summary = %q", infos[0].Summary)
+	}
+}
+
+// TestList_ExcludesArchivedByDefault is the regression guard for handing
+// archives to callers that can't cope with them.
+//
+// An archived row's id resolves through loadSnapshot, so Load returns a
+// freshly-minted session rather than the row asked for. When List returned
+// archives unconditionally, that broke every consumer that treats the list
+// as "the live sessions": recall.Backfill indexed each archive under a new
+// random id and then immediately pruned it (churn on every launch, and the
+// archived content never actually searchable), `sessions list --json` grew
+// rows that scripts had never seen, and `sessions rename <archive>` wrote a
+// duplicate session instead of renaming. Archives are opt-in for that reason.
+func TestList_ExcludesArchivedByDefault(t *testing.T) {
+	home := redirectHome(t)
+	real, _ := New("m", "/x")
+	if err := withExchange(real).Save(); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	writeSnapshot(t, home, real.ID)
+
+	plain, err := List()
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	for _, in := range plain {
+		if in.Archived {
+			t.Errorf("List() must not return archives by default: %+v", in)
+		}
+		if IsSnapshotID(in.ID) {
+			t.Errorf("List() returned a snapshot id %q", in.ID)
+		}
+	}
+	if len(plain) != 1 {
+		t.Errorf("List() = %d rows, want just the live session", len(plain))
+	}
+
+	// And the opt-in path still surfaces it.
+	withArch, err := ListWith(ListOptions{IncludeArchived: true})
+	if err != nil {
+		t.Fatalf("ListWith: %v", err)
+	}
+	if len(withArch) != 2 {
+		t.Errorf("ListWith(IncludeArchived) = %d rows, want session + archive", len(withArch))
+	}
+}
+
+// TestSafePath_AllowsDotPrefixedNames: the escape check must key on a
+// leading ".." path element, not a ".." string prefix — an id like "..foo"
+// resolves inside the directory and is legitimate.
+func TestSafePath_AllowsDotPrefixedNames(t *testing.T) {
+	redirectHome(t)
+	dir, err := sessionsDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"..foo", "...bar", ".hidden"} {
+		p, err := safePath(dir, id)
+		if err != nil {
+			t.Errorf("safePath(%q) rejected a name that stays inside dir: %v", id, err)
+			continue
+		}
+		if p != filepath.Join(dir, id+".json") {
+			t.Errorf("safePath(%q) = %q, want %q", id, p, filepath.Join(dir, id+".json"))
+		}
+	}
+	// Still refuses genuine escapes. Note a BARE ".." is not one: the
+	// ".json" suffix is appended before the join, so it resolves to the
+	// in-directory file "...json" rather than to dir's parent.
+	for _, id := range []string{"../x", "../../x", "../" + strings.Repeat("a", 4)} {
+		if p, err := safePath(dir, id); err == nil {
+			t.Errorf("safePath(%q) = %q; must reject an escape", id, p)
+		}
+	}
 }
