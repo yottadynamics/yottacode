@@ -556,16 +556,24 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 		summarizerWindow = catalog.ResolveWindowForProvider(fileCfg.ProviderKindForModel(fastModel), fastModel, fileCfg.ContextWindowOverride(fastModel), fileCfg.Context.DefaultWindow)
 	}
 	cfg := agent.LoopConfig{
-		Adapter:           ad,
-		Registry:          reg,
-		Permissions:       perms,
-		BypassPermissions: opts.BypassPermissions,
-		Cwd:               cwdRef,
-		MaxIterations:     opts.MaxIterations,
-		PlanMode:          planMode,
-		AutoMode:          autoMode,
-		YoloMode:          yoloMode,
-		LoopControl:       loopControl,
+		Adapter:     ad,
+		Registry:    reg,
+		Permissions: perms,
+		// The TUI drives yolo/bypass SOLELY through YoloMode (a shared,
+		// live-toggleable atomic set by enterYoloMode at startup for --yolo
+		// and by /yolo mid-session). It deliberately does NOT set
+		// cfg.BypassPermissions: that plain bool is the oneshot/CI-only
+		// representation, and setting it here created a second source of
+		// truth that /yolo off couldn't clear — leaving tool auto-approval
+		// on while the banner said "approvals restored". See loop.go's
+		// approval switch: the YoloMode case dominates when active, and the
+		// BypassPermissions fallback must stay off in the TUI.
+		Cwd:           cwdRef,
+		MaxIterations: opts.MaxIterations,
+		PlanMode:      planMode,
+		AutoMode:      autoMode,
+		YoloMode:      yoloMode,
+		LoopControl:   loopControl,
 		Compaction: &agent.CompactionConfig{
 			Window:           compactionWindow,
 			Threshold:        compactionThreshold,
@@ -651,7 +659,6 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 		XSearchToDate:          opts.XSearchToDate,
 		ProviderProfile:        ad.Profile(),
 		Cwd:                    cwd,
-		BypassPermissions:      opts.BypassPermissions,
 		Version:                version.Current,
 		Commit:                 version.Commit(),
 		Dirty:                  version.Dirty(),

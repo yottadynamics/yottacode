@@ -46,11 +46,17 @@ func enterYoloMode(m Model) Model {
 
 // exitYoloMode is the cleanup half invoked by /yolo when the overlay
 // is already on. Mutates the shared YoloModeState in place so the
-// agent goroutine sees the new state on its next tool dispatch. The
-// fallback BypassPermissions bool (oneshot/CI path) is not touched
-// here — that flag is only meaningful for the non-TUI oneshot path
-// and is reset per-process at launch, so flipping it mid-session
-// would have no effect and could desync from YoloMode.
+// agent goroutine sees the new state on its next tool dispatch.
+//
+// YoloMode is the SOLE representation of the bypass in the TUI — the
+// LoopConfig no longer carries a BypassPermissions bool (see run.go),
+// so clearing Active here is sufficient to restore tool approvals.
+// (BypassPermissions survives only on the non-TUI oneshot/CI path,
+// which never constructs a YoloModeState; the loop's approval switch
+// reads it there.) Earlier this function had to leave a second
+// TUI-side flag alone, which meant /yolo off didn't actually restore
+// approvals for a --yolo-launched session — removing that flag is what
+// made this a clean single-flag toggle.
 //
 // Orthogonality preserved: exiting yolo mode does NOT enter or exit
 // any mode — whichever mode was active before the overlay (auto,

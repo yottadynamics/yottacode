@@ -117,6 +117,62 @@ func TestEnterYoloMode_DoesNotExitAutoMode(t *testing.T) {
 	}
 }
 
+// Nil-state guard: in a build where the YoloModeState pointer was never
+// wired, /yolo must degrade to a printed notice rather than panic on the
+// nil dereference. Exercises the cmd_yolo.go `state == nil` branch that the
+// happy-path fixtures never reach.
+func TestCmdYolo_NilStatePrintsUnavailable(t *testing.T) {
+	m, _ := newYoloTestModel(t)
+	m.cfg.YoloMode = nil
+	m, _ = cmdYolo(m, nil)
+	out := stripANSI(m.transcript.String())
+	if !strings.Contains(out, "not available in this build") {
+		t.Errorf("nil YoloMode should print an unavailable notice; got %q", out)
+	}
+}
+
+// Orthogonality with PLAN mode (the auto-mode direction is covered by
+// TestEnterYoloMode_DoesNotExitAutoMode). Yolo is an overlay, so toggling
+// it on then off must leave plan mode exactly as it found it — the loop's
+// approval switch checks the yolo case ahead of the plan case while active,
+// and hands the gate back to plan on exit.
+func TestYoloMode_DoesNotTouchPlanMode(t *testing.T) {
+	m, _ := newYoloTestModel(t)
+	planMode := m.cfg.PlanMode
+	if planMode == nil {
+		t.Fatalf("fixture: plan mode state pointer must be wired")
+	}
+	planMode.Active.Store(true)
+
+	m = enterYoloMode(m)
+	if !planMode.IsActive() {
+		t.Errorf("enterYoloMode should NOT exit plan mode — yolo is an orthogonal overlay")
+	}
+	exitYoloMode(&m)
+	if !planMode.IsActive() {
+		t.Errorf("exitYoloMode should NOT turn plan mode off — orthogonality runs both ways")
+	}
+}
+
+// F1 regression (TUI side): toggling /yolo OFF must leave the overlay
+// inactive so the loop's approval gate returns. This is the TUI half of the
+// bypass-restore contract; the behavioral half (an inactive YoloMode with no
+// BypassPermissions actually prompts) is pinned in the agent package by
+// TestApproval_YoloOffRestoresPrompt. Regression target: a --yolo-launched
+// session used to keep auto-approving after /yolo off because a second flag
+// (cfg.BypassPermissions) stayed set; that flag no longer exists in the TUI.
+func TestCmdYolo_ToggleOffLeavesOverlayInactive(t *testing.T) {
+	m, yoloMode := newYoloTestModel(t)
+	m = enterYoloMode(m) // the --yolo / first-/yolo shape
+	if !yoloMode.IsActive() {
+		t.Fatalf("enterYoloMode should have armed the overlay")
+	}
+	m, _ = cmdYolo(m, nil) // /yolo again → off
+	if yoloMode.IsActive() {
+		t.Errorf("after /yolo off the overlay must be inactive so approvals return")
+	}
+}
+
 // /yolo is registered in allSlash (the slash registry parity test
 // lives in cmd_plan_test.go as TestSlashYolo_Registered). Here we
 // additionally pin the help blurb so a future edit doesn't silently

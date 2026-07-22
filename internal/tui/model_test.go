@@ -34,13 +34,12 @@ func newTestModel(t *testing.T) Model {
 	// directly to <cwd>/.yottacode/permissions.json before calling Load.
 	perms := permissions.LoadEmpty(cwd)
 	m := New(context.Background(), Config{
-		Cfg:               cfg,
-		Session:           sess,
-		Permissions:       perms,
-		ModelName:         "test-model",
-		BaseURL:           "http://test/v1",
-		Cwd:               cwd,
-		BypassPermissions: false,
+		Cfg:         cfg,
+		Session:     sess,
+		Permissions: perms,
+		ModelName:   "test-model",
+		BaseURL:     "http://test/v1",
+		Cwd:         cwd,
 	})
 	m, _ = applyMsg(m, tea.WindowSizeMsg{Width: 80, Height: 24})
 	return m

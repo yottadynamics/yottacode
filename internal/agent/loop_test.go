@@ -391,6 +391,55 @@ func TestLoop_BypassPermissionsAutoApproves(t *testing.T) {
 	}
 }
 
+// TestApproval_YoloOffRestoresPrompt is the F1 regression. The TUI drives the
+// bypass solely through YoloMode; when /yolo is toggled off, the loop must
+// prompt again for a RequiresApproval tool. Two shapes, one tool:
+//   - YoloMode active            → auto-approve (no prompt)
+//   - YoloMode inactive, no bypass (the TUI-after-/yolo-off shape) → prompt
+//
+// The bug this guards: a --yolo-launched TUI session used to ALSO set
+// cfg.BypassPermissions, which /yolo off couldn't clear, so the second shape
+// silently auto-approved while the banner claimed approvals were restored.
+// That flag is gone from the TUI path, so the inactive shape must now prompt.
+func TestApproval_YoloOffRestoresPrompt(t *testing.T) {
+	newCfg := func(yolo *YoloModeState) (LoopConfig, *[]adapter.Message) {
+		streamer := &scriptedStreamer{turns: [][]adapter.StreamEvent{
+			{sseDone("", adapter.ToolCall{ID: "c1", Name: "mut", ArgsJSON: `{}`})},
+			{sseToken("ok"), sseDone("ok")},
+		}}
+		reg := NewRegistry()
+		reg.Register(&mockTool{name: "mut", requiresApproval: true, output: "executed"})
+		// The TUI shape: no BypassPermissions; YoloMode is the only lever.
+		cfg := LoopConfig{Adapter: streamer, Registry: reg, YoloMode: yolo, MaxIterations: 5}
+		hist := []adapter.Message{{Role: adapter.RoleUser, Content: "go"}}
+		return cfg, &hist
+	}
+
+	// Yolo ON → auto-approved, no prompt.
+	on := &YoloModeState{}
+	on.Active.Store(true)
+	cfg, hist := newCfg(on)
+	events, _ := runTurnSync(t, context.Background(), cfg, hist, func(ApprovalNeeded) Decision {
+		t.Fatalf("yolo ON must not prompt")
+		return Deny
+	})
+	if hasEvent[ApprovalNeeded](events) {
+		t.Errorf("yolo ON should auto-approve, not prompt")
+	}
+
+	// Yolo OFF, no bypass → must prompt (approvals restored).
+	off := &YoloModeState{} // inactive
+	cfg, hist = newCfg(off)
+	prompted := false
+	events, _ = runTurnSync(t, context.Background(), cfg, hist, func(ApprovalNeeded) Decision {
+		prompted = true
+		return AllowOnce
+	})
+	if !prompted || !hasEvent[ApprovalNeeded](events) {
+		t.Errorf("yolo OFF with no bypass must prompt — approvals were not restored")
+	}
+}
+
 // permsForTest builds a project-local permissions store under tmpdir
 // and seeds the file with an initial JSON shape. Returns the loaded
 // store + the tmpdir (used as Cwd in LoopConfig).
