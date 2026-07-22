@@ -386,8 +386,8 @@ func TestLoop_BypassPermissionsAutoApproves(t *testing.T) {
 			auto = &a
 		}
 	}
-	if auto == nil || auto.Source != "bypass-permissions" {
-		t.Errorf("expected ApprovalAuto with Source=bypass-permissions; got %+v", auto)
+	if auto == nil || auto.Source != "yolo-mode" {
+		t.Errorf("expected ApprovalAuto with Source=yolo-mode; got %+v", auto)
 	}
 }
 

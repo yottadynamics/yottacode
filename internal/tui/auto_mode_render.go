@@ -18,22 +18,21 @@ const AutoModeIcon = "▸"
 const autoCycleKeysHint = "Shift+Tab cycles"
 
 // renderAutoModeBanner is the one-line indicator above the cmdline
-// while auto mode is active. The optional yolo suffix means the
-// permissions-bypass overlay is also on; in that case we drop the
-// activity detail (bypass overrides it — bash auto-allows too) so the
-// banner doesn't say something misleading. The cycle-keys hint rides
-// along whenever there's room (mirrors Claude Code's persistent
-// "shift+tab to cycle" indicator) and is the first segment dropped on
-// narrow terminals.
+// while auto mode is active. The optional yolo suffix means the yolo
+// mode overlay is also on; in that case we drop the activity detail
+// (yolo overrides it — bash auto-allows too) so the banner doesn't
+// say something misleading. The cycle-keys hint rides along whenever
+// there's room (mirrors Claude Code's persistent "shift+tab to cycle"
+// indicator) and is the first segment dropped on narrow terminals.
 //
 // Activity wording reflects the safe-bash carve-out: read-only shell
 // commands (cd, ls, cat, grep, find, …) auto-allow alongside edits;
 // only mutating bash and commits still prompt. The earlier
-// "bash & commits prompt" wording was a footgun once that bypass
-// landed — it implied every shell call interrupted the flow.
+// "bash & commits prompt" wording was a footgun once that yolo
+// mode landed — it implied every shell call interrupted the flow.
 //
-//	▸ auto mode · edits + read-only bash auto-allow; commits prompt · Shift+Tab cycles   (no bypass)
-//	▸ auto mode · ⚠ bypass · Shift+Tab cycles                                            (bypass on)
+//	▸ auto mode · edits + read-only bash auto-allow; commits prompt · Shift+Tab cycles   (no yolo)
+//	▸ auto mode · ⚠ yolo mode · Shift+Tab cycles                                         (yolo on)
 func renderAutoModeBanner(yoloOn bool, width int) string {
 	if width <= 0 {
 		width = 80

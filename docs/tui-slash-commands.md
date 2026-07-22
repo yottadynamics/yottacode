@@ -41,7 +41,7 @@ Type `/` in the TUI to open the slash-command palette. The palette filters as yo
 
 Beyond the built-ins, you can ship your own slash commands by dropping markdown files in a `commands/` directory — see [Custom commands](#custom-commands).
 
-> **Auto mode and the permissions-bypass overlay are intentionally not slash commands** (mirroring Claude Code). Auto enters via `Shift+Tab` (cycle: `normal → auto → plan → normal`) or `yottacode --permission-mode auto` at startup. Permissions bypass enters only via `yottacode --yolo` at startup — there is no in-TUI toggle, no palette entry, no accidental activation. See [Auto mode](#auto-mode) and [Permissions bypass](#permissions-bypass) below.
+> **Auto mode is intentionally not a slash command** (mirroring Claude Code). Auto enters via `Shift+Tab` (cycle: `normal → auto → plan → normal`) or `yottacode --permission-mode auto` at startup. **Yolo mode** is the exception — it has a `/yolo` slash toggle in addition to `yottacode --yolo` at startup, because the danger lies in skipping prompts rather than in being hard to leave. See [Auto mode](#auto-mode) and [Yolo mode](#yolo-mode) below.
 
 ## Provider picker
 
@@ -139,7 +139,7 @@ Three ways to reduce friction on commands you trust:
 
 - **Auto mode** (`Shift+Tab` or `yottacode --permission-mode auto`) — edits auto-allow; `run_bash`, `git_commit`, `git_checkpoint`, and `rollback` remain in the safety floor and still prompt. See [Auto mode](#auto-mode).
 - **`.yottacode/permissions.json` allow rules** — pre-approve specific shell invocations or tool patterns (`allow: ["Bash(go test*)", "Bash(go mod tidy)"]`). Rules apply equally to commands the agent calls from a custom-command turn and to anything else.
-- **`yottacode --yolo`** — everything auto-runs, with a high but finite iteration budget. Use only for fully-trusted scripted runs. See [Permissions bypass](#permissions-bypass).
+- **`yottacode --yolo`** — everything auto-runs, with a high but finite iteration budget. Use only for fully-trusted scripted runs. See [Yolo mode](#yolo-mode).
 
 Per-command `allowed-tools:` frontmatter (a Claude Code feature that scopes which tools a command can call) is **not** supported in v1; the closest equivalent today is auto mode plus an `.yottacode/permissions.json` allow list. See [Out of scope](#out-of-scope-for-now).
 
@@ -446,17 +446,22 @@ The plan-approval card's `[A]` auto-approval hotkey is a shortcut: it approves t
 
 Auto mode persists across turns until you toggle it off. The banner above the cmdline (`▸ auto mode · edits + read-only bash auto-allow; commits prompt · Shift+Tab cycles`) is always visible while active so the state isn't easy to forget — the trailing `Shift+Tab cycles` hint is how you leave (it drops first on narrow terminals). The entry log shows the full cycle (`auto → plan → normal`); the exit log shows the re-enter key.
 
-The default per-turn iteration cap is 100; auto mode raises the effective cap to 400 (4×). If you still hit the cap on long implementations, run `/max-iterations 500` (sanity ceiling) or relaunch with `--yolo` (raises the cap to `max-iterations × 20`, at least 1000; see [Permissions bypass](#permissions-bypass)).
+The default per-turn iteration cap is 100; auto mode raises the effective cap to 400 (4×). If you still hit the cap on long implementations, run `/max-iterations 500` (sanity ceiling) or relaunch with `--yolo` (raises the cap to `max-iterations × 20`, at least 1000; see [Yolo mode](#yolo-mode)).
 
-## Permissions bypass
+## Yolo mode
 
-Permissions bypass is the unrestricted overlay — every tool auto-runs (`run_bash`, `git_commit`, edits, everything), and the iteration cap is raised to a generous but finite budget (`max-iterations × 20`, at least 1000) so a runaway model still terminates. Intended for unattended long-running implementations where you've decided no further oversight is needed. The startup flag is `--yolo`; the in-TUI banner label reads "permissions bypass" (the codebase calls the overlay state "yolo" internally).
+Yolo mode is the unrestricted overlay — every tool auto-runs (`run_bash`, `git_commit`, edits, everything), and the iteration cap is raised to a generous but finite budget (`max-iterations × 20`, at least 1000) so a runaway model still terminates. Intended for unattended long-running implementations where you've decided no further oversight is needed. The startup flag is `--yolo`; the slash command is `/yolo`; the in-TUI banner label reads "yolo mode" (the codebase calls the overlay state "yolo" internally).
 
-Mirroring Claude Code, the overlay enters **only via `yottacode --yolo` at startup**. There is no slash command, no `Shift+Tab` binding, and no in-TUI toggle — opt in once per process, and recovery requires restarting yottacode without the flag. This is deliberate: the high-autonomy state should be a conscious one-time decision, not a key chord away.
+There are two ways in:
 
-The overlay is a **modifier**, not a mode — once active, it sits on top of normal, auto, or plan. Entering auto or plan via `Shift+Tab` does not turn bypass off. The bypass banner takes visual priority while it's on (it's the loudest signal), and when a mode (auto or plan) is also active, the mode banner picks up a `⚠ bypass` suffix instead.
+- **`yottacode --yolo` at startup** — the original one-time opt-in. Recovery requires restarting yottacode without the flag.
+- **`/yolo` slash command** (mid-session toggle) — turns yolo mode on; running `/yolo` again turns it off. The escape hatch the one-time `--yolo` path never had.
 
-Explicit `deny` rules in `.yottacode/permissions.json` still win — the bypass overlay is "skip prompts," not "ignore my policy." `Ctrl+C` is the escape hatch if a model goes into a runaway loop. The banner (`⚠ permissions bypass · all tools auto-allow · high iteration cap`) renders in red so the state isn't easy to forget; when a mode (auto or plan) is also active, the mode banner picks up a `⚠ bypass` suffix instead.
+Auto mode (`/auto`) is intentionally NOT slash-invocable (auto enters via `Shift+Tab` or `--permission-mode auto` only); yolo mode is the lone exception with a slash-toggle because its danger lies in skipping prompts, not in being hard to leave.
+
+The overlay is a **modifier**, not a mode — once active, it sits on top of normal, auto, or plan. Entering auto or plan via `Shift+Tab` does not turn yolo mode off. The yolo banner takes visual priority while it's on (it's the loudest signal), and when a mode (auto or plan) is also active, the mode banner picks up a `⚠ yolo mode` suffix instead.
+
+Explicit `deny` rules in `.yottacode/permissions.json` still win — the yolo overlay is "skip prompts," not "ignore my policy." `Ctrl+C` is the escape hatch if a model goes into a runaway loop. The banner (`⚠ yolo mode · all tools auto-allow · high iteration cap`) renders in red so the state isn't easy to forget; when a mode (auto or plan) is also active, the mode banner picks up a `⚠ yolo mode` suffix instead.
 
 Plan-mode state is per-launch — a new `yottacode` session starts in normal mode, and resuming an old session never re-enters plan mode automatically. Plan files persist on disk under `~/.yottacode/plans/`, sorted newest-first.
 

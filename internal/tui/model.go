@@ -1265,7 +1265,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// One blank line of breathing room between the card and
 				// the input frame — matches the Phase 2 spacing target.
 				m.queuePrintln("")
-				// Construction-time entry banners (permissions-bypass,
+				// Construction-time entry banners (yolo mode,
 				// plan/auto mode, custom-command errors) recorded into
 				// historyLines before any width was known — queuePrintln
 				// deferred their emission rather than wrap at the 80-col
@@ -2707,12 +2707,13 @@ func (m Model) View() string {
 			parts = append(parts, renderFilePalette(m.filePaletteFiltered, m.filePaletteIndex, m.filePaletteOffset, liveContentWidth(m.width)+4))
 		}
 		// Banner: one-line indicator above the input rule. Modes
-		// (plan/auto) are mutually exclusive; yolo is an orthogonal
-		// overlay flag whose `⚠ yolo` tag appends to the active mode
-		// banner. When no mode is active but yolo is, a standalone
-		// yolo banner shows so the user can still see the "rails
-		// off" state. Suppressed entirely while a palette is open
-		// (palettes already own the above-cmdline real estate).
+		// (plan/auto) are mutually exclusive; yolo mode is an
+		// orthogonal overlay flag whose `⚠ yolo mode` tag appends to
+		// the active mode banner. When no mode is active but yolo
+		// mode is, a standalone yolo banner shows so the user can
+		// still see the "rails off" state. Suppressed entirely while a
+		// palette is open (palettes already own the above-cmdline real
+		// estate).
 		yoloOn := m.cfg.YoloMode.IsActive()
 		switch {
 		case m.paletteOpen, m.filePaletteOpen:

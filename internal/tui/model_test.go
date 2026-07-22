@@ -2255,7 +2255,7 @@ func TestStartupBanner_DeferredUntilWidthKnown(t *testing.T) {
 		if strings.Contains(b, "YottaCode by YottaDynamics") {
 			boxIdx = i
 		}
-		if strings.Contains(b, "permissions bypass active") {
+		if strings.Contains(b, "yolo mode active") {
 			bannerIdx = i
 			// At width 120 the whole banner fits on one line; an 80-col
 			// wrap would have split "no iteration cap" onto a second row.
