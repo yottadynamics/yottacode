@@ -73,7 +73,7 @@ func (a *copilotAdapter) ChatStream(ctx context.Context, messages []Message, too
 }
 
 func (a *copilotAdapter) runOnce(ctx context.Context, messages []Message, tools []Tool, out chan<- StreamEvent) {
-	body, err := buildCopilotRequest(a.model, messages, tools)
+	body, err := buildCopilotRequest(a.model, messages, tools, liftedChatMaxTokens(a.cfg.ModelMaxOutput))
 	if err != nil {
 		out <- StreamEvent{Kind: EventErr, Err: fmt.Errorf("copilot: build request: %w", err)}
 		return
@@ -204,7 +204,7 @@ func copilotUnsanitizeName(sanitized string, origNames []string) string {
 	return sanitized
 }
 
-func buildCopilotRequest(model string, messages []Message, tools []Tool) ([]byte, error) {
+func buildCopilotRequest(model string, messages []Message, tools []Tool, maxTokens int64) ([]byte, error) {
 	chatMessages := make([]map[string]any, 0, len(messages))
 	for _, m := range messages {
 		var content any = m.Content
@@ -246,7 +246,7 @@ func buildCopilotRequest(model string, messages []Message, tools []Tool) ([]byte
 		"model":      model,
 		"messages":   chatMessages,
 		"stream":     true,
-		"max_tokens": ChatDefaultMaxTokens,
+		"max_tokens": maxTokens,
 		"stream_options": map[string]any{
 			"include_usage": true,
 		},

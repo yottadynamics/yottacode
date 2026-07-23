@@ -88,6 +88,19 @@ type AgentTool struct {
 	// that a child inherits when nothing routes it elsewhere.
 	Adapter Streamer
 
+	// FastAdapter is the cheap/fast model's streamer used for cache-safe
+	// task routing. nil when routing is disabled. The fast model is
+	// reserved for subagent compaction summarization (a mechanical
+	// compression, not reasoning, so the cheap model is the right tool),
+	// and is reachable for a subagent's own routing only via an explicit
+	// `model:` override. nil falls back to the child's own adapter.
+	FastAdapter Streamer
+
+	// FastModel is the fast model's name, recorded on the task +
+	// SubagentDone events so /subagents and the inline card can show
+	// which model handled a delegation. Empty when routing is off.
+	FastModel string
+
 	// SmartAdapter is the capable model's streamer ([router].smart_model).
 	// In auto mode every delegated subagent without an explicit `model:`
 	// routes here instead of inheriting the active session model — so
@@ -518,6 +531,46 @@ func (t *AgentTool) Execute(ctx context.Context, argsJSON string) (string, error
 		return result, nil // returned as a tool result so the model sees the failure
 	}
 	return result, nil
+}
+
+// readOnlyChildTools is the set of tools that cannot mutate the user's
+// workspace or execute arbitrary commands. It is used only for execution
+// posture (safe automatic backgrounding and dispatch worktree decisions),
+// not for model routing: auto routing sends every delegated subagent to the
+// smart model, while the fast model is reserved for summarization.
+var readOnlyChildTools = map[string]bool{
+	"read_file":              true,
+	"read_many_files":        true,
+	"grep":                   true,
+	"glob":                   true,
+	"list_dir":               true,
+	"list_project_structure": true,
+	"git_log_file":           true,
+	"git_blame_lines":        true,
+	"git_diff_files":         true,
+	"git_show_file_at_rev":   true,
+	"git_branch_status":      true,
+	"list_git_changed_files": true,
+	"git_merge_base":         true,
+	"fetch_url":              true,
+	"todo_write":             true,
+	"session_recall":         true,
+	"memory_search":          true,
+}
+
+// agentIsReadOnly reports whether an agent definition is restricted to the
+// read-only tool set. A wildcard / inherit-all allowlist (empty Tools) is not
+// read-only because it can reach the full registry.
+func agentIsReadOnly(cfg *subagents.AgentConfig) bool {
+	if cfg == nil || len(cfg.Tools) == 0 {
+		return false
+	}
+	for _, name := range cfg.Tools {
+		if !readOnlyChildTools[name] {
+			return false
+		}
+	}
+	return true
 }
 
 // routeChildModel picks the streamer + model name for a child subagent.

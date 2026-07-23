@@ -194,7 +194,7 @@ func resolveConfiguredModel(cfg config.Config, model string) (config.ResolvedCan
 
 func providerHasModel(p *config.Provider, model string) bool {
 	if catalog.IsCurated(*p) {
-		for _, m := range catalog.Get(p.Kind) {
+		for _, m := range catalog.Curated(p.Kind) {
 			if m.ID == model {
 				return true
 			}

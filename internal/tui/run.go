@@ -460,7 +460,7 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 		SmartAdapter:  routerSmart(routerAdapters),
 		SmartModel:    routerSmartModel(routerAdapters),
 		RouteAuto:     fileCfg.Router.RoutingAuto(),
-		ModelResolver: routerResolve(routerAdapters),
+		ModelResolver: routerModelResolver(routerAdapters, fileCfg.Router.RoutingEnabled()),
 		// Source the child loop's compaction window the same way the
 		// status bar does, so subagents size context against the real
 		// (override- and default_window-aware) window.
@@ -673,6 +673,9 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 		BaseSystemPrompt:       baseSys,
 		EmbedClient:            embedClient,
 		FileCfg:                fileCfg,
+		RouterAdapters:         routerAdapters,
+		RouterMode:             fileCfg.Router.Mode,
+		Options:                opts,
 		Subagents:              subagentTasks,
 		AgentTool:              agentTool,
 		CustomCommands:         customCmds,
@@ -1003,6 +1006,26 @@ func routerResolve(ra *cli.RouterAdapters) func(string) agent.Streamer {
 		}
 		return s
 	}
+}
+
+// routerModelResolver gates explicit model-frontmatter routing on the router
+// mode. A configured pair may be built while routing is off so /router can
+// toggle live, but off mode promises every subagent inherits the active model.
+func routerModelResolver(ra *cli.RouterAdapters, enabled bool) func(string) agent.Streamer {
+	if !enabled {
+		return nil
+	}
+	return routerResolve(ra)
+}
+
+// routerSummarizer returns the fast-model summarizer only in auto mode. Manual
+// routing resolves explicit subagent model pins but keeps compaction on the
+// active model.
+func routerSummarizer(ra *cli.RouterAdapters, auto bool) (agent.Streamer, string) {
+	if !auto {
+		return nil, ""
+	}
+	return routerFast(ra), routerFastModel(ra)
 }
 
 func composeSystemPrompt(base string, profile adapter.ProviderProfile) string {

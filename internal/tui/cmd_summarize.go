@@ -122,6 +122,8 @@ type summaryDoneMsg struct {
 	tokensBefore int
 	tokensAfter  int
 	err          error
+	fallbacks    []adapter.StreamEvent
+	degraded     bool
 	// compactionSeq is the mid-turn compaction generation captured when
 	// summarizeCmd cloned history; a changed value makes the result stale.
 	compactionSeq int
@@ -173,14 +175,9 @@ func (m Model) summarizeCmd(auto bool) tea.Cmd {
 	m.histMu.Lock()
 	history := slices.Clone(m.sess.Messages)
 	m.histMu.Unlock()
-	// Compaction is a single isolated call on a near-full context — when
-	// cache-safe routing is on this runs on the fast model (a large,
-	// safe saving). summarizerAdapter falls back to the main adapter
-	// when routing is off, or for Models built without New().
-	ad := m.summarizerAdapter
-	if ad == nil {
-		ad = m.cfg.Adapter
-	}
+	// Compaction is a single isolated call on a near-full context. Auto
+	// routing uses the fast model until repeated failures degrade to smart.
+	ad, degraded := m.chooseSummarizer()
 	parentCtx := m.parentCtx
 	sessID := m.sess.ID
 	seq := m.compactionSeq
@@ -193,13 +190,13 @@ func (m Model) summarizeCmd(auto bool) tea.Cmd {
 		ctx, cancel := context.WithTimeout(parentCtx, summarizeTimeout)
 		defer cancel()
 
-		summary, err := runSummarization(ctx, ad, history, windowTokens)
+		summary, fallbacks, err := runSummarization(ctx, ad, history, windowTokens)
 		if err != nil {
-			return summaryDoneMsg{auto: auto, err: err}
+			return summaryDoneMsg{auto: auto, err: err, degraded: degraded}
 		}
 		snapshotPath, err := writePreSummarySnapshot(sessID, history)
 		if err != nil {
-			return summaryDoneMsg{auto: auto, err: fmt.Errorf("snapshot: %w", err)}
+			return summaryDoneMsg{auto: auto, err: fmt.Errorf("snapshot: %w", err), degraded: degraded}
 		}
 
 		newHistory := composeSummarizedHistory(history, summary, windowTokens)
@@ -209,6 +206,8 @@ func (m Model) summarizeCmd(auto bool) tea.Cmd {
 			snapshotPath:  snapshotPath,
 			tokensBefore:  tokensBefore,
 			compactionSeq: seq,
+			fallbacks:     fallbacks,
+			degraded:      degraded,
 		}
 	}
 }
@@ -220,10 +219,10 @@ func (m Model) summarizeCmd(auto bool) tea.Cmd {
 // budgeted so input + summarization prompt + reserved output fits
 // inside the window. Pass 0 to disable budgeting (test paths,
 // scripted stubs).
-func runSummarization(ctx context.Context, ad agentStreamer, history []adapter.Message, windowTokens int) (string, error) {
+func runSummarization(ctx context.Context, ad agentStreamer, history []adapter.Message, windowTokens int) (string, []adapter.StreamEvent, error) {
 	body := renderHistoryForSummarization(history, windowTokens)
 	if strings.TrimSpace(body) == "" {
-		return "", errors.New("history is empty")
+		return "", nil, errors.New("history is empty")
 	}
 	messages := []adapter.Message{
 		{Role: adapter.RoleSystem, Content: summarizationPrompt},
@@ -231,12 +230,15 @@ func runSummarization(ctx context.Context, ad agentStreamer, history []adapter.M
 	}
 	out := ad.ChatStream(ctx, messages, nil)
 	var content strings.Builder
+	var fallbacks []adapter.StreamEvent
 	for ev := range out {
 		switch ev.Kind {
 		case adapter.EventTokenDelta:
 			content.WriteString(ev.Token)
+		case adapter.EventFallback:
+			fallbacks = append(fallbacks, ev)
 		case adapter.EventErr:
-			return "", ev.Err
+			return "", fallbacks, ev.Err
 		case adapter.EventDone:
 			if content.Len() == 0 && ev.Final != nil {
 				content.WriteString(ev.Final.Content)
@@ -245,9 +247,9 @@ func runSummarization(ctx context.Context, ad agentStreamer, history []adapter.M
 	}
 	out2 := strings.TrimSpace(content.String())
 	if out2 == "" {
-		return "", errors.New("model returned empty summary")
+		return "", fallbacks, errors.New("model returned empty summary")
 	}
-	return ensureFourSections(out2), nil
+	return ensureFourSections(out2), fallbacks, nil
 }
 
 // agentStreamer is the slim interface the summarizer needs from the
@@ -255,6 +257,24 @@ func runSummarization(ctx context.Context, ad agentStreamer, history []adapter.M
 // stub without depending on the agent package.
 type agentStreamer interface {
 	ChatStream(ctx context.Context, messages []adapter.Message, tools []adapter.Tool) <-chan adapter.StreamEvent
+}
+
+// summarizeDegradeThreshold is the number of consecutive fast-model
+// summarization failures before auto routing degrades compaction to smart.
+const summarizeDegradeThreshold = 2
+
+// chooseSummarizer picks the streamer for a compaction call. In auto routing,
+// repeated failures on the fast model degrade to the smart model so
+// compaction keeps working during a fast-provider outage; off/manual falls
+// through to the active model via summarizerAdapter/cfg.Adapter.
+func (m Model) chooseSummarizer() (agentStreamer, bool) {
+	if m.routerMode == config.RouterModeAuto && m.summarizeFailures >= summarizeDegradeThreshold && m.router != nil && m.router.Smart != nil {
+		return m.router.Smart, true
+	}
+	if m.summarizerAdapter != nil {
+		return m.summarizerAdapter, false
+	}
+	return m.cfg.Adapter, false
 }
 
 // summarizerOrDefault picks the routed summarizer adapter when present,
@@ -634,7 +654,7 @@ func findOrComputeSummary(deps summarizeDeps, sess *session.Session) (string, st
 	ctx, cancel := context.WithTimeout(deps.ctx, summarizeTimeout)
 	defer cancel()
 	windowTokens := catalog.ResolveWindowForProvider(deps.fileCfg.ProviderKindForModel(sess.Model), sess.Model, deps.fileCfg.ContextWindowOverride(sess.Model), deps.fileCfg.Context.DefaultWindow)
-	summary, err := runSummarization(ctx, deps.adapter, sess.Messages, windowTokens)
+	summary, _, err := runSummarization(ctx, deps.adapter, sess.Messages, windowTokens)
 	if err != nil {
 		return "", "", fmt.Errorf("on-the-fly summarize: %w", err)
 	}

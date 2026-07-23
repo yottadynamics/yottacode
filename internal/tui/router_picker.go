@@ -549,7 +549,9 @@ func (m Model) switchActiveModelToRef(ref string) (Model, tea.Cmd) {
 	if m.sess != nil {
 		m.sess.Model = model
 	}
-	m, _ = reloadMemoryNow(m, "")
+	if m.histMu != nil {
+		m, _ = reloadMemoryNow(m, "")
+	}
 	m.appendLine(styleAuto.Render(fmt.Sprintf(
 		"[router] active model → %s (matching the configured smart model)", model)))
 	return m, runProviderProbe(m.parentCtx, m.adapterConfig(model, m.baseURL), false)
@@ -612,11 +614,11 @@ func renderRouterPicker(p *routerPickerState) string {
 		b.WriteString(marker)
 		b.WriteString(label)
 		b.WriteString("  ")
-		b.WriteString(stylePaletteEmpty.Render(r.value))
+		b.WriteString(styleEmpty.Render(r.value))
 		b.WriteByte('\n')
 	}
 	b.WriteByte('\n')
-	b.WriteString(stylePaletteEmpty.Render(
+	b.WriteString(styleEmpty.Render(
 		"↵ set a model (or toggle Routing) · d clears a fallback · persists to config.toml"))
 	if p.note != "" {
 		b.WriteString("\n")
@@ -653,7 +655,7 @@ func renderRouterModelList(p *routerPickerState) string {
 	b.WriteString(renderMenuHeader(title, "↑↓ navigate · ↵ select · esc back"))
 	b.WriteString("\n\n")
 	if len(p.models) == 0 {
-		b.WriteString(stylePaletteEmpty.Render("no configured models — add a provider first"))
+		b.WriteString(styleEmpty.Render("no configured models — add a provider first"))
 		return b.String()
 	}
 	visible := p.visibleRows
@@ -662,7 +664,7 @@ func renderRouterModelList(p *routerPickerState) string {
 	}
 	end := min(p.windowTop+visible, len(p.models))
 	if p.windowTop > 0 {
-		b.WriteString(stylePaletteEmpty.Render(fmt.Sprintf("  ▲ %d more above", p.windowTop)))
+		b.WriteString(styleEmpty.Render(fmt.Sprintf("  ▲ %d more above", p.windowTop)))
 		b.WriteByte('\n')
 	}
 	for i := p.windowTop; i < end; i++ {
@@ -674,14 +676,14 @@ func renderRouterModelList(p *routerPickerState) string {
 			marker = cursorArrow
 			label = stylePaletteSelected.Render(e.label)
 		case e.ref == current:
-			marker = stylePaletteEmpty.Render("· ")
+			marker = styleEmpty.Render("· ")
 		}
 		b.WriteString(marker)
 		b.WriteString(label)
 		b.WriteByte('\n')
 	}
 	if end < len(p.models) {
-		b.WriteString(stylePaletteEmpty.Render(fmt.Sprintf("  ▼ %d more below", len(p.models)-end)))
+		b.WriteString(styleEmpty.Render(fmt.Sprintf("  ▼ %d more below", len(p.models)-end)))
 		b.WriteByte('\n')
 	}
 	return strings.TrimRight(b.String(), "\n")
