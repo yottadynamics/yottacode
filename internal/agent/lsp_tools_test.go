@@ -10,8 +10,11 @@ import (
 )
 
 type fakeLSPClient struct {
-	symbols []lspci.Symbol
-	locs    []lspci.Location
+	symbols     []lspci.Symbol
+	locs        []lspci.Location
+	diagnostics []lspci.Diagnostic
+	actions     []lspci.CodeAction
+	calls       []lspci.CallHierarchyItem
 }
 
 func (f *fakeLSPClient) WorkspaceSymbols(context.Context, string) ([]lspci.Symbol, error) {
@@ -27,12 +30,21 @@ func (f *fakeLSPClient) Hover(context.Context, string, lspci.Position) (string, 
 	return "hover text", nil
 }
 func (f *fakeLSPClient) Diagnostics(context.Context, string) ([]lspci.Diagnostic, error) {
+	if f.diagnostics != nil {
+		return f.diagnostics, nil
+	}
 	return []lspci.Diagnostic{{Path: "main.go", Line: 0, Character: 1, Severity: "error", Source: "test", Message: "bad"}}, nil
 }
 func (f *fakeLSPClient) CodeActions(context.Context, string, lspci.Position, lspci.Position) ([]lspci.CodeAction, error) {
+	if f.actions != nil {
+		return f.actions, nil
+	}
 	return []lspci.CodeAction{{Kind: "quickfix", Title: "Fix it"}}, nil
 }
 func (f *fakeLSPClient) CallHierarchy(context.Context, string, lspci.Position) ([]lspci.CallHierarchyItem, error) {
+	if f.calls != nil {
+		return f.calls, nil
+	}
 	return []lspci.CallHierarchyItem{{Name: "caller", Kind: "function", Direction: "incoming", Location: lspci.Location{Path: "main.go", Line: 1, Character: 2}}}, nil
 }
 func (f *fakeLSPClient) Close() error { return nil }
@@ -129,7 +141,7 @@ func TestRegisterCoreCwdTools_LSPGate(t *testing.T) {
 	}
 	reg = NewRegistry()
 	RegisterCoreCwdTools(reg, cwd, CoreToolDeps{WriteOpts: WritePathOptions{Cwd: cwd}, EnableLSP: true})
-	for _, name := range []string{"lsp_status", "lsp_symbols", "lsp_definition", "lsp_references"} {
+	for _, name := range []string{"lsp_status", "lsp_symbols", "lsp_definition", "lsp_references", "lsp_diagnostics", "lsp_hover", "lsp_code_actions", "lsp_call_hierarchy"} {
 		if _, ok := reg.Get(name); !ok {
 			t.Errorf("%s should register when EnableLSP is true", name)
 		}

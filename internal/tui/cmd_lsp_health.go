@@ -47,6 +47,10 @@ func cmdLSP(m Model, args []string) (Model, tea.Cmd) {
 			m.appendLine(styleAuto.Render("    hint: " + lang.InstallHint))
 		}
 	}
+	if m.lspManager != nil {
+		stats := m.lspManager.Stats()
+		m.appendLine(styleAuto.Render(fmt.Sprintf("  manager  open=%d/%d  starts=%d  reuses=%d  evictions=%d  last_start=%s", stats.OpenServers, stats.MaxServers, stats.Starts, stats.Reuses, stats.Evictions, stats.LastStart)))
+	}
 	return m, nil
 }
 
@@ -77,6 +81,10 @@ func cmdHealth(m Model, _ []string) (Model, tea.Cmd) {
 				}
 			}
 			fmt.Fprintf(&b, "lsp: %d languages (%d installed, %d missing)\n", len(langs), installed, missing)
+			if m.lspManager != nil {
+				stats := m.lspManager.Stats()
+				fmt.Fprintf(&b, "lsp_manager: open=%d/%d starts=%d reuses=%d evictions=%d last_start=%s\n", stats.OpenServers, stats.MaxServers, stats.Starts, stats.Reuses, stats.Evictions, stats.LastStart)
+			}
 		} else {
 			fmt.Fprintf(&b, "lsp: error: %v\n", err)
 		}

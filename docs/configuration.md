@@ -620,8 +620,9 @@ Then install the servers for the languages you use:
 - Rust: install `rust-analyzer` through rustup, your package manager, or upstream docs
 
 Use the `lsp_status` tool in-session to see detected languages, installed/missing
-servers, and the same install hints. See [tools.md](tools.md#lsp_status) for the
-full tool reference. Use `/lsp` for the same status directly from the TUI, and
+servers, and the same install hints. See [lsp.md](lsp.md) for setup,
+troubleshooting, and production-promotion notes, and [tools.md](tools.md#lsp_status)
+for the full tool reference. Use `/lsp` for the same status directly from the TUI, and
 customize commands when needed:
 
 ```toml

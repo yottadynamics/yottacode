@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 )
@@ -31,6 +32,9 @@ func (t *LSPHoverTool) Execute(ctx context.Context, argsJSON string) (string, er
 	}
 	defer client.Close()
 	text, err := client.Hover(ctx, path, pos)
+	if errors.Is(err, lspci.ErrUnsupportedCapability) {
+		return unsupportedCapabilityResult("lsp_hover", err), nil
+	}
 	if err != nil {
 		return "", fmt.Errorf("lsp_hover: %w", err)
 	}
@@ -72,6 +76,9 @@ func (t *LSPDiagnosticsTool) Execute(ctx context.Context, argsJSON string) (stri
 	}
 	defer client.Close()
 	diags, err := client.Diagnostics(ctx, path)
+	if errors.Is(err, lspci.ErrUnsupportedCapability) {
+		return unsupportedCapabilityResult("lsp_diagnostics", err), nil
+	}
 	if err != nil {
 		return "", fmt.Errorf("lsp_diagnostics: %w", err)
 	}
@@ -127,6 +134,9 @@ func (t *LSPCodeActionsTool) Execute(ctx context.Context, argsJSON string) (stri
 		end = pos
 	}
 	actions, err := client.CodeActions(ctx, path, pos, end)
+	if errors.Is(err, lspci.ErrUnsupportedCapability) {
+		return unsupportedCapabilityResult("lsp_code_actions", err), nil
+	}
 	if err != nil {
 		return "", fmt.Errorf("lsp_code_actions: %w", err)
 	}
@@ -162,6 +172,9 @@ func (t *LSPCallHierarchyTool) Execute(ctx context.Context, argsJSON string) (st
 	}
 	defer client.Close()
 	items, err := client.CallHierarchy(ctx, path, pos)
+	if errors.Is(err, lspci.ErrUnsupportedCapability) {
+		return unsupportedCapabilityResult("lsp_call_hierarchy", err), nil
+	}
 	if err != nil {
 		return "", fmt.Errorf("lsp_call_hierarchy: %w", err)
 	}
@@ -195,7 +208,7 @@ func openPositionClient(ctx context.Context, base lspToolBase, argsJSON, name st
 	if !lspci.ServerAvailable(lang) && base.NewClient == nil {
 		return nil, path, lspci.Position{}, unavailableServerResult(lang), nil
 	}
-	client, err := base.factory()(ctx, lang, base.cwd())
+	client, err := base.openClient(ctx, lang, lspci.WorkspaceRoot(path, lang, base.cwd()))
 	if err != nil {
 		return nil, path, lspci.Position{}, missingServerResult(lang, err), nil
 	}

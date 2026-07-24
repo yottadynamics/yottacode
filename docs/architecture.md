@@ -235,6 +235,45 @@ parent-turn cancel does not propagate. They continue running to
 completion and surface via `SubagentBackgroundDone` whenever they
 finish, regardless of which parent turn is active.
 
+## LSP Code Intelligence
+
+The experimental LSP bridge adds semantic, read-only code intelligence on top of
+the normal lexical tools (`grep`, `glob`, `read_file`). When
+`lsp_code_intelligence` is enabled, the core registry exposes LSP-backed tools
+for status, workspace symbols, definitions, references, diagnostics, hover,
+code actions, and call hierarchy.
+
+Architecture shape:
+
+```text
+agent tool call
+   |
+   v
+internal/agent/lsp_* tool
+   |
+   v
+internal/lsp Manager  -- bounded pool keyed by language + root + command
+   |
+   v
+local language server subprocess over stdio JSON-RPC
+```
+
+The LSP manager is session-owned. TUI and oneshot sessions construct it when the
+feature flag is enabled, pass it into the LSP tools, and close all pooled servers
+on exit. Servers are lazy-started on first use and reused until they go idle or
+the bounded pool needs to evict one. The user can inspect pool stats through
+`lsp_status`, `/lsp`, and `/health`.
+
+The bridge is intentionally local and opt-in:
+
+- yottacode never installs language servers automatically;
+- missing servers degrade into install hints and lexical fallback where possible;
+- `[lsp.servers]` overrides execute direct argv arrays, not shell strings;
+- code actions are listed read-only and are not applied by this feature.
+
+See [lsp.md](lsp.md) for setup, supported languages, commands, troubleshooting,
+and production-promotion notes.
+
 ## Subagents
 
 The `Agent` tool (`internal/agent/agent_tool.go`) is the parent's

@@ -30,6 +30,7 @@ import (
 	"github.com/yottadynamics/yottacode/internal/contextwindow"
 	"github.com/yottadynamics/yottacode/internal/filerefs"
 	githubapi "github.com/yottadynamics/yottacode/internal/github"
+	"github.com/yottadynamics/yottacode/internal/lsp"
 	mcppkg "github.com/yottadynamics/yottacode/internal/mcp"
 	"github.com/yottadynamics/yottacode/internal/memory"
 	"github.com/yottadynamics/yottacode/internal/permissions"
@@ -102,6 +103,7 @@ type Config struct {
 	MemorySummary     string   // "USER", "YOTTA", "USER+YOTTA", "UMEM", "USER+UMEM", or "" if none
 	BaseSystemPrompt  string   // pre-memory prompt — needed by /memory reload to recompose
 	EmbedClient       *memory.EmbedClient
+	LSPManager        *lsp.Manager
 
 	// FileCfg holds tunables loaded from ~/.yottacode/config.toml
 	// (context watermarks, retrieval). The TUI reads these at session
@@ -218,6 +220,7 @@ type Model struct {
 	memorySummary    string
 	baseSystemPrompt string // pre-memory prompt; used by /memory reload
 	embedClient      *memory.EmbedClient
+	lspManager       *lsp.Manager
 
 	// summarizerAdapter is the streamer the /summarize + auto-compaction
 	// path calls into. When cache-safe routing is on it points at the
@@ -1051,6 +1054,7 @@ func New(parent context.Context, c Config) Model {
 		memorySummary:          c.MemorySummary,
 		baseSystemPrompt:       c.BaseSystemPrompt,
 		embedClient:            c.EmbedClient,
+		lspManager:             c.LSPManager,
 		summarizerAdapter:      summarizerOrDefault(c.SummarizerAdapter, c.Cfg.Adapter),
 		summarizerModel:        c.SummarizerModel,
 		fileCfg:                c.FileCfg,

@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/url"
@@ -22,6 +23,11 @@ const (
 	defaultRequestTimeout = 5 * time.Second
 	maxMessageBytes       = 4 * 1024 * 1024
 )
+
+// ErrUnsupportedCapability marks an LSP method that the initialized server did
+// not advertise. Tool wrappers turn this into an actionable unavailable result
+// instead of showing a misleading empty response.
+var ErrUnsupportedCapability = errors.New("unsupported LSP capability")
 
 // Position is a zero-based LSP text position.
 type Position struct {
@@ -69,6 +75,15 @@ type CallHierarchyItem struct {
 	Direction string
 }
 
+type serverCapabilities struct {
+	WorkspaceSymbol bool
+	Definition      bool
+	References      bool
+	Hover           bool
+	CodeAction      bool
+	CallHierarchy   bool
+}
+
 // Client owns one short-lived language-server process. yottacode starts a
 // process per tool call instead of keeping editor-style background servers so
 // lifecycle, permissions, and session teardown stay simple.
@@ -78,6 +93,8 @@ type Client struct {
 	stdout  *bufio.Reader
 	stderr  bytes.Buffer
 	rootURI string
+	caps    serverCapabilities
+	capOK   bool
 
 	mu     sync.Mutex
 	nextID int64
@@ -140,9 +157,11 @@ func (c *Client) initialize(ctx context.Context) error {
 			},
 		},
 	}
-	if _, err := c.requestLocked(ctx, "initialize", params); err != nil {
+	raw, err := c.requestLocked(ctx, "initialize", params)
+	if err != nil {
 		return fmt.Errorf("initialize: %w%s", err, c.stderrSuffix())
 	}
+	c.caps, c.capOK = parseServerCapabilities(raw), true
 	return c.notifyLocked("initialized", map[string]any{})
 }
 
@@ -177,6 +196,9 @@ func (c *Client) Close() error {
 
 // WorkspaceSymbols runs workspace/symbol and returns normalized results.
 func (c *Client) WorkspaceSymbols(ctx context.Context, query string) ([]Symbol, error) {
+	if err := c.requireCapability(c.caps.WorkspaceSymbol, "workspace/symbol"); err != nil {
+		return nil, err
+	}
 	ctx, cancel := context.WithTimeout(ctx, defaultRequestTimeout)
 	defer cancel()
 	raw, err := c.request(ctx, "workspace/symbol", map[string]any{"query": query})
@@ -214,6 +236,12 @@ func (c *Client) WorkspaceSymbols(ctx context.Context, query string) ([]Symbol, 
 
 // Definition runs textDocument/definition at pos.
 func (c *Client) Definition(ctx context.Context, path string, pos Position) ([]Location, error) {
+	if err := c.requireCapability(c.caps.Definition, "textDocument/definition"); err != nil {
+		return nil, err
+	}
+	if err := c.openDocument(ctx, path); err != nil {
+		return nil, err
+	}
 	return c.locationRequest(ctx, "textDocument/definition", map[string]any{
 		"textDocument": map[string]any{"uri": pathToURI(path)},
 		"position":     pos,
@@ -222,6 +250,12 @@ func (c *Client) Definition(ctx context.Context, path string, pos Position) ([]L
 
 // References runs textDocument/references at pos.
 func (c *Client) References(ctx context.Context, path string, pos Position, includeDeclaration bool) ([]Location, error) {
+	if err := c.requireCapability(c.caps.References, "textDocument/references"); err != nil {
+		return nil, err
+	}
+	if err := c.openDocument(ctx, path); err != nil {
+		return nil, err
+	}
 	return c.locationRequest(ctx, "textDocument/references", map[string]any{
 		"textDocument": map[string]any{"uri": pathToURI(path)},
 		"position":     pos,
@@ -231,6 +265,12 @@ func (c *Client) References(ctx context.Context, path string, pos Position, incl
 
 // Hover returns type/doc information at a source position.
 func (c *Client) Hover(ctx context.Context, path string, pos Position) (string, error) {
+	if err := c.requireCapability(c.caps.Hover, "textDocument/hover"); err != nil {
+		return "", err
+	}
+	if err := c.openDocument(ctx, path); err != nil {
+		return "", err
+	}
 	ctx, cancel := context.WithTimeout(ctx, defaultRequestTimeout)
 	defer cancel()
 	raw, err := c.request(ctx, "textDocument/hover", map[string]any{"textDocument": map[string]any{"uri": pathToURI(path)}, "position": pos})
@@ -242,6 +282,12 @@ func (c *Client) Hover(ctx context.Context, path string, pos Position) (string, 
 
 // CodeActions lists server-offered actions for a range without applying them.
 func (c *Client) CodeActions(ctx context.Context, path string, start, end Position) ([]CodeAction, error) {
+	if err := c.requireCapability(c.caps.CodeAction, "textDocument/codeAction"); err != nil {
+		return nil, err
+	}
+	if err := c.openDocument(ctx, path); err != nil {
+		return nil, err
+	}
 	ctx, cancel := context.WithTimeout(ctx, defaultRequestTimeout)
 	defer cancel()
 	raw, err := c.request(ctx, "textDocument/codeAction", map[string]any{
@@ -267,7 +313,7 @@ func (c *Client) CodeActions(ctx context.Context, path string, start, end Positi
 func (c *Client) Diagnostics(ctx context.Context, path string) ([]Diagnostic, error) {
 	ctx, cancel := context.WithTimeout(ctx, defaultRequestTimeout)
 	defer cancel()
-	if err := c.notify("textDocument/didOpen", map[string]any{"textDocument": map[string]any{"uri": pathToURI(path), "languageId": languageIDForPath(path), "version": 1, "text": readTextBestEffort(path)}}); err != nil {
+	if err := c.openDocument(ctx, path); err != nil {
 		return nil, err
 	}
 	for {
@@ -291,6 +337,12 @@ func (c *Client) Diagnostics(ctx context.Context, path string) ([]Diagnostic, er
 
 // CallHierarchy returns incoming and outgoing calls for a source position.
 func (c *Client) CallHierarchy(ctx context.Context, path string, pos Position) ([]CallHierarchyItem, error) {
+	if err := c.requireCapability(c.caps.CallHierarchy, "textDocument/prepareCallHierarchy"); err != nil {
+		return nil, err
+	}
+	if err := c.openDocument(ctx, path); err != nil {
+		return nil, err
+	}
 	ctx, cancel := context.WithTimeout(ctx, defaultRequestTimeout)
 	defer cancel()
 	params := map[string]any{"textDocument": map[string]any{"uri": pathToURI(path)}, "position": pos}
@@ -313,6 +365,24 @@ func (c *Client) CallHierarchy(ctx context.Context, path string, pos Position) (
 		}
 	}
 	return out, nil
+}
+
+func (c *Client) openDocument(ctx context.Context, path string) error {
+	// Tests can construct a Client around pipes without running initialize; skip
+	// didOpen there so request-framing tests keep their expected first method.
+	if !c.capOK {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, defaultRequestTimeout)
+	defer cancel()
+	return c.notifyContext(ctx, "textDocument/didOpen", map[string]any{"textDocument": map[string]any{"uri": pathToURI(path), "languageId": languageIDForPath(path), "version": 1, "text": readTextBestEffort(path)}})
+}
+
+func (c *Client) requireCapability(ok bool, method string) error {
+	if !c.capOK || ok {
+		return nil
+	}
+	return fmt.Errorf("%w: %s", ErrUnsupportedCapability, method)
 }
 
 func (c *Client) locationRequest(ctx context.Context, method string, params any) ([]Location, error) {
@@ -396,8 +466,15 @@ func (c *Client) requestLocked(ctx context.Context, method string, params any) (
 }
 
 func (c *Client) notify(method string, params any) error {
+	return c.notifyContext(context.Background(), method, params)
+}
+
+func (c *Client) notifyContext(ctx context.Context, method string, params any) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	return c.notifyLocked(method, params)
 }
 

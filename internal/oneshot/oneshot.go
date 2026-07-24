@@ -26,6 +26,7 @@ import (
 	"github.com/yottadynamics/yottacode/internal/config"
 	"github.com/yottadynamics/yottacode/internal/experimental"
 	"github.com/yottadynamics/yottacode/internal/filerefs"
+	"github.com/yottadynamics/yottacode/internal/lsp"
 	"github.com/yottadynamics/yottacode/internal/memory"
 	"github.com/yottadynamics/yottacode/internal/permissions"
 	"github.com/yottadynamics/yottacode/internal/session"
@@ -255,6 +256,12 @@ func Run(ctx context.Context, opts cli.ChatOptions, prompt string) error {
 		planStore.Replace(sess.Todos)
 	}
 
+	lspManager := (*lsp.Manager)(nil)
+	if expSet.IsEnabled(experimental.LSPCodeIntelligence) {
+		lspManager = lsp.NewManager(0, 0)
+		defer lspManager.CloseAll()
+	}
+
 	reg := agent.NewRegistry()
 	// Core cwd-bound tools — shared with the TUI build and the dispatch
 	// worktree-child registry via RegisterCoreCwdTools. Oneshot's extras
@@ -263,6 +270,7 @@ func Run(ctx context.Context, opts cli.ChatOptions, prompt string) error {
 		WriteOpts:  writeOpts,
 		DenyReads:  denyReads,
 		EnableLSP:  expSet.IsEnabled(experimental.LSPCodeIntelligence),
+		LSPManager: lspManager,
 		LSPServers: fileCfg.LSP.Servers,
 	})
 	// Git worktree tools. enter_worktree / exit_worktree always prompt

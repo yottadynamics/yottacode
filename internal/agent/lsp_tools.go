@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -37,6 +38,7 @@ type lspToolBase struct {
 	DenyReadPaths []string
 	NewClient     lspClientFactory
 	Servers       map[string][]string
+	Manager       *lspci.Manager
 }
 
 func (b lspToolBase) cwd() string {
@@ -51,6 +53,16 @@ func (b lspToolBase) factory() lspClientFactory {
 		return b.NewClient
 	}
 	return defaultLSPClientFactory
+}
+
+func (b lspToolBase) openClient(ctx context.Context, lang lspci.Language, root string) (lspClient, error) {
+	if b.NewClient != nil {
+		return b.NewClient(ctx, lang, root)
+	}
+	if b.Manager != nil {
+		return b.Manager.Acquire(ctx, lang, root)
+	}
+	return defaultLSPClientFactory(ctx, lang, root)
 }
 
 func (b lspToolBase) validateRead(path string) (string, error) {
@@ -127,6 +139,10 @@ func (t *LSPStatusTool) Execute(ctx context.Context, argsJSON string) (string, e
 		}
 		b.WriteByte('\n')
 	}
+	if t.Manager != nil {
+		stats := t.Manager.Stats()
+		fmt.Fprintf(&b, "manager\topen=%d/%d\tstarts=%d\treuses=%d\tevictions=%d\tlast_start=%s\n", stats.OpenServers, stats.MaxServers, stats.Starts, stats.Reuses, stats.Evictions, stats.LastStart)
+	}
 	return b.String(), nil
 }
 
@@ -177,13 +193,16 @@ func (t *LSPSymbolsTool) Execute(ctx context.Context, argsJSON string) (string, 
 	if unavailable != "" {
 		return unavailable, nil
 	}
-	client, err := t.factory()(ctx, lang, root)
+	client, err := t.openClient(ctx, lang, root)
 	if err != nil {
 		return missingServerResult(lang, err), nil
 	}
 	defer client.Close()
 	items, err := client.WorkspaceSymbols(ctx, a.Query)
 	if err != nil {
+		if errors.Is(err, lspci.ErrUnsupportedCapability) {
+			return unsupportedCapabilityResult("lsp_symbols", err), nil
+		}
 		if t.NewClient == nil {
 			fallback, fbErr := lspci.FallbackSymbols(ctx, root, a.Query, 2000)
 			if fbErr == nil && len(fallback) > 0 {
@@ -274,7 +293,7 @@ func executeLSPLocations(ctx context.Context, base lspToolBase, argsJSON, name s
 	if !lspci.ServerAvailable(lang) && base.NewClient == nil {
 		return unavailableServerResult(lang), nil
 	}
-	client, err := base.factory()(ctx, lang, base.cwd())
+	client, err := base.openClient(ctx, lang, lspci.WorkspaceRoot(path, lang, base.cwd()))
 	if err != nil {
 		return missingServerResult(lang, err), nil
 	}
@@ -287,6 +306,9 @@ func executeLSPLocations(ctx context.Context, base lspToolBase, argsJSON, name s
 		locs, err = client.Definition(ctx, path, pos)
 	}
 	if err != nil {
+		if errors.Is(err, lspci.ErrUnsupportedCapability) {
+			return unsupportedCapabilityResult(name, err), nil
+		}
 		return "", fmt.Errorf("%s: %w", name, err)
 	}
 	if len(locs) == 0 {
@@ -313,7 +335,8 @@ func (t *LSPSymbolsTool) resolveLanguage(ctx context.Context, path string) (lspc
 		}
 		if info, err := os.Stat(abs); err == nil && !info.IsDir() {
 			if lang, ok := lspci.ResolveFile(abs); ok {
-				return lspci.ApplyOverrides(lang, t.Servers), filepath.Dir(abs), "", nil
+				lang = lspci.ApplyOverrides(lang, t.Servers)
+				return lang, lspci.WorkspaceRoot(abs, lang, t.cwd()), "", nil
 			}
 			return lspci.Language{}, "", unsupportedFileResult(abs), nil
 		}
@@ -358,6 +381,10 @@ func unavailableServerResult(lang lspci.Language) string {
 
 func missingServerResult(lang lspci.Language, err error) string {
 	return fmt.Sprintf("unavailable: %s language server could not start: %v. %s\n", lang.Name, err, lang.InstallHint)
+}
+
+func unsupportedCapabilityResult(tool string, err error) string {
+	return fmt.Sprintf("unavailable: %s is not supported by this language server (%v)\n", tool, err)
 }
 
 func unsupportedFileResult(path string) string {
