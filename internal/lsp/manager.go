@@ -105,7 +105,7 @@ func (m *Manager) Acquire(ctx context.Context, lang Language, root string) (*Poo
 	return &PooledClient{Client: client, manager: m, key: key}, nil
 }
 
-// Stats returns a lock-protected snapshot for /lsp and lsp_status output.
+// Stats returns a lock-protected snapshot for lsp_status output.
 func (m *Manager) Stats() ManagerStats {
 	if m == nil {
 		return ManagerStats{}

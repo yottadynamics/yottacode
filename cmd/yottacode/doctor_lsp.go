@@ -87,7 +87,7 @@ func renderLSPDoctor(result LSPDoctorResult) string {
 		return b.String()
 	}
 	if result.Enabled && result.Manager.MaxServers > 0 {
-		fmt.Fprintf(&b, "\nmanager: max_servers=%d (runtime open/start/reuse stats are available in /lsp and lsp_status)", result.Manager.MaxServers)
+		fmt.Fprintf(&b, "\nmanager: max_servers=%d (runtime open/start/reuse stats are available in lsp_status)", result.Manager.MaxServers)
 	}
 	for _, lang := range result.Languages {
 		status := "missing"
