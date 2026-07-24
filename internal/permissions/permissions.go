@@ -6,13 +6,13 @@
 //
 // Both files merge at load time. Each file holds three pattern lists:
 //
-//   {
-//     "permissions": {
-//       "allow": ["Bash(go test *)", "Edit(internal/**)"],
-//       "ask":   ["Bash(rm *)"],
-//       "deny":  ["Bash(curl * | sh)", "Edit(/etc/**)"]
-//     }
-//   }
+//	{
+//	  "permissions": {
+//	    "allow": ["Bash(go test *)", "Edit(internal/**)"],
+//	    "ask":   ["Bash(rm *)"],
+//	    "deny":  ["Bash(curl * | sh)", "Edit(/etc/**)"]
+//	  }
+//	}
 //
 // Each rule is "<Tool>(<pattern>)". Tool names are capitalized rule
 // prefixes (Bash, Read, Write, Edit, Mkdir, Copy, Move, Delete, List,
@@ -23,8 +23,8 @@
 //
 // Github(...) descriptors are the canonical verb name:
 //
-//   read_pr, read_pr_review_context, read_issue, list_open_issues,
-//   create_pr, update_pr, add_pr_comment
+//	read_pr, read_pr_review_context, read_issue, list_open_issues,
+//	create_pr, update_pr, add_pr_comment
 //
 // Wildcards work as usual, so `Github(read_*)` covers every read,
 // `Github(*_pr)` covers every PR verb, and `Github(*)` is the
@@ -358,6 +358,52 @@ func (p *Permissions) AddAllow(rule string) error {
 		}
 	}
 	shape.Permissions.Allow = append(shape.Permissions.Allow, rule)
+	out, err := json.MarshalIndent(shape, "", "  ")
+	if err != nil {
+		return err
+	}
+	tmp := p.localPath + ".tmp"
+	if err := os.WriteFile(tmp, out, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, p.localPath)
+}
+
+// AddDeny appends a rule to the deny[] list of permissions.local.json
+// (creating the file and parent dir if needed). The mirror of AddAllow,
+// used by the TUI's "never / block" path. Because Deny outranks Allow in
+// the precedence chain, a newly added deny immediately overrides any
+// existing allow for the same pattern. Idempotent: a duplicate rule is
+// silently dropped.
+func (p *Permissions) AddDeny(rule string) error {
+	parsed, err := parseRule(rule, "permissions.local.json")
+	if err != nil {
+		return err
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for _, existing := range p.deny {
+		if existing.Tool == parsed.Tool && existing.Pattern == parsed.Pattern {
+			return nil
+		}
+	}
+	p.deny = append(p.deny, parsed)
+
+	// Persist by re-reading the local file (so we don't clobber
+	// concurrent edits the user made), appending, and atomic-renaming.
+	if err := os.MkdirAll(filepath.Dir(p.localPath), 0o700); err != nil {
+		return err
+	}
+	var shape fileShape
+	if b, err := os.ReadFile(p.localPath); err == nil {
+		_ = json.Unmarshal(b, &shape)
+	}
+	for _, existing := range shape.Permissions.Deny {
+		if existing == rule {
+			return nil
+		}
+	}
+	shape.Permissions.Deny = append(shape.Permissions.Deny, rule)
 	out, err := json.MarshalIndent(shape, "", "  ")
 	if err != nil {
 		return err

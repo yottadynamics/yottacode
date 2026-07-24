@@ -143,3 +143,36 @@ func TestRenderRunBashApproval_EmptyCwdNoOp(t *testing.T) {
 		t.Errorf("empty cwd should leave absolute path intact, got: %q", body)
 	}
 }
+
+// run_bash bypasses the file-tool path deny lists, so the approval banner
+// must surface credential reads and git-hook writes that would otherwise
+// render as ordinary commands.
+func TestRenderRunBashApproval_FlagsCredentialRead(t *testing.T) {
+	body, _, ok := renderRunBashApproval(`{"command":"cat ~/.ssh/id_rsa"}`, "/home/me/proj")
+	if !ok {
+		t.Fatalf("expected ok=true")
+	}
+	if !strings.Contains(body, "reads ~/.ssh") {
+		t.Errorf("credential read should be surfaced in banner: %q", body)
+	}
+}
+
+func TestRenderRunBashApproval_FlagsGitHookWrite(t *testing.T) {
+	body, _, ok := renderRunBashApproval(`{"command":"echo x > .git/hooks/pre-commit"}`, "/home/me/proj")
+	if !ok {
+		t.Fatalf("expected ok=true")
+	}
+	if !strings.Contains(body, ".git/hooks") {
+		t.Errorf("git-hook write should be surfaced in banner: %q", body)
+	}
+}
+
+func TestRenderRunBashApproval_NoWarningOnBenign(t *testing.T) {
+	body, _, ok := renderRunBashApproval(`{"command":"ls -la"}`, "/home/me/proj")
+	if !ok {
+		t.Fatalf("expected ok=true")
+	}
+	if strings.Contains(body, "reads ") || strings.Contains(body, "touches ") {
+		t.Errorf("benign command should carry no sensitive-path warning: %q", body)
+	}
+}

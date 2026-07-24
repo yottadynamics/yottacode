@@ -37,4 +37,12 @@ const (
 	// parent directory to the session-scoped allow list so every
 	// future write under that directory also succeeds. Session-only.
 	PathTrustSession
+	// DenyAlways refuses this call (like Deny) AND asks the loop to
+	// derive a block pattern from it (via permissions.DeriveDenyRule) and
+	// append it to the deny[] list in permissions.local.json, so future
+	// matching calls are refused without prompting. The mirror of
+	// AllowAlways. Unlike AllowAlways it is offered even for dangerous or
+	// compound commands — those are exactly the calls a user most wants to
+	// block permanently. Scope is currently run_bash + git.
+	DenyAlways
 )

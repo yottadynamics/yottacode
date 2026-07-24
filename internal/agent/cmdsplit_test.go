@@ -159,3 +159,49 @@ func TestSplitCommand_HighlightsDestructiveSegment(t *testing.T) {
 		t.Errorf("reason should mention rm: %q", got[1].Reason)
 	}
 }
+
+func TestAssessRisk_AwkShellExec(t *testing.T) {
+	// awk that reaches a shell must not be treated as a read-only verb.
+	cases := []string{
+		`awk 'BEGIN{system("id")}'`,
+		`awk '{print $0 | "sh"}'`,
+		`awk 'BEGIN{"date" | getline d; print d}'`,
+	}
+	for _, c := range cases {
+		risk, reason := AssessRisk(c)
+		if risk != RiskDestructive {
+			t.Errorf("AssessRisk(%q) = %v, want destructive (reason=%q)", c, risk, reason)
+		}
+	}
+}
+
+func TestAssessRisk_AwkOpaqueOrInPlace(t *testing.T) {
+	cases := []string{
+		`gawk -i inplace '{gsub(/a/,"b"); print}' file`,
+		`awk -f transform.awk data.txt`,
+	}
+	for _, c := range cases {
+		risk, reason := AssessRisk(c)
+		if risk == RiskNone {
+			t.Errorf("AssessRisk(%q) = none, want caution (reason=%q)", c, reason)
+		}
+	}
+}
+
+func TestAssessRisk_AwkReadOnlyStillNone(t *testing.T) {
+	// Common field-extraction awk must stay on the auto-mode fast path: -F
+	// (field separator) must not be read as -f (program file), and a pipe
+	// field separator must not look like a command pipe.
+	cases := []string{
+		`awk '{print $2}'`,
+		`awk -F, '{print $1}'`,
+		`awk -F'|' '{print $NF}'`,
+		`awk 'END{print NR}' file.txt`,
+	}
+	for _, c := range cases {
+		risk, reason := AssessRisk(c)
+		if risk != RiskNone {
+			t.Errorf("AssessRisk(%q) = %v, want none (reason=%q)", c, risk, reason)
+		}
+	}
+}

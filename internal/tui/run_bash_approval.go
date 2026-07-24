@@ -34,6 +34,7 @@ func renderRunBashApproval(argsJSON, cwd string) (body string, segments int, ok 
 	if len(segs) == 0 {
 		return "", 0, false
 	}
+	var b strings.Builder
 	if len(segs) == 1 {
 		s := segs[0]
 		line := shortenCwdInText(s.Text, cwd)
@@ -43,25 +44,31 @@ func renderRunBashApproval(argsJSON, cwd string) (body string, segments int, ok 
 				line += "    " + styleApprovalReason(s.Risk).Render("⚠ "+s.Reason)
 			}
 		}
-		return line, 1, true
+		b.WriteString(line)
+	} else {
+		for i, s := range segs {
+			if i > 0 {
+				b.WriteString("\n")
+			}
+			idx := fmt.Sprintf("  %d. ", i+1)
+			sep := ""
+			if s.Separator != "" {
+				sep = styleApprovalSep.Render("(" + s.Separator + ") ")
+			}
+			text := truncSegment(shortenCwdInText(s.Text, cwd), 100)
+			risk := renderRiskInline(s)
+			reason := ""
+			if s.Reason != "" {
+				reason = "    " + styleApprovalReason(s.Risk).Render("⚠ "+s.Reason)
+			}
+			b.WriteString(idx + sep + risk + text + reason)
+		}
 	}
-	var b strings.Builder
-	for i, s := range segs {
-		if i > 0 {
-			b.WriteString("\n")
-		}
-		idx := fmt.Sprintf("  %d. ", i+1)
-		sep := ""
-		if s.Separator != "" {
-			sep = styleApprovalSep.Render("("+s.Separator+") ")
-		}
-		text := truncSegment(shortenCwdInText(s.Text, cwd), 100)
-		risk := renderRiskInline(s)
-		reason := ""
-		if s.Reason != "" {
-			reason = "    " + styleApprovalReason(s.Risk).Render("⚠ "+s.Reason)
-		}
-		b.WriteString(idx + sep + risk + text + reason)
+	// run_bash bypasses the file-tool path deny lists and has no sandbox, so
+	// surface any credential-store or git-hook access the command reaches —
+	// these render benign otherwise. Shown in all modes.
+	for _, w := range agent.BashSensitivePathHits(a.Command, cwd) {
+		b.WriteString("\n" + styleApprovalReason(agent.RiskCaution).Render("⚠ "+w))
 	}
 	return b.String(), len(segs), true
 }

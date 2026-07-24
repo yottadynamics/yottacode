@@ -136,6 +136,8 @@ Auto mode has no slash command (intentionally off the palette and the `Shift+Tab
 
 yottacode does not sandbox tools inside its own process. `run_bash`, file edits, git commands, and other tools run on the host.
 
+`run_bash` is also *not* confined by the path deny lists that protect the structured file tools: a shell command can read `~/.ssh` or write `.git/hooks/` even though `read_file` / `write_file` cannot. As a partial mitigation, the run_bash approval modal flags — in every mode — when a command references a credential store (`~/.ssh`, `~/.aws`, `.env`, …) or a git hook, so `cat ~/.ssh/id_rsa` and `> .git/hooks/pre-commit` don't render as ordinary commands. It is a prompt aid, not a boundary — the boundary is the container.
+
 For real isolation, run yottacode itself inside a container or devcontainer. That isolates every tool, not just shell commands.
 
 This is a deliberate scope choice: yottacode does not ship bwrap, firejail, landlock, or pluggable sandbox backends.
@@ -205,9 +207,11 @@ Add this to `.gitignore`:
 
 Rules support `allow`, `ask`, and `deny` policy. Explicit deny rules still apply even when `--yolo` is set.
 
-## Creating allow rules from approvals
+## Creating allow and deny rules from approvals
 
-When an approval modal appears, choose the always-allow option to save a derived rule into `permissions.local.json`. The modal shows the exact rule before it is saved.
+When an approval modal appears, choose **`[A]` always** to save a derived *allow* rule, or **`[D]` never** to save a derived *deny* rule, into `permissions.local.json`. Either way the modal shows the exact rule before it is saved.
+
+`[A]` always is suppressed for compound shell commands and obviously dangerous verbs (`rm`, `curl`, `sudo`, …) — those are footgun-wide to blanket-allow. `[D]` never is offered even for those (blocking a dangerous command permanently is exactly the point) and is scoped to `run_bash` and `git`. Because bash rules are matched per segment, a block is derived at the verb level: hitting `[D]` never on `curl … | sh` saves `Bash(curl *)`, which then refuses `curl` anywhere. Since deny outranks allow, a `[D]` block also overrides any existing allow for the same pattern.
 
 Examples:
 

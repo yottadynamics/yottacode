@@ -45,7 +45,11 @@ func (t *ApplyDiffTool) PathsToSnapshot(cwd, argsJSON string) []string {
 	if err := json.Unmarshal([]byte(argsJSON), &a); err != nil || strings.TrimSpace(a.Diff) == "" {
 		return nil
 	}
-	rels := permissions.ParseDiffPaths(a.Diff)
+	// Repair first so the snapshot set matches the paths Execute will
+	// actually validate and patch (see Execute's repair call). Otherwise a
+	// fully-escaped diff snapshots a garbage path and /checkpoints captures
+	// no pre-image for the real target.
+	rels := permissions.ParseDiffPaths(repairFullyEscapedDiff(a.Diff))
 	out := make([]string, 0, len(rels))
 	for _, rel := range rels {
 		abs := rel
@@ -81,6 +85,16 @@ func (t *ApplyDiffTool) Execute(ctx context.Context, argsJSON string) (string, e
 	if _, err := exec.LookPath("git"); err != nil {
 		return "", errors.New("apply_diff: git binary not found in PATH")
 	}
+	// Repair a fully JSON-escaped diff BEFORE anything reads it. This must
+	// precede path parsing: ParseDiffPaths and ValidateWritePath have to
+	// see the exact bytes `git apply` will receive. If the repair ran after
+	// validation (as it once did), an escaped diff would be validated as a
+	// single garbage "path" that matches no deny entry and resolves under
+	// cwd, then repaired into a real multi-line patch targeting a denied
+	// file — a deny-list bypass (self-granting a permissions rule) and,
+	// symmetrically, a spurious "no recognizable file headers" rejection of
+	// a diff the repair would have made applyable.
+	a.Diff = repairFullyEscapedDiff(a.Diff)
 	// Parse target paths out of the diff header and run them through
 	// the same write-path validator write_file/edit_file use, so
 	// DefaultDenyPaths (yottacode state, .git internals, etc.) and the
@@ -89,7 +103,19 @@ func (t *ApplyDiffTool) Execute(ctx context.Context, argsJSON string) (string, e
 	// diff said so, bypassing the rest of the safety story.
 	paths := permissions.ParseDiffPaths(a.Diff)
 	if len(paths) == 0 {
-		return "", errors.New("apply_diff: diff contains no recognizable file headers")
+		// Echo a bounded, quoted snippet of what the parser actually saw
+		// (post-repair — the same bytes ParseDiffPaths read). The failure
+		// is usually an invisible one: a single JSON-escaped line, `@@`
+		// hunks with no `---`/`+++`, or whitespace that ate the header. %q
+		// surfaces newlines/tabs so the shape is legible, and naming the
+		// expected header makes the error self-correcting. Mirrors the
+		// git-apply failure path below, which already echoes patch=%q.
+		got := a.Diff
+		if len(got) > 200 {
+			got = got[:200] + "…"
+		}
+		return "", fmt.Errorf("apply_diff: diff contains no recognizable file headers — "+
+			"expected a `--- a/PATH` / `+++ b/PATH` header pair (or `rename from`/`rename to`); got %q", got)
 	}
 	for _, rel := range paths {
 		abs := rel
@@ -106,7 +132,6 @@ func (t *ApplyDiffTool) Execute(ctx context.Context, argsJSON string) (string, e
 	}
 	patchPath := patch.Name()
 	defer os.Remove(patchPath)
-	a.Diff = repairFullyEscapedDiff(a.Diff)
 	if _, err := patch.WriteString(a.Diff); err != nil {
 		patch.Close()
 		return "", fmt.Errorf("apply_diff: write temp patch: %w", err)

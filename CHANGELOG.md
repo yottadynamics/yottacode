@@ -85,6 +85,17 @@ the project uses semantic versioning once it's past `1.0.0`.
 
 ### Fixed
 
+- **`apply_diff` no longer lets a JSON-escaped diff bypass the write deny
+  list.** A diff whose newlines arrived as the literal `\n` escape sequence was
+  repaired into a real patch *after* its target paths were parsed and validated,
+  so validation ran on a single garbage "path" that matched no deny entry — then
+  `git apply` wrote the real, repaired target. A model could patch
+  `.yottacode/permissions.local.json` (self-granting a permissions rule) or any
+  other deny-listed path this way. The repair now runs before parsing, so the
+  bytes validated are the bytes applied. The same reordering fixes a spurious
+  "diff contains no recognizable file headers" rejection of escaped diffs the
+  repair would have made applyable, and that rejection now quotes the diff it
+  received so a genuinely headerless patch is debuggable instead of opaque.
 - **`retrieval.session_recall.top_k = 0` now injects nothing.** It fell through
   to an internal default of ten, so the value you'd set to turn injection off
   delivered more than the default of three.

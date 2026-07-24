@@ -1240,6 +1240,29 @@ func promptForApproval(
 	if d == SaveForLater {
 		return false, true, nil
 	}
+	if d == DenyAlways {
+		// Mirror of AllowAlways, but for the deny[] list: derive a block
+		// rule, persist it to permissions.local.json, and refuse this call
+		// (like Deny). Offered even for dangerous/compound commands.
+		if cfg.Permissions != nil {
+			if rule, ok := permissions.DeriveDenyRule(tool.Name(), tc.ArgsJSON, cfg.Cwd.Get()); ok {
+				if err := cfg.Permissions.AddDeny(rule); err != nil {
+					_ = send(ctx, events, ApprovalAuto{
+						ToolName: tool.Name(),
+						Preview:  fmt.Sprintf("[warn] could not save deny rule %q: %v", rule, err),
+						Source:   "permissions",
+					})
+				} else {
+					_ = send(ctx, events, ApprovalAuto{
+						ToolName: tool.Name(),
+						Preview:  "saved deny rule: " + rule,
+						Source:   "permissions",
+					})
+				}
+			}
+		}
+		return true, false, nil
+	}
 	if d == AllowAlways && cfg.Permissions != nil {
 		// Inject worktree-aware path normalization so [A]-always inside
 		// a yottacode worktree doesn't bake the auto-generated worktree

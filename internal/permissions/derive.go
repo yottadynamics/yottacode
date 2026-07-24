@@ -27,19 +27,19 @@ type PathNormalizer func(string) string
 //     should write the rule by hand instead of getting a footgun-wide
 //     blanket grant.
 //   - Path-typed tools (Edit/Write/Mkdir/Delete/Read/List):
-//       In-cwd descriptors → `Tool(<absolute-cwd>/**)`. The rule
-//         documents which working directory it applies to, so a
-//         permissions.local.json copied to another project doesn't
-//         accidentally grant access there.
-//       Out-of-cwd descriptors → `Tool(<parent-dir>/**)`. Lets a
-//         single click on a write to `~/Desktop/notes.md` produce
-//         `Write(/home/me/Desktop/**)`.
-//       Suppressed when the parent dir is `/`, the user's $HOME
-//         directly, or a known system root (`/etc`, `/usr`, `/bin`,
-//         `/sbin`, `/var`, `/sys`, `/proc`, `/dev`, `/boot`, `/lib`,
-//         `/lib64`, `/root`, `/srv`). Hand-write those if you really
-//         want them — one-click blanket grants on system trees are
-//         a footgun.
+//     In-cwd descriptors → `Tool(<absolute-cwd>/**)`. The rule
+//     documents which working directory it applies to, so a
+//     permissions.local.json copied to another project doesn't
+//     accidentally grant access there.
+//     Out-of-cwd descriptors → `Tool(<parent-dir>/**)`. Lets a
+//     single click on a write to `~/Desktop/notes.md` produce
+//     `Write(/home/me/Desktop/**)`.
+//     Suppressed when the parent dir is `/`, the user's $HOME
+//     directly, or a known system root (`/etc`, `/usr`, `/bin`,
+//     `/sbin`, `/var`, `/sys`, `/proc`, `/dev`, `/boot`, `/lib`,
+//     `/lib64`, `/root`, `/srv`). Hand-write those if you really
+//     want them — one-click blanket grants on system trees are
+//     a footgun.
 //   - Move/Copy: src and dst broadened independently with the same
 //     rule, joined with " -> ".
 //   - Git: first arg + " *".
@@ -92,6 +92,48 @@ func DeriveAllowRule(toolName, argsJSON, cwd string, normalize PathNormalizer) (
 		return target.PermName + "(" + srcPat + " -> " + dstPat + ")", true
 	}
 	return "", false
+}
+
+// DeriveDenyRule produces a "never allow / block" pattern from a single
+// tool call — the mirror of DeriveAllowRule, used when the user hits the
+// "never" key in the approval modal. Scope is intentionally limited to
+// Bash and Git, the calls a user most wants to block outright; other
+// tools return ok=false so the modal doesn't offer a persistent block for
+// them yet.
+//
+// Two deliberate differences from DeriveAllowRule:
+//   - It does NOT suppress "dangerous" verbs — a permanent deny on `curl`
+//     or `rm` is the whole point — nor compound commands.
+//   - It blocks the command's leading VERB (`Bash(curl *)`), not an exact
+//     line. run_bash rules are matched per-segment with any-deny
+//     precedence, so a verb-level block reliably takes effect wherever
+//     that verb appears in a chain (an exact `curl … | sh` string would
+//     never match a single segment). The derived rule is shown in the
+//     modal before the user commits, so an over-broad block is visible.
+func DeriveDenyRule(toolName, argsJSON, cwd string) (rule string, ok bool) {
+	target := targetFor(toolName, argsJSON, cwd)
+	switch target.PermName {
+	case "Bash":
+		return deriveBashDeny(target.Descriptor)
+	case "Git":
+		first := strings.SplitN(strings.TrimSpace(target.Descriptor), " ", 2)[0]
+		if first == "" {
+			return "", false
+		}
+		return "Git(" + first + " *)", true
+	}
+	return "", false
+}
+
+// deriveBashDeny returns "Bash(<verb> *)" — a block on the command's
+// leading verb. See DeriveDenyRule for why this is verb-level rather than
+// an exact command line.
+func deriveBashDeny(command string) (string, bool) {
+	fields := strings.Fields(command)
+	if len(fields) == 0 {
+		return "", false
+	}
+	return "Bash(" + fields[0] + " *)", true
 }
 
 func identityPath(s string) string { return s }

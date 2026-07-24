@@ -124,3 +124,65 @@ func TestEditFile_FileMissing(t *testing.T) {
 		t.Errorf("expected error for missing file")
 	}
 }
+
+func TestEditFile_TolerantTrailingWhitespace(t *testing.T) {
+	tmp := t.TempDir()
+	// "alpha" carries trailing spaces on disk; the model's old_string omits
+	// them, so the exact match misses and the tolerant matcher must catch it.
+	writeFile(t, tmp, "doc.md", "alpha  \nbeta\ngamma\n")
+	tool := &EditFileTool{Cwd: NewCwdRef(tmp), WriteOpts: WritePathOptions{Cwd: NewCwdRef(tmp)}}
+	out, err := tool.Execute(context.Background(), `{"path":"doc.md","old_string":"alpha\nbeta","new_string":"ALPHA\nBETA"}`)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if !strings.Contains(out, "ignoring trailing whitespace") {
+		t.Errorf("output = %q, want tolerant-match note", out)
+	}
+	got, _ := os.ReadFile(filepath.Join(tmp, "doc.md"))
+	if string(got) != "ALPHA\nBETA\ngamma\n" {
+		t.Errorf("file = %q, want 'ALPHA\\nBETA\\ngamma\\n'", string(got))
+	}
+}
+
+func TestEditFile_TolerantCRLF(t *testing.T) {
+	tmp := t.TempDir()
+	writeFile(t, tmp, "doc.md", "foo\r\nbar\r\n")
+	tool := &EditFileTool{Cwd: NewCwdRef(tmp), WriteOpts: WritePathOptions{Cwd: NewCwdRef(tmp)}}
+	out, err := tool.Execute(context.Background(), `{"path":"doc.md","old_string":"foo\nbar","new_string":"FOO\nBAR"}`)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if !strings.Contains(out, "1 replacement") {
+		t.Errorf("output = %q", out)
+	}
+	got, _ := os.ReadFile(filepath.Join(tmp, "doc.md"))
+	if string(got) != "FOO\nBAR\n" {
+		t.Errorf("file = %q, want 'FOO\\nBAR\\n'", string(got))
+	}
+}
+
+func TestEditFile_TolerantMatchRefusedWhenAmbiguous(t *testing.T) {
+	tmp := t.TempDir()
+	// Both blocks match "a\nb" once trailing whitespace is ignored, so the
+	// tolerant matcher must refuse rather than guess a location.
+	writeFile(t, tmp, "doc.md", "a  \nb\nx\na\t\nb\n")
+	tool := &EditFileTool{Cwd: NewCwdRef(tmp), WriteOpts: WritePathOptions{Cwd: NewCwdRef(tmp)}}
+	_, err := tool.Execute(context.Background(), `{"path":"doc.md","old_string":"a\nb","new_string":"Z"}`)
+	if err == nil || !strings.Contains(err.Error(), "ambiguous") {
+		t.Fatalf("err = %v, want ambiguous refusal", err)
+	}
+	got, _ := os.ReadFile(filepath.Join(tmp, "doc.md"))
+	if string(got) != "a  \nb\nx\na\t\nb\n" {
+		t.Errorf("file mutated despite ambiguous refusal: %q", string(got))
+	}
+}
+
+func TestEditFile_NotFoundErrorPointsAtClosestLine(t *testing.T) {
+	tmp := t.TempDir()
+	writeFile(t, tmp, "doc.md", "the quick brown fox\n")
+	tool := &EditFileTool{Cwd: NewCwdRef(tmp), WriteOpts: WritePathOptions{Cwd: NewCwdRef(tmp)}}
+	_, err := tool.Execute(context.Background(), `{"path":"doc.md","old_string":"the quick brown FOX jumped","new_string":"X"}`)
+	if err == nil || !strings.Contains(err.Error(), "closest line") {
+		t.Fatalf("err = %v, want closest-line hint", err)
+	}
+}

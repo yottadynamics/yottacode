@@ -656,6 +656,12 @@ type Model struct {
 	// user picks [a]. Shown in the modal so the user knows what
 	// they're committing to.
 	approvalDerivedRule string
+	// approvalDenyAlwaysOK gates the [d] never/block keypress; set true
+	// whenever DeriveDenyRule yields a rule for the pending call (broader
+	// than approvalAllowAlwaysOK — offered for dangerous/compound commands
+	// too). approvalDerivedDenyRule is the rule shown and persisted.
+	approvalDenyAlwaysOK    bool
+	approvalDerivedDenyRule string
 
 	// Inline path-trust elevation modal state (Prompt 2 in
 	// yottacode-roadmap/folder-trust.md). When awaitingPathTrust is
@@ -1123,6 +1129,8 @@ func (m *Model) clearPendingDecisionUI() {
 	m.approvalArgs = ""
 	m.approvalAllowAlwaysOK = false
 	m.approvalDerivedRule = ""
+	m.approvalDenyAlwaysOK = false
+	m.approvalDerivedDenyRule = ""
 	m.awaitingPathTrust = false
 	m.pathTrustReq = agent.PathTrustElevationNeeded{}
 }
@@ -1924,6 +1932,19 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					// user can see exactly which rule was added.
 					if rule != "" {
 						m.appendLine(approvalToast(rule))
+					}
+				}
+			case "d", "D":
+				if m.approvalDenyAlwaysOK {
+					rule := m.approvalDerivedDenyRule
+					if !m.sendDecision(agent.DenyAlways) {
+						return m, nil
+					}
+					answered = true
+					// Receipt of the block that was just persisted, so
+					// the user sees exactly which deny rule was added.
+					if rule != "" {
+						m.appendLine(approvalDenyToast(rule))
 					}
 				}
 			case "n", "N", "esc":
@@ -4632,6 +4653,16 @@ func (m Model) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 		} else {
 			m.approvalAllowAlwaysOK = false
 			m.approvalDerivedRule = ""
+		}
+		// Pre-derive the "never / block" rule (run_bash + git). Unlike the
+		// allow side, this is offered for dangerous/compound commands too —
+		// those are exactly what a user most wants to block permanently.
+		if rule, ok := permissions.DeriveDenyRule(e.ToolName, e.ArgsJSON, m.cwd); ok && m.perms != nil {
+			m.approvalDenyAlwaysOK = true
+			m.approvalDerivedDenyRule = rule
+		} else {
+			m.approvalDenyAlwaysOK = false
+			m.approvalDerivedDenyRule = ""
 		}
 		// Don't queue another waitForEvent until the user answers; the
 		// approval keypress handler issues it.
