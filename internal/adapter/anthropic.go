@@ -98,16 +98,31 @@ func (a *anthropicAdapter) ChatStream(ctx context.Context, messages []Message, t
 		if anthropicTools := toAnthropicTools(tools, a.cfg, a.profile); len(anthropicTools) > 0 {
 			params.Tools = anthropicTools
 		}
+		// Lift max_tokens to the model's real output ceiling on every
+		// turn. max_tokens is a hard cap, not a target — Anthropic bills
+		// per token actually generated — so a higher ceiling costs
+		// nothing and keeps a large tool input (a big write_file) from
+		// being truncated mid-call, which surfaces downstream as
+		// "stream ended with incomplete tool call — response truncated".
+		// This lift used to live only inside the thinking branch below,
+		// which left every non-thinking turn pinned at the conservative
+		// AnthropicDefaultMaxTokens default. Stays at that default when
+		// the catalog doesn't know the model's ceiling (ModelMaxOutput
+		// == 0): we can't safely request more than the default for an
+		// unknown model, since a Claude 3.5-class model caps output at
+		// 8192 and an over-request 400s. The value used here is the same
+		// one the thinking branch already sends, so it carries no new
+		// max_tokens-too-large risk.
+		if int64(a.cfg.ModelMaxOutput) > params.MaxTokens {
+			params.MaxTokens = int64(a.cfg.ModelMaxOutput)
+		}
 		// Extended thinking is opt-in: enabled only when the user set an
 		// effort level and the model is known to support it. budget is a
 		// fraction of the model's max-output tokens (from the catalog);
-		// max_tokens covers thinking + the visible answer together, so
-		// raise it to the model's real cap to leave the answer room.
+		// max_tokens (raised above) covers thinking + the visible answer
+		// together, leaving the answer room.
 		if budget := anthropicThinkingBudget(a.cfg.ReasoningEffort, a.cfg.ModelMaxOutput, a.cfg.ModelSupportsThinking); budget > 0 {
 			params.Thinking = anthropic.ThinkingConfigParamOfEnabled(budget)
-			if int64(a.cfg.ModelMaxOutput) > params.MaxTokens {
-				params.MaxTokens = int64(a.cfg.ModelMaxOutput)
-			}
 		}
 
 		stream := a.client.Messages.NewStreaming(ctx, params)

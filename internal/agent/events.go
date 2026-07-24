@@ -92,8 +92,8 @@ type ProviderToolCall struct {
 // ApprovalAuto is logged when the loop auto-approves (or auto-denies)
 // a tool call without asking the user. Source identifies which gate
 // fired: "permissions" (matched an allow rule), "deny-rule" (matched
-// a deny rule, no execution), or "bypass-permissions"
-// (--yolo flag is set and no rule matched).
+// a deny rule, no execution), or "yolo-mode"
+// (--yolo flag is set / /yolo toggle is on and no rule matched).
 type ApprovalAuto struct {
 	ToolName string
 	Preview  string
@@ -233,6 +233,11 @@ type Fallback struct {
 	To     string
 	Reason string
 	Policy string
+	// Agent names the context the fallback happened in — a subagent type
+	// (e.g. "Explore") or "summarize" — so the TUI can distinguish a
+	// delegated/summarization fallover from a main-thread one. Empty for
+	// the main conversation.
+	Agent string
 }
 
 // SubagentStart fires when the Agent tool begins a child Turn. The

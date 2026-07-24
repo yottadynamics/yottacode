@@ -1018,7 +1018,7 @@ func executeToolCallImpl(
 				// before bypass is ever consulted.
 				if cfg.BypassPermissions {
 					if err := send(ctx, events, ApprovalAuto{
-						ToolName: tool.Name(), Preview: preview, Source: "bypass-permissions",
+						ToolName: tool.Name(), Preview: preview, Source: "yolo-mode",
 					}); err != nil {
 						return "", nil, false, err
 					}

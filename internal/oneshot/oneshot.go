@@ -335,7 +335,7 @@ func Run(ctx context.Context, opts cli.ChatOptions, prompt string) error {
 		SmartAdapter:     oneshotRouterSmart(routerAdapters),
 		SmartModel:       oneshotRouterSmartModel(routerAdapters),
 		RouteAuto:        fileCfg.Router.RoutingAuto(),
-		ModelResolver:    oneshotRouterResolve(routerAdapters),
+		ModelResolver:    oneshotRouterResolve(routerAdapters, fileCfg.Router.RoutingEnabled()),
 		ResolveWindow: func(model string) int {
 			return catalog.ResolveWindowForProvider(fileCfg.ProviderKindForModel(model), model, fileCfg.ContextWindowOverride(model), fileCfg.Context.DefaultWindow)
 		},
@@ -672,8 +672,8 @@ func oneshotRouterSmartModel(ra *cli.RouterAdapters) string {
 	return ra.SmartModel
 }
 
-func oneshotRouterResolve(ra *cli.RouterAdapters) func(string) agent.Streamer {
-	if ra == nil || ra.Resolve == nil {
+func oneshotRouterResolve(ra *cli.RouterAdapters, enabled bool) func(string) agent.Streamer {
+	if !enabled || ra == nil || ra.Resolve == nil {
 		return nil
 	}
 	return func(model string) agent.Streamer {

@@ -34,13 +34,12 @@ func newTestModel(t *testing.T) Model {
 	// directly to <cwd>/.yottacode/permissions.json before calling Load.
 	perms := permissions.LoadEmpty(cwd)
 	m := New(context.Background(), Config{
-		Cfg:               cfg,
-		Session:           sess,
-		Permissions:       perms,
-		ModelName:         "test-model",
-		BaseURL:           "http://test/v1",
-		Cwd:               cwd,
-		BypassPermissions: false,
+		Cfg:         cfg,
+		Session:     sess,
+		Permissions: perms,
+		ModelName:   "test-model",
+		BaseURL:     "http://test/v1",
+		Cwd:         cwd,
 	})
 	m, _ = applyMsg(m, tea.WindowSizeMsg{Width: 80, Height: 24})
 	return m
@@ -2255,7 +2254,7 @@ func TestStartupBanner_DeferredUntilWidthKnown(t *testing.T) {
 		if strings.Contains(b, "YottaCode by YottaDynamics") {
 			boxIdx = i
 		}
-		if strings.Contains(b, "permissions bypass active") {
+		if strings.Contains(b, "yolo mode active") {
 			bannerIdx = i
 			// At width 120 the whole banner fits on one line; an 80-col
 			// wrap would have split "no iteration cap" onto a second row.

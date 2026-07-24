@@ -26,6 +26,7 @@ import (
 	openaiauth "github.com/yottadynamics/yottacode/internal/auth/openai"
 	"github.com/yottadynamics/yottacode/internal/catalog"
 	"github.com/yottadynamics/yottacode/internal/checkpoint"
+	"github.com/yottadynamics/yottacode/internal/cli"
 	"github.com/yottadynamics/yottacode/internal/config"
 	"github.com/yottadynamics/yottacode/internal/contextwindow"
 	"github.com/yottadynamics/yottacode/internal/filerefs"
@@ -87,21 +88,17 @@ type Config struct {
 	XSearchToDate          string
 	ProviderProfile        adapter.ProviderProfile
 	Cwd                    string
-	// BypassPermissions auto-approves every tool call. DANGEROUS — see
-	// the flag help on --yolo. Explicit `deny`
-	// rules in .yottacode/permissions.json still apply.
-	BypassPermissions bool
-	Version           string   // e.g. "0.3.0" — shown in the header
-	Commit            string   // short SHA the binary was built from; "" when unknown (go run, tarball)
-	Dirty             bool     // true when the build had uncommitted changes; renders a "*" beside the commit
-	Branch            string   // current git branch (empty if not in a repo)
-	ProjectRoots      []string // roots counting as this project (repo root + its worktree container); auto-recall's project scope matches them and everything below
-	SensitiveProject  bool     // this project is marked sensitive: no automatic recall injection at all
-	SensitiveRoots    []string // every sensitive root; their sessions never surface in any project's recall
-	Worktree          string   // yottacode worktree name when running inside one (empty for main checkout); rendered as a status-line chip
-	MemorySummary     string   // "USER", "YOTTA", "USER+YOTTA", "UMEM", "USER+UMEM", or "" if none
-	BaseSystemPrompt  string   // pre-memory prompt — needed by /memory reload to recompose
-	EmbedClient       *memory.EmbedClient
+	Version                string   // e.g. "0.3.0" — shown in the header
+	Commit                 string   // short SHA the binary was built from; "" when unknown (go run, tarball)
+	Dirty                  bool     // true when the build had uncommitted changes; renders a "*" beside the commit
+	Branch                 string   // current git branch (empty if not in a repo)
+	ProjectRoots           []string // roots counting as this project (repo root + its worktree container); auto-recall's project scope matches them and everything below
+	SensitiveProject       bool     // this project is marked sensitive: no automatic recall injection at all
+	SensitiveRoots         []string // every sensitive root; their sessions never surface in any project's recall
+	Worktree               string   // yottacode worktree name when running inside one (empty for main checkout); rendered as a status-line chip
+	MemorySummary          string   // "USER", "YOTTA", "USER+YOTTA", "UMEM", "USER+UMEM", or "" if none
+	BaseSystemPrompt       string   // pre-memory prompt — needed by /memory reload to recompose
+	EmbedClient            *memory.EmbedClient
 
 	// FileCfg holds tunables loaded from ~/.yottacode/config.toml
 	// (context watermarks, retrieval). The TUI reads these at session
@@ -153,6 +150,13 @@ type Config struct {
 	// "unknown command" error in that case.
 	SkillTool *agent.SkillTool
 
+	// RouterAdapters holds the resolved fast/smart task-routing adapters.
+	// RouterMode is the live routing mode. They drive the /router picker and
+	// live rewiring without switching the main-thread adapter mid-turn.
+	RouterAdapters *cli.RouterAdapters
+	RouterMode     string
+	Options        cli.ChatOptions
+
 	// SummarizerAdapter routes the /summarize + auto-compaction call to
 	// the fast model under cache-safe routing. nil → New() falls back to
 	// Cfg.Adapter (the legacy single-adapter behavior).
@@ -196,7 +200,6 @@ type Model struct {
 	xSearchFromDate        string
 	xSearchToDate          string
 	providerProfile        adapter.ProviderProfile
-	bypassPermissions      bool
 	cwd                    string
 	projectRoots           []string // roots counting as this project, resolved once at startup; scopes auto-recall
 	sensitiveProject       bool     // auto-recall suppressed entirely for this project
@@ -218,6 +221,13 @@ type Model struct {
 	memorySummary    string
 	baseSystemPrompt string // pre-memory prompt; used by /memory reload
 	embedClient      *memory.EmbedClient
+
+	// routerAdapters/routerMode hold live task-routing state for /router.
+	// Routing only changes isolated contexts (summarization/subagents), not the
+	// main-thread adapter, so prompt-cache locality is preserved.
+	router     *cli.RouterAdapters
+	routerMode string
+	opts       cli.ChatOptions
 
 	// summarizerAdapter is the streamer the /summarize + auto-compaction
 	// path calls into. When cache-safe routing is on it points at the
@@ -279,6 +289,11 @@ type Model struct {
 	// running so we don't fire a second one on top of the first if
 	// the user crosses another threshold while we're working.
 	summarizing bool
+
+	// summarizeFailures counts consecutive summarize failures while auto routing
+	// is using the fast model. At the threshold we degrade to smart for the next
+	// attempt so a fast-provider outage cannot block compaction.
+	summarizeFailures int
 
 	// summarizeStart timestamps when the active summarization began, so
 	// the live summarizing row can show elapsed time. Only meaningful
@@ -768,6 +783,11 @@ type Model struct {
 	subagentsPickerOpen bool
 	subagentsPicker     *subagentsPickerState
 
+	// routerPickerOpen/routerPicker drive the /router overlay: a menu for
+	// toggling cache-safe task routing and selecting fast/smart models.
+	routerPickerOpen bool
+	routerPicker     *routerPickerState
+
 	mcpPickerOpen bool
 	mcpPicker     *mcpPickerState
 
@@ -1042,7 +1062,6 @@ func New(parent context.Context, c Config) Model {
 		xSearchFromDate:        c.XSearchFromDate,
 		xSearchToDate:          c.XSearchToDate,
 		providerProfile:        c.ProviderProfile,
-		bypassPermissions:      c.BypassPermissions,
 		cwd:                    c.Cwd,
 		perms:                  c.Permissions,
 		recall:                 c.Recall,
@@ -1059,6 +1078,9 @@ func New(parent context.Context, c Config) Model {
 		embedClient:            c.EmbedClient,
 		summarizerAdapter:      summarizerOrDefault(c.SummarizerAdapter, c.Cfg.Adapter),
 		summarizerModel:        c.SummarizerModel,
+		router:                 c.RouterAdapters,
+		routerMode:             routerModeOrOff(c.RouterMode),
+		opts:                   c.Options,
 		fileCfg:                c.FileCfg,
 		subagentTasks:          c.Subagents,
 		subagentTool:           c.AgentTool,
@@ -1202,7 +1224,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if _, ok := msg.(spinner.TickMsg); ok {
-		if !m.turnActive && !m.summarizing && !m.hasRunningSubagents() {
+		if !m.turnActive && !m.summarizing && !m.hasRunningSubagents() && !m.skillsBusy() {
 			// Idle: drop the tick so we stop re-scheduling ourselves.
 			// startTurn re-arms m.spinner.Tick when work begins; the
 			// summarize commands re-arm it for the summarizing row.
@@ -1215,6 +1237,12 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		var cmd tea.Cmd
 		m.spinner, cmd = m.spinner.Update(msg)
+		if m.skillsPickerOpen && m.skillsPicker != nil && m.skillsPicker.busy != "" {
+			m.skillsPicker.busyFrame = m.spinner.View()
+		}
+		if m.skillsMenuOpen && m.skillsMenu != nil && m.skillsMenu.busy != "" {
+			m.skillsMenu.busyFrame = m.spinner.View()
+		}
 		return m, cmd
 	}
 	if _, ok := msg.(cursorBlinkMsg); ok {
@@ -1273,7 +1301,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// One blank line of breathing room between the card and
 				// the input frame — matches the Phase 2 spacing target.
 				m.queuePrintln("")
-				// Construction-time entry banners (permissions-bypass,
+				// Construction-time entry banners (yolo mode,
 				// plan/auto mode, custom-command errors) recorded into
 				// historyLines before any width was known — queuePrintln
 				// deferred their emission rather than wrap at the 80-col
@@ -1393,6 +1421,9 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.subagentsPickerOpen {
 			return m.updateSubagentsPicker(msg)
+		}
+		if m.routerPickerOpen {
+			return m.updateRouterPicker(msg)
 		}
 		if m.skillsMenuOpen {
 			return m.updateSkillsMenu(msg)
@@ -2194,6 +2225,18 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case modelPickerLoadedMsg:
 		return m.handleModelPickerLoaded(msg)
 
+	case skillsCatalogRefreshDoneMsg:
+		return handleSkillsCatalogRefreshDone(m, msg)
+
+	case skillsOfficialInstallDoneMsg:
+		return handleSkillsOfficialInstallDone(m, msg)
+
+	case skillsMenuInstallDoneMsg:
+		return handleSkillsMenuInstallDone(m, msg)
+
+	case skillsMenuUpdateDoneMsg:
+		return handleSkillsMenuUpdateDone(m, msg)
+
 	case tea.MouseMsg:
 		// Mouse capture stays enabled (so palette clicks could be wired up
 		// later); we no longer forward to a viewport because the conversation
@@ -2447,6 +2490,17 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case summaryDoneMsg:
 		m.summarizing = false
+		if msg.err != nil {
+			m.summarizeFailures++
+		} else {
+			m.summarizeFailures = 0
+		}
+		for _, fb := range msg.fallbacks {
+			m.appendLine(renderFallbackLine(agent.Fallback{From: fb.FallbackFrom, To: fb.FallbackTo, Reason: fb.FallbackReason, Agent: "summarize"}))
+		}
+		if msg.degraded && msg.err == nil {
+			m.appendLine(styleAuto.Render("[summarize] fast model failed repeatedly; used smart model for compaction"))
+		}
 		if msg.compactionSeq != m.compactionSeq {
 			// A mid-turn compaction rewrote history after summarizeCmd took
 			// its clone. Discard this stale result rather than overwriting
@@ -2565,7 +2619,7 @@ func (m Model) anyOverlayOpen() bool {
 		m.permissionsOpen || m.modelPickerOpen || m.providerPickerOpen ||
 		m.embedSetupOpen || m.memoryPickerOpen || m.recallPickerOpen || m.sessionsPickerOpen ||
 		m.plansPickerOpen || m.checkpointsPickerOpen || m.subagentsPickerOpen ||
-		m.themePickerOpen || m.effortPickerOpen || m.skillsMenuOpen ||
+		m.routerPickerOpen || m.themePickerOpen || m.effortPickerOpen || m.skillsMenuOpen ||
 		m.skillsPickerOpen || m.mcpPickerOpen
 }
 
@@ -2581,6 +2635,11 @@ func (m Model) overlayClosed(after Model) bool {
 // workers and nothing else would trigger a redraw until they finish.
 func (m Model) hasRunningSubagents() bool {
 	return m.subagentTasks != nil && m.subagentTasks.ActiveCount() > 0
+}
+
+func (m Model) skillsBusy() bool {
+	return (m.skillsPickerOpen && m.skillsPicker != nil && m.skillsPicker.busy != "") ||
+		(m.skillsMenuOpen && m.skillsMenu != nil && m.skillsMenu.busy != "")
 }
 
 // View renders the live footer that redraws in place at the bottom of the
@@ -2640,6 +2699,9 @@ func (m Model) View() string {
 	}
 	if m.subagentsPickerOpen && m.subagentsPicker != nil {
 		return m.renderInlineOverlay(renderSubagentsPicker(m.subagentsPicker, m.width))
+	}
+	if m.routerPickerOpen && m.routerPicker != nil {
+		return m.renderInlineOverlay(renderRouterPicker(m.routerPicker))
 	}
 	if m.themePickerOpen && m.themePicker != nil {
 		return m.renderInlineOverlay(renderThemePicker(m.themePicker, m.width))
@@ -2728,12 +2790,13 @@ func (m Model) View() string {
 			parts = append(parts, renderFilePalette(m.filePaletteFiltered, m.filePaletteIndex, m.filePaletteOffset, liveContentWidth(m.width)+4))
 		}
 		// Banner: one-line indicator above the input rule. Modes
-		// (plan/auto) are mutually exclusive; yolo is an orthogonal
-		// overlay flag whose `⚠ yolo` tag appends to the active mode
-		// banner. When no mode is active but yolo is, a standalone
-		// yolo banner shows so the user can still see the "rails
-		// off" state. Suppressed entirely while a palette is open
-		// (palettes already own the above-cmdline real estate).
+		// (plan/auto) are mutually exclusive; yolo mode is an
+		// orthogonal overlay flag whose `⚠ yolo mode` tag appends to
+		// the active mode banner. When no mode is active but yolo
+		// mode is, a standalone yolo banner shows so the user can
+		// still see the "rails off" state. Suppressed entirely while a
+		// palette is open (palettes already own the above-cmdline real
+		// estate).
 		yoloOn := m.cfg.YoloMode.IsActive()
 		switch {
 		case m.paletteOpen, m.filePaletteOpen:
@@ -3187,7 +3250,11 @@ func renderToolStartLine(toolName, preview string) string {
 // degraded and the router took over. Silent fallback would hide a real
 // provider issue; the design's whole point is to surface it loudly.
 func renderFallbackLine(e agent.Fallback) string {
-	head := fmt.Sprintf("↻ fallback: %s → %s", e.From, e.To)
+	head := "↻ fallback"
+	if e.Agent != "" {
+		head += " [" + e.Agent + "]"
+	}
+	head += fmt.Sprintf(": %s → %s", e.From, e.To)
 	if e.Policy != "" {
 		head += " [" + e.Policy + "]"
 	}
@@ -3726,7 +3793,22 @@ func (m Model) historyForward() (Model, bool) {
 // signals.
 func (m Model) renderStatus() string {
 	dot := renderConnDot(m.connection)
-	model := renderModelName(m.modelName)
+	modelName := m.modelName
+	routingNote := ""
+	if m.router != nil {
+		smart, fast := shortModelTag(m.router.SmartModel), shortModelTag(m.router.FastModel)
+		switch routerModeOrOff(m.routerMode) {
+		case config.RouterModeAuto:
+			if smart != "" && fast != "" && (m.modelName == m.router.SmartModel || m.modelName == smart) {
+				modelName = smart + ":" + fast
+			} else {
+				routingNote = "routing: auto"
+			}
+		case config.RouterModeManual:
+			routingNote = "routing: manual"
+		}
+	}
+	model := renderModelName(modelName)
 	tag := m.providerLabel
 	if tag == "" {
 		tag = m.provider
@@ -3789,6 +3871,9 @@ func (m Model) renderStatus() string {
 		}
 		if worktreeSeg != "" {
 			segs = append(segs, worktreeSeg)
+		}
+		if routingNote != "" {
+			segs = append(segs, lipgloss.NewStyle().Foreground(colorDim).Render(routingNote))
 		}
 		// Flush-left: the status dot sits at column 0, aligned with the
 		// input frame's left border directly above it (and the flush-left
@@ -3996,6 +4081,17 @@ func renderProviderTag(provider string) string {
 // for the eye.
 func renderModelName(name string) string {
 	return styleStatusModel.Render(name)
+}
+
+// shortModelTag strips provider/catalog prefixes from router model labels so
+// the status pair stays compact: "provider/model" and "provider:model" render
+// as just "model".
+func shortModelTag(name string) string {
+	name = strings.TrimSpace(name)
+	if i := strings.LastIndexAny(name, "/:"); i >= 0 {
+		return name[i+1:]
+	}
+	return name
 }
 
 // renderTurnStatus composes the live thinking-row footer. Format is

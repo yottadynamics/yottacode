@@ -72,58 +72,99 @@ type RouterAdapters struct {
 	Resolve func(model string) adapter.Streamer
 }
 
-// BuildRouterAdapters resolves the [router].fast_model / smart_model
-// pair and returns their adapters plus an on-demand resolver. Returns
-// (nil, nil) when task routing is disabled (mode "off"/absent). Errors
-// only on misconfiguration Validate didn't catch.
+// BuildRouterAdapters resolves the [router] fast/smart slots and returns
+// their adapters plus an on-demand resolver. Each slot may be a single
+// model or a failover chain (fast_models / smart_models): a one-model
+// chain yields a plain client, a multi-model chain a *MultiStreamer that
+// fails over primary → fallbacks using the same policy + health knobs as
+// the candidates router. Returns (nil, nil) only when a slot is
+// unconfigured — building is decoupled from Mode so the `/router` command
+// can flip routing on live (mode "off" with a configured pair still
+// builds the adapters, ready to wire). The caller decides what to wire
+// from RoutingAuto()/the active mode. Errors only on misconfiguration
+// Validate didn't catch.
 func BuildRouterAdapters(cfg config.Config, opts ChatOptions) (*RouterAdapters, error) {
-	if !cfg.Router.RoutingEnabled() {
+	if len(cfg.Router.FastChain()) == 0 || len(cfg.Router.SmartChain()) == 0 {
 		return nil, nil
 	}
-	fastRC, smartRC, err := cfg.ResolveRouterModels()
+	fastChain, smartChain, err := cfg.ResolveRouterChains()
 	if err != nil {
 		return nil, fmt.Errorf("router: %w", err)
 	}
-	// built memoizes one adapter per model name. ra.Resolve is called
-	// concurrently — the agent can dispatch several subagents that each
-	// declare an explicit `model:` (and background subagents) in the same
-	// turn — so every read+write of `built` must hold mu. Without it the
-	// Go runtime fatally panics ("concurrent map read and map write"),
-	// which is uncatchable and kills the whole session.
-	var mu sync.Mutex
+	// Memoize by provider+model, not model alone: a failover chain can name
+	// the SAME model on two providers (e.g. "openai:gpt-4o",
+	// "azure:gpt-4o") — keying on the model name only would collapse them
+	// to one adapter and silently defeat the failover.
+	//
+	// Mutex-guarded: the build-time calls below are sequential, but the
+	// map outlives this function inside ra.Resolve, which runs on
+	// concurrent subagent goroutines (parallel foreground batches,
+	// background children). An unguarded map there is a fatal
+	// concurrent-read-write crash, not a recoverable race.
+	var builtMu sync.Mutex
 	built := map[string]adapter.Client{}
 	get := func(rc config.ResolvedCandidate) adapter.Client {
-		mu.Lock()
-		defer mu.Unlock()
-		if c, ok := built[rc.Model]; ok {
+		key := rc.Provider.Name + ":" + rc.Model
+		builtMu.Lock()
+		defer builtMu.Unlock()
+		if c, ok := built[key]; ok {
 			return c
 		}
 		c := adapter.NewWithConfig(candidateAdapterConfig(rc, opts))
-		built[rc.Model] = c
+		built[key] = c
 		return c
 	}
+	// buildChain returns a plain client for a one-model chain, or a
+	// failover MultiStreamer (primary first, fallbacks after) otherwise.
+	//
+	// Slot chains always dispatch in WRITTEN order (FallbackChain): entry
+	// 0 is the primary the user picked, the rest are fallbacks. The
+	// [router].policy knob applies to the candidates router (BuildRouter)
+	// only — applying cheap-first here would dispatch a cheap FALLBACK
+	// before the configured primary, contradicting the docs ("the first
+	// entry is the primary") and the FastModel/SmartModel labels the UI
+	// derives from chain[0].
+	buildChain := func(chain []config.ResolvedCandidate) (adapter.Client, error) {
+		if len(chain) == 1 {
+			return get(chain[0]), nil
+		}
+		cands := make([]adapter.Candidate, 0, len(chain))
+		for _, rc := range chain {
+			client := get(rc)
+			cands = append(cands, adapter.Candidate{
+				Streamer: client,
+				Label:    fmt.Sprintf("%s/%s", rc.Provider.Name, rc.Model),
+				Tier:     adapter.Tier(rc.Tier),
+				Profile:  client.Profile(),
+			})
+		}
+		return adapter.NewMultiStreamer(cands, adapter.FallbackChain{}, adapter.WithHealth(healthOptionsFromConfig(cfg.Router)))
+	}
+	fastClient, err := buildChain(fastChain)
+	if err != nil {
+		return nil, fmt.Errorf("router.fast: %w", err)
+	}
+	smartClient, err := buildChain(smartChain)
+	if err != nil {
+		return nil, fmt.Errorf("router.smart: %w", err)
+	}
 	ra := &RouterAdapters{
-		Fast:       get(fastRC),
-		Smart:      get(smartRC),
-		FastModel:  fastRC.Model,
-		SmartModel: smartRC.Model,
+		Fast:       fastClient,
+		Smart:      smartClient,
+		FastModel:  fastChain[0].Model,
+		SmartModel: smartChain[0].Model,
 	}
 	ra.Resolve = func(model string) adapter.Streamer {
 		model = strings.TrimSpace(model)
 		if model == "" {
 			return nil
 		}
-		mu.Lock()
-		c, ok := built[model]
-		mu.Unlock()
-		if ok {
-			return c
-		}
-		// Miss: get() takes mu itself, so don't hold it across this call.
 		rc, ok := resolveConfiguredModel(cfg, model)
 		if !ok {
 			return nil
 		}
+		// get() memoizes by provider+model, so a model already built for a
+		// chain is reused here rather than rebuilt.
 		return get(rc)
 	}
 	return ra, nil
@@ -203,7 +244,6 @@ func candidateAdapterConfig(rc config.ResolvedCandidate, opts ChatOptions) adapt
 		Model:                  rc.Model,
 		ProviderOverride:       adapter.Provider(strings.TrimSpace(rc.Provider.Kind)),
 		ReasoningEffort:        opts.ReasoningEffort,
-		CacheKey:               opts.CacheKey,
 		ModelMaxOutput:         maxOutput,
 		ModelSupportsThinking:  supportsThinking,
 		EnableWebSearch:        opts.EnableWebSearch,

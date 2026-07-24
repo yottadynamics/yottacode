@@ -113,24 +113,24 @@ Tool calls flow through layered gates in this order:
 
 1. **`Deny` rules** in `permissions.json` always win.
 2. **Plan-mode gate** (only when plan mode is active) — blocks every mutating tool except `todo_write`, `exit_plan_mode`, and writes to the resolved plan file. Returns a structured error to the model so it can switch to a read-only or plan-file alternative.
-3. **Permissions-bypass auto-allow** (only when `--yolo` was passed at startup) — every tool auto-allows silently. No safety floor.
+3. **Yolo mode auto-allow** (when `--yolo` was passed at startup or `/yolo` toggled the overlay on) — every tool auto-allows silently. No safety floor.
 4. **Plan-mode auto-allow** — writes to the resolved plan file are the model's only legitimate mutation surface while planning; they auto-allow without a prompt.
 5. **Auto-mode auto-allow** (only when auto mode is active) — non-safety-floor mutating tools auto-allow. Safety floor (`run_bash`, `git_commit`, `git_checkpoint`, `rollback`) normally still prompts, with one carve-out: `run_bash` calls whose every segment uses a verb from a built-in read-only allowlist (`ls`, `cat`, `head`, `tail`, `wc`, `grep`, `rg`, `find`, `awk`, `cut`, `sort`, `uniq`, `diff`, `cd`, `pwd`, `which`, `echo`, `date`, `tree`, `stat`, `file`, `du`, `df`, …) AND carries no risk flag (no `>` redirects, no pipe-into-shell, no sudo) auto-allow under Source `auto-mode-safe-bash`. The intent: a model's habitual `cd <project> && grep …` chain doesn't break flow, while any mutation (rm, mv, touch, curl, go test, sed -i, …) still prompts.
 6. **`Allow` rules** in `permissions.json` skip the prompt.
 7. **`Ask` rules** force a prompt even on tools that would normally auto-execute.
 8. **Tool-default policy** (the tool's own `RequiresApproval`) prompts mutating tools and auto-executes read-only ones.
 
-`Deny` always wins, including over permissions bypass. `--yolo` is "skip prompts," not "ignore my policy."
+`Deny` always wins, including over yolo mode. `--yolo` / `/yolo` is "skip prompts," not "ignore my policy."
 
-Trust controls separate into **modes** (workflow shape, mutually exclusive) and the **permissions-bypass overlay** (orthogonal startup flag):
+Trust controls separate into **modes** (workflow shape, mutually exclusive) and the **yolo mode overlay** (orthogonal, applies on top of any mode):
 
 | Surface | Entry point | Effect |
 |---|---|---|
 | Plan mode | `/plan` · `Shift+Tab` · `--permission-mode plan` | Read-only research; gated to plan file; ends with `exit_plan_mode` |
 | Auto mode | `Shift+Tab` · `--permission-mode auto` (no slash command) | Edits auto, bash/commits prompt, 4× iteration cap |
-| Permissions bypass | `--yolo` at startup (no slash, no keybinding) | Drops all prompts, no iteration cap; sits on top of any mode |
+| Yolo mode | `--yolo` at startup · `/yolo` mid-session toggle | Drops all prompts, no iteration cap; sits on top of any mode |
 
-Mirroring Claude Code, auto mode has no slash command and permissions bypass enters only via the startup flag — these high-autonomy states are intentionally kept off the palette and off the `Shift+Tab` cycle so they can't be triggered by accident. Permissions bypass, once enabled, is one-way per process: restart without the flag to recover. The bypass banner (`⚠ permissions bypass`) takes precedence visually while it's on; when a mode (auto or plan) is also active, the mode banner picks up a `⚠ bypass` suffix.
+Auto mode has no slash command (intentionally off the palette and the `Shift+Tab` cycle so it can't be triggered by accident). Yolo mode, also off the `Shift+Tab` cycle, is the lone exception with a slash toggle (`/yolo`): opt in via the `--yolo` startup flag (one-way per process — restart without the flag to recover) or via `/yolo` mid-session (toggle on, then `/yolo` again to toggle off). The yolo banner (`⚠ yolo mode`) takes precedence visually while it's on; when a mode (auto or plan) is also active, the mode banner picks up a `⚠ yolo mode` suffix.
 
 ## No in-process sandbox
 
@@ -222,13 +222,13 @@ Examples:
 - `MCP(filesystem/read_*)` — allow filesystem MCP server's read tools (see [MCP](mcp.md))
 - `MCP(github/*)` — allow every tool from the GitHub MCP server
 
-## Permissions bypass (the danger setting)
+## Yolo mode (the danger setting)
 
 ```bash
 yottacode --yolo
 ```
 
-This is dangerous. It skips approval prompts for matching operations and raises the iteration cap to a high but finite budget, but explicit deny rules remain enforced. Use it only in trusted automation or disposable environments. There is no in-TUI toggle — restart without the flag to recover.
+This is dangerous. It skips approval prompts for matching operations and raises the iteration cap to a high but finite budget, but explicit deny rules remain enforced. Use it only in trusted automation or disposable environments. Two ways in: `yottacode --yolo` at startup (restart without the flag to recover), or `/yolo` in the TUI to toggle the overlay on or off mid-session.
 
 ## Provider-hosted search allow lists
 

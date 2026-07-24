@@ -122,10 +122,19 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 	// Cache-safe task routing: when [router].mode is "manual"/"auto",
 	// resolve the fast/smart model adapters. These drive isolated
 	// contexts only (subagents + summarization), so they never disturb
-	// the main-thread prompt cache. nil when routing is off.
+	// the main-thread prompt cache. nil when no pair is configured.
 	routerAdapters, err := cli.BuildRouterAdapters(fileCfg, opts)
 	if err != nil {
-		return err
+		if fileCfg.Router.RoutingEnabled() {
+			return err
+		}
+		// Routing is OFF: a stale pair (e.g. the provider it referenced
+		// was removed after the models were picked) must not stop the
+		// session — pre-router builds started fine without any pair.
+		// Warn and run unrouted; /router will re-surface the error if
+		// the user tries to turn it back on.
+		fmt.Fprintln(os.Stderr, "warning: [router] pair unresolved (routing is off, continuing without it): "+err.Error())
+		routerAdapters = nil
 	}
 
 	// Load skills early so the resolved set can flow into both the
@@ -451,7 +460,7 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 		SmartAdapter:  routerSmart(routerAdapters),
 		SmartModel:    routerSmartModel(routerAdapters),
 		RouteAuto:     fileCfg.Router.RoutingAuto(),
-		ModelResolver: routerResolve(routerAdapters),
+		ModelResolver: routerModelResolver(routerAdapters, fileCfg.Router.RoutingEnabled()),
 		// Source the child loop's compaction window the same way the
 		// status bar does, so subagents size context against the real
 		// (override- and default_window-aware) window.
@@ -556,16 +565,24 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 		summarizerWindow = catalog.ResolveWindowForProvider(fileCfg.ProviderKindForModel(fastModel), fastModel, fileCfg.ContextWindowOverride(fastModel), fileCfg.Context.DefaultWindow)
 	}
 	cfg := agent.LoopConfig{
-		Adapter:           ad,
-		Registry:          reg,
-		Permissions:       perms,
-		BypassPermissions: opts.BypassPermissions,
-		Cwd:               cwdRef,
-		MaxIterations:     opts.MaxIterations,
-		PlanMode:          planMode,
-		AutoMode:          autoMode,
-		YoloMode:          yoloMode,
-		LoopControl:       loopControl,
+		Adapter:     ad,
+		Registry:    reg,
+		Permissions: perms,
+		// The TUI drives yolo/bypass SOLELY through YoloMode (a shared,
+		// live-toggleable atomic set by enterYoloMode at startup for --yolo
+		// and by /yolo mid-session). It deliberately does NOT set
+		// cfg.BypassPermissions: that plain bool is the oneshot/CI-only
+		// representation, and setting it here created a second source of
+		// truth that /yolo off couldn't clear — leaving tool auto-approval
+		// on while the banner said "approvals restored". See loop.go's
+		// approval switch: the YoloMode case dominates when active, and the
+		// BypassPermissions fallback must stay off in the TUI.
+		Cwd:           cwdRef,
+		MaxIterations: opts.MaxIterations,
+		PlanMode:      planMode,
+		AutoMode:      autoMode,
+		YoloMode:      yoloMode,
+		LoopControl:   loopControl,
 		Compaction: &agent.CompactionConfig{
 			Window:           compactionWindow,
 			Threshold:        compactionThreshold,
@@ -651,7 +668,6 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 		XSearchToDate:          opts.XSearchToDate,
 		ProviderProfile:        ad.Profile(),
 		Cwd:                    cwd,
-		BypassPermissions:      opts.BypassPermissions,
 		Version:                version.Current,
 		Commit:                 version.Commit(),
 		Dirty:                  version.Dirty(),
@@ -664,6 +680,9 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 		BaseSystemPrompt:       baseSys,
 		EmbedClient:            embedClient,
 		FileCfg:                fileCfg,
+		RouterAdapters:         routerAdapters,
+		RouterMode:             fileCfg.Router.Mode,
+		Options:                opts,
 		Subagents:              subagentTasks,
 		AgentTool:              agentTool,
 		CustomCommands:         customCmds,
@@ -994,6 +1013,26 @@ func routerResolve(ra *cli.RouterAdapters) func(string) agent.Streamer {
 		}
 		return s
 	}
+}
+
+// routerModelResolver gates explicit model-frontmatter routing on the router
+// mode. A configured pair may be built while routing is off so /router can
+// toggle live, but off mode promises every subagent inherits the active model.
+func routerModelResolver(ra *cli.RouterAdapters, enabled bool) func(string) agent.Streamer {
+	if !enabled {
+		return nil
+	}
+	return routerResolve(ra)
+}
+
+// routerSummarizer returns the fast-model summarizer only in auto mode. Manual
+// routing resolves explicit subagent model pins but keeps compaction on the
+// active model.
+func routerSummarizer(ra *cli.RouterAdapters, auto bool) (agent.Streamer, string) {
+	if !auto {
+		return nil, ""
+	}
+	return routerFast(ra), routerFastModel(ra)
 }
 
 func composeSystemPrompt(base string, profile adapter.ProviderProfile) string {

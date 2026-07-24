@@ -42,6 +42,24 @@ type chatAdapter struct {
 // the adapter actually sends.
 const ChatDefaultMaxTokens int64 = 8192
 
+// liftedChatMaxTokens returns the per-turn output cap to send on a Chat
+// Completions-family request (this adapter and the Copilot adapter): the
+// model's catalog output ceiling when it's known and larger than the
+// default, otherwise the conservative ChatDefaultMaxTokens. This keeps a
+// large tool input — a big write_file in particular — from being
+// truncated at the 8192 floor on models that support more (gpt-4o is
+// 16k, gpt-4.1 is 32k), which otherwise surfaces as "stream ended with
+// an incomplete tool call — response truncated". It never over-requests
+// for a model whose ceiling we don't know (modelMaxOutput == 0): an
+// unknown small model would 400 on an over-large max_tokens. Mirrors the
+// same lift the Anthropic adapter applies.
+func liftedChatMaxTokens(modelMaxOutput int) int64 {
+	if int64(modelMaxOutput) > ChatDefaultMaxTokens {
+		return int64(modelMaxOutput)
+	}
+	return ChatDefaultMaxTokens
+}
+
 // newChatAdapter builds a chatAdapter. apiKey is sent as Authorization:
 // Bearer; Ollama and Llama Stack ignore it, but the SDK requires a
 // non-empty value.
@@ -87,7 +105,7 @@ func (a *chatAdapter) ChatStream(ctx context.Context, messages []Message, tools 
 		params := openai.ChatCompletionNewParams{
 			Model:     a.model,
 			Messages:  toOpenAIMessages(messages),
-			MaxTokens: openai.Int(ChatDefaultMaxTokens),
+			MaxTokens: openai.Int(liftedChatMaxTokens(a.cfg.ModelMaxOutput)),
 		}
 		// prompt_cache_key pins real OpenAI Chat-Completions sessions to a
 		// stable server-side cache shard so the stable prompt prefix keeps

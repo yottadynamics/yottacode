@@ -80,46 +80,69 @@ func Render(cfg Config) string {
 		b.WriteString("\n")
 	}
 
-	// Two independent features share the [router] table: the
-	// multi-provider fallback router (enabled/policy/candidates/health)
-	// and cache-safe task routing (mode/fast_model/smart_model). Emit the
-	// table when EITHER is configured — gating only on the multi-provider
-	// router silently dropped a user's /router mode + fast/smart choice on
-	// every save, so the feature evaporated on the next restart.
-	multiProvider := cfg.Router.Enabled && len(cfg.Router.Candidates) > 0
-	routing := cfg.Router.RoutingEnabled()
-	if multiProvider || routing {
+	// The [router] section carries two independent features: cache-safe
+	// task routing (mode + fast/smart model) and the multi-provider
+	// fallback router (enabled + candidates). Either, both, or neither may
+	// be configured; render a single section when at least one is set.
+	hasTaskRouting := cfg.Router.FastModel != "" || cfg.Router.SmartModel != "" ||
+		len(cfg.Router.FastModels) > 0 || len(cfg.Router.SmartModels) > 0 ||
+		(cfg.Router.Mode != "" && cfg.Router.Mode != RouterModeOff)
+	hasFallback := cfg.Router.Enabled && len(cfg.Router.Candidates) > 0
+	if hasTaskRouting || hasFallback {
 		b.WriteString("[router]\n")
-		if multiProvider {
-			b.WriteString("enabled    = true\n")
-			policy := cfg.Router.Policy
-			if policy == "" {
-				policy = "fallback-chain"
-			}
-			fmt.Fprintf(&b, "policy     = %q\n", policy)
-			b.WriteString("candidates = [")
-			for i, c := range cfg.Router.Candidates {
-				if i > 0 {
-					b.WriteString(", ")
-				}
-				fmt.Fprintf(&b, "%q", c)
-			}
-			b.WriteString("]\n")
-			if cfg.Router.HealthWindowSeconds > 0 {
-				fmt.Fprintf(&b, "health_window_seconds    = %d\n", cfg.Router.HealthWindowSeconds)
-			}
-			if cfg.Router.HealthFailureThreshold > 0 {
-				fmt.Fprintf(&b, "health_failure_threshold = %d\n", cfg.Router.HealthFailureThreshold)
-			}
+	}
+	if hasTaskRouting {
+		// %-13s aligns every key's `=` (smart_models is the longest at 12).
+		if cfg.Router.Mode != "" {
+			fmt.Fprintf(&b, "%-13s= %q\n", "mode", cfg.Router.Mode)
 		}
-		if routing {
-			fmt.Fprintf(&b, "mode        = %q\n", cfg.Router.Mode)
-			if cfg.Router.FastModel != "" {
-				fmt.Fprintf(&b, "fast_model  = %q\n", cfg.Router.FastModel)
+		if cfg.Router.FastModel != "" {
+			fmt.Fprintf(&b, "%-13s= %q\n", "fast_model", cfg.Router.FastModel)
+		}
+		if cfg.Router.SmartModel != "" {
+			fmt.Fprintf(&b, "%-13s= %q\n", "smart_model", cfg.Router.SmartModel)
+		}
+		if len(cfg.Router.FastModels) > 0 {
+			writeRouterModelList(&b, "fast_models", cfg.Router.FastModels)
+		}
+		if len(cfg.Router.SmartModels) > 0 {
+			writeRouterModelList(&b, "smart_models", cfg.Router.SmartModels)
+		}
+	}
+	if hasFallback {
+		b.WriteString("enabled    = true\n")
+		policy := cfg.Router.Policy
+		if policy == "" {
+			policy = "fallback-chain"
+		}
+		fmt.Fprintf(&b, "policy     = %q\n", policy)
+		b.WriteString("candidates = [")
+		for i, c := range cfg.Router.Candidates {
+			if i > 0 {
+				b.WriteString(", ")
 			}
-			if cfg.Router.SmartModel != "" {
-				fmt.Fprintf(&b, "smart_model = %q\n", cfg.Router.SmartModel)
-			}
+			fmt.Fprintf(&b, "%q", c)
+		}
+		b.WriteString("]\n")
+	} else if hasTaskRouting && cfg.Router.Policy != "" {
+		// A chain-only config can still carry a policy key (the failover
+		// docs name it right next to smart_models). It must survive a
+		// rewrite: every /router picker commit goes through here, and
+		// silently stripping user-set keys is the config-clobber class
+		// this project has been bitten by before.
+		fmt.Fprintf(&b, "%-13s= %q\n", "policy", cfg.Router.Policy)
+	}
+	// Health knobs apply to ANY failover surface — the candidates router
+	// and fast/smart slot chains both feed healthOptionsFromConfig — so
+	// they render whenever set, not only when the candidates router is
+	// enabled (which used to drop them from chain-only configs on every
+	// picker write).
+	if hasTaskRouting || hasFallback {
+		if cfg.Router.HealthWindowSeconds > 0 {
+			fmt.Fprintf(&b, "health_window_seconds    = %d\n", cfg.Router.HealthWindowSeconds)
+		}
+		if cfg.Router.HealthFailureThreshold > 0 {
+			fmt.Fprintf(&b, "health_failure_threshold = %d\n", cfg.Router.HealthFailureThreshold)
 		}
 		b.WriteString("\n")
 	}
@@ -175,6 +198,19 @@ func Render(cfg Config) string {
 	return b.String()
 }
 
+// writeRouterModelList renders a [router] string-list assignment
+// (fast_models / smart_models) aligned with the other task-routing keys.
+func writeRouterModelList(b *strings.Builder, key string, items []string) {
+	fmt.Fprintf(b, "%-13s= [", key)
+	for i, m := range items {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		fmt.Fprintf(b, "%q", m)
+	}
+	b.WriteString("]\n")
+}
+
 // Save writes cfg to path atomically (tmp + rename). Creates parent
 // dirs as needed. The file mode is 0644 — keys live in .env, never
 // here, so 0600 isn't required. Used by every TUI write path
@@ -199,11 +235,9 @@ func Save(cfg Config, path string) error {
 }
 
 // encodeTunables renders only the [context], [retrieval], and [memory]
-// sections via the BurntSushi encoder. We marshal a trimmed struct so
-// the encoder doesn't try to emit [active], [[providers]], or [router].
-// Memory must be included: Render rebuilds the file from the struct, so
-// any section left out of this list is silently DROPPED from disk the
-// next time a picker or wizard saves the config.
+// sections via the BurntSushi encoder. We marshal a trimmed struct so the
+// encoder doesn't try to emit [active], [[providers]], or [router]. Memory is
+// included because explicit opt-outs (false/0) must survive Render → Load.
 func encodeTunables(cfg Config) (string, error) {
 	var trimmed = struct {
 		Context   ContextConfig   `toml:"context"`
