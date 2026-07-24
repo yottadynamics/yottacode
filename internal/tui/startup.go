@@ -28,7 +28,7 @@ import (
 // wrapped with ansi.Wrap so the bordered box stays inside the terminal
 // on resize. termWidth <= 0 disables wrapping (early frames before the
 // first WindowSizeMsg, test fixtures).
-func renderStartupBox(version, commit string, dirty bool, modelName, dir, branch, memorySummary string, profile adapter.ProviderProfile, tip string, termWidth int) string {
+func renderStartupBox(version, commit string, dirty bool, modelName, dir, sessionID, branch, memorySummary string, profile adapter.ProviderProfile, tip string, termWidth int) string {
 	title := styleSplashTitle.Render(">_ YottaCode by YottaDynamics ") +
 		styleSplashLabel.Render(fmt.Sprintf("(%s)", buildLabel(version, commit, dirty)))
 
@@ -36,6 +36,14 @@ func renderStartupBox(version, commit string, dirty bool, modelName, dir, branch
 		{Key: "model", Value: modelName},
 		{Key: "provider", Value: renderProviderSummary(profile)},
 		{Key: "directory", Value: abbrevHome(dir)},
+	}
+	// The id you'd pass to `sessions resume`. Shown up front so it's
+	// available mid-session — the exit hint prints it too, but only once
+	// you're already leaving, and only for sessions that reached a turn.
+	// Sits above the optional tools/context rows so its position is stable
+	// whether or not those render.
+	if sessionID != "" {
+		items = append(items, startupInfoRow{Key: "session", Value: sessionID})
 	}
 	if tools := renderBuiltinTools(profile); tools != "" {
 		items = append(items, startupInfoRow{Key: "tools", Value: tools})
@@ -153,4 +161,3 @@ func renderBuiltinTools(profile adapter.ProviderProfile) string {
 	}
 	return strings.Join(parts, " + ")
 }
-

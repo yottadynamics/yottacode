@@ -65,6 +65,7 @@ func TestCopilotBuildRequest(t *testing.T) {
 			{Role: RoleUser, Content: "hi"},
 		},
 		nil,
+		ChatDefaultMaxTokens,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -89,6 +90,31 @@ func TestCopilotBuildRequest(t *testing.T) {
 	}
 }
 
+// TestCopilotBuildRequestCarriesMaxTokens guards the truncation fix on
+// the Copilot path: the request body must carry whatever per-turn cap the
+// adapter computed (the model's lifted ceiling, or the safe default),
+// rather than a hardcoded 8192 — otherwise a large write_file truncates
+// mid-call.
+func TestCopilotBuildRequestCarriesMaxTokens(t *testing.T) {
+	for _, want := range []int64{ChatDefaultMaxTokens, 32768} {
+		body, err := buildCopilotRequest("gpt-4o",
+			[]Message{{Role: RoleUser, Content: "hi"}},
+			nil,
+			want,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got map[string]any
+		if err := json.Unmarshal(body, &got); err != nil {
+			t.Fatal(err)
+		}
+		if mt, _ := got["max_tokens"].(float64); int64(mt) != want {
+			t.Errorf("max_tokens = %v, want %d", got["max_tokens"], want)
+		}
+	}
+}
+
 func TestCopilotBuildRequestWithTools(t *testing.T) {
 	tools := []Tool{{
 		Name:        "read_file",
@@ -98,6 +124,7 @@ func TestCopilotBuildRequestWithTools(t *testing.T) {
 	body, _ := buildCopilotRequest("gpt-4o",
 		[]Message{{Role: RoleUser, Content: "hi"}},
 		tools,
+		ChatDefaultMaxTokens,
 	)
 	var got map[string]any
 	_ = json.Unmarshal(body, &got)
@@ -123,6 +150,7 @@ func TestCopilotBuildRequestWithToolCalls(t *testing.T) {
 			{Role: RoleTool, ToolCallID: "call_1", Content: "done"},
 		},
 		nil,
+		ChatDefaultMaxTokens,
 	)
 	if err != nil {
 		t.Fatal(err)

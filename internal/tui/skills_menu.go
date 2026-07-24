@@ -46,11 +46,14 @@ type skillsMenuItem struct {
 // /skills invocation — the user picks a subcommand, it runs, the
 // menu closes.
 type skillsMenuState struct {
-	cursor int
-	items  []skillsMenuItem
-	mode   skillsMenuMode
-	input  textinput.Model
-	status string
+	cursor    int
+	items     []skillsMenuItem
+	mode      skillsMenuMode
+	input     textinput.Model
+	status    string
+	busy      string
+	busyKind  string
+	busyFrame string
 
 	// uninstallRows is the removable (user-scope) skill set shown while
 	// mode == skillsMenuUninstallPick; uninstallCursor is its focused
@@ -58,6 +61,31 @@ type skillsMenuState struct {
 	// after every removal so the list always reflects disk reality.
 	uninstallRows   []skills.Skill
 	uninstallCursor int
+}
+
+type skillsMenuInstallDoneMsg struct {
+	source string
+	res    skills.InstallResult
+	err    error
+}
+
+type skillsMenuUpdateDoneMsg struct {
+	results []skills.UpdateResult
+	err     error
+}
+
+func installSkillFromMenuCmd(source string) tea.Cmd {
+	return func() tea.Msg {
+		res, err := skills.Install(skills.InstallOptions{Source: source})
+		return skillsMenuInstallDoneMsg{source: source, res: res, err: err}
+	}
+}
+
+func updateSkillsFromMenuCmd() tea.Cmd {
+	return func() tea.Msg {
+		results, err := skills.Update(skills.UpdateOptions{})
+		return skillsMenuUpdateDoneMsg{results: results, err: err}
+	}
 }
 
 // openSkillsMenu builds the top-level menu and attaches it to the
@@ -102,6 +130,9 @@ func (m *Model) openSkillsMenu() {
 func (m Model) updateSkillsMenu(msg tea.KeyMsg) (Model, tea.Cmd) {
 	if m.skillsMenu == nil {
 		m.skillsMenuOpen = false
+		return m, nil
+	}
+	if m.skillsMenu.busy != "" {
 		return m, nil
 	}
 	switch m.skillsMenu.mode {
@@ -200,7 +231,22 @@ func commitSkillsMenuInstall(m Model) (Model, tea.Cmd) {
 		state.status = "source required"
 		return m, nil
 	}
-	res, err := skills.Install(skills.InstallOptions{Source: source})
+	state.busy = "installing from " + source + "…"
+	state.busyKind = "install:" + source
+	state.busyFrame = m.spinner.View()
+	state.status = state.busy
+	return m, tea.Batch(m.spinner.Tick, installSkillFromMenuCmd(source))
+}
+
+func handleSkillsMenuInstallDone(m Model, msg skillsMenuInstallDoneMsg) (Model, tea.Cmd) {
+	if !m.skillsMenuOpen || m.skillsMenu == nil || m.skillsMenu.busyKind != "install:"+msg.source {
+		return m, nil
+	}
+	state := m.skillsMenu
+	state.busy = ""
+	state.busyKind = ""
+	state.busyFrame = ""
+	res, err := msg.res, msg.err
 	if err != nil {
 		state.status = err.Error()
 		return m, nil
@@ -343,9 +389,53 @@ func skillsMenuRunCheck(m Model) (Model, tea.Cmd) {
 }
 
 func skillsMenuRunUpdate(m Model) (Model, tea.Cmd) {
+	if m.skillsMenu == nil {
+		return m, nil
+	}
+	m.skillsMenu.busy = "updating installed skills…"
+	m.skillsMenu.busyKind = "update"
+	m.skillsMenu.busyFrame = m.spinner.View()
+	m.skillsMenu.status = m.skillsMenu.busy
+	return m, tea.Batch(m.spinner.Tick, updateSkillsFromMenuCmd())
+}
+
+func handleSkillsMenuUpdateDone(m Model, msg skillsMenuUpdateDoneMsg) (Model, tea.Cmd) {
+	if !m.skillsMenuOpen || m.skillsMenu == nil || m.skillsMenu.busyKind != "update" {
+		return m, nil
+	}
+	m.skillsMenu.busy = ""
+	m.skillsMenu.busyKind = ""
+	m.skillsMenu.busyFrame = ""
+	if msg.err != nil {
+		m.skillsMenu.status = "update failed: " + msg.err.Error()
+		return m, nil
+	}
+	if len(msg.results) == 0 {
+		m.skillsMenuOpen = false
+		m.skillsMenu = nil
+		m.appendLine("(no tracked skills to update)")
+		return m, nil
+	}
+	maxName := 4
+	for _, r := range msg.results {
+		if l := len(r.Name); l > maxName {
+			maxName = l
+		}
+	}
+	var b strings.Builder
+	for _, r := range msg.results {
+		fmt.Fprintf(&b, "  %-*s  %s", maxName, r.Name, r.Status)
+		if r.Message != "" {
+			b.WriteString("  (")
+			b.WriteString(r.Message)
+			b.WriteString(")")
+		}
+		b.WriteByte('\n')
+	}
 	m.skillsMenuOpen = false
 	m.skillsMenu = nil
-	return cmdSkillsUpdate(m, nil)
+	m.appendLine(strings.TrimRight(b.String(), "\n"))
+	return reloadSkillsRegistry(m), nil
 }
 
 // renderSkillsMenu draws the overlay. Two layouts — list and install
@@ -358,6 +448,14 @@ func renderSkillsMenu(state *skillsMenuState, _ int) string {
 		"Manage Agent Skills · Up/Down · Enter selects · Esc closes",
 	))
 	b.WriteString("\n")
+	if state.busy != "" {
+		frame := state.busyFrame
+		if frame == "" {
+			frame = "⣾"
+		}
+		b.WriteString(styleMeta.Render("  " + frame + " " + state.busy))
+		b.WriteString("\n\n")
+	}
 
 	if state.mode == skillsMenuInstallInput {
 		b.WriteString(state.input.View())

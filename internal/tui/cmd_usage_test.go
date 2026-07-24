@@ -220,16 +220,18 @@ func TestRenderSessionUsage_NoData(t *testing.T) {
 	}
 }
 
-// TestRenderOpenAIAuthAccount_FromMemo simulates an observed 429 by
-// writing the rate-limit memo directly (and clearing the probe
-// cache) and asserts the panel surfaces plan + reset window from
-// just the memo path.
+// TestRenderOpenAIAuthAccount_FromMemo writes the quota memo directly
+// (and clears the probe cache) and asserts the panel surfaces plan +
+// reset window from just the memo path.
 func TestRenderOpenAIAuthAccount_FromMemo(t *testing.T) {
 	// Drop a memo with a plan + reset 90 minutes out.
 	adapter.SetOpenAIAuthRateLimitForTest(&adapter.OpenAIAuthRateLimit{
 		Observed: time.Now(),
 		PlanType: "pro",
-		ResetsAt: time.Now().Add(90 * time.Minute),
+		Primary: adapter.OpenAIAuthWindow{
+			Has:      true,
+			ResetsAt: time.Now().Add(90 * time.Minute),
+		},
 	})
 	defer adapter.SetOpenAIAuthRateLimitForTest(nil)
 	// Clear any cached probe so the renderer falls back to the memo.
@@ -242,6 +244,120 @@ func TestRenderOpenAIAuthAccount_FromMemo(t *testing.T) {
 	}
 	if !strings.Contains(got, "resets in") {
 		t.Errorf("missing reset hint in:\n%s", got)
+	}
+}
+
+// TestRenderOpenAIAuthAccount_BothWindows locks the headline feature:
+// when the backend reports both quota windows they render as separate,
+// individually-labelled rows, so a user blocked on the short window is
+// never shown only the weekly number.
+func TestRenderOpenAIAuthAccount_BothWindows(t *testing.T) {
+	adapter.SetOpenAIAuthRateLimitForTest(&adapter.OpenAIAuthRateLimit{
+		Observed: time.Now(),
+		PlanType: "prolite",
+		Primary: adapter.OpenAIAuthWindow{
+			Has: true, HasPercent: true, UsedPercent: 12,
+			WindowMinutes: 300,
+			ResetsAt:      time.Now().Add(3*time.Hour + 41*time.Minute),
+		},
+		Secondary: adapter.OpenAIAuthWindow{
+			Has: true, HasPercent: true, UsedPercent: 97,
+			WindowMinutes: 10080,
+			ResetsAt:      time.Now().Add(6*24*time.Hour + 12*time.Hour),
+		},
+	})
+	defer adapter.SetOpenAIAuthRateLimitForTest(nil)
+	adapter.SetOpenAIAuthAccountForTest(nil)
+
+	got := renderOpenAIAuthAccount(context.Background())
+
+	for _, want := range []string{
+		"prolite plan",
+		"5h window",
+		"12% used",
+		"resets in 3h 41m",
+		"weekly",
+		"97% used",
+		"resets in 6d 12h",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q in:\n%s", want, got)
+		}
+	}
+}
+
+// TestRenderOpenAIAuthAccount_OmitsLapsedWindow is the regression test
+// for the bug that started this: a window whose reset has already passed
+// used to render as a permanent "resets in now", because
+// humanizeUsageDuration collapses non-positive durations to "now". A
+// lapsed window describes a quota that has since refilled, so it must be
+// dropped entirely — leaving only the window still in force.
+func TestRenderOpenAIAuthAccount_OmitsLapsedWindow(t *testing.T) {
+	adapter.SetOpenAIAuthRateLimitForTest(&adapter.OpenAIAuthRateLimit{
+		Observed: time.Now().Add(-8 * time.Hour),
+		PlanType: "pro",
+		Primary: adapter.OpenAIAuthWindow{
+			Has: true, HasPercent: true, UsedPercent: 100,
+			WindowMinutes: 300,
+			ResetsAt:      time.Now().Add(-2 * time.Hour), // already reset
+		},
+		Secondary: adapter.OpenAIAuthWindow{
+			Has: true, HasPercent: true, UsedPercent: 55,
+			WindowMinutes: 10080,
+			ResetsAt:      time.Now().Add(48 * time.Hour),
+		},
+	})
+	defer adapter.SetOpenAIAuthRateLimitForTest(nil)
+	adapter.SetOpenAIAuthAccountForTest(nil)
+
+	got := renderOpenAIAuthAccount(context.Background())
+
+	if strings.Contains(got, "resets in now") {
+		t.Errorf("lapsed window rendered as %q; want the row dropped:\n%s", "resets in now", got)
+	}
+	if strings.Contains(got, "5h window") {
+		t.Errorf("lapsed 5h window still shown in:\n%s", got)
+	}
+	if !strings.Contains(got, "weekly") {
+		t.Errorf("in-force weekly window missing in:\n%s", got)
+	}
+}
+
+// TestRenderOpenAIAuthAccount_PercentWithoutReset covers the partial
+// case: a window reporting usage but no reset instant shows the percent
+// alone rather than an invented countdown.
+func TestRenderOpenAIAuthAccount_PercentWithoutReset(t *testing.T) {
+	adapter.SetOpenAIAuthRateLimitForTest(&adapter.OpenAIAuthRateLimit{
+		Observed: time.Now(),
+		Primary: adapter.OpenAIAuthWindow{
+			Has: true, HasPercent: true, UsedPercent: 30,
+			WindowMinutes: 300,
+		},
+	})
+	defer adapter.SetOpenAIAuthRateLimitForTest(nil)
+	adapter.SetOpenAIAuthAccountForTest(nil)
+
+	got := renderOpenAIAuthAccount(context.Background())
+
+	if !strings.Contains(got, "30% used") {
+		t.Errorf("missing percent in:\n%s", got)
+	}
+	if strings.Contains(got, "resets in") {
+		t.Errorf("invented a countdown with no reset instant in:\n%s", got)
+	}
+}
+
+// TestRenderOpenAIAuthAccount_NoQuotaObserved confirms the empty state
+// points at the first turn (capture is now per-response) rather than the
+// old "only after a 429".
+func TestRenderOpenAIAuthAccount_NoQuotaObserved(t *testing.T) {
+	adapter.SetOpenAIAuthRateLimitForTest(nil)
+	adapter.SetOpenAIAuthAccountForTest(nil)
+
+	got := renderOpenAIAuthAccount(context.Background())
+
+	if !strings.Contains(got, "quota shown after the first turn") {
+		t.Errorf("missing empty-state hint in:\n%s", got)
 	}
 }
 

@@ -778,6 +778,62 @@ func run429(t *testing.T, headers map[string]string, body string) string {
 	return errs[0].Error()
 }
 
+// TestChatStreamSuccessCapturesQuotaHeaders is the end-to-end guard for
+// live quota capture: a perfectly ordinary 200 + SSE turn must leave a
+// populated memo behind. Before this, the memo was only ever written
+// from the 429 branch, so /usage could report where the user had been
+// blocked but never where they currently stood.
+func TestChatStreamSuccessCapturesQuotaHeaders(t *testing.T) {
+	openAIAuthRateLimitMu.Lock()
+	openAIAuthRateLimit = nil
+	openAIAuthRateLimitMu.Unlock()
+
+	backend := newFakeBackend(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("x-codex-plan-type", "prolite")
+		w.Header().Set("x-codex-primary-used-percent", "12")
+		w.Header().Set("x-codex-primary-window-minutes", "300")
+		w.Header().Set("x-codex-primary-reset-after-seconds", "3600")
+		w.Header().Set("x-codex-secondary-used-percent", "97")
+		w.Header().Set("x-codex-secondary-window-minutes", "10080")
+		w.Header().Set("x-codex-secondary-reset-after-seconds", "561600")
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(ssePayload("hello")))
+	})
+
+	src := openaiauth.NewTokenSource(writeAuthStore(t, t.TempDir(), openaiauth.TokenSet{
+		AccessToken:  "atk",
+		RefreshToken: "rtk",
+		ExpiresAt:    time.Now().Add(time.Hour),
+	}))
+	a := newOpenAIAuthAdapterFor(
+		Config{Model: "gpt-5.5", ProviderOverride: ProviderOpenAIAuth},
+		src,
+		backend.srv.URL+"/responses",
+	)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, _, _, errs := drainEvents(a.ChatStream(ctx, []Message{{Role: RoleUser, Content: "hi"}}, nil))
+	if len(errs) != 0 {
+		t.Fatalf("expected a clean turn, got errors: %v", errs)
+	}
+
+	got := LastOpenAIAuthRateLimit()
+	if got == nil {
+		t.Fatal("no quota memo after a successful turn; live capture did not fire")
+	}
+	if got.PlanType != "prolite" {
+		t.Errorf("PlanType = %q, want prolite", got.PlanType)
+	}
+	if got.Primary.WindowMinutes != 300 || got.Primary.UsedPercent != 12 {
+		t.Errorf("primary window = %+v, want 300min / 12%%", got.Primary)
+	}
+	if got.Secondary.WindowMinutes != 10080 || got.Secondary.UsedPercent != 97 {
+		t.Errorf("secondary window = %+v, want 10080min / 97%%", got.Secondary)
+	}
+}
+
 func TestChatStream429ParsesCodexBodyShape(t *testing.T) {
 	// Real Codex 429 body shape (verified by probe 2026-05-06):
 	// nested `error.resets_in_seconds` + `error.plan_type`. Days

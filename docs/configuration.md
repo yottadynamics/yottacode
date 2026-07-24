@@ -29,8 +29,8 @@ The same provider flags also apply to `yottacode doctor`.
 | `--system` | — | no | Override the default system prompt |
 | `--resume` | — | no | Resume a session by id or name |
 | `--continue` / `-c` | — | no | Resume the most recent session whose cwd matches the current directory. Mirrors Claude Code's `--continue`. Mutually exclusive with `--resume`. |
-| `--yolo` | — | no | DANGEROUS: auto-approve every tool call without prompting and remove the iteration cap (`deny` rules in `permissions.json` still apply). Mirrors Claude Code's flag. Launch-only; cannot be toggled mid-run — restart yottacode without the flag to recover. |
-| `--max-iterations` | — | no | Tool-call cap per turn; defaults to `100`. Auto mode raises the effective cap to 4× (400). `--yolo` removes it entirely. |
+| `--yolo` | — | no | DANGEROUS: auto-approve every tool call without prompting and raise the iteration cap to a large finite bound (`deny` rules in `permissions.json` still apply). Mirrors Claude Code's flag. Also toggleable mid-session with `/yolo` — restart without the flag, or run `/yolo` again, to recover. |
+| `--max-iterations` | — | no | Tool-call cap per turn; defaults to `100`. Auto mode raises the effective cap to 4× (400). `--yolo` raises it to a large finite bound (not unlimited). |
 | `--allow-paths` | `YOTTACODE_ALLOW_PATHS` | no | Comma-separated extra write roots in addition to the current working directory |
 | `--permission-mode` | — | no | Startup permission mode: `default` (no startup mode), `plan` (read-only research; describe the task as your first message), or `auto` (edits auto-allow; bash & commits still prompt). Mirrors Claude Code's `--permission-mode`. No-op for `yottacode run`. |
 | `--plan-resume` | — | no | Resume an existing plan by slug or substring (matched against `~/.yottacode/plans/`, newest-first). Implies `--permission-mode plan`. No-op for `yottacode run`. |
@@ -575,12 +575,21 @@ chosen model — a pure cost saving with no prompt-cache churn:
 
 - `mode = "off"` (or absent) — disabled; fully backward compatible.
 - `mode = "manual"` — only routes subagents that declare an explicit `model:`.
-- `mode = "auto"` — also routes read-only/search subagents and summarization to `fast_model`.
+- `mode = "auto"` — routes summarization to `fast_model` and every delegated subagent to `smart_model` (an explicit `model:` on an agent overrides this).
 
 `fast_model` / `smart_model` are required when `mode` is not `off` and
 use the `"<provider>"` or `"<provider>:<model>"` grammar; the model must
-exist in that provider's `models`. See [`models.md`](models.md#cache-safe-task-routing)
-for the cost rationale and the auto heuristic.
+exist in that provider's `models`. These keys can also be set from the
+TUI with the **`/router`** picker, which persists them here.
+
+Either slot can be a **failover chain** via the plural form
+`fast_models` / `smart_models = ["<primary>", "<fallback>", …]`, which
+fails over primary → fallbacks in written order (sharing the health
+knobs; `policy` orders the multi-provider candidates router only) when
+the primary errors before producing output. A slot uses the singular or
+the plural form, not both. See
+[`models.md`](models.md#cache-safe-task-routing) for the cost
+rationale, the auto heuristic, the picker, and failover chains.
 
 **Multi-provider failover** (separate feature, same block) dispatches
 each main-thread turn across an ordered candidate list, falling through

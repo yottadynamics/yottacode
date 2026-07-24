@@ -890,7 +890,13 @@ func TestSessionsPicker_ResumeByRefCtrlSToggles(t *testing.T) {
 func TestSessionsPicker_RenameFlow(t *testing.T) {
 	m := newTestModel(t)
 	// Make sure the running session is on disk so List finds it; the
-	// picker's list is sourced from session.List().
+	// picker's list is sourced from session.List(), which only offers
+	// sessions holding a real exchange — a system-only shell isn't
+	// resumable, so it never reaches the picker.
+	m.sess.Messages = append(m.sess.Messages,
+		adapter.Message{Role: adapter.RoleUser, Content: "hello"},
+		adapter.Message{Role: adapter.RoleAssistant, Content: "world"},
+	)
 	if err := m.sess.Save(); err != nil {
 		t.Fatalf("seed save: %v", err)
 	}
@@ -981,6 +987,11 @@ func TestSessionsPicker_ExportFlow(t *testing.T) {
 // while the Load list has focus flips the summarized state.
 func TestSessionsPicker_LoadSummarizedToggle(t *testing.T) {
 	m := newTestModel(t)
+	// Needs a real exchange: session.List skips system-only shells.
+	m.sess.Messages = append(m.sess.Messages,
+		adapter.Message{Role: adapter.RoleUser, Content: "hello"},
+		adapter.Message{Role: adapter.RoleAssistant, Content: "world"},
+	)
 	if err := m.sess.Save(); err != nil {
 		t.Fatalf("seed save: %v", err)
 	}

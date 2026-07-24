@@ -11,9 +11,79 @@ import (
 	"testing"
 
 	"github.com/yottadynamics/yottacode/internal/adapter"
+	"github.com/yottadynamics/yottacode/internal/agent"
 	"github.com/yottadynamics/yottacode/internal/config"
 	"github.com/yottadynamics/yottacode/internal/contextwindow"
 )
+
+// TestRenderFallbackLine_AgentLabel: a main-thread fallback has no agent
+// tag; a delegated/summarization fallback names its context.
+func TestRenderFallbackLine_AgentLabel(t *testing.T) {
+	main := stripANSI(renderFallbackLine(agent.Fallback{From: "a", To: "b", Policy: "fallback-chain"}))
+	if !strings.Contains(main, "fallback: a → b") || strings.Contains(main, "fallback [") {
+		t.Errorf("main-thread fallback should have no agent tag: %q", main)
+	}
+	sub := stripANSI(renderFallbackLine(agent.Fallback{From: "a", To: "b", Agent: "Explore"}))
+	if !strings.Contains(sub, "fallback [Explore]: a → b") {
+		t.Errorf("agent fallback should be tagged: %q", sub)
+	}
+}
+
+// TestChooseSummarizer_DegradesAfterFailures: in auto mode, summarization
+// runs on the fast model until it has failed summarizeDegradeThreshold
+// times in a row, then degrades to the smart model so a fast-provider
+// outage can't block compaction. Off mode never degrades.
+func TestChooseSummarizer_DegradesAfterFailures(t *testing.T) {
+	ra := testRouterAdapters(t) // fast + smart, defined in cmd_router_test.go
+	m := Model{
+		routerMode:        config.RouterModeAuto,
+		summarizerAdapter: ra.Fast,
+		router:            ra,
+	}
+
+	// Below the threshold → the fast model, no degrade.
+	if ad, degraded := m.chooseSummarizer(); degraded || ad != agentStreamer(ra.Fast) {
+		t.Errorf("below threshold should use fast (degraded=%v)", degraded)
+	}
+
+	// At the threshold → degrade to the smart model.
+	m.summarizeFailures = summarizeDegradeThreshold
+	ad, degraded := m.chooseSummarizer()
+	if !degraded {
+		t.Fatal("at the threshold summarization should degrade to smart")
+	}
+	if ad != agentStreamer(ra.Smart) {
+		t.Error("degraded summarizer should be the smart adapter")
+	}
+
+	// Off mode never degrades (summarization runs on the active model).
+	m.routerMode = config.RouterModeOff
+	if _, degraded := m.chooseSummarizer(); degraded {
+		t.Error("off mode must not degrade to smart")
+	}
+}
+
+// TestRunSummarization_CapturesFallback: an EventFallback during
+// compaction is collected so the caller can surface it.
+func TestRunSummarization_CapturesFallback(t *testing.T) {
+	stub := &scriptedAdapter{turns: [][]adapter.StreamEvent{{
+		{Kind: adapter.EventFallback, FallbackFrom: "anthropic/haiku", FallbackTo: "openai/gpt-4o-mini", FallbackReason: "timeout"},
+		{Kind: adapter.EventTokenDelta, Token: "## Decisions made\n(none)"},
+		{Kind: adapter.EventDone},
+	}}}
+	_, fallbacks, err := runSummarization(context.Background(), stub, []adapter.Message{
+		{Role: adapter.RoleUser, Content: "hi"},
+	}, 0)
+	if err != nil {
+		t.Fatalf("runSummarization: %v", err)
+	}
+	if len(fallbacks) != 1 {
+		t.Fatalf("expected 1 captured fallback, got %d", len(fallbacks))
+	}
+	if fallbacks[0].FallbackTo != "openai/gpt-4o-mini" {
+		t.Errorf("captured fallback To = %q, want openai/gpt-4o-mini", fallbacks[0].FallbackTo)
+	}
+}
 
 // scriptedAdapter is the smallest stub that satisfies the agent loop's
 // Streamer expectations. Each call to ChatStream pops the next pre-set
@@ -307,7 +377,7 @@ func TestRunSummarization_BudgetsInputAgainstWindow(t *testing.T) {
 		)
 	}
 
-	_, err := runSummarization(context.Background(), stub, history, 32_000)
+	_, _, err := runSummarization(context.Background(), stub, history, 32_000)
 	if err != nil {
 		t.Fatalf("runSummarization: %v", err)
 	}
@@ -437,7 +507,7 @@ func TestInjectSummaryIntoSystemPrompt_IsIdempotent(t *testing.T) {
 
 func TestRunSummarization_EmptyHistoryErrors(t *testing.T) {
 	stub := &scriptedAdapter{}
-	_, err := runSummarization(context.Background(), stub, nil, 0)
+	_, _, err := runSummarization(context.Background(), stub, nil, 0)
 	if err == nil {
 		t.Errorf("empty history should error")
 	}
@@ -448,7 +518,7 @@ func TestRunSummarization_StreamsAndStructures(t *testing.T) {
 		{Kind: adapter.EventTokenDelta, Token: "## Decisions made\n(none)\n"},
 		{Kind: adapter.EventDone, Final: &adapter.Message{Role: adapter.RoleAssistant, Content: "## Decisions made\n(none)"}},
 	}}}
-	out, err := runSummarization(context.Background(), stub, []adapter.Message{
+	out, _, err := runSummarization(context.Background(), stub, []adapter.Message{
 		{Role: adapter.RoleUser, Content: "hi"},
 		{Role: adapter.RoleAssistant, Content: "hello"},
 	}, 0)

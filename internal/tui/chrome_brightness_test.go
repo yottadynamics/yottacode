@@ -102,7 +102,7 @@ func TestChromeReadsBright(t *testing.T) {
 			t.Errorf("%s: expected a Dim border/divider: %q", label, s)
 		}
 	}
-	card := renderStartupBox("0.2.0", "abc1234", true, "all-minilm:latest", "/repo",
+	card := renderStartupBox("0.2.0", "abc1234", true, "all-minilm:latest", "/repo", "20260721-000000.000000",
 		"main", "USER", adapter.ProviderProfile{Provider: adapter.ProviderOpenAICompatible}, "", 120)
 	offRule("startup card border", card)
 	offRule("cmdline box frame", m.renderInputFrame())

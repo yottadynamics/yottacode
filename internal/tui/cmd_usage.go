@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -395,29 +396,83 @@ func renderOpenAIAuthAccount(ctx context.Context) string {
 	memo := adapter.LastOpenAIAuthRateLimit()
 	label := "openai-auth (chatgpt subscription)"
 
-	switch {
-	case acct != nil && acct.Plan != "" && memo != nil && !memo.ResetsAt.IsZero():
-		fmt.Fprintf(&b, "%-13sopenai-auth (chatgpt %s plan)\n", "account", acct.Plan)
-		fmt.Fprintf(&b, "%-13sresets in %s\n", "", humanizeUsageDuration(time.Until(memo.ResetsAt)))
-	case acct != nil && acct.Plan != "":
-		fmt.Fprintf(&b, "%-13sopenai-auth (chatgpt %s plan)\n", "account", acct.Plan)
-	case memo != nil && memo.PlanType != "" && !memo.ResetsAt.IsZero():
-		fmt.Fprintf(&b, "%-13sopenai-auth (chatgpt %s plan)\n", "account", memo.PlanType)
-		fmt.Fprintf(&b, "%-13sresets in %s\n", "", humanizeUsageDuration(time.Until(memo.ResetsAt)))
-	case memo != nil && memo.PlanType != "":
-		fmt.Fprintf(&b, "%-13sopenai-auth (chatgpt %s plan)\n", "account", memo.PlanType)
-	case memo != nil && !memo.ResetsAt.IsZero():
+	// Plan name: the probe is authoritative when it answered, the memo's
+	// header/body value is the fallback.
+	plan := ""
+	if acct != nil {
+		plan = acct.Plan
+	}
+	if plan == "" && memo != nil {
+		plan = memo.PlanType
+	}
+	if plan != "" {
+		fmt.Fprintf(&b, "%-13sopenai-auth (chatgpt %s plan)\n", "account", plan)
+	} else {
 		fmt.Fprintf(&b, "%-13s%s\n", "account", label)
-		fmt.Fprintf(&b, "%-13sresets in %s\n", "", humanizeUsageDuration(time.Until(memo.ResetsAt)))
-	default:
-		fmt.Fprintf(&b, "%-13s%s\n", "account", label)
-		fmt.Fprintf(&b, "%-13s%s\n", "", "quota shown only after a 429")
+	}
+
+	rows := quotaWindowRows(memo)
+	for _, row := range rows {
+		fmt.Fprintf(&b, "%-13s%s\n", "", row)
+	}
+	if len(rows) == 0 {
+		fmt.Fprintf(&b, "%-13s%s\n", "", "quota shown after the first turn")
 	}
 	if acct != nil && acct.Email != "" {
 		fmt.Fprintf(&b, "%-13ssigned in as %s\n", "", acct.Email)
 	}
 	fmt.Fprintf(&b, "%-13s✓ no per-request cost — subscription\n", "")
 	return b.String()
+}
+
+// quotaWindowRows renders one line per Codex quota window that still
+// carries usable information, most-constraining facts first. Returns
+// nothing when the memo is empty or every window has lapsed, which is
+// the renderer's cue to print the "not observed yet" fallback.
+//
+// A window whose reset instant has already passed is dropped rather than
+// shown: the quota it described has since refilled, so displaying it
+// asserts a limit the user is no longer under. (Before this, a lapsed
+// window rendered as a permanent "resets in now", because
+// humanizeUsageDuration collapses every non-positive duration to "now".)
+func quotaWindowRows(memo *adapter.OpenAIAuthRateLimit) []string {
+	if memo == nil {
+		return nil
+	}
+	now := time.Now()
+	var rows []string
+	for _, w := range []struct {
+		family string
+		win    adapter.OpenAIAuthWindow
+	}{
+		{"primary", memo.Primary},
+		{"secondary", memo.Secondary},
+	} {
+		if !w.win.Has {
+			continue
+		}
+		// Lapsed: the window reset while we weren't looking.
+		if !w.win.ResetsAt.IsZero() && !w.win.ResetsAt.After(now) {
+			continue
+		}
+		label := adapter.FormatQuotaWindowLabel(w.win.WindowMinutes)
+		if label == "" {
+			label = w.family
+		}
+
+		var parts []string
+		if w.win.HasPercent {
+			parts = append(parts, strconv.FormatFloat(w.win.UsedPercent, 'f', -1, 64)+"% used")
+		}
+		if !w.win.ResetsAt.IsZero() {
+			parts = append(parts, "resets in "+humanizeUsageDuration(time.Until(w.win.ResetsAt)))
+		}
+		if len(parts) == 0 {
+			continue
+		}
+		rows = append(rows, fmt.Sprintf("%-13s%s", label, strings.Join(parts, " · ")))
+	}
+	return rows
 }
 
 func shortUsageURL(raw string) string {

@@ -11,12 +11,13 @@ Type `/` in the TUI to open the slash-command palette. The palette filters as yo
 | `/clear` | — | Save the current session and start a fresh one |
 | `/permissions` | — | Print shared and local permission file paths |
 | `/system` | — | Show the active system prompt, including injected memory |
-| `/usage` | — | Show per-session token totals, today's rolling total, live rate-limit headroom, and a per-provider billing-dashboard link. No dollar estimate — token counts are exact, but cost would need an unmaintainable price table. See [cost.md](cost.md). |
+| `/usage` | — | Show per-session token totals, today's rolling total, live rate-limit headroom (including both Codex quota windows on a ChatGPT subscription), and a per-provider billing-dashboard link. No dollar estimate — token counts are exact, but cost would need an unmaintainable price table. See [cost.md](cost.md). |
 | `/sessions` | `[id\|name]` | Open the sessions picker or resume a known session directly |
 | `/model` | `<name>` | Switch the active model for this session |
 | `/provider` | — | Show resolved provider, API style, built-ins, capabilities, and diagnostics |
 | `/context` | — | Show context-window diagnostics: resolved window, thresholds, tool-schema overhead, largest buckets, compaction status, and MCP/memory/skills breakdowns |
 | `/effort` | `[default\|low\|medium\|high]` | Set reasoning effort for this session on providers that support it. Bare opens a picker; a positional argument sets it directly. `default` (aliases `off`/`none`) injects no reasoning override — every provider behaves as if `/effort` were never used. Supported active models show the current level in the status bar. Session-only, mirroring `--reasoning-effort`. See [providers.md](providers.md#reasoning-effort). |
+| `/router` | `[on\|off]` | Configure cache-safe model routing between a fast and a smart model. Bare opens a picker with three rows — Routing, Fast model, Smart model — that all act **in place** (the picker stays open). The Routing row toggles on/off; the model rows open a list of your configured models (catalog + `providers.models`). You can enable routing first and pick the `fast_model` / `smart_model` below — routing turns on automatically once both are set — or pick the models and then toggle on. Choices **persist to `config.toml`** and apply live; picking a catalog model also adds it to that provider's `providers.models` so the write validates. `on`/`off` are quick shortcuts for the toggle (also persist); `on` always means `auto` (summarization → fast model; every delegated subagent → smart model, unless it pins an explicit `model:`). The main-thread model is never switched mid-conversation, so routing only ever touches isolated contexts and never invalidates the prompt cache — a pure saving. A `routing:` chip shows in the status bar while active. `manual` mode (route only subagents with explicit `model:` frontmatter) stays config-only. |
 | `/doctor` | — | Probe the provider `/models` endpoint |
 | `/redo` | — | Rewind the last user message and put it back in the input box |
 | `/recall` | `<query>` | Search saved sessions in an interactive results overlay |
@@ -33,6 +34,7 @@ Type `/` in the TUI to open the slash-command palette. The palette filters as yo
 | `/git-review-pr` | `[ref]` | Self-review an existing pull request. Ref is a number (`17`) or branch (`feature/x`); empty defaults to the current branch's PR. Fetches PR metadata + diff + check rollup via the typed `internal/github.Interface`, surfaces failing CI at the top, emits a structured review (Failing checks / Blockers / Suggestions / Nits). Output to scrollback only — posting back to GitHub is deferred to a future `--post` flag. |
 | `/code-review` | `[low\|medium\|high]` | Multi-agent review of the **local** diff (the current branch against its resolved base, or the uncommitted working tree when there are no commits ahead). The main agent reads the diff via the `code_review_context` tool, crafts review "angles", fans them out to read-only background subagents, dedups their candidate findings, verifies them, and emits one structured review (Blockers / Suggestions / Nits) to scrollback. Effort scales the fan-out: `low` (2 finders, no verification), `medium` (4 finders, verify uncertain findings), `high` (up to 8 finders, one verifier per finding). Background subagents are GA in the interactive TUI — no experimental flag required. Finders and verifiers are read-only by design — the `review` and `code-verifier` agent types carry no shell tool at all, so verification argues from the code rather than executing it. (For build/test probes, the separate `verification` agent type with `run_bash` remains available outside this command.) Output to scrollback only; the author owns the changes. |
 | `/plan` | — | Toggle plan mode (also `Shift+Tab`). Type `/plan list` to open a picker and resume an earlier plan. |
+| `/yolo` | — | Toggle yolo mode (also `--yolo` at startup). Auto-runs every tool with NO safety floor and raises the iteration cap to a large finite bound; explicit `deny` rules still win. Run `/yolo` again to restore approvals. See [Yolo mode](#yolo-mode). |
 | `/subagents` | `[list \| view <id> \| stop <id> \| types]` | List subagent runs, view a transcript (`Enter`), stop a running task (`s`), inject a finished task's result into the conversation (`i`), or list available agent types. See [subagents.md](subagents.md). |
 | `/experimental` | — | List experimental features and which are enabled this session (`dispatch`, `lsp_code_intelligence`, …). `background_subagents` has graduated to GA — the flag is now a recognized no-op. Read-only; enabling happens via `--experimental <name>`, `YOTTACODE_EXPERIMENTAL`, or the `[experimental]` config block — see [experimental.md](experimental.md). |
 | `/lsp` | `[path]` | Show LSP language detection, server status, install hints, and session manager stats for the current workspace or path. Requires `lsp_code_intelligence` — see [lsp.md](lsp.md). |
@@ -42,7 +44,7 @@ Type `/` in the TUI to open the slash-command palette. The palette filters as yo
 
 Beyond the built-ins, you can ship your own slash commands by dropping markdown files in a `commands/` directory — see [Custom commands](#custom-commands).
 
-> **Auto mode and the permissions-bypass overlay are intentionally not slash commands** (mirroring Claude Code). Auto enters via `Shift+Tab` (cycle: `normal → auto → plan → normal`) or `yottacode --permission-mode auto` at startup. Permissions bypass enters only via `yottacode --yolo` at startup — there is no in-TUI toggle, no palette entry, no accidental activation. See [Auto mode](#auto-mode) and [Permissions bypass](#permissions-bypass) below.
+> **Auto mode is intentionally not a slash command** (mirroring Claude Code). Auto enters via `Shift+Tab` (cycle: `normal → auto → plan → normal`) or `yottacode --permission-mode auto` at startup. **Yolo mode** is the exception — it has a `/yolo` slash toggle in addition to `yottacode --yolo` at startup, because the danger lies in skipping prompts rather than in being hard to leave. See [Auto mode](#auto-mode) and [Yolo mode](#yolo-mode) below.
 
 ## Provider picker
 
@@ -140,7 +142,7 @@ Three ways to reduce friction on commands you trust:
 
 - **Auto mode** (`Shift+Tab` or `yottacode --permission-mode auto`) — edits auto-allow; `run_bash`, `git_commit`, `git_checkpoint`, and `rollback` remain in the safety floor and still prompt. See [Auto mode](#auto-mode).
 - **`.yottacode/permissions.json` allow rules** — pre-approve specific shell invocations or tool patterns (`allow: ["Bash(go test*)", "Bash(go mod tidy)"]`). Rules apply equally to commands the agent calls from a custom-command turn and to anything else.
-- **`yottacode --yolo`** — everything auto-runs, with a high but finite iteration budget. Use only for fully-trusted scripted runs. See [Permissions bypass](#permissions-bypass).
+- **`yottacode --yolo`** — everything auto-runs, with a high but finite iteration budget. Use only for fully-trusted scripted runs. See [Yolo mode](#yolo-mode).
 
 Per-command `allowed-tools:` frontmatter (a Claude Code feature that scopes which tools a command can call) is **not** supported in v1; the closest equivalent today is auto mode plus an `.yottacode/permissions.json` allow list. See [Out of scope](#out-of-scope-for-now).
 
@@ -299,13 +301,13 @@ Uninstalling a user-scope official skill from the Catalog (`u` on an installed O
 
 | Form | What it does |
 |---|---|
-| `/skills install <source> [--force]` | Install a skill from `official/<name>`, a local path, `https://.../SKILL.md` URL, or `owner/repo[/path]` GitHub shorthand. Refuses to overwrite an existing slug unless `--force` is set. |
+| `/skills install <source> [--force]` | Install a skill from `official/<name>`, a local path, `https://.../SKILL.md` URL, or `owner/repo[/path]` GitHub shorthand. Refuses to overwrite an existing slug unless `--force` is set. In the `/skills` menu, installs run with an inline spinner so network fetches do not look frozen. |
 | `/skills official <name>` | Shortcut for installing from the public `yottadynamics/yottacode-skills` catalog. Equivalent to `/skills install official/<name>`. |
-| `/skills catalog refresh` | Refresh the offline Official catalog metadata cache from `yottadynamics/yottacode-skills`. Browsing the Catalog itself never contacts GitHub; installs still fetch the selected skill. |
+| `/skills catalog refresh` | Refresh the offline Official catalog metadata cache from `yottadynamics/yottacode-skills`. Browsing the Catalog itself never contacts GitHub; installs still fetch the selected skill. In the Catalog picker, refresh shows an inline spinner until GitHub responds. |
 | `/skills show <name>` | Print one skill's full body — the same bytes the model receives when it calls `Skill(skill="<name>")`. |
 | `/skills uninstall <name>` | Remove a user-scope skill from `~/.yottacode/skills/`. Built-in and project-scope skills are out of scope (project skills are committed source — remove via git/rm; built-ins are embedded in the binary). |
 | `/skills check [name]` | Report drift between the installed bytes and `~/.yottacode/skills/.lock.json`. Statuses: `ok`, `modified`, `missing-lock`, `orphaned-lock`, `hash-error`. Read-only. |
-| `/skills update [name] [--force]` | Re-fetch from the originally-recorded source. Skips installs whose on-disk hash diverges from the lockfile unless `--force` is set, so hand-edits aren't silently overwritten. |
+| `/skills update [name] [--force]` | Re-fetch from the originally-recorded source. Skips installs whose on-disk hash diverges from the lockfile unless `--force` is set, so hand-edits aren't silently overwritten. The `/skills` menu Update action shows an inline spinner while tracked skills are refetched. |
 
 Source shapes:
 
@@ -447,17 +449,22 @@ The plan-approval card's `[A]` auto-approval hotkey is a shortcut: it approves t
 
 Auto mode persists across turns until you toggle it off. The banner above the cmdline (`▸ auto mode · edits + read-only bash auto-allow; commits prompt · Shift+Tab cycles`) is always visible while active so the state isn't easy to forget — the trailing `Shift+Tab cycles` hint is how you leave (it drops first on narrow terminals). The entry log shows the full cycle (`auto → plan → normal`); the exit log shows the re-enter key.
 
-The default per-turn iteration cap is 100; auto mode raises the effective cap to 400 (4×). If you still hit the cap on long implementations, run `/max-iterations 500` (sanity ceiling) or relaunch with `--yolo` (raises the cap to `max-iterations × 20`, at least 1000; see [Permissions bypass](#permissions-bypass)).
+The default per-turn iteration cap is 100; auto mode raises the effective cap to 400 (4×). If you still hit the cap on long implementations, run `/max-iterations 500` (sanity ceiling) or relaunch with `--yolo` (raises the cap to `max-iterations × 20`, at least 1000; see [Yolo mode](#yolo-mode)).
 
-## Permissions bypass
+## Yolo mode
 
-Permissions bypass is the unrestricted overlay — every tool auto-runs (`run_bash`, `git_commit`, edits, everything), and the iteration cap is raised to a generous but finite budget (`max-iterations × 20`, at least 1000) so a runaway model still terminates. Intended for unattended long-running implementations where you've decided no further oversight is needed. The startup flag is `--yolo`; the in-TUI banner label reads "permissions bypass" (the codebase calls the overlay state "yolo" internally).
+Yolo mode is the unrestricted overlay — every tool auto-runs (`run_bash`, `git_commit`, edits, everything), and the iteration cap is raised to a generous but finite budget (`max-iterations × 20`, at least 1000) so a runaway model still terminates. Intended for unattended long-running implementations where you've decided no further oversight is needed. The startup flag is `--yolo`; the slash command is `/yolo`; the in-TUI banner label reads "yolo mode" (the codebase calls the overlay state "yolo" internally).
 
-Mirroring Claude Code, the overlay enters **only via `yottacode --yolo` at startup**. There is no slash command, no `Shift+Tab` binding, and no in-TUI toggle — opt in once per process, and recovery requires restarting yottacode without the flag. This is deliberate: the high-autonomy state should be a conscious one-time decision, not a key chord away.
+There are two ways in:
 
-The overlay is a **modifier**, not a mode — once active, it sits on top of normal, auto, or plan. Entering auto or plan via `Shift+Tab` does not turn bypass off. The bypass banner takes visual priority while it's on (it's the loudest signal), and when a mode (auto or plan) is also active, the mode banner picks up a `⚠ bypass` suffix instead.
+- **`yottacode --yolo` at startup** — the original one-time opt-in. Recovery requires restarting yottacode without the flag.
+- **`/yolo` slash command** (mid-session toggle) — turns yolo mode on; running `/yolo` again turns it off. The escape hatch the one-time `--yolo` path never had.
 
-Explicit `deny` rules in `.yottacode/permissions.json` still win — the bypass overlay is "skip prompts," not "ignore my policy." `Ctrl+C` is the escape hatch if a model goes into a runaway loop. The banner (`⚠ permissions bypass · all tools auto-allow · high iteration cap`) renders in red so the state isn't easy to forget; when a mode (auto or plan) is also active, the mode banner picks up a `⚠ bypass` suffix instead.
+Auto mode (`/auto`) is intentionally NOT slash-invocable (auto enters via `Shift+Tab` or `--permission-mode auto` only); yolo mode is the lone exception with a slash-toggle because its danger lies in skipping prompts, not in being hard to leave.
+
+The overlay is a **modifier**, not a mode — once active, it sits on top of normal, auto, or plan. Entering auto or plan via `Shift+Tab` does not turn yolo mode off. The yolo banner takes visual priority while it's on (it's the loudest signal), and when a mode (auto or plan) is also active, the mode banner picks up a `⚠ yolo mode` suffix instead.
+
+Explicit `deny` rules in `.yottacode/permissions.json` still win — the yolo overlay is "skip prompts," not "ignore my policy." `Ctrl+C` is the escape hatch if a model goes into a runaway loop. The banner (`⚠ yolo mode · all tools auto-allow · no iteration cap`) renders in red so the state isn't easy to forget; when a mode (auto or plan) is also active, the mode banner picks up a `⚠ yolo mode` suffix instead.
 
 Plan-mode state is per-launch — a new `yottacode` session starts in normal mode, and resuming an old session never re-enters plan mode automatically. Plan files persist on disk under `~/.yottacode/plans/`, sorted newest-first.
 
