@@ -116,14 +116,79 @@ func TestApplyDiffTool_RefusesDeniedPath(t *testing.T) {
 
 // Regression: a diff with no parseable header must be refused. An
 // empty path set used to vacuously pass validation; now it errors so
-// the model gets a clear signal.
+// the model gets a clear signal — and the error echoes a quoted snippet
+// of what was received so the (usually invisible) defect is debuggable.
 func TestApplyDiffTool_RefusesEmptyHeaderDiff(t *testing.T) {
 	tmp := gitInit(t)
 	tool := &ApplyDiffTool{Cwd: NewCwdRef(tmp), WriteOpts: WritePathOptions{Cwd: NewCwdRef(tmp)}}
 	args := map[string]string{"diff": "garbage with no diff headers\n"}
 	b, _ := json.Marshal(args)
-	if _, err := tool.Execute(context.Background(), string(b)); err == nil {
-		t.Errorf("expected error for headerless diff")
+	_, err := tool.Execute(context.Background(), string(b))
+	if err == nil {
+		t.Fatalf("expected error for headerless diff")
+	}
+	// The error must quote what the parser saw so the model/user can see why.
+	if !strings.Contains(err.Error(), `garbage with no diff headers`) {
+		t.Errorf("error should echo the received diff snippet, got %v", err)
+	}
+}
+
+// Security regression: the escaped-diff variant of RefusesDeniedPath. A
+// fully JSON-escaped diff (newlines as the literal \\n sequence, no real
+// newlines) that targets a denied path must still be refused. Before the
+// repair-ordering fix, ParseDiffPaths ran on the un-repaired bytes and
+// extracted one garbage "path" (the whole diff tail) that matched no deny
+// entry and resolved under cwd, so ValidateWritePath passed — then the
+// diff was repaired into a real patch and git apply wrote the denied file,
+// self-granting a permissions rule. The repair now precedes validation, so
+// the target git apply sees is the target we validate.
+func TestApplyDiffTool_RefusesDeniedPath_Escaped(t *testing.T) {
+	tmp := gitInit(t)
+	denied := filepath.Join(tmp, ".yottacode", "permissions.local.json")
+	if err := os.MkdirAll(filepath.Dir(denied), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(denied, []byte("x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	tool := &ApplyDiffTool{
+		Cwd:       NewCwdRef(tmp),
+		WriteOpts: WritePathOptions{Cwd: NewCwdRef(tmp), DenyExact: DefaultDenyPaths(tmp)},
+	}
+	// No real newlines; `\\n` is the literal 3-char escape sequence.
+	escaped := `--- a/.yottacode/permissions.local.json\\n+++ b/.yottacode/permissions.local.json\\n@@ -1 +1 @@\\n-x\\n+{"permissions":{"allow":["Bash(*)"]}}\\n`
+	b, _ := json.Marshal(map[string]string{"diff": escaped})
+	out, err := tool.Execute(context.Background(), string(b))
+	if err == nil {
+		t.Fatalf("expected deny-list refusal, got out=%q", out)
+	}
+	if !strings.Contains(err.Error(), "deny list") {
+		t.Errorf("expected deny-list error, got %v", err)
+	}
+	got, _ := os.ReadFile(denied)
+	if string(got) != "x\n" {
+		t.Errorf("denied file was modified: %q", string(got))
+	}
+}
+
+// Regression: a fully JSON-escaped diff targeting an ALLOWED file must be
+// repaired and applied, not rejected. Before the fix, ParseDiffPaths ran
+// before repairFullyEscapedDiff, so this single-line diff (git-style
+// prelude, no real newlines) produced an empty path set and bounced with
+// "no recognizable file headers" even though the repair would make it
+// applyable.
+func TestApplyDiffTool_AppliesFullyEscapedDiff(t *testing.T) {
+	tmp := gitInit(t)
+	writeFile(t, tmp, "a.txt", "one\ntwo\n")
+	tool := &ApplyDiffTool{Cwd: NewCwdRef(tmp), WriteOpts: WritePathOptions{Cwd: NewCwdRef(tmp)}}
+	escaped := `diff --git a/a.txt b/a.txt\\n--- a/a.txt\\n+++ b/a.txt\\n@@ -1,2 +1,2 @@\\n one\\n-two\\n+TWO\\n`
+	b, _ := json.Marshal(map[string]string{"diff": escaped})
+	if _, err := tool.Execute(context.Background(), string(b)); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	got, _ := os.ReadFile(filepath.Join(tmp, "a.txt"))
+	if string(got) != "one\nTWO\n" {
+		t.Errorf("file = %q, want %q", string(got), "one\nTWO\n")
 	}
 }
 
