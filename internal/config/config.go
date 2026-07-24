@@ -45,6 +45,10 @@ type Config struct {
 	// later is non-breaking.
 	MCPServers []MCPServer `toml:"mcp_servers"`
 	Theme      ThemeConfig `toml:"theme"`
+	// LSP carries optional command overrides for the experimental
+	// language-server code-intelligence tools. Defaults remain built in;
+	// this only exists for Nix/devcontainer/custom-toolchain paths.
+	LSP LSPConfig `toml:"lsp"`
 	// Experimental gates non-default features behind named opt-ins.
 	// Mirrors the --experimental CLI flag and the
 	// $YOTTACODE_EXPERIMENTAL env var. Each entry is a feature name
@@ -71,6 +75,12 @@ type Config struct {
 // total). <=0 falls through to DefaultSubagentSessionTokenBudget.
 type SubagentsConfig struct {
 	SessionTokenBudget int `toml:"session_token_budget"`
+}
+
+// LSPConfig contains optional per-language server command overrides. Keys are
+// stable language IDs such as "go", "typescript", "python", and "rust".
+type LSPConfig struct {
+	Servers map[string][]string `toml:"servers"`
 }
 
 // DefaultSubagentSessionTokenBudget bounds cumulative subagent spend per
@@ -678,6 +688,18 @@ func Validate(cfg Config) error {
 	if cfg.Memory.CaptureReminderEveryTurns < 0 {
 		return fmt.Errorf("memory.capture_reminder_every_turns = %d must be >= 0 (0 = disabled)",
 			cfg.Memory.CaptureReminderEveryTurns)
+	}
+	validLSP := map[string]bool{}
+	for _, lang := range []string{"go", "typescript", "python", "rust"} {
+		validLSP[lang] = true
+	}
+	for id, cmd := range cfg.LSP.Servers {
+		if !validLSP[id] {
+			return fmt.Errorf("lsp.servers.%s unknown (expected one of go, typescript, python, rust)", id)
+		}
+		if len(cmd) == 0 || strings.TrimSpace(cmd[0]) == "" {
+			return fmt.Errorf("lsp.servers.%s must name a command", id)
+		}
 	}
 
 	if name := strings.TrimSpace(cfg.Theme.Name); name != "" && !themes.IsValid(name) {

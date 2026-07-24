@@ -234,19 +234,25 @@ func Save(cfg Config, path string) error {
 	return os.Rename(tmp, path)
 }
 
-// encodeTunables renders only the [context], [retrieval], and [memory]
-// sections via the BurntSushi encoder. We marshal a trimmed struct so the
-// encoder doesn't try to emit [active], [[providers]], or [router]. Memory is
-// included because explicit opt-outs (false/0) must survive Render → Load.
+// encodeTunables renders only the [context], [retrieval], [memory], [lsp],
+// and [experimental] sections via the BurntSushi encoder. We marshal a trimmed
+// struct so the encoder doesn't try to emit [active], [[providers]], or
+// [router]. Memory/LSP/experimental must be included: Render rebuilds the file
+// from the struct, so any section left out of this list is silently DROPPED
+// from disk the next time a picker or wizard saves the config.
 func encodeTunables(cfg Config) (string, error) {
 	var trimmed = struct {
-		Context   ContextConfig   `toml:"context"`
-		Retrieval RetrievalConfig `toml:"retrieval"`
-		Memory    MemoryConfig    `toml:"memory"`
+		Context      ContextConfig   `toml:"context"`
+		Retrieval    RetrievalConfig `toml:"retrieval"`
+		Memory       MemoryConfig    `toml:"memory"`
+		LSP          LSPConfig       `toml:"lsp"`
+		Experimental map[string]bool `toml:"experimental"`
 	}{
-		Context:   cfg.Context,
-		Retrieval: cfg.Retrieval,
-		Memory:    cfg.Memory,
+		Context:      cfg.Context,
+		Retrieval:    cfg.Retrieval,
+		Memory:       cfg.Memory,
+		LSP:          cfg.LSP,
+		Experimental: cfg.Experimental,
 	}
 	var b strings.Builder
 	enc := toml.NewEncoder(&b)

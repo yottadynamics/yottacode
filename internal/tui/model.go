@@ -31,6 +31,7 @@ import (
 	"github.com/yottadynamics/yottacode/internal/contextwindow"
 	"github.com/yottadynamics/yottacode/internal/filerefs"
 	githubapi "github.com/yottadynamics/yottacode/internal/github"
+	"github.com/yottadynamics/yottacode/internal/lsp"
 	mcppkg "github.com/yottadynamics/yottacode/internal/mcp"
 	"github.com/yottadynamics/yottacode/internal/memory"
 	"github.com/yottadynamics/yottacode/internal/permissions"
@@ -88,17 +89,22 @@ type Config struct {
 	XSearchToDate          string
 	ProviderProfile        adapter.ProviderProfile
 	Cwd                    string
-	Version                string   // e.g. "0.3.0" — shown in the header
-	Commit                 string   // short SHA the binary was built from; "" when unknown (go run, tarball)
-	Dirty                  bool     // true when the build had uncommitted changes; renders a "*" beside the commit
-	Branch                 string   // current git branch (empty if not in a repo)
-	ProjectRoots           []string // roots counting as this project (repo root + its worktree container); auto-recall's project scope matches them and everything below
-	SensitiveProject       bool     // this project is marked sensitive: no automatic recall injection at all
-	SensitiveRoots         []string // every sensitive root; their sessions never surface in any project's recall
-	Worktree               string   // yottacode worktree name when running inside one (empty for main checkout); rendered as a status-line chip
-	MemorySummary          string   // "USER", "YOTTA", "USER+YOTTA", "UMEM", "USER+UMEM", or "" if none
-	BaseSystemPrompt       string   // pre-memory prompt — needed by /memory reload to recompose
-	EmbedClient            *memory.EmbedClient
+	// BypassPermissions auto-approves every tool call. DANGEROUS — see
+	// the flag help on --yolo. Explicit `deny`
+	// rules in .yottacode/permissions.json still apply.
+	BypassPermissions bool
+	Version           string   // e.g. "0.3.0" — shown in the header
+	Commit            string   // short SHA the binary was built from; "" when unknown (go run, tarball)
+	Dirty             bool     // true when the build had uncommitted changes; renders a "*" beside the commit
+	Branch            string   // current git branch (empty if not in a repo)
+	ProjectRoots      []string // roots counting as this project (repo root + its worktree container); auto-recall's project scope matches them and everything below
+	SensitiveProject  bool     // this project is marked sensitive: no automatic recall injection at all
+	SensitiveRoots    []string // every sensitive root; their sessions never surface in any project's recall
+	Worktree          string   // yottacode worktree name when running inside one (empty for main checkout); rendered as a status-line chip
+	MemorySummary     string   // "USER", "YOTTA", "USER+YOTTA", "UMEM", "USER+UMEM", or "" if none
+	BaseSystemPrompt  string   // pre-memory prompt — needed by /memory reload to recompose
+	EmbedClient       *memory.EmbedClient
+	LSPManager        *lsp.Manager
 
 	// FileCfg holds tunables loaded from ~/.yottacode/config.toml
 	// (context watermarks, retrieval). The TUI reads these at session
@@ -221,6 +227,7 @@ type Model struct {
 	memorySummary    string
 	baseSystemPrompt string // pre-memory prompt; used by /memory reload
 	embedClient      *memory.EmbedClient
+	lspManager       *lsp.Manager
 
 	// routerAdapters/routerMode hold live task-routing state for /router.
 	// Routing only changes isolated contexts (summarization/subagents), not the
@@ -1070,6 +1077,7 @@ func New(parent context.Context, c Config) Model {
 		memorySummary:          c.MemorySummary,
 		baseSystemPrompt:       c.BaseSystemPrompt,
 		embedClient:            c.EmbedClient,
+		lspManager:             c.LSPManager,
 		summarizerAdapter:      summarizerOrDefault(c.SummarizerAdapter, c.Cfg.Adapter),
 		summarizerModel:        c.SummarizerModel,
 		router:                 c.RouterAdapters,

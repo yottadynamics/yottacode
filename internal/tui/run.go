@@ -19,6 +19,7 @@ import (
 	"github.com/yottadynamics/yottacode/internal/config"
 	"github.com/yottadynamics/yottacode/internal/experimental"
 	githubapi "github.com/yottadynamics/yottacode/internal/github"
+	"github.com/yottadynamics/yottacode/internal/lsp"
 	"github.com/yottadynamics/yottacode/internal/mcp"
 	"github.com/yottadynamics/yottacode/internal/memory"
 	"github.com/yottadynamics/yottacode/internal/permissions"
@@ -248,6 +249,12 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 	// writes a stop request through it; the TUI Model consumes it at turn end.
 	loopControl := &agent.LoopControlState{}
 
+	lspManager := (*lsp.Manager)(nil)
+	if expSet.IsEnabled(experimental.LSPCodeIntelligence) {
+		lspManager = lsp.NewManager(0, 0)
+		defer lspManager.CloseAll()
+	}
+
 	reg := agent.NewRegistry()
 	// Core cwd-bound tools (file read/write/edit, search, git-read/stage/
 	// commit, checkpoints, run_bash/run_tests). Extracted into a shared
@@ -259,6 +266,9 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 		WriteOpts:      writeOpts,
 		DenyReads:      denyReads,
 		SupportsImages: ad.Profile().SupportsImages,
+		EnableLSP:      expSet.IsEnabled(experimental.LSPCodeIntelligence),
+		LSPManager:     lspManager,
+		LSPServers:     fileCfg.LSP.Servers,
 	})
 	// Git worktree tools. Layer 1 (enter/exit/status) are the agent-
 	// friendly entry points; Layer 2 (the git_worktree_* wrappers) sit
@@ -310,6 +320,7 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 	// reviews the branch-vs-base diff, or the uncommitted working
 	// tree when there are no commits ahead.
 	reg.Register(&agent.CodeReviewContextTool{Cwd: cwdRef})
+	reg.Register(&agent.PRReadinessContextTool{Cwd: cwdRef})
 	// gh_pr_read is the lightweight metadata-only sibling — one
 	// API call vs. review_context's three. The model picks between
 	// them based on whether it needs the diff + checks (review) or
@@ -679,6 +690,7 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 		MemorySummary:          mem.Summary().String(),
 		BaseSystemPrompt:       baseSys,
 		EmbedClient:            embedClient,
+		LSPManager:             lspManager,
 		FileCfg:                fileCfg,
 		RouterAdapters:         routerAdapters,
 		RouterMode:             fileCfg.Router.Mode,

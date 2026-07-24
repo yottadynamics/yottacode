@@ -1,5 +1,7 @@
 package agent
 
+import lspci "github.com/yottadynamics/yottacode/internal/lsp"
+
 // CoreToolDeps carries the per-session settings the core cwd-bound tools
 // need at construction. It is passed to RegisterCoreCwdTools so the same
 // toolset can be built against different working directories — the parent
@@ -18,6 +20,23 @@ type CoreToolDeps struct {
 	// SupportsImages mirrors the adapter profile's image capability so
 	// read_file can return image blocks when the model accepts them.
 	SupportsImages bool
+
+	// EnableLSP registers the experimental language-server-backed read-only
+	// code-intelligence tools. The gate lives outside this helper so parent
+	// sessions and dispatch workers expose the same surface once enabled.
+	EnableLSP bool
+
+	// LSPClientFactory lets tests inject a fake language-server client. Nil
+	// uses the production stdio JSON-RPC client.
+	LSPClientFactory lspClientFactory
+
+	// LSPManager reuses initialized language-server processes across tool calls
+	// for the parent session. Nil keeps the simple one-process-per-call path.
+	LSPManager *lspci.Manager
+
+	// LSPServers carries optional per-language server command overrides keyed by
+	// stable language ID (go/typescript/python/rust).
+	LSPServers map[string][]string
 }
 
 // RegisterCoreCwdTools registers the core working-directory-bound tools —
@@ -79,4 +98,16 @@ func RegisterCoreCwdTools(reg *Registry, cwd *CwdRef, deps CoreToolDeps) {
 	reg.Register(&ListProjectStructureTool{Cwd: cwd})
 	reg.Register(&GlobTool{Cwd: cwd})
 	reg.Register(&GrepTool{Cwd: cwd, DenyReadPaths: deps.DenyReads})
+	reg.Register(&PRReadinessContextTool{Cwd: cwd})
+	if deps.EnableLSP {
+		base := lspToolBase{Cwd: cwd, DenyReadPaths: deps.DenyReads, NewClient: deps.LSPClientFactory, Servers: deps.LSPServers, Manager: deps.LSPManager}
+		reg.Register(&LSPStatusTool{lspToolBase: base})
+		reg.Register(&LSPSymbolsTool{lspToolBase: base})
+		reg.Register(&LSPDefinitionTool{lspToolBase: base})
+		reg.Register(&LSPReferencesTool{lspToolBase: base})
+		reg.Register(&LSPHoverTool{lspToolBase: base})
+		reg.Register(&LSPDiagnosticsTool{lspToolBase: base})
+		reg.Register(&LSPCodeActionsTool{lspToolBase: base})
+		reg.Register(&LSPCallHierarchyTool{lspToolBase: base})
+	}
 }

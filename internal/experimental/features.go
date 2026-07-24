@@ -44,6 +44,11 @@ const (
 	// children run foreground/blocking, not fire-and-forget. Gated while
 	// the decomposition + partition + merge UX settles.
 	Dispatch Feature = "dispatch"
+
+	// LSPCodeIntelligence enables read-only language-server-backed code
+	// navigation tools. It stays experimental while server discovery,
+	// install guidance, and multi-language UX settle.
+	LSPCodeIntelligence Feature = "lsp_code_intelligence"
 )
 
 // All returns every recognized feature name in deterministic order.
@@ -53,6 +58,7 @@ func All() []Feature {
 	return []Feature{
 		BackgroundSubagents,
 		Dispatch,
+		LSPCodeIntelligence,
 	}
 }
 
@@ -66,6 +72,8 @@ func Description(f Feature) string {
 		return "Background subagents have graduated to GA in the interactive TUI; this flag is recognized as a no-op for compatibility."
 	case Dispatch:
 		return "Dispatch + integrate tools. Fan a batch of subtasks out to concurrent subagents (write-capable ones in isolated git worktrees, partitioned by file ownership), then merge their branches into one integration branch for a PR."
+	case LSPCodeIntelligence:
+		return "Language-server-backed code intelligence tools. Detect supported languages, report missing server binaries with install hints, and provide symbols/definition/references when servers are available."
 	default:
 		return ""
 	}

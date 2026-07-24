@@ -37,8 +37,13 @@ Standing rules:
 
 ## Adding A Built-In Tool
 
-Implement [`agent.Tool`](../internal/agent/tools.go) and register the tool in
-both entry points:
+Implement [`agent.Tool`](../internal/agent/tools.go). Core cwd-bound tools
+(file/search/git/run helpers and any experimental tools that should also exist in
+dispatch worktree children) register through
+[`RegisterCoreCwdTools`](../internal/agent/toolset.go), then the TUI and oneshot
+entry points pass the needed dependencies into that helper. Session-scoped tools
+(GitHub, memory, plan, subagents, web, skills) still register directly in both
+entry points:
 
 - [`internal/tui/run.go`](../internal/tui/run.go)
 - [`internal/oneshot/oneshot.go`](../internal/oneshot/oneshot.go)
