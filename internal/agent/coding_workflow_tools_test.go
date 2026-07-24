@@ -28,6 +28,46 @@ func TestApplyDiffTool_AppliesPatch(t *testing.T) {
 	}
 }
 
+func TestApplyDiffTool_AppliesMiscountedHunkHeader(t *testing.T) {
+	tmp := gitInit(t)
+	writeFile(t, tmp, "a.txt", "one\ntwo\nthree\n")
+	tool := &ApplyDiffTool{Cwd: NewCwdRef(tmp), WriteOpts: WritePathOptions{Cwd: NewCwdRef(tmp)}}
+	// The hunk body has three old and three new lines, but the header claims
+	// four of each. --recount should repair that model-authored arithmetic.
+	diff := "--- a/a.txt\n+++ b/a.txt\n@@ -1,4 +1,4 @@\n one\n-two\n+TWO\n three\n"
+	b, err := json.Marshal(map[string]string{"diff": diff})
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+	if _, err := tool.Execute(context.Background(), string(b)); err != nil {
+		t.Fatalf("Execute: %v (diff=%q)", err, diff)
+	}
+	got, _ := os.ReadFile(filepath.Join(tmp, "a.txt"))
+	if string(got) != "one\nTWO\nthree\n" {
+		t.Errorf("file = %q", string(got))
+	}
+}
+
+func TestApplyDiffTool_AppliesWhitespaceDriftedContext(t *testing.T) {
+	tmp := gitInit(t)
+	writeFile(t, tmp, "a.txt", "start\n\tcontext\nold\nend\n")
+	tool := &ApplyDiffTool{Cwd: NewCwdRef(tmp), WriteOpts: WritePathOptions{Cwd: NewCwdRef(tmp)}}
+	// The unchanged context line is tab-indented on disk but space-indented in
+	// the diff. The lenient retry should absorb that context whitespace drift.
+	diff := "--- a/a.txt\n+++ b/a.txt\n@@ -1,4 +1,4 @@\n start\n     context\n-old\n+new\n end\n"
+	b, err := json.Marshal(map[string]string{"diff": diff})
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+	if _, err := tool.Execute(context.Background(), string(b)); err != nil {
+		t.Fatalf("Execute: %v (diff=%q)", err, diff)
+	}
+	got, _ := os.ReadFile(filepath.Join(tmp, "a.txt"))
+	if string(got) != "start\n\tcontext\nnew\nend\n" {
+		t.Errorf("file = %q", string(got))
+	}
+}
+
 // TestRepairFullyEscapedDiff guards the apply_diff repair heuristic.
 // Regression for the release audit's
 // apply-diff-global-backslash-n-replacement-corrupts-patch finding.

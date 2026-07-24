@@ -211,6 +211,35 @@ func TestEvaluate_AskOverridesDefault(t *testing.T) {
 	}
 }
 
+func TestEvaluate_NormalizedArgsStillHitDenyRules(t *testing.T) {
+	cwd := t.TempDir()
+	seed(t, filepath.Join(cwd, ".yottacode", "permissions.json"), nil, nil, []string{
+		"Read(secrets/**)",
+		"Git(commit *)",
+		"Fetch(https://example.com/private/*)",
+	})
+	p, _ := Load(cwd)
+
+	cases := []struct {
+		name string
+		tool string
+		args string
+	}{
+		{"read_file boundary whitespace", "read_file", `{"path":" secrets/key.txt\n"}`},
+		{"read_many_files single string", "read_many_files", `{"paths":"secrets/key.txt"}`},
+		{"read_many_files boundary whitespace", "read_many_files", `{"paths":[" secrets/key.txt\n"]}`},
+		{"git string args", "git", `{"args":"git commit -m \"x\""}`},
+		{"fetch normalized url", "fetch_url", `{"url":" HTTPS://example.com/private/a\n"}`},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := p.Evaluate(c.tool, c.args); got != Deny {
+				t.Fatalf("Evaluate(%s, %s) = %v, want Deny", c.tool, c.args, got)
+			}
+		})
+	}
+}
+
 func TestEvaluate_PathPatternsUseDoublestar(t *testing.T) {
 	cwd := t.TempDir()
 	seed(t, filepath.Join(cwd, ".yottacode", "permissions.json"),

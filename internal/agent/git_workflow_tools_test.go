@@ -37,6 +37,33 @@ func TestGitShowFileAtRevTool(t *testing.T) {
 	}
 }
 
+func TestGitWorkflowTools_TrimPathAndRefWhitespace(t *testing.T) {
+	tmp := gitInit(t)
+	writeFile(t, tmp, "f.txt", "v1\n")
+	gitCommit(t, tmp, "base")
+
+	show := &GitShowFileAtRevTool{Cwd: NewCwdRef(tmp)}
+	out, err := show.Execute(context.Background(), `{"path":" f.txt\n","rev":" HEAD\n"}`)
+	if err != nil {
+		t.Fatalf("show trimmed path/ref: %v", err)
+	}
+	if out != "v1\n" {
+		t.Fatalf("show output = %q", out)
+	}
+
+	logTool := &GitLogFileTool{Cwd: NewCwdRef(tmp)}
+	out, err = logTool.Execute(context.Background(), `{"path":" f.txt\n"}`)
+	if err != nil || !strings.Contains(out, "base") {
+		t.Fatalf("log trimmed path out=%q err=%v", out, err)
+	}
+
+	mergeBase := &GitMergeBaseTool{Cwd: NewCwdRef(tmp)}
+	out, err = mergeBase.Execute(context.Background(), `{"base":" HEAD\n","head":" HEAD "}`)
+	if err != nil || strings.TrimSpace(out) == "" {
+		t.Fatalf("merge-base trimmed refs out=%q err=%v", out, err)
+	}
+}
+
 func TestGitDiffFilesTool(t *testing.T) {
 	tmp := gitInit(t)
 	writeFile(t, tmp, "f.txt", "v1\n")

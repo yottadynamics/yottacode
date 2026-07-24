@@ -28,6 +28,24 @@ func TestFetchURLTool_HappyPath(t *testing.T) {
 	}
 }
 
+func TestFetchURLTool_NormalizesSchemeAndWhitespace(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = w.Write([]byte("ok"))
+	}))
+	t.Cleanup(srv.Close)
+
+	raw := "  HTTP" + strings.TrimPrefix(srv.URL, "http") + " \\n"
+	tool := &FetchURLTool{Client: srv.Client()}
+	out, err := tool.Execute(context.Background(), `{"url":"`+raw+`"}`)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if !strings.Contains(out, "URL: "+srv.URL) || !strings.Contains(out, "ok") {
+		t.Fatalf("normalized URL output missing expected content:\n%s", out)
+	}
+}
+
 // TestFetchURLTool_BlocksSSRF is a regression for the release follow-up:
 // fetch_url auto-executes on a model-supplied URL, so the production
 // (default) client must refuse loopback / link-local / private

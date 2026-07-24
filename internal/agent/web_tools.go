@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -72,12 +73,22 @@ func (t *FetchURLTool) Execute(ctx context.Context, argsJSON string) (string, er
 	if err := json.Unmarshal([]byte(argsJSON), &a); err != nil {
 		return "", fmt.Errorf("fetch_url: invalid args: %w", err)
 	}
-	if strings.TrimSpace(a.URL) == "" {
+	rawURL := strings.TrimSpace(a.URL)
+	if rawURL == "" {
 		return "", fmt.Errorf("fetch_url: url is required")
 	}
-	if !strings.HasPrefix(a.URL, "http://") && !strings.HasPrefix(a.URL, "https://") {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return "", fmt.Errorf("fetch_url: invalid url: %w", err)
+	}
+	u.Scheme = strings.ToLower(u.Scheme)
+	if u.Scheme != "http" && u.Scheme != "https" {
 		return "", fmt.Errorf("fetch_url: url must start with http:// or https://")
 	}
+	if u.Host == "" {
+		return "", fmt.Errorf("fetch_url: url must include a host")
+	}
+	normalizedURL := u.String()
 	if a.MaxBytes <= 0 || a.MaxBytes > 256*1024 {
 		a.MaxBytes = 64 * 1024
 	}
@@ -85,7 +96,7 @@ func (t *FetchURLTool) Execute(ctx context.Context, argsJSON string) (string, er
 	reqCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, a.URL, nil)
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, normalizedURL, nil)
 	if err != nil {
 		return "", fmt.Errorf("fetch_url: %w", err)
 	}
@@ -119,7 +130,7 @@ func (t *FetchURLTool) Execute(ctx context.Context, argsJSON string) (string, er
 	}
 
 	var b strings.Builder
-	fmt.Fprintf(&b, "URL: %s\n", a.URL)
+	fmt.Fprintf(&b, "URL: %s\n", normalizedURL)
 	fmt.Fprintf(&b, "Status: %d\n", resp.StatusCode)
 	if contentType != "" {
 		fmt.Fprintf(&b, "Content-Type: %s\n", contentType)

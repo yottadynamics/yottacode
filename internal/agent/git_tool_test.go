@@ -59,6 +59,40 @@ func TestGit_StatusInRepo(t *testing.T) {
 	}
 }
 
+func TestGit_AcceptsStringArgs(t *testing.T) {
+	tmp := gitInit(t)
+	tool := &GitTool{Cwd: NewCwdRef(tmp)}
+	out, err := tool.Execute(context.Background(), `{"args":"git status --short"}`)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if !strings.Contains(out, "$ git status --short") || !strings.Contains(out, "exit=0") {
+		t.Errorf("string args were not parsed as git argv: %q", out)
+	}
+}
+
+func TestGit_StringArgsPreserveQuotedValues(t *testing.T) {
+	args, err := parseGitArgs(`{"args":"commit -m \"fix bug\""}`)
+	if err != nil {
+		t.Fatalf("parseGitArgs: %v", err)
+	}
+	want := []string{"commit", "-m", "fix bug"}
+	if strings.Join(args, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("args = %#v, want %#v", args, want)
+	}
+}
+
+func TestGit_StringArgsRejectShellOperators(t *testing.T) {
+	tool := &GitTool{Cwd: NewCwdRef(t.TempDir())}
+	_, err := tool.Execute(context.Background(), `{"args":"status; touch NOPE"}`)
+	if err == nil {
+		t.Fatalf("expected shell operator rejection")
+	}
+	if !strings.Contains(err.Error(), "shell control operator") {
+		t.Fatalf("err = %v, want shell control operator", err)
+	}
+}
+
 func TestGit_StatusOutsideRepoReportsError(t *testing.T) {
 	tmp := t.TempDir()
 	tool := &GitTool{Cwd: NewCwdRef(tmp)}

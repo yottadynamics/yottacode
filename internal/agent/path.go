@@ -13,6 +13,7 @@ import (
 // ValidateWritePath, so paths like "~/foo" can never end up creating a
 // literal "~" directory under cwd.
 func resolvePath(cwd, p string) string {
+	p = strings.TrimSpace(p)
 	if p == "" {
 		return p
 	}

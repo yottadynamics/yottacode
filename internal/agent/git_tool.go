@@ -398,10 +398,95 @@ func (t *GitTool) Execute(ctx context.Context, argsJSON string) (string, error) 
 
 func parseGitArgs(argsJSON string) ([]string, error) {
 	var a struct {
-		Args []string `json:"args"`
+		Args json.RawMessage `json:"args"`
 	}
 	if err := json.Unmarshal([]byte(argsJSON), &a); err != nil {
 		return nil, err
 	}
-	return a.Args, nil
+	if len(a.Args) == 0 || string(a.Args) == "null" {
+		return nil, nil
+	}
+	var args []string
+	if err := json.Unmarshal(a.Args, &args); err == nil {
+		return args, nil
+	}
+	var argString string
+	if err := json.Unmarshal(a.Args, &argString); err != nil {
+		return nil, fmt.Errorf("args must be an array of strings or a shell-like string")
+	}
+	return splitGitArgString(argString)
+}
+
+// splitGitArgString accepts the common model-authored fallback shape
+// {"args":"status --short"} and turns it into argv without invoking a
+// shell. Shell control operators are rejected rather than interpreted so a
+// single string cannot smuggle a compound command past the normal git policy.
+func splitGitArgString(s string) ([]string, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil, nil
+	}
+	var args []string
+	var cur strings.Builder
+	inSingle := false
+	inDouble := false
+	escape := false
+	push := func() {
+		if cur.Len() > 0 {
+			args = append(args, cur.String())
+			cur.Reset()
+		}
+	}
+	for _, r := range s {
+		if escape {
+			cur.WriteRune(r)
+			escape = false
+			continue
+		}
+		if r == '\\' {
+			escape = true
+			continue
+		}
+		if inSingle {
+			if r == '\'' {
+				inSingle = false
+				continue
+			}
+			cur.WriteRune(r)
+			continue
+		}
+		if inDouble {
+			if r == '"' {
+				inDouble = false
+				continue
+			}
+			cur.WriteRune(r)
+			continue
+		}
+		switch r {
+		case '\'', '"':
+			if r == '\'' {
+				inSingle = true
+			} else {
+				inDouble = true
+			}
+		case ' ', '\t', '\n', '\r':
+			push()
+		case ';', '|', '&':
+			return nil, fmt.Errorf("shell control operator %q is not allowed in git args", r)
+		default:
+			cur.WriteRune(r)
+		}
+	}
+	if escape {
+		return nil, fmt.Errorf("unfinished escape in git args")
+	}
+	if inSingle || inDouble {
+		return nil, fmt.Errorf("unterminated quote in git args")
+	}
+	push()
+	if len(args) > 0 && args[0] == "git" {
+		args = args[1:]
+	}
+	return args, nil
 }
