@@ -20,6 +20,7 @@ import (
 //	│                                                      │
 //	│   [Y] yes              [N] no                        │
 //	│   [A] always — adds Bash(go *)                       │
+//	│   [D] never  — adds Bash(curl *)                     │
 //	│                                                      │
 //	└──────────────────────────────────────────────────────┘
 //
@@ -29,7 +30,7 @@ import (
 // Keeps the prompt focused on the immediate decision.
 func renderApprovalModal(m Model) string {
 	body := approvalBodyFor(m)
-	hotkeys := approvalHotkeyGrid(m.approvalAllowAlwaysOK, m.approvalDerivedRule)
+	hotkeys := approvalHotkeyGrid(m.approvalAllowAlwaysOK, m.approvalDerivedRule, m.approvalDenyAlwaysOK, m.approvalDerivedDenyRule)
 
 	// Expand tabs to spaces so width measurement matches what the
 	// terminal actually renders. ansi.StringWidth treats `\t` as
@@ -160,18 +161,22 @@ func approvalBodyFor(m Model) string {
 // optional [A] always hint on a second line when always-allow is
 // available for this tool. Brackets-first formatting is faster to
 // scan than `[y]es`-style mid-word brackets.
-func approvalHotkeyGrid(allowAlways bool, derivedRule string) string {
+func approvalHotkeyGrid(allowAlways bool, derivedRule string, denyAlways bool, denyRule string) string {
 	primary := strings.Join([]string{
 		styleApprovalHotkey.Render("[Y]") + " " + styleApprovalChoice.Render("yes"),
 		strings.Repeat(" ", 6),
 		styleApprovalHotkey.Render("[N]") + " " + styleApprovalChoice.Render("no"),
 	}, "")
-	if !allowAlways {
-		return primary
+	lines := []string{primary}
+	if allowAlways {
+		lines = append(lines, styleApprovalHotkey.Render("[A]")+" "+
+			styleApprovalChoiceDim.Render("always — adds "+derivedRule))
 	}
-	always := styleApprovalHotkey.Render("[A]") + " " +
-		styleApprovalChoiceDim.Render("always — adds "+derivedRule)
-	return primary + "\n" + always
+	if denyAlways {
+		lines = append(lines, styleApprovalHotkey.Render("[D]")+" "+
+			styleApprovalChoiceDim.Render("never — adds "+denyRule))
+	}
+	return strings.Join(lines, "\n")
 }
 
 // approvalToast formats the post-decision confirmation that lands in
@@ -180,6 +185,12 @@ func approvalHotkeyGrid(allowAlways bool, derivedRule string) string {
 // receipt of what got persisted.
 func approvalToast(rule string) string {
 	return styleApprovalToast.Render(fmt.Sprintf("✓ Added %s to permissions.local.json", rule))
+}
+
+// approvalDenyToast is approvalToast's mirror for the "[D] never" path —
+// the receipt for a persisted block rule.
+func approvalDenyToast(rule string) string {
+	return styleApprovalToast.Render(fmt.Sprintf("✓ Blocked %s — saved to permissions.local.json", rule))
 }
 
 // Approval-modal styles. Bare declarations — see plan_mode_render.go's

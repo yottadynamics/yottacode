@@ -225,31 +225,18 @@ func isEnvAssignment(tok string) bool {
 // own project and refusing every recursive grep would defeat it; the
 // concern is silently reaching OTHER credential stores.
 func bashSegmentReachesDeny(text, cwd string, deny []string) bool {
-	cwdAbs, err := filepath.Abs(cwd)
-	if err != nil {
-		cwdAbs = filepath.Clean(cwd)
-	} else {
-		cwdAbs = filepath.Clean(cwdAbs)
-	}
+	cwdAbs := absClean(cwd)
 	for _, tok := range strings.Fields(text) {
-		p := strings.Trim(tok, `"'`)
-		if p == "" || strings.HasPrefix(p, "-") {
-			continue
-		}
-		p = expandHomeRefs(p)
-		// A token we can't statically resolve (still has a `$var`, after
-		// expanding the home refs we understand) must not be assumed safe:
-		// `cat $XDG_CONFIG_HOME/...` could land in a credential store. Refuse
-		// auto-approval and let the modal handle it. ($(...) and backticks
-		// are already rejected upstream by the risk classifier.)
-		if strings.ContainsRune(p, '$') {
+		abs, ok, hasVar := resolveBashPathToken(tok, cwdAbs)
+		if hasVar {
+			// A token we can't statically resolve (an unexpanded `$var`)
+			// must not be assumed safe: `cat $XDG_CONFIG_HOME/...` could land
+			// in a credential store. Refuse auto-approval; the modal handles it.
 			return true
 		}
-		abs := p
-		if !filepath.IsAbs(abs) {
-			abs = filepath.Join(cwdAbs, abs)
+		if !ok {
+			continue
 		}
-		abs = filepath.Clean(abs)
 		if matchesAny(abs, deny) {
 			return true // token is at/under a credential store
 		}
@@ -287,4 +274,111 @@ func expandHomeRefs(p string) string {
 		return filepath.Join(home, p[len("${HOME}/"):])
 	}
 	return p
+}
+
+// absClean returns filepath.Clean of the absolute form of p, falling back
+// to a lexical clean when the working directory can't be resolved.
+func absClean(p string) string {
+	if abs, err := filepath.Abs(p); err == nil {
+		return filepath.Clean(abs)
+	}
+	return filepath.Clean(p)
+}
+
+// resolveBashPathToken resolves a single shell token to an absolute,
+// cleaned filesystem path for deny-list comparison. ok is false for flags
+// and empty tokens; hasVar is true for a token still carrying an
+// unexpanded `$var` (its target can't be pinned down statically — the
+// auto-mode gate treats that conservatively, the banner skips it). Leading
+// home refs (~, $HOME) are expanded first.
+func resolveBashPathToken(tok, cwdAbs string) (abs string, ok bool, hasVar bool) {
+	p := strings.Trim(tok, `"'`)
+	if p == "" || strings.HasPrefix(p, "-") {
+		return "", false, false
+	}
+	p = expandHomeRefs(p)
+	if strings.ContainsRune(p, '$') {
+		return "", false, true
+	}
+	if !filepath.IsAbs(p) {
+		p = filepath.Join(cwdAbs, p)
+	}
+	return filepath.Clean(p), true, false
+}
+
+// BashSensitivePathHits returns terse, deduped warnings for any segment of
+// a run_bash command that references a credential/secret store (the
+// DefaultDenyReadPaths) or a git hook. These are the sensitive targets the
+// structured-file deny lists guard but run_bash does NOT — run_bash has no
+// path confinement and no sandbox (see exec_tool.go), so the approval modal
+// surfaces them here to keep `cat ~/.ssh/id_rsa` or `> .git/hooks/pre-commit`
+// from rendering like ordinary commands. Empty when nothing sensitive is
+// referenced; unresolved `$var` tokens are skipped (we only warn on a path
+// we can name).
+//
+// A recursive walk (`grep -r X ~`) flags an out-of-cwd store, but a walk of
+// the project's own tree (`grep -r X .` reaching <cwd>/.env) is not flagged —
+// mirroring the auto-mode gate: the concern is silently reaching OTHER
+// credential stores, not the user's own project files.
+func BashSensitivePathHits(command, cwd string) []string {
+	cwdAbs := absClean(cwd)
+	home, _ := os.UserHomeDir()
+
+	type target struct{ path, label string }
+	targets := make([]target, 0, 16)
+	for _, p := range DefaultDenyReadPaths(cwd) {
+		targets = append(targets, target{absClean(p), "reads " + prettyPath(p, home, cwd)})
+	}
+	if cwd != "" {
+		// Git hooks are writable and run_bash-reachable — a planted hook runs
+		// on the user's next git operation (a persistence vector).
+		targets = append(targets, target{
+			absClean(filepath.Join(cwd, ".git", "hooks")),
+			"touches .git/hooks — runs on future git operations",
+		})
+	}
+
+	seen := map[string]bool{}
+	var out []string
+	mark := func(label string) {
+		if !seen[label] {
+			seen[label] = true
+			out = append(out, label)
+		}
+	}
+	for _, seg := range SplitCommand(command) {
+		for _, tok := range strings.Fields(seg.Text) {
+			abs, ok, _ := resolveBashPathToken(tok, cwdAbs)
+			if !ok {
+				continue
+			}
+			for _, t := range targets {
+				switch {
+				case pathUnder(abs, t.path):
+					mark(t.label) // token directly names the store
+				case pathUnder(t.path, abs) && !pathUnder(t.path, cwdAbs):
+					mark(t.label) // recursive walk reaches an out-of-cwd store
+				}
+			}
+		}
+	}
+	return out
+}
+
+// prettyPath renders an absolute sensitive-path target as a short banner
+// label: cwd-relative when under cwd, else "~/..." when under $HOME, else
+// the cleaned absolute path.
+func prettyPath(p, home, cwd string) string {
+	abs := absClean(p)
+	if cwd != "" {
+		if rel, err := filepath.Rel(cwd, abs); err == nil && rel != "." && !strings.HasPrefix(rel, "..") {
+			return filepath.ToSlash(rel)
+		}
+	}
+	if home != "" {
+		if rel, err := filepath.Rel(home, abs); err == nil && !strings.HasPrefix(rel, "..") {
+			return "~/" + filepath.ToSlash(rel)
+		}
+	}
+	return filepath.ToSlash(abs)
 }
