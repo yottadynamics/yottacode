@@ -4020,6 +4020,48 @@ func currentPRNumberFromGitHubEnv(ctx context.Context, cwd string) int {
 	return pulls[0].Number
 }
 
+func branchChangingGitTool(toolName, argsJSON string) bool {
+	switch toolName {
+	case "git_create_branch", "enter_worktree", "exit_worktree":
+		return true
+	case "git":
+		args := parseTUIToolGitArgs(argsJSON)
+		if len(args) == 0 {
+			return false
+		}
+		switch args[0] {
+		case "checkout", "switch":
+			return true
+		default:
+			return false
+		}
+	default:
+		return false
+	}
+}
+
+func parseTUIToolGitArgs(argsJSON string) []string {
+	var raw struct {
+		Args json.RawMessage `json:"args"`
+	}
+	if err := json.Unmarshal([]byte(argsJSON), &raw); err != nil || len(raw.Args) == 0 {
+		return nil
+	}
+	var args []string
+	if err := json.Unmarshal(raw.Args, &args); err == nil {
+		return args
+	}
+	var argString string
+	if err := json.Unmarshal(raw.Args, &argString); err != nil {
+		return nil
+	}
+	fields := strings.Fields(argString)
+	if len(fields) > 0 && fields[0] == "git" {
+		fields = fields[1:]
+	}
+	return fields
+}
+
 func prNumberFromToolOutput(output string) int {
 	for _, line := range strings.Split(output, "\n") {
 		line = strings.TrimSpace(line)
@@ -4694,6 +4736,9 @@ func (m Model) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 		m.toolsStarted++
 		m.turnToolCalls++
 	case agent.ToolResult:
+		if branchChangingGitTool(e.ToolName, m.pendingToolArgs) {
+			m.branch = gitBranch(m.parentCtx, m.cwd)
+		}
 		if e.ToolName == "gh_pr_read" || e.ToolName == "gh_pr_review_context" {
 			m.currentPR = prNumberFromToolOutput(e.Output)
 		}
@@ -4774,6 +4819,7 @@ func (m Model) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 		// would put a git subprocess on the event path. m.cwd still
 		// updates, so the literal-cwd arm of the scope match follows.
 		m.cwd = e.NewCwd
+		m.branch = gitBranch(m.parentCtx, e.NewCwd)
 		m.currentPR = 0
 		// Compute the worktree name from the new path: any path under
 		// <some-repo>/.yottacode/worktrees/<name>/ identifies the name

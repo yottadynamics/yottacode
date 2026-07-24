@@ -174,6 +174,39 @@ func TestReadManyFilesTool_ReadsMultipleFiles(t *testing.T) {
 	}
 }
 
+func TestReadManyFilesTool_AcceptsSinglePathString(t *testing.T) {
+	tmp := t.TempDir()
+	writeFile(t, tmp, "a.txt", "alpha")
+	tool := &ReadManyFilesTool{Cwd: NewCwdRef(tmp)}
+	out, err := tool.Execute(context.Background(), `{"paths":" a.txt\n"}`)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if !strings.Contains(out, "==> a.txt <==") || !strings.Contains(out, "alpha") {
+		t.Errorf("single string path was not read: %q", out)
+	}
+}
+
+func TestFilesystemTools_TrimBoundaryWhitespaceInPaths(t *testing.T) {
+	tmp := t.TempDir()
+	writeFile(t, tmp, "src.txt", "payload")
+	copyTool := &CopyFileTool{Cwd: NewCwdRef(tmp), WriteOpts: WritePathOptions{Cwd: NewCwdRef(tmp)}}
+	if _, err := copyTool.Execute(context.Background(), `{"src":" src.txt\n","dst":" nested/dst.txt\n"}`); err != nil {
+		t.Fatalf("copy with boundary whitespace: %v", err)
+	}
+	if got, err := os.ReadFile(filepath.Join(tmp, "nested", "dst.txt")); err != nil || string(got) != "payload" {
+		t.Fatalf("copied file = %q err=%v", string(got), err)
+	}
+
+	deleteTool := &DeleteFileTool{Cwd: NewCwdRef(tmp), WriteOpts: WritePathOptions{Cwd: NewCwdRef(tmp)}}
+	if _, err := deleteTool.Execute(context.Background(), `{"path":" nested/dst.txt\n"}`); err != nil {
+		t.Fatalf("delete with boundary whitespace: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(tmp, "nested", "dst.txt")); !os.IsNotExist(err) {
+		t.Fatalf("trimmed delete did not remove destination; err=%v", err)
+	}
+}
+
 // TestReadManyFilesTool_EmptyFileInBatch is a regression for the release
 // audit's read-many-files-empty-file-aborts-batch finding: io.ReadFull
 // returns io.EOF for an empty file, and the old code turned that into a

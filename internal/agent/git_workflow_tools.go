@@ -92,13 +92,15 @@ func (t *GitShowFileAtRevTool) Execute(ctx context.Context, argsJSON string) (st
 	if err := json.Unmarshal([]byte(argsJSON), &a); err != nil {
 		return "", fmt.Errorf("git_show_file_at_rev: invalid args: %w", err)
 	}
-	if strings.TrimSpace(a.Path) == "" {
+	path := strings.TrimSpace(a.Path)
+	rev := strings.TrimSpace(a.Rev)
+	if path == "" {
 		return "", errors.New("git_show_file_at_rev: path is required")
 	}
-	if strings.TrimSpace(a.Rev) == "" {
-		a.Rev = "HEAD"
+	if rev == "" {
+		rev = "HEAD"
 	}
-	out, err := gitOutput(ctx, t.Cwd.Get(), "show", a.Rev+":"+filepath.ToSlash(a.Path))
+	out, err := gitOutput(ctx, t.Cwd.Get(), "show", rev+":"+filepath.ToSlash(path))
 	if err != nil {
 		return "", fmt.Errorf("git_show_file_at_rev: %w", err)
 	}
@@ -136,16 +138,19 @@ func (t *GitDiffFilesTool) Execute(ctx context.Context, argsJSON string) (string
 	if err := json.Unmarshal([]byte(argsJSON), &a); err != nil {
 		return "", fmt.Errorf("git_diff_files: invalid args: %w", err)
 	}
+	base := strings.TrimSpace(a.Base)
+	head := strings.TrimSpace(a.Head)
+	paths := trimStrings(a.Paths)
 	args := []string{"diff"}
 	switch {
-	case strings.TrimSpace(a.Base) != "" && strings.TrimSpace(a.Head) != "":
-		args = append(args, a.Base, a.Head)
-	case strings.TrimSpace(a.Base) != "":
-		args = append(args, a.Base)
+	case base != "" && head != "":
+		args = append(args, base, head)
+	case base != "":
+		args = append(args, base)
 	}
-	if len(a.Paths) > 0 {
+	if len(paths) > 0 {
 		args = append(args, "--")
-		args = append(args, a.Paths...)
+		args = append(args, paths...)
 	}
 	out, err := gitOutput(ctx, t.Cwd.Get(), args...)
 	if err != nil {
@@ -366,13 +371,14 @@ func (t *GitLogFileTool) Execute(ctx context.Context, argsJSON string) (string, 
 	if err := json.Unmarshal([]byte(argsJSON), &a); err != nil {
 		return "", fmt.Errorf("git_log_file: invalid args: %w", err)
 	}
-	if strings.TrimSpace(a.Path) == "" {
+	path := strings.TrimSpace(a.Path)
+	if path == "" {
 		return "", errors.New("git_log_file: path is required")
 	}
 	if a.Limit <= 0 {
 		a.Limit = 10
 	}
-	out, err := gitOutput(ctx, t.Cwd.Get(), "log", "--oneline", "-n", fmt.Sprintf("%d", a.Limit), "--", a.Path)
+	out, err := gitOutput(ctx, t.Cwd.Get(), "log", "--oneline", "-n", fmt.Sprintf("%d", a.Limit), "--", path)
 	if err != nil {
 		return "", fmt.Errorf("git_log_file: %w", err)
 	}
@@ -411,10 +417,11 @@ func (t *GitBlameLinesTool) Execute(ctx context.Context, argsJSON string) (strin
 	if err := json.Unmarshal([]byte(argsJSON), &a); err != nil {
 		return "", fmt.Errorf("git_blame_lines: invalid args: %w", err)
 	}
-	if strings.TrimSpace(a.Path) == "" || a.Start <= 0 || a.End < a.Start {
+	path := strings.TrimSpace(a.Path)
+	if path == "" || a.Start <= 0 || a.End < a.Start {
 		return "", errors.New("git_blame_lines: path, start, and end are required and must form a valid range")
 	}
-	out, err := gitOutput(ctx, t.Cwd.Get(), "blame", "-L", fmt.Sprintf("%d,%d", a.Start, a.End), "--", a.Path)
+	out, err := gitOutput(ctx, t.Cwd.Get(), "blame", "-L", fmt.Sprintf("%d,%d", a.Start, a.End), "--", path)
 	if err != nil {
 		return "", fmt.Errorf("git_blame_lines: %w", err)
 	}
@@ -443,10 +450,12 @@ func (t *GitMergeBaseTool) Execute(ctx context.Context, argsJSON string) (string
 	if err := json.Unmarshal([]byte(argsJSON), &a); err != nil {
 		return "", fmt.Errorf("git_merge_base: invalid args: %w", err)
 	}
-	if strings.TrimSpace(a.Base) == "" || strings.TrimSpace(a.Head) == "" {
+	base := strings.TrimSpace(a.Base)
+	head := strings.TrimSpace(a.Head)
+	if base == "" || head == "" {
 		return "", errors.New("git_merge_base: base and head are required")
 	}
-	out, err := gitOutput(ctx, t.Cwd.Get(), "merge-base", a.Base, a.Head)
+	out, err := gitOutput(ctx, t.Cwd.Get(), "merge-base", base, head)
 	if err != nil {
 		return "", fmt.Errorf("git_merge_base: %w", err)
 	}
@@ -464,4 +473,14 @@ func gitOutput(ctx context.Context, cwd string, args ...string) (string, error) 
 		return "", fmt.Errorf("git %s: %s", strings.Join(args, " "), strings.TrimSpace(string(out)))
 	}
 	return string(out), nil
+}
+
+func trimStrings(in []string) []string {
+	out := make([]string, 0, len(in))
+	for _, s := range in {
+		if s = strings.TrimSpace(s); s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
 }

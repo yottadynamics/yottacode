@@ -21,7 +21,7 @@ type ApplyDiffTool struct {
 
 func (t *ApplyDiffTool) Name() string { return "apply_diff" }
 func (t *ApplyDiffTool) Description() string {
-	return "Apply a unified diff patch to files in the working tree using git apply. Better than string-based edit_file for multi-hunk edits."
+	return "Apply a unified diff patch to files in the working tree using git apply. Tolerates miscounted hunk headers and common whitespace drift after target-path validation."
 }
 func (t *ApplyDiffTool) Schema() map[string]any {
 	return map[string]any{
@@ -139,16 +139,41 @@ func (t *ApplyDiffTool) Execute(ctx context.Context, argsJSON string) (string, e
 	if err := patch.Close(); err != nil {
 		return "", fmt.Errorf("apply_diff: close temp patch: %w", err)
 	}
-	cmd := exec.CommandContext(ctx, "git", "apply", "--whitespace=nowarn", patchPath)
-	cmd.Dir = t.Cwd.Get()
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
+	if stderr, err := applyGitPatch(ctx, t.Cwd.Get(), patchPath); err != nil {
 		body, _ := os.ReadFile(patchPath)
-		return "", fmt.Errorf("apply_diff: %w; stderr=%q patch=%q", err, stderr.String(), string(body))
+		return "", fmt.Errorf("apply_diff: %w; stderr=%q hint=%q patch=%q", err, stderr,
+			"context may not match the current file — re-read it and regenerate the diff", string(body))
 	}
 	return "applied diff", nil
+}
+
+// applyGitPatch applies a prevalidated patch file with a strict-to-lenient
+// ladder. The first pass uses --recount to repair model-authored hunk header
+// arithmetic without loosening content matching; the retry only ignores
+// whitespace after exact matching has already failed.
+func applyGitPatch(ctx context.Context, dir, patchPath string) (string, error) {
+	attempts := [][]string{
+		{"apply", "--whitespace=nowarn", "--recount", patchPath},
+		{"apply", "--whitespace=nowarn", "--recount", "--ignore-whitespace", patchPath},
+	}
+	var firstErr error
+	var firstStderr string
+	for _, args := range attempts {
+		cmd := exec.CommandContext(ctx, "git", args...)
+		cmd.Dir = dir
+		var stdout, stderr bytes.Buffer
+		cmd.Stdout = &stdout
+		cmd.Stderr = &stderr
+		if err := cmd.Run(); err != nil {
+			if firstErr == nil {
+				firstErr = err
+				firstStderr = stderr.String()
+			}
+			continue
+		}
+		return "", nil
+	}
+	return firstStderr, firstErr
 }
 
 // repairFullyEscapedDiff repairs a diff that arrived fully JSON-escaped:

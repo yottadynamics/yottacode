@@ -1,6 +1,10 @@
 package tui
 
 import (
+	"context"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -8,6 +12,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/yottadynamics/yottacode/internal/adapter"
+	"github.com/yottadynamics/yottacode/internal/agent"
 )
 
 // The input is borderless. The earlier design wrapped it in a
@@ -171,6 +176,49 @@ func TestStatusBar_RendersLocationChip(t *testing.T) {
 	plain := stripANSI(m.renderStatus())
 	if !strings.Contains(plain, "foo/bar (main)") {
 		t.Errorf("status bar should include the location chip 'foo/bar (main)': %q", plain)
+	}
+}
+
+func TestStatusBar_BranchRefreshesAfterGitSwitch(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	tmp := t.TempDir()
+	for _, args := range [][]string{
+		{"init", "-q", "-b", "main"},
+		{"config", "user.email", "yotta-test@example.com"},
+		{"config", "user.name", "yotta-test"},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = tmp
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(tmp, "f.txt"), []byte("v1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"add", "f.txt"}, {"commit", "-q", "-m", "base"}, {"switch", "-c", "feature/live-chip"}} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = tmp
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+
+	m := newTestModel(t)
+	m.parentCtx = context.Background()
+	m.cwd = tmp
+	m.branch = "main"
+	m.pendingToolArgs = `{"args":["switch","feature/live-chip"]}`
+	m.width = 160
+	updated, _ := m.handleAgentEvent(agent.ToolResult{ToolName: "git", Output: "ok"})
+	m = updated.(Model)
+	if m.branch != "feature/live-chip" {
+		t.Fatalf("branch = %q, want feature/live-chip", m.branch)
+	}
+	if plain := stripANSI(m.renderStatus()); !strings.Contains(plain, "feature/live-chip") {
+		t.Fatalf("status did not render refreshed branch: %q", plain)
 	}
 }
 

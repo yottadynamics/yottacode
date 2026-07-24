@@ -229,7 +229,7 @@ round-trips.
 
 | Param | Type | Default | Notes |
 |---|---|---|---|
-| `paths` | []string | — | Required; max 20 files |
+| `paths` | []string or string | — | Required; max 20 files; a single string is accepted for one file |
 | `offset` | int | `0` | Bytes; negatives clamped to 0 |
 | `limit` | int | `524288` | Per-file cap |
 
@@ -282,8 +282,10 @@ Always prompts for approval. The diff header is parsed and each
 touched file is run through the same write-path validator
 `write_file` / `edit_file` use — yottacode-managed state, `.git`
 internals, paths outside cwd, and symlinks are refused before
-`git apply` runs. A `Deny(Edit(<pattern>))` rule applies if any
-target path matches; an `Allow(Edit(<pattern>))` rule auto-approves
+`git apply` runs. After validation, common model-authored defects such
+as miscounted `@@` hunk headers and whitespace drift in context lines
+are tolerated while applying. A `Deny(Edit(<pattern>))` rule applies if
+any target path matches; an `Allow(Edit(<pattern>))` rule auto-approves
 only when every target path matches (mixed-path diffs still prompt).
 
 ## mkdir
@@ -1036,12 +1038,16 @@ devcontainer.
 
 ## git
 
-Unified git tool. Args are passed as a JSON string array, never via the
-shell, so there's nothing to escape and nothing to inject.
+Unified git tool. Args are normally passed as a JSON string array and run
+without a shell, so there's nothing to escape and nothing to inject. For
+model-authored calls that accidentally provide one string (for example
+`"status --short"`), yottacode conservatively splits it into argv, rejects
+shell control operators, and applies the same approval policy to the parsed
+arguments.
 
 | Param | Type | Default | Notes |
 |---|---|---|---|
-| `args` | []string | — | e.g. `["status"]`, `["log", "--oneline", "-n", "5"]` |
+| `args` | []string or string | — | e.g. `["status"]`, `["log", "--oneline", "-n", "5"]`, or the tolerated string form `"status --short"` |
 
 Approval policy is **allowlist-shaped and flag-aware**, in three tiers:
 

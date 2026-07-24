@@ -2,6 +2,7 @@ package permissions
 
 import (
 	"encoding/json"
+	"net/url"
 	"path/filepath"
 	"strings"
 
@@ -112,7 +113,7 @@ func targetFor(toolName, argsJSON, cwd string) Target {
 	case "grep":
 		return Target{PermName: "Grep", Descriptor: extractField(argsJSON, "pattern")}
 	case "fetch_url":
-		return Target{PermName: "Fetch", Descriptor: extractField(argsJSON, "url")}
+		return Target{PermName: "Fetch", Descriptor: normalizeFetchDescriptor(extractField(argsJSON, "url"))}
 	case "web_search":
 		return Target{PermName: "Fetch", Descriptor: extractField(argsJSON, "query")}
 	case "memory_save":
@@ -191,11 +192,19 @@ func extractPath(argsJSON string) string {
 }
 
 func extractPaths(argsJSON string) []string {
-	var a struct {
-		Paths []string `json:"paths"`
+	var raw struct {
+		Paths json.RawMessage `json:"paths"`
 	}
-	_ = json.Unmarshal([]byte(argsJSON), &a)
-	return a.Paths
+	_ = json.Unmarshal([]byte(argsJSON), &raw)
+	var paths []string
+	if err := json.Unmarshal(raw.Paths, &paths); err == nil {
+		return paths
+	}
+	var one string
+	if err := json.Unmarshal(raw.Paths, &one); err == nil {
+		return []string{one}
+	}
+	return nil
 }
 
 func extractSrcDst(argsJSON string) (string, string) {
@@ -227,11 +236,100 @@ func extractField(argsJSON, key string) string {
 }
 
 func extractGitArgs(argsJSON string) string {
-	var a struct {
-		Args []string `json:"args"`
+	var raw struct {
+		Args json.RawMessage `json:"args"`
 	}
-	_ = json.Unmarshal([]byte(argsJSON), &a)
-	return strings.Join(a.Args, " ")
+	_ = json.Unmarshal([]byte(argsJSON), &raw)
+	var args []string
+	if err := json.Unmarshal(raw.Args, &args); err == nil {
+		return strings.Join(args, " ")
+	}
+	var argString string
+	if err := json.Unmarshal(raw.Args, &argString); err != nil {
+		return ""
+	}
+	args = splitGitArgString(argString)
+	return strings.Join(args, " ")
+}
+
+func splitGitArgString(s string) []string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil
+	}
+	var args []string
+	var cur strings.Builder
+	inSingle := false
+	inDouble := false
+	escape := false
+	push := func() {
+		if cur.Len() > 0 {
+			args = append(args, cur.String())
+			cur.Reset()
+		}
+	}
+	for _, r := range s {
+		if escape {
+			cur.WriteRune(r)
+			escape = false
+			continue
+		}
+		if r == '\\' {
+			escape = true
+			continue
+		}
+		if inSingle {
+			if r == '\'' {
+				inSingle = false
+				continue
+			}
+			cur.WriteRune(r)
+			continue
+		}
+		if inDouble {
+			if r == '"' {
+				inDouble = false
+				continue
+			}
+			cur.WriteRune(r)
+			continue
+		}
+		switch r {
+		case '\'', '"':
+			if r == '\'' {
+				inSingle = true
+			} else {
+				inDouble = true
+			}
+		case ' ', '\t', '\n', '\r':
+			push()
+		case ';', '|', '&':
+			return nil
+		default:
+			cur.WriteRune(r)
+		}
+	}
+	if escape || inSingle || inDouble {
+		return nil
+	}
+	push()
+	if len(args) > 0 && args[0] == "git" {
+		args = args[1:]
+	}
+	return args
+}
+
+func normalizeFetchDescriptor(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return raw
+	}
+	u.Scheme = strings.ToLower(u.Scheme)
+	return u.String()
 }
 
 // summarizeArgs renders the raw JSON args into a one-line descriptor by
@@ -246,12 +344,12 @@ func summarizeArgs(argsJSON string) string {
 	for k, v := range a {
 		switch t := v.(type) {
 		case string:
-			parts = append(parts, k+"="+t)
+			parts = append(parts, k+"="+strings.TrimSpace(t))
 		case []any:
 			strs := make([]string, 0, len(t))
 			for _, x := range t {
 				if s, ok := x.(string); ok {
-					strs = append(strs, s)
+					strs = append(strs, strings.TrimSpace(s))
 				}
 			}
 			parts = append(parts, k+"="+strings.Join(strs, ","))
@@ -267,6 +365,7 @@ func summarizeArgs(argsJSON string) string {
 // so paths the model passes as "~/foo" produce stable absolute
 // descriptors instead of a literal "~" segment.
 func relPath(p, cwd string) string {
+	p = strings.TrimSpace(p)
 	if p == "" {
 		return ""
 	}

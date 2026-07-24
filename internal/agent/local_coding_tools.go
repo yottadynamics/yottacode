@@ -335,35 +335,28 @@ func (t *ReadManyFilesTool) Schema() map[string]any {
 func (t *ReadManyFilesTool) RequiresApproval(string) bool { return false }
 func (t *ReadManyFilesTool) ParallelSafe(string) bool     { return true }
 func (t *ReadManyFilesTool) PreviewCall(argsJSON string) string {
-	var a struct {
-		Paths []string `json:"paths"`
-	}
-	_ = json.Unmarshal([]byte(argsJSON), &a)
-	return fmt.Sprintf("read_many_files(%d paths)", len(a.Paths))
+	paths, _, _, _ := parseReadManyFilesArgs(argsJSON)
+	return fmt.Sprintf("read_many_files(%d paths)", len(paths))
 }
 func (t *ReadManyFilesTool) Execute(ctx context.Context, argsJSON string) (string, error) {
-	var a struct {
-		Paths  []string `json:"paths"`
-		Offset int64    `json:"offset"`
-		Limit  int64    `json:"limit"`
-	}
-	if err := json.Unmarshal([]byte(argsJSON), &a); err != nil {
+	pathsArg, offset, limitArg, err := parseReadManyFilesArgs(argsJSON)
+	if err != nil {
 		return "", fmt.Errorf("read_many_files: invalid args: %w", err)
 	}
-	if len(a.Paths) == 0 {
+	if len(pathsArg) == 0 {
 		return "", fmt.Errorf("read_many_files: paths is required")
 	}
-	if len(a.Paths) > defaultReadManyMaxFiles {
-		return "", fmt.Errorf("read_many_files: too many paths (%d > %d)", len(a.Paths), defaultReadManyMaxFiles)
+	if len(pathsArg) > defaultReadManyMaxFiles {
+		return "", fmt.Errorf("read_many_files: too many paths (%d > %d)", len(pathsArg), defaultReadManyMaxFiles)
 	}
-	if a.Offset < 0 {
-		a.Offset = 0
+	if offset < 0 {
+		offset = 0
 	}
-	limit := a.Limit
+	limit := limitArg
 	if limit <= 0 || limit > maxReadBytes {
 		limit = maxReadBytes
 	}
-	paths := append([]string(nil), a.Paths...)
+	paths := append([]string(nil), pathsArg...)
 	sort.Strings(paths)
 	var b strings.Builder
 	for i, rel := range paths {
@@ -375,8 +368,8 @@ func (t *ReadManyFilesTool) Execute(ctx context.Context, argsJSON string) (strin
 		if err != nil {
 			return "", fmt.Errorf("read_many_files: %s: %w", p, err)
 		}
-		if a.Offset > 0 {
-			if _, err := f.Seek(a.Offset, io.SeekStart); err != nil {
+		if offset > 0 {
+			if _, err := f.Seek(offset, io.SeekStart); err != nil {
 				f.Close()
 				return "", fmt.Errorf("read_many_files: %s: seek: %w", p, err)
 			}
@@ -410,4 +403,27 @@ func (t *ReadManyFilesTool) Execute(ctx context.Context, argsJSON string) (strin
 		}
 	}
 	return b.String(), nil
+}
+
+func parseReadManyFilesArgs(argsJSON string) ([]string, int64, int64, error) {
+	var raw struct {
+		Paths  json.RawMessage `json:"paths"`
+		Offset int64           `json:"offset"`
+		Limit  int64           `json:"limit"`
+	}
+	if err := json.Unmarshal([]byte(argsJSON), &raw); err != nil {
+		return nil, 0, 0, err
+	}
+	var paths []string
+	if err := json.Unmarshal(raw.Paths, &paths); err != nil {
+		var one string
+		if err := json.Unmarshal(raw.Paths, &one); err != nil {
+			return nil, 0, 0, fmt.Errorf("paths must be an array of strings or a single string")
+		}
+		paths = []string{one}
+	}
+	for i := range paths {
+		paths[i] = strings.TrimSpace(paths[i])
+	}
+	return paths, raw.Offset, raw.Limit, nil
 }
