@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/yottadynamics/yottacode/internal/lsp"
 )
@@ -23,38 +24,77 @@ func renderLSPAdvisory(langs []lsp.DetectedLanguage) string {
 		return ""
 	}
 
-	rows := []string{styleWarnIcon.Render("LSP Code Intelligence"), ""}
 	if len(missing) == 1 {
-		lang := missing[0]
-		rows = append(rows,
-			fmt.Sprintf("%s detected · semantic server missing", lang.Name),
-			"",
-			fmt.Sprintf("Install %s for richer diagnostics, definitions,", serverDisplayName(lang)),
-			"references, hover, and code review:",
-			"",
-			styleInlineCommand.Render("  "+installCommand(lang)),
-			"",
-			styleMeta.Render("Continuing with normal file reads for now."),
-		)
-	} else {
-		rows = append(rows, "Some detected languages can use richer code intelligence:", "")
-		for _, lang := range missing {
-			rows = append(rows,
-				fmt.Sprintf("%s  missing %s", lang.Name, strings.Join(lang.Command, " ")),
-				styleInlineCommand.Render("  "+installCommand(lang)),
-			)
-		}
-		rows = append(rows, "", styleMeta.Render("Continuing with normal file reads for now."))
+		return renderSingleLSPAdvisory(missing[0])
 	}
 
-	box := lipgloss.NewStyle().
-		Border(lipgloss.NormalBorder()).
-		BorderForeground(colorWarning).
-		Padding(0, 1)
-	if hasThemeBackground {
-		box = box.Background(themeBackground)
+	rows := []string{"", "Some detected languages can use richer code intelligence:", ""}
+	for _, lang := range missing {
+		rows = append(rows,
+			fmt.Sprintf("%s not found: %s", serverDisplayName(lang), lang.Name),
+			styleInlineCommand.Render("  "+installCommand(lang)),
+		)
 	}
-	return box.Render(strings.Join(rows, "\n"))
+	rows = append(rows, "", styleMeta.Render("Everything works without them; they unlock deeper code intelligence."), "")
+
+	return renderLSPAdvisoryBox("LSP Code Intelligence", fmt.Sprintf("%d languages", len(missing)), rows)
+}
+
+// renderSingleLSPAdvisory mirrors the startup card shape used by approvals and
+// plan prompts: title on the left frame, language on the right, and plain copy
+// that says exactly what is missing while reassuring users the session continues.
+func renderSingleLSPAdvisory(lang lsp.DetectedLanguage) string {
+	server := serverDisplayName(lang)
+	rows := []string{
+		"",
+		fmt.Sprintf("%s not found — running without go-to-def,", server),
+		"live diagnostics, and symbol-aware review.",
+		"",
+		styleInlineCommand.Render("  " + installCommand(lang)),
+		"",
+		styleMeta.Render("Everything works without it; this just unlocks"),
+		styleMeta.Render("deeper code intelligence."),
+		"",
+	}
+	return renderLSPAdvisoryBox("LSP Code Intelligence", lang.Name, rows)
+}
+
+func renderLSPAdvisoryBox(title, context string, bodyLines []string) string {
+	leftLabel := " " + styleWarnIcon.Render(title) + " "
+	rightLabel := " " + styleMeta.Render(context) + " "
+
+	innerW := 0
+	for _, line := range bodyLines {
+		if w := ansi.StringWidth(line); w > innerW {
+			innerW = w
+		}
+	}
+	headW := ansi.StringWidth(leftLabel) + ansi.StringWidth(rightLabel) + 2
+	if headW > innerW {
+		innerW = headW
+	}
+
+	border := lipgloss.NewStyle().Foreground(colorWarning)
+	fill := innerW - ansi.StringWidth(leftLabel) - ansi.StringWidth(rightLabel)
+	if fill < 1 {
+		fill = 1
+	}
+	top := border.Render("┌─") + leftLabel +
+		border.Render(strings.Repeat("─", fill)) +
+		rightLabel + border.Render("─┐")
+
+	sideL := border.Render("│ ")
+	sideR := border.Render(" │")
+	rows := []string{top}
+	for _, line := range bodyLines {
+		pad := innerW - ansi.StringWidth(line)
+		if pad < 0 {
+			pad = 0
+		}
+		rows = append(rows, sideL+line+strings.Repeat(" ", pad)+sideR)
+	}
+	rows = append(rows, border.Render("└"+strings.Repeat("─", innerW+2)+"┘"))
+	return strings.Join(rows, "\n")
 }
 
 func serverDisplayName(lang lsp.DetectedLanguage) string {
