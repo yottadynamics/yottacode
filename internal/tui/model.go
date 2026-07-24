@@ -1216,7 +1216,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if _, ok := msg.(spinner.TickMsg); ok {
-		if !m.turnActive && !m.summarizing && !m.hasRunningSubagents() {
+		if !m.turnActive && !m.summarizing && !m.hasRunningSubagents() && !m.skillsBusy() {
 			// Idle: drop the tick so we stop re-scheduling ourselves.
 			// startTurn re-arms m.spinner.Tick when work begins; the
 			// summarize commands re-arm it for the summarizing row.
@@ -1229,6 +1229,12 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		var cmd tea.Cmd
 		m.spinner, cmd = m.spinner.Update(msg)
+		if m.skillsPickerOpen && m.skillsPicker != nil && m.skillsPicker.busy != "" {
+			m.skillsPicker.busyFrame = m.spinner.View()
+		}
+		if m.skillsMenuOpen && m.skillsMenu != nil && m.skillsMenu.busy != "" {
+			m.skillsMenu.busyFrame = m.spinner.View()
+		}
 		return m, cmd
 	}
 	if _, ok := msg.(cursorBlinkMsg); ok {
@@ -2198,6 +2204,18 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case modelPickerLoadedMsg:
 		return m.handleModelPickerLoaded(msg)
 
+	case skillsCatalogRefreshDoneMsg:
+		return handleSkillsCatalogRefreshDone(m, msg)
+
+	case skillsOfficialInstallDoneMsg:
+		return handleSkillsOfficialInstallDone(m, msg)
+
+	case skillsMenuInstallDoneMsg:
+		return handleSkillsMenuInstallDone(m, msg)
+
+	case skillsMenuUpdateDoneMsg:
+		return handleSkillsMenuUpdateDone(m, msg)
+
 	case tea.MouseMsg:
 		// Mouse capture stays enabled (so palette clicks could be wired up
 		// later); we no longer forward to a viewport because the conversation
@@ -2596,6 +2614,11 @@ func (m Model) overlayClosed(after Model) bool {
 // workers and nothing else would trigger a redraw until they finish.
 func (m Model) hasRunningSubagents() bool {
 	return m.subagentTasks != nil && m.subagentTasks.ActiveCount() > 0
+}
+
+func (m Model) skillsBusy() bool {
+	return (m.skillsPickerOpen && m.skillsPicker != nil && m.skillsPicker.busy != "") ||
+		(m.skillsMenuOpen && m.skillsMenu != nil && m.skillsMenu.busy != "")
 }
 
 // View renders the live footer that redraws in place at the bottom of the

@@ -71,8 +71,36 @@ type skillsPickerState struct {
 	// resumes normal navigation.
 	filterMode bool
 
-	cursor int
-	status string
+	cursor    int
+	status    string
+	busy      string
+	busyKind  string
+	busyFrame string
+}
+
+type skillsCatalogRefreshDoneMsg struct {
+	rows []skills.Skill
+	err  error
+}
+
+type skillsOfficialInstallDoneMsg struct {
+	name string
+	res  skills.InstallResult
+	err  error
+}
+
+func refreshOfficialCatalogCmd() tea.Cmd {
+	return func() tea.Msg {
+		rows, err := skills.RefreshOfficialCatalog(skills.OfficialCatalogOptions{})
+		return skillsCatalogRefreshDoneMsg{rows: rows, err: err}
+	}
+}
+
+func installOfficialSkillCmd(name string) tea.Cmd {
+	return func() tea.Msg {
+		res, err := skills.Install(skills.InstallOptions{Source: skills.OfficialPrefix + name})
+		return skillsOfficialInstallDoneMsg{name: name, res: res, err: err}
+	}
 }
 
 // visibleRows returns the slice of rows the current tab should render. Official
@@ -159,6 +187,9 @@ func (m Model) updateSkillsPicker(msg tea.KeyMsg) (Model, tea.Cmd) {
 		return m, nil
 	}
 	p := m.skillsPicker
+	if p.busy != "" {
+		return m, nil
+	}
 	// Filter mode hijacks keystrokes for the filter buffer. Esc
 	// clears + exits; Enter commits + exits; Backspace deletes one
 	// rune; printable runes append. Cursor resets to 0 on any edit
@@ -355,14 +386,28 @@ func updateSkillsPickerFilter(m Model, p *skillsPickerState, msg tea.KeyMsg) (Mo
 // user request. Normal Catalog browsing is offline; this is the only picker path
 // that contacts GitHub without installing a skill.
 func refreshOfficialCatalogFromPicker(m Model, p *skillsPickerState) (Model, tea.Cmd) {
-	rows, err := skills.RefreshOfficialCatalog(skills.OfficialCatalogOptions{})
-	if err != nil {
-		p.status = "refresh failed: " + err.Error()
+	p.busy = "refreshing official catalog…"
+	p.busyKind = "refresh"
+	p.busyFrame = m.spinner.View()
+	p.status = p.busy
+	return m, tea.Batch(m.spinner.Tick, refreshOfficialCatalogCmd())
+}
+
+func handleSkillsCatalogRefreshDone(m Model, msg skillsCatalogRefreshDoneMsg) (Model, tea.Cmd) {
+	if !m.skillsPickerOpen || m.skillsPicker == nil || m.skillsPicker.busyKind != "refresh" {
 		return m, nil
 	}
-	p.officialRows = rows
+	p := m.skillsPicker
+	p.busy = ""
+	p.busyKind = ""
+	p.busyFrame = ""
+	if msg.err != nil {
+		p.status = "refresh failed: " + msg.err.Error()
+		return m, nil
+	}
+	p.officialRows = msg.rows
 	p.cursor = 0
-	p.status = fmt.Sprintf("refreshed official catalog (%d skills)", len(rows))
+	p.status = fmt.Sprintf("refreshed official catalog (%d skills)", len(msg.rows))
 	return m, nil
 }
 
@@ -374,10 +419,22 @@ func installOfficialFromSkillsPicker(m Model, p *skillsPickerState, sk skills.Sk
 		p.status = fmt.Sprintf("%s is already installed at %s", sk.Name, dir)
 		return m, nil
 	}
-	source := skills.OfficialPrefix + sk.Name
-	label := "official"
-	autoEnable := true
-	res, err := skills.Install(skills.InstallOptions{Source: source})
+	p.busy = "installing " + sk.Name + "…"
+	p.busyKind = "install:" + sk.Name
+	p.busyFrame = m.spinner.View()
+	p.status = p.busy
+	return m, tea.Batch(m.spinner.Tick, installOfficialSkillCmd(sk.Name))
+}
+
+func handleSkillsOfficialInstallDone(m Model, msg skillsOfficialInstallDoneMsg) (Model, tea.Cmd) {
+	if !m.skillsPickerOpen || m.skillsPicker == nil || m.skillsPicker.busyKind != "install:"+msg.name {
+		return m, nil
+	}
+	p := m.skillsPicker
+	p.busy = ""
+	p.busyKind = ""
+	p.busyFrame = ""
+	res, err := msg.res, msg.err
 	if err != nil {
 		if already, ok := skills.IsAlreadyInstalled(err); ok {
 			m = switchPickerToInstalledSkill(m, p, already.Name)
@@ -387,6 +444,12 @@ func installOfficialFromSkillsPicker(m Model, p *skillsPickerState, sk skills.Sk
 		p.status = "install failed: " + err.Error()
 		return m, nil
 	}
+	label := "official"
+	autoEnable := true
+	return finishOfficialInstallFromPicker(m, p, res, label, autoEnable)
+}
+
+func finishOfficialInstallFromPicker(m Model, p *skillsPickerState, res skills.InstallResult, label string, autoEnable bool) (Model, tea.Cmd) {
 	m.appendLine(styleAuto.Render(fmt.Sprintf("[skills] installed %s %s at %s", label, res.Skill.Name, res.Dir)))
 	if !autoEnable {
 		m.appendLine(styleMeta.Render("[skills] external skill installed disabled; press Space in Catalog to enable after review"))
@@ -660,6 +723,13 @@ func renderSkillsPicker(state *skillsPickerState, _ int) string {
 		body += styleMeta.Render(filterLine) + "\n"
 	}
 	body += "\n"
+	if state.busy != "" {
+		frame := state.busyFrame
+		if frame == "" {
+			frame = "⣾"
+		}
+		body += styleMeta.Render("  "+frame+" "+state.busy) + "\n\n"
+	}
 
 	visible := state.visibleRows()
 	if len(visible) == 0 {

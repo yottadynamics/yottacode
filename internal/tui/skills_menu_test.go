@@ -165,6 +165,47 @@ func TestCatalogPicker_ArrowKeysSwitchTabs(t *testing.T) {
 	}
 }
 
+func TestCatalogPicker_RefreshShowsBusyThenUpdatesRows(t *testing.T) {
+	withOfficialCatalogStub(t, nil)
+	m := newTestModel(t)
+	m.skillTool = &agent.SkillTool{All: nil}
+	m, _ = m.runSlash("/skills")
+	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter}) // Catalog
+
+	m, cmd := applyMsg(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+	if cmd == nil {
+		t.Fatal("refresh should return an async command")
+	}
+	if m.skillsPicker.busy == "" || !strings.Contains(renderSkillsPicker(m.skillsPicker, 80), "refreshing official catalog") {
+		t.Fatalf("refresh should show a busy status, got %q", renderSkillsPicker(m.skillsPicker, 80))
+	}
+	rows := []skills.Skill{{Name: "new-skill", Description: "fresh", Source: skills.ScopeOfficial}}
+	m, _ = applyMsg(m, skillsCatalogRefreshDoneMsg{rows: rows})
+	if m.skillsPicker.busy != "" {
+		t.Fatal("refresh completion should clear busy state")
+	}
+	if got := m.skillsPicker.officialRows; len(got) != 1 || got[0].Name != "new-skill" {
+		t.Fatalf("official rows = %v, want new-skill", got)
+	}
+	if !strings.Contains(m.skillsPicker.status, "refreshed official catalog (1 skills)") {
+		t.Fatalf("status = %q", m.skillsPicker.status)
+	}
+}
+
+func TestCatalogPicker_BusyIgnoresKeys(t *testing.T) {
+	withOfficialCatalogStub(t, []skills.Skill{{Name: "official-alpha", Description: "o", Source: skills.ScopeOfficial}})
+	m := newTestModel(t)
+	m.skillTool = &agent.SkillTool{All: []skills.Skill{{Name: "alpha", Description: "a", Source: skills.ScopeBuiltin}}}
+	m, _ = m.runSlash("/skills")
+	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	m.skillsPicker.busy = "refreshing official catalog…"
+
+	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyRight})
+	if m.skillsPicker.tab != catalogTabOfficial {
+		t.Fatal("busy picker should ignore tab-switch keys")
+	}
+}
+
 // TestCatalogPicker_OfficialAlreadyInstalledIsNoop keeps the Catalog UX
 // idempotent: already-installed official rows show installed status and can be
 // toggled without contacting GitHub or surfacing the CLI overwrite error.
@@ -280,7 +321,19 @@ func TestSkillsMenu_InstallRoundTrip(t *testing.T) {
 	for _, r := range src {
 		m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
 	}
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	cmd := tea.Cmd(nil)
+	m, cmd = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("install should return an async command")
+	}
+	if !m.skillsMenuOpen || m.skillsMenu.busy == "" {
+		t.Fatal("menu should stay open with a busy install status")
+	}
+	res, err := skills.Install(skills.InstallOptions{Source: src})
+	if err != nil {
+		t.Fatalf("install fixture: %v", err)
+	}
+	m, _ = applyMsg(m, skillsMenuInstallDoneMsg{source: src, res: res})
 
 	if m.skillsMenuOpen {
 		t.Error("menu should close after successful install")
@@ -565,6 +618,28 @@ func TestSkillsMenu_InstallShowsErrorInline(t *testing.T) {
 	}
 	if m.skillsMenu.status == "" {
 		t.Error("status should explain why install was rejected")
+	}
+}
+
+func TestSkillsMenu_InstallAsyncFailureStaysInline(t *testing.T) {
+	m := newTestModel(t)
+	m.skillTool = &agent.SkillTool{All: nil}
+	m, _ = m.runSlash("/skills")
+	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyDown})
+	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	for _, r := range "./missing-skill" {
+		m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+	m, cmd := applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil || m.skillsMenu.busy == "" {
+		t.Fatal("install submit should enter busy state and return a command")
+	}
+	m, _ = applyMsg(m, skillsMenuInstallDoneMsg{source: "./missing-skill", err: os.ErrNotExist})
+	if !m.skillsMenuOpen {
+		t.Fatal("failed async install should keep the menu open")
+	}
+	if m.skillsMenu.busy != "" || m.skillsMenu.status == "" {
+		t.Fatalf("failure should clear busy and leave status, busy=%q status=%q", m.skillsMenu.busy, m.skillsMenu.status)
 	}
 }
 
