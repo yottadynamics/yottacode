@@ -745,6 +745,14 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 		model.pendingStartupNotices = append(model.pendingStartupNotices,
 			styleAuto.Render("experimental enabled: "+strings.Join(names, ", ")+" — /experimental for details"))
 	}
+	if expSet.IsEnabled(experimental.LSPCodeIntelligence) {
+		if langs, err := lsp.DetectWorkspace(ctx, cwd, 2000); err == nil {
+			langs = lsp.ApplyOverridesToDetected(langs, fileCfg.LSP.Servers)
+			if card := renderLSPAdvisory(langs); card != "" {
+				model.pendingStartupNotices = append(model.pendingStartupNotices, card)
+			}
+		}
+	}
 	// Wire the AgentTool's background-completion callback into the
 	// Model's long-lived inbox. The callback runs from a detached
 	// goroutine when a background subagent finishes; non-blocking

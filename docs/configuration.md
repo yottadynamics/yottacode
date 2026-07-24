@@ -629,11 +629,12 @@ Then install the servers for the languages you use:
 - Rust: install `rust-analyzer` through rustup, your package manager, or upstream docs
 
 Use the `lsp_status` tool in-session to see detected languages, installed/missing
-servers, and the same install hints. See [lsp.md](lsp.md) for setup,
+servers, install hints, and session manager stats. Interactive sessions also show
+a startup **LSP Code Intelligence** advisory card when supported files are detected
+but the matching server is missing. See [lsp.md](lsp.md) for setup,
 troubleshooting, and production-promotion notes, and [tools.md](tools.md#lsp_status)
-for the full tool reference. Use `/lsp` for the same status directly from the TUI,
-and `yottacode doctor --experimental lsp_code_intelligence` for command-line
-setup diagnostics. Customize commands when needed:
+for the full tool reference. Use `yottacode doctor --experimental lsp_code_intelligence`
+for command-line setup diagnostics. Customize commands when needed:
 
 ```toml
 [lsp.servers]

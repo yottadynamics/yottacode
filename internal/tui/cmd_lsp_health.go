@@ -1,61 +1,91 @@
 package tui
 
 import (
-	"context"
 	"fmt"
 	"strings"
 
-	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
-	"github.com/yottadynamics/yottacode/internal/experimental"
 	"github.com/yottadynamics/yottacode/internal/lsp"
 )
 
-// cmdLSP renders the same readiness signal as the model-facing lsp_status tool,
-// but as a user-facing slash command so setup is discoverable without asking the
-// model to call a tool.
-func cmdLSP(m Model, args []string) (Model, tea.Cmd) {
-	if !stringInSlice(m.experimentalEnabled, string(experimental.LSPCodeIntelligence)) {
-		m.appendLine(styleError.Render("[lsp] experimental feature is disabled — enable lsp_code_intelligence in [experimental]"))
-		return m, nil
-	}
-	path := m.cwd
-	if len(args) > 0 && strings.TrimSpace(args[0]) != "" {
-		path = args[0]
-	}
-	langs, err := lsp.DetectWorkspace(context.Background(), path, 2000)
-	if err != nil {
-		m.appendLine(styleError.Render("[lsp] " + err.Error()))
-		return m, nil
-	}
-	langs = lsp.ApplyOverridesToDetected(langs, m.fileCfg.LSP.Servers)
-	if len(langs) == 0 {
-		m.appendLine(styleAuto.Render("[lsp] no supported languages detected (Go, TypeScript/JavaScript, Python, Rust)"))
-		return m, nil
-	}
-	m.appendLine(styleAssistantHeader.Render("LSP status"))
+// renderLSPAdvisory returns a non-blocking startup card for supported languages
+// whose semantic server is missing. It teaches the user how to unlock the
+// experimental LSP tools without forcing the model to discover setup state.
+func renderLSPAdvisory(langs []lsp.DetectedLanguage) string {
+	missing := make([]lsp.DetectedLanguage, 0, len(langs))
 	for _, lang := range langs {
-		status := styleError.Render("missing")
-		if lang.ServerAvailable {
-			status = styleAuto.Render("installed")
-		}
-		m.appendLine(fmt.Sprintf("  %s  files=%d  server=%s  %s", lang.Name, lang.FilesAvailable, strings.Join(lang.Command, " "), status))
-		if !lang.ServerAvailable {
-			m.appendLine(styleAuto.Render("    hint: " + lang.InstallHint))
+		if lang.FilesAvailable > 0 && !lang.ServerAvailable {
+			missing = append(missing, lang)
 		}
 	}
-	if m.lspManager != nil {
-		stats := m.lspManager.Stats()
-		m.appendLine(styleAuto.Render(fmt.Sprintf("  manager  open=%d/%d  starts=%d  reuses=%d  evictions=%d  last_start=%s", stats.OpenServers, stats.MaxServers, stats.Starts, stats.Reuses, stats.Evictions, stats.LastStart)))
+	if len(missing) == 0 {
+		return ""
 	}
-	return m, nil
+
+	rows := []string{styleWarnIcon.Render("LSP Code Intelligence"), ""}
+	if len(missing) == 1 {
+		lang := missing[0]
+		rows = append(rows,
+			fmt.Sprintf("%s detected · semantic server missing", lang.Name),
+			"",
+			fmt.Sprintf("Install %s for richer diagnostics, definitions,", serverDisplayName(lang)),
+			"references, hover, and code review:",
+			"",
+			styleInlineCommand.Render("  "+installCommand(lang)),
+			"",
+			styleMeta.Render("Continuing with normal file reads for now."),
+		)
+	} else {
+		rows = append(rows, "Some detected languages can use richer code intelligence:", "")
+		for _, lang := range missing {
+			rows = append(rows,
+				fmt.Sprintf("%s  missing %s", lang.Name, strings.Join(lang.Command, " ")),
+				styleInlineCommand.Render("  "+installCommand(lang)),
+			)
+		}
+		rows = append(rows, "", styleMeta.Render("Continuing with normal file reads for now."))
+	}
+
+	box := lipgloss.NewStyle().
+		Border(lipgloss.NormalBorder()).
+		BorderForeground(colorWarning).
+		Padding(0, 1)
+	if hasThemeBackground {
+		box = box.Background(themeBackground)
+	}
+	return box.Render(strings.Join(rows, "\n"))
 }
 
-func stringInSlice(ss []string, s string) bool {
-	for _, x := range ss {
-		if x == s {
-			return true
+func serverDisplayName(lang lsp.DetectedLanguage) string {
+	switch lang.ID {
+	case "go":
+		return "gopls"
+	case "typescript":
+		return "TypeScript language server"
+	case "python":
+		return "pyright"
+	case "rust":
+		return "rust-analyzer"
+	default:
+		if len(lang.Command) > 0 {
+			return lang.Command[0]
 		}
+		return "the language server"
 	}
-	return false
+}
+
+func installCommand(lang lsp.DetectedLanguage) string {
+	switch lang.ID {
+	case "go":
+		return "go install golang.org/x/tools/gopls@latest"
+	case "typescript":
+		return "npm install -g typescript typescript-language-server"
+	case "python":
+		return "npm install -g pyright"
+	case "rust":
+		return "rustup component add rust-analyzer"
+	default:
+		return lang.InstallHint
+	}
 }
