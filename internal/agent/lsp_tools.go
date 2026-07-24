@@ -211,6 +211,7 @@ func (t *LSPSymbolsTool) Execute(ctx context.Context, argsJSON string) (string, 
 		}
 		return "", fmt.Errorf("lsp_symbols: %w", err)
 	}
+	items = filterSymbolsInRoot(items, root)
 	return formatSymbols(items, normalizedLSPMax(a.MaxResults), ""), nil
 }
 
@@ -359,6 +360,35 @@ func (t *LSPSymbolsTool) resolveLanguage(ctx context.Context, path string) (lspc
 		return langs[0].Language, root, "fallback", nil
 	}
 	return lspci.Language{}, "", unavailableServerResult(langs[0].Language), nil
+}
+
+func filterSymbolsInRoot(items []lspci.Symbol, root string) []lspci.Symbol {
+	// Some language servers, notably gopls, can return symbols from module cache
+	// dependencies. Keep the default tool result focused on workspace code.
+	absRoot, err := filepath.Abs(root)
+	if err != nil {
+		return items
+	}
+	out := make([]lspci.Symbol, 0, len(items))
+	for _, item := range items {
+		path := item.Location.Path
+		if strings.HasPrefix(path, "~/") || strings.HasPrefix(path, "~"+string(filepath.Separator)) {
+			continue
+		}
+		if !filepath.IsAbs(path) {
+			clean := filepath.Clean(path)
+			if clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+				continue
+			}
+			out = append(out, item)
+			continue
+		}
+		rel, err := filepath.Rel(absRoot, path)
+		if err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			out = append(out, item)
+		}
+	}
+	return out
 }
 
 func normalizedLSPMax(n int) int {

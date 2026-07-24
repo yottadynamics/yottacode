@@ -3,6 +3,8 @@ package agent
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -80,6 +82,31 @@ func TestLSPSymbolsUsesInjectedClient(t *testing.T) {
 	}
 	if !strings.Contains(out, "internal/agent/toolset.go:36:6") || !strings.Contains(out, "RegisterCoreCwdTools") {
 		t.Errorf("unexpected symbols output: %q", out)
+	}
+}
+
+func TestLSPSymbolsFiltersDependencyResults(t *testing.T) {
+	tmp := t.TempDir()
+	writeFile(t, tmp, "main.go", "package main")
+	tool := &LSPSymbolsTool{lspToolBase: lspToolBase{
+		Cwd: NewCwdRef(tmp),
+		NewClient: func(context.Context, lspci.Language, string) (lspClient, error) {
+			return &fakeLSPClient{symbols: []lspci.Symbol{
+				{Name: "LocalNewManager", Kind: "function", Container: "local", Location: lspci.Location{Path: filepath.Join(tmp, "internal/lsp/manager.go"), Line: 50, Character: 5}},
+				{Name: "DependencyNewManager", Kind: "function", Container: "dep", Location: lspci.Location{Path: filepath.Join(os.TempDir(), "pkg/mod/example/manager.go"), Line: 10, Character: 1}},
+				{Name: "HomeModule", Kind: "function", Container: "dep", Location: lspci.Location{Path: "~/go/pkg/mod/example/manager.go", Line: 20, Character: 1}},
+			}}, nil
+		},
+	}}
+	out, err := tool.Execute(context.Background(), `{"query":"NewManager","path":"main.go"}`)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if !strings.Contains(out, "LocalNewManager") {
+		t.Fatalf("workspace symbol missing from output: %q", out)
+	}
+	if strings.Contains(out, "DependencyNewManager") || strings.Contains(out, "HomeModule") {
+		t.Fatalf("dependency symbols should be filtered from output: %q", out)
 	}
 }
 
