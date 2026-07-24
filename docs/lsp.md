@@ -26,7 +26,7 @@ lsp_code_intelligence = true
 | Python | `pyright-langserver --stdio` | `npm install -g pyright` |
 | Rust | `rust-analyzer` | Install with `rustup`, your package manager, or the rust-analyzer project instructions |
 
-Missing servers are not fatal. yottacode reports the missing command and an install hint through `lsp_status`, `/lsp`, `/health`, and `/config-doctor`.
+Missing servers are not fatal. yottacode reports the missing command and an install hint through `lsp_status`, `/lsp`, `yottacode doctor`, and LSP tool unavailable results.
 
 ## Tools
 
@@ -51,10 +51,9 @@ Positions are zero-based line and UTF-16 character offsets, matching LSP. Output
 
 | Command | Purpose |
 |---|---|
-| `/lsp [path]` | Show detected languages, server commands, installed/missing state, and install hints |
-| `/health` | Show git/provider/memory/LSP/MCP/experimental status in one workspace card |
-| `/config-doctor` | Validate local dependencies such as LSP commands, MCP commands, and memory embeddings |
-| `/handoff` | Print a concise session handoff-note template |
+| `/lsp [path]` | Show detected languages, server commands, installed/missing state, install hints, and session manager stats |
+
+For command-line diagnostics, `yottacode doctor` includes an **LSP Code Intelligence** section with the feature flag state, detected supported languages, server availability, install hints, command overrides, and manager configuration.
 
 ## Command overrides
 
@@ -77,13 +76,13 @@ The experimental bridge now includes several production-readiness behaviors:
 - Workspace roots are detected from language markers such as `go.mod`, `package.json`, `pyproject.toml`, and `Cargo.toml` instead of always using the file's directory.
 - Documents are opened with `textDocument/didOpen` before position-based requests so servers see the same file contents yottacode read from disk.
 - Server capabilities returned by `initialize` are checked before optional methods; unsupported methods return an explicit `unavailable` result rather than a misleading empty response.
-- `lsp_status`, `/lsp`, and `/health` expose manager stats: open servers, starts, reuses, evictions, and last startup latency.
+- `lsp_status` and `/lsp` expose session manager stats: open servers, starts, reuses, evictions, and last startup latency. `yottacode doctor` reports the default manager configuration without starting a session server.
 - Smoke tests exist for all supported servers and skip automatically when the binary is not installed.
 
 ## Troubleshooting
 
 1. Run `/lsp` to confirm yottacode detects your language and command.
-2. Run `/config-doctor` to find missing binaries or broken override names.
+2. Run `yottacode doctor --experimental lsp_code_intelligence` to see the command-line LSP Code Intelligence section.
 3. Confirm the server works outside yottacode, for example `gopls version` or `pyright-langserver --version`.
 4. If a workspace symbol query fails, yottacode may fall back to an approximate regex symbol index. Definition, references, diagnostics, hover, code actions, and call hierarchy require a real server.
 
@@ -98,4 +97,4 @@ Before graduating this feature from experimental to default-on, verify:
 - Diagnostics, code actions, and call hierarchy outputs are bounded and readable.
 - Path validation applies to every file/workspace argument.
 - Custom server commands are documented as local user-configured execution.
-- `/lsp`, `/health`, and `/config-doctor` give actionable setup hints.
+- `/lsp` and `yottacode doctor` give actionable setup hints.

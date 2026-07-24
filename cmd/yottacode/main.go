@@ -429,6 +429,11 @@ Use --json for scripting.`,
 			if err := cli.Resolve(opts); err != nil {
 				return err
 			}
+			fileCfg := config.Default()
+			if loaded, err := config.LoadDefault(); err == nil {
+				fileCfg = loaded
+			}
+			lspResult := probeLSPDoctor(cmd.Context(), *opts, fileCfg)
 			result := adapter.Probe(cmd.Context(), adapterConfigFromOptions(*opts))
 			// --no-github skips the GitHub side entirely. Used by
 			// scripted / CI invocations that don't have a token
@@ -440,11 +445,15 @@ Use --json for scripting.`,
 				if jsonOutput {
 					enc := json.NewEncoder(cmd.OutOrStdout())
 					enc.SetIndent("", "  ")
-					if err := enc.Encode(result); err != nil {
+					combined := struct {
+						adapter.ProbeResult
+						LSP LSPDoctorResult `json:"lsp_code_intelligence"`
+					}{ProbeResult: result, LSP: lspResult}
+					if err := enc.Encode(combined); err != nil {
 						return err
 					}
 				} else {
-					fmt.Fprintln(cmd.OutOrStdout(), formatDoctorResult(result))
+					fmt.Fprintln(cmd.OutOrStdout(), formatDoctorResult(result)+renderLSPDoctor(lspResult))
 				}
 				if len(result.Issues) > 0 {
 					return errors.New("doctor found issues")
@@ -463,15 +472,17 @@ Use --json for scripting.`,
 				combined := struct {
 					adapter.ProbeResult
 					GitHub GitHubProbeResult `json:"github"`
+					LSP    LSPDoctorResult   `json:"lsp_code_intelligence"`
 				}{
 					ProbeResult: result,
 					GitHub:      ghResult,
+					LSP:         lspResult,
 				}
 				if err := enc.Encode(combined); err != nil {
 					return err
 				}
 			} else {
-				fmt.Fprintln(cmd.OutOrStdout(), formatDoctorResult(result)+renderGitHubProbe(ghResult))
+				fmt.Fprintln(cmd.OutOrStdout(), formatDoctorResult(result)+renderGitHubProbe(ghResult)+renderLSPDoctor(lspResult))
 			}
 			if len(result.Issues) > 0 || len(ghResult.Issues) > 0 {
 				return errors.New("doctor found issues")

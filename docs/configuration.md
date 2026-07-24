@@ -622,8 +622,9 @@ Then install the servers for the languages you use:
 Use the `lsp_status` tool in-session to see detected languages, installed/missing
 servers, and the same install hints. See [lsp.md](lsp.md) for setup,
 troubleshooting, and production-promotion notes, and [tools.md](tools.md#lsp_status)
-for the full tool reference. Use `/lsp` for the same status directly from the TUI, and
-customize commands when needed:
+for the full tool reference. Use `/lsp` for the same status directly from the TUI,
+and `yottacode doctor --experimental lsp_code_intelligence` for command-line
+setup diagnostics. Customize commands when needed:
 
 ```toml
 [lsp.servers]
@@ -632,12 +633,6 @@ typescript = ["typescript-language-server", "--stdio"]
 python = ["pyright-langserver", "--stdio"]
 rust = ["rust-analyzer"]
 ```
-
-Additional workspace readiness commands:
-
-- `/health` shows git/provider/memory/LSP/MCP/experimental state.
-- `/handoff` prints a concise session-state handoff note template.
-- `/config-doctor` validates local dependencies such as LSP/MCP commands and memory embeddings.
 
 ## Runtime Reconfiguration
 

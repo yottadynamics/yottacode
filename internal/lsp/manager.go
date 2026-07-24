@@ -25,6 +25,8 @@ type ManagerStats struct {
 	LastStart   time.Duration
 }
 
+func DefaultManagerMaxServers() int { return defaultManagerMaxServers }
+
 // Manager keeps a bounded pool of initialized LSP servers keyed by language,
 // workspace root, and command. It avoids paying process startup on every tool
 // call while still staying simple: all servers are closed at session teardown
@@ -103,7 +105,7 @@ func (m *Manager) Acquire(ctx context.Context, lang Language, root string) (*Poo
 	return &PooledClient{Client: client, manager: m, key: key}, nil
 }
 
-// Stats returns a lock-protected snapshot for /lsp and /health-style status.
+// Stats returns a lock-protected snapshot for /lsp and lsp_status output.
 func (m *Manager) Stats() ManagerStats {
 	if m == nil {
 		return ManagerStats{}

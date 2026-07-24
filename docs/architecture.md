@@ -261,8 +261,7 @@ local language server subprocess over stdio JSON-RPC
 The LSP manager is session-owned. TUI and oneshot sessions construct it when the
 feature flag is enabled, pass it into the LSP tools, and close all pooled servers
 on exit. Servers are lazy-started on first use and reused until they go idle or
-the bounded pool needs to evict one. The user can inspect pool stats through
-`lsp_status`, `/lsp`, and `/health`.
+the bounded pool needs to evict one. The user can inspect pool stats through `lsp_status` and `/lsp`. The command-line `yottacode doctor` includes an **LSP Code Intelligence** section for preflight setup checks, detected languages, server availability, install hints, overrides, and manager configuration.
 
 The bridge is intentionally local and opt-in:
 
