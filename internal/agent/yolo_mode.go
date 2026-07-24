@@ -5,17 +5,23 @@ import "sync/atomic"
 // YoloModeState is the per-session "no questions asked" flag. When
 // active, the loop auto-approves every tool call WITHOUT the safety
 // floor that auto mode keeps (run_bash, git_commit, git_checkpoint,
-// rollback all auto-allow silently), AND removes the iteration cap.
-// Explicit Deny rules in permissions.json still win — yolo is "skip
-// prompts," not "ignore my policy."
+// rollback all auto-allow silently), and raises the iteration cap to a
+// large but FINITE bound (see yoloIterationCap — not literally
+// uncapped). Explicit Deny rules in permissions.json still win — yolo
+// is "skip prompts," not "ignore my policy."
 //
-// Mutually exclusive with AutoMode and PlanMode at the TUI layer:
-// entering yolo turns the other two off. The loop-level gate doesn't
-// enforce this on its own; the TUI does.
+// Orthogonal OVERLAY, not a mode: it sits on top of whichever mode
+// (auto, plan, or none) is active and does NOT turn the others off.
+// The loop's approval switch checks the yolo case ahead of the auto
+// and plan cases, so it dominates while active; exiting it hands the
+// gate back to whatever mode was underneath.
 //
-// Intentionally NOT in the Shift+Tab mode cycle and not slash-invocable
-// — the only way in is launching with --yolo, so it can't be reached
-// by accident mid-session.
+// NOT in the Shift+Tab mode cycle. Entered by launching with --yolo or
+// by the /yolo slash command mid-session (cmdYolo), and /yolo also
+// exits it — the deliberate escape hatch the flag alone doesn't give.
+// In the TUI this is the SOLE representation of the bypass; the
+// separate LoopConfig.BypassPermissions bool is used only on the
+// non-TUI oneshot/CI path, which never constructs a YoloModeState.
 type YoloModeState struct {
 	Active atomic.Bool
 }

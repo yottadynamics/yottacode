@@ -65,10 +65,13 @@ func init() {
 	// workflow → config → git → utilities → meta.
 	allSlash = []slashCommand{
 		// Workflow — most reached-for during active coding.
-		// Auto mode and yolo are intentionally NOT slash-invocable (mirroring
-		// Claude Code): auto via Shift+Tab or --permission-mode auto; yolo only
-		// via --yolo at startup.
+		// Auto mode is intentionally NOT slash-invocable (mirroring
+		// Claude Code): auto via Shift+Tab or --permission-mode auto.
+		// Yolo enters via --yolo at startup AND /yolo mid-session; the
+		// /yolo slash command is the mid-session escape hatch that
+		// toggles the overlay off again.
 		{Name: "plan", Help: "toggle plan mode — also Shift+Tab. Type `/plan list` to resume an earlier plan.", Run: cmdPlan},
+		{Name: "yolo", Help: "toggle yolo mode — also --yolo at startup. Auto-runs every tool (NO safety floor); deny rules still win.", Run: cmdYolo},
 		{Name: "model", Help: "open the model picker (subcommands: list [all], <name>)", Run: cmdModel},
 		{Name: "provider", Help: "select a new provider (subcommands: list, use, add, remove, models)", Run: cmdProviderEntry},
 		{Name: "effort", Help: "set reasoning effort for providers that support it (default · low · medium · high)", Run: cmdEffort},

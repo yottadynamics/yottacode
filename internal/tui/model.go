@@ -87,21 +87,17 @@ type Config struct {
 	XSearchToDate          string
 	ProviderProfile        adapter.ProviderProfile
 	Cwd                    string
-	// BypassPermissions auto-approves every tool call. DANGEROUS — see
-	// the flag help on --yolo. Explicit `deny`
-	// rules in .yottacode/permissions.json still apply.
-	BypassPermissions bool
-	Version           string   // e.g. "0.3.0" — shown in the header
-	Commit            string   // short SHA the binary was built from; "" when unknown (go run, tarball)
-	Dirty             bool     // true when the build had uncommitted changes; renders a "*" beside the commit
-	Branch            string   // current git branch (empty if not in a repo)
-	ProjectRoots      []string // roots counting as this project (repo root + its worktree container); auto-recall's project scope matches them and everything below
-	SensitiveProject  bool     // this project is marked sensitive: no automatic recall injection at all
-	SensitiveRoots    []string // every sensitive root; their sessions never surface in any project's recall
-	Worktree          string   // yottacode worktree name when running inside one (empty for main checkout); rendered as a status-line chip
-	MemorySummary     string   // "USER", "YOTTA", "USER+YOTTA", "UMEM", "USER+UMEM", or "" if none
-	BaseSystemPrompt  string   // pre-memory prompt — needed by /memory reload to recompose
-	EmbedClient       *memory.EmbedClient
+	Version                string   // e.g. "0.3.0" — shown in the header
+	Commit                 string   // short SHA the binary was built from; "" when unknown (go run, tarball)
+	Dirty                  bool     // true when the build had uncommitted changes; renders a "*" beside the commit
+	Branch                 string   // current git branch (empty if not in a repo)
+	ProjectRoots           []string // roots counting as this project (repo root + its worktree container); auto-recall's project scope matches them and everything below
+	SensitiveProject       bool     // this project is marked sensitive: no automatic recall injection at all
+	SensitiveRoots         []string // every sensitive root; their sessions never surface in any project's recall
+	Worktree               string   // yottacode worktree name when running inside one (empty for main checkout); rendered as a status-line chip
+	MemorySummary          string   // "USER", "YOTTA", "USER+YOTTA", "UMEM", "USER+UMEM", or "" if none
+	BaseSystemPrompt       string   // pre-memory prompt — needed by /memory reload to recompose
+	EmbedClient            *memory.EmbedClient
 
 	// FileCfg holds tunables loaded from ~/.yottacode/config.toml
 	// (context watermarks, retrieval). The TUI reads these at session
@@ -196,7 +192,6 @@ type Model struct {
 	xSearchFromDate        string
 	xSearchToDate          string
 	providerProfile        adapter.ProviderProfile
-	bypassPermissions      bool
 	cwd                    string
 	projectRoots           []string // roots counting as this project, resolved once at startup; scopes auto-recall
 	sensitiveProject       bool     // auto-recall suppressed entirely for this project
@@ -1036,7 +1031,6 @@ func New(parent context.Context, c Config) Model {
 		xSearchFromDate:        c.XSearchFromDate,
 		xSearchToDate:          c.XSearchToDate,
 		providerProfile:        c.ProviderProfile,
-		bypassPermissions:      c.BypassPermissions,
 		cwd:                    c.Cwd,
 		perms:                  c.Permissions,
 		recall:                 c.Recall,
@@ -1265,7 +1259,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// One blank line of breathing room between the card and
 				// the input frame — matches the Phase 2 spacing target.
 				m.queuePrintln("")
-				// Construction-time entry banners (permissions-bypass,
+				// Construction-time entry banners (yolo mode,
 				// plan/auto mode, custom-command errors) recorded into
 				// historyLines before any width was known — queuePrintln
 				// deferred their emission rather than wrap at the 80-col
@@ -2707,12 +2701,13 @@ func (m Model) View() string {
 			parts = append(parts, renderFilePalette(m.filePaletteFiltered, m.filePaletteIndex, m.filePaletteOffset, liveContentWidth(m.width)+4))
 		}
 		// Banner: one-line indicator above the input rule. Modes
-		// (plan/auto) are mutually exclusive; yolo is an orthogonal
-		// overlay flag whose `⚠ yolo` tag appends to the active mode
-		// banner. When no mode is active but yolo is, a standalone
-		// yolo banner shows so the user can still see the "rails
-		// off" state. Suppressed entirely while a palette is open
-		// (palettes already own the above-cmdline real estate).
+		// (plan/auto) are mutually exclusive; yolo mode is an
+		// orthogonal overlay flag whose `⚠ yolo mode` tag appends to
+		// the active mode banner. When no mode is active but yolo
+		// mode is, a standalone yolo banner shows so the user can
+		// still see the "rails off" state. Suppressed entirely while a
+		// palette is open (palettes already own the above-cmdline real
+		// estate).
 		yoloOn := m.cfg.YoloMode.IsActive()
 		switch {
 		case m.paletteOpen, m.filePaletteOpen:

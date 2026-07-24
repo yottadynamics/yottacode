@@ -113,6 +113,7 @@ Type `/` in the TUI to open the command palette — it filters as you type and s
 | `/max-iterations <N>` | Cap tool-call iterations per turn (default 100; auto mode 4×) |
 | `/loop <interval> [Nx] <prompt>` | Repeat prompts or slash commands as local loops with IDs (`/loop 2m check current PR CI`, `/loop stop <id>`, 5-day expiry) |
 | `/plan` | Toggle plan mode (`/plan list` resumes a saved plan; also `Shift+Tab`) |
+| `/yolo` | Toggle yolo mode — every tool auto-runs, no safety floor, no iteration cap (also `--yolo` at startup; deny rules still win) |
 | `/subagents` | Open the subagents picker — view, stop, or list agent types |
 | `/skills` | Open the skills menu (`install`, `show`, `uninstall`, `check`, `update`) |
 | `/git-commit` | Compose and run a one-line commit on the staged changes |
@@ -126,7 +127,7 @@ Type `/` in the TUI to open the command palette — it filters as you type and s
 | `/setup` | Re-run the setup wizard (reloads config on return) |
 | `/quit` | Exit yottacode |
 
-> Auto mode and the permissions-bypass overlay are intentionally not slash commands: enter auto mode with `Shift+Tab` (or `--permission-mode auto`), and the bypass overlay only via `yottacode --yolo` at launch.
+> Auto mode is intentionally not a slash command: enter auto mode with `Shift+Tab` (or `--permission-mode auto`). Yolo mode is the exception — it has a `/yolo` slash toggle in addition to `yottacode --yolo` at launch, so the danger overlay can be turned off mid-session without restarting.
 
 Full references: [`docs/cli.md`](docs/cli.md) and [`docs/tui-slash-commands.md`](docs/tui-slash-commands.md).
 

@@ -631,13 +631,13 @@ func TestEnterYoloMode_OneWay(t *testing.T) {
 		t.Errorf("enterYoloMode should be idempotent — no second banner")
 	}
 	out := stripANSI(m.transcript.String())
-	if !strings.Contains(out, "permissions bypass active") {
-		t.Errorf("expected 'permissions bypass active' banner in transcript; got %q", out)
+	if !strings.Contains(out, "yolo mode active") {
+		t.Errorf("expected 'yolo mode active' banner in transcript; got %q", out)
 	}
-	if strings.Contains(strings.ReplaceAll(out, "--yolo", ""), "yolo") {
-		t.Errorf("entry banner should not surface the internal 'yolo' label to the user; got %q", out)
+	if strings.Contains(out, "permissions bypass") {
+		t.Errorf("entry banner should use 'yolo mode', not the old 'permissions bypass' wording; got %q", out)
 	}
-	if !strings.Contains(out, "restart without --yolo") {
+	if !strings.Contains(out, "--yolo") {
 		t.Errorf("expected recovery hint pointing at the flag; got %q", out)
 	}
 }
@@ -692,14 +692,14 @@ func TestBanner_AutoPlusYoloShowsBothLabels(t *testing.T) {
 	if !strings.Contains(view, "auto mode") {
 		t.Errorf("banner should still show 'auto mode' label; got %q", view)
 	}
-	if !strings.Contains(view, YoloModeIcon+" bypass") {
-		t.Errorf("banner should show '⚠ bypass' suffix; got %q", view)
+	if !strings.Contains(view, YoloModeIcon+" yolo mode") {
+		t.Errorf("banner should show '⚠ yolo mode' suffix; got %q", view)
 	}
-	// Bypass overrides the safety floor, so the auto banner's
+	// Yolo overrides the safety floor, so the auto banner's
 	// "bash & commits prompt" claim is misleading and should be
 	// suppressed.
 	if strings.Contains(view, "bash & commits prompt") {
-		t.Errorf("auto banner's safety-floor text should be suppressed when bypass overrides it; got %q", view)
+		t.Errorf("auto banner's safety-floor text should be suppressed when yolo overrides it; got %q", view)
 	}
 }
 
@@ -717,30 +717,26 @@ func TestBanner_PlanPlusYoloShowsBothLabels(t *testing.T) {
 	if !strings.Contains(view, "plan mode") {
 		t.Errorf("banner should still show 'plan mode' label; got %q", view)
 	}
-	if !strings.Contains(view, YoloModeIcon+" bypass") {
-		t.Errorf("banner should show '⚠ bypass' suffix; got %q", view)
+	if !strings.Contains(view, YoloModeIcon+" yolo mode") {
+		t.Errorf("banner should show '⚠ yolo mode' suffix; got %q", view)
 	}
 }
 
-// Standalone bypass banner appears when the overlay is on AND no mode
-// is active. Format: "⚠ permissions bypass · all tools auto-allow ·
-// no iteration cap" (a mode-less overlay, not a mode itself — so no
-// "mode" label).
+// Standalone yolo banner appears when the overlay is on AND no mode
+// is active. Format: "⚠ yolo mode · all tools auto-allow ·
+// no iteration cap".
 func TestYoloStandaloneBanner_RendersWhenAlone(t *testing.T) {
 	m, _ := newPlanModeTestModel(t)
 	m = enterYoloMode(m)
 	view := stripANSI(m.View())
-	if !strings.Contains(view, YoloModeIcon+" permissions bypass") {
-		t.Errorf("standalone bypass banner missing icon + label; got %q", view)
+	if !strings.Contains(view, YoloModeIcon+" yolo mode") {
+		t.Errorf("standalone yolo banner missing icon + label; got %q", view)
 	}
-	if strings.Contains(view, "yolo") {
-		t.Errorf("standalone bypass banner should not surface the internal 'yolo' label; got %q", view)
-	}
-	if strings.Contains(view, "permissions bypass mode") {
-		t.Errorf("standalone bypass banner should not say 'mode' — it's an overlay; got %q", view)
+	if strings.Contains(view, "permissions bypass") {
+		t.Errorf("standalone yolo banner should use 'yolo mode', not the old 'permissions bypass' wording; got %q", view)
 	}
 	if !strings.Contains(view, "no iteration cap") {
-		t.Errorf("standalone bypass banner should call out 'no iteration cap'; got %q", view)
+		t.Errorf("standalone yolo banner should call out 'no iteration cap'; got %q", view)
 	}
 }
 
@@ -892,18 +888,20 @@ func TestRebuildTranscript_UnknownToolFallback(t *testing.T) {
 	}
 }
 
-// Slash registry parity with Claude Code: /plan is invocable; /auto
-// and /yolo are NOT. Locks the removal so a future palette edit
-// doesn't accidentally re-expose them.
+// Slash registry: /plan and /yolo are invocable; /auto is NOT (auto
+// enters via Shift+Tab or --permission-mode auto). /yolo is the
+// mid-session toggle for the yolo mode overlay (mirror of --yolo at
+// startup). Locks the registry so a future palette edit doesn't
+// accidentally re- or un-expose them.
 func TestSlashAuto_NotRegistered(t *testing.T) {
 	if findSlash("auto") != nil {
 		t.Errorf("/auto must not be a slash command — auto enters via Shift+Tab or --permission-mode auto")
 	}
 }
 
-func TestSlashYolo_NotRegistered(t *testing.T) {
-	if findSlash("yolo") != nil {
-		t.Errorf("/yolo must not be a slash command — yolo enters only via --yolo at startup")
+func TestSlashYolo_Registered(t *testing.T) {
+	if findSlash("yolo") == nil {
+		t.Errorf("/yolo should be a slash command — it toggles the yolo mode overlay mid-session")
 	}
 }
 
