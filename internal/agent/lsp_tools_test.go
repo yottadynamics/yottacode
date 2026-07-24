@@ -13,7 +13,9 @@ import (
 
 type fakeLSPClient struct {
 	symbols     []lspci.Symbol
+	docSymbols  []lspci.Symbol
 	locs        []lspci.Location
+	signatures  lspci.SignatureHelp
 	diagnostics []lspci.Diagnostic
 	actions     []lspci.CodeAction
 	calls       []lspci.CallHierarchyItem
@@ -21,6 +23,9 @@ type fakeLSPClient struct {
 
 func (f *fakeLSPClient) WorkspaceSymbols(context.Context, string) ([]lspci.Symbol, error) {
 	return f.symbols, nil
+}
+func (f *fakeLSPClient) DocumentSymbols(context.Context, string) ([]lspci.Symbol, error) {
+	return f.docSymbols, nil
 }
 func (f *fakeLSPClient) Definition(context.Context, string, lspci.Position) ([]lspci.Location, error) {
 	return f.locs, nil
@@ -30,6 +35,12 @@ func (f *fakeLSPClient) References(context.Context, string, lspci.Position, bool
 }
 func (f *fakeLSPClient) Hover(context.Context, string, lspci.Position) (string, error) {
 	return "hover text", nil
+}
+func (f *fakeLSPClient) SignatureHelp(context.Context, string, lspci.Position) (lspci.SignatureHelp, error) {
+	if len(f.signatures.Signatures) > 0 {
+		return f.signatures, nil
+	}
+	return lspci.SignatureHelp{Signatures: []lspci.SignatureInformation{{Label: "fmt.Println(a ...any)", Parameters: []lspci.ParameterInformation{{Label: "a ...any"}}}}}, nil
 }
 func (f *fakeLSPClient) Diagnostics(context.Context, string) ([]lspci.Diagnostic, error) {
 	if f.diagnostics != nil {
@@ -168,7 +179,7 @@ func TestRegisterCoreCwdTools_LSPGate(t *testing.T) {
 	}
 	reg = NewRegistry()
 	RegisterCoreCwdTools(reg, cwd, CoreToolDeps{WriteOpts: WritePathOptions{Cwd: cwd}, EnableLSP: true})
-	for _, name := range []string{"lsp_status", "lsp_symbols", "lsp_definition", "lsp_references", "lsp_diagnostics", "lsp_hover", "lsp_code_actions", "lsp_call_hierarchy"} {
+	for _, name := range []string{"lsp_status", "lsp_symbols", "lsp_document_symbols", "lsp_definition", "lsp_references", "lsp_diagnostics", "lsp_hover", "lsp_signature_help", "lsp_code_actions", "lsp_call_hierarchy"} {
 		if _, ok := reg.Get(name); !ok {
 			t.Errorf("%s should register when EnableLSP is true", name)
 		}

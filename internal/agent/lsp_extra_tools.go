@@ -10,6 +10,49 @@ import (
 
 import lspci "github.com/yottadynamics/yottacode/internal/lsp"
 
+// LSPDocumentSymbolsTool returns the structural symbols declared in one file.
+type LSPDocumentSymbolsTool struct{ lspToolBase }
+
+func (t *LSPDocumentSymbolsTool) Name() string { return "lsp_document_symbols" }
+func (t *LSPDocumentSymbolsTool) Description() string {
+	return "List language-server document symbols for a supported source file. Use this for file structure before review or edits."
+}
+func (t *LSPDocumentSymbolsTool) Schema() map[string]any {
+	return map[string]any{"type": "object", "properties": map[string]any{
+		"path":        map[string]any{"type": "string", "description": "Source file path"},
+		"max_results": map[string]any{"type": "integer", "description": "Cap on returned symbols (default 50)"},
+	}, "required": []string{"path"}}
+}
+func (t *LSPDocumentSymbolsTool) RequiresApproval(string) bool { return false }
+func (t *LSPDocumentSymbolsTool) ParallelSafe(string) bool     { return true }
+func (t *LSPDocumentSymbolsTool) PreviewCall(argsJSON string) string {
+	var a struct{ Path string }
+	_ = json.Unmarshal([]byte(argsJSON), &a)
+	return fmt.Sprintf("lsp_document_symbols(%s)", a.Path)
+}
+func (t *LSPDocumentSymbolsTool) Execute(ctx context.Context, argsJSON string) (string, error) {
+	var a struct {
+		Path       string `json:"path"`
+		MaxResults int    `json:"max_results"`
+	}
+	if err := json.Unmarshal([]byte(argsJSON), &a); err != nil {
+		return "", fmt.Errorf("lsp_document_symbols: invalid args: %w", err)
+	}
+	client, path, _, unavailable, err := openPositionClient(ctx, t.lspToolBase, fmt.Sprintf(`{"path":%q,"line":0,"character":0}`, a.Path), "lsp_document_symbols")
+	if err != nil || unavailable != "" {
+		return unavailable, err
+	}
+	defer client.Close()
+	items, err := client.DocumentSymbols(ctx, path)
+	if errors.Is(err, lspci.ErrUnsupportedCapability) {
+		return unsupportedCapabilityResult("lsp_document_symbols", err), nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("lsp_document_symbols: %w", err)
+	}
+	return formatSymbols(items, normalizedLSPMax(a.MaxResults), ""), nil
+}
+
 // LSPHoverTool returns hover/type information for a source position.
 type LSPHoverTool struct{ lspToolBase }
 
@@ -42,6 +85,62 @@ func (t *LSPHoverTool) Execute(ctx context.Context, argsJSON string) (string, er
 		return "(no hover)\n", nil
 	}
 	return text + "\n", nil
+}
+
+// LSPSignatureHelpTool returns callable signatures for a source position.
+type LSPSignatureHelpTool struct{ lspToolBase }
+
+func (t *LSPSignatureHelpTool) Name() string { return "lsp_signature_help" }
+func (t *LSPSignatureHelpTool) Description() string {
+	return "Show language-server signature help for a call position, including active signature and parameter when available."
+}
+func (t *LSPSignatureHelpTool) Schema() map[string]any       { return positionSchema() }
+func (t *LSPSignatureHelpTool) RequiresApproval(string) bool { return false }
+func (t *LSPSignatureHelpTool) ParallelSafe(string) bool     { return true }
+func (t *LSPSignatureHelpTool) PreviewCall(argsJSON string) string {
+	var a positionArgs
+	_ = json.Unmarshal([]byte(argsJSON), &a)
+	return fmt.Sprintf("lsp_signature_help(%s:%d:%d)", a.Path, a.Line, a.Character)
+}
+func (t *LSPSignatureHelpTool) Execute(ctx context.Context, argsJSON string) (string, error) {
+	client, path, pos, unavailable, err := openPositionClient(ctx, t.lspToolBase, argsJSON, "lsp_signature_help")
+	if err != nil || unavailable != "" {
+		return unavailable, err
+	}
+	defer client.Close()
+	help, err := client.SignatureHelp(ctx, path, pos)
+	if errors.Is(err, lspci.ErrUnsupportedCapability) {
+		return unsupportedCapabilityResult("lsp_signature_help", err), nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("lsp_signature_help: %w", err)
+	}
+	if len(help.Signatures) == 0 {
+		return "(no signature help)\n", nil
+	}
+	var b strings.Builder
+	for i, sig := range help.Signatures {
+		active := ""
+		if i == help.ActiveSignature {
+			active = "active\t"
+		}
+		fmt.Fprintf(&b, "%s%s\n", active, sig.Label)
+		if strings.TrimSpace(sig.Documentation) != "" {
+			fmt.Fprintf(&b, "  doc\t%s\n", strings.TrimSpace(sig.Documentation))
+		}
+		for j, param := range sig.Parameters {
+			marker := ""
+			if i == help.ActiveSignature && j == help.ActiveParameter {
+				marker = "active "
+			}
+			fmt.Fprintf(&b, "  %sparam\t%s", marker, param.Label)
+			if strings.TrimSpace(param.Documentation) != "" {
+				fmt.Fprintf(&b, "\t%s", strings.TrimSpace(param.Documentation))
+			}
+			b.WriteByte('\n')
+		}
+	}
+	return b.String(), nil
 }
 
 // LSPDiagnosticsTool returns language-server diagnostics for one source file.

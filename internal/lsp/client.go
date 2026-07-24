@@ -42,12 +42,32 @@ type Location struct {
 	Character int    `json:"character"`
 }
 
-// Symbol is a workspace symbol result from an LSP server.
+// Symbol is a workspace or document symbol result from an LSP server.
 type Symbol struct {
 	Name      string
 	Kind      string
 	Container string
 	Location  Location
+}
+
+// ParameterInformation describes one signature parameter returned by LSP.
+type ParameterInformation struct {
+	Label         string
+	Documentation string
+}
+
+// SignatureInformation describes one callable signature at a source position.
+type SignatureInformation struct {
+	Label         string
+	Documentation string
+	Parameters    []ParameterInformation
+}
+
+// SignatureHelp is the normalized LSP signature-help response.
+type SignatureHelp struct {
+	Signatures      []SignatureInformation
+	ActiveSignature int
+	ActiveParameter int
 }
 
 // Diagnostic is a compile/type/lint message published by an LSP server.
@@ -77,9 +97,11 @@ type CallHierarchyItem struct {
 
 type serverCapabilities struct {
 	WorkspaceSymbol bool
+	DocumentSymbol  bool
 	Definition      bool
 	References      bool
 	Hover           bool
+	SignatureHelp   bool
 	CodeAction      bool
 	CallHierarchy   bool
 }
@@ -148,9 +170,11 @@ func (c *Client) initialize(ctx context.Context) error {
 				"symbol": map[string]any{},
 			},
 			"textDocument": map[string]any{
+				"documentSymbol":     map[string]any{},
 				"definition":         map[string]any{},
 				"references":         map[string]any{},
 				"hover":              map[string]any{"contentFormat": []string{"markdown", "plaintext"}},
+				"signatureHelp":      map[string]any{},
 				"codeAction":         map[string]any{},
 				"publishDiagnostics": map[string]any{},
 				"callHierarchy":      map[string]any{},
@@ -234,6 +258,25 @@ func (c *Client) WorkspaceSymbols(ctx context.Context, query string) ([]Symbol, 
 	return out, nil
 }
 
+// DocumentSymbols runs textDocument/documentSymbol and returns normalized symbols
+// from one source file. Hierarchical DocumentSymbol responses are flattened with
+// the parent name as Container so tool output stays compact.
+func (c *Client) DocumentSymbols(ctx context.Context, path string) ([]Symbol, error) {
+	if err := c.requireCapability(c.caps.DocumentSymbol, "textDocument/documentSymbol"); err != nil {
+		return nil, err
+	}
+	if err := c.openDocument(ctx, path); err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(ctx, defaultRequestTimeout)
+	defer cancel()
+	raw, err := c.request(ctx, "textDocument/documentSymbol", map[string]any{"textDocument": map[string]any{"uri": pathToURI(path)}})
+	if err != nil || len(raw) == 0 || string(raw) == "null" {
+		return nil, err
+	}
+	return documentSymbols(path, raw)
+}
+
 // Definition runs textDocument/definition at pos.
 func (c *Client) Definition(ctx context.Context, path string, pos Position) ([]Location, error) {
 	if err := c.requireCapability(c.caps.Definition, "textDocument/definition"); err != nil {
@@ -278,6 +321,23 @@ func (c *Client) Hover(ctx context.Context, path string, pos Position) (string, 
 		return "", err
 	}
 	return hoverText(raw)
+}
+
+// SignatureHelp returns callable signatures visible at a source position.
+func (c *Client) SignatureHelp(ctx context.Context, path string, pos Position) (SignatureHelp, error) {
+	if err := c.requireCapability(c.caps.SignatureHelp, "textDocument/signatureHelp"); err != nil {
+		return SignatureHelp{}, err
+	}
+	if err := c.openDocument(ctx, path); err != nil {
+		return SignatureHelp{}, err
+	}
+	ctx, cancel := context.WithTimeout(ctx, defaultRequestTimeout)
+	defer cancel()
+	raw, err := c.request(ctx, "textDocument/signatureHelp", map[string]any{"textDocument": map[string]any{"uri": pathToURI(path)}, "position": pos})
+	if err != nil || len(raw) == 0 || string(raw) == "null" {
+		return SignatureHelp{}, err
+	}
+	return signatureHelp(raw)
 }
 
 // CodeActions lists server-offered actions for a range without applying them.

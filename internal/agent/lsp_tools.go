@@ -18,9 +18,11 @@ const defaultLSPMaxResults = 50
 // inject fakes through lspClientFactory so they never require real LSP binaries.
 type lspClient interface {
 	WorkspaceSymbols(ctx context.Context, query string) ([]lspci.Symbol, error)
+	DocumentSymbols(ctx context.Context, path string) ([]lspci.Symbol, error)
 	Definition(ctx context.Context, path string, pos lspci.Position) ([]lspci.Location, error)
 	References(ctx context.Context, path string, pos lspci.Position, includeDeclaration bool) ([]lspci.Location, error)
 	Hover(ctx context.Context, path string, pos lspci.Position) (string, error)
+	SignatureHelp(ctx context.Context, path string, pos lspci.Position) (lspci.SignatureHelp, error)
 	Diagnostics(ctx context.Context, path string) ([]lspci.Diagnostic, error)
 	CodeActions(ctx context.Context, path string, start, end lspci.Position) ([]lspci.CodeAction, error)
 	CallHierarchy(ctx context.Context, path string, pos lspci.Position) ([]lspci.CallHierarchyItem, error)

@@ -103,9 +103,11 @@ func RegisterCoreCwdTools(reg *Registry, cwd *CwdRef, deps CoreToolDeps) {
 		base := lspToolBase{Cwd: cwd, DenyReadPaths: deps.DenyReads, NewClient: deps.LSPClientFactory, Servers: deps.LSPServers, Manager: deps.LSPManager}
 		reg.Register(&LSPStatusTool{lspToolBase: base})
 		reg.Register(&LSPSymbolsTool{lspToolBase: base})
+		reg.Register(&LSPDocumentSymbolsTool{lspToolBase: base})
 		reg.Register(&LSPDefinitionTool{lspToolBase: base})
 		reg.Register(&LSPReferencesTool{lspToolBase: base})
 		reg.Register(&LSPHoverTool{lspToolBase: base})
+		reg.Register(&LSPSignatureHelpTool{lspToolBase: base})
 		reg.Register(&LSPDiagnosticsTool{lspToolBase: base})
 		reg.Register(&LSPCodeActionsTool{lspToolBase: base})
 		reg.Register(&LSPCallHierarchyTool{lspToolBase: base})

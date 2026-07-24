@@ -58,10 +58,12 @@ In addition to the built-ins, **MCP tools** register dynamically when an `[[mcp_
 | [`grep`](#grep) | none | Ripgrep (or GNU grep fallback) |
 | [`lsp_status`](#lsp_status) | none | Detect supported workspace languages and report missing LSP servers with install hints |
 | [`lsp_symbols`](#lsp_symbols) | none | Search workspace symbols through an installed language server |
+| [`lsp_document_symbols`](#lsp_document_symbols) | none | List structural symbols declared in one source file |
 | [`lsp_definition`](#lsp_definition) | none | Find definition locations for a source position through an installed language server |
 | [`lsp_references`](#lsp_references) | none | Find reference locations for a source position through an installed language server |
 | [`lsp_diagnostics`](#lsp_diagnostics) | none | Return compile/type diagnostics from an installed language server |
 | [`lsp_hover`](#lsp_hover) | none | Show hover/type/docs information at a source position |
+| [`lsp_signature_help`](#lsp_signature_help) | none | Show callable signatures and active parameter info at a source position |
 | [`lsp_code_actions`](#lsp_code_actions) | none | List quick fixes/refactors for a range without applying them |
 | [`lsp_call_hierarchy`](#lsp_call_hierarchy) | none | Show incoming/outgoing calls for a source position |
 | [`pr_readiness_context`](#pr_readiness_context) | none | Gather a local PR readiness snapshot before opening or updating a PR |
@@ -130,8 +132,10 @@ tool-call log; the TUI renames it for readability. Mapping:
 | `grep` | `Grep("<pattern>" in <path>)` |
 | `lsp_status` | `LSP(status <path>)` |
 | `lsp_symbols` | `LSP(symbols "<query>")` or `LSP(symbols "<query>" in <path>)` |
+| `lsp_document_symbols` | `LSP(document symbols <path>)` |
 | `lsp_definition` | `LSP(definition <path>:<line>:<character>)` |
 | `lsp_references` | `LSP(references <path>:<line>:<character>)` |
+| `lsp_signature_help` | `LSP(signature <path>:<line>:<character>)` |
 | `fetch_url` | `Fetch(<url>)` |
 | `run_tests` | `Test(<command>)` |
 | `rollback` | `Rollback(<target>)` |
@@ -884,6 +888,19 @@ same install hint as `lsp_status`.
 
 No approval.
 
+## lsp_document_symbols
+
+List structural symbols declared in a single source file through the matching
+language server. Hierarchical server responses are flattened and include the
+parent symbol as the `Container` column when available.
+
+| Param | Type | Default | Notes |
+|---|---|---|---|
+| `path` | string | — | Required source file |
+| `max_results` | int | `50` | Clamped to `500` |
+
+No approval.
+
 ## lsp_definition
 
 Find definition locations for a source position through the matching language
@@ -929,6 +946,20 @@ No approval.
 ## lsp_hover
 
 Show hover/type/documentation information for a source position.
+
+| Param | Type | Default | Notes |
+|---|---|---|---|
+| `path` | string | — | Required source file |
+| `line` | int | — | Zero-based line |
+| `character` | int | — | Zero-based UTF-16 character offset |
+
+No approval.
+
+## lsp_signature_help
+
+Show callable signatures at a source position, including the active signature
+and active parameter when the server reports them. This is useful before writing
+or changing a function call.
 
 | Param | Type | Default | Notes |
 |---|---|---|---|

@@ -9,9 +9,11 @@ func parseServerCapabilities(raw json.RawMessage) serverCapabilities {
 	var msg struct {
 		Capabilities struct {
 			WorkspaceSymbolProvider any `json:"workspaceSymbolProvider"`
+			DocumentSymbolProvider  any `json:"documentSymbolProvider"`
 			DefinitionProvider      any `json:"definitionProvider"`
 			ReferencesProvider      any `json:"referencesProvider"`
 			HoverProvider           any `json:"hoverProvider"`
+			SignatureHelpProvider   any `json:"signatureHelpProvider"`
 			CodeActionProvider      any `json:"codeActionProvider"`
 			CallHierarchyProvider   any `json:"callHierarchyProvider"`
 		} `json:"capabilities"`
@@ -19,9 +21,11 @@ func parseServerCapabilities(raw json.RawMessage) serverCapabilities {
 	_ = json.Unmarshal(raw, &msg)
 	return serverCapabilities{
 		WorkspaceSymbol: capabilityEnabled(msg.Capabilities.WorkspaceSymbolProvider),
+		DocumentSymbol:  capabilityEnabled(msg.Capabilities.DocumentSymbolProvider),
 		Definition:      capabilityEnabled(msg.Capabilities.DefinitionProvider),
 		References:      capabilityEnabled(msg.Capabilities.ReferencesProvider),
 		Hover:           capabilityEnabled(msg.Capabilities.HoverProvider),
+		SignatureHelp:   capabilityEnabled(msg.Capabilities.SignatureHelpProvider),
 		CodeAction:      capabilityEnabled(msg.Capabilities.CodeActionProvider),
 		CallHierarchy:   capabilityEnabled(msg.Capabilities.CallHierarchyProvider),
 	}
