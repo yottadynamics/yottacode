@@ -298,13 +298,13 @@ Uninstalling a user-scope official skill from the Catalog (`u` on an installed O
 
 | Form | What it does |
 |---|---|
-| `/skills install <source> [--force]` | Install a skill from `official/<name>`, a local path, `https://.../SKILL.md` URL, or `owner/repo[/path]` GitHub shorthand. Refuses to overwrite an existing slug unless `--force` is set. |
+| `/skills install <source> [--force]` | Install a skill from `official/<name>`, a local path, `https://.../SKILL.md` URL, or `owner/repo[/path]` GitHub shorthand. Refuses to overwrite an existing slug unless `--force` is set. In the `/skills` menu, installs run with an inline spinner so network fetches do not look frozen. |
 | `/skills official <name>` | Shortcut for installing from the public `yottadynamics/yottacode-skills` catalog. Equivalent to `/skills install official/<name>`. |
-| `/skills catalog refresh` | Refresh the offline Official catalog metadata cache from `yottadynamics/yottacode-skills`. Browsing the Catalog itself never contacts GitHub; installs still fetch the selected skill. |
+| `/skills catalog refresh` | Refresh the offline Official catalog metadata cache from `yottadynamics/yottacode-skills`. Browsing the Catalog itself never contacts GitHub; installs still fetch the selected skill. In the Catalog picker, refresh shows an inline spinner until GitHub responds. |
 | `/skills show <name>` | Print one skill's full body — the same bytes the model receives when it calls `Skill(skill="<name>")`. |
 | `/skills uninstall <name>` | Remove a user-scope skill from `~/.yottacode/skills/`. Built-in and project-scope skills are out of scope (project skills are committed source — remove via git/rm; built-ins are embedded in the binary). |
 | `/skills check [name]` | Report drift between the installed bytes and `~/.yottacode/skills/.lock.json`. Statuses: `ok`, `modified`, `missing-lock`, `orphaned-lock`, `hash-error`. Read-only. |
-| `/skills update [name] [--force]` | Re-fetch from the originally-recorded source. Skips installs whose on-disk hash diverges from the lockfile unless `--force` is set, so hand-edits aren't silently overwritten. |
+| `/skills update [name] [--force]` | Re-fetch from the originally-recorded source. Skips installs whose on-disk hash diverges from the lockfile unless `--force` is set, so hand-edits aren't silently overwritten. The `/skills` menu Update action shows an inline spinner while tracked skills are refetched. |
 
 Source shapes:
 
