@@ -15,6 +15,8 @@ func TestLSPExtraToolsUseInjectedClient(t *testing.T) {
 		Cwd: NewCwdRef(tmp),
 		NewClient: func(context.Context, lspci.Language, string) (lspClient, error) {
 			return &fakeLSPClient{
+				docSymbols:  []lspci.Symbol{{Name: "main", Kind: "function", Container: "", Location: lspci.Location{Path: "main.go", Line: 1, Character: 5}}},
+				signatures:  lspci.SignatureHelp{ActiveSignature: 0, ActiveParameter: 0, Signatures: []lspci.SignatureInformation{{Label: "fmt.Println(a ...any)", Parameters: []lspci.ParameterInformation{{Label: "a ...any", Documentation: "values"}}}}},
 				diagnostics: []lspci.Diagnostic{{Path: "main.go", Line: 1, Character: 6, Severity: "warning", Source: "gopls", Message: "unused"}},
 				actions:     []lspci.CodeAction{{Kind: "quickfix", Title: "Remove unused"}},
 				calls:       []lspci.CallHierarchyItem{{Direction: "outgoing", Name: "fmt.Println", Kind: "function", Detail: "fmt", Location: lspci.Location{Path: "main.go", Line: 1, Character: 12}}},
@@ -27,7 +29,9 @@ func TestLSPExtraToolsUseInjectedClient(t *testing.T) {
 		args string
 		want string
 	}{
+		{"document symbols", &LSPDocumentSymbolsTool{lspToolBase: base}, `{"path":"main.go"}`, "main.go:2:6\tfunction\tmain"},
 		{"hover", &LSPHoverTool{lspToolBase: base}, `{"path":"main.go","line":1,"character":5}`, "hover text"},
+		{"signature help", &LSPSignatureHelpTool{lspToolBase: base}, `{"path":"main.go","line":1,"character":12}`, "active\tfmt.Println(a ...any)"},
 		{"diagnostics", &LSPDiagnosticsTool{lspToolBase: base}, `{"path":"main.go"}`, "main.go:2:7\twarning\tgopls\tunused"},
 		{"code actions", &LSPCodeActionsTool{lspToolBase: base}, `{"path":"main.go","line":1,"character":0,"end_line":1,"end_character":4}`, "quickfix\tRemove unused"},
 		{"call hierarchy", &LSPCallHierarchyTool{lspToolBase: base}, `{"path":"main.go","line":1,"character":5}`, "outgoing\tmain.go:2:13\tfunction\tfmt.Println\tfmt"},

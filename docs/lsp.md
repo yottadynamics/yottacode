@@ -36,10 +36,12 @@ When the feature flag is enabled, yottacode registers these read-only tools:
 |---|---|
 | `lsp_status` | Detect supported languages in the workspace and show server availability/install hints |
 | `lsp_symbols` | Search workspace symbols through LSP, with a regex fallback when no server is installed |
+| `lsp_document_symbols` | List structural symbols declared in one source file |
 | `lsp_definition` | Find definition locations for a file position |
 | `lsp_references` | Find reference locations for a file position |
 | `lsp_diagnostics` | Return compile/type diagnostics for a source file |
 | `lsp_hover` | Show hover/type/documentation text for a source position |
+| `lsp_signature_help` | Show callable signatures and active parameter info at a source position |
 | `lsp_code_actions` | List quick fixes/refactors for a range without applying them |
 | `lsp_call_hierarchy` | Show incoming/outgoing call hierarchy for a source position |
 

@@ -27,7 +27,7 @@ You have these tools, all rooted at the user's current working directory:
   - git_commits_between, git_branch_ahead_behind, git_branch_diff (range/branch review — reach for git_branch_diff first on "what changed vs main?")
   - git_stage_files, git_unstage_files, git_create_branch, git_commit, git_commit_amend, git_commit_fixup, git_log_file, git_blame_lines, git_merge_base
   - git_checkpoint, rollback, run_tests
-  - lsp_status, lsp_symbols, lsp_definition, lsp_references, lsp_hover, lsp_diagnostics, lsp_code_actions, lsp_call_hierarchy (when experimental LSP code intelligence is enabled)
+  - lsp_status, lsp_symbols, lsp_document_symbols, lsp_definition, lsp_references, lsp_hover, lsp_signature_help, lsp_diagnostics, lsp_code_actions, lsp_call_hierarchy (when experimental LSP code intelligence is enabled)
   - run_bash (always asks for approval)
   - git (unified — call as git(args=[...]); read-only subcommands auto-execute)
   - todo_write (working plan tracker — see below)
