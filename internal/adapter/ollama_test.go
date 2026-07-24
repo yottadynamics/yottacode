@@ -672,6 +672,52 @@ func TestAdapter_SetsDefaultMaxTokens(t *testing.T) {
 	}
 }
 
+func TestLiftedChatMaxTokens(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		modelMaxOut int
+		want        int64
+	}{
+		{"unknown model keeps the safe default", 0, ChatDefaultMaxTokens},
+		{"smaller-than-default is not lowered", 4096, ChatDefaultMaxTokens},
+		{"equal to default stays default", int(ChatDefaultMaxTokens), ChatDefaultMaxTokens},
+		{"larger ceiling is lifted (gpt-4o)", 16384, 16384},
+		{"larger ceiling is lifted (gpt-4.1)", 32768, 32768},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := liftedChatMaxTokens(tc.modelMaxOut); got != tc.want {
+				t.Errorf("liftedChatMaxTokens(%d) = %d, want %d", tc.modelMaxOut, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestChatAdapter_LiftsMaxTokensToModelCeiling guards the truncation fix
+// on the chat-completions path: when the catalog knows the model's output
+// ceiling, the adapter must send it as max_tokens instead of the 8192
+// default, so a large tool input (a big write_file) isn't truncated
+// mid-call. Reproduces by inspecting the JSON body on the wire.
+func TestChatAdapter_LiftsMaxTokensToModelCeiling(t *testing.T) {
+	var gotBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(raw, &gotBody)
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, sseBody(
+			`{"id":"c","object":"chat.completion.chunk","created":1,"model":"t","choices":[{"index":0,"delta":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`,
+		))
+	}))
+	t.Cleanup(srv.Close)
+
+	ad := newChatAdapter(Config{BaseURL: srv.URL, APIKey: "test", Model: "gpt-4.1", ModelMaxOutput: 32768})
+	_, _, _, _ = drainEvents(ad.ChatStream(context.Background(), []Message{{Role: RoleUser, Content: "ping"}}, nil))
+
+	val, _ := gotBody["max_tokens"].(float64)
+	if int64(val) != 32768 {
+		t.Errorf("max_tokens = %d, want it lifted to the model ceiling 32768", int64(val))
+	}
+}
+
 // captureChatRequestWithUsageProfile records one chat-completions request from
 // an adapter whose usage-support flag has been forced for the test. The real
 // NVIDIA NIM profile disables usage reporting, but the server must remain an

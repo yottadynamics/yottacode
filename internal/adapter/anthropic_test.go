@@ -255,6 +255,37 @@ func TestAnthropicAdapter_NoEffortNoThinking(t *testing.T) {
 	}
 }
 
+func TestAnthropicAdapter_LiftsMaxTokensWithoutThinking(t *testing.T) {
+	// Regression for the Vertex "stream ended with incomplete tool call —
+	// response truncated" report: a non-thinking turn must still lift
+	// max_tokens to the model's catalog ceiling so a large tool input
+	// (a big write_file) isn't truncated at the conservative 8192
+	// default. The lift used to live only in the thinking branch, pinning
+	// every non-thinking turn at AnthropicDefaultMaxTokens.
+	body := captureAnthropicBody(t, Config{
+		Model:          "claude-sonnet-4-6",
+		ModelMaxOutput: 64000,
+	})
+	if _, present := body["thinking"]; present {
+		t.Fatalf("thinking must stay off without effort, got %v", body["thinking"])
+	}
+	if mt, _ := body["max_tokens"].(float64); int64(mt) != 64000 {
+		t.Errorf("max_tokens = %v, want it lifted to ModelMaxOutput 64000", body["max_tokens"])
+	}
+}
+
+func TestAnthropicAdapter_UncatalogedModelKeepsSafeDefault(t *testing.T) {
+	// When the catalog doesn't know the model (ModelMaxOutput == 0) we
+	// can't safely request more than the default — a Claude 3.5-class
+	// model caps output at 8192 and an over-request 400s — so max_tokens
+	// stays at AnthropicDefaultMaxTokens rather than being lifted to 0.
+	body := captureAnthropicBody(t, Config{Model: "claude-brand-new"})
+	if mt, _ := body["max_tokens"].(float64); int64(mt) != AnthropicDefaultMaxTokens {
+		t.Errorf("max_tokens = %v, want the %d default for an uncataloged model",
+			body["max_tokens"], AnthropicDefaultMaxTokens)
+	}
+}
+
 func TestAnthropicAdapter_EffortIgnoredWhenUnsupported(t *testing.T) {
 	// Catalog says the model can't think → effort is a no-op rather than
 	// an API error.

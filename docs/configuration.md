@@ -575,12 +575,21 @@ chosen model — a pure cost saving with no prompt-cache churn:
 
 - `mode = "off"` (or absent) — disabled; fully backward compatible.
 - `mode = "manual"` — only routes subagents that declare an explicit `model:`.
-- `mode = "auto"` — also routes read-only/search subagents and summarization to `fast_model`.
+- `mode = "auto"` — routes summarization to `fast_model` and every delegated subagent to `smart_model` (an explicit `model:` on an agent overrides this).
 
 `fast_model` / `smart_model` are required when `mode` is not `off` and
 use the `"<provider>"` or `"<provider>:<model>"` grammar; the model must
-exist in that provider's `models`. See [`models.md`](models.md#cache-safe-task-routing)
-for the cost rationale and the auto heuristic.
+exist in that provider's `models`. These keys can also be set from the
+TUI with the **`/router`** picker, which persists them here.
+
+Either slot can be a **failover chain** via the plural form
+`fast_models` / `smart_models = ["<primary>", "<fallback>", …]`, which
+fails over primary → fallbacks in written order (sharing the health
+knobs; `policy` orders the multi-provider candidates router only) when
+the primary errors before producing output. A slot uses the singular or
+the plural form, not both. See
+[`models.md`](models.md#cache-safe-task-routing) for the cost
+rationale, the auto heuristic, the picker, and failover chains.
 
 **Multi-provider failover** (separate feature, same block) dispatches
 each main-thread turn across an ordered candidate list, falling through
