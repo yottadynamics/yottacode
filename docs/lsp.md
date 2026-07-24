@@ -51,7 +51,7 @@ Positions are zero-based line and UTF-16 character offsets, matching LSP. Output
 
 ## Session advisory
 
-Interactive sessions show a non-blocking **LSP Code Intelligence** advisory card when the feature is enabled, supported files are detected, and a matching server is missing. The card includes the install command and notes that yottacode will continue with normal file reads. It is deterministic TUI chrome, not model-generated text, so setup hints appear even before the model calls `lsp_status`.
+Interactive sessions show a non-blocking **LSP Code Intelligence** advisory card when the feature is enabled, supported files are detected, and a matching server is missing. The card names the affected language, calls out that go-to-definition, live diagnostics, and symbol-aware review are unavailable without the server, shows the install command, and notes that yottacode still works without it. It is deterministic TUI chrome, not model-generated text, so setup hints appear even before the model calls `lsp_status`.
 
 For command-line diagnostics, `yottacode doctor` includes an **LSP Code Intelligence** section with the feature flag state, detected supported languages, server availability, install hints, command overrides, and manager configuration.
 
