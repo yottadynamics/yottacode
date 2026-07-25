@@ -137,8 +137,12 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 		fmt.Fprintln(os.Stderr, "warning: [router] pair unresolved (routing is off, continuing without it): "+err.Error())
 		routerAdapters = nil
 	}
-
-	// Load skills early so the resolved set can flow into both the
+	if fileCfg.Router.RoutingEnabled() && routerAdapters != nil && routerAdapters.Advisor != nil {
+		ad = routerAdapters.Advisor
+		if routerAdapters.AdvisorModel != "" {
+			opts.Model = routerAdapters.AdvisorModel
+		}
+	}
 	// system prompt (description-matched metadata tier) and the Skill
 	// tool registration below. Loading twice would be wasteful and
 	// risks the prompt and the tool drifting; this single load wins.
@@ -414,7 +418,9 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 	// .yottacode/agents) and register the Agent dispatch tool. The
 	// background-done callback is wired below after the Model exists
 	// so completions route to the long-lived inbox the Model owns.
-	subRes, _ := subagents.LoadAll(cwd, reg.Names())
+	validSubagentTools := reg.Names()
+	validSubagentTools[agent.ConsultAdvisorToolName] = true
+	subRes, _ := subagents.LoadAll(cwd, validSubagentTools)
 	for _, w := range subRes.Warnings {
 		fmt.Fprintln(os.Stderr, "subagents: "+w)
 	}
@@ -463,15 +469,20 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 		Tasks:          subagentTasks,
 		Adapter:        ad,
 		ParentRegistry: reg,
-		// Cache-safe routing wiring; zero values (nil/false) when
-		// routing is disabled, so the AgentTool inherits the parent
-		// adapter for every child exactly as before.
-		FastAdapter:   routerFast(routerAdapters),
-		FastModel:     routerFastModel(routerAdapters),
-		SmartAdapter:  routerSmart(routerAdapters),
-		SmartModel:    routerSmartModel(routerAdapters),
-		RouteAuto:     fileCfg.Router.RoutingAuto(),
-		ModelResolver: routerModelResolver(routerAdapters, fileCfg.Router.RoutingEnabled()),
+		// Cache-safe routing wiring; zero values (nil/false) when routing is
+		// disabled, so the AgentTool inherits the parent adapter for every child
+		// exactly as before. Legacy Fast/Smart aliases stay populated during the
+		// role-routing migration.
+		ImplementerAdapter: routerImplementer(routerAdapters),
+		ImplementerModel:   routerImplementerModel(routerAdapters),
+		AdvisorAdapter:     routerAdvisor(routerAdapters),
+		AdvisorModel:       routerAdvisorModel(routerAdapters),
+		FastAdapter:        routerImplementer(routerAdapters),
+		FastModel:          routerImplementerModel(routerAdapters),
+		SmartAdapter:       routerAdvisor(routerAdapters),
+		SmartModel:         routerAdvisorModel(routerAdapters),
+		RouteAuto:          fileCfg.Router.RoutingAuto(),
+		ModelResolver:      routerModelResolver(routerAdapters, fileCfg.Router.RoutingEnabled()),
 		// Source the child loop's compaction window the same way the
 		// status bar does, so subagents size context against the real
 		// (override- and default_window-aware) window.
@@ -984,40 +995,63 @@ func splitCSV(s string) []string {
 	return out
 }
 
-// routerFast returns the fast-model streamer for subagent routing, or
+// routerImplementer returns the implementer-model streamer for routing, or
 // nil when routing is disabled (ra == nil). Returning a typed nil-free
-// interface keeps AgentTool.FastAdapter genuinely nil so routeChildModel
+// interface keeps AgentTool.ImplementerAdapter genuinely nil so routeChildModel
 // falls back to the parent adapter.
-func routerFast(ra *cli.RouterAdapters) agent.Streamer {
-	if ra == nil || ra.Fast == nil {
+func routerImplementer(ra *cli.RouterAdapters) agent.Streamer {
+	if ra == nil || ra.Implementer == nil {
 		return nil
 	}
-	return ra.Fast
+	return ra.Implementer
 }
 
-func routerFastModel(ra *cli.RouterAdapters) string {
+func routerImplementerModel(ra *cli.RouterAdapters) string {
 	if ra == nil {
 		return ""
 	}
-	return ra.FastModel
+	return ra.ImplementerModel
 }
 
-// routerSmart returns the smart-model streamer for subagent routing, or
-// nil when routing is disabled (then non-read-only subagents inherit the
-// active model, the pre-routing behavior).
-func routerSmart(ra *cli.RouterAdapters) agent.Streamer {
-	if ra == nil || ra.Smart == nil {
-		return nil
-	}
-	return ra.Smart
-}
-
-func routerSmartModel(ra *cli.RouterAdapters) string {
+func routerImplementerRef(ra *cli.RouterAdapters) string {
 	if ra == nil {
 		return ""
 	}
-	return ra.SmartModel
+	return ra.ImplementerRef
 }
+
+// routerAdvisor returns the advisor-model streamer for routing, or nil when
+// routing is disabled.
+func routerAdvisor(ra *cli.RouterAdapters) agent.Streamer {
+	if ra == nil || ra.Advisor == nil {
+		return nil
+	}
+	return ra.Advisor
+}
+
+func routerAdvisorModel(ra *cli.RouterAdapters) string {
+	if ra == nil {
+		return ""
+	}
+	return ra.AdvisorModel
+}
+
+func routerAdvisorRef(ra *cli.RouterAdapters) string {
+	if ra == nil {
+		return ""
+	}
+	return ra.AdvisorRef
+}
+
+// routerFast returns the legacy fast/implementer streamer for older call sites.
+func routerFast(ra *cli.RouterAdapters) agent.Streamer { return routerImplementer(ra) }
+
+func routerFastModel(ra *cli.RouterAdapters) string { return routerImplementerModel(ra) }
+
+// routerSmart returns the legacy smart/advisor streamer for older call sites.
+func routerSmart(ra *cli.RouterAdapters) agent.Streamer { return routerAdvisor(ra) }
+
+func routerSmartModel(ra *cli.RouterAdapters) string { return routerAdvisorModel(ra) }
 
 // routerResolve adapts RouterAdapters.Resolve (func → adapter.Streamer)
 // to the agent package's func → agent.Streamer signature the AgentTool

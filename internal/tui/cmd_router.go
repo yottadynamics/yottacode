@@ -22,8 +22,8 @@ func routerModeOrOff(mode string) string {
 	}
 }
 
-// cmdRouter is the /router handler: configure cache-safe task routing
-// between a fast and a smart model. Subcommands:
+// cmdRouter is the /router handler: configure cache-safe role routing
+// between an advisor model and an implementer model. Subcommands:
 //
 //	/router      — open the picker (toggle routing + pick fast/smart models)
 //	/router on   — enable routing (auto); persists [router].mode = "auto"
@@ -58,7 +58,7 @@ func cmdRouter(m Model, args []string) (Model, tea.Cmd) {
 func (m Model) routerOn() (Model, tea.Cmd) {
 	if m.router == nil {
 		m.appendLine(styleAuto.Render(
-			"[router] no fast/smart pair configured — run /router to pick models"))
+			"[router] no advisor/implementer pair configured — run /router to pick models"))
 		return m, nil
 	}
 	return commitRouterMode(m, config.RouterModeAuto)
@@ -69,11 +69,11 @@ func (m Model) routerOff() (Model, tea.Cmd) {
 	return commitRouterMode(m, config.RouterModeOff)
 }
 
-// applyRoutingOn wires the live session for auto routing: read-only
-// subagents and summarization run on the fast model, other delegated work
-// on the smart model. Mutates the shared AgentTool (pointer) and the
-// summarizer in place. No logging, no persistence — callers own those.
-// No-op when no fast/smart pair is built.
+// applyRoutingOn wires the live session for auto routing: subagents and
+// summarization run on the implementer model, while the advisor remains
+// available for plan mode and consult_advisor. Mutates the shared AgentTool
+// (pointer) and the summarizer in place. No logging, no persistence — callers
+// own those. No-op when no advisor/implementer pair is built.
 func applyRoutingOn(m *Model) {
 	if m.router == nil {
 		return
@@ -81,10 +81,18 @@ func applyRoutingOn(m *Model) {
 	if m.subagentTool != nil {
 		m.subagentTool.RouteAuto = true
 		m.subagentTool.ModelResolver = routerResolve(m.router)
+		m.subagentTool.ImplementerAdapter = routerImplementer(m.router)
+		m.subagentTool.ImplementerModel = routerImplementerModel(m.router)
+		m.subagentTool.AdvisorAdapter = routerAdvisor(m.router)
+		m.subagentTool.AdvisorModel = routerAdvisorModel(m.router)
+		m.subagentTool.FastAdapter = routerImplementer(m.router)
+		m.subagentTool.FastModel = routerImplementerModel(m.router)
+		m.subagentTool.SmartAdapter = routerAdvisor(m.router)
+		m.subagentTool.SmartModel = routerAdvisorModel(m.router)
 	}
-	if fast := routerFast(m.router); fast != nil {
-		m.summarizerAdapter = fast
-		m.summarizerModel = routerFastModel(m.router)
+	if implementer := routerImplementer(m.router); implementer != nil {
+		m.summarizerAdapter = implementer
+		m.summarizerModel = routerImplementerModel(m.router)
 	}
 	m.routerMode = config.RouterModeAuto
 }
@@ -95,6 +103,14 @@ func applyRoutingOff(m *Model) {
 	if m.subagentTool != nil {
 		m.subagentTool.RouteAuto = false
 		m.subagentTool.ModelResolver = nil
+		m.subagentTool.ImplementerAdapter = nil
+		m.subagentTool.ImplementerModel = ""
+		m.subagentTool.AdvisorAdapter = nil
+		m.subagentTool.AdvisorModel = ""
+		m.subagentTool.FastAdapter = nil
+		m.subagentTool.FastModel = ""
+		m.subagentTool.SmartAdapter = nil
+		m.subagentTool.SmartModel = ""
 	}
 	// nil, NOT a snapshot of m.cfg.Adapter: chooseSummarizer falls
 	// through to the LIVE m.cfg.Adapter when no summarizer is pinned.

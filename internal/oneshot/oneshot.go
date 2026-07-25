@@ -143,7 +143,12 @@ func Run(ctx context.Context, opts cli.ChatOptions, prompt string) error {
 		return err
 	}
 	var profile adapter.ProviderProfile
-	if router != nil {
+	if fileCfg.Router.RoutingEnabled() && routerAdapters != nil && routerAdapters.Advisor != nil {
+		profile = routerAdapters.Advisor.Profile()
+		if routerAdapters.AdvisorModel != "" {
+			opts.Model = routerAdapters.AdvisorModel
+		}
+	} else if router != nil {
 		profile = router.Profile()
 	} else {
 		profile = adapter.NewWithConfig(adCfg).Profile()
@@ -223,7 +228,9 @@ func Run(ctx context.Context, opts cli.ChatOptions, prompt string) error {
 		Content: prompt,
 	})
 	var ad adapter.Client
-	if router != nil {
+	if fileCfg.Router.RoutingEnabled() && routerAdapters != nil && routerAdapters.Advisor != nil {
+		ad = routerAdapters.Advisor
+	} else if router != nil {
 		ad = router
 	} else {
 		if err := preflight(ctx, adCfg); err != nil {
@@ -302,7 +309,9 @@ func Run(ctx context.Context, opts cli.ChatOptions, prompt string) error {
 	// .yottacode/agents) and register the dispatch tool. Background
 	// runs are rejected in oneshot — the model gets a recoverable
 	// error string and can retry without the flag.
-	subRes, _ := subagents.LoadAll(cwd, reg.Names())
+	validSubagentTools := reg.Names()
+	validSubagentTools[agent.ConsultAdvisorToolName] = true
+	subRes, _ := subagents.LoadAll(cwd, validSubagentTools)
 	for _, w := range subRes.Warnings {
 		fmt.Fprintln(os.Stderr, "subagents: "+w)
 	}
@@ -339,13 +348,17 @@ func Run(ctx context.Context, opts cli.ChatOptions, prompt string) error {
 		AllowBackground: false,
 		// Foreground subagent spend is still bounded session-wide (oneshot
 		// can fan out foreground children), same backstop as the TUI.
-		MaxSessionTokens: fileCfg.SubagentSessionTokenBudget(),
-		FastAdapter:      oneshotRouterFast(routerAdapters),
-		FastModel:        oneshotRouterFastModel(routerAdapters),
-		SmartAdapter:     oneshotRouterSmart(routerAdapters),
-		SmartModel:       oneshotRouterSmartModel(routerAdapters),
-		RouteAuto:        fileCfg.Router.RoutingAuto(),
-		ModelResolver:    oneshotRouterResolve(routerAdapters, fileCfg.Router.RoutingEnabled()),
+		MaxSessionTokens:   fileCfg.SubagentSessionTokenBudget(),
+		ImplementerAdapter: oneshotRouterFast(routerAdapters),
+		ImplementerModel:   oneshotRouterFastModel(routerAdapters),
+		AdvisorAdapter:     oneshotRouterSmart(routerAdapters),
+		AdvisorModel:       oneshotRouterSmartModel(routerAdapters),
+		FastAdapter:        oneshotRouterFast(routerAdapters),
+		FastModel:          oneshotRouterFastModel(routerAdapters),
+		SmartAdapter:       oneshotRouterSmart(routerAdapters),
+		SmartModel:         oneshotRouterSmartModel(routerAdapters),
+		RouteAuto:          fileCfg.Router.RoutingAuto(),
+		ModelResolver:      oneshotRouterResolve(routerAdapters, fileCfg.Router.RoutingEnabled()),
 		ResolveWindow: func(model string) int {
 			return catalog.ResolveWindowForProvider(fileCfg.ProviderKindForModel(model), model, fileCfg.ContextWindowOverride(model), fileCfg.Context.DefaultWindow)
 		},

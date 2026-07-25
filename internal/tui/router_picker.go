@@ -22,12 +22,9 @@ type routerModelEntry struct {
 	label string
 }
 
-// Menu rows. The smart slot has a primary row and an optional fallback row
-// (the fallback reuses the single-select model list and appends to
-// smart_models). The fast slot is summarization-only and self-healing, so
-// it has no fallback row — a fast_models chain set in config.toml is still
-// honored and preserved on edit, just not surfaced here. Longer chains
-// stay editable in config.toml.
+// Menu rows. The advisor slot has a primary row and an optional fallback row.
+// The implementer slot has a primary row in the first picker pass; longer
+// failover chains remain editable in config.toml.
 const (
 	rowRouting = iota
 	rowSmartPrimary
@@ -134,8 +131,8 @@ func (m *Model) openRouterPicker() {
 	cfg := loadConfigForCommand(*m)
 	m.routerPicker = &routerPickerState{
 		mode:        routerModeOrOff(m.routerMode),
-		fastChain:   cfg.Router.FastChain(),
-		smartChain:  cfg.Router.SmartChain(),
+		fastChain:   cfg.Router.ImplementerChain(),
+		smartChain:  cfg.Router.AdvisorChain(),
 		models:      routerPickerModels(cfg),
 		visibleRows: routerPickerVisibleRows,
 	}
@@ -227,7 +224,7 @@ func (m Model) activateRouterMenuRow() (Model, tea.Cmd) {
 		// (here, or via completePendingEnable after a pick).
 		p.mode = config.RouterModeAuto
 		if chainPrimary(p.fastChain) == "" || chainPrimary(p.smartChain) == "" {
-			p.note = "select a fast and a smart model below to finish enabling"
+			p.note = "select an advisor and an implementer model below to finish enabling"
 			return m, nil
 		}
 		p.note = ""
@@ -238,7 +235,7 @@ func (m Model) activateRouterMenuRow() (Model, tea.Cmd) {
 		p.openModelList("smart")
 	case rowSmartFallback:
 		if chainPrimary(p.smartChain) == "" {
-			p.note = "set a smart model first"
+			p.note = "set an advisor model first"
 			return m, nil
 		}
 		p.openModelList("smart-fb")
@@ -393,12 +390,12 @@ func commitRouterMode(m Model, mode string) (Model, tea.Cmd) {
 	m.fileCfg = cfg
 	if mode == config.RouterModeAuto {
 		applyRoutingOn(&m)
-		fast, smart := "", ""
+		implementer, advisor := "", ""
 		if m.router != nil {
-			fast, smart = m.router.FastModel, m.router.SmartModel
+			implementer, advisor = m.router.ImplementerModel, m.router.AdvisorModel
 		}
 		m.appendLine(styleAuto.Render(fmt.Sprintf(
-			"[router] on — %s (fast) / %s (smart) · persisted", fast, smart)))
+			"[router] on — %s (advisor) / %s (implementer) · persisted", advisor, implementer)))
 	} else {
 		applyRoutingOff(&m)
 		m.appendLine(styleAuto.Render(
@@ -454,9 +451,11 @@ func setRouterChain(cfg *config.Config, slot string, chain []string) {
 		plural = chain
 	}
 	if slot == "smart" {
-		cfg.Router.SmartModel, cfg.Router.SmartModels = single, plural
+		cfg.Router.AdvisorModel, cfg.Router.AdvisorModels = single, plural
+		cfg.Router.SmartModel, cfg.Router.SmartModels = "", nil
 	} else {
-		cfg.Router.FastModel, cfg.Router.FastModels = single, plural
+		cfg.Router.ImplementerModel, cfg.Router.ImplementerModels = single, plural
+		cfg.Router.FastModel, cfg.Router.FastModels = "", nil
 	}
 }
 
@@ -529,6 +528,9 @@ func (m Model) switchActiveModelToRef(ref string) (Model, tea.Cmd) {
 	if p.BaseURL != "" {
 		m.baseURL = p.BaseURL
 	}
+	if p.Kind != "" {
+		m.provider = p.Kind
+	}
 	if p.APIKeyEnv != "" {
 		if v := os.Getenv(p.APIKeyEnv); v != "" {
 			m.apiKey = v
@@ -553,7 +555,57 @@ func (m Model) switchActiveModelToRef(ref string) (Model, tea.Cmd) {
 		m, _ = reloadMemoryNow(m, "")
 	}
 	m.appendLine(styleAuto.Render(fmt.Sprintf(
-		"[router] active model → %s (matching the configured smart model)", model)))
+		"[router] active model → %s", model)))
+	return m, runProviderProbe(m.parentCtx, m.adapterConfig(model, m.baseURL), false)
+}
+
+func (m Model) switchActiveModelToRouterRole(role string) (Model, tea.Cmd) {
+	if m.router == nil {
+		return m, nil
+	}
+	var ref, model string
+	var ad adapter.Client
+	switch role {
+	case "advisor":
+		ref, model, ad = routerAdvisorRef(m.router), routerAdvisorModel(m.router), m.router.Advisor
+	case "implementer":
+		ref, model, ad = routerImplementerRef(m.router), routerImplementerModel(m.router), m.router.Implementer
+	default:
+		return m, nil
+	}
+	if ref == "" || model == "" || ad == nil || m.modelName == model {
+		return m, nil
+	}
+	provName, _, err := config.ParseCandidate(ref)
+	if err == nil {
+		cfg := loadConfigForCommand(m)
+		if p := cfg.FindProvider(provName); p != nil {
+			if p.BaseURL != "" {
+				m.baseURL = p.BaseURL
+			}
+			if p.Kind != "" {
+				m.provider = p.Kind
+			}
+			if p.APIKeyEnv != "" {
+				if v := os.Getenv(p.APIKeyEnv); v != "" {
+					m.apiKey = v
+				}
+			}
+		}
+	}
+	m.cfg.Adapter = ad
+	if m.subagentTool != nil {
+		m.subagentTool.Adapter = ad
+	}
+	m.providerProfile = ad.Profile()
+	m.modelName = model
+	if m.sess != nil {
+		m.sess.Model = model
+	}
+	if m.histMu != nil {
+		m, _ = reloadMemoryNow(m, "")
+	}
+	m.appendLine(styleAuto.Render(fmt.Sprintf("[router] active role → %s (%s)", role, model)))
 	return m, runProviderProbe(m.parentCtx, m.adapterConfig(model, m.baseURL), false)
 }
 
@@ -596,13 +648,13 @@ func renderRouterPicker(p *routerPickerState) string {
 	routingValue := routerModeLabel(p.mode)
 	if routerModeOrOff(p.mode) == config.RouterModeAuto &&
 		(chainPrimary(p.fastChain) == "" || chainPrimary(p.smartChain) == "") {
-		routingValue = "on — set fast & smart below"
+		routingValue = "on — set advisor & implementer below"
 	}
 	rows := []struct{ label, value string }{
 		{"Routing", routingValue},
-		{"Smart model", orNotSet(chainPrimary(p.smartChain))},
-		{"Fast model", orNotSet(chainPrimary(p.fastChain))},
-		{"Smart fallback", fallbackValue(p.smartChain)},
+		{"Advisor model", orNotSet(chainPrimary(p.smartChain))},
+		{"Implementer", orNotSet(chainPrimary(p.fastChain))},
+		{"Advisor fb", fallbackValue(p.smartChain)},
 	}
 	for i, r := range rows {
 		marker := "  "

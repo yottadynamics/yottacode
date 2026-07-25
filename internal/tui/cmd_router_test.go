@@ -186,7 +186,7 @@ func TestRouterOn_NoPairHint(t *testing.T) {
 	if m.routerMode != config.RouterModeOff {
 		t.Errorf("routerOn with no pair should stay off, got %q", m.routerMode)
 	}
-	if !strings.Contains(stripANSI(m.transcript.String()), "no fast/smart pair configured") {
+	if !strings.Contains(stripANSI(m.transcript.String()), "no advisor/implementer pair configured") {
 		t.Errorf("expected a 'no pair configured' hint: %q", m.transcript.String())
 	}
 }

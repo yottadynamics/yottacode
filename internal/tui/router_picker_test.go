@@ -120,8 +120,8 @@ func TestCommitRouter_AddsModelsThenTurnsOn(t *testing.T) {
 		t.Fatalf("reload: %v", err)
 	}
 	if reloaded.Router.Mode != config.RouterModeAuto ||
-		reloaded.Router.FastModel != "anthropic:claude-haiku-4-5" ||
-		reloaded.Router.SmartModel != "anthropic:claude-opus-4-6" {
+		reloaded.Router.ImplementerModel != "anthropic:claude-haiku-4-5" ||
+		reloaded.Router.AdvisorModel != "anthropic:claude-opus-4-6" {
 		t.Errorf("router config not persisted: %+v", reloaded.Router)
 	}
 	if err := config.Validate(reloaded); err != nil {
@@ -268,21 +268,21 @@ func TestSetRouterChain(t *testing.T) {
 	cfg := config.Config{}
 	cfg.Router.SmartModel = "stale"
 	setRouterChain(&cfg, "smart", []string{"primary", "backup"})
-	if cfg.Router.SmartModel != "" {
-		t.Errorf("singular should be cleared for a chain, got %q", cfg.Router.SmartModel)
+	if cfg.Router.AdvisorModel != "" {
+		t.Errorf("legacy singular should be cleared for a chain, got %q", cfg.Router.AdvisorModel)
 	}
-	if len(cfg.Router.SmartModels) != 2 || cfg.Router.SmartModels[0] != "primary" || cfg.Router.SmartModels[1] != "backup" {
-		t.Errorf("plural = %v, want [primary backup]", cfg.Router.SmartModels)
+	if len(cfg.Router.AdvisorModels) != 2 || cfg.Router.AdvisorModels[0] != "primary" || cfg.Router.AdvisorModels[1] != "backup" {
+		t.Errorf("plural = %v, want [primary backup]", cfg.Router.AdvisorModels)
 	}
 
 	// Single-element chain → singular form; the plural is cleared.
 	cfg2 := config.Config{}
 	cfg2.Router.FastModels = []string{"stale1", "stale2"}
 	setRouterChain(&cfg2, "fast", []string{"only"})
-	if cfg2.Router.FastModel != "only" {
-		t.Errorf("singular = %q, want only", cfg2.Router.FastModel)
+	if cfg2.Router.ImplementerModel != "only" {
+		t.Errorf("singular = %q, want only", cfg2.Router.ImplementerModel)
 	}
-	if len(cfg2.Router.FastModels) != 0 {
+	if len(cfg2.Router.ImplementerModels) != 0 {
 		t.Errorf("plural should be cleared, got %v", cfg2.Router.FastModels)
 	}
 }
@@ -333,7 +333,7 @@ func TestRouterPicker_ShowsFallbackRow(t *testing.T) {
 		t.Errorf("fastChain = %v, want 1 entry", m.routerPicker.fastChain)
 	}
 	plain := stripANSI(renderRouterPicker(m.routerPicker))
-	if !strings.Contains(plain, "Smart fallback") || !strings.Contains(plain, "anthropic:claude-haiku-4-5") {
+	if !strings.Contains(plain, "Advisor fb") || !strings.Contains(plain, "anthropic:claude-haiku-4-5") {
 		t.Errorf("expected the smart fallback row with its model: %q", plain)
 	}
 	if strings.Contains(plain, "Fast fallback") {
@@ -394,11 +394,11 @@ func TestRouterPicker_AddAndClearSmartFallback(t *testing.T) {
 		t.Fatalf("smart chain should have the fallback appended: %v", m.routerPicker.smartChain)
 	}
 	reloaded, _ := config.LoadDefault()
-	if len(reloaded.Router.SmartModels) != 2 || reloaded.Router.SmartModels[1] != "anthropic:claude-haiku-4-5" {
-		t.Errorf("smart_models not persisted as a chain: %v (single=%q)", reloaded.Router.SmartModels, reloaded.Router.SmartModel)
+	if len(reloaded.Router.AdvisorModels) != 2 || reloaded.Router.AdvisorModels[1] != "anthropic:claude-haiku-4-5" {
+		t.Errorf("advisor_models not persisted as a chain: %v (single=%q)", reloaded.Router.AdvisorModels, reloaded.Router.AdvisorModel)
 	}
-	if reloaded.Router.SmartModel != "" {
-		t.Errorf("singular smart_model should be cleared when a chain is set, got %q", reloaded.Router.SmartModel)
+	if reloaded.Router.AdvisorModel != "" {
+		t.Errorf("singular advisor_model should be cleared when a chain is set, got %q", reloaded.Router.AdvisorModel)
 	}
 
 	// Clear it with 'd' on the Smart fallback row.
@@ -408,9 +408,9 @@ func TestRouterPicker_AddAndClearSmartFallback(t *testing.T) {
 		t.Errorf("clearing the fallback should leave just the primary: %v", m.routerPicker.smartChain)
 	}
 	reloaded2, _ := config.LoadDefault()
-	if reloaded2.Router.SmartModel != "anthropic:claude-opus-4-6" || len(reloaded2.Router.SmartModels) != 0 {
-		t.Errorf("after clear, expected the singular smart_model: single=%q plural=%v",
-			reloaded2.Router.SmartModel, reloaded2.Router.SmartModels)
+	if reloaded2.Router.AdvisorModel != "anthropic:claude-opus-4-6" || len(reloaded2.Router.AdvisorModels) != 0 {
+		t.Errorf("after clear, expected the singular advisor_model: single=%q plural=%v",
+			reloaded2.Router.AdvisorModel, reloaded2.Router.AdvisorModels)
 	}
 }
 

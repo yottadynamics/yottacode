@@ -81,26 +81,42 @@ func Render(cfg Config) string {
 	}
 
 	// The [router] section carries two independent features: cache-safe
-	// task routing (mode + fast/smart model) and the multi-provider
+	// task routing (mode + advisor/implementer models) and the multi-provider
 	// fallback router (enabled + candidates). Either, both, or neither may
 	// be configured; render a single section when at least one is set.
-	hasTaskRouting := cfg.Router.FastModel != "" || cfg.Router.SmartModel != "" ||
-		len(cfg.Router.FastModels) > 0 || len(cfg.Router.SmartModels) > 0 ||
+	hasTaskRouting := hasModelSlot(cfg.Router.AdvisorModel, cfg.Router.AdvisorModels) ||
+		hasModelSlot(cfg.Router.ImplementerModel, cfg.Router.ImplementerModels) ||
+		hasModelSlot(cfg.Router.SmartModel, cfg.Router.SmartModels) ||
+		hasModelSlot(cfg.Router.FastModel, cfg.Router.FastModels) ||
 		(cfg.Router.Mode != "" && cfg.Router.Mode != RouterModeOff)
 	hasFallback := cfg.Router.Enabled && len(cfg.Router.Candidates) > 0
 	if hasTaskRouting || hasFallback {
 		b.WriteString("[router]\n")
 	}
 	if hasTaskRouting {
-		// %-13s aligns every key's `=` (smart_models is the longest at 12).
+		// %-19s aligns every key's `=` (implementer_models is longest).
 		if cfg.Router.Mode != "" {
-			fmt.Fprintf(&b, "%-13s= %q\n", "mode", cfg.Router.Mode)
+			fmt.Fprintf(&b, "%-19s= %q\n", "mode", cfg.Router.Mode)
 		}
+		if cfg.Router.AdvisorModel != "" {
+			fmt.Fprintf(&b, "%-19s= %q\n", "advisor_model", cfg.Router.AdvisorModel)
+		}
+		if cfg.Router.ImplementerModel != "" {
+			fmt.Fprintf(&b, "%-19s= %q\n", "implementer_model", cfg.Router.ImplementerModel)
+		}
+		if len(cfg.Router.AdvisorModels) > 0 {
+			writeRouterModelList(&b, "advisor_models", cfg.Router.AdvisorModels)
+		}
+		if len(cfg.Router.ImplementerModels) > 0 {
+			writeRouterModelList(&b, "implementer_models", cfg.Router.ImplementerModels)
+		}
+		// Preserve legacy aliases when a config has not yet been edited onto
+		// the canonical role fields.
 		if cfg.Router.FastModel != "" {
-			fmt.Fprintf(&b, "%-13s= %q\n", "fast_model", cfg.Router.FastModel)
+			fmt.Fprintf(&b, "%-19s= %q\n", "fast_model", cfg.Router.FastModel)
 		}
 		if cfg.Router.SmartModel != "" {
-			fmt.Fprintf(&b, "%-13s= %q\n", "smart_model", cfg.Router.SmartModel)
+			fmt.Fprintf(&b, "%-19s= %q\n", "smart_model", cfg.Router.SmartModel)
 		}
 		if len(cfg.Router.FastModels) > 0 {
 			writeRouterModelList(&b, "fast_models", cfg.Router.FastModels)
@@ -201,7 +217,7 @@ func Render(cfg Config) string {
 // writeRouterModelList renders a [router] string-list assignment
 // (fast_models / smart_models) aligned with the other task-routing keys.
 func writeRouterModelList(b *strings.Builder, key string, items []string) {
-	fmt.Fprintf(b, "%-13s= [", key)
+	fmt.Fprintf(b, "%-19s= [", key)
 	for i, m := range items {
 		if i > 0 {
 			b.WriteString(", ")
