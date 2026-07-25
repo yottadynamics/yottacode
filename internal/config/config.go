@@ -160,25 +160,29 @@ type RouterConfig struct {
 	HealthWindowSeconds    int      `toml:"health_window_seconds"`
 	HealthFailureThreshold int      `toml:"health_failure_threshold"`
 
-	// Mode controls cache-safe task routing between a smart and a fast
-	// model. "off" (default) disables it entirely. "manual" resolves the
-	// fast/smart models but only routes when an agent declares an explicit
-	// model. "auto" routes summarization to FastModel and every delegated
-	// subagent to SmartModel (an explicit agent `model:` overrides this);
-	// the fast model is reserved for summarization. Routing never touches
-	// the main-thread model mid-conversation (that would invalidate the
-	// prompt cache and cost more) — only isolated contexts are routed.
+	// Mode controls cache-safe task routing between an advisor and an
+	// implementer model. "off" (default) disables it entirely. "manual"
+	// resolves the role models but only routes when an agent declares an
+	// explicit model. "auto" makes the advisor the reasoning/planning model
+	// and the implementer the fast coding/subagent/summarization model. The
+	// router changes the main-thread model only at explicit session/mode
+	// boundaries; child/advisor-consult contexts are isolated.
 	Mode string `toml:"mode"`
-	// FastModel and SmartModel name the cheap and capable models as
+	// AdvisorModel and ImplementerModel name the role models as
 	// "<provider>" or "<provider>:<model>" (same grammar as Candidates).
 	// Required when Mode is not "off" (unless the plural form is set).
-	FastModel  string `toml:"fast_model"`
-	SmartModel string `toml:"smart_model"`
-	// FastModels and SmartModels are the failover-chain forms of the two
-	// slots: the first entry is the primary, the rest are fallbacks tried
-	// in order (via the same policy + health knobs as Candidates) when the
-	// primary fails. A slot may set the singular OR the plural form, not
-	// both. Empty plural → the singular is used as a one-element chain.
+	AdvisorModel     string `toml:"advisor_model"`
+	ImplementerModel string `toml:"implementer_model"`
+	// AdvisorModels and ImplementerModels are failover-chain forms: the
+	// first entry is the primary, the rest are fallbacks tried in order
+	// when the primary fails. A slot may set the singular OR plural form,
+	// not both. Empty plural → the singular is used as a one-element chain.
+	AdvisorModels     []string `toml:"advisor_models"`
+	ImplementerModels []string `toml:"implementer_models"`
+	// Fast*/Smart* are legacy aliases for Implementer*/Advisor* kept so
+	// existing configs load. New writes use the role-named fields.
+	FastModel   string   `toml:"fast_model"`
+	SmartModel  string   `toml:"smart_model"`
 	FastModels  []string `toml:"fast_models"`
 	SmartModels []string `toml:"smart_models"`
 }
@@ -206,12 +210,31 @@ func (r RouterConfig) RoutingAuto() bool {
 	return r.Mode == RouterModeAuto
 }
 
-// FastChain returns the fast-model failover chain: the plural FastModels
-// when set, otherwise the singular FastModel as a one-element chain (or
-// empty when neither is set). The first entry is the primary; the rest
-// are fallbacks. SmartChain is the same for the smart slot.
-func (r RouterConfig) FastChain() []string  { return modelChain(r.FastModels, r.FastModel) }
-func (r RouterConfig) SmartChain() []string { return modelChain(r.SmartModels, r.SmartModel) }
+// AdvisorChain returns the advisor-model failover chain, falling back to the
+// legacy smart_* aliases when the canonical advisor_* fields are absent.
+// ImplementerChain is the same for implementer_* with legacy fast_* aliases.
+func (r RouterConfig) AdvisorChain() []string {
+	if hasModelSlot(r.AdvisorModel, r.AdvisorModels) {
+		return modelChain(r.AdvisorModels, r.AdvisorModel)
+	}
+	return modelChain(r.SmartModels, r.SmartModel)
+}
+
+func (r RouterConfig) ImplementerChain() []string {
+	if hasModelSlot(r.ImplementerModel, r.ImplementerModels) {
+		return modelChain(r.ImplementerModels, r.ImplementerModel)
+	}
+	return modelChain(r.FastModels, r.FastModel)
+}
+
+// FastChain and SmartChain are compatibility accessors for older callers and
+// tests. Fast maps to implementer; smart maps to advisor.
+func (r RouterConfig) FastChain() []string  { return r.ImplementerChain() }
+func (r RouterConfig) SmartChain() []string { return r.AdvisorChain() }
+
+func hasModelSlot(single string, plural []string) bool {
+	return strings.TrimSpace(single) != "" || len(modelChain(plural, "")) > 0
+}
 
 // modelChain coalesces the plural/singular forms of a router slot into a
 // single ordered chain, dropping blank entries.
@@ -850,30 +873,42 @@ func Validate(cfg Config) error {
 		return fmt.Errorf("router.mode %q invalid (expected one of %s)",
 			cfg.Router.Mode, strings.Join(ValidRouterModes, ", "))
 	}
-	// A slot uses the singular OR the plural (chain) form, not both.
+	// A role slot uses the singular OR the plural (chain) form, not both.
+	if cfg.Router.ImplementerModel != "" && len(cfg.Router.ImplementerModels) > 0 {
+		return fmt.Errorf("router: set either implementer_model or implementer_models, not both")
+	}
+	if cfg.Router.AdvisorModel != "" && len(cfg.Router.AdvisorModels) > 0 {
+		return fmt.Errorf("router: set either advisor_model or advisor_models, not both")
+	}
 	if cfg.Router.FastModel != "" && len(cfg.Router.FastModels) > 0 {
 		return fmt.Errorf("router: set either fast_model or fast_models, not both")
 	}
 	if cfg.Router.SmartModel != "" && len(cfg.Router.SmartModels) > 0 {
 		return fmt.Errorf("router: set either smart_model or smart_models, not both")
 	}
+	if hasModelSlot(cfg.Router.ImplementerModel, cfg.Router.ImplementerModels) && hasModelSlot(cfg.Router.FastModel, cfg.Router.FastModels) {
+		return fmt.Errorf("router: set implementer_model(s) or legacy fast_model(s), not both")
+	}
+	if hasModelSlot(cfg.Router.AdvisorModel, cfg.Router.AdvisorModels) && hasModelSlot(cfg.Router.SmartModel, cfg.Router.SmartModels) {
+		return fmt.Errorf("router: set advisor_model(s) or legacy smart_model(s), not both")
+	}
 	if cfg.Router.RoutingEnabled() {
-		fastChain := cfg.Router.FastChain()
-		smartChain := cfg.Router.SmartChain()
-		if len(fastChain) == 0 {
-			return fmt.Errorf("router.mode = %q requires router.fast_model (or fast_models)", cfg.Router.Mode)
+		implementerChain := cfg.Router.ImplementerChain()
+		advisorChain := cfg.Router.AdvisorChain()
+		if len(implementerChain) == 0 {
+			return fmt.Errorf("router.mode = %q requires router.implementer_model (or implementer_models)", cfg.Router.Mode)
 		}
-		if len(smartChain) == 0 {
-			return fmt.Errorf("router.mode = %q requires router.smart_model (or smart_models)", cfg.Router.Mode)
+		if len(advisorChain) == 0 {
+			return fmt.Errorf("router.mode = %q requires router.advisor_model (or advisor_models)", cfg.Router.Mode)
 		}
-		for i, ref := range fastChain {
+		for i, ref := range implementerChain {
 			if err := cfg.validateModelRef(ref); err != nil {
-				return fmt.Errorf("router.fast_model(s)[%d]: %w", i, err)
+				return fmt.Errorf("router.implementer_model(s)[%d]: %w", i, err)
 			}
 		}
-		for i, ref := range smartChain {
+		for i, ref := range advisorChain {
 			if err := cfg.validateModelRef(ref); err != nil {
-				return fmt.Errorf("router.smart_model(s)[%d]: %w", i, err)
+				return fmt.Errorf("router.advisor_model(s)[%d]: %w", i, err)
 			}
 		}
 	}
@@ -986,32 +1021,40 @@ func (c *Config) validateModelRef(raw string) error {
 	return fmt.Errorf("model %q not in providers[%q].models", model, provider)
 }
 
-// ResolveRouterModels resolves the fast and smart models named in the
-// [router] block. Callable only when routing is enabled (Mode != off);
+// ResolveRouterModels resolves the implementer and advisor primary models named
+// in the [router] block. Callable only when routing is enabled (Mode != off);
 // Validate has already confirmed both strings resolve.
-func (c *Config) ResolveRouterModels() (fast, smart ResolvedCandidate, err error) {
-	fast, err = c.resolveCandidate(c.Router.FastModel)
-	if err != nil {
-		return ResolvedCandidate{}, ResolvedCandidate{}, fmt.Errorf("router.fast_model: %w", err)
+func (c *Config) ResolveRouterModels() (implementer, advisor ResolvedCandidate, err error) {
+	implementerChain := c.Router.ImplementerChain()
+	if len(implementerChain) == 0 {
+		return ResolvedCandidate{}, ResolvedCandidate{}, fmt.Errorf("router.implementer_model: empty")
 	}
-	smart, err = c.resolveCandidate(c.Router.SmartModel)
-	if err != nil {
-		return ResolvedCandidate{}, ResolvedCandidate{}, fmt.Errorf("router.smart_model: %w", err)
+	advisorChain := c.Router.AdvisorChain()
+	if len(advisorChain) == 0 {
+		return ResolvedCandidate{}, ResolvedCandidate{}, fmt.Errorf("router.advisor_model: empty")
 	}
-	return fast, smart, nil
+	implementer, err = c.resolveCandidate(implementerChain[0])
+	if err != nil {
+		return ResolvedCandidate{}, ResolvedCandidate{}, fmt.Errorf("router.implementer_model: %w", err)
+	}
+	advisor, err = c.resolveCandidate(advisorChain[0])
+	if err != nil {
+		return ResolvedCandidate{}, ResolvedCandidate{}, fmt.Errorf("router.advisor_model: %w", err)
+	}
+	return implementer, advisor, nil
 }
 
-// ResolveRouterChains resolves the fast and smart failover chains
-// (FastChain / SmartChain) to ordered candidate lists — primary first,
-// then fallbacks. Validate has confirmed every entry resolves.
-func (c *Config) ResolveRouterChains() (fast, smart []ResolvedCandidate, err error) {
-	if fast, err = c.resolveChain(c.Router.FastChain()); err != nil {
-		return nil, nil, fmt.Errorf("router.fast_model(s): %w", err)
+// ResolveRouterChains resolves the implementer and advisor failover chains
+// to ordered candidate lists — primary first, then fallbacks. Validate has
+// confirmed every entry resolves.
+func (c *Config) ResolveRouterChains() (implementer, advisor []ResolvedCandidate, err error) {
+	if implementer, err = c.resolveChain(c.Router.ImplementerChain()); err != nil {
+		return nil, nil, fmt.Errorf("router.implementer_model(s): %w", err)
 	}
-	if smart, err = c.resolveChain(c.Router.SmartChain()); err != nil {
-		return nil, nil, fmt.Errorf("router.smart_model(s): %w", err)
+	if advisor, err = c.resolveChain(c.Router.AdvisorChain()); err != nil {
+		return nil, nil, fmt.Errorf("router.advisor_model(s): %w", err)
 	}
-	return fast, smart, nil
+	return implementer, advisor, nil
 }
 
 // resolveChain resolves each ref in a model chain. Mirrors
@@ -1413,42 +1456,40 @@ capture_reminder_every_turns = 6
 # health_failure_threshold = 3
 
 # ---------------------------------------------------------------------
-# Cache-safe task routing (opt-in). Routes ISOLATED contexts — subagents
-# and history compaction — to a cheap "fast" model while your main
-# conversation stays on the "smart" model. This SAVES cost: those
-# contexts never shared the main thread's prompt cache, so routing them
-# costs nothing in cache locality. The main-thread model is never
-# switched mid-conversation (that would invalidate the cache and cost
-# MORE), so routing is purely a saving.
+# Cache-safe role routing (opt-in). Assigns explicit roles to models:
+# advisor for planning/design/reasoning, implementer for fast coding,
+# subagents, and history compaction. The main-thread model only changes
+# at explicit session/mode boundaries (startup, /plan, /auto, /model,
+# /router selection), not mid-turn.
 #
 #   mode = "off"    — disabled (default).
-#   mode = "manual" — resolve fast/smart; route only subagents whose
-#                     definition declares an explicit model: frontmatter.
-#   mode = "auto"   — route summarization to fast_model and every
-#                     delegated subagent (Explore, Plan, general-purpose,
-#                     custom, …) to smart_model. The fast model is
-#                     reserved for summarization; a subagent reaches it
-#                     only via an explicit model: override.
+#   mode = "manual" — resolve advisor/implementer; route only subagents
+#                     whose definition declares explicit model: frontmatter.
+#   mode = "auto"   — startup and /plan use advisor_model; auto-mode work,
+#                     summarization, and delegated subagents use
+#                     implementer_model. Implementer children can call
+#                     consult_advisor for bounded no-tools guidance.
 #
-# fast_model / smart_model use the same "<provider>" or "<provider>:<model>"
-# grammar as candidates above. Both are required when mode != "off".
+# advisor_model / implementer_model use the same "<provider>" or
+# "<provider>:<model>" grammar as candidates above. Both are required when
+# mode != "off". Legacy smart_model / fast_model aliases still load, but
+# new writes use the role-named keys. Reasoning effort is global via
+# /effort or --reasoning-effort; router has no per-role effort fields.
 #
 # Either slot can be a FAILOVER CHAIN instead of a single model via the
-# plural form fast_models / smart_models = ["<primary>", "<fallback>", …]:
-# on failure/timeout the call falls through to the next entry using the
-# same policy + health knobs as candidates above. A slot uses the
+# plural form advisor_models / implementer_models = ["<primary>",
+# "<fallback>", …]: on failure/timeout the call falls through to the next
+# entry using the same health knobs as candidates above. A slot uses the
 # singular OR the plural form, not both.
 #
-# Toggle routing live with the /router command (off <-> auto); it never
-# switches the main-thread model, so it only ever touches isolated
-# contexts and stays a pure prompt-cache-safe saving. The value here is
-# the session's starting state.
+# Toggle routing live with the /router command (off <-> auto). The value
+# here is the session's starting state.
 # ---------------------------------------------------------------------
 
 # [router]
-# mode        = "auto"
-# fast_model  = "anthropic:claude-haiku-4-5"
-# smart_model = "anthropic:claude-opus-4-6"
+# mode              = "auto"
+# advisor_model     = "anthropic:claude-opus-4-6"
+# implementer_model = "anthropic:claude-haiku-4-5"
 # # or a failover chain for a slot:
-# # smart_models = ["anthropic:claude-opus-4-6", "openai:gpt-4o"]
+# # advisor_models = ["anthropic:claude-opus-4-6", "openai:gpt-4o"]
 `

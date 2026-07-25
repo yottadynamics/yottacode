@@ -429,12 +429,13 @@ the parent. Token usage rolls into the session's overall counter via
 the shared adapter. Per-subagent token counts are surfaced in the
 `SubagentDone` event and stored in the task registry.
 
-With [cache-safe task routing](models.md#cache-safe-task-routing)
-enabled (`auto`), every delegated subagent runs on `smart_model`, and any
+With [cache-safe role routing](models.md#cache-safe-task-routing)
+enabled (`auto`), every delegated subagent runs on `implementer_model`, and any
 agent with an explicit `model:` runs on whatever it names — all in an
 isolated context that never shared the main thread's prompt cache. The
-fast model is reserved for summarization; a subagent reaches it only via
-an explicit `model:`. The model each subagent ran on shows in the
+advisor model is available to implementer-style children through the
+`consult_advisor` tool for bounded design/debugging help; it is not a
+recursive subagent dispatch. The model each subagent ran on shows in the
 `/subagents` picker and on its completion card. (Per-subagent token figures are estimates; yottacode does not yet
 aggregate per-model token totals across a session.)
 

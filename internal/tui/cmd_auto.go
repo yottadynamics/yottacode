@@ -2,6 +2,8 @@ package tui
 
 import (
 	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/yottadynamics/yottacode/internal/config"
 )
 
 // toggleAutoMode is the entry/exit helper used by the Shift+Tab cycle,
@@ -27,6 +29,9 @@ func toggleAutoMode(m Model) (Model, tea.Cmd) {
 		exitPlanMode(&m)
 	}
 	state.Active.Store(true)
+	if routerModeOrOff(m.routerMode) != config.RouterModeOff {
+		m, _ = m.switchActiveModelToRouterRole("implementer")
+	}
 	m.appendLine(styleAutoBannerLabel.Render(AutoModeIcon+" auto mode active") +
 		" " + styleAutoBannerHint.Render("— edits auto-allow; run_bash, git_commit, git_checkpoint, rollback still prompt"))
 	m.appendLine(styleAutoBannerHint.Render("  Shift+Tab cycles onward: auto → plan → normal"))

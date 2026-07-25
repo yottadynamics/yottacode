@@ -53,48 +53,49 @@ func BuildRouter(cfg config.Config, opts ChatOptions) (adapter.Client, error) {
 	return adapter.NewMultiStreamer(candidates, policy, adapter.WithHealth(healthOptionsFromConfig(cfg.Router)))
 }
 
-// RouterAdapters bundles the resolved fast/smart adapters for cache-safe
-// task routing, plus a resolver for an agent's explicit `model:`
-// frontmatter override. These adapters drive only isolated contexts
-// (subagents, summarization) — never the main-thread model
-// mid-conversation — so swapping a task onto Fast never invalidates the
-// parent's prompt cache.
+// RouterAdapters bundles the resolved advisor/implementer adapters for
+// cache-safe role routing, plus a resolver for an agent's explicit `model:`
+// frontmatter override. These adapters drive only isolated contexts and
+// explicit mode-boundary switches.
 type RouterAdapters struct {
+	Advisor          adapter.Client
+	Implementer      adapter.Client
+	AdvisorModel     string
+	ImplementerModel string
+	AdvisorRef       string
+	ImplementerRef   string
+	// Fast/Smart are legacy aliases kept while call sites migrate: fast maps
+	// to implementer; smart maps to advisor.
 	Fast       adapter.Client
 	Smart      adapter.Client
 	FastModel  string
 	SmartModel string
 	// Resolve returns an adapter for an arbitrary configured model
 	// name, or nil when the name matches no configured provider model
-	// (the caller then inherits the parent/smart adapter). Adapters are
+	// (the caller then inherits the parent/role adapter). Adapters are
 	// memoized so repeated dispatches of the same agent type reuse one
 	// client.
 	Resolve func(model string) adapter.Streamer
 }
 
-// BuildRouterAdapters resolves the [router] fast/smart slots and returns
-// their adapters plus an on-demand resolver. Each slot may be a single
-// model or a failover chain (fast_models / smart_models): a one-model
-// chain yields a plain client, a multi-model chain a *MultiStreamer that
-// fails over primary → fallbacks using the same policy + health knobs as
-// the candidates router. Returns (nil, nil) only when a slot is
-// unconfigured — building is decoupled from Mode so the `/router` command
-// can flip routing on live (mode "off" with a configured pair still
-// builds the adapters, ready to wire). The caller decides what to wire
-// from RoutingAuto()/the active mode. Errors only on misconfiguration
-// Validate didn't catch.
+// BuildRouterAdapters resolves the [router] advisor/implementer slots and
+// returns their adapters plus an on-demand resolver. Each slot may be a single
+// model or a failover chain: a one-model chain yields a plain client, a
+// multi-model chain yields a *MultiStreamer that fails over primary →
+// fallbacks using the same health knobs as the candidates router. Returns
+// (nil, nil) only when a slot is unconfigured — building is decoupled from
+// Mode so the `/router` command can flip routing on live.
 func BuildRouterAdapters(cfg config.Config, opts ChatOptions) (*RouterAdapters, error) {
-	if len(cfg.Router.FastChain()) == 0 || len(cfg.Router.SmartChain()) == 0 {
+	if len(cfg.Router.ImplementerChain()) == 0 || len(cfg.Router.AdvisorChain()) == 0 {
 		return nil, nil
 	}
-	fastChain, smartChain, err := cfg.ResolveRouterChains()
+	implementerChain, advisorChain, err := cfg.ResolveRouterChains()
 	if err != nil {
 		return nil, fmt.Errorf("router: %w", err)
 	}
 	// Memoize by provider+model, not model alone: a failover chain can name
 	// the SAME model on two providers (e.g. "openai:gpt-4o",
-	// "azure:gpt-4o") — keying on the model name only would collapse them
-	// to one adapter and silently defeat the failover.
+	// "azure:gpt-4o"). Keying on model only would collapse distinct clients.
 	//
 	// Mutex-guarded: the build-time calls below are sequential, but the
 	// map outlives this function inside ra.Resolve, which runs on
@@ -140,19 +141,25 @@ func BuildRouterAdapters(cfg config.Config, opts ChatOptions) (*RouterAdapters, 
 		}
 		return adapter.NewMultiStreamer(cands, adapter.FallbackChain{}, adapter.WithHealth(healthOptionsFromConfig(cfg.Router)))
 	}
-	fastClient, err := buildChain(fastChain)
+	implementerClient, err := buildChain(implementerChain)
 	if err != nil {
-		return nil, fmt.Errorf("router.fast: %w", err)
+		return nil, fmt.Errorf("router.implementer: %w", err)
 	}
-	smartClient, err := buildChain(smartChain)
+	advisorClient, err := buildChain(advisorChain)
 	if err != nil {
-		return nil, fmt.Errorf("router.smart: %w", err)
+		return nil, fmt.Errorf("router.advisor: %w", err)
 	}
 	ra := &RouterAdapters{
-		Fast:       fastClient,
-		Smart:      smartClient,
-		FastModel:  fastChain[0].Model,
-		SmartModel: smartChain[0].Model,
+		Advisor:          advisorClient,
+		Implementer:      implementerClient,
+		AdvisorModel:     advisorChain[0].Model,
+		ImplementerModel: implementerChain[0].Model,
+		AdvisorRef:       advisorChain[0].Provider.Name + ":" + advisorChain[0].Model,
+		ImplementerRef:   implementerChain[0].Provider.Name + ":" + implementerChain[0].Model,
+		Fast:             implementerClient,
+		Smart:            advisorClient,
+		FastModel:        implementerChain[0].Model,
+		SmartModel:       advisorChain[0].Model,
 	}
 	ra.Resolve = func(model string) adapter.Streamer {
 		model = strings.TrimSpace(model)

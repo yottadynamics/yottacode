@@ -88,36 +88,32 @@ type AgentTool struct {
 	// that a child inherits when nothing routes it elsewhere.
 	Adapter Streamer
 
-	// FastAdapter is the cheap/fast model's streamer used for cache-safe
-	// task routing. nil when routing is disabled. The fast model is
-	// reserved for subagent compaction summarization (a mechanical
-	// compression, not reasoning, so the cheap model is the right tool),
-	// and is reachable for a subagent's own routing only via an explicit
-	// `model:` override. nil falls back to the child's own adapter.
-	FastAdapter Streamer
+	// ImplementerAdapter is the fast coding model's streamer used for
+	// cache-safe task routing. nil when routing is disabled. In auto mode,
+	// delegated subagents default here; summarization also uses this role.
+	ImplementerAdapter Streamer
 
-	// FastModel is the fast model's name, recorded on the task +
-	// SubagentDone events so /subagents and the inline card can show
+	// ImplementerModel is recorded on task events so /subagents can show
 	// which model handled a delegation. Empty when routing is off.
-	FastModel string
+	ImplementerModel string
 
-	// SmartAdapter is the capable model's streamer ([router].smart_model).
-	// In auto mode every delegated subagent without an explicit `model:`
-	// routes here instead of inheriting the active session model — so
-	// subagent work runs on the configured smart model, not whatever the
-	// main thread happens to be on. nil when routing is off, in which
-	// case such agents inherit Adapter (the active model). The fast model
-	// is reserved for summarization (wired separately) and is reachable
-	// for a subagent only via an explicit `model:` override.
+	// AdvisorAdapter is the reasoning/planning model's streamer. The main
+	// session uses it at routed startup and in plan mode, while implementer
+	// children can call consult_advisor for isolated help.
+	AdvisorAdapter Streamer
+
+	// AdvisorModel is the advisor model's name for task/tool display.
+	AdvisorModel string
+
+	// Fast*/Smart* are legacy aliases retained while TUI/oneshot call sites
+	// migrate. Fast maps to implementer; smart maps to advisor.
+	FastAdapter  Streamer
+	FastModel    string
 	SmartAdapter Streamer
-
-	// SmartModel is the smart model's name, recorded on the task +
-	// SubagentDone events so /subagents and the inline card can show
-	// which model handled a delegation. Empty when routing is off.
-	SmartModel string
+	SmartModel   string
 
 	// RouteAuto enables the heuristic that routes delegated subagents to
-	// SmartAdapter. False in "manual" mode (only an explicit `model:`
+	// ImplementerAdapter. False in "manual" mode (only an explicit `model:`
 	// frontmatter routes) and when routing is off.
 	RouteAuto bool
 
@@ -537,7 +533,7 @@ func (t *AgentTool) Execute(ctx context.Context, argsJSON string) (string, error
 // workspace or execute arbitrary commands. It is used only for execution
 // posture (safe automatic backgrounding and dispatch worktree decisions),
 // not for model routing: auto routing sends every delegated subagent to the
-// smart model, while the fast model is reserved for summarization.
+// implementer model. The advisor is reached explicitly through consult_advisor.
 var readOnlyChildTools = map[string]bool{
 	"read_file":              true,
 	"read_many_files":        true,
@@ -556,6 +552,7 @@ var readOnlyChildTools = map[string]bool{
 	"todo_write":             true,
 	"session_recall":         true,
 	"memory_search":          true,
+	ConsultAdvisorToolName:   true,
 }
 
 // agentIsReadOnly reports whether an agent definition is restricted to the
@@ -574,16 +571,13 @@ func agentIsReadOnly(cfg *subagents.AgentConfig) bool {
 }
 
 // routeChildModel picks the streamer + model name for a child subagent.
-// Routing only ever touches isolated child contexts — never the
-// main-thread model mid-conversation — so it never invalidates the
-// parent's prompt cache. Precedence:
-//  1. an explicit `model:` frontmatter resolves via ModelResolver
-//     (manual or auto mode); an unresolvable name falls through so a
-//     typo degrades gracefully rather than erroring;
-//  2. auto mode: every delegated subagent → the smart model (the
-//     capable target, not the active session model). The fast model is
-//     reserved for summarization; subagents reach it only via an
-//     explicit `model:` override;
+// Routing only ever touches isolated child contexts — never the main-thread
+// model mid-conversation — so it never invalidates the parent's prompt cache.
+// Precedence:
+//  1. an explicit `model:` frontmatter resolves via ModelResolver (manual or
+//     auto mode); an unresolvable name falls through so a typo degrades
+//     gracefully rather than erroring;
+//  2. auto mode: every delegated subagent → the implementer model;
 //  3. otherwise (manual mode without an explicit model, or routing off)
 //     inherit the parent's active adapter.
 //
@@ -595,8 +589,18 @@ func (t *AgentTool) routeChildModel(cfg *subagents.AgentConfig) (Streamer, strin
 			return s, m
 		}
 	}
-	if t.RouteAuto && t.SmartAdapter != nil {
-		return t.SmartAdapter, t.SmartModel
+	implementer := t.ImplementerAdapter
+	implementerModel := t.ImplementerModel
+	if implementer == nil {
+		implementer = t.FastAdapter
+		implementerModel = t.FastModel
+	}
+	if implementer == nil {
+		implementer = t.SmartAdapter
+		implementerModel = t.SmartModel
+	}
+	if t.RouteAuto && implementer != nil {
+		return implementer, implementerModel
 	}
 	return t.Adapter, ""
 }
@@ -1204,6 +1208,15 @@ func (t *AgentTool) buildChildRegistry(cfg *subagents.AgentConfig) *Registry {
 			continue
 		}
 		out.Register(tool)
+	}
+	advisor := t.AdvisorAdapter
+	advisorModel := t.AdvisorModel
+	if advisor == nil {
+		advisor = t.SmartAdapter
+		advisorModel = t.SmartModel
+	}
+	if advisor != nil {
+		out.Register(&ConsultAdvisorTool{Advisor: advisor, Model: advisorModel})
 	}
 	return out
 }

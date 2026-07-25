@@ -77,14 +77,14 @@ func TestRouter_RenderRoundTrip(t *testing.T) {
 		t.Fatalf("Load: %v", err)
 	}
 	cfg.Router.Mode = RouterModeAuto
-	cfg.Router.FastModel = "anthropic:claude-haiku-4-5"
-	cfg.Router.SmartModel = "anthropic:claude-opus-4-6"
+	cfg.Router.ImplementerModel = "anthropic:claude-haiku-4-5"
+	cfg.Router.AdvisorModel = "anthropic:claude-opus-4-6"
 
 	rendered := Render(cfg)
 	for _, want := range []string{
-		`mode         = "auto"`,
-		`fast_model   = "anthropic:claude-haiku-4-5"`,
-		`smart_model  = "anthropic:claude-opus-4-6"`,
+		`mode               = "auto"`,
+		`advisor_model      = "anthropic:claude-opus-4-6"`,
+		`implementer_model  = "anthropic:claude-haiku-4-5"`,
 	} {
 		if !strings.Contains(rendered, want) {
 			t.Errorf("Render output missing %q\n--- got ---\n%s", want, rendered)
@@ -96,8 +96,8 @@ func TestRouter_RenderRoundTrip(t *testing.T) {
 		t.Fatalf("reload rendered config: %v", err)
 	}
 	if reloaded.Router.Mode != RouterModeAuto ||
-		reloaded.Router.FastModel != "anthropic:claude-haiku-4-5" ||
-		reloaded.Router.SmartModel != "anthropic:claude-opus-4-6" {
+		reloaded.Router.ImplementerModel != "anthropic:claude-haiku-4-5" ||
+		reloaded.Router.AdvisorModel != "anthropic:claude-opus-4-6" {
 		t.Errorf("round-trip lost router fields: %+v", reloaded.Router)
 	}
 	if err := Validate(reloaded); err != nil {
@@ -132,19 +132,19 @@ func TestRouter_ChainRenderRoundTrip(t *testing.T) {
 		t.Fatalf("Load: %v", err)
 	}
 	cfg.Router.Mode = RouterModeAuto
-	cfg.Router.FastModel = "anthropic:claude-haiku-4-5"
-	cfg.Router.SmartModels = []string{"anthropic:claude-opus-4-6", "anthropic:claude-haiku-4-5"}
+	cfg.Router.ImplementerModel = "anthropic:claude-haiku-4-5"
+	cfg.Router.AdvisorModels = []string{"anthropic:claude-opus-4-6", "anthropic:claude-haiku-4-5"}
 
 	rendered := Render(cfg)
-	if !strings.Contains(rendered, `smart_models = ["anthropic:claude-opus-4-6", "anthropic:claude-haiku-4-5"]`) {
-		t.Errorf("render missing smart_models list:\n%s", rendered)
+	if !strings.Contains(rendered, `advisor_models     = ["anthropic:claude-opus-4-6", "anthropic:claude-haiku-4-5"]`) {
+		t.Errorf("render missing advisor_models list:\n%s", rendered)
 	}
 	reloaded, err := Load(writeFile(t, rendered))
 	if err != nil {
 		t.Fatalf("reload rendered config: %v", err)
 	}
-	if len(reloaded.Router.SmartModels) != 2 || reloaded.Router.SmartModels[0] != "anthropic:claude-opus-4-6" {
-		t.Errorf("round-trip lost smart_models: %v", reloaded.Router.SmartModels)
+	if len(reloaded.Router.AdvisorModels) != 2 || reloaded.Router.AdvisorModels[0] != "anthropic:claude-opus-4-6" {
+		t.Errorf("round-trip lost advisor_models: %v", reloaded.Router.AdvisorModels)
 	}
 	if err := Validate(reloaded); err != nil {
 		t.Errorf("chain config should validate: %v", err)
@@ -217,7 +217,7 @@ mode       = "auto"
 fast_model = "anthropic:claude-haiku-4-5"
 `
 	_, err := Load(writeFile(t, src))
-	if err == nil || !strings.Contains(err.Error(), "smart_model") {
+	if err == nil || !strings.Contains(err.Error(), "advisor_model") {
 		t.Fatalf("expected missing smart_model error, got %v", err)
 	}
 }
@@ -230,7 +230,7 @@ fast_model  = "anthropic:no-such-model"
 smart_model = "anthropic:claude-opus-4-6"
 `
 	_, err := Load(writeFile(t, src))
-	if err == nil || !strings.Contains(err.Error(), "fast_model") {
+	if err == nil || !strings.Contains(err.Error(), "implementer_model") {
 		t.Fatalf("expected fast_model resolution error, got %v", err)
 	}
 }

@@ -9,6 +9,7 @@ import (
 
 	"github.com/yottadynamics/yottacode/internal/adapter"
 	"github.com/yottadynamics/yottacode/internal/agent"
+	"github.com/yottadynamics/yottacode/internal/config"
 )
 
 // emitPlanBodyToScrollback writes the plan body to scrollback as a
@@ -112,6 +113,9 @@ func togglePlanMode(m Model) (Model, tea.Cmd) {
 	state.PlanFile = ""
 	applyPlanFileToWriteTools(m.cfg.Registry, "")
 	state.Active.Store(true)
+	if routerModeOrOff(m.routerMode) != config.RouterModeOff {
+		m, _ = m.switchActiveModelToRouterRole("advisor")
+	}
 	// Card-shaped entry: header + body + footer in the gutter style
 	// shared with tool-output cards. The footer carries the exit keys;
 	// the persistent banner repeats them (width permitting) so the
@@ -146,6 +150,9 @@ func enterPlanModeFromTool(m *Model) {
 		state.PlanFile = ""
 		applyPlanFileToWriteTools(m.cfg.Registry, "")
 		state.Active.Store(true)
+		if routerModeOrOff(m.routerMode) != config.RouterModeOff {
+			*m, _ = m.switchActiveModelToRouterRole("advisor")
+		}
 		m.appendLine(renderPlanModeEntryCard(planEntryHintModelRequested))
 		m.appendLine("")
 	}
@@ -254,4 +261,3 @@ func applyPlanFileToWriteTools(reg *agent.Registry, planFile string) {
 		}
 	}
 }
-
