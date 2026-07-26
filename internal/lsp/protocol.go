@@ -11,9 +11,17 @@ type lspDiagnostic struct {
 	Range struct {
 		Start Position `json:"start"`
 	} `json:"range"`
-	Severity int    `json:"severity"`
-	Source   string `json:"source"`
-	Message  string `json:"message"`
+	Severity           int                    `json:"severity"`
+	Code               any                    `json:"code"`
+	Source             string                 `json:"source"`
+	Tags               []int                  `json:"tags"`
+	RelatedInformation []lspDiagnosticRelated `json:"relatedInformation"`
+	Message            string                 `json:"message"`
+}
+
+type lspDiagnosticRelated struct {
+	Location lspLocation `json:"location"`
+	Message  string      `json:"message"`
 }
 
 type lspCallHierarchyItem struct {
@@ -64,7 +72,37 @@ func markupText(v any) string {
 func normalizeDiagnostics(path string, in []lspDiagnostic) []Diagnostic {
 	out := make([]Diagnostic, 0, len(in))
 	for _, d := range in {
-		out = append(out, Diagnostic{Path: path, Line: d.Range.Start.Line, Character: d.Range.Start.Character, Severity: severityName(d.Severity), Source: d.Source, Message: d.Message})
+		related := make([]DiagnosticRelated, 0, len(d.RelatedInformation))
+		for _, item := range d.RelatedInformation {
+			related = append(related, DiagnosticRelated{Location: Location{Path: uriToPath(item.Location.URI), Line: item.Location.Range.Start.Line, Character: item.Location.Range.Start.Character}, Message: item.Message})
+		}
+		out = append(out, Diagnostic{Path: path, Line: d.Range.Start.Line, Character: d.Range.Start.Character, Severity: severityName(d.Severity), Source: d.Source, Code: diagnosticCode(d.Code), Tags: diagnosticTags(d.Tags), Related: related, Message: d.Message})
+	}
+	return out
+}
+
+func diagnosticCode(v any) string {
+	switch x := v.(type) {
+	case string:
+		return x
+	case float64:
+		return fmt.Sprintf("%.0f", x)
+	default:
+		return ""
+	}
+}
+
+func diagnosticTags(tags []int) []string {
+	out := make([]string, 0, len(tags))
+	for _, tag := range tags {
+		switch tag {
+		case 1:
+			out = append(out, "unnecessary")
+		case 2:
+			out = append(out, "deprecated")
+		default:
+			out = append(out, fmt.Sprintf("tag%d", tag))
+		}
 	}
 	return out
 }

@@ -61,8 +61,8 @@ func RegisterCoreCwdTools(reg *Registry, cwd *CwdRef, deps CoreToolDeps) {
 
 	reg.Register(&ReadFileTool{Cwd: cwd, DenyReadPaths: deps.DenyReads, SupportsImages: deps.SupportsImages})
 	reg.Register(&ReadManyFilesTool{Cwd: cwd, DenyReadPaths: deps.DenyReads})
-	reg.Register(&WriteFileTool{Cwd: cwd, WriteOpts: wo})
-	reg.Register(&EditFileTool{Cwd: cwd, WriteOpts: wo})
+	reg.Register(&WriteFileTool{Cwd: cwd, WriteOpts: wo, LSPManager: deps.LSPManager, LSPServers: deps.LSPServers})
+	reg.Register(&EditFileTool{Cwd: cwd, WriteOpts: wo, LSPManager: deps.LSPManager, LSPServers: deps.LSPServers})
 	reg.Register(&ApplyDiffTool{Cwd: cwd, WriteOpts: wo})
 	reg.Register(&MkdirTool{Cwd: cwd, WriteOpts: wo})
 	reg.Register(&CopyFileTool{Cwd: cwd, WriteOpts: wo, DenyReadPaths: deps.DenyReads})
@@ -109,11 +109,17 @@ func RegisterCoreCwdTools(reg *Registry, cwd *CwdRef, deps CoreToolDeps) {
 		reg.Register(&LSPSymbolsTool{lspToolBase: base})
 		reg.Register(&LSPDocumentSymbolsTool{lspToolBase: base})
 		reg.Register(&LSPDefinitionTool{lspToolBase: base})
+		reg.Register(&LSPTypeDefinitionTool{lspToolBase: base})
+		reg.Register(&LSPImplementationTool{lspToolBase: base})
 		reg.Register(&LSPReferencesTool{lspToolBase: base})
 		reg.Register(&LSPHoverTool{lspToolBase: base})
 		reg.Register(&LSPSignatureHelpTool{lspToolBase: base})
 		reg.Register(&LSPDiagnosticsTool{lspToolBase: base})
+		reg.Register(&LSPChangedFilesDiagnosticsTool{lspToolBase: base})
 		reg.Register(&LSPCodeActionsTool{lspToolBase: base})
+		reg.Register(&LSPRenamePreviewTool{lspToolBase: base})
+		reg.Register(&LSPFormatPreviewTool{lspToolBase: base})
+		reg.Register(&LSPApplyWorkspaceEditTool{lspToolBase: base, WriteOpts: wo})
 		reg.Register(&LSPCallHierarchyTool{lspToolBase: base})
 	}
 }

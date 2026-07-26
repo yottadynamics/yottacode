@@ -63,11 +63,17 @@ In addition to the built-ins, **MCP tools** register dynamically when an `[[mcp_
 | [`lsp_symbols`](#lsp_symbols) | none | Search workspace symbols through an installed language server |
 | [`lsp_document_symbols`](#lsp_document_symbols) | none | List structural symbols declared in one source file |
 | [`lsp_definition`](#lsp_definition) | none | Find definition locations for a source position through an installed language server |
+| [`lsp_type_definition`](#lsp_type_definition) | none | Find type definition locations for a source position through an installed language server |
+| [`lsp_implementation`](#lsp_implementation) | none | Find implementation locations for an interface, method, or symbol |
 | [`lsp_references`](#lsp_references) | none | Find reference locations for a source position through an installed language server |
 | [`lsp_diagnostics`](#lsp_diagnostics) | none | Return compile/type diagnostics from an installed language server |
+| [`lsp_changed_files_diagnostics`](#lsp_changed_files_diagnostics) | none | Return diagnostics for git-changed supported source files after edits |
 | [`lsp_hover`](#lsp_hover) | none | Show hover/type/docs information at a source position |
 | [`lsp_signature_help`](#lsp_signature_help) | none | Show callable signatures and active parameter info at a source position |
 | [`lsp_code_actions`](#lsp_code_actions) | none | List quick fixes/refactors for a range without applying them |
+| [`lsp_rename_preview`](#lsp_rename_preview) | none | Preview semantic rename edits without applying them |
+| [`lsp_format_preview`](#lsp_format_preview) | none | Preview formatting edits without applying them |
+| [`lsp_apply_workspace_edit`](#lsp_apply_workspace_edit) | yes | Apply a previously previewed WorkspaceEdit after validation and approval |
 | [`lsp_call_hierarchy`](#lsp_call_hierarchy) | none | Show incoming/outgoing calls for a source position |
 | [`pr_readiness_context`](#pr_readiness_context) | none | Gather a local PR readiness snapshot before opening or updating a PR |
 | [`fetch_url`](#fetch_url) | none | Fetch a single HTTP(S) URL and return capped textual content |
@@ -966,6 +972,18 @@ are one-based `path:line:column` rows for terminal readability.
 
 No approval.
 
+## lsp_type_definition
+
+Find type definition locations for a source position. Parameters and output match `lsp_definition`.
+
+No approval.
+
+## lsp_implementation
+
+Find implementation locations for an interface, method, or symbol position. Parameters and output match `lsp_definition`.
+
+No approval.
+
 ## lsp_references
 
 Find reference locations for a source position through the matching language
@@ -985,12 +1003,24 @@ No approval.
 ## lsp_diagnostics
 
 Return compile/type diagnostics for a source file by opening it in the matching
-language server and reading `publishDiagnostics`. Missing servers return an
-`unavailable` result with install hints.
+language server and reading `publishDiagnostics`. Output distinguishes published
+clean results from `diagnostics not published before timeout`, and includes
+severity, source, code, tags, and related locations when the server provides them.
+Missing servers return an `unavailable` result with install hints.
 
 | Param | Type | Default | Notes |
 |---|---|---|---|
 | `path` | string | — | Required source file |
+
+No approval.
+
+## lsp_changed_files_diagnostics
+
+Run diagnostics across git-changed supported source files. Use this after edits in an LSP-supported language before declaring the change done.
+
+| Param | Type | Default | Notes |
+|---|---|---|---|
+| `max_files` | int | `20` | Maximum changed source files to inspect |
 
 No approval.
 
@@ -1023,7 +1053,9 @@ No approval.
 ## lsp_code_actions
 
 List language-server code actions and quick fixes for a range without applying
-them. This is intentionally read-only; an apply variant would need approval.
+them. Output includes whether each action carries an edit, command, related
+diagnostics, or requires a server-side resolve step. Applying edits is handled by
+the preview/apply WorkspaceEdit flow.
 
 | Param | Type | Default | Notes |
 |---|---|---|---|
@@ -1034,6 +1066,39 @@ them. This is intentionally read-only; an apply variant would need approval.
 | `end_character` | int | `character` | Zero-based end character |
 
 No approval.
+
+## lsp_rename_preview
+
+Preview a semantic rename as normalized WorkspaceEdit JSON without writing files. Pass the returned `apply_payload` to `lsp_apply_workspace_edit` only after reviewing the affected files.
+
+| Param | Type | Default | Notes |
+|---|---|---|---|
+| `path` | string | — | Required source file |
+| `line` | int | — | Zero-based line |
+| `character` | int | — | Zero-based UTF-16 character offset |
+| `new_name` | string | — | Replacement symbol name |
+
+No approval.
+
+## lsp_format_preview
+
+Preview server formatting edits for one file without writing files.
+
+| Param | Type | Default | Notes |
+|---|---|---|---|
+| `path` | string | — | Required source file |
+
+No approval.
+
+## lsp_apply_workspace_edit
+
+Apply a previously previewed WorkspaceEdit through yottacode's path validator, checkpoint snapshot flow, and normal approval modal. The language server never writes directly. In this experimental version, be cautious with non-ASCII / UTF-16-heavy edit ranges until broader real-server coverage lands.
+
+| Param | Type | Default | Notes |
+|---|---|---|---|
+| `edit` | object | — | WorkspaceEdit object from a preview tool's `apply_payload` |
+
+Requires approval.
 
 ## lsp_call_hierarchy
 

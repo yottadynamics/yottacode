@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"strings"
+
+	lspci "github.com/yottadynamics/yottacode/internal/lsp"
 )
 
 // EditFileTool performs a surgical replacement inside an existing file.
@@ -13,8 +15,10 @@ import (
 // file and refuses to apply a non-unique match unless replace_all is set,
 // which catches stale assumptions before they corrupt code.
 type EditFileTool struct {
-	Cwd       *CwdRef
-	WriteOpts WritePathOptions
+	Cwd        *CwdRef
+	WriteOpts  WritePathOptions
+	LSPManager *lspci.Manager
+	LSPServers map[string][]string
 }
 
 func (t *EditFileTool) Name() string { return "edit_file" }
@@ -104,7 +108,7 @@ func (t *EditFileTool) Execute(ctx context.Context, argsJSON string) (string, er
 				if err := os.WriteFile(p, []byte(out), 0o644); err != nil {
 					return "", fmt.Errorf("edit_file: write: %w", err)
 				}
-				return fmt.Sprintf("edited %s: 1 replacement (matched ignoring trailing whitespace / line endings)", p), nil
+				return t.editResult(ctx, p, out, "edited %s: 1 replacement (matched ignoring trailing whitespace / line endings)")
 			} else if mcount > 1 {
 				return "", fmt.Errorf("edit_file: old_string is not present exactly, and a whitespace-insensitive match is ambiguous (%d candidates) in %s — re-read the file and copy the exact text, or add surrounding lines to old_string for a unique match", mcount, p)
 			}
@@ -126,7 +130,15 @@ func (t *EditFileTool) Execute(ctx context.Context, argsJSON string) (string, er
 	if err := os.WriteFile(p, []byte(out), 0o644); err != nil {
 		return "", fmt.Errorf("edit_file: write: %w", err)
 	}
-	return fmt.Sprintf("edited %s: %d replacement(s)", p, n), nil
+	return t.editResult(ctx, p, out, fmt.Sprintf("edited %%s: %d replacement(s)", n))
+}
+
+func (t *EditFileTool) editResult(ctx context.Context, path, text, format string) (string, error) {
+	msg := fmt.Sprintf(format, path)
+	if note := notifyLSPFileChanged(ctx, t.Cwd, t.LSPManager, t.LSPServers, path, text); note != "" {
+		msg += "\n" + note
+	}
+	return msg, nil
 }
 
 // editNormalizeMatchLine strips a trailing CR and trailing spaces/tabs so

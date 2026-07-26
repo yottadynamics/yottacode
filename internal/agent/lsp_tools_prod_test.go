@@ -32,8 +32,8 @@ func TestLSPExtraToolsUseInjectedClient(t *testing.T) {
 		{"document symbols", &LSPDocumentSymbolsTool{lspToolBase: base}, `{"path":"main.go"}`, "main.go:2:6\tfunction\tmain"},
 		{"hover", &LSPHoverTool{lspToolBase: base}, `{"path":"main.go","line":1,"character":5}`, "hover text"},
 		{"signature help", &LSPSignatureHelpTool{lspToolBase: base}, `{"path":"main.go","line":1,"character":12}`, "active\tfmt.Println(a ...any)"},
-		{"diagnostics", &LSPDiagnosticsTool{lspToolBase: base}, `{"path":"main.go"}`, "main.go:2:7\twarning\tgopls\tunused"},
-		{"code actions", &LSPCodeActionsTool{lspToolBase: base}, `{"path":"main.go","line":1,"character":0,"end_line":1,"end_character":4}`, "quickfix\tRemove unused"},
+		{"diagnostics", &LSPDiagnosticsTool{lspToolBase: base}, `{"path":"main.go"}`, "main.go:2:7\twarning source=gopls\tunused"},
+		{"code actions", &LSPCodeActionsTool{lspToolBase: base}, `{"path":"main.go","line":1,"character":0,"end_line":1,"end_character":4}`, "quickfix\tRemove unused\tedit=no command=no"},
 		{"call hierarchy", &LSPCallHierarchyTool{lspToolBase: base}, `{"path":"main.go","line":1,"character":5}`, "outgoing\tmain.go:2:13\tfunction\tfmt.Println\tfmt"},
 	}
 	for _, tc := range cases {

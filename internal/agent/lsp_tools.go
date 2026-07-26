@@ -20,11 +20,15 @@ type lspClient interface {
 	WorkspaceSymbols(ctx context.Context, query string) ([]lspci.Symbol, error)
 	DocumentSymbols(ctx context.Context, path string) ([]lspci.Symbol, error)
 	Definition(ctx context.Context, path string, pos lspci.Position) ([]lspci.Location, error)
+	TypeDefinition(ctx context.Context, path string, pos lspci.Position) ([]lspci.Location, error)
+	Implementation(ctx context.Context, path string, pos lspci.Position) ([]lspci.Location, error)
 	References(ctx context.Context, path string, pos lspci.Position, includeDeclaration bool) ([]lspci.Location, error)
 	Hover(ctx context.Context, path string, pos lspci.Position) (string, error)
 	SignatureHelp(ctx context.Context, path string, pos lspci.Position) (lspci.SignatureHelp, error)
-	Diagnostics(ctx context.Context, path string) ([]lspci.Diagnostic, error)
+	Diagnostics(ctx context.Context, path string) (lspci.DiagnosticsSnapshot, error)
 	CodeActions(ctx context.Context, path string, start, end lspci.Position) ([]lspci.CodeAction, error)
+	RenamePreview(ctx context.Context, path string, pos lspci.Position, newName string) (lspci.WorkspaceEdit, error)
+	FormatPreview(ctx context.Context, path string) (lspci.WorkspaceEdit, error)
 	CallHierarchy(ctx context.Context, path string, pos lspci.Position) ([]lspci.CallHierarchyItem, error)
 	Close() error
 }
@@ -233,7 +237,51 @@ func (t *LSPDefinitionTool) PreviewCall(argsJSON string) string {
 	return fmt.Sprintf("lsp_definition(%s:%d:%d)", a.Path, a.Line, a.Character)
 }
 func (t *LSPDefinitionTool) Execute(ctx context.Context, argsJSON string) (string, error) {
-	return executeLSPLocations(ctx, t.lspToolBase, argsJSON, "lsp_definition", false)
+	return executeLSPLocations(ctx, t.lspToolBase, argsJSON, "lsp_definition", func(client lspClient, path string, pos lspci.Position, _ positionArgs) ([]lspci.Location, error) {
+		return client.Definition(ctx, path, pos)
+	})
+}
+
+// LSPTypeDefinitionTool returns type definition locations for a source position.
+type LSPTypeDefinitionTool struct{ lspToolBase }
+
+func (t *LSPTypeDefinitionTool) Name() string { return "lsp_type_definition" }
+func (t *LSPTypeDefinitionTool) Description() string {
+	return "Find language-server type definition locations for a source position (zero-based line and character)."
+}
+func (t *LSPTypeDefinitionTool) Schema() map[string]any       { return positionSchema() }
+func (t *LSPTypeDefinitionTool) RequiresApproval(string) bool { return false }
+func (t *LSPTypeDefinitionTool) ParallelSafe(string) bool     { return true }
+func (t *LSPTypeDefinitionTool) PreviewCall(argsJSON string) string {
+	var a positionArgs
+	_ = json.Unmarshal([]byte(argsJSON), &a)
+	return fmt.Sprintf("lsp_type_definition(%s:%d:%d)", a.Path, a.Line, a.Character)
+}
+func (t *LSPTypeDefinitionTool) Execute(ctx context.Context, argsJSON string) (string, error) {
+	return executeLSPLocations(ctx, t.lspToolBase, argsJSON, "lsp_type_definition", func(client lspClient, path string, pos lspci.Position, _ positionArgs) ([]lspci.Location, error) {
+		return client.TypeDefinition(ctx, path, pos)
+	})
+}
+
+// LSPImplementationTool returns implementation locations for a source position.
+type LSPImplementationTool struct{ lspToolBase }
+
+func (t *LSPImplementationTool) Name() string { return "lsp_implementation" }
+func (t *LSPImplementationTool) Description() string {
+	return "Find language-server implementation locations for an interface, method, or symbol position."
+}
+func (t *LSPImplementationTool) Schema() map[string]any       { return positionSchema() }
+func (t *LSPImplementationTool) RequiresApproval(string) bool { return false }
+func (t *LSPImplementationTool) ParallelSafe(string) bool     { return true }
+func (t *LSPImplementationTool) PreviewCall(argsJSON string) string {
+	var a positionArgs
+	_ = json.Unmarshal([]byte(argsJSON), &a)
+	return fmt.Sprintf("lsp_implementation(%s:%d:%d)", a.Path, a.Line, a.Character)
+}
+func (t *LSPImplementationTool) Execute(ctx context.Context, argsJSON string) (string, error) {
+	return executeLSPLocations(ctx, t.lspToolBase, argsJSON, "lsp_implementation", func(client lspClient, path string, pos lspci.Position, _ positionArgs) ([]lspci.Location, error) {
+		return client.Implementation(ctx, path, pos)
+	})
 }
 
 // LSPReferencesTool returns reference locations for a source position.
@@ -257,7 +305,9 @@ func (t *LSPReferencesTool) PreviewCall(argsJSON string) string {
 	return fmt.Sprintf("lsp_references(%s:%d:%d)", a.Path, a.Line, a.Character)
 }
 func (t *LSPReferencesTool) Execute(ctx context.Context, argsJSON string) (string, error) {
-	return executeLSPLocations(ctx, t.lspToolBase, argsJSON, "lsp_references", true)
+	return executeLSPLocations(ctx, t.lspToolBase, argsJSON, "lsp_references", func(client lspClient, path string, pos lspci.Position, a positionArgs) ([]lspci.Location, error) {
+		return client.References(ctx, path, pos, a.IncludeDeclaration)
+	})
 }
 
 type positionArgs struct {
@@ -276,7 +326,7 @@ func positionSchema() map[string]any {
 	}, "required": []string{"path", "line", "character"}}
 }
 
-func executeLSPLocations(ctx context.Context, base lspToolBase, argsJSON, name string, references bool) (string, error) {
+func executeLSPLocations(ctx context.Context, base lspToolBase, argsJSON, name string, request func(lspClient, string, lspci.Position, positionArgs) ([]lspci.Location, error)) (string, error) {
 	var a positionArgs
 	if err := json.Unmarshal([]byte(argsJSON), &a); err != nil {
 		return "", fmt.Errorf("%s: invalid args: %w", name, err)
@@ -302,12 +352,7 @@ func executeLSPLocations(ctx context.Context, base lspToolBase, argsJSON, name s
 	}
 	defer client.Close()
 	pos := lspci.Position{Line: a.Line, Character: a.Character}
-	var locs []lspci.Location
-	if references {
-		locs, err = client.References(ctx, path, pos, a.IncludeDeclaration)
-	} else {
-		locs, err = client.Definition(ctx, path, pos)
-	}
+	locs, err := request(client, path, pos, a)
 	if err != nil {
 		if errors.Is(err, lspci.ErrUnsupportedCapability) {
 			return unsupportedCapabilityResult(name, err), nil

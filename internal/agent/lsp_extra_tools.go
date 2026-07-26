@@ -174,25 +174,14 @@ func (t *LSPDiagnosticsTool) Execute(ctx context.Context, argsJSON string) (stri
 		return unavailable, err
 	}
 	defer client.Close()
-	diags, err := client.Diagnostics(ctx, path)
+	snap, err := client.Diagnostics(ctx, path)
 	if errors.Is(err, lspci.ErrUnsupportedCapability) {
 		return unsupportedCapabilityResult("lsp_diagnostics", err), nil
 	}
 	if err != nil {
 		return "", fmt.Errorf("lsp_diagnostics: %w", err)
 	}
-	if len(diags) == 0 {
-		return "(no diagnostics)\n", nil
-	}
-	var b strings.Builder
-	for _, d := range diags {
-		source := d.Source
-		if source != "" {
-			source = "\t" + source
-		}
-		fmt.Fprintf(&b, "%s:%d:%d\t%s%s\t%s\n", d.Path, d.Line+1, d.Character+1, d.Severity, source, d.Message)
-	}
-	return b.String(), nil
+	return formatDiagnosticsSnapshot(snap), nil
 }
 
 // LSPCodeActionsTool lists available code actions without applying them.
@@ -244,7 +233,27 @@ func (t *LSPCodeActionsTool) Execute(ctx context.Context, argsJSON string) (stri
 	}
 	var b strings.Builder
 	for _, action := range actions {
-		fmt.Fprintf(&b, "%s\t%s\n", action.Kind, action.Title)
+		flags := []string{}
+		if action.HasEdit {
+			flags = append(flags, "edit=yes")
+		} else {
+			flags = append(flags, "edit=no")
+		}
+		if action.HasCommand {
+			flags = append(flags, "command=yes")
+		} else {
+			flags = append(flags, "command=no")
+		}
+		if action.DiagnosticCount > 0 {
+			flags = append(flags, fmt.Sprintf("diagnostics=%d", action.DiagnosticCount))
+		}
+		if action.ResolveSupported {
+			flags = append(flags, "resolve=yes")
+		}
+		if action.ResolveIncomplete {
+			flags = append(flags, "needs_resolve=yes")
+		}
+		fmt.Fprintf(&b, "%s\t%s\t%s\n", action.Kind, action.Title, strings.Join(flags, " "))
 	}
 	return b.String(), nil
 }
