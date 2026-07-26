@@ -45,3 +45,10 @@ go.work.sum
 # Editor/IDE
 # .idea/
 # .vscode/
+
+# Generated local media renders and smoke-test artifacts
+/out/
+
+# Private planning notes live outside the public repo
+roadmap
+

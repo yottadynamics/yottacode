@@ -433,6 +433,7 @@ Use --json for scripting.`,
 			if loaded, err := config.LoadDefault(); err == nil {
 				fileCfg = loaded
 			}
+			mediaResult := probeMediaDoctor(cmd.Context())
 			lspResult := probeLSPDoctor(cmd.Context(), *opts, fileCfg)
 			result := adapter.Probe(cmd.Context(), adapterConfigFromOptions(*opts))
 			// --no-github skips the GitHub side entirely. Used by
@@ -447,13 +448,14 @@ Use --json for scripting.`,
 					enc.SetIndent("", "  ")
 					combined := struct {
 						adapter.ProbeResult
-						LSP LSPDoctorResult `json:"lsp_code_intelligence"`
-					}{ProbeResult: result, LSP: lspResult}
+						LSP   LSPDoctorResult   `json:"lsp_code_intelligence"`
+						Media MediaDoctorResult `json:"media_editing"`
+					}{ProbeResult: result, LSP: lspResult, Media: mediaResult}
 					if err := enc.Encode(combined); err != nil {
 						return err
 					}
 				} else {
-					fmt.Fprintln(cmd.OutOrStdout(), formatDoctorResult(result)+renderLSPDoctor(lspResult))
+					fmt.Fprintln(cmd.OutOrStdout(), formatDoctorResult(result)+renderLSPDoctor(lspResult)+renderMediaDoctor(mediaResult))
 				}
 				if len(result.Issues) > 0 {
 					return errors.New("doctor found issues")
@@ -473,16 +475,18 @@ Use --json for scripting.`,
 					adapter.ProbeResult
 					GitHub GitHubProbeResult `json:"github"`
 					LSP    LSPDoctorResult   `json:"lsp_code_intelligence"`
+					Media  MediaDoctorResult `json:"media_editing"`
 				}{
 					ProbeResult: result,
 					GitHub:      ghResult,
 					LSP:         lspResult,
+					Media:       mediaResult,
 				}
 				if err := enc.Encode(combined); err != nil {
 					return err
 				}
 			} else {
-				fmt.Fprintln(cmd.OutOrStdout(), formatDoctorResult(result)+renderGitHubProbe(ghResult)+renderLSPDoctor(lspResult))
+				fmt.Fprintln(cmd.OutOrStdout(), formatDoctorResult(result)+renderGitHubProbe(ghResult)+renderLSPDoctor(lspResult)+renderMediaDoctor(mediaResult))
 			}
 			if len(result.Issues) > 0 || len(ghResult.Issues) > 0 {
 				return errors.New("doctor found issues")

@@ -94,6 +94,10 @@ func RegisterCoreCwdTools(reg *Registry, cwd *CwdRef, deps CoreToolDeps) {
 	reg.Register(&RunTestsTool{Cwd: cwd})
 	reg.Register(&RunBashTool{Cwd: cwd})
 
+	reg.Register(&MediaProbeTool{Cwd: cwd, DenyReadPaths: deps.DenyReads})
+	reg.Register(&MediaAnalyzeTool{Cwd: cwd, DenyReadPaths: deps.DenyReads})
+	reg.Register(&MediaRenderTool{Cwd: cwd, DenyReadPaths: deps.DenyReads, WriteOpts: wo})
+
 	reg.Register(&ListDirTool{Cwd: cwd})
 	reg.Register(&ListProjectStructureTool{Cwd: cwd})
 	reg.Register(&GlobTool{Cwd: cwd})

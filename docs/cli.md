@@ -109,7 +109,7 @@ yottacode doctor
 yottacode doctor --json
 ```
 
-`doctor` probes the provider `/models` endpoint and reports reachability, auth status, model visibility, provider capabilities, and configuration warnings. The JSON form is intended for scripts.
+`doctor` probes the provider `/models` endpoint and reports reachability, auth status, model visibility, provider capabilities, configuration warnings, and optional local tooling readiness such as LSP servers and media-editing binaries. The JSON form is intended for scripts.
 
 ## ChatGPT OAuth
 

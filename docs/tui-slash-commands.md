@@ -24,6 +24,7 @@ Type `/` in the TUI to open the slash-command palette. The palette filters as yo
 | `/summarize` | — | Compress the current session after snapshotting it |
 | `/checkpoints` | — | Open the checkpoints picker — also `Esc Esc`. Restore conversation, files, or both to any prior prompt |
 | `/memory` | — | Edit curated memory or browse agent-managed memories |
+| `/video` | `[edit\|analyze] <path>` | Guide a marketing-video workflow: probe a recording, analyze audio/visual fluff, propose cuts, then render approved YouTube/X outputs |
 | `/setup` | — | Suspend the TUI and rerun setup |
 | `/init` | — | Ask the agent to draft or refresh `.yottacode/YOTTACODE.md` |
 | `/git-commit` | — | Compose and run a one-line commit on the staged changes. Procedural: control flow is in Go, the model only synthesizes the subject. Replaces the legacy markdown `/git:commit-message`. |
