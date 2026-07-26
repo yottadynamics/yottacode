@@ -118,6 +118,43 @@ func (m *Manager) Stats() ManagerStats {
 	return out
 }
 
+// NotifyFileChanged updates the pooled server for a file that yottacode just
+// wrote. It is best-effort by design: LSP diagnostics are advisory, and an edit
+// must not fail only because a local language server is missing or busy.
+func (m *Manager) NotifyFileChanged(ctx context.Context, lang Language, root, path, text string) error {
+	if m == nil {
+		return nil
+	}
+	client, err := m.Acquire(ctx, lang, root)
+	if err != nil {
+		return err
+	}
+	defer client.Close()
+	if err := client.NotifyChanged(ctx, path, text); err != nil {
+		return err
+	}
+	return client.NotifySaved(ctx, path)
+}
+
+// CloseDocument removes one open document from a pooled server if that server
+// is already running. It does not start a new server just to close a document.
+func (m *Manager) CloseDocument(ctx context.Context, lang Language, root, path string) error {
+	if m == nil {
+		return nil
+	}
+	key := managerKey(lang, cleanRoot(root))
+	m.mu.Lock()
+	entry := m.clients[key]
+	if entry != nil {
+		entry.lastUsed = time.Now()
+	}
+	m.mu.Unlock()
+	if entry == nil {
+		return nil
+	}
+	return entry.client.CloseDocument(ctx, path)
+}
+
 // CloseAll terminates every pooled server. It is safe to call multiple times.
 func (m *Manager) CloseAll() {
 	if m == nil {

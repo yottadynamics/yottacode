@@ -77,13 +77,37 @@ type Diagnostic struct {
 	Character int
 	Severity  string
 	Source    string
+	Code      string
+	Tags      []string
+	Related   []DiagnosticRelated
 	Message   string
+}
+
+// DiagnosticRelated points at supporting context for a diagnostic, such as the
+// declaration that caused an implementation mismatch. It is intentionally small
+// so tool output can stay bounded.
+type DiagnosticRelated struct {
+	Location Location
+	Message  string
+}
+
+// DiagnosticsSnapshot is the latest diagnostic state yottacode could observe
+// for a file. Published=false means the server did not publish diagnostics
+// before the bounded settle timeout, which is distinct from a clean file.
+type DiagnosticsSnapshot struct {
+	Published   bool
+	Diagnostics []Diagnostic
 }
 
 // CodeAction is a read-only description of a server-offered fix/refactor.
 type CodeAction struct {
-	Title string
-	Kind  string
+	Title             string
+	Kind              string
+	HasEdit           bool
+	HasCommand        bool
+	DiagnosticCount   int
+	ResolveSupported  bool
+	ResolveIncomplete bool
 }
 
 // CallHierarchyItem is one incoming/outgoing call hierarchy row.
@@ -96,14 +120,24 @@ type CallHierarchyItem struct {
 }
 
 type serverCapabilities struct {
-	WorkspaceSymbol bool
-	DocumentSymbol  bool
-	Definition      bool
-	References      bool
-	Hover           bool
-	SignatureHelp   bool
-	CodeAction      bool
-	CallHierarchy   bool
+	WorkspaceSymbol   bool
+	DocumentSymbol    bool
+	Definition        bool
+	TypeDefinition    bool
+	Implementation    bool
+	References        bool
+	Hover             bool
+	SignatureHelp     bool
+	CodeAction        bool
+	CodeActionResolve bool
+	CallHierarchy     bool
+	Rename            bool
+	Formatting        bool
+}
+
+type openDocumentState struct {
+	version int
+	text    string
 }
 
 // Client owns one short-lived language-server process. yottacode starts a
@@ -117,6 +151,8 @@ type Client struct {
 	rootURI string
 	caps    serverCapabilities
 	capOK   bool
+	docs    map[string]openDocumentState
+	diags   map[string]DiagnosticsSnapshot
 
 	mu     sync.Mutex
 	nextID int64
@@ -153,6 +189,8 @@ func NewClient(ctx context.Context, lang Language, root string) (*Client, error)
 		stdout:  bufio.NewReader(stdoutPipe),
 		stderr:  stderr,
 		rootURI: pathToURI(root),
+		docs:    map[string]openDocumentState{},
+		diags:   map[string]DiagnosticsSnapshot{},
 	}
 	if err := c.initialize(startCtx); err != nil {
 		_ = c.Close()
@@ -172,12 +210,16 @@ func (c *Client) initialize(ctx context.Context) error {
 			"textDocument": map[string]any{
 				"documentSymbol":     map[string]any{},
 				"definition":         map[string]any{},
+				"typeDefinition":     map[string]any{},
+				"implementation":     map[string]any{},
 				"references":         map[string]any{},
 				"hover":              map[string]any{"contentFormat": []string{"markdown", "plaintext"}},
 				"signatureHelp":      map[string]any{},
-				"codeAction":         map[string]any{},
+				"codeAction":         map[string]any{"resolveSupport": map[string]any{"properties": []string{"edit", "command"}}},
 				"publishDiagnostics": map[string]any{},
 				"callHierarchy":      map[string]any{},
+				"rename":             map[string]any{},
+				"formatting":         map[string]any{},
 			},
 		},
 	}
@@ -291,6 +333,28 @@ func (c *Client) Definition(ctx context.Context, path string, pos Position) ([]L
 	})
 }
 
+// TypeDefinition runs textDocument/typeDefinition at pos.
+func (c *Client) TypeDefinition(ctx context.Context, path string, pos Position) ([]Location, error) {
+	if err := c.requireCapability(c.caps.TypeDefinition, "textDocument/typeDefinition"); err != nil {
+		return nil, err
+	}
+	if err := c.openDocument(ctx, path); err != nil {
+		return nil, err
+	}
+	return c.locationRequest(ctx, "textDocument/typeDefinition", map[string]any{"textDocument": map[string]any{"uri": pathToURI(path)}, "position": pos})
+}
+
+// Implementation runs textDocument/implementation at pos.
+func (c *Client) Implementation(ctx context.Context, path string, pos Position) ([]Location, error) {
+	if err := c.requireCapability(c.caps.Implementation, "textDocument/implementation"); err != nil {
+		return nil, err
+	}
+	if err := c.openDocument(ctx, path); err != nil {
+		return nil, err
+	}
+	return c.locationRequest(ctx, "textDocument/implementation", map[string]any{"textDocument": map[string]any{"uri": pathToURI(path)}, "position": pos})
+}
+
 // References runs textDocument/references at pos.
 func (c *Client) References(ctx context.Context, path string, pos Position, includeDeclaration bool) ([]Location, error) {
 	if err := c.requireCapability(c.caps.References, "textDocument/references"); err != nil {
@@ -358,28 +422,86 @@ func (c *Client) CodeActions(ctx context.Context, path string, start, end Positi
 	if err != nil || len(raw) == 0 || string(raw) == "null" {
 		return nil, err
 	}
-	var items []struct{ Title, Kind string }
-	if err := json.Unmarshal(raw, &items); err != nil {
+	items, err := codeActions(raw, c.caps.CodeActionResolve)
+	if err != nil {
 		return nil, fmt.Errorf("parse codeAction response: %w", err)
 	}
-	out := make([]CodeAction, 0, len(items))
-	for _, item := range items {
-		out = append(out, CodeAction{Title: item.Title, Kind: item.Kind})
+	return items, nil
+}
+
+// RenamePreview asks the server for a semantic rename edit without applying it.
+func (c *Client) RenamePreview(ctx context.Context, path string, pos Position, newName string) (WorkspaceEdit, error) {
+	if err := c.requireCapability(c.caps.Rename, "textDocument/rename"); err != nil {
+		return WorkspaceEdit{}, err
+	}
+	if err := c.openDocument(ctx, path); err != nil {
+		return WorkspaceEdit{}, err
+	}
+	ctx, cancel := context.WithTimeout(ctx, defaultRequestTimeout)
+	defer cancel()
+	raw, err := c.request(ctx, "textDocument/rename", map[string]any{"textDocument": map[string]any{"uri": pathToURI(path)}, "position": pos, "newName": newName})
+	if err != nil {
+		return WorkspaceEdit{}, err
+	}
+	return workspaceEdit(raw)
+}
+
+// FormatPreview asks the server for whole-document formatting edits without
+// applying them. The agent apply path remains yottacode-owned and approved.
+func (c *Client) FormatPreview(ctx context.Context, path string) (WorkspaceEdit, error) {
+	if err := c.requireCapability(c.caps.Formatting, "textDocument/formatting"); err != nil {
+		return WorkspaceEdit{}, err
+	}
+	if err := c.openDocument(ctx, path); err != nil {
+		return WorkspaceEdit{}, err
+	}
+	ctx, cancel := context.WithTimeout(ctx, defaultRequestTimeout)
+	defer cancel()
+	raw, err := c.request(ctx, "textDocument/formatting", map[string]any{"textDocument": map[string]any{"uri": pathToURI(path)}, "options": map[string]any{"tabSize": 4, "insertSpaces": false}})
+	if err != nil {
+		return WorkspaceEdit{}, err
+	}
+	if len(raw) == 0 || string(raw) == "null" {
+		return WorkspaceEdit{}, nil
+	}
+	var edits []struct {
+		Range   TextRange `json:"range"`
+		NewText string    `json:"newText"`
+	}
+	if err := json.Unmarshal(raw, &edits); err != nil {
+		return WorkspaceEdit{}, err
+	}
+	out := WorkspaceEdit{}
+	for _, edit := range edits {
+		out.Edits = append(out.Edits, TextEdit{Path: path, Range: edit.Range, NewText: edit.NewText})
 	}
 	return out, nil
 }
 
 // Diagnostics opens a document and waits briefly for publishDiagnostics.
-func (c *Client) Diagnostics(ctx context.Context, path string) ([]Diagnostic, error) {
+func (c *Client) Diagnostics(ctx context.Context, path string) (DiagnosticsSnapshot, error) {
 	ctx, cancel := context.WithTimeout(ctx, defaultRequestTimeout)
 	defer cancel()
 	if err := c.openDocument(ctx, path); err != nil {
-		return nil, err
+		return DiagnosticsSnapshot{}, err
 	}
+	uri := pathToURI(path)
+	settle := time.After(1200 * time.Millisecond)
 	for {
+		select {
+		case <-settle:
+			c.mu.Lock()
+			cached, ok := c.diags[uri]
+			c.mu.Unlock()
+			if ok {
+				return cached, nil
+			}
+			return DiagnosticsSnapshot{Published: false}, nil
+		default:
+		}
 		msg, err := c.readMessageContext(ctx)
 		if err != nil {
-			return nil, err
+			return DiagnosticsSnapshot{}, err
 		}
 		var note struct {
 			Method string `json:"method"`
@@ -391,7 +513,13 @@ func (c *Client) Diagnostics(ctx context.Context, path string) ([]Diagnostic, er
 		if err := json.Unmarshal(msg, &note); err != nil || note.Method != "textDocument/publishDiagnostics" {
 			continue
 		}
-		return normalizeDiagnostics(uriToPath(note.Params.URI), note.Params.Diagnostics), nil
+		snap := DiagnosticsSnapshot{Published: true, Diagnostics: normalizeDiagnostics(uriToPath(note.Params.URI), note.Params.Diagnostics)}
+		c.mu.Lock()
+		c.diags[note.Params.URI] = snap
+		c.mu.Unlock()
+		if note.Params.URI == uri {
+			return snap, nil
+		}
 	}
 }
 
@@ -435,7 +563,68 @@ func (c *Client) openDocument(ctx context.Context, path string) error {
 	}
 	ctx, cancel := context.WithTimeout(ctx, defaultRequestTimeout)
 	defer cancel()
-	return c.notifyContext(ctx, "textDocument/didOpen", map[string]any{"textDocument": map[string]any{"uri": pathToURI(path), "languageId": languageIDForPath(path), "version": 1, "text": readTextBestEffort(path)}})
+	return c.syncDocumentLocked(ctx, path, readTextBestEffort(path))
+}
+
+// NotifyChanged sends a full-document didChange for a path that yottacode just
+// wrote. Full sync is less clever than incremental ranges but is safer for an
+// agent whose edits may come from multiple tools and rollback paths.
+func (c *Client) NotifyChanged(ctx context.Context, path, text string) error {
+	if !c.capOK {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, defaultRequestTimeout)
+	defer cancel()
+	return c.syncDocumentLocked(ctx, path, text)
+}
+
+func (c *Client) syncDocumentLocked(ctx context.Context, path, text string) error {
+	uri := pathToURI(path)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if state, ok := c.docs[uri]; ok {
+		if state.text == text {
+			return nil
+		}
+		state.version++
+		state.text = text
+		c.docs[uri] = state
+		return c.notifyLocked("textDocument/didChange", map[string]any{"textDocument": map[string]any{"uri": uri, "version": state.version}, "contentChanges": []map[string]any{{"text": text}}})
+	}
+	state := openDocumentState{version: 1, text: text}
+	c.docs[uri] = state
+	return c.notifyLocked("textDocument/didOpen", map[string]any{"textDocument": map[string]any{"uri": uri, "languageId": languageIDForPath(path), "version": state.version, "text": text}})
+}
+
+// NotifySaved tells the server that yottacode finished writing a document.
+// Servers that ignore didSave simply drop the notification.
+func (c *Client) NotifySaved(ctx context.Context, path string) error {
+	if !c.capOK {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, defaultRequestTimeout)
+	defer cancel()
+	return c.notifyContext(ctx, "textDocument/didSave", map[string]any{"textDocument": map[string]any{"uri": pathToURI(path)}})
+}
+
+// CloseDocument releases a document from the server's open set and removes the
+// local version counter. The manager calls this during teardown or resync.
+func (c *Client) CloseDocument(ctx context.Context, path string) error {
+	if !c.capOK {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, defaultRequestTimeout)
+	defer cancel()
+	uri := pathToURI(path)
+	c.mu.Lock()
+	delete(c.docs, uri)
+	delete(c.diags, uri)
+	err := c.notifyLocked("textDocument/didClose", map[string]any{"textDocument": map[string]any{"uri": uri}})
+	c.mu.Unlock()
+	return err
 }
 
 func (c *Client) requireCapability(ok bool, method string) error {

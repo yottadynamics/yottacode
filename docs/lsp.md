@@ -30,7 +30,7 @@ Missing servers are not fatal. yottacode reports the missing command and an inst
 
 ## Tools
 
-When the feature flag is enabled, yottacode registers these read-only tools:
+When the feature flag is enabled, yottacode registers these LSP tools. Most are read-only; `lsp_apply_workspace_edit` is the approval-gated mutation step for previously previewed server edits:
 
 | Tool | Purpose |
 |---|---|
@@ -38,16 +38,24 @@ When the feature flag is enabled, yottacode registers these read-only tools:
 | `lsp_symbols` | Search workspace symbols through LSP, with a regex fallback when no server is installed |
 | `lsp_document_symbols` | List structural symbols declared in one source file |
 | `lsp_definition` | Find definition locations for a file position |
+| `lsp_type_definition` | Find type definition locations for a file position |
+| `lsp_implementation` | Find implementation locations for an interface, method, or symbol |
 | `lsp_references` | Find reference locations for a file position |
-| `lsp_diagnostics` | Return compile/type diagnostics for a source file |
+| `lsp_diagnostics` | Return compile/type diagnostics for a source file, distinguishing clean results from diagnostic-publish timeouts |
+| `lsp_changed_files_diagnostics` | Check diagnostics for git-changed supported source files after edits |
 | `lsp_hover` | Show hover/type/documentation text for a source position |
 | `lsp_signature_help` | Show callable signatures and active parameter info at a source position |
-| `lsp_code_actions` | List quick fixes/refactors for a range without applying them |
+| `lsp_code_actions` | List quick fixes/refactors for a range without applying them, including edit/command metadata |
+| `lsp_rename_preview` | Preview semantic rename edits as WorkspaceEdit JSON without writing files |
+| `lsp_format_preview` | Preview formatting edits for one file without writing files |
+| `lsp_apply_workspace_edit` | Apply a previously previewed WorkspaceEdit through yottacode path validation and approval |
 | `lsp_call_hierarchy` | Show incoming/outgoing call hierarchy for a source position |
 
 Positions are zero-based line and UTF-16 character offsets, matching LSP. Output locations are rendered one-based as `path:line:column` for terminal readability.
 
-`lsp_code_actions` is intentionally read-only. It lists actions but does not apply edits; applying language-server edits would require a separate approval-gated tool.
+`lsp_code_actions` is intentionally read-only. Semantic edits use a two-step flow: preview tools (`lsp_rename_preview`, `lsp_format_preview`, and future code-action previews) return normalized WorkspaceEdit JSON, then `lsp_apply_workspace_edit` validates every path, snapshots affected files through the normal mutator flow, writes the edits itself, and notifies the LSP manager. The language server never writes directly to the repository.
+
+The WorkspaceEdit applier is intentionally conservative in this experimental phase. It applies text edits from the bottom of each file upward and validates every path, but non-ASCII / UTF-16-heavy edit ranges need more real-server coverage before relying on broad semantic refactors in such files.
 
 ## Session advisory
 
@@ -75,6 +83,8 @@ The experimental bridge now includes several production-readiness behaviors:
 
 - Workspace roots are detected from language markers such as `go.mod`, `package.json`, `pyproject.toml`, and `Cargo.toml` instead of always using the file's directory.
 - Documents are opened with `textDocument/didOpen` before position-based requests so servers see the same file contents yottacode read from disk.
+- Successful `edit_file` and `write_file` calls notify pooled servers with full-document `didChange` and `didSave`, using version counters so diagnostics can reflect yottacode edits.
+- `lsp_diagnostics` reports whether diagnostics were actually published before the settle timeout, so “clean” is distinct from “no diagnostic publication observed yet”.
 - Server capabilities returned by `initialize` are checked before optional methods; unsupported methods return an explicit `unavailable` result rather than a misleading empty response.
 - `lsp_status` exposes session manager stats: open servers, starts, reuses, evictions, and last startup latency. `yottacode doctor` reports the default manager configuration without starting a session server.
 - Smoke tests exist for all supported servers and skip automatically when the binary is not installed.

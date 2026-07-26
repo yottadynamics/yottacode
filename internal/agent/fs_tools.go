@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/yottadynamics/yottacode/internal/adapter"
+	lspci "github.com/yottadynamics/yottacode/internal/lsp"
 )
 
 const (
@@ -228,8 +229,10 @@ func (t *ReadFileTool) ExecuteMultimodal(ctx context.Context, argsJSON string) (
 // paths *before* the approval modal opens, so the model can't trick a
 // distracted user into approving a misleading path.
 type WriteFileTool struct {
-	Cwd       *CwdRef
-	WriteOpts WritePathOptions
+	Cwd        *CwdRef
+	WriteOpts  WritePathOptions
+	LSPManager *lspci.Manager
+	LSPServers map[string][]string
 }
 
 func (t *WriteFileTool) Name() string { return "write_file" }
@@ -294,5 +297,9 @@ func (t *WriteFileTool) Execute(ctx context.Context, argsJSON string) (string, e
 	if err := os.WriteFile(p, []byte(a.Content), 0o644); err != nil {
 		return "", fmt.Errorf("write_file: %w", err)
 	}
-	return fmt.Sprintf("wrote %d bytes to %s", len(a.Content), p), nil
+	msg := fmt.Sprintf("wrote %d bytes to %s", len(a.Content), p)
+	if note := notifyLSPFileChanged(ctx, t.Cwd, t.LSPManager, t.LSPServers, p, a.Content); note != "" {
+		msg += "\n" + note
+	}
+	return msg, nil
 }
