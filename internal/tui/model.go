@@ -3970,9 +3970,12 @@ func resolveCurrentPRCmd(ctx context.Context, gh githubapi.Interface, cwd string
 		probeCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 		defer cancel()
 		if gh != nil {
-			pr, err := gh.ReadPR(probeCtx, githubapi.ReadPRRequest{})
-			if err == nil {
-				return prStatusMsg{number: pr.Number}
+			ref := gitBranch(probeCtx, cwd)
+			if ref != "" {
+				pr, err := gh.ReadPR(probeCtx, githubapi.ReadPRRequest{Ref: ref})
+				if err == nil {
+					return prStatusMsg{number: pr.Number}
+				}
 			}
 		}
 		if n := currentPRNumberFromGitHubEnv(probeCtx, cwd); n > 0 {
@@ -4026,18 +4029,38 @@ func branchChangingGitTool(toolName, argsJSON string) bool {
 		return true
 	case "git":
 		args := parseTUIToolGitArgs(argsJSON)
-		if len(args) == 0 {
-			return false
-		}
-		switch args[0] {
-		case "checkout", "switch":
-			return true
-		default:
-			return false
-		}
+		sub := tuiGitSubcommand(args)
+		return sub == "checkout" || sub == "switch"
 	default:
 		return false
 	}
+}
+
+// tuiGitSubcommand returns the first non-global git subcommand.
+// The status bar uses this to notice branch switches even when the
+// model includes global flags such as `git -C <repo> switch feature`.
+func tuiGitSubcommand(args []string) string {
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if a == "-C" || a == "-c" || a == "--git-dir" || a == "--work-tree" {
+			i++
+			continue
+		}
+		if strings.HasPrefix(a, "-C") && len(a) > 2 {
+			continue
+		}
+		if strings.HasPrefix(a, "-c") && len(a) > 2 {
+			continue
+		}
+		if strings.HasPrefix(a, "--git-dir=") || strings.HasPrefix(a, "--work-tree=") {
+			continue
+		}
+		if strings.HasPrefix(a, "-") {
+			continue
+		}
+		return a
+	}
+	return ""
 }
 
 func parseTUIToolGitArgs(argsJSON string) []string {
@@ -4736,8 +4759,9 @@ func (m Model) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 		m.toolsStarted++
 		m.turnToolCalls++
 	case agent.ToolResult:
-		if branchChangingGitTool(e.ToolName, m.pendingToolArgs) {
+		if !e.Errored && branchChangingGitTool(e.ToolName, m.pendingToolArgs) {
 			m.branch = gitBranch(m.parentCtx, m.cwd)
+			m.currentPR = 0
 		}
 		if e.ToolName == "gh_pr_read" || e.ToolName == "gh_pr_review_context" {
 			m.currentPR = prNumberFromToolOutput(e.Output)

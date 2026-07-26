@@ -13,7 +13,53 @@ import (
 
 	"github.com/yottadynamics/yottacode/internal/adapter"
 	"github.com/yottadynamics/yottacode/internal/agent"
+	githubapi "github.com/yottadynamics/yottacode/internal/github"
 )
+
+type statusBarPRClient struct {
+	readPRReq githubapi.ReadPRRequest
+}
+
+func (c *statusBarPRClient) CreatePR(context.Context, githubapi.CreatePRRequest) (githubapi.CreatePRResult, error) {
+	return githubapi.CreatePRResult{}, nil
+}
+
+func (c *statusBarPRClient) ReadPR(_ context.Context, req githubapi.ReadPRRequest) (githubapi.PRDetails, error) {
+	c.readPRReq = req
+	return githubapi.PRDetails{Number: 42}, nil
+}
+
+func (c *statusBarPRClient) ReadPRDiff(context.Context, githubapi.ReadPRRequest) (string, error) {
+	return "", nil
+}
+
+func (c *statusBarPRClient) ListPRChecks(context.Context, githubapi.ReadPRRequest) ([]githubapi.CheckRun, error) {
+	return nil, nil
+}
+
+func (c *statusBarPRClient) UpdatePR(context.Context, githubapi.UpdatePRRequest) (githubapi.UpdatePRResult, error) {
+	return githubapi.UpdatePRResult{}, nil
+}
+
+func (c *statusBarPRClient) ReadIssue(context.Context, githubapi.ReadIssueRequest) (githubapi.IssueDetails, error) {
+	return githubapi.IssueDetails{}, nil
+}
+
+func (c *statusBarPRClient) ListOpenIssues(context.Context, githubapi.ListIssuesRequest) ([]githubapi.IssueSummary, error) {
+	return nil, nil
+}
+
+func (c *statusBarPRClient) AddPRComment(context.Context, githubapi.AddPRCommentRequest) (githubapi.AddPRCommentResult, error) {
+	return githubapi.AddPRCommentResult{}, nil
+}
+
+func (c *statusBarPRClient) CreateIssue(context.Context, githubapi.CreateIssueRequest) (githubapi.CreateIssueResult, error) {
+	return githubapi.CreateIssueResult{}, nil
+}
+
+func (c *statusBarPRClient) RateLimit() githubapi.RateLimitSnapshot {
+	return githubapi.RateLimitSnapshot{}
+}
 
 // The input is borderless. The earlier design wrapped it in a
 // brand-colored box that drowned out everything inside; the chevron +
@@ -180,6 +226,78 @@ func TestStatusBar_RendersLocationChip(t *testing.T) {
 }
 
 func TestStatusBar_BranchRefreshesAfterGitSwitch(t *testing.T) {
+	tmp := statusBarGitRepo(t)
+
+	m := newTestModel(t)
+	m.parentCtx = context.Background()
+	m.cwd = tmp
+	m.branch = "main"
+	m.currentPR = 13
+	m.pendingToolArgs = `{"args":["switch","feature/live-chip"]}`
+	m.width = 160
+	updated, _ := m.handleAgentEvent(agent.ToolResult{ToolName: "git", Output: "ok"})
+	m = updated.(Model)
+	if m.branch != "feature/live-chip" {
+		t.Fatalf("branch = %q, want feature/live-chip", m.branch)
+	}
+	if m.currentPR != 0 {
+		t.Fatalf("currentPR = %d, want cleared after branch switch", m.currentPR)
+	}
+	if plain := stripANSI(m.renderStatus()); !strings.Contains(plain, "feature/live-chip") {
+		t.Fatalf("status did not render refreshed branch: %q", plain)
+	}
+}
+
+func TestStatusBar_BranchRefreshesAfterGitSwitchWithGlobalFlags(t *testing.T) {
+	tmp := statusBarGitRepo(t)
+
+	m := newTestModel(t)
+	m.parentCtx = context.Background()
+	m.cwd = tmp
+	m.branch = "main"
+	m.pendingToolArgs = `{"args":["-C","` + filepath.ToSlash(tmp) + `","switch","feature/live-chip"]}`
+	m.width = 160
+	updated, _ := m.handleAgentEvent(agent.ToolResult{ToolName: "git", Output: "ok"})
+	m = updated.(Model)
+	if m.branch != "feature/live-chip" {
+		t.Fatalf("branch = %q, want feature/live-chip", m.branch)
+	}
+}
+
+func TestStatusBar_CurrentPRProbeUsesLiveBranchRef(t *testing.T) {
+	tmp := statusBarGitRepo(t)
+	gh := &statusBarPRClient{}
+
+	msg := resolveCurrentPRCmd(context.Background(), gh, tmp)().(prStatusMsg)
+	if msg.number != 42 {
+		t.Fatalf("pr number = %d, want 42", msg.number)
+	}
+	if gh.readPRReq.Ref != "feature/live-chip" {
+		t.Fatalf("ReadPR ref = %q, want live branch", gh.readPRReq.Ref)
+	}
+}
+
+func TestStatusBar_DoesNotRefreshBranchAfterFailedGitSwitch(t *testing.T) {
+	tmp := statusBarGitRepo(t)
+
+	m := newTestModel(t)
+	m.parentCtx = context.Background()
+	m.cwd = tmp
+	m.branch = "main"
+	m.currentPR = 13
+	m.pendingToolArgs = `{"args":["switch","feature/live-chip"]}`
+	updated, _ := m.handleAgentEvent(agent.ToolResult{ToolName: "git", Output: "failed", Errored: true})
+	m = updated.(Model)
+	if m.branch != "main" {
+		t.Fatalf("branch = %q, want unchanged after failed switch", m.branch)
+	}
+	if m.currentPR != 13 {
+		t.Fatalf("currentPR = %d, want unchanged after failed switch", m.currentPR)
+	}
+}
+
+func statusBarGitRepo(t *testing.T) string {
+	t.Helper()
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not installed")
 	}
@@ -205,21 +323,7 @@ func TestStatusBar_BranchRefreshesAfterGitSwitch(t *testing.T) {
 			t.Fatalf("git %v: %v: %s", args, err, out)
 		}
 	}
-
-	m := newTestModel(t)
-	m.parentCtx = context.Background()
-	m.cwd = tmp
-	m.branch = "main"
-	m.pendingToolArgs = `{"args":["switch","feature/live-chip"]}`
-	m.width = 160
-	updated, _ := m.handleAgentEvent(agent.ToolResult{ToolName: "git", Output: "ok"})
-	m = updated.(Model)
-	if m.branch != "feature/live-chip" {
-		t.Fatalf("branch = %q, want feature/live-chip", m.branch)
-	}
-	if plain := stripANSI(m.renderStatus()); !strings.Contains(plain, "feature/live-chip") {
-		t.Fatalf("status did not render refreshed branch: %q", plain)
-	}
+	return tmp
 }
 
 // With no branch (detached / not a repo) the chip still shows the dir,

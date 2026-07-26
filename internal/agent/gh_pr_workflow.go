@@ -418,8 +418,14 @@ func (t *GHPRCreateTool) Execute(ctx context.Context, argsJSON string) (string, 
 		return "", errors.New("gh_pr_create: no GitHub adapter configured")
 	}
 
+	head, err := livePRBranchRef(ctx, t.Cwd)
+	if err != nil {
+		return "", fmt.Errorf("gh_pr_create: detect head branch: %w", err)
+	}
+
 	res, err := CreatePR(ctx, t.GH, github.CreatePRRequest{
 		Base:  a.Base,
+		Head:  head,
 		Title: a.Title,
 		Body:  a.Body,
 		Draft: a.Draft,
@@ -428,6 +434,27 @@ func (t *GHPRCreateTool) Execute(ctx context.Context, argsJSON string) (string, 
 		return "", fmt.Errorf("gh_pr_create: %w", err)
 	}
 	return renderPRCreateResult(res), nil
+}
+
+// livePRBranchRef resolves the branch from the session's live cwd.
+// The typed GitHub client also has a cwd, but that value is fixed at
+// session startup; after enter_worktree it may still point at main.
+func livePRBranchRef(ctx context.Context, cwd *CwdRef) (string, error) {
+	branch, err := gitOutput(ctx, cwd.Get(), "rev-parse", "--abbrev-ref", "HEAD")
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(branch), nil
+}
+
+// livePRRefOrExplicit preserves caller-supplied PR refs while making
+// empty-ref ergonomics use the same live cwd as local git tools.
+func livePRRefOrExplicit(ctx context.Context, cwd *CwdRef, ref string) (string, error) {
+	ref = strings.TrimSpace(ref)
+	if ref != "" {
+		return ref, nil
+	}
+	return livePRBranchRef(ctx, cwd)
 }
 
 // CreatePR is the deterministic core of gh_pr_create. Validates
@@ -585,8 +612,12 @@ func (t *GHPRUpdateTool) Execute(ctx context.Context, argsJSON string) (string, 
 	if t.GH == nil {
 		return "", errors.New("gh_pr_update: no GitHub adapter configured")
 	}
+	ref, err := livePRRefOrExplicit(ctx, t.Cwd, a.Ref)
+	if err != nil {
+		return "", fmt.Errorf("gh_pr_update: detect current branch: %w", err)
+	}
 	res, err := UpdatePR(ctx, t.GH, github.UpdatePRRequest{
-		Ref:   a.Ref,
+		Ref:   ref,
 		Title: a.Title,
 		Body:  a.Body,
 	})
@@ -762,8 +793,12 @@ func (t *GHPRAddCommentTool) Execute(ctx context.Context, argsJSON string) (stri
 		return "", errors.New("gh_pr_add_comment: no GitHub adapter configured")
 	}
 
+	ref, err := livePRRefOrExplicit(ctx, t.Cwd, a.Ref)
+	if err != nil {
+		return "", fmt.Errorf("gh_pr_add_comment: detect current branch: %w", err)
+	}
 	res, err := AddPRComment(ctx, t.GH, github.AddPRCommentRequest{
-		Ref:  a.Ref,
+		Ref:  ref,
 		Body: a.Body,
 	})
 	if err != nil {
@@ -933,7 +968,11 @@ func (t *GHPRReviewContextTool) Execute(ctx context.Context, argsJSON string) (s
 	if argsJSON != "" {
 		_ = json.Unmarshal([]byte(argsJSON), &a)
 	}
-	snap, err := BuildPRReviewContext(ctx, t.GH, strings.TrimSpace(a.Ref))
+	ref, err := livePRRefOrExplicit(ctx, t.Cwd, a.Ref)
+	if err != nil {
+		return "", fmt.Errorf("gh_pr_review_context: detect current branch: %w", err)
+	}
+	snap, err := BuildPRReviewContext(ctx, t.GH, ref)
 	if err != nil {
 		return "", fmt.Errorf("gh_pr_review_context: %w", err)
 	}
@@ -1190,7 +1229,11 @@ func (t *GHPRReadTool) Execute(ctx context.Context, argsJSON string) (string, er
 	if argsJSON != "" {
 		_ = json.Unmarshal([]byte(argsJSON), &a)
 	}
-	snap := BuildPRReadContext(ctx, t.GH, strings.TrimSpace(a.Ref))
+	ref, err := livePRRefOrExplicit(ctx, t.Cwd, a.Ref)
+	if err != nil {
+		return "", fmt.Errorf("gh_pr_read: detect current branch: %w", err)
+	}
+	snap := BuildPRReadContext(ctx, t.GH, ref)
 	return renderPRReadContext(snap), nil
 }
 
