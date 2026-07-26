@@ -30,15 +30,15 @@ type fakeGH struct {
 	// returned value so the test can simulate ErrPRNotFound /
 	// ErrGhUnavailable / generic gh failures without contorting the
 	// fixture struct.
-	readPRRes      github.PRDetails
-	readPRErr      error
-	readPRReq      github.ReadPRRequest
-	readPRDiffRes  string
-	readPRDiffErr  error
-	readPRDiffReq  github.ReadPRRequest
-	listChecksRes  []github.CheckRun
-	listChecksErr  error
-	listChecksReq  github.ReadPRRequest
+	readPRRes     github.PRDetails
+	readPRErr     error
+	readPRReq     github.ReadPRRequest
+	readPRDiffRes string
+	readPRDiffErr error
+	readPRDiffReq github.ReadPRRequest
+	listChecksRes []github.CheckRun
+	listChecksErr error
+	listChecksReq github.ReadPRRequest
 
 	// Update-PR side
 	updatePRRes github.UpdatePRResult
@@ -339,8 +339,10 @@ func TestBuildPRContext_NoOriginNoTemplate(t *testing.T) {
 }
 
 func TestGHPRCreateTool_RoundsThroughTool(t *testing.T) {
+	tmp := gitRepoOnBranch(t, "feature/live-head")
+
 	gh := &fakeGH{res: github.CreatePRResult{URL: "https://github.com/o/r/pull/3", Number: 3}}
-	tool := &GHPRCreateTool{Cwd: NewCwdRef(t.TempDir()), GH: gh}
+	tool := &GHPRCreateTool{Cwd: NewCwdRef(tmp), GH: gh}
 	out, err := tool.Execute(context.Background(),
 		`{"base":"main","title":"implement caching","body":"why","draft":true}`)
 	if err != nil {
@@ -349,9 +351,82 @@ func TestGHPRCreateTool_RoundsThroughTool(t *testing.T) {
 	if !strings.HasPrefix(out, "created=true url=") {
 		t.Errorf("expected created=true, got:\n%s", out)
 	}
+	if gh.lastReq.Head != "feature/live-head" {
+		t.Errorf("expected live cwd branch forwarded as Head; got %+v", gh.lastReq)
+	}
 	if !gh.lastReq.Draft {
 		t.Errorf("expected Draft=true forwarded to client; got %+v", gh.lastReq)
 	}
+}
+
+func TestGHPRTools_DefaultEmptyRefToLiveBranch(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		run  func(*fakeGH, *CwdRef) error
+		got  func(*fakeGH) string
+	}{
+		{
+			name: "read",
+			run: func(gh *fakeGH, cwd *CwdRef) error {
+				tool := &GHPRReadTool{Cwd: cwd, GH: gh}
+				_, err := tool.Execute(context.Background(), `{}`)
+				return err
+			},
+			got: func(gh *fakeGH) string { return gh.readPRReq.Ref },
+		},
+		{
+			name: "review context",
+			run: func(gh *fakeGH, cwd *CwdRef) error {
+				tool := &GHPRReviewContextTool{Cwd: cwd, GH: gh}
+				_, err := tool.Execute(context.Background(), `{}`)
+				return err
+			},
+			got: func(gh *fakeGH) string { return gh.readPRReq.Ref },
+		},
+		{
+			name: "update",
+			run: func(gh *fakeGH, cwd *CwdRef) error {
+				tool := &GHPRUpdateTool{Cwd: cwd, GH: gh}
+				_, err := tool.Execute(context.Background(), `{"title":"refresh","body":"body"}`)
+				return err
+			},
+			got: func(gh *fakeGH) string { return gh.updatePRReq.Ref },
+		},
+		{
+			name: "add comment",
+			run: func(gh *fakeGH, cwd *CwdRef) error {
+				tool := &GHPRAddCommentTool{Cwd: cwd, GH: gh}
+				_, err := tool.Execute(context.Background(), `{"body":"LGTM"}`)
+				return err
+			},
+			got: func(gh *fakeGH) string { return gh.addPRCommentReq.Ref },
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cwd := NewCwdRef(gitRepoOnBranch(t, "feature/live-ref"))
+			gh := &fakeGH{
+				readPRRes:       github.PRDetails{Number: 3, Title: "t"},
+				readPRDiffRes:   "diff",
+				updatePRRes:     github.UpdatePRResult{URL: "https://github.com/o/r/pull/3", Number: 3},
+				addPRCommentRes: github.AddPRCommentResult{URL: "https://github.com/o/r/pull/3#issuecomment-1", ID: 1},
+			}
+			if err := tc.run(gh, cwd); err != nil {
+				t.Fatalf("Execute: %v", err)
+			}
+			if got := tc.got(gh); got != "feature/live-ref" {
+				t.Fatalf("default ref = %q, want live branch", got)
+			}
+		})
+	}
+}
+
+func gitRepoOnBranch(t *testing.T, branch string) string {
+	t.Helper()
+	tmp := gitInit(t)
+	writeFile(t, tmp, "f.txt", "v1\n")
+	gitCommit(t, tmp, "base")
+	gitRun(t, tmp, "checkout", "-q", "-b", branch)
+	return tmp
 }
 
 func TestBuildPRReviewContext_HappyPath(t *testing.T) {
@@ -952,10 +1027,10 @@ func TestRenderPRReviewContext_FailingChecksInState(t *testing.T) {
 
 func TestRenderPRContext_StateBlockFirst(t *testing.T) {
 	snap := PRContext{
-		ResolvedBase:  "main",
-		CurrentBranch: "feature/x",
-		AheadCount:    3,
-		GhAvailable:   true,
+		ResolvedBase:   "main",
+		CurrentBranch:  "feature/x",
+		AheadCount:     3,
+		GhAvailable:    true,
 		PushedToOrigin: true,
 		BaseResolution: "explicit",
 	}
