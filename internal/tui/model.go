@@ -3970,9 +3970,12 @@ func resolveCurrentPRCmd(ctx context.Context, gh githubapi.Interface, cwd string
 		probeCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 		defer cancel()
 		if gh != nil {
-			pr, err := gh.ReadPR(probeCtx, githubapi.ReadPRRequest{})
-			if err == nil {
-				return prStatusMsg{number: pr.Number}
+			ref := gitBranch(probeCtx, cwd)
+			if ref != "" {
+				pr, err := gh.ReadPR(probeCtx, githubapi.ReadPRRequest{Ref: ref})
+				if err == nil {
+					return prStatusMsg{number: pr.Number}
+				}
 			}
 		}
 		if n := currentPRNumberFromGitHubEnv(probeCtx, cwd); n > 0 {

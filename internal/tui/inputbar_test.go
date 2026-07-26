@@ -13,7 +13,53 @@ import (
 
 	"github.com/yottadynamics/yottacode/internal/adapter"
 	"github.com/yottadynamics/yottacode/internal/agent"
+	githubapi "github.com/yottadynamics/yottacode/internal/github"
 )
+
+type statusBarPRClient struct {
+	readPRReq githubapi.ReadPRRequest
+}
+
+func (c *statusBarPRClient) CreatePR(context.Context, githubapi.CreatePRRequest) (githubapi.CreatePRResult, error) {
+	return githubapi.CreatePRResult{}, nil
+}
+
+func (c *statusBarPRClient) ReadPR(_ context.Context, req githubapi.ReadPRRequest) (githubapi.PRDetails, error) {
+	c.readPRReq = req
+	return githubapi.PRDetails{Number: 42}, nil
+}
+
+func (c *statusBarPRClient) ReadPRDiff(context.Context, githubapi.ReadPRRequest) (string, error) {
+	return "", nil
+}
+
+func (c *statusBarPRClient) ListPRChecks(context.Context, githubapi.ReadPRRequest) ([]githubapi.CheckRun, error) {
+	return nil, nil
+}
+
+func (c *statusBarPRClient) UpdatePR(context.Context, githubapi.UpdatePRRequest) (githubapi.UpdatePRResult, error) {
+	return githubapi.UpdatePRResult{}, nil
+}
+
+func (c *statusBarPRClient) ReadIssue(context.Context, githubapi.ReadIssueRequest) (githubapi.IssueDetails, error) {
+	return githubapi.IssueDetails{}, nil
+}
+
+func (c *statusBarPRClient) ListOpenIssues(context.Context, githubapi.ListIssuesRequest) ([]githubapi.IssueSummary, error) {
+	return nil, nil
+}
+
+func (c *statusBarPRClient) AddPRComment(context.Context, githubapi.AddPRCommentRequest) (githubapi.AddPRCommentResult, error) {
+	return githubapi.AddPRCommentResult{}, nil
+}
+
+func (c *statusBarPRClient) CreateIssue(context.Context, githubapi.CreateIssueRequest) (githubapi.CreateIssueResult, error) {
+	return githubapi.CreateIssueResult{}, nil
+}
+
+func (c *statusBarPRClient) RateLimit() githubapi.RateLimitSnapshot {
+	return githubapi.RateLimitSnapshot{}
+}
 
 // The input is borderless. The earlier design wrapped it in a
 // brand-colored box that drowned out everything inside; the chevron +
@@ -215,6 +261,19 @@ func TestStatusBar_BranchRefreshesAfterGitSwitchWithGlobalFlags(t *testing.T) {
 	m = updated.(Model)
 	if m.branch != "feature/live-chip" {
 		t.Fatalf("branch = %q, want feature/live-chip", m.branch)
+	}
+}
+
+func TestStatusBar_CurrentPRProbeUsesLiveBranchRef(t *testing.T) {
+	tmp := statusBarGitRepo(t)
+	gh := &statusBarPRClient{}
+
+	msg := resolveCurrentPRCmd(context.Background(), gh, tmp)().(prStatusMsg)
+	if msg.number != 42 {
+		t.Fatalf("pr number = %d, want 42", msg.number)
+	}
+	if gh.readPRReq.Ref != "feature/live-chip" {
+		t.Fatalf("ReadPR ref = %q, want live branch", gh.readPRReq.Ref)
 	}
 }
 
