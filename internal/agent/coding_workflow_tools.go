@@ -21,7 +21,7 @@ type ApplyDiffTool struct {
 
 func (t *ApplyDiffTool) Name() string { return "apply_diff" }
 func (t *ApplyDiffTool) Description() string {
-	return "Apply a unified diff patch to files in the working tree using git apply. Tolerates miscounted hunk headers and common whitespace drift after target-path validation."
+	return "Apply a unified diff patch to files in the working tree using git apply. Rejects apply_patch-style patches with a targeted error and validates target paths before patching."
 }
 func (t *ApplyDiffTool) Schema() map[string]any {
 	return map[string]any{
@@ -94,7 +94,7 @@ func (t *ApplyDiffTool) Execute(ctx context.Context, argsJSON string) (string, e
 	// file — a deny-list bypass (self-granting a permissions rule) and,
 	// symmetrically, a spurious "no recognizable file headers" rejection of
 	// a diff the repair would have made applyable.
-	a.Diff = repairFullyEscapedDiff(a.Diff)
+	a.Diff = normalizeModelPatch(repairFullyEscapedDiff(a.Diff))
 	// Parse target paths out of the diff header and run them through
 	// the same write-path validator write_file/edit_file use, so
 	// DefaultDenyPaths (yottacode state, .git internals, etc.) and the
@@ -103,6 +103,9 @@ func (t *ApplyDiffTool) Execute(ctx context.Context, argsJSON string) (string, e
 	// diff said so, bypassing the rest of the safety story.
 	paths := permissions.ParseDiffPaths(a.Diff)
 	if len(paths) == 0 {
+		if strings.Contains(a.Diff, "*** Begin Patch") || strings.Contains(a.Diff, "*** Update File:") {
+			return "", fmt.Errorf("apply_diff: apply_patch-style patches are not accepted here — use a unified diff with `--- a/PATH` / `+++ b/PATH` headers")
+		}
 		// Echo a bounded, quoted snippet of what the parser actually saw
 		// (post-repair — the same bytes ParseDiffPaths read). The failure
 		// is usually an invisible one: a single JSON-escaped line, `@@`
@@ -142,9 +145,23 @@ func (t *ApplyDiffTool) Execute(ctx context.Context, argsJSON string) (string, e
 	if stderr, err := applyGitPatch(ctx, t.Cwd.Get(), patchPath); err != nil {
 		body, _ := os.ReadFile(patchPath)
 		return "", fmt.Errorf("apply_diff: %w; stderr=%q hint=%q patch=%q", err, stderr,
-			"context may not match the current file — re-read it and regenerate the diff", string(body))
+			applyPatchFailureHint(stderr), string(body))
 	}
 	return "applied diff", nil
+}
+
+func applyPatchFailureHint(stderr string) string {
+	if strings.Contains(stderr, "corrupt patch") || strings.Contains(stderr, "unexpected line:") {
+		return "patch syntax is malformed — remove placeholder hunks like bare `@@`, or regenerate a complete unified diff with valid hunk headers"
+	}
+	if strings.Contains(stderr, "patch does not apply") || strings.Contains(stderr, "patch failed:") {
+		return "patch headers were valid, but hunk context did not match the current file — re-read the target file and regenerate the diff with fresh surrounding lines"
+	}
+	return "context may not match the current file — re-read it and regenerate the diff"
+}
+
+func normalizeModelPatch(diff string) string {
+	return diff
 }
 
 // applyGitPatch applies a prevalidated patch file with a strict-to-lenient

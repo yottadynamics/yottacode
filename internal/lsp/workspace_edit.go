@@ -5,11 +5,11 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"unicode/utf8"
 )
 
 // TextRange is an LSP half-open range in zero-based line/UTF-16 character
-// coordinates. The current applier handles ASCII/UTF-8 byte-compatible ranges;
-// callers should keep non-ASCII range conversion covered before broadening use.
+// coordinates.
 type TextRange struct {
 	Start Position `json:"start"`
 	End   Position `json:"end"`
@@ -120,9 +120,12 @@ func offsetForPosition(text string, pos Position) (int, error) {
 			offset++
 			continue
 		}
-		_, width := firstRune(text[offset:])
+		r, width := utf8.DecodeRuneInString(text[offset:])
+		if r == utf8.RuneError && width == 1 {
+			return 0, fmt.Errorf("invalid UTF-8 at byte offset %d", offset)
+		}
 		offset += width
-		col++
+		col += utf16CodeUnits(r)
 	}
 	if line == pos.Line && col == pos.Character {
 		return offset, nil
@@ -130,11 +133,11 @@ func offsetForPosition(text string, pos Position) (int, error) {
 	return 0, fmt.Errorf("position %d:%d outside document", pos.Line, pos.Character)
 }
 
-func firstRune(s string) (rune, int) {
-	for _, r := range s {
-		return r, len(string(r))
+func utf16CodeUnits(r rune) int {
+	if r < 0x10000 {
+		return 1
 	}
-	return 0, 0
+	return 2
 }
 
 func WorkspaceEditSummary(edit WorkspaceEdit) string {

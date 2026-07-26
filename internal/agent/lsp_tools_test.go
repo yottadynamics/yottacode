@@ -60,6 +60,12 @@ func (f *fakeLSPClient) CodeActions(context.Context, string, lspci.Position, lsp
 	}
 	return []lspci.CodeAction{{Kind: "quickfix", Title: "Fix it"}}, nil
 }
+func (f *fakeLSPClient) CodeActionPreview(_ context.Context, path string, _ lspci.Position, _ lspci.Position, _ string, _ int) (lspci.WorkspaceEdit, error) {
+	if len(f.actions) > 0 && f.actions[0].HasEdit {
+		return lspci.WorkspaceEdit{Edits: []lspci.TextEdit{{Path: path, Range: lspci.TextRange{Start: lspci.Position{Line: 1, Character: 0}, End: lspci.Position{Line: 1, Character: 0}}, NewText: "// fixed\n"}}}, nil
+	}
+	return lspci.WorkspaceEdit{}, errors.New("no edit")
+}
 func (f *fakeLSPClient) RenamePreview(_ context.Context, path string, _ lspci.Position, _ string) (lspci.WorkspaceEdit, error) {
 	return lspci.WorkspaceEdit{Edits: []lspci.TextEdit{{Path: path, Range: lspci.TextRange{Start: lspci.Position{Line: 0, Character: 0}, End: lspci.Position{Line: 0, Character: 0}}, NewText: "// renamed\n"}}}, nil
 }
@@ -202,7 +208,7 @@ func TestRegisterCoreCwdTools_LSPGate(t *testing.T) {
 	}
 	reg = NewRegistry()
 	RegisterCoreCwdTools(reg, cwd, CoreToolDeps{WriteOpts: WritePathOptions{Cwd: cwd}, EnableLSP: true})
-	for _, name := range []string{"lsp_status", "lsp_symbols", "lsp_document_symbols", "lsp_definition", "lsp_type_definition", "lsp_implementation", "lsp_references", "lsp_diagnostics", "lsp_changed_files_diagnostics", "lsp_hover", "lsp_signature_help", "lsp_code_actions", "lsp_rename_preview", "lsp_format_preview", "lsp_apply_workspace_edit", "lsp_call_hierarchy"} {
+	for _, name := range []string{"lsp_status", "lsp_symbols", "lsp_document_symbols", "lsp_definition", "lsp_type_definition", "lsp_implementation", "lsp_references", "lsp_diagnostics", "lsp_changed_files_diagnostics", "lsp_hover", "lsp_signature_help", "lsp_code_actions", "lsp_code_action_preview", "lsp_rename_preview", "lsp_format_preview", "lsp_apply_workspace_edit", "lsp_call_hierarchy"} {
 		if _, ok := reg.Get(name); !ok {
 			t.Errorf("%s should register when EnableLSP is true", name)
 		}

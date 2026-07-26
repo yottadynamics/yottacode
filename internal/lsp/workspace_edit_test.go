@@ -21,6 +21,36 @@ func TestApplyTextEditsAppliesRangesFromBottomUp(t *testing.T) {
 	}
 }
 
+func TestApplyTextEditsUsesUTF16CharacterOffsets(t *testing.T) {
+	text := "emoji 😀 old\naccent é old\n"
+	edits := []TextEdit{
+		{Range: TextRange{Start: Position{Line: 0, Character: 9}, End: Position{Line: 0, Character: 12}}, NewText: "new"},
+		{Range: TextRange{Start: Position{Line: 1, Character: 9}, End: Position{Line: 1, Character: 12}}, NewText: "new"},
+	}
+	got, err := ApplyTextEdits(text, edits)
+	if err != nil {
+		t.Fatalf("ApplyTextEdits: %v", err)
+	}
+	want := "emoji 😀 new\naccent é new\n"
+	if got != want {
+		t.Fatalf("ApplyTextEdits() = %q, want %q", got, want)
+	}
+}
+
+func TestApplyTextEditsRejectsHalfSurrogateOffset(t *testing.T) {
+	_, err := ApplyTextEdits("😀\n", []TextEdit{{Range: TextRange{Start: Position{Line: 0, Character: 1}, End: Position{Line: 0, Character: 1}}, NewText: "x"}})
+	if err == nil || !strings.Contains(err.Error(), "outside document") {
+		t.Fatalf("expected half-surrogate offset error, got %v", err)
+	}
+}
+
+func TestApplyTextEditsRejectsInvalidUTF8(t *testing.T) {
+	_, err := ApplyTextEdits(string([]byte{0xff, '\n'}), []TextEdit{{Range: TextRange{Start: Position{Line: 0, Character: 1}, End: Position{Line: 0, Character: 1}}, NewText: "x"}})
+	if err == nil || !strings.Contains(err.Error(), "invalid UTF-8") {
+		t.Fatalf("expected invalid UTF-8 error, got %v", err)
+	}
+}
+
 func TestApplyTextEditsRejectsInvalidRange(t *testing.T) {
 	_, err := ApplyTextEdits("one\n", []TextEdit{{Range: TextRange{Start: Position{Line: 3, Character: 0}, End: Position{Line: 3, Character: 1}}, NewText: "x"}})
 	if err == nil || !strings.Contains(err.Error(), "outside document") {

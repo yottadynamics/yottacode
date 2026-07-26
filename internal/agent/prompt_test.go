@@ -60,6 +60,7 @@ var canonicalTools = []string{
 	"lsp_signature_help",
 	"lsp_diagnostics",
 	"lsp_code_actions",
+	"lsp_code_action_preview",
 	"lsp_call_hierarchy",
 	"run_bash",
 	"git",

@@ -117,6 +117,7 @@ func RegisterCoreCwdTools(reg *Registry, cwd *CwdRef, deps CoreToolDeps) {
 		reg.Register(&LSPDiagnosticsTool{lspToolBase: base})
 		reg.Register(&LSPChangedFilesDiagnosticsTool{lspToolBase: base})
 		reg.Register(&LSPCodeActionsTool{lspToolBase: base})
+		reg.Register(&LSPCodeActionPreviewTool{lspToolBase: base})
 		reg.Register(&LSPRenamePreviewTool{lspToolBase: base})
 		reg.Register(&LSPFormatPreviewTool{lspToolBase: base})
 		reg.Register(&LSPApplyWorkspaceEditTool{lspToolBase: base, WriteOpts: wo})

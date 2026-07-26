@@ -1,6 +1,6 @@
 # Built-in tools
 
-Fifty-seven tools ship in `internal/agent` (fifty always-on, four experimental LSP tools, plus `todo_write`
+Fifty-eight tools ship in `internal/agent` (including the experimental LSP tools, `todo_write`,
 and the `enter_plan_mode` / `exit_plan_mode` pair). The model sees their JSON-schema parameters via the
 OpenAI tools API; the TUI renders each invocation as a bordered card with a
 verb-style header (see [How tool calls render in the TUI](#how-tool-calls-render-in-the-tui)).
@@ -71,6 +71,7 @@ In addition to the built-ins, **MCP tools** register dynamically when an `[[mcp_
 | [`lsp_hover`](#lsp_hover) | none | Show hover/type/docs information at a source position |
 | [`lsp_signature_help`](#lsp_signature_help) | none | Show callable signatures and active parameter info at a source position |
 | [`lsp_code_actions`](#lsp_code_actions) | none | List quick fixes/refactors for a range without applying them |
+| [`lsp_code_action_preview`](#lsp_code_action_preview) | none | Preview the WorkspaceEdit for one code action without applying it |
 | [`lsp_rename_preview`](#lsp_rename_preview) | none | Preview semantic rename edits without applying them |
 | [`lsp_format_preview`](#lsp_format_preview) | none | Preview formatting edits without applying them |
 | [`lsp_apply_workspace_edit`](#lsp_apply_workspace_edit) | yes | Apply a previously previewed WorkspaceEdit after validation and approval |
@@ -1053,17 +1054,37 @@ No approval.
 ## lsp_code_actions
 
 List language-server code actions and quick fixes for a range without applying
-them. Output includes whether each action carries an edit, command, related
-diagnostics, or requires a server-side resolve step. Applying edits is handled by
-the preview/apply WorkspaceEdit flow.
+them. Output includes each action's zero-based index and whether it carries an
+edit, command, related diagnostics, or requires a server-side resolve step. Use
+`lsp_code_action_preview` for editable actions before applying them with
+`lsp_apply_workspace_edit`.
 
 | Param | Type | Default | Notes |
 |---|---|---|---|
 | `path` | string | — | Required source file |
 | `line` | int | — | Zero-based start line |
-| `character` | int | — | Zero-based start character |
+| `character` | int | — | Zero-based UTF-16 start character |
 | `end_line` | int | `line` | Zero-based end line |
-| `end_character` | int | `character` | Zero-based end character |
+| `end_character` | int | `character` | Zero-based UTF-16 end character |
+
+No approval.
+
+## lsp_code_action_preview
+
+Preview one code action's normalized WorkspaceEdit JSON without writing files.
+Select the action by exact `title` or by zero-based `index` from
+`lsp_code_actions`; `index` is preferred when titles repeat. Pass the returned
+`apply_payload` to `lsp_apply_workspace_edit` only after reviewing the diff.
+
+| Param | Type | Default | Notes |
+|---|---|---|---|
+| `path` | string | — | Required source file |
+| `line` | int | — | Zero-based start line |
+| `character` | int | — | Zero-based UTF-16 start character |
+| `end_line` | int | `line` | Zero-based end line |
+| `end_character` | int | `character` | Zero-based UTF-16 end character |
+| `title` | string | — | Exact code action title |
+| `index` | int | `0` when `title` is omitted | Zero-based action index |
 
 No approval.
 

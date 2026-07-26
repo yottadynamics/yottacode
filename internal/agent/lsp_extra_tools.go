@@ -233,6 +233,7 @@ func (t *LSPCodeActionsTool) Execute(ctx context.Context, argsJSON string) (stri
 	}
 	var b strings.Builder
 	for _, action := range actions {
+		fmt.Fprintf(&b, "%d\t", action.Index)
 		flags := []string{}
 		if action.HasEdit {
 			flags = append(flags, "edit=yes")
@@ -256,6 +257,72 @@ func (t *LSPCodeActionsTool) Execute(ctx context.Context, argsJSON string) (stri
 		fmt.Fprintf(&b, "%s\t%s\t%s\n", action.Kind, action.Title, strings.Join(flags, " "))
 	}
 	return b.String(), nil
+}
+
+// LSPCodeActionPreviewTool resolves one code action into a WorkspaceEdit preview
+// without applying it. The separate apply tool keeps all writes approval-gated.
+type LSPCodeActionPreviewTool struct{ lspToolBase }
+
+func (t *LSPCodeActionPreviewTool) Name() string { return "lsp_code_action_preview" }
+func (t *LSPCodeActionPreviewTool) Description() string {
+	return "Preview the WorkspaceEdit for one language-server code action without applying it."
+}
+func (t *LSPCodeActionPreviewTool) Schema() map[string]any {
+	s := positionSchema()
+	props := s["properties"].(map[string]any)
+	props["end_line"] = map[string]any{"type": "integer", "description": "Zero-based end line (default: line)"}
+	props["end_character"] = map[string]any{"type": "integer", "description": "Zero-based end UTF-16 character offset (default: character)"}
+	props["title"] = map[string]any{"type": "string", "description": "Exact code action title to preview"}
+	props["index"] = map[string]any{"type": "integer", "description": "Zero-based code action index from lsp_code_actions; preferred when titles repeat"}
+	return s
+}
+func (t *LSPCodeActionPreviewTool) RequiresApproval(string) bool { return false }
+func (t *LSPCodeActionPreviewTool) ParallelSafe(string) bool     { return true }
+func (t *LSPCodeActionPreviewTool) PreviewCall(argsJSON string) string {
+	var a struct {
+		positionArgs
+		Title string `json:"title"`
+		Index int    `json:"index"`
+	}
+	_ = json.Unmarshal([]byte(argsJSON), &a)
+	selector := a.Title
+	if selector == "" {
+		selector = fmt.Sprintf("#%d", a.Index)
+	}
+	return fmt.Sprintf("lsp_code_action_preview(%s:%d:%d %s)", a.Path, a.Line, a.Character, selector)
+}
+func (t *LSPCodeActionPreviewTool) Execute(ctx context.Context, argsJSON string) (string, error) {
+	var a struct {
+		positionArgs
+		EndLine      int    `json:"end_line"`
+		EndCharacter int    `json:"end_character"`
+		Title        string `json:"title"`
+		Index        int    `json:"index"`
+	}
+	if err := json.Unmarshal([]byte(argsJSON), &a); err != nil {
+		return "", fmt.Errorf("lsp_code_action_preview: invalid args: %w", err)
+	}
+	client, path, pos, unavailable, err := openPositionClient(ctx, t.lspToolBase, argsJSON, "lsp_code_action_preview")
+	if err != nil || unavailable != "" {
+		return unavailable, err
+	}
+	defer client.Close()
+	end := lspci.Position{Line: a.EndLine, Character: a.EndCharacter}
+	if end.Line == 0 && end.Character == 0 {
+		end = pos
+	}
+	index := -1
+	if strings.TrimSpace(a.Title) == "" {
+		index = a.Index
+	}
+	edit, err := client.CodeActionPreview(ctx, path, pos, end, a.Title, index)
+	if errors.Is(err, lspci.ErrUnsupportedCapability) {
+		return unsupportedCapabilityResult("lsp_code_action_preview", err), nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("lsp_code_action_preview: %w", err)
+	}
+	return formatWorkspaceEditPreview(edit)
 }
 
 // LSPCallHierarchyTool returns incoming/outgoing calls for a source position.
