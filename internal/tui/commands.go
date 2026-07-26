@@ -82,6 +82,7 @@ func init() {
 		// still works when typed manually (`/memory search <query>`) —
 		// same pattern as /plan, /model, /sessions.
 		{Name: "memory", Help: "open the memory picker; `/memory search <q>` ranks saved memories", Run: cmdMemory},
+		{Name: "video", Args: "[path]", Help: "guide a marketing-video workflow", Run: cmdVideo},
 		{Name: "summarize", Help: "compress session history into a structured summary", Run: cmdSummarize},
 		{Name: "skills", Help: "skills menu; subcommands: install <source>, official <name>, show <name>, uninstall <name>, check [name], update [name]", Run: cmdSkills, PreservesTurn: true},
 		{Name: "subagents", Help: "open the subagents picker (Enter views · t toggles types · s stops · Esc closes)", Run: cmdSubagents, PreservesTurn: true},

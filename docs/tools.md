@@ -1,6 +1,6 @@
 # Built-in tools
 
-Fifty-four tools ship in `internal/agent` (forty-seven always-on, four experimental LSP tools, plus `todo_write`
+Fifty-seven tools ship in `internal/agent` (fifty always-on, four experimental LSP tools, plus `todo_write`
 and the `enter_plan_mode` / `exit_plan_mode` pair). The model sees their JSON-schema parameters via the
 OpenAI tools API; the TUI renders each invocation as a bordered card with a
 verb-style header (see [How tool calls render in the TUI](#how-tool-calls-render-in-the-tui)).
@@ -53,6 +53,9 @@ In addition to the built-ins, **MCP tools** register dynamically when an `[[mcp_
 | [`git_checkpoint`](#git_checkpoint) | required | Create a local checkpoint commit |
 | [`rollback`](#rollback) | required | Reset the repo to an earlier commit |
 | [`run_tests`](#run_tests) | none | Run the repo's test command |
+| [`media_probe`](#media_probe) | none | Inspect audio/video metadata with ffprobe |
+| [`media_analyze`](#media_analyze) | none | Detect silence/fluff candidates with ffmpeg |
+| [`media_render`](#media_render) | required | Render approved edits to YouTube/X MP4 or GIF preview profiles with ffmpeg |
 | [`list_dir`](#list_dir) | none | One-line-per-entry directory listing |
 | [`glob`](#glob) | none | Doublestar pattern match |
 | [`grep`](#grep) | none | Ripgrep (or GNU grep fallback) |
@@ -810,6 +813,52 @@ Run a test command in the repo. Defaults to `go test ./...`.
 | `path` | string | `.` |
 
 No approval.
+
+## media_probe
+
+Inspect a local audio/video file with `ffprobe` and return compact stream metadata: duration, container, video dimensions/fps/codec, audio codec/sample rate/channels, and rotation when present. The media bytes are never sent to the model.
+
+| Param | Type | Default |
+|---|---|---|
+| `path` | string | — |
+
+No approval. Requires `ffprobe` on `PATH`; `yottacode doctor` reports readiness.
+
+## media_analyze
+
+Run `ffmpeg` detectors and return a unified edit decision list for review before rendering. `mode=auto` runs audio silence detection when an audio stream exists and visual idle detection when a video stream exists, so silent terminal demos still produce useful candidates.
+
+| Param | Type | Default |
+|---|---|---|
+| `path` | string | — |
+| `mode` | string | `auto` |
+| `detectors` | []string | selected from streams |
+| `silence_threshold_db` | number | `-35` |
+| `min_silence_duration` | number | `0.6` |
+| `visual_noise_threshold` | number | `0.003` (`0.0015` in `terminal_demo`) |
+| `min_idle_duration` | number | `1.0` (`0.8` in `terminal_demo`) |
+
+Modes: `auto`, `audio_silence`, `visual_idle`, `terminal_demo`, or `all`. Returned candidates include `start`, `end`, `duration`, `detector`, `confidence`, and `reason` so the agent can explain why each cut was proposed. No approval. Requires `ffmpeg` on `PATH`.
+
+## media_render
+
+Render an approved edit plan with `ffmpeg`. The tool validates the source/caption/intro/outro paths as reads, validates output paths as writes, and refuses to overwrite existing files unless `overwrite=true` is passed.
+
+| Param | Type | Default | Notes |
+|---|---|---|---|
+| `input` | string | — | Source media file |
+| `output` | string | — | Output file, or base output when multiple profiles are requested |
+| `profiles` | []string | `["youtube_16x9"]` | `youtube_16x9`, `x_16x9`, `x_vertical_9x16`, `gif_preview`, `gif_preview_large` |
+| `gif_width` | int | profile default | Optional GIF width override in pixels |
+| `gif_fps` | number | `12` | Optional GIF frame-rate override |
+| `speed` | number | `1` | Optional GIF playback speed multiplier, e.g. `1.5` or `2` |
+| `keep_ranges` | []object | — | Approved ranges to keep, in seconds; multiple ranges are joined with ffmpeg concat |
+| `cut_ranges` | []object | — | Approved ranges to remove; converted to keep ranges from probed duration when `keep_ranges` is omitted |
+| `captions_path` | string | — | Optional `.srt` / `.ass` subtitle file to burn in |
+| `intro_path` / `outro_path` | string | — | Optional composition assets |
+| `overwrite` | bool | `false` | Must be explicit to replace an existing output |
+
+Always prompts for approval. Requires `ffmpeg` on `PATH`. Multi-profile outputs append the profile name to the file stem, such as `demo-youtube_16x9.mp4`, `demo-x_16x9.mp4`, and `demo-gif_preview.gif`. Multi-range edits are rendered with ffmpeg `trim`/`atrim` + `concat`, so approved fluff cuts are actually removed from the final output. `gif_preview` renders a 960px-wide 12 fps looping GIF and `gif_preview_large` renders a 1440px-wide version for readable terminal text; both use ffmpeg palette generation/paletteuse. For slow terminal clips, set `speed` to `1.5` or `2` to shorten the GIF without changing the approved edit ranges. Use GIF profiles for short teasers because GIFs grow quickly. See [`marketing-videos.md`](marketing-videos.md) for the recommended screen-recording workflow.
 
 ## list_dir
 

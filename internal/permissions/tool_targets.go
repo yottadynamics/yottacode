@@ -112,6 +112,12 @@ func targetFor(toolName, argsJSON, cwd string) Target {
 		return Target{PermName: "Glob", Descriptor: extractField(argsJSON, "pattern")}
 	case "grep":
 		return Target{PermName: "Grep", Descriptor: extractField(argsJSON, "pattern")}
+	case "media_probe":
+		return Target{PermName: "Media", Descriptor: "probe " + relPath(extractPath(argsJSON), cwd)}
+	case "media_analyze":
+		return Target{PermName: "Media", Descriptor: "analyze " + relPath(extractPath(argsJSON), cwd)}
+	case "media_render":
+		return Target{PermName: "Media", Descriptor: "render " + relPath(extractField(argsJSON, "output"), cwd)}
 	case "fetch_url":
 		return Target{PermName: "Fetch", Descriptor: normalizeFetchDescriptor(extractField(argsJSON, "url"))}
 	case "web_search":

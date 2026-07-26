@@ -123,6 +123,30 @@ func TestTools_Metadata(t *testing.T) {
 			wantPreviewSubstring: "go test ./...",
 		},
 		{
+			tool:                 &MediaProbeTool{Cwd: NewCwdRef(cwd)},
+			wantName:             "media_probe",
+			wantApproval:         false,
+			previewArgsJSON:      `{"path":"demo.mp4"}`,
+			wantPreviewSubstring: "demo.mp4",
+			wantSchemaRequired:   []string{"path"},
+		},
+		{
+			tool:                 &MediaAnalyzeTool{Cwd: NewCwdRef(cwd)},
+			wantName:             "media_analyze",
+			wantApproval:         false,
+			previewArgsJSON:      `{"path":"demo.mp4"}`,
+			wantPreviewSubstring: "demo.mp4",
+			wantSchemaRequired:   []string{"path"},
+		},
+		{
+			tool:                 &MediaRenderTool{Cwd: NewCwdRef(cwd), WriteOpts: WritePathOptions{Cwd: NewCwdRef(cwd)}},
+			wantName:             "media_render",
+			wantApproval:         true,
+			previewArgsJSON:      `{"input":"demo.mp4","output":"out.mp4","profiles":["youtube_16x9","x_16x9"]}`,
+			wantPreviewSubstring: "profiles=youtube_16x9,x_16x9",
+			wantSchemaRequired:   []string{"input", "output"},
+		},
+		{
 			tool:                 &GitBranchStatusTool{Cwd: NewCwdRef(cwd)},
 			wantName:             "git_branch_status",
 			wantApproval:         false,
@@ -336,4 +360,3 @@ func TestGitTool_Metadata(t *testing.T) {
 		t.Errorf("schema required = %v, want to include 'args'", required)
 	}
 }
-

@@ -67,7 +67,7 @@ For build-from-source, cross-compilation, manual provider configuration, and oth
 
 - **Deep GitHub integration.** A typed `go-github` adapter (no shelling out to the `gh` CLI) gives the agent first-class pull-request and issue tools — read and review PRs, open and update them, post review comments, and triage issues — plus slash commands like `/git-create-pr`, `/git-review-pr`, and `/git-implement-issue`, which takes an issue end-to-end: research → plan → branch → implement → tests → commit → push → draft PR. See [`docs/github.md`](docs/github.md).
 
-- **A deep, repo-aware tool surface.** Forty built-in tools span reads, writes, search, a full git suite (status / diff / blame / log / commit / checkpoint / rollback / file-at-revision), bash, tests, the `todo_write` working-plan tracker, and the plan-mode tools — each with an explicit approval policy. See [`docs/tools.md`](docs/tools.md).
+- **A deep, repo-aware tool surface.** Built-in tools span reads, writes, search, a full git suite (status / diff / blame / log / commit / checkpoint / rollback / file-at-revision), bash, tests, local media editing with `ffmpeg`/`ffprobe`, the `todo_write` working-plan tracker, and the plan-mode tools — each with an explicit approval policy. See [`docs/tools.md`](docs/tools.md) and [`docs/marketing-videos.md`](docs/marketing-videos.md).
 
 - **Plan first, then let it run.** Plan mode (`/plan`, `Shift+Tab`, or `--permission-mode plan`) investigates read-only and drafts a plan you approve; approving drops into auto mode so implementation skips per-tool prompts, while `run_bash`, `git_commit`, `git_checkpoint`, and `rollback` stay in the safety floor. `Shift+Tab` cycles **normal → auto → plan** mid-turn, and the agent can never escalate its own permissions.
 

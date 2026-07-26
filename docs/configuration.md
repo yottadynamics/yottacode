@@ -163,7 +163,7 @@ yottacode doctor
 yottacode doctor --json
 ```
 
-`yottacode doctor` exits non-zero when issues are found. `--json` emits a
+`yottacode doctor` exits non-zero when issues are found. It also reports optional local-tool readiness, including LSP code intelligence and media editing (`ffmpeg`/`ffprobe`, plus optional local transcription). `--json` emits a
 stable machine-readable payload.
 
 ### `doctor --json` shape
@@ -180,6 +180,8 @@ Top-level fields:
 - `available_models`
 - `issues`
 - `warnings`
+- `lsp_code_intelligence`
+- `media_editing`
 
 The nested `profile` object includes:
 
@@ -371,6 +373,7 @@ Each rule has the shape `<Tool>(<pattern>)`. Supported tool prefixes:
 | `List` | `list_dir`, `list_project_structure` | cwd-relative path (doublestar) |
 | `Glob` / `Grep` | the same-named tools | pattern string |
 | `Fetch` | `fetch_url` | URL (string) |
+| `Media` | `media_probe`, `media_analyze`, `media_render` | action plus path, e.g. `probe raw/demo.mp4` or `render out/demo.mp4` |
 | `Git` | unified `git` + discrete `git_*` helpers | joined args (string) |
 | `Github` | every `gh_*` tool (PR + issue surface) | canonical verb name (string) |
 | `Memory` | `memory_save` / `memory_forget` | `op scope:name` (string) |
