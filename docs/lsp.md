@@ -46,6 +46,7 @@ When the feature flag is enabled, yottacode registers these LSP tools. Most are 
 | `lsp_hover` | Show hover/type/documentation text for a source position |
 | `lsp_signature_help` | Show callable signatures and active parameter info at a source position |
 | `lsp_code_actions` | List quick fixes/refactors for a range without applying them, including edit/command metadata |
+| `lsp_code_action_preview` | Preview the WorkspaceEdit for one code action without writing files |
 | `lsp_rename_preview` | Preview semantic rename edits as WorkspaceEdit JSON without writing files |
 | `lsp_format_preview` | Preview formatting edits for one file without writing files |
 | `lsp_apply_workspace_edit` | Apply a previously previewed WorkspaceEdit through yottacode path validation and approval |
@@ -53,9 +54,9 @@ When the feature flag is enabled, yottacode registers these LSP tools. Most are 
 
 Positions are zero-based line and UTF-16 character offsets, matching LSP. Output locations are rendered one-based as `path:line:column` for terminal readability.
 
-`lsp_code_actions` is intentionally read-only. Semantic edits use a two-step flow: preview tools (`lsp_rename_preview`, `lsp_format_preview`, and future code-action previews) return normalized WorkspaceEdit JSON, then `lsp_apply_workspace_edit` validates every path, snapshots affected files through the normal mutator flow, writes the edits itself, and notifies the LSP manager. The language server never writes directly to the repository.
+`lsp_code_actions` is intentionally read-only. Semantic edits use a two-step flow: preview tools (`lsp_code_action_preview`, `lsp_rename_preview`, and `lsp_format_preview`) return normalized WorkspaceEdit JSON, then `lsp_apply_workspace_edit` validates every path, snapshots affected files through the normal mutator flow, writes the edits itself, and notifies the LSP manager. The language server never writes directly to the repository.
 
-The WorkspaceEdit applier is intentionally conservative in this experimental phase. It applies text edits from the bottom of each file upward and validates every path, but non-ASCII / UTF-16-heavy edit ranges need more real-server coverage before relying on broad semantic refactors in such files.
+The WorkspaceEdit applier uses LSP UTF-16 character offsets, applies text edits from the bottom of each file upward, and validates every path before writing. Broad semantic refactors should still be reviewed carefully because server-proposed multi-file edits can be large.
 
 ## Session advisory
 
@@ -85,6 +86,7 @@ The experimental bridge now includes several production-readiness behaviors:
 - Documents are opened with `textDocument/didOpen` before position-based requests so servers see the same file contents yottacode read from disk.
 - Successful `edit_file` and `write_file` calls notify pooled servers with full-document `didChange` and `didSave`, using version counters so diagnostics can reflect yottacode edits.
 - `lsp_diagnostics` reports whether diagnostics were actually published before the settle timeout, so “clean” is distinct from “no diagnostic publication observed yet”.
+- `lsp_code_action_preview` resolves editable code actions into the same preview/apply WorkspaceEdit flow used by rename and formatting.
 - Server capabilities returned by `initialize` are checked before optional methods; unsupported methods return an explicit `unavailable` result rather than a misleading empty response.
 - `lsp_status` exposes session manager stats: open servers, starts, reuses, evictions, and last startup latency. `yottacode doctor` reports the default manager configuration without starting a session server.
 - Smoke tests exist for all supported servers and skip automatically when the binary is not installed.

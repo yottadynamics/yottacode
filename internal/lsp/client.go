@@ -101,6 +101,7 @@ type DiagnosticsSnapshot struct {
 
 // CodeAction is a read-only description of a server-offered fix/refactor.
 type CodeAction struct {
+	Index             int
 	Title             string
 	Kind              string
 	HasEdit           bool
@@ -427,6 +428,50 @@ func (c *Client) CodeActions(ctx context.Context, path string, start, end Positi
 		return nil, fmt.Errorf("parse codeAction response: %w", err)
 	}
 	return items, nil
+}
+
+// CodeActionPreview returns the WorkspaceEdit for one server-offered code
+// action without applying it. Some servers return edits inline while others
+// require codeAction/resolve; both paths still end at yottacode's preview/apply
+// flow so the language server never writes files directly.
+func (c *Client) CodeActionPreview(ctx context.Context, path string, start, end Position, title string, index int) (WorkspaceEdit, error) {
+	if err := c.requireCapability(c.caps.CodeAction, "textDocument/codeAction"); err != nil {
+		return WorkspaceEdit{}, err
+	}
+	if err := c.openDocument(ctx, path); err != nil {
+		return WorkspaceEdit{}, err
+	}
+	ctx, cancel := context.WithTimeout(ctx, defaultRequestTimeout)
+	defer cancel()
+	raw, err := c.request(ctx, "textDocument/codeAction", map[string]any{
+		"textDocument": map[string]any{"uri": pathToURI(path)},
+		"range":        map[string]any{"start": start, "end": end},
+		"context":      map[string]any{"diagnostics": []any{}},
+	})
+	if err != nil || len(raw) == 0 || string(raw) == "null" {
+		return WorkspaceEdit{}, err
+	}
+	action, err := selectCodeAction(raw, title, index)
+	if err != nil {
+		return WorkspaceEdit{}, err
+	}
+	if len(action.Edit) == 0 || string(action.Edit) == "null" {
+		if !c.caps.CodeActionResolve {
+			return WorkspaceEdit{}, fmt.Errorf("selected code action has no edit and codeAction/resolve is unsupported")
+		}
+		resolved, err := c.request(ctx, "codeAction/resolve", action.Raw)
+		if err != nil {
+			return WorkspaceEdit{}, err
+		}
+		action, err = normalizeCodeAction(resolved, action.Index, c.caps.CodeActionResolve)
+		if err != nil {
+			return WorkspaceEdit{}, err
+		}
+	}
+	if len(action.Edit) == 0 || string(action.Edit) == "null" {
+		return WorkspaceEdit{}, fmt.Errorf("selected code action has no workspace edit")
+	}
+	return workspaceEdit(action.Edit)
 }
 
 // RenamePreview asks the server for a semantic rename edit without applying it.

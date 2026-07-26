@@ -232,6 +232,43 @@ func TestApplyDiffTool_AppliesFullyEscapedDiff(t *testing.T) {
 	}
 }
 
+func TestApplyDiffTool_RefusesApplyPatchStyleDiff(t *testing.T) {
+	tmp := gitInit(t)
+	tool := &ApplyDiffTool{Cwd: NewCwdRef(tmp), WriteOpts: WritePathOptions{Cwd: NewCwdRef(tmp)}}
+	diff := "*** Begin Patch\n*** Update File: a.txt\n@@\n-old\n+new\n*** End Patch"
+	b, _ := json.Marshal(map[string]string{"diff": diff})
+	_, err := tool.Execute(context.Background(), string(b))
+	if err == nil {
+		t.Fatalf("expected apply_patch-style diff to be rejected")
+	}
+	if !strings.Contains(err.Error(), "apply_patch-style patches are not accepted") {
+		t.Fatalf("expected targeted apply_patch-style error, got %v", err)
+	}
+}
+
+func TestApplyDiffTool_StaleContextHintIsSpecific(t *testing.T) {
+	tmp := gitInit(t)
+	writeFile(t, tmp, "a.txt", "current\n")
+	tool := &ApplyDiffTool{Cwd: NewCwdRef(tmp), WriteOpts: WritePathOptions{Cwd: NewCwdRef(tmp)}}
+	diff := "--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-stale\n+new\n"
+	b, _ := json.Marshal(map[string]string{"diff": diff})
+	_, err := tool.Execute(context.Background(), string(b))
+	if err == nil {
+		t.Fatalf("expected stale-context patch to fail")
+	}
+	if !strings.Contains(err.Error(), "hunk context did not match the current file") {
+		t.Fatalf("expected stale-context hint, got %v", err)
+	}
+}
+
+func TestApplyPatchFailureHintClassifiesMalformedPatch(t *testing.T) {
+	stderr := "warning: recount: unexpected line: @@\n\nerror: corrupt patch at line 30\n"
+	got := applyPatchFailureHint(stderr)
+	if !strings.Contains(got, "patch syntax is malformed") {
+		t.Fatalf("expected malformed-patch hint, got %q", got)
+	}
+}
+
 func TestListGitChangedFilesTool_FindsStagedUnstagedAndUntracked(t *testing.T) {
 	tmp := gitInit(t)
 	writeFile(t, tmp, "tracked.txt", "v1\n")

@@ -27,6 +27,7 @@ type lspClient interface {
 	SignatureHelp(ctx context.Context, path string, pos lspci.Position) (lspci.SignatureHelp, error)
 	Diagnostics(ctx context.Context, path string) (lspci.DiagnosticsSnapshot, error)
 	CodeActions(ctx context.Context, path string, start, end lspci.Position) ([]lspci.CodeAction, error)
+	CodeActionPreview(ctx context.Context, path string, start, end lspci.Position, title string, index int) (lspci.WorkspaceEdit, error)
 	RenamePreview(ctx context.Context, path string, pos lspci.Position, newName string) (lspci.WorkspaceEdit, error)
 	FormatPreview(ctx context.Context, path string) (lspci.WorkspaceEdit, error)
 	CallHierarchy(ctx context.Context, path string, pos lspci.Position) ([]lspci.CallHierarchyItem, error)

@@ -298,6 +298,48 @@ adversarial config) and `exit_plan_mode`. See
 definition format, built-in agents, `/subagents` command, and
 limitations.
 
+## Advisor / Implementer Routing
+
+The optional `[router]` role-routing layer lets yottacode use two model
+roles during one session:
+
+- **Advisor** — the planning, design, and reasoning model.
+- **Implementer** — the faster coding model used for implementation-heavy
+  work.
+
+When routing is enabled, yottacode starts interactive sessions on the advisor
+so the main conversation gets the stronger planning model by default. Plan mode
+also switches to the advisor. Auto mode switches to the implementer, and
+delegated subagents plus summarization/compaction run on the implementer unless
+an individual agent definition pins a different model.
+
+This is primarily a cost-control feature. It does not magically reduce the
+number of tokens needed for a task; instead, it moves routine isolated work onto
+a cheaper role while keeping high-leverage planning on the advisor. The main
+prompt cache is preserved except at explicit model-switch boundaries such as
+startup, `/plan`, `/auto`, `/model`, or a `/router` picker change.
+
+Implementer agents also get a narrow `consult_advisor` tool. It performs one
+isolated no-tools call to the advisor for design, debugging, or uncertainty that
+the implementer should not resolve alone. Because advisor calls are the more
+expensive path, the tool is explicit and bounded rather than an automatic
+fallback.
+
+Configuration uses role-named fields under `[router]`:
+
+```toml
+[router]
+  mode              = "auto"                       # off | manual | auto
+  advisor_model     = "anthropic:claude-opus-4-6"
+  implementer_model = "anthropic:claude-haiku-4-5"
+```
+
+`advisor_models` and `implementer_models` provide primary→fallback chains.
+Legacy `smart_model(s)` and `fast_model(s)` still load as aliases for advisor
+and implementer, but new writes use the role names. Reasoning effort stays
+global through `/effort` and `--reasoning-effort`; there are no per-role effort
+settings.
+
 The loop reads all three flags at turn start (effective iteration
 cap) and on every tool dispatch. Approval-chain priority (the internal
 `YoloModeState` Go identifier still uses "yolo" in the precedence label;

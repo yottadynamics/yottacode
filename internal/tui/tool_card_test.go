@@ -297,6 +297,7 @@ func TestToolHeader_RewritesPerToolPreviews(t *testing.T) {
 		{"lsp_definition", `{"path":"main.go","line":1,"character":2}`, "lsp_definition(main.go:1:2)", "LSP(definition main.go:1:2)"},
 		{"lsp_references", `{"path":"main.go","line":1,"character":2}`, "lsp_references(main.go:1:2)", "LSP(references main.go:1:2)"},
 		{"lsp_signature_help", `{"path":"main.go","line":1,"character":2}`, "lsp_signature_help(main.go:1:2)", "LSP(signature main.go:1:2)"},
+		{"lsp_code_action_preview", `{"path":"main.go","line":1,"character":2,"index":3}`, "lsp_code_action_preview(main.go:1:2 #3)", "LSP(code action #3 main.go:1:2)"},
 		{"git", `{"args":["status","-sb"]}`, "$ git status -sb", "Git(status -sb)"},
 		{"git_commit", `{"message":"x"}`, `git_commit("x")`, "Git(commit)"},
 		{"run_tests", `{"command":"go test ./..."}`, "run_tests(go test ./... in .)", "Test(go test ./...)"},

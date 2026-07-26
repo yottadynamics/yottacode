@@ -62,3 +62,21 @@ func TestLSPRenamePreviewIncludesApplyPayload(t *testing.T) {
 		t.Fatalf("preview should include diff and apply payload, got %q", out)
 	}
 }
+
+func TestLSPCodeActionPreviewIncludesApplyPayload(t *testing.T) {
+	cwd := t.TempDir()
+	writeFile(t, cwd, "main.go", "package main\nfunc main() {}\n")
+	base := lspToolBase{Cwd: NewCwdRef(cwd), NewClient: func(context.Context, lspci.Language, string) (lspClient, error) {
+		return &fakeLSPClient{actions: []lspci.CodeAction{{Index: 0, Kind: "quickfix", Title: "Add comment", HasEdit: true}}}, nil
+	}}
+	tool := &LSPCodeActionPreviewTool{lspToolBase: base}
+	out, err := tool.Execute(context.Background(), `{"path":"main.go","line":1,"character":0,"index":0}`)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	for _, want := range []string{"apply_payload:", `"edits"`, "// fixed"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("preview output %q does not contain %q", out, want)
+		}
+	}
+}
