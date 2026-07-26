@@ -180,6 +180,65 @@ func TestStatusBar_RendersLocationChip(t *testing.T) {
 }
 
 func TestStatusBar_BranchRefreshesAfterGitSwitch(t *testing.T) {
+	tmp := statusBarGitRepo(t)
+
+	m := newTestModel(t)
+	m.parentCtx = context.Background()
+	m.cwd = tmp
+	m.branch = "main"
+	m.currentPR = 13
+	m.pendingToolArgs = `{"args":["switch","feature/live-chip"]}`
+	m.width = 160
+	updated, _ := m.handleAgentEvent(agent.ToolResult{ToolName: "git", Output: "ok"})
+	m = updated.(Model)
+	if m.branch != "feature/live-chip" {
+		t.Fatalf("branch = %q, want feature/live-chip", m.branch)
+	}
+	if m.currentPR != 0 {
+		t.Fatalf("currentPR = %d, want cleared after branch switch", m.currentPR)
+	}
+	if plain := stripANSI(m.renderStatus()); !strings.Contains(plain, "feature/live-chip") {
+		t.Fatalf("status did not render refreshed branch: %q", plain)
+	}
+}
+
+func TestStatusBar_BranchRefreshesAfterGitSwitchWithGlobalFlags(t *testing.T) {
+	tmp := statusBarGitRepo(t)
+
+	m := newTestModel(t)
+	m.parentCtx = context.Background()
+	m.cwd = tmp
+	m.branch = "main"
+	m.pendingToolArgs = `{"args":["-C","` + filepath.ToSlash(tmp) + `","switch","feature/live-chip"]}`
+	m.width = 160
+	updated, _ := m.handleAgentEvent(agent.ToolResult{ToolName: "git", Output: "ok"})
+	m = updated.(Model)
+	if m.branch != "feature/live-chip" {
+		t.Fatalf("branch = %q, want feature/live-chip", m.branch)
+	}
+}
+
+func TestStatusBar_DoesNotRefreshBranchAfterFailedGitSwitch(t *testing.T) {
+	tmp := statusBarGitRepo(t)
+
+	m := newTestModel(t)
+	m.parentCtx = context.Background()
+	m.cwd = tmp
+	m.branch = "main"
+	m.currentPR = 13
+	m.pendingToolArgs = `{"args":["switch","feature/live-chip"]}`
+	updated, _ := m.handleAgentEvent(agent.ToolResult{ToolName: "git", Output: "failed", Errored: true})
+	m = updated.(Model)
+	if m.branch != "main" {
+		t.Fatalf("branch = %q, want unchanged after failed switch", m.branch)
+	}
+	if m.currentPR != 13 {
+		t.Fatalf("currentPR = %d, want unchanged after failed switch", m.currentPR)
+	}
+}
+
+func statusBarGitRepo(t *testing.T) string {
+	t.Helper()
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not installed")
 	}
@@ -205,21 +264,7 @@ func TestStatusBar_BranchRefreshesAfterGitSwitch(t *testing.T) {
 			t.Fatalf("git %v: %v: %s", args, err, out)
 		}
 	}
-
-	m := newTestModel(t)
-	m.parentCtx = context.Background()
-	m.cwd = tmp
-	m.branch = "main"
-	m.pendingToolArgs = `{"args":["switch","feature/live-chip"]}`
-	m.width = 160
-	updated, _ := m.handleAgentEvent(agent.ToolResult{ToolName: "git", Output: "ok"})
-	m = updated.(Model)
-	if m.branch != "feature/live-chip" {
-		t.Fatalf("branch = %q, want feature/live-chip", m.branch)
-	}
-	if plain := stripANSI(m.renderStatus()); !strings.Contains(plain, "feature/live-chip") {
-		t.Fatalf("status did not render refreshed branch: %q", plain)
-	}
+	return tmp
 }
 
 // With no branch (detached / not a repo) the chip still shows the dir,
