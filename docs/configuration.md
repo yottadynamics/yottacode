@@ -588,7 +588,7 @@ model must exist in that provider's `models`. Legacy `smart_model` and
 `fast_model` still load as aliases for advisor and implementer, but new
 writes use the role-named keys. Reasoning effort stays session-wide:
 use `/effort` (or `--reasoning-effort`) rather than per-role fields.
-These keys can also be set from the TUI with the **`/router`** picker,
+These keys can also be set from the TUI with the **`/advisor`** picker,
 which persists them here.
 
 Either slot can be a **failover chain** via the plural form
