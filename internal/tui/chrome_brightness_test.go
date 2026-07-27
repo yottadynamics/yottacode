@@ -90,7 +90,9 @@ func TestChromeReadsBright(t *testing.T) {
 		DefaultWindow: 1000, WarnThreshold: 0.65, AutoThreshold: 0.85,
 	}}
 	m.contextTokens = 100 // 10% — below warn, so the bar is in its default tier
-	bright("context bar", m.renderContextBar())
+	if !strings.Contains(m.renderContextBar(), esc(colorSuccess)) {
+		t.Errorf("context bar graph should use Success green below warn: %q", m.renderContextBar())
+	}
 
 	// --- frames/dividers brightened off Rule onto Dim ----------------
 	offRule := func(label, s string) {

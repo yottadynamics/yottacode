@@ -91,8 +91,8 @@ func (m *Model) noteWindowOverflow(err error) bool {
 	if !changed {
 		return false
 	}
-	m.appendLine(styleWatermark.Render(fmt.Sprintf(
-		"[window] provider rejected ~%s tokens but the resolved window was %s — pinning %s to %s in the runtime overlay and re-checking context",
+	m.appendLine(statusWarnLine("window", fmt.Sprintf(
+		"provider rejected ~%s tokens but the resolved window was %s — pinning %s to %s in the runtime overlay and re-checking context",
 		formatTokens(estimate), formatTokens(window), key, formatTokens(pinned))))
 	return true
 }
@@ -126,7 +126,7 @@ func (m *Model) noteWindowUsage(u *adapter.Usage) {
 	if !changed {
 		return
 	}
-	m.appendLine(styleWatermark.Render(fmt.Sprintf(
-		"[window] provider accepted %s input tokens against a resolved window of %s — raising %s to the proven %s",
+	m.appendLine(statusWarnLine("window", fmt.Sprintf(
+		"provider accepted %s input tokens against a resolved window of %s — raising %s to the proven %s",
 		formatTokens(totalIn), formatTokens(window), key, formatTokens(totalIn))))
 }

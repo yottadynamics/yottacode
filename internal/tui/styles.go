@@ -96,8 +96,13 @@ var (
 	styleAuto             lipgloss.Style
 	styleError            lipgloss.Style
 	styleWarnIcon         lipgloss.Style
+	styleSystemSuccess    lipgloss.Style
+	styleSystemWarn       lipgloss.Style
+	styleSystemError      lipgloss.Style
+	styleSystemTrace      lipgloss.Style
 	styleApprovalBox      lipgloss.Style
 	stylePaletteBox       lipgloss.Style
+	styleSubmenuBox       lipgloss.Style
 	stylePaletteItem      lipgloss.Style
 	stylePaletteSelected  lipgloss.Style
 	// Three intent-named styles for the dim secondary text that used to
@@ -254,6 +259,10 @@ func buildStyles(p themes.Palette) {
 	styleAuto = lipgloss.NewStyle().Foreground(colorDim)
 	styleError = lipgloss.NewStyle().Foreground(colorErr).Bold(true)
 	styleWarnIcon = lipgloss.NewStyle().Foreground(colorWarning).Bold(true)
+	styleSystemSuccess = lipgloss.NewStyle().Foreground(colorSuccess).Bold(true)
+	styleSystemWarn = lipgloss.NewStyle().Foreground(colorWarning).Bold(true)
+	styleSystemError = lipgloss.NewStyle().Foreground(colorError).Bold(true)
+	styleSystemTrace = lipgloss.NewStyle().Foreground(colorDim)
 	styleApprovalBox = lipgloss.NewStyle().
 		Border(lipgloss.NormalBorder()).
 		BorderForeground(colorWarn).
@@ -270,6 +279,16 @@ func buildStyles(p themes.Palette) {
 		paletteBox = paletteBox.Background(themeBackground)
 	}
 	stylePaletteBox = paletteBox
+
+	// Inline submenu overlays use the brand/success green frame so modal-like
+	// pickers read as a distinct control surface above the task/status chrome.
+	styleSubmenuBox = lipgloss.NewStyle().
+		Border(lipgloss.NormalBorder()).
+		BorderForeground(colorSuccess).
+		Padding(0, 1)
+	if hasThemeBackground {
+		styleSubmenuBox = styleSubmenuBox.Background(themeBackground)
+	}
 
 	stylePaletteItem = lipgloss.NewStyle().Foreground(colorContent)
 	// Selected row: reverse video on the brand color, i.e. brand

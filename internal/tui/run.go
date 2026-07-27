@@ -757,13 +757,6 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 			styleAuto.Render("sensitive project: automatic session recall is off, and this project's "+
 				"conversations are excluded from every other project's recall — `yottacode sensitive` to manage"))
 	}
-	// Confirm at startup which experimental features are on — without this
-	// the gate left no in-session signal it was enabled. /experimental shows
-	// the full catalog and detail.
-	if names := expSet.EnabledNames(); len(names) > 0 {
-		model.pendingStartupNotices = append(model.pendingStartupNotices,
-			styleAuto.Render("experimental enabled: "+strings.Join(names, ", ")+" — /experimental for details"))
-	}
 	if expSet.IsEnabled(experimental.LSPCodeIntelligence) {
 		if langs, err := lsp.DetectWorkspace(ctx, cwd, 2000); err == nil {
 			langs = lsp.ApplyOverridesToDetected(langs, fileCfg.LSP.Servers)

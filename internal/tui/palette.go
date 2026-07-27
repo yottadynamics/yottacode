@@ -1,7 +1,6 @@
 package tui
 
 import (
-	"fmt"
 	"strings"
 )
 
@@ -140,13 +139,17 @@ func renderPalette(items []slashCommand, idx, offset, width int) string {
 	var lines []string
 	for i := offset; i < end; i++ {
 		c := items[i]
-		line := fmt.Sprintf(" %-*s   %s", colWidth, lefts[i], c.Help)
-		if i == idx {
-			line = stylePaletteSelected.Render(line)
-		} else {
-			line = stylePaletteItem.Render(line)
+		descWidth := width - colWidth - 12
+		if descWidth < 12 {
+			descWidth = 12
 		}
-		lines = append(lines, line)
+		lines = append(lines, renderMenuItem(menuItemOpts{
+			Label:      lefts[i],
+			LabelWidth: colWidth,
+			Desc:       c.Help,
+			DescWidth:  descWidth,
+			Cursor:     i == idx,
+		}))
 	}
 	return stylePaletteBox.Width(width - 2).Render(strings.Join(lines, "\n"))
 }

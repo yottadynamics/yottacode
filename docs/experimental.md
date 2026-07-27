@@ -27,6 +27,14 @@ one release so existing configs don't break.
 `internal/experimental/features.go`. See that file's package doc
 for the contract.)
 
+## In-TUI catalog
+
+Inside the interactive TUI, `/experimental` opens the same inline submenu surface
+used by other slash-command menus. It shows every recognized feature, marks the
+features enabled for the current session with `[ON ]`, and keeps the startup
+configuration hints in the header. The submenu is read-only; close it with any
+key and restart with one of the enablement sources below to change flags.
+
 ## How to enable
 
 Three sources, merged at startup (CLI > env > config; later sources
