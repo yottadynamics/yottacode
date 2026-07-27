@@ -3825,7 +3825,9 @@ func (m Model) renderStatus() string {
 		smart, fast := shortModelTag(m.router.SmartModel), shortModelTag(m.router.FastModel)
 		switch routerModeOrOff(m.routerMode) {
 		case config.RouterModeAuto:
-			if smart != "" && fast != "" && (m.modelName == m.router.SmartModel || m.modelName == smart) {
+			// Plan mode already carries its own prominent banner; show the real
+			// advisor model here so the implementer half of the pair is not mistaken for the active planner.
+			if !m.cfg.PlanMode.IsActive() && smart != "" && fast != "" && (m.modelName == m.router.SmartModel || m.modelName == smart) {
 				modelName = smart + ":" + fast
 			} else {
 				routingNote = "routing: auto"

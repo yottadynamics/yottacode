@@ -578,6 +578,10 @@ The `[router]` block hosts two independent, opt-in features.
 - `mode = "manual"` — only routes subagents that declare an explicit `model:`.
 - `mode = "auto"` — starts the session and `/plan` on `advisor_model`, switches auto-mode work and delegated subagents to `implementer_model`, and routes summarization to `implementer_model` (an explicit `model:` on an agent overrides this).
 
+In `auto` mode, top-level turns driven by `implementer_model` can call
+`consult_advisor` for bounded no-tools guidance from `advisor_model`. Advisor
+turns, including plan mode, do not expose that tool.
+
 `advisor_model` / `implementer_model` are required when `mode` is not
 `off` and use the `"<provider>"` or `"<provider>:<model>"` grammar; the
 model must exist in that provider's `models`. Legacy `smart_model` and

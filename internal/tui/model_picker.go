@@ -409,6 +409,7 @@ func (m Model) commitModelChoice(chosen string, window int) (Model, tea.Cmd) {
 		m.subagentTool.Adapter = ad
 	}
 	m.providerProfile = ad.Profile()
+	syncMainConsultAdvisorTool(&m)
 	m, _ = reloadMemoryNow(m, "")
 	m.appendLine(styleAuto.Render(statusLine("model", fmt.Sprintf("default → %s", chosen))))
 	cmds := []tea.Cmd{runProviderProbe(m.parentCtx, m.adapterConfig(chosen, m.baseURL), false)}

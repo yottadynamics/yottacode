@@ -84,6 +84,7 @@ func modelShortcutSwitch(m Model, newTag string) (Model, tea.Cmd) {
 	m.providerProfile = ad.Profile()
 	m.modelName = newTag
 	m.sess.Model = newTag
+	syncMainConsultAdvisorTool(&m)
 	m, _ = reloadMemoryNow(m, "")
 	if switchedProfile != "" && switchedProfile != strings.TrimSpace(m.provider) {
 		m.appendLine(styleAuto.Render(statusLine("model", fmt.Sprintf("switched to %s (provider: %s)", newTag, switchedProfile))))

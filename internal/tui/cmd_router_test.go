@@ -282,3 +282,24 @@ func TestRenderStatus_AutoPairOnlyWhileActiveMatchesSmart(t *testing.T) {
 		t.Errorf("diverged: the pair must not remain the primary segment; got %q", bar)
 	}
 }
+
+func TestRenderStatus_PlanModeShowsActiveAdvisorNotPair(t *testing.T) {
+	ra := testRouterAdapters(t)
+	planMode := &agent.PlanModeState{}
+	planMode.Active.Store(true)
+	m := Model{
+		router:     ra,
+		routerMode: config.RouterModeAuto,
+		modelName:  ra.SmartModel,
+		cfg:        agent.LoopConfig{PlanMode: planMode},
+		connection: connOK,
+	}
+
+	bar := stripANSI(m.renderStatus())
+	if !strings.Contains(bar, "claude-opus-4-6") {
+		t.Errorf("plan mode status should show active advisor model; got %q", bar)
+	}
+	if strings.Contains(bar, "claude-opus-4-6:claude-haiku-4-5") || strings.Contains(bar, "claude-haiku-4-5") {
+		t.Errorf("plan mode status must not show implementer/pair as active; got %q", bar)
+	}
+}
