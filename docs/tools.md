@@ -76,6 +76,14 @@ In addition to the built-ins, **MCP tools** register dynamically when an `[[mcp_
 | [`lsp_format_preview`](#lsp_format_preview) | none | Preview formatting edits without applying them |
 | [`lsp_apply_workspace_edit`](#lsp_apply_workspace_edit) | yes | Apply a previously previewed WorkspaceEdit after validation and approval |
 | [`lsp_call_hierarchy`](#lsp_call_hierarchy) | none | Show incoming/outgoing calls for a source position |
+| [`code_map`](#code_map) | none | Return a bounded directory/file/symbol structure map from the experimental code index |
+| [`code_symbols`](#code_symbols) | none | Return indexed symbols for a file or query from the experimental code index |
+| [`code_structure_projection`](#code_structure_projection) | none | Generate a compact code-structure projection for agent context |
+| [`code_dependencies`](#code_dependencies) | none | Return direct import dependencies for an indexed file/path query |
+| [`code_dependents`](#code_dependents) | none | Return direct import dependents for an indexed file/path query |
+| [`code_impact`](#code_impact) | none | Return dependencies, dependents, transitive dependents, and cycles as a blast-radius summary |
+| [`code_cycles`](#code_cycles) | none | Return import cycles, optionally narrowed to one indexed file/path query |
+| [`code_map_diagram`](#code_map_diagram) | none | Return a Mermaid import dependency diagram, optionally focused around one file |
 | [`pr_readiness_context`](#pr_readiness_context) | none | Gather a local PR readiness snapshot before opening or updating a PR |
 | [`fetch_url`](#fetch_url) | none | Fetch a single HTTP(S) URL and return capped textual content |
 | [`run_bash`](#run_bash) | required | Shell command via `/bin/sh -c` |
@@ -1132,6 +1140,77 @@ Show incoming and outgoing call hierarchy entries for a source position.
 | `character` | int | — | Zero-based UTF-16 character offset |
 
 No approval.
+
+## code_map
+
+Read-only. Experimental behind `code_map`.
+
+Returns a bounded repository structure map from yottacode's code index:
+directories, files, symbols, and cheap counts such as LOC and exported/private
+symbols. Pass `query` to filter by path, symbol name, kind, or container. Output
+is capped by `max_results` so agents can orient themselves without reading files
+first.
+
+## code_symbols
+
+Read-only. Experimental behind `code_map`.
+
+Returns indexed symbols either for one `path` or for a `query`. This is the
+symbol-only companion to `code_map`; use it when names and locations are enough
+and opening whole files would waste context.
+
+## code_structure_projection
+
+Read-only. Experimental behind `code_map`.
+
+Generates a compact, token-efficient projection of the indexed structure: root
+counts, important files, and their symbols. It is designed for agent context
+projection, not for dependency or impact analysis. Dependency/call graph tools
+will be added only after import/reference/call edges are indexed and tested.
+
+## code_dependencies
+
+Read-only. Experimental behind `code_map`.
+
+Returns direct outgoing import dependencies for an indexed file/path query. The
+current implementation resolves in-workspace Go package imports; unresolved
+standard-library, third-party, or ambiguous imports are omitted rather than
+invented.
+
+## code_dependents
+
+Read-only. Experimental behind `code_map`.
+
+Returns direct incoming import dependents for an indexed file/path query. This is
+the reverse edge of `code_dependencies` and is the safest first blast-radius
+query for Go changes.
+
+## code_impact
+
+Read-only. Experimental behind `code_map`.
+
+Returns a conservative impact summary: files the queried file imports, files
+that import the queried file, transitive dependents up to `depth`, and import
+cycles involving the target. `depth` defaults to all transitive dependents; pass a
+positive integer to cap traversal. It does not yet include references, call
+hierarchy, tests, or git-derived change frequency.
+
+## code_cycles
+
+Read-only. Experimental behind `code_map`.
+
+Returns detected import cycles, optionally narrowed to cycles involving `path`.
+The current implementation is Go-first and only reports cycles made from
+resolvable in-workspace import edges.
+
+## code_map_diagram
+
+Read-only. Experimental behind `code_map`.
+
+Returns a bounded Mermaid `graph TD` diagram from the import graph. Pass `path`
+to focus the diagram around one file's direct incoming/outgoing import edges;
+omit it for a bounded workspace diagram. This is intended for copy-pasting into
+issues, docs, or PR descriptions.
 
 ## pr_readiness_context
 

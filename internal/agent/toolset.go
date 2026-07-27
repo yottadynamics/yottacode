@@ -1,6 +1,9 @@
 package agent
 
-import lspci "github.com/yottadynamics/yottacode/internal/lsp"
+import (
+	"github.com/yottadynamics/yottacode/internal/codemap"
+	lspci "github.com/yottadynamics/yottacode/internal/lsp"
+)
 
 // CoreToolDeps carries the per-session settings the core cwd-bound tools
 // need at construction. It is passed to RegisterCoreCwdTools so the same
@@ -37,6 +40,13 @@ type CoreToolDeps struct {
 	// LSPServers carries optional per-language server command overrides keyed by
 	// stable language ID (go/typescript/python/rust).
 	LSPServers map[string][]string
+
+	// CodeMapProvider exposes the optional experimental repository structure
+	// index to read-only agent tools.
+	CodeMapProvider codemap.Provider
+
+	// EnableCodeMap registers the experimental read-only code-map tools.
+	EnableCodeMap bool
 }
 
 // RegisterCoreCwdTools registers the core working-directory-bound tools —
@@ -103,6 +113,16 @@ func RegisterCoreCwdTools(reg *Registry, cwd *CwdRef, deps CoreToolDeps) {
 	reg.Register(&GlobTool{Cwd: cwd})
 	reg.Register(&GrepTool{Cwd: cwd, DenyReadPaths: deps.DenyReads})
 	reg.Register(&PRReadinessContextTool{Cwd: cwd})
+	if deps.EnableCodeMap {
+		reg.Register(&CodeMapTool{Provider: deps.CodeMapProvider})
+		reg.Register(&CodeSymbolsTool{Provider: deps.CodeMapProvider})
+		reg.Register(&CodeStructureProjectionTool{Provider: deps.CodeMapProvider})
+		reg.Register(&CodeDependenciesTool{Provider: deps.CodeMapProvider})
+		reg.Register(&CodeDependentsTool{Provider: deps.CodeMapProvider})
+		reg.Register(&CodeImpactTool{Provider: deps.CodeMapProvider})
+		reg.Register(&CodeCyclesTool{Provider: deps.CodeMapProvider})
+		reg.Register(&CodeMapDiagramTool{Provider: deps.CodeMapProvider})
+	}
 	if deps.EnableLSP {
 		base := lspToolBase{Cwd: cwd, DenyReadPaths: deps.DenyReads, NewClient: deps.LSPClientFactory, Servers: deps.LSPServers, Manager: deps.LSPManager}
 		reg.Register(&LSPStatusTool{lspToolBase: base})

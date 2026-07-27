@@ -27,6 +27,7 @@ import (
 	"github.com/yottadynamics/yottacode/internal/catalog"
 	"github.com/yottadynamics/yottacode/internal/checkpoint"
 	"github.com/yottadynamics/yottacode/internal/cli"
+	"github.com/yottadynamics/yottacode/internal/codemap"
 	"github.com/yottadynamics/yottacode/internal/config"
 	"github.com/yottadynamics/yottacode/internal/contextwindow"
 	"github.com/yottadynamics/yottacode/internal/filerefs"
@@ -105,6 +106,7 @@ type Config struct {
 	BaseSystemPrompt  string   // pre-memory prompt — needed by /memory reload to recompose
 	EmbedClient       *memory.EmbedClient
 	LSPManager        *lsp.Manager
+	CodeMapProvider   codemap.Provider
 
 	// FileCfg holds tunables loaded from ~/.yottacode/config.toml
 	// (context watermarks, retrieval). The TUI reads these at session
@@ -228,6 +230,7 @@ type Model struct {
 	baseSystemPrompt string // pre-memory prompt; used by /memory reload
 	embedClient      *memory.EmbedClient
 	lspManager       *lsp.Manager
+	codeMapProvider  codemap.Provider
 
 	// routerAdapters/routerMode hold live task-routing state for /router.
 	// Routing only changes isolated contexts (summarization/subagents), not the
@@ -748,6 +751,12 @@ type Model struct {
 	recallPickerOpen bool
 	recallPicker     *recallPickerState
 
+	// Code map overlay (/map). Shows the experimental repository structure index
+	// as a bounded directory/file/symbol tree. The map is transient navigation
+	// context, not conversation history.
+	codeMapPickerOpen bool
+	codeMapPicker     *codeMapPickerState
+
 	// Embed setup overlay — opened from /memory "Enable semantic search".
 	embedSetupOpen    bool
 	embedSetupCursor  int
@@ -1084,6 +1093,7 @@ func New(parent context.Context, c Config) Model {
 		baseSystemPrompt:       c.BaseSystemPrompt,
 		embedClient:            c.EmbedClient,
 		lspManager:             c.LSPManager,
+		codeMapProvider:        c.CodeMapProvider,
 		summarizerAdapter:      summarizerOrDefault(c.SummarizerAdapter, c.Cfg.Adapter),
 		summarizerModel:        c.SummarizerModel,
 		router:                 c.RouterAdapters,
@@ -1411,6 +1421,9 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.recallPickerOpen {
 			return m.updateRecallPicker(msg)
+		}
+		if m.codeMapPickerOpen {
+			return m.updateCodeMapPicker(msg)
 		}
 		if m.sessionsPickerOpen {
 			return m.updateSessionsPicker(msg)
@@ -2227,6 +2240,8 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, cmd
 		}
 
+	case codeMapLoadedMsg:
+		return m.handleCodeMapLoaded(msg)
 	case agentEventMsg:
 		return m.handleAgentEvent(msg.ev)
 
@@ -2625,7 +2640,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m Model) anyOverlayOpen() bool {
 	return m.cheatsheetOpen || m.loopListOpen || m.usageOpen || m.contextReportOpen ||
 		m.permissionsOpen || m.modelPickerOpen || m.providerPickerOpen ||
-		m.embedSetupOpen || m.memoryPickerOpen || m.recallPickerOpen || m.sessionsPickerOpen ||
+		m.embedSetupOpen || m.memoryPickerOpen || m.recallPickerOpen || m.codeMapPickerOpen || m.sessionsPickerOpen ||
 		m.plansPickerOpen || m.checkpointsPickerOpen || m.subagentsPickerOpen ||
 		m.routerPickerOpen || m.themePickerOpen || m.effortPickerOpen || m.skillsMenuOpen ||
 		m.skillsPickerOpen || m.mcpPickerOpen
@@ -2695,6 +2710,9 @@ func (m Model) View() string {
 	}
 	if m.recallPickerOpen && m.recallPicker != nil {
 		return m.renderInlineOverlay(renderRecallPicker(m.recallPicker, m.width))
+	}
+	if m.codeMapPickerOpen && m.codeMapPicker != nil {
+		return m.renderInlineOverlay(renderCodeMapPicker(m.codeMapPicker, m.width))
 	}
 	if m.sessionsPickerOpen && m.sessionsPicker != nil {
 		return m.renderInlineOverlay(renderSessionsPicker(m.sessionsPicker, m.width))
