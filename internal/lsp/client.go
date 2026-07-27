@@ -48,6 +48,7 @@ type Symbol struct {
 	Kind      string
 	Container string
 	Location  Location
+	Range     TextRange
 }
 
 // ParameterInformation describes one signature parameter returned by LSP.

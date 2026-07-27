@@ -8,6 +8,7 @@ type documentSymbolItem struct {
 	SelectionRange struct {
 		Start Position `json:"start"`
 	} `json:"selectionRange"`
+	Range    TextRange            `json:"range"`
 	Children []documentSymbolItem `json:"children"`
 }
 
@@ -30,9 +31,7 @@ func documentSymbols(path string, raw json.RawMessage) ([]Symbol, error) {
 		ContainerName string `json:"containerName"`
 		Location      struct {
 			URI   string `json:"uri"`
-			Range struct {
-				Start Position `json:"start"`
-			} `json:"range"`
+			Range TextRange `json:"range"`
 		} `json:"location"`
 	}
 	if err := json.Unmarshal(raw, &flat); err != nil {
@@ -40,7 +39,8 @@ func documentSymbols(path string, raw json.RawMessage) ([]Symbol, error) {
 	}
 	out := make([]Symbol, 0, len(flat))
 	for _, item := range flat {
-		out = append(out, Symbol{Name: item.Name, Kind: symbolKindName(item.Kind), Container: item.ContainerName, Location: Location{Path: uriToPath(item.Location.URI), Line: item.Location.Range.Start.Line, Character: item.Location.Range.Start.Character}})
+		path := uriToPath(item.Location.URI)
+		out = append(out, Symbol{Name: item.Name, Kind: symbolKindName(item.Kind), Container: item.ContainerName, Location: Location{Path: path, Line: item.Location.Range.Start.Line, Character: item.Location.Range.Start.Character}, Range: item.Location.Range})
 	}
 	return out, nil
 }
@@ -60,7 +60,11 @@ func responseHasSelectionRanges(raw json.RawMessage) bool {
 
 func flattenDocumentSymbols(path, container string, items []documentSymbolItem, out *[]Symbol) {
 	for _, item := range items {
-		*out = append(*out, Symbol{Name: item.Name, Kind: symbolKindName(item.Kind), Container: container, Location: Location{Path: path, Line: item.SelectionRange.Start.Line, Character: item.SelectionRange.Start.Character}})
+		rng := item.Range
+		if rng.Start == (Position{}) && rng.End == (Position{}) {
+			rng = TextRange{Start: item.SelectionRange.Start, End: item.SelectionRange.Start}
+		}
+		*out = append(*out, Symbol{Name: item.Name, Kind: symbolKindName(item.Kind), Container: container, Location: Location{Path: path, Line: item.SelectionRange.Start.Line, Character: item.SelectionRange.Start.Character}, Range: rng})
 		flattenDocumentSymbols(path, item.Name, item.Children, out)
 	}
 }

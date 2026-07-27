@@ -2,6 +2,8 @@
 
 `lsp_code_intelligence` is an experimental, opt-in bridge from yottacode tools to local Language Server Protocol (LSP) servers. It adds editor-like read-only code navigation without making yottacode an IDE or installing anything on the user's machine. Interactive and oneshot sessions reuse a bounded pool of initialized servers so repeated tool calls do not pay startup cost every time; the pool is closed when the session exits.
 
+The separate experimental `code_map` feature reuses this LSP surface when available to build the `/map` structure overlay and code-map agent tools. If a language server is missing, the map falls back to approximate regex symbols so the outline still works. Dependency and impact queries currently use resolvable in-workspace Go imports, including transitive dependents, import-cycle detection, and Mermaid diagram output; deeper reference/call graph views remain out of scope until reference/call edges are indexed and tested.
+
 Enable it with any experimental-feature path:
 
 ```bash

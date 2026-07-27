@@ -23,6 +23,7 @@ import (
 	"github.com/yottadynamics/yottacode/internal/agent"
 	"github.com/yottadynamics/yottacode/internal/catalog"
 	"github.com/yottadynamics/yottacode/internal/cli"
+	"github.com/yottadynamics/yottacode/internal/codemap"
 	"github.com/yottadynamics/yottacode/internal/config"
 	"github.com/yottadynamics/yottacode/internal/experimental"
 	"github.com/yottadynamics/yottacode/internal/filerefs"
@@ -268,17 +269,23 @@ func Run(ctx context.Context, opts cli.ChatOptions, prompt string) error {
 		lspManager = lsp.NewManager(0, 0)
 		defer lspManager.CloseAll()
 	}
+	var codeMapProvider codemap.Provider
+	if expSet.IsEnabled(experimental.CodeMap) {
+		codeMapProvider = &codemap.CachedProvider{Options: codemap.BuildOptions{Root: cwd, Source: codemap.LSPSource{Manager: lspManager, Servers: fileCfg.LSP.Servers, Root: cwd}}}
+	}
 
 	reg := agent.NewRegistry()
 	// Core cwd-bound tools — shared with the TUI build and the dispatch
 	// worktree-child registry via RegisterCoreCwdTools. Oneshot's extras
 	// (worktree-admin, memory, git escape-hatch, todo, plan) stay inline.
 	agent.RegisterCoreCwdTools(reg, cwdRef, agent.CoreToolDeps{
-		WriteOpts:  writeOpts,
-		DenyReads:  denyReads,
-		EnableLSP:  expSet.IsEnabled(experimental.LSPCodeIntelligence),
-		LSPManager: lspManager,
-		LSPServers: fileCfg.LSP.Servers,
+		WriteOpts:       writeOpts,
+		DenyReads:       denyReads,
+		EnableLSP:       expSet.IsEnabled(experimental.LSPCodeIntelligence),
+		LSPManager:      lspManager,
+		LSPServers:      fileCfg.LSP.Servers,
+		EnableCodeMap:   expSet.IsEnabled(experimental.CodeMap),
+		CodeMapProvider: codeMapProvider,
 	})
 	// Git worktree tools. enter_worktree / exit_worktree always prompt
 	// (auto-mode safety floor); see IsAutoModeSafetyFloor.

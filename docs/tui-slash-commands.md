@@ -9,6 +9,7 @@ Type `/` in the TUI to open the slash-command palette. The palette filters as yo
 | `/help` | — | List all commands with help text |
 | `/quit` | — | Exit yottacode |
 | `/clear` | — | Save the current session and start a fresh one |
+| `/map` | `[query]` | Open the experimental code map. `/map here` shows changed files and their immediate import neighborhood; Enter inserts the selected file/symbol as an `@path` prompt reference. Other modes stay under the same command: `/map deps <path>`, `/map dependents <path>`, `/map impact [--depth N\|all] <path>`, `/map cycles [path]`, and `/map diagram [path]`. Enable with `--experimental code_map`. |
 | `/permissions` | — | Print shared and local permission file paths |
 | `/system` | — | Show the active system prompt, including injected memory |
 | `/usage` | — | Show per-session token totals, today's rolling total, live rate-limit headroom (including both Codex quota windows on a ChatGPT subscription), and a per-provider billing-dashboard link. No dollar estimate — token counts are exact, but cost would need an unmaintainable price table. See [cost.md](cost.md). |

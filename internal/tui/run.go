@@ -16,6 +16,7 @@ import (
 	"github.com/yottadynamics/yottacode/internal/catalog"
 	"github.com/yottadynamics/yottacode/internal/checkpoint"
 	"github.com/yottadynamics/yottacode/internal/cli"
+	"github.com/yottadynamics/yottacode/internal/codemap"
 	"github.com/yottadynamics/yottacode/internal/config"
 	"github.com/yottadynamics/yottacode/internal/experimental"
 	githubapi "github.com/yottadynamics/yottacode/internal/github"
@@ -258,6 +259,10 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 		lspManager = lsp.NewManager(0, 0)
 		defer lspManager.CloseAll()
 	}
+	var codeMapProvider codemap.Provider
+	if expSet.IsEnabled(experimental.CodeMap) {
+		codeMapProvider = &codemap.CachedProvider{Options: codemap.BuildOptions{Root: cwd, Source: codemap.LSPSource{Manager: lspManager, Servers: fileCfg.LSP.Servers, Root: cwd}}}
+	}
 
 	reg := agent.NewRegistry()
 	// Core cwd-bound tools (file read/write/edit, search, git-read/stage/
@@ -267,12 +272,14 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 	// extras (worktree-admin, commit-workflow composites, GH/PR, memory,
 	// web, todo, plan) stay registered inline below.
 	agent.RegisterCoreCwdTools(reg, cwdRef, agent.CoreToolDeps{
-		WriteOpts:      writeOpts,
-		DenyReads:      denyReads,
-		SupportsImages: ad.Profile().SupportsImages,
-		EnableLSP:      expSet.IsEnabled(experimental.LSPCodeIntelligence),
-		LSPManager:     lspManager,
-		LSPServers:     fileCfg.LSP.Servers,
+		WriteOpts:       writeOpts,
+		DenyReads:       denyReads,
+		SupportsImages:  ad.Profile().SupportsImages,
+		EnableLSP:       expSet.IsEnabled(experimental.LSPCodeIntelligence),
+		LSPManager:      lspManager,
+		LSPServers:      fileCfg.LSP.Servers,
+		EnableCodeMap:   expSet.IsEnabled(experimental.CodeMap),
+		CodeMapProvider: codeMapProvider,
 	})
 	// Git worktree tools. Layer 1 (enter/exit/status) are the agent-
 	// friendly entry points; Layer 2 (the git_worktree_* wrappers) sit
@@ -702,6 +709,7 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 		BaseSystemPrompt:       baseSys,
 		EmbedClient:            embedClient,
 		LSPManager:             lspManager,
+		CodeMapProvider:        codeMapProvider,
 		FileCfg:                fileCfg,
 		RouterAdapters:         routerAdapters,
 		RouterMode:             fileCfg.Router.Mode,

@@ -88,6 +88,21 @@ func FallbackSymbols(ctx context.Context, root, query string, maxFiles int) ([]S
 	return out, nil
 }
 
+// FallbackFileSymbols scans one supported source file with the same conservative
+// regexes used by FallbackSymbols. It is intended for outline-style callers that
+// already walked the workspace and need deterministic per-file results.
+func FallbackFileSymbols(path string) ([]Symbol, error) {
+	lang, ok := ResolveFile(path)
+	if !ok {
+		return nil, nil
+	}
+	patterns := fallbackSymbolPatterns[lang.ID]
+	if len(patterns) == 0 {
+		return nil, nil
+	}
+	return scanFallbackFile(path, "", patterns)
+}
+
 func scanFallbackFile(path, query string, patterns []struct {
 	kind string
 	re   *regexp.Regexp
@@ -115,7 +130,7 @@ func scanFallbackFile(path, query string, patterns []struct {
 			if col < 0 {
 				col = 0
 			}
-			out = append(out, Symbol{Name: name, Kind: p.kind, Container: "fallback", Location: Location{Path: path, Line: line, Character: col}})
+			out = append(out, Symbol{Name: name, Kind: p.kind, Container: "fallback", Location: Location{Path: path, Line: line, Character: col}, Range: TextRange{Start: Position{Line: line, Character: col}, End: Position{Line: line, Character: col + len(name)}}})
 		}
 		line++
 	}

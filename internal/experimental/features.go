@@ -37,6 +37,11 @@ const (
 	// GA in the interactive TUI; the flag no longer gates behavior.
 	BackgroundSubagents Feature = "background_subagents"
 
+	// CodeMap enables the read-only repository structure map. It starts as an
+	// outline-first graph index shared by the TUI and agent tools while the
+	// dependency/impact-query UX settles.
+	CodeMap Feature = "code_map"
+
 	// Dispatch enables the `dispatch` + `integrate` tools: fan a batch
 	// of subtasks out to subagents that run concurrently (write-capable
 	// ones in isolated git worktrees), then merge their branches into one
@@ -57,6 +62,7 @@ const (
 func All() []Feature {
 	return []Feature{
 		BackgroundSubagents,
+		CodeMap,
 		Dispatch,
 		LSPCodeIntelligence,
 	}
@@ -70,6 +76,8 @@ func Description(f Feature) string {
 	switch f {
 	case BackgroundSubagents:
 		return "Background subagents have graduated to GA in the interactive TUI; this flag is recognized as a no-op for compatibility."
+	case CodeMap:
+		return "Repository code map. Builds a read-only structure index for the /map TUI overlay and code-map agent tools, using LSP when available and approximate fallback symbols otherwise."
 	case Dispatch:
 		return "Dispatch + integrate tools. Fan a batch of subtasks out to concurrent subagents (write-capable ones in isolated git worktrees, partitioned by file ownership), then merge their branches into one integration branch for a PR."
 	case LSPCodeIntelligence:
