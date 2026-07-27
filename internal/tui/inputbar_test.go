@@ -190,13 +190,14 @@ func TestStatusBar_NarrowTerminalKeepsModelAndCtx(t *testing.T) {
 // When the session runs inside a yottacode worktree, the status bar
 // shows "worktree: <name>" so users see at a glance where edits land.
 // Empty worktree on the main checkout renders no chip.
-func TestStatusBar_RendersWorktreeChip(t *testing.T) {
-	m := newTestModel(t)
-	m.worktree = "feature-auth"
+func TestStatusBar_AutoModeNextToModel(t *testing.T) {
+	m, _ := newPlanModeTestModel(t)
 	m, _ = applyMsg(m, tea.WindowSizeMsg{Width: 120, Height: 24})
+	m.modelName = "gpt-5.4"
+	m.cfg.AutoMode.Active.Store(true)
 	plain := stripANSI(m.renderStatus())
-	if !strings.Contains(plain, "worktree: feature-auth") {
-		t.Errorf("status bar should include the worktree chip: %q", plain)
+	if !strings.Contains(plain, "gpt-5.4 auto") {
+		t.Fatalf("status bar should render auto next to model: %q", plain)
 	}
 }
 

@@ -88,7 +88,7 @@ func TestLoop_MultipleLoopsAndStatus(t *testing.T) {
 	if ids[0] == ids[1] {
 		t.Fatal("loop IDs should be unique")
 	}
-	// Bare /loop opens the status panel below the cmdline instead of writing
+	// Bare /loop opens the status panel above the cmdline instead of writing
 	// cards into the transcript.
 	before := m.transcript.String()
 	m, _ = cmdLoop(m, nil)

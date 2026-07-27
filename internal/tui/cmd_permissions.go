@@ -92,9 +92,8 @@ func (m Model) permissionsRowPath(idx int) string {
 // language as /model and /provider — `renderMenuHeader` for the
 // title block, `renderMenuItem` for the rows, `styleFooter` for the
 // hotkey row at the bottom. No rounded box, no horizontal centering;
-// the parent renderInlineOverlay sits this body below the cmdline +
-// status bar + separator rule, so a second border would read as
-// "modal floating on a modal".
+// the parent renderInlineOverlay sits this body above the cmdline,
+// so a second border would read as "modal floating on a modal".
 func renderPermissionsOverlay(m Model) string {
 	shared := ""
 	local := ""

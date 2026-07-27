@@ -636,7 +636,7 @@ type Model struct {
 	loopExitConfirmCursor int
 
 	// loopListOpen shows the active-loop panel (bare `/loop`) as a dismissable
-	// inline overlay below the cmdline, instead of writing loop cards into the
+	// inline overlay above the cmdline, instead of writing loop cards into the
 	// session transcript. Any key closes it.
 	loopListOpen bool
 
@@ -678,19 +678,17 @@ type Model struct {
 	// Cheatsheet overlay
 	cheatsheetOpen bool
 
-	// Usage overlay (/usage). Read-only panel rendered below the
-	// cmdline via renderInlineOverlay rather than appended to chat
-	// scrollback — token tallies are transient inspection, not part
-	// of the conversation the model should re-read. usagePanel holds
-	// the body rendered once at open time (so the per-frame redraw
+	// Usage overlay (/usage). Read-only panel rendered as an inline overlay
+	// above the cmdline rather than appended to chat scrollback — token
+	// tallies are transient inspection, not part of the conversation the
+	// model should re-read. usagePanel holds the body rendered once at open time (so the per-frame redraw
 	// doesn't re-fire the openai-auth backend probe); any key closes.
 	usageOpen  bool
 	usagePanel string
 	// Context report overlay (/context). Renders the context-window
-	// breakdown on the inline-overlay surface (below the cmdline +
-	// status bar) instead of in chat history, so the report — which is
-	// transient inspection, not conversation — stays out of scrollback,
-	// the transcript, and resume replay. Body is snapshotted at open
+	// breakdown on the inline-overlay surface (above the cmdline) instead
+	// of in chat history, so the report — which is transient inspection,
+	// not conversation — stays out of scrollback, the transcript, and resume replay. Body is snapshotted at open
 	// time (the report reads memory files from disk and walks the skill
 	// set, too heavy to recompute every frame); any key dismisses it,
 	// mirroring the cheatsheet.
@@ -700,9 +698,9 @@ type Model struct {
 	// Permissions picker (/permissions). Two-row picker (shared /
 	// local) modelled on /memory's three-row picker — Up/Down
 	// navigates, Enter suspends to vim on the chosen rule file, Esc
-	// closes. Rendered below the cmdline via renderInlineOverlay so
-	// the paths sit right next to the input the user is about to type
-	// the next command into. The store re-reads both files on the
+	// closes. Rendered above the cmdline via renderInlineOverlay so the
+	// paths sit near the input the user is about to type the next command
+	// into. The store re-reads both files on the
 	// next tool call, so there's no explicit reload step.
 	permissionsOpen   bool
 	permissionsCursor int
@@ -746,7 +744,7 @@ type Model struct {
 	memoryPicker     *memoryPickerState
 
 	// Recall picker overlay (/recall <query>). Search results are transient
-	// navigation context, rendered below the cmdline instead of being appended
+	// navigation context, rendered above the cmdline instead of being appended
 	// to the session transcript. Enter resumes the selected session.
 	recallPickerOpen bool
 	recallPicker     *recallPickerState
@@ -2673,13 +2671,11 @@ func (m Model) View() string {
 	}
 
 	// Inline-overlay layout shared by every picker (cheatsheet, model,
-	// provider, memory): cmdline at the top so the user keeps visual
-	// anchoring on the input frame, status bar directly below it (the
-	// `● model · provider · cwd · mem · tokens` line), a thin
-	// separator rule, then the picker itself. Pickers own all
-	// keystrokes while open — the cmdline still renders but won't
-	// receive input — so the user can read context (current cwd,
-	// model, token count) without leaving the picker.
+	// provider, memory): picker body above the cmdline so menus stay in
+	// the same above-prompt region as the slash and file palettes. The
+	// cmdline remains visible underneath for anchoring, and the status bar
+	// stays directly below the cmdline so session state is still readable
+	// while a picker owns keystrokes.
 	if m.cheatsheetOpen {
 		return m.renderInlineOverlay(renderCheatsheet(m.width))
 	}
@@ -2876,19 +2872,19 @@ func (m Model) View() string {
 }
 
 // renderInlineOverlay stacks an inline picker (cheatsheet, model,
-// provider, memory) below the cmdline + status bar with a thin
-// separator rule between them. Layout:
+// provider, memory) above the cmdline with a thin separator rule
+// between the overlay body and the prompt chrome. Layout:
 //
+//	[overlay body]
+//	───────────────…
 //	[cmdline]
 //	[status bar]
-//	───────────────…
-//	[overlay body]
 //
-// The overlay owns input while open; renderInputBox is included only
+// The overlay owns input while open; renderInputFrame is included only
 // for visual anchoring (so the user keeps sight of the input frame
 // they're going to return to). The separator width tracks the
-// terminal so the rule reads as "this is a different surface from
-// the chat above" without floating mid-screen.
+// terminal so the rule reads as the boundary between menu surface and
+// prompt chrome without floating mid-screen.
 func (m Model) renderInlineOverlay(body string) string {
 	width := m.width
 	if width < 4 {
@@ -2896,10 +2892,10 @@ func (m Model) renderInlineOverlay(body string) string {
 	}
 	overlayRule := styleOverlayRule.Render(strings.Repeat("─", width))
 	return lipgloss.JoinVertical(lipgloss.Left,
+		body,
+		overlayRule,
 		m.renderInputFrame(),
 		m.renderStatus(),
-		overlayRule,
-		body,
 	)
 }
 
@@ -3819,11 +3815,18 @@ func (m Model) historyForward() (Model, bool) {
 func (m Model) renderStatus() string {
 	dot := renderConnDot(m.connection)
 	modelName := m.modelName
+	modeSuffix := ""
 	routingNote := ""
+	if m.cfg.AutoMode.IsActive() {
+		modeSuffix = "auto"
+	}
 	if m.router != nil {
 		smart, fast := shortModelTag(m.router.SmartModel), shortModelTag(m.router.FastModel)
 		switch routerModeOrOff(m.routerMode) {
 		case config.RouterModeAuto:
+			if modeSuffix == "" {
+				modeSuffix = "auto"
+			}
 			// Plan mode already carries its own prominent banner; show the real
 			// advisor model here so the implementer half of the pair is not mistaken for the active planner.
 			if !m.cfg.PlanMode.IsActive() && smart != "" && fast != "" && (m.modelName == m.router.SmartModel || m.modelName == smart) {
@@ -3833,10 +3836,17 @@ func (m Model) renderStatus() string {
 				routingNote = "auto"
 			}
 		case config.RouterModeManual:
+			// Manual routing is only meaningful inside the advisor/implementer
+			// UI itself; when the advisor isn't actively in play, showing a
+			// `manual` suffix in the main status bar is just noise.
 			routingNote = "manual"
 		}
 	}
-	model := renderModelName(modelName)
+	modelLabel := modelName
+	if modeSuffix != "" {
+		modelLabel += " " + modeSuffix
+	}
+	model := renderModelName(modelLabel)
 	tag := m.providerLabel
 	if tag == "" {
 		tag = m.provider
@@ -3849,8 +3859,8 @@ func (m Model) renderStatus() string {
 	sep := lipgloss.NewStyle().Foreground(colorDim).Render("  ·  ")
 	innerSep := lipgloss.NewStyle().Foreground(colorDim).Render(" · ")
 
-	// First segment: dot + model + (optional) provider tag. The provider
-	// is bound to the model so it survives the same narrow-screen
+	// First segment: dot + model-with-mode + (optional) provider tag. The provider
+	// is bound to the model cluster so it survives the same narrow-screen
 	// pressure until the explicit drop kicks in.
 	first := dot + "  " + model
 	if provider != "" {
@@ -3900,7 +3910,7 @@ func (m Model) renderStatus() string {
 		if worktreeSeg != "" {
 			segs = append(segs, worktreeSeg)
 		}
-		if routingNote != "" {
+		if routingNote != "" && modeSuffix == "" {
 			segs = append(segs, lipgloss.NewStyle().Foreground(colorDim).Render(routingNote))
 		}
 		// Flush-left: the status dot sits at column 0, aligned with the

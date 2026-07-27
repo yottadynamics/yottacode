@@ -22,7 +22,7 @@ func cmdLoop(m Model, args []string) (Model, tea.Cmd) {
 			m.appendLine(styleAuto.Render("[loop] none armed — /loop <interval> [Nx] <prompt|/cmd>"))
 			return m, nil
 		}
-		// Show the loops as a dismissable panel below the cmdline rather than
+		// Show the loops as a dismissable panel above the cmdline rather than
 		// writing cards into the session — the transcript shouldn't fill with a
 		// status readout every time the user checks their loops.
 		m.loopListOpen = true
@@ -389,7 +389,7 @@ func renderLoopCard(ls loopState, width int) string {
 
 // renderLoopListPanel is the body of the bare-`/loop` overlay: a compact menu
 // (one row per loop, house picker style via renderMenuItem) plus a stop/dismiss
-// hint. Rendered below the cmdline via renderInlineOverlay so checking loops
+// hint. Rendered above the cmdline via renderInlineOverlay so checking loops
 // never clutters the transcript. Deliberately NOT the multi-line arm card —
 // this is a scannable list of what's running, keyed by ID for `/loop stop`.
 func (m Model) renderLoopListPanel() string {

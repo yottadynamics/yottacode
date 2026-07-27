@@ -1,6 +1,6 @@
 # TUI slash commands
 
-Type `/` in the TUI to open the slash-command palette. The palette filters as you type, supports Tab completion, and can be dismissed with `Esc`.
+Type `/` in the TUI to open the slash-command palette. The palette filters as you type, supports Tab completion, uses the same `❯` row cursor as the larger sub-pickers, renders above the cmdline, and can be dismissed with `Esc`.
 
 ## Command reference
 

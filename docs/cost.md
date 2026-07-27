@@ -54,7 +54,7 @@ account      openai-auth (chatgpt prolite plan)
              ✓ no per-request cost — subscription
 ```
 
-The block renders in an inline overlay below the cmdline (the same
+The block renders in an inline overlay above the cmdline (the same
 surface the cheatsheet and the pickers use), not in chat scrollback —
 token tallies are transient inspection, not part of the conversation,
 so they never bloat the history the model re-reads. Press any key to

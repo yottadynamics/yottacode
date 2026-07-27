@@ -73,8 +73,7 @@ func cmdProviderEntry(m Model, args []string) (Model, tea.Cmd) {
 // collapsed into one inline screen — the user-facing affordance is
 // the same: see configured providers, switch with Enter.
 //
-// Renders inline below the cmdline + status bar via the shared
-// renderInlineOverlay helper, matching every other picker.
+// Renders inline above the cmdline via the shared renderInlineOverlay helper, matching every other picker.
 func providerListShortcut(m Model) (Model, tea.Cmd) {
 	cfg := loadConfigForCommand(m)
 	if len(cfg.Providers) == 0 {
