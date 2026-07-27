@@ -202,6 +202,57 @@ func TestAutoModeAlreadyOnImplementerSyncsConsultAdvisor(t *testing.T) {
 	}
 }
 
+// reasoningEffort is a session-global field switchActiveModelToRouterRole
+// never clears or re-validates. Switching to the implementer role
+// (gpt-4o-mini, a non-reasoning OpenAI model) while an effort level is
+// set must re-flag it as a no-op, the same check /model and /provider
+// already run — otherwise a level that applied cleanly on the advisor
+// model silently stops applying the moment /auto or /plan swaps roles.
+func TestSwitchActiveModelToRouterRole_WarnsWhenEffortBecomesNoop(t *testing.T) {
+	seedRoleSwitchConfig(t)
+	advisor := &roleSwitchAdapter{profile: adapter.ProviderProfile{Provider: adapter.ProviderAnthropic}}
+	implementer := &roleSwitchAdapter{profile: adapter.ProviderProfile{Provider: adapter.ProviderOpenAI}}
+	sess, err := session.New("claude-opus-4-6", "/cwd")
+	if err != nil {
+		t.Fatalf("session: %v", err)
+	}
+	m := Model{
+		parentCtx:       context.Background(),
+		modelName:       "claude-opus-4-6",
+		baseURL:         "https://api.anthropic.com",
+		provider:        "anthropic",
+		apiKey:          "anthropic-key",
+		reasoningEffort: "high",
+		cfg:             agent.LoopConfig{Adapter: advisor, Registry: agent.NewRegistry()},
+		subagentTool:    &agent.AgentTool{Adapter: advisor},
+		sess:            sess,
+		transcript:      &strings.Builder{},
+		routerMode:      config.RouterModeManual,
+		router: &cli.RouterAdapters{
+			Advisor:          advisor,
+			AdvisorModel:     "claude-opus-4-6",
+			AdvisorRef:       "anthropic:claude-opus-4-6",
+			Implementer:      implementer,
+			ImplementerModel: "gpt-4o-mini",
+			ImplementerRef:   "openai:gpt-4o-mini",
+		},
+	}
+
+	// Switching onto the model already active (advisor == modelName) must
+	// not warn — claude-opus-4-6 applies effort cleanly.
+	m, _ = m.switchActiveModelToRouterRole("advisor")
+	if strings.Contains(m.transcript.String(), "no-op on this model") {
+		t.Fatalf("effort should apply cleanly on the advisor model; transcript:\n%s", m.transcript.String())
+	}
+
+	pre := m.transcript.String()
+	m, _ = m.switchActiveModelToRouterRole("implementer")
+	post := m.transcript.String()[len(pre):]
+	if !strings.Contains(post, "no-op on this model") {
+		t.Errorf("switching to the implementer role (gpt-4o-mini, non-reasoning) should warn; new transcript:\n%s", post)
+	}
+}
+
 func seedRoleSwitchConfig(t *testing.T) {
 	t.Helper()
 	t.Setenv("HOME", t.TempDir())

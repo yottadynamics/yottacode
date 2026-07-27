@@ -831,6 +831,59 @@ default_model = "qwen3.5:9b"
 	}
 }
 
+// Picking a model in the overlay is the default /model UX (the bare
+// invocation), so the no-op re-check needs to hold here too, not just
+// on the /model <name> and /provider use shortcuts. reasoningEffort is
+// a session-global field commitModelChoice never clears or
+// re-validates, so a level that applied cleanly on the old model must
+// be re-flagged as a no-op the moment the picked model can't use it.
+func TestModelPicker_PickWarnsWhenEffortBecomesNoop(t *testing.T) {
+	m := newTestModel(t)
+	seedConfigTOML(t, `
+[[providers]]
+name = "anthropic-test"
+kind = "anthropic"
+base_url = "https://anthropic.example/v1"
+default_model = "claude-sonnet-4-6"
+  [[providers.models]]
+  name = "claude-sonnet-4-6"
+  tier = "balanced"
+
+[[providers]]
+name = "openai-test"
+kind = "openai"
+base_url = "https://openai.example/v1"
+default_model = "gpt-4o"
+  [[providers.models]]
+  name = "gpt-4o"
+  tier = "balanced"
+`)
+	m, _ = typeAndEnter(t, m, "/provider use anthropic-test")
+	m, _ = typeAndEnter(t, m, "/effort high")
+	if strings.Contains(m.transcript.String(), "no-op on this model") {
+		t.Fatalf("effort should apply cleanly on claude-sonnet-4-6; transcript:\n%s", m.transcript.String())
+	}
+
+	cfg, err := config.LoadDefault()
+	if err != nil {
+		t.Fatalf("LoadDefault: %v", err)
+	}
+	prov := *cfg.FindProvider("openai-test")
+	m.pickerList = stubPickerList([]catalog.Model{{ID: "gpt-4o", Provider: "session"}}, nil)
+	cmd := m.openModelPicker(prov)
+	m, _ = applyMsg(m, cmd())
+
+	pre := m.transcript.String()
+	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	if m.modelPickerOpen {
+		t.Fatalf("Enter should close the picker after committing")
+	}
+	post := m.transcript.String()[len(pre):]
+	if !strings.Contains(post, "no-op on this model") {
+		t.Errorf("picking gpt-4o (non-reasoning) should re-surface the no-op warning; new transcript:\n%s", post)
+	}
+}
+
 // The pickerList stub is the source of truth — when it returns the
 // list, those entries land in the picker. This replaces the old
 // merge-with-static-catalog test (we removed that merge — config-side

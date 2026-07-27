@@ -130,6 +130,11 @@ func (m Model) updateEffortPicker(msg tea.KeyMsg) (Model, tea.Cmd) {
 // how --reasoning-effort has always been a runtime-only setting.
 func commitEffortChoice(m Model, level string) (Model, tea.Cmd) {
 	m.reasoningEffort = level
+	// Keep the ChatOptions snapshot in sync too: it's the template
+	// refreshRouterAdapters (and any future /router rebuild) uses to
+	// construct the advisor/implementer adapters, so a stale opts here
+	// would re-introduce the same regression the rebuild below fixes.
+	m.opts.ReasoningEffort = level
 	cfg := m.adapterConfig(m.modelName, m.baseURL)
 	ad := adapter.NewWithConfig(cfg)
 	m.cfg.Adapter = ad
@@ -138,6 +143,7 @@ func commitEffortChoice(m Model, level string) (Model, tea.Cmd) {
 		m.subagentTool.Adapter = ad
 	}
 	m.providerProfile = ad.Profile()
+	refreshRouterAdapters(&m)
 
 	display := level
 	if display == "" {
@@ -146,10 +152,22 @@ func commitEffortChoice(m Model, level string) (Model, tea.Cmd) {
 	m.appendLine(styleAuto.Render(fmt.Sprintf("[effort] reasoning effort: %s", display)))
 	// Warn when the chosen level won't actually do anything on this
 	// model, so a no-op isn't mistaken for "applied."
+	warnIfEffortNoop(&m, cfg)
+	return m, nil
+}
+
+// warnIfEffortNoop re-surfaces the "no-op on this model" notice after a
+// /model or /provider switch lands the session on a model that silently
+// ignores the already-configured reasoning effort. Reasoning effort is a
+// session-global setting that /model and /provider switches never touch
+// or re-validate, so without this a user who set /effort high and then
+// switched models would carry a setting that quietly stopped applying,
+// with no indication it had. Mirrors the check commitEffortChoice runs
+// when the level is first set.
+func warnIfEffortNoop(m *Model, cfg adapter.Config) {
 	if reason := adapter.EffortInapplicableReason(cfg, m.providerProfile.Provider); reason != "" {
 		m.appendLine(styleMeta.Render("  (no-op on this model — " + reason + ")"))
 	}
-	return m, nil
 }
 
 // normalizedEffort lowercases/trims and folds the user-facing aliases

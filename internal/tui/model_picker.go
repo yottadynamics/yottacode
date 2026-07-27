@@ -402,7 +402,8 @@ func (m Model) commitModelChoice(chosen string, window int) (Model, tea.Cmd) {
 	}
 	m.modelName = chosen
 	m.sess.Model = chosen
-	ad := adapter.NewWithConfig(m.adapterConfig(chosen, m.baseURL))
+	acfg := m.adapterConfig(chosen, m.baseURL)
+	ad := adapter.NewWithConfig(acfg)
 	m.cfg.Adapter = ad
 	// Also update the AgentTool's Adapter so subagents inherit the new provider
 	if m.subagentTool != nil {
@@ -412,7 +413,8 @@ func (m Model) commitModelChoice(chosen string, window int) (Model, tea.Cmd) {
 	syncMainConsultAdvisorTool(&m)
 	m, _ = reloadMemoryNow(m, "")
 	m.appendLine(styleAuto.Render(statusLine("model", fmt.Sprintf("default → %s", chosen))))
-	cmds := []tea.Cmd{runProviderProbe(m.parentCtx, m.adapterConfig(chosen, m.baseURL), false)}
+	warnIfEffortNoop(&m, acfg)
+	cmds := []tea.Cmd{runProviderProbe(m.parentCtx, acfg, false)}
 	// When the picker's list-models row carried no window for this model
 	// (NVIDIA NIM, thin proxies), discover it in the background from the
 	// live API and persist on return — non-blocking so the picker closes

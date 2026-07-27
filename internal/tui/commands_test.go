@@ -425,6 +425,45 @@ default_model = "gpt-4o"
 	}
 }
 
+// A reasoning effort set on a model that supports it must be re-flagged
+// as a no-op the moment /provider use lands the session on a model that
+// doesn't — reasoningEffort is a session-global field that /provider
+// never clears or re-validates, so without an active re-check the
+// setting would silently stop applying with no indication to the user.
+func TestSlash_ProviderUseWarnsWhenEffortBecomesNoop(t *testing.T) {
+	m := newTestModel(t)
+	seedConfigTOML(t, `
+[[providers]]
+name = "anthropic-test"
+kind = "anthropic"
+base_url = "https://anthropic.example/v1"
+default_model = "claude-sonnet-4-6"
+  [[providers.models]]
+  name = "claude-sonnet-4-6"
+  tier = "balanced"
+
+[[providers]]
+name = "openai-test"
+kind = "openai"
+base_url = "https://openai.example/v1"
+default_model = "gpt-4o"
+  [[providers.models]]
+  name = "gpt-4o"
+  tier = "balanced"
+`)
+	m, _ = typeAndEnter(t, m, "/provider use anthropic-test")
+	m, _ = typeAndEnter(t, m, "/effort high")
+	if strings.Contains(m.transcript.String(), "no-op on this model") {
+		t.Fatalf("effort should apply cleanly on claude-sonnet-4-6; transcript:\n%s", m.transcript.String())
+	}
+	pre := m.transcript.String()
+	m, _ = typeAndEnter(t, m, "/provider use openai-test")
+	post := m.transcript.String()[len(pre):]
+	if !strings.Contains(post, "no-op on this model") {
+		t.Errorf("switching to gpt-4o (non-reasoning) should re-surface the no-op warning; new transcript:\n%s", post)
+	}
+}
+
 func TestSlash_ModelListAllGroupsByProvider(t *testing.T) {
 	m := newTestModel(t)
 	seedConfigTOML(t, `

@@ -487,6 +487,67 @@ func TestSwitchActiveModelToRef(t *testing.T) {
 	}
 }
 
+// reasoningEffort is a session-global field switchActiveModelToRef never
+// clears or re-validates. Configuring a new smart model in /router that
+// happens to be a non-reasoning model must re-flag an already-set effort
+// level as a no-op — the same check every other model/provider switch
+// path runs — otherwise a level that applied cleanly on the old model
+// silently stops applying with nothing telling the user.
+func TestSwitchActiveModelToRef_WarnsWhenEffortBecomesNoop(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+	t.Setenv("OPENAI_API_KEY", "sk-openai-test")
+	seed := config.Default()
+	seed.Providers = []config.Provider{
+		{
+			Name:         "anthropic",
+			Kind:         "anthropic",
+			BaseURL:      "https://api.anthropic.com",
+			APIKeyEnv:    "ANTHROPIC_API_KEY",
+			DefaultModel: "claude-opus-4-6",
+			Models:       []config.Model{{Name: "claude-opus-4-6"}},
+		},
+		{
+			Name:         "openai",
+			Kind:         "openai",
+			BaseURL:      "https://api.openai.com/v1",
+			APIKeyEnv:    "OPENAI_API_KEY",
+			DefaultModel: "gpt-4o",
+			Models:       []config.Model{{Name: "gpt-4o"}},
+		},
+	}
+	if err := config.Save(seed, ""); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	sess, err := session.New("claude-opus-4-6", "/cwd")
+	if err != nil {
+		t.Fatalf("session: %v", err)
+	}
+	m := Model{
+		parentCtx:       context.Background(),
+		modelName:       "claude-opus-4-6",
+		baseURL:         "https://api.anthropic.com",
+		provider:        "anthropic",
+		reasoningEffort: "high",
+		cfg:             agent.LoopConfig{Adapter: &scriptedAdapter{}},
+		subagentTool:    &agent.AgentTool{Adapter: &scriptedAdapter{}},
+		sess:            sess,
+		transcript:      &strings.Builder{},
+	}
+
+	m, _ = m.switchActiveModelToRef("anthropic:claude-opus-4-6")
+	if strings.Contains(m.transcript.String(), "no-op on this model") {
+		t.Fatalf("effort should apply cleanly on claude-opus-4-6; transcript:\n%s", m.transcript.String())
+	}
+
+	pre := m.transcript.String()
+	m, _ = m.switchActiveModelToRef("openai:gpt-4o")
+	post := m.transcript.String()[len(pre):]
+	if !strings.Contains(post, "no-op on this model") {
+		t.Errorf("switching to gpt-4o (non-reasoning) should re-surface the no-op warning; new transcript:\n%s", post)
+	}
+}
+
 func TestAnyOverlayOpen_RouterPicker(t *testing.T) {
 	m := Model{}
 	if m.anyOverlayOpen() {

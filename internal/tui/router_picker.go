@@ -536,7 +536,8 @@ func (m Model) switchActiveModelToRef(ref string) (Model, tea.Cmd) {
 			m.apiKey = v
 		}
 	}
-	ad := adapter.NewWithConfig(m.adapterConfig(model, m.baseURL))
+	acfg := m.adapterConfig(model, m.baseURL)
+	ad := adapter.NewWithConfig(acfg)
 	m.cfg.Adapter = ad
 	// Keep the shared AgentTool on the same adapter as the conversation —
 	// the same sync every other model/provider switch path does. Without
@@ -557,7 +558,8 @@ func (m Model) switchActiveModelToRef(ref string) (Model, tea.Cmd) {
 	}
 	m.appendLine(styleAuto.Render(fmt.Sprintf(
 		"[router] active model → %s", model)))
-	return m, runProviderProbe(m.parentCtx, m.adapterConfig(model, m.baseURL), false)
+	warnIfEffortNoop(&m, acfg)
+	return m, runProviderProbe(m.parentCtx, acfg, false)
 }
 
 func (m Model) switchActiveModelToRouterRole(role string) (Model, tea.Cmd) {
@@ -591,6 +593,7 @@ func (m Model) switchActiveModelToRouterRole(role string) (Model, tea.Cmd) {
 			m.sess.Model = model
 		}
 		syncMainConsultAdvisorTool(&m)
+		warnIfEffortNoop(&m, m.adapterConfig(model, m.baseURL))
 		return m, nil
 	}
 	provName, _, err := config.ParseCandidate(ref)
@@ -624,7 +627,9 @@ func (m Model) switchActiveModelToRouterRole(role string) (Model, tea.Cmd) {
 		m, _ = reloadMemoryNow(m, "")
 	}
 	m.appendLine(styleAuto.Render(fmt.Sprintf("[router] active role → %s (%s)", role, model)))
-	return m, runProviderProbe(m.parentCtx, m.adapterConfig(model, m.baseURL), false)
+	acfg := m.adapterConfig(model, m.baseURL)
+	warnIfEffortNoop(&m, acfg)
+	return m, runProviderProbe(m.parentCtx, acfg, false)
 }
 
 // ensureProviderModel makes sure the model named in ref
