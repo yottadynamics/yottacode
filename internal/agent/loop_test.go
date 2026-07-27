@@ -224,6 +224,35 @@ func TestLoop_ReasoningTokensFlowSeparately(t *testing.T) {
 	}
 }
 
+func TestLoop_ToolCallScratchContentNotPersisted(t *testing.T) {
+	streamer := &scriptedStreamer{turns: [][]adapter.StreamEvent{
+		{sseToken("Need maybe inspect the file first\n"), sseDone("Need maybe inspect the file first\n", adapter.ToolCall{ID: "c1", Name: "lookup", ArgsJSON: `{}`})},
+		{sseToken("done"), sseDone("done")},
+	}}
+	reg := NewRegistry()
+	reg.Register(&mockTool{name: "lookup", output: "value"})
+	cfg := LoopConfig{Adapter: streamer, Registry: reg, MaxIterations: 5}
+	hist := []adapter.Message{{Role: adapter.RoleUser, Content: "look"}}
+
+	events, err := runTurnSync(t, context.Background(), cfg, &hist, nil)
+	if err != nil {
+		t.Fatalf("Turn: %v", err)
+	}
+	if !hasEvent[ContentToken](events) || !hasEvent[ToolStart](events) || !hasEvent[ToolResult](events) {
+		t.Fatalf("expected content stream and tool lifecycle events; got %+v", events)
+	}
+	if len(hist) < 3 {
+		t.Fatalf("history too short: %+v", hist)
+	}
+	toolTurn := hist[1]
+	if toolTurn.Role != adapter.RoleAssistant || len(toolTurn.ToolCalls) != 1 {
+		t.Fatalf("expected assistant tool-call turn at hist[1], got %+v", toolTurn)
+	}
+	if toolTurn.Content != "" {
+		t.Fatalf("tool-call scratch content persisted: %q", toolTurn.Content)
+	}
+}
+
 func TestLoop_ToolCallNoApproval(t *testing.T) {
 	streamer := &scriptedStreamer{turns: [][]adapter.StreamEvent{
 		// turn 1: model calls the tool

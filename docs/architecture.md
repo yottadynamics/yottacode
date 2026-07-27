@@ -89,6 +89,11 @@ Consumers decide how to render those events. The Bubble Tea UI turns them into
 transcript rows, status changes, and approval modals. The one-shot runner sends
 answer content to stdout and operational detail to stderr.
 
+Assistant content that arrives before a tool call is provisional. If the final
+assistant message contains tool calls, the loop drops that pre-tool text from
+history and the TUI discards its buffered preview, leaving the transcript to show
+only intentional assistant replies plus tool lifecycle cards/status events.
+
 ## Session Lifecycle
 
 ### `yottacode`

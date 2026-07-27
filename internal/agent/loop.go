@@ -451,6 +451,12 @@ func Turn(
 				final.ToolCalls[i].ArgsJSON = coerceArgsToSchema(final.ToolCalls[i].ArgsJSON, tool.Schema())
 			}
 		}
+		if len(final.ToolCalls) > 0 {
+			// Text emitted before tool calls is tool-intent scratch, not a deliberate
+			// assistant reply. Keep the durable transcript/history focused on the
+			// tool lifecycle events that actually represent this turn.
+			final.Content = ""
+		}
 		appendHistory(cfg, state.history, *final)
 		if err := send(ctx, events, AssistantMessage{Message: *final}); err != nil {
 			if isCancelErr(err) {
