@@ -5,7 +5,6 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
-	"github.com/charmbracelet/x/ansi"
 )
 
 // renderApprovalModal lays out the approval prompt per the Phase 5
@@ -39,95 +38,30 @@ func renderApprovalModal(m Model) string {
 	// (notably Go source in a write_file approval).
 	body = strings.ReplaceAll(body, "\t", "    ")
 
-	const sideIndent = "  "
-	const sideIndentW = 2
-
-	// Determine the cap (max permitted innerW) up-front so we can wrap
-	// long body lines to fit. Cap == 0 means we don't know the
-	// terminal width yet (test fixtures, very early frames) — fall
-	// back to the original unconstrained behavior.
-	cap := m.width - 4
-	if cap > 120 {
-		cap = 120
-	}
-
-	// hardWrap applies cap-aware soft wrapping to a multi-line block.
-	// Without it, a single body line wider than the box (very long
-	// markdown in a write_file approval, a 200-char URL in a run_bash
-	// approval) bleeds past the right border because the row-padding
-	// loop below only pads, never trims.
-	hardWrap := func(s string) []string {
-		lines := strings.Split(s, "\n")
-		if cap <= sideIndentW {
-			return lines
-		}
-		wrapW := cap - sideIndentW
-		out := make([]string, 0, len(lines))
-		for _, line := range lines {
-			if ansi.StringWidth(line) <= wrapW {
-				out = append(out, line)
-				continue
-			}
-			out = append(out, strings.Split(ansi.Hardwrap(line, wrapW, true), "\n")...)
-		}
-		return out
-	}
+	// capW == 0 means we don't know the terminal width yet (test
+	// fixtures, very early frames) — hardWrapLabeled/renderLabeledBox
+	// both fall back to the original unconstrained behavior in that
+	// case. Wrapping matters because a single body line wider than the
+	// box (very long markdown in a write_file approval, a 200-char URL
+	// in a run_bash approval) would otherwise bleed past the right
+	// border — the row-padding loop in renderLabeledBox only pads,
+	// never trims.
+	capW := capLabeledBoxWidth(m.width)
 
 	bodyLines := []string{""}
-	for _, line := range hardWrap(body) {
-		bodyLines = append(bodyLines, sideIndent+line)
+	for _, line := range hardWrapLabeled(body, capW) {
+		bodyLines = append(bodyLines, labeledBoxIndent+line)
 	}
 	bodyLines = append(bodyLines, "")
-	for _, line := range hardWrap(hotkeys) {
-		bodyLines = append(bodyLines, sideIndent+line)
+	for _, line := range hardWrapLabeled(hotkeys, capW) {
+		bodyLines = append(bodyLines, labeledBoxIndent+line)
 	}
 	bodyLines = append(bodyLines, "")
 
 	leftLabel := " " + styleApprovalTitle.Render("Approval needed") + " "
 	rightLabel := " " + styleApprovalTool.Render(m.approvalTool) + " "
 
-	innerW := 0
-	for _, line := range bodyLines {
-		if w := ansi.StringWidth(line); w > innerW {
-			innerW = w
-		}
-	}
-	headW := ansi.StringWidth(leftLabel) + ansi.StringWidth(rightLabel) + 2
-	if headW > innerW {
-		innerW = headW
-	}
-	// Final cap pass — header expansion above can push innerW past
-	// the cap on a small terminal with a long tool name; clamp again
-	// so the box still fits.
-	if cap > 0 && innerW > cap {
-		innerW = cap
-	}
-
-	border := lipgloss.NewStyle().Foreground(colorWarning)
-	// Top width = "┌─" + leftLabel + ─×fill + rightLabel + "─┐" =
-	// leftW + rightW + fill + 4. Body/bottom rows are innerW + 4. So
-	// fill = innerW - leftW - rightW keeps the top border flush with
-	// the right edge of the box.
-	fill := innerW - ansi.StringWidth(leftLabel) - ansi.StringWidth(rightLabel)
-	if fill < 1 {
-		fill = 1
-	}
-	top := border.Render("┌─") + leftLabel +
-		border.Render(strings.Repeat("─", fill)) +
-		rightLabel + border.Render("─┐")
-
-	sideL := border.Render("│ ")
-	sideR := border.Render(" │")
-	rows := []string{top}
-	for _, line := range bodyLines {
-		pad := innerW - ansi.StringWidth(line)
-		if pad < 0 {
-			pad = 0
-		}
-		rows = append(rows, sideL+line+strings.Repeat(" ", pad)+sideR)
-	}
-	rows = append(rows, border.Render("└"+strings.Repeat("─", innerW+2)+"┘"))
-	return strings.Join(rows, "\n")
+	return renderLabeledBox(leftLabel, rightLabel, bodyLines, capW, colorWarning)
 }
 
 // approvalBodyFor returns the focused, Content-styled body for the

@@ -2,10 +2,6 @@ package tui
 
 import (
 	"fmt"
-	"strings"
-
-	"github.com/charmbracelet/lipgloss"
-	"github.com/charmbracelet/x/ansi"
 
 	"github.com/yottadynamics/yottacode/internal/lsp"
 )
@@ -59,42 +55,27 @@ func renderSingleLSPAdvisory(lang lsp.DetectedLanguage) string {
 	return renderLSPAdvisoryBox("LSP Code Intelligence", lang.Name, rows)
 }
 
+// renderLSPAdvisoryBox draws the startup card. Unlike the approval
+// modal and plan-mode decision cards, there's no live terminal width
+// available here — run.go builds this string into
+// pendingStartupNotices before the Bubble Tea program starts, well
+// before the first WindowSizeMsg. So instead of a live-width cap we
+// wrap every body line at the shared labeledBoxCap ceiling: normal
+// advisory copy is short and renders unchanged, but a pathological
+// install hint or language count can no longer stretch the box wider
+// than any real terminal.
 func renderLSPAdvisoryBox(title, context string, bodyLines []string) string {
 	leftLabel := " " + styleWarnIcon.Render(title) + " "
 	rightLabel := " " + styleMeta.Render(context) + " "
 
-	innerW := 0
+	wrapped := make([]string, 0, len(bodyLines))
 	for _, line := range bodyLines {
-		if w := ansi.StringWidth(line); w > innerW {
-			innerW = w
+		for _, wrappedLine := range hardWrapLabeled(line, labeledBoxCap) {
+			wrapped = append(wrapped, labeledBoxIndent+wrappedLine)
 		}
 	}
-	headW := ansi.StringWidth(leftLabel) + ansi.StringWidth(rightLabel) + 2
-	if headW > innerW {
-		innerW = headW
-	}
 
-	border := lipgloss.NewStyle().Foreground(colorWarning)
-	fill := innerW - ansi.StringWidth(leftLabel) - ansi.StringWidth(rightLabel)
-	if fill < 1 {
-		fill = 1
-	}
-	top := border.Render("┌─") + leftLabel +
-		border.Render(strings.Repeat("─", fill)) +
-		rightLabel + border.Render("─┐")
-
-	sideL := border.Render("│ ")
-	sideR := border.Render(" │")
-	rows := []string{top}
-	for _, line := range bodyLines {
-		pad := innerW - ansi.StringWidth(line)
-		if pad < 0 {
-			pad = 0
-		}
-		rows = append(rows, sideL+line+strings.Repeat(" ", pad)+sideR)
-	}
-	rows = append(rows, border.Render("└"+strings.Repeat("─", innerW+2)+"┘"))
-	return strings.Join(rows, "\n")
+	return renderLabeledBox(leftLabel, rightLabel, wrapped, labeledBoxCap, colorWarning)
 }
 
 func serverDisplayName(lang lsp.DetectedLanguage) string {

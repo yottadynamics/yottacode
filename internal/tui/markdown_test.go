@@ -46,3 +46,35 @@ func TestMarkdownRenderer_NarrowWidthClampsToDefault(t *testing.T) {
 		t.Errorf("narrow width should still produce a working renderer")
 	}
 }
+
+// TestMarkdownRenderer_MonochromeThemeStripsColor is a regression test:
+// newMarkdownRenderer used to hardcode glamour's "dark" style
+// regardless of the active theme, so selecting the "no-color" theme
+// muted chroma code-block highlighting (via Highlight: "bw") but left
+// assistant markdown prose (headings, bold, links) rendered in
+// glamour's baked-in ANSI colors — breaking that theme's "every role
+// renders as default terminal foreground" contract. themeMonochrome
+// (set from Palette.Monochrome in buildStyles) now switches glamour to
+// its colorless "notty" style.
+func TestMarkdownRenderer_MonochromeThemeStripsColor(t *testing.T) {
+	const doc = "# Heading\n\n**bold** and *italic*"
+
+	colored := newMarkdownRenderer(80).render(doc)
+	if !strings.Contains(colored, "\x1b[") {
+		t.Fatalf("dark-style renderer should emit ANSI escapes for a heading, got %q", colored)
+	}
+
+	prev := themeMonochrome
+	themeMonochrome = true
+	defer func() { themeMonochrome = prev }()
+
+	mono := newMarkdownRenderer(80).render(doc)
+	if strings.Contains(mono, "\x1b[") {
+		t.Errorf("monochrome theme should render with no ANSI escapes at all, got %q", mono)
+	}
+	for _, w := range []string{"Heading", "bold", "italic"} {
+		if !strings.Contains(mono, w) {
+			t.Errorf("word %q missing from monochrome output: %q", w, mono)
+		}
+	}
+}

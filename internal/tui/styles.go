@@ -66,6 +66,12 @@ var (
 	// one (terminal theme). Read by highlight.go.
 	themeHighlightStyle string
 
+	// themeMonochrome mirrors themes.Palette.Monochrome. Read by
+	// markdown.go so the glamour renderer used for finalized assistant
+	// messages goes fully colorless under the "no-color" theme instead
+	// of always rendering with glamour's baked-in "dark" style.
+	themeMonochrome bool
+
 	// --- live style slots (rebuilt by buildStyles) --------------
 	styleLogo             lipgloss.Style
 	styleSplashTitle      lipgloss.Style
@@ -96,7 +102,6 @@ var (
 	styleAuto             lipgloss.Style
 	styleError            lipgloss.Style
 	styleWarnIcon         lipgloss.Style
-	styleApprovalBox      lipgloss.Style
 	stylePaletteBox       lipgloss.Style
 	stylePaletteItem      lipgloss.Style
 	stylePaletteSelected  lipgloss.Style
@@ -146,8 +151,9 @@ func init() {
 // warning. The TUI's render loop is "everything looks up globals
 // at render time" — the next View() call picks up the new palette
 // automatically. Components that captured a style by value at
-// construction time (textarea prompt, spinner) need a separate
-// refresh hook; Model.RefreshThemeStyles() does that work.
+// construction time (textarea prompt, spinner, markdown renderer)
+// need a separate refresh hook; refreshComponentStyles (cmd_themes.go)
+// does that work.
 func ApplyTheme(name string) bool {
 	p, ok := themes.Get(name)
 	if !ok {
@@ -195,6 +201,7 @@ func buildStyles(p themes.Palette) {
 	themeBackground = p.Background
 
 	themeHighlightStyle = p.Highlight
+	themeMonochrome = p.Monochrome
 
 	styleLogo = lipgloss.NewStyle().Foreground(colorBrand).Bold(true)
 	styleSplashTitle = lipgloss.NewStyle().Foreground(colorBrand).Bold(true)
@@ -254,13 +261,6 @@ func buildStyles(p themes.Palette) {
 	styleAuto = lipgloss.NewStyle().Foreground(colorDim)
 	styleError = lipgloss.NewStyle().Foreground(colorErr).Bold(true)
 	styleWarnIcon = lipgloss.NewStyle().Foreground(colorWarning).Bold(true)
-	styleApprovalBox = lipgloss.NewStyle().
-		Border(lipgloss.NormalBorder()).
-		BorderForeground(colorWarn).
-		Padding(0, 1)
-	if hasThemeBackground {
-		styleApprovalBox = styleApprovalBox.Background(themeBackground)
-	}
 
 	paletteBox := lipgloss.NewStyle().
 		Border(lipgloss.NormalBorder()).
