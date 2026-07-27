@@ -2252,7 +2252,7 @@ func TestStartupBanner_DeferredUntilWidthKnown(t *testing.T) {
 
 	boxIdx, bannerIdx := -1, -1
 	for i, b := range bodies {
-		if strings.Contains(b, "YottaCode by YottaDynamics") {
+		if strings.Contains(b, "YottaCode") {
 			boxIdx = i
 		}
 		if strings.Contains(b, "yolo mode active") {

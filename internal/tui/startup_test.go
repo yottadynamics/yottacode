@@ -18,15 +18,15 @@ func TestBuildLabel_NoCommit(t *testing.T) {
 
 func TestBuildLabel_CleanCommit(t *testing.T) {
 	got := buildLabel("0.1.0", "e546e47", false)
-	if got != "v0.1.0 · e546e47" {
-		t.Fatalf("buildLabel(clean) = %q, want %q", got, "v0.1.0 · e546e47")
+	if got != "v0.1.0 (e546e47)" {
+		t.Fatalf("buildLabel(clean) = %q, want %q", got, "v0.1.0 (e546e47)")
 	}
 }
 
 func TestBuildLabel_DirtyCommit(t *testing.T) {
 	got := buildLabel("0.1.0", "e546e47", true)
-	if got != "v0.1.0 · e546e47*" {
-		t.Fatalf("buildLabel(dirty) = %q, want %q", got, "v0.1.0 · e546e47*")
+	if got != "v0.1.0 (e546e47*)" {
+		t.Fatalf("buildLabel(dirty) = %q, want %q", got, "v0.1.0 (e546e47*)")
 	}
 }
 
@@ -68,6 +68,60 @@ func TestRenderStartupBox_DropsInlineCommandHints(t *testing.T) {
 	}
 	if strings.Contains(plain, "/provider for details") {
 		t.Errorf("startup card should not carry the /provider hint: %q", plain)
+	}
+}
+
+func TestRenderStartupBox_EmbedsTitleAndVersionInTopBorder(t *testing.T) {
+	got := renderStartupBox("0.3.0", "148eb2b", false, "gpt-4o", "/repo", "20260721-000000.000000", "main", "USER", adapter.ProviderProfile{
+		Provider: adapter.ProviderOpenAI,
+	}, "", 80)
+	plain := stripANSI(got)
+	lines := strings.Split(plain, "\n")
+	if len(lines) < 2 {
+		t.Fatalf("startup card should have a border and body rows:\n%s", plain)
+	}
+
+	if !strings.Contains(lines[0], ">_ YottaCode") {
+		t.Fatalf("top border should embed product label:\n%s", plain)
+	}
+	if !strings.Contains(lines[0], "v0.3.0 (148eb2b)") {
+		t.Fatalf("top border should embed version label:\n%s", plain)
+	}
+	if strings.Contains(lines[0], "YottaDynamics") {
+		t.Fatalf("startup header should not include company text:\n%s", plain)
+	}
+	versionIdx := strings.Index(lines[0], "v0.3.0 (148eb2b)")
+	titleIdx := strings.Index(lines[0], ">_ YottaCode")
+	if versionIdx < 0 || titleIdx < 0 {
+		t.Fatalf("top border should include both version and title:\n%s", plain)
+	}
+	if titleIdx > versionIdx {
+		t.Fatalf("title should render before version in the top border:\n%s", plain)
+	}
+	if strings.Contains(lines[0], "YottaCode  v0.3.0") {
+		t.Fatalf("version/title spacing should be tight in the top border:\n%s", plain)
+	}
+	if !strings.Contains(lines[0], ">_ YottaCode v0.3.0 (148eb2b)") {
+		t.Fatalf("top border should render title followed by version:\n%s", plain)
+	}
+	for _, line := range lines[1:] {
+		if strings.Contains(line, ">_ YottaCode") || strings.Contains(line, "v0.3.0") {
+			t.Fatalf("title/version should stay in top border only, got body line %q:\n%s", line, plain)
+		}
+	}
+}
+
+func TestRenderStartupBox_SpansCmdlineWidth(t *testing.T) {
+	const termWidth = 100
+	got := stripANSI(renderStartupBox("0.3.0", "148eb2b", false, "gpt-4o", "/repo", "20260721-000000.000000", "main", "USER", adapter.ProviderProfile{
+		Provider: adapter.ProviderOpenAI,
+	}, "", termWidth))
+
+	lines := strings.Split(got, "\n")
+	for _, line := range lines {
+		if w := lipgloss.Width(line); w != termWidth {
+			t.Fatalf("startup card row width = %d, want %d for %q:\n%s", w, termWidth, line, got)
+		}
 	}
 }
 

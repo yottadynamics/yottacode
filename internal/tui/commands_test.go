@@ -88,8 +88,11 @@ func TestSlash_HelpReEmitsStartupCard(t *testing.T) {
 	m.transcript.Reset()
 	m, _ = typeAndEnter(t, m, "/help")
 	content := m.transcript.String()
-	if !strings.Contains(content, "YottaCode by YottaDynamics") {
+	if !strings.Contains(content, "YottaCode") {
 		t.Errorf("/help should re-emit the startup card mid-session: %q", content)
+	}
+	if strings.Contains(content, "YottaCode by YottaDynamics") {
+		t.Errorf("startup card should not include company text in the header: %q", content)
 	}
 	if !strings.Contains(content, "Available commands") {
 		t.Errorf("/help should still list commands: %q", content)
