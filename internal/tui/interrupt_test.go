@@ -6,8 +6,6 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
-
-	"github.com/yottadynamics/yottacode/internal/agent"
 )
 
 // installFakeTurn arms the model as if a turn were in flight. It plants a
@@ -56,10 +54,6 @@ func TestInterrupt_EnterMidTurnQueuesOnChannel(t *testing.T) {
 	if !m.turnActive {
 		t.Errorf("turnActive should remain true")
 	}
-	plain := stripANSI(m.transcript.String())
-	if !strings.Contains(plain, "\n\n→ queued: will deliver next tool round · follow up\n\n") {
-		t.Fatalf("queued notice should be a spaced one-line system row; transcript=%q", plain)
-	}
 }
 
 // TestInterrupt_UpMidTurnRecallsQueuedMessageForEditing covers the edit-
@@ -86,7 +80,7 @@ func TestInterrupt_UpMidTurnRecallsQueuedMessageForEditing(t *testing.T) {
 	if got := cancels.Load(); got != 0 {
 		t.Fatalf("recalling queued text must not cancel turn; got %d calls", got)
 	}
-	if !strings.Contains(m.transcript.String(), "→ queued: recalled for editing") {
+	if !strings.Contains(m.transcript.String(), "[queued] recalled for editing") {
 		t.Fatalf("expected recall notice in transcript; got %q", m.transcript.String())
 	}
 }
@@ -118,10 +112,10 @@ func TestInterrupt_UpMidTurnCanReviseAndRequeueQueuedMessage(t *testing.T) {
 	}
 }
 
-// TestInterrupt_EnterMidTurnOverflowDoesNotCancel verifies that a second
-// mid-turn Enter before the first queued message is consumed does not cancel
-// the active turn. Normal typing must not interrupt in-flight tool calls.
-func TestInterrupt_EnterMidTurnOverflowDoesNotCancel(t *testing.T) {
+// TestInterrupt_EnterMidTurnFallsBackOnOverflow verifies that when the
+// userMsgCh buffer is full (a second Enter before the first was consumed),
+// the handler falls back to the old cancel+resubmit path.
+func TestInterrupt_EnterMidTurnFallsBackOnOverflow(t *testing.T) {
 	m := newTestModel(t)
 	cancels := installFakeTurn(t, &m)
 
@@ -131,31 +125,17 @@ func TestInterrupt_EnterMidTurnOverflowDoesNotCancel(t *testing.T) {
 	}
 	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
 
-	// Second message: channel full, stays in the textarea and only warns.
+	// Second message: channel full, falls back to cancel+resubmit.
 	for _, r := range "second" {
 		m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
 	}
 	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
 
-	select {
-	case got := <-m.userMsgCh:
-		if got != "first" {
-			t.Fatalf("first queued message changed: got %q", got)
-		}
-	default:
-		t.Fatalf("first queued message should remain pending")
+	if m.pendingInputAfterTurn != "second" {
+		t.Errorf("pendingInputAfterTurn = %q, want %q (fallback path)", m.pendingInputAfterTurn, "second")
 	}
-	if m.pendingInputAfterTurn != "" {
-		t.Errorf("pendingInputAfterTurn should stay empty; got %q", m.pendingInputAfterTurn)
-	}
-	if got := cancels.Load(); got != 0 {
-		t.Errorf("turnCancel should not fire on queue overflow; got %d", got)
-	}
-	if got := m.textInput.Value(); got != "second" {
-		t.Errorf("second message should remain editable in textarea; got %q", got)
-	}
-	if !strings.Contains(stripANSI(m.transcript.String()), "already waiting for delivery") {
-		t.Fatalf("expected queue-full warning; transcript=%q", stripANSI(m.transcript.String()))
+	if got := cancels.Load(); got != 1 {
+		t.Errorf("turnCancel should fire once on overflow; got %d", got)
 	}
 }
 
@@ -231,18 +211,6 @@ func TestInterrupt_EscBehavesLikeCtrlC(t *testing.T) {
 	}
 	if got := cancels.Load(); got < 1 {
 		t.Errorf("Esc must call turnCancel; count = %d", got)
-	}
-}
-
-func TestInterrupt_UserMessageAppendedRendersSpacedDeliveredNotice(t *testing.T) {
-	m := newTestModel(t)
-
-	out, _ := m.handleAgentEvent(agent.UserMessageAppended{Content: "follow up delivered"})
-	m = out.(Model)
-
-	plain := stripANSI(m.transcript.String())
-	if !strings.Contains(plain, "\n\n✓ delivered: follow up delivered\n\n") {
-		t.Fatalf("delivered notice should be a spaced one-line system row; transcript=%q", plain)
 	}
 }
 

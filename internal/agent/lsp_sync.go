@@ -28,7 +28,7 @@ func notifyLSPFileChanged(ctx context.Context, cwd *CwdRef, manager *lspci.Manag
 	}
 	root := lspci.WorkspaceRoot(path, lang, fallback)
 	if err := manager.NotifyFileChanged(ctx, lang, root, path, text); err != nil {
-		return fmt.Sprintf("◆ lsp: change notification skipped: %v", err)
+		return fmt.Sprintf("lsp: change notification skipped: %v", err)
 	}
-	return "✓ lsp: document synced"
+	return "lsp: document synced"
 }

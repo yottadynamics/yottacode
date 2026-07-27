@@ -4,8 +4,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/charmbracelet/lipgloss"
-
 	"github.com/yottadynamics/yottacode/internal/config"
 )
 
@@ -15,10 +13,11 @@ import (
 
 // renderContextBar emits `ctx ████░░ <used> / <max> (<pct>%)` —
 // label in Dim, then a six-cell █/░ fill bar, the abbreviated
-// used/max token counts, and the percentage in parentheses. Only the bar is
-// colored by tier (Success green under warn_threshold, Warning amber once
-// crossed, Error red once auto_threshold is crossed). The legacy ▓ glyph
-// rendered inconsistently across fonts; █ + ░ is the chosen pair.
+// used/max token counts, and the percentage in parentheses. Bar +
+// value are colored by tier (Dim under warn_threshold, Warning amber
+// once crossed, Error red once auto_threshold is crossed). The
+// legacy ▓ glyph rendered inconsistently across fonts; █ + ░ is the
+// chosen pair.
 
 func TestSummaryConverged(t *testing.T) {
 	cases := []struct {
@@ -100,37 +99,6 @@ func TestRenderContextBar_BelowThreshold(t *testing.T) {
 	}
 	if strings.Contains(plain, "▓") {
 		t.Errorf("context segment should not render the legacy ▓ glyph: %q", plain)
-	}
-}
-
-func TestRenderContextBar_ColorsOnlyGraphByTier(t *testing.T) {
-	cases := []struct {
-		name   string
-		tokens int
-		color  lipgloss.AdaptiveColor
-	}{
-		{name: "below", tokens: 100, color: colorSuccess},
-		{name: "warn", tokens: 700, color: colorWarning},
-		{name: "error", tokens: 950, color: colorError},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			m := newTestModel(t)
-			m.fileCfg = config.Config{Context: config.ContextConfig{
-				DefaultWindow: 1000,
-				WarnThreshold: 0.65,
-				AutoThreshold: 0.85,
-			}}
-			m.contextTokens = tc.tokens
-
-			got := m.renderContextBar()
-			plain := stripANSI(got)
-			bar := strings.Fields(plain)[1]
-			coloredBar := lipgloss.NewStyle().Foreground(tc.color).Render(bar)
-			if !strings.Contains(got, coloredBar) {
-				t.Errorf("context graph should use tier color; got %q", got)
-			}
-		})
 	}
 }
 

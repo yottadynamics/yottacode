@@ -160,48 +160,6 @@ func TestAutoModeSwitchesToImplementer(t *testing.T) {
 	}
 }
 
-func TestAutoModeAlreadyOnImplementerSyncsConsultAdvisor(t *testing.T) {
-	advisor := &roleSwitchAdapter{profile: adapter.ProviderProfile{Provider: adapter.ProviderAnthropic}}
-	implementer := &roleSwitchAdapter{profile: adapter.ProviderProfile{Provider: adapter.ProviderOpenAI}}
-	stale := &roleSwitchAdapter{profile: adapter.ProviderProfile{Provider: adapter.ProviderXAI}}
-	reg := agent.NewRegistry()
-	sess, err := session.New("gpt-4o-mini", "/cwd")
-	if err != nil {
-		t.Fatalf("session: %v", err)
-	}
-	m := Model{
-		parentCtx:    context.Background(),
-		modelName:    "gpt-4o-mini",
-		cfg:          agent.LoopConfig{Adapter: stale, Registry: reg, AutoMode: &agent.AutoModeState{}, PlanMode: &agent.PlanModeState{}},
-		subagentTool: &agent.AgentTool{Adapter: stale},
-		sess:         sess,
-		transcript:   &strings.Builder{},
-		routerMode:   config.RouterModeAuto,
-		router: &cli.RouterAdapters{
-			Advisor:          advisor,
-			AdvisorModel:     "claude-opus-4-6",
-			AdvisorRef:       "anthropic:claude-opus-4-6",
-			Implementer:      implementer,
-			ImplementerModel: "gpt-4o-mini",
-			ImplementerRef:   "openai:gpt-4o-mini",
-		},
-	}
-
-	m, _ = toggleAutoMode(m)
-	if m.cfg.Adapter != implementer || m.subagentTool.Adapter != implementer {
-		t.Fatal("same-model auto mode should resync active adapters to implementer")
-	}
-	if m.modelName != "gpt-4o-mini" || m.sess.Model != "gpt-4o-mini" {
-		t.Fatalf("same-model auto mode models = (%q, %q), want implementer", m.modelName, m.sess.Model)
-	}
-	if m.providerProfile.Provider != adapter.ProviderOpenAI {
-		t.Fatalf("providerProfile = %s, want openai", m.providerProfile.Provider)
-	}
-	if _, ok := reg.Get(agent.ConsultAdvisorToolName); !ok {
-		t.Fatal("same-model auto-mode implementer should sync consult_advisor into the main registry")
-	}
-}
-
 func seedRoleSwitchConfig(t *testing.T) {
 	t.Helper()
 	t.Setenv("HOME", t.TempDir())

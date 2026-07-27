@@ -32,12 +32,9 @@ type menuItemOpts struct {
 	// Zero means "render as-is, no padding/truncation."
 	LabelWidth int
 
-	// Desc is the right-column description text.
+	// Desc is the right-column description text. Truncated
+	// implicitly by terminal wrap.
 	Desc string
-
-	// DescWidth caps Desc before rendering. Zero uses the shared default cap so
-	// long right-side text never grows an overlay past the terminal edge.
-	DescWidth int
 
 	// Cursor adds the `❯ ` prefix and bolds the row in the
 	// brand color.
@@ -56,18 +53,19 @@ type menuItemOpts struct {
 }
 
 // renderMenuHeader draws the picker's title + optional description
-// block, followed by a divider. Title is bold/branded; description is muted.
-// Caller appends a blank line + items below.
+// block. Title is bold/branded; description is muted. Caller
+// appends a blank line + items below.
 func renderMenuHeader(title, description string) string {
 	var b strings.Builder
 	b.WriteString(styleSplashTitle.Render(title))
 	b.WriteString("\n")
 	if description != "" {
-		b.WriteString(styleMeta.Render(truncateLabel(strings.TrimSpace(description), 88)))
+		// Wrap description at ~80 cols for readability when the
+		// terminal is wide. Lipgloss handles this for us via the
+		// styled writer; we just trim trailing whitespace.
+		b.WriteString(styleMeta.Render(strings.TrimSpace(description)))
 		b.WriteString("\n")
 	}
-	b.WriteString(styleOverlayRule.Render(strings.Repeat("─", 120)))
-	b.WriteString("\n")
 	return b.String()
 }
 
@@ -94,17 +92,12 @@ func renderMenuItem(o menuItemOpts) string {
 	if o.Checked {
 		check = "✓ "
 	}
-	desc := o.Desc
-	descWidth := o.DescWidth
-	if descWidth > 0 {
-		desc = shortenMiddle(desc, descWidth)
-	}
 	label := o.Label
 	if o.LabelWidth > 0 {
 		label = truncateLabel(label, o.LabelWidth)
 		label = fmt.Sprintf("%-*s", o.LabelWidth, label)
 	}
-	body := cursor + label + " " + check + desc
+	body := cursor + label + " " + check + o.Desc
 	switch {
 	case o.Disabled && o.Cursor:
 		// Cursor on a disabled row: muted + italic + underline so

@@ -61,18 +61,16 @@ func (c *statusBarPRClient) RateLimit() githubapi.RateLimitSnapshot {
 	return githubapi.RateLimitSnapshot{}
 }
 
-// The live command line sits in a full-width bordered frame so it mirrors the
-// startup card and gives the bottom chrome a stable edge.
-func TestInputFrame_IsFullWidthBordered(t *testing.T) {
+// The input is borderless. The earlier design wrapped it in a
+// brand-colored box that drowned out everything inside; the chevron +
+// placeholder/content carry the focal weight on their own. Catches
+// regressions that re-add a frame border — rounded (╭╮╰╯) or sharp
+// (┌┐└┘).
+func TestInput_HasNoBorder(t *testing.T) {
 	m := newTestModel(t)
-	m.width = 80
-	view := m.renderInputFrame()
-	lines := strings.Split(stripANSI(view), "\n")
-	if !strings.HasPrefix(lines[0], "┌") || !strings.HasSuffix(lines[0], "┐") || !strings.HasPrefix(lines[len(lines)-1], "└") {
-		t.Fatalf("input frame should render a full border: %q", stripANSI(view))
-	}
-	if got := lipgloss.Width(lines[0]); got != m.width {
-		t.Fatalf("input frame width = %d, want %d", got, m.width)
+	view := m.renderInputBox()
+	if strings.ContainsAny(view, "╭╮╯╰┌┐└┘│") {
+		t.Errorf("input should be borderless; frame chars found: %q", view)
 	}
 }
 

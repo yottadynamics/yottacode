@@ -9,9 +9,10 @@ import (
 	"github.com/yottadynamics/yottacode/internal/skills"
 )
 
-// On a fresh session with no memory configured, the startup output shows the
-// memory tip directly below the card — the highest-leverage thing to do next.
-func TestWelcome_FreshSessionShowsMemoryTipBelowCard(t *testing.T) {
+// On a fresh session with no memory configured, the startup card
+// folds the memory tip in as a dim footer line — the highest-leverage
+// thing the user could do next.
+func TestWelcome_FreshSessionEmbedsMemoryTipInCard(t *testing.T) {
 	m := newTestModel(t)
 	if !m.isFreshSession() {
 		t.Fatalf("brand-new model should be a fresh session")
@@ -21,7 +22,7 @@ func TestWelcome_FreshSessionShowsMemoryTipBelowCard(t *testing.T) {
 		t.Errorf("memory tip should mention USER.md: %q", v)
 	}
 	if !strings.Contains(v, "tip:") {
-		t.Errorf("tip prefix should appear in startup output: %q", v)
+		t.Errorf("tip prefix should appear inside the startup card: %q", v)
 	}
 }
 
