@@ -1505,7 +1505,7 @@ func TestModel_TurnStatusTokRateShownPreStream(t *testing.T) {
 	}
 }
 
-// TurnDone leaves a "◦ Thought for Ns" footnote in scrollback so the
+// TurnDone leaves a "› Thought for Ns" footnote in scrollback so the
 // user has a quiet receipt of how long the turn took once it ends.
 func TestModel_TurnDoneAppendsThoughtForFootnote(t *testing.T) {
 	m := newTestModel(t)
@@ -1515,11 +1515,8 @@ func TestModel_TurnDoneAppendsThoughtForFootnote(t *testing.T) {
 	m, _ = applyMsg(m, agentEventMsg{ev: agent.TurnDone{}})
 
 	got := stripANSI(m.transcript.String())
-	if !strings.Contains(got, "◦ Thought for") {
+	if !strings.Contains(got, "› Thought for") {
 		t.Errorf("TurnDone should append the 'Thought for Ns' footnote: %q", got)
-	}
-	if !strings.Contains(got, "◦ Thought for 7s\n") {
-		t.Errorf("footnote should leave a newline after the receipt: %q", got)
 	}
 	if !strings.Contains(got, "7s") {
 		t.Errorf("footnote should include the elapsed seconds: %q", got)
@@ -2255,7 +2252,7 @@ func TestStartupBanner_DeferredUntilWidthKnown(t *testing.T) {
 
 	boxIdx, bannerIdx := -1, -1
 	for i, b := range bodies {
-		if strings.Contains(b, ">_ YottaCode") {
+		if strings.Contains(b, "YottaCode by YottaDynamics") {
 			boxIdx = i
 		}
 		if strings.Contains(b, "yolo mode active") {

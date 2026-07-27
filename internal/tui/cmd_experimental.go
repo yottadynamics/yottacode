@@ -5,7 +5,6 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/x/ansi"
 
 	"github.com/yottadynamics/yottacode/internal/experimental"
 )
@@ -20,81 +19,27 @@ import (
 // experimental.Set.EnabledNames — previously dead, so the gate left no
 // in-session confirmation it was on.
 func cmdExperimental(m Model, _ []string) (Model, tea.Cmd) {
-	m.experimentalBody = renderExperimentalOverlay(m.experimentalEnabled, m.width)
-	m.experimentalOpen = true
-	return m, nil
-}
-
-// renderExperimentalOverlay formats the feature catalog for the inline submenu
-// box. The parent renderInlineOverlay supplies the green frame; this body uses
-// the shared submenu title/divider/row visual language so /experimental feels
-// like /router, /skills, /permissions, and the other transient TUI menus.
-func renderExperimentalOverlay(enabled []string, width int) string {
-	on := make(map[string]bool, len(enabled))
-	for _, name := range enabled {
+	on := make(map[string]bool, len(m.experimentalEnabled))
+	for _, name := range m.experimentalEnabled {
 		on[name] = true
 	}
 
 	var b strings.Builder
-	b.WriteString(renderMenuHeader("Experimental features",
-		"Enable at startup: --experimental <name> · YOTTACODE_EXPERIMENTAL=<name> · [experimental] <name> = true"))
-	b.WriteString("\n")
-
-	labelWidth := 0
+	b.WriteString("Experimental features")
+	b.WriteString(" — enable at startup with `--experimental <name>`, `YOTTACODE_EXPERIMENTAL=<name>`, or `[experimental]` `<name> = true` in ~/.yottacode/config.toml:\n")
 	for _, f := range experimental.All() {
-		if n := len(string(f)); n > labelWidth {
-			labelWidth = n
-		}
-	}
-	innerWidth := width - 4
-	if innerWidth <= 0 {
-		innerWidth = 96
-	}
-	descWidth := innerWidth - labelWidth - len("  [off] ")
-	if descWidth < 32 {
-		descWidth = 32
-	}
-
-	for _, f := range experimental.All() {
-		state := "[off]"
+		state := "off"
 		if on[string(f)] {
-			state = "[ON ]"
+			state = "ON"
 		}
-		writeExperimentalRow(&b, state, string(f), experimental.Description(f), labelWidth, descWidth)
+		fmt.Fprintf(&b, "  [%-3s] %s — %s\n", state, string(f), experimental.Description(f))
 	}
-	b.WriteString("\n")
-	if len(enabled) == 0 {
-		b.WriteString(styleFooter.Render("Enabled this session: none"))
+	if len(m.experimentalEnabled) == 0 {
+		b.WriteString("\nNone enabled this session.")
 	} else {
-		fmt.Fprintf(&b, "%s %s", styleFooter.Render("Enabled this session:"), stylePaletteItem.Render(strings.Join(enabled, ", ")))
+		fmt.Fprintf(&b, "\nEnabled this session: %s", strings.Join(m.experimentalEnabled, ", "))
 	}
-	b.WriteString("\n")
-	b.WriteString(styleFooter.Render("esc/any key close"))
 
-	return strings.TrimRight(b.String(), "\n")
-}
-
-// writeExperimentalRow wraps long descriptions under the description column so
-// feature text stays inside the submenu frame on normal terminal widths.
-func writeExperimentalRow(b *strings.Builder, state, name, desc string, labelWidth, descWidth int) {
-	name = fmt.Sprintf("%-*s", labelWidth, name)
-	wrapped := strings.Split(ansi.Wrap(desc, descWidth, ""), "\n")
-	if len(wrapped) == 0 {
-		wrapped = []string{""}
-	}
-	status := styleMeta.Render(state)
-	if state == "[ON ]" {
-		status = styleSystemSuccess.Render(state)
-	}
-	prefix := "  " + status + " " + styleSplashTitle.Render(name) + styleMeta.Render(" — ")
-	continuation := "  " + strings.Repeat(" ", len(state)+1+labelWidth+3)
-	for i, line := range wrapped {
-		if i == 0 {
-			b.WriteString(prefix)
-		} else {
-			b.WriteString(continuation)
-		}
-		b.WriteString(stylePaletteItem.Render(line))
-		b.WriteString("\n")
-	}
+	m.appendLine(styleAuto.Render(strings.TrimRight(b.String(), "\n")))
+	return m, nil
 }

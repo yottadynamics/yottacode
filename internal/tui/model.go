@@ -697,14 +697,6 @@ type Model struct {
 	contextReportOpen bool
 	contextReportBody string
 
-	// Experimental overlay (/experimental). Renders the feature catalog in the
-	// same inline submenu box as the other transient inspection surfaces instead
-	// of appending a plain-text dump to chat scrollback. Body is snapshotted at
-	// open time from the startup-resolved experimentalEnabled set; any key
-	// dismisses it, mirroring /usage and /context.
-	experimentalOpen bool
-	experimentalBody string
-
 	// Permissions picker (/permissions). Two-row picker (shared /
 	// local) modelled on /memory's three-row picker — Up/Down
 	// navigates, Enter suspends to vim on the chosen rule file, Esc
@@ -910,11 +902,6 @@ type textareaSyncMsg struct{}
 type providerProbeMsg struct {
 	result   adapter.ProbeResult
 	announce bool
-}
-
-type doctorProbeMsg struct {
-	provider adapter.ProbeResult
-	lsp      tuiLSPDoctorResult
 }
 
 type prStatusMsg struct {
@@ -1295,15 +1282,6 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	}
-	if doctor, ok := msg.(doctorProbeMsg); ok {
-		m.connection = probeConnectionState(doctor.provider)
-		if doctor.provider.Profile.Provider != "" {
-			m.providerProfile = doctor.provider.Profile
-		}
-		m.appendLine(formatProbeResult(doctor.provider))
-		m.appendLine(renderTUILSPDoctor(doctor.lsp))
-		return m, nil
-	}
 	if pr, ok := msg.(prStatusMsg); ok {
 		m.currentPR = pr.number
 		return m, nil
@@ -1337,7 +1315,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// don't reprint.
 			if !m.startupPrinted {
 				m.startupPrinted = true
-				m.appendRawFlush(renderStartupBox(m.version, m.commit, m.dirty, m.modelName, m.cwd, m.sess.ID, m.branch, m.memorySummary, m.providerProfile, m.startupTip(), m.width, m.experimentalEnabled...))
+				m.appendRawFlush(renderStartupBox(m.version, m.commit, m.dirty, m.modelName, m.cwd, m.sess.ID, m.branch, m.memorySummary, m.providerProfile, m.startupTip(), m.width))
 				// One blank line of breathing room between the card and
 				// the input frame — matches the Phase 2 spacing target.
 				m.queuePrintln("")
@@ -1419,11 +1397,6 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.contextReportOpen {
 			m.contextReportOpen = false
 			m.contextReportBody = ""
-			return m, nil
-		}
-		if m.experimentalOpen {
-			m.experimentalOpen = false
-			m.experimentalBody = ""
 			return m, nil
 		}
 		if m.permissionsOpen {
@@ -1619,7 +1592,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						if queued != "" {
 							m.textInput.SetValue(queued)
 							m.textInput.CursorEnd()
-							m.appendLine(styleAuto.Render(statusActionLine("queued", "recalled for editing")))
+							m.appendLine(styleAuto.Render("[queued] recalled for editing"))
 							return m, nil
 						}
 					default:
@@ -1629,7 +1602,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.pendingInputAfterTurn = ""
 						m.textInput.SetValue(queued)
 						m.textInput.CursorEnd()
-						m.appendLine(styleAuto.Render(statusActionLine("queued", "recalled for editing")))
+						m.appendLine(styleAuto.Render("[queued] recalled for editing"))
 						return m, nil
 					}
 				}
@@ -1776,9 +1749,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.paletteIndex = 0
 					m.paletteOffset = 0
 					m.appendLine(renderUserBlock(input, m.width))
-					m.appendLine("")
-					m.appendLine(styleAuto.Render(statusActionLine("queued", "will deliver next tool round · "+truncateForRender(input, 80))))
-					m.appendLine("")
+					m.appendLine(styleAuto.Render("[queued] will be delivered at next tool round"))
 					return m, nil
 				default:
 					m.appendLine(styleAuto.Render(statusWarnLine("queued",
@@ -2667,7 +2638,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // over-tall collapse this guards.
 func (m Model) anyOverlayOpen() bool {
 	return m.cheatsheetOpen || m.loopListOpen || m.usageOpen || m.contextReportOpen ||
-		m.experimentalOpen || m.permissionsOpen || m.modelPickerOpen || m.providerPickerOpen ||
+		m.permissionsOpen || m.modelPickerOpen || m.providerPickerOpen ||
 		m.embedSetupOpen || m.memoryPickerOpen || m.recallPickerOpen || m.codeMapPickerOpen || m.sessionsPickerOpen ||
 		m.plansPickerOpen || m.checkpointsPickerOpen || m.subagentsPickerOpen ||
 		m.routerPickerOpen || m.themePickerOpen || m.effortPickerOpen || m.skillsMenuOpen ||
@@ -2720,9 +2691,6 @@ func (m Model) View() string {
 	}
 	if m.contextReportOpen {
 		return m.renderInlineOverlay(m.contextReportBody)
-	}
-	if m.experimentalOpen {
-		return m.renderInlineOverlay(m.experimentalBody)
 	}
 	if m.permissionsOpen {
 		return m.renderInlineOverlay(renderPermissionsOverlay(m))
@@ -2907,47 +2875,32 @@ func (m Model) View() string {
 	return lipgloss.JoinVertical(lipgloss.Left, parts...)
 }
 
-// renderInlineOverlay stacks an inline picker (cheatsheet, model, provider,
-// memory, sessions, skills, etc.) above the bottom status/input chrome inside a
-// green framed box. Layout:
+// renderInlineOverlay stacks an inline picker (cheatsheet, model,
+// provider, memory) below the cmdline + status bar with a thin
+// separator rule between them. Layout:
 //
-//	[green submenu box]
-//	[status bar]
 //	[cmdline]
+//	[status bar]
+//	───────────────…
+//	[overlay body]
 //
-// The overlay owns input while open; the status bar and input frame remain
-// visible below it so the user can keep orientation without the submenu
-// overflowing under the task bar.
+// The overlay owns input while open; renderInputBox is included only
+// for visual anchoring (so the user keeps sight of the input frame
+// they're going to return to). The separator width tracks the
+// terminal so the rule reads as "this is a different surface from
+// the chat above" without floating mid-screen.
 func (m Model) renderInlineOverlay(body string) string {
 	width := m.width
 	if width < 4 {
 		width = 4
 	}
-	body = expandMenuDividers(body, width-4)
-	box := styleSubmenuBox.Width(width - 2).Render(body)
+	overlayRule := styleOverlayRule.Render(strings.Repeat("─", width))
 	return lipgloss.JoinVertical(lipgloss.Left,
-		box,
-		m.renderStatus(),
 		m.renderInputFrame(),
+		m.renderStatus(),
+		overlayRule,
+		body,
 	)
-}
-
-// expandMenuDividers stretches submenu header rules to the box's usable text
-// width. renderMenuHeader is shared by many pickers that do not know the live
-// terminal width, so the final overlay pass owns the edge-to-edge adjustment.
-func expandMenuDividers(body string, innerWidth int) string {
-	if innerWidth <= 0 {
-		return body
-	}
-	lines := strings.Split(body, "\n")
-	for i, line := range lines {
-		plain := strings.TrimSpace(ansi.Strip(line))
-		if plain == "" || strings.Trim(plain, "─") != "" {
-			continue
-		}
-		lines[i] = styleOverlayRule.Render(strings.Repeat("─", innerWidth))
-	}
-	return strings.Join(lines, "\n")
 }
 
 // renderInputBox renders the cmdline as a borderless input row capped at
@@ -3866,16 +3819,20 @@ func (m Model) historyForward() (Model, bool) {
 func (m Model) renderStatus() string {
 	dot := renderConnDot(m.connection)
 	modelName := m.modelName
-	routingMode := ""
+	routingNote := ""
 	if m.router != nil {
+		smart, fast := shortModelTag(m.router.SmartModel), shortModelTag(m.router.FastModel)
 		switch routerModeOrOff(m.routerMode) {
 		case config.RouterModeAuto:
-			// The status bar always names the active top-level model. Routing is
-			// surfaced inline beside it so the advisor/implementer pair is not
-			// mistaken for what the current turn is using.
-			routingMode = "auto"
+			// Plan mode already carries its own prominent banner; show the real
+			// advisor model here so the implementer half of the pair is not mistaken for the active planner.
+			if !m.cfg.PlanMode.IsActive() && smart != "" && fast != "" && (m.modelName == m.router.SmartModel || m.modelName == smart) {
+				modelName = smart + ":" + fast
+			} else {
+				routingNote = "routing: auto"
+			}
 		case config.RouterModeManual:
-			routingMode = "manual"
+			routingNote = "routing: manual"
 		}
 	}
 	model := renderModelName(modelName)
@@ -3895,9 +3852,6 @@ func (m Model) renderStatus() string {
 	// is bound to the model so it survives the same narrow-screen
 	// pressure until the explicit drop kicks in.
 	first := dot + "  " + model
-	if routingMode != "" {
-		first += " " + lipgloss.NewStyle().Foreground(colorDim).Render(routingMode)
-	}
 	if provider != "" {
 		first += innerSep + provider
 	}
@@ -3945,6 +3899,9 @@ func (m Model) renderStatus() string {
 		if worktreeSeg != "" {
 			segs = append(segs, worktreeSeg)
 		}
+		if routingNote != "" {
+			segs = append(segs, lipgloss.NewStyle().Foreground(colorDim).Render(routingNote))
+		}
 		// Flush-left: the status dot sits at column 0, aligned with the
 		// input frame's left border directly above it (and the flush-left
 		// scrollback canvas). An earlier 2-space inset trailed the old
@@ -3966,9 +3923,6 @@ func (m Model) renderStatus() string {
 	}
 	// Drop the provider tag first.
 	first = dot + "  " + model
-	if routingMode != "" {
-		first += " " + lipgloss.NewStyle().Foreground(colorDim).Render(routingMode)
-	}
 	line = build(first, true, true, true)
 	if lipgloss.Width(line) <= w {
 		return line
@@ -3995,9 +3949,6 @@ func (m Model) renderStatus() string {
 	// `nvidia/nemotron-…` → `nemotron-…`).
 	if idx := strings.LastIndex(m.modelName, "/"); idx >= 0 && idx < len(m.modelName)-1 {
 		first = dot + "  " + renderModelName(m.modelName[idx+1:])
-		if routingMode != "" {
-			first += " " + lipgloss.NewStyle().Foreground(colorDim).Render(routingMode)
-		}
 	}
 	return build(first, false, false, false)
 }
@@ -4731,7 +4682,7 @@ func (m Model) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 		if i := strings.Index(summary, "\n"); i >= 0 {
 			summary = summary[:i]
 		}
-		m.appendLine(statusOKLine(e.Source, summary))
+		m.appendLine(styleAuto.Render(statusOKLine(e.Source, summary)))
 	case agent.ApprovalNeeded:
 		m.commitStreaming()
 		// exit_plan_mode reads the plan from the resolved plan file
@@ -4980,9 +4931,7 @@ func (m Model) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 			m.appendLine(styleError.Render("✗ " + line))
 		}
 	case agent.UserMessageAppended:
-		m.appendLine("")
-		m.appendLine(styleAuto.Render(statusOKLine("delivered", truncateForRender(e.Content, 80))))
-		m.appendLine("")
+		m.appendLine(styleAuto.Render("[delivered] " + truncateForRender(e.Content, 80)))
 	case agent.TurnDone:
 		m.commitStreaming()
 		// If the agent touched the plan this turn, commit one full
@@ -6209,7 +6158,7 @@ func (m *Model) queuePrintlnIndented(s string, leftMargin int) {
 func (m *Model) repaintViewport() {
 	m.pendingCmds = append(m.pendingCmds, tea.ClearScreen)
 	if m.shouldShowStartupCard() {
-		m.queuePrintlnFlush(renderStartupBox(m.version, m.commit, m.dirty, m.modelName, m.cwd, m.sess.ID, m.branch, m.memorySummary, m.providerProfile, m.startupTip(), m.width, m.experimentalEnabled...))
+		m.queuePrintlnFlush(renderStartupBox(m.version, m.commit, m.dirty, m.modelName, m.cwd, m.sess.ID, m.branch, m.memorySummary, m.providerProfile, m.startupTip(), m.width))
 		m.queuePrintln("")
 	}
 	for _, line := range m.historyLines {

@@ -492,16 +492,16 @@ func totalTokensFor(u adapter.Usage) int64 {
 // renderTurnFooter composes the quiet end-of-turn receipt — how long the
 // turn took, plus this turn's exact token total when the provider reported
 // usage. The token clause is dropped when usage is zero (providers that
-// don't report it) so the line stays "◦ Thought for 12s" unchanged. Uses
+// don't report it) so the line stays "› Thought for 12s" unchanged. Uses
 // the same total-tokens basis as /usage and the subagent cards, so every
 // surface counts tokens the same way. Compact k/M formatting (formatTokens)
 // keeps it glanceable, unlike /usage's exact comma counts.
 func renderTurnFooter(elapsed time.Duration, turnUsage adapter.Usage) string {
-	s := "◦ Thought for " + formatDuration(elapsed)
+	s := "› Thought for " + formatDuration(elapsed)
 	if tok := int(totalTokensFor(turnUsage)); tok > 0 {
 		s += " · " + formatTokens(tok) + " tokens"
 	}
-	return s + "\n"
+	return s
 }
 
 // formatInt renders an int64 with thousands separators. /usage uses

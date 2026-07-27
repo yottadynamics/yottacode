@@ -166,12 +166,20 @@ reasoning model, so this keeps the two in sync (the same as running
 `/model <advisor>`). Closing without changing the advisor model leaves
 your active model untouched.
 
-While routing is active (`auto`) the status bar's primary segment stays the
-active top-level model, with the routing mode shown inline beside it, e.g.
-`● gpt-5.5 auto · ctx …`. It does **not** show `<advisor>:<implementer>` as a
-pair, because that would look like the current turn is running on both models.
-(`manual` mode likewise keeps the active model and adds `manual`; `off` shows
-just the active model.)
+While routing is active (`auto`) the status bar's primary segment becomes
+the routing pair itself — `<advisor>:<implementer>` (advisor first,
+implementer second, short-tagged, colon-joined), e.g.
+`● claude-opus-4-6:claude-haiku-4-5 · ctx …`. The active session model is
+not shown separately because configuring the advisor model also switches
+your active model to it (see above), so the advisor half names what
+planning/design turns run on and the implementer half names auto-mode
+coding, subagents, and summarization. (`manual` mode keeps the active
+model and adds a dim `routing: manual` note; `off` shows just the active
+model — the picker toggles between `off` and `auto`.)
+
+Plan mode is the exception: because `/plan` switches the active conversation to
+the advisor, the status bar shows the actual advisor model rather than the
+advisor:implementer pair. A dim `routing: auto` note still indicates routing is on.
 
 ### Why this saves money (and never costs more)
 
@@ -196,7 +204,7 @@ cache** in the first place:
 |---|---|
 | `off` (default) | Routing disabled. Everything runs on your active model. Fully backward compatible. |
 | `manual` | Resolves `advisor_model` / `implementer_model`, but only routes a subagent when its definition declares an explicit `model:` (see [subagents.md](subagents.md)). Non-annotated agents inherit your active model, exactly as with routing off. |
-| `auto` | Session startup and `/plan` use `advisor_model`. Permission auto mode (`Shift+Tab` or `--permission-mode auto`), **summarization / history compaction**, and **every delegated subagent** use `implementer_model`. Implementer-style subagents can call `consult_advisor` for bounded design/debugging help. An explicit `model:` on an agent definition overrides this. |
+| `auto` | Session startup and `/plan` use `advisor_model`. Auto-mode work, **summarization / history compaction**, and **every delegated subagent** use `implementer_model`. Implementer-style subagents can call `consult_advisor` for bounded design/debugging help. An explicit `model:` on an agent definition overrides this. |
 
 The split is deliberate: planning and design should happen on the
 advisor; routine implementation and isolated child work can run on the

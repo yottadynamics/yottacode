@@ -6,8 +6,6 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
-
-	"github.com/yottadynamics/yottacode/internal/agent"
 )
 
 // installFakeTurn arms the model as if a turn were in flight. It plants a
@@ -56,10 +54,6 @@ func TestInterrupt_EnterMidTurnQueuesOnChannel(t *testing.T) {
 	if !m.turnActive {
 		t.Errorf("turnActive should remain true")
 	}
-	plain := stripANSI(m.transcript.String())
-	if !strings.Contains(plain, "\n\n→ queued: will deliver next tool round · follow up\n\n") {
-		t.Fatalf("queued notice should be a spaced one-line system row; transcript=%q", plain)
-	}
 }
 
 // TestInterrupt_UpMidTurnRecallsQueuedMessageForEditing covers the edit-
@@ -86,7 +80,7 @@ func TestInterrupt_UpMidTurnRecallsQueuedMessageForEditing(t *testing.T) {
 	if got := cancels.Load(); got != 0 {
 		t.Fatalf("recalling queued text must not cancel turn; got %d calls", got)
 	}
-	if !strings.Contains(m.transcript.String(), "→ queued: recalled for editing") {
+	if !strings.Contains(m.transcript.String(), "[queued] recalled for editing") {
 		t.Fatalf("expected recall notice in transcript; got %q", m.transcript.String())
 	}
 }
@@ -231,18 +225,6 @@ func TestInterrupt_EscBehavesLikeCtrlC(t *testing.T) {
 	}
 	if got := cancels.Load(); got < 1 {
 		t.Errorf("Esc must call turnCancel; count = %d", got)
-	}
-}
-
-func TestInterrupt_UserMessageAppendedRendersSpacedDeliveredNotice(t *testing.T) {
-	m := newTestModel(t)
-
-	out, _ := m.handleAgentEvent(agent.UserMessageAppended{Content: "follow up delivered"})
-	m = out.(Model)
-
-	plain := stripANSI(m.transcript.String())
-	if !strings.Contains(plain, "\n\n✓ delivered: follow up delivered\n\n") {
-		t.Fatalf("delivered notice should be a spaced one-line system row; transcript=%q", plain)
 	}
 }
 

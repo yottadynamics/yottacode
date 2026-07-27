@@ -984,8 +984,8 @@ func TestExitPlanModeApprovalCard_AutoRoutingSwitchesToImplementer(t *testing.T)
 		t.Fatalf("auto implementation should switch status model to implementer, got %q", m.modelName)
 	}
 	bar := stripANSI(m.renderStatus())
-	if !strings.Contains(bar, "gpt-5.5-codex-mini") || !strings.Contains(bar, " auto") {
-		t.Fatalf("status should show implementer plus auto routing, got %q", bar)
+	if !strings.Contains(bar, "gpt-5.5-codex-mini") || !strings.Contains(bar, "routing: auto") {
+		t.Fatalf("status should show implementer with auto routing context, got %q", bar)
 	}
 	if strings.Contains(bar, "gpt-5.5 auto") {
 		t.Fatalf("status should not leave advisor as the active auto model, got %q", bar)

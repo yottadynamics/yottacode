@@ -203,26 +203,30 @@ func TestCmdRouter_BareOpensPicker(t *testing.T) {
 	}
 }
 
-// TestStatusBar_RendersRoutingChip: active auto routing renders as a mode note
-// while the primary status segment remains the active top-level model.
+// TestStatusBar_RendersRoutingChip: an active auto router makes the
+// routing pair the PRIMARY segment — `<smart>:<fast>` (smart first, fast
+// second), short-tagged, with no provider tag and no active-model
+// duplicate — while the active model matches the smart slot (the normal
+// state: configuring smart switches the active model on picker close).
+// The diverged case is covered by
+// TestRenderStatus_AutoPairOnlyWhileActiveMatchesSmart below.
 func TestStatusBar_RendersRoutingChip(t *testing.T) {
 	m := newTestModel(t)
 	m, _ = applyMsg(m, tea.WindowSizeMsg{Width: 200, Height: 24})
 	m.routerMode = config.RouterModeAuto
 	m.router = &cli.RouterAdapters{FastModel: "anthropic/claude-haiku-4-5", SmartModel: "nvidia/claude-opus-4-6"}
-	m.modelName = m.router.SmartModel
+	m.modelName = m.router.SmartModel // active == smart: the pair is primary
 	plain := stripANSI(m.renderStatus())
-	if !strings.Contains(plain, "nvidia/claude-opus-4-6") {
-		t.Errorf("status bar should show the active model: %q", plain)
+	if !strings.Contains(plain, "claude-opus-4-6:claude-haiku-4-5") {
+		t.Errorf("status bar should show <smart>:<fast>, short-tagged: %q", plain)
 	}
-	if !strings.Contains(plain, " auto") {
-		t.Errorf("status bar should show routing mode next to the model: %q", plain)
-	}
+	// Old labeled form must be gone.
 	if strings.Contains(plain, "smart:") || strings.Contains(plain, "fast:") {
 		t.Errorf("status bar should not use the labeled smart:/fast: form: %q", plain)
 	}
-	if strings.Contains(plain, "claude-opus-4-6:claude-haiku-4-5") || strings.Contains(plain, "anthropic/claude-haiku-4-5") {
-		t.Errorf("status bar should not show the advisor:implementer pair: %q", plain)
+	// Vendor prefixes are stripped on both halves of the pair.
+	if strings.Contains(plain, "nvidia/") || strings.Contains(plain, "anthropic/") {
+		t.Errorf("routing pair should be short-tagged (no vendor prefix): %q", plain)
 	}
 }
 
@@ -232,8 +236,8 @@ func TestStatusBar_RoutingChipManual(t *testing.T) {
 	m.routerMode = config.RouterModeManual
 	m.router = &cli.RouterAdapters{FastModel: "claude-haiku-4-5", SmartModel: "claude-opus-4-6"}
 	plain := stripANSI(m.renderStatus())
-	if !strings.Contains(plain, " manual") {
-		t.Errorf("manual mode should show 'manual' next to the model: %q", plain)
+	if !strings.Contains(plain, "routing: manual") {
+		t.Errorf("manual mode should show 'routing: manual': %q", plain)
 	}
 }
 
@@ -247,36 +251,35 @@ func TestStatusBar_NoRoutingChipWhenOff(t *testing.T) {
 	}
 }
 
-// In auto mode the status bar always shows the active top-level model only.
-// The advisor/implementer pair is routing configuration, not the live model
-// for the current turn, so it stays out of the primary segment.
-func TestRenderStatus_AutoShowsActiveModelOnly(t *testing.T) {
+// In auto mode the status bar shows the smart:fast pair as the primary
+// segment ONLY while the active model still matches the smart slot.
+// After a /model switch the pair display would claim interactive turns
+// run on the smart model when they don't — the bar must show the real
+// active model, with the pair demoted to a dim routing note.
+func TestRenderStatus_AutoPairOnlyWhileActiveMatchesSmart(t *testing.T) {
 	ra := testRouterAdapters(t)
 
 	m := Model{
 		router:     ra,
 		routerMode: config.RouterModeAuto,
-		modelName:  ra.SmartModel,
+		modelName:  ra.SmartModel, // active == smart: pair is the primary segment
 		connection: connOK,
 	}
 	bar := stripANSI(m.renderStatus())
-	if !strings.Contains(bar, "claude-opus-4-6") {
-		t.Errorf("status bar should show the active advisor model; got %q", bar)
-	}
-	if strings.Contains(bar, "claude-opus-4-6:claude-haiku-4-5") || strings.Contains(bar, "claude-haiku-4-5") {
-		t.Errorf("status bar must not show advisor:implementer pair; got %q", bar)
-	}
-	if !strings.Contains(bar, " auto") {
-		t.Errorf("auto routing should remain visible next to the model; got %q", bar)
+	if !strings.Contains(bar, "claude-opus-4-6:claude-haiku-4-5") {
+		t.Errorf("active==smart: status bar should show the smart:fast pair; got %q", bar)
 	}
 
 	m.modelName = "some-other-model" // user ran /model after configuring the router
 	bar = stripANSI(m.renderStatus())
 	if !strings.Contains(bar, "some-other-model") {
-		t.Errorf("status bar must show the real active model; got %q", bar)
+		t.Errorf("diverged: status bar must show the real active model; got %q", bar)
 	}
-	if !strings.Contains(bar, " auto") {
-		t.Errorf("routing should render next to the model; got %q", bar)
+	if !strings.Contains(bar, "routing: auto") {
+		t.Errorf("diverged: routing should demote to a dim note; got %q", bar)
+	}
+	if strings.HasPrefix(strings.TrimSpace(stripANSI(m.renderStatus())), "claude-opus-4-6:") {
+		t.Errorf("diverged: the pair must not remain the primary segment; got %q", bar)
 	}
 }
 

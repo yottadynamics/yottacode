@@ -672,7 +672,7 @@ func renderRouterPicker(p *routerPickerState) string {
 		{"Routing", routingValue},
 		{"Advisor model", orNotSet(chainPrimary(p.smartChain))},
 		{"Implementer", orNotSet(chainPrimary(p.fastChain))},
-		{"Fallback", fallbackValue(p.smartChain)},
+		{"Advisor fb", fallbackValue(p.smartChain)},
 	}
 	for i, r := range rows {
 		marker := "  "

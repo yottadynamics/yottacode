@@ -120,7 +120,6 @@ func renderPermissionsOverlay(m Model) string {
 			Label:      row.Label,
 			LabelWidth: 8,
 			Desc:       row.Path,
-			DescWidth:  60,
 			Cursor:     i == m.permissionsCursor,
 		}))
 		b.WriteString("\n")

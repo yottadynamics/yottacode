@@ -710,7 +710,8 @@ func renderSkillsPicker(state *skillsPickerState, _ int) string {
 	// checkbox is the model-autonomy gate; disk presence alone keeps slash
 	// invocation alive either way. Keep the status legend inline so the Official
 	// catalog's installed/enabled wording is self-explanatory.
-	tabIntro := styleMeta.Render("  Official installs skills. Bundled toggles model access for this session.")
+	tabIntro := styleMeta.Render(
+		"  Official status: not installed, installed, installed/enabled (available to the model this session). Bundled rows toggle model access.")
 	body := header + "\n" + tabIntro + "\n\n" + renderSkillsTabs(state.tab) + "\n"
 	if state.filter != "" || state.filterMode {
 		filterLine := "  filter: " + state.filter
@@ -787,10 +788,9 @@ func renderSkillsPicker(state *skillsPickerState, _ int) string {
 		sourcePad := strings.Repeat(" ", max(0, sourceW-runeCount(source)))
 		label := mark + " " + name + namePad + " " + source + sourcePad
 		body += renderMenuItem(menuItemOpts{
-			Label:     label,
-			Desc:      sk.Description,
-			DescWidth: 64,
-			Cursor:    i == state.cursor,
+			Label:  label,
+			Desc:   truncateForRender(sk.Description, 80),
+			Cursor: i == state.cursor,
 		}) + "\n"
 	}
 	if state.status != "" {
