@@ -63,6 +63,22 @@ func TestLSPRenamePreviewIncludesApplyPayload(t *testing.T) {
 	}
 }
 
+func TestLSPRenamePreviewInvalidPositionReturnsUnavailable(t *testing.T) {
+	cwd := t.TempDir()
+	writeFile(t, cwd, "main.go", "package main\nfunc oldName() {}\n")
+	base := lspToolBase{Cwd: NewCwdRef(cwd), NewClient: func(context.Context, lspci.Language, string) (lspClient, error) {
+		return &fakeLSPClient{renameErr: lspci.ErrInvalidRenamePosition}, nil
+	}}
+	tool := &LSPRenamePreviewTool{lspToolBase: base}
+	out, err := tool.Execute(context.Background(), `{"path":"main.go","line":0,"character":0,"new_name":"newName"}`)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if !strings.Contains(out, "unavailable: rename is not valid at this position") {
+		t.Fatalf("expected unavailable invalid-position message, got %q", out)
+	}
+}
+
 func TestLSPCodeActionPreviewIncludesApplyPayload(t *testing.T) {
 	cwd := t.TempDir()
 	writeFile(t, cwd, "main.go", "package main\nfunc main() {}\n")

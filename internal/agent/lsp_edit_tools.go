@@ -58,6 +58,9 @@ func (t *LSPRenamePreviewTool) Execute(ctx context.Context, argsJSON string) (st
 	if errors.Is(err, lspci.ErrUnsupportedCapability) {
 		return unsupportedCapabilityResult("lsp_rename_preview", err), nil
 	}
+	if errors.Is(err, lspci.ErrInvalidRenamePosition) {
+		return fmt.Sprintf("unavailable: rename is not valid at this position (%v)\n", err), nil
+	}
 	if err != nil {
 		return "", fmt.Errorf("lsp_rename_preview: %w", err)
 	}

@@ -1,6 +1,6 @@
 # Built-in tools
 
-Fifty-eight tools ship in `internal/agent` (including the experimental LSP tools, `todo_write`,
+Sixty tools ship in `internal/agent` (including the experimental LSP tools, `todo_write`,
 and the `enter_plan_mode` / `exit_plan_mode` pair). The model sees their JSON-schema parameters via the
 OpenAI tools API; the TUI renders each invocation as a bordered card with a
 verb-style header (see [How tool calls render in the TUI](#how-tool-calls-render-in-the-tui)).
@@ -62,6 +62,8 @@ In addition to the built-ins, **MCP tools** register dynamically when an `[[mcp_
 | [`lsp_status`](#lsp_status) | none | Detect supported workspace languages and report missing LSP servers with install hints |
 | [`lsp_symbols`](#lsp_symbols) | none | Search workspace symbols through an installed language server |
 | [`lsp_document_symbols`](#lsp_document_symbols) | none | List structural symbols declared in one source file |
+| [`lsp_document_highlights`](#lsp_document_highlights) | none | Show current-file symbol reads/writes/text occurrences |
+| [`lsp_selection_ranges`](#lsp_selection_ranges) | none | Show nested syntax ranges around a source position |
 | [`lsp_definition`](#lsp_definition) | none | Find definition locations for a source position through an installed language server |
 | [`lsp_type_definition`](#lsp_type_definition) | none | Find type definition locations for a source position through an installed language server |
 | [`lsp_implementation`](#lsp_implementation) | none | Find implementation locations for an interface, method, or symbol |
@@ -151,6 +153,8 @@ tool-call log; the TUI renames it for readability. Mapping:
 | `lsp_status` | `LSP(status <path>)` |
 | `lsp_symbols` | `LSP(symbols "<query>")` or `LSP(symbols "<query>" in <path>)` |
 | `lsp_document_symbols` | `LSP(document symbols <path>)` |
+| `lsp_document_highlights` | `LSP(document highlights <path>:<line>:<character>)` |
+| `lsp_selection_ranges` | `LSP(selection ranges <path>:<line>:<character>)` |
 | `lsp_definition` | `LSP(definition <path>:<line>:<character>)` |
 | `lsp_references` | `LSP(references <path>:<line>:<character>)` |
 | `lsp_signature_help` | `LSP(signature <path>:<line>:<character>)` |
@@ -967,6 +971,41 @@ parent symbol as the `Container` column when available.
 
 No approval.
 
+## lsp_document_highlights
+
+Show current-file symbol occurrences for a source position through
+`textDocument/documentHighlight`. This is narrower than `lsp_references`: it
+returns only the open document's read/write/text highlights, so agents can
+inspect local usage without pulling workspace-wide reference noise into context.
+
+| Param | Type | Default | Notes |
+|---|---|---|---|
+| `path` | string | — | Required source file |
+| `line` | int | — | Zero-based line |
+| `character` | int | — | Zero-based UTF-16 character offset |
+
+Output rows are `kind\tpath:startLine:startColumn-endLine:endColumn`, where
+`kind` is `text`, `read`, `write`, or `kindN` for unknown server values. No
+approval.
+
+## lsp_selection_ranges
+
+Show nested syntax selection ranges around a source position through
+`textDocument/selectionRange`. Ranges are returned from the smallest expression
+to larger enclosing ranges such as statement, block, or function when the server
+provides them. This helps agents choose the right read/edit scope before making
+semantic changes.
+
+| Param | Type | Default | Notes |
+|---|---|---|---|
+| `path` | string | — | Required source file |
+| `line` | int | — | Zero-based line |
+| `character` | int | — | Zero-based UTF-16 character offset |
+| `max_results` | int | `50` | Clamped to `500` |
+
+Output rows are `depth\tpath:startLine:startColumn-endLine:endColumn`, with
+depth `0` as the smallest range. No approval.
+
 ## lsp_definition
 
 Find definition locations for a source position through the matching language
@@ -1098,7 +1137,7 @@ No approval.
 
 ## lsp_rename_preview
 
-Preview a semantic rename as normalized WorkspaceEdit JSON without writing files. Pass the returned `apply_payload` to `lsp_apply_workspace_edit` only after reviewing the affected files.
+Preview a semantic rename as normalized WorkspaceEdit JSON without writing files. When the server supports `textDocument/prepareRename`, yottacode validates the target position first and returns an explicit unavailable result if the cursor is not renameable. Pass the returned `apply_payload` to `lsp_apply_workspace_edit` only after reviewing the affected files.
 
 | Param | Type | Default | Notes |
 |---|---|---|---|

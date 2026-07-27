@@ -19,6 +19,8 @@ const defaultLSPMaxResults = 50
 type lspClient interface {
 	WorkspaceSymbols(ctx context.Context, query string) ([]lspci.Symbol, error)
 	DocumentSymbols(ctx context.Context, path string) ([]lspci.Symbol, error)
+	DocumentHighlights(ctx context.Context, path string, pos lspci.Position) ([]lspci.DocumentHighlight, error)
+	SelectionRanges(ctx context.Context, path string, positions []lspci.Position) ([]lspci.SelectionRange, error)
 	Definition(ctx context.Context, path string, pos lspci.Position) ([]lspci.Location, error)
 	TypeDefinition(ctx context.Context, path string, pos lspci.Position) ([]lspci.Location, error)
 	Implementation(ctx context.Context, path string, pos lspci.Position) ([]lspci.Location, error)
