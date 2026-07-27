@@ -486,9 +486,10 @@ func renderSkillsMenu(state *skillsMenuState, _ int) string {
 			label := sk.Name + strings.Repeat(" ", maxName-len(sk.Name)) +
 				"  [" + string(sk.Source) + "]"
 			b.WriteString(renderMenuItem(menuItemOpts{
-				Label:  label,
-				Desc:   truncateForRender(sk.Description, 80),
-				Cursor: i == state.uninstallCursor,
+				Label:     label,
+				Desc:      sk.Description,
+				DescWidth: 64,
+				Cursor:    i == state.uninstallCursor,
 			}))
 			b.WriteByte('\n')
 		}

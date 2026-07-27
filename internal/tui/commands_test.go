@@ -88,7 +88,7 @@ func TestSlash_HelpReEmitsStartupCard(t *testing.T) {
 	m.transcript.Reset()
 	m, _ = typeAndEnter(t, m, "/help")
 	content := m.transcript.String()
-	if !strings.Contains(content, "YottaCode by YottaDynamics") {
+	if !strings.Contains(content, ">_ YottaCode") {
 		t.Errorf("/help should re-emit the startup card mid-session: %q", content)
 	}
 	if !strings.Contains(content, "Available commands") {
@@ -659,8 +659,8 @@ func TestSlash_DoctorRunsActiveProbe(t *testing.T) {
 	if cmd == nil {
 		t.Fatalf("/doctor should return a probe command")
 	}
-	if !strings.Contains(m.transcript.String(), "[doctor] probing provider...") {
-		t.Fatalf("doctor preflight line missing:\n%s", m.transcript.String())
+	if !strings.Contains(m.transcript.String(), "[doctor] probing provider and local code intelligence...") {
+		t.Fatalf("doctor preflight line missing or stale:\n%s", m.transcript.String())
 	}
 	m, _ = applyMsg(m, cmd())
 	got := m.transcript.String()
@@ -668,6 +668,8 @@ func TestSlash_DoctorRunsActiveProbe(t *testing.T) {
 		"probe: endpoint=yes auth=yes model-visible=yes status=200",
 		"models: gpt-5",
 		"result: ok",
+		"LSP Code Intelligence:",
+		"feature:",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("/doctor output missing %q:\n%s", want, got)
@@ -1354,7 +1356,7 @@ func TestStatusLine_RendersCompactPrefix(t *testing.T) {
 func TestStatusHelpers_RenderSymbolsAndHints(t *testing.T) {
 	cases := map[string]string{
 		statusOKLine("provider", "added openai"):       "✓ provider: added openai",
-		statusWarnLine("model", "context unknown"):     "⚠ model: context unknown",
+		statusWarnLine("model", "context unknown"):     "◆ model: context unknown",
 		statusActionLine("openai-auth", "signing in"):  "→ openai-auth: signing in",
 		statusHintLine("set context_window in config"): "  hint: set context_window in config",
 	}

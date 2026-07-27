@@ -20,6 +20,8 @@ import (
 	"github.com/yottadynamics/yottacode/internal/catalog"
 	"github.com/yottadynamics/yottacode/internal/config"
 	"github.com/yottadynamics/yottacode/internal/dotenv"
+	"github.com/yottadynamics/yottacode/internal/experimental"
+	"github.com/yottadynamics/yottacode/internal/lsp"
 	"github.com/yottadynamics/yottacode/internal/providerops"
 	"github.com/yottadynamics/yottacode/internal/session"
 	"github.com/yottadynamics/yottacode/internal/wizard"
@@ -67,11 +69,7 @@ func init() {
 		// Workflow — most reached-for during active coding.
 		// Auto mode is intentionally NOT slash-invocable (mirroring
 		// Claude Code): auto via Shift+Tab or --permission-mode auto.
-		// Yolo enters via --yolo at startup AND /yolo mid-session; the
-		// /yolo slash command is the mid-session escape hatch that
-		// toggles the overlay off again.
 		{Name: "plan", Help: "toggle plan mode — also Shift+Tab. Type `/plan list` to resume an earlier plan.", Run: cmdPlan},
-		{Name: "yolo", Help: "toggle yolo mode — also --yolo at startup. Auto-runs every tool (NO safety floor); deny rules still win.", Run: cmdYolo},
 		{Name: "model", Help: "open the model picker (subcommands: list [all], <name>)", Run: cmdModel},
 		{Name: "provider", Help: "select a new provider (subcommands: list, use, add, remove, models)", Run: cmdProviderEntry},
 		{Name: "effort", Help: "set reasoning effort for providers that support it (default · low · medium · high)", Run: cmdEffort},
@@ -85,7 +83,7 @@ func init() {
 		{Name: "map", Args: "[query]", Help: "open the code map: directory → file → symbol structure", Run: cmdMap, PreservesTurn: true},
 		{Name: "video", Args: "[path]", Help: "guide a marketing-video workflow", Run: cmdVideo},
 		{Name: "summarize", Help: "compress session history into a structured summary", Run: cmdSummarize},
-		{Name: "skills", Help: "skills menu; subcommands: install <source>, official <name>, show <name>, uninstall <name>, check [name], update [name]", Run: cmdSkills, PreservesTurn: true},
+		{Name: "skills", Help: "open the skills menu", Run: cmdSkills, PreservesTurn: true},
 		{Name: "subagents", Help: "open the subagents picker (Enter views · t toggles types · s stops · Esc closes)", Run: cmdSubagents, PreservesTurn: true},
 		{Name: "init", Help: "draft .yottacode/YOTTACODE.md from the current repo", Run: cmdInit},
 		{Name: "permissions", Help: "show where permissions are configured", Run: cmdPermissions, PreservesTurn: true},
@@ -123,6 +121,10 @@ func init() {
 		{Name: "setup", Help: "re-run the setup wizard (reloads config on return)", Run: cmdSetup},
 
 		// Meta — always last.
+		// Yolo enters via --yolo at startup AND /yolo mid-session; keep it near
+		// the bottom of the palette because it is a dangerous overlay, not a
+		// routine workflow command.
+		{Name: "yolo", Help: "toggle yolo mode — NO safety floor; deny rules still win", Run: cmdYolo},
 		{Name: "help", Help: "show this list", Run: cmdHelp, PreservesTurn: true},
 		{Name: "quit", Help: "exit yottacode", Run: cmdQuit},
 	}
@@ -207,7 +209,7 @@ func (m Model) dispatchSlash(input string) (Model, tea.Cmd) {
 // returns "" past the first user message), so on resumed sessions
 // /help shows just the bare context summary above the help list.
 func cmdHelp(m Model, _ []string) (Model, tea.Cmd) {
-	m.appendLine(renderStartupBox(m.version, m.commit, m.dirty, m.modelName, m.cwd, m.sess.ID, m.branch, m.memorySummary, m.providerProfile, m.startupTip(), m.width))
+	m.appendLine(renderStartupBox(m.version, m.commit, m.dirty, m.modelName, m.cwd, m.sess.ID, m.branch, m.memorySummary, m.providerProfile, m.startupTip(), m.width, m.experimentalEnabled...))
 
 	// Compute one shared column width across BOTH built-ins and custom
 	// commands so the help text dashes line up across the two
@@ -430,23 +432,31 @@ func cmdSessions(m Model, args []string) (Model, tea.Cmd) {
 
 // statusLine keeps transcript notices compact and grep-friendly.
 func statusLine(tag, msg string) string {
-	return tag + ": " + msg
+	return styleSystemTrace.Render(tag + ": " + msg)
 }
 
 func statusOKLine(tag, msg string) string {
-	return "✓ " + statusLine(tag, msg)
+	return styleSystemSuccess.Render("✓") + " " + styleSystemTrace.Render(tag+": "+msg)
 }
 
 func statusWarnLine(tag, msg string) string {
-	return "⚠ " + statusLine(tag, msg)
+	return styleSystemWarn.Render("◆") + " " + styleSystemTrace.Render(tag+": "+msg)
 }
 
 func statusActionLine(tag, msg string) string {
-	return "→ " + statusLine(tag, msg)
+	return styleSystemTrace.Render("→ " + tag + ": " + msg)
 }
 
 func statusHintLine(msg string) string {
-	return "  hint: " + msg
+	return styleSystemTrace.Render("  hint: " + msg)
+}
+
+func statusErrorLine(tag, msg string) string {
+	return styleSystemError.Render("✗") + " " + styleSystemTrace.Render(tag+": "+msg)
+}
+
+func statusTraceLine(tag, msg string) string {
+	return styleSystemTrace.Render(tag + ": " + msg)
 }
 
 func shortenMiddle(s string, max int) string {
@@ -1122,8 +1132,8 @@ func inSlice(ss []string, s string) bool {
 }
 
 func cmdDoctor(m Model, _ []string) (Model, tea.Cmd) {
-	m.appendLine(styleAuto.Render("[doctor] probing provider..."))
-	return m, runProviderProbe(m.parentCtx, m.adapterConfig(m.modelName, m.baseURL), true)
+	m.appendLine(styleAuto.Render("[doctor] probing provider and local code intelligence..."))
+	return m, runDoctorProbe(m.parentCtx, m)
 }
 
 func renderProviderCommandValue(provider adapter.Provider) string {
@@ -1195,6 +1205,114 @@ func runProviderProbe(ctx context.Context, cfg adapter.Config, announce bool) te
 			announce: announce,
 		}
 	}
+}
+
+type tuiLSPDoctorResult struct {
+	Enabled   bool
+	Languages []tuiLSPDoctorLanguage
+	MaxServer int
+	Note      string
+	Error     string
+}
+
+type tuiLSPDoctorLanguage struct {
+	Name            string
+	Files           int
+	Command         []string
+	ServerAvailable bool
+	InstallHint     string
+	Override        bool
+}
+
+func runDoctorProbe(ctx context.Context, m Model) tea.Cmd {
+	providerCfg := m.adapterConfig(m.modelName, m.baseURL)
+	cwd := m.cwd
+	fileCfg := m.fileCfg
+	experimentalEnabled := append([]string(nil), m.experimentalEnabled...)
+	return func() tea.Msg {
+		return doctorProbeMsg{
+			provider: adapter.Probe(ctx, providerCfg),
+			lsp:      probeTUILSPDoctor(ctx, cwd, fileCfg, experimentalEnabled),
+		}
+	}
+}
+
+func probeTUILSPDoctor(ctx context.Context, cwd string, cfg config.Config, enabledNames []string) tuiLSPDoctorResult {
+	enabled := inSlice(enabledNames, string(experimental.LSPCodeIntelligence))
+	if cfg.Experimental[string(experimental.LSPCodeIntelligence)] {
+		enabled = true
+	}
+	root := cwd
+	if strings.TrimSpace(root) == "" {
+		root = "."
+	}
+	langs, err := lsp.DetectWorkspace(ctx, root, 2000)
+	if err != nil {
+		return tuiLSPDoctorResult{Enabled: enabled, Error: err.Error()}
+	}
+	langs = lsp.ApplyOverridesToDetected(langs, cfg.LSP.Servers)
+	out := tuiLSPDoctorResult{Enabled: enabled, MaxServer: lsp.DefaultManagerMaxServers()}
+	if !enabled {
+		out.Note = "enable with --experimental lsp_code_intelligence or [experimental].lsp_code_intelligence = true"
+	}
+	if enabled {
+		out.Note = "servers are local subprocesses and are never auto-installed"
+	}
+	if len(langs) == 0 {
+		out.Note = "no supported languages detected in this workspace"
+		if !enabled {
+			out.Note = "disabled; no supported languages detected in this workspace"
+		}
+	}
+	for _, lang := range langs {
+		hint := ""
+		if !lang.ServerAvailable {
+			hint = lang.InstallHint
+		}
+		out.Languages = append(out.Languages, tuiLSPDoctorLanguage{
+			Name:            lang.Name,
+			Files:           lang.FilesAvailable,
+			Command:         append([]string(nil), lang.Command...),
+			ServerAvailable: lang.ServerAvailable,
+			InstallHint:     hint,
+			Override:        len(cfg.LSP.Servers[lang.ID]) > 0,
+		})
+	}
+	return out
+}
+
+func renderTUILSPDoctor(result tuiLSPDoctorResult) string {
+	var b strings.Builder
+	b.WriteString("LSP Code Intelligence:\n")
+	fmt.Fprintf(&b, "feature: %s", renderBool(result.Enabled))
+	if result.Note != "" {
+		fmt.Fprintf(&b, " (%s)", result.Note)
+	}
+	if result.Error != "" {
+		fmt.Fprintf(&b, "\nerror: %s", result.Error)
+		return b.String()
+	}
+	if result.Enabled && result.MaxServer > 0 {
+		fmt.Fprintf(&b, "\nmanager: max_servers=%d", result.MaxServer)
+	}
+	if len(result.Languages) == 0 {
+		return b.String()
+	}
+	for _, lang := range result.Languages {
+		status := "missing"
+		if lang.ServerAvailable {
+			status = "installed"
+		}
+		override := ""
+		if lang.Override {
+			override = " override=yes"
+		}
+		fmt.Fprintf(&b, "\n- %s: files=%d server=%s status=%s%s", lang.Name, lang.Files, strings.Join(lang.Command, " "), status, override)
+		if !lang.ServerAvailable && lang.InstallHint != "" {
+			fmt.Fprintf(&b, "\n  hint: %s", lang.InstallHint)
+		}
+	}
+	return b.String()
 }
 
 func formatProviderProfile(profile adapter.ProviderProfile, baseURL string, connection connState) string {
@@ -1327,7 +1445,7 @@ func cmdClear(m Model, _ []string) (Model, tea.Cmd) {
 	// only a system prompt, so isFreshSession() is true).
 	m.pendingCmds = append(m.pendingCmds, tea.ClearScreen)
 	if m.shouldShowStartupCard() {
-		m.appendRaw(renderStartupBox(m.version, m.commit, m.dirty, m.modelName, m.cwd, m.sess.ID, m.branch, m.memorySummary, m.providerProfile, m.startupTip(), m.width))
+		m.appendRaw(renderStartupBox(m.version, m.commit, m.dirty, m.modelName, m.cwd, m.sess.ID, m.branch, m.memorySummary, m.providerProfile, m.startupTip(), m.width, m.experimentalEnabled...))
 		m.queuePrintln("")
 	}
 	m.appendLine(styleAuto.Render(fmt.Sprintf("[clear] new session %s", newSess.ID)))

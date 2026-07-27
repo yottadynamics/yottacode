@@ -90,23 +90,52 @@ func TestRenderStartupBox_WrapsToTerminalWidth(t *testing.T) {
 	}
 }
 
-// On fresh sessions the tip is folded into the card as a dim footer
-// line. Empty tip omits the footer.
-func TestRenderStartupBox_TipFooter(t *testing.T) {
+// On fresh sessions the tip renders inside the bordered card.
+func TestRenderStartupBox_TipInsideCard(t *testing.T) {
 	withTip := renderStartupBox("0.1.0", "abc1234", false, "gpt-4o", "/repo", "20260721-000000.000000", "main", "USER", adapter.ProviderProfile{
 		Provider: adapter.ProviderOpenAI,
-	}, "drop preferences into ~/.yottacode/USER.md", 0)
+	}, "drop preferences into ~/.yottacode/USER.md", 80)
 	if !strings.Contains(stripANSI(withTip), "tip:") {
-		t.Errorf("card should embed `tip:` prefix when a tip is provided: %q", stripANSI(withTip))
+		t.Errorf("startup output should include `tip:` prefix when a tip is provided: %q", stripANSI(withTip))
 	}
 	if !strings.Contains(stripANSI(withTip), "USER.md") {
-		t.Errorf("card should render the tip body: %q", stripANSI(withTip))
+		t.Errorf("startup output should render the tip body: %q", stripANSI(withTip))
+	}
+	lines := strings.Split(stripANSI(withTip), "\n")
+	if strings.HasPrefix(lines[len(lines)-1], "tip:") {
+		t.Errorf("tip should not render below the card, got last line %q in %q", lines[len(lines)-1], stripANSI(withTip))
+	}
+	foundInside := false
+	for _, line := range lines {
+		if strings.Contains(line, "tip:") && strings.HasPrefix(line, "│ ") {
+			foundInside = true
+			break
+		}
+	}
+	if !foundInside {
+		t.Errorf("tip should render as a bordered row inside the card: %q", stripANSI(withTip))
 	}
 	noTip := renderStartupBox("0.1.0", "abc1234", false, "gpt-4o", "/repo", "20260721-000000.000000", "main", "USER", adapter.ProviderProfile{
 		Provider: adapter.ProviderOpenAI,
 	}, "", 0)
 	if strings.Contains(stripANSI(noTip), "tip:") {
 		t.Errorf("empty tip should suppress the footer: %q", stripANSI(noTip))
+	}
+}
+
+func TestRenderStartupBox_HeaderUsesBrandAndBuildEdges(t *testing.T) {
+	got := stripANSI(renderStartupBox("0.3.0", "ff9dbeb", true, "gpt-4o", "/repo", "20260721-000000.000000", "main", "USER", adapter.ProviderProfile{
+		Provider: adapter.ProviderOpenAI,
+	}, "", 80))
+	if !strings.Contains(got, ">_ YottaCode v0.3.0 (ff9dbeb*)") {
+		t.Fatalf("startup card missing left-aligned product/build mark: %q", got)
+	}
+	if strings.Contains(got, "by YottaDynamics") {
+		t.Fatalf("startup card should not include company byline: %q", got)
+	}
+	first := strings.Split(got, "\n")[0]
+	if !strings.HasPrefix(first, "┌─ >_ YottaCode v0.3.0 (ff9dbeb*) ") {
+		t.Fatalf("startup header should embed brand and build label on the left border, got %q", first)
 	}
 }
 
@@ -133,6 +162,24 @@ func TestStartupBox_OmitsEmptySessionID(t *testing.T) {
 	for _, line := range strings.Split(got, "\n") {
 		if strings.Contains(line, "session") {
 			t.Errorf("empty id should render no session row, got %q", line)
+		}
+	}
+}
+
+func TestStartupBox_ShowsExperimentalFlagsInsideCard(t *testing.T) {
+	got := stripANSI(renderStartupBox("0.1.0", "abc1234", false, "gpt-4o", "/repo",
+		"20260721-024553.488321", "main", "USER", adapter.ProviderProfile{
+			Provider: adapter.ProviderOpenAI,
+		}, "", 100, "lsp_code_intelligence"))
+	if !strings.Contains(got, "experimental") || !strings.Contains(got, "lsp_code_intelligence") {
+		t.Fatalf("startup card should carry enabled experimental flags:\n%s", got)
+	}
+	if !strings.Contains(got, "/experimental for details") {
+		t.Fatalf("startup card should keep the experimental details hint:\n%s", got)
+	}
+	for _, line := range strings.Split(got, "\n") {
+		if strings.Contains(line, "lsp_code_intelligence") && !strings.HasPrefix(line, "│ ") {
+			t.Fatalf("experimental row should render inside the startup card, got %q in:\n%s", line, got)
 		}
 	}
 }
