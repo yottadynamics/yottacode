@@ -135,7 +135,7 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 		// session — pre-router builds started fine without any pair.
 		// Warn and run unrouted; /router will re-surface the error if
 		// the user tries to turn it back on.
-		fmt.Fprintln(os.Stderr, "warning: [router] pair unresolved (routing is off, continuing without it): "+err.Error())
+		fmt.Fprintln(os.Stderr, "warning: [advisor] pair unresolved (routing is off, continuing without it): "+err.Error())
 		routerAdapters = nil
 	}
 	if fileCfg.Router.RoutingEnabled() && routerAdapters != nil && routerAdapters.Advisor != nil {

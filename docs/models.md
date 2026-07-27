@@ -83,7 +83,7 @@ Routing lets yottacode assign work to two explicit roles:
 - **implementer** — the fast coding model used for auto-mode work,
   delegated subagents, and summarization.
 
-It is opt-in, configurable from the TUI with **`/router`** (recommended —
+It is opt-in, configurable from the TUI with **`/advisor`** (recommended —
 see below) or by hand via the `[router]` block in
 `~/.yottacode/config.toml`:
 
@@ -137,8 +137,8 @@ fallbacks already are — a warm-yellow line tagged with where it occurred:
 ↻ fallback [summarize]: anthropic/claude-haiku-4-5 → openai/gpt-4o-mini: <reason>
 ```
 
-The status chip and subagent cards still show the primary. The `/router`
-picker has an **Advisor fallback** row: Enter sets it (a one-model
+The status chip and subagent cards still show the primary. The `/advisor`
+picker has a **Fallback** row: Enter sets it (a one-model
 fallback), `d` clears it. Chains longer than two stay in `config.toml` —
 the picker shows `(+N more)` and preserves them.
 
@@ -146,17 +146,17 @@ The **implementer slot has no fallback row** in the picker. An
 `implementer_models` chain set by hand in `config.toml` is still honored;
 it is just not surfaced in the picker.
 
-### Configuring from the TUI: `/router`
+### Configuring from the TUI: `/advisor`
 
-You don't have to edit the file by hand. **`/router`** opens a picker
-with rows — Routing, Advisor model, Implementer, Advisor fallback — that
+You don't have to edit the file by hand. **`/advisor`** opens a picker
+with rows — Routing, Advisor model, Implementer, Fallback — that
 all act in place (the picker stays open). Toggle the Routing row on/off,
 and open the model rows to pick from your configured models (the embedded
 catalog plus any `providers.models`). You can enable routing first and
 choose the models below — routing turns on once both are set — or pick
 the models and then toggle on. Selections persist to `config.toml` and
 apply live; picking a catalog model also records it in that provider's
-`providers.models` so the write validates. `/router on` and `/router off`
+`providers.models` so the write validates. `/advisor on` and `/advisor off`
 are quick shortcuts for the toggle.
 
 **Configuring the advisor model also switches your active model.** When
@@ -166,20 +166,16 @@ reasoning model, so this keeps the two in sync (the same as running
 `/model <advisor>`). Closing without changing the advisor model leaves
 your active model untouched.
 
-While routing is active (`auto`) the status bar's primary segment becomes
-the routing pair itself — `<advisor>:<implementer>` (advisor first,
-implementer second, short-tagged, colon-joined), e.g.
-`● claude-opus-4-6:claude-haiku-4-5 · ctx …`. The active session model is
-not shown separately because configuring the advisor model also switches
-your active model to it (see above), so the advisor half names what
-planning/design turns run on and the implementer half names auto-mode
-coding, subagents, and summarization. (`manual` mode keeps the active
-model and adds a dim `routing: manual` note; `off` shows just the active
-model — the picker toggles between `off` and `auto`.)
+While routing is active, the status bar keeps the **active model** as the
+primary label and adds inline mode text: `auto` or `manual`. It does **not**
+show a separate `routing:` chip or an advisor:implementer pair in the main
+status display. Configuring the advisor model still switches your active model
+to it (see above), so advisor-led interactive turns remain aligned with the
+configured advisor while the inline mode label makes routing state visible.
 
-Plan mode is the exception: because `/plan` switches the active conversation to
-the advisor, the status bar shows the actual advisor model rather than the
-advisor:implementer pair. A dim `routing: auto` note still indicates routing is on.
+Plan mode is the exception only in that it still shows the actual advisor
+model as the active model; routing state remains visible through the same
+inline `auto` text instead of a separate routing chip.
 
 ### Why this saves money (and never costs more)
 
@@ -189,7 +185,7 @@ repeat turns on the *same* model cheap — cache reads are a fraction of
 the input price. Switching the **main-thread** model mid-conversation
 would throw that cache away on *both* models and cost *more*, so yottacode
 only changes the active model at explicit session/mode boundaries such as
-startup, `/plan`, `/auto`, `/model`, or a `/router` picker selection.
+startup, `/plan`, `/auto`, `/model`, or a `/advisor` picker selection.
 
 Routing also targets contexts that **never shared the main thread's
 cache** in the first place:
