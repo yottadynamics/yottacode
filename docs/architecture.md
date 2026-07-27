@@ -322,7 +322,7 @@ This is primarily a cost-control feature. It does not magically reduce the
 number of tokens needed for a task; instead, it moves routine isolated work onto
 a cheaper role while keeping high-leverage planning on the advisor. The main
 prompt cache is preserved except at explicit model-switch boundaries such as
-startup, `/plan`, `/auto`, `/model`, or a `/router` picker change.
+startup, `/plan`, `/auto`, `/model`, or a `/advisor` picker change.
 
 Implementer-driven contexts also get a narrow `consult_advisor` tool. It is
 available to implementer subagents and to the top-level conversation when auto

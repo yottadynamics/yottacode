@@ -75,7 +75,7 @@ func init() {
 		{Name: "model", Help: "open the model picker (subcommands: list [all], <name>)", Run: cmdModel},
 		{Name: "provider", Help: "select a new provider (subcommands: list, use, add, remove, models)", Run: cmdProviderEntry},
 		{Name: "effort", Help: "set reasoning effort for providers that support it (default · low · medium · high)", Run: cmdEffort},
-		{Name: "router", Help: "show or toggle cache-safe model routing between fast and smart (subcommands: on, off)", Run: cmdRouter},
+		{Name: "advisor", Help: "show or toggle advisor/implementer routing (subcommands: on, off)", Run: cmdAdvisor},
 		{Name: "sessions", Help: "open the sessions menu (or /sessions <id|name> to resume directly)", Run: cmdSessions},
 		// No Args: a bare /memory must execute on Enter (one keystroke) to
 		// open the picker. The `search` subcommand is surfaced in Help and

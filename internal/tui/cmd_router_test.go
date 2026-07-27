@@ -194,7 +194,7 @@ func TestRouterOn_NoPairHint(t *testing.T) {
 // TestCmdRouter_BareOpensPicker: bare /router opens the picker overlay.
 func TestCmdRouter_BareOpensPicker(t *testing.T) {
 	m := newTestModel(t)
-	m, _ = cmdRouter(m, nil)
+	m, _ = cmdAdvisor(m, nil)
 	if !m.routerPickerOpen {
 		t.Error("bare /router should open the router picker")
 	}
@@ -217,16 +217,19 @@ func TestStatusBar_RendersRoutingChip(t *testing.T) {
 	m.router = &cli.RouterAdapters{FastModel: "anthropic/claude-haiku-4-5", SmartModel: "nvidia/claude-opus-4-6"}
 	m.modelName = m.router.SmartModel // active == smart: the pair is primary
 	plain := stripANSI(m.renderStatus())
-	if !strings.Contains(plain, "claude-opus-4-6:claude-haiku-4-5") {
-		t.Errorf("status bar should show <smart>:<fast>, short-tagged: %q", plain)
+	if !strings.Contains(plain, "claude-opus-4-6") || !strings.Contains(plain, "auto") {
+		t.Errorf("status bar should show active model with inline auto mode: %q", plain)
+	}
+	if strings.Contains(plain, "claude-opus-4-6:claude-haiku-4-5") {
+		t.Errorf("status bar should not show advisor:implementer pair: %q", plain)
 	}
 	// Old labeled form must be gone.
-	if strings.Contains(plain, "smart:") || strings.Contains(plain, "fast:") {
-		t.Errorf("status bar should not use the labeled smart:/fast: form: %q", plain)
+	if strings.Contains(plain, "smart:") || strings.Contains(plain, "fast:") || strings.Contains(plain, "routing: auto") {
+		t.Errorf("status bar should not use labeled routing forms or a separate routing chip: %q", plain)
 	}
-	// Vendor prefixes are stripped on both halves of the pair.
+	// Vendor prefixes are stripped from the displayed active model.
 	if strings.Contains(plain, "nvidia/") || strings.Contains(plain, "anthropic/") {
-		t.Errorf("routing pair should be short-tagged (no vendor prefix): %q", plain)
+		t.Errorf("active model should be short-tagged (no vendor prefix): %q", plain)
 	}
 }
 
@@ -236,8 +239,11 @@ func TestStatusBar_RoutingChipManual(t *testing.T) {
 	m.routerMode = config.RouterModeManual
 	m.router = &cli.RouterAdapters{FastModel: "claude-haiku-4-5", SmartModel: "claude-opus-4-6"}
 	plain := stripANSI(m.renderStatus())
-	if !strings.Contains(plain, "routing: manual") {
-		t.Errorf("manual mode should show 'routing: manual': %q", plain)
+	if !strings.Contains(plain, "manual") {
+		t.Errorf("manual mode should show inline manual mode text: %q", plain)
+	}
+	if strings.Contains(plain, "routing: manual") {
+		t.Errorf("manual mode should not show a separate routing chip: %q", plain)
 	}
 }
 
@@ -266,8 +272,11 @@ func TestRenderStatus_AutoPairOnlyWhileActiveMatchesSmart(t *testing.T) {
 		connection: connOK,
 	}
 	bar := stripANSI(m.renderStatus())
-	if !strings.Contains(bar, "claude-opus-4-6:claude-haiku-4-5") {
-		t.Errorf("active==smart: status bar should show the smart:fast pair; got %q", bar)
+	if !strings.Contains(bar, "claude-opus-4-6") || !strings.Contains(bar, "auto") {
+		t.Errorf("active==smart: status bar should show the active model with inline auto text; got %q", bar)
+	}
+	if strings.Contains(bar, "claude-opus-4-6:claude-haiku-4-5") {
+		t.Errorf("active==smart: status bar must not show advisor:implementer pair; got %q", bar)
 	}
 
 	m.modelName = "some-other-model" // user ran /model after configuring the router
@@ -275,10 +284,13 @@ func TestRenderStatus_AutoPairOnlyWhileActiveMatchesSmart(t *testing.T) {
 	if !strings.Contains(bar, "some-other-model") {
 		t.Errorf("diverged: status bar must show the real active model; got %q", bar)
 	}
-	if !strings.Contains(bar, "routing: auto") {
-		t.Errorf("diverged: routing should demote to a dim note; got %q", bar)
+	if !strings.Contains(bar, "auto") {
+		t.Errorf("diverged: routing should show auto mode inline; got %q", bar)
 	}
-	if strings.HasPrefix(strings.TrimSpace(stripANSI(m.renderStatus())), "claude-opus-4-6:") {
+	if strings.Contains(bar, "routing: auto") {
+		t.Errorf("diverged: status bar should not render a separate routing chip; got %q", bar)
+	}
+	if strings.Contains(bar, "claude-opus-4-6:claude-haiku-4-5") {
 		t.Errorf("diverged: the pair must not remain the primary segment; got %q", bar)
 	}
 }

@@ -380,11 +380,11 @@ func commitRouterMode(m Model, mode string) (Model, tea.Cmd) {
 	cfg := loadConfigForCommand(m)
 	cfg.Router.Mode = mode
 	if err := config.Validate(cfg); err != nil {
-		m.appendLine(styleError.Render(fmt.Sprintf("[router] %v", err)))
+		m.appendLine(styleError.Render(fmt.Sprintf("[advisor] %v", err)))
 		return m, nil
 	}
 	if err := writeConfig(cfg); err != nil {
-		m.appendLine(styleError.Render(fmt.Sprintf("[router] write config: %v", err)))
+		m.appendLine(styleError.Render(fmt.Sprintf("[advisor] write config: %v", err)))
 		return m, nil
 	}
 	m.fileCfg = cfg
@@ -395,11 +395,11 @@ func commitRouterMode(m Model, mode string) (Model, tea.Cmd) {
 			implementer, advisor = m.router.ImplementerModel, m.router.AdvisorModel
 		}
 		m.appendLine(styleAuto.Render(fmt.Sprintf(
-			"[router] on — %s (advisor) / %s (implementer) · persisted", advisor, implementer)))
+			"[advisor] on — %s (advisor) / %s (implementer) · persisted", advisor, implementer)))
 	} else {
 		applyRoutingOff(&m)
 		m.appendLine(styleAuto.Render(
-			"[router] off — subagents and summarization run on the active model · persisted"))
+			"[advisor] off — subagents and summarization run on the active model · persisted"))
 	}
 	return m, nil
 }
@@ -416,17 +416,17 @@ func commitRouterChain(m Model, slot string, chain []string) (Model, tea.Cmd) {
 	}
 	setRouterChain(&cfg, slot, chain)
 	if err := config.Validate(cfg); err != nil {
-		m.appendLine(styleError.Render(fmt.Sprintf("[router] %v", err)))
+		m.appendLine(styleError.Render(fmt.Sprintf("[advisor] %v", err)))
 		return m, nil
 	}
 	if err := writeConfig(cfg); err != nil {
-		m.appendLine(styleError.Render(fmt.Sprintf("[router] write config: %v", err)))
+		m.appendLine(styleError.Render(fmt.Sprintf("[advisor] write config: %v", err)))
 		return m, nil
 	}
 	m.fileCfg = cfg
 	ra, err := cli.BuildRouterAdapters(cfg, m.opts)
 	if err != nil {
-		m.appendLine(styleError.Render(fmt.Sprintf("[router] rebuild adapters: %v", err)))
+		m.appendLine(styleError.Render(fmt.Sprintf("[advisor] rebuild adapters: %v", err)))
 		return m, nil
 	}
 	m.router = ra
@@ -557,7 +557,7 @@ func (m Model) switchActiveModelToRef(ref string) (Model, tea.Cmd) {
 		m, _ = reloadMemoryNow(m, "")
 	}
 	m.appendLine(styleAuto.Render(fmt.Sprintf(
-		"[router] active model → %s", model)))
+		"[advisor] active model → %s", model)))
 	warnIfEffortNoop(&m, acfg)
 	return m, runProviderProbe(m.parentCtx, acfg, false)
 }
@@ -626,7 +626,7 @@ func (m Model) switchActiveModelToRouterRole(role string) (Model, tea.Cmd) {
 	if m.histMu != nil {
 		m, _ = reloadMemoryNow(m, "")
 	}
-	m.appendLine(styleAuto.Render(fmt.Sprintf("[router] active role → %s (%s)", role, model)))
+	m.appendLine(styleAuto.Render(fmt.Sprintf("[advisor] active role → %s (%s)", role, model)))
 	acfg := m.adapterConfig(model, m.baseURL)
 	warnIfEffortNoop(&m, acfg)
 	return m, runProviderProbe(m.parentCtx, acfg, false)
@@ -677,7 +677,7 @@ func renderRouterPicker(p *routerPickerState) string {
 		{"Routing", routingValue},
 		{"Advisor model", orNotSet(chainPrimary(p.smartChain))},
 		{"Implementer", orNotSet(chainPrimary(p.fastChain))},
-		{"Advisor fb", fallbackValue(p.smartChain)},
+		{"Fallback", fallbackValue(p.smartChain)},
 	}
 	for i, r := range rows {
 		marker := "  "
