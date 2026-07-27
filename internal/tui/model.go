@@ -3827,12 +3827,13 @@ func (m Model) renderStatus() string {
 			// Plan mode already carries its own prominent banner; show the real
 			// advisor model here so the implementer half of the pair is not mistaken for the active planner.
 			if !m.cfg.PlanMode.IsActive() && smart != "" && fast != "" && (m.modelName == m.router.SmartModel || m.modelName == smart) {
-				modelName = smart + ":" + fast
+				modelName = smart
+				routingNote = "auto"
 			} else {
-				routingNote = "routing: auto"
+				routingNote = "auto"
 			}
 		case config.RouterModeManual:
-			routingNote = "routing: manual"
+			routingNote = "manual"
 		}
 	}
 	model := renderModelName(modelName)

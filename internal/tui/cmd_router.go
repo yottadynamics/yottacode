@@ -23,17 +23,17 @@ func routerModeOrOff(mode string) string {
 	}
 }
 
-// cmdRouter is the /router handler: configure cache-safe role routing
+// cmdAdvisor is the /advisor handler: configure cache-safe role routing
 // between an advisor model and an implementer model. Subcommands:
 //
-//	/router      — open the picker (toggle routing + pick fast/smart models)
-//	/router on   — enable routing (auto); persists [router].mode = "auto"
-//	/router off  — disable routing; persists [router].mode = "off"
+//	/advisor      — open the picker (toggle routing + pick fast/smart models)
+//	/advisor on   — enable routing (auto); persists [router].mode = "auto"
+//	/advisor off  — disable routing; persists [router].mode = "off"
 //
 // All changes persist to config.toml and apply live. "manual" mode (route
 // only subagents with explicit `model:` frontmatter) stays config-only;
-// `/router on` always means auto.
-func cmdRouter(m Model, args []string) (Model, tea.Cmd) {
+// `/advisor on` always means auto.
+func cmdAdvisor(m Model, args []string) (Model, tea.Cmd) {
 	sub := ""
 	if len(args) > 0 {
 		sub = strings.ToLower(strings.TrimSpace(args[0]))
@@ -48,7 +48,7 @@ func cmdRouter(m Model, args []string) (Model, tea.Cmd) {
 		return m.routerOff()
 	default:
 		m.appendLine(styleAuto.Render(fmt.Sprintf(
-			"[router] unknown subcommand %q — use /router, /router on, or /router off", sub)))
+			"[advisor] unknown subcommand %q — use /advisor, /advisor on, or /advisor off", sub)))
 		return m, nil
 	}
 }
@@ -59,7 +59,7 @@ func cmdRouter(m Model, args []string) (Model, tea.Cmd) {
 func (m Model) routerOn() (Model, tea.Cmd) {
 	if m.router == nil {
 		m.appendLine(styleAuto.Render(
-			"[router] no advisor/implementer pair configured — run /router to pick models"))
+			"[advisor] no advisor/implementer pair configured — run /advisor to pick models"))
 		return m, nil
 	}
 	return commitRouterMode(m, config.RouterModeAuto)
