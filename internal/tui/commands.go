@@ -1358,7 +1358,7 @@ func rebuildTranscript(m *Model) {
 		case adapter.RoleUser:
 			m.appendLine(renderUserBlock(msg.Content, m.width))
 		case adapter.RoleAssistant:
-			if msg.Content != "" {
+			if msg.Content != "" && len(msg.ToolCalls) == 0 {
 				m.appendLine(renderAssistantBlock(msg.Content))
 			}
 			for _, tc := range msg.ToolCalls {

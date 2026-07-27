@@ -4635,27 +4635,20 @@ func (m Model) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 		m.statsTokens++
 		m.turnTokens++
 	case agent.ContentToken:
-		// Model finished reasoning and started writing the answer. Clear
-		// the reasoning preview so the live footer transitions cleanly
-		// from "thinking" to "answering."
+		// Model finished reasoning and started writing candidate assistant text.
+		// Keep it provisional until AssistantMessage tells us whether this turn
+		// is a deliberate reply or only pre-tool scratch.
 		m.reasoning.Reset()
-		// First content token of this turn: emit a leading blank line
-		// for breathing room from the previous block (the user message
-		// or a tool result). After this, content streams line-by-line
-		// directly into scrollback as each \n arrives — see
-		// flushCompletedStreamLines below. Only the trailing partial
-		// line stays in m.streaming for the live footer preview.
-		if m.streamingMode != streamContent {
-			m.appendLine("")
-			m.paragraphStart = true
-		}
 		m.streamingMode = streamContent
 		m.streaming.WriteString(e.Text)
 		m.statsTokens++
 		m.turnTokens++
-		m.flushCompletedStreamLines()
 	case agent.AssistantMessage:
-		m.commitStreaming()
+		if len(e.Message.ToolCalls) > 0 {
+			m.discardStreaming()
+		} else {
+			m.commitStreamingWithLeadingBlank()
+		}
 		if rendered := renderCitations(e.Message.Citations); rendered != "" {
 			m.appendLine(rendered)
 		}
@@ -5083,9 +5076,33 @@ func (m *Model) commitStreaming() {
 	if m.inCodeBlock {
 		m.flushCodeBlock(false /* highlight */)
 	}
+	m.discardStreaming()
+}
+
+// commitStreamingWithLeadingBlank commits provisional assistant text once
+// the final message proves it was a deliberate tool-free reply. The leading
+// blank line is delayed until commit so pre-tool scratch can be discarded
+// without leaving transcript whitespace behind.
+func (m *Model) commitStreamingWithLeadingBlank() {
+	if m.streaming.Len() > 0 || m.inCodeBlock || m.inTable {
+		m.appendLine("")
+		m.paragraphStart = true
+	}
+	m.commitStreaming()
+}
+
+// discardStreaming clears provisional assistant text without painting it.
+// Used when the final assistant message contains tool calls: the visible
+// representation of that turn is the tool lifecycle, not pre-tool prose.
+func (m *Model) discardStreaming() {
 	m.streaming.Reset()
 	m.streamingMode = streamIdle
 	m.reasoning.Reset()
+	m.codeBlockBuf.Reset()
+	m.codeBlockLang = ""
+	m.inCodeBlock = false
+	m.tableBuf.Reset()
+	m.inTable = false
 }
 
 // flushCompletedStreamLines processes every line of the streaming

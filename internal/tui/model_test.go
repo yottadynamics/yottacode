@@ -184,36 +184,38 @@ func TestModel_StreamingTokensRenderInTranscript(t *testing.T) {
 	}
 }
 
-func TestModel_StreamingFlushesCompletedLinesToScrollback(t *testing.T) {
-	// Lines terminated by \n should land in scrollback (transcript)
-	// as they arrive, not stay buffered until end-of-turn. Only the
-	// trailing partial line stays in the live footer.
+func TestModel_StreamingBuffersCompletedLinesUntilAssistantMessage(t *testing.T) {
+	// Content tokens are provisional until the final assistant message proves
+	// they are deliberate prose rather than pre-tool scratch.
 	m := newTestModel(t)
 	m, _ = applyMsg(m, agentEventMsg{ev: agent.ContentToken{Text: "line one\nline tw"}})
-	if !strings.Contains(m.transcript.String(), "line one") {
-		t.Errorf("completed line should flush to scrollback: %q", m.transcript.String())
+	if strings.Contains(m.transcript.String(), "line one") {
+		t.Errorf("completed line should stay provisional before finalization: %q", m.transcript.String())
 	}
-	if strings.Contains(m.transcript.String(), "line tw") {
-		t.Errorf("partial trailing line should NOT be in scrollback yet: %q", m.transcript.String())
-	}
-	// Partial line should be visible in the live footer.
 	if !strings.Contains(m.View(), "line tw") {
 		t.Errorf("partial line should be in live footer preview: %q", m.View())
+	}
+	m, _ = applyMsg(m, agentEventMsg{ev: agent.AssistantMessage{}})
+	if !strings.Contains(m.transcript.String(), "line one") || !strings.Contains(m.transcript.String(), "line tw") {
+		t.Errorf("finalized assistant prose should flush to scrollback: %q", m.transcript.String())
 	}
 }
 
 func TestModel_StreamingMultipleNewlinesAtOnce(t *testing.T) {
 	m := newTestModel(t)
 	m, _ = applyMsg(m, agentEventMsg{ev: agent.ContentToken{Text: "a\nb\nc"}})
-	transcript := m.transcript.String()
-	for _, want := range []string{"a", "b"} {
-		if !strings.Contains(transcript, want) {
-			t.Errorf("scrollback should contain %q: %q", want, transcript)
-		}
+	if strings.Contains(m.transcript.String(), "a\nb") || strings.Contains(m.transcript.String(), "b\nc") {
+		t.Errorf("completed lines should stay provisional before finalization: %q", m.transcript.String())
 	}
-	// "c" has no trailing newline so it stays partial.
 	if !strings.Contains(m.View(), "c") {
 		t.Errorf("partial 'c' should be in live preview: %q", m.View())
+	}
+	m, _ = applyMsg(m, agentEventMsg{ev: agent.AssistantMessage{}})
+	transcript := m.transcript.String()
+	for _, want := range []string{"a", "b", "c"} {
+		if !strings.Contains(transcript, want) {
+			t.Errorf("scrollback should contain %q after finalization: %q", want, transcript)
+		}
 	}
 }
 
@@ -234,30 +236,18 @@ func TestModel_CommitStreamingFlushesPartialLine(t *testing.T) {
 }
 
 func TestModel_StreamingCodeBlockBuffersUntilClose(t *testing.T) {
-	// Inside a code block, lines should NOT go to scrollback live.
-	// They buffer until the closing ``` and emit highlighted.
+	// Content is provisional until AssistantMessage, so even completed prose
+	// and code-block lines stay out of scrollback before finalization.
 	m := newTestModel(t)
 	m, _ = applyMsg(m, agentEventMsg{ev: agent.ContentToken{
 		Text: "Here's some code:\n```go\nfunc main() {}\n",
 	}})
 	transcript := m.transcript.String()
-	// Prose before the fence should be in scrollback.
-	if !strings.Contains(transcript, "Here's some code:") {
-		t.Errorf("prose before fence should stream live: %q", transcript)
+	if strings.Contains(transcript, "Here's some code:") || strings.Contains(transcript, "func main()") {
+		t.Errorf("provisional content should not land in scrollback before finalization: %q", transcript)
 	}
-	// Fence markers are control syntax, not transcript content.
-	if strings.Contains(transcript, "```go") || strings.Contains(transcript, "```") {
-		t.Errorf("fence markers should not land in scrollback: %q", transcript)
-	}
-	// Code body should NOT yet be in scrollback — it's buffered.
-	if strings.Contains(transcript, "func main()") {
-		t.Errorf("code body should NOT be in scrollback yet (buffered): %q", transcript)
-	}
-	if !m.inCodeBlock {
-		t.Errorf("model should be in code block state")
-	}
-	if m.codeBlockLang != "go" {
-		t.Errorf("language hint = %q, want go", m.codeBlockLang)
+	if !strings.Contains(m.View(), "func main") {
+		t.Errorf("provisional content should remain visible in the live preview: %q", m.View())
 	}
 }
 
@@ -276,6 +266,7 @@ func TestModel_StreamingCodeBlockEmitsHighlightedAtClose(t *testing.T) {
 	m, _ = applyMsg(m, agentEventMsg{ev: agent.ContentToken{
 		Text: "```go\nfunc main() {\n\tfmt.Println(\"Hello, world!\")\n}\n```\n",
 	}})
+	m, _ = applyMsg(m, agentEventMsg{ev: agent.AssistantMessage{}})
 	transcript := m.transcript.String()
 	// Highlighting produces ANSI escape codes between tokens, so the
 	// raw substring "func main()" won't appear contiguously. Strip
@@ -305,11 +296,8 @@ func TestModel_StreamingCodeBlockShowsLiveFooterNotice(t *testing.T) {
 		Text: "```python\nprint('hi')\n",
 	}})
 	view := m.View()
-	if !strings.Contains(view, "writing python") {
-		t.Errorf("footer should show 'writing python' notice: %q", view)
-	}
-	if !strings.Contains(view, "lines") {
-		t.Errorf("footer should mention line count: %q", view)
+	if !strings.Contains(view, "```python") || !strings.Contains(view, "print('hi')") {
+		t.Errorf("footer should show provisional code text before finalization: %q", view)
 	}
 }
 
@@ -363,23 +351,18 @@ func TestModel_StreamingUnclosedCodeBlockEmitsPlainOnCommit(t *testing.T) {
 func TestModel_StreamingTableBuffersUntilNonTableLine(t *testing.T) {
 	m := newTestModel(t)
 	m, _ = applyMsg(m, agentEventMsg{ev: agent.ContentToken{
-		Text: "| Col1 | Col2 |\n| --- | --- |\n| val1 | val2 |\n",
+		Text: "| Col1 | Col2 |\n| --- | --- |\n| val1 | val2 |\nDone.\n",
 	}})
+	if strings.Contains(m.transcript.String(), "val1") {
+		t.Errorf("table body should stay provisional before finalization: %q", m.transcript.String())
+	}
+	m, _ = applyMsg(m, agentEventMsg{ev: agent.AssistantMessage{}})
 	transcript := m.transcript.String()
-	if strings.Contains(transcript, "val1") {
-		t.Errorf("table body should NOT be in scrollback yet (buffered): %q", transcript)
-	}
-	if !m.inTable {
-		t.Errorf("model should be in table state")
-	}
-	// Non-table line flushes the table.
-	m, _ = applyMsg(m, agentEventMsg{ev: agent.ContentToken{Text: "Done.\n"}})
-	transcript = m.transcript.String()
 	if !strings.Contains(stripANSI(transcript), "val1") {
-		t.Errorf("table content should land in scrollback after flush: %q", stripANSI(transcript))
+		t.Errorf("table content should land in scrollback after finalization: %q", stripANSI(transcript))
 	}
 	if m.inTable {
-		t.Errorf("model should exit table state after flush")
+		t.Errorf("model should exit table state after finalization")
 	}
 }
 
@@ -388,6 +371,7 @@ func TestModel_StreamingTableRenderedThroughGlamour(t *testing.T) {
 	m, _ = applyMsg(m, agentEventMsg{ev: agent.ContentToken{
 		Text: "| Name | Age |\n| --- | --- |\n| Alice | 30 |\nDone.\n",
 	}})
+	m, _ = applyMsg(m, agentEventMsg{ev: agent.AssistantMessage{}})
 	plain := stripANSI(m.transcript.String())
 	if !strings.Contains(plain, "Alice") {
 		t.Errorf("table content words should survive glamour rendering: %q", plain)
@@ -403,11 +387,8 @@ func TestModel_StreamingTableShowsLiveNotice(t *testing.T) {
 		Text: "| H1 | H2 |\n| --- | --- |\n| a | b |\n",
 	}})
 	view := m.View()
-	if !strings.Contains(view, "formatting table") {
-		t.Errorf("footer should show 'formatting table' notice: %q", view)
-	}
-	if !strings.Contains(view, "rows") {
-		t.Errorf("footer should mention row count: %q", view)
+	if !strings.Contains(view, "| H1 | H2 |") || !strings.Contains(view, "| a | b |") {
+		t.Errorf("footer should show provisional table text before finalization: %q", view)
 	}
 }
 
@@ -416,9 +397,6 @@ func TestModel_StreamingUnclosedTableRendersOnCommit(t *testing.T) {
 	m, _ = applyMsg(m, agentEventMsg{ev: agent.ContentToken{
 		Text: "| X | Y |\n| --- | --- |\n| 1 | 2 |",
 	}})
-	if !m.inTable {
-		t.Errorf("should be in table state before commit")
-	}
 	m, _ = applyMsg(m, agentEventMsg{ev: agent.AssistantMessage{}})
 	plain := stripANSI(m.transcript.String())
 	if !strings.Contains(plain, "1") || !strings.Contains(plain, "2") {
@@ -434,11 +412,10 @@ func TestModel_TableInsideCodeBlockNotIntercepted(t *testing.T) {
 	m, _ = applyMsg(m, agentEventMsg{ev: agent.ContentToken{
 		Text: "```\n| Col1 | Col2 |\n| --- | --- |\n| a | b |\n",
 	}})
-	if m.inTable {
-		t.Errorf("table inside code block should NOT trigger table state")
-	}
-	if !m.inCodeBlock {
-		t.Errorf("should be in code block state")
+	m, _ = applyMsg(m, agentEventMsg{ev: agent.AssistantMessage{}})
+	plain := stripANSI(m.transcript.String())
+	if !strings.Contains(plain, "| Col1 | Col2 |") || !strings.Contains(plain, "| a | b |") {
+		t.Errorf("table-looking lines inside code block should render as code on finalization: %q", plain)
 	}
 }
 
@@ -447,6 +424,7 @@ func TestModel_SeparatorOnlyLineDoesNotStartTable(t *testing.T) {
 	m, _ = applyMsg(m, agentEventMsg{ev: agent.ContentToken{
 		Text: "|---|---|\n",
 	}})
+	m, _ = applyMsg(m, agentEventMsg{ev: agent.AssistantMessage{}})
 	if m.inTable {
 		t.Errorf("separator-only line should not start table state")
 	}
@@ -459,6 +437,7 @@ func TestModel_UnicodeTableOverflowWrapsInsideCell(t *testing.T) {
 	m := newTestModel(t) // width = 80
 	line := "  Retrieval / scoring      │ No scoring – entire memory snapshot       │ semantic uses local Ollama embeddings, auto falls back to BM25Top-K"
 	m, _ = applyMsg(m, agentEventMsg{ev: agent.ContentToken{Text: line + "\n"}})
+	m, _ = applyMsg(m, agentEventMsg{ev: agent.AssistantMessage{}})
 	plain := stripANSI(m.transcript.String())
 	if strings.Contains(plain, "\nlocal") || strings.Contains(plain, "\nauto") {
 		t.Fatalf("overflow should not be orphaned at column zero: %q", plain)
@@ -477,6 +456,7 @@ func TestModel_LongProseLineWordWraps(t *testing.T) {
 	m := newTestModel(t) // width = 80
 	long := "Auto-summarization in yottacode operates on the session transcript (the rolling history of user/assistant/tool turns), not on the agent-managed memory files."
 	m, _ = applyMsg(m, agentEventMsg{ev: agent.ContentToken{Text: long + "\nDone.\n"}})
+	m, _ = applyMsg(m, agentEventMsg{ev: agent.AssistantMessage{}})
 	plain := stripANSI(m.transcript.String())
 	if !strings.Contains(plain, "Auto-summarization") {
 		t.Errorf("content should be in scrollback: %q", plain)
@@ -577,17 +557,12 @@ func TestFixTableAlignment_NoChangeWhenAligned(t *testing.T) {
 
 func TestModel_BlankLineMidTableDoesNotSplit(t *testing.T) {
 	m := newTestModel(t)
-	// Stream a table with a blank line between rows. The blank line
-	// should NOT flush the first half as a separate table.
+	// Stream a table with a blank line between rows. The blank line should not
+	// split the table once the deliberate assistant reply finalizes.
 	m, _ = applyMsg(m, agentEventMsg{ev: agent.ContentToken{
-		Text: "| A | B |\n| --- | --- |\n| x | y |\n\n| z | w |\n",
+		Text: "| A | B |\n| --- | --- |\n| x | y |\n\n| z | w |\nDone.\n",
 	}})
-	// Should still be in table mode (blank line didn't end it).
-	if !m.inTable {
-		t.Errorf("blank line should not end table state")
-	}
-	// Flush by sending non-table text.
-	m, _ = applyMsg(m, agentEventMsg{ev: agent.ContentToken{Text: "Done.\n"}})
+	m, _ = applyMsg(m, agentEventMsg{ev: agent.AssistantMessage{}})
 	plain := stripANSI(m.transcript.String())
 	// Both rows should appear in a single rendered table.
 	if !strings.Contains(plain, "x") || !strings.Contains(plain, "z") {
@@ -885,6 +860,26 @@ func TestModel_ApprovalAutoRendersSingleLineSummary(t *testing.T) {
 	}
 	if strings.Contains(v, "│ package main") || strings.Contains(v, "func main()") {
 		t.Errorf("auto-approval line must not embed the full preview body: %q", v)
+	}
+}
+
+func TestModel_ToolCallScratchContentNotRendered(t *testing.T) {
+	m := newTestModel(t)
+	m.transcript.Reset()
+
+	m, _ = applyMsg(m, agentEventMsg{ev: agent.ContentToken{Text: "Need maybe inspect files first\n"}})
+	m, _ = applyMsg(m, agentEventMsg{ev: agent.AssistantMessage{Message: adapter.Message{
+		ToolCalls: []adapter.ToolCall{{ID: "c1", Name: "read_file", ArgsJSON: `{"path":"x.go"}`}},
+	}}})
+	m, _ = applyMsg(m, agentEventMsg{ev: agent.ToolStart{ToolName: "read_file", Preview: "read_file(x.go)", ArgsJSON: `{"path":"x.go"}`}})
+	m, _ = applyMsg(m, agentEventMsg{ev: agent.ToolResult{ToolName: "read_file", Output: "package main\n"}})
+
+	plain := stripANSI(m.transcript.String())
+	if strings.Contains(plain, "Need maybe inspect") {
+		t.Fatalf("pre-tool scratch text leaked into transcript: %q", plain)
+	}
+	if !strings.Contains(plain, "Read(x.go)") || !strings.Contains(plain, "1 line") {
+		t.Fatalf("tool card should still render after scratch discard: %q", plain)
 	}
 }
 
