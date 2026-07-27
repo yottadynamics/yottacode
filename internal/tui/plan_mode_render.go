@@ -201,72 +201,18 @@ func renderEnterPlanApprovalCard(width int) string {
 // name on the top-right, hotkey rows in the body. Kept generic over
 // (title, toolName, hotkeys) so enter and exit render identically.
 func renderPlanDecisionCard(title, toolName, hotkeys string, width int) string {
-	const sideIndent = "  "
-	const sideIndentW = 2
-	cap := width - 4
-	if cap > 120 {
-		cap = 120
-	}
-	hardWrap := func(s string) []string {
-		lines := strings.Split(s, "\n")
-		if cap <= sideIndentW {
-			return lines
-		}
-		wrapW := cap - sideIndentW
-		out := make([]string, 0, len(lines))
-		for _, line := range lines {
-			if ansi.StringWidth(line) <= wrapW {
-				out = append(out, line)
-				continue
-			}
-			out = append(out, strings.Split(ansi.Hardwrap(line, wrapW, true), "\n")...)
-		}
-		return out
-	}
+	capW := capLabeledBoxWidth(width)
 
 	bodyLines := []string{""}
-	for _, line := range hardWrap(hotkeys) {
-		bodyLines = append(bodyLines, sideIndent+line)
+	for _, line := range hardWrapLabeled(hotkeys, capW) {
+		bodyLines = append(bodyLines, labeledBoxIndent+line)
 	}
 	bodyLines = append(bodyLines, "")
 
 	leftLabel := " " + stylePlanApprovalTitle.Render(title) + " "
 	rightLabel := " " + stylePlanApprovalTool.Render(toolName) + " "
 
-	innerW := 0
-	for _, line := range bodyLines {
-		if w := ansi.StringWidth(line); w > innerW {
-			innerW = w
-		}
-	}
-	headW := ansi.StringWidth(leftLabel) + ansi.StringWidth(rightLabel) + 2
-	if headW > innerW {
-		innerW = headW
-	}
-	if cap > 0 && innerW > cap {
-		innerW = cap
-	}
-
-	border := lipgloss.NewStyle().Foreground(colorWarning)
-	fill := innerW - ansi.StringWidth(leftLabel) - ansi.StringWidth(rightLabel)
-	if fill < 1 {
-		fill = 1
-	}
-	top := border.Render("┌─") + leftLabel +
-		border.Render(strings.Repeat("─", fill)) +
-		rightLabel + border.Render("─┐")
-	sideL := border.Render("│ ")
-	sideR := border.Render(" │")
-	rows := []string{top}
-	for _, line := range bodyLines {
-		pad := innerW - ansi.StringWidth(line)
-		if pad < 0 {
-			pad = 0
-		}
-		rows = append(rows, sideL+line+strings.Repeat(" ", pad)+sideR)
-	}
-	rows = append(rows, border.Render("└"+strings.Repeat("─", innerW+2)+"┘"))
-	return strings.Join(rows, "\n")
+	return renderLabeledBox(leftLabel, rightLabel, bodyLines, capW, colorWarning)
 }
 
 // Plan-mode banner / approval styles. Bare declarations (no

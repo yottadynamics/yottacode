@@ -76,8 +76,10 @@ func renderMenuHeader(title, description string) string {
 //
 // Cursor and check markers reserve their column whether or not
 // they're present, so unchecked rows align with checked ones and
-// non-cursor rows align with cursor rows. Active rows use Accent
-// (cyan) so they match the input frame and the user-message bar.
+// non-cursor rows align with cursor rows. Active rows use the brand
+// green (colorSuccess), not Accent — matching the input frame and the
+// user-message bar's chevron, which never renders Accent either
+// (maintainer call: blue/cyan reads wrong on prompt-adjacent chrome).
 //
 // The `Number` field on menuItemOpts is preserved for back-compat
 // but no longer rendered — arrow-key navigation is enough, and the

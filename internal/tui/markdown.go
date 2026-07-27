@@ -18,8 +18,21 @@ func newMarkdownRenderer(width int) *markdownRenderer {
 	if width < 20 {
 		width = 80
 	}
+	// themeMonochrome mirrors the active theme's Palette.Monochrome
+	// (styles.go, set from buildStyles). Only "no-color" sets it —
+	// without this check glamour always rendered assistant prose with
+	// its baked-in "dark" style regardless of theme, so selecting
+	// no-color muted code-block syntax highlighting (via the
+	// Highlight: "bw" chroma style) but left headings/bold/links still
+	// colored, breaking that theme's "every role renders as default
+	// terminal foreground" contract. "notty" is glamour's dedicated
+	// colorless style (identical to "ascii" except for the name).
+	style := "dark"
+	if themeMonochrome {
+		style = "notty"
+	}
 	r, err := glamour.NewTermRenderer(
-		glamour.WithStandardStyle("dark"),
+		glamour.WithStandardStyle(style),
 		glamour.WithWordWrap(width),
 	)
 	if err != nil {

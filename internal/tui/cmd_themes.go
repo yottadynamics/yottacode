@@ -97,9 +97,10 @@ func cmdThemesSet(m Model, args []string) (Model, tea.Cmd) {
 // refreshComponentStyles replays styles into sub-components that
 // captured them by value at construction time. Bubble Tea's
 // textarea and spinner deep-copy the lipgloss.Style they're given,
-// so reassigning the package var after construction wouldn't reach
-// them. Called from the picker (on every cursor move and on commit)
-// and from cmdThemesSet so the switch lands on every visible
+// and glamour bakes its style choice in at construction too, so
+// reassigning the package var after construction wouldn't reach any
+// of them. Called from the picker (on every cursor move and on
+// commit) and from cmdThemesSet so the switch lands on every visible
 // surface, not just the render-time lookups.
 //
 // Returns the Model unchanged in field shape — only sub-component
@@ -108,5 +109,6 @@ func refreshComponentStyles(m Model) Model {
 	m.textInput.FocusedStyle.Prompt = styleInputPrompt
 	m.textInput.BlurredStyle.Prompt = styleInputPrompt
 	m.spinner.Style = styleSpinner
+	m.md = newMarkdownRenderer(m.width - 4)
 	return m
 }

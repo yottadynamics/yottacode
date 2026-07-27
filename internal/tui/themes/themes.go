@@ -52,6 +52,15 @@ type Palette struct {
 
 	HasBackground bool
 	Background    lipgloss.AdaptiveColor
+
+	// Monochrome marks a theme that wants every surface to render as
+	// plain default-foreground text — currently only "no-color". Read
+	// by markdown.go so glamour's rendering of finalized assistant
+	// messages honors the same "no color at all" contract the theme
+	// already gets for chroma code-block highlighting (via Highlight:
+	// "bw") and every other role (via the flat ANSI-7 AdaptiveColors
+	// above). Zero value (false) is correct for every other theme.
+	Monochrome bool
 }
 
 // registry holds every built-in palette, keyed by name. Population

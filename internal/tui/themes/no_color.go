@@ -25,6 +25,7 @@ func init() {
 		Name:        "no-color",
 		Description: "monochrome — every role renders as default terminal foreground",
 		Highlight:   "bw",
+		Monochrome:  true,
 
 		// "7" is default-foreground in the ANSI 16-color table; on
 		// both light and dark terminals it picks the readable
