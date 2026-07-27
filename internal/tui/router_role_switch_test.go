@@ -31,6 +31,7 @@ func TestSwitchActiveModelToRouterRole_AdvisorAndImplementer(t *testing.T) {
 	seedRoleSwitchConfig(t)
 	advisor := &roleSwitchAdapter{profile: adapter.ProviderProfile{Provider: adapter.ProviderAnthropic}}
 	implementer := &roleSwitchAdapter{profile: adapter.ProviderProfile{Provider: adapter.ProviderOpenAI}}
+	reg := agent.NewRegistry()
 	sess, err := session.New("gpt-4o-mini", "/cwd")
 	if err != nil {
 		t.Fatalf("session: %v", err)
@@ -41,10 +42,11 @@ func TestSwitchActiveModelToRouterRole_AdvisorAndImplementer(t *testing.T) {
 		baseURL:      "https://api.openai.com/v1",
 		provider:     "openai",
 		apiKey:       "openai-key",
-		cfg:          agent.LoopConfig{Adapter: implementer},
+		cfg:          agent.LoopConfig{Adapter: implementer, Registry: reg},
 		subagentTool: &agent.AgentTool{Adapter: implementer},
 		sess:         sess,
 		transcript:   &strings.Builder{},
+		routerMode:   config.RouterModeAuto,
 		router: &cli.RouterAdapters{
 			Advisor:          advisor,
 			AdvisorModel:     "claude-opus-4-6",
@@ -71,6 +73,9 @@ func TestSwitchActiveModelToRouterRole_AdvisorAndImplementer(t *testing.T) {
 	if m.providerProfile.Provider != adapter.ProviderAnthropic {
 		t.Fatalf("providerProfile = %s, want anthropic", m.providerProfile.Provider)
 	}
+	if _, ok := reg.Get(agent.ConsultAdvisorToolName); ok {
+		t.Fatal("advisor-driven main session should not expose consult_advisor")
+	}
 
 	m, _ = m.switchActiveModelToRouterRole("implementer")
 	if m.cfg.Adapter != implementer {
@@ -87,6 +92,13 @@ func TestSwitchActiveModelToRouterRole_AdvisorAndImplementer(t *testing.T) {
 	}
 	if m.providerProfile.Provider != adapter.ProviderOpenAI {
 		t.Fatalf("providerProfile = %s, want openai", m.providerProfile.Provider)
+	}
+	got, ok := reg.Get(agent.ConsultAdvisorToolName)
+	if !ok {
+		t.Fatal("implementer-driven main session should expose consult_advisor")
+	}
+	if _, ok := got.(*agent.ConsultAdvisorTool); !ok {
+		t.Fatalf("consult_advisor tool type = %T", got)
 	}
 }
 
@@ -115,13 +127,14 @@ func TestAutoModeSwitchesToImplementer(t *testing.T) {
 	seedRoleSwitchConfig(t)
 	advisor := &roleSwitchAdapter{profile: adapter.ProviderProfile{Provider: adapter.ProviderAnthropic}}
 	implementer := &roleSwitchAdapter{profile: adapter.ProviderProfile{Provider: adapter.ProviderOpenAI}}
+	reg := agent.NewRegistry()
 	m := Model{
 		parentCtx:    context.Background(),
 		modelName:    "claude-opus-4-6",
 		baseURL:      "https://api.anthropic.com",
 		provider:     "anthropic",
 		apiKey:       "anthropic-key",
-		cfg:          agent.LoopConfig{Adapter: advisor, AutoMode: &agent.AutoModeState{}, PlanMode: &agent.PlanModeState{}},
+		cfg:          agent.LoopConfig{Adapter: advisor, Registry: reg, AutoMode: &agent.AutoModeState{}, PlanMode: &agent.PlanModeState{}},
 		subagentTool: &agent.AgentTool{Adapter: advisor},
 		transcript:   &strings.Builder{},
 		routerMode:   config.RouterModeAuto,
@@ -141,6 +154,9 @@ func TestAutoModeSwitchesToImplementer(t *testing.T) {
 	}
 	if m.modelName != "gpt-4o-mini" || m.provider != "openai" {
 		t.Fatalf("auto mode model/provider = (%q, %q), want implementer", m.modelName, m.provider)
+	}
+	if _, ok := reg.Get(agent.ConsultAdvisorToolName); !ok {
+		t.Fatal("auto-mode implementer should have consult_advisor in the main registry")
 	}
 }
 

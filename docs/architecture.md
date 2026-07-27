@@ -324,9 +324,12 @@ a cheaper role while keeping high-leverage planning on the advisor. The main
 prompt cache is preserved except at explicit model-switch boundaries such as
 startup, `/plan`, `/auto`, `/model`, or a `/router` picker change.
 
-Implementer agents also get a narrow `consult_advisor` tool. It performs one
-isolated no-tools call to the advisor for design, debugging, or uncertainty that
-the implementer should not resolve alone. Because advisor calls are the more
+Implementer-driven contexts also get a narrow `consult_advisor` tool. It is
+available to implementer subagents and to the top-level conversation when auto
+routing has switched the main session onto the implementer model; advisor-led
+sessions and plan mode do not expose it. The tool performs one isolated
+no-tools call to the advisor for design, debugging, or uncertainty that the
+implementer should not resolve alone. Because advisor calls are the more
 expensive path, the tool is explicit and bounded rather than an automatic
 fallback.
 

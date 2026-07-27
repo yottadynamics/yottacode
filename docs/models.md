@@ -177,6 +177,10 @@ coding, subagents, and summarization. (`manual` mode keeps the active
 model and adds a dim `routing: manual` note; `off` shows just the active
 model — the picker toggles between `off` and `auto`.)
 
+Plan mode is the exception: because `/plan` switches the active conversation to
+the advisor, the status bar shows the actual advisor model rather than the
+advisor:implementer pair. A dim `routing: auto` note still indicates routing is on.
+
 ### Why this saves money (and never costs more)
 
 In an agentic loop the dominant cost is **re-sending the full context**
@@ -206,8 +210,11 @@ The split is deliberate: planning and design should happen on the
 advisor; routine implementation and isolated child work can run on the
 faster implementer. If the implementer gets stuck, `consult_advisor` gives
 it a bounded no-tools path to ask the advisor without recursively spawning
-another agent. Your reasoning-effort selection remains global via
-`/effort`, so roles do not fight over hidden effort settings.
+another agent. That tool is available to implementer subagents and to the
+top-level conversation while auto mode is driving the main session with the
+implementer; advisor-led sessions and plan mode do not expose it. Your
+reasoning-effort selection remains global via `/effort`, so roles do not fight
+over hidden effort settings.
 
 ### Seeing what ran where
 

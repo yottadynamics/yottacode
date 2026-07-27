@@ -551,6 +551,7 @@ func (m Model) switchActiveModelToRef(ref string) (Model, tea.Cmd) {
 	if m.sess != nil {
 		m.sess.Model = model
 	}
+	syncMainConsultAdvisorTool(&m)
 	if m.histMu != nil {
 		m, _ = reloadMemoryNow(m, "")
 	}
@@ -602,6 +603,7 @@ func (m Model) switchActiveModelToRouterRole(role string) (Model, tea.Cmd) {
 	if m.sess != nil {
 		m.sess.Model = model
 	}
+	syncMainConsultAdvisorTool(&m)
 	if m.histMu != nil {
 		m, _ = reloadMemoryNow(m, "")
 	}

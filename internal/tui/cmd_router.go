@@ -6,6 +6,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/yottadynamics/yottacode/internal/agent"
 	"github.com/yottadynamics/yottacode/internal/config"
 )
 
@@ -95,6 +96,7 @@ func applyRoutingOn(m *Model) {
 		m.summarizerModel = routerImplementerModel(m.router)
 	}
 	m.routerMode = config.RouterModeAuto
+	syncMainConsultAdvisorTool(m)
 }
 
 // applyRoutingOff wires the live session back to the active model for
@@ -120,4 +122,25 @@ func applyRoutingOff(m *Model) {
 	m.summarizerAdapter = nil
 	m.summarizerModel = ""
 	m.routerMode = config.RouterModeOff
+	syncMainConsultAdvisorTool(m)
+}
+
+// syncMainConsultAdvisorTool exposes consult_advisor only to a top-level
+// session that is actively driven by the routed implementer model. Subagents
+// get their own consult_advisor registration from AgentTool.buildChildRegistry;
+// this live registry sync is for the main conversation loop only.
+func syncMainConsultAdvisorTool(m *Model) {
+	if m == nil || m.cfg.Registry == nil {
+		return
+	}
+	advisor := routerAdvisor(m.router)
+	advisorModel := routerAdvisorModel(m.router)
+	implementerModel := routerImplementerModel(m.router)
+	shouldExpose := routerModeOrOff(m.routerMode) == config.RouterModeAuto &&
+		advisor != nil && advisorModel != "" && implementerModel != "" && m.modelName == implementerModel
+	if !shouldExpose {
+		m.cfg.Registry.Deregister(agent.ConsultAdvisorToolName)
+		return
+	}
+	m.cfg.Registry.Register(&agent.ConsultAdvisorTool{Advisor: advisor, Model: advisorModel})
 }
