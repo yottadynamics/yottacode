@@ -10,6 +10,8 @@ func parseServerCapabilities(raw json.RawMessage) serverCapabilities {
 		Capabilities struct {
 			WorkspaceSymbolProvider    any `json:"workspaceSymbolProvider"`
 			DocumentSymbolProvider     any `json:"documentSymbolProvider"`
+			DocumentHighlightProvider  any `json:"documentHighlightProvider"`
+			SelectionRangeProvider     any `json:"selectionRangeProvider"`
 			DefinitionProvider         any `json:"definitionProvider"`
 			TypeDefinitionProvider     any `json:"typeDefinitionProvider"`
 			ImplementationProvider     any `json:"implementationProvider"`
@@ -24,9 +26,12 @@ func parseServerCapabilities(raw json.RawMessage) serverCapabilities {
 	}
 	_ = json.Unmarshal(raw, &msg)
 	codeActionResolve := capabilityResolveEnabled(msg.Capabilities.CodeActionProvider)
+	renamePrepare := capabilityPrepareEnabled(msg.Capabilities.RenameProvider)
 	return serverCapabilities{
 		WorkspaceSymbol:   capabilityEnabled(msg.Capabilities.WorkspaceSymbolProvider),
 		DocumentSymbol:    capabilityEnabled(msg.Capabilities.DocumentSymbolProvider),
+		DocumentHighlight: capabilityEnabled(msg.Capabilities.DocumentHighlightProvider),
+		SelectionRange:    capabilityEnabled(msg.Capabilities.SelectionRangeProvider),
 		Definition:        capabilityEnabled(msg.Capabilities.DefinitionProvider),
 		TypeDefinition:    capabilityEnabled(msg.Capabilities.TypeDefinitionProvider),
 		Implementation:    capabilityEnabled(msg.Capabilities.ImplementationProvider),
@@ -37,6 +42,7 @@ func parseServerCapabilities(raw json.RawMessage) serverCapabilities {
 		CodeActionResolve: codeActionResolve,
 		CallHierarchy:     capabilityEnabled(msg.Capabilities.CallHierarchyProvider),
 		Rename:            capabilityEnabled(msg.Capabilities.RenameProvider),
+		RenamePrepare:     renamePrepare,
 		Formatting:        capabilityEnabled(msg.Capabilities.DocumentFormattingProvider),
 	}
 }
@@ -64,4 +70,16 @@ func capabilityResolveEnabled(v any) bool {
 		return false
 	}
 	return resolve
+}
+
+func capabilityPrepareEnabled(v any) bool {
+	m, ok := v.(map[string]any)
+	if !ok {
+		return false
+	}
+	prepare, ok := m["prepareProvider"].(bool)
+	if !ok {
+		return false
+	}
+	return prepare
 }

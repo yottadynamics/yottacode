@@ -39,6 +39,8 @@ When the feature flag is enabled, yottacode registers these LSP tools. Most are 
 | `lsp_status` | Detect supported languages in the workspace and show server availability/install hints |
 | `lsp_symbols` | Search workspace symbols through LSP, with a regex fallback when no server is installed |
 | `lsp_document_symbols` | List structural symbols declared in one source file |
+| `lsp_document_highlights` | Show current-file symbol reads/writes/text occurrences for a source position |
+| `lsp_selection_ranges` | Show nested syntax ranges around a source position, from expression to enclosing block/function |
 | `lsp_definition` | Find definition locations for a file position |
 | `lsp_type_definition` | Find type definition locations for a file position |
 | `lsp_implementation` | Find implementation locations for an interface, method, or symbol |
@@ -58,7 +60,7 @@ Positions are zero-based line and UTF-16 character offsets, matching LSP. Output
 
 `lsp_code_actions` is intentionally read-only. Semantic edits use a two-step flow: preview tools (`lsp_code_action_preview`, `lsp_rename_preview`, and `lsp_format_preview`) return normalized WorkspaceEdit JSON, then `lsp_apply_workspace_edit` validates every path, snapshots affected files through the normal mutator flow, writes the edits itself, and notifies the LSP manager. The language server never writes directly to the repository.
 
-The WorkspaceEdit applier uses LSP UTF-16 character offsets, applies text edits from the bottom of each file upward, and validates every path before writing. Broad semantic refactors should still be reviewed carefully because server-proposed multi-file edits can be large.
+When a server advertises `textDocument/prepareRename`, `lsp_rename_preview` preflights the target position before asking for edits and returns an explicit unavailable result for invalid rename targets. The WorkspaceEdit applier uses LSP UTF-16 character offsets, applies text edits from the bottom of each file upward, and validates every path before writing. Broad semantic refactors should still be reviewed carefully because server-proposed multi-file edits can be large.
 
 ## Session advisory
 
@@ -89,6 +91,8 @@ The experimental bridge now includes several production-readiness behaviors:
 - Successful `edit_file` and `write_file` calls notify pooled servers with full-document `didChange` and `didSave`, using version counters so diagnostics can reflect yottacode edits.
 - `lsp_diagnostics` reports whether diagnostics were actually published before the settle timeout, so “clean” is distinct from “no diagnostic publication observed yet”.
 - `lsp_code_action_preview` resolves editable code actions into the same preview/apply WorkspaceEdit flow used by rename and formatting.
+- `lsp_document_highlights` and `lsp_selection_ranges` provide bounded current-file context before agents choose an edit range or wider read window.
+- `lsp_rename_preview` uses server-side prepare-rename validation when available so invalid cursor positions fail before any edit preview is requested.
 - Server capabilities returned by `initialize` are checked before optional methods; unsupported methods return an explicit `unavailable` result rather than a misleading empty response.
 - `lsp_status` exposes session manager stats: open servers, starts, reuses, evictions, and last startup latency. `yottacode doctor` reports the default manager configuration without starting a session server.
 - Smoke tests exist for all supported servers and skip automatically when the binary is not installed.

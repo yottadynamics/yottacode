@@ -34,6 +34,11 @@ type lspCallHierarchyItem struct {
 	} `json:"selectionRange"`
 }
 
+type lspSelectionRange struct {
+	Range  TextRange          `json:"range"`
+	Parent *lspSelectionRange `json:"parent"`
+}
+
 func hoverText(raw json.RawMessage) (string, error) {
 	var msg struct {
 		Contents any `json:"contents"`
@@ -140,6 +145,30 @@ func normalizeCalls(method string, raw json.RawMessage) []CallHierarchyItem {
 			continue
 		}
 		out = append(out, CallHierarchyItem{Name: item.Name, Kind: symbolKindName(item.Kind), Detail: item.Detail, Direction: direction, Location: Location{Path: uriToPath(item.URI), Line: item.SelectionRange.Start.Line, Character: item.SelectionRange.Start.Character}})
+	}
+	return out
+}
+
+func documentHighlightKindName(kind int) string {
+	switch kind {
+	case 0, 1:
+		return "text"
+	case 2:
+		return "read"
+	case 3:
+		return "write"
+	default:
+		return fmt.Sprintf("kind%d", kind)
+	}
+}
+
+func flattenSelectionRanges(path string, positionIndex int, item *lspSelectionRange) []SelectionRange {
+	var out []SelectionRange
+	depth := 0
+	for item != nil {
+		out = append(out, SelectionRange{Path: path, PositionIndex: positionIndex, Depth: depth, Range: item.Range})
+		item = item.Parent
+		depth++
 	}
 	return out
 }

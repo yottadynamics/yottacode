@@ -54,6 +54,8 @@ var canonicalTools = []string{
 	"lsp_status",
 	"lsp_symbols",
 	"lsp_document_symbols",
+	"lsp_document_highlights",
+	"lsp_selection_ranges",
 	"lsp_definition",
 	"lsp_references",
 	"lsp_hover",

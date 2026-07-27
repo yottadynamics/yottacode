@@ -128,6 +128,8 @@ func RegisterCoreCwdTools(reg *Registry, cwd *CwdRef, deps CoreToolDeps) {
 		reg.Register(&LSPStatusTool{lspToolBase: base})
 		reg.Register(&LSPSymbolsTool{lspToolBase: base})
 		reg.Register(&LSPDocumentSymbolsTool{lspToolBase: base})
+		reg.Register(&LSPDocumentHighlightsTool{lspToolBase: base})
+		reg.Register(&LSPSelectionRangesTool{lspToolBase: base})
 		reg.Register(&LSPDefinitionTool{lspToolBase: base})
 		reg.Register(&LSPTypeDefinitionTool{lspToolBase: base})
 		reg.Register(&LSPImplementationTool{lspToolBase: base})

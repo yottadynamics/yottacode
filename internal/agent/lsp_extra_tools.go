@@ -53,6 +53,99 @@ func (t *LSPDocumentSymbolsTool) Execute(ctx context.Context, argsJSON string) (
 	return formatSymbols(items, normalizedLSPMax(a.MaxResults), ""), nil
 }
 
+// LSPDocumentHighlightsTool returns current-file symbol occurrences for a
+// position. It is intentionally narrower than references so agents can inspect
+// local reads/writes without pulling workspace-wide results into context.
+type LSPDocumentHighlightsTool struct{ lspToolBase }
+
+func (t *LSPDocumentHighlightsTool) Name() string { return "lsp_document_highlights" }
+func (t *LSPDocumentHighlightsTool) Description() string {
+	return "Show current-file language-server document highlights for a source position, including read/write/text occurrence kind."
+}
+func (t *LSPDocumentHighlightsTool) Schema() map[string]any       { return positionSchema() }
+func (t *LSPDocumentHighlightsTool) RequiresApproval(string) bool { return false }
+func (t *LSPDocumentHighlightsTool) ParallelSafe(string) bool     { return true }
+func (t *LSPDocumentHighlightsTool) PreviewCall(argsJSON string) string {
+	var a positionArgs
+	_ = json.Unmarshal([]byte(argsJSON), &a)
+	return fmt.Sprintf("lsp_document_highlights(%s:%d:%d)", a.Path, a.Line, a.Character)
+}
+func (t *LSPDocumentHighlightsTool) Execute(ctx context.Context, argsJSON string) (string, error) {
+	client, path, pos, unavailable, err := openPositionClient(ctx, t.lspToolBase, argsJSON, "lsp_document_highlights")
+	if err != nil || unavailable != "" {
+		return unavailable, err
+	}
+	defer client.Close()
+	highlights, err := client.DocumentHighlights(ctx, path, pos)
+	if errors.Is(err, lspci.ErrUnsupportedCapability) {
+		return unsupportedCapabilityResult("lsp_document_highlights", err), nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("lsp_document_highlights: %w", err)
+	}
+	if len(highlights) == 0 {
+		return "(no document highlights)\n", nil
+	}
+	var b strings.Builder
+	for _, highlight := range highlights {
+		fmt.Fprintf(&b, "%s\t%s\n", highlight.Kind, displayRange(path, highlight.Range))
+	}
+	return b.String(), nil
+}
+
+// LSPSelectionRangesTool returns the nested syntax ranges around a position.
+// Agents can use the smallest-to-largest chain to choose a safe expression,
+// block, or function-sized context window before editing.
+type LSPSelectionRangesTool struct{ lspToolBase }
+
+func (t *LSPSelectionRangesTool) Name() string { return "lsp_selection_ranges" }
+func (t *LSPSelectionRangesTool) Description() string {
+	return "Show nested language-server selection ranges around a source position, from smallest expression to larger enclosing ranges."
+}
+func (t *LSPSelectionRangesTool) Schema() map[string]any {
+	s := positionSchema()
+	s["properties"].(map[string]any)["max_results"] = map[string]any{"type": "integer", "description": "Cap on returned ranges (default 50)"}
+	return s
+}
+func (t *LSPSelectionRangesTool) RequiresApproval(string) bool { return false }
+func (t *LSPSelectionRangesTool) ParallelSafe(string) bool     { return true }
+func (t *LSPSelectionRangesTool) PreviewCall(argsJSON string) string {
+	var a positionArgs
+	_ = json.Unmarshal([]byte(argsJSON), &a)
+	return fmt.Sprintf("lsp_selection_ranges(%s:%d:%d)", a.Path, a.Line, a.Character)
+}
+func (t *LSPSelectionRangesTool) Execute(ctx context.Context, argsJSON string) (string, error) {
+	var a positionArgs
+	if err := json.Unmarshal([]byte(argsJSON), &a); err != nil {
+		return "", fmt.Errorf("lsp_selection_ranges: invalid args: %w", err)
+	}
+	client, path, pos, unavailable, err := openPositionClient(ctx, t.lspToolBase, argsJSON, "lsp_selection_ranges")
+	if err != nil || unavailable != "" {
+		return unavailable, err
+	}
+	defer client.Close()
+	ranges, err := client.SelectionRanges(ctx, path, []lspci.Position{pos})
+	if errors.Is(err, lspci.ErrUnsupportedCapability) {
+		return unsupportedCapabilityResult("lsp_selection_ranges", err), nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("lsp_selection_ranges: %w", err)
+	}
+	if len(ranges) == 0 {
+		return "(no selection ranges)\n", nil
+	}
+	limit := normalizedLSPMax(a.MaxResults)
+	var b strings.Builder
+	for i, r := range ranges {
+		if i >= limit {
+			fmt.Fprintf(&b, "…[truncated at %d results]\n", limit)
+			break
+		}
+		fmt.Fprintf(&b, "%d\t%s\n", r.Depth, displayRange(r.Path, r.Range))
+	}
+	return b.String(), nil
+}
+
 // LSPHoverTool returns hover/type information for a source position.
 type LSPHoverTool struct{ lspToolBase }
 
@@ -404,4 +497,8 @@ func formatSymbols(items []lspci.Symbol, limit int, prefix string) string {
 		fmt.Fprintf(&b, "%s\t%s\t%s\t%s\n", displayLocation(item.Location), item.Kind, item.Name, item.Container)
 	}
 	return b.String()
+}
+
+func displayRange(path string, r lspci.TextRange) string {
+	return fmt.Sprintf("%s:%d:%d-%d:%d", path, r.Start.Line+1, r.Start.Character+1, r.End.Line+1, r.End.Character+1)
 }

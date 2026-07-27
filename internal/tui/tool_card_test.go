@@ -294,6 +294,8 @@ func TestToolHeader_RewritesPerToolPreviews(t *testing.T) {
 		{"lsp_status", `{"path":"."}`, "lsp_status(.)", "LSP(status .)"},
 		{"lsp_symbols", `{"query":"Foo","path":"internal"}`, `lsp_symbols("Foo" in internal)`, `LSP(symbols "Foo" in internal)`},
 		{"lsp_document_symbols", `{"path":"main.go"}`, "lsp_document_symbols(main.go)", "LSP(document symbols main.go)"},
+		{"lsp_document_highlights", `{"path":"main.go","line":1,"character":2}`, "lsp_document_highlights(main.go:1:2)", "LSP(document highlights main.go:1:2)"},
+		{"lsp_selection_ranges", `{"path":"main.go","line":1,"character":2}`, "lsp_selection_ranges(main.go:1:2)", "LSP(selection ranges main.go:1:2)"},
 		{"lsp_definition", `{"path":"main.go","line":1,"character":2}`, "lsp_definition(main.go:1:2)", "LSP(definition main.go:1:2)"},
 		{"lsp_references", `{"path":"main.go","line":1,"character":2}`, "lsp_references(main.go:1:2)", "LSP(references main.go:1:2)"},
 		{"lsp_signature_help", `{"path":"main.go","line":1,"character":2}`, "lsp_signature_help(main.go:1:2)", "LSP(signature main.go:1:2)"},

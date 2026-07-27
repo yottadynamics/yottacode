@@ -29,6 +29,10 @@ const (
 // instead of showing a misleading empty response.
 var ErrUnsupportedCapability = errors.New("unsupported LSP capability")
 
+// ErrInvalidRenamePosition marks a cursor position that the server rejected
+// during textDocument/prepareRename before yottacode asked for rename edits.
+var ErrInvalidRenamePosition = errors.New("invalid rename position")
+
 // Position is a zero-based LSP text position.
 type Position struct {
 	Line      int `json:"line"`
@@ -49,6 +53,24 @@ type Symbol struct {
 	Container string
 	Location  Location
 	Range     TextRange
+}
+
+// DocumentHighlight is a current-document read/write/text occurrence range
+// returned by textDocument/documentHighlight. Ranges use zero-based LSP UTF-16
+// coordinates.
+type DocumentHighlight struct {
+	Range TextRange
+	Kind  string
+}
+
+// SelectionRange is one enclosing syntax range returned by
+// textDocument/selectionRange. Depth starts at zero for the smallest range and
+// increases as the server walks to larger parent ranges.
+type SelectionRange struct {
+	Path          string
+	PositionIndex int
+	Depth         int
+	Range         TextRange
 }
 
 // ParameterInformation describes one signature parameter returned by LSP.
@@ -124,6 +146,8 @@ type CallHierarchyItem struct {
 type serverCapabilities struct {
 	WorkspaceSymbol   bool
 	DocumentSymbol    bool
+	DocumentHighlight bool
+	SelectionRange    bool
 	Definition        bool
 	TypeDefinition    bool
 	Implementation    bool
@@ -134,6 +158,7 @@ type serverCapabilities struct {
 	CodeActionResolve bool
 	CallHierarchy     bool
 	Rename            bool
+	RenamePrepare     bool
 	Formatting        bool
 }
 
@@ -211,6 +236,8 @@ func (c *Client) initialize(ctx context.Context) error {
 			},
 			"textDocument": map[string]any{
 				"documentSymbol":     map[string]any{},
+				"documentHighlight":  map[string]any{},
+				"selectionRange":     map[string]any{},
 				"definition":         map[string]any{},
 				"typeDefinition":     map[string]any{},
 				"implementation":     map[string]any{},
@@ -220,7 +247,7 @@ func (c *Client) initialize(ctx context.Context) error {
 				"codeAction":         map[string]any{"resolveSupport": map[string]any{"properties": []string{"edit", "command"}}},
 				"publishDiagnostics": map[string]any{},
 				"callHierarchy":      map[string]any{},
-				"rename":             map[string]any{},
+				"rename":             map[string]any{"prepareSupport": true},
 				"formatting":         map[string]any{},
 			},
 		},
@@ -319,6 +346,62 @@ func (c *Client) DocumentSymbols(ctx context.Context, path string) ([]Symbol, er
 		return nil, err
 	}
 	return documentSymbols(path, raw)
+}
+
+// DocumentHighlights returns current-file symbol occurrences at pos.
+func (c *Client) DocumentHighlights(ctx context.Context, path string, pos Position) ([]DocumentHighlight, error) {
+	if err := c.requireCapability(c.caps.DocumentHighlight, "textDocument/documentHighlight"); err != nil {
+		return nil, err
+	}
+	if err := c.openDocument(ctx, path); err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(ctx, defaultRequestTimeout)
+	defer cancel()
+	raw, err := c.request(ctx, "textDocument/documentHighlight", map[string]any{"textDocument": map[string]any{"uri": pathToURI(path)}, "position": pos})
+	if err != nil || len(raw) == 0 || string(raw) == "null" {
+		return nil, err
+	}
+	var items []struct {
+		Range TextRange `json:"range"`
+		Kind  int       `json:"kind"`
+	}
+	if err := json.Unmarshal(raw, &items); err != nil {
+		return nil, fmt.Errorf("parse documentHighlight response: %w", err)
+	}
+	out := make([]DocumentHighlight, 0, len(items))
+	for _, item := range items {
+		out = append(out, DocumentHighlight{Range: item.Range, Kind: documentHighlightKindName(item.Kind)})
+	}
+	return out, nil
+}
+
+// SelectionRanges returns enclosing syntax ranges for one or more positions.
+func (c *Client) SelectionRanges(ctx context.Context, path string, positions []Position) ([]SelectionRange, error) {
+	if err := c.requireCapability(c.caps.SelectionRange, "textDocument/selectionRange"); err != nil {
+		return nil, err
+	}
+	if len(positions) == 0 {
+		return nil, nil
+	}
+	if err := c.openDocument(ctx, path); err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(ctx, defaultRequestTimeout)
+	defer cancel()
+	raw, err := c.request(ctx, "textDocument/selectionRange", map[string]any{"textDocument": map[string]any{"uri": pathToURI(path)}, "positions": positions})
+	if err != nil || len(raw) == 0 || string(raw) == "null" {
+		return nil, err
+	}
+	var items []lspSelectionRange
+	if err := json.Unmarshal(raw, &items); err != nil {
+		return nil, fmt.Errorf("parse selectionRange response: %w", err)
+	}
+	var out []SelectionRange
+	for i := range items {
+		out = append(out, flattenSelectionRanges(path, i, &items[i])...)
+	}
+	return out, nil
 }
 
 // Definition runs textDocument/definition at pos.
@@ -485,6 +568,15 @@ func (c *Client) RenamePreview(ctx context.Context, path string, pos Position, n
 	}
 	ctx, cancel := context.WithTimeout(ctx, defaultRequestTimeout)
 	defer cancel()
+	if c.caps.RenamePrepare {
+		raw, err := c.request(ctx, "textDocument/prepareRename", map[string]any{"textDocument": map[string]any{"uri": pathToURI(path)}, "position": pos})
+		if err != nil || len(raw) == 0 || string(raw) == "null" {
+			if err != nil {
+				return WorkspaceEdit{}, fmt.Errorf("%w: %v", ErrInvalidRenamePosition, err)
+			}
+			return WorkspaceEdit{}, ErrInvalidRenamePosition
+		}
+	}
 	raw, err := c.request(ctx, "textDocument/rename", map[string]any{"textDocument": map[string]any{"uri": pathToURI(path)}, "position": pos, "newName": newName})
 	if err != nil {
 		return WorkspaceEdit{}, err

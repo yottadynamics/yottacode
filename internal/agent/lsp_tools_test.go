@@ -14,11 +14,14 @@ import (
 type fakeLSPClient struct {
 	symbols     []lspci.Symbol
 	docSymbols  []lspci.Symbol
+	highlights  []lspci.DocumentHighlight
+	selections  []lspci.SelectionRange
 	locs        []lspci.Location
 	signatures  lspci.SignatureHelp
 	diagnostics []lspci.Diagnostic
 	actions     []lspci.CodeAction
 	calls       []lspci.CallHierarchyItem
+	renameErr   error
 }
 
 func (f *fakeLSPClient) WorkspaceSymbols(context.Context, string) ([]lspci.Symbol, error) {
@@ -26,6 +29,18 @@ func (f *fakeLSPClient) WorkspaceSymbols(context.Context, string) ([]lspci.Symbo
 }
 func (f *fakeLSPClient) DocumentSymbols(context.Context, string) ([]lspci.Symbol, error) {
 	return f.docSymbols, nil
+}
+func (f *fakeLSPClient) DocumentHighlights(context.Context, string, lspci.Position) ([]lspci.DocumentHighlight, error) {
+	return f.highlights, nil
+}
+func (f *fakeLSPClient) SelectionRanges(_ context.Context, path string, _ []lspci.Position) ([]lspci.SelectionRange, error) {
+	if f.selections != nil {
+		return f.selections, nil
+	}
+	return []lspci.SelectionRange{
+		{Path: path, Depth: 0, Range: lspci.TextRange{Start: lspci.Position{Line: 1, Character: 8}, End: lspci.Position{Line: 1, Character: 14}}},
+		{Path: path, Depth: 1, Range: lspci.TextRange{Start: lspci.Position{Line: 1, Character: 5}, End: lspci.Position{Line: 1, Character: 16}}},
+	}, nil
 }
 func (f *fakeLSPClient) Definition(context.Context, string, lspci.Position) ([]lspci.Location, error) {
 	return f.locs, nil
@@ -67,6 +82,9 @@ func (f *fakeLSPClient) CodeActionPreview(_ context.Context, path string, _ lspc
 	return lspci.WorkspaceEdit{}, errors.New("no edit")
 }
 func (f *fakeLSPClient) RenamePreview(_ context.Context, path string, _ lspci.Position, _ string) (lspci.WorkspaceEdit, error) {
+	if f.renameErr != nil {
+		return lspci.WorkspaceEdit{}, f.renameErr
+	}
 	return lspci.WorkspaceEdit{Edits: []lspci.TextEdit{{Path: path, Range: lspci.TextRange{Start: lspci.Position{Line: 0, Character: 0}, End: lspci.Position{Line: 0, Character: 0}}, NewText: "// renamed\n"}}}, nil
 }
 func (f *fakeLSPClient) FormatPreview(_ context.Context, path string) (lspci.WorkspaceEdit, error) {
@@ -208,9 +226,72 @@ func TestRegisterCoreCwdTools_LSPGate(t *testing.T) {
 	}
 	reg = NewRegistry()
 	RegisterCoreCwdTools(reg, cwd, CoreToolDeps{WriteOpts: WritePathOptions{Cwd: cwd}, EnableLSP: true})
-	for _, name := range []string{"lsp_status", "lsp_symbols", "lsp_document_symbols", "lsp_definition", "lsp_type_definition", "lsp_implementation", "lsp_references", "lsp_diagnostics", "lsp_changed_files_diagnostics", "lsp_hover", "lsp_signature_help", "lsp_code_actions", "lsp_code_action_preview", "lsp_rename_preview", "lsp_format_preview", "lsp_apply_workspace_edit", "lsp_call_hierarchy"} {
+	for _, name := range []string{"lsp_status", "lsp_symbols", "lsp_document_symbols", "lsp_document_highlights", "lsp_selection_ranges", "lsp_definition", "lsp_type_definition", "lsp_implementation", "lsp_references", "lsp_diagnostics", "lsp_changed_files_diagnostics", "lsp_hover", "lsp_signature_help", "lsp_code_actions", "lsp_code_action_preview", "lsp_rename_preview", "lsp_format_preview", "lsp_apply_workspace_edit", "lsp_call_hierarchy"} {
 		if _, ok := reg.Get(name); !ok {
 			t.Errorf("%s should register when EnableLSP is true", name)
 		}
+	}
+}
+
+func TestLSPDocumentHighlightsFormatsRanges(t *testing.T) {
+	tmp := t.TempDir()
+	writeFile(t, tmp, "main.go", "package main\nvar count int\n")
+	tool := &LSPDocumentHighlightsTool{lspToolBase: lspToolBase{
+		Cwd: NewCwdRef(tmp),
+		NewClient: func(context.Context, lspci.Language, string) (lspClient, error) {
+			return &fakeLSPClient{highlights: []lspci.DocumentHighlight{{Kind: "write", Range: lspci.TextRange{Start: lspci.Position{Line: 1, Character: 4}, End: lspci.Position{Line: 1, Character: 9}}}}}, nil
+		},
+	}}
+	out, err := tool.Execute(context.Background(), `{"path":"main.go","line":1,"character":5}`)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if strings.TrimSpace(out) != "write\t"+filepath.Join(tmp, "main.go")+":2:5-2:10" {
+		t.Fatalf("unexpected highlights output: %q", out)
+	}
+}
+
+func TestLSPDocumentHighlightsEmptyOutput(t *testing.T) {
+	tmp := t.TempDir()
+	writeFile(t, tmp, "main.go", "package main")
+	tool := &LSPDocumentHighlightsTool{lspToolBase: lspToolBase{Cwd: NewCwdRef(tmp), NewClient: func(context.Context, lspci.Language, string) (lspClient, error) {
+		return &fakeLSPClient{}, nil
+	}}}
+	out, err := tool.Execute(context.Background(), `{"path":"main.go","line":0,"character":0}`)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if strings.TrimSpace(out) != "(no document highlights)" {
+		t.Fatalf("unexpected empty output: %q", out)
+	}
+}
+
+func TestLSPSelectionRangesFormatsAndTruncates(t *testing.T) {
+	tmp := t.TempDir()
+	writeFile(t, tmp, "main.go", "package main\nfunc main() {}\n")
+	tool := &LSPSelectionRangesTool{lspToolBase: lspToolBase{Cwd: NewCwdRef(tmp), NewClient: func(context.Context, lspci.Language, string) (lspClient, error) {
+		return &fakeLSPClient{}, nil
+	}}}
+	out, err := tool.Execute(context.Background(), `{"path":"main.go","line":1,"character":9,"max_results":1}`)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if !strings.Contains(out, "0\t"+filepath.Join(tmp, "main.go")+":2:9-2:15") || !strings.Contains(out, "…[truncated at 1 results]") {
+		t.Fatalf("unexpected selection output: %q", out)
+	}
+}
+
+func TestLSPSelectionRangesEmptyOutput(t *testing.T) {
+	tmp := t.TempDir()
+	writeFile(t, tmp, "main.go", "package main")
+	tool := &LSPSelectionRangesTool{lspToolBase: lspToolBase{Cwd: NewCwdRef(tmp), NewClient: func(context.Context, lspci.Language, string) (lspClient, error) {
+		return &fakeLSPClient{selections: []lspci.SelectionRange{}}, nil
+	}}}
+	out, err := tool.Execute(context.Background(), `{"path":"main.go","line":0,"character":0}`)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if strings.TrimSpace(out) != "(no selection ranges)" {
+		t.Fatalf("unexpected empty output: %q", out)
 	}
 }
