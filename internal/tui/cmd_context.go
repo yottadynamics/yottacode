@@ -62,7 +62,7 @@ type skillEntry struct {
 }
 
 // cmdContext renders the /context breakdown onto the inline-overlay
-// surface (below the cmdline + status bar) rather than into chat
+// surface (above the cmdline) rather than into chat
 // history — the report is transient inspection, so keeping it out of
 // scrollback / the transcript / resume replay avoids cluttering the
 // conversation record. The body is snapshotted here (it reads memory

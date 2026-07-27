@@ -217,7 +217,7 @@ func TestStatusBar_RendersRoutingChip(t *testing.T) {
 	m.router = &cli.RouterAdapters{FastModel: "anthropic/claude-haiku-4-5", SmartModel: "nvidia/claude-opus-4-6"}
 	m.modelName = m.router.SmartModel // active == smart: the pair is primary
 	plain := stripANSI(m.renderStatus())
-	if !strings.Contains(plain, "claude-opus-4-6") || !strings.Contains(plain, "auto") {
+	if !strings.Contains(plain, "claude-opus-4-6 auto") {
 		t.Errorf("status bar should show active model with inline auto mode: %q", plain)
 	}
 	if strings.Contains(plain, "claude-opus-4-6:claude-haiku-4-5") {
@@ -233,14 +233,15 @@ func TestStatusBar_RendersRoutingChip(t *testing.T) {
 	}
 }
 
-func TestStatusBar_RoutingChipManual(t *testing.T) {
+func TestStatusBar_ManualRoutingDoesNotAddModelSuffix(t *testing.T) {
 	m := newTestModel(t)
 	m, _ = applyMsg(m, tea.WindowSizeMsg{Width: 160, Height: 24})
 	m.routerMode = config.RouterModeManual
 	m.router = &cli.RouterAdapters{FastModel: "claude-haiku-4-5", SmartModel: "claude-opus-4-6"}
+	m.modelName = m.router.SmartModel
 	plain := stripANSI(m.renderStatus())
-	if !strings.Contains(plain, "manual") {
-		t.Errorf("manual mode should show inline manual mode text: %q", plain)
+	if strings.Contains(plain, "claude-opus-4-6 manual") {
+		t.Errorf("manual routing should not add a model suffix when advisor isn't active: %q", plain)
 	}
 	if strings.Contains(plain, "routing: manual") {
 		t.Errorf("manual mode should not show a separate routing chip: %q", plain)
@@ -272,7 +273,7 @@ func TestRenderStatus_AutoPairOnlyWhileActiveMatchesSmart(t *testing.T) {
 		connection: connOK,
 	}
 	bar := stripANSI(m.renderStatus())
-	if !strings.Contains(bar, "claude-opus-4-6") || !strings.Contains(bar, "auto") {
+	if !strings.Contains(bar, "claude-opus-4-6 auto") {
 		t.Errorf("active==smart: status bar should show the active model with inline auto text; got %q", bar)
 	}
 	if strings.Contains(bar, "claude-opus-4-6:claude-haiku-4-5") {
@@ -281,11 +282,8 @@ func TestRenderStatus_AutoPairOnlyWhileActiveMatchesSmart(t *testing.T) {
 
 	m.modelName = "some-other-model" // user ran /model after configuring the router
 	bar = stripANSI(m.renderStatus())
-	if !strings.Contains(bar, "some-other-model") {
-		t.Errorf("diverged: status bar must show the real active model; got %q", bar)
-	}
-	if !strings.Contains(bar, "auto") {
-		t.Errorf("diverged: routing should show auto mode inline; got %q", bar)
+	if !strings.Contains(bar, "some-other-model auto") {
+		t.Errorf("diverged: status bar must show the real active model with inline auto text; got %q", bar)
 	}
 	if strings.Contains(bar, "routing: auto") {
 		t.Errorf("diverged: status bar should not render a separate routing chip; got %q", bar)
@@ -308,8 +306,8 @@ func TestRenderStatus_PlanModeShowsActiveAdvisorNotPair(t *testing.T) {
 	}
 
 	bar := stripANSI(m.renderStatus())
-	if !strings.Contains(bar, "claude-opus-4-6") {
-		t.Errorf("plan mode status should show active advisor model; got %q", bar)
+	if !strings.Contains(bar, "claude-opus-4-6 auto") {
+		t.Errorf("plan mode status should show active advisor model with inline auto text; got %q", bar)
 	}
 	if strings.Contains(bar, "claude-opus-4-6:claude-haiku-4-5") || strings.Contains(bar, "claude-haiku-4-5") {
 		t.Errorf("plan mode status must not show implementer/pair as active; got %q", bar)

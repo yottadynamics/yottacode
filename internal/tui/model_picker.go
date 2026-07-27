@@ -629,10 +629,10 @@ func renderModelPicker(p *modelPickerState, width int) string {
 	footer := "↵ save · ↑↓ navigate · PgUp/PgDn jump · home/end · esc cancel"
 	b.WriteString(styleFooter.Render(footer))
 
-	// Inline-overlay shape: no outer rounded box, no horizontal
-	// centering. The parent renderInlineOverlay sits this body below
-	// the cmdline + status bar + separator rule, so a second border
-	// would read as "modal floating on a modal".
+	// Inline-overlay shape: no rounded box, no horizontal
+	// centering. The parent renderInlineOverlay sits this body above
+	// the cmdline, so a second border would read as "modal floating
+	// on a modal".
 	return strings.TrimRight(b.String(), "\n")
 }
 

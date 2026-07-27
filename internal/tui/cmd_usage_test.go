@@ -14,7 +14,7 @@ import (
 )
 
 // TestCmdUsage_OpensOverlayNotHistory locks the core behavior: /usage
-// renders into the inline overlay below the cmdline (m.usageOpen +
+// renders into the inline overlay above the cmdline (m.usageOpen +
 // m.usagePanel) and does NOT append to chat scrollback, so the token
 // tallies never enter the conversation the model re-reads.
 func TestCmdUsage_OpensOverlayNotHistory(t *testing.T) {

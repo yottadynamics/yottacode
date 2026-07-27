@@ -1,7 +1,6 @@
 package tui
 
 import (
-	"fmt"
 	"strings"
 )
 
@@ -105,9 +104,9 @@ const slashPaletteVisible = 12
 // the border, hence the -2 at the render calls; passing width straight
 // through used to make the box overflow the terminal by two columns.
 //
-// When the filtered list is longer than slashPaletteVisible, we render
-// only the window and add muted `▲ N more` / `▼ N more` hints above and
-// below so the user knows there's more to scroll to.
+// Rows use the same `❯` cursor affordance as the larger slash-command
+// submenus so opening `/` feels like the first level of that picker
+// hierarchy, not a separate reverse-video completion widget.
 func renderPalette(items []slashCommand, idx, offset, width int) string {
 	if len(items) == 0 {
 		return stylePaletteBox.Width(width - 2).Render(styleEmpty.Render("(no matching commands)"))
@@ -139,14 +138,12 @@ func renderPalette(items []slashCommand, idx, offset, width int) string {
 	}
 	var lines []string
 	for i := offset; i < end; i++ {
-		c := items[i]
-		line := fmt.Sprintf(" %-*s   %s", colWidth, lefts[i], c.Help)
-		if i == idx {
-			line = stylePaletteSelected.Render(line)
-		} else {
-			line = stylePaletteItem.Render(line)
-		}
-		lines = append(lines, line)
+		lines = append(lines, renderMenuItem(menuItemOpts{
+			Label:      lefts[i],
+			LabelWidth: colWidth,
+			Desc:       items[i].Help,
+			Cursor:     i == idx,
+		}))
 	}
 	return stylePaletteBox.Width(width - 2).Render(strings.Join(lines, "\n"))
 }

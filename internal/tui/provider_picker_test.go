@@ -117,7 +117,7 @@ func TestProviderPicker_EscFromMenuClosesPicker(t *testing.T) {
 
 // /provider list typed shortcut now opens the picker into the Use
 // sub-mode (replacing the prior scrollback dump). The list is shown
-// inline below the cmdline + status bar, and the user can switch
+// inline above the cmdline, and the user can switch
 // providers from the same screen with Enter.
 func TestSlash_ProviderListShortcutOpensUsePicker(t *testing.T) {
 	m := newTestModel(t)

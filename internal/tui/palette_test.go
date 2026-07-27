@@ -135,10 +135,11 @@ func TestRenderPalette_MatchesInputFrameWidth(t *testing.T) {
 }
 
 func TestRenderPalette_HighlightsSelected(t *testing.T) {
-	out := renderPalette(allSlash, 0, 0, 80)
-	// /plan is at index 0; it should appear with the selected style applied.
-	if !strings.Contains(out, "/plan") {
-		t.Errorf("palette missing /plan: %q", out)
+	out := stripANSI(renderPalette(allSlash, 0, 0, 80))
+	// /plan is at index 0; it should use the same arrow-cursor picker
+	// affordance as slash-command submenus.
+	if !strings.Contains(out, "❯ /plan") {
+		t.Errorf("palette selected row should use ❯ cursor for /plan: %q", out)
 	}
 }
 
@@ -161,10 +162,11 @@ func TestRenderPalette_WindowedNoOverflowHints(t *testing.T) {
 		t.Skipf("test requires more than %d built-in commands; have %d", slashPaletteVisible, len(allSlash))
 	}
 	out := stripANSI(renderPalette(allSlash, 0, 0, 80))
-	// Count rendered command rows — each starts with " /" after ANSI strip.
+	// Count rendered command rows. Only actual menu rows start with the
+	// picker cursor or its unselected spacer prefix.
 	rows := 0
 	for _, line := range strings.Split(out, "\n") {
-		if strings.Contains(line, "/") {
+		if strings.HasPrefix(line, "❯ /") || strings.HasPrefix(line, "  /") {
 			rows++
 		}
 	}

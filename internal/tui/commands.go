@@ -62,16 +62,12 @@ var allSlash []slashCommand
 
 func init() {
 	// Ordered by reach frequency during an active session:
-	// workflow → config → git → utilities → meta.
+	// workflow → config → git → utilities → rare-dangerous toggle → meta.
 	allSlash = []slashCommand{
 		// Workflow — most reached-for during active coding.
 		// Auto mode is intentionally NOT slash-invocable (mirroring
 		// Claude Code): auto via Shift+Tab or --permission-mode auto.
-		// Yolo enters via --yolo at startup AND /yolo mid-session; the
-		// /yolo slash command is the mid-session escape hatch that
-		// toggles the overlay off again.
 		{Name: "plan", Help: "toggle plan mode — also Shift+Tab. Type `/plan list` to resume an earlier plan.", Run: cmdPlan},
-		{Name: "yolo", Help: "toggle yolo mode — also --yolo at startup. Auto-runs every tool (NO safety floor); deny rules still win.", Run: cmdYolo},
 		{Name: "model", Help: "open the model picker (subcommands: list [all], <name>)", Run: cmdModel},
 		{Name: "provider", Help: "select a new provider (subcommands: list, use, add, remove, models)", Run: cmdProviderEntry},
 		{Name: "effort", Help: "set reasoning effort for providers that support it (default · low · medium · high)", Run: cmdEffort},
@@ -85,7 +81,7 @@ func init() {
 		{Name: "map", Args: "[query]", Help: "open the code map: directory → file → symbol structure", Run: cmdMap, PreservesTurn: true},
 		{Name: "video", Args: "[path]", Help: "guide a marketing-video workflow", Run: cmdVideo},
 		{Name: "summarize", Help: "compress session history into a structured summary", Run: cmdSummarize},
-		{Name: "skills", Help: "skills menu; subcommands: install <source>, official <name>, show <name>, uninstall <name>, check [name], update [name]", Run: cmdSkills, PreservesTurn: true},
+		{Name: "skills", Help: "skills menu; install/show/update/uninstall/check", Run: cmdSkills, PreservesTurn: true},
 		{Name: "subagents", Help: "open the subagents picker (Enter views · t toggles types · s stops · Esc closes)", Run: cmdSubagents, PreservesTurn: true},
 		{Name: "init", Help: "draft .yottacode/YOTTACODE.md from the current repo", Run: cmdInit},
 		{Name: "permissions", Help: "show where permissions are configured", Run: cmdPermissions, PreservesTurn: true},
@@ -121,9 +117,14 @@ func init() {
 		{Name: "checkpoints", Help: "open the checkpoints picker — also Esc Esc", Run: cmdCheckpoints},
 		{Name: "max-iterations", Args: "<N>", Help: "cap tool-call iterations per turn (default: 100; auto mode 4×)", Run: cmdMaxIterations},
 		{Name: "setup", Help: "re-run the setup wizard (reloads config on return)", Run: cmdSetup},
+		// Yolo enters via --yolo at startup AND /yolo mid-session; the
+		// /yolo slash command is the mid-session escape hatch that
+		// toggles the overlay off again, so keep it near the end but
+		// still above meta-only commands.
+		{Name: "yolo", Help: "toggle yolo mode — also --yolo at startup. Auto-runs every tool (NO safety floor); deny rules still win.", Run: cmdYolo},
+		{Name: "help", Help: "show this list", Run: cmdHelp, PreservesTurn: true},
 
 		// Meta — always last.
-		{Name: "help", Help: "show this list", Run: cmdHelp, PreservesTurn: true},
 		{Name: "quit", Help: "exit yottacode", Run: cmdQuit},
 	}
 }
@@ -1502,7 +1503,7 @@ func cmdRedo(m Model, _ []string) (Model, tea.Cmd) {
 }
 
 // cmdRecall queries the FTS5 index for matches across every saved session.
-// Non-empty results open a transient picker below the cmdline instead of
+// Non-empty results open a transient picker above the cmdline instead of
 // writing search/navigation output into the persistent session transcript. The
 // picker points users at the same resume flow as /sessions: Enter resumes the
 // highlighted hit; Esc closes back to the slash palette. With no recall index

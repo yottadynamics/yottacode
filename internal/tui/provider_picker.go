@@ -976,9 +976,8 @@ func renderProviderPicker(p *providerPickerState, width int) string {
 	}
 	footer := styleFooter.Render(footerText)
 	// Inline-overlay shape: no rounded box, no horizontal centering.
-	// The parent renderInlineOverlay sits this body below the cmdline
-	// + status bar + separator rule, so a second border would read as
-	// "modal floating on a modal".
+	// The parent renderInlineOverlay sits this body above the cmdline,
+	// so a second border would read as "modal floating on a modal".
 	_ = width
 	return body + "\n\n" + footer
 }

@@ -34,7 +34,7 @@ import (
 //     link.
 //   - free / local (ollama, NIM): token counts only.
 //
-// Renders into an inline overlay below the cmdline (like the
+// Renders into an inline overlay above the cmdline (like the
 // cheatsheet) rather than appending to chat scrollback: token tallies
 // are transient inspection, not part of the conversation, so they
 // shouldn't bloat the history the model re-reads. The body is rendered

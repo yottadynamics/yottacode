@@ -143,6 +143,20 @@ func TestSlash_PermissionsOpensPickerWithBothRows(t *testing.T) {
 			t.Errorf("/permissions picker missing %q; got %q", want, v)
 		}
 	}
+	// Inline overlays render above the cmdline, with the status bar still
+	// directly below the cmdline. This pins the shared compositor used by
+	// slash-command submenus.
+	plainView := stripANSI(v)
+	permIdx := strings.Index(plainView, "Permissions")
+	cmdIdx := strings.Index(plainView, "┌")
+	statusIdx := strings.Index(plainView, "●")
+	if permIdx < 0 || cmdIdx < 0 || statusIdx < 0 {
+		t.Fatalf("view missing overlay/cmdline/status markers:\n%s", plainView)
+	}
+	if !(permIdx < cmdIdx && cmdIdx < statusIdx) {
+		t.Errorf("expected overlay above cmdline and status below cmdline; positions permissions=%d cmd=%d status=%d\n%s",
+			permIdx, cmdIdx, statusIdx, plainView)
+	}
 	// Picker must not regress into a state-dump (no rule listing).
 	for _, banned := range []string{"Bash(go *)", "Bash(rm *)"} {
 		if strings.Contains(v, banned) {
@@ -154,11 +168,10 @@ func TestSlash_PermissionsOpensPickerWithBothRows(t *testing.T) {
 	if strings.Contains(v, "press any key") {
 		t.Errorf("/permissions should use picker-style esc dismiss, not 'press any key': %q", v)
 	}
-	// Transcript stays clean of the picker chrome — picker is below
-	// the cmdline, not in scrollback above it. The startup card may
-	// embed the test's temp-dir name (which contains "Permissions"),
-	// so assert against the picker's hotkey footer instead, which is
-	// unique to the live overlay.
+	// Transcript stays clean of the picker chrome — picker is live
+	// footer UI, not scrollback. The startup card may embed the test's
+	// temp-dir name (which contains "Permissions"), so assert against the
+	// picker's hotkey footer instead, which is unique to the live overlay.
 	if got := m.transcript.String(); strings.Contains(got, "↵ open in vim") {
 		t.Errorf("/permissions should not write the picker to scrollback; got %q", got)
 	}
