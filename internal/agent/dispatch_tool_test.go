@@ -195,6 +195,18 @@ func dispatchTestRepo(t *testing.T) string {
 			t.Fatalf("git %v: %v", args, err)
 		}
 	}
+	// Disable background git maintenance in short-lived test repositories. On
+	// CI, asynchronous maintenance can still be touching .git/objects when
+	// testing.TempDir cleanup begins, which makes os.RemoveAll occasionally
+	// fail with "directory not empty" even though the test assertions passed.
+	for _, args := range [][]string{
+		{"config", "gc.auto", "0"},
+		{"config", "maintenance.auto", "false"},
+	} {
+		if _, err := gitOutput(ctx, dir, args...); err != nil {
+			t.Fatalf("git %v: %v", args, err)
+		}
+	}
 	// Worktrees live under ~/.yottacode/worktrees/<repo-slug>/ (outside
 	// t.TempDir), so remove that slug dir on cleanup to avoid leaving
 	// cruft behind across test runs.
@@ -331,6 +343,10 @@ func TestDispatch_Background_DoneCallbackCarriesCommitStatus(t *testing.T) {
 			t.Fatalf("only %d/2 background-done callbacks fired", len(got))
 		}
 	}
+	// Receiving the async callback proves the commit status was reported, but
+	// keep the usual detached-worker join before TempDir cleanup starts. This
+	// avoids test teardown racing any final goroutine/file-handle cleanup.
+	waitForTasksDone(t, d.Agent.Tasks, 2, 5*time.Second)
 	for _, e := range got {
 		if !e.Committed || e.CommitSHA == "" {
 			t.Errorf("worker %s should report Committed with a SHA, got %+v", e.TaskID[:8], e)
