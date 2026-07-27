@@ -75,7 +75,8 @@ func modelShortcutSwitch(m Model, newTag string) (Model, tea.Cmd) {
 
 	m.apiKey = newAPIKey
 	m.baseURL = newBaseURL
-	ad := adapter.NewWithConfig(m.adapterConfig(newTag, newBaseURL))
+	acfg := m.adapterConfig(newTag, newBaseURL)
+	ad := adapter.NewWithConfig(acfg)
 	m.cfg.Adapter = ad
 	// Also update the AgentTool's Adapter so subagents inherit the new provider
 	if m.subagentTool != nil {
@@ -91,7 +92,8 @@ func modelShortcutSwitch(m Model, newTag string) (Model, tea.Cmd) {
 	} else {
 		m.appendLine(styleAuto.Render(statusLine("model", fmt.Sprintf("switched to %s", newTag))))
 	}
-	return m, runProviderProbe(m.parentCtx, m.adapterConfig(newTag, newBaseURL), false)
+	warnIfEffortNoop(&m, acfg)
+	return m, runProviderProbe(m.parentCtx, acfg, false)
 }
 
 // providerOwnsModel reports whether p's model surface contains tag.

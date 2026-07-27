@@ -486,7 +486,8 @@ func providerUse(m Model, name string) (Model, tea.Cmd) {
 	m.modelName = newModel
 	m.provider = string(detectKindAsProvider(p.Kind))
 	m.providerLabel = wizard.CatalogIdentity(p.Name)
-	ad := adapter.NewWithConfig(m.adapterConfig(newModel, p.BaseURL))
+	acfg := m.adapterConfig(newModel, p.BaseURL)
+	ad := adapter.NewWithConfig(acfg)
 	m.cfg.Adapter = ad
 	// Also update the AgentTool's Adapter so subagents inherit the new provider
 	if m.subagentTool != nil {
@@ -496,7 +497,8 @@ func providerUse(m Model, name string) (Model, tea.Cmd) {
 	m.sess.Model = newModel
 	m, _ = reloadMemoryNow(m, "")
 	m.appendLine(styleAuto.Render(statusOKLine("provider", fmt.Sprintf("switched to %s (model: %s)", name, newModel))))
-	cmds := []tea.Cmd{runProviderProbe(m.parentCtx, m.adapterConfig(newModel, p.BaseURL), false)}
+	warnIfEffortNoop(&m, acfg)
+	cmds := []tea.Cmd{runProviderProbe(m.parentCtx, acfg, false)}
 	// A provider switch changes the active model outside the picker path —
 	// discover its window from the live API too (the picker reads it from
 	// the list-models row; this path otherwise never would).

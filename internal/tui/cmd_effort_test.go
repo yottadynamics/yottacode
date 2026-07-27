@@ -1,10 +1,14 @@
 package tui
 
 import (
+	"context"
 	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/yottadynamics/yottacode/internal/agent"
+	"github.com/yottadynamics/yottacode/internal/config"
 )
 
 // /effort is registered so the palette and /help surface it.
@@ -110,6 +114,65 @@ func TestEffort_PickerEscIsNonDestructive(t *testing.T) {
 	}
 	if m.reasoningEffort != "medium" {
 		t.Errorf("Esc must not change the effort; got %q, want medium", m.reasoningEffort)
+	}
+}
+
+// commitEffortChoice must rebuild the router's advisor/implementer
+// adapters, not just the main one. BuildRouterAdapters bakes reasoning
+// effort into each adapter at construction time from m.opts, and m.opts
+// is a startup snapshot /effort never used to update — without the
+// rebuild in refreshRouterAdapters, /auto or /plan (or routed subagent
+// dispatch) would silently regress back to the pre-/effort setting the
+// next time either role adapter is used.
+func TestCommitEffortChoice_RebuildsRouterAdapters(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+
+	seed := config.Default()
+	seed.Providers = []config.Provider{{
+		Name:         "anthropic",
+		Kind:         "anthropic",
+		BaseURL:      "https://api.anthropic.com",
+		APIKeyEnv:    "ANTHROPIC_API_KEY",
+		DefaultModel: "claude-opus-4-6",
+		Models: []config.Model{
+			{Name: "claude-opus-4-6", Tier: "expensive"},
+			{Name: "claude-haiku-4-5", Tier: "cheap"},
+		},
+	}}
+	if err := config.Save(seed, ""); err != nil {
+		t.Fatalf("seed config: %v", err)
+	}
+
+	m := Model{
+		parentCtx:    context.Background(),
+		subagentTool: &agent.AgentTool{},
+		cfg:          agent.LoopConfig{Adapter: &scriptedAdapter{}},
+		routerMode:   config.RouterModeOff,
+		transcript:   &strings.Builder{},
+		routerPicker: &routerPickerState{},
+		modelName:    "claude-opus-4-6",
+		baseURL:      "https://api.anthropic.com",
+		provider:     "anthropic",
+	}
+	m, _ = commitRouterChain(m, "fast", []string{"anthropic:claude-haiku-4-5"})
+	m, _ = commitRouterChain(m, "smart", []string{"anthropic:claude-opus-4-6"})
+	if m.router == nil {
+		t.Fatalf("setup: commitRouterChain should build m.router")
+	}
+	staleImplementer := m.router.Implementer
+	staleAdvisor := m.router.Advisor
+
+	m, _ = commitEffortChoice(m, "high")
+
+	if m.opts.ReasoningEffort != "high" {
+		t.Errorf("m.opts.ReasoningEffort = %q, want high — router rebuilds read effort from opts", m.opts.ReasoningEffort)
+	}
+	if m.router.Implementer == staleImplementer {
+		t.Error("commitEffortChoice should rebuild the router's implementer adapter with the new effort, not keep the stale one")
+	}
+	if m.router.Advisor == staleAdvisor {
+		t.Error("commitEffortChoice should rebuild the router's advisor adapter with the new effort, not keep the stale one")
 	}
 }
 

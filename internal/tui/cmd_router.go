@@ -7,6 +7,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/yottadynamics/yottacode/internal/agent"
+	"github.com/yottadynamics/yottacode/internal/cli"
 	"github.com/yottadynamics/yottacode/internal/config"
 )
 
@@ -68,6 +69,32 @@ func (m Model) routerOn() (Model, tea.Cmd) {
 // routerOff disables routing via the persistent path.
 func (m Model) routerOff() (Model, tea.Cmd) {
 	return commitRouterMode(m, config.RouterModeOff)
+}
+
+// refreshRouterAdapters rebuilds the router's advisor/implementer (+
+// fast/smart alias) adapters from the session's current settings and,
+// in Auto mode, re-wires the subagent tool onto the fresh pointers.
+// BuildRouterAdapters bakes reasoning effort into each adapter at
+// construction time from m.opts, and m.opts is a startup snapshot that
+// /effort never updates directly — without this rebuild, the router
+// pair keeps serving whatever effort was set at session start (or the
+// last /router change), and a later /auto, /plan, or routed subagent
+// dispatch would silently regress the session back to that stale
+// setting the moment it swaps onto one of these roles. No-op when
+// routing isn't configured; a rebuild error leaves the existing pair in
+// place rather than losing it.
+func refreshRouterAdapters(m *Model) {
+	if m.router == nil {
+		return
+	}
+	ra, err := cli.BuildRouterAdapters(loadConfigForCommand(*m), m.opts)
+	if err != nil || ra == nil {
+		return
+	}
+	m.router = ra
+	if routerModeOrOff(m.routerMode) == config.RouterModeAuto {
+		applyRoutingOn(m)
+	}
 }
 
 // applyRoutingOn wires the live session for auto routing: subagents and
