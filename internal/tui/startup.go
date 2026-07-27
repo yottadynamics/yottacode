@@ -29,8 +29,7 @@ import (
 // on resize. termWidth <= 0 disables wrapping (early frames before the
 // first WindowSizeMsg, test fixtures).
 func renderStartupBox(version, commit string, dirty bool, modelName, dir, sessionID, branch, memorySummary string, profile adapter.ProviderProfile, tip string, termWidth int) string {
-	title := styleSplashTitle.Render(">_ YottaCode by YottaDynamics ") +
-		styleSplashLabel.Render(fmt.Sprintf("(%s)", buildLabel(version, commit, dirty)))
+	leftLabel := " " + styleSplashTitle.Render(">_ YottaCode") + " " + styleSplashLabel.Render(buildLabel(version, commit, dirty))
 
 	items := []startupInfoRow{
 		{Key: "model", Value: modelName},
@@ -51,7 +50,7 @@ func renderStartupBox(version, commit string, dirty bool, modelName, dir, sessio
 	if ctx := contextLine(branch, memorySummary); ctx != "" {
 		items = append(items, startupInfoRow{Key: "context", Value: ctx})
 	}
-	rows := []string{title, ""}
+	rows := []string{""}
 	rows = append(rows, renderStartupRows(items)...)
 	if tip != "" {
 		rows = append(rows, "", styleSplashLabel.Render("tip:")+" "+renderInlineCodeSpans(tip, styleSplashLabel))
@@ -69,17 +68,58 @@ func renderStartupBox(version, commit string, dirty bool, modelName, dir, sessio
 		rows = wrapped
 	}
 
-	return lipgloss.NewStyle().
-		Border(lipgloss.NormalBorder()).
-		BorderForeground(colorDim). // Dim (not Rule) so the card frame reads brightly
-		Padding(0, 1).
-		Render(strings.Join(rows, "\n"))
+	return renderStartupFrame(leftLabel, rows, termWidth)
+}
+
+// renderStartupFrame draws the startup card with title metadata embedded in
+// the top border, matching the LSP advisory card's shape while honoring the
+// cmdline's full-width frame when the terminal width is known.
+func renderStartupFrame(leftLabel string, bodyLines []string, termWidth int) string {
+	innerW := 0
+	for _, line := range bodyLines {
+		if w := ansi.StringWidth(line); w > innerW {
+			innerW = w
+		}
+	}
+
+	// The top border needs at least one rule cell after the embedded label.
+	headW := ansi.StringWidth(leftLabel) + 1
+	if headW > innerW {
+		innerW = headW
+	}
+	if termWidth > 0 {
+		// Outer width is inner content plus both borders and one padding cell on
+		// each side. Use the cmdline width when possible, but never clip labels.
+		if w := termWidth - 4; w > innerW {
+			innerW = w
+		}
+	}
+
+	border := lipgloss.NewStyle().Foreground(colorDim)
+	fill := innerW - ansi.StringWidth(leftLabel)
+	if fill < 1 {
+		fill = 1
+	}
+	top := border.Render("┌─") + leftLabel + border.Render(strings.Repeat("─", fill+1)+"┐")
+
+	sideL := border.Render("│ ")
+	sideR := border.Render(" │")
+	rows := []string{top}
+	for _, line := range bodyLines {
+		pad := innerW - ansi.StringWidth(line)
+		if pad < 0 {
+			pad = 0
+		}
+		rows = append(rows, sideL+line+strings.Repeat(" ", pad)+sideR)
+	}
+	rows = append(rows, border.Render("└"+strings.Repeat("─", innerW+2)+"┘"))
+	return strings.Join(rows, "\n")
 }
 
 // buildLabel composes the version + commit fragment shown in the
 // startup card title. Falls back to a bare "vX.Y.Z" when no commit is
 // known (go run, tarball build, -buildvcs=false) so we don't render
-// confusing empty parens like "v0.1.0 · ".
+// confusing empty parens like "v0.1.0 ()".
 func buildLabel(version, commit string, dirty bool) string {
 	if commit == "" {
 		return "v" + version
@@ -88,7 +128,7 @@ func buildLabel(version, commit string, dirty bool) string {
 	if dirty {
 		suffix += "*"
 	}
-	return "v" + version + " · " + suffix
+	return "v" + version + " (" + suffix + ")"
 }
 
 // contextLine joins branch + memory summary into one
