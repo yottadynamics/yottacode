@@ -701,16 +701,13 @@ func TestModel_TypingAllowedWhileThinking(t *testing.T) {
 }
 
 func TestModel_EnterMidTurnQueuesNotSubmits(t *testing.T) {
-	// Enter mid-turn no longer just stays silent — it captures the
-	// message into pendingInputAfterTurn so turnEndedMsg can auto-
-	// submit after the cancel unwinds. The textarea is cleared
-	// because the input was consumed (it's the queue's job to hold
-	// it now). What this test guards is the invariant that no NEW
-	// session message gets appended directly from this key press —
-	// the actual append happens later via startTurn's normal path.
+	// Enter mid-turn queues the message for the loop's next tool round.
+	// It must not append a user message directly or cancel the active turn;
+	// the actual append happens later via the loop's UserMessages channel.
 	m := newTestModel(t)
 	m.turnActive = true
 	m.turnCancel = func() {}
+	m.userMsgCh = make(chan string, 1)
 	for _, r := range "queued" {
 		m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
 	}
@@ -719,8 +716,13 @@ func TestModel_EnterMidTurnQueuesNotSubmits(t *testing.T) {
 	if len(m.sess.Messages) != beforeMsgs {
 		t.Errorf("Enter during a turn should not directly append a session message; msgs grew from %d to %d", beforeMsgs, len(m.sess.Messages))
 	}
-	if m.pendingInputAfterTurn != "queued" {
-		t.Errorf("Enter during a turn should stash input in pendingInputAfterTurn; got %q", m.pendingInputAfterTurn)
+	select {
+	case got := <-m.userMsgCh:
+		if got != "queued" {
+			t.Errorf("queued input = %q, want queued", got)
+		}
+	default:
+		t.Errorf("Enter during a turn should queue input on userMsgCh")
 	}
 	if m.textInput.Value() != "" {
 		t.Errorf("textarea should clear after queueing; got %q", m.textInput.Value())
@@ -814,14 +816,13 @@ func TestModel_UnknownSlashCommandDuringThinkingDoesNotCancel(t *testing.T) {
 }
 
 func TestModel_RegularMessageMidTurnQueuesForResubmission(t *testing.T) {
-	// Non-slash Enter mid-turn must not submit a new session message
-	// directly; it queues into pendingInputAfterTurn so the auto-
-	// submit path in turnEndedMsg can run startTurn after the cancel
-	// resolves. Mirrors the slash-mid-turn cancel-then-run flow but
-	// for plain text.
+	// Non-slash Enter mid-turn must not submit a new session message directly;
+	// it queues on userMsgCh so the active turn can consume it at the next tool
+	// round without cancelling any in-flight tool call.
 	m := newTestModel(t)
 	m.turnActive = true
 	m.turnCancel = func() {}
+	m.userMsgCh = make(chan string, 1)
 	for _, r := range "hello world" {
 		m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
 	}
@@ -830,8 +831,13 @@ func TestModel_RegularMessageMidTurnQueuesForResubmission(t *testing.T) {
 	if len(m.sess.Messages) != beforeMsgs {
 		t.Errorf("regular Enter during a turn should not directly submit")
 	}
-	if m.pendingInputAfterTurn != "hello world" {
-		t.Errorf("regular Enter should stash into pendingInputAfterTurn; got %q", m.pendingInputAfterTurn)
+	select {
+	case got := <-m.userMsgCh:
+		if got != "hello world" {
+			t.Errorf("queued input = %q, want hello world", got)
+		}
+	default:
+		t.Errorf("regular Enter should queue on userMsgCh")
 	}
 	if m.textInput.Value() != "" {
 		t.Errorf("textarea should clear after queueing; got %q", m.textInput.Value())

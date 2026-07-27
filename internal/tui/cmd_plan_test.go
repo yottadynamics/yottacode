@@ -12,6 +12,8 @@ import (
 
 	"github.com/yottadynamics/yottacode/internal/adapter"
 	"github.com/yottadynamics/yottacode/internal/agent"
+	"github.com/yottadynamics/yottacode/internal/cli"
+	"github.com/yottadynamics/yottacode/internal/config"
 	"github.com/yottadynamics/yottacode/internal/permissions"
 	"github.com/yottadynamics/yottacode/internal/session"
 )
@@ -944,6 +946,49 @@ func TestExitPlanModeApprovalCard_AEntersAutoMode(t *testing.T) {
 	}
 	if !autoMode.IsActive() {
 		t.Errorf("auto mode should be on after [A]")
+	}
+}
+
+func TestExitPlanModeApprovalCard_AutoRoutingSwitchesToImplementer(t *testing.T) {
+	m, planMode := newPlanModeTestModel(t)
+	advisor := &roleSwitchAdapter{profile: adapter.ProviderProfile{Provider: adapter.ProviderAnthropic}}
+	implementer := &roleSwitchAdapter{profile: adapter.ProviderProfile{Provider: adapter.ProviderOpenAI}}
+	m.routerMode = config.RouterModeAuto
+	m.router = &cli.RouterAdapters{
+		Advisor:          advisor,
+		AdvisorModel:     "gpt-5.5",
+		AdvisorRef:       "anthropic:gpt-5.5",
+		Implementer:      implementer,
+		ImplementerModel: "gpt-5.5-codex-mini",
+		ImplementerRef:   "openai:gpt-5.5-codex-mini",
+	}
+
+	m, _ = cmdPlan(m, nil)
+	if m.modelName != "gpt-5.5" {
+		t.Fatalf("plan mode should switch to advisor, got %q", m.modelName)
+	}
+	maybeFillPlanFile(&m, "investigate")
+	if err := os.MkdirAll(filepath.Dir(planMode.PlanFile), 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(planMode.PlanFile, []byte("# Plan\n"), 0o644); err != nil {
+		t.Fatalf("write plan file: %v", err)
+	}
+	m.eventsCh = make(chan agent.Event, 4)
+	m.decisions = make(chan agent.Decision, 1)
+	m.turnErrCh = make(chan error, 1)
+	m, _ = m.handleAgentEventTea(agent.ApprovalNeeded{ToolName: "exit_plan_mode", ArgsJSON: `{}`})
+
+	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	if m.modelName != "gpt-5.5-codex-mini" {
+		t.Fatalf("auto implementation should switch status model to implementer, got %q", m.modelName)
+	}
+	bar := stripANSI(m.renderStatus())
+	if !strings.Contains(bar, "gpt-5.5-codex-mini") || !strings.Contains(bar, "routing: auto") {
+		t.Fatalf("status should show implementer with auto routing context, got %q", bar)
+	}
+	if strings.Contains(bar, "gpt-5.5 auto") {
+		t.Fatalf("status should not leave advisor as the active auto model, got %q", bar)
 	}
 }
 

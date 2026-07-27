@@ -604,17 +604,17 @@ type Model struct {
 	// in by --resume, so the exit-save activity bar
 	// (exitSaveMinUserTurns) measures fresh interaction only.
 	userTurnsThisLaunch int
-	// pendingInputAfterTurn captures a user message that couldn't be
-	// delivered mid-turn (model finished without a tool round, or the
-	// userMsgCh buffer was full and we fell back to cancel+resubmit).
-	// The turnEndedMsg handler picks it up and starts a fresh turn.
+	// pendingInputAfterTurn captures a user message queued at a turn boundary
+	// when the model finished before it could consume userMsgCh. The
+	// turnEndedMsg handler picks it up and starts a fresh turn.
 	pendingInputAfterTurn string
 
 	// userMsgCh feeds mid-turn user messages into the agent loop's
 	// UserMessages channel. Created per-turn in startTurn; the loop
 	// checks it (non-blocking) between tool rounds and appends the
-	// message to history without cancelling. Buffer of 1; overflow
-	// falls back to the old cancel+resubmit path.
+	// message to history without cancelling. Buffer of 1; overflow keeps
+	// the new text in the input box and warns instead of interrupting the
+	// active tool call.
 	userMsgCh chan string
 
 	// loops holds every active /loop command in this TUI process. Loops are
@@ -1730,9 +1730,12 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// round without cancelling the active turn. The agent
 				// loop picks it up from userMsgCh between tool-call
 				// batches and appends it to history as a user message.
-				// If the buffer is full (a second message before the
-				// first was consumed), fall back to the old
-				// cancel+resubmit path.
+				// If a previous message is still queued, keep the typed
+				// text in the box and show a quiet status row instead of
+				// cancelling the active turn. Normal typing must never
+				// be able to interrupt an in-flight tool call; Esc/Ctrl+C
+				// and state-changing slash commands are the explicit stop
+				// paths.
 				if input == "" {
 					return m, nil
 				}
@@ -1749,15 +1752,8 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.appendLine(styleAuto.Render("[queued] will be delivered at next tool round"))
 					return m, nil
 				default:
-					// Buffer full — fall back to cancel+resubmit.
-					m.pendingInputAfterTurn = input
-					m.textInput.SetValue("")
-					m.paletteOpen = false
-					m.paletteIndex = 0
-					m.paletteOffset = 0
-					if m.turnCancel != nil {
-						m.turnCancel()
-					}
+					m.appendLine(styleAuto.Render(statusWarnLine("queued",
+						"already waiting for delivery; press ↑ to edit it or wait for the next tool round")))
 					return m, nil
 				}
 			default:
@@ -1842,6 +1838,9 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					exitPlanMode(&m)
 					if m.cfg.AutoMode != nil {
 						m.cfg.AutoMode.Active.Store(true)
+						if routerModeOrOff(m.routerMode) != config.RouterModeOff {
+							m, _ = m.switchActiveModelToRouterRole("implementer")
+						}
 						m.appendLine(styleAutoBannerLabel.Render(AutoModeIcon+" auto mode active") +
 							" " + styleAutoBannerHint.Render("— implementing the approved plan; bash & commits still prompt"))
 					}

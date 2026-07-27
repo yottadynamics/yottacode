@@ -112,10 +112,10 @@ func TestInterrupt_UpMidTurnCanReviseAndRequeueQueuedMessage(t *testing.T) {
 	}
 }
 
-// TestInterrupt_EnterMidTurnFallsBackOnOverflow verifies that when the
-// userMsgCh buffer is full (a second Enter before the first was consumed),
-// the handler falls back to the old cancel+resubmit path.
-func TestInterrupt_EnterMidTurnFallsBackOnOverflow(t *testing.T) {
+// TestInterrupt_EnterMidTurnOverflowDoesNotCancel verifies that a second
+// mid-turn Enter before the first queued message is consumed does not cancel
+// the active turn. Normal typing must not interrupt in-flight tool calls.
+func TestInterrupt_EnterMidTurnOverflowDoesNotCancel(t *testing.T) {
 	m := newTestModel(t)
 	cancels := installFakeTurn(t, &m)
 
@@ -125,17 +125,31 @@ func TestInterrupt_EnterMidTurnFallsBackOnOverflow(t *testing.T) {
 	}
 	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
 
-	// Second message: channel full, falls back to cancel+resubmit.
+	// Second message: channel full, stays in the textarea and only warns.
 	for _, r := range "second" {
 		m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
 	}
 	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
 
-	if m.pendingInputAfterTurn != "second" {
-		t.Errorf("pendingInputAfterTurn = %q, want %q (fallback path)", m.pendingInputAfterTurn, "second")
+	select {
+	case got := <-m.userMsgCh:
+		if got != "first" {
+			t.Fatalf("first queued message changed: got %q", got)
+		}
+	default:
+		t.Fatalf("first queued message should remain pending")
 	}
-	if got := cancels.Load(); got != 1 {
-		t.Errorf("turnCancel should fire once on overflow; got %d", got)
+	if m.pendingInputAfterTurn != "" {
+		t.Errorf("pendingInputAfterTurn should stay empty; got %q", m.pendingInputAfterTurn)
+	}
+	if got := cancels.Load(); got != 0 {
+		t.Errorf("turnCancel should not fire on queue overflow; got %d", got)
+	}
+	if got := m.textInput.Value(); got != "second" {
+		t.Errorf("second message should remain editable in textarea; got %q", got)
+	}
+	if !strings.Contains(stripANSI(m.transcript.String()), "already waiting for delivery") {
+		t.Fatalf("expected queue-full warning; transcript=%q", stripANSI(m.transcript.String()))
 	}
 }
 

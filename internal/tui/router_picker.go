@@ -574,7 +574,23 @@ func (m Model) switchActiveModelToRouterRole(role string) (Model, tea.Cmd) {
 	default:
 		return m, nil
 	}
-	if ref == "" || model == "" || ad == nil || m.modelName == model {
+	if ref == "" || model == "" || ad == nil {
+		return m, nil
+	}
+	if m.modelName == model {
+		// Same-model role switches are still meaningful because routing state
+		// and the live tool registry can change independently of the active
+		// model name. Refresh the adapter-backed fields and consult_advisor
+		// exposure without logging a visible switch or probing the provider.
+		m.cfg.Adapter = ad
+		if m.subagentTool != nil {
+			m.subagentTool.Adapter = ad
+		}
+		m.providerProfile = ad.Profile()
+		if m.sess != nil {
+			m.sess.Model = model
+		}
+		syncMainConsultAdvisorTool(&m)
 		return m, nil
 	}
 	provName, _, err := config.ParseCandidate(ref)
