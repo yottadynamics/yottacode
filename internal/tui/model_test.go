@@ -434,11 +434,11 @@ func TestModel_ContextCompactedRendersSystemMessage(t *testing.T) {
 	m := newTestModel(t)
 	m, _ = applyMsg(m, agentEventMsg{ev: agent.ContextCompacted{Before: 221000, After: 36000, SnapshotPath: "/tmp/foo.json"}})
 	plain := stripANSI(m.transcript.String())
-	want := SysMsg(SysContext, "context", "compacted", "~221K → ~36K tokens", "/tmp/foo.json")
+	want := "◇ context · compacted · 172% → 28% · full history saved"
 	if !strings.Contains(plain, want) {
-		t.Fatalf("expected context system message %q, got %q", want, plain)
+		t.Fatalf("expected context compaction line %q, got %q", want, plain)
 	}
-	if strings.Contains(plain, "┌ Context") {
+	if strings.Contains(plain, "/tmp/foo.json") {
 		t.Fatalf("context compaction should not render as a card, got %q", plain)
 	}
 }

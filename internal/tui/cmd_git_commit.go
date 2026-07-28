@@ -32,7 +32,7 @@ import (
 // foundation work landed.
 func cmdGitCommit(m Model, _ []string) (Model, tea.Cmd) {
 	if m.turnActive {
-		m.appendLine(styleError.Render("[git-commit] a turn is already running — wait for it to finish or press Esc to cancel"))
+		m.appendLine(styleError.Render(SysMsg(SysWarning, "git-commit", "turn already running", "wait or Esc to cancel")))
 		return m, nil
 	}
 	prompt := gitCommitDirective()

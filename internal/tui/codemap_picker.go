@@ -57,7 +57,7 @@ type codeMapLoadedMsg struct {
 
 func (m Model) openCodeMapPicker(mode codeMapMode, filter string, depth int) (Model, tea.Cmd) {
 	if m.codeMapProvider == nil {
-		m.appendLine(styleError.Render("/map requires --experimental code_map"))
+		m.appendLine(styleError.Render(SysMsg(SysWarning, "map", "experimental feature required", "--experimental code_map")))
 		return m, nil
 	}
 	hereFiles := []string(nil)

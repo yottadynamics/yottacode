@@ -121,12 +121,21 @@ func renderToolCard(toolName, preview, argsJSON, output string, errored bool, te
 	}
 	if !errored && toolName == "grep" {
 		if rows, ok := grepBodyRows(argsJSON, output, width, cwd); ok {
+			rows = capPrefixedBodyRows(rows, matchFooter(output))
 			out = append(out, rows...)
 			out = append(out, g.bottom.Render("└ ")+toolFooter(toolName, output, false, cwd))
 			return strings.Join(out, "\n")
 		}
 	}
+	if !errored && toolName == "code_review_context" {
+		body := codeReviewContextBody(output)
+		return renderPlainBodyToolCard(out, g, footer, body, width, toolName)
+	}
 	body := toolBodyLines(toolName, output, errored, cwd)
+	return renderPlainBodyToolCard(out, g, footer, body, width, toolName)
+}
+
+func renderPlainBodyToolCard(out []string, g cardGutter, footer string, body []string, width int, toolName string) string {
 	gutter := g.side.Render("│ ")
 	gutterWidth := ansi.StringWidth(gutter)
 	bodyWidth := width - gutterWidth
@@ -167,6 +176,24 @@ func renderToolCard(toolName, preview, argsJSON, output string, errored bool, te
 	}
 	out = append(out, g.bottom.Render("└ ")+footer)
 	return strings.Join(out, "\n")
+}
+
+// capPrefixedBodyRows applies the standard card body cap to custom renderers
+// whose rows already include their own gutter/styling. This keeps specialized
+// cards like grep from dumping unbounded match lists into scrollback.
+func capPrefixedBodyRows(rows []string, totalLabel string) []string {
+	if len(rows) <= cardBodyLineCap {
+		return rows
+	}
+	hidden := len(rows) - cardBodyLineCap
+	out := make([]string, 0, cardBodyLineCap+1)
+	out = append(out, rows[:cardBodyLineCap]...)
+	label := fmt.Sprintf("…%d more line(s)", hidden)
+	if strings.Contains(totalLabel, "match") {
+		label = fmt.Sprintf("…%d more match(es)", hidden)
+	}
+	out = append(out, neutralGutter().side.Render("│ ")+styleCardMeta.Render(label))
+	return out
 }
 
 // cardGutter carries the three box-drawing glyph styles for one tool
@@ -632,6 +659,66 @@ func matchFooter(out string) string {
 		return "1 match"
 	}
 	return fmt.Sprintf("%d matches", n)
+}
+
+// codeReviewContextBody renders the human-facing card from the structured
+// summary section first, plus only exceptional state flags. The model still
+// receives the full snapshot; scrollback should show the digest, not boilerplate
+// false flags.
+func codeReviewContextBody(out string) []string {
+	summary := sectionBody(out, "## summary")
+	state := sectionBody(out, "## state")
+	var rows []string
+	if summary != "" {
+		rows = append(rows, strings.Split(summary, "\n")...)
+	}
+	for _, flag := range codeReviewExceptionFlags(state) {
+		rows = append(rows, "⚠ "+flag)
+	}
+	if len(rows) == 0 {
+		return toolBodyLines("", out, false, "")
+	}
+	return rows
+}
+
+func sectionBody(out, header string) string {
+	start := strings.Index(out, header)
+	if start < 0 {
+		return ""
+	}
+	body := out[start+len(header):]
+	if strings.HasPrefix(body, "\n") {
+		body = body[1:]
+	}
+	if next := strings.Index(body, "\n## "); next >= 0 {
+		body = body[:next]
+	}
+	return strings.TrimSpace(body)
+}
+
+func codeReviewExceptionFlags(state string) []string {
+	if state == "" {
+		return nil
+	}
+	interesting := map[string]bool{
+		"not_found_base":  true,
+		"empty_repo":      true,
+		"diff_empty":      true,
+		"diff_err":        true,
+		"ahead_count_err": true,
+		"no_merge_base":   true,
+		"changed_capped":  true,
+		"diff_capped":     true,
+	}
+	var flags []string
+	for _, line := range strings.Split(state, "\n") {
+		key, val, ok := strings.Cut(strings.TrimSpace(line), "=")
+		if !ok || !interesting[key] || strings.TrimSpace(val) != "true" {
+			continue
+		}
+		flags = append(flags, key)
+	}
+	return flags
 }
 
 // recoverableToolErrorBody reshapes stale model-authored tool input failures
@@ -1294,25 +1381,53 @@ func renderSystemNoticeCard(title string, lines []string, footer string, termWid
 	// Compatibility shim for older call sites: system lifecycle notices are
 	// now one-line rows, not boxed cards. Prefer calling SysMsg directly.
 	_ = termWidth
-	parts := []string{strings.TrimSpace(title)}
+	source := strings.ToLower(strings.TrimSpace(title))
+	icon := SysState
+	event := "notice"
 	for _, line := range lines {
 		if trimmed := strings.TrimSpace(line); trimmed != "" {
-			parts = append(parts, trimmed)
+			lineIcon, lineEvent := splitSystemLine(trimmed)
+			if lineIcon != "" {
+				icon = lineIcon
+			}
+			if lineEvent != "" {
+				event = lineEvent
+			}
 		}
 	}
-	if strings.TrimSpace(footer) != "" {
-		parts = append(parts, strings.TrimSpace(footer))
-	}
-	return styleAuto.Render(strings.Join(parts, " · "))
+	return styleAuto.Render(SysMsg(icon, source, event, footer))
 }
 
 func renderStatusNoticeCard(title, body, footer string, termWidth int) string {
 	_ = termWidth
-	body = strings.TrimSpace(body)
-	if strings.TrimSpace(footer) == "" {
-		return styleAuto.Render(strings.TrimSpace(title + " · " + body))
+	icon, event := splitSystemLine(body)
+	if icon == "" {
+		icon = SysState
 	}
-	return styleAuto.Render(strings.TrimSpace(title+" · "+body) + " · " + strings.TrimSpace(footer))
+	return styleAuto.Render(SysMsg(icon, strings.ToLower(strings.TrimSpace(title)), event, footer))
+}
+
+func splitSystemLine(line string) (SysIcon, string) {
+	line = strings.TrimSpace(line)
+	for _, pair := range []struct {
+		prefix string
+		icon   SysIcon
+	}{
+		{"✓", SysSuccess},
+		{"⚠", SysWarning},
+		{"→", SysQueue},
+		{"…", SysProgress},
+		{"✕", SysFailure},
+		{"✗", SysFailure},
+		{"◇", SysContext},
+		{"↩", SysReturn},
+		{"○", SysState},
+	} {
+		if strings.HasPrefix(line, pair.prefix) {
+			return pair.icon, strings.TrimSpace(strings.TrimPrefix(line, pair.prefix))
+		}
+	}
+	return "", line
 }
 
 func styleSystemNoticeLine(line string) string {
@@ -1366,9 +1481,16 @@ func renderQueueNoticeCard(kind, detail, footer string, termWidth int) string {
 	return styleAuto.Render(detail)
 }
 
-func renderCompactionNoticeCard(before, after, snapshot string, termWidth int) string {
+func renderCompactionNoticeCard(reduction, snapshotPath string, snapshotErr error, termWidth int) string {
 	_ = termWidth
-	return styleAuto.Render(SysMsg(SysContext, "context", "compacted", fmt.Sprintf("~%s → ~%s tokens", before, after), snapshot))
+	details := []string{reduction, "full history saved"}
+	if recall := recallCommandForSnapshot(snapshotPath); recall != "" {
+		details = append(details, recall)
+	}
+	if snapshotErr != nil {
+		details = append(details, "snapshot failed: "+snapshotErr.Error())
+	}
+	return styleAuto.Render(SysMsg(SysContext, "context", "compacted", details...))
 }
 
 func renderWindowNoticeCard(lines []string, footer string, termWidth int) string {
@@ -1408,7 +1530,9 @@ var (
 	styleTodoDone       lipgloss.Style
 	styleTodoInProgress lipgloss.Style
 	styleTodoPending    lipgloss.Style
+	styleTodoSkipped    lipgloss.Style
 	styleTodoCheckDone  lipgloss.Style
+	styleTodoSkip       lipgloss.Style
 	styleTodoArrow      lipgloss.Style
 	styleTodoBullet     lipgloss.Style
 )
@@ -1417,6 +1541,8 @@ func todoRow(td agent.Todo) string {
 	switch td.Status {
 	case agent.TodoCompleted:
 		return styleTodoCheckDone.Render("✓ ") + styleTodoDone.Render(td.Content)
+	case agent.TodoSkipped:
+		return styleTodoSkip.Render("✗ ") + styleTodoSkipped.Render(td.Content)
 	case agent.TodoInProgress:
 		return styleTodoArrow.Render("▸ ") + styleTodoInProgress.Render(td.Content)
 	default:
@@ -1455,11 +1581,9 @@ func renderTodoCardFromTodos(todos []agent.Todo, termWidth int) string {
 }
 
 func todoCardHeaderText(todos []agent.Todo) string {
-	done := 0
-	for _, td := range todos {
-		if td.Status == agent.TodoCompleted {
-			done++
-		}
+	done, skipped := todoCounts(todos)
+	if skipped > 0 {
+		return fmt.Sprintf("Plan: %d items (%d done, %d skipped)", len(todos), done, skipped)
 	}
 	return fmt.Sprintf("Plan: %d items (%d done)", len(todos), done)
 }
@@ -1468,11 +1592,33 @@ func todoCardFooterText(todos []agent.Todo) string {
 	if len(todos) == 0 {
 		return "plan cleared"
 	}
-	done := 0
-	for _, td := range todos {
-		if td.Status == agent.TodoCompleted {
-			done++
-		}
+	done, skipped := todoCounts(todos)
+	if skipped > 0 && done+skipped == len(todos) {
+		return "plan abandoned: " + lastSkippedTodo(todos)
+	}
+	if skipped > 0 {
+		return fmt.Sprintf("plan updated: %d items (%d done, %d skipped)", len(todos), done, skipped)
 	}
 	return fmt.Sprintf("plan updated: %d items (%d done)", len(todos), done)
+}
+
+func todoCounts(todos []agent.Todo) (done, skipped int) {
+	for _, td := range todos {
+		switch td.Status {
+		case agent.TodoCompleted:
+			done++
+		case agent.TodoSkipped:
+			skipped++
+		}
+	}
+	return done, skipped
+}
+
+func lastSkippedTodo(todos []agent.Todo) string {
+	for i := len(todos) - 1; i >= 0; i-- {
+		if todos[i].Status == agent.TodoSkipped {
+			return todos[i].Content
+		}
+	}
+	return "remaining work skipped"
 }
