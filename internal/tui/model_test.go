@@ -407,6 +407,45 @@ func TestModel_StreamingUnclosedTableRendersOnCommit(t *testing.T) {
 	}
 }
 
+func TestModel_ApprovalAutoRendersNoticeCard(t *testing.T) {
+	m := newTestModel(t)
+	m, _ = applyMsg(m, agentEventMsg{ev: agent.ApprovalAuto{Source: "auto-mode", Preview: `grep("auto mode" in internal/tui)`}})
+	plain := stripANSI(m.transcript.String())
+	if !strings.Contains(plain, "┌ Auto") {
+		t.Fatalf("expected approval notice card, got %q", plain)
+	}
+	if !strings.Contains(plain, "✓ grep(\"auto mode\" in internal/tui)") {
+		t.Fatalf("expected preview in notice card, got %q", plain)
+	}
+	if !strings.Contains(plain, "└ auto-mode") {
+		t.Fatalf("expected source footer, got %q", plain)
+	}
+}
+
+func TestModel_UserMessageAppendedRendersQueueCard(t *testing.T) {
+	m := newTestModel(t)
+	m, _ = applyMsg(m, agentEventMsg{ev: agent.UserMessageAppended{Content: "please update docs too"}})
+	plain := stripANSI(m.transcript.String())
+	if !strings.Contains(plain, "┌ Queue") || !strings.Contains(plain, "✓ delivered: please update docs too") {
+		t.Fatalf("expected delivered queue card, got %q", plain)
+	}
+}
+
+func TestModel_ContextCompactedRendersNoticeCard(t *testing.T) {
+	m := newTestModel(t)
+	m, _ = applyMsg(m, agentEventMsg{ev: agent.ContextCompacted{Before: 221000, After: 36000, SnapshotPath: "/tmp/foo.json"}})
+	plain := stripANSI(m.transcript.String())
+	if !strings.Contains(plain, "┌ Context") {
+		t.Fatalf("expected context card, got %q", plain)
+	}
+	if !strings.Contains(plain, "compacted mid-turn: ~221K → ~36K tokens") {
+		t.Fatalf("expected compaction summary, got %q", plain)
+	}
+	if !strings.Contains(plain, "snapshot: /tmp/foo.json") {
+		t.Fatalf("expected snapshot detail, got %q", plain)
+	}
+}
+
 func TestModel_TableInsideCodeBlockNotIntercepted(t *testing.T) {
 	m := newTestModel(t)
 	m, _ = applyMsg(m, agentEventMsg{ev: agent.ContentToken{
@@ -860,9 +899,9 @@ func TestModel_ApprovalAutoRendersSingleLineSummary(t *testing.T) {
 		Preview:  multilinePreview,
 		Source:   "permissions",
 	}})
-	v := m.transcript.String()
-	if !strings.Contains(v, "✓ permissions: write_file(main.go, 1234 bytes)") {
-		t.Errorf("expected one-line auto-approval summary; got %q", v)
+	v := stripANSI(m.transcript.String())
+	if !strings.Contains(v, "┌ Allowed by rule") || !strings.Contains(v, "✓ write_file(main.go, 1234 bytes)") || !strings.Contains(v, "└ permissions") {
+		t.Errorf("expected compact auto-approval notice card; got %q", v)
 	}
 	if strings.Contains(v, "│ package main") || strings.Contains(v, "func main()") {
 		t.Errorf("auto-approval line must not embed the full preview body: %q", v)

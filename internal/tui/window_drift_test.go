@@ -53,7 +53,7 @@ func TestWindowDrift_ShrinkAndRecoverOnOverflow(t *testing.T) {
 	if got := catalog.ResolveWindowForProvider("testkind", model, 0, 100_000); got != wantPin {
 		t.Errorf("pinned window = %d, want %d", got, wantPin)
 	}
-	if !strings.Contains(mm.transcript.String(), "[window]") {
+	if !strings.Contains(mm.transcript.String(), "Window") {
 		t.Errorf("expected drift notice; transcript: %q", mm.transcript.String())
 	}
 	// Recovery: estimate (~15K) is over 85% of the corrected ~13.5K
@@ -112,7 +112,7 @@ func TestWindowDrift_RaiseOnProvenUsage(t *testing.T) {
 	if got := catalog.ResolveWindowForProvider("testkind", model, 0, 100_000); got != 150_000 {
 		t.Errorf("raised window = %d, want proven 150000", got)
 	}
-	if !strings.Contains(m.transcript.String(), "raising") {
+	if !strings.Contains(m.transcript.String(), "raised") {
 		t.Errorf("expected raise notice; transcript: %q", m.transcript.String())
 	}
 

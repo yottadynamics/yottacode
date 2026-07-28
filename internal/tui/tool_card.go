@@ -119,6 +119,13 @@ func renderToolCard(toolName, preview, argsJSON, output string, errored bool, te
 			out = append(out, g.side.Render("│ ")+styleCardErrFooter.Render(w))
 		}
 	}
+	if !errored && toolName == "grep" {
+		if rows, ok := grepBodyRows(argsJSON, output, width, cwd); ok {
+			out = append(out, rows...)
+			out = append(out, g.bottom.Render("└ ")+toolFooter(toolName, output, false, cwd))
+			return strings.Join(out, "\n")
+		}
+	}
 	body := toolBodyLines(toolName, output, errored, cwd)
 	gutter := g.side.Render("│ ")
 	gutterWidth := ansi.StringWidth(gutter)
@@ -267,6 +274,9 @@ func renderCardHeader(preview string, g cardGutter, dur time.Duration, width int
 // errors). The shortening is applied last, after per-tool shaping, so
 // each per-tool case can stay in terms of raw output.
 func toolBodyLines(toolName, output string, errored bool, cwd string) []string {
+	if errored {
+		return recoverableToolErrorBody(toolName, output, cwd)
+	}
 	output = strings.TrimRight(output, "\n")
 	if output == "" {
 		return nil
@@ -280,9 +290,6 @@ func toolBodyLines(toolName, output string, errored bool, cwd string) []string {
 			out[i] = shortenCwdInText(l, cwd)
 		}
 		return out
-	}
-	if errored {
-		return shortenLines(strings.Split(output, "\n"))
 	}
 	switch toolName {
 	case "list_dir":
@@ -317,6 +324,9 @@ func toolBodyLines(toolName, output string, errored bool, cwd string) []string {
 // line). Other footers don't carry absolute paths.
 func toolFooter(toolName, output string, errored bool, cwd string) string {
 	if errored {
+		if footer := recoverableToolErrorFooter(toolName, output); footer != "" {
+			return styleCardMeta.Render(footer)
+		}
 		summary := summarizeToolOutput(output)
 		return styleCardErrFooter.Render("✗ " + shortenCwdInText(summary, cwd))
 	}
@@ -622,6 +632,174 @@ func matchFooter(out string) string {
 		return "1 match"
 	}
 	return fmt.Sprintf("%d matches", n)
+}
+
+// recoverableToolErrorBody reshapes stale model-authored tool input failures
+// into compact guidance. The model still receives the full tool result, but the
+// human-facing card should not look like yottacode crashed because a patch hunk
+// or edit old_string was stale.
+func recoverableToolErrorBody(toolName, output, cwd string) []string {
+	trimmed := strings.TrimSpace(shortenCwdInText(output, cwd))
+	switch toolName {
+	case "edit_file":
+		if strings.Contains(trimmed, "old_string not found") {
+			line := closestLineHint(trimmed)
+			if line != "" {
+				return []string{"stale edit target — re-read the file and retry with exact current text", line}
+			}
+			return []string{"stale edit target — re-read the file and retry with exact current text"}
+		}
+	case "apply_diff":
+		if strings.Contains(trimmed, "patch does not apply") || strings.Contains(trimmed, "patch failed:") {
+			file := patchFailedFile(trimmed)
+			if file != "" {
+				return []string{"stale patch context — re-read " + file + " and regenerate the diff"}
+			}
+			return []string{"stale patch context — re-read the target file and regenerate the diff"}
+		}
+	}
+	if trimmed == "" {
+		return nil
+	}
+	return strings.Split(trimmed, "\n")
+}
+
+func recoverableToolErrorFooter(toolName, output string) string {
+	switch toolName {
+	case "edit_file":
+		if strings.Contains(output, "old_string not found") {
+			return "recoverable: stale edit target"
+		}
+	case "apply_diff":
+		if strings.Contains(output, "patch does not apply") || strings.Contains(output, "patch failed:") {
+			return "recoverable: stale patch context"
+		}
+	}
+	return ""
+}
+
+func closestLineHint(s string) string {
+	marker := "the closest line is "
+	idx := strings.Index(s, marker)
+	if idx < 0 {
+		return ""
+	}
+	hint := s[idx+len(marker):]
+	if end := strings.Index(hint, ". Re-read"); end >= 0 {
+		hint = hint[:end]
+	}
+	return "closest line: " + hint
+}
+
+func patchFailedFile(s string) string {
+	idx := strings.Index(s, "patch failed: ")
+	if idx < 0 {
+		return ""
+	}
+	rest := s[idx+len("patch failed: "):]
+	if end := strings.Index(rest, ":"); end >= 0 {
+		return rest[:end]
+	}
+	return ""
+}
+
+type grepMatchRow struct {
+	Path string
+	Line string
+	Text string
+}
+
+func grepBodyRows(argsJSON, output string, width int, cwd string) ([]string, bool) {
+	var a struct {
+		Pattern    string `json:"pattern"`
+		Regex      bool   `json:"regex"`
+		IgnoreCase bool   `json:"ignore_case"`
+	}
+	if err := json.Unmarshal([]byte(argsJSON), &a); err != nil {
+		return nil, false
+	}
+	rows := parseGrepMatchRows(strings.TrimRight(output, "\n"), cwd)
+	if len(rows) == 0 {
+		return nil, false
+	}
+	contentWidth := width - ansi.StringWidth("│ ")
+	if contentWidth < 20 {
+		contentWidth = 20
+	}
+	var out []string
+	for _, row := range rows {
+		prefix := styleMeta.Render(row.Path) + styleMeta.Render(":"+row.Line+": ")
+		prefixWidth := ansi.StringWidth(prefix)
+		textWidth := contentWidth - prefixWidth
+		if textWidth < 12 {
+			textWidth = 12
+		}
+		styledText := highlightGrepText(row.Text, a.Pattern, a.Regex, a.IgnoreCase)
+		wrapped := ansi.Wrap(styledText, textWidth, "")
+		lines := strings.Split(wrapped, "\n")
+		for i, line := range lines {
+			if i == 0 {
+				out = append(out, "│ "+prefix+line)
+				continue
+			}
+			out = append(out, "│ "+strings.Repeat(" ", prefixWidth)+line)
+		}
+	}
+	return out, true
+}
+
+func parseGrepMatchRows(out, cwd string) []grepMatchRow {
+	if out == "" || strings.HasPrefix(out, "(no matches)") {
+		return nil
+	}
+	var rows []grepMatchRow
+	for _, line := range strings.Split(out, "\n") {
+		if line == "" || strings.HasPrefix(line, "…") {
+			continue
+		}
+		path, rest, ok := strings.Cut(line, ":")
+		if !ok {
+			return nil
+		}
+		ln, text, ok := strings.Cut(rest, ":")
+		if !ok {
+			return nil
+		}
+		rows = append(rows, grepMatchRow{
+			Path: shortenCwdInText(path, cwd),
+			Line: ln,
+			Text: strings.TrimLeft(text, " "),
+		})
+	}
+	return rows
+}
+
+func highlightGrepText(text, pattern string, regex, ignoreCase bool) string {
+	if pattern == "" {
+		return text
+	}
+	needle := pattern
+	haystack := text
+	if ignoreCase {
+		needle = strings.ToLower(pattern)
+		haystack = strings.ToLower(text)
+	}
+	if regex {
+		return text
+	}
+	idx := strings.Index(haystack, needle)
+	if idx < 0 {
+		return text
+	}
+	end := idx + len(pattern)
+	if ignoreCase {
+		end = idx + len([]rune(pattern))
+		return text // fallback until rune-safe case-fold highlight is added
+	}
+	if end > len(text) {
+		end = len(text)
+	}
+	return text[:idx] + styleDiffAddEmph.Render(text[idx:end]) + text[end:]
 }
 
 // toolHeader rewrites a tool's raw `preview` into a short, human-readable
@@ -1098,6 +1276,106 @@ func pluralize(noun string, n int) string {
 	return noun + "s"
 }
 
+func renderSystemNoticeCard(title string, lines []string, footer string, termWidth int) string {
+	width := cardMaxWidthCap
+	if termWidth > 0 && termWidth-4 < width {
+		width = termWidth - 4
+	}
+	if width < cardMinUsefulCols {
+		width = cardMinUsefulCols
+	}
+	gutter := styleNoticeBorder.Render("│ ")
+	gutterWidth := ansi.StringWidth(gutter)
+	bodyWidth := width - gutterWidth
+	if bodyWidth < 20 {
+		bodyWidth = 20
+	}
+	out := []string{styleNoticeBorder.Render("┌ ") + styleNoticeLabel.Render(title)}
+	for _, line := range lines {
+		styled := styleSystemNoticeLine(line)
+		for _, row := range strings.Split(ansi.Wrap(styled, bodyWidth, ""), "\n") {
+			out = append(out, gutter+row)
+		}
+	}
+	if strings.TrimSpace(footer) != "" {
+		out = append(out, styleNoticeBorder.Render("└ ")+styleNoticeFooter.Render(footer))
+	} else {
+		out = append(out, styleNoticeBorder.Render("└"))
+	}
+	return strings.Join(out, "\n")
+}
+
+func renderStatusNoticeCard(title, body, footer string, termWidth int) string {
+	var lines []string
+	for _, line := range strings.Split(strings.TrimRight(body, "\n"), "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		lines = append(lines, line)
+	}
+	return renderSystemNoticeCard(title, lines, footer, termWidth)
+}
+
+func styleSystemNoticeLine(line string) string {
+	trimmed := strings.TrimSpace(line)
+	switch {
+	case strings.HasPrefix(trimmed, "✓ "):
+		return styleNoticeOK.Render(trimmed)
+	case strings.HasPrefix(trimmed, "⚠ "):
+		return styleNoticeWarn.Render(trimmed)
+	case strings.HasPrefix(trimmed, "→ "):
+		return styleNoticeAction.Render(trimmed)
+	case strings.HasPrefix(line, "  hint:") || strings.HasPrefix(trimmed, "hint:"):
+		return styleNoticeHint.Render(trimmed)
+	default:
+		return styleNoticeBody.Render(strings.TrimRight(line, "\n"))
+	}
+}
+
+func autoApprovalNoticeTitle(source string) string {
+	switch source {
+	case "auto-mode":
+		return "Auto"
+	case "auto-mode-safe-bash":
+		return "Auto bash"
+	case "permissions":
+		return "Allowed by rule"
+	case "deny-rule":
+		return "Blocked"
+	case "yolo-mode":
+		return "Yolo"
+	case "plan-mode-allow":
+		return "Plan allow"
+	case "plan-mode-block":
+		return "Plan block"
+	default:
+		return "Tool notice"
+	}
+}
+
+func autoApprovalNoticeFooter(source string) string {
+	if strings.TrimSpace(source) == "" {
+		return "tool notice"
+	}
+	return source
+}
+
+func renderQueueNoticeCard(kind, detail, footer string, termWidth int) string {
+	return renderSystemNoticeCard(kind, []string{detail}, footer, termWidth)
+}
+
+func renderCompactionNoticeCard(before, after, snapshot string, termWidth int) string {
+	lines := []string{fmt.Sprintf("✓ compacted mid-turn: ~%s → ~%s tokens", before, after)}
+	if strings.TrimSpace(snapshot) != "" {
+		lines = append(lines, "  snapshot: "+snapshot)
+	}
+	return renderSystemNoticeCard("Context", lines, "compaction", termWidth)
+}
+
+func renderWindowNoticeCard(lines []string, footer string, termWidth int) string {
+	return renderSystemNoticeCard("Window", lines, footer, termWidth)
+}
+
 // Card-specific styles. The gutter (┌ │ └) renders Muted (decorative);
 // the header preview is Content (the value the user cares about);
 // metadata (duration, footer) renders Dim by default with state
@@ -1119,6 +1397,14 @@ var (
 	styleCardMeta      lipgloss.Style
 	styleCardOKFooter  lipgloss.Style
 	styleCardErrFooter lipgloss.Style
+	styleNoticeLabel   lipgloss.Style
+	styleNoticeBody    lipgloss.Style
+	styleNoticeHint    lipgloss.Style
+	styleNoticeOK      lipgloss.Style
+	styleNoticeWarn    lipgloss.Style
+	styleNoticeAction  lipgloss.Style
+	styleNoticeFooter  lipgloss.Style
+	styleNoticeBorder  lipgloss.Style
 
 	styleTodoDone       lipgloss.Style
 	styleTodoInProgress lipgloss.Style

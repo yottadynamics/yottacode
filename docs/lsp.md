@@ -88,7 +88,7 @@ The experimental bridge now includes several production-readiness behaviors:
 
 - Workspace roots are detected from language markers such as `go.mod`, `package.json`, `pyproject.toml`, and `Cargo.toml` instead of always using the file's directory.
 - Documents are opened with `textDocument/didOpen` before position-based requests so servers see the same file contents yottacode read from disk.
-- Successful `edit_file` and `write_file` calls notify pooled servers with full-document `didChange` and `didSave`, using version counters so diagnostics can reflect yottacode edits.
+- Successful `edit_file` and `write_file` calls notify pooled servers with full-document `didChange` and `didSave`, using version counters so diagnostics can reflect yottacode edits. This sync is best-effort: a dead server pipe is evicted/retried once and never turns an otherwise-successful file write into a scary edit error.
 - `lsp_diagnostics` reports whether diagnostics were actually published before the settle timeout, so “clean” is distinct from “no diagnostic publication observed yet”.
 - `lsp_code_action_preview` resolves editable code actions into the same preview/apply WorkspaceEdit flow used by rename and formatting.
 - `lsp_document_highlights` and `lsp_selection_ranges` provide bounded current-file context before agents choose an edit range or wider read window.
@@ -103,6 +103,8 @@ The experimental bridge now includes several production-readiness behaviors:
 2. Run `yottacode doctor --experimental lsp_code_intelligence` to see the command-line LSP Code Intelligence section.
 3. Confirm the server works outside yottacode, for example `gopls version` or `pyright-langserver --version`.
 4. If a workspace symbol query fails, yottacode may fall back to an approximate regex symbol index. Definition, references, diagnostics, hover, code actions, and call hierarchy require a real server.
+
+5. Post-edit LSP sync is advisory. If a local language server dies while yottacode writes a file, yottacode evicts/retries the server and keeps raw transport text such as `broken pipe` out of the edit result.
 
 ## Production promotion checklist
 

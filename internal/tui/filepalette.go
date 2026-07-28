@@ -232,6 +232,9 @@ func renderFilePalette(items []fileEntry, idx, offset, width int) string {
 		offset = 0
 	}
 	var lines []string
+	lines = append(lines, styleSplashTitle.Render(filePaletteTitle))
+	lines = append(lines, renderMenuDivider(max(width-4, 1)))
+
 	if offset > 0 {
 		lines = append(lines, styleMeta.Render(fmt.Sprintf(" ▲ %d more", offset)))
 	}

@@ -435,6 +435,7 @@ func Turn(
 				}
 				_ = send(context.Background(), events, TurnInterrupted{
 					PartialContent: partialContent,
+					Explicit:       false,
 				})
 				return err
 			}
@@ -462,6 +463,7 @@ func Turn(
 			if isCancelErr(err) {
 				_ = send(context.Background(), events, TurnInterrupted{
 					PartialContent: final.Content,
+					Explicit:       false,
 				})
 			}
 			return err
@@ -486,6 +488,7 @@ func Turn(
 					_ = send(context.Background(), events, TurnInterrupted{
 						PartialContent: final.Content,
 						OrphanedCalls:  orphans,
+						Explicit:       false,
 					})
 					return err
 				}

@@ -497,7 +497,7 @@ Pick a checkpoint and choose one of four actions:
 
 ## Interrupting a turn
 
-Pressing **Enter** while the agent is thinking captures whatever you typed, cancels the in-flight iteration, and queues the message for auto-submission the moment the loop unwinds. Any tokens that streamed before the cancel land in history as a partial assistant message, and any tool calls that were in flight or queued get a synthetic `interrupted by user` tool result so the next turn sees a valid conversation. This is the "interrupt with feedback" path — works the same in normal, plan, and auto modes.
+Pressing **Enter** while the agent is thinking queues whatever you typed for delivery at the next safe tool boundary without cancelling the active tool call. If the model finishes before it reaches a tool boundary, yottacode starts a fresh turn with the queued message after the current turn ends. A second queued message stays in the textarea and shows a queue-full notice instead of interrupting the session.
 
 Press **Esc** or **Ctrl+C** while a turn is running to cancel without submitting. Any queued message is dropped; the textarea contents are preserved so a draft survives an accidental Esc.
 
@@ -561,7 +561,7 @@ Examples:
 
 ## Keyboard shortcuts
 
-- `Enter` submits (mid-turn: interrupt and queue the new message)
+- `Enter` submits (mid-turn: queue the new message for the next safe tool boundary)
 - `Ctrl+J` inserts a newline
 - `Esc` cancels the current turn (alias for Ctrl+C, mirrors Claude Code); also stops an armed `/loop`
 - `Esc Esc` (idle, tapped within 500ms) opens the `/checkpoints` picker

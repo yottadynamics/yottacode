@@ -2,6 +2,7 @@ package lsp
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -125,15 +126,45 @@ func (m *Manager) NotifyFileChanged(ctx context.Context, lang Language, root, pa
 	if m == nil {
 		return nil
 	}
+	if err := m.notifyFileChangedOnce(ctx, lang, root, path, text); err != nil {
+		if !isDeadClientErr(err) {
+			return err
+		}
+		// A pooled language server can die between tool calls. Evict the stale
+		// process and retry once so advisory LSP sync heals instead of leaking a
+		// raw broken-pipe write error into an otherwise-successful file edit.
+		m.evictClient(lang, root)
+		return m.notifyFileChangedOnce(ctx, lang, root, path, text)
+	}
+	return nil
+}
+
+func (m *Manager) notifyFileChangedOnce(ctx context.Context, lang Language, root, path, text string) error {
 	client, err := m.Acquire(ctx, lang, root)
 	if err != nil {
 		return err
 	}
 	defer client.Close()
 	if err := client.NotifyChanged(ctx, path, text); err != nil {
+		client.dropFromPoolAndClose()
 		return err
 	}
-	return client.NotifySaved(ctx, path)
+	if err := client.NotifySaved(ctx, path); err != nil {
+		client.dropFromPoolAndClose()
+		return err
+	}
+	return nil
+}
+
+func isDeadClientErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	s := strings.ToLower(err.Error())
+	return strings.Contains(s, "broken pipe") || strings.Contains(s, "closed pipe") || strings.Contains(s, "connection reset by peer")
 }
 
 // CloseDocument removes one open document from a pooled server if that server
@@ -170,6 +201,24 @@ func (m *Manager) CloseAll() {
 	m.mu.Unlock()
 	for _, client := range clients {
 		_ = m.closeClient(client)
+	}
+}
+
+func (m *Manager) evictClient(lang Language, root string) {
+	if m == nil {
+		return
+	}
+	key := managerKey(lang, cleanRoot(root))
+	m.mu.Lock()
+	entry := m.clients[key]
+	if entry != nil {
+		delete(m.clients, key)
+		m.stats.Evictions++
+		m.stats.OpenServers = len(m.clients)
+	}
+	m.mu.Unlock()
+	if entry != nil {
+		_ = m.closeClient(entry.client)
 	}
 }
 
@@ -243,4 +292,21 @@ func (c *PooledClient) Close() error {
 	}
 	c.manager.release(c.key)
 	return nil
+}
+
+func (c *PooledClient) dropFromPoolAndClose() {
+	if c == nil || c.manager == nil || c.key == "" {
+		return
+	}
+	c.manager.mu.Lock()
+	entry := c.manager.clients[c.key]
+	if entry != nil {
+		delete(c.manager.clients, c.key)
+		c.manager.stats.Evictions++
+	}
+	c.manager.stats.OpenServers = len(c.manager.clients)
+	c.manager.mu.Unlock()
+	if entry != nil {
+		_ = c.manager.closeClient(entry.client)
+	}
 }
