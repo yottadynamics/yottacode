@@ -28,7 +28,7 @@ func TestContextCompactedHandlerRefreshesAndBumpsSeq(t *testing.T) {
 	if m.contextTokens == 999 {
 		t.Fatal("context tokens were not refreshed")
 	}
-	if got := m.transcript.String(); !strings.Contains(got, "force-compacted") || !strings.Contains(got, "pre.json") {
+	if got := m.transcript.String(); !strings.Contains(got, "compaction") || !strings.Contains(got, "pre.json") || !strings.Contains(got, "compacted mid-turn") {
 		t.Fatalf("transcript missing compaction status: %q", got)
 	}
 }

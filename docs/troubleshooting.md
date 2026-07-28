@@ -181,6 +181,10 @@ Large pastes are shown as a short marker to keep the input line usable. The full
 
 The TUI uses inline rendering so your terminal owns scrollback. If rendering becomes messy after a resize, clear the terminal or restart yottacode; the saved session can be resumed.
 
+## Stale edit or patch target
+
+If an `edit_file` old string or `apply_diff` hunk no longer matches the file, the tool result is recoverable retry guidance, not a session failure. The TUI shows it as a compact stale-target hint; the agent should re-read the current file text and retry with fresh context.
+
 ## ChatGPT OAuth: callback port already in use
 
 `openai-auth` uses a fixed loopback callback port required by the OAuth redirect allow-list. If sign-in says the callback port is already in use, another sign-in is still holding it — often an abandoned browser flow in this or another yottacode instance.

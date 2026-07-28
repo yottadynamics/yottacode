@@ -92,6 +92,11 @@ func (m *Model) filterPaletteAll(typed string) []slashCommand {
 // readable. Matches filePaletteVisible so both palettes feel the same.
 const slashPaletteVisible = 12
 
+const (
+	slashPaletteTitle = "Commands"
+	filePaletteTitle  = "Files"
+)
+
 // renderPalette draws the slash command list as a bordered box. idx is the
 // currently highlighted entry (Tab completes it; Up/Down navigate). offset
 // is the index of the first row in the visible window — the Model
@@ -137,6 +142,9 @@ func renderPalette(items []slashCommand, idx, offset, width int) string {
 		end = len(items)
 	}
 	var lines []string
+	lines = append(lines, styleSplashTitle.Render(slashPaletteTitle))
+	lines = append(lines, renderMenuDivider(max(width-4, 1)))
+
 	for i := offset; i < end; i++ {
 		lines = append(lines, renderMenuItem(menuItemOpts{
 			Label:      lefts[i],

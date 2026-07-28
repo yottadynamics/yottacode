@@ -584,9 +584,13 @@ type Model struct {
 
 	turnActive bool
 	turnCancel context.CancelFunc
-	eventsCh   chan agent.Event
-	turnErrCh  chan error
-	decisions  chan agent.Decision
+	// turnCancelRequested records an explicit user stop (Esc/Ctrl+C or a
+	// state-changing slash command). It keeps automatic/queued-message
+	// cancellation artifacts from rendering as scary interruption footers.
+	turnCancelRequested bool
+	eventsCh            chan agent.Event
+	turnErrCh           chan error
+	decisions           chan agent.Decision
 	// memoryNudgePending arms the pre-compaction memory reminder: set
 	// when the context watermark first crosses the warn threshold
 	// (updateContextUsage), consumed by the next startTurnWithDisplay,
@@ -1617,6 +1621,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// Use Enter to interrupt-with-feedback; use Esc /
 				// Ctrl+C to stop without sending.
 				if m.turnCancel != nil {
+					m.turnCancelRequested = true
 					m.turnCancel()
 				}
 				m.pendingInputAfterTurn = ""
@@ -1707,6 +1712,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						}
 					}
 					if shouldCancel && m.turnCancel != nil {
+						m.turnCancelRequested = true
 						m.turnCancel()
 					}
 					// A slash command typed mid-turn is a fresh user
@@ -1747,11 +1753,13 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.paletteIndex = 0
 					m.paletteOffset = 0
 					m.appendLine(renderUserBlock(input, m.width))
-					m.appendLine(styleAuto.Render("[queued] will be delivered at next tool round"))
+					m.appendLine(renderQueueNoticeCard("Queue", "→ queued: will deliver at next tool round", "follow-up pending", m.width))
 					return m, nil
 				default:
-					m.appendLine(styleAuto.Render(statusWarnLine("queued",
-						"already waiting for delivery; press ↑ to edit it or wait for the next tool round")))
+					m.appendLine(renderSystemNoticeCard("Queue", []string{
+						"⚠ queued: already waiting for delivery",
+						"  hint: press ↑ to edit it or wait for the next tool round",
+					}, "queue full", m.width))
 					return m, nil
 				}
 			default:
@@ -2305,6 +2313,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.consumeLoopControl()
 		m.clearPendingDecisionUI()
 		if m.turnCancel != nil {
+			m.turnCancelRequested = false
 			m.turnCancel()
 			m.turnCancel = nil
 		}
@@ -4550,6 +4559,7 @@ func (m Model) startTurnWithDisplay(input, displayLabel string) (tea.Model, tea.
 	m.eventsCh = make(chan agent.Event, 64)
 	m.decisions = make(chan agent.Decision, 1)
 	m.turnErrCh = make(chan error, 1)
+	m.turnCancelRequested = false
 	m.userMsgCh = make(chan string, 1)
 	m.cfg.UserMessages = m.userMsgCh
 	// Serialize the agent goroutine's history appends against this Update
@@ -4693,7 +4703,7 @@ func (m Model) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 		if i := strings.Index(summary, "\n"); i >= 0 {
 			summary = summary[:i]
 		}
-		m.appendLine(styleAuto.Render(statusOKLine(e.Source, summary)))
+		m.appendLine(renderSystemNoticeCard(autoApprovalNoticeTitle(e.Source), []string{"✓ " + summary}, autoApprovalNoticeFooter(e.Source), m.width))
 	case agent.ApprovalNeeded:
 		m.commitStreaming()
 		// exit_plan_mode reads the plan from the resolved plan file
@@ -4930,7 +4940,16 @@ func (m Model) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 		if e.SnapshotErr != nil {
 			m.lastContextCompaction += fmt.Sprintf(" · snapshot failed: %v", e.SnapshotErr)
 		}
-		m.appendLine(styleAuto.Render(line))
+		snapshot := ""
+		if e.SnapshotPath != "" {
+			snapshot = abbrevHome(e.SnapshotPath)
+			if e.SnapshotErr != nil {
+				snapshot += fmt.Sprintf(" (snapshot failed: %v)", e.SnapshotErr)
+			}
+		} else if e.SnapshotErr != nil {
+			snapshot = fmt.Sprintf("snapshot failed: %v", e.SnapshotErr)
+		}
+		m.appendLine(renderCompactionNoticeCard(formatTokens(e.Before), formatTokens(e.After), snapshot, m.width))
 		m.refreshContextTokens()
 		m.compactionSeq++
 	case agent.ErrorEvent:
@@ -4942,7 +4961,7 @@ func (m Model) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 			m.appendLine(styleError.Render("✗ " + line))
 		}
 	case agent.UserMessageAppended:
-		m.appendLine(styleAuto.Render("[delivered] " + truncateForRender(e.Content, 80)))
+		m.appendLine(renderQueueNoticeCard("Queue", "✓ delivered: "+truncateForRender(e.Content, 80), "mid-turn input", m.width))
 	case agent.TurnDone:
 		m.commitStreaming()
 		// If the agent touched the plan this turn, commit one full
@@ -4979,19 +4998,23 @@ func (m Model) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 		if !m.turnStart.IsZero() {
 			m.appendLine(styleTurnFooter.Render(renderTurnFooter(time.Since(m.turnStart), m.turnUsage)))
 		}
+		m.turnCancelRequested = false
 	case agent.TurnInterrupted:
-		// Calm marker, not a red error. The loop has already preserved
+		m.commitStreaming()
+		// Don't commit a plan snapshot for an interrupted turn — the
+		// in-flight state was, by definition, not what the agent intended
+		// to ship. Reset the flag even when the visible footer is suppressed
+		// for non-explicit cancellation noise.
+		m.livePlanTouched = false
+		if !e.Explicit && !m.turnCancelRequested {
+			return m, nil
+		}
+		// Calm marker for explicit stops, not a red error. The loop has already preserved
 		// history (partial assistant content + synthetic tool_result
 		// entries for any orphaned tool_use); this line just lets the
 		// user see that the cancel landed cleanly. If pending input
 		// was queued by Enter, turnEndedMsg will auto-submit it
 		// immediately after — no extra prompt needed here.
-		m.commitStreaming()
-		// Don't commit a plan snapshot for an interrupted turn — the
-		// in-flight state was, by definition, not what the agent
-		// intended to ship. Reset the flag so the NEXT TurnDone
-		// doesn't fire a stale snapshot referencing this turn's work.
-		m.livePlanTouched = false
 		msg := "↩ interrupted"
 		if e.OrphanedCalls > 0 {
 			noun := "tool calls"
@@ -5001,6 +5024,7 @@ func (m Model) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 			msg = fmt.Sprintf("%s (%d %s cancelled)", msg, e.OrphanedCalls, noun)
 		}
 		m.appendLine(styleTurnFooter.Render(msg))
+		m.turnCancelRequested = false
 	case agent.SubagentStart:
 		// Lead with a blank line so the subagent block reads as its own
 		// section against the surrounding tool cards.

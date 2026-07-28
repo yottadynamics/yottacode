@@ -16,6 +16,11 @@ import (
 // rows. The pattern follows Claude Code's "Select model" picker so
 // users coming from there have the same affordances available.
 
+const (
+	// menuDividerWidth spans ordinary submenu boxes without wrapping on narrow terminals.
+	menuDividerWidth = 72
+)
+
 // menuItemOpts customizes one row in a picker. Build a slice of
 // these and pass them through renderMenuItem to get consistent
 // alignment + cursor/check rendering.
@@ -52,9 +57,9 @@ type menuItemOpts struct {
 	Disabled bool
 }
 
-// renderMenuHeader draws the picker's title + optional description
-// block. Title is bold/branded; description is muted. Caller
-// appends a blank line + items below.
+// renderMenuHeader draws the picker's title + optional description block, then
+// a muted divider. The rule visually separates submenu chrome from rows while
+// keeping all slash-command submenus on one shared layout path.
 func renderMenuHeader(title, description string) string {
 	var b strings.Builder
 	b.WriteString(styleSplashTitle.Render(title))
@@ -66,7 +71,19 @@ func renderMenuHeader(title, description string) string {
 		b.WriteString(styleMeta.Render(strings.TrimSpace(description)))
 		b.WriteString("\n")
 	}
+	b.WriteString(renderMenuDivider(menuDividerWidth))
+	b.WriteString("\n")
 	return b.String()
+}
+
+// renderMenuDivider returns a single horizontal rule sized for the current
+// menu body. Width is in display cells, not bytes; callers pass a conservative
+// content width so the line reaches toward the box edge without forcing wraps.
+func renderMenuDivider(width int) string {
+	if width < 1 {
+		width = 1
+	}
+	return styleOverlayRule.Render(strings.Repeat("─", width))
 }
 
 // renderMenuItem returns one formatted picker row. The layout:

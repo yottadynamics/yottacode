@@ -2,7 +2,6 @@ package agent
 
 import (
 	"context"
-	"fmt"
 
 	lspci "github.com/yottadynamics/yottacode/internal/lsp"
 )
@@ -28,7 +27,10 @@ func notifyLSPFileChanged(ctx context.Context, cwd *CwdRef, manager *lspci.Manag
 	}
 	root := lspci.WorkspaceRoot(path, lang, fallback)
 	if err := manager.NotifyFileChanged(ctx, lang, root, path, text); err != nil {
-		return fmt.Sprintf("lsp: change notification skipped: %v", err)
+		// LSP sync is advisory. Raw local-server transport errors (for example
+		// "write |1: broken pipe") looked like edit failures even though the file
+		// write succeeded, so keep them out of tool output.
+		return ""
 	}
 	return "lsp: document synced"
 }

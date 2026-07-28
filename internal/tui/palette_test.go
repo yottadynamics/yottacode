@@ -143,6 +143,21 @@ func TestRenderPalette_HighlightsSelected(t *testing.T) {
 	}
 }
 
+func TestRenderPalette_IncludesHeaderDivider(t *testing.T) {
+	out := stripANSI(renderPalette(allSlash, 0, 0, 80))
+	if !strings.Contains(out, slashPaletteTitle) || !strings.Contains(out, "──") {
+		t.Fatalf("slash palette should include title and divider: %q", out)
+	}
+}
+
+func TestRenderFilePalette_IncludesHeaderDivider(t *testing.T) {
+	files := []fileEntry{{Path: "main.go"}}
+	out := stripANSI(renderFilePalette(files, 0, 0, 80))
+	if !strings.Contains(out, filePaletteTitle) || !strings.Contains(out, "──") {
+		t.Fatalf("file palette should include title and divider: %q", out)
+	}
+}
+
 func TestRenderPalette_EmptyShowsHint(t *testing.T) {
 	out := renderPalette(nil, 0, 0, 80)
 	if !strings.Contains(out, "no matching") {

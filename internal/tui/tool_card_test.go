@@ -96,6 +96,63 @@ func TestToolCard_RunBashSplitsStdoutStderr(t *testing.T) {
 	}
 }
 
+func TestRenderToolCard_GrepWrapsUnderMatchText(t *testing.T) {
+	out := strings.Join([]string{
+		"./internal/agent/prompt.go:30:  - lsp_status, lsp_symbols, lsp_document_symbols, lsp_document_highlights, lsp_selection_ranges, lsp_definition",
+		"./internal/agent/events.go:205:// TurnInterrupted fires when the turn ended via user-initiated context cancellation",
+	}, "\n") + "\n"
+	got := stripANSI(renderToolCard(
+		"grep",
+		`grep("TurnInterrupted" in internal/agent)`,
+		`{"pattern":"TurnInterrupted","path":"internal/agent","regex":false,"ignore_case":false}`,
+		out,
+		false,
+		90,
+		"",
+		0,
+	))
+	if !strings.Contains(got, "│ ./internal/agent/prompt.go:30:") {
+		t.Fatalf("first grep row should render structured prefix: %q", got)
+	}
+	if !strings.Contains(got, "│                                lsp_document_highlights") {
+		t.Fatalf("wrapped grep continuation should hang-indent under text: %q", got)
+	}
+	if strings.Contains(got, "\n│ lsp_document_highlights") {
+		t.Fatalf("grep continuation should not restart at column 0: %q", got)
+	}
+	if !strings.Contains(got, "└ 2 matches") {
+		t.Fatalf("grep footer should still report match count: %q", got)
+	}
+}
+
+func TestRenderSystemNoticeCard_WrapsAndKeepsFooter(t *testing.T) {
+	got := stripANSI(renderSystemNoticeCard("Auto", []string{
+		"✓ grep(\"auto.*model|model.*auto|routingNote|renderStatus\\(\\).*auto|gpt-5.4 auto|auto mode\" in internal/tui)",
+	}, "auto-mode", 88))
+	if !strings.Contains(got, "┌ Auto") {
+		t.Fatalf("missing notice header: %q", got)
+	}
+	if !strings.Contains(got, "└ auto-mode") {
+		t.Fatalf("missing notice footer: %q", got)
+	}
+	if strings.Contains(got, "\ngrep(") {
+		t.Fatalf("wrapped notice body should stay inside the card gutter: %q", got)
+	}
+}
+
+func TestRenderCompactionNoticeCard_ShowsSnapshot(t *testing.T) {
+	got := stripANSI(renderCompactionNoticeCard("221K", "36K", "~/.yottacode/sessions/foo.json", 100))
+	if !strings.Contains(got, "compacted mid-turn: ~221K → ~36K tokens") {
+		t.Fatalf("missing compaction summary: %q", got)
+	}
+	if !strings.Contains(got, "snapshot: ~/.yottacode/sessions/foo.json") {
+		t.Fatalf("missing snapshot detail: %q", got)
+	}
+	if !strings.Contains(got, "└ compaction") {
+		t.Fatalf("missing compaction footer: %q", got)
+	}
+}
+
 func TestToolCard_RunBashErrorExitColored(t *testing.T) {
 	// run_bash always emits the format
 	// "exit=N\n--- stdout ---\n<STDOUT>\n--- stderr ---\n<STDERR>".
@@ -243,6 +300,43 @@ func TestRenderToolCard_EditFileRendersDiffBody(t *testing.T) {
 	// Footer: the result message comes through unchanged.
 	if !strings.Contains(got, "└ edited /abs/main.go: 1 replacement(s)") {
 		t.Errorf("footer should carry the edit result: %q", got)
+	}
+}
+
+func TestRenderToolCard_EditFileOldStringMissIsCompact(t *testing.T) {
+	out := `error: edit_file: old_string not found in ./internal/tui/model.go — the closest line is 3910: "\t\tif worktreeSeg != \"\" {". Re-read the file and copy its exact current text (including whitespace) into old_string`
+	got := stripANSI(renderToolCard(
+		"edit_file",
+		"edit_file(internal/tui/model.go, single)",
+		`{"path":"internal/tui/model.go"}`,
+		out,
+		true,
+		100,
+		"",
+		0,
+	))
+	if !strings.Contains(got, "stale edit target") {
+		t.Fatalf("card should classify stale edit target: %q", got)
+	}
+	if !strings.Contains(got, "closest line: 3910") {
+		t.Fatalf("card should retain closest-line hint: %q", got)
+	}
+	if strings.Count(got, "old_string not found") > 0 {
+		t.Fatalf("card should not dump raw old_string error prose: %q", got)
+	}
+}
+
+func TestRenderToolCard_ApplyDiffStalePatchIsCompact(t *testing.T) {
+	out := `error: apply_diff: exit status 1; stderr="error: patch failed: internal/tui/model.go:1707\nerror: internal/tui/model.go: patch does not apply\n" hint="patch headers were valid" patch="diff --git a/internal/tui/model.go b/internal/tui/model.go"`
+	got := stripANSI(renderToolCard("apply_diff", "Patch(apply)", `{}`, out, true, 100, "", 0))
+	if !strings.Contains(got, "stale patch context") {
+		t.Fatalf("card should classify stale patch context: %q", got)
+	}
+	if !strings.Contains(got, "internal/tui/model.go") {
+		t.Fatalf("card should name failed file: %q", got)
+	}
+	if strings.Count(got, "patch failed") > 0 || strings.Count(got, "patch=\"") > 0 {
+		t.Fatalf("card should not dump raw patch failure payload: %q", got)
 	}
 }
 

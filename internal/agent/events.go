@@ -203,7 +203,7 @@ type CheckpointInfo struct{ Message string }
 type TurnDone struct{}
 
 // TurnInterrupted fires when the turn ended via user-initiated context
-// cancellation (Enter or Esc/Ctrl+C mid-turn) rather than an error or a
+// cancellation (Esc/Ctrl+C or an explicit turn-canceling command mid-turn) rather than an error or a
 // clean finish. By the time this event lands, the loop has already
 // preserved history correctness: any tokens that streamed before the
 // cancel are appended as a content-only assistant message, and any
@@ -221,6 +221,9 @@ type TurnInterrupted struct {
 	// did not produce real output). Zero when the cancel landed mid-
 	// stream before any tool call started.
 	OrphanedCalls int
+	// Explicit reports whether the user intentionally stopped the turn. False
+	// covers non-fatal internal cancellation paths where consumers should stay quiet.
+	Explicit bool
 }
 
 // Fallback fires when the multi-provider router falls through from one

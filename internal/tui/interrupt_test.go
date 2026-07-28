@@ -6,6 +6,8 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/yottadynamics/yottacode/internal/agent"
 )
 
 // installFakeTurn arms the model as if a turn were in flight. It plants a
@@ -53,6 +55,20 @@ func TestInterrupt_EnterMidTurnQueuesOnChannel(t *testing.T) {
 	}
 	if !m.turnActive {
 		t.Errorf("turnActive should remain true")
+	}
+}
+
+func TestInterrupt_QueuedEnterDoesNotRenderInterruptedFooter(t *testing.T) {
+	m := newTestModel(t)
+	_ = installFakeTurn(t, &m)
+	m.textInput.SetValue("follow up")
+	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+
+	m, _ = applyMsg(m, agentEventMsg{ev: agent.TurnInterrupted{OrphanedCalls: 1, Explicit: false}})
+
+	plain := stripANSI(m.transcript.String())
+	if strings.Contains(plain, "↩ interrupted") {
+		t.Fatalf("queued feedback must not render interrupted footer: %q", plain)
 	}
 }
 
@@ -201,6 +217,20 @@ func TestInterrupt_CtrlCMidTurnCancelsAndDrainsChannel(t *testing.T) {
 	}
 	if got := cancels.Load(); got < 1 {
 		t.Errorf("Ctrl+C must call turnCancel; count = %d", got)
+	}
+}
+
+func TestInterrupt_CtrlCRendersInterruptedFooter(t *testing.T) {
+	m := newTestModel(t)
+	_ = installFakeTurn(t, &m)
+	m.textInput.SetValue("abc")
+	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyCtrlC})
+
+	m, _ = applyMsg(m, agentEventMsg{ev: agent.TurnInterrupted{OrphanedCalls: 1, Explicit: true}})
+
+	plain := stripANSI(m.transcript.String())
+	if !strings.Contains(plain, "↩ interrupted (1 tool call cancelled)") {
+		t.Fatalf("explicit cancel should render interrupted footer: %q", plain)
 	}
 }
 
