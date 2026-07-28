@@ -919,6 +919,7 @@ func TestModel_ToolCallScratchContentNotRendered(t *testing.T) {
 	}}})
 	m, _ = applyMsg(m, agentEventMsg{ev: agent.ToolStart{ToolName: "read_file", Preview: "read_file(x.go)", ArgsJSON: `{"path":"x.go"}`}})
 	m, _ = applyMsg(m, agentEventMsg{ev: agent.ToolResult{ToolName: "read_file", Output: "package main\n"}})
+	m, _ = applyMsg(m, agentEventMsg{ev: agent.TurnDone{}})
 
 	plain := stripANSI(m.transcript.String())
 	if strings.Contains(plain, "Need maybe inspect") {

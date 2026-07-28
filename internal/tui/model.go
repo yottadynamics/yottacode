@@ -344,15 +344,16 @@ type Model struct {
 	toolsRequested int
 	toolsStarted   int
 
-	// In-flight tool-call buffer. The unified tool card is rendered on
-	// ToolResult — until then we hold the start metadata so the card
-	// header can carry the original preview + duration. Cleared on
-	// every ToolResult. pendingToolStart is stamped on ToolStart so the
-	// card header can show how long a slow call took (see slowDurationTag).
-	pendingToolName    string
-	pendingToolPreview string
-	pendingToolArgs    string
-	pendingToolStart   time.Time
+	// In-flight tool-call buffer. Most tool calls render immediately on
+	// ToolResult; consecutive summary-only reads buffer into
+	// pendingGroupedTools until a non-groupable event flushes one grouped
+	// scrollback card. pendingToolStart is stamped on ToolStart so the
+	// header can show how long a slow call took (see slowDurationTag).
+	pendingToolName     string
+	pendingToolPreview  string
+	pendingToolArgs     string
+	pendingToolStart    time.Time
+	pendingGroupedTools []groupedToolResult
 
 	// Input history (Up/Down when palette is closed)
 	inputHistory    []string
@@ -4661,6 +4662,7 @@ func (m Model) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 		m.statsTokens++
 		m.turnTokens++
 	case agent.AssistantMessage:
+		m.flushPendingGroupedTools()
 		if len(e.Message.ToolCalls) > 0 {
 			m.discardStreaming()
 		} else {
@@ -4682,12 +4684,15 @@ func (m Model) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 		// the resolved window too small (see window_drift.go).
 		m.noteWindowUsage(e.Message.Usage)
 	case agent.ProviderToolCall:
+		m.flushPendingGroupedTools()
 		m.reasoning.Reset()
 		m.appendLine("")
 		m.appendLine(renderProviderToolCard(e.ToolName, e.Phase, e.Detail, m.width))
 	case agent.Fallback:
+		m.flushPendingGroupedTools()
 		m.appendLine(renderFallbackLine(e))
 	case agent.ApprovalAuto:
+		m.flushPendingGroupedTools()
 		// Render only the first line of the preview — the full content
 		// (file body, edit diff, etc.) is about to land in the unified
 		// tool card, so dumping it twice would just be noise. Tools
@@ -4700,6 +4705,7 @@ func (m Model) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 		}
 		m.appendLine(styleAuto.Render(SysMsg(SysSuccess, autoApprovalNoticeTitle(e.Source), summary, autoApprovalNoticeFooter(e.Source))))
 	case agent.ApprovalNeeded:
+		m.flushPendingGroupedTools()
 		m.commitStreaming()
 		// exit_plan_mode reads the plan from the resolved plan file
 		// (single source of truth); the tool itself takes no arg. If
@@ -4761,6 +4767,7 @@ func (m Model) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 		// approval keypress handler issues it.
 		return m, nil
 	case agent.PathTrustElevationNeeded:
+		m.flushPendingGroupedTools()
 		// Out-of-workspace write hit the validator. Park the
 		// elevation request and render Prompt 2 (the inline
 		// path-trust modal). The keypress handler in the input
@@ -4822,14 +4829,40 @@ func (m Model) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 		// for every plan flip — exactly the visual noise this surface is
 		// designed to avoid. The end-of-turn commit in TurnDone lands
 		// one final snapshot in scrollback.
-		if e.ToolName == "todo_write" {
-			m.pendingToolName = ""
-			m.pendingToolPreview = ""
-			m.pendingToolArgs = ""
-			m.pendingToolStart = time.Time{}
-			break
-		}
-		// Render the buffered start info + this result as a unified
+			if e.ToolName == "todo_write" {
+				m.pendingToolName = ""
+				m.pendingToolPreview = ""
+				m.pendingToolArgs = ""
+				m.pendingToolStart = time.Time{}
+				break
+			}
+			if groupableToolCard(e.ToolName, e.Errored) {
+				var toolDur time.Duration
+				if !m.pendingToolStart.IsZero() {
+					toolDur = time.Since(m.pendingToolStart)
+				}
+				preview := m.pendingToolPreview
+				if preview == "" {
+					preview = e.ToolName
+				}
+				m.pendingGroupedTools = append(m.pendingGroupedTools, groupedToolResult{
+					toolName: e.ToolName,
+					preview:  preview,
+					argsJSON: m.pendingToolArgs,
+					output:   e.Output,
+					errored:  e.Errored,
+					dur:      toolDur,
+					cwd:      m.cwd,
+				})
+				m.pendingToolName = ""
+				m.pendingToolPreview = ""
+				m.pendingToolArgs = ""
+				m.pendingToolStart = time.Time{}
+				m.streamingMode = streamIdle
+				break
+			}
+			m.flushPendingGroupedTools()
+			// Render the buffered start info + this result as a unified
 		// tool card. Leading blank line gives each card breathing
 		// room from the previous emission.
 		m.appendLine("")
@@ -4859,6 +4892,7 @@ func (m Model) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 		// against the card's `└ done` footer with no breathing room.
 		m.streamingMode = streamIdle
 	case agent.CwdChanged:
+		m.flushPendingGroupedTools()
 		// enter_worktree / exit_worktree swapped the session's working
 		// directory mid-conversation. Refresh m.cwd so the status-line
 		// worktree chip and any cwd-derived display state pick up the
@@ -4883,6 +4917,7 @@ func (m Model) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 		}
 		return m, tea.Batch(resolveCurrentPRCmd(m.parentCtx, m.githubClient, m.cwd), waitForEvent(m.eventsCh, m.turnErrCh))
 	case agent.TodoUpdate:
+		m.flushPendingGroupedTools()
 		// Drive the live plan card in View(): livePlan is what
 		// renderLivePlanCard reads on every redraw, livePlanTouched
 		// arms the end-of-turn snapshot commit in TurnDone. An empty
@@ -4899,6 +4934,7 @@ func (m Model) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 			m.sess.Todos = e.Todos
 		}
 	case agent.IterCap:
+		m.flushPendingGroupedTools()
 		// Cap hit. The hint suggests doubling — the most common
 		// recovery is "I want it to keep going." `e.Max` already
 		// reflects the auto-mode multiplier (the loop computes the
@@ -4912,6 +4948,7 @@ func (m Model) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 			"  raise with `/max-iterations %d` and ask me to continue, or pass --max-iterations %d at launch",
 			suggest, suggest)))
 	case agent.ContextCompacted:
+		m.flushPendingGroupedTools()
 		if e.Err != nil {
 			m.lastContextCompaction = "skipped: " + e.Err.Error()
 			m.appendLine(styleAuto.Render(SysMsg(SysWarning, "context", "compaction skipped", e.Err.Error())))
@@ -4939,6 +4976,7 @@ func (m Model) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 		m.refreshContextTokens()
 		m.compactionSeq++
 	case agent.ErrorEvent:
+		m.flushPendingGroupedTools()
 		m.commitStreaming()
 		// Multi-line errors (e.g. 429 with retry-after hint) render
 		// each line with its own ✗ prefix so the second line
@@ -4947,8 +4985,10 @@ func (m Model) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 			m.appendLine(styleError.Render("✗ " + line))
 		}
 	case agent.UserMessageAppended:
+		m.flushPendingGroupedTools()
 		m.appendLine(styleAuto.Render(SysMsg(SysSuccess, "delivered", truncateForRender(e.Content, 80))))
 	case agent.TurnDone:
+		m.flushPendingGroupedTools()
 		m.commitStreaming()
 		// If the agent touched the plan this turn, commit one full
 		// snapshot of the final state to scrollback AND clear the
@@ -4986,6 +5026,7 @@ func (m Model) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 		}
 		m.turnCancelRequested = false
 	case agent.TurnInterrupted:
+		m.flushPendingGroupedTools()
 		m.commitStreaming()
 		// Don't commit a plan snapshot for an interrupted turn — the
 		// in-flight state was, by definition, not what the agent intended
@@ -5012,16 +5053,19 @@ func (m Model) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 		m.appendLine(styleTurnFooter.Render(msg))
 		m.turnCancelRequested = false
 	case agent.SubagentStart:
+		m.flushPendingGroupedTools()
 		// Lead with a blank line so the subagent block reads as its own
 		// section against the surrounding tool cards.
 		m.appendLine("")
 		m.appendLine(renderSubagentStart(e))
 	case agent.SubagentProgress:
+		m.flushPendingGroupedTools()
 		// One-line tick. Multiple of these will land in quick
 		// succession while a child works through its tool budget; let
 		// scrollback collect them rather than overwriting.
 		m.appendLine(renderSubagentProgress(e))
 	case agent.SubagentDone:
+		m.flushPendingGroupedTools()
 		m.appendLine(renderSubagentDone(e))
 	case agent.SubagentBackgroundDone:
 		// Routed through the long-lived inbox so it can fire after the
@@ -6042,6 +6086,19 @@ func looksLikeShellCommand(line string) bool {
 		}
 	}
 	return false
+}
+
+func (m *Model) flushPendingGroupedTools() {
+	if len(m.pendingGroupedTools) == 0 {
+		return
+	}
+	card := renderGroupedToolCard(m.pendingGroupedTools, m.width, m.cwd)
+	m.pendingGroupedTools = nil
+	if card == "" {
+		return
+	}
+	m.appendLine("")
+	m.appendLine(card)
 }
 
 // appendLine emits a conversation line to terminal scrollback (via

@@ -164,13 +164,104 @@ func TestModel_StaleSuppressedToolStartDoesNotTagNextResult(t *testing.T) {
 		ToolName: "read_file",
 		Output:   "hello",
 	}})
+	m, _ = applyMsg(m, agentEventMsg{ev: agent.TurnDone{}})
 
 	got := stripANSI(m.transcript.String())
 	if strings.Contains(got, "2m") {
 		t.Fatalf("ordinary card inherited stale suppressed-tool duration:\n%s", got)
 	}
-	if !strings.Contains(got, "┌ read_file") || !strings.Contains(got, "└ 1 line · 5 bytes") {
-		t.Fatalf("ordinary card should still render from fallback state; got:\n%s", got)
+	if !strings.Contains(got, "Read(read_file)") && !strings.Contains(got, "read_file") {
+		t.Fatalf("ordinary card should still render after grouped flush; got:\n%s", got)
+	}
+	if !strings.Contains(got, "1 line · 5 bytes") {
+		t.Fatalf("ordinary card should still show read footer after grouped flush; got:\n%s", got)
+	}
+}
+
+func TestModel_ConsecutiveReadResultsGroupIntoOneCard(t *testing.T) {
+	m := newTestModel(t)
+	m.transcript.Reset()
+	m, _ = applyMsg(m, agentEventMsg{ev: agent.ToolStart{ToolName: "read_file", Preview: "read_file(a.go)", ArgsJSON: `{"path":"a.go"}`}})
+	m, _ = applyMsg(m, agentEventMsg{ev: agent.ToolResult{ToolName: "read_file", Output: "one\n"}})
+	if got := m.transcript.String(); got != "" {
+		t.Fatalf("groupable read should buffer, not render immediately: %q", got)
+	}
+	m, _ = applyMsg(m, agentEventMsg{ev: agent.ToolStart{ToolName: "read_file", Preview: "read_file(b.go)", ArgsJSON: `{"path":"b.go"}`}})
+	m, _ = applyMsg(m, agentEventMsg{ev: agent.ToolResult{ToolName: "read_file", Output: "two\nthree\n"}})
+	if got := m.transcript.String(); got != "" {
+		t.Fatalf("second groupable read should still buffer until a flush boundary: %q", got)
+	}
+	m, _ = applyMsg(m, agentEventMsg{ev: agent.TurnDone{}})
+	got := stripANSI(m.transcript.String())
+	if !strings.Contains(got, "┌ Read · 2 calls") {
+		t.Fatalf("expected grouped read card, got:\n%s", got)
+	}
+	if strings.Count(got, "Read(") < 2 {
+		t.Fatalf("expected two grouped read rows, got:\n%s", got)
+	}
+}
+
+func TestModel_ConsecutiveListResultsGroupIntoOneCard(t *testing.T) {
+	m := newTestModel(t)
+	m.transcript.Reset()
+	m, _ = applyMsg(m, agentEventMsg{ev: agent.ToolStart{ToolName: "list_dir", Preview: "list_dir(.)", ArgsJSON: `{"path":"."}`}})
+	m, _ = applyMsg(m, agentEventMsg{ev: agent.ToolResult{ToolName: "list_dir", Output: "d\tbin\nf\tREADME.md\n"}})
+	m, _ = applyMsg(m, agentEventMsg{ev: agent.ToolStart{ToolName: "list_project_structure", Preview: "list_project_structure(.)", ArgsJSON: `{"path":".","max_depth":2}`}})
+	m, _ = applyMsg(m, agentEventMsg{ev: agent.ToolResult{ToolName: "list_project_structure", Output: "d\t4096\t2026-05-03T02:09:50Z\tinternal\nf\t91\t2026-05-03T02:09:50Z\tgo.mod\n"}})
+	m, _ = applyMsg(m, agentEventMsg{ev: agent.TurnDone{}})
+	got := stripANSI(m.transcript.String())
+	if !strings.Contains(got, "┌ List · 2 calls") {
+		t.Fatalf("expected grouped list card, got:\n%s", got)
+	}
+	if !strings.Contains(got, "List(.) — 2 entries") || !strings.Contains(got, "Tree(., depth=2) — 2 entries") {
+		t.Fatalf("expected grouped list rows, got:\n%s", got)
+	}
+}
+
+func TestModel_ConsecutiveGlobResultsGroupIntoOneCard(t *testing.T) {
+	m := newTestModel(t)
+	m.transcript.Reset()
+	m, _ = applyMsg(m, agentEventMsg{ev: agent.ToolStart{ToolName: "glob", Preview: "glob(*.go)", ArgsJSON: `{"pattern":"*.go"}`}})
+	m, _ = applyMsg(m, agentEventMsg{ev: agent.ToolResult{ToolName: "glob", Output: "main.go\ninternal/tui/model.go\n"}})
+	m, _ = applyMsg(m, agentEventMsg{ev: agent.ToolStart{ToolName: "glob", Preview: "glob(*.md)", ArgsJSON: `{"pattern":"*.md"}`}})
+	m, _ = applyMsg(m, agentEventMsg{ev: agent.ToolResult{ToolName: "glob", Output: "README.md\n"}})
+	m, _ = applyMsg(m, agentEventMsg{ev: agent.TurnDone{}})
+	got := stripANSI(m.transcript.String())
+	if !strings.Contains(got, "┌ Glob · 2 calls") {
+		t.Fatalf("expected grouped glob card, got:\n%s", got)
+	}
+	if !strings.Contains(got, "Glob(*.go) — 2 matches") || !strings.Contains(got, "Glob(*.md) — 1 match") {
+		t.Fatalf("expected grouped glob rows, got:\n%s", got)
+	}
+}
+
+func TestModel_NonGroupableToolFlushesPendingReadGroup(t *testing.T) {
+	m := newTestModel(t)
+	m.transcript.Reset()
+	m, _ = applyMsg(m, agentEventMsg{ev: agent.ToolStart{ToolName: "read_file", Preview: "read_file(a.go)", ArgsJSON: `{"path":"a.go"}`}})
+	m, _ = applyMsg(m, agentEventMsg{ev: agent.ToolResult{ToolName: "read_file", Output: "one\n"}})
+	m, _ = applyMsg(m, agentEventMsg{ev: agent.ToolStart{ToolName: "grep", Preview: `grep("x" in .)`, ArgsJSON: `{"pattern":"x","path":"."}`}})
+	m, _ = applyMsg(m, agentEventMsg{ev: agent.ToolResult{ToolName: "grep", Output: "./a.go:1:x\n"}})
+	got := stripANSI(m.transcript.String())
+	if !strings.Contains(got, "┌ Read · 1 call") {
+		t.Fatalf("pending grouped reads should flush before non-groupable card:\n%s", got)
+	}
+	if !strings.Contains(got, "┌ Grep(\"x\")") {
+		t.Fatalf("non-groupable tool should still render its own card:\n%s", got)
+	}
+}
+
+func TestModel_ErroredReadDoesNotGroup(t *testing.T) {
+	m := newTestModel(t)
+	m.transcript.Reset()
+	m, _ = applyMsg(m, agentEventMsg{ev: agent.ToolStart{ToolName: "read_file", Preview: "read_file(a.go)", ArgsJSON: `{"path":"a.go"}`}})
+	m, _ = applyMsg(m, agentEventMsg{ev: agent.ToolResult{ToolName: "read_file", Output: "boom", Errored: true}})
+	got := stripANSI(m.transcript.String())
+	if strings.Contains(got, "┌ Read ·") {
+		t.Fatalf("errored read should not render grouped card:\n%s", got)
+	}
+	if !strings.Contains(got, "┌ Read(a.go)") && !strings.Contains(got, "┌ read_file(a.go)") {
+		t.Fatalf("errored read should render standalone card:\n%s", got)
 	}
 }
 

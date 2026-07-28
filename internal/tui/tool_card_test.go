@@ -170,7 +170,7 @@ func TestToolCard_RunBashErrorExitColored(t *testing.T) {
 // model reads is visual noise; the footer carries the line+byte count
 // so the user can still tell how much was read at a glance. The model
 // of course gets the full content via ToolResult.Output regardless.
-func TestToolCard_ReadFileBodyIsEmpty(t *testing.T) {
+func TestRenderToolCard_ReadFileBodyIsEmpty(t *testing.T) {
 	out := "package main\n\nimport \"fmt\"\n\nfunc main() {}\n"
 	body := toolBodyLines("read_file", out, false, "")
 	if len(body) != 0 {
@@ -179,6 +179,56 @@ func TestToolCard_ReadFileBodyIsEmpty(t *testing.T) {
 	footer := stripANSI(toolFooter("read_file", out, false, ""))
 	if !strings.Contains(footer, "lines") || !strings.Contains(footer, "bytes") {
 		t.Errorf("read_file footer should report lines + bytes; got %q", footer)
+	}
+}
+
+func TestRenderGroupedToolCard_Reads(t *testing.T) {
+	got := stripANSI(renderGroupedToolCard([]groupedToolResult{
+		{toolName: "read_file", preview: "read_file(a.go)", argsJSON: `{"path":"a.go"}`, output: "one\n"},
+		{toolName: "read_file", preview: "read_file(b.go)", argsJSON: `{"path":"b.go","offset":10,"limit":20}`, output: "two\nthree\n"},
+	}, 100, ""))
+	for _, want := range []string{
+		"┌ Read · 2 calls",
+		"Read(a.go) — 1 line · 4 bytes",
+		"Read(b.go @ L10+20) — 2 lines · 10 bytes",
+		"└ 2 calls · 3 lines · 14 bytes",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("grouped read card missing %q\nfull output:\n%s", want, got)
+		}
+	}
+}
+
+func TestRenderGroupedToolCard_Lists(t *testing.T) {
+	got := stripANSI(renderGroupedToolCard([]groupedToolResult{
+		{toolName: "list_dir", preview: "list_dir(.)", argsJSON: `{"path":"."}`, output: "d\tbin\nf\tREADME.md\n"},
+		{toolName: "list_project_structure", preview: "list_project_structure(.)", argsJSON: `{"path":".","max_depth":2}`, output: "d\t4096\t2026-05-03T02:09:50Z\tinternal\nf\t91\t2026-05-03T02:09:50Z\tgo.mod\n"},
+	}, 100, ""))
+	for _, want := range []string{
+		"┌ List · 2 calls",
+		"List(.) — 2 entries",
+		"Tree(., depth=2) — 2 entries",
+		"└ 2 calls · 4 entries",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("grouped list card missing %q\nfull output:\n%s", want, got)
+		}
+	}
+}
+
+func TestRenderGroupedToolCard_ReadManyFilesOmitsBogusLineCount(t *testing.T) {
+	got := stripANSI(renderGroupedToolCard([]groupedToolResult{
+		{toolName: "read_many_files", preview: "read_many_files(2 files)", argsJSON: `{"paths":["a.go","b.go"]}`, output: "==> a.go <==\none\n\n==> b.go <==\ntwo\n"},
+		{toolName: "read_many_files", preview: "read_many_files(1 file)", argsJSON: `{"paths":["c.go"]}`, output: "==> c.go <==\nthree\n"},
+	}, 100, ""))
+	if !strings.Contains(got, "┌ Read · 2 calls") {
+		t.Fatalf("expected grouped read_many_files card, got:\n%s", got)
+	}
+	if strings.Contains(got, "0 lines") {
+		t.Fatalf("grouped read_many_files card should not claim zero lines:\n%s", got)
+	}
+	if !strings.Contains(got, "└ 2 calls · 54 bytes") {
+		t.Fatalf("grouped read_many_files footer should fall back to bytes only, got:\n%s", got)
 	}
 }
 
