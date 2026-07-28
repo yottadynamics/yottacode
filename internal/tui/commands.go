@@ -429,25 +429,25 @@ func cmdSessions(m Model, args []string) (Model, tea.Cmd) {
 	return m, nil
 }
 
-// statusLine keeps transcript notices compact and grep-friendly.
+// statusLine keeps transcript notices compact and consistent with SysMsg.
 func statusLine(tag, msg string) string {
-	return tag + ": " + msg
+	return SysMsg(SysState, tag, msg)
 }
 
 func statusOKLine(tag, msg string) string {
-	return "✓ " + statusLine(tag, msg)
+	return SysMsg(SysSuccess, tag, msg)
 }
 
 func statusWarnLine(tag, msg string) string {
-	return "⚠ " + statusLine(tag, msg)
+	return SysMsg(SysWarning, tag, msg)
 }
 
 func statusActionLine(tag, msg string) string {
-	return "→ " + statusLine(tag, msg)
+	return SysMsg(SysProgress, tag, strings.TrimSuffix(msg, "…"))
 }
 
 func statusHintLine(msg string) string {
-	return "  hint: " + msg
+	return SysMsg(SysState, "hint", msg)
 }
 
 func shortenMiddle(s string, max int) string {
@@ -1125,7 +1125,7 @@ func inSlice(ss []string, s string) bool {
 }
 
 func cmdDoctor(m Model, _ []string) (Model, tea.Cmd) {
-	m.appendLine(styleAuto.Render("[doctor] probing provider..."))
+	m.appendLine(styleAuto.Render(SysMsg(SysProgress, "doctor", "probing provider")))
 	return m, runProviderProbe(m.parentCtx, m.adapterConfig(m.modelName, m.baseURL), true)
 }
 
@@ -1333,7 +1333,7 @@ func cmdClear(m Model, _ []string) (Model, tea.Cmd) {
 		m.appendRaw(renderStartupBox(m.version, m.commit, m.dirty, m.modelName, m.cwd, m.sess.ID, m.branch, m.memorySummary, m.providerProfile, m.startupTip(), m.width))
 		m.queuePrintln("")
 	}
-	m.appendLine(styleAuto.Render(fmt.Sprintf("[clear] new session %s", newSess.ID)))
+	m.appendLine(styleAuto.Render(SysMsg(SysState, "clear", "new session", newSess.ID)))
 	// A /clear starts a fresh conversation, so an armed /loop from the old
 	// session must not bleed into it (and its arm line was just wiped, so
 	// the user couldn't see it anyway). Disarm and drop its pending tick.
@@ -1498,7 +1498,7 @@ func cmdRedo(m Model, _ []string) (Model, tea.Cmd) {
 	m.textInput.SetValue(lastUserText)
 	m.textInput.CursorEnd()
 
-	m.appendLine(styleAuto.Render("[redo] previous message loaded — edit and submit to re-run"))
+	m.appendLine(styleAuto.Render(SysMsg(SysReturn, "redo", "message loaded", "edit & submit")))
 	return m, nil
 }
 

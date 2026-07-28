@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/yottadynamics/yottacode/internal/permissions"
@@ -121,6 +122,11 @@ func (t *ApplyDiffTool) Execute(ctx context.Context, argsJSON string) (string, e
 			"expected a `--- a/PATH` / `+++ b/PATH` header pair (or `rename from`/`rename to`); got %q", got)
 	}
 	for _, rel := range paths {
+		if err := validateUnifiedDiffHunks(a.Diff, rel); err != nil {
+			return "", fmt.Errorf("apply_diff: %w", err)
+		}
+	}
+	for _, rel := range paths {
 		abs := rel
 		if !filepath.IsAbs(abs) {
 			abs = filepath.Join(t.Cwd.Get(), rel)
@@ -151,7 +157,7 @@ func (t *ApplyDiffTool) Execute(ctx context.Context, argsJSON string) (string, e
 }
 
 func applyPatchFailureHint(stderr string) string {
-	if strings.Contains(stderr, "corrupt patch") || strings.Contains(stderr, "unexpected line:") {
+	if strings.Contains(stderr, "corrupt patch") || strings.Contains(stderr, "unexpected line:") || strings.Contains(stderr, "only garbage") {
 		return "patch syntax is malformed — remove placeholder hunks like bare `@@`, or regenerate a complete unified diff with valid hunk headers"
 	}
 	if strings.Contains(stderr, "patch does not apply") || strings.Contains(stderr, "patch failed:") {
@@ -162,6 +168,37 @@ func applyPatchFailureHint(stderr string) string {
 
 func normalizeModelPatch(diff string) string {
 	return diff
+}
+
+var unifiedHunkHeaderRE = regexp.MustCompile(`^@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@`)
+
+// validateUnifiedDiffHunks catches malformed model-authored hunk headers before
+// invoking git apply. Git's "only garbage" / "corrupt patch" diagnostics are
+// technically correct but too opaque for the model to self-correct; returning a
+// typed, narrow error here tells it exactly which file needs a real hunk range.
+func validateUnifiedDiffHunks(diff, rel string) error {
+	lines := strings.Split(diff, "\n")
+	inFile := false
+	seenHeader := false
+	for _, line := range lines {
+		switch {
+		case strings.HasPrefix(line, "diff --git "):
+			inFile = false
+		case strings.HasPrefix(line, "+++ "):
+			path := strings.TrimSpace(strings.TrimPrefix(line, "+++ "))
+			path = strings.TrimPrefix(path, "b/")
+			inFile = path == rel
+		case inFile && strings.HasPrefix(line, "@@"):
+			seenHeader = true
+			if !unifiedHunkHeaderRE.MatchString(line) {
+				return fmt.Errorf("malformed_patch: hunk header for %s must include line ranges, e.g. `@@ -12,7 +12,8 @@`; got %q", rel, line)
+			}
+		}
+	}
+	if !seenHeader {
+		return fmt.Errorf("malformed_patch: diff for %s contains file headers but no hunk header", rel)
+	}
+	return nil
 }
 
 // applyGitPatch applies a prevalidated patch file with a strict-to-lenient

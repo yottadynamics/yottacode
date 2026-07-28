@@ -650,10 +650,13 @@ func recoverableToolErrorBody(toolName, output, cwd string) []string {
 			return []string{"stale edit target — re-read the file and retry with exact current text"}
 		}
 	case "apply_diff":
-		if strings.Contains(trimmed, "patch does not apply") || strings.Contains(trimmed, "patch failed:") {
+		if isRecoverablePatchError(trimmed) {
 			file := patchFailedFile(trimmed)
 			if file != "" {
 				return []string{"stale patch context — re-read " + file + " and regenerate the diff"}
+			}
+			if strings.Contains(trimmed, "only garbage") {
+				return []string{"malformed patch — use a valid unified diff with real hunk ranges"}
 			}
 			return []string{"stale patch context — re-read the target file and regenerate the diff"}
 		}
@@ -671,11 +674,22 @@ func recoverableToolErrorFooter(toolName, output string) string {
 			return "recoverable: stale edit target"
 		}
 	case "apply_diff":
-		if strings.Contains(output, "patch does not apply") || strings.Contains(output, "patch failed:") {
+		if isRecoverablePatchError(output) {
+			if strings.Contains(output, "only garbage") {
+				return "recoverable: malformed patch"
+			}
 			return "recoverable: stale patch context"
 		}
 	}
 	return ""
+}
+
+// isRecoverablePatchError recognizes git-apply failures caused by stale or
+// malformed model-authored patches. The raw tool result includes the entire
+// patch payload, but the card should show the actionable diagnosis instead of
+// dumping hundreds of escaped diff characters into scrollback.
+func isRecoverablePatchError(output string) bool {
+	return strings.Contains(output, "patch does not apply") || strings.Contains(output, "patch failed:") || strings.Contains(output, "only garbage")
 }
 
 func closestLineHint(s string) string {
@@ -1277,43 +1291,28 @@ func pluralize(noun string, n int) string {
 }
 
 func renderSystemNoticeCard(title string, lines []string, footer string, termWidth int) string {
-	width := cardMaxWidthCap
-	if termWidth > 0 && termWidth-4 < width {
-		width = termWidth - 4
-	}
-	if width < cardMinUsefulCols {
-		width = cardMinUsefulCols
-	}
-	gutter := styleNoticeBorder.Render("│ ")
-	gutterWidth := ansi.StringWidth(gutter)
-	bodyWidth := width - gutterWidth
-	if bodyWidth < 20 {
-		bodyWidth = 20
-	}
-	out := []string{styleNoticeBorder.Render("┌ ") + styleNoticeLabel.Render(title)}
+	// Compatibility shim for older call sites: system lifecycle notices are
+	// now one-line rows, not boxed cards. Prefer calling SysMsg directly.
+	_ = termWidth
+	parts := []string{strings.TrimSpace(title)}
 	for _, line := range lines {
-		styled := styleSystemNoticeLine(line)
-		for _, row := range strings.Split(ansi.Wrap(styled, bodyWidth, ""), "\n") {
-			out = append(out, gutter+row)
+		if trimmed := strings.TrimSpace(line); trimmed != "" {
+			parts = append(parts, trimmed)
 		}
 	}
 	if strings.TrimSpace(footer) != "" {
-		out = append(out, styleNoticeBorder.Render("└ ")+styleNoticeFooter.Render(footer))
-	} else {
-		out = append(out, styleNoticeBorder.Render("└"))
+		parts = append(parts, strings.TrimSpace(footer))
 	}
-	return strings.Join(out, "\n")
+	return styleAuto.Render(strings.Join(parts, " · "))
 }
 
 func renderStatusNoticeCard(title, body, footer string, termWidth int) string {
-	var lines []string
-	for _, line := range strings.Split(strings.TrimRight(body, "\n"), "\n") {
-		if strings.TrimSpace(line) == "" {
-			continue
-		}
-		lines = append(lines, line)
+	_ = termWidth
+	body = strings.TrimSpace(body)
+	if strings.TrimSpace(footer) == "" {
+		return styleAuto.Render(strings.TrimSpace(title + " · " + body))
 	}
-	return renderSystemNoticeCard(title, lines, footer, termWidth)
+	return styleAuto.Render(strings.TrimSpace(title+" · "+body) + " · " + strings.TrimSpace(footer))
 }
 
 func styleSystemNoticeLine(line string) string {
@@ -1335,21 +1334,21 @@ func styleSystemNoticeLine(line string) string {
 func autoApprovalNoticeTitle(source string) string {
 	switch source {
 	case "auto-mode":
-		return "Auto"
+		return "auto"
 	case "auto-mode-safe-bash":
-		return "Auto bash"
+		return "auto bash"
 	case "permissions":
-		return "Allowed by rule"
+		return "allowed by rule"
 	case "deny-rule":
-		return "Blocked"
+		return "blocked"
 	case "yolo-mode":
-		return "Yolo"
+		return "yolo mode"
 	case "plan-mode-allow":
-		return "Plan allow"
+		return "plan allow"
 	case "plan-mode-block":
-		return "Plan block"
+		return "plan block"
 	default:
-		return "Tool notice"
+		return "tool notice"
 	}
 }
 
@@ -1361,19 +1360,19 @@ func autoApprovalNoticeFooter(source string) string {
 }
 
 func renderQueueNoticeCard(kind, detail, footer string, termWidth int) string {
-	return renderSystemNoticeCard(kind, []string{detail}, footer, termWidth)
+	_ = kind
+	_ = footer
+	_ = termWidth
+	return styleAuto.Render(detail)
 }
 
 func renderCompactionNoticeCard(before, after, snapshot string, termWidth int) string {
-	lines := []string{fmt.Sprintf("✓ compacted mid-turn: ~%s → ~%s tokens", before, after)}
-	if strings.TrimSpace(snapshot) != "" {
-		lines = append(lines, "  snapshot: "+snapshot)
-	}
-	return renderSystemNoticeCard("Context", lines, "compaction", termWidth)
+	_ = termWidth
+	return styleAuto.Render(SysMsg(SysContext, "context", "compacted", fmt.Sprintf("~%s → ~%s tokens", before, after), snapshot))
 }
 
 func renderWindowNoticeCard(lines []string, footer string, termWidth int) string {
-	return renderSystemNoticeCard("Window", lines, footer, termWidth)
+	return renderSystemNoticeCard("window", lines, footer, termWidth)
 }
 
 // Card-specific styles. The gutter (┌ │ └) renders Muted (decorative);

@@ -714,7 +714,7 @@ func TestSlash_DoctorRunsActiveProbe(t *testing.T) {
 	if cmd == nil {
 		t.Fatalf("/doctor should return a probe command")
 	}
-	if !strings.Contains(m.transcript.String(), "[doctor] probing provider...") {
+	if !strings.Contains(m.transcript.String(), SysMsg(SysProgress, "doctor", "probing provider")) {
 		t.Fatalf("doctor preflight line missing:\n%s", m.transcript.String())
 	}
 	m, _ = applyMsg(m, cmd())
@@ -1401,17 +1401,17 @@ func TestPalette_EnterPassesThroughTypedArgs(t *testing.T) {
 
 func TestStatusLine_RendersCompactPrefix(t *testing.T) {
 	line := statusLine("provider", "switched to openai")
-	if line != "provider: switched to openai" {
+	if line != "○ provider · switched to openai" {
 		t.Fatalf("statusLine rendered %q", line)
 	}
 }
 
 func TestStatusHelpers_RenderSymbolsAndHints(t *testing.T) {
 	cases := map[string]string{
-		statusOKLine("provider", "added openai"):       "✓ provider: added openai",
-		statusWarnLine("model", "context unknown"):     "⚠ model: context unknown",
-		statusActionLine("openai-auth", "signing in"):  "→ openai-auth: signing in",
-		statusHintLine("set context_window in config"): "  hint: set context_window in config",
+		statusOKLine("provider", "added openai"):       "✓ provider · added openai",
+		statusWarnLine("model", "context unknown"):     "⚠ model · context unknown",
+		statusActionLine("openai-auth", "signing in"):  "… openai-auth · signing in",
+		statusHintLine("set context_window in config"): "○ hint · set context_window in config",
 	}
 	for got, want := range cases {
 		if got != want {

@@ -105,7 +105,7 @@ By default:
 - git mutations prompt
 - destructive flags are called out in previews
 
-Approval prompts can be answered once or turned into a reusable allow rule.
+Approval prompts can be answered once or turned into a reusable allow rule. Auto-approved calls do not render boxed notice cards in the transcript; they render as one-line system messages such as `✓ auto · edit_file(...) · auto-mode` or `✓ allowed by rule · write_file(...) · permissions` so approval state stays visible without adding multi-line noise.
 
 ### Gate precedence
 

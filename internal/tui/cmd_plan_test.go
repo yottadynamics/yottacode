@@ -764,7 +764,7 @@ func TestToggleAutoMode_Toggles(t *testing.T) {
 	if !strings.Contains(out, "Shift+Tab cycles onward: auto → plan → normal") {
 		t.Errorf("entry log should carry the cycle keys; got %q", out)
 	}
-	if !strings.Contains(out, "auto mode exited") || !strings.Contains(out, "re-enter with Shift+Tab") {
+	if !strings.Contains(out, "○ auto mode · exited") || !strings.Contains(out, "re-enter with Shift+Tab") {
 		t.Errorf("exit log should carry the re-enter keys; got %q", out)
 	}
 }
