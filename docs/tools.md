@@ -210,7 +210,12 @@ output. A few tools have card-specific body shapes:
   exception flags in the card; the full structured diff snapshot still goes
   to the model.
 - **`read_file` / `write_file`** show no body — the footer's
-  `N lines · M bytes` / `wrote N bytes` carries the entire signal.
+  `N lines · M bytes` / `wrote N bytes` carries the entire signal. When
+  multiple successful summary-only read cards land consecutively (`read_file`,
+  `read_many_files`, `list_dir`, `list_project_structure`, `glob`), the TUI may
+  group them into one visual card with one row per call; this is display-only
+  and does not change the individual tool results the model or saved session
+  receive.
 
 **Footer.** Summarizes the call: `N entries`, `wrote N bytes`,
 `N lines · M bytes [(truncated)]`, `N matches`, `exit N` (colored), or

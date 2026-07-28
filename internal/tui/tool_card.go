@@ -135,6 +135,224 @@ func renderToolCard(toolName, preview, argsJSON, output string, errored bool, te
 	return renderPlainBodyToolCard(out, g, footer, body, width, toolName)
 }
 
+type groupedToolResult struct {
+	toolName string
+	preview  string
+	argsJSON string
+	output   string
+	errored  bool
+	dur      time.Duration
+	cwd      string
+}
+
+func groupableToolCard(toolName string, errored bool) bool {
+	if errored {
+		return false
+	}
+	switch toolName {
+	case "read_file", "read_many_files", "list_dir", "list_project_structure", "glob":
+		return true
+	}
+	return false
+}
+
+func renderGroupedToolCard(items []groupedToolResult, termWidth int, cwd string) string {
+	if len(items) == 0 {
+		return ""
+	}
+	width := cardMaxWidthCap
+	if termWidth > 0 && termWidth-4 < width {
+		width = termWidth - 4
+	}
+	if width < cardMinUsefulCols {
+		width = cardMinUsefulCols
+	}
+	g := neutralGutter()
+	label := groupedToolHeaderLabel(items)
+	callNoun := "calls"
+	if len(items) == 1 {
+		callNoun = "call"
+	}
+	header := renderCardHeader(fmt.Sprintf("%s · %d %s", label, len(items), callNoun), g, 0, width)
+	out := []string{header}
+	rows := groupedToolRows(items, width)
+	out = append(out, capPrefixedBodyRows(rows, fmt.Sprintf("%d %s", len(items), callNoun))...)
+	out = append(out, g.bottom.Render("└ ")+styleCardMeta.Render(groupedToolFooter(items)))
+	return strings.Join(out, "\n")
+}
+
+func groupedToolRows(items []groupedToolResult, width int) []string {
+	gutter := neutralGutter().side.Render("│ ")
+	gutterWidth := ansi.StringWidth(gutter)
+	bodyWidth := width - gutterWidth
+	if bodyWidth < 20 {
+		bodyWidth = 20
+	}
+	rows := make([]string, 0, len(items))
+	for _, item := range items {
+		header := toolHeader(item.toolName, item.argsJSON, item.preview, width, item.cwd)
+		footer := plainFooter(toolFooter(item.toolName, item.output, item.errored, item.cwd))
+		line := fmt.Sprintf("%s — %s", header, footer)
+		styled := styleCardBody.Render(line)
+		if ansi.StringWidth(styled) <= bodyWidth {
+			rows = append(rows, gutter+styled)
+			continue
+		}
+		wrapped := ansi.Wrap(styled, bodyWidth, "")
+		for _, part := range strings.Split(wrapped, "\n") {
+			rows = append(rows, gutter+part)
+		}
+	}
+	return rows
+}
+
+func groupedToolHeaderLabel(items []groupedToolResult) string {
+	if len(items) == 0 {
+		return "Tools"
+	}
+	label := groupedToolKindLabel(items[0].toolName)
+	for _, item := range items[1:] {
+		if groupedToolKindLabel(item.toolName) != label {
+			return "Tools"
+		}
+	}
+	return label
+}
+
+func groupedToolKindLabel(toolName string) string {
+	switch toolName {
+	case "read_file", "read_many_files":
+		return "Read"
+	case "list_dir", "list_project_structure":
+		return "List"
+	case "glob":
+		return "Glob"
+	default:
+		return "Tools"
+	}
+}
+
+func groupedToolFooter(items []groupedToolResult) string {
+	if len(items) == 0 {
+		return "0 calls"
+	}
+	callNoun := "calls"
+	if len(items) == 1 {
+		callNoun = "call"
+	}
+	sameKind := true
+	firstKind := groupedToolKindLabel(items[0].toolName)
+	for _, item := range items[1:] {
+		if groupedToolKindLabel(item.toolName) != firstKind {
+			sameKind = false
+			break
+		}
+	}
+	if sameKind {
+		switch items[0].toolName {
+		case "read_file", "read_many_files":
+			totalLines := 0
+			totalBytes := 0
+			unknownLines := false
+			for _, item := range items {
+				lines, bytes := groupedReadMetrics(item)
+				totalBytes += bytes
+				if lines < 0 {
+					unknownLines = true
+					continue
+				}
+				totalLines += lines
+			}
+			if unknownLines {
+				return fmt.Sprintf("%d %s · %d bytes", len(items), callNoun, totalBytes)
+			}
+			lineNoun := "lines"
+			if totalLines == 1 {
+				lineNoun = "line"
+			}
+			return fmt.Sprintf("%d %s · %d %s · %d bytes", len(items), callNoun, totalLines, lineNoun, totalBytes)
+		case "list_dir", "list_project_structure":
+			totalEntries := 0
+			for _, item := range items {
+				totalEntries += countNonTruncationLines(item.output)
+			}
+			entryNoun := "entries"
+			if totalEntries == 1 {
+				entryNoun = "entry"
+			}
+			return fmt.Sprintf("%d %s · %d %s", len(items), callNoun, totalEntries, entryNoun)
+		case "glob":
+			totalMatches := 0
+			for _, item := range items {
+				totalMatches += countNonEmptyLines(item.output)
+			}
+			matchNoun := "matches"
+			if totalMatches == 1 {
+				matchNoun = "match"
+			}
+			return fmt.Sprintf("%d %s · %d %s", len(items), callNoun, totalMatches, matchNoun)
+		}
+	}
+	return fmt.Sprintf("%d %s", len(items), callNoun)
+}
+
+func plainFooter(s string) string {
+	replacer := strings.NewReplacer(
+		"\x1b[0m", "",
+		"\x1b[1m", "",
+		"\x1b[2m", "",
+		"\x1b[3m", "",
+		"\x1b[4m", "",
+	)
+	for {
+		next := replacer.Replace(s)
+		if next == s {
+			break
+		}
+		s = next
+	}
+	return s
+}
+
+func groupedReadMetrics(item groupedToolResult) (lines, bytes int) {
+	trimmed := item.output
+	if item.toolName == "read_file" {
+		truncated := strings.HasSuffix(trimmed, "\n…[truncated]")
+		if truncated {
+			trimmed = strings.TrimSuffix(trimmed, "\n…[truncated]")
+		}
+		bytes = len(trimmed)
+		lines = strings.Count(trimmed, "\n")
+		if bytes > 0 && !strings.HasSuffix(trimmed, "\n") {
+			lines++
+		}
+		return lines, bytes
+	}
+	bytes = len(item.output)
+	return -1, bytes
+}
+
+func countNonEmptyLines(out string) int {
+	n := 0
+	for _, line := range strings.Split(out, "\n") {
+		if strings.TrimSpace(line) != "" {
+			n++
+		}
+	}
+	return n
+}
+
+func countNonTruncationLines(out string) int {
+	n := 0
+	for _, line := range strings.Split(out, "\n") {
+		if line == "" || strings.HasPrefix(line, "…") {
+			continue
+		}
+		n++
+	}
+	return n
+}
+
 func renderPlainBodyToolCard(out []string, g cardGutter, footer string, body []string, width int, toolName string) string {
 	gutter := g.side.Render("│ ")
 	gutterWidth := ansi.StringWidth(gutter)
