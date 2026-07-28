@@ -69,31 +69,28 @@ func pollCopilotAuthCmd(ctx context.Context, dc copilotauth.DeviceCode) tea.Cmd 
 
 func handleInlineCopilotAuthCode(m Model, msg inlineCopilotAuthCodeMsg) (Model, tea.Cmd) {
 	if msg.err != nil {
-		m.appendLine(styleError.Render("[copilot] device code request failed: " + msg.err.Error()))
+		m.appendLine(styleError.Render(SysMsg(SysFailure, "copilot", "device code request failed", msg.err.Error())))
 		if m.copilotPendingAdd != nil {
-			m.appendLine(styleAuto.Render(fmt.Sprintf("(profile %q was not saved — retry /provider add)",
-				m.copilotPendingAdd.add.Name)))
+			m.appendLine(styleAuto.Render(SysMsg(SysWarning, "copilot", "profile not saved", m.copilotPendingAdd.add.Name)))
 			m.copilotPendingAdd = nil
 		}
 		return m, nil
 	}
-	m.appendLine(styleAuto.Render(fmt.Sprintf("[copilot] open %s and enter code: %s",
-		msg.dc.VerificationURI, msg.dc.UserCode)))
+	m.appendLine(styleAuto.Render(SysMsg(SysProgress, "copilot", "device code sign-in", fmt.Sprintf("open %s", msg.dc.VerificationURI), "code "+msg.dc.UserCode)))
 	return m, pollCopilotAuthCmd(m.parentCtx, msg.dc)
 }
 
 func handleInlineCopilotAuthDone(m Model, msg inlineCopilotAuthDoneMsg) (Model, tea.Cmd) {
 	if msg.err != nil {
-		m.appendLine(styleError.Render("[copilot] sign-in failed: " + msg.err.Error()))
+		m.appendLine(styleError.Render(SysMsg(SysFailure, "copilot", "sign-in failed", msg.err.Error())))
 		if m.copilotPendingAdd != nil {
-			m.appendLine(styleAuto.Render(fmt.Sprintf("(profile %q was not saved — retry /provider add)",
-				m.copilotPendingAdd.add.Name)))
+			m.appendLine(styleAuto.Render(SysMsg(SysWarning, "copilot", "profile not saved", m.copilotPendingAdd.add.Name)))
 			m.copilotPendingAdd = nil
 		}
-		m.appendLine(styleAuto.Render("[copilot] run `yottacode copilot-auth login` to retry"))
+		m.appendLine(styleAuto.Render(SysMsg(SysState, "copilot", "retry", "run `yottacode copilot-auth login`")))
 		return m, nil
 	}
-	m.appendLine(styleAuto.Render("[copilot] signed in — token saved and Copilot access verified"))
+	m.appendLine(styleAuto.Render(SysMsg(SysSuccess, "copilot", "signed in")))
 
 	if pending := m.copilotPendingAdd; pending != nil {
 		m.copilotPendingAdd = nil

@@ -45,9 +45,9 @@ type mcpPickerState struct {
 	servers    []mcpServerEntry
 	listCursor int
 
-	addFields  []textinput.Model
-	addLabels  []string
-	addFocused int
+	addFields   []textinput.Model
+	addLabels   []string
+	addFocused  int
 	addInputErr string
 }
 
@@ -254,17 +254,17 @@ func (m Model) updateMCPLogs(msg tea.KeyMsg) (Model, tea.Cmd) {
 			}
 			client := mgr.Client(name)
 			if client == nil {
-				m.appendLine(styleAuto.Render(fmt.Sprintf("[mcp] server %q has no live client", name)))
+				m.appendLine(styleAuto.Render(SysMsg(SysWarning, "mcp", "no live client", name)))
 				return m, nil
 			}
 			sc, ok := client.(*mcp.StdioClient)
 			if !ok {
-				m.appendLine(styleAuto.Render(fmt.Sprintf("[mcp] server %q has no stderr (non-stdio transport)", name)))
+				m.appendLine(styleAuto.Render(SysMsg(SysState, "mcp", "no stderr", name, "non-stdio transport")))
 				return m, nil
 			}
 			lines := sc.StderrTail()
 			if len(lines) == 0 {
-				m.appendLine(styleAuto.Render(fmt.Sprintf("[mcp] server %q has produced no stderr yet", name)))
+				m.appendLine(styleAuto.Render(SysMsg(SysState, "mcp", "no stderr yet", name)))
 				return m, nil
 			}
 			m.appendLine(styleMCPHeader.Render(fmt.Sprintf("-- %s -- stderr (last %d lines) --", name, len(lines))))
@@ -348,11 +348,11 @@ func commitMCPAdd(m *Model) (Model, tea.Cmd) {
 	if len(args) > 0 {
 		argsHint = fmt.Sprintf(" %s", strings.Join(args, " "))
 	}
-	m.appendLine(styleAuto.Render(fmt.Sprintf("[mcp] added %q (%s%s)", name, command, argsHint)))
+	m.appendLine(styleAuto.Render(SysMsg(SysSuccess, "mcp", "added", name, strings.TrimSpace(command+argsHint))))
 
 	mgr := m.mcpManager
 	if mgr == nil {
-		m.appendLine(styleAuto.Render("[mcp] restart yottacode to start this server"))
+		m.appendLine(styleAuto.Render(SysMsg(SysState, "mcp", "restart yottacode", "to start this server")))
 		return *m, nil
 	}
 
@@ -361,7 +361,7 @@ func commitMCPAdd(m *Model) (Model, tea.Cmd) {
 	// otherwise freeze the entire TUI right after the user pressed Enter.
 	// registry.Register is mutex-guarded, so registering from the command
 	// goroutine can't race the agent goroutine's reads.
-	m.appendLine(styleAuto.Render("[mcp] starting server…"))
+	m.appendLine(styleAuto.Render(SysMsg(SysProgress, "mcp", "starting server")))
 	return *m, startMCPServerCmd(mgr, server, m.cfg.Registry)
 }
 
@@ -385,18 +385,18 @@ func startMCPServerCmd(mgr *mcp.Manager, server config.MCPServer, registry *agen
 			result, err = mgr.Add(startCtx, server)
 		}
 		if err != nil {
-			return mcpServerStartedMsg{lines: []string{fmt.Sprintf("[mcp] failed to start %q: %v", name, err)}}
+			return mcpServerStartedMsg{lines: []string{SysMsg(SysFailure, "mcp", "failed to start", name, err.Error())}}
 		}
 		if result.Err != nil {
 			return mcpServerStartedMsg{lines: []string{
-				fmt.Sprintf("[mcp] server %q failed to start: %v", name, result.Err),
-				"[mcp] check /mcp logs " + name + " for details",
+				SysMsg(SysFailure, "mcp", "failed to start", name, result.Err.Error()),
+				SysMsg(SysState, "mcp", "check logs", "/mcp logs "+name),
 			}}
 		}
 		fresh := mgr.Client(name)
 		tools, err := fresh.ListTools(startCtx)
 		if err != nil {
-			return mcpServerStartedMsg{lines: []string{fmt.Sprintf("[mcp] %s: list tools: %v", name, err)}}
+			return mcpServerStartedMsg{lines: []string{SysMsg(SysFailure, "mcp", "list tools", name, err.Error())}}
 		}
 		if registry != nil {
 			for _, td := range tools {
@@ -410,7 +410,7 @@ func startMCPServerCmd(mgr *mcp.Manager, server config.MCPServer, registry *agen
 				})
 			}
 		}
-		return mcpServerStartedMsg{lines: []string{fmt.Sprintf("[mcp] server %q started — %d tools registered", name, len(tools))}}
+		return mcpServerStartedMsg{lines: []string{SysMsg(SysSuccess, "mcp", "started", name, fmt.Sprintf("%d tools registered", len(tools)))}}
 	}
 }
 
@@ -446,7 +446,7 @@ func commitMCPRemove(m *Model) (Model, tea.Cmd) {
 
 	m.mcpPickerOpen = false
 	m.mcpPicker = nil
-	m.appendLine(styleAuto.Render(fmt.Sprintf("[mcp] removed %q", name)))
+	m.appendLine(styleAuto.Render(SysMsg(SysSuccess, "mcp", "removed", name)))
 	stopMCPServer(m, name)
 	return *m, nil
 }

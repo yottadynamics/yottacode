@@ -1594,7 +1594,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						if queued != "" {
 							m.textInput.SetValue(queued)
 							m.textInput.CursorEnd()
-							m.appendLine(styleAuto.Render("[queued] recalled for editing"))
+							m.appendLine(styleAuto.Render(SysMsg(SysReturn, "queue", "recalled for editing")))
 							return m, nil
 						}
 					default:
@@ -1604,7 +1604,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.pendingInputAfterTurn = ""
 						m.textInput.SetValue(queued)
 						m.textInput.CursorEnd()
-						m.appendLine(styleAuto.Render("[queued] recalled for editing"))
+						m.appendLine(styleAuto.Render(SysMsg(SysReturn, "queue", "recalled for editing")))
 						return m, nil
 					}
 				}
@@ -1753,13 +1753,10 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.paletteIndex = 0
 					m.paletteOffset = 0
 					m.appendLine(renderUserBlock(input, m.width))
-					m.appendLine(renderQueueNoticeCard("Queue", "→ queued: will deliver at next tool round", "follow-up pending", m.width))
+					m.appendLine(styleAuto.Render(SysMsg(SysQueue, "queue", "next tool round", truncateForRender(input, 80))))
 					return m, nil
 				default:
-					m.appendLine(renderSystemNoticeCard("Queue", []string{
-						"⚠ queued: already waiting for delivery",
-						"  hint: press ↑ to edit it or wait for the next tool round",
-					}, "queue full", m.width))
+					m.appendLine(styleAuto.Render(SysMsg(SysWarning, "queue", "already waiting", "↑ to edit")))
 					return m, nil
 				}
 			default:
@@ -2528,7 +2525,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.appendLine(renderFallbackLine(agent.Fallback{From: fb.FallbackFrom, To: fb.FallbackTo, Reason: fb.FallbackReason, Agent: "summarize"}))
 		}
 		if msg.degraded && msg.err == nil {
-			m.appendLine(styleAuto.Render("[summarize] fast model failed repeatedly; used smart model for compaction"))
+			m.appendLine(styleAuto.Render(SysMsg(SysWarning, "summarize", "fast failed", "used smart model")))
 		}
 		if msg.compactionSeq != m.compactionSeq {
 			// A mid-turn compaction rewrote history after summarizeCmd took
@@ -2546,7 +2543,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// closed forever and we silently stop attempting compression.
 			m.lastWatermarkPct = 0
 			m.lastContextSummary = "failed: " + msg.err.Error()
-			m.appendLine(styleError.Render("[summarize] " + msg.err.Error()))
+			m.appendLine(styleError.Render(SysMsg(SysFailure, "summarize", "failed", msg.err.Error())))
 			return m, nil
 		}
 		// Guard the slice write under histMu: /summarize is
@@ -2614,9 +2611,8 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				abbrevHome(msg.snapshotPath))))
 		default:
 			m.lastContextSummary = fmt.Sprintf("manual summarized %s → %s", formatTokens(msg.tokensBefore), formatTokens(m.contextTokens))
-			m.appendLine(styleAuto.Render(fmt.Sprintf(
-				"[summarize] compressed history (~%d → ~%d tokens). Snapshot: %s",
-				msg.tokensBefore, m.contextTokens, abbrevHome(msg.snapshotPath))))
+			m.appendLine(styleAuto.Render(SysMsg(SysContext, "summarize", "compressed history",
+				fmt.Sprintf("~%d → ~%d tokens", msg.tokensBefore, m.contextTokens), abbrevHome(msg.snapshotPath))))
 		}
 		if len(m.pendingSubagentWakes) > 0 {
 			// A notify_on_done completion may have arrived while summarization
@@ -4703,7 +4699,7 @@ func (m Model) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 		if i := strings.Index(summary, "\n"); i >= 0 {
 			summary = summary[:i]
 		}
-		m.appendLine(renderSystemNoticeCard(autoApprovalNoticeTitle(e.Source), []string{"✓ " + summary}, autoApprovalNoticeFooter(e.Source), m.width))
+		m.appendLine(styleAuto.Render(SysMsg(SysSuccess, autoApprovalNoticeTitle(e.Source), summary, autoApprovalNoticeFooter(e.Source))))
 	case agent.ApprovalNeeded:
 		m.commitStreaming()
 		// exit_plan_mode reads the plan from the resolved plan file
@@ -4919,7 +4915,7 @@ func (m Model) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 	case agent.ContextCompacted:
 		if e.Err != nil {
 			m.lastContextCompaction = "skipped: " + e.Err.Error()
-			m.appendLine(styleAuto.Render(fmt.Sprintf("[context] compaction skipped: %v", e.Err)))
+			m.appendLine(styleAuto.Render(SysMsg(SysWarning, "context", "compaction skipped", e.Err.Error())))
 			break
 		}
 		kind := "compacted"
@@ -4961,7 +4957,7 @@ func (m Model) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 			m.appendLine(styleError.Render("✗ " + line))
 		}
 	case agent.UserMessageAppended:
-		m.appendLine(renderQueueNoticeCard("Queue", "✓ delivered: "+truncateForRender(e.Content, 80), "mid-turn input", m.width))
+		m.appendLine(styleAuto.Render(SysMsg(SysSuccess, "delivered", truncateForRender(e.Content, 80))))
 	case agent.TurnDone:
 		m.commitStreaming()
 		// If the agent touched the plan this turn, commit one full
@@ -5015,13 +5011,13 @@ func (m Model) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 		// user see that the cancel landed cleanly. If pending input
 		// was queued by Enter, turnEndedMsg will auto-submit it
 		// immediately after — no extra prompt needed here.
-		msg := "↩ interrupted"
+		msg := SysMsg(SysReturn, "interrupt", "cancelled")
 		if e.OrphanedCalls > 0 {
 			noun := "tool calls"
 			if e.OrphanedCalls == 1 {
 				noun = "tool call"
 			}
-			msg = fmt.Sprintf("%s (%d %s cancelled)", msg, e.OrphanedCalls, noun)
+			msg = SysMsg(SysReturn, "interrupt", fmt.Sprintf("%d %s cancelled", e.OrphanedCalls, noun))
 		}
 		m.appendLine(styleTurnFooter.Render(msg))
 		m.turnCancelRequested = false

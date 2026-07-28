@@ -125,31 +125,22 @@ func TestRenderToolCard_GrepWrapsUnderMatchText(t *testing.T) {
 	}
 }
 
-func TestRenderSystemNoticeCard_WrapsAndKeepsFooter(t *testing.T) {
-	got := stripANSI(renderSystemNoticeCard("Auto", []string{
-		"✓ grep(\"auto.*model|model.*auto|routingNote|renderStatus\\(\\).*auto|gpt-5.4 auto|auto mode\" in internal/tui)",
+func TestRenderSystemNoticeCard_UsesOneLineGrammar(t *testing.T) {
+	got := stripANSI(renderSystemNoticeCard("auto", []string{
+		"grep(\"auto mode\" in internal/tui)",
 	}, "auto-mode", 88))
-	if !strings.Contains(got, "┌ Auto") {
-		t.Fatalf("missing notice header: %q", got)
+	if strings.Contains(got, "┌") || strings.Contains(got, "│") || strings.Contains(got, "└") {
+		t.Fatalf("system notices should not render card gutters: %q", got)
 	}
-	if !strings.Contains(got, "└ auto-mode") {
-		t.Fatalf("missing notice footer: %q", got)
-	}
-	if strings.Contains(got, "\ngrep(") {
-		t.Fatalf("wrapped notice body should stay inside the card gutter: %q", got)
+	if got != "auto · grep(\"auto mode\" in internal/tui) · auto-mode" {
+		t.Fatalf("unexpected one-line notice: %q", got)
 	}
 }
 
 func TestRenderCompactionNoticeCard_ShowsSnapshot(t *testing.T) {
 	got := stripANSI(renderCompactionNoticeCard("221K", "36K", "~/.yottacode/sessions/foo.json", 100))
-	if !strings.Contains(got, "compacted mid-turn: ~221K → ~36K tokens") {
-		t.Fatalf("missing compaction summary: %q", got)
-	}
-	if !strings.Contains(got, "snapshot: ~/.yottacode/sessions/foo.json") {
-		t.Fatalf("missing snapshot detail: %q", got)
-	}
-	if !strings.Contains(got, "└ compaction") {
-		t.Fatalf("missing compaction footer: %q", got)
+	if got != "◇ context · compacted · ~221K → ~36K tokens · ~/.yottacode/sessions/foo.json" {
+		t.Fatalf("unexpected compaction notice: %q", got)
 	}
 }
 
@@ -224,9 +215,9 @@ func TestToolCard_WriteFileFooterDropsRedundantPath(t *testing.T) {
 	}
 }
 
-// Errored output bypasses per-tool body shapers and renders raw — the
-// user needs to see the message verbatim. Footer carries an ✗
-// summary.
+// Errored output bypasses most per-tool body shapers and renders raw — the
+// user needs to see the message verbatim. Recoverable edit/patch errors are
+// the exception: they render concise guidance instead of dumping stale inputs.
 func TestToolCard_ErroredOutputRendersRaw(t *testing.T) {
 	body := toolBodyLines("list_dir", "list_dir: open /nope: no such file or directory", true, "")
 	if len(body) != 1 || !strings.Contains(body[0], "no such file or directory") {
@@ -235,6 +226,18 @@ func TestToolCard_ErroredOutputRendersRaw(t *testing.T) {
 	footer := stripANSI(toolFooter("list_dir", "list_dir: open /nope: no such file or directory", true, ""))
 	if !strings.HasPrefix(footer, "✗ ") {
 		t.Errorf("errored footer should be marked: %q", footer)
+	}
+}
+
+func TestToolCard_ApplyDiffMalformedPatchIsConcise(t *testing.T) {
+	out := `error: apply_diff: exit status 128; stderr="error: patch with only garbage at line 5\n" hint="context may not match the current file — re-read it and regenerate the diff" patch="diff --git a/internal/tui/tool_card.go b/internal/tui/tool_card.go\nindex 1111111..2222222 100644\n--- a/internal/tui/tool_card.go\n+++ b/internal/tui/tool_card.go\n@@\n-func old() {}\n+func new() {}\n"`
+	body := toolBodyLines("apply_diff", out, true, "")
+	if len(body) != 1 || body[0] != "malformed patch — use a valid unified diff with real hunk ranges" {
+		t.Fatalf("apply_diff body should show concise diagnosis, got %v", body)
+	}
+	footer := stripANSI(toolFooter("apply_diff", out, true, ""))
+	if footer != "recoverable: malformed patch" {
+		t.Fatalf("apply_diff footer = %q", footer)
 	}
 }
 

@@ -246,6 +246,21 @@ func TestApplyDiffTool_RefusesApplyPatchStyleDiff(t *testing.T) {
 	}
 }
 
+func TestApplyDiffTool_RejectsBareHunkHeaderBeforeGitApply(t *testing.T) {
+	tmp := gitInit(t)
+	writeFile(t, tmp, "a.txt", "one\ntwo\n")
+	tool := &ApplyDiffTool{Cwd: NewCwdRef(tmp), WriteOpts: WritePathOptions{Cwd: NewCwdRef(tmp)}}
+	diff := "--- a/a.txt\n+++ b/a.txt\n@@\n-one\n+ONE\n"
+	b, _ := json.Marshal(map[string]string{"diff": diff})
+	_, err := tool.Execute(context.Background(), string(b))
+	if err == nil {
+		t.Fatalf("expected malformed patch error")
+	}
+	if !strings.Contains(err.Error(), "malformed_patch") || !strings.Contains(err.Error(), "hunk header") {
+		t.Fatalf("expected targeted malformed hunk error, got %v", err)
+	}
+}
+
 func TestApplyDiffTool_StaleContextHintIsSpecific(t *testing.T) {
 	tmp := gitInit(t)
 	writeFile(t, tmp, "a.txt", "current\n")

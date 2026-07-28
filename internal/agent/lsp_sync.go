@@ -32,5 +32,5 @@ func notifyLSPFileChanged(ctx context.Context, cwd *CwdRef, manager *lspci.Manag
 		// write succeeded, so keep them out of tool output.
 		return ""
 	}
-	return "lsp: document synced"
+	return "○ lsp · document synced"
 }

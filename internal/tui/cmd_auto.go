@@ -32,7 +32,7 @@ func toggleAutoMode(m Model) (Model, tea.Cmd) {
 	if routerModeOrOff(m.routerMode) != config.RouterModeOff {
 		m, _ = m.switchActiveModelToRouterRole("implementer")
 	}
-	m.appendLine(styleAutoBannerLabel.Render(AutoModeIcon+" auto mode active") +
+	m.appendLine(styleAutoBannerLabel.Render(SysMsg(SysState, "auto mode", "active")) +
 		" " + styleAutoBannerHint.Render("— edits auto-allow; run_bash, git_commit, git_checkpoint, rollback still prompt"))
 	m.appendLine(styleAutoBannerHint.Render("  Shift+Tab cycles onward: auto → plan → normal"))
 	// Visual breather between the entry log and the live banner.
@@ -52,7 +52,7 @@ func exitAutoMode(m *Model) {
 	if !wasActive {
 		return
 	}
-	m.appendLine(styleAutoBannerLabel.Render(AutoModeIcon+" auto mode exited") +
+	m.appendLine(styleAutoBannerLabel.Render(SysMsg(SysState, "auto mode", "exited")) +
 		" " + styleAutoBannerHint.Render("— re-enter with Shift+Tab"))
 }
 

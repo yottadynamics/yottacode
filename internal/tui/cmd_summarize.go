@@ -134,16 +134,16 @@ type summaryDoneMsg struct {
 // command was accepted.
 func cmdSummarize(m Model, _ []string) (Model, tea.Cmd) {
 	if m.summarizing {
-		m.appendLine(styleAuto.Render("[summarize] already running"))
+		m.appendLine(styleAuto.Render(SysMsg(SysState, "summarize", "already running")))
 		return m, nil
 	}
 	if !hasSummarizableHistory(m.sess.Messages) {
-		m.appendLine(styleAuto.Render("[summarize] nothing to compress yet"))
+		m.appendLine(styleAuto.Render(SysMsg(SysState, "summarize", "nothing to compress yet")))
 		return m, nil
 	}
 	m.summarizing = true
 	m.summarizeStart = time.Now()
-	m.appendLine(styleAuto.Render("[summarize] compressing session…"))
+	m.appendLine(styleAuto.Render(SysMsg(SysProgress, "summarize", "compressing session")))
 	// Batch the spinner tick so the live summarizing row animates while
 	// the (multi-minute) compression runs between turns.
 	return m, tea.Batch(m.spinner.Tick, m.summarizeCmd(false))

@@ -96,7 +96,7 @@ func TestInterrupt_UpMidTurnRecallsQueuedMessageForEditing(t *testing.T) {
 	if got := cancels.Load(); got != 0 {
 		t.Fatalf("recalling queued text must not cancel turn; got %d calls", got)
 	}
-	if !strings.Contains(m.transcript.String(), "[queued] recalled for editing") {
+	if !strings.Contains(m.transcript.String(), SysMsg(SysReturn, "queue", "recalled for editing")) {
 		t.Fatalf("expected recall notice in transcript; got %q", m.transcript.String())
 	}
 }
@@ -164,7 +164,7 @@ func TestInterrupt_EnterMidTurnOverflowDoesNotCancel(t *testing.T) {
 	if got := m.textInput.Value(); got != "second" {
 		t.Errorf("second message should remain editable in textarea; got %q", got)
 	}
-	if !strings.Contains(stripANSI(m.transcript.String()), "already waiting for delivery") {
+	if !strings.Contains(stripANSI(m.transcript.String()), SysMsg(SysWarning, "queue", "already waiting", "↑ to edit")) {
 		t.Fatalf("expected queue-full warning; transcript=%q", stripANSI(m.transcript.String()))
 	}
 }
@@ -229,7 +229,7 @@ func TestInterrupt_CtrlCRendersInterruptedFooter(t *testing.T) {
 	m, _ = applyMsg(m, agentEventMsg{ev: agent.TurnInterrupted{OrphanedCalls: 1, Explicit: true}})
 
 	plain := stripANSI(m.transcript.String())
-	if !strings.Contains(plain, "↩ interrupted (1 tool call cancelled)") {
+	if !strings.Contains(plain, SysMsg(SysReturn, "interrupt", "1 tool call cancelled")) {
 		t.Fatalf("explicit cancel should render interrupted footer: %q", plain)
 	}
 }

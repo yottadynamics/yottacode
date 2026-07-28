@@ -675,7 +675,7 @@ func TestSummaryDoneMsg_ErrorResetsWatermark(t *testing.T) {
 	if m.lastWatermarkPct != 0 {
 		t.Errorf("lastWatermarkPct should reset to 0 on error; got %v", m.lastWatermarkPct)
 	}
-	if !strings.Contains(m.transcript.String(), "[summarize]") {
+	if !strings.Contains(m.transcript.String(), SysMsg(SysFailure, "summarize", "failed", context.DeadlineExceeded.Error())) {
 		t.Errorf("error should be surfaced in transcript; got %q", m.transcript.String())
 	}
 }
