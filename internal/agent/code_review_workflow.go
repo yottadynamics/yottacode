@@ -87,7 +87,7 @@ func (t *CodeReviewContextTool) Description() string {
 		"on without parsing git errors. This is the Layer-1 read for the " +
 		"/code-review command. effort is low|medium|high (default medium) " +
 		"and only scales the diff cap. Returns a snapshot keyed by section " +
-		"headers (## state, ## changed-files, ## diff, ## commit-log, " +
+		"headers (## summary, ## state, ## changed-files, ## diff, ## commit-log, " +
 		"## style-context)."
 }
 
@@ -163,6 +163,10 @@ type CodeReviewContext struct {
 	DiffSource     string // "branch-vs-base" | "working-tree"
 	AheadCount     int
 	AheadCountErr  bool // rev-list --count errored; AheadCount unreliable (0 may not mean "not ahead")
+	FilesChanged   int
+	Insertions     int
+	Deletions      int
+	DiffLines      int
 	DiffEmpty      bool
 	DiffErr        bool // a `git diff` call failed — distinct from a genuinely empty diff (must NOT read as "no changes")
 
@@ -333,8 +337,52 @@ func BuildCodeReviewContext(ctx context.Context, cwd, effort string) (CodeReview
 		}
 	}
 	snap.DetectedStyle = detectCommitStyle(subjects)
+	snap.computeSummaryStats()
 
 	return snap, nil
+}
+
+// computeSummaryStats fills the cheap digest fields used by the TUI card. It
+// derives counts from already-collected diff/name-status text so the review tool
+// does not pay for another git command just to make scrollback readable.
+func (snap *CodeReviewContext) computeSummaryStats() {
+	for _, line := range splitNonEmptyLines(snap.ChangedFiles) {
+		if strings.HasPrefix(line, "[truncated") {
+			continue
+		}
+		snap.FilesChanged++
+	}
+	for _, line := range strings.Split(snap.Diff, "\n") {
+		if strings.TrimSpace(line) != "" {
+			snap.DiffLines++
+		}
+		if strings.HasPrefix(line, "+++") || strings.HasPrefix(line, "---") {
+			continue
+		}
+		if strings.HasPrefix(line, "+") {
+			snap.Insertions++
+		}
+		if strings.HasPrefix(line, "-") {
+			snap.Deletions++
+		}
+	}
+}
+
+func (s CodeReviewContext) summaryLine() string {
+	left := s.CurrentBranch
+	if left == "" {
+		left = "(unknown)"
+	}
+	right := s.ResolvedBase
+	if right == "" {
+		right = "(unresolved)"
+	}
+	diffKind := "working-tree diff"
+	if s.DiffSource == "branch-vs-base" {
+		diffKind = "branch diff"
+	}
+	return fmt.Sprintf("code_review_context(effort=%s) · %s → %s · %s · %d files changed (+%d/−%d) · %d lines",
+		s.Effort, left, right, diffKind, s.FilesChanged, s.Insertions, s.Deletions, s.DiffLines)
 }
 
 // foldUntracked appends each untracked file to the changed-files list (as
@@ -412,10 +460,12 @@ func gitDiffNoIndex(ctx context.Context, cwd, path string) (string, error) {
 func renderCodeReviewContext(s CodeReviewContext) string {
 	var b strings.Builder
 
-	fmt.Fprintf(&b, "## state\neffort=%s\ncurrent_branch=%s\nresolved_base=%s\nbase_resolution=%s\nnot_found_base=%v\nempty_repo=%v\ndiff_empty=%v\ndiff_err=%v\ndiff_source=%s\nahead_count=%d\nahead_count_err=%v\nmerge_base=%s\ndiff_base=%s\nno_merge_base=%v\ndiff_cap_bytes=%d\n",
+	fmt.Fprintf(&b, "## summary\n%s\n\n", s.summaryLine())
+	fmt.Fprintf(&b, "## state\neffort=%s\ncurrent_branch=%s\nresolved_base=%s\nbase_resolution=%s\nnot_found_base=%v\nempty_repo=%v\ndiff_empty=%v\ndiff_err=%v\ndiff_source=%s\nahead_count=%d\nahead_count_err=%v\nmerge_base=%s\ndiff_base=%s\nno_merge_base=%v\ndiff_cap_bytes=%d\nchanged_capped=%v\ndiff_capped=%v\n",
 		s.Effort, s.CurrentBranch, s.ResolvedBase, s.BaseResolution,
 		s.NotFoundBase, s.EmptyRepo, s.DiffEmpty, s.DiffErr, s.DiffSource,
-		s.AheadCount, s.AheadCountErr, s.MergeBase, s.DiffBase, s.NoMergeBase, s.DiffCap)
+		s.AheadCount, s.AheadCountErr, s.MergeBase, s.DiffBase, s.NoMergeBase, s.DiffCap,
+		s.ChangedCapped, s.DiffCapped)
 
 	// STOP conditions — render only ## state and let the orchestrator
 	// surface the message. diff_err with an empty diff is a STOP too: a

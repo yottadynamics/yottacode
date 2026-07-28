@@ -2600,19 +2600,18 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch {
 		case !converged:
 			culprit, culpritTok := m.dominantContextBucket()
+			recall := recallCommandForSnapshot(msg.snapshotPath)
 			m.lastContextSummary = fmt.Sprintf("non-convergent at %d%%; largest bucket %s (~%s)", int(nonConvergentPct*100), culprit, formatTokens(culpritTok))
-			m.appendLine(styleWatermarkBox.Render(fmt.Sprintf(
-				"⚡ Summarized, but context is still at %d%% — the biggest consumer is %s (~%s), which alone won't fit under the limit, so auto-summarize is paused to avoid re-running every turn (it resumes if context grows further or you switch models).\nFree space with /clear, disable unused MCP tools, set a larger context_window for this model, or switch to a bigger-window model.\nFull history saved to %s",
-				int(nonConvergentPct*100), culprit, formatTokens(culpritTok), abbrevHome(msg.snapshotPath))))
+			m.appendLine(styleWatermarkAlert.Render(SysMsg(
+				SysWarning, "context", "summarized but still "+fmt.Sprintf("%d%%", int(nonConvergentPct*100)),
+				fmt.Sprintf("largest %s ~%s", culprit, formatTokens(culpritTok)),
+				"auto paused", "/context for details", recall)))
 		case msg.auto:
 			m.lastContextSummary = fmt.Sprintf("auto summarized %s → %s", formatTokens(msg.tokensBefore), formatTokens(m.contextTokens))
-			m.appendLine(styleWatermarkBox.Render(fmt.Sprintf(
-				"⚡ Context auto-summarized.\nFull history saved to %s\nUse /recall <id> to search the compressed session.",
-				abbrevHome(msg.snapshotPath))))
+			m.appendLine(styleAuto.Render(SysMsg(SysContext, "context", "summarized", m.contextReductionLabel(msg.tokensBefore, m.contextTokens), "full history saved", recallCommandForSnapshot(msg.snapshotPath))))
 		default:
 			m.lastContextSummary = fmt.Sprintf("manual summarized %s → %s", formatTokens(msg.tokensBefore), formatTokens(m.contextTokens))
-			m.appendLine(styleAuto.Render(SysMsg(SysContext, "summarize", "compressed history",
-				fmt.Sprintf("~%d → ~%d tokens", msg.tokensBefore, m.contextTokens), abbrevHome(msg.snapshotPath))))
+			m.appendLine(styleAuto.Render(SysMsg(SysContext, "context", "summarized", m.contextReductionLabel(msg.tokensBefore, m.contextTokens), "full history saved", recallCommandForSnapshot(msg.snapshotPath))))
 		}
 		if len(m.pendingSubagentWakes) > 0 {
 			// A notify_on_done completion may have arrived while summarization
@@ -4936,16 +4935,7 @@ func (m Model) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 		if e.SnapshotErr != nil {
 			m.lastContextCompaction += fmt.Sprintf(" · snapshot failed: %v", e.SnapshotErr)
 		}
-		snapshot := ""
-		if e.SnapshotPath != "" {
-			snapshot = abbrevHome(e.SnapshotPath)
-			if e.SnapshotErr != nil {
-				snapshot += fmt.Sprintf(" (snapshot failed: %v)", e.SnapshotErr)
-			}
-		} else if e.SnapshotErr != nil {
-			snapshot = fmt.Sprintf("snapshot failed: %v", e.SnapshotErr)
-		}
-		m.appendLine(renderCompactionNoticeCard(formatTokens(e.Before), formatTokens(e.After), snapshot, m.width))
+		m.appendLine(renderCompactionNoticeCard(m.contextReductionLabel(e.Before, e.After), e.SnapshotPath, e.SnapshotErr, m.width))
 		m.refreshContextTokens()
 		m.compactionSeq++
 	case agent.ErrorEvent:
@@ -5576,6 +5566,17 @@ func tableMetrics(raw string) (numCols int, idealWidth int) {
 		total += w + 2
 	}
 	return numCols, total
+}
+
+// contextReductionLabel prefers the same percentage framing as the status-bar
+// context meter when the active window is known, and falls back to compact token
+// counts for tests/providers without a resolved context window.
+func (m Model) contextReductionLabel(before, after int) string {
+	window := m.contextWindow()
+	if window > 0 {
+		return fmt.Sprintf("%d%% → %d%%", int(float64(before)/float64(window)*100), int(float64(after)/float64(window)*100))
+	}
+	return fmt.Sprintf("~%s → ~%s tokens", formatTokens(before), formatTokens(after))
 }
 
 // emitTableLines sends glamour-rendered table lines to scrollback.

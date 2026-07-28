@@ -1,7 +1,6 @@
 package tui
 
 import (
-	"fmt"
 	"strings"
 	"time"
 
@@ -54,16 +53,16 @@ func cmdCheckpoints(m Model, _ []string) (Model, tea.Cmd) {
 func (m *Model) openCheckpointsPicker() {
 	store, ok := m.cfg.Checkpoints.(*checkpoint.Store)
 	if !ok || store == nil {
-		m.appendLine(styleAuto.Render("[checkpoints] checkpoint store unavailable for this session"))
+		m.appendLine(styleAuto.Render(SysMsg(SysState, "checkpoints", "store unavailable")))
 		return
 	}
 	man, err := store.LoadManifest(m.sess.ID)
 	if err != nil {
-		m.appendLine(styleError.Render(fmt.Sprintf("[checkpoints] could not read manifest: %v", err)))
+		m.appendLine(styleError.Render(SysMsg(SysFailure, "checkpoints", "read manifest", err.Error())))
 		return
 	}
 	if len(man.Entries) == 0 {
-		m.appendLine(styleAuto.Render("[checkpoints] no checkpoints yet — send a prompt and try again"))
+		m.appendLine(styleAuto.Render(SysMsg(SysState, "checkpoints", "none yet", "send a prompt and try again")))
 		return
 	}
 	m.checkpointsPicker = &checkpointsPickerState{entries: man.Entries}
@@ -185,7 +184,7 @@ func renderCheckpointsPicker(state *checkpointsPickerState, _ int) string {
 func (m Model) applyCheckpointAction(entry checkpoint.ManifestEntry, action int) (Model, tea.Cmd) {
 	store, ok := m.cfg.Checkpoints.(*checkpoint.Store)
 	if !ok || store == nil {
-		m.appendLine(styleError.Render("[checkpoints] checkpoint store unavailable"))
+		m.appendLine(styleError.Render(SysMsg(SysFailure, "checkpoints", "store unavailable")))
 		return m, nil
 	}
 
@@ -193,16 +192,16 @@ func (m Model) applyCheckpointAction(entry checkpoint.ManifestEntry, action int)
 	case 0, 2: // restore code (and optionally conversation)
 		errs, err := store.RestoreCode(m.sess.ID, entry.CheckpointID)
 		if err != nil {
-			m.appendLine(styleError.Render(fmt.Sprintf("[checkpoints] restore failed: %v", err)))
+			m.appendLine(styleError.Render(SysMsg(SysFailure, "checkpoints", "restore failed", err.Error())))
 			return m, nil
 		}
 		for _, e := range errs {
-			m.appendLine(styleError.Render(fmt.Sprintf("[checkpoints] %v", e)))
+			m.appendLine(styleError.Render(SysMsg(SysFailure, "checkpoints", "restore warning", e.Error())))
 		}
 		if action == 0 {
 			return m.restoreConversation(entry, store, true)
 		}
-		m.appendLine(styleAuto.Render(fmt.Sprintf("[checkpoints] restored code from \"%s\"", truncatePromptPreview(entry.PromptPreview, 60))))
+		m.appendLine(styleAuto.Render(SysMsg(SysSuccess, "checkpoints", "restored code", truncatePromptPreview(entry.PromptPreview, 60))))
 		return m, nil
 	case 1: // restore conversation only
 		return m.restoreConversation(entry, store, true)
@@ -223,19 +222,19 @@ func (m Model) applyCheckpointAction(entry checkpoint.ManifestEntry, action int)
 func (m Model) restoreConversation(entry checkpoint.ManifestEntry, store *checkpoint.Store, prefill bool) (Model, tea.Cmd) {
 	restored, err := store.LoadMessages(m.sess.ID, entry.CheckpointID)
 	if err != nil {
-		m.appendLine(styleError.Render(fmt.Sprintf("[checkpoints] could not load conversation: %v", err)))
+		m.appendLine(styleError.Render(SysMsg(SysFailure, "checkpoints", "load conversation", err.Error())))
 		return m, nil
 	}
 	m.sess.Messages = restored
 	if err := m.sess.Save(); err != nil {
-		m.appendLine(styleError.Render(fmt.Sprintf("[checkpoints] save session: %v", err)))
+		m.appendLine(styleError.Render(SysMsg(SysFailure, "checkpoints", "save session", err.Error())))
 	}
 	rebuildTranscript(&m)
 	if prefill {
 		m.textInput.SetValue(entry.PromptPreview)
 		m.textInput.CursorEnd()
 	}
-	m.appendLine(styleAuto.Render(fmt.Sprintf("[checkpoints] restored to \"%s\"", truncatePromptPreview(entry.PromptPreview, 60))))
+	m.appendLine(styleAuto.Render(SysMsg(SysSuccess, "checkpoints", "restored", truncatePromptPreview(entry.PromptPreview, 60))))
 	return m, nil
 }
 

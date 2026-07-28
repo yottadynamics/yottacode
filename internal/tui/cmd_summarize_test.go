@@ -552,7 +552,7 @@ func TestUpdateContextUsage_FiresWarningAtThreshold(t *testing.T) {
 	if cmd != nil {
 		t.Errorf("warning crossing should NOT trigger auto-summarize: %v", cmd)
 	}
-	if !strings.Contains(m.transcript.String(), "context at") {
+	if !strings.Contains(m.transcript.String(), "⚠ context · at") {
 		t.Errorf("expected context watermark notice in transcript; got %q", m.transcript.String())
 	}
 	want := contextwindow.EstimateTokens(m.sess.Messages)
@@ -570,7 +570,7 @@ func TestUpdateContextUsage_BelowThresholdIsSilent(t *testing.T) {
 	if cmd != nil {
 		t.Errorf("below threshold should not fire any cmd")
 	}
-	if strings.Contains(m.transcript.String(), "context at") {
+	if strings.Contains(m.transcript.String(), "⚠ context · at") {
 		t.Errorf("no notice expected; got %q", m.transcript.String())
 	}
 }
@@ -634,8 +634,8 @@ func TestResumeWatermarkCheck_HealsOversizedSession(t *testing.T) {
 	if !mm.summarizing {
 		t.Error("resume check should flip summarizing")
 	}
-	if !strings.Contains(mm.transcript.String(), "auto-summarizing") {
-		t.Errorf("expected auto-summarize banner; got %q", mm.transcript.String())
+	if strings.Contains(mm.transcript.String(), "auto-summarizing") {
+		t.Errorf("auto-summarize should not leave a preflight banner; got %q", mm.transcript.String())
 	}
 }
 
@@ -651,7 +651,7 @@ func TestUpdateContextUsage_DisabledByThreshold1(t *testing.T) {
 	if cmd != nil {
 		t.Errorf("threshold=1.0 should disable auto-summarize")
 	}
-	if strings.Contains(m.transcript.String(), "context at") {
+	if strings.Contains(m.transcript.String(), "⚠ context · at") {
 		t.Errorf("threshold=1.0 should suppress warnings; got %q", m.transcript.String())
 	}
 }

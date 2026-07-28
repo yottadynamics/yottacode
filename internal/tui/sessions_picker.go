@@ -351,23 +351,23 @@ func (m Model) resumeSession(id string, summarized bool) (Model, tea.Cmd) {
 	// almost always empty.
 	if m.sess.HasExchange() {
 		if err := m.sess.Save(); err != nil {
-			m.appendLine(styleError.Render(fmt.Sprintf("⚠ saving current: %v", err)))
+			m.appendLine(styleError.Render(SysMsg(SysWarning, "sessions", "save current", err.Error())))
 		}
 	}
 	loaded, err := session.Load(id)
 	if err != nil {
-		m.appendLine(styleError.Render(fmt.Sprintf("✗ %v", err)))
+		m.appendLine(styleError.Render(SysMsg(SysFailure, "sessions", "load failed", err.Error())))
 		return m, nil
 	}
 	if summarized {
 		newSess, _, note, err := loadSummarizedSession(m.summarizeDeps(), loaded)
 		if err != nil {
-			m.appendLine(styleError.Render(fmt.Sprintf("✗ %v", err)))
+			m.appendLine(styleError.Render(SysMsg(SysFailure, "sessions", "summarize failed", err.Error())))
 			return m, nil
 		}
 		loaded = newSess
 		if note != "" {
-			m.appendLine(styleAuto.Render(note))
+			m.appendLine(styleAuto.Render(SysMsg(SysContext, "sessions", "summarized resume", note)))
 		}
 	}
 	m.sess = loaded
@@ -381,11 +381,9 @@ func (m Model) resumeSession(id string, summarized bool) (Model, tea.Cmd) {
 	// session so continuing can't overwrite the archive — which for most
 	// snapshots is the only surviving copy of that history.
 	if session.IsSnapshotID(id) {
-		m.appendLine(styleAuto.Render(fmt.Sprintf(
-			"[restore] archived history from %s → new session %s (%d msgs); the archive is unchanged",
-			id, loaded.ID, len(loaded.Messages))))
+		m.appendLine(styleAuto.Render(SysMsg(SysSuccess, "restore", "archived history", id+" → "+loaded.ID, fmt.Sprintf("%d msgs", len(loaded.Messages)), "archive unchanged")))
 	} else {
-		m.appendLine(styleAuto.Render(fmt.Sprintf("[resume] loaded %s (%d msgs)", loaded.ID, len(loaded.Messages))))
+		m.appendLine(styleAuto.Render(SysMsg(SysSuccess, "resume", "loaded", loaded.ID, fmt.Sprintf("%d msgs", len(loaded.Messages)))))
 	}
 	// Switching sessions must not carry an armed /loop into the loaded one —
 	// it was armed against the old conversation's context.
@@ -450,25 +448,25 @@ func (m Model) commitSessionsRename() (Model, tea.Cmd) {
 		// in-memory session either way, so the first real turn persists it.
 		if m.sess.HasExchange() {
 			if err := m.sess.Save(); err != nil {
-				m.appendLine(styleError.Render(fmt.Sprintf("✗ %v", err)))
+				m.appendLine(styleError.Render(SysMsg(SysFailure, "rename", "save session", err.Error())))
 				return m, nil
 			}
 		}
 	} else {
 		loaded, err := session.Load(target.ID)
 		if err != nil {
-			m.appendLine(styleError.Render(fmt.Sprintf("✗ %v", err)))
+			m.appendLine(styleError.Render(SysMsg(SysFailure, "rename", "load session", err.Error())))
 			return m, nil
 		}
 		loaded.Name = name
 		if err := loaded.Save(); err != nil {
-			m.appendLine(styleError.Render(fmt.Sprintf("✗ %v", err)))
+			m.appendLine(styleError.Render(SysMsg(SysFailure, "rename", "save session", err.Error())))
 			return m, nil
 		}
 	}
 	m.sessionsPickerOpen = false
 	m.sessionsPicker = nil
-	m.appendLine(styleAuto.Render(fmt.Sprintf("[rename] %s → %q", target.ID, name)))
+	m.appendLine(styleAuto.Render(SysMsg(SysSuccess, "rename", "saved", target.ID+" → "+name)))
 	return m, nil
 }
 
@@ -551,7 +549,7 @@ func (m Model) commitSessionsExport() (Model, tea.Cmd) {
 	}
 	m.sessionsPickerOpen = false
 	m.sessionsPicker = nil
-	m.appendLine(styleAuto.Render(fmt.Sprintf("[export] wrote %d bytes to %s", len(md), path)))
+	m.appendLine(styleAuto.Render(SysMsg(SysSuccess, "export", "wrote transcript", fmt.Sprintf("%d bytes", len(md)), path)))
 	return m, nil
 }
 

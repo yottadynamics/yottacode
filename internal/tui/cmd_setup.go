@@ -26,7 +26,7 @@ type setupDoneMsg struct {
 func cmdSetup(m Model, _ []string) (Model, tea.Cmd) {
 	self, err := os.Executable()
 	if err != nil {
-		m.appendLine(styleError.Render("[setup] cannot resolve own binary: " + err.Error()))
+		m.appendLine(styleError.Render(SysMsg(SysFailure, "setup", "resolve binary", err.Error())))
 		return m, nil
 	}
 	cmd := exec.Command(self, "setup")
@@ -48,20 +48,20 @@ func cmdSetup(m Model, _ []string) (Model, tea.Cmd) {
 // probe; that's a clear restart-worthy event.
 func handleSetupDone(m Model, msg setupDoneMsg) (Model, tea.Cmd) {
 	if msg.err != nil {
-		m.appendLine(styleError.Render("[setup] " + msg.err.Error()))
+		m.appendLine(styleError.Render(SysMsg(SysFailure, "setup", "failed", msg.err.Error())))
 		return m, nil
 	}
 	cfgPath, err := config.DefaultPath()
 	if err != nil {
-		m.appendLine(styleError.Render("[setup] " + err.Error()))
+		m.appendLine(styleError.Render(SysMsg(SysFailure, "setup", "config path", err.Error())))
 		return m, nil
 	}
 	newCfg, err := config.Load(cfgPath)
 	if err != nil {
-		m.appendLine(styleError.Render("[setup] config reload: " + err.Error()))
+		m.appendLine(styleError.Render(SysMsg(SysFailure, "setup", "config reload", err.Error())))
 		return m, nil
 	}
 	m.fileCfg = newCfg
-	m.appendLine(styleAuto.Render("[setup] config reloaded — /provider use <name> to switch, or restart to pick up the new active provider"))
+	m.appendLine(styleAuto.Render(SysMsg(SysSuccess, "setup", "config reloaded", "/provider use <name> or restart")))
 	return m, nil
 }

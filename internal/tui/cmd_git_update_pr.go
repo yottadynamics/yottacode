@@ -22,7 +22,7 @@ import (
 // branch's PR — matching the rest of the family's ref-handling.
 func cmdGitUpdatePR(m Model, args []string) (Model, tea.Cmd) {
 	if m.turnActive {
-		m.appendLine(styleError.Render("[git-update-pr] a turn is already running — wait for it to finish or press Esc to cancel"))
+		m.appendLine(styleError.Render(SysMsg(SysWarning, "git-update-pr", "turn already running", "wait or Esc to cancel")))
 		return m, nil
 	}
 	ref := ""

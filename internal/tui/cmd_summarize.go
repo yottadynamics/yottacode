@@ -580,6 +580,23 @@ func writePreSummarySnapshot(sessionID string, history []adapter.Message) (strin
 	return path, nil
 }
 
+// recallCommandForSnapshot turns a pre-summary snapshot path back into the
+// original session id the user can pass to /recall. Snapshot filenames are
+// intentionally longer than the recall id (<id>-pre-summary-<timestamp>.json),
+// so the UI must print the copyable command instead of asking the user to parse
+// the path by eye.
+func recallCommandForSnapshot(snapshotPath string) string {
+	if strings.TrimSpace(snapshotPath) == "" {
+		return ""
+	}
+	name := strings.TrimSuffix(filepath.Base(snapshotPath), ".json")
+	sessionID, _, ok := strings.Cut(name, session.SnapshotMarker)
+	if !ok || strings.TrimSpace(sessionID) == "" {
+		return ""
+	}
+	return "/recall " + sessionID
+}
+
 // summarizeDeps carries the dependencies loadSummarizedSession needs.
 // Pulled out so callers that don't hold a Model (e.g. CLI startup
 // before the TUI Model is constructed) can drive the same path.
@@ -764,6 +781,7 @@ func injectSummaryIntoSystemPrompt(messages []adapter.Message, summary string) [
 // the auto flag changes the post-summary banner to the user-facing
 // alert form.
 func (m *Model) startAutoSummarize(pct float64) tea.Cmd {
+	_ = pct // Progress is shown live; only the final summary receipt persists.
 	if m.summarizing {
 		return nil
 	}
@@ -772,7 +790,8 @@ func (m *Model) startAutoSummarize(pct float64) tea.Cmd {
 	}
 	m.summarizing = true
 	m.summarizeStart = time.Now()
-	m.appendLine(styleWatermarkAlert.Render(
-		fmt.Sprintf("⚡ Context at %d%% — auto-summarizing before next turn…", int(pct*100))))
+	// The live footer already shows summarization progress; keep scrollback for
+	// the final success/failure receipt instead of persisting a warning-colored
+	// preflight line for routine housekeeping.
 	return tea.Batch(m.spinner.Tick, m.summarizeCmd(true))
 }

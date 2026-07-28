@@ -391,7 +391,9 @@ func buildStyles(p themes.Palette) {
 	styleTodoDone = lipgloss.NewStyle().Foreground(colorDim).Strikethrough(true)
 	styleTodoInProgress = lipgloss.NewStyle().Foreground(colorContent).Bold(true)
 	styleTodoPending = lipgloss.NewStyle().Foreground(colorContent)
+	styleTodoSkipped = lipgloss.NewStyle().Foreground(colorDim).Strikethrough(true)
 	styleTodoCheckDone = lipgloss.NewStyle().Foreground(colorSuccess).Bold(true)
+	styleTodoSkip = lipgloss.NewStyle().Foreground(colorDim).Bold(true)
 	styleTodoArrow = lipgloss.NewStyle().Foreground(colorSuccess).Bold(true)
 	styleTodoBullet = lipgloss.NewStyle().Foreground(colorDim)
 

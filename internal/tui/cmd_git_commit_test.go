@@ -29,10 +29,10 @@ func TestGitCommitDirective_NamesBothCompositeTools(t *testing.T) {
 func TestGitCommitDirective_PinsHardProhibitions(t *testing.T) {
 	got := gitCommitDirective()
 	mustContain := []string{
-		"git commit --amend",         // amend prohibition
-		"git_stage_files",            // stage prohibition + reference
+		"git commit --amend",          // amend prohibition
+		"git_stage_files",             // stage prohibition + reference
 		"do NOT call git_stage_files", // explicit on the early-exit branch
-		"STOP",                       // hook-error stop directive
+		"STOP",                        // hook-error stop directive
 	}
 	for _, frag := range mustContain {
 		if !strings.Contains(got, frag) {
@@ -70,7 +70,7 @@ func TestSlash_GitCommitBailsWhenTurnActive(t *testing.T) {
 	if cmd != nil {
 		t.Errorf("cmdGitCommit should not start a new turn while one is active")
 	}
-	if !strings.Contains(out.transcript.String(), "a turn is already running") {
+	if !strings.Contains(out.transcript.String(), "turn already running") {
 		t.Errorf("expected 'a turn is already running' notice; got: %q", out.transcript.String())
 	}
 }

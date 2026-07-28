@@ -1033,7 +1033,7 @@ func TestSessionsPicker_ExportFlow(t *testing.T) {
 	if !strings.Contains(body, "hello") || !strings.Contains(body, "world") {
 		t.Errorf("export missing turns: %q", body)
 	}
-	if !strings.Contains(m.transcript.String(), "[export]") {
+	if !strings.Contains(m.transcript.String(), "✓ export · wrote transcript") {
 		t.Errorf("export should report success: %q", m.transcript.String())
 	}
 }

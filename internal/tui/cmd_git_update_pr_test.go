@@ -43,10 +43,10 @@ func TestGitUpdatePRDirective_InlinesRefArgument(t *testing.T) {
 func TestGitUpdatePRDirective_PinsTitleChurnGuard(t *testing.T) {
 	got := gitUpdatePRDirective("")
 	mustContain := []string{
-		"keep the existing title verbatim",       // default-keep stance
-		"scope materially changed",                // bar for rewriting
-		"rewording, capitalization fixes",         // explicit no-cosmetic list
-		"adds noise to the PR's GitHub history",   // why it matters
+		"keep the existing title verbatim",      // default-keep stance
+		"scope materially changed",              // bar for rewriting
+		"rewording, capitalization fixes",       // explicit no-cosmetic list
+		"adds noise to the PR's GitHub history", // why it matters
 	}
 	for _, frag := range mustContain {
 		if !strings.Contains(got, frag) {
@@ -65,7 +65,7 @@ func TestGitUpdatePRDirective_PinsHardProhibitions(t *testing.T) {
 		"Do NOT touch fields other than title and body", // scope guard
 		"Do NOT close, reopen, or merge the PR",         // lifecycle guard
 		"Do NOT rewrite the title for cosmetic reasons", // churn guard
-		"STOP",                                          // explicit stops on each branch
+		"STOP", // explicit stops on each branch
 	}
 	for _, frag := range mustContain {
 		if !strings.Contains(got, frag) {
@@ -96,7 +96,7 @@ func TestSlash_GitUpdatePRBailsWhenTurnActive(t *testing.T) {
 	if cmd != nil {
 		t.Errorf("cmdGitUpdatePR should not start a new turn while one is active")
 	}
-	if !strings.Contains(out.transcript.String(), "a turn is already running") {
+	if !strings.Contains(out.transcript.String(), "turn already running") {
 		t.Errorf("expected 'a turn is already running' notice; got: %q", out.transcript.String())
 	}
 }

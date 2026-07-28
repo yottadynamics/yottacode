@@ -182,14 +182,10 @@ func (m *Model) updateContextUsage(allowAuto bool) tea.Cmd {
 			// would arrive too late.
 			if m.lastWatermarkPct == 0 && !m.memoryNudgePending {
 				m.memoryNudgePending = true
-				m.appendLine(renderSystemNoticeCard("Memory", []string{
-					"→ the model will be reminded to save durable memories on its next turn",
-				}, "session reminder", m.width))
+				m.appendLine(styleAuto.Render(SysMsg(SysQueue, "memory", "reminder armed", "save durable memories next turn")))
 			}
 			m.lastWatermarkPct = pct
-			m.appendLine(renderSystemNoticeCard("Context", []string{
-				fmt.Sprintf("⚠ context at %d%% — consider /summarize", int(pct*100)),
-			}, "session reminder", m.width))
+			m.appendLine(styleAuto.Render(SysMsg(SysWarning, "context", fmt.Sprintf("at %d%%", int(pct*100)), "consider /summarize")))
 		}
 	} else if warnThr < 1.0 && pct < warnThr {
 		// Below threshold (after /summarize, /clear, or a /sessions

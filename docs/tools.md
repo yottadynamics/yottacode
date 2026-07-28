@@ -186,7 +186,9 @@ commands are clipped to fit the terminal width with a `…)` tail.
 grep matches, command stdout, diff hunks. Capped at 10 visible lines —
 the model still receives the full output via the agent's tool-result
 event. Listing-shaped tools keep the first 10 lines with a trailing
-`…N more line(s)` notice; command-envelope tools (`run_bash`,
+`…N more line(s)` notice; custom listing renderers use the same cap, so
+large highlighted grep cards show at most 10 match rows plus `…N more
+match(es)`. Command-envelope tools (`run_bash`,
 `run_tests`, `git`) keep the **last** 10 lines behind a leading
 `…N earlier line(s)` notice, because the verdict of a command — the
 test summary, the final compiler error — lives at the end of its
@@ -204,6 +206,9 @@ output. A few tools have card-specific body shapes:
   metadata (`Status`, `Content-Type`, optional truncation note). The
   footer reports the response body size. The model still receives the
   full content; the user is spared 64+ KiB of minified markup.
+- **`code_review_context`** shows the `## summary` digest and only true
+  exception flags in the card; the full structured diff snapshot still goes
+  to the model.
 - **`read_file` / `write_file`** show no body — the footer's
   `N lines · M bytes` / `wrote N bytes` carries the entire signal.
 
@@ -214,6 +219,12 @@ renders `└ ✗ <error>` in bold red and the body shows the raw error
 verbatim (per-tool body shaping is bypassed for errors).
 
 ---
+
+Successful context summarization and mid-turn compaction now use the shared
+system-message grammar (`◇ context · summarized/compacted · ...`) and print a
+literal `/recall <session-id>` command when a pre-summary snapshot is available.
+The full snapshot path is intentionally omitted from normal scrollback; it
+remains recoverable through sessions/recall tooling.
 
 ## read_file
 
@@ -916,7 +927,9 @@ arguments are passed via argv — no shell, no injection.
 | `max_results` | int | `50` | Hard cap |
 
 Output is capped at 256 KiB. Exit code 1 (no matches) is treated as
-"no results", not as an error.
+"no results", not as an error. The TUI card is separately capped at 10
+visible match rows and then shows `…N more match(es)`; the model still
+receives every match returned by the tool.
 
 No approval.
 
@@ -1345,9 +1358,12 @@ scrollback as the historical receipt for that turn.
 | `todos` | []object | — | Complete plan; previous list is replaced wholesale |
 
 Each item has `content` (short human-readable description) and `status`
-(`pending` / `in_progress` / `completed`, at most one `in_progress`).
-No filesystem or network side effects — purely a visibility primitive,
-so it never prompts for approval.
+(`pending` / `in_progress` / `completed` / `skipped`, at most one
+`in_progress`). Use `skipped` when the agent changes course and is
+intentionally not doing a previously planned step; the TUI renders it as a
+dim `✗` row instead of leaving stale pending work visible. No filesystem or
+network side effects — purely a visibility primitive, so it never prompts
+for approval.
 
 The model is instructed to call `todo_write` proactively for any task with
 three or more distinct steps and to update it as soon as each step finishes.

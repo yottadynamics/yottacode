@@ -8,6 +8,8 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/muesli/termenv"
+
+	"github.com/yottadynamics/yottacode/internal/agent"
 )
 
 // list_project_structure emits "marker\tsize\tmtime\trelpath" lines.
@@ -132,14 +134,15 @@ func TestRenderSystemNoticeCard_UsesOneLineGrammar(t *testing.T) {
 	if strings.Contains(got, "┌") || strings.Contains(got, "│") || strings.Contains(got, "└") {
 		t.Fatalf("system notices should not render card gutters: %q", got)
 	}
-	if got != "auto · grep(\"auto mode\" in internal/tui) · auto-mode" {
+	if got != "○ auto · grep(\"auto mode\" in internal/tui) · auto-mode" {
 		t.Fatalf("unexpected one-line notice: %q", got)
 	}
 }
 
-func TestRenderCompactionNoticeCard_ShowsSnapshot(t *testing.T) {
-	got := stripANSI(renderCompactionNoticeCard("221K", "36K", "~/.yottacode/sessions/foo.json", 100))
-	if got != "◇ context · compacted · ~221K → ~36K tokens · ~/.yottacode/sessions/foo.json" {
+func TestRenderCompactionNoticeCard_ShowsCompactRecallCommand(t *testing.T) {
+	got := stripANSI(renderCompactionNoticeCard("87% → 23%", "/home/me/.yottacode/sessions/20260727-155559.693248-pre-summary-20260727-164818.296261277.json", nil, 100))
+	want := "◇ context · compacted · 87% → 23% · full history saved · /recall 20260727-155559.693248"
+	if got != want {
 		t.Fatalf("unexpected compaction notice: %q", got)
 	}
 }
@@ -813,5 +816,71 @@ func TestSlowDurationTag_Threshold(t *testing.T) {
 	}
 	if got := slowDurationTag(4 * time.Second); got != "4s" {
 		t.Errorf("4s tag = %q, want %q", got, "4s")
+	}
+}
+
+func TestRenderToolCard_GrepCapsCustomRows(t *testing.T) {
+	var rows []string
+	for i := 1; i <= 101; i++ {
+		rows = append(rows, fmt.Sprintf("./internal/tui/tool_card.go:%d: toolName", i))
+	}
+	got := stripANSI(renderToolCard(
+		"grep",
+		`grep("toolName" in internal/tui)`,
+		`{"pattern":"toolName","path":"internal/tui","regex":false,"ignore_case":false}`,
+		strings.Join(rows, "\n")+"\n",
+		false,
+		100,
+		"",
+		0,
+	))
+	if strings.Count(got, "tool_card.go:") != cardBodyLineCap {
+		t.Fatalf("grep card should show %d match rows, got:\n%s", cardBodyLineCap, got)
+	}
+	if !strings.Contains(got, "…91 more match(es)") {
+		t.Fatalf("grep card should show hidden-match marker, got:\n%s", got)
+	}
+	if !strings.Contains(got, "└ 101 matches") {
+		t.Fatalf("grep footer should report total matches, got:\n%s", got)
+	}
+}
+
+func TestRenderToolCard_CodeReviewContextUsesSummaryAndWarnings(t *testing.T) {
+	out := strings.Join([]string{
+		"## summary",
+		"code_review_context(effort=medium) · feature/ui → main · working-tree diff · 2 files changed (+120/−8) · 2,092 lines",
+		"",
+		"## state",
+		"not_found_base=false",
+		"empty_repo=false",
+		"diff_empty=false",
+		"diff_err=false",
+		"diff_capped=true",
+		"",
+		"## diff",
+		strings.Repeat("x\n", 20),
+	}, "\n")
+	got := stripANSI(renderToolCard("code_review_context", "code_review_context(effort=medium)", `{"effort":"medium"}`, out, false, 120, "", 0))
+	if !strings.Contains(got, "2 files changed (+120/−8) · 2,092") || !strings.Contains(got, "lines") {
+		t.Fatalf("code review card should show summary digest, got:\n%s", got)
+	}
+	if strings.Contains(got, "not_found_base=false") {
+		t.Fatalf("code review card should hide false state flags, got:\n%s", got)
+	}
+	if !strings.Contains(got, "⚠ diff_capped") {
+		t.Fatalf("code review card should show true exception flags, got:\n%s", got)
+	}
+}
+
+func TestRenderTodoCardFromTodos_ShowsSkippedItems(t *testing.T) {
+	got := stripANSI(renderTodoCardFromTodos([]agent.Todo{
+		{Content: "Check git state", Status: agent.TodoCompleted},
+		{Content: "Open the PR", Status: agent.TodoSkipped},
+	}, 100))
+	if !strings.Contains(got, "✗ Open the PR") {
+		t.Fatalf("todo card should show skipped item with x icon, got:\n%s", got)
+	}
+	if !strings.Contains(got, "plan abandoned: Open the PR") {
+		t.Fatalf("todo card should surface abandoned-plan footer, got:\n%s", got)
 	}
 }

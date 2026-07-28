@@ -85,16 +85,13 @@ func (m *Model) noteWindowOverflow(err error) bool {
 	}
 	changed, uerr := catalog.UpsertWindow(key, pinned)
 	if uerr != nil {
-		m.appendLine(styleError.Render(fmt.Sprintf("⚠ window drift: pin %s: %v", key, uerr)))
+		m.appendLine(styleError.Render(SysMsg(SysFailure, "window", "pin failed", key, uerr.Error())))
 		return false
 	}
 	if !changed {
 		return false
 	}
-	m.appendLine(renderWindowNoticeCard([]string{
-		fmt.Sprintf("⚠ provider rejected ~%s tokens but the resolved window was %s", formatTokens(estimate), formatTokens(window)),
-		fmt.Sprintf("  pinning %s to %s in the runtime overlay and re-checking context", key, formatTokens(pinned)),
-	}, "auto calibration", m.width))
+	m.appendLine(styleAuto.Render(SysMsg(SysWarning, "window", "drift detected", fmt.Sprintf("provider rejected ~%s tokens", formatTokens(estimate)), fmt.Sprintf("pinning %s to %s", key, formatTokens(pinned)), "re-checking context")))
 	return true
 }
 
@@ -121,14 +118,11 @@ func (m *Model) noteWindowUsage(u *adapter.Usage) {
 	}
 	changed, uerr := catalog.UpsertWindow(key, totalIn)
 	if uerr != nil {
-		m.appendLine(styleError.Render(fmt.Sprintf("⚠ window drift: pin %s: %v", key, uerr)))
+		m.appendLine(styleError.Render(SysMsg(SysFailure, "window", "pin failed", key, uerr.Error())))
 		return
 	}
 	if !changed {
 		return
 	}
-	m.appendLine(renderWindowNoticeCard([]string{
-		fmt.Sprintf("✓ provider accepted %s input tokens against a resolved window of %s", formatTokens(totalIn), formatTokens(window)),
-		fmt.Sprintf("  raised %s to the proven %s", key, formatTokens(totalIn)),
-	}, "auto calibration", m.width))
+	m.appendLine(styleAuto.Render(SysMsg(SysSuccess, "window", "drift corrected", fmt.Sprintf("accepted %s input tokens", formatTokens(totalIn)), fmt.Sprintf("raised %s to %s", key, formatTokens(totalIn)))))
 }

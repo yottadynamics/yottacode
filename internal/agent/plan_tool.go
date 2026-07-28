@@ -23,7 +23,7 @@ func (t *TodoWriteTool) Name() string { return "todo_write" }
 func (t *TodoWriteTool) Description() string {
 	return "Maintain the agent's working task plan, visible to the user as a card in the transcript. " +
 		"Pass the COMPLETE plan every call — the previous plan is discarded, not merged. " +
-		"Statuses: 'pending' (not started), 'in_progress' (currently working on it; AT MOST ONE), 'completed' (done). " +
+		"Statuses: 'pending' (not started), 'in_progress' (currently working on it; AT MOST ONE), 'completed' (done), 'skipped' (intentionally not doing it anymore). " +
 		"\n\nUse this tool PROACTIVELY for any task that has 3 or more distinct steps. " +
 		"Call it BEFORE you start work to lay out the plan, then call it AGAIN as soon as each step finishes — " +
 		"flip the just-finished item to 'completed' and move the next item to 'in_progress' in the SAME call. " +
@@ -31,6 +31,7 @@ func (t *TodoWriteTool) Description() string {
 		"\n\nIMPORTANT: Use todo lists for execution tracking, not as permission gates. " +
 		"Do not pause after creating a todo list just because implementation steps are present; continue unless the user explicitly asked to review a plan first, the session is in plan mode, or the next action is risky/destructive/ambiguous enough to need clarification. " +
 		"Real safety gates live on mutating tools such as write_file, edit_file, run_bash, and git mutations. " +
+		"When changing course, mark abandoned future work as 'skipped' instead of leaving stale pending items visible. " +
 		"\n\nDo NOT use this tool for trivial single-step requests (one read, one edit, a quick answer) — the plan card just adds noise there. " +
 		"Pass an empty list to clear the plan when the work is done or no longer relevant."
 }
@@ -52,7 +53,7 @@ func (t *TodoWriteTool) Schema() map[string]any {
 						"status": map[string]any{
 							"type":        "string",
 							"description": "Lifecycle state of this step.",
-							"enum":        []string{"pending", "in_progress", "completed"},
+							"enum":        []string{"pending", "in_progress", "completed", "skipped"},
 						},
 					},
 					"required": []string{"content", "status"},
@@ -83,13 +84,8 @@ type todoWriteArgs struct {
 func (t *TodoWriteTool) PreviewCall(argsJSON string) string {
 	var a todoWriteArgs
 	_ = json.Unmarshal([]byte(argsJSON), &a)
-	done := 0
-	for _, td := range a.Todos {
-		if td.Status == TodoCompleted {
-			done++
-		}
-	}
-	return fmt.Sprintf("Plan: %d items (%d done)", len(a.Todos), done)
+	done, skipped := todoCounts(a.Todos)
+	return planUpdateSummary("Plan", len(a.Todos), done, skipped)
 }
 
 func (t *TodoWriteTool) Execute(_ context.Context, argsJSON string) (string, error) {
@@ -105,16 +101,11 @@ func (t *TodoWriteTool) Execute(_ context.Context, argsJSON string) (string, err
 		return "", err
 	}
 	t.Store.Replace(cleaned)
-	done := 0
-	for _, td := range cleaned {
-		if td.Status == TodoCompleted {
-			done++
-		}
-	}
+	done, skipped := todoCounts(cleaned)
 	if len(cleaned) == 0 {
 		return "plan cleared", nil
 	}
-	return fmt.Sprintf("plan updated: %d items (%d done)", len(cleaned), done), nil
+	return planUpdateSummary("plan updated", len(cleaned), done, skipped), nil
 }
 
 func validatePlanItems(items []Todo) ([]Todo, error) {
@@ -126,11 +117,11 @@ func validatePlanItems(items []Todo) ([]Todo, error) {
 			return nil, fmt.Errorf("todo_write: item %d has empty content", i)
 		}
 		switch td.Status {
-		case TodoPending, TodoInProgress, TodoCompleted:
+		case TodoPending, TodoInProgress, TodoCompleted, TodoSkipped:
 		case "":
 			return nil, fmt.Errorf("todo_write: item %d has empty status", i)
 		default:
-			return nil, fmt.Errorf("todo_write: item %d has unknown status %q (allowed: pending, in_progress, completed)", i, td.Status)
+			return nil, fmt.Errorf("todo_write: item %d has unknown status %q (allowed: pending, in_progress, completed, skipped)", i, td.Status)
 		}
 		if td.Status == TodoInProgress {
 			inProgress++
@@ -141,4 +132,23 @@ func validatePlanItems(items []Todo) ([]Todo, error) {
 		return nil, fmt.Errorf("todo_write: at most one item may be in_progress at a time (got %d)", inProgress)
 	}
 	return out, nil
+}
+
+func todoCounts(todos []Todo) (done, skipped int) {
+	for _, td := range todos {
+		switch td.Status {
+		case TodoCompleted:
+			done++
+		case TodoSkipped:
+			skipped++
+		}
+	}
+	return done, skipped
+}
+
+func planUpdateSummary(prefix string, total, done, skipped int) string {
+	if skipped == 0 {
+		return fmt.Sprintf("%s: %d items (%d done)", prefix, total, done)
+	}
+	return fmt.Sprintf("%s: %d items (%d done, %d skipped)", prefix, total, done, skipped)
 }
