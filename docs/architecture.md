@@ -272,7 +272,7 @@ The bridge is intentionally local and opt-in:
 - yottacode never installs language servers automatically;
 - missing servers degrade into install hints and lexical fallback where possible;
 - `[lsp.servers]` overrides execute direct argv arrays, not shell strings;
-- code actions are listed read-only and are not applied by this feature.
+- code actions remain preview-first: listing is read-only, and any server-proposed edits go through explicit preview plus `lsp_apply_workspace_edit` rather than direct writes.
 
 See [lsp.md](lsp.md) for setup, supported languages, commands, troubleshooting,
 and production-promotion notes.

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	lspci "github.com/yottadynamics/yottacode/internal/lsp"
@@ -147,15 +148,28 @@ func (t *LSPApplyWorkspaceEditTool) Execute(ctx context.Context, argsJSON string
 		if err := ValidateWritePath(abs, t.WriteOpts); err != nil {
 			return "", fmt.Errorf("lsp_apply_workspace_edit: %w", err)
 		}
+		e.Path = abs
 		byPath[abs] = append(byPath[abs], e)
 	}
+	paths := make([]string, 0, len(byPath))
+	for path := range byPath {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
 	var changed []string
-	for path, edits := range byPath {
+	for _, path := range paths {
+		edits := byPath[path]
 		oldBytes, err := os.ReadFile(path)
 		if err != nil {
 			return "", fmt.Errorf("lsp_apply_workspace_edit: read %s: %w", path, err)
 		}
-		newText, err := lspci.ApplyTextEdits(string(oldBytes), edits)
+		oldText := string(oldBytes)
+		for _, edit := range edits {
+			if edit.PreviewHash != "" && edit.PreviewHash != lspci.PreviewHash(oldText) {
+				return "", fmt.Errorf("lsp_apply_workspace_edit: stale preview for %s; re-run the preview tool", path)
+			}
+		}
+		newText, err := lspci.ApplyTextEdits(oldText, edits)
 		if err != nil {
 			return "", fmt.Errorf("lsp_apply_workspace_edit: %s: %w", path, err)
 		}
@@ -180,20 +194,21 @@ func parseWorkspaceEditArg(argsJSON string) (lspci.WorkspaceEdit, error) {
 }
 
 func formatWorkspaceEditPreview(edit lspci.WorkspaceEdit) (string, error) {
-	payload, err := json.MarshalIndent(lspWorkspaceEditEnvelope{Edit: edit}, "", "  ")
+	annotated := edit
+	payload, err := annotateWorkspaceEditPreview(&annotated)
 	if err != nil {
 		return "", err
 	}
 	var b strings.Builder
-	b.WriteString(lspci.WorkspaceEditSummary(edit))
-	for _, path := range edit.Paths() {
+	b.WriteString(lspci.WorkspaceEditSummary(annotated))
+	for _, path := range annotated.Paths() {
 		oldBytes, err := os.ReadFile(path)
 		if err != nil {
 			fmt.Fprintf(&b, "preview\t%s\tread error: %v\n", filepath.Base(path), err)
 			continue
 		}
 		var edits []lspci.TextEdit
-		for _, edit := range edit.Edits {
+		for _, edit := range annotated.Edits {
 			if edit.Path == path {
 				edits = append(edits, edit)
 			}
@@ -203,7 +218,7 @@ func formatWorkspaceEditPreview(edit lspci.WorkspaceEdit) (string, error) {
 			fmt.Fprintf(&b, "preview\t%s\tapply error: %v\n", filepath.Base(path), err)
 			continue
 		}
-		b.WriteString(simpleUnifiedDiff(path, string(oldBytes), newText))
+		b.WriteString(boundedUnifiedDiff(path, string(oldBytes), newText, 2, 80))
 	}
 	b.WriteString("\napply_payload:\n")
 	b.Write(payload)
@@ -211,19 +226,75 @@ func formatWorkspaceEditPreview(edit lspci.WorkspaceEdit) (string, error) {
 	return b.String(), nil
 }
 
-func simpleUnifiedDiff(path, oldText, newText string) string {
+func annotateWorkspaceEditPreview(edit *lspci.WorkspaceEdit) ([]byte, error) {
+	for i := range edit.Edits {
+		oldBytes, err := os.ReadFile(edit.Edits[i].Path)
+		if err != nil {
+			return nil, err
+		}
+		edit.Edits[i].PreviewHash = lspci.PreviewHash(string(oldBytes))
+		edit.Edits[i].PreviewBytes = len(oldBytes)
+	}
+	return json.MarshalIndent(lspWorkspaceEditEnvelope{Edit: *edit}, "", "  ")
+}
+
+func boundedUnifiedDiff(path, oldText, newText string, contextLines, maxChangedLines int) string {
 	if oldText == newText {
 		return fmt.Sprintf("diff -- %s\n(no changes)\n", path)
 	}
 	oldLines := strings.Split(strings.TrimSuffix(oldText, "\n"), "\n")
 	newLines := strings.Split(strings.TrimSuffix(newText, "\n"), "\n")
+	prefix := 0
+	for prefix < len(oldLines) && prefix < len(newLines) && oldLines[prefix] == newLines[prefix] {
+		prefix++
+	}
+	oldSuffix, newSuffix := len(oldLines), len(newLines)
+	for oldSuffix > prefix && newSuffix > prefix && oldLines[oldSuffix-1] == newLines[newSuffix-1] {
+		oldSuffix--
+		newSuffix--
+	}
+	oldStart := maxInt(0, prefix-contextLines)
+	newStart := maxInt(0, prefix-contextLines)
+	oldEnd := minInt(len(oldLines), oldSuffix+contextLines)
+	newEnd := minInt(len(newLines), newSuffix+contextLines)
 	var b strings.Builder
 	fmt.Fprintf(&b, "--- %s\n+++ %s\n", path, path)
-	for _, line := range oldLines {
-		fmt.Fprintf(&b, "-%s\n", line)
+	fmt.Fprintf(&b, "@@ -%d,%d +%d,%d @@\n", oldStart+1, oldEnd-oldStart, newStart+1, newEnd-newStart)
+	changedLines := 0
+	for i := oldStart; i < prefix && i < oldEnd; i++ {
+		fmt.Fprintf(&b, " %s\n", oldLines[i])
 	}
-	for _, line := range newLines {
-		fmt.Fprintf(&b, "+%s\n", line)
+	for i := prefix; i < oldSuffix && i < oldEnd; i++ {
+		if changedLines >= maxChangedLines {
+			b.WriteString("…[truncated diff]\n")
+			break
+		}
+		fmt.Fprintf(&b, "-%s\n", oldLines[i])
+		changedLines++
+	}
+	for i := prefix; i < newSuffix && i < newEnd; i++ {
+		if changedLines >= maxChangedLines {
+			break
+		}
+		fmt.Fprintf(&b, "+%s\n", newLines[i])
+		changedLines++
+	}
+	for i := oldSuffix; i < oldEnd && i-(oldSuffix) < contextLines; i++ {
+		fmt.Fprintf(&b, " %s\n", oldLines[i])
 	}
 	return b.String()
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }

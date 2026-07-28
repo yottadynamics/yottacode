@@ -7,8 +7,10 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestClientJSONRPCFramingAndRequests(t *testing.T) {
@@ -173,6 +175,84 @@ func TestClientServerErrorSurfaces(t *testing.T) {
 	}
 }
 
+func TestClientDiagnosticsReturnsCachedSnapshotImmediately(t *testing.T) {
+	path := "/tmp/main.go"
+	uri := pathToURI(path)
+	c := &Client{docs: map[string]openDocumentState{}, diags: map[string]DiagnosticsSnapshot{uri: {Published: true, Diagnostics: []Diagnostic{{Path: path, Message: "cached"}}}}, diagSettle: time.Millisecond}
+	snap, err := c.Diagnostics(context.Background(), path)
+	if err != nil {
+		t.Fatalf("Diagnostics: %v", err)
+	}
+	if !snap.Published || len(snap.Diagnostics) != 1 || snap.Diagnostics[0].Message != "cached" {
+		t.Fatalf("unexpected snapshot: %+v", snap)
+	}
+}
+
+func TestClientDiagnosticsCachesUnrelatedPublishWhileWaiting(t *testing.T) {
+	path := "/tmp/main.go"
+	var calls int
+	c := &Client{
+		capOK:      true,
+		stdin:      nopWriteCloser{},
+		docs:       map[string]openDocumentState{},
+		diags:      map[string]DiagnosticsSnapshot{},
+		diagSettle: 20 * time.Millisecond,
+		readMessageFn: func() ([]byte, error) {
+			calls++
+			if calls == 1 {
+				body, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "method": "textDocument/publishDiagnostics", "params": map[string]any{"uri": "file:///tmp/other.go", "diagnostics": []map[string]any{{"range": map[string]any{"start": map[string]any{"line": 1, "character": 2}, "end": map[string]any{"line": 1, "character": 3}}, "message": "other", "severity": 2}}}})
+				if err != nil {
+					t.Fatalf("marshal diagnostics notification: %v", err)
+				}
+				return body, nil
+			}
+			ctxErrBody, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "method": "window/logMessage", "params": map[string]any{"type": 3, "message": "idle"}})
+			if err != nil {
+				t.Fatalf("marshal idle notification: %v", err)
+			}
+			time.Sleep(25 * time.Millisecond)
+			return ctxErrBody, nil
+		},
+	}
+	snap, err := c.Diagnostics(context.Background(), path)
+	if err != nil {
+		t.Fatalf("Diagnostics: %v", err)
+	}
+	if snap.Published {
+		t.Fatalf("expected unpublished snapshot for main.go, got %+v", snap)
+	}
+	other, ok := c.diags[pathToURI("/tmp/other.go")]
+	if !ok || !other.Published || len(other.Diagnostics) != 1 || other.Diagnostics[0].Message != "other" {
+		t.Fatalf("unexpected cached unrelated diagnostics: %+v", other)
+	}
+}
+
+func TestClientReadMessageContextCancelsAndKillsProcess(t *testing.T) {
+	cmd := sleepCmd(t)
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	c := &Client{
+		cmd:    cmd,
+		waitCh: make(chan error, 1),
+		readMessageFn: func() ([]byte, error) {
+			time.Sleep(100 * time.Millisecond)
+			return nil, nil
+		},
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	_, err := c.readMessageContext(ctx)
+	if err == nil || err != context.DeadlineExceeded {
+		t.Fatalf("expected deadline exceeded, got %v", err)
+	}
+	select {
+	case <-c.processWaitCh():
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("timed out waiting for killed process")
+	}
+}
+
 func TestPathURIConversion(t *testing.T) {
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -228,4 +308,21 @@ func writeServerResponse(t *testing.T, w io.Writer, id int, result any) {
 		t.Fatalf("marshal response: %v", err)
 	}
 	fmt.Fprintf(w, "Content-Length: %d\r\n\r\n%s", len(body), body)
+}
+
+func writeServerNotification(t *testing.T, w io.Writer, method string, params any) {
+	t.Helper()
+	body, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "method": method, "params": params})
+	if err != nil {
+		t.Fatalf("marshal notification: %v", err)
+	}
+	fmt.Fprintf(w, "Content-Length: %d\r\n\r\n%s", len(body), body)
+}
+
+func sleepCmd(t *testing.T) *exec.Cmd {
+	t.Helper()
+	if _, err := os.Stat("/bin/sh"); err == nil {
+		return exec.Command("/bin/sh", "-c", "sleep 30")
+	}
+	return exec.Command("sleep", "30")
 }

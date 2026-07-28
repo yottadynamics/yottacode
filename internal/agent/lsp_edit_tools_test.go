@@ -90,9 +90,29 @@ func TestLSPCodeActionPreviewIncludesApplyPayload(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
-	for _, want := range []string{"apply_payload:", `"edits"`, "// fixed"} {
+	for _, want := range []string{"apply_payload:", `"edits"`, `"preview_hash"`, "@@", "// fixed"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("preview output %q does not contain %q", out, want)
 		}
+	}
+}
+
+func TestLSPApplyWorkspaceEditRejectsStalePreview(t *testing.T) {
+	cwd := t.TempDir()
+	writeFile(t, cwd, "main.go", "package main\nfunc oldName() {}\n")
+	tool := &LSPApplyWorkspaceEditTool{lspToolBase: lspToolBase{Cwd: NewCwdRef(cwd)}, WriteOpts: WritePathOptions{Cwd: NewCwdRef(cwd)}}
+	args := `{"edit":{"edits":[{"path":"main.go","range":{"start":{"line":1,"character":5},"end":{"line":1,"character":12}},"new_text":"newName","preview_hash":"deadbeef"}]}}`
+	if _, err := tool.Execute(context.Background(), args); err == nil || !strings.Contains(err.Error(), "stale preview") {
+		t.Fatalf("expected stale preview error, got %v", err)
+	}
+}
+
+func TestLSPApplyWorkspaceEditRejectsOverlappingRanges(t *testing.T) {
+	cwd := t.TempDir()
+	writeFile(t, cwd, "main.go", "package main\nfunc oldName() {}\n")
+	tool := &LSPApplyWorkspaceEditTool{lspToolBase: lspToolBase{Cwd: NewCwdRef(cwd)}, WriteOpts: WritePathOptions{Cwd: NewCwdRef(cwd)}}
+	args := `{"edit":{"edits":[{"path":"main.go","range":{"start":{"line":1,"character":5},"end":{"line":1,"character":12}},"new_text":"newName"},{"path":"main.go","range":{"start":{"line":1,"character":6},"end":{"line":1,"character":10}},"new_text":"xxx"}]}}`
+	if _, err := tool.Execute(context.Background(), args); err == nil || !strings.Contains(err.Error(), "overlapping edit range") {
+		t.Fatalf("expected overlapping edit error, got %v", err)
 	}
 }

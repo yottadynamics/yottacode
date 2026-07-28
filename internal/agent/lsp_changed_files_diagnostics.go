@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
 	lspci "github.com/yottadynamics/yottacode/internal/lsp"
@@ -64,25 +65,52 @@ func (t *LSPChangedFilesDiagnosticsTool) Execute(ctx context.Context, argsJSON s
 }
 
 func changedSourceFiles(ctx context.Context, cwd string, maxFiles int) ([]string, error) {
-	cmd := exec.CommandContext(ctx, "git", "diff", "--name-only", "HEAD", "--")
-	cmd.Dir = cwd
-	out, err := cmd.Output()
+	repoRoot, err := gitTopLevel(ctx, cwd)
 	if err != nil {
 		return nil, err
 	}
+	seen := map[string]bool{}
 	var paths []string
-	for _, line := range strings.Split(string(out), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
+	collect := func(args ...string) error {
+		cmd := exec.CommandContext(ctx, "git", args...)
+		cmd.Dir = repoRoot
+		out, err := cmd.Output()
+		if err != nil {
+			return err
 		}
-		if _, ok := lspci.ResolveFile(line); !ok {
-			continue
+		for _, line := range strings.Split(string(out), "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" || seen[line] {
+				continue
+			}
+			if _, ok := lspci.ResolveFile(line); !ok {
+				continue
+			}
+			seen[line] = true
+			paths = append(paths, filepath.ToSlash(line))
+			if maxFiles > 0 && len(paths) >= maxFiles {
+				return nil
+			}
 		}
-		paths = append(paths, line)
+		return nil
+	}
+	for _, args := range [][]string{{"diff", "--name-only", "HEAD", "--"}, {"diff", "--cached", "--name-only", "--"}, {"ls-files", "--others", "--exclude-standard"}} {
 		if maxFiles > 0 && len(paths) >= maxFiles {
 			break
 		}
+		if err := collect(args...); err != nil {
+			return nil, err
+		}
 	}
 	return paths, nil
+}
+
+func gitTopLevel(ctx context.Context, cwd string) (string, error) {
+	cmd := exec.CommandContext(ctx, "git", "rev-parse", "--show-toplevel")
+	cmd.Dir = cwd
+	out, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
 }
