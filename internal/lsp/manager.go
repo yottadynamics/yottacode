@@ -93,10 +93,16 @@ func (m *Manager) Acquire(ctx context.Context, lang Language, root string) (*Poo
 	}
 
 	m.mu.Lock()
-	defer m.mu.Unlock()
+	var duplicate *Client
+	defer func() {
+		m.mu.Unlock()
+		if duplicate != nil {
+			_ = m.closeClient(duplicate)
+		}
+	}()
 	if existing := m.clients[key]; existing != nil {
 		m.stats.Reuses++
-		m.closeClient(client)
+		duplicate = client
 		return &PooledClient{Client: existing.client, manager: m, key: key}, nil
 	}
 	m.clients[key] = &managerEntry{client: client, lang: lang, root: root, lastUsed: time.Now()}
@@ -231,18 +237,21 @@ func (m *Manager) release(key string) {
 }
 
 func (m *Manager) evictIdleLocked(now time.Time) {
+	var toClose []*Client
 	for key, entry := range m.clients {
 		if now.Sub(entry.lastUsed) <= m.idleTimeout {
 			continue
 		}
 		delete(m.clients, key)
 		m.stats.Evictions++
-		_ = m.closeClient(entry.client)
+		toClose = append(toClose, entry.client)
 	}
 	m.stats.OpenServers = len(m.clients)
+	go m.closeClients(toClose)
 }
 
 func (m *Manager) evictToCapacityLocked() {
+	var toClose []*Client
 	for len(m.clients) >= m.maxServers {
 		var oldestKey string
 		var oldestTime time.Time
@@ -258,9 +267,18 @@ func (m *Manager) evictToCapacityLocked() {
 		entry := m.clients[oldestKey]
 		delete(m.clients, oldestKey)
 		m.stats.Evictions++
-		_ = m.closeClient(entry.client)
+		toClose = append(toClose, entry.client)
 	}
 	m.stats.OpenServers = len(m.clients)
+	go m.closeClients(toClose)
+}
+
+func (m *Manager) closeClients(clients []*Client) {
+	for _, client := range clients {
+		if client != nil {
+			_ = m.closeClient(client)
+		}
+	}
 }
 
 func managerKey(lang Language, root string) string {

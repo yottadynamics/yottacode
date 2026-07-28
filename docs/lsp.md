@@ -89,13 +89,15 @@ The experimental bridge now includes several production-readiness behaviors:
 - Workspace roots are detected from language markers such as `go.mod`, `package.json`, `pyproject.toml`, and `Cargo.toml` instead of always using the file's directory.
 - Documents are opened with `textDocument/didOpen` before position-based requests so servers see the same file contents yottacode read from disk.
 - Successful `edit_file` and `write_file` calls notify pooled servers with full-document `didChange` and `didSave`, using version counters so diagnostics can reflect yottacode edits. This sync is best-effort: a dead server pipe is evicted/retried once and never turns an otherwise-successful file write into a scary edit error.
-- `lsp_diagnostics` reports whether diagnostics were actually published before the settle timeout, so “clean” is distinct from “no diagnostic publication observed yet”.
+- `lsp_diagnostics` reports whether diagnostics were actually published before the settle timeout, so “clean” is distinct from “no diagnostic publication observed yet”. Cached diagnostics for the requested file are returned immediately, and unrelated diagnostics that arrive while waiting are cached for later file-specific checks.
+- `lsp_changed_files_diagnostics` inspects staged, unstaged, and untracked supported source files from the repo root, de-duplicates them, and skips unsupported paths.
 - `lsp_code_action_preview` resolves editable code actions into the same preview/apply WorkspaceEdit flow used by rename and formatting.
 - `lsp_document_highlights` and `lsp_selection_ranges` provide bounded current-file context before agents choose an edit range or wider read window.
 - `lsp_rename_preview` uses server-side prepare-rename validation when available so invalid cursor positions fail before any edit preview is requested.
 - Server capabilities returned by `initialize` are checked before optional methods; unsupported methods return an explicit `unavailable` result rather than a misleading empty response.
 - `lsp_status` exposes session manager stats: open servers, starts, reuses, evictions, and last startup latency. `yottacode doctor` reports the default manager configuration without starting a session server.
-- Smoke tests exist for all supported servers and skip automatically when the binary is not installed.
+- WorkspaceEdit previews now include per-file preview hashes, bounded diff hunks instead of whole-file remove/add dumps, and apply-time stale-preview detection. The applier rejects overlapping edit ranges before writing.
+- Smoke tests exist for all supported servers and opportunistically exercise workflow requests such as document symbols, diagnostics, and formatting when the installed server advertises them.
 
 ## Troubleshooting
 

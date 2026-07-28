@@ -1120,7 +1120,8 @@ No approval.
 
 Preview one code action's normalized WorkspaceEdit JSON without writing files.
 Select the action by exact `title` or by zero-based `index` from
-`lsp_code_actions`; `index` is preferred when titles repeat. Pass the returned
+`lsp_code_actions`; `index` is preferred when titles repeat. The preview output
+includes bounded diff hunks plus per-file preview hashes. Pass the returned
 `apply_payload` to `lsp_apply_workspace_edit` only after reviewing the diff.
 
 | Param | Type | Default | Notes |
@@ -1137,7 +1138,7 @@ No approval.
 
 ## lsp_rename_preview
 
-Preview a semantic rename as normalized WorkspaceEdit JSON without writing files. When the server supports `textDocument/prepareRename`, yottacode validates the target position first and returns an explicit unavailable result if the cursor is not renameable. Pass the returned `apply_payload` to `lsp_apply_workspace_edit` only after reviewing the affected files.
+Preview a semantic rename as normalized WorkspaceEdit JSON without writing files. When the server supports `textDocument/prepareRename`, yottacode validates the target position first and returns an explicit unavailable result if the cursor is not renameable. Preview output includes bounded diff hunks plus per-file preview hashes. Pass the returned `apply_payload` to `lsp_apply_workspace_edit` only after reviewing the affected files.
 
 | Param | Type | Default | Notes |
 |---|---|---|---|
@@ -1150,7 +1151,7 @@ No approval.
 
 ## lsp_format_preview
 
-Preview server formatting edits for one file without writing files.
+Preview server formatting edits for one file without writing files. Preview output includes bounded diff hunks plus per-file preview hashes so the later apply step can reject stale previews.
 
 | Param | Type | Default | Notes |
 |---|---|---|---|
@@ -1160,7 +1161,7 @@ No approval.
 
 ## lsp_apply_workspace_edit
 
-Apply a previously previewed WorkspaceEdit through yottacode's path validator, checkpoint snapshot flow, and normal approval modal. The language server never writes directly. In this experimental version, be cautious with non-ASCII / UTF-16-heavy edit ranges until broader real-server coverage lands.
+Apply a previously previewed WorkspaceEdit through yottacode's path validator, checkpoint snapshot flow, and normal approval modal. The language server never writes directly. Preview payloads carry per-file hashes so apply can reject stale previews, and overlapping edit ranges are refused before any file write. In this experimental version, still be cautious with non-ASCII / UTF-16-heavy edit ranges until broader real-server coverage lands.
 
 | Param | Type | Default | Notes |
 |---|---|---|---|

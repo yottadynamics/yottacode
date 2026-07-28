@@ -57,3 +57,19 @@ func TestApplyTextEditsRejectsInvalidRange(t *testing.T) {
 		t.Fatalf("expected outside-document error, got %v", err)
 	}
 }
+
+func TestApplyTextEditsRejectsOverlappingRanges(t *testing.T) {
+	_, err := ApplyTextEdits("alpha\n", []TextEdit{
+		{Range: TextRange{Start: Position{Line: 0, Character: 0}, End: Position{Line: 0, Character: 3}}, NewText: "A"},
+		{Range: TextRange{Start: Position{Line: 0, Character: 1}, End: Position{Line: 0, Character: 4}}, NewText: "B"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "overlapping edit range") {
+		t.Fatalf("expected overlapping edit error, got %v", err)
+	}
+}
+
+func TestPreviewHashIsStable(t *testing.T) {
+	if got, want := PreviewHash("hello"), PreviewHash("hello"); got != want || got == "" {
+		t.Fatalf("PreviewHash stability failed: got %q want %q", got, want)
+	}
+}

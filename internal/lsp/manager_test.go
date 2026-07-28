@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"sync"
 	"testing"
 	"time"
 )
@@ -91,6 +92,94 @@ func TestManagerNotifyFileChangedEvictsDeadClientAndRetries(t *testing.T) {
 	stats := mgr.Stats()
 	if stats.Evictions == 0 || stats.OpenServers != 1 {
 		t.Fatalf("stats = %+v, want one eviction and one live retry client", stats)
+	}
+}
+
+func TestManagerEvictsIdleClients(t *testing.T) {
+	mgr := NewManager(2, 5*time.Millisecond)
+	closed := make(chan struct{}, 1)
+	mgr.closeClient = func(*Client) error {
+		closed <- struct{}{}
+		return nil
+	}
+	defer mgr.CloseAll()
+	mgr.newClient = func(context.Context, Language, string) (*Client, error) { return &Client{}, nil }
+	lang := Language{ID: "go", Name: "Go", Command: []string{"gopls"}}
+	client, err := mgr.Acquire(context.Background(), lang, t.TempDir())
+	if err != nil {
+		t.Fatalf("Acquire: %v", err)
+	}
+	_ = client.Close()
+	time.Sleep(10 * time.Millisecond)
+	other := Language{ID: "python", Name: "Python", Command: []string{"pyright-langserver"}}
+	second, err := mgr.Acquire(context.Background(), other, t.TempDir())
+	if err != nil {
+		t.Fatalf("Acquire second: %v", err)
+	}
+	_ = second.Close()
+	select {
+	case <-closed:
+	case <-time.After(time.Second):
+		t.Fatal("expected idle client to be closed")
+	}
+	if stats := mgr.Stats(); stats.Evictions == 0 {
+		t.Fatalf("expected idle eviction, got stats %+v", stats)
+	}
+}
+
+func TestManagerConcurrentAcquireClosesDuplicateStart(t *testing.T) {
+	mgr := NewManager(4, time.Hour)
+	defer mgr.CloseAll()
+	lang := Language{ID: "go", Name: "Go", Command: []string{"gopls"}}
+	startBarrier := make(chan struct{})
+	var starts int
+	var mu sync.Mutex
+	closed := 0
+	mgr.closeClient = func(*Client) error {
+		mu.Lock()
+		closed++
+		mu.Unlock()
+		return nil
+	}
+	mgr.newClient = func(context.Context, Language, string) (*Client, error) {
+		mu.Lock()
+		starts++
+		mu.Unlock()
+		<-startBarrier
+		return &Client{}, nil
+	}
+	root := t.TempDir()
+	var wg sync.WaitGroup
+	results := make([]*PooledClient, 2)
+	errs := make([]error, 2)
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			results[i], errs[i] = mgr.Acquire(context.Background(), lang, root)
+		}(i)
+	}
+	time.Sleep(20 * time.Millisecond)
+	close(startBarrier)
+	wg.Wait()
+	for _, err := range errs {
+		if err != nil {
+			t.Fatalf("Acquire: %v", err)
+		}
+	}
+	for _, client := range results {
+		_ = client.Close()
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if starts != 2 {
+		t.Fatalf("starts = %d, want 2 racing starts", starts)
+	}
+	if closed != 1 {
+		t.Fatalf("closed = %d, want one duplicate closed", closed)
+	}
+	if stats := mgr.Stats(); stats.Reuses == 0 || stats.OpenServers != 1 {
+		t.Fatalf("unexpected stats: %+v", stats)
 	}
 }
 

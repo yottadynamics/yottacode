@@ -49,12 +49,46 @@ func smokeLanguageServer(t *testing.T, lang Language, root, query string) {
 	if err != nil {
 		t.Skipf("%s workspace symbols unavailable for smoke test: %v", lang.Command[0], err)
 	}
+	found := false
 	for _, item := range items {
 		if strings.Contains(item.Name, query) {
-			return
+			found = true
+			break
 		}
 	}
-	t.Skipf("%s workspace symbols for %s did not include target; got %d items", lang.Command[0], query, len(items))
+	if !found {
+		t.Skipf("%s workspace symbols for %s did not include target; got %d items", lang.Command[0], query, len(items))
+	}
+	workflowPath := smokeWorkflowPath(root, lang)
+	if workflowPath == "" {
+		return
+	}
+	if _, err := client.DocumentSymbols(ctx, workflowPath); err != nil {
+		t.Skipf("%s document symbols unavailable for smoke test: %v", lang.Command[0], err)
+	}
+	if _, err := client.Diagnostics(ctx, workflowPath); err != nil {
+		t.Skipf("%s diagnostics unavailable for smoke test: %v", lang.Command[0], err)
+	}
+	if client.caps.Formatting {
+		if _, err := client.FormatPreview(ctx, workflowPath); err != nil {
+			t.Skipf("%s formatting unavailable for smoke test: %v", lang.Command[0], err)
+		}
+	}
+}
+
+func smokeWorkflowPath(root string, lang Language) string {
+	switch lang.ID {
+	case "go":
+		return filepath.Join(root, "internal", "lsp", "client.go")
+	case "typescript":
+		return filepath.Join(root, "index.ts")
+	case "python":
+		return filepath.Join(root, "main.py")
+	case "rust":
+		return filepath.Join(root, "src", "lib.rs")
+	default:
+		return ""
+	}
 }
 
 func writeSmokeFile(t *testing.T, root, rel, body string) {
@@ -67,3 +101,4 @@ func writeSmokeFile(t *testing.T, root, rel, body string) {
 		t.Fatalf("write %s: %v", rel, err)
 	}
 }
+

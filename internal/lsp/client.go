@@ -173,16 +173,24 @@ type openDocumentState struct {
 type Client struct {
 	cmd     *exec.Cmd
 	stdin   io.WriteCloser
-	stdout  *bufio.Reader
-	stderr  bytes.Buffer
-	rootURI string
-	caps    serverCapabilities
-	capOK   bool
-	docs    map[string]openDocumentState
-	diags   map[string]DiagnosticsSnapshot
+	stdout      *bufio.Reader
+	stdoutRaw   io.Reader
+	stderr      bytes.Buffer
+	rootURI     string
+	caps        serverCapabilities
+	capOK       bool
+	docs        map[string]openDocumentState
+	diags       map[string]DiagnosticsSnapshot
+	readMessageFn func() ([]byte, error)
 
-	mu     sync.Mutex
-	nextID int64
+	mu          sync.Mutex
+	nextID      int64
+	waitOnce    sync.Once
+	waitCh      chan error
+	killOnce    sync.Once
+	closed      bool
+	readTimeout time.Duration
+	diagSettle  time.Duration
 }
 
 // NewClient starts and initializes the server for lang at root.
@@ -211,14 +219,18 @@ func NewClient(ctx context.Context, lang Language, root string) (*Client, error)
 		return nil, fmt.Errorf("start %s: %w", lang.Command[0], err)
 	}
 	c := &Client{
-		cmd:     cmd,
-		stdin:   stdin,
-		stdout:  bufio.NewReader(stdoutPipe),
-		stderr:  stderr,
-		rootURI: pathToURI(root),
-		docs:    map[string]openDocumentState{},
-		diags:   map[string]DiagnosticsSnapshot{},
+		cmd:       cmd,
+		stdin:     stdin,
+		stdout:    bufio.NewReader(stdoutPipe),
+		stdoutRaw: stdoutPipe,
+		stderr:    stderr,
+		rootURI:   pathToURI(root),
+		docs:      map[string]openDocumentState{},
+		diags:     map[string]DiagnosticsSnapshot{},
+		waitCh:    make(chan error, 1),
 	}
+	c.readTimeout = defaultRequestTimeout
+	c.diagSettle = 1200 * time.Millisecond
 	if err := c.initialize(startCtx); err != nil {
 		_ = c.Close()
 		return nil, err
@@ -264,6 +276,17 @@ func (c *Client) initialize(ctx context.Context) error {
 // still running. Errors are intentionally swallowed by callers via defer; the
 // tool result has already been produced by this point.
 func (c *Client) Close() error {
+	if c == nil {
+		return nil
+	}
+	c.mu.Lock()
+	if c.closed {
+		c.mu.Unlock()
+		return nil
+	}
+	c.closed = true
+	c.mu.Unlock()
+
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	func() {
@@ -276,14 +299,12 @@ func (c *Client) Close() error {
 		_ = c.stdin.Close()
 	}
 	if c.cmd != nil && c.cmd.Process != nil {
-		done := make(chan error, 1)
-		go func() { done <- c.cmd.Wait() }()
 		select {
-		case err := <-done:
+		case err := <-c.processWaitCh():
 			return err
 		case <-time.After(time.Second):
-			_ = c.cmd.Process.Kill()
-			<-done
+			c.killProcess()
+			<-c.processWaitCh()
 		}
 	}
 	return nil
@@ -624,7 +645,17 @@ func (c *Client) Diagnostics(ctx context.Context, path string) (DiagnosticsSnaps
 		return DiagnosticsSnapshot{}, err
 	}
 	uri := pathToURI(path)
-	settle := time.After(1200 * time.Millisecond)
+	c.mu.Lock()
+	if cached, ok := c.diags[uri]; ok {
+		c.mu.Unlock()
+		return cached, nil
+	}
+	diagSettle := c.diagSettle
+	if diagSettle <= 0 {
+		diagSettle = 1200 * time.Millisecond
+	}
+	c.mu.Unlock()
+	settle := time.After(diagSettle)
 	for {
 		select {
 		case <-settle:
@@ -879,24 +910,110 @@ func (c *Client) writeMessage(v any) error {
 }
 
 func (c *Client) readMessageContext(ctx context.Context) ([]byte, error) {
-	type result struct {
-		body []byte
-		err  error
+	if c.readMessageFn != nil {
+		type result struct {
+			body []byte
+			err  error
+		}
+		ch := make(chan result, 1)
+		go func() {
+			body, err := c.readMessageFn()
+			ch <- result{body: body, err: err}
+		}()
+		select {
+		case res := <-ch:
+			return res.body, res.err
+		case <-ctx.Done():
+			c.killProcess()
+			return nil, ctx.Err()
+		}
 	}
-	ch := make(chan result, 1)
-	go func() {
+	readTimeout := c.readTimeout
+	if readTimeout <= 0 {
+		readTimeout = defaultRequestTimeout
+	}
+	for {
+		if err := ctx.Err(); err != nil {
+			c.killProcess()
+			return nil, err
+		}
+		if c.stdout == nil {
+			select {
+			case <-ctx.Done():
+				c.killProcess()
+				return nil, ctx.Err()
+			case <-time.After(minDuration(readTimeout, 10*time.Millisecond)):
+			}
+			continue
+		}
+		if err := c.setReadDeadline(time.Now().Add(readTimeout)); err != nil {
+			return nil, err
+		}
 		body, err := c.readMessage()
-		ch <- result{body: body, err: err}
-	}()
-	select {
-	case res := <-ch:
-		return res.body, res.err
-	case <-ctx.Done():
+		if err == nil {
+			return body, nil
+		}
+		if isNetTimeout(err) {
+			continue
+		}
+		return nil, err
+	}
+}
+
+func (c *Client) setReadDeadline(deadline time.Time) error {
+	if c.stdout == nil {
+		return nil
+	}
+	type deadlineReader interface{ SetReadDeadline(time.Time) error }
+	if r, ok := c.stdoutRaw.(deadlineReader); ok {
+		return r.SetReadDeadline(deadline)
+	}
+	return nil
+}
+
+func (c *Client) processWaitCh() <-chan error {
+	if c == nil {
+		ch := make(chan error, 1)
+		ch <- nil
+		return ch
+	}
+	c.waitOnce.Do(func() {
+		if c.waitCh == nil {
+			c.waitCh = make(chan error, 1)
+		}
+		go func() {
+			if c.cmd == nil {
+				c.waitCh <- nil
+				return
+			}
+			c.waitCh <- c.cmd.Wait()
+		}()
+	})
+	return c.waitCh
+}
+
+func (c *Client) killProcess() {
+	if c == nil {
+		return
+	}
+	c.killOnce.Do(func() {
 		if c.cmd != nil && c.cmd.Process != nil {
 			_ = c.cmd.Process.Kill()
 		}
-		return nil, ctx.Err()
+	})
+}
+
+func isNetTimeout(err error) bool {
+	type timeout interface{ Timeout() bool }
+	var te timeout
+	return errors.As(err, &te) && te.Timeout()
+}
+
+func minDuration(a, b time.Duration) time.Duration {
+	if a < b {
+		return a
 	}
+	return b
 }
 
 func (c *Client) readMessage() ([]byte, error) {
