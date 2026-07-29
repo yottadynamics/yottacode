@@ -249,10 +249,13 @@ func TestLoop_CardAndBanner(t *testing.T) {
 	m.loops = map[string]loopState{"loop-a": {id: "loop-a", active: true, payload: "do it", interval: 5 * time.Minute, remaining: 3, expiresAt: now.Add(loopDefaultTTL)}}
 	m.loopOrder = []string{"loop-a"}
 	got := stripANSI(renderLoopCard(m.loops["loop-a"], 80))
-	for _, want := range []string{"loop-a", "every 5m", "3 left", "do it", "/loop stop loop-a", "╭", "│", "╰"} {
+	for _, want := range []string{"┌ Loop(loop-a)", "every 5m", "3 left", "do it", "/loop stop loop-a", "│", "└"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("loop card %q missing %q", got, want)
 		}
+	}
+	if strings.ContainsAny(got, "╭╰") {
+		t.Fatalf("loop card should use standard card gutters, got %q", got)
 	}
 	banner := stripANSI(renderLoopBanner(m.loopBannerStates(), 80))
 	if !strings.Contains(banner, "loop-a") || !strings.Contains(banner, "every 5m") {
@@ -286,11 +289,11 @@ func TestLoop_CardWrapsLongPayload(t *testing.T) {
 		}
 		// Every row carries a gutter glyph so continuation lines stay inside
 		// the card rather than bleeding to column 0.
-		if !strings.ContainsAny(string([]rune(row)[0]), "╭│╰") {
+		if !strings.ContainsAny(string([]rune(row)[0]), "┌│└") {
 			t.Errorf("row %d missing gutter: %q", i, row)
 		}
 	}
-	if !strings.HasPrefix(rows[len(rows)-1], "╰") {
+	if !strings.HasPrefix(rows[len(rows)-1], "└") {
 		t.Errorf("last row should be the footer: %q", rows[len(rows)-1])
 	}
 }

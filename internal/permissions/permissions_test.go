@@ -86,6 +86,26 @@ func TestLoad_MergesSharedAndLocal(t *testing.T) {
 	}
 }
 
+func TestEvaluateWithRule_ReturnsMatchingRuleSource(t *testing.T) {
+	cwd := t.TempDir()
+	seed(t, filepath.Join(cwd, ".yottacode", "permissions.json"),
+		[]string{"Bash(go test *)"}, nil, nil)
+	seed(t, filepath.Join(cwd, ".yottacode", "permissions.local.json"),
+		[]string{"Bash(gofmt *)"}, nil, nil)
+	p, err := Load(cwd)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	decision, rule := p.EvaluateWithRule("run_bash", `{"command":"gofmt -w internal/tui/model.go"}`)
+	if decision != Allow {
+		t.Fatalf("decision = %v, want Allow", decision)
+	}
+	if rule.Source != "permissions.local.json" {
+		t.Fatalf("rule source = %q, want permissions.local.json", rule.Source)
+	}
+}
+
 // TestLoad_EmptyFileIsNotError pins the regression: openInVim creates
 // permissions.json as 0 bytes when the user first opens the picker row,
 // so the next startup was crashing on json.Unmarshal of an empty byte

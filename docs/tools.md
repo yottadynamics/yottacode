@@ -213,9 +213,12 @@ output. A few tools have card-specific body shapes:
   `N lines · M bytes` / `wrote N bytes` carries the entire signal. When
   multiple successful summary-only read cards land consecutively (`read_file`,
   `read_many_files`, `list_dir`, `list_project_structure`, `glob`), the TUI may
-  group them into one visual card with one row per call; this is display-only
-  and does not change the individual tool results the model or saved session
-  receive.
+  group them into one visual card with one row per call. Wrapped continuation
+  rows hang-indent under the row text, and overflow copy names the hidden row
+  type (`read calls`, `list calls`, `glob calls`). This is display-only and does
+  not change the individual tool results the model or saved session receive.
+- **Provider-hosted tools** (for example xAI web search) reuse the same body
+  wrapping and footer path as local tool cards, so card polish applies uniformly.
 
 **Footer.** Summarizes the call: `N entries`, `wrote N bytes`,
 `N lines · M bytes [(truncated)]`, `N matches`, `exit N` (colored), or
@@ -320,11 +323,17 @@ Always prompts for approval. The diff header is parsed and each
 touched file is run through the same write-path validator
 `write_file` / `edit_file` use — yottacode-managed state, `.git`
 internals, paths outside cwd, and symlinks are refused before
-`git apply` runs. After validation, common model-authored defects such
-as miscounted `@@` hunk headers and whitespace drift in context lines
-are tolerated while applying. A `Deny(Edit(<pattern>))` rule applies if
-any target path matches; an `Allow(Edit(<pattern>))` rule auto-approves
-only when every target path matches (mixed-path diffs still prompt).
+`git apply` runs. Before path validation, the tool rejects common
+model-authored wrappers such as markdown fences and `apply_patch`-style
+`*** Begin Patch` blocks with typed malformed-patch errors. After
+validation, common model-authored defects such as miscounted `@@` hunk
+headers and whitespace drift in context lines are tolerated while
+applying. Malformed patch syntax (`corrupt patch`, bare `@@`, invalid
+hunk headers) and stale context (`patch does not apply`) are classified
+separately so the TUI can show compact recovery guidance instead of the
+raw patch payload. A `Deny(Edit(<pattern>))` rule applies if any target
+path matches; an `Allow(Edit(<pattern>))` rule auto-approves only when
+every target path matches (mixed-path diffs still prompt).
 
 ## mkdir
 

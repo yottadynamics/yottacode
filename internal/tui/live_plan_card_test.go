@@ -49,6 +49,28 @@ func TestRenderTodoCardFromTodos_EmptyShowsClearedFooter(t *testing.T) {
 	}
 }
 
+func TestRenderTodoCardFromTodos_WrapsLongRowsUnderStatusGutter(t *testing.T) {
+	got := stripANSI(renderTodoCardFromTodos([]agent.Todo{{
+		Content: "review a very long plan item that wraps cleanly on narrow terminals without losing the status gutter",
+		Status:  agent.TodoInProgress,
+	}}, 48))
+	rows := strings.Split(got, "\n")
+	if len(rows) < 4 {
+		t.Fatalf("expected wrapped todo card rows, got:\n%s", got)
+	}
+	if !strings.Contains(got, "│ ▸ review") {
+		t.Fatalf("first todo row should keep status icon:\n%s", got)
+	}
+	if !strings.Contains(got, "│   cleanly") {
+		t.Fatalf("wrapped todo continuation should align under todo text:\n%s", got)
+	}
+	for i, row := range rows {
+		if len([]rune(row)) > 48 {
+			t.Fatalf("todo card row %d exceeded width 48: %q\n%s", i, row, got)
+		}
+	}
+}
+
 func TestModel_RenderLivePlanCard_EmptyReturnsBlank(t *testing.T) {
 	m := newTestModel(t)
 	if got := m.renderLivePlanCard(); got != "" {

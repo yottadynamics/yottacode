@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -28,7 +29,6 @@ func TestPathTrustStyles_FollowTheme(t *testing.T) {
 			got   lipgloss.TerminalColor
 			want  lipgloss.AdaptiveColor
 		}{
-			{"border", stylePathTrustBorder.GetBorderTopForeground(), p.Warning},
 			{"title", stylePathTrustTitle.GetForeground(), p.Warning},
 			{"hint", stylePathTrustBodyHint.GetForeground(), p.Dim},
 			{"accept", stylePathTrustAccept.GetForeground(), p.Success},
@@ -38,6 +38,37 @@ func TestPathTrustStyles_FollowTheme(t *testing.T) {
 			if c.got != lipgloss.TerminalColor(c.want) {
 				t.Errorf("theme %s: %s = %v, want palette role %v", name, c.label, c.got, c.want)
 			}
+		}
+	}
+}
+
+func TestRenderPathTrustModal_UsesLabeledBox(t *testing.T) {
+	m := newTestModel(t)
+	m.width = 88
+	m.pathTrustReq = agent.PathTrustElevationNeeded{
+		ToolName:     "write_file",
+		Path:         "/tmp/outside/file.txt",
+		Cwd:          "/repo",
+		AllowedRoots: []string{"/tmp/allowed"},
+	}
+
+	got := stripANSI(renderPathTrustModal(m))
+	for _, want := range []string{
+		"┌─ Write outside workspace",
+		"write_file ─┐",
+		"requested",
+		"/tmp/outside/file.txt",
+		"workspace",
+		"/repo",
+		"allowed roots",
+		"/tmp/allowed",
+		"[1] allow once",
+		"[2] trust session",
+		"[3] reject",
+		"└",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("path trust modal missing %q\n%s", want, got)
 		}
 	}
 }

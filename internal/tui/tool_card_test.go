@@ -127,8 +127,8 @@ func TestRenderToolCard_GrepWrapsUnderMatchText(t *testing.T) {
 	}
 }
 
-func TestRenderSystemNoticeCard_UsesOneLineGrammar(t *testing.T) {
-	got := stripANSI(renderSystemNoticeCard("auto", []string{
+func TestRenderSystemNoticeLine_UsesOneLineGrammar(t *testing.T) {
+	got := stripANSI(renderSystemNoticeLine("auto", []string{
 		"grep(\"auto mode\" in internal/tui)",
 	}, "auto-mode", 88))
 	if strings.Contains(got, "┌") || strings.Contains(got, "│") || strings.Contains(got, "└") {
@@ -139,8 +139,8 @@ func TestRenderSystemNoticeCard_UsesOneLineGrammar(t *testing.T) {
 	}
 }
 
-func TestRenderCompactionNoticeCard_ShowsCompactRecallCommand(t *testing.T) {
-	got := stripANSI(renderCompactionNoticeCard("87% → 23%", "/home/me/.yottacode/sessions/20260727-155559.693248-pre-summary-20260727-164818.296261277.json", nil, 100))
+func TestRenderCompactionNoticeLine_ShowsCompactRecallCommand(t *testing.T) {
+	got := stripANSI(renderCompactionNoticeLine("87% → 23%", "/home/me/.yottacode/sessions/20260727-155559.693248-pre-summary-20260727-164818.296261277.json", nil, 100))
 	want := "◇ context · compacted · 87% → 23% · full history saved · /recall 20260727-155559.693248"
 	if got != want {
 		t.Fatalf("unexpected compaction notice: %q", got)
@@ -232,6 +232,47 @@ func TestRenderGroupedToolCard_ReadManyFilesOmitsBogusLineCount(t *testing.T) {
 	}
 }
 
+func TestRenderGroupedToolCard_HangIndentsWrappedRows(t *testing.T) {
+	got := stripANSI(renderGroupedToolCard([]groupedToolResult{
+		{toolName: "read_file", preview: "read_file(internal/tui/very_long_component_name_that_wraps.go)", argsJSON: `{"path":"internal/tui/very_long_component_name_that_wraps.go","offset":159,"limit":150}`, output: "one\ntwo\n"},
+	}, 52, ""))
+	if !strings.Contains(got, "│   ") {
+		t.Fatalf("wrapped grouped rows should hang-indent continuation lines:\n%s", got)
+	}
+	if strings.Contains(got, "\n│ bytes") {
+		t.Fatalf("wrapped grouped row continuation restarted flat at the gutter:\n%s", got)
+	}
+}
+
+func TestRenderGroupedToolCard_OverflowCopyIsTypeAware(t *testing.T) {
+	readItems := make([]groupedToolResult, cardBodyLineCap+2)
+	for i := range readItems {
+		readItems[i] = groupedToolResult{toolName: "read_file", argsJSON: fmt.Sprintf(`{"path":"%d.go"}`, i), output: "x\n"}
+	}
+	readGot := stripANSI(renderGroupedToolCard(readItems, 100, ""))
+	if !strings.Contains(readGot, "…2 more read calls") {
+		t.Fatalf("read overflow should name read calls:\n%s", readGot)
+	}
+
+	listItems := make([]groupedToolResult, cardBodyLineCap+1)
+	for i := range listItems {
+		listItems[i] = groupedToolResult{toolName: "list_dir", argsJSON: fmt.Sprintf(`{"path":"dir-%d"}`, i), output: "f\tfile\n"}
+	}
+	listGot := stripANSI(renderGroupedToolCard(listItems, 100, ""))
+	if !strings.Contains(listGot, "…1 more list call") {
+		t.Fatalf("list overflow should name list calls:\n%s", listGot)
+	}
+
+	globItems := make([]groupedToolResult, cardBodyLineCap+3)
+	for i := range globItems {
+		globItems[i] = groupedToolResult{toolName: "glob", argsJSON: fmt.Sprintf(`{"pattern":"*.%d"}`, i), output: "a.go\n"}
+	}
+	globGot := stripANSI(renderGroupedToolCard(globItems, 100, ""))
+	if !strings.Contains(globGot, "…3 more glob calls") {
+		t.Fatalf("glob overflow should name glob calls:\n%s", globGot)
+	}
+}
+
 // readFileFooter: line count uses singular when count == 1; truncation
 // suffix when the tool's 512KiB read cap was hit; trailing newline isn't
 // counted as a phantom extra line.
@@ -291,6 +332,25 @@ func TestToolCard_ApplyDiffMalformedPatchIsConcise(t *testing.T) {
 	footer := stripANSI(toolFooter("apply_diff", out, true, ""))
 	if footer != "recoverable: malformed patch" {
 		t.Fatalf("apply_diff footer = %q", footer)
+	}
+}
+
+func TestToolCard_ApplyDiffCorruptPatchIsConcise(t *testing.T) {
+	out := `error: apply_diff: exit status 128; stderr="error: corrupt patch at line 138\n" hint="patch syntax is malformed — remove placeholder hunks like bare ` + "`@@`" + `, or regenerate a complete unified diff with valid hunk headers" patch="diff --git a/internal/agent/events.go b/internal/agent/events.go\nindex 6d57d55..def096b 100644\n--- a/internal/agent/events.go\n+++ b/internal/agent/events.go\n@@ -97,9 +97,12 @@ type ErrorEvent struct {\n type ApprovalAuto struct {\n\tToolName string\n\tPreview  string\n\tSource   string\n+\tRuleSource string\n }"`
+	body := toolBodyLines("apply_diff", out, true, "")
+	if len(body) != 1 || body[0] != "malformed patch — use a valid unified diff with real hunk ranges" {
+		t.Fatalf("apply_diff body should show concise corrupt-patch diagnosis, got %v", body)
+	}
+	footer := stripANSI(toolFooter("apply_diff", out, true, ""))
+	if footer != "recoverable: malformed patch" {
+		t.Fatalf("apply_diff footer = %q", footer)
+	}
+	got := stripANSI(renderToolCard("apply_diff", "Patch(apply)", `{}`, out, true, 100, "", 0))
+	if strings.Contains(got, "patch=\"") || strings.Contains(got, "RuleSource") {
+		t.Fatalf("card should not dump raw corrupt patch payload: %q", got)
+	}
+	if !strings.Contains(got, "malformed patch") {
+		t.Fatalf("card should classify corrupt patch as malformed: %q", got)
 	}
 }
 

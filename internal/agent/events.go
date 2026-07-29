@@ -98,6 +98,9 @@ type ApprovalAuto struct {
 	ToolName string
 	Preview  string
 	Source   string
+	// RuleSource identifies the permissions file that matched when Source is
+	// "permissions" or "deny-rule". Empty for mode-based auto approvals.
+	RuleSource string
 }
 
 // ApprovalNeeded is the request half of an approval round-trip. The loop

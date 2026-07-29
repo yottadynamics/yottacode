@@ -96,6 +96,12 @@ func (t *ApplyDiffTool) Execute(ctx context.Context, argsJSON string) (string, e
 	// symmetrically, a spurious "no recognizable file headers" rejection of
 	// a diff the repair would have made applyable.
 	a.Diff = normalizeModelPatch(repairFullyEscapedDiff(a.Diff))
+	// Reject common non-diff wrappers before path parsing. These are model
+	// input-shape mistakes, not git-apply problems, so returning a typed error
+	// here gives the model a shorter self-correction loop.
+	if err := validatePatchEnvelope(a.Diff); err != nil {
+		return "", fmt.Errorf("apply_diff: %w", err)
+	}
 	// Parse target paths out of the diff header and run them through
 	// the same write-path validator write_file/edit_file use, so
 	// DefaultDenyPaths (yottacode state, .git internals, etc.) and the
@@ -156,18 +162,71 @@ func (t *ApplyDiffTool) Execute(ctx context.Context, argsJSON string) (string, e
 	return "applied diff", nil
 }
 
+type PatchFailureKind string
+
+const (
+	PatchFailureUnknown   PatchFailureKind = "unknown"
+	PatchFailureMalformed PatchFailureKind = "malformed"
+	PatchFailureStale     PatchFailureKind = "stale"
+)
+
+// ClassifyPatchFailure gives all user-facing surfaces the same patch-error
+// vocabulary. The apply_diff tool and TUI cards both see either preflight
+// errors or git-apply stderr; keeping the classifier here prevents their
+// malformed/stale wording from drifting as new git diagnostics are observed.
+func ClassifyPatchFailure(output string) PatchFailureKind {
+	// Tool errors may include a quoted raw patch payload after `patch=` for
+	// debugging. Classify only the diagnostic prefix so patch content containing
+	// phrases like "corrupt patch" cannot override the real git/apply error.
+	if i := strings.Index(output, " patch="); i >= 0 {
+		output = output[:i]
+	}
+	switch {
+	case strings.Contains(output, "patch does not apply"),
+		strings.Contains(output, "patch failed:"),
+		strings.Contains(output, "hunk context did not match the current file"):
+		return PatchFailureStale
+	case strings.Contains(output, "malformed_patch"),
+		strings.Contains(output, "patch syntax is malformed"),
+		strings.Contains(output, "apply_patch-style patches are not accepted"),
+		strings.Contains(output, "markdown fences"),
+		strings.Contains(output, "corrupt patch"),
+		strings.Contains(output, "unexpected line:"),
+		strings.Contains(output, "only garbage"):
+		return PatchFailureMalformed
+	default:
+		return PatchFailureUnknown
+	}
+}
+
 func applyPatchFailureHint(stderr string) string {
-	if strings.Contains(stderr, "corrupt patch") || strings.Contains(stderr, "unexpected line:") || strings.Contains(stderr, "only garbage") {
+	switch ClassifyPatchFailure(stderr) {
+	case PatchFailureMalformed:
 		return "patch syntax is malformed — remove placeholder hunks like bare `@@`, or regenerate a complete unified diff with valid hunk headers"
-	}
-	if strings.Contains(stderr, "patch does not apply") || strings.Contains(stderr, "patch failed:") {
+	case PatchFailureStale:
 		return "patch headers were valid, but hunk context did not match the current file — re-read the target file and regenerate the diff with fresh surrounding lines"
+	default:
+		return "context may not match the current file — re-read it and regenerate the diff"
 	}
-	return "context may not match the current file — re-read it and regenerate the diff"
 }
 
 func normalizeModelPatch(diff string) string {
 	return diff
+}
+
+// validatePatchEnvelope rejects wrappers that are common in model-authored
+// patches but are never valid input to git apply. It intentionally stays
+// conservative: real patch grammar validation remains with git apply and the
+// hunk preflight below.
+func validatePatchEnvelope(diff string) error {
+	trimmed := strings.TrimSpace(diff)
+	if strings.HasPrefix(trimmed, "```") {
+		return fmt.Errorf("malformed_patch: remove markdown fences and pass only the unified diff")
+	}
+	if strings.HasPrefix(trimmed, "*** Begin Patch") || strings.HasPrefix(trimmed, "*** Update File:") || strings.HasPrefix(trimmed, "*** End Patch") {
+		return fmt.Errorf("malformed_patch: apply_patch-style patches are not accepted here — use a unified diff with `--- a/PATH` / `+++ b/PATH` headers")
+	}
+	return nil
 }
 
 var unifiedHunkHeaderRE = regexp.MustCompile(`^@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@`)

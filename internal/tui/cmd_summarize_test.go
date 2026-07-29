@@ -552,7 +552,7 @@ func TestUpdateContextUsage_FiresWarningAtThreshold(t *testing.T) {
 	if cmd != nil {
 		t.Errorf("warning crossing should NOT trigger auto-summarize: %v", cmd)
 	}
-	if !strings.Contains(m.transcript.String(), "⚠ context · at") {
+	if !strings.Contains(m.transcript.String(), "⚠ context  · at") {
 		t.Errorf("expected context watermark notice in transcript; got %q", m.transcript.String())
 	}
 	want := contextwindow.EstimateTokens(m.sess.Messages)

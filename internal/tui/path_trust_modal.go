@@ -1,7 +1,6 @@
 package tui
 
 import (
-	"fmt"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
@@ -31,47 +30,58 @@ var (
 // renderPathTrustModal builds the inline elevation prompt
 // (Prompt 2 in yottacode-roadmap/folder-trust.md). The body
 // names the requested path, the workspace boundary, and the
-// three choices. Three options, three hotkeys each:
+// three choices in the same labeled-box family as approvals and
+// plan decisions. Three options, three hotkeys each:
 //
-//	[1 / O] Allow once         — grant just this exact path
-//	[2 / T] Trust for session  — grant the containing directory
-//	[3 / N] Reject             — surface ErrPathOutsideWorkspace
+//	[1] allow once      trust just this file for the session
+//	[2] trust session   trust this directory and every subfolder
+//	[3] reject          model sees the original error
 //
 // The modal stays narrow and plain-text; no emoji.
 func renderPathTrustModal(m Model) string {
 	req := m.pathTrustReq
-	width := liveContentWidth(m.width)
-	// True modal → the Phase 6 cap applies here (min(120, width-4)),
-	// unlike the palettes/textarea, which stay full-width to share a
-	// right edge with the input frame.
-	if width > 120 {
-		width = 120
-	}
-	if width < 40 {
-		width = 40
-	}
+	capW := capLabeledBoxWidth(m.width)
 
-	var b strings.Builder
-	fmt.Fprintln(&b, stylePathTrustTitle.Render("Write outside workspace"))
-	fmt.Fprintln(&b)
-	fmt.Fprintln(&b, "Requested path:")
-	fmt.Fprintln(&b, "  "+req.Path)
-	fmt.Fprintln(&b)
-	fmt.Fprintln(&b, "Session workspace:")
-	fmt.Fprintln(&b, "  "+req.Cwd)
-	if len(req.AllowedRoots) > 0 {
-		fmt.Fprintln(&b)
-		fmt.Fprintln(&b, "Existing --allow-paths roots:")
-		for _, r := range req.AllowedRoots {
-			fmt.Fprintln(&b, "  "+r)
+	var body []string
+	appendWrapped := func(line string) {
+		for _, wrapped := range hardWrapLabeled(line, capW) {
+			body = append(body, labeledBoxIndent+wrapped)
 		}
 	}
-	fmt.Fprintln(&b)
-	fmt.Fprintln(&b, stylePathTrustBodyKey.Render("[1] Allow once")+stylePathTrustBodyHint.Render("        — trust just this file for the session"))
-	fmt.Fprintln(&b, stylePathTrustBodyKey.Render("[2] Trust for session")+stylePathTrustBodyHint.Render(" — trust this directory and every subfolder"))
-	fmt.Fprint(&b, stylePathTrustBodyKey.Render("[3] Reject")+stylePathTrustBodyHint.Render("           — model sees the original error"))
+	body = append(body, "")
+	appendWrapped(stylePathTrustBodyKey.Render("requested"))
+	appendWrapped(req.Path)
+	body = append(body, "")
+	appendWrapped(stylePathTrustBodyKey.Render("workspace"))
+	appendWrapped(req.Cwd)
+	if len(req.AllowedRoots) > 0 {
+		body = append(body, "")
+		appendWrapped(stylePathTrustBodyKey.Render("allowed roots"))
+		for _, r := range req.AllowedRoots {
+			appendWrapped(r)
+		}
+	}
+	body = append(body, "")
+	for _, line := range pathTrustHotkeys() {
+		appendWrapped(line)
+	}
+	body = append(body, "")
 
-	return stylePathTrustBorder.Width(width - 2).Render(b.String())
+	leftLabel := " " + stylePathTrustTitle.Render("Write outside workspace") + " "
+	right := req.ToolName
+	if strings.TrimSpace(right) == "" {
+		right = "write_file"
+	}
+	rightLabel := " " + styleApprovalTool.Render(right) + " "
+	return renderLabeledBox(leftLabel, rightLabel, body, capW, colorWarning)
+}
+
+func pathTrustHotkeys() []string {
+	return []string{
+		stylePathTrustBodyKey.Render("[1] allow once") + stylePathTrustBodyHint.Render("      trust just this file for the session"),
+		stylePathTrustBodyKey.Render("[2] trust session") + stylePathTrustBodyHint.Render("   trust this directory and every subfolder"),
+		stylePathTrustBodyKey.Render("[3] reject") + stylePathTrustBodyHint.Render("          model sees the original error"),
+	}
 }
 
 // addAllowedPathToWriteTools appends path to WriteOpts.AllowedPaths
