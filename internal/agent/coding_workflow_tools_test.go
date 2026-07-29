@@ -232,17 +232,36 @@ func TestApplyDiffTool_AppliesFullyEscapedDiff(t *testing.T) {
 	}
 }
 
-func TestApplyDiffTool_RefusesApplyPatchStyleDiff(t *testing.T) {
+func TestApplyDiffTool_PreflightRejectsMalformedPatchWrappers(t *testing.T) {
 	tmp := gitInit(t)
 	tool := &ApplyDiffTool{Cwd: NewCwdRef(tmp), WriteOpts: WritePathOptions{Cwd: NewCwdRef(tmp)}}
-	diff := "*** Begin Patch\n*** Update File: a.txt\n@@\n-old\n+new\n*** End Patch"
-	b, _ := json.Marshal(map[string]string{"diff": diff})
-	_, err := tool.Execute(context.Background(), string(b))
-	if err == nil {
-		t.Fatalf("expected apply_patch-style diff to be rejected")
+	cases := []struct {
+		name string
+		diff string
+		want string
+	}{
+		{
+			name: "apply-patch-style",
+			diff: "*** Begin Patch\n*** Update File: a.txt\n@@\n-old\n+new\n*** End Patch",
+			want: "apply_patch-style patches are not accepted",
+		},
+		{
+			name: "markdown-fence",
+			diff: "```diff\n--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-old\n+new\n```",
+			want: "remove markdown fences",
+		},
 	}
-	if !strings.Contains(err.Error(), "apply_patch-style patches are not accepted") {
-		t.Fatalf("expected targeted apply_patch-style error, got %v", err)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			b, _ := json.Marshal(map[string]string{"diff": tc.diff})
+			_, err := tool.Execute(context.Background(), string(b))
+			if err == nil {
+				t.Fatalf("expected malformed wrapper to be rejected")
+			}
+			if !strings.Contains(err.Error(), "malformed_patch") || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("expected targeted malformed wrapper error containing %q, got %v", tc.want, err)
+			}
+		})
 	}
 }
 
@@ -276,11 +295,34 @@ func TestApplyDiffTool_StaleContextHintIsSpecific(t *testing.T) {
 	}
 }
 
-func TestApplyPatchFailureHintClassifiesMalformedPatch(t *testing.T) {
-	stderr := "warning: recount: unexpected line: @@\n\nerror: corrupt patch at line 30\n"
-	got := applyPatchFailureHint(stderr)
-	if !strings.Contains(got, "patch syntax is malformed") {
-		t.Fatalf("expected malformed-patch hint, got %q", got)
+func TestClassifyPatchFailure(t *testing.T) {
+	cases := []struct {
+		name string
+		out  string
+		want PatchFailureKind
+	}{
+		{
+			name: "corrupt patch is malformed",
+			out:  "warning: recount: unexpected line: @@\n\nerror: corrupt patch at line 30\n",
+			want: PatchFailureMalformed,
+		},
+		{
+			name: "preflight malformed",
+			out:  "apply_diff: malformed_patch: hunk header for a.txt must include line ranges",
+			want: PatchFailureMalformed,
+		},
+		{
+			name: "stale context",
+			out:  "error: patch failed: a.txt:1\nerror: a.txt: patch does not apply\n",
+			want: PatchFailureStale,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ClassifyPatchFailure(tc.out); got != tc.want {
+				t.Fatalf("ClassifyPatchFailure() = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 

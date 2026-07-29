@@ -335,6 +335,25 @@ func TestToolCard_ApplyDiffMalformedPatchIsConcise(t *testing.T) {
 	}
 }
 
+func TestToolCard_ApplyDiffCorruptPatchIsConcise(t *testing.T) {
+	out := `error: apply_diff: exit status 128; stderr="error: corrupt patch at line 138\n" hint="patch syntax is malformed — remove placeholder hunks like bare ` + "`@@`" + `, or regenerate a complete unified diff with valid hunk headers" patch="diff --git a/internal/agent/events.go b/internal/agent/events.go\nindex 6d57d55..def096b 100644\n--- a/internal/agent/events.go\n+++ b/internal/agent/events.go\n@@ -97,9 +97,12 @@ type ErrorEvent struct {\n type ApprovalAuto struct {\n\tToolName string\n\tPreview  string\n\tSource   string\n+\tRuleSource string\n }"`
+	body := toolBodyLines("apply_diff", out, true, "")
+	if len(body) != 1 || body[0] != "malformed patch — use a valid unified diff with real hunk ranges" {
+		t.Fatalf("apply_diff body should show concise corrupt-patch diagnosis, got %v", body)
+	}
+	footer := stripANSI(toolFooter("apply_diff", out, true, ""))
+	if footer != "recoverable: malformed patch" {
+		t.Fatalf("apply_diff footer = %q", footer)
+	}
+	got := stripANSI(renderToolCard("apply_diff", "Patch(apply)", `{}`, out, true, 100, "", 0))
+	if strings.Contains(got, "patch=\"") || strings.Contains(got, "RuleSource") {
+		t.Fatalf("card should not dump raw corrupt patch payload: %q", got)
+	}
+	if !strings.Contains(got, "malformed patch") {
+		t.Fatalf("card should classify corrupt patch as malformed: %q", got)
+	}
+}
+
 // renderToolCard composes the full card. The header gutter (┌),
 // per-line body gutter (│), and footer gutter (└) all need to be
 // present so the user gets the unified shape.

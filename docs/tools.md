@@ -323,11 +323,17 @@ Always prompts for approval. The diff header is parsed and each
 touched file is run through the same write-path validator
 `write_file` / `edit_file` use — yottacode-managed state, `.git`
 internals, paths outside cwd, and symlinks are refused before
-`git apply` runs. After validation, common model-authored defects such
-as miscounted `@@` hunk headers and whitespace drift in context lines
-are tolerated while applying. A `Deny(Edit(<pattern>))` rule applies if
-any target path matches; an `Allow(Edit(<pattern>))` rule auto-approves
-only when every target path matches (mixed-path diffs still prompt).
+`git apply` runs. Before path validation, the tool rejects common
+model-authored wrappers such as markdown fences and `apply_patch`-style
+`*** Begin Patch` blocks with typed malformed-patch errors. After
+validation, common model-authored defects such as miscounted `@@` hunk
+headers and whitespace drift in context lines are tolerated while
+applying. Malformed patch syntax (`corrupt patch`, bare `@@`, invalid
+hunk headers) and stale context (`patch does not apply`) are classified
+separately so the TUI can show compact recovery guidance instead of the
+raw patch payload. A `Deny(Edit(<pattern>))` rule applies if any target
+path matches; an `Allow(Edit(<pattern>))` rule auto-approves only when
+every target path matches (mixed-path diffs still prompt).
 
 ## mkdir
 

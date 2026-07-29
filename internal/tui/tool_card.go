@@ -977,13 +977,13 @@ func recoverableToolErrorBody(toolName, output, cwd string) []string {
 			return []string{"stale edit target — re-read the file and retry with exact current text"}
 		}
 	case "apply_diff":
-		if isRecoverablePatchError(trimmed) {
+		switch agent.ClassifyPatchFailure(trimmed) {
+		case agent.PatchFailureMalformed:
+			return []string{"malformed patch — use a valid unified diff with real hunk ranges"}
+		case agent.PatchFailureStale:
 			file := patchFailedFile(trimmed)
 			if file != "" {
 				return []string{"stale patch context — re-read " + file + " and regenerate the diff"}
-			}
-			if strings.Contains(trimmed, "only garbage") {
-				return []string{"malformed patch — use a valid unified diff with real hunk ranges"}
 			}
 			return []string{"stale patch context — re-read the target file and regenerate the diff"}
 		}
@@ -1001,22 +1001,14 @@ func recoverableToolErrorFooter(toolName, output string) string {
 			return "recoverable: stale edit target"
 		}
 	case "apply_diff":
-		if isRecoverablePatchError(output) {
-			if strings.Contains(output, "only garbage") {
-				return "recoverable: malformed patch"
-			}
+		switch agent.ClassifyPatchFailure(output) {
+		case agent.PatchFailureMalformed:
+			return "recoverable: malformed patch"
+		case agent.PatchFailureStale:
 			return "recoverable: stale patch context"
 		}
 	}
 	return ""
-}
-
-// isRecoverablePatchError recognizes git-apply failures caused by stale or
-// malformed model-authored patches. The raw tool result includes the entire
-// patch payload, but the card should show the actionable diagnosis instead of
-// dumping hundreds of escaped diff characters into scrollback.
-func isRecoverablePatchError(output string) bool {
-	return strings.Contains(output, "patch does not apply") || strings.Contains(output, "patch failed:") || strings.Contains(output, "only garbage")
 }
 
 func closestLineHint(s string) string {
