@@ -347,7 +347,7 @@ func (m *Model) removeLoop(id string) {
 // block used for scrollback log entries (see renderPlanModeEntryCard). It backs
 // both the arm notice and the /loop list. Header carries the loop label + ID,
 // the meta line carries cadence / remaining count / expiry, the body carries
-// the (wrapped) payload, and the footer carries the stop hint. Rendered off the
+// the wrapped payload, and the footer carries the stop hint. Rendered off the
 // arm/list paths, not per frame, so the time.Now expiry read is cheap.
 func renderLoopCard(ls loopState, width int) string {
 	if width <= 0 {
@@ -356,6 +356,7 @@ func renderLoopCard(ls loopState, width int) string {
 	gutter := styleCardGutter.Render
 	dot := styleAutoBannerSep.Render(" · ")
 
+	g := neutralGutter()
 	count := "unbounded"
 	if ls.remaining > 0 {
 		count = fmt.Sprintf("%d left", ls.remaining)
@@ -365,7 +366,7 @@ func renderLoopCard(ls loopState, width int) string {
 		dot + styleAutoBannerActivity.Render("expires "+formatLoopRemaining(time.Now(), ls.expiresAt))
 
 	lines := []string{
-		gutter("╭ ") + styleAutoBannerLabel.Render("loop") + dot + styleAutoBannerActivity.Render(ls.id),
+		renderCardHeader("Loop("+ls.id+")", g, 0, width),
 		gutter("│ ") + meta,
 	}
 	// The payload can be long (an entire prose prompt); wrap it under the
@@ -383,7 +384,7 @@ func renderLoopCard(ls loopState, width int) string {
 		// continuation lines start flush under the gutter.
 		lines = append(lines, gutter("│ ")+styleAutoBannerActivity.Render(strings.TrimLeft(seg, " ")))
 	}
-	lines = append(lines, gutter("╰ ")+styleAutoBannerHint.Render("/loop stop "+ls.id))
+	lines = append(lines, gutter("└ ")+styleAutoBannerHint.Render("/loop stop "+ls.id))
 	return strings.Join(lines, "\n")
 }
 

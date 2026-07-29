@@ -213,9 +213,12 @@ output. A few tools have card-specific body shapes:
   `N lines · M bytes` / `wrote N bytes` carries the entire signal. When
   multiple successful summary-only read cards land consecutively (`read_file`,
   `read_many_files`, `list_dir`, `list_project_structure`, `glob`), the TUI may
-  group them into one visual card with one row per call; this is display-only
-  and does not change the individual tool results the model or saved session
-  receive.
+  group them into one visual card with one row per call. Wrapped continuation
+  rows hang-indent under the row text, and overflow copy names the hidden row
+  type (`read calls`, `list calls`, `glob calls`). This is display-only and does
+  not change the individual tool results the model or saved session receive.
+- **Provider-hosted tools** (for example xAI web search) reuse the same body
+  wrapping and footer path as local tool cards, so card polish applies uniformly.
 
 **Footer.** Summarizes the call: `N entries`, `wrote N bytes`,
 `N lines · M bytes [(truncated)]`, `N matches`, `exit N` (colored), or

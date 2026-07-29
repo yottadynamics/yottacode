@@ -195,7 +195,7 @@ func TestRenderSessionUsage_FoldsSubagents(t *testing.T) {
 // total when usage was reported, and stays duration-only when it wasn't.
 func TestRenderTurnFooter(t *testing.T) {
 	withUsage := renderTurnFooter(12*time.Second, adapter.Usage{InputTokens: 3_000, OutputTokens: 200, CacheReadTokens: 40_000})
-	if !strings.Contains(withUsage, "Thought for") {
+	if !strings.Contains(withUsage, "◦ thought") {
 		t.Errorf("footer must keep the duration receipt; got %q", withUsage)
 	}
 	if !strings.Contains(withUsage, "tokens") {

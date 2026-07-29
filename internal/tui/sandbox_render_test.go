@@ -74,4 +74,17 @@ func TestRenderProviderToolCard(t *testing.T) {
 			t.Errorf("provider tool card missing %q:\n%s", want, got)
 		}
 	}
+
+	got = stripANSI(renderProviderToolCard("web_search", "completed", "7 results from allowed domains with enough detail to wrap on a narrow terminal", 48))
+	for _, want := range []string{"┌ xAI Web Search", "│ web search complete", "│ 7 results", "└ hosted web search"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("provider tool card missing %q:\n%s", want, got)
+		}
+	}
+	rows := strings.Split(got, "\n")
+	for i, row := range rows {
+		if len([]rune(row)) > 48 {
+			t.Fatalf("provider card row %d exceeded width 48: %q\n%s", i, row, got)
+		}
+	}
 }

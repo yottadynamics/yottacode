@@ -931,8 +931,9 @@ func executeToolCallImpl(
 	}
 
 	verdict := permissions.Default
+	var verdictRule permissions.Rule
 	if cfg.Permissions != nil {
-		verdict = cfg.Permissions.Evaluate(tool.Name(), argsJSON)
+		verdict, verdictRule = cfg.Permissions.EvaluateWithRule(tool.Name(), argsJSON)
 	}
 
 	// Permission Deny always wins, even over plan-mode auto-allow. A
@@ -940,7 +941,7 @@ func executeToolCallImpl(
 	// no writes at all, plan file included.
 	if verdict == permissions.Deny {
 		_ = send(ctx, events, ApprovalAuto{
-			ToolName: tool.Name(), Preview: preview, Source: "deny-rule",
+			ToolName: tool.Name(), Preview: preview, Source: "deny-rule", RuleSource: verdictRule.Source,
 		})
 		return "denied by permissions.json deny rule", nil, true, nil
 	}
@@ -1012,7 +1013,7 @@ func executeToolCallImpl(
 		switch verdict {
 		case permissions.Allow:
 			if err := send(ctx, events, ApprovalAuto{
-				ToolName: tool.Name(), Preview: preview, Source: "permissions",
+				ToolName: tool.Name(), Preview: preview, Source: "permissions", RuleSource: verdictRule.Source,
 			}); err != nil {
 				return "", nil, false, err
 			}

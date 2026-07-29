@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"testing"
 	"time"
+
+	"github.com/yottadynamics/yottacode/internal/agent"
 )
 
 // TestDemo_CardOutput is a throwaway visualization that renders every
@@ -124,6 +126,45 @@ func TestDemo_CardOutput(t *testing.T) {
 		fmt.Println(stripANSI(renderToolCard(tc.toolName, tc.preview, tc.args, tc.output, tc.errored, width, "", 0)))
 		fmt.Println()
 	}
+
+	// Error-tinted gutter + slow-call header tag. Rendered WITH color
+	// (no stripANSI) so the red error frame and the right-aligned duration
+	// are visible when eyeballing the demo. Clean cards stay neutral Dim.
+	fmt.Println("─── Grouped cards ───")
+	fmt.Println(stripANSI(renderGroupedToolCard([]groupedToolResult{
+		{toolName: "read_file", preview: "read_file(a.go)", argsJSON: `{"path":"a.go"}`, output: "one\n"},
+		{toolName: "glob", preview: "glob(**/*.go)", argsJSON: `{"pattern":"**/*.go"}`, output: "a.go\nb.go\n"},
+	}, width, "")))
+	fmt.Println()
+	fmt.Println("─── Approval modal ───")
+	approval := newTestModel(t)
+	approval.width = width
+	approval.approvalTool = "run_bash"
+	approval.approvalPreview = "$ go test ./..."
+	approval.approvalArgs = `{"command":"go test ./..."}`
+	fmt.Println(stripANSI(renderApprovalModal(approval)))
+	fmt.Println()
+	fmt.Println("─── Plan approval ───")
+	fmt.Println(stripANSI(renderPlanApprovalCard(width)))
+	fmt.Println()
+	fmt.Println("─── Path trust modal ───")
+	pathTrust := newTestModel(t)
+	pathTrust.width = width
+	pathTrust.pathTrustReq = agent.PathTrustElevationNeeded{ToolName: "write_file", Path: "/tmp/outside/file.txt", Cwd: "/repo"}
+	fmt.Println(stripANSI(renderPathTrustModal(pathTrust)))
+	fmt.Println()
+	fmt.Println("─── Loop card ───")
+	fmt.Println(stripANSI(renderLoopCard(loopState{id: "loop-a", interval: 30 * time.Second, remaining: -1, payload: "/git-review-pr", expiresAt: time.Now().Add(loopDefaultTTL)}, width)))
+	fmt.Println()
+	fmt.Println("─── Hosted provider tool ───")
+	fmt.Println(stripANSI(renderProviderToolCard("web_search", "searching", "", width)))
+	fmt.Println()
+	fmt.Println("─── Live plan card ───")
+	fmt.Println(stripANSI(renderTodoCardFromTodos(samplePlan(), width)))
+	fmt.Println()
+	fmt.Println("─── LSP advisory ───")
+	fmt.Println(stripANSI(renderLSPAdvisoryBox("LSP Code Intelligence", "Go", []string{"", "gopls not found — running without go-to-def,", "live diagnostics, and symbol-aware review.", "", styleInlineCommand.Render("  go install golang.org/x/tools/gopls@latest"), ""})))
+	fmt.Println()
 
 	// Error-tinted gutter + slow-call header tag. Rendered WITH color
 	// (no stripANSI) so the red error frame and the right-aligned duration

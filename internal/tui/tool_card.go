@@ -121,7 +121,7 @@ func renderToolCard(toolName, preview, argsJSON, output string, errored bool, te
 	}
 	if !errored && toolName == "grep" {
 		if rows, ok := grepBodyRows(argsJSON, output, width, cwd); ok {
-			rows = capPrefixedBodyRows(rows, matchFooter(output))
+			rows = capPrefixedBodyRows(rows, "matches")
 			out = append(out, rows...)
 			out = append(out, g.bottom.Render("└ ")+toolFooter(toolName, output, false, cwd))
 			return strings.Join(out, "\n")
@@ -176,7 +176,7 @@ func renderGroupedToolCard(items []groupedToolResult, termWidth int, cwd string)
 	header := renderCardHeader(fmt.Sprintf("%s · %d %s", label, len(items), callNoun), g, 0, width)
 	out := []string{header}
 	rows := groupedToolRows(items, width)
-	out = append(out, capPrefixedBodyRows(rows, fmt.Sprintf("%d %s", len(items), callNoun))...)
+	out = append(out, capPrefixedBodyRows(rows, strings.ToLower(label)+" calls")...)
 	out = append(out, g.bottom.Render("└ ")+styleCardMeta.Render(groupedToolFooter(items)))
 	return strings.Join(out, "\n")
 }
@@ -198,8 +198,21 @@ func groupedToolRows(items []groupedToolResult, width int) []string {
 			rows = append(rows, gutter+styled)
 			continue
 		}
-		wrapped := ansi.Wrap(styled, bodyWidth, "")
-		for _, part := range strings.Split(wrapped, "\n") {
+		// Hang-indent continuation rows under the row text so long file paths or
+		// footers do not restart immediately after the card gutter. Two spaces is
+		// intentionally modest: grouped rows do not have a structured prefix width
+		// like grep matches, but they still need a visible continuation offset.
+		contIndent := "  "
+		firstWidth := bodyWidth
+		contWidth := bodyWidth - ansi.StringWidth(contIndent)
+		if contWidth < 20 {
+			contWidth = 20
+		}
+		wrapped := ansi.Wrap(styled, firstWidth, "")
+		for i, part := range strings.Split(wrapped, "\n") {
+			if i > 0 {
+				part = contIndent + ansi.Truncate(part, contWidth, "…")
+			}
 			rows = append(rows, gutter+part)
 		}
 	}
@@ -399,7 +412,7 @@ func renderPlainBodyToolCard(out []string, g cardGutter, footer string, body []s
 // capPrefixedBodyRows applies the standard card body cap to custom renderers
 // whose rows already include their own gutter/styling. This keeps specialized
 // cards like grep from dumping unbounded match lists into scrollback.
-func capPrefixedBodyRows(rows []string, totalLabel string) []string {
+func capPrefixedBodyRows(rows []string, overflowKind string) []string {
 	if len(rows) <= cardBodyLineCap {
 		return rows
 	}
@@ -407,8 +420,17 @@ func capPrefixedBodyRows(rows []string, totalLabel string) []string {
 	out := make([]string, 0, cardBodyLineCap+1)
 	out = append(out, rows[:cardBodyLineCap]...)
 	label := fmt.Sprintf("…%d more line(s)", hidden)
-	if strings.Contains(totalLabel, "match") {
+	switch {
+	case strings.Contains(overflowKind, "match"):
 		label = fmt.Sprintf("…%d more match(es)", hidden)
+	case strings.TrimSpace(overflowKind) != "":
+		kind := strings.TrimSpace(overflowKind)
+		// Call overflow labels should read naturally for both one hidden row
+		// and many hidden rows: “1 more read call”, “8 more glob calls”.
+		if hidden == 1 && strings.HasSuffix(kind, " calls") {
+			kind = strings.TrimSuffix(kind, "s")
+		}
+		label = fmt.Sprintf("…%d more %s", hidden, kind)
 	}
 	out = append(out, neutralGutter().side.Render("│ ")+styleCardMeta.Render(label))
 	return out
@@ -1595,7 +1617,7 @@ func pluralize(noun string, n int) string {
 	return noun + "s"
 }
 
-func renderSystemNoticeCard(title string, lines []string, footer string, termWidth int) string {
+func renderSystemNoticeLine(title string, lines []string, footer string, termWidth int) string {
 	// Compatibility shim for older call sites: system lifecycle notices are
 	// now one-line rows, not boxed cards. Prefer calling SysMsg directly.
 	_ = termWidth
@@ -1616,7 +1638,7 @@ func renderSystemNoticeCard(title string, lines []string, footer string, termWid
 	return styleAuto.Render(SysMsg(icon, source, event, footer))
 }
 
-func renderStatusNoticeCard(title, body, footer string, termWidth int) string {
+func renderStatusNoticeLine(title, body, footer string, termWidth int) string {
 	_ = termWidth
 	icon, event := splitSystemLine(body)
 	if icon == "" {
@@ -1664,6 +1686,44 @@ func styleSystemNoticeLine(line string) string {
 	}
 }
 
+func (m Model) renderApprovalAutoNotice(e agent.ApprovalAuto) string {
+	// Render only the first line of the preview — the full content (file body,
+	// edit diff, etc.) is about to land in the unified tool card, so dumping it
+	// twice would just be noise. Tools emit a single-line invocation summary as
+	// the first line by convention; if a tool ever ships a multi-line preview, we
+	// still get a useful one-liner here.
+	summary := e.Preview
+	if i := strings.Index(summary, "\n"); i >= 0 {
+		summary = summary[:i]
+	}
+	summary = truncateForRender(summary, 48)
+
+	if e.Source == "permissions" {
+		source := m.permissionRuleDisplayPath(e.RuleSource)
+		return SysMsgAligned(SysSuccess, "permissions", "allowed by rule", source, summary)
+	}
+	return SysMsg(SysSuccess, autoApprovalNoticeTitle(e.Source), summary, autoApprovalNoticeFooter(e.Source))
+}
+
+func (m Model) permissionRuleDisplayPath(source string) string {
+	if m.perms == nil {
+		if source == "" {
+			return "permissions"
+		}
+		return source
+	}
+	switch source {
+	case "permissions.local.json":
+		return displayPath(m.perms.LocalPath(), m.cwd)
+	case "permissions.json":
+		return displayPath(m.perms.SharedPath(), m.cwd)
+	case "":
+		return "permissions"
+	default:
+		return source
+	}
+}
+
 func autoApprovalNoticeTitle(source string) string {
 	switch source {
 	case "auto-mode":
@@ -1692,14 +1752,14 @@ func autoApprovalNoticeFooter(source string) string {
 	return source
 }
 
-func renderQueueNoticeCard(kind, detail, footer string, termWidth int) string {
+func renderQueueNoticeLine(kind, detail, footer string, termWidth int) string {
 	_ = kind
 	_ = footer
 	_ = termWidth
 	return styleAuto.Render(detail)
 }
 
-func renderCompactionNoticeCard(reduction, snapshotPath string, snapshotErr error, termWidth int) string {
+func renderCompactionNoticeLine(reduction, snapshotPath string, snapshotErr error, termWidth int) string {
 	_ = termWidth
 	details := []string{reduction, "full history saved"}
 	if recall := recallCommandForSnapshot(snapshotPath); recall != "" {
@@ -1711,8 +1771,8 @@ func renderCompactionNoticeCard(reduction, snapshotPath string, snapshotErr erro
 	return styleAuto.Render(SysMsg(SysContext, "context", "compacted", details...))
 }
 
-func renderWindowNoticeCard(lines []string, footer string, termWidth int) string {
-	return renderSystemNoticeCard("window", lines, footer, termWidth)
+func renderWindowNoticeLine(lines []string, footer string, termWidth int) string {
+	return renderSystemNoticeLine("window", lines, footer, termWidth)
 }
 
 // Card-specific styles. The gutter (┌ │ └) renders Muted (decorative);
@@ -1768,6 +1828,37 @@ func todoRow(td agent.Todo) string {
 	}
 }
 
+func todoRowParts(td agent.Todo) (icon, content string) {
+	switch td.Status {
+	case agent.TodoCompleted:
+		return styleTodoCheckDone.Render("✓ "), styleTodoDone.Render(td.Content)
+	case agent.TodoSkipped:
+		return styleTodoSkip.Render("✗ "), styleTodoSkipped.Render(td.Content)
+	case agent.TodoInProgress:
+		return styleTodoArrow.Render("▸ "), styleTodoInProgress.Render(td.Content)
+	default:
+		return styleTodoBullet.Render("· "), styleTodoPending.Render(td.Content)
+	}
+}
+
+func todoRows(td agent.Todo, contentWidth int) []string {
+	icon, content := todoRowParts(td)
+	wrapW := contentWidth - ansi.StringWidth(icon)
+	if wrapW < 20 {
+		wrapW = 20
+	}
+	wrapped := strings.Split(ansi.Wrap(content, wrapW, ""), "\n")
+	out := make([]string, 0, len(wrapped))
+	for i, row := range wrapped {
+		if i == 0 {
+			out = append(out, icon+row)
+			continue
+		}
+		out = append(out, strings.Repeat(" ", ansi.StringWidth(icon))+row)
+	}
+	return out
+}
+
 // renderTodoCardFromTodos renders the complete todo_write card from a
 // typed Todo slice. Used by both the scrollback path
 // (renderToolCard's todo_write branch, on each ToolResult) and the
@@ -1783,15 +1874,28 @@ func todoRow(td agent.Todo) string {
 // don't have to thread argsJSON or the model's response string
 // through to render correctly.
 func renderTodoCardFromTodos(todos []agent.Todo, termWidth int) string {
-	_ = termWidth // reserved for future row-truncation; todo content is the user's signal, never clipped today
+	width := cardMaxWidthCap
+	if termWidth > 0 && termWidth-4 < width {
+		width = termWidth - 4
+	}
+	if width < cardMinUsefulCols {
+		width = cardMinUsefulCols
+	}
 	// Neutral gutter, no duration: a plan snapshot is neither a pass nor a
 	// fail, and it carries no measured elapsed to tag.
-	out := []string{renderCardHeader(todoCardHeaderText(todos), neutralGutter(), 0, termWidth)}
+	out := []string{renderCardHeader(todoCardHeaderText(todos), neutralGutter(), 0, width)}
+	gutter := styleCardGutter.Render("│ ")
+	contentWidth := width - ansi.StringWidth(gutter)
+	if contentWidth < 20 {
+		contentWidth = 20
+	}
 	if len(todos) == 0 {
-		out = append(out, styleCardGutter.Render("│ ")+styleCardMeta.Render("(empty plan)"))
+		out = append(out, gutter+styleCardMeta.Render("(empty plan)"))
 	} else {
 		for _, td := range todos {
-			out = append(out, styleCardGutter.Render("│ ")+todoRow(td))
+			for _, row := range todoRows(td, contentWidth) {
+				out = append(out, gutter+row)
+			}
 		}
 	}
 	out = append(out, styleCardGutter.Render("└ ")+styleCardMeta.Render(todoCardFooterText(todos)))

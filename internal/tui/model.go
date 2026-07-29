@@ -3306,30 +3306,8 @@ func renderProviderToolCard(toolName, phase, detail string, termWidth int) strin
 	// tint or time here.
 	header := renderCardHeader(providerToolHeader(toolName), neutralGutter(), 0, width)
 	body := providerToolBody(toolName, phase, detail)
-	gutter := styleCardGutter.Render("│ ")
-	gutterWidth := ansi.StringWidth(gutter)
-	bodyWidth := width - gutterWidth
-	if bodyWidth < 20 {
-		bodyWidth = 20
-	}
-
-	out := []string{header}
-	appendBodyLine := func(line string) {
-		styled := styleCardBody.Render(line)
-		if ansi.StringWidth(styled) <= bodyWidth {
-			out = append(out, gutter+styled)
-			return
-		}
-		wrapped := ansi.Wrap(styled, bodyWidth, "")
-		for _, row := range strings.Split(wrapped, "\n") {
-			out = append(out, gutter+row)
-		}
-	}
-	for _, line := range body {
-		appendBodyLine(line)
-	}
 	footer := styleCardMeta.Render(providerToolFooter(toolName, phase))
-	return strings.Join(append(out, styleCardGutter.Render("└ ")+footer), "\n")
+	return renderPlainBodyToolCard([]string{header}, neutralGutter(), footer, body, width, "provider_tool")
 }
 
 func providerToolBody(toolName, phase, detail string) []string {
@@ -4693,17 +4671,7 @@ func (m Model) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 		m.appendLine(renderFallbackLine(e))
 	case agent.ApprovalAuto:
 		m.flushPendingGroupedTools()
-		// Render only the first line of the preview — the full content
-		// (file body, edit diff, etc.) is about to land in the unified
-		// tool card, so dumping it twice would just be noise. Tools
-		// emit a single-line invocation summary as the first line by
-		// convention; if a tool ever ships a multi-line preview, we
-		// still get a useful one-liner here.
-		summary := e.Preview
-		if i := strings.Index(summary, "\n"); i >= 0 {
-			summary = summary[:i]
-		}
-		m.appendLine(styleAuto.Render(SysMsg(SysSuccess, autoApprovalNoticeTitle(e.Source), summary, autoApprovalNoticeFooter(e.Source))))
+		m.appendLine(styleAuto.Render(m.renderApprovalAutoNotice(e)))
 	case agent.ApprovalNeeded:
 		m.flushPendingGroupedTools()
 		m.commitStreaming()
@@ -4829,40 +4797,40 @@ func (m Model) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 		// for every plan flip — exactly the visual noise this surface is
 		// designed to avoid. The end-of-turn commit in TurnDone lands
 		// one final snapshot in scrollback.
-			if e.ToolName == "todo_write" {
-				m.pendingToolName = ""
-				m.pendingToolPreview = ""
-				m.pendingToolArgs = ""
-				m.pendingToolStart = time.Time{}
-				break
+		if e.ToolName == "todo_write" {
+			m.pendingToolName = ""
+			m.pendingToolPreview = ""
+			m.pendingToolArgs = ""
+			m.pendingToolStart = time.Time{}
+			break
+		}
+		if groupableToolCard(e.ToolName, e.Errored) {
+			var toolDur time.Duration
+			if !m.pendingToolStart.IsZero() {
+				toolDur = time.Since(m.pendingToolStart)
 			}
-			if groupableToolCard(e.ToolName, e.Errored) {
-				var toolDur time.Duration
-				if !m.pendingToolStart.IsZero() {
-					toolDur = time.Since(m.pendingToolStart)
-				}
-				preview := m.pendingToolPreview
-				if preview == "" {
-					preview = e.ToolName
-				}
-				m.pendingGroupedTools = append(m.pendingGroupedTools, groupedToolResult{
-					toolName: e.ToolName,
-					preview:  preview,
-					argsJSON: m.pendingToolArgs,
-					output:   e.Output,
-					errored:  e.Errored,
-					dur:      toolDur,
-					cwd:      m.cwd,
-				})
-				m.pendingToolName = ""
-				m.pendingToolPreview = ""
-				m.pendingToolArgs = ""
-				m.pendingToolStart = time.Time{}
-				m.streamingMode = streamIdle
-				break
+			preview := m.pendingToolPreview
+			if preview == "" {
+				preview = e.ToolName
 			}
-			m.flushPendingGroupedTools()
-			// Render the buffered start info + this result as a unified
+			m.pendingGroupedTools = append(m.pendingGroupedTools, groupedToolResult{
+				toolName: e.ToolName,
+				preview:  preview,
+				argsJSON: m.pendingToolArgs,
+				output:   e.Output,
+				errored:  e.Errored,
+				dur:      toolDur,
+				cwd:      m.cwd,
+			})
+			m.pendingToolName = ""
+			m.pendingToolPreview = ""
+			m.pendingToolArgs = ""
+			m.pendingToolStart = time.Time{}
+			m.streamingMode = streamIdle
+			break
+		}
+		m.flushPendingGroupedTools()
+		// Render the buffered start info + this result as a unified
 		// tool card. Leading blank line gives each card breathing
 		// room from the previous emission.
 		m.appendLine("")
@@ -4972,7 +4940,7 @@ func (m Model) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 		if e.SnapshotErr != nil {
 			m.lastContextCompaction += fmt.Sprintf(" · snapshot failed: %v", e.SnapshotErr)
 		}
-		m.appendLine(renderCompactionNoticeCard(m.contextReductionLabel(e.Before, e.After), e.SnapshotPath, e.SnapshotErr, m.width))
+		m.appendLine(renderCompactionNoticeLine(m.contextReductionLabel(e.Before, e.After), e.SnapshotPath, e.SnapshotErr, m.width))
 		m.refreshContextTokens()
 		m.compactionSeq++
 	case agent.ErrorEvent:

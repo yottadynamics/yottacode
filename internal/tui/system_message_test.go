@@ -10,6 +10,14 @@ func TestSysMsgSkipsEmptyDetails(t *testing.T) {
 	}
 }
 
+func TestSysMsgAlignedPadsSource(t *testing.T) {
+	got := SysMsgAligned(SysThought, "thought", "7s", "42 tokens")
+	want := "◦ thought  · 7s · 42 tokens"
+	if got != want {
+		t.Fatalf("SysMsgAligned() = %q, want %q", got, want)
+	}
+}
+
 func TestSysMsgQueueExamples(t *testing.T) {
 	cases := map[string]string{
 		SysMsg(SysQueue, "queue", "next tool round", "fix docs"):     "→ queue · next tool round · fix docs",

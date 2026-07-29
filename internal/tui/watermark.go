@@ -182,10 +182,10 @@ func (m *Model) updateContextUsage(allowAuto bool) tea.Cmd {
 			// would arrive too late.
 			if m.lastWatermarkPct == 0 && !m.memoryNudgePending {
 				m.memoryNudgePending = true
-				m.appendLine(styleAuto.Render(SysMsg(SysQueue, "memory", "reminder armed", "save durable memories next turn")))
+				m.appendLine(styleAuto.Render(SysMsgAligned(SysQueue, "memory", "reminder armed", "save durable memories next turn")))
 			}
 			m.lastWatermarkPct = pct
-			m.appendLine(styleAuto.Render(SysMsg(SysWarning, "context", fmt.Sprintf("at %d%%", int(pct*100)), "consider /summarize")))
+			m.appendLine(styleAuto.Render(SysMsgAligned(SysWarning, "context", fmt.Sprintf("at %d%%", int(pct*100)), "consider /summarize")))
 		}
 	} else if warnThr < 1.0 && pct < warnThr {
 		// Below threshold (after /summarize, /clear, or a /sessions

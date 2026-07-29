@@ -267,63 +267,85 @@ func parseRule(raw, source string) (Rule, error) {
 // matches ask. The conservative Allow rule prevents a diff that mixes
 // rule-covered and unknown paths from skipping the modal.
 func (p *Permissions) Evaluate(toolName, argsJSON string) Decision {
+	decision, _ := p.EvaluateWithRule(toolName, argsJSON)
+	return decision
+}
+
+// EvaluateWithRule is Evaluate plus the first matching rule that decided the
+// verdict. The rule is used for human-facing provenance (which permissions file
+// auto-allowed or denied the call); callers that only need the decision should
+// use Evaluate.
+func (p *Permissions) EvaluateWithRule(toolName, argsJSON string) (Decision, Rule) {
 	if p == nil {
-		return Default
+		return Default, Rule{}
 	}
 	target := targetFor(toolName, argsJSON, p.cwd)
 	if target.PermName == "" {
-		return Default
+		return Default, Rule{}
 	}
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	if target.Multi {
-		return p.evaluateMulti(target)
+		return p.evaluateMultiWithRule(target)
 	}
-	if matchAny(target, p.deny, p.cwd) {
-		return Deny
+	if rule, ok := matchFirst(target, p.deny, p.cwd); ok {
+		return Deny, rule
 	}
-	if matchAny(target, p.allow, p.cwd) {
-		return Allow
+	if rule, ok := matchFirst(target, p.allow, p.cwd); ok {
+		return Allow, rule
 	}
-	if matchAny(target, p.ask, p.cwd) {
-		return Ask
+	if rule, ok := matchFirst(target, p.ask, p.cwd); ok {
+		return Ask, rule
 	}
-	return Default
+	return Default, Rule{}
 }
 
 // evaluateMulti iterates a multi-descriptor target through the
 // precedence chain. Caller holds p.mu.
 func (p *Permissions) evaluateMulti(target Target) Decision {
+	decision, _ := p.evaluateMultiWithRule(target)
+	return decision
+}
+
+// evaluateMultiWithRule is evaluateMulti plus representative rule provenance.
+// For an Allow verdict every descriptor matched an allow rule; when those rules
+// come from mixed files, the first matching allow rule is still enough to tell
+// the user this was permission-policy driven without changing the conservative
+// multi-target semantics.
+func (p *Permissions) evaluateMultiWithRule(target Target) (Decision, Rule) {
 	descs := target.Descriptors
 	// Empty descriptor slice (e.g. an apply_diff with no parseable
 	// header lines) falls through to Default rather than auto-allowing.
 	// "Allow if all match" with zero items would otherwise vacuously
 	// allow — the wrong answer when the diff content is opaque.
 	if len(descs) == 0 {
-		return Default
+		return Default, Rule{}
 	}
-	hit := func(rules []Rule) (matchedAll, matchedAny bool) {
+	hit := func(rules []Rule) (matchedAll, matchedAny bool, first Rule) {
 		matchedAll = true
 		for _, d := range descs {
 			sub := Target{PermName: target.PermName, Descriptor: d, IsPath: target.IsPath}
-			if matchAny(sub, rules, p.cwd) {
+			if rule, ok := matchFirst(sub, rules, p.cwd); ok {
 				matchedAny = true
+				if first.Tool == "" {
+					first = rule
+				}
 			} else {
 				matchedAll = false
 			}
 		}
 		return
 	}
-	if _, anyDeny := hit(p.deny); anyDeny {
-		return Deny
+	if _, anyDeny, rule := hit(p.deny); anyDeny {
+		return Deny, rule
 	}
-	if allAllow, _ := hit(p.allow); allAllow {
-		return Allow
+	if allAllow, _, rule := hit(p.allow); allAllow {
+		return Allow, rule
 	}
-	if _, anyAsk := hit(p.ask); anyAsk {
-		return Ask
+	if _, anyAsk, rule := hit(p.ask); anyAsk {
+		return Ask, rule
 	}
-	return Default
+	return Default, Rule{}
 }
 
 // AddAllow appends a rule to permissions.local.json (creating the file
@@ -489,15 +511,20 @@ func (p *Permissions) LocalPath() string {
 // can be compared against the cwd-relative descriptors the agent
 // produces (e.g. `hello.txt` when cwd is `/tmp`).
 func matchAny(target Target, rules []Rule, cwd string) bool {
+	_, ok := matchFirst(target, rules, cwd)
+	return ok
+}
+
+func matchFirst(target Target, rules []Rule, cwd string) (Rule, bool) {
 	for _, r := range rules {
 		if r.Tool != target.PermName {
 			continue
 		}
 		if matchPattern(r.Pattern, target.Descriptor, cwd, target.IsPath) {
-			return true
+			return r, true
 		}
 	}
-	return false
+	return Rule{}, false
 }
 
 // matchPattern dispatches to the right matcher based on whether the

@@ -892,12 +892,13 @@ func TestModel_ApprovalAutoRendersSingleLineSummary(t *testing.T) {
 	m.turnActive = true
 	multilinePreview := "write_file(main.go, 1234 bytes)\n  │ package main\n  │ \n  │ func main() {}\n"
 	m, _ = applyMsg(m, agentEventMsg{ev: agent.ApprovalAuto{
-		ToolName: "write_file",
-		Preview:  multilinePreview,
-		Source:   "permissions",
+		ToolName:   "write_file",
+		Preview:    multilinePreview,
+		Source:     "permissions",
+		RuleSource: "permissions.local.json",
 	}})
 	v := stripANSI(m.transcript.String())
-	want := SysMsg(SysSuccess, "allowed by rule", "write_file(main.go, 1234 bytes)", "permissions")
+	want := SysMsgAligned(SysSuccess, "permissions", "allowed by rule", "./.yottacode/permissions.local.json", "write_file(main.go, 1234 bytes)")
 	if !strings.Contains(v, want) {
 		t.Errorf("expected compact auto-approval system message %q; got %q", want, v)
 	}
@@ -1546,7 +1547,7 @@ func TestModel_TurnStatusTokRateShownPreStream(t *testing.T) {
 	}
 }
 
-// TurnDone leaves a "› Thought for Ns" footnote in scrollback so the
+// TurnDone leaves a "◦ thought · Ns" footnote in scrollback so the
 // user has a quiet receipt of how long the turn took once it ends.
 func TestModel_TurnDoneAppendsThoughtForFootnote(t *testing.T) {
 	m := newTestModel(t)
@@ -1556,8 +1557,8 @@ func TestModel_TurnDoneAppendsThoughtForFootnote(t *testing.T) {
 	m, _ = applyMsg(m, agentEventMsg{ev: agent.TurnDone{}})
 
 	got := stripANSI(m.transcript.String())
-	if !strings.Contains(got, "› Thought for") {
-		t.Errorf("TurnDone should append the 'Thought for Ns' footnote: %q", got)
+	if !strings.Contains(got, "◦ thought") {
+		t.Errorf("TurnDone should append the thought footnote: %q", got)
 	}
 	if !strings.Contains(got, "7s") {
 		t.Errorf("footnote should include the elapsed seconds: %q", got)
