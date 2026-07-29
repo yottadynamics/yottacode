@@ -63,12 +63,23 @@ func FallbackSymbols(ctx context.Context, root, query string, maxFiles int) ([]S
 			}
 			return nil
 		}
+		lang, ok := ResolveFile(path)
+		if !ok {
+			return nil
+		}
 		seen++
 		if seen > maxFiles {
 			return filepath.SkipAll
 		}
-		lang, ok := ResolveFile(path)
-		if !ok {
+		if items, ok, err := syntaxFileSymbols(ctx, lang, path); ok {
+			if err != nil {
+				return nil
+			}
+			for _, item := range items {
+				if query == "" || strings.Contains(strings.ToLower(item.Name), query) {
+					out = append(out, item)
+				}
+			}
 			return nil
 		}
 		patterns := fallbackSymbolPatterns[lang.ID]
@@ -95,6 +106,9 @@ func FallbackFileSymbols(path string) ([]Symbol, error) {
 	lang, ok := ResolveFile(path)
 	if !ok {
 		return nil, nil
+	}
+	if items, ok, err := syntaxFileSymbols(context.Background(), lang, path); ok {
+		return items, err
 	}
 	patterns := fallbackSymbolPatterns[lang.ID]
 	if len(patterns) == 0 {

@@ -142,7 +142,7 @@ func (t *LSPStatusTool) Execute(ctx context.Context, argsJSON string) (string, e
 		if lang.ServerAvailable {
 			status = "installed"
 		}
-		fmt.Fprintf(&b, "%s\tfiles=%d\tserver=%s\tstatus=%s", lang.Name, lang.FilesAvailable, strings.Join(lang.Command, " "), status)
+		fmt.Fprintf(&b, "%s\tfiles=%d\tserver=%s\tstatus=%s\tsyntax=%s", lang.Name, lang.FilesAvailable, strings.Join(lang.Command, " "), status, lspci.SyntaxMode(lang.ID))
 		if !lang.ServerAvailable {
 			fmt.Fprintf(&b, "\thint=%s", lang.InstallHint)
 		}

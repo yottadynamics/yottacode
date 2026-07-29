@@ -64,6 +64,7 @@ var canonicalTools = []string{
 	"lsp_code_actions",
 	"lsp_code_action_preview",
 	"lsp_call_hierarchy",
+	"lsp_impact",
 	"run_bash",
 	"git",
 	"todo_write",

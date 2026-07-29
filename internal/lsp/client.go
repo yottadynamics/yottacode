@@ -167,20 +167,20 @@ type openDocumentState struct {
 	text    string
 }
 
-// Client owns one short-lived language-server process. yottacode starts a
-// process per tool call instead of keeping editor-style background servers so
-// lifecycle, permissions, and session teardown stay simple.
+// Client owns one language-server subprocess. In normal TUI/oneshot sessions it
+// is acquired through Manager and kept warm across tool calls; tests and fallback
+// callers can still construct short-lived clients directly.
 type Client struct {
-	cmd     *exec.Cmd
-	stdin   io.WriteCloser
-	stdout      *bufio.Reader
-	stdoutRaw   io.Reader
-	stderr      bytes.Buffer
-	rootURI     string
-	caps        serverCapabilities
-	capOK       bool
-	docs        map[string]openDocumentState
-	diags       map[string]DiagnosticsSnapshot
+	cmd           *exec.Cmd
+	stdin         io.WriteCloser
+	stdout        *bufio.Reader
+	stdoutRaw     io.Reader
+	stderr        bytes.Buffer
+	rootURI       string
+	caps          serverCapabilities
+	capOK         bool
+	docs          map[string]openDocumentState
+	diags         map[string]DiagnosticsSnapshot
 	readMessageFn func() ([]byte, error)
 
 	mu          sync.Mutex

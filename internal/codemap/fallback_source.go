@@ -6,9 +6,9 @@ import (
 	"github.com/yottadynamics/yottacode/internal/lsp"
 )
 
-// FallbackSource uses yottacode's conservative regex symbol scanner. Results
-// are approximate, but they make /map useful without requiring users to install
-// language servers first.
+// FallbackSource uses yottacode's offline syntax layer when available, then the
+// conservative regex scanner. It keeps /map useful without requiring users to
+// install language servers first.
 type FallbackSource struct{}
 
 func (FallbackSource) Symbols(ctx context.Context, path string) ([]lsp.Symbol, string, error) {
@@ -16,5 +16,9 @@ func (FallbackSource) Symbols(ctx context.Context, path string) ([]lsp.Symbol, s
 		return nil, "fallback", err
 	}
 	items, err := lsp.FallbackFileSymbols(path)
-	return items, "fallback", err
+	source := "fallback"
+	if lang, ok := lsp.ResolveFile(path); ok && lsp.SyntaxMode(lang.ID) == "parser" {
+		source = "parser"
+	}
+	return items, source, err
 }
