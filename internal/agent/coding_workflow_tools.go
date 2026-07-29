@@ -175,7 +175,17 @@ const (
 // errors or git-apply stderr; keeping the classifier here prevents their
 // malformed/stale wording from drifting as new git diagnostics are observed.
 func ClassifyPatchFailure(output string) PatchFailureKind {
+	// Tool errors may include a quoted raw patch payload after `patch=` for
+	// debugging. Classify only the diagnostic prefix so patch content containing
+	// phrases like "corrupt patch" cannot override the real git/apply error.
+	if i := strings.Index(output, " patch="); i >= 0 {
+		output = output[:i]
+	}
 	switch {
+	case strings.Contains(output, "patch does not apply"),
+		strings.Contains(output, "patch failed:"),
+		strings.Contains(output, "hunk context did not match the current file"):
+		return PatchFailureStale
 	case strings.Contains(output, "malformed_patch"),
 		strings.Contains(output, "patch syntax is malformed"),
 		strings.Contains(output, "apply_patch-style patches are not accepted"),
@@ -184,10 +194,6 @@ func ClassifyPatchFailure(output string) PatchFailureKind {
 		strings.Contains(output, "unexpected line:"),
 		strings.Contains(output, "only garbage"):
 		return PatchFailureMalformed
-	case strings.Contains(output, "patch does not apply"),
-		strings.Contains(output, "patch failed:"),
-		strings.Contains(output, "hunk context did not match the current file"):
-		return PatchFailureStale
 	default:
 		return PatchFailureUnknown
 	}
@@ -214,10 +220,10 @@ func normalizeModelPatch(diff string) string {
 // hunk preflight below.
 func validatePatchEnvelope(diff string) error {
 	trimmed := strings.TrimSpace(diff)
-	if strings.HasPrefix(trimmed, "```") || strings.HasSuffix(trimmed, "```") {
+	if strings.HasPrefix(trimmed, "```") {
 		return fmt.Errorf("malformed_patch: remove markdown fences and pass only the unified diff")
 	}
-	if strings.Contains(diff, "*** Begin Patch") || strings.Contains(diff, "*** Update File:") || strings.Contains(diff, "*** End Patch") {
+	if strings.HasPrefix(trimmed, "*** Begin Patch") || strings.HasPrefix(trimmed, "*** Update File:") || strings.HasPrefix(trimmed, "*** End Patch") {
 		return fmt.Errorf("malformed_patch: apply_patch-style patches are not accepted here — use a unified diff with `--- a/PATH` / `+++ b/PATH` headers")
 	}
 	return nil

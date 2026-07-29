@@ -265,6 +265,41 @@ func TestApplyDiffTool_PreflightRejectsMalformedPatchWrappers(t *testing.T) {
 	}
 }
 
+func TestApplyDiffTool_AllowsPatchContentThatLooksLikeWrappers(t *testing.T) {
+	tmp := gitInit(t)
+	writeFile(t, tmp, "doc.md", "old\n")
+	tool := &ApplyDiffTool{Cwd: NewCwdRef(tmp), WriteOpts: WritePathOptions{Cwd: NewCwdRef(tmp)}}
+	cases := []struct {
+		name string
+		diff string
+		want string
+	}{
+		{
+			name: "apply-patch-string-in-content",
+			diff: "--- a/doc.md\n+++ b/doc.md\n@@ -1 +1 @@\n-old\n+*** Begin Patch\n",
+			want: "*** Begin Patch\n",
+		},
+		{
+			name: "final-markdown-fence-in-content",
+			diff: "--- a/doc.md\n+++ b/doc.md\n@@ -1 +1 @@\n-old\n+```\n",
+			want: "```\n",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			writeFile(t, tmp, "doc.md", "old\n")
+			b, _ := json.Marshal(map[string]string{"diff": tc.diff})
+			if _, err := tool.Execute(context.Background(), string(b)); err != nil {
+				t.Fatalf("Execute: %v", err)
+			}
+			got, _ := os.ReadFile(filepath.Join(tmp, "doc.md"))
+			if string(got) != tc.want {
+				t.Fatalf("doc.md = %q, want %q", string(got), tc.want)
+			}
+		})
+	}
+}
+
 func TestApplyDiffTool_RejectsBareHunkHeaderBeforeGitApply(t *testing.T) {
 	tmp := gitInit(t)
 	writeFile(t, tmp, "a.txt", "one\ntwo\n")
@@ -314,6 +349,11 @@ func TestClassifyPatchFailure(t *testing.T) {
 		{
 			name: "stale context",
 			out:  "error: patch failed: a.txt:1\nerror: a.txt: patch does not apply\n",
+			want: PatchFailureStale,
+		},
+		{
+			name: "patch payload does not override stale diagnostic",
+			out:  `apply_diff: exit status 1; stderr="error: patch failed: a.txt:1\nerror: a.txt: patch does not apply" hint="..." patch="+corrupt patch"`,
 			want: PatchFailureStale,
 		},
 	}

@@ -1694,6 +1694,10 @@ func (m Model) renderApprovalAutoNotice(e agent.ApprovalAuto) string {
 		source := m.permissionRuleDisplayPath(e.RuleSource)
 		return SysMsgAligned(SysSuccess, "permissions", "allowed by rule", source, summary)
 	}
+	if e.Source == "deny-rule" {
+		source := m.permissionRuleDisplayPath(e.RuleSource)
+		return SysMsgAligned(SysWarning, "permissions", "blocked by rule", source, summary)
+	}
 	return SysMsg(SysSuccess, autoApprovalNoticeTitle(e.Source), summary, autoApprovalNoticeFooter(e.Source))
 }
 
