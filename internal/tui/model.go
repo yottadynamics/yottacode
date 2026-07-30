@@ -3152,8 +3152,25 @@ func (m Model) renderReasoningPreview() string {
 		return ""
 	}
 	const maxLines = 6
+	width := liveContentWidth(m.width)
+	if width <= 1 {
+		return ""
+	}
 	body := strings.TrimRight(m.reasoning.String(), "\n")
-	lines := strings.Split(body, "\n")
+	var lines []string
+	for _, line := range strings.Split(body, "\n") {
+		if line == "" {
+			lines = append(lines, "")
+			continue
+		}
+		wrapped := ansi.Wrap(line, width, "")
+		for _, row := range strings.Split(wrapped, "\n") {
+			if ansi.StringWidth(row) > width {
+				row = ansi.Truncate(row, width, "…")
+			}
+			lines = append(lines, row)
+		}
+	}
 	if len(lines) > maxLines {
 		lines = lines[len(lines)-maxLines:]
 	}
