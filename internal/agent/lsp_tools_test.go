@@ -109,6 +109,9 @@ func TestLSPStatusDetectsLanguagesAndHints(t *testing.T) {
 	if !strings.Contains(out, "Go") || !strings.Contains(out, "server=gopls") {
 		t.Errorf("status should report Go/gopls: %q", out)
 	}
+	if !strings.Contains(out, "syntax=parser") {
+		t.Errorf("status should report parser-backed syntax fallback: %q", out)
+	}
 	if strings.Contains(out, "status=missing") && !strings.Contains(out, "go install golang.org/x/tools/gopls") {
 		t.Errorf("missing gopls should include install hint: %q", out)
 	}
@@ -226,7 +229,7 @@ func TestRegisterCoreCwdTools_LSPGate(t *testing.T) {
 	}
 	reg = NewRegistry()
 	RegisterCoreCwdTools(reg, cwd, CoreToolDeps{WriteOpts: WritePathOptions{Cwd: cwd}, EnableLSP: true})
-	for _, name := range []string{"lsp_status", "lsp_symbols", "lsp_document_symbols", "lsp_document_highlights", "lsp_selection_ranges", "lsp_definition", "lsp_type_definition", "lsp_implementation", "lsp_references", "lsp_diagnostics", "lsp_changed_files_diagnostics", "lsp_hover", "lsp_signature_help", "lsp_code_actions", "lsp_code_action_preview", "lsp_rename_preview", "lsp_format_preview", "lsp_apply_workspace_edit", "lsp_call_hierarchy"} {
+	for _, name := range []string{"lsp_status", "lsp_symbols", "lsp_document_symbols", "lsp_document_highlights", "lsp_selection_ranges", "lsp_definition", "lsp_type_definition", "lsp_implementation", "lsp_references", "lsp_diagnostics", "lsp_changed_files_diagnostics", "lsp_hover", "lsp_signature_help", "lsp_code_actions", "lsp_code_action_preview", "lsp_rename_preview", "lsp_format_preview", "lsp_apply_workspace_edit", "lsp_call_hierarchy", "lsp_impact"} {
 		if _, ok := reg.Get(name); !ok {
 			t.Errorf("%s should register when EnableLSP is true", name)
 		}

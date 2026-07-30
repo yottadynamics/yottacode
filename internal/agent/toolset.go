@@ -144,5 +144,6 @@ func RegisterCoreCwdTools(reg *Registry, cwd *CwdRef, deps CoreToolDeps) {
 		reg.Register(&LSPFormatPreviewTool{lspToolBase: base})
 		reg.Register(&LSPApplyWorkspaceEditTool{lspToolBase: base, WriteOpts: wo})
 		reg.Register(&LSPCallHierarchyTool{lspToolBase: base})
+		reg.Register(&LSPImpactTool{lspToolBase: base, CodeMapProvider: deps.CodeMapProvider})
 	}
 }

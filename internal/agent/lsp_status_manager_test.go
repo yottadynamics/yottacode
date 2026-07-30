@@ -22,4 +22,7 @@ func TestLSPStatusReportsManagerStats(t *testing.T) {
 	if !strings.Contains(out, "manager\topen=0/2") {
 		t.Fatalf("status should include manager stats, got %q", out)
 	}
+	if !strings.Contains(out, "syntax=parser") {
+		t.Fatalf("status should include offline syntax capability, got %q", out)
+	}
 }

@@ -88,11 +88,11 @@ func ApplyTextEdits(text string, edits []TextEdit) (string, error) {
 	type span struct{ start, end int }
 	spans := make([]span, 0, len(ordered))
 	for _, edit := range ordered {
-		start, err := offsetForPosition(text, edit.Range.Start)
+		start, err := OffsetForPosition(text, edit.Range.Start)
 		if err != nil {
 			return "", err
 		}
-		end, err := offsetForPosition(text, edit.Range.End)
+		end, err := OffsetForPosition(text, edit.Range.End)
 		if err != nil {
 			return "", err
 		}
@@ -117,11 +117,11 @@ func ApplyTextEdits(text string, edits []TextEdit) (string, error) {
 	out := text
 	lastStart := len(text) + 1
 	for _, edit := range ordered {
-		start, err := offsetForPosition(out, edit.Range.Start)
+		start, err := OffsetForPosition(out, edit.Range.Start)
 		if err != nil {
 			return "", err
 		}
-		end, err := offsetForPosition(out, edit.Range.End)
+		end, err := OffsetForPosition(out, edit.Range.End)
 		if err != nil {
 			return "", err
 		}
@@ -137,7 +137,9 @@ func ApplyTextEdits(text string, edits []TextEdit) (string, error) {
 	return out, nil
 }
 
-func offsetForPosition(text string, pos Position) (int, error) {
+// OffsetForPosition converts a zero-based LSP UTF-16 position to a UTF-8 byte
+// offset. It rejects positions in the middle of surrogate pairs.
+func OffsetForPosition(text string, pos Position) (int, error) {
 	if pos.Line < 0 || pos.Character < 0 {
 		return 0, fmt.Errorf("negative LSP position")
 	}
@@ -163,6 +165,37 @@ func offsetForPosition(text string, pos Position) (int, error) {
 		return offset, nil
 	}
 	return 0, fmt.Errorf("position %d:%d outside document", pos.Line, pos.Character)
+}
+
+// PositionForOffset converts a UTF-8 byte offset to a zero-based LSP UTF-16
+// position. Parser-backed syntax sources use this to normalize token.FileSet
+// byte offsets into the same coordinates returned by language servers.
+func PositionForOffset(text string, target int) (Position, error) {
+	if target < 0 || target > len(text) {
+		return Position{}, fmt.Errorf("byte offset %d outside document", target)
+	}
+	line, col, offset := 0, 0, 0
+	for offset < len(text) {
+		if offset == target {
+			return Position{Line: line, Character: col}, nil
+		}
+		if text[offset] == '\n' {
+			line++
+			col = 0
+			offset++
+			continue
+		}
+		r, width := utf8.DecodeRuneInString(text[offset:])
+		if r == utf8.RuneError && width == 1 {
+			return Position{}, fmt.Errorf("invalid UTF-8 at byte offset %d", offset)
+		}
+		if offset+width > target {
+			return Position{}, fmt.Errorf("byte offset %d splits UTF-8 rune", target)
+		}
+		offset += width
+		col += utf16CodeUnits(r)
+	}
+	return Position{Line: line, Character: col}, nil
 }
 
 func utf16CodeUnits(r rune) int {

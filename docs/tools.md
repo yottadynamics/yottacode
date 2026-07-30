@@ -78,6 +78,7 @@ In addition to the built-ins, **MCP tools** register dynamically when an `[[mcp_
 | [`lsp_format_preview`](#lsp_format_preview) | none | Preview formatting edits without applying them |
 | [`lsp_apply_workspace_edit`](#lsp_apply_workspace_edit) | yes | Apply a previously previewed WorkspaceEdit after validation and approval |
 | [`lsp_call_hierarchy`](#lsp_call_hierarchy) | none | Show incoming/outgoing calls for a source position |
+| [`lsp_impact`](#lsp_impact) | none | Composite impact report for a source position: hover, definitions, references, calls, diagnostics, and Code Map imports |
 | [`code_map`](#code_map) | none | Return a bounded directory/file/symbol structure map from the experimental code index |
 | [`code_symbols`](#code_symbols) | none | Return indexed symbols for a file or query from the experimental code index |
 | [`code_structure_projection`](#code_structure_projection) | none | Generate a compact code-structure projection for agent context |
@@ -157,6 +158,7 @@ tool-call log; the TUI renames it for readability. Mapping:
 | `lsp_selection_ranges` | `LSP(selection ranges <path>:<line>:<character>)` |
 | `lsp_definition` | `LSP(definition <path>:<line>:<character>)` |
 | `lsp_references` | `LSP(references <path>:<line>:<character>)` |
+| `lsp_impact` | `LSP(impact <path>:<line>:<character>)` |
 | `lsp_signature_help` | `LSP(signature <path>:<line>:<character>)` |
 | `fetch_url` | `Fetch(<url>)` |
 | `run_tests` | `Test(<command>)` |
@@ -952,16 +954,17 @@ No approval.
 Detect supported source languages in the workspace and report whether the
 matching language server command is installed on `PATH`. This tool is available
 only when `lsp_code_intelligence` is enabled. It never installs anything; when a
-server is missing it includes a concise install hint.
+server is missing it includes a concise install hint. Each row also reports the
+offline structure fallback as `syntax=parser`, `syntax=regex`, or `syntax=none`.
 
-Supported language servers:
+Supported language servers and fallback modes:
 
-| Language | Server command | Install hint |
-|---|---|---|
-| Go | `gopls` | `go install golang.org/x/tools/gopls@latest` and ensure `$(go env GOPATH)/bin` is on `PATH` |
-| TypeScript/JavaScript | `typescript-language-server --stdio` | `npm install -g typescript typescript-language-server` |
-| Python | `pyright-langserver --stdio` | `npm install -g pyright` |
-| Rust | `rust-analyzer` | install through rustup, your package manager, or rust-analyzer's upstream docs |
+| Language | Server command | Offline syntax | Install hint |
+|---|---|---|---|
+| Go | `gopls` | parser | `go install golang.org/x/tools/gopls@latest` and ensure `$(go env GOPATH)/bin` is on `PATH` |
+| TypeScript/JavaScript | `typescript-language-server --stdio` | regex fallback | `npm install -g typescript typescript-language-server` |
+| Python | `pyright-langserver --stdio` | regex fallback | `npm install -g pyright` |
+| Rust | `rust-analyzer` | regex fallback | install through rustup, your package manager, or rust-analyzer's upstream docs |
 
 | Param | Type | Default | Notes |
 |---|---|---|---|
@@ -1205,6 +1208,25 @@ Show incoming and outgoing call hierarchy entries for a source position.
 | `path` | string | — | Required source file |
 | `line` | int | — | Zero-based line |
 | `character` | int | — | Zero-based UTF-16 character offset |
+
+No approval.
+
+## lsp_impact
+
+Return a composite impact report for a source position. The tool batches hover,
+definition, references, call hierarchy, diagnostics, and optional Code Map import
+blast radius into one compact result. It is intended for pre-refactor planning
+and review, where raw LSP calls would otherwise require several tool rounds.
+When `code_map` is not enabled, the Code Map section reports unavailable and the
+LSP sections still run.
+
+| Param | Type | Default | Notes |
+|---|---|---|---|
+| `path` | string | — | Required source file |
+| `line` | int | — | Zero-based line |
+| `character` | int | — | Zero-based UTF-16 character offset |
+| `include_declaration` | bool | `false` | Include declarations in reference results |
+| `max_results` | int | `50` | Cap per section, clamped to `500` |
 
 No approval.
 

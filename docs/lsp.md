@@ -1,8 +1,8 @@
 # LSP Code Intelligence
 
-`lsp_code_intelligence` is an experimental, opt-in bridge from yottacode tools to local Language Server Protocol (LSP) servers. It adds editor-like read-only code navigation without making yottacode an IDE or installing anything on the user's machine. Interactive and oneshot sessions reuse a bounded pool of initialized servers so repeated tool calls do not pay startup cost every time; the pool is closed when the session exits.
+`lsp_code_intelligence` is an experimental, opt-in bridge from yottacode tools to local Language Server Protocol (LSP) servers plus yottacode's offline syntax fallback layer. It adds editor-like semantic navigation without making yottacode an IDE or installing anything on the user's machine. Interactive and oneshot sessions reuse a bounded pool of initialized servers so repeated tool calls do not pay startup cost every time; the pool is closed when the session exits.
 
-The separate experimental `code_map` feature reuses this LSP surface when available to build the `/map` structure overlay and code-map agent tools. If a language server is missing, the map falls back to approximate regex symbols so the outline still works. Dependency and impact queries currently use resolvable in-workspace Go imports, including transitive dependents, import-cycle detection, and Mermaid diagram output; deeper reference/call graph views remain out of scope until reference/call edges are indexed and tested.
+The separate experimental `code_map` feature reuses this LSP surface when available to build the `/map` structure overlay and code-map agent tools. If a language server is missing, the map falls back to offline syntax symbols: Go uses a parser-backed source, while TypeScript/JavaScript, Python, and Rust currently keep the conservative regex fallback. Dependency and impact queries currently use resolvable in-workspace Go imports, including transitive dependents, import-cycle detection, and Mermaid diagram output; `lsp_impact` can combine those import edges with live LSP references, calls, hover, and diagnostics.
 
 Enable it with any experimental-feature path:
 
@@ -21,14 +21,14 @@ lsp_code_intelligence = true
 
 ## Supported languages
 
-| Language | Server command | Install hint |
-|---|---|---|
-| Go | `gopls` | `go install golang.org/x/tools/gopls@latest` and ensure `$(go env GOPATH)/bin` is on `PATH` |
-| TypeScript/JavaScript | `typescript-language-server --stdio` | `npm install -g typescript typescript-language-server` |
-| Python | `pyright-langserver --stdio` | `npm install -g pyright` |
-| Rust | `rust-analyzer` | Install with `rustup`, your package manager, or the rust-analyzer project instructions |
+| Language | Server command | Offline syntax | Impact enrichment | Install hint |
+|---|---|---|---|---|
+| Go | `gopls` | parser | LSP refs/calls + Code Map imports | `go install golang.org/x/tools/gopls@latest` and ensure `$(go env GOPATH)/bin` is on `PATH` |
+| TypeScript/JavaScript | `typescript-language-server --stdio` | regex fallback | LSP refs/calls when server is installed | `npm install -g typescript typescript-language-server` |
+| Python | `pyright-langserver --stdio` | regex fallback | LSP refs/calls when server is installed | `npm install -g pyright` |
+| Rust | `rust-analyzer` | regex fallback | LSP refs/calls when server is installed | Install with `rustup`, your package manager, or the rust-analyzer project instructions |
 
-Missing servers are not fatal. yottacode reports the missing command and an install hint through the startup session advisory card, `lsp_status`, `yottacode doctor`, and LSP tool unavailable results.
+Missing servers are not fatal. yottacode reports the missing command and an install hint through the startup session advisory card, `lsp_status`, `yottacode doctor`, and LSP tool unavailable results. `lsp_status` also reports the offline syntax mode (`syntax=parser`, `syntax=regex`, or `syntax=none`) so users can see what still works without a server.
 
 ## Tools
 
@@ -55,6 +55,7 @@ When the feature flag is enabled, yottacode registers these LSP tools. Most are 
 | `lsp_format_preview` | Preview formatting edits for one file without writing files |
 | `lsp_apply_workspace_edit` | Apply a previously previewed WorkspaceEdit through yottacode path validation and approval |
 | `lsp_call_hierarchy` | Show incoming/outgoing call hierarchy for a source position |
+| `lsp_impact` | Return a composite impact report with hover, definitions, references, calls, diagnostics, and optional Code Map import blast radius |
 
 Positions are zero-based line and UTF-16 character offsets, matching LSP. Output locations are rendered one-based as `path:line:column` for terminal readability.
 
@@ -93,6 +94,8 @@ The experimental bridge now includes several production-readiness behaviors:
 - `lsp_changed_files_diagnostics` inspects staged, unstaged, and untracked supported source files from the repo root, de-duplicates them, and skips unsupported paths.
 - `lsp_code_action_preview` resolves editable code actions into the same preview/apply WorkspaceEdit flow used by rename and formatting.
 - `lsp_document_highlights` and `lsp_selection_ranges` provide bounded current-file context before agents choose an edit range or wider read window.
+- Offline syntax fallback is language-neutral. Go has a parser-backed fallback today; TypeScript/JavaScript, Python, and Rust keep regex fallback until dedicated parser backends or a Tree-sitter language pack lands.
+- `lsp_impact` batches the common pre-refactor questions into one compact result so agents do not have to spend separate tool calls on hover, definitions, references, call hierarchy, diagnostics, and Code Map import impact.
 - `lsp_rename_preview` uses server-side prepare-rename validation when available so invalid cursor positions fail before any edit preview is requested.
 - Server capabilities returned by `initialize` are checked before optional methods; unsupported methods return an explicit `unavailable` result rather than a misleading empty response.
 - `lsp_status` exposes session manager stats: open servers, starts, reuses, evictions, and last startup latency. `yottacode doctor` reports the default manager configuration without starting a session server.
