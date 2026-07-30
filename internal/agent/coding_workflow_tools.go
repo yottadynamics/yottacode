@@ -204,7 +204,7 @@ func applyPatchFailureHint(stderr string) string {
 	case PatchFailureMalformed:
 		return "patch syntax is malformed — remove placeholder hunks like bare `@@`, or regenerate a complete unified diff with valid hunk headers"
 	case PatchFailureStale:
-		return "patch headers were valid, but hunk context did not match the current file — re-read the target file and regenerate the diff with fresh surrounding lines"
+		return "patch headers were valid, but hunk context did not match the current file — re-read the target file, preferably with anchors=true for the affected block, then regenerate the diff or switch to edit_anchored"
 	default:
 		return "context may not match the current file — re-read it and regenerate the diff"
 	}

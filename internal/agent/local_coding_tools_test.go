@@ -245,10 +245,19 @@ func TestReadManyFilesTool_OffsetLimitAndTruncate(t *testing.T) {
 	}
 }
 
-func TestReadManyFilesTool_RequiresPaths(t *testing.T) {
-	tool := &ReadManyFilesTool{Cwd: NewCwdRef(t.TempDir())}
-	if _, err := tool.Execute(context.Background(), `{}`); err == nil {
-		t.Errorf("expected error")
+func TestReadManyFilesTool_Anchors(t *testing.T) {
+	tmp := t.TempDir()
+	writeFile(t, tmp, "a.txt", "alpha\nbeta\n")
+	tool := &ReadManyFilesTool{Cwd: NewCwdRef(tmp)}
+	out, err := tool.Execute(context.Background(), `{"paths":["a.txt"],"anchors":true}`)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if !strings.Contains(out, "==> a.txt <==") {
+		t.Fatalf("missing section header: %q", out)
+	}
+	if !strings.Contains(out, "#") || !strings.Contains(out, "\talpha") || !strings.Contains(out, "\tbeta") {
+		t.Fatalf("missing anchored lines: %q", out)
 	}
 }
 

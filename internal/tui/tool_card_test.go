@@ -442,7 +442,7 @@ func TestRenderToolCard_EditFileOldStringMissIsCompact(t *testing.T) {
 	}
 }
 
-func TestRenderToolCard_ApplyDiffStalePatchIsCompact(t *testing.T) {
+func TestToolCard_ApplyDiffStalePatchIsCompact(t *testing.T) {
 	out := `error: apply_diff: exit status 1; stderr="error: patch failed: internal/tui/model.go:1707\nerror: internal/tui/model.go: patch does not apply\n" hint="patch headers were valid" patch="diff --git a/internal/tui/model.go b/internal/tui/model.go"`
 	got := stripANSI(renderToolCard("apply_diff", "Patch(apply)", `{}`, out, true, 100, "", 0))
 	if !strings.Contains(got, "stale patch context") {
@@ -450,6 +450,9 @@ func TestRenderToolCard_ApplyDiffStalePatchIsCompact(t *testing.T) {
 	}
 	if !strings.Contains(got, "internal/tui/model.go") {
 		t.Fatalf("card should name failed file: %q", got)
+	}
+	if !strings.Contains(got, "prefer anchors=true") || !strings.Contains(got, "edit_anchored") {
+		t.Fatalf("card should steer stale patches toward anchored recovery: %q", got)
 	}
 	if strings.Count(got, "patch failed") > 0 || strings.Count(got, "patch=\"") > 0 {
 		t.Fatalf("card should not dump raw patch failure payload: %q", got)
@@ -475,6 +478,14 @@ func TestRenderToolCard_EditFileFallsBackWhenArgsMissing(t *testing.T) {
 	}
 	if !strings.Contains(got, "└ edited /abs/main.go: 1 replacement(s)") {
 		t.Errorf("footer should still render: %q", got)
+	}
+}
+
+// edit_anchored gets a compact header with path + op count.
+func TestToolHeader_EditAnchored(t *testing.T) {
+	got := toolHeader("edit_anchored", `{"path":"main.go","operations":[{"op":"insert_after"},{"op":"delete_range"}]}`, "edit_anchored(main.go, 2 ops)", 120, "")
+	if got != "edit_anchored(main.go, 2 ops)" {
+		t.Fatalf("toolHeader(edit_anchored) = %q", got)
 	}
 }
 

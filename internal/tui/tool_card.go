@@ -983,9 +983,9 @@ func recoverableToolErrorBody(toolName, output, cwd string) []string {
 		case agent.PatchFailureStale:
 			file := patchFailedFile(trimmed)
 			if file != "" {
-				return []string{"stale patch context — re-read " + file + " and regenerate the diff"}
+				return []string{"stale patch context — re-read " + file + " and retry", "prefer anchors=true for the affected block, then regenerate the diff or use edit_anchored"}
 			}
-			return []string{"stale patch context — re-read the target file and regenerate the diff"}
+			return []string{"stale patch context — re-read the target file and retry", "prefer anchors=true for the affected block, then regenerate the diff or use edit_anchored"}
 		}
 	}
 	if trimmed == "" {
@@ -1173,15 +1173,22 @@ func toolHeader(toolName, argsJSON, preview string, maxWidth int, cwd string) st
 		return clipHeader("Bash("+shortenCwdInText(oneLine(a.Command), cwd)+")", headerBudget)
 	case "read_file":
 		var a struct {
-			Path   string `json:"path"`
-			Offset int64  `json:"offset"`
-			Limit  int64  `json:"limit"`
+			Path    string `json:"path"`
+			Offset  int64  `json:"offset"`
+			Limit   int64  `json:"limit"`
+			Anchors bool   `json:"anchors"`
 		}
 		if json.Unmarshal([]byte(argsJSON), &a) != nil {
 			return preview
 		}
-		if a.Offset == 0 && a.Limit == 0 {
+		if a.Offset == 0 && a.Limit == 0 && !a.Anchors {
 			return clipHeader("Read("+short(a.Path)+")", headerBudget)
+		}
+		if a.Anchors && a.Offset == 0 && a.Limit == 0 {
+			return clipHeader("Read("+short(a.Path)+" · anchors)", headerBudget)
+		}
+		if a.Anchors {
+			return clipHeader(fmt.Sprintf("Read(%s @ L%d+%d · anchors)", short(a.Path), a.Offset, a.Limit), headerBudget)
 		}
 		return clipHeader(fmt.Sprintf("Read(%s @ L%d+%d)", short(a.Path), a.Offset, a.Limit), headerBudget)
 	case "write_file":
@@ -1205,6 +1212,15 @@ func toolHeader(toolName, argsJSON, preview string, maxWidth int, cwd string) st
 			mode = "all"
 		}
 		return clipHeader(fmt.Sprintf("Edit(%s, %s)", short(a.Path), mode), headerBudget)
+	case "edit_anchored":
+		var a struct {
+			Path       string            `json:"path"`
+			Operations []json.RawMessage `json:"operations"`
+		}
+		if json.Unmarshal([]byte(argsJSON), &a) != nil {
+			return preview
+		}
+		return clipHeader(fmt.Sprintf("edit_anchored(%s, %d ops)", short(a.Path), len(a.Operations)), headerBudget)
 	case "delete_file":
 		var a struct {
 			Path string `json:"path"`

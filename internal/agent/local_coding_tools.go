@@ -315,7 +315,7 @@ type ReadManyFilesTool struct {
 
 func (t *ReadManyFilesTool) Name() string { return "read_many_files" }
 func (t *ReadManyFilesTool) Description() string {
-	return "Read multiple UTF-8 text files from disk in one call. Optional offset and limit apply to each file. Returns clearly separated sections per file."
+	return "Read multiple UTF-8 text files from disk in one call. Optional offset and limit apply to each file. Set anchors=true to prefix each returned line with line#anchor. Returns clearly separated sections per file."
 }
 func (t *ReadManyFilesTool) Schema() map[string]any {
 	return map[string]any{
@@ -326,8 +326,9 @@ func (t *ReadManyFilesTool) Schema() map[string]any {
 				"items":       map[string]any{"type": "string"},
 				"description": "Files to read",
 			},
-			"offset": map[string]any{"type": "integer", "description": "Byte offset to start each read from (default 0)"},
-			"limit":  map[string]any{"type": "integer", "description": fmt.Sprintf("Max bytes per file (default %d)", maxReadBytes)},
+			"offset":  map[string]any{"type": "integer", "description": "Byte offset to start each read from (default 0)"},
+			"limit":   map[string]any{"type": "integer", "description": fmt.Sprintf("Max bytes per file (default %d)", maxReadBytes)},
+			"anchors": map[string]any{"type": "boolean", "description": "When true, prefix each returned line with line#anchor before the tab-delimited content."},
 		},
 		"required": []string{"paths"},
 	}
@@ -335,11 +336,14 @@ func (t *ReadManyFilesTool) Schema() map[string]any {
 func (t *ReadManyFilesTool) RequiresApproval(string) bool { return false }
 func (t *ReadManyFilesTool) ParallelSafe(string) bool     { return true }
 func (t *ReadManyFilesTool) PreviewCall(argsJSON string) string {
-	paths, _, _, _ := parseReadManyFilesArgs(argsJSON)
+	paths, _, _, anchors, _ := parseReadManyFilesArgs(argsJSON)
+	if anchors {
+		return fmt.Sprintf("read_many_files(%d paths, anchors=true)", len(paths))
+	}
 	return fmt.Sprintf("read_many_files(%d paths)", len(paths))
 }
 func (t *ReadManyFilesTool) Execute(ctx context.Context, argsJSON string) (string, error) {
-	pathsArg, offset, limitArg, err := parseReadManyFilesArgs(argsJSON)
+	pathsArg, offset, limitArg, anchors, err := parseReadManyFilesArgs(argsJSON)
 	if err != nil {
 		return "", fmt.Errorf("read_many_files: invalid args: %w", err)
 	}
@@ -397,7 +401,22 @@ func (t *ReadManyFilesTool) Execute(ctx context.Context, argsJSON string) (strin
 			b.WriteString("\n")
 		}
 		fmt.Fprintf(&b, "==> %s <==\n", rel)
-		b.Write(buf[:n])
+			if anchors {
+				text := string(buf[:n])
+				text = strings.TrimSuffix(text, "\n")
+				if text != "" {
+					lines := strings.Split(text, "\n")
+					anchored := buildAnchoredLines(lines, 1)
+					for j, line := range anchored {
+						fmt.Fprintf(&b, "%6d#%s\t%s", line.LineNumber, line.Hash, line.Content)
+						if j < len(anchored)-1 || truncated {
+							b.WriteByte('\n')
+						}
+					}
+				}
+			} else {
+				b.Write(buf[:n])
+			}
 		if truncated {
 			b.WriteString("\n…[truncated]")
 		}
@@ -405,25 +424,26 @@ func (t *ReadManyFilesTool) Execute(ctx context.Context, argsJSON string) (strin
 	return b.String(), nil
 }
 
-func parseReadManyFilesArgs(argsJSON string) ([]string, int64, int64, error) {
+func parseReadManyFilesArgs(argsJSON string) ([]string, int64, int64, bool, error) {
 	var raw struct {
-		Paths  json.RawMessage `json:"paths"`
-		Offset int64           `json:"offset"`
-		Limit  int64           `json:"limit"`
+		Paths   json.RawMessage `json:"paths"`
+		Offset  int64           `json:"offset"`
+		Limit   int64           `json:"limit"`
+		Anchors bool            `json:"anchors"`
 	}
 	if err := json.Unmarshal([]byte(argsJSON), &raw); err != nil {
-		return nil, 0, 0, err
+		return nil, 0, 0, false, err
 	}
 	var paths []string
 	if err := json.Unmarshal(raw.Paths, &paths); err != nil {
 		var one string
 		if err := json.Unmarshal(raw.Paths, &one); err != nil {
-			return nil, 0, 0, fmt.Errorf("paths must be an array of strings or a single string")
+			return nil, 0, 0, false, fmt.Errorf("paths must be an array of strings or a single string")
 		}
 		paths = []string{one}
 	}
 	for i := range paths {
 		paths[i] = strings.TrimSpace(paths[i])
 	}
-	return paths, raw.Offset, raw.Limit, nil
+	return paths, raw.Offset, raw.Limit, raw.Anchors, nil
 }
