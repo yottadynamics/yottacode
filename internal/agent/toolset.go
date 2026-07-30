@@ -73,6 +73,7 @@ func RegisterCoreCwdTools(reg *Registry, cwd *CwdRef, deps CoreToolDeps) {
 	reg.Register(&ReadManyFilesTool{Cwd: cwd, DenyReadPaths: deps.DenyReads})
 	reg.Register(&WriteFileTool{Cwd: cwd, WriteOpts: wo, LSPManager: deps.LSPManager, LSPServers: deps.LSPServers})
 	reg.Register(&EditFileTool{Cwd: cwd, WriteOpts: wo, LSPManager: deps.LSPManager, LSPServers: deps.LSPServers})
+	reg.Register(&EditAnchoredTool{Cwd: cwd, WriteOpts: wo, LSPManager: deps.LSPManager, LSPServers: deps.LSPServers})
 	reg.Register(&ApplyDiffTool{Cwd: cwd, WriteOpts: wo})
 	reg.Register(&MkdirTool{Cwd: cwd, WriteOpts: wo})
 	reg.Register(&CopyFileTool{Cwd: cwd, WriteOpts: wo, DenyReadPaths: deps.DenyReads})

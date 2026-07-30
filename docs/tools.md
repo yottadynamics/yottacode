@@ -21,6 +21,7 @@ In addition to the built-ins, **MCP tools** register dynamically when an `[[mcp_
 | [`read_many_files`](#read_many_files) | none | Read multiple UTF-8 files in one call |
 | [`write_file`](#write_file) | required | Overwrite or create a file |
 | [`edit_file`](#edit_file) | required | Surgical `old_string`→`new_string` replacement |
+| [`edit_anchored`](#edit_anchored) | required | Anchor-validated line edits after anchored reads |
 | [`apply_diff`](#apply_diff) | required | Apply a unified diff patch |
 | [`mkdir`](#mkdir) | required | Create a directory and missing parents |
 | [`copy_file`](#copy_file) | required | Copy a file to a new path |
@@ -138,10 +139,11 @@ tool-call log; the TUI renames it for readability. Mapping:
 | Tool | Header |
 |---|---|
 | `run_bash` | `Bash(<command>)` |
-| `read_file` | `Read(<path>)` or `Read(<path> @ L<offset>+<limit>)` (images: `Read(<path>)`) |
+| `read_file` | `Read(<path>)` or `Read(<path> @ L<offset>+<limit>)` (images: `Read(<path>)`; anchored reads append `· anchors`) |
 | `read_many_files` | `Read(N files)` |
 | `write_file` | `Write(<path>)` |
 | `edit_file` | `Edit(<path>, single\|all)` |
+| `edit_anchored` | `edit_anchored(<path>, N ops)` |
 | `apply_diff` | `Patch(apply)` |
 | `mkdir` | `Mkdir(<path>)` |
 | `copy_file` | `Copy(<src> → <dst>)` |
@@ -246,6 +248,7 @@ block that vision-capable models can see directly.
 | `path` | string | — | Absolute or cwd-relative |
 | `offset` | int | `1` | 1-indexed start line (text files only) |
 | `limit` | int | `2000` | Max lines to return (text files only) |
+| `anchors` | bool | `false` | When true, prefix text rows as `line#anchor\tcontent` |
 
 **Image support.** When the path points to a recognized image file and the
 provider supports images in tool results (currently Anthropic only), the
@@ -273,6 +276,7 @@ round-trips.
 | `paths` | []string or string | — | Required; max 20 files; a single string is accepted for one file |
 | `offset` | int | `0` | Bytes; negatives clamped to 0 |
 | `limit` | int | `524288` | Per-file cap |
+| `anchors` | bool | `false` | When true, prefix each returned text line with `line#anchor\tcontent` |
 
 Returns sections in the form:
 
@@ -310,7 +314,26 @@ more-than-one place (uniqueness check), unless `replace_all=true`.
 Always prompts for approval. The TUI's approval modal renders a colored
 diff (red `−` / green `+`) so you see exactly what's about to change.
 
-## apply_diff
+## edit_anchored
+
+Apply line-oriented edits validated against anchors returned by `read_file(..., anchors=true)` or `read_many_files(..., anchors=true)`.
+
+| Param | Type | Default | Notes |
+|---|---|---|---|
+| `path` | string | — | Must exist |
+| `operations` | []object | — | Ordered operations; each object has `op` plus `anchor` or `start_anchor`/`end_anchor` |
+
+Supported `op` values:
+
+- `replace_range` — replace the inclusive line range from `start_anchor` to `end_anchor` with `new_text`
+- `delete_range` — delete the inclusive line range from `start_anchor` to `end_anchor`
+- `insert_before` — insert `new_text` before `anchor`
+- `insert_after` — insert `new_text` after `anchor`
+
+Anchors should be passed as full `line#hash` references, for example `42#a8f13c2b`. The tool re-reads the file and rejects stale or ambiguous anchors before writing, so it is the preferred path for drift-sensitive block edits that would be fragile with `edit_file` or a stale diff.
+
+Always prompts for approval.
+
 
 Apply a unified diff patch using `git apply`. This is better than
 `edit_file` for multi-hunk changes across one or more files.
@@ -331,7 +354,9 @@ headers and whitespace drift in context lines are tolerated while
 applying. Malformed patch syntax (`corrupt patch`, bare `@@`, invalid
 hunk headers) and stale context (`patch does not apply`) are classified
 separately so the TUI can show compact recovery guidance instead of the
-raw patch payload. A `Deny(Edit(<pattern>))` rule applies if any target
+raw patch payload. Stale-context failures should prompt a fresh read —
+often with `anchors=true` — and a fallback to `edit_anchored` when the
+change no longer applies cleanly as a unified diff. A `Deny(Edit(<pattern>))` rule applies if any target
 path matches; an `Allow(Edit(<pattern>))` rule auto-approves only when
 every target path matches (mixed-path diffs still prompt).
 

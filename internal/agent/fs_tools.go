@@ -40,7 +40,7 @@ type ReadFileTool struct {
 func (t *ReadFileTool) Name() string { return "read_file" }
 
 func (t *ReadFileTool) Description() string {
-	return "Read a file. For text files, output is `cat -n` style: every line is prefixed with its 1-indexed line number and a tab. " +
+	return "Read a file. For text files, output is `cat -n` style: every line is prefixed with its 1-indexed line number and a tab, or `line#anchor\tcontent` when anchors=true. " +
 		"For image files (png, jpg, gif, webp), the image is returned as visual content the model can see directly. " +
 		"Optional offset (1-indexed start line, default 1) and limit (lines, default 2000) apply to text files only. " +
 		"When more content follows the returned window, a trailing '…[truncated]' marker is appended."
@@ -62,6 +62,10 @@ func (t *ReadFileTool) Schema() map[string]any {
 				"type":        "integer",
 				"description": fmt.Sprintf("Maximum number of lines to return (default %d).", defaultReadLines),
 			},
+			"anchors": map[string]any{
+				"type":        "boolean",
+				"description": "When true, prefix each text line with line#anchor before the tab-delimited content.",
+			},
 		},
 		"required": []string{"path"},
 	}
@@ -71,18 +75,19 @@ func (t *ReadFileTool) RequiresApproval(string) bool { return false }
 func (t *ReadFileTool) ParallelSafe(string) bool     { return true }
 
 type readFileArgs struct {
-	Path   string `json:"path"`
-	Offset int    `json:"offset"` // 1-indexed start line
-	Limit  int    `json:"limit"`  // max lines to return
+	Path    string `json:"path"`
+	Offset  int    `json:"offset"` // 1-indexed start line
+	Limit   int    `json:"limit"`  // max lines to return
+	Anchors bool   `json:"anchors"`
 }
 
 func (t *ReadFileTool) PreviewCall(argsJSON string) string {
 	var a readFileArgs
 	_ = json.Unmarshal([]byte(argsJSON), &a)
-	if a.Offset == 0 && a.Limit == 0 {
+	if a.Offset == 0 && a.Limit == 0 && !a.Anchors {
 		return fmt.Sprintf("read_file(%s)", a.Path)
 	}
-	return fmt.Sprintf("read_file(%s, offset=%d, limit=%d)", a.Path, a.Offset, a.Limit)
+	return fmt.Sprintf("read_file(%s, offset=%d, limit=%d, anchors=%t)", a.Path, a.Offset, a.Limit, a.Anchors)
 }
 
 func (t *ReadFileTool) Execute(ctx context.Context, argsJSON string) (string, error) {
@@ -147,10 +152,15 @@ func (t *ReadFileTool) readText(ctx context.Context, a readFileArgs) (string, er
 	}
 	selected := lines[startIdx:endIdx]
 
+	anchored := buildAnchoredLines(selected, startLine)
 	var sb strings.Builder
-	for i, line := range selected {
-		fmt.Fprintf(&sb, "%6d\t%s", startLine+i, line)
-		if i < len(selected)-1 || truncated {
+	for i, line := range anchored {
+		if a.Anchors {
+			fmt.Fprintf(&sb, "%6d#%s\t%s", line.LineNumber, line.Hash, line.Content)
+		} else {
+			fmt.Fprintf(&sb, "%6d\t%s", line.LineNumber, line.Content)
+		}
+		if i < len(anchored)-1 || truncated {
 			sb.WriteByte('\n')
 		}
 	}
