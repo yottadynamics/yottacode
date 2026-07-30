@@ -2102,7 +2102,10 @@ func TestResizeReplay_RoutesThroughQueuePrintln(t *testing.T) {
 	// Emit a multi-line tool card so historyLines holds real content.
 	card := renderToolCard("memory_save", "Memory(save user/x)",
 		`{"scope":"user","name":"x"}`, `saved user memory "x"`, false, m.width, "", 0)
+	// Emit a marker after the multi-line card so bounded resize replay keeps
+	// this test independent from the total startup-history length.
 	m.appendLine(card)
+	m.appendLine("resize replay marker")
 	if len(m.historyLines) == 0 {
 		t.Fatal("expected history lines after appendLine")
 	}
@@ -2125,12 +2128,12 @@ func TestResizeReplay_RoutesThroughQueuePrintln(t *testing.T) {
 			t.Errorf("resize-replayed line missing clear-line prefix "+
 				"(bare tea.Println regressed?): %q", raw)
 		}
-		if strings.Contains(stripANSI(raw), "saved user memory") {
+		if strings.Contains(stripANSI(raw), "resize replay marker") {
 			sawReplay = true
 		}
 	}
 	if !sawReplay {
-		t.Error("expected the replayed history to carry the card body content")
+		t.Error("expected the replayed history to carry recent history content")
 	}
 }
 
@@ -2204,6 +2207,52 @@ func TestRepaintViewport_ClearsAndReplaysHistory(t *testing.T) {
 	joined := strings.Join(bodies, "\n")
 	if !strings.Contains(joined, "alpha scrollback") || !strings.Contains(joined, "beta scrollback") {
 		t.Errorf("repaintViewport should replay history lines, got %q", joined)
+	}
+}
+
+// TestResizeReplay_DoesNotDumpEntireHistory guards the resize bug where every
+// WindowSizeMsg replayed the complete native scrollback. Terminal emulators emit
+// many resize events while a user drags the window, so replaying thousands of
+// lines per event makes the whole session appear to scroll forever.
+func TestResizeReplay_DoesNotDumpEntireHistory(t *testing.T) {
+	m := newTestModel(t)
+	for i := 0; i < 1000; i++ {
+		m.historyLines = append(m.historyLines, "history line")
+	}
+	m.pendingCmds = nil
+
+	out, _ := m.update(tea.WindowSizeMsg{Width: 60, Height: 24})
+	mm := out.(Model)
+
+	printedHistory := 0
+	for _, msg := range flattenCmd(tea.Sequence(mm.pendingCmds...)) {
+		v := reflect.ValueOf(msg)
+		if v.Kind() == reflect.Struct && v.NumField() > 0 && strings.Contains(stripANSI(v.Field(0).String()), "history line") {
+			printedHistory++
+		}
+	}
+	if printedHistory >= len(m.historyLines) {
+		t.Fatalf("resize replayed full history: printed %d history lines for %d history lines", printedHistory, len(m.historyLines))
+	}
+	if printedHistory > m.height {
+		t.Fatalf("resize should replay only a bounded history tail, printed %d history lines for height %d", printedHistory, m.height)
+	}
+}
+
+func TestHistoryReplayTail_BoundsWrappedRows(t *testing.T) {
+	m := newTestModel(t)
+	m.width = 10
+	m.historyLines = []string{
+		"old one",
+		"old two",
+		strings.Repeat("x", 35),
+		"recent",
+	}
+
+	got := m.historyReplayTail(5)
+	want := []string{strings.Repeat("x", 35), "recent"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("historyReplayTail = %#v, want %#v", got, want)
 	}
 }
 
