@@ -1358,12 +1358,13 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// at every prior width. tea.ClearScreen wipes the visible
 			// viewport so the next View() draws clean.
 			//
-			// We then replay the conversation under freshly-rendered
-			// startup chrome at the new width via repaintViewport — see
-			// that helper for why the replay goes through queuePrintln
-			// (clear-line prefix + re-wrap to the new width) rather than
-			// a bare tea.Println.
-			m.repaintViewport()
+			// We then replay only a bounded tail under freshly-rendered
+			// startup chrome at the new width. Terminals emit many resize
+			// events while the user drags the window; replaying the entire
+			// native scrollback for each event makes long sessions visibly
+			// scroll forever. The bounded tail is enough to re-anchor the live
+			// frame without dumping the whole conversation repeatedly.
+			m.repaintViewportTail(m.resizeReplayLimit())
 			return m, nil
 		}
 		return m, nil
@@ -6247,30 +6248,82 @@ func (m *Model) queuePrintlnIndented(s string, leftMargin int) {
 	}
 }
 
+// resizeReplayLimit caps resize-triggered history replay. It is intentionally
+// tied to the visible terminal height instead of total session history: resize
+// storms should redraw enough recent context to re-anchor Bubble Tea's inline
+// footer, not re-print the entire native scrollback on every WindowSizeMsg.
+func (m *Model) resizeReplayLimit() int {
+	if m.height <= 0 {
+		return 24
+	}
+	return m.height
+}
+
 // repaintViewport forces a clean inline redraw: wipe the visible viewport,
-// then replay the startup chrome (fresh sessions only) followed by every
-// recorded conversation line at the current width. Re-emitting the
-// transcript from the top down scrolls the live frame back to the bottom of
-// the terminal — the load-bearing side effect, since inline-mode Bubbletea
-// (no alt-screen) doesn't re-anchor a frame on its own.
-//
-// Two callers need that re-anchor: a genuine resize (the live frame's
-// border smears at the old width) and a quiet overlay close (the shrinking
-// frame strands the footer mid-screen). Routing both here keeps the
-// recovery sequence in one place.
-//
-// Each replay line goes through queuePrintln — the SAME path live emission
-// uses — so it gets the \r\x1b[2K clear-line prefix (cursor reset, no
-// column bleed) and is re-wrapped to the current width.
-func (m *Model) repaintViewport() {
+// then replay the startup chrome (fresh sessions only) followed by recorded
+// conversation lines at the current width. A limit <= 0 means replay every
+// line; positive limits replay only the most recent tail.
+func (m *Model) repaintViewportTail(limit int) {
 	m.pendingCmds = append(m.pendingCmds, tea.ClearScreen)
 	if m.shouldShowStartupCard() {
 		m.queuePrintlnFlush(renderStartupBox(m.version, m.commit, m.dirty, m.modelName, m.cwd, m.sess.ID, m.branch, m.memorySummary, m.providerProfile, m.startupTip(), m.width))
 		m.queuePrintln("")
 	}
-	for _, line := range m.historyLines {
+	lines := m.historyLines
+	if limit > 0 {
+		lines = m.historyReplayTail(limit)
+	}
+	for _, line := range lines {
 		m.queuePrintln(line)
 	}
+}
+
+// historyReplayTail returns recent history entries whose rendered terminal rows
+// fit within maxRows. historyLines stores logical entries, but queuePrintln may
+// hard-wrap one entry into many rows; counting rows here keeps resize storms
+// bounded even when the latest output contains long unbroken lines.
+func (m *Model) historyReplayTail(maxRows int) []string {
+	if maxRows <= 0 || len(m.historyLines) == 0 {
+		return m.historyLines
+	}
+	rows := 0
+	start := len(m.historyLines)
+	for start > 0 {
+		lineRows := replayTerminalRows(m.historyLines[start-1], m.width)
+		if rows > 0 && rows+lineRows > maxRows {
+			break
+		}
+		rows += lineRows
+		start--
+		if rows >= maxRows {
+			break
+		}
+	}
+	return m.historyLines[start:]
+}
+
+// replayTerminalRows mirrors queuePrintlnIndented's wrapping cost without
+// queuing commands. Blank lines still consume one terminal row.
+func replayTerminalRows(line string, width int) int {
+	if width <= 0 || line == "" {
+		return 1
+	}
+	lineWidth := ansi.StringWidth(line)
+	if lineWidth <= width {
+		return 1
+	}
+	rows := lineWidth / width
+	if lineWidth%width != 0 {
+		rows++
+	}
+	return rows
+}
+
+// repaintViewport preserves the full replay path for explicit recovery cases
+// such as quiet overlay closes, where one user action needs to re-anchor the
+// inline footer after a tall transient view disappears.
+func (m *Model) repaintViewport() {
+	m.repaintViewportTail(0)
 }
 
 // flushPending drains queued tea.Println cmds into a single sequenced Cmd.
