@@ -117,7 +117,7 @@ go test ./internal/tui/ -run TestDemo_CardOutput -v | sed -n '/^─── /,/^--
 ```
 
 ```text
-┌ Verb(arg)                                              4s
+┌ Verb(arg) · 4s
 │   <body lines, capped at 10>
 └ <summary footer>
 ```
@@ -131,7 +131,7 @@ three columns under the gutter so the shape reads as "header, indented
 content, footer."
 
 **Duration tag.** When a call takes at least one second, its elapsed
-time is right-aligned on the header row (`4s`, `1m 03s`). Sub-second
+time is shown as compact header metadata (`· 4s`, `· 1m 03s`). Sub-second
 calls — the vast majority — show no tag, so the timing surfaces only
 when "how long did that take?" is a real question.
 
