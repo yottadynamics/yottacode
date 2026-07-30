@@ -535,24 +535,43 @@ func (t *AgentTool) Execute(ctx context.Context, argsJSON string) (string, error
 // not for model routing: auto routing sends every delegated subagent to the
 // implementer model. The advisor is reached explicitly through consult_advisor.
 var readOnlyChildTools = map[string]bool{
-	"read_file":              true,
-	"read_many_files":        true,
-	"grep":                   true,
-	"glob":                   true,
-	"list_dir":               true,
-	"list_project_structure": true,
-	"git_log_file":           true,
-	"git_blame_lines":        true,
-	"git_diff_files":         true,
-	"git_show_file_at_rev":   true,
-	"git_branch_status":      true,
-	"list_git_changed_files": true,
-	"git_merge_base":         true,
-	"fetch_url":              true,
-	"todo_write":             true,
-	"session_recall":         true,
-	"memory_search":          true,
-	ConsultAdvisorToolName:   true,
+	"read_file":                     true,
+	"read_many_files":               true,
+	"grep":                          true,
+	"glob":                          true,
+	"list_dir":                      true,
+	"list_project_structure":        true,
+	"git_log_file":                  true,
+	"git_blame_lines":               true,
+	"git_diff_files":                true,
+	"git_show_file_at_rev":          true,
+	"git_branch_status":             true,
+	"list_git_changed_files":        true,
+	"git_merge_base":                true,
+	"fetch_url":                     true,
+	"todo_write":                    true,
+	"session_recall":                true,
+	"memory_search":                 true,
+	"lsp_status":                    true,
+	"lsp_symbols":                   true,
+	"lsp_document_symbols":          true,
+	"lsp_document_highlights":       true,
+	"lsp_selection_ranges":          true,
+	"lsp_definition":                true,
+	"lsp_type_definition":           true,
+	"lsp_implementation":            true,
+	"lsp_references":                true,
+	"lsp_diagnostics":               true,
+	"lsp_changed_files_diagnostics": true,
+	"lsp_hover":                     true,
+	"lsp_signature_help":            true,
+	"lsp_code_actions":              true,
+	"lsp_code_action_preview":       true,
+	"lsp_rename_preview":            true,
+	"lsp_format_preview":            true,
+	"lsp_call_hierarchy":            true,
+	"lsp_impact":                    true,
+	ConsultAdvisorToolName:          true,
 }
 
 // agentIsReadOnly reports whether an agent definition is restricted to the
@@ -647,7 +666,7 @@ type childRunOpts struct {
 	// rule). dispatch uses it to declare the task's file ownership.
 	extraSystemPrompt string
 	// bgPolicy makes a dispatch background worker apply a deterministic
-	// allow/deny policy: owned-file writes + run_tests are allowed; shell and
+	// allow/deny policy: owned-file writes are allowed; tests, shell, and
 	// approval-requiring git/network tools are denied. The child does NOT
 	// bypass permissions — explicit deny rules still win, the run_bash
 	// hardline floor still applies, and writes stay confined to the worktree
@@ -686,6 +705,9 @@ func (t *AgentTool) runChild(
 	childReg := opts.reg
 	if childReg == nil {
 		childReg = t.buildChildRegistry(cfg)
+	}
+	if opts.bgPolicy || opts.standaloneBackgroundPolicy {
+		stripUnattendedProcessTools(childReg)
 	}
 
 	// Mode propagation: the child runs under the same mode as the
@@ -943,11 +965,11 @@ func (t *AgentTool) runChild(
 				continue
 			}
 			// Background path: nobody's watching. Dispatch's unattended
-			// workers (bgPolicy) apply a deterministic allow/deny policy —
-			// worktree-confined writes + tests + read-only shell allowed,
-			// dangerous/mutating shell + other floor tools denied. Other
-			// background subagents auto-deny everything (the conservative
-			// default; allowlist via permissions.json to loosen).
+			// workers (bgPolicy) apply a deterministic allow/deny policy:
+			// owned-file writes and an explicit read-only allowlist are allowed;
+			// tests, shell, network, git process tools, and other approval-
+			// requiring tools are denied. Other background subagents use the same
+			// closed-form policy style, but only for read-only tools.
 			verdict := Deny
 			note := fmt.Sprintf("auto-denied %s (background subagent cannot prompt; allowlist the tool in permissions.json if needed)", e.ToolName)
 			if opts.bgPolicy {
@@ -1123,15 +1145,42 @@ func doneTokensAndCalls(reg *subagents.Registry, taskID string, estimate int) (t
 // standaloneBackgroundApprovalPolicy is the GA safety policy for ordinary
 // Agent(run_in_background:true) runs. Background delegation is available by
 // default in the TUI, but unattended children still cannot answer approval
-// modals, so any approval-requiring tool is denied before parent auto/yolo or
-// permissions Allow can auto-approve it. No-approval tools fall through to
-// normal execution. Write-capable parallel implementation belongs to dispatch, which
-// supplies dispatchBackgroundApprovalPolicy with worktree/file-scope guards.
+// modals, so only an explicit safe read-only allowlist can run. This is stricter
+// than the normal no-approval path: no-approval mutators such as memory_save are
+// still denied because standalone background subagents are documented read-only.
+// Write-capable parallel implementation belongs to dispatch, which supplies
+// dispatchBackgroundApprovalPolicy with worktree/file-scope guards.
 func standaloneBackgroundApprovalPolicy(tool Tool, argsJSON string) (Decision, string, bool) {
-	if tool.RequiresApproval(argsJSON) {
-		return Deny, "denied " + tool.Name() + " (standalone background subagents are read-only; use dispatch for worktree-isolated write fan-out, or run this subagent in the foreground)", true
+	name := tool.Name()
+	if !safeUnattendedReadOnlyTool(name) {
+		return Deny, "denied " + name + " (standalone background subagents are read-only; use dispatch for worktree-isolated write fan-out, or run this subagent in the foreground)", true
 	}
-	return Deny, "", false
+	if tool.RequiresApproval(argsJSON) {
+		return Deny, "denied " + name + " (approval-requiring form is disabled for standalone background subagents)", true
+	}
+	return AllowOnce, "allowed " + name + " (standalone background read-only allowlist)", true
+}
+
+func safeUnattendedReadOnlyTool(name string) bool {
+	if !readOnlyChildTools[name] {
+		return false
+	}
+	if strings.HasPrefix(name, "lsp_") || strings.HasPrefix(name, "media_") || strings.HasPrefix(name, "git_") || name == "list_git_changed_files" || name == "fetch_url" {
+		return false
+	}
+	return name != ConsultAdvisorToolName
+}
+
+// stripUnattendedProcessTools removes no-approval tools that can still launch
+// non-git external binaries. Unattended workers have no prompt surface, so they
+// must not reach language-server or ffmpeg/ffprobe startup through tools that
+// otherwise look read-only.
+func stripUnattendedProcessTools(reg *Registry) {
+	for name := range reg.Names() {
+		if strings.HasPrefix(name, "lsp_") || strings.HasPrefix(name, "media_") {
+			reg.Deregister(name)
+		}
+	}
 }
 
 // dispatchBackgroundApprovalPolicy is the deterministic approval policy for an
@@ -1144,7 +1193,8 @@ func standaloneBackgroundApprovalPolicy(tool Tool, argsJSON string) (Decision, s
 //   - File-mutation tools are allowed: the worktree child registry confines
 //     their writes to the isolated worktree AND to the dispatch worker's owned
 //     file set via WriteOpts, so the blast radius is the worker's branch.
-//   - run_tests is allowed so a worker can verify its change.
+//   - run_tests is DENIED for unattended workers: tests execute arbitrary Go
+//     code from the worker's worktree and can also be influenced by GOFLAGS.
 //   - run_bash is DENIED for unattended workers (GA posture). The
 //     "read-only shell" classifier (IsAutoModeSafeBash) is a first-token
 //     check that is bypassable (env/command wrappers, process substitution),
@@ -1155,26 +1205,28 @@ func standaloneBackgroundApprovalPolicy(tool Tool, argsJSON string) (Decision, s
 //   - Everything else (git_commit, the unified git tool, fetch, …) is denied;
 //     the worker's commit happens via dispatch's own auto-commit.
 func dispatchBackgroundApprovalPolicy(tool Tool, argsJSON string) (Decision, string, bool) {
-	_ = argsJSON // reserved for a future token-aware shell classifier
-	switch tool.Name() {
-	case "write_file", "edit_file", "apply_diff", "mkdir", "copy_file", "move_file", "delete_file":
-		return AllowOnce, "allowed " + tool.Name() + " (dispatch worktree + owned-file scoped write)", true
+	name := tool.Name()
+	switch name {
+	case "write_file", "edit_file", "edit_anchored", "apply_diff", "mkdir", "copy_file", "move_file", "delete_file":
+		return AllowOnce, "allowed " + name + " (dispatch worktree + owned-file scoped write)", true
+	case "lsp_apply_workspace_edit":
+		return Deny, "denied lsp_apply_workspace_edit (workspace edits can partially apply across files; run this task in the foreground to approve it)", true
 	case "run_tests":
-		return AllowOnce, "allowed run_tests (dispatch background worker)", true
+		return Deny, "denied run_tests (tests execute code and are disabled for unattended dispatch workers; run the task in the foreground to approve tests)", true
 	case "run_bash":
-		return Deny, "denied run_bash (shell is disabled for unattended dispatch workers; use run_tests, or run this task in the foreground)", true
-	default:
-		if tool.RequiresApproval(argsJSON) {
-			return Deny, "denied " + tool.Name() + " (not auto-allowed for unattended dispatch workers; needs a human)", true
-		}
-		return Deny, "", false
+		return Deny, "denied run_bash (shell is disabled for unattended dispatch workers; run this task in the foreground to approve shell/tests)", true
 	}
+	if !safeUnattendedReadOnlyTool(name) {
+		return Deny, "denied " + name + " (not auto-allowed for unattended dispatch workers; needs a human)", true
+	}
+	if tool.RequiresApproval(argsJSON) {
+		return Deny, "denied " + name + " (approval-requiring form is disabled for unattended dispatch workers)", true
+	}
+	return AllowOnce, "allowed " + name + " (dispatch background read-only allowlist)", true
 }
-
-// backgroundWorkerDecision preserves the older test/helper surface for the
-// dispatch unattended-worker policy.
 func backgroundWorkerDecision(toolName, argsJSON string) (Decision, string) {
-	decision, note, _ := dispatchBackgroundApprovalPolicy(namedApprovalTool{name: toolName}, argsJSON)
+	tool := namedApprovalTool{name: toolName}
+	decision, note, _ := dispatchBackgroundApprovalPolicy(tool, argsJSON)
 	return decision, note
 }
 
@@ -1189,19 +1241,19 @@ func (t namedApprovalTool) Execute(context.Context, string) (string, error) {
 	return "", nil
 }
 
-// buildChildRegistry clones the parent registry into a new one,
-// stripping Agent (recursion guard) and the plan-mode boundary tools
+// buildChildRegistry clones the parent registry into a new one, stripping the
+// delegation tools (recursion guard) and the plan-mode boundary tools
 // (children inherit the parent's plan-mode state by pointer; only the
 // top-level loop may transition it — a child flipping the shared mode
 // mid-flight would yank the parent's gates out from under it), and
 // applying the agent config's tools allowlist when one is set. The
-// recursion guard is unconditional — even a config that names Agent
+// recursion guard is unconditional — even a config that names Agent/dispatch
 // in its allowlist cannot reintroduce it.
 func (t *AgentTool) buildChildRegistry(cfg *subagents.AgentConfig) *Registry {
 	out := NewRegistry()
 	for _, tool := range t.ParentRegistry.Tools() {
 		name := tool.Name()
-		if name == agentToolName || isPlanBoundaryTool(name) {
+		if isDelegationTool(name) || isPlanBoundaryTool(name) {
 			continue
 		}
 		if !cfg.ToolAllowed(name) {
@@ -1219,6 +1271,10 @@ func (t *AgentTool) buildChildRegistry(cfg *subagents.AgentConfig) *Registry {
 		out.Register(&ConsultAdvisorTool{Advisor: advisor, Model: advisorModel})
 	}
 	return out
+}
+
+func isDelegationTool(name string) bool {
+	return name == agentToolName || name == DispatchToolName || name == IntegrateToolName
 }
 
 func (t *AgentTool) unknownSubagentError(name string) string {

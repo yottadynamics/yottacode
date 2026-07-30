@@ -22,7 +22,8 @@ const DispatchToolName = "dispatch"
 const maxDispatchReplyChars = 4000
 
 // DispatchTool fans a batch of subtasks out to subagents that run
-// concurrently, then blocks until all finish and returns their results
+// concurrently. Write batches usually return immediately and continue in
+// background worktrees; all-read batches wait and return their findings
 // labeled together so the parent can assemble them. Write-capable subtasks
 // each run in an isolated git worktree+branch (no shared-cwd clobbering);
 // read-only subtasks share the parent cwd. The parent partitions work by
@@ -45,28 +46,34 @@ type DispatchTool struct {
 	// SupportsBackground reports whether this session can host detached
 	// background workers (true in the TUI, false in oneshot where there's
 	// no long-running session to surface async completions). When false,
-	// a background dispatch silently falls back to foreground/blocking.
+	// a background dispatch silently falls back to foreground/waiting mode.
 	SupportsBackground bool
 
-	// Enabled gates the whole tool behind the `dispatch` experimental
-	// feature. When false, Execute returns a recoverable error string the
-	// model relays to the user.
+	// Enabled gates the tool behind the `dispatch` experimental feature.
+	// When false, Execute returns a recoverable error string.
 	Enabled bool
 
-	// EnableSyntaxRanges mirrors the parent session's syntax_ranges gate so
-	// dispatch workers can use the same offline range-selection surface.
+	// EnableSyntaxRanges lets dispatch workers use the same offline range-selection surface.
 	EnableSyntaxRanges bool
+
+	// EnableLSP lets dispatch workers expose the same LSP tool surface as the
+	// parent session, while writes still flow through the worker's owned-file
+	// WriteOpts.
+	EnableLSP bool
+
+	// LSPServers carries optional per-language server command overrides.
+	LSPServers map[string][]string
 }
 
 func (t *DispatchTool) Name() string { return DispatchToolName }
 
 func (t *DispatchTool) Description() string {
 	var b strings.Builder
-	b.WriteString("Fan a batch of independent subtasks out to subagents that run concurrently, then block until all finish and return their results together for you to assemble. ")
+	b.WriteString("Fan a batch of independent subtasks out to subagents that run concurrently. ")
 	b.WriteString("Use this to decompose a large piece of work (e.g. a PR) into smaller independent tasks. ")
 	b.WriteString("WRITE subtasks (agents that can edit files) each run in their OWN git worktree+branch, so they never clobber each other or your working tree; you then call `integrate` to merge the branches into one branch for a PR. READ/research subtasks share the working dir and just return findings.\n\n")
 	b.WriteString("CRITICAL — partition by files: give each WRITE subtask a `files` list naming the files it owns. The file sets MUST NOT overlap across write subtasks (the tool rejects the call if they do) — non-overlapping ownership is what makes the branches merge cleanly. A subtask may READ any file; it must only CREATE/EDIT files in its own set.\n\n")
-	b.WriteString("Modes: write/implementation batches run in the BACKGROUND by default (non-blocking — returns a batch id + branches immediately; owned-file writes and run_tests are auto-approved, while shell and other approval-requiring tools are denied; you call `integrate` once they finish). All-read/research batches run in the FOREGROUND (blocking) and return every subtask's findings together for you to assemble right away. Set `background` explicitly to override. ")
+	b.WriteString("Modes: write/implementation batches run in the BACKGROUND by default (returns a batch id + branches immediately; owned-file writes are auto-approved, while tests, shell, and other approval-requiring tools are denied; you call `integrate` once they finish). All-read/research batches run in the FOREGROUND (the call waits for the subtasks and returns every finding together for you to assemble right away). Set `background` explicitly to override. ")
 	b.WriteString("Available subagent_type values are the same as the Agent tool's.")
 	return b.String()
 }
@@ -81,7 +88,7 @@ func (t *DispatchTool) Schema() map[string]any {
 			},
 			"background": map[string]any{
 				"type":        "boolean",
-				"description": "Run the batch in the background (non-blocking): returns a batch id + branches immediately, workers run in their worktrees, you call integrate later. Omit to use the default: background for batches with write-capable tasks (parallel implementation), foreground/blocking for all-read batches (research you want assembled now).",
+				"description": "Run the batch in the background: returns a batch id + branches immediately in TUI sessions, workers run in their worktrees, you call integrate later. Non-interactive sessions cannot host detached workers and run foreground/waiting instead. Omit to use the default: background for TUI batches with write-capable tasks (parallel implementation), foreground/waiting for all-read batches.",
 			},
 			"tasks": map[string]any{
 				"type":        "array",
@@ -183,18 +190,17 @@ type dispatchChild struct {
 
 func (t *DispatchTool) Execute(ctx context.Context, argsJSON string) (string, error) {
 	if !t.Enabled {
-		return "error: `dispatch` is an experimental feature and is not enabled in this session. " +
-			"Enable it with `--experimental dispatch` at startup, `YOTTACODE_EXPERIMENTAL=dispatch` in the environment, " +
-			"or `[experimental]\\ndispatch = true` in ~/.yottacode/config.toml. See docs/dispatch.md. " +
-			"You can still dispatch one subagent at a time with the Agent tool.", nil
+		return "error: `dispatch` is an experimental feature and is not enabled in this session. Enable it with `--experimental dispatch`, `YOTTACODE_EXPERIMENTAL=dispatch`, or `[experimental] dispatch = true` in config.toml. You can still dispatch one subagent at a time with the Agent tool.", nil
 	}
 	a := parseDispatchArgs(argsJSON)
+
 	if strings.TrimSpace(a.Goal) == "" {
 		return "error: dispatch requires a `goal` describing the overall objective", nil
 	}
 	if len(a.Tasks) < 2 {
 		return "error: dispatch needs at least 2 tasks (use the Agent tool for a single subagent)", nil
 	}
+
 	if len(a.Tasks) > MaxForegroundSubagents {
 		return fmt.Sprintf("error: dispatch supports at most %d concurrent subtasks (got %d); split into smaller batches", MaxForegroundSubagents, len(a.Tasks)), nil
 	}
@@ -256,8 +262,8 @@ func (t *DispatchTool) Execute(ctx context.Context, argsJSON string) (string, er
 
 	batchID := subagents.NewTaskID()[:8]
 
-	// Mode: background (non-blocking) for write-capable batches by default —
-	// they're long-running parallel implementation; foreground (blocking,
+	// Mode: background for write-capable batches by default —
+	// they're long-running parallel implementation; foreground (waiting,
 	// assemble-now) for all-read research batches. An explicit `background`
 	// overrides. Falls back to foreground where the session can't host
 	// detached workers (oneshot). Decided here, before any worktree is
@@ -349,7 +355,7 @@ func (t *DispatchTool) resolveBackground(request *bool, hasWrite bool) (bool, st
 		want = *request
 	}
 	if want && !t.SupportsBackground {
-		return false, " (background isn't available in this session — ran foreground/blocking instead)"
+		return false, " (background isn't available in this session — ran foreground/waiting instead)"
 	}
 	return want, ""
 }
@@ -359,7 +365,7 @@ func (t *DispatchTool) resolveBackground(request *bool, hasWrite bool) (bool, st
 // and auto-commits a write task's worktree to its branch.
 //
 // background changes the posture: a foreground child forwards progress +
-// approvals to the parent (emit/decisions), blocking the dispatch call; a
+// approvals to the parent (emit/decisions), keeping the dispatch call open; a
 // background child runs detached and silent — no inline cards (the dock +
 // /subagents read the live registry), auto-approves within its worktree,
 // and reports completion via the background-done callback so it lands after
@@ -467,7 +473,7 @@ func (t *DispatchTool) runDispatchChild(ctx context.Context, c *dispatchChild, b
 	opts := childRunOpts{bgPolicy: background}
 	if c.isWrite {
 		childCwd := NewCwdRef(c.worktree)
-		opts.reg = t.buildWorktreeChildRegistry(c.cfg, childCwd, c.worktree, c.spec.Files)
+		opts.reg = t.buildWorktreeChildRegistry(c.cfg, childCwd, c.worktree, c.spec.Files, background)
 		opts.cwd = childCwd
 		opts.extraSystemPrompt = writeScopePrompt(c.branch, c.spec.Files)
 	}
@@ -603,12 +609,19 @@ func (t *DispatchTool) runDispatchChild(ctx context.Context, c *dispatchChild, b
 // child's worktree, then narrows it to the agent config's allowlist. The
 // core set already excludes the delegation tools (Agent/dispatch/integrate)
 // and exit_plan_mode, so a worker can't recurse.
-func (t *DispatchTool) buildWorktreeChildRegistry(cfg *subagents.AgentConfig, cwd *CwdRef, wtDir string, ownedFiles []string) *Registry {
+func (t *DispatchTool) buildWorktreeChildRegistry(cfg *subagents.AgentConfig, cwd *CwdRef, wtDir string, ownedFiles []string, background bool) *Registry {
 	core := NewRegistry()
+	enableLSP := t.EnableLSP && !background
 	RegisterCoreCwdTools(core, cwd, CoreToolDeps{
-		WriteOpts:          WritePathOptions{Cwd: cwd, DenyExact: DefaultDenyPaths(wtDir), OwnedPaths: append([]string(nil), ownedFiles...)},
-		DenyReads:          DefaultDenyReadPaths(wtDir),
-		SupportsImages:     t.SupportsImages,
+		WriteOpts:      WritePathOptions{Cwd: cwd, DenyExact: DefaultDenyPaths(wtDir), OwnedPaths: append([]string(nil), ownedFiles...)},
+		DenyReads:      DefaultDenyReadPaths(wtDir),
+		SupportsImages: t.SupportsImages,
+		EnableLSP:      enableLSP,
+		LSPServers:     t.LSPServers,
+		// Background workers are unattended, so they must not spawn language-server
+		// binaries. Foreground workers may use LSP tools, but still do not share the
+		// parent manager because eviction is process-level and not lease-aware.
+		LSPManager:         nil,
 		EnableSyntaxRanges: t.EnableSyntaxRanges,
 	})
 	out := NewRegistry()
@@ -624,7 +637,7 @@ func (t *DispatchTool) buildWorktreeChildRegistry(cfg *subagents.AgentConfig, cw
 // and that no file is claimed by two write subtasks. Returns "" when valid,
 // or a recoverable error message naming the collisions / missing scopes.
 func validateWritePartition(children []*dispatchChild) string {
-	owner := map[string]int{} // cleaned repo-relative path -> first task index (1-based)
+	var claims []dispatchFileClaim
 	var missing []string
 	var collisions []string
 	for i, c := range children {
@@ -637,14 +650,15 @@ func validateWritePartition(children []*dispatchChild) string {
 		}
 		for _, f := range c.spec.Files {
 			key := filepath.Clean(strings.TrimSpace(f))
-			if key == "" || key == "." {
+			if key == "" || key == "." || key == ".." || filepath.IsAbs(key) || strings.HasPrefix(key, ".."+string(filepath.Separator)) {
+				collisions = append(collisions, fmt.Sprintf("task %d has invalid broad ownership claim %q", i+1, f))
 				continue
 			}
-			if prev, ok := owner[key]; ok {
-				collisions = append(collisions, fmt.Sprintf("%q is claimed by both task %d and task %d", key, prev, i+1))
+			if prev, ok := overlappingDispatchClaim(claims, key); ok {
+				collisions = append(collisions, fmt.Sprintf("%q overlaps %q claimed by task %d and task %d", key, prev.path, prev.task, i+1))
 				continue
 			}
-			owner[key] = i + 1
+			claims = append(claims, dispatchFileClaim{path: key, task: i + 1})
 		}
 	}
 	if len(missing) > 0 {
@@ -656,6 +670,24 @@ func validateWritePartition(children []*dispatchChild) string {
 			strings.Join(collisions, "; ") + ". Re-partition so each file is owned by exactly one task."
 	}
 	return ""
+}
+
+type dispatchFileClaim struct {
+	path string
+	task int
+}
+
+func overlappingDispatchClaim(claims []dispatchFileClaim, path string) (dispatchFileClaim, bool) {
+	for _, c := range claims {
+		if pathsOverlap(c.path, path) {
+			return c, true
+		}
+	}
+	return dispatchFileClaim{}, false
+}
+
+func pathsOverlap(a, b string) bool {
+	return a == b || strings.HasPrefix(a, b+string(filepath.Separator)) || strings.HasPrefix(b, a+string(filepath.Separator))
 }
 
 // writeScopePrompt is the system-prompt addendum that tells a write subtask
@@ -694,7 +726,7 @@ func commitSubject(agentType, description string) string {
 func (t *DispatchTool) formatBackgroundResult(goal, batchID string, children []*dispatchChild, note string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Dispatched %d subtasks in the BACKGROUND for: %s%s\n", len(children), strings.TrimSpace(goal), note)
-	fmt.Fprintf(&b, "Batch %s — workers are running in parallel; this call did not block.\n\n", batchID)
+	fmt.Fprintf(&b, "Batch %s — workers are running in parallel; this call returned immediately.\n\n", batchID)
 
 	var branches []string
 	for i, c := range children {
@@ -710,14 +742,18 @@ func (t *DispatchTool) formatBackgroundResult(goal, batchID string, children []*
 		fmt.Fprintln(&b)
 	}
 	b.WriteString("\nFollow progress in the live dock (pinned above the status bar) or with /subagents. ")
-	b.WriteString("Each worker auto-approves within its own isolated worktree and is committed to its branch when it finishes.\n")
+	if len(branches) > 0 {
+		b.WriteString("Each write worker auto-approves within its own isolated worktree and is committed to its branch when it finishes.\n")
+	} else {
+		b.WriteString("Read-only workers run without worktrees or integration branches; collect their results from /subagents when they finish.\n")
+	}
 	if len(branches) > 0 {
 		// Don't over-promise: at dispatch time we don't yet know which
 		// workers will actually produce commits (a hook rejection, an empty
 		// change, or an iter-cap can leave a branch with nothing). integrate
-		// skips empty branches, and the dock shows each worker's commit
-		// status as it lands — so phrase this as "merge whatever committed".
-		fmt.Fprintf(&b, "When the workers finish (watch the dock for each one's commit status), call integrate with branches [%s]; it merges whatever committed cleanly and skips any branch a worker left empty.\n", strings.Join(branches, ", "))
+		// now fails fast on missing branches, so tell the model to pass only the
+		// branches the dock reports as committed.
+		fmt.Fprintf(&b, "When the workers finish (watch the dock for each one's commit status), call integrate with the committed branches from this list [%s]. Do not include workers reported as empty/reclaimed or NOT committed.\n", strings.Join(branches, ", "))
 	}
 	return b.String()
 }

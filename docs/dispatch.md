@@ -1,33 +1,21 @@
 # Dispatch & integrate (experimental)
 
 `dispatch` fans a batch of independent subtasks out to subagents that run
-**concurrently**, then blocks until they all finish and returns their
-results together for the main agent to assemble. Write-capable subtasks
-each run in their **own git worktree + branch**, so they never clobber each
-other or your working tree. `integrate` then merges those branches into a
-single integration branch you open a PR from.
+**concurrently**. Write-capable subtasks run in the background by default, each
+in its **own git worktree + branch**, while all-read batches wait for the
+subtasks and return results together for the main agent to assemble. `integrate`
+then merges worker branches into a single integration branch you open a PR from.
+
 
 This is the building block for "decompose a large PR into smaller
 independent tasks, implement them in parallel, assemble the result."
 
-> **Status: experimental beta — opt-in, and we want your feedback.** The
-> feature is merged and tested, but the UX and model behavior are still
-> settling. Enable the `dispatch` feature:
->
-> ```bash
-> yottacode --experimental dispatch
-> ```
->
-> (or `YOTTACODE_EXPERIMENTAL=dispatch`, or set it under
-> `[experimental]` in `~/.yottacode/config.toml`.) Background subagents are
-> now GA in the interactive TUI — no separate flag needed. See
-> [experimental.md](experimental.md) for every way to enable.
->
-> **Hit a bug or a rough edge?** Please file it on GitHub Issues with the
-> **`dispatch-beta`** label — include what you dispatched, what happened, and
-> the relevant transcript (open `/subagents`, press Enter on the task). Skim
-> the **[Known limitations (beta)](#known-limitations-beta)** at the bottom
-> first — a few sharp edges are known and listed there.
+> **Status: experimental.** Enable with `--experimental dispatch`,
+> `YOTTACODE_EXPERIMENTAL=dispatch`, or `[experimental] dispatch = true` in
+> config. Background subagents themselves are GA in the interactive TUI, but
+> dispatch/integrate remains opt-in while the decomposition and integration UX
+> settles.
+
 
 ## The model
 
@@ -39,8 +27,8 @@ dispatch({ goal, tasks:[{subagent_type, description, prompt, files[]}], backgrou
    └─ read task  → shared working dir, no worktree (research only)
    │  each write task is auto-committed to its branch when it finishes
    ▼  BACKGROUND (default for write batches): returns a batch id + branches
-      immediately, non-blocking; workers run on; you integrate later
-   ▼  FOREGROUND (default for all-read batches): blocks, returns every
+      immediately; workers run on; you integrate later
+   ▼  FOREGROUND (default for all-read batches): waits, returns every
       subtask's findings together for you to assemble now
 integrate({ branches:[...] })
    │  fresh integration worktree; git merge --no-ff each branch in order
@@ -53,21 +41,23 @@ integrate({ branches:[...] })
 `dispatch` runs in one of two modes:
 
 - **Background** (default when the batch has any **write** task): the call
-  returns **immediately** with a batch id and the worker branches, and does
-  **not** block the main agent — the workers keep implementing in parallel
+  returns **immediately** with a batch id and the worker branches. The main agent
+  can continue while workers keep implementing in parallel
   in their worktrees. You watch the live dock, then call `integrate` once
   they finish. This is the path for "implement a large PR in parallel
   without tying up the session." Background workers apply a fixed unattended
-  policy: owned-file writes and `run_tests` are auto-approved; shell and other
-  approval-requiring tools are denied because there is no UI to prompt.
+  policy: owned-file writes are auto-approved; `run_tests`, shell, and other
+  approval-requiring tools are denied because tests/shell execute code and
+  there is no UI to prompt.
 - **Foreground** (default for an **all-read / research** batch): the call
-  **blocks**, runs the subtasks concurrently, and returns every subtask's
+  waits for the subtasks, runs them concurrently, and returns every subtask's
   findings together for the main agent to assemble right away. No worktrees.
   Foreground children forward any approval to your modal.
 
+
 Override the default with the `background` argument (`true`/`false`). In a
 non-interactive (`oneshot`) session there's nowhere to host detached
-workers, so background silently falls back to foreground/blocking.
+workers, so background silently falls back to foreground/waiting mode.
 
 ## Partition by files — the key rule
 
@@ -113,21 +103,21 @@ disjoint file set). A common full arc is **`Plan`** (design the split) →
 
 This is a write batch, so it runs in the **background**: the call returns
 immediately with a batch id and the three worker branches, and the workers
-keep implementing in parallel. Watch the live dock; once it shows them done:
+keep implementing in parallel. Watch the live dock; once it shows them done,
+call `integrate` with only the branches the dock reported as committed:
 
 ```jsonc
 integrate({ "branches": [
   "worktree-dispatch-ab12cd34-1",
-  "worktree-dispatch-ab12cd34-2",
   "worktree-dispatch-ab12cd34-3"
 ]})
 ```
 
-…produces one integration branch with all three changes. Push it and open
+…produces one integration branch with the committed worker changes. Push it and open
 a PR (e.g. `/git-create-pr`).
 
 A read-only batch (e.g. three `explore` tasks mapping different subsystems)
-runs in the **foreground** instead: the call blocks briefly and returns all
+runs in the **foreground** instead: the call waits briefly and returns all
 three findings together for you to synthesize immediately — no branches, no
 `integrate` step.
 
@@ -142,28 +132,30 @@ on the mode:
   - **File writes/edits** — allowed only inside the worker's own worktree and
     declared `files` ownership, so the blast radius is its branch and its file
     partition.
-  - **`run_tests`** — allowed, so a worker can verify its change.
+  - **`run_tests`** — **disabled** for unattended workers. Tests execute
+    arbitrary project code and inherit environment such as `GOFLAGS`, so they
+    need a foreground task where a human can approve them.
   - **`run_bash`** — **disabled** for unattended workers. The
     "read-only shell" classifier is a first-token check that can be bypassed
     (e.g. `env`/`command` wrappers, process substitution) and `run_bash` isn't
     path-confined once allowed, so auto-allowing it would be an arbitrary-code-
     execution surface for a worker nobody is watching. A task that genuinely
     needs shell must run in the **foreground** (where a human approves each
-    call), or use **`run_tests`**. (A token-aware classifier that re-enables
-    safe read-only shell is tracked as dispatch-v3 Layer 0.)
+    call). A token-aware classifier that re-enables safe read-only shell is
+    tracked as future work.
   - Other approval-requiring tools (git mutations, GitHub writes, etc.) are
     denied; the commit happens via dispatch's own auto-commit.
 - **Foreground children forward approvals to your modal** (serialized across
   the batch), so you see and answer each one. Pair with **auto** mode to skip
   per-edit prompts on the path-confined file writes.
 
+
 **Hardline floor (always on).** A small set of catastrophic commands —
 `rm -rf /` / `~` / system dirs, `mkfs`, `dd` to a raw block device, fork
 bombs, `shutdown`/`reboot`/`poweroff` — are refused at the `run_bash`
 execution chokepoint **unconditionally**, even under `--yolo` or a background
 worker. They can't be run through the agent at all; run them yourself in a
-real terminal if you genuinely need to. (Mirrors hermes's hardline blocklist
-and Claude Code's `rm -rf /` circuit breaker.)
+real terminal if you genuinely need to.
 
 > Note: the hardline floor and the read-only-shell policy are deterministic
 > pattern/allowlist checks, not a sandbox. For untrusted work, run yottacode
@@ -195,7 +187,8 @@ that left uncommitted work — that's reported with the reason (and the
 worktree path for an errored worker), instead of a misleading "no changes".
 For a background batch the per-worker commit status (committed SHA, or the
 not-committed reason) lands on the dock banner as each worker finishes, and
-`integrate` simply skips any branch that ended up empty.
+`integrate` fails fast for missing branch names; pass only branches that the dock
+or foreground result reported as committed.
 
 ## Watching it run
 
@@ -223,28 +216,30 @@ lists every task and opens each one's full transcript.
   for `integrate`; one still holding *uncommitted* work is kept and its
   path reported so partial output is never discarded.
 - On a clean `integrate`, the merged task worktrees **and** their
-  `worktree-dispatch-*` branches are reclaimed automatically (their work is
-  safely on the integration branch). Empty skipped branches are removed too,
-  under the same keep rules as above. (There's no more "prune later with
-  `git_worktree_prune`" step — that was a no-op against live worktrees.)
+  `worktree-dispatch-*` branches are reclaimed automatically, including after
+  conflict resolution resumes (their work is safely on the integration branch).
+  Missing branch names fail fast, so omit workers reported as empty/reclaimed or
+  NOT committed when you call `integrate`.
+  (There's no more "prune later with `git_worktree_prune`" step — that was a
+  no-op against live worktrees.)
 - Background workers are bound to the session: quitting yottacode cancels
   any still-running workers (and tears down their provider streams) rather
   than leaking them, then sweeps the session's dispatch worktrees one last
   time so workers the bounded drain gave up on don't leak empty worktrees
   either. The sweep keeps committed and dirty worktrees, same as above.
 
-## Known limitations (beta)
+## Known limitations
 
-Sharp edges we know about — read these before filing a `dispatch-beta` issue:
+Sharp edges we know about:
+
 
 - **The sandbox is not a container.** Worktree write-confinement + the
   deterministic shell floor are guardrails, not isolation. For untrusted or
   high-stakes work, run yottacode itself inside a VM/container.
-- **Unattended `run_bash` is disabled.** Background workers can write files
-  and `run_tests`, but cannot run arbitrary shell (the read-only classifier is
-  bypassable and `run_bash` isn't path-confined). A task that needs shell must
-  run in the foreground, where you approve each call. Safe read-only shell for
-  background workers returns once the token-aware classifier lands.
+- **Unattended `run_bash` and `run_tests` are disabled.** Background workers can
+  write owned files, but cannot run shell or tests. A task that needs either
+  must run in the foreground, where you approve each call.
+
 - **Kept worktrees accumulate until you integrate or discard them.** Empty
   worktrees are reclaimed automatically (per worker on finish, any outcome,
   foreground and background, plus the session-exit sweep), and `integrate`

@@ -80,6 +80,37 @@ func TestBuildSubagentWakeMessage_MultipleAndErrored(t *testing.T) {
 	}
 }
 
+func TestBuildSubagentWakeMessage_DispatchCommitMetadata(t *testing.T) {
+	msg := buildSubagentWakeMessage([]agent.SubagentBackgroundDone{
+		{
+			TaskID:    "dddd1111eeee2222",
+			AgentType: "implement",
+			Result:    "changed owned files",
+			BatchID:   "dispatch-abcd1234",
+			Branch:    "worktree-dispatch-abcd1234-1",
+			Committed: true,
+			CommitSHA: "1234567890abcdef",
+		},
+	})
+	for _, want := range []string{"dispatch-abcd1234", "worktree-dispatch-abcd1234-1", "1234567890abcdef", "call integrate"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("dispatch wake message missing %q; got:\n%s", want, msg)
+		}
+	}
+}
+
+func TestBuildSubagentWakeMessage_DispatchCommitFailureMetadata(t *testing.T) {
+	msg := buildSubagentWakeMessage([]agent.SubagentBackgroundDone{
+		{TaskID: "eeee1111ffff2222", AgentType: "test", Result: "hook failed", BatchID: "dispatch-deadbeef", Branch: "worktree-dispatch-deadbeef-2", CommitErr: "pre-commit hook rejected the commit"},
+		{TaskID: "ffff1111aaaa2222", AgentType: "docs", Result: "nothing to do", BatchID: "dispatch-deadbeef", Branch: "worktree-dispatch-deadbeef-3", Reclaimed: true},
+	})
+	for _, want := range []string{"NOT committed", "pre-commit hook rejected", "empty worktree and branch reclaimed"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("dispatch wake message missing %q; got:\n%s", want, msg)
+		}
+	}
+}
+
 // TestShortTaskID tolerates ids shorter than 8 chars (test fixtures) and
 // truncates longer ones to the 8-char prefix used across the subagent UI.
 func TestShortTaskID(t *testing.T) {

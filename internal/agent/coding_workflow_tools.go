@@ -499,6 +499,11 @@ func (t *RollbackTool) Execute(ctx context.Context, argsJSON string) (string, er
 	return strings.TrimSpace(string(b)), nil
 }
 
+type runTestsArgs struct {
+	Command string `json:"command"`
+	Path    string `json:"path"`
+}
+
 type RunTestsTool struct{ Cwd *CwdRef }
 
 func (t *RunTestsTool) Name() string { return "run_tests" }
@@ -516,39 +521,25 @@ func (t *RunTestsTool) Schema() map[string]any {
 }
 func (t *RunTestsTool) RequiresApproval(string) bool { return true }
 func (t *RunTestsTool) PreviewCall(argsJSON string) string {
-	var a struct {
-		Command string `json:"command"`
-		Path    string `json:"path"`
-	}
+	var a runTestsArgs
 	_ = json.Unmarshal([]byte(argsJSON), &a)
-	cmd := strings.TrimSpace(a.Command)
-	if cmd == "" {
-		cmd = "go test ./..."
-	}
+	cmd := normalizeRunTestsCommand(a.Command)
 	root := a.Path
 	if root == "" {
 		root = "."
 	}
 	return fmt.Sprintf("run_tests(%s in %s)", cmd, root)
 }
+
 func (t *RunTestsTool) Execute(ctx context.Context, argsJSON string) (string, error) {
-	var a struct {
-		Command string `json:"command"`
-		Path    string `json:"path"`
-	}
+	var a runTestsArgs
 	if err := json.Unmarshal([]byte(argsJSON), &a); err != nil {
 		return "", fmt.Errorf("run_tests: invalid args: %w", err)
 	}
-	command := strings.TrimSpace(a.Command)
-	if command == "" {
-		command = "go test ./..."
-	}
-	root := t.Cwd.Get()
-	if strings.TrimSpace(a.Path) != "" {
-		root = a.Path
-		if !filepath.IsAbs(root) {
-			root = filepath.Join(t.Cwd.Get(), root)
-		}
+	command := normalizeRunTestsCommand(a.Command)
+	root, err := t.resolveRunTestsRoot(a.Path)
+	if err != nil {
+		return "", fmt.Errorf("run_tests: %w", err)
 	}
 	cmd := exec.CommandContext(ctx, "/bin/sh", "-c", command)
 	cmd.Dir = root
@@ -565,4 +556,25 @@ func (t *RunTestsTool) Execute(ctx context.Context, argsJSON string) (string, er
 		return "", fmt.Errorf("run_tests: %w", runErr)
 	}
 	return fmt.Sprintf("$ %s\nexit=%d\n--- stdout ---\n%s--- stderr ---\n%s", command, exit, stdout.String(), stderr.String()), nil
+}
+
+func normalizeRunTestsCommand(command string) string {
+	command = strings.TrimSpace(command)
+	if command == "" {
+		return "go test ./..."
+	}
+	return command
+}
+
+func (t *RunTestsTool) resolveRunTestsRoot(path string) (string, error) {
+	base := filepath.Clean(t.Cwd.Get())
+	root := base
+	if strings.TrimSpace(path) != "" {
+		root = strings.TrimSpace(path)
+		if !filepath.IsAbs(root) {
+			root = filepath.Join(base, root)
+		}
+		root = filepath.Clean(root)
+	}
+	return root, nil
 }

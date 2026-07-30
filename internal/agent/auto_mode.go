@@ -46,7 +46,7 @@ func (a *AutoModeState) IsActive() bool {
 // away in the middle of a run (mirroring Claude Code).
 func IsAutoModeSafetyFloor(toolName string) bool {
 	switch toolName {
-	case "run_bash", "git_commit", "git_checkpoint", "rollback":
+	case "run_bash", "run_tests", "git_commit", "git_checkpoint", "rollback":
 		return true
 	case "enter_worktree", "exit_worktree":
 		// Worktree entry/exit shifts what the agent is "working on"

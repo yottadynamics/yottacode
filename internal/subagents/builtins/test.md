@@ -22,14 +22,14 @@ Rules:
   for context, but only CREATE or EDIT the test files you own. Do not edit
   the implementation under test — if it looks wrong, report it, don't fix it
   (that's another agent's file).
-- Run the tests you write (`run_tests`) and report the result. If they
-  fail because the implementation is broken, say so plainly with the
-  failure output — a failing test that reflects a real bug is a success for
-  you, not something to paper over.
-- In dispatch fan-out, write-capable workers run in background worktrees:
-  your shell (`run_bash`) is disabled and your work is committed for you on
-  finish; use `run_tests` to execute the suite. In standalone Agent calls,
-  expect foreground execution when command execution is required.
-
+- Run the tests you write (`run_tests`) and report the result when you are in
+  a foreground run. If tests fail because the implementation is broken, say so
+  plainly with the failure output — a failing test that reflects a real bug is
+  a success for you, not something to paper over.
+- In dispatch fan-out, write-capable workers usually run in background
+  worktrees: your shell (`run_bash`) and `run_tests` are disabled because no
+  human can approve command execution, and your work is committed for you on
+  finish. If you cannot run tests for that reason, state the gap explicitly in
+  your final reply instead of retrying the denied tool.
 Your final reply: what you covered (the cases/paths), the run result, and
 any gap you couldn't cover and why. Just the summary, no scaffolding.

@@ -168,8 +168,8 @@ func Run(ctx context.Context, opts cli.ChatOptions, prompt string) error {
 		fmt.Fprintln(os.Stderr, "skills: "+w)
 	}
 	// Resolve experimental features before composing the prompt so the
-	// dispatch steering can be baked in (the model needs it to reach for
-	// dispatch/integrate). Reused for tool gating below.
+	// optional feature prompts can be baked in. Dispatch stays experimental for
+	// this PR, so its steering is appended only when the flag enables the tools.
 	expSet := experimental.NewSet()
 	for name, on := range fileCfg.Experimental {
 		if on {
@@ -380,10 +380,9 @@ func Run(ctx context.Context, opts cli.ChatOptions, prompt string) error {
 	// symmetric with the TUI is worth the one extra line.
 	reg.Register(&agent.GetSubagentResultTool{Tasks: tasks})
 
-	// Dispatch + integrate (foreground, so usable in oneshot). Gated by
-	// the `dispatch` experimental feature like the TUI.
+	// Dispatch + integrate (foreground in oneshot when enabled).
 	dispatchEnabled := expSet.IsEnabled(experimental.Dispatch)
-	reg.Register(&agent.DispatchTool{Agent: agentTool, Enabled: dispatchEnabled, EnableSyntaxRanges: expSet.IsEnabled(experimental.SyntaxRanges)})
+	reg.Register(&agent.DispatchTool{Agent: agentTool, Enabled: dispatchEnabled, EnableLSP: expSet.IsEnabled(experimental.LSPCodeIntelligence), LSPServers: fileCfg.LSP.Servers, EnableSyntaxRanges: expSet.IsEnabled(experimental.SyntaxRanges)})
 	reg.Register(&agent.IntegrateTool{Cwd: cwdRef, Enabled: dispatchEnabled})
 
 	// Skill tool: reuses the set loaded above for system-prompt

@@ -248,17 +248,71 @@ func TestAgentTool_RecursionGuard(t *testing.T) {
 	cfg := subagents.AgentConfig{
 		Name:        "evil",
 		Description: "tries to recurse",
-		Tools:       []string{"read_file", "Agent"},
+		Tools:       []string{"read_file", "Agent", "dispatch", "integrate"},
 		Prompt:      "be evil",
 		Source:      "test",
 	}
 	tool, _ := newTestAgentTool(t, []subagents.AgentConfig{cfg}, nil, false)
+	tool.ParentRegistry.Register(&DispatchTool{Enabled: true})
+	tool.ParentRegistry.Register(&IntegrateTool{Enabled: true})
 	child := tool.buildChildRegistry(&cfg)
 	if _, ok := child.Get(agentToolName); ok {
 		t.Fatalf("child registry contains the Agent tool — recursion guard failed")
 	}
+	if _, ok := child.Get(DispatchToolName); ok {
+		t.Fatalf("child registry contains dispatch — delegation guard failed")
+	}
+	if _, ok := child.Get(IntegrateToolName); ok {
+		t.Fatalf("child registry contains integrate — delegation guard failed")
+	}
 	if _, ok := child.Get("read_file"); !ok {
 		t.Errorf("child registry missing read_file (should be inherited)")
+	}
+}
+
+func TestStandaloneBackgroundPolicyIsExplicitReadOnlyAllowlist(t *testing.T) {
+	read := &mockTool{name: "read_file"}
+	decision, note, handled := standaloneBackgroundApprovalPolicy(read, `{}`)
+	if !handled || decision != AllowOnce || !strings.Contains(note, "read-only allowlist") {
+		t.Fatalf("read_file should be explicitly allowed by standalone background policy, got decision=%v note=%q handled=%v", decision, note, handled)
+	}
+
+	memorySave := &mockTool{name: "memory_save"}
+	decision, note, handled = standaloneBackgroundApprovalPolicy(memorySave, `{}`)
+	if !handled || decision != Deny || !strings.Contains(note, "read-only") {
+		t.Fatalf("memory_save should be explicitly denied in standalone background, got decision=%v note=%q handled=%v", decision, note, handled)
+	}
+
+	approvalRead := &mockTool{name: "read_file", requiresApproval: true}
+	decision, note, handled = standaloneBackgroundApprovalPolicy(approvalRead, `{}`)
+	if !handled || decision != Deny || !strings.Contains(note, "approval-requiring") {
+		t.Fatalf("approval-requiring read_file form should be denied, got decision=%v note=%q handled=%v", decision, note, handled)
+	}
+}
+
+func TestDispatchBackgroundPolicyIsExplicitAllowlist(t *testing.T) {
+	write := &mockTool{name: "write_file", requiresApproval: true}
+	decision, note, handled := dispatchBackgroundApprovalPolicy(write, `{}`)
+	if !handled || decision != AllowOnce || !strings.Contains(note, "owned-file scoped") {
+		t.Fatalf("write_file should be allowed once, got decision=%v note=%q handled=%v", decision, note, handled)
+	}
+
+	read := &mockTool{name: "read_file"}
+	decision, note, handled = dispatchBackgroundApprovalPolicy(read, `{}`)
+	if !handled || decision != AllowOnce || !strings.Contains(note, "read-only allowlist") {
+		t.Fatalf("read_file should be explicitly allowed by dispatch background policy, got decision=%v note=%q handled=%v", decision, note, handled)
+	}
+
+	gitRead := &mockTool{name: "git_diff_files"}
+	decision, note, handled = dispatchBackgroundApprovalPolicy(gitRead, `{}`)
+	if !handled || decision != Deny || !strings.Contains(note, "not auto-allowed") {
+		t.Fatalf("git_diff_files should be denied by explicit unattended allowlist, got decision=%v note=%q handled=%v", decision, note, handled)
+	}
+
+	fetch := &mockTool{name: "fetch_url"}
+	decision, note, handled = dispatchBackgroundApprovalPolicy(fetch, `{}`)
+	if !handled || decision != Deny || !strings.Contains(note, "not auto-allowed") {
+		t.Fatalf("fetch_url should be denied by unattended network policy, got decision=%v note=%q handled=%v", decision, note, handled)
 	}
 }
 

@@ -26,10 +26,12 @@ Rules:
   the tests for what you built (or rely on the paired `test` agent if the
   parent split that out — don't duplicate its files).
 - In dispatch fan-out, write-capable workers run in background worktrees:
-  your shell (`run_bash`) is disabled and your changes are committed for you
-  when you finish. You don't need to commit. In standalone Agent calls,
-  expect foreground execution for write-capable work; mutating tools go
-  through the normal approval flow.
+  your shell (`run_bash`) and `run_tests` are disabled because no human can
+  approve command execution, and your changes are committed for you when you
+  finish. You don't need to commit. If you cannot verify for that reason, say
+  so in your final summary. In standalone Agent calls, expect foreground
+  execution for write-capable work; mutating tools go through the normal
+  approval flow.
 
 Your final reply is a short, factual summary the parent will read to
 assemble the whole: what you changed, the key files, and anything the

@@ -106,13 +106,11 @@ Memory hygiene:
 
 Self-improvement: treat every session and every completed task as an opportunity to strengthen the knowledge base. At task boundaries, actively check whether the user taught you something durable, an approach succeeded or failed in a way worth recording, a decision or rationale emerged, or you discovered a constraint, gotcha, subsystem behavior, or pattern that future-you would benefit from knowing. If so, save it before the session context is lost.`
 
-// DispatchPromptAddendum is appended to the system prompt ONLY when the
-// `dispatch` experimental feature is enabled (run.go / oneshot.go gate it).
-// Without it the model has no steering toward the dispatch/integrate tools
-// and falls back to its ingrained "use Agent / just do it myself" reflexes —
-// the tool description alone doesn't win against the rest of the prompt.
-// Kept separate (not in DefaultSystemPrompt) so the prompt never advertises
-// tools that aren't registered when the gate is off.
+// DispatchPromptAddendum gives the model explicit steering toward dispatch and
+// integrate for GA parallel implementation. Kept separate from
+// DefaultSystemPrompt so embedders can omit it when they don't register those
+// tools, but the built-in TUI and oneshot surfaces append it unconditionally.
+
 const DispatchPromptAddendum = `## Parallel implementation with dispatch + integrate (enabled this session)
 
 You also have two tools for fanning a batch of work out to subagents that run concurrently:
@@ -125,8 +123,8 @@ WHEN TO USE dispatch (prefer it over doing the work yourself one-by-one):
 
 HOW:
   1. Decompose the request into 2+ subtasks, each owning a DISJOINT set of files (no two subtasks edit the same file — that is what keeps the merge clean). Pass each write subtask a "files" list of exactly the files it will create/edit.
-  2. Write/implementation batches run in the BACKGROUND by default: dispatch returns a batch id + branches immediately and does NOT block. The workers keep going in their worktrees with owned-file writes and run_tests auto-approved; shell and other approval-requiring tools are denied. Read-only research batches run foreground and return findings together.
-  3. After the workers finish (watch the live dock / /subagents), call integrate with their branches to assemble one branch, then open a PR.
+  2. In the TUI, write/implementation batches run in the BACKGROUND by default: dispatch returns a batch id + branches immediately and does NOT block. In non-interactive oneshot runs, background dispatch falls back to foreground/waiting. Workers keep going in their worktrees with owned-file writes auto-approved; tests, shell, network, and other approval-requiring tools are denied. Read-only research batches run foreground and return findings together.
+  3. After the workers finish (watch the live dock / /subagents), call integrate with only the branches reported as committed to assemble one branch, then open a PR.
 
 dispatch is for parallel WORK across files; the plain Agent tool is for delegating a single investigation. If the user names multiple independent units of work, reach for dispatch.`
 
