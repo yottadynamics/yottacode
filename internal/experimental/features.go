@@ -54,6 +54,11 @@ const (
 	// navigation tools. It stays experimental while server discovery,
 	// install guidance, and multi-language UX settle.
 	LSPCodeIntelligence Feature = "lsp_code_intelligence"
+
+	// SyntaxRanges enables offline parser-backed syntax range selection. It is
+	// separate from LSP so agents can choose structural edit ranges without
+	// requiring a language server process.
+	SyntaxRanges Feature = "syntax_ranges"
 )
 
 // All returns every recognized feature name in deterministic order.
@@ -65,6 +70,7 @@ func All() []Feature {
 		CodeMap,
 		Dispatch,
 		LSPCodeIntelligence,
+		SyntaxRanges,
 	}
 }
 
@@ -82,6 +88,8 @@ func Description(f Feature) string {
 		return "Dispatch + integrate tools. Fan a batch of subtasks out to concurrent subagents (write-capable ones in isolated git worktrees, partitioned by file ownership), then merge their branches into one integration branch for a PR."
 	case LSPCodeIntelligence:
 		return "Language-server-backed code intelligence tools. Detect supported languages, report missing server binaries with install hints, and provide symbols/definition/references when servers are available."
+	case SyntaxRanges:
+		return "Offline syntax range tools for selecting local structural edit ranges before anchored edits."
 	default:
 		return ""
 	}

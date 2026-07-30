@@ -47,6 +47,10 @@ type CoreToolDeps struct {
 
 	// EnableCodeMap registers the experimental read-only code-map tools.
 	EnableCodeMap bool
+
+	// EnableSyntaxRanges registers offline parser-backed range-selection tools.
+	// The actual edits still flow through anchored reads and edit_anchored.
+	EnableSyntaxRanges bool
 }
 
 // RegisterCoreCwdTools registers the core working-directory-bound tools —
@@ -123,6 +127,9 @@ func RegisterCoreCwdTools(reg *Registry, cwd *CwdRef, deps CoreToolDeps) {
 		reg.Register(&CodeImpactTool{Provider: deps.CodeMapProvider})
 		reg.Register(&CodeCyclesTool{Provider: deps.CodeMapProvider})
 		reg.Register(&CodeMapDiagramTool{Provider: deps.CodeMapProvider})
+	}
+	if deps.EnableSyntaxRanges {
+		reg.Register(&SyntaxRangeTool{Cwd: cwd, DenyReadPaths: deps.DenyReads})
 	}
 	if deps.EnableLSP {
 		base := lspToolBase{Cwd: cwd, DenyReadPaths: deps.DenyReads, NewClient: deps.LSPClientFactory, Servers: deps.LSPServers, Manager: deps.LSPManager}

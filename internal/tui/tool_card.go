@@ -630,7 +630,7 @@ func toolFooter(toolName, output string, errored bool, cwd string) string {
 		return styleCardMeta.Render(fetchURLFooter(output))
 	case "lsp_status":
 		return styleCardMeta.Render(listDirFooter(output))
-	case "lsp_symbols", "lsp_document_symbols", "lsp_document_highlights", "lsp_selection_ranges", "lsp_definition", "lsp_references", "lsp_signature_help", "lsp_diagnostics", "lsp_code_actions", "lsp_code_action_preview", "lsp_call_hierarchy":
+	case "syntax_range", "lsp_symbols", "lsp_document_symbols", "lsp_document_highlights", "lsp_selection_ranges", "lsp_definition", "lsp_references", "lsp_signature_help", "lsp_diagnostics", "lsp_code_actions", "lsp_code_action_preview", "lsp_call_hierarchy":
 		return styleCardMeta.Render(matchFooter(output))
 	case "run_tests":
 		// run_tests reuses run_bash's exit=N\n--- stdout ---\n…\n--- stderr ---\n…
@@ -1307,6 +1307,14 @@ func toolHeader(toolName, argsJSON, preview string, maxWidth int, cwd string) st
 		}
 		_ = json.Unmarshal([]byte(argsJSON), &a)
 		return clipHeader("Fetch("+a.URL+")", headerBudget)
+	case "syntax_range":
+		var a struct {
+			Path      string `json:"path"`
+			Line      int    `json:"line"`
+			Character int    `json:"character"`
+		}
+		_ = json.Unmarshal([]byte(argsJSON), &a)
+		return clipHeader(fmt.Sprintf("Syntax(range %s:%d:%d)", short(a.Path), a.Line, a.Character), headerBudget)
 	case "lsp_status":
 		var a struct {
 			Path string `json:"path"`

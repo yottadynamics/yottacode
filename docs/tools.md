@@ -64,7 +64,8 @@ In addition to the built-ins, **MCP tools** register dynamically when an `[[mcp_
 | [`lsp_symbols`](#lsp_symbols) | none | Search workspace symbols through an installed language server |
 | [`lsp_document_symbols`](#lsp_document_symbols) | none | List structural symbols declared in one source file |
 | [`lsp_document_highlights`](#lsp_document_highlights) | none | Show current-file symbol reads/writes/text occurrences |
-| [`lsp_selection_ranges`](#lsp_selection_ranges) | none | Show nested syntax ranges around a source position |
+| [`syntax_range`](#syntax_range) | none | Offline parser-backed syntax ranges around a source position |
+| [`lsp_selection_ranges`](#lsp_selection_ranges) | none | Show server-backed nested syntax ranges around a source position |
 | [`lsp_definition`](#lsp_definition) | none | Find definition locations for a source position through an installed language server |
 | [`lsp_type_definition`](#lsp_type_definition) | none | Find type definition locations for a source position through an installed language server |
 | [`lsp_implementation`](#lsp_implementation) | none | Find implementation locations for an interface, method, or symbol |
@@ -145,6 +146,7 @@ tool-call log; the TUI renames it for readability. Mapping:
 | `write_file` | `Write(<path>)` |
 | `edit_file` | `Edit(<path>, single\|all)` |
 | `edit_anchored` | `edit_anchored(<path>, N ops)` |
+| `syntax_range` | `Syntax(range <path>:<line>:<character>)` |
 | `apply_diff` | `Patch(apply)` |
 | `mkdir` | `Mkdir(<path>)` |
 | `copy_file` | `Copy(<src> → <dst>)` |
@@ -336,6 +338,22 @@ Anchors should be passed as full `line#hash` references, for example `42#a8f13c2
 
 Always prompts for approval.
 
+## syntax_range
+
+Return offline parser-backed syntax ranges around a source position. This is a read-only helper for choosing a local edit target before an anchored read/edit; it does not replace LSP semantic tools and it never writes files.
+
+| Param | Type | Default | Notes |
+|---|---|---|---|
+| `path` | string | — | Required source file |
+| `line` | int | — | Zero-based line |
+| `character` | int | — | Zero-based UTF-16 character offset |
+| `max_results` | int | `50` | Clamped to `500` |
+
+Output rows are `kind name [detail]\tpath:startLine:startColumn-endLine:endColumn\tlines=A-B\tanchor_read={...}`. Ranges are ordered smallest-to-largest so the agent can choose a nearby block, function, method, type, or file. The `anchor_read` JSON is a suggested `read_file` call with `anchors=true`; after that read, use `edit_anchored` for the actual write.
+
+The first implementation is Go-only and uses the standard library parser. Other languages should use `lsp_selection_ranges` when a language server is installed until parser backends are added. Experimental behind `syntax_ranges`.
+
+## apply_diff
 
 Apply a unified diff patch using `git apply`. This is better than
 `edit_file` for multi-hunk changes across one or more files.

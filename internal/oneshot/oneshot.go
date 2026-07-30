@@ -279,13 +279,14 @@ func Run(ctx context.Context, opts cli.ChatOptions, prompt string) error {
 	// worktree-child registry via RegisterCoreCwdTools. Oneshot's extras
 	// (worktree-admin, memory, git escape-hatch, todo, plan) stay inline.
 	agent.RegisterCoreCwdTools(reg, cwdRef, agent.CoreToolDeps{
-		WriteOpts:       writeOpts,
-		DenyReads:       denyReads,
-		EnableLSP:       expSet.IsEnabled(experimental.LSPCodeIntelligence),
-		LSPManager:      lspManager,
-		LSPServers:      fileCfg.LSP.Servers,
-		EnableCodeMap:   expSet.IsEnabled(experimental.CodeMap),
-		CodeMapProvider: codeMapProvider,
+		WriteOpts:          writeOpts,
+		DenyReads:          denyReads,
+		EnableLSP:          expSet.IsEnabled(experimental.LSPCodeIntelligence),
+		LSPManager:         lspManager,
+		LSPServers:         fileCfg.LSP.Servers,
+		EnableCodeMap:      expSet.IsEnabled(experimental.CodeMap),
+		CodeMapProvider:    codeMapProvider,
+		EnableSyntaxRanges: expSet.IsEnabled(experimental.SyntaxRanges),
 	})
 	// Git worktree tools. enter_worktree / exit_worktree always prompt
 	// (auto-mode safety floor); see IsAutoModeSafetyFloor.
@@ -382,7 +383,7 @@ func Run(ctx context.Context, opts cli.ChatOptions, prompt string) error {
 	// Dispatch + integrate (foreground, so usable in oneshot). Gated by
 	// the `dispatch` experimental feature like the TUI.
 	dispatchEnabled := expSet.IsEnabled(experimental.Dispatch)
-	reg.Register(&agent.DispatchTool{Agent: agentTool, Enabled: dispatchEnabled})
+	reg.Register(&agent.DispatchTool{Agent: agentTool, Enabled: dispatchEnabled, EnableSyntaxRanges: expSet.IsEnabled(experimental.SyntaxRanges)})
 	reg.Register(&agent.IntegrateTool{Cwd: cwdRef, Enabled: dispatchEnabled})
 
 	// Skill tool: reuses the set loaded above for system-prompt

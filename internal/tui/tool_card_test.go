@@ -127,6 +127,18 @@ func TestRenderToolCard_GrepWrapsUnderMatchText(t *testing.T) {
 	}
 }
 
+func TestToolCard_SyntaxRangeHeaderAndFooter(t *testing.T) {
+	out := "block\t/tmp/main.go:4:2-6:3\tlines=4-6\tanchor_read={}\nfunction run\t/tmp/main.go:3:1-7:2\tlines=3-7\tanchor_read={}\n"
+	header := toolHeader("syntax_range", `{"path":"/tmp/main.go","line":4,"character":10}`, "", 100, "")
+	if header != "Syntax(range /tmp/main.go:4:10)" {
+		t.Fatalf("header = %q", header)
+	}
+	footer := stripANSI(toolFooter("syntax_range", out, false, ""))
+	if footer != "2 matches" {
+		t.Fatalf("footer = %q, want 2 matches", footer)
+	}
+}
+
 func TestRenderSystemNoticeLine_UsesOneLineGrammar(t *testing.T) {
 	got := stripANSI(renderSystemNoticeLine("auto", []string{
 		"grep(\"auto mode\" in internal/tui)",
