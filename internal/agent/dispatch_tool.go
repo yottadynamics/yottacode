@@ -52,6 +52,10 @@ type DispatchTool struct {
 	// feature. When false, Execute returns a recoverable error string the
 	// model relays to the user.
 	Enabled bool
+
+	// EnableSyntaxRanges mirrors the parent session's syntax_ranges gate so
+	// dispatch workers can use the same offline range-selection surface.
+	EnableSyntaxRanges bool
 }
 
 func (t *DispatchTool) Name() string { return DispatchToolName }
@@ -602,9 +606,10 @@ func (t *DispatchTool) runDispatchChild(ctx context.Context, c *dispatchChild, b
 func (t *DispatchTool) buildWorktreeChildRegistry(cfg *subagents.AgentConfig, cwd *CwdRef, wtDir string, ownedFiles []string) *Registry {
 	core := NewRegistry()
 	RegisterCoreCwdTools(core, cwd, CoreToolDeps{
-		WriteOpts:      WritePathOptions{Cwd: cwd, DenyExact: DefaultDenyPaths(wtDir), OwnedPaths: append([]string(nil), ownedFiles...)},
-		DenyReads:      DefaultDenyReadPaths(wtDir),
-		SupportsImages: t.SupportsImages,
+		WriteOpts:          WritePathOptions{Cwd: cwd, DenyExact: DefaultDenyPaths(wtDir), OwnedPaths: append([]string(nil), ownedFiles...)},
+		DenyReads:          DefaultDenyReadPaths(wtDir),
+		SupportsImages:     t.SupportsImages,
+		EnableSyntaxRanges: t.EnableSyntaxRanges,
 	})
 	out := NewRegistry()
 	for _, tool := range core.Tools() {

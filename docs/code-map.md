@@ -14,6 +14,8 @@ Shipped in the MVP:
 - LSP-backed symbols when available, fallback regex symbols otherwise.
 - Go import edges resolved module-path-first from `go.mod`, then package-name
   fallback.
+- Parser-backed Go syntax also powers the separate experimental `syntax_range`
+  tool for local edit-range selection before anchored edits.
 - `/map` TUI overlay with submodes:
   - `/map`
   - `/map here [path]`

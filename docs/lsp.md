@@ -4,6 +4,8 @@
 
 The separate experimental `code_map` feature reuses this LSP surface when available to build the `/map` structure overlay and code-map agent tools. If a language server is missing, the map falls back to offline syntax symbols: Go uses a parser-backed source, while TypeScript/JavaScript, Python, and Rust currently keep the conservative regex fallback. Dependency and impact queries currently use resolvable in-workspace Go imports, including transitive dependents, import-cycle detection, and Mermaid diagram output; `lsp_impact` can combine those import edges with live LSP references, calls, hover, and diagnostics.
 
+The separate experimental `syntax_ranges` feature exposes one piece of that offline layer directly as `syntax_range`: a read-only, parser-backed range selector for local edit targeting. `lsp_selection_ranges` remains the server-backed option when LSP is enabled; `syntax_range` is the no-server fallback for choosing a block/function/type before an anchored read and `edit_anchored` write.
+
 Enable it with any experimental-feature path:
 
 ```bash
@@ -13,6 +15,7 @@ export YOTTACODE_EXPERIMENTAL=lsp_code_intelligence
 ```
 
 Or in `~/.yottacode/config.toml`:
+
 
 ```toml
 [experimental]
