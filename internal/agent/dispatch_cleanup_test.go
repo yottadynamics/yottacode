@@ -76,6 +76,38 @@ func dispatchWorktreeDirs(reg *subagents.Registry) []string {
 	return dirs
 }
 
+// eventuallyNoDispatchWorktrees waits for git's linked-worktree cleanup to
+// become visible before asserting. macOS CI can report a just-removed
+// worktree branch briefly after the worker's cleanup returned.
+func eventuallyNoDispatchWorktrees(t *testing.T, repoRoot string, dirs []string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	var branches []string
+	var existing []string
+	for {
+		branches = gitListBranches(t, repoRoot, "worktree-dispatch-*")
+		existing = existing[:0]
+		for _, dir := range dirs {
+			if _, err := os.Stat(dir); err == nil {
+				existing = append(existing, dir)
+			}
+		}
+		if len(branches) == 0 && len(existing) == 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	if len(branches) != 0 {
+		t.Errorf("empty dispatch branches should be deleted, still have %v", branches)
+	}
+	for _, dir := range existing {
+		t.Errorf("worktree %s should be removed", dir)
+	}
+}
+
 // TestDispatch_Foreground_EmptyWorktreesReclaimed is the foreground-leak
 // regression: a FOREGROUND write batch whose workers produce nothing must
 // reclaim their worktrees + branches at the end of the run. Before the fix,
@@ -100,14 +132,7 @@ func TestDispatch_Foreground_EmptyWorktreesReclaimed(t *testing.T) {
 	if !strings.Contains(out, "nothing to integrate") {
 		t.Errorf("expected 'nothing to integrate', got:\n%s", out)
 	}
-	if branches := gitListBranches(t, repoRoot, "worktree-dispatch-*"); len(branches) != 0 {
-		t.Errorf("empty branches should be deleted, still have %v", branches)
-	}
-	for _, dir := range dispatchWorktreeDirs(d.Agent.Tasks) {
-		if _, err := os.Stat(dir); err == nil {
-			t.Errorf("worktree %s should be removed", dir)
-		}
-	}
+	eventuallyNoDispatchWorktrees(t, repoRoot, dispatchWorktreeDirs(d.Agent.Tasks))
 }
 
 // TestDispatch_Foreground_ErroredCleanWorktreeReclaimed: a FAILED worker that
@@ -133,14 +158,7 @@ func TestDispatch_Foreground_ErroredCleanWorktreeReclaimed(t *testing.T) {
 	if !strings.Contains(out, "empty worktree and branch reclaimed") {
 		t.Errorf("result should report the reclaim, got:\n%s", out)
 	}
-	if branches := gitListBranches(t, repoRoot, "worktree-dispatch-*"); len(branches) != 0 {
-		t.Errorf("errored-but-empty branches should be deleted, still have %v", branches)
-	}
-	for _, dir := range dispatchWorktreeDirs(d.Agent.Tasks) {
-		if _, err := os.Stat(dir); err == nil {
-			t.Errorf("worktree %s should be removed", dir)
-		}
-	}
+	eventuallyNoDispatchWorktrees(t, repoRoot, dispatchWorktreeDirs(d.Agent.Tasks))
 }
 
 // TestDispatch_Foreground_ErroredDirtyWorktreeKept guards the recovery
@@ -209,14 +227,7 @@ func TestDispatch_Background_EmptyWorktreesReclaimed(t *testing.T) {
 			t.Fatalf("only %d/2 background-done callbacks fired", got)
 		}
 	}
-	if branches := gitListBranches(t, repoRoot, "worktree-dispatch-*"); len(branches) != 0 {
-		t.Errorf("empty background branches should be deleted, still have %v", branches)
-	}
-	for _, dir := range dispatchWorktreeDirs(d.Agent.Tasks) {
-		if _, err := os.Stat(dir); err == nil {
-			t.Errorf("worktree %s should be removed", dir)
-		}
-	}
+	eventuallyNoDispatchWorktrees(t, repoRoot, dispatchWorktreeDirs(d.Agent.Tasks))
 }
 
 // TestReclaimEmptyWorktree_Conservative: emptiness must be affirmative — a

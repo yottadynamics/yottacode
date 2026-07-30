@@ -968,6 +968,17 @@ func recoverableToolErrorBody(toolName, output, cwd string) []string {
 			}
 			return []string{"stale edit target — re-read the file and retry with exact current text"}
 		}
+	case "edit_anchored":
+		if strings.Contains(trimmed, "anchor is required") {
+			return []string{"missing anchor — re-read the target block with anchors=true and retry with the required anchor field"}
+		}
+		if strings.Contains(trimmed, "stale anchor") {
+			detail := anchoredErrorDetail(trimmed)
+			if detail != "" {
+				return []string{"stale anchor — re-read the target block with anchors=true and retry with current line#anchor values", detail}
+			}
+			return []string{"stale anchor — re-read the target block with anchors=true and retry with current line#anchor values"}
+		}
 	case "apply_diff":
 		switch agent.ClassifyPatchFailure(trimmed) {
 		case agent.PatchFailureMalformed:
@@ -992,6 +1003,13 @@ func recoverableToolErrorFooter(toolName, output string) string {
 		if strings.Contains(output, "old_string not found") {
 			return "recoverable: stale edit target"
 		}
+	case "edit_anchored":
+		if strings.Contains(output, "anchor is required") {
+			return "recoverable: missing anchor"
+		}
+		if strings.Contains(output, "stale anchor") {
+			return "recoverable: stale anchor"
+		}
 	case "apply_diff":
 		switch agent.ClassifyPatchFailure(output) {
 		case agent.PatchFailureMalformed:
@@ -1014,6 +1032,26 @@ func closestLineHint(s string) string {
 		hint = hint[:end]
 	}
 	return "closest line: " + hint
+}
+
+// anchoredErrorDetail keeps the useful operation/anchor fragment from a raw
+// edit_anchored failure without dumping the full tool error into the TUI card.
+func anchoredErrorDetail(s string) string {
+	for _, marker := range []string{"operation ", "stale anchor "} {
+		idx := strings.Index(s, marker)
+		if idx < 0 {
+			continue
+		}
+		detail := s[idx:]
+		if end := strings.IndexByte(detail, '\n'); end >= 0 {
+			detail = detail[:end]
+		}
+		if len(detail) > 120 {
+			detail = detail[:120] + "…"
+		}
+		return detail
+	}
+	return ""
 }
 
 func patchFailedFile(s string) string {
