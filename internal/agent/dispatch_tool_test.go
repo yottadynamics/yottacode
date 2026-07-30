@@ -54,6 +54,90 @@ func TestValidateWritePartition(t *testing.T) {
 			t.Errorf("expected normalized overlap rejection, got %q", got)
 		}
 	})
+	t.Run("directory claim overlaps descendant file", func(t *testing.T) {
+		got := validateWritePartition([]*dispatchChild{mk(writer, "internal/api"), mk(writer, "internal/api/health.go")})
+		if !strings.Contains(got, "non-overlapping") {
+			t.Errorf("expected directory/file overlap rejection, got %q", got)
+		}
+	})
+	t.Run("descendant directory claim overlaps parent", func(t *testing.T) {
+		got := validateWritePartition([]*dispatchChild{mk(writer, "internal/api/health"), mk(writer, "internal/api")})
+		if !strings.Contains(got, "non-overlapping") {
+			t.Errorf("expected parent/child overlap rejection, got %q", got)
+		}
+	})
+	t.Run("sibling directories allowed", func(t *testing.T) {
+		got := validateWritePartition([]*dispatchChild{mk(writer, "internal/api"), mk(writer, "internal/app")})
+		if got != "" {
+			t.Errorf("sibling claims should be allowed, got %q", got)
+		}
+	})
+	t.Run("root claim rejected", func(t *testing.T) {
+		got := validateWritePartition([]*dispatchChild{mk(writer, "."), mk(writer, "foo.go")})
+		if !strings.Contains(got, "invalid broad ownership") || !strings.Contains(got, "non-overlapping") {
+			t.Errorf("expected root ownership rejection, got %q", got)
+		}
+	})
+	t.Run("blank claim rejected", func(t *testing.T) {
+		got := validateWritePartition([]*dispatchChild{mk(writer, "  ")})
+		if !strings.Contains(got, "invalid broad ownership") {
+			t.Errorf("expected blank ownership rejection, got %q", got)
+		}
+	})
+	t.Run("parent and absolute claims rejected", func(t *testing.T) {
+		for _, claim := range []string{"..", "../", "../foo.go", "/tmp/foo.go"} {
+			got := validateWritePartition([]*dispatchChild{mk(writer, claim)})
+			if !strings.Contains(got, "invalid broad ownership") {
+				t.Errorf("claim %q: expected broad ownership rejection, got %q", claim, got)
+			}
+		}
+	})
+}
+
+func TestBuildWorktreeChildRegistry_BackgroundDisablesLSP(t *testing.T) {
+	cwd := NewCwdRef(t.TempDir())
+	d := &DispatchTool{
+		EnableLSP:  true,
+		LSPServers: map[string][]string{"go": {"gopls"}},
+	}
+	cfg := &subagents.AgentConfig{Name: "lsp-worker", Tools: []string{"lsp_status"}}
+
+	bgReg := d.buildWorktreeChildRegistry(cfg, cwd, cwd.Get(), []string{"owned.go"}, true)
+	if _, ok := bgReg.Get("lsp_status"); ok {
+		t.Fatal("background dispatch workers must not register LSP tools that can spawn language-server processes")
+	}
+
+	fgReg := d.buildWorktreeChildRegistry(cfg, cwd, cwd.Get(), []string{"owned.go"}, false)
+	raw, ok := fgReg.Get("lsp_status")
+	if !ok {
+		t.Fatal("foreground dispatch worker should keep LSP tools")
+	}
+	tool := raw.(*LSPStatusTool)
+	if tool.Manager != nil {
+		t.Fatal("foreground dispatch worker LSP tools must not share the parent LSP manager")
+	}
+	if got := strings.Join(tool.Servers["go"], " "); got != "gopls" {
+		t.Fatalf("LSP server overrides were not propagated, got %q", got)
+	}
+}
+
+func TestStripUnattendedProcessToolsRemovesLSPFromSharedRegistry(t *testing.T) {
+	reg := NewRegistry()
+	reg.Register(namedApprovalTool{name: "lsp_status"})
+	reg.Register(namedApprovalTool{name: "media_probe"})
+	reg.Register(namedApprovalTool{name: "read_file"})
+
+	stripUnattendedProcessTools(reg)
+
+	if _, ok := reg.Get("lsp_status"); ok {
+		t.Fatal("background policy should remove LSP tools from shared registries")
+	}
+	if _, ok := reg.Get("media_probe"); ok {
+		t.Fatal("background policy should remove media tools that launch external processes")
+	}
+	if _, ok := reg.Get("read_file"); !ok {
+		t.Fatal("background policy should keep ordinary read-only tools")
+	}
 }
 
 func TestCommitSubject(t *testing.T) {
@@ -93,7 +177,7 @@ func TestDispatch_GatingErrors(t *testing.T) {
 		d := newDispatchToolForGating()
 		d.Enabled = false
 		out, _ := d.Execute(ctx, `{"goal":"x","tasks":[{"subagent_type":"reader","prompt":"a"},{"subagent_type":"reader","prompt":"b"}]}`)
-		if !strings.Contains(out, "experimental") {
+		if !strings.Contains(out, "experimental") || !strings.Contains(out, "--experimental dispatch") {
 			t.Errorf("expected experimental gate message, got %q", out)
 		}
 	})

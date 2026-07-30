@@ -42,12 +42,8 @@ const (
 	// dependency/impact-query UX settles.
 	CodeMap Feature = "code_map"
 
-	// Dispatch enables the `dispatch` + `integrate` tools: fan a batch
-	// of subtasks out to subagents that run concurrently (write-capable
-	// ones in isolated git worktrees), then merge their branches into one
-	// integration branch. Distinct from BackgroundSubagents — dispatch
-	// children run foreground/blocking, not fire-and-forget. Gated while
-	// the decomposition + partition + merge UX settles.
+	// Dispatch is still experimental: it enables the dispatch + integrate tools
+	// for opt-in users while the decomposition + unattended-worker UX settles.
 	Dispatch Feature = "dispatch"
 
 	// LSPCodeIntelligence enables read-only language-server-backed code
@@ -74,6 +70,15 @@ func All() []Feature {
 	}
 }
 
+func IsGraduated(f Feature) bool {
+	switch f {
+	case BackgroundSubagents:
+		return true
+	default:
+		return false
+	}
+}
+
 // Description returns a one-line human-readable description for the
 // `/experimental` overlay and docs. Returns "" for unknown names so
 // graduated-feature configs don't break — callers should treat an
@@ -85,7 +90,7 @@ func Description(f Feature) string {
 	case CodeMap:
 		return "Repository code map. Builds a read-only structure index for the /map TUI overlay and code-map agent tools, using LSP when available and approximate fallback symbols otherwise."
 	case Dispatch:
-		return "Dispatch + integrate tools. Fan a batch of subtasks out to concurrent subagents (write-capable ones in isolated git worktrees, partitioned by file ownership), then merge their branches into one integration branch for a PR."
+		return "Dispatch + integrate tools. Fan a batch of subtasks out to concurrent subagents (write-capable ones in isolated git worktrees, partitioned by file ownership), then merge committed branches into one integration branch for a PR."
 	case LSPCodeIntelligence:
 		return "Language-server-backed code intelligence tools. Detect supported languages, report missing server binaries with install hints, and provide symbols/definition/references when servers are available."
 	case SyntaxRanges:

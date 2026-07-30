@@ -1,6 +1,6 @@
 # Built-in tools
 
-Sixty tools ship in `internal/agent` (including the experimental LSP tools, `todo_write`,
+Built-in tools ship in `internal/agent` (including the experimental LSP tools, `todo_write`,
 and the `enter_plan_mode` / `exit_plan_mode` pair). The model sees their JSON-schema parameters via the
 OpenAI tools API; the TUI renders each invocation as a bordered card with a
 verb-style header (see [How tool calls render in the TUI](#how-tool-calls-render-in-the-tui)).
@@ -53,7 +53,7 @@ In addition to the built-ins, **MCP tools** register dynamically when an `[[mcp_
 | [`git_merge_base`](#git_merge_base) | none | Find merge base between two refs |
 | [`git_checkpoint`](#git_checkpoint) | required | Create a local checkpoint commit |
 | [`rollback`](#rollback) | required | Reset the repo to an earlier commit |
-| [`run_tests`](#run_tests) | none | Run the repo's test command |
+| [`run_tests`](#run_tests) | required | Run the repo's test command |
 | [`media_probe`](#media_probe) | none | Inspect audio/video metadata with ffprobe |
 | [`media_analyze`](#media_analyze) | none | Detect silence/fluff candidates with ffmpeg |
 | [`media_render`](#media_render) | required | Render approved edits to YouTube/X MP4 or GIF preview profiles with ffmpeg |
@@ -97,6 +97,8 @@ In addition to the built-ins, **MCP tools** register dynamically when an `[[mcp_
 | [`enter_plan_mode`](#enter_plan_mode) | required | Only callable OUTSIDE plan mode; requests the read-only planning state via a [Y]/[N] card |
 | [`exit_plan_mode`](#exit_plan_mode) | required | Only callable in `/plan` mode; presents the plan for user approval |
 | [`Agent`](#agent) | none | Dispatch a typed subagent that runs in its own context window; see [subagents.md](subagents.md) |
+| [`dispatch`](#dispatch) | none | Experimental behind `dispatch`; fan multiple independent subtasks out to concurrent subagents |
+| [`integrate`](#integrate) | none | Experimental behind `dispatch`; merge dispatch worker branches into one PR-ready integration branch |
 
 "Approval = required" means the tool always pauses for a `y` / `a` /
 `N` from the user, unless an `allow` rule in
@@ -903,7 +905,7 @@ Run a test command in the repo. Defaults to `go test ./...`.
 | `command` | string | `go test ./...` |
 | `path` | string | `.` |
 
-No approval.
+Prompts for approval in foreground use. Background dispatch workers cannot run `run_tests` because tests execute project code without a human approval surface.
 
 ## media_probe
 
@@ -1537,6 +1539,30 @@ Mirrors Claude Code's `Agent` / `Task` tool surface.
 | `description` | string | "" | A 3-5 word label shown to the user while the subagent runs. |
 | `run_in_background` | boolean | `false` | If true (TUI only), return immediately with a task id; the subagent runs to completion in the background. `oneshot` rejects this with a recoverable error so the model can retry without the flag. |
 
+## dispatch
+
+Fan a batch of independent subtasks out to subagents that run concurrently. Write-capable subtasks each run in their own git worktree + branch and must declare disjoint `files`; read-only subtasks share the current working directory. Write batches default to background in the TUI and return a batch id plus worker branches immediately; all-read batches default to foreground and return the findings together.
+
+| Param | Type | Default | Notes |
+|---|---|---|---|
+| `goal` | string | — | Overall objective the subtasks add up to. |
+| `tasks` | []object | — | Two or more `{subagent_type, description, prompt, files}` entries. `files` is required for write-capable subagents and must not overlap. |
+| `background` | bool | smart default | Defaults true for write batches in the TUI, false for all-read batches; oneshot falls back to foreground. |
+
+No approval for orchestration. Experimental behind `dispatch`. Background workers auto-approve owned-file writes; `run_tests`, `run_bash`, git/GitHub mutations, and other approval-requiring tools are denied because there is no prompt surface. Pair with [`integrate`](#integrate) to assemble committed worker branches. See [dispatch.md](dispatch.md).
+
+## integrate
+
+Merge dispatch worker branches into one integration branch in a dedicated worktree. Experimental behind `dispatch`. It leaves the user's current checkout untouched. On conflict it stops, reports the conflicted files and integration worktree path, and can resume after the merge is resolved and committed.
+
+| Param | Type | Default | Notes |
+|---|---|---|---|
+| `branches` | []string | — | Worker branches to merge in order. May be empty only when finalizing an existing `integration_branch` after resolving the last conflict. |
+| `integration_branch` | string | generated | Existing or new integration branch. Reuse the same value to resume after conflicts. |
+| `base` | string | `HEAD` | Base ref for a newly created integration branch. |
+
+No approval. On clean success it reports the integration branch to push/open a PR from and reclaims merged worker worktrees/branches where safe.
+
 ## gh_issue_context
 
 Composite read-only snapshot used to open an issue without parsing
@@ -1571,6 +1597,7 @@ state, create tool validates the title and opens the issue.
 | _(none)_ | | |
 
 No approval. Parallel-safe.
+
 
 ## gh_issue_create
 

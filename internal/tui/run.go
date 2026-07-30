@@ -152,10 +152,9 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 		fmt.Fprintln(os.Stderr, "skills: "+w)
 	}
 	// Resolve experimental features up front (CLI > env > config) so the
-	// dispatch steering can be baked into the system prompt below — without
-	// it the model has no nudge toward the dispatch/integrate tools and
-	// falls back to implementing serially itself. Reused for tool gating
-	// further down so we resolve the Set exactly once.
+	// optional feature prompts can be baked into the system prompt below.
+	// Dispatch stays experimental for this PR, so its steering is appended only
+	// when the flag enables the dispatch/integrate tools.
 	expSet := experimental.NewSet()
 	for name, on := range fileCfg.Experimental {
 		if on {
@@ -521,16 +520,13 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 	// subagent find?" becomes one tool call.
 	reg.Register(&agent.GetSubagentResultTool{Tasks: subagentTasks})
 
-	// Dispatch + integrate: fan a batch of subtasks out to concurrent
-	// subagents (write-capable ones in isolated git worktrees, partitioned
-	// by file ownership) and merge their branches into one integration
-	// branch. Gated behind the `dispatch` experimental feature; when off,
-	// each tool returns a recoverable error the model relays to the user.
-	// dispatch reuses the AgentTool for routing/transcripts/runChild.
+	// Dispatch + integrate: experimental fan-out/merge tools for opt-in users.
 	dispatchEnabled := expSet.IsEnabled(experimental.Dispatch)
 	reg.Register(&agent.DispatchTool{
 		Agent:              agentTool,
 		SupportsImages:     ad.Profile().SupportsImages,
+		EnableLSP:          expSet.IsEnabled(experimental.LSPCodeIntelligence),
+		LSPServers:         fileCfg.LSP.Servers,
 		EnableSyntaxRanges: expSet.IsEnabled(experimental.SyntaxRanges),
 		// The TUI is a long-running session that can host detached
 		// background workers and surface their completion via the

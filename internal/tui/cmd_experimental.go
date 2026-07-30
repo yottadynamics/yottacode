@@ -26,10 +26,12 @@ func cmdExperimental(m Model, _ []string) (Model, tea.Cmd) {
 
 	var b strings.Builder
 	b.WriteString("Experimental features")
-	b.WriteString(" — enable at startup with `--experimental <name>`, `YOTTACODE_EXPERIMENTAL=<name>`, or `[experimental]` `<name> = true` in ~/.yottacode/config.toml:\n")
+	b.WriteString(" — enable active experiments at startup with `--experimental <name>`, `YOTTACODE_EXPERIMENTAL=<name>`, or `[experimental]` `<name> = true` in ~/.yottacode/config.toml. Graduated entries are GA/no-op compatibility flags:\n")
 	for _, f := range experimental.All() {
 		state := "off"
-		if on[string(f)] {
+		if experimental.IsGraduated(f) {
+			state = "GA"
+		} else if on[string(f)] {
 			state = "ON"
 		}
 		fmt.Fprintf(&b, "  [%-3s] %s — %s\n", state, string(f), experimental.Description(f))

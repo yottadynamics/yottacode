@@ -4369,11 +4369,41 @@ func buildSubagentWakeMessage(wakes []agent.SubagentBackgroundDone) string {
 		if w.Errored {
 			status = "errored"
 		}
-		fmt.Fprintf(&b, "Subagent: %s (task %s) — %s\n\nResult:\n%s\n",
-			w.AgentType, shortTaskID(w.TaskID), status, strings.TrimRight(w.Result, "\n"))
+		fmt.Fprintf(&b, "Subagent: %s (task %s) — %s\n", w.AgentType, shortTaskID(w.TaskID), status)
+		appendDispatchWakeMetadata(&b, w)
+		fmt.Fprintf(&b, "\nResult:\n%s\n", strings.TrimRight(w.Result, "\n"))
 	}
 	b.WriteString("\nReview the result(s) above and continue the work they were part of, or report back to the user as appropriate. If a result is empty or errored, decide whether to retry or move on.")
 	return b.String()
+}
+
+func appendDispatchWakeMetadata(b *strings.Builder, w agent.SubagentBackgroundDone) {
+	if w.BatchID == "" && w.Branch == "" {
+		return
+	}
+	if w.BatchID != "" {
+		fmt.Fprintf(b, "Batch: %s\n", w.BatchID)
+	}
+	if w.Branch != "" {
+		fmt.Fprintf(b, "Branch: %s\n", w.Branch)
+		switch {
+		case w.Committed:
+			sha := w.CommitSHA
+			if sha == "" {
+				sha = "committed"
+			}
+			fmt.Fprintf(b, "Commit: %s\n", sha)
+		case w.CommitErr != "":
+			fmt.Fprintf(b, "Commit: NOT committed — %s\n", w.CommitErr)
+		case w.Reclaimed:
+			b.WriteString("Commit: no changes — empty worktree and branch reclaimed\n")
+		default:
+			b.WriteString("Commit: no changes to merge yet\n")
+		}
+	}
+	if w.Committed && w.Branch != "" {
+		b.WriteString("Next: when every worker in this batch has finished, call integrate with the committed dispatch branch list.\n")
+	}
 }
 
 // shortTaskID renders the 8-char task-id prefix used across the subagent

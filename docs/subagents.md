@@ -22,8 +22,8 @@ Nine agent types ship with the binary:
 | `Explore` | read-only (read_file, grep, glob, list_*, git read subcommands, fetch_url) | Fast code search and location lookup. |
 | `Plan` | Explore's tools + `todo_write` | Produce a written plan for a coding task. Ends with a `### Critical Files for Implementation` trailer. |
 | `verification` | Explore's tools + `run_bash` | Adversarially verify a change: run builds / tests / probes, try to break it, end with a `VERDICT: PASS\|FAIL\|PARTIAL` line. Runs foreground by default in standalone `Agent` calls because it needs `run_bash`; use foreground when command execution is required. |
-| `implement` | read + full write set + `run_tests` + `run_bash` | Build one well-scoped component end-to-end, staying inside its owned files. Write-capable; in `dispatch` fan-out it runs in an isolated background worktree with owned-file enforcement. |
-| `test` | read + write + `run_tests` + `run_bash` | Write/update and run tests for a component, owning the test files only. Write-capable; in `dispatch` fan-out it runs in an isolated background worktree and pairs with `implement` on disjoint files. |
+| `implement` | read + full write set + `run_tests` + `run_bash` | Build one well-scoped component end-to-end, staying inside its owned files. Write-capable; in background `dispatch` fan-out it runs in an isolated worktree with owned-file enforcement, but `run_tests`/`run_bash` are disabled because no human can approve command execution. |
+| `test` | read + write + `run_tests` + `run_bash` | Write/update and run tests for a component, owning the test files only. Write-capable; in background `dispatch` fan-out it runs in an isolated worktree, but `run_tests`/`run_bash` are disabled and the worker must report the verification gap. |
 | `docs` | read + `write_file`/`edit_file` + git read + `fetch_url` | Update documentation and comments for a change, owning the doc files only. Write-capable; in `dispatch` fan-out it runs in an isolated background worktree. |
 | `review` | read-only (Explore's tools + more git read) | Read-only critique of a diff — findings ranked by severity (file:line + scenario). Cannot edit; complements `verification`. Foreground. |
 | `code-verifier` | read-only (`review`'s set plus `git_merge_base`) | Read-only adversarial check of a **single** review finding: given one `file:line` + claim, try to refute it from the code, end with `VERDICT: PASS\|FAIL\|PARTIAL`. The read-only counterpart to `verification` (which runs builds/tests). Foreground; used by `/code-review`'s verification pass. |
@@ -439,7 +439,7 @@ recursive subagent dispatch. The model each subagent ran on shows in the
 `/subagents` picker and on its completion card. (Per-subagent token figures are estimates; yottacode does not yet
 aggregate per-model token totals across a session.)
 
-## Dispatch & integrate (experimental)
+## Dispatch & integrate
 
 Where a single `Agent` call delegates one subtask, **`dispatch`** fans a
 whole batch out at once: each subtask runs as a concurrent subagent, and
@@ -450,13 +450,14 @@ ownership so the merge stays clean by construction.
 
 Write/implementation batches run in the **background** by default
 (non-blocking — returns a batch handle immediately, workers auto-approve
-within their worktree, you `integrate` when done); all-read/research batches
-run in the **foreground** (blocking) and return every subtask's findings
-together for the main agent to assemble right away.
+owned-file writes but deny shell/tests because those execute code, you
+`integrate` when done); all-read/research batches run in the **foreground**
+(blocking) and return every subtask's findings together for the main agent to
+assemble right away.
 
-This is gated behind the `dispatch` experimental feature and is the path
-for "decompose a large PR into independent parallel tasks." Full guide:
-[dispatch.md](dispatch.md).
+Full guide: [dispatch.md](dispatch.md). Dispatch/integrate remains experimental;
+enable it with `--experimental dispatch`.
+
 
 ## Known limitations
 
@@ -535,8 +536,8 @@ Foreground subagents forward approval requests to the parent's
 modal. Background subagents auto-deny — there's no live UI to
 prompt against. Standalone background `Agent` runs are read-only by
 default (see above). Dispatch background workers apply a
-deterministic policy that allows owned-file writes and `run_tests`,
-but denies shell and approval-requiring tools such as git mutations.
+deterministic policy that allows owned-file writes but denies `run_tests`,
+shell, LSP/media process tools, and approval-requiring tools such as git mutations.
 
 ## Why this design
 

@@ -14,7 +14,7 @@ import (
 func TestCmdExperimental_ListsCatalogAndState(t *testing.T) {
 	m := Model{
 		transcript:          &strings.Builder{},
-		experimentalEnabled: []string{string(experimental.BackgroundSubagents)},
+		experimentalEnabled: []string{string(experimental.CodeMap)},
 	}
 	out, _ := cmdExperimental(m, nil)
 	got := out.transcript.String()
@@ -29,7 +29,7 @@ func TestCmdExperimental_ListsCatalogAndState(t *testing.T) {
 	if !strings.Contains(got, "ON") {
 		t.Errorf("/experimental must mark the enabled feature ON; got:\n%s", got)
 	}
-	if !strings.Contains(got, "Enabled this session: "+string(experimental.BackgroundSubagents)) {
+	if !strings.Contains(got, "Enabled this session: "+string(experimental.CodeMap)) {
 		t.Errorf("/experimental must name the enabled feature in the summary; got:\n%s", got)
 	}
 }
@@ -43,7 +43,7 @@ func TestCmdExperimental_NoneEnabled(t *testing.T) {
 	if !strings.Contains(got, "None enabled this session") {
 		t.Errorf("/experimental must state when nothing is enabled; got:\n%s", got)
 	}
-	if !strings.Contains(got, string(experimental.BackgroundSubagents)) {
-		t.Errorf("/experimental must still list the catalog when nothing is enabled; got:\n%s", got)
+	if !strings.Contains(got, "GA") || !strings.Contains(got, string(experimental.BackgroundSubagents)) {
+		t.Errorf("/experimental must mark graduated compatibility flags as GA; got:\n%s", got)
 	}
 }

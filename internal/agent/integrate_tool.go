@@ -2,6 +2,8 @@ package agent
 
 import (
 	"context"
+	"crypto/sha1"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -13,6 +15,12 @@ import (
 
 // IntegrateToolName is the schema-visible name of the branch-assembly tool.
 const IntegrateToolName = "integrate"
+
+// integrateCleanupConfigPrefix stores dispatch branches that reached the
+// integration worktree before a conflict stopped the merge sequence. The actual
+// key is scoped by integration branch so concurrent conflicted integrations in
+// one repo cannot overwrite each other's cleanup state.
+const integrateCleanupConfigPrefix = "yottacode.dispatchcleanup"
 
 // IntegrateTool merges dispatch task branches into a single integration
 // branch — the one branch a PR is opened from. It runs in a dedicated
@@ -36,7 +44,7 @@ func (t *IntegrateTool) Name() string { return IntegrateToolName }
 func (t *IntegrateTool) Description() string {
 	var b strings.Builder
 	b.WriteString("Merge dispatch task branches into one integration branch ready to open a PR from. ")
-	b.WriteString("Pass the branches returned by a `dispatch` call. Merges run in a dedicated worktree (your working tree is untouched) in the given order. ")
+	b.WriteString("Pass only branches that dispatch reported as committed; omit empty/reclaimed or NOT committed worker branches. Merges run in a dedicated worktree (your working tree is untouched) in the given order. ")
 	b.WriteString("On a merge conflict the tool STOPS and reports the conflicted files and the integration worktree path; resolve the conflict there (edit, then commit the merge), then call integrate again with the SAME integration_branch and the REMAINING branches to continue. ")
 	b.WriteString("On full success it reports the integration branch to open a PR from.")
 	return b.String()
@@ -49,7 +57,7 @@ func (t *IntegrateTool) Schema() map[string]any {
 			"branches": map[string]any{
 				"type":        "array",
 				"items":       map[string]any{"type": "string"},
-				"description": "The task branches to merge, in order (as returned by dispatch).",
+				"description": "The committed task branches to merge, in order. Use only branches dispatch/dock/foreground results reported as committed; omit empty/reclaimed or NOT committed workers.",
 			},
 			"integration_branch": map[string]any{
 				"type":        "string",
@@ -86,12 +94,12 @@ func parseIntegrateArgs(argsJSON string) integrateArgs {
 
 func (t *IntegrateTool) Execute(ctx context.Context, argsJSON string) (string, error) {
 	if !t.Enabled {
-		return "error: `integrate` is part of the experimental `dispatch` feature and is not enabled in this session. " +
-			"Enable it with `--experimental dispatch`, `YOTTACODE_EXPERIMENTAL=dispatch`, or `[experimental]\\ndispatch = true` in config.toml.", nil
+		return "error: `integrate` is part of the experimental `dispatch` feature and is not enabled in this session. Enable it with `--experimental dispatch`, `YOTTACODE_EXPERIMENTAL=dispatch`, or `[experimental] dispatch = true` in config.toml.", nil
 	}
+
 	a := parseIntegrateArgs(argsJSON)
-	if len(a.Branches) == 0 {
-		return "error: integrate requires at least one branch (the branches returned by dispatch)", nil
+	if len(a.Branches) == 0 && strings.TrimSpace(a.IntegrationBranch) == "" {
+		return "error: integrate requires at least one branch (the branches returned by dispatch), or an integration_branch to finalize after resolving a conflict", nil
 	}
 
 	repoRoot, err := worktree.ResolveRepoRoot(ctx, t.Cwd.Get())
@@ -107,10 +115,34 @@ func (t *IntegrateTool) Execute(ctx context.Context, argsJSON string) (string, e
 		return fmt.Sprintf("error: invalid integration_branch %q: %v", integBranch, err), nil
 	}
 	integDir := worktree.Dir(repoRoot, integBranch)
+	if len(a.Branches) == 0 {
+		if !isDir(integDir) {
+			return fmt.Sprintf("error: integrate cannot finalize %q with branches=[] because its integration worktree does not exist; pass the remaining branches or the correct integration_branch", integBranch), nil
+		}
+		if msg := validateExistingIntegrationWorktree(ctx, repoRoot, integBranch, integDir); msg != "" {
+			return msg, nil
+		}
+	}
 
 	base := strings.TrimSpace(a.Base)
 	if base == "" {
 		base = "HEAD"
+	}
+
+	// Validate branch names and existence before creating a new integration
+	// worktree. A typo should fail cleanly instead of leaking a generated
+	// dispatch-integration-* worktree the caller does not know to reuse.
+	for _, branch := range a.Branches {
+		branch = strings.TrimSpace(branch)
+		if branch == "" {
+			return "error: integrate branch list contains an empty branch name; pass only committed local branch names", nil
+		}
+		if !validBranchName(ctx, repoRoot, branch) {
+			return fmt.Sprintf("error: invalid branch %q; pass a local branch name, not a revision expression", branch), nil
+		}
+		if !localBranchExists(ctx, repoRoot, branch) {
+			return fmt.Sprintf("error: branch %q does not exist; check the branch name or remove it from branches", branch), nil
+		}
 	}
 
 	if msg := t.ensureIntegrationWorktree(ctx, repoRoot, integBranch, integDir, base); msg != "" {
@@ -130,17 +162,17 @@ func (t *IntegrateTool) Execute(ctx context.Context, argsJSON string) (string, e
 	for i, branch := range a.Branches {
 		branch = strings.TrimSpace(branch)
 		if branch == "" {
-			continue
+			return "error: integrate branch list contains an empty branch name; pass only committed local branch names", nil
 		}
-		// Skip branches that add nothing over the integration tip (e.g. a
-		// write subtask that produced no changes).
 		if !branchHasUniqueCommits(ctx, integDir, branch) {
 			skipped = append(skipped, branch)
 			continue
 		}
-		conflicts, mErr := gitMerge(ctx, integDir, branch)
+		mergeRef := "refs/heads/" + branch
+		conflicts, mErr := gitMerge(ctx, integDir, mergeRef)
 		if mErr != nil {
 			if len(conflicts) > 0 {
+				writePendingCleanupBranches(ctx, integDir, integBranch, append(append(readPendingCleanupBranches(ctx, integDir, integBranch), merged...), branch))
 				remaining := a.Branches[i+1:]
 				return t.conflictMessage(integBranch, integDir, branch, conflicts, remaining, merged), nil
 			}
@@ -153,7 +185,9 @@ func (t *IntegrateTool) Execute(ctx context.Context, argsJSON string) (string, e
 	// integration branch, so reclaim their throwaway worktrees + branches
 	// instead of letting them accumulate forever (the old "prune with
 	// git_worktree_prune" advice was a no-op against still-live worktrees).
-	removedWts, keptWts := cleanupSourceWorktrees(ctx, repoRoot, merged, skipped)
+	cleanupMerged := uniqueBranches(append(merged, readPendingCleanupBranches(ctx, integDir, integBranch)...))
+	removedWts, keptWts := cleanupSourceWorktrees(ctx, repoRoot, integDir, cleanupMerged, skipped)
+	clearPendingCleanupBranches(ctx, integDir, integBranch)
 	return t.successMessage(integBranch, integDir, merged, skipped, removedWts, keptWts), nil
 }
 
@@ -165,7 +199,7 @@ func (t *IntegrateTool) Execute(ctx context.Context, argsJSON string) (string, e
 // uncommitted/untracked work is KEPT and its path returned, so a worker's
 // partial output is never discarded. Best-effort — a removal failure is
 // reported, never fatal (the integration already succeeded).
-func cleanupSourceWorktrees(ctx context.Context, repoRoot string, merged, skipped []string) (removed, kept []string) {
+func cleanupSourceWorktrees(ctx context.Context, repoRoot, integDir string, merged, skipped []string) (removed, kept []string) {
 	infos, err := worktree.List(ctx, repoRoot)
 	if err != nil {
 		return nil, nil
@@ -178,7 +212,13 @@ func cleanupSourceWorktrees(ctx context.Context, repoRoot string, merged, skippe
 	}
 	for _, br := range merged {
 		if dir, ok := byBranch[br]; ok {
-			if err := worktree.Remove(ctx, repoRoot, dir, true); err == nil {
+			// Pending conflict-resume cleanup can include a branch whose conflict was
+			// aborted instead of resolved; keep it unless the integration tip reaches it.
+			if branchHasUniqueCommits(ctx, integDir, br) {
+				kept = append(kept, dir)
+				continue
+			}
+			if canRemoveDispatchSourceWorktree(ctx, repoRoot, dir, br) && worktree.Remove(ctx, repoRoot, dir, false) == nil {
 				removed = append(removed, br)
 			} else {
 				kept = append(kept, dir)
@@ -192,20 +232,46 @@ func cleanupSourceWorktrees(ctx context.Context, repoRoot string, merged, skippe
 		}
 		// Only remove an empty branch's worktree when it holds no unsaved
 		// work; otherwise keep it so the user can recover what's there.
-		if st, e := worktree.DetectState(ctx, dir); e == nil && !st.HasUncommitted && !st.HasUntracked {
-			if err := worktree.Remove(ctx, repoRoot, dir, true); err == nil {
-				removed = append(removed, br)
-				continue
-			}
+		if canRemoveDispatchSourceWorktree(ctx, repoRoot, dir, br) && worktree.Remove(ctx, repoRoot, dir, false) == nil {
+			removed = append(removed, br)
+			continue
 		}
 		kept = append(kept, dir)
 	}
 	return removed, kept
 }
 
+func canRemoveDispatchSourceWorktree(ctx context.Context, repoRoot, dir, branch string) bool {
+	if !strings.HasPrefix(branch, "worktree-dispatch-") {
+		return false
+	}
+	if _, ok := worktree.IsWorktreePath(repoRoot, dir); !ok {
+		return false
+	}
+	st, err := worktree.DetectState(ctx, dir)
+	if err != nil {
+		return false
+	}
+	return !st.HasUncommitted && !st.HasUntracked
+}
+
 // ensureIntegrationWorktree makes sure integDir is a worktree checked out on
 // integBranch, creating the branch and/or worktree as needed. Returns "" on
 // success or a recoverable error message.
+func validateExistingIntegrationWorktree(ctx context.Context, repoRoot, integBranch, integDir string) string {
+	branch, err := gitOutput(ctx, integDir, "rev-parse", "--abbrev-ref", "HEAD")
+	if err != nil {
+		return fmt.Sprintf("error: %s exists but is not a usable git worktree (%v); remove it or pass a different integration_branch", integDir, err)
+	}
+	if got := strings.TrimSpace(branch); got != integBranch {
+		return fmt.Sprintf("error: %s is checked out on %q, not the integration branch %q; remove it or pass a different integration_branch", integDir, got, integBranch)
+	}
+	if !isRegisteredWorktree(ctx, repoRoot, integDir) {
+		return fmt.Sprintf("error: %s is on branch %q but is not a registered worktree of this repo; remove it or pass a different integration_branch", integDir, integBranch)
+	}
+	return ""
+}
+
 func (t *IntegrateTool) ensureIntegrationWorktree(ctx context.Context, repoRoot, integBranch, integDir, base string) string {
 	if isDir(integDir) {
 		// The directory exists — but before piling merges into it, verify it
@@ -213,24 +279,17 @@ func (t *IntegrateTool) ensureIntegrationWorktree(ctx context.Context, repoRoot,
 		// repo, checked out on integBranch. Reusing any directory that merely
 		// sits at this path (a stray dir, a worktree on the wrong branch, a
 		// detached HEAD) would merge branches into the wrong place silently.
-		branch, err := gitOutput(ctx, integDir, "rev-parse", "--abbrev-ref", "HEAD")
-		if err != nil {
-			return fmt.Sprintf("error: %s exists but is not a usable git worktree (%v); remove it or pass a different integration_branch", integDir, err)
-		}
-		if got := strings.TrimSpace(branch); got != integBranch {
-			return fmt.Sprintf("error: %s is checked out on %q, not the integration branch %q; remove it or pass a different integration_branch", integDir, got, integBranch)
-		}
-		if !isRegisteredWorktree(ctx, repoRoot, integDir) {
-			return fmt.Sprintf("error: %s is on branch %q but is not a registered worktree of this repo; remove it or pass a different integration_branch", integDir, integBranch)
+		if msg := validateExistingIntegrationWorktree(ctx, repoRoot, integBranch, integDir); msg != "" {
+			return msg
 		}
 		return "" // verified — reuse the existing integration worktree
 	}
-	branchExists := false
+	dispatchBranchExists := false
 	if _, e := gitOutput(ctx, repoRoot, "rev-parse", "--verify", "refs/heads/"+integBranch); e == nil {
-		branchExists = true
+		dispatchBranchExists = true
 	}
 	var err error
-	if branchExists {
+	if dispatchBranchExists {
 		// Branch exists but its worktree is gone — re-attach a worktree.
 		_, err = gitOutput(ctx, repoRoot, "worktree", "add", integDir, integBranch)
 	} else {
@@ -257,7 +316,7 @@ func (t *IntegrateTool) conflictMessage(integBranch, integDir, branch string, co
 	if len(remaining) > 0 {
 		fmt.Fprintf(&b, " and branches=[%s]", strings.Join(remaining, ", "))
 	} else {
-		b.WriteString(" and branches=[] to finalize")
+		b.WriteString(" and branches=[] to finalize the resolved integration branch")
 	}
 	b.WriteString(".\n")
 	// Alternative: skip this branch for now rather than resolving in place.
@@ -290,21 +349,78 @@ func (t *IntegrateTool) successMessage(integBranch, integDir string, merged, ski
 		fmt.Fprintf(&b, "Reclaimed %d task worktree(s) + branch(es) now that their work is integrated.\n", len(removedWts))
 	}
 	if len(keptWts) > 0 {
-		fmt.Fprintf(&b, "Kept %d task worktree(s) that still hold uncommitted work — recover or discard manually: %s.\n", len(keptWts), strings.Join(keptWts, ", "))
+		fmt.Fprintf(&b, "Kept %d task worktree(s) that were dirty, non-dispatch, or not integrated in this round — inspect before recovering or discarding manually: %s.\n", len(keptWts), strings.Join(keptWts, ", "))
 	}
 	return b.String()
+}
+
+func readPendingCleanupBranches(ctx context.Context, integDir, integBranch string) []string {
+	out, err := gitOutput(ctx, integDir, "config", "--get", integrateCleanupConfigKey(integBranch))
+	if err != nil {
+		return nil
+	}
+	return nonEmptyLines(strings.ReplaceAll(out, ",", "\n"))
+}
+
+func writePendingCleanupBranches(ctx context.Context, integDir, integBranch string, branches []string) {
+	branches = uniqueBranches(branches)
+	if len(branches) == 0 {
+		return
+	}
+	_, _ = gitOutput(ctx, integDir, "config", integrateCleanupConfigKey(integBranch), strings.Join(branches, ","))
+}
+
+func clearPendingCleanupBranches(ctx context.Context, integDir, integBranch string) {
+	_, _ = gitOutput(ctx, integDir, "config", "--unset", integrateCleanupConfigKey(integBranch))
+}
+
+func integrateCleanupConfigKey(integBranch string) string {
+	sum := sha1.Sum([]byte(integBranch))
+	return integrateCleanupConfigPrefix + ".v" + hex.EncodeToString(sum[:8])
+}
+
+func uniqueBranches(branches []string) []string {
+	seen := make(map[string]bool, len(branches))
+	out := make([]string, 0, len(branches))
+	for _, br := range branches {
+		br = strings.TrimSpace(br)
+		if br == "" || seen[br] {
+			continue
+		}
+		seen[br] = true
+		out = append(out, br)
+	}
+	return out
 }
 
 // branchHasUniqueCommits reports whether branch has any commit not already
 // reachable from the integration tip (HEAD of integDir) — i.e. whether
 // merging it would add anything.
+//
+// Always qualify local branch names as refs/heads/<name>. Short ref lookup can
+// resolve an ambiguous tag before the branch, which would make integrate skip a
+// real worker branch or compare against the wrong object.
 func branchHasUniqueCommits(ctx context.Context, integDir, branch string) bool {
-	out, err := gitOutput(ctx, integDir, "rev-list", "--count", "HEAD.."+branch)
+	ref := branch
+	if !strings.HasPrefix(ref, "refs/") {
+		ref = "refs/heads/" + ref
+	}
+	out, err := gitOutput(ctx, integDir, "rev-list", "--count", "HEAD.."+ref)
 	if err != nil {
-		// Unknown branch or other error — let the merge attempt surface it.
+		// Unknown branch/ref or other error — let the merge attempt surface it.
 		return true
 	}
 	return strings.TrimSpace(out) != "0"
+}
+
+func validBranchName(ctx context.Context, repoDir, branch string) bool {
+	_, err := gitOutput(ctx, repoDir, "check-ref-format", "--branch", branch)
+	return err == nil
+}
+
+func localBranchExists(ctx context.Context, repoDir, branch string) bool {
+	_, err := gitOutput(ctx, repoDir, "rev-parse", "--verify", "refs/heads/"+branch+"^{commit}")
+	return err == nil
 }
 
 func isDir(p string) bool {

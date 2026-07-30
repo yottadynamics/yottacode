@@ -178,7 +178,9 @@ func TestAutoModeState_IsActiveNilSafe(t *testing.T) {
 
 func TestIsAutoModeSafetyFloor(t *testing.T) {
 	for _, name := range []string{
-		"run_bash", "git_commit", "git_checkpoint", "rollback",
+		// run_bash and run_tests execute arbitrary commands; git history
+		// mutations are hard to reverse.
+		"run_bash", "run_tests", "git_commit", "git_checkpoint", "rollback",
 		// enter_worktree / exit_worktree shift the agent's working
 		// context (and exit's force-remove is destructive); always
 		// prompt regardless of mode.
