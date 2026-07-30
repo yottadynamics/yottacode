@@ -135,6 +135,8 @@ time is shown as compact header metadata (`· 4s`, `· 1m 03s`). Sub-second
 calls — the vast majority — show no tag, so the timing surfaces only
 when "how long did that take?" is a real question.
 
+**Session stream spacing.** Completed turns end with the dim `◦ thought · <duration>` receipt, followed by one blank spacer row. The spacer separates the prior turn's timing receipt from the next prompt or tool block without adding another visible status message.
+
 **Header verbs.** The raw tool name still appears in the agent's
 tool-call log; the TUI renames it for readability. Mapping:
 

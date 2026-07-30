@@ -1585,6 +1585,9 @@ func TestModel_TurnDoneAppendsThoughtForFootnote(t *testing.T) {
 	if !strings.Contains(got, "7s") {
 		t.Errorf("footnote should include the elapsed seconds: %q", got)
 	}
+	if !strings.HasSuffix(got, "\n\n") {
+		t.Errorf("thought footnote should leave a blank spacer after it: %q", got)
+	}
 }
 
 // Regression: tok/s must keep climbing on a tool-call-only turn where

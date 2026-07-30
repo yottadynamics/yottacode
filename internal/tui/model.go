@@ -5008,6 +5008,9 @@ func (m Model) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 		// scrollback as a quiet receipt.
 		if !m.turnStart.IsZero() {
 			m.appendLine(styleTurnFooter.Render(renderTurnFooter(time.Since(m.turnStart), m.turnUsage)))
+			// Leave one quiet spacer after the thought receipt so the next
+			// user prompt/tool block doesn't visually attach to the prior turn.
+			m.appendLine("")
 		}
 		m.turnCancelRequested = false
 	case agent.TurnInterrupted:
