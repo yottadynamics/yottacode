@@ -910,8 +910,8 @@ func TestRenderToolCard_SuccessGutterIsNeutral(t *testing.T) {
 }
 
 // A slow call (≥ slowCallThreshold) surfaces a right-aligned duration tag
-// in the header; the tag is padded toward the card's right edge rather
-// than butted against the invocation text.
+// in the header as compact metadata next to the invocation. Keeping the tag
+// inline avoids huge whitespace gaps on wide terminals.
 func TestRenderToolCard_SlowCallShowsDurationTag(t *testing.T) {
 	got := stripANSI(renderToolCard("run_bash", "run_bash: go build", `{"command":"go build"}`,
 		"exit=0\n--- stdout ---\n--- stderr ---\n", false, 80, "", 4*time.Second))
@@ -919,11 +919,11 @@ func TestRenderToolCard_SlowCallShowsDurationTag(t *testing.T) {
 	if !strings.Contains(header, "4s") {
 		t.Errorf("slow call (4s ≥ threshold) should show a duration tag; header = %q", header)
 	}
-	if !strings.HasSuffix(strings.TrimRight(header, " "), "4s") {
-		t.Errorf("duration tag should sit at the right edge of the header; header = %q", header)
+	if !strings.Contains(header, "Bash(go build) · 4s") {
+		t.Errorf("duration tag should be compact inline metadata; header = %q", header)
 	}
-	if strings.Contains(header, "build 4s") {
-		t.Errorf("duration tag should be right-aligned, not adjacent to the invocation; header = %q", header)
+	if strings.Contains(header, "     4s") {
+		t.Errorf("duration tag should not be padded to the far edge; header = %q", header)
 	}
 }
 
