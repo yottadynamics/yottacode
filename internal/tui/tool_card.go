@@ -507,15 +507,7 @@ func renderCardHeader(preview string, g cardGutter, dur time.Duration, width int
 	if tag == "" || width < cardMinUsefulCols {
 		return head
 	}
-	styledTag := styleCardMeta.Render(tag)
-	// Right-align the tag to the notional card edge (`width`). A single-
-	// space floor keeps it off the header text when a long preview nearly
-	// fills the row.
-	gap := width - ansi.StringWidth(head) - ansi.StringWidth(styledTag)
-	if gap < 1 {
-		gap = 1
-	}
-	return head + strings.Repeat(" ", gap) + styledTag
+	return head + styleCardMeta.Render(" · "+tag)
 }
 
 // toolBodyLines extracts the displayable body for a given tool. Returns

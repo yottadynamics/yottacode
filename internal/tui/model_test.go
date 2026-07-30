@@ -669,6 +669,28 @@ func TestModel_ReasoningTokensCountedAndStreamedLive(t *testing.T) {
 	}
 }
 
+func TestModel_ReasoningPreviewWrapsAndCapsRows(t *testing.T) {
+	m := newTestModel(t)
+	m.width = 24
+	m.turnActive = true
+	m.reasoning.WriteString("alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi omicron")
+
+	plain := stripANSI(m.renderReasoningPreview())
+	if plain == "" {
+		t.Fatalf("expected wrapped reasoning preview")
+	}
+	rows := strings.Split(plain, "\n")
+	if len(rows) > 6 {
+		t.Fatalf("reasoning preview should cap to 6 rows, got %d rows: %q", len(rows), plain)
+	}
+	for _, row := range rows {
+		row = strings.TrimSpace(row)
+		if ansi.StringWidth(row) > liveContentWidth(m.width) {
+			t.Fatalf("reasoning row exceeds live width %d: %q in %q", liveContentWidth(m.width), row, plain)
+		}
+	}
+}
+
 func TestModel_ReasoningPreviewClearsOnContent(t *testing.T) {
 	// Once the model finishes reasoning and starts writing the answer,
 	// the live reasoning preview should disappear so the view
@@ -1562,6 +1584,9 @@ func TestModel_TurnDoneAppendsThoughtForFootnote(t *testing.T) {
 	}
 	if !strings.Contains(got, "7s") {
 		t.Errorf("footnote should include the elapsed seconds: %q", got)
+	}
+	if !strings.HasSuffix(got, "\n\n") {
+		t.Errorf("thought footnote should leave a blank spacer after it: %q", got)
 	}
 }
 
