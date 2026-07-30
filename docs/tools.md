@@ -338,7 +338,7 @@ Supported `op` values:
 - `insert_before` — insert `new_text` before `anchor`
 - `insert_after` — insert `new_text` after `anchor`
 
-Anchors should be passed as full `line#hash` references, for example `42#a8f13c2b`. The tool re-reads the file and rejects stale or ambiguous anchors before writing, so it is the preferred path for drift-sensitive block edits that would be fragile with `edit_file` or a stale diff.
+Anchors should be passed as full `line#hash` references, for example `42#a8f13c2b`. The tool re-reads the file and rejects stale or ambiguous anchors before writing, so it is the preferred path for drift-sensitive block edits that would be fragile with `edit_file` or a stale diff. Missing-anchor and stale-anchor failures are recoverable: re-read the target block with `anchors=true`, then retry with the current required `anchor` or `start_anchor`/`end_anchor` values.
 
 Always prompts for approval.
 

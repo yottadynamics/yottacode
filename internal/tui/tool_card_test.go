@@ -471,6 +471,58 @@ func TestToolCard_ApplyDiffStalePatchIsCompact(t *testing.T) {
 	}
 }
 
+func TestToolCard_EditAnchoredMissingAnchorIsCompact(t *testing.T) {
+	out := `error: edit_anchored: operation 1: anchor is required`
+	got := stripANSI(renderToolCard(
+		"edit_anchored",
+		"edit_anchored(internal/tui/model.go, 1 ops)",
+		`{"path":"internal/tui/model.go","operations":[{"op":"insert_after","new_text":"x"}]}`,
+		out,
+		true,
+		100,
+		"",
+		0,
+	))
+	if !strings.Contains(got, "missing anchor") {
+		t.Fatalf("card should classify missing anchors: %q", got)
+	}
+	if !strings.Contains(got, "anchors=true") {
+		t.Fatalf("card should steer retry through anchored reads: %q", got)
+	}
+	if !strings.Contains(got, "recoverable: missing anchor") {
+		t.Fatalf("card should use a recoverable footer: %q", got)
+	}
+	if strings.Count(got, "anchor is required") > 0 {
+		t.Fatalf("card should not dump raw anchor error prose: %q", got)
+	}
+}
+
+func TestToolCard_EditAnchoredStaleAnchorIsCompact(t *testing.T) {
+	out := `error: edit_anchored: operation 1: stale anchor 91f36ec2 — no current line matches this anchor hash`
+	got := stripANSI(renderToolCard(
+		"edit_anchored",
+		"edit_anchored(internal/tui/model.go, 1 ops)",
+		`{"path":"internal/tui/model.go","operations":[{"op":"insert_after","anchor":"91f36ec2","new_text":"x"}]}`,
+		out,
+		true,
+		100,
+		"",
+		0,
+	))
+	if !strings.Contains(got, "stale anchor") {
+		t.Fatalf("card should classify stale anchors: %q", got)
+	}
+	if !strings.Contains(got, "anchors=true") || !strings.Contains(got, "line#anchor") {
+		t.Fatalf("card should steer retry through current anchors: %q", got)
+	}
+	if !strings.Contains(got, "operation 1") || !strings.Contains(got, "91f36ec2") {
+		t.Fatalf("card should retain concise anchor detail: %q", got)
+	}
+	if !strings.Contains(got, "recoverable: stale anchor") {
+		t.Fatalf("card should use a recoverable footer: %q", got)
+	}
+}
+
 // edit_file falls back to the generic text-body path when argsJSON is
 // missing or malformed (e.g., a buggy adapter or a test harness emitting
 // the event without args). The card must still render — never panic.
