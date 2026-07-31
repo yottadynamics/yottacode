@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -326,6 +327,65 @@ func TestMemorySave_ReadErrorDoesNotOverwriteExisting(t *testing.T) {
 	}
 	if string(data) != original {
 		t.Fatalf("memory_save overwrote unreadable existing memory:\n%s", data)
+	}
+}
+
+func TestMemorySave_ArchiveFailureDoesNotOverwriteExisting(t *testing.T) {
+	home, cwd := memTestSetup(t)
+	memDir := filepath.Join(home, ".yottacode", "memory", "user")
+	if err := os.MkdirAll(memDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(memDir, "prefs.md")
+	original := "---\nname: prefs\ntype: feedback\ndescription: original\ncreated: 2020-01-01T00:00:00Z\n---\nORIGINAL\n"
+	if err := os.WriteFile(path, []byte(original), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// ArchivePrior needs <memory-dir>/.archive to be a directory. A file at
+	// that path deterministically makes archiving fail without relying on
+	// platform-specific permission semantics.
+	if err := os.WriteFile(filepath.Join(memDir, memory.ArchiveDirName), []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	tool := &MemorySaveTool{Cwd: NewCwdRef(cwd)}
+	_, err := tool.Execute(context.Background(), `{"scope":"user","type":"feedback","name":"prefs","description":"new","content":"NEW"}`)
+	if err == nil || !strings.Contains(err.Error(), "archive prior") {
+		t.Fatalf("expected archive-prior error, got %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != original {
+		t.Fatalf("memory_save overwrote existing memory after archive failure:\n%s", data)
+	}
+}
+
+func TestMemorySave_UpdateDeletesStaleVecWhenEmbeddingFails(t *testing.T) {
+	home, cwd := memTestSetup(t)
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses localhost port 1 failure timing that is platform-specific on Windows")
+	}
+	tool := &MemorySaveTool{Cwd: NewCwdRef(cwd)}
+	if _, err := tool.Execute(context.Background(), `{"scope":"user","type":"reference","name":"topic","description":"old","content":"old body"}`); err != nil {
+		t.Fatalf("initial save: %v", err)
+	}
+	path := filepath.Join(home, ".yottacode", "memory", "user", "topic.md")
+	vecPath := memory.VecPath(path)
+	if err := memory.WriteVecWithModel(vecPath, []float32{1, 0, 0}, "nomic-embed-text"); err != nil {
+		t.Fatalf("write vec: %v", err)
+	}
+	tool.Embedder = &memory.EmbedClient{BaseURL: "http://127.0.0.1:1", Model: "nomic-embed-text", Timeout: time.Second}
+	out, err := tool.Execute(context.Background(), `{"scope":"user","type":"reference","name":"topic","description":"new","content":"new body"}`)
+	if err != nil {
+		t.Fatalf("update should save even when embedding fails: %v", err)
+	}
+	if !strings.Contains(out, "semantic index not updated") {
+		t.Fatalf("expected semantic failure note, got %q", out)
+	}
+	if _, err := os.Stat(vecPath); !os.IsNotExist(err) {
+		t.Fatalf("stale vec sidecar should be removed when updated memory cannot be re-embedded, stat err=%v", err)
 	}
 }
 

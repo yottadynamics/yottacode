@@ -85,103 +85,17 @@ func TestSlash_MemoryOpensPicker(t *testing.T) {
 	}
 }
 
-// /memory search <query> ranks saved memories (BM25) and shows them in an
-// interactive overlay (scroll + open) — results render in the overlay,
-// NOT the session transcript. Only matching entries (score > 0) appear.
-func TestSlash_MemorySearchOpensInteractiveResults(t *testing.T) {
+func TestSlash_MemoryIgnoresSearchArgs(t *testing.T) {
 	m := newMemoryTestModel(t)
-	seedUserMemoryFile(t, "queue-writes", "database writes go behind a queue for durability")
-	seedUserMemoryFile(t, "flush-left", "the TUI shares a column-0 left edge")
-
 	m, _ = m.runSlash("/memory search database queue")
-
 	if !m.memoryPickerOpen || m.memoryPicker == nil {
-		t.Fatalf("/memory search should open the results overlay")
-	}
-	if m.memoryPicker.mode != memorySearchMode {
-		t.Errorf("expected search mode; got %v", m.memoryPicker.mode)
-	}
-	// The user's requirement: results must NOT land in the session scrollback.
-	if strings.Contains(m.transcript.String(), "queue-writes") {
-		t.Errorf("search results must not be printed to the session; got:\n%s", m.transcript.String())
-	}
-	v := stripANSI(m.View())
-	if !strings.Contains(v, "queue-writes") {
-		t.Errorf("results overlay should list the matching memory; got:\n%s", v)
-	}
-	if strings.Contains(v, "flush-left") {
-		t.Errorf("non-matching memory should be filtered out; got:\n%s", v)
-	}
-}
-
-// Enter on a result opens the editor but keeps the picker open in search
-// mode, so exiting the editor returns to the same results (query kept).
-func TestSlash_MemorySearchEnterKeepsPickerOpen(t *testing.T) {
-	m := newMemoryTestModel(t)
-	seedUserMemoryFile(t, "queue-writes", "database writes go behind a queue")
-	m, _ = m.runSlash("/memory search queue")
-	if m.memoryPicker == nil || len(m.memoryPicker.searchResults) == 0 {
-		t.Fatalf("expected results to open on")
-	}
-	m, cmd := applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
-	if !m.memoryPickerOpen || m.memoryPicker == nil || m.memoryPicker.mode != memorySearchMode {
-		t.Errorf("opening a result must keep the picker in search mode (so editor-exit returns here)")
-	}
-	if cmd == nil {
-		t.Errorf("Enter on a result should dispatch a Cmd to launch the editor")
-	}
-}
-
-// Esc from the results list returns to the picker root menu.
-func TestSlash_MemorySearchEscReturnsToRoot(t *testing.T) {
-	m := newMemoryTestModel(t)
-	seedUserMemoryFile(t, "queue-writes", "database writes go behind a queue")
-	m, _ = m.runSlash("/memory search queue")
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEsc})
-	if m.memoryPicker == nil || m.memoryPicker.mode != memoryRootMode {
-		t.Errorf("Esc from results should return to root; got picker=%v", m.memoryPicker)
-	}
-}
-
-// An empty query opens the picker root rather than printing to the session.
-func TestSlash_MemorySearchEmptyQueryOpensPicker(t *testing.T) {
-	m := newMemoryTestModel(t)
-	m, _ = m.runSlash("/memory search")
-	if !m.memoryPickerOpen || m.memoryPicker == nil {
-		t.Fatalf("empty search query should open the picker")
+		t.Fatalf("/memory should open the picker even when extra args are present")
 	}
 	if m.memoryPicker.mode != memoryRootMode {
-		t.Errorf("empty query should land on the root menu; got mode %v", m.memoryPicker.mode)
+		t.Errorf("/memory no longer has a search subcommand; got mode %v", m.memoryPicker.mode)
 	}
-	if strings.Contains(m.transcript.String(), "[memory]") {
-		t.Errorf("must not print to the session transcript; got:\n%s", m.transcript.String())
-	}
-}
-
-// The in-picker "Search memories" row (index 4) opens a query box; typing
-// a query and pressing Enter shows the ranked results overlay.
-func TestSlash_MemoryPickerSearchRowRunsSearch(t *testing.T) {
-	m := newMemoryTestModel(t)
-	seedUserMemoryFile(t, "queue-writes", "database writes go behind a queue")
-
-	m, _ = typeAndEnter(t, m, "/memory")
-	for i := 0; i < 4; i++ { // move cursor to the "Search memories" row
-		m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyDown})
-	}
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
-	if m.memoryPicker == nil || m.memoryPicker.mode != memorySearchInputMode {
-		t.Fatalf("Search row should open the query input; got picker=%v", m.memoryPicker)
-	}
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("queue")})
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
-	if m.memoryPicker.mode != memorySearchMode {
-		t.Fatalf("Enter in the query box should run the search; got mode %v", m.memoryPicker.mode)
-	}
-	if len(m.memoryPicker.searchResults) == 0 {
-		t.Errorf("expected at least one ranked result for 'queue'")
-	}
-	if !strings.Contains(stripANSI(m.View()), "queue-writes") {
-		t.Errorf("results overlay should list queue-writes; got:\n%s", stripANSI(m.View()))
+	if strings.Contains(m.transcript.String(), "queue-writes") || strings.Contains(stripANSI(m.View()), "database queue") || strings.Contains(stripANSI(m.View()), "Search memories") {
+		t.Errorf("/memory args should not run a search or print results")
 	}
 }
 
@@ -403,17 +317,17 @@ func TestFormatMemorySizeWarning_MatchesExpectedShape(t *testing.T) {
 }
 
 func TestMemoryPickerRowCount_WithoutEmbedClient(t *testing.T) {
-	// 6 base rows (incl. "Search memories") + 1 "Enable semantic search".
+	// 5 base rows + 1 "Enable semantic search".
 	st := &memoryPickerState{showEnableSemanticRow: true}
-	if got := st.rowCount(); got != 7 {
-		t.Errorf("rowCount with semantic row = %d, want 7", got)
+	if got := st.rowCount(); got != 6 {
+		t.Errorf("rowCount with semantic row = %d, want 6", got)
 	}
 }
 
 func TestMemoryPickerRowCount_WithEmbedClient(t *testing.T) {
 	st := &memoryPickerState{showEnableSemanticRow: false}
-	if got := st.rowCount(); got != 6 {
-		t.Errorf("rowCount without semantic row = %d, want 6", got)
+	if got := st.rowCount(); got != 5 {
+		t.Errorf("rowCount without semantic row = %d, want 5", got)
 	}
 }
 

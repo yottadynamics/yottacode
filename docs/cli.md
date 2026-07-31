@@ -154,7 +154,6 @@ Sessions are saved automatically after completed turns in `~/.yottacode/sessions
 ```bash
 yottacode memory list                              # default scope: project
 yottacode memory list --scope user
-yottacode memory search <query>
 yottacode memory audit                             # read-only curation report
 yottacode memory forget --scope <user|project> <name>
 ```

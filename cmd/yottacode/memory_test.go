@@ -82,34 +82,14 @@ func TestMemoryList_EmptyFolderPrintsHint(t *testing.T) {
 	}
 }
 
-func TestMemorySearch_UsesConfiguredRetrievalAndProjectShadowing(t *testing.T) {
-	cwd := withCwdAndHome(t)
-	home := os.Getenv("HOME")
-	userDir := filepath.Join(home, ".yottacode", "memory", "user")
-	if err := os.MkdirAll(userDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	userPath := filepath.Join(userDir, "same-name.md")
-	userBody := "---\nname: same-name\ntype: reference\ndescription: old user rule\n---\nThe user rule mentions zebra-user-marker and should be shadowed.\n"
-	if err := os.WriteFile(userPath, []byte(userBody), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	seedProjectMemory(t, cwd, "same-name", "The project rule mentions zebra-project-marker and wins in this repo.")
-
+func TestMemorySearchCommandRemoved(t *testing.T) {
 	cmd := newCLI()
-	var out strings.Builder
-	cmd.SetOut(&out)
-	cmd.SetErr(&out)
-	cmd.SetArgs([]string{"memory", "search", "zebra"})
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("execute: %v", err)
+	memoryCmd, _, err := cmd.Find([]string{"memory", "search"})
+	if err != nil {
+		t.Fatalf("find memory search: %v", err)
 	}
-	body := out.String()
-	if !strings.Contains(body, "same-name") || !strings.Contains(body, "project") {
-		t.Fatalf("search should return project memory: %q", body)
-	}
-	if strings.Contains(body, "user") {
-		t.Fatalf("search should not return shadowed user twin: %q", body)
+	if memoryCmd != nil && memoryCmd.Name() == "search" {
+		t.Fatalf("memory search command should not be registered")
 	}
 }
 
