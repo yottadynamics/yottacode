@@ -6,7 +6,10 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
+
+	lspci "github.com/yottadynamics/yottacode/internal/lsp"
 )
 
 func TestChangedSourceFilesIncludesStagedUnstagedAndUntracked(t *testing.T) {
@@ -93,5 +96,59 @@ func TestChangedSourceFilesWorksFromNestedDir(t *testing.T) {
 	want := []string{"pkg/nested.go"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("changedSourceFiles() = %#v, want %#v", got, want)
+	}
+}
+
+func TestFormatChangedFilesDiagnosticsSummarizesCleanFiles(t *testing.T) {
+	results := []changedFileDiagnosticsResult{
+		{Path: "a.go", Snapshot: lspci.DiagnosticsSnapshot{Published: true}},
+		{Path: "b.go", Snapshot: lspci.DiagnosticsSnapshot{Published: true}},
+		{Path: "c.go", Snapshot: lspci.DiagnosticsSnapshot{Published: true}},
+	}
+
+	got := formatChangedFilesDiagnostics(results)
+	for _, want := range []string{
+		"checked 3 changed LSP source files",
+		"✓ clean: no diagnostics in 3 files",
+		"files: a.go, b.go, c.go",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("clean summary missing %q: %q", want, got)
+		}
+	}
+	if strings.Contains(got, "(no diagnostics)") {
+		t.Fatalf("clean summary should collapse repeated no-diagnostic rows: %q", got)
+	}
+}
+
+func TestFormatChangedFilesDiagnosticsReportsIssuesAndSkippedStates(t *testing.T) {
+	results := []changedFileDiagnosticsResult{
+		{Path: "clean.go", Snapshot: lspci.DiagnosticsSnapshot{Published: true}},
+		{Path: "bad.go", Snapshot: lspci.DiagnosticsSnapshot{Published: true, Diagnostics: []lspci.Diagnostic{{
+			Path:      "bad.go",
+			Line:      1,
+			Character: 2,
+			Severity:  "error",
+			Source:    "gopls",
+			Message:   "undefined: thing",
+		}}}},
+		{Path: "slow.go", Snapshot: lspci.DiagnosticsSnapshot{Published: false}},
+		{Path: "missing.py", Unavailable: `unavailable: Python language server "pyright-langserver" not found on PATH. install pyright`},
+	}
+
+	got := formatChangedFilesDiagnostics(results)
+	for _, want := range []string{
+		"checked 4 changed LSP source files",
+		"⚠ 1 diagnostic in 1 file",
+		"✓ clean: 1 file",
+		"○ pending: diagnostics not published for 1 file before timeout",
+		"pending files: slow.go",
+		"○ skipped: LSP unavailable for 1 file",
+		"missing.py: unavailable: Python language server",
+		"bad.go:2:3\terror source=gopls\tundefined: thing",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("diagnostics summary missing %q: %q", want, got)
+		}
 	}
 }
