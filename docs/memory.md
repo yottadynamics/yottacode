@@ -437,7 +437,7 @@ yottacode supports three scoring strategies, selectable via config:
 | `semantic` | BM25 score (60%) + cosine similarity from local Ollama embeddings (40%) | When you want conceptual matching — "error handling philosophy" finds memories about soft failures even without shared keywords |
 | `auto` **(default)** | Probes for a local Ollama embedding model at session start. If found → `semantic`; otherwise → `bm25` | Recommended. Zero config, best available scoring |
 
-**BM25** is the baseline — pure Go, zero dependencies, deterministic. It ships a Porter stemmer and ~15 hand-curated synonym groups for programming/dev vocabulary (test/mock/fake, database/db/sql, deploy/release/ship, auth/login/credential, etc.). This alone is a major upgrade over raw keyword matching. Synonym-derived query terms are scored at a fractional weight (half of an exact term) so a memory that incidentally touches several distinct synonyms of a group can't outrank one that uses the exact term you searched for — recall stays up, exact-match precision wins ties. (The CLI / TUI `/memory search` preview uses equal weights; the agent's retrieval applies the down-weight.)
+**BM25** is the baseline — pure Go, zero dependencies, deterministic. It ships a Porter stemmer and ~15 hand-curated synonym groups for programming/dev vocabulary (test/mock/fake, database/db/sql, deploy/release/ship, auth/login/credential, etc.). This alone is a major upgrade over raw keyword matching. Synonym-derived query terms are scored at a fractional weight (half of an exact term) so a memory that incidentally touches several distinct synonyms of a group can't outrank one that uses the exact term you searched for — recall stays up, exact-match precision wins ties. The agent-facing `memory_search` tool also applies a small score floor so tiny positive tail matches don't show as relevant results.
 
 **Semantic** layers local embeddings on top when a local Ollama server is available with an embedding model installed. Vector sidecars (`.vec` files) are stored alongside memory `.md` files and generated automatically on `memory_save`. The combined score blends BM25 (which excels at exact matches like file paths and function names) with cosine similarity (which captures conceptual relationships) — by default **60% BM25 / 40% cosine**, tunable via `retrieval.semantic_weight` (the cosine fraction; BM25 gets the rest). Raise it to trust meaning-based matches more on paraphrased queries, lower it (or set `0.0`) to lean on exact keywords. Because the blended score is re-normalized to top=1.0, only the ratio matters. A sidecar produced by a *different* embedding model than the one in use is skipped for the cosine term (cross-model vectors aren't comparable) — that entry simply ranks on BM25 until `memory reindex` rebuilds it.
 
@@ -543,7 +543,7 @@ On topic-distinct memories BM25 alone already scores perfectly; semantic's measu
 
 ### `/memory` picker
 
-The TUI's `/memory` command opens a six-row picker (plus a conditional seventh row):
+The TUI's `/memory` command opens a five-row picker (plus a conditional sixth row):
 
 | Row | Action |
 |---|---|
@@ -551,13 +551,10 @@ The TUI's `/memory` command opens a six-row picker (plus a conditional seventh r
 | User preferences | Edits `~/.yottacode/USER.md` in vim |
 | Browse user memories | Sub-list of `~/.yottacode/memory/user/*.md` |
 | Browse project memories | Sub-list of `~/.yottacode/memory/projects/<slug>/*.md` |
-| Search memories | Opens a query box; ranks saved memories and lets you open one (see below) |
 | Reindex embeddings | Generates `.vec` sidecars for semantic retrieval (requires Ollama) |
 | Enable semantic search | Appears only when no embedding model is active (e.g. first run without Ollama); pulls an Ollama embedding model and reindexes |
 
-In the browse sub-lists: `Enter` opens the chosen memory in vim, `d` deletes it (and regenerates `MEMORY.md`), `f` opens the folder in your file manager, `Esc` returns to the root menu.
-
-**Searching memories.** Two entry points land in the same interactive results overlay: the **Search memories** picker row (which opens a query box first), or `/memory search <query>` typed directly. Results are ranked by configured retrieval semantics and apply the same project-shadows-user precedence as prompt injection (each row shows scope + score + description). `↑`/`↓` scroll, `Enter` opens the highlighted memory in vim, and `Esc` steps back (results → root → close). Exiting the editor returns you to the **same results** — the query isn't lost. Crucially, results render in the overlay and are **never printed into the conversation transcript**, so searching doesn't pollute your session scrollback. It's a deterministic, zero-token way to find "what do I have stored about X" without spending a model turn (the interactive equivalent of the `yottacode memory search` CLI command). Use `/recall <query>` for the analogous search over past *sessions*.
+In the browse sub-lists: `Enter` opens the chosen memory in vim, `d` deletes it (and regenerates `MEMORY.md`), `f` opens the folder in your file manager, `Esc` returns to the root menu. If you want to find a specific memory, ask the agent; it can use the `memory_search` tool without exposing an unreliable manual search UI.
 
 ### Cobra subcommands (for scripts)
 
@@ -567,7 +564,6 @@ The same actions are exposed as non-interactive subcommands so CI or one-off she
 yottacode memory list [--scope user|project]   # default: project
 yottacode memory forget --scope <s> <name>
 yottacode memory reindex                       # generate .vec sidecars for all memories
-yottacode memory search <query>                # search memories with configured retrieval (same precedence as injection)
 yottacode memory audit                         # read-only curation report for notes/duplicates/scope/body issues
 yottacode memory audit --plan                  # group issues into a read-only curation plan
 yottacode memory audit --propose               # draft subjective curation proposals without applying them

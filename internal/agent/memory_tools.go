@@ -314,15 +314,26 @@ func (t *MemorySaveTool) Execute(ctx context.Context, argsJSON string) (string, 
 		changeSummary = memorySaveChangeSummary(existing, memType, desc, source, body)
 	}
 	if len(existing) > 0 && string(existing) != full {
-		// Content actually changes — archive the prior version first.
-		// Soft on failure: better to complete the save the agent asked
-		// for than to block it because archiving hiccupped.
-		if ap, aerr := memory.ArchivePrior(path, fmt.Sprintf("%d", time.Now().UnixNano())); aerr == nil && ap != "" {
+		// Content actually changes — archive the prior version first. The
+		// archive is the recovery path for accidental same-name overwrites, so
+		// failing to create it must stop before the live file is replaced.
+		ap, aerr := memory.ArchivePrior(path, fmt.Sprintf("%d", time.Now().UnixNano()))
+		if aerr != nil {
+			return "", fmt.Errorf("memory_save: archive prior %q: %w", path, aerr)
+		}
+		if ap != "" {
 			archived = true
 		}
 	}
+	contentChanged := len(existing) == 0 || string(existing) != full
 	if err := memory.AtomicWrite(path, []byte(full), 0o600); err != nil {
 		return "", fmt.Errorf("memory_save: write %q: %w", path, err)
+	}
+	if contentChanged {
+		// A rewritten markdown body invalidates any previous semantic sidecar. If
+		// embedding is unavailable below, leaving no vector is safer than ranking
+		// the new memory with the old content's vector.
+		memory.DeleteVec(path)
 	}
 	if err := memory.RegenerateMemoryIndex(a.Scope, t.Cwd.Get()); err != nil {
 		return "", fmt.Errorf("memory_save: regenerate index: %w", err)

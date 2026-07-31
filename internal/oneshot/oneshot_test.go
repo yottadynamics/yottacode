@@ -72,7 +72,7 @@ func TestRegisterMemoryTools_ParityWithTUI(t *testing.T) {
 	cwdRef := agent.NewCwdRef("/tmp")
 	client := memory.NewEmbedClient("http://localhost:11434", "test-model")
 
-	registerMemoryTools(reg, cwdRef, client, "bm25", memory.Source{Session: "test-session"})
+	registerMemoryTools(reg, cwdRef, client, "bm25", 0.4, memory.Source{Session: "test-session"})
 
 	for _, name := range []string{"memory_save", "memory_forget", "memory_search", "memory_audit", "memory_curate_apply", "memory_archive_prune", "memory_get"} {
 		if _, ok := reg.Get(name); !ok {
@@ -107,7 +107,7 @@ func TestRegisterMemoryTools_ParityWithTUI(t *testing.T) {
 // still register and degrade to BM25.
 func TestRegisterMemoryTools_NilEmbedderOK(t *testing.T) {
 	reg := agent.NewRegistry()
-	registerMemoryTools(reg, agent.NewCwdRef("/tmp"), nil, "auto", memory.Source{})
+	registerMemoryTools(reg, agent.NewCwdRef("/tmp"), nil, "auto", 0.4, memory.Source{})
 	for _, name := range []string{"memory_save", "memory_forget", "memory_search", "memory_audit", "memory_curate_apply", "memory_archive_prune", "memory_get"} {
 		if _, ok := reg.Get(name); !ok {
 			t.Errorf("memory tool %q not registered with nil embedder", name)

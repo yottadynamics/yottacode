@@ -24,6 +24,13 @@ type MemorySearchTool struct {
 	// working when constructed without config wired. Threaded so search
 	// ranks the same way injection does instead of always forcing auto.
 	Strategy string
+	// SemanticWeight is retrieval.semantic_weight. When unset by old tests or
+	// ad-hoc construction, Execute falls back to the config default so semantic
+	// search is not accidentally pure BM25.
+	SemanticWeight float64
+	// SemanticWeightConfigured distinguishes an explicit 0.0 semantic weight
+	// from the zero value of an unwired tool.
+	SemanticWeightConfigured bool
 }
 
 func (t *MemorySearchTool) Name() string { return "memory_search" }
@@ -113,23 +120,26 @@ func (t *MemorySearchTool) Execute(ctx context.Context, argsJSON string) (string
 	if strategy == "" {
 		strategy = "auto"
 	}
+	semanticWeight := t.SemanticWeight
+	if !t.SemanticWeightConfigured {
+		semanticWeight = config.Default().Retrieval.SemanticWeight
+	}
 	cfg := config.RetrievalConfig{
-		Enabled:  true,
-		TopK:     a.Limit,
-		MinScore: 0.0,
-		Strategy: strategy,
+		Enabled:        true,
+		TopK:           a.Limit,
+		MinScore:       memory.ExplicitSearchMinScore,
+		Strategy:       strategy,
+		SemanticWeight: semanticWeight,
 	}
 
 	scored := memory.SelectWithEmbeddingsScored(ctx, entries, a.Query, cfg, t.Embedder)
 
-	// Drop zero-relevance entries: with MinScore=0 the selector returns
-	// every memory up to the limit (score 0 included), which would label
-	// irrelevant memories "matching". The CLI and TUI /memory search
-	// surfaces already filter score<=0, so this keeps the agent's view
-	// consistent with the operator's.
+	// Drop any entries below the explicit-search relevance floor. The selector
+	// enforces the same threshold, but keeping this guard here preserves the
+	// public behavior if a future selector path returns unfiltered scores.
 	kept := make([]memory.Scored, 0, len(scored))
 	for _, s := range scored {
-		if s.Score > 0 {
+		if memory.ExplicitSearchMatch(s.Entry, a.Query, s.Score) {
 			kept = append(kept, s)
 		}
 	}

@@ -22,12 +22,12 @@ type Corpus struct {
 }
 
 type document struct {
-	Entry          MemoryEntry
-	HeadlineStems  []string
-	BodyStems      []string
-	HeadlineFreq   map[string]int
-	BodyFreq       map[string]int
-	Length         int
+	Entry         MemoryEntry
+	HeadlineStems []string
+	BodyStems     []string
+	HeadlineFreq  map[string]int
+	BodyFreq      map[string]int
+	Length        int
 }
 
 // BuildCorpus tokenizes and stems all entries, computing document
@@ -85,7 +85,7 @@ type weightedStem struct {
 }
 
 // equalWeight wraps plain stems at weight 1.0 — the legacy/public scoring
-// behavior used by the CLI and TUI /memory search surfaces.
+// behavior used by user-visible memory search surfaces.
 func equalWeight(stems []string) []weightedStem {
 	out := make([]weightedStem, len(stems))
 	for i, s := range stems {

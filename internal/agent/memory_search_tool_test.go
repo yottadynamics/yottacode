@@ -3,6 +3,8 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -168,6 +170,88 @@ func TestMemorySearchTool_AllScopeAppliesProjectShadowing(t *testing.T) {
 	}
 	if strings.Contains(result, "aardvark-user-marker") {
 		t.Fatalf("all-scope search returned shadowed user twin: %s", result)
+	}
+}
+
+func TestMemorySearchTool_DefaultSemanticWeightUsesVectors(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("YOTTACODE_HOME", "")
+
+	memDir := filepath.Join(home, ".yottacode", "memory", "user")
+	if err := os.MkdirAll(memDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeTestMemory(t, memDir, "concept", "reference",
+		"unrelated headline", "vector-only alpha beta gamma")
+	path := filepath.Join(memDir, "concept.md")
+	if err := memory.WriteVecWithModel(memory.VecPath(path), []float32{1, 0}, "test-embed"); err != nil {
+		t.Fatalf("write vec: %v", err)
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/embeddings" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"embedding":[1,0]}`))
+	}))
+	defer srv.Close()
+
+	cwd := t.TempDir()
+	cwdRef := &CwdRef{}
+	cwdRef.Set(cwd)
+	tool := &MemorySearchTool{
+		Cwd:      cwdRef,
+		Embedder: &memory.EmbedClient{BaseURL: srv.URL, Model: "test-embed", Timeout: time.Second},
+		Strategy: "semantic",
+		// SemanticWeightConfigured intentionally false: this exercises the
+		// default path that used to leave semantic weight at zero (pure BM25).
+	}
+	args, _ := json.Marshal(memorySearchArgs{Query: "vector-only", Scope: "user", Limit: 10})
+	result, err := tool.Execute(context.Background(), string(args))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(result, "concept") {
+		t.Fatalf("semantic default weight should allow vector-only match; got: %s", result)
+	}
+}
+
+func TestMemorySearchTool_FiltersTinyTailMatches(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("YOTTACODE_HOME", "")
+
+	memDir := filepath.Join(home, ".yottacode", "memory", "user")
+	if err := os.MkdirAll(memDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeTestMemory(t, memDir, "target", "reference",
+		"database queue retry authentication token launch release provider setup",
+		"The exact operational memory covers database queue retry authentication token launch release provider setup decisions.")
+	writeTestMemory(t, memDir, "tail-noise", "reference",
+		"release note",
+		"This memory mentions release once but is otherwise about unrelated terminal colors and menus.")
+
+	cwd := t.TempDir()
+	cwdRef := &CwdRef{}
+	cwdRef.Set(cwd)
+	tool := &MemorySearchTool{Cwd: cwdRef, Strategy: "bm25"}
+	args, _ := json.Marshal(memorySearchArgs{
+		Query: "database queue retry authentication token launch release provider setup",
+		Scope: "user",
+		Limit: 10,
+	})
+	result, err := tool.Execute(context.Background(), string(args))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(result, "target") {
+		t.Fatalf("expected exact target memory; got: %s", result)
+	}
+	if strings.Contains(result, "tail-noise") {
+		t.Fatalf("tiny positive tail match should be filtered out; got: %s", result)
 	}
 }
 

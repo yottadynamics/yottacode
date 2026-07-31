@@ -300,7 +300,7 @@ func Run(ctx context.Context, opts cli.ChatOptions, prompt string) error {
 	reg.Register(&agent.GitWorktreeUnlockTool{Cwd: cwdRef})
 	reg.Register(&agent.GitWorktreePruneTool{Cwd: cwdRef})
 	reg.Register(&agent.FetchURLTool{})
-	registerMemoryTools(reg, cwdRef, embedClient, fileCfg.Retrieval.Strategy, memory.Source{Session: sess.ID})
+	registerMemoryTools(reg, cwdRef, embedClient, fileCfg.Retrieval.Strategy, fileCfg.Retrieval.SemanticWeight, memory.Source{Session: sess.ID})
 	reg.Register(&agent.GitTool{Cwd: cwdRef})
 	reg.Register(&agent.TodoWriteTool{Store: planStore})
 	// ExitPlanModeTool is registered for schema parity with the TUI
@@ -428,10 +428,10 @@ func Run(ctx context.Context, opts cli.ChatOptions, prompt string) error {
 // driving a full one-shot run. A nil embedder degrades gracefully:
 // memory_save skips the sidecar, search and injection fall back to
 // BM25.
-func registerMemoryTools(reg *agent.Registry, cwdRef *agent.CwdRef, embedClient *memory.EmbedClient, strategy string, source memory.Source) {
+func registerMemoryTools(reg *agent.Registry, cwdRef *agent.CwdRef, embedClient *memory.EmbedClient, strategy string, semanticWeight float64, source memory.Source) {
 	reg.Register(&agent.MemorySaveTool{Cwd: cwdRef, Embedder: embedClient, Source: source})
 	reg.Register(&agent.MemoryForgetTool{Cwd: cwdRef})
-	reg.Register(&agent.MemorySearchTool{Cwd: cwdRef, Embedder: embedClient, Strategy: strategy})
+	reg.Register(&agent.MemorySearchTool{Cwd: cwdRef, Embedder: embedClient, Strategy: strategy, SemanticWeight: semanticWeight, SemanticWeightConfigured: true})
 	reg.Register(&agent.MemoryAuditTool{Cwd: cwdRef})
 	reg.Register(&agent.MemoryCurateApplyTool{Cwd: cwdRef})
 	reg.Register(&agent.MemoryArchivePruneTool{Cwd: cwdRef})

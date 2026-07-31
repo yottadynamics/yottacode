@@ -108,7 +108,7 @@ Type `/` in the TUI to open the command palette — it filters as you type and s
 | `/provider` | Select or inspect a provider (`list`, `use`, `add`, `remove`, `models`) |
 | `/effort [level]` | Set reasoning effort where supported (`default` · `low` · `medium` · `high`) |
 | `/doctor` | Probe provider auth and model access |
-| `/memory` | Open the memory picker (`/memory search <q>` ranks saved memories) |
+| `/memory` | Open the memory picker to edit/browse memories and reindex embeddings |
 | `/system` | Show the active system prompt, including injected memory |
 | `/init` | Draft `.yottacode/YOTTACODE.md` from the current repo |
 | `/permissions` | Show where permissions are configured |

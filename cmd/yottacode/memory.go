@@ -24,7 +24,6 @@ func newMemoryCmd() *cobra.Command {
 into non-interactive cobra subcommands.
 
   list     list saved memories (defaults to project scope)
-  search   search memories using configured retrieval
   audit    report memories that need curation
   forget   delete a saved memory by name`,
 		Args: cobra.NoArgs,
@@ -33,7 +32,6 @@ into non-interactive cobra subcommands.
 		newMemoryListCmd(),
 		newMemoryForgetCmd(),
 		newMemoryReindexCmd(),
-		newMemorySearchCmd(),
 		newMemoryAuditCmd(),
 		newMemoryHealthCmd(),
 		newMemoryArchiveCmd(),
@@ -185,75 +183,6 @@ Configure the model via [retrieval] embedding_model in
 				indexed++
 			}
 			fmt.Fprintf(out, "done: %d indexed, %d up-to-date\n", indexed, skipped)
-			return nil
-		},
-	}
-}
-
-// newMemorySearchCmd scores memories against a query with the same configured
-// retrieval selector used by agent prompt injection.
-func newMemorySearchCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:   "search <query>",
-		Short: "Search memories using configured retrieval",
-		Long: `Search scores user-scope and project-scope memories against the query
-using the same configured retrieval selector used by agent prompt injection.
-The default auto strategy uses local semantic embeddings when available and
-falls back to BM25 with Porter stemming and synonym expansion otherwise.`,
-		Args: cobra.MinimumNArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			cwd, err := os.Getwd()
-			if err != nil {
-				return err
-			}
-			query := strings.Join(args, " ")
-			loaded, err := memory.Load(cwd)
-			if err != nil {
-				return err
-			}
-
-			all := memory.EffectiveEntries(loaded.UserMemories, loaded.ProjectMemories)
-			if len(all) == 0 {
-				fmt.Fprintln(cmd.OutOrStdout(), "(no memories)")
-				return nil
-			}
-
-			cfg, err := config.LoadDefault()
-			if err != nil {
-				return err
-			}
-			retrieval := cfg.Retrieval
-			retrieval.Enabled = true
-			retrieval.TopK = 20
-			retrieval.MinScore = 0
-			retrieval.MaxBytes = 0
-			embedder := memory.NewEmbedClient("", retrieval.EmbeddingModel)
-			if retrieval.Strategy == "keyword" || retrieval.Strategy == "bm25" || !embedder.Available(cmd.Context()) {
-				embedder = nil
-			}
-			ranked := memory.SelectWithEmbeddingsScored(cmd.Context(), all, query, retrieval, embedder)
-
-			out := cmd.OutOrStdout()
-			fmt.Fprintf(out, "query: %q  (%d memories searched)\n\n", query, len(all))
-			shown := 0
-			for _, s := range ranked {
-				if s.Score <= 0 {
-					continue
-				}
-				shown++
-				scope := s.Entry.Scope
-				if scope == "" {
-					scope = "?"
-				}
-				fmt.Fprintf(out, "  %.3f  %-8s %-10s %s", s.Score, scope, s.Entry.Type, s.Entry.Name)
-				if s.Entry.Description != "" {
-					fmt.Fprintf(out, " — %s", s.Entry.Description)
-				}
-				fmt.Fprintln(out)
-			}
-			if shown == 0 {
-				fmt.Fprintln(out, "  (no matches)")
-			}
 			return nil
 		},
 	}

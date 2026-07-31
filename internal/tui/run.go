@@ -398,7 +398,7 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 	}
 	reg.Register(&agent.MemorySaveTool{Cwd: cwdRef, Embedder: embedClient, Source: memory.Source{Session: sess.ID}})
 	reg.Register(&agent.MemoryForgetTool{Cwd: cwdRef})
-	reg.Register(&agent.MemorySearchTool{Cwd: cwdRef, Embedder: embedClient, Strategy: fileCfg.Retrieval.Strategy})
+	reg.Register(&agent.MemorySearchTool{Cwd: cwdRef, Embedder: embedClient, Strategy: fileCfg.Retrieval.Strategy, SemanticWeight: fileCfg.Retrieval.SemanticWeight, SemanticWeightConfigured: true})
 	reg.Register(&agent.MemoryAuditTool{Cwd: cwdRef})
 	reg.Register(&agent.MemoryCurateApplyTool{Cwd: cwdRef})
 	reg.Register(&agent.MemoryArchivePruneTool{Cwd: cwdRef})

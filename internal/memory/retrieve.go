@@ -27,6 +27,20 @@ import (
 	"github.com/yottadynamics/yottacode/internal/config"
 )
 
+// ExplicitSearchMinScore is the default relevance floor for the agent-facing
+// memory_search tool. Prompt injection keeps using retrieval.min_score; explicit
+// tool searches need a small floor so tiny stem/synonym tail scores do not show
+// unrelated memories as matches.
+const ExplicitSearchMinScore = 0.05
+
+// ExplicitSearchMatch reports whether a scored memory should be shown by the
+// agent-facing memory_search tool. The agent can inspect ranked candidates and
+// refine its query, so keep this conservative: drop only obvious low-score noise
+// instead of applying brittle UI-style query heuristics.
+func ExplicitSearchMatch(_ MemoryEntry, _ string, score float64) bool {
+	return score >= ExplicitSearchMinScore
+}
+
 // Scored pairs a memory entry with the relevance score the
 // orchestrator assigned it for a particular query. Score is in
 // [0.0, 1.0]; deterministic across runs.

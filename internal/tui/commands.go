@@ -74,10 +74,9 @@ func init() {
 		{Name: "advisor", Help: "show or toggle advisor/implementer routing (subcommands: on, off)", Run: cmdAdvisor},
 		{Name: "sessions", Help: "open the sessions menu (or /sessions <id|name> to resume directly)", Run: cmdSessions},
 		// No Args: a bare /memory must execute on Enter (one keystroke) to
-		// open the picker. The `search` subcommand is surfaced in Help and
-		// still works when typed manually (`/memory search <query>`) —
-		// same pattern as /plan, /model, /sessions.
-		{Name: "memory", Help: "open the memory picker; `/memory search <q>` ranks saved memories", Run: cmdMemory},
+		// open the edit/browse/reindex picker. Manual memory search is not a
+		// TUI slash surface; the agent keeps the memory_search tool.
+		{Name: "memory", Help: "open the memory picker", Run: cmdMemory},
 		{Name: "map", Args: "[query]", Help: "open the code map: directory → file → symbol structure", Run: cmdMap, PreservesTurn: true},
 		{Name: "video", Args: "[path]", Help: "guide a marketing-video workflow", Run: cmdVideo},
 		{Name: "summarize", Help: "compress session history into a structured summary", Run: cmdSummarize},
