@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/yottadynamics/yottacode/internal/memory"
 )
@@ -262,6 +263,96 @@ func TestMemorySave_ConcurrentSameNameNoSilentLoss(t *testing.T) {
 	}
 	if len(seen) != n {
 		t.Errorf("expected all %d versions recoverable (live + archive); got %d — silent loss under concurrency", n, len(seen))
+	}
+}
+
+func TestMemorySave_ConcurrentDifferentNamesKeepsCompleteIndex(t *testing.T) {
+	home, cwd := memTestSetup(t)
+	tool := &MemorySaveTool{Cwd: NewCwdRef(cwd)}
+	const n = 40
+
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			args := fmt.Sprintf(`{"scope":"user","type":"reference","name":"mem-%02d","description":"memory %02d","content":"body %02d"}`, i, i, i)
+			if _, err := tool.Execute(context.Background(), args); err != nil {
+				t.Errorf("save %d: %v", i, err)
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	idx, err := os.ReadFile(filepath.Join(home, ".yottacode", "memory", "user", "MEMORY.md"))
+	if err != nil {
+		t.Fatalf("read index: %v", err)
+	}
+	for i := 0; i < n; i++ {
+		name := fmt.Sprintf("mem-%02d", i)
+		if !strings.Contains(string(idx), "["+name+"]") {
+			t.Fatalf("index missing %s after concurrent saves:\n%s", name, idx)
+		}
+	}
+}
+
+func TestMemorySave_ReadErrorDoesNotOverwriteExisting(t *testing.T) {
+	home, cwd := memTestSetup(t)
+	memDir := filepath.Join(home, ".yottacode", "memory", "user")
+	if err := os.MkdirAll(memDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(memDir, "locked.md")
+	original := "---\nname: locked\ntype: reference\ndescription: original\ncreated: 2020-01-01T00:00:00Z\n---\nORIGINAL\n"
+	if err := os.WriteFile(path, []byte(original), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(path, 0o600) })
+
+	tool := &MemorySaveTool{Cwd: NewCwdRef(cwd)}
+	_, err := tool.Execute(context.Background(), `{"scope":"user","type":"reference","name":"locked","description":"new","content":"NEW"}`)
+	if err == nil || !strings.Contains(err.Error(), "read existing") {
+		t.Fatalf("expected read-existing error, got %v", err)
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != original {
+		t.Fatalf("memory_save overwrote unreadable existing memory:\n%s", data)
+	}
+}
+
+func TestMemorySave_CanceledContextCancelsEmbedding(t *testing.T) {
+	home, cwd := memTestSetup(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	tool := &MemorySaveTool{
+		Cwd: NewCwdRef(cwd),
+		Embedder: &memory.EmbedClient{
+			BaseURL: "http://127.0.0.1:1",
+			Model:   "nomic-embed-text",
+			Timeout: time.Second,
+		},
+	}
+	out, err := tool.Execute(ctx, `{"scope":"user","type":"reference","name":"cancel-embed","description":"cancel embed","content":"body"}`)
+	if err != nil {
+		t.Fatalf("save should remain durable when embedding is canceled: %v", err)
+	}
+	if !strings.Contains(out, "semantic index not updated") {
+		t.Fatalf("expected non-fatal semantic note, got %q", out)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".yottacode", "memory", "user", "cancel-embed.md")); err != nil {
+		t.Fatalf("memory file should still be written: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".yottacode", "memory", "user", "cancel-embed.vec")); !os.IsNotExist(err) {
+		t.Fatalf("canceled embedding should not write vec sidecar, stat err=%v", err)
 	}
 }
 

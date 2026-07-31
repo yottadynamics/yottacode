@@ -395,16 +395,16 @@ func SystemPromptForSemantic(ctx context.Context, base string, l Loaded, query s
 	return SystemPrompt(base, filtered)
 }
 
-// shadowUserByProject drops user-scope memories whose name also exists in
+// ShadowUserByProject drops user-scope memories whose name also exists in
 // project scope. In a given repo the project-scope memory of a name is
 // authoritative, so the user-scope twin's body is not injected — it would
-// otherwise duplicate or, worse, contradict the project version. This
-// mirrors the project-shadows-user precedence slash commands and config
-// layering already use. The user file stays on disk and still applies in
-// every other repo (where no project twin exists). Shadowing keys on the
-// full project set, so it applies whether or not the project twin ranked
-// this turn — a name's owner doesn't flip based on relevance.
-func shadowUserByProject(user, project []MemoryEntry) []MemoryEntry {
+// otherwise duplicate or, worse, contradict the project version. This mirrors
+// the project-shadows-user precedence slash commands and config layering
+// already use. The user file stays on disk and still applies in every other
+// repo (where no project twin exists). Shadowing keys on the full project set,
+// so it applies whether or not the project twin ranked this turn — a name's
+// owner doesn't flip based on relevance.
+func ShadowUserByProject(user, project []MemoryEntry) []MemoryEntry {
 	if len(user) == 0 || len(project) == 0 {
 		return user
 	}
@@ -419,6 +419,20 @@ func shadowUserByProject(user, project []MemoryEntry) []MemoryEntry {
 		}
 	}
 	return out
+}
+
+// EffectiveEntries returns the all-scope memory set after applying the same
+// project-over-user precedence used by prompt injection.
+func EffectiveEntries(user, project []MemoryEntry) []MemoryEntry {
+	user = ShadowUserByProject(user, project)
+	combined := make([]MemoryEntry, 0, len(user)+len(project))
+	combined = append(combined, user...)
+	combined = append(combined, project...)
+	return combined
+}
+
+func shadowUserByProject(user, project []MemoryEntry) []MemoryEntry {
+	return ShadowUserByProject(user, project)
 }
 
 // selectAcrossScopes ranks both pools jointly under one cfg.TopK

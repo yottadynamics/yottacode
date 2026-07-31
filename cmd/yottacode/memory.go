@@ -24,7 +24,7 @@ func newMemoryCmd() *cobra.Command {
 into non-interactive cobra subcommands.
 
   list     list saved memories (defaults to project scope)
-  search   search memories using BM25 scoring
+  search   search memories using configured retrieval
   audit    report memories that need curation
   forget   delete a saved memory by name`,
 		Args: cobra.NoArgs,
@@ -190,16 +190,16 @@ Configure the model via [retrieval] embedding_model in
 	}
 }
 
-// newMemorySearchCmd scores all memories against a query and displays
-// ranked results — the same view the agent's retrieval sees.
+// newMemorySearchCmd scores memories against a query with the same configured
+// retrieval selector used by agent prompt injection.
 func newMemorySearchCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "search <query>",
-		Short: "Search memories using BM25 scoring (stemming + synonyms)",
-		Long: `Search scores all user-scope and project-scope memories against the
-query using the BM25 retrieval algorithm with Porter stemming and
-synonym expansion. Shows the same ranked results the agent's
-per-turn retrieval would return.`,
+		Short: "Search memories using configured retrieval",
+		Long: `Search scores user-scope and project-scope memories against the query
+using the same configured retrieval selector used by agent prompt injection.
+The default auto strategy uses local semantic embeddings when available and
+falls back to BM25 with Porter stemming and synonym expansion otherwise.`,
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cwd, err := os.Getwd()
@@ -212,20 +212,29 @@ per-turn retrieval would return.`,
 				return err
 			}
 
-			var all []memory.MemoryEntry
-			all = append(all, loaded.UserMemories...)
-			all = append(all, loaded.ProjectMemories...)
+			all := memory.EffectiveEntries(loaded.UserMemories, loaded.ProjectMemories)
 			if len(all) == 0 {
 				fmt.Fprintln(cmd.OutOrStdout(), "(no memories)")
 				return nil
 			}
 
-			corpus := memory.BuildCorpus(all)
-			qStems := memory.StemExpandTokenize(query)
-			ranked := corpus.Rank(qStems)
+			cfg, err := config.LoadDefault()
+			if err != nil {
+				return err
+			}
+			retrieval := cfg.Retrieval
+			retrieval.Enabled = true
+			retrieval.TopK = 20
+			retrieval.MinScore = 0
+			retrieval.MaxBytes = 0
+			embedder := memory.NewEmbedClient("", retrieval.EmbeddingModel)
+			if retrieval.Strategy == "keyword" || retrieval.Strategy == "bm25" || !embedder.Available(cmd.Context()) {
+				embedder = nil
+			}
+			ranked := memory.SelectWithEmbeddingsScored(cmd.Context(), all, query, retrieval, embedder)
 
 			out := cmd.OutOrStdout()
-			fmt.Fprintf(out, "query: %q  (%d memories scored)\n\n", query, len(ranked))
+			fmt.Fprintf(out, "query: %q  (%d memories searched)\n\n", query, len(all))
 			shown := 0
 			for _, s := range ranked {
 				if s.Score <= 0 {
@@ -241,9 +250,6 @@ per-turn retrieval would return.`,
 					fmt.Fprintf(out, " — %s", s.Entry.Description)
 				}
 				fmt.Fprintln(out)
-				if shown >= 20 {
-					break
-				}
 			}
 			if shown == 0 {
 				fmt.Fprintln(out, "  (no matches)")

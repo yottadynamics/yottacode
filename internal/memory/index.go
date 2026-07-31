@@ -173,9 +173,9 @@ func RegenerateMemoryIndex(scope, cwd string) error {
 	return AtomicWrite(indexPath, []byte(body), 0o600)
 }
 
-// memoryDirFor resolves the directory for the given scope. Project
-// scope always derives from cwd via ProjectMemoryDir.
-func memoryDirFor(scope, cwd string) (string, error) {
+// MemoryDirForScope resolves the directory for the given memory scope.
+// Project scope always derives from cwd via ProjectMemoryDir.
+func MemoryDirForScope(scope, cwd string) (string, error) {
 	switch scope {
 	case "user":
 		return UserMemoryDir()
@@ -184,6 +184,12 @@ func memoryDirFor(scope, cwd string) (string, error) {
 	default:
 		return "", fmt.Errorf("memory: invalid scope %q", scope)
 	}
+}
+
+// memoryDirFor resolves the directory for the given scope. Project
+// scope always derives from cwd via ProjectMemoryDir.
+func memoryDirFor(scope, cwd string) (string, error) {
+	return MemoryDirForScope(scope, cwd)
 }
 
 // Index files are written via the shared memory.AtomicWrite (see

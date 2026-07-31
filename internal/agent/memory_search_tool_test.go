@@ -134,6 +134,43 @@ func TestMemorySearchTool_HonorsConfiguredStrategy(t *testing.T) {
 	}
 }
 
+func TestMemorySearchTool_AllScopeAppliesProjectShadowing(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("YOTTACODE_HOME", "")
+
+	cwd := t.TempDir()
+	userDir := filepath.Join(home, ".yottacode", "memory", "user")
+	projDir := filepath.Join(home, ".yottacode", "memory", "projects", filepath.Base(cwd))
+	if err := os.MkdirAll(userDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(projDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeTestMemory(t, userDir, "same-name", "reference",
+		"user scope old routing rule",
+		"The portable rule mentions aardvark-user-marker and should be shadowed.")
+	writeTestMemory(t, projDir, "same-name", "project",
+		"project scope current routing rule",
+		"The repo-specific rule mentions aardvark-project-marker and wins here.")
+
+	cwdRef := &CwdRef{}
+	cwdRef.Set(cwd)
+	tool := &MemorySearchTool{Cwd: cwdRef, Strategy: "bm25"}
+	args, _ := json.Marshal(memorySearchArgs{Query: "aardvark", Scope: "all", Limit: 10})
+	result, err := tool.Execute(context.Background(), string(args))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(result, "aardvark-project-marker") {
+		t.Fatalf("all-scope search should return project winner; got: %s", result)
+	}
+	if strings.Contains(result, "aardvark-user-marker") {
+		t.Fatalf("all-scope search returned shadowed user twin: %s", result)
+	}
+}
+
 func TestTruncateRunes_NeverSplitsMultibyte(t *testing.T) {
 	// 400 multibyte runes; cap at 300 must yield valid UTF-8 (300 runes + ellipsis).
 	s := strings.Repeat("界", 400)

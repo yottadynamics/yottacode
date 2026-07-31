@@ -100,9 +100,7 @@ func (t *MemorySearchTool) Execute(ctx context.Context, argsJSON string) (string
 	case "project":
 		entries = loaded.ProjectMemories
 	case "all":
-		entries = make([]memory.MemoryEntry, 0, len(loaded.UserMemories)+len(loaded.ProjectMemories))
-		entries = append(entries, loaded.UserMemories...)
-		entries = append(entries, loaded.ProjectMemories...)
+		entries = memory.EffectiveEntries(loaded.UserMemories, loaded.ProjectMemories)
 	default:
 		return "", fmt.Errorf("memory_search: invalid scope %q (want all, user, or project)", a.Scope)
 	}
