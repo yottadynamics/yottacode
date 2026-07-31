@@ -378,16 +378,16 @@ other's in-flight temp; the `fsync` closes the crash window that a bare
 `rename` leaves (a file coming back zero-length or stale after power loss).
 Reads are best-effort and never block a turn.
 
-**In-process serialization.** `memory_save` holds a per-path mutex across
-its whole *read → archive → write → regenerate-index* sequence. This
-matters because the same tool instance is shared into detached background
-subagents: without the lock, two concurrent saves to the same name would
-both read the same prior, both archive only that prior, and the second
-`rename` would silently drop the first writer's *new* content. The lock
-makes the sequence serial, so each writer archives the previous writer's
-version and nothing is lost. (`memory_forget` and the TUI delete don't take
-the lock; they're already serialized within a single agent loop because the
-memory tools aren't parallel-safe.)
+**In-process serialization.** `memory_save`, `memory_forget`, and mechanical
+curation applies hold process-wide mutexes for the two mutation scopes that
+matter: the individual memory path and the scope-wide index. The per-path lock
+serializes same-name read → archive → write races, so two concurrent saves to
+one memory archive each predecessor instead of silently losing an intermediate
+version. The scope lock covers the body mutation plus `MEMORY.md` regeneration,
+so two different-name saves in the same scope cannot render from different
+directory snapshots and let a stale index land last. These locks matter because
+memory tools can be reachable from detached/background agent work as well as the
+main loop.
 
 **Cross-process guarantee.** There is **no OS-level file lock** (no
 `flock`/`fcntl`), so the per-path mutex doesn't reach across processes —
@@ -395,23 +395,20 @@ two separate yottacode processes, or a process plus a concurrent `yottacode
 memory` CLI invocation, share no lock. The exact guarantee that still
 holds:
 
-- **Body files are never lost or corrupted.** Each memory is a distinct
-  path; the atomic rename is last-writer-wins *on a valid file*, and
-  `ArchivePrior` stages through a unique temp so a prior version is never
-  clobbered.
-- **Only `MEMORY.md` can go transiently stale.** Index regeneration is a
-  read-modify-write over the whole directory (scan all `*.md` → render →
-  atomic-write), so an unlucky interleave can let a regen rendered from an
-  older scan land last and drop a just-added entry's *table-of-contents
-  line*. This is **cosmetic and self-healing**: `MEMORY.md` is a rendered
-  convenience index, not the source of truth — retrieval and injection scan
-  the directory directly (`Load` → `scanMemoryDir`), so the dropped entry's
-  body still injects and is still searchable, and the next save/forget
-  rewrites the index from a fresh scan. No memory disappears.
+- **Body files are never corrupted.** Each memory is a distinct path; the
+  atomic rename is last-writer-wins *on a valid file*, and `ArchivePrior`
+  stages through a unique temp so a prior version is never clobbered. A
+  save that cannot read an existing file now errors before writing, so an
+  unreadable memory is not treated as absent and overwritten without an
+  archive.
+- **In-process `MEMORY.md` regeneration is serialized.** Different-name
+  mutations in one yottacode process hold a scope lock around the mutation
+  and the directory scan/render/write, so the always-loaded table of
+  contents stays complete after concurrent saves/forgets.
 
-For a single-user desktop tool this residual race is rare (a millisecond
-window needing two simultaneously-mutating processes) and harmless. An
-advisory directory lock around index regeneration would close it; it's an
+For a single-user desktop tool this residual cross-process race is rare (a
+millisecond window needing two simultaneously-mutating processes) and bounded.
+An advisory directory lock around memory mutations would close it; it's an
 accepted, documented gap rather than a shipped guard.
 
 ### Per-turn retrieval
@@ -560,7 +557,7 @@ The TUI's `/memory` command opens a six-row picker (plus a conditional seventh r
 
 In the browse sub-lists: `Enter` opens the chosen memory in vim, `d` deletes it (and regenerates `MEMORY.md`), `f` opens the folder in your file manager, `Esc` returns to the root menu.
 
-**Searching memories.** Two entry points land in the same interactive results overlay: the **Search memories** picker row (which opens a query box first), or `/memory search <query>` typed directly. Results are ranked by the same BM25 the agent's retrieval uses (each row shows scope + score + description). `↑`/`↓` scroll, `Enter` opens the highlighted memory in vim, and `Esc` steps back (results → root → close). Exiting the editor returns you to the **same results** — the query isn't lost. Crucially, results render in the overlay and are **never printed into the conversation transcript**, so searching doesn't pollute your session scrollback. It's a deterministic, zero-token way to find "what do I have stored about X" without spending a model turn (the interactive equivalent of the `yottacode memory search` CLI command). Use `/recall <query>` for the analogous search over past *sessions*.
+**Searching memories.** Two entry points land in the same interactive results overlay: the **Search memories** picker row (which opens a query box first), or `/memory search <query>` typed directly. Results are ranked by configured retrieval semantics and apply the same project-shadows-user precedence as prompt injection (each row shows scope + score + description). `↑`/`↓` scroll, `Enter` opens the highlighted memory in vim, and `Esc` steps back (results → root → close). Exiting the editor returns you to the **same results** — the query isn't lost. Crucially, results render in the overlay and are **never printed into the conversation transcript**, so searching doesn't pollute your session scrollback. It's a deterministic, zero-token way to find "what do I have stored about X" without spending a model turn (the interactive equivalent of the `yottacode memory search` CLI command). Use `/recall <query>` for the analogous search over past *sessions*.
 
 ### Cobra subcommands (for scripts)
 
@@ -570,7 +567,7 @@ The same actions are exposed as non-interactive subcommands so CI or one-off she
 yottacode memory list [--scope user|project]   # default: project
 yottacode memory forget --scope <s> <name>
 yottacode memory reindex                       # generate .vec sidecars for all memories
-yottacode memory search <query>                # search memories by query (same as memory_search tool)
+yottacode memory search <query>                # search memories with configured retrieval (same precedence as injection)
 yottacode memory audit                         # read-only curation report for notes/duplicates/scope/body issues
 yottacode memory audit --plan                  # group issues into a read-only curation plan
 yottacode memory audit --propose               # draft subjective curation proposals without applying them

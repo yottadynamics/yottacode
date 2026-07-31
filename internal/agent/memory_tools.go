@@ -13,24 +13,39 @@ import (
 	"github.com/yottadynamics/yottacode/internal/memory"
 )
 
-// memSaveLocks serializes the read→archive→write→index sequence per
-// memory-file path across the whole process. memory_save is not
-// ParallelSafe, but that only serializes calls within ONE agent loop's
-// parallel batch — the same *MemorySaveTool pointer is shared into
-// background subagents (which run in detached goroutines), so two
-// concurrent saves to the same name would otherwise both read the same
-// prior, both archive only that prior, and the last write would win,
-// silently losing the other writer's NEW content. A per-path lock makes
-// the sequence serial so each writer archives the previous writer's
-// content — nothing is silently lost. (Cross-process concurrent saves to
-// the same name remain a documented gap; an OS file lock would close it.)
-var memSaveLocks sync.Map // abs path -> *sync.Mutex
+// memLocks serializes memory mutations inside this process. There are two
+// independent race classes:
+//   - same-path save/save races must archive each writer's predecessor rather
+//     than letting the last writer silently lose an intermediate version;
+//   - same-scope different-path save/forget races all rewrite one MEMORY.md,
+//     so the scope lock must cover the mutation and index regeneration.
+//
+// These locks are intentionally in-process only. Cross-process save/forget
+// races remain a documented gap; an OS file lock around the scope directory
+// would close it.
+var memLocks sync.Map // abs lock key -> *sync.Mutex
 
-func lockMemoryPath(path string) func() {
-	mu, _ := memSaveLocks.LoadOrStore(path, &sync.Mutex{})
+func lockMemoryKey(key string) func() {
+	mu, _ := memLocks.LoadOrStore(key, &sync.Mutex{})
 	m := mu.(*sync.Mutex)
 	m.Lock()
 	return m.Unlock
+}
+
+func memoryScopeLockKey(scope, cwd string) (string, error) {
+	dir, err := memory.MemoryDirForScope(scope, cwd)
+	if err != nil {
+		return "", err
+	}
+	return "scope:" + dir, nil
+}
+
+func memoryPathLockKey(path string) string {
+	return "path:" + path
+}
+
+func lockMemoryPath(path string) func() {
+	return lockMemoryKey(memoryPathLockKey(path))
 }
 
 // MemorySaveTool persists a typed memory file under either the
@@ -223,7 +238,7 @@ func formatMemorySourceChange(oldSource, newSource memory.Source) string {
 	}
 }
 
-func (t *MemorySaveTool) Execute(_ context.Context, argsJSON string) (string, error) {
+func (t *MemorySaveTool) Execute(ctx context.Context, argsJSON string) (string, error) {
 	var a memorySaveArgs
 	if err := json.Unmarshal([]byte(argsJSON), &a); err != nil {
 		return "", fmt.Errorf("memory_save: invalid args: %w", err)
@@ -242,18 +257,31 @@ func (t *MemorySaveTool) Execute(_ context.Context, argsJSON string) (string, er
 	if err != nil {
 		return "", err
 	}
-	// Serialize the whole read→archive→write→index sequence for this path
-	// so two concurrent saves to the same name can't lose-update each
-	// other (see memSaveLocks).
-	unlock := lockMemoryPath(path)
-	defer unlock()
+	// Serialize the same-name read→archive→write path, and also hold the
+	// scope-wide lock across index regeneration so a different-name save in
+	// the same scope cannot render a stale MEMORY.md last.
+	scopeKey, err := memoryScopeLockKey(a.Scope, t.Cwd.Get())
+	if err != nil {
+		return "", err
+	}
+	unlockScope := lockMemoryKey(scopeKey)
+	defer unlockScope()
+	unlockPath := lockMemoryKey(memoryPathLockKey(path))
+	defer unlockPath()
 	// Read-before-write: recover the original creation time and detect an
 	// overwrite. The memory store's whole promise is that the agent keeps
 	// what it learned, so a save must never SILENTLY destroy a different
 	// memory that happens to reuse this name (the model picks names on its
 	// own). We preserve `created` across updates and archive the prior
 	// version on any content change — recoverable, never lost.
-	existing, _ := os.ReadFile(path) // nil when absent
+	existing, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			existing = nil
+		} else {
+			return "", fmt.Errorf("memory_save: read existing %q: %w", path, err)
+		}
+	}
 	created := time.Now()
 	source := t.Source
 	verb := "created"
@@ -302,7 +330,7 @@ func (t *MemorySaveTool) Execute(_ context.Context, argsJSON string) (string, er
 	note := ""
 	if t.Embedder != nil {
 		text := a.Name + " " + a.Description + " " + a.Content
-		vec, err := t.Embedder.Embed(context.Background(), text)
+		vec, err := t.Embedder.Embed(ctx, text)
 		switch {
 		case err != nil:
 			// The memory is durably saved; only its semantic vector is
@@ -399,14 +427,17 @@ func (t *MemoryForgetTool) Execute(_ context.Context, argsJSON string) (string, 
 	if err != nil {
 		return "", err
 	}
-	// Hold the same per-path lock memory_save takes: forget shares
-	// RegenerateMemoryIndex, and both tools' pointers are reachable from
-	// background subagents (detached goroutines). Without this, a
-	// concurrent save+forget (or two forgets) on the same name can
-	// interleave the remove and the index regeneration, leaving MEMORY.md
-	// transiently listing a deleted memory or dropping a live one.
-	unlock := lockMemoryPath(path)
-	defer unlock()
+	// Hold the same locks memory_save takes: the path lock serializes
+	// same-name save/forget races, and the scope lock keeps the scope-wide
+	// MEMORY.md regeneration from interleaving with different-name mutations.
+	scopeKey, err := memoryScopeLockKey(a.Scope, t.Cwd.Get())
+	if err != nil {
+		return "", err
+	}
+	unlockScope := lockMemoryKey(scopeKey)
+	defer unlockScope()
+	unlockPath := lockMemoryKey(memoryPathLockKey(path))
+	defer unlockPath()
 	if err := os.Remove(path); err != nil {
 		if os.IsNotExist(err) {
 			return "", fmt.Errorf("memory_forget: no %s memory named %q", a.Scope, a.Name)

@@ -500,12 +500,16 @@ func TestSelect_BM25_SynonymsDownweightedVsExact(t *testing.T) {
 func TestShadowUserByProject(t *testing.T) {
 	user := []MemoryEntry{{Name: "a", Scope: "user"}, {Name: "dup", Scope: "user"}}
 	project := []MemoryEntry{{Name: "dup", Scope: "project"}, {Name: "c", Scope: "project"}}
-	out := shadowUserByProject(user, project)
+	out := ShadowUserByProject(user, project)
 	if len(out) != 1 || out[0].Name != "a" {
 		t.Errorf("project should shadow user 'dup'; got %+v", out)
 	}
-	if len(shadowUserByProject(user, nil)) != 2 {
+	if len(ShadowUserByProject(user, nil)) != 2 {
 		t.Error("no project memories should leave the user set untouched")
+	}
+	eff := EffectiveEntries(user, project)
+	if len(eff) != 3 || eff[0].Name != "a" || eff[1].Name != "dup" || eff[2].Name != "c" {
+		t.Errorf("effective all-scope entries should be shadowed user + project in order; got %+v", eff)
 	}
 }
 

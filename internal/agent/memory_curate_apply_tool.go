@@ -122,8 +122,14 @@ func (t *MemoryCurateApplyTool) applyDeleteEmpty(a memoryCurateApplyArgs) (strin
 	if err != nil {
 		return "", err
 	}
-	unlock := lockMemoryPath(path)
-	defer unlock()
+	scopeKey, err := memoryScopeLockKey(a.Scope, t.Cwd.Get())
+	if err != nil {
+		return "", err
+	}
+	unlockScope := lockMemoryKey(scopeKey)
+	defer unlockScope()
+	unlockPath := lockMemoryPath(path)
+	defer unlockPath()
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return "", fmt.Errorf("memory_curate_apply: read %q: %w", path, err)
@@ -159,8 +165,18 @@ func (t *MemoryCurateApplyTool) applyMovePortable(a memoryCurateApplyArgs) (stri
 	if err != nil {
 		return "", err
 	}
-	unlock := lockMemoryPaths(projectPath, userPath)
-	defer unlock()
+	userScopeKey, err := memoryScopeLockKey("user", cwd)
+	if err != nil {
+		return "", err
+	}
+	projectScopeKey, err := memoryScopeLockKey("project", cwd)
+	if err != nil {
+		return "", err
+	}
+	unlockScopes := lockMemoryKeysSorted(userScopeKey, projectScopeKey)
+	defer unlockScopes()
+	unlockPaths := lockMemoryPaths(projectPath, userPath)
+	defer unlockPaths()
 	if _, err := os.Stat(userPath); err == nil {
 		return "", fmt.Errorf("memory_curate_apply: user memory %q already exists; merge manually with memory_get/memory_save", a.Name)
 	} else if !os.IsNotExist(err) {
@@ -198,6 +214,20 @@ func (t *MemoryCurateApplyTool) applyMovePortable(a memoryCurateApplyArgs) (stri
 		Reason: "audit issue portable-in-project",
 	})
 	return fmt.Sprintf("moved project memory %q to user scope", a.Name), nil
+}
+
+func lockMemoryKeysSorted(keys ...string) func() {
+	keys = append([]string(nil), keys...)
+	sort.Strings(keys)
+	unlocks := make([]func(), 0, len(keys))
+	for _, key := range keys {
+		unlocks = append(unlocks, lockMemoryKey(key))
+	}
+	return func() {
+		for i := len(unlocks) - 1; i >= 0; i-- {
+			unlocks[i]()
+		}
+	}
 }
 
 func lockMemoryPaths(paths ...string) func() {
