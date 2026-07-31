@@ -1141,7 +1141,7 @@ No approval.
 
 ## lsp_changed_files_diagnostics
 
-Run diagnostics across git-changed supported source files. Use this after edits in an LSP-supported language before declaring the change done.
+Run diagnostics across git-changed supported source files. Use this after edits in an LSP-supported language before declaring the change done. Multi-file results are summarized as clean/issues/pending/skipped counts so clean checks do not print one repeated row per file.
 
 | Param | Type | Default | Notes |
 |---|---|---|---|
