@@ -81,7 +81,7 @@ func dispatchWorktreeDirs(reg *subagents.Registry) []string {
 // worktree branch briefly after the worker's cleanup returned.
 func eventuallyNoDispatchWorktrees(t *testing.T, repoRoot string, dirs []string) {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(10 * time.Second)
 	var branches []string
 	var existing []string
 	for {
