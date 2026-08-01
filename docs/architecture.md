@@ -93,6 +93,10 @@ Assistant content that arrives before a tool call is provisional. If the final
 assistant message contains tool calls, the loop drops that pre-tool text from
 history and the TUI discards its buffered preview, leaving the transcript to show
 only intentional assistant replies plus tool lifecycle cards/status events.
+During active TUI turns, streamed reasoning and provisional answer text share one
+reserved live-preview row above the cmdline. The row shows a single-line tail of
+the latest activity and keeps its height stable so the input prompt does not jump
+as reasoning appears, wraps, or clears.
 
 ## Session Lifecycle
 

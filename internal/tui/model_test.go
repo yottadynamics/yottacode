@@ -669,25 +669,107 @@ func TestModel_ReasoningTokensCountedAndStreamedLive(t *testing.T) {
 	}
 }
 
-func TestModel_ReasoningPreviewWrapsAndCapsRows(t *testing.T) {
+func TestModel_ReasoningPreviewStaysSingleRow(t *testing.T) {
 	m := newTestModel(t)
 	m.width = 24
 	m.turnActive = true
 	m.reasoning.WriteString("alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi omicron")
 
-	plain := stripANSI(m.renderReasoningPreview())
-	if plain == "" {
-		t.Fatalf("expected wrapped reasoning preview")
-	}
-	rows := strings.Split(plain, "\n")
-	if len(rows) > 6 {
-		t.Fatalf("reasoning preview should cap to 6 rows, got %d rows: %q", len(rows), plain)
-	}
-	for _, row := range rows {
-		row = strings.TrimSpace(row)
-		if ansi.StringWidth(row) > liveContentWidth(m.width) {
-			t.Fatalf("reasoning row exceeds live width %d: %q in %q", liveContentWidth(m.width), row, plain)
+	rendered := strings.TrimRight(stripANSI(m.renderReasoningPreview()), "\n")
+	lines := strings.Split(rendered, "\n")
+	var contentRows []string
+	for _, line := range lines {
+		if strings.TrimSpace(line) != "" {
+			contentRows = append(contentRows, line)
 		}
+	}
+	if len(contentRows) != 1 {
+		t.Fatalf("reasoning preview should render exactly one content row, got %d rows: %q", len(contentRows), rendered)
+	}
+	plain := contentRows[0]
+	if plain == "" {
+		t.Fatalf("expected reasoning preview")
+	}
+	if strings.Contains(plain, "\n") {
+		t.Fatalf("reasoning preview should stay on one row to avoid cmdline jitter, got %q", plain)
+	}
+	if ansi.StringWidth(plain) > liveContentWidth(m.width) {
+		t.Fatalf("reasoning row exceeds live width %d: %q", liveContentWidth(m.width), plain)
+	}
+	if !strings.HasPrefix(strings.TrimSpace(plain), "…") {
+		t.Fatalf("truncated reasoning preview should show the latest text with ellipsis, got %q", plain)
+	}
+}
+
+func TestModel_ActiveTurnFooterHeightStableAcrossReasoningStream(t *testing.T) {
+	m := newTestModel(t)
+	m.width = 24
+	m.turnActive = true
+	m.turnStart = time.Now()
+
+	// The active-turn footer must reserve a stable live-preview row. Without
+	// that, reasoning text wrapping from zero to many rows pushes the cmdline up
+	// and down while the model thinks.
+	baseHeight := lipgloss.Height(m.View())
+	m, _ = applyMsg(m, agentEventMsg{ev: agent.ReasoningToken{Text: "short"}})
+	if got := lipgloss.Height(m.View()); got != baseHeight {
+		t.Fatalf("short reasoning changed footer height: got %d, want %d", got, baseHeight)
+	}
+	m, _ = applyMsg(m, agentEventMsg{ev: agent.ReasoningToken{Text: " alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi omicron"}})
+	if got := lipgloss.Height(m.View()); got != baseHeight {
+		t.Fatalf("wrapped reasoning changed footer height: got %d, want %d", got, baseHeight)
+	}
+	m, _ = applyMsg(m, agentEventMsg{ev: agent.ContentToken{Text: "Answer."}})
+	if got := lipgloss.Height(m.View()); got != baseHeight {
+		t.Fatalf("content transition changed footer height: got %d, want %d", got, baseHeight)
+	}
+}
+
+func TestModel_ActiveTurnFooterHeightStableForBufferedMarkdown(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		text string
+	}{
+		{name: "code", text: "```go\nfmt.Println(\"hello\")\n"},
+		{name: "table", text: "| H1 | H2 |\n| --- | --- |\n| a | b |\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := newTestModel(t)
+			m.width = 24
+			m.turnActive = true
+			m.turnStart = time.Now()
+			baseHeight := lipgloss.Height(m.View())
+
+			m, _ = applyMsg(m, agentEventMsg{ev: agent.ContentToken{Text: tc.text}})
+			if got := lipgloss.Height(m.View()); got != baseHeight {
+				t.Fatalf("buffered markdown changed footer height: got %d, want %d\n%s", got, baseHeight, stripANSI(m.View()))
+			}
+		})
+	}
+}
+
+func TestModel_ActiveTurnPreviewRowCapsBufferedNotices(t *testing.T) {
+	m := newTestModel(t)
+	m.width = 24
+	m.turnActive = true
+	m.streamingMode = streamContent
+	m.inCodeBlock = true
+	m.codeBlockLang = "typescript"
+	m.codeBlockBuf.WriteString(strings.Repeat("line\n", 20))
+
+	rendered := strings.TrimRight(stripANSI(m.renderActiveTurnPreviewRow()), "\n")
+	lines := strings.Split(rendered, "\n")
+	var contentRows []string
+	for _, line := range lines {
+		if strings.TrimSpace(line) != "" {
+			contentRows = append(contentRows, line)
+		}
+	}
+	if len(contentRows) != 1 {
+		t.Fatalf("active preview should render exactly one content row, got %d rows: %q", len(contentRows), rendered)
+	}
+	if ansi.StringWidth(contentRows[0]) > liveContentWidth(m.width) {
+		t.Fatalf("active preview row exceeds live width %d: %q", liveContentWidth(m.width), contentRows[0])
 	}
 }
 

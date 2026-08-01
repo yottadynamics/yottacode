@@ -13,6 +13,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/spinner"
@@ -2756,16 +2757,17 @@ func (m Model) View() string {
 	// not stuck to the cmdline).
 	if m.turnActive {
 		parts = append(parts, "")
-	}
-	if preview := m.renderReasoningPreview(); preview != "" {
+		// Reserve one live-preview row for the whole active turn, even before
+		// text arrives or after reasoning clears. Keeping the footer height fixed
+		// prevents the cmdline from bouncing while the LLM switches between
+		// thinking, streaming content, and tool calls.
+		parts = append(parts, m.renderActiveTurnPreviewRow())
+	} else if preview := m.renderReasoningPreview(); preview != "" {
 		parts = append(parts, preview)
-	}
-	if m.streamingMode == streamContent {
-		// Inside a code block: show a quiet "writing code" notice in
-		// the footer (no live feed of the lines, since they'll land
-		// highlighted in scrollback at the closing fence). Outside,
-		// show the trailing partial prose line, truncated to one
-		// terminal row.
+	} else if m.streamingMode == streamContent {
+		// Idle/test render path: keep provisional content visible even when a
+		// synthetic test doesn't mark a full turn active. Real active turns use
+		// the fixed-height preview row above.
 		if m.inCodeBlock {
 			parts = append(parts, m.renderCodeBlockNotice())
 		} else if m.inTable {
@@ -3142,40 +3144,83 @@ func liveContentWidth(terminalWidth int) int {
 	return w
 }
 
-// renderReasoningPreview returns the live chain-of-thought text for the
-// in-progress turn, capped to the most recent 6 lines so a verbose
-// reasoning summary doesn't push the input box off the screen. Each
-// line is rendered in faint italic muted style — present enough to
-// follow the model's thinking but visibly subordinate to the answer.
-// Returns "" when there's nothing to preview.
+// renderActiveTurnPreviewRow returns the single reserved live-preview row used
+// while a turn is active. It deliberately returns a blank styled row when no
+// preview text is available so the footer keeps a constant height and the
+// cmdline stays anchored instead of moving as reasoning appears or clears.
+func (m Model) renderActiveTurnPreviewRow() string {
+	if !m.turnActive {
+		return ""
+	}
+	if preview := m.renderReasoningPreview(); preview != "" {
+		return preview
+	}
+	if m.streamingMode == streamContent {
+		// Inside buffered Markdown structures, show progress without varying the
+		// footer height. Plain prose uses the capped one-row streaming preview.
+		switch {
+		case m.inCodeBlock:
+			return m.renderActiveTurnNotice(m.codeBlockNoticeText())
+		case m.inTable:
+			return m.renderActiveTurnNotice(m.tableNoticeText())
+		case m.streaming.Len() > 0:
+			return m.renderActiveTurnNotice(m.streaming.String())
+		}
+	}
+	return styleTurnFooter.Render(" ")
+}
+
+// renderActiveTurnNotice styles a single-row tail of an active-turn preview.
+// The style adds left padding, so reserve those columns before trimming.
+func (m Model) renderActiveTurnNotice(s string) string {
+	width := liveContentWidth(m.width) - 2
+	if width <= 1 {
+		return ""
+	}
+	s = strings.TrimSpace(strings.ReplaceAll(s, "\n", " "))
+	if s == "" {
+		return styleTurnFooter.Render(" ")
+	}
+	if ansi.StringWidth(s) > width {
+		s = tailWithLeftEllipsis(s, width)
+	}
+	return styleTurnFooter.Render(s)
+}
+
+// tailWithLeftEllipsis keeps the newest text within max display columns and
+// prefixes an ellipsis so truncation direction is obvious in the live preview.
+func tailWithLeftEllipsis(s string, max int) string {
+	if max <= 1 || ansi.StringWidth(s) <= max {
+		return s
+	}
+	for ansi.StringWidth(s) > max-1 && s != "" {
+		_, size := utf8.DecodeRuneInString(s)
+		s = s[size:]
+	}
+	return "…" + strings.TrimPrefix(s, "…")
+}
+
+// renderReasoningPreview returns the most recent live chain-of-thought text for
+// the in-progress turn, capped to one row. Reasoning streams can grow from zero
+// to many wrapped lines and then disappear when answer text starts; keeping this
+// preview single-line preserves the live footer height so the cmdline stays
+// visually anchored.
 func (m Model) renderReasoningPreview() string {
 	if m.reasoning.Len() == 0 {
 		return ""
 	}
-	const maxLines = 6
-	width := liveContentWidth(m.width)
+	width := liveContentWidth(m.width) - 2
 	if width <= 1 {
 		return ""
 	}
-	body := strings.TrimRight(m.reasoning.String(), "\n")
-	var lines []string
-	for _, line := range strings.Split(body, "\n") {
-		if line == "" {
-			lines = append(lines, "")
-			continue
-		}
-		wrapped := ansi.Wrap(line, width, "")
-		for _, row := range strings.Split(wrapped, "\n") {
-			if ansi.StringWidth(row) > width {
-				row = ansi.Truncate(row, width, "…")
-			}
-			lines = append(lines, row)
-		}
+	body := strings.TrimSpace(strings.ReplaceAll(m.reasoning.String(), "\n", " "))
+	if body == "" {
+		return ""
 	}
-	if len(lines) > maxLines {
-		lines = lines[len(lines)-maxLines:]
+	if ansi.StringWidth(body) > width {
+		body = tailWithLeftEllipsis(body, width)
 	}
-	return styleTurnFooter.Render(strings.Join(lines, "\n"))
+	return styleTurnFooter.Render(body)
 }
 
 // renderCodeBlockNotice is the in-progress indicator shown in the live
@@ -3185,6 +3230,10 @@ func (m Model) renderReasoningPreview() string {
 // progress (line count + language tag) without the line-by-line
 // scroll that would lose the eventual highlighting.
 func (m Model) renderCodeBlockNotice() string {
+	return styleTurnFooter.Render(m.codeBlockNoticeText())
+}
+
+func (m Model) codeBlockNoticeText() string {
 	lines := strings.Count(m.codeBlockBuf.String(), "\n")
 	// Include any partial trailing line currently in m.streaming.
 	if m.streaming.Len() > 0 {
@@ -3194,15 +3243,19 @@ func (m Model) renderCodeBlockNotice() string {
 	if lang == "" {
 		lang = "code"
 	}
-	return styleTurnFooter.Render(fmt.Sprintf("…writing %s (%d lines, will format on close)", lang, lines))
+	return fmt.Sprintf("…writing %s (%d lines, will format on close)", lang, lines)
 }
 
 func (m Model) renderTableNotice() string {
+	return styleTurnFooter.Render(m.tableNoticeText())
+}
+
+func (m Model) tableNoticeText() string {
 	rows := strings.Count(m.tableBuf.String(), "\n")
 	if m.streaming.Len() > 0 {
 		rows++
 	}
-	return styleTurnFooter.Render(fmt.Sprintf("…formatting table (%d rows, will render on close)", rows))
+	return fmt.Sprintf("…formatting table (%d rows, will render on close)", rows)
 }
 
 // renderStreamingPreview returns the trailing partial prose line capped
