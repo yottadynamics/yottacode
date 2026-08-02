@@ -8,6 +8,13 @@ the project uses semantic versioning once it's past `1.0.0`.
 
 ### Added
 
+- **`studio-dark` theme** — a recording-first TUI palette for yottacode
+  demos and screenshares. It uses a near-black charcoal backdrop, crisp
+  off-white text, punchy yottacode green accents, brighter metadata, and
+  compression-safe warning/error colors so terminal recordings stay readable on
+  YouTube/X.
+  Select it with `/theme studio-dark`; see [docs/themes.md](docs/themes.md).
+
 - **Google Vertex AI support** — two provider kinds serving models from your
   own GCP project, billed to your Google Cloud account: `vertex-anthropic`
   (Claude, via `:streamRawPredict`) and `vertex` (Gemini, via the project's

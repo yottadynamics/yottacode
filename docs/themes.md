@@ -1,6 +1,6 @@
 # Themes
 
-The yottacode TUI ships with eleven built-in color palettes. Switch between them with `/theme` — an interactive picker with a live preview pane — or pin one in `~/.yottacode/config.toml` so every new session boots into it.
+The yottacode TUI ships with twelve built-in color palettes. Switch between them with `/theme` — an interactive picker with a live preview pane — or pin one in `~/.yottacode/config.toml` so every new session boots into it.
 
 ## The picker
 
@@ -42,6 +42,7 @@ Order matches what the picker displays: `terminal` leads (the universal-safe and
 | `nord` | Arctic Ice Studio's cool blue-grey — restrained northern tones, minimal saturation. | `nord` |
 | `one-dark` | Atom's classic slate with cool blue, green, and a distinctive coral red. The "default dark" muscle memory for a large slice of devs. | `onedark` |
 | `solarized-dark` | Ethan Schoonover's classic — deliberate L*a*b* tones, blue base, amber/violet accents. | `solarized-dark` |
+| `studio-dark` | Recording-first studio palette — near-black charcoal backdrop, crisp off-white text, punchy yottacode green accents, brighter metadata, and non-neon warning/error colors tuned to stay readable after screenshare and YouTube/X compression. Best paired with a dark terminal profile when recording demos. | `github-dark` |
 | `tokyo-night` | Deep navy with vivid blue, purple, and cyan. More saturated than Nord while staying cool; very popular in the Neovim community. | `tokyonight-night` |
 
 ## Why there's no true "light" theme
@@ -64,7 +65,7 @@ to `~/.yottacode/config.toml`. The default theme (`terminal`) is *not* persisted
 A typo in the persisted `name` is rejected at load time:
 
 ```
-config: ~/.yottacode/config.toml: theme.name = "termnal" is not a registered theme (try one of terminal, catppuccin, dimmed, gruvbox, high-contrast, low-contrast, no-color, nord, one-dark, solarized-dark, tokyo-night)
+config: ~/.yottacode/config.toml: theme.name = "termnal" is not a registered theme (try one of terminal, catppuccin, dimmed, gruvbox, high-contrast, low-contrast, no-color, nord, one-dark, solarized-dark, studio-dark, tokyo-night)
 ```
 
 ## Adding a theme (for contributors)

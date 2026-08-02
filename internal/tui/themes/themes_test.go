@@ -25,6 +25,7 @@ var expectedThemes = []string{
 	"nord",
 	"one-dark",
 	"solarized-dark",
+	"studio-dark",
 	"tokyo-night",
 }
 
@@ -177,6 +178,28 @@ func TestNoColor_AllRolesSameValue(t *testing.T) {
 		if r.value != first {
 			t.Errorf("no-color.%s = %q, want %q (every role must collapse)", r.name, r.value, first)
 		}
+	}
+}
+
+func TestStudioDark_PaintsRecordingBackdrop(t *testing.T) {
+	p, ok := Get("studio-dark")
+	if !ok {
+		t.Fatalf("studio-dark theme not registered")
+	}
+	if !p.HasBackground {
+		t.Errorf("studio-dark.HasBackground = false, want true — recording chrome needs the charcoal backdrop")
+	}
+	if p.Background.Dark != "#0b0f0e" || p.Background.Light != "#0b0f0e" {
+		t.Errorf("studio-dark.Background = light %q dark %q, want pinned #0b0f0e", p.Background.Light, p.Background.Dark)
+	}
+	if p.Accent.Dark != "#00ff66" {
+		t.Errorf("studio-dark.Accent.Dark = %q, want punchy yottacode green #00ff66", p.Accent.Dark)
+	}
+	if p.Content.Dark != "#f2fff7" {
+		t.Errorf("studio-dark.Content.Dark = %q, want crisp off-white #f2fff7", p.Content.Dark)
+	}
+	if p.Rule.Dark != "#008f4a" {
+		t.Errorf("studio-dark.Rule.Dark = %q, want balanced recording border green #008f4a", p.Rule.Dark)
 	}
 }
 
