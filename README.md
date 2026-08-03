@@ -5,7 +5,7 @@
 **Sovereign terminal AI coding agent.**  
 Any model. Durable memory. Real GitOps. Your machine, your rules.
 
-Model-agnostic · Agent-managed memory · Typed GitHub workflows · Fail-closed by design
+Model-agnostic · Agent-managed memory · Typed GitHub workflows · Approval-first by design
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Go](https://img.shields.io/badge/Go-1.26+-00ADD8?logo=go&logoColor=white)](https://go.dev)
