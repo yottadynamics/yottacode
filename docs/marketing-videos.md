@@ -1,6 +1,6 @@
 # Marketing videos
 
-`yottacode` can help turn raw screen recordings into publishable marketing cuts by driving local `ffmpeg`/`ffprobe` tools through the agent. The first workflow targets recorded yottacode demos: inspect the recording, find dead air or visually idle terminal stretches, propose cuts, then render YouTube/X-ready MP4s and short GIF previews after approval.
+`yottacode` can help turn raw screen recordings and local assets into publishable marketing cuts by driving local `ffmpeg`/`ffprobe` tools through the agent. The recording workflow targets yottacode demos: inspect the recording, find dead air or visually idle terminal stretches, propose cuts, then render YouTube/X-ready MP4s and short GIF previews after approval. Prompt mode can also draft and render asset-based release videos from docs, logos, screenshots, and supplied clips.
 
 ## Dependencies
 
@@ -32,7 +32,7 @@ Use `/video` in the TUI as a guided entry point:
 /video prompt Create a 45-second release video from RELEASE_v0.3.0.md and marketing/raw/demo.mp4
 ```
 
-Bare `/video` explains the available video capabilities. With a path, it sends a normal agent workflow prompt that uses the same public tools (`media_probe`, `media_analyze`, `media_render`) and the same approval gates. With `prompt <goal>`, it asks the agent to plan an asset-based marketing video from local docs, screenshots, title cards, and clips, then stop for approval before rendering with `media_compose` / `media_render`. Natural language remains supported; `/video` is only a shortcut for discoverability.
+Bare `/video` explains the available video capabilities. With a path, it sends a normal agent workflow prompt that uses the same public tools (`media_probe`, `media_analyze`, `media_render`) and the same approval gates. With `prompt <goal>`, it asks the agent to plan an asset-based marketing video from local docs, screenshots, title cards, and clips, then stop for approval before rendering with `media_compose` / `media_render`. Natural language remains supported; `/video` is only a shortcut for discoverability. See [`video-tools.md`](video-tools.md) for the full tool/capability matrix.
 
 ## Prompt-driven marketing videos
 
@@ -44,9 +44,9 @@ Use `/video prompt <goal>` when you want a finished marketing-video plan rather 
 /video prompt Create a YouTube tutorial intro for plan mode using screenshots in marketing/assets/
 ```
 
-Prompt mode is still asset-based in its first version. The model reads referenced docs and assets, writes a storyboard/script, proposes segment order and output profiles, and asks for approval before calling any render tool. After approval it can use `media_compose` to assemble title cards, screenshots/images, and approved clip segments into a draft MP4, then use `media_render` for platform exports.
+Prompt mode is still asset-based. The model reads referenced docs and assets, writes a storyboard/script, proposes segment order and output profiles, and asks for approval before calling any render tool. After approval it can use `media_compose` to assemble title cards, screenshots/images, and approved clip segments into a draft MP4 with branded templates, lower-third captions, simple fades, and image zoom/pan motion, then use `media_render` for platform exports.
 
-This does not require an AI video model. Hosted text-to-video, generated b-roll, TTS narration, and music generation are optional future layers; Phase 1 uses a language model for planning/copy and local `ffmpeg` for deterministic assembly.
+This does not require an AI video model. Hosted text-to-video, generated b-roll, TTS narration, and music generation are optional future layers; the current workflow uses a language model for planning/copy and local `ffmpeg` for deterministic assembly.
 
 ## Recommended workflow
 
@@ -91,8 +91,8 @@ When multiple profiles are requested from one base output, yottacode appends the
 
 ## Captions and branding
 
-`media_compose` can build simple title-card/image/clip drafts from local assets. `media_render` accepts an optional captions file path and burns subtitles into the output with ffmpeg. Keep brand assets in the repo, for example under `marketing/assets/`, so normal path validation and review apply.
+`media_compose` can build title-card/image/clip drafts from local assets with branded templates, lower thirds, image zoom/pan motion, and simple fades. `media_render` accepts an optional captions file path and burns subtitles into the output with ffmpeg. Keep brand assets in the repo, for example under `marketing/assets/`, so normal path validation and review apply.
 
 ## Current boundaries
 
-This is not a timeline editor and it does not generate AI video clips. It edits and composes real local assets with ffmpeg utilities. Generated feature videos, TTS narration, and stylized AI clips remain separate roadmap work in `roadmap/video-generation.md`.
+This is not a full timeline editor and it does not generate AI video clips. It edits and composes real local assets with ffmpeg utilities. Generated feature videos, TTS narration, and stylized AI clips remain separate roadmap work in `roadmap/video-generation.md`.

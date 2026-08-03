@@ -56,7 +56,7 @@ In addition to the built-ins, **MCP tools** register dynamically when an `[[mcp_
 | [`run_tests`](#run_tests) | required | Run the repo's test command |
 | [`media_probe`](#media_probe) | none | Inspect audio/video metadata with ffprobe |
 | [`media_analyze`](#media_analyze) | none | Detect silence/fluff candidates with ffmpeg |
-| [`media_compose`](#media_compose) | required | Assemble title cards, images, and clips into a draft MP4 with ffmpeg |
+| [`media_compose`](#media_compose) | required | Assemble title cards, images, and clips into a draft MP4 with ffmpeg templates/effects |
 | [`media_render`](#media_render) | required | Render approved edits to YouTube/X MP4 or GIF preview profiles with ffmpeg |
 | [`list_dir`](#list_dir) | none | One-line-per-entry directory listing |
 | [`glob`](#glob) | none | Doublestar pattern match |
@@ -936,7 +936,7 @@ Modes: `auto`, `audio_silence`, `visual_idle`, `terminal_demo`, or `all`. Return
 
 ## media_compose
 
-Compose an approved storyboard into one draft MP4 with `ffmpeg`. It assembles ordered title-card, image, and clip segments after validating every input path as a read and the output path as a write. It refuses to overwrite existing files unless `overwrite=true` is passed.
+Compose an approved storyboard into one draft MP4 with `ffmpeg`. It assembles ordered title-card, image, and clip segments after validating every input path as a read and the output path as a write. It refuses to overwrite existing files unless `overwrite=true` is passed. See [`video-tools.md`](video-tools.md) for examples and the capability matrix.
 
 | Param | Type | Default | Notes |
 |---|---|---|---|
@@ -957,9 +957,12 @@ Segment fields:
 | `path` | `image`, `clip` | Required local input path |
 | `duration` | `title`, `image` | Required positive duration in seconds, capped at 300 seconds per synthetic segment |
 | `keep_ranges` | `clip` | Optional single range to trim a clip; pre-render complex cuts with `media_render` first |
-| `caption` | all | Reserved for storyboard metadata / future overlays |
+| `caption` | `image`, `clip` | Optional lower-third text overlay |
+| `template` | all | `default`, `hero`, `feature`, or `closing` branded layout accents |
+| `motion` | `image` | `none`, `zoom_in`, or `zoom_out` image motion |
+| `transition` | all | `none` or `fade` |
 
-Always prompts for approval. Requires `ffmpeg` on `PATH`. The first implementation renders video-only draft MP4s; use `media_render` afterward for final platform profiles and caption burn-in.
+Always prompts for approval. Requires `ffmpeg` on `PATH`. The current implementation renders video-only draft MP4s with optional branded templates, lower thirds, simple fades, and image zoom/pan motion; use `media_render` afterward for final platform profiles and caption burn-in.
 
 ## media_render
 
@@ -979,7 +982,7 @@ Render an approved edit plan with `ffmpeg`. The tool validates the source/captio
 | `intro_path` / `outro_path` | string | — | Optional composition assets |
 | `overwrite` | bool | `false` | Must be explicit to replace an existing output |
 
-Always prompts for approval. Requires `ffmpeg` on `PATH`. Multi-profile outputs append the profile name to the file stem, such as `demo-youtube_16x9.mp4`, `demo-x_16x9.mp4`, and `demo-gif_preview.gif`. Multi-range edits are rendered with ffmpeg `trim`/`atrim` + `concat`, so approved fluff cuts are actually removed from the final output. `gif_preview` renders a 960px-wide 12 fps looping GIF and `gif_preview_large` renders a 1440px-wide version for readable terminal text; both use ffmpeg palette generation/paletteuse. For slow terminal clips, set `speed` to `1.5` or `2` to shorten the GIF without changing the approved edit ranges. Use GIF profiles for short teasers because GIFs grow quickly. See [`marketing-videos.md`](marketing-videos.md) for the recommended screen-recording workflow.
+Always prompts for approval. Requires `ffmpeg` on `PATH`. Multi-profile outputs append the profile name to the file stem, such as `demo-youtube_16x9.mp4`, `demo-x_16x9.mp4`, and `demo-gif_preview.gif`. Multi-range edits are rendered with ffmpeg `trim`/`atrim` + `concat`, so approved fluff cuts are actually removed from the final output. `gif_preview` renders a 960px-wide 12 fps looping GIF and `gif_preview_large` renders a 1440px-wide version for readable terminal text; both use ffmpeg palette generation/paletteuse. For slow terminal clips, set `speed` to `1.5` or `2` to shorten the GIF without changing the approved edit ranges. Use GIF profiles for short teasers because GIFs grow quickly. See [`marketing-videos.md`](marketing-videos.md) for the recommended screen-recording workflow and [`video-tools.md`](video-tools.md) for the full video capability matrix.
 
 ## list_dir
 

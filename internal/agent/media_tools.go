@@ -351,9 +351,9 @@ func (t *MediaRenderTool) Execute(ctx context.Context, argsJSON string) (string,
 const mediaComposeMaxSyntheticDuration = 300.0
 
 // MediaComposeTool assembles an approved storyboard into one draft MP4. It is
-// intentionally a small local composition primitive: the model still plans the
-// story, but ffmpeg does the deterministic rendering from title cards, stills,
-// and real clips.
+// intentionally a local composition primitive: the model still plans the story,
+// but ffmpeg does deterministic rendering from title cards, stills, real clips,
+// simple motion, branded overlays, and conservative fades.
 type MediaComposeTool struct {
 	Cwd           *CwdRef
 	DenyReadPaths []string
@@ -362,7 +362,7 @@ type MediaComposeTool struct {
 
 func (t *MediaComposeTool) Name() string { return "media_compose" }
 func (t *MediaComposeTool) Description() string {
-	return "Compose an approved marketing-video storyboard from title cards, images, and clips into one local MP4 with ffmpeg. Requires ffmpeg on PATH."
+	return "Compose an approved marketing-video storyboard from title cards, images, and clips into one local MP4 with ffmpeg, including simple templates, overlays, fades, and image motion. Requires ffmpeg on PATH."
 }
 func (t *MediaComposeTool) Schema() map[string]any {
 	return map[string]any{
@@ -389,7 +389,10 @@ func mediaComposeSegmentsSchema() map[string]any {
 			"text":        map[string]any{"type": "string", "description": "Title-card text for title segments"},
 			"duration":    map[string]any{"type": "number", "description": "Segment duration in seconds; required for title and image segments"},
 			"keep_ranges": mediaRangeSchema("Optional clip ranges to keep, in seconds"),
-			"caption":     map[string]any{"type": "string", "description": "Optional caption text for future branded overlays"},
+			"caption":     map[string]any{"type": "string", "description": "Optional lower-third caption overlay for image and clip segments"},
+			"template":    map[string]any{"type": "string", "description": "Visual template: default, hero, feature, or closing"},
+			"motion":      map[string]any{"type": "string", "description": "Image motion: none, zoom_in, or zoom_out"},
+			"transition":  map[string]any{"type": "string", "description": "Segment transition: none or fade"},
 		}, "required": []string{"type"}},
 	}
 }
@@ -470,6 +473,9 @@ type mediaComposeSegment struct {
 	Duration   float64      `json:"duration"`
 	KeepRanges []mediaRange `json:"keep_ranges"`
 	Caption    string       `json:"caption"`
+	Template   string       `json:"template"`
+	Motion     string       `json:"motion"`
+	Transition string       `json:"transition"`
 }
 
 func validateMediaComposeArgs(a mediaComposeArgs) error {
@@ -483,6 +489,12 @@ func validateMediaComposeArgs(a mediaComposeArgs) error {
 		return errors.New("at least one segment is required")
 	}
 	for i, segment := range a.Segments {
+		if err := validateMediaComposeStyleFields(i, segment); err != nil {
+			return err
+		}
+		if motion := strings.TrimSpace(segment.Motion); motion != "" && motion != "none" && strings.TrimSpace(segment.Type) != "image" {
+			return fmt.Errorf("segment %d motion is only supported for image segments", i)
+		}
 		switch strings.TrimSpace(segment.Type) {
 		case "title":
 			if strings.TrimSpace(segment.Text) == "" {
@@ -525,6 +537,32 @@ func validateMediaComposeSyntheticDuration(index int, typ string, duration float
 		return fmt.Errorf("segment %d %s duration %.3f exceeds max %.0f seconds", index, typ, duration, mediaComposeMaxSyntheticDuration)
 	}
 	return nil
+}
+
+func validateMediaComposeStyleFields(index int, segment mediaComposeSegment) error {
+	if err := validateMediaComposeEnum(index, "template", segment.Template, []string{"", "default", "hero", "feature", "closing"}); err != nil {
+		return err
+	}
+	if err := validateMediaComposeEnum(index, "motion", segment.Motion, []string{"", "none", "zoom_in", "zoom_out"}); err != nil {
+		return err
+	}
+	return validateMediaComposeEnum(index, "transition", segment.Transition, []string{"", "none", "fade"})
+}
+
+func validateMediaComposeEnum(index int, field, value string, allowed []string) error {
+	value = strings.TrimSpace(value)
+	for _, candidate := range allowed {
+		if value == candidate {
+			return nil
+		}
+	}
+	nonEmpty := make([]string, 0, len(allowed))
+	for _, candidate := range allowed {
+		if candidate != "" {
+			nonEmpty = append(nonEmpty, candidate)
+		}
+	}
+	return fmt.Errorf("segment %d %s must be one of %s", index, field, strings.Join(nonEmpty, ", "))
 }
 
 func buildMediaComposeArgs(cwd, output string, a mediaComposeArgs) ([]string, error) {
@@ -636,6 +674,7 @@ func mediaComposeFilter(a mediaComposeArgs, inputs []int, width, height int, fps
 		if input < 0 {
 			return "", fmt.Errorf("segment %d has no input", i)
 		}
+		var segmentFilter strings.Builder
 		base := fmt.Sprintf("[%d:v]", input)
 		if strings.TrimSpace(segment.Type) == "clip" {
 			if len(segment.KeepRanges) == 1 {
@@ -645,7 +684,13 @@ func mediaComposeFilter(a mediaComposeArgs, inputs []int, width, height int, fps
 				base += "setpts=PTS-STARTPTS,"
 			}
 		}
-		fmt.Fprintf(&b, "%s%ssetsar=1,fps=%s,scale=%d:%d:force_original_aspect_ratio=decrease,pad=%d:%d:(ow-iw)/2:(oh-ih)/2,format=yuv420p", base, mediaComposeTitleFilter(segment), fmtNumber(fps), width, height, width, height)
+		fmt.Fprintf(&segmentFilter, "%ssetsar=1,fps=%s,scale=%d:%d:force_original_aspect_ratio=decrease,pad=%d:%d:(ow-iw)/2:(oh-ih)/2,format=yuv420p,", base, fmtNumber(fps), width, height, width, height)
+		segmentFilter.WriteString(mediaComposeImageMotionFilter(segment, width, height, fps))
+		segmentFilter.WriteString(mediaComposeTemplateFilter(segment))
+		segmentFilter.WriteString(mediaComposeTitleFilter(segment))
+		segmentFilter.WriteString(mediaComposeCaptionFilter(segment))
+		segmentFilter.WriteString(mediaComposeFadeFilter(segment))
+		b.WriteString(strings.TrimSuffix(segmentFilter.String(), ","))
 		fmt.Fprintf(&b, "[v%d];", i)
 	}
 	for i := range a.Segments {
@@ -659,7 +704,75 @@ func mediaComposeTitleFilter(segment mediaComposeSegment) string {
 	if strings.TrimSpace(segment.Type) != "title" {
 		return ""
 	}
-	return fmt.Sprintf("drawtext=text='%s':fontcolor=white:fontsize=64:x=(w-text_w)/2:y=(h-text_h)/2:expansion=none,", escapeFFmpegDrawText(segment.Text))
+	style := mediaComposeTemplateStyle(segment.Template)
+	return fmt.Sprintf("drawtext=text='%s':fontcolor=%s:fontsize=%d:x=(w-text_w)/2:y=(h-text_h)/2:expansion=none,", escapeFFmpegDrawText(segment.Text), style.TextColor, style.TitleSize)
+}
+
+type mediaComposeStyle struct {
+	TextColor string
+	TitleSize int
+}
+
+func mediaComposeTemplateStyle(template string) mediaComposeStyle {
+	switch strings.TrimSpace(template) {
+	case "hero":
+		return mediaComposeStyle{TextColor: "0x39ff14", TitleSize: 78}
+	case "feature":
+		return mediaComposeStyle{TextColor: "white", TitleSize: 60}
+	case "closing":
+		return mediaComposeStyle{TextColor: "0x39ff14", TitleSize: 70}
+	default:
+		return mediaComposeStyle{TextColor: "white", TitleSize: 64}
+	}
+}
+
+func mediaComposeTemplateFilter(segment mediaComposeSegment) string {
+	switch strings.TrimSpace(segment.Template) {
+	case "hero":
+		return "drawbox=x=0:y=0:w=iw:h=ih:color=0x07130d@0.22:t=fill,drawbox=x=0:y=ih-18:w=iw:h=18:color=0x39ff14@0.90:t=fill,"
+	case "feature":
+		return "drawbox=x=0:y=0:w=18:h=ih:color=0x39ff14@0.90:t=fill,drawbox=x=54:y=64:w=220:h=6:color=0x39ff14@0.80:t=fill,"
+	case "closing":
+		return "drawbox=x=0:y=0:w=iw:h=ih:color=0x050806@0.30:t=fill,drawbox=x=0:y=0:w=iw:h=14:color=0x39ff14@0.90:t=fill,drawbox=x=0:y=ih-14:w=iw:h=14:color=0x39ff14@0.90:t=fill,"
+	default:
+		return ""
+	}
+}
+
+func mediaComposeImageMotionFilter(segment mediaComposeSegment, width, height int, fps float64) string {
+	if strings.TrimSpace(segment.Type) != "image" {
+		return ""
+	}
+	switch strings.TrimSpace(segment.Motion) {
+	case "zoom_in":
+		return fmt.Sprintf("zoompan=z='min(zoom+0.0015\\,1.12)':d=1:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=%dx%d:fps=%s,", width, height, fmtNumber(fps))
+	case "zoom_out":
+		return fmt.Sprintf("zoompan=z='if(eq(on\\,1)\\,1.12\\,max(zoom-0.0015\\,1.0))':d=1:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=%dx%d:fps=%s,", width, height, fmtNumber(fps))
+	default:
+		return ""
+	}
+}
+
+func mediaComposeCaptionFilter(segment mediaComposeSegment) string {
+	caption := strings.TrimSpace(segment.Caption)
+	if caption == "" {
+		return ""
+	}
+	return fmt.Sprintf("drawbox=x=80:y=ih-190:w=iw-160:h=110:color=black@0.55:t=fill,drawtext=text='%s':fontcolor=white:fontsize=42:x=120:y=h-155:expansion=none,", escapeFFmpegDrawText(caption))
+}
+
+func mediaComposeFadeFilter(segment mediaComposeSegment) string {
+	if strings.TrimSpace(segment.Transition) != "fade" {
+		return ""
+	}
+	if segment.Duration > 0 {
+		fadeOutStart := segment.Duration - 0.35
+		if fadeOutStart < 0 {
+			fadeOutStart = 0
+		}
+		return fmt.Sprintf("fade=t=in:st=0:d=0.35,fade=t=out:st=%s:d=0.35,", fmtSeconds(fadeOutStart))
+	}
+	return "fade=t=in:st=0:d=0.35,"
 }
 
 func escapeFFmpegDrawText(s string) string {
