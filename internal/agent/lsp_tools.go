@@ -141,7 +141,7 @@ func (t *LSPStatusTool) Execute(ctx context.Context, argsJSON string) (string, e
 	var b strings.Builder
 	for _, lang := range langs {
 		status := "missing"
-		if lang.ServerAvailable {
+		if lang.ServerAvailable || t.NewClient != nil {
 			status = "installed"
 		}
 		if t.Disabled[lang.ID] {
