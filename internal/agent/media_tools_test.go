@@ -247,3 +247,136 @@ func TestMediaRenderSchemaRequired(t *testing.T) {
 		t.Fatalf("schema missing expected media hints: %s", b)
 	}
 }
+
+func TestMediaComposeSchemaRequired(t *testing.T) {
+	schema := (&MediaComposeTool{}).Schema()
+	b, _ := json.Marshal(schema)
+	for _, want := range []string{"segments", "title", "clip", "image", "overwrite"} {
+		if !strings.Contains(string(b), want) {
+			t.Fatalf("schema missing %q: %s", want, b)
+		}
+	}
+}
+
+func TestMediaComposeValidation(t *testing.T) {
+	tests := []struct {
+		name string
+		args mediaComposeArgs
+		want string
+	}{
+		{name: "output required", args: mediaComposeArgs{Segments: []mediaComposeSegment{{Type: "title", Text: "Hi", Duration: 1}}}, want: "output is required"},
+		{name: "mp4 output", args: mediaComposeArgs{Output: "out.mov", Segments: []mediaComposeSegment{{Type: "title", Text: "Hi", Duration: 1}}}, want: "must end with .mp4"},
+		{name: "segment required", args: mediaComposeArgs{Output: "out.mp4"}, want: "at least one segment"},
+		{name: "title text", args: mediaComposeArgs{Output: "out.mp4", Segments: []mediaComposeSegment{{Type: "title", Duration: 1}}}, want: "title text"},
+		{name: "image path", args: mediaComposeArgs{Output: "out.mp4", Segments: []mediaComposeSegment{{Type: "image", Duration: 1}}}, want: "image path"},
+		{name: "clip path", args: mediaComposeArgs{Output: "out.mp4", Segments: []mediaComposeSegment{{Type: "clip"}}}, want: "clip path"},
+		{name: "unknown type", args: mediaComposeArgs{Output: "out.mp4", Segments: []mediaComposeSegment{{Type: "audio"}}}, want: "unknown type"},
+		{name: "duration too long", args: mediaComposeArgs{Output: "out.mp4", Segments: []mediaComposeSegment{{Type: "title", Text: "Hi", Duration: mediaComposeMaxSyntheticDuration + 1}}}, want: "exceeds max"},
+		{name: "multiple keep ranges", args: mediaComposeArgs{Output: "out.mp4", Segments: []mediaComposeSegment{{Type: "clip", Path: "in.mp4", KeepRanges: []mediaRange{{Start: 0, End: 1}, {Start: 2, End: 3}}}}}, want: "at most one keep_range"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateMediaComposeArgs(tt.args)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("err = %v, want containing %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestBuildMediaComposeArgsTitleImageClip(t *testing.T) {
+	cwd := t.TempDir()
+	args, err := buildMediaComposeArgs(cwd, filepath.Join(cwd, "out", "promo.mp4"), mediaComposeArgs{
+		Output:    "out/promo.mp4",
+		Overwrite: true,
+		Segments: []mediaComposeSegment{
+			{Type: "title", Text: "Ship: faster", Duration: 2},
+			{Type: "image", Path: "assets/card.png", Duration: 3},
+			{Type: "clip", Path: "raw/demo.mp4", KeepRanges: []mediaRange{{Start: 1, End: 4}}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("buildMediaComposeArgs: %v", err)
+	}
+	joined := strings.Join(args, " ")
+	for _, want := range []string{"-hide_banner", "-y", "color=c=#0b0f0d:s=1920x1080:r=30", "drawtext=text='Ship\\: faster'", "-loop 1", filepath.Join(cwd, "assets", "card.png"), filepath.Join(cwd, "raw", "demo.mp4"), "trim=start=1.000:end=4.000", "concat=n=3:v=1:a=0", "-map [vout]", "-an", "-c:v libx264"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("compose args missing %q:\n%s", want, joined)
+		}
+	}
+	if strings.Contains(joined, "/bin/sh") {
+		t.Fatalf("compose args must not invoke a shell: %s", joined)
+	}
+}
+
+func TestEscapeFFmpegDrawTextDisablesExpansion(t *testing.T) {
+	filter := mediaComposeTitleFilter(mediaComposeSegment{Type: "title", Text: "50% faster: it's ok"})
+	for _, want := range []string{"50% faster\\: it\\'s ok", "expansion=none"} {
+		if !strings.Contains(filter, want) {
+			t.Fatalf("title filter missing %q:\n%s", want, filter)
+		}
+	}
+}
+
+func TestBuildMediaComposeArgsResetsUntrimmedClipPTS(t *testing.T) {
+	cwd := t.TempDir()
+	args, err := buildMediaComposeArgs(cwd, filepath.Join(cwd, "out.mp4"), mediaComposeArgs{
+		Output: "out.mp4",
+		Segments: []mediaComposeSegment{
+			{Type: "title", Text: "Hi", Duration: 1},
+			{Type: "clip", Path: "raw/demo.mp4"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("buildMediaComposeArgs: %v", err)
+	}
+	joined := strings.Join(args, " ")
+	if !strings.Contains(joined, "[1:v]setpts=PTS-STARTPTS") {
+		t.Fatalf("untrimmed clip must reset PTS before concat:\n%s", joined)
+	}
+}
+
+func TestBuildMediaComposeArgsRejectsInvalidCanvas(t *testing.T) {
+	_, err := buildMediaComposeArgs(t.TempDir(), "out.mp4", mediaComposeArgs{
+		Output:   "out.mp4",
+		Width:    100000,
+		Segments: []mediaComposeSegment{{Type: "title", Text: "Hi", Duration: 1}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "width") {
+		t.Fatalf("err = %v, want width validation", err)
+	}
+}
+
+func TestBuildMediaComposeArgsRejectsUnsafeBackgroundColor(t *testing.T) {
+	_, err := buildMediaComposeArgs(t.TempDir(), "out.mp4", mediaComposeArgs{
+		Output:          "out.mp4",
+		BackgroundColor: "red:size=999x999",
+		Segments:        []mediaComposeSegment{{Type: "title", Text: "Hi", Duration: 1}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "background_color") {
+		t.Fatalf("err = %v, want background_color validation", err)
+	}
+}
+
+func TestMediaComposePathsToSnapshot(t *testing.T) {
+	cwd := t.TempDir()
+	tool := &MediaComposeTool{Cwd: NewCwdRef(cwd)}
+	paths := tool.PathsToSnapshot(cwd, `{"output":"marketing/out/promo.mp4","segments":[{"type":"title","text":"Hi","duration":1}]}`)
+	want := filepath.Join(cwd, "marketing", "out", "promo.mp4")
+	if len(paths) != 1 || paths[0] != want {
+		t.Fatalf("paths = %#v, want %q", paths, want)
+	}
+}
+
+func TestMediaComposeMissingFFmpeg(t *testing.T) {
+	oldLookPath := mediaLookPath
+	mediaLookPath = func(string) (string, error) { return "", os.ErrNotExist }
+	t.Cleanup(func() { mediaLookPath = oldLookPath })
+
+	cwd := t.TempDir()
+	tool := &MediaComposeTool{Cwd: NewCwdRef(cwd), WriteOpts: WritePathOptions{Cwd: NewCwdRef(cwd)}}
+	_, err := tool.Execute(context.Background(), `{"output":"out/promo.mp4","segments":[{"type":"title","text":"Hi","duration":1}]}`)
+	if err == nil || !strings.Contains(err.Error(), "ffmpeg binary not found") {
+		t.Fatalf("err = %v, want missing ffmpeg", err)
+	}
+}

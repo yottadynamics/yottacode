@@ -78,7 +78,7 @@ func init() {
 		// TUI slash surface; the agent keeps the memory_search tool.
 		{Name: "memory", Help: "open the memory picker", Run: cmdMemory},
 		{Name: "map", Args: "[query]", Help: "open the code map: directory → file → symbol structure", Run: cmdMap, PreservesTurn: true},
-		{Name: "video", Args: "[path]", Help: "guide a marketing-video workflow", Run: cmdVideo},
+		{Name: "video", Args: "[path|prompt <goal>]", Help: "guide recording cleanup or prompt-driven marketing videos", Run: cmdVideo},
 		{Name: "summarize", Help: "compress session history into a structured summary", Run: cmdSummarize},
 		{Name: "skills", Help: "skills menu; install/show/update/uninstall/check", Run: cmdSkills, PreservesTurn: true},
 		{Name: "subagents", Help: "open the subagents picker (Enter views · t toggles types · s stops · Esc closes)", Run: cmdSubagents, PreservesTurn: true},

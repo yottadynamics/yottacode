@@ -113,6 +113,7 @@ Type `/` in the TUI to open the command palette — it filters as you type and s
 | `/init` | Draft `.yottacode/YOTTACODE.md` from the current repo |
 | `/permissions` | Show where permissions are configured |
 | `/max-iterations <N>` | Cap tool-call iterations per turn (default 100; auto mode 4×) |
+| `/video [path]` / `/video prompt <goal>` | Guide recording cleanup or prompt-driven, asset-based marketing videos |
 | `/loop <interval> [Nx] <prompt>` | Repeat prompts or slash commands as local loops with IDs (`/loop 2m check current PR CI`, `/loop stop <id>`, 5-day expiry) |
 | `/plan` | Toggle plan mode (`/plan list` resumes a saved plan; also `Shift+Tab`) |
 | `/yolo` | Toggle yolo mode — every tool auto-runs, no safety floor, no iteration cap (also `--yolo` at startup; deny rules still win) |

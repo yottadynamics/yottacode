@@ -114,6 +114,7 @@ func RegisterCoreCwdTools(reg *Registry, cwd *CwdRef, deps CoreToolDeps) {
 
 	reg.Register(&MediaProbeTool{Cwd: cwd, DenyReadPaths: deps.DenyReads})
 	reg.Register(&MediaAnalyzeTool{Cwd: cwd, DenyReadPaths: deps.DenyReads})
+	reg.Register(&MediaComposeTool{Cwd: cwd, DenyReadPaths: deps.DenyReads, WriteOpts: wo})
 	reg.Register(&MediaRenderTool{Cwd: cwd, DenyReadPaths: deps.DenyReads, WriteOpts: wo})
 
 	reg.Register(&ListDirTool{Cwd: cwd})
