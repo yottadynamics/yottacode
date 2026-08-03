@@ -22,7 +22,7 @@ Model-agnostic · Agent-managed memory · Typed GitHub workflows · Approval-fir
 
 ---
 
-## GitOps, handled from the terminal
+## From prompt to pull request, without leaving your terminal
 
 An end-to-end agentic development workflow: plan mode → branch → implement → tests → commit → push → create PR.
 
