@@ -96,6 +96,9 @@ func (f *fakeLSPClient) CallHierarchy(context.Context, string, lspci.Position) (
 	}
 	return []lspci.CallHierarchyItem{{Name: "caller", Kind: "function", Direction: "incoming", Location: lspci.Location{Path: "main.go", Line: 1, Character: 2}}}, nil
 }
+func (f *fakeLSPClient) Capabilities() lspci.Capabilities {
+	return lspci.Capabilities{DocumentSymbol: true, Definition: true, References: true, Rename: true}
+}
 func (f *fakeLSPClient) Close() error { return nil }
 
 func TestLSPStatusDetectsLanguagesAndHints(t *testing.T) {

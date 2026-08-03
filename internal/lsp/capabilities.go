@@ -2,6 +2,28 @@ package lsp
 
 import "encoding/json"
 
+// Capabilities is the stable, printable subset of initialized server
+// capabilities that yottacode exposes through status and doctor output.
+// It intentionally mirrors only methods used by the agent tool surface.
+type Capabilities struct {
+	WorkspaceSymbol   bool `json:"workspace_symbol"`
+	DocumentSymbol    bool `json:"document_symbol"`
+	DocumentHighlight bool `json:"document_highlight"`
+	SelectionRange    bool `json:"selection_range"`
+	Definition        bool `json:"definition"`
+	TypeDefinition    bool `json:"type_definition"`
+	Implementation    bool `json:"implementation"`
+	References        bool `json:"references"`
+	Hover             bool `json:"hover"`
+	SignatureHelp     bool `json:"signature_help"`
+	CodeAction        bool `json:"code_action"`
+	CodeActionResolve bool `json:"code_action_resolve"`
+	CallHierarchy     bool `json:"call_hierarchy"`
+	Rename            bool `json:"rename"`
+	RenamePrepare     bool `json:"rename_prepare"`
+	Formatting        bool `json:"formatting"`
+}
+
 func parseServerCapabilities(raw json.RawMessage) serverCapabilities {
 	// Missing or malformed capabilities are treated as empty only for production
 	// clients. Unit tests that construct Client directly leave capOK=false and
@@ -44,6 +66,27 @@ func parseServerCapabilities(raw json.RawMessage) serverCapabilities {
 		Rename:            capabilityEnabled(msg.Capabilities.RenameProvider),
 		RenamePrepare:     renamePrepare,
 		Formatting:        capabilityEnabled(msg.Capabilities.DocumentFormattingProvider),
+	}
+}
+
+func (c serverCapabilities) exported() Capabilities {
+	return Capabilities{
+		WorkspaceSymbol:   c.WorkspaceSymbol,
+		DocumentSymbol:    c.DocumentSymbol,
+		DocumentHighlight: c.DocumentHighlight,
+		SelectionRange:    c.SelectionRange,
+		Definition:        c.Definition,
+		TypeDefinition:    c.TypeDefinition,
+		Implementation:    c.Implementation,
+		References:        c.References,
+		Hover:             c.Hover,
+		SignatureHelp:     c.SignatureHelp,
+		CodeAction:        c.CodeAction,
+		CodeActionResolve: c.CodeActionResolve,
+		CallHierarchy:     c.CallHierarchy,
+		Rename:            c.Rename,
+		RenamePrepare:     c.RenamePrepare,
+		Formatting:        c.Formatting,
 	}
 }
 

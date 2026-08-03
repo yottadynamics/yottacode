@@ -101,4 +101,3 @@ func writeSmokeFile(t *testing.T, root, rel, body string) {
 		t.Fatalf("write %s: %v", rel, err)
 	}
 }
-

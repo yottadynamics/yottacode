@@ -32,6 +32,7 @@ type lspClient interface {
 	CodeActionPreview(ctx context.Context, path string, start, end lspci.Position, title string, index int) (lspci.WorkspaceEdit, error)
 	RenamePreview(ctx context.Context, path string, pos lspci.Position, newName string) (lspci.WorkspaceEdit, error)
 	FormatPreview(ctx context.Context, path string) (lspci.WorkspaceEdit, error)
+	Capabilities() lspci.Capabilities
 	CallHierarchy(ctx context.Context, path string, pos lspci.Position) ([]lspci.CallHierarchyItem, error)
 	Close() error
 }
@@ -47,6 +48,7 @@ type lspToolBase struct {
 	DenyReadPaths []string
 	NewClient     lspClientFactory
 	Servers       map[string][]string
+	Disabled      map[string]bool
 	Manager       *lspci.Manager
 }
 
@@ -139,20 +141,67 @@ func (t *LSPStatusTool) Execute(ctx context.Context, argsJSON string) (string, e
 	var b strings.Builder
 	for _, lang := range langs {
 		status := "missing"
-		if lang.ServerAvailable {
+		if lang.ServerAvailable || t.NewClient != nil {
 			status = "installed"
 		}
+		if t.Disabled[lang.ID] {
+			status = "disabled"
+		}
 		fmt.Fprintf(&b, "%s\tfiles=%d\tserver=%s\tstatus=%s\tsyntax=%s", lang.Name, lang.FilesAvailable, strings.Join(lang.Command, " "), status, lspci.SyntaxMode(lang.ID))
-		if !lang.ServerAvailable {
+		if !lang.ServerAvailable && t.NewClient == nil && !t.Disabled[lang.ID] {
 			fmt.Fprintf(&b, "\thint=%s", lang.InstallHint)
+		} else if t.Disabled[lang.ID] {
+			fmt.Fprintf(&b, "\tprobe=skipped:disabled")
+		} else {
+			root := lspci.WorkspaceRoot(abs, lang.Language, abs)
+			client, err := t.openClient(ctx, lang.Language, root)
+			if err != nil {
+				fmt.Fprintf(&b, "\tprobe=failed:%s", lspErrorSummary(err))
+			} else {
+				fmt.Fprintf(&b, "\tprobe=ok\tcapabilities=%s", formatLSPCapabilities(client.Capabilities()))
+				_ = client.Close()
+			}
 		}
 		b.WriteByte('\n')
 	}
 	if t.Manager != nil {
 		stats := t.Manager.Stats()
-		fmt.Fprintf(&b, "manager\topen=%d/%d\tstarts=%d\treuses=%d\tevictions=%d\tlast_start=%s\n", stats.OpenServers, stats.MaxServers, stats.Starts, stats.Reuses, stats.Evictions, stats.LastStart)
+		fmt.Fprintf(&b, "manager\topen=%d/%d\tbusy=%d\tleases=%d\tcapacity_hits=%d\tstarts=%d\treuses=%d\tevictions=%d\tlast_start=%s\n", stats.OpenServers, stats.MaxServers, stats.BusyServers, stats.Leases, stats.CapacityHits, stats.Starts, stats.Reuses, stats.Evictions, stats.LastStart)
 	}
 	return b.String(), nil
+}
+
+func formatLSPCapabilities(c lspci.Capabilities) string {
+	parts := make([]string, 0, 16)
+	add := func(name string, ok bool) {
+		if ok {
+			parts = append(parts, name)
+		}
+	}
+	add("workspace_symbol", c.WorkspaceSymbol)
+	add("document_symbol", c.DocumentSymbol)
+	add("document_highlight", c.DocumentHighlight)
+	add("selection_range", c.SelectionRange)
+	add("definition", c.Definition)
+	add("type_definition", c.TypeDefinition)
+	add("implementation", c.Implementation)
+	add("references", c.References)
+	add("hover", c.Hover)
+	add("signature_help", c.SignatureHelp)
+	add("code_action", c.CodeAction)
+	add("code_action_resolve", c.CodeActionResolve)
+	add("call_hierarchy", c.CallHierarchy)
+	add("rename", c.Rename)
+	add("rename_prepare", c.RenamePrepare)
+	add("formatting", c.Formatting)
+	if len(parts) == 0 {
+		return "none"
+	}
+	return strings.Join(parts, ",")
+}
+
+func lspErrorSummary(err error) string {
+	return strings.ReplaceAll(err.Error(), "\t", " ")
 }
 
 // LSPSymbolsTool searches workspace symbols through the resolved server.
@@ -345,6 +394,9 @@ func executeLSPLocations(ctx context.Context, base lspToolBase, argsJSON, name s
 	if !ok {
 		return unsupportedFileResult(path), nil
 	}
+	if base.Disabled[lang.ID] {
+		return fmt.Sprintf("unavailable: LSP language %s is disabled by config\n", lang.ID), nil
+	}
 	lang = lspci.ApplyOverrides(lang, base.Servers)
 	if !lspci.ServerAvailable(lang) && base.NewClient == nil {
 		return unavailableServerResult(lang), nil
@@ -386,6 +438,9 @@ func (t *LSPSymbolsTool) resolveLanguage(ctx context.Context, path string) (lspc
 		}
 		if info, err := os.Stat(abs); err == nil && !info.IsDir() {
 			if lang, ok := lspci.ResolveFile(abs); ok {
+				if t.Disabled[lang.ID] {
+					return lspci.Language{}, "", fmt.Sprintf("unavailable: LSP language %s is disabled by config\n", lang.ID), nil
+				}
 				lang = lspci.ApplyOverrides(lang, t.Servers)
 				return lang, lspci.WorkspaceRoot(abs, lang, t.cwd()), "", nil
 			}
@@ -402,6 +457,9 @@ func (t *LSPSymbolsTool) resolveLanguage(ctx context.Context, path string) (lspc
 		return lspci.Language{}, "", "no supported LSP languages detected (supported: Go, TypeScript/JavaScript, Python, Rust)\n", nil
 	}
 	for _, detected := range langs {
+		if t.Disabled[detected.ID] {
+			continue
+		}
 		if detected.ServerAvailable || t.NewClient != nil {
 			return detected.Language, root, "", nil
 		}
@@ -476,4 +534,15 @@ func emptyDefault(s, fallback string) string {
 		return fallback
 	}
 	return s
+}
+
+func disabledLSPSet(ids []string) map[string]bool {
+	if len(ids) == 0 {
+		return nil
+	}
+	out := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		out[strings.TrimSpace(strings.ToLower(id))] = true
+	}
+	return out
 }

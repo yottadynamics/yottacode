@@ -3,7 +3,6 @@ package codemap
 import (
 	"context"
 	"errors"
-	"strings"
 
 	"github.com/yottadynamics/yottacode/internal/lsp"
 )
@@ -39,7 +38,7 @@ func (s LSPSource) Symbols(ctx context.Context, path string) ([]lsp.Symbol, stri
 	if err == nil {
 		return items, "lsp", nil
 	}
-	if errors.Is(err, lsp.ErrUnsupportedCapability) || strings.Contains(err.Error(), "unsupported") {
+	if errors.Is(err, lsp.ErrUnsupportedCapability) {
 		items, fbErr := lsp.FallbackFileSymbols(path)
 		return items, "fallback", fbErr
 	}

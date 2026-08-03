@@ -80,7 +80,8 @@ type SubagentsConfig struct {
 // LSPConfig contains optional per-language server command overrides. Keys are
 // stable language IDs such as "go", "typescript", "python", and "rust".
 type LSPConfig struct {
-	Servers map[string][]string `toml:"servers"`
+	Servers  map[string][]string `toml:"servers"`
+	Disabled []string            `toml:"disabled"`
 }
 
 // DefaultSubagentSessionTokenBudget bounds cumulative subagent spend per
@@ -722,6 +723,11 @@ func Validate(cfg Config) error {
 		}
 		if len(cmd) == 0 || strings.TrimSpace(cmd[0]) == "" {
 			return fmt.Errorf("lsp.servers.%s must name a command", id)
+		}
+	}
+	for _, id := range cfg.LSP.Disabled {
+		if !validLSP[id] {
+			return fmt.Errorf("lsp.disabled contains unknown language %q (expected one of go, typescript, python, rust)", id)
 		}
 	}
 

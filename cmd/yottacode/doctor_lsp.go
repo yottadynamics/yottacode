@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/yottadynamics/yottacode/internal/cli"
 	"github.com/yottadynamics/yottacode/internal/config"
@@ -30,6 +31,8 @@ type LSPDoctorLanguage struct {
 	Command         []string `json:"command"`
 	ServerAvailable bool     `json:"server_available"`
 	InstallHint     string   `json:"install_hint,omitempty"`
+	Probe           string   `json:"probe,omitempty"`
+	Capabilities    string   `json:"capabilities,omitempty"`
 	Override        bool     `json:"override"`
 }
 
@@ -59,6 +62,23 @@ func probeLSPDoctor(ctx context.Context, opts cli.ChatOptions, cfg config.Config
 	langs = lsp.ApplyOverridesToDetected(langs, cfg.LSP.Servers)
 	out := LSPDoctorResult{Enabled: true, Manager: LSPDoctorManager{MaxServers: lsp.DefaultManagerMaxServers()}, Note: "experimental opt-in; servers are local subprocesses and are never auto-installed"}
 	for _, lang := range langs {
+		probe := "missing"
+		caps := ""
+		disabled := lspDisabled(cfg.LSP.Disabled, lang.ID)
+		if disabled {
+			probe = "skipped: disabled"
+		} else if lang.ServerAvailable {
+			probe = "ok"
+			probeCtx, cancel := context.WithTimeout(ctx, 4*time.Second)
+			client, err := lsp.NewClient(probeCtx, lang.Language, lsp.WorkspaceRoot(".", lang.Language, "."))
+			cancel()
+			if err != nil {
+				probe = "failed: " + err.Error()
+			} else {
+				caps = formatDoctorLSPCapabilities(client.Capabilities())
+				_ = client.Close()
+			}
+		}
 		out.Languages = append(out.Languages, LSPDoctorLanguage{
 			ID:              lang.ID,
 			Name:            lang.Name,
@@ -66,6 +86,8 @@ func probeLSPDoctor(ctx context.Context, opts cli.ChatOptions, cfg config.Config
 			Command:         append([]string(nil), lang.Command...),
 			ServerAvailable: lang.ServerAvailable,
 			InstallHint:     installHintIfMissing(lang),
+			Probe:           probe,
+			Capabilities:    caps,
 			Override:        len(cfg.LSP.Servers[lang.ID]) > 0,
 		})
 	}
@@ -102,6 +124,12 @@ func renderLSPDoctor(result LSPDoctorResult) string {
 		if !lang.ServerAvailable && lang.InstallHint != "" {
 			fmt.Fprintf(&b, "\n  hint: %s", lang.InstallHint)
 		}
+		if lang.Probe != "" {
+			fmt.Fprintf(&b, "\n  probe: %s", lang.Probe)
+		}
+		if lang.Capabilities != "" {
+			fmt.Fprintf(&b, "\n  capabilities: %s", lang.Capabilities)
+		}
 	}
 	return b.String()
 }
@@ -111,4 +139,42 @@ func installHintIfMissing(lang lsp.DetectedLanguage) string {
 		return ""
 	}
 	return lang.InstallHint
+}
+
+func lspDisabled(disabled []string, id string) bool {
+	for _, candidate := range disabled {
+		if candidate == id {
+			return true
+		}
+	}
+	return false
+}
+
+func formatDoctorLSPCapabilities(c lsp.Capabilities) string {
+	parts := make([]string, 0, 16)
+	add := func(name string, ok bool) {
+		if ok {
+			parts = append(parts, name)
+		}
+	}
+	add("workspace_symbol", c.WorkspaceSymbol)
+	add("document_symbol", c.DocumentSymbol)
+	add("document_highlight", c.DocumentHighlight)
+	add("selection_range", c.SelectionRange)
+	add("definition", c.Definition)
+	add("type_definition", c.TypeDefinition)
+	add("implementation", c.Implementation)
+	add("references", c.References)
+	add("hover", c.Hover)
+	add("signature_help", c.SignatureHelp)
+	add("code_action", c.CodeAction)
+	add("code_action_resolve", c.CodeActionResolve)
+	add("call_hierarchy", c.CallHierarchy)
+	add("rename", c.Rename)
+	add("rename_prepare", c.RenamePrepare)
+	add("formatting", c.Formatting)
+	if len(parts) == 0 {
+		return "none"
+	}
+	return strings.Join(parts, ",")
 }

@@ -41,6 +41,9 @@ type CoreToolDeps struct {
 	// stable language ID (go/typescript/python/rust).
 	LSPServers map[string][]string
 
+	// LSPDisabled lists language IDs whose server launch is disabled by config.
+	LSPDisabled []string
+
 	// CodeMapProvider exposes the optional experimental repository structure
 	// index to read-only agent tools.
 	CodeMapProvider codemap.Provider
@@ -132,7 +135,7 @@ func RegisterCoreCwdTools(reg *Registry, cwd *CwdRef, deps CoreToolDeps) {
 		reg.Register(&SyntaxRangeTool{Cwd: cwd, DenyReadPaths: deps.DenyReads})
 	}
 	if deps.EnableLSP {
-		base := lspToolBase{Cwd: cwd, DenyReadPaths: deps.DenyReads, NewClient: deps.LSPClientFactory, Servers: deps.LSPServers, Manager: deps.LSPManager}
+		base := lspToolBase{Cwd: cwd, DenyReadPaths: deps.DenyReads, NewClient: deps.LSPClientFactory, Servers: deps.LSPServers, Disabled: disabledLSPSet(deps.LSPDisabled), Manager: deps.LSPManager}
 		reg.Register(&LSPStatusTool{lspToolBase: base})
 		reg.Register(&LSPSymbolsTool{lspToolBase: base})
 		reg.Register(&LSPDocumentSymbolsTool{lspToolBase: base})

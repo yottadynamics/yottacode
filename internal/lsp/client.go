@@ -29,9 +29,28 @@ const (
 // instead of showing a misleading empty response.
 var ErrUnsupportedCapability = errors.New("unsupported LSP capability")
 
+// ErrServerUnavailable marks a missing or intentionally disabled language
+// server. Callers can fall back to parser/regex code intelligence.
+var ErrServerUnavailable = errors.New("LSP server unavailable")
+
+// ErrServerStartFailed marks a configured server binary that exists but failed
+// to launch or initialize successfully.
+var ErrServerStartFailed = errors.New("LSP server start failed")
+
+// ErrProtocolMalformed marks invalid JSON-RPC framing or response payloads.
+var ErrProtocolMalformed = errors.New("malformed LSP protocol message")
+
+// ErrRequestTimeout marks a bounded LSP request or diagnostic wait timeout.
+var ErrRequestTimeout = errors.New("LSP request timed out")
+
 // ErrInvalidRenamePosition marks a cursor position that the server rejected
 // during textDocument/prepareRename before yottacode asked for rename edits.
 var ErrInvalidRenamePosition = errors.New("invalid rename position")
+
+// ErrUnsupportedWorkspaceEdit marks LSP WorkspaceEdit shapes yottacode refuses
+// to apply, such as file create/rename/delete operations. Text edits remain
+// previewed and applied through yottacode's own validators.
+var ErrUnsupportedWorkspaceEdit = errors.New("unsupported LSP workspace edit")
 
 // Position is a zero-based LSP text position.
 type Position struct {
@@ -196,10 +215,10 @@ type Client struct {
 // NewClient starts and initializes the server for lang at root.
 func NewClient(ctx context.Context, lang Language, root string) (*Client, error) {
 	if len(lang.Command) == 0 {
-		return nil, fmt.Errorf("%s language server command is not configured", lang.Name)
+		return nil, fmt.Errorf("%w: %s language server command is not configured", ErrServerUnavailable, lang.Name)
 	}
 	if _, err := exec.LookPath(lang.Command[0]); err != nil {
-		return nil, fmt.Errorf("%s language server %q not found on PATH", lang.Name, lang.Command[0])
+		return nil, fmt.Errorf("%w: %s language server %q not found on PATH", ErrServerUnavailable, lang.Name, lang.Command[0])
 	}
 	startCtx, cancel := context.WithTimeout(ctx, defaultStartupTimeout)
 	defer cancel()
@@ -216,7 +235,7 @@ func NewClient(ctx context.Context, lang Language, root string) (*Client, error)
 	var stderr bytes.Buffer
 	cmd.Stderr = &cappedWriter{buf: &stderr, max: 64 * 1024}
 	if err := cmd.Start(); err != nil {
-		return nil, fmt.Errorf("start %s: %w", lang.Command[0], err)
+		return nil, fmt.Errorf("%w: start %s: %v", ErrServerStartFailed, lang.Command[0], err)
 	}
 	c := &Client{
 		cmd:       cmd,
@@ -233,7 +252,7 @@ func NewClient(ctx context.Context, lang Language, root string) (*Client, error)
 	c.diagSettle = 1200 * time.Millisecond
 	if err := c.initialize(startCtx); err != nil {
 		_ = c.Close()
-		return nil, err
+		return nil, fmt.Errorf("%w: %v", ErrServerStartFailed, err)
 	}
 	return c, nil
 }
@@ -270,6 +289,15 @@ func (c *Client) initialize(ctx context.Context) error {
 	}
 	c.caps, c.capOK = parseServerCapabilities(raw), true
 	return c.notifyLocked("initialized", map[string]any{})
+}
+
+// Capabilities returns the initialized server capability snapshot. A direct
+// test client that bypassed initialize returns the zero-value snapshot.
+func (c *Client) Capabilities() Capabilities {
+	if c == nil {
+		return Capabilities{}
+	}
+	return c.caps.exported()
 }
 
 // Close asks the server to shut down, then tears down the process if it is
@@ -646,22 +674,19 @@ func (c *Client) Diagnostics(ctx context.Context, path string) (DiagnosticsSnaps
 	}
 	uri := pathToURI(path)
 	c.mu.Lock()
+	defer c.mu.Unlock()
 	if cached, ok := c.diags[uri]; ok {
-		c.mu.Unlock()
 		return cached, nil
 	}
 	diagSettle := c.diagSettle
 	if diagSettle <= 0 {
 		diagSettle = 1200 * time.Millisecond
 	}
-	c.mu.Unlock()
 	settle := time.After(diagSettle)
 	for {
 		select {
 		case <-settle:
-			c.mu.Lock()
 			cached, ok := c.diags[uri]
-			c.mu.Unlock()
 			if ok {
 				return cached, nil
 			}
@@ -680,12 +705,10 @@ func (c *Client) Diagnostics(ctx context.Context, path string) (DiagnosticsSnaps
 			} `json:"params"`
 		}
 		if err := json.Unmarshal(msg, &note); err != nil || note.Method != "textDocument/publishDiagnostics" {
+			c.handleNotificationLocked(msg)
 			continue
 		}
-		snap := DiagnosticsSnapshot{Published: true, Diagnostics: normalizeDiagnostics(uriToPath(note.Params.URI), note.Params.Diagnostics)}
-		c.mu.Lock()
-		c.diags[note.Params.URI] = snap
-		c.mu.Unlock()
+		snap := c.cacheDiagnosticsNotificationLocked(note.Params.URI, note.Params.Diagnostics)
 		if note.Params.URI == uri {
 			return snap, nil
 		}
@@ -871,6 +894,7 @@ func (c *Client) requestLocked(ctx context.Context, method string, params any) (
 			return nil, fmt.Errorf("decode response: %w", err)
 		}
 		if resp.ID == 0 {
+			c.handleNotificationLocked(msg)
 			continue
 		}
 		if resp.ID != id {
@@ -881,6 +905,26 @@ func (c *Client) requestLocked(ctx context.Context, method string, params any) (
 		}
 		return resp.Result, nil
 	}
+}
+
+func (c *Client) handleNotificationLocked(msg []byte) {
+	var note struct {
+		Method string `json:"method"`
+		Params struct {
+			URI         string          `json:"uri"`
+			Diagnostics []lspDiagnostic `json:"diagnostics"`
+		} `json:"params"`
+	}
+	if err := json.Unmarshal(msg, &note); err != nil || note.Method != "textDocument/publishDiagnostics" || note.Params.URI == "" {
+		return
+	}
+	_ = c.cacheDiagnosticsNotificationLocked(note.Params.URI, note.Params.Diagnostics)
+}
+
+func (c *Client) cacheDiagnosticsNotificationLocked(uri string, diagnostics []lspDiagnostic) DiagnosticsSnapshot {
+	snap := DiagnosticsSnapshot{Published: true, Diagnostics: normalizeDiagnostics(uriToPath(uri), diagnostics)}
+	c.diags[uri] = snap
+	return snap
 }
 
 func (c *Client) notify(method string, params any) error {
@@ -925,7 +969,7 @@ func (c *Client) readMessageContext(ctx context.Context) ([]byte, error) {
 			return res.body, res.err
 		case <-ctx.Done():
 			c.killProcess()
-			return nil, ctx.Err()
+			return nil, fmt.Errorf("%w: %w", ErrRequestTimeout, ctx.Err())
 		}
 	}
 	readTimeout := c.readTimeout
@@ -935,13 +979,13 @@ func (c *Client) readMessageContext(ctx context.Context) ([]byte, error) {
 	for {
 		if err := ctx.Err(); err != nil {
 			c.killProcess()
-			return nil, err
+			return nil, fmt.Errorf("%w: %w", ErrRequestTimeout, err)
 		}
 		if c.stdout == nil {
 			select {
 			case <-ctx.Done():
 				c.killProcess()
-				return nil, ctx.Err()
+				return nil, fmt.Errorf("%w: %w", ErrRequestTimeout, ctx.Err())
 			case <-time.After(minDuration(readTimeout, 10*time.Millisecond)):
 			}
 			continue
@@ -1021,7 +1065,7 @@ func (c *Client) readMessage() ([]byte, error) {
 	for {
 		line, err := c.stdout.ReadString('\n')
 		if err != nil {
-			return nil, fmt.Errorf("read header: %w%s", err, c.stderrSuffix())
+			return nil, fmt.Errorf("%w: read header: %v%s", ErrProtocolMalformed, err, c.stderrSuffix())
 		}
 		line = strings.TrimRight(line, "\r\n")
 		if line == "" {
@@ -1033,19 +1077,19 @@ func (c *Client) readMessage() ([]byte, error) {
 		}
 		n, err := strconv.Atoi(strings.TrimSpace(value))
 		if err != nil {
-			return nil, fmt.Errorf("invalid Content-Length %q", value)
+			return nil, fmt.Errorf("%w: invalid Content-Length %q", ErrProtocolMalformed, value)
 		}
 		length = n
 	}
 	if length < 0 {
-		return nil, fmt.Errorf("missing Content-Length")
+		return nil, fmt.Errorf("%w: missing Content-Length", ErrProtocolMalformed)
 	}
 	if length > maxMessageBytes {
-		return nil, fmt.Errorf("message too large: %d bytes", length)
+		return nil, fmt.Errorf("%w: message too large: %d bytes", ErrProtocolMalformed, length)
 	}
 	body := make([]byte, length)
 	if _, err := io.ReadFull(c.stdout, body); err != nil {
-		return nil, fmt.Errorf("read body: %w%s", err, c.stderrSuffix())
+		return nil, fmt.Errorf("%w: read body: %v%s", ErrProtocolMalformed, err, c.stderrSuffix())
 	}
 	return body, nil
 }

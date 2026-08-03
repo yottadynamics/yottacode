@@ -412,6 +412,9 @@ func (t *LSPCodeActionPreviewTool) Execute(ctx context.Context, argsJSON string)
 	if errors.Is(err, lspci.ErrUnsupportedCapability) {
 		return unsupportedCapabilityResult("lsp_code_action_preview", err), nil
 	}
+	if errors.Is(err, lspci.ErrUnsupportedWorkspaceEdit) {
+		return fmt.Sprintf("unavailable: %v\n", err), nil
+	}
 	if err != nil {
 		return "", fmt.Errorf("lsp_code_action_preview: %w", err)
 	}
@@ -471,6 +474,9 @@ func openPositionClient(ctx context.Context, base lspToolBase, argsJSON, name st
 	lang, ok := lspci.ResolveFile(path)
 	if !ok {
 		return nil, path, lspci.Position{}, unsupportedFileResult(path), nil
+	}
+	if base.Disabled[lang.ID] {
+		return nil, path, lspci.Position{}, fmt.Sprintf("unavailable: LSP language %s is disabled by config\n", lang.ID), nil
 	}
 	lang = lspci.ApplyOverrides(lang, base.Servers)
 	if !lspci.ServerAvailable(lang) && base.NewClient == nil {

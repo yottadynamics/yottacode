@@ -38,15 +38,7 @@ func workspaceEdit(raw json.RawMessage) (WorkspaceEdit, error) {
 			Range   TextRange `json:"range"`
 			NewText string    `json:"newText"`
 		} `json:"changes"`
-		DocumentChanges []struct {
-			TextDocument struct {
-				URI string `json:"uri"`
-			} `json:"textDocument"`
-			Edits []struct {
-				Range   TextRange `json:"range"`
-				NewText string    `json:"newText"`
-			} `json:"edits"`
-		} `json:"documentChanges"`
+		DocumentChanges []json.RawMessage `json:"documentChanges"`
 	}
 	if len(raw) == 0 || string(raw) == "null" {
 		return WorkspaceEdit{}, nil
@@ -62,10 +54,51 @@ func workspaceEdit(raw json.RawMessage) (WorkspaceEdit, error) {
 		}
 	}
 	for _, change := range msg.DocumentChanges {
-		path := uriToPath(change.TextDocument.URI)
-		for _, edit := range change.Edits {
-			out.Edits = append(out.Edits, TextEdit{Path: path, Range: edit.Range, NewText: edit.NewText})
+		edits, err := workspaceDocumentChange(change)
+		if err != nil {
+			return WorkspaceEdit{}, err
 		}
+		out.Edits = append(out.Edits, edits...)
+	}
+	return out, nil
+}
+
+func workspaceDocumentChange(raw json.RawMessage) ([]TextEdit, error) {
+	var meta struct {
+		Kind string `json:"kind"`
+	}
+	_ = json.Unmarshal(raw, &meta)
+	switch meta.Kind {
+	case "create", "rename", "delete":
+		return nil, fmt.Errorf("%w: file %s operations are not supported", ErrUnsupportedWorkspaceEdit, meta.Kind)
+	}
+	var change struct {
+		TextDocument *struct {
+			URI     string `json:"uri"`
+			Version *int   `json:"version,omitempty"`
+		} `json:"textDocument"`
+		Edits []struct {
+			Range   *TextRange `json:"range"`
+			NewText *string    `json:"newText"`
+		} `json:"edits"`
+		AnnotationID string `json:"annotationId"`
+	}
+	if err := json.Unmarshal(raw, &change); err != nil {
+		return nil, fmt.Errorf("%w: parse documentChanges entry: %v", ErrUnsupportedWorkspaceEdit, err)
+	}
+	if change.AnnotationID != "" {
+		return nil, fmt.Errorf("%w: change annotations are not supported", ErrUnsupportedWorkspaceEdit)
+	}
+	if change.TextDocument == nil || change.TextDocument.URI == "" {
+		return nil, fmt.Errorf("%w: documentChanges entry has no textDocument.uri", ErrUnsupportedWorkspaceEdit)
+	}
+	path := uriToPath(change.TextDocument.URI)
+	out := make([]TextEdit, 0, len(change.Edits))
+	for _, edit := range change.Edits {
+		if edit.Range == nil || edit.NewText == nil {
+			return nil, fmt.Errorf("%w: documentChanges entry contains a non-text edit", ErrUnsupportedWorkspaceEdit)
+		}
+		out = append(out, TextEdit{Path: path, Range: *edit.Range, NewText: *edit.NewText})
 	}
 	return out, nil
 }
