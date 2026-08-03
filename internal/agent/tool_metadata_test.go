@@ -147,6 +147,14 @@ func TestTools_Metadata(t *testing.T) {
 			wantSchemaRequired:   []string{"input", "output"},
 		},
 		{
+			tool:                 &MediaComposeTool{Cwd: NewCwdRef(cwd), WriteOpts: WritePathOptions{Cwd: NewCwdRef(cwd)}},
+			wantName:             "media_compose",
+			wantApproval:         true,
+			previewArgsJSON:      `{"output":"promo.mp4","segments":[{"type":"title","text":"Hi","duration":1}]}`,
+			wantPreviewSubstring: "1 segments -> promo.mp4",
+			wantSchemaRequired:   []string{"output", "segments"},
+		},
+		{
 			tool:                 &GitBranchStatusTool{Cwd: NewCwdRef(cwd)},
 			wantName:             "git_branch_status",
 			wantApproval:         false,

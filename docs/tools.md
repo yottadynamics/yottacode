@@ -56,6 +56,7 @@ In addition to the built-ins, **MCP tools** register dynamically when an `[[mcp_
 | [`run_tests`](#run_tests) | required | Run the repo's test command |
 | [`media_probe`](#media_probe) | none | Inspect audio/video metadata with ffprobe |
 | [`media_analyze`](#media_analyze) | none | Detect silence/fluff candidates with ffmpeg |
+| [`media_compose`](#media_compose) | required | Assemble title cards, images, and clips into a draft MP4 with ffmpeg |
 | [`media_render`](#media_render) | required | Render approved edits to YouTube/X MP4 or GIF preview profiles with ffmpeg |
 | [`list_dir`](#list_dir) | none | One-line-per-entry directory listing |
 | [`glob`](#glob) | none | Doublestar pattern match |
@@ -932,6 +933,33 @@ Run `ffmpeg` detectors and return a unified edit decision list for review before
 | `min_idle_duration` | number | `1.0` (`0.8` in `terminal_demo`) |
 
 Modes: `auto`, `audio_silence`, `visual_idle`, `terminal_demo`, or `all`. Returned candidates include `start`, `end`, `duration`, `detector`, `confidence`, and `reason` so the agent can explain why each cut was proposed. No approval. Requires `ffmpeg` on `PATH`.
+
+## media_compose
+
+Compose an approved storyboard into one draft MP4 with `ffmpeg`. It assembles ordered title-card, image, and clip segments after validating every input path as a read and the output path as a write. It refuses to overwrite existing files unless `overwrite=true` is passed.
+
+| Param | Type | Default | Notes |
+|---|---|---|---|
+| `output` | string | — | Draft MP4 output path; must end with `.mp4` |
+| `segments` | []object | — | Ordered `title`, `image`, or `clip` segments |
+| `width` | int | `1920` | Canvas width |
+| `height` | int | `1080` | Canvas height |
+| `fps` | number | `30` | Output frame rate |
+| `background_color` | string | `#0b0f0d` | Title-card background color |
+| `overwrite` | bool | `false` | Must be explicit to replace an existing output |
+
+Segment fields:
+
+| Field | Applies to | Notes |
+|---|---|---|
+| `type` | all | `title`, `image`, or `clip` |
+| `text` | `title` | Required title-card text |
+| `path` | `image`, `clip` | Required local input path |
+| `duration` | `title`, `image` | Required positive duration in seconds, capped at 300 seconds per synthetic segment |
+| `keep_ranges` | `clip` | Optional single range to trim a clip; pre-render complex cuts with `media_render` first |
+| `caption` | all | Reserved for storyboard metadata / future overlays |
+
+Always prompts for approval. Requires `ffmpeg` on `PATH`. The first implementation renders video-only draft MP4s; use `media_render` afterward for final platform profiles and caption burn-in.
 
 ## media_render
 

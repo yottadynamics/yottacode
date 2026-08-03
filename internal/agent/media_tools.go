@@ -348,6 +348,328 @@ func (t *MediaRenderTool) Execute(ctx context.Context, argsJSON string) (string,
 	return "rendered:\n" + strings.Join(rendered, "\n") + "\n", nil
 }
 
+const mediaComposeMaxSyntheticDuration = 300.0
+
+// MediaComposeTool assembles an approved storyboard into one draft MP4. It is
+// intentionally a small local composition primitive: the model still plans the
+// story, but ffmpeg does the deterministic rendering from title cards, stills,
+// and real clips.
+type MediaComposeTool struct {
+	Cwd           *CwdRef
+	DenyReadPaths []string
+	WriteOpts     WritePathOptions
+}
+
+func (t *MediaComposeTool) Name() string { return "media_compose" }
+func (t *MediaComposeTool) Description() string {
+	return "Compose an approved marketing-video storyboard from title cards, images, and clips into one local MP4 with ffmpeg. Requires ffmpeg on PATH."
+}
+func (t *MediaComposeTool) Schema() map[string]any {
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"output":           map[string]any{"type": "string", "description": "Draft MP4 output path"},
+			"segments":         mediaComposeSegmentsSchema(),
+			"width":            map[string]any{"type": "integer", "description": "Canvas width in pixels (default 1920)"},
+			"height":           map[string]any{"type": "integer", "description": "Canvas height in pixels (default 1080)"},
+			"fps":              map[string]any{"type": "number", "description": "Output frame rate (default 30)"},
+			"background_color": map[string]any{"type": "string", "description": "Title-card background color (default #0b0f0d)"},
+			"overwrite":        map[string]any{"type": "boolean", "description": "Allow replacing an existing output file (default false)"},
+		},
+		"required": []string{"output", "segments"},
+	}
+}
+func mediaComposeSegmentsSchema() map[string]any {
+	return map[string]any{
+		"type":        "array",
+		"description": "Ordered storyboard segments. type is title, image, or clip.",
+		"items": map[string]any{"type": "object", "properties": map[string]any{
+			"type":        map[string]any{"type": "string", "description": "Segment type: title, image, or clip"},
+			"path":        map[string]any{"type": "string", "description": "Input file path for image and clip segments"},
+			"text":        map[string]any{"type": "string", "description": "Title-card text for title segments"},
+			"duration":    map[string]any{"type": "number", "description": "Segment duration in seconds; required for title and image segments"},
+			"keep_ranges": mediaRangeSchema("Optional clip ranges to keep, in seconds"),
+			"caption":     map[string]any{"type": "string", "description": "Optional caption text for future branded overlays"},
+		}, "required": []string{"type"}},
+	}
+}
+func (t *MediaComposeTool) RequiresApproval(string) bool { return true }
+func (t *MediaComposeTool) PreviewCall(argsJSON string) string {
+	var a mediaComposeArgs
+	_ = json.Unmarshal([]byte(argsJSON), &a)
+	return fmt.Sprintf("media_compose(%d segments -> %s)", len(a.Segments), a.Output)
+}
+func (t *MediaComposeTool) PathsToSnapshot(cwd, argsJSON string) []string {
+	var a mediaComposeArgs
+	if err := json.Unmarshal([]byte(argsJSON), &a); err != nil || strings.TrimSpace(a.Output) == "" {
+		return nil
+	}
+	return []string{resolvePath(cwd, a.Output)}
+}
+func (t *MediaComposeTool) Execute(ctx context.Context, argsJSON string) (string, error) {
+	var a mediaComposeArgs
+	if err := json.Unmarshal([]byte(argsJSON), &a); err != nil {
+		return "", fmt.Errorf("media_compose: invalid args: %w", err)
+	}
+	if err := validateMediaComposeArgs(a); err != nil {
+		return "", fmt.Errorf("media_compose: %w", err)
+	}
+	if _, err := mediaLookPath("ffmpeg"); err != nil {
+		return "", errors.New("media_compose: ffmpeg binary not found in PATH; install ffmpeg first")
+	}
+	cwd := t.Cwd.Get()
+	for i, segment := range a.Segments {
+		if strings.TrimSpace(segment.Path) == "" {
+			continue
+		}
+		if err := ValidateReadPath(resolvePath(cwd, segment.Path), t.DenyReadPaths); err != nil {
+			return "", fmt.Errorf("media_compose: segment %d input: %w", i, err)
+		}
+	}
+	output := resolvePath(cwd, a.Output)
+	if err := ValidateWritePath(output, t.WriteOpts); err != nil {
+		return "", fmt.Errorf("media_compose: output: %w", err)
+	}
+	if !a.Overwrite {
+		if _, err := os.Stat(output); err == nil {
+			return "", fmt.Errorf("media_compose: output %q already exists; set overwrite=true to replace it", output)
+		}
+	}
+	if err := os.MkdirAll(filepath.Dir(output), 0o755); err != nil {
+		return "", fmt.Errorf("media_compose: mkdir output dir: %w", err)
+	}
+	args, err := buildMediaComposeArgs(cwd, output, a)
+	if err != nil {
+		return "", fmt.Errorf("media_compose: %w", err)
+	}
+	cmd := mediaCommandContext(ctx, "ffmpeg", args...)
+	cmd.Dir = cwd
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &capped{buf: &stdout, max: 32 * 1024}
+	cmd.Stderr = &capped{buf: &stderr, max: mediaMaxOutputBytes}
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("media_compose: ffmpeg failed: %w; stderr=%q", err, stderr.String())
+	}
+	return "rendered:\n" + output + "\n", nil
+}
+
+type mediaComposeArgs struct {
+	Output          string                `json:"output"`
+	Segments        []mediaComposeSegment `json:"segments"`
+	Width           int                   `json:"width"`
+	Height          int                   `json:"height"`
+	FPS             float64               `json:"fps"`
+	BackgroundColor string                `json:"background_color"`
+	Overwrite       bool                  `json:"overwrite"`
+}
+
+type mediaComposeSegment struct {
+	Type       string       `json:"type"`
+	Path       string       `json:"path"`
+	Text       string       `json:"text"`
+	Duration   float64      `json:"duration"`
+	KeepRanges []mediaRange `json:"keep_ranges"`
+	Caption    string       `json:"caption"`
+}
+
+func validateMediaComposeArgs(a mediaComposeArgs) error {
+	if strings.TrimSpace(a.Output) == "" {
+		return errors.New("output is required")
+	}
+	if ext := strings.ToLower(filepath.Ext(strings.TrimSpace(a.Output))); ext != ".mp4" {
+		return fmt.Errorf("output must end with .mp4")
+	}
+	if len(a.Segments) == 0 {
+		return errors.New("at least one segment is required")
+	}
+	for i, segment := range a.Segments {
+		switch strings.TrimSpace(segment.Type) {
+		case "title":
+			if strings.TrimSpace(segment.Text) == "" {
+				return fmt.Errorf("segment %d title text is required", i)
+			}
+			if err := validateMediaComposeSyntheticDuration(i, "title", segment.Duration); err != nil {
+				return err
+			}
+		case "image":
+			if strings.TrimSpace(segment.Path) == "" {
+				return fmt.Errorf("segment %d image path is required", i)
+			}
+			if err := validateMediaComposeSyntheticDuration(i, "image", segment.Duration); err != nil {
+				return err
+			}
+		case "clip":
+			if strings.TrimSpace(segment.Path) == "" {
+				return fmt.Errorf("segment %d clip path is required", i)
+			}
+			if len(segment.KeepRanges) > 1 {
+				return fmt.Errorf("segment %d clip supports at most one keep_range in media_compose; pre-render complex cuts with media_render first", i)
+			}
+			for _, r := range segment.KeepRanges {
+				if r.End <= r.Start {
+					return fmt.Errorf("segment %d clip keep_range end must be after start", i)
+				}
+			}
+		default:
+			return fmt.Errorf("segment %d has unknown type %q", i, segment.Type)
+		}
+	}
+	return nil
+}
+
+func validateMediaComposeSyntheticDuration(index int, typ string, duration float64) error {
+	if duration <= 0 {
+		return fmt.Errorf("segment %d %s duration must be positive", index, typ)
+	}
+	if duration > mediaComposeMaxSyntheticDuration {
+		return fmt.Errorf("segment %d %s duration %.3f exceeds max %.0f seconds", index, typ, duration, mediaComposeMaxSyntheticDuration)
+	}
+	return nil
+}
+
+func buildMediaComposeArgs(cwd, output string, a mediaComposeArgs) ([]string, error) {
+	if err := validateMediaComposeArgs(a); err != nil {
+		return nil, err
+	}
+	width, height, fps, err := mediaComposeCanvas(a)
+	if err != nil {
+		return nil, err
+	}
+	background := strings.TrimSpace(a.BackgroundColor)
+	if background == "" {
+		background = "#0b0f0d"
+	}
+	if !validMediaComposeColor(background) {
+		return nil, fmt.Errorf("background_color %q must be a hex color like #0b0f0d or a simple ffmpeg color name", background)
+	}
+	args := []string{"-hide_banner"}
+	if a.Overwrite {
+		args = append(args, "-y")
+	} else {
+		args = append(args, "-n")
+	}
+	inputIndex := 0
+	segmentInputs := make([]int, len(a.Segments))
+	for i, segment := range a.Segments {
+		segmentInputs[i] = -1
+		switch strings.TrimSpace(segment.Type) {
+		case "title":
+			args = append(args, "-f", "lavfi", "-t", fmtSeconds(segment.Duration), "-i", fmt.Sprintf("color=c=%s:s=%dx%d:r=%s", background, width, height, fmtNumber(fps)))
+			segmentInputs[i] = inputIndex
+			inputIndex++
+		case "image":
+			args = append(args, "-loop", "1", "-t", fmtSeconds(segment.Duration), "-i", resolvePath(cwd, segment.Path))
+			segmentInputs[i] = inputIndex
+			inputIndex++
+		case "clip":
+			args = append(args, "-i", resolvePath(cwd, segment.Path))
+			segmentInputs[i] = inputIndex
+			inputIndex++
+		}
+	}
+	filter, err := mediaComposeFilter(a, segmentInputs, width, height, fps)
+	if err != nil {
+		return nil, err
+	}
+	args = append(args,
+		"-filter_complex", filter,
+		"-map", "[vout]",
+		"-an",
+		"-c:v", "libx264", "-preset", "medium", "-crf", "20",
+		"-movflags", "+faststart", output,
+	)
+	return args, nil
+}
+
+func mediaComposeCanvas(a mediaComposeArgs) (int, int, float64, error) {
+	width := a.Width
+	if width <= 0 {
+		width = 1920
+	}
+	height := a.Height
+	if height <= 0 {
+		height = 1080
+	}
+	fps := a.FPS
+	if fps <= 0 {
+		fps = 30
+	}
+	if width < 16 || width > 7680 {
+		return 0, 0, 0, fmt.Errorf("width %d is outside supported range 16..7680", width)
+	}
+	if height < 16 || height > 4320 {
+		return 0, 0, 0, fmt.Errorf("height %d is outside supported range 16..4320", height)
+	}
+	if fps < 1 || fps > 120 {
+		return 0, 0, 0, fmt.Errorf("fps %s is outside supported range 1..120", fmtNumber(fps))
+	}
+	return width, height, fps, nil
+}
+
+func validMediaComposeColor(color string) bool {
+	if color == "" {
+		return false
+	}
+	if strings.HasPrefix(color, "#") {
+		if len(color) != 7 && len(color) != 9 {
+			return false
+		}
+		for _, r := range color[1:] {
+			if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F')) {
+				return false
+			}
+		}
+		return true
+	}
+	for _, r := range color {
+		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z')) {
+			return false
+		}
+	}
+	return true
+}
+
+func mediaComposeFilter(a mediaComposeArgs, inputs []int, width, height int, fps float64) (string, error) {
+	var b strings.Builder
+	for i, segment := range a.Segments {
+		input := inputs[i]
+		if input < 0 {
+			return "", fmt.Errorf("segment %d has no input", i)
+		}
+		base := fmt.Sprintf("[%d:v]", input)
+		if strings.TrimSpace(segment.Type) == "clip" {
+			if len(segment.KeepRanges) == 1 {
+				r := segment.KeepRanges[0]
+				base += fmt.Sprintf("trim=start=%s:end=%s,setpts=PTS-STARTPTS,", fmtSeconds(r.Start), fmtSeconds(r.End))
+			} else {
+				base += "setpts=PTS-STARTPTS,"
+			}
+		}
+		fmt.Fprintf(&b, "%s%ssetsar=1,fps=%s,scale=%d:%d:force_original_aspect_ratio=decrease,pad=%d:%d:(ow-iw)/2:(oh-ih)/2,format=yuv420p", base, mediaComposeTitleFilter(segment), fmtNumber(fps), width, height, width, height)
+		fmt.Fprintf(&b, "[v%d];", i)
+	}
+	for i := range a.Segments {
+		fmt.Fprintf(&b, "[v%d]", i)
+	}
+	fmt.Fprintf(&b, "concat=n=%d:v=1:a=0[vout]", len(a.Segments))
+	return b.String(), nil
+}
+
+func mediaComposeTitleFilter(segment mediaComposeSegment) string {
+	if strings.TrimSpace(segment.Type) != "title" {
+		return ""
+	}
+	return fmt.Sprintf("drawtext=text='%s':fontcolor=white:fontsize=64:x=(w-text_w)/2:y=(h-text_h)/2:expansion=none,", escapeFFmpegDrawText(segment.Text))
+}
+
+func escapeFFmpegDrawText(s string) string {
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	s = strings.ReplaceAll(s, `:`, `\:`)
+	s = strings.ReplaceAll(s, `'`, `\'`)
+	s = strings.ReplaceAll(s, "\n", `\n`)
+	return s
+}
+
 type mediaRange struct {
 	Start float64 `json:"start"`
 	End   float64 `json:"end"`

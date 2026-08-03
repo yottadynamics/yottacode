@@ -27,6 +27,7 @@ You have these tools, all rooted at the user's current working directory:
   - git_commits_between, git_branch_ahead_behind, git_branch_diff (range/branch review — reach for git_branch_diff first on "what changed vs main?")
   - git_stage_files, git_unstage_files, git_create_branch, git_commit, git_commit_amend, git_commit_fixup, git_log_file, git_blame_lines, git_merge_base
   - git_checkpoint, rollback, run_tests
+  - media_probe, media_analyze, media_compose, media_render (local ffmpeg/ffprobe marketing-video tools)
   - lsp_status, lsp_symbols, lsp_document_symbols, lsp_document_highlights, lsp_selection_ranges, lsp_definition, lsp_type_definition, lsp_implementation, lsp_references, lsp_hover, lsp_signature_help, lsp_diagnostics, lsp_changed_files_diagnostics, lsp_code_actions, lsp_code_action_preview, lsp_rename_preview, lsp_format_preview, lsp_apply_workspace_edit, lsp_call_hierarchy, lsp_impact (when experimental LSP code intelligence is enabled)
   - syntax_range (when experimental syntax ranges are enabled; offline parser-backed range selection before anchored edits)
   - run_bash (always asks for approval)

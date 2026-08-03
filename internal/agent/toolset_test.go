@@ -20,7 +20,7 @@ func TestRegisterCoreCwdTools_RegistersCoreSet(t *testing.T) {
 	for _, want := range []string{
 		"read_file", "write_file", "edit_file", "edit_anchored", "apply_diff",
 		"grep", "glob", "list_dir", "run_bash", "run_tests",
-		"git_diff_files", "git_commit",
+		"git_diff_files", "git_commit", "media_compose",
 	} {
 		if !names[want] {
 			t.Errorf("core tool %q not registered", want)
