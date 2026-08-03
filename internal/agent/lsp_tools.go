@@ -150,6 +150,9 @@ func (t *LSPStatusTool) Execute(ctx context.Context, argsJSON string) (string, e
 		fmt.Fprintf(&b, "%s\tfiles=%d\tserver=%s\tstatus=%s\tsyntax=%s", lang.Name, lang.FilesAvailable, strings.Join(lang.Command, " "), status, lspci.SyntaxMode(lang.ID))
 		if !lang.ServerAvailable && t.NewClient == nil && !t.Disabled[lang.ID] {
 			fmt.Fprintf(&b, "\thint=%s", lang.InstallHint)
+			if strings.TrimSpace(lang.InstallCommand) != "" {
+				fmt.Fprintf(&b, "\tinstall_command=%s", lang.InstallCommand)
+			}
 		} else if t.Disabled[lang.ID] {
 			fmt.Fprintf(&b, "\tprobe=skipped:disabled")
 		} else {
@@ -162,6 +165,7 @@ func (t *LSPStatusTool) Execute(ctx context.Context, argsJSON string) (string, e
 				_ = client.Close()
 			}
 		}
+
 		b.WriteByte('\n')
 	}
 	if t.Manager != nil {
@@ -514,11 +518,18 @@ func displayLocation(loc lspci.Location) string {
 }
 
 func unavailableServerResult(lang lspci.Language) string {
-	return fmt.Sprintf("unavailable: %s language server %q not found on PATH. %s\n", lang.Name, lang.Command[0], lang.InstallHint)
+	return fmt.Sprintf("unavailable: %s language server %q not found on PATH. %s%s\n", lang.Name, lang.Command[0], lang.InstallHint, installCommandSuffix(lang))
 }
 
 func missingServerResult(lang lspci.Language, err error) string {
-	return fmt.Sprintf("unavailable: %s language server could not start: %v. %s\n", lang.Name, err, lang.InstallHint)
+	return fmt.Sprintf("unavailable: %s language server could not start: %v. %s%s\n", lang.Name, err, lang.InstallHint, installCommandSuffix(lang))
+}
+
+func installCommandSuffix(lang lspci.Language) string {
+	if strings.TrimSpace(lang.InstallCommand) == "" {
+		return ""
+	}
+	return " To install through normal bash approval, ask before running: " + lang.InstallCommand
 }
 
 func unsupportedCapabilityResult(tool string, err error) string {

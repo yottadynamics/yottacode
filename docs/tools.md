@@ -1032,7 +1032,9 @@ No approval.
 Detect supported source languages in the workspace and report whether the
 matching language server command is installed on `PATH`. This tool is available
 only when `lsp_code_intelligence` is enabled. It never installs anything; when a
-server is missing it includes a concise install hint. Each row also reports the
+server is missing it includes a concise install hint and an exact `install_command`
+that the agent may offer to run through normal bash approval when the active task
+would benefit from LSP. Each row also reports the
 offline structure fallback as `syntax=parser`, `syntax=regex`, or `syntax=none`.
 
 Supported language servers and fallback modes:

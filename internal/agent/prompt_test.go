@@ -119,6 +119,8 @@ func TestDefaultSystemPrompt_KeepsActionDirectives(t *testing.T) {
 		// on a file that fits in a single read.
 		"prefer ONE read_file call with a generous limit",
 		"stop — grep for the symbol you're actually hunting instead",
+		"offer to run the reported install_command through normal run_bash approval",
+		"never auto-install or imply it has already run",
 	} {
 		if !strings.Contains(DefaultSystemPrompt, want) {
 			t.Errorf("DefaultSystemPrompt is missing required directive %q", want)

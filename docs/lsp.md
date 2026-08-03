@@ -31,7 +31,7 @@ lsp_code_intelligence = true
 | Python | `pyright-langserver --stdio` | regex fallback | LSP refs/calls when server is installed | `npm install -g pyright` |
 | Rust | `rust-analyzer` | regex fallback | LSP refs/calls when server is installed | Install with `rustup`, your package manager, or the rust-analyzer project instructions |
 
-Missing servers are not fatal. yottacode reports the missing command and an install hint through the startup session advisory card, `lsp_status`, `yottacode doctor`, and LSP tool unavailable results. `lsp_status` also initializes installed, enabled servers through the normal manager path and prints the capabilities the server advertised during `initialize` (for example `definition`, `references`, `rename`, or `formatting`). `yottacode doctor` runs the same bounded protocol probe, so “binary exists” and “server can initialize with useful capabilities” are reported separately.
+Missing servers are not fatal. yottacode reports the missing command and an install hint through the startup session advisory card, `lsp_status`, `yottacode doctor`, and LSP tool unavailable results. `lsp_status` also includes an exact `install_command` field for missing servers so the agent can offer to run it through the normal bash approval process when the active task would benefit from LSP. yottacode never auto-installs or silently enables servers; the user must approve any install command like any other shell command. `lsp_status` also initializes installed, enabled servers through the normal manager path and prints the capabilities the server advertised during `initialize` (for example `definition`, `references`, `rename`, or `formatting`). `yottacode doctor` runs the same bounded protocol probe, so “binary exists” and “server can initialize with useful capabilities” are reported separately.
 
 ## Tools
 
@@ -68,7 +68,7 @@ When a server advertises `textDocument/prepareRename`, `lsp_rename_preview` pref
 
 ## Session advisory
 
-Interactive sessions show a non-blocking **LSP Code Intelligence** advisory card when the feature is enabled, supported files are detected, and a matching server is missing. The card names the affected language, calls out that go-to-definition, live diagnostics, and symbol-aware review are unavailable without the server, shows the install command, and notes that yottacode still works without it. It is deterministic TUI chrome, not model-generated text, so setup hints appear even before the model calls `lsp_status`.
+Interactive sessions show a non-blocking **LSP Code Intelligence** advisory card when the feature is enabled, supported files are detected, and a matching server is missing. The card names the affected language, calls out that go-to-definition, live diagnostics, and symbol-aware review are unavailable without the server, shows the install command, and notes that yottacode still works without it. It is deterministic TUI chrome, not model-generated text, so setup hints appear even before the model calls `lsp_status`. When a later user request is actively working in that language or would benefit from semantic code intelligence, the agent may offer to run the same install command; that offer still goes through the standard bash approval modal and is never automatic.
 
 For command-line diagnostics, `yottacode doctor` includes an **LSP Code Intelligence** section with the feature flag state, detected supported languages, server availability, install hints, command overrides, and manager configuration.
 
