@@ -21,7 +21,7 @@
 
 An end-to-end agentic development workflow: plan mode → branch → implement → tests → commit → push → create PR.
 
-<video src="assets/yottacode-gitops.mp4" autoplay loop muted playsinline width="100%"></video>
+![yottacode GitOps demo](assets/yottacode-gitops-readme.gif)
 
 ---
 
