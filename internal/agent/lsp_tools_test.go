@@ -118,6 +118,9 @@ func TestLSPStatusDetectsLanguagesAndHints(t *testing.T) {
 	if strings.Contains(out, "status=missing") && !strings.Contains(out, "go install golang.org/x/tools/gopls") {
 		t.Errorf("missing gopls should include install hint: %q", out)
 	}
+	if strings.Contains(out, "status=missing") && !strings.Contains(out, "install_command=go install golang.org/x/tools/gopls@latest") {
+		t.Errorf("missing gopls should expose exact approval-gated install command: %q", out)
+	}
 }
 
 func TestLSPSymbolsUsesInjectedClient(t *testing.T) {
@@ -220,6 +223,9 @@ func TestLSPClientStartErrorIncludesInstallHint(t *testing.T) {
 	}
 	if !strings.Contains(out, "could not start") || !strings.Contains(out, "Install gopls") {
 		t.Errorf("start failure should include install hint: %q", out)
+	}
+	if !strings.Contains(out, "ask before running: go install golang.org/x/tools/gopls@latest") {
+		t.Errorf("start failure should include exact bash approval command: %q", out)
 	}
 }
 

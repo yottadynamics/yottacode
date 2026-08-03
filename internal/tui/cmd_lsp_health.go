@@ -99,6 +99,9 @@ func serverDisplayName(lang lsp.DetectedLanguage) string {
 }
 
 func installCommand(lang lsp.DetectedLanguage) string {
+	if lang.InstallCommand != "" {
+		return lang.InstallCommand
+	}
 	switch lang.ID {
 	case "go":
 		return "go install golang.org/x/tools/gopls@latest"

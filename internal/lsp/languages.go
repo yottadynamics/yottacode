@@ -14,14 +14,16 @@ import (
 )
 
 // Language describes one supported language-server family. Each entry includes
-// a user-facing install hint so unavailable servers degrade into useful setup
-// guidance instead of a bare "command not found" error.
+// a user-facing install hint and exact install command so unavailable servers
+// degrade into actionable, approval-gated setup guidance instead of a bare
+// "command not found" error.
 type Language struct {
-	ID          string
-	Name        string
-	Extensions  []string
-	Command     []string
-	InstallHint string
+	ID             string
+	Name           string
+	Extensions     []string
+	Command        []string
+	InstallHint    string
+	InstallCommand string
 }
 
 // Languages returns the supported language-server families in deterministic
@@ -36,27 +38,31 @@ func Languages() []Language {
 			Command:    []string{"gopls"},
 			InstallHint: "Install gopls: go install golang.org/x/tools/gopls@latest " +
 				"and ensure $(go env GOPATH)/bin is on PATH.",
+			InstallCommand: "go install golang.org/x/tools/gopls@latest",
 		},
 		{
-			ID:          "typescript",
-			Name:        "TypeScript/JavaScript",
-			Extensions:  []string{".ts", ".tsx", ".js", ".jsx"},
-			Command:     []string{"typescript-language-server", "--stdio"},
-			InstallHint: "Install TypeScript language server: npm install -g typescript typescript-language-server.",
+			ID:             "typescript",
+			Name:           "TypeScript/JavaScript",
+			Extensions:     []string{".ts", ".tsx", ".js", ".jsx"},
+			Command:        []string{"typescript-language-server", "--stdio"},
+			InstallHint:    "Install TypeScript language server: npm install -g typescript typescript-language-server.",
+			InstallCommand: "npm install -g typescript typescript-language-server",
 		},
 		{
-			ID:          "python",
-			Name:        "Python",
-			Extensions:  []string{".py"},
-			Command:     []string{"pyright-langserver", "--stdio"},
-			InstallHint: "Install Pyright language server: npm install -g pyright.",
+			ID:             "python",
+			Name:           "Python",
+			Extensions:     []string{".py"},
+			Command:        []string{"pyright-langserver", "--stdio"},
+			InstallHint:    "Install Pyright language server: npm install -g pyright.",
+			InstallCommand: "npm install -g pyright",
 		},
 		{
-			ID:          "rust",
-			Name:        "Rust",
-			Extensions:  []string{".rs"},
-			Command:     []string{"rust-analyzer"},
-			InstallHint: "Install rust-analyzer through rustup, your package manager, or https://rust-analyzer.github.io/.",
+			ID:             "rust",
+			Name:           "Rust",
+			Extensions:     []string{".rs"},
+			Command:        []string{"rust-analyzer"},
+			InstallHint:    "Install rust-analyzer through rustup, your package manager, or https://rust-analyzer.github.io/.",
+			InstallCommand: "rustup component add rust-analyzer",
 		},
 	}
 	return langs
