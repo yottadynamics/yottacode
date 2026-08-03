@@ -2,10 +2,15 @@
 
 # yottacode
 
-**An autonomous AI coding agent that plans, edits, and ships code from your terminal.**
+**Sovereign terminal AI coding agent.**  
+Any model. Durable memory. Real GitOps. Your machine, your rules.
+
+Model-agnostic · Agent-managed memory · Typed GitHub workflows · Approval-first by design
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Go](https://img.shields.io/badge/Go-1.26+-00ADD8?logo=go&logoColor=white)](https://go.dev)
+[![Pure Go](https://img.shields.io/badge/Pure%20Go-no%20Node%20%7C%20no%20Python%20%7C%20no%20CGo-00ADD8?logo=go&logoColor=white)](docs/development.md)
+[![No telemetry](https://img.shields.io/badge/Telemetry-none-1f6feb)](docs/security-and-allow-lists.md)
 [![Release](https://img.shields.io/github/v/release/yottadynamics/yottacode?color=green)](https://github.com/yottadynamics/yottacode/releases)
 [![CI](https://github.com/yottadynamics/yottacode/actions/workflows/go.yml/badge.svg)](https://github.com/yottadynamics/yottacode/actions/workflows/go.yml)
 [![Docs](https://img.shields.io/badge/Docs-yottacode.ai-1f6feb)](https://yottacode.ai/docs/)
@@ -17,7 +22,7 @@
 
 ---
 
-## GitOps, handled from the terminal
+## From prompt to pull request, without leaving your terminal
 
 An end-to-end agentic development workflow: plan mode → branch → implement → tests → commit → push → create PR.
 
@@ -27,11 +32,14 @@ An end-to-end agentic development workflow: plan mode → branch → implement �
 
 ## What makes yottacode different
 
-- **Any model, no lock-in.** Native adapters for OpenAI, Anthropic, Gemini, and xAI, plus local Ollama with no API key at all — switch providers or models mid-session with `/model`.
-- **Agent-managed memory.** yottacode captures durable user and project context, retrieves only what matters each turn, and helps keep memory clean over time.
-- **Typed GitHub workflows.** Issues, PR reviews, check status, commits, pushes, PR creation, PR updates, and comments are first-class agent tools.
-- **Parallel work without branch chaos.** yottacode can dispatch independent tasks into isolated git worktrees and integrate them into one reviewable branch.
-- **Plan mode as a permission boundary.** yottacode can investigate read-only, produce a plan, and only then move into implementation with approvals, path validation, diffs, and checkpoints.
+For engineers who want terminal-agent agency without vendor lock-in, cloud data leakage, or black-box behavior.
+
+- **Any model, zero lock-in.** Native adapters for OpenAI, Anthropic, Gemini, Google Vertex AI, xAI, ChatGPT/Copilot OAuth, OpenAI-compatible endpoints, and local Ollama — switch providers or models mid-session with `/model`.
+- **Agent-managed memory that compounds.** yottacode captures durable user and project context, retrieves only what matters each turn, and helps keep memory clean over time.
+- **Typed GitHub + worktree workflows.** Issues, PR reviews, check status, commits, pushes, PR creation, PR updates, comments, and isolated worktrees are first-class tools instead of fragile shell transcripts.
+- **Plan mode as a real permission boundary.** yottacode can investigate read-only, produce a plan, and only then move into implementation with approvals, path validation, diffs, and checkpoints.
+- **Local-first by design.** Sessions, memory, checkpoints, and project rules are plain files under `~/.yottacode/`; there is no telemetry or analytics, and code only leaves your machine for the model provider you choose.
+- **A growing skills ecosystem.** Reusable Agent Skills let teams package repeatable workflows; see [`yottacode-skills`](https://github.com/yottadynamics/yottacode-skills).
 
 ---
 
@@ -77,14 +85,14 @@ Watch the Ollama setup walkthrough: [Get started with yottacode and Ollama](http
 <details><summary><b>Manual install (pinned version, no installer script)</b></summary>
 
 ```bash
-export VERSION=0.3.0
+export VERSION=<latest-release> # for example: 0.3.0
 # Swap linux/darwin and amd64/arm64 to match your machine
 curl -fsSL https://github.com/yottadynamics/yottacode/releases/download/v${VERSION}/yottacode_${VERSION}_linux_amd64.tar.gz \
   | tar -xz
 install -m 0755 ./yottacode "$HOME/.yottacode/bin/yottacode"
 ```
 
-Available archives: `yottacode_${VERSION}_{linux,darwin}_{amd64,arm64}.tar.gz`; checksums in `SHA256SUMS` on each release.
+Available archives: `yottacode_${VERSION}_{linux,darwin}_{amd64,arm64}.tar.gz`; checksums are published in `SHA256SUMS` on each release.
 
 > Windows users should run yottacode under WSL.
 
@@ -100,22 +108,23 @@ More install options: [`docs/installation.md`](docs/installation.md).
 - **Fix a failing test.** Let it read the failure, trace the relevant code, propose a fix, edit the repo, and rerun checks with your approval.
 - **Ship a GitOps change.** Update YAML, preserve a reviewable diff, and carry the change through branch → commit → push → PR.
 - **Learn an unfamiliar repo.** Use local session recall and project memory so explanations get sharper as yottacode learns the codebase.
+- **Package repeatable workflows.** Install or write Agent Skills for team-specific reviews, release checklists, migrations, and runbooks.
 - **Turn an issue into a draft PR.** Move from issue context to plan, implementation, tests, commit, push, and PR without leaving the terminal.
 
-See the full command reference in [`docs/tui-slash-commands.md`](docs/tui-slash-commands.md) and [`docs/cli.md`](docs/cli.md).
+See the full command reference in [`docs/tui-slash-commands.md`](docs/tui-slash-commands.md) and [`docs/cli.md`](docs/cli.md). Browse reusable workflows in [`yottacode-skills`](https://github.com/yottadynamics/yottacode-skills).
 
 ---
 
 ## Built for control and privacy
 
-Autonomy is useful only when you can trust the loop, and trust starts with knowing where your data lives:
+Autonomy is useful only when you can trust the loop, and trust starts with knowing where your data lives: **no telemetry, no analytics, plain files under `~/.yottacode/`, and model traffic only to providers you configure.**
 
 - Mutating tools pause for approval with a diff or command preview.
 - Path validation confines edits to the working tree and blocks risky targets like secrets and SSH/cloud credentials.
 - Project rules can `allow`, `ask`, or `deny` specific tools and paths for team-shared policy.
 - Checkpoints let you roll back conversation state, file changes, or both.
 - Plan mode investigates read-only first, then waits for approval before implementation.
-- **Data sovereignty by default.** Sessions, memory, and checkpoints are plain files on your machine under `~/.yottacode/` — no telemetry, no analytics. Code only leaves the machine to reach the model provider you explicitly configure, and with local Ollama, nothing leaves at all.
+- **Data sovereignty by default.** Sessions, memory, and checkpoints are plain files on your machine under `~/.yottacode/`. Code only leaves the machine to reach the model provider you explicitly configure, and with local Ollama, nothing leaves at all.
 
 Tools run on the host with no in-process sandbox; use a container or devcontainer when you need stronger isolation. See [`docs/security-and-allow-lists.md`](docs/security-and-allow-lists.md).
 
@@ -199,7 +208,7 @@ See [`docs/development.md`](docs/development.md) for the full guide — project 
 
 ---
 
-If yottacode saves you time, star the repo — it's the single biggest way to help other developers discover it. Found a bug or have an idea? [Issues](https://github.com/yottadynamics/yottacode/issues/new/choose) are always welcome.
+If yottacode is useful to you, starring the repo is the single highest-leverage thing you can do right now. It directly affects how many other engineers discover it. Found a bug or have an idea? [Issues](https://github.com/yottadynamics/yottacode/issues/new/choose) are always welcome.
 
 ---
 
