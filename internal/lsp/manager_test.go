@@ -183,6 +183,69 @@ func TestManagerConcurrentAcquireClosesDuplicateStart(t *testing.T) {
 	}
 }
 
+func TestManagerRejectsNewClientWhenAllServersBusyAtCapacity(t *testing.T) {
+	mgr := NewManager(1, time.Hour)
+	mgr.closeClient = func(*Client) error { return nil }
+	defer mgr.CloseAll()
+	starts := 0
+	mgr.newClient = func(context.Context, Language, string) (*Client, error) {
+		starts++
+		return &Client{}, nil
+	}
+	lang := Language{ID: "go", Name: "Go", Command: []string{"gopls"}}
+	first, err := mgr.Acquire(context.Background(), lang, t.TempDir())
+	if err != nil {
+		t.Fatalf("Acquire first: %v", err)
+	}
+	stats := mgr.Stats()
+	if stats.OpenServers != 1 || stats.BusyServers != 1 || stats.Leases != 1 {
+		t.Fatalf("busy stats after first acquire = %+v", stats)
+	}
+	secondLang := Language{ID: "python", Name: "Python", Command: []string{"pyright-langserver"}}
+	second, err := mgr.Acquire(context.Background(), secondLang, t.TempDir())
+	if err == nil {
+		_ = second.Close()
+		t.Fatal("expected acquire at busy capacity to fail")
+	}
+	if !errors.Is(err, ErrServerUnavailable) {
+		t.Fatalf("expected capacity error wrapping ErrServerUnavailable, got %v", err)
+	}
+	stats = mgr.Stats()
+	if stats.OpenServers != 1 || stats.BusyServers != 1 || stats.CapacityHits == 0 {
+		t.Fatalf("pool should remain bounded at capacity, got %+v", stats)
+	}
+	if starts != 1 {
+		t.Fatalf("manager should not start a second server at capacity, starts=%d", starts)
+	}
+	_ = first.Close()
+}
+
+func TestPooledClientCloseIsIdempotentForStats(t *testing.T) {
+	mgr := NewManager(2, time.Hour)
+	mgr.closeClient = func(*Client) error { return nil }
+	defer mgr.CloseAll()
+	mgr.newClient = func(context.Context, Language, string) (*Client, error) { return &Client{}, nil }
+	lang := Language{ID: "go", Name: "Go", Command: []string{"gopls"}}
+	root := t.TempDir()
+	first, err := mgr.Acquire(context.Background(), lang, root)
+	if err != nil {
+		t.Fatalf("Acquire first: %v", err)
+	}
+	second, err := mgr.Acquire(context.Background(), lang, root)
+	if err != nil {
+		t.Fatalf("Acquire second: %v", err)
+	}
+	_ = first.Close()
+	_ = first.Close()
+	if stats := mgr.Stats(); stats.Leases != 1 || stats.BusyServers != 1 {
+		t.Fatalf("double close should release only one lease while second remains active: %+v", stats)
+	}
+	_ = second.Close()
+	if stats := mgr.Stats(); stats.Leases != 0 || stats.BusyServers != 0 {
+		t.Fatalf("second close should release final lease: %+v", stats)
+	}
+}
+
 func (c *PooledClient) keyRootForTest() string {
 	if c == nil || c.manager == nil {
 		return ""

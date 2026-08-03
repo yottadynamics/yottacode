@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -227,6 +228,73 @@ func TestClientDiagnosticsCachesUnrelatedPublishWhileWaiting(t *testing.T) {
 	}
 }
 
+func TestClientDiagnosticsSerializesWithConcurrentRequests(t *testing.T) {
+	clientReader, serverWriter := io.Pipe()
+	serverReader, clientWriter := io.Pipe()
+	c := &Client{stdin: clientWriter, stdout: bufio.NewReader(clientReader), capOK: true, caps: serverCapabilities{WorkspaceSymbol: true}, docs: map[string]openDocumentState{}, diags: map[string]DiagnosticsSnapshot{}, diagSettle: 30 * time.Millisecond}
+
+	diagDone := make(chan error, 1)
+	go func() {
+		snap, err := c.Diagnostics(context.Background(), "/tmp/main.go")
+		if err != nil {
+			diagDone <- err
+			return
+		}
+		if !snap.Published {
+			diagDone <- fmt.Errorf("diagnostics were not published: %+v", snap)
+			return
+		}
+		diagDone <- nil
+	}()
+	readServerRequest(t, serverReader, "textDocument/didOpen")
+
+	symbolStarted := make(chan struct{})
+	symbolDone := make(chan error, 1)
+	go func() {
+		close(symbolStarted)
+		items, err := c.WorkspaceSymbols(context.Background(), "Thing")
+		if err != nil {
+			symbolDone <- err
+			return
+		}
+		if len(items) != 1 || items[0].Name != "Thing" {
+			symbolDone <- fmt.Errorf("unexpected symbols: %+v", items)
+			return
+		}
+		symbolDone <- nil
+	}()
+	<-symbolStarted
+
+	writeServerNotification(t, serverWriter, "textDocument/publishDiagnostics", map[string]any{"uri": "file:///tmp/main.go", "diagnostics": []map[string]any{}})
+	select {
+	case err := <-diagDone:
+		if err != nil {
+			t.Fatalf("Diagnostics: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Diagnostics timed out")
+	}
+
+	readServerRequest(t, serverReader, "workspace/symbol")
+	writeServerResponse(t, serverWriter, 1, []map[string]any{{
+		"name":          "Thing",
+		"kind":          12,
+		"containerName": "pkg",
+		"location": map[string]any{
+			"uri":   "file:///tmp/main.go",
+			"range": map[string]any{"start": map[string]any{"line": 4, "character": 2}},
+		},
+	}})
+	select {
+	case err := <-symbolDone:
+		if err != nil {
+			t.Fatalf("WorkspaceSymbols: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("WorkspaceSymbols timed out")
+	}
+}
+
 func TestClientReadMessageContextCancelsAndKillsProcess(t *testing.T) {
 	cmd := sleepCmd(t)
 	if err := cmd.Start(); err != nil {
@@ -243,8 +311,8 @@ func TestClientReadMessageContextCancelsAndKillsProcess(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
 	_, err := c.readMessageContext(ctx)
-	if err == nil || err != context.DeadlineExceeded {
-		t.Fatalf("expected deadline exceeded, got %v", err)
+	if err == nil || !errors.Is(err, ErrRequestTimeout) || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected deadline timeout, got %v", err)
 	}
 	select {
 	case <-c.processWaitCh():

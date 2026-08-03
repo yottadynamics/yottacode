@@ -31,7 +31,7 @@ func renderLSPAdvisory(langs []lsp.DetectedLanguage) string {
 			styleInlineCommand.Render("  "+installCommand(lang)),
 		)
 	}
-	rows = append(rows, "", styleMeta.Render("Everything works without them; they unlock deeper code intelligence."), "")
+	rows = append(rows, "", styleMeta.Render("Servers are local subprocesses and are never auto-installed."), styleMeta.Render("Everything works without them; they unlock deeper code intelligence."), "")
 
 	return renderLSPAdvisoryBox("LSP Code Intelligence", fmt.Sprintf("%d languages", len(missing)), rows)
 }
@@ -45,6 +45,8 @@ func renderSingleLSPAdvisory(lang lsp.DetectedLanguage) string {
 		"",
 		fmt.Sprintf("%s not found — running without go-to-def,", server),
 		"live diagnostics, and symbol-aware review.",
+		"LSP servers are local subprocesses; yottacode",
+		"never auto-installs or auto-enables them.",
 		"",
 		styleInlineCommand.Render("  " + installCommand(lang)),
 		"",

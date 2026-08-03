@@ -63,6 +63,9 @@ type DispatchTool struct {
 
 	// LSPServers carries optional per-language server command overrides.
 	LSPServers map[string][]string
+
+	// LSPDisabled lists language IDs whose server launch is disabled by config.
+	LSPDisabled []string
 }
 
 func (t *DispatchTool) Name() string { return DispatchToolName }
@@ -618,6 +621,7 @@ func (t *DispatchTool) buildWorktreeChildRegistry(cfg *subagents.AgentConfig, cw
 		SupportsImages: t.SupportsImages,
 		EnableLSP:      enableLSP,
 		LSPServers:     t.LSPServers,
+		LSPDisabled:    t.LSPDisabled,
 		// Background workers are unattended, so they must not spawn language-server
 		// binaries. Foreground workers may use LSP tools, but still do not share the
 		// parent manager because eviction is process-level and not lease-aware.

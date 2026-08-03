@@ -284,6 +284,7 @@ func Run(ctx context.Context, opts cli.ChatOptions, prompt string) error {
 		EnableLSP:          expSet.IsEnabled(experimental.LSPCodeIntelligence),
 		LSPManager:         lspManager,
 		LSPServers:         fileCfg.LSP.Servers,
+		LSPDisabled:        fileCfg.LSP.Disabled,
 		EnableCodeMap:      expSet.IsEnabled(experimental.CodeMap),
 		CodeMapProvider:    codeMapProvider,
 		EnableSyntaxRanges: expSet.IsEnabled(experimental.SyntaxRanges),
@@ -382,7 +383,7 @@ func Run(ctx context.Context, opts cli.ChatOptions, prompt string) error {
 
 	// Dispatch + integrate (foreground in oneshot when enabled).
 	dispatchEnabled := expSet.IsEnabled(experimental.Dispatch)
-	reg.Register(&agent.DispatchTool{Agent: agentTool, Enabled: dispatchEnabled, EnableLSP: expSet.IsEnabled(experimental.LSPCodeIntelligence), LSPServers: fileCfg.LSP.Servers, EnableSyntaxRanges: expSet.IsEnabled(experimental.SyntaxRanges)})
+	reg.Register(&agent.DispatchTool{Agent: agentTool, Enabled: dispatchEnabled, EnableLSP: expSet.IsEnabled(experimental.LSPCodeIntelligence), LSPServers: fileCfg.LSP.Servers, LSPDisabled: fileCfg.LSP.Disabled, EnableSyntaxRanges: expSet.IsEnabled(experimental.SyntaxRanges)})
 	reg.Register(&agent.IntegrateTool{Cwd: cwdRef, Enabled: dispatchEnabled})
 
 	// Skill tool: reuses the set loaded above for system-prompt

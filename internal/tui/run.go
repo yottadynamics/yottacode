@@ -277,6 +277,7 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 		EnableLSP:          expSet.IsEnabled(experimental.LSPCodeIntelligence),
 		LSPManager:         lspManager,
 		LSPServers:         fileCfg.LSP.Servers,
+		LSPDisabled:        fileCfg.LSP.Disabled,
 		EnableCodeMap:      expSet.IsEnabled(experimental.CodeMap),
 		CodeMapProvider:    codeMapProvider,
 		EnableSyntaxRanges: expSet.IsEnabled(experimental.SyntaxRanges),
@@ -527,6 +528,7 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 		SupportsImages:     ad.Profile().SupportsImages,
 		EnableLSP:          expSet.IsEnabled(experimental.LSPCodeIntelligence),
 		LSPServers:         fileCfg.LSP.Servers,
+		LSPDisabled:        fileCfg.LSP.Disabled,
 		EnableSyntaxRanges: expSet.IsEnabled(experimental.SyntaxRanges),
 		// The TUI is a long-running session that can host detached
 		// background workers and surface their completion via the

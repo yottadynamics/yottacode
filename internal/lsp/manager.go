@@ -3,6 +3,7 @@ package lsp
 import (
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -18,12 +19,15 @@ const (
 // small and printable so status tools can surface latency and reuse without
 // depending on internal pool details.
 type ManagerStats struct {
-	OpenServers int
-	MaxServers  int
-	Starts      int
-	Reuses      int
-	Evictions   int
-	LastStart   time.Duration
+	OpenServers  int
+	MaxServers   int
+	Starts       int
+	Reuses       int
+	Evictions    int
+	LastStart    time.Duration
+	BusyServers  int
+	Leases       int
+	CapacityHits int
 }
 
 func DefaultManagerMaxServers() int { return defaultManagerMaxServers }
@@ -47,6 +51,7 @@ type managerEntry struct {
 	lang     Language
 	root     string
 	lastUsed time.Time
+	leases   int
 }
 
 // NewManager constructs a bounded LSP server manager. Zero values select safe
@@ -78,11 +83,15 @@ func (m *Manager) Acquire(ctx context.Context, lang Language, root string) (*Poo
 	m.evictIdleLocked(now)
 	if entry := m.clients[key]; entry != nil {
 		entry.lastUsed = now
+		entry.leases++
 		m.stats.Reuses++
 		m.mu.Unlock()
 		return &PooledClient{Client: entry.client, manager: m, key: key}, nil
 	}
-	m.evictToCapacityLocked()
+	if !m.evictToCapacityLocked() {
+		m.mu.Unlock()
+		return nil, fmt.Errorf("%w: LSP server pool is at capacity (%d) and all clients are busy", ErrServerUnavailable, m.maxServers)
+	}
 	m.mu.Unlock()
 
 	start := time.Now()
@@ -101,11 +110,17 @@ func (m *Manager) Acquire(ctx context.Context, lang Language, root string) (*Poo
 		}
 	}()
 	if existing := m.clients[key]; existing != nil {
+		existing.leases++
 		m.stats.Reuses++
 		duplicate = client
 		return &PooledClient{Client: existing.client, manager: m, key: key}, nil
 	}
-	m.clients[key] = &managerEntry{client: client, lang: lang, root: root, lastUsed: time.Now()}
+	if !m.evictToCapacityLocked() {
+		m.stats.CapacityHits++
+		duplicate = client
+		return nil, fmt.Errorf("%w: LSP server pool is at capacity (%d) and all clients are busy", ErrServerUnavailable, m.maxServers)
+	}
+	m.clients[key] = &managerEntry{client: client, lang: lang, root: root, lastUsed: time.Now(), leases: 1}
 	m.stats.Starts++
 	m.stats.LastStart = elapsed
 	m.stats.OpenServers = len(m.clients)
@@ -120,7 +135,7 @@ func (m *Manager) Stats() ManagerStats {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	out := m.stats
-	out.OpenServers = len(m.clients)
+	out.OpenServers, out.BusyServers, out.Leases = m.poolCountsLocked()
 	out.MaxServers = m.maxServers
 	return out
 }
@@ -232,6 +247,9 @@ func (m *Manager) release(key string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if entry := m.clients[key]; entry != nil {
+		if entry.leases > 0 {
+			entry.leases--
+		}
 		entry.lastUsed = time.Now()
 	}
 }
@@ -239,6 +257,9 @@ func (m *Manager) release(key string) {
 func (m *Manager) evictIdleLocked(now time.Time) {
 	var toClose []*Client
 	for key, entry := range m.clients {
+		if entry.leases > 0 {
+			continue
+		}
 		if now.Sub(entry.lastUsed) <= m.idleTimeout {
 			continue
 		}
@@ -250,19 +271,23 @@ func (m *Manager) evictIdleLocked(now time.Time) {
 	go m.closeClients(toClose)
 }
 
-func (m *Manager) evictToCapacityLocked() {
+func (m *Manager) evictToCapacityLocked() bool {
 	var toClose []*Client
 	for len(m.clients) >= m.maxServers {
 		var oldestKey string
 		var oldestTime time.Time
 		for key, entry := range m.clients {
+			if entry.leases > 0 {
+				continue
+			}
 			if oldestKey == "" || entry.lastUsed.Before(oldestTime) {
 				oldestKey = key
 				oldestTime = entry.lastUsed
 			}
 		}
 		if oldestKey == "" {
-			return
+			m.stats.CapacityHits++
+			return false
 		}
 		entry := m.clients[oldestKey]
 		delete(m.clients, oldestKey)
@@ -271,6 +296,7 @@ func (m *Manager) evictToCapacityLocked() {
 	}
 	m.stats.OpenServers = len(m.clients)
 	go m.closeClients(toClose)
+	return true
 }
 
 func (m *Manager) closeClients(clients []*Client) {
@@ -279,6 +305,17 @@ func (m *Manager) closeClients(clients []*Client) {
 			_ = m.closeClient(client)
 		}
 	}
+}
+
+func (m *Manager) poolCountsLocked() (open, busy, leases int) {
+	open = len(m.clients)
+	for _, entry := range m.clients {
+		if entry.leases > 0 {
+			busy++
+			leases += entry.leases
+		}
+	}
+	return open, busy, leases
 }
 
 func managerKey(lang Language, root string) string {
@@ -299,17 +336,22 @@ type PooledClient struct {
 	manager   *Manager
 	key       string
 	closeReal bool
+	closeOnce sync.Once
+	closeErr  error
 }
 
 func (c *PooledClient) Close() error {
 	if c == nil || c.Client == nil {
 		return nil
 	}
-	if c.closeReal || c.manager == nil {
-		return c.Client.Close()
-	}
-	c.manager.release(c.key)
-	return nil
+	c.closeOnce.Do(func() {
+		if c.closeReal || c.manager == nil {
+			c.closeErr = c.Client.Close()
+			return
+		}
+		c.manager.release(c.key)
+	})
+	return c.closeErr
 }
 
 func (c *PooledClient) dropFromPoolAndClose() {

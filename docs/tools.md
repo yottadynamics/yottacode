@@ -60,7 +60,7 @@ In addition to the built-ins, **MCP tools** register dynamically when an `[[mcp_
 | [`list_dir`](#list_dir) | none | One-line-per-entry directory listing |
 | [`glob`](#glob) | none | Doublestar pattern match |
 | [`grep`](#grep) | none | Ripgrep (or GNU grep fallback) |
-| [`lsp_status`](#lsp_status) | none | Detect supported workspace languages and report missing LSP servers with install hints |
+| [`lsp_status`](#lsp_status) | none | Detect supported workspace languages, report server install/probe status, and show initialized capabilities |
 | [`lsp_symbols`](#lsp_symbols) | none | Search workspace symbols through an installed language server |
 | [`lsp_document_symbols`](#lsp_document_symbols) | none | List structural symbols declared in one source file |
 | [`lsp_document_highlights`](#lsp_document_highlights) | none | Show current-file symbol reads/writes/text occurrences |

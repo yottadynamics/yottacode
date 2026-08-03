@@ -31,7 +31,7 @@ lsp_code_intelligence = true
 | Python | `pyright-langserver --stdio` | regex fallback | LSP refs/calls when server is installed | `npm install -g pyright` |
 | Rust | `rust-analyzer` | regex fallback | LSP refs/calls when server is installed | Install with `rustup`, your package manager, or the rust-analyzer project instructions |
 
-Missing servers are not fatal. yottacode reports the missing command and an install hint through the startup session advisory card, `lsp_status`, `yottacode doctor`, and LSP tool unavailable results. `lsp_status` also reports the offline syntax mode (`syntax=parser`, `syntax=regex`, or `syntax=none`) so users can see what still works without a server.
+Missing servers are not fatal. yottacode reports the missing command and an install hint through the startup session advisory card, `lsp_status`, `yottacode doctor`, and LSP tool unavailable results. `lsp_status` also initializes installed, enabled servers through the normal manager path and prints the capabilities the server advertised during `initialize` (for example `definition`, `references`, `rename`, or `formatting`). `yottacode doctor` runs the same bounded protocol probe, so “binary exists” and “server can initialize with useful capabilities” are reported separately.
 
 ## Tools
 
@@ -86,9 +86,18 @@ rust = ["rust-analyzer"]
 
 Valid keys are `go`, `typescript`, `python`, and `rust`. Overrides execute directly without a shell; the first array item is the binary checked and launched.
 
+To disable server launch for a language while keeping offline fallback available, list its stable ID:
+
+```toml
+[lsp]
+disabled = ["python"]
+```
+
+Disabled languages show as `status=disabled` in `lsp_status`, are skipped by doctor probes, and return an explicit unavailable result for semantic LSP tools.
+
 ## Production hardening behavior
 
-The experimental bridge now includes several production-readiness behaviors:
+The experimental bridge now includes several production-readiness behaviors. This PR hardens the opt-in implementation but does not graduate LSP to default-on GA; promotion should be a separate change after CI or release verification runs the real-server smoke suite in an environment with the supported servers installed:
 
 - Workspace roots are detected from language markers such as `go.mod`, `package.json`, `pyproject.toml`, and `Cargo.toml` instead of always using the file's directory.
 - Documents are opened with `textDocument/didOpen` before position-based requests so servers see the same file contents yottacode read from disk.
@@ -101,9 +110,9 @@ The experimental bridge now includes several production-readiness behaviors:
 - `lsp_impact` batches the common pre-refactor questions into one compact result so agents do not have to spend separate tool calls on hover, definitions, references, call hierarchy, diagnostics, and Code Map import impact.
 - `lsp_rename_preview` uses server-side prepare-rename validation when available so invalid cursor positions fail before any edit preview is requested.
 - Server capabilities returned by `initialize` are checked before optional methods; unsupported methods return an explicit `unavailable` result rather than a misleading empty response.
-- `lsp_status` exposes session manager stats: open servers, starts, reuses, evictions, and last startup latency. `yottacode doctor` reports the default manager configuration without starting a session server.
-- WorkspaceEdit previews now include per-file preview hashes, bounded diff hunks instead of whole-file remove/add dumps, and apply-time stale-preview detection. The applier rejects overlapping edit ranges before writing.
-- Smoke tests exist for all supported servers and opportunistically exercise workflow requests such as document symbols, diagnostics, and formatting when the installed server advertises them.
+- `lsp_status` exposes session manager stats: open servers, busy leases, capacity hits, starts, reuses, evictions, and last startup latency. It also probes installed servers and prints initialized capability snapshots. `yottacode doctor` reports the default manager configuration and runs bounded protocol/capability probes without attaching to a chat-session server.
+- WorkspaceEdit previews now include per-file preview hashes, bounded diff hunks instead of whole-file remove/add dumps, and apply-time stale-preview detection. The applier rejects overlapping edit ranges before writing and explicitly refuses unsupported WorkspaceEdit shapes such as create/rename/delete file operations or unknown non-text edits.
+- Smoke tests exist for all supported servers and opportunistically exercise workflow requests such as document symbols, diagnostics, and formatting when the installed server advertises them. Normal unit-test runs skip only missing local server binaries; GA promotion should add an explicit CI or release-verification job that installs `gopls`, `typescript-language-server`, `pyright-langserver`, and `rust-analyzer` and runs the real-server smoke suite.
 
 ## Troubleshooting
 
