@@ -148,7 +148,7 @@ func (t *LSPStatusTool) Execute(ctx context.Context, argsJSON string) (string, e
 			status = "disabled"
 		}
 		fmt.Fprintf(&b, "%s\tfiles=%d\tserver=%s\tstatus=%s\tsyntax=%s", lang.Name, lang.FilesAvailable, strings.Join(lang.Command, " "), status, lspci.SyntaxMode(lang.ID))
-		if !lang.ServerAvailable && !t.Disabled[lang.ID] {
+		if !lang.ServerAvailable && t.NewClient == nil && !t.Disabled[lang.ID] {
 			fmt.Fprintf(&b, "\thint=%s", lang.InstallHint)
 		} else if t.Disabled[lang.ID] {
 			fmt.Fprintf(&b, "\tprobe=skipped:disabled")
