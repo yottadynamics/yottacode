@@ -251,7 +251,7 @@ func TestMediaRenderSchemaRequired(t *testing.T) {
 func TestMediaComposeSchemaRequired(t *testing.T) {
 	schema := (&MediaComposeTool{}).Schema()
 	b, _ := json.Marshal(schema)
-	for _, want := range []string{"segments", "title", "clip", "image", "overwrite"} {
+	for _, want := range []string{"segments", "title", "clip", "image", "overwrite", "template", "motion", "transition", "caption"} {
 		if !strings.Contains(string(b), want) {
 			t.Fatalf("schema missing %q: %s", want, b)
 		}
@@ -273,6 +273,10 @@ func TestMediaComposeValidation(t *testing.T) {
 		{name: "unknown type", args: mediaComposeArgs{Output: "out.mp4", Segments: []mediaComposeSegment{{Type: "audio"}}}, want: "unknown type"},
 		{name: "duration too long", args: mediaComposeArgs{Output: "out.mp4", Segments: []mediaComposeSegment{{Type: "title", Text: "Hi", Duration: mediaComposeMaxSyntheticDuration + 1}}}, want: "exceeds max"},
 		{name: "multiple keep ranges", args: mediaComposeArgs{Output: "out.mp4", Segments: []mediaComposeSegment{{Type: "clip", Path: "in.mp4", KeepRanges: []mediaRange{{Start: 0, End: 1}, {Start: 2, End: 3}}}}}, want: "at most one keep_range"},
+		{name: "bad template", args: mediaComposeArgs{Output: "out.mp4", Segments: []mediaComposeSegment{{Type: "title", Text: "Hi", Duration: 1, Template: "sparkles"}}}, want: "template must be one of"},
+		{name: "bad motion", args: mediaComposeArgs{Output: "out.mp4", Segments: []mediaComposeSegment{{Type: "image", Path: "card.png", Duration: 1, Motion: "spin"}}}, want: "motion must be one of"},
+		{name: "bad transition", args: mediaComposeArgs{Output: "out.mp4", Segments: []mediaComposeSegment{{Type: "title", Text: "Hi", Duration: 1, Transition: "wipe"}}}, want: "transition must be one of"},
+		{name: "motion on title", args: mediaComposeArgs{Output: "out.mp4", Segments: []mediaComposeSegment{{Type: "title", Text: "Hi", Duration: 1, Motion: "zoom_in"}}}, want: "motion is only supported"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -284,22 +288,29 @@ func TestMediaComposeValidation(t *testing.T) {
 	}
 }
 
+func TestMediaComposeAllowsExplicitNoMotionOnNonImage(t *testing.T) {
+	err := validateMediaComposeArgs(mediaComposeArgs{Output: "out.mp4", Segments: []mediaComposeSegment{{Type: "title", Text: "Hi", Duration: 1, Motion: "none"}}})
+	if err != nil {
+		t.Fatalf("validateMediaComposeArgs: %v", err)
+	}
+}
+
 func TestBuildMediaComposeArgsTitleImageClip(t *testing.T) {
 	cwd := t.TempDir()
 	args, err := buildMediaComposeArgs(cwd, filepath.Join(cwd, "out", "promo.mp4"), mediaComposeArgs{
 		Output:    "out/promo.mp4",
 		Overwrite: true,
 		Segments: []mediaComposeSegment{
-			{Type: "title", Text: "Ship: faster", Duration: 2},
-			{Type: "image", Path: "assets/card.png", Duration: 3},
-			{Type: "clip", Path: "raw/demo.mp4", KeepRanges: []mediaRange{{Start: 1, End: 4}}},
+			{Type: "title", Text: "Ship: faster", Duration: 2, Template: "hero", Transition: "fade"},
+			{Type: "image", Path: "assets/card.png", Duration: 3, Motion: "zoom_in", Caption: "Reusable skills"},
+			{Type: "clip", Path: "raw/demo.mp4", KeepRanges: []mediaRange{{Start: 1, End: 4}}, Template: "feature", Caption: "Approved local footage"},
 		},
 	})
 	if err != nil {
 		t.Fatalf("buildMediaComposeArgs: %v", err)
 	}
 	joined := strings.Join(args, " ")
-	for _, want := range []string{"-hide_banner", "-y", "color=c=#0b0f0d:s=1920x1080:r=30", "drawtext=text='Ship\\: faster'", "-loop 1", filepath.Join(cwd, "assets", "card.png"), filepath.Join(cwd, "raw", "demo.mp4"), "trim=start=1.000:end=4.000", "concat=n=3:v=1:a=0", "-map [vout]", "-an", "-c:v libx264"} {
+	for _, want := range []string{"-hide_banner", "-y", "color=c=#0b0f0d:s=1920x1080:r=30", "drawtext=text='Ship\\: faster'", "0x39ff14", "zoompan", "drawbox=x=80:y=ih-190", "Reusable skills", "fade=t=in", "-loop 1", filepath.Join(cwd, "assets", "card.png"), filepath.Join(cwd, "raw", "demo.mp4"), "trim=start=1.000:end=4.000", "concat=n=3:v=1:a=0", "-map [vout]", "-an", "-c:v libx264"} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("compose args missing %q:\n%s", want, joined)
 		}

@@ -13,7 +13,7 @@ func TestSlash_VideoCommandRegistered(t *testing.T) {
 
 func TestVideoHelpTextNamesCapabilities(t *testing.T) {
 	got := videoHelpText()
-	for _, want := range []string{"media_probe", "media_analyze", "media_compose", "media_render", "audio silence", "visual terminal-idle", "GIF", "sped-up", "/video prompt"} {
+	for _, want := range []string{"media_probe", "media_analyze", "media_compose", "media_render", "audio silence", "visual terminal-idle", "GIF", "sped-up", "/video prompt", "lower thirds", "zoom/pan"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("video help missing %q:\n%s", want, got)
 		}
@@ -37,7 +37,7 @@ func TestVideoDirectivePromptSubmitsCreativeWorkflow(t *testing.T) {
 	if display != "/video prompt Create a release teaser" {
 		t.Fatalf("display = %q", display)
 	}
-	for _, want := range []string{"storyboard", "script/caption", "media_compose", "media_render", "Stop for user approval", "asset-based video creation"} {
+	for _, want := range []string{"storyboard", "script/caption", "media_compose", "media_render", "Stop for user approval", "asset-based video creation", "branded templates", "simple motion"} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("video prompt directive missing %q:\n%s", want, prompt)
 		}
