@@ -25,7 +25,7 @@ type VerifyResult struct {
 //
 // Returns a typed error distinguishing the common failure
 // modes:
-//   - ErrGhUnavailable: token rejected (401) or auth otherwise
+//   - ErrGitHubUnavailable: token rejected (401) or auth otherwise
 //     failed.
 //   - Anything else: network failure or unexpected GitHub-side
 //     error, wrapped with context.
@@ -37,7 +37,7 @@ func VerifyToken(ctx context.Context, token string) (VerifyResult, error) {
 	client := gogithub.NewClient(nil).WithAuthToken(token)
 	user, _, err := client.Users.Get(ctx, "")
 	if err != nil {
-		// Map 401 to ErrGhUnavailable — same shape callers
+		// Map 401 to ErrGitHubUnavailable — same shape callers
 		// already branch on. Other API errors bubble up
 		// wrapped.
 		return res, fmt.Errorf("verify token: %w", classifyAPIError(err))

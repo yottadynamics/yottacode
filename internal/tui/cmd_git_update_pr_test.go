@@ -7,11 +7,11 @@ import (
 
 // TestGitUpdatePRDirective_NamesBothCompositeTools — same
 // contract guard as the rest of the /git-* family. The directive
-// reuses gh_pr_review_context for the gathering step and adds
-// gh_pr_update for the mutation. Both names must appear.
+// reuses pr_review_context for the gathering step and adds
+// pr_update for the mutation. Both names must appear.
 func TestGitUpdatePRDirective_NamesBothCompositeTools(t *testing.T) {
 	got := gitUpdatePRDirective("")
-	for _, tool := range []string{"gh_pr_review_context", "gh_pr_update"} {
+	for _, tool := range []string{"pr_review_context", "pr_update"} {
 		if !strings.Contains(got, tool) {
 			t.Errorf("gitUpdatePRDirective must name %s; got:\n%s", tool, got)
 		}

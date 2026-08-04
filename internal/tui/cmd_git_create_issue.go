@@ -17,7 +17,7 @@ import (
 //
 // Same shape as cmdGitCreatePR: the slash handler is a thin wrapper
 // that composes a narrow directive naming the two composite tools
-// (gh_issue_context + gh_issue_create) and submits via startTurn. The
+// (issue_context + issue_create) and submits via startTurn. The
 // reliability work — template detection, gh-unavailable fall-through,
 // title validation — lives in Go inside those tools, not in the prompt.
 //
@@ -53,13 +53,13 @@ func issueTitleFromArgs(args []string) string {
 // shape and the surfacing rules for each typed result branch.
 //
 // The title argument, when supplied, is pinned in the directive for
-// the gh_issue_create step (gh_issue_context takes no arguments), so
+// the issue_create step (issue_context takes no arguments), so
 // the model doesn't have to thread it through prose interpretation.
 func gitCreateIssueDirective(title string) string {
-	titleLine := `Step 1 — call gh_issue_context with no arguments. It returns a typed snapshot
+	titleLine := `Step 1 — call issue_context with no arguments. It returns a typed snapshot
 under section headers (## state, ## template).`
 	if title != "" {
-		titleLine = fmt.Sprintf("Step 1 — call gh_issue_context with no arguments. You will use title=%q in the create step.", title)
+		titleLine = fmt.Sprintf("Step 1 — call issue_context with no arguments. You will use title=%q in the create step.", title)
 	}
 
 	return `Create a GitHub issue in the current repository.
@@ -102,22 +102,22 @@ Step 3 — compose a title and body using the snapshot:
   Cap the body at ~80 lines.
 
 Step 4 — print the exact title and body you are about to post as
-plain scrollback text, THEN call gh_issue_create with title / body /
+plain scrollback text, THEN call issue_create with title / body /
 labels / assignees. The approval modal shows only the invocation
 summary (title + labels + assignees), not the body — the text you
 just printed is what the user is actually approving. Never call
-gh_issue_create with a body the user has not seen.
+issue_create with a body the user has not seen.
 
 Step 5 — surface the result envelope verbatim:
 - "created=true url=... number=..." → emit a "Issue created: <url>"
   line plus a one-line summary (title, labels).
 - "created=false reason=validation error=..." → surface the error,
   then either (a) compose a new title/body that satisfies the rule
-  and call gh_issue_create once more, or (b) stop and ask. Pick (b)
+  and call issue_create once more, or (b) stop and ask. Pick (b)
   after one retry.
-- "created=false reason=gh_unavailable" → fall through to
+- "created=false reason=github_unavailable" → fall through to
   draft-only as described in step 2.
-- "created=false reason=gh_error" → surface the gh output verbatim
+- "created=false reason=github_error" → surface the gh output verbatim
   and STOP. Do NOT auto-retry, auto-edit, or gh issue edit. The user
   needs to see the error and decide.
 

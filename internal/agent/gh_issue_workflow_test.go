@@ -26,7 +26,7 @@ func TestBuildIssueReadContext_HappyPath(t *testing.T) {
 		},
 	}
 	snap := BuildIssueReadContext(context.Background(), gh, 42, 0)
-	if snap.NotFound || snap.GhUnavailable {
+	if snap.NotFound || snap.GitHubUnavailable {
 		t.Errorf("expected found+available; got %+v", snap)
 	}
 	if snap.Issue.Number != 42 || snap.Issue.Title != "Add caching" {
@@ -45,18 +45,18 @@ func TestBuildIssueReadContext_NotFoundSurfaced(t *testing.T) {
 	}
 }
 
-func TestBuildIssueReadContext_GhUnavailableSurfaced(t *testing.T) {
-	gh := &fakeGH{readIssueErr: github.ErrGhUnavailable}
+func TestBuildIssueReadContext_GitHubUnavailableSurfaced(t *testing.T) {
+	gh := &fakeGH{readIssueErr: github.ErrGitHubUnavailable}
 	snap := BuildIssueReadContext(context.Background(), gh, 42, 0)
-	if !snap.GhUnavailable {
-		t.Errorf("expected GhUnavailable=true; got %+v", snap)
+	if !snap.GitHubUnavailable {
+		t.Errorf("expected GitHubUnavailable=true; got %+v", snap)
 	}
 }
 
 func TestBuildIssueReadContext_GenericErrorSurfaced(t *testing.T) {
 	gh := &fakeGH{readIssueErr: errors.New("api: 500")}
 	snap := BuildIssueReadContext(context.Background(), gh, 42, 0)
-	if snap.NotFound || snap.GhUnavailable {
+	if snap.NotFound || snap.GitHubUnavailable {
 		t.Errorf("generic error should not flip typed flags: %+v", snap)
 	}
 	if !strings.Contains(snap.FetchErr, "500") {
@@ -127,13 +127,13 @@ func TestGHIssueReadTool_RejectsMissingNumber(t *testing.T) {
 
 func TestGHIssueReadTool_PreviewCall(t *testing.T) {
 	tool := &GHIssueReadTool{}
-	if got := tool.PreviewCall(""); got != "gh_issue_read()" {
+	if got := tool.PreviewCall(""); got != "issue_read()" {
 		t.Errorf("empty args preview = %q", got)
 	}
-	if got := tool.PreviewCall(`{"number":42}`); got != "gh_issue_read(number=42)" {
+	if got := tool.PreviewCall(`{"number":42}`); got != "issue_read(number=42)" {
 		t.Errorf("number-only preview = %q", got)
 	}
-	if got := tool.PreviewCall(`{"number":42,"max_comments":5}`); got != "gh_issue_read(number=42, max_comments=5)" {
+	if got := tool.PreviewCall(`{"number":42,"max_comments":5}`); got != "issue_read(number=42, max_comments=5)" {
 		t.Errorf("with max_comments preview = %q", got)
 	}
 }
@@ -141,7 +141,7 @@ func TestGHIssueReadTool_PreviewCall(t *testing.T) {
 func TestGHIssueReadTool_NotApprovalRequired(t *testing.T) {
 	tool := &GHIssueReadTool{}
 	if tool.RequiresApproval("") {
-		t.Errorf("gh_issue_read is read-only; must not require approval")
+		t.Errorf("issue_read is read-only; must not require approval")
 	}
 }
 
@@ -165,7 +165,7 @@ func TestBuildIssueListContext_HappyPath(t *testing.T) {
 	snap := BuildIssueListContext(context.Background(), gh, github.ListIssuesRequest{
 		Labels: []string{"bug"},
 	})
-	if snap.GhUnavailable {
+	if snap.GitHubUnavailable {
 		t.Errorf("expected available; got %+v", snap)
 	}
 	if len(snap.Issues) != 2 {
@@ -179,7 +179,7 @@ func TestBuildIssueListContext_HappyPath(t *testing.T) {
 func TestBuildIssueListContext_EmptyResultIsValid(t *testing.T) {
 	gh := &fakeGH{listIssuesRes: nil}
 	snap := BuildIssueListContext(context.Background(), gh, github.ListIssuesRequest{})
-	if snap.GhUnavailable || snap.FetchErr != "" {
+	if snap.GitHubUnavailable || snap.FetchErr != "" {
 		t.Errorf("empty result should not set flags: %+v", snap)
 	}
 	if len(snap.Issues) != 0 {
@@ -187,11 +187,11 @@ func TestBuildIssueListContext_EmptyResultIsValid(t *testing.T) {
 	}
 }
 
-func TestBuildIssueListContext_GhUnavailableSurfaced(t *testing.T) {
-	gh := &fakeGH{listIssuesErr: github.ErrGhUnavailable}
+func TestBuildIssueListContext_GitHubUnavailableSurfaced(t *testing.T) {
+	gh := &fakeGH{listIssuesErr: github.ErrGitHubUnavailable}
 	snap := BuildIssueListContext(context.Background(), gh, github.ListIssuesRequest{})
-	if !snap.GhUnavailable {
-		t.Errorf("expected GhUnavailable=true; got %+v", snap)
+	if !snap.GitHubUnavailable {
+		t.Errorf("expected GitHubUnavailable=true; got %+v", snap)
 	}
 }
 
@@ -227,10 +227,10 @@ func TestGHIssueListTool_RendersEmptyResultExplicitly(t *testing.T) {
 
 func TestGHIssueListTool_PreviewCall(t *testing.T) {
 	tool := &GHIssueListTool{}
-	if got := tool.PreviewCall(""); got != "gh_issue_list()" {
+	if got := tool.PreviewCall(""); got != "issue_list()" {
 		t.Errorf("empty args preview = %q", got)
 	}
-	if got := tool.PreviewCall(`{"labels":["bug","urgent"],"assignee":"octocat"}`); got != "gh_issue_list(labels=bug+urgent, assignee=octocat)" {
+	if got := tool.PreviewCall(`{"labels":["bug","urgent"],"assignee":"octocat"}`); got != "issue_list(labels=bug+urgent, assignee=octocat)" {
 		t.Errorf("filter preview = %q", got)
 	}
 }
@@ -238,7 +238,7 @@ func TestGHIssueListTool_PreviewCall(t *testing.T) {
 func TestGHIssueListTool_NotApprovalRequired(t *testing.T) {
 	tool := &GHIssueListTool{}
 	if tool.RequiresApproval("") {
-		t.Errorf("gh_issue_list is read-only; must not require approval")
+		t.Errorf("issue_list is read-only; must not require approval")
 	}
 }
 
@@ -617,30 +617,30 @@ func TestCreateIssue_HappyPath(t *testing.T) {
 	}
 }
 
-func TestCreateIssue_GhUnavailableSurfaced(t *testing.T) {
-	gh := &fakeGH{createIssueErr: github.ErrGhUnavailable}
+func TestCreateIssue_GitHubUnavailableSurfaced(t *testing.T) {
+	gh := &fakeGH{createIssueErr: github.ErrGitHubUnavailable}
 	res, err := CreateIssue(context.Background(), gh, github.CreateIssueRequest{Title: "add caching"})
 	if err != nil {
 		t.Fatalf("CreateIssue: %v", err)
 	}
-	if !res.GhUnavailable {
-		t.Errorf("expected GhUnavailable=true: %+v", res)
+	if !res.GitHubUnavailable {
+		t.Errorf("expected GitHubUnavailable=true: %+v", res)
 	}
 	if res.Created {
 		t.Errorf("must not be Created when gh unavailable: %+v", res)
 	}
 }
 
-func TestCreateIssue_GenericGhErrorSurfaced(t *testing.T) {
+func TestCreateIssue_GenericGitHubErrorSurfaced(t *testing.T) {
 	gh := &fakeGH{createIssueErr: errors.New("rate limited")}
 	res, err := CreateIssue(context.Background(), gh, github.CreateIssueRequest{Title: "add caching"})
 	if err != nil {
 		t.Fatalf("CreateIssue: %v", err)
 	}
-	if !strings.Contains(res.GhError, "rate limited") {
-		t.Errorf("GhError should carry the message; got %q", res.GhError)
+	if !strings.Contains(res.GitHubError, "rate limited") {
+		t.Errorf("GitHubError should carry the message; got %q", res.GitHubError)
 	}
-	if res.Created || res.GhUnavailable {
+	if res.Created || res.GitHubUnavailable {
 		t.Errorf("generic error must not flip other flags: %+v", res)
 	}
 }
@@ -657,10 +657,10 @@ func TestRenderIssueCreateResult_Envelopes(t *testing.T) {
 			[]string{"created=true url=https://github.com/o/r/issues/7 number=7"}},
 		{"validation", IssueCreateResult{ValidationErr: "title is empty"},
 			[]string{"created=false reason=validation", "error=title is empty"}},
-		{"gh_unavailable", IssueCreateResult{GhUnavailable: true},
-			[]string{"created=false reason=gh_unavailable"}},
-		{"gh_error", IssueCreateResult{GhError: "api: 502"},
-			[]string{"created=false reason=gh_error", "--- gh output ---", "api: 502"}},
+		{"github_unavailable", IssueCreateResult{GitHubUnavailable: true},
+			[]string{"created=false reason=github_unavailable"}},
+		{"github_error", IssueCreateResult{GitHubError: "api: 502"},
+			[]string{"created=false reason=github_error", "--- gh output ---", "api: 502"}},
 		{"unknown", IssueCreateResult{},
 			[]string{"created=false reason=unknown"}},
 	}
@@ -697,7 +697,7 @@ func TestGHIssueCreateTool_RoundsThroughTool(t *testing.T) {
 func TestGHIssueCreateTool_RequiresApproval(t *testing.T) {
 	tool := &GHIssueCreateTool{}
 	if !tool.RequiresApproval("{}") {
-		t.Errorf("gh_issue_create must always require approval")
+		t.Errorf("issue_create must always require approval")
 	}
 }
 

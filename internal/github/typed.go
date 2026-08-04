@@ -1,9 +1,11 @@
 package github
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os/exec"
 	"strings"
@@ -11,6 +13,8 @@ import (
 
 	gogithub "github.com/google/go-github/v66/github"
 )
+
+const defaultLogTailLines = 240
 
 // TypedClient is the Interface implementation backed by the
 // go-github typed REST client. Replaces the gh-CLI ShellOut
@@ -76,7 +80,7 @@ func (c *TypedClient) init(ctx context.Context) (*gogithub.Client, error) {
 		token, _, err := c.Resolver.Resolve(ctx)
 		if err != nil {
 			if errors.Is(err, ErrNoToken) {
-				c.initErr = ErrGhUnavailable
+				c.initErr = ErrGitHubUnavailable
 				return
 			}
 			c.initErr = fmt.Errorf("resolve auth: %w", err)
@@ -108,7 +112,7 @@ func (c *TypedClient) resolveOwnerRepo(ctx context.Context, owner, repo string) 
 
 // classifyAPIError maps go-github's response errors into our
 // typed sentinels. 404 → ErrPRNotFound. Auth failures
-// (401 / 403 from missing or invalid token) → ErrGhUnavailable
+// (401 / 403 from missing or invalid token) → ErrGitHubUnavailable
 // for caller-side parity with the ShellOut behavior. Network-layer
 // failures (DNS, refused connection, TLS) → ErrGitHubUnreachable
 // via classifyNetworkError. Everything else bubbles up wrapped.
@@ -119,7 +123,7 @@ func classifyAPIError(err error) error {
 		case http.StatusNotFound:
 			return ErrPRNotFound
 		case http.StatusUnauthorized:
-			return ErrGhUnavailable
+			return ErrGitHubUnavailable
 		}
 	}
 	// Network-layer concerns (no go-github ErrorResponse wrapping)
@@ -150,7 +154,7 @@ func (c *TypedClient) recordRate(resp *gogithub.Response) {
 // AuthedUserLogin returns the login of the user the current token
 // authenticates as. Powers the doctor probe — the call doubles as
 // a connectivity check (the underlying HTTPS hit) and as the
-// auth-validity check (a bad token returns 401 → ErrGhUnavailable).
+// auth-validity check (a bad token returns 401 → ErrGitHubUnavailable).
 // Not on the Interface — probe-specific, not a workflow operation.
 func (c *TypedClient) AuthedUserLogin(ctx context.Context) (string, error) {
 	cl, err := c.init(ctx)
@@ -334,6 +338,176 @@ func (c *TypedClient) ListPRChecks(ctx context.Context, req ReadPRRequest) ([]Ch
 		out = append(out, mapStatus(st))
 	}
 	return out, nil
+}
+
+// ListFailedWorkflowJobLogTails finds GitHub Actions runs for a head SHA,
+// filters failed jobs, and returns only the requested tail lines for each job.
+// This intentionally fetches job logs only after the caller has already seen a
+// failed check; it is not part of the normal PR review snapshot path.
+func (c *TypedClient) ListFailedWorkflowJobLogTails(ctx context.Context, req FailedWorkflowLogsRequest) (FailedWorkflowLogsResult, error) {
+	var res FailedWorkflowLogsResult
+	cl, err := c.init(ctx)
+	if err != nil {
+		return res, err
+	}
+	owner, repo, err := c.resolveOwnerRepo(ctx, req.Owner, req.Repo)
+	if err != nil {
+		return res, err
+	}
+	headSHA := strings.TrimSpace(req.HeadSHA)
+	if headSHA == "" {
+		return res, fmt.Errorf("list failed workflow logs: head SHA is required")
+	}
+	res.HeadSHA = headSHA
+
+	tailLines := req.TailLines
+	if tailLines <= 0 {
+		tailLines = defaultLogTailLines
+	}
+	maxRuns := req.MaxRuns
+	if maxRuns <= 0 {
+		maxRuns = 10
+	}
+	if maxRuns > 50 {
+		maxRuns = 50
+	}
+
+	runs, resp, err := cl.Actions.ListRepositoryWorkflowRuns(ctx, owner, repo, &gogithub.ListWorkflowRunsOptions{
+		HeadSHA: headSHA,
+		ListOptions: gogithub.ListOptions{
+			PerPage: maxRuns,
+		},
+	})
+	c.recordRate(resp)
+	if err != nil {
+		return res, fmt.Errorf("list failed workflow logs: list runs: %w", classifyAPIError(err))
+	}
+	if runs == nil {
+		return res, nil
+	}
+
+	for _, run := range runs.WorkflowRuns {
+		if run == nil || run.GetID() == 0 {
+			continue
+		}
+		jobs, jresp, jerr := cl.Actions.ListWorkflowJobs(ctx, owner, repo, run.GetID(), &gogithub.ListWorkflowJobsOptions{Filter: "latest"})
+		c.recordRate(jresp)
+		if jerr != nil {
+			return res, fmt.Errorf("list failed workflow logs: list jobs: %w", classifyAPIError(jerr))
+		}
+		if jobs == nil {
+			continue
+		}
+		for _, job := range jobs.Jobs {
+			if job == nil || !isFailedWorkflowConclusion(job.GetConclusion()) {
+				continue
+			}
+			entry := FailedWorkflowJobLog{
+				WorkflowRunID: run.GetID(),
+				WorkflowName:  run.GetName(),
+				WorkflowURL:   run.GetHTMLURL(),
+				JobID:         job.GetID(),
+				JobName:       job.GetName(),
+				JobURL:        job.GetHTMLURL(),
+				Conclusion:    strings.ToUpper(job.GetConclusion()),
+			}
+			lines, lerr := c.workflowJobLogTail(ctx, cl, owner, repo, job.GetID(), tailLines)
+			if lerr != nil {
+				entry.LogError = lerr.Error()
+			} else {
+				entry.LogTail = lines
+			}
+			res.Jobs = append(res.Jobs, entry)
+		}
+	}
+	return res, nil
+}
+
+func isFailedWorkflowConclusion(conclusion string) bool {
+	switch strings.ToUpper(strings.TrimSpace(conclusion)) {
+	case "FAILURE", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED":
+		return true
+	default:
+		return false
+	}
+}
+
+func (c *TypedClient) workflowJobLogTail(ctx context.Context, cl *gogithub.Client, owner, repo string, jobID int64, tailLines int) ([]string, error) {
+	if jobID == 0 {
+		return nil, fmt.Errorf("job id missing")
+	}
+	u, resp, err := cl.Actions.GetWorkflowJobLogs(ctx, owner, repo, jobID, 1)
+	c.recordRate(resp)
+	if err != nil {
+		return nil, fmt.Errorf("get job log URL: %w", classifyAPIError(err))
+	}
+	if u == nil {
+		return nil, fmt.Errorf("job log URL missing")
+	}
+
+	hc := c.HTTPClient
+	if hc == nil {
+		hc = http.DefaultClient
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	if err != nil {
+		return nil, fmt.Errorf("build job log request: %w", err)
+	}
+	logResp, err := hc.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("download job log: %w", err)
+	}
+	defer logResp.Body.Close()
+	if logResp.StatusCode < 200 || logResp.StatusCode > 299 {
+		return nil, fmt.Errorf("download job log: HTTP %d", logResp.StatusCode)
+	}
+	return tailLinesFromReader(logResp.Body, tailLines)
+}
+
+func tailLinesFromReader(r io.Reader, n int) ([]string, error) {
+	if n == 0 {
+		return nil, nil
+	}
+	if n < 0 {
+		n = defaultLogTailLines
+	}
+	// Scan the whole log while retaining only the requested ring buffer.
+	// GitHub job logs can exceed several MiB; limiting the reader would
+	// tail the prefix and hide the failure at the actual end of the log.
+	scanner := bufio.NewScanner(r)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	lines := make([]string, n)
+	count := 0
+	for scanner.Scan() {
+		lines[count%n] = scanner.Text()
+		count++
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("read job log: %w", err)
+	}
+	if count == 0 {
+		return nil, nil
+	}
+	if count < n {
+		return lines[:count], nil
+	}
+	out := make([]string, n)
+	start := count % n
+	copy(out, lines[start:])
+	copy(out[n-start:], lines[:start])
+	return out, nil
+}
+
+func tailLinesOf(s string, n int) []string {
+	s = strings.TrimRight(s, "\n")
+	if s == "" || n == 0 {
+		return nil
+	}
+	lines := strings.Split(s, "\n")
+	if n > 0 && len(lines) > n {
+		lines = lines[len(lines)-n:]
+	}
+	return lines
 }
 
 // UpdatePR rewrites an existing PR's title and body. Other

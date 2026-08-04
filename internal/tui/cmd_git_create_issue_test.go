@@ -7,7 +7,7 @@ import (
 
 func TestGitCreateIssueDirective_NamesReadAndCreateTools(t *testing.T) {
 	d := gitCreateIssueDirective("")
-	for _, want := range []string{"gh_issue_context", "gh_issue_create"} {
+	for _, want := range []string{"issue_context", "issue_create"} {
 		if !strings.Contains(d, want) {
 			t.Errorf("directive missing tool name %q\nfull:\n%s", want, d)
 		}
@@ -39,8 +39,8 @@ func TestGitCreateIssueDirective_BranchesOnStateFlags(t *testing.T) {
 	for _, want := range []string{
 		"gh_available=false",
 		"validation error",
-		"gh_unavailable",
-		"gh_error",
+		"github_unavailable",
+		"github_error",
 	} {
 		if !strings.Contains(d, want) {
 			t.Errorf("directive missing state-flag branch %q\nfull:\n%s", want, d)

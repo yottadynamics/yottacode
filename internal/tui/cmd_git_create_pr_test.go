@@ -13,7 +13,7 @@ import (
 // this guard.
 func TestGitCreatePRDirective_NamesBothCompositeTools(t *testing.T) {
 	got := gitCreatePRDirective("")
-	for _, tool := range []string{"gh_pr_context", "gh_pr_create"} {
+	for _, tool := range []string{"pr_context", "pr_create"} {
 		if !strings.Contains(got, tool) {
 			t.Errorf("gitCreatePRDirective must name %s; got:\n%s", tool, got)
 		}
@@ -22,14 +22,14 @@ func TestGitCreatePRDirective_NamesBothCompositeTools(t *testing.T) {
 
 // TestGitCreatePRDirective_InlinesBaseArgument locks the
 // splice-injection path: when /git-create-pr is invoked with an
-// explicit base, the prompt embeds that base in the gh_pr_context
+// explicit base, the prompt embeds that base in the pr_context
 // call instead of asking the model to thread it as prose. Threading
 // via prose was a stumbling block in the legacy directive ($1
 // substitution depended on the model honoring the placeholder).
 func TestGitCreatePRDirective_InlinesBaseArgument(t *testing.T) {
 	got := gitCreatePRDirective("develop")
 	if !strings.Contains(got, `base="develop"`) {
-		t.Errorf("expected base=\"develop\" inlined into the gh_pr_context call; got:\n%s", got)
+		t.Errorf("expected base=\"develop\" inlined into the pr_context call; got:\n%s", got)
 	}
 
 	// Without a base, no `base=` line — the resolver does its

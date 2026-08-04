@@ -27,7 +27,7 @@ import (
 //
 // The chain stops at the first tier that yields a non-empty
 // token. ResolveToken returns ErrNoToken when every tier fails;
-// callers surface ErrGhUnavailable / draft-only fallback the
+// callers surface ErrGitHubUnavailable / draft-only fallback the
 // same way they do today.
 //
 // Token discovery happens at most once per process (via the
@@ -36,7 +36,7 @@ import (
 // mid-session restarts yottacode to pick up the new token.
 
 // ErrNoToken signals that the auth chain found no usable token.
-// Distinct from ErrGhUnavailable: gh might be installed and
+// Distinct from ErrGitHubUnavailable: gh might be installed and
 // authed but not on PATH (env var path), or vice versa.
 var ErrNoToken = errors.New("no GitHub auth token configured (set $GITHUB_TOKEN, run `gh auth login`, or run `yottacode setup github`)")
 
@@ -156,7 +156,7 @@ func tokenFilePath() (string, error) {
 
 // IsGhAvailable reports whether the auth chain can resolve a
 // usable token from any tier. The historical name is preserved
-// for caller compatibility (the gh_pr_context tool exposes a
+// for caller compatibility (the pr_context tool exposes a
 // "GhAvailable" flag in its snapshot), but with the typed client
 // in place the check is provider-agnostic: any of the three
 // auth tiers ($GITHUB_TOKEN, gh, file) satisfying counts.

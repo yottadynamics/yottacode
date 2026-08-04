@@ -14,8 +14,8 @@ import (
 // flow under /git-implement-issue).
 //
 // Companion to the rest of the /git-* family. Reuses the shipped
-// composite tools (gh_issue_read, git_stage_files,
-// git_commit_apply, git_push, gh_pr_create) rather than reinventing
+// composite tools (issue_read, git_stage_files,
+// git_commit_apply, git_push, pr_create) rather than reinventing
 // the mechanics; the directive's job is to sequence them and pin
 // the safety rails (plan-mode checkpoint, no auto-iterate on test
 // failures, draft PR is the merge gate).
@@ -58,10 +58,10 @@ func gitImplementIssueDirective(n int) string {
 	return `Implement the changes that resolve GitHub issue #` + num + ` and
 open a draft PR. Flow is deterministic — follow each step in order.
 
-Step 1 — call gh_issue_read with number=` + num + `. It returns a
+Step 1 — call issue_read with number=` + num + `. It returns a
 typed snapshot under section headers (## state, ## issue,
 ## comments). Read ## state first and branch:
-- gh_unavailable=true → surface "[git-implement-issue] GitHub
+- github_unavailable=true → surface "[git-implement-issue] GitHub
   adapter unconfigured — run yottacode setup github" and STOP.
 - not_found=true → surface "[git-implement-issue] issue #` + num + `
   not found" and STOP. Do NOT guess at the user's intent.
@@ -138,7 +138,7 @@ branch to origin. The push tool will surface failures (detached
 HEAD, push-rejected); do NOT force-push and do NOT amend on
 failure. STOP and let the user diagnose.
 
-Step 9 — open the draft PR via gh_pr_create. base="main" (unless
+Step 9 — open the draft PR via pr_create. base="main" (unless
 the repo's default branch is different — check the issue body or
 the prior /git-create-pr conventions). draft=true. Body must
 include:
@@ -159,7 +159,7 @@ detection closes the issue automatically when the PR merges.
 Don't substitute "Fixes" / "Resolves" / "Refs" here; "Closes" is
 the most explicit and most widely understood.
 
-After gh_pr_create returns, surface the PR URL to the user and
+After pr_create returns, surface the PR URL to the user and
 STOP. The draft PR is the human-review gate — the user reviews
 the diff on GitHub, marks ready-for-review when satisfied, and
 merges manually.
@@ -176,7 +176,7 @@ Hard constraints (each pinned by the spec — do not relax):
   PR. Same scope-pinning as /git-update-pr.
 - Do NOT fabricate file:line refs anywhere — cite only locations
   the diff actually shows.
-- Do NOT post a comment back on the issue via gh_pr_add_comment
+- Do NOT post a comment back on the issue via pr_add_comment
   at the end of this flow. The "Closes #` + num + `" link is the
   cross-reference; an explicit comment is redundant.`
 }

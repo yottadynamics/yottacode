@@ -12,7 +12,7 @@ import (
 )
 
 // Composite code-review tool — the local-diff sibling to
-// gh_pr_workflow.go. Where gh_pr_review_context talks to an existing
+// gh_pr_workflow.go. Where pr_review_context talks to an existing
 // PR via the github.Interface, this one reviews the *local* diff
 // (the current branch against its resolved base, or — when there are
 // no commits ahead — the uncommitted working tree). That makes it a
@@ -65,7 +65,7 @@ func effortDiffCap(effort string) int {
 // out a multi-angle review of the local diff in one composite call:
 // the resolved base, the changed-file list, the capped diff, the
 // commit log, and detected commit style. Read-only, no approval
-// modal. Counterpart to gh_pr_review_context (which reviews an
+// modal. Counterpart to pr_review_context (which reviews an
 // existing PR); this one reviews uncommitted/local work, so it needs
 // no github.Interface.
 type CodeReviewContextTool struct {
@@ -205,7 +205,7 @@ type CodeReviewContext struct {
 
 // BuildCodeReviewContext is the deterministic core of
 // code_review_context. It resolves the base (reusing
-// resolveBaseBranch — the same logic gh_pr_context uses), decides the
+// resolveBaseBranch — the same logic pr_context uses), decides the
 // diff source, and folds the result into typed STOP flags. A missing
 // git binary or a non-repo cwd surfaces as the error from the first
 // gitOutput call.

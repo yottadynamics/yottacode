@@ -291,11 +291,11 @@ func TestEvaluate_GithubRuleMatchesByVerb(t *testing.T) {
 	seed(t, filepath.Join(cwd, ".yottacode", "permissions.json"),
 		[]string{"Github(read_pr)"}, nil, nil)
 	p, _ := Load(cwd)
-	if got := p.Evaluate("gh_pr_read", `{"ref":"29"}`); got != Allow {
-		t.Errorf("Github(read_pr) should match gh_pr_read; got %v", got)
+	if got := p.Evaluate("pr_read", `{"ref":"29"}`); got != Allow {
+		t.Errorf("Github(read_pr) should match pr_read; got %v", got)
 	}
-	if got := p.Evaluate("gh_pr_create", `{"base":"main","title":"t","body":"b"}`); got != Default {
-		t.Errorf("Github(read_pr) should NOT match gh_pr_create; got %v", got)
+	if got := p.Evaluate("pr_create", `{"base":"main","title":"t","body":"b"}`); got != Default {
+		t.Errorf("Github(read_pr) should NOT match pr_create; got %v", got)
 	}
 }
 
@@ -306,12 +306,12 @@ func TestEvaluate_GithubReadWildcard(t *testing.T) {
 	seed(t, filepath.Join(cwd, ".yottacode", "permissions.json"),
 		[]string{"Github(read_*)"}, nil, nil)
 	p, _ := Load(cwd)
-	for _, tool := range []string{"gh_pr_read", "gh_pr_review_context", "gh_issue_read"} {
+	for _, tool := range []string{"pr_context", "pr_read", "pr_review_context", "pr_watch_checks", "issue_context", "issue_read"} {
 		if got := p.Evaluate(tool, `{}`); got != Allow {
 			t.Errorf("Github(read_*) should match %s; got %v", tool, got)
 		}
 	}
-	for _, tool := range []string{"gh_pr_create", "gh_pr_update", "gh_pr_add_comment"} {
+	for _, tool := range []string{"pr_create", "pr_update", "pr_add_comment"} {
 		if got := p.Evaluate(tool, `{"base":"main","title":"t","body":"b"}`); got != Default {
 			t.Errorf("Github(read_*) should NOT match %s; got %v", tool, got)
 		}
@@ -323,7 +323,7 @@ func TestEvaluate_GithubCatchAllWildcard(t *testing.T) {
 	seed(t, filepath.Join(cwd, ".yottacode", "permissions.json"),
 		[]string{"Github(*)"}, nil, nil)
 	p, _ := Load(cwd)
-	for _, tool := range []string{"gh_pr_read", "gh_pr_create", "gh_pr_update", "gh_pr_add_comment", "gh_issue_read", "gh_issue_list", "gh_issue_create", "gh_pr_review_context"} {
+	for _, tool := range []string{"pr_context", "pr_read", "pr_create", "pr_update", "pr_add_comment", "issue_context", "issue_read", "issue_list", "issue_create", "pr_review_context", "pr_watch_checks"} {
 		got := p.Evaluate(tool, `{}`)
 		if got != Allow {
 			t.Errorf("Github(*) should match %s; got %v", tool, got)
@@ -331,7 +331,7 @@ func TestEvaluate_GithubCatchAllWildcard(t *testing.T) {
 	}
 }
 
-// Regression: gh_issue_create shipped with docs advertising
+// Regression: issue_create shipped with docs advertising
 // Github(create_issue) rules but no targetFor mapping, so the tool fell
 // through to Target{} and allow/ask/deny rules — including a Deny under
 // --yolo, the one gate yolo still honors — never bound to it.
@@ -340,10 +340,10 @@ func TestEvaluate_GithubCreateIssueRulesBind(t *testing.T) {
 	seed(t, filepath.Join(cwd, ".yottacode", "permissions.json"),
 		[]string{"Github(*)"}, nil, []string{"Github(create_issue)"})
 	p, _ := Load(cwd)
-	if got := p.Evaluate("gh_issue_create", `{"title":"t"}`); got != Deny {
-		t.Errorf("Github(create_issue) deny must bind to gh_issue_create; got %v", got)
+	if got := p.Evaluate("issue_create", `{"title":"t"}`); got != Deny {
+		t.Errorf("Github(create_issue) deny must bind to issue_create; got %v", got)
 	}
-	if got := p.Evaluate("gh_issue_list", `{}`); got != Allow {
+	if got := p.Evaluate("issue_list", `{}`); got != Allow {
 		t.Errorf("sibling read verb should still allow; got %v", got)
 	}
 }
@@ -356,10 +356,10 @@ func TestEvaluate_GithubDenyOverridesAllow(t *testing.T) {
 	seed(t, filepath.Join(cwd, ".yottacode", "permissions.json"),
 		[]string{"Github(*)"}, nil, []string{"Github(add_pr_comment)"})
 	p, _ := Load(cwd)
-	if got := p.Evaluate("gh_pr_add_comment", `{"ref":"29","body":"x"}`); got != Deny {
+	if got := p.Evaluate("pr_add_comment", `{"ref":"29","body":"x"}`); got != Deny {
 		t.Errorf("Deny should beat Allow for add_pr_comment; got %v", got)
 	}
-	if got := p.Evaluate("gh_pr_read", `{}`); got != Allow {
+	if got := p.Evaluate("pr_read", `{}`); got != Allow {
 		t.Errorf("non-denied verb should still allow; got %v", got)
 	}
 }
@@ -372,7 +372,7 @@ func TestEvaluate_GithubAskForWrites(t *testing.T) {
 	seed(t, filepath.Join(cwd, ".yottacode", "permissions.json"),
 		[]string{"Github(read_*)"}, []string{"Github(create_pr)", "Github(update_pr)", "Github(add_pr_comment)"}, nil)
 	p, _ := Load(cwd)
-	if got := p.Evaluate("gh_pr_create", `{"base":"main","title":"t","body":"b"}`); got != Ask {
+	if got := p.Evaluate("pr_create", `{"base":"main","title":"t","body":"b"}`); got != Ask {
 		t.Errorf("Github ask rule should force Ask on create_pr; got %v", got)
 	}
 }
@@ -395,21 +395,24 @@ func TestTargetFor_MemoryToolsAllGated(t *testing.T) {
 
 func TestTargetFor_GithubVerbMapping(t *testing.T) {
 	// Pin the tool-name → verb mapping so a future rename of
-	// a tool surface that drops the gh_pr_read → read_pr mapping
+	// a tool surface that drops the pr_read → read_pr mapping
 	// breaks visibly here instead of silently turning an Allow
 	// into a Default.
 	cases := []struct {
 		toolName string
 		wantVerb string
 	}{
-		{"gh_pr_create", "create_pr"},
-		{"gh_pr_update", "update_pr"},
-		{"gh_pr_read", "read_pr"},
-		{"gh_pr_review_context", "read_pr_review_context"},
-		{"gh_pr_add_comment", "add_pr_comment"},
-		{"gh_issue_read", "read_issue"},
-		{"gh_issue_list", "list_open_issues"},
-		{"gh_issue_create", "create_issue"},
+		{"pr_context", "read_pr_context"},
+		{"pr_create", "create_pr"},
+		{"pr_update", "update_pr"},
+		{"pr_read", "read_pr"},
+		{"pr_review_context", "read_pr_review_context"},
+		{"pr_watch_checks", "read_pr_checks"},
+		{"pr_add_comment", "add_pr_comment"},
+		{"issue_context", "read_issue_context"},
+		{"issue_read", "read_issue"},
+		{"issue_list", "list_open_issues"},
+		{"issue_create", "create_issue"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.toolName, func(t *testing.T) {

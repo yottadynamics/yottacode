@@ -1,9 +1,9 @@
 // Issue-workflow tools for the GitHub adapter.
 //
-// gh_issue_read fetches a single issue (metadata + comments).
-// gh_issue_list returns lightweight summaries of open issues.
+// issue_read fetches a single issue (metadata + comments).
+// issue_list returns lightweight summaries of open issues.
 //
-// Both are read-only, no approval. Mirror the gh_pr_read / shape
+// Both are read-only, no approval. Mirror the pr_read / shape
 // so the model brief can describe issue and PR reads with the
 // same template (state-flag header, typed snapshot body).
 
@@ -29,14 +29,14 @@ import (
 // the cheap default for any "what does issue 42 say" question.
 //
 // Read-only, no approval modal. Single API surface, so cheaper than
-// gh_pr_review_context — there's no checks/diff equivalent to
+// pr_review_context — there's no checks/diff equivalent to
 // bundle in for issues.
 type GHIssueReadTool struct {
 	Cwd *CwdRef
 	GH  github.Interface
 }
 
-func (t *GHIssueReadTool) Name() string { return "gh_issue_read" }
+func (t *GHIssueReadTool) Name() string { return "issue_read" }
 
 func (t *GHIssueReadTool) Description() string {
 	return "Fetch typed metadata for a single GitHub issue: number, " +
@@ -45,7 +45,7 @@ func (t *GHIssueReadTool) Description() string {
 		"to `gh issue view <n> --json ...` from run_bash whenever the " +
 		"goal is reading issue context: faster, no subprocess, " +
 		"structured result with state flags the caller can branch on " +
-		"(## state flags not_found / gh_unavailable so the caller can " +
+		"(## state flags not_found / github_unavailable so the caller can " +
 		"surface a clean error and stop). Number is required. " +
 		"max_comments caps the comment fetch (0 = default 20, -1 = " +
 		"skip comments entirely)."
@@ -77,17 +77,17 @@ func (t *GHIssueReadTool) PreviewCall(argsJSON string) string {
 	}
 	_ = json.Unmarshal([]byte(argsJSON), &a)
 	if a.Number == 0 {
-		return "gh_issue_read()"
+		return "issue_read()"
 	}
 	if a.MaxComments != 0 {
-		return fmt.Sprintf("gh_issue_read(number=%d, max_comments=%d)", a.Number, a.MaxComments)
+		return fmt.Sprintf("issue_read(number=%d, max_comments=%d)", a.Number, a.MaxComments)
 	}
-	return fmt.Sprintf("gh_issue_read(number=%d)", a.Number)
+	return fmt.Sprintf("issue_read(number=%d)", a.Number)
 }
 
 func (t *GHIssueReadTool) Execute(ctx context.Context, argsJSON string) (string, error) {
 	if t.GH == nil {
-		return "", errors.New("gh_issue_read: no GitHub adapter configured")
+		return "", errors.New("issue_read: no GitHub adapter configured")
 	}
 	var a struct {
 		Number      int `json:"number"`
@@ -97,26 +97,26 @@ func (t *GHIssueReadTool) Execute(ctx context.Context, argsJSON string) (string,
 		_ = json.Unmarshal([]byte(argsJSON), &a)
 	}
 	if a.Number <= 0 {
-		return "", fmt.Errorf("gh_issue_read: number is required")
+		return "", fmt.Errorf("issue_read: number is required")
 	}
 	snap := BuildIssueReadContext(ctx, t.GH, a.Number, a.MaxComments)
 	return renderIssueReadContext(snap), nil
 }
 
-// IssueReadContext is the typed snapshot gh_issue_read returns.
+// IssueReadContext is the typed snapshot issue_read returns.
 // State flags follow the same pattern as PR snapshots (NotFound,
-// GhUnavailable, FetchErr) so callers branch on flags before
+// GitHubUnavailable, FetchErr) so callers branch on flags before
 // reading the issue body.
 type IssueReadContext struct {
-	Number        int
-	NotFound      bool
-	GhUnavailable bool
-	FetchErr      string
+	Number            int
+	NotFound          bool
+	GitHubUnavailable bool
+	FetchErr          string
 
 	Issue github.IssueDetails
 }
 
-// BuildIssueReadContext is the deterministic core of gh_issue_read.
+// BuildIssueReadContext is the deterministic core of issue_read.
 // Wraps one ReadIssue call; folds typed errors into the snapshot.
 // Doesn't return an error itself — every failure shape is captured
 // in the snapshot so callers can branch on flags.
@@ -126,8 +126,8 @@ func BuildIssueReadContext(ctx context.Context, client github.Interface, number,
 		Number:      number,
 		MaxComments: maxComments,
 	})
-	if errors.Is(err, github.ErrGhUnavailable) {
-		snap.GhUnavailable = true
+	if errors.Is(err, github.ErrGitHubUnavailable) {
+		snap.GitHubUnavailable = true
 		return snap
 	}
 	if errors.Is(err, github.ErrIssueNotFound) {
@@ -148,13 +148,13 @@ func BuildIssueReadContext(ctx context.Context, client github.Interface, number,
 func renderIssueReadContext(s IssueReadContext) string {
 	var b strings.Builder
 
-	fmt.Fprintf(&b, "## state\nnumber=%d\nnot_found=%v\ngh_unavailable=%v\n",
-		s.Number, s.NotFound, s.GhUnavailable)
+	fmt.Fprintf(&b, "## state\nnumber=%d\nnot_found=%v\ngithub_unavailable=%v\n",
+		s.Number, s.NotFound, s.GitHubUnavailable)
 	if s.FetchErr != "" {
 		fmt.Fprintf(&b, "fetch_error=%s\n", s.FetchErr)
 	}
 
-	if s.NotFound || s.GhUnavailable {
+	if s.NotFound || s.GitHubUnavailable {
 		return strings.TrimRight(b.String(), "\n") + "\n"
 	}
 
@@ -199,7 +199,7 @@ func renderIssueReadContext(s IssueReadContext) string {
 // GHIssueListTool wraps Interface.ListOpenIssues. Returns
 // lightweight summaries — number, title, author, URL, labels,
 // assignees. Bodies are deliberately not included; the model
-// follows up with gh_issue_read on a specific issue when it
+// follows up with issue_read on a specific issue when it
 // needs more.
 //
 // Read-only, no approval. Filters are AND-ed (e.g., labels=[bug]
@@ -209,14 +209,14 @@ type GHIssueListTool struct {
 	GH  github.Interface
 }
 
-func (t *GHIssueListTool) Name() string { return "gh_issue_list" }
+func (t *GHIssueListTool) Name() string { return "issue_list" }
 
 func (t *GHIssueListTool) Description() string {
 	return "List open GitHub issues for the current repo, with " +
 		"optional label / assignee / milestone filters (AND-ed). " +
 		"Returns lightweight summaries (number, title, author, URL, " +
 		"labels, assignees) — bodies and comments are dropped, " +
-		"follow up with gh_issue_read for the full content. Prefer " +
+		"follow up with issue_read for the full content. Prefer " +
 		"this over shelling out to `gh issue list --json ...` from " +
 		"run_bash whenever the goal is enumerating open issues: " +
 		"faster, structured, and the filter fields map directly to " +
@@ -266,14 +266,14 @@ func (t *GHIssueListTool) PreviewCall(argsJSON string) string {
 		parts = append(parts, "milestone="+a.Milestone)
 	}
 	if len(parts) == 0 {
-		return "gh_issue_list()"
+		return "issue_list()"
 	}
-	return "gh_issue_list(" + strings.Join(parts, ", ") + ")"
+	return "issue_list(" + strings.Join(parts, ", ") + ")"
 }
 
 func (t *GHIssueListTool) Execute(ctx context.Context, argsJSON string) (string, error) {
 	if t.GH == nil {
-		return "", errors.New("gh_issue_list: no GitHub adapter configured")
+		return "", errors.New("issue_list: no GitHub adapter configured")
 	}
 	var a struct {
 		Labels    []string `json:"labels"`
@@ -291,26 +291,26 @@ func (t *GHIssueListTool) Execute(ctx context.Context, argsJSON string) (string,
 	return renderIssueListContext(snap), nil
 }
 
-// IssueListContext is the typed snapshot gh_issue_list returns.
-// GhUnavailable + FetchErr follow the same state-flag pattern as
+// IssueListContext is the typed snapshot issue_list returns.
+// GitHubUnavailable + FetchErr follow the same state-flag pattern as
 // the other read tools. Empty Issues with no flags means "no open
 // issues match" — a valid result, not an error.
 type IssueListContext struct {
-	GhUnavailable bool
-	FetchErr      string
+	GitHubUnavailable bool
+	FetchErr          string
 
 	Filter github.ListIssuesRequest
 	Issues []github.IssueSummary
 }
 
-// BuildIssueListContext is the deterministic core of gh_issue_list.
+// BuildIssueListContext is the deterministic core of issue_list.
 // Folds typed errors into the snapshot's flags so callers branch on
 // flags rather than err strings.
 func BuildIssueListContext(ctx context.Context, client github.Interface, req github.ListIssuesRequest) IssueListContext {
 	snap := IssueListContext{Filter: req}
 	issues, err := client.ListOpenIssues(ctx, req)
-	if errors.Is(err, github.ErrGhUnavailable) {
-		snap.GhUnavailable = true
+	if errors.Is(err, github.ErrGitHubUnavailable) {
+		snap.GitHubUnavailable = true
 		return snap
 	}
 	if err != nil {
@@ -326,8 +326,8 @@ func BuildIssueListContext(ctx context.Context, client github.Interface, req git
 func renderIssueListContext(s IssueListContext) string {
 	var b strings.Builder
 
-	fmt.Fprintf(&b, "## state\ngh_unavailable=%v\ncount=%d\n",
-		s.GhUnavailable, len(s.Issues))
+	fmt.Fprintf(&b, "## state\ngithub_unavailable=%v\ncount=%d\n",
+		s.GitHubUnavailable, len(s.Issues))
 	if s.FetchErr != "" {
 		fmt.Fprintf(&b, "fetch_error=%s\n", s.FetchErr)
 	}
@@ -341,7 +341,7 @@ func renderIssueListContext(s IssueListContext) string {
 		fmt.Fprintf(&b, "filter_milestone=%s\n", s.Filter.Milestone)
 	}
 
-	if s.GhUnavailable || s.FetchErr != "" {
+	if s.GitHubUnavailable || s.FetchErr != "" {
 		return strings.TrimRight(b.String(), "\n") + "\n"
 	}
 
@@ -396,14 +396,14 @@ var issueTemplateCandidates = []string{
 // draft an issue title + body. Mirrors GHPRContextTool for issues.
 type GHIssueContextTool struct{ Cwd *CwdRef }
 
-func (t *GHIssueContextTool) Name() string { return "gh_issue_context" }
+func (t *GHIssueContextTool) Name() string { return "issue_context" }
 
 func (t *GHIssueContextTool) Description() string {
 	return "Gather the read-only context needed to open a GitHub issue: " +
 		"resolved repo (owner/repo), whether GitHub auth is available, " +
 		"and the contents of a local issue template if one exists. " +
 		"Returns a structured snapshot keyed by section headers. " +
-		"Pair with gh_issue_create to open the issue."
+		"Pair with issue_create to open the issue."
 }
 
 func (t *GHIssueContextTool) Schema() map[string]any {
@@ -416,13 +416,13 @@ func (t *GHIssueContextTool) Schema() map[string]any {
 func (t *GHIssueContextTool) RequiresApproval(string) bool { return false }
 
 func (t *GHIssueContextTool) PreviewCall(argsJSON string) string {
-	return "gh_issue_context()"
+	return "issue_context()"
 }
 
 func (t *GHIssueContextTool) Execute(ctx context.Context, argsJSON string) (string, error) {
 	snap, err := BuildIssueContext(ctx, t.Cwd.Get())
 	if err != nil {
-		return "", fmt.Errorf("gh_issue_context: %w", err)
+		return "", fmt.Errorf("issue_context: %w", err)
 	}
 	return renderIssueContext(snap), nil
 }
@@ -464,7 +464,7 @@ type IssueContactLink struct {
 	About string `yaml:"about"`
 }
 
-// BuildIssueContext is the deterministic core of gh_issue_context.
+// BuildIssueContext is the deterministic core of issue_context.
 // Owner/repo come from the cwd's origin remote, GhAvailable reports
 // whether the GitHub auth token chain resolves (same signal
 // BuildPRContext exposes — the /git-create-issue directive branches
@@ -821,14 +821,14 @@ type GHIssueCreateTool struct {
 	GH  github.Interface
 }
 
-func (t *GHIssueCreateTool) Name() string { return "gh_issue_create" }
+func (t *GHIssueCreateTool) Name() string { return "issue_create" }
 
 func (t *GHIssueCreateTool) Description() string {
 	return "Open a GitHub issue with the supplied title, body, labels, and assignees. " +
 		"Title is validated to be a single line of at most " + strconv.Itoa(PRTitleMaxLen) + " " +
 		"characters with no trailing period. " +
 		"Returns a typed result with the issue URL and number on success, " +
-		"or a gh_unavailable / validation / gh_error reason on failure. " +
+		"or a github_unavailable / validation / github_error reason on failure. " +
 		"The approval modal shows only the invocation summary (title, labels, assignees) — " +
 		"NOT the body. Print the full drafted title and body as plain text BEFORE calling " +
 		"this tool, so the user approves what will actually be posted."
@@ -880,22 +880,22 @@ func (t *GHIssueCreateTool) PreviewCall(argsJSON string) string {
 	if len(a.Assignees) > 0 {
 		parts = append(parts, "assignees="+strings.Join(a.Assignees, "+"))
 	}
-	return "gh_issue_create(" + strings.Join(parts, ", ") + ")"
+	return "issue_create(" + strings.Join(parts, ", ") + ")"
 }
 
 // IssueCreateResult is the typed envelope CreateIssue returns. Same shape
 // rationale as PRCreateResult: callers branch on typed fields, not
 // stringy err checks. Reason discriminates the failure mode so the
 // procedural /create-issue handles each branch differently (validation
-// → re-prompt; gh_unavailable → fall through to draft-only; gh_error
+// → re-prompt; github_unavailable → fall through to draft-only; github_error
 // → surface verbatim and stop).
 type IssueCreateResult struct {
-	Created       bool
-	URL           string
-	Number        int
-	ValidationErr string
-	GhUnavailable bool
-	GhError       string
+	Created           bool
+	URL               string
+	Number            int
+	ValidationErr     string
+	GitHubUnavailable bool
+	GitHubError       string
 }
 
 func (t *GHIssueCreateTool) Execute(ctx context.Context, argsJSON string) (string, error) {
@@ -906,10 +906,10 @@ func (t *GHIssueCreateTool) Execute(ctx context.Context, argsJSON string) (strin
 		Assignees []string `json:"assignees"`
 	}
 	if err := json.Unmarshal([]byte(argsJSON), &a); err != nil {
-		return "", fmt.Errorf("gh_issue_create: invalid args: %w", err)
+		return "", fmt.Errorf("issue_create: invalid args: %w", err)
 	}
 	if t.GH == nil {
-		return "", errors.New("gh_issue_create: no GitHub adapter configured")
+		return "", errors.New("issue_create: no GitHub adapter configured")
 	}
 
 	res, err := CreateIssue(ctx, t.GH, github.CreateIssueRequest{
@@ -919,18 +919,18 @@ func (t *GHIssueCreateTool) Execute(ctx context.Context, argsJSON string) (strin
 		Assignees: a.Assignees,
 	})
 	if err != nil {
-		return "", fmt.Errorf("gh_issue_create: %w", err)
+		return "", fmt.Errorf("issue_create: %w", err)
 	}
 	return renderIssueCreateResult(res), nil
 }
 
-// CreateIssue is the deterministic core of gh_issue_create. Validates
+// CreateIssue is the deterministic core of issue_create. Validates
 // title *before* dialing the Interface, so an oversize title never
 // reaches the network. Returns a typed IssueCreateResult; the tool
 // wrapper renders it for model consumption, /create-issue reads it directly.
 //
-// The Interface returns ErrGhUnavailable when the local environment
-// can't make the call; we surface that as GhUnavailable=true so the
+// The Interface returns ErrGitHubUnavailable when the local environment
+// can't make the call; we surface that as GitHubUnavailable=true so the
 // caller can fall through to draft-only instead of treating it as
 // an opaque error.
 func CreateIssue(ctx context.Context, client github.Interface, req github.CreateIssueRequest) (IssueCreateResult, error) {
@@ -942,12 +942,12 @@ func CreateIssue(ctx context.Context, client github.Interface, req github.Create
 	}
 
 	out, err := client.CreateIssue(ctx, req)
-	if errors.Is(err, github.ErrGhUnavailable) {
-		res.GhUnavailable = true
+	if errors.Is(err, github.ErrGitHubUnavailable) {
+		res.GitHubUnavailable = true
 		return res, nil
 	}
 	if err != nil {
-		res.GhError = err.Error()
+		res.GitHubError = err.Error()
 		return res, nil
 	}
 	res.Created = true
@@ -965,14 +965,14 @@ func renderIssueCreateResult(r IssueCreateResult) string {
 	switch {
 	case r.ValidationErr != "":
 		fmt.Fprintf(&b, "created=false reason=validation\nerror=%s\n", r.ValidationErr)
-	case r.GhUnavailable:
-		b.WriteString("created=false reason=gh_unavailable\n")
+	case r.GitHubUnavailable:
+		b.WriteString("created=false reason=github_unavailable\n")
 		b.WriteString("Hint: install gh and run `gh auth login`, or surface the drafted title + body to the user so they can paste them into GitHub manually.\n")
-	case r.GhError != "":
-		b.WriteString("created=false reason=gh_error\n")
+	case r.GitHubError != "":
+		b.WriteString("created=false reason=github_error\n")
 		b.WriteString("--- gh output ---\n")
-		b.WriteString(r.GhError)
-		if !strings.HasSuffix(r.GhError, "\n") {
+		b.WriteString(r.GitHubError)
+		if !strings.HasSuffix(r.GitHubError, "\n") {
 			b.WriteString("\n")
 		}
 		b.WriteString("--- end gh output ---\n")

@@ -17,7 +17,7 @@ import (
 //
 // Same shape as cmdGitCommit: the slash handler is a thin wrapper
 // that composes a narrow directive naming the two composite tools
-// (gh_pr_context + gh_pr_create) and submits via startTurn. The
+// (pr_context + pr_create) and submits via startTurn. The
 // reliability work — base resolution, ahead-count gating,
 // gh-unavailable fall-through, title validation, push state
 // detection — lives in Go inside those tools, not in the prompt.
@@ -49,15 +49,15 @@ func cmdGitCreatePR(m Model, args []string) (Model, tea.Cmd) {
 // shape and the surfacing rules for each typed result branch.
 //
 // The base argument, when supplied, is splice-injected into the
-// gh_pr_context call so the model doesn't have to thread it as a
+// pr_context call so the model doesn't have to thread it as a
 // string parameter through prose interpretation. (The tool also
 // accepts no-base and runs its fallback chain, so empty base is
 // also fine.)
 func gitCreatePRDirective(base string) string {
-	baseArgLine := `Step 1 — call gh_pr_context with no arguments. It will resolve the
+	baseArgLine := `Step 1 — call pr_context with no arguments. It will resolve the
 base branch via origin/HEAD → main/master/develop.`
 	if base != "" {
-		baseArgLine = "Step 1 — call gh_pr_context with base=\"" + base + "\"."
+		baseArgLine = "Step 1 — call pr_context with base=\"" + base + "\"."
 	}
 
 	return `Open a GitHub pull request for the current branch.
@@ -106,7 +106,7 @@ Step 3 — compose a title and body using the snapshot:
   Cap the body at ~80 lines. Do NOT paste the diff verbatim —
   describe it.
 
-Step 4 — call gh_pr_create with base / title / body. The approval
+Step 4 — call pr_create with base / title / body. The approval
 modal fires showing the full title + body inline; the user
 approves or denies.
 
@@ -115,11 +115,11 @@ Step 5 — surface the result envelope verbatim:
   line plus a one-line summary (title, base, commit count).
 - "created=false reason=validation error=..." → surface the error,
   then either (a) compose a new title/body that satisfies the rule
-  and call gh_pr_create once more, or (b) stop and ask. Pick (b)
+  and call pr_create once more, or (b) stop and ask. Pick (b)
   after one retry.
-- "created=false reason=gh_unavailable" → fall through to
+- "created=false reason=github_unavailable" → fall through to
   draft-only as described in step 2.
-- "created=false reason=gh_error" → surface the gh output verbatim
+- "created=false reason=github_error" → surface the gh output verbatim
   and STOP. Do NOT auto-retry, auto-edit, gh pr merge, or
   gh pr edit. The user needs to see the error and decide.
 

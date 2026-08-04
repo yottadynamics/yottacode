@@ -7,7 +7,7 @@ import (
 
 func TestGitImplementIssueDirective_NamesReadAndCreateTools(t *testing.T) {
 	d := gitImplementIssueDirective(42)
-	for _, want := range []string{"gh_issue_read", "gh_pr_create", "git_commit_apply", "git_push", "git_stage_files"} {
+	for _, want := range []string{"issue_read", "pr_create", "git_commit_apply", "git_push", "git_stage_files"} {
 		if !strings.Contains(d, want) {
 			t.Errorf("directive missing tool name %q\nfull:\n%s", want, d)
 		}
@@ -16,7 +16,7 @@ func TestGitImplementIssueDirective_NamesReadAndCreateTools(t *testing.T) {
 
 func TestGitImplementIssueDirective_InlinesIssueNumber(t *testing.T) {
 	d := gitImplementIssueDirective(42)
-	// The issue number must splice into the gh_issue_read call,
+	// The issue number must splice into the issue_read call,
 	// the branch name template, the commit Refs, and the Closes
 	// line. If any one of these drifts the flow breaks silently.
 	for _, want := range []string{
@@ -88,7 +88,7 @@ func TestGitImplementIssueDirective_BranchesOnStateFlags(t *testing.T) {
 	// refactor of the flag names is caught here.
 	d := gitImplementIssueDirective(42)
 	for _, want := range []string{
-		"gh_unavailable=true",
+		"github_unavailable=true",
 		"not_found=true",
 		"state=CLOSED",
 	} {

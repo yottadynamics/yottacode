@@ -182,6 +182,17 @@ func TestMapStatus_UsesStateAsConclusion(t *testing.T) {
 	}
 }
 
+func TestTailLinesFromReaderReadsWholeLog(t *testing.T) {
+	log := strings.Join([]string{"early failure", "middle", "actual final failure"}, "\n")
+	got, err := tailLinesFromReader(strings.NewReader(log), 1)
+	if err != nil {
+		t.Fatalf("tailLinesFromReader: %v", err)
+	}
+	if len(got) != 1 || got[0] != "actual final failure" {
+		t.Fatalf("tail = %#v, want final line", got)
+	}
+}
+
 func TestMapIssueDetails_FullFixture(t *testing.T) {
 	state := "open"
 	issue := &gogithub.Issue{
@@ -307,8 +318,8 @@ func TestClassifyAPIError_404IsNotFound(t *testing.T) {
 	}
 }
 
-func TestClassifyAPIError_401IsGhUnavailable(t *testing.T) {
-	// Token rejected / missing → ErrGhUnavailable parity with
+func TestClassifyAPIError_401IsGitHubUnavailable(t *testing.T) {
+	// Token rejected / missing → ErrGitHubUnavailable parity with
 	// ShellOut's behavior so callers don't have to branch on
 	// new error types.
 	err := &gogithub.ErrorResponse{
@@ -316,8 +327,8 @@ func TestClassifyAPIError_401IsGhUnavailable(t *testing.T) {
 		Message:  "Bad credentials",
 	}
 	got := classifyAPIError(err)
-	if !errors.Is(got, ErrGhUnavailable) {
-		t.Errorf("401 should classify as ErrGhUnavailable; got %v", got)
+	if !errors.Is(got, ErrGitHubUnavailable) {
+		t.Errorf("401 should classify as ErrGitHubUnavailable; got %v", got)
 	}
 }
 
@@ -329,7 +340,7 @@ func TestClassifyAPIError_OtherStatusBubblesUp(t *testing.T) {
 		Message:  "Internal Server Error",
 	}
 	got := classifyAPIError(err)
-	if errors.Is(got, ErrPRNotFound) || errors.Is(got, ErrGhUnavailable) {
+	if errors.Is(got, ErrPRNotFound) || errors.Is(got, ErrGitHubUnavailable) {
 		t.Errorf("500 should pass through, not classify; got %v", got)
 	}
 }

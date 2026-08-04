@@ -4957,10 +4957,10 @@ func (m Model) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 			m.branch = gitBranch(m.parentCtx, m.cwd)
 			m.currentPR = 0
 		}
-		if e.ToolName == "gh_pr_read" || e.ToolName == "gh_pr_review_context" {
+		if e.ToolName == "pr_read" || e.ToolName == "pr_review_context" {
 			m.currentPR = prNumberFromToolOutput(e.Output)
 		}
-		if e.ToolName == "gh_pr_create" || e.ToolName == "git_push" {
+		if e.ToolName == "pr_create" || e.ToolName == "git_push" {
 			if n := prNumberFromToolOutput(e.Output); n > 0 {
 				m.currentPR = n
 			}

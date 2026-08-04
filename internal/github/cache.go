@@ -210,6 +210,13 @@ func (c *CachingClient) ListPRChecks(ctx context.Context, req ReadPRRequest) ([]
 	return c.Inner.ListPRChecks(ctx, req)
 }
 
+// ListFailedWorkflowJobLogTails is intentionally not cached. Logs and
+// failed-job state are fetched only after CI reports a failure, and a rerun can
+// update that state while the head SHA stays stable.
+func (c *CachingClient) ListFailedWorkflowJobLogTails(ctx context.Context, req FailedWorkflowLogsRequest) (FailedWorkflowLogsResult, error) {
+	return c.Inner.ListFailedWorkflowJobLogTails(ctx, req)
+}
+
 // UpdatePR rewrites title/body — the next ReadPR must see fresh
 // data, so we evict the matching ReadPR entry before passing
 // through. Diff is unaffected (the head SHA hasn't moved), so that

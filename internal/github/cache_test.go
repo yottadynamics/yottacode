@@ -62,6 +62,10 @@ func (c *countingInner) ListPRChecks(_ context.Context, req ReadPRRequest) ([]Ch
 	return c.checksRes, c.checksErr
 }
 
+func (c *countingInner) ListFailedWorkflowJobLogTails(_ context.Context, req FailedWorkflowLogsRequest) (FailedWorkflowLogsResult, error) {
+	return FailedWorkflowLogsResult{}, nil
+}
+
 func (c *countingInner) UpdatePR(_ context.Context, req UpdatePRRequest) (UpdatePRResult, error) {
 	c.mu.Lock()
 	c.updatePRCount++

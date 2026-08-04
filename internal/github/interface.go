@@ -20,12 +20,12 @@ import (
 	"time"
 )
 
-// ErrGhUnavailable signals that the local environment cannot satisfy
+// ErrGitHubUnavailable signals that the local environment cannot satisfy
 // a GitHub call — either the `gh` binary isn't installed, or it is
 // installed but unauthenticated. Callers branch on this so the
 // procedural /create-pr can fall through to a draft-only preview
 // instead of failing the turn opaquely.
-var ErrGhUnavailable = errors.New("gh CLI unavailable or unauthenticated")
+var ErrGitHubUnavailable = errors.New("gh CLI unavailable or unauthenticated")
 
 // ErrPRNotFound signals that the requested PR doesn't exist (no
 // open PR for the supplied branch, or the explicit number resolves
@@ -48,7 +48,7 @@ var ErrIssueNotFound = errors.New("issue not found")
 // burden bounded — each method we add ships with at least one
 // caller that exercises it.
 type Interface interface {
-	// CreatePR opens a pull request. Returns ErrGhUnavailable when
+	// CreatePR opens a pull request. Returns ErrGitHubUnavailable when
 	// the local environment can't make the call (no gh, no auth)
 	// so callers can fall back gracefully rather than reporting a
 	// generic execution failure.
@@ -71,13 +71,19 @@ type Interface interface {
 	// the review, which is why typed access matters here.
 	ListPRChecks(ctx context.Context, req ReadPRRequest) ([]CheckRun, error)
 
+	// ListFailedWorkflowJobLogTails returns capped log tails for failed
+	// GitHub Actions jobs on a specific head SHA. This is the typed
+	// read-only counterpart to `gh run view --log-failed | tail`, used
+	// only after checks report a failure.
+	ListFailedWorkflowJobLogTails(ctx context.Context, req FailedWorkflowLogsRequest) (FailedWorkflowLogsResult, error)
+
 	// UpdatePR rewrites an existing PR's title and body. Used by
 	// /git-update-pr after follow-up commits make the original
 	// description stale. Other PR-level edits (labels, base,
 	// reviewers, draft toggle) are intentionally out of scope —
 	// the v0.5.0 spec defers them until a concrete workflow asks.
 	// Returns ErrPRNotFound when nothing matches the ref;
-	// ErrGhUnavailable when the local environment can't make the
+	// ErrGitHubUnavailable when the local environment can't make the
 	// call.
 	UpdatePR(ctx context.Context, req UpdatePRRequest) (UpdatePRResult, error)
 
@@ -103,7 +109,7 @@ type Interface interface {
 	// different scope).
 	AddPRComment(ctx context.Context, req AddPRCommentRequest) (AddPRCommentResult, error)
 
-	// CreateIssue opens a new issue. Returns ErrGhUnavailable when
+	// CreateIssue opens a new issue. Returns ErrGitHubUnavailable when
 	// the local environment can't make the call (no gh, no auth)
 	// so callers can fall back gracefully rather than reporting a
 	// generic execution failure.
@@ -218,6 +224,40 @@ type CheckRun struct {
 	Conclusion  string
 	StartedAt   time.Time
 	CompletedAt time.Time
+}
+
+// FailedWorkflowLogsRequest selects the failed GitHub Actions logs to
+// fetch for a single PR head SHA. Owner / Repo follow the same optional
+// inference semantics as the other GitHub request types.
+type FailedWorkflowLogsRequest struct {
+	Owner     string // repo owner (optional; inferred from cwd when empty)
+	Repo      string // repo name  (optional; inferred from cwd when empty)
+	HeadSHA   string // commit SHA whose workflow runs should be inspected (required)
+	TailLines int    // max lines per failed job; <=0 uses implementation default
+	MaxRuns   int    // max workflow runs to inspect; <=0 uses implementation default
+}
+
+// FailedWorkflowLogsResult is the typed envelope for failed job log
+// tails. Missing logs are reported per job via LogError rather than as
+// a hard failure so callers still see which checks failed.
+type FailedWorkflowLogsResult struct {
+	HeadSHA string
+	Jobs    []FailedWorkflowJobLog
+}
+
+// FailedWorkflowJobLog is one failed GitHub Actions job plus the
+// capped tail of its log. WorkflowName and JobName are separate so a
+// renderer can group or display either without parsing check labels.
+type FailedWorkflowJobLog struct {
+	WorkflowRunID int64
+	WorkflowName  string
+	WorkflowURL   string
+	JobID         int64
+	JobName       string
+	JobURL        string
+	Conclusion    string
+	LogTail       []string
+	LogError      string
 }
 
 // ReadIssueRequest is the typed payload for Interface.ReadIssue.
