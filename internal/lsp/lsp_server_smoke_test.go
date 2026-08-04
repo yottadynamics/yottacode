@@ -16,6 +16,7 @@ func TestGoplsSmoke(t *testing.T) {
 func TestTypeScriptLanguageServerSmoke(t *testing.T) {
 	root := t.TempDir()
 	writeSmokeFile(t, root, "package.json", `{"devDependencies":{"typescript":"^5.9.0"}}`)
+	writeSmokeFile(t, root, "tsconfig.json", `{"compilerOptions":{"strict":true},"include":["index.ts"]}`)
 	installTypeScriptForSmoke(t, root)
 	writeSmokeFile(t, root, "index.ts", "export function smokeTarget(): number { return 1 }\n")
 	lang := Language{ID: "typescript", Name: "TypeScript/JavaScript", Extensions: []string{".ts"}, Command: []string{"typescript-language-server", "--stdio"}}
@@ -53,10 +54,14 @@ func smokeLanguageServer(t *testing.T, lang Language, root, query string) {
 		return
 	}
 	defer client.Close()
+	workflowPath := smokeWorkflowPath(root, lang)
 	items, err := client.WorkspaceSymbols(ctx, query)
-	if err != nil {
+	if err != nil && workflowPath == "" {
 		smokeUnavailable(t, required, "%s workspace symbols unavailable for smoke test: %v", lang.Command[0], err)
 		return
+	}
+	if err != nil {
+		t.Logf("%s workspace symbols unavailable; falling back to document symbols: %v", lang.Command[0], err)
 	}
 	found := false
 	for _, item := range items {
@@ -65,7 +70,6 @@ func smokeLanguageServer(t *testing.T, lang Language, root, query string) {
 			break
 		}
 	}
-	workflowPath := smokeWorkflowPath(root, lang)
 	if !found {
 		if workflowPath == "" {
 			smokeUnavailable(t, required, "%s workspace symbols for %s did not include target; got %d items", lang.Command[0], query, len(items))
