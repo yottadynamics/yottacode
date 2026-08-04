@@ -1,9 +1,11 @@
 package github
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os/exec"
 	"strings"
@@ -334,6 +336,209 @@ func (c *TypedClient) ListPRChecks(ctx context.Context, req ReadPRRequest) ([]Ch
 		out = append(out, mapStatus(st))
 	}
 	return out, nil
+}
+
+// ListFailedWorkflowJobLogTails fetches bounded log tails for failed
+// GitHub Actions jobs on the PR's current head SHA. The implementation
+// downloads only failed job logs, not entire successful workflow logs.
+func (c *TypedClient) ListFailedWorkflowJobLogTails(ctx context.Context, req ReadPRRequest, maxLines int) ([]WorkflowJobLogTail, error) {
+	if maxLines <= 0 {
+		maxLines = 240
+	}
+	if maxLines > 2000 {
+		maxLines = 2000
+	}
+	cl, err := c.init(ctx)
+	if err != nil {
+		return nil, err
+	}
+	owner, repo, headSHA, err := c.resolvePRHeadSHA(ctx, cl, req)
+	if err != nil {
+		return nil, err
+	}
+	runs, err := c.failedWorkflowRunsForHead(ctx, cl, owner, repo, headSHA)
+	if err != nil {
+		return nil, err
+	}
+
+	var out []WorkflowJobLogTail
+	for _, run := range runs {
+		if run == nil || run.ID == nil {
+			continue
+		}
+		jobs, resp, err := cl.Actions.ListWorkflowJobs(ctx, owner, repo, *run.ID, &gogithub.ListWorkflowJobsOptions{Filter: "latest"})
+		c.recordRate(resp)
+		if err != nil {
+			return nil, fmt.Errorf("list failed job logs: list jobs for run %d: %w", *run.ID, classifyAPIError(err))
+		}
+		if jobs == nil {
+			continue
+		}
+		for _, job := range jobs.Jobs {
+			if !isFailedWorkflowJob(job) || job.ID == nil {
+				continue
+			}
+			logURL, resp, err := cl.Actions.GetWorkflowJobLogs(ctx, owner, repo, *job.ID, 0)
+			c.recordRate(resp)
+			if err != nil {
+				return nil, fmt.Errorf("list failed job logs: get log url for job %d: %w", *job.ID, classifyAPIError(err))
+			}
+			tail, lines, truncated, err := fetchLogTail(ctx, cl.Client(), logURL.String(), maxLines)
+			if err != nil {
+				return nil, fmt.Errorf("list failed job logs: fetch log for job %d: %w", *job.ID, err)
+			}
+			out = append(out, mapWorkflowJobLogTail(job, tail, lines, truncated))
+		}
+	}
+	return out, nil
+}
+
+// RerunFailedPRChecks asks GitHub to rerun failed jobs for every failed
+// workflow run attached to the PR's current head SHA.
+func (c *TypedClient) RerunFailedPRChecks(ctx context.Context, req ReadPRRequest) (RerunFailedPRChecksResult, error) {
+	var res RerunFailedPRChecksResult
+	cl, err := c.init(ctx)
+	if err != nil {
+		return res, err
+	}
+	owner, repo, headSHA, err := c.resolvePRHeadSHA(ctx, cl, req)
+	if err != nil {
+		return res, err
+	}
+	runs, err := c.failedWorkflowRunsForHead(ctx, cl, owner, repo, headSHA)
+	if err != nil {
+		return res, err
+	}
+	for _, run := range runs {
+		if run == nil || run.ID == nil {
+			continue
+		}
+		resp, err := cl.Actions.RerunFailedJobsByID(ctx, owner, repo, *run.ID)
+		c.recordRate(resp)
+		if err != nil {
+			return res, fmt.Errorf("rerun failed checks: run %d: %w", *run.ID, classifyAPIError(err))
+		}
+		res.RunIDs = append(res.RunIDs, *run.ID)
+	}
+	res.Count = len(res.RunIDs)
+	return res, nil
+}
+
+// resolvePRHeadSHA resolves a PR ref and returns the repository plus
+// current head SHA. Several Actions workflows need this same PR → SHA
+// bridge, so keeping it shared avoids subtly different ref behavior.
+func (c *TypedClient) resolvePRHeadSHA(ctx context.Context, cl *gogithub.Client, req ReadPRRequest) (owner, repo, headSHA string, err error) {
+	owner, repo, err = c.resolveOwnerRepo(ctx, req.Owner, req.Repo)
+	if err != nil {
+		return "", "", "", err
+	}
+	number, err := c.resolvePRNumber(ctx, cl, owner, repo, req.Ref)
+	if err != nil {
+		return "", "", "", err
+	}
+	pr, resp, err := cl.PullRequests.Get(ctx, owner, repo, number)
+	c.recordRate(resp)
+	if err != nil {
+		return "", "", "", fmt.Errorf("read pr head: %w", classifyAPIError(err))
+	}
+	if pr.Head == nil || pr.Head.SHA == nil || strings.TrimSpace(*pr.Head.SHA) == "" {
+		return "", "", "", fmt.Errorf("read pr head: PR head SHA missing")
+	}
+	return owner, repo, *pr.Head.SHA, nil
+}
+
+// failedWorkflowRunsForHead returns failed Actions workflow runs for a
+// head SHA. It asks GitHub for conclusion=failure because only those
+// runs have failed jobs to log or rerun.
+func (c *TypedClient) failedWorkflowRunsForHead(ctx context.Context, cl *gogithub.Client, owner, repo, headSHA string) ([]*gogithub.WorkflowRun, error) {
+	runs, resp, err := cl.Actions.ListRepositoryWorkflowRuns(ctx, owner, repo, &gogithub.ListWorkflowRunsOptions{
+		HeadSHA: headSHA,
+		Status:  "failure",
+		ListOptions: gogithub.ListOptions{
+			PerPage: 50,
+		},
+	})
+	c.recordRate(resp)
+	if err != nil {
+		return nil, fmt.Errorf("list failed workflow runs: %w", classifyAPIError(err))
+	}
+	if runs == nil {
+		return nil, nil
+	}
+	return runs.WorkflowRuns, nil
+}
+
+func isFailedWorkflowJob(job *gogithub.WorkflowJob) bool {
+	return job != nil && strings.EqualFold(job.GetConclusion(), "failure")
+}
+
+func fetchLogTail(ctx context.Context, client *http.Client, url string, maxLines int) (tail string, lines int, truncated bool, err error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return "", 0, false, err
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", 0, false, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "", 0, false, fmt.Errorf("unexpected status: %s", resp.Status)
+	}
+	return tailReaderLines(resp.Body, maxLines)
+}
+
+func tailReaderLines(r io.Reader, maxLines int) (tail string, lines int, truncated bool, err error) {
+	if maxLines <= 0 {
+		maxLines = 1
+	}
+	buf := make([]string, maxLines)
+	scanner := bufio.NewScanner(r)
+	// GitHub Actions log lines can contain long command output. Raise the
+	// Scanner cap to 1 MiB per line so a single long line does not make log
+	// retrieval fail, while still avoiding an unbounded per-line allocation.
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	count := 0
+	for scanner.Scan() {
+		buf[count%maxLines] = scanner.Text()
+		count++
+	}
+	if err := scanner.Err(); err != nil {
+		return "", 0, false, err
+	}
+	if count == 0 {
+		return "", 0, false, nil
+	}
+	kept := count
+	if kept > maxLines {
+		kept = maxLines
+		truncated = true
+	}
+	out := make([]string, 0, kept)
+	start := count - kept
+	for i := start; i < count; i++ {
+		out = append(out, buf[i%maxLines])
+	}
+	return strings.Join(out, "\n"), kept, truncated, nil
+}
+
+func lastLines(s string, maxLines int) (tail string, lines int, truncated bool) {
+	tail, lines, truncated, _ = tailReaderLines(strings.NewReader(s), maxLines)
+	return tail, lines, truncated
+}
+
+func mapWorkflowJobLogTail(job *gogithub.WorkflowJob, tail string, lines int, truncated bool) WorkflowJobLogTail {
+	return WorkflowJobLogTail{
+		RunID:      job.GetRunID(),
+		JobID:      job.GetID(),
+		Name:       job.GetName(),
+		Workflow:   job.GetWorkflowName(),
+		Conclusion: strings.ToUpper(job.GetConclusion()),
+		HTMLURL:    job.GetHTMLURL(),
+		Tail:       tail,
+		Lines:      lines,
+		Truncated:  truncated,
+	}
 }
 
 // UpdatePR rewrites an existing PR's title and body. Other

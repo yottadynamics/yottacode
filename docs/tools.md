@@ -41,6 +41,8 @@ In addition to the built-ins, **MCP tools** register dynamically when an `[[mcp_
 | [`gh_pr_create`](#gh_pr_create) | required | Validate title and open a PR via the `internal/github.Interface` adapter with typed result envelope |
 | [`gh_pr_read`](#gh_pr_read) | none | Fetch PR metadata only via one API call (use instead of `run_bash gh pr view --json …`) |
 | [`gh_pr_review_context`](#gh_pr_review_context) | none | Fetch PR metadata + diff + check rollup via the `internal/github.Interface` adapter for review |
+| [`pr_check_logs`](#pr_check_logs) | none | Fetch failed GitHub Actions job log tails for a PR |
+| [`pr_rerun_checks`](#pr_rerun_checks) | required | Rerun failed GitHub Actions jobs for a PR |
 | [`gh_pr_update`](#gh_pr_update) | required | Rewrite an existing PR's title and body via the `internal/github.Interface` adapter; title validation + non-empty-body guard |
 | [`gh_pr_add_comment`](#gh_pr_add_comment) | required | Post a top-level conversation comment on a PR; body capped, approval-gated |
 | [`gh_issue_read`](#gh_issue_read) | none | Fetch issue metadata + comments (use instead of `run_bash gh issue view --json …`) |
@@ -733,6 +735,27 @@ diff <ref>` for the full content.
 | `ref` | string | (uses current branch's PR) |
 
 No approval. Touches the network (not parallel-safe).
+
+## pr_check_logs
+
+Read-only helper for failed CI logs. It resolves the PR ref (number, branch, or current branch when omitted), finds failed GitHub Actions workflow runs for the PR head SHA, and returns bounded tails for the failed jobs only. Use it instead of `run_bash` patterns such as `gh run view <id> --log-failed | tail -240`.
+
+| Param | Type | Default |
+|---|---|---|
+| `ref` | string | current branch's PR |
+| `max_lines` | integer | `240` (capped at `2000`) |
+
+No approval. Touches the network (not parallel-safe).
+
+## pr_rerun_checks
+
+Approval-gated helper for retrying failed CI. It resolves the PR ref, finds failed GitHub Actions workflow runs for the PR head SHA, and asks GitHub to rerun failed jobs for each failed run. It does not rerun successful jobs.
+
+| Param | Type | Default |
+|---|---|---|
+| `ref` | string | current branch's PR |
+
+Always prompts for approval because it mutates remote CI state and may consume CI minutes.
 
 ## gh_pr_update
 

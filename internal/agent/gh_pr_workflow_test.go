@@ -39,6 +39,13 @@ type fakeGH struct {
 	listChecksRes []github.CheckRun
 	listChecksErr error
 	listChecksReq github.ReadPRRequest
+	logTailsRes   []github.WorkflowJobLogTail
+	logTailsErr   error
+	logTailsReq   github.ReadPRRequest
+	logTailsMax   int
+	rerunRes      github.RerunFailedPRChecksResult
+	rerunErr      error
+	rerunReq      github.ReadPRRequest
 
 	// Update-PR side
 	updatePRRes github.UpdatePRResult
@@ -81,6 +88,17 @@ func (f *fakeGH) ReadPRDiff(_ context.Context, req github.ReadPRRequest) (string
 func (f *fakeGH) ListPRChecks(_ context.Context, req github.ReadPRRequest) ([]github.CheckRun, error) {
 	f.listChecksReq = req
 	return f.listChecksRes, f.listChecksErr
+}
+
+func (f *fakeGH) ListFailedWorkflowJobLogTails(_ context.Context, req github.ReadPRRequest, maxLines int) ([]github.WorkflowJobLogTail, error) {
+	f.logTailsReq = req
+	f.logTailsMax = maxLines
+	return f.logTailsRes, f.logTailsErr
+}
+
+func (f *fakeGH) RerunFailedPRChecks(_ context.Context, req github.ReadPRRequest) (github.RerunFailedPRChecksResult, error) {
+	f.rerunReq = req
+	return f.rerunRes, f.rerunErr
 }
 
 func (f *fakeGH) UpdatePR(_ context.Context, req github.UpdatePRRequest) (github.UpdatePRResult, error) {
@@ -400,6 +418,24 @@ func TestGHPRTools_DefaultEmptyRefToLiveBranch(t *testing.T) {
 				return err
 			},
 			got: func(gh *fakeGH) string { return gh.addPRCommentReq.Ref },
+		},
+		{
+			name: "check logs",
+			run: func(gh *fakeGH, cwd *CwdRef) error {
+				tool := &PRCheckLogsTool{Cwd: cwd, GH: gh}
+				_, err := tool.Execute(context.Background(), `{}`)
+				return err
+			},
+			got: func(gh *fakeGH) string { return gh.logTailsReq.Ref },
+		},
+		{
+			name: "rerun checks",
+			run: func(gh *fakeGH, cwd *CwdRef) error {
+				tool := &PRRerunChecksTool{Cwd: cwd, GH: gh}
+				_, err := tool.Execute(context.Background(), `{}`)
+				return err
+			},
+			got: func(gh *fakeGH) string { return gh.rerunReq.Ref },
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

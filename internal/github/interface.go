@@ -5,7 +5,8 @@
 //   - Typed client (TypedClient) wrapping go-github/v66, with HTTPClient
 //     injection for tests.
 //   - Auth resolver chain: $GITHUB_TOKEN → `gh auth token` → ~/.yottacode/github.json.
-//   - PR surface: CreatePR, ReadPR, ReadPRDiff, ListPRChecks, UpdatePR.
+//   - PR surface: CreatePR, ReadPR, ReadPRDiff, ListPRChecks,
+//     ListFailedWorkflowJobLogTails, RerunFailedPRChecks, UpdatePR.
 //   - Issue surface: ReadIssue, ListOpenIssues.
 //   - PR comment surface: AddPRComment.
 //
@@ -70,6 +71,19 @@ type Interface interface {
 	// `/git-review-pr` flow surfaces failing checks at the top of
 	// the review, which is why typed access matters here.
 	ListPRChecks(ctx context.Context, req ReadPRRequest) ([]CheckRun, error)
+
+	// ListFailedWorkflowJobLogTails returns bounded log tails for the
+	// failed GitHub Actions jobs attached to a PR's current head SHA.
+	// It is intentionally scoped to failed jobs so callers can replace
+	// `gh run view --log-failed | tail -N` without downloading every
+	// successful job log in a workflow run.
+	ListFailedWorkflowJobLogTails(ctx context.Context, req ReadPRRequest, maxLines int) ([]WorkflowJobLogTail, error)
+
+	// RerunFailedPRChecks re-runs failed jobs for every failed workflow
+	// run attached to a PR's current head SHA. It intentionally targets
+	// GitHub's failed-jobs endpoint, not a full workflow rerun, so the
+	// tool does the least surprising mutating action by default.
+	RerunFailedPRChecks(ctx context.Context, req ReadPRRequest) (RerunFailedPRChecksResult, error)
 
 	// UpdatePR rewrites an existing PR's title and body. Used by
 	// /git-update-pr after follow-up commits make the original
@@ -218,6 +232,29 @@ type CheckRun struct {
 	Conclusion  string
 	StartedAt   time.Time
 	CompletedAt time.Time
+}
+
+// WorkflowJobLogTail is the bounded log excerpt for one failed
+// GitHub Actions job. The full log can be large; callers ask for a
+// tail so the model sees the failure without flooding the context.
+type WorkflowJobLogTail struct {
+	RunID      int64
+	JobID      int64
+	Name       string
+	Workflow   string
+	Conclusion string
+	HTMLURL    string
+	Tail       string
+	Lines      int
+	Truncated  bool
+}
+
+// RerunFailedPRChecksResult reports which workflow runs were asked to
+// rerun failed jobs. The endpoint is asynchronous; success means
+// GitHub accepted the rerun request, not that CI has passed.
+type RerunFailedPRChecksResult struct {
+	RunIDs []int64
+	Count  int
 }
 
 // ReadIssueRequest is the typed payload for Interface.ReadIssue.
