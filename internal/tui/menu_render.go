@@ -57,11 +57,19 @@ type menuItemOpts struct {
 	Disabled bool
 }
 
-// renderMenuHeader draws the picker's title + optional description block, then
-// a muted divider. The rule visually separates submenu chrome from rows while
-// keeping all slash-command submenus on one shared layout path.
-func renderMenuHeader(title, description string) string {
+// renderMenuHeader draws the picker's top divider, title, optional description,
+// and matching bottom divider. The rules visually separate submenu chrome from
+// surrounding terminal content and rows while keeping all slash-command submenus
+// on one shared layout path. Callers that know the live overlay width pass it so
+// the header rules align with the prompt separator below the menu.
+func renderMenuHeader(title, description string, widths ...int) string {
+	dividerWidth := menuDividerWidth
+	if len(widths) > 0 && widths[0] > 0 {
+		dividerWidth = widths[0]
+	}
 	var b strings.Builder
+	b.WriteString(renderMenuDivider(dividerWidth))
+	b.WriteString("\n")
 	b.WriteString(styleSplashTitle.Render(title))
 	b.WriteString("\n")
 	if description != "" {
@@ -71,7 +79,7 @@ func renderMenuHeader(title, description string) string {
 		b.WriteString(styleMeta.Render(strings.TrimSpace(description)))
 		b.WriteString("\n")
 	}
-	b.WriteString(renderMenuDivider(menuDividerWidth))
+	b.WriteString(renderMenuDivider(dividerWidth))
 	b.WriteString("\n")
 	return b.String()
 }

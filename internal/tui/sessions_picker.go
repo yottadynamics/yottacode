@@ -560,7 +560,7 @@ func renderSessionsPicker(p *sessionsPickerState, width int) string {
 	var body, footerText string
 	switch p.mode {
 	case sessionsMenuMode:
-		body = renderSessionsMenu(p)
+		body = renderSessionsMenu(p, width)
 		footerText = "↵ confirm · esc cancel · ↑↓ navigate"
 	case sessionsLoadListMode:
 		body = renderSessionsList(p, "Load session", loadListDescription(p), width)
@@ -570,7 +570,7 @@ func renderSessionsPicker(p *sessionsPickerState, width int) string {
 		}
 		footerText = fmt.Sprintf("↵ load · s toggle summarized (%s) · esc back · ↑↓ navigate", state)
 	case sessionsResumeInputMode:
-		body = renderSessionsResumeInput(p)
+		body = renderSessionsResumeInput(p, width)
 		state := "off"
 		if p.summarized {
 			state = "on"
@@ -581,14 +581,14 @@ func renderSessionsPicker(p *sessionsPickerState, width int) string {
 			"Pick a session to label. The current session is marked ✓.", width)
 		footerText = "↵ rename · esc back · ↑↓ navigate"
 	case sessionsRenameInputMode:
-		body = renderSessionsRenameInput(p)
+		body = renderSessionsRenameInput(p, width)
 		footerText = "↵ save · esc back"
 	case sessionsExportListMode:
 		body = renderSessionsList(p, "Export session",
 			"Pick a session to export as Markdown. The current session is marked ✓.", width)
 		footerText = "↵ export · esc back · ↑↓ navigate"
 	case sessionsExportInputMode:
-		body = renderSessionsExportInput(p)
+		body = renderSessionsExportInput(p, width)
 		footerText = "↵ write · esc back"
 	default:
 		body = styleEmpty.Render("(unknown picker state)")
@@ -598,10 +598,10 @@ func renderSessionsPicker(p *sessionsPickerState, width int) string {
 	return body + "\n\n" + footer
 }
 
-func renderSessionsMenu(p *sessionsPickerState) string {
+func renderSessionsMenu(p *sessionsPickerState, width int) string {
 	var b strings.Builder
 	b.WriteString(renderMenuHeader("Sessions",
-		"Resume, rename, or export a saved session."))
+		"Resume, rename, or export a saved session.", width))
 	b.WriteString("\n")
 	for i, item := range p.menuItems {
 		b.WriteString(renderMenuItem(menuItemOpts{
@@ -633,7 +633,7 @@ func loadListDescription(p *sessionsPickerState) string {
 // older sessions.
 func renderSessionsList(p *sessionsPickerState, title, description string, width int) string {
 	var b strings.Builder
-	b.WriteString(renderMenuHeader(title, description))
+	b.WriteString(renderMenuHeader(title, description, width))
 	b.WriteString("\n")
 	if len(p.sessions) == 0 {
 		b.WriteString(styleEmpty.Render("  (no saved sessions yet)"))
@@ -778,10 +778,10 @@ func sessionsRowLayout(sessions []session.SessionInfo, width int) sessionRowLayo
 	return sessionRowLayout{}
 }
 
-func renderSessionsResumeInput(p *sessionsPickerState) string {
+func renderSessionsResumeInput(p *sessionsPickerState, width int) string {
 	var b strings.Builder
 	b.WriteString(renderMenuHeader("Resume session",
-		"Type a session id (e.g. 2026-04-29T14-22-08) or a name set via /sessions Rename."))
+		"Type a session id (e.g. 2026-04-29T14-22-08) or a name set via /sessions Rename.", width))
 	b.WriteString("\n")
 	if p.inputErr != "" {
 		b.WriteString(styleError.Render("✗ " + p.inputErr))
@@ -791,7 +791,7 @@ func renderSessionsResumeInput(p *sessionsPickerState) string {
 	return strings.TrimRight(b.String(), "\n")
 }
 
-func renderSessionsRenameInput(p *sessionsPickerState) string {
+func renderSessionsRenameInput(p *sessionsPickerState, width int) string {
 	var b strings.Builder
 	title := "Rename session"
 	if p.picked != nil {
@@ -800,7 +800,7 @@ func renderSessionsRenameInput(p *sessionsPickerState) string {
 		})
 	}
 	b.WriteString(renderMenuHeader(title,
-		"Type a label and press Enter. Names are not unique; the canonical key is the session id."))
+		"Type a label and press Enter. Names are not unique; the canonical key is the session id.", width))
 	b.WriteString("\n")
 	if p.inputErr != "" {
 		b.WriteString(styleError.Render("✗ " + p.inputErr))
@@ -810,7 +810,7 @@ func renderSessionsRenameInput(p *sessionsPickerState) string {
 	return strings.TrimRight(b.String(), "\n")
 }
 
-func renderSessionsExportInput(p *sessionsPickerState) string {
+func renderSessionsExportInput(p *sessionsPickerState, width int) string {
 	var b strings.Builder
 	title := "Export session"
 	if p.picked != nil {
@@ -819,7 +819,7 @@ func renderSessionsExportInput(p *sessionsPickerState) string {
 		})
 	}
 	b.WriteString(renderMenuHeader(title,
-		"Confirm or edit the path. Relative paths resolve against the current directory."))
+		"Confirm or edit the path. Relative paths resolve against the current directory.", width))
 	b.WriteString("\n")
 	if p.inputErr != "" {
 		b.WriteString(styleError.Render("✗ " + p.inputErr))
