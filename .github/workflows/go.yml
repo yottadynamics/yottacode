@@ -87,6 +87,9 @@ jobs:
         run: |
           set -eu
           export YOTTACODE_LSP_TYPESCRIPT_TSSERVER="$(npm root -g)/typescript/lib/tsserver.js"
+          if [ ! -f "$YOTTACODE_LSP_TYPESCRIPT_TSSERVER" ]; then
+            export YOTTACODE_LSP_TYPESCRIPT_TSSERVER="$(npm root -g)/typescript/lib/_tsserver.js"
+          fi
           test -f "$YOTTACODE_LSP_TYPESCRIPT_TSSERVER"
           go test -run 'Test(Gopls|TypeScriptLanguageServer|PyrightLanguageServer|RustAnalyzer)Smoke' ./internal/lsp
 
