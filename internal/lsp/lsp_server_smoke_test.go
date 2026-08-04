@@ -16,10 +16,11 @@ func TestGoplsSmoke(t *testing.T) {
 func TestTypeScriptLanguageServerSmoke(t *testing.T) {
 	root := t.TempDir()
 	writeSmokeFile(t, root, "package.json", `{"devDependencies":{"typescript":"latest"}}`)
+	installTypeScriptForSmoke(t, root)
 	writeSmokeFile(t, root, "index.ts", "export function smokeTarget(): number { return 1 }\n")
 	lang := Language{ID: "typescript", Name: "TypeScript/JavaScript", Extensions: []string{".ts"}, Command: []string{"typescript-language-server", "--stdio"}}
 	if tsserverPath := os.Getenv("YOTTACODE_LSP_TYPESCRIPT_TSSERVER"); tsserverPath != "" {
-		lang.InitializationOptions = map[string]any{"tsserver": map[string]any{"path": tsserverPath}}
+		lang.InitializationOptions = map[string]any{"tsserver": map[string]any{"path": tsserverPath, "fallbackPath": tsserverPath}}
 	}
 	smokeLanguageServer(t, lang, root, "smokeTarget")
 }
@@ -115,6 +116,21 @@ func smokeWorkflowPath(root string, lang Language) string {
 		return filepath.Join(root, "src", "lib.rs")
 	default:
 		return ""
+	}
+}
+
+func installTypeScriptForSmoke(t *testing.T, root string) {
+	t.Helper()
+	if os.Getenv("YOTTACODE_LSP_SMOKE_REQUIRED") != "1" {
+		return
+	}
+	if _, err := exec.LookPath("npm"); err != nil {
+		smokeUnavailable(t, true, "npm not installed for TypeScript smoke workspace setup")
+	}
+	cmd := exec.Command("npm", "install", "--silent")
+	cmd.Dir = root
+	if out, err := cmd.CombinedOutput(); err != nil {
+		smokeUnavailable(t, true, "npm install for TypeScript smoke workspace failed: %v\n%s", err, strings.TrimSpace(string(out)))
 	}
 }
 

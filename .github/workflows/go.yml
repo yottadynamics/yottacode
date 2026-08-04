@@ -87,7 +87,7 @@ jobs:
         run: |
           set -eu
           smoke_dir="$(mktemp -d)"
-          npm install --prefix "$smoke_dir" typescript
+          npm install --silent --prefix "$smoke_dir" typescript
           export YOTTACODE_LSP_TYPESCRIPT_TSSERVER="$smoke_dir/node_modules/typescript/lib"
           test -d "$YOTTACODE_LSP_TYPESCRIPT_TSSERVER"
           go test -run 'Test(Gopls|TypeScriptLanguageServer|PyrightLanguageServer|RustAnalyzer)Smoke' ./internal/lsp
