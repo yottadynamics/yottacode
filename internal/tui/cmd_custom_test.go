@@ -93,8 +93,8 @@ func TestCustom_HelpListsCustomSection(t *testing.T) {
 		SourceFile:  "/tmp/commands/deploy.md",
 	}})
 	m, _ = typeAndEnter(t, m, "/help")
-	content := m.transcript.String()
-	if !strings.Contains(content, "Custom commands:") {
+	content := m.helpPanel
+	if !strings.Contains(content, "Custom commands") {
 		t.Errorf("/help should include 'Custom commands:' section: %q", content)
 	}
 	if !strings.Contains(content, "/deploy") {

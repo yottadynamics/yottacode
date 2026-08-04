@@ -691,6 +691,18 @@ type Model struct {
 	// doesn't re-fire the openai-auth backend probe); any key closes.
 	usageOpen  bool
 	usagePanel string
+
+	// Experimental overlay (/experimental). Read-only feature catalog rendered as
+	// an inline overlay, not scrollback, so feature-state inspection stays
+	// transient like /usage and /context.
+	experimentalOpen  bool
+	experimentalPanel string
+
+	// Help overlay (/help). Read-only command catalog rendered as an inline
+	// overlay so the dense command list stays readable and out of transcript
+	// history.
+	helpOpen  bool
+	helpPanel string
 	// Context report overlay (/context). Renders the context-window
 	// breakdown on the inline-overlay surface (above the cmdline) instead
 	// of in chat history, so the report — which is transient inspection,
@@ -1401,6 +1413,16 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.usageOpen {
 			m.usageOpen = false
 			m.usagePanel = ""
+			return m, nil
+		}
+		if m.experimentalOpen {
+			m.experimentalOpen = false
+			m.experimentalPanel = ""
+			return m, nil
+		}
+		if m.helpOpen {
+			m.helpOpen = false
+			m.helpPanel = ""
 			return m, nil
 		}
 		if m.contextReportOpen {
@@ -2646,7 +2668,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // normal footer, not as a replacing overlay, so they don't drive the
 // over-tall collapse this guards.
 func (m Model) anyOverlayOpen() bool {
-	return m.cheatsheetOpen || m.loopListOpen || m.usageOpen || m.contextReportOpen ||
+	return m.cheatsheetOpen || m.loopListOpen || m.usageOpen || m.experimentalOpen || m.helpOpen || m.contextReportOpen ||
 		m.permissionsOpen || m.modelPickerOpen || m.providerPickerOpen ||
 		m.embedSetupOpen || m.memoryPickerOpen || m.recallPickerOpen || m.codeMapPickerOpen || m.sessionsPickerOpen ||
 		m.plansPickerOpen || m.checkpointsPickerOpen || m.subagentsPickerOpen ||
@@ -2695,6 +2717,12 @@ func (m Model) View() string {
 	}
 	if m.usageOpen {
 		return m.renderInlineOverlay(m.usagePanel)
+	}
+	if m.experimentalOpen {
+		return m.renderInlineOverlay(m.experimentalPanel)
+	}
+	if m.helpOpen {
+		return m.renderInlineOverlay(m.helpPanel)
 	}
 	if m.contextReportOpen {
 		return m.renderInlineOverlay(m.contextReportBody)

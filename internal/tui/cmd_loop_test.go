@@ -336,8 +336,8 @@ func TestLoop_EndToEndDispatch(t *testing.T) {
 	if ls.interval != 30*time.Second || !ls.isSlash || ls.payload != "/help" {
 		t.Fatalf("loop state = %+v", ls)
 	}
-	if !strings.Contains(m.transcript.String(), "Available commands") {
-		t.Fatalf("first iteration should execute /help; transcript=%q", m.transcript.String())
+	if !m.helpOpen || !strings.Contains(m.helpPanel, "/help") {
+		t.Fatalf("first iteration should execute /help; helpOpen=%v panel=%q", m.helpOpen, m.helpPanel)
 	}
 }
 

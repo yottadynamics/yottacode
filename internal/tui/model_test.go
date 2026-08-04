@@ -920,7 +920,6 @@ func TestModel_PreservesTurnSlashDuringThinkingDoesNotCancel(t *testing.T) {
 	canceled := false
 	m.turnCancel = func() { canceled = true }
 
-	beforeLen := len(m.historyLines)
 	for _, r := range "/help" {
 		m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
 	}
@@ -928,8 +927,8 @@ func TestModel_PreservesTurnSlashDuringThinkingDoesNotCancel(t *testing.T) {
 	if canceled {
 		t.Errorf("PreservesTurn slash command must NOT cancel the active turn")
 	}
-	if len(m.historyLines) <= beforeLen {
-		t.Errorf("/help should still produce output even when the turn is preserved")
+	if !m.helpOpen || m.helpPanel == "" {
+		t.Errorf("/help should still open its overlay even when the turn is preserved")
 	}
 }
 
