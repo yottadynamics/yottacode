@@ -37,6 +37,7 @@ For engineers who want terminal-agent agency without vendor lock-in, cloud data 
 - **Any model, zero lock-in.** Native adapters for OpenAI, Anthropic, Gemini, Google Vertex AI, xAI, ChatGPT/Copilot OAuth, OpenAI-compatible endpoints, and local Ollama — switch providers or models mid-session with `/model`.
 - **Agent-managed memory that compounds.** yottacode captures durable user and project context, retrieves only what matters each turn, and helps keep memory clean over time.
 - **Typed GitHub + worktree workflows.** Issues, PR reviews, check status, commits, pushes, PR creation, PR updates, comments, and isolated worktrees are first-class tools instead of fragile shell transcripts.
+- **GA code intelligence without IDE lock-in.** LSP tools are default-on for Go, TypeScript/JavaScript, Python, and Rust; servers run locally, start lazily, and are never installed without approval.
 - **Plan mode as a real permission boundary.** yottacode can investigate read-only, produce a plan, and only then move into implementation with approvals, path validation, diffs, and checkpoints.
 - **Local-first by design.** Sessions, memory, checkpoints, and project rules are plain files under `~/.yottacode/`; there is no telemetry or analytics, and code only leaves your machine for the model provider you choose.
 - **A growing skills ecosystem.** Reusable Agent Skills let teams package repeatable workflows; see [`yottacode-skills`](https://github.com/yottadynamics/yottacode-skills).
@@ -142,6 +143,7 @@ Browse the full documentation online at **[yottacode.ai/docs](https://yottacode.
 | [`docs/providers.md`](docs/providers.md) | Provider setup and switching |
 | [`docs/models.md`](docs/models.md) | Model configuration |
 | [`docs/tools.md`](docs/tools.md) | Built-in tools and approval behavior |
+| [`docs/lsp.md`](docs/lsp.md) | LSP code intelligence for Go, TypeScript/JavaScript, Python, and Rust |
 | [`docs/github.md`](docs/github.md) | GitHub integration: auth, tools, permissions |
 | [`docs/security-and-allow-lists.md`](docs/security-and-allow-lists.md) | Approvals, permissions, path policy, isolation |
 | [`docs/worktrees.md`](docs/worktrees.md) | Parallel sessions and `.worktreeinclude` |

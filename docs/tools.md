@@ -1,6 +1,6 @@
 # Built-in tools
 
-Built-in tools ship in `internal/agent` (including the experimental LSP tools, `todo_write`,
+Built-in tools ship in `internal/agent` (including the LSP tools, `todo_write`,
 and the `enter_plan_mode` / `exit_plan_mode` pair). The model sees their JSON-schema parameters via the
 OpenAI tools API; the TUI renders each invocation as a bordered card with a
 verb-style header (see [How tool calls render in the TUI](#how-tool-calls-render-in-the-tui)).
@@ -1030,8 +1030,7 @@ No approval.
 ## lsp_status
 
 Detect supported source languages in the workspace and report whether the
-matching language server command is installed on `PATH`. This tool is available
-only when `lsp_code_intelligence` is enabled. It never installs anything; when a
+matching language server command is installed on `PATH`. It never installs anything; when a
 server is missing it includes a concise install hint and an exact `install_command`
 that the agent may offer to run through normal bash approval when the active task
 would benefit from LSP. Each row also reports the

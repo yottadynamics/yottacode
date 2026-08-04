@@ -574,6 +574,12 @@ type Model struct {
 	// instead of the full body — keeps the cmdline from stretching to
 	// fill the screen. On submit, expandPastes() swaps the markers back
 	// for their original content before the message hits the agent.
+	// pendingLSPSetupReminder holds startup LSP install guidance for the
+	// next user turn. Like memory reminders, it rides only the hidden
+	// model-facing history copy so the transcript keeps the user's text
+	// clean while the agent can offer approval-gated setup when relevant.
+	pendingLSPSetupReminder string
+
 	pastes   map[string]string
 	pasteSeq int
 
@@ -4674,6 +4680,10 @@ func (m Model) startTurnWithDisplay(input, displayLabel string) (tea.Model, tea.
 		content += "\n\n" + preCompactionMemoryReminder
 	case m.captureReminderDue():
 		content += "\n\n" + captureReminderPrompt
+	}
+	if m.pendingLSPSetupReminder != "" {
+		content += "\n\n" + m.pendingLSPSetupReminder
+		m.pendingLSPSetupReminder = ""
 	}
 	m.sess.Messages = append(m.sess.Messages, adapter.Message{
 		Role:    adapter.RoleUser,

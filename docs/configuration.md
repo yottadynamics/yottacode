@@ -619,18 +619,13 @@ can set either, both, or neither.
 
 ## LSP code intelligence
 
-The experimental `lsp_code_intelligence` feature adds read-only LSP-backed code
-navigation tools for Go, TypeScript/JavaScript, Python, and Rust. yottacode
+LSP Code Intelligence adds LSP-backed code navigation tools for Go,
+TypeScript/JavaScript, Python, and Rust. The tools are registered by default, but
+servers start lazily only when semantic code intelligence is requested. yottacode
 detects supported files in the workspace and tells the user exactly which server
 binary is missing, but it does **not** install language servers automatically.
-Enable it explicitly:
 
-```toml
-[experimental]
-lsp_code_intelligence = true
-```
-
-Then install the servers for the languages you use:
+Install the servers for the languages you use:
 
 - Go: `go install golang.org/x/tools/gopls@latest` and put `$(go env GOPATH)/bin` on `PATH`
 - TypeScript/JavaScript: `npm install -g typescript typescript-language-server`
@@ -642,9 +637,9 @@ servers, install hints, and session manager stats. Interactive sessions also sho
 a startup **LSP Code Intelligence** advisory card when supported files are detected
 but the matching server is missing; it names the language, explains which semantic
 features stay offline, and includes the install command. See [lsp.md](lsp.md) for setup,
-troubleshooting, and production-promotion notes, and [tools.md](tools.md#lsp_status)
-for the full tool reference. Use `yottacode doctor --experimental lsp_code_intelligence`
-for command-line setup diagnostics. Customize commands when needed:
+troubleshooting, and production-status notes, and [tools.md](tools.md#lsp_status)
+for the full tool reference. Use `yottacode doctor` for command-line setup
+diagnostics. Customize commands when needed:
 
 ```toml
 [lsp.servers]

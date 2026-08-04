@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"strings"
 
+	lspci "github.com/yottadynamics/yottacode/internal/lsp"
 	"github.com/yottadynamics/yottacode/internal/permissions"
 )
 
@@ -451,7 +452,10 @@ func (t *GitCheckpointTool) Execute(ctx context.Context, argsJSON string) (strin
 	return fmt.Sprintf("created checkpoint %s", strings.TrimSpace(string(b))), nil
 }
 
-type RollbackTool struct{ Cwd *CwdRef }
+type RollbackTool struct {
+	Cwd        *CwdRef
+	LSPManager *lspci.Manager
+}
 
 func (t *RollbackTool) Name() string { return "rollback" }
 func (t *RollbackTool) Description() string {
@@ -496,7 +500,11 @@ func (t *RollbackTool) Execute(ctx context.Context, argsJSON string) (string, er
 	if err != nil {
 		return "", fmt.Errorf("rollback: %s", strings.TrimSpace(string(b)))
 	}
-	return strings.TrimSpace(string(b)), nil
+	out := strings.TrimSpace(string(b))
+	if note := invalidateLSPServers(t.LSPManager); note != "" {
+		out += "\n" + note
+	}
+	return out, nil
 }
 
 type runTestsArgs struct {

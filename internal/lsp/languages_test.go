@@ -45,6 +45,21 @@ func TestResolveIDAndInstallHints(t *testing.T) {
 	}
 }
 
+func TestLanguageSafeInitializationOptions(t *testing.T) {
+	rust, ok := ResolveID("rust")
+	if !ok || len(rust.InitializationOptions) == 0 {
+		t.Fatalf("rust should carry safe initialization options: %+v", rust)
+	}
+	ts, ok := ResolveID("typescript")
+	if !ok || len(ts.InitializationOptions) == 0 {
+		t.Fatalf("typescript should carry safe initialization options: %+v", ts)
+	}
+	custom := ApplyOverrides(rust, map[string][]string{"rust": {"custom-rust-analyzer"}})
+	if len(custom.InitializationOptions) != 0 {
+		t.Fatalf("custom server overrides should not inherit built-in settings: %+v", custom.InitializationOptions)
+	}
+}
+
 func TestDetectWorkspaceAggregatesLanguagesAndSkipsHeavyDirs(t *testing.T) {
 	tmp := t.TempDir()
 	writeDetectFile(t, tmp, "main.go")

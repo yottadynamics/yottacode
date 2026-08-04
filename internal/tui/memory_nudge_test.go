@@ -222,6 +222,32 @@ func TestCaptureReminder_YieldsToPreCompaction(t *testing.T) {
 	}
 }
 
+func TestStartTurn_ConsumesPendingLSPSetupReminder(t *testing.T) {
+	m := captureModel(t, 0, 1)
+	m.pendingLSPSetupReminder = "[system reminder — not from the user] offer run_bash approval for install_command=npm install -g pyright"
+
+	m2, content := startAndLastContent(t, m, "review app.py")
+
+	if !strings.Contains(content, "install_command=npm install -g pyright") {
+		t.Fatalf("LSP setup reminder should ride the history copy; got %q", content)
+	}
+	if m2.pendingLSPSetupReminder != "" {
+		t.Fatalf("LSP setup reminder should be consumed, got %q", m2.pendingLSPSetupReminder)
+	}
+	if got := m2.transcript.String(); strings.Contains(got, "install_command=npm install") {
+		t.Fatalf("LSP setup reminder leaked into transcript: %q", got)
+	}
+}
+
+func TestStartTurn_AppendsLSPReminderAfterMemoryReminder(t *testing.T) {
+	m := captureModel(t, 6, 6)
+	m.pendingLSPSetupReminder = "[system reminder — not from the user] install_command=npm install -g pyright"
+	_, content := startAndLastContent(t, m, "review app.py")
+	if !strings.Contains(content, captureReminderPrompt+"\n\n"+m.pendingLSPSetupReminder) {
+		t.Fatalf("LSP setup reminder should coexist after memory reminder; got %q", content)
+	}
+}
+
 func TestCaptureReminder_SuppressedDuringSummarizeAndExitSave(t *testing.T) {
 	for name, mut := range map[string]func(Model) Model{
 		"summarizing": func(m Model) Model { m.summarizing = true; return m },

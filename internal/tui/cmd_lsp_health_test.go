@@ -16,23 +16,8 @@ func TestRenderLSPAdvisory_PythonMissing(t *testing.T) {
 		ServerAvailable: false,
 	}}))
 
-	wantCard := strings.Join([]string{
-		"┌─ LSP Code Intelligence ───────────────── Python ─┐",
-		"│                                                  │",
-		"│   pyright not found — running without go-to-def, │",
-		"│   live diagnostics, and symbol-aware review.     │",
-		"│   LSP servers are local subprocesses; yottacode  │",
-		"│   never auto-installs or auto-enables them.      │",
-		"│                                                  │",
-		"│     npm install -g pyright                       │",
-		"│                                                  │",
-		"│   Everything works without it; this just unlocks │",
-		"│   deeper code intelligence.                      │",
-		"│                                                  │",
-		"└──────────────────────────────────────────────────┘",
-	}, "\n")
-	if card != wantCard {
-		t.Fatalf("LSP advisory changed:\nwant:\n%s\n\ngot:\n%s", wantCard, card)
+	if card == "" {
+		t.Fatal("missing Python server should render an advisory card")
 	}
 
 	for _, want := range []string{
@@ -41,9 +26,10 @@ func TestRenderLSPAdvisory_PythonMissing(t *testing.T) {
 		"pyright not found — running without go-to-def",
 		"live diagnostics, and symbol-aware review.",
 		"LSP servers are local subprocesses; yottacode",
-		"never auto-installs or auto-enables them.",
+		"can ask to run the install command below",
+		"through normal approval.",
 		"npm install -g pyright",
-		"Everything works without it; this just unlocks",
+		"Everything works without it; approving just unlocks",
 		"deeper code intelligence.",
 	} {
 		if !strings.Contains(card, want) {
@@ -68,6 +54,37 @@ func TestRenderLSPAdvisory_SuppressesInstalledServers(t *testing.T) {
 	}})
 	if card != "" {
 		t.Fatalf("installed servers should not produce advisory card: %q", stripANSI(card))
+	}
+}
+
+func TestLSPSetupReminderIncludesApprovalCommand(t *testing.T) {
+	reminder := lspSetupReminder([]lsp.DetectedLanguage{{
+		Language:        lsp.Language{ID: "python", Name: "Python", Command: []string{"pyright-langserver", "--stdio"}, InstallCommand: "npm install -g pyright"},
+		FilesAvailable:  1,
+		ServerAvailable: false,
+	}})
+
+	for _, want := range []string{
+		"system reminder — not from the user",
+		"Python: pyright missing",
+		"install_command=npm install -g pyright",
+		"run_bash approval",
+		"Never auto-install",
+	} {
+		if !strings.Contains(reminder, want) {
+			t.Fatalf("LSP setup reminder missing %q:\n%s", want, reminder)
+		}
+	}
+}
+
+func TestLSPSetupReminderSuppressesInstalledServers(t *testing.T) {
+	reminder := lspSetupReminder([]lsp.DetectedLanguage{{
+		Language:        lsp.Language{ID: "python", Name: "Python", Command: []string{"pyright-langserver", "--stdio"}, InstallCommand: "npm install -g pyright"},
+		FilesAvailable:  1,
+		ServerAvailable: true,
+	}})
+	if reminder != "" {
+		t.Fatalf("installed servers should not produce a setup reminder: %q", reminder)
 	}
 }
 
