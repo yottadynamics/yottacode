@@ -76,7 +76,6 @@ jobs:
           set -eu
           go install golang.org/x/tools/gopls@latest
           npm install -g typescript typescript-language-server pyright
-          npm link typescript
           curl -L https://github.com/rust-lang/rust-analyzer/releases/latest/download/rust-analyzer-x86_64-unknown-linux-gnu.gz -o /tmp/rust-analyzer.gz
           gzip -d /tmp/rust-analyzer.gz
           chmod +x /tmp/rust-analyzer
@@ -85,6 +84,7 @@ jobs:
       - name: Real-server LSP smoke tests
         env:
           YOTTACODE_LSP_SMOKE_REQUIRED: '1'
+          YOTTACODE_LSP_TYPESCRIPT_TSSERVER: /usr/local/lib/node_modules/typescript/lib/tsserver.js
         run: go test -run 'Test(Gopls|TypeScriptLanguageServer|PyrightLanguageServer|RustAnalyzer)Smoke' ./internal/lsp
 
   shellcheck:

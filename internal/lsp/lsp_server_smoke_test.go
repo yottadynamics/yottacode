@@ -18,7 +18,7 @@ func TestTypeScriptLanguageServerSmoke(t *testing.T) {
 	writeSmokeFile(t, root, "package.json", `{"devDependencies":{"typescript":"latest"}}`)
 	writeSmokeFile(t, root, "index.ts", "export function smokeTarget(): number { return 1 }\n")
 	lang := Language{ID: "typescript", Name: "TypeScript/JavaScript", Extensions: []string{".ts"}, Command: []string{"typescript-language-server", "--stdio"}}
-	if tsserverPath := globalTSServerPath(t); tsserverPath != "" {
+	if tsserverPath := os.Getenv("YOTTACODE_LSP_TYPESCRIPT_TSSERVER"); tsserverPath != "" {
 		lang.InitializationOptions = map[string]any{"tsserver": map[string]any{"path": tsserverPath}}
 	}
 	smokeLanguageServer(t, lang, root, "smokeTarget")
@@ -127,19 +127,6 @@ func writeSmokeFile(t *testing.T, root, rel, body string) {
 	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
 		t.Fatalf("write %s: %v", rel, err)
 	}
-}
-
-func globalTSServerPath(t *testing.T) string {
-	t.Helper()
-	out, err := exec.Command("npm", "root", "-g").Output()
-	if err != nil {
-		return ""
-	}
-	path := filepath.Join(strings.TrimSpace(string(out)), "typescript", "lib", "tsserver.js")
-	if _, err := os.Stat(path); err != nil {
-		return ""
-	}
-	return path
 }
 
 func smokeUnavailable(t *testing.T, required bool, format string, args ...any) {
