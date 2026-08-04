@@ -32,7 +32,7 @@ func TestSlash_ContextRendersAllSections(t *testing.T) {
 	got := ansi.Strip(m.contextReportBody)
 
 	for _, want := range []string{
-		"Context Usage",
+		"Context",
 		"Diagnostics",
 		"Window:",
 		"Thresholds:",
@@ -61,9 +61,26 @@ func TestSlash_ContextRendersAllSections(t *testing.T) {
 		}
 	}
 
+	if !strings.Contains(got, "──") {
+		t.Errorf("/context should render with submenu horizontal rules:\n%s", got)
+	}
+
+	if diag := strings.Index(got, "Diagnostics"); diag >= 0 {
+		cats := strings.Index(got[diag:], "Estimated usage by category")
+		section := ""
+		if cats >= 0 {
+			section = got[diag : diag+cats]
+		}
+		if !strings.Contains(section, " / ") || !strings.Contains(section, "test-model") {
+			t.Errorf("/context should keep the progress summary under Diagnostics\n---\n%s", got)
+		}
+	} else {
+		t.Errorf("/context output missing Diagnostics section\n---\n%s", got)
+	}
+
 	// The report is transient inspection — it must NOT leak into chat
 	// history / the transcript (which feeds /export and resume replay).
-	if tr := ansi.Strip(m.transcript.String()); strings.Contains(tr, "Context Usage") {
+	if tr := ansi.Strip(m.transcript.String()); strings.Contains(tr, "Estimated usage by category") {
 		t.Errorf("/context output leaked into the transcript:\n%s", tr)
 	}
 

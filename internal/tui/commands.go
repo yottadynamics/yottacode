@@ -201,69 +201,139 @@ func (m Model) dispatchSlash(input string) (Model, tea.Cmd) {
 
 // --- handlers --------------------------------------------------------------
 
-// cmdHelp prints the command list, and re-emits the startup card so
-// the user gets a refreshed full context summary mid-session. The
-// card hides its onboarding tip on non-fresh sessions (startupTip()
-// returns "" past the first user message), so on resumed sessions
-// /help shows just the bare context summary above the help list.
+// cmdHelp opens a readable command catalog as an inline overlay. The help list
+// is dense reference material, so it uses the same submenu chrome as /sessions
+// and /usage instead of dumping a raw aligned table into scrollback.
 func cmdHelp(m Model, _ []string) (Model, tea.Cmd) {
-	m.appendLine(renderStartupBox(m.version, m.commit, m.dirty, m.modelName, m.cwd, m.sess.ID, m.branch, m.memorySummary, m.providerProfile, m.startupTip(), m.width))
+	m.helpPanel = renderHelpPanel(m)
+	m.helpOpen = true
+	return m, nil
+}
 
-	// Compute one shared column width across BOTH built-ins and custom
-	// commands so the help text dashes line up across the two
-	// sections — avoids the visual jaggedness of two independent
-	// column widths.
-	leftFor := func(c slashCommand) string {
-		left := "/" + c.Name
-		if c.Args != "" {
-			left += " " + c.Args
-		}
-		return left
+func renderHelpPanel(m Model) string {
+	width := helpCommandWidth(m)
+	wrapWidth := m.inlineOverlayWidth() - 4
+	if wrapWidth < 40 {
+		wrapWidth = 40
 	}
-	width := 0
-	for _, c := range allSlash {
-		if w := len(leftFor(c)); w > width {
-			width = w
-		}
-	}
-	for _, c := range m.customSlash {
-		if w := len(leftFor(c)); w > width {
-			width = w
-		}
-	}
-	for _, c := range m.skillSlash {
-		if w := len(leftFor(c)); w > width {
-			width = w
-		}
-	}
-
 	var b strings.Builder
-	b.WriteString("Available commands:\n")
-	for _, c := range allSlash {
-		b.WriteString(fmt.Sprintf("  %-*s   %s\n", width, leftFor(c), c.Help))
-	}
+	b.WriteString(renderMenuHeader("Help", "Type / to search commands directly. Press ? for keyboard shortcuts."))
+	b.WriteString("\n")
+
+	renderHelpCommonSection(&b, width)
+	renderHelpGroup(&b, "Workflow", allSlash[0:16], wrapWidth)
+	renderHelpGroup(&b, "Git", allSlash[16:24], wrapWidth)
+	renderHelpGroup(&b, "Integrations", allSlash[24:25], wrapWidth)
+	renderHelpGroup(&b, "Utilities", allSlash[25:36], wrapWidth)
+	renderHelpGroup(&b, "Mode", allSlash[36:37], wrapWidth)
+	renderHelpGroup(&b, "Meta", allSlash[37:], wrapWidth)
 	if len(m.customSlash) > 0 {
-		b.WriteString("\nCustom commands:\n")
-		for _, c := range m.customSlash {
-			line := fmt.Sprintf("  %-*s   %s", width, leftFor(c), c.Help)
-			if c.Source != "" {
-				line += styleMeta.Render("  ·  " + displayPath(c.Source, m.cwd))
-			}
-			b.WriteString(line + "\n")
-		}
+		renderHelpDetailSection(&b, "Custom commands", m.customSlash, width, m.cwd)
 	}
 	if len(m.skillSlash) > 0 {
-		b.WriteString("\nSkills:\n")
-		for _, c := range m.skillSlash {
-			line := fmt.Sprintf("  %-*s   %s", width, leftFor(c), c.Help)
-			if c.Source != "" {
-				line += styleMeta.Render("  ·  " + displayPath(c.Source, m.cwd))
+		renderHelpDetailSection(&b, "Skills", m.skillSlash, width, m.cwd)
+	}
+
+	b.WriteString("\n")
+	b.WriteString(styleHint.Render("esc to close"))
+	return strings.TrimRight(b.String(), "\n")
+}
+
+func renderHelpCommonSection(b *strings.Builder, width int) {
+	b.WriteString(styleSplashTitle.Render("Common"))
+	b.WriteString("\n")
+	for _, item := range []slashCommand{
+		{Name: "sessions", Help: "load, rename, or export saved sessions"},
+		{Name: "usage", Help: "inspect token usage and account links"},
+		{Name: "context", Help: "inspect window usage and compaction status"},
+		{Name: "model", Help: "switch model"},
+		{Name: "help", Help: "show this command map"},
+	} {
+		b.WriteString(renderMenuItem(menuItemOpts{
+			Label:      helpCommandLabel(item),
+			LabelWidth: width,
+			Desc:       item.Help,
+		}))
+		b.WriteString("\n")
+	}
+}
+
+func renderHelpGroup(b *strings.Builder, title string, commands []slashCommand, wrapWidth int) {
+	if len(commands) == 0 {
+		return
+	}
+	b.WriteString("\n")
+	b.WriteString(styleSplashTitle.Render(title))
+	b.WriteString("\n")
+	for _, line := range wrapHelpLabels(commands, wrapWidth) {
+		b.WriteString("  ")
+		b.WriteString(line)
+		b.WriteString("\n")
+	}
+}
+
+func renderHelpDetailSection(b *strings.Builder, title string, commands []slashCommand, width int, cwd string) {
+	if len(commands) == 0 {
+		return
+	}
+	b.WriteString("\n")
+	b.WriteString(styleSplashTitle.Render(title))
+	b.WriteString("\n")
+	for _, c := range commands {
+		desc := c.Help
+		if c.Source != "" {
+			desc += styleMeta.Render("  ·  " + displayPath(c.Source, cwd))
+		}
+		b.WriteString(renderMenuItem(menuItemOpts{
+			Label:      helpCommandLabel(c),
+			LabelWidth: width,
+			Desc:       desc,
+		}))
+		b.WriteString("\n")
+	}
+}
+
+func wrapHelpLabels(commands []slashCommand, width int) []string {
+	var lines []string
+	line := ""
+	for _, c := range commands {
+		label := helpCommandLabel(c)
+		if line == "" {
+			line = label
+			continue
+		}
+		candidate := line + "  " + label
+		if runeLen(candidate) > width {
+			lines = append(lines, line)
+			line = label
+			continue
+		}
+		line = candidate
+	}
+	if line != "" {
+		lines = append(lines, line)
+	}
+	return lines
+}
+
+func helpCommandWidth(m Model) int {
+	width := 0
+	for _, group := range [][]slashCommand{allSlash, m.customSlash, m.skillSlash} {
+		for _, c := range group {
+			if w := runeLen(helpCommandLabel(c)); w > width {
+				width = w
 			}
-			b.WriteString(line + "\n")
 		}
 	}
-	m.appendLine(strings.TrimRight(b.String(), "\n"))
-	return m, nil
+	return width
+}
+
+func helpCommandLabel(c slashCommand) string {
+	left := "/" + c.Name
+	if c.Args != "" {
+		left += " " + c.Args
+	}
+	return left
 }
 
 // displayPath shortens an absolute path for readability: replaces the

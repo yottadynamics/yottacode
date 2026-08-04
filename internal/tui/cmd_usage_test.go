@@ -35,6 +35,9 @@ func TestCmdUsage_OpensOverlayNotHistory(t *testing.T) {
 	}
 
 	v := m.View()
+	if !strings.Contains(m.usagePanel, "──") {
+		t.Errorf("/usage should render with submenu horizontal rules: %q", m.usagePanel)
+	}
 	if !strings.Contains(v, "Usage") {
 		t.Errorf("View should render the usage overlay: %q", v)
 	}

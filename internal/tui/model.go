@@ -691,6 +691,18 @@ type Model struct {
 	// doesn't re-fire the openai-auth backend probe); any key closes.
 	usageOpen  bool
 	usagePanel string
+
+	// Experimental overlay (/experimental). Read-only feature catalog rendered as
+	// an inline overlay, not scrollback, so feature-state inspection stays
+	// transient like /usage and /context.
+	experimentalOpen  bool
+	experimentalPanel string
+
+	// Help overlay (/help). Read-only command catalog rendered as an inline
+	// overlay so the dense command list stays readable and out of transcript
+	// history.
+	helpOpen  bool
+	helpPanel string
 	// Context report overlay (/context). Renders the context-window
 	// breakdown on the inline-overlay surface (above the cmdline) instead
 	// of in chat history, so the report — which is transient inspection,
@@ -1181,6 +1193,10 @@ func (m Model) Init() tea.Cmd {
 	// and line-clear ANSI which can invalidate active mouse selections
 	// in scrollback on terminals/tmux. startTurn re-arms the tick.
 	cmds := []tea.Cmd{
+		// Inline mode reuses the terminal's visible viewport. Clear it once
+		// at launch so yottacode opens on a clean screen while preserving the
+		// native scrollback above the fresh session.
+		tea.ClearScreen,
 		textarea.Blink,
 		cursorBlinkCmd(),
 		runProviderProbe(m.parentCtx, m.adapterConfig(m.modelName, m.baseURL), false),
@@ -1397,6 +1413,16 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.usageOpen {
 			m.usageOpen = false
 			m.usagePanel = ""
+			return m, nil
+		}
+		if m.experimentalOpen {
+			m.experimentalOpen = false
+			m.experimentalPanel = ""
+			return m, nil
+		}
+		if m.helpOpen {
+			m.helpOpen = false
+			m.helpPanel = ""
 			return m, nil
 		}
 		if m.contextReportOpen {
@@ -2642,7 +2668,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // normal footer, not as a replacing overlay, so they don't drive the
 // over-tall collapse this guards.
 func (m Model) anyOverlayOpen() bool {
-	return m.cheatsheetOpen || m.loopListOpen || m.usageOpen || m.contextReportOpen ||
+	return m.cheatsheetOpen || m.loopListOpen || m.usageOpen || m.experimentalOpen || m.helpOpen || m.contextReportOpen ||
 		m.permissionsOpen || m.modelPickerOpen || m.providerPickerOpen ||
 		m.embedSetupOpen || m.memoryPickerOpen || m.recallPickerOpen || m.codeMapPickerOpen || m.sessionsPickerOpen ||
 		m.plansPickerOpen || m.checkpointsPickerOpen || m.subagentsPickerOpen ||
@@ -2684,13 +2710,19 @@ func (m Model) View() string {
 	// stays directly below the cmdline so session state is still readable
 	// while a picker owns keystrokes.
 	if m.cheatsheetOpen {
-		return m.renderInlineOverlay(renderCheatsheet(m.width))
+		return m.renderInlineOverlay(renderCheatsheet(m.inlineOverlayWidth()))
 	}
 	if m.loopListOpen && m.activeLoopCount() > 0 {
 		return m.renderInlineOverlay(m.renderLoopListPanel())
 	}
 	if m.usageOpen {
 		return m.renderInlineOverlay(m.usagePanel)
+	}
+	if m.experimentalOpen {
+		return m.renderInlineOverlay(m.experimentalPanel)
+	}
+	if m.helpOpen {
+		return m.renderInlineOverlay(m.helpPanel)
 	}
 	if m.contextReportOpen {
 		return m.renderInlineOverlay(m.contextReportBody)
@@ -2699,52 +2731,52 @@ func (m Model) View() string {
 		return m.renderInlineOverlay(renderPermissionsOverlay(m))
 	}
 	if m.modelPickerOpen && m.modelPicker != nil {
-		return m.renderInlineOverlay(renderModelPicker(m.modelPicker, m.width))
+		return m.renderInlineOverlay(renderModelPicker(m.modelPicker, m.inlineOverlayWidth()))
 	}
 	if m.providerPickerOpen && m.providerPicker != nil {
-		return m.renderInlineOverlay(renderProviderPicker(m.providerPicker, m.width))
+		return m.renderInlineOverlay(renderProviderPicker(m.providerPicker, m.inlineOverlayWidth()))
 	}
 	if m.embedSetupOpen {
 		return m.renderInlineOverlay(m.renderEmbedSetup())
 	}
 	if m.memoryPickerOpen && m.memoryPicker != nil {
-		return m.renderInlineOverlay(renderMemoryPicker(m.memoryPicker, m.width))
+		return m.renderInlineOverlay(renderMemoryPicker(m.memoryPicker, m.inlineOverlayWidth()))
 	}
 	if m.recallPickerOpen && m.recallPicker != nil {
-		return m.renderInlineOverlay(renderRecallPicker(m.recallPicker, m.width))
+		return m.renderInlineOverlay(renderRecallPicker(m.recallPicker, m.inlineOverlayWidth()))
 	}
 	if m.codeMapPickerOpen && m.codeMapPicker != nil {
-		return m.renderInlineOverlay(renderCodeMapPicker(m.codeMapPicker, m.width))
+		return m.renderInlineOverlay(renderCodeMapPicker(m.codeMapPicker, m.inlineOverlayWidth()))
 	}
 	if m.sessionsPickerOpen && m.sessionsPicker != nil {
-		return m.renderInlineOverlay(renderSessionsPicker(m.sessionsPicker, m.width))
+		return m.renderInlineOverlay(renderSessionsPicker(m.sessionsPicker, m.inlineOverlayWidth()))
 	}
 	if m.plansPickerOpen && m.plansPicker != nil {
-		return m.renderInlineOverlay(renderPlansPicker(m.plansPicker, m.width))
+		return m.renderInlineOverlay(renderPlansPicker(m.plansPicker, m.inlineOverlayWidth()))
 	}
 	if m.checkpointsPickerOpen && m.checkpointsPicker != nil {
-		return m.renderInlineOverlay(renderCheckpointsPicker(m.checkpointsPicker, m.width))
+		return m.renderInlineOverlay(renderCheckpointsPicker(m.checkpointsPicker, m.inlineOverlayWidth()))
 	}
 	if m.subagentsPickerOpen && m.subagentsPicker != nil {
-		return m.renderInlineOverlay(renderSubagentsPicker(m.subagentsPicker, m.width))
+		return m.renderInlineOverlay(renderSubagentsPicker(m.subagentsPicker, m.inlineOverlayWidth()))
 	}
 	if m.routerPickerOpen && m.routerPicker != nil {
 		return m.renderInlineOverlay(renderRouterPicker(m.routerPicker))
 	}
 	if m.themePickerOpen && m.themePicker != nil {
-		return m.renderInlineOverlay(renderThemePicker(m.themePicker, m.width))
+		return m.renderInlineOverlay(renderThemePicker(m.themePicker, m.inlineOverlayWidth()))
 	}
 	if m.effortPickerOpen && m.effortPicker != nil {
 		return m.renderInlineOverlay(renderEffortPicker(m.effortPicker))
 	}
 	if m.skillsMenuOpen && m.skillsMenu != nil {
-		return m.renderInlineOverlay(renderSkillsMenu(m.skillsMenu, m.width))
+		return m.renderInlineOverlay(renderSkillsMenu(m.skillsMenu, m.inlineOverlayWidth()))
 	}
 	if m.skillsPickerOpen && m.skillsPicker != nil {
-		return m.renderInlineOverlay(renderSkillsPicker(m.skillsPicker, m.width))
+		return m.renderInlineOverlay(renderSkillsPicker(m.skillsPicker, m.inlineOverlayWidth()))
 	}
 	if m.mcpPickerOpen && m.mcpPicker != nil {
-		return m.renderInlineOverlay(renderMCPPicker(m.mcpPicker, m.width))
+		return m.renderInlineOverlay(renderMCPPicker(m.mcpPicker, m.inlineOverlayWidth()))
 	}
 
 	parts := []string{}
@@ -2893,14 +2925,62 @@ func (m Model) View() string {
 // they're going to return to). The separator width tracks the
 // terminal so the rule reads as the boundary between menu surface and
 // prompt chrome without floating mid-screen.
+// inlineOverlayInset keeps picker surfaces visually inside the same one-cell
+// gutter implied by the startup and cmdline frame corners.
+const inlineOverlayInset = 1
+
+func (m Model) inlineOverlayWidth() int {
+	width := m.width - inlineOverlayInset*2
+	if width < 1 {
+		return 1
+	}
+	return width
+}
+
+func indentInlineOverlayBody(body string) string {
+	if body == "" {
+		return body
+	}
+	pad := strings.Repeat(" ", inlineOverlayInset)
+	lines := strings.Split(body, "\n")
+	for i, line := range lines {
+		if line == "" {
+			continue
+		}
+		lines[i] = pad + line
+	}
+	return strings.Join(lines, "\n")
+}
+
+func expandInlineOverlayRules(body string, width int) string {
+	if body == "" || width < 1 {
+		return body
+	}
+	lines := strings.Split(body, "\n")
+	for i, line := range lines {
+		plain := strings.TrimSpace(ansi.Strip(line))
+		if plain == "" {
+			continue
+		}
+		if strings.Trim(plain, "─") == "" {
+			// Submenu headers often render their own top/bottom rules before
+			// the shared overlay wrapper sees the body. Normalize those rules
+			// here so every picker aligns with the same inset prompt chrome.
+			lines[i] = styleOverlayRule.Render(strings.Repeat("─", width))
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
 func (m Model) renderInlineOverlay(body string) string {
-	width := m.width
+	width := m.inlineOverlayWidth()
 	if width < 4 {
 		width = 4
 	}
-	overlayRule := styleOverlayRule.Render(strings.Repeat("─", width))
+	body = expandInlineOverlayRules(body, width)
+	overlayRule := strings.Repeat(" ", inlineOverlayInset) + styleOverlayRule.Render(strings.Repeat("─", width))
 	return lipgloss.JoinVertical(lipgloss.Left,
-		body,
+		indentInlineOverlayBody(body),
 		overlayRule,
 		m.renderInputFrame(),
 		m.renderStatus(),

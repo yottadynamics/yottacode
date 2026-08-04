@@ -117,6 +117,21 @@ func TestSessionPickerDesc_ZeroWidthUsesDefault(t *testing.T) {
 	}
 }
 
+func TestRenderSessionsMenuHeaderSpansOverlayWidth(t *testing.T) {
+	p := &sessionsPickerState{menuItems: []sessionsMenuItem{
+		{Label: "Load", Subtitle: "pick a session from the recent list", Action: sessionsLoadListMode},
+		{Label: "Resume", Subtitle: "type a session id or name to resume directly", Action: sessionsResumeInputMode},
+	}}
+	out := stripANSI(renderSessionsPicker(p, 140))
+	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	if len(lines) == 0 {
+		t.Fatal("sessions picker rendered no lines")
+	}
+	if got := runeLen(lines[0]); got != 140 {
+		t.Fatalf("sessions top divider width = %d, want 140", got)
+	}
+}
+
 // TestResumeSession_DoesNotPersistEmptyCurrent is the regression guard for
 // the save site missed when HasExchange gating went in. "Launch yottacode,
 // open /sessions, load a previous conversation" is the picker's most common

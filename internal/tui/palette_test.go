@@ -134,6 +134,44 @@ func TestRenderPalette_MatchesInputFrameWidth(t *testing.T) {
 	}
 }
 
+func TestRenderInlineOverlayInsetsBodyAndRule(t *testing.T) {
+	m := newTestModel(t)
+	m.width = 100
+	out := stripANSI(m.renderInlineOverlay("Sessions\nbody"))
+	lines := strings.Split(out, "\n")
+	if len(lines) < 3 {
+		t.Fatalf("overlay rendered too few lines: %q", out)
+	}
+	if strings.TrimRight(lines[0], " ") != " Sessions" || strings.TrimRight(lines[1], " ") != " body" {
+		t.Fatalf("overlay body should be inset by one column, got %q / %q", lines[0], lines[1])
+	}
+	if !strings.HasPrefix(lines[2], " ──") {
+		t.Fatalf("overlay separator should be inset by one column, got %q", lines[2])
+	}
+	if got := lipgloss.Width(strings.TrimRight(lines[2], " ")); got != m.width-inlineOverlayInset {
+		t.Fatalf("overlay separator width = %d, want %d", got, m.width-inlineOverlayInset)
+	}
+}
+
+func TestRenderInlineOverlayExpandsMenuRules(t *testing.T) {
+	m := newTestModel(t)
+	m.width = 100
+	out := stripANSI(m.renderInlineOverlay("────\nSessions\n────"))
+	lines := strings.Split(out, "\n")
+	if len(lines) < 3 {
+		t.Fatalf("overlay rendered too few lines: %q", out)
+	}
+	for _, idx := range []int{0, 2} {
+		trimmed := strings.TrimRight(lines[idx], " ")
+		if !strings.HasPrefix(trimmed, " ──") {
+			t.Fatalf("rule line %d should be inset and expanded, got %q", idx, lines[idx])
+		}
+		if got := lipgloss.Width(trimmed); got != m.width-inlineOverlayInset {
+			t.Fatalf("rule line %d width = %d, want %d", idx, got, m.width-inlineOverlayInset)
+		}
+	}
+}
+
 func TestRenderPalette_HighlightsSelected(t *testing.T) {
 	out := stripANSI(renderPalette(allSlash, 0, 0, 80))
 	// /plan is at index 0; it should use the same arrow-cursor picker

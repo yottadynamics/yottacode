@@ -920,7 +920,6 @@ func TestModel_PreservesTurnSlashDuringThinkingDoesNotCancel(t *testing.T) {
 	canceled := false
 	m.turnCancel = func() { canceled = true }
 
-	beforeLen := len(m.historyLines)
 	for _, r := range "/help" {
 		m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
 	}
@@ -928,8 +927,8 @@ func TestModel_PreservesTurnSlashDuringThinkingDoesNotCancel(t *testing.T) {
 	if canceled {
 		t.Errorf("PreservesTurn slash command must NOT cancel the active turn")
 	}
-	if len(m.historyLines) <= beforeLen {
-		t.Errorf("/help should still produce output even when the turn is preserved")
+	if !m.helpOpen || m.helpPanel == "" {
+		t.Errorf("/help should still open its overlay even when the turn is preserved")
 	}
 }
 
@@ -2179,6 +2178,30 @@ func TestQueuePrintln_FlushLeftCanvas(t *testing.T) {
 // at a different column than freshly-emitted lines — the "indentation gets
 // shifted at some point" symptom. We assert every replayed scrollback line
 // carries the clear-line prefix.
+// TestInit_ClearsScreenBeforeStartupCommands locks the launch clean-slate
+// behavior: yottacode clears the visible inline viewport before any startup
+// probe, spinner, or background watcher can redraw.
+func TestInit_ClearsScreenBeforeStartupCommands(t *testing.T) {
+	m := newTestModel(t)
+	cmd := m.Init()
+	if cmd == nil {
+		t.Fatal("Init returned nil command")
+	}
+
+	batched := reflect.ValueOf(cmd())
+	if batched.Kind() != reflect.Slice || batched.Len() == 0 {
+		t.Fatalf("Init command should batch startup commands, got %#v", batched.Interface())
+	}
+	firstCmd, ok := batched.Index(0).Interface().(tea.Cmd)
+	if !ok {
+		t.Fatalf("first startup entry is %T, want tea.Cmd", batched.Index(0).Interface())
+	}
+	first := reflect.ValueOf(firstCmd())
+	if first.Kind() != reflect.Struct || first.NumField() != 0 {
+		t.Errorf("first startup command should be ClearScreen (empty-struct msg), got %#v", first.Interface())
+	}
+}
+
 func TestResizeReplay_RoutesThroughQueuePrintln(t *testing.T) {
 	m := newTestModel(t) // ready, width 80
 	// Emit a multi-line tool card so historyLines holds real content.

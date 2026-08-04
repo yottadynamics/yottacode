@@ -63,38 +63,37 @@ func TestAllSlash_NoDuplicateNames(t *testing.T) {
 
 func TestSlash_HelpListsAllCommands(t *testing.T) {
 	m, _ := typeAndEnter(t, newTestModel(t), "/help")
-	// Check the raw transcript rather than View(): View() runs through the
-	// fixed-height viewport which may scroll-clip when the command list
-	// grows. We want to assert content was *produced*, not that it all
-	// happened to fit in 24 rows.
-	content := m.transcript.String()
+	content := m.helpPanel
+	if !m.helpOpen {
+		t.Fatal("/help should open the inline help overlay")
+	}
 	for _, c := range allSlash {
 		if !strings.Contains(content, "/"+c.Name) {
 			t.Errorf("/help output missing /%s", c.Name)
 		}
 	}
+	if !strings.Contains(content, "──") || !strings.Contains(content, "Common") || !strings.Contains(content, "Workflow") || !strings.Contains(content, "Git") {
+		t.Errorf("/help should use grouped submenu chrome: %q", content)
+	}
 }
 
-// /help re-emits the startup card so users get a refreshed full
-// context summary mid-session. On a non-fresh session the launch
-// card was emitted but is no longer in scrollback for the user to
-// glance at; /help is the explicit way to summon it again.
-func TestSlash_HelpReEmitsStartupCard(t *testing.T) {
+// /help renders as a transient overlay so the dense command catalog stays out
+// of transcript history while remaining visible above the cmdline.
+func TestSlash_HelpOpensOverlay(t *testing.T) {
 	m := newTestModel(t)
 	m.sess.Messages = append(m.sess.Messages,
 		adapter.Message{Role: adapter.RoleUser, Content: "hi"},
 	)
-	// Forget the launch card so we can isolate /help's contribution.
 	m.transcript.Reset()
 	m, _ = typeAndEnter(t, m, "/help")
-	content := m.transcript.String()
-	if !strings.Contains(content, "YottaCode") {
-		t.Errorf("/help should re-emit the startup card mid-session: %q", content)
+	content := m.helpPanel
+	if !m.helpOpen {
+		t.Fatal("/help should open the help overlay")
 	}
-	if strings.Contains(content, "YottaCode by YottaDynamics") {
-		t.Errorf("startup card should not include company text in the header: %q", content)
+	if strings.Contains(m.transcript.String(), "Workflow") {
+		t.Errorf("/help should not dump the command catalog into transcript: %q", m.transcript.String())
 	}
-	if !strings.Contains(content, "Available commands") {
+	if !strings.Contains(content, "Help") || !strings.Contains(content, "/help") {
 		t.Errorf("/help should still list commands: %q", content)
 	}
 }
@@ -1334,8 +1333,8 @@ func TestPalette_EnterRunsHighlightedNoArgsCommand(t *testing.T) {
 		t.Fatalf("palette should be open")
 	}
 	// Find /help in the filtered list and arrow down to it. /help is
-	// chosen because it has no args and produces visible transcript
-	// output, so the post-Enter assertion is unambiguous.
+	// chosen because it has no args and opens visible overlay output, so
+	// the post-Enter assertion is unambiguous.
 	target := -1
 	for i, c := range m.paletteFiltered {
 		if c.Name == "help" {
@@ -1352,11 +1351,10 @@ func TestPalette_EnterRunsHighlightedNoArgsCommand(t *testing.T) {
 	if m.paletteIndex != target {
 		t.Fatalf("paletteIndex = %d, want %d", m.paletteIndex, target)
 	}
-	beforeLen := len(m.historyLines)
 
 	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
-	if len(m.historyLines) <= beforeLen {
-		t.Errorf("Enter should have executed /help (appending the help block)")
+	if !m.helpOpen || !strings.Contains(m.helpPanel, "/help") {
+		t.Errorf("Enter should have executed /help and opened the help overlay")
 	}
 	if m.paletteOpen {
 		t.Errorf("palette should close after execution")
