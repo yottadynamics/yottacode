@@ -15,6 +15,9 @@ func TestGoplsSmoke(t *testing.T) {
 
 func TestTypeScriptLanguageServerSmoke(t *testing.T) {
 	root := t.TempDir()
+	// Pin to the stable TypeScript 5.x server layout. The 7.x prerelease package no
+	// longer exposes the classic lib/tsserver.js path that typescript-language-server
+	// expects today.
 	writeSmokeFile(t, root, "package.json", `{"devDependencies":{"typescript":"^5.9.0"}}`)
 	writeSmokeFile(t, root, "tsconfig.json", `{"compilerOptions":{"strict":true},"include":["index.ts"]}`)
 	installTypeScriptForSmoke(t, root)
@@ -125,16 +128,15 @@ func smokeWorkflowPath(root string, lang Language) string {
 
 func installTypeScriptForSmoke(t *testing.T, root string) {
 	t.Helper()
-	if os.Getenv("YOTTACODE_LSP_SMOKE_REQUIRED") != "1" {
-		return
-	}
+	required := os.Getenv("YOTTACODE_LSP_SMOKE_REQUIRED") == "1"
 	if _, err := exec.LookPath("npm"); err != nil {
-		smokeUnavailable(t, true, "npm not installed for TypeScript smoke workspace setup")
+		smokeUnavailable(t, required, "npm not installed for TypeScript smoke workspace setup")
+		return
 	}
 	cmd := exec.Command("npm", "install", "--silent")
 	cmd.Dir = root
 	if out, err := cmd.CombinedOutput(); err != nil {
-		smokeUnavailable(t, true, "npm install for TypeScript smoke workspace failed: %v\n%s", err, strings.TrimSpace(string(out)))
+		smokeUnavailable(t, required, "npm install for TypeScript smoke workspace failed: %v\n%s", err, strings.TrimSpace(string(out)))
 	}
 }
 
