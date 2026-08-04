@@ -45,6 +45,9 @@ type fakeGH struct {
 	failedLogsRes   github.FailedWorkflowLogsResult
 	failedLogsErr   error
 	failedLogsReq   github.FailedWorkflowLogsRequest
+	rerunRes        github.RerunFailedPRChecksResult
+	rerunErr        error
+	rerunReq        github.ReadPRRequest
 
 	// Update-PR side
 	updatePRRes github.UpdatePRResult
@@ -96,6 +99,11 @@ func (f *fakeGH) ListPRChecks(_ context.Context, req github.ReadPRRequest) ([]gi
 func (f *fakeGH) ListFailedWorkflowJobLogTails(_ context.Context, req github.FailedWorkflowLogsRequest) (github.FailedWorkflowLogsResult, error) {
 	f.failedLogsReq = req
 	return f.failedLogsRes, f.failedLogsErr
+}
+
+func (f *fakeGH) RerunFailedPRChecks(_ context.Context, req github.ReadPRRequest) (github.RerunFailedPRChecksResult, error) {
+	f.rerunReq = req
+	return f.rerunRes, f.rerunErr
 }
 
 func (f *fakeGH) UpdatePR(_ context.Context, req github.UpdatePRRequest) (github.UpdatePRResult, error) {

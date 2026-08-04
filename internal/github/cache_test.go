@@ -18,6 +18,8 @@ type countingInner struct {
 	readPRCount      int
 	readPRDiffCount  int
 	listChecksCount  int
+	logTailsCount    int
+	rerunChecksCount int
 	updatePRCount    int
 	createPRCount    int
 	readIssueCount   int
@@ -31,6 +33,8 @@ type countingInner struct {
 	diffErr        error
 	checksRes      []CheckRun
 	checksErr      error
+	logTailsRes    FailedWorkflowLogsResult
+	rerunRes       RerunFailedPRChecksResult
 	updatePRRes    UpdatePRResult
 	createPRRes    CreatePRResult
 	issueRes       IssueDetails
@@ -63,7 +67,17 @@ func (c *countingInner) ListPRChecks(_ context.Context, req ReadPRRequest) ([]Ch
 }
 
 func (c *countingInner) ListFailedWorkflowJobLogTails(_ context.Context, req FailedWorkflowLogsRequest) (FailedWorkflowLogsResult, error) {
-	return FailedWorkflowLogsResult{}, nil
+	c.mu.Lock()
+	c.logTailsCount++
+	c.mu.Unlock()
+	return c.logTailsRes, nil
+}
+
+func (c *countingInner) RerunFailedPRChecks(_ context.Context, req ReadPRRequest) (RerunFailedPRChecksResult, error) {
+	c.mu.Lock()
+	c.rerunChecksCount++
+	c.mu.Unlock()
+	return c.rerunRes, nil
 }
 
 func (c *countingInner) UpdatePR(_ context.Context, req UpdatePRRequest) (UpdatePRResult, error) {

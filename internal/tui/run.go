@@ -324,6 +324,8 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 	// changes one variable above instead of two registration sites.
 	reg.Register(&agent.GHPRReviewContextTool{Cwd: cwdRef, GH: ghClient})
 	reg.Register(&agent.PRWatchChecksTool{Cwd: cwdRef, GH: ghClient})
+	reg.Register(&agent.PRCheckLogsTool{Cwd: cwdRef, GH: ghClient})
+	reg.Register(&agent.PRRerunChecksTool{Cwd: cwdRef, GH: ghClient})
 	// code_review_context is the local-diff counterpart to
 	// pr_review_context, paired with the /code-review slash
 	// command. Read-only and Cwd-only (no github.Interface): it

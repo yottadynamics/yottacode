@@ -173,6 +173,10 @@ func targetFor(toolName, argsJSON, cwd string) Target {
 		return Target{PermName: "Github", Descriptor: "read_pr_review_context"}
 	case "pr_watch_checks":
 		return Target{PermName: "Github", Descriptor: "read_pr_checks"}
+	case "pr_check_logs":
+		return Target{PermName: "Github", Descriptor: "read_pr_check_logs"}
+	case "pr_rerun_checks":
+		return Target{PermName: "Github", Descriptor: "rerun_pr_checks"}
 	case "pr_add_comment":
 		return Target{PermName: "Github", Descriptor: "add_pr_comment"}
 	case "issue_context":

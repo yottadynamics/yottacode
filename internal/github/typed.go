@@ -510,6 +510,60 @@ func tailLinesOf(s string, n int) []string {
 	return lines
 }
 
+// RerunFailedPRChecks asks GitHub to rerun failed jobs for every failed
+// workflow run attached to the PR's current head SHA.
+func (c *TypedClient) RerunFailedPRChecks(ctx context.Context, req ReadPRRequest) (RerunFailedPRChecksResult, error) {
+	var res RerunFailedPRChecksResult
+	cl, err := c.init(ctx)
+	if err != nil {
+		return res, err
+	}
+	owner, repo, err := c.resolveOwnerRepo(ctx, req.Owner, req.Repo)
+	if err != nil {
+		return res, err
+	}
+	number, err := c.resolvePRNumber(ctx, cl, owner, repo, req.Ref)
+	if err != nil {
+		return res, err
+	}
+	pr, resp, err := cl.PullRequests.Get(ctx, owner, repo, number)
+	c.recordRate(resp)
+	if err != nil {
+		return res, fmt.Errorf("rerun failed checks: read pr: %w", classifyAPIError(err))
+	}
+	if pr.Head == nil || pr.Head.SHA == nil || strings.TrimSpace(*pr.Head.SHA) == "" {
+		return res, fmt.Errorf("rerun failed checks: PR head SHA missing")
+	}
+
+	runs, resp, err := cl.Actions.ListRepositoryWorkflowRuns(ctx, owner, repo, &gogithub.ListWorkflowRunsOptions{
+		HeadSHA: *pr.Head.SHA,
+		Status:  "failure",
+		ListOptions: gogithub.ListOptions{
+			PerPage: 50,
+		},
+	})
+	c.recordRate(resp)
+	if err != nil {
+		return res, fmt.Errorf("rerun failed checks: list failed workflow runs: %w", classifyAPIError(err))
+	}
+	if runs == nil {
+		return res, nil
+	}
+	for _, run := range runs.WorkflowRuns {
+		if run == nil || run.GetID() == 0 {
+			continue
+		}
+		resp, err := cl.Actions.RerunFailedJobsByID(ctx, owner, repo, run.GetID())
+		c.recordRate(resp)
+		if err != nil {
+			return res, fmt.Errorf("rerun failed checks: run %d: %w", run.GetID(), classifyAPIError(err))
+		}
+		res.RunIDs = append(res.RunIDs, run.GetID())
+	}
+	res.Count = len(res.RunIDs)
+	return res, nil
+}
+
 // UpdatePR rewrites an existing PR's title and body. Other
 // fields stay locked — the v1 scope is title + body only.
 func (c *TypedClient) UpdatePR(ctx context.Context, req UpdatePRRequest) (UpdatePRResult, error) {

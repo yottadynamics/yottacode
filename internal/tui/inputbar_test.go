@@ -41,6 +41,10 @@ func (c *statusBarPRClient) ListFailedWorkflowJobLogTails(context.Context, githu
 	return githubapi.FailedWorkflowLogsResult{}, nil
 }
 
+func (c *statusBarPRClient) RerunFailedPRChecks(context.Context, githubapi.ReadPRRequest) (githubapi.RerunFailedPRChecksResult, error) {
+	return githubapi.RerunFailedPRChecksResult{}, nil
+}
+
 func (c *statusBarPRClient) UpdatePR(context.Context, githubapi.UpdatePRRequest) (githubapi.UpdatePRResult, error) {
 	return githubapi.UpdatePRResult{}, nil
 }

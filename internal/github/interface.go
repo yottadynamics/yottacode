@@ -5,7 +5,8 @@
 //   - Typed client (TypedClient) wrapping go-github/v66, with HTTPClient
 //     injection for tests.
 //   - Auth resolver chain: $GITHUB_TOKEN → `gh auth token` → ~/.yottacode/github.json.
-//   - PR surface: CreatePR, ReadPR, ReadPRDiff, ListPRChecks, UpdatePR.
+//   - PR surface: CreatePR, ReadPR, ReadPRDiff, ListPRChecks,
+//     ListFailedWorkflowJobLogTails, RerunFailedPRChecks, UpdatePR.
 //   - Issue surface: ReadIssue, ListOpenIssues.
 //   - PR comment surface: AddPRComment.
 //
@@ -76,6 +77,11 @@ type Interface interface {
 	// read-only counterpart to `gh run view --log-failed | tail`, used
 	// only after checks report a failure.
 	ListFailedWorkflowJobLogTails(ctx context.Context, req FailedWorkflowLogsRequest) (FailedWorkflowLogsResult, error)
+
+	// RerunFailedPRChecks re-runs failed GitHub Actions jobs for every
+	// failed workflow run attached to a PR's current head SHA. It uses
+	// GitHub's failed-jobs endpoint rather than rerunning successful jobs.
+	RerunFailedPRChecks(ctx context.Context, req ReadPRRequest) (RerunFailedPRChecksResult, error)
 
 	// UpdatePR rewrites an existing PR's title and body. Used by
 	// /git-update-pr after follow-up commits make the original
@@ -258,6 +264,14 @@ type FailedWorkflowJobLog struct {
 	Conclusion    string
 	LogTail       []string
 	LogError      string
+}
+
+// RerunFailedPRChecksResult reports which workflow runs were asked to
+// rerun failed jobs. The endpoint is asynchronous; success means GitHub
+// accepted the rerun request, not that CI has passed.
+type RerunFailedPRChecksResult struct {
+	RunIDs []int64
+	Count  int
 }
 
 // ReadIssueRequest is the typed payload for Interface.ReadIssue.

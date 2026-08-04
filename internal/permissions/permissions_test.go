@@ -306,12 +306,12 @@ func TestEvaluate_GithubReadWildcard(t *testing.T) {
 	seed(t, filepath.Join(cwd, ".yottacode", "permissions.json"),
 		[]string{"Github(read_*)"}, nil, nil)
 	p, _ := Load(cwd)
-	for _, tool := range []string{"pr_context", "pr_read", "pr_review_context", "pr_watch_checks", "issue_context", "issue_read"} {
+	for _, tool := range []string{"pr_context", "pr_read", "pr_review_context", "pr_watch_checks", "pr_check_logs", "issue_context", "issue_read"} {
 		if got := p.Evaluate(tool, `{}`); got != Allow {
 			t.Errorf("Github(read_*) should match %s; got %v", tool, got)
 		}
 	}
-	for _, tool := range []string{"pr_create", "pr_update", "pr_add_comment"} {
+	for _, tool := range []string{"pr_create", "pr_update", "pr_add_comment", "pr_rerun_checks"} {
 		if got := p.Evaluate(tool, `{"base":"main","title":"t","body":"b"}`); got != Default {
 			t.Errorf("Github(read_*) should NOT match %s; got %v", tool, got)
 		}
@@ -323,7 +323,7 @@ func TestEvaluate_GithubCatchAllWildcard(t *testing.T) {
 	seed(t, filepath.Join(cwd, ".yottacode", "permissions.json"),
 		[]string{"Github(*)"}, nil, nil)
 	p, _ := Load(cwd)
-	for _, tool := range []string{"pr_context", "pr_read", "pr_create", "pr_update", "pr_add_comment", "issue_context", "issue_read", "issue_list", "issue_create", "pr_review_context", "pr_watch_checks"} {
+	for _, tool := range []string{"pr_context", "pr_read", "pr_create", "pr_update", "pr_add_comment", "pr_check_logs", "pr_rerun_checks", "issue_context", "issue_read", "issue_list", "issue_create", "pr_review_context", "pr_watch_checks"} {
 		got := p.Evaluate(tool, `{}`)
 		if got != Allow {
 			t.Errorf("Github(*) should match %s; got %v", tool, got)
@@ -408,6 +408,8 @@ func TestTargetFor_GithubVerbMapping(t *testing.T) {
 		{"pr_read", "read_pr"},
 		{"pr_review_context", "read_pr_review_context"},
 		{"pr_watch_checks", "read_pr_checks"},
+		{"pr_check_logs", "read_pr_check_logs"},
+		{"pr_rerun_checks", "rerun_pr_checks"},
 		{"pr_add_comment", "add_pr_comment"},
 		{"issue_context", "read_issue_context"},
 		{"issue_read", "read_issue"},
