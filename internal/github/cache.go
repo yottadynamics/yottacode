@@ -210,6 +210,19 @@ func (c *CachingClient) ListPRChecks(ctx context.Context, req ReadPRRequest) ([]
 	return c.Inner.ListPRChecks(ctx, req)
 }
 
+// ListFailedWorkflowJobLogTails is intentionally NOT cached for the same
+// reason as ListPRChecks: the failed-job set and log contents can change
+// as reruns progress during a session.
+func (c *CachingClient) ListFailedWorkflowJobLogTails(ctx context.Context, req ReadPRRequest, maxLines int) ([]WorkflowJobLogTail, error) {
+	return c.Inner.ListFailedWorkflowJobLogTails(ctx, req, maxLines)
+}
+
+// RerunFailedPRChecks is a write — passes through without caching. Check
+// snapshots and log tails are uncached, so no explicit invalidation is needed.
+func (c *CachingClient) RerunFailedPRChecks(ctx context.Context, req ReadPRRequest) (RerunFailedPRChecksResult, error) {
+	return c.Inner.RerunFailedPRChecks(ctx, req)
+}
+
 // UpdatePR rewrites title/body — the next ReadPR must see fresh
 // data, so we evict the matching ReadPR entry before passing
 // through. Diff is unaffected (the head SHA hasn't moved), so that

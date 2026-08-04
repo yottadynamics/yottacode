@@ -306,12 +306,12 @@ func TestEvaluate_GithubReadWildcard(t *testing.T) {
 	seed(t, filepath.Join(cwd, ".yottacode", "permissions.json"),
 		[]string{"Github(read_*)"}, nil, nil)
 	p, _ := Load(cwd)
-	for _, tool := range []string{"gh_pr_read", "gh_pr_review_context", "gh_issue_read"} {
+	for _, tool := range []string{"gh_pr_read", "gh_pr_review_context", "pr_check_logs", "gh_issue_read"} {
 		if got := p.Evaluate(tool, `{}`); got != Allow {
 			t.Errorf("Github(read_*) should match %s; got %v", tool, got)
 		}
 	}
-	for _, tool := range []string{"gh_pr_create", "gh_pr_update", "gh_pr_add_comment"} {
+	for _, tool := range []string{"gh_pr_create", "gh_pr_update", "gh_pr_add_comment", "pr_rerun_checks"} {
 		if got := p.Evaluate(tool, `{"base":"main","title":"t","body":"b"}`); got != Default {
 			t.Errorf("Github(read_*) should NOT match %s; got %v", tool, got)
 		}
@@ -323,7 +323,7 @@ func TestEvaluate_GithubCatchAllWildcard(t *testing.T) {
 	seed(t, filepath.Join(cwd, ".yottacode", "permissions.json"),
 		[]string{"Github(*)"}, nil, nil)
 	p, _ := Load(cwd)
-	for _, tool := range []string{"gh_pr_read", "gh_pr_create", "gh_pr_update", "gh_pr_add_comment", "gh_issue_read", "gh_issue_list", "gh_issue_create", "gh_pr_review_context"} {
+	for _, tool := range []string{"gh_pr_read", "gh_pr_create", "gh_pr_update", "gh_pr_add_comment", "pr_check_logs", "pr_rerun_checks", "gh_issue_read", "gh_issue_list", "gh_issue_create", "gh_pr_review_context"} {
 		got := p.Evaluate(tool, `{}`)
 		if got != Allow {
 			t.Errorf("Github(*) should match %s; got %v", tool, got)
@@ -406,6 +406,8 @@ func TestTargetFor_GithubVerbMapping(t *testing.T) {
 		{"gh_pr_update", "update_pr"},
 		{"gh_pr_read", "read_pr"},
 		{"gh_pr_review_context", "read_pr_review_context"},
+		{"pr_check_logs", "read_pr_check_logs"},
+		{"pr_rerun_checks", "rerun_pr_checks"},
 		{"gh_pr_add_comment", "add_pr_comment"},
 		{"gh_issue_read", "read_issue"},
 		{"gh_issue_list", "list_open_issues"},
