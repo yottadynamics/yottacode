@@ -34,3 +34,15 @@ func notifyLSPFileChanged(ctx context.Context, cwd *CwdRef, manager *lspci.Manag
 	}
 	return "○ lsp · document synced"
 }
+
+// invalidateLSPServers closes pooled language servers after a bulk mutation that
+// can rewrite many files outside the single-file didChange hook. LSP is
+// advisory, so invalidation never makes the underlying git/rollback operation
+// fail; the next semantic tool call will reopen a clean server view lazily.
+func invalidateLSPServers(manager *lspci.Manager) string {
+	if manager == nil {
+		return ""
+	}
+	manager.InvalidateAll()
+	return "○ lsp · servers invalidated"
+}

@@ -46,9 +46,9 @@ const (
 	// for opt-in users while the decomposition + unattended-worker UX settles.
 	Dispatch Feature = "dispatch"
 
-	// LSPCodeIntelligence enables read-only language-server-backed code
-	// navigation tools. It stays experimental while server discovery,
-	// install guidance, and multi-language UX settle.
+	// LSPCodeIntelligence is a graduated no-op flag kept recognized for one
+	// release so old configs don't warn or break. LSP tools are now default-on;
+	// server launch still happens lazily only when a semantic tool is used.
 	LSPCodeIntelligence Feature = "lsp_code_intelligence"
 
 	// SyntaxRanges enables offline parser-backed syntax range selection. It is
@@ -72,7 +72,7 @@ func All() []Feature {
 
 func IsGraduated(f Feature) bool {
 	switch f {
-	case BackgroundSubagents:
+	case BackgroundSubagents, LSPCodeIntelligence:
 		return true
 	default:
 		return false
@@ -92,7 +92,7 @@ func Description(f Feature) string {
 	case Dispatch:
 		return "Dispatch + integrate tools. Fan a batch of subtasks out to concurrent subagents (write-capable ones in isolated git worktrees, partitioned by file ownership), then merge committed branches into one integration branch for a PR."
 	case LSPCodeIntelligence:
-		return "Language-server-backed code intelligence tools. Detect supported languages, report missing server binaries with install hints, and provide symbols/definition/references when servers are available."
+		return "LSP Code Intelligence has graduated to GA; this flag is recognized as a no-op for compatibility."
 	case SyntaxRanges:
 		return "Offline syntax range tools for selecting local structural edit ranges before anchored edits."
 	default:

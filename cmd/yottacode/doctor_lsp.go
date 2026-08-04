@@ -8,11 +8,10 @@ import (
 
 	"github.com/yottadynamics/yottacode/internal/cli"
 	"github.com/yottadynamics/yottacode/internal/config"
-	"github.com/yottadynamics/yottacode/internal/experimental"
 	"github.com/yottadynamics/yottacode/internal/lsp"
 )
 
-// LSPDoctorResult is the command-line doctor snapshot for the experimental LSP
+// LSPDoctorResult is the command-line doctor snapshot for LSP Code
 // feature. It stays independent of the session-owned LSP manager because doctor
 // is a preflight command, not a chat session.
 type LSPDoctorResult struct {
@@ -42,25 +41,13 @@ type LSPDoctorManager struct {
 	MaxServers int `json:"max_servers"`
 }
 
-func probeLSPDoctor(ctx context.Context, opts cli.ChatOptions, cfg config.Config) LSPDoctorResult {
-	set := experimental.NewSet()
-	for _, name := range opts.Experimental {
-		set.Enable(name)
-	}
-	for name, enabled := range cfg.Experimental {
-		if enabled {
-			set.Enable(name)
-		}
-	}
-	if !set.IsEnabled(experimental.LSPCodeIntelligence) {
-		return LSPDoctorResult{Enabled: false, Note: "enable with --experimental lsp_code_intelligence or [experimental].lsp_code_intelligence = true"}
-	}
+func probeLSPDoctor(ctx context.Context, _ cli.ChatOptions, cfg config.Config) LSPDoctorResult {
 	langs, err := lsp.DetectWorkspace(ctx, ".", 2000)
 	if err != nil {
 		return LSPDoctorResult{Enabled: true, Error: err.Error()}
 	}
 	langs = lsp.ApplyOverridesToDetected(langs, cfg.LSP.Servers)
-	out := LSPDoctorResult{Enabled: true, Manager: LSPDoctorManager{MaxServers: lsp.DefaultManagerMaxServers()}, Note: "experimental opt-in; servers are local subprocesses and are never auto-installed"}
+	out := LSPDoctorResult{Enabled: true, Manager: LSPDoctorManager{MaxServers: lsp.DefaultManagerMaxServers()}, Note: "default-on; servers are local subprocesses and are never auto-installed"}
 	for _, lang := range langs {
 		probe := "missing"
 		caps := ""

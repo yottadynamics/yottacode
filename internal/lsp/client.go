@@ -196,6 +196,7 @@ type Client struct {
 	stdoutRaw     io.Reader
 	stderr        bytes.Buffer
 	rootURI       string
+	lang          Language
 	caps          serverCapabilities
 	capOK         bool
 	docs          map[string]openDocumentState
@@ -244,6 +245,7 @@ func NewClient(ctx context.Context, lang Language, root string) (*Client, error)
 		stdoutRaw: stdoutPipe,
 		stderr:    stderr,
 		rootURI:   pathToURI(root),
+		lang:      lang,
 		docs:      map[string]openDocumentState{},
 		diags:     map[string]DiagnosticsSnapshot{},
 		waitCh:    make(chan error, 1),
@@ -282,6 +284,9 @@ func (c *Client) initialize(ctx context.Context) error {
 				"formatting":         map[string]any{},
 			},
 		},
+	}
+	if len(c.lang.InitializationOptions) > 0 {
+		params["initializationOptions"] = c.lang.InitializationOptions
 	}
 	raw, err := c.requestLocked(ctx, "initialize", params)
 	if err != nil {
@@ -876,6 +881,7 @@ func (c *Client) requestLocked(ctx context.Context, method string, params any) (
 	}
 	for {
 		if err := ctx.Err(); err != nil {
+			_ = c.notifyLocked("$/cancelRequest", map[string]any{"id": id})
 			return nil, err
 		}
 		msg, err := c.readMessageContext(ctx)

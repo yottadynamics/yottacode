@@ -36,18 +36,22 @@ func TestRustAnalyzerSmoke(t *testing.T) {
 
 func smokeLanguageServer(t *testing.T, lang Language, root, query string) {
 	t.Helper()
+	required := os.Getenv("YOTTACODE_LSP_SMOKE_REQUIRED") == "1"
 	if _, err := exec.LookPath(lang.Command[0]); err != nil {
-		t.Skipf("%s not installed", lang.Command[0])
+		smokeUnavailable(t, required, "%s not installed", lang.Command[0])
+		return
 	}
 	ctx := context.Background()
 	client, err := NewClient(ctx, lang, root)
 	if err != nil {
-		t.Skipf("%s installed but not usable for smoke test: %v", lang.Command[0], err)
+		smokeUnavailable(t, required, "%s installed but not usable for smoke test: %v", lang.Command[0], err)
+		return
 	}
 	defer client.Close()
 	items, err := client.WorkspaceSymbols(ctx, query)
 	if err != nil {
-		t.Skipf("%s workspace symbols unavailable for smoke test: %v", lang.Command[0], err)
+		smokeUnavailable(t, required, "%s workspace symbols unavailable for smoke test: %v", lang.Command[0], err)
+		return
 	}
 	found := false
 	for _, item := range items {
@@ -57,21 +61,24 @@ func smokeLanguageServer(t *testing.T, lang Language, root, query string) {
 		}
 	}
 	if !found {
-		t.Skipf("%s workspace symbols for %s did not include target; got %d items", lang.Command[0], query, len(items))
+		smokeUnavailable(t, required, "%s workspace symbols for %s did not include target; got %d items", lang.Command[0], query, len(items))
+		return
 	}
 	workflowPath := smokeWorkflowPath(root, lang)
 	if workflowPath == "" {
 		return
 	}
 	if _, err := client.DocumentSymbols(ctx, workflowPath); err != nil {
-		t.Skipf("%s document symbols unavailable for smoke test: %v", lang.Command[0], err)
+		smokeUnavailable(t, required, "%s document symbols unavailable for smoke test: %v", lang.Command[0], err)
+		return
 	}
 	if _, err := client.Diagnostics(ctx, workflowPath); err != nil {
-		t.Skipf("%s diagnostics unavailable for smoke test: %v", lang.Command[0], err)
+		smokeUnavailable(t, required, "%s diagnostics unavailable for smoke test: %v", lang.Command[0], err)
+		return
 	}
 	if client.caps.Formatting {
 		if _, err := client.FormatPreview(ctx, workflowPath); err != nil {
-			t.Skipf("%s formatting unavailable for smoke test: %v", lang.Command[0], err)
+			smokeUnavailable(t, required, "%s formatting unavailable for smoke test: %v", lang.Command[0], err)
 		}
 	}
 }
@@ -100,4 +107,13 @@ func writeSmokeFile(t *testing.T, root, rel, body string) {
 	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
 		t.Fatalf("write %s: %v", rel, err)
 	}
+}
+
+func smokeUnavailable(t *testing.T, required bool, format string, args ...any) {
+	t.Helper()
+	if required {
+		t.Fatalf(format, args...)
+		return
+	}
+	t.Skipf(format, args...)
 }

@@ -264,11 +264,8 @@ func Run(ctx context.Context, opts cli.ChatOptions, prompt string) error {
 		planStore.Replace(sess.Todos)
 	}
 
-	lspManager := (*lsp.Manager)(nil)
-	if expSet.IsEnabled(experimental.LSPCodeIntelligence) {
-		lspManager = lsp.NewManager(0, 0)
-		defer lspManager.CloseAll()
-	}
+	lspManager := lsp.NewManager(0, 0)
+	defer lspManager.CloseAll()
 	var codeMapProvider codemap.Provider
 	if expSet.IsEnabled(experimental.CodeMap) {
 		codeMapProvider = &codemap.CachedProvider{Options: codemap.BuildOptions{Root: cwd, Source: codemap.LSPSource{Manager: lspManager, Servers: fileCfg.LSP.Servers, Root: cwd}}}
@@ -281,7 +278,7 @@ func Run(ctx context.Context, opts cli.ChatOptions, prompt string) error {
 	agent.RegisterCoreCwdTools(reg, cwdRef, agent.CoreToolDeps{
 		WriteOpts:          writeOpts,
 		DenyReads:          denyReads,
-		EnableLSP:          expSet.IsEnabled(experimental.LSPCodeIntelligence),
+		EnableLSP:          true,
 		LSPManager:         lspManager,
 		LSPServers:         fileCfg.LSP.Servers,
 		LSPDisabled:        fileCfg.LSP.Disabled,
@@ -302,7 +299,7 @@ func Run(ctx context.Context, opts cli.ChatOptions, prompt string) error {
 	reg.Register(&agent.GitWorktreePruneTool{Cwd: cwdRef})
 	reg.Register(&agent.FetchURLTool{})
 	registerMemoryTools(reg, cwdRef, embedClient, fileCfg.Retrieval.Strategy, fileCfg.Retrieval.SemanticWeight, memory.Source{Session: sess.ID})
-	reg.Register(&agent.GitTool{Cwd: cwdRef})
+	reg.Register(&agent.GitTool{Cwd: cwdRef, LSPManager: lspManager})
 	reg.Register(&agent.TodoWriteTool{Store: planStore})
 	// ExitPlanModeTool is registered for schema parity with the TUI
 	// build. The adapter-tools filter in the loop hides it whenever
@@ -383,7 +380,7 @@ func Run(ctx context.Context, opts cli.ChatOptions, prompt string) error {
 
 	// Dispatch + integrate (foreground in oneshot when enabled).
 	dispatchEnabled := expSet.IsEnabled(experimental.Dispatch)
-	reg.Register(&agent.DispatchTool{Agent: agentTool, Enabled: dispatchEnabled, EnableLSP: expSet.IsEnabled(experimental.LSPCodeIntelligence), LSPServers: fileCfg.LSP.Servers, LSPDisabled: fileCfg.LSP.Disabled, EnableSyntaxRanges: expSet.IsEnabled(experimental.SyntaxRanges)})
+	reg.Register(&agent.DispatchTool{Agent: agentTool, Enabled: dispatchEnabled, EnableLSP: true, LSPServers: fileCfg.LSP.Servers, LSPDisabled: fileCfg.LSP.Disabled, EnableSyntaxRanges: expSet.IsEnabled(experimental.SyntaxRanges)})
 	reg.Register(&agent.IntegrateTool{Cwd: cwdRef, Enabled: dispatchEnabled})
 
 	// Skill tool: reuses the set loaded above for system-prompt

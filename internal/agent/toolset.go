@@ -93,7 +93,7 @@ func RegisterCoreCwdTools(reg *Registry, cwd *CwdRef, deps CoreToolDeps) {
 	reg.Register(&GitDiffFilesTool{Cwd: cwd})
 	reg.Register(&GitStageFilesTool{Cwd: cwd})
 	reg.Register(&GitUnstageFilesTool{Cwd: cwd})
-	reg.Register(&GitCreateBranchTool{Cwd: cwd})
+	reg.Register(&GitCreateBranchTool{Cwd: cwd, LSPManager: deps.LSPManager})
 	reg.Register(&GitCommitTool{Cwd: cwd})
 	reg.Register(&GitLogFileTool{Cwd: cwd})
 	reg.Register(&GitBlameLinesTool{Cwd: cwd})
@@ -107,7 +107,7 @@ func RegisterCoreCwdTools(reg *Registry, cwd *CwdRef, deps CoreToolDeps) {
 	reg.Register(&GitCommitAmendTool{Cwd: cwd})
 	reg.Register(&GitCommitFixupTool{Cwd: cwd})
 	reg.Register(&GitCheckpointTool{Cwd: cwd})
-	reg.Register(&RollbackTool{Cwd: cwd})
+	reg.Register(&RollbackTool{Cwd: cwd, LSPManager: deps.LSPManager})
 
 	reg.Register(&RunTestsTool{Cwd: cwd})
 	reg.Register(&RunBashTool{Cwd: cwd})

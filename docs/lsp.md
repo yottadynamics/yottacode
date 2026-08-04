@@ -1,26 +1,12 @@
 # LSP Code Intelligence
 
-`lsp_code_intelligence` is an experimental, opt-in bridge from yottacode tools to local Language Server Protocol (LSP) servers plus yottacode's offline syntax fallback layer. It adds editor-like semantic navigation without making yottacode an IDE or installing anything on the user's machine. Interactive and oneshot sessions reuse a bounded pool of initialized servers so repeated tool calls do not pay startup cost every time; the pool is closed when the session exits.
+LSP Code Intelligence connects yottacode tools to local Language Server Protocol (LSP) servers plus yottacode's offline syntax fallback layer. It is GA and default-on in interactive and oneshot sessions, but remains lazy: yottacode starts a server only when a semantic LSP tool needs one. Interactive and oneshot sessions reuse a bounded pool of initialized servers so repeated tool calls do not pay startup cost every time; the pool is closed when the session exits.
 
 The separate experimental `code_map` feature reuses this LSP surface when available to build the `/map` structure overlay and code-map agent tools. If a language server is missing, the map falls back to offline syntax symbols: Go uses a parser-backed source, while TypeScript/JavaScript, Python, and Rust currently keep the conservative regex fallback. Dependency and impact queries currently use resolvable in-workspace Go imports, including transitive dependents, import-cycle detection, and Mermaid diagram output; `lsp_impact` can combine those import edges with live LSP references, calls, hover, and diagnostics.
 
-The separate experimental `syntax_ranges` feature exposes one piece of that offline layer directly as `syntax_range`: a read-only, parser-backed range selector for local edit targeting. `lsp_selection_ranges` remains the server-backed option when LSP is enabled; `syntax_range` is the no-server fallback for choosing a block/function/type before an anchored read and `edit_anchored` write.
+The separate experimental `syntax_ranges` feature exposes one piece of that offline layer directly as `syntax_range`: a read-only, parser-backed range selector for local edit targeting. `lsp_selection_ranges` remains the server-backed option; `syntax_range` is the no-server fallback for choosing a block/function/type before an anchored read and `edit_anchored` write.
 
-Enable it with any experimental-feature path:
-
-```bash
-yottacode --experimental lsp_code_intelligence
-# or
-export YOTTACODE_EXPERIMENTAL=lsp_code_intelligence
-```
-
-Or in `~/.yottacode/config.toml`:
-
-
-```toml
-[experimental]
-lsp_code_intelligence = true
-```
+The old `lsp_code_intelligence` experimental flag is still recognized as a GA/no-op compatibility flag for one release so existing configs keep working.
 
 ## Supported languages
 
@@ -35,7 +21,7 @@ Missing servers are not fatal. yottacode reports the missing command and an inst
 
 ## Tools
 
-When the feature flag is enabled, yottacode registers these LSP tools. Most are read-only; `lsp_apply_workspace_edit` is the approval-gated mutation step for previously previewed server edits:
+LSP tools are registered by default. Most are read-only; `lsp_apply_workspace_edit` is the approval-gated mutation step for previously previewed server edits:
 
 | Tool | Purpose |
 |---|---|
@@ -68,9 +54,9 @@ When a server advertises `textDocument/prepareRename`, `lsp_rename_preview` pref
 
 ## Session advisory
 
-Interactive sessions show a non-blocking **LSP Code Intelligence** advisory card when the feature is enabled, supported files are detected, and a matching server is missing. The card names the affected language, calls out that go-to-definition, live diagnostics, and symbol-aware review are unavailable without the server, shows the install command, and notes that yottacode still works without it. It is deterministic TUI chrome, not model-generated text, so setup hints appear even before the model calls `lsp_status`. When a later user request is actively working in that language or would benefit from semantic code intelligence, the agent may offer to run the same install command; that offer still goes through the standard bash approval modal and is never automatic.
+Interactive sessions show a non-blocking **LSP Code Intelligence** advisory card when supported files are detected and a matching server is missing. The card names the affected language, calls out that go-to-definition, live diagnostics, and symbol-aware review are unavailable without the server, shows the install command, and notes that yottacode still works without it. It is deterministic TUI chrome, not model-generated text, so setup hints appear even before the model calls `lsp_status`. The same startup detection also seeds a hidden reminder into the next user turn: when that request is actively working in the affected language or would benefit from semantic code intelligence, the agent should offer to run the matching command through the standard bash approval modal. The command is never run automatically, and declining it just leaves yottacode on ordinary file reads and offline fallbacks.
 
-For command-line diagnostics, `yottacode doctor` includes an **LSP Code Intelligence** section with the feature flag state, detected supported languages, server availability, install hints, command overrides, and manager configuration.
+For command-line diagnostics, `yottacode doctor` includes an **LSP Code Intelligence** section with detected supported languages, server availability, install hints, command overrides, and manager configuration.
 
 ## Command overrides
 
@@ -97,7 +83,7 @@ Disabled languages show as `status=disabled` in `lsp_status`, are skipped by doc
 
 ## Production hardening behavior
 
-The experimental bridge now includes several production-readiness behaviors. This PR hardens the opt-in implementation but does not graduate LSP to default-on GA; promotion should be a separate change after CI or release verification runs the real-server smoke suite in an environment with the supported servers installed:
+The GA bridge includes these production-readiness behaviors:
 
 - Workspace roots are detected from language markers such as `go.mod`, `package.json`, `pyproject.toml`, and `Cargo.toml` instead of always using the file's directory.
 - Documents are opened with `textDocument/didOpen` before position-based requests so servers see the same file contents yottacode read from disk.
@@ -112,25 +98,25 @@ The experimental bridge now includes several production-readiness behaviors. Thi
 - Server capabilities returned by `initialize` are checked before optional methods; unsupported methods return an explicit `unavailable` result rather than a misleading empty response.
 - `lsp_status` exposes session manager stats: open servers, busy leases, capacity hits, starts, reuses, evictions, and last startup latency. It also probes installed servers and prints initialized capability snapshots. `yottacode doctor` reports the default manager configuration and runs bounded protocol/capability probes without attaching to a chat-session server.
 - WorkspaceEdit previews now include per-file preview hashes, bounded diff hunks instead of whole-file remove/add dumps, and apply-time stale-preview detection. The applier rejects overlapping edit ranges before writing and explicitly refuses unsupported WorkspaceEdit shapes such as create/rename/delete file operations or unknown non-text edits.
-- Smoke tests exist for all supported servers and opportunistically exercise workflow requests such as document symbols, diagnostics, and formatting when the installed server advertises them. Normal unit-test runs skip only missing local server binaries; GA promotion should add an explicit CI or release-verification job that installs `gopls`, `typescript-language-server`, `pyright-langserver`, and `rust-analyzer` and runs the real-server smoke suite.
+- Smoke tests exist for all supported servers and opportunistically exercise workflow requests such as document symbols, diagnostics, and formatting when the installed server advertises them. CI installs `gopls`, `typescript-language-server`, `pyright-langserver`, and `rust-analyzer` and runs the real-server smoke suite on supported platforms.
 
 ## Troubleshooting
 
-1. Restart the TUI and look for the **LSP Code Intelligence** advisory card when a supported server is missing.
-2. Run `yottacode doctor --experimental lsp_code_intelligence` to see the command-line LSP Code Intelligence section.
+1. Restart the TUI and look for the **LSP Code Intelligence** advisory card when a supported server is missing. On the next relevant user turn, the agent should offer the displayed install command through approval-gated `run_bash`.
+2. Run `yottacode doctor` to see the command-line LSP Code Intelligence section.
 3. Confirm the server works outside yottacode, for example `gopls version` or `pyright-langserver --version`.
 4. If a workspace symbol query fails, yottacode may fall back to an approximate regex symbol index. Definition, references, diagnostics, hover, code actions, and call hierarchy require a real server.
 
 5. Post-edit LSP sync is advisory. If a local language server dies while yottacode writes a file, yottacode evicts/retries the server and keeps raw transport text such as `broken pipe` out of the edit result.
 
-## Production promotion checklist
+## Production status
 
-Before graduating this feature from experimental to default-on, verify:
+LSP Code Intelligence is production/GA when these checks stay green:
 
 - Real-server smoke tests pass for `gopls`, `typescript-language-server`, `pyright-langserver`, and `rust-analyzer`.
 - Workspace root detection picks the expected language project root for nested files.
 - Server capability checks report unsupported optional methods clearly.
-- Cancellation/timeouts kill server subprocesses without leaks.
+- Cancellation/timeouts send LSP cancellation where possible and kill server subprocesses without leaks.
 - Diagnostics, code actions, and call hierarchy outputs are bounded and readable.
 - Path validation applies to every file/workspace argument.
 - Custom server commands are documented as local user-configured execution.

@@ -24,6 +24,10 @@ type Language struct {
 	Command        []string
 	InstallHint    string
 	InstallCommand string
+	// InitializationOptions are sent during initialize to prefer safe analysis
+	// defaults for local subprocess servers that may otherwise execute project
+	// build hooks or load repo-configured plugins while indexing.
+	InitializationOptions map[string]any
 }
 
 // Languages returns the supported language-server families in deterministic
@@ -47,6 +51,12 @@ func Languages() []Language {
 			Command:        []string{"typescript-language-server", "--stdio"},
 			InstallHint:    "Install TypeScript language server: npm install -g typescript typescript-language-server.",
 			InstallCommand: "npm install -g typescript typescript-language-server",
+			InitializationOptions: map[string]any{
+				"preferences": map[string]any{
+					"disableSuggestions": true,
+				},
+				"plugins": []any{},
+			},
 		},
 		{
 			ID:             "python",
@@ -63,6 +73,14 @@ func Languages() []Language {
 			Command:        []string{"rust-analyzer"},
 			InstallHint:    "Install rust-analyzer through rustup, your package manager, or https://rust-analyzer.github.io/.",
 			InstallCommand: "rustup component add rust-analyzer",
+			InitializationOptions: map[string]any{
+				"cargo": map[string]any{
+					"buildScripts": map[string]any{"enable": false},
+				},
+				"procMacro": map[string]any{
+					"enable": false,
+				},
+			},
 		},
 	}
 	return langs
@@ -76,6 +94,7 @@ func ApplyOverrides(lang Language, overrides map[string][]string) Language {
 	}
 	if cmd := overrides[lang.ID]; len(cmd) > 0 && strings.TrimSpace(cmd[0]) != "" {
 		lang.Command = append([]string(nil), cmd...)
+		lang.InitializationOptions = nil
 	}
 	return lang
 }

@@ -8,6 +8,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	lspci "github.com/yottadynamics/yottacode/internal/lsp"
 )
 
 type GitBranchStatusTool struct{ Cwd *CwdRef }
@@ -249,7 +251,10 @@ func (t *GitUnstageFilesTool) Execute(ctx context.Context, argsJSON string) (str
 	return fmt.Sprintf("unstaged %d file(s)", len(a.Paths)), nil
 }
 
-type GitCreateBranchTool struct{ Cwd *CwdRef }
+type GitCreateBranchTool struct {
+	Cwd        *CwdRef
+	LSPManager *lspci.Manager
+}
 
 func (t *GitCreateBranchTool) Name() string { return "git_create_branch" }
 func (t *GitCreateBranchTool) Description() string {
@@ -302,7 +307,11 @@ func (t *GitCreateBranchTool) Execute(ctx context.Context, argsJSON string) (str
 	if err != nil {
 		return "", fmt.Errorf("git_create_branch: %w", err)
 	}
-	return fmt.Sprintf("created=true branch=%s from=%s", name, strings.TrimSpace(fromSHA)), nil
+	out := fmt.Sprintf("created=true branch=%s from=%s", name, strings.TrimSpace(fromSHA))
+	if note := invalidateLSPServers(t.LSPManager); note != "" {
+		out += "\n" + note
+	}
+	return out, nil
 }
 
 type GitCommitTool struct{ Cwd *CwdRef }

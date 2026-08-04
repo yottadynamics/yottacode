@@ -54,6 +54,38 @@ jobs:
         # -short keeps the demo/visualization tests out, same as above.
         run: go test -short -race ./...
 
+  lsp-smoke:
+    # GA LSP support must be proven against real servers, not only fakes.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.3'
+          cache: true
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install language servers
+        run: |
+          set -eu
+          go install golang.org/x/tools/gopls@latest
+          npm install -g typescript typescript-language-server pyright
+          curl -L https://github.com/rust-lang/rust-analyzer/releases/latest/download/rust-analyzer-x86_64-unknown-linux-gnu.gz -o /tmp/rust-analyzer.gz
+          gzip -d /tmp/rust-analyzer.gz
+          chmod +x /tmp/rust-analyzer
+          sudo mv /tmp/rust-analyzer /usr/local/bin/rust-analyzer
+
+      - name: Real-server LSP smoke tests
+        env:
+          YOTTACODE_LSP_SMOKE_REQUIRED: '1'
+        run: go test -run 'Test(Gopls|TypeScriptLanguageServer|PyrightLanguageServer|RustAnalyzer)Smoke' ./internal/lsp
+
   shellcheck:
     runs-on: ubuntu-latest
     steps:

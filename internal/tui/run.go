@@ -253,11 +253,8 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 	// writes a stop request through it; the TUI Model consumes it at turn end.
 	loopControl := &agent.LoopControlState{}
 
-	lspManager := (*lsp.Manager)(nil)
-	if expSet.IsEnabled(experimental.LSPCodeIntelligence) {
-		lspManager = lsp.NewManager(0, 0)
-		defer lspManager.CloseAll()
-	}
+	lspManager := lsp.NewManager(0, 0)
+	defer lspManager.CloseAll()
 	var codeMapProvider codemap.Provider
 	if expSet.IsEnabled(experimental.CodeMap) {
 		codeMapProvider = &codemap.CachedProvider{Options: codemap.BuildOptions{Root: cwd, Source: codemap.LSPSource{Manager: lspManager, Servers: fileCfg.LSP.Servers, Root: cwd}}}
@@ -274,7 +271,7 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 		WriteOpts:          writeOpts,
 		DenyReads:          denyReads,
 		SupportsImages:     ad.Profile().SupportsImages,
-		EnableLSP:          expSet.IsEnabled(experimental.LSPCodeIntelligence),
+		EnableLSP:          true,
 		LSPManager:         lspManager,
 		LSPServers:         fileCfg.LSP.Servers,
 		LSPDisabled:        fileCfg.LSP.Disabled,
@@ -404,7 +401,7 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 	reg.Register(&agent.MemoryCurateApplyTool{Cwd: cwdRef})
 	reg.Register(&agent.MemoryArchivePruneTool{Cwd: cwdRef})
 	reg.Register(&agent.MemoryGetTool{Cwd: cwdRef})
-	reg.Register(&agent.GitTool{Cwd: cwdRef})
+	reg.Register(&agent.GitTool{Cwd: cwdRef, LSPManager: lspManager})
 	reg.Register(&agent.TodoWriteTool{Store: planStore})
 	// The plan-mode boundary pair. The loop's schema filter advertises
 	// exit_plan_mode only while plan mode is active and enter_plan_mode
@@ -526,7 +523,7 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 	reg.Register(&agent.DispatchTool{
 		Agent:              agentTool,
 		SupportsImages:     ad.Profile().SupportsImages,
-		EnableLSP:          expSet.IsEnabled(experimental.LSPCodeIntelligence),
+		EnableLSP:          true,
 		LSPServers:         fileCfg.LSP.Servers,
 		LSPDisabled:        fileCfg.LSP.Disabled,
 		EnableSyntaxRanges: expSet.IsEnabled(experimental.SyntaxRanges),
@@ -764,14 +761,14 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 		model.pendingStartupNotices = append(model.pendingStartupNotices,
 			styleAuto.Render("experimental enabled: "+strings.Join(names, ", ")+" — /experimental for details"))
 	}
-	if expSet.IsEnabled(experimental.LSPCodeIntelligence) {
-		if langs, err := lsp.DetectWorkspace(ctx, cwd, 2000); err == nil {
-			langs = lsp.ApplyOverridesToDetected(langs, fileCfg.LSP.Servers)
-			if card := renderLSPAdvisory(langs); card != "" {
-				model.pendingStartupNotices = append(model.pendingStartupNotices, card)
-			}
+	if langs, err := lsp.DetectWorkspace(ctx, cwd, 2000); err == nil {
+		langs = lsp.ApplyOverridesToDetected(langs, fileCfg.LSP.Servers)
+		if card := renderLSPAdvisory(langs); card != "" {
+			model.pendingStartupNotices = append(model.pendingStartupNotices, card)
+			model.pendingLSPSetupReminder = lspSetupReminder(langs)
 		}
 	}
+
 	// Wire the AgentTool's background-completion callback into the
 	// Model's long-lived inbox. The callback runs from a detached
 	// goroutine when a background subagent finishes; non-blocking

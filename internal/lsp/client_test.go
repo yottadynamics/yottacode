@@ -14,6 +14,43 @@ import (
 	"time"
 )
 
+func TestClientInitializeSendsLanguageInitializationOptions(t *testing.T) {
+	clientReader, serverWriter := io.Pipe()
+	serverReader, clientWriter := io.Pipe()
+	c := &Client{
+		stdin:   clientWriter,
+		stdout:  bufio.NewReader(clientReader),
+		rootURI: "file:///tmp/project",
+		lang: Language{ID: "rust", Name: "Rust", InitializationOptions: map[string]any{
+			"procMacro": map[string]any{"enable": false},
+		}},
+	}
+	done := make(chan error, 1)
+	go func() {
+		body := readServerRequestBody(t, serverReader, "initialize")
+		var msg struct {
+			Params map[string]any `json:"params"`
+		}
+		if err := json.Unmarshal(body, &msg); err != nil {
+			done <- err
+			return
+		}
+		if _, ok := msg.Params["initializationOptions"]; !ok {
+			done <- fmt.Errorf("initialize params missing initializationOptions: %s", body)
+			return
+		}
+		writeServerResponse(t, serverWriter, 1, map[string]any{"capabilities": map[string]any{}})
+		readServerRequest(t, serverReader, "initialized")
+		done <- nil
+	}()
+	if err := c.initialize(context.Background()); err != nil {
+		t.Fatalf("initialize: %v", err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestClientJSONRPCFramingAndRequests(t *testing.T) {
 	clientReader, serverWriter := io.Pipe()
 	serverReader, clientWriter := io.Pipe()
@@ -231,7 +268,7 @@ func TestClientDiagnosticsCachesUnrelatedPublishWhileWaiting(t *testing.T) {
 func TestClientDiagnosticsSerializesWithConcurrentRequests(t *testing.T) {
 	clientReader, serverWriter := io.Pipe()
 	serverReader, clientWriter := io.Pipe()
-	c := &Client{stdin: clientWriter, stdout: bufio.NewReader(clientReader), capOK: true, caps: serverCapabilities{WorkspaceSymbol: true}, docs: map[string]openDocumentState{}, diags: map[string]DiagnosticsSnapshot{}, diagSettle: 30 * time.Millisecond}
+	c := &Client{stdin: clientWriter, stdout: bufio.NewReader(clientReader), capOK: true, caps: serverCapabilities{WorkspaceSymbol: true}, docs: map[string]openDocumentState{}, diags: map[string]DiagnosticsSnapshot{}, diagSettle: time.Second}
 
 	diagDone := make(chan error, 1)
 	go func() {
@@ -240,13 +277,26 @@ func TestClientDiagnosticsSerializesWithConcurrentRequests(t *testing.T) {
 			diagDone <- err
 			return
 		}
-		if !snap.Published {
-			diagDone <- fmt.Errorf("diagnostics were not published: %+v", snap)
+		if !snap.Published || len(snap.Diagnostics) != 1 || snap.Diagnostics[0].Message != "queued diagnostic" {
+			diagDone <- fmt.Errorf("unexpected diagnostics snapshot: %+v", snap)
 			return
 		}
 		diagDone <- nil
 	}()
 	readServerRequest(t, serverReader, "textDocument/didOpen")
+
+	// Feed diagnostics before starting the concurrent symbol request. The request
+	// path is still serialized by Client.mu, but this avoids pipe-level deadlocks
+	// where both test goroutines are trying to write into unbuffered pipes.
+	writeServerNotification(t, serverWriter, "textDocument/publishDiagnostics", map[string]any{"uri": "file:///tmp/main.go", "diagnostics": []map[string]any{{"range": map[string]any{"start": map[string]any{"line": 1, "character": 2}, "end": map[string]any{"line": 1, "character": 3}}, "message": "queued diagnostic", "severity": 2}}})
+	select {
+	case err := <-diagDone:
+		if err != nil {
+			t.Fatalf("Diagnostics: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Diagnostics timed out")
+	}
 
 	symbolStarted := make(chan struct{})
 	symbolDone := make(chan error, 1)
@@ -265,16 +315,6 @@ func TestClientDiagnosticsSerializesWithConcurrentRequests(t *testing.T) {
 	}()
 	<-symbolStarted
 
-	writeServerNotification(t, serverWriter, "textDocument/publishDiagnostics", map[string]any{"uri": "file:///tmp/main.go", "diagnostics": []map[string]any{}})
-	select {
-	case err := <-diagDone:
-		if err != nil {
-			t.Fatalf("Diagnostics: %v", err)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("Diagnostics timed out")
-	}
-
 	readServerRequest(t, serverReader, "workspace/symbol")
 	writeServerResponse(t, serverWriter, 1, []map[string]any{{
 		"name":          "Thing",
@@ -292,6 +332,48 @@ func TestClientDiagnosticsSerializesWithConcurrentRequests(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("WorkspaceSymbols timed out")
+	}
+}
+
+func TestClientRequestSendsCancelNotificationOnContextCancel(t *testing.T) {
+	clientReader, _ := io.Pipe()
+	serverReader, clientWriter := io.Pipe()
+	c := &Client{stdin: clientWriter, stdout: bufio.NewReader(clientReader)}
+
+	serverDone := make(chan error, 1)
+	go func() {
+		body := readServerRequestBody(t, serverReader, "workspace/symbol")
+		var req struct {
+			ID int64 `json:"id"`
+		}
+		if err := json.Unmarshal(body, &req); err != nil {
+			serverDone <- err
+			return
+		}
+		cancelBody := readServerRequestBody(t, serverReader, "$/cancelRequest")
+		var cancelMsg struct {
+			Params struct {
+				ID int64 `json:"id"`
+			} `json:"params"`
+		}
+		if err := json.Unmarshal(cancelBody, &cancelMsg); err != nil {
+			serverDone <- err
+			return
+		}
+		if cancelMsg.Params.ID != req.ID {
+			serverDone <- fmt.Errorf("cancel id = %d, want %d", cancelMsg.Params.ID, req.ID)
+			return
+		}
+		serverDone <- nil
+	}()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := c.WorkspaceSymbols(ctx, "Thing")
+	if err == nil || !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context canceled, got %v", err)
+	}
+	if err := <-serverDone; err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -335,9 +417,29 @@ func TestPathURIConversion(t *testing.T) {
 	}
 }
 
-func readServerRequest(t *testing.T, r io.Reader, wantMethod string) {
+func readServerRequestBody(t *testing.T, r io.Reader, wantMethod string) []byte {
 	t.Helper()
 	br := bufio.NewReader(r)
+	body := readFramedBody(t, br)
+	var msg struct {
+		Method string `json:"method"`
+	}
+	if err := json.Unmarshal(body, &msg); err != nil {
+		t.Fatalf("unmarshal request: %v", err)
+	}
+	if msg.Method != wantMethod {
+		t.Fatalf("method = %q, want %q; body=%s", msg.Method, wantMethod, body)
+	}
+	return body
+}
+
+func readServerRequest(t *testing.T, r io.Reader, wantMethod string) {
+	t.Helper()
+	_ = readServerRequestBody(t, r, wantMethod)
+}
+
+func readFramedBody(t *testing.T, br *bufio.Reader) []byte {
+	t.Helper()
 	length := 0
 	for {
 		line, err := br.ReadString('\n')
@@ -358,15 +460,7 @@ func readServerRequest(t *testing.T, r io.Reader, wantMethod string) {
 	if _, err := io.ReadFull(br, body); err != nil {
 		t.Fatalf("read body: %v", err)
 	}
-	var msg struct {
-		Method string `json:"method"`
-	}
-	if err := json.Unmarshal(body, &msg); err != nil {
-		t.Fatalf("unmarshal request: %v", err)
-	}
-	if msg.Method != wantMethod {
-		t.Fatalf("method = %q, want %q; body=%s", msg.Method, wantMethod, body)
-	}
+	return body
 }
 
 func writeServerResponse(t *testing.T, w io.Writer, id int, result any) {

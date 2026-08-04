@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+
+	lspci "github.com/yottadynamics/yottacode/internal/lsp"
 )
 
 const (
@@ -297,7 +299,8 @@ func gitHighRiskReason(args []string) string {
 // argv-style tokens (no shell), and approval policy is decided by inspecting
 // the first arg.
 type GitTool struct {
-	Cwd *CwdRef
+	Cwd        *CwdRef
+	LSPManager *lspci.Manager
 }
 
 func (t *GitTool) Name() string { return "git" }
@@ -388,12 +391,47 @@ func (t *GitTool) Execute(ctx context.Context, argsJSON string) (string, error) 
 		return "", fmt.Errorf("git: %w", runErr)
 	}
 
-	return fmt.Sprintf("$ git %s\nexit=%d\n--- stdout ---\n%s--- stderr ---\n%s",
+	out := fmt.Sprintf("$ git %s\nexit=%d\n--- stdout ---\n%s--- stderr ---\n%s",
 		strings.Join(args, " "),
 		exit,
 		stdout.String(),
 		stderr.String(),
-	), nil
+	)
+	if gitInvalidatesLSP(args) {
+		if note := invalidateLSPServers(t.LSPManager); note != "" {
+			out += note + "\n"
+		}
+	}
+	return out, nil
+}
+
+// gitInvalidatesLSP returns true for git operations that can rewrite many files
+// without flowing through yottacode's single-file didChange sync. It deliberately
+// runs even after a non-zero git exit because conflicts still write files.
+func gitInvalidatesLSP(args []string) bool {
+	if len(args) == 0 {
+		return false
+	}
+	switch args[0] {
+	case "checkout", "switch", "reset", "restore", "clean", "merge", "rebase", "pull", "cherry-pick", "revert", "apply", "am":
+		return true
+	case "stash":
+		return gitStashInvalidatesLSP(args[1:])
+	default:
+		return false
+	}
+}
+
+func gitStashInvalidatesLSP(rest []string) bool {
+	if len(rest) == 0 {
+		return true
+	}
+	switch rest[0] {
+	case "list", "show":
+		return false
+	default:
+		return true
+	}
 }
 
 func parseGitArgs(argsJSON string) ([]string, error) {

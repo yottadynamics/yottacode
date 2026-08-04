@@ -2,13 +2,14 @@ package tui
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/yottadynamics/yottacode/internal/lsp"
 )
 
 // renderLSPAdvisory returns a non-blocking startup card for supported languages
 // whose semantic server is missing. It teaches the user how to unlock the
-// experimental LSP tools without forcing the model to discover setup state.
+// richer LSP tools without forcing the model to discover setup state.
 func renderLSPAdvisory(langs []lsp.DetectedLanguage) string {
 	missing := make([]lsp.DetectedLanguage, 0, len(langs))
 	for _, lang := range langs {
@@ -31,7 +32,7 @@ func renderLSPAdvisory(langs []lsp.DetectedLanguage) string {
 			styleInlineCommand.Render("  "+installCommand(lang)),
 		)
 	}
-	rows = append(rows, "", styleMeta.Render("Servers are local subprocesses and are never auto-installed."), styleMeta.Render("Everything works without them; they unlock deeper code intelligence."), "")
+	rows = append(rows, "", styleMeta.Render("yottacode may offer to run a command with approval."), styleMeta.Render("Everything works without them; they unlock deeper code intelligence."), "")
 
 	return renderLSPAdvisoryBox("LSP Code Intelligence", fmt.Sprintf("%d languages", len(missing)), rows)
 }
@@ -46,11 +47,12 @@ func renderSingleLSPAdvisory(lang lsp.DetectedLanguage) string {
 		fmt.Sprintf("%s not found — running without go-to-def,", server),
 		"live diagnostics, and symbol-aware review.",
 		"LSP servers are local subprocesses; yottacode",
-		"never auto-installs or auto-enables them.",
+		"can ask to run the install command below",
+		"through normal approval.",
 		"",
 		styleInlineCommand.Render("  " + installCommand(lang)),
 		"",
-		styleMeta.Render("Everything works without it; this just unlocks"),
+		styleMeta.Render("Everything works without it; approving just unlocks"),
 		styleMeta.Render("deeper code intelligence."),
 		"",
 	}
@@ -96,6 +98,24 @@ func serverDisplayName(lang lsp.DetectedLanguage) string {
 		}
 		return "the language server"
 	}
+}
+
+func lspSetupReminder(langs []lsp.DetectedLanguage) string {
+	missing := make([]string, 0, len(langs))
+	for _, lang := range langs {
+		if lang.FilesAvailable <= 0 || lang.ServerAvailable {
+			continue
+		}
+		cmd := strings.TrimSpace(installCommand(lang))
+		if cmd == "" {
+			continue
+		}
+		missing = append(missing, fmt.Sprintf("- %s: %s missing; install_command=%s", lang.Name, serverDisplayName(lang), cmd))
+	}
+	if len(missing) == 0 {
+		return ""
+	}
+	return "[system reminder — not from the user] The startup LSP Code Intelligence advisory found missing local language servers:\n" + strings.Join(missing, "\n") + "\nIf the user's request above is actively working in one of these languages, or would benefit from go-to-definition, diagnostics, references, or symbol-aware review, offer to run the matching install_command through normal run_bash approval. Never auto-install, never imply the server was installed unless the approved command succeeds, and continue with ordinary file reads/grep if the user declines or the server is not relevant."
 }
 
 func installCommand(lang lsp.DetectedLanguage) string {

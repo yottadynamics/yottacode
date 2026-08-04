@@ -207,6 +207,13 @@ func (m *Manager) CloseDocument(ctx context.Context, lang Language, root, path s
 	return entry.client.CloseDocument(ctx, path)
 }
 
+// InvalidateAll closes every pooled server after a bulk working-tree mutation.
+// The next LSP tool call lazily starts fresh servers against the new on-disk
+// state, avoiding stale diagnostics after rollback, reset, checkout, or switch.
+func (m *Manager) InvalidateAll() {
+	m.CloseAll()
+}
+
 // CloseAll terminates every pooled server. It is safe to call multiple times.
 func (m *Manager) CloseAll() {
 	if m == nil {

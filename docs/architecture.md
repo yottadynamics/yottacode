@@ -245,11 +245,11 @@ finish, regardless of which parent turn is active.
 
 ## LSP Code Intelligence
 
-The experimental LSP bridge adds semantic, read-only code intelligence on top of
-the normal lexical tools (`grep`, `glob`, `read_file`). When
-`lsp_code_intelligence` is enabled, the core registry exposes LSP-backed tools
-for status, workspace symbols, definitions, references, diagnostics, hover,
-code actions, and call hierarchy.
+The LSP bridge adds semantic, mostly read-only code intelligence on top of the
+normal lexical tools (`grep`, `glob`, `read_file`). It is registered by default;
+servers are lazy-started only when a semantic LSP tool needs one. The core
+registry exposes LSP-backed tools for status, workspace symbols, definitions,
+references, diagnostics, hover, code actions, and call hierarchy.
 
 Architecture shape:
 
@@ -266,12 +266,12 @@ internal/lsp Manager  -- bounded pool keyed by language + root + command
 local language server subprocess over stdio JSON-RPC
 ```
 
-The LSP manager is session-owned. TUI and oneshot sessions construct it when the
-feature flag is enabled, pass it into the LSP tools, and close all pooled servers
-on exit. Servers are lazy-started on first use and reused until they go idle or
-the bounded pool needs to evict one. The user can inspect pool stats through `lsp_status`. Interactive sessions also show a non-blocking **LSP Code Intelligence** advisory card when the feature is enabled, supported files are detected, and a matching server is missing. The command-line `yottacode doctor` includes an **LSP Code Intelligence** section for preflight setup checks, detected languages, server availability, install hints, overrides, and manager configuration. When LSP would help the active task, the agent can offer the same install command through standard bash approval; no server install happens automatically.
+The LSP manager is session-owned. TUI and oneshot sessions construct it, pass it
+into the LSP tools, and close all pooled servers on exit. Servers are
+lazy-started on first use and reused until they go idle or the bounded pool needs
+to evict one. The user can inspect pool stats through `lsp_status`. Interactive sessions also show a non-blocking **LSP Code Intelligence** advisory card when supported files are detected and a matching server is missing. The same startup detection seeds the next user turn with hidden, model-facing setup guidance so the agent can offer the matching install command when the request would benefit from LSP. The command-line `yottacode doctor` includes an **LSP Code Intelligence** section for preflight setup checks, detected languages, server availability, install hints, overrides, and manager configuration. Any install still goes through standard bash approval; no server install happens automatically.
 
-The bridge is intentionally local and opt-in:
+The bridge is intentionally local and conservative:
 
 - yottacode never installs language servers automatically;
 - missing servers degrade into install hints and lexical fallback where possible;
@@ -279,7 +279,7 @@ The bridge is intentionally local and opt-in:
 - code actions remain preview-first: listing is read-only, and any server-proposed edits go through explicit preview plus `lsp_apply_workspace_edit` rather than direct writes.
 
 See [lsp.md](lsp.md) for setup, supported languages, commands, troubleshooting,
-and production-promotion notes.
+and production-status notes.
 
 ## Subagents
 
