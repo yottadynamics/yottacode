@@ -10,27 +10,27 @@ import (
 
 func TestPRCheckLogsTool_RoundsThroughTool(t *testing.T) {
 	gh := &fakeGH{
-		logTailsRes: []github.WorkflowJobLogTail{{
-			RunID:      101,
-			JobID:      202,
-			Name:       "test",
-			Workflow:   "CI",
-			Conclusion: "FAILURE",
-			HTMLURL:    "https://github.com/o/r/actions/runs/101/job/202",
-			Tail:       "panic: boom\nFAIL",
-			Lines:      2,
-			Truncated:  true,
+		readPRRes: github.PRDetails{HeadSHA: "sha"},
+		failedLogsRes: github.FailedWorkflowLogsResult{Jobs: []github.FailedWorkflowJobLog{{
+			WorkflowRunID: 101,
+			JobID:         202,
+			JobName:       "test",
+			WorkflowName:  "CI",
+			Conclusion:    "FAILURE",
+			JobURL:        "https://github.com/o/r/actions/runs/101/job/202",
+			LogTail:       []string{"panic: boom", "FAIL"},
 		}},
+		},
 	}
 	tool := &PRCheckLogsTool{Cwd: NewCwdRef(t.TempDir()), GH: gh}
 	out, err := tool.Execute(context.Background(), `{"ref":"29","max_lines":12}`)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
-	if gh.logTailsReq.Ref != "29" || gh.logTailsMax != 12 {
-		t.Fatalf("request not forwarded: req=%+v max=%d", gh.logTailsReq, gh.logTailsMax)
+	if gh.failedLogsReq.HeadSHA != "sha" || gh.failedLogsReq.TailLines != 12 {
+		t.Fatalf("request not forwarded: req=%+v", gh.failedLogsReq)
 	}
-	for _, want := range []string{"## state", "failed_jobs=1", "### test", "run_id=101", "panic: boom", "truncated=true"} {
+	for _, want := range []string{"## state", "failed_jobs=1", "### test", "run_id=101", "panic: boom"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output missing %q\n---\n%s\n---", want, out)
 		}
@@ -38,14 +38,14 @@ func TestPRCheckLogsTool_RoundsThroughTool(t *testing.T) {
 }
 
 func TestPRCheckLogsTool_DefaultsMaxLines(t *testing.T) {
-	gh := &fakeGH{}
+	gh := &fakeGH{readPRRes: github.PRDetails{HeadSHA: "sha"}}
 	tool := &PRCheckLogsTool{Cwd: NewCwdRef(t.TempDir()), GH: gh}
 	_, err := tool.Execute(context.Background(), `{"ref":"29"}`)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
-	if gh.logTailsMax != defaultPRCheckLogTailLines {
-		t.Fatalf("max_lines = %d, want default %d", gh.logTailsMax, defaultPRCheckLogTailLines)
+	if gh.failedLogsReq.TailLines != defaultPRCheckLogTailLines {
+		t.Fatalf("max_lines = %d, want default %d", gh.failedLogsReq.TailLines, defaultPRCheckLogTailLines)
 	}
 }
 

@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/yottadynamics/yottacode/internal/github"
 )
@@ -28,24 +29,25 @@ type fakeGH struct {
 	// Read side — each fixture is used by the matching method when
 	// the test populates it. Errors short-circuit ahead of the
 	// returned value so the test can simulate ErrPRNotFound /
-	// ErrGhUnavailable / generic gh failures without contorting the
+	// ErrGitHubUnavailable / generic gh failures without contorting the
 	// fixture struct.
-	readPRRes     github.PRDetails
-	readPRErr     error
-	readPRReq     github.ReadPRRequest
-	readPRDiffRes string
-	readPRDiffErr error
-	readPRDiffReq github.ReadPRRequest
-	listChecksRes []github.CheckRun
-	listChecksErr error
-	listChecksReq github.ReadPRRequest
-	logTailsRes   []github.WorkflowJobLogTail
-	logTailsErr   error
-	logTailsReq   github.ReadPRRequest
-	logTailsMax   int
-	rerunRes      github.RerunFailedPRChecksResult
-	rerunErr      error
-	rerunReq      github.ReadPRRequest
+	readPRRes       github.PRDetails
+	readPRErr       error
+	readPRReq       github.ReadPRRequest
+	readPRDiffRes   string
+	readPRDiffErr   error
+	readPRDiffReq   github.ReadPRRequest
+	listChecksRes   []github.CheckRun
+	listChecksErr   error
+	listChecksReq   github.ReadPRRequest
+	listChecksSeq   [][]github.CheckRun
+	listChecksCalls int
+	failedLogsRes   github.FailedWorkflowLogsResult
+	failedLogsErr   error
+	failedLogsReq   github.FailedWorkflowLogsRequest
+	rerunRes        github.RerunFailedPRChecksResult
+	rerunErr        error
+	rerunReq        github.ReadPRRequest
 
 	// Update-PR side
 	updatePRRes github.UpdatePRResult
@@ -87,13 +89,16 @@ func (f *fakeGH) ReadPRDiff(_ context.Context, req github.ReadPRRequest) (string
 
 func (f *fakeGH) ListPRChecks(_ context.Context, req github.ReadPRRequest) ([]github.CheckRun, error) {
 	f.listChecksReq = req
+	f.listChecksCalls++
+	if len(f.listChecksSeq) > 0 && f.listChecksCalls <= len(f.listChecksSeq) {
+		return f.listChecksSeq[f.listChecksCalls-1], f.listChecksErr
+	}
 	return f.listChecksRes, f.listChecksErr
 }
 
-func (f *fakeGH) ListFailedWorkflowJobLogTails(_ context.Context, req github.ReadPRRequest, maxLines int) ([]github.WorkflowJobLogTail, error) {
-	f.logTailsReq = req
-	f.logTailsMax = maxLines
-	return f.logTailsRes, f.logTailsErr
+func (f *fakeGH) ListFailedWorkflowJobLogTails(_ context.Context, req github.FailedWorkflowLogsRequest) (github.FailedWorkflowLogsResult, error) {
+	f.failedLogsReq = req
+	return f.failedLogsRes, f.failedLogsErr
 }
 
 func (f *fakeGH) RerunFailedPRChecks(_ context.Context, req github.ReadPRRequest) (github.RerunFailedPRChecksResult, error) {
@@ -204,23 +209,23 @@ func TestCreatePR_HappyPath(t *testing.T) {
 	}
 }
 
-func TestCreatePR_GhUnavailableSurfaced(t *testing.T) {
-	gh := &fakeGH{err: github.ErrGhUnavailable}
+func TestCreatePR_GitHubUnavailableSurfaced(t *testing.T) {
+	gh := &fakeGH{err: github.ErrGitHubUnavailable}
 	res, err := CreatePR(context.Background(), gh, github.CreatePRRequest{
 		Base: "main", Title: "implement caching", Body: "details",
 	})
 	if err != nil {
 		t.Fatalf("CreatePR: %v", err)
 	}
-	if !res.GhUnavailable {
-		t.Errorf("expected GhUnavailable=true: %+v", res)
+	if !res.GitHubUnavailable {
+		t.Errorf("expected GitHubUnavailable=true: %+v", res)
 	}
 	if res.Created {
 		t.Errorf("must not be Created when gh unavailable: %+v", res)
 	}
 }
 
-func TestCreatePR_GenericGhErrorSurfaced(t *testing.T) {
+func TestCreatePR_GenericGitHubErrorSurfaced(t *testing.T) {
 	gh := &fakeGH{err: errors.New("rate limited")}
 	res, err := CreatePR(context.Background(), gh, github.CreatePRRequest{
 		Base: "main", Title: "implement caching", Body: "details",
@@ -228,11 +233,11 @@ func TestCreatePR_GenericGhErrorSurfaced(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreatePR: %v", err)
 	}
-	if res.GhError == "" {
-		t.Errorf("expected GhError populated: %+v", res)
+	if res.GitHubError == "" {
+		t.Errorf("expected GitHubError populated: %+v", res)
 	}
-	if !strings.Contains(res.GhError, "rate limited") {
-		t.Errorf("GhError should surface verbatim cause: %q", res.GhError)
+	if !strings.Contains(res.GitHubError, "rate limited") {
+		t.Errorf("GitHubError should surface verbatim cause: %q", res.GitHubError)
 	}
 }
 
@@ -419,24 +424,6 @@ func TestGHPRTools_DefaultEmptyRefToLiveBranch(t *testing.T) {
 			},
 			got: func(gh *fakeGH) string { return gh.addPRCommentReq.Ref },
 		},
-		{
-			name: "check logs",
-			run: func(gh *fakeGH, cwd *CwdRef) error {
-				tool := &PRCheckLogsTool{Cwd: cwd, GH: gh}
-				_, err := tool.Execute(context.Background(), `{}`)
-				return err
-			},
-			got: func(gh *fakeGH) string { return gh.logTailsReq.Ref },
-		},
-		{
-			name: "rerun checks",
-			run: func(gh *fakeGH, cwd *CwdRef) error {
-				tool := &PRRerunChecksTool{Cwd: cwd, GH: gh}
-				_, err := tool.Execute(context.Background(), `{}`)
-				return err
-			},
-			got: func(gh *fakeGH) string { return gh.rerunReq.Ref },
-		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cwd := NewCwdRef(gitRepoOnBranch(t, "feature/live-ref"))
@@ -482,7 +469,7 @@ func TestBuildPRReviewContext_HappyPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildPRReviewContext: %v", err)
 	}
-	if snap.NotFound || snap.GhUnavailable {
+	if snap.NotFound || snap.GitHubUnavailable {
 		t.Errorf("expected found+available; got %+v", snap)
 	}
 	if snap.PR.Number != 17 || snap.PR.Title != "fix the thing" {
@@ -515,14 +502,14 @@ func TestBuildPRReviewContext_NotFoundSurfaced(t *testing.T) {
 	}
 }
 
-func TestBuildPRReviewContext_GhUnavailableSurfaced(t *testing.T) {
-	gh := &fakeGH{readPRErr: github.ErrGhUnavailable}
+func TestBuildPRReviewContext_GitHubUnavailableSurfaced(t *testing.T) {
+	gh := &fakeGH{readPRErr: github.ErrGitHubUnavailable}
 	snap, err := BuildPRReviewContext(context.Background(), gh, "17")
 	if err != nil {
 		t.Fatalf("BuildPRReviewContext: %v", err)
 	}
-	if !snap.GhUnavailable {
-		t.Errorf("expected GhUnavailable=true; got %+v", snap)
+	if !snap.GitHubUnavailable {
+		t.Errorf("expected GitHubUnavailable=true; got %+v", snap)
 	}
 }
 
@@ -587,7 +574,7 @@ func TestBuildPRReadContext_HappyPath(t *testing.T) {
 		},
 	}
 	snap := BuildPRReadContext(context.Background(), gh, "29")
-	if snap.NotFound || snap.GhUnavailable {
+	if snap.NotFound || snap.GitHubUnavailable {
 		t.Errorf("expected found+available; got %+v", snap)
 	}
 	if snap.PR.Number != 29 || snap.PR.Title != "fix prompt" {
@@ -596,14 +583,14 @@ func TestBuildPRReadContext_HappyPath(t *testing.T) {
 	if snap.PR.Body == "" {
 		t.Errorf("Body should be populated")
 	}
-	// Critical contract: gh_pr_read MUST NOT call diff or checks.
+	// Critical contract: pr_read MUST NOT call diff or checks.
 	// If a future refactor accidentally folds them in, this test
 	// catches it.
 	if gh.readPRDiffReq.Ref != "" {
-		t.Errorf("ReadPRDiff must NOT be called by gh_pr_read")
+		t.Errorf("ReadPRDiff must NOT be called by pr_read")
 	}
 	if gh.listChecksReq.Ref != "" {
-		t.Errorf("ListPRChecks must NOT be called by gh_pr_read")
+		t.Errorf("ListPRChecks must NOT be called by pr_read")
 	}
 }
 
@@ -615,22 +602,111 @@ func TestBuildPRReadContext_NotFoundSurfaced(t *testing.T) {
 	}
 }
 
-func TestBuildPRReadContext_GhUnavailableSurfaced(t *testing.T) {
-	gh := &fakeGH{readPRErr: github.ErrGhUnavailable}
+func TestBuildPRReadContext_GitHubUnavailableSurfaced(t *testing.T) {
+	gh := &fakeGH{readPRErr: github.ErrGitHubUnavailable}
 	snap := BuildPRReadContext(context.Background(), gh, "29")
-	if !snap.GhUnavailable {
-		t.Errorf("expected GhUnavailable=true; got %+v", snap)
+	if !snap.GitHubUnavailable {
+		t.Errorf("expected GitHubUnavailable=true; got %+v", snap)
 	}
 }
 
 func TestBuildPRReadContext_GenericErrorSurfaced(t *testing.T) {
 	gh := &fakeGH{readPRErr: errors.New("api: rate limit exceeded")}
 	snap := BuildPRReadContext(context.Background(), gh, "29")
-	if snap.NotFound || snap.GhUnavailable {
+	if snap.NotFound || snap.GitHubUnavailable {
 		t.Errorf("generic error should not flip typed flags: %+v", snap)
 	}
 	if !strings.Contains(snap.FetchErr, "rate limit") {
 		t.Errorf("FetchErr should carry the message; got %q", snap.FetchErr)
+	}
+}
+
+func TestWatchPRChecks_Success(t *testing.T) {
+	gh := &fakeGH{
+		readPRRes:     github.PRDetails{Number: 17, Title: "t", HeadSHA: "abc"},
+		listChecksRes: []github.CheckRun{{Name: "build", State: "COMPLETED", Conclusion: "SUCCESS"}},
+	}
+	snap, err := WatchPRChecks(context.Background(), gh, PRWatchOptions{Ref: "17", Timeout: time.Second, PollInterval: time.Millisecond})
+	if err != nil {
+		t.Fatalf("WatchPRChecks: %v", err)
+	}
+	if !snap.AllSuccess || snap.Failed || snap.TimedOut {
+		t.Fatalf("unexpected success state: %+v", snap)
+	}
+	if gh.failedLogsReq.HeadSHA != "" {
+		t.Fatalf("success must not fetch failed logs: %+v", gh.failedLogsReq)
+	}
+}
+
+func TestWatchPRChecks_FailureFetchesLogTail(t *testing.T) {
+	gh := &fakeGH{
+		readPRRes:     github.PRDetails{Number: 17, Title: "t", HeadSHA: "abc"},
+		listChecksRes: []github.CheckRun{{Name: "build", State: "COMPLETED", Conclusion: "FAILURE"}},
+		failedLogsRes: github.FailedWorkflowLogsResult{HeadSHA: "abc", Jobs: []github.FailedWorkflowJobLog{{
+			WorkflowName: "ci", JobName: "build", Conclusion: "FAILURE", LogTail: []string{"line1", "line2"},
+		}}},
+	}
+	snap, err := WatchPRChecks(context.Background(), gh, PRWatchOptions{Ref: "17", Timeout: time.Second, PollInterval: time.Millisecond, LogTailLines: 2})
+	if err != nil {
+		t.Fatalf("WatchPRChecks: %v", err)
+	}
+	if !snap.Failed || !slices.Equal(snap.FailingChecks, []string{"build"}) {
+		t.Fatalf("expected failed build: %+v", snap)
+	}
+	if gh.failedLogsReq.HeadSHA != "abc" || gh.failedLogsReq.TailLines != 2 {
+		t.Fatalf("failed log request not populated: %+v", gh.failedLogsReq)
+	}
+	out := renderPRWatchChecks(snap)
+	if !strings.Contains(out, "## failed_logs") || !strings.Contains(out, "line2") {
+		t.Fatalf("missing failed logs in render:\n%s", out)
+	}
+}
+
+func TestWatchPRChecks_TimeoutWithPendingChecks(t *testing.T) {
+	gh := &fakeGH{
+		readPRRes:     github.PRDetails{Number: 17, Title: "t", HeadSHA: "abc"},
+		listChecksRes: []github.CheckRun{{Name: "build", State: "IN_PROGRESS"}},
+	}
+	snap, err := WatchPRChecks(context.Background(), gh, PRWatchOptions{Ref: "17", Timeout: time.Nanosecond, PollInterval: time.Millisecond})
+	if err != nil {
+		t.Fatalf("WatchPRChecks: %v", err)
+	}
+	if !snap.TimedOut || snap.AllSuccess || snap.Failed {
+		t.Fatalf("expected timeout with pending checks: %+v", snap)
+	}
+}
+
+func TestWatchPRChecks_PollsEmptyChecksUntilTheyAppear(t *testing.T) {
+	gh := &fakeGH{
+		readPRRes: github.PRDetails{Number: 17, Title: "t", HeadSHA: "abc"},
+		listChecksSeq: [][]github.CheckRun{
+			{},
+			{{Name: "build", State: "COMPLETED", Conclusion: "SUCCESS"}},
+		},
+	}
+	snap, err := WatchPRChecks(context.Background(), gh, PRWatchOptions{Ref: "17", Timeout: time.Second, PollInterval: time.Millisecond})
+	if err != nil {
+		t.Fatalf("WatchPRChecks: %v", err)
+	}
+	if !snap.AllSuccess || snap.TimedOut || gh.listChecksCalls != 2 {
+		t.Fatalf("expected second poll success; calls=%d snap=%+v", gh.listChecksCalls, snap)
+	}
+}
+
+func TestWatchPRChecks_SkippedAndNeutralAreTerminalSuccess(t *testing.T) {
+	gh := &fakeGH{
+		readPRRes: github.PRDetails{Number: 17, Title: "t", HeadSHA: "abc"},
+		listChecksRes: []github.CheckRun{
+			{Name: "docs", State: "COMPLETED", Conclusion: "SKIPPED"},
+			{Name: "optional", State: "COMPLETED", Conclusion: "NEUTRAL"},
+		},
+	}
+	snap, err := WatchPRChecks(context.Background(), gh, PRWatchOptions{Ref: "17", Timeout: time.Second, PollInterval: time.Millisecond})
+	if err != nil {
+		t.Fatalf("WatchPRChecks: %v", err)
+	}
+	if !snap.AllSuccess || snap.TimedOut || snap.Failed {
+		t.Fatalf("expected non-blocking terminal checks to pass: %+v", snap)
 	}
 }
 
@@ -716,8 +792,8 @@ func TestAddPRComment_NotFoundSurfaced(t *testing.T) {
 	}
 }
 
-func TestAddPRComment_GhUnavailableSurfaced(t *testing.T) {
-	gh := &fakeGH{addPRCommentErr: github.ErrGhUnavailable}
+func TestAddPRComment_GitHubUnavailableSurfaced(t *testing.T) {
+	gh := &fakeGH{addPRCommentErr: github.ErrGitHubUnavailable}
 	res, err := AddPRComment(context.Background(), gh, github.AddPRCommentRequest{
 		Ref:  "29",
 		Body: "body",
@@ -725,8 +801,8 @@ func TestAddPRComment_GhUnavailableSurfaced(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AddPRComment: %v", err)
 	}
-	if !res.GhUnavailable {
-		t.Errorf("expected GhUnavailable=true; got %+v", res)
+	if !res.GitHubUnavailable {
+		t.Errorf("expected GitHubUnavailable=true; got %+v", res)
 	}
 }
 
@@ -752,7 +828,7 @@ func TestGHPRAddCommentTool_RoundsThroughTool(t *testing.T) {
 func TestGHPRAddCommentTool_RequiresApproval(t *testing.T) {
 	tool := &GHPRAddCommentTool{}
 	if !tool.RequiresApproval("") {
-		t.Errorf("gh_pr_add_comment is a write tool; MUST require approval")
+		t.Errorf("pr_add_comment is a write tool; MUST require approval")
 	}
 }
 
@@ -818,10 +894,10 @@ func TestGHPRReadTool_RoundsThroughTool(t *testing.T) {
 			t.Errorf("output missing %q\n---\n%s\n---", want, out)
 		}
 	}
-	// Diff and checks sections must NOT appear in gh_pr_read output —
+	// Diff and checks sections must NOT appear in pr_read output —
 	// that's the whole point of the tool.
 	if strings.Contains(out, "## diff") || strings.Contains(out, "## checks") {
-		t.Errorf("gh_pr_read output should not contain diff/checks sections:\n%s", out)
+		t.Errorf("pr_read output should not contain diff/checks sections:\n%s", out)
 	}
 }
 
@@ -835,10 +911,10 @@ func TestGHPRReadTool_NoGHAdapterErrors(t *testing.T) {
 
 func TestGHPRReadTool_PreviewCall(t *testing.T) {
 	tool := &GHPRReadTool{}
-	if got := tool.PreviewCall(""); got != "gh_pr_read()" {
+	if got := tool.PreviewCall(""); got != "pr_read()" {
 		t.Errorf("empty args preview = %q", got)
 	}
-	if got := tool.PreviewCall(`{"ref":"29"}`); got != "gh_pr_read(ref=29)" {
+	if got := tool.PreviewCall(`{"ref":"29"}`); got != "pr_read(ref=29)" {
 		t.Errorf("ref preview = %q", got)
 	}
 }
@@ -846,7 +922,7 @@ func TestGHPRReadTool_PreviewCall(t *testing.T) {
 func TestGHPRReadTool_NotApprovalRequired(t *testing.T) {
 	tool := &GHPRReadTool{}
 	if tool.RequiresApproval("") {
-		t.Errorf("gh_pr_read is read-only; must not require approval")
+		t.Errorf("pr_read is read-only; must not require approval")
 	}
 }
 
@@ -866,14 +942,14 @@ func TestGHPRReadTool_DescriptionNudgesAwayFromBash(t *testing.T) {
 }
 
 func TestGHPRReviewContextTool_DescriptionNudgesAwayFromBash(t *testing.T) {
-	// Sibling pin for gh_pr_review_context. Same contract: the
+	// Sibling pin for pr_review_context. Same contract: the
 	// description must explicitly steer the model toward typed
 	// tools over `gh pr view` / `gh pr diff` / `gh pr checks` via
-	// run_bash, and must call out gh_pr_read as the lighter
+	// run_bash, and must call out pr_read as the lighter
 	// alternative so the model knows to pick.
 	tool := &GHPRReviewContextTool{}
 	desc := tool.Description()
-	for _, want := range []string{"run_bash", "gh_pr_read", "three API calls"} {
+	for _, want := range []string{"run_bash", "pr_read", "three API calls"} {
 		if !strings.Contains(desc, want) {
 			t.Errorf("Description missing nudge phrase %q\nfull description: %s", want, desc)
 		}
@@ -973,16 +1049,16 @@ func TestUpdatePR_HappyPath(t *testing.T) {
 	}
 }
 
-func TestUpdatePR_GhUnavailableSurfaced(t *testing.T) {
-	gh := &fakeGH{updatePRErr: github.ErrGhUnavailable}
+func TestUpdatePR_GitHubUnavailableSurfaced(t *testing.T) {
+	gh := &fakeGH{updatePRErr: github.ErrGitHubUnavailable}
 	res, err := UpdatePR(context.Background(), gh, github.UpdatePRRequest{
 		Ref: "17", Title: "t", Body: "b",
 	})
 	if err != nil {
 		t.Fatalf("UpdatePR: %v", err)
 	}
-	if !res.GhUnavailable {
-		t.Errorf("expected GhUnavailable=true: %+v", res)
+	if !res.GitHubUnavailable {
+		t.Errorf("expected GitHubUnavailable=true: %+v", res)
 	}
 }
 
@@ -999,7 +1075,7 @@ func TestUpdatePR_NotFoundSurfaced(t *testing.T) {
 	}
 }
 
-func TestUpdatePR_GenericGhErrorSurfaced(t *testing.T) {
+func TestUpdatePR_GenericGitHubErrorSurfaced(t *testing.T) {
 	gh := &fakeGH{updatePRErr: errors.New("rate limited")}
 	res, err := UpdatePR(context.Background(), gh, github.UpdatePRRequest{
 		Ref: "17", Title: "t", Body: "b",
@@ -1007,8 +1083,8 @@ func TestUpdatePR_GenericGhErrorSurfaced(t *testing.T) {
 	if err != nil {
 		t.Fatalf("UpdatePR: %v", err)
 	}
-	if !strings.Contains(res.GhError, "rate limited") {
-		t.Errorf("GhError should surface verbatim cause: %q", res.GhError)
+	if !strings.Contains(res.GitHubError, "rate limited") {
+		t.Errorf("GitHubError should surface verbatim cause: %q", res.GitHubError)
 	}
 }
 

@@ -37,18 +37,19 @@ In addition to the built-ins, **MCP tools** register dynamically when an `[[mcp_
 | [`git_commit`](#git_commit) | required | Commit staged changes |
 | [`git_commit_context`](#git_commit_context) | none | Typed snapshot for drafting a commit message (paired with `git_commit_apply`) |
 | [`git_commit_apply`](#git_commit_apply) | required | Validate a one-line subject and run `git commit` with structured result envelope |
-| [`gh_pr_context`](#gh_pr_context) | none | Typed snapshot for opening a PR (base resolution, ahead-count, push state, gh availability, PR template) |
-| [`gh_pr_create`](#gh_pr_create) | required | Validate title and open a PR via the `internal/github.Interface` adapter with typed result envelope |
-| [`gh_pr_read`](#gh_pr_read) | none | Fetch PR metadata only via one API call (use instead of `run_bash gh pr view --json …`) |
-| [`gh_pr_review_context`](#gh_pr_review_context) | none | Fetch PR metadata + diff + check rollup via the `internal/github.Interface` adapter for review |
+| [`pr_context`](#pr_context) | none | Typed snapshot for opening a PR (base resolution, ahead-count, push state, gh availability, PR template) |
+| [`pr_create`](#pr_create) | required | Validate title and open a PR via the `internal/github.Interface` adapter with typed result envelope |
+| [`pr_read`](#pr_read) | none | Fetch PR metadata only via one API call (use instead of `run_bash gh pr view --json …`) |
+| [`pr_review_context`](#pr_review_context) | none | Fetch PR metadata + diff + check rollup via the `internal/github.Interface` adapter for review |
+| [`pr_watch_checks`](#pr_watch_checks) | none | Watch PR checks until pass/fail/timeout and return failed GitHub Actions log tails |
 | [`pr_check_logs`](#pr_check_logs) | none | Fetch failed GitHub Actions job log tails for a PR |
 | [`pr_rerun_checks`](#pr_rerun_checks) | required | Rerun failed GitHub Actions jobs for a PR |
-| [`gh_pr_update`](#gh_pr_update) | required | Rewrite an existing PR's title and body via the `internal/github.Interface` adapter; title validation + non-empty-body guard |
-| [`gh_pr_add_comment`](#gh_pr_add_comment) | required | Post a top-level conversation comment on a PR; body capped, approval-gated |
-| [`gh_issue_read`](#gh_issue_read) | none | Fetch issue metadata + comments (use instead of `run_bash gh issue view --json …`) |
-| [`gh_issue_list`](#gh_issue_list) | none | List open issues matching label/assignee/milestone filters |
-| [`gh_issue_context`](#gh_issue_context) | none | Typed snapshot for opening an issue (repo detection, gh availability, template discovery) |
-| [`gh_issue_create`](#gh_issue_create) | required | Validate title and open an issue via the `internal/github.Interface` adapter with typed result envelope |
+| [`pr_update`](#pr_update) | required | Rewrite an existing PR's title and body via the `internal/github.Interface` adapter; title validation + non-empty-body guard |
+| [`pr_add_comment`](#pr_add_comment) | required | Post a top-level conversation comment on a PR; body capped, approval-gated |
+| [`issue_read`](#issue_read) | none | Fetch issue metadata + comments (use instead of `run_bash gh issue view --json …`) |
+| [`issue_list`](#issue_list) | none | List open issues matching label/assignee/milestone filters |
+| [`issue_context`](#issue_context) | none | Typed snapshot for opening an issue (repo detection, gh availability, template discovery) |
+| [`issue_create`](#issue_create) | required | Validate title and open an issue via the `internal/github.Interface` adapter with typed result envelope |
 | [`git_push`](#git_push) | required | Push the current branch to origin with deterministic upstream detection; surfaces the PR URL when one exists |
 | [`git_log_file`](#git_log_file) | none | Show history for one file |
 | [`git_blame_lines`](#git_blame_lines) | none | Blame a line range in a file |
@@ -643,7 +644,7 @@ verbatim output. The tool never auto-retries, auto-stages, or amends.
 
 Always prompts for approval.
 
-## gh_pr_context
+## pr_context
 
 Composite read-only snapshot used to open a pull request without
 parsing multi-step bash output. Returns labeled sections under
@@ -660,7 +661,7 @@ locally. The `pushed_to_origin` check uses `git ls-remote --exit-code
 --heads origin <branch>` so empty-remote repos correctly report
 `false` without crashing.
 
-Pair with [`gh_pr_create`](#gh_pr_create) — context tool gathers
+Pair with [`pr_create`](#pr_create) — context tool gathers
 state, create tool validates the title and opens the PR.
 
 | Param | Type | Default |
@@ -669,7 +670,7 @@ state, create tool validates the title and opens the PR.
 
 No approval.
 
-## gh_pr_create
+## pr_create
 
 Composite mutator that validates a PR title and opens the pull request
 through the typed `internal/github.Interface` adapter. The following
@@ -683,9 +684,9 @@ model judgment):
 
 Returns a typed envelope. On success: `created=true url=<url>
 number=<n>`. On a missing or unauthenticated `gh` CLI:
-`created=false reason=gh_unavailable` so the procedural `/git-create-pr`
+`created=false reason=github_unavailable` so the procedural `/git-create-pr`
 can fall through to draft-only output without surfacing an opaque
-exec failure. On other gh errors: `created=false reason=gh_error`
+exec failure. On other gh errors: `created=false reason=github_error`
 followed by the gh output verbatim. The tool never auto-retries,
 auto-edits, or auto-merges.
 
@@ -707,7 +708,7 @@ when `$GITHUB_TOKEN` isn't set.
 
 Always prompts for approval.
 
-## gh_pr_review_context
+## pr_review_context
 
 Composite read-only fetcher for the procedural `/git-review-pr`
 flow. Calls the three Interface read methods (`ReadPR`,
@@ -717,10 +718,10 @@ typed snapshot under `## state`, `## pr`, `## checks.summary`,
 
 The `## state` block carries deterministic flags callers branch
 on: `ref=`, `not_found=` (the gh CLI couldn't resolve the ref to
-an existing PR), `gh_unavailable=` (gh missing or
+an existing PR), `github_unavailable=` (gh missing or
 unauthenticated), and `failing_checks=` (comma-separated names of
 check runs whose conclusion was FAILURE, CANCELLED, TIMED_OUT, or
-ACTION_REQUIRED). When `not_found` or `gh_unavailable` are true
+ACTION_REQUIRED). When `not_found` or `github_unavailable` are true
 the snapshot short-circuits — the pr/checks/diff sections are
 omitted to keep the model's branching clean.
 
@@ -736,6 +737,28 @@ diff <ref>` for the full content.
 
 No approval. Touches the network (not parallel-safe).
 
+## pr_watch_checks
+
+Read-only PR CI watcher. It resolves the PR, polls `ListPRChecks`
+until checks pass, fail, or the timeout expires, and when a check
+fails it fetches capped GitHub Actions job log tails through the typed
+GitHub adapter. Use this instead of `run_bash gh run watch …` followed
+by `gh run view --log-failed | tail`.
+
+The returned snapshot uses `## state`, `## pr`, `## checks.summary`,
+`## checks`, and `## failed_logs`. State flags include `not_found=`,
+`github_unavailable=`, `timed_out=`, `all_success=`, `failed=`, and
+`failing_checks=`.
+
+| Param | Type | Default |
+|---|---|---|
+| `ref` | string | (uses current branch's PR) |
+| `timeout_seconds` | int | `900` |
+| `poll_interval_seconds` | int | `15` |
+| `log_tail_lines` | int | `240` |
+
+No approval. Touches the network (not parallel-safe).
+
 ## pr_check_logs
 
 Read-only helper for failed CI logs. It resolves the PR ref (number, branch, or current branch when omitted), finds failed GitHub Actions workflow runs for the PR head SHA, and returns bounded tails for the failed jobs only. Use it instead of `run_bash` patterns such as `gh run view <id> --log-failed | tail -240`.
@@ -743,7 +766,7 @@ Read-only helper for failed CI logs. It resolves the PR ref (number, branch, or 
 | Param | Type | Default |
 |---|---|---|
 | `ref` | string | current branch's PR |
-| `max_lines` | integer | `240` (capped at `2000`) |
+| `max_lines` | integer | `240` |
 
 No approval. Touches the network (not parallel-safe).
 
@@ -757,7 +780,7 @@ Approval-gated helper for retrying failed CI. It resolves the PR ref, finds fail
 
 Always prompts for approval because it mutates remote CI state and may consume CI minutes.
 
-## gh_pr_update
+## pr_update
 
 Composite mutator that rewrites an existing PR's title and body.
 Paired with the procedural `/git-update-pr` slash command for the
@@ -765,7 +788,7 @@ Paired with the procedural `/git-update-pr` slash command for the
 
 Deterministic guarantees:
 
-- **Title validation** (reuses `validatePRTitle` from `gh_pr_create`):
+- **Title validation** (reuses `validatePRTitle` from `pr_create`):
   rejects empty, multi-line, oversize (>72 chars), and
   trailing-period titles before dialing the adapter.
 - **Non-empty body guard:** empty body would clobber the existing
@@ -779,8 +802,8 @@ Deterministic guarantees:
 Returns a typed envelope. On success: `updated=true url=<url>
 number=<n>`. On a missing PR: `updated=false reason=not_found`
 with a hint pointing at `/git-create-pr`. On gh-unavailable:
-`updated=false reason=gh_unavailable`. On other gh errors:
-`updated=false reason=gh_error` with the gh output verbatim. The
+`updated=false reason=github_unavailable`. On other gh errors:
+`updated=false reason=github_error` with the gh output verbatim. The
 tool never auto-retries, auto-edits other fields, or auto-merges.
 
 | Param | Type | Default |
@@ -1618,7 +1641,7 @@ Merge dispatch worker branches into one integration branch in a dedicated worktr
 
 No approval. On clean success it reports the integration branch to push/open a PR from and reclaims merged worker worktrees/branches where safe.
 
-## gh_issue_context
+## issue_context
 
 Composite read-only snapshot used to open an issue without parsing
 bash output. Returns labeled sections under `## state`, `## template`,
@@ -1644,7 +1667,7 @@ reported under `## blank_issue`, and `contact_links` are reported under
 `## contact_links` so documentation, discussions, and security-report links
 can be surfaced without creating public issues for them.
 
-Pair with [`gh_issue_create`](#gh_issue_create) — context tool gathers
+Pair with [`issue_create`](#issue_create) — context tool gathers
 state, create tool validates the title and opens the issue.
 
 | Param | Type | Default |
@@ -1654,7 +1677,7 @@ state, create tool validates the title and opens the issue.
 No approval. Parallel-safe.
 
 
-## gh_issue_create
+## issue_create
 
 Composite mutator that validates an issue title and opens the issue
 through the typed `internal/github.Interface` adapter. The following
@@ -1668,9 +1691,9 @@ model judgment):
 
 Returns a typed envelope. On success: `created=true url=<url>
 number=<n>`. On a missing or unauthenticated `gh` CLI:
-`created=false reason=gh_unavailable` so the procedural `/git-create-issue`
+`created=false reason=github_unavailable` so the procedural `/git-create-issue`
 can fall through to draft-only output without surfacing an opaque
-exec failure. On other gh errors: `created=false reason=gh_error`
+exec failure. On other gh errors: `created=false reason=github_error`
 followed by the gh output verbatim. The tool never auto-retries,
 auto-edits, or auto-assigns labels beyond what the user explicitly provided
 or the selected issue template declares.

@@ -210,11 +210,11 @@ func (c *CachingClient) ListPRChecks(ctx context.Context, req ReadPRRequest) ([]
 	return c.Inner.ListPRChecks(ctx, req)
 }
 
-// ListFailedWorkflowJobLogTails is intentionally NOT cached for the same
-// reason as ListPRChecks: the failed-job set and log contents can change
-// as reruns progress during a session.
-func (c *CachingClient) ListFailedWorkflowJobLogTails(ctx context.Context, req ReadPRRequest, maxLines int) ([]WorkflowJobLogTail, error) {
-	return c.Inner.ListFailedWorkflowJobLogTails(ctx, req, maxLines)
+// ListFailedWorkflowJobLogTails is intentionally not cached. Logs and
+// failed-job state are fetched only after CI reports a failure, and a rerun can
+// update that state while the head SHA stays stable.
+func (c *CachingClient) ListFailedWorkflowJobLogTails(ctx context.Context, req FailedWorkflowLogsRequest) (FailedWorkflowLogsResult, error) {
+	return c.Inner.ListFailedWorkflowJobLogTails(ctx, req)
 }
 
 // RerunFailedPRChecks is a write — passes through without caching. Check

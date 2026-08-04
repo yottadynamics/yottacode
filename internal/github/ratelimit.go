@@ -11,7 +11,7 @@ import (
 
 // ErrGitHubUnreachable signals that the network couldn't reach
 // api.github.com — DNS failure, refused connection, TLS error,
-// timeout. Distinct from ErrGhUnavailable (auth) and ErrPRNotFound
+// timeout. Distinct from ErrGitHubUnavailable (auth) and ErrPRNotFound
 // (logical) so callers can branch on the right recovery — auth
 // failures want `gh auth login`, unreachable wants "check your
 // network".

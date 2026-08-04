@@ -56,7 +56,7 @@ Unknown keys are rejected at load time so typos like `trnsport` surface immediat
 
 ## Tool namespacing
 
-Every MCP tool registers as `mcp/<server>/<tool>`. So the GitHub server's `create_pull_request` becomes `mcp/github/create_pull_request` — distinct from yottacode's native `gh_pr_create`. The namespacing also makes permission rules predictable; see below.
+Every MCP tool registers as `mcp/<server>/<tool>`. So the GitHub server's `create_pull_request` becomes `mcp/github/create_pull_request` — distinct from yottacode's native `pr_create`. The namespacing also makes permission rules predictable; see below.
 
 ## Approval and permissions
 

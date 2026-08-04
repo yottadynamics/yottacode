@@ -375,7 +375,7 @@ Each rule has the shape `<Tool>(<pattern>)`. Supported tool prefixes:
 | `Fetch` | `fetch_url` | URL (string) |
 | `Media` | `media_probe`, `media_analyze`, `media_render` | action plus path, e.g. `probe raw/demo.mp4` or `render out/demo.mp4` |
 | `Git` | unified `git` + discrete `git_*` helpers | joined args (string) |
-| `Github` | every `gh_*` tool (PR + issue surface) | canonical verb name (string) |
+| `Github` | native GitHub PR/issue workflow tools (`pr_*`, `issue_*`) | canonical verb name (string) |
 | `Memory` | `memory_save` / `memory_forget` | `op scope:name` (string) |
 | `Tests` / `Rollback` | the same-named tools | empty descriptor (binary allow/deny) |
 
@@ -385,18 +385,21 @@ roadmap's `Github(read_*)` style works):
 
 | Tool | Verb |
 |---|---|
-| `gh_pr_read` | `read_pr` |
-| `gh_pr_review_context` | `read_pr_review_context` |
-| `gh_pr_create` | `create_pr` |
-| `gh_pr_update` | `update_pr` |
-| `gh_pr_add_comment` | `add_pr_comment` |
-| `gh_issue_read` | `read_issue` |
-| `gh_issue_list` | `list_open_issues` |
-| `gh_issue_create` | `create_issue` |
+| `pr_context` | `read_pr_context` |
+| `pr_read` | `read_pr` |
+| `pr_review_context` | `read_pr_review_context` |
+| `pr_watch_checks` | `read_pr_checks` |
+| `pr_create` | `create_pr` |
+| `pr_update` | `update_pr` |
+| `pr_add_comment` | `add_pr_comment` |
+| `issue_context` | `read_issue_context` |
+| `issue_read` | `read_issue` |
+| `issue_list` | `list_open_issues` |
+| `issue_create` | `create_issue` |
 
 Wildcards work as in any other rule, so:
 
-- `Github(read_*)` covers every read verb
+- `Github(read_*)` covers every read/context verb
 - `Github(*_pr)` covers every PR-targeting verb
 - `Github(*)` is the catch-all (use sparingly — `Allow` it and writes auto-approve)
 

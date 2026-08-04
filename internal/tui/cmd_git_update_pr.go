@@ -12,9 +12,9 @@ import (
 // after follow-up commits have made the original description
 // stale.
 //
-// Reuses the existing gh_pr_review_context for the gathering
+// Reuses the existing pr_review_context for the gathering
 // step (it already fetches PR metadata + commit list + diff for
-// the same ref). The new piece is gh_pr_update, which validates
+// the same ref). The new piece is pr_update, which validates
 // the refreshed title and dials Interface.UpdatePR.
 //
 // Optional ref arg: PR number (`/git-update-pr 17`) or branch
@@ -48,10 +48,10 @@ func cmdGitUpdatePR(m Model, args []string) (Model, tea.Cmd) {
 // every invocation, which churns the PR's GitHub history with
 // cosmetic noise.
 func gitUpdatePRDirective(ref string) string {
-	refArgLine := `Step 1 — call gh_pr_review_context with no arguments. It will
+	refArgLine := `Step 1 — call pr_review_context with no arguments. It will
 use the current branch's PR.`
 	if ref != "" {
-		refArgLine = "Step 1 — call gh_pr_review_context with ref=\"" + ref + "\"."
+		refArgLine = "Step 1 — call pr_review_context with ref=\"" + ref + "\"."
 	}
 
 	return `Refresh an existing pull request's title and body to match the
@@ -64,7 +64,7 @@ and body — read them before composing the refreshed versions so
 you know what's there now.
 
 Step 2 — branch on ## state BEFORE composing anything:
-- gh_unavailable=true → surface "[git-update-pr] gh CLI
+- github_unavailable=true → surface "[git-update-pr] gh CLI
   unavailable or unauthenticated — run gh auth login" and STOP.
 - not_found=true → surface "[git-update-pr] no PR found for
   <ref>. Run /git-create-pr to open one instead." and STOP. Do
@@ -97,7 +97,7 @@ Step 3 — compose the refreshed title and body:
   Cap the body at ~80 lines. Do NOT paste the diff verbatim —
   describe it.
 
-Step 4 — call gh_pr_update with the refreshed title and body.
+Step 4 — call pr_update with the refreshed title and body.
 The approval modal fires showing both inline; user approves or
 denies.
 
@@ -107,11 +107,11 @@ Step 5 — surface the result envelope verbatim:
   rewritten / body refreshed / both).
 - "updated=false reason=validation error=..." → surface the
   error, then either (a) compose a new title/body that satisfies
-  the rule and call gh_pr_update once more, or (b) stop. Pick
+  the rule and call pr_update once more, or (b) stop. Pick
   (b) after one retry.
 - "updated=false reason=not_found" → surface and stop. Same
   routing rule as Step 2.
-- "updated=false reason=gh_error" → surface the gh output
+- "updated=false reason=github_error" → surface the gh output
   verbatim and STOP. Do NOT auto-retry, auto-edit labels /
   reviewers / base / draft, or auto-merge.
 

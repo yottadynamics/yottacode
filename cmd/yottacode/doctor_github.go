@@ -97,7 +97,7 @@ func probeGitHub(ctx context.Context) GitHubProbeResult {
 		case errors.Is(callErr, gh.ErrGitHubUnreachable):
 			res.Reachable = false
 			res.Issues = append(res.Issues, fmt.Sprintf("api.github.com unreachable: %s", strings.TrimPrefix(callErr.Error(), "github API unreachable: ")))
-		case errors.Is(callErr, gh.ErrGhUnavailable):
+		case errors.Is(callErr, gh.ErrGitHubUnavailable):
 			res.Reachable = true
 			res.Issues = append(res.Issues, "token rejected by api.github.com (401) — token is invalid or expired")
 		default:

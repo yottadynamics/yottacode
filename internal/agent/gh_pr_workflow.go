@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/yottadynamics/yottacode/internal/github"
 )
@@ -73,7 +74,7 @@ var baseCandidates = []string{"main", "master", "develop"}
 // /git:create-pr directive used as its first tool call.
 type GHPRContextTool struct{ Cwd *CwdRef }
 
-func (t *GHPRContextTool) Name() string { return "gh_pr_context" }
+func (t *GHPRContextTool) Name() string { return "pr_context" }
 
 func (t *GHPRContextTool) Description() string {
 	return "Gather the read-only context needed to open a pull request: " +
@@ -82,7 +83,7 @@ func (t *GHPRContextTool) Description() string {
 		"branch is pushed to origin, whether gh is installed and " +
 		"authenticated, and the contents of a local PR template if one " +
 		"exists. Returns a structured snapshot keyed by section headers. " +
-		"Pair with gh_pr_create to open the PR."
+		"Pair with pr_create to open the PR."
 }
 
 func (t *GHPRContextTool) Schema() map[string]any {
@@ -104,14 +105,14 @@ func (t *GHPRContextTool) PreviewCall(argsJSON string) string {
 	}
 	_ = json.Unmarshal([]byte(argsJSON), &a)
 	if strings.TrimSpace(a.Base) == "" {
-		return "gh_pr_context()"
+		return "pr_context()"
 	}
-	return fmt.Sprintf("gh_pr_context(base=%s)", a.Base)
+	return fmt.Sprintf("pr_context(base=%s)", a.Base)
 }
 
 func (t *GHPRContextTool) Execute(ctx context.Context, argsJSON string) (string, error) {
 	if _, err := exec.LookPath("git"); err != nil {
-		return "", errors.New("gh_pr_context: git binary not found in PATH")
+		return "", errors.New("pr_context: git binary not found in PATH")
 	}
 	var a struct {
 		Base string `json:"base"`
@@ -121,7 +122,7 @@ func (t *GHPRContextTool) Execute(ctx context.Context, argsJSON string) (string,
 	}
 	snap, err := BuildPRContext(ctx, t.Cwd.Get(), strings.TrimSpace(a.Base))
 	if err != nil {
-		return "", fmt.Errorf("gh_pr_context: %w", err)
+		return "", fmt.Errorf("pr_context: %w", err)
 	}
 	return renderPRContext(snap), nil
 }
@@ -148,7 +149,7 @@ type PRContext struct {
 	PRTemplateCapped  bool
 }
 
-// BuildPRContext is the deterministic core of gh_pr_context. Returns
+// BuildPRContext is the deterministic core of pr_context. Returns
 // a typed snapshot the tool wrapper renders to text, and the
 // procedural /create-pr reads directly. Errors return only on
 // infrastructure failures (git binary missing, etc.); informational
@@ -335,7 +336,7 @@ type GHPRCreateTool struct {
 	GH  github.Interface
 }
 
-func (t *GHPRCreateTool) Name() string { return "gh_pr_create" }
+func (t *GHPRCreateTool) Name() string { return "pr_create" }
 
 func (t *GHPRCreateTool) Description() string {
 	return "Open a GitHub pull request with the supplied base, title, " +
@@ -343,7 +344,7 @@ func (t *GHPRCreateTool) Description() string {
 		"single line of at most " + strconv.Itoa(PRTitleMaxLen) + " " +
 		"characters with no trailing period; body must be non-empty. " +
 		"Returns a typed result with the PR URL and number on success, " +
-		"or a gh_unavailable / validation / gh_error reason on failure. " +
+		"or a github_unavailable / validation / github_error reason on failure. " +
 		"The approval modal fires once showing the full title + body + " +
 		"base before the call lands."
 }
@@ -384,24 +385,24 @@ func (t *GHPRCreateTool) PreviewCall(argsJSON string) string {
 	}
 	_ = json.Unmarshal([]byte(argsJSON), &a)
 	if a.Draft {
-		return fmt.Sprintf("gh_pr_create(base=%s, title=%q, draft=true)", a.Base, a.Title)
+		return fmt.Sprintf("pr_create(base=%s, title=%q, draft=true)", a.Base, a.Title)
 	}
-	return fmt.Sprintf("gh_pr_create(base=%s, title=%q)", a.Base, a.Title)
+	return fmt.Sprintf("pr_create(base=%s, title=%q)", a.Base, a.Title)
 }
 
 // PRCreateResult is the typed envelope CreatePR returns. Same shape
 // rationale as CommitResult: callers branch on typed fields, not
 // stringy err checks. Reason discriminates the failure mode so the
 // procedural /create-pr handles each branch differently (validation
-// → re-prompt; gh_unavailable → fall through to draft-only; gh_error
+// → re-prompt; github_unavailable → fall through to draft-only; github_error
 // → surface verbatim and stop).
 type PRCreateResult struct {
-	Created       bool
-	URL           string
-	Number        int
-	ValidationErr string
-	GhUnavailable bool
-	GhError       string
+	Created           bool
+	URL               string
+	Number            int
+	ValidationErr     string
+	GitHubUnavailable bool
+	GitHubError       string
 }
 
 func (t *GHPRCreateTool) Execute(ctx context.Context, argsJSON string) (string, error) {
@@ -412,15 +413,15 @@ func (t *GHPRCreateTool) Execute(ctx context.Context, argsJSON string) (string, 
 		Draft bool   `json:"draft"`
 	}
 	if err := json.Unmarshal([]byte(argsJSON), &a); err != nil {
-		return "", fmt.Errorf("gh_pr_create: invalid args: %w", err)
+		return "", fmt.Errorf("pr_create: invalid args: %w", err)
 	}
 	if t.GH == nil {
-		return "", errors.New("gh_pr_create: no GitHub adapter configured")
+		return "", errors.New("pr_create: no GitHub adapter configured")
 	}
 
 	head, err := livePRBranchRef(ctx, t.Cwd)
 	if err != nil {
-		return "", fmt.Errorf("gh_pr_create: detect head branch: %w", err)
+		return "", fmt.Errorf("pr_create: detect head branch: %w", err)
 	}
 
 	res, err := CreatePR(ctx, t.GH, github.CreatePRRequest{
@@ -431,7 +432,7 @@ func (t *GHPRCreateTool) Execute(ctx context.Context, argsJSON string) (string, 
 		Draft: a.Draft,
 	})
 	if err != nil {
-		return "", fmt.Errorf("gh_pr_create: %w", err)
+		return "", fmt.Errorf("pr_create: %w", err)
 	}
 	return renderPRCreateResult(res), nil
 }
@@ -457,14 +458,14 @@ func livePRRefOrExplicit(ctx context.Context, cwd *CwdRef, ref string) (string, 
 	return livePRBranchRef(ctx, cwd)
 }
 
-// CreatePR is the deterministic core of gh_pr_create. Validates
+// CreatePR is the deterministic core of pr_create. Validates
 // title and required fields *before* dialing the Interface, so an
 // oversize title or empty body never reaches the network. Returns a
 // typed PRCreateResult; the tool wrapper renders it for model
 // consumption, /create-pr reads it directly.
 //
-// The Interface returns ErrGhUnavailable when the local environment
-// can't make the call; we surface that as GhUnavailable=true so the
+// The Interface returns ErrGitHubUnavailable when the local environment
+// can't make the call; we surface that as GitHubUnavailable=true so the
 // caller can fall through to draft-only instead of treating it as
 // an opaque error.
 func CreatePR(ctx context.Context, client github.Interface, req github.CreatePRRequest) (PRCreateResult, error) {
@@ -484,12 +485,12 @@ func CreatePR(ctx context.Context, client github.Interface, req github.CreatePRR
 	}
 
 	out, err := client.CreatePR(ctx, req)
-	if errors.Is(err, github.ErrGhUnavailable) {
-		res.GhUnavailable = true
+	if errors.Is(err, github.ErrGitHubUnavailable) {
+		res.GitHubUnavailable = true
 		return res, nil
 	}
 	if err != nil {
-		res.GhError = err.Error()
+		res.GitHubError = err.Error()
 		return res, nil
 	}
 	res.Created = true
@@ -536,7 +537,7 @@ type GHPRUpdateTool struct {
 	GH  github.Interface
 }
 
-func (t *GHPRUpdateTool) Name() string { return "gh_pr_update" }
+func (t *GHPRUpdateTool) Name() string { return "pr_update" }
 
 func (t *GHPRUpdateTool) Description() string {
 	return "Rewrite an existing pull request's title and body. Ref is " +
@@ -544,8 +545,8 @@ func (t *GHPRUpdateTool) Description() string {
 		"branch's PR. Title is validated to be a single line of at most " +
 		strconv.Itoa(PRTitleMaxLen) + " characters with no trailing " +
 		"period; body must be non-empty. Returns a typed result with " +
-		"the PR URL on success, or a gh_unavailable / not_found / " +
-		"validation / gh_error reason on failure. The approval modal " +
+		"the PR URL on success, or a github_unavailable / not_found / " +
+		"validation / github_error reason on failure. The approval modal " +
 		"fires once showing the new title + body + ref before the call " +
 		"lands."
 }
@@ -581,9 +582,9 @@ func (t *GHPRUpdateTool) PreviewCall(argsJSON string) string {
 	}
 	_ = json.Unmarshal([]byte(argsJSON), &a)
 	if a.Ref == "" {
-		return fmt.Sprintf("gh_pr_update(title=%q)", a.Title)
+		return fmt.Sprintf("pr_update(title=%q)", a.Title)
 	}
-	return fmt.Sprintf("gh_pr_update(ref=%s, title=%q)", a.Ref, a.Title)
+	return fmt.Sprintf("pr_update(ref=%s, title=%q)", a.Ref, a.Title)
 }
 
 // PRUpdateResult is the typed envelope UpdatePR returns. Same
@@ -591,13 +592,13 @@ func (t *GHPRUpdateTool) PreviewCall(argsJSON string) string {
 // fields. Reason discriminates the failure mode so the
 // procedural /git-update-pr handles each branch differently.
 type PRUpdateResult struct {
-	Updated       bool
-	URL           string
-	Number        int
-	ValidationErr string
-	GhUnavailable bool
-	NotFound      bool
-	GhError       string
+	Updated           bool
+	URL               string
+	Number            int
+	ValidationErr     string
+	GitHubUnavailable bool
+	NotFound          bool
+	GitHubError       string
 }
 
 func (t *GHPRUpdateTool) Execute(ctx context.Context, argsJSON string) (string, error) {
@@ -607,14 +608,14 @@ func (t *GHPRUpdateTool) Execute(ctx context.Context, argsJSON string) (string, 
 		Body  string `json:"body"`
 	}
 	if err := json.Unmarshal([]byte(argsJSON), &a); err != nil {
-		return "", fmt.Errorf("gh_pr_update: invalid args: %w", err)
+		return "", fmt.Errorf("pr_update: invalid args: %w", err)
 	}
 	if t.GH == nil {
-		return "", errors.New("gh_pr_update: no GitHub adapter configured")
+		return "", errors.New("pr_update: no GitHub adapter configured")
 	}
 	ref, err := livePRRefOrExplicit(ctx, t.Cwd, a.Ref)
 	if err != nil {
-		return "", fmt.Errorf("gh_pr_update: detect current branch: %w", err)
+		return "", fmt.Errorf("pr_update: detect current branch: %w", err)
 	}
 	res, err := UpdatePR(ctx, t.GH, github.UpdatePRRequest{
 		Ref:   ref,
@@ -622,18 +623,18 @@ func (t *GHPRUpdateTool) Execute(ctx context.Context, argsJSON string) (string, 
 		Body:  a.Body,
 	})
 	if err != nil {
-		return "", fmt.Errorf("gh_pr_update: %w", err)
+		return "", fmt.Errorf("pr_update: %w", err)
 	}
 	return renderPRUpdateResult(res), nil
 }
 
-// UpdatePR is the deterministic core of gh_pr_update. Validates
+// UpdatePR is the deterministic core of pr_update. Validates
 // title and body *before* dialing the Interface, so oversize
 // titles and empty bodies never reach the network. Returns a
 // typed PRUpdateResult; the tool wrapper renders it for model
 // consumption.
 //
-// The Interface's ErrPRNotFound and ErrGhUnavailable get folded
+// The Interface's ErrPRNotFound and ErrGitHubUnavailable get folded
 // into typed envelope fields so callers branch on flags rather
 // than err strings.
 func UpdatePR(ctx context.Context, client github.Interface, req github.UpdatePRRequest) (PRUpdateResult, error) {
@@ -649,8 +650,8 @@ func UpdatePR(ctx context.Context, client github.Interface, req github.UpdatePRR
 	}
 
 	out, err := client.UpdatePR(ctx, req)
-	if errors.Is(err, github.ErrGhUnavailable) {
-		res.GhUnavailable = true
+	if errors.Is(err, github.ErrGitHubUnavailable) {
+		res.GitHubUnavailable = true
 		return res, nil
 	}
 	if errors.Is(err, github.ErrPRNotFound) {
@@ -658,7 +659,7 @@ func UpdatePR(ctx context.Context, client github.Interface, req github.UpdatePRR
 		return res, nil
 	}
 	if err != nil {
-		res.GhError = err.Error()
+		res.GitHubError = err.Error()
 		return res, nil
 	}
 	res.Updated = true
@@ -676,17 +677,17 @@ func renderPRUpdateResult(r PRUpdateResult) string {
 	switch {
 	case r.ValidationErr != "":
 		fmt.Fprintf(&b, "updated=false reason=validation\nerror=%s\n", r.ValidationErr)
-	case r.GhUnavailable:
-		b.WriteString("updated=false reason=gh_unavailable\n")
+	case r.GitHubUnavailable:
+		b.WriteString("updated=false reason=github_unavailable\n")
 		b.WriteString("Hint: install gh and run `gh auth login`.\n")
 	case r.NotFound:
 		b.WriteString("updated=false reason=not_found\n")
 		b.WriteString("Hint: no PR matches the ref. Run /git-create-pr to open one instead.\n")
-	case r.GhError != "":
-		b.WriteString("updated=false reason=gh_error\n")
+	case r.GitHubError != "":
+		b.WriteString("updated=false reason=github_error\n")
 		b.WriteString("--- gh output ---\n")
-		b.WriteString(r.GhError)
-		if !strings.HasSuffix(r.GhError, "\n") {
+		b.WriteString(r.GitHubError)
+		if !strings.HasSuffix(r.GitHubError, "\n") {
 			b.WriteString("\n")
 		}
 		b.WriteString("--- end gh output ---\n")
@@ -710,7 +711,7 @@ const prCommentBodyCap = 16 * 1024
 // PR. Approval-gated — every comment goes through the modal so the
 // user reads the body before it lands publicly on GitHub.
 //
-// Companion to gh_pr_create / gh_pr_update for the write surface.
+// Companion to pr_create / pr_update for the write surface.
 // Validates body length in Go before dialing the Interface so
 // runaway template output can't reach the network.
 type GHPRAddCommentTool struct {
@@ -718,7 +719,7 @@ type GHPRAddCommentTool struct {
 	GH  github.Interface
 }
 
-func (t *GHPRAddCommentTool) Name() string { return "gh_pr_add_comment" }
+func (t *GHPRAddCommentTool) Name() string { return "pr_add_comment" }
 
 func (t *GHPRAddCommentTool) Description() string {
 	return "Post a top-level conversation comment on a pull request. " +
@@ -761,9 +762,9 @@ func (t *GHPRAddCommentTool) PreviewCall(argsJSON string) string {
 	_ = json.Unmarshal([]byte(argsJSON), &a)
 	excerpt := previewExcerpt(a.Body, 80)
 	if strings.TrimSpace(a.Ref) == "" {
-		return fmt.Sprintf("gh_pr_add_comment(body=%q)", excerpt)
+		return fmt.Sprintf("pr_add_comment(body=%q)", excerpt)
 	}
-	return fmt.Sprintf("gh_pr_add_comment(ref=%s, body=%q)", a.Ref, excerpt)
+	return fmt.Sprintf("pr_add_comment(ref=%s, body=%q)", a.Ref, excerpt)
 }
 
 // PRAddCommentResult is the typed envelope AddPRComment returns
@@ -772,13 +773,13 @@ func (t *GHPRAddCommentTool) PreviewCall(argsJSON string) string {
 // brief and slash commands can branch on typed flags rather than
 // stringy error checks.
 type PRAddCommentResult struct {
-	Posted        bool
-	URL           string
-	ID            int64
-	ValidationErr string
-	GhUnavailable bool
-	NotFound      bool
-	GhError       string
+	Posted            bool
+	URL               string
+	ID                int64
+	ValidationErr     string
+	GitHubUnavailable bool
+	NotFound          bool
+	GitHubError       string
 }
 
 func (t *GHPRAddCommentTool) Execute(ctx context.Context, argsJSON string) (string, error) {
@@ -787,29 +788,29 @@ func (t *GHPRAddCommentTool) Execute(ctx context.Context, argsJSON string) (stri
 		Body string `json:"body"`
 	}
 	if err := json.Unmarshal([]byte(argsJSON), &a); err != nil {
-		return "", fmt.Errorf("gh_pr_add_comment: invalid args: %w", err)
+		return "", fmt.Errorf("pr_add_comment: invalid args: %w", err)
 	}
 	if t.GH == nil {
-		return "", errors.New("gh_pr_add_comment: no GitHub adapter configured")
+		return "", errors.New("pr_add_comment: no GitHub adapter configured")
 	}
 
 	ref, err := livePRRefOrExplicit(ctx, t.Cwd, a.Ref)
 	if err != nil {
-		return "", fmt.Errorf("gh_pr_add_comment: detect current branch: %w", err)
+		return "", fmt.Errorf("pr_add_comment: detect current branch: %w", err)
 	}
 	res, err := AddPRComment(ctx, t.GH, github.AddPRCommentRequest{
 		Ref:  ref,
 		Body: a.Body,
 	})
 	if err != nil {
-		return "", fmt.Errorf("gh_pr_add_comment: %w", err)
+		return "", fmt.Errorf("pr_add_comment: %w", err)
 	}
 	return renderPRAddCommentResult(res), nil
 }
 
-// AddPRComment is the deterministic core of gh_pr_add_comment.
+// AddPRComment is the deterministic core of pr_add_comment.
 // Validates body length and presence in Go before dialing the
-// Interface; folds typed errors (ErrPRNotFound, ErrGhUnavailable)
+// Interface; folds typed errors (ErrPRNotFound, ErrGitHubUnavailable)
 // into the typed result envelope so callers branch on flags rather
 // than err strings.
 func AddPRComment(ctx context.Context, client github.Interface, req github.AddPRCommentRequest) (PRAddCommentResult, error) {
@@ -826,8 +827,8 @@ func AddPRComment(ctx context.Context, client github.Interface, req github.AddPR
 	}
 
 	posted, err := client.AddPRComment(ctx, req)
-	if errors.Is(err, github.ErrGhUnavailable) {
-		res.GhUnavailable = true
+	if errors.Is(err, github.ErrGitHubUnavailable) {
+		res.GitHubUnavailable = true
 		return res, nil
 	}
 	if errors.Is(err, github.ErrPRNotFound) {
@@ -835,7 +836,7 @@ func AddPRComment(ctx context.Context, client github.Interface, req github.AddPR
 		return res, nil
 	}
 	if err != nil {
-		res.GhError = err.Error()
+		res.GitHubError = err.Error()
 		return res, nil
 	}
 	res.Posted = true
@@ -851,17 +852,17 @@ func renderPRAddCommentResult(r PRAddCommentResult) string {
 	switch {
 	case r.ValidationErr != "":
 		fmt.Fprintf(&b, "posted=false reason=validation\nerror=%s\n", r.ValidationErr)
-	case r.GhUnavailable:
-		b.WriteString("posted=false reason=gh_unavailable\n")
+	case r.GitHubUnavailable:
+		b.WriteString("posted=false reason=github_unavailable\n")
 		b.WriteString("Hint: install gh and run `gh auth login`, or set $GITHUB_TOKEN.\n")
 	case r.NotFound:
 		b.WriteString("posted=false reason=not_found\n")
 		b.WriteString("Hint: no PR matches the ref. Verify the number or branch name.\n")
-	case r.GhError != "":
-		b.WriteString("posted=false reason=gh_error\n")
+	case r.GitHubError != "":
+		b.WriteString("posted=false reason=github_error\n")
 		b.WriteString("--- gh output ---\n")
-		b.WriteString(r.GhError)
-		if !strings.HasSuffix(r.GhError, "\n") {
+		b.WriteString(r.GitHubError)
+		if !strings.HasSuffix(r.GitHubError, "\n") {
 			b.WriteString("\n")
 		}
 		b.WriteString("--- end gh output ---\n")
@@ -889,7 +890,7 @@ func previewExcerpt(body string, cap int) string {
 }
 
 // prReviewDiffCap bounds the diff body the review snapshot
-// surfaces. Bigger than the gh_pr_context diffstat cap (16 KiB)
+// surfaces. Bigger than the pr_context diffstat cap (16 KiB)
 // because reviewers need the actual hunks, not just file names —
 // but bounded enough that a long-running branch's accumulated
 // diff doesn't blow the prompt cache. 64 KiB covers most
@@ -899,7 +900,7 @@ const prReviewDiffCap = 64 * 1024
 
 // GHPRReviewContextTool fetches everything /git-review-pr needs in
 // one composite call: PR metadata, full diff (capped), and the
-// status check rollup. Counterpart to gh_pr_context (which gathers
+// status check rollup. Counterpart to pr_context (which gathers
 // local pre-PR state); this one talks to an existing PR via the
 // github.Interface.
 //
@@ -907,14 +908,14 @@ const prReviewDiffCap = 64 * 1024
 // is NOT marked parallel-safe. The fetch fans out to three
 // Interface calls (ReadPR + ListPRChecks + ReadPRDiff). When the
 // caller only needs PR metadata (title, body, state, labels), the
-// cheaper gh_pr_read tool is the right choice — see its Description
+// cheaper pr_read tool is the right choice — see its Description
 // for the selection rule.
 type GHPRReviewContextTool struct {
 	Cwd *CwdRef
 	GH  github.Interface
 }
 
-func (t *GHPRReviewContextTool) Name() string { return "gh_pr_review_context" }
+func (t *GHPRReviewContextTool) Name() string { return "pr_review_context" }
 
 func (t *GHPRReviewContextTool) Description() string {
 	return "Fetch everything needed to review an existing pull request: " +
@@ -926,9 +927,9 @@ func (t *GHPRReviewContextTool) Description() string {
 		"over shelling out to `gh pr view`, `gh pr diff`, or `gh pr " +
 		"checks` from run_bash: the typed call is faster, handles auth " +
 		"directly, and returns structured data the model can branch on " +
-		"(## state flags for not_found / gh_unavailable; ## " +
+		"(## state flags for not_found / github_unavailable; ## " +
 		"checks.summary for CI rollup). If you only need PR metadata " +
-		"(no diff, no checks), use gh_pr_read instead — single API call, " +
+		"(no diff, no checks), use pr_read instead — single API call, " +
 		"same metadata shape. Ref is the PR number or branch name; " +
 		"empty defaults to the current branch."
 }
@@ -953,14 +954,14 @@ func (t *GHPRReviewContextTool) PreviewCall(argsJSON string) string {
 	}
 	_ = json.Unmarshal([]byte(argsJSON), &a)
 	if strings.TrimSpace(a.Ref) == "" {
-		return "gh_pr_review_context()"
+		return "pr_review_context()"
 	}
-	return fmt.Sprintf("gh_pr_review_context(ref=%s)", a.Ref)
+	return fmt.Sprintf("pr_review_context(ref=%s)", a.Ref)
 }
 
 func (t *GHPRReviewContextTool) Execute(ctx context.Context, argsJSON string) (string, error) {
 	if t.GH == nil {
-		return "", errors.New("gh_pr_review_context: no GitHub adapter configured")
+		return "", errors.New("pr_review_context: no GitHub adapter configured")
 	}
 	var a struct {
 		Ref string `json:"ref"`
@@ -970,11 +971,11 @@ func (t *GHPRReviewContextTool) Execute(ctx context.Context, argsJSON string) (s
 	}
 	ref, err := livePRRefOrExplicit(ctx, t.Cwd, a.Ref)
 	if err != nil {
-		return "", fmt.Errorf("gh_pr_review_context: detect current branch: %w", err)
+		return "", fmt.Errorf("pr_review_context: detect current branch: %w", err)
 	}
 	snap, err := BuildPRReviewContext(ctx, t.GH, ref)
 	if err != nil {
-		return "", fmt.Errorf("gh_pr_review_context: %w", err)
+		return "", fmt.Errorf("pr_review_context: %w", err)
 	}
 	return renderPRReviewContext(snap), nil
 }
@@ -984,10 +985,10 @@ func (t *GHPRReviewContextTool) Execute(ctx context.Context, argsJSON string) (s
 // branch on typed fields, and the rendered string is for the
 // model's consumption rather than the only access path.
 type PRReviewContext struct {
-	Ref           string
-	NotFound      bool   // true when gh couldn't resolve the ref
-	GhUnavailable bool   // true when gh is missing / unauthed
-	FetchErr      string // any other Interface error, surfaced verbatim
+	Ref               string
+	NotFound          bool   // true when gh couldn't resolve the ref
+	GitHubUnavailable bool   // true when gh is missing / unauthed
+	FetchErr          string // any other Interface error, surfaced verbatim
 
 	PR            github.PRDetails
 	Checks        []github.CheckRun
@@ -997,9 +998,9 @@ type PRReviewContext struct {
 }
 
 // BuildPRReviewContext is the deterministic core of
-// gh_pr_review_context. Fans out the three Interface calls
+// pr_review_context. Fans out the three Interface calls
 // (ReadPR, ListPRChecks, ReadPRDiff), folds the typed errors into
-// the snapshot's NotFound / GhUnavailable flags so the caller can
+// the snapshot's NotFound / GitHubUnavailable flags so the caller can
 // branch without parsing err strings, and computes the
 // FailingChecks list for the slash command to surface at the top
 // of the review.
@@ -1008,8 +1009,8 @@ func BuildPRReviewContext(ctx context.Context, client github.Interface, ref stri
 
 	req := github.ReadPRRequest{Ref: ref}
 	pr, err := client.ReadPR(ctx, req)
-	if errors.Is(err, github.ErrGhUnavailable) {
-		snap.GhUnavailable = true
+	if errors.Is(err, github.ErrGitHubUnavailable) {
+		snap.GitHubUnavailable = true
 		return snap, nil
 	}
 	if errors.Is(err, github.ErrPRNotFound) {
@@ -1082,8 +1083,8 @@ func renderPRReviewContext(s PRReviewContext) string {
 
 	// ## state goes first so the caller branches on the typed
 	// flags before doing any rendering work.
-	fmt.Fprintf(&b, "## state\nref=%s\nnot_found=%v\ngh_unavailable=%v\n",
-		s.Ref, s.NotFound, s.GhUnavailable)
+	fmt.Fprintf(&b, "## state\nref=%s\nnot_found=%v\ngithub_unavailable=%v\n",
+		s.Ref, s.NotFound, s.GitHubUnavailable)
 	if s.FetchErr != "" {
 		fmt.Fprintf(&b, "fetch_error=%s\n", s.FetchErr)
 	}
@@ -1091,7 +1092,7 @@ func renderPRReviewContext(s PRReviewContext) string {
 		fmt.Fprintf(&b, "failing_checks=%s\n", strings.Join(s.FailingChecks, ","))
 	}
 
-	if s.NotFound || s.GhUnavailable {
+	if s.NotFound || s.GitHubUnavailable {
 		// Nothing more to render — the slash command surfaces a
 		// "no PR found" / "gh unavailable" message and stops.
 		return strings.TrimRight(b.String(), "\n") + "\n"
@@ -1115,36 +1116,8 @@ func renderPRReviewContext(s PRReviewContext) string {
 	}
 
 	b.WriteString("\n## checks.summary\n")
-	if len(s.Checks) == 0 {
-		b.WriteString("(no checks)\n")
-	} else {
-		pass, fail, pending := 0, 0, 0
-		for _, c := range s.Checks {
-			switch {
-			case isFailingCheck(c):
-				fail++
-			case strings.ToUpper(c.Conclusion) == "SUCCESS" || strings.ToUpper(c.State) == "SUCCESS":
-				pass++
-			default:
-				pending++
-			}
-		}
-		fmt.Fprintf(&b, "total=%d pass=%d fail=%d pending=%d\n",
-			len(s.Checks), pass, fail, pending)
-	}
-
-	b.WriteString("\n## checks\n")
-	if len(s.Checks) == 0 {
-		b.WriteString("(none)\n")
-	} else {
-		for _, c := range s.Checks {
-			state := c.State
-			if c.Conclusion != "" {
-				state = c.State + "/" + c.Conclusion
-			}
-			fmt.Fprintf(&b, "- %s [%s]\n", c.Name, state)
-		}
-	}
+	renderChecksSummaryBody(&b, s.Checks)
+	renderChecksList(&b, s.Checks)
 
 	b.WriteString("\n## diff\n")
 	if strings.TrimSpace(s.Diff) == "" {
@@ -1163,6 +1136,314 @@ func renderPRReviewContext(s PRReviewContext) string {
 	return strings.TrimRight(b.String(), "\n") + "\n"
 }
 
+const (
+	prWatchDefaultTimeout      = 15 * time.Minute
+	prWatchDefaultPollInterval = 15 * time.Second
+	prWatchDefaultLogTailLines = 240
+	prWatchMaxLogTailLines     = 1000
+	prWatchMaxTimeout          = 2 * time.Hour
+)
+
+// PRWatchChecksTool waits for a PR's checks to reach a useful terminal state.
+// It replaces shell pipelines such as `gh run watch ...; gh run view
+// --log-failed | tail` with a bounded, read-only typed GitHub workflow.
+type PRWatchChecksTool struct {
+	Cwd *CwdRef
+	GH  github.Interface
+}
+
+func (t *PRWatchChecksTool) Name() string { return "pr_watch_checks" }
+
+func (t *PRWatchChecksTool) Description() string {
+	return "Watch a pull request's checks until they pass, fail, or time out, " +
+		"then return a typed CI snapshot and capped failed-job log tails. " +
+		"Use this instead of shelling out to `gh run watch`, `gh pr checks`, " +
+		"or `gh run view --log-failed | tail` from run_bash when the task is " +
+		"to wait for PR CI. Ref is the PR number or branch name; empty " +
+		"defaults to the current branch's PR. No approval; read-only network " +
+		"tool."
+}
+
+func (t *PRWatchChecksTool) Schema() map[string]any {
+	return map[string]any{"type": "object", "properties": map[string]any{
+		"ref":                   map[string]any{"type": "string", "description": "PR number or branch name. Empty defaults to current branch."},
+		"timeout_seconds":       map[string]any{"type": "integer", "description": "Maximum seconds to wait. Default 900; bounded to 1..7200."},
+		"poll_interval_seconds": map[string]any{"type": "integer", "description": "Seconds between check polls. Default 15; bounded to 1..300."},
+		"log_tail_lines":        map[string]any{"type": "integer", "description": "Failed-job log tail lines per job. Default 240; bounded to 0..1000."},
+	}}
+}
+
+func (t *PRWatchChecksTool) RequiresApproval(string) bool { return false }
+
+func (t *PRWatchChecksTool) PreviewCall(argsJSON string) string {
+	var a struct {
+		Ref string `json:"ref"`
+	}
+	_ = json.Unmarshal([]byte(argsJSON), &a)
+	if strings.TrimSpace(a.Ref) == "" {
+		return "pr_watch_checks()"
+	}
+	return fmt.Sprintf("pr_watch_checks(ref=%s)", a.Ref)
+}
+
+func (t *PRWatchChecksTool) Execute(ctx context.Context, argsJSON string) (string, error) {
+	if t.GH == nil {
+		return "", errors.New("pr_watch_checks: no GitHub adapter configured")
+	}
+	var a struct {
+		Ref                 string `json:"ref"`
+		TimeoutSeconds      int    `json:"timeout_seconds"`
+		PollIntervalSeconds int    `json:"poll_interval_seconds"`
+		LogTailLines        int    `json:"log_tail_lines"`
+	}
+	if argsJSON != "" {
+		_ = json.Unmarshal([]byte(argsJSON), &a)
+	}
+	ref, err := livePRRefOrExplicit(ctx, t.Cwd, a.Ref)
+	if err != nil {
+		return "", fmt.Errorf("pr_watch_checks: detect current branch: %w", err)
+	}
+	snap, err := WatchPRChecks(ctx, t.GH, PRWatchOptions{
+		Ref:          ref,
+		Timeout:      secondsOrDefault(a.TimeoutSeconds, prWatchDefaultTimeout, prWatchMaxTimeout),
+		PollInterval: secondsOrDefault(a.PollIntervalSeconds, prWatchDefaultPollInterval, 5*time.Minute),
+		LogTailLines: boundedInt(a.LogTailLines, prWatchDefaultLogTailLines, 0, prWatchMaxLogTailLines),
+	})
+	if err != nil {
+		return "", fmt.Errorf("pr_watch_checks: %w", err)
+	}
+	return renderPRWatchChecks(snap), nil
+}
+
+type PRWatchOptions struct {
+	Ref          string
+	Timeout      time.Duration
+	PollInterval time.Duration
+	LogTailLines int
+}
+
+type PRWatchChecksSnapshot struct {
+	Ref                string
+	NotFound           bool
+	GitHubUnavailable  bool
+	TimedOut           bool
+	AllSuccess         bool
+	Failed             bool
+	FetchErr           string
+	FailedLogsFetchErr string
+	PR                 github.PRDetails
+	Checks             []github.CheckRun
+	FailingChecks      []string
+	FailedLogs         github.FailedWorkflowLogsResult
+}
+
+func WatchPRChecks(ctx context.Context, client github.Interface, opts PRWatchOptions) (PRWatchChecksSnapshot, error) {
+	snap := PRWatchChecksSnapshot{Ref: opts.Ref}
+	if opts.Timeout <= 0 {
+		opts.Timeout = prWatchDefaultTimeout
+	}
+	if opts.PollInterval <= 0 {
+		opts.PollInterval = prWatchDefaultPollInterval
+	}
+	req := github.ReadPRRequest{Ref: opts.Ref}
+	pr, err := client.ReadPR(ctx, req)
+	if errors.Is(err, github.ErrGitHubUnavailable) {
+		snap.GitHubUnavailable = true
+		return snap, nil
+	}
+	if errors.Is(err, github.ErrPRNotFound) {
+		snap.NotFound = true
+		return snap, nil
+	}
+	if err != nil {
+		snap.FetchErr = err.Error()
+		return snap, nil
+	}
+	snap.PR = pr
+	deadline := time.Now().Add(opts.Timeout)
+	// Poll until a terminal state or the exact timeout. Empty check lists
+	// are treated as pending because GitHub can lag between a push and
+	// check-suite creation.
+	for {
+		checks, err := client.ListPRChecks(ctx, req)
+		if errors.Is(err, github.ErrGitHubUnavailable) {
+			snap.GitHubUnavailable = true
+			return snap, nil
+		}
+		if errors.Is(err, github.ErrPRNotFound) {
+			snap.NotFound = true
+			return snap, nil
+		}
+		if err != nil {
+			snap.FetchErr = err.Error()
+			return snap, nil
+		}
+		snap.Checks = checks
+		snap.FailingChecks = failingCheckNames(checks)
+		snap.Failed = len(snap.FailingChecks) > 0
+		snap.AllSuccess = len(checks) > 0 && allChecksTerminalSuccess(checks)
+		if snap.Failed || snap.AllSuccess {
+			break
+		}
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			snap.TimedOut = true
+			break
+		}
+		sleepFor := opts.PollInterval
+		if sleepFor > remaining {
+			sleepFor = remaining
+		}
+		select {
+		case <-ctx.Done():
+			return snap, ctx.Err()
+		case <-time.After(sleepFor):
+		}
+	}
+	if snap.Failed && strings.TrimSpace(pr.HeadSHA) != "" && opts.LogTailLines > 0 {
+		logs, err := client.ListFailedWorkflowJobLogTails(ctx, github.FailedWorkflowLogsRequest{HeadSHA: pr.HeadSHA, TailLines: opts.LogTailLines, MaxRuns: 10})
+		if err != nil {
+			snap.FailedLogsFetchErr = err.Error()
+		} else {
+			snap.FailedLogs = logs
+		}
+	}
+	return snap, nil
+}
+
+func secondsOrDefault(seconds int, def, max time.Duration) time.Duration {
+	if seconds <= 0 {
+		return def
+	}
+	d := time.Duration(seconds) * time.Second
+	if d > max {
+		return max
+	}
+	return d
+}
+
+func boundedInt(v, def, min, max int) int {
+	if v == 0 {
+		return def
+	}
+	if v < min {
+		return min
+	}
+	if v > max {
+		return max
+	}
+	return v
+}
+
+func failingCheckNames(checks []github.CheckRun) []string {
+	var out []string
+	for _, c := range checks {
+		if isFailingCheck(c) {
+			out = append(out, c.Name)
+		}
+	}
+	return out
+}
+
+func allChecksTerminalSuccess(checks []github.CheckRun) bool {
+	for _, c := range checks {
+		if !isTerminalSuccessfulCheck(c) {
+			return false
+		}
+	}
+	return true
+}
+
+func isTerminalSuccessfulCheck(c github.CheckRun) bool {
+	conclusion := strings.ToUpper(strings.TrimSpace(c.Conclusion))
+	state := strings.ToUpper(strings.TrimSpace(c.State))
+	if conclusion == "SUCCESS" || conclusion == "NEUTRAL" || conclusion == "SKIPPED" {
+		return true
+	}
+	return conclusion == "" && state == "SUCCESS"
+}
+
+func renderPRWatchChecks(s PRWatchChecksSnapshot) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "## state\nref=%s\nnot_found=%v\ngithub_unavailable=%v\ntimed_out=%v\nall_success=%v\nfailed=%v\n", s.Ref, s.NotFound, s.GitHubUnavailable, s.TimedOut, s.AllSuccess, s.Failed)
+	if len(s.FailingChecks) > 0 {
+		fmt.Fprintf(&b, "failing_checks=%s\n", strings.Join(s.FailingChecks, ","))
+	}
+	if s.FetchErr != "" {
+		fmt.Fprintf(&b, "fetch_error=%s\n", s.FetchErr)
+	}
+	if s.FailedLogsFetchErr != "" {
+		fmt.Fprintf(&b, "failed_logs_fetch_error=%s\n", s.FailedLogsFetchErr)
+	}
+	if s.NotFound || s.GitHubUnavailable {
+		return strings.TrimRight(b.String(), "\n") + "\n"
+	}
+	b.WriteString("\n## pr\n")
+	fmt.Fprintf(&b, "number=%d\nstate=%s\ndraft=%v\nbase=%s\nhead=%s\nhead_sha=%s\nurl=%s\n", s.PR.Number, s.PR.State, s.PR.Draft, s.PR.BaseRef, s.PR.HeadRef, s.PR.HeadSHA, s.PR.URL)
+	fmt.Fprintf(&b, "title=%s\n", s.PR.Title)
+	renderChecksSummary(&b, s.Checks)
+	renderChecksList(&b, s.Checks)
+	b.WriteString("\n## failed_logs\n")
+	if len(s.FailedLogs.Jobs) == 0 {
+		b.WriteString("(none)\n")
+	} else {
+		for _, job := range s.FailedLogs.Jobs {
+			fmt.Fprintf(&b, "### %s / %s [%s]\n", job.WorkflowName, job.JobName, job.Conclusion)
+			if job.JobURL != "" {
+				fmt.Fprintf(&b, "url=%s\n", job.JobURL)
+			}
+			if job.LogError != "" {
+				fmt.Fprintf(&b, "log_error=%s\n", job.LogError)
+				continue
+			}
+			for _, line := range job.LogTail {
+				b.WriteString(line)
+				b.WriteString("\n")
+			}
+		}
+	}
+	return strings.TrimRight(b.String(), "\n") + "\n"
+}
+
+func renderChecksSummary(b *strings.Builder, checks []github.CheckRun) {
+	b.WriteString("\n## checks.summary\n")
+	renderChecksSummaryBody(b, checks)
+}
+
+func renderChecksSummaryBody(b *strings.Builder, checks []github.CheckRun) {
+	if len(checks) == 0 {
+		b.WriteString("(no checks)\n")
+		return
+	}
+	pass, fail, pending := 0, 0, 0
+	for _, c := range checks {
+		switch {
+		case isFailingCheck(c):
+			fail++
+		case strings.ToUpper(c.Conclusion) == "SUCCESS" || strings.ToUpper(c.State) == "SUCCESS":
+			pass++
+		default:
+			pending++
+		}
+	}
+	fmt.Fprintf(b, "total=%d pass=%d fail=%d pending=%d\n", len(checks), pass, fail, pending)
+}
+
+func renderChecksList(b *strings.Builder, checks []github.CheckRun) {
+	b.WriteString("\n## checks\n")
+	if len(checks) == 0 {
+		b.WriteString("(none)\n")
+		return
+	}
+	for _, c := range checks {
+		state := c.State
+		if c.Conclusion != "" {
+			state = c.State + "/" + c.Conclusion
+		}
+		fmt.Fprintf(b, "- %s [%s]\n", c.Name, state)
+	}
+}
+
 // GHPRReadTool is the cheap counterpart to GHPRReviewContextTool —
 // a single ReadPR call returning just the PR metadata (no diff, no
 // checks). Exists so the model has a body-only read path that
@@ -1170,14 +1451,14 @@ func renderPRReviewContext(s PRReviewContext) string {
 // is "fetch the PR description" or "what's the title of #29".
 //
 // Read-only, no approval modal, single API call. The cheap default
-// for any PR-metadata question; gh_pr_review_context stays the
+// for any PR-metadata question; pr_review_context stays the
 // right choice when the model also needs the diff or check status.
 type GHPRReadTool struct {
 	Cwd *CwdRef
 	GH  github.Interface
 }
 
-func (t *GHPRReadTool) Name() string { return "gh_pr_read" }
+func (t *GHPRReadTool) Name() string { return "pr_read" }
 
 func (t *GHPRReadTool) Description() string {
 	return "Fetch typed metadata for a single pull request: number, " +
@@ -1186,11 +1467,11 @@ func (t *GHPRReadTool) Description() string {
 		"no check-runs. Prefer this over shelling out to `gh pr view " +
 		"--json ...` from run_bash whenever the goal is reading PR " +
 		"metadata: faster, no subprocess, structured result. Use " +
-		"gh_pr_review_context instead when the diff or CI status also " +
+		"pr_review_context instead when the diff or CI status also " +
 		"matters (PR review, audit). Ref is the PR number or branch " +
 		"name; empty defaults to the current branch. Returns a typed " +
 		"snapshot keyed by section headers (## state then ## pr); " +
-		"## state flags not_found / gh_unavailable so the caller can " +
+		"## state flags not_found / github_unavailable so the caller can " +
 		"branch without parsing free-text errors."
 }
 
@@ -1214,14 +1495,14 @@ func (t *GHPRReadTool) PreviewCall(argsJSON string) string {
 	}
 	_ = json.Unmarshal([]byte(argsJSON), &a)
 	if strings.TrimSpace(a.Ref) == "" {
-		return "gh_pr_read()"
+		return "pr_read()"
 	}
-	return fmt.Sprintf("gh_pr_read(ref=%s)", a.Ref)
+	return fmt.Sprintf("pr_read(ref=%s)", a.Ref)
 }
 
 func (t *GHPRReadTool) Execute(ctx context.Context, argsJSON string) (string, error) {
 	if t.GH == nil {
-		return "", errors.New("gh_pr_read: no GitHub adapter configured")
+		return "", errors.New("pr_read: no GitHub adapter configured")
 	}
 	var a struct {
 		Ref string `json:"ref"`
@@ -1231,26 +1512,26 @@ func (t *GHPRReadTool) Execute(ctx context.Context, argsJSON string) (string, er
 	}
 	ref, err := livePRRefOrExplicit(ctx, t.Cwd, a.Ref)
 	if err != nil {
-		return "", fmt.Errorf("gh_pr_read: detect current branch: %w", err)
+		return "", fmt.Errorf("pr_read: detect current branch: %w", err)
 	}
 	snap := BuildPRReadContext(ctx, t.GH, ref)
 	return renderPRReadContext(snap), nil
 }
 
-// PRReadContext is the typed snapshot gh_pr_read returns. Same
-// state-flag pattern as PRReviewContext (NotFound / GhUnavailable
+// PRReadContext is the typed snapshot pr_read returns. Same
+// state-flag pattern as PRReviewContext (NotFound / GitHubUnavailable
 // / FetchErr) so the model branches on typed flags before reading
 // the metadata. PR is zero-valued when the read failed.
 type PRReadContext struct {
-	Ref           string
-	NotFound      bool
-	GhUnavailable bool
-	FetchErr      string
+	Ref               string
+	NotFound          bool
+	GitHubUnavailable bool
+	FetchErr          string
 
 	PR github.PRDetails
 }
 
-// BuildPRReadContext is the deterministic core of gh_pr_read.
+// BuildPRReadContext is the deterministic core of pr_read.
 // Wraps a single Interface.ReadPR call and folds the typed errors
 // into the snapshot's flags. Doesn't return an error itself —
 // every failure shape is captured in the snapshot so callers can
@@ -1258,8 +1539,8 @@ type PRReadContext struct {
 func BuildPRReadContext(ctx context.Context, client github.Interface, ref string) PRReadContext {
 	snap := PRReadContext{Ref: ref}
 	pr, err := client.ReadPR(ctx, github.ReadPRRequest{Ref: ref})
-	if errors.Is(err, github.ErrGhUnavailable) {
-		snap.GhUnavailable = true
+	if errors.Is(err, github.ErrGitHubUnavailable) {
+		snap.GitHubUnavailable = true
 		return snap
 	}
 	if errors.Is(err, github.ErrPRNotFound) {
@@ -1277,17 +1558,17 @@ func BuildPRReadContext(ctx context.Context, client github.Interface, ref string
 // renderPRReadContext mirrors renderPRReviewContext's state-first
 // layout so the model can apply the same parsing template to both
 // tools. Diff and checks sections intentionally omitted — that's
-// the entire point of gh_pr_read.
+// the entire point of pr_read.
 func renderPRReadContext(s PRReadContext) string {
 	var b strings.Builder
 
-	fmt.Fprintf(&b, "## state\nref=%s\nnot_found=%v\ngh_unavailable=%v\n",
-		s.Ref, s.NotFound, s.GhUnavailable)
+	fmt.Fprintf(&b, "## state\nref=%s\nnot_found=%v\ngithub_unavailable=%v\n",
+		s.Ref, s.NotFound, s.GitHubUnavailable)
 	if s.FetchErr != "" {
 		fmt.Fprintf(&b, "fetch_error=%s\n", s.FetchErr)
 	}
 
-	if s.NotFound || s.GhUnavailable {
+	if s.NotFound || s.GitHubUnavailable {
 		return strings.TrimRight(b.String(), "\n") + "\n"
 	}
 
@@ -1314,7 +1595,7 @@ func renderPRReadContext(s PRReadContext) string {
 // renderPRCreateResult shapes the result envelope for the model.
 // Field names match PRCreateResult so a model parsing the output
 // maps back without ambiguity. The "draft preview" instruction at
-// the bottom of the gh_unavailable branch is the procedural
+// the bottom of the github_unavailable branch is the procedural
 // fallback the legacy directive named — surfacing it inside the
 // tool result keeps it discoverable without forcing the prompt to
 // repeat the guidance.
@@ -1323,14 +1604,14 @@ func renderPRCreateResult(r PRCreateResult) string {
 	switch {
 	case r.ValidationErr != "":
 		fmt.Fprintf(&b, "created=false reason=validation\nerror=%s\n", r.ValidationErr)
-	case r.GhUnavailable:
-		b.WriteString("created=false reason=gh_unavailable\n")
+	case r.GitHubUnavailable:
+		b.WriteString("created=false reason=github_unavailable\n")
 		b.WriteString("Hint: install gh and run `gh auth login`, or surface the drafted title + body to the user so they can paste them into GitHub manually.\n")
-	case r.GhError != "":
-		b.WriteString("created=false reason=gh_error\n")
+	case r.GitHubError != "":
+		b.WriteString("created=false reason=github_error\n")
 		b.WriteString("--- gh output ---\n")
-		b.WriteString(r.GhError)
-		if !strings.HasSuffix(r.GhError, "\n") {
+		b.WriteString(r.GitHubError)
+		if !strings.HasSuffix(r.GitHubError, "\n") {
 			b.WriteString("\n")
 		}
 		b.WriteString("--- end gh output ---\n")

@@ -161,25 +161,31 @@ func targetFor(toolName, argsJSON, cwd string) Target {
 		// `Git(commit *)` style rule covers the unified tool too.
 		sub := strings.TrimPrefix(toolName, "git_")
 		return Target{PermName: "Git", Descriptor: sub + " " + summarizeArgs(argsJSON)}
-	case "gh_pr_create":
+	case "pr_context":
+		return Target{PermName: "Github", Descriptor: "read_pr_context"}
+	case "pr_create":
 		return Target{PermName: "Github", Descriptor: "create_pr"}
-	case "gh_pr_update":
+	case "pr_update":
 		return Target{PermName: "Github", Descriptor: "update_pr"}
-	case "gh_pr_read":
+	case "pr_read":
 		return Target{PermName: "Github", Descriptor: "read_pr"}
-	case "gh_pr_review_context":
+	case "pr_review_context":
 		return Target{PermName: "Github", Descriptor: "read_pr_review_context"}
+	case "pr_watch_checks":
+		return Target{PermName: "Github", Descriptor: "read_pr_checks"}
 	case "pr_check_logs":
 		return Target{PermName: "Github", Descriptor: "read_pr_check_logs"}
 	case "pr_rerun_checks":
 		return Target{PermName: "Github", Descriptor: "rerun_pr_checks"}
-	case "gh_pr_add_comment":
+	case "pr_add_comment":
 		return Target{PermName: "Github", Descriptor: "add_pr_comment"}
-	case "gh_issue_read":
+	case "issue_context":
+		return Target{PermName: "Github", Descriptor: "read_issue_context"}
+	case "issue_read":
 		return Target{PermName: "Github", Descriptor: "read_issue"}
-	case "gh_issue_list":
+	case "issue_list":
 		return Target{PermName: "Github", Descriptor: "list_open_issues"}
-	case "gh_issue_create":
+	case "issue_create":
 		return Target{PermName: "Github", Descriptor: "create_issue"}
 	}
 	return Target{}

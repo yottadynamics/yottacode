@@ -83,7 +83,11 @@ func (t *PRCheckLogsTool) Execute(ctx context.Context, argsJSON string) (string,
 	if a.MaxLines <= 0 {
 		a.MaxLines = defaultPRCheckLogTailLines
 	}
-	logs, err := t.GH.ListFailedWorkflowJobLogTails(ctx, github.ReadPRRequest{Ref: ref}, a.MaxLines)
+	pr, err := t.GH.ReadPR(ctx, github.ReadPRRequest{Ref: ref})
+	if err != nil {
+		return renderPRCheckLogsError(ref, err), nil
+	}
+	logs, err := t.GH.ListFailedWorkflowJobLogTails(ctx, github.FailedWorkflowLogsRequest{HeadSHA: pr.HeadSHA, TailLines: a.MaxLines, MaxRuns: 10})
 	if err != nil {
 		return renderPRCheckLogsError(ref, err), nil
 	}
@@ -94,29 +98,33 @@ func renderPRCheckLogsError(ref string, err error) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "## state\nref=%s\n", ref)
 	switch {
-	case errors.Is(err, github.ErrGhUnavailable):
-		b.WriteString("gh_unavailable=true\n")
+	case errors.Is(err, github.ErrGitHubUnavailable):
+		b.WriteString("github_unavailable=true\n")
 	case errors.Is(err, github.ErrPRNotFound):
 		b.WriteString("not_found=true\n")
 	default:
-		b.WriteString("gh_error=true\n")
+		b.WriteString("github_error=true\n")
 		fmt.Fprintf(&b, "error=%s\n", err)
 	}
 	return b.String()
 }
 
-func renderPRCheckLogs(ref string, logs []github.WorkflowJobLogTail) string {
+func renderPRCheckLogs(ref string, logs github.FailedWorkflowLogsResult) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "## state\nref=%s\nnot_found=false\ngh_unavailable=false\nfailed_jobs=%d\n", ref, len(logs))
+	fmt.Fprintf(&b, "## state\nref=%s\nnot_found=false\ngithub_unavailable=false\nfailed_jobs=%d\n", ref, len(logs.Jobs))
 	b.WriteString("\n## failed_job_logs\n")
-	if len(logs) == 0 {
+	if len(logs.Jobs) == 0 {
 		b.WriteString("(none)\n")
 		return b.String()
 	}
-	for _, log := range logs {
-		fmt.Fprintf(&b, "### %s\nrun_id=%d\njob_id=%d\nworkflow=%s\nconclusion=%s\nurl=%s\nlines=%d\ntruncated=%v\nlog=|\n",
-			log.Name, log.RunID, log.JobID, log.Workflow, log.Conclusion, log.HTMLURL, log.Lines, log.Truncated)
-		for _, line := range strings.Split(strings.TrimRight(log.Tail, "\n"), "\n") {
+	for _, log := range logs.Jobs {
+		fmt.Fprintf(&b, "### %s\nrun_id=%d\njob_id=%d\nworkflow=%s\nconclusion=%s\nurl=%s\nlines=%d\nlog=|\n",
+			log.JobName, log.WorkflowRunID, log.JobID, log.WorkflowName, log.Conclusion, log.JobURL, len(log.LogTail))
+		if log.LogError != "" {
+			fmt.Fprintf(&b, "  log_error=%s\n", log.LogError)
+			continue
+		}
+		for _, line := range log.LogTail {
 			b.WriteString("  ")
 			b.WriteString(line)
 			b.WriteString("\n")
@@ -191,12 +199,12 @@ func renderPRRerunChecksError(ref string, err error) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "rerun=false\nref=%s\n", ref)
 	switch {
-	case errors.Is(err, github.ErrGhUnavailable):
-		b.WriteString("reason=gh_unavailable\n")
+	case errors.Is(err, github.ErrGitHubUnavailable):
+		b.WriteString("reason=github_unavailable\n")
 	case errors.Is(err, github.ErrPRNotFound):
 		b.WriteString("reason=not_found\n")
 	default:
-		b.WriteString("reason=gh_error\n")
+		b.WriteString("reason=github_error\n")
 		fmt.Fprintf(&b, "error=%s\n", err)
 	}
 	return b.String()

@@ -34,24 +34,25 @@ yottacode to pick up the new token.
 
 | Tool | What it returns |
 |---|---|
-| `gh_pr_read` | PR metadata (title, body, state, draft, base/head, mergeable, author, labels, URL). **One API call.** |
-| `gh_pr_review_context` | PR metadata + diff (capped) + check-run rollup + failing-checks summary. Three API calls, one snapshot. Used by `/git-review-pr`. |
-| `gh_pr_context` | Local pre-PR context (base resolution, ahead-count, push state, PR template). No network — git-local. |
-| `gh_issue_read` | Issue metadata (title, body, state, labels, assignees) + recent comments. |
-| `gh_issue_list` | Open issues matching label / assignee / milestone filters. |
+| `pr_read` | PR metadata (title, body, state, draft, base/head, mergeable, author, labels, URL). **One API call.** |
+| `pr_review_context` | PR metadata + diff (capped) + check-run rollup + failing-checks summary. Three API calls, one snapshot. Used by `/git-review-pr`. |
+| `pr_watch_checks` | Watches PR checks until pass/fail/timeout and returns failed GitHub Actions job log tails. |
+| `pr_context` | Local pre-PR context (base resolution, ahead-count, push state, PR template). No network — git-local. |
+| `issue_read` | Issue metadata (title, body, state, labels, assignees) + recent comments. |
+| `issue_list` | Open issues matching label / assignee / milestone filters. |
 
 The two read tools the model is most likely to reach for via
-`run_bash gh pr view --json …` are `gh_pr_read` (body-only) and
-`gh_pr_review_context` (review). Each tool's description explicitly
+`run_bash gh pr view --json …` are `pr_read` (body-only) and
+`pr_review_context` (review). Each tool's description explicitly
 calls out the typed-vs-bash trade-off so the model picks correctly.
 
 ### Write tools (approval required)
 
 | Tool | What it does | Slash command |
 |---|---|---|
-| `gh_pr_create` | Opens a PR (validates title, body, base) | `/git-create-pr` |
-| `gh_pr_update` | Rewrites an existing PR's title + body | `/git-update-pr` |
-| `gh_pr_add_comment` | Posts a conversation comment on a PR | (model-callable) |
+| `pr_create` | Opens a PR (validates title, body, base) | `/git-create-pr` |
+| `pr_update` | Rewrites an existing PR's title + body | `/git-update-pr` |
+| `pr_add_comment` | Posts a conversation comment on a PR | (model-callable) |
 
 Every write goes through the approval modal — the modal renders the
 full title + body before the call lands. `--yolo`
@@ -143,7 +144,7 @@ true at or below; the doctor adds a warning line.
 
 Network errors (DNS failure, refused connection, TLS handshake,
 timeout) classify as `ErrGitHubUnreachable` — distinct from
-`ErrGhUnavailable` (auth missing) and `ErrPRNotFound` (logical).
+`ErrGitHubUnavailable` (auth missing) and `ErrPRNotFound` (logical).
 Callers branch on these typed sentinels so the recovery hint is
 right: auth wants `gh auth login`, unreachable wants "check your
 network."

@@ -6,14 +6,14 @@ import (
 )
 
 // TestGitReviewPRDirective_NamesCompositeTool locks the contract:
-// the procedural directive must reference gh_pr_review_context by
+// the procedural directive must reference pr_review_context by
 // name. The reliability work lives in that tool; if the prompt
 // stops naming it, we silently regress to whatever the model picks
 // (likely raw bash + gh CLI).
 func TestGitReviewPRDirective_NamesCompositeTool(t *testing.T) {
 	got := gitReviewPRDirective("")
-	if !strings.Contains(got, "gh_pr_review_context") {
-		t.Errorf("gitReviewPRDirective must name gh_pr_review_context; got:\n%s", got)
+	if !strings.Contains(got, "pr_review_context") {
+		t.Errorf("gitReviewPRDirective must name pr_review_context; got:\n%s", got)
 	}
 }
 

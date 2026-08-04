@@ -13,7 +13,7 @@ import (
 //
 // Companion to /git-create-pr in the /git-* family; together they
 // give "create + review" coverage from the same surface. Shares the
-// gh_pr_review_context composite tool (Layer 1) and the typed
+// pr_review_context composite tool (Layer 1) and the typed
 // github.Interface (Layer 4) — both also used by /git-create-pr —
 // so the reliability work (gh availability, not-found detection,
 // failing-check classification) lives in Go.
@@ -49,10 +49,10 @@ func cmdGitReviewPR(m Model, args []string) (Model, tea.Cmd) {
 // The ref argument splices into the tool call (when present) for
 // the same reason as create-pr: avoids threading $1 through prose.
 func gitReviewPRDirective(ref string) string {
-	refArgLine := `Step 1 — call gh_pr_review_context with no arguments. It will
+	refArgLine := `Step 1 — call pr_review_context with no arguments. It will
 use the current branch's PR.`
 	if ref != "" {
-		refArgLine = "Step 1 — call gh_pr_review_context with ref=\"" + ref + "\"."
+		refArgLine = "Step 1 — call pr_review_context with ref=\"" + ref + "\"."
 	}
 
 	return `Review a pull request and emit a structured assessment.
@@ -62,7 +62,7 @@ under section headers (## state, ## pr, ## checks.summary,
 ## checks, ## diff).
 
 Step 2 — read the ## state header and branch BEFORE composing:
-- gh_unavailable=true → surface "[git-review-pr] gh CLI unavailable
+- github_unavailable=true → surface "[git-review-pr] gh CLI unavailable
   or unauthenticated — run gh auth login" and STOP.
 - not_found=true → surface "[git-review-pr] no PR found for
   <ref>" and STOP. Do NOT attempt a local-diff review as a
