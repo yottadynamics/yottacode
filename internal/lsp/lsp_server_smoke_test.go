@@ -17,7 +17,11 @@ func TestTypeScriptLanguageServerSmoke(t *testing.T) {
 	root := t.TempDir()
 	writeSmokeFile(t, root, "package.json", `{"devDependencies":{"typescript":"latest"}}`)
 	writeSmokeFile(t, root, "index.ts", "export function smokeTarget(): number { return 1 }\n")
-	smokeLanguageServer(t, Language{ID: "typescript", Name: "TypeScript/JavaScript", Extensions: []string{".ts"}, Command: []string{"typescript-language-server", "--stdio"}}, root, "smokeTarget")
+	lang := Language{ID: "typescript", Name: "TypeScript/JavaScript", Extensions: []string{".ts"}, Command: []string{"typescript-language-server", "--stdio"}}
+	if tsserverPath := globalTSServerPath(t); tsserverPath != "" {
+		lang.InitializationOptions = map[string]any{"tsserver": map[string]any{"path": tsserverPath}}
+	}
+	smokeLanguageServer(t, lang, root, "smokeTarget")
 }
 
 func TestPyrightLanguageServerSmoke(t *testing.T) {
@@ -60,11 +64,28 @@ func smokeLanguageServer(t *testing.T, lang Language, root, query string) {
 			break
 		}
 	}
-	if !found {
-		smokeUnavailable(t, required, "%s workspace symbols for %s did not include target; got %d items", lang.Command[0], query, len(items))
-		return
-	}
 	workflowPath := smokeWorkflowPath(root, lang)
+	if !found {
+		if workflowPath == "" {
+			smokeUnavailable(t, required, "%s workspace symbols for %s did not include target; got %d items", lang.Command[0], query, len(items))
+			return
+		}
+		docItems, err := client.DocumentSymbols(ctx, workflowPath)
+		if err != nil {
+			smokeUnavailable(t, required, "%s document symbols unavailable for smoke test after empty workspace symbols: %v", lang.Command[0], err)
+			return
+		}
+		for _, item := range docItems {
+			if strings.Contains(item.Name, query) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			smokeUnavailable(t, required, "%s symbols for %s did not include target; workspace=%d document=%d", lang.Command[0], query, len(items), len(docItems))
+			return
+		}
+	}
 	if workflowPath == "" {
 		return
 	}
@@ -107,6 +128,19 @@ func writeSmokeFile(t *testing.T, root, rel, body string) {
 	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
 		t.Fatalf("write %s: %v", rel, err)
 	}
+}
+
+func globalTSServerPath(t *testing.T) string {
+	t.Helper()
+	out, err := exec.Command("npm", "root", "-g").Output()
+	if err != nil {
+		return ""
+	}
+	path := filepath.Join(strings.TrimSpace(string(out)), "typescript", "lib", "tsserver.js")
+	if _, err := os.Stat(path); err != nil {
+		return ""
+	}
+	return path
 }
 
 func smokeUnavailable(t *testing.T, required bool, format string, args ...any) {
