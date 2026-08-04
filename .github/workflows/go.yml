@@ -84,8 +84,11 @@ jobs:
       - name: Real-server LSP smoke tests
         env:
           YOTTACODE_LSP_SMOKE_REQUIRED: '1'
-          YOTTACODE_LSP_TYPESCRIPT_TSSERVER: /usr/local/lib/node_modules/typescript/lib/tsserver.js
-        run: go test -run 'Test(Gopls|TypeScriptLanguageServer|PyrightLanguageServer|RustAnalyzer)Smoke' ./internal/lsp
+        run: |
+          set -eu
+          export YOTTACODE_LSP_TYPESCRIPT_TSSERVER="$(npm root -g)/typescript/lib/tsserver.js"
+          test -f "$YOTTACODE_LSP_TYPESCRIPT_TSSERVER"
+          go test -run 'Test(Gopls|TypeScriptLanguageServer|PyrightLanguageServer|RustAnalyzer)Smoke' ./internal/lsp
 
   shellcheck:
     runs-on: ubuntu-latest
