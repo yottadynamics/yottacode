@@ -56,8 +56,8 @@ func cmdUsage(m Model, _ []string) (Model, tea.Cmd) {
 
 func renderUsagePanel(m Model) string {
 	var b strings.Builder
-	b.WriteString(styleSplashTitle.Render("Usage"))
-	b.WriteString("\n\n")
+	b.WriteString(renderMenuHeader("Usage", "Session tokens, rate limits, daily rollup, and account links."))
+	b.WriteString("\n")
 
 	b.WriteString(renderSessionUsage(m.sess))
 	b.WriteString("\n\n")
@@ -77,7 +77,7 @@ func renderUsagePanel(m Model) string {
 	b.WriteString("\n\n")
 	b.WriteString(styleHint.Render("esc to close"))
 
-	return indentContextReport(strings.TrimRight(b.String(), "\n"), "  ")
+	return strings.TrimRight(b.String(), "\n")
 }
 
 // renderSessionUsage writes the "session" block: a per-model token

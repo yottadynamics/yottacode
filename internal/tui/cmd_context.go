@@ -78,26 +78,9 @@ func cmdContext(m Model, _ []string) (Model, tea.Cmd) {
 	// people reach for — matching /usage and the cheatsheet; see Update).
 	report := renderContextReport(&m) +
 		"\n\n" + styleHint.Render("esc to close")
-	// Indent the whole block 2 spaces so every line — headers included,
-	// not just the already-indented legend/detail rows — clears the
-	// overlay's left edge uniformly.
-	m.contextReportBody = indentContextReport(report, "  ")
+	m.contextReportBody = report
 	m.contextReportOpen = true
 	return m, nil
-}
-
-// indentContextReport prefixes each non-blank line with pad. Blank
-// lines are left untouched so the block doesn't carry trailing
-// whitespace. ANSI-safe — the pad lands before any style codes at the
-// start of the line.
-func indentContextReport(s, pad string) string {
-	lines := strings.Split(s, "\n")
-	for i, ln := range lines {
-		if ln != "" {
-			lines[i] = pad + ln
-		}
-	}
-	return strings.Join(lines, "\n")
 }
 
 // renderContextReport assembles the full /context view: header,
@@ -158,20 +141,13 @@ func renderContextReport(m *Model) string {
 	buckets = append(buckets, contextBucket{"Free space", free, colorDim, false})
 
 	var out strings.Builder
-	out.WriteString(styleSplashTitle.Render("Context Usage"))
-	out.WriteString("\n\n")
-
-	out.WriteString(renderContextSegmentedBar(buckets, window, m.width))
-	out.WriteString("  ")
-	out.WriteString(styleMeta.Render(contextPercentLabel(used, window)))
+	out.WriteString(renderMenuHeader("Context", "Window usage, compaction status, and prompt contributors."))
 	out.WriteString("\n")
-	out.WriteString(styleMeta.Render(contextSummaryLine(used, window, m.modelName)))
-	out.WriteString("\n\n")
 
 	out.WriteString(renderContextDiagnostics(m, buckets, used, window, sysTok, sysToolTokens+skillTokens+mcpToolTokens, convoTok))
 	out.WriteString("\n\n")
 
-	out.WriteString(styleMeta.Render("Estimated usage by category"))
+	out.WriteString(styleSplashTitle.Render("Estimated usage by category"))
 	out.WriteString("\n")
 	out.WriteString(renderContextLegend(buckets, window))
 
@@ -206,7 +182,14 @@ func renderContextDiagnostics(m *Model, buckets []contextBucket, used, window, s
 	fmt.Fprintf(&out, "  Largest bucket: %s (%s tokens)\n", name, formatTokens(tokens))
 	fmt.Fprintf(&out, "  Compaction: %s\n", contextCompactionStatus(m, used, window, systemTokens, toolTokens, messageTokens))
 	fmt.Fprintf(&out, "  Last summarize: %s\n", emptyDash(m.lastContextSummary))
-	fmt.Fprintf(&out, "  Last mid-turn compaction: %s", emptyDash(m.lastContextCompaction))
+	fmt.Fprintf(&out, "  Last mid-turn compaction: %s\n\n", emptyDash(m.lastContextCompaction))
+	out.WriteString("  ")
+	out.WriteString(renderContextSegmentedBar(buckets, window, m.width))
+	out.WriteString("  ")
+	out.WriteString(styleMeta.Render(contextPercentLabel(used, window)))
+	out.WriteString("\n")
+	out.WriteString("  ")
+	out.WriteString(styleMeta.Render(contextSummaryLine(used, window, m.modelName)))
 	return out.String()
 }
 
