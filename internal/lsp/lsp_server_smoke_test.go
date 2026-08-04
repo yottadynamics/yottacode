@@ -15,7 +15,7 @@ func TestGoplsSmoke(t *testing.T) {
 
 func TestTypeScriptLanguageServerSmoke(t *testing.T) {
 	root := t.TempDir()
-	writeSmokeFile(t, root, "package.json", `{"devDependencies":{"typescript":"latest"}}`)
+	writeSmokeFile(t, root, "package.json", `{"devDependencies":{"typescript":"^5.9.0"}}`)
 	installTypeScriptForSmoke(t, root)
 	writeSmokeFile(t, root, "index.ts", "export function smokeTarget(): number { return 1 }\n")
 	lang := Language{ID: "typescript", Name: "TypeScript/JavaScript", Extensions: []string{".ts"}, Command: []string{"typescript-language-server", "--stdio"}}
