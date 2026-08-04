@@ -75,7 +75,8 @@ jobs:
         run: |
           set -eu
           go install golang.org/x/tools/gopls@latest
-          npm install -g typescript typescript-language-server pyright
+          npm install -g typescript-language-server pyright
+          npm install --prefix "$RUNNER_TEMP/yottacode-lsp-typescript" typescript
           curl -L https://github.com/rust-lang/rust-analyzer/releases/latest/download/rust-analyzer-x86_64-unknown-linux-gnu.gz -o /tmp/rust-analyzer.gz
           gzip -d /tmp/rust-analyzer.gz
           chmod +x /tmp/rust-analyzer
@@ -86,9 +87,9 @@ jobs:
           YOTTACODE_LSP_SMOKE_REQUIRED: '1'
         run: |
           set -eu
-          export YOTTACODE_LSP_TYPESCRIPT_TSSERVER="$(npm root -g)/typescript/lib/tsserver.js"
+          export YOTTACODE_LSP_TYPESCRIPT_TSSERVER="$RUNNER_TEMP/yottacode-lsp-typescript/node_modules/typescript/lib/tsserver.js"
           if [ ! -f "$YOTTACODE_LSP_TYPESCRIPT_TSSERVER" ]; then
-            export YOTTACODE_LSP_TYPESCRIPT_TSSERVER="$(npm root -g)/typescript/lib/_tsserver.js"
+            export YOTTACODE_LSP_TYPESCRIPT_TSSERVER="$RUNNER_TEMP/yottacode-lsp-typescript/node_modules/typescript/lib/_tsserver.js"
           fi
           test -f "$YOTTACODE_LSP_TYPESCRIPT_TSSERVER"
           go test -run 'Test(Gopls|TypeScriptLanguageServer|PyrightLanguageServer|RustAnalyzer)Smoke' ./internal/lsp
