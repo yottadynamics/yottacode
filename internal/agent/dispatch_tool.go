@@ -56,6 +56,10 @@ type DispatchTool struct {
 	// EnableSyntaxRanges lets dispatch workers use the same offline range-selection surface.
 	EnableSyntaxRanges bool
 
+	// EnableDocumentIngestion lets dispatch workers use the same
+	// read_document tool surface as the parent session.
+	EnableDocumentIngestion bool
+
 	// EnableLSP lets dispatch workers expose the same LSP tool surface as the
 	// parent session, while writes still flow through the worker's owned-file
 	// WriteOpts.
@@ -625,8 +629,9 @@ func (t *DispatchTool) buildWorktreeChildRegistry(cfg *subagents.AgentConfig, cw
 		// Background workers are unattended, so they must not spawn language-server
 		// binaries. Foreground workers may use LSP tools, but still do not share the
 		// parent manager because eviction is process-level and not lease-aware.
-		LSPManager:         nil,
-		EnableSyntaxRanges: t.EnableSyntaxRanges,
+		LSPManager:              nil,
+		EnableSyntaxRanges:      t.EnableSyntaxRanges,
+		EnableDocumentIngestion: t.EnableDocumentIngestion,
 	})
 	out := NewRegistry()
 	for _, tool := range core.Tools() {

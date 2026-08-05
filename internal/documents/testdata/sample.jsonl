@@ -1,0 +1,4 @@
+{"event": "start", "id": 1}
+{"event": "step", "id": 2}
+not valid json
+{"event": "end", "id": 3}

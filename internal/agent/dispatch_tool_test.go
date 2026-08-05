@@ -121,6 +121,29 @@ func TestBuildWorktreeChildRegistry_BackgroundDisablesLSP(t *testing.T) {
 	}
 }
 
+// TestBuildWorktreeChildRegistry_DocumentIngestionPropagates is a
+// regression for the parity gap: EnableDocumentIngestion must reach
+// dispatch/worktree-child workers the same way EnableLSP and
+// EnableSyntaxRanges already do, so a subagent can use read_document
+// whenever the parent session has the document_ingestion experimental
+// feature enabled.
+func TestBuildWorktreeChildRegistry_DocumentIngestionPropagates(t *testing.T) {
+	cwd := NewCwdRef(t.TempDir())
+	cfg := &subagents.AgentConfig{Name: "doc-worker", Tools: []string{"read_document"}}
+
+	off := &DispatchTool{}
+	offReg := off.buildWorktreeChildRegistry(cfg, cwd, cwd.Get(), nil, false)
+	if _, ok := offReg.Get("read_document"); ok {
+		t.Fatal("read_document should be absent from a worktree child when EnableDocumentIngestion is false")
+	}
+
+	on := &DispatchTool{EnableDocumentIngestion: true}
+	onReg := on.buildWorktreeChildRegistry(cfg, cwd, cwd.Get(), nil, false)
+	if _, ok := onReg.Get("read_document"); !ok {
+		t.Fatal("read_document should be registered on a worktree child when EnableDocumentIngestion is true")
+	}
+}
+
 func TestStripUnattendedProcessToolsRemovesLSPFromSharedRegistry(t *testing.T) {
 	reg := NewRegistry()
 	reg.Register(namedApprovalTool{name: "lsp_status"})

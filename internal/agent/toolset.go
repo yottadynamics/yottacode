@@ -51,6 +51,10 @@ type CoreToolDeps struct {
 	// EnableCodeMap registers the experimental read-only code-map tools.
 	EnableCodeMap bool
 
+	// EnableDocumentIngestion registers the experimental read_document
+	// tool (bounded CSV/TSV/JSON/JSONL/XML/HTML extraction).
+	EnableDocumentIngestion bool
+
 	// EnableSyntaxRanges registers offline parser-backed range-selection tools.
 	// The actual edits still flow through anchored reads and edit_anchored.
 	EnableSyntaxRanges bool
@@ -78,6 +82,9 @@ func RegisterCoreCwdTools(reg *Registry, cwd *CwdRef, deps CoreToolDeps) {
 
 	reg.Register(&ReadFileTool{Cwd: cwd, DenyReadPaths: deps.DenyReads, SupportsImages: deps.SupportsImages})
 	reg.Register(&ReadManyFilesTool{Cwd: cwd, DenyReadPaths: deps.DenyReads})
+	if deps.EnableDocumentIngestion {
+		reg.Register(&ReadDocumentTool{Cwd: cwd, DenyReadPaths: deps.DenyReads})
+	}
 	reg.Register(&WriteFileTool{Cwd: cwd, WriteOpts: wo, LSPManager: deps.LSPManager, LSPServers: deps.LSPServers})
 	reg.Register(&EditFileTool{Cwd: cwd, WriteOpts: wo, LSPManager: deps.LSPManager, LSPServers: deps.LSPServers})
 	reg.Register(&EditAnchoredTool{Cwd: cwd, WriteOpts: wo, LSPManager: deps.LSPManager, LSPServers: deps.LSPServers})

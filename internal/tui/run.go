@@ -268,16 +268,17 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 	// extras (worktree-admin, commit-workflow composites, GH/PR, memory,
 	// web, todo, plan) stay registered inline below.
 	agent.RegisterCoreCwdTools(reg, cwdRef, agent.CoreToolDeps{
-		WriteOpts:          writeOpts,
-		DenyReads:          denyReads,
-		SupportsImages:     ad.Profile().SupportsImages,
-		EnableLSP:          true,
-		LSPManager:         lspManager,
-		LSPServers:         fileCfg.LSP.Servers,
-		LSPDisabled:        fileCfg.LSP.Disabled,
-		EnableCodeMap:      expSet.IsEnabled(experimental.CodeMap),
-		CodeMapProvider:    codeMapProvider,
-		EnableSyntaxRanges: true,
+		WriteOpts:               writeOpts,
+		DenyReads:               denyReads,
+		SupportsImages:          ad.Profile().SupportsImages,
+		EnableLSP:               true,
+		LSPManager:              lspManager,
+		LSPServers:              fileCfg.LSP.Servers,
+		LSPDisabled:             fileCfg.LSP.Disabled,
+		EnableCodeMap:           expSet.IsEnabled(experimental.CodeMap),
+		CodeMapProvider:         codeMapProvider,
+		EnableSyntaxRanges:      true,
+		EnableDocumentIngestion: expSet.IsEnabled(experimental.DocumentIngestion),
 	})
 	// Git worktree tools. Layer 1 (enter/exit/status) are the agent-
 	// friendly entry points; Layer 2 (the git_worktree_* wrappers) sit
@@ -524,12 +525,13 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 	// Dispatch + integrate: experimental fan-out/merge tools for opt-in users.
 	dispatchEnabled := expSet.IsEnabled(experimental.Dispatch)
 	reg.Register(&agent.DispatchTool{
-		Agent:              agentTool,
-		SupportsImages:     ad.Profile().SupportsImages,
-		EnableLSP:          true,
-		LSPServers:         fileCfg.LSP.Servers,
-		LSPDisabled:        fileCfg.LSP.Disabled,
-		EnableSyntaxRanges: true,
+		Agent:                   agentTool,
+		SupportsImages:          ad.Profile().SupportsImages,
+		EnableLSP:               true,
+		LSPServers:              fileCfg.LSP.Servers,
+		LSPDisabled:             fileCfg.LSP.Disabled,
+		EnableSyntaxRanges:      true,
+		EnableDocumentIngestion: expSet.IsEnabled(experimental.DocumentIngestion),
 		// The TUI is a long-running session that can host detached
 		// background workers and surface their completion via the
 		// subagent inbox, so background dispatch is available here.

@@ -276,15 +276,16 @@ func Run(ctx context.Context, opts cli.ChatOptions, prompt string) error {
 	// worktree-child registry via RegisterCoreCwdTools. Oneshot's extras
 	// (worktree-admin, memory, git escape-hatch, todo, plan) stay inline.
 	agent.RegisterCoreCwdTools(reg, cwdRef, agent.CoreToolDeps{
-		WriteOpts:          writeOpts,
-		DenyReads:          denyReads,
-		EnableLSP:          true,
-		LSPManager:         lspManager,
-		LSPServers:         fileCfg.LSP.Servers,
-		LSPDisabled:        fileCfg.LSP.Disabled,
-		EnableCodeMap:      expSet.IsEnabled(experimental.CodeMap),
-		CodeMapProvider:    codeMapProvider,
-		EnableSyntaxRanges: true,
+		WriteOpts:               writeOpts,
+		DenyReads:               denyReads,
+		EnableLSP:               true,
+		LSPManager:              lspManager,
+		LSPServers:              fileCfg.LSP.Servers,
+		LSPDisabled:             fileCfg.LSP.Disabled,
+		EnableCodeMap:           expSet.IsEnabled(experimental.CodeMap),
+		CodeMapProvider:         codeMapProvider,
+		EnableSyntaxRanges:      true,
+		EnableDocumentIngestion: expSet.IsEnabled(experimental.DocumentIngestion),
 	})
 	// Git worktree tools. enter_worktree / exit_worktree always prompt
 	// (auto-mode safety floor); see IsAutoModeSafetyFloor.
@@ -380,7 +381,7 @@ func Run(ctx context.Context, opts cli.ChatOptions, prompt string) error {
 
 	// Dispatch + integrate (foreground in oneshot when enabled).
 	dispatchEnabled := expSet.IsEnabled(experimental.Dispatch)
-	reg.Register(&agent.DispatchTool{Agent: agentTool, Enabled: dispatchEnabled, EnableLSP: true, LSPServers: fileCfg.LSP.Servers, LSPDisabled: fileCfg.LSP.Disabled, EnableSyntaxRanges: true})
+	reg.Register(&agent.DispatchTool{Agent: agentTool, Enabled: dispatchEnabled, EnableLSP: true, LSPServers: fileCfg.LSP.Servers, LSPDisabled: fileCfg.LSP.Disabled, EnableSyntaxRanges: true, EnableDocumentIngestion: expSet.IsEnabled(experimental.DocumentIngestion)})
 	reg.Register(&agent.IntegrateTool{Cwd: cwdRef, Enabled: dispatchEnabled})
 
 	// Skill tool: reuses the set loaded above for system-prompt
