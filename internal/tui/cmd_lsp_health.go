@@ -28,32 +28,33 @@ func renderLSPAdvisory(langs []lsp.DetectedLanguage) string {
 	rows := []string{"", "Some detected languages can use richer code intelligence:", ""}
 	for _, lang := range missing {
 		rows = append(rows,
-			fmt.Sprintf("%s not found: %s", serverDisplayName(lang), lang.Name),
+			fmt.Sprintf("%s: install %s to unlock it", lang.Name, serverDisplayName(lang)),
 			styleInlineCommand.Render("  "+installCommand(lang)),
 		)
 	}
-	rows = append(rows, "", styleMeta.Render("yottacode may offer to run a command with approval."), styleMeta.Render("Everything works without them; they unlock deeper code intelligence."), "")
+	rows = append(rows, "", styleMeta.Render("yottacode may offer to run a command with approval."), styleMeta.Render("Everything works without them; they unlock go-to-def, live"), styleMeta.Render("diagnostics, and symbol-aware review."), "")
 
 	return renderLSPAdvisoryBox("LSP Code Intelligence", fmt.Sprintf("%d languages", len(missing)), rows)
 }
 
 // renderSingleLSPAdvisory mirrors the startup card shape used by approvals and
-// plan prompts: title on the left frame, language on the right, and plain copy
-// that says exactly what is missing while reassuring users the session continues.
+// plan prompts: title on the left frame, language on the right, and detection-first
+// copy that frames the missing server as an unlockable opportunity rather than an
+// error state. The template is language-agnostic — lang.Name and server fill the
+// slots for every supported language.
 func renderSingleLSPAdvisory(lang lsp.DetectedLanguage) string {
 	server := serverDisplayName(lang)
 	rows := []string{
 		"",
-		fmt.Sprintf("%s not found — running without go-to-def,", server),
-		"live diagnostics, and symbol-aware review.",
-		"LSP servers are local subprocesses; yottacode",
-		"can ask to run the install command below",
-		"through normal approval.",
+		fmt.Sprintf("%s detected in this workspace — richer", lang.Name),
+		fmt.Sprintf("code intelligence is available by installing %s.", server),
+		"yottacode can ask to run the install command",
+		"below through normal approval.",
 		"",
 		styleInlineCommand.Render("  " + installCommand(lang)),
 		"",
-		styleMeta.Render("Everything works without it; approving just unlocks"),
-		styleMeta.Render("deeper code intelligence."),
+		styleMeta.Render("The session works without it; approving unlocks"),
+		styleMeta.Render("go-to-def, live diagnostics, and symbol-aware review."),
 		"",
 	}
 	return renderLSPAdvisoryBox("LSP Code Intelligence", lang.Name, rows)

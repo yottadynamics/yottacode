@@ -23,14 +23,13 @@ func TestRenderLSPAdvisory_PythonMissing(t *testing.T) {
 	for _, want := range []string{
 		"LSP Code Intelligence",
 		"Python",
-		"pyright not found — running without go-to-def",
-		"live diagnostics, and symbol-aware review.",
-		"LSP servers are local subprocesses; yottacode",
-		"can ask to run the install command below",
-		"through normal approval.",
+		"Python detected in this workspace — richer",
+		"code intelligence is available by installing pyright.",
+		"yottacode can ask to run the install command",
+		"below through normal approval.",
 		"npm install -g pyright",
-		"Everything works without it; approving just unlocks",
-		"deeper code intelligence.",
+		"The session works without it; approving unlocks",
+		"go-to-def, live diagnostics, and symbol-aware review.",
 	} {
 		if !strings.Contains(card, want) {
 			t.Fatalf("LSP advisory missing %q:\n%s", want, card)

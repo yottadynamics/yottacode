@@ -163,7 +163,7 @@ func TestDemo_CardOutput(t *testing.T) {
 	fmt.Println(stripANSI(renderTodoCardFromTodos(samplePlan(), width)))
 	fmt.Println()
 	fmt.Println("─── LSP advisory ───")
-	fmt.Println(stripANSI(renderLSPAdvisoryBox("LSP Code Intelligence", "Go", []string{"", "gopls not found — running without go-to-def,", "live diagnostics, and symbol-aware review.", "", styleInlineCommand.Render("  go install golang.org/x/tools/gopls@latest"), ""})))
+	fmt.Println(stripANSI(renderLSPAdvisoryBox("LSP Code Intelligence", "Go", []string{"", "Go detected in this workspace — richer", "code intelligence is available by installing gopls.", "yottacode can ask to run the install command", "below through normal approval.", "", styleInlineCommand.Render("  go install golang.org/x/tools/gopls@latest"), "", styleMeta.Render("The session works without it; approving unlocks"), styleMeta.Render("go-to-def, live diagnostics, and symbol-aware review.")})))
 	fmt.Println()
 
 	// Error-tinted gutter + slow-call header tag. Rendered WITH color
