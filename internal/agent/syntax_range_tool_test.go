@@ -30,6 +30,74 @@ func run() {
 	}
 }
 
+func TestSyntaxRangeToolExecuteTypeScriptRanges(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "widget.ts")
+	writeFile(t, dir, "widget.ts", `class Widget {
+  method() {
+    if (true) {
+      console.log("target");
+    }
+  }
+}
+`)
+	tool := &SyntaxRangeTool{Cwd: NewCwdRef(dir)}
+	out, err := tool.Execute(context.Background(), `{"path":"widget.ts","line":3,"character":20}`)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	for _, want := range []string{"method [Widget]", "class Widget", "anchor_read=", `"anchors":true`, path} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("output missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestSyntaxRangeToolExecutePythonRanges(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "widget.py")
+	writeFile(t, dir, "widget.py", `class Widget:
+    def method(self):
+        if True:
+            print("target")
+`)
+	tool := &SyntaxRangeTool{Cwd: NewCwdRef(dir)}
+	out, err := tool.Execute(context.Background(), `{"path":"widget.py","line":3,"character":16}`)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	for _, want := range []string{"method [Widget]", "class Widget", "anchor_read=", `"anchors":true`, path} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("output missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestSyntaxRangeToolExecuteRustRanges(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "widget.rs")
+	writeFile(t, dir, "widget.rs", `struct Widget {
+    name: String,
+}
+
+impl Widget {
+    fn greet(&self) {
+        println!("hi");
+    }
+}
+`)
+	tool := &SyntaxRangeTool{Cwd: NewCwdRef(dir)}
+	out, err := tool.Execute(context.Background(), `{"path":"widget.rs","line":5,"character":10}`)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	for _, want := range []string{"fn greet [Widget]", "impl Widget", "anchor_read=", `"anchors":true`, path} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("output missing %q:\n%s", want, out)
+		}
+	}
+}
+
 func TestSyntaxRangeToolUnsupportedLanguage(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "note.md", "# hi\n")

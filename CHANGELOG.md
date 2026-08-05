@@ -8,6 +8,17 @@ the project uses semantic versioning once it's past `1.0.0`.
 
 ### Added
 
+- **`syntax_range` graduates to GA, now covering all four LSP languages** —
+  the offline, no-server structural edit-range tool previously only
+  understood Go (via `go/parser`). It now also covers TypeScript/JavaScript
+  and Rust (a shared brace-depth scanner) and Python (an indentation-depth
+  scanner), both built on chroma's existing pure-Go tokenizers rather than
+  adding a CGO/tree-sitter dependency. The same parser-backed layer upgrades
+  `code_map`'s offline symbol fallback and `lsp_status`'s `syntax=` column
+  for those three languages from `regex` to `parser`. The `syntax_ranges`
+  experimental flag is now a no-op kept for one release for compatibility.
+  See [docs/tools.md](docs/tools.md#syntax_range).
+
 - **`studio-dark` theme** — a recording-first TUI palette for yottacode
   demos and screenshares. It uses a near-black charcoal backdrop, crisp
   off-white text, punchy yottacode green accents, brighter metadata, and

@@ -72,7 +72,7 @@ func TestFallbackSymbolsMaxFilesCountsSupportedFilesOnly(t *testing.T) {
 	}
 }
 
-func TestFallbackFileSymbolsKeepsRegexForOtherLanguages(t *testing.T) {
+func TestFallbackFileSymbolsUsesParserSourceForTypeScript(t *testing.T) {
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "app.ts")
 	writeFallbackTestFile(t, path, "export function run() {}\nexport class Box {}\n")
@@ -84,13 +84,13 @@ func TestFallbackFileSymbolsKeepsRegexForOtherLanguages(t *testing.T) {
 	for _, item := range items {
 		got[item.Name] = item
 	}
-	if got["run"].Container != "fallback" || got["Box"].Kind != "class" {
-		t.Fatalf("TypeScript regex fallback regressed: %#v", items)
+	if got["run"].Container != "parser" || got["Box"].Kind != "class" {
+		t.Fatalf("TypeScript parser-backed symbols regressed: %#v", items)
 	}
 }
 
 func TestSyntaxModeReportsFallbackCapability(t *testing.T) {
-	cases := map[string]string{"go": "parser", "typescript": "regex", "python": "regex", "rust": "regex", "ruby": "none"}
+	cases := map[string]string{"go": "parser", "typescript": "parser", "python": "parser", "rust": "parser", "ruby": "none"}
 	for id, want := range cases {
 		if got := SyntaxMode(id); got != want {
 			t.Fatalf("SyntaxMode(%q) = %q, want %q", id, got, want)

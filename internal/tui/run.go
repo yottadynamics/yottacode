@@ -277,7 +277,7 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 		LSPDisabled:        fileCfg.LSP.Disabled,
 		EnableCodeMap:      expSet.IsEnabled(experimental.CodeMap),
 		CodeMapProvider:    codeMapProvider,
-		EnableSyntaxRanges: expSet.IsEnabled(experimental.SyntaxRanges),
+		EnableSyntaxRanges: true,
 	})
 	// Git worktree tools. Layer 1 (enter/exit/status) are the agent-
 	// friendly entry points; Layer 2 (the git_worktree_* wrappers) sit
@@ -529,7 +529,7 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 		EnableLSP:          true,
 		LSPServers:         fileCfg.LSP.Servers,
 		LSPDisabled:        fileCfg.LSP.Disabled,
-		EnableSyntaxRanges: expSet.IsEnabled(experimental.SyntaxRanges),
+		EnableSyntaxRanges: true,
 		// The TUI is a long-running session that can host detached
 		// background workers and surface their completion via the
 		// subagent inbox, so background dispatch is available here.

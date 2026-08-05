@@ -49,7 +49,7 @@ func (t *SyntaxRangeTool) Execute(ctx context.Context, argsJSON string) (string,
 	}
 	lang, ok := lspci.ResolveFile(path)
 	if !ok {
-		return fmt.Sprintf("unavailable: syntax ranges are not available for %s (supported parser-backed ranges: Go)\n", path), nil
+		return fmt.Sprintf("unavailable: syntax ranges are not available for %s (supported parser-backed ranges: Go, TypeScript/JavaScript, Python, Rust)\n", path), nil
 	}
 	ranges, ok, err := lspci.SyntaxFileRanges(ctx, lang, path, lspci.Position{Line: a.Line, Character: a.Character})
 	if err != nil {

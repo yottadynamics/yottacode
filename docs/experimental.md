@@ -22,8 +22,7 @@ one release so existing configs don't break.
 | `code_map` | experimental | Repository structure map. Adds the `/map` TUI overlay and read-only `code_map`, `code_symbols`, `code_structure_projection`, `code_dependencies`, `code_dependents`, `code_impact`, `code_cycles`, and `code_map_diagram` agent tools. The TUI includes `/map here` for changed-file neighborhoods and Enter-to-insert `@path` prompt refs, plus structure, dependency, impact, cycle, and Mermaid diagram modes. The index is LSP-backed when available and falls back to approximate regex symbols. Future call graph views will stay under `/map` instead of adding more slash commands. See [code-map.md](code-map.md). |
 | `dispatch` | experimental | The `dispatch` + `integrate` tools — fan a batch of subtasks out to concurrent subagents (write-capable ones in isolated git worktrees, partitioned by file ownership), then merge committed branches into one integration branch for a PR. See [dispatch.md](dispatch.md), incl. its Known Limitations. |
 | `lsp_code_intelligence` | **graduated** (GA) | LSP Code Intelligence is now default-on in TUI and oneshot sessions. The flag is a no-op kept for one release so existing configs don't break. Servers are still lazy-started only when semantic tools need them, never installed automatically, and missing servers degrade to install hints plus lexical fallback. See [lsp.md](lsp.md). |
-
-| `syntax_ranges` | experimental | Offline parser-backed syntax range selection for safer anchored edits. Adds the read-only `syntax_range` agent tool, which returns Go parser-backed block/function/type/file ranges around a source position plus `read_file(anchors=true)` hints. Tree-sitter and additional languages are future backend work, not part of the initial surface. |
+| `syntax_ranges` | **graduated** (GA) | The read-only `syntax_range` agent tool is now default-on for Go, TypeScript/JavaScript, Python, and Rust, returning parser-backed block/function/type/file ranges around a source position plus `read_file(anchors=true)` hints. The flag is a no-op kept for one release so existing configs don't break. See [tools.md](tools.md#syntax_range). |
 
 (Adding a feature here is a one-constant change in
 `internal/experimental/features.go`. See that file's package doc
@@ -66,7 +65,7 @@ cleaner than threading the flag everywhere.
 background_subagents = true
 code_map = true                 # optional: enables /map and code-map agent tools
 lsp_code_intelligence = true    # GA/no-op compatibility flag
-syntax_ranges = true            # optional: enables offline Go parser-backed syntax_range
+syntax_ranges = true            # GA/no-op compatibility flag
 # future:
 # other_feature = true
 ```

@@ -2,20 +2,20 @@
 
 LSP Code Intelligence connects yottacode tools to local Language Server Protocol (LSP) servers plus yottacode's offline syntax fallback layer. It is GA and default-on in interactive and oneshot sessions, but remains lazy: yottacode starts a server only when a semantic LSP tool needs one. Interactive and oneshot sessions reuse a bounded pool of initialized servers so repeated tool calls do not pay startup cost every time; the pool is closed when the session exits.
 
-The separate experimental `code_map` feature reuses this LSP surface when available to build the `/map` structure overlay and code-map agent tools. If a language server is missing, the map falls back to offline syntax symbols: Go uses a parser-backed source, while TypeScript/JavaScript, Python, and Rust currently keep the conservative regex fallback. Dependency and impact queries currently use resolvable in-workspace Go imports, including transitive dependents, import-cycle detection, and Mermaid diagram output; `lsp_impact` can combine those import edges with live LSP references, calls, hover, and diagnostics.
+The separate `code_map` feature (still experimental) reuses this LSP surface when available to build the `/map` structure overlay and code-map agent tools. If a language server is missing, the map falls back to offline syntax symbols: Go, TypeScript/JavaScript, Python, and Rust all use parser-backed sources. Dependency and impact queries currently use resolvable in-workspace Go imports, including transitive dependents, import-cycle detection, and Mermaid diagram output; `lsp_impact` can combine those import edges with live LSP references, calls, hover, and diagnostics.
 
-The separate experimental `syntax_ranges` feature exposes one piece of that offline layer directly as `syntax_range`: a read-only, parser-backed range selector for local edit targeting. `lsp_selection_ranges` remains the server-backed option; `syntax_range` is the no-server fallback for choosing a block/function/type before an anchored read and `edit_anchored` write.
+`syntax_ranges` (now GA) exposes one piece of that offline layer directly as `syntax_range`: a read-only, parser-backed range selector for local edit targeting, covering Go, TypeScript/JavaScript, Python, and Rust. `lsp_selection_ranges` remains the server-backed option; `syntax_range` is the no-server fallback for choosing a block/function/type before an anchored read and `edit_anchored` write.
 
-The old `lsp_code_intelligence` experimental flag is still recognized as a GA/no-op compatibility flag for one release so existing configs keep working.
+The old `lsp_code_intelligence` and `syntax_ranges` experimental flags are still recognized as GA/no-op compatibility flags for one release so existing configs keep working.
 
 ## Supported languages
 
 | Language | Server command | Offline syntax | Impact enrichment | Install hint |
 |---|---|---|---|---|
 | Go | `gopls` | parser | LSP refs/calls + Code Map imports | `go install golang.org/x/tools/gopls@latest` and ensure `$(go env GOPATH)/bin` is on `PATH` |
-| TypeScript/JavaScript | `typescript-language-server --stdio` | regex fallback | LSP refs/calls when server is installed | `npm install -g typescript typescript-language-server` |
-| Python | `pyright-langserver --stdio` | regex fallback | LSP refs/calls when server is installed | `npm install -g pyright` |
-| Rust | `rust-analyzer` | regex fallback | LSP refs/calls when server is installed | Install with `rustup`, your package manager, or the rust-analyzer project instructions |
+| TypeScript/JavaScript | `typescript-language-server --stdio` | parser | LSP refs/calls when server is installed | `npm install -g typescript typescript-language-server` |
+| Python | `pyright-langserver --stdio` | parser | LSP refs/calls when server is installed | `npm install -g pyright` |
+| Rust | `rust-analyzer` | parser | LSP refs/calls when server is installed | Install with `rustup`, your package manager, or the rust-analyzer project instructions |
 
 Missing servers are not fatal. yottacode reports the missing command and an install hint through the startup session advisory card, `lsp_status`, `yottacode doctor`, and LSP tool unavailable results. `lsp_status` also includes an exact `install_command` field for missing servers so the agent can offer to run it through the normal bash approval process when the active task would benefit from LSP. yottacode never auto-installs or silently enables servers; the user must approve any install command like any other shell command. `lsp_status` also initializes installed, enabled servers through the normal manager path and prints the capabilities the server advertised during `initialize` (for example `definition`, `references`, `rename`, or `formatting`). `yottacode doctor` runs the same bounded protocol probe, so “binary exists” and “server can initialize with useful capabilities” are reported separately.
 
@@ -92,7 +92,7 @@ The GA bridge includes these production-readiness behaviors:
 - `lsp_changed_files_diagnostics` inspects staged, unstaged, and untracked supported source files from the repo root, de-duplicates them, skips unsupported paths, and summarizes the result as clean/issues/pending/skipped counts instead of printing one repeated clean row per file.
 - `lsp_code_action_preview` resolves editable code actions into the same preview/apply WorkspaceEdit flow used by rename and formatting.
 - `lsp_document_highlights` and `lsp_selection_ranges` provide bounded current-file context before agents choose an edit range or wider read window.
-- Offline syntax fallback is language-neutral. Go has a parser-backed fallback today; TypeScript/JavaScript, Python, and Rust keep regex fallback until dedicated parser backends or a Tree-sitter language pack lands.
+- Offline syntax fallback is language-neutral. Go, TypeScript/JavaScript, Python, and Rust all have parser-backed fallback (Go via `go/parser`; TypeScript/JavaScript and Rust via a shared chroma-token brace-depth scanner; Python via a chroma-token indentation scanner). Other languages keep regex fallback until dedicated parser backends land.
 - `lsp_impact` batches the common pre-refactor questions into one compact result so agents do not have to spend separate tool calls on hover, definitions, references, call hierarchy, diagnostics, and Code Map import impact.
 - `lsp_rename_preview` uses server-side prepare-rename validation when available so invalid cursor positions fail before any edit preview is requested.
 - Server capabilities returned by `initialize` are checked before optional methods; unsupported methods return an explicit `unavailable` result rather than a misleading empty response.
