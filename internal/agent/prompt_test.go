@@ -105,6 +105,15 @@ func TestDefaultSystemPrompt_KeepsActionDirectives(t *testing.T) {
 		"call todo_write BEFORE you start work",
 		"Do NOT call todo_write for trivial single-step requests",
 		"Creating or updating a todo card is NOT itself a request for permission",
+		// Closing-out directive: non-trivial work should end with a
+		// structured shipped-summary (theme + files, tests, verification
+		// commands, git state) rather than a one-line "done" — mirrors
+		// the completion report style the user pointed at from Claude Code.
+		"Closing out a task",
+		"end your reply with a summary of what shipped",
+		"name the verification you actually ran",
+		"don't imply anything was committed unless a git_commit call was actually approved",
+		"Keep it proportional",
 		// Mode-switching honesty: the model may REQUEST plan mode via
 		// enter_plan_mode but can never self-escalate to auto/yolo,
 		// and must never claim a mode changed when it didn't. This
