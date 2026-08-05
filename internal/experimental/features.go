@@ -51,9 +51,9 @@ const (
 	// server launch still happens lazily only when a semantic tool is used.
 	LSPCodeIntelligence Feature = "lsp_code_intelligence"
 
-	// SyntaxRanges enables offline parser-backed syntax range selection. It is
-	// separate from LSP so agents can choose structural edit ranges without
-	// requiring a language server process.
+	// SyntaxRanges is a graduated no-op flag kept recognized for one release
+	// so old configs don't warn or break. The syntax_range tool is now
+	// default-on for Go, TypeScript/JavaScript, Python, and Rust.
 	SyntaxRanges Feature = "syntax_ranges"
 )
 
@@ -72,7 +72,7 @@ func All() []Feature {
 
 func IsGraduated(f Feature) bool {
 	switch f {
-	case BackgroundSubagents, LSPCodeIntelligence:
+	case BackgroundSubagents, LSPCodeIntelligence, SyntaxRanges:
 		return true
 	default:
 		return false
@@ -94,7 +94,7 @@ func Description(f Feature) string {
 	case LSPCodeIntelligence:
 		return "LSP Code Intelligence has graduated to GA; this flag is recognized as a no-op for compatibility."
 	case SyntaxRanges:
-		return "Offline syntax range tools for selecting local structural edit ranges before anchored edits."
+		return "Offline syntax ranges have graduated to GA for Go, TypeScript/JavaScript, Python, and Rust; this flag is recognized as a no-op for compatibility."
 	default:
 		return ""
 	}

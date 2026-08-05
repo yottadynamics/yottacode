@@ -11,11 +11,14 @@ Shipped in the MVP:
 
 - Shared `internal/codemap` index with cached snapshots.
 - Directory, file, and symbol nodes.
-- LSP-backed symbols when available, fallback regex symbols otherwise.
+- LSP-backed symbols when available, parser-backed symbols (Go, TypeScript/
+  JavaScript, Python, Rust) otherwise, falling back further to regex symbols
+  for other languages.
 - Go import edges resolved module-path-first from `go.mod`, then package-name
   fallback.
-- Parser-backed Go syntax also powers the separate experimental `syntax_range`
-  tool for local edit-range selection before anchored edits.
+- The same parser-backed offline syntax layer also powers the separate,
+  now-GA `syntax_range` tool for local edit-range selection before anchored
+  edits.
 - `/map` TUI overlay with submodes:
   - `/map`
   - `/map here [path]`

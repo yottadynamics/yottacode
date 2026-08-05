@@ -70,13 +70,13 @@ func TestGoSyntaxSourceRangesRejectsInvalidPosition(t *testing.T) {
 }
 
 func TestSyntaxFileRangesReportsUnsupportedSource(t *testing.T) {
-	lang := Language{ID: "typescript"}
-	ranges, ok, err := SyntaxFileRanges(context.Background(), lang, "app.ts", Position{})
+	lang := Language{ID: "ruby"}
+	ranges, ok, err := SyntaxFileRanges(context.Background(), lang, "app.rb", Position{})
 	if err != nil {
 		t.Fatalf("SyntaxFileRanges: %v", err)
 	}
 	if ok || ranges != nil {
-		t.Fatalf("typescript should not have parser-backed ranges yet: ok=%v ranges=%#v", ok, ranges)
+		t.Fatalf("ruby should not have parser-backed ranges: ok=%v ranges=%#v", ok, ranges)
 	}
 }
 

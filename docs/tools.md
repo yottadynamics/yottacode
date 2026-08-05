@@ -359,7 +359,7 @@ Return offline parser-backed syntax ranges around a source position. This is a r
 
 Output rows are `kind name [detail]\tpath:startLine:startColumn-endLine:endColumn\tlines=A-B\tanchor_read={...}`. Ranges are ordered smallest-to-largest so the agent can choose a nearby block, function, method, type, or file. The `anchor_read` JSON is a suggested `read_file` call with `anchors=true`; after that read, use `edit_anchored` for the actual write.
 
-The first implementation is Go-only and uses the standard library parser. Other languages should use `lsp_selection_ranges` when a language server is installed until parser backends are added. Experimental behind `syntax_ranges`.
+Covers Go (standard library parser), TypeScript/JavaScript and Rust (a shared chroma-token brace-depth scanner), and Python (a chroma-token indentation scanner). Other languages should use `lsp_selection_ranges` when a language server is installed. GA; the `syntax_ranges` flag is a no-op kept for one release for compatibility.
 
 ## apply_diff
 
@@ -1087,9 +1087,9 @@ Supported language servers and fallback modes:
 | Language | Server command | Offline syntax | Install hint |
 |---|---|---|---|
 | Go | `gopls` | parser | `go install golang.org/x/tools/gopls@latest` and ensure `$(go env GOPATH)/bin` is on `PATH` |
-| TypeScript/JavaScript | `typescript-language-server --stdio` | regex fallback | `npm install -g typescript typescript-language-server` |
-| Python | `pyright-langserver --stdio` | regex fallback | `npm install -g pyright` |
-| Rust | `rust-analyzer` | regex fallback | install through rustup, your package manager, or rust-analyzer's upstream docs |
+| TypeScript/JavaScript | `typescript-language-server --stdio` | parser | `npm install -g typescript typescript-language-server` |
+| Python | `pyright-langserver --stdio` | parser | `npm install -g pyright` |
+| Rust | `rust-analyzer` | parser | install through rustup, your package manager, or rust-analyzer's upstream docs |
 
 | Param | Type | Default | Notes |
 |---|---|---|---|

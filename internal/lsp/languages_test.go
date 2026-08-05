@@ -78,13 +78,9 @@ func TestDetectWorkspaceAggregatesLanguagesAndSkipsHeavyDirs(t *testing.T) {
 			t.Errorf("detected language missing metadata: %+v", lang)
 		}
 		switch lang.ID {
-		case "go":
+		case "go", "typescript", "python", "rust":
 			if SyntaxMode(lang.ID) != "parser" {
-				t.Errorf("Go should report parser syntax fallback")
-			}
-		case "typescript", "python", "rust":
-			if SyntaxMode(lang.ID) != "regex" {
-				t.Errorf("%s should report regex syntax fallback", lang.ID)
+				t.Errorf("%s should report parser syntax fallback", lang.ID)
 			}
 		}
 	}
