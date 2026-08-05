@@ -1,0 +1,11 @@
+<?xml version="1.0"?>
+<catalog>
+  <item>
+    <name>Widget</name>
+    <price>9.99</price>
+  </item>
+  <item>
+    <name>Gadget</name>
+    <price>19.50</price>
+  </item>
+</catalog>

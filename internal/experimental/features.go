@@ -46,6 +46,13 @@ const (
 	// for opt-in users while the decomposition + unattended-worker UX settles.
 	Dispatch Feature = "dispatch"
 
+	// DocumentIngestion enables the read_document agent tool: bounded,
+	// provenance-labeled text extraction for CSV, TSV, JSON, JSONL, XML,
+	// and HTML files. Opt-in first because it's a brand-new tool surface
+	// whose caps and format coverage haven't been exercised on real
+	// files yet.
+	DocumentIngestion Feature = "document_ingestion"
+
 	// LSPCodeIntelligence is a graduated no-op flag kept recognized for one
 	// release so old configs don't warn or break. LSP tools are now default-on;
 	// server launch still happens lazily only when a semantic tool is used.
@@ -65,6 +72,7 @@ func All() []Feature {
 		BackgroundSubagents,
 		CodeMap,
 		Dispatch,
+		DocumentIngestion,
 		LSPCodeIntelligence,
 		SyntaxRanges,
 	}
@@ -91,6 +99,8 @@ func Description(f Feature) string {
 		return "Repository code map. Builds a read-only structure index for the /map TUI overlay and code-map agent tools, using LSP when available and approximate fallback symbols otherwise."
 	case Dispatch:
 		return "Dispatch + integrate tools. Fan a batch of subtasks out to concurrent subagents (write-capable ones in isolated git worktrees, partitioned by file ownership), then merge committed branches into one integration branch for a PR."
+	case DocumentIngestion:
+		return "The read_document agent tool. Bounded, provenance-labeled text extraction for CSV, TSV, JSON, JSONL, XML, and HTML files — a structured alternative to read_file for these formats."
 	case LSPCodeIntelligence:
 		return "LSP Code Intelligence has graduated to GA; this flag is recognized as a no-op for compatibility."
 	case SyntaxRanges:

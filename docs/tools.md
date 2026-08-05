@@ -19,6 +19,7 @@ In addition to the built-ins, **MCP tools** register dynamically when an `[[mcp_
 |---|---|---|
 | [`read_file`](#read_file) | none | Read a text or image file (png/jpg/gif/webp) with optional line offset/limit |
 | [`read_many_files`](#read_many_files) | none | Read multiple UTF-8 files in one call |
+| [`read_document`](#read_document) | none | *Experimental.* Bounded, structured extraction for CSV/TSV/JSON/JSONL/XML/HTML |
 | [`write_file`](#write_file) | required | Overwrite or create a file |
 | [`edit_file`](#edit_file) | required | Surgical `old_string`→`new_string` replacement |
 | [`edit_anchored`](#edit_anchored) | required | Anchor-validated line edits after anchored reads |
@@ -298,6 +299,53 @@ Returns sections in the form:
 ```
 
 Each file gets its own `[truncated]` marker if needed.
+
+## read_document
+
+*Experimental — enable with `--experimental document_ingestion` (see
+[experimental.md](experimental.md)).*
+
+Extract bounded, structured text from a CSV, TSV, JSON, JSONL, XML, or
+HTML file. Prefer this over `read_file` for these formats: `read_file`'s
+raw line-based view shears a CSV field's embedded newline into a bogus
+extra row, and dumps HTML/XML markup noise (scripts, styles, tags)
+verbatim instead of the content underneath.
+
+| Param | Type | Default | Notes |
+|---|---|---|---|
+| `path` | string | — | Absolute or cwd-relative; extension must be `.csv`, `.tsv`, `.json`, `.jsonl`, `.xml`, `.html`, or `.htm` |
+| `max_rows` | int | `200` | Max CSV/TSV rows or JSONL records sampled into the preview |
+| `max_chars` | int | `20000` | Max characters of extracted text returned |
+
+The response always starts with a structure summary before any content:
+
+- **CSV/TSV** — column headers and a total row count, then the sampled
+  rows.
+- **JSON** — a one-line shape summary (object key set, or array length
+  + element type), then a pretty-printed preview. A `.json` file larger
+  than the byte cap falls back to a raw-text preview instead of
+  attempting to parse a document truncated at an arbitrary byte offset.
+- **JSONL** — each sampled record is its own section labeled with its
+  source line number (`JSONL line 412`), so the model can cite an exact
+  line back to the user. Malformed lines are skipped and counted in a
+  warning, not silently dropped.
+- **XML** — the root element name plus the most frequent child element
+  tags, then the visible text content.
+- **HTML** — the `<title>` and headings, then the visible text with
+  `<script>`/`<style>` bodies stripped.
+
+Every cap that actually truncated something shows up as an explicit
+warning line (e.g. `showing the first 50 of 250 data rows read`) —
+truncation is never silent. A file larger than a 5 MiB hard byte cap
+stops reading there regardless of how many rows/records that covers,
+so a pathological single-line file can't be read unbounded into memory.
+
+Read-only, no approval — same trust posture as `read_file`, including
+the same credential-path deny list.
+
+Not in scope for this tool: PDF, Office formats (docx/xlsx/pptx),
+`.md`/`.txt`/`.log` (already covered by `read_file`), and any file
+fetched from a URL — local files only.
 
 ## write_file
 
