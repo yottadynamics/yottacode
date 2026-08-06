@@ -43,8 +43,10 @@ integrate({ branches:[...] })
 - **Background** (default when the batch has any **write** task): the call
   returns **immediately** with a batch id and the worker branches. The main agent
   can continue while workers keep implementing in parallel
-  in their worktrees. You watch the live dock, then call `integrate` once
-  they finish. This is the path for "implement a large PR in parallel
+  in their worktrees. You watch the live dock; when the **last** worker in the
+  batch finishes, the agent is re-prompted automatically with every worker's
+  result in one turn, so it can go straight to `integrate` without you having
+  to nudge it. This is the path for "implement a large PR in parallel
   without tying up the session." Background workers apply a fixed unattended
   policy: owned-file writes are auto-approved; `run_tests`, shell, and other
   approval-requiring tools are denied because tests/shell execute code and
@@ -197,9 +199,20 @@ one row per running subagent with its branch, latest activity, and elapsed
 time. It collapses when nothing is running. After the fact, `/subagents`
 lists every task and opens each one's full transcript.
 
+A background batch also wakes the agent on its own once **every** worker in the
+batch has finished — one wake turn carrying all of their results, not one per
+worker. Until then, each completion just paints its banner. So a batch that
+looks stalled in the dock is genuinely still running; you don't need to prompt
+it to move on to `integrate`.
+
 ## Limits & notes
 
 - At most 8 subtasks per `dispatch` call (the foreground concurrency cap).
+- Dispatch spends against the session-wide subagent token budget
+  (`[subagents] session_token_budget` in `~/.yottacode/config.toml`) and is
+  refused once that budget is exhausted — before any worktree is created. A
+  batch is N child loops at once, so this is the backstop that bounds a
+  runaway fan-out; raise the budget or finish without delegating.
 - Write subtasks require a git repository (worktree isolation needs git);
   read-only dispatch works anywhere.
 - Not available while in plan mode for write subtasks (plan mode blocks
@@ -209,6 +222,8 @@ lists every task and opens each one's full transcript.
 - At most 8 **background** workers run concurrently across the whole
   session — repeated background dispatch calls are rejected once the live
   count would exceed the cap (wait for some to finish, or `/subagents stop`).
+- Stop a whole batch with `/subagents stop batch <batch-id>` (the id on the
+  dock header); `/subagents stop <id-prefix>` still stops one worker.
 - Every worker reclaims its own worktree+branch the moment it finishes if
   they hold nothing — no commits beyond the dispatch base and a clean tree —
   whatever the outcome (completed, errored, canceled, iter-capped) and in
@@ -237,8 +252,17 @@ Sharp edges we know about:
   deterministic shell floor are guardrails, not isolation. For untrusted or
   high-stakes work, run yottacode itself inside a VM/container.
 - **Unattended `run_bash` and `run_tests` are disabled.** Background workers can
-  write owned files, but cannot run shell or tests. A task that needs either
-  must run in the foreground, where you approve each call.
+  write owned files, but cannot run shell, tests, or even a compiler — so a
+  background worker commits code nothing has verified. A task that needs any of
+  that must run in the foreground (`background: false`), where you approve each
+  call. This is deliberate: unlike file writes, which the worktree and owned-file
+  scope confine to the worker's own branch, shell has no confinement today, so
+  auto-allowing it would be arbitrary code execution for a worker nobody is
+  watching. The planned fix is to confine workers in a container rather than to
+  guess at command safety — tracked in
+  [`roadmap/dispatch-v3-collaboration.md`](../roadmap/dispatch-v3-collaboration.md#0d-revisited--unattended-shell-confine-dont-classify),
+  sequenced behind the command sandbox in
+  [`roadmap/sandbox-podman.md`](../roadmap/sandbox-podman.md).
 
 - **Kept worktrees accumulate until you integrate or discard them.** Empty
   worktrees are reclaimed automatically (per worker on finish, any outcome,
@@ -246,9 +270,13 @@ Sharp edges we know about:
   reclaims what it merges — but everything that's *deliberately* kept can
   still pile up: branches with commits you never integrate, worktrees holding
   an errored worker's uncommitted output, and a conflicted integration
-  worktree awaiting resolution. A crashed session (kill -9, power loss) also
-  skips all cleanup — there is no startup garbage-collection yet. Clean
-  these up yourself:
+  worktree awaiting resolution. A crashed session (kill -9, power loss) skips
+  the at-exit sweep, but the next start-up runs two passes that recover the
+  empty ones: the session's own rehydrated task records, then a scan of
+  `git worktree list` for `worktree-dispatch-*` branches, which also catches
+  worktrees from a session that died before its records were ever saved. Both
+  keep anything they can't prove is empty, so deliberately-kept work is never
+  swept. Clean the rest up yourself:
 
   ```bash
   yottacode worktree list      # see what's there
@@ -259,8 +287,14 @@ Sharp edges we know about:
 - **The concurrency cap is per session, not per task tree.** The 8-background
   limit is a flat cap; there's no tree-wide budget yet, so deeply nested or
   rapid-fire dispatching is bounded only coarsely.
-- **A shutdown mid-commit can leave a stale `index.lock`.** Rare, and the next
+- **A shutdown mid-commit can still, rarely, leave a stale `index.lock`.**
+  A worker's auto-commit deliberately runs detached from cancellation so
+  just-finished work is never lost, which means quitting can't stop it — only
+  outrun it. Quitting now waits out a commit that's genuinely in flight (up to
+  30s, announced on stderr) instead of abandoning it after the 3s grace window,
+  so this needs a wedged pre-commit hook to happen at all. If it does, the next
   `git` op in that worktree will tell you; clear the lock and retry.
 
 These are tracked for the next iteration in
-`yottacode-roadmap/dispatch-v3-collaboration.md` (Layer 0).
+[`roadmap/dispatch-v3-collaboration.md`](../roadmap/dispatch-v3-collaboration.md)
+(Layer 0).

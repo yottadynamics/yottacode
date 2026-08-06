@@ -74,3 +74,55 @@ func ReclaimEmptyDispatchWorktrees(ctx context.Context, tasks *subagents.Registr
 	}
 	return n
 }
+
+// dispatchBranchPrefix is what `git worktree add -b` names a dispatch worker's
+// branch: worktree.Branch("dispatch-<batch>-<i>"). Matching on it is how the
+// orphan sweep tells dispatch's worktrees apart from ones the user made with
+// `yottacode worktree add`, which must never be touched.
+const dispatchBranchPrefix = worktree.BranchPrefix + "dispatch-"
+
+// ReclaimOrphanDispatchWorktrees sweeps the repo's dispatch worktrees on disk
+// and reclaims the ones holding nothing, WITHOUT needing a registry record.
+//
+// ReclaimEmptyDispatchWorktrees can only see worktrees the current session
+// knows about — the ones it created, plus whatever the session import
+// rehydrated. That misses the case the cleanup story most needs to cover: a
+// session killed hard enough (SIGKILL, power loss, a crash before the session
+// save) that its records never persisted, leaving worktrees no later session
+// can attribute. Those used to accumulate forever. This walks `git worktree
+// list` instead, so attribution comes from the branch name, not from memory.
+//
+// An orphan has no recorded dispatch base, so it's derived as the merge-base of
+// the repo's HEAD and the worker's branch — the point the branch diverged.
+// Commits past it are the worker's output and mean "keep", exactly as a
+// recorded base would. Everything else is the shared conservative rule in
+// reclaimEmptyWorktree: both probes must affirmatively say empty, any git error
+// means keep. Locked worktrees are skipped outright — a lock is an explicit
+// "don't touch this". Scoped to repoRoot; other repos are not this session's
+// business. Best-effort, never fatal. Returns how many were removed.
+func ReclaimOrphanDispatchWorktrees(ctx context.Context, repoRoot string) int {
+	if repoRoot == "" {
+		return 0
+	}
+	infos, err := worktree.List(ctx, repoRoot)
+	if err != nil {
+		return 0
+	}
+	n := 0
+	for _, info := range infos {
+		if info.Locked || !strings.HasPrefix(info.Branch, dispatchBranchPrefix) {
+			continue
+		}
+		if _, err := os.Stat(info.Path); err != nil {
+			continue // already gone; `git worktree prune` will drop the record
+		}
+		base, err := gitOutput(ctx, repoRoot, "merge-base", "HEAD", info.Branch)
+		if err != nil {
+			continue // can't establish a base → can't prove emptiness → keep
+		}
+		if reclaimEmptyWorktree(ctx, repoRoot, info.Path, strings.TrimSpace(base)) {
+			n++
+		}
+	}
+	return n
+}

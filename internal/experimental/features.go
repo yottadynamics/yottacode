@@ -7,11 +7,17 @@
 //   - We want production users to encounter the feature only on
 //     deliberate opt-in.
 //
-// Once a feature stabilizes the gate is removed (and Description
-// returns "" for the removed name to keep old configs from
-// erroring). New features land here as new Feature constants; the
-// surface is intentionally small so adding one is one constant +
-// one Description case.
+// Once a feature stabilizes, the gate at each use site becomes a
+// literal true, but the constant STAYS here: it's added to
+// IsGraduated, its Description is rewritten to say so, and it
+// remains in All() so Recognized keeps returning true. That's what
+// keeps an existing `--experimental <name>` silent rather than
+// warning at every startup once the feature is default-on.
+// Description returns "" only for names that were dropped entirely
+// — a separate, later cleanup. New features land here as new
+// Feature constants; the surface is intentionally small so adding
+// one is one constant + one Description case. See
+// docs/experimental.md for the full graduation checklist.
 //
 // Resolution sources (CLI > env > config; later wins on conflict):
 //

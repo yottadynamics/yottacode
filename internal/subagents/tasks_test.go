@@ -326,3 +326,150 @@ func TestNewTaskID_NonEmpty(t *testing.T) {
 		t.Errorf("Two consecutive IDs collided: %q", a)
 	}
 }
+
+// TestTryReserveBatch_AllOrNothing: a batch that fits is admitted whole; one
+// that would breach the cap is rejected WITHOUT inserting any of its tasks.
+// Dispatch depends on the all-or-nothing half — a partial admission would leave
+// worktrees on disk for workers that were never allowed to run.
+func TestTryReserveBatch_AllOrNothing(t *testing.T) {
+	r := NewRegistry()
+	r.Add(&Task{ID: "running-1", Status: TaskRunning, Background: true})
+
+	over := []*Task{
+		{ID: "over-1", Status: TaskRunning, Background: true},
+		{ID: "over-2", Status: TaskRunning, Background: true},
+		{ID: "over-3", Status: TaskRunning, Background: true},
+	}
+	if r.TryReserveBatch(over, 3, false) {
+		t.Fatal("a batch of 3 against a cap of 3 with 1 already running must be rejected")
+	}
+	for _, tk := range over {
+		if _, ok := r.Get(tk.ID); ok {
+			t.Errorf("rejected batch inserted %s — reservation must be all-or-nothing", tk.ID)
+		}
+	}
+
+	fits := []*Task{
+		{ID: "fits-1", Status: TaskRunning, Background: true},
+		{ID: "fits-2", Status: TaskRunning, Background: true},
+	}
+	if !r.TryReserveBatch(fits, 3, false) {
+		t.Fatal("a batch of 2 against a cap of 3 with 1 running must be admitted")
+	}
+	if n := r.ActiveCount(); n != 3 {
+		t.Errorf("ActiveCount = %d after admitting the batch, want 3", n)
+	}
+
+	// Terminal tasks free their slot, same as TryReserve.
+	r.MarkDone("running-1", TaskCompleted, "", false, 0)
+	if !r.TryReserveBatch([]*Task{{ID: "after-1", Status: TaskRunning, Background: true}}, 3, false) {
+		t.Error("a finished task must free its slot for a later reservation")
+	}
+	// An empty batch is trivially admissible (nothing to insert).
+	if !r.TryReserveBatch(nil, 0, false) {
+		t.Error("an empty batch must be admitted")
+	}
+}
+
+// TestBatchActiveCount: the TUI uses this to hold a dispatch batch's wakes
+// until its LAST worker finishes, so it must count only running members of the
+// named batch — and must never treat batch-less tasks as a batch.
+func TestBatchActiveCount(t *testing.T) {
+	r := NewRegistry()
+	r.Add(&Task{ID: "b1-a", Status: TaskRunning, Background: true, BatchID: "batch-1"})
+	r.Add(&Task{ID: "b1-b", Status: TaskRunning, Background: true, BatchID: "batch-1"})
+	r.Add(&Task{ID: "b2-a", Status: TaskRunning, Background: true, BatchID: "batch-2"})
+	r.Add(&Task{ID: "loner", Status: TaskRunning, Background: true})
+
+	if n := r.BatchActiveCount("batch-1"); n != 2 {
+		t.Errorf("BatchActiveCount(batch-1) = %d, want 2", n)
+	}
+	r.MarkDone("b1-a", TaskCompleted, "", false, 0)
+	if n := r.BatchActiveCount("batch-1"); n != 1 {
+		t.Errorf("after one worker finished: got %d, want 1", n)
+	}
+	r.MarkDone("b1-b", TaskCompleted, "", false, 0)
+	if n := r.BatchActiveCount("batch-1"); n != 0 {
+		t.Errorf("a fully drained batch must report 0, got %d", n)
+	}
+	if n := r.BatchActiveCount("batch-2"); n != 1 {
+		t.Errorf("sibling batch must be unaffected, got %d", n)
+	}
+	// An empty id must never sweep up the batch-less tasks.
+	if n := r.BatchActiveCount(""); n != 0 {
+		t.Errorf(`BatchActiveCount("") = %d, want 0`, n)
+	}
+	if n := r.BatchActiveCount("nope"); n != 0 {
+		t.Errorf("unknown batch = %d, want 0", n)
+	}
+}
+
+// TestCancelBatch: cancels every running member of one dispatch batch and
+// nothing else — sibling batches and batch-less tasks must be untouched, and
+// an empty batch id must never sweep everything up.
+func TestCancelBatch(t *testing.T) {
+	r := NewRegistry()
+	canceled := map[string]bool{}
+	add := func(id, batch string) {
+		r.Add(&Task{ID: id, Status: TaskRunning, Background: true, BatchID: batch})
+		r.AttachCancel(id, func() { canceled[id] = true })
+	}
+	add("b1-a", "batch-1")
+	add("b1-b", "batch-1")
+	add("b2-a", "batch-2")
+	add("loner", "")
+
+	if n := r.CancelBatch("batch-1"); n != 2 {
+		t.Fatalf("CancelBatch(batch-1) = %d, want 2", n)
+	}
+	if !canceled["b1-a"] || !canceled["b1-b"] {
+		t.Error("both members of the batch must be canceled")
+	}
+	if canceled["b2-a"] || canceled["loner"] {
+		t.Error("a sibling batch and a batch-less task must be untouched")
+	}
+	// Cancellation is attributed to the user, same as /subagents stop.
+	if tk, _ := r.Get("b1-a"); tk == nil || !tk.CanceledByUser {
+		t.Error("batch cancel must mark CanceledByUser so the outcome is attributed correctly")
+	}
+	// Idempotent: the cancel hooks are cleared, so a second call signals none.
+	if n := r.CancelBatch("batch-1"); n != 0 {
+		t.Errorf("second CancelBatch should signal 0, got %d", n)
+	}
+	// An empty id must never act as a wildcard.
+	if n := r.CancelBatch(""); n != 0 {
+		t.Errorf(`CancelBatch("") = %d, want 0 — it must not sweep up batch-less tasks`, n)
+	}
+	if canceled["loner"] {
+		t.Error(`CancelBatch("") cancelled a batch-less task`)
+	}
+}
+
+// TestCommittingCount tracks only RUNNING mid-commit tasks: session teardown
+// uses it to decide whether to extend its drain, and a finished task must not
+// hold the session open.
+func TestCommittingCount(t *testing.T) {
+	r := NewRegistry()
+	r.Add(&Task{ID: "worker-1", Status: TaskRunning, Background: true})
+	r.Add(&Task{ID: "worker-2", Status: TaskRunning, Background: true})
+
+	if n := r.CommittingCount(); n != 0 {
+		t.Errorf("nothing committing yet, got %d", n)
+	}
+	r.SetCommitting("worker-1", true)
+	r.SetCommitting("worker-2", true)
+	if n := r.CommittingCount(); n != 2 {
+		t.Errorf("CommittingCount = %d, want 2", n)
+	}
+	r.SetCommitting("worker-1", false)
+	if n := r.CommittingCount(); n != 1 {
+		t.Errorf("after one cleared: got %d, want 1", n)
+	}
+	// A task that goes terminal stops counting even if the flag was never
+	// cleared — that's what keeps a crashed worker from wedging the drain.
+	r.MarkDone("worker-2", TaskCompleted, "", false, 0)
+	if n := r.CommittingCount(); n != 0 {
+		t.Errorf("a terminal task must not count as committing, got %d", n)
+	}
+	r.SetCommitting("nonexistent", true) // must not panic
+}

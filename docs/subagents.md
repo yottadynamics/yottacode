@@ -294,6 +294,7 @@ Two cases, governed by foreground vs background:
 | `/subagents` | Open the picker overlay in **tasks** view |
 | `/subagents types` | Open the picker overlay in **types** view |
 | `/subagents stop <id-prefix>` | Cancel a running task from the cmdline |
+| `/subagents stop batch <batch-id>` | Cancel every running worker in one [dispatch](dispatch.md) batch |
 
 Inside the picker:
 
@@ -307,7 +308,9 @@ Inside the picker:
 | `Esc` | Close the picker |
 
 Task ids are 16-char hex; the first 8 chars are usually unique
-enough for the `/subagents stop` cmdline form.
+enough for the `/subagents stop` cmdline form. Dispatch batch ids are
+8-char hex and appear on the live dock's header — `stop batch` takes
+the whole id, not a prefix.
 
 `/subagents` is the **after-the-fact** browser. While subagents are
 running, a **live dock** sits at the bottom, a blank line **below the

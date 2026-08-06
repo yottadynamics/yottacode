@@ -761,3 +761,134 @@ func TestDispatch_Background_EndToEnd(t *testing.T) {
 		}
 	}
 }
+
+// TestDispatch_RespectsSessionTokenBudget is the cost-ceiling regression:
+// dispatch children record their estimated spend via MarkDone exactly like
+// Agent-tool children, so they DEPLETE the session token budget — but
+// DispatchTool.Execute never checked that budget, making a fan-out batch (N
+// child loops at once) the one delegation path the backstop could not stop.
+// The batch must be refused before any worktree is created.
+func TestDispatch_RespectsSessionTokenBudget(t *testing.T) {
+	repoRoot := dispatchTestRepo(t)
+	d := newDispatchToolE2E(t, repoRoot)
+	d.Agent.MaxSessionTokens = 1000
+
+	// A finished child that already consumed the whole budget.
+	spent := &subagents.Task{ID: subagents.NewTaskID(), Status: subagents.TaskRunning}
+	d.Agent.Tasks.Add(spent)
+	d.Agent.Tasks.MarkDone(spent.ID, subagents.TaskCompleted, "done", false, 1200)
+
+	out, err := d.Execute(context.Background(), `{"goal":"x","tasks":[
+		{"subagent_type":"writer","description":"a","prompt":"TESTWRITE:alpha.txt","files":["alpha.txt"]},
+		{"subagent_type":"writer","description":"b","prompt":"TESTWRITE:beta.txt","files":["beta.txt"]}
+	]}`)
+	if err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	if !strings.Contains(out, "budget") {
+		t.Errorf("expected the session token budget to reject the batch, got:\n%s", out)
+	}
+	// Refused before anything was spawned or created on disk.
+	if branches := gitListBranches(t, repoRoot, "worktree-dispatch-*"); len(branches) != 0 {
+		t.Errorf("budget-rejected batch leaked worktree branches: %v", branches)
+	}
+	if n := d.Agent.Tasks.ActiveCount(); n != 0 {
+		t.Errorf("budget-rejected batch registered %d running tasks, want 0", n)
+	}
+}
+
+// TestDispatch_Background_CompletionAsksToWake is the async-re-entry
+// regression. Background is the DEFAULT for write batches, and its completion
+// event omitted NotifyOnDone — so the TUI's wake arms (which gate on that flag)
+// never fired and the fan-out → integrate workflow silently stalled after the
+// workers finished, until the user happened to type something. Every background
+// worker's completion must ask for a wake and carry its BatchID, which is what
+// lets the TUI coalesce a batch into a single wake turn.
+func TestDispatch_Background_CompletionAsksToWake(t *testing.T) {
+	repoRoot := dispatchTestRepo(t)
+	d := newDispatchToolE2E(t, repoRoot)
+	d.SupportsBackground = true
+
+	done := make(chan SubagentBackgroundDone, 4)
+	d.Agent.SetBackgroundDoneCallback(func(e SubagentBackgroundDone) { done <- e })
+
+	if _, err := d.Execute(context.Background(), `{"goal":"two files","tasks":[
+		{"subagent_type":"writer","description":"a","prompt":"TESTWRITE:alpha.txt","files":["alpha.txt"]},
+		{"subagent_type":"writer","description":"b","prompt":"TESTWRITE:beta.txt","files":["beta.txt"]}
+	]}`); err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	waitForTasksDone(t, d.Agent.Tasks, 2, 10*time.Second)
+
+	batches := map[string]int{}
+	for i := 0; i < 2; i++ {
+		select {
+		case e := <-done:
+			if !e.NotifyOnDone {
+				t.Errorf("background completion %s did not ask to wake the model — the batch would stall before integrate", e.TaskID)
+			}
+			if e.BatchID == "" {
+				t.Errorf("background completion %s carries no BatchID — the TUI cannot coalesce the batch into one wake", e.TaskID)
+			}
+			batches[e.BatchID]++
+		case <-time.After(10 * time.Second):
+			t.Fatal("timed out waiting for background completions")
+		}
+	}
+	if len(batches) != 1 {
+		t.Errorf("both workers should share one BatchID, got %v", batches)
+	}
+
+	// The registry record must agree — it is what reconcileSubagentCompletions
+	// reads to heal a dropped completion event.
+	for _, tk := range d.Agent.Tasks.List() {
+		if !tk.NotifyOnDone {
+			t.Errorf("task %s: NotifyOnDone not persisted on the registry record", tk.ID)
+		}
+	}
+}
+
+// TestDispatch_MarksCommittingWindow: the auto-commit runs on a
+// cancellation-detached context, so session teardown cannot stop it and must
+// instead wait it out. That wait is driven by Task.Committing, so dispatch has
+// to actually raise the flag while the commit is in flight — and lower it after,
+// or a finished worker would hold every future quit open. A slow pre-commit
+// hook holds the window open long enough to observe.
+func TestDispatch_MarksCommittingWindow(t *testing.T) {
+	repoRoot := dispatchTestRepo(t)
+	hook := filepath.Join(repoRoot, ".git", "hooks", "pre-commit")
+	if err := os.WriteFile(hook, []byte("#!/bin/sh\nsleep 0.4\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	d := newDispatchToolE2E(t, repoRoot)
+	d.SupportsBackground = true
+
+	if _, err := d.Execute(context.Background(), `{"goal":"one file","tasks":[
+		{"subagent_type":"writer","description":"a","prompt":"TESTWRITE:alpha.txt","files":["alpha.txt"]},
+		{"subagent_type":"writer","description":"b","prompt":"TESTWRITE:beta.txt","files":["beta.txt"]}
+	]}`); err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+
+	// Catch the window while the hook is sleeping.
+	sawCommitting := false
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if d.Agent.Tasks.CommittingCount() > 0 {
+			sawCommitting = true
+			break
+		}
+		if d.Agent.Tasks.ActiveCount() == 0 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if !sawCommitting {
+		t.Error("no worker ever reported Committing — session teardown would abandon the commit on its flat grace deadline")
+	}
+
+	waitForTasksDone(t, d.Agent.Tasks, 2, 15*time.Second)
+	if n := d.Agent.Tasks.CommittingCount(); n != 0 {
+		t.Errorf("%d finished workers still flagged Committing — every later quit would pay the extended wait", n)
+	}
+}

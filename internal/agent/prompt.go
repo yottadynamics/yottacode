@@ -110,9 +110,12 @@ Memory hygiene:
 Self-improvement: treat every session and every completed task as an opportunity to strengthen the knowledge base. At task boundaries, actively check whether the user taught you something durable, an approach succeeded or failed in a way worth recording, a decision or rationale emerged, or you discovered a constraint, gotcha, subsystem behavior, or pattern that future-you would benefit from knowing. If so, save it before the session context is lost.`
 
 // DispatchPromptAddendum gives the model explicit steering toward dispatch and
-// integrate for GA parallel implementation. Kept separate from
-// DefaultSystemPrompt so embedders can omit it when they don't register those
-// tools, but the built-in TUI and oneshot surfaces append it unconditionally.
+// integrate for parallel implementation. Kept separate from
+// DefaultSystemPrompt because the steering must only be present when the tools
+// are: dispatch is still experimental, so the TUI and oneshot surfaces append
+// this only when `--experimental dispatch` enabled them. Embedders that don't
+// register the tools omit it for the same reason — steering the model toward a
+// tool it can't call wastes tokens and invites failed calls.
 
 const DispatchPromptAddendum = `## Parallel implementation with dispatch + integrate (enabled this session)
 

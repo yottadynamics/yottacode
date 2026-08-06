@@ -20,9 +20,10 @@ type pagerDoneMsg struct {
 
 // cmdSubagents implements the /subagents slash command. Subcommands:
 //
-//	/subagents                   — picker overlay, tasks view (Enter views, s stops)
-//	/subagents types             — picker overlay, types view (t toggles back)
-//	/subagents stop <id-prefix>  — cancel a running task from the cmdline
+//	/subagents                     — picker overlay, tasks view (Enter views, s stops)
+//	/subagents types               — picker overlay, types view (t toggles back)
+//	/subagents stop <id-prefix>    — cancel a running task from the cmdline
+//	/subagents stop batch <id>     — cancel every running worker in one dispatch batch
 //
 // All viewing happens through the picker overlay (Enter on a row
 // opens that task's transcript in $PAGER). Standalone `list` and
@@ -46,7 +47,24 @@ func cmdSubagents(m Model, args []string) (Model, tea.Cmd) {
 	switch sub {
 	case "stop":
 		if len(args) < 2 {
-			m.appendLine(styleError.Render("usage: /subagents stop <id-prefix>"))
+			m.appendLine(styleError.Render("usage: /subagents stop <id-prefix> | /subagents stop batch <batch-id>"))
+			return m, nil
+		}
+		// `stop batch <id>` kills a whole dispatch batch at once. A batch is up
+		// to 8 workers; stopping them one at a time means hunting down each id
+		// from the dock while the rest keep spending tokens.
+		if strings.ToLower(args[1]) == "batch" {
+			if len(args) < 3 {
+				m.appendLine(styleError.Render("usage: /subagents stop batch <batch-id> (the id shown on the dock header)"))
+				return m, nil
+			}
+			batchID := args[2]
+			n := m.subagentTasks.CancelBatch(batchID)
+			if n == 0 {
+				m.appendLine(styleError.Render(fmt.Sprintf("no running subagents in batch %q", batchID)))
+				return m, nil
+			}
+			m.appendLine(styleSubagentMeta.Render(fmt.Sprintf("canceled %s in batch %s — wait a moment for the runs to clean up", pluralizeWorkers(n), batchID)))
 			return m, nil
 		}
 		t, ok := m.subagentTasks.FindByPrefix(args[1])

@@ -97,6 +97,15 @@ type Task struct {
 	// render them together and the parent can refer to the batch. Empty
 	// for standalone Agent dispatches.
 	BatchID string
+	// Committing marks the window where a dispatch write-worker is staging and
+	// committing its worktree to Branch. That work deliberately runs on a
+	// cancellation-detached context so a just-finished worker still saves its
+	// output — which means canceling the session does NOT stop it, and killing
+	// the process mid-commit can abandon a half-written index (a stale
+	// index.lock the user has to clear by hand in a worktree they never knew
+	// existed). Session teardown reads this to keep waiting while a commit is
+	// genuinely in flight, instead of abandoning it on a flat deadline.
+	Committing bool
 	// CtxTokens / CtxWindow track the subagent's live context usage,
 	// updated each iteration from the child loop's ContextUsage event.
 	// CtxWindow is 0 until the first update (and for child models whose
@@ -296,6 +305,63 @@ func (r *Registry) TryReserve(t *Task, max int, countForegroundOnly bool) bool {
 	}
 	r.tasks[t.ID] = t
 	return true
+}
+
+// TryReserveBatch is the all-or-nothing variant of TryReserve for a group of
+// tasks that must be admitted together: it counts the Running class ONCE and
+// inserts every task, or inserts none. Dispatch needs this because it spawns N
+// workers from a single call — a per-task TryReserve loop could admit some and
+// reject the rest, leaving a half-built batch whose worktrees are already on
+// disk, and a check-then-Add (count here, insert in the spawned goroutines)
+// reopens the very race TryReserve exists to close.
+//
+// countForegroundOnly selects the class, same as TryReserve. Every task's
+// Status should be TaskRunning. Returns false WITHOUT inserting anything when
+// the batch would push the class past max.
+func (r *Registry) TryReserveBatch(tasks []*Task, max int, countForegroundOnly bool) bool {
+	if len(tasks) == 0 {
+		return true
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	n := 0
+	for _, e := range r.tasks {
+		if e.Status != TaskRunning {
+			continue
+		}
+		if countForegroundOnly && e.Background {
+			continue
+		}
+		n++
+	}
+	if n+len(tasks) > max {
+		return false
+	}
+	for _, t := range tasks {
+		r.tasks[t.ID] = t
+	}
+	return true
+}
+
+// BatchActiveCount returns how many tasks in the named dispatch batch are
+// still TaskRunning. The TUI reads this to decide whether a batch's background
+// completions are ready to wake the model: workers finish at staggered times,
+// and waking once per worker would burn a turn each. Zero means the batch has
+// fully drained (or the id is unknown). An empty batchID counts nothing —
+// non-dispatch tasks carry no BatchID and must never be batch-gated.
+func (r *Registry) BatchActiveCount(batchID string) int {
+	if batchID == "" {
+		return 0
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	n := 0
+	for _, t := range r.tasks {
+		if t.Status == TaskRunning && t.BatchID == batchID {
+			n++
+		}
+	}
+	return n
 }
 
 // Get returns a snapshot of the named task or (nil, false). The returned
@@ -525,6 +591,56 @@ func (r *Registry) CancelAll() int {
 		if t.cancel != nil {
 			t.cancel()
 			t.cancel = nil
+			n++
+		}
+	}
+	return n
+}
+
+// CancelBatch cancels every running member of one dispatch batch, leaving
+// tasks outside it untouched. A batch is up to 8 workers, and stopping one by
+// one via Cancel means finding and typing each id while the rest keep burning
+// tokens. Returns the number signaled. Same contract as Cancel: the goroutines
+// mark themselves done when they observe the canceled context. An empty
+// batchID cancels nothing — batch-less tasks must never be swept up.
+func (r *Registry) CancelBatch(batchID string) int {
+	if batchID == "" {
+		return 0
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	n := 0
+	for _, t := range r.tasks {
+		if t.BatchID != batchID || t.cancel == nil {
+			continue
+		}
+		t.CanceledByUser = true
+		t.cancel()
+		t.cancel = nil
+		n++
+	}
+	return n
+}
+
+// SetCommitting marks (or clears) a task's commit-in-flight window. See
+// Task.Committing — session teardown consults it before giving up on a drain.
+func (r *Registry) SetCommitting(id string, committing bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if t, ok := r.tasks[id]; ok {
+		t.Committing = committing
+	}
+}
+
+// CommittingCount returns how many running tasks are mid-commit. Session
+// teardown polls this to extend its drain only while real work is at risk,
+// rather than making every quit pay a longer worst-case wait.
+func (r *Registry) CommittingCount() int {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	n := 0
+	for _, t := range r.tasks {
+		if t.Status == TaskRunning && t.Committing {
 			n++
 		}
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strings"
@@ -39,6 +40,73 @@ import (
 // defaultSystemPrompt is sourced from internal/agent so the TUI and
 // the oneshot runner cannot drift. See agent.DefaultSystemPrompt.
 const defaultSystemPrompt = agent.DefaultSystemPrompt
+
+const (
+	// subagentDrainGrace is how long session teardown waits for canceled
+	// subagents to unwind normally. Short on purpose: a canceled worker
+	// notices at its next context check, and nobody should pay a long hang on
+	// quit for work that is already being thrown away.
+	subagentDrainGrace = 3 * time.Second
+	// subagentCommitDrainMax is the ceiling for the one case worth waiting on:
+	// a dispatch worker mid-commit. That commit runs cancellation-detached so
+	// a just-finished worker still saves its output, which means teardown
+	// cannot stop it — only outrun it. Losing that race kills git mid-write and
+	// can leave a stale index.lock in a worktree the user never knew existed,
+	// so they get a hand-repair job instead of a clean quit. `git add -A` plus
+	// a lint/format pre-commit hook routinely needs more than the grace window,
+	// hence the separate, much larger ceiling. Still bounded: a wedged hook
+	// must not hold the session hostage forever.
+	subagentCommitDrainMax = 30 * time.Second
+	// subagentDrainPoll is the registry poll interval for both phases.
+	subagentDrainPoll = 20 * time.Millisecond
+)
+
+// drainSubagentsOnExit waits for canceled subagents to unwind at session
+// teardown, in two phases.
+//
+// Phase 1 is the flat grace window: everything gets subagentDrainGrace to
+// notice its canceled context and finish.
+//
+// Phase 2 only happens if a dispatch worker is still mid-commit when the grace
+// expires (Registry.CommittingCount). Those workers are extended to
+// subagentCommitDrainMax because abandoning them is destructive in a way that
+// abandoning an ordinary canceled worker is not — see subagentCommitDrainMax.
+// The wait is announced on stderr: Bubbletea has already released the terminal
+// by the time this defer runs, so a silent multi-second pause would read as a
+// hang. Printing only in phase 2 keeps the common quit silent.
+func drainSubagentsOnExit(tasks *subagents.Registry) {
+	drainSubagents(tasks, subagentDrainGrace, subagentCommitDrainMax, subagentDrainPoll, os.Stderr)
+}
+
+// drainSubagents is drainSubagentsOnExit with the timings and output sink
+// injected, so tests can exercise both phases without waiting real seconds.
+func drainSubagents(tasks *subagents.Registry, grace, commitMax, poll time.Duration, out io.Writer) {
+	deadline := time.Now().Add(grace)
+	for tasks.ActiveCount() > 0 && time.Now().Before(deadline) {
+		time.Sleep(poll)
+	}
+	committing := tasks.CommittingCount()
+	if committing == 0 {
+		return
+	}
+	fmt.Fprintf(out, "waiting for %s to finish committing (up to %s, Ctrl-C to abandon)…\n",
+		pluralizeWorkers(committing), commitMax)
+	extended := time.Now().Add(commitMax)
+	for tasks.CommittingCount() > 0 && time.Now().Before(extended) {
+		time.Sleep(poll)
+	}
+	if left := tasks.CommittingCount(); left > 0 {
+		fmt.Fprintf(out, "gave up waiting on %s still committing; if a worktree reports a stale index.lock, remove that file and retry the git command\n",
+			pluralizeWorkers(left))
+	}
+}
+
+func pluralizeWorkers(n int) string {
+	if n == 1 {
+		return "1 dispatch worker"
+	}
+	return fmt.Sprintf("%d dispatch workers", n)
+}
 
 // Run wires up session, permissions, adapter, and tools, then drives
 // the Bubbletea program. The non-interactive sibling is oneshot.Run, which
@@ -447,10 +515,7 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 	// panics, which previously skipped this entirely, are now covered.
 	defer func() {
 		if n := subagentTasks.CancelAll(); n > 0 {
-			drainDeadline := time.Now().Add(3 * time.Second)
-			for subagentTasks.ActiveCount() > 0 && time.Now().Before(drainDeadline) {
-				time.Sleep(20 * time.Millisecond)
-			}
+			drainSubagentsOnExit(subagentTasks)
 		}
 		sweepCtx, sweepCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		agent.ReclaimEmptyDispatchWorktrees(sweepCtx, subagentTasks)
@@ -467,6 +532,15 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 	{
 		startupSweepCtx, startupSweepCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		agent.ReclaimEmptyDispatchWorktrees(startupSweepCtx, subagentTasks)
+		// Then the same sweep driven off `git worktree list` rather than the
+		// task index, which catches what the index cannot: worktrees from a
+		// session that died before its records were ever saved, and from any
+		// session other than the one just resumed. Both passes share the same
+		// conservative keep-unless-provably-empty rule, so running them back to
+		// back is safe — the second simply sees a wider set.
+		if repoRoot, err := worktree.ResolveRepoRoot(startupSweepCtx, cwdRef.Get()); err == nil {
+			agent.ReclaimOrphanDispatchWorktrees(startupSweepCtx, repoRoot)
+		}
 		startupSweepCancel()
 	}
 	// experimental.Set (expSet) was resolved earlier, before prompt

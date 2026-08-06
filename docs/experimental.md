@@ -101,17 +101,38 @@ feature graduates and the gate goes away.
 
 When the team decides a feature is ready for default-on behavior:
 
-1. The gate at the use site is removed.
-2. The constant in `internal/experimental/features.go` is dropped.
-3. `Recognized(<name>)` now returns false → users with the old
-   flag get the startup warning but the feature still works (it's
-   default-on now).
-4. After one full release cycle, the warning is removed (the name
-   becomes truly unknown, no different from a typo).
+1. **Flip every use site to a literal `true`.** The plumbing field stays;
+   only the `expSet.IsEnabled(...)` read goes away. Check *both*
+   entry points — `internal/tui/run.go` and
+   `internal/oneshot/oneshot.go` — and remember a feature often has
+   more than one gate per file (tool construction and prompt
+   composition are separate sites).
+2. **Keep the constant** in `internal/experimental/features.go` and
+   leave it in `All()`. Rewrite its doc comment to the stock form:
+   *"X is a graduated no-op flag kept recognized for one release so
+   old configs don't warn or break."*
+3. **Add it to `IsGraduated()`.** This is what makes `/experimental`
+   render `[GA]` instead of `[off]`.
+4. **Rewrite its `Description()`** to say the feature has graduated
+   and the flag is recognized as a no-op for compatibility.
+5. **Update the docs**: this file's catalog row (status →
+   `**graduated** (GA)`, config sample comment → `# GA/no-op
+   compatibility flag`), the feature's own doc page, the per-tool
+   line in `tools.md`, a `CHANGELOG.md` entry under Unreleased, and
+   a `README.md` bullet if the capability is headline-worthy.
 
-This means: setting `--experimental foo` for a feature that has
-since graduated is harmless — the feature still works, the user
-just sees a warning that they can clean up at their leisure.
+Because the constant stays recognized, an existing
+`--experimental foo` (or `[experimental] foo = true`) for a
+graduated feature is **completely silent** — no warning, and the
+feature works because it's default-on now. That's the point: a
+graduation must never make someone's working config start
+complaining. `features_test.go` enforces the invariant that
+everything in `All()` is `Recognized()` and has a non-empty
+`Description()`, so a half-finished graduation fails CI.
+
+Dropping the constant outright is a separate, later cleanup — and
+it *does* make the name warn like a typo, so it should wait until
+the flag has been a documented no-op for at least a release.
 
 ## Reading from code
 
