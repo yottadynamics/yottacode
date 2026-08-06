@@ -33,6 +33,22 @@ const (
 	// content preview) so a single document can't dominate the model's
 	// context window.
 	DefaultMaxChars = 20000
+
+	// MaxAllowedBytes is the ceiling on a caller-supplied MaxBytes.
+	// MaxBytes is the only cap that needs one: MaxRows and MaxChars are
+	// transitively bounded by it (no extractor can sample more rows or
+	// characters than the bytes it was allowed to read), so bounding
+	// bytes bounds everything downstream.
+	//
+	// The ceiling exists mainly for the .json path, which is the one
+	// extractor that buffers the whole allowance and decodes it into an
+	// `any` tree — a representation several times larger than the source
+	// text. The streaming extractors (CSV/TSV/JSONL/XML/HTML) grow only
+	// linearly with the allowance. 32 MiB is ~6x the default, which
+	// covers the realistic "my export is bigger than 5 MiB" case while
+	// keeping even the amplified JSON worst case survivable on a dev
+	// machine.
+	MaxAllowedBytes int64 = 32 * 1024 * 1024 // 32 MiB
 )
 
 // ExtractRequest carries the local file to parse plus the caps that
@@ -47,11 +63,39 @@ type ExtractRequest struct {
 	MaxBytes int64
 	MaxChars int
 	MaxRows  int
+
+	// Offset is where the preview window starts, counted in whatever
+	// unit that format's preview is made of: data rows for CSV/TSV,
+	// records for JSONL, characters for the JSON/XML/HTML text preview.
+	// One name rather than row_offset/char_offset because every result
+	// labels the window it actually returned ("rows 201-400 of 5000"),
+	// so the unit is unambiguous exactly where it's read.
+	//
+	// Skipping still requires streaming through what came before —
+	// rows are variable-length and a quoted field may contain newlines,
+	// so there is no seek. Skipped content is parsed and discarded
+	// rather than retained, so paging costs time, not memory. It does
+	// consume the MaxBytes budget, and a window that lies past the cap
+	// says so rather than looking like the end of the file.
+	Offset int
+
+	// HasHeader overrides CSV/TSV header handling. Nil auto-detects
+	// (see firstRowLooksLikeData); non-nil forces the answer, which is
+	// the escape hatch for the cases the heuristic cannot get right —
+	// a header of bare years, or a headerless file whose first row
+	// happens to be all text. Ignored by non-tabular extractors.
+	HasHeader *bool
 }
 
 func (r ExtractRequest) withDefaults() ExtractRequest {
 	if r.MaxBytes <= 0 {
 		r.MaxBytes = DefaultMaxBytes
+	}
+	if r.MaxBytes > MaxAllowedBytes {
+		r.MaxBytes = MaxAllowedBytes
+	}
+	if r.Offset < 0 {
+		r.Offset = 0
 	}
 	if r.MaxChars <= 0 {
 		r.MaxChars = DefaultMaxChars

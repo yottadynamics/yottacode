@@ -44,9 +44,16 @@ func (t *ReadDocumentTool) Description() string {
 	return "Extract bounded, structured text from a CSV, TSV, JSON, JSONL, XML, or HTML file. " +
 		"Returns a structure summary (columns, JSON shape, XML/HTML title and headings) plus a capped content preview, " +
 		"with every truncation reported explicitly rather than silently cut. " +
-		"Prefer this over read_file for these formats: read_file's raw line-based view shears a CSV field's " +
+		"Use this when you need to ANALYZE the data — read_file's raw line-based view shears a CSV field's " +
 		"embedded newline into a bogus extra row and returns HTML/XML markup noise verbatim. " +
-		"Use max_rows/max_chars to raise or lower the default preview size."
+		"Keep using read_file when you intend to EDIT the file: only read_file's cat -n output feeds " +
+		"exact-string edit_file and anchored edit_anchored, and this tool's reformatted preview cannot be used that way. " +
+		"That matters most for .json/.xml/.html, which are often source files you are editing rather than data you are reading. " +
+		"Handles real-world export quirks: a UTF-8 BOM is stripped, a semicolon/tab/pipe-delimited .csv is detected rather than collapsed into one column, " +
+		"and a file with no header row is recognized instead of losing its first record to the column names. " +
+		"Use max_rows/max_chars to resize the preview, offset to page past the rows/records you have already seen, " +
+		"max_bytes to read further into a file that hit the byte cap, " +
+		"and has_header to override header detection when it guessed wrong."
 }
 
 func (t *ReadDocumentTool) Schema() map[string]any {
@@ -65,6 +72,20 @@ func (t *ReadDocumentTool) Schema() map[string]any {
 				"type":        "integer",
 				"description": fmt.Sprintf("Maximum characters of extracted text to return (default %d).", documents.DefaultMaxChars),
 			},
+			"offset": map[string]any{
+				"type":        "integer",
+				"description": "Where the preview window starts (default 0). Counted in data rows for CSV/TSV, records for JSONL, and characters for JSON/XML/HTML. Page through a large file by repeating the call with offset advanced by the number of rows/records you got back; every result labels the window it returned.",
+			},
+			"has_header": map[string]any{
+				"type":        "boolean",
+				"description": "CSV/TSV only: whether the first row holds column names. Omit to auto-detect — a first row containing a number is read as data, not a header. Set it explicitly when the result's header looks wrong.",
+			},
+			"max_bytes": map[string]any{
+				"type": "integer",
+				"description": fmt.Sprintf(
+					"Maximum bytes to read from the source file (default %d, ceiling %d). Raise this when a result warns that the file exceeded the byte cap.",
+					documents.DefaultMaxBytes, documents.MaxAllowedBytes),
+			},
 		},
 		"required": []string{"path"},
 	}
@@ -77,6 +98,13 @@ type readDocumentArgs struct {
 	Path     string `json:"path"`
 	MaxRows  int    `json:"max_rows"`
 	MaxChars int    `json:"max_chars"`
+	MaxBytes int64  `json:"max_bytes"`
+	Offset   int    `json:"offset"`
+
+	// HasHeader is a pointer so an omitted key stays distinguishable
+	// from an explicit false: absent means "auto-detect", which is a
+	// different instruction than "this file has no header".
+	HasHeader *bool `json:"has_header"`
 }
 
 func (t *ReadDocumentTool) PreviewCall(argsJSON string) string {
@@ -105,12 +133,25 @@ func (t *ReadDocumentTool) Execute(ctx context.Context, argsJSON string) (string
 	}
 
 	res, err := ex.Extract(ctx, documents.ExtractRequest{
-		Path:     p,
-		MaxRows:  a.MaxRows,
-		MaxChars: a.MaxChars,
+		Path:      p,
+		MaxRows:   a.MaxRows,
+		MaxChars:  a.MaxChars,
+		MaxBytes:  a.MaxBytes,
+		Offset:    a.Offset,
+		HasHeader: a.HasHeader,
 	})
 	if err != nil {
 		return "", fmt.Errorf("read_document: %w", err)
+	}
+
+	// withDefaults silently clamps an over-ceiling MaxBytes, which would
+	// otherwise leave the model believing it got the allowance it asked
+	// for. Say so — the whole point of this tool is that limits are
+	// stated, not inferred from a short result.
+	if a.MaxBytes > documents.MaxAllowedBytes {
+		res.Warnings = append(res.Warnings, fmt.Sprintf(
+			"requested max_bytes %d exceeds the %d-byte ceiling; clamped to the ceiling",
+			a.MaxBytes, documents.MaxAllowedBytes))
 	}
 
 	return formatDocumentResult(p, res), nil

@@ -41,7 +41,7 @@ func (e *XMLExtractor) Extract(ctx context.Context, req ExtractRequest) (Extract
 		root      string
 		depth     int
 		elemCount = map[string]int{}
-		text      strings.Builder
+		text      = newBoundedTextBuilder(req.Offset, req.MaxChars)
 		warnings  []string
 	)
 
@@ -67,12 +67,7 @@ func (e *XMLExtractor) Extract(ctx context.Context, req ExtractRequest) (Extract
 		case xml.EndElement:
 			depth--
 		case xml.CharData:
-			if s := strings.TrimSpace(string(t)); s != "" {
-				if text.Len() > 0 {
-					text.WriteByte(' ')
-				}
-				text.WriteString(s)
-			}
+			text.Add(strings.TrimSpace(string(t)))
 		}
 	}
 
@@ -80,11 +75,10 @@ func (e *XMLExtractor) Extract(ctx context.Context, req ExtractRequest) (Extract
 		warnings = append(warnings, fmt.Sprintf("source file exceeds %d bytes; stopped reading at the byte cap", req.MaxBytes))
 	}
 
-	full := text.String()
-	if len(full) > req.MaxChars {
-		warnings = append(warnings, fmt.Sprintf("showing the first %d of %d characters of text content", req.MaxChars, len(full)))
+	if notice := textWindowNotice(req.Offset, req.MaxChars, text.Total(), "text content"); notice != "" {
+		warnings = append(warnings, notice)
 	}
-	preview := boundedString(full, req.MaxChars)
+	preview := boundedString(text.String(), req.MaxChars)
 
 	label := "no root element"
 	if root != "" {

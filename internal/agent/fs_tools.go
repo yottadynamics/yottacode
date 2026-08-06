@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -15,12 +16,25 @@ import (
 )
 
 const (
-	// maxReadBytes is the hard cap on how much of the file we read into
-	// memory before slicing into lines. With the default 2000-line
-	// window and ~80-char lines this leaves comfortable headroom; it
-	// also bounds the worst-case cost of a single pathologically long
-	// line.
+	// maxReadBytes caps how much content a single read *returns*. With
+	// the default 2000-line window and ~80-char lines this leaves
+	// comfortable headroom; it also bounds the worst-case cost of a
+	// single pathologically long line.
+	//
+	// It deliberately does not cap how far into a file the window may
+	// start. It used to: the reader took a fixed maxReadBytes prefix and
+	// indexed offset into that, so every line past the prefix was
+	// unreachable and asking for one returned an empty string —
+	// indistinguishable from a genuine end-of-file. Lines are now
+	// skipped by streaming, so reaching a distant offset costs time
+	// rather than memory.
 	maxReadBytes = 512 * 1024 // 512 KiB
+
+	// readWindowBufSize is the buffered-reader size used while streaming
+	// to the requested window. Large enough that ordinary lines never
+	// need a second pass; overlong lines are consumed incrementally
+	// rather than by growing this.
+	readWindowBufSize = 64 * 1024
 
 	// defaultReadLines mirrors Claude Code's Read tool: 2000 lines is
 	// the implicit limit when the model omits an explicit `limit`.
@@ -96,10 +110,7 @@ func (t *ReadFileTool) Execute(ctx context.Context, argsJSON string) (string, er
 }
 
 func (t *ReadFileTool) readText(ctx context.Context, a readFileArgs) (string, error) {
-	startLine := a.Offset
-	if startLine < 1 {
-		startLine = 1
-	}
+	startLine := max(a.Offset, 1)
 	limit := a.Limit
 	if limit <= 0 {
 		limit = defaultReadLines
@@ -115,42 +126,13 @@ func (t *ReadFileTool) readText(ctx context.Context, a readFileArgs) (string, er
 	}
 	defer f.Close()
 
-	buf := make([]byte, maxReadBytes+1)
-	n, err := io.ReadFull(f, buf)
-	switch {
-	case errors.Is(err, io.EOF):
-		return "", nil
-	case errors.Is(err, io.ErrUnexpectedEOF):
-		err = nil
-	}
+	selected, truncated, err := readLineWindow(ctx, f, startLine, limit, maxReadBytes)
 	if err != nil {
 		return "", fmt.Errorf("read_file: %w", err)
 	}
-	fileExceedsCap := n > maxReadBytes
-	if fileExceedsCap {
-		if last := strings.LastIndexByte(string(buf[:maxReadBytes]), '\n'); last >= 0 {
-			n = last + 1
-		} else {
-			n = maxReadBytes
-		}
-	}
-
-	lines := strings.Split(string(buf[:n]), "\n")
-	if len(lines) > 0 && lines[len(lines)-1] == "" {
-		lines = lines[:len(lines)-1]
-	}
-	total := len(lines)
-	if startLine > total {
+	if len(selected) == 0 {
 		return "", nil
 	}
-
-	startIdx := startLine - 1
-	endIdx := startIdx + limit
-	truncated := fileExceedsCap || endIdx < total
-	if endIdx > total {
-		endIdx = total
-	}
-	selected := lines[startIdx:endIdx]
 
 	anchored := buildAnchoredLines(selected, startLine)
 	var sb strings.Builder
@@ -168,6 +150,86 @@ func (t *ReadFileTool) readText(ctx context.Context, a readFileArgs) (string, er
 		sb.WriteString("…[truncated]")
 	}
 	return sb.String(), nil
+}
+
+// readLineWindow streams r and returns the lines in
+// [startLine, startLine+limit), plus whether any content follows that
+// window (which is what earns the trailing truncation marker).
+//
+// Lines before the window are read and discarded rather than retained,
+// so the window can begin anywhere in the file while held memory stays
+// bounded by maxBytes. Reaching a distant offset therefore costs time,
+// not memory — the same trade read_document makes for paging.
+//
+// A window starting past the last line returns no lines and no error,
+// matching the tool's long-standing "offset past EOF yields empty"
+// contract.
+func readLineWindow(ctx context.Context, r io.Reader, startLine, limit, maxBytes int) ([]string, bool, error) {
+	br := bufio.NewReaderSize(r, readWindowBufSize)
+
+	for n := 1; n < startLine; n++ {
+		if err := ctx.Err(); err != nil {
+			return nil, false, err
+		}
+		if err := discardLine(br); err != nil {
+			if errors.Is(err, io.EOF) {
+				return nil, false, nil
+			}
+			return nil, false, err
+		}
+	}
+
+	var (
+		lines []string
+		used  int
+	)
+	for len(lines) < limit {
+		if err := ctx.Err(); err != nil {
+			return nil, false, err
+		}
+		line, readErr := br.ReadString('\n')
+		if readErr != nil && !errors.Is(readErr, io.EOF) {
+			return nil, false, readErr
+		}
+		atEOF := errors.Is(readErr, io.EOF)
+		if line == "" && atEOF {
+			return lines, false, nil
+		}
+		line = strings.TrimSuffix(line, "\n")
+
+		if used+len(line)+1 > maxBytes {
+			// A single line that alone blows the budget still has to
+			// return something rather than nothing.
+			if len(lines) == 0 {
+				lines = append(lines, line[:min(len(line), maxBytes)])
+			}
+			return lines, true, nil
+		}
+		lines = append(lines, line)
+		used += len(line) + 1 // the newline counts toward the budget
+		if atEOF {
+			return lines, false, nil
+		}
+	}
+
+	// Stopped on the line limit — the marker depends on whether
+	// anything is actually left after the window.
+	_, peekErr := br.Peek(1)
+	return lines, peekErr == nil, nil
+}
+
+// discardLine consumes bytes through the next newline without retaining
+// them. ReadSlice reports ErrBufferFull when a line is longer than the
+// buffer, so looping on that skips even a pathologically long line in
+// bounded memory.
+func discardLine(br *bufio.Reader) error {
+	for {
+		_, err := br.ReadSlice('\n')
+		if errors.Is(err, bufio.ErrBufferFull) {
+			continue
+		}
+		return err
+	}
 }
 
 const maxImageBytes = 20 * 1024 * 1024 // 20 MiB
