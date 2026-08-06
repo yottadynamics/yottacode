@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -252,5 +253,140 @@ func TestWriteFileTool_PreviewIsSingleLineSummary(t *testing.T) {
 	}
 	if strings.Contains(preview, "\n") {
 		t.Errorf("preview must be single-line: %q", preview)
+	}
+}
+
+// bigLogLines builds a file whose total size comfortably exceeds
+// maxReadBytes, so any line-window logic that only ever looks at a
+// fixed prefix will be caught.
+func bigLogLines(t *testing.T, n int) (dir, name string) {
+	t.Helper()
+	var b strings.Builder
+	for i := range n {
+		fmt.Fprintf(&b, "2026-08-06 line %06d some message\n", i)
+	}
+	dir = t.TempDir()
+	writeFile(t, dir, "big.log", b.String())
+	return dir, "big.log"
+}
+
+// TestReadFileTool_OffsetReachesPastByteCap is the regression: the
+// reader used to take a fixed maxReadBytes prefix and index offset into
+// *that*, so every line beyond the prefix was unreachable — and asking
+// for one returned an empty string, indistinguishable from a genuine
+// end-of-file. On a 30k-line log that silently capped reads at roughly
+// line 14,000.
+func TestReadFileTool_OffsetReachesPastByteCap(t *testing.T) {
+	dir, name := bigLogLines(t, 30000)
+	tool := &ReadFileTool{Cwd: NewCwdRef(dir)}
+
+	for _, offset := range []int{20000, 29999, 30000} {
+		out, err := tool.Execute(context.Background(),
+			fmt.Sprintf(`{"path":%q,"offset":%d,"limit":1}`, name, offset))
+		if err != nil {
+			t.Fatalf("offset %d: %v", offset, err)
+		}
+		want := fmt.Sprintf("line %06d", offset-1)
+		if !strings.Contains(out, want) {
+			t.Errorf("offset %d returned %q, want it to contain %q", offset, out, want)
+		}
+	}
+}
+
+// TestReadFileTool_OffsetPastLastLineStillEmpty: now that deep offsets
+// are reachable, an empty result must mean only one thing — genuinely
+// past the end.
+func TestReadFileTool_OffsetPastLastLineStillEmpty(t *testing.T) {
+	dir, name := bigLogLines(t, 30000)
+	tool := &ReadFileTool{Cwd: NewCwdRef(dir)}
+
+	for _, offset := range []int{30001, 50000} {
+		out, err := tool.Execute(context.Background(),
+			fmt.Sprintf(`{"path":%q,"offset":%d,"limit":1}`, name, offset))
+		if err != nil {
+			t.Fatalf("offset %d: %v", offset, err)
+		}
+		if out != "" {
+			t.Errorf("offset %d returned %q, want empty (past the last line)", offset, out)
+		}
+	}
+}
+
+// TestReadFileTool_PagesCoverEveryLineExactlyOnce walks a file larger
+// than the byte cap in windows and checks the windows reassemble it in
+// order — the property that catches an off-by-one at a page boundary,
+// which would corrupt a read without ever erroring.
+func TestReadFileTool_PagesCoverEveryLineExactlyOnce(t *testing.T) {
+	const total = 30000
+	dir, name := bigLogLines(t, total)
+	tool := &ReadFileTool{Cwd: NewCwdRef(dir)}
+
+	const page = 4000
+	seen := 0
+	for offset := 1; ; offset += page {
+		out, err := tool.Execute(context.Background(),
+			fmt.Sprintf(`{"path":%q,"offset":%d,"limit":%d}`, name, offset, page))
+		if err != nil {
+			t.Fatalf("offset %d: %v", offset, err)
+		}
+		if out == "" {
+			break
+		}
+		for line := range strings.SplitSeq(strings.TrimSuffix(out, "…[truncated]"), "\n") {
+			if strings.TrimSpace(line) == "" {
+				continue
+			}
+			want := fmt.Sprintf("line %06d", seen)
+			if !strings.Contains(line, want) {
+				t.Fatalf("line %d = %q, want it to contain %q (pages overlap or skip)", seen, line, want)
+			}
+			seen++
+		}
+		if offset > total+page {
+			t.Fatal("paging failed to terminate")
+		}
+	}
+
+	if seen != total {
+		t.Errorf("paged %d lines, want %d", seen, total)
+	}
+}
+
+// TestReadFileTool_SkipsPastOverlongLine: skipping is done with a
+// bounded reader loop, so a single multi-megabyte line before the
+// window must not be buffered whole just to get past it.
+func TestReadFileTool_SkipsPastOverlongLine(t *testing.T) {
+	tmp := t.TempDir()
+	writeFile(t, tmp, "huge.txt", "a\n"+strings.Repeat("x", 5_000_000)+"\nTARGET\n")
+
+	tool := &ReadFileTool{Cwd: NewCwdRef(tmp)}
+	out, err := tool.Execute(context.Background(), `{"path":"huge.txt","offset":3,"limit":1}`)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if out != "     3\tTARGET" {
+		t.Errorf("got %q, want the line after the overlong one", out)
+	}
+}
+
+// TestReadFileTool_WindowStillCappedByBytes: reachability changed, the
+// budget did not — a single window must still not return more than
+// maxReadBytes of content.
+func TestReadFileTool_WindowStillCappedByBytes(t *testing.T) {
+	dir, name := bigLogLines(t, 30000)
+	tool := &ReadFileTool{Cwd: NewCwdRef(dir)}
+
+	out, err := tool.Execute(context.Background(),
+		fmt.Sprintf(`{"path":%q,"offset":15000,"limit":30000}`, name))
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	// Line-number prefixes add ~7 bytes/line, so allow generous slack
+	// over the raw content budget while still catching "no cap at all".
+	if len(out) > 2*maxReadBytes {
+		t.Errorf("window returned %d bytes, want it bounded near maxReadBytes=%d", len(out), maxReadBytes)
+	}
+	if !strings.HasSuffix(out, "…[truncated]") {
+		t.Error("a byte-capped window must still report truncation")
 	}
 }
