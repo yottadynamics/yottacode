@@ -4417,9 +4417,14 @@ func (m Model) startSubagentWakeTurn() (tea.Model, tea.Cmd) {
 		// turns cannot overlap or out-order those writes.
 		return m, nil
 	}
-	wakes := m.pendingSubagentWakes
-	m.pendingSubagentWakes = nil
+	if len(m.pendingSubagentWakes) == 0 {
+		return m, nil
+	}
+	wakes, held := m.partitionReadyWakes()
+	m.pendingSubagentWakes = held
 	if len(wakes) == 0 {
+		// Everything queued belongs to a batch that's still running. Hold it:
+		// the last worker's completion re-enters here and releases the batch.
 		return m, nil
 	}
 	input := buildSubagentWakeMessage(wakes)
@@ -4431,6 +4436,34 @@ func (m Model) startSubagentWakeTurn() (tea.Model, tea.Cmd) {
 		label = fmt.Sprintf("↩ %d background subagents finished — acting on their results", len(wakes))
 	}
 	return m.startTurnWithDisplay(input, label)
+}
+
+// partitionReadyWakes splits the queued background completions into the ones
+// ready to wake the model now and the ones that must keep waiting.
+//
+// A dispatch batch finishes worker-by-worker, often minutes apart. Waking on
+// each completion would burn one turn per worker (up to 8) and hand the model a
+// partial picture every time — it can't call integrate until the whole batch
+// has committed. So a wake carrying a BatchID is HELD until no task in that
+// batch is still running; then every wake for that batch releases together and
+// buildSubagentWakeMessage renders them as a single message.
+//
+// Wakes with no BatchID are standalone Agent-tool background runs. They have no
+// siblings to wait on and are always ready.
+//
+// If the last worker's completion event is ever dropped (the inbox send is
+// non-blocking), the batch stays held only until the next turn boundary:
+// reconcileSubagentCompletions reads terminal state from the registry, queues
+// the missing wake, and the drain releases the batch.
+func (m Model) partitionReadyWakes() (ready, held []agent.SubagentBackgroundDone) {
+	for _, w := range m.pendingSubagentWakes {
+		if w.BatchID != "" && m.subagentTasks != nil && m.subagentTasks.BatchActiveCount(w.BatchID) > 0 {
+			held = append(held, w)
+			continue
+		}
+		ready = append(ready, w)
+	}
+	return ready, held
 }
 
 // reconcileSubagentCompletions is the self-healing safety net for the
@@ -4465,6 +4498,13 @@ func (m *Model) reconcileSubagentCompletions() bool {
 			ToolCalls:    t.ToolCalls,
 			Model:        t.Model,
 			NotifyOnDone: t.NotifyOnDone,
+			// BatchID so a healed dispatch completion still routes through the
+			// batch gate in partitionReadyWakes rather than waking on its own.
+			// Branch is deliberately left empty: the registry record carries no
+			// commit status, and appendDispatchWakeMetadata would render a
+			// branch without one as "no changes to merge yet" — wrong for a
+			// worker that did commit. Batch-only renders just the batch line.
+			BatchID: t.BatchID,
 		}
 		m.appendLine("")
 		m.appendLine(renderSubagentBackgroundDone(done))

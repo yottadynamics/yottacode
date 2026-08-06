@@ -8,6 +8,54 @@ the project uses semantic versioning once it's past `1.0.0`.
 
 ### Added
 
+- **`/subagents stop batch <batch-id>`** — cancel every running worker in one
+  dispatch batch. A batch is up to 8 workers; stopping them previously meant
+  finding and typing each task id while the rest kept spending tokens. The
+  batch id is on the dock header. `/subagents stop <id-prefix>` still stops a
+  single worker.
+
+### Fixed
+
+- **Dispatch pre-GA hardening** (still behind `--experimental dispatch`) — four
+  defects that only surface once the feature is relied on:
+  - **Background batches now re-prompt the agent when they finish.** Background
+    is the default for write batches, but its completion event never asked for a
+    wake, so the fan-out → `integrate` workflow stalled after the workers
+    finished until the user happened to type something. The wake is coalesced
+    per batch: an 8-worker batch produces **one** turn carrying all eight
+    results, not eight turns with partial pictures.
+  - **Dispatch now respects the session subagent token budget.**
+    `[subagents] session_token_budget` was enforced for single subagents but not
+    for dispatch, even though dispatch children deplete it — leaving the one
+    fan-out path the cost backstop couldn't stop. A batch over budget is
+    refused before any worktree is created.
+  - **The background concurrency cap is now enforced atomically.** The cap was
+    counted in `dispatch` but applied when each worker registered itself, so a
+    batch could overshoot; the whole batch is now admitted or rejected in one
+    locked step.
+  - **Quitting no longer abandons a worker mid-commit.** A worker's
+    auto-commit runs detached from cancellation so finished work is never
+    lost — which meant shutdown couldn't stop it, only outrun it, and a
+    `git add -A` plus a lint pre-commit hook routinely lost that race, leaving
+    a stale `index.lock` to hand-repair. Teardown now keeps the 3s grace
+    window for ordinary workers but waits out a commit that's actually in
+    flight (up to 30s), printing why so the pause doesn't read as a hang.
+  - **Orphaned dispatch worktrees are reclaimed at start-up.** A session killed
+    before its task records were saved used to leave empty worktrees that no
+    later session could attribute. Start-up now also scans
+    `git worktree list`, keeping (as before) anything holding commits or
+    uncommitted work.
+  See [docs/dispatch.md](docs/dispatch.md).
+
+- **`docs/experimental.md` described a graduation process the project doesn't
+  follow** — it said a graduating feature's constant is dropped so
+  `Recognized()` returns false and old configs warn. Every actual graduation did
+  the opposite (keep the constant, add it to `IsGraduated()`, stay silent).
+  Following the written steps would have made every existing config warn at
+  start-up. The checklist now matches practice.
+
+### Added
+
 - **`syntax_range` graduates to GA, now covering all four LSP languages** —
   the offline, no-server structural edit-range tool previously only
   understood Go (via `go/parser`). It now also covers TypeScript/JavaScript

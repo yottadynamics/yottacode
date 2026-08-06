@@ -177,6 +177,15 @@ type dispatchChild struct {
 	worktree string // write only
 	repoRoot string // write only: the main repo the worktree belongs to
 	base     string // write only: the base commit the worktree branched from
+	// task, adapter, model, and transcriptPath are resolved in Execute — BEFORE
+	// any worker goroutine starts — so the whole batch can be admitted to the
+	// registry in one atomic reservation (Registry.TryReserveBatch) instead of
+	// each worker counting-then-inserting itself. Written pre-spawn only; the
+	// goroutines mutate the post-run fields below and never these.
+	task           *subagents.Task
+	adapter        Streamer
+	model          string
+	transcriptPath string
 	// filled after the run
 	status  subagents.TaskStatus
 	result  string
@@ -210,6 +219,20 @@ func (t *DispatchTool) Execute(ctx context.Context, argsJSON string) (string, er
 
 	if len(a.Tasks) > MaxForegroundSubagents {
 		return fmt.Sprintf("error: dispatch supports at most %d concurrent subtasks (got %d); split into smaller batches", MaxForegroundSubagents, len(a.Tasks)), nil
+	}
+
+	// Session-wide token budget, same backstop the Agent tool applies at spawn
+	// (see AgentTool.Execute). Dispatch children record their estimated spend
+	// via MarkDone exactly like Agent children, so they DEPLETE this budget —
+	// without this check they were the one fan-out path that could never be
+	// stopped by it, which is the worst place to omit it: a dispatch batch is
+	// N child loops at once, not one. Checked before any worktree exists so a
+	// rejected batch leaves nothing behind.
+	if t.Agent.MaxSessionTokens > 0 {
+		if used := t.Agent.Tasks.TotalTokensUsed(); used >= t.Agent.MaxSessionTokens {
+			return fmt.Sprintf("error: this session's subagent token budget (~%d estimated tokens) is exhausted (used ~%d); the budget is cumulative for the session and covers dispatch batches as well as single subagents. Raise it with `[subagents]` `session_token_budget = N` in ~/.yottacode/config.toml, or finish the remaining work without further delegation.",
+				t.Agent.MaxSessionTokens, used), nil
+		}
 	}
 
 	// Resolve each task's agent config + classify read vs write.
@@ -277,10 +300,13 @@ func (t *DispatchTool) Execute(ctx context.Context, argsJSON string) (string, er
 	// created, so the background cap can fail fast and leak nothing.
 	runBackground, bgNote := t.resolveBackground(a.Background, hasWrite)
 
-	// Background cap: each detached worker holds a slot until it finishes, and
-	// repeated background dispatch calls would otherwise stack unbounded
-	// workers (provider streams + goroutines). Reject when this batch would
-	// push the live count past the cap — mirrors the Agent tool's own gate.
+	// Background cap, fast pre-check: each detached worker holds a slot until
+	// it finishes, and repeated background dispatch calls would otherwise stack
+	// unbounded workers (provider streams + goroutines). Rejecting here means
+	// the common over-cap case fails before a single worktree is created. The
+	// AUTHORITATIVE check is the atomic TryReserveBatch below — this one can go
+	// stale between the count and the inserts, which is exactly the race that
+	// made a bare check-then-Add wrong.
 	if runBackground {
 		if active := t.Agent.Tasks.ActiveCount(); active+len(children) > MaxBackgroundSubagents {
 			return fmt.Sprintf("error: dispatching %d background workers would exceed the cap of %d concurrent background subagents (currently %d running); wait for some to finish or stop them with /subagents stop, then retry",
@@ -316,6 +342,32 @@ func (t *DispatchTool) Execute(ctx context.Context, argsJSON string) (string, er
 		c.worktree = wtDir
 		c.repoRoot = repoRoot
 		c.base = baseSHA
+	}
+
+	// Build every worker's registry record now — branch/worktree already
+	// resolved — then admit the whole batch in ONE locked step. Adding from
+	// inside each spawned goroutine (what this used to do) left a window
+	// between the cap count above and the inserts, the same check-then-Add race
+	// Registry.TryReserve exists to close for the Agent tool. Reserving here
+	// also gives a rejected batch exactly one cleanup path: the worktrees
+	// created above.
+	tasks := make([]*subagents.Task, len(children))
+	for i, c := range children {
+		tasks[i] = t.prepareDispatchChild(c, batchID, runBackground)
+	}
+	if runBackground {
+		if !t.Agent.Tasks.TryReserveBatch(tasks, MaxBackgroundSubagents, false) {
+			cleanup()
+			return fmt.Sprintf("error: dispatching %d background workers would exceed the cap of %d concurrent background subagents (currently %d running); wait for some to finish or stop them with /subagents stop, then retry",
+				len(children), MaxBackgroundSubagents, t.Agent.Tasks.ActiveCount()), nil
+		}
+	} else {
+		// Foreground batches are bounded by the MaxForegroundSubagents check at
+		// the top of Execute, and ParallelSafe==false keeps two dispatch calls
+		// from overlapping — so there is no cap to reserve against here.
+		for _, task := range tasks {
+			t.Agent.Tasks.Add(task)
+		}
 	}
 
 	if runBackground {
@@ -367,6 +419,42 @@ func (t *DispatchTool) resolveBackground(request *bool, hasWrite bool) (bool, st
 	return want, ""
 }
 
+// prepareDispatchChild resolves one subtask's identity, model routing, and
+// registry record, returning the record for the caller to admit. Execute calls
+// this for every child BEFORE any worker goroutine starts, so the whole batch
+// can be admitted in a single atomic reservation; runDispatchChild therefore
+// assumes c.task is already built and registered.
+//
+// Must be called AFTER worktree creation — the record carries the child's
+// branch/worktree/base, and the registry copy is what the session-exit sweep
+// and the crash-recovery import read to reclaim worktrees.
+func (t *DispatchTool) prepareDispatchChild(c *dispatchChild, batchID string, background bool) *subagents.Task {
+	c.taskID = subagents.NewTaskID()
+	c.transcriptPath = filepath.Join(t.Agent.TranscriptDir, fmt.Sprintf("%s-%s.md", c.cfg.Name, c.taskID))
+	c.adapter, c.model = t.Agent.routeChildModel(c.cfg)
+	c.task = &subagents.Task{
+		ID:             c.taskID,
+		AgentType:      c.cfg.Name,
+		Prompt:         c.spec.Prompt,
+		Started:        time.Now(),
+		Status:         subagents.TaskRunning,
+		Background:     background,
+		TranscriptPath: c.transcriptPath,
+		Model:          c.model,
+		Branch:         c.branch,
+		Worktree:       c.worktree,
+		Base:           c.base,
+		BatchID:        batchID,
+		// A background batch re-prompts the model once its LAST worker finishes
+		// (the TUI coalesces pending wakes per BatchID) so the fan-out →
+		// integrate workflow completes on its own instead of stalling until the
+		// user happens to type. Foreground batches return their results inline
+		// — there is nothing to wake.
+		NotifyOnDone: background,
+	}
+	return c.task
+}
+
 // runDispatchChild runs one subtask to completion: routes its model, builds
 // its (worktree-isolated, for write tasks) registry, runs the child loop,
 // and auto-commits a write task's worktree to its branch.
@@ -378,25 +466,12 @@ func (t *DispatchTool) resolveBackground(request *bool, hasWrite bool) (bool, st
 // and reports completion via the background-done callback so it lands after
 // the parent turn ends.
 func (t *DispatchTool) runDispatchChild(ctx context.Context, c *dispatchChild, batchID string, background bool, parentEvents chan<- Event, parentDecisions <-chan Decision) {
-	c.taskID = subagents.NewTaskID()
-	transcriptPath := filepath.Join(t.Agent.TranscriptDir, fmt.Sprintf("%s-%s.md", c.cfg.Name, c.taskID))
-	childAdapter, childModel := t.Agent.routeChildModel(c.cfg)
-
-	task := &subagents.Task{
-		ID:             c.taskID,
-		AgentType:      c.cfg.Name,
-		Prompt:         c.spec.Prompt,
-		Started:        time.Now(),
-		Status:         subagents.TaskRunning,
-		Background:     background,
-		TranscriptPath: transcriptPath,
-		Model:          childModel,
-		Branch:         c.branch,
-		Worktree:       c.worktree,
-		Base:           c.base,
-		BatchID:        batchID,
-	}
-	t.Agent.Tasks.Add(task)
+	// Identity, model routing, and registry admission all happened in Execute
+	// (one atomic reservation for the batch), so this function starts from an
+	// already-registered task.
+	task := c.task
+	transcriptPath := c.transcriptPath
+	childAdapter, childModel := c.adapter, c.model
 
 	// A panic in this child's orchestration must not crash the user's
 	// session (background workers are detached; a foreground panic also
@@ -426,20 +501,21 @@ func (t *DispatchTool) runDispatchChild(ctx context.Context, c *dispatchChild, b
 			if background {
 				tokensUsed, toolCalls := doneTokensAndCalls(t.Agent.Tasks, c.taskID, c.tokens)
 				t.Agent.fireBackgroundDone(SubagentBackgroundDone{
-					TaskID:     c.taskID,
-					AgentType:  c.cfg.Name,
-					Result:     c.result,
-					Errored:    true,
-					Duration:   time.Since(task.Started),
-					TokensUsed: tokensUsed,
-					ToolCalls:  toolCalls,
-					Model:      childModel,
-					Branch:     c.branch,
-					BatchID:    batchID,
-					Committed:  c.commit != "",
-					CommitSHA:  c.commit,
-					CommitErr:  c.commitErr,
-					Reclaimed:  c.reclaimed,
+					TaskID:       c.taskID,
+					AgentType:    c.cfg.Name,
+					Result:       c.result,
+					Errored:      true,
+					Duration:     time.Since(task.Started),
+					TokensUsed:   tokensUsed,
+					ToolCalls:    toolCalls,
+					Model:        childModel,
+					Branch:       c.branch,
+					BatchID:      batchID,
+					Committed:    c.commit != "",
+					CommitSHA:    c.commit,
+					CommitErr:    c.commitErr,
+					Reclaimed:    c.reclaimed,
+					NotifyOnDone: true,
 				})
 			}
 		}
@@ -517,6 +593,19 @@ func (t *DispatchTool) runDispatchChild(ctx context.Context, c *dispatchChild, b
 		// out (canceled ctx) → false → skip its own commit, defeating the
 		// commit-on-cancel intent this block exists for.
 		commitCtx := context.WithoutCancel(ctx)
+		// Detaching from cancellation is what saves the work — but it also means
+		// session teardown can't stop this, only outrun it. Flag the window so
+		// the shutdown drain waits for a commit that's genuinely in flight
+		// rather than abandoning it on a flat deadline and leaving a stale
+		// index.lock behind.
+		//
+		// The defer clears it at FUNCTION exit, deliberately: that covers the
+		// worktree reclaim below (also worth waiting for) and the panic path.
+		// MarkDone runs first either way, and CommittingCount only counts
+		// TaskRunning tasks, so the flag stops mattering the moment the task
+		// goes terminal — the defer is the belt-and-braces.
+		t.Agent.Tasks.SetCommitting(c.taskID, true)
+		defer t.Agent.Tasks.SetCommitting(c.taskID, false)
 		if !errored && gitWorktreeDirty(commitCtx, c.worktree) {
 			if outside := outOfScopeWorkerChanges(commitCtx, c.worktree, c.spec.Files); len(outside) > 0 {
 				c.commitErr = "out-of-scope changes left uncommitted: " + strings.Join(outside, ", ")
@@ -595,6 +684,10 @@ func (t *DispatchTool) runDispatchChild(ctx context.Context, c *dispatchChild, b
 			CommitSHA:  c.commit,
 			CommitErr:  c.commitErr,
 			Reclaimed:  c.reclaimed,
+			// Wake the model with this batch's results. The TUI holds the wake
+			// until every worker sharing this BatchID has finished, so an
+			// 8-worker batch produces one wake turn, not eight.
+			NotifyOnDone: true,
 		})
 		return
 	}

@@ -323,3 +323,75 @@ func TestReclaimEmptyDispatchWorktrees_Sweep(t *testing.T) {
 		t.Errorf("nil registry: got %d, want 0", got)
 	}
 }
+
+// TestReclaimOrphanDispatchWorktrees_Sweep covers the crash-recovery gap the
+// registry sweep structurally cannot: worktrees from a session killed before
+// its task records were ever saved, which no later session can attribute. The
+// sweep walks `git worktree list` instead of the task index, so it sees them —
+// and applies the same conservative rule, keeping anything it can't prove is
+// empty. Non-dispatch worktrees must never be touched.
+func TestReclaimOrphanDispatchWorktrees_Sweep(t *testing.T) {
+	repoRoot := dispatchTestRepo(t)
+	ctx := context.Background()
+	base, err := gitOutput(ctx, repoRoot, "rev-parse", "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	base = strings.TrimSpace(base)
+
+	mkWorktree := func(name string) string {
+		t.Helper()
+		dir := worktree.Dir(repoRoot, name)
+		if _, err := gitOutput(ctx, repoRoot, "worktree", "add", "-b", worktree.Branch(name), dir, base); err != nil {
+			t.Fatalf("worktree add %s: %v", name, err)
+		}
+		return dir
+	}
+
+	// Three dispatch orphans, one per outcome, plus a user worktree that the
+	// sweep must leave alone even though it is equally empty.
+	empty := mkWorktree("dispatch-orphan-1")
+	dirty := mkWorktree("dispatch-orphan-2")
+	if err := os.WriteFile(filepath.Join(dirty, "partial.txt"), []byte("wip\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	committed := mkWorktree("dispatch-orphan-3")
+	if err := os.WriteFile(filepath.Join(committed, "done.txt"), []byte("done\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"add", "-A"}, {"commit", "-m", "work"}} {
+		if _, err := gitOutput(ctx, committed, args...); err != nil {
+			t.Fatalf("git %v: %v", args, err)
+		}
+	}
+	userWorktree := mkWorktree("my-feature")
+
+	// No registry involved at all — that is the point of this sweep.
+	if n := ReclaimOrphanDispatchWorktrees(ctx, repoRoot); n != 1 {
+		t.Errorf("orphan sweep removed %d worktrees, want exactly 1 (the empty one)", n)
+	}
+	if _, err := os.Stat(empty); err == nil {
+		t.Errorf("the empty dispatch orphan should have been reclaimed: %s", empty)
+	}
+	if _, err := os.Stat(dirty); err != nil {
+		t.Errorf("a dispatch orphan holding uncommitted work must be KEPT for recovery: %s", dirty)
+	}
+	if _, err := os.Stat(committed); err != nil {
+		t.Errorf("a dispatch orphan with commits must be KEPT for integrate: %s", committed)
+	}
+	if _, err := os.Stat(userWorktree); err != nil {
+		t.Errorf("a non-dispatch worktree must never be touched: %s", userWorktree)
+	}
+}
+
+// TestReclaimOrphanDispatchWorktrees_Conservative: an unusable repo root must
+// be a no-op, never an error or a deletion.
+func TestReclaimOrphanDispatchWorktrees_Conservative(t *testing.T) {
+	ctx := context.Background()
+	if n := ReclaimOrphanDispatchWorktrees(ctx, ""); n != 0 {
+		t.Errorf("empty repoRoot must reclaim nothing, got %d", n)
+	}
+	if n := ReclaimOrphanDispatchWorktrees(ctx, t.TempDir()); n != 0 {
+		t.Errorf("a non-repo dir must reclaim nothing, got %d", n)
+	}
+}

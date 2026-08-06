@@ -42,6 +42,10 @@ func TestBackgroundDispatchPanicStillFiresDoneCallback(t *testing.T) {
 		spec: dispatchTaskSpec{Prompt: "p", Description: "d"},
 		cfg:  &at.Configs[0],
 	}
+	// Execute builds and admits every child's registry record before spawning
+	// (one atomic reservation for the batch), so a direct runDispatchChild call
+	// has to do the same two steps itself.
+	at.Tasks.Add(d.prepareDispatchChild(c, "batch-1", true))
 
 	// background=true; the nil ctx is deliberate — it makes
 	// context.WithCancel panic after the recover is armed, standing in for a

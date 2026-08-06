@@ -208,3 +208,87 @@ func TestCanceledTaskBannersButNeverWakes(t *testing.T) {
 		t.Errorf("user-canceled task must not queue a wake via the inbox arm; got %v", nm.pendingSubagentWakes)
 	}
 }
+
+// TestPartitionReadyWakes_HoldsPartialBatch: a dispatch batch finishes
+// worker-by-worker. Waking on each completion would burn one turn per worker
+// and hand the model a partial picture it can't integrate from, so wakes
+// carrying a BatchID are held until the batch drains. Standalone Agent-tool
+// background runs (no BatchID) have no siblings and are always ready.
+func TestPartitionReadyWakes_HoldsPartialBatch(t *testing.T) {
+	reg := subagents.NewRegistry()
+	reg.Add(&subagents.Task{ID: "batchworker00001", Status: subagents.TaskRunning, Background: true, BatchID: "b1"})
+	reg.Add(&subagents.Task{ID: "batchworker00002", Status: subagents.TaskRunning, Background: true, BatchID: "b1"})
+	// Worker 1 is done; worker 2 is still running.
+	reg.MarkDone("batchworker00001", subagents.TaskCompleted, "wrote alpha.txt", false, 0)
+
+	m := Model{subagentTasks: reg, pendingSubagentWakes: []agent.SubagentBackgroundDone{
+		{TaskID: "batchworker00001", AgentType: "writer", BatchID: "b1"},
+		{TaskID: "standalone000001", AgentType: "review"},
+	}}
+
+	ready, held := m.partitionReadyWakes()
+	if len(held) != 1 || held[0].TaskID != "batchworker00001" {
+		t.Errorf("the finished worker of a STILL-RUNNING batch must be held; held=%v", held)
+	}
+	if len(ready) != 1 || ready[0].TaskID != "standalone000001" {
+		t.Errorf("a wake with no BatchID has no siblings and must be ready; ready=%v", ready)
+	}
+}
+
+// TestPartitionReadyWakes_ReleasesDrainedBatch: once the last worker finishes,
+// the whole batch releases together so buildSubagentWakeMessage renders it as a
+// single wake turn.
+func TestPartitionReadyWakes_ReleasesDrainedBatch(t *testing.T) {
+	reg := subagents.NewRegistry()
+	reg.Add(&subagents.Task{ID: "batchworker00001", Status: subagents.TaskRunning, Background: true, BatchID: "b1"})
+	reg.Add(&subagents.Task{ID: "batchworker00002", Status: subagents.TaskRunning, Background: true, BatchID: "b1"})
+	reg.MarkDone("batchworker00001", subagents.TaskCompleted, "wrote alpha.txt", false, 0)
+	reg.MarkDone("batchworker00002", subagents.TaskCompleted, "wrote beta.txt", false, 0)
+
+	m := Model{subagentTasks: reg, pendingSubagentWakes: []agent.SubagentBackgroundDone{
+		{TaskID: "batchworker00001", AgentType: "writer", BatchID: "b1", Branch: "worktree-dispatch-b1-1", Committed: true, CommitSHA: "abc1234"},
+		{TaskID: "batchworker00002", AgentType: "writer", BatchID: "b1", Branch: "worktree-dispatch-b1-2", Committed: true, CommitSHA: "def5678"},
+	}}
+
+	ready, held := m.partitionReadyWakes()
+	if len(held) != 0 {
+		t.Errorf("a drained batch must release everything; held=%v", held)
+	}
+	if len(ready) != 2 {
+		t.Fatalf("both workers must release together, got %d", len(ready))
+	}
+	// One message carrying the whole batch is the point of coalescing.
+	msg := buildSubagentWakeMessage(ready)
+	for _, want := range []string{"2 background subagents", "worktree-dispatch-b1-1", "worktree-dispatch-b1-2", "abc1234", "def5678"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("coalesced wake message missing %q; got:\n%s", want, msg)
+		}
+	}
+}
+
+// TestStartSubagentWakeTurn_HeldBatchStartsNoTurn: the gate lives inside
+// startSubagentWakeTurn so every call site (turn-boundary drains, the inbox
+// arm) is covered by one check. A batch that hasn't drained must start no turn
+// and must keep its wakes queued for the last worker to release.
+func TestStartSubagentWakeTurn_HeldBatchStartsNoTurn(t *testing.T) {
+	reg := subagents.NewRegistry()
+	reg.Add(&subagents.Task{ID: "batchworker00001", Status: subagents.TaskRunning, Background: true, BatchID: "b1"})
+	reg.Add(&subagents.Task{ID: "batchworker00002", Status: subagents.TaskRunning, Background: true, BatchID: "b1"})
+	reg.MarkDone("batchworker00001", subagents.TaskCompleted, "wrote alpha.txt", false, 0)
+
+	m := Model{subagentTasks: reg, transcript: &strings.Builder{}, pendingSubagentWakes: []agent.SubagentBackgroundDone{
+		{TaskID: "batchworker00001", AgentType: "writer", BatchID: "b1"},
+	}}
+
+	next, cmd := m.startSubagentWakeTurn()
+	if cmd != nil {
+		t.Error("a partially finished batch must not start a wake turn")
+	}
+	got, ok := next.(Model)
+	if !ok {
+		t.Fatalf("startSubagentWakeTurn returned %T, want Model", next)
+	}
+	if len(got.pendingSubagentWakes) != 1 {
+		t.Errorf("held wakes must stay queued for the last worker to release, got %d", len(got.pendingSubagentWakes))
+	}
+}
