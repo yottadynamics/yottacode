@@ -815,6 +815,128 @@ func TestAnthropicAdapter_AnnotatesPromptCacheBreakpoints(t *testing.T) {
 	}
 }
 
+// TestAnthropicAdapter_CacheTTLDefaultOmitsField pins down the
+// no-opt-in path: Config.CacheTTL unset must produce a request
+// byte-identical to the pre-feature shape — no "ttl" key at all, not
+// even an explicit "5m" — so every session that hasn't opted in sees
+// no behavior change. Anthropic applies its own 5m default server-side
+// when the field is absent.
+func TestAnthropicAdapter_CacheTTLDefaultOmitsField(t *testing.T) {
+	captured := make(chan map[string]any, 1)
+	srv := newAnthropicMockServer(t, anthropicScript{
+		events: []anthropicSSE{
+			{Event: "message_start", Data: `{"type":"message_start","message":{"id":"m","role":"assistant","content":[],"model":"claude-sonnet-4-6"}}`},
+			{Event: "content_block_start", Data: `{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`},
+			{Event: "content_block_delta", Data: `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"ok"}}`},
+			{Event: "content_block_stop", Data: `{"type":"content_block_stop","index":0}`},
+			{Event: "message_delta", Data: `{"type":"message_delta","delta":{"stop_reason":"end_turn"}}`},
+			{Event: "message_stop", Data: `{"type":"message_stop"}`},
+		},
+		captureBody: captured,
+	})
+	t.Cleanup(srv.Close)
+
+	// CacheTTL deliberately left unset — the default, no-opt-in case.
+	a := newAnthropicAdapter(Config{BaseURL: srv.URL, APIKey: "k", Model: "claude-sonnet-4-6"})
+	for range a.ChatStream(context.Background(),
+		[]Message{{Role: RoleSystem, Content: "be terse"}, {Role: RoleUser, Content: "hello"}}, nil) {
+	}
+	body := <-captured
+
+	systemBlocks := body["system"].([]any)
+	last := systemBlocks[len(systemBlocks)-1].(map[string]any)
+	cc := last["cache_control"].(map[string]any)
+	if _, present := cc["ttl"]; present {
+		t.Errorf("cache_control should omit ttl when CacheTTL is unset; got: %v", cc)
+	}
+}
+
+// TestAnthropicAdapter_CacheTTLOptIn confirms Config.CacheTTL = "1h"
+// lands on every breakpoint applyAnthropicCacheControl placed — the
+// system tail and the last message — via the applyAnthropicCacheTTL
+// post-pass in ChatStream.
+func TestAnthropicAdapter_CacheTTLOptIn(t *testing.T) {
+	captured := make(chan map[string]any, 1)
+	srv := newAnthropicMockServer(t, anthropicScript{
+		events: []anthropicSSE{
+			{Event: "message_start", Data: `{"type":"message_start","message":{"id":"m","role":"assistant","content":[],"model":"claude-sonnet-4-6"}}`},
+			{Event: "content_block_start", Data: `{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`},
+			{Event: "content_block_delta", Data: `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"ok"}}`},
+			{Event: "content_block_stop", Data: `{"type":"content_block_stop","index":0}`},
+			{Event: "message_delta", Data: `{"type":"message_delta","delta":{"stop_reason":"end_turn"}}`},
+			{Event: "message_stop", Data: `{"type":"message_stop"}`},
+		},
+		captureBody: captured,
+	})
+	t.Cleanup(srv.Close)
+
+	a := newAnthropicAdapter(Config{BaseURL: srv.URL, APIKey: "k", Model: "claude-sonnet-4-6", CacheTTL: "1h"})
+	for range a.ChatStream(context.Background(),
+		[]Message{{Role: RoleSystem, Content: "be terse"}, {Role: RoleUser, Content: "hello"}}, nil) {
+	}
+	body := <-captured
+
+	systemBlocks := body["system"].([]any)
+	lastSys := systemBlocks[len(systemBlocks)-1].(map[string]any)
+	if cc := lastSys["cache_control"].(map[string]any); cc["ttl"] != "1h" {
+		t.Errorf("system cache_control.ttl = %v, want \"1h\"", cc["ttl"])
+	}
+
+	msgs := body["messages"].([]any)
+	lastMsg := msgs[len(msgs)-1].(map[string]any)
+	contentBlocks := lastMsg["content"].([]any)
+	lastBlock := contentBlocks[len(contentBlocks)-1].(map[string]any)
+	if cc := lastBlock["cache_control"].(map[string]any); cc["ttl"] != "1h" {
+		t.Errorf("message cache_control.ttl = %v, want \"1h\"", cc["ttl"])
+	}
+}
+
+// TestAnthropicAdapter_CacheTTLAppliesToSplitHead confirms the "1h"
+// opt-in reaches BOTH breakpoints when CacheHeadBytes splits the
+// system prompt into a stable head (splitForAnthropic's own
+// breakpoint) and a dynamic tail (applyAnthropicCacheControl's
+// breakpoint) — the multi-block case applyAnthropicCacheTTL's
+// scan-by-presence design exists to handle without duplicating either
+// placement function's logic.
+func TestAnthropicAdapter_CacheTTLAppliesToSplitHead(t *testing.T) {
+	captured := make(chan map[string]any, 1)
+	srv := newAnthropicMockServer(t, anthropicScript{
+		events: []anthropicSSE{
+			{Event: "message_start", Data: `{"type":"message_start","message":{"id":"m","role":"assistant","content":[],"model":"claude-sonnet-4-6"}}`},
+			{Event: "content_block_start", Data: `{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`},
+			{Event: "content_block_delta", Data: `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"ok"}}`},
+			{Event: "content_block_stop", Data: `{"type":"content_block_stop","index":0}`},
+			{Event: "message_delta", Data: `{"type":"message_delta","delta":{"stop_reason":"end_turn"}}`},
+			{Event: "message_stop", Data: `{"type":"message_stop"}`},
+		},
+		captureBody: captured,
+	})
+	t.Cleanup(srv.Close)
+
+	head := "STATIC BASE PROMPT"
+	tail := "\n\nDYNAMIC MEMORY TAIL"
+	a := newAnthropicAdapter(Config{BaseURL: srv.URL, APIKey: "k", Model: "claude-sonnet-4-6", CacheTTL: "1h"})
+	for range a.ChatStream(context.Background(),
+		[]Message{
+			{Role: RoleSystem, Content: head + tail, CacheHeadBytes: len(head)},
+			{Role: RoleUser, Content: "hello"},
+		}, nil) {
+	}
+	body := <-captured
+
+	systemBlocks := body["system"].([]any)
+	if len(systemBlocks) != 2 {
+		t.Fatalf("want 2 system blocks (head+tail), got %d: %v", len(systemBlocks), systemBlocks)
+	}
+	for i, blk := range systemBlocks {
+		b := blk.(map[string]any)
+		cc := b["cache_control"].(map[string]any)
+		if cc["ttl"] != "1h" {
+			t.Errorf("system block %d cache_control.ttl = %v, want \"1h\"", i, cc["ttl"])
+		}
+	}
+}
+
 // TestApplyAnthropicCacheControl_EdgeCases pins down the helper's
 // no-op behavior on degenerate inputs (no system, no messages, both
 // empty). A panic here would bring down every Anthropic turn —

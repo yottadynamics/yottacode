@@ -40,7 +40,8 @@ func (t *EnterPlanModeTool) Name() string { return "enter_plan_mode" }
 
 func (t *EnterPlanModeTool) Description() string {
 	return "Request to switch the session into plan mode — a read-only research mode where you investigate the codebase and write an implementation plan for user approval before any code changes. " +
-		"Use this when the user asks you to plan first (\"make a plan\", \"drop into plan mode\", \"let's design this before implementing\") or when you're about to start a non-trivial implementation whose approach the user has not yet agreed to. " +
+		"Use this when the user asks you to plan first (\"make a plan\", \"drop into plan mode\", \"let's design this before implementing\"), or when a request has multiple reasonable implementation approaches with materially different tradeoffs and the user hasn't said which one they want. " +
+		"Task size or step count alone does NOT warrant this — use todo_write for a long-but-clear task instead; reserve this tool for genuine approach ambiguity. " +
 		"The user sees a confirmation card; once they approve, you lose write access except to the plan file, and you present the finished plan via exit_plan_mode. " +
 		"Do NOT use this for pure research or Q&A that ends in an answer rather than code changes, and do NOT call it when plan mode is already active."
 }

@@ -130,7 +130,7 @@ func TestSlash_ProviderListShortcutOpensUsePicker(t *testing.T) {
 		t.Errorf("expected use-picker mode; got %v", m.providerPicker.mode)
 	}
 	got := stripANSI(m.View())
-	for _, want := range []string{"Switch provider", "anthropic", "openai", "✓"} {
+	for _, want := range []string{"Switch provider", "anthropic", "openai", "✓", "resets the provider's prompt cache"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("view missing %q; got:\n%s", want, got)
 		}
@@ -335,6 +335,13 @@ func TestProviderPicker_RemoveTransitionsToRemoveList(t *testing.T) {
 	// blow it away).
 	if m.providerPicker.usePickerCursor != 0 {
 		t.Errorf("remove cursor should default to 0; got %d", m.providerPicker.usePickerCursor)
+	}
+	// The cache-reset note only makes sense on the switch picker —
+	// deleting a provider profile doesn't touch the running session's
+	// active model, so the note would be misleading noise here.
+	got := stripANSI(m.View())
+	if strings.Contains(got, "resets the provider's prompt cache") {
+		t.Errorf("remove picker should not carry the switch-only cache-reset note; got:\n%s", got)
 	}
 }
 

@@ -58,6 +58,13 @@ type Config struct {
 	// OpenAI-compatible providers intentionally do not receive it because
 	// some reject unknown request fields.
 	CacheKey string
+	// CacheTTL sets the time-to-live for Anthropic's explicit
+	// cache_control breakpoints ("5m" or "1h"; empty behaves like "5m",
+	// Anthropic's own default). Populated from config.CacheConfig.
+	// AnthropicTTL. Consumed only by the Anthropic adapter (and Vertex
+	// Anthropic, which reuses it wholesale) — other providers manage
+	// their own cache eviction with no client-exposed TTL.
+	CacheTTL string
 	// ModelMaxOutput and ModelSupportsThinking carry catalog-derived
 	// facts about the active model so budget-based reasoning providers
 	// (Anthropic, Gemini) can size a thinking budget without the adapter

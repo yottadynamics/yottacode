@@ -36,7 +36,7 @@ func BuildRouter(cfg config.Config, opts ChatOptions) (adapter.Client, error) {
 	}
 	candidates := make([]adapter.Candidate, 0, len(resolved))
 	for _, rc := range resolved {
-		adCfg := candidateAdapterConfig(rc, opts)
+		adCfg := candidateAdapterConfig(rc, opts, cfg.Cache.AnthropicTTL)
 		client := adapter.NewWithConfig(adCfg)
 		label := fmt.Sprintf("%s/%s", rc.Provider.Name, rc.Model)
 		candidates = append(candidates, adapter.Candidate{
@@ -111,7 +111,7 @@ func BuildRouterAdapters(cfg config.Config, opts ChatOptions) (*RouterAdapters, 
 		if c, ok := built[key]; ok {
 			return c
 		}
-		c := adapter.NewWithConfig(candidateAdapterConfig(rc, opts))
+		c := adapter.NewWithConfig(candidateAdapterConfig(rc, opts, cfg.Cache.AnthropicTTL))
 		built[key] = c
 		return c
 	}
@@ -238,8 +238,12 @@ func healthOptionsFromConfig(rc config.RouterConfig) adapter.HealthOptions {
 // provider profile, then layers on the search/reasoning flags from
 // opts. Builtin-tool toggles are global to the user's intent — if they
 // passed --enable-web-search, every capability-supporting candidate
-// should advertise it.
-func candidateAdapterConfig(rc config.ResolvedCandidate, opts ChatOptions) adapter.Config {
+// should advertise it. cacheTTL is cfg.Cache.AnthropicTTL, threaded in
+// explicitly (rather than passing the whole config.Config) since this
+// is the only cache-relevant field a router candidate needs — the
+// advisor/implementer pair built from this is exactly what makes
+// Plan/Auto role-switch round-trips a TTL beneficiary.
+func candidateAdapterConfig(rc config.ResolvedCandidate, opts ChatOptions, cacheTTL string) adapter.Config {
 	apiKey := ""
 	if rc.Provider.APIKeyEnv != "" {
 		apiKey = os.Getenv(rc.Provider.APIKeyEnv)
@@ -251,6 +255,7 @@ func candidateAdapterConfig(rc config.ResolvedCandidate, opts ChatOptions) adapt
 		Model:                  rc.Model,
 		ProviderOverride:       adapter.Provider(strings.TrimSpace(rc.Provider.Kind)),
 		ReasoningEffort:        opts.ReasoningEffort,
+		CacheTTL:               cacheTTL,
 		ModelMaxOutput:         maxOutput,
 		ModelSupportsThinking:  supportsThinking,
 		EnableWebSearch:        opts.EnableWebSearch,
