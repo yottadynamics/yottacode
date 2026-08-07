@@ -66,6 +66,18 @@ feature/anthropic-config-updates
 
 ### Fixed
 
+- **`run_bash` and `pr_check_logs` could each dump enough CI-log text into
+  a single tool result to blow through a session's token budget.**
+  `run_bash`'s per-stream output cap was 1 MiB — on its own a large
+  fraction of any model's context window — so shelling out to something
+  like `gh run view --log-failed` on a noisy CI job could burn through a
+  request in one call. That cap is now 256 KiB, matching the ceiling
+  already used elsewhere for tool output. Separately, `pr_check_logs`'s
+  `max_lines` was documented as "capped at 2000" but the cap was never
+  enforced: a caller passing a much larger value got that many lines per
+  failed job, per run, with no ceiling. `max_lines` is now actually
+  clamped to the documented cap.
+
 - **`read_file` can now reach past the first 512 KiB of a file.** The
   reader took a fixed 512 KiB prefix and applied `offset` to lines within
   *that buffer*, so every line beyond the prefix was unreachable — and

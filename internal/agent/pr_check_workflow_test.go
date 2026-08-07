@@ -49,6 +49,18 @@ func TestPRCheckLogsTool_DefaultsMaxLines(t *testing.T) {
 	}
 }
 
+func TestPRCheckLogsTool_ClampsMaxLines(t *testing.T) {
+	gh := &fakeGH{readPRRes: github.PRDetails{HeadSHA: "sha"}}
+	tool := &PRCheckLogsTool{Cwd: NewCwdRef(t.TempDir()), GH: gh}
+	_, err := tool.Execute(context.Background(), `{"ref":"29","max_lines":500000}`)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if gh.failedLogsReq.TailLines != maxPRCheckLogTailLines {
+		t.Fatalf("max_lines = %d, want it clamped to documented cap %d", gh.failedLogsReq.TailLines, maxPRCheckLogTailLines)
+	}
+}
+
 func TestPRCheckLogsTool_NotApprovalRequired(t *testing.T) {
 	if (&PRCheckLogsTool{}).RequiresApproval("") {
 		t.Errorf("pr_check_logs is read-only and must not require approval")

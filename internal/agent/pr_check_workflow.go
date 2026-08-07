@@ -11,7 +11,10 @@ import (
 	"github.com/yottadynamics/yottacode/internal/github"
 )
 
-const defaultPRCheckLogTailLines = 240
+const (
+	defaultPRCheckLogTailLines = 240
+	maxPRCheckLogTailLines     = 2000
+)
 
 // PRCheckLogsTool fetches failed GitHub Actions job logs for a PR without
 // shelling out to `gh run view --log-failed | tail`. It is read-only, but
@@ -80,9 +83,7 @@ func (t *PRCheckLogsTool) Execute(ctx context.Context, argsJSON string) (string,
 	if err != nil {
 		return "", fmt.Errorf("pr_check_logs: detect current branch: %w", err)
 	}
-	if a.MaxLines <= 0 {
-		a.MaxLines = defaultPRCheckLogTailLines
-	}
+	a.MaxLines = boundedInt(a.MaxLines, defaultPRCheckLogTailLines, 0, maxPRCheckLogTailLines)
 	pr, err := t.GH.ReadPR(ctx, github.ReadPRRequest{Ref: ref})
 	if err != nil {
 		return renderPRCheckLogsError(ref, err), nil
