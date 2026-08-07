@@ -1660,7 +1660,7 @@ Run a shell command via `/bin/sh -c` in the session's cwd.
 | `command` | string | — | Passed verbatim to `/bin/sh -c` |
 
 Always prompts for approval. Output is `exit=<code>\n--- stdout ---\n…\n--- stderr ---\n…`,
-each stream capped at 1 MiB; truncation is announced in the result.
+each stream capped at 256 KiB; truncation is announced in the result.
 
 There is no in-process sandbox, and there will not be one — yottacode
 keeps its core small and does not ship bwrap/firejail/landlock

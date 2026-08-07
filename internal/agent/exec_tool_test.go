@@ -46,6 +46,24 @@ func TestRunBashTool_ShellStartFailureReturnsError(t *testing.T) {
 	}
 }
 
+// Regression: a noisy command (e.g. `gh run view --log-failed` on a
+// verbose CI job) must not be allowed to dump megabytes of text into
+// the model's context. 300000 bytes exceeds the 256 KiB cap but was
+// let through whole under the old 1 MiB ceiling.
+func TestRunBashTool_TruncatesLargeStdout(t *testing.T) {
+	tool := &RunBashTool{Cwd: NewCwdRef(t.TempDir())}
+	out, err := tool.Execute(context.Background(), `{"command":"yes a | head -c 300000"}`)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if !strings.Contains(out, "[output truncated]") {
+		t.Errorf("expected truncation marker, got output of length %d", len(out))
+	}
+	if len(out) > runBashMaxStreamBytes+1024 {
+		t.Errorf("output length %d exceeds cap (%d) plus overhead", len(out), runBashMaxStreamBytes)
+	}
+}
+
 func TestRunBashTool_RejectsEmptyCommand(t *testing.T) {
 	tool := &RunBashTool{Cwd: NewCwdRef(t.TempDir())}
 	if _, err := tool.Execute(context.Background(), `{}`); err == nil {

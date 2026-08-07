@@ -45,9 +45,12 @@ func (t *RunBashTool) PreviewCall(argsJSON string) string {
 	return fmt.Sprintf("run_bash: %s", a.Command)
 }
 
-// runBashMaxStreamBytes caps each of stdout/stderr at 1 MiB so a
-// runaway command can't OOM the agent.
-const runBashMaxStreamBytes = 1 << 20
+// runBashMaxStreamBytes caps each of stdout/stderr so a runaway
+// command (e.g. `gh run view --log-failed` on a noisy CI job) can't
+// dump megabytes of raw text into the model's context. Matches the
+// 256 KiB ceiling used elsewhere for tool output (mediaMaxOutputBytes,
+// web_tools' fetch cap).
+const runBashMaxStreamBytes = 256 * 1024
 
 func (t *RunBashTool) Execute(ctx context.Context, argsJSON string) (string, error) {
 	var a struct {
