@@ -400,6 +400,7 @@ func (m Model) commitModelChoice(chosen string, window int) (Model, tea.Cmd) {
 			}
 		}
 	}
+	previousModel := m.modelName
 	m.modelName = chosen
 	m.sess.Model = chosen
 	acfg := m.adapterConfig(chosen, m.baseURL)
@@ -414,6 +415,7 @@ func (m Model) commitModelChoice(chosen string, window int) (Model, tea.Cmd) {
 	m, _ = reloadMemoryNow(m, "")
 	m.appendLine(styleAuto.Render(statusLine("model", fmt.Sprintf("default → %s", chosen))))
 	warnIfEffortNoop(&m, acfg)
+	warnIfCacheReset(&m, previousModel, chosen)
 	cmds := []tea.Cmd{runProviderProbe(m.parentCtx, acfg, false)}
 	// When the picker's list-models row carried no window for this model
 	// (NVIDIA NIM, thin proxies), discover it in the background from the
@@ -532,7 +534,8 @@ func renderModelPicker(p *modelPickerState, width int) string {
 	_ = width // reserved for future per-row truncation; the inline
 	// overlay no longer needs it for centering.
 	var b strings.Builder
-	b.WriteString(renderMenuHeader("Model", ""))
+	b.WriteString(renderMenuHeader("Model",
+		"Switching models mid-session resets the provider's prompt cache — the next turn reprocesses full history."))
 	if len(p.allProviders) > 1 {
 		b.WriteString(renderProviderTabStrip(p))
 		b.WriteString("\n")

@@ -514,6 +514,7 @@ func routerActiveSwitchTarget(p *routerPickerState, activeModel string) string {
 // rebuilding the adapter against the ref's provider profile. Used when the
 // user configures a new smart model in /router.
 func (m Model) switchActiveModelToRef(ref string) (Model, tea.Cmd) {
+	previousModel := m.modelName
 	provName, model, err := config.ParseCandidate(ref)
 	if err != nil || model == "" {
 		return m, nil
@@ -556,6 +557,7 @@ func (m Model) switchActiveModelToRef(ref string) (Model, tea.Cmd) {
 	}
 	m.appendLine(styleAuto.Render(SysMsg(SysSuccess, "advisor", "active model", model)))
 	warnIfEffortNoop(&m, acfg)
+	warnIfCacheReset(&m, previousModel, model)
 	return m, runProviderProbe(m.parentCtx, acfg, false)
 }
 
@@ -563,6 +565,7 @@ func (m Model) switchActiveModelToRouterRole(role string) (Model, tea.Cmd) {
 	if m.router == nil {
 		return m, nil
 	}
+	previousModel := m.modelName
 	var ref, model string
 	var ad adapter.Client
 	switch role {
@@ -626,6 +629,7 @@ func (m Model) switchActiveModelToRouterRole(role string) (Model, tea.Cmd) {
 	m.appendLine(styleAuto.Render(SysMsg(SysSuccess, "advisor", "active role", role, model)))
 	acfg := m.adapterConfig(model, m.baseURL)
 	warnIfEffortNoop(&m, acfg)
+	warnIfCacheReset(&m, previousModel, model)
 	return m, runProviderProbe(m.parentCtx, acfg, false)
 }
 

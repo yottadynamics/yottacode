@@ -112,6 +112,7 @@ func Run(ctx context.Context, opts cli.ChatOptions, prompt string) error {
 		ProviderOverride:       adapter.Provider(strings.TrimSpace(opts.ProviderKind)),
 		ReasoningEffort:        opts.ReasoningEffort,
 		CacheKey:               opts.CacheKey,
+		CacheTTL:               fileCfg.Cache.AnthropicTTL,
 		ModelMaxOutput:         maxOutput,
 		ModelSupportsThinking:  supportsThinking,
 		EnableWebSearch:        opts.EnableWebSearch,

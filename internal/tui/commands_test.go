@@ -476,6 +476,45 @@ default_model = "gpt-4o"
 	}
 }
 
+// /provider use changes the active model exactly like /model and the
+// picker do (providerUse adopts the target provider's default_model),
+// so a mid-session switch burns the provider prompt cache the same
+// way — the earlier cache-reset warning was wired into the /model
+// shortcut and the picker but missed this third call site.
+func TestSlash_ProviderUseWarnsOnMidSessionCacheReset(t *testing.T) {
+	m := newTestModel(t)
+	seedConfigTOML(t, `
+[[providers]]
+name = "anthropic-test"
+kind = "anthropic"
+base_url = "https://anthropic.example/v1"
+default_model = "claude-sonnet-4-6"
+  [[providers.models]]
+  name = "claude-sonnet-4-6"
+  tier = "balanced"
+
+[[providers]]
+name = "openai-test"
+kind = "openai"
+base_url = "https://openai.example/v1"
+default_model = "gpt-4o"
+  [[providers.models]]
+  name = "gpt-4o"
+  tier = "balanced"
+`)
+	m, _ = typeAndEnter(t, m, "/provider use anthropic-test")
+	m.sess.Messages = append(m.sess.Messages,
+		adapter.Message{Role: adapter.RoleUser, Content: "hi"},
+		adapter.Message{Role: adapter.RoleAssistant, Content: "hello"},
+	)
+	pre := m.transcript.String()
+	m, _ = typeAndEnter(t, m, "/provider use openai-test")
+	post := m.transcript.String()[len(pre):]
+	if !strings.Contains(post, "prompt cache resets") {
+		t.Errorf("/provider use mid-session should warn about the cache reset; new transcript:\n%s", post)
+	}
+}
+
 func TestSlash_ModelListAllGroupsByProvider(t *testing.T) {
 	m := newTestModel(t)
 	seedConfigTOML(t, `

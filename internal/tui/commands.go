@@ -538,6 +538,7 @@ func providerUse(m Model, name string) (Model, tea.Cmd) {
 		m.appendLine(styleError.Render(fmt.Sprintf("provider %q not found in config.toml", name)))
 		return m, nil
 	}
+	previousModel := m.modelName
 	newModel := m.modelName
 	switch {
 	case cfg.Active.Provider == name && cfg.Active.Model != "":
@@ -568,6 +569,7 @@ func providerUse(m Model, name string) (Model, tea.Cmd) {
 	m, _ = reloadMemoryNow(m, "")
 	m.appendLine(styleAuto.Render(statusOKLine("provider", fmt.Sprintf("switched to %s (model: %s)", name, newModel))))
 	warnIfEffortNoop(&m, acfg)
+	warnIfCacheReset(&m, previousModel, newModel)
 	cmds := []tea.Cmd{runProviderProbe(m.parentCtx, acfg, false)}
 	// A provider switch changes the active model outside the picker path —
 	// discover its window from the live API too (the picker reads it from
@@ -1245,6 +1247,7 @@ func (m Model) adapterConfig(modelName, baseURL string) adapter.Config {
 		ProviderOverride:       adapter.Provider(strings.TrimSpace(m.provider)),
 		ReasoningEffort:        m.reasoningEffort,
 		CacheKey:               m.sessionCacheKey(),
+		CacheTTL:               m.fileCfg.Cache.AnthropicTTL,
 		ModelMaxOutput:         maxOutput,
 		ModelSupportsThinking:  supportsThinking,
 		EnableWebSearch:        m.enableWebSearch,

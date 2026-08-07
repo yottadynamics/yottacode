@@ -1150,7 +1150,7 @@ func renderProviderAddModelExtras(p *providerPickerState) string {
 
 func renderProviderUseList(p *providerPickerState, title string) string {
 	var b strings.Builder
-	desc := "Pick a provider to switch the running session to."
+	desc := "Pick a provider to switch the running session to. Switching mid-session resets the provider's prompt cache — the next turn reprocesses full history."
 	if title == "Remove provider" {
 		desc = "Pick a provider to delete from your config. The active provider is cleared if removed."
 	}

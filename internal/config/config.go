@@ -32,6 +32,7 @@ import (
 type Config struct {
 	Context     ContextConfig     `toml:"context"`
 	Retrieval   RetrievalConfig   `toml:"retrieval"`
+	Cache       CacheConfig       `toml:"cache"`
 	Memory      MemoryConfig      `toml:"memory"`
 	Router      RouterConfig      `toml:"router"`
 	Active      Active            `toml:"active"`
@@ -332,6 +333,31 @@ type SessionRecallConfig struct {
 // ValidStrategies is the whitelist for RetrievalConfig.Strategy.
 // Empty is coerced to the default ("auto") at load time.
 var ValidStrategies = []string{"keyword", "bm25", "semantic", "auto"}
+
+// CacheConfig tunes provider prompt-cache behavior.
+type CacheConfig struct {
+	// AnthropicTTL sets the time-to-live for Anthropic's explicit
+	// cache_control breakpoints: "5m" (Anthropic's own default) or "1h".
+	// Empty behaves identically to "5m" — the field is simply omitted
+	// from the request and Anthropic applies its server-side default.
+	//
+	// A longer TTL matters for two cases: sessions resumed more than 5
+	// minutes after the last turn, and Plan/Auto mode round-trips when
+	// [router] routes them to different models — both otherwise pay a
+	// full uncached reprocess the moment the 5-minute window lapses.
+	// The tradeoff is cost, not correctness: Anthropic bills a 1h cache
+	// write at 2x base instead of 1.25x. See
+	// yottacode-roadmap/prompt-caching.md.
+	//
+	// Anthropic-only. OpenAI/Gemini/xAI/Copilot manage their own cache
+	// eviction with no client-exposed TTL, so this has no effect there.
+	AnthropicTTL string `toml:"anthropic_ttl"`
+}
+
+// ValidCacheTTLs is the whitelist for CacheConfig.AnthropicTTL. Empty is
+// valid too (behaves like "5m") but isn't listed here since it's the
+// unset/default state, not a value a user explicitly chooses.
+var ValidCacheTTLs = []string{"5m", "1h"}
 
 // ValidSessionRecallScopes is the whitelist for SessionRecallConfig.Scope.
 // Empty is coerced to the default ("project") at load time. "user" and "all"
@@ -695,6 +721,10 @@ func Validate(cfg Config) error {
 	if cfg.Retrieval.Strategy != "" && !inSlice(ValidStrategies, cfg.Retrieval.Strategy) {
 		return fmt.Errorf("retrieval.strategy = %q invalid (expected one of %s)",
 			cfg.Retrieval.Strategy, strings.Join(ValidStrategies, ", "))
+	}
+	if cfg.Cache.AnthropicTTL != "" && !inSlice(ValidCacheTTLs, cfg.Cache.AnthropicTTL) {
+		return fmt.Errorf("cache.anthropic_ttl = %q invalid (expected one of %s)",
+			cfg.Cache.AnthropicTTL, strings.Join(ValidCacheTTLs, ", "))
 	}
 	if sr := cfg.Retrieval.SessionRecall; sr.Scope != "" && !inSlice(ValidSessionRecallScopes, sr.Scope) {
 		return fmt.Errorf("retrieval.session_recall.scope = %q invalid (expected one of %s)",

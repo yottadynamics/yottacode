@@ -260,12 +260,14 @@ func encodeTunables(cfg Config) (string, error) {
 	var trimmed = struct {
 		Context      ContextConfig   `toml:"context"`
 		Retrieval    RetrievalConfig `toml:"retrieval"`
+		Cache        CacheConfig     `toml:"cache"`
 		Memory       MemoryConfig    `toml:"memory"`
 		LSP          LSPConfig       `toml:"lsp"`
 		Experimental map[string]bool `toml:"experimental"`
 	}{
 		Context:      cfg.Context,
 		Retrieval:    cfg.Retrieval,
+		Cache:        cfg.Cache,
 		Memory:       cfg.Memory,
 		LSP:          cfg.LSP,
 		Experimental: cfg.Experimental,

@@ -87,6 +87,7 @@ func (a *anthropicAdapter) ChatStream(ctx context.Context, messages []Message, t
 
 		system, msgs := splitForAnthropic(messages)
 		applyAnthropicCacheControl(system, msgs)
+		applyAnthropicCacheTTL(system, msgs, a.cfg.CacheTTL)
 		params := anthropic.MessageNewParams{
 			Model:     anthropic.Model(a.model),
 			MaxTokens: a.maxTokens,
@@ -558,6 +559,40 @@ func applyAnthropicCacheControl(system []anthropic.TextBlockParam, msgs []anthro
 		if b := len(blocks); b > 0 {
 			if cc := blocks[b-1].GetCacheControl(); cc != nil {
 				*cc = anthropic.NewCacheControlEphemeralParam()
+			}
+		}
+	}
+}
+
+// applyAnthropicCacheTTL overwrites the TTL on every cache_control
+// breakpoint already placed — by splitForAnthropic (the stable system
+// head, when Message.CacheHeadBytes is set) and applyAnthropicCacheControl
+// (the system tail + last message). Must run after both, and after any
+// future breakpoint-placement pass, since it works by scanning for
+// blocks that already carry a breakpoint (Type != "") rather than
+// re-deriving positions — so a new breakpoint added elsewhere is picked
+// up automatically without a matching change here.
+//
+// ttl is Config.CacheTTL ("5m", "1h", or ""). Only "1h" does anything:
+// "5m" and "" both mean "use Anthropic's server-side default", so the
+// field is left unset either way — byte-identical to the request shape
+// before this option existed, for every session that hasn't opted in.
+// See config.CacheConfig.AnthropicTTL for the cost tradeoff (2x write
+// cost vs 1.25x) that TTL="1h" trades for surviving longer idle gaps
+// and Plan/Auto role-switch round-trips.
+func applyAnthropicCacheTTL(system []anthropic.TextBlockParam, msgs []anthropic.MessageParam, ttl string) {
+	if ttl != "1h" {
+		return
+	}
+	for i := range system {
+		if system[i].CacheControl.Type != "" {
+			system[i].CacheControl.TTL = anthropic.CacheControlEphemeralTTLTTL1h
+		}
+	}
+	for _, m := range msgs {
+		for _, b := range m.Content {
+			if cc := b.GetCacheControl(); cc != nil && cc.Type != "" {
+				cc.TTL = anthropic.CacheControlEphemeralTTLTTL1h
 			}
 		}
 	}

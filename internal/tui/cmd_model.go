@@ -52,6 +52,7 @@ func openPickerForActiveProvider(m Model) (Model, tea.Cmd) {
 // current provider" otherwise. Mirrors pre-picker behavior so muscle
 // memory keeps working.
 func modelShortcutSwitch(m Model, newTag string) (Model, tea.Cmd) {
+	previousModel := m.modelName
 	cfg := loadConfigForCommand(m)
 	newBaseURL := m.baseURL
 	newAPIKey := m.apiKey
@@ -93,7 +94,31 @@ func modelShortcutSwitch(m Model, newTag string) (Model, tea.Cmd) {
 		m.appendLine(styleAuto.Render(statusLine("model", fmt.Sprintf("switched to %s", newTag))))
 	}
 	warnIfEffortNoop(&m, acfg)
+	warnIfCacheReset(&m, previousModel, newTag)
 	return m, runProviderProbe(m.parentCtx, acfg, false)
+}
+
+// warnIfCacheReset surfaces a status line when a mid-session /model
+// switch is about to burn the provider's prompt cache. Every provider
+// we support caches by reusing precomputed attention state (KV cache)
+// for a stable prompt prefix — Anthropic's explicit cache_control
+// breakpoints, OpenAI/Copilot's automatic prefix cache, Gemini's
+// implicit/explicit caching, and local Ollama's in-process KV reuse
+// all key that state to the specific model's weights. Switching models
+// mid-session means the next turn reprocesses the full history against
+// a cache that cannot be reused, regardless of which provider is
+// active — see yottacode-roadmap/prompt-caching.md. Skipped when the
+// session is still fresh (at most the system prompt — matches the
+// len(Messages) > 1 idiom used elsewhere for "has this session had a
+// turn yet") or when the model tag didn't actually change.
+func warnIfCacheReset(m *Model, previousModel, newModel string) {
+	if previousModel == "" || previousModel == newModel {
+		return
+	}
+	if m.sess == nil || len(m.sess.Messages) <= 1 {
+		return
+	}
+	m.appendLine(styleMeta.Render("  (mid-session model switch — provider prompt cache resets; next turn reprocesses full history uncached)"))
 }
 
 // providerOwnsModel reports whether p's model surface contains tag.

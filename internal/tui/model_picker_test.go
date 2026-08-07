@@ -11,6 +11,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/yottadynamics/yottacode/internal/adapter"
 	"github.com/yottadynamics/yottacode/internal/catalog"
 	"github.com/yottadynamics/yottacode/internal/config"
 )
@@ -189,6 +190,22 @@ func TestModelPicker_ViewIncludesBanner(t *testing.T) {
 	}
 }
 
+// The picker is the proactive surface for the cache-reset fact — shown
+// unconditionally in the header before the user commits to a switch,
+// unlike the reactive scrollback warning (warnIfCacheReset) which only
+// fires after a real mid-session switch. Both surfaces matter: the
+// header primes users browsing the list, the scrollback line still
+// covers the /model <name> power-user shortcut, which never renders
+// this view at all.
+func TestModelPicker_ViewIncludesCacheResetNote(t *testing.T) {
+	m := newTestModel(t)
+	m, _ = typeAndEnter(t, m, "/model")
+	got := stripANSI(m.View())
+	if !strings.Contains(got, "resets the provider's prompt cache") {
+		t.Errorf("picker header should proactively note the cache-reset fact; got:\n%s", got)
+	}
+}
+
 // Live fetch error doesn't panic the picker — we surface it inline
 // and the caller can still see whatever catalog entries we have.
 // Tested by providing an empty catalog and an error fetcher: picker
@@ -261,6 +278,52 @@ default_model = "qwen3.5:9b"
 	}
 	if saved.Active.DefaultModel != "qwen3.5:9b" {
 		t.Errorf("Active.DefaultModel = %q, want qwen3.5:9b", saved.Active.DefaultModel)
+	}
+}
+
+// TestModelPicker_WarnsOnMidSessionCacheReset mirrors
+// TestModelShortcut_WarnsOnMidSessionCacheReset for the picker's Enter
+// commit path (commitModelChoice), so the warning isn't only wired
+// into the /model <name> shortcut. newTestModel's session starts on
+// "test-model"; picking a different model here is a real switch.
+func TestModelPicker_WarnsOnMidSessionCacheReset(t *testing.T) {
+	m := newTestModel(t)
+	m.sess.Messages = append(m.sess.Messages,
+		adapter.Message{Role: adapter.RoleUser, Content: "hi"},
+		adapter.Message{Role: adapter.RoleAssistant, Content: "hello"},
+	)
+	dir := filepath.Join(os.Getenv("HOME"), ".yottacode")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	body := `
+[[providers]]
+name = "picker-test"
+kind = "ollama"
+base_url = "http://localhost:11434/v1"
+default_model = "other-model"
+  [[providers.models]]
+  name = "other-model"
+  tier = "cheap"
+`
+	if err := os.WriteFile(filepath.Join(dir, "config.toml"), []byte(body), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	cfg, err := config.Load(filepath.Join(dir, "config.toml"))
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	prov := *cfg.FindProvider("picker-test")
+	m.pickerList = stubPickerList(
+		[]catalog.Model{{ID: "other-model", Provider: "session"}}, nil,
+	)
+	cmd := m.openModelPicker(prov)
+	m, _ = applyMsg(m, cmd())
+	pre := m.transcript.String()
+	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	post := m.transcript.String()[len(pre):]
+	if !strings.Contains(post, "prompt cache resets") {
+		t.Errorf("picker-driven mid-session model switch should warn about the cache reset; new transcript:\n%s", post)
 	}
 }
 
