@@ -1,6 +1,7 @@
 package documents
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -81,5 +82,33 @@ func TestHTMLExtractorMaxCharsTruncation(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("expected a character-truncation warning, got %v", res.Warnings)
+	}
+}
+
+// TestHTMLExtractorCapsHeadingCollection: only the first maxHeadings are
+// ever named, so collecting every heading in a large document just to
+// discard the tail was the same waste as buffering all the text. The
+// summary must still report the true count.
+func TestHTMLExtractorCapsHeadingCollection(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "many.html")
+
+	var b strings.Builder
+	b.WriteString("<html><title>T</title><body>")
+	for i := range 500 {
+		fmt.Fprintf(&b, "<h2>Heading %d</h2>", i)
+	}
+	b.WriteString("</body></html>")
+	if err := os.WriteFile(path, []byte(b.String()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	res := mustExtract(t, &HTMLExtractor{}, ExtractRequest{Path: path})
+
+	if !strings.Contains(res.Metadata.Shape, "(500 total)") {
+		t.Errorf("Shape must report the true heading count, got %q", res.Metadata.Shape)
+	}
+	if strings.Count(res.Metadata.Shape, "Heading ") > maxHeadings {
+		t.Errorf("Shape names more than %d headings: %q", maxHeadings, res.Metadata.Shape)
 	}
 }

@@ -131,14 +131,10 @@ func TestCSVExtractorMaxRowsTruncation(t *testing.T) {
 	if got := strings.Count(res.Sections[0].Text, "\n") + 1; got != 51 { // header + 50 sampled rows
 		t.Errorf("preview has %d lines, want 51 (header + MaxRows)", got)
 	}
-	found := false
-	for _, w := range res.Warnings {
-		if strings.Contains(w, "first 50 of 250") {
-			found = true
-		}
-	}
-	if !found {
-		t.Errorf("expected a truncation warning naming 50 of 250, got %v", res.Warnings)
+	// The warning names the window, not just the count — with offset
+	// available, "the first 50" is no longer the only possible answer.
+	if !hasWarningContaining(res.Warnings, "rows 1-50 of 250") {
+		t.Errorf("expected a truncation warning naming the window 1-50 of 250, got %v", res.Warnings)
 	}
 }
 
@@ -347,5 +343,244 @@ func TestCSVExtractorByteCap_DoesNotLeakContentPastTheCap(t *testing.T) {
 	}
 	if !foundByteCap {
 		t.Errorf("expected a byte-cap warning, got %v", res.Warnings)
+	}
+}
+
+// writeCSV writes body to a temp file and returns its path. Test bodies
+// use \ufeff escapes for BOMs — a literal mark in Go source is a syntax
+// error, which is its own small reminder of how invisible these are.
+func writeCSV(t *testing.T, name, body string) string {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), name)
+	if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+// TestCSVExtractorStripsUTF8BOM: Windows Excel prefixes exports with a
+// BOM, and encoding/csv folds it into the first column's name — so "id"
+// arrives as "<BOM>id" and every later match on that column silently
+// misses.
+func TestCSVExtractorStripsUTF8BOM(t *testing.T) {
+	res := mustExtract(t, NewCSVExtractor(), ExtractRequest{
+		Path: writeCSV(t, "bom.csv", "\ufeffid,name\n1,Widget\n"),
+	})
+
+	if len(res.Metadata.Columns) == 0 || res.Metadata.Columns[0] != "id" {
+		t.Errorf("Columns = %q, want first column %q with the BOM stripped", res.Metadata.Columns, "id")
+	}
+}
+
+// TestCSVExtractorDetectsSemicolonDelimiter is the silent-wrong-answer
+// regression. Excel writes ";"-delimited .csv in every European locale;
+// parsing one as comma-delimited collapses each line into a single
+// column and reports it as a perfectly valid one-column table.
+func TestCSVExtractorDetectsSemicolonDelimiter(t *testing.T) {
+	res := mustExtract(t, NewCSVExtractor(), ExtractRequest{
+		Path: writeCSV(t, "euro.csv", "id;name\n1;Widget\n2;Gadget\n"),
+	})
+
+	if len(res.Metadata.Columns) != 2 {
+		t.Fatalf("Columns = %q, want 2 columns from the semicolon-delimited file", res.Metadata.Columns)
+	}
+	if res.Metadata.RowCount != 2 {
+		t.Errorf("RowCount = %d, want 2", res.Metadata.RowCount)
+	}
+	// Choosing a delimiter changes how every row was read, so it must
+	// be reported rather than silently applied.
+	if !hasWarningContaining(res.Warnings, `detected ";"`) {
+		t.Errorf("a sniffed delimiter must be reported, got %v", res.Warnings)
+	}
+}
+
+func TestCSVExtractorDetectsPipeDelimiter(t *testing.T) {
+	res := mustExtract(t, NewCSVExtractor(), ExtractRequest{
+		Path: writeCSV(t, "pipe.csv", "id|name\n1|Widget\n"),
+	})
+
+	if len(res.Metadata.Columns) != 2 {
+		t.Errorf("Columns = %q, want 2 columns from the pipe-delimited file", res.Metadata.Columns)
+	}
+}
+
+// TestCSVExtractorCommaFileIsNotWarned: sniffing must stay invisible on
+// ordinary files, or every normal read grows a spurious warning.
+func TestCSVExtractorCommaFileIsNotWarned(t *testing.T) {
+	res := mustExtract(t, NewCSVExtractor(), ExtractRequest{
+		Path: writeCSV(t, "plain.csv", "id,name\n1,Widget\n"),
+	})
+
+	if hasWarningContaining(res.Warnings, "detected") {
+		t.Errorf("a comma-delimited .csv must not produce a delimiter warning, got %v", res.Warnings)
+	}
+}
+
+// TestCSVExtractorSniffIgnoresQuotedDelimiters: a header like
+// `"last, first",age` has more commas inside quotes than out; counting
+// them naively would pick the wrong separator.
+func TestCSVExtractorSniffIgnoresQuotedDelimiters(t *testing.T) {
+	res := mustExtract(t, NewCSVExtractor(), ExtractRequest{
+		Path: writeCSV(t, "quoted.csv", "\"last, first\";age\n\"Doe, J\";41\n"),
+	})
+
+	if len(res.Metadata.Columns) != 2 || res.Metadata.Columns[0] != "last, first" {
+		t.Errorf("Columns = %q, want the quoted comma kept inside one field", res.Metadata.Columns)
+	}
+}
+
+// TestTSVExtractorDoesNotSniff: .tsv states its separator, so a tab file
+// whose data contains commas must not be re-read as comma-delimited.
+func TestTSVExtractorDoesNotSniff(t *testing.T) {
+	res := mustExtract(t, NewTSVExtractor(), ExtractRequest{
+		Path: writeCSV(t, "d.tsv", "id\tnote\n1\ta,b,c,d\n"),
+	})
+
+	if len(res.Metadata.Columns) != 2 {
+		t.Fatalf("Columns = %q, want 2 tab-separated columns", res.Metadata.Columns)
+	}
+	if hasWarningContaining(res.Warnings, "detected") {
+		t.Errorf(".tsv must not sniff its delimiter, got %v", res.Warnings)
+	}
+}
+
+// TestCSVExtractorDetectsHeaderlessFile: treating row 1 as column names
+// unconditionally both loses that record and mislabels every column.
+func TestCSVExtractorDetectsHeaderlessFile(t *testing.T) {
+	res := mustExtract(t, NewCSVExtractor(), ExtractRequest{
+		Path: writeCSV(t, "raw.csv", "1,Widget\n2,Gadget\n3,Doohickey\n"),
+	})
+
+	if len(res.Metadata.Columns) != 0 {
+		t.Errorf("Columns = %q, want none for a headerless file", res.Metadata.Columns)
+	}
+	if res.Metadata.RowCount != 3 {
+		t.Errorf("RowCount = %d, want 3 — the first row is data, not a header", res.Metadata.RowCount)
+	}
+	if !hasWarningContaining(res.Warnings, "no header row detected") {
+		t.Errorf("a headerless file must say so, got %v", res.Warnings)
+	}
+	// Shape must still report the real width, not len(header)==0.
+	if res.Metadata.Shape != "2 columns" {
+		t.Errorf("Shape = %q, want %q", res.Metadata.Shape, "2 columns")
+	}
+}
+
+func TestCSVExtractorTextHeaderIsStillAHeader(t *testing.T) {
+	res := mustExtract(t, NewCSVExtractor(), ExtractRequest{
+		Path: writeCSV(t, "h.csv", "id,name\n1,Widget\n"),
+	})
+
+	if len(res.Metadata.Columns) != 2 || res.Metadata.Columns[0] != "id" {
+		t.Errorf("Columns = %q, want the text header preserved", res.Metadata.Columns)
+	}
+	if hasWarningContaining(res.Warnings, "no header row detected") {
+		t.Errorf("a normal header must not trip headerless detection, got %v", res.Warnings)
+	}
+}
+
+// TestCSVExtractorHasHeaderOverride covers the heuristic's known blind
+// spot in both directions: a genuine header of bare years reads as data,
+// and a headerless file of pure text reads as a header. has_header is
+// the escape hatch for exactly these.
+func TestCSVExtractorHasHeaderOverride(t *testing.T) {
+	yes, no := true, false
+
+	forced := mustExtract(t, NewCSVExtractor(), ExtractRequest{
+		Path:      writeCSV(t, "years.csv", "2024,2025\n10,20\n"),
+		HasHeader: &yes,
+	})
+	if len(forced.Metadata.Columns) != 2 || forced.Metadata.Columns[0] != "2024" {
+		t.Errorf("Columns = %q, want the numeric header honored under has_header=true", forced.Metadata.Columns)
+	}
+	if hasWarningContaining(forced.Warnings, "no header row detected") {
+		t.Errorf("an explicit has_header must not emit the auto-detect warning, got %v", forced.Warnings)
+	}
+
+	suppressed := mustExtract(t, NewCSVExtractor(), ExtractRequest{
+		Path:      writeCSV(t, "text.csv", "Widget,Red\nGadget,Blue\n"),
+		HasHeader: &no,
+	})
+	if len(suppressed.Metadata.Columns) != 0 {
+		t.Errorf("Columns = %q, want none under has_header=false", suppressed.Metadata.Columns)
+	}
+	if suppressed.Metadata.RowCount != 2 {
+		t.Errorf("RowCount = %d, want 2 under has_header=false", suppressed.Metadata.RowCount)
+	}
+}
+
+// TestCSVExtractorOffsetWindow: paging is the point of offset — rows
+// 3-4 of a 6-row file must come back with labels that say so.
+func TestCSVExtractorOffsetWindow(t *testing.T) {
+	path := writeCSV(t, "page.csv", "id,name\n1,a\n2,b\n3,c\n4,d\n5,e\n6,f\n")
+
+	res := mustExtract(t, NewCSVExtractor(), ExtractRequest{Path: path, Offset: 2, MaxRows: 2})
+
+	if !strings.Contains(res.Sections[0].Text, "3 | c") || !strings.Contains(res.Sections[0].Text, "4 | d") {
+		t.Errorf("preview = %q, want rows 3 and 4", res.Sections[0].Text)
+	}
+	if strings.Contains(res.Sections[0].Text, "1 | a") || strings.Contains(res.Sections[0].Text, "5 | e") {
+		t.Errorf("preview = %q, must contain only the requested window", res.Sections[0].Text)
+	}
+	if res.Sections[0].Label != "rows 3-4" {
+		t.Errorf("Label = %q, want %q — the label is what makes the unit unambiguous", res.Sections[0].Label, "rows 3-4")
+	}
+	// The header must survive paging; without it a later page is
+	// unreadable.
+	if len(res.Metadata.Columns) != 2 {
+		t.Errorf("Columns = %q, want the header repeated on every page", res.Metadata.Columns)
+	}
+	// RowCount stays the file's true total so the caller knows how far
+	// it can keep paging.
+	if res.Metadata.RowCount != 6 {
+		t.Errorf("RowCount = %d, want 6", res.Metadata.RowCount)
+	}
+}
+
+// TestCSVExtractorPagesCoverEveryRowExactlyOnce is the property that
+// makes paging trustworthy: walking the file in pages must reproduce it
+// in order, with no row skipped and none repeated at a boundary.
+func TestCSVExtractorPagesCoverEveryRowExactlyOnce(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("id,value\n")
+	for i := range 97 { // deliberately not a multiple of the page size
+		fmt.Fprintf(&b, "%d,v%d\n", i, i)
+	}
+	path := writeCSV(t, "many.csv", b.String())
+
+	const page = 10
+	var got []string
+	for offset := 0; ; offset += page {
+		res := mustExtract(t, NewCSVExtractor(), ExtractRequest{Path: path, Offset: offset, MaxRows: page})
+		lines := strings.Split(res.Sections[0].Text, "\n")
+		if len(lines) <= 1 { // header only == past the end
+			break
+		}
+		got = append(got, lines[1:]...) // drop the repeated header
+		if offset > 200 {
+			t.Fatal("paging failed to terminate")
+		}
+	}
+
+	if len(got) != 97 {
+		t.Fatalf("paged %d rows, want 97 (gaps or duplicates at a page boundary)", len(got))
+	}
+	for i, line := range got {
+		if want := fmt.Sprintf("%d | v%d", i, i); line != want {
+			t.Fatalf("row %d = %q, want %q — pages are out of order or overlapping", i, line, want)
+		}
+	}
+}
+
+// TestCSVExtractorOffsetPastEndIsReported: an empty window otherwise
+// looks exactly like an empty file, which would end a paging loop a
+// page early and silently drop the tail.
+func TestCSVExtractorOffsetPastEndIsReported(t *testing.T) {
+	path := writeCSV(t, "short.csv", "id,name\n1,a\n2,b\n")
+
+	res := mustExtract(t, NewCSVExtractor(), ExtractRequest{Path: path, Offset: 50})
+
+	if !hasWarningContaining(res.Warnings, "offset 50 is past the last data row") {
+		t.Errorf("an out-of-range offset must be reported, got %v", res.Warnings)
 	}
 }

@@ -12,6 +12,10 @@ import (
 	"golang.org/x/net/html/atom"
 )
 
+// maxHeadings bounds how many headings the shape summary names before
+// collapsing the rest into a count.
+const maxHeadings = 10
+
 // HTMLExtractor strips script/style content and returns visible text
 // plus headings, using golang.org/x/net/html's tokenizer (already a
 // go.mod dependency) rather than a naive tag strip — a regex-based
@@ -42,7 +46,8 @@ func (e *HTMLExtractor) Extract(ctx context.Context, req ExtractRequest) (Extrac
 	var (
 		title     string
 		headings  []string
-		text      strings.Builder
+		nHeadings int // total seen, including those past the collection cap
+		text      = newBoundedTextBuilder(req.Offset, req.MaxChars)
 		skipDepth int // >0 while inside <script> or <style>
 		inTitle   bool
 		inHeading bool
@@ -97,12 +102,17 @@ loop:
 				title = s
 			}
 			if inHeading {
-				headings = append(headings, s)
+				// Only the first maxHeadings are ever rendered, so
+				// collecting every heading in a large document just to
+				// discard the tail is the same waste as buffering all
+				// the text. One extra is retained to distinguish
+				// "exactly maxHeadings" from "more than that".
+				nHeadings++
+				if len(headings) <= maxHeadings {
+					headings = append(headings, s)
+				}
 			}
-			if text.Len() > 0 {
-				text.WriteByte(' ')
-			}
-			text.WriteString(s)
+			text.Add(s)
 		}
 	}
 
@@ -110,23 +120,21 @@ loop:
 		warnings = append(warnings, fmt.Sprintf("source file exceeds %d bytes; stopped reading at the byte cap", req.MaxBytes))
 	}
 
-	full := text.String()
-	if len(full) > req.MaxChars {
-		warnings = append(warnings, fmt.Sprintf("showing the first %d of %d characters of visible text", req.MaxChars, len(full)))
+	if notice := textWindowNotice(req.Offset, req.MaxChars, text.Total(), "visible text"); notice != "" {
+		warnings = append(warnings, notice)
 	}
-	preview := boundedString(full, req.MaxChars)
+	preview := boundedString(text.String(), req.MaxChars)
 
 	shape := "no <title>"
 	if title != "" {
 		shape = fmt.Sprintf("title: %q", title)
 	}
 	if len(headings) > 0 {
-		const maxHeadings = 10
 		shown := headings
 		suffix := ""
-		if len(shown) > maxHeadings {
+		if nHeadings > maxHeadings {
 			shown = shown[:maxHeadings]
-			suffix = ", …"
+			suffix = fmt.Sprintf(", … (%d total)", nHeadings)
 		}
 		shape += fmt.Sprintf("; headings: %s%s", strings.Join(shown, " / "), suffix)
 	}

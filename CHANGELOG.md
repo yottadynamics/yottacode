@@ -8,6 +8,7 @@ the project uses semantic versioning once it's past `1.0.0`.
 
 ### Added
 
+feature/anthropic-config-updates
 - **Prompt-cache awareness for mid-session model/provider switches.**
   Every provider's prompt cache is keyed to the specific model's
   weights — switching models mid-session always burns whatever cache
@@ -30,6 +31,33 @@ the project uses semantic versioning once it's past `1.0.0`.
     providers manage their own cache eviction with no client-exposed
     TTL. See [`yottacode-roadmap/prompt-caching.md`](yottacode-roadmap/prompt-caching.md).
 
+- **`read_document` can page through a file with `offset`** (still behind
+  `--experimental document_ingestion`). A 10k-row CSV previously showed
+  only its first `max_rows` and nothing else was reachable — raising
+  `max_chars` just re-rendered the same prefix — so "find the rows where
+  X" had to drop to `run_bash`. `offset` moves the preview window, in
+  whatever unit that format's preview is made of: data rows for CSV/TSV,
+  records for JSONL, characters for JSON/XML/HTML. One parameter rather
+  than separate row/char variants because every result labels the window
+  it returned (`rows 201-400`, `JSONL line 412`), so the unit is
+  unambiguous where it's read. The CSV header repeats on every page,
+  JSONL line labels stay absolute, row counts keep reporting the file's
+  true total, and an offset past the end is reported rather than coming
+  back as an empty window indistinguishable from an empty file. Skipped
+  rows are parsed and discarded, never retained, so deep paging costs
+  time rather than memory. Every text preview — including the raw
+  fallback a byte-capped `.json` falls back to — windows through one
+  shared helper, so no path can quietly return page 1 forever.
+
+- **`read_document` now takes `max_bytes`** (still behind
+  `--experimental document_ingestion`). The 5 MiB read cap was previously
+  unreachable from the tool, so a result that warned "source file exceeds
+  the byte cap" left the model with no recourse except dropping to
+  `run_bash`. It can now raise the allowance up to a 32 MiB ceiling —
+  and an over-ceiling request is reported as clamped rather than quietly
+  honored at a smaller value. `max_bytes` is the only cap that needs a
+  ceiling: `max_rows` and `max_chars` are transitively bounded by it.
+
 - **`/subagents stop batch <batch-id>`** — cancel every running worker in one
   dispatch batch. A batch is up to 8 workers; stopping them previously meant
   finding and typing each task id while the rest kept spending tokens. The
@@ -37,6 +65,90 @@ the project uses semantic versioning once it's past `1.0.0`.
   single worker.
 
 ### Fixed
+
+- **`read_file` can now reach past the first 512 KiB of a file.** The
+  reader took a fixed 512 KiB prefix and applied `offset` to lines within
+  *that buffer*, so every line beyond the prefix was unreachable — and
+  asking for one returned an **empty string**, indistinguishable from a
+  genuine end-of-file. On a 30,000-line log, reads silently stopped
+  working somewhere around line 14,000, and a caller paging through it
+  would conclude the file ended there. Lines before the window are now
+  streamed past and discarded, so `offset` can start anywhere while the
+  512 KiB budget still caps what a single call *returns*. Reaching a
+  distant offset costs time rather than memory, including across a
+  multi-megabyte single line, and an empty result now means only "past
+  the last line".
+
+- **`/experimental` renders as aligned columns again.** Feature names were
+  padded to a hardcoded 18 columns, but the catalog's longest name
+  (`lsp_code_intelligence`, 21) overflowed that and pushed its own `[GA]`
+  marker out of the column, so the list read as ragged. The name column is
+  now sized from the catalog itself. Descriptions, which are full
+  sentences, moved onto their own wrapped lines instead of running off the
+  right edge and being clipped mid-word by the terminal.
+
+- **`read_document` handles real-world export quirks** (still behind
+  `--experimental document_ingestion`). Three cases that each produced a
+  *wrong* answer indistinguishable from a right one:
+  - **A UTF-8 BOM no longer corrupts the read.** Windows Excel writes one
+    by default. In CSV it became part of the first column's name, so `id`
+    arrived as `<BOM>id` and every later match on that column silently
+    missed. In JSON it was worse than degraded — `encoding/json` rejects
+    the whole document with `invalid character 'ï'`, making a BOM-prefixed
+    file entirely unreadable. In JSONL it made line 1 unparseable, which
+    was then counted as a malformed line and dropped.
+  - **Semicolon/tab/pipe-delimited `.csv` is detected.** Excel writes
+    `;`-delimited CSV in every European locale; read as comma-delimited,
+    every line collapsed into one column and reported as a valid
+    one-column table. The delimiter is now sniffed from the first line
+    (counted outside quotes, so `"last, first",age` doesn't fool it), and
+    a non-default choice is reported. `.tsv` is not sniffed.
+  - **A `.json` file holding JSONL is recognized.** Read as one document
+    it doesn't degrade, it errors — `encoding/json` rejects the second
+    value and the entire file comes back unusable. Whole-document parse
+    failure now retries line-oriented, and reports the reinterpretation.
+    The bar is strict (every non-blank line must parse, and there must be
+    more than one) so a genuinely broken file still returns its original
+    `invalid JSON` error, which is the more useful answer.
+  - **One oversized JSONL record no longer suppresses the rest.** Hitting
+    the character budget stopped sampling outright, so a single fat
+    record early in a file discarded every later one — on a 7-record
+    file with one big row, 1 record came back instead of 6. Oversized
+    records are now skipped individually and counted; because labels are
+    absolute source line numbers, the gap is visible rather than
+    misleading.
+  - **Headerless files keep their first record.** Row 1 was taken as
+    column names unconditionally, which both lost that row and mislabeled
+    every column. A first row containing a number is now read as data and
+    the decision is stated; the new `has_header` argument overrides it in
+    either direction for the ambiguous cases (a real header of bare years).
+
+- **`read_document` no longer buffers a whole XML/HTML document to return a
+  preview** (still behind `--experimental document_ingestion`). Both
+  extractors accumulated the file's entire visible text and only then cut
+  it to `max_chars`, so memory scaled with the document rather than the
+  preview — waste that became worth fixing once `max_bytes` could be
+  raised toward 32 MiB. Text is now retained only up to the cap while the
+  true total is tracked separately, so the "showing the first N of M
+  characters" warning stays exact. HTML's heading collection had the same
+  shape (every heading gathered, ten ever shown) and is capped the same
+  way, now reporting the full count. Measured on an ~8 MB XML file:
+  53.5 MB/op → 36.8 MB/op, with output byte-identical.
+
+- **`read_document` names which cap truncated a JSONL sample** (still behind
+  `--experimental document_ingestion`). The CSV extractor already reported
+  its reason; the JSONL path returned a bare `showing 10 of 250 records`,
+  and a single oversized record tripping the character budget rendered as
+  `showing 0 of 250 records` with no cause at all — leaving no way to tell
+  whether to raise `max_rows` or `max_chars`.
+
+- **`read_document` is now discoverable to the model.** It was missing from
+  the system prompt's tool list entirely, so the only signal telling the
+  model when to prefer it over `read_file` was its own schema description.
+  It now appears in the list with an explicit routing rule: analyze
+  structured data with `read_document`, but keep using `read_file` when you
+  intend to edit the file, since only `read_file`'s `cat -n` output feeds
+  `edit_file` and `edit_anchored`.
 
 - **Dispatch pre-GA hardening** (still behind `--experimental dispatch`) — four
   defects that only surface once the feature is relied on:

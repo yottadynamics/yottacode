@@ -263,6 +263,14 @@ block that vision-capable models can see directly.
 | `limit` | int | `2000` | Max lines to return (text files only) |
 | `anchors` | bool | `false` | When true, prefix text rows as `line#anchor\tcontent` |
 
+**Paging large files.** A single read returns at most 512 KiB of content;
+when more follows the window, the output ends in `…[truncated]`. That
+budget caps what one call *returns*, not how far into a file `offset` may
+reach — lines before the window are streamed past and discarded, so a
+distant offset costs time rather than memory. Page a large log by
+advancing `offset` by the number of lines you got back. An empty result
+means one thing only: the offset is past the last line.
+
 **Image support.** When the path points to a recognized image file and the
 provider supports images in tool results (currently Anthropic only), the
 tool reads the raw bytes (up to 20 MiB) and returns them as an image
@@ -306,16 +314,98 @@ Each file gets its own `[truncated]` marker if needed.
 [experimental.md](experimental.md)).*
 
 Extract bounded, structured text from a CSV, TSV, JSON, JSONL, XML, or
-HTML file. Prefer this over `read_file` for these formats: `read_file`'s
-raw line-based view shears a CSV field's embedded newline into a bogus
-extra row, and dumps HTML/XML markup noise (scripts, styles, tags)
-verbatim instead of the content underneath.
+HTML file. Use it when you need to **analyze** data in one of these
+formats: `read_file`'s raw line-based view shears a CSV field's embedded
+newline into a bogus extra row, and dumps HTML/XML markup noise (scripts,
+styles, tags) verbatim instead of the content underneath.
+
+**Analyze with `read_document`, edit with `read_file`.** The two tools
+are not interchangeable by file extension. `read_file` returns `cat -n`
+output, and those line numbers and exact strings are what feed
+`edit_file` and `edit_anchored`; `read_document` returns a reformatted,
+re-pretty-printed preview that cannot drive either. So a `.json`, `.xml`,
+or `.html` file you are about to *edit* — `package.json`, `tsconfig.json`,
+an HTML template — still wants `read_file`. `.csv`, `.tsv`, and `.jsonl`
+are almost always data being read, where `read_document` is the right
+call. The routing decision is intent, not suffix, which is why it lives
+in the model's judgement rather than in an automatic dispatch inside
+`read_file`.
 
 | Param | Type | Default | Notes |
 |---|---|---|---|
 | `path` | string | — | Absolute or cwd-relative; extension must be `.csv`, `.tsv`, `.json`, `.jsonl`, `.xml`, `.html`, or `.htm` |
 | `max_rows` | int | `200` | Max CSV/TSV rows or JSONL records sampled into the preview |
 | `max_chars` | int | `20000` | Max characters of extracted text returned |
+| `offset` | int | `0` | Where the preview window starts — data rows for CSV/TSV, records for JSONL, characters for JSON/XML/HTML |
+| `has_header` | bool | auto | CSV/TSV only: whether row 1 holds column names. Omitted means auto-detect |
+| `max_bytes` | int | `5 MiB` | Max bytes read from the source file. Raise it when a result warns the file exceeded the byte cap; clamped to a 32 MiB ceiling, and the clamp is reported as a warning rather than applied silently |
+
+### Paging
+
+`offset` moves the preview window, so a file larger than one page is
+reachable rather than permanently truncated at the first `max_rows`.
+Page by repeating the call with `offset` advanced by however many
+rows/records came back:
+
+```
+read_document(path="sales.csv", max_rows=200)            → rows 1-200
+read_document(path="sales.csv", max_rows=200, offset=200) → rows 201-400
+```
+
+The unit is whatever that format's preview is made of — data rows for
+CSV/TSV, records for JSONL, characters for the JSON/XML/HTML text
+preview. There's one `offset` rather than separate `row_offset` and
+`char_offset` because every result labels the window it actually
+returned (`rows 201-400`, `document characters 11-20`), so the unit is
+unambiguous exactly where you read it.
+
+Three things hold across pages: the CSV header repeats on every page
+(later pages would be unreadable otherwise), JSONL labels stay absolute
+source line numbers (`JSONL line 412`), and `rows`/`RowCount` keeps
+reporting the file's true total so you know how far you can keep going.
+An offset past the end is reported as such — an empty window otherwise
+looks identical to an empty file and would end a paging loop one page
+early.
+
+Skipping is a forward scan, not a seek: rows are variable-length and a
+quoted field may contain newlines. Skipped content is parsed and
+discarded rather than retained, so deep paging costs time, not memory.
+It does spend the `max_bytes` budget, and a window lying past that cap
+says so rather than looking like the end of the file.
+
+### Real-world export quirks
+
+Files that come out of Excel, BI tools, and database exports rarely match
+the textbook format. Three cases are handled automatically, because each
+one otherwise produces a *wrong* answer that looks like a right one:
+
+- **UTF-8 BOM.** Windows Excel prefixes exports with a byte-order mark.
+  Go's CSV reader folds it into the first column's name (`id` arrives as
+  `<BOM>id`, so every later match on that column misses), and its JSON
+  decoder rejects the whole document with `invalid character 'ï'`. The
+  mark is stripped silently — there's no reading in which it was content.
+- **Non-comma delimiters.** Excel writes `;`-delimited `.csv` in every
+  European locale. Read as comma-delimited, each line collapses into a
+  single column and reports as a valid one-column table. The delimiter is
+  sniffed from the first line (`,`, `;`, tab, `|`, counted outside
+  quotes), and a non-default choice is always reported as a warning since
+  it changes how every row was parsed. `.tsv` is not sniffed — its
+  extension is unambiguous.
+- **No header row.** Treating row 1 as column names unconditionally both
+  loses that record and mislabels every column. A first row containing a
+  number is read as data, and the decision is stated in the warnings.
+  The known false positive is a genuine header of bare years
+  (`2024,2025`) — pass `has_header: true` for that, or `false` to force
+  the other direction.
+- **JSONL content in a `.json` file.** Read as one document it doesn't
+  degrade, it errors — `encoding/json` rejects the second value and the
+  whole file comes back unusable. When whole-document parsing fails and
+  every non-blank line parses on its own, the file is re-read as JSONL
+  and the reinterpretation is reported. The bar is deliberately strict:
+  a single malformed line means the original `invalid JSON` error stands,
+  since that's the more useful answer for a genuinely broken file.
+
+### Response shape
 
 The response always starts with a structure summary before any content:
 
@@ -328,17 +418,29 @@ The response always starts with a structure summary before any content:
 - **JSONL** — each sampled record is its own section labeled with its
   source line number (`JSONL line 412`), so the model can cite an exact
   line back to the user. Malformed lines are skipped and counted in a
-  warning, not silently dropped.
+  warning, not silently dropped. A record too large for the remaining
+  character budget is skipped individually and counted; sampling
+  continues past it, and the gap stays readable because the labels are
+  absolute line numbers.
 - **XML** — the root element name plus the most frequent child element
   tags, then the visible text content.
 - **HTML** — the `<title>` and headings, then the visible text with
   `<script>`/`<style>` bodies stripped.
 
 Every cap that actually truncated something shows up as an explicit
-warning line (e.g. `showing the first 50 of 250 data rows read`) —
-truncation is never silent. A file larger than a 5 MiB hard byte cap
-stops reading there regardless of how many rows/records that covers,
-so a pathological single-line file can't be read unbounded into memory.
+warning line naming *which* cap did it (e.g. `showing rows 1-50 of 250
+data rows read (200-row sample cap)`) — truncation is never silent, and
+the reason is always stated so you know whether to raise `max_rows`,
+`max_chars`, or `max_bytes`, or to page on with `offset`. A file larger than the byte cap stops
+reading there regardless of how many rows/records that covers, so a
+pathological single-line file can't be read unbounded into memory.
+
+`max_bytes` is the only cap with a hard ceiling (32 MiB), because it is
+the one that bounds the others — no extractor can sample more rows or
+characters than the bytes it was allowed to read. The ceiling matters
+most for `.json`, the one format that buffers its whole allowance and
+decodes it into an in-memory tree several times larger than the source
+text; the streaming extractors grow only linearly with the allowance.
 
 Read-only, no approval — same trust posture as `read_file`, including
 the same credential-path deny list.
@@ -756,6 +858,30 @@ when `$GITHUB_TOKEN` isn't set.
 
 Always prompts for approval.
 
+## pr_read
+
+Read-only fetch of a single pull request's metadata in **one API call**:
+number, title, body, state, draft flag, base/head refs, head SHA,
+mergeable state, author, labels, and URL. No diff, no check runs.
+
+Prefer this over `run_bash gh pr view --json ...` whenever the goal is
+reading PR metadata — no subprocess, and the result is structured. Reach
+for [`pr_review_context`](#pr_review_context) instead when the diff or CI
+status also matters (PR review, audit).
+
+Returns a typed snapshot keyed by section headers (`## state`, then
+`## pr`). The `## state` block flags `not_found` and
+`github_unavailable`, so a caller branches on typed fields instead of
+parsing free-text errors.
+
+| Param | Type | Default |
+|---|---|---|
+| `ref` | string | (PR for the current branch) |
+
+`ref` accepts a PR number (`"17"`) or a branch name.
+
+No approval. Parallel-safe.
+
 ## pr_review_context
 
 Composite read-only fetcher for the procedural `/git-review-pr`
@@ -859,6 +985,35 @@ tool never auto-retries, auto-edits other fields, or auto-merges.
 | `ref` | string | (uses current branch's PR) |
 | `title` | string | — |
 | `body` | string | — |
+
+Always prompts for approval.
+
+## pr_add_comment
+
+Composite mutator that posts a top-level conversation comment on a pull
+request. Used to cross-link related issues (`Refs #42`), leave follow-up
+notes after a `/git-review-pr` run, or surface structured summaries.
+
+Deterministic guarantees:
+
+- **Non-empty body:** a blank or whitespace-only body is rejected in Go
+  before dialing the adapter (`posted=false reason=validation`).
+- **Body cap:** 16 KiB (16384 characters) of comment Markdown, also
+  enforced before the adapter call.
+- **Scope-pinned:** top-level conversation comments only. Inline review
+  comments on specific lines are a different GitHub API surface and are
+  deliberately out of scope.
+
+The approval modal renders the full body, so the comment is read before
+it lands. Returns a typed envelope. On success: `posted=true url=<url>`.
+Otherwise `posted=false` with `reason=` discriminating `validation`,
+`not_found`, `github_unavailable`, and `github_error` — each carrying a
+hint rather than a raw error string.
+
+| Param | Type | Default |
+|---|---|---|
+| `ref` | string | (PR for the current branch) |
+| `body` | string | — (required, <= 16384 chars) |
 
 Always prompts for approval.
 
@@ -1688,6 +1843,52 @@ Merge dispatch worker branches into one integration branch in a dedicated worktr
 | `base` | string | `HEAD` | Base ref for a newly created integration branch. |
 
 No approval. On clean success it reports the integration branch to push/open a PR from and reclaims merged worker worktrees/branches where safe.
+
+## issue_read
+
+Read-only fetch of a single GitHub issue: number, title, body, state,
+author, URL, labels, assignees, and the most-recent comments (capped).
+
+Prefer this over `run_bash gh issue view <n> --json ...` whenever the
+goal is reading issue context — no subprocess, structured result, and
+state flags the caller can branch on.
+
+Returns labeled sections `## state`, `## issue`, and `## comments`. The
+`## state` block flags `not_found` and `github_unavailable` so the caller
+can surface a clean error and stop.
+
+| Param | Type | Default |
+|---|---|---|
+| `number` | integer | — (required) |
+| `max_comments` | integer | `0` |
+
+`max_comments` caps the comment fetch: `0` uses the default of 20, `-1`
+skips comments entirely, and any positive value caps at that many.
+
+No approval. Parallel-safe.
+
+## issue_list
+
+Lists **open** issues for the current repo, with optional label,
+assignee, and milestone filters (AND-ed together). Returns lightweight
+summaries — number, title, author, URL, labels, assignees. Bodies and
+comments are dropped; follow up with [`issue_read`](#issue_read) for the
+full content of any one issue.
+
+Prefer this over `run_bash gh issue list --json ...` when enumerating
+open issues: the filter fields map directly to the GitHub API. Returns
+labeled sections `## state` and `## issues`.
+
+Returns the **first page only** (GitHub's default, roughly 30 issues).
+Refine the filters if you need a narrower set.
+
+| Param | Type | Default |
+|---|---|---|
+| `labels` | string[] | (no label filter) |
+| `assignee` | string | (no assignee filter) |
+| `milestone` | string | (no milestone filter) |
+
+No approval. Parallel-safe.
 
 ## issue_context
 
