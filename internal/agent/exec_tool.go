@@ -93,17 +93,24 @@ func (t *RunBashTool) Execute(ctx context.Context, argsJSON string) (string, err
 // cappedWriter drops bytes past runBashMaxStreamBytes and emits a
 // `[output truncated]` notice in-band so the model sees the cap.
 type cappedWriter struct {
-	buf *bytes.Buffer
+	buf       *bytes.Buffer
+	truncated bool
 }
 
 func (w *cappedWriter) Write(p []byte) (int, error) {
+	if w.truncated {
+		return len(p), nil
+	}
 	remaining := runBashMaxStreamBytes - w.buf.Len()
 	if remaining <= 0 {
+		w.buf.WriteString("\n…[output truncated]\n")
+		w.truncated = true
 		return len(p), nil
 	}
 	if len(p) > remaining {
 		w.buf.Write(p[:remaining])
 		w.buf.WriteString("\n…[output truncated]\n")
+		w.truncated = true
 		return len(p), nil
 	}
 	return w.buf.Write(p)
