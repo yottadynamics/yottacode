@@ -8,6 +8,28 @@ the project uses semantic versioning once it's past `1.0.0`.
 
 ### Added
 
+- **Prompt-cache awareness for mid-session model/provider switches.**
+  Every provider's prompt cache is keyed to the specific model's
+  weights — switching models mid-session always burns whatever cache
+  existed, regardless of provider. yottacode now surfaces this instead
+  of leaving it invisible until the next turn runs slow:
+  - A status-line warning after any of the five call sites that change
+    the active model mid-session: `/model <name>`, the model picker,
+    `/provider use <name>`, and the two router-role switches (Plan
+    mode swaps onto the advisor model, Auto mode onto the implementer,
+    when `/advisor` routing is on).
+  - A proactive note in the `/model` and `/provider` → "Switch
+    provider" picker headers, visible before committing to a switch.
+  - **`cache.anthropic_ttl`** — a new config.toml opt-in (`"1h"`,
+    default `"5m"`) that extends Anthropic's cache breakpoint TTL, so
+    sessions resumed after a longer idle gap, or Plan/Auto round-trips
+    with a routed advisor/implementer pair, have a real chance to hit
+    cache instead of always missing after 5 minutes. Costs 2x on cache
+    writes instead of 1.25x — off by default since it's a genuine
+    cost/latency tradeoff, not a universal win. Anthropic-only; other
+    providers manage their own cache eviction with no client-exposed
+    TTL. See [`yottacode-roadmap/prompt-caching.md`](yottacode-roadmap/prompt-caching.md).
+
 - **`/subagents stop batch <batch-id>`** — cancel every running worker in one
   dispatch batch. A batch is up to 8 workers; stopping them previously meant
   finding and typing each task id while the rest kept spending tokens. The
