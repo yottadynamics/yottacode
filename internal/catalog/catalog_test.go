@@ -163,6 +163,12 @@ func TestGet_OpenAIAuthFromModelsFile(t *testing.T) {
 	}
 	if err := openaiauth.SaveModels(path, openaiauth.ModelsFile{
 		Models: []string{"gpt-5.5", "gpt-5.4", "gpt-9-future"},
+		DisplayNames: map[string]string{
+			"gpt-5.5": "GPT-5.5",
+			"gpt-5.4": "GPT-5.4",
+			// gpt-9-future deliberately has no entry — exercises the
+			// ID-as-label fallback for a slug the scan didn't name.
+		},
 	}); err != nil {
 		t.Fatalf("SaveModels: %v", err)
 	}
@@ -173,7 +179,7 @@ func TestGet_OpenAIAuthFromModelsFile(t *testing.T) {
 	wantLabels := map[string]string{
 		"gpt-5.5":      "GPT-5.5",
 		"gpt-5.4":      "GPT-5.4",
-		"gpt-9-future": "gpt-9-future", // unrecognised → ID as label
+		"gpt-9-future": "gpt-9-future", // no DisplayNames entry → ID as label
 	}
 	for _, m := range got {
 		if want := wantLabels[m.ID]; m.DisplayName != want {
@@ -181,14 +187,6 @@ func TestGet_OpenAIAuthFromModelsFile(t *testing.T) {
 		}
 		if m.Provider != "openai-auth" {
 			t.Errorf("Provider for %q = %q, want openai-auth", m.ID, m.Provider)
-		}
-	}
-}
-
-func TestOpenAIAuthLabelsCoverDefaultCandidates(t *testing.T) {
-	for _, id := range openaiauth.DefaultCandidates {
-		if _, ok := openAIAuthLabels[id]; !ok {
-			t.Errorf("openAIAuthLabels missing entry for default candidate %q", id)
 		}
 	}
 }
