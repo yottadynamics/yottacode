@@ -160,11 +160,9 @@ func TestOpenAIAuthCmd_TreeShape(t *testing.T) {
 	}
 }
 
-// TestOpenAIAuthLogin_HasCandidatesFlag verifies the maintainer-only
-// flag the standalone probe binary used to expose now lives on the
-// blessed user-facing surface. Lookup-only — wiring the flag into a
-// scan needs the OAuth fixture.
-func TestOpenAIAuthLogin_HasCandidatesFlag(t *testing.T) {
+// TestOpenAIAuthLogin_HasStoreFlag is lookup-only — wiring the flag
+// into a real scan needs the OAuth fixture.
+func TestOpenAIAuthLogin_HasStoreFlag(t *testing.T) {
 	tree := newOpenAIAuthCmd()
 	var login *cobra.Command
 	for _, sub := range tree.Commands() {
@@ -175,9 +173,6 @@ func TestOpenAIAuthLogin_HasCandidatesFlag(t *testing.T) {
 	}
 	if login == nil {
 		t.Fatal("login subcommand missing from openai-auth tree")
-	}
-	if f := login.Flags().Lookup("candidates"); f == nil {
-		t.Errorf("login is missing --candidates flag")
 	}
 	if f := login.Flags().Lookup("store"); f == nil {
 		t.Errorf("login is missing --store flag")

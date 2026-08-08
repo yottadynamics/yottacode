@@ -38,18 +38,6 @@ var curatedKinds = map[string]bool{
 	"vertex-anthropic": true,
 }
 
-// openAIAuthLabels maps the known openai-auth model IDs to friendly
-// display names for the picker. Unknown IDs (e.g. a candidate added
-// ad-hoc via `yottacode openai-auth login --candidates`) fall through
-// to using the ID as the display name in wrapOpenAIAuthIDs.
-var openAIAuthLabels = map[string]string{
-	"gpt-5.5":       "GPT-5.5",
-	"gpt-5.4":       "GPT-5.4",
-	"gpt-5.4-mini":  "GPT-5.4 Mini",
-	"gpt-5.3-codex": "GPT-5.3 Codex",
-	"gpt-5.2":       "GPT-5.2",
-}
-
 // openAIAuthModels reads ~/.yottacode/auth/openai-auth-models.json
 // (written after every successful login) and converts the IDs to
 // catalog.Model. Returns nil when the file is missing or unreadable —
@@ -67,17 +55,19 @@ func openAIAuthModels() []Model {
 	if err != nil || len(mf.Models) == 0 {
 		return nil
 	}
-	return wrapOpenAIAuthIDs(mf.Models)
+	return wrapOpenAIAuthIDs(mf.Models, mf.DisplayNames)
 }
 
-// wrapOpenAIAuthIDs lifts bare IDs into catalog.Model, attaching
-// friendly display names from openAIAuthLabels with the ID as a
-// fallback for unrecognised entries.
-func wrapOpenAIAuthIDs(ids []string) []Model {
+// wrapOpenAIAuthIDs lifts bare IDs into catalog.Model, attaching the
+// display name the live catalog scan recorded for each slug (see
+// openaiauth.ScanAndPersist). Falls back to the bare ID when the
+// models file predates DisplayNames or the scan didn't get one for
+// that slug.
+func wrapOpenAIAuthIDs(ids []string, displayNames map[string]string) []Model {
 	out := make([]Model, 0, len(ids))
 	for _, id := range ids {
-		display, ok := openAIAuthLabels[id]
-		if !ok {
+		display := displayNames[id]
+		if display == "" {
 			display = id
 		}
 		out = append(out, Model{

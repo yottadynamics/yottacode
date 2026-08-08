@@ -9,28 +9,23 @@ import (
 	"time"
 )
 
-// ModelsFile is the on-disk shape of a successful model scan. Sibling
-// of TokenSet — same auth/ directory, same 0600 mode, same atomic
-// write template. Wrapping the slice (rather than emitting bare
-// `[]string`) leaves room for future fields like context windows or
-// capability flags without breaking older binaries.
+// ModelsFile is the on-disk shape of a successful model catalog fetch.
+// Sibling of TokenSet — same auth/ directory, same 0600 mode, same
+// atomic write template. Wrapping the slice (rather than emitting
+// bare `[]string`) leaves room for future fields like context windows
+// or capability flags without breaking older binaries.
 //
-// Presence of this file on disk implies "a real scan succeeded at
-// ScannedAt"; failed scans must NOT write the file (the previous file,
-// if any, stays as the last-known-good list).
+// Presence of this file on disk implies "a real fetch succeeded at
+// ScannedAt"; failed fetches must NOT write the file (the previous
+// file, if any, stays as the last-known-good list).
 //
-// Models is the OK-only filtered subset that the adapter and catalog
-// consult. Results is the full per-candidate data — same shape the
-// CLI table renders — kept around so users can audit a verdict
-// after the fact ("why is gpt-5.4 in the OK list? — oh, the codex
-// backend returned 429, not 200"). Readers that just want "what
-// can the user pick" should use Models; tooling that wants to debug
-// or re-render the table should use Results.
+// DisplayNames maps a Models slug to the label the live catalog
+// reported for it (ModelsFile written by an older binary may lack an
+// entry for a given slug; readers fall back to the bare slug).
 type ModelsFile struct {
-	ScannedAt  time.Time    `json:"scanned_at"`
-	Candidates []string     `json:"candidates"`
-	Models     []string     `json:"models"`
-	Results    []ScanResult `json:"results,omitempty"`
+	ScannedAt    time.Time         `json:"scanned_at"`
+	Models       []string          `json:"models"`
+	DisplayNames map[string]string `json:"display_names,omitempty"`
 }
 
 // ErrModelsNotFound is returned by LoadModels when no models file
