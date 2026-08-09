@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 
 	"github.com/yottadynamics/yottacode/internal/agent"
 	"github.com/yottadynamics/yottacode/internal/config"
@@ -45,35 +45,98 @@ func TestUpdateSandboxPicker_UpDownNavigatesAndEscCloses(t *testing.T) {
 		t.Fatalf("cursor should start on the current mode (off, by default), got %v", m.sandboxPicker.cursor)
 	}
 
-	m, _ = m.updateSandboxPicker(tea.KeyMsg{Type: tea.KeyUp})
+	m, _ = m.updateSandboxPicker(tea.KeyPressMsg{Code: tea.KeyUp})
 	if m.sandboxPicker.cursor != sandboxModeRegular {
 		t.Errorf("Up from the bottom row should move to Regular, got %v", m.sandboxPicker.cursor)
 	}
-	m, _ = m.updateSandboxPicker(tea.KeyMsg{Type: tea.KeyUp})
+	m, _ = m.updateSandboxPicker(tea.KeyPressMsg{Code: tea.KeyUp})
 	if m.sandboxPicker.cursor != sandboxModeAutoAllow {
 		t.Errorf("Up should reach the top row (AutoAllow), got %v", m.sandboxPicker.cursor)
 	}
-	m, _ = m.updateSandboxPicker(tea.KeyMsg{Type: tea.KeyUp})
+	m, _ = m.updateSandboxPicker(tea.KeyPressMsg{Code: tea.KeyUp})
 	if m.sandboxPicker.cursor != sandboxModeAutoAllow {
 		t.Errorf("Up at the top row should stay put, got %v", m.sandboxPicker.cursor)
 	}
 
-	m, _ = m.updateSandboxPicker(tea.KeyMsg{Type: tea.KeyDown})
+	m, _ = m.updateSandboxPicker(tea.KeyPressMsg{Code: tea.KeyDown})
 	if m.sandboxPicker.cursor != sandboxModeRegular {
 		t.Errorf("Down should move to the next row, got %v", m.sandboxPicker.cursor)
 	}
-	m, _ = m.updateSandboxPicker(tea.KeyMsg{Type: tea.KeyDown})
+	m, _ = m.updateSandboxPicker(tea.KeyPressMsg{Code: tea.KeyDown})
 	if m.sandboxPicker.cursor != sandboxModeOff {
 		t.Errorf("Down should move to the last row, got %v", m.sandboxPicker.cursor)
 	}
-	m, _ = m.updateSandboxPicker(tea.KeyMsg{Type: tea.KeyDown})
+	m, _ = m.updateSandboxPicker(tea.KeyPressMsg{Code: tea.KeyDown})
 	if m.sandboxPicker.cursor != sandboxModeOff {
 		t.Errorf("Down at the bottom row should stay put, got %v", m.sandboxPicker.cursor)
 	}
 
-	m, _ = m.updateSandboxPicker(tea.KeyMsg{Type: tea.KeyEsc})
+	m, _ = m.updateSandboxPicker(tea.KeyPressMsg{Code: tea.KeyEsc})
 	if m.sandboxPickerOpen {
 		t.Error("Esc should close the picker")
+	}
+}
+
+func TestUpdateSandboxPicker_EnterRequiresExplicitConfirmation(t *testing.T) {
+	m := newTestModel(t)
+	m.cfg.AutoMode = &agent.AutoModeState{}
+	m, _ = m.openSandboxPicker()
+	m.sandboxPicker.cursor = sandboxModeRegular
+
+	// First Enter only arms confirmation. It must not write config or close the
+	// picker because changing command isolation is too safety-sensitive for a
+	// single list-selection keypress.
+	m, _ = m.updateSandboxPicker(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if !m.sandboxPickerOpen || m.sandboxPicker == nil || !m.sandboxPicker.confirming {
+		t.Fatalf("first Enter should keep the picker open in confirming state: open=%v picker=%#v", m.sandboxPickerOpen, m.sandboxPicker)
+	}
+	reloaded, err := config.LoadDefault()
+	if err != nil {
+		t.Fatalf("reload after preview Enter: %v", err)
+	}
+	if reloaded.Sandbox.Backend == "podman" {
+		t.Fatal("first Enter should not persist the sandbox backend")
+	}
+
+	m, _ = m.updateSandboxPicker(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if m.sandboxPickerOpen {
+		t.Fatal("second Enter should confirm and close the picker")
+	}
+	reloaded, err = config.LoadDefault()
+	if err != nil {
+		t.Fatalf("reload after confirm Enter: %v", err)
+	}
+	if reloaded.Sandbox.Backend != "podman" {
+		t.Fatalf("confirmed sandbox backend = %q, want podman", reloaded.Sandbox.Backend)
+	}
+}
+
+func TestUpdateSandboxPicker_EscFromConfirmationReturnsToPicker(t *testing.T) {
+	m := newTestModel(t)
+	m, _ = m.openSandboxPicker()
+	m.sandboxPicker.cursor = sandboxModeRegular
+	m.sandboxPicker.confirming = true
+
+	m, _ = m.updateSandboxPicker(tea.KeyPressMsg{Code: tea.KeyEsc})
+	if !m.sandboxPickerOpen {
+		t.Fatal("Esc from confirmation should return to the picker, not close it")
+	}
+	if m.sandboxPicker.confirming {
+		t.Fatal("Esc from confirmation should clear confirming state")
+	}
+}
+
+func TestUpdateSandboxPicker_EscCloseDoesNotReopenSlashPalette(t *testing.T) {
+	m := newTestModel(t)
+	m.openSlashPalette()
+	m, _ = m.openSandboxPicker()
+
+	m, _ = m.updateSandboxPicker(tea.KeyPressMsg{Code: tea.KeyEsc})
+	if m.sandboxPickerOpen {
+		t.Fatal("Esc should close the sandbox picker")
+	}
+	if m.paletteOpen {
+		t.Fatal("Esc should not reopen the slash palette after closing /sandbox")
 	}
 }
 
@@ -209,6 +272,16 @@ func TestRenderSandboxPicker_ShowsThreeRowsAndCurrentCheckmark(t *testing.T) {
 	for _, want := range []string{"Sandbox run_bash, with auto-allow", "Sandbox run_bash, with regular permissions", "No sandbox"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("render missing row %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestRenderSandboxPicker_ConfirmationCopy(t *testing.T) {
+	p := &sandboxPickerState{cursor: sandboxModeRegular, confirming: true, detected: true, status: sandbox.Status{Installed: true, ImagePresent: true}}
+	got := renderSandboxPicker(p)
+	for _, want := range []string{"↵ confirm · esc back", "Press Enter again to persist Sandbox run_bash, with regular permissions"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("confirmation render missing %q:\n%s", want, got)
 		}
 	}
 }

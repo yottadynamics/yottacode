@@ -122,9 +122,10 @@ three-row picker:
 
 The backend selection does **not** hot-swap the running session. `RunBashTool`
 gets its `Sandbox` once, during session startup. Restart yottacode or start a
-new session for backend changes to affect command execution. The picker always
-says this after a backend selection so users do not mistake a config write for a
-live isolation change.
+new session for backend changes to affect command execution. The picker requires
+an explicit second Enter before it writes config, then always says restart/new
+session is required so users do not mistake a config write for a live isolation
+change.
 
 The picker also runs a local, network-free detection pass (`podman image exists
 <image>`) and shows warnings if Podman is missing or if the configured base
