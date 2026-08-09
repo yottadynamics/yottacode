@@ -826,6 +826,13 @@ type Model struct {
 	routerPickerOpen bool
 	routerPicker     *routerPickerState
 
+	// sandboxPickerOpen/sandboxPicker drive the /sandbox overlay: a
+	// three-row menu for choosing how run_bash executes (podman sandbox
+	// with this session's auto mode, podman sandbox with regular
+	// permissions, or no sandbox).
+	sandboxPickerOpen bool
+	sandboxPicker     *sandboxPickerState
+
 	mcpPickerOpen bool
 	mcpPicker     *mcpPickerState
 
@@ -1308,6 +1315,13 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	}
+	if det, ok := msg.(sandboxDetectMsg); ok {
+		if m.sandboxPicker != nil {
+			m.sandboxPicker.status = det.status
+			m.sandboxPicker.detected = true
+		}
+		return m, nil
+	}
 	if pr, ok := msg.(prStatusMsg); ok {
 		m.currentPR = pr.number
 		return m, nil
@@ -1482,6 +1496,9 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.routerPickerOpen {
 			return m.updateRouterPicker(msg)
+		}
+		if m.sandboxPickerOpen {
+			return m.updateSandboxPicker(msg)
 		}
 		if m.skillsMenuOpen {
 			return m.updateSkillsMenu(msg)
@@ -2679,7 +2696,7 @@ func (m Model) anyOverlayOpen() bool {
 		m.embedSetupOpen || m.memoryPickerOpen || m.recallPickerOpen || m.codeMapPickerOpen || m.sessionsPickerOpen ||
 		m.plansPickerOpen || m.checkpointsPickerOpen || m.subagentsPickerOpen ||
 		m.routerPickerOpen || m.themePickerOpen || m.effortPickerOpen || m.skillsMenuOpen ||
-		m.skillsPickerOpen || m.mcpPickerOpen
+		m.skillsPickerOpen || m.mcpPickerOpen || m.sandboxPickerOpen
 }
 
 // overlayClosed reports whether the transition from this model (pre-update)
@@ -2768,6 +2785,9 @@ func (m Model) View() string {
 	}
 	if m.routerPickerOpen && m.routerPicker != nil {
 		return m.renderInlineOverlay(renderRouterPicker(m.routerPicker))
+	}
+	if m.sandboxPickerOpen && m.sandboxPicker != nil {
+		return m.renderInlineOverlay(renderSandboxPicker(m.sandboxPicker))
 	}
 	if m.themePickerOpen && m.themePicker != nil {
 		return m.renderInlineOverlay(renderThemePicker(m.themePicker, m.inlineOverlayWidth()))

@@ -9,11 +9,23 @@ import (
 	"os/exec"
 )
 
-// RunBashTool runs a shell command in cwd via /bin/sh -c. Always
-// requires approval. There is no sandbox today; for real isolation,
-// run yottacode itself inside a container.
+// RunBashTool runs a shell command in cwd via /bin/sh -c. Always requires
+// approval. Command execution routes through Sandbox — nil selects
+// HostSandbox (today's direct-on-host behavior); a config/experimental-flag
+// gated PodmanSandbox (internal/sandbox) provides real isolation.
 type RunBashTool struct {
 	Cwd *CwdRef
+	// Sandbox is nil-safe: a nil Sandbox behaves exactly like HostSandbox,
+	// so every call site that doesn't set it keeps today's behavior.
+	Sandbox Sandbox
+}
+
+// sandbox returns t.Sandbox, or HostSandbox{} when unset.
+func (t *RunBashTool) sandbox() Sandbox {
+	if t.Sandbox != nil {
+		return t.Sandbox
+	}
+	return HostSandbox{}
 }
 
 func (t *RunBashTool) Name() string { return "run_bash" }
@@ -42,7 +54,11 @@ func (t *RunBashTool) PreviewCall(argsJSON string) string {
 		Command string `json:"command"`
 	}
 	_ = json.Unmarshal([]byte(argsJSON), &a)
-	return fmt.Sprintf("run_bash: %s", a.Command)
+	preview := fmt.Sprintf("run_bash: %s", a.Command)
+	if sb := t.sandbox(); sb.Label() != (HostSandbox{}).Label() {
+		preview = sb.Label() + " " + preview
+	}
+	return preview
 }
 
 // runBashMaxStreamBytes caps each of stdout/stderr so a runaway
@@ -71,8 +87,7 @@ func (t *RunBashTool) Execute(ctx context.Context, argsJSON string) (string, err
 	if blocked, reason := IsHardlineCommand(a.Command); blocked {
 		return fmt.Sprintf("BLOCKED (hardline): %s. This command is on the unconditional blocklist and cannot be run through the agent — not even with --yolo. If you genuinely need it, run it yourself in a terminal outside the agent.", reason), nil
 	}
-	c := exec.CommandContext(ctx, "/bin/sh", "-c", a.Command)
-	c.Dir = t.Cwd.Get()
+	c := t.sandbox().Command(ctx, a.Command, t.Cwd.Get())
 	var stdout, stderr bytes.Buffer
 	c.Stdout = &cappedWriter{buf: &stdout}
 	c.Stderr = &cappedWriter{buf: &stderr}
@@ -86,9 +101,33 @@ func (t *RunBashTool) Execute(ctx context.Context, argsJSON string) (string, err
 		return "", fmt.Errorf("run_bash: %w", err)
 	}
 	exit := c.ProcessState.ExitCode()
-	return fmt.Sprintf("exit=%d\n--- stdout ---\n%s\n--- stderr ---\n%s",
-		exit, stdout.String(), stderr.String()), nil
+	result := fmt.Sprintf("exit=%d\n--- stdout ---\n%s\n--- stderr ---\n%s",
+		exit, stdout.String(), stderr.String())
+	if exit == podmanInfraExitCode && t.sandbox().Label() == podmanSandboxLabel {
+		// podman's own exit-code convention (125 = podman itself failed —
+		// bad container/cwd/image/network setup; 126/127 = the invoked
+		// command couldn't be found/run; anything else passes the
+		// contained command's own exit code straight through). Without
+		// this note, a dead or misconfigured sandbox container surfaces
+		// as an ordinary-looking exit=125 with podman's own error text
+		// sitting in the stderr slot, indistinguishable in shape from
+		// the user's own command failing — nothing tells the model this
+		// is an infrastructure problem rather than a scripting one.
+		result = "NOTE: exit=125 is podman's own convention for a podman-level failure (not the command's exit code) — the sandbox container itself may need attention (see /sandbox). " + result
+	}
+	return result, nil
 }
+
+// podmanInfraExitCode and podmanSandboxLabel encode just enough of
+// PodmanSandbox's convention to annotate this one case, without
+// internal/agent importing internal/sandbox (internal/agent stays
+// unaware of any concrete Sandbox implementation — see
+// internal/sandbox/podman.go's package doc) — Label() is already part
+// of the Sandbox interface, so comparing against it costs nothing new.
+const (
+	podmanInfraExitCode = 125
+	podmanSandboxLabel  = "[podman-sandbox]"
+)
 
 // cappedWriter drops bytes past runBashMaxStreamBytes and emits a
 // `[output truncated]` notice in-band so the model sees the cap.

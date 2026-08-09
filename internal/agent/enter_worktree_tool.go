@@ -27,6 +27,14 @@ import (
 // warrants an explicit user click.
 type EnterWorktreeTool struct {
 	Cwd *CwdRef
+	// Sandbox is nil when run_bash executes on the host (today's
+	// default). Non-nil means a container-backed Sandbox (e.g.
+	// PodmanSandbox) is active for this session — Execute then refuses:
+	// the container only has the session's ORIGINAL cwd bind-mounted
+	// (set once at session startup), so swapping CwdRef to a worktree
+	// path would point every subsequent run_bash's `podman exec -w` at a
+	// directory the container can't see, silently breaking it.
+	Sandbox Sandbox
 }
 
 func (t *EnterWorktreeTool) Name() string { return "enter_worktree" }
@@ -94,6 +102,9 @@ func (t *EnterWorktreeTool) Execute(ctx context.Context, argsJSON string) (strin
 	}
 	if a.Base != "fresh" && a.Base != "head" {
 		return "", fmt.Errorf("enter_worktree: base must be 'fresh' or 'head', got %q", a.Base)
+	}
+	if t.Sandbox != nil {
+		return "", fmt.Errorf("enter_worktree: not available while the podman command sandbox is active for this session — the container only has the original session directory mounted, and there's no way to remount it mid-session. Start a fresh session already inside a worktree instead (`yottacode --worktree <name>`), or restart without sandbox before entering a worktree")
 	}
 
 	repoRoot, err := worktree.ResolveRepoRoot(ctx, t.Cwd.Get())
@@ -195,4 +206,3 @@ func (t *EnterWorktreeTool) swapCwd(newDir string) error {
 	}
 	return nil
 }
-

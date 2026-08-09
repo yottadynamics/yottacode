@@ -30,6 +30,7 @@ import (
 	"github.com/yottadynamics/yottacode/internal/lsp"
 	"github.com/yottadynamics/yottacode/internal/memory"
 	"github.com/yottadynamics/yottacode/internal/permissions"
+	"github.com/yottadynamics/yottacode/internal/sandbox"
 	"github.com/yottadynamics/yottacode/internal/session"
 	"github.com/yottadynamics/yottacode/internal/skills"
 	"github.com/yottadynamics/yottacode/internal/subagents"
@@ -272,6 +273,25 @@ func Run(ctx context.Context, opts cli.ChatOptions, prompt string) error {
 		codeMapProvider = &codemap.CachedProvider{Options: codemap.BuildOptions{Root: cwd, Source: codemap.LSPSource{Manager: lspManager, Servers: fileCfg.LSP.Servers, Root: cwd}}}
 	}
 
+	// Podman command sandbox (roadmap/sandbox-podman.md): opt-in via the
+	// "sandbox" experimental feature + [sandbox].backend = "podman". A
+	// construction failure is fatal to startup — never falls back to
+	// HostSandbox silently. sandboxFactory gives dispatch write-workers
+	// their own container inheriting the same posture.
+	var cmdSandbox agent.Sandbox
+	var sandboxFactory agent.SandboxFactory
+	if expSet.IsEnabled(experimental.Sandbox) && fileCfg.Sandbox.Backend == "podman" {
+		ps, err := sandbox.NewPodmanSandbox(ctx, fileCfg.Sandbox, sess.ID, cwd)
+		if err != nil {
+			return fmt.Errorf("sandbox: %w", err)
+		}
+		cmdSandbox = ps
+		defer func() { _ = cmdSandbox.Close() }()
+		sandboxFactory = func(ctx context.Context, wtDir, taskID string) (agent.Sandbox, error) {
+			return sandbox.NewPodmanSandbox(ctx, fileCfg.Sandbox, sess.ID+"-"+taskID, wtDir)
+		}
+	}
+
 	reg := agent.NewRegistry()
 	// Core cwd-bound tools — shared with the TUI build and the dispatch
 	// worktree-child registry via RegisterCoreCwdTools. Oneshot's extras
@@ -287,10 +307,11 @@ func Run(ctx context.Context, opts cli.ChatOptions, prompt string) error {
 		CodeMapProvider:         codeMapProvider,
 		EnableSyntaxRanges:      true,
 		EnableDocumentIngestion: expSet.IsEnabled(experimental.DocumentIngestion),
+		Sandbox:                 cmdSandbox,
 	})
 	// Git worktree tools. enter_worktree / exit_worktree always prompt
 	// (auto-mode safety floor); see IsAutoModeSafetyFloor.
-	reg.Register(&agent.EnterWorktreeTool{Cwd: cwdRef})
+	reg.Register(&agent.EnterWorktreeTool{Cwd: cwdRef, Sandbox: cmdSandbox})
 	reg.Register(&agent.ExitWorktreeTool{Cwd: cwdRef})
 	reg.Register(&agent.WorktreeStatusTool{Cwd: cwdRef})
 	reg.Register(&agent.GitWorktreeListTool{Cwd: cwdRef})
@@ -382,7 +403,7 @@ func Run(ctx context.Context, opts cli.ChatOptions, prompt string) error {
 
 	// Dispatch + integrate (foreground in oneshot when enabled).
 	dispatchEnabled := expSet.IsEnabled(experimental.Dispatch)
-	reg.Register(&agent.DispatchTool{Agent: agentTool, Enabled: dispatchEnabled, EnableLSP: true, LSPServers: fileCfg.LSP.Servers, LSPDisabled: fileCfg.LSP.Disabled, EnableSyntaxRanges: true, EnableDocumentIngestion: expSet.IsEnabled(experimental.DocumentIngestion)})
+	reg.Register(&agent.DispatchTool{Agent: agentTool, Enabled: dispatchEnabled, EnableLSP: true, LSPServers: fileCfg.LSP.Servers, LSPDisabled: fileCfg.LSP.Disabled, EnableSyntaxRanges: true, EnableDocumentIngestion: expSet.IsEnabled(experimental.DocumentIngestion), SandboxFactory: sandboxFactory})
 	reg.Register(&agent.IntegrateTool{Cwd: cwdRef, Enabled: dispatchEnabled})
 
 	// Skill tool: reuses the set loaded above for system-prompt

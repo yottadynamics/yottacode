@@ -58,6 +58,10 @@ type CoreToolDeps struct {
 	// EnableSyntaxRanges registers offline parser-backed range-selection tools.
 	// The actual edits still flow through anchored reads and edit_anchored.
 	EnableSyntaxRanges bool
+
+	// Sandbox is the command-execution backend for run_bash. Nil selects
+	// HostSandbox (today's direct-on-host behavior) — see RunBashTool.sandbox.
+	Sandbox Sandbox
 }
 
 // RegisterCoreCwdTools registers the core working-directory-bound tools —
@@ -117,7 +121,7 @@ func RegisterCoreCwdTools(reg *Registry, cwd *CwdRef, deps CoreToolDeps) {
 	reg.Register(&RollbackTool{Cwd: cwd, LSPManager: deps.LSPManager})
 
 	reg.Register(&RunTestsTool{Cwd: cwd})
-	reg.Register(&RunBashTool{Cwd: cwd})
+	reg.Register(&RunBashTool{Cwd: cwd, Sandbox: deps.Sandbox})
 
 	reg.Register(&MediaProbeTool{Cwd: cwd, DenyReadPaths: deps.DenyReads})
 	reg.Register(&MediaAnalyzeTool{Cwd: cwd, DenyReadPaths: deps.DenyReads})

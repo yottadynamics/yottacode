@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/yottadynamics/yottacode/internal/worktree"
 	"github.com/stretchr/testify/require"
+	"github.com/yottadynamics/yottacode/internal/worktree"
 )
 
 func TestEnterWorktreeCreatesAndCopiesIncludes(t *testing.T) {
@@ -68,6 +68,34 @@ func TestEnterWorktreeRejectsBadBase(t *testing.T) {
 	tool := &EnterWorktreeTool{Cwd: NewCwdRef(repo)}
 	_, err := tool.Execute(context.Background(), `{"name":"x","base":"wrong"}`)
 	require.Error(t, err)
+}
+
+// TestEnterWorktreeRejectsWhenSandboxActive: a container-backed Sandbox
+// only has the session's original cwd bind-mounted, so swapping CwdRef to
+// a worktree path would point every subsequent run_bash exec at a
+// directory the container can't see. enter_worktree must refuse loudly
+// rather than let that happen silently.
+func TestEnterWorktreeRejectsWhenSandboxActive(t *testing.T) {
+	repo := mkRepoForAgent(t)
+	tool := &EnterWorktreeTool{Cwd: NewCwdRef(repo), Sandbox: &spySandbox{label: "[podman]"}}
+	_, err := tool.Execute(context.Background(), `{"name":"x","base":"head"}`)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "podman command sandbox is active")
+	// No worktree should have been created — the refusal must happen
+	// before any side effect.
+	if _, statErr := os.Stat(worktree.Dir(repo, "x")); !os.IsNotExist(statErr) {
+		t.Errorf("worktree should not exist after a refused enter_worktree, stat err = %v", statErr)
+	}
+}
+
+// TestEnterWorktreeAllowsWhenSandboxNil confirms the common (no sandbox)
+// case is unaffected — a nil Sandbox field behaves exactly as before this
+// guard existed.
+func TestEnterWorktreeAllowsWhenSandboxNil(t *testing.T) {
+	repo := mkRepoForAgent(t)
+	tool := &EnterWorktreeTool{Cwd: NewCwdRef(repo)}
+	_, err := tool.Execute(context.Background(), `{"name":"x","base":"head"}`)
+	require.NoError(t, err)
 }
 
 // mkRepoForAgent creates a tmp git repo with an initial commit. Kept

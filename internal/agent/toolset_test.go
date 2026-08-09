@@ -59,3 +59,26 @@ func TestRegisterCoreCwdTools_IsolatesByCwd(t *testing.T) {
 		t.Errorf("content = %q, want %q", got, "hi")
 	}
 }
+
+// TestRegisterCoreCwdTools_ThreadsSandbox pins that CoreToolDeps.Sandbox
+// reaches the registered run_bash tool — the one line in
+// RegisterCoreCwdTools every session/worker construction site depends on
+// to actually get sandboxed command execution.
+func TestRegisterCoreCwdTools_ThreadsSandbox(t *testing.T) {
+	reg := NewRegistry()
+	cwd := NewCwdRef(t.TempDir())
+	sb := &spySandbox{label: "[podman]"}
+	RegisterCoreCwdTools(reg, cwd, CoreToolDeps{WriteOpts: WritePathOptions{Cwd: cwd}, Sandbox: sb})
+
+	tool, ok := reg.Get("run_bash")
+	if !ok {
+		t.Fatal("run_bash not registered")
+	}
+	rb, ok := tool.(*RunBashTool)
+	if !ok {
+		t.Fatalf("run_bash tool is %T, want *RunBashTool", tool)
+	}
+	if rb.Sandbox != Sandbox(sb) {
+		t.Errorf("RunBashTool.Sandbox not threaded from CoreToolDeps.Sandbox")
+	}
+}
