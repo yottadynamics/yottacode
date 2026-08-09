@@ -107,6 +107,9 @@ func TestRenderSubagentDock_Hints(t *testing.T) {
 	if !strings.Contains(focused, "exit") {
 		t.Errorf("focused hint should show the exit key, got:\n%s", focused)
 	}
+	if !strings.Contains(focused, "cancel") {
+		t.Errorf("focused hint should advertise the cancel key, got:\n%s", focused)
+	}
 }
 
 func TestDockTaskLabel(t *testing.T) {
@@ -204,6 +207,47 @@ func TestUpdateDockFocus_Navigation(t *testing.T) {
 	m, _ = m.updateDockFocus(tea.KeyPressMsg{Code: tea.KeyEsc})
 	if m.dockFocused {
 		t.Fatalf("esc should exit dock focus")
+	}
+}
+
+func TestUpdateDockFocus_CancelSelected(t *testing.T) {
+	m := newTestModel(t)
+	// A single-task registry keeps which task lands at cursor 0
+	// unambiguous — List() sorts by Started, and with more than one
+	// task the tie-break order isn't something this test should pin.
+	m.subagentTasks = dockTestRegistry(1)
+	canceled := false
+	m.subagentTasks.AttachCancel("task0000-aaaa", func() { canceled = true })
+	m.dockFocused = true
+	m.dockCursor = 0
+
+	m, _ = m.updateDockFocus(tea.KeyPressMsg{Text: "s"})
+	if !canceled {
+		t.Fatalf("s should invoke the selected task's cancel func")
+	}
+	if !strings.Contains(m.transcript.String(), "canceled subagent task task0000") {
+		t.Errorf("expected a canceled-task notice in scrollback, got: %q", m.transcript.String())
+	}
+	// Cancel doesn't mark the task done synchronously (the owning
+	// goroutine does that when it observes the canceled context), so
+	// dock focus stays put and the cursor doesn't move — the user can
+	// keep canceling other rows without losing their place.
+	if !m.dockFocused {
+		t.Errorf("dock should stay focused after canceling one task")
+	}
+	if m.dockCursor != 0 {
+		t.Errorf("cursor = %d, want 0 (unchanged)", m.dockCursor)
+	}
+}
+
+func TestUpdateDockFocus_CancelWithNoCancelHookIsSilent(t *testing.T) {
+	m := newTestModel(t)
+	m.subagentTasks = dockTestRegistry(1) // no AttachCancel — task has no live cancel hook
+	m.dockFocused = true
+
+	m, _ = m.updateDockFocus(tea.KeyPressMsg{Text: "s"})
+	if strings.Contains(m.transcript.String(), "canceled") {
+		t.Errorf("should not report success when the task has no cancel hook, got: %q", m.transcript.String())
 	}
 }
 

@@ -279,10 +279,13 @@ func TestModel_ErroredReadDoesNotGroup(t *testing.T) {
 	m, _ = applyMsg(m, agentEventMsg{ev: agent.ToolStart{ToolName: "read_file", Preview: "read_file(a.go)", ArgsJSON: `{"path":"a.go"}`}})
 	m, _ = applyMsg(m, agentEventMsg{ev: agent.ToolResult{ToolName: "read_file", Output: "boom", Errored: true}})
 	got := stripANSI(m.transcript.String())
-	if strings.Contains(got, "┌ Read ·") {
+	if strings.Contains(got, "Read · ") {
 		t.Fatalf("errored read should not render grouped card:\n%s", got)
 	}
-	if !strings.Contains(got, "┌ Read(a.go)") && !strings.Contains(got, "┌ read_file(a.go)") {
+	// Glyph-agnostic: a standalone card's opening corner is ┌ when
+	// clean or ╔ when errored (see gutterFor) — this test only cares
+	// that it's the standalone shape, not which outcome glyph it uses.
+	if !strings.Contains(got, "Read(a.go)") && !strings.Contains(got, "read_file(a.go)") {
 		t.Fatalf("errored read should render standalone card:\n%s", got)
 	}
 }

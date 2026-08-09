@@ -79,7 +79,7 @@ func renderToolCard(toolName, preview, argsJSON, output string, errored bool, te
 	if !errored && toolName == "edit_file" {
 		if rows, ok := editFileDiffRows(argsJSON, width); ok {
 			out = append(out, rows...)
-			out = append(out, g.bottom.Render("└ ")+footer)
+			out = append(out, g.bottom.Render(g.bottomGlyph)+footer)
 			return strings.Join(out, "\n")
 		}
 	}
@@ -90,7 +90,7 @@ func renderToolCard(toolName, preview, argsJSON, output string, errored bool, te
 	if !errored && toolName == "write_file" {
 		if rows, ok := writeFileBodyRows(argsJSON, width); ok {
 			out = append(out, rows...)
-			out = append(out, g.bottom.Render("└ ")+footer)
+			out = append(out, g.bottom.Render(g.bottomGlyph)+footer)
 			return strings.Join(out, "\n")
 		}
 	}
@@ -116,14 +116,14 @@ func renderToolCard(toolName, preview, argsJSON, output string, errored bool, te
 	// the invocation.
 	if !errored && toolName == "git" {
 		if w := gitDestructiveWarning(preview); w != "" {
-			out = append(out, g.side.Render("│ ")+styleCardErrFooter.Render(w))
+			out = append(out, g.side.Render(g.sideGlyph)+styleCardErrFooter.Render(w))
 		}
 	}
 	if !errored && toolName == "grep" {
 		if rows, ok := grepBodyRows(argsJSON, output, width, cwd); ok {
 			rows = capPrefixedBodyRows(rows, "matches")
 			out = append(out, rows...)
-			out = append(out, g.bottom.Render("└ ")+toolFooter(toolName, output, false, cwd))
+			out = append(out, g.bottom.Render(g.bottomGlyph)+toolFooter(toolName, output, false, cwd))
 			return strings.Join(out, "\n")
 		}
 	}
@@ -177,12 +177,13 @@ func renderGroupedToolCard(items []groupedToolResult, termWidth int, cwd string)
 	out := []string{header}
 	rows := groupedToolRows(items, width)
 	out = append(out, capPrefixedBodyRows(rows, strings.ToLower(label)+" calls")...)
-	out = append(out, g.bottom.Render("└ ")+styleCardMeta.Render(groupedToolFooter(items)))
+	out = append(out, g.bottom.Render(g.bottomGlyph)+styleCardMeta.Render(groupedToolFooter(items)))
 	return strings.Join(out, "\n")
 }
 
 func groupedToolRows(items []groupedToolResult, width int) []string {
-	gutter := neutralGutter().side.Render("│ ")
+	ng := neutralGutter()
+	gutter := ng.side.Render(ng.sideGlyph)
 	gutterWidth := ansi.StringWidth(gutter)
 	bodyWidth := width - gutterWidth
 	if bodyWidth < 20 {
@@ -367,7 +368,7 @@ func countNonTruncationLines(out string) int {
 }
 
 func renderPlainBodyToolCard(out []string, g cardGutter, footer string, body []string, width int, toolName string) string {
-	gutter := g.side.Render("│ ")
+	gutter := g.side.Render(g.sideGlyph)
 	gutterWidth := ansi.StringWidth(gutter)
 	bodyWidth := width - gutterWidth
 	if bodyWidth < 20 {
@@ -405,7 +406,7 @@ func renderPlainBodyToolCard(out []string, g cardGutter, footer string, body []s
 			appendBodyLine(line)
 		}
 	}
-	out = append(out, g.bottom.Render("└ ")+footer)
+	out = append(out, g.bottom.Render(g.bottomGlyph)+footer)
 	return strings.Join(out, "\n")
 }
 
@@ -432,36 +433,51 @@ func capPrefixedBodyRows(rows []string, overflowKind string) []string {
 		}
 		label = fmt.Sprintf("…%d more %s", hidden, kind)
 	}
-	out = append(out, neutralGutter().side.Render("│ ")+styleCardMeta.Render(label))
+	ng := neutralGutter()
+	out = append(out, ng.side.Render(ng.sideGlyph)+styleCardMeta.Render(label))
 	return out
 }
 
-// cardGutter carries the three box-drawing glyph styles for one tool
-// card: the opening ┌ (top), the side │, and the closing └ (bottom).
-// Bundling them lets renderToolCard tint the whole frame by result in
-// one place instead of threading three styles through every branch.
+// cardGutter carries the three box-drawing glyphs (+ styles) for one
+// tool card: the opening top corner, the side rule, and the closing
+// bottom corner. Bundling them lets renderToolCard tint AND shape the
+// whole frame by result in one place instead of threading three
+// styles (and now two glyph sets) through every branch.
 type cardGutter struct {
-	top, side, bottom lipgloss.Style
+	top, side, bottom                lipgloss.Style
+	topGlyph, sideGlyph, bottomGlyph string
 }
 
 // gutterFor picks a card's gutter styling from its result. A failed call
-// paints every edge Error red so it stands out in a screenful of cards; a
-// clean call stays neutral Dim on every edge. (An earlier version tinted
-// the closing └ Success green on clean calls, but a green corner on nearly
-// every card was too much green in a long transcript — the red error frame
-// carries the whole scannability signal.)
+// paints every edge Error red AND switches the whole frame to a double-line
+// box (╔║╚) so it stands out even under NO_COLOR or to a colorblind user —
+// color alone used to be the only signal, identical ┌│└ on every card
+// regardless of outcome. The double border shows on every row of an
+// errored card, not just the header or footer, so the signal survives
+// however the card is scrolled into view. A clean call stays the ordinary
+// single-line frame (┌│└), neutral Dim on every edge. (An earlier version
+// tinted the closing └ Success green on clean calls, but a green corner on
+// nearly every card was too much green in a long transcript — the doubled
+// red error frame now carries the whole scannability signal.)
 func gutterFor(errored bool) cardGutter {
 	if errored {
-		return cardGutter{top: styleCardErrGutter, side: styleCardErrGutter, bottom: styleCardErrGutter}
+		return cardGutter{
+			top: styleCardErrGutter, side: styleCardErrGutter, bottom: styleCardErrGutter,
+			topGlyph: "╔ ", sideGlyph: "║ ", bottomGlyph: "╚ ",
+		}
 	}
 	return neutralGutter()
 }
 
-// neutralGutter is the all-Dim frame for cards that are neither a success
-// nor a failure — today the todo/plan snapshot, whose └ footer reports a
-// plan update rather than a tool result.
+// neutralGutter is the all-Dim, single-line frame for cards that are
+// neither a success nor a failure — today the todo/plan snapshot, whose
+// └ footer reports a plan update rather than a tool result — and for
+// clean tool calls.
 func neutralGutter() cardGutter {
-	return cardGutter{top: styleCardGutter, side: styleCardGutter, bottom: styleCardGutter}
+	return cardGutter{
+		top: styleCardGutter, side: styleCardGutter, bottom: styleCardGutter,
+		topGlyph: "┌ ", sideGlyph: "│ ", bottomGlyph: "└ ",
+	}
 }
 
 // slowDurationTag returns the compact duration shown on a slow tool
@@ -502,7 +518,7 @@ func tailTruncatedTool(toolName string) bool {
 // card (< cardMinUsefulCols) the padding would be more gap than signal,
 // so we skip it and keep the bare header.
 func renderCardHeader(preview string, g cardGutter, dur time.Duration, width int) string {
-	head := g.top.Render("┌ ") + styleCardHeader.Render(preview)
+	head := g.top.Render(g.topGlyph) + styleCardHeader.Render(preview)
 	tag := slowDurationTag(dur)
 	if tag == "" || width < cardMinUsefulCols {
 		return head

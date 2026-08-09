@@ -96,12 +96,12 @@ func renderRiskInline(s agent.CommandSegment) string {
 func styleApprovalReason(risk agent.Risk) lipgloss.Style {
 	switch risk {
 	case agent.RiskDestructive:
-		return lipgloss.NewStyle().Foreground(colorErr).Bold(true)
+		return lipgloss.NewStyle().Foreground(colorError).Bold(true)
 	case agent.RiskCaution:
-		return lipgloss.NewStyle().Foreground(colorWarn)
+		return lipgloss.NewStyle().Foreground(colorWarning)
 	default:
 		return lipgloss.NewStyle()
 	}
 }
 
-var styleApprovalSep = lipgloss.NewStyle().Foreground(colorMuted).Italic(true)
+var styleApprovalSep = lipgloss.NewStyle().Foreground(colorDim).Italic(true)

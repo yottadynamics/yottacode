@@ -59,7 +59,7 @@ func renderSubagentDock(tasks []subagents.Task, width int, defaultModel string, 
 	}
 	hint := "tab to inspect"
 	if focused {
-		hint = "↑/↓ select · enter open · q/esc exit"
+		hint = "↑/↓ select · enter open · s cancel · q/esc exit"
 	}
 
 	var b strings.Builder
@@ -233,8 +233,10 @@ func (m Model) runningSubagents() []subagents.Task {
 
 // updateDockFocus handles keystrokes while the live dock has focus:
 // up/down (or k/j) move the cursor among running subagents, Enter opens the
-// selected subagent's transcript, Esc/Tab/q return focus to the cmdline.
-// Exits automatically if every subagent finished while focused.
+// selected subagent's transcript, s cancels it (same verb + registry call as
+// /subagents stop and the /subagents picker's own 's' key), Esc/Tab/q return
+// focus to the cmdline. Exits automatically if every subagent finished while
+// focused.
 func (m Model) updateDockFocus(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 	running := m.runningSubagents()
 	if len(running) == 0 {
@@ -278,6 +280,11 @@ func (m Model) updateDockFocus(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 				}
 			case 'q':
 				m.dockFocused = false
+			case 's':
+				t := running[m.dockCursor]
+				if m.subagentTasks.Cancel(t.ID) {
+					m.appendLine(styleSubagentMeta.Render(fmt.Sprintf("canceled subagent task %s — wait a moment for the run to clean up", t.ID[:8])))
+				}
 			}
 		}
 	}

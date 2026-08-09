@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
@@ -170,7 +171,7 @@ func TestRenderModelName_NotAccentColored(t *testing.T) {
 func TestStatusBar_RendersProviderNextToModel(t *testing.T) {
 	m := newTestModel(t)
 	m.provider = "openai-auth"
-	m, _ = applyMsg(m, tea.WindowSizeMsg{Width: 120, Height: 24})
+	m, _ = applyResize(m, 120, 24)
 	plain := stripANSI(m.renderStatus())
 	if !strings.Contains(plain, "test-model") {
 		t.Errorf("status bar should include model: %q", plain)
@@ -185,7 +186,7 @@ func TestStatusBar_RendersProviderNextToModel(t *testing.T) {
 func TestStatusBar_NarrowTerminalKeepsModelAndCtx(t *testing.T) {
 	m := newTestModel(t)
 	m.provider = "openai-auth"
-	m, _ = applyMsg(m, tea.WindowSizeMsg{Width: 40, Height: 24})
+	m, _ = applyResize(m, 40, 24)
 	plain := stripANSI(m.renderStatus())
 	if !strings.Contains(plain, "test-model") {
 		t.Errorf("narrow status bar should keep model name: %q", plain)
@@ -200,7 +201,7 @@ func TestStatusBar_NarrowTerminalKeepsModelAndCtx(t *testing.T) {
 // Empty worktree on the main checkout renders no chip.
 func TestStatusBar_AutoModeNextToModel(t *testing.T) {
 	m, _ := newPlanModeTestModel(t)
-	m, _ = applyMsg(m, tea.WindowSizeMsg{Width: 120, Height: 24})
+	m, _ = applyResize(m, 120, 24)
 	m.modelName = "gpt-5.4"
 	m.cfg.AutoMode.Active.Store(true)
 	plain := stripANSI(m.renderStatus())
@@ -212,7 +213,7 @@ func TestStatusBar_AutoModeNextToModel(t *testing.T) {
 func TestStatusBar_NoWorktreeChipOnMainCheckout(t *testing.T) {
 	m := newTestModel(t)
 	m.worktree = ""
-	m, _ = applyMsg(m, tea.WindowSizeMsg{Width: 120, Height: 24})
+	m, _ = applyResize(m, 120, 24)
 	plain := stripANSI(m.renderStatus())
 	if strings.Contains(plain, "worktree:") {
 		t.Errorf("main-checkout status bar should not render worktree chip: %q", plain)
@@ -227,7 +228,7 @@ func TestStatusBar_RendersLocationChip(t *testing.T) {
 	m := newTestModel(t)
 	m.cwd = "/home/me/go/src/foo/bar"
 	m.branch = "main"
-	m, _ = applyMsg(m, tea.WindowSizeMsg{Width: 120, Height: 24})
+	m, _ = applyResize(m, 120, 24)
 	plain := stripANSI(m.renderStatus())
 	if !strings.Contains(plain, "foo/bar (main)") {
 		t.Errorf("status bar should include the location chip 'foo/bar (main)': %q", plain)
@@ -341,7 +342,7 @@ func TestStatusBar_LocationChipShowsDirWithoutBranch(t *testing.T) {
 	m := newTestModel(t)
 	m.cwd = "/home/me/go/src/foo/bar"
 	m.branch = ""
-	m, _ = applyMsg(m, tea.WindowSizeMsg{Width: 120, Height: 24})
+	m, _ = applyResize(m, 120, 24)
 	plain := stripANSI(m.renderStatus())
 	if !strings.Contains(plain, "foo/bar") {
 		t.Errorf("location chip should still show the dir when no branch: %q", plain)
@@ -358,7 +359,7 @@ func TestStatusBar_LocationChipDropsOnNarrow(t *testing.T) {
 	m := newTestModel(t)
 	m.cwd = "/home/me/go/src/some-long-project/deeply-nested-dir"
 	m.branch = "feature-really-long-branch-name"
-	m, _ = applyMsg(m, tea.WindowSizeMsg{Width: 44, Height: 24})
+	m, _ = applyResize(m, 44, 24)
 	plain := stripANSI(m.renderStatus())
 	if strings.Contains(plain, "feature-really-long-branch-name") {
 		t.Errorf("narrow status bar should drop the location chip: %q", plain)
@@ -373,7 +374,7 @@ func TestStatusBar_LocationChipDropsOnNarrow(t *testing.T) {
 func TestStatusBar_RendersCurrentPRChip(t *testing.T) {
 	m := newTestModel(t)
 	m.currentPR = 13
-	m, _ = applyMsg(m, tea.WindowSizeMsg{Width: 120, Height: 24})
+	m, _ = applyResize(m, 120, 24)
 	plain := stripANSI(m.renderStatus())
 	if !strings.Contains(plain, "PR #13") {
 		t.Errorf("status bar should include current PR chip: %q", plain)
@@ -383,7 +384,7 @@ func TestStatusBar_RendersCurrentPRChip(t *testing.T) {
 func TestStatusBar_NoCurrentPRChipWhenUndetected(t *testing.T) {
 	m := newTestModel(t)
 	m.currentPR = 0
-	m, _ = applyMsg(m, tea.WindowSizeMsg{Width: 120, Height: 24})
+	m, _ = applyResize(m, 120, 24)
 	plain := stripANSI(m.renderStatus())
 	if strings.Contains(plain, "PR #") {
 		t.Errorf("status bar should hide PR chip when no PR is detected: %q", plain)
@@ -395,7 +396,7 @@ func TestStatusBar_NoCurrentPRChipWhenUndetected(t *testing.T) {
 func TestStatusBar_NarrowTerminalDropsPRBeforeCoreSignals(t *testing.T) {
 	m := newTestModel(t)
 	m.currentPR = 13
-	m, _ = applyMsg(m, tea.WindowSizeMsg{Width: 40, Height: 24})
+	m, _ = applyResize(m, 40, 24)
 	plain := stripANSI(m.renderStatus())
 	if strings.Contains(plain, "PR #") {
 		t.Errorf("narrow status bar should drop PR chip: %q", plain)
@@ -410,7 +411,7 @@ func TestStatusBar_NarrowTerminalDropsPRBeforeCoreSignals(t *testing.T) {
 func TestStatusBar_VeryNarrowTrimsVendorPrefix(t *testing.T) {
 	m := newTestModel(t)
 	m.modelName = "nvidia/nemotron-3-super-120b-a12b"
-	m, _ = applyMsg(m, tea.WindowSizeMsg{Width: 30, Height: 24})
+	m, _ = applyResize(m, 30, 24)
 	plain := stripANSI(m.renderStatus())
 	if strings.Contains(plain, "nvidia/") {
 		t.Errorf("very narrow status bar should drop vendor prefix: %q", plain)
@@ -429,7 +430,7 @@ func TestStatusBar_RendersEffortForReasoningModel(t *testing.T) {
 	m.provider = "openai"
 	m.providerProfile.Provider = adapter.ProviderOpenAI
 	m.modelName = "gpt-5"
-	m, _ = applyMsg(m, tea.WindowSizeMsg{Width: 120, Height: 24})
+	m, _ = applyResize(m, 120, 24)
 
 	plain := stripANSI(m.renderStatus())
 	if !strings.Contains(plain, "effort: default") {
@@ -451,7 +452,7 @@ func TestStatusBar_HidesEffortForUnsupportedModel(t *testing.T) {
 	m.providerProfile.Provider = adapter.ProviderOpenAI
 	m.modelName = "gpt-4o"
 	m.reasoningEffort = "high"
-	m, _ = applyMsg(m, tea.WindowSizeMsg{Width: 120, Height: 24})
+	m, _ = applyResize(m, 120, 24)
 
 	plain := stripANSI(m.renderStatus())
 	if strings.Contains(plain, "effort:") {
@@ -467,7 +468,7 @@ func TestStatusBar_NarrowTerminalDropsEffortBeforeCoreSignals(t *testing.T) {
 	m.providerProfile.Provider = adapter.ProviderOpenAI
 	m.modelName = "gpt-5"
 	m.reasoningEffort = "high"
-	m, _ = applyMsg(m, tea.WindowSizeMsg{Width: 40, Height: 24})
+	m, _ = applyResize(m, 40, 24)
 
 	plain := stripANSI(m.renderStatus())
 	if strings.Contains(plain, "effort:") {
@@ -518,7 +519,7 @@ func TestInput_EnclosedInBorderedBox(t *testing.T) {
 // narrow rule looked like a floating underline rather than a frame.
 func TestInput_RuleSpansFullTerminalWidth(t *testing.T) {
 	m := newTestModel(t)
-	m, _ = applyMsg(m, tea.WindowSizeMsg{Width: 200, Height: 24})
+	m, _ = applyResize(m, 200, 24)
 	rule := stripANSI(m.renderInputRule())
 	if got := lipgloss.Width(rule); got != m.width {
 		t.Errorf("rule width = %d, want %d (full terminal width)", got, m.width)
@@ -540,6 +541,50 @@ func TestCursor_BlinkMsgTogglesVisibility(t *testing.T) {
 	m, _ = applyMsg(m, cursorBlinkMsg{})
 	if !m.cursorVisible {
 		t.Errorf("cursor should be visible again after second blink tick")
+	}
+}
+
+// Once idle past cursorBlinkIdleTimeout, the blink tick must stop
+// TOGGLING (freeze cursorVisible=true) even though it keeps rearming
+// itself. A frozen value renders an identical View() frame every tick,
+// which Bubble Tea's own renderer skips writing — silencing the
+// terminal writes a fully idle session was otherwise sending forever
+// (verified against a real pty: ~33 bytes every ~530ms with zero
+// input), which was fighting native text selection on scroll.
+func TestCursor_BlinkFreezesWhenIdle(t *testing.T) {
+	m := newTestModel(t)
+	m.lastInputAt = time.Now().Add(-cursorBlinkIdleTimeout - time.Second)
+
+	m, _ = applyMsg(m, cursorBlinkMsg{})
+	if !m.cursorVisible {
+		t.Fatalf("idle blink should freeze cursorVisible=true, got false")
+	}
+	m, _ = applyMsg(m, cursorBlinkMsg{})
+	if !m.cursorVisible {
+		t.Fatalf("cursor should stay frozen visible across repeated idle ticks")
+	}
+}
+
+// A keystroke must resume normal toggling on the very next tick — no
+// separate "restart" plumbing exists; every KeyPressMsg branch just
+// relies on lastInputAt having been refreshed unconditionally at the
+// top of the case.
+func TestCursor_BlinkResumesAfterKeypress(t *testing.T) {
+	m := newTestModel(t)
+	m.lastInputAt = time.Now().Add(-cursorBlinkIdleTimeout - time.Second)
+	m, _ = applyMsg(m, cursorBlinkMsg{})
+	if !m.cursorVisible {
+		t.Fatalf("setup: expected frozen visible cursor before keypress")
+	}
+
+	m, _ = applyMsg(m, tea.KeyPressMsg{Text: "h"})
+	if time.Since(m.lastInputAt) > time.Second {
+		t.Fatalf("keypress should refresh lastInputAt")
+	}
+
+	m, _ = applyMsg(m, cursorBlinkMsg{})
+	if m.cursorVisible {
+		t.Errorf("blink should resume toggling after activity: expected invisible, got visible")
 	}
 }
 

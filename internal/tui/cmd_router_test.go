@@ -4,8 +4,6 @@ import (
 	"strings"
 	"testing"
 
-	tea "charm.land/bubbletea/v2"
-
 	"github.com/yottadynamics/yottacode/internal/agent"
 	"github.com/yottadynamics/yottacode/internal/cli"
 	"github.com/yottadynamics/yottacode/internal/config"
@@ -212,7 +210,7 @@ func TestCmdRouter_BareOpensPicker(t *testing.T) {
 // TestRenderStatus_AutoPairOnlyWhileActiveMatchesSmart below.
 func TestStatusBar_RendersRoutingChip(t *testing.T) {
 	m := newTestModel(t)
-	m, _ = applyMsg(m, tea.WindowSizeMsg{Width: 200, Height: 24})
+	m, _ = applyResize(m, 200, 24)
 	m.routerMode = config.RouterModeAuto
 	m.router = &cli.RouterAdapters{FastModel: "anthropic/claude-haiku-4-5", SmartModel: "nvidia/claude-opus-4-6"}
 	m.modelName = m.router.SmartModel // active == smart: the pair is primary
@@ -235,7 +233,7 @@ func TestStatusBar_RendersRoutingChip(t *testing.T) {
 
 func TestStatusBar_ManualRoutingDoesNotAddModelSuffix(t *testing.T) {
 	m := newTestModel(t)
-	m, _ = applyMsg(m, tea.WindowSizeMsg{Width: 160, Height: 24})
+	m, _ = applyResize(m, 160, 24)
 	m.routerMode = config.RouterModeManual
 	m.router = &cli.RouterAdapters{FastModel: "claude-haiku-4-5", SmartModel: "claude-opus-4-6"}
 	m.modelName = m.router.SmartModel
@@ -250,7 +248,7 @@ func TestStatusBar_ManualRoutingDoesNotAddModelSuffix(t *testing.T) {
 
 func TestStatusBar_NoRoutingChipWhenOff(t *testing.T) {
 	m := newTestModel(t)
-	m, _ = applyMsg(m, tea.WindowSizeMsg{Width: 160, Height: 24})
+	m, _ = applyResize(m, 160, 24)
 	m.routerMode = config.RouterModeOff
 	plain := stripANSI(m.renderStatus())
 	if strings.Contains(plain, "routing") {

@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -101,6 +102,40 @@ func TestFilterPaletteAll_RanksAcrossCustomCommands(t *testing.T) {
 	}
 }
 
+// Fuzzy subsequence matching: a scattered abbreviation of the command
+// name itself ("ml" → m…odel) surfaces the command even though it's
+// neither a prefix nor a substring match.
+func TestFilterPalette_FuzzyMatchesScatteredAbbreviation(t *testing.T) {
+	got := filterPalette("/ml")
+	if len(got) != 1 || got[0].Name != "model" {
+		t.Errorf("/ml should fuzzy-match /model via scattered m…l; got %+v", got)
+	}
+}
+
+// Fuzzy ranks below prefix and substring: a query that's already a
+// prefix match for one command shouldn't lose that command's usual
+// top spot to fuzzy noise from other commands.
+func TestFilterPalette_FuzzyRanksBelowPrefixAndSubstring(t *testing.T) {
+	got := filterPalette("/gcr")
+	if len(got) == 0 || !strings.HasPrefix(got[0].Name, "git-create-") {
+		t.Errorf("/gcr should fuzzy-match the git-create-* commands; got %+v", got)
+	}
+}
+
+// Regression guard: naive unbounded subsequence matching turns any
+// short query into a near-universal match (every letter of "mo"
+// appears, in order, in "permissions", "plan", "provider", "doctor",
+// "yolo"...). The first-character anchor + span bound must keep a
+// short, common query from dragging in unrelated commands.
+func TestFilterPalette_FuzzyDoesNotMatchUnrelatedCommands(t *testing.T) {
+	got := filterPalette("/mo")
+	for _, c := range got {
+		if c.Name == "permissions" || c.Name == "plan" || c.Name == "yolo" || c.Name == "doctor" {
+			t.Errorf("/mo should not fuzzy-match unrelated command %q; got %+v", c.Name, got)
+		}
+	}
+}
+
 func TestFilterPalette_LeadingSlashOptional(t *testing.T) {
 	got := filterPalette("perm")
 	if len(got) != 1 || got[0].Name != "permissions" {
@@ -169,6 +204,67 @@ func TestRenderInlineOverlayExpandsMenuRules(t *testing.T) {
 		if got := lipgloss.Width(trimmed); got != m.width-inlineOverlayInset {
 			t.Fatalf("rule line %d width = %d, want %d", idx, got, m.width-inlineOverlayInset)
 		}
+	}
+}
+
+// clampOverlayBodyHeight keeps a live overlay's rendered content within the
+// terminal height. Bubble Tea's inline renderer falls back to a buggy
+// tail-clip when a live View() is taller than the terminal, and that
+// fallback desyncs across a resize that also changes the content's wrapped
+// row count (reproduced via a scripted pty + terminal emulator: /help open
+// on a terminal shorter than its full content, then widened, corrupted the
+// screen into dozens of repeated lines). Staying within the terminal height
+// avoids that renderer path entirely.
+func TestClampOverlayBodyHeight_NoOpWhenFits(t *testing.T) {
+	body := "a\nb\nc"
+	if got := clampOverlayBodyHeight(body, 24, 5); got != body {
+		t.Errorf("body under budget should pass through unchanged, got %q", got)
+	}
+}
+
+func TestClampOverlayBodyHeight_TruncatesWithNotice(t *testing.T) {
+	var lines []string
+	for i := 0; i < 30; i++ {
+		lines = append(lines, fmt.Sprintf("line%d", i))
+	}
+	body := strings.Join(lines, "\n")
+	got := clampOverlayBodyHeight(body, 24, 4) // budget = 24-4 = 20 rows
+	gotLines := strings.Split(got, "\n")
+	if len(gotLines) != 20 {
+		t.Fatalf("clamped body should have exactly 20 rows (19 content + notice), got %d: %q", len(gotLines), got)
+	}
+	for i := 0; i < 19; i++ {
+		if gotLines[i] != lines[i] {
+			t.Errorf("row %d = %q, want %q (kept rows must stay in order)", i, gotLines[i], lines[i])
+		}
+	}
+	if !strings.Contains(stripANSI(gotLines[19]), "11 more line(s)") {
+		t.Errorf("last row should note the 11 hidden lines (30 - 19 kept), got %q", gotLines[19])
+	}
+}
+
+func TestClampOverlayBodyHeight_NoOpWhenHeightUnknown(t *testing.T) {
+	body := strings.Repeat("x\n", 200)
+	if got := clampOverlayBodyHeight(body, 0, 4); got != body {
+		t.Errorf("termHeight<=0 (no WindowSizeMsg yet) should not clamp, got %q", got)
+	}
+}
+
+// Integration-level: renderInlineOverlay must never hand Bubble Tea a live
+// View() taller than the terminal, regardless of how tall the overlay's own
+// body content is.
+func TestRenderInlineOverlay_NeverExceedsTerminalHeight(t *testing.T) {
+	m := newTestModel(t)
+	m.width = 100
+	m.height = 20
+	var lines []string
+	for i := 0; i < 100; i++ {
+		lines = append(lines, fmt.Sprintf("skill entry %d", i))
+	}
+	out := m.renderInlineOverlay(strings.Join(lines, "\n"))
+	got := len(strings.Split(out, "\n"))
+	if got > m.height {
+		t.Errorf("overlay rendered %d rows, want at most terminal height %d", got, m.height)
 	}
 }
 

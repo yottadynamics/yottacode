@@ -111,7 +111,7 @@ func renderEditDiff(argsJSON string) (string, bool) {
 
 	header := stylePathHeader.Render(a.Path)
 	if a.ReplaceAll {
-		header += " " + lipgloss.NewStyle().Foreground(colorMuted).Render("(replace_all)")
+		header += " " + lipgloss.NewStyle().Foreground(colorDim).Render("(replace_all)")
 	}
 
 	var b strings.Builder

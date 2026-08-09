@@ -161,7 +161,7 @@ func renderMenuItem(o menuItemOpts) string {
 		// users can still tell where their cursor sits even though
 		// the row is inactive. Selecting it is a no-op handled by
 		// the parent dispatcher.
-		return lipgloss.NewStyle().Foreground(colorMuted).Italic(true).Underline(true).Render(body)
+		return lipgloss.NewStyle().Foreground(colorDim).Italic(true).Underline(true).Render(body)
 	case o.Disabled:
 		return styleEmpty.Render(body)
 	case o.Cursor:

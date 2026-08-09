@@ -40,7 +40,7 @@ var (
 	styleMCPName   = lipgloss.NewStyle().Foreground(colorContent).Bold(true)
 	styleMCPOK     = lipgloss.NewStyle().Foreground(colorSuccess)
 	styleMCPFail   = lipgloss.NewStyle().Foreground(colorError)
-	styleMCPMeta   = lipgloss.NewStyle().Foreground(colorMuted)
+	styleMCPMeta   = lipgloss.NewStyle().Foreground(colorDim)
 )
 
 // cmdMCP implements the /mcp slash command.

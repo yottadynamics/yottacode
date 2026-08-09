@@ -13,6 +13,60 @@ import (
 	"github.com/yottadynamics/yottacode/internal/tui/themes"
 )
 
+// glamour.NewTermRenderer recompiles a full chroma style sheet — expensive
+// enough that rebuilding it on every arrow key in the theme picker is worth
+// avoiding. newMarkdownRenderer's only actual behavioral axis besides width
+// is themeMonochrome (only "no-color" sets it), so refreshComponentStyles
+// should skip the rebuild whenever neither has changed.
+func TestRefreshComponentStyles_SkipsMarkdownRebuildWhenUnchanged(t *testing.T) {
+	t.Cleanup(func() { ApplyTheme(themes.DefaultName) })
+	m := newTestModel(t)
+	ApplyTheme(themes.DefaultName)
+	m = refreshComponentStyles(m)
+	first := m.md
+
+	m = refreshComponentStyles(m)
+	if m.md != first {
+		t.Errorf("refreshComponentStyles rebuilt the markdown renderer with no width/monochrome change")
+	}
+}
+
+// Arrowing between two ordinary (non-monochrome) themes must not rebuild
+// either — this is the actual noisy case the theme picker hits in practice,
+// since every non-monochrome theme produces an identical renderer.
+func TestRefreshComponentStyles_SkipsRebuildAcrossNonMonochromeThemes(t *testing.T) {
+	t.Cleanup(func() { ApplyTheme(themes.DefaultName) })
+	m := newTestModel(t)
+	ApplyTheme("nord")
+	m = refreshComponentStyles(m)
+	first := m.md
+
+	ApplyTheme("gruvbox")
+	m = refreshComponentStyles(m)
+	if m.md != first {
+		t.Errorf("switching between two non-monochrome themes should not rebuild the markdown renderer")
+	}
+}
+
+// Switching to/from the monochrome "no-color" theme must still rebuild —
+// that's the one axis where the renderer's actual output changes.
+func TestRefreshComponentStyles_RebuildsMarkdownWhenMonochromeChanges(t *testing.T) {
+	t.Cleanup(func() { ApplyTheme(themes.DefaultName) })
+	m := newTestModel(t)
+	ApplyTheme(themes.DefaultName)
+	m = refreshComponentStyles(m)
+	first := m.md
+
+	ApplyTheme("no-color")
+	m = refreshComponentStyles(m)
+	if m.md == first {
+		t.Errorf("refreshComponentStyles should rebuild when the monochrome flag changes")
+	}
+	if !m.md.monochrome {
+		t.Errorf("rebuilt renderer should record monochrome=true for the no-color theme")
+	}
+}
+
 // /theme (bare) opens the picker, attaches state, and live-applies
 // the highlighted theme so the right pane shows a preview without
 // waiting for the first arrow press.

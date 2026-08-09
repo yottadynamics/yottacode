@@ -111,6 +111,14 @@ func refreshComponentStyles(m Model) Model {
 	tiStyles.Blurred.Prompt = styleInputPrompt
 	m.textInput.SetStyles(tiStyles)
 	m.spinner.Style = styleSpinner
-	m.md = newMarkdownRenderer(m.width - 4)
+	// glamour.NewTermRenderer recompiles a full chroma style sheet, and
+	// the theme picker calls this on every cursor step — but the only
+	// axis newMarkdownRenderer actually varies on is themeMonochrome
+	// (every non-monochrome theme produces an identical renderer), so
+	// skip the rebuild unless the width or the monochrome flag actually
+	// changed since m.md was last built.
+	if wantWidth := clampMarkdownWidth(m.width - 4); m.md == nil || m.md.width != wantWidth || m.md.monochrome != themeMonochrome {
+		m.md = newMarkdownRenderer(m.width - 4)
+	}
 	return m
 }

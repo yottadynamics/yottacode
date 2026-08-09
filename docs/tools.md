@@ -129,13 +129,15 @@ go test ./internal/tui/ -run TestDemo_CardOutput -v | sed -n '/^─── /,/^--
 └ <summary footer>
 ```
 
-The gutter glyphs (`┌ │ └`) are tinted by result so a long transcript
-stays scannable: a **failed call tints the whole `┌ │ └` frame red** so
-the bad card is findable at a glance, while a clean call keeps the frame
-neutral dim. The header is bold; the footer is dim, with `exit 0` in
-green and `exit N≠0` / `✗ <error>` in bold red. Body rows are indented
-three columns under the gutter so the shape reads as "header, indented
-content, footer."
+The gutter glyphs are both tinted AND shaped by result, so the signal
+survives `NO_COLOR` and colorblindness rather than depending on red vs.
+dim alone: a **failed call switches the whole frame to a red, double-line
+`╔ ║ ╚` box**, findable at a glance even mid-scroll (every body row carries
+the doubled edge, not just the header/footer), while a clean call keeps
+the ordinary single-line `┌ │ └` frame, neutral dim. The header is bold;
+the footer is dim, with `exit 0` in green and `exit N≠0` / `✗ <error>` in
+bold red. Body rows are indented three columns under the gutter so the
+shape reads as "header, indented content, footer."
 
 **Duration tag.** When a call takes at least one second, its elapsed
 time is shown as compact header metadata (`· 4s`, `· 1m 03s`). Sub-second
@@ -238,7 +240,7 @@ output. A few tools have card-specific body shapes:
 **Footer.** Summarizes the call: `N entries`, `wrote N bytes`,
 `N lines · M bytes [(truncated)]`, `N matches`, `exit N` (colored), or
 the tool's confirmation message. When the call errored, the footer
-renders `└ ✗ <error>` in bold red and the body shows the raw error
+renders `╚ ✗ <error>` in bold red and the body shows the raw error
 verbatim (per-tool body shaping is bypassed for errors).
 
 ---

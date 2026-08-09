@@ -648,7 +648,7 @@ func renderModelPicker(p *modelPickerState, width int) string {
 // rest of the picker chrome.
 func renderProviderTabStrip(p *modelPickerState) string {
 	activeStyle := lipgloss.NewStyle().Foreground(colorAccent).Bold(true)
-	mutedStyle := lipgloss.NewStyle().Foreground(colorMuted)
+	mutedStyle := lipgloss.NewStyle().Foreground(colorDim)
 	tabs := make([]string, 0, len(p.allProviders))
 	for i, prov := range p.allProviders {
 		if i == p.providerIdx {

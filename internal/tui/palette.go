@@ -22,44 +22,83 @@ func (m *Model) openSlashPalette() {
 
 // paletteMatchRank classifies how a command name matches the typed
 // filter: 0 = prefix match, 1 = substring match elsewhere in the
-// name, -1 = no match. Prefix matches rank above substring matches
-// so muscle-memory filters ("/mo" → /model) keep their position at
-// the top, while a mid-name search ("review" → /code-review,
-// /git-review-pr) still finds everything — prefix-only matching
-// made every /git-* and /code-* command invisible to the verb the
-// user actually thinks in.
+// name, 2 = fuzzy subsequence match, -1 = no match. Prefix matches
+// rank above substring matches so muscle-memory filters ("/mo" →
+// /model) keep their position at the top, while a mid-name search
+// ("review" → /code-review, /git-review-pr) still finds everything —
+// prefix-only matching made every /git-* and /code-* command
+// invisible to the verb the user actually thinks in. Fuzzy ranks
+// below both so it only surfaces once the stricter tiers come up
+// empty — it's a wider net (typing "ml" finds "model" via the
+// scattered m…l), not a replacement for them.
 func paletteMatchRank(name, typed string) int {
 	switch {
 	case typed == "", strings.HasPrefix(name, typed):
 		return 0
 	case strings.Contains(name, typed):
 		return 1
+	case fuzzySubsequence(name, typed):
+		return 2
 	}
 	return -1
 }
 
+// fuzzySubsequence reports whether typed matches name as a tight,
+// ordered subsequence — e.g. "ml" matches "model" (m, then l three
+// characters later) even though "ml" is neither a prefix nor a
+// substring. Assumes both arguments are already lowercased, same as
+// the prefix/substring checks above.
+//
+// Two guards keep this a narrow net instead of swallowing half the
+// command list, which an unbounded subsequence check does in
+// practice — every short query is trivially a scattered subsequence
+// of most long names ("mo" is hidden inside "permissions",
+// "max-iterations", "provider"...): the first character must match
+// name's first character, so a hit buried deep inside an unrelated
+// word never surfaces; and the matched span can't run more than a
+// few characters past typed's own length, so a long name can't rack
+// up an accidental hit purely by being long enough to contain the
+// letters somewhere.
+func fuzzySubsequence(name, typed string) bool {
+	if typed == "" || name == "" || name[0] != typed[0] {
+		return false
+	}
+	const maxSlack = 3
+	ti, last := 0, 0
+	for i := 0; i < len(name) && ti < len(typed); i++ {
+		if name[i] == typed[ti] {
+			last = i
+			ti++
+		}
+	}
+	return ti == len(typed) && last < len(typed)+maxSlack
+}
+
 // filterPalette returns the built-in slash commands matching the
-// typed filter — prefix matches first, then substring matches, each
-// group in registration order. "/" matches everything; "/mo" matches
-// "/model"; "/review" also surfaces "/code-review". Case-insensitive.
-// Built-ins-only variant kept for tests that lock the built-in
-// palette behavior; the dispatcher uses the Model-bound variant
-// below so custom commands appear in the palette too.
+// typed filter — prefix matches first, then substring matches, then
+// fuzzy subsequence matches, each group in registration order. "/"
+// matches everything; "/mo" matches "/model"; "/review" also surfaces
+// "/code-review"; "/ml" fuzzy-matches "/model" via subsequence.
+// Case-insensitive. Built-ins-only variant kept for tests that lock
+// the built-in palette behavior; the dispatcher uses the Model-bound
+// variant below so custom commands appear in the palette too.
 func filterPalette(typed string) []slashCommand {
 	typed = strings.ToLower(strings.TrimPrefix(typed, "/"))
 	if typed == "" {
 		return allSlash
 	}
-	var prefix, substr []slashCommand
+	var prefix, substr, fuzzy []slashCommand
 	for _, c := range allSlash {
 		switch paletteMatchRank(c.Name, typed) {
 		case 0:
 			prefix = append(prefix, c)
 		case 1:
 			substr = append(substr, c)
+		case 2:
+			fuzzy = append(fuzzy, c)
 		}
 	}
-	return append(prefix, substr...)
+	return append(append(prefix, substr...), fuzzy...)
 }
 
 // filterPalette (method) returns built-ins followed by the session's
@@ -69,7 +108,7 @@ func filterPalette(typed string) []slashCommand {
 // users can see and tab-complete their custom commands.
 func (m *Model) filterPaletteAll(typed string) []slashCommand {
 	typed = strings.ToLower(strings.TrimPrefix(typed, "/"))
-	var prefix, substr []slashCommand
+	var prefix, substr, fuzzy []slashCommand
 	collect := func(cmds []slashCommand) {
 		for _, c := range cmds {
 			switch paletteMatchRank(c.Name, typed) {
@@ -77,12 +116,14 @@ func (m *Model) filterPaletteAll(typed string) []slashCommand {
 				prefix = append(prefix, c)
 			case 1:
 				substr = append(substr, c)
+			case 2:
+				fuzzy = append(fuzzy, c)
 			}
 		}
 	}
 	collect(allSlash)
 	collect(m.customSlash)
-	return append(prefix, substr...)
+	return append(append(prefix, substr...), fuzzy...)
 }
 
 // slashPaletteVisible caps how many entries the rendered slash palette

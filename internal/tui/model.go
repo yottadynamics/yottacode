@@ -887,6 +887,15 @@ type Model struct {
 	// first Update tick — gated on this flag.
 	startupPrinted bool
 
+	// pendingResizeWidth/Height hold the most recent WindowSizeMsg
+	// dimensions not yet applied, and resizeDebounceGen tags which
+	// scheduled resizeSettledMsg tick is current — see the
+	// tea.WindowSizeMsg case for why resize is debounced instead of
+	// applied immediately.
+	pendingResizeWidth  int
+	pendingResizeHeight int
+	resizeDebounceGen   int
+
 	// firstMessageSent flips true the first time the user submits a turn
 	// in this launch. Drives whether the dim onboarding hint
 	// (`/ commands · @ files · ↑↓ history`) renders inlined on the
@@ -903,6 +912,17 @@ type Model struct {
 	// stays stable across phases — the cursor cell is always 1 column
 	// wide; visibility just swaps reverse-video on for the block.
 	cursorVisible bool
+
+	// lastInputAt records the last keystroke, so the perpetual blink tick
+	// (cursorBlinkMsg) can freeze cursorVisible (steady, not toggling)
+	// once idle past cursorBlinkIdleTimeout instead of writing to the
+	// terminal every 530ms forever. A live terminal, even fully idle at
+	// the empty prompt, was measurably writing reverse-video escape
+	// sequences on that cadence — background writes that fight a user's
+	// native text selection the moment they try to scroll and extend one
+	// (verified with a scripted pty capture: ~33 bytes/tick, indefinitely,
+	// with zero input). See cursorBlinkMsg's handler in update().
+	lastInputAt time.Time
 
 	// openAIAuthPending tracks an in-flight inline OAuth login from
 	// /provider add openai-auth. Non-nil between the URL-ready and
@@ -968,12 +988,67 @@ type cursorBlinkMsg struct{}
 // stuck.
 const cursorBlinkInterval = 530 * time.Millisecond
 
+// cursorBlinkIdleTimeout is how long the cmdline can sit untouched before
+// the blink freezes steady-visible instead of continuing to toggle. The
+// tick keeps rearming itself either way (see cursorBlinkMsg's handler) —
+// freezing the value, not stopping the loop, is what matters: an unchanged
+// cursorVisible makes the next View() byte-identical to the last one, and
+// Bubble Tea's own renderer skips writing anything when nothing changed.
+// That's what actually stops the terminal writes; 5s is long enough that a
+// normal pause mid-typing never freezes it, short enough to cover "turn
+// finished, now reading/selecting the response" — the case that was
+// fighting native text selection.
+const cursorBlinkIdleTimeout = 5 * time.Second
+
 // cursorBlinkCmd schedules the next blink toggle. Kept as a free
 // function so Init and update() can both reach for it.
 func cursorBlinkCmd() tea.Cmd {
 	return tea.Tick(cursorBlinkInterval, func(time.Time) tea.Msg {
 		return cursorBlinkMsg{}
 	})
+}
+
+// resizeSettledMsg fires resizeDebounceInterval after the most recent
+// WindowSizeMsg, carrying the generation it was scheduled for so a
+// superseded tick (a newer resize arrived before it fired) can recognize
+// itself as stale — see the tea.WindowSizeMsg case for why resize is
+// debounced at all.
+type resizeSettledMsg struct{ gen int }
+
+// resizeDebounceInterval is how long resize must stay quiet before the
+// pending size actually applies. Short enough that settling reads as
+// instant once the user stops resizing, long enough that a window drag's
+// burst of WindowSizeMsg events coalesces into one settle instead of one
+// per event.
+const resizeDebounceInterval = 150 * time.Millisecond
+
+// resizeDebounceCmd schedules the tick that will settle a pending resize,
+// tagged with the generation it's for.
+func resizeDebounceCmd(gen int) tea.Cmd {
+	return tea.Tick(resizeDebounceInterval, func(time.Time) tea.Msg {
+		return resizeSettledMsg{gen: gen}
+	})
+}
+
+// applyWindowSize updates every width/height-derived field from a raw
+// terminal size report. Shared by the true first render (applied
+// immediately — see tea.WindowSizeMsg's !m.ready branch) and the debounced
+// resize-settle path (resizeSettledMsg).
+func (m *Model) applyWindowSize(width, height int) {
+	// m.width is the full terminal width minus the (now zero)
+	// scrollbackLeftMargin — see the const's note on the flush-left
+	// canvas. The subtraction stays so a future non-zero margin would
+	// flow through every downstream width calc (tool cards, table
+	// sizing, prose wrap) without further changes.
+	m.width = width - scrollbackLeftMargin
+	if m.width < 20 {
+		m.width = width // terminal too narrow; bypass the margin
+	}
+	m.height = height
+	m.md = newMarkdownRenderer(width - 4)
+	m.textInput.SetWidth(liveContentWidth(width))
+	m.fitTextareaHeight()
+	menuDividerWidth = computeMenuDividerWidth(m.width)
 }
 
 // loopState drives the /loop recurring command. Each iteration
@@ -1177,6 +1252,7 @@ func New(parent context.Context, c Config) Model {
 		// Init) flips it off, giving an unambiguous "yes the input is
 		// focused" cue on the very first frame.
 		cursorVisible: true,
+		lastInputAt:   time.Now(),
 	}
 }
 
@@ -1316,12 +1392,25 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	}
 	if _, ok := msg.(cursorBlinkMsg); ok {
-		// Toggle and re-arm. Unlike the spinner tick, the cursor
-		// blink runs perpetually — there's no "idle" state where we
-		// hide the input row, so the tick has work to do every
-		// cycle. The 530ms cadence keeps redraw churn low compared
-		// to the spinner's 100ms.
-		m.cursorVisible = !m.cursorVisible
+		// Always re-arm — unlike the spinner tick, the cursor blink runs
+		// perpetually, so the next keystroke can resume toggling with no
+		// extra "restart" plumbing at every one of KeyPressMsg's many
+		// early-return branches; it just needs lastInputAt to already be
+		// current, which every keystroke sets unconditionally at the top
+		// of that case.
+		//
+		// Only actually TOGGLE while recently active. Once idle past
+		// cursorBlinkIdleTimeout, freeze cursorVisible steady (true, not
+		// false — the cursor reads as "present," not "gone") instead of
+		// flipping it. A frozen value makes the next View() identical to
+		// the last one, and Bubble Tea's renderer skips writing anything
+		// when nothing changed — so this is what actually silences the
+		// terminal writes, not the rearming choice above.
+		if time.Since(m.lastInputAt) < cursorBlinkIdleTimeout {
+			m.cursorVisible = !m.cursorVisible
+		} else {
+			m.cursorVisible = true
+		}
 		return m, cursorBlinkCmd()
 	}
 	if probe, ok := msg.(providerProbeMsg); ok {
@@ -1353,22 +1442,11 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 
 	case tea.WindowSizeMsg:
-		wasReady := m.ready
-		// m.width is the full terminal width minus the (now zero)
-		// scrollbackLeftMargin — see the const's note on the flush-left
-		// canvas. The subtraction stays so a future non-zero margin would
-		// flow through every downstream width calc (tool cards, table
-		// sizing, prose wrap) without further changes.
-		m.width = msg.Width - scrollbackLeftMargin
-		if m.width < 20 {
-			m.width = msg.Width // terminal too narrow; bypass the margin
-		}
-		m.height = msg.Height
-		m.md = newMarkdownRenderer(msg.Width - 4)
-		m.textInput.SetWidth(liveContentWidth(msg.Width))
-		m.fitTextareaHeight()
-		menuDividerWidth = computeMenuDividerWidth(m.width)
 		if !m.ready {
+			// True first size report — apply immediately, no debounce.
+			// There's nothing to coalesce yet and delaying it would just
+			// add startup latency.
+			m.applyWindowSize(msg.Width, msg.Height)
 			m.ready = true
 			// First Update tick — flush the startup box + welcome to
 			// scrollback. Gated on startupPrinted so subsequent resizes
@@ -1406,27 +1484,58 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					rebuildTranscript(&m)
 				}
 			}
-		}
-		if wasReady {
-			// Genuine resize (not the initial size on startup). Bubbletea's
-			// inline-mode renderer can't reliably clean up a bordered live
-			// frame when the width changes — the previous frame's border
-			// characters smear into scrollback as stair-step "┌───" ghosts
-			// at every prior width. tea.ClearScreen wipes the visible
-			// viewport so the next View() draws clean.
-			//
-			// We then replay only a bounded tail under freshly-rendered
-			// startup chrome at the new width. Terminals emit many resize
-			// events while the user drags the window; replaying the entire
-			// native scrollback for each event makes long sessions visibly
-			// scroll forever. The bounded tail is enough to re-anchor the live
-			// frame without dumping the whole conversation repeatedly.
-			m.repaintViewportTail(m.resizeReplayLimit())
 			return m, nil
 		}
+		// Genuine resize (not the initial size on startup): debounce
+		// rather than apply immediately. A window drag fires many
+		// WindowSizeMsg events in rapid succession; Bubble Tea's core
+		// event loop calls renderer.resize() (erasing its internal
+		// screen state) for EVERY one of them synchronously, but the
+		// actual paint only happens on a separate ~60fps ticker that
+		// skips writing anything when View()'s output hasn't changed
+		// (cursedRenderer.flush's viewEquals check). If we update
+		// m.width/m.height — and therefore View()'s output — on every
+		// single event, each one gets its own real paint, and Bubble
+		// Tea's inline-mode renderer can't reliably clean up a resized
+		// live frame: confirmed against a user's real terminal (a single
+		// drag gesture left a dozen-plus duplicate cmdline boxes stacked
+		// in permanent scrollback) and matches a known upstream
+		// limitation (charmbracelet/bubbletea#1567 — the maintainer's own
+		// answer: inline mode pushes the prior render into scrollback on
+		// resize by design; the only full fix is alt-screen mode, which
+		// we're not adopting because it would cost native terminal
+		// selection/copy-paste).
+		//
+		// By holding m.width/m.height (and therefore View()'s content)
+		// unchanged until resize goes quiet for resizeDebounceInterval,
+		// every intermediate event's paint is a no-op (identical view,
+		// skipped by viewEquals) — only the final settled size actually
+		// changes what's drawn, collapsing a whole drag into one real
+		// paint instead of one per event. It reduces exposure to the
+		// underlying inline-mode behavior; it can't eliminate it (a
+		// single resize can still trigger it once).
+		m.pendingResizeWidth = msg.Width
+		m.pendingResizeHeight = msg.Height
+		m.resizeDebounceGen++
+		return m, resizeDebounceCmd(m.resizeDebounceGen)
+
+	case resizeSettledMsg:
+		if msg.gen != m.resizeDebounceGen {
+			// Superseded — a newer resize arrived before this tick fired.
+			// That resize's own tick is already scheduled and will settle
+			// things instead; applying this stale size would flash an
+			// intermediate width right before the real one lands.
+			return m, nil
+		}
+		m.applyWindowSize(m.pendingResizeWidth, m.pendingResizeHeight)
 		return m, nil
 
 	case tea.KeyPressMsg:
+		// Unconditional, ahead of every branch below (this case has many
+		// early returns): any keystroke counts as activity, resuming the
+		// cursor blink's toggling on its next tick if it had gone idle.
+		// See cursorBlinkMsg's handler and lastInputAt's field doc.
+		m.lastInputAt = time.Now()
 		if m.loopExitConfirmOpen {
 			return m.updateLoopExitConfirm(msg)
 		}
@@ -3023,6 +3132,35 @@ func expandInlineOverlayRules(body string, width int) string {
 	return strings.Join(lines, "\n")
 }
 
+// clampOverlayBodyHeight caps body at maxRows lines (termHeight minus the
+// rule/input-frame/status chrome below it) so a live overlay never renders
+// taller than the terminal. Bubble Tea's inline-mode renderer falls back to
+// showing only the tail of a live View() taller than the terminal, and that
+// fallback's internal diff state desyncs across a resize that also changes
+// how many rows the SAME content wraps into (verified with a scripted pty +
+// terminal emulator: a live overlay taller than the terminal renders fine
+// once, but a subsequent resize scrambles it into dozens of repeated
+// lines). Staying within the terminal height sidesteps that renderer path
+// entirely rather than working around its bug. termHeight <= 0 means no
+// WindowSizeMsg has landed yet — nothing to clamp against, so no-op.
+func clampOverlayBodyHeight(body string, termHeight, reservedRows int) string {
+	if termHeight <= 0 {
+		return body
+	}
+	maxRows := termHeight - reservedRows
+	if maxRows < 1 {
+		maxRows = 1
+	}
+	lines := strings.Split(body, "\n")
+	if len(lines) <= maxRows {
+		return body
+	}
+	hidden := len(lines) - (maxRows - 1)
+	kept := append([]string{}, lines[:maxRows-1]...)
+	kept = append(kept, styleMeta.Render(fmt.Sprintf("… %d more line(s) — grow your terminal to see the rest", hidden)))
+	return strings.Join(kept, "\n")
+}
+
 func (m Model) renderInlineOverlay(body string) string {
 	width := m.inlineOverlayWidth()
 	if width < 4 {
@@ -3030,11 +3168,15 @@ func (m Model) renderInlineOverlay(body string) string {
 	}
 	body = expandInlineOverlayRules(body, width)
 	overlayRule := strings.Repeat(" ", inlineOverlayInset) + styleOverlayRule.Render(strings.Repeat("─", width))
+	inputFrame := m.renderInputFrame()
+	status := m.renderStatus()
+	reserved := 1 + (strings.Count(inputFrame, "\n") + 1) + (strings.Count(status, "\n") + 1)
+	body = clampOverlayBodyHeight(body, m.height, reserved)
 	return lipgloss.JoinVertical(lipgloss.Left,
 		indentInlineOverlayBody(body),
 		overlayRule,
-		m.renderInputFrame(),
-		m.renderStatus(),
+		inputFrame,
+		status,
 	)
 }
 
@@ -3425,7 +3567,7 @@ func (m Model) renderThinkingRow() string {
 		return ""
 	}
 	indicator := styleSpinner.Render(m.renderTurnStatus())
-	hint := lipgloss.NewStyle().Foreground(colorMuted).Render(" · Ctrl+C to cancel")
+	hint := lipgloss.NewStyle().Foreground(colorDim).Render(" · Ctrl+C to cancel")
 	return indicator + hint
 }
 
@@ -6480,82 +6622,37 @@ func (m *Model) queuePrintlnIndented(s string, leftMargin int) {
 	m.pendingPrintRows = append(m.pendingPrintRows, rows...)
 }
 
-// resizeReplayLimit caps resize-triggered history replay. It is intentionally
-// tied to the visible terminal height instead of total session history: resize
-// storms should redraw enough recent context to re-anchor Bubble Tea's inline
-// footer, not re-print the entire native scrollback on every WindowSizeMsg.
-func (m *Model) resizeReplayLimit() int {
-	if m.height <= 0 {
-		return 24
-	}
-	return m.height
-}
-
 // repaintViewport forces a clean inline redraw: wipe the visible viewport,
-// then replay the startup chrome (fresh sessions only) followed by recorded
-// conversation lines at the current width. A limit <= 0 means replay every
-// line; positive limits replay only the most recent tail.
-func (m *Model) repaintViewportTail(limit int) {
+// then replay every recorded conversation line at the current width. Used
+// for explicit recovery cases — currently just the quiet-overlay-close
+// re-anchor guard, where one user action needs to re-anchor the inline
+// footer after a tall transient view disappears.
+//
+// This used to also run on every genuine window resize, bounded to a
+// recent tail (resizeReplayLimit/historyReplayTail, since removed) instead
+// of the full history, on the theory that a resize storm shouldn't
+// re-print an entire long session per event. Resize no longer calls this
+// at all — see case tea.WindowSizeMsg's wasReady branch for why (Bubble
+// Tea's own live-frame redraw doesn't need our help, and our help was
+// desyncing it, corrupting the live frame on resize). The overlay-close
+// guard's call here is a single, one-off user action (not a resize
+// storm), so replaying the full history — simpler than reintroducing a
+// bounding mechanism only one caller ever used — is a non-issue in
+// practice.
+//
+// Does NOT re-emit the startup card — it's already been printed exactly
+// once, during the true first render (see startupPrinted). Reprinting it
+// here too on every fresh-session overlay-close/resize used to pile up
+// duplicate cards in real scrollback, since ClearScreen only wipes the
+// currently visible viewport and each reprint that overflows the screen
+// permanently scrolls the previous one into history — confirmed against a
+// user's real terminal capture (6 duplicate cards from one resize) and
+// reproduced the same pattern in a scripted pty test.
+func (m *Model) repaintViewport() {
 	m.pendingCmds = append(m.pendingCmds, tea.ClearScreen)
-	if m.shouldShowStartupCard() {
-		m.queuePrintlnFlush(renderStartupBox(m.version, m.commit, m.dirty, m.modelName, m.cwd, m.sess.ID, m.branch, m.memorySummary, m.providerProfile, m.startupTip(), m.width))
-		m.queuePrintln("")
-	}
-	lines := m.historyLines
-	if limit > 0 {
-		lines = m.historyReplayTail(limit)
-	}
-	for _, line := range lines {
+	for _, line := range m.historyLines {
 		m.queuePrintln(line)
 	}
-}
-
-// historyReplayTail returns recent history entries whose rendered terminal rows
-// fit within maxRows. historyLines stores logical entries, but queuePrintln may
-// hard-wrap one entry into many rows; counting rows here keeps resize storms
-// bounded even when the latest output contains long unbroken lines.
-func (m *Model) historyReplayTail(maxRows int) []string {
-	if maxRows <= 0 || len(m.historyLines) == 0 {
-		return m.historyLines
-	}
-	rows := 0
-	start := len(m.historyLines)
-	for start > 0 {
-		lineRows := replayTerminalRows(m.historyLines[start-1], m.width)
-		if rows > 0 && rows+lineRows > maxRows {
-			break
-		}
-		rows += lineRows
-		start--
-		if rows >= maxRows {
-			break
-		}
-	}
-	return m.historyLines[start:]
-}
-
-// replayTerminalRows mirrors queuePrintlnIndented's wrapping cost without
-// queuing commands. Blank lines still consume one terminal row.
-func replayTerminalRows(line string, width int) int {
-	if width <= 0 || line == "" {
-		return 1
-	}
-	lineWidth := ansi.StringWidth(line)
-	if lineWidth <= width {
-		return 1
-	}
-	rows := lineWidth / width
-	if lineWidth%width != 0 {
-		rows++
-	}
-	return rows
-}
-
-// repaintViewport preserves the full replay path for explicit recovery cases
-// such as quiet overlay closes, where one user action needs to re-anchor the
-// inline footer after a tall transient view disappears.
-func (m *Model) repaintViewport() {
-	m.repaintViewportTail(0)
 }
 
 // flushPending drains queued tea.Println cmds into a single sequenced Cmd.

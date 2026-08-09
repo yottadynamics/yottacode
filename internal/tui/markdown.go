@@ -12,12 +12,30 @@ import "charm.land/glamour/v2"
 // transcript replaces the plain text with the rendered version.
 type markdownRenderer struct {
 	r *glamour.TermRenderer
+
+	// width and monochrome record what this renderer was built with, so
+	// a caller about to rebuild (refreshComponentStyles, on every theme
+	// picker cursor step) can compare against the wanted values first
+	// and skip the rebuild — glamour.NewTermRenderer recompiles a full
+	// chroma style sheet, and outside the no-color theme this value
+	// never actually changes between themes (see newMarkdownRenderer).
+	width      int
+	monochrome bool
+}
+
+// clampMarkdownWidth applies the same "too narrow to wrap sensibly"
+// floor newMarkdownRenderer uses. Exported to this file's callers so a
+// rebuild-skip comparison checks against the width glamour will
+// actually use, not the raw pre-clamp input.
+func clampMarkdownWidth(width int) int {
+	if width < 20 {
+		return 80
+	}
+	return width
 }
 
 func newMarkdownRenderer(width int) *markdownRenderer {
-	if width < 20 {
-		width = 80
-	}
+	width = clampMarkdownWidth(width)
 	// themeMonochrome mirrors the active theme's Palette.Monochrome
 	// (styles.go, set from buildStyles). Only "no-color" sets it —
 	// without this check glamour always rendered assistant prose with
@@ -27,8 +45,9 @@ func newMarkdownRenderer(width int) *markdownRenderer {
 	// colored, breaking that theme's "every role renders as default
 	// terminal foreground" contract. "notty" is glamour's dedicated
 	// colorless style (identical to "ascii" except for the name).
+	mono := themeMonochrome
 	style := "dark"
-	if themeMonochrome {
+	if mono {
 		style = "notty"
 	}
 	r, err := glamour.NewTermRenderer(
@@ -36,9 +55,9 @@ func newMarkdownRenderer(width int) *markdownRenderer {
 		glamour.WithWordWrap(width),
 	)
 	if err != nil {
-		return &markdownRenderer{}
+		return &markdownRenderer{width: width, monochrome: mono}
 	}
-	return &markdownRenderer{r: r}
+	return &markdownRenderer{r: r, width: width, monochrome: mono}
 }
 
 // render returns the rendered output, or the original text if glamour fails

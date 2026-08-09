@@ -323,7 +323,8 @@ run) and collapses to nothing when nothing is running.
 
 Press **Tab** to focus the dock (when no completion palette is open and a
 subagent is running): `↑`/`↓` (or `k`/`j`) move between subagents, `Enter`
-opens the selected one's transcript in the pager, `Esc` returns to the
+opens the selected one's transcript in the pager, `s` cancels it (same as
+`/subagents stop <id>`, without leaving the dock), `Esc`/`q` returns to the
 cmdline. It's keyboard-only by design — yottacode doesn't capture the mouse,
 so terminal text selection / copy-paste keeps working.
 

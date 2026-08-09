@@ -33,7 +33,7 @@ func renderCheatsheet(width int) string {
 	var b strings.Builder
 	b.WriteString(stylePathHeader.Render("Keyboard shortcuts") + "\n\n")
 	for _, e := range cheatsheet {
-		key := lipgloss.NewStyle().Foreground(colorBrand).Bold(true).Render(e.Key)
+		key := lipgloss.NewStyle().Foreground(colorSuccess).Bold(true).Render(e.Key)
 		// Pad the key column for alignment.
 		padded := lipgloss.PlaceHorizontal(12, lipgloss.Left, key)
 		b.WriteString("  " + padded + " " + e.Action + "\n")

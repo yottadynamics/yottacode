@@ -960,6 +960,9 @@ func TestRenderToolCard_RunBashKeepsTailOnOverflow(t *testing.T) {
 // is findable at a glance while scanning back. Forced color profile —
 // under `go test` lipgloss renders plain ASCII, which would make the
 // tinted and neutral gutters indistinguishable.
+// An errored card's gutter differs from a clean one in BOTH color and
+// shape: single-line ┌│└ (light box) switches to double-line ╔║╚, so the
+// error signal survives NO_COLOR and colorblindness, not just red-vs-dim.
 func TestRenderToolCard_ErroredGutterTintsFrameRed(t *testing.T) {
 	prevProfile := lipgloss.Writer.Profile
 	lipgloss.Writer.Profile = colorprofile.TrueColor
@@ -969,19 +972,25 @@ func TestRenderToolCard_ErroredGutterTintsFrameRed(t *testing.T) {
 	got := renderToolCard("run_bash", "run_bash: ./x", `{"command":"./x"}`,
 		"exit=1\n--- stdout ---\n--- stderr ---\nboom\n", true, 80, "", 0)
 
-	for _, glyph := range []string{"┌ ", "│ ", "└ "} {
+	for _, glyph := range []string{"╔ ", "║ ", "╚ "} {
 		if want := styleCardErrGutter.Render(glyph); !strings.Contains(got, want) {
-			t.Errorf("errored card should tint %q Error-red; not found in:\n%q", glyph, got)
+			t.Errorf("errored card should tint double-line %q Error-red; not found in:\n%q", glyph, got)
 		}
 	}
 	if strings.Contains(got, styleCardGutter.Render("└ ")) {
-		t.Errorf("errored card's └ must be Error-red, not neutral:\n%q", got)
+		t.Errorf("errored card's corner must be Error-red, not neutral:\n%q", got)
+	}
+	for _, glyph := range []string{"┌ ", "│ ", "└ "} {
+		if strings.Contains(got, glyph) {
+			t.Errorf("errored card must not fall back to the single-line %q gutter:\n%q", glyph, got)
+		}
 	}
 }
 
-// A clean tool call keeps the whole frame neutral Dim — no state color.
-// (The closing └ used to tint Success green, but a green corner on nearly
-// every card was too much green; the red error frame carries the signal.)
+// A clean tool call keeps the whole frame neutral Dim, single-line box —
+// no state color, no double-line shape. (The closing └ used to tint
+// Success green, but a green corner on nearly every card was too much
+// green; the red+doubled error frame carries the signal instead.)
 func TestRenderToolCard_SuccessGutterIsNeutral(t *testing.T) {
 	prevProfile := lipgloss.Writer.Profile
 	lipgloss.Writer.Profile = colorprofile.TrueColor
@@ -997,6 +1006,11 @@ func TestRenderToolCard_SuccessGutterIsNeutral(t *testing.T) {
 	}
 	if strings.Contains(got, styleCardErrGutter.Render("└ ")) {
 		t.Errorf("clean card must not use the Error-red corner:\n%q", got)
+	}
+	for _, glyph := range []string{"╔ ", "║ ", "╚ "} {
+		if strings.Contains(got, glyph) {
+			t.Errorf("clean card must not use the double-line error gutter %q:\n%q", glyph, got)
+		}
 	}
 }
 

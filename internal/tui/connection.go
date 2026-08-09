@@ -61,7 +61,7 @@ func renderConnDot(state connState) string {
 	case connDown:
 		style = style.Foreground(colorError)
 	default:
-		style = style.Foreground(colorMuted)
+		style = style.Foreground(colorDim)
 	}
 	return style.Render(connDotGlyph(state))
 }

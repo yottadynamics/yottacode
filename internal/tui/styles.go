@@ -7,7 +7,8 @@ import (
 	"github.com/yottadynamics/yottacode/internal/tui/themes"
 )
 
-// Canonical palette — see docs/TUI.md "Color Palette". Seven semantic roles:
+// Canonical palette — see roadmap/TUI.md "Color Palette" for the original
+// design brief. Seven semantic roles:
 //
 //	Accent   — primary accent: prompts, active selection, focus
 //	Success  — ✓ ok, healthy status dot
@@ -15,7 +16,7 @@ import (
 //	Error    — failures, errors
 //	Content  — primary text, values
 //	Dim      — labels, hints, separators, telemetry  (mid-gray, readable text)
-//	Muted    — borders, gutters, disabled chrome      (dark-gray, decoration only)
+//	Rule     — borders, gutters, disabled chrome      (dark-gray, decoration only)
 //
 // The single most important rule: labels are always Dim, values are always
 // Content, and never the reverse. State colors (Success/Warning/Error)
@@ -23,12 +24,6 @@ import (
 //
 // Values are AdaptiveColor pairs so the terminal's light/dark mode picks
 // the readable variant.
-//
-// Naming caveat: the legacy `colorMuted` token (kept as an alias below)
-// historically meant "dim text" — it maps to the spec's `Dim` role, NOT
-// the spec's `Muted` (which is dark-gray for borders). The canonical
-// dark-gray border color is `colorRule`. New code should use the
-// canonical names; the legacy aliases stay until Phase 4 sweeps them.
 //
 // THEMING NOTE: every color and style below is package-mutable. The
 // var block holds the live values; buildStyles repopulates them from
@@ -39,7 +34,7 @@ import (
 // below. v1's lipgloss.AdaptiveColor stored Light/Dark as plain strings, so
 // its zero value ("") rendered harmlessly as "no color" for any style built
 // (at package-init time, before ApplyTheme/buildStyles ever runs — e.g.
-// run_bash_approval.go's styleApprovalSep captures its Foreground(colorMuted)
+// run_bash_approval.go's styleApprovalSep captures its Foreground(colorDim)
 // argument once, permanently, before this package's colors are themed) from
 // a not-yet-themed color var. v2's compat.AdaptiveColor stores Light/Dark as
 // color.Color interfaces, whose nil zero value panics in .RGBA() the moment
@@ -55,11 +50,7 @@ var (
 	colorError     = zeroAdaptiveColor
 	colorContent   = zeroAdaptiveColor
 	colorDim       = zeroAdaptiveColor
-	colorMuted     = zeroAdaptiveColor // legacy alias: dim text
-	colorBrand     = zeroAdaptiveColor // legacy alias: success/brand mark
 	colorAssistant = zeroAdaptiveColor
-	colorWarn      = zeroAdaptiveColor // legacy alias of colorWarning
-	colorErr       = zeroAdaptiveColor // legacy alias of colorError
 	colorRule      = zeroAdaptiveColor
 	colorCode      = zeroAdaptiveColor
 	colorWarm      = zeroAdaptiveColor
@@ -201,11 +192,7 @@ func buildStyles(p themes.Palette) {
 	colorError = p.Error
 	colorContent = p.Content
 	colorDim = p.Dim
-	colorMuted = p.Dim     // legacy alias: "muted text" maps to Dim
-	colorBrand = p.Success // legacy alias: brand mark = green/success
 	colorAssistant = p.Assistant
-	colorWarn = p.Warning
-	colorErr = p.Error
 	colorRule = p.Rule
 	colorCode = p.Code
 	colorWarm = p.Warm
@@ -216,16 +203,16 @@ func buildStyles(p themes.Palette) {
 	themeHighlightStyle = p.Highlight
 	themeMonochrome = p.Monochrome
 
-	styleLogo = lipgloss.NewStyle().Foreground(colorBrand).Bold(true)
-	styleSplashTitle = lipgloss.NewStyle().Foreground(colorBrand).Bold(true)
-	styleSplashInfo = lipgloss.NewStyle().Foreground(colorMuted)
+	styleLogo = lipgloss.NewStyle().Foreground(colorSuccess).Bold(true)
+	styleSplashTitle = lipgloss.NewStyle().Foreground(colorSuccess).Bold(true)
+	styleSplashInfo = lipgloss.NewStyle().Foreground(colorDim)
 	// styleSplashLabel is the startup card's bright text — labels,
 	// version, provider, and the tip. The card is a one-time orientation
 	// surface, so its rows render in Content (not the usual Dim labels)
 	// to stay easy to read at a glance.
 	styleSplashLabel = lipgloss.NewStyle().Foreground(colorContent)
-	styleSeparator = lipgloss.NewStyle().Foreground(colorMuted)
-	styleFooter = lipgloss.NewStyle().Foreground(colorMuted)
+	styleSeparator = lipgloss.NewStyle().Foreground(colorDim)
+	styleFooter = lipgloss.NewStyle().Foreground(colorDim)
 	styleUserHeader = lipgloss.NewStyle().Bold(true).Foreground(colorAccent)
 	styleAssistantHeader = lipgloss.NewStyle().Bold(true).Foreground(colorAssistant)
 	// User chevron in the brand green, NOT Accent — maintainer call
@@ -234,21 +221,21 @@ func buildStyles(p themes.Palette) {
 	// status dot) while still giving user prompts a colored anchor
 	// that's findable when scanning back through a long session. The
 	// body stays Content so the typed text reads bright.
-	styleUserBar = lipgloss.NewStyle().Foreground(colorBrand).Bold(true)
+	styleUserBar = lipgloss.NewStyle().Foreground(colorSuccess).Bold(true)
 	styleUserBody = lipgloss.NewStyle().Foreground(colorContent)
 	styleAssistantBody = lipgloss.NewStyle().Foreground(colorContent).PaddingLeft(2)
 	styleAssistantProse = lipgloss.NewStyle().Foreground(colorContent)
 	styleAssistantBold = lipgloss.NewStyle().Foreground(colorContent).Bold(true)
 	styleAssistantHeading = lipgloss.NewStyle().Foreground(colorAssistant).Bold(true).Underline(true).PaddingLeft(2)
-	styleAssistantQuote = lipgloss.NewStyle().Foreground(colorMuted).Italic(true)
-	styleInlineCode = lipgloss.NewStyle().Foreground(colorBrand).Bold(true)
+	styleAssistantQuote = lipgloss.NewStyle().Foreground(colorDim).Italic(true)
+	styleInlineCode = lipgloss.NewStyle().Foreground(colorSuccess).Bold(true)
 	styleInlinePath = lipgloss.NewStyle().Foreground(colorAccent).Underline(true)
 	styleInlineCommand = lipgloss.NewStyle().Foreground(colorAssistant).Bold(true)
 	styleListMarker = lipgloss.NewStyle().Foreground(colorAssistant).Bold(true)
 	styleBullet = styleListMarker
 	styleActionVerb = lipgloss.NewStyle().Foreground(colorAssistant).Bold(true)
-	styleThinking = lipgloss.NewStyle().Faint(true).Foreground(colorMuted)
-	styleToolCall = lipgloss.NewStyle().Foreground(colorWarn)
+	styleThinking = lipgloss.NewStyle().Faint(true).Foreground(colorDim)
+	styleToolCall = lipgloss.NewStyle().Foreground(colorWarning)
 	styleToolMeta = lipgloss.NewStyle().Foreground(colorDim).Italic(true)
 
 	// Code block intentionally does NOT pick up the theme
@@ -272,12 +259,12 @@ func buildStyles(p themes.Palette) {
 	// sit at column 0 — lined up with the startup card border and other
 	// structural chrome rather than the 2-space prose gutter.
 	styleAuto = lipgloss.NewStyle().Foreground(colorDim)
-	styleError = lipgloss.NewStyle().Foreground(colorErr).Bold(true)
+	styleError = lipgloss.NewStyle().Foreground(colorError).Bold(true)
 	styleWarnIcon = lipgloss.NewStyle().Foreground(colorWarning).Bold(true)
 
 	paletteBox := lipgloss.NewStyle().
 		Border(lipgloss.NormalBorder()).
-		BorderForeground(colorBrand).
+		BorderForeground(colorSuccess).
 		Padding(0, 1)
 	if hasThemeBackground {
 		paletteBox = paletteBox.Background(themeBackground)
@@ -293,7 +280,7 @@ func buildStyles(p themes.Palette) {
 	// on themes whose Success role resolves dark (light-mode
 	// palettes, no-color).
 	stylePaletteSelected = lipgloss.NewStyle().
-		Foreground(colorBrand).
+		Foreground(colorSuccess).
 		Reverse(true).
 		Bold(true)
 	// styleEmpty keeps the soft italic-dim look for "nothing here"
@@ -319,7 +306,7 @@ func buildStyles(p themes.Palette) {
 	styleDiffAddEmph = lipgloss.NewStyle().Foreground(colorSuccess).Reverse(true)
 	styleDiffDelEmph = lipgloss.NewStyle().Foreground(colorError).Reverse(true)
 	stylePathHeader = lipgloss.NewStyle().Foreground(colorAccent).Bold(true)
-	styleSpinner = lipgloss.NewStyle().Foreground(colorBrand).Bold(true)
+	styleSpinner = lipgloss.NewStyle().Foreground(colorSuccess).Bold(true)
 
 	// Cmdline box reads bright rather than the dimmer Rule/Dim it
 	// used before — the prompt, placeholder, and hint row should all
@@ -327,28 +314,28 @@ func buildStyles(p themes.Palette) {
 	// (same maintainer call as styleUserBar above — no blue here),
 	// matching the scrollback user-echo chevron so the live bar and
 	// its echo look identical.
-	styleInputPrompt = lipgloss.NewStyle().Foreground(colorBrand).Bold(true)
+	styleInputPrompt = lipgloss.NewStyle().Foreground(colorSuccess).Bold(true)
 	styleInputPlaceholder = lipgloss.NewStyle().Foreground(colorContent).Italic(true)
 	styleInputHint = lipgloss.NewStyle().Foreground(colorContent)
 	styleOverlayRule = lipgloss.NewStyle().Foreground(colorRule).Faint(true)
 
-	styleWatermark = lipgloss.NewStyle().Foreground(colorWarn).Italic(true).PaddingLeft(2)
-	styleWatermarkAlert = lipgloss.NewStyle().Foreground(colorWarn).Bold(true).PaddingLeft(2)
+	styleWatermark = lipgloss.NewStyle().Foreground(colorWarning).Italic(true).PaddingLeft(2)
+	styleWatermarkAlert = lipgloss.NewStyle().Foreground(colorWarning).Bold(true).PaddingLeft(2)
 	// No MarginLeft: the box border sits at column 0, flush-left with the
 	// startup box and input frame (the canvas is flush-left — see
 	// scrollbackLeftMargin). An earlier MarginLeft(2) trailed the old
 	// scrollback margin and now just floats the box off the chrome edge.
 	styleWatermarkBox = lipgloss.NewStyle().
 		Border(lipgloss.NormalBorder()).
-		BorderForeground(colorWarn).
-		Foreground(colorWarn).
+		BorderForeground(colorWarning).
+		Foreground(colorWarning).
 		Bold(true).
 		Padding(0, 1)
 	if hasThemeBackground {
 		styleWatermarkBox = styleWatermarkBox.Background(themeBackground)
 	}
 
-	styleTurnFooter = lipgloss.NewStyle().Foreground(colorMuted).Italic(true).Faint(true).PaddingLeft(2).MarginTop(1)
+	styleTurnFooter = lipgloss.NewStyle().Foreground(colorDim).Italic(true).Faint(true).PaddingLeft(2).MarginTop(1)
 
 	// --- Styles whose declarations live in other files ---------
 	// These were previously declared with var-block initializers in
@@ -424,10 +411,10 @@ func buildStyles(p themes.Palette) {
 
 	// Subagent card (subagent_card.go)
 	styleSubagentLabel = lipgloss.NewStyle().Foreground(colorAccent).Bold(true)
-	styleSubagentMeta = lipgloss.NewStyle().Foreground(colorMuted)
+	styleSubagentMeta = lipgloss.NewStyle().Foreground(colorDim)
 	styleSubagentActivity = lipgloss.NewStyle().Foreground(colorContent)
 	styleSubagentOK = lipgloss.NewStyle().Foreground(colorSuccess)
 	styleSubagentErr = lipgloss.NewStyle().Foreground(colorError)
 	styleSubagentRunning = lipgloss.NewStyle().Foreground(colorAccent).Bold(true)
-	styleSubagentTableHeader = lipgloss.NewStyle().Foreground(colorMuted).Bold(true)
+	styleSubagentTableHeader = lipgloss.NewStyle().Foreground(colorDim).Bold(true)
 }

@@ -68,8 +68,8 @@ func TestChromeReadsBright(t *testing.T) {
 		"styleInputPrompt": styleInputPrompt,
 		"styleUserBar":     styleUserBar,
 	} {
-		if got := style.GetForeground(); got != color.Color(colorBrand) {
-			t.Errorf("%s: foreground = %v, want brand green (%v)", name, got, colorBrand)
+		if got := style.GetForeground(); got != color.Color(colorSuccess) {
+			t.Errorf("%s: foreground = %v, want brand green (%v)", name, got, colorSuccess)
 		}
 	}
 

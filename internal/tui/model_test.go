@@ -51,6 +51,26 @@ func applyMsg(m Model, msg tea.Msg) (Model, tea.Cmd) {
 	return out.(Model), cmd
 }
 
+// applyResize sends a WindowSizeMsg and, when the model debounces it (any
+// resize after the model is already ready — see resizeSettledMsg), also
+// settles it immediately by constructing the resulting resizeSettledMsg
+// directly rather than calling the debounce Cmd — that Cmd wraps a real
+// tea.Tick, which would block resizeDebounceInterval in actual wall-clock
+// time if invoked. mm.resizeDebounceGen is exactly the generation the Cmd's
+// closure captured (the resize case increments it, then schedules the tick
+// for that value), so constructing the message directly is equivalent to
+// letting the real timer fire, just instant. This is the synchronous resize
+// most tests want. The true first resize (model not yet ready) applies
+// immediately with no tick to settle, so this is safe to use for every
+// WindowSizeMsg a test sends, first or not.
+func applyResize(m Model, width, height int) (Model, tea.Cmd) {
+	mm, cmd := applyMsg(m, tea.WindowSizeMsg{Width: width, Height: height})
+	if cmd == nil {
+		return mm, nil
+	}
+	return applyMsg(mm, resizeSettledMsg{gen: mm.resizeDebounceGen})
+}
+
 func TestModel_WindowSizeMakesItReady(t *testing.T) {
 	m := newTestModel(t)
 	if !m.ready {
@@ -2216,39 +2236,147 @@ func TestInit_ClearsScreenBeforeStartupCommands(t *testing.T) {
 	}
 }
 
-func TestResizeReplay_RoutesThroughQueuePrintln(t *testing.T) {
-	m := newTestModel(t) // ready, width 80
-	// Emit a multi-line tool card so historyLines holds real content.
-	card := renderToolCard("memory_save", "Memory(save user/x)",
-		`{"scope":"user","name":"x"}`, `saved user memory "x"`, false, m.width, "", 0)
-	// Emit a marker after the multi-line card so bounded resize replay keeps
-	// this test independent from the total startup-history length.
-	m.appendLine(card)
-	m.appendLine("resize replay marker")
-	if len(m.historyLines) == 0 {
-		t.Fatal("expected history lines after appendLine")
-	}
-	m.pendingCmds = nil
-	m.pendingPrintRows = nil
+// A genuine window resize must queue NOTHING — no tea.ClearScreen, no
+// history replay — regardless of how much scrollback exists or whether an
+// overlay is open, at either the raw event or the debounced settle. It
+// used to run a manual tea.ClearScreen + bounded history-tail replay to
+// "re-anchor" the live frame after a width change, on the theory that
+// Bubble Tea's inline-mode renderer couldn't reliably clean up a bordered
+// live frame on its own. That reasoning didn't hold: tea.ClearScreen wipes
+// only the currently visible viewport, with no way to tell Bubble Tea's
+// own internal diff state (the cell buffer + last view it compares the
+// next frame against) that the physical screen changed underneath it — so
+// the next live frame painted only its own believed delta over a screen
+// that was actually blank. Confirmed against a scripted pty + terminal
+// emulator (a live /help overlay whose content re-wrapped across a resize
+// came out corrupted) and against a user's real terminal (a single
+// window-drag gesture left a dozen-plus duplicate bordered cmdline boxes
+// stacked in permanent scrollback — real terminal lines, not a rendering
+// artifact that cleared on its own). Bubble Tea's own flush() already
+// erases + resizes its internal buffer correctly whenever the live
+// frame's area changes — it doesn't need help, and the help was actively
+// breaking it.
+//
+// The raw event debounces (see resizeSettledMsg): m.width/m.height stay
+// at their OLD value and nothing gets queued until resize goes quiet for
+// resizeDebounceInterval, at which point they update to the pending size
+// — still with nothing queued, since the manual clear+replay is gone
+// entirely, not just delayed.
+func TestResizeReplay_QueuesNothing(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		helpOpen    bool
+		withHistory bool
+	}{
+		{name: "plain cmdline, no history"},
+		{name: "plain cmdline, with real history", withHistory: true},
+		{name: "overlay open", helpOpen: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := newTestModel(t)
+			m.helpOpen = tc.helpOpen
+			if tc.withHistory {
+				card := renderToolCard("memory_save", "Memory(save user/x)",
+					`{"scope":"user","name":"x"}`, `saved user memory "x"`, false, m.width, "", 0)
+				m.appendLine(card)
+				m.appendLine("resize replay marker")
+				if len(m.historyLines) == 0 {
+					t.Fatal("expected history lines after appendLine")
+				}
+			}
+			m.pendingCmds = nil
+			m.pendingPrintRows = nil
+			oldWidth, oldHeight := m.width, m.height
 
-	// Genuine resize (wasReady): triggers tea.ClearScreen + history replay.
-	// Call the inner update directly so pendingCmds/pendingPrintRows aren't
-	// drained by flushPending (which Update does on the way out).
-	out, _ := m.update(tea.WindowSizeMsg{Width: 60, Height: 24})
-	mm := out.(Model)
+			// Call the inner update directly so pendingCmds/pendingPrintRows
+			// aren't drained by flushPending (which Update does on the way out).
+			out, cmd := m.update(tea.WindowSizeMsg{Width: 60, Height: 24})
+			mm := out.(Model)
 
-	sawReplay := false
-	for _, raw := range mm.pendingPrintRows {
-		if !strings.HasPrefix(raw, "\r\x1b[2K") {
-			t.Errorf("resize-replayed line missing clear-line prefix "+
-				"(bare tea.Println regressed?): %q", raw)
-		}
-		if strings.Contains(stripANSI(raw), "resize replay marker") {
-			sawReplay = true
+			if len(mm.pendingCmds) != 0 {
+				t.Errorf("raw resize event should not queue any Cmds, got %#v", mm.pendingCmds)
+			}
+			if len(mm.pendingPrintRows) != 0 {
+				t.Errorf("raw resize event should not queue a history replay, got %#v", mm.pendingPrintRows)
+			}
+			if mm.width != oldWidth || mm.height != oldHeight {
+				t.Errorf("width/height should stay unchanged until the debounce settles: got %d/%d, want %d/%d",
+					mm.width, mm.height, oldWidth, oldHeight)
+			}
+			if cmd == nil {
+				t.Fatal("raw resize event should schedule a debounce settle Cmd")
+			}
+
+			// Fire the settle tick.
+			settleMsg, ok := cmd().(resizeSettledMsg)
+			if !ok {
+				t.Fatalf("resize Cmd should produce a resizeSettledMsg, got %T", cmd())
+			}
+			out, _ = mm.update(settleMsg)
+			settled := out.(Model)
+
+			if len(settled.pendingCmds) != 0 {
+				t.Errorf("settled resize should not queue any Cmds, got %#v", settled.pendingCmds)
+			}
+			if len(settled.pendingPrintRows) != 0 {
+				t.Errorf("settled resize should not queue a history replay, got %#v", settled.pendingPrintRows)
+			}
+			if settled.width != 60-scrollbackLeftMargin && settled.width != 60 {
+				t.Errorf("m.width should update once the debounce settles, got %d", settled.width)
+			}
+			if settled.height != 24 {
+				t.Errorf("m.height should update once the debounce settles, got %d", settled.height)
+			}
+		})
+	}
+}
+
+// A genuine resize must never re-emit the startup identity card:
+// repaintViewportTail only runs after the app is already up, by which
+// point the card was already printed exactly once during the true first
+// render. It used to reprint the card on every resize for a fresh
+// session — meaning a single window-drag gesture (which fires many
+// resize events) piled up that many duplicate cards in real scrollback,
+// since ClearScreen only wipes the visible viewport and each reprint
+// that overflows the screen permanently scrolls the previous one into
+// history. Reproduced against a user's real terminal (6 duplicate
+// cards from one resize) and confirmed here across repeated resizes on
+// a still-fresh test session (newTestModel's session has no
+// user/assistant messages yet, so isFreshSession() — and therefore
+// shouldShowStartupCard() — is true, the exact condition that triggered
+// the bug).
+func TestResizeReplay_NeverReemitsStartupCard(t *testing.T) {
+	m := newTestModel(t)
+	if !m.isFreshSession() {
+		t.Fatal("setup: newTestModel's session should be fresh (no user/assistant messages)")
+	}
+
+	var seen []string
+	check := func(rows []string) {
+		for _, raw := range rows {
+			if strings.Contains(stripANSI(raw), "YottaCode") {
+				seen = append(seen, raw)
+			}
 		}
 	}
-	if !sawReplay {
-		t.Error("expected the replayed history to carry recent history content")
+	for i := 0; i < 5; i++ {
+		m.pendingCmds = nil
+		m.pendingPrintRows = nil
+		out, cmd := m.update(tea.WindowSizeMsg{Width: 70 + i, Height: 24})
+		mm := out.(Model)
+		check(mm.pendingPrintRows)
+		if cmd != nil {
+			// Settle directly instead of calling the real debounce Cmd,
+			// which wraps a tea.Tick and would block resizeDebounceInterval
+			// in wall-clock time per iteration.
+			out, _ = mm.update(resizeSettledMsg{gen: mm.resizeDebounceGen})
+			mm = out.(Model)
+			check(mm.pendingPrintRows)
+		}
+		m = mm
+	}
+	if len(seen) != 0 {
+		t.Errorf("repaintViewportTail should never re-emit the startup card on resize, got %d occurrence(s): %#v", len(seen), seen)
 	}
 }
 
@@ -2323,52 +2451,6 @@ func TestRepaintViewport_ClearsAndReplaysHistory(t *testing.T) {
 	joined := stripANSI(strings.Join(m.pendingPrintRows, "\n"))
 	if !strings.Contains(joined, "alpha scrollback") || !strings.Contains(joined, "beta scrollback") {
 		t.Errorf("repaintViewport should replay history lines, got %q", joined)
-	}
-}
-
-// TestResizeReplay_DoesNotDumpEntireHistory guards the resize bug where every
-// WindowSizeMsg replayed the complete native scrollback. Terminal emulators emit
-// many resize events while a user drags the window, so replaying thousands of
-// lines per event makes the whole session appear to scroll forever.
-func TestResizeReplay_DoesNotDumpEntireHistory(t *testing.T) {
-	m := newTestModel(t)
-	for i := 0; i < 1000; i++ {
-		m.historyLines = append(m.historyLines, "history line")
-	}
-	m.pendingCmds = nil
-
-	out, _ := m.update(tea.WindowSizeMsg{Width: 60, Height: 24})
-	mm := out.(Model)
-
-	printedHistory := 0
-	for _, msg := range flattenCmd(tea.Sequence(mm.pendingCmds...)) {
-		v := reflect.ValueOf(msg)
-		if v.Kind() == reflect.Struct && v.NumField() > 0 && strings.Contains(stripANSI(v.Field(0).String()), "history line") {
-			printedHistory++
-		}
-	}
-	if printedHistory >= len(m.historyLines) {
-		t.Fatalf("resize replayed full history: printed %d history lines for %d history lines", printedHistory, len(m.historyLines))
-	}
-	if printedHistory > m.height {
-		t.Fatalf("resize should replay only a bounded history tail, printed %d history lines for height %d", printedHistory, m.height)
-	}
-}
-
-func TestHistoryReplayTail_BoundsWrappedRows(t *testing.T) {
-	m := newTestModel(t)
-	m.width = 10
-	m.historyLines = []string{
-		"old one",
-		"old two",
-		strings.Repeat("x", 35),
-		"recent",
-	}
-
-	got := m.historyReplayTail(5)
-	want := []string{strings.Repeat("x", 35), "recent"}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("historyReplayTail = %#v, want %#v", got, want)
 	}
 }
 
@@ -2602,7 +2684,7 @@ func TestModel_InputBoxRespectsWidthCap(t *testing.T) {
 // input layout that would expand into "empty runway" territory.
 func TestModel_InputBoxCapsAt120OnWideTerminal(t *testing.T) {
 	m := newTestModel(t)
-	m, _ = applyMsg(m, tea.WindowSizeMsg{Width: 200, Height: 24})
+	m, _ = applyResize(m, 200, 24)
 	if got := inputContentWidth(m.width); got != 120 {
 		t.Errorf("input width cap on wide terminal = %d, want 120", got)
 	}
