@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/bubbles/textinput"
-	tea "github.com/charmbracelet/bubbletea"
+	"charm.land/bubbles/v2/textinput"
+	tea "charm.land/bubbletea/v2"
 
 	"github.com/yottadynamics/yottacode/internal/session"
 )
@@ -121,13 +121,13 @@ func (m *Model) openSessionsPicker() {
 
 // updateSessionsPicker handles keystrokes while the picker is the
 // foreground modal. Returns the new model + any cmd to spawn.
-func (m Model) updateSessionsPicker(msg tea.KeyMsg) (Model, tea.Cmd) {
+func (m Model) updateSessionsPicker(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 	if m.sessionsPicker == nil {
 		m.sessionsPickerOpen = false
 		return m, nil
 	}
 	p := m.sessionsPicker
-	switch msg.Type {
+	switch msg.Code {
 	case tea.KeyEsc:
 		switch p.mode {
 		case sessionsMenuMode:
@@ -194,7 +194,7 @@ func (m Model) updateSessionsPicker(msg tea.KeyMsg) (Model, tea.Cmd) {
 	// the keypress would normally type the rune; we intercept it
 	// when there's no modifier so the user can still flip the toggle
 	// without leaving the form.
-	if msg.Type == tea.KeyRunes && string(msg.Runes) == "s" {
+	if msg.Text == "s" {
 		if p.mode == sessionsLoadListMode {
 			p.summarized = !p.summarized
 			return m, nil
@@ -205,7 +205,7 @@ func (m Model) updateSessionsPicker(msg tea.KeyMsg) (Model, tea.Cmd) {
 		// In Resume mode, Ctrl+S toggles --summarized. We use a control
 		// chord rather than a bare `s` here because `s` is a legal
 		// character in id strings and session names.
-		if p.mode == sessionsResumeInputMode && msg.Type == tea.KeyCtrlS {
+		if p.mode == sessionsResumeInputMode && msg.String() == "ctrl+s" {
 			p.summarized = !p.summarized
 			return m, nil
 		}

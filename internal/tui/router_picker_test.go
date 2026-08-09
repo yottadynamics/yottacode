@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 
 	"github.com/yottadynamics/yottacode/internal/agent"
 	"github.com/yottadynamics/yottacode/internal/config"
@@ -148,11 +148,11 @@ func TestUpdateRouterPicker_MenuToModelListAndBack(t *testing.T) {
 		},
 	}
 
-	m, _ = m.updateRouterPicker(tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = m.updateRouterPicker(tea.KeyPressMsg{Code: tea.KeyEnter})
 	if m.routerPicker.selecting != "fast" {
 		t.Fatalf("Enter on Fast should open the sub-list, got selecting=%q", m.routerPicker.selecting)
 	}
-	m, _ = m.updateRouterPicker(tea.KeyMsg{Type: tea.KeyEsc})
+	m, _ = m.updateRouterPicker(tea.KeyPressMsg{Code: tea.KeyEsc})
 	if m.routerPicker.selecting != "" {
 		t.Errorf("Esc in the sub-list should return to the menu, got selecting=%q", m.routerPicker.selecting)
 	}
@@ -164,7 +164,7 @@ func TestUpdateRouterPicker_EscClosesMenu(t *testing.T) {
 	if !m.routerPickerOpen {
 		t.Fatal("openRouterPicker should set routerPickerOpen")
 	}
-	m, _ = m.updateRouterPicker(tea.KeyMsg{Type: tea.KeyEsc})
+	m, _ = m.updateRouterPicker(tea.KeyPressMsg{Code: tea.KeyEsc})
 	if m.routerPickerOpen {
 		t.Error("Esc on the menu should close the picker")
 	}
@@ -179,7 +179,7 @@ func TestRouterPicker_ToggleOnWithoutModels(t *testing.T) {
 		routerPicker:     &routerPickerState{cursor: 0, mode: config.RouterModeOff},
 		transcript:       &strings.Builder{},
 	}
-	m, _ = m.updateRouterPicker(tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = m.updateRouterPicker(tea.KeyPressMsg{Code: tea.KeyEnter})
 	if !m.routerPickerOpen {
 		t.Error("toggling on without models should keep the picker open")
 	}
@@ -228,24 +228,24 @@ func TestRouterPicker_EnableThenPickModels(t *testing.T) {
 	}
 
 	// Toggle On — pending (no models yet).
-	m, _ = m.updateRouterPicker(tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = m.updateRouterPicker(tea.KeyPressMsg{Code: tea.KeyEnter})
 	if m.routerMode == config.RouterModeAuto {
 		t.Fatal("should not be live before models are set")
 	}
 
 	// Pick Fast: cursor to the Fast model row, Enter (sub-list), select first model.
 	m.routerPicker.cursor = rowFastPrimary
-	m, _ = m.updateRouterPicker(tea.KeyMsg{Type: tea.KeyEnter}) // open fast sub-list
-	m, _ = m.updateRouterPicker(tea.KeyMsg{Type: tea.KeyEnter}) // select models[0] = haiku
+	m, _ = m.updateRouterPicker(tea.KeyPressMsg{Code: tea.KeyEnter}) // open fast sub-list
+	m, _ = m.updateRouterPicker(tea.KeyPressMsg{Code: tea.KeyEnter}) // select models[0] = haiku
 	if m.routerMode == config.RouterModeAuto {
 		t.Fatal("still pending after only the fast model is set")
 	}
 
 	// Pick Smart: cursor to the Smart model row, open sub-list, move to opus, select.
 	m.routerPicker.cursor = rowSmartPrimary
-	m, _ = m.updateRouterPicker(tea.KeyMsg{Type: tea.KeyEnter}) // open smart sub-list
-	m, _ = m.updateRouterPicker(tea.KeyMsg{Type: tea.KeyDown})  // to models[1] = opus
-	m, _ = m.updateRouterPicker(tea.KeyMsg{Type: tea.KeyEnter}) // select
+	m, _ = m.updateRouterPicker(tea.KeyPressMsg{Code: tea.KeyEnter}) // open smart sub-list
+	m, _ = m.updateRouterPicker(tea.KeyPressMsg{Code: tea.KeyDown})  // to models[1] = opus
+	m, _ = m.updateRouterPicker(tea.KeyPressMsg{Code: tea.KeyEnter}) // select
 
 	if !m.routerPickerOpen {
 		t.Error("picker should stay open throughout enable + model selection")
@@ -384,11 +384,11 @@ func TestRouterPicker_AddAndClearSmartFallback(t *testing.T) {
 
 	// Add a smart fallback: cursor to the Smart fallback row, open list, pick haiku.
 	m.routerPicker.cursor = rowSmartFallback
-	m, _ = m.updateRouterPicker(tea.KeyMsg{Type: tea.KeyEnter}) // open smart-fb list
+	m, _ = m.updateRouterPicker(tea.KeyPressMsg{Code: tea.KeyEnter}) // open smart-fb list
 	if m.routerPicker.selecting != "smart-fb" {
 		t.Fatalf("expected the smart-fb sub-list, got %q", m.routerPicker.selecting)
 	}
-	m, _ = m.updateRouterPicker(tea.KeyMsg{Type: tea.KeyEnter}) // select first (haiku) as the fallback
+	m, _ = m.updateRouterPicker(tea.KeyPressMsg{Code: tea.KeyEnter}) // select first (haiku) as the fallback
 
 	if len(m.routerPicker.smartChain) != 2 || m.routerPicker.smartChain[1] != "anthropic:claude-haiku-4-5" {
 		t.Fatalf("smart chain should have the fallback appended: %v", m.routerPicker.smartChain)
@@ -403,7 +403,7 @@ func TestRouterPicker_AddAndClearSmartFallback(t *testing.T) {
 
 	// Clear it with 'd' on the Smart fallback row.
 	m.routerPicker.cursor = rowSmartFallback
-	m, _ = m.updateRouterPicker(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+	m, _ = m.updateRouterPicker(tea.KeyPressMsg{Text: "d"})
 	if len(m.routerPicker.smartChain) != 1 {
 		t.Errorf("clearing the fallback should leave just the primary: %v", m.routerPicker.smartChain)
 	}

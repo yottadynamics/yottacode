@@ -1,13 +1,16 @@
 package wizard
 
-import "github.com/charmbracelet/lipgloss"
+import (
+	"charm.land/lipgloss/v2"
+	"charm.land/lipgloss/v2/compat"
+)
 
 // Wizard-local styles. Kept separate from internal/tui/styles.go so
 // the wizard can render correctly even when the chat TUI hasn't been
 // loaded (e.g. when init runs from a fresh shell without launching
 // the chat program).
 var (
-	colorBrand = lipgloss.AdaptiveColor{Light: "2", Dark: "10"}
+	colorBrand = compat.AdaptiveColor{Light: lipgloss.Color("2"), Dark: lipgloss.Color("10")}
 	// Accent: Go "Gopher Blue" (#00ADD8) — the official Go brand
 	// blue from go.dev's brand guidelines. We dim it slightly for
 	// light terminals (#0086a8) so it reads with enough contrast
@@ -19,20 +22,20 @@ var (
 	// chrome / progress / completion; Gopher Blue carries
 	// everything labelled / selectable — also a subtle nod to the
 	// language the project is written in.
-	colorAccent = lipgloss.AdaptiveColor{Light: "#0086a8", Dark: "#00add8"}
-	colorMuted  = lipgloss.AdaptiveColor{Light: "#7a7a7a", Dark: "#888888"}
-	colorDim    = lipgloss.AdaptiveColor{Light: "#9a9a9a", Dark: "#666666"}
-	colorWarn   = lipgloss.AdaptiveColor{Light: "#af5f00", Dark: "#ffaf5f"}
-	colorErr    = lipgloss.AdaptiveColor{Light: "#af0000", Dark: "#ff5f5f"}
+	colorAccent = compat.AdaptiveColor{Light: lipgloss.Color("#0086a8"), Dark: lipgloss.Color("#00add8")}
+	colorMuted  = compat.AdaptiveColor{Light: lipgloss.Color("#7a7a7a"), Dark: lipgloss.Color("#888888")}
+	colorDim    = compat.AdaptiveColor{Light: lipgloss.Color("#9a9a9a"), Dark: lipgloss.Color("#666666")}
+	colorWarn   = compat.AdaptiveColor{Light: lipgloss.Color("#af5f00"), Dark: lipgloss.Color("#ffaf5f")}
+	colorErr    = compat.AdaptiveColor{Light: lipgloss.Color("#af0000"), Dark: lipgloss.Color("#ff5f5f")}
 	// colorOK aliases colorBrand so ✓ markers, env-present badges, and
 	// validation OK glyphs all read as the same single green as the
 	// rest of the wizard's brand chrome — no second shade in play.
-	colorOK = colorBrand
-	colorRule     = lipgloss.AdaptiveColor{Light: "#b0b0b0", Dark: "#444444"}
-	colorChipBG   = lipgloss.AdaptiveColor{Light: "#e6e6e6", Dark: "#262626"}
-	colorTierC    = lipgloss.AdaptiveColor{Light: "#005f00", Dark: "#87d787"}
-	colorTierB    = lipgloss.AdaptiveColor{Light: "#5f5f00", Dark: "#d7d787"}
-	colorTierE    = lipgloss.AdaptiveColor{Light: "#5f0000", Dark: "#ff8787"}
+	colorOK     = colorBrand
+	colorRule   = compat.AdaptiveColor{Light: lipgloss.Color("#b0b0b0"), Dark: lipgloss.Color("#444444")}
+	colorChipBG = compat.AdaptiveColor{Light: lipgloss.Color("#e6e6e6"), Dark: lipgloss.Color("#262626")}
+	colorTierC  = compat.AdaptiveColor{Light: lipgloss.Color("#005f00"), Dark: lipgloss.Color("#87d787")}
+	colorTierB  = compat.AdaptiveColor{Light: lipgloss.Color("#5f5f00"), Dark: lipgloss.Color("#d7d787")}
+	colorTierE  = compat.AdaptiveColor{Light: lipgloss.Color("#5f0000"), Dark: lipgloss.Color("#ff8787")}
 
 	styleTitle    = lipgloss.NewStyle().Foreground(colorBrand).Bold(true)
 	styleHeading  = lipgloss.NewStyle().Foreground(colorAccent).Bold(true)
@@ -55,9 +58,9 @@ var (
 				Background(colorBrand).
 				Foreground(lipgloss.Color("0")).
 				Bold(true)
-	styleRule     = lipgloss.NewStyle().Foreground(colorRule)
-	styleChip     = lipgloss.NewStyle().Background(colorChipBG).Foreground(colorAccent).Padding(0, 1)
-	stylePathHL   = lipgloss.NewStyle().Foreground(colorAccent).Underline(true)
+	styleRule   = lipgloss.NewStyle().Foreground(colorRule)
+	styleChip   = lipgloss.NewStyle().Background(colorChipBG).Foreground(colorAccent).Padding(0, 1)
+	stylePathHL = lipgloss.NewStyle().Foreground(colorAccent).Underline(true)
 )
 
 // tierStyle returns a style appropriate for rendering a tier badge.

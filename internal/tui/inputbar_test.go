@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 
 	"github.com/yottadynamics/yottacode/internal/adapter"
 	"github.com/yottadynamics/yottacode/internal/agent"
@@ -103,7 +103,7 @@ func TestInput_PlaceholderIsShort(t *testing.T) {
 // Keyed off m.firstMessageSent which starts false.
 func TestInput_HintsShowInlineBeforeFirstMessage(t *testing.T) {
 	m := newTestModel(t)
-	plain := stripANSI(m.View())
+	plain := stripANSI(m.View().Content)
 	for _, want := range []string{"commands", "@ files", "↑↓ history"} {
 		if !strings.Contains(plain, want) {
 			t.Errorf("fresh session view missing hint %q: %q", want, plain)
@@ -127,7 +127,7 @@ func TestInput_HintsShowInlineBeforeFirstMessage(t *testing.T) {
 func TestInput_HintsDisappearAfterFirstMessage(t *testing.T) {
 	m := newTestModel(t)
 	m.firstMessageSent = true
-	plain := stripANSI(m.View())
+	plain := stripANSI(m.View().Content)
 	for _, gone := range []string{"@ files", "↑↓ history"} {
 		if strings.Contains(plain, gone) {
 			t.Errorf("hint %q should be hidden after first message: %q", gone, plain)
@@ -146,10 +146,10 @@ func TestInput_HintsDisappearAfterFirstMessage(t *testing.T) {
 func TestInput_ChevronStaysVisibleWithContent(t *testing.T) {
 	m := newTestModel(t)
 	for _, r := range "hello" {
-		m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m, _ = applyMsg(m, tea.KeyPressMsg{Text: string(r)})
 	}
-	if !strings.Contains(m.View(), "❯") {
-		t.Errorf("chevron should stay visible with content: %q", m.View())
+	if !strings.Contains(m.View().Content, "❯") {
+		t.Errorf("chevron should stay visible with content: %q", m.View().Content)
 	}
 }
 
@@ -483,7 +483,7 @@ func TestStatusBar_NarrowTerminalDropsEffortBeforeCoreSignals(t *testing.T) {
 // sequence of `─` spanning the input's content width.
 func TestInput_EnclosedInBorderedBox(t *testing.T) {
 	m := newTestModel(t)
-	plain := stripANSI(m.View())
+	plain := stripANSI(m.View().Content)
 	lines := strings.Split(plain, "\n")
 	cmdIdx := -1
 	for i, line := range lines {

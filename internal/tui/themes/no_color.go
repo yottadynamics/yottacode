@@ -1,14 +1,17 @@
 package themes
 
-import "github.com/charmbracelet/lipgloss"
+import (
+	"charm.land/lipgloss/v2"
+	"charm.land/lipgloss/v2/compat"
+)
 
 // ansi returns an AdaptiveColor that names ANSI palette indices on
 // each side. Numbers are strings on purpose — lipgloss.Color accepts
 // decimal strings for the 16-color palette. Lives here because
 // no-color is the only remaining caller after the terminal theme
 // was reverted to AdaptiveColor hex pairs.
-func ansi(light, dark string) lipgloss.AdaptiveColor {
-	return lipgloss.AdaptiveColor{Light: light, Dark: dark}
+func ansi(light, dark string) compat.AdaptiveColor {
+	return compat.AdaptiveColor{Light: lipgloss.Color(light), Dark: lipgloss.Color(dark)}
 }
 
 // noColor collapses every role to default-foreground (ANSI 7) so

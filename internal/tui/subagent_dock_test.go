@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"github.com/yottadynamics/yottacode/internal/subagents"
 )
 
@@ -183,33 +183,46 @@ func dockTestRegistry(n int) *subagents.Registry {
 func TestUpdateDockFocus_Navigation(t *testing.T) {
 	m := Model{subagentTasks: dockTestRegistry(3), dockFocused: true, dockCursor: 0}
 
-	m, _ = m.updateDockFocus(tea.KeyMsg{Type: tea.KeyDown})
+	m, _ = m.updateDockFocus(tea.KeyPressMsg{Code: tea.KeyDown})
 	if m.dockCursor != 1 {
 		t.Fatalf("down: cursor = %d, want 1", m.dockCursor)
 	}
-	m, _ = m.updateDockFocus(tea.KeyMsg{Type: tea.KeyDown})
-	m, _ = m.updateDockFocus(tea.KeyMsg{Type: tea.KeyDown}) // clamp at last
+	m, _ = m.updateDockFocus(tea.KeyPressMsg{Code: tea.KeyDown})
+	m, _ = m.updateDockFocus(tea.KeyPressMsg{Code: tea.KeyDown}) // clamp at last
 	if m.dockCursor != 2 {
 		t.Fatalf("down clamp: cursor = %d, want 2", m.dockCursor)
 	}
-	m, _ = m.updateDockFocus(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'k'}})
+	m, _ = m.updateDockFocus(tea.KeyPressMsg{Text: "k"})
 	if m.dockCursor != 1 {
 		t.Fatalf("k: cursor = %d, want 1", m.dockCursor)
 	}
-	m, _ = m.updateDockFocus(tea.KeyMsg{Type: tea.KeyUp})
-	m, _ = m.updateDockFocus(tea.KeyMsg{Type: tea.KeyUp}) // clamp at 0
+	m, _ = m.updateDockFocus(tea.KeyPressMsg{Code: tea.KeyUp})
+	m, _ = m.updateDockFocus(tea.KeyPressMsg{Code: tea.KeyUp}) // clamp at 0
 	if m.dockCursor != 0 {
 		t.Fatalf("up clamp: cursor = %d, want 0", m.dockCursor)
 	}
-	m, _ = m.updateDockFocus(tea.KeyMsg{Type: tea.KeyEsc})
+	m, _ = m.updateDockFocus(tea.KeyPressMsg{Code: tea.KeyEsc})
 	if m.dockFocused {
 		t.Fatalf("esc should exit dock focus")
 	}
 }
 
+func TestSubagentDock_TabFocusIgnoresShiftTab(t *testing.T) {
+	m, _ := newPlanModeTestModel(t)
+	m.subagentTasks = dockTestRegistry(1)
+
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift})
+	if m.dockFocused {
+		t.Fatalf("Shift+Tab should cycle agent mode, not focus the subagent dock")
+	}
+	if !m.cfg.AutoMode.IsActive() {
+		t.Fatalf("Shift+Tab should cycle normal mode into auto mode")
+	}
+}
+
 func TestUpdateDockFocus_ExitsWhenNoneRunning(t *testing.T) {
 	m := Model{subagentTasks: subagents.NewRegistry(), dockFocused: true}
-	m, _ = m.updateDockFocus(tea.KeyMsg{Type: tea.KeyDown})
+	m, _ = m.updateDockFocus(tea.KeyPressMsg{Code: tea.KeyDown})
 	if m.dockFocused {
 		t.Fatalf("dock should unfocus when no subagent is running")
 	}

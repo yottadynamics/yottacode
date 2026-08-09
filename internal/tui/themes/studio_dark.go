@@ -1,6 +1,9 @@
 package themes
 
-import "github.com/charmbracelet/lipgloss"
+import (
+	"charm.land/lipgloss/v2"
+	"charm.land/lipgloss/v2/compat"
+)
 
 // studioDark is tuned for recorded terminal demos and screenshares.
 // It uses a near-black charcoal backdrop instead of pure black so
@@ -32,6 +35,6 @@ func init() {
 		Warm:      pin("#ffb86b"), // orange emphasis for active/warm UI states
 
 		HasBackground: true,
-		Background:    lipgloss.AdaptiveColor{Light: "#0b0f0e", Dark: "#0b0f0e"},
+		Background:    compat.AdaptiveColor{Light: lipgloss.Color("#0b0f0e"), Dark: lipgloss.Color("#0b0f0e")},
 	})
 }

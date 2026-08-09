@@ -4,7 +4,7 @@ import (
 	"os"
 	"strings"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 )
 
 // permissionsRowCount is the number of rows in the /permissions picker
@@ -35,8 +35,8 @@ func cmdPermissions(m Model, _ []string) (Model, tea.Cmd) {
 // closes, ↑/↓ navigates the two rows, Enter dispatches to vim on the
 // highlighted file. Unknown keys are no-ops (the textarea is hidden
 // underneath).
-func (m Model) updatePermissionsPicker(msg tea.KeyMsg) (Model, tea.Cmd) {
-	switch msg.Type {
+func (m Model) updatePermissionsPicker(msg tea.KeyPressMsg) (Model, tea.Cmd) {
+	switch msg.Code {
 	case tea.KeyEsc:
 		m.permissionsOpen = false
 		m.permissionsCursor = 0

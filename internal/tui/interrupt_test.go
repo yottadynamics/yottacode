@@ -5,7 +5,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 
 	"github.com/yottadynamics/yottacode/internal/agent"
 )
@@ -34,9 +34,9 @@ func TestInterrupt_EnterMidTurnQueuesOnChannel(t *testing.T) {
 	cancels := installFakeTurn(t, &m)
 
 	for _, r := range "follow up" {
-		m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m, _ = applyMsg(m, tea.KeyPressMsg{Text: string(r)})
 	}
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 
 	// Message should be on the channel, not in pendingInputAfterTurn.
 	select {
@@ -62,7 +62,7 @@ func TestInterrupt_QueuedEnterDoesNotRenderInterruptedFooter(t *testing.T) {
 	m := newTestModel(t)
 	_ = installFakeTurn(t, &m)
 	m.textInput.SetValue("follow up")
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 
 	m, _ = applyMsg(m, agentEventMsg{ev: agent.TurnInterrupted{OrphanedCalls: 1, Explicit: false}})
 
@@ -80,10 +80,10 @@ func TestInterrupt_UpMidTurnRecallsQueuedMessageForEditing(t *testing.T) {
 	cancels := installFakeTurn(t, &m)
 
 	for _, r := range "follow up" {
-		m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m, _ = applyMsg(m, tea.KeyPressMsg{Text: string(r)})
 	}
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyUp})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyUp})
 
 	if got := m.textInput.Value(); got != "follow up" {
 		t.Fatalf("Up should recall queued text into textarea; got %q", got)
@@ -108,12 +108,12 @@ func TestInterrupt_UpMidTurnCanReviseAndRequeueQueuedMessage(t *testing.T) {
 	_ = installFakeTurn(t, &m)
 
 	for _, r := range "follow" {
-		m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m, _ = applyMsg(m, tea.KeyPressMsg{Text: string(r)})
 	}
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyUp})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyUp})
 	m.textInput.SetValue("follow up revised")
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 
 	select {
 	case got := <-m.userMsgCh:
@@ -137,15 +137,15 @@ func TestInterrupt_EnterMidTurnOverflowDoesNotCancel(t *testing.T) {
 
 	// First message: queued on channel.
 	for _, r := range "first" {
-		m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m, _ = applyMsg(m, tea.KeyPressMsg{Text: string(r)})
 	}
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 
 	// Second message: channel full, stays in the textarea and only warns.
 	for _, r := range "second" {
-		m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m, _ = applyMsg(m, tea.KeyPressMsg{Text: string(r)})
 	}
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 
 	select {
 	case got := <-m.userMsgCh:
@@ -175,7 +175,7 @@ func TestInterrupt_EmptyEnterMidTurnIsSilent(t *testing.T) {
 	m := newTestModel(t)
 	cancels := installFakeTurn(t, &m)
 
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 
 	select {
 	case msg := <-m.userMsgCh:
@@ -198,14 +198,14 @@ func TestInterrupt_CtrlCMidTurnCancelsAndDrainsChannel(t *testing.T) {
 	cancels := installFakeTurn(t, &m)
 
 	for _, r := range "abc" {
-		m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m, _ = applyMsg(m, tea.KeyPressMsg{Text: string(r)})
 	}
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 
 	// Verify message was queued (not cancelled yet).
 	// Don't drain it — let Ctrl+C do that.
 
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyCtrlC})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
 
 	select {
 	case msg := <-m.userMsgCh:
@@ -224,7 +224,7 @@ func TestInterrupt_CtrlCRendersInterruptedFooter(t *testing.T) {
 	m := newTestModel(t)
 	_ = installFakeTurn(t, &m)
 	m.textInput.SetValue("abc")
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyCtrlC})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
 
 	m, _ = applyMsg(m, agentEventMsg{ev: agent.TurnInterrupted{OrphanedCalls: 1, Explicit: true}})
 
@@ -240,10 +240,10 @@ func TestInterrupt_EscBehavesLikeCtrlC(t *testing.T) {
 	cancels := installFakeTurn(t, &m)
 
 	for _, r := range "xyz" {
-		m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m, _ = applyMsg(m, tea.KeyPressMsg{Text: string(r)})
 	}
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEsc})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEsc})
 
 	select {
 	case msg := <-m.userMsgCh:
@@ -267,9 +267,9 @@ func TestInterrupt_TurnEndedDrainsUndeliveredMessage(t *testing.T) {
 	_ = installFakeTurn(t, &m)
 
 	for _, r := range "do the thing" {
-		m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m, _ = applyMsg(m, tea.KeyPressMsg{Text: string(r)})
 	}
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 
 	m, _ = applyMsg(m, turnEndedMsg{})
 
@@ -313,13 +313,13 @@ func TestInterrupt_SlashMidTurnDrainsChannel(t *testing.T) {
 	_ = installFakeTurn(t, &m)
 
 	for _, r := range "stale message" {
-		m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m, _ = applyMsg(m, tea.KeyPressMsg{Text: string(r)})
 	}
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 
 	// Type /clear and press Enter.
 	m.textInput.SetValue("/clear")
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 
 	select {
 	case msg := <-m.userMsgCh:

@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 )
 
 func TestNormalizePasteLineBreaks(t *testing.T) {
@@ -38,8 +38,7 @@ func TestNormalizePasteLineBreaks(t *testing.T) {
 // detour like any LF-separated paste and round-trip with LF line breaks.
 func TestPaste_CRSeparatedTakesLargePasteDetour(t *testing.T) {
 	m := newTestModel(t)
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyRunes, Paste: true,
-		Runes: []rune("adapter\ragent\rauth")})
+	m, _ = applyMsg(m, tea.PasteMsg{Content: "adapter\ragent\rauth"})
 
 	got := m.textInput.Value()
 	if strings.ContainsRune(got, '\r') {
@@ -56,8 +55,7 @@ func TestPaste_CRSeparatedTakesLargePasteDetour(t *testing.T) {
 
 func TestPaste_SmallPasteWithoutLineBreaksInsertsVerbatim(t *testing.T) {
 	m := newTestModel(t)
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyRunes, Paste: true,
-		Runes: []rune("hello world")})
+	m, _ = applyMsg(m, tea.PasteMsg{Content: "hello world"})
 
 	if got := m.textInput.Value(); got != "hello world" {
 		t.Errorf("textarea = %q, want %q", got, "hello world")

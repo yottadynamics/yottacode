@@ -6,8 +6,9 @@ import (
 	"sort"
 	"strings"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
+	"charm.land/lipgloss/v2/compat"
 
 	"github.com/yottadynamics/yottacode/internal/adapter"
 	"github.com/yottadynamics/yottacode/internal/contextwindow"
@@ -34,7 +35,7 @@ const (
 type contextBucket struct {
 	label  string
 	tokens int
-	color  lipgloss.AdaptiveColor
+	color  compat.AdaptiveColor
 	used   bool
 }
 

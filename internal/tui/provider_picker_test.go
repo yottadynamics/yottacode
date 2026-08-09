@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 
 	"github.com/yottadynamics/yottacode/internal/catalog"
 	"github.com/yottadynamics/yottacode/internal/wizard"
@@ -20,7 +20,7 @@ func navigateToKind(t *testing.T, m Model, kind string) Model {
 	for i, e := range m.providerPicker.addCatalog {
 		if e.Kind == kind {
 			for j := 0; j < i; j++ {
-				m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyDown})
+				m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyDown})
 			}
 			return m
 		}
@@ -37,7 +37,7 @@ func navigateToMenuItem(t *testing.T, m Model, label string) Model {
 		if item.Label == label {
 			break
 		}
-		m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyDown})
+		m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyDown})
 	}
 	return m
 }
@@ -109,7 +109,7 @@ func TestProviderPicker_EscFromMenuClosesPicker(t *testing.T) {
 	m := newTestModel(t)
 	seedProviderConfig(t)
 	m, _ = typeAndEnter(t, m, "/provider")
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEsc})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEsc})
 	if m.providerPickerOpen {
 		t.Errorf("Esc from menu should close picker")
 	}
@@ -129,7 +129,7 @@ func TestSlash_ProviderListShortcutOpensUsePicker(t *testing.T) {
 	if m.providerPicker.mode != providerUsePickerMode {
 		t.Errorf("expected use-picker mode; got %v", m.providerPicker.mode)
 	}
-	got := stripANSI(m.View())
+	got := stripANSI(m.View().Content)
 	for _, want := range []string{"Switch provider", "anthropic", "openai", "✓", "resets the provider's prompt cache"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("view missing %q; got:\n%s", want, got)
@@ -146,7 +146,7 @@ func TestProviderPicker_UseMenuItemTransitionsToUseList(t *testing.T) {
 	seedProviderConfig(t)
 	m, _ = typeAndEnter(t, m, "/provider")
 	m = navigateToMenuItem(t, m, "Use")
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	if m.providerPicker.mode != providerUsePickerMode {
 		t.Errorf("Enter on Use should transition to use-list mode; got %v", m.providerPicker.mode)
 	}
@@ -163,8 +163,8 @@ func TestProviderPicker_EscFromSubPickerPopsToMenu(t *testing.T) {
 	m := newTestModel(t)
 	seedProviderConfig(t)
 	m, _ = typeAndEnter(t, m, "/provider")
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter}) // enter Use sub-picker
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEsc})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // enter Use sub-picker
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEsc})
 	if !m.providerPickerOpen {
 		t.Errorf("Esc from sub-picker should NOT close picker")
 	}
@@ -181,12 +181,12 @@ func TestProviderPicker_UseConfirmSwitchesActive(t *testing.T) {
 	seedProviderConfig(t)
 	m, _ = typeAndEnter(t, m, "/provider")
 	m = navigateToMenuItem(t, m, "Use")
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter}) // → Use sub-picker
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyDown})  // cursor → openai
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // → Use sub-picker
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyDown})  // cursor → openai
 	if m.providerPicker.usePickerCursor != 1 {
 		t.Fatalf("setup: cursor should be at openai (1); got %d", m.providerPicker.usePickerCursor)
 	}
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	if m.providerPickerOpen {
 		t.Errorf("Enter on Use confirm should close picker")
 	}
@@ -206,7 +206,7 @@ func TestProviderPicker_UseWithNoProvidersHints(t *testing.T) {
 	// Don't seed a config — no providers configured.
 	m, _ = typeAndEnter(t, m, "/provider")
 	m = navigateToMenuItem(t, m, "Use")
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter}) // try to enter Use
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // try to enter Use
 	if m.providerPickerOpen {
 		t.Errorf("Use with no providers should close the picker (hint, not transition)")
 	}
@@ -220,8 +220,8 @@ func TestProviderPicker_ViewIncludesProviderHeadline(t *testing.T) {
 	m := newTestModel(t)
 	seedProviderConfig(t)
 	m, _ = typeAndEnter(t, m, "/provider")
-	if !strings.Contains(stripANSI(m.View()), "Provider") {
-		t.Errorf("View should include 'Provider' headline; got:\n%s", m.View())
+	if !strings.Contains(stripANSI(m.View().Content), "Provider") {
+		t.Errorf("View should include 'Provider' headline; got:\n%s", m.View().Content)
 	}
 }
 
@@ -233,7 +233,7 @@ func TestProviderPicker_MenuRendersClaudeCodeStyle(t *testing.T) {
 	m := newTestModel(t)
 	seedProviderConfig(t)
 	m, _ = typeAndEnter(t, m, "/provider")
-	got := stripANSI(m.View())
+	got := stripANSI(m.View().Content)
 	for _, want := range []string{
 		"❯",   // cursor glyph
 		"Use", // labels (no leading numbers per Phase 5b)
@@ -269,8 +269,8 @@ func TestProviderPicker_UseListMarksActiveWithCheckmark(t *testing.T) {
 	seedProviderConfig(t)
 	m, _ = typeAndEnter(t, m, "/provider")
 	m = navigateToMenuItem(t, m, "Use")
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
-	got := stripANSI(m.View())
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	got := stripANSI(m.View().Content)
 	if !strings.Contains(got, "✓") {
 		t.Errorf("Use sub-picker should mark the active provider with ✓; got:\n%s", got)
 	}
@@ -321,12 +321,12 @@ func TestProviderPicker_RemoveTransitionsToRemoveList(t *testing.T) {
 		t.Fatalf("Remove not in menu")
 	}
 	for i := 0; i < target; i++ {
-		m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyDown})
+		m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyDown})
 	}
 	if m.providerPicker.menuCursor != target {
 		t.Fatalf("cursor should be on Remove (index %d); got %d", target, m.providerPicker.menuCursor)
 	}
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	if m.providerPicker.mode != providerRemovePickerMode {
 		t.Errorf("Enter on Remove should transition to remove-list mode; got %v", m.providerPicker.mode)
 	}
@@ -339,7 +339,7 @@ func TestProviderPicker_RemoveTransitionsToRemoveList(t *testing.T) {
 	// The cache-reset note only makes sense on the switch picker —
 	// deleting a provider profile doesn't touch the running session's
 	// active model, so the note would be misleading noise here.
-	got := stripANSI(m.View())
+	got := stripANSI(m.View().Content)
 	if strings.Contains(got, "resets the provider's prompt cache") {
 		t.Errorf("remove picker should not carry the switch-only cache-reset note; got:\n%s", got)
 	}
@@ -358,14 +358,14 @@ func TestProviderPicker_RemoveConfirmDeletes(t *testing.T) {
 		}
 	}
 	for i := 0; i < target; i++ {
-		m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyDown})
+		m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyDown})
 	}
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	// Cursor at 0 = anthropic. Move to openai (cursor 1) to avoid
 	// nuking the active row in this test (covered separately
 	// below).
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyDown})
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyDown})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	if m.providerPickerOpen {
 		t.Errorf("Enter on confirm should close picker")
 	}
@@ -404,9 +404,9 @@ func TestProviderPicker_AddTransitionsToKindList(t *testing.T) {
 		t.Fatalf("Add not in menu")
 	}
 	for i := 0; i < target; i++ {
-		m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyDown})
+		m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyDown})
 	}
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	if m.providerPicker.mode != providerAddKindMode {
 		t.Errorf("Enter on Add should transition to kind picker; got %v", m.providerPicker.mode)
 	}
@@ -425,19 +425,19 @@ func TestProviderPicker_AddCloudKindBuildsForm(t *testing.T) {
 		if item.Label == "Add" {
 			break
 		}
-		m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyDown})
+		m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyDown})
 	}
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter}) // → addKindMode
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // → addKindMode
 	// Navigate to anthropic (no longer at index 0).
 	for i, e := range m.providerPicker.addCatalog {
 		if e.Kind == "anthropic" {
 			for j := 0; j < i; j++ {
-				m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyDown})
+				m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyDown})
 			}
 			break
 		}
 	}
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	if m.providerPicker.mode != providerAddFieldsMode {
 		t.Fatalf("Enter on kind should transition to fields mode; got %v", m.providerPicker.mode)
 	}
@@ -470,11 +470,11 @@ func TestProviderPicker_AddEscFromFieldsPopsToKindList(t *testing.T) {
 		if item.Label == "Add" {
 			break
 		}
-		m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyDown})
+		m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyDown})
 	}
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter}) // → addKindMode
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter}) // → addFieldsMode
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEsc})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // → addKindMode
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // → addFieldsMode
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEsc})
 	if m.providerPicker.mode != providerAddKindMode {
 		t.Errorf("Esc from fields should pop to kind list; got %v", m.providerPicker.mode)
 	}
@@ -500,24 +500,24 @@ func TestProviderPicker_AddConfirmAppendsProvider(t *testing.T) {
 		if item.Label == "Add" {
 			break
 		}
-		m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyDown})
+		m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyDown})
 	}
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter}) // → addKindMode
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // → addKindMode
 	// Navigate down to anthropic (skip openai-auth, copilot-auth).
 	for i, e := range m.providerPicker.addCatalog {
 		if e.Kind == "anthropic" {
 			for j := 0; j < i; j++ {
-				m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyDown})
+				m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyDown})
 			}
 			break
 		}
 	}
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter}) // → addFieldsMode
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // → addFieldsMode
 	// Field index 2 = API key, index 3 = Default model for cloud
 	// providers (Name, Base URL, API key, Default model).
 	m.providerPicker.addFields[2].SetValue("sk-ant-test-key")
 	m.providerPicker.addFields[3].SetValue("claude-sonnet-4-6")
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	if m.providerPickerOpen {
 		t.Errorf("Enter on save should close picker")
 	}
@@ -549,21 +549,21 @@ func TestProviderPicker_AddRejectsMissingKeyForCloudProvider(t *testing.T) {
 		if item.Label == "Add" {
 			break
 		}
-		m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyDown})
+		m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyDown})
 	}
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter}) // → addKindMode
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // → addKindMode
 	for i, e := range m.providerPicker.addCatalog {
 		if e.Kind == "anthropic" {
 			for j := 0; j < i; j++ {
-				m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyDown})
+				m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyDown})
 			}
 			break
 		}
 	}
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter}) // → addFieldsMode
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // → addFieldsMode
 	// Fill model but deliberately leave the API key blank.
 	m.providerPicker.addFields[3].SetValue("claude-sonnet-4-6")
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 
 	if !m.providerPickerOpen {
 		t.Fatalf("save with no key should keep picker open")
@@ -607,13 +607,13 @@ func TestProviderPicker_AddAcceptsKeyFromExistingEnv(t *testing.T) {
 		if item.Label == "Add" {
 			break
 		}
-		m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyDown})
+		m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyDown})
 	}
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter}) // → addKindMode
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // → addKindMode
 	m = navigateToKind(t, m, "anthropic")
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter}) // → addFieldsMode
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // → addFieldsMode
 	m.providerPicker.addFields[3].SetValue("claude-sonnet-4-6")
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	if m.providerPickerOpen {
 		t.Errorf("save should succeed when env var is set; addInputErr=%q", m.providerPicker.addInputErr)
 	}
@@ -635,9 +635,9 @@ func TestProviderPicker_AddNvidiaRequiresExplicitModel(t *testing.T) {
 		if item.Label == "Add" {
 			break
 		}
-		m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyDown})
+		m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyDown})
 	}
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter}) // → addKindMode
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // → addKindMode
 
 	target := -1
 	for i, e := range m.providerPicker.addCatalog {
@@ -650,9 +650,9 @@ func TestProviderPicker_AddNvidiaRequiresExplicitModel(t *testing.T) {
 		t.Fatalf("nvidia-nim not in catalog")
 	}
 	for i := 0; i < target; i++ {
-		m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyDown})
+		m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyDown})
 	}
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter}) // → addFieldsMode
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // → addFieldsMode
 
 	// Find the model field. Should be empty (not pre-filled), with the
 	// suggestion sitting in Placeholder.
@@ -676,7 +676,7 @@ func TestProviderPicker_AddNvidiaRequiresExplicitModel(t *testing.T) {
 
 	// Trying to save without typing rejects with the model-required
 	// error — the guard that catches the silent-default bug.
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	if !m.providerPickerOpen {
 		t.Fatalf("save with empty model should keep picker open")
 	}
@@ -721,9 +721,9 @@ default_model = "nvidia/nemotron-3-super-120b-a12b"
 		if item.Label == "Add" {
 			break
 		}
-		m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyDown})
+		m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyDown})
 	}
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter}) // → addKindMode
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // → addKindMode
 
 	// Walk to nvidia-nim catalog row.
 	target := -1
@@ -737,9 +737,9 @@ default_model = "nvidia/nemotron-3-super-120b-a12b"
 		t.Fatalf("nvidia-nim not in catalog")
 	}
 	for i := 0; i < target; i++ {
-		m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyDown})
+		m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyDown})
 	}
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter}) // → addFieldsMode
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // → addFieldsMode
 
 	// uniqueProviderName already filled "nvidia-nim-2" since
 	// "nvidia-nim" is taken. Pre-fill model so we don't trip the
@@ -751,7 +751,7 @@ default_model = "nvidia/nemotron-3-super-120b-a12b"
 	last := len(m.providerPicker.addFields) - 1
 	m.providerPicker.addFields[last].SetValue("nvidia/some-other-model")
 
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 
 	if !m.providerPickerOpen {
 		t.Fatalf("second profile save with no key should keep picker open")
@@ -776,9 +776,9 @@ func TestProviderPicker_AddOllamaSkipsKeyCheck(t *testing.T) {
 		if item.Label == "Add" {
 			break
 		}
-		m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyDown})
+		m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyDown})
 	}
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter}) // → addKindMode
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // → addKindMode
 	// Walk the catalog cursor to the Ollama row.
 	target := -1
 	for i, e := range m.providerPicker.addCatalog {
@@ -791,14 +791,14 @@ func TestProviderPicker_AddOllamaSkipsKeyCheck(t *testing.T) {
 		t.Fatalf("ollama not in catalog")
 	}
 	for i := 0; i < target; i++ {
-		m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyDown})
+		m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyDown})
 	}
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter}) // → addFieldsMode
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // → addFieldsMode
 	// Ollama form: Name, Base URL, Default model (no API key field).
 	// Default model is the last index regardless of field count.
 	last := len(m.providerPicker.addFields) - 1
 	m.providerPicker.addFields[last].SetValue("llama3.1:8b")
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	if m.providerPickerOpen {
 		t.Errorf("Ollama save (no key required) should close picker; addInputErr=%q", m.providerPicker.addInputErr)
 	}
@@ -817,9 +817,9 @@ func TestProviderPicker_AddFreeFormRejectsBlankModel(t *testing.T) {
 		if item.Label == "Add" {
 			break
 		}
-		m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyDown})
+		m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyDown})
 	}
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter}) // → addKindMode
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // → addKindMode
 	// Every catalog entry without an embedded model list is free-form (the curated list lives in
 	// internal/catalog/catalog.gen.json). Pick the first non-curated
 	// kind so the test exercises the "default model required" path
@@ -840,13 +840,13 @@ func TestProviderPicker_AddFreeFormRejectsBlankModel(t *testing.T) {
 		t.Fatalf("expected at least one non-curated catalog entry")
 	}
 	for i := 0; i < target; i++ {
-		m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyDown})
+		m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyDown})
 	}
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter}) // → addFieldsMode
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // → addFieldsMode
 	// Fill base URL but leave model blank. Tab to base URL field, type, then Enter.
 	// addFields[0] = Name (pre-filled), [1] = Base URL.
 	m.providerPicker.addFields[1].SetValue("http://example.com/v1")
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter}) // try to save
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // try to save
 	if !m.providerPickerOpen {
 		t.Errorf("Enter with blank model should NOT close picker (validation error)")
 	}
@@ -876,18 +876,18 @@ func TestProviderPicker_AddPropagatesAPIKeyToProcessEnv(t *testing.T) {
 		if item.Label == "Add" {
 			break
 		}
-		m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyDown})
+		m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyDown})
 	}
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter}) // → addKindMode
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // → addKindMode
 	m = navigateToKind(t, m, "anthropic")
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter}) // → addFieldsMode
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // → addFieldsMode
 	// Set the API key + model fields directly. Field index 2 = API
 	// key, index 3 = Default model. Anthropic went free-form when the
 	// curated catalog was removed, so the model needs an explicit
 	// value or save validation rejects it.
 	m.providerPicker.addFields[2].SetValue("sk-ant-fresh-key")
 	m.providerPicker.addFields[3].SetValue("claude-sonnet-4-6")
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	if m.providerPickerOpen {
 		t.Errorf("Enter on save should close picker")
 	}
@@ -926,9 +926,9 @@ func TestProviderPicker_AddRejectsMissingKey_AllCloudProviders(t *testing.T) {
 				if item.Label == "Add" {
 					break
 				}
-				m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyDown})
+				m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyDown})
 			}
-			m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter}) // → addKindMode
+			m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // → addKindMode
 			// Walk the catalog cursor to the target row.
 			target := -1
 			for i, e := range m.providerPicker.addCatalog {
@@ -941,9 +941,9 @@ func TestProviderPicker_AddRejectsMissingKey_AllCloudProviders(t *testing.T) {
 				t.Fatalf("catalog missing %q", tc.kindName)
 			}
 			for i := 0; i < target; i++ {
-				m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyDown})
+				m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyDown})
 			}
-			m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter}) // → addFieldsMode
+			m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // → addFieldsMode
 			// Fill the Default model field so we isolate the API-key
 			// check (otherwise the model-required guard fires first
 			// for kinds whose curated catalog is empty).
@@ -961,7 +961,7 @@ func TestProviderPicker_AddRejectsMissingKey_AllCloudProviders(t *testing.T) {
 				m.providerPicker.addFields[modelIdx].SetValue("placeholder-model")
 			}
 			// Try to save with no key.
-			m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+			m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 			if !m.providerPickerOpen {
 				t.Fatalf("%s: save with no key should keep picker open", tc.kindName)
 			}
@@ -983,11 +983,11 @@ func TestProviderPicker_VertexPreservesTypedModelPerFamily(t *testing.T) {
 		if item.Label == "Add" {
 			break
 		}
-		m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyDown})
+		m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyDown})
 	}
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = navigateToKind(t, m, "vertex")
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 
 	modelIdx := -1
 	familyIdx := -1
@@ -1023,11 +1023,11 @@ func TestProviderPicker_VertexPreservesEditedModelAfterCatalogPick(t *testing.T)
 		if item.Label == "Add" {
 			break
 		}
-		m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyDown})
+		m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyDown})
 	}
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = navigateToKind(t, m, "vertex")
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 
 	modelIdx := -1
 	for i, lbl := range m.providerPicker.addLabels {
@@ -1071,11 +1071,11 @@ func TestProviderPicker_AddCuratedKindLoadsCatalogModels(t *testing.T) {
 		if item.Label == "Add" {
 			break
 		}
-		m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyDown})
+		m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyDown})
 	}
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter}) // → addKindMode
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // → addKindMode
 	m = navigateToKind(t, m, "anthropic")
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter}) // → addFieldsMode
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // → addFieldsMode
 	if len(m.providerPicker.addCuratedModels) == 0 {
 		t.Fatalf("anthropic catalog should be populated; got 0 entries")
 	}
@@ -1094,7 +1094,7 @@ func TestProviderPicker_AddCuratedKindLoadsCatalogModels(t *testing.T) {
 	}
 	// Render must include at least one catalog entry's label so the
 	// user sees the list and knows what to pick from.
-	view := stripANSI(m.View())
+	view := stripANSI(m.View().Content)
 	if !strings.Contains(view, m.providerPicker.addCuratedModels[0].Label()) {
 		t.Errorf("rendered form missing first model label %q;\nview:\n%s",
 			m.providerPicker.addCuratedModels[0].Label(), view)
@@ -1113,10 +1113,10 @@ func TestProviderPicker_AddArrowKeysNavigateCuratedCatalog(t *testing.T) {
 		if item.Label == "Add" {
 			break
 		}
-		m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyDown})
+		m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyDown})
 	}
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter}) // → addKindMode
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter}) // → addFieldsMode
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // → addKindMode
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // → addFieldsMode
 
 	if len(m.providerPicker.addCuratedModels) < 2 {
 		t.Skipf("need ≥2 anthropic catalog entries to exercise navigation; got %d",
@@ -1131,11 +1131,11 @@ func TestProviderPicker_AddArrowKeysNavigateCuratedCatalog(t *testing.T) {
 		}
 	}
 	for m.providerPicker.addFocused != modelIdx {
-		m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyTab})
+		m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyTab})
 	}
 	// Cursor starts at -1 (no auto-pick). First Down moves to 0 and
 	// fills the textinput with the first catalog model's ID.
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyDown})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyDown})
 	if m.providerPicker.addModelCursor != 0 {
 		t.Fatalf("first Down should advance cursor from -1 to 0; got %d", m.providerPicker.addModelCursor)
 	}
@@ -1143,7 +1143,7 @@ func TestProviderPicker_AddArrowKeysNavigateCuratedCatalog(t *testing.T) {
 		t.Errorf("textinput after first Down = %q, want %q", got, want)
 	}
 	// Second Down → cursor 1.
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyDown})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyDown})
 	if m.providerPicker.addModelCursor != 1 {
 		t.Fatalf("second Down should advance cursor to 1; got %d", m.providerPicker.addModelCursor)
 	}
@@ -1151,12 +1151,12 @@ func TestProviderPicker_AddArrowKeysNavigateCuratedCatalog(t *testing.T) {
 		t.Errorf("textinput after second Down = %q, want %q", got, want)
 	}
 	// Up should reverse it.
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyUp})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyUp})
 	if m.providerPicker.addModelCursor != 0 {
 		t.Errorf("Up should return cursor to 0; got %d", m.providerPicker.addModelCursor)
 	}
 	// Up at 0 should clamp (not wrap to -1) — no point un-picking.
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyUp})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyUp})
 	if m.providerPicker.addModelCursor != 0 {
 		t.Errorf("Up at cursor 0 should clamp to 0; got %d", m.providerPicker.addModelCursor)
 	}
@@ -1175,10 +1175,10 @@ func TestProviderPicker_AddCuratedKindPersistsCatalogPick(t *testing.T) {
 		if item.Label == "Add" {
 			break
 		}
-		m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyDown})
+		m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyDown})
 	}
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter}) // → addKindMode (anthropic)
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter}) // → addFieldsMode
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // → addKindMode (anthropic)
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // → addFieldsMode
 	if len(m.providerPicker.addCuratedModels) == 0 {
 		t.Skip("anthropic catalog empty in this build; skipping curated-pick test")
 	}
@@ -1197,11 +1197,11 @@ func TestProviderPicker_AddCuratedKindPersistsCatalogPick(t *testing.T) {
 	// new contract: no auto-prefill, user must take a deliberate
 	// action.
 	for m.providerPicker.addFocused != modelIdx {
-		m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyTab})
+		m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyTab})
 	}
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyDown}) // cursor -1 → 0
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyDown}) // cursor -1 → 0
 	wantModel := m.providerPicker.addCuratedModels[0].ID
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	if m.providerPickerOpen {
 		t.Fatalf("save should close picker; addInputErr=%q", m.providerPicker.addInputErr)
 	}
@@ -1228,10 +1228,10 @@ func TestProviderPicker_AddCuratedKindRequiresExplicitModelPick(t *testing.T) {
 		if item.Label == "Add" {
 			break
 		}
-		m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyDown})
+		m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyDown})
 	}
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter}) // → addKindMode
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter}) // → addFieldsMode
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // → addKindMode
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // → addFieldsMode
 	if len(m.providerPicker.addCuratedModels) == 0 {
 		t.Skip("anthropic catalog empty in this build; nothing to pre-fill")
 	}
@@ -1246,7 +1246,7 @@ func TestProviderPicker_AddCuratedKindRequiresExplicitModelPick(t *testing.T) {
 	m.providerPicker.addFields[keyIdx].SetValue("sk-ant-no-pick")
 	// Try to save without ever Tab-ing to the model field or
 	// arrowing to pick.
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	if !m.providerPickerOpen {
 		t.Fatalf("save without picking model should keep picker open")
 	}
@@ -1274,15 +1274,15 @@ func TestProviderPicker_AddFieldsHaveBoundedWidth(t *testing.T) {
 		if item.Label == "Add" {
 			break
 		}
-		m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyDown})
+		m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyDown})
 	}
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter}) // → addKindMode (anthropic)
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter}) // → addFieldsMode
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // → addKindMode (anthropic)
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // → addFieldsMode
 	// newTestModel sends WindowSizeMsg{Width: 80}. With margin for
 	// marker + label column, providerAddInputWidth(80) should yield
 	// something well below 80 and at least the lower clamp (24).
 	for i, label := range m.providerPicker.addLabels {
-		w := m.providerPicker.addFields[i].Width
+		w := m.providerPicker.addFields[i].Width()
 		if w <= 0 {
 			t.Errorf("%s field has unbounded Width=%d", label, w)
 		}
@@ -1344,9 +1344,9 @@ func TestProviderPicker_AddFormContract_AllCloudProviders(t *testing.T) {
 				if item.Label == "Add" {
 					break
 				}
-				m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyDown})
+				m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyDown})
 			}
-			m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter}) // → addKindMode
+			m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // → addKindMode
 			target := -1
 			for i, e := range m.providerPicker.addCatalog {
 				if e.Name == tc.kindName {
@@ -1358,13 +1358,13 @@ func TestProviderPicker_AddFormContract_AllCloudProviders(t *testing.T) {
 				t.Fatalf("catalog missing %q", tc.kindName)
 			}
 			for i := 0; i < target; i++ {
-				m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyDown})
+				m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyDown})
 			}
-			m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter}) // → addFieldsMode
+			m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // → addFieldsMode
 
 			// (a) every textinput claims a bounded width.
 			for i, lbl := range m.providerPicker.addLabels {
-				w := m.providerPicker.addFields[i].Width
+				w := m.providerPicker.addFields[i].Width()
 				if w <= 0 || w >= 80 {
 					t.Errorf("%s: %s field has unsafe Width=%d", tc.kindName, lbl, w)
 				}
@@ -1408,7 +1408,7 @@ func TestProviderPicker_AddFormContract_AllCloudProviders(t *testing.T) {
 			if tc.kindName == "xai" {
 				m.providerPicker.addFields[modelIdx].SetValue("")
 			}
-			m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+			m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 			if !m.providerPickerOpen {
 				t.Fatalf("%s: save with no model should keep picker open", tc.kindName)
 			}
@@ -1432,9 +1432,9 @@ func TestProviderPicker_AddFreeFormKindHasNoCuratedModels(t *testing.T) {
 		if item.Label == "Add" {
 			break
 		}
-		m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyDown})
+		m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyDown})
 	}
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter}) // → addKindMode
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // → addKindMode
 	target := -1
 	for i, e := range m.providerPicker.addCatalog {
 		if e.Kind == "ollama" {
@@ -1443,9 +1443,9 @@ func TestProviderPicker_AddFreeFormKindHasNoCuratedModels(t *testing.T) {
 		}
 	}
 	for i := 0; i < target; i++ {
-		m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyDown})
+		m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyDown})
 	}
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter}) // → addFieldsMode
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // → addFieldsMode
 	if len(m.providerPicker.addCuratedModels) != 0 {
 		t.Errorf("ollama should have no curated catalog; got %d entries",
 			len(m.providerPicker.addCuratedModels))
@@ -1467,11 +1467,11 @@ func TestProviderPicker_AddSetsActiveOnFirstAdd(t *testing.T) {
 		if item.Label == "Add" {
 			break
 		}
-		m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyDown})
+		m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyDown})
 	}
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter}) // → addKindMode
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // → addKindMode
 	m = navigateToKind(t, m, "anthropic")
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter}) // → addFieldsMode
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // → addFieldsMode
 
 	// Fill key + arrow-pick a model so save passes the guards.
 	keyIdx, modelIdx := -1, -1
@@ -1488,11 +1488,11 @@ func TestProviderPicker_AddSetsActiveOnFirstAdd(t *testing.T) {
 		m.providerPicker.addFields[modelIdx].SetValue("claude-sonnet-4-6")
 	} else {
 		for m.providerPicker.addFocused != modelIdx {
-			m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyTab})
+			m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyTab})
 		}
-		m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyDown}) // -1 → 0
+		m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyDown}) // -1 → 0
 	}
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	if m.providerPickerOpen {
 		t.Fatalf("save should close picker; addInputErr=%q", m.providerPicker.addInputErr)
 	}
@@ -1519,9 +1519,9 @@ func TestProviderPicker_AddPreservesExistingActive(t *testing.T) {
 		if item.Label == "Add" {
 			break
 		}
-		m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyDown})
+		m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyDown})
 	}
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter}) // → addKindMode
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // → addKindMode
 	// Walk to gemini (index varies; skip if catalog reordered).
 	target := -1
 	for i, e := range m.providerPicker.addCatalog {
@@ -1534,9 +1534,9 @@ func TestProviderPicker_AddPreservesExistingActive(t *testing.T) {
 		t.Skip("gemini missing from catalog; skipping")
 	}
 	for i := 0; i < target; i++ {
-		m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyDown})
+		m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyDown})
 	}
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter}) // → addFieldsMode
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // → addFieldsMode
 
 	// Fill required fields.
 	keyIdx, modelIdx := -1, -1
@@ -1550,7 +1550,7 @@ func TestProviderPicker_AddPreservesExistingActive(t *testing.T) {
 	}
 	m.providerPicker.addFields[keyIdx].SetValue("test-gemini-key")
 	m.providerPicker.addFields[modelIdx].SetValue("gemini-2.5-flash")
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	if m.providerPickerOpen {
 		t.Fatalf("save should close picker; addInputErr=%q", m.providerPicker.addInputErr)
 	}
@@ -1581,11 +1581,11 @@ func TestProviderPicker_RemoveActiveAutoSwitches(t *testing.T) {
 		}
 	}
 	for i := 0; i < target; i++ {
-		m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyDown})
+		m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyDown})
 	}
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter}) // → Remove sub-picker
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // → Remove sub-picker
 	// Cursor at 0 = anthropic (the active one).
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	got := stripANSI(m.transcript.String())
 	if !strings.Contains(got, `removed "anthropic"`) {
 		t.Errorf("expected removed line; transcript:\n%s", got)
@@ -1641,10 +1641,10 @@ default_model = "gpt-5.5"
 		t.Fatalf("Remove not in menu")
 	}
 	for i := 0; i < target; i++ {
-		m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyDown})
+		m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyDown})
 	}
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter}) // Remove → sub-picker
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter}) // confirm cursor 0 (chatgpt)
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // Remove → sub-picker
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // confirm cursor 0 (chatgpt)
 
 	if _, err := os.Stat(tokenPath); !os.IsNotExist(err) {
 		t.Errorf("token store should have been deleted by picker remove; stat err = %v", err)
@@ -1705,12 +1705,12 @@ default_model = "gpt-4o"
 		t.Fatalf("Remove not in menu")
 	}
 	for i := 0; i < target; i++ {
-		m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyDown})
+		m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyDown})
 	}
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter}) // Remove → sub-picker
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // Remove → sub-picker
 	// Sub-picker: cursor 0 = anthropic. Move to openai (index 1).
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyDown})
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter}) // confirm
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyDown})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // confirm
 
 	body, err := os.ReadFile(envPath)
 	if err != nil {
@@ -1775,9 +1775,9 @@ func TestProviderPicker_GeminiAddFormUsesCuratedCatalog(t *testing.T) {
 	seedProviderConfig(t)
 	m, _ = typeAndEnter(t, m, "/provider")
 	m = navigateToMenuItem(t, m, "Add")
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter}) // → addKindMode
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // → addKindMode
 	m = navigateToKind(t, m, "gemini")
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter}) // → addFieldsMode
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // → addFieldsMode
 
 	got := m.providerPicker.addCuratedModels
 	if len(got) == 0 {

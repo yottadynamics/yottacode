@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/yottadynamics/yottacode/internal/experimental"
@@ -124,7 +124,7 @@ func TestCmdExperimental_AnyKeyDismisses(t *testing.T) {
 	m.experimentalOpen = true
 	m.experimentalPanel = "stale body"
 
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEsc})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEsc})
 
 	if m.experimentalOpen {
 		t.Error("any key should close the experimental overlay")

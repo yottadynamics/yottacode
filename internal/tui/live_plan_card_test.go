@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 
 	"github.com/yottadynamics/yottacode/internal/agent"
 )
@@ -368,7 +368,7 @@ func TestModel_TurnInterrupted_ResetsTouchedFlag(t *testing.T) {
 func TestModel_View_RendersLivePlanCardWhenPopulated(t *testing.T) {
 	m := newTestModel(t)
 	m, _ = applyMsg(m, agentEventMsg{ev: agent.TodoUpdate{Todos: samplePlan()}})
-	view := stripANSI(m.View())
+	view := stripANSI(m.View().Content)
 	if !strings.Contains(view, "Plan: 3 items (1 done)") {
 		t.Errorf("View() should show the live plan card; got:\n%s", view)
 	}

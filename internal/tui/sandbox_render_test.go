@@ -17,7 +17,7 @@ func TestRenderToolStartLine_NonRunBashUnchanged(t *testing.T) {
 // The run_bash preview renders as plain pass-through — there's no
 // per-call backend tag today.
 func TestRenderToolStartLine_RunBashPlainPassthrough(t *testing.T) {
-	got := renderToolStartLine("run_bash", "run_bash: ls -la")
+	got := stripANSI(renderToolStartLine("run_bash", "run_bash: ls -la"))
 	if strings.Contains(got, "[") || strings.Contains(got, "]") {
 		t.Errorf("run_bash output should not carry a bracket tag: %q", got)
 	}

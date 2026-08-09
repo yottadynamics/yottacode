@@ -7,8 +7,8 @@ import (
 	"sort"
 	"strings"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 
 	"github.com/yottadynamics/yottacode/internal/adapter"
 	"github.com/yottadynamics/yottacode/internal/config"
@@ -181,7 +181,7 @@ func (m *Model) openSkillsPicker() {
 // Installed tab is active (built-ins can't be uninstalled — they're
 // embedded). `c` commits the enablement toggles and closes; Esc
 // cancels.
-func (m Model) updateSkillsPicker(msg tea.KeyMsg) (Model, tea.Cmd) {
+func (m Model) updateSkillsPicker(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 	if m.skillsPicker == nil {
 		m.skillsPickerOpen = false
 		return m, nil
@@ -198,20 +198,20 @@ func (m Model) updateSkillsPicker(msg tea.KeyMsg) (Model, tea.Cmd) {
 		return updateSkillsPickerFilter(m, p, msg)
 	}
 	visible := p.visibleRows()
-	switch msg.Type {
-	case tea.KeyUp:
+	switch msg.String() {
+	case "up":
 		if p.cursor > 0 {
 			p.cursor--
 		}
 		p.status = ""
 		return m, nil
-	case tea.KeyDown:
+	case "down":
 		if p.cursor < len(visible)-1 {
 			p.cursor++
 		}
 		p.status = ""
 		return m, nil
-	case tea.KeyTab, tea.KeyRight:
+	case "tab", "right":
 		// Cycle tabs forward. Up/Down remain row navigation; Left/Right
 		// move between tabs so the catalog feels like a browser tab
 		// bar. Tab is kept as an alias for keyboards where Right is
@@ -222,13 +222,13 @@ func (m Model) updateSkillsPicker(msg tea.KeyMsg) (Model, tea.Cmd) {
 		p.cursor = 0
 		p.status = ""
 		return m, nil
-	case tea.KeyShiftTab, tea.KeyLeft:
+	case "shift+tab", "left":
 		// Cycle tabs backward across Official and Bundled.
 		p.tab = (p.tab + 1) % 2
 		p.cursor = 0
 		p.status = ""
 		return m, nil
-	case tea.KeyEnter:
+	case "enter":
 		if len(visible) == 0 {
 			return m, nil
 		}
@@ -256,14 +256,14 @@ func (m Model) updateSkillsPicker(msg tea.KeyMsg) (Model, tea.Cmd) {
 		m.skillsPickerOpen = false
 		m.skillsPicker = nil
 		return m.openTranscriptInPager(path, sk.Name, false)
-	case tea.KeyEsc:
+	case "esc":
 		// Esc commits and closes. Two-phase commit (toggle then `c`)
 		// was the original design, but users naturally reach for Esc
 		// to exit and were losing their toggles to the cancel path.
 		// Committing on Esc matches every other picker in the
 		// codebase. `c` stays wired as an alias below.
 		return commitSkillsPicker(m, p)
-	case tea.KeySpace:
+	case "space":
 		if len(visible) == 0 {
 			return m, nil
 		}
@@ -281,8 +281,8 @@ func (m Model) updateSkillsPicker(msg tea.KeyMsg) (Model, tea.Cmd) {
 		p.enabled[name] = !p.enabled[name]
 		p.status = ""
 		return m, nil
-	case tea.KeyRunes:
-		switch string(msg.Runes) {
+	default:
+		switch msg.String() {
 		case "r":
 			if p.tab == catalogTabOfficial {
 				return refreshOfficialCatalogFromPicker(m, p)
@@ -343,8 +343,8 @@ func (m Model) updateSkillsPicker(msg tea.KeyMsg) (Model, tea.Cmd) {
 // buffer has focus. Kept separate from the main update path so the
 // regular cursor/Tab/Space bindings don't have to add filter-mode
 // guards everywhere.
-func updateSkillsPickerFilter(m Model, p *skillsPickerState, msg tea.KeyMsg) (Model, tea.Cmd) {
-	switch msg.Type {
+func updateSkillsPickerFilter(m Model, p *skillsPickerState, msg tea.KeyPressMsg) (Model, tea.Cmd) {
+	switch msg.Code {
 	case tea.KeyEsc:
 		// Esc on filter mode is "clear and exit filter" — distinct
 		// from Esc on the main picker which commits and closes.
@@ -370,16 +370,17 @@ func updateSkillsPickerFilter(m Model, p *skillsPickerState, msg tea.KeyMsg) (Mo
 			p.cursor = 0
 		}
 		return m, nil
-	case tea.KeyRunes:
-		p.filter += string(msg.Runes)
-		p.cursor = 0
-		return m, nil
 	case tea.KeySpace:
 		p.filter += " "
 		p.cursor = 0
 		return m, nil
+	default:
+		if msg.Text != "" {
+			p.filter += msg.Text
+			p.cursor = 0
+		}
+		return m, nil
 	}
-	return m, nil
 }
 
 // refreshOfficialCatalogFromPicker updates the local metadata cache on explicit

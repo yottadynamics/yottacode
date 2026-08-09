@@ -15,8 +15,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/textinput"
-	tea "github.com/charmbracelet/bubbletea"
+	"charm.land/bubbles/v2/textinput"
+	tea "charm.land/bubbletea/v2"
 
 	"github.com/yottadynamics/yottacode/internal/skills"
 )
@@ -127,7 +127,7 @@ func (m *Model) openSkillsMenu() {
 
 // updateSkillsMenu routes keystrokes while the menu is open. Two
 // modes — vertical-list selection and the inline install textinput.
-func (m Model) updateSkillsMenu(msg tea.KeyMsg) (Model, tea.Cmd) {
+func (m Model) updateSkillsMenu(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 	if m.skillsMenu == nil {
 		m.skillsMenuOpen = false
 		return m, nil
@@ -147,9 +147,9 @@ func (m Model) updateSkillsMenu(msg tea.KeyMsg) (Model, tea.Cmd) {
 
 // updateSkillsMenuSelect handles arrow navigation + Enter on the
 // menu. Esc closes; Enter runs the focused item's action.
-func updateSkillsMenuSelect(m Model, msg tea.KeyMsg) (Model, tea.Cmd) {
+func updateSkillsMenuSelect(m Model, msg tea.KeyPressMsg) (Model, tea.Cmd) {
 	state := m.skillsMenu
-	switch msg.Type {
+	switch msg.Code {
 	case tea.KeyUp:
 		if state.cursor > 0 {
 			state.cursor--
@@ -178,9 +178,9 @@ func updateSkillsMenuSelect(m Model, msg tea.KeyMsg) (Model, tea.Cmd) {
 // updateSkillsMenuInstallInput hands keystrokes to the install
 // textinput. Enter submits the source; Esc returns to the menu
 // without running the install.
-func updateSkillsMenuInstallInput(m Model, msg tea.KeyMsg) (Model, tea.Cmd) {
+func updateSkillsMenuInstallInput(m Model, msg tea.KeyPressMsg) (Model, tea.Cmd) {
 	state := m.skillsMenu
-	switch msg.Type {
+	switch msg.Code {
 	case tea.KeyEsc:
 		state.mode = skillsMenuSelect
 		state.status = ""
@@ -314,9 +314,9 @@ func removableUserSkills(m Model) []skills.Skill {
 // updateSkillsMenuUninstallPick handles navigation in the uninstall
 // list. Up/Down move within the list, Enter removes the focused skill,
 // Esc returns to the menu without removing anything.
-func updateSkillsMenuUninstallPick(m Model, msg tea.KeyMsg) (Model, tea.Cmd) {
+func updateSkillsMenuUninstallPick(m Model, msg tea.KeyPressMsg) (Model, tea.Cmd) {
 	state := m.skillsMenu
-	switch msg.Type {
+	switch msg.Code {
 	case tea.KeyUp:
 		if state.uninstallCursor > 0 {
 			state.uninstallCursor--

@@ -6,21 +6,21 @@ import (
 	"path/filepath"
 	"strings"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 )
 
 // styleTrustSelector / styleTrustLabel keep the picker plain.
 // Green caret on the selected row, no border, no footer hint —
 // per the user's "nothing fancy" guidance.
 var (
-	styleTrustSelector  = lipgloss.NewStyle().Foreground(lipgloss.Color("78")).Bold(true)
-	styleTrustSelected  = lipgloss.NewStyle().Foreground(lipgloss.Color("78")).Bold(true)
-	styleTrustUnsel     = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
-	styleTrustTitle     = lipgloss.NewStyle().Foreground(lipgloss.Color("78")).Bold(true)
-	styleTrustRule      = lipgloss.NewStyle().Foreground(lipgloss.Color("78"))
-	styleTrustBody      = lipgloss.NewStyle()
-	styleTrustHint      = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
+	styleTrustSelector = lipgloss.NewStyle().Foreground(lipgloss.Color("78")).Bold(true)
+	styleTrustSelected = lipgloss.NewStyle().Foreground(lipgloss.Color("78")).Bold(true)
+	styleTrustUnsel    = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
+	styleTrustTitle    = lipgloss.NewStyle().Foreground(lipgloss.Color("78")).Bold(true)
+	styleTrustRule     = lipgloss.NewStyle().Foreground(lipgloss.Color("78"))
+	styleTrustBody     = lipgloss.NewStyle()
+	styleTrustHint     = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
 )
 
 // trustPickerModel is the tiny Bubbletea model that backs the
@@ -44,7 +44,7 @@ func (m trustPickerModel) Init() tea.Cmd { return nil }
 
 func (m trustPickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		switch msg.String() {
 		case "up", "k":
 			if m.index > 0 {
@@ -71,12 +71,12 @@ func (m trustPickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m trustPickerModel) View() string {
+func (m trustPickerModel) View() tea.View {
 	if m.answered {
 		// Hide the picker once the user has answered. Bubbletea
 		// re-renders one last time before exiting; returning an
 		// empty View leaves a clean shell prompt below.
-		return ""
+		return tea.NewView("")
 	}
 	const indent = "  "
 	var b strings.Builder
@@ -103,7 +103,7 @@ func (m trustPickerModel) View() string {
 	}
 	fmt.Fprintln(&b)
 	fmt.Fprintln(&b, styleTrustHint.Render("Enter to confirm · Esc to cancel"))
-	return b.String()
+	return tea.NewView(b.String())
 }
 
 // PromptInteractive opens the Bubbletea trust dialog and returns

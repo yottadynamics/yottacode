@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 )
 
 func TestExtractFileQuery(t *testing.T) {
@@ -160,7 +160,7 @@ func TestModel_FilePaletteScrollsPastWindow(t *testing.T) {
 	m := newTestModel(t)
 	m.cwd = cwd
 	for _, r := range []rune("@seedfile") {
-		m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m, _ = applyMsg(m, tea.KeyPressMsg{Text: string(r)})
 	}
 	if !m.filePaletteOpen {
 		t.Fatalf("setup: palette should be open after typing @seedfile")
@@ -173,7 +173,7 @@ func TestModel_FilePaletteScrollsPastWindow(t *testing.T) {
 	}
 	// Down past the visible window should advance the offset.
 	for i := 0; i < filePaletteVisible; i++ {
-		m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyDown})
+		m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyDown})
 	}
 	if m.filePaletteIndex != filePaletteVisible {
 		t.Fatalf("index after %d downs = %d, want %d", filePaletteVisible, m.filePaletteIndex, filePaletteVisible)
@@ -183,7 +183,7 @@ func TestModel_FilePaletteScrollsPastWindow(t *testing.T) {
 	}
 	// Up past the offset should pull it back.
 	for i := 0; i < filePaletteVisible; i++ {
-		m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyUp})
+		m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyUp})
 	}
 	if m.filePaletteIndex != 0 || m.filePaletteOffset != 0 {
 		t.Fatalf("after scrolling back to top, index=%d offset=%d, want 0/0", m.filePaletteIndex, m.filePaletteOffset)
@@ -198,7 +198,7 @@ func TestModel_AtKeyOpensFilePalette(t *testing.T) {
 	m := newTestModel(t)
 	m.cwd = cwd
 	// Type "@" — should open the file palette.
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'@'}})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Text: "@"})
 	if !m.filePaletteOpen {
 		t.Fatalf("typing @ should open file palette")
 	}
@@ -212,7 +212,7 @@ func TestModel_AtKeyDoesNotOpenPaletteOnEmail(t *testing.T) {
 	m := newTestModel(t)
 	m.cwd = cwd
 	for _, r := range []rune("user@") {
-		m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m, _ = applyMsg(m, tea.KeyPressMsg{Text: string(r)})
 	}
 	if m.filePaletteOpen {
 		t.Fatalf("user@ should not open palette (no whitespace before @)")
@@ -227,12 +227,12 @@ func TestModel_TabAcceptsFilePaletteChoice(t *testing.T) {
 	m := newTestModel(t)
 	m.cwd = cwd
 	for _, r := range []rune("@main") {
-		m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m, _ = applyMsg(m, tea.KeyPressMsg{Text: string(r)})
 	}
 	if !m.filePaletteOpen {
 		t.Fatalf("file palette should be open after @main")
 	}
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyTab})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyTab})
 
 	got := m.textInput.Value()
 	if !strings.HasPrefix(got, "@main.go ") {
@@ -250,12 +250,12 @@ func TestModel_EscClosesFilePaletteWithoutWipingInput(t *testing.T) {
 	m := newTestModel(t)
 	m.cwd = cwd
 	for _, r := range []rune("@ma") {
-		m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m, _ = applyMsg(m, tea.KeyPressMsg{Text: string(r)})
 	}
 	if !m.filePaletteOpen {
 		t.Fatalf("setup: palette should be open")
 	}
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEsc})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEsc})
 	if m.filePaletteOpen {
 		t.Fatalf("Esc should close the palette")
 	}

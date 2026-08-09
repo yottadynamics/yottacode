@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/yottadynamics/yottacode/internal/adapter"
@@ -85,7 +85,7 @@ func TestSlash_ContextRendersAllSections(t *testing.T) {
 	}
 
 	// Any key dismisses the overlay (mirrors the cheatsheet).
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEsc})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEsc})
 	if m.contextReportOpen {
 		t.Error("esc should dismiss the /context overlay")
 	}

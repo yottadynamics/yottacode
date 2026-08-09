@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"strings"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/yottadynamics/yottacode/internal/subagents"
 )
 
@@ -235,7 +235,7 @@ func (m Model) runningSubagents() []subagents.Task {
 // up/down (or k/j) move the cursor among running subagents, Enter opens the
 // selected subagent's transcript, Esc/Tab/q return focus to the cmdline.
 // Exits automatically if every subagent finished while focused.
-func (m Model) updateDockFocus(msg tea.KeyMsg) (Model, tea.Cmd) {
+func (m Model) updateDockFocus(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 	running := m.runningSubagents()
 	if len(running) == 0 {
 		m.dockFocused = false
@@ -247,7 +247,7 @@ func (m Model) updateDockFocus(msg tea.KeyMsg) (Model, tea.Cmd) {
 	if m.dockCursor < 0 {
 		m.dockCursor = 0
 	}
-	switch msg.Type {
+	switch msg.Code {
 	case tea.KeyEsc, tea.KeyTab:
 		m.dockFocused = false
 		return m, nil
@@ -265,9 +265,9 @@ func (m Model) updateDockFocus(msg tea.KeyMsg) (Model, tea.Cmd) {
 		t := running[m.dockCursor]
 		m.dockFocused = false
 		return m.openTranscriptInPager(t.TranscriptPath, t.ID[:8], t.Status == subagents.TaskRunning)
-	case tea.KeyRunes:
-		if len(msg.Runes) == 1 {
-			switch msg.Runes[0] {
+	default:
+		if r := []rune(msg.Text); len(r) == 1 {
+			switch r[0] {
 			case 'k':
 				if m.dockCursor > 0 {
 					m.dockCursor--

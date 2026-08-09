@@ -1,11 +1,13 @@
 package tui
 
 import (
+	"image/color"
 	"strings"
 	"testing"
 
-	"github.com/charmbracelet/lipgloss"
-	"github.com/muesli/termenv"
+	"charm.land/lipgloss/v2"
+	"charm.land/lipgloss/v2/compat"
+	"github.com/charmbracelet/colorprofile"
 
 	"github.com/yottadynamics/yottacode/internal/adapter"
 	"github.com/yottadynamics/yottacode/internal/config"
@@ -27,17 +29,17 @@ func TestChromeReadsBright(t *testing.T) {
 	// Pin a known palette and force truecolor so style escapes are
 	// actually emitted (lipgloss renders plain ASCII under `go test`).
 	prevTheme := ActiveTheme()
-	prevProfile := lipgloss.ColorProfile()
+	prevProfile := lipgloss.Writer.Profile
 	ApplyTheme(themes.DefaultName)
-	lipgloss.SetColorProfile(termenv.TrueColor)
-	lipgloss.SetHasDarkBackground(true)
+	lipgloss.Writer.Profile = colorprofile.TrueColor
+	compat.HasDarkBackground = true
 	t.Cleanup(func() {
-		lipgloss.SetColorProfile(prevProfile)
+		lipgloss.Writer.Profile = prevProfile
 		ApplyTheme(prevTheme)
 	})
 
 	// Opening SGR escape for each role, taken from the live colors.
-	esc := func(c lipgloss.TerminalColor) string {
+	esc := func(c color.Color) string {
 		open, _, _ := strings.Cut(lipgloss.NewStyle().Foreground(c).Render("x"), "x")
 		return open
 	}
@@ -53,7 +55,7 @@ func TestChromeReadsBright(t *testing.T) {
 		"styleInputPlaceholder": styleInputPlaceholder,
 		"styleInputHint":        styleInputHint,
 	} {
-		if got := style.GetForeground(); got != lipgloss.TerminalColor(colorContent) {
+		if got := style.GetForeground(); got != color.Color(colorContent) {
 			t.Errorf("%s: foreground = %v, want Content (%v)", name, got, colorContent)
 		}
 	}
@@ -66,7 +68,7 @@ func TestChromeReadsBright(t *testing.T) {
 		"styleInputPrompt": styleInputPrompt,
 		"styleUserBar":     styleUserBar,
 	} {
-		if got := style.GetForeground(); got != lipgloss.TerminalColor(colorBrand) {
+		if got := style.GetForeground(); got != color.Color(colorBrand) {
 			t.Errorf("%s: foreground = %v, want brand green (%v)", name, got, colorBrand)
 		}
 	}

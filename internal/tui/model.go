@@ -15,11 +15,11 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/charmbracelet/bubbles/key"
-	"github.com/charmbracelet/bubbles/spinner"
-	"github.com/charmbracelet/bubbles/textarea"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/key"
+	"charm.land/bubbles/v2/spinner"
+	"charm.land/bubbles/v2/textarea"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/yottadynamics/yottacode/internal/adapter"
@@ -546,11 +546,28 @@ type Model struct {
 	// a cancelled turn doesn't leave the flag armed for the next one.
 	livePlanTouched bool
 
-	// pendingCmds holds tea.Println commands queued during one Update tick.
+	// pendingCmds holds non-print tea.Cmd values queued during one Update
+	// tick (currently just tea.ClearScreen from repaintViewportTail).
 	// Flushed at the tail of Update via the wrapper below. Kept as a slice on
 	// a pointer-backed field (strings.Builder above is *strings.Builder for
 	// the same reason) so value-receiver Update copies see consistent state.
 	pendingCmds []tea.Cmd
+
+	// pendingPrintRows accumulates every row queued via queuePrintlnIndented
+	// during one Update tick, across however many logical calls contributed
+	// to it (the startup box, the blank-line spacer after it, resume-banner
+	// lines, history replay, ...). flushPending joins them into ONE
+	// tea.Println. This matters beyond just fewer Cmds: bubbletea v2's
+	// inline-mode renderer (insertAbove) computes its scroll offset fresh
+	// per Println call from a hardcoded "cursor is at (0,0)" assumption, not
+	// from wherever the previous call actually left the cursor. Two
+	// SEPARATE sequenced Println calls each independently scroll the
+	// terminal by their own row count from that same assumed origin — the
+	// second call's scroll pushes the first call's just-written rows up and
+	// out of the visible viewport before the terminal ever paints them,
+	// even though the combined content easily fits on screen. One Println
+	// call for the whole batch means one correctly-sized scroll.
+	pendingPrintRows []string
 
 	// historyLines records every conversation line emitted via appendLine —
 	// user blocks, assistant replies, tool calls, errors, footers — in the
@@ -1023,8 +1040,8 @@ func New(parent context.Context, c Config) Model {
 	// Render the chevron only on the first display row; soft-wrapped and
 	// hard-newline continuations get a 2-col indent so the input reads as
 	// one block instead of "❯" repeating on every wrapped line.
-	ti.SetPromptFunc(2, func(displayLine int) string {
-		if displayLine == 0 {
+	ti.SetPromptFunc(2, func(info textarea.PromptInfo) string {
+		if info.LineNumber == 0 {
 			return "❯ "
 		}
 		return "  "
@@ -1032,14 +1049,16 @@ func New(parent context.Context, c Config) Model {
 	ti.SetHeight(1)
 	ti.ShowLineNumbers = false
 	// Brand-colored bold prompt — the focal point of the input area.
-	ti.FocusedStyle.Prompt = styleInputPrompt
-	ti.BlurredStyle.Prompt = styleInputPrompt
+	tiStyles := ti.Styles()
+	tiStyles.Focused.Prompt = styleInputPrompt
+	tiStyles.Blurred.Prompt = styleInputPrompt
 	// Bubbles' textarea defaults to a dark background on the line under
 	// the cursor (Background "0" on dark terminals = solid black). That
 	// reads as "your typing got highlighted" which is jarring on a
 	// transparent terminal. Override to no background.
-	ti.FocusedStyle.CursorLine = lipgloss.NewStyle()
-	ti.BlurredStyle.CursorLine = lipgloss.NewStyle()
+	tiStyles.Focused.CursorLine = lipgloss.NewStyle()
+	tiStyles.Blurred.CursorLine = lipgloss.NewStyle()
+	ti.SetStyles(tiStyles)
 	ti.KeyMap.InsertNewline = key.NewBinding(key.WithKeys("ctrl+j"))
 	ti.Focus()
 
@@ -1259,7 +1278,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// key) don't. So when a key closes an overlay and nothing else queued a
 	// scrollback redraw this tick, force the clean redraw ourselves. Only
 	// key input closes overlays, so other message types skip the check.
-	if _, isKey := msg.(tea.KeyMsg); isKey && m.overlayClosed(mm) && len(mm.pendingCmds) == 0 {
+	if _, isKey := msg.(tea.KeyPressMsg); isKey && m.overlayClosed(mm) && len(mm.pendingCmds) == 0 && len(mm.pendingPrintRows) == 0 {
 		mm.repaintViewport()
 	}
 	if flush := mm.flushPending(); flush != nil {
@@ -1348,6 +1367,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.md = newMarkdownRenderer(msg.Width - 4)
 		m.textInput.SetWidth(liveContentWidth(msg.Width))
 		m.fitTextareaHeight()
+		menuDividerWidth = computeMenuDividerWidth(m.width)
 		if !m.ready {
 			m.ready = true
 			// First Update tick — flush the startup box + welcome to
@@ -1406,16 +1426,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
-	case tea.KeyMsg:
-		// Bracketed pastes arrive with terminal line breaks — CR (or
-		// CRLF), not LF. Normalize before ANY routing so every consumer
-		// (pickers, tryImagePaste's multi-line rejection, the
-		// large-paste detour, the textarea) sees the single '\n'
-		// convention. A raw CR that survives to submit overprints the
-		// transcript echo from column 0, mangling the line into garbage.
-		if msg.Paste {
-			msg.Runes = normalizePasteLineBreaks(msg.Runes)
-		}
+	case tea.KeyPressMsg:
 		if m.loopExitConfirmOpen {
 			return m.updateLoopExitConfirm(msg)
 		}
@@ -1525,31 +1536,16 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.dockFocused {
 			return m.updateDockFocus(msg)
 		}
-		if msg.Type == tea.KeyTab && !m.paletteOpen && !m.filePaletteOpen && m.hasRunningSubagents() {
+		if !m.awaitingApproval && !m.awaitingPathTrust && msg.Code == tea.KeyTab && msg.Mod == 0 && !m.paletteOpen && !m.filePaletteOpen && m.hasRunningSubagents() {
 			m.dockFocused = true
 			m.dockCursor = 0
 			return m, nil
 		}
-		// Intercept image pastes before any other handling. Terminals
-		// paste image paths as file:/// URLs or raw paths — detect
-		// these regardless of size and replace with a compact marker.
-		if msg.Paste {
-			if marker, ok := m.tryImagePaste(string(msg.Runes)); ok {
-				syn := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(marker)}
-				m.preGrowTextarea()
-				var cmd tea.Cmd
-				m.textInput, cmd = m.textInput.Update(syn)
-				m.fitTextareaHeight()
-				return m, cmd
+		if !m.awaitingApproval && !m.awaitingPathTrust && msg.Code == tea.KeyTab && msg.Mod == tea.ModShift {
+			if m.paletteOpen || m.filePaletteOpen {
+				return m, nil
 			}
-		}
-		// Intercept large bracketed pastes before any other handling.
-		// Bubbletea sets msg.Paste=true with all the pasted runes in a
-		// single KeyMsg. For anything over the threshold, we swap the
-		// runes for a short marker and stash the original — keeps the
-		// cmdline from stretching to fill the screen on a 5KB paste.
-		if msg.Paste && (len(msg.Runes) > pasteThreshold || strings.ContainsRune(string(msg.Runes), '\n')) {
-			return m.handleLargePaste(msg)
+			return cycleAgentMode(m)
 		}
 		// While the path-trust modal is up, route keys to that handler
 		// (further down) — not to the mid-turn textarea path below.
@@ -1562,7 +1558,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// before the mid-turn textarea block so Up/Down/Tab/Esc reach
 		// the palette instead of the textarea.
 		if m.turnActive && !m.awaitingApproval && !m.awaitingPathTrust && m.paletteOpen {
-			switch msg.Type {
+			switch msg.Code {
 			case tea.KeyUp:
 				if m.paletteIndex > 0 {
 					m.paletteIndex--
@@ -1598,7 +1594,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// the mid-turn handler below.
 		}
 		if m.turnActive && !m.awaitingApproval && !m.awaitingPathTrust && m.filePaletteOpen {
-			switch msg.Type {
+			switch msg.Code {
 			case tea.KeyUp:
 				if m.filePaletteIndex > 0 {
 					m.filePaletteIndex--
@@ -1620,7 +1616,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.acceptFilePaletteChoice()
 					return m, nil
 				}
-				if msg.Type == tea.KeyEsc {
+				if msg.Code == tea.KeyEsc {
 					m.filePaletteOpen = false
 					m.filePaletteIndex = 0
 					m.filePaletteOffset = 0
@@ -1634,8 +1630,8 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		if m.turnActive && !m.awaitingApproval && !m.awaitingPathTrust {
-			switch msg.Type {
-			case tea.KeyUp:
+			switch msg.String() {
+			case "up":
 				// Up while the active-turn textarea is empty is the edit handle for
 				// a queued-but-undelivered user message. Draining userMsgCh removes
 				// the pending delivery; pressing Enter after editing will enqueue the
@@ -1665,7 +1661,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.textInput, cmd = m.textInput.Update(msg)
 				m.fitTextareaHeight()
 				return m, cmd
-			case tea.KeyCtrlC, tea.KeyEsc:
+			case "ctrl+c", "esc":
 				// Esc mirrors Claude Code's cancel feel — same effect
 				// as Ctrl+C while a turn is running: kill the
 				// in-flight iteration, leave the textarea contents
@@ -1687,16 +1683,16 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				default:
 				}
 				return m, nil
-			case tea.KeyCtrlD:
+			case "ctrl+d":
 				return m, tea.Quit
-			case tea.KeyCtrlU:
+			case "ctrl+u":
 				m.snapshotKillBeforeCursor()
 				m.preGrowTextarea()
 				var cmd tea.Cmd
 				m.textInput, cmd = m.textInput.Update(msg)
 				m.fitTextareaHeight()
 				return m, cmd
-			case tea.KeyCtrlY:
+			case "ctrl+y":
 				if m.killRing == "" {
 					return m, nil
 				}
@@ -1704,7 +1700,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.textInput.InsertString(m.killRing)
 				m.fitTextareaHeight()
 				return m, nil
-			case tea.KeyShiftTab:
+			case "shift+tab":
 				// Mode cycling works mid-turn (mirrors Claude Code):
 				// the loop reads the mode atomics on every tool
 				// dispatch and rebuilds the plan addendum per
@@ -1719,7 +1715,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, nil
 				}
 				return cycleAgentMode(m)
-			case tea.KeyEnter:
+			case "enter":
 				input := strings.TrimSpace(m.textInput.Value())
 				// Palette selection: resolve the highlighted entry
 				// so Enter picks the selected command, not the
@@ -2027,7 +2023,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		if m.paletteOpen {
-			switch msg.Type {
+			switch msg.Code {
 			case tea.KeyUp:
 				if m.paletteIndex > 0 {
 					m.paletteIndex--
@@ -2066,7 +2062,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// palette but leaves the literal `@<query>` text in place
 			// so the user can still submit a turn with a non-existent
 			// path if they really meant to.
-			switch msg.Type {
+			switch msg.Code {
 			case tea.KeyUp:
 				if m.filePaletteIndex > 0 {
 					m.filePaletteIndex--
@@ -2090,12 +2086,12 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					// typing; Enter is treated as "I'm done picking"
 					// — the next Enter (with no further chars) will
 					// submit normally.
-					if msg.Type == tea.KeyEnter {
+					if msg.Code == tea.KeyEnter {
 						return m, nil
 					}
 					return m, nil
 				}
-				if msg.Type == tea.KeyEnter {
+				if msg.Code == tea.KeyEnter {
 					// No matches: fall through to normal Enter so the
 					// user can submit whatever they typed.
 					m.filePaletteOpen = false
@@ -2115,7 +2111,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// keys must reach the textarea so the cursor moves between
 			// rows like every other shell. Single-line drafts always
 			// pass the gate (Line()==0 and Line()==LineCount()-1).
-			switch msg.Type {
+			switch msg.Code {
 			case tea.KeyUp:
 				if m.textInput.Line() == 0 {
 					if newM, handled := m.historyBack(); handled {
@@ -2131,13 +2127,13 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
-		if msg.Type == tea.KeyRunes && len(msg.Runes) == 1 && msg.Runes[0] == '?' && m.textInput.Value() == "" {
+		if msg.String() == "?" && m.textInput.Value() == "" {
 			m.cheatsheetOpen = true
 			return m, nil
 		}
 
-		switch msg.Type {
-		case tea.KeyCtrlC:
+		switch msg.String() {
+		case "ctrl+c":
 			if m.turnActive && m.turnCancel != nil {
 				m.turnCancel()
 				m.disarmAllLoops("[loop] stopped")
@@ -2155,11 +2151,11 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// capture reminder (captureReminderDue), not by
 			// overloading this key with a model call.
 			return m, tea.Quit
-		case tea.KeyCtrlD:
+		case "ctrl+d":
 			// Deliberate idle exit — same graceful path as /quit (final
 			// memory turn when warranted).
 			return requestGracefulExit(m)
-		case tea.KeyEsc:
+		case "esc":
 			// A single Esc stops an armed /loop, before the esc-esc chord
 			// gets a chance to open /checkpoints.
 			if m.activeLoopCount() > 0 {
@@ -2179,7 +2175,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.lastEscAt = time.Now()
 			return m, nil
-		case tea.KeyShiftTab:
+		case "shift+tab":
 			// Cycle through normal → auto → plan → normal. Mirrors
 			// Claude Code's Shift+Tab, INCLUDING mid-turn: the loop
 			// reads the mode atomics on every tool dispatch and
@@ -2196,7 +2192,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			return cycleAgentMode(m)
-		case tea.KeyCtrlU:
+		case "ctrl+u":
 			// Capture the line-before-cursor into the kill ring before
 			// forwarding to bubbles' textarea (which performs the actual
 			// delete via DeleteBeforeCursor). Ctrl+Y yanks it back.
@@ -2206,7 +2202,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.textInput, cmd = m.textInput.Update(msg)
 			m.fitTextareaHeight()
 			return m, cmd
-		case tea.KeyCtrlY:
+		case "ctrl+y":
 			// Yank the most recent kill at the cursor. Bubbles doesn't
 			// bind Ctrl+Y by default, so we own this key outright.
 			if m.killRing == "" {
@@ -2216,7 +2212,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.textInput.InsertString(m.killRing)
 			m.fitTextareaHeight()
 			return m, nil
-		case tea.KeyEnter:
+		case "enter":
 			if m.turnActive {
 				return m, nil
 			}
@@ -2294,6 +2290,39 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, cmd
 		}
 
+	case tea.PasteMsg:
+		// v2 delivers bracketed pastes as their own message type instead
+		// of a Paste-flagged key event. Bubbletea sets terminal line
+		// breaks as CR (or CRLF), not LF — normalize before any routing
+		// so every consumer (the image-path check, the large-paste
+		// detour, the textarea) sees the single '\n' convention. A raw
+		// CR that survives to submit overprints the transcript echo from
+		// column 0, mangling the line into garbage.
+		content := string(normalizePasteLineBreaks([]rune(msg.Content)))
+		// Intercept image pastes before any other handling. Terminals
+		// paste image paths as file:/// URLs or raw paths — detect
+		// these regardless of size and replace with a compact marker.
+		if marker, ok := m.tryImagePaste(content); ok {
+			syn := tea.PasteMsg{Content: marker}
+			m.preGrowTextarea()
+			var cmd tea.Cmd
+			m.textInput, cmd = m.textInput.Update(syn)
+			m.fitTextareaHeight()
+			return m, cmd
+		}
+		// Intercept large bracketed pastes before any other handling.
+		// For anything over the threshold, swap the content for a short
+		// marker and stash the original — keeps the cmdline from
+		// stretching to fill the screen on a 5KB paste.
+		if len(content) > pasteThreshold || strings.ContainsRune(content, '\n') {
+			return m.handleLargePaste(content)
+		}
+		m.preGrowTextarea()
+		var cmd tea.Cmd
+		m.textInput, cmd = m.textInput.Update(tea.PasteMsg{Content: content})
+		m.fitTextareaHeight()
+		return m, cmd
+
 	case codeMapLoadedMsg:
 		return m.handleCodeMapLoaded(msg)
 	case agentEventMsg:
@@ -2313,14 +2342,6 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case skillsMenuUpdateDoneMsg:
 		return handleSkillsMenuUpdateDone(m, msg)
-
-	case tea.MouseMsg:
-		// Mouse capture stays enabled (so palette clicks could be wired up
-		// later); we no longer forward to a viewport because the conversation
-		// lives in the terminal's native scrollback. Wheel events fall
-		// through to the terminal — Shift+drag selects text in scrollback as
-		// the terminal owns it.
-		return m, nil
 
 	case loopTickMsg:
 		// The /loop heartbeat targets one active local loop. Drop stale ticks from
@@ -2721,7 +2742,11 @@ func (m Model) skillsBusy() bool {
 // View renders the live footer that redraws in place at the bottom of the
 // terminal. Conversation history is NOT in here — those lines live in
 // terminal scrollback courtesy of tea.Println from appendLine.
-func (m Model) View() string {
+func (m Model) View() tea.View {
+	return tea.NewView(m.viewString())
+}
+
+func (m Model) viewString() string {
 	if !m.ready {
 		return "initializing…"
 	}
@@ -3694,8 +3719,7 @@ func normalizePasteLineBreaks(rs []rune) []rune {
 // Image file paths are detected by extension and loaded eagerly — the
 // marker reads "[Image: filename.png]" and the decoded bytes are
 // stashed in m.pastedImages for attachment on submit.
-func (m Model) handleLargePaste(msg tea.KeyMsg) (Model, tea.Cmd) {
-	content := string(msg.Runes)
+func (m Model) handleLargePaste(content string) (Model, tea.Cmd) {
 	m.pasteSeq++
 	lines := strings.Count(content, "\n") + 1
 	marker := fmt.Sprintf("[Pasted text #%d: %d lines, %d bytes]", m.pasteSeq, lines, len(content))
@@ -3703,7 +3727,7 @@ func (m Model) handleLargePaste(msg tea.KeyMsg) (Model, tea.Cmd) {
 		m.pastes = map[string]string{}
 	}
 	m.pastes[marker] = content
-	syn := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(marker)}
+	syn := tea.PasteMsg{Content: marker}
 	m.preGrowTextarea()
 	var cmd tea.Cmd
 	m.textInput, cmd = m.textInput.Update(syn)
@@ -6375,35 +6399,38 @@ func (m *Model) appendRawFlush(s string) {
 	m.queuePrintlnFlush(s)
 }
 
-// queuePrintln queues s as one or more tea.Println commands — one per
-// terminal-row-sized chunk — without touching the transcript builder.
-// Used by appendRaw and by the resize replay path.
+// queuePrintln queues s as ONE tea.Println command carrying every
+// terminal-row-sized chunk, without touching the transcript builder. Used
+// by appendRaw and by the resize replay path.
 //
-// Lines longer than the terminal width are hard-wrapped (ANSI-aware)
-// so each Println maps to exactly one terminal row. This is the
-// load-bearing invariant for inline-mode rendering: when a single
-// Println carries content that the terminal then auto-wraps, Bubbletea
-// counts 1 logical line but the terminal moved the cursor down N
-// rows, the live frame redraws at the wrong row, and the wrapped tail
-// of the printed line gets left as a "ghost" right under the new
-// scrollback emit. Pre-wrapping here keeps the renderer's row count
-// honest.
+// Lines longer than the terminal width are hard-wrapped (ANSI-aware) so
+// each row lands as exactly one terminal row inside that single Println.
 //
-// Each printed line is prefixed with `\r\x1b[2K` (carriage-return +
-// Erase-Entire-Line) so the cursor is at column 0 of a clean row
-// before our content paints. Without this, Bubbletea's inline mode
-// leaves the cursor at whatever column the previous live-frame
-// render finished at, and any leading columns of the landing row not
-// painted by our content show through as bleed — `cmdline border` /
-// `status bar` / `thinking row` text appearing embedded at the start
-// of indented lines, where our leading whitespace doesn't overwrite.
-// (Bubbletea only emits `\r` to reset the cursor on the first frame;
-// see standard_renderer.go:228. Subsequent queued message lines
-// inherit whatever column the previous draw ended in.)
+// v2's renderer (`(*cursedRenderer).insertAbove`) computes its scroll
+// offset ONCE across every "\n"-separated row in a single Println's
+// payload, then does one scroll-to-bottom / insert-lines-at-top / write
+// pass for the whole block. Queuing N separate single-line Printlns for
+// one logical block (the prior v1-era shape of this function, kept
+// because v1's standard_renderer miscounted "linesRendered" for a single
+// multi-line Println whose lines auto-wrapped) means N independent
+// scroll-to-bottom passes instead of one — each one's forced linefeed at
+// the bottom margin scrolls whatever the PREVIOUS call just inserted back
+// out of the visible viewport before the terminal ever paints it. The
+// visible symptom: multi-line prints (worst-hit: the startup identity
+// card) lose all but their last row or two. Passing the whole block as
+// one Println sidesteps this entirely — v2 already batches multi-row
+// content correctly, so per-row wrapping still happens here, per-row
+// *Println calls* no longer do.
 //
-// Trailing erase-to-EOL is NOT added here — Bubbletea's renderer
-// already appends `ansi.EraseLineRight` to every short queued
-// message line (standard_renderer.go:202).
+// Each printed row is still prefixed with `\r\x1b[2K` (carriage-return +
+// Erase-Entire-Line): by the time the renderer's own cursor positioning
+// lands on each row it should already be a freshly-inserted blank one, so
+// this is normally a no-op, but it's cheap insurance against the same
+// "leading columns of the landing row not painted by our content show
+// through as bleed" class of bug the prefix was originally added for.
+//
+// Trailing erase-to-EOL is NOT added here — the renderer already appends
+// `ansi.EraseLineRight` to every row of an inserted block itself.
 func (m *Model) queuePrintln(s string) {
 	m.queuePrintlnIndented(s, scrollbackLeftMargin)
 }
@@ -6433,22 +6460,24 @@ func (m *Model) queuePrintlnIndented(s string, leftMargin int) {
 	}
 	const clearLine = "\r\x1b[2K"
 	margin := strings.Repeat(" ", leftMargin)
+	var rows []string
 	for _, line := range strings.Split(s, "\n") {
 		// Blank rows emit as bare empty lines so visual paragraph
 		// breaks stay clean — no trailing whitespace to scroll past.
 		if line == "" {
-			m.pendingCmds = append(m.pendingCmds, tea.Println(clearLine))
+			rows = append(rows, clearLine)
 			continue
 		}
 		if ansi.StringWidth(line) <= width {
-			m.pendingCmds = append(m.pendingCmds, tea.Println(clearLine+margin+line))
+			rows = append(rows, clearLine+margin+line)
 			continue
 		}
 		wrapped := ansi.Hardwrap(line, width, true)
 		for _, row := range strings.Split(wrapped, "\n") {
-			m.pendingCmds = append(m.pendingCmds, tea.Println(clearLine+margin+row))
+			rows = append(rows, clearLine+margin+row)
 		}
 	}
+	m.pendingPrintRows = append(m.pendingPrintRows, rows...)
 }
 
 // resizeReplayLimit caps resize-triggered history replay. It is intentionally
@@ -6531,11 +6560,22 @@ func (m *Model) repaintViewport() {
 
 // flushPending drains queued tea.Println cmds into a single sequenced Cmd.
 func (m *Model) flushPending() tea.Cmd {
-	if len(m.pendingCmds) == 0 {
-		return nil
-	}
 	cmds := m.pendingCmds
 	m.pendingCmds = nil
+	// Every row queued this tick — across however many logical
+	// queuePrintln-family calls contributed to it — collapses into ONE
+	// tea.Println. See pendingPrintRows' field doc for why: v2's inline
+	// renderer scrolls fresh from an assumed (0,0) cursor on every
+	// separate Println, so multiple sequenced calls erode each other's
+	// just-printed rows out of the viewport even when everything would
+	// have fit on screen as a single block.
+	if len(m.pendingPrintRows) > 0 {
+		cmds = append(cmds, tea.Println(strings.Join(m.pendingPrintRows, "\n")))
+		m.pendingPrintRows = nil
+	}
+	if len(cmds) == 0 {
+		return nil
+	}
 	if len(cmds) == 1 {
 		return cmds[0]
 	}

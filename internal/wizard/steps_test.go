@@ -7,9 +7,9 @@ import (
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
-	"github.com/muesli/termenv"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/colorprofile"
 
 	"github.com/yottadynamics/yottacode/internal/catalog"
 )
@@ -72,7 +72,7 @@ func TestView_NarrowTerminalNoLineWrap(t *testing.T) {
 				m.step = s.step
 				m.err = nil
 
-				out := m.View()
+				out := m.View().Content
 				for i, line := range splitLines(out) {
 					if vw := lipglossVisibleWidth(line); vw > width+tolerance {
 						t.Errorf("w=%d step=%s line %d width=%d exceeds budget+tol=%d\n  line: %q",
@@ -157,29 +157,29 @@ func TestUpdate_WindowSizeMsg_ResizesInputs(t *testing.T) {
 	m.inputs = []providerInputs{m.newProviderInputs(custom)}
 	// Initial width before the first WindowSizeMsg is the historic
 	// default (m.width is 0 at construction).
-	if m.inputs[0].customModel.Width != 48 {
+	if m.inputs[0].customModel.Width() != 48 {
 		t.Fatalf("pre-resize Width = %d, want 48 (default for unset terminal)",
-			m.inputs[0].customModel.Width)
+			m.inputs[0].customModel.Width())
 	}
 
 	// Wide terminal: 120 cols → input ceilinged at 80.
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	wm := updated.(wizardModel)
-	if wm.inputs[0].customModel.Width != 80 {
+	if wm.inputs[0].customModel.Width() != 80 {
 		t.Errorf("after wide resize, customModel.Width = %d, want 80",
-			wm.inputs[0].customModel.Width)
+			wm.inputs[0].customModel.Width())
 	}
-	if wm.inputs[0].key.Width != 80 || wm.inputs[0].baseURL.Width != 80 {
+	if wm.inputs[0].key.Width() != 80 || wm.inputs[0].baseURL.Width() != 80 {
 		t.Errorf("all three inputs should resize uniformly; got key=%d baseURL=%d",
-			wm.inputs[0].key.Width, wm.inputs[0].baseURL.Width)
+			wm.inputs[0].key.Width(), wm.inputs[0].baseURL.Width())
 	}
 
 	// Narrow terminal: 32 cols → input floored at 24 (32-8).
 	updated, _ = wm.Update(tea.WindowSizeMsg{Width: 32, Height: 20})
 	wm = updated.(wizardModel)
-	if wm.inputs[0].customModel.Width != 24 {
+	if wm.inputs[0].customModel.Width() != 24 {
 		t.Errorf("after narrow resize, customModel.Width = %d, want 24",
-			wm.inputs[0].customModel.Width)
+			wm.inputs[0].customModel.Width())
 	}
 }
 
@@ -301,7 +301,7 @@ func TestUpdateConfigure_DownArrowDrivesCuratedPicker(t *testing.T) {
 	m.step = stepConfigure
 
 	// Down should advance the cursor, NOT switch wizard fields.
-	updated, _ := m.updateConfigure(tea.KeyMsg{Type: tea.KeyDown})
+	updated, _ := m.updateConfigure(tea.KeyPressMsg{Code: tea.KeyDown})
 	wm := updated.(wizardModel)
 	if wm.inputs[0].modelCursor != 1 {
 		t.Errorf("Down: modelCursor = %d, want 1", wm.inputs[0].modelCursor)
@@ -310,22 +310,22 @@ func TestUpdateConfigure_DownArrowDrivesCuratedPicker(t *testing.T) {
 		t.Errorf("Down should not change field; got %d, want 2", wm.inputs[0].field)
 	}
 	// Down again → 2, then bounded at last entry.
-	updated, _ = wm.updateConfigure(tea.KeyMsg{Type: tea.KeyDown})
+	updated, _ = wm.updateConfigure(tea.KeyPressMsg{Code: tea.KeyDown})
 	wm = updated.(wizardModel)
-	updated, _ = wm.updateConfigure(tea.KeyMsg{Type: tea.KeyDown})
+	updated, _ = wm.updateConfigure(tea.KeyPressMsg{Code: tea.KeyDown})
 	wm = updated.(wizardModel)
 	if wm.inputs[0].modelCursor != 2 {
 		t.Errorf("Down should bound at last entry; got %d, want 2", wm.inputs[0].modelCursor)
 	}
 	// Up retreats.
-	updated, _ = wm.updateConfigure(tea.KeyMsg{Type: tea.KeyUp})
+	updated, _ = wm.updateConfigure(tea.KeyPressMsg{Code: tea.KeyUp})
 	wm = updated.(wizardModel)
 	if wm.inputs[0].modelCursor != 1 {
 		t.Errorf("Up: modelCursor = %d, want 1", wm.inputs[0].modelCursor)
 	}
 	// Tab still switches fields (so the user isn't trapped on the
 	// model row when they want to revisit the key).
-	updated, _ = wm.updateConfigure(tea.KeyMsg{Type: tea.KeyTab})
+	updated, _ = wm.updateConfigure(tea.KeyPressMsg{Code: tea.KeyTab})
 	wm = updated.(wizardModel)
 	if wm.inputs[0].field == 2 {
 		t.Errorf("Tab should advance field past 2; stayed at %d", wm.inputs[0].field)
@@ -363,12 +363,12 @@ func TestUpdateConfigure_OllamaDetectedModelsUsePicker(t *testing.T) {
 		t.Fatalf("Ollama picker should not focus the free-form model input")
 	}
 
-	updated, _ := m.updateConfigure(tea.KeyMsg{Type: tea.KeyDown})
+	updated, _ := m.updateConfigure(tea.KeyPressMsg{Code: tea.KeyDown})
 	wm := updated.(wizardModel)
 	if wm.inputs[0].modelCursor != 1 {
 		t.Fatalf("Down should select the second Ollama model; got cursor %d", wm.inputs[0].modelCursor)
 	}
-	updated, _ = wm.updateConfigure(tea.KeyMsg{Type: tea.KeyEnter})
+	updated, _ = wm.updateConfigure(tea.KeyPressMsg{Code: tea.KeyEnter})
 	wm = updated.(wizardModel)
 	if wm.inputs[0].chosenModel != "qwen3.5:latest" {
 		t.Errorf("Enter should commit highlighted Ollama model; got %q", wm.inputs[0].chosenModel)
@@ -397,7 +397,7 @@ func TestEmbedDetectedModelUsesPicker(t *testing.T) {
 	if strings.Contains(out, "y/enter") {
 		t.Fatalf("detected embedding screen should not render legacy y/n hint; got:\n%s", out)
 	}
-	updated, _ := m.updateEmbedSubStep(tea.KeyMsg{Type: tea.KeyEnter})
+	updated, _ := m.updateEmbedSubStep(tea.KeyPressMsg{Code: tea.KeyEnter})
 	wm := updated.(wizardModel)
 	if wm.embedChosenModel != "" {
 		t.Errorf("Skip row should clear detected embedding model; got %q", wm.embedChosenModel)
@@ -517,7 +517,7 @@ func TestProvidersFlow_EnterDropsIntoConfigure(t *testing.T) {
 	target := catalogIndex("openai")
 	m.providerCursor = target
 
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	wm := updated.(wizardModel)
 	if wm.step != stepConfigure {
 		t.Fatalf("Enter on provider row should drop into stepConfigure; got %v", wm.step)
@@ -565,7 +565,7 @@ func TestProvidersFlow_ContinueRow(t *testing.T) {
 
 	// Park cursor on the Continue sentinel.
 	m.providerCursor = len(Catalog)
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	wm := updated.(wizardModel)
 	if wm.step != stepProviders {
 		t.Errorf("Continue with nothing configured should stay on stepProviders; got %v", wm.step)
@@ -579,7 +579,7 @@ func TestProvidersFlow_ContinueRow(t *testing.T) {
 	wm.inputs[idx].configured = true
 	wm.inputs[idx].chosenModel = "claude-sonnet-4-6"
 	wm.err = nil
-	updated, _ = wm.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	updated, _ = wm.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	wm = updated.(wizardModel)
 	if wm.step != stepActive {
 		t.Errorf("Continue with one configured should advance to stepActive; got %v", wm.step)
@@ -614,7 +614,7 @@ func TestConfigureFlow_FinishMarksConfiguredAndReturns(t *testing.T) {
 	// straight to field=2 above to skip past key/baseURL.
 	m.step = stepConfigure
 
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	wm := updated.(wizardModel)
 	if !wm.inputs[idx].configured {
 		t.Errorf("Enter on model field should mark inputs[%d].configured = true", idx)
@@ -651,7 +651,7 @@ func TestConfigureFlow_RefusesEmptyKey(t *testing.T) {
 	in.configured = false
 	m.step = stepConfigure
 
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	wm := updated.(wizardModel)
 	if wm.inputs[idx].configured {
 		t.Errorf("provider must NOT be marked configured without an API key")
@@ -681,7 +681,7 @@ func TestConfigureFlow_AcceptsExplicitSkipKey(t *testing.T) {
 	in.configured = false
 	m.step = stepConfigure
 
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	wm := updated.(wizardModel)
 	if !wm.inputs[idx].configured {
 		t.Errorf("explicit skipKey should still mark configured (user accepts the trade-off)")
@@ -849,7 +849,7 @@ func TestWizard_VertexUsesProjectFieldForBaseURL(t *testing.T) {
 		t.Fatalf("initial fieldKind = %q, want family so the user can choose Gemini or Claude", got)
 	}
 	m.inputs[0].vertexFamily = VertexFamilyClaude
-	updated, _ := m.updateConfigure(tea.KeyMsg{Type: tea.KeyEnter})
+	updated, _ := m.updateConfigure(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = updated.(wizardModel)
 	if got := m.fieldKind(); got != "project" {
 		t.Fatalf("after choosing family, fieldKind = %q, want project", got)
@@ -866,7 +866,7 @@ func TestWizard_VertexUsesProjectFieldForBaseURL(t *testing.T) {
 	}
 
 	m.inputs[0].project.SetValue("my-project")
-	updated, _ = m.updateConfigure(tea.KeyMsg{Type: tea.KeyEnter})
+	updated, _ = m.updateConfigure(tea.KeyPressMsg{Code: tea.KeyEnter})
 	wm := updated.(wizardModel)
 	if got := wm.fieldKind(); got != "model" {
 		t.Fatalf("after entering project, fieldKind = %q, want model", got)
@@ -880,7 +880,7 @@ func TestWizard_VertexUsesProjectFieldForBaseURL(t *testing.T) {
 	// Saving from the model field must still fail if the project field was
 	// skipped or cleared after navigation.
 	wm.inputs[0].project.SetValue("")
-	updated, _ = wm.updateConfigure(tea.KeyMsg{Type: tea.KeyEnter})
+	updated, _ = wm.updateConfigure(tea.KeyPressMsg{Code: tea.KeyEnter})
 	wm = updated.(wizardModel)
 	if got := wm.fieldKind(); got != "project" {
 		t.Fatalf("saving Vertex without project should return to project field; got %q", got)
@@ -959,7 +959,7 @@ func TestWizardFlow_SkipsRouterStep(t *testing.T) {
 	m.step = stepActive
 
 	// Forward: Active → Review (skips Router).
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	wm := updated.(wizardModel)
 	if wm.step != stepReview {
 		t.Errorf("Active+enter should advance to stepReview; got %v", wm.step)
@@ -1268,9 +1268,9 @@ func TestPickerOptionsAreLegible(t *testing.T) {
 	// Under `go test` lipgloss renders plain ASCII; force truecolor so
 	// the style escapes we assert on are actually emitted. Restore the
 	// previous profile afterward so other tests see the default.
-	prev := lipgloss.ColorProfile()
-	lipgloss.SetColorProfile(termenv.TrueColor)
-	t.Cleanup(func() { lipgloss.SetColorProfile(prev) })
+	prev := lipgloss.Writer.Profile
+	lipgloss.Writer.Profile = colorprofile.TrueColor
+	t.Cleanup(func() { lipgloss.Writer.Profile = prev })
 
 	// dimFg is the opening escape styleDim emits — the shade the fix
 	// removed from option text. Deriving it from the style (rather than

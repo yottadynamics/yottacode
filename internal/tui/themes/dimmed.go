@@ -1,6 +1,9 @@
 package themes
 
-import "github.com/charmbracelet/lipgloss"
+import (
+	"charm.land/lipgloss/v2"
+	"charm.land/lipgloss/v2/compat"
+)
 
 // dimmed is GitHub Dark Dimmed
 // (https://primer.style/foundations/color/overview, "dark_dimmed"
@@ -42,6 +45,6 @@ func init() {
 		// dark mode (#0d1117). Far enough from terminal black to
 		// read as a painted surface, gentle enough that it doesn't
 		// fight the user's own terminal bg on chrome regions.
-		Background: lipgloss.AdaptiveColor{Light: "#22272e", Dark: "#22272e"},
+		Background: compat.AdaptiveColor{Light: lipgloss.Color("#22272e"), Dark: lipgloss.Color("#22272e")},
 	})
 }

@@ -389,6 +389,27 @@ feature/anthropic-config-updates
   version suffix (`claude-opus-4-8@default`). Such models previously read as
   uncatalogued and silently lost their extended-thinking budget.
 
+### Added
+
+- **The TUI's underlying Bubble Tea/Lip Gloss/Bubbles/Glamour dependencies moved
+  to their v2 lines** (v1 has been feature-frozen since 2025-09-17). No
+  intended visible behavior change on its own — this lands the flicker-free
+  "Cursed" renderer for streaming/diff redraws and an explicit color-profile
+  model that the theme system now routes through — but it's a real dependency
+  bump worth flagging if a terminal renders differently than before. Mouse
+  support remains intentionally off (it was already opt-in and unused).
+- **Picker overlays (`/model`, `/provider`, `/sessions`, `/mcp`, `/skills`,
+  `/themes`, and friends) no longer overflow on narrow terminals.** Their
+  divider width was pinned to a fixed 72 columns; the status bar and tool
+  cards already degraded gracefully below that width, pickers didn't. The
+  divider now tracks the live terminal width, still capped at 72 on anything
+  wide enough to afford it — wide-terminal layouts are unchanged.
+- **The connection status dot is no longer color-only.** All four states
+  (healthy, degraded, down, unknown) rendered the identical `●` glyph in
+  different colors — invisible under `NO_COLOR` or to a colorblind user. Each
+  state now has its own shape too: `●` filled (healthy), `◐` half (degraded),
+  `○` hollow (down), `·` dot (unknown).
+
 ## 0.3.0 — 2026-06-10
 
 > Memory + ecosystem — persistent agent memory with semantic recall,

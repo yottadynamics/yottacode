@@ -114,7 +114,7 @@ const (
 // hierarchy, not a separate reverse-video completion widget.
 func renderPalette(items []slashCommand, idx, offset, width int) string {
 	if len(items) == 0 {
-		return stylePaletteBox.Width(width - 2).Render(styleEmpty.Render("(no matching commands)"))
+		return stylePaletteBox.Width(width).Render(styleEmpty.Render("(no matching commands)"))
 	}
 	// Compute column width from the visible items so the help text
 	// always aligns regardless of which subset matched the prefix.
@@ -153,5 +153,5 @@ func renderPalette(items []slashCommand, idx, offset, width int) string {
 			Cursor:     i == idx,
 		}))
 	}
-	return stylePaletteBox.Width(width - 2).Render(strings.Join(lines, "\n"))
+	return stylePaletteBox.Width(width).Render(strings.Join(lines, "\n"))
 }
