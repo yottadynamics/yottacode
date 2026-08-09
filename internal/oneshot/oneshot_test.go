@@ -4,17 +4,12 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"fmt"
-	"net/http"
-	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
 
 	"github.com/yottadynamics/yottacode/internal/adapter"
 	"github.com/yottadynamics/yottacode/internal/agent"
-	"github.com/yottadynamics/yottacode/internal/cli"
-	"github.com/yottadynamics/yottacode/internal/memory"
 )
 
 // scriptedStreamer is a duplicate of the one in internal/agent — kept here
@@ -61,59 +56,10 @@ func sseDone(content string, tcs ...adapter.ToolCall) adapter.StreamEvent {
 	return adapter.StreamEvent{Kind: adapter.EventDone, Final: msg}
 }
 
-// TestRegisterMemoryTools_ParityWithTUI guards the oneshot↔TUI memory
-// parity that #4 fixed: memory_search must be registered (it was
-// previously omitted in oneshot), and both memory_save and
-// memory_search must carry the embedder + configured strategy so
-// headless runs produce .vec sidecars and rank the same way the
-// interactive surface does.
-func TestRegisterMemoryTools_ParityWithTUI(t *testing.T) {
-	reg := agent.NewRegistry()
-	cwdRef := agent.NewCwdRef("/tmp")
-	client := memory.NewEmbedClient("http://localhost:11434", "test-model")
-
-	registerMemoryTools(reg, cwdRef, client, "bm25", 0.4, memory.Source{Session: "test-session"})
-
-	for _, name := range []string{"memory_save", "memory_forget", "memory_search", "memory_audit", "memory_curate_apply", "memory_archive_prune", "memory_get"} {
-		if _, ok := reg.Get(name); !ok {
-			t.Errorf("memory tool %q not registered", name)
-		}
-	}
-
-	saveTool, _ := reg.Get("memory_save")
-	save, ok := saveTool.(*agent.MemorySaveTool)
-	if !ok {
-		t.Fatalf("memory_save is %T, want *agent.MemorySaveTool", saveTool)
-	}
-	if save.Embedder != client {
-		t.Error("memory_save did not receive the wired embedder — headless saves would skip .vec sidecars")
-	}
-
-	searchTool, _ := reg.Get("memory_search")
-	search, ok := searchTool.(*agent.MemorySearchTool)
-	if !ok {
-		t.Fatalf("memory_search is %T, want *agent.MemorySearchTool", searchTool)
-	}
-	if search.Embedder != client {
-		t.Error("memory_search did not receive the wired embedder")
-	}
-	if search.Strategy != "bm25" {
-		t.Errorf("memory_search strategy = %q, want the configured %q", search.Strategy, "bm25")
-	}
-}
-
-// TestRegisterMemoryTools_NilEmbedderOK confirms the registration is
-// safe when no embedder is available (Ollama absent) — all three tools
-// still register and degrade to BM25.
-func TestRegisterMemoryTools_NilEmbedderOK(t *testing.T) {
-	reg := agent.NewRegistry()
-	registerMemoryTools(reg, agent.NewCwdRef("/tmp"), nil, "auto", 0.4, memory.Source{})
-	for _, name := range []string{"memory_save", "memory_forget", "memory_search", "memory_audit", "memory_curate_apply", "memory_archive_prune", "memory_get"} {
-		if _, ok := reg.Get(name); !ok {
-			t.Errorf("memory tool %q not registered with nil embedder", name)
-		}
-	}
-}
+// Memory-tool registration parity (memory_save/memory_search carrying the
+// embedder + configured strategy) is now tested in
+// internal/agentruntime — registerMemoryTools moved there as part of the
+// Builder extraction (see agentruntime.Builder.Build).
 
 func TestOneshot_ContentGoesToStdout(t *testing.T) {
 	streamer := &scriptedStreamer{turns: [][]adapter.StreamEvent{
@@ -225,61 +171,9 @@ func TestOneshot_PropagatesAdapterError(t *testing.T) {
 	}
 }
 
-func TestComposeSystemPrompt_XAIPrefersXSearch(t *testing.T) {
-	got := composeSystemPrompt("base", adapter.ProviderProfile{
-		Provider: adapter.ProviderXAI,
-		EnabledBuiltinTools: []adapter.BuiltinToolKind{
-			adapter.BuiltinToolWebSearch,
-			adapter.BuiltinToolXSearch,
-		},
-	})
-	for _, want := range []string{"use x_search, not web_search", "X/Twitter posts", "Use web_search only for general web pages"} {
-		if !strings.Contains(got, want) {
-			t.Fatalf("xAI prompt guidance missing %q:\n%s", want, got)
-		}
-	}
-}
-
-func TestPreflight_AuthFailure(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Error(w, "nope", http.StatusUnauthorized)
-	}))
-	t.Cleanup(srv.Close)
-
-	err := preflight(context.Background(), adapter.Config{
-		BaseURL:          srv.URL,
-		APIKey:           "bad",
-		Model:            "gpt-5",
-		ProviderOverride: adapter.ProviderOpenAI,
-	})
-	if err == nil {
-		t.Fatalf("expected preflight error")
-	}
-	if !strings.Contains(err.Error(), "authentication failed (HTTP 401)") {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func TestPreflight_ModelInvisible(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, `{"data":[{"id":"gpt-4.1"}]}`)
-	}))
-	t.Cleanup(srv.Close)
-
-	err := preflight(context.Background(), adapter.Config{
-		BaseURL:          srv.URL,
-		APIKey:           "sk-test",
-		Model:            "gpt-5",
-		ProviderOverride: adapter.ProviderOpenAI,
-	})
-	if err == nil {
-		t.Fatalf("expected preflight error")
-	}
-	if !strings.Contains(err.Error(), `model "gpt-5" not listed by /models`) {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
+// composeSystemPrompt's xAI framing and preflight's error formatting are
+// now tested in internal/agentruntime — both moved there as part of the
+// Builder extraction.
 
 func TestOneshot_StreamRecoversTurnPanic(t *testing.T) {
 	cfg := agent.LoopConfig{Adapter: panicStreamer{}, Registry: agent.NewRegistry(), MaxIterations: 3}
@@ -310,20 +204,6 @@ func (m *fakeApprovalTool) Execute(_ context.Context, _ string) (string, error) 
 	return "should not run", nil
 }
 
-// oneshotRouterResolve must be nil in mode off even when a pair is
-// configured: adapters build regardless of mode (so /router can toggle
-// live), but "off" promises every agent — including ones with explicit
-// model: frontmatter — runs on the active model. The TUI gates its
-// resolver the same way; this pins oneshot parity.
-func TestOneshotRouterResolve_GatedOnMode(t *testing.T) {
-	ra := &cli.RouterAdapters{Resolve: func(string) adapter.Streamer { return nil }}
-	if got := oneshotRouterResolve(ra, false); got != nil {
-		t.Error("resolver must be nil when routing is off")
-	}
-	if got := oneshotRouterResolve(ra, true); got == nil {
-		t.Error("resolver must be wired when routing is enabled")
-	}
-	if got := oneshotRouterResolve(nil, true); got != nil {
-		t.Error("nil adapters must yield a nil resolver")
-	}
-}
+// Router-resolver mode-gating (routerModelResolver/routerResolve) is now
+// tested in internal/agentruntime — moved there as part of the Builder
+// extraction.

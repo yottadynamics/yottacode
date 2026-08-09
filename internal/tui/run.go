@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"slices"
 	"strings"
 	"time"
 
@@ -14,17 +15,11 @@ import (
 
 	"github.com/yottadynamics/yottacode/internal/adapter"
 	"github.com/yottadynamics/yottacode/internal/agent"
-	"github.com/yottadynamics/yottacode/internal/catalog"
+	"github.com/yottadynamics/yottacode/internal/agentruntime"
 	"github.com/yottadynamics/yottacode/internal/checkpoint"
 	"github.com/yottadynamics/yottacode/internal/cli"
-	"github.com/yottadynamics/yottacode/internal/codemap"
 	"github.com/yottadynamics/yottacode/internal/config"
-	"github.com/yottadynamics/yottacode/internal/experimental"
-	githubapi "github.com/yottadynamics/yottacode/internal/github"
 	"github.com/yottadynamics/yottacode/internal/lsp"
-	"github.com/yottadynamics/yottacode/internal/mcp"
-	"github.com/yottadynamics/yottacode/internal/memory"
-	"github.com/yottadynamics/yottacode/internal/permissions"
 	"github.com/yottadynamics/yottacode/internal/recall"
 	"github.com/yottadynamics/yottacode/internal/sensitive"
 	"github.com/yottadynamics/yottacode/internal/session"
@@ -36,10 +31,6 @@ import (
 	"github.com/yottadynamics/yottacode/internal/wizard"
 	"github.com/yottadynamics/yottacode/internal/worktree"
 )
-
-// defaultSystemPrompt is sourced from internal/agent so the TUI and
-// the oneshot runner cannot drift. See agent.DefaultSystemPrompt.
-const defaultSystemPrompt = agent.DefaultSystemPrompt
 
 const (
 	// subagentDrainGrace is how long session teardown waits for canceled
@@ -117,396 +108,82 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 		return err
 	}
 
-	// Folder-trust gate: fires before openSession so an untrusted
-	// workspace never accumulates session state. Subfolders of any
-	// previously trusted root inherit trust; --allow-paths roots
-	// satisfy the gate session-only; YOTTACODE_TRUST_ALL=1 is the
-	// CI escape hatch. See yottacode-roadmap/folder-trust.md.
+	// Folder-trust gate: fires before Build so an untrusted workspace
+	// never accumulates session state. Subfolders of any previously
+	// trusted root inherit trust; --allow-paths roots satisfy the gate
+	// session-only; YOTTACODE_TRUST_ALL=1 is the CI escape hatch. See
+	// yottacode-roadmap/folder-trust.md.
 	if err := ensureWorkspaceTrust(cwd, opts); err != nil {
 		return err
 	}
 
-	sess, fresh, err := openSession(opts, cwd)
-	if err != nil {
-		return err
-	}
-	// Derive the Responses-API prompt_cache_key from the session id so
-	// every turn this run makes shares one server-side cache shard. Set
-	// before the adapters (single + router candidates) are built below.
-	opts.CacheKey = sess.ID
-	mem, err := memory.Load(cwd)
-	if err != nil {
-		return err
-	}
 	// Load slash commands from two scopes merged by precedence:
 	// project (<cwd>/.yottacode/commands/) > user (~/.yottacode/commands/).
 	// Fail-soft: per-file load errors are surfaced as startup notices
 	// below but never block launch. Shadow warnings fire when user
 	// and project name-collide.
 	customCmds, customErrs := usercmd.Load(cwd)
-	// Load tunables (~/.yottacode/config.toml). Missing file → defaults
-	// (no error). Invalid file → return the error so the user fixes it
-	// rather than silently running with stale defaults.
-	fileCfg, err := config.LoadDefault()
+
+	// sessionID is set once Build returns (see below) and read by the
+	// PreCompact closure — captured by reference here since Build needs
+	// the closure before the session it snapshots exists yet, but the
+	// closure itself is only ever invoked much later, mid-turn.
+	var sessionID string
+	spec := agentruntime.SessionSpec{
+		ChatOptions: opts,
+		Cwd:         cwd,
+		// TUI is long-running and can host detached background workers,
+		// surfacing their completion via the subagent inbox.
+		SupportsBackgroundDispatch: true,
+		// enter_worktree/exit_worktree's process-global os.Chdir is safe
+		// here: the TUI hosts one session per process.
+		DisableWorktreeTools: false,
+		PreCompact: func(history []adapter.Message) (string, error) {
+			return writePreSummarySnapshot(sessionID, history)
+		},
+		// TUI starts MCP servers asynchronously via its own Bubbletea
+		// tea.Cmd (cmd_mcp.go) so slow/hanging npx-based servers don't
+		// delay first paint.
+		DeferMCPStart: true,
+	}
+	rt, err := agentruntime.NewBuilder().Build(ctx, spec)
 	if err != nil {
 		return err
 	}
-	baseSys := opts.SystemPrompt
-	if baseSys == "" {
-		baseSys = defaultSystemPrompt
-	}
-	// Routing: when [router].enabled is true in config.toml, dispatch
-	// across the configured candidates per the chosen policy. The
-	// returned Client implements both Streamer (for the agent loop)
-	// and Profile() (for system-prompt composition / connection
-	// probe). When routing is disabled, fall back to the original
-	// single-adapter dispatch path.
-	var ad adapter.Client
-	if router, err := cli.BuildRouter(fileCfg, opts); err != nil {
-		return err
-	} else if router != nil {
-		ad = router
-	} else {
-		adhocMaxOutput, adhocThinking := catalog.ReasoningInfo(opts.Model)
-		ad = adapter.NewWithConfig(adapter.Config{
-			BaseURL:                opts.BaseURL,
-			APIKey:                 opts.APIKey,
-			Model:                  opts.Model,
-			ProviderOverride:       adapter.Provider(strings.TrimSpace(opts.ProviderKind)),
-			ReasoningEffort:        opts.ReasoningEffort,
-			CacheKey:               opts.CacheKey,
-			CacheTTL:               fileCfg.Cache.AnthropicTTL,
-			ModelMaxOutput:         adhocMaxOutput,
-			ModelSupportsThinking:  adhocThinking,
-			EnableWebSearch:        opts.EnableWebSearch,
-			DisableWebSearch:       opts.DisableWebSearch,
-			EnableXSearch:          opts.EnableXSearch,
-			EnableCodeInterpreter:  opts.EnableCodeInterpreter,
-			SearchAllowedDomains:   splitCSV(opts.SearchAllowedDomains),
-			SearchExcludedDomains:  splitCSV(opts.SearchExcludedDomains),
-			XSearchAllowedHandles:  splitCSV(opts.XSearchAllowedHandles),
-			XSearchExcludedHandles: splitCSV(opts.XSearchExcludedHandles),
-			XSearchFromDate:        strings.TrimSpace(opts.XSearchFromDate),
-			XSearchToDate:          strings.TrimSpace(opts.XSearchToDate),
-		})
-	}
-	// Cache-safe task routing: when [router].mode is "manual"/"auto",
-	// resolve the fast/smart model adapters. These drive isolated
-	// contexts only (subagents + summarization), so they never disturb
-	// the main-thread prompt cache. nil when no pair is configured.
-	routerAdapters, err := cli.BuildRouterAdapters(fileCfg, opts)
-	if err != nil {
-		if fileCfg.Router.RoutingEnabled() {
-			return err
-		}
-		// Routing is OFF: a stale pair (e.g. the provider it referenced
-		// was removed after the models were picked) must not stop the
-		// session — pre-router builds started fine without any pair.
-		// Warn and run unrouted; /router will re-surface the error if
-		// the user tries to turn it back on.
-		fmt.Fprintln(os.Stderr, "warning: [advisor] pair unresolved (routing is off, continuing without it): "+err.Error())
-		routerAdapters = nil
-	}
-	if fileCfg.Router.RoutingEnabled() && routerAdapters != nil && routerAdapters.Advisor != nil {
-		ad = routerAdapters.Advisor
-		if routerAdapters.AdvisorModel != "" {
-			opts.Model = routerAdapters.AdvisorModel
-		}
-	}
-	// system prompt (description-matched metadata tier) and the Skill
-	// tool registration below. Loading twice would be wasteful and
-	// risks the prompt and the tool drifting; this single load wins.
-	skillsRes, _ := skills.LoadAll(cwd, usercmd.Reserved)
-	for _, w := range skillsRes.Warnings {
-		fmt.Fprintln(os.Stderr, "skills: "+w)
-	}
-	// Resolve experimental features up front (CLI > env > config) so the
-	// optional feature prompts can be baked into the system prompt below.
-	// Dispatch stays experimental for this PR, so its steering is appended only
-	// when the flag enables the dispatch/integrate tools.
-	expSet := experimental.NewSet()
-	for name, on := range fileCfg.Experimental {
-		if on {
-			expSet.Enable(name)
-		}
-	}
-	for _, name := range opts.Experimental {
-		expSet.Enable(name)
-	}
-	for _, unknown := range expSet.UnknownNames() {
-		fmt.Fprintf(os.Stderr, "warning: --experimental %q is not a recognized feature (typo? graduated? see docs/experimental.md)\n", unknown)
-	}
-	if expSet.IsEnabled(experimental.Dispatch) {
-		baseSys += "\n\n" + agent.DispatchPromptAddendum
-	}
-	composedBase := composeSystemPrompt(baseSys, ad.Profile())
-	composedBase = appendSkillsSection(composedBase, skillsRes.Skills)
-	if fresh {
-		sess.Messages = append(sess.Messages, adapter.Message{
-			Role:           adapter.RoleSystem,
-			Content:        memory.SystemPrompt(composedBase, mem),
-			CacheHeadBytes: len(composedBase),
-		})
-	} else {
-		recomposeSessionSystemPrompt(sess, memory.SystemPrompt(composedBase, mem), len(composedBase))
-	}
+	sessionID = rt.Session.ID
+	defer rt.LSPManager.CloseAll()
 
 	// `--summarized` (only meaningful when resuming): replace the loaded
 	// transcript with a structured summary injected into the system
 	// prompt, the same way the in-TUI /sessions picker's `s`-toggle on
 	// the Resume row does.
-	if opts.Summarized && !fresh {
+	if opts.Summarized && !rt.Fresh {
 		newSess, _, note, err := loadSummarizedSession(summarizeDeps{
 			ctx:     ctx,
-			adapter: ad,
-			fileCfg: fileCfg,
-		}, sess)
+			adapter: rt.Adapter,
+			fileCfg: rt.FileCfg,
+		}, rt.Session)
 		if err != nil {
 			return fmt.Errorf("resume --summarized: %w", err)
 		}
-		sess = newSess
+		rt.Session = newSess
 		if note != "" {
 			fmt.Fprintln(os.Stdout, note)
 		}
 	}
 
-	// Permissions are project-local: .yottacode/permissions.json
-	// (committable team rules) + .yottacode/permissions.local.json
-	// (gitignored personal additions). Missing files → empty rule
-	// set; malformed file → returned error so the user can fix it
-	// instead of silently running with stale rules.
-	perms, err := permissions.Load(cwd)
-	if err != nil {
-		return err
-	}
+	cwdRef := rt.CwdRef
+	fileCfg := rt.FileCfg
+	ad := rt.Adapter
 
-	// cwdRef is the shared working-directory holder every tool reads
-	// from. enter_worktree / exit_worktree call cwdRef.Set(...) (plus
-	// os.Chdir) so a mid-session worktree swap propagates to all
-	// tools without rebuilding the registry. WriteOpts holds the
-	// same pointer so write validation tracks the swap too — important
-	// now that yottacode worktrees live in ~/.yottacode/worktrees/,
-	// outside the original cwd's pathUnder perimeter.
-	cwdRef := agent.NewCwdRef(cwd)
+	// GitHub tool suite (PR/Issue composites + git_push) and the
+	// WebSearchTool fallback are registered by Build now — shared with
+	// oneshot/acp, not TUI-only. rt.GHClient is the same typed client
+	// the tools use, kept here for the status bar's own direct
+	// current-PR lookup (resolveCurrentPRCmd below), which has no ACP
+	// equivalent.
+	ghClient := rt.GHClient
 
-	// Path-validation policy: every mutating filesystem tool gets the
-	// same WriteOpts. Cwd-confined writes by default; --allow-paths
-	// expands the allowed roots; the deny list is hardcoded to keep
-	// yottacode's own state and git internals off-limits.
-	writeOpts := agent.WritePathOptions{
-		Cwd:          cwdRef,
-		AllowedPaths: splitAllowPaths(opts.AllowPaths),
-		DenyExact:    agent.DefaultDenyPaths(cwd),
-	}
-	denyReads := agent.DefaultDenyReadPaths(cwd)
-
-	planStore := agent.NewPlanStore()
-	if len(sess.Todos) > 0 {
-		planStore.Replace(sess.Todos)
-	}
-
-	// Mode flags shared between LoopConfig and the TUI Model:
-	//   - plan (Shift+Tab cycle + /plan slash + --permission-mode plan
-	//     startup flag + model-requested enter_plan_mode)
-	//   - auto (Shift+Tab cycle + --permission-mode auto startup flag
-	//     + plan-card [A]; no slash command, mirroring Claude Code)
-	//   - yolo (--yolo startup flag only; no
-	//     slash command, no keybinding — opt-in once per process)
-	// Plan and auto are mutually exclusive; yolo is an orthogonal
-	// overlay that stacks with either. Per-session lifetime;
-	// always-off at startup unless the corresponding flag was passed.
-	planMode := &agent.PlanModeState{}
-	autoMode := &agent.AutoModeState{}
-	yoloMode := &agent.YoloModeState{}
-	// Shared /loop self-stop signal: the loop_control tool (registered below)
-	// writes a stop request through it; the TUI Model consumes it at turn end.
-	loopControl := &agent.LoopControlState{}
-
-	lspManager := lsp.NewManager(0, 0)
-	defer lspManager.CloseAll()
-	var codeMapProvider codemap.Provider
-	if expSet.IsEnabled(experimental.CodeMap) {
-		codeMapProvider = &codemap.CachedProvider{Options: codemap.BuildOptions{Root: cwd, Source: codemap.LSPSource{Manager: lspManager, Servers: fileCfg.LSP.Servers, Root: cwd}}}
-	}
-
-	reg := agent.NewRegistry()
-	// Core cwd-bound tools (file read/write/edit, search, git-read/stage/
-	// commit, checkpoints, run_bash/run_tests). Extracted into a shared
-	// builder so the dispatch subagent path can register the identical
-	// toolset against an isolated worktree CwdRef. The session-scoped
-	// extras (worktree-admin, commit-workflow composites, GH/PR, memory,
-	// web, todo, plan) stay registered inline below.
-	agent.RegisterCoreCwdTools(reg, cwdRef, agent.CoreToolDeps{
-		WriteOpts:               writeOpts,
-		DenyReads:               denyReads,
-		SupportsImages:          ad.Profile().SupportsImages,
-		EnableLSP:               true,
-		LSPManager:              lspManager,
-		LSPServers:              fileCfg.LSP.Servers,
-		LSPDisabled:             fileCfg.LSP.Disabled,
-		EnableCodeMap:           expSet.IsEnabled(experimental.CodeMap),
-		CodeMapProvider:         codeMapProvider,
-		EnableSyntaxRanges:      true,
-		EnableDocumentIngestion: expSet.IsEnabled(experimental.DocumentIngestion),
-	})
-	// Git worktree tools. Layer 1 (enter/exit/status) are the agent-
-	// friendly entry points; Layer 2 (the git_worktree_* wrappers) sit
-	// underneath for finer-grained admin. enter_worktree and
-	// exit_worktree are in the auto-mode safety floor — they always
-	// prompt, even when auto mode is on, because they shift the agent's
-	// working context (and exit's force-remove is destructive).
-	reg.Register(&agent.EnterWorktreeTool{Cwd: cwdRef})
-	reg.Register(&agent.ExitWorktreeTool{Cwd: cwdRef})
-	reg.Register(&agent.WorktreeStatusTool{Cwd: cwdRef})
-	reg.Register(&agent.GitWorktreeListTool{Cwd: cwdRef})
-	reg.Register(&agent.GitWorktreeAddTool{Cwd: cwdRef})
-	reg.Register(&agent.GitWorktreeRemoveTool{Cwd: cwdRef})
-	reg.Register(&agent.GitWorktreeLockTool{Cwd: cwdRef})
-	reg.Register(&agent.GitWorktreeUnlockTool{Cwd: cwdRef})
-	reg.Register(&agent.GitWorktreePruneTool{Cwd: cwdRef})
-	// Composite commit-workflow tools paired with the /commit slash
-	// command (cmd_commit.go). Context is read-only and parallel-safe;
-	// apply is approval-gated and validates the subject in Go before
-	// invoking git, so empty-staging / oversize / trailing-period /
-	// multi-line messages can't reach a `git commit` invocation no
-	// matter what the model emits.
-	reg.Register(&agent.GitCommitContextTool{Cwd: cwdRef})
-	reg.Register(&agent.GitCommitApplyTool{Cwd: cwdRef})
-	// Composite PR-workflow tools paired with the /create-pr slash
-	// command (cmd_create_pr.go). Context is read-only (no network
-	// beyond a cheap `git ls-remote` push-state check); create is
-	// approval-gated and validates the title in Go before dialing the
-	// github.Interface. The Interface is the foundation hook for
-	// v0.5.0's typed go-github client — swapping the ShellOut for the
-	// typed client is a one-line registration change.
-	// In-session cache wraps the typed client so duplicate reads
-	// within one turn make one API call. The cache lives for the
-	// session and is cleared at process exit — no explicit
-	// teardown needed. Writes (CreatePR, UpdatePR, AddPRComment)
-	// pass through; UpdatePR invalidates matching ReadPR entries
-	// so the next read sees fresh data.
-	ghClient := githubapi.NewCachingClient(githubapi.NewTypedClient(cwd))
-	reg.Register(&agent.GHPRContextTool{Cwd: cwdRef})
-	reg.Register(&agent.GHPRCreateTool{Cwd: cwdRef, GH: ghClient})
-	// pr_review_context is the read-side composite paired with
-	// /git-review-pr. Shares the same github.Interface instance as
-	// pr_create so the v0.5.0 swap to a typed go-github client
-	// changes one variable above instead of two registration sites.
-	reg.Register(&agent.GHPRReviewContextTool{Cwd: cwdRef, GH: ghClient})
-	reg.Register(&agent.PRWatchChecksTool{Cwd: cwdRef, GH: ghClient})
-	reg.Register(&agent.PRCheckLogsTool{Cwd: cwdRef, GH: ghClient})
-	reg.Register(&agent.PRRerunChecksTool{Cwd: cwdRef, GH: ghClient})
-	// code_review_context is the local-diff counterpart to
-	// pr_review_context, paired with the /code-review slash
-	// command. Read-only and Cwd-only (no github.Interface): it
-	// reviews the branch-vs-base diff, or the uncommitted working
-	// tree when there are no commits ahead.
-	reg.Register(&agent.CodeReviewContextTool{Cwd: cwdRef})
-	reg.Register(&agent.PRReadinessContextTool{Cwd: cwdRef})
-	// pr_read is the lightweight metadata-only sibling — one
-	// API call vs. review_context's three. The model picks between
-	// them based on whether it needs the diff + checks (review) or
-	// just metadata (read). The Description on each tool spells out
-	// the selection rule so the model doesn't reach for run_bash
-	// `gh pr view --json body`.
-	reg.Register(&agent.GHPRReadTool{Cwd: cwdRef, GH: ghClient})
-	// Issue-side counterparts: issue_read for single-issue
-	// metadata + comments (the /git-implement-issue command's
-	// first step), issue_list for filtered open-issue
-	// summaries. Same nudge-the-model-away-from-run_bash framing
-	// as the PR tools.
-	reg.Register(&agent.GHIssueReadTool{Cwd: cwdRef, GH: ghClient})
-	reg.Register(&agent.GHIssueListTool{Cwd: cwdRef, GH: ghClient})
-	// issue_context + issue_create pair for /git-create-issue.
-	// Context needs no client (git remote + token chain + local
-	// template lookup); create shares the github.Interface instance
-	// with the other issue tools.
-	reg.Register(&agent.GHIssueContextTool{Cwd: cwdRef})
-	reg.Register(&agent.GHIssueCreateTool{Cwd: cwdRef, GH: ghClient})
-	// git_push is paired with /git-push. The GH dependency is for
-	// the best-effort PR-URL lookup after a successful push — a
-	// nil client would skip the lookup silently, but registering
-	// with the shared ghClient gives us the "PR updated: <url>"
-	// footer for free.
-	reg.Register(&agent.GitPushTool{Cwd: cwdRef, GH: ghClient})
-	// pr_update is paired with /git-update-pr. Same Interface
-	// instance as the other PR tools — the v0.5.0 typed client
-	// swap will switch one variable above and pick up all four
-	// (create/read-review/push-lookup/update) at once.
-	reg.Register(&agent.GHPRUpdateTool{Cwd: cwdRef, GH: ghClient})
-	// pr_add_comment posts a conversation-level comment on a PR.
-	// Approval-gated like the other write tools. Used for
-	// cross-linking related issues, post-review follow-ups, and
-	// structured summaries the model wants public on the PR.
-	reg.Register(&agent.GHPRAddCommentTool{Cwd: cwdRef, GH: ghClient})
-	reg.Register(&agent.FetchURLTool{})
-	if !hasBuiltin(ad.Profile().EnabledBuiltinTools, adapter.BuiltinToolWebSearch) {
-		reg.Register(&agent.WebSearchTool{})
-	}
-	var embedClient *memory.EmbedClient
-	var embedMissingLine1, embedMissingLine2 string
-	if s := fileCfg.Retrieval.Strategy; s == "semantic" || s == "auto" {
-		ec := memory.NewEmbedClient("", fileCfg.Retrieval.EmbeddingModel)
-		reachable, installed := ec.Status(ctx)
-		switch {
-		case installed:
-			// Short per-call bound on the interactive path so a
-			// mid-session Ollama hang can't freeze the TUI; reindex uses
-			// its own default-timeout client.
-			ec.Timeout = memory.InteractiveEmbedTimeout
-			embedClient = ec
-		case reachable:
-			// Ollama is up but the configured embedding model isn't
-			// there — most likely the user removed it via `ollama rm`
-			// after enabling semantic search. Surface this on startup
-			// so the silent fallback to BM25 doesn't look like a
-			// retrieval-quality regression with no cause.
-			embedMissingLine1 = fmt.Sprintf(
-				"[memory] embedding model %q not installed — falling back to BM25 (keyword search).",
-				ec.Model)
-			embedMissingLine2 = fmt.Sprintf("Run: ollama pull %s", ec.Model)
-		}
-	}
-	reg.Register(&agent.MemorySaveTool{Cwd: cwdRef, Embedder: embedClient, Source: memory.Source{Session: sess.ID}})
-	reg.Register(&agent.MemoryForgetTool{Cwd: cwdRef})
-	reg.Register(&agent.MemorySearchTool{Cwd: cwdRef, Embedder: embedClient, Strategy: fileCfg.Retrieval.Strategy, SemanticWeight: fileCfg.Retrieval.SemanticWeight, SemanticWeightConfigured: true})
-	reg.Register(&agent.MemoryAuditTool{Cwd: cwdRef})
-	reg.Register(&agent.MemoryCurateApplyTool{Cwd: cwdRef})
-	reg.Register(&agent.MemoryArchivePruneTool{Cwd: cwdRef})
-	reg.Register(&agent.MemoryGetTool{Cwd: cwdRef})
-	reg.Register(&agent.GitTool{Cwd: cwdRef, LSPManager: lspManager})
-	reg.Register(&agent.TodoWriteTool{Store: planStore})
-	// The plan-mode boundary pair. The loop's schema filter advertises
-	// exit_plan_mode only while plan mode is active and enter_plan_mode
-	// only while it is NOT, and both always route through the approval
-	// modal — the TUI's [Y]/[N] / [A][M][L][K] handlers are what
-	// actually flip the shared PlanModeState before forwarding the
-	// decision. EnterPlanModeTool carries the state pointer so its
-	// Execute can report the resolved plan-file path to the model.
-	reg.Register(&agent.ExitPlanModeTool{})
-	reg.Register(&agent.EnterPlanModeTool{State: planMode})
-
-	// loop_control lets a /loop prose iteration end its own loop once the
-	// model judges the loop's goal met (e.g. "…and stop when CI is green").
-	// Gated to loop turns in iterationToolFilter via the shared state below,
-	// so it's hidden from ordinary turns.
-	reg.Register(&agent.LoopControlTool{State: loopControl})
-
-	// Subagents: load definitions (built-in + ~/.yottacode/agents +
-	// .yottacode/agents) and register the Agent dispatch tool. The
-	// background-done callback is wired below after the Model exists
-	// so completions route to the long-lived inbox the Model owns.
-	validSubagentTools := reg.Names()
-	validSubagentTools[agent.ConsultAdvisorToolName] = true
-	subRes, _ := subagents.LoadAll(cwd, validSubagentTools)
-	for _, w := range subRes.Warnings {
-		fmt.Fprintln(os.Stderr, "subagents: "+w)
-	}
-	// Resolve the transcript dir but don't create it: openTranscript
-	// MkdirAlls on the first dispatch, so a session with no subagent run
-	// leaves no empty ~/.yottacode/memory/projects/<slug>/ behind.
-	transcriptDir, _ := subagents.TranscriptDirFor(cwd)
-	subagentTasks := subagents.NewRegistry()
 	// Subagent teardown is DEFERRED (not inline after prog.Run) so it runs
 	// even when prog.Run returns an error or panics: background workers run on
 	// context.Background() and must never outlive the session (their
@@ -514,6 +191,7 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 	// worktrees must be reclaimed regardless of how we exit. SIGKILL is still
 	// uncatchable — nothing can defer through it — but error-returns and
 	// panics, which previously skipped this entirely, are now covered.
+	subagentTasks := rt.SubagentTasks
 	defer func() {
 		if n := subagentTasks.CancelAll(); n > 0 {
 			drainSubagentsOnExit(subagentTasks)
@@ -522,14 +200,11 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 		agent.ReclaimEmptyDispatchWorktrees(sweepCtx, subagentTasks)
 		sweepCancel()
 	}()
-	// Rehydrate the prior session's subagent task index so task-ids the model
-	// wrote into the conversation still resolve (get_subagent_result /
-	// subagents) after a restart; tasks that were running when that session
-	// ended come back marked orphaned. Then sweep any empty dispatch worktrees
-	// a crashed session leaked — the rehydrated records carry the worktree +
-	// base the reclaim check needs (the at-exit defer above couldn't run if
-	// the previous process was SIGKILLed or power-lost).
-	subagentTasks.Import(sess.SubagentTasks)
+	// Sweep any empty dispatch worktrees a crashed session leaked — Build
+	// already imported the resumed session's task index (the records it
+	// carries have the worktree + base the reclaim check needs; the
+	// at-exit defer above couldn't run if the previous process was
+	// SIGKILLed or power-lost).
 	{
 		startupSweepCtx, startupSweepCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		agent.ReclaimEmptyDispatchWorktrees(startupSweepCtx, subagentTasks)
@@ -544,163 +219,15 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 		}
 		startupSweepCancel()
 	}
-	// experimental.Set (expSet) was resolved earlier, before prompt
-	// composition, so the dispatch steering could be baked into the
-	// system prompt. Reuse it here for tool gating.
 
-	agentTool := &agent.AgentTool{
-		Configs:        subRes.Configs,
-		Tasks:          subagentTasks,
-		Adapter:        ad,
-		ParentRegistry: reg,
-		// Cache-safe routing wiring; zero values (nil/false) when routing is
-		// disabled, so the AgentTool inherits the parent adapter for every child
-		// exactly as before. Legacy Fast/Smart aliases stay populated during the
-		// role-routing migration.
-		ImplementerAdapter: routerImplementer(routerAdapters),
-		ImplementerModel:   routerImplementerModel(routerAdapters),
-		AdvisorAdapter:     routerAdvisor(routerAdapters),
-		AdvisorModel:       routerAdvisorModel(routerAdapters),
-		FastAdapter:        routerImplementer(routerAdapters),
-		FastModel:          routerImplementerModel(routerAdapters),
-		SmartAdapter:       routerAdvisor(routerAdapters),
-		SmartModel:         routerAdvisorModel(routerAdapters),
-		RouteAuto:          fileCfg.Router.RoutingAuto(),
-		ModelResolver:      routerModelResolver(routerAdapters, fileCfg.Router.RoutingEnabled()),
-		// Source the child loop's compaction window the same way the
-		// status bar does, so subagents size context against the real
-		// (override- and default_window-aware) window.
-		ResolveWindow: func(model string) int {
-			return catalog.ResolveWindowForProvider(fileCfg.ProviderKindForModel(model), model, fileCfg.ContextWindowOverride(model), fileCfg.Context.DefaultWindow)
-		},
-		Permissions:   perms,
-		YoloMode:      yoloMode,
-		PlanMode:      planMode,
-		AutoMode:      autoMode,
-		Cwd:           cwdRef,
-		TranscriptDir: transcriptDir,
-		// Session-wide subagent token backstop (config-driven, generous
-		// default). Bounds cumulative fan-out spend the per-wave caps can't.
-		MaxSessionTokens: fileCfg.SubagentSessionTokenBudget(),
-		// Background subagents are GA in the interactive TUI. Oneshot still
-		// leaves AllowBackground=false because there is no long-lived UI or
-		// /subagents picker to host detached work.
-		AllowBackground: true,
-	}
-	reg.Register(agentTool)
-	// Pair with the Agent tool: lets the parent fetch a previously-
-	// dispatched (typically background) subagent's final result by
-	// task id. Without this tool, background runs are fire-and-forget
-	// — their results live in the transcript on disk and the in-memory
-	// registry, but the parent's model has no way to pull a result
-	// back into the conversation. With it, "what did the background
-	// subagent find?" becomes one tool call.
-	reg.Register(&agent.GetSubagentResultTool{Tasks: subagentTasks})
+	// MCP client setup: the manager exists (Build constructed it) but
+	// hasn't started — Start runs from the Bubble Tea Init cmd so the
+	// TUI renders immediately. Servers initialize in the background;
+	// tools are registered when the mcpStartupDoneMsg lands in Update
+	// (cmd_mcp.go). Failed servers are non-fatal.
+	mcpManager := rt.MCPManager
 
-	// Dispatch + integrate: experimental fan-out/merge tools for opt-in users.
-	dispatchEnabled := expSet.IsEnabled(experimental.Dispatch)
-	reg.Register(&agent.DispatchTool{
-		Agent:                   agentTool,
-		SupportsImages:          ad.Profile().SupportsImages,
-		EnableLSP:               true,
-		LSPServers:              fileCfg.LSP.Servers,
-		LSPDisabled:             fileCfg.LSP.Disabled,
-		EnableSyntaxRanges:      true,
-		EnableDocumentIngestion: expSet.IsEnabled(experimental.DocumentIngestion),
-		// The TUI is a long-running session that can host detached
-		// background workers and surface their completion via the
-		// subagent inbox, so background dispatch is available here.
-		SupportsBackground: true,
-		Enabled:            dispatchEnabled,
-	})
-	reg.Register(&agent.IntegrateTool{Cwd: cwdRef, Enabled: dispatchEnabled})
-
-	// MCP client setup: construct the manager now but defer Start to
-	// the Bubble Tea Init cmd so the TUI renders immediately. Servers
-	// initialize in the background; tools are registered when the
-	// mcpStartupDoneMsg lands in Update. Failed servers are non-fatal.
-	mcpManager := mcp.NewManager(fileCfg.MCPServers)
-
-	// Agent Skills tool. Skills are loaded up-front (alongside the
-	// system-prompt composition) so the same resolved set drives both
-	// the description-matched metadata tier in the prompt and the
-	// model-facing Skill tool. User-typed /<skill-name> dispatches
-	// through the TUI Model's skillSlash (built from c.Skills below)
-	// and works regardless of enablement — typing the slash IS the
-	// selection.
-	//
-	// Default policy: NO skills enabled at session start. The model
-	// sees an empty skills section in the prompt until the user opens
-	// /skills and picks some. This keeps the prompt small and avoids
-	// the model reaching for a skill the user didn't ask about. Slash
-	// invocations stay available so a user who knows the name can
-	// always pull a skill in one keystroke.
-	//
-	// Persistent override: `[skills] default_on = [...]` in config
-	// seeds the enablement map with the named skills so a user who's
-	// found a stable workflow doesn't have to redo the picker dance
-	// each session. Names that don't match any loaded skill emit a
-	// warning so a typo surfaces instead of silently no-op'ing.
-	skillTool := &agent.SkillTool{All: skillsRes.Skills}
-	defaultOn := map[string]bool{}
-	loadedNames := map[string]bool{}
-	for _, sk := range skillsRes.Skills {
-		loadedNames[sk.Name] = true
-	}
-	for _, name := range fileCfg.Skills.DefaultOn {
-		if !loadedNames[name] {
-			fmt.Fprintln(os.Stderr, "skills: [skills] default_on references unknown skill "+name+" — ignoring")
-			continue
-		}
-		defaultOn[name] = true
-	}
-	skillTool.SetEnabled(defaultOn)
-	reg.Register(skillTool)
-
-	// Mid-turn compaction can safely rewrite interactive history because
-	// every rewrite first snapshots the full pre-compaction transcript to
-	// disk. It intentionally sits above the turn-boundary auto-summarizer:
-	// normal sessions still use the richer boundary summary, while a single
-	// long auto/yolo turn gets an in-loop safety net before the provider
-	// limit. The exact Window is refreshed again inside each turn after the
-	// system prompt is rebuilt with current memory/skills.
-	compactionWindow := catalog.ResolveWindowForProvider(fileCfg.ProviderKindForModel(opts.Model), opts.Model, fileCfg.ContextWindowOverride(opts.Model), fileCfg.Context.DefaultWindow)
-	compactionThreshold := fileCfg.Context.CompactionThreshold
-	var summarizerWindow int
-	if fastModel := routerFastModel(routerAdapters); fastModel != "" {
-		summarizerWindow = catalog.ResolveWindowForProvider(fileCfg.ProviderKindForModel(fastModel), fastModel, fileCfg.ContextWindowOverride(fastModel), fileCfg.Context.DefaultWindow)
-	}
-	cfg := agent.LoopConfig{
-		Adapter:     ad,
-		Registry:    reg,
-		Permissions: perms,
-		// The TUI drives yolo/bypass SOLELY through YoloMode (a shared,
-		// live-toggleable atomic set by enterYoloMode at startup for --yolo
-		// and by /yolo mid-session). It deliberately does NOT set
-		// cfg.BypassPermissions: that plain bool is the oneshot/CI-only
-		// representation, and setting it here created a second source of
-		// truth that /yolo off couldn't clear — leaving tool auto-approval
-		// on while the banner said "approvals restored". See loop.go's
-		// approval switch: the YoloMode case dominates when active, and the
-		// BypassPermissions fallback must stay off in the TUI.
-		Cwd:           cwdRef,
-		MaxIterations: opts.MaxIterations,
-		PlanMode:      planMode,
-		AutoMode:      autoMode,
-		YoloMode:      yoloMode,
-		LoopControl:   loopControl,
-		Compaction: &agent.CompactionConfig{
-			Window:           compactionWindow,
-			Threshold:        compactionThreshold,
-			TargetRatio:      contextCompactionTargetRatio(fileCfg.Context.CompactionTargetRatio),
-			Summarizer:       routerFast(routerAdapters),
-			SummarizerWindow: summarizerWindow,
-			PreCompact: func(history []adapter.Message) (string, error) {
-				return writePreSummarySnapshot(sess.ID, history)
-			},
-		},
-	}
-
+	cfg := rt.Cfg
 	// Checkpoint store powers /checkpoints + Esc Esc. Failure here is
 	// non-fatal — the feature simply stays disabled and the rest of
 	// the TUI keeps working.
@@ -717,18 +244,19 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 		}()
 	}
 
-	// Open the FTS5 index. A failure here is non-fatal — /recall just
-	// becomes unavailable and the rest of yottacode runs fine. Backfill
-	// runs in a goroutine so a large session corpus doesn't delay the UI.
-	idx, recallErr := recall.Open()
-	if recallErr == nil {
-		// Backfill the FTS index first (so message rows exist), then embed any
-		// messages lacking a current vector for auto-recall. Both run in one
-		// background goroutine so a large corpus never delays the UI; vector
-		// backfill is skipped when embeddings are unavailable or auto-recall is
-		// off, and resumes across restarts since already-embedded messages are
-		// skipped. ctx cancellation (app exit) stops it promptly.
-		ec := embedClient
+	// Build already opened the FTS5 index and registered session_recall
+	// (shared with oneshot/acp — see agentruntime/runtime.go). TUI's own
+	// addition on top: backfill the corpus in the background so a large
+	// session history doesn't delay first paint, then embed any messages
+	// lacking a current vector for auto-recall. Both skipped when the
+	// index failed to open (idx nil — /recall just stays unavailable);
+	// vector backfill is additionally skipped when embeddings are
+	// unavailable or auto-recall is off, and resumes across restarts
+	// since already-embedded messages are skipped. ctx cancellation (app
+	// exit) stops it promptly.
+	idx := rt.RecallIndex
+	if idx != nil {
+		ec := rt.EmbedClient
 		autoRecall := fileCfg.Retrieval.SessionRecall.Auto
 		go func() {
 			_ = recall.Backfill(idx)
@@ -736,7 +264,6 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 				_ = idx.BackfillVectors(ctx, ec, ec.Model)
 			}
 		}()
-		reg.Register(&agent.SessionRecallTool{Searcher: &recallAdapter{idx: idx}})
 	}
 
 	// Resolve the project once, then decide the sensitivity posture from it.
@@ -752,11 +279,11 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 
 	model := New(ctx, Config{
 		Cfg:                    cfg,
-		Session:                sess,
-		ExperimentalEnabled:    expSet.EnabledNames(),
-		Permissions:            perms,
+		Session:                rt.Session,
+		ExperimentalEnabled:    rt.ExperimentalSet.EnabledNames(),
+		Permissions:            rt.Permissions,
 		Recall:                 idx,
-		ModelName:              opts.Model,
+		ModelName:              rt.Model,
 		BaseURL:                opts.BaseURL,
 		APIKey:                 opts.APIKey,
 		Provider:               opts.ProviderKind,
@@ -781,24 +308,24 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 		ProjectRoots:           projectRoots,
 		SensitiveProject:       sensitiveProject,
 		SensitiveRoots:         sensitiveRoots,
-		Worktree:               sess.Worktree,
-		MemorySummary:          mem.Summary().String(),
-		BaseSystemPrompt:       baseSys,
-		EmbedClient:            embedClient,
-		LSPManager:             lspManager,
-		CodeMapProvider:        codeMapProvider,
+		Worktree:               rt.Session.Worktree,
+		MemorySummary:          rt.Mem.Summary().String(),
+		BaseSystemPrompt:       rt.RawSystemPrompt,
+		EmbedClient:            rt.EmbedClient,
+		LSPManager:             rt.LSPManager,
+		CodeMapProvider:        rt.CodeMapProvider,
 		FileCfg:                fileCfg,
-		RouterAdapters:         routerAdapters,
+		RouterAdapters:         rt.RouterAdapters,
 		RouterMode:             fileCfg.Router.Mode,
 		Options:                opts,
 		Subagents:              subagentTasks,
-		AgentTool:              agentTool,
+		AgentTool:              rt.AgentTool,
 		CustomCommands:         customCmds,
 		MCPManager:             mcpManager,
-		Skills:                 skillsRes.Skills,
-		SkillTool:              skillTool,
-		SummarizerAdapter:      routerFast(routerAdapters),
-		SummarizerModel:        routerFastModel(routerAdapters),
+		Skills:                 rt.Skills,
+		SkillTool:              rt.SkillTool,
+		SummarizerAdapter:      routerFast(rt.RouterAdapters),
+		SummarizerModel:        routerFastModel(rt.RouterAdapters),
 	})
 	model.githubClient = ghClient
 	// Skills onboarding (skills installed but none enabled) is surfaced
@@ -807,16 +334,20 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 	// separate tea.Println here used to race with the welcome box's
 	// per-row Println sequence, landing the notice above, below, or
 	// even inside the box depending on Init batch timing.
+	// Surface Build's non-fatal construction issues (router degrade,
+	// embedding model unreachable, MCP server start failures — though
+	// MCP itself starts later here, see DeferMCPStart above — skills/
+	// subagents load warnings, unknown experimental flags) as startup
+	// notices rather than raw stderr, so they render inside the TUI
+	// instead of scrolling past before it even paints.
+	for _, w := range rt.Warnings {
+		model.pendingStartupNotices = append(model.pendingStartupNotices, styleAuto.Render(w))
+	}
 	// Surface custom-command load errors via the startup notice path
 	// (historyLines is appendLine's queue; tea.Println replays it
 	// once the program starts). Errors render in red, warnings in the
 	// muted auto-mode style — same conventions other startup lines
 	// already use.
-	if embedMissingLine1 != "" {
-		line1 := styleWarnIcon.Render("⚠") + " " + styleAuto.Render(embedMissingLine1)
-		line2 := "  " + styleAuto.Render(embedMissingLine2)
-		model.pendingStartupNotices = append(model.pendingStartupNotices, line1, line2)
-	}
 	for _, e := range customErrs {
 		var rendered string
 		if e.Level == usercmd.LevelWarning {
@@ -837,7 +368,7 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 	// Confirm at startup which experimental features are on — without this
 	// the gate left no in-session signal it was enabled. /experimental shows
 	// the full catalog and detail.
-	if names := expSet.EnabledNames(); len(names) > 0 {
+	if names := rt.ExperimentalSet.EnabledNames(); len(names) > 0 {
 		model.pendingStartupNotices = append(model.pendingStartupNotices,
 			styleAuto.Render("experimental enabled: "+strings.Join(names, ", ")+" — /experimental for details"))
 	}
@@ -855,7 +386,7 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 	// send so a full inbox doesn't deadlock the runner.
 	{
 		inbox := model.subagentInbox
-		agentTool.SetBackgroundDoneCallback(func(ev agent.SubagentBackgroundDone) {
+		rt.AgentTool.SetBackgroundDoneCallback(func(ev agent.SubagentBackgroundDone) {
 			select {
 			case inbox <- ev:
 			default:
@@ -934,7 +465,7 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 	// resolve on a later resume. (The deferred teardown's CancelAll runs after
 	// this save, so a task still running at exit persists as "running" and
 	// rehydrates as orphaned next launch.)
-	sess.SubagentTasks = subagentTasks.Export()
+	rt.Session.SubagentTasks = subagentTasks.Export()
 	// Only sessions that actually held a conversation get written. session.New
 	// doesn't touch the disk, so this at-exit Save is what creates the file —
 	// and saving unconditionally meant every "open yottacode, change my mind,
@@ -944,14 +475,14 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 	// Skipping the write is what keeps them out of the store; List and
 	// LatestInCwd filter the ones older builds already wrote.
 	var saveErr error
-	if sess.HasExchange() {
-		saveErr = sess.Save()
+	if rt.Session.HasExchange() {
+		saveErr = rt.Session.Save()
 	}
 	// Only advertise a resume once the transcript is actually on disk —
 	// pointing the user at an id that failed to persist is worse than
 	// staying quiet.
 	if saveErr == nil {
-		if hint := resumeHint(sess); hint != "" {
+		if hint := resumeHint(rt.Session); hint != "" {
 			fmt.Fprintln(os.Stderr, hint)
 		}
 	}
@@ -1133,11 +664,6 @@ func routerFast(ra *cli.RouterAdapters) agent.Streamer { return routerImplemente
 
 func routerFastModel(ra *cli.RouterAdapters) string { return routerImplementerModel(ra) }
 
-// routerSmart returns the legacy smart/advisor streamer for older call sites.
-func routerSmart(ra *cli.RouterAdapters) agent.Streamer { return routerAdvisor(ra) }
-
-func routerSmartModel(ra *cli.RouterAdapters) string { return routerAdvisorModel(ra) }
-
 // routerResolve adapts RouterAdapters.Resolve (func → adapter.Streamer)
 // to the agent package's func → agent.Streamer signature the AgentTool
 // expects. Returns nil when routing is disabled.
@@ -1205,31 +731,8 @@ func appendSkillsSection(base string, loaded []skills.Skill) string {
 		"a name that appears there.\n"
 }
 
-// recomposeSessionSystemPrompt rewrites the session's system message.
-// headBytes is the length of the stable cache prefix (the static base
-// prompt ahead of the memory tail) — see Message.CacheHeadBytes.
-func recomposeSessionSystemPrompt(sess *session.Session, content string, headBytes int) {
-	for i := range sess.Messages {
-		if sess.Messages[i].Role == adapter.RoleSystem {
-			sess.Messages[i].Content = content
-			sess.Messages[i].CacheHeadBytes = headBytes
-			return
-		}
-	}
-	sess.Messages = append([]adapter.Message{{
-		Role:           adapter.RoleSystem,
-		Content:        content,
-		CacheHeadBytes: headBytes,
-	}}, sess.Messages...)
-}
-
 func hasBuiltin(tools []adapter.BuiltinToolKind, want adapter.BuiltinToolKind) bool {
-	for _, tool := range tools {
-		if tool == want {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(tools, want)
 }
 
 // gitBranch reads the current git branch via `git -C <cwd> branch --show-current`.
@@ -1333,47 +836,3 @@ func sensitiveRecallRoots(roots []string) []string {
 	return out
 }
 
-func openSession(opts cli.ChatOptions, cwd string) (*session.Session, bool, error) {
-	if opts.Resume != "" {
-		s, err := session.Load(opts.Resume)
-		if err != nil {
-			return nil, false, err
-		}
-		return s, false, nil
-	}
-	s, err := session.New(opts.Model, cwd)
-	if err != nil {
-		return nil, false, err
-	}
-	// Stamp the worktree name when the session is launched inside one
-	// (via --worktree at startup). Sessions resume into the right
-	// worktree because Session.Cwd is the worktree dir; the field is
-	// kept for `sessions list` display and future tooling.
-	s.Worktree = opts.Worktree
-	return s, true, nil
-}
-
-// recallAdapter bridges *recall.Index (which returns recall.Hit) to
-// agent.RecallSearcher (which expects agent.RecallHit) so the agent
-// package stays cycle-free (agent → session → agent would cycle if
-// agent imported recall directly).
-type recallAdapter struct{ idx *recall.Index }
-
-func (a *recallAdapter) Search(query string, limit int) ([]agent.RecallHit, error) {
-	hits, err := a.idx.Search(query, limit)
-	if err != nil {
-		return nil, err
-	}
-	out := make([]agent.RecallHit, len(hits))
-	for i, h := range hits {
-		out[i] = agent.RecallHit{
-			SessionID:   h.SessionID,
-			SessionName: h.SessionName,
-			Model:       h.Model,
-			Created:     h.Created,
-			Role:        string(h.Role),
-			Snippet:     h.Snippet,
-		}
-	}
-	return out, nil
-}

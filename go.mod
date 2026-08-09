@@ -5,6 +5,7 @@ go 1.26.3
 require (
 	github.com/BurntSushi/toml v1.6.0
 	github.com/anthropics/anthropic-sdk-go v1.38.0
+	github.com/coder/acp-go-sdk v0.13.5
 	github.com/google/go-github/v66 v66.0.0
 	github.com/modelcontextprotocol/go-sdk v1.7.0
 	github.com/openai/openai-go v1.12.0

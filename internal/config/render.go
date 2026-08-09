@@ -181,32 +181,52 @@ func Render(cfg Config) string {
 
 	for _, s := range cfg.MCPServers {
 		b.WriteString("[[mcp_servers]]\n")
-		fmt.Fprintf(&b, "name    = %q\n", s.Name)
-		fmt.Fprintf(&b, "command = %q\n", s.Command)
-		if len(s.Args) > 0 {
-			b.WriteString("args    = [")
-			for i, a := range s.Args {
-				if i > 0 {
-					b.WriteString(", ")
-				}
-				fmt.Fprintf(&b, "%q", a)
-			}
-			b.WriteString("]\n")
+		fmt.Fprintf(&b, "name      = %q\n", s.Name)
+		if s.Transport != "" {
+			fmt.Fprintf(&b, "transport = %q\n", s.Transport)
 		}
-		if len(s.Env) > 0 {
-			b.WriteString("env     = { ")
-			first := true
-			for k, v := range s.Env {
-				if !first {
-					b.WriteString(", ")
+		switch s.Transport {
+		case "", "stdio":
+			fmt.Fprintf(&b, "command   = %q\n", s.Command)
+			if len(s.Args) > 0 {
+				b.WriteString("args      = [")
+				for i, a := range s.Args {
+					if i > 0 {
+						b.WriteString(", ")
+					}
+					fmt.Fprintf(&b, "%q", a)
 				}
-				fmt.Fprintf(&b, "%s = %q", k, v)
-				first = false
+				b.WriteString("]\n")
 			}
-			b.WriteString(" }\n")
+			if len(s.Env) > 0 {
+				b.WriteString("env       = { ")
+				first := true
+				for k, v := range s.Env {
+					if !first {
+						b.WriteString(", ")
+					}
+					fmt.Fprintf(&b, "%s = %q", k, v)
+					first = false
+				}
+				b.WriteString(" }\n")
+			}
+		default: // http, sse
+			fmt.Fprintf(&b, "url       = %q\n", s.URL)
+			if len(s.Headers) > 0 {
+				b.WriteString("headers   = { ")
+				first := true
+				for k, v := range s.Headers {
+					if !first {
+						b.WriteString(", ")
+					}
+					fmt.Fprintf(&b, "%s = %q", k, v)
+					first = false
+				}
+				b.WriteString(" }\n")
+			}
 		}
 		if s.Disabled {
-			b.WriteString("disabled = true\n")
+			b.WriteString("disabled  = true\n")
 		}
 		b.WriteString("\n")
 	}

@@ -20,6 +20,7 @@ import (
 	"github.com/yottadynamics/yottacode/internal/catalog"
 	"github.com/yottadynamics/yottacode/internal/config"
 	"github.com/yottadynamics/yottacode/internal/dotenv"
+	"github.com/yottadynamics/yottacode/internal/promptmacros"
 	"github.com/yottadynamics/yottacode/internal/providerops"
 	"github.com/yottadynamics/yottacode/internal/session"
 	"github.com/yottadynamics/yottacode/internal/wizard"
@@ -82,7 +83,7 @@ func init() {
 		{Name: "summarize", Help: "compress session history into a structured summary", Run: cmdSummarize},
 		{Name: "skills", Help: "skills menu; install/show/update/uninstall/check", Run: cmdSkills, PreservesTurn: true},
 		{Name: "subagents", Help: "open the subagents picker (Enter views · t toggles types · s stops · Esc closes)", Run: cmdSubagents, PreservesTurn: true},
-		{Name: "init", Help: "draft .yottacode/YOTTACODE.md from the current repo", Run: cmdInit},
+		{Name: "init", Help: promptmacros.MustGet("init").Description, Run: cmdInit},
 		{Name: "permissions", Help: "show where permissions are configured", Run: cmdPermissions, PreservesTurn: true},
 		{Name: "theme", Help: "change the theme", Run: cmdThemes, PreservesTurn: true},
 		{Name: "loop", Args: "<dur> [Nx] <prompt>", Help: "repeat on interval; stop <id> or stop all", Run: cmdLoop, PreservesTurn: true},
@@ -90,14 +91,18 @@ func init() {
 		// Git workflow.
 		// Palette order mirrors the daily flow: commit → push →
 		// create PR → update PR, then the review/implement pair.
-		{Name: "git-commit", Help: "compose and run a one-line git commit", Run: cmdGitCommit},
-		{Name: "git-push", Help: "push the current branch to origin (sets upstream on first push; surfaces the PR URL when one exists)", Run: cmdGitPush},
-		{Name: "git-create-pr", Args: "[base]", Help: "open a pull request for the current branch", Run: cmdGitCreatePR},
-		{Name: "git-update-pr", Args: "[ref]", Help: "refresh a PR's title and body to match the current commit list", Run: cmdGitUpdatePR},
-		{Name: "git-create-issue", Args: "[title]", Help: "create a GitHub issue in the current repo", Run: cmdGitCreateIssue},
-		{Name: "git-review-pr", Args: "[ref]", Help: "review a pull request (number or branch; defaults to current branch's PR)", Run: cmdGitReviewPR},
-		{Name: "code-review", Help: "multi-agent review of the current diff — effort low · medium · high (background subagents GA)", Run: cmdCodeReview},
-		{Name: "git-implement-issue", Args: "<n>", Help: "implement a GitHub issue end-to-end: fetch → plan → branch → code → tests → commit → push → draft PR", Run: cmdGitImplementIssue},
+		// Help/Args come from internal/promptmacros — the same package
+		// internal/acp uses for available_commands_update — so the
+		// palette blurb and the ACP-advertised description can't drift
+		// apart into two hand-maintained copies.
+		{Name: "git-commit", Args: promptmacros.MustGet("git-commit").ArgHint, Help: promptmacros.MustGet("git-commit").Description, Run: cmdGitCommit},
+		{Name: "git-push", Args: promptmacros.MustGet("git-push").ArgHint, Help: promptmacros.MustGet("git-push").Description, Run: cmdGitPush},
+		{Name: "git-create-pr", Args: promptmacros.MustGet("git-create-pr").ArgHint, Help: promptmacros.MustGet("git-create-pr").Description, Run: cmdGitCreatePR},
+		{Name: "git-update-pr", Args: promptmacros.MustGet("git-update-pr").ArgHint, Help: promptmacros.MustGet("git-update-pr").Description, Run: cmdGitUpdatePR},
+		{Name: "git-create-issue", Args: promptmacros.MustGet("git-create-issue").ArgHint, Help: promptmacros.MustGet("git-create-issue").Description, Run: cmdGitCreateIssue},
+		{Name: "git-review-pr", Args: promptmacros.MustGet("git-review-pr").ArgHint, Help: promptmacros.MustGet("git-review-pr").Description, Run: cmdGitReviewPR},
+		{Name: "code-review", Args: promptmacros.MustGet("code-review").ArgHint, Help: promptmacros.MustGet("code-review").Description, Run: cmdCodeReview},
+		{Name: "git-implement-issue", Args: promptmacros.MustGet("git-implement-issue").ArgHint, Help: promptmacros.MustGet("git-implement-issue").Description, Run: cmdGitImplementIssue},
 		// /mcp inspects the live MCP server manager: list configured
 		// servers, their start status + tool counts, and dump stderr
 		// from a misbehaving one. PreservesTurn=true: read-only on

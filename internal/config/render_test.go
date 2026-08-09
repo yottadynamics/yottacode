@@ -61,3 +61,62 @@ func TestRender_RouterRoutingWithoutMultiProvider(t *testing.T) {
 		t.Errorf("routing not enabled after round trip; mode=%q", got.Router.Mode)
 	}
 }
+
+// TestRender_RoundTripsMCPServers guards that every MCPServer transport
+// shape survives a Render→decode round trip. Render previously always
+// emitted command (even empty, for http/sse servers) and never emitted
+// transport, url, or headers at all — added when ACP's HTTP/SSE MCP
+// support landed, but Render was never updated to match, so an
+// http/sse [[mcp_servers]] entry silently reverted to a broken
+// zero-command stdio entry on the next config save.
+func TestRender_RoundTripsMCPServers(t *testing.T) {
+	cfg := Default()
+	cfg.MCPServers = []MCPServer{
+		{
+			Name:    "filesystem",
+			Command: "npx",
+			Args:    []string{"-y", "@modelcontextprotocol/server-filesystem", "/workspace"},
+			Env:     map[string]string{"FOO": "bar"},
+		},
+		{
+			Name:      "remote-http",
+			Transport: "http",
+			URL:       "https://mcp.example.com/http",
+			Headers:   map[string]string{"Authorization": "Bearer tok"},
+		},
+		{
+			Name:      "remote-sse",
+			Transport: "sse",
+			URL:       "https://mcp.example.com/sse",
+			Headers:   map[string]string{"X-Api-Key": "secret"},
+			Disabled:  true,
+		},
+	}
+
+	out := Render(cfg)
+	var got Config
+	if _, err := toml.Decode(out, &got); err != nil {
+		t.Fatalf("decode rendered config: %v\n---\n%s", err, out)
+	}
+	if len(got.MCPServers) != 3 {
+		t.Fatalf("MCPServers = %d entries, want 3\nrendered:\n%s", len(got.MCPServers), out)
+	}
+
+	stdio := got.MCPServers[0]
+	if stdio.Command != "npx" || len(stdio.Args) != 3 || stdio.Env["FOO"] != "bar" {
+		t.Errorf("stdio entry mangled: %+v\nrendered:\n%s", stdio, out)
+	}
+
+	http := got.MCPServers[1]
+	if http.Transport != "http" || http.URL != "https://mcp.example.com/http" || http.Headers["Authorization"] != "Bearer tok" {
+		t.Errorf("http entry mangled (transport/url/headers dropped by Render): %+v\nrendered:\n%s", http, out)
+	}
+	if http.Command != "" {
+		t.Errorf("http entry should not emit a command, got %q\nrendered:\n%s", http.Command, out)
+	}
+
+	sse := got.MCPServers[2]
+	if sse.Transport != "sse" || sse.URL != "https://mcp.example.com/sse" || sse.Headers["X-Api-Key"] != "secret" || !sse.Disabled {
+		t.Errorf("sse entry mangled: %+v\nrendered:\n%s", sse, out)
+	}
+}
