@@ -1662,10 +1662,14 @@ Run a shell command via `/bin/sh -c` in the session's cwd.
 Always prompts for approval. Output is `exit=<code>\n--- stdout ---\n…\n--- stderr ---\n…`,
 each stream capped at 256 KiB; truncation is announced in the result.
 
-There is no in-process sandbox, and there will not be one — yottacode
-keeps its core small and does not ship bwrap/firejail/landlock
-backends. For real isolation, run yottacode inside a container or
-devcontainer.
+There is no *in-process* sandbox, and there will not be one — yottacode
+keeps its core small and does not ship bwrap/firejail/landlock backends.
+By default the command runs directly on the host. Two ways to add real
+isolation: run yottacode itself inside a container or devcontainer
+(covers every tool, all-or-nothing), or enable the experimental command
+sandbox (`[sandbox] backend = "podman"`, behind `--experimental sandbox`)
+to route just `run_bash` through a session-scoped rootless Podman
+container instead — see [sandbox.md](sandbox.md).
 
 ## git
 

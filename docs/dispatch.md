@@ -242,6 +242,18 @@ it to move on to `integrate`.
   than leaking them, then sweeps the session's dispatch worktrees one last
   time so workers the bounded drain gave up on don't leak empty worktrees
   either. The sweep keeps committed and dirty worktrees, same as above.
+- When the parent session has the experimental [command sandbox](sandbox.md)
+  enabled (`[sandbox] backend = "podman"`), every write worker gets its
+  **own** container mounted at its own worktree — inherited automatically,
+  no separate dispatch-level opt-in. Container resource cost scales with
+  the number of concurrent write workers, but each one is capped by the
+  same `memory`/`cpus`/`pids_limit` as the parent session's container, so
+  it's bounded per worker rather than unbounded. Read-only workers don't
+  get their own container — they share the parent's toolset (and its
+  sandbox, if any) directly, which means their `run_bash` calls compete
+  for that ONE container's resource caps alongside the parent session's
+  own — size `[sandbox]`'s limits accordingly if you dispatch read-only
+  batches that run real shell commands (tests, linters) regularly.
 
 ## Known limitations
 

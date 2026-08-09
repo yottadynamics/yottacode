@@ -1200,7 +1200,18 @@ func toolHeader(toolName, argsJSON, preview string, maxWidth int, cwd string) st
 		if json.Unmarshal([]byte(argsJSON), &a) != nil {
 			return preview
 		}
-		return clipHeader("Bash("+shortenCwdInText(oneLine(a.Command), cwd)+")", headerBudget)
+		// PreviewCall prefixes a "[podman] " (or other non-host) sandbox
+		// label onto preview (see RunBashTool.PreviewCall) — carry it
+		// through even though the rest of the header is recomputed from
+		// argsJSON, or a sandboxed run_bash would render identically to
+		// an unsandboxed one.
+		tag := ""
+		if strings.HasPrefix(preview, "[") {
+			if end := strings.Index(preview, "] "); end > 0 {
+				tag = preview[:end+2]
+			}
+		}
+		return clipHeader(tag+"Bash("+shortenCwdInText(oneLine(a.Command), cwd)+")", headerBudget)
 	case "read_file":
 		var a struct {
 			Path    string `json:"path"`

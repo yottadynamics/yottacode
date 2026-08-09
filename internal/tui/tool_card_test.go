@@ -600,6 +600,44 @@ func TestToolHeader_RewritesPerToolPreviews(t *testing.T) {
 	}
 }
 
+// run_bash's header is recomputed from argsJSON (see
+// TestToolHeader_RewritesPerToolPreviews), which would otherwise silently
+// swallow the "[podman]" sandbox tag RunBashTool.PreviewCall puts on
+// preview — a sandboxed run_bash card would then render identically to an
+// unsandboxed one. The tag must carry through.
+func TestToolHeader_RunBashCarriesSandboxTag(t *testing.T) {
+	got := toolHeader("run_bash", `{"command":"ls -la"}`, "[podman] run_bash: ls -la", 120, "")
+	if got != "[podman] Bash(ls -la)" {
+		t.Errorf("got %q, want sandbox tag preserved", got)
+	}
+}
+
+func TestToolHeader_RunBashOmitsTagWhenPreviewUntagged(t *testing.T) {
+	got := toolHeader("run_bash", `{"command":"ls -la"}`, "run_bash: ls -la", 120, "")
+	if got != "Bash(ls -la)" {
+		t.Errorf("got %q, want no tag prefix for an unsandboxed preview", got)
+	}
+}
+
+// TestToolHeader_MalformedSandboxTagDegradesGracefully pins the fail-safe
+// behavior documented on agent.Sandbox.Label(): a hypothetical future
+// Sandbox implementation whose label doesn't follow the "[name]" bracket
+// contract (see internal/agent/sandbox.go) must not crash or corrupt the
+// header — the tag is just silently absent, same as an untagged preview.
+func TestToolHeader_MalformedSandboxTagDegradesGracefully(t *testing.T) {
+	cases := []string{
+		"podman] run_bash: ls -la",  // missing leading [
+		"[podman run_bash: ls -la",  // missing "] " close
+		"[podman run_bash: ls -la]", // ] present but not after a name
+	}
+	for _, preview := range cases {
+		got := toolHeader("run_bash", `{"command":"ls -la"}`, preview, 120, "")
+		if got != "Bash(ls -la)" {
+			t.Errorf("preview %q: got %q, want the plain untagged header (malformed tags must degrade safely)", preview, got)
+		}
+	}
+}
+
 func TestToolHeader_MalformedWriteFileArgsFallsBackToPreview(t *testing.T) {
 	got := toolHeader("write_file", `{"path":`, "write_file(, 0 bytes)", 120, "")
 	if got != "write_file(, 0 bytes)" {

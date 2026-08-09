@@ -26,6 +26,7 @@ import (
 	"github.com/yottadynamics/yottacode/internal/memory"
 	"github.com/yottadynamics/yottacode/internal/permissions"
 	"github.com/yottadynamics/yottacode/internal/recall"
+	"github.com/yottadynamics/yottacode/internal/sandbox"
 	"github.com/yottadynamics/yottacode/internal/sensitive"
 	"github.com/yottadynamics/yottacode/internal/session"
 	"github.com/yottadynamics/yottacode/internal/skills"
@@ -329,6 +330,26 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 		codeMapProvider = &codemap.CachedProvider{Options: codemap.BuildOptions{Root: cwd, Source: codemap.LSPSource{Manager: lspManager, Servers: fileCfg.LSP.Servers, Root: cwd}}}
 	}
 
+	// Podman command sandbox (roadmap/sandbox-podman.md): opt-in via the
+	// "sandbox" experimental feature + [sandbox].backend = "podman". A
+	// construction failure is fatal to session startup — never falls back
+	// to HostSandbox silently, which would defeat the isolation the user
+	// asked for. sandboxFactory gives dispatch write-workers their own
+	// container inheriting the same posture (wired in DispatchTool below).
+	var cmdSandbox agent.Sandbox
+	var sandboxFactory agent.SandboxFactory
+	if expSet.IsEnabled(experimental.Sandbox) && fileCfg.Sandbox.Backend == "podman" {
+		ps, err := sandbox.NewPodmanSandbox(ctx, fileCfg.Sandbox, sess.ID, cwd)
+		if err != nil {
+			return fmt.Errorf("sandbox: %w", err)
+		}
+		cmdSandbox = ps
+		defer func() { _ = cmdSandbox.Close() }()
+		sandboxFactory = func(ctx context.Context, wtDir, taskID string) (agent.Sandbox, error) {
+			return sandbox.NewPodmanSandbox(ctx, fileCfg.Sandbox, sess.ID+"-"+taskID, wtDir)
+		}
+	}
+
 	reg := agent.NewRegistry()
 	// Core cwd-bound tools (file read/write/edit, search, git-read/stage/
 	// commit, checkpoints, run_bash/run_tests). Extracted into a shared
@@ -348,6 +369,7 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 		CodeMapProvider:         codeMapProvider,
 		EnableSyntaxRanges:      true,
 		EnableDocumentIngestion: expSet.IsEnabled(experimental.DocumentIngestion),
+		Sandbox:                 cmdSandbox,
 	})
 	// Git worktree tools. Layer 1 (enter/exit/status) are the agent-
 	// friendly entry points; Layer 2 (the git_worktree_* wrappers) sit
@@ -355,7 +377,7 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 	// exit_worktree are in the auto-mode safety floor — they always
 	// prompt, even when auto mode is on, because they shift the agent's
 	// working context (and exit's force-remove is destructive).
-	reg.Register(&agent.EnterWorktreeTool{Cwd: cwdRef})
+	reg.Register(&agent.EnterWorktreeTool{Cwd: cwdRef, Sandbox: cmdSandbox})
 	reg.Register(&agent.ExitWorktreeTool{Cwd: cwdRef})
 	reg.Register(&agent.WorktreeStatusTool{Cwd: cwdRef})
 	reg.Register(&agent.GitWorktreeListTool{Cwd: cwdRef})
@@ -612,6 +634,7 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 		// subagent inbox, so background dispatch is available here.
 		SupportsBackground: true,
 		Enabled:            dispatchEnabled,
+		SandboxFactory:     sandboxFactory,
 	})
 	reg.Register(&agent.IntegrateTool{Cwd: cwdRef, Enabled: dispatchEnabled})
 
