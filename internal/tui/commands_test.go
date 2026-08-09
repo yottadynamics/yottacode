@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 
 	"github.com/yottadynamics/yottacode/internal/adapter"
 	"github.com/yottadynamics/yottacode/internal/permissions"
@@ -43,9 +43,9 @@ func permissionsLoadHelper(t *testing.T, cwd string, allow, ask, deny []string) 
 func typeAndEnter(t *testing.T, m Model, input string) (Model, tea.Cmd) {
 	t.Helper()
 	for _, r := range input {
-		m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m, _ = applyMsg(m, tea.KeyPressMsg{Text: string(r)})
 	}
-	return applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	return applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 }
 
 // allSlash must not register the same name twice — /help and the slash
@@ -123,11 +123,15 @@ func TestSlash_PermissionsOpensPickerWithBothRows(t *testing.T) {
 	if m.permissionsCursor != 0 {
 		t.Errorf("fresh picker should start with cursor on the shared row, got %d", m.permissionsCursor)
 	}
+	// The layout-order assertion below locates the status bar via its
+	// connection dot glyph, which is state-dependent (connUnknown's default
+	// glyph is "·", not "●") — pin a known state so the marker is stable.
+	m.connection = connOK
 	// Picker chrome lives in View() — the cmd no longer dumps to
 	// scrollback, so assert against the rendered view. Match the
 	// /model + /provider visual language: title, both row labels,
 	// path strings, picker-style hotkey footer.
-	v := m.View()
+	v := m.View().Content
 	for _, want := range []string{
 		"Permissions",
 		"shared",
@@ -188,26 +192,26 @@ func TestSlash_PermissionsPickerNavigatesAndEscDismisses(t *testing.T) {
 		t.Fatalf("/permissions should open the inline picker")
 	}
 	// Down moves to the local row.
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyDown})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyDown})
 	if m.permissionsCursor != 1 {
 		t.Errorf("Down should move cursor to row 1 (local); got %d", m.permissionsCursor)
 	}
 	// Down at the bottom row clamps — no third row.
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyDown})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyDown})
 	if m.permissionsCursor != 1 {
 		t.Errorf("Down at bottom should clamp at 1; got %d", m.permissionsCursor)
 	}
 	// Up returns to the shared row.
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyUp})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyUp})
 	if m.permissionsCursor != 0 {
 		t.Errorf("Up should move cursor back to row 0 (shared); got %d", m.permissionsCursor)
 	}
 	// Random keystrokes don't dismiss anymore — only Esc does.
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Text: "x"})
 	if !m.permissionsOpen {
 		t.Errorf("non-picker keys should not dismiss the permissions picker")
 	}
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEsc})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEsc})
 	if m.permissionsOpen {
 		t.Errorf("Esc should dismiss the permissions picker")
 	}
@@ -405,7 +409,7 @@ default_model = "gpt-4o"
 	if m.providerPicker.mode != providerUsePickerMode {
 		t.Errorf("expected use-picker mode; got %v", m.providerPicker.mode)
 	}
-	got := stripANSI(m.View())
+	got := stripANSI(m.View().Content)
 	for _, want := range []string{"anthropic", "openai", "Switch provider"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("/provider list view missing %q; got:\n%s", want, got)
@@ -870,7 +874,7 @@ func TestSessionsPicker_LoadFlow(t *testing.T) {
 	// list. The current session sorts ahead of the seed because List
 	// sorts by ID descending — find the seed row by walking the cursor
 	// down until we land on it.
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	if m.sessionsPicker == nil || m.sessionsPicker.mode != sessionsLoadListMode {
 		t.Fatalf("Enter on Load row should drop into load list; got mode=%v",
 			m.sessionsPicker)
@@ -881,7 +885,7 @@ func TestSessionsPicker_LoadFlow(t *testing.T) {
 			break
 		}
 	}
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	if m.sess.ID != other.ID {
 		t.Errorf("picker load should swap session; got %q want %q", m.sess.ID, other.ID)
 	}
@@ -911,16 +915,16 @@ func TestSessionsPicker_ResumeByRefFlow(t *testing.T) {
 
 	m, _ = typeAndEnter(t, m, "/sessions")
 	// Menu cursor starts on Load (row 0); Down once to land on Resume.
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyDown})
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyDown})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	if m.sessionsPicker == nil || m.sessionsPicker.mode != sessionsResumeInputMode {
 		t.Fatalf("Enter on Resume row should drop into resume input; got mode=%v",
 			m.sessionsPicker)
 	}
 	for _, r := range "labelled" {
-		m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m, _ = applyMsg(m, tea.KeyPressMsg{Text: string(r)})
 	}
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	if m.sess.ID != other.ID {
 		t.Errorf("resume-by-ref should swap session; got %q want %q", m.sess.ID, other.ID)
 	}
@@ -935,12 +939,12 @@ func TestSessionsPicker_ResumeByRefFlow(t *testing.T) {
 func TestSessionsPicker_ResumeByRefRequiresInput(t *testing.T) {
 	m := newTestModel(t)
 	m, _ = typeAndEnter(t, m, "/sessions")
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyDown}) // Resume row
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyDown}) // Resume row
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	if m.sessionsPicker == nil || m.sessionsPicker.mode != sessionsResumeInputMode {
 		t.Fatalf("expected resume input mode")
 	}
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	if m.sessionsPicker == nil {
 		t.Fatalf("empty submit should keep the form open")
 	}
@@ -956,18 +960,18 @@ func TestSessionsPicker_ResumeByRefRequiresInput(t *testing.T) {
 func TestSessionsPicker_ResumeByRefCtrlSToggles(t *testing.T) {
 	m := newTestModel(t)
 	m, _ = typeAndEnter(t, m, "/sessions")
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyDown}) // Resume row
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyDown}) // Resume row
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	if m.sessionsPicker.summarized {
 		t.Fatalf("resume input should default summarized=false")
 	}
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyCtrlS})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
 	if !m.sessionsPicker.summarized {
 		t.Errorf("ctrl+s should toggle summarized on")
 	}
 	// A bare 's' in the input should NOT toggle the state — it should
 	// land in the textinput as a typed character.
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Text: "s"})
 	if !m.sessionsPicker.summarized {
 		t.Errorf("bare 's' should not flip the toggle (left it %v)", m.sessionsPicker.summarized)
 	}
@@ -995,22 +999,22 @@ func TestSessionsPicker_RenameFlow(t *testing.T) {
 	}
 	m, _ = typeAndEnter(t, m, "/sessions")
 	// Move cursor to Rename (row 2: Load=0, Resume=1, Rename=2, Export=3).
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyDown})
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyDown})
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyDown})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyDown})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	if m.sessionsPicker == nil || m.sessionsPicker.mode != sessionsRenameListMode {
 		t.Fatalf("expected rename list mode")
 	}
 	// Cursor defaulted to the active session — Enter to drop into the
 	// textinput.
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	if m.sessionsPicker.mode != sessionsRenameInputMode {
 		t.Fatalf("expected rename input mode")
 	}
 	for _, r := range "my-feature" {
-		m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m, _ = applyMsg(m, tea.KeyPressMsg{Text: string(r)})
 	}
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	if m.sess.Name != "my-feature" {
 		t.Errorf("rename commit should set Name on live session; got %q", m.sess.Name)
 	}
@@ -1041,10 +1045,10 @@ func TestSessionsPicker_ExportFlow(t *testing.T) {
 	m, _ = typeAndEnter(t, m, "/sessions")
 	// Menu: down three times to land on Export (Load=0, Resume=1,
 	// Rename=2, Export=3), Enter to drop in.
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyDown})
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyDown})
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyDown})
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyDown})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyDown})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyDown})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	if m.sessionsPicker == nil || m.sessionsPicker.mode != sessionsExportListMode {
 		t.Fatalf("expected export list mode")
 	}
@@ -1055,14 +1059,14 @@ func TestSessionsPicker_ExportFlow(t *testing.T) {
 			break
 		}
 	}
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	if m.sessionsPicker.mode != sessionsExportInputMode {
 		t.Fatalf("expected export input mode")
 	}
 	// Replace the suggested default with our own path so we can read
 	// the file off a known location.
 	m.sessionsPicker.input.SetValue(filepath.Join(tmp, "out.md"))
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	contents, err := os.ReadFile(filepath.Join(tmp, "out.md"))
 	if err != nil {
 		t.Fatalf("export file not written: %v", err)
@@ -1089,15 +1093,15 @@ func TestSessionsPicker_LoadSummarizedToggle(t *testing.T) {
 		t.Fatalf("seed save: %v", err)
 	}
 	m, _ = typeAndEnter(t, m, "/sessions")
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter}) // into Load list
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // into Load list
 	if m.sessionsPicker.summarized {
 		t.Fatalf("load list should default summarized=false")
 	}
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Text: "s"})
 	if !m.sessionsPicker.summarized {
 		t.Errorf("`s` should toggle summarized on")
 	}
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Text: "s"})
 	if m.sessionsPicker.summarized {
 		t.Errorf("`s` should toggle summarized off again")
 	}
@@ -1144,7 +1148,7 @@ func TestSlash_RecallReturnsHits(t *testing.T) {
 		t.Fatalf("/recall hits should open the picker; open=%v picker=%v",
 			m.recallPickerOpen, m.recallPicker != nil)
 	}
-	view := stripANSI(m.View())
+	view := stripANSI(m.View().Content)
 	for _, want := range []string{"Recall", "1 session(s), 2 hit(s)", "seed-1", "2 hits", "↵ preview"} {
 		if !strings.Contains(view, want) {
 			t.Errorf("recall picker view missing %q:\n%s", want, view)
@@ -1189,17 +1193,17 @@ func TestSlash_RecallPickerEnterPreviewsThenResumesSelectedSession(t *testing.T)
 		t.Fatalf("/recall should open picker with grouped hits")
 	}
 	selectedID := m.recallPicker.groups[m.recallPicker.cursor].SessionID
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	if !m.recallPickerOpen || m.recallPicker == nil || !m.recallPicker.preview {
 		t.Fatalf("first Enter should preview without closing picker")
 	}
 	if m.sess.ID == selectedID {
 		t.Fatalf("first Enter should not resume the session yet")
 	}
-	if view := stripANSI(m.View()); !strings.Contains(view, "Recall preview") || !strings.Contains(view, "previous context before auth") || !strings.Contains(view, "authentication picker resume target") || !strings.Contains(view, "next context after auth") {
+	if view := stripANSI(m.View().Content); !strings.Contains(view, "Recall preview") || !strings.Contains(view, "previous context before auth") || !strings.Contains(view, "authentication picker resume target") || !strings.Contains(view, "next context after auth") {
 		t.Fatalf("preview should show selected session snippets; got:\n%s", view)
 	}
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	if m.recallPickerOpen {
 		t.Errorf("second Enter should close recall picker")
 	}
@@ -1224,27 +1228,27 @@ func TestSlash_RecallPreviewScrollsAndTogglesSummarized(t *testing.T) {
 	m.recall = idx
 
 	m, _ = typeAndEnter(t, m, "/recall authentication")
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	if !m.recallPicker.preview {
 		t.Fatalf("Enter should open recall preview")
 	}
-	view := stripANSI(m.View())
+	view := stripANSI(m.View().Content)
 	if !strings.Contains(view, "showing hits 1-5") || strings.Contains(view, "target 6") {
 		t.Fatalf("preview should start on the first bounded page; got:\n%s", view)
 	}
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyPgDown})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyPgDown})
 	if m.recallPicker.previewOffset != recallPreviewPageSize {
 		t.Fatalf("PgDown previewOffset = %d, want %d", m.recallPicker.previewOffset, recallPreviewPageSize)
 	}
-	view = stripANSI(m.View())
+	view = stripANSI(m.View().Content)
 	if !strings.Contains(view, "showing hits 6-7") || !strings.Contains(view, "target 6") {
 		t.Fatalf("PgDown should show the next preview page; got:\n%s", view)
 	}
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Text: "s"})
 	if !m.recallPicker.summarized {
 		t.Fatalf("s should toggle summarized resume on")
 	}
-	if view := stripANSI(m.View()); !strings.Contains(view, "summarized (on)") {
+	if view := stripANSI(m.View().Content); !strings.Contains(view, "summarized (on)") {
 		t.Fatalf("preview footer should show summarized state; got:\n%s", view)
 	}
 }
@@ -1315,7 +1319,7 @@ func TestSlash_RedoDropsEverythingAfterUserMessage(t *testing.T) {
 
 func TestPalette_OpensWhenInputStartsWithSlash(t *testing.T) {
 	m := newTestModel(t)
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Text: "/"})
 	if !m.paletteOpen {
 		t.Errorf("palette should open after typing '/'")
 	}
@@ -1324,12 +1328,12 @@ func TestPalette_OpensWhenInputStartsWithSlash(t *testing.T) {
 func TestPalette_TabCompletes(t *testing.T) {
 	m := newTestModel(t)
 	for _, r := range "/mo" {
-		m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m, _ = applyMsg(m, tea.KeyPressMsg{Text: string(r)})
 	}
 	if !m.paletteOpen {
 		t.Fatalf("palette should be open after /mo")
 	}
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyTab})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyTab})
 	if got := m.textInput.Value(); !strings.HasPrefix(got, "/model") {
 		t.Errorf("Tab should complete to /model; got %q", got)
 	}
@@ -1340,9 +1344,9 @@ func TestPalette_TabCompletes(t *testing.T) {
 
 func TestPalette_DownArrowMovesIndex(t *testing.T) {
 	m := newTestModel(t)
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Text: "/"})
 	startIdx := m.paletteIndex
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyDown})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyDown})
 	if m.paletteIndex != startIdx+1 {
 		t.Errorf("Down arrow should advance idx; got %d", m.paletteIndex)
 	}
@@ -1351,9 +1355,9 @@ func TestPalette_DownArrowMovesIndex(t *testing.T) {
 func TestPalette_EscClosesAndClears(t *testing.T) {
 	m := newTestModel(t)
 	for _, r := range "/mo" {
-		m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m, _ = applyMsg(m, tea.KeyPressMsg{Text: string(r)})
 	}
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEsc})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEsc})
 	if m.paletteOpen {
 		t.Errorf("Esc should close palette")
 	}
@@ -1367,7 +1371,7 @@ func TestPalette_EnterRunsHighlightedNoArgsCommand(t *testing.T) {
 	// Enter — should execute the highlighted command instead of trying to
 	// run "/" (which has historically reported "unknown command").
 	m := newTestModel(t)
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Text: "/"})
 	if !m.paletteOpen {
 		t.Fatalf("palette should be open")
 	}
@@ -1385,13 +1389,13 @@ func TestPalette_EnterRunsHighlightedNoArgsCommand(t *testing.T) {
 		t.Fatalf("/help not in palette")
 	}
 	for i := 0; i < target; i++ {
-		m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyDown})
+		m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyDown})
 	}
 	if m.paletteIndex != target {
 		t.Fatalf("paletteIndex = %d, want %d", m.paletteIndex, target)
 	}
 
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	if !m.helpOpen || !strings.Contains(m.helpPanel, "/help") {
 		t.Errorf("Enter should have executed /help and opened the help overlay")
 	}
@@ -1409,12 +1413,12 @@ func TestPalette_EnterFillsInForArgsCommand(t *testing.T) {
 	// args-required command.)
 	m := newTestModel(t)
 	for _, r := range "/recal" {
-		m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m, _ = applyMsg(m, tea.KeyPressMsg{Text: string(r)})
 	}
 	if !m.paletteOpen {
 		t.Fatalf("palette should be open after /recal")
 	}
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	if got := m.textInput.Value(); got != "/recall " {
 		t.Errorf("Enter on /recall should fill in '/recall '; got %q", got)
 	}
@@ -1428,9 +1432,9 @@ func TestPalette_EnterPassesThroughTypedArgs(t *testing.T) {
 	// though the palette is technically still open.
 	m := newTestModel(t)
 	for _, r := range "/model qwen3.5" {
-		m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m, _ = applyMsg(m, tea.KeyPressMsg{Text: string(r)})
 	}
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	if m.modelName != "qwen3.5" {
 		t.Errorf("/model with typed arg should swap modelName; got %q", m.modelName)
 	}

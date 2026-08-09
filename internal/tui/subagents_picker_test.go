@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 
 	"github.com/yottadynamics/yottacode/internal/subagents"
 )
@@ -58,7 +58,7 @@ func TestSubagentsPicker_InjectClosesPickerOnReturnedModel(t *testing.T) {
 	m.subagentsPicker = &subagentsPickerState{mode: subagentsPickerModeTasks, tasks: reg.List()}
 	m.subagentsPickerOpen = true
 
-	nm, _ := m.updateSubagentsPicker(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'i'}})
+	nm, _ := m.updateSubagentsPicker(tea.KeyPressMsg{Text: "i"})
 	if nm.subagentsPickerOpen || nm.subagentsPicker != nil {
 		t.Errorf("after `i` the RETURNED model must have the picker closed; open=%v state=%v",
 			nm.subagentsPickerOpen, nm.subagentsPicker)

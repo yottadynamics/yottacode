@@ -5,7 +5,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/lipgloss/v2"
 )
 
 // menu_render.go centralizes the picker overlay layout so the model
@@ -16,10 +16,40 @@ import (
 // rows. The pattern follows Claude Code's "Select model" picker so
 // users coming from there have the same affordances available.
 
-const (
-	// menuDividerWidth spans ordinary submenu boxes without wrapping on narrow terminals.
-	menuDividerWidth = 72
-)
+// menuDividerWidthCap is the divider width used on any terminal wide enough
+// to afford it — unchanged from the historical fixed value, so wide
+// terminals render exactly as before.
+const menuDividerWidthCap = 72
+
+// menuDividerWidthFloor keeps the divider from shrinking into an unusably
+// thin rule on very narrow terminals.
+const menuDividerWidthFloor = 20
+
+// menuDividerWidth is the divider width picker overlays fall back to when a
+// caller doesn't pass an explicit width to renderMenuHeader. It used to be a
+// fixed 72-column constant, which overflowed/wrapped on narrow terminals —
+// unlike the status bar and tool cards, which already degrade gracefully
+// (see renderStatus's progressive truncation, cardMinUsefulCols). Kept as a
+// package var, recomputed on every WindowSizeMsg (see model.go's Update),
+// rather than threading m.width through the ~30 renderMenuHeader call sites
+// across every picker file — the callers that DO pass an explicit width
+// (e.g. cmd_experimental.go, sessions_picker.go) are unaffected.
+var menuDividerWidth = menuDividerWidthCap
+
+// computeMenuDividerWidth clamps the picker divider to the terminal width
+// (minus the same 4-column margin liveContentWidth uses for chrome), capped
+// at menuDividerWidthCap so wide terminals keep the historical look, floored
+// at menuDividerWidthFloor so it never collapses to nothing.
+func computeMenuDividerWidth(terminalWidth int) int {
+	w := terminalWidth - 4
+	if w > menuDividerWidthCap {
+		return menuDividerWidthCap
+	}
+	if w < menuDividerWidthFloor {
+		return menuDividerWidthFloor
+	}
+	return w
+}
 
 // menuItemOpts customizes one row in a picker. Build a slice of
 // these and pass them through renderMenuItem to get consistent

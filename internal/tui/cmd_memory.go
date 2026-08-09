@@ -9,7 +9,7 @@ import (
 	"runtime"
 	"strings"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 
 	"github.com/yottadynamics/yottacode/internal/adapter"
 	"github.com/yottadynamics/yottacode/internal/config"
@@ -88,7 +88,7 @@ func (m *Model) openMemoryPicker() {
 	m.memoryPickerOpen = true
 }
 
-func (m Model) updateMemoryPicker(msg tea.KeyMsg) (Model, tea.Cmd) {
+func (m Model) updateMemoryPicker(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 	if m.memoryPicker == nil {
 		m.memoryPickerOpen = false
 		return m, nil
@@ -97,7 +97,7 @@ func (m Model) updateMemoryPicker(msg tea.KeyMsg) (Model, tea.Cmd) {
 	if p.mode == memoryBrowseMode {
 		return m.updateMemoryBrowse(msg)
 	}
-	switch msg.Type {
+	switch msg.Code {
 	case tea.KeyEsc:
 		m.memoryPickerOpen = false
 		m.memoryPicker = nil
@@ -256,12 +256,12 @@ func scanMemoryEntriesForBrowse(scope, cwd string) ([]memory.MemoryEntry, error)
 	}
 }
 
-func (m Model) updateMemoryBrowse(msg tea.KeyMsg) (Model, tea.Cmd) {
+func (m Model) updateMemoryBrowse(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 	p := m.memoryPicker
 	if p == nil {
 		return m, nil
 	}
-	switch msg.Type {
+	switch msg.Code {
 	case tea.KeyEsc:
 		p.mode = memoryRootMode
 		p.entries = nil
@@ -281,8 +281,8 @@ func (m Model) updateMemoryBrowse(msg tea.KeyMsg) (Model, tea.Cmd) {
 	case tea.KeyEnter:
 		return m.commitMemoryBrowseOpen()
 	}
-	if msg.Type == tea.KeyRunes && len(msg.Runes) == 1 {
-		switch msg.Runes[0] {
+	if r := []rune(msg.Text); len(r) == 1 {
+		switch r[0] {
 		case 'd':
 			return m.commitMemoryBrowseDelete()
 		case 'f':
@@ -562,11 +562,11 @@ func (m Model) runEmbedSetup() (Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m Model) updateEmbedSetup(msg tea.KeyMsg) (Model, tea.Cmd) {
+func (m Model) updateEmbedSetup(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 	if m.embedSetupPulling {
 		return m, nil
 	}
-	switch msg.Type {
+	switch msg.Code {
 	case tea.KeyEsc:
 		m.embedSetupOpen = false
 		return m, nil

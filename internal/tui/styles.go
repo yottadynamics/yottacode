@@ -1,7 +1,8 @@
 package tui
 
 import (
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/lipgloss/v2"
+	"charm.land/lipgloss/v2/compat"
 
 	"github.com/yottadynamics/yottacode/internal/tui/themes"
 )
@@ -34,22 +35,34 @@ import (
 // a themes.Palette. /themes set calls ApplyTheme which rebuilds the
 // whole surface — that's why styles must be set with `=` (assign),
 // not `:=` (decl), inside buildStyles.
+// zeroAdaptiveColor is the pre-buildStyles default for every color* var
+// below. v1's lipgloss.AdaptiveColor stored Light/Dark as plain strings, so
+// its zero value ("") rendered harmlessly as "no color" for any style built
+// (at package-init time, before ApplyTheme/buildStyles ever runs — e.g.
+// run_bash_approval.go's styleApprovalSep captures its Foreground(colorMuted)
+// argument once, permanently, before this package's colors are themed) from
+// a not-yet-themed color var. v2's compat.AdaptiveColor stores Light/Dark as
+// color.Color interfaces, whose nil zero value panics in .RGBA() the moment
+// anything tries to render it — so every color var needs an explicit,
+// render-safe default instead of relying on Go's zero value.
+var zeroAdaptiveColor = compat.AdaptiveColor{Light: lipgloss.NoColor{}, Dark: lipgloss.NoColor{}}
+
 var (
 	// --- live color slots ---------------------------------------
-	colorAccent    lipgloss.AdaptiveColor
-	colorSuccess   lipgloss.AdaptiveColor
-	colorWarning   lipgloss.AdaptiveColor
-	colorError     lipgloss.AdaptiveColor
-	colorContent   lipgloss.AdaptiveColor
-	colorDim       lipgloss.AdaptiveColor
-	colorMuted     lipgloss.AdaptiveColor // legacy alias: dim text
-	colorBrand     lipgloss.AdaptiveColor // legacy alias: success/brand mark
-	colorAssistant lipgloss.AdaptiveColor
-	colorWarn      lipgloss.AdaptiveColor // legacy alias of colorWarning
-	colorErr       lipgloss.AdaptiveColor // legacy alias of colorError
-	colorRule      lipgloss.AdaptiveColor
-	colorCode      lipgloss.AdaptiveColor
-	colorWarm      lipgloss.AdaptiveColor
+	colorAccent    = zeroAdaptiveColor
+	colorSuccess   = zeroAdaptiveColor
+	colorWarning   = zeroAdaptiveColor
+	colorError     = zeroAdaptiveColor
+	colorContent   = zeroAdaptiveColor
+	colorDim       = zeroAdaptiveColor
+	colorMuted     = zeroAdaptiveColor // legacy alias: dim text
+	colorBrand     = zeroAdaptiveColor // legacy alias: success/brand mark
+	colorAssistant = zeroAdaptiveColor
+	colorWarn      = zeroAdaptiveColor // legacy alias of colorWarning
+	colorErr       = zeroAdaptiveColor // legacy alias of colorError
+	colorRule      = zeroAdaptiveColor
+	colorCode      = zeroAdaptiveColor
+	colorWarm      = zeroAdaptiveColor
 
 	// --- optional surface tint ----------------------------------
 	// Themes that paint a backdrop (currently only "dimmed") set
@@ -58,7 +71,7 @@ var (
 	// themeBackground when painting a Background. Other styles
 	// ignore it — most of the TUI stays on the user's terminal bg.
 	hasThemeBackground bool
-	themeBackground    lipgloss.AdaptiveColor
+	themeBackground    = zeroAdaptiveColor
 
 	// --- chroma highlight style name ----------------------------
 	// Mirrored from themes.Palette.Highlight; falls back to

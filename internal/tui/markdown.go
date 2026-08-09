@@ -1,6 +1,6 @@
 package tui
 
-import "github.com/charmbracelet/glamour"
+import "charm.land/glamour/v2"
 
 // markdownRenderer wraps glamour with a preconfigured style and width. The
 // width is rebuilt on every WindowSizeMsg so wrapping respects the terminal.

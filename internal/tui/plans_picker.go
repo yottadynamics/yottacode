@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 
 	"github.com/yottadynamics/yottacode/internal/agent"
 )
@@ -37,12 +37,12 @@ func (m *Model) openPlansPicker() {
 
 // updatePlansPicker handles keystrokes while the plans picker is open.
 // Mirrors the navigation contract of the other inline overlays.
-func (m Model) updatePlansPicker(msg tea.KeyMsg) (Model, tea.Cmd) {
+func (m Model) updatePlansPicker(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 	if m.plansPicker == nil {
 		m.plansPickerOpen = false
 		return m, nil
 	}
-	switch msg.Type {
+	switch msg.Code {
 	case tea.KeyUp:
 		if m.plansPicker.cursor > 0 {
 			m.plansPicker.cursor--

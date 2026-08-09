@@ -1,6 +1,9 @@
 package themes
 
-import "github.com/charmbracelet/lipgloss"
+import (
+	"charm.land/lipgloss/v2"
+	"charm.land/lipgloss/v2/compat"
+)
 
 // lowContrast is the deliberate inverse of `high-contrast`. Where
 // high-contrast pushes every role toward its bright pole (pure red
@@ -34,20 +37,20 @@ func init() {
 		// State colors carry a faint hue cast (cool / green / amber /
 		// rose) but stay desaturated and tonally close to Content.
 		// Distinguishable on close reading, invisible at a glance.
-		Accent:    lipgloss.AdaptiveColor{Light: "#5a7080", Dark: "#7a8a9a"}, // muted slate blue
-		Success:   lipgloss.AdaptiveColor{Light: "#5a7060", Dark: "#7a8a78"}, // muted sage
-		Warning:   lipgloss.AdaptiveColor{Light: "#7a6850", Dark: "#9a8a70"}, // muted tan
-		Error:     lipgloss.AdaptiveColor{Light: "#80606a", Dark: "#9a7a80"}, // muted rose
-		Content:   lipgloss.AdaptiveColor{Light: "#505050", Dark: "#a0a0a0"}, // mid-grey body text
+		Accent:  compat.AdaptiveColor{Light: lipgloss.Color("#5a7080"), Dark: lipgloss.Color("#7a8a9a")}, // muted slate blue
+		Success: compat.AdaptiveColor{Light: lipgloss.Color("#5a7060"), Dark: lipgloss.Color("#7a8a78")}, // muted sage
+		Warning: compat.AdaptiveColor{Light: lipgloss.Color("#7a6850"), Dark: lipgloss.Color("#9a8a70")}, // muted tan
+		Error:   compat.AdaptiveColor{Light: lipgloss.Color("#80606a"), Dark: lipgloss.Color("#9a7a80")}, // muted rose
+		Content: compat.AdaptiveColor{Light: lipgloss.Color("#505050"), Dark: lipgloss.Color("#a0a0a0")}, // mid-grey body text
 		// Dim sits ONE step away from Content (not five, like in `dark`)
 		// — the whole point is that labels and content are not loudly
 		// differentiated.
-		Dim:       lipgloss.AdaptiveColor{Light: "#707070", Dark: "#808080"},
+		Dim: compat.AdaptiveColor{Light: lipgloss.Color("#707070"), Dark: lipgloss.Color("#808080")},
 		// Rule (borders) drops a second step away so chrome reads as
 		// decoration without disappearing entirely.
-		Rule:      lipgloss.AdaptiveColor{Light: "#909090", Dark: "#606060"},
-		Assistant: lipgloss.AdaptiveColor{Light: "#506068", Dark: "#7a8a90"}, // muted teal
-		Code:      lipgloss.AdaptiveColor{Light: "#505050", Dark: "#a0a0a0"},
-		Warm:      lipgloss.AdaptiveColor{Light: "#706050", Dark: "#9a8a78"},
+		Rule:      compat.AdaptiveColor{Light: lipgloss.Color("#909090"), Dark: lipgloss.Color("#606060")},
+		Assistant: compat.AdaptiveColor{Light: lipgloss.Color("#506068"), Dark: lipgloss.Color("#7a8a90")}, // muted teal
+		Code:      compat.AdaptiveColor{Light: lipgloss.Color("#505050"), Dark: lipgloss.Color("#a0a0a0")},
+		Warm:      compat.AdaptiveColor{Light: lipgloss.Color("#706050"), Dark: lipgloss.Color("#9a8a78")},
 	})
 }

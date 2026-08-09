@@ -5,7 +5,7 @@ import (
 	"strings"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 
 	"github.com/yottadynamics/yottacode/internal/adapter"
 	"github.com/yottadynamics/yottacode/internal/recall"
@@ -115,7 +115,7 @@ func (g *recallSessionGroup) loadContext() {
 // selected session first; Enter again from preview resumes through the same path
 // as /sessions so save/load/rebuild logic stays centralized. Esc returns to the
 // list from preview, or to the slash palette from the list.
-func (m Model) updateRecallPicker(msg tea.KeyMsg) (Model, tea.Cmd) {
+func (m Model) updateRecallPicker(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 	p := m.recallPicker
 	if p == nil {
 		m.recallPickerOpen = false
@@ -124,7 +124,7 @@ func (m Model) updateRecallPicker(msg tea.KeyMsg) (Model, tea.Cmd) {
 	if p.preview {
 		return m.updateRecallPreview(msg)
 	}
-	switch msg.Type {
+	switch msg.Code {
 	case tea.KeyEsc:
 		m.recallPickerOpen = false
 		m.recallPicker = nil
@@ -152,13 +152,13 @@ func (m Model) updateRecallPicker(msg tea.KeyMsg) (Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m Model) updateRecallPreview(msg tea.KeyMsg) (Model, tea.Cmd) {
+func (m Model) updateRecallPreview(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 	p := m.recallPicker
 	if p == nil {
 		m.recallPickerOpen = false
 		return m, nil
 	}
-	switch msg.Type {
+	switch msg.Code {
 	case tea.KeyEsc:
 		p.preview = false
 		return m, nil
@@ -190,7 +190,7 @@ func (m Model) updateRecallPreview(msg tea.KeyMsg) (Model, tea.Cmd) {
 		m.recallPicker = nil
 		return m.resumeSession(id, summarized)
 	}
-	if msg.Type == tea.KeyRunes && string(msg.Runes) == "s" {
+	if msg.Text == "s" {
 		p.summarized = !p.summarized
 		return m, nil
 	}

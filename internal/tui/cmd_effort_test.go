@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 
 	"github.com/yottadynamics/yottacode/internal/agent"
 	"github.com/yottadynamics/yottacode/internal/config"
@@ -93,8 +93,8 @@ func TestEffort_PickerEnterCommits(t *testing.T) {
 	m := newTestModel(t)
 	m, _ = m.runSlash("/effort")
 	// Jump to the last row (high) and commit.
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnd})
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnd})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	if m.effortPickerOpen {
 		t.Error("Enter should close the picker")
 	}
@@ -107,8 +107,8 @@ func TestEffort_PickerEscIsNonDestructive(t *testing.T) {
 	m := newTestModel(t)
 	m, _ = m.runSlash("/effort medium") // start from a known level
 	m, _ = m.runSlash("/effort")        // open picker
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnd})
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEsc})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnd})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEsc})
 	if m.effortPickerOpen {
 		t.Error("Esc should close the picker")
 	}

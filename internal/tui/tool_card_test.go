@@ -6,8 +6,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/charmbracelet/lipgloss"
-	"github.com/muesli/termenv"
+	"charm.land/lipgloss/v2"
+	"charm.land/lipgloss/v2/compat"
+	"github.com/charmbracelet/colorprofile"
 
 	"github.com/yottadynamics/yottacode/internal/agent"
 )
@@ -165,7 +166,7 @@ func TestToolCard_RunBashErrorExitColored(t *testing.T) {
 	// With empty stdout there's still one blank line between the two
 	// section markers — the `\n` after the empty stdout body.
 	out := "exit=2\n--- stdout ---\n\n--- stderr ---\nboom\n"
-	body := toolBodyLines("run_bash", out, false, "")
+	body := stripANSILines(toolBodyLines("run_bash", out, false, ""))
 	if !contains(body, "── stderr ──") {
 		t.Errorf("body should label the stderr section: %v", body)
 	}
@@ -922,10 +923,10 @@ func TestRenderToolCard_RunBashKeepsTailOnOverflow(t *testing.T) {
 // under `go test` lipgloss renders plain ASCII, which would make the
 // tinted and neutral gutters indistinguishable.
 func TestRenderToolCard_ErroredGutterTintsFrameRed(t *testing.T) {
-	prevProfile := lipgloss.ColorProfile()
-	lipgloss.SetColorProfile(termenv.TrueColor)
-	lipgloss.SetHasDarkBackground(true)
-	t.Cleanup(func() { lipgloss.SetColorProfile(prevProfile) })
+	prevProfile := lipgloss.Writer.Profile
+	lipgloss.Writer.Profile = colorprofile.TrueColor
+	compat.HasDarkBackground = true
+	t.Cleanup(func() { lipgloss.Writer.Profile = prevProfile })
 
 	got := renderToolCard("run_bash", "run_bash: ./x", `{"command":"./x"}`,
 		"exit=1\n--- stdout ---\n--- stderr ---\nboom\n", true, 80, "", 0)
@@ -944,10 +945,10 @@ func TestRenderToolCard_ErroredGutterTintsFrameRed(t *testing.T) {
 // (The closing └ used to tint Success green, but a green corner on nearly
 // every card was too much green; the red error frame carries the signal.)
 func TestRenderToolCard_SuccessGutterIsNeutral(t *testing.T) {
-	prevProfile := lipgloss.ColorProfile()
-	lipgloss.SetColorProfile(termenv.TrueColor)
-	lipgloss.SetHasDarkBackground(true)
-	t.Cleanup(func() { lipgloss.SetColorProfile(prevProfile) })
+	prevProfile := lipgloss.Writer.Profile
+	lipgloss.Writer.Profile = colorprofile.TrueColor
+	compat.HasDarkBackground = true
+	t.Cleanup(func() { lipgloss.Writer.Profile = prevProfile })
 
 	got := renderToolCard("list_dir", "list_dir(.)", "", "d\tbin\nf\tmain.go\n", false, 80, "", 0)
 

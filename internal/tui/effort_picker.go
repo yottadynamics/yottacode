@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"strings"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 
 	"github.com/yottadynamics/yottacode/internal/adapter"
 )
@@ -73,13 +73,13 @@ func (m *Model) openEffortPicker() {
 
 // updateEffortPicker handles keystrokes while the picker is foreground.
 // Up/Down (and j/k) navigate; Enter commits; Esc closes without change.
-func (m Model) updateEffortPicker(msg tea.KeyMsg) (Model, tea.Cmd) {
+func (m Model) updateEffortPicker(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 	if m.effortPicker == nil {
 		m.effortPickerOpen = false
 		return m, nil
 	}
 	p := m.effortPicker
-	switch msg.Type {
+	switch msg.Code {
 	case tea.KeyEsc:
 		m.effortPickerOpen = false
 		m.effortPicker = nil
@@ -106,9 +106,9 @@ func (m Model) updateEffortPicker(msg tea.KeyMsg) (Model, tea.Cmd) {
 		m.effortPickerOpen = false
 		m.effortPicker = nil
 		return commitEffortChoice(m, chosen)
-	case tea.KeyRunes:
-		if len(msg.Runes) == 1 {
-			switch msg.Runes[0] {
+	default:
+		if r := []rune(msg.Text); len(r) == 1 {
+			switch r[0] {
 			case 'j':
 				if p.cursor < len(p.entries)-1 {
 					p.cursor++
@@ -121,7 +121,6 @@ func (m Model) updateEffortPicker(msg tea.KeyMsg) (Model, tea.Cmd) {
 		}
 		return m, nil
 	}
-	return m, nil
 }
 
 // commitEffortChoice sets the new level and rebuilds the active adapter

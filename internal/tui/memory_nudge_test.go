@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 
 	"github.com/yottadynamics/yottacode/internal/adapter"
 	"github.com/yottadynamics/yottacode/internal/config"
@@ -393,7 +393,7 @@ func TestExitSave_TurnEndCompletesQuit(t *testing.T) {
 
 func TestExitSave_CtrlDIdleRoutesThroughExitSave(t *testing.T) {
 	m := exitReadyModel(t)
-	out, cmd := applyMsg(m, tea.KeyMsg{Type: tea.KeyCtrlD})
+	out, cmd := applyMsg(m, tea.KeyPressMsg{Code: 'd', Mod: tea.ModCtrl})
 	if cmd == nil {
 		t.Fatalf("Ctrl+D should produce a Cmd")
 	}
@@ -410,7 +410,7 @@ func TestExitSave_CtrlDIdleRoutesThroughExitSave(t *testing.T) {
 
 func TestExitSave_CtrlCAlwaysQuitsImmediately(t *testing.T) {
 	m := exitReadyModel(t)
-	out, cmd := applyMsg(m, tea.KeyMsg{Type: tea.KeyCtrlC})
+	out, cmd := applyMsg(m, tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
 	assertQuits(t, cmd, "idle Ctrl+C")
 	if out.exitSavePending {
 		t.Errorf("Ctrl+C must never start the final memory turn")
@@ -420,6 +420,6 @@ func TestExitSave_CtrlCAlwaysQuitsImmediately(t *testing.T) {
 func TestExitSave_CtrlDMidTurnHardQuits(t *testing.T) {
 	m := exitReadyModel(t)
 	m.turnActive = true // e.g. the final memory turn itself is running
-	_, cmd := applyMsg(m, tea.KeyMsg{Type: tea.KeyCtrlD})
+	_, cmd := applyMsg(m, tea.KeyPressMsg{Code: 'd', Mod: tea.ModCtrl})
 	assertQuits(t, cmd, "mid-turn Ctrl+D")
 }

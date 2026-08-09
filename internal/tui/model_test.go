@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/yottadynamics/yottacode/internal/adapter"
@@ -73,7 +73,7 @@ func TestModel_ViewBeforeReadyDoesNotCrash(t *testing.T) {
 		Cfg:     cfg,
 		Session: sess,
 	})
-	out := m.View()
+	out := m.View().Content
 	if !strings.Contains(out, "initializing") {
 		t.Errorf("pre-ready View should say initializing; got %q", out)
 	}
@@ -85,7 +85,7 @@ func TestModel_LargePasteShowsPlaceholderInsteadOfStretchingCmdline(t *testing.T
 	// threshold. The visible textarea should show a short marker, not
 	// the full content.
 	big := strings.Repeat("x", 1000)
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(big), Paste: true})
+	m, _ = applyMsg(m, tea.PasteMsg{Content: big})
 
 	val := m.textInput.Value()
 	if strings.Contains(val, "x") && !strings.Contains(val, "Pasted text") {
@@ -107,7 +107,7 @@ func TestModel_SmallPasteGoesInVerbatim(t *testing.T) {
 	m := newTestModel(t)
 	// Below the threshold — should land in the textarea unchanged.
 	small := "hello"
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(small), Paste: true})
+	m, _ = applyMsg(m, tea.PasteMsg{Content: small})
 	if got := m.textInput.Value(); got != small {
 		t.Errorf("small paste should be inserted verbatim; got %q", got)
 	}
@@ -119,7 +119,7 @@ func TestModel_SmallPasteGoesInVerbatim(t *testing.T) {
 func TestModel_PasteMarkerExpandsOnSubmit(t *testing.T) {
 	m := newTestModel(t)
 	big := strings.Repeat("y", 500)
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(big), Paste: true})
+	m, _ = applyMsg(m, tea.PasteMsg{Content: big})
 	// Expand the markers manually (the same path used on submit).
 	expanded := m.expandPastes(m.textInput.Value())
 	if !strings.Contains(expanded, big) {
@@ -130,7 +130,7 @@ func TestModel_PasteMarkerExpandsOnSubmit(t *testing.T) {
 func TestModel_TypingBuffersInTextInput(t *testing.T) {
 	m := newTestModel(t)
 	for _, r := range "hello" {
-		m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m, _ = applyMsg(m, tea.KeyPressMsg{Text: string(r)})
 	}
 	if got := m.textInput.Value(); got != "hello" {
 		t.Errorf("textInput value = %q, want 'hello'", got)
@@ -139,7 +139,7 @@ func TestModel_TypingBuffersInTextInput(t *testing.T) {
 
 func TestModel_EnterOnEmptyInputIsNoop(t *testing.T) {
 	m := newTestModel(t)
-	out, cmd := applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	out, cmd := applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	if out.turnActive {
 		t.Errorf("empty input should not start a turn")
 	}
@@ -151,9 +151,9 @@ func TestModel_EnterOnEmptyInputIsNoop(t *testing.T) {
 func TestModel_QuitSlashCommandReturnsQuit(t *testing.T) {
 	m := newTestModel(t)
 	for _, r := range "/quit" {
-		m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m, _ = applyMsg(m, tea.KeyPressMsg{Text: string(r)})
 	}
-	_, cmd := applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	_, cmd := applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	if cmd == nil {
 		t.Fatalf("expected a tea.Quit Cmd")
 	}
@@ -165,7 +165,7 @@ func TestModel_QuitSlashCommandReturnsQuit(t *testing.T) {
 
 func TestModel_CtrlDQuits(t *testing.T) {
 	m := newTestModel(t)
-	_, cmd := applyMsg(m, tea.KeyMsg{Type: tea.KeyCtrlD})
+	_, cmd := applyMsg(m, tea.KeyPressMsg{Code: 'd', Mod: tea.ModCtrl})
 	if cmd == nil {
 		t.Fatalf("Ctrl+D should produce a Cmd")
 	}
@@ -178,7 +178,7 @@ func TestModel_StreamingTokensRenderInTranscript(t *testing.T) {
 	m := newTestModel(t)
 	m, _ = applyMsg(m, agentEventMsg{ev: agent.ContentToken{Text: "Hello "}})
 	m, _ = applyMsg(m, agentEventMsg{ev: agent.ContentToken{Text: "world"}})
-	v := m.View()
+	v := m.View().Content
 	if !strings.Contains(v, "Hello world") {
 		t.Errorf("streaming tokens not rendered: %q", v)
 	}
@@ -192,8 +192,8 @@ func TestModel_StreamingBuffersCompletedLinesUntilAssistantMessage(t *testing.T)
 	if strings.Contains(m.transcript.String(), "line one") {
 		t.Errorf("completed line should stay provisional before finalization: %q", m.transcript.String())
 	}
-	if !strings.Contains(m.View(), "line tw") {
-		t.Errorf("partial line should be in live footer preview: %q", m.View())
+	if !strings.Contains(m.View().Content, "line tw") {
+		t.Errorf("partial line should be in live footer preview: %q", m.View().Content)
 	}
 	m, _ = applyMsg(m, agentEventMsg{ev: agent.AssistantMessage{}})
 	if !strings.Contains(m.transcript.String(), "line one") || !strings.Contains(m.transcript.String(), "line tw") {
@@ -207,8 +207,8 @@ func TestModel_StreamingMultipleNewlinesAtOnce(t *testing.T) {
 	if strings.Contains(m.transcript.String(), "a\nb") || strings.Contains(m.transcript.String(), "b\nc") {
 		t.Errorf("completed lines should stay provisional before finalization: %q", m.transcript.String())
 	}
-	if !strings.Contains(m.View(), "c") {
-		t.Errorf("partial 'c' should be in live preview: %q", m.View())
+	if !strings.Contains(m.View().Content, "c") {
+		t.Errorf("partial 'c' should be in live preview: %q", m.View().Content)
 	}
 	m, _ = applyMsg(m, agentEventMsg{ev: agent.AssistantMessage{}})
 	transcript := m.transcript.String()
@@ -246,8 +246,8 @@ func TestModel_StreamingCodeBlockBuffersUntilClose(t *testing.T) {
 	if strings.Contains(transcript, "Here's some code:") || strings.Contains(transcript, "func main()") {
 		t.Errorf("provisional content should not land in scrollback before finalization: %q", transcript)
 	}
-	if !strings.Contains(m.View(), "func main") {
-		t.Errorf("provisional content should remain visible in the live preview: %q", m.View())
+	if !strings.Contains(m.View().Content, "func main") {
+		t.Errorf("provisional content should remain visible in the live preview: %q", m.View().Content)
 	}
 }
 
@@ -295,7 +295,7 @@ func TestModel_StreamingCodeBlockShowsLiveFooterNotice(t *testing.T) {
 	m, _ = applyMsg(m, agentEventMsg{ev: agent.ContentToken{
 		Text: "```python\nprint('hi')\n",
 	}})
-	view := m.View()
+	view := m.View().Content
 	if !strings.Contains(view, "```python") || !strings.Contains(view, "print('hi')") {
 		t.Errorf("footer should show provisional code text before finalization: %q", view)
 	}
@@ -386,7 +386,7 @@ func TestModel_StreamingTableShowsLiveNotice(t *testing.T) {
 	m, _ = applyMsg(m, agentEventMsg{ev: agent.ContentToken{
 		Text: "| H1 | H2 |\n| --- | --- |\n| a | b |\n",
 	}})
-	view := m.View()
+	view := m.View().Content
 	if !strings.Contains(view, "| H1 | H2 |") || !strings.Contains(view, "| a | b |") {
 		t.Errorf("footer should show provisional table text before finalization: %q", view)
 	}
@@ -658,11 +658,11 @@ func TestModel_ReasoningTokensCountedAndStreamedLive(t *testing.T) {
 	if m.statsTokens != startTokens+1 {
 		t.Errorf("reasoning should count toward stats; got %d", m.statsTokens)
 	}
-	if !strings.Contains(m.View(), "lengthy chain of thought") {
-		t.Errorf("reasoning preview should appear live in View: %q", m.View())
+	if !strings.Contains(m.View().Content, "lengthy chain of thought") {
+		t.Errorf("reasoning preview should appear live in View: %q", m.View().Content)
 	}
-	if !strings.Contains(m.View(), "thinking") {
-		t.Errorf("indicator row should still show 'Thinking…': %q", m.View())
+	if !strings.Contains(m.View().Content, "thinking") {
+		t.Errorf("indicator row should still show 'Thinking…': %q", m.View().Content)
 	}
 	if strings.Contains(m.transcript.String(), "lengthy chain of thought") {
 		t.Errorf("reasoning must NOT enter scrollback (transcript): %q", m.transcript.String())
@@ -710,17 +710,17 @@ func TestModel_ActiveTurnFooterHeightStableAcrossReasoningStream(t *testing.T) {
 	// The active-turn footer must reserve a stable live-preview row. Without
 	// that, reasoning text wrapping from zero to many rows pushes the cmdline up
 	// and down while the model thinks.
-	baseHeight := lipgloss.Height(m.View())
+	baseHeight := lipgloss.Height(m.View().Content)
 	m, _ = applyMsg(m, agentEventMsg{ev: agent.ReasoningToken{Text: "short"}})
-	if got := lipgloss.Height(m.View()); got != baseHeight {
+	if got := lipgloss.Height(m.View().Content); got != baseHeight {
 		t.Fatalf("short reasoning changed footer height: got %d, want %d", got, baseHeight)
 	}
 	m, _ = applyMsg(m, agentEventMsg{ev: agent.ReasoningToken{Text: " alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi omicron"}})
-	if got := lipgloss.Height(m.View()); got != baseHeight {
+	if got := lipgloss.Height(m.View().Content); got != baseHeight {
 		t.Fatalf("wrapped reasoning changed footer height: got %d, want %d", got, baseHeight)
 	}
 	m, _ = applyMsg(m, agentEventMsg{ev: agent.ContentToken{Text: "Answer."}})
-	if got := lipgloss.Height(m.View()); got != baseHeight {
+	if got := lipgloss.Height(m.View().Content); got != baseHeight {
 		t.Fatalf("content transition changed footer height: got %d, want %d", got, baseHeight)
 	}
 }
@@ -738,11 +738,11 @@ func TestModel_ActiveTurnFooterHeightStableForBufferedMarkdown(t *testing.T) {
 			m.width = 24
 			m.turnActive = true
 			m.turnStart = time.Now()
-			baseHeight := lipgloss.Height(m.View())
+			baseHeight := lipgloss.Height(m.View().Content)
 
 			m, _ = applyMsg(m, agentEventMsg{ev: agent.ContentToken{Text: tc.text}})
-			if got := lipgloss.Height(m.View()); got != baseHeight {
-				t.Fatalf("buffered markdown changed footer height: got %d, want %d\n%s", got, baseHeight, stripANSI(m.View()))
+			if got := lipgloss.Height(m.View().Content); got != baseHeight {
+				t.Fatalf("buffered markdown changed footer height: got %d, want %d\n%s", got, baseHeight, stripANSI(m.View().Content))
 			}
 		})
 	}
@@ -780,12 +780,12 @@ func TestModel_ReasoningPreviewClearsOnContent(t *testing.T) {
 	m := newTestModel(t)
 	m.turnActive = true
 	m, _ = applyMsg(m, agentEventMsg{ev: agent.ReasoningToken{Text: "thinking..."}})
-	if !strings.Contains(m.View(), "thinking...") {
-		t.Fatalf("reasoning preview missing before content: %q", m.View())
+	if !strings.Contains(m.View().Content, "thinking...") {
+		t.Fatalf("reasoning preview missing before content: %q", m.View().Content)
 	}
 	m, _ = applyMsg(m, agentEventMsg{ev: agent.ContentToken{Text: "Answer."}})
-	if strings.Contains(m.View(), "thinking...") {
-		t.Errorf("reasoning preview should clear when content streams: %q", m.View())
+	if strings.Contains(m.View().Content, "thinking...") {
+		t.Errorf("reasoning preview should clear when content streams: %q", m.View().Content)
 	}
 }
 
@@ -795,12 +795,12 @@ func TestModel_ReasoningPreviewClearsOnToolStart(t *testing.T) {
 	m := newTestModel(t)
 	m.turnActive = true
 	m, _ = applyMsg(m, agentEventMsg{ev: agent.ReasoningToken{Text: "deciding..."}})
-	if !strings.Contains(m.View(), "deciding...") {
-		t.Fatalf("reasoning preview missing before tool call: %q", m.View())
+	if !strings.Contains(m.View().Content, "deciding...") {
+		t.Fatalf("reasoning preview missing before tool call: %q", m.View().Content)
 	}
 	m, _ = applyMsg(m, agentEventMsg{ev: agent.ToolStart{ToolName: "read_file", Preview: "read_file(x.go)"}})
-	if strings.Contains(m.View(), "deciding...") {
-		t.Errorf("reasoning preview should clear when a tool fires: %q", m.View())
+	if strings.Contains(m.View().Content, "deciding...") {
+		t.Errorf("reasoning preview should clear when a tool fires: %q", m.View().Content)
 	}
 }
 
@@ -808,7 +808,7 @@ func TestModel_ThinkingRowAboveInputWhenActive(t *testing.T) {
 	m := newTestModel(t)
 	m.turnActive = true
 	m.turnStart = time.Now()
-	v := m.View()
+	v := m.View().Content
 	if !strings.Contains(v, "thinking") {
 		t.Errorf("active turn should show 'Thinking…' indicator: %q", v)
 	}
@@ -833,7 +833,7 @@ func TestModel_TypingAllowedWhileThinking(t *testing.T) {
 	m := newTestModel(t)
 	m.turnActive = true
 	for _, r := range "queued" {
-		m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m, _ = applyMsg(m, tea.KeyPressMsg{Text: string(r)})
 	}
 	if m.textInput.Value() != "queued" {
 		t.Errorf("typing during thinking should accumulate in textarea; got %q", m.textInput.Value())
@@ -849,10 +849,10 @@ func TestModel_EnterMidTurnQueuesNotSubmits(t *testing.T) {
 	m.turnCancel = func() {}
 	m.userMsgCh = make(chan string, 1)
 	for _, r := range "queued" {
-		m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m, _ = applyMsg(m, tea.KeyPressMsg{Text: string(r)})
 	}
 	beforeMsgs := len(m.sess.Messages)
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	if len(m.sess.Messages) != beforeMsgs {
 		t.Errorf("Enter during a turn should not directly append a session message; msgs grew from %d to %d", beforeMsgs, len(m.sess.Messages))
 	}
@@ -876,7 +876,7 @@ func TestModel_CtrlDDuringThinkingQuits(t *testing.T) {
 	m := newTestModel(t)
 	m.turnActive = true
 	m.turnCancel = func() {}
-	_, cmd := applyMsg(m, tea.KeyMsg{Type: tea.KeyCtrlD})
+	_, cmd := applyMsg(m, tea.KeyPressMsg{Code: 'd', Mod: tea.ModCtrl})
 	if cmd == nil {
 		t.Fatalf("Ctrl+D during a turn should still produce a Quit cmd")
 	}
@@ -897,9 +897,9 @@ func TestModel_StateChangingSlashDuringThinkingCancelsTurnAndRuns(t *testing.T) 
 	m.turnCancel = func() { canceled = true }
 
 	for _, r := range "/sessions" {
-		m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m, _ = applyMsg(m, tea.KeyPressMsg{Text: string(r)})
 	}
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	if !canceled {
 		t.Errorf("state-changing slash command during turn should cancel the turn first")
 	}
@@ -921,9 +921,9 @@ func TestModel_PreservesTurnSlashDuringThinkingDoesNotCancel(t *testing.T) {
 	m.turnCancel = func() { canceled = true }
 
 	for _, r := range "/help" {
-		m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m, _ = applyMsg(m, tea.KeyPressMsg{Text: string(r)})
 	}
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	if canceled {
 		t.Errorf("PreservesTurn slash command must NOT cancel the active turn")
 	}
@@ -946,9 +946,9 @@ func TestModel_UnknownSlashCommandDuringThinkingDoesNotCancel(t *testing.T) {
 	m.turnCancel = func() { canceled = true }
 
 	for _, r := range "/subagent" { // typo: missing the trailing s
-		m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m, _ = applyMsg(m, tea.KeyPressMsg{Text: string(r)})
 	}
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	if canceled {
 		t.Errorf("unknown slash command must NOT cancel the active turn (a typo shouldn't kill in-flight work)")
 	}
@@ -963,10 +963,10 @@ func TestModel_RegularMessageMidTurnQueuesForResubmission(t *testing.T) {
 	m.turnCancel = func() {}
 	m.userMsgCh = make(chan string, 1)
 	for _, r := range "hello world" {
-		m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m, _ = applyMsg(m, tea.KeyPressMsg{Text: string(r)})
 	}
 	beforeMsgs := len(m.sess.Messages)
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	if len(m.sess.Messages) != beforeMsgs {
 		t.Errorf("regular Enter during a turn should not directly submit")
 	}
@@ -1048,7 +1048,7 @@ func TestModel_ApprovalAnswerResumesEventStream(t *testing.T) {
 	m.awaitingApproval = true
 	m.approvalTool = "write_file"
 
-	_, cmd := applyMsg(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+	_, cmd := applyMsg(m, tea.KeyPressMsg{Text: "y"})
 	if cmd == nil {
 		t.Fatalf("approval answer must return a Cmd that resumes the event pump")
 	}
@@ -1068,7 +1068,7 @@ func TestModel_CtrlCDuringThinkingCancelsTurn(t *testing.T) {
 	m.turnActive = true
 	canceled := false
 	m.turnCancel = func() { canceled = true }
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyCtrlC})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
 	if !canceled {
 		t.Errorf("Ctrl+C during a turn should call turnCancel")
 	}
@@ -1117,7 +1117,7 @@ func TestModel_ApprovalNeededShowsModalAndBlocksInput(t *testing.T) {
 	if !m.awaitingApproval {
 		t.Fatalf("awaitingApproval should be true after ApprovalNeeded")
 	}
-	v := m.View()
+	v := stripANSI(m.View().Content)
 	if !strings.Contains(v, "Approval needed") {
 		t.Errorf("approval modal not rendered: %q", v)
 	}
@@ -1138,7 +1138,7 @@ func TestModel_ApprovalKeyPressYesEmitsAllowOnce(t *testing.T) {
 	m := newTestModel(t)
 	m.decisions = make(chan agent.Decision, 1)
 	m, _ = applyMsg(m, agentEventMsg{ev: agent.ApprovalNeeded{ToolName: "x", Preview: "p"}})
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Text: "y"})
 	if m.awaitingApproval {
 		t.Errorf("modal should clear after y")
 	}
@@ -1163,7 +1163,7 @@ func TestModel_ApprovalKeyPressAlwaysEmitsAllowAlways(t *testing.T) {
 		Preview:  "run_bash: echo hi",
 		ArgsJSON: `{"command":"echo hi"}`,
 	}})
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Text: "a"})
 	select {
 	case d := <-m.decisions:
 		if d != agent.AllowAlways {
@@ -1184,7 +1184,7 @@ func TestModel_ApprovalKeyPressAlwaysSuppressedForCompoundBash(t *testing.T) {
 		Preview:  "run_bash: cd /tmp && rm -rf x",
 		ArgsJSON: `{"command":"cd /tmp && rm -rf x"}`,
 	}})
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Text: "a"})
 	select {
 	case d := <-m.decisions:
 		t.Errorf("compound bash should suppress [a]; got %v", d)
@@ -1197,7 +1197,7 @@ func TestModel_ApprovalKeyPressNoEmitsDeny(t *testing.T) {
 	m := newTestModel(t)
 	m.decisions = make(chan agent.Decision, 1)
 	m, _ = applyMsg(m, agentEventMsg{ev: agent.ApprovalNeeded{ToolName: "x", Preview: "p"}})
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Text: "n"})
 	select {
 	case d := <-m.decisions:
 		if d != agent.Deny {
@@ -1342,7 +1342,7 @@ func TestModel_SplashShowsProductName(t *testing.T) {
 
 func TestModel_PromptIsChevron(t *testing.T) {
 	m := newTestModel(t)
-	v := m.View()
+	v := m.View().Content
 	if !strings.Contains(v, "❯") {
 		t.Errorf("input prompt should use ❯ chevron: %q", v)
 	}
@@ -1357,7 +1357,7 @@ func TestModel_PromptOnlyOnFirstWrappedRow(t *testing.T) {
 	long := strings.Repeat("e", 400)
 	m.textInput.SetValue(long)
 	m.fitTextareaHeight()
-	v := m.View()
+	v := m.View().Content
 	if got := strings.Count(v, "❯"); got != 1 {
 		t.Errorf("expected exactly 1 ❯ in view for soft-wrapped input, got %d:\n%s", got, v)
 	}
@@ -1410,9 +1410,9 @@ func TestModel_TypingPastWrapKeepsChevronVisible(t *testing.T) {
 	// rs == wrap and rs == wrap+1 where the bug manifests).
 	for i := 0; i < wrap+5; i++ {
 		var c tea.Model = m
-		c, _ = c.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'e'}})
+		c, _ = c.Update(tea.KeyPressMsg{Text: "e"})
 		m = c.(Model)
-		if !strings.Contains(m.View(), "❯") {
+		if !strings.Contains(m.View().Content, "❯") {
 			t.Fatalf("chevron missing from view after typing char %d (content len=%d, wrap=%d, height=%d)", i+1, i+1, wrap, m.textInput.Height())
 		}
 	}
@@ -1785,7 +1785,7 @@ func TestModel_HistoryUpRespectsTextareaCursorMidDraft(t *testing.T) {
 	if got := m.textInput.Line(); got != 1 {
 		t.Fatalf("setup: expected cursor on line 1, got %d", got)
 	}
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyUp})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyUp})
 	// History must NOT have replaced the value.
 	if got := m.textInput.Value(); got != "line one\nline two" {
 		t.Errorf("Up mid-draft should not steal to history; value = %q", got)
@@ -1794,10 +1794,10 @@ func TestModel_HistoryUpRespectsTextareaCursorMidDraft(t *testing.T) {
 	// claim the keystroke and replace the value with history.
 	for m.textInput.Line() > 0 {
 		var cmd tea.Cmd
-		m.textInput, cmd = m.textInput.Update(tea.KeyMsg{Type: tea.KeyUp})
+		m.textInput, cmd = m.textInput.Update(tea.KeyPressMsg{Code: tea.KeyUp})
 		_ = cmd
 	}
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyUp})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyUp})
 	if got := m.textInput.Value(); got != "earlier prompt" {
 		t.Errorf("Up at line 0 should recall history; value = %q", got)
 	}
@@ -1812,7 +1812,7 @@ func TestModel_HistoryDownRespectsTextareaCursorMidDraft(t *testing.T) {
 	// directly so the dispatcher's gating doesn't fire.
 	for m.textInput.Line() > 0 {
 		var cmd tea.Cmd
-		m.textInput, cmd = m.textInput.Update(tea.KeyMsg{Type: tea.KeyUp})
+		m.textInput, cmd = m.textInput.Update(tea.KeyPressMsg{Code: tea.KeyUp})
 		_ = cmd
 	}
 	// Prime history so historyForward could fire if the gate let it.
@@ -1821,10 +1821,10 @@ func TestModel_HistoryDownRespectsTextareaCursorMidDraft(t *testing.T) {
 	m.textInput.SetValue("first line\nsecond line") // restore the multi-line draft
 	for m.textInput.Line() > 0 {                    // re-anchor cursor on line 0
 		var cmd tea.Cmd
-		m.textInput, cmd = m.textInput.Update(tea.KeyMsg{Type: tea.KeyUp})
+		m.textInput, cmd = m.textInput.Update(tea.KeyPressMsg{Code: tea.KeyUp})
 		_ = cmd
 	}
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyDown})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyDown})
 	// History should NOT have replaced the value mid-draft.
 	if got := m.textInput.Value(); got != "first line\nsecond line" {
 		t.Errorf("Down mid-draft should not steal to history; value = %q", got)
@@ -1837,7 +1837,7 @@ func TestModel_HistoryUpStillWorksOnSingleLineDraft(t *testing.T) {
 	m := newTestModel(t)
 	m.recordHistory("prior")
 	m.textInput.SetValue("draft")
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyUp})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyUp})
 	if got := m.textInput.Value(); got != "prior" {
 		t.Errorf("single-line Up should reach history; value = %q", got)
 	}
@@ -1875,11 +1875,11 @@ func TestModel_TextareaAcceptsCtrlJForNewline(t *testing.T) {
 	// the input value contains a newline.
 	m := newTestModel(t)
 	for _, r := range "first" {
-		m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m, _ = applyMsg(m, tea.KeyPressMsg{Text: string(r)})
 	}
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyCtrlJ})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: 'j', Mod: tea.ModCtrl})
 	for _, r := range "second" {
-		m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m, _ = applyMsg(m, tea.KeyPressMsg{Text: string(r)})
 	}
 	got := m.textInput.Value()
 	if !strings.Contains(got, "first") || !strings.Contains(got, "second") {
@@ -2153,21 +2153,35 @@ func TestFlushLeftCanvas_ColumnAlignment(t *testing.T) {
 func TestQueuePrintln_FlushLeftCanvas(t *testing.T) {
 	m := newTestModel(t)
 	m.pendingCmds = nil
+	m.pendingPrintRows = nil
 	m.queuePrintln("alpha")
 	m.queuePrintlnFlush("beta")
-	if len(m.pendingCmds) != 2 {
-		t.Fatalf("expected 2 queued cmds, got %d", len(m.pendingCmds))
+	// Both calls accumulate into pendingPrintRows (not pendingCmds directly)
+	// — flushPending joins every row queued this tick into ONE tea.Println,
+	// since bubbletea v2's inline renderer scrolls fresh per Println call
+	// and would otherwise erode earlier rows out of the viewport (see
+	// pendingPrintRows' field doc).
+	if len(m.pendingPrintRows) != 2 {
+		t.Fatalf("expected 2 queued rows, got %d", len(m.pendingPrintRows))
 	}
 	// Both land at column 0 — no leading margin spaces on either path.
-	if got := printlnBody(t, m.pendingCmds[0]); got != "alpha" {
-		t.Errorf("queuePrintln body = %q, want %q (flush-left, no margin)", got, "alpha")
+	if got := strings.TrimPrefix(stripANSI(m.pendingPrintRows[0]), "\r\x1b[2K"); got != "alpha" {
+		t.Errorf("queuePrintln row = %q, want %q (flush-left, no margin)", got, "alpha")
 	}
-	if got := printlnBody(t, m.pendingCmds[1]); got != "beta" {
-		t.Errorf("queuePrintlnFlush body = %q, want %q (flush column 0)", got, "beta")
+	if got := strings.TrimPrefix(stripANSI(m.pendingPrintRows[1]), "\r\x1b[2K"); got != "beta" {
+		t.Errorf("queuePrintlnFlush row = %q, want %q (flush column 0)", got, "beta")
 	}
 	// The clear-line prefix is present on the raw emission.
-	if raw := printlnRaw(t, m.pendingCmds[0]); !strings.HasPrefix(raw, "\r\x1b[2K") {
+	if raw := stripANSI(m.pendingPrintRows[0]); !strings.HasPrefix(raw, "\r\x1b[2K") {
 		t.Errorf("queuePrintln must carry the \\r\\x1b[2K clear-line prefix, got %q", raw)
+	}
+	// flushPending must combine both rows into a single Println.
+	flush := m.flushPending()
+	if flush == nil {
+		t.Fatal("flushPending returned nil")
+	}
+	if got := printlnBody(t, flush); !strings.Contains(got, "alpha") || !strings.Contains(got, "beta") {
+		t.Errorf("combined Println body = %q, want both alpha and beta", got)
 	}
 }
 
@@ -2215,20 +2229,16 @@ func TestResizeReplay_RoutesThroughQueuePrintln(t *testing.T) {
 		t.Fatal("expected history lines after appendLine")
 	}
 	m.pendingCmds = nil
+	m.pendingPrintRows = nil
 
 	// Genuine resize (wasReady): triggers tea.ClearScreen + history replay.
-	// Call the inner update directly so pendingCmds aren't drained by
-	// flushPending (which Update does on the way out).
+	// Call the inner update directly so pendingCmds/pendingPrintRows aren't
+	// drained by flushPending (which Update does on the way out).
 	out, _ := m.update(tea.WindowSizeMsg{Width: 60, Height: 24})
 	mm := out.(Model)
 
 	sawReplay := false
-	for _, cmd := range mm.pendingCmds {
-		v := reflect.ValueOf(cmd())
-		if v.Kind() != reflect.Struct || v.NumField() == 0 {
-			continue // tea.ClearScreen and other non-print messages
-		}
-		raw := v.Field(0).String() // printLineMessage.messageBody
+	for _, raw := range mm.pendingPrintRows {
 		if !strings.HasPrefix(raw, "\r\x1b[2K") {
 			t.Errorf("resize-replayed line missing clear-line prefix "+
 				"(bare tea.Println regressed?): %q", raw)
@@ -2291,6 +2301,7 @@ func TestRepaintViewport_ClearsAndReplaysHistory(t *testing.T) {
 	m := newTestModel(t)
 	m.historyLines = []string{"alpha scrollback", "beta scrollback"}
 	m.pendingCmds = nil
+	m.pendingPrintRows = nil
 	m.repaintViewport()
 
 	if len(m.pendingCmds) == 0 {
@@ -2302,14 +2313,14 @@ func TestRepaintViewport_ClearsAndReplaysHistory(t *testing.T) {
 	if first.Kind() != reflect.Struct || first.NumField() != 0 {
 		t.Errorf("first queued cmd should be ClearScreen (empty-struct msg), got %#v", first)
 	}
-	var bodies []string
-	for _, msg := range flattenCmd(tea.Sequence(m.pendingCmds...)) {
-		v := reflect.ValueOf(msg)
-		if v.Kind() == reflect.Struct && v.NumField() > 0 {
-			bodies = append(bodies, stripANSI(v.Field(0).String()))
-		}
+	// Replayed history now accumulates in pendingPrintRows (flushPending
+	// joins it into one trailing Println behind the ClearScreen) rather
+	// than as separate pendingCmds entries — see pendingPrintRows' field
+	// doc for why per-row Println calls regressed under v2's renderer.
+	if len(m.pendingPrintRows) == 0 {
+		t.Fatal("repaintViewport queued no print rows")
 	}
-	joined := strings.Join(bodies, "\n")
+	joined := stripANSI(strings.Join(m.pendingPrintRows, "\n"))
 	if !strings.Contains(joined, "alpha scrollback") || !strings.Contains(joined, "beta scrollback") {
 		t.Errorf("repaintViewport should replay history lines, got %q", joined)
 	}
@@ -2389,7 +2400,7 @@ func TestOverlayClose_ReanchorGuard(t *testing.T) {
 		m.openSkillsMenu()
 		m.pendingCmds = nil // drop the appendLine emit; we only want the close's cmds
 
-		out, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+		out, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
 		if out.(Model).skillsMenuOpen {
 			t.Fatal("Esc should have closed the menu")
 		}
@@ -2404,11 +2415,11 @@ func TestOverlayClose_ReanchorGuard(t *testing.T) {
 		m.appendLine(marker)
 		m.openSkillsMenu()
 		// Walk to the Check row (Catalog, Install, Uninstall, Check, Update).
-		m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyDown})
-		m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyDown})
-		m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyDown})
+		m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyDown})
+		m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyDown})
+		m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyDown})
 
-		out, cmd := applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+		out, cmd := applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 		if out.skillsMenuOpen {
 			t.Fatal("Check should have closed the menu")
 		}
@@ -2450,25 +2461,22 @@ func TestStartupBanner_DeferredUntilWidthKnown(t *testing.T) {
 
 	// Construction-time emission (as run.go does it) at unknown width.
 	m = enterYoloMode(m)
-	if len(m.pendingCmds) != 0 {
-		t.Errorf("entry banner must be deferred at width 0, got %d queued cmds", len(m.pendingCmds))
+	if len(m.pendingCmds) != 0 || len(m.pendingPrintRows) != 0 {
+		t.Errorf("entry banner must be deferred at width 0, got %d queued cmds, %d queued rows",
+			len(m.pendingCmds), len(m.pendingPrintRows))
 	}
 	if len(m.historyLines) == 0 {
 		t.Fatal("entry banner should still be recorded into historyLines while deferred")
 	}
 
 	// First WindowSizeMsg at a WIDE terminal. Use the inner update so
-	// pendingCmds aren't drained by flushPending before we can inspect.
+	// pendingPrintRows aren't drained by flushPending before we can inspect.
 	out, _ := m.update(tea.WindowSizeMsg{Width: 120, Height: 24})
 	mm := out.(Model)
 
 	var bodies []string
-	for _, cmd := range mm.pendingCmds {
-		v := reflect.ValueOf(cmd())
-		if v.Kind() != reflect.Struct || v.NumField() == 0 {
-			continue // tea.ClearScreen etc.
-		}
-		bodies = append(bodies, strings.TrimPrefix(stripANSI(v.Field(0).String()), "\r\x1b[2K"))
+	for _, raw := range mm.pendingPrintRows {
+		bodies = append(bodies, strings.TrimPrefix(stripANSI(raw), "\r\x1b[2K"))
 	}
 
 	boxIdx, bannerIdx := -1, -1
@@ -2534,7 +2542,7 @@ func TestModel_TextareaStaysSingleRowForLongLine(t *testing.T) {
 	}
 	long := strings.Repeat("x", m.textInput.Width()*3)
 	for _, r := range long {
-		m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m, _ = applyMsg(m, tea.KeyPressMsg{Text: string(r)})
 	}
 	if h := m.textInput.Height(); h != 1 {
 		t.Errorf("textarea should stay at height 1 for a single long line; got %d", h)
@@ -2547,8 +2555,8 @@ func TestModel_TextareaGrowsOnExplicitNewlines(t *testing.T) {
 	// visible below the prompt — up to the 6-row cap.
 	m := newTestModel(t)
 	for i := 0; i < 3; i++ {
-		m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
-		m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyCtrlJ})
+		m, _ = applyMsg(m, tea.KeyPressMsg{Text: "a"})
+		m, _ = applyMsg(m, tea.KeyPressMsg{Code: 'j', Mod: tea.ModCtrl})
 	}
 	if h := m.textInput.Height(); h != 4 {
 		t.Errorf("3 explicit newlines should produce height 4; got %d", h)
@@ -2559,7 +2567,7 @@ func TestModel_TextareaHeightCappedAtSixOnManyNewlines(t *testing.T) {
 	// Even with 100 explicit \n's the textarea must not eat the screen.
 	m := newTestModel(t)
 	for i := 0; i < 100; i++ {
-		m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyCtrlJ})
+		m, _ = applyMsg(m, tea.KeyPressMsg{Code: 'j', Mod: tea.ModCtrl})
 	}
 	if h := m.textInput.Height(); h > 6 {
 		t.Errorf("textarea height should cap at 6; got %d", h)
@@ -2609,10 +2617,7 @@ func TestModel_MouseEventDoesNotPanic(t *testing.T) {
 			t.Errorf("mouse handler panicked: %v", r)
 		}
 	}()
-	m, _ = applyMsg(m, tea.MouseMsg{
-		Action: tea.MouseActionPress,
-		Button: tea.MouseButtonWheelDown,
-	})
+	m, _ = applyMsg(m, tea.MouseWheelMsg{Button: tea.MouseWheelDown})
 }
 
 // User block renders with the same chevron prompt as the live input bar on
@@ -2706,7 +2711,7 @@ func TestModel_NoValueBuilderFields(t *testing.T) {
 func typeRunes(t *testing.T, m Model, s string) Model {
 	t.Helper()
 	for _, r := range s {
-		m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m, _ = applyMsg(m, tea.KeyPressMsg{Text: string(r)})
 	}
 	return m
 }
@@ -2714,7 +2719,7 @@ func typeRunes(t *testing.T, m Model, s string) Model {
 func TestModel_CtrlUKillsLineAndPopulatesRing(t *testing.T) {
 	m := newTestModel(t)
 	m = typeRunes(t, m, "hello world")
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyCtrlU})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: 'u', Mod: tea.ModCtrl})
 	if got := m.textInput.Value(); got != "" {
 		t.Errorf("Ctrl+U should clear the line; got %q", got)
 	}
@@ -2726,8 +2731,8 @@ func TestModel_CtrlUKillsLineAndPopulatesRing(t *testing.T) {
 func TestModel_CtrlYYanksFromRing(t *testing.T) {
 	m := newTestModel(t)
 	m = typeRunes(t, m, "abc")
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyCtrlU})
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyCtrlY})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: 'u', Mod: tea.ModCtrl})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: 'y', Mod: tea.ModCtrl})
 	if got := m.textInput.Value(); got != "abc" {
 		t.Errorf("Ctrl+Y should restore killed text; got %q", got)
 	}
@@ -2739,10 +2744,10 @@ func TestModel_CtrlYYanksFromRing(t *testing.T) {
 func TestModel_CtrlUAtColumnZeroPreservesRing(t *testing.T) {
 	m := newTestModel(t)
 	m = typeRunes(t, m, "first")
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyCtrlU})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: 'u', Mod: tea.ModCtrl})
 	// Now the line is empty and the ring holds "first". A second Ctrl+U
 	// at column 0 must not blank the ring.
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyCtrlU})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: 'u', Mod: tea.ModCtrl})
 	if got := m.killRing; got != "first" {
 		t.Errorf("Ctrl+U at column 0 should not overwrite ring; got %q", got)
 	}
@@ -2750,7 +2755,7 @@ func TestModel_CtrlUAtColumnZeroPreservesRing(t *testing.T) {
 
 func TestModel_CtrlYWithEmptyRingIsNoop(t *testing.T) {
 	m := newTestModel(t)
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyCtrlY})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: 'y', Mod: tea.ModCtrl})
 	if got := m.textInput.Value(); got != "" {
 		t.Errorf("Ctrl+Y with empty ring should leave input empty; got %q", got)
 	}
@@ -2761,9 +2766,9 @@ func TestModel_CtrlUKillsOnlyTextBeforeCursor(t *testing.T) {
 	m = typeRunes(t, m, "left right")
 	// Move cursor to between "left" and " right" — 4 lefts.
 	for i := 0; i < len("right"); i++ {
-		m.textInput, _ = m.textInput.Update(tea.KeyMsg{Type: tea.KeyLeft})
+		m.textInput, _ = m.textInput.Update(tea.KeyPressMsg{Code: tea.KeyLeft})
 	}
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyCtrlU})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: 'u', Mod: tea.ModCtrl})
 	if got := m.textInput.Value(); got != "right" {
 		t.Errorf("Ctrl+U should kill only text-before-cursor; got %q", got)
 	}
@@ -2776,8 +2781,8 @@ func TestModel_CtrlUThenYankRoundTripWithUnicode(t *testing.T) {
 	m := newTestModel(t)
 	// Multi-byte runes — kill-and-yank must preserve them char-for-char.
 	m = typeRunes(t, m, "héllo ✓ 漢字")
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyCtrlU})
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyCtrlY})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: 'u', Mod: tea.ModCtrl})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: 'y', Mod: tea.ModCtrl})
 	if got := m.textInput.Value(); got != "héllo ✓ 漢字" {
 		t.Errorf("round-trip should preserve unicode; got %q", got)
 	}

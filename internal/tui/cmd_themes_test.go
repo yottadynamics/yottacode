@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 
 	"github.com/yottadynamics/yottacode/internal/config"
 	"github.com/yottadynamics/yottacode/internal/tui/themes"
@@ -46,13 +46,13 @@ func TestThemesPicker_EscRevertsLivePreview(t *testing.T) {
 	m, _ = m.runSlash("/theme")
 	// Walk the cursor down twice so the live-applied theme differs
 	// from where we started.
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyDown})
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyDown})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyDown})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyDown})
 	if ActiveTheme() == originalTheme {
 		t.Fatalf("navigation should live-apply a different theme; still on %q", ActiveTheme())
 	}
 
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEsc})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEsc})
 	if m.themePickerOpen {
 		t.Errorf("Esc should close the picker")
 	}
@@ -76,9 +76,9 @@ func TestThemesPicker_EnterCommitsAndPersists(t *testing.T) {
 	m, _ = m.runSlash("/theme")
 	// Walk to a non-default entry — the cursor lands on the active
 	// theme at open, so one Down arrow is enough to differ.
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyDown})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyDown})
 	chosen := m.themePicker.entries[m.themePicker.cursor]
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 
 	if m.themePickerOpen {
 		t.Errorf("Enter should close the picker")
@@ -107,12 +107,12 @@ func TestThemesPicker_VimKeysNavigate(t *testing.T) {
 	m, _ = m.runSlash("/theme")
 	start := m.themePicker.cursor
 
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Text: "j"})
 	if m.themePicker.cursor != start+1 && start+1 < len(m.themePicker.entries) {
 		t.Errorf("j should advance the cursor by 1 (%d → %d)", start, m.themePicker.cursor)
 	}
 
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'k'}})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Text: "k"})
 	if m.themePicker.cursor != start {
 		t.Errorf("k should retreat the cursor by 1 (now %d, want %d)", m.themePicker.cursor, start)
 	}
@@ -124,13 +124,13 @@ func TestThemesPicker_HomeEndJumps(t *testing.T) {
 	m := newTestModel(t)
 	m, _ = m.runSlash("/theme")
 
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnd})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnd})
 	last := len(m.themePicker.entries) - 1
 	if m.themePicker.cursor != last {
 		t.Errorf("End should jump to %d, got %d", last, m.themePicker.cursor)
 	}
 
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyHome})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyHome})
 	if m.themePicker.cursor != 0 {
 		t.Errorf("Home should jump to 0, got %d", m.themePicker.cursor)
 	}
@@ -217,7 +217,7 @@ func TestRenderThemePreviewPane_EmitsAllRoleSamples(t *testing.T) {
 					break
 				}
 			}
-			out := renderThemePreviewPane(state, 60)
+			out := stripANSI(renderThemePreviewPane(state, 60))
 			for _, marker := range []string{
 				name,            // theme name in header
 				"Inline tokens", // inline-tokens heading

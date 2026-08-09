@@ -6,8 +6,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/bubbles/textinput"
-	tea "github.com/charmbracelet/bubbletea"
+	"charm.land/bubbles/v2/textinput"
+	tea "charm.land/bubbletea/v2"
 
 	"github.com/yottadynamics/yottacode/internal/agent"
 	"github.com/yottadynamics/yottacode/internal/config"
@@ -128,7 +128,7 @@ func populateMCPAddFields(p *mcpPickerState) {
 	p.addInputErr = ""
 }
 
-func (m Model) updateMCPPicker(msg tea.KeyMsg) (Model, tea.Cmd) {
+func (m Model) updateMCPPicker(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 	p := m.mcpPicker
 	if p == nil {
 		return m, nil
@@ -149,7 +149,7 @@ func (m Model) updateMCPPicker(msg tea.KeyMsg) (Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m Model) updateMCPMenu(msg tea.KeyMsg) (Model, tea.Cmd) {
+func (m Model) updateMCPMenu(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 	p := m.mcpPicker
 	switch msg.String() {
 	case "esc":
@@ -174,7 +174,7 @@ func (m Model) updateMCPMenu(msg tea.KeyMsg) (Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m Model) updateMCPList(msg tea.KeyMsg) (Model, tea.Cmd) {
+func (m Model) updateMCPList(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 	p := m.mcpPicker
 	switch msg.String() {
 	case "esc":
@@ -195,7 +195,7 @@ func (m Model) updateMCPList(msg tea.KeyMsg) (Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m Model) updateMCPAdd(msg tea.KeyMsg) (Model, tea.Cmd) {
+func (m Model) updateMCPAdd(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 	p := m.mcpPicker
 	switch msg.String() {
 	case "esc":
@@ -229,7 +229,7 @@ func cycleMCPAddFocus(p *mcpPickerState, delta int) {
 	p.addFields[p.addFocused].Focus()
 }
 
-func (m Model) updateMCPLogs(msg tea.KeyMsg) (Model, tea.Cmd) {
+func (m Model) updateMCPLogs(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 	p := m.mcpPicker
 	switch msg.String() {
 	case "esc":
@@ -276,7 +276,7 @@ func (m Model) updateMCPLogs(msg tea.KeyMsg) (Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m Model) updateMCPRemove(msg tea.KeyMsg) (Model, tea.Cmd) {
+func (m Model) updateMCPRemove(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 	p := m.mcpPicker
 	switch msg.String() {
 	case "esc":
@@ -549,7 +549,7 @@ func renderMCPAddForm(p *mcpPickerState, width int) string {
 		fieldWidth = 20
 	}
 	for i, field := range p.addFields {
-		field.Width = fieldWidth
+		field.SetWidth(fieldWidth)
 		p.addFields[i] = field
 		cursor := "  "
 		if i == p.addFocused {

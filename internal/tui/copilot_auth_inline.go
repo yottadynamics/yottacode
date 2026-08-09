@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 
 	copilotauth "github.com/yottadynamics/yottacode/internal/auth/copilot"
 	"github.com/yottadynamics/yottacode/internal/providerops"

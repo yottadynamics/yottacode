@@ -7,10 +7,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/bubbles/spinner"
-	"github.com/charmbracelet/bubbles/textinput"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/spinner"
+	"charm.land/bubbles/v2/textinput"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 
 	copilotauth "github.com/yottadynamics/yottacode/internal/auth/copilot"
 	openaiauth "github.com/yottadynamics/yottacode/internal/auth/openai"
@@ -206,13 +206,11 @@ type wizardModel struct {
 // non-interactive path so users see the same "wrote /path" lines.
 func runInteractive(ctx context.Context, opts Options) (Plan, error) {
 	m := newWizardModel(ctx, opts)
-	// Alt-screen for the wizard: it's a modal one-shot flow, not a
-	// scrollback-friendly chat. Alt-screen repaints fully on resize
-	// so border/separator characters don't smear into the user's
-	// scrollback the way they do with inline rendering. The
-	// post-write summary still goes to the regular terminal buffer
-	// because Run() prints it after the program exits.
-	prog := tea.NewProgram(m, tea.WithAltScreen())
+	// Alt-screen mode is now set declaratively in View() (v.AltScreen
+	// = true) rather than as a NewProgram option. The post-write
+	// summary still goes to the regular terminal buffer because Run()
+	// prints it after the program exits.
+	prog := tea.NewProgram(m)
 	final, err := prog.Run()
 	if err != nil {
 		return Plan{}, fmt.Errorf("wizard: tui: %w", err)
@@ -628,9 +626,9 @@ func (m wizardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// "  > " gutter and a trailing margin.
 		w := inputWidthFor(msg.Width)
 		for i := range m.inputs {
-			m.inputs[i].key.Width = w
-			m.inputs[i].baseURL.Width = w
-			m.inputs[i].customModel.Width = w
+			m.inputs[i].key.SetWidth(w)
+			m.inputs[i].baseURL.SetWidth(w)
+			m.inputs[i].customModel.SetWidth(w)
 		}
 		return m, nil
 	case spinner.TickMsg:
@@ -742,7 +740,7 @@ func (m wizardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.copilotErr = msg.err
 		m.step = stepDone
 		return m, tea.Quit
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		// Global keys.
 		switch msg.String() {
 		case "ctrl+c":
@@ -788,7 +786,17 @@ func (m wizardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 // View dispatches to per-step renderers wrapped with the consistent
 // header/footer chrome.
-func (m wizardModel) View() string {
+func (m wizardModel) View() tea.View {
+	v := tea.NewView(m.viewString())
+	// Alt-screen for the wizard: it's a modal one-shot flow, not a
+	// scrollback-friendly chat. Alt-screen repaints fully on resize so
+	// border/separator characters don't smear into the user's
+	// scrollback the way they do with inline rendering.
+	v.AltScreen = true
+	return v
+}
+
+func (m wizardModel) viewString() string {
 	if m.aborted {
 		return styleMuted.Render("aborted") + "\n"
 	}
@@ -972,7 +980,7 @@ func (m wizardModel) goBack() wizardModel {
 // stepWelcome
 // =============================================================================
 
-func (m wizardModel) updateWelcome(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m wizardModel) updateWelcome(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "enter":
 		// Cursor placement is handled in newWizardModel (first row
@@ -1061,7 +1069,7 @@ func (m wizardModel) cursorTarget() int {
 	return m.providerCursor
 }
 
-func (m wizardModel) updateProviders(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m wizardModel) updateProviders(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	maxCursor := len(Catalog) // includes Continue row at the bottom
 	switch msg.String() {
 	case "up", "k":
@@ -1237,22 +1245,22 @@ func (m wizardModel) newProviderInputs(e CatalogEntry) providerInputs {
 	in.key.EchoMode = textinput.EchoPassword
 	in.key.EchoCharacter = '•'
 	in.key.CharLimit = 256
-	in.key.Width = w
+	in.key.SetWidth(w)
 
 	in.baseURL = textinput.New()
 	in.baseURL.Placeholder = "https://your-endpoint/v1"
 	in.baseURL.CharLimit = 256
-	in.baseURL.Width = w
+	in.baseURL.SetWidth(w)
 
 	in.project = textinput.New()
 	in.project.Placeholder = "your-gcp-project-id"
 	in.project.CharLimit = 128
-	in.project.Width = w
+	in.project.SetWidth(w)
 
 	in.customModel = textinput.New()
 	in.customModel.Placeholder = FreeFormModelPlaceholder(e.Name)
 	in.customModel.CharLimit = 128
-	in.customModel.Width = w
+	in.customModel.SetWidth(w)
 
 	// Pre-fill model defaults for free-form providers where we have a
 	// reasonable starting tag — saves the user from typing one out
@@ -1439,7 +1447,7 @@ func (m wizardModel) fieldKind() string {
 	return ""
 }
 
-func (m wizardModel) updateConfigure(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m wizardModel) updateConfigure(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if m.embedSubStep {
 		return m.updateEmbedSubStep(msg)
 	}
@@ -1934,7 +1942,7 @@ func (m wizardModel) viewConfigure() string {
 // Embedding model sub-step (shown after Ollama provider configuration)
 // ---------------------------------------------------------------------------
 
-func (m wizardModel) updateEmbedSubStep(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m wizardModel) updateEmbedSubStep(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if m.embedPulling {
 		return m, nil
 	}
@@ -2187,7 +2195,7 @@ func validationGlyph(in providerInputs, spinView string) string {
 // stepActive
 // =============================================================================
 
-func (m wizardModel) updateActive(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m wizardModel) updateActive(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	choices := m.activeChoices()
 	switch msg.String() {
 	case "up", "k":
@@ -2254,7 +2262,7 @@ func (m wizardModel) viewActive() string {
 // stepRouter
 // =============================================================================
 
-func (m wizardModel) updateRouter(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m wizardModel) updateRouter(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "up", "k":
 		if m.routerCursor > 0 {
@@ -2336,7 +2344,7 @@ func (m wizardModel) viewRouter() string {
 // stepReview
 // =============================================================================
 
-func (m wizardModel) updateReview(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m wizardModel) updateReview(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "y", "enter":
 		m.step = stepWriting

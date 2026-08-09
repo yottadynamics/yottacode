@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 )
 
 // TestSummarizing_BlocksNewTurn is a regression for the release audit's
@@ -19,7 +19,7 @@ func TestSummarizing_BlocksNewTurn(t *testing.T) {
 	m.summarizing = true
 	m.textInput.SetValue("hello during summarize")
 
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 
 	if m.turnActive {
 		t.Error("a turn started during summarize; its messages would be clobbered by summaryDoneMsg")
@@ -40,7 +40,7 @@ func TestSummarizing_AllowsSlashCommands(t *testing.T) {
 	m.summarizing = true
 	m.textInput.SetValue("/help")
 
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 
 	if got := m.textInput.Value(); got != "" {
 		t.Errorf("slash command not dispatched during summarize; box = %q", got)

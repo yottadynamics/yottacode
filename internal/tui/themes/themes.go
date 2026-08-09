@@ -14,7 +14,10 @@
 // register it in init(), and document it in docs/themes.md.
 package themes
 
-import "github.com/charmbracelet/lipgloss"
+import (
+	"charm.land/lipgloss/v2"
+	"charm.land/lipgloss/v2/compat"
+)
 
 // Palette is the full color surface a theme needs to fill. Names
 // mirror the canonical roles in internal/tui/styles.go; see that
@@ -39,19 +42,19 @@ type Palette struct {
 	Description string
 	Highlight   string
 
-	Accent    lipgloss.AdaptiveColor
-	Success   lipgloss.AdaptiveColor
-	Warning   lipgloss.AdaptiveColor
-	Error     lipgloss.AdaptiveColor
-	Content   lipgloss.AdaptiveColor
-	Dim       lipgloss.AdaptiveColor
-	Rule      lipgloss.AdaptiveColor
-	Assistant lipgloss.AdaptiveColor
-	Code      lipgloss.AdaptiveColor
-	Warm      lipgloss.AdaptiveColor
+	Accent    compat.AdaptiveColor
+	Success   compat.AdaptiveColor
+	Warning   compat.AdaptiveColor
+	Error     compat.AdaptiveColor
+	Content   compat.AdaptiveColor
+	Dim       compat.AdaptiveColor
+	Rule      compat.AdaptiveColor
+	Assistant compat.AdaptiveColor
+	Code      compat.AdaptiveColor
+	Warm      compat.AdaptiveColor
 
 	HasBackground bool
-	Background    lipgloss.AdaptiveColor
+	Background    compat.AdaptiveColor
 
 	// Monochrome marks a theme that wants every surface to render as
 	// plain default-foreground text — currently only "no-color". Read
@@ -79,8 +82,8 @@ const DefaultName = "terminal"
 // same — used by themes that intentionally don't react to the
 // terminal's background detection. Every fixed-palette theme
 // (gruvbox, nord, catppuccin, …) builds its roles through this.
-func pin(c string) lipgloss.AdaptiveColor {
-	return lipgloss.AdaptiveColor{Light: c, Dark: c}
+func pin(c string) compat.AdaptiveColor {
+	return compat.AdaptiveColor{Light: lipgloss.Color(c), Dark: lipgloss.Color(c)}
 }
 
 // register installs a palette factory under its declared Name. Panics
@@ -120,9 +123,9 @@ func MustGet(name string) Palette {
 // hand-curated head followed by alphabetical for the rest. The head
 // pins themes the user most often wants to reach first:
 //
-//   1. terminal — the universal "match my terminal" choice, works
-//      on every background; the safest pick when you don't know
-//      what to choose, and the default.
+//  1. terminal — the universal "match my terminal" choice, works
+//     on every background; the safest pick when you don't know
+//     what to choose, and the default.
 //
 // Anything else falls into the alphabetical tail so the order stays
 // predictable across adding new palettes. Registry map iteration in

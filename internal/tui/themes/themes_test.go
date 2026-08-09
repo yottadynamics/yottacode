@@ -1,9 +1,37 @@
 package themes
 
 import (
-	"strings"
+	"image/color"
 	"testing"
+
+	"charm.land/lipgloss/v2"
 )
+
+// colorEquals compares a color.Color (as stored on an AdaptiveColor
+// after the v2 migration moved Light/Dark from raw hex strings to
+// color.Color values) against an expected hex/ANSI spec string by
+// resolving both through RGBA. Needed because color.Color is an
+// interface — string literals can no longer be compared directly.
+func colorEquals(c color.Color, want string) bool {
+	if c == nil {
+		return want == ""
+	}
+	wr, wg, wb, wa := lipgloss.Color(want).RGBA()
+	cr, cg, cb, ca := c.RGBA()
+	return wr == cr && wg == cg && wb == cb && wa == ca
+}
+
+// sameColor reports whether two color.Color values resolve to the
+// same RGBA — used to detect an AdaptiveColor pinned to one value
+// (Light == Dark).
+func sameColor(a, b color.Color) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	ar, ag, ab, aa := a.RGBA()
+	br, bg, bb, ba := b.RGBA()
+	return ar == br && ag == bg && ab == bb && aa == ba
+}
 
 // expectedThemes is the registered set this binary ships, in the
 // canonical display order Names() returns: head (terminal) then the
@@ -110,8 +138,8 @@ func TestDimmed_PaintsBackground(t *testing.T) {
 	// Background should NOT be terminal-black; the whole point is to
 	// be "a few shades off" so the user can see the surface.
 	dark := p.Background.Dark
-	if dark == "" || strings.HasPrefix(dark, "#00") && len(dark) == 7 && dark[3:] == "0000" {
-		t.Errorf("dimmed.Background = %q — should be a shade away from terminal black, not pure black", dark)
+	if dark == nil || colorEquals(dark, "#000000") {
+		t.Errorf("dimmed.Background is nil or pure black — should be a shade away from terminal black")
 	}
 }
 
@@ -130,7 +158,7 @@ func TestTerminal_RolesAreAdaptive(t *testing.T) {
 		t.Fatalf("terminal theme not registered")
 	}
 	roles := map[string]struct {
-		light, dark string
+		light, dark color.Color
 	}{
 		"Accent":    {p.Accent.Light, p.Accent.Dark},
 		"Warning":   {p.Warning.Light, p.Warning.Dark},
@@ -143,11 +171,11 @@ func TestTerminal_RolesAreAdaptive(t *testing.T) {
 		"Warm":      {p.Warm.Light, p.Warm.Dark},
 	}
 	for role, v := range roles {
-		if v.light == "" || v.dark == "" {
-			t.Errorf("terminal.%s missing one side: light=%q dark=%q", role, v.light, v.dark)
+		if v.light == nil || v.dark == nil {
+			t.Errorf("terminal.%s missing one side: light=%v dark=%v", role, v.light, v.dark)
 		}
-		if v.light == v.dark {
-			t.Errorf("terminal.%s pinned (light == dark == %q); defeats AdaptiveColor", role, v.light)
+		if sameColor(v.light, v.dark) {
+			t.Errorf("terminal.%s pinned (light == dark); defeats AdaptiveColor", role)
 		}
 	}
 }
@@ -162,7 +190,8 @@ func TestNoColor_AllRolesSameValue(t *testing.T) {
 	}
 	first := p.Accent.Dark
 	roles := []struct {
-		name, value string
+		name  string
+		value color.Color
 	}{
 		{"Success", p.Success.Dark},
 		{"Warning", p.Warning.Dark},
@@ -175,8 +204,8 @@ func TestNoColor_AllRolesSameValue(t *testing.T) {
 		{"Warm", p.Warm.Dark},
 	}
 	for _, r := range roles {
-		if r.value != first {
-			t.Errorf("no-color.%s = %q, want %q (every role must collapse)", r.name, r.value, first)
+		if !sameColor(r.value, first) {
+			t.Errorf("no-color.%s does not match Accent (every role must collapse)", r.name)
 		}
 	}
 }
@@ -189,17 +218,17 @@ func TestStudioDark_PaintsRecordingBackdrop(t *testing.T) {
 	if !p.HasBackground {
 		t.Errorf("studio-dark.HasBackground = false, want true — recording chrome needs the charcoal backdrop")
 	}
-	if p.Background.Dark != "#0b0f0e" || p.Background.Light != "#0b0f0e" {
-		t.Errorf("studio-dark.Background = light %q dark %q, want pinned #0b0f0e", p.Background.Light, p.Background.Dark)
+	if !colorEquals(p.Background.Dark, "#0b0f0e") || !colorEquals(p.Background.Light, "#0b0f0e") {
+		t.Errorf("studio-dark.Background != pinned #0b0f0e")
 	}
-	if p.Accent.Dark != "#00ff66" {
-		t.Errorf("studio-dark.Accent.Dark = %q, want punchy yottacode green #00ff66", p.Accent.Dark)
+	if !colorEquals(p.Accent.Dark, "#00ff66") {
+		t.Errorf("studio-dark.Accent.Dark != punchy yottacode green #00ff66")
 	}
-	if p.Content.Dark != "#f2fff7" {
-		t.Errorf("studio-dark.Content.Dark = %q, want crisp off-white #f2fff7", p.Content.Dark)
+	if !colorEquals(p.Content.Dark, "#f2fff7") {
+		t.Errorf("studio-dark.Content.Dark != crisp off-white #f2fff7")
 	}
-	if p.Rule.Dark != "#008f4a" {
-		t.Errorf("studio-dark.Rule.Dark = %q, want balanced recording border green #008f4a", p.Rule.Dark)
+	if !colorEquals(p.Rule.Dark, "#008f4a") {
+		t.Errorf("studio-dark.Rule.Dark != balanced recording border green #008f4a")
 	}
 }
 

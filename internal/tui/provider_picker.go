@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/textinput"
-	tea "github.com/charmbracelet/bubbletea"
+	"charm.land/bubbles/v2/textinput"
+	tea "charm.land/bubbletea/v2"
 
 	"github.com/yottadynamics/yottacode/internal/catalog"
 	"github.com/yottadynamics/yottacode/internal/config"
@@ -160,13 +160,19 @@ func (m *Model) openProviderPicker(initialMode ...providerPickerMode) {
 // updateProviderPicker handles keystrokes while the provider picker
 // is foreground. Returns the new model + any cmd to run (e.g. a
 // provider probe after a Use selection).
-func (m Model) updateProviderPicker(msg tea.KeyMsg) (Model, tea.Cmd) {
+func (m Model) updateProviderPicker(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 	if m.providerPicker == nil {
 		m.providerPickerOpen = false
 		return m, nil
 	}
 	p := m.providerPicker
-	switch msg.Type {
+	if msg.String() == "shift+tab" {
+		if p.mode == providerAddFieldsMode {
+			cycleAddFocus(p, -1)
+		}
+		return m, nil
+	}
+	switch msg.Code {
 	case tea.KeyEsc:
 		// Esc from a sub-picker pops back to the menu; Esc from the
 		// menu closes outright. Add-fields pops back to add-kind.
@@ -244,11 +250,6 @@ func (m Model) updateProviderPicker(msg tea.KeyMsg) (Model, tea.Cmd) {
 	case tea.KeyTab:
 		if p.mode == providerAddFieldsMode {
 			cycleAddFocus(p, 1)
-		}
-		return m, nil
-	case tea.KeyShiftTab:
-		if p.mode == providerAddFieldsMode {
-			cycleAddFocus(p, -1)
 		}
 		return m, nil
 	case tea.KeyEnter:
@@ -491,7 +492,7 @@ func populateAddFields(p *providerPickerState, e wizard.CatalogEntry, inputWidth
 	name.SetValue(uniqueProviderName(e.Name))
 	name.Prompt = ""
 	name.CharLimit = 64
-	name.Width = inputWidth
+	name.SetWidth(inputWidth)
 	p.addFields = append(p.addFields, name)
 	p.addLabels = append(p.addLabels, "Name")
 
@@ -499,7 +500,7 @@ func populateAddFields(p *providerPickerState, e wizard.CatalogEntry, inputWidth
 		family := textinput.New()
 		family.Prompt = ""
 		family.SetValue(vertexFamilyDropdownValue(wizard.VertexFamilyGemini))
-		family.Width = inputWidth
+		family.SetWidth(inputWidth)
 		p.addFields = append(p.addFields, family)
 		p.addLabels = append(p.addLabels, "Model family")
 		p.addVertexFamily = wizard.VertexFamilyGemini
@@ -510,7 +511,7 @@ func populateAddFields(p *providerPickerState, e wizard.CatalogEntry, inputWidth
 		project.Prompt = ""
 		project.Placeholder = "your-gcp-project-id"
 		project.CharLimit = 128
-		project.Width = inputWidth
+		project.SetWidth(inputWidth)
 		p.addFields = append(p.addFields, project)
 		p.addLabels = append(p.addLabels, "GCP project")
 
@@ -536,7 +537,7 @@ func populateAddFields(p *providerPickerState, e wizard.CatalogEntry, inputWidth
 		}
 		baseURL.Prompt = ""
 		baseURL.CharLimit = 200
-		baseURL.Width = inputWidth
+		baseURL.SetWidth(inputWidth)
 		p.addFields = append(p.addFields, baseURL)
 		p.addLabels = append(p.addLabels, "Base URL")
 	}
@@ -557,7 +558,7 @@ func populateAddFields(p *providerPickerState, e wizard.CatalogEntry, inputWidth
 		key.CharLimit = 256
 		key.EchoMode = textinput.EchoPassword
 		key.EchoCharacter = '•'
-		key.Width = inputWidth
+		key.SetWidth(inputWidth)
 		p.addFields = append(p.addFields, key)
 		p.addLabels = append(p.addLabels, "API key")
 	}
@@ -578,7 +579,7 @@ func populateAddFields(p *providerPickerState, e wizard.CatalogEntry, inputWidth
 	model := textinput.New()
 	model.Prompt = ""
 	model.CharLimit = 128
-	model.Width = inputWidth
+	model.SetWidth(inputWidth)
 	// openai-auth's model list is per-user and only populated by the
 	// post-login scan, so the catalog is intentionally empty here.
 	// Skip Get() so the renderer falls into the free-form branch and
