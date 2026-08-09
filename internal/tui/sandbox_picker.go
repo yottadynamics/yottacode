@@ -4,8 +4,8 @@ import (
 	"context"
 	"strings"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 
 	"github.com/yottadynamics/yottacode/internal/agent"
 	"github.com/yottadynamics/yottacode/internal/config"
@@ -64,7 +64,11 @@ type sandboxPickerState struct {
 	// openSandboxPicker's sandboxDetectCmd arrives — the render shows a
 	// "checking…" state until then instead of a stale zero-value Status.
 	detected bool
-	note     string
+	// confirming gates config writes behind an explicit second Enter. Selecting
+	// a row previews the exact mode first; only the confirmation step persists
+	// config.toml or flips live auto mode.
+	confirming bool
+	note       string
 }
 
 // currentSandboxMode derives the active mode from on-disk config plus this
@@ -114,52 +118,67 @@ func sandboxDetectCmd(ctx context.Context, image string) tea.Cmd {
 }
 
 // updateSandboxPicker handles keystrokes while the overlay is open.
-func (m Model) updateSandboxPicker(msg tea.KeyMsg) (Model, tea.Cmd) {
+func (m Model) updateSandboxPicker(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 	p := m.sandboxPicker
 	if p == nil {
 		m.sandboxPickerOpen = false
 		return m, nil
 	}
 	p.note = ""
-	switch msg.Type {
+	switch msg.Code {
 	case tea.KeyEsc:
+		if p.confirming {
+			p.confirming = false
+			return m, nil
+		}
 		return m.closeSandboxPicker()
 	case tea.KeyUp:
 		if p.cursor > 0 {
 			p.cursor--
 		}
+		p.confirming = false
 		return m, nil
 	case tea.KeyDown:
 		if p.cursor < sandboxModeCount-1 {
 			p.cursor++
 		}
+		p.confirming = false
 		return m, nil
 	case tea.KeyEnter:
+		if !p.confirming {
+			p.confirming = true
+			return m, nil
+		}
 		return commitSandboxMode(m, p.cursor)
-	case tea.KeyRunes:
-		if len(msg.Runes) == 1 {
-			switch msg.Runes[0] {
+	default:
+		if r := []rune(msg.Text); len(r) == 1 {
+			switch r[0] {
 			case 'j':
 				if p.cursor < sandboxModeCount-1 {
 					p.cursor++
 				}
+				p.confirming = false
 			case 'k':
 				if p.cursor > 0 {
 					p.cursor--
 				}
+				p.confirming = false
 			}
 		}
 		return m, nil
 	}
-	return m, nil
 }
 
-// closeSandboxPicker dismisses the picker and reopens the slash palette,
-// matching the other config pickers.
+// closeSandboxPicker dismisses the picker. It does not reopen the slash palette:
+// Esc should restore the normal footer immediately, not leave a second transient
+// surface open that prevents the inline-overlay re-anchor repaint.
 func (m Model) closeSandboxPicker() (Model, tea.Cmd) {
 	m.sandboxPickerOpen = false
 	m.sandboxPicker = nil
-	m.openSlashPalette()
+	m.paletteOpen = false
+	m.paletteIndex = 0
+	m.paletteOffset = 0
+	m.textInput.SetValue("")
 	return m, nil
 }
 
@@ -216,8 +235,9 @@ func commitSandboxMode(m Model, mode sandboxMode) (Model, tea.Cmd) {
 	m.appendLine(styleAuto.Render(SysMsg(SysSuccess, "sandbox", sandboxModeLabel(mode), detail)))
 	if p := m.sandboxPicker; p != nil {
 		p.current = mode
+		p.confirming = false
 	}
-	return m, nil
+	return m.closeSandboxPicker()
 }
 
 // renderSandboxPicker draws the three-row mode menu plus podman/image
@@ -225,11 +245,15 @@ func commitSandboxMode(m Model, mode sandboxMode) (Model, tea.Cmd) {
 func renderSandboxPicker(p *sandboxPickerState) string {
 	cursorArrow := lipgloss.NewStyle().Foreground(colorSuccess).Bold(true).Render("❯ ")
 	var b strings.Builder
-	// "(podman)" is hardcoded, not derived from config — it's the only
+	// "podman" is hardcoded, not derived from config — it's the only
 	// real backend today (config.ValidSandboxBackends is "none"|"podman"),
 	// and the picker's whole purpose is choosing whether THIS backend is
 	// active. Generalize if a second backend ever lands.
-	b.WriteString(renderMenuHeader("Sandbox (podman)", "↑↓ navigate · ↵ select · esc close"))
+	help := "↑↓ navigate · ↵ preview change · esc close"
+	if p.confirming {
+		help = "↵ confirm · esc back"
+	}
+	b.WriteString(renderMenuHeader("Sandbox (podman)", help))
 	b.WriteString("\n\n")
 
 	for mode := sandboxMode(0); mode < sandboxModeCount; mode++ {
@@ -264,6 +288,11 @@ func renderSandboxPicker(p *sandboxPickerState) string {
 			b.WriteString("\n")
 			b.WriteString(styleEmpty.Render("base image not pulled locally yet — podman will pull it on first use"))
 		}
+	}
+	if p.confirming {
+		b.WriteString("\n")
+		b.WriteString(styleEmpty.Render("Press Enter again to persist " + sandboxModeLabel(p.cursor) + "; Esc returns to the picker without changing config."))
+		b.WriteByte('\n')
 	}
 	if p.note != "" {
 		b.WriteString("\n")
