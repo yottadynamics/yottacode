@@ -46,9 +46,9 @@ type StartResult struct {
 }
 
 // NewManager constructs a Manager from the parsed config block. Each
-// non-disabled MCPServer becomes one StdioClient. Disabled entries
-// are dropped — they don't appear in /mcp at all in v1; the file is
-// the only place that knows about them.
+// non-disabled MCPServer becomes one Client (stdio, HTTP, or SSE — see
+// newClient). Disabled entries are dropped — they don't appear in /mcp
+// at all in v1; the file is the only place that knows about them.
 func NewManager(servers []config.MCPServer) *Manager {
 	m := &Manager{
 		configs: make(map[string]config.MCPServer, len(servers)),
@@ -61,10 +61,30 @@ func NewManager(servers []config.MCPServer) *Manager {
 			continue
 		}
 		m.configs[s.Name] = s
-		m.clients[s.Name] = NewStdioClient(s.Name, s.Command, s.Args, s.Env)
+		m.clients[s.Name] = newClient(s)
 		m.order = append(m.order, s.Name)
 	}
 	return m
+}
+
+// newClient constructs the right Client implementation for cfg.Transport
+// — stdio (the default, "" or "stdio") spawns a subprocess; "http"/"sse"
+// dial cfg.URL instead. Configs loaded from config.toml are already
+// validated (config.Load calls Validate, which rejects any other
+// Transport value); a config supplied directly to Add isn't guaranteed
+// to have gone through that check, so an unrecognized Transport falls
+// through to stdio rather than panicking — with an empty Command that
+// fails cleanly at Start() ("command not found") instead of silently
+// misbehaving.
+func newClient(cfg config.MCPServer) Client {
+	switch cfg.Transport {
+	case "http":
+		return NewHTTPClient(cfg.Name, cfg.URL, cfg.Headers, false)
+	case "sse":
+		return NewHTTPClient(cfg.Name, cfg.URL, cfg.Headers, true)
+	default:
+		return NewStdioClient(cfg.Name, cfg.Command, cfg.Args, cfg.Env)
+	}
 }
 
 // Start spawns every configured client concurrently. Each client gets
@@ -189,7 +209,7 @@ func (m *Manager) Add(ctx context.Context, cfg config.MCPServer) (StartResult, e
 		m.mu.Unlock()
 		return StartResult{}, fmt.Errorf("mcp: server %q already exists", cfg.Name)
 	}
-	client := NewStdioClient(cfg.Name, cfg.Command, cfg.Args, cfg.Env)
+	client := newClient(cfg)
 	m.configs[cfg.Name] = cfg
 	m.clients[cfg.Name] = client
 	m.order = append(m.order, cfg.Name)
@@ -237,7 +257,7 @@ func (m *Manager) Restart(ctx context.Context, name string) (StartResult, error)
 		_ = old.Stop(ctx)
 	}
 
-	fresh := NewStdioClient(cfg.Name, cfg.Command, cfg.Args, cfg.Env)
+	fresh := newClient(cfg)
 	result := startOne(ctx, fresh)
 
 	m.mu.Lock()

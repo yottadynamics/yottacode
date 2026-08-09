@@ -514,36 +514,51 @@ type Model struct {
 	ContextWindow int `toml:"context_window"`
 }
 
-// MCPServer describes one Model Context Protocol server launched as a
-// stdio subprocess at session start. The MCP client connects over
-// stdin/stdout, lists the server's tools, and registers each tool in
-// the agent tool registry under mcp/<Name>/<tool>.
+// MCPServer describes one Model Context Protocol server launched at
+// session start, over stdio (the default), HTTP, or SSE. The client
+// connects, lists the server's tools, and registers each tool in the
+// agent tool registry under mcp/<Name>/<tool>.
 //
-// The exec.LookPath / spawn / initialize-handshake is performed at
+// The exec.LookPath/spawn/dial + initialize-handshake is performed at
 // session start by internal/mcp.Manager — config.Validate only checks
-// structural well-formedness. Runtime failures (missing binary, init
-// timeout, subprocess crash) are surfaced via /mcp and the next tool
-// invocation rather than refusing the entire session.
+// structural well-formedness. Runtime failures (missing binary, dial
+// failure, init timeout, subprocess crash) are surfaced via /mcp and the
+// next tool invocation rather than refusing the entire session.
 type MCPServer struct {
 	// Name is the unique identifier used in tool namespacing and in
 	// the /mcp slash command. Must match mcpNameRE.
 	Name string `toml:"name"`
 
-	// Command is the executable that runs the MCP server. Resolved
-	// via exec.LookPath at session start.
+	// Transport selects how the server is reached. "" (the zero value)
+	// and "stdio" both mean stdio; "http" and "sse" dial URL instead of
+	// spawning Command. See Validate for which fields each transport
+	// requires.
+	Transport string `toml:"transport"`
+
+	// Command is the executable that runs the MCP server. Resolved via
+	// exec.LookPath at session start. stdio only.
 	Command string `toml:"command"`
 
 	// Args are passed to Command verbatim. Typical shape:
 	//   command = "npx"
 	//   args    = ["-y", "@modelcontextprotocol/server-filesystem", "/workspace"]
+	// stdio only.
 	Args []string `toml:"args"`
 
 	// Env supplies additional environment variables to the subprocess
 	// on top of yottacode's inherited environment. Values may use
 	// $VAR substitution from yottacode's process env, resolved at
 	// spawn time. Unresolved $VARs surface a startup warning but
-	// don't fail load.
+	// don't fail load. stdio only.
 	Env map[string]string `toml:"env"`
+
+	// URL is the server's HTTP/SSE endpoint. Required when Transport is
+	// "http" or "sse"; ignored for stdio.
+	URL string `toml:"url"`
+
+	// Headers are set on every outgoing request to URL — e.g. an
+	// Authorization bearer token. http/sse only.
+	Headers map[string]string `toml:"headers"`
 
 	// Disabled skips this entry at session start without removing it
 	// from the config file. Useful for temporarily quieting a
@@ -897,8 +912,17 @@ func Validate(cfg Config) error {
 			return fmt.Errorf("mcp_servers[%d]: duplicate name %q", i, s.Name)
 		}
 		seenMCP[s.Name] = struct{}{}
-		if strings.TrimSpace(s.Command) == "" {
-			return fmt.Errorf("mcp_servers[%q]: command is required", s.Name)
+		switch s.Transport {
+		case "", "stdio":
+			if strings.TrimSpace(s.Command) == "" {
+				return fmt.Errorf("mcp_servers[%q]: command is required", s.Name)
+			}
+		case "http", "sse":
+			if strings.TrimSpace(s.URL) == "" {
+				return fmt.Errorf("mcp_servers[%q]: url is required for transport %q", s.Name, s.Transport)
+			}
+		default:
+			return fmt.Errorf("mcp_servers[%q]: transport %q invalid (expected \"\", \"stdio\", \"http\", or \"sse\")", s.Name, s.Transport)
 		}
 	}
 

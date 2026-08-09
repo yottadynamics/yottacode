@@ -59,6 +59,7 @@ func newCLI() *cobra.Command {
 	bindCommonPersistentFlags(root, opts)
 	root.AddCommand(
 		newRunCmd(opts),
+		newAcpCmd(opts),
 		newSessionsCmd(opts),
 		newMemoryCmd(),
 		newDoctorCmd(opts),

@@ -1186,6 +1186,72 @@ command = ""
 	}
 }
 
+func TestLoad_ParsesMCPHTTPAndSSEServers(t *testing.T) {
+	src := `
+[[mcp_servers]]
+name      = "docs-http"
+transport = "http"
+url       = "https://example.com/mcp"
+
+[mcp_servers.headers]
+Authorization = "Bearer secret"
+
+[[mcp_servers]]
+name      = "docs-sse"
+transport = "sse"
+url       = "https://example.com/mcp/sse"
+`
+	cfg, err := Load(writeFile(t, src))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(cfg.MCPServers) != 2 {
+		t.Fatalf("want 2 MCP servers, got %d", len(cfg.MCPServers))
+	}
+	httpSrv := cfg.MCPServers[0]
+	if httpSrv.Transport != "http" || httpSrv.URL != "https://example.com/mcp" {
+		t.Errorf("http entry = %+v", httpSrv)
+	}
+	if httpSrv.Headers["Authorization"] != "Bearer secret" {
+		t.Errorf("http entry headers = %+v", httpSrv.Headers)
+	}
+	sseSrv := cfg.MCPServers[1]
+	if sseSrv.Transport != "sse" || sseSrv.URL != "https://example.com/mcp/sse" {
+		t.Errorf("sse entry = %+v", sseSrv)
+	}
+}
+
+func TestLoad_RejectsMCPHTTPMissingURL(t *testing.T) {
+	src := `
+[[mcp_servers]]
+name      = "docs"
+transport = "http"
+`
+	_, err := Load(writeFile(t, src))
+	if err == nil {
+		t.Fatal("expected error for http transport with no url")
+	}
+	if !strings.Contains(err.Error(), "url") {
+		t.Errorf("error should mention url; got %q", err)
+	}
+}
+
+func TestLoad_RejectsMCPUnknownTransport(t *testing.T) {
+	src := `
+[[mcp_servers]]
+name      = "docs"
+transport = "carrier-pigeon"
+url       = "https://example.com/mcp"
+`
+	_, err := Load(writeFile(t, src))
+	if err == nil {
+		t.Fatal("expected error for unknown transport value")
+	}
+	if !strings.Contains(err.Error(), "transport") {
+		t.Errorf("error should mention transport; got %q", err)
+	}
+}
+
 func TestLoad_RejectsMCPUnknownKey(t *testing.T) {
 	src := `
 [[mcp_servers]]

@@ -120,6 +120,42 @@ func TestManager_DisabledServerIsExcluded(t *testing.T) {
 	}
 }
 
+// TestManager_SelectsClientTypeByTransport locks in newClient's
+// branching: stdio (the zero value and explicit "stdio") builds a
+// *mcp.StdioClient, "http"/"sse" build a *mcp.HTTPClient — across
+// NewManager, Add, and Restart, the three call sites that construct a
+// client from config.
+func TestManager_SelectsClientTypeByTransport(t *testing.T) {
+	bin := buildEchoServer(t)
+	mgr := mcp.NewManager([]config.MCPServer{
+		{Name: "stdio-default", Command: bin},
+		{Name: "stdio-explicit", Transport: "stdio", Command: bin},
+		{Name: "http", Transport: "http", URL: "http://127.0.0.1:0"},
+		{Name: "sse", Transport: "sse", URL: "http://127.0.0.1:0"},
+	})
+
+	if _, ok := mgr.Client("stdio-default").(*mcp.StdioClient); !ok {
+		t.Errorf("stdio-default = %T, want *mcp.StdioClient", mgr.Client("stdio-default"))
+	}
+	if _, ok := mgr.Client("stdio-explicit").(*mcp.StdioClient); !ok {
+		t.Errorf("stdio-explicit = %T, want *mcp.StdioClient", mgr.Client("stdio-explicit"))
+	}
+	if _, ok := mgr.Client("http").(*mcp.HTTPClient); !ok {
+		t.Errorf("http = %T, want *mcp.HTTPClient", mgr.Client("http"))
+	}
+	if _, ok := mgr.Client("sse").(*mcp.HTTPClient); !ok {
+		t.Errorf("sse = %T, want *mcp.HTTPClient", mgr.Client("sse"))
+	}
+
+	// Add and Restart share the same newClient helper — spot-check Add.
+	if _, err := mgr.Add(context.Background(), config.MCPServer{Name: "http-added", Transport: "http", URL: "http://127.0.0.1:0"}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if _, ok := mgr.Client("http-added").(*mcp.HTTPClient); !ok {
+		t.Errorf("http-added = %T, want *mcp.HTTPClient", mgr.Client("http-added"))
+	}
+}
+
 func TestManager_ClientLookupUnknownReturnsNil(t *testing.T) {
 	mgr := managerWithMixedServers(t)
 	if got := mgr.Client("ghost"); got != nil {
