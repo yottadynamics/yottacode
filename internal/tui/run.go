@@ -429,11 +429,21 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 	if opts.BypassPermissions {
 		model = enterYoloMode(model)
 	}
-	// Inline mode (no alt-screen): conversation lines flow into the
-	// terminal's native scrollback via tea.Println from inside the model.
-	// Only the live footer (input + status + transient overlays) redraws in
-	// place. This makes selection, scroll-wheel, and copy "just work" via
-	// the terminal — see model.go for the appendLine emit path.
+	// Alt-screen full-screen mode: the TUI owns the whole frame, including
+	// an app-owned scrollable transcript viewport — see model.go's View.
+	//
+	// Restore the real terminal background (if a theme ever repainted it —
+	// see tea.View.BackgroundColor in Model.View) before we hand the
+	// terminal back. Deferred here, ahead of prog.Run, so it runs even on
+	// a panic or early error-return from the run loop — same discipline
+	// as the subagent-teardown defer above. capturedTerminalBackground
+	// (terminal_background.go) is read at defer-EXECUTION time via this
+	// closure, not registration time, since it isn't populated yet here
+	// (it fills in asynchronously once Init's tea.RequestBackgroundColor
+	// gets a reply).
+	defer func() {
+		restoreTerminalBackground(capturedTerminalBackground)
+	}()
 	prog := tea.NewProgram(model)
 	_, runErr := prog.Run()
 	// Everything below is shutdown, and it must run on EVERY exit path.

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"image/color"
 	"net/http"
 	"net/url"
 	"os"
@@ -18,6 +19,7 @@ import (
 	"charm.land/bubbles/v2/key"
 	"charm.land/bubbles/v2/spinner"
 	"charm.land/bubbles/v2/textarea"
+	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
@@ -175,12 +177,12 @@ type Config struct {
 	SummarizerModel string
 }
 
-// Model is the Bubbletea state for the chat TUI. The TUI runs in inline mode
-// (no alt-screen): conversation lines flow into the terminal's native
-// scrollback via tea.Println, while only the live footer (input box + status
-// bar + transient overlays) redraws in place at the bottom. This means the
-// terminal — not the app — owns history, so native selection, scroll-wheel,
-// and copy work end-to-end.
+// Model is the Bubbletea state for the chat TUI. The TUI runs full-screen
+// (alt-screen): the app owns the whole frame, including a scrollable
+// conversation transcript viewport above the live footer. Native terminal
+// scrollback is unavailable inside alt-screen, so transcript history is kept in
+// transcriptRows and scrolled with PgUp/PgDn/Ctrl+Home/Ctrl+End while mouse
+// capture stays disabled so plain terminal text selection still works.
 type Model struct {
 	parentCtx context.Context
 	cfg       agent.LoopConfig
@@ -493,6 +495,34 @@ type Model struct {
 	height    int
 	ready     bool
 
+	// enteredConversation is a one-way flag: false shows the top-anchored
+	// launch hero (startup card + cmdline) instead of the top-anchored
+	// transcript viewport; true shows the normal conversation layout
+	// permanently for the rest of the session. Set on a plain chat
+	// message (the "enter" key case) and, belt-and-suspenders, whenever
+	// a real agent turn actually starts (startTurnWithDisplay) or an
+	// agentEventMsg arrives. Deliberately NOT set just because a slash
+	// command was typed — most slash commands only open a picker or
+	// print a quick lookup (/theme, /model, /permissions), and popping
+	// out to the conversation layout for those left the cmdline jumping
+	// to the bottom of an otherwise-still-empty screen, with a
+	// leftover gap once the picker closed. Also deliberately NOT
+	// re-derived from len(historyLines)==0 or similar, so a /clear
+	// later in the session can't accidentally flip back to the hero —
+	// re-centering the whole UI mid-session would be disorienting.
+	enteredConversation bool
+
+	// originalTerminalBackground is the terminal's real background
+	// color, captured once via tea.RequestBackgroundColor's reply (see
+	// Init and the tea.BackgroundColorMsg case in update). nil until
+	// captured, and stays nil for the whole session if the terminal
+	// never answers (no OSC 11 background-query support — SSH without
+	// passthrough, some multiplexers, headless ttys). View only paints
+	// a real terminal background (tea.View.BackgroundColor) when this
+	// is non-nil, and run.go's shutdown path uses it to restore the
+	// original on exit.
+	originalTerminalBackground color.Color
+
 	// transcript is an append-only record of every line we've emitted to the
 	// terminal. View() does NOT render it (lines live in terminal scrollback);
 	// kept solely so tests can assert "this line was emitted." It also backs
@@ -546,36 +576,35 @@ type Model struct {
 	// a cancelled turn doesn't leave the flag armed for the next one.
 	livePlanTouched bool
 
-	// pendingCmds holds non-print tea.Cmd values queued during one Update
-	// tick (currently just tea.ClearScreen from repaintViewportTail).
-	// Flushed at the tail of Update via the wrapper below. Kept as a slice on
-	// a pointer-backed field (strings.Builder above is *strings.Builder for
-	// the same reason) so value-receiver Update copies see consistent state.
-	pendingCmds []tea.Cmd
+	// transcriptViewport is the owned, scrollable conversation surface —
+	// the TUI runs full-screen (alt-screen) now, so it has no native
+	// terminal scrollback to lean on. Its content is (re)synced from
+	// transcriptRows and its size tracks the live footer every tick; see
+	// refreshTranscriptViewport. Scrolled with PgUp/PgDn/Ctrl+Home/Ctrl+End
+	// — arrow keys stay reserved for input history, matching prior inline
+	// behavior and avoiding a focus-toggle just to disambiguate the two.
+	transcriptViewport viewport.Model
 
-	// pendingPrintRows accumulates every row queued via queuePrintlnIndented
-	// during one Update tick, across however many logical calls contributed
-	// to it (the startup box, the blank-line spacer after it, resume-banner
-	// lines, history replay, ...). flushPending joins them into ONE
-	// tea.Println. This matters beyond just fewer Cmds: bubbletea v2's
-	// inline-mode renderer (insertAbove) computes its scroll offset fresh
-	// per Println call from a hardcoded "cursor is at (0,0)" assumption, not
-	// from wherever the previous call actually left the cursor. Two
-	// SEPARATE sequenced Println calls each independently scroll the
-	// terminal by their own row count from that same assumed origin — the
-	// second call's scroll pushes the first call's just-written rows up and
-	// out of the visible viewport before the terminal ever paints them,
-	// even though the combined content easily fits on screen. One Println
-	// call for the whole batch means one correctly-sized scroll.
-	pendingPrintRows []string
+	// transcriptRows accumulates every terminal row ever queued via
+	// queuePrintlnIndented, in order — the full backing content for
+	// transcriptViewport. Rows are pre-wrapped to width at append time
+	// (see queuePrintlnIndented), same as the old tea.Println path, so a
+	// resize doesn't reflow already-emitted tool cards/diffs/box art —
+	// matches the fidelity of what the terminal-native scrollback gave
+	// before this owned viewport replaced it.
+	transcriptRows []string
+
+	// transcriptDirty flips true whenever queuePrintlnIndented appends new
+	// rows; refreshTranscriptViewport consumes it once per Update tick so a
+	// long session's content isn't rebuilt on every keystroke that doesn't
+	// touch the transcript.
+	transcriptDirty bool
 
 	// historyLines records every conversation line emitted via appendLine —
 	// user blocks, assistant replies, tool calls, errors, footers — in the
-	// order they were emitted. On terminal resize the live frame's
-	// tea.ClearScreen wipes the visible viewport; replaying historyLines
-	// restores the conversation under a freshly-rendered startup box.
-	// Startup chrome (box, hint, welcome) is NOT in this slice — those get
-	// regenerated at the new width on every resize.
+	// order they were emitted. Kept for /export and other consumers that
+	// want logical (pre-wrap) entries rather than transcriptRows' wrapped
+	// terminal rows.
 	historyLines []string
 
 	// pendingStartupNotices holds notice strings set by run.go before the
@@ -739,10 +768,9 @@ type Model struct {
 	// Permissions picker (/permissions). Two-row picker (shared /
 	// local) modelled on /memory's three-row picker — Up/Down
 	// navigates, Enter suspends to vim on the chosen rule file, Esc
-	// closes. Rendered above the cmdline via renderInlineOverlay so the
-	// paths sit near the input the user is about to type the next command
-	// into. The store re-reads both files on the
-	// next tool call, so there's no explicit reload step.
+	// closes. Rendered as a centered popup (popup.go). The store
+	// re-reads both files on the next tool call, so there's no explicit
+	// reload step.
 	permissionsOpen   bool
 	permissionsCursor int
 
@@ -881,10 +909,9 @@ type Model struct {
 	filePaletteQuery    string
 	filePaletteAt       int // byte index of the active `@` in textarea value
 
-	// startupPrinted gates the one-shot scrollback emission of the startup
-	// box and welcome panel. Init() can't directly tea.Println because Init
-	// runs before the first WindowSizeMsg, so we defer the print to the
-	// first Update tick — gated on this flag.
+	// startupPrinted gates the one-shot emission of width-deferred startup
+	// notices after the first WindowSizeMsg. The startup card itself is launch
+	// hero chrome now, not transcript content.
 	startupPrinted bool
 
 	// firstMessageSent flips true the first time the user submits a turn
@@ -1225,12 +1252,19 @@ func (m Model) Init() tea.Cmd {
 	// and line-clear ANSI which can invalidate active mouse selections
 	// in scrollback on terminals/tmux. startTurn re-arms the tick.
 	cmds := []tea.Cmd{
-		// Inline mode reuses the terminal's visible viewport. Clear it once
-		// at launch so yottacode opens on a clean screen while preserving the
-		// native scrollback above the fresh session.
 		tea.ClearScreen,
 		textarea.Blink,
 		cursorBlinkCmd(),
+		// Capture the terminal's real background color once at startup
+		// (delivered as tea.BackgroundColorMsg, handled in update) so
+		// themes with their own real-background repaint (View, via
+		// tea.View.BackgroundColor) have something to restore when a
+		// non-backgrounded theme is picked, and so run.go's shutdown
+		// path knows what to restore on exit. No reply (terminal/
+		// multiplexer doesn't support OSC 11 background queries) just
+		// means the message never arrives — real-background repaint
+		// stays off for the whole session rather than guessing.
+		func() tea.Msg { return tea.RequestBackgroundColor() },
 		runProviderProbe(m.parentCtx, m.adapterConfig(m.modelName, m.baseURL), false),
 		// Drain the long-lived subagent inbox for the life of the
 		// program. A nil channel here is a programming error (New
@@ -1263,32 +1297,12 @@ func (m Model) Init() tea.Cmd {
 }
 
 // Update is the public Bubbletea entry point. It delegates to update() then
-// flushes any tea.Println commands appendLine queued during the tick. Single
-// chokepoint keeps the rest of the model from threading Cmds by hand.
+// resyncs the owned transcript viewport. Single chokepoint keeps the rest
+// of the model from threading viewport size/content bookkeeping by hand.
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	out, cmd := m.update(msg)
 	mm := out.(Model)
-	// Inline-mode re-anchor guard. A full-screen overlay (e.g. /context,
-	// the /skills menu) renders taller than the bare footer; in inline mode
-	// Bubbletea doesn't re-anchor a shrinking live frame to the terminal
-	// bottom, so closing one leaves the footer (input box + status bar)
-	// stranded mid-screen until something redraws scrollback. Overlays that
-	// emit a line on close — model/provider selection's `appendLine` — get
-	// re-anchored for free by that tea.Println; the quiet closes (Esc / any
-	// key) don't. So when a key closes an overlay and nothing else queued a
-	// scrollback redraw this tick, force the clean redraw ourselves. Only
-	// key input closes overlays, so other message types skip the check.
-	if _, isKey := msg.(tea.KeyPressMsg); isKey && m.overlayClosed(mm) && len(mm.pendingCmds) == 0 && len(mm.pendingPrintRows) == 0 {
-		mm.repaintViewport()
-	}
-	if flush := mm.flushPending(); flush != nil {
-		if cmd == nil {
-			return mm, flush
-		}
-		// Sequence: scrollback prints first, then any other Cmd (event pump,
-		// quit, ping, etc.) — keeps line ordering deterministic.
-		return mm, tea.Sequence(flush, cmd)
-	}
+	mm.refreshTranscriptViewport()
 	return mm, cmd
 }
 
@@ -1353,7 +1367,6 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 
 	case tea.WindowSizeMsg:
-		wasReady := m.ready
 		// m.width is the full terminal width minus the (now zero)
 		// scrollbackLeftMargin — see the const's note on the flush-left
 		// canvas. The subtraction stays so a future non-zero margin would
@@ -1370,23 +1383,22 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		menuDividerWidth = computeMenuDividerWidth(m.width)
 		if !m.ready {
 			m.ready = true
-			// First Update tick — flush the startup box + welcome to
-			// scrollback. Gated on startupPrinted so subsequent resizes
-			// don't reprint.
+			// First Update tick: width is finally known, so any startup notices
+			// that were recorded before layout can now be wrapped correctly.
+			// The launch hero renders the startup card directly while
+			// enteredConversation is false; do not also append that card to
+			// transcriptRows here, or it reappears above the first real turn
+			// once the conversation layout takes over.
 			if !m.startupPrinted {
 				m.startupPrinted = true
-				m.appendRawFlush(renderStartupBox(m.version, m.commit, m.dirty, m.modelName, m.cwd, m.sess.ID, m.branch, m.memorySummary, m.providerProfile, m.startupTip(), m.width))
-				// One blank line of breathing room between the card and
-				// the input frame — matches the Phase 2 spacing target.
-				m.queuePrintln("")
-				// Construction-time entry banners (yolo mode,
-				// plan/auto mode, custom-command errors) recorded into
-				// historyLines before any width was known — queuePrintln
-				// deferred their emission rather than wrap at the 80-col
-				// fallback (see queuePrintlnIndented). Emit them now at the
-				// real width, below the box, matching the box-then-history
-				// order the resize replay uses so the layout is identical
-				// on first boot and after every resize.
+				// Construction-time entry banners (yolo mode, plan/auto
+				// mode, custom-command errors) recorded into historyLines
+				// before any width was known still need to be emitted now
+				// at the real width. The hero also renders active mode
+				// banners live via aboveInputRows, but historyLines keeps
+				// durable startup notices available once the conversation
+				// layout takes over.
+
 				for _, line := range m.historyLines {
 					m.queuePrintln(line)
 				}
@@ -1407,23 +1419,11 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 		}
-		if wasReady {
-			// Genuine resize (not the initial size on startup). Bubbletea's
-			// inline-mode renderer can't reliably clean up a bordered live
-			// frame when the width changes — the previous frame's border
-			// characters smear into scrollback as stair-step "┌───" ghosts
-			// at every prior width. tea.ClearScreen wipes the visible
-			// viewport so the next View() draws clean.
-			//
-			// We then replay only a bounded tail under freshly-rendered
-			// startup chrome at the new width. Terminals emit many resize
-			// events while the user drags the window; replaying the entire
-			// native scrollback for each event makes long sessions visibly
-			// scroll forever. The bounded tail is enough to re-anchor the live
-			// frame without dumping the whole conversation repeatedly.
-			m.repaintViewportTail(m.resizeReplayLimit())
-			return m, nil
-		}
+		// Genuine resizes need nothing further here: alt-screen repaints
+		// the whole owned frame every tick (no terminal-scrollback border
+		// smearing to defensively wipe, unlike the old inline-mode
+		// resize path), and refreshTranscriptViewport resyncs the
+		// transcript viewport's width/height on every Update tick anyway.
 		return m, nil
 
 	case tea.KeyPressMsg:
@@ -1519,6 +1519,36 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.mcpPickerOpen {
 			return m.updateMCPPicker(msg)
+		}
+		// Transcript scrolling. No mouse support, and alt-screen mode owns
+		// the whole frame (no native terminal scrollback to fall back on),
+		// so PgUp/PgDn/Ctrl+Home/Ctrl+End are the only way to read back
+		// through history. Arrow keys stay reserved for input history
+		// (below) rather than doing double duty here — that would need a
+		// focus-toggle (like the dock's Tab-to-focus) to disambiguate for
+		// no real benefit, since PgUp/PgDn is already the idiomatic
+		// scrollback gesture. Skipped while the dock has focus so its own
+		// up/down/enter navigation isn't shadowed.
+		if !m.dockFocused {
+			// Re-measure before moving: footer height can change between
+			// ticks (streaming rows, banners, dock), and PageUp/PageDown need
+			// current viewport dimensions because alt-screen has no native
+			// terminal scrollback fallback.
+			m.resizeTranscriptViewport(m.renderFooter())
+			switch {
+			case msg.Code == tea.KeyPgUp:
+				m.transcriptViewport.PageUp()
+				return m, nil
+			case msg.Code == tea.KeyPgDown:
+				m.transcriptViewport.PageDown()
+				return m, nil
+			case msg.Code == tea.KeyHome && msg.Mod == tea.ModCtrl:
+				m.transcriptViewport.GotoTop()
+				return m, nil
+			case msg.Code == tea.KeyEnd && msg.Mod == tea.ModCtrl:
+				m.transcriptViewport.GotoBottom()
+				return m, nil
+			}
 		}
 		// Live-dock keyboard navigation. When focused, the dock consumes
 		// keys (up/down/enter/esc) ahead of the cmdline. Tab focuses it —
@@ -2251,8 +2281,22 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.pastes = nil
 			if strings.HasPrefix(input, "/") {
 				m.pastedImages = nil
+				// Deliberately NOT setting enteredConversation here — most
+				// slash commands just open a picker or print a quick
+				// lookup (e.g. /theme, /model, /permissions), and exiting
+				// the launch hero for those felt wrong in practice: the
+				// cmdline would jump to the bottom of the now-permanent,
+				// still-empty conversation layout, leaving a big gap once
+				// the picker closed. Commands that DO start a real agent
+				// turn (e.g. /git-commit) still exit the hero — via
+				// startTurnWithDisplay's own belt-and-suspenders set,
+				// below — since real conversation content is actually
+				// about to exist.
 				return m.runSlash(input)
 			}
+			// A plain chat message is the unambiguous "conversation has
+			// begun" signal — see enteredConversation's field doc.
+			m.enteredConversation = true
 			// pastedImages is consumed by startTurn → startTurnWithDisplay
 			// via collectPastedImages(); no nil needed here.
 			return m.startTurn(input)
@@ -2323,9 +2367,26 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.fitTextareaHeight()
 		return m, cmd
 
+	case tea.BackgroundColorMsg:
+		// Reply to Init's tea.RequestBackgroundColor. Captured once and
+		// never re-requested — see originalTerminalBackground's field
+		// doc for how View uses it. Also mirrored into the package-level
+		// capturedTerminalBackground (terminal_background.go) so run.go
+		// can restore it from a defer registered before prog.Run even
+		// starts, covering panics and early error-returns too.
+		m.originalTerminalBackground = msg
+		capturedTerminalBackground = msg
+		return m, nil
+
 	case codeMapLoadedMsg:
 		return m.handleCodeMapLoaded(msg)
 	case agentEventMsg:
+		// Belt-and-suspenders alongside startTurnWithDisplay: an
+		// agentEventMsg can only exist because a turn is (or was)
+		// running, so its arrival is unambiguous evidence the
+		// conversation has begun — covers tests that inject events
+		// directly without going through startTurn too.
+		m.enteredConversation = true
 		return m.handleAgentEvent(msg.ev)
 
 	case modelPickerLoadedMsg:
@@ -2704,13 +2765,12 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// anyOverlayOpen reports whether a full-screen inline overlay is open —
-// the set of flags that make View() short-circuit into renderInlineOverlay
-// (a single panel that replaces the whole footer). Keep this in sync with
-// the early-return chain at the top of View. The slash/file palettes are
-// deliberately excluded: they render inline *above* the cmdline within the
-// normal footer, not as a replacing overlay, so they don't drive the
-// over-tall collapse this guards.
+// anyOverlayOpen reports whether a full-screen popup is open — the set of
+// flags that make activePopupBody return ok=true. Keep this in sync with
+// activePopupBody's branches. The slash/file palettes are deliberately
+// excluded: they render inline *above* the cmdline within the normal
+// footer, not as a popup, so they don't drive the over-tall collapse this
+// guards.
 func (m Model) anyOverlayOpen() bool {
 	return m.cheatsheetOpen || m.loopListOpen || m.usageOpen || m.experimentalOpen || m.helpOpen || m.contextReportOpen ||
 		m.permissionsOpen || m.modelPickerOpen || m.providerPickerOpen ||
@@ -2718,12 +2778,6 @@ func (m Model) anyOverlayOpen() bool {
 		m.plansPickerOpen || m.checkpointsPickerOpen || m.subagentsPickerOpen ||
 		m.routerPickerOpen || m.themePickerOpen || m.effortPickerOpen || m.skillsMenuOpen ||
 		m.skillsPickerOpen || m.mcpPickerOpen || m.sandboxPickerOpen
-}
-
-// overlayClosed reports whether the transition from this model (pre-update)
-// to `after` closed a full-screen inline overlay — open before, gone after.
-func (m Model) overlayClosed(after Model) bool {
-	return m.anyOverlayOpen() && !after.anyOverlayOpen()
 }
 
 // hasRunningSubagents reports whether any subagent task is currently
@@ -2739,11 +2793,49 @@ func (m Model) skillsBusy() bool {
 		(m.skillsMenuOpen && m.skillsMenu != nil && m.skillsMenu.busy != "")
 }
 
-// View renders the live footer that redraws in place at the bottom of the
-// terminal. Conversation history is NOT in here — those lines live in
-// terminal scrollback courtesy of tea.Println from appendLine.
+// View renders the full-screen frame: the owned, scrollable transcript
+// viewport on top and the live footer (input box + status bar + transient
+// overlays) pinned to the bottom. Alt-screen (like internal/wizard's
+// steps.go) is set declaratively here per Bubbletea v2's per-View pattern,
+// not as a tea.NewProgram option.
+//
+// Real terminal-background repaint (tea.View.BackgroundColor) rides the
+// same declarative pattern: hasThemeBackground/themeBackground
+// (styles.go) are set by buildStyles, the single chokepoint every theme
+// change already funnels through — startup load, /theme set, and every
+// cursor move in the live-preview theme picker alike — so a theme's
+// real background applies and (via Esc reverting to the prior theme,
+// which re-triggers buildStyles) un-applies with no picker-specific
+// code here. Only set when originalTerminalBackground was actually
+// captured (Init/update's tea.BackgroundColorMsg case) — a terminal
+// that never answered the startup query never gets a blind write
+// attempt, and a non-backgrounded theme falls back to that captured
+// original rather than leaving whatever the last themed pick set.
 func (m Model) View() tea.View {
-	return tea.NewView(m.viewString())
+	v := tea.NewView(m.viewString())
+	v.AltScreen = true
+	// MouseMode deliberately left at its zero value (MouseModeNone): no
+	// mouse support. Claiming the mouse — even just for wheel events —
+	// takes plain click+drag away from the terminal's own native text
+	// selection (a terminal only lets Shift+drag bypass an app that has
+	// claimed the mouse, and even then, Shift held for the bypass also
+	// blocks wheel events from reaching the app, so scroll-while-
+	// selecting doesn't work either way). Native selection with no
+	// modifier needed is worth more than wheel-scroll, given
+	// PgUp/PgDn/Ctrl+Home/Ctrl+End already cover scrolling from the
+	// keyboard — see the mouse-wheel capability's brief existence and
+	// revert in git history/docs/tui-slash-commands.md if that tradeoff
+	// ever needs revisiting (e.g. with real in-app click-drag selection
+	// + OSC 52 clipboard copy, which tea.MouseClickMsg/MouseMotionMsg/
+	// MouseReleaseMsg and tea.SetClipboard would make buildable).
+	if m.originalTerminalBackground != nil {
+		if hasThemeBackground {
+			v.BackgroundColor = themeBackground
+		} else {
+			v.BackgroundColor = m.originalTerminalBackground
+		}
+	}
+	return v
 }
 
 func (m Model) viewString() string {
@@ -2751,85 +2843,211 @@ func (m Model) viewString() string {
 		return "initializing…"
 	}
 
-	// Inline-overlay layout shared by every picker (cheatsheet, model,
-	// provider, memory): picker body above the cmdline so menus stay in
-	// the same above-prompt region as the slash and file palettes. The
-	// cmdline remains visible underneath for anchoring, and the status bar
-	// stays directly below the cmdline so session state is still readable
-	// while a picker owns keystrokes.
-	if m.cheatsheetOpen {
-		return m.renderInlineOverlay(renderCheatsheet(m.inlineOverlayWidth()))
-	}
-	if m.loopListOpen && m.activeLoopCount() > 0 {
-		return m.renderInlineOverlay(m.renderLoopListPanel())
-	}
-	if m.usageOpen {
-		return m.renderInlineOverlay(m.usagePanel)
-	}
-	if m.experimentalOpen {
-		return m.renderInlineOverlay(m.experimentalPanel)
-	}
-	if m.helpOpen {
-		return m.renderInlineOverlay(m.helpPanel)
-	}
-	if m.contextReportOpen {
-		return m.renderInlineOverlay(m.contextReportBody)
-	}
-	if m.permissionsOpen {
-		return m.renderInlineOverlay(renderPermissionsOverlay(m))
-	}
-	if m.modelPickerOpen && m.modelPicker != nil {
-		return m.renderInlineOverlay(renderModelPicker(m.modelPicker, m.inlineOverlayWidth()))
-	}
-	if m.providerPickerOpen && m.providerPicker != nil {
-		return m.renderInlineOverlay(renderProviderPicker(m.providerPicker, m.inlineOverlayWidth()))
-	}
-	if m.embedSetupOpen {
-		return m.renderInlineOverlay(m.renderEmbedSetup())
-	}
-	if m.memoryPickerOpen && m.memoryPicker != nil {
-		return m.renderInlineOverlay(renderMemoryPicker(m.memoryPicker, m.inlineOverlayWidth()))
-	}
-	if m.recallPickerOpen && m.recallPicker != nil {
-		return m.renderInlineOverlay(renderRecallPicker(m.recallPicker, m.inlineOverlayWidth()))
-	}
-	if m.codeMapPickerOpen && m.codeMapPicker != nil {
-		return m.renderInlineOverlay(renderCodeMapPicker(m.codeMapPicker, m.inlineOverlayWidth()))
-	}
-	if m.sessionsPickerOpen && m.sessionsPicker != nil {
-		return m.renderInlineOverlay(renderSessionsPicker(m.sessionsPicker, m.inlineOverlayWidth()))
-	}
-	if m.plansPickerOpen && m.plansPicker != nil {
-		return m.renderInlineOverlay(renderPlansPicker(m.plansPicker, m.inlineOverlayWidth()))
-	}
-	if m.checkpointsPickerOpen && m.checkpointsPicker != nil {
-		return m.renderInlineOverlay(renderCheckpointsPicker(m.checkpointsPicker, m.inlineOverlayWidth()))
-	}
-	if m.subagentsPickerOpen && m.subagentsPicker != nil {
-		return m.renderInlineOverlay(renderSubagentsPicker(m.subagentsPicker, m.inlineOverlayWidth()))
-	}
-	if m.routerPickerOpen && m.routerPicker != nil {
-		return m.renderInlineOverlay(renderRouterPicker(m.routerPicker))
-	}
-	if m.sandboxPickerOpen && m.sandboxPicker != nil {
-		return m.renderInlineOverlay(renderSandboxPicker(m.sandboxPicker))
-	}
-	if m.themePickerOpen && m.themePicker != nil {
-		return m.renderInlineOverlay(renderThemePicker(m.themePicker, m.inlineOverlayWidth()))
-	}
-	if m.effortPickerOpen && m.effortPicker != nil {
-		return m.renderInlineOverlay(renderEffortPicker(m.effortPicker))
-	}
-	if m.skillsMenuOpen && m.skillsMenu != nil {
-		return m.renderInlineOverlay(renderSkillsMenu(m.skillsMenu, m.inlineOverlayWidth()))
-	}
-	if m.skillsPickerOpen && m.skillsPicker != nil {
-		return m.renderInlineOverlay(renderSkillsPicker(m.skillsPicker, m.inlineOverlayWidth()))
-	}
-	if m.mcpPickerOpen && m.mcpPicker != nil {
-		return m.renderInlineOverlay(renderMCPPicker(m.mcpPicker, m.inlineOverlayWidth()))
+	var background string
+	if !m.enteredConversation {
+		// Launch hero: identity card + cmdline, centered in the upper
+		// half of the screen, no transcript viewport (nothing to show
+		// yet — see renderHero).
+		background = m.renderHero()
+	} else {
+		// Full-screen frame: the owned transcript viewport fills the space
+		// above the footer. resizeTranscriptViewport re-measures against
+		// this same renderFooter() output on every render (not just every
+		// Update tick) so direct field mutations between Update calls —
+		// tests are the common case — never leave stale sizing on screen.
+		footer := m.renderFooter()
+		m.resizeTranscriptViewport(footer)
+		background = lipgloss.JoinVertical(lipgloss.Left, m.transcriptViewport.View(), footer)
 	}
 
+	// Popup layer: pickers, panels, and decision modals all render as a
+	// centered floating window over the full frame (popup.go), instead
+	// of the old renderInlineOverlay's "replace the whole footer". Works
+	// the same whether the background is the hero or the conversation
+	// layout — e.g. "?" for the cheatsheet works before the first message
+	// too.
+	if box, ok := m.activePopupBody(); ok {
+		return m.composePopup(background, box)
+	}
+	return background
+}
+
+// renderHero is the launch screen shown until the user's first
+// Enter-submission (see enteredConversation): the identity card anchored
+// near the top of the screen, with the cmdline directly below it —
+// blank space fills the rest of the screen underneath, rather than
+// floating the whole block mid-screen. aboveInputRows (shared with
+// renderFooter) contributes the slash/file palette and mode banners —
+// both can be live before the first message (typing "/", or yolo/auto
+// mode armed via a startup flag), and were previously invisible during
+// the hero because this function built its block by hand instead of
+// reusing that logic. Everything renders at normal full terminal
+// width — same as it always has; the startup card and input frame
+// already read as paired top/bottom chrome at that width (see
+// queuePrintlnFlush's doc).
+//
+// Uses lipgloss.Top (an exact 0.0 Position), not a fractional vPos —
+// charm.land/lipgloss/v2@v2.0.5's Place has a verified bug where any
+// vPos strictly between 0 and 1 lands inverted (content ends up near
+// the BOTTOM instead of proportionally down from the top); only the
+// exact 0.0/1.0 endpoints land where documented, which is what let the
+// earlier "center-upper" attempt (a fractional vPos) render at the
+// bottom of the screen instead of the top.
+func (m Model) renderHero() string {
+	box := renderStartupBox(m.version, m.commit, m.dirty, m.modelName, m.cwd, m.sess.ID, m.branch, m.memorySummary, m.providerProfile, m.startupTip(), m.width)
+	// Leading blank row: a little breathing room off the terminal's top
+	// edge rather than the card butting flush against row 0.
+	parts := append([]string{"", box, ""}, m.aboveInputRows()...)
+	parts = append(parts, m.renderInputFrame(), m.renderStatus())
+	block := lipgloss.JoinVertical(lipgloss.Left, parts...)
+	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Top, block)
+}
+
+// activePopupBody returns the framed box for whichever picker, panel, or
+// decision modal is currently open, or ok=false when none is. Decision
+// modals (path-trust, approval, plan-approval, loop-exit-confirm) are
+// checked first since they can be modal even mid-turn; they already
+// self-border via renderLabeledBox (labeled_box.go) so they're returned
+// as-is. Everything else is a borderless body wrapped in the shared
+// rounded popup border via popupBox. Mechanically the same one-flag-per-
+// branch shape as the old viewString if-chain — only what each branch
+// returns (and how it gets composited) has changed.
+func (m Model) activePopupBody() (box string, ok bool) {
+	switch {
+	case m.awaitingPathTrust:
+		// Mutually exclusive with the regular approval modal — only one
+		// of awaitingPathTrust / awaitingApproval is ever true.
+		return renderPathTrustModal(m), true
+	case m.awaitingApproval:
+		// The plan-mode boundary tools get their own decision cards —
+		// just the hotkeys in a bordered box, never the generic
+		// always-allow modal. For exit, the plan body itself is
+		// emitted to scrollback above the box when ApprovalNeeded
+		// fires (see handleAgentEvent), so the body persists naturally
+		// after the modal dismisses and isn't cramped inside the box.
+		switch m.approvalTool {
+		case "exit_plan_mode":
+			return renderPlanApprovalCard(m.width), true
+		case "enter_plan_mode":
+			return renderEnterPlanApprovalCard(m.width), true
+		default:
+			return renderApprovalModal(m), true
+		}
+	case m.loopExitConfirmOpen:
+		return popupBox(renderLoopExitConfirm(m)), true
+	case m.cheatsheetOpen:
+		return popupBox(renderCheatsheet()), true
+	case m.loopListOpen && m.activeLoopCount() > 0:
+		return popupBox(m.renderLoopListPanel()), true
+	case m.usageOpen:
+		return popupBox(m.usagePanel), true
+	case m.experimentalOpen:
+		return popupBox(m.experimentalPanel), true
+	case m.helpOpen:
+		return popupBox(m.helpPanel), true
+	case m.contextReportOpen:
+		return popupBox(m.contextReportBody), true
+	case m.permissionsOpen:
+		return popupBox(renderPermissionsOverlay(m)), true
+	case m.modelPickerOpen && m.modelPicker != nil:
+		return popupBox(renderModelPicker(m.modelPicker, m.popupWidth())), true
+	case m.providerPickerOpen && m.providerPicker != nil:
+		return popupBox(renderProviderPicker(m.providerPicker, m.popupWidth())), true
+	case m.embedSetupOpen:
+		return popupBox(m.renderEmbedSetup()), true
+	case m.memoryPickerOpen && m.memoryPicker != nil:
+		return popupBox(renderMemoryPicker(m.memoryPicker, m.popupWidth())), true
+	case m.recallPickerOpen && m.recallPicker != nil:
+		return popupBox(renderRecallPicker(m.recallPicker, m.popupWidth())), true
+	case m.codeMapPickerOpen && m.codeMapPicker != nil:
+		return popupBox(renderCodeMapPicker(m.codeMapPicker, m.popupWidth())), true
+	case m.sessionsPickerOpen && m.sessionsPicker != nil:
+		return popupBox(renderSessionsPicker(m.sessionsPicker, m.popupWidth())), true
+	case m.plansPickerOpen && m.plansPicker != nil:
+		return popupBox(renderPlansPicker(m.plansPicker, m.popupWidth())), true
+	case m.checkpointsPickerOpen && m.checkpointsPicker != nil:
+		return popupBox(renderCheckpointsPicker(m.checkpointsPicker, m.popupWidth())), true
+	case m.subagentsPickerOpen && m.subagentsPicker != nil:
+		return popupBox(renderSubagentsPicker(m.subagentsPicker, m.popupWidth())), true
+	case m.routerPickerOpen && m.routerPicker != nil:
+		return popupBox(renderRouterPicker(m.routerPicker)), true
+	case m.sandboxPickerOpen && m.sandboxPicker != nil:
+		return popupBox(renderSandboxPicker(m.sandboxPicker)), true
+	case m.themePickerOpen && m.themePicker != nil:
+		return popupBox(renderThemePicker(m.themePicker, m.popupWidth())), true
+	case m.effortPickerOpen && m.effortPicker != nil:
+		return popupBox(renderEffortPicker(m.effortPicker)), true
+	case m.skillsMenuOpen && m.skillsMenu != nil:
+		return popupBox(renderSkillsMenu(m.skillsMenu, m.popupWidth())), true
+	case m.skillsPickerOpen && m.skillsPicker != nil:
+		return popupBox(renderSkillsPicker(m.skillsPicker, m.popupWidth())), true
+	case m.mcpPickerOpen && m.mcpPicker != nil:
+		return popupBox(renderMCPPicker(m.mcpPicker, m.popupWidth())), true
+	}
+	return "", false
+}
+
+// aboveInputRows returns the palette/mode-banner/loop-banner rows that
+// stack directly above the cmdline — shared between renderFooter (the
+// conversation layout) and renderHero (the launch layout), since
+// palette state and mode banners (yolo/auto/plan armed via a startup
+// flag, before any message) can both be live before the user's first
+// Enter-submission, not just during a conversation. Plan-mode's banner
+// and the loop banner are gated on state that's only reachable after
+// enteredConversation is already true (PlanFile is set on the first
+// plan-mode message; loops are armed via a submitted /loop command) —
+// harmless no-ops here during the hero, not dead code to prune.
+func (m Model) aboveInputRows() []string {
+	var rows []string
+	if m.paletteOpen {
+		rows = append(rows, renderPalette(m.paletteFiltered, m.paletteIndex, m.paletteOffset, liveContentWidth(m.width)+4))
+	}
+	if m.filePaletteOpen {
+		rows = append(rows, renderFilePalette(m.filePaletteFiltered, m.filePaletteIndex, m.filePaletteOffset, liveContentWidth(m.width)+4))
+	}
+	// Banner: one-line indicator above the input rule. Modes
+	// (plan/auto) are mutually exclusive; yolo mode is an
+	// orthogonal overlay flag whose `⚠ yolo mode` tag appends to
+	// the active mode banner. When no mode is active but yolo
+	// mode is, a standalone yolo banner shows so the user can
+	// still see the "rails off" state. Suppressed entirely while a
+	// palette is open (palettes already own the above-cmdline real
+	// estate).
+	yoloOn := m.cfg.YoloMode.IsActive()
+	switch {
+	case m.paletteOpen, m.filePaletteOpen:
+		// suppressed
+	case m.cfg.PlanMode.IsActive() && m.cfg.PlanMode.PlanFile != "":
+		// Plan-mode banner is gated behind "the user has submitted
+		// their first message in this plan session" — PlanFile is
+		// empty between /plan-entry and the first user prompt, then
+		// set by maybeFillPlanFile or the resume picker. Hiding
+		// the banner during that window avoids stacking it
+		// immediately below the entry log's "plan mode active —
+		// read-only research…" line, which scanned as a duplicate.
+		rows = append(rows, renderPlanModeBanner(computePlanBannerInfo(m), yoloOn, m.width))
+	case m.cfg.AutoMode.IsActive():
+		rows = append(rows, renderAutoModeBanner(yoloOn, m.width))
+	case yoloOn:
+		rows = append(rows, renderYoloStandaloneBanner(m.width))
+	}
+	// Loop banner is additive — a /loop can be armed in any mode, so it
+	// stacks below the mode banner (if any) rather than replacing it.
+	// Suppressed with the mode banners while a palette owns the
+	// above-cmdline space.
+	if m.activeLoopCount() > 0 && !m.paletteOpen && !m.filePaletteOpen {
+		rows = append(rows, renderLoopBanner(m.loopBannerStates(), m.width))
+	}
+	return rows
+}
+
+// renderFooter builds the live footer that sits below the transcript
+// viewport: turn-active previews, the live plan card, approval/path-trust
+// modals, mode/loop banners, the cmdline input frame, the status bar, and
+// the subagent dock. Also used by refreshTranscriptViewport purely to
+// measure its height (via lipgloss.Height) so the transcript viewport
+// above it is sized to fill exactly what's left.
+func (m Model) renderFooter() string {
 	parts := []string{}
 	// During an active turn the live footer carries: a leading blank row
 	// (separates the live area from the user's just-emitted message in
@@ -2872,70 +3090,15 @@ func (m Model) viewString() string {
 		parts = append(parts, m.renderSummarizingRow(), "")
 	}
 
-	if m.awaitingPathTrust {
-		// Prompt 2: inline path-trust elevation modal. Mutually
-		// exclusive with the regular approval modal — only one of
-		// awaitingPathTrust / awaitingApproval is ever true.
-		parts = append(parts, renderPathTrustModal(m))
-	} else if m.awaitingApproval {
-		// The plan-mode boundary tools get their own decision cards —
-		// just the hotkeys in a bordered box, never the generic
-		// always-allow modal. For exit, the plan body itself is
-		// emitted to scrollback above the box when ApprovalNeeded
-		// fires (see handleAgentEvent), so the body persists naturally
-		// after the modal dismisses and isn't cramped inside the box.
-		switch m.approvalTool {
-		case "exit_plan_mode":
-			parts = append(parts, renderPlanApprovalCard(m.width))
-		case "enter_plan_mode":
-			parts = append(parts, renderEnterPlanApprovalCard(m.width))
-		default:
-			parts = append(parts, renderApprovalModal(m))
-		}
-	} else if m.loopExitConfirmOpen {
-		parts = append(parts, renderLoopExitConfirm(m))
-	} else {
-		if m.paletteOpen {
-			parts = append(parts, renderPalette(m.paletteFiltered, m.paletteIndex, m.paletteOffset, liveContentWidth(m.width)+4))
-		}
-		if m.filePaletteOpen {
-			parts = append(parts, renderFilePalette(m.filePaletteFiltered, m.filePaletteIndex, m.filePaletteOffset, liveContentWidth(m.width)+4))
-		}
-		// Banner: one-line indicator above the input rule. Modes
-		// (plan/auto) are mutually exclusive; yolo mode is an
-		// orthogonal overlay flag whose `⚠ yolo mode` tag appends to
-		// the active mode banner. When no mode is active but yolo
-		// mode is, a standalone yolo banner shows so the user can
-		// still see the "rails off" state. Suppressed entirely while a
-		// palette is open (palettes already own the above-cmdline real
-		// estate).
-		yoloOn := m.cfg.YoloMode.IsActive()
-		switch {
-		case m.paletteOpen, m.filePaletteOpen:
-			// suppressed
-		case m.cfg.PlanMode.IsActive() && m.cfg.PlanMode.PlanFile != "":
-			// Plan-mode banner is gated behind "the user has submitted
-			// their first message in this plan session" — PlanFile is
-			// empty between /plan-entry and the first user prompt, then
-			// set by maybeFillPlanFile or the resume picker. Hiding
-			// the banner during that window avoids stacking it
-			// immediately below the entry log's "plan mode active —
-			// read-only research…" line, which scanned as a duplicate.
-			parts = append(parts, renderPlanModeBanner(computePlanBannerInfo(m), yoloOn, m.width))
-		case m.cfg.AutoMode.IsActive():
-			parts = append(parts, renderAutoModeBanner(yoloOn, m.width))
-		case yoloOn:
-			parts = append(parts, renderYoloStandaloneBanner(m.width))
-		}
-		// Loop banner is additive — a /loop can be armed in any mode, so it
-		// stacks below the mode banner (if any) rather than replacing it.
-		// Suppressed with the mode banners while a palette owns the
-		// above-cmdline space.
-		if m.activeLoopCount() > 0 && !m.paletteOpen && !m.filePaletteOpen {
-			parts = append(parts, renderLoopBanner(m.loopBannerStates(), m.width))
-		}
-		parts = append(parts, m.renderInputFrame())
-	}
+	// awaitingPathTrust/awaitingApproval/loopExitConfirmOpen no longer
+	// special-case this section — those decision cards are popups now
+	// (see activePopupBody), composited over the whole frame including
+	// this footer. The footer keeps rendering normally underneath so the
+	// input frame and banners stay visible around the popup rather than
+	// disappearing while it's up; keyboard routing for the modal is
+	// handled separately in update(), ahead of the palette/textarea path.
+	parts = append(parts, m.aboveInputRows()...)
+	parts = append(parts, m.renderInputFrame())
 
 	// Status bar sits directly below the cmdline. Earlier versions
 	// inserted a blank line for breathing room — turned out to leave the
@@ -2960,82 +3123,6 @@ func (m Model) viewString() string {
 		}
 	}
 	return lipgloss.JoinVertical(lipgloss.Left, parts...)
-}
-
-// renderInlineOverlay stacks an inline picker (cheatsheet, model,
-// provider, memory) above the cmdline with a thin separator rule
-// between the overlay body and the prompt chrome. Layout:
-//
-//	[overlay body]
-//	───────────────…
-//	[cmdline]
-//	[status bar]
-//
-// The overlay owns input while open; renderInputFrame is included only
-// for visual anchoring (so the user keeps sight of the input frame
-// they're going to return to). The separator width tracks the
-// terminal so the rule reads as the boundary between menu surface and
-// prompt chrome without floating mid-screen.
-// inlineOverlayInset keeps picker surfaces visually inside the same one-cell
-// gutter implied by the startup and cmdline frame corners.
-const inlineOverlayInset = 1
-
-func (m Model) inlineOverlayWidth() int {
-	width := m.width - inlineOverlayInset*2
-	if width < 1 {
-		return 1
-	}
-	return width
-}
-
-func indentInlineOverlayBody(body string) string {
-	if body == "" {
-		return body
-	}
-	pad := strings.Repeat(" ", inlineOverlayInset)
-	lines := strings.Split(body, "\n")
-	for i, line := range lines {
-		if line == "" {
-			continue
-		}
-		lines[i] = pad + line
-	}
-	return strings.Join(lines, "\n")
-}
-
-func expandInlineOverlayRules(body string, width int) string {
-	if body == "" || width < 1 {
-		return body
-	}
-	lines := strings.Split(body, "\n")
-	for i, line := range lines {
-		plain := strings.TrimSpace(ansi.Strip(line))
-		if plain == "" {
-			continue
-		}
-		if strings.Trim(plain, "─") == "" {
-			// Submenu headers often render their own top/bottom rules before
-			// the shared overlay wrapper sees the body. Normalize those rules
-			// here so every picker aligns with the same inset prompt chrome.
-			lines[i] = styleOverlayRule.Render(strings.Repeat("─", width))
-		}
-	}
-	return strings.Join(lines, "\n")
-}
-
-func (m Model) renderInlineOverlay(body string) string {
-	width := m.inlineOverlayWidth()
-	if width < 4 {
-		width = 4
-	}
-	body = expandInlineOverlayRules(body, width)
-	overlayRule := strings.Repeat(" ", inlineOverlayInset) + styleOverlayRule.Render(strings.Repeat("─", width))
-	return lipgloss.JoinVertical(lipgloss.Left,
-		indentInlineOverlayBody(body),
-		overlayRule,
-		m.renderInputFrame(),
-		m.renderStatus(),
-	)
 }
 
 // renderInputBox renders the cmdline as a borderless input row capped at
@@ -4681,6 +4768,12 @@ func (m Model) injectSubagentResult(task subagents.Task) (tea.Model, tea.Cmd, st
 // downstream prompts still carry the full input — only the visible
 // scrollback rendering is compressed.
 func (m Model) startTurnWithDisplay(input, displayLabel string) (tea.Model, tea.Cmd) {
+	// Belt-and-suspenders alongside the "enter" key case: any turn
+	// starting — including a background subagent wake turn firing before
+	// the user has typed anything — is unambiguous evidence the
+	// conversation has begun, so the launch hero shouldn't still be
+	// showing once its content starts streaming in.
+	m.enteredConversation = true
 	// Refuse the turn if the running session has no adapter — happens
 	// after `/provider remove` deletes the only configured provider
 	// (invalidateAdapter clears m.cfg.Adapter). Without this guard the
@@ -6371,15 +6464,6 @@ func (m *Model) appendLine(s string) {
 // does NOT go through appendLine because we regenerate it fresh on every
 // resize at the new terminal width, instead of replaying the original
 // (which would have wrong border math at the new width).
-//
-// Splits multi-line inputs into per-line tea.Println calls. Bubbletea's
-// standard renderer in inline mode (no alt-screen) miscounts the
-// "linesRendered" bookkeeping when a single tea.Println carries
-// multiple \n-separated lines and any of those lines auto-wraps on a
-// narrow terminal — the live frame's redraw lands at the wrong cursor
-// row and bleeds the input-box borders / status bar over the leading
-// columns of just-printed content. One-line-per-Println keeps every
-// print as a clean atomic render cycle the renderer can track.
 func (m *Model) appendRaw(s string) {
 	if m.transcript.Len() > 0 {
 		m.transcript.WriteString("\n\n")
@@ -6399,38 +6483,8 @@ func (m *Model) appendRawFlush(s string) {
 	m.queuePrintlnFlush(s)
 }
 
-// queuePrintln queues s as ONE tea.Println command carrying every
-// terminal-row-sized chunk, without touching the transcript builder. Used
-// by appendRaw and by the resize replay path.
-//
-// Lines longer than the terminal width are hard-wrapped (ANSI-aware) so
-// each row lands as exactly one terminal row inside that single Println.
-//
-// v2's renderer (`(*cursedRenderer).insertAbove`) computes its scroll
-// offset ONCE across every "\n"-separated row in a single Println's
-// payload, then does one scroll-to-bottom / insert-lines-at-top / write
-// pass for the whole block. Queuing N separate single-line Printlns for
-// one logical block (the prior v1-era shape of this function, kept
-// because v1's standard_renderer miscounted "linesRendered" for a single
-// multi-line Println whose lines auto-wrapped) means N independent
-// scroll-to-bottom passes instead of one — each one's forced linefeed at
-// the bottom margin scrolls whatever the PREVIOUS call just inserted back
-// out of the visible viewport before the terminal ever paints it. The
-// visible symptom: multi-line prints (worst-hit: the startup identity
-// card) lose all but their last row or two. Passing the whole block as
-// one Println sidesteps this entirely — v2 already batches multi-row
-// content correctly, so per-row wrapping still happens here, per-row
-// *Println calls* no longer do.
-//
-// Each printed row is still prefixed with `\r\x1b[2K` (carriage-return +
-// Erase-Entire-Line): by the time the renderer's own cursor positioning
-// lands on each row it should already be a freshly-inserted blank one, so
-// this is normally a no-op, but it's cheap insurance against the same
-// "leading columns of the landing row not painted by our content show
-// through as bleed" class of bug the prefix was originally added for.
-//
-// Trailing erase-to-EOL is NOT added here — the renderer already appends
-// `ansi.EraseLineRight` to every row of an inserted block itself.
+// queuePrintln appends s to the owned transcript buffer (transcriptRows),
+// pre-wrapped to the current terminal width. Used by appendRaw.
 func (m *Model) queuePrintln(s string) {
 	m.queuePrintlnIndented(s, scrollbackLeftMargin)
 }
@@ -6444,6 +6498,13 @@ func (m *Model) queuePrintlnFlush(s string) {
 	m.queuePrintlnIndented(s, 0)
 }
 
+// queuePrintlnIndented hard-wraps s (ANSI-aware) to the current terminal
+// width and appends the resulting rows to transcriptRows, the backing
+// content for the owned transcriptViewport. Pre-wrapping at append time
+// (rather than relying on the viewport's own soft-wrap) matches what the
+// terminal-native scrollback used to give: already-fitted tool cards and
+// diffs don't reflow on resize, they just render at whatever width they
+// were emitted at — same limitation as before, not a regression.
 func (m *Model) queuePrintlnIndented(s string, leftMargin int) {
 	width := m.width
 	if width <= 0 {
@@ -6458,126 +6519,64 @@ func (m *Model) queuePrintlnIndented(s string, leftMargin int) {
 		// rather than emit at the wrong width.
 		return
 	}
-	const clearLine = "\r\x1b[2K"
 	margin := strings.Repeat(" ", leftMargin)
 	var rows []string
 	for _, line := range strings.Split(s, "\n") {
-		// Blank rows emit as bare empty lines so visual paragraph
-		// breaks stay clean — no trailing whitespace to scroll past.
 		if line == "" {
-			rows = append(rows, clearLine)
+			rows = append(rows, "")
 			continue
 		}
 		if ansi.StringWidth(line) <= width {
-			rows = append(rows, clearLine+margin+line)
+			rows = append(rows, margin+line)
 			continue
 		}
 		wrapped := ansi.Hardwrap(line, width, true)
 		for _, row := range strings.Split(wrapped, "\n") {
-			rows = append(rows, clearLine+margin+row)
+			rows = append(rows, margin+row)
 		}
 	}
-	m.pendingPrintRows = append(m.pendingPrintRows, rows...)
+	m.transcriptRows = append(m.transcriptRows, rows...)
+	m.transcriptDirty = true
 }
 
-// resizeReplayLimit caps resize-triggered history replay. It is intentionally
-// tied to the visible terminal height instead of total session history: resize
-// storms should redraw enough recent context to re-anchor Bubble Tea's inline
-// footer, not re-print the entire native scrollback on every WindowSizeMsg.
-func (m *Model) resizeReplayLimit() int {
-	if m.height <= 0 {
-		return 24
+// resizeTranscriptViewport sizes transcriptViewport against footer's
+// rendered height, filling whatever's left of m.height. Split out from
+// refreshTranscriptViewport so viewString can call it too (idempotent,
+// cheap — just field assignments): View has a value receiver, so its own
+// call only affects that render, but it means a test (or any other code)
+// that mutates m.width/m.turnActive/etc. directly without going through
+// Update still gets correctly-sized output instead of stale dimensions
+// left over from whenever Update last ran.
+func (m *Model) resizeTranscriptViewport(footer string) {
+	m.transcriptViewport.SetWidth(m.width)
+	h := m.height - lipgloss.Height(footer)
+	if h < 0 {
+		h = 0
 	}
-	return m.height
+	m.transcriptViewport.SetHeight(h)
 }
 
-// repaintViewport forces a clean inline redraw: wipe the visible viewport,
-// then replay the startup chrome (fresh sessions only) followed by recorded
-// conversation lines at the current width. A limit <= 0 means replay every
-// line; positive limits replay only the most recent tail.
-func (m *Model) repaintViewportTail(limit int) {
-	m.pendingCmds = append(m.pendingCmds, tea.ClearScreen)
-	if m.shouldShowStartupCard() {
-		m.queuePrintlnFlush(renderStartupBox(m.version, m.commit, m.dirty, m.modelName, m.cwd, m.sess.ID, m.branch, m.memorySummary, m.providerProfile, m.startupTip(), m.width))
-		m.queuePrintln("")
+// refreshTranscriptViewport keeps the owned scrollback viewport's size and
+// content current. Called once per Update tick (the single chokepoint,
+// mirroring the old flushPending idiom) so callers throughout the file
+// never have to think about it — in particular so PageUp/PageDown (called
+// from key handling, between Update ticks) compute against dimensions that
+// persist on the real model rather than a throwaway View-local copy.
+// Width/height track the live footer, which changes size every tick as
+// banners/streaming previews/the dock come and go — recomputed here rather
+// than only on resize. Content resyncs from transcriptRows only when
+// transcriptDirty (new rows queued since the last call), and auto-follows
+// to the bottom only when the viewport was already there — so scrolling up
+// to read history mid-stream isn't yanked away by incoming output.
+func (m *Model) refreshTranscriptViewport() {
+	m.resizeTranscriptViewport(m.renderFooter())
+	if !m.transcriptDirty {
+		return
 	}
-	lines := m.historyLines
-	if limit > 0 {
-		lines = m.historyReplayTail(limit)
+	m.transcriptDirty = false
+	wasAtBottom := m.transcriptViewport.AtBottom()
+	m.transcriptViewport.SetContentLines(m.transcriptRows)
+	if wasAtBottom {
+		m.transcriptViewport.GotoBottom()
 	}
-	for _, line := range lines {
-		m.queuePrintln(line)
-	}
-}
-
-// historyReplayTail returns recent history entries whose rendered terminal rows
-// fit within maxRows. historyLines stores logical entries, but queuePrintln may
-// hard-wrap one entry into many rows; counting rows here keeps resize storms
-// bounded even when the latest output contains long unbroken lines.
-func (m *Model) historyReplayTail(maxRows int) []string {
-	if maxRows <= 0 || len(m.historyLines) == 0 {
-		return m.historyLines
-	}
-	rows := 0
-	start := len(m.historyLines)
-	for start > 0 {
-		lineRows := replayTerminalRows(m.historyLines[start-1], m.width)
-		if rows > 0 && rows+lineRows > maxRows {
-			break
-		}
-		rows += lineRows
-		start--
-		if rows >= maxRows {
-			break
-		}
-	}
-	return m.historyLines[start:]
-}
-
-// replayTerminalRows mirrors queuePrintlnIndented's wrapping cost without
-// queuing commands. Blank lines still consume one terminal row.
-func replayTerminalRows(line string, width int) int {
-	if width <= 0 || line == "" {
-		return 1
-	}
-	lineWidth := ansi.StringWidth(line)
-	if lineWidth <= width {
-		return 1
-	}
-	rows := lineWidth / width
-	if lineWidth%width != 0 {
-		rows++
-	}
-	return rows
-}
-
-// repaintViewport preserves the full replay path for explicit recovery cases
-// such as quiet overlay closes, where one user action needs to re-anchor the
-// inline footer after a tall transient view disappears.
-func (m *Model) repaintViewport() {
-	m.repaintViewportTail(0)
-}
-
-// flushPending drains queued tea.Println cmds into a single sequenced Cmd.
-func (m *Model) flushPending() tea.Cmd {
-	cmds := m.pendingCmds
-	m.pendingCmds = nil
-	// Every row queued this tick — across however many logical
-	// queuePrintln-family calls contributed to it — collapses into ONE
-	// tea.Println. See pendingPrintRows' field doc for why: v2's inline
-	// renderer scrolls fresh from an assumed (0,0) cursor on every
-	// separate Println, so multiple sequenced calls erode each other's
-	// just-printed rows out of the viewport even when everything would
-	// have fit on screen as a single block.
-	if len(m.pendingPrintRows) > 0 {
-		cmds = append(cmds, tea.Println(strings.Join(m.pendingPrintRows, "\n")))
-		m.pendingPrintRows = nil
-	}
-	if len(cmds) == 0 {
-		return nil
-	}
-	if len(cmds) == 1 {
-		return cmds[0]
-	}
-	return tea.Sequence(cmds...)
 }

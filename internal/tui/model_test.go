@@ -704,6 +704,7 @@ func TestModel_ReasoningPreviewStaysSingleRow(t *testing.T) {
 func TestModel_ActiveTurnFooterHeightStableAcrossReasoningStream(t *testing.T) {
 	m := newTestModel(t)
 	m.width = 24
+	m.enteredConversation = true // measure the conversation layout consistently, not a hero-then-conversation mismatch
 	m.turnActive = true
 	m.turnStart = time.Now()
 
@@ -736,6 +737,7 @@ func TestModel_ActiveTurnFooterHeightStableForBufferedMarkdown(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			m := newTestModel(t)
 			m.width = 24
+			m.enteredConversation = true // measure the conversation layout consistently, not a hero-then-conversation mismatch
 			m.turnActive = true
 			m.turnStart = time.Now()
 			baseHeight := lipgloss.Height(m.View().Content)
@@ -806,6 +808,7 @@ func TestModel_ReasoningPreviewClearsOnToolStart(t *testing.T) {
 
 func TestModel_ThinkingRowAboveInputWhenActive(t *testing.T) {
 	m := newTestModel(t)
+	m.enteredConversation = true // thinking row only renders in the conversation layout, not the launch hero
 	m.turnActive = true
 	m.turnStart = time.Now()
 	v := m.View().Content
@@ -1292,9 +1295,8 @@ func TestModel_HeaderShowsBrandingAndVersion(t *testing.T) {
 		Version:   "9.9.9",
 	})
 	m, _ = applyMsg(m, tea.WindowSizeMsg{Width: 100, Height: 24})
-	// The startup box is emitted to scrollback on the first WindowSizeMsg —
-	// inspect via the transcript builder, not the live footer.
-	v := m.transcript.String()
+	// The startup box is launch hero chrome, not transcript content.
+	v := m.View().Content
 	if !strings.Contains(v, "YottaCode") || !strings.Contains(v, "v9.9.9") {
 		t.Errorf("startup box missing branding/version: %q", v)
 	}
@@ -1334,7 +1336,7 @@ func TestModel_NewSeedsContextTokensFromResumedSession(t *testing.T) {
 
 func TestModel_SplashShowsProductName(t *testing.T) {
 	m := newTestModel(t)
-	v := m.transcript.String()
+	v := m.View().Content
 	if !strings.Contains(v, "YottaCode") {
 		t.Errorf("startup box should show product name: %q", v)
 	}
@@ -1516,7 +1518,7 @@ func TestModel_HeaderShowsMemoryWhenLoaded(t *testing.T) {
 		MemorySummary: "USER+PROJECT",
 	})
 	m, _ = applyMsg(m, tea.WindowSizeMsg{Width: 120, Height: 24})
-	if !strings.Contains(m.transcript.String(), "mem=USER+PROJECT") {
+	if !strings.Contains(m.View().Content, "mem=USER+PROJECT") {
 		t.Errorf("startup box should show memory summary")
 	}
 }
@@ -2045,37 +2047,6 @@ func TestSystemNoticeStyles_NoIntrinsicPadding(t *testing.T) {
 	}
 }
 
-// printlnBody executes a queued tea.Println cmd and returns the line text
-// it would emit (bubbletea's unexported printLineMessage.messageBody),
-// with the leading clear-line control prefix stripped. reflect.Value.String()
-// is legal on an unexported string field — unlike .Interface() it does not
-// trip the flag check.
-func printlnBody(t *testing.T, cmd tea.Cmd) string {
-	t.Helper()
-	if cmd == nil {
-		t.Fatal("nil cmd")
-	}
-	v := reflect.ValueOf(cmd())
-	if v.Kind() != reflect.Struct || v.NumField() == 0 {
-		t.Fatalf("not a printLineMessage: %#v", v)
-	}
-	return strings.TrimPrefix(stripANSI(v.Field(0).String()), "\r\x1b[2K")
-}
-
-// printlnRaw is printlnBody without stripping the clear-line prefix — used
-// to assert the \r\x1b[2K invariant is present on the emitted bytes.
-func printlnRaw(t *testing.T, cmd tea.Cmd) string {
-	t.Helper()
-	if cmd == nil {
-		t.Fatal("nil cmd")
-	}
-	v := reflect.ValueOf(cmd())
-	if v.Kind() != reflect.Struct || v.NumField() == 0 {
-		t.Fatalf("not a printLineMessage: %#v", v)
-	}
-	return stripANSI(v.Field(0).String())
-}
-
 // The scrollback canvas is flush-left: with scrollbackLeftMargin == 0,
 // queuePrintln and its flush variant both emit at column 0, aligned with
 // the input frame and startup chrome. Both still carry the leading
@@ -2152,46 +2123,29 @@ func TestFlushLeftCanvas_ColumnAlignment(t *testing.T) {
 
 func TestQueuePrintln_FlushLeftCanvas(t *testing.T) {
 	m := newTestModel(t)
-	m.pendingCmds = nil
-	m.pendingPrintRows = nil
+	m.transcriptRows = nil
+	m.transcriptDirty = false
 	m.queuePrintln("alpha")
 	m.queuePrintlnFlush("beta")
-	// Both calls accumulate into pendingPrintRows (not pendingCmds directly)
-	// — flushPending joins every row queued this tick into ONE tea.Println,
-	// since bubbletea v2's inline renderer scrolls fresh per Println call
-	// and would otherwise erode earlier rows out of the viewport (see
-	// pendingPrintRows' field doc).
-	if len(m.pendingPrintRows) != 2 {
-		t.Fatalf("expected 2 queued rows, got %d", len(m.pendingPrintRows))
+	// Both calls accumulate into the owned transcriptRows buffer (the
+	// backing content for transcriptViewport) and flag it dirty for the
+	// next refreshTranscriptViewport call.
+	if len(m.transcriptRows) != 2 {
+		t.Fatalf("expected 2 queued rows, got %d", len(m.transcriptRows))
 	}
-	// Both land at column 0 — no leading margin spaces on either path.
-	if got := strings.TrimPrefix(stripANSI(m.pendingPrintRows[0]), "\r\x1b[2K"); got != "alpha" {
+	if !m.transcriptDirty {
+		t.Error("queuePrintln should flag transcriptDirty")
+	}
+	// Both land at column 0 — no leading margin spaces on either path
+	// (scrollbackLeftMargin is 0; see the const's flush-left canvas note).
+	if got := stripANSI(m.transcriptRows[0]); got != "alpha" {
 		t.Errorf("queuePrintln row = %q, want %q (flush-left, no margin)", got, "alpha")
 	}
-	if got := strings.TrimPrefix(stripANSI(m.pendingPrintRows[1]), "\r\x1b[2K"); got != "beta" {
+	if got := stripANSI(m.transcriptRows[1]); got != "beta" {
 		t.Errorf("queuePrintlnFlush row = %q, want %q (flush column 0)", got, "beta")
-	}
-	// The clear-line prefix is present on the raw emission.
-	if raw := stripANSI(m.pendingPrintRows[0]); !strings.HasPrefix(raw, "\r\x1b[2K") {
-		t.Errorf("queuePrintln must carry the \\r\\x1b[2K clear-line prefix, got %q", raw)
-	}
-	// flushPending must combine both rows into a single Println.
-	flush := m.flushPending()
-	if flush == nil {
-		t.Fatal("flushPending returned nil")
-	}
-	if got := printlnBody(t, flush); !strings.Contains(got, "alpha") || !strings.Contains(got, "beta") {
-		t.Errorf("combined Println body = %q, want both alpha and beta", got)
 	}
 }
 
-// Regression guard for the scrollback indentation drift: on a genuine
-// resize the conversation is replayed via queuePrintln (the SAME path
-// live emission uses), NOT bare tea.Println. Bare tea.Println dropped the
-// \r\x1b[2K clear-line prefix and the re-wrap, so post-resize lines landed
-// at a different column than freshly-emitted lines — the "indentation gets
-// shifted at some point" symptom. We assert every replayed scrollback line
-// carries the clear-line prefix.
 // TestInit_ClearsScreenBeforeStartupCommands locks the launch clean-slate
 // behavior: yottacode clears the visible inline viewport before any startup
 // probe, spinner, or background watcher can redraw.
@@ -2216,228 +2170,12 @@ func TestInit_ClearsScreenBeforeStartupCommands(t *testing.T) {
 	}
 }
 
-func TestResizeReplay_RoutesThroughQueuePrintln(t *testing.T) {
-	m := newTestModel(t) // ready, width 80
-	// Emit a multi-line tool card so historyLines holds real content.
-	card := renderToolCard("memory_save", "Memory(save user/x)",
-		`{"scope":"user","name":"x"}`, `saved user memory "x"`, false, m.width, "", 0)
-	// Emit a marker after the multi-line card so bounded resize replay keeps
-	// this test independent from the total startup-history length.
-	m.appendLine(card)
-	m.appendLine("resize replay marker")
-	if len(m.historyLines) == 0 {
-		t.Fatal("expected history lines after appendLine")
-	}
-	m.pendingCmds = nil
-	m.pendingPrintRows = nil
-
-	// Genuine resize (wasReady): triggers tea.ClearScreen + history replay.
-	// Call the inner update directly so pendingCmds/pendingPrintRows aren't
-	// drained by flushPending (which Update does on the way out).
-	out, _ := m.update(tea.WindowSizeMsg{Width: 60, Height: 24})
-	mm := out.(Model)
-
-	sawReplay := false
-	for _, raw := range mm.pendingPrintRows {
-		if !strings.HasPrefix(raw, "\r\x1b[2K") {
-			t.Errorf("resize-replayed line missing clear-line prefix "+
-				"(bare tea.Println regressed?): %q", raw)
-		}
-		if strings.Contains(stripANSI(raw), "resize replay marker") {
-			sawReplay = true
-		}
-	}
-	if !sawReplay {
-		t.Error("expected the replayed history to carry recent history content")
-	}
-}
-
-// flattenCmd executes cmd and recursively flattens tea.Sequence /
-// tea.Batch results (both carry a []tea.Cmd payload) into the leaf
-// messages — so a test can inspect the print lines a sequenced flush
-// command will ultimately emit.
-func flattenCmd(cmd tea.Cmd) []tea.Msg {
-	if cmd == nil {
-		return nil
-	}
-	rv := reflect.ValueOf(cmd())
-	if rv.Kind() == reflect.Slice { // sequenceMsg / batchMsg are []tea.Cmd
-		var out []tea.Msg
-		for i := 0; i < rv.Len(); i++ {
-			if c, ok := rv.Index(i).Interface().(tea.Cmd); ok {
-				out = append(out, flattenCmd(c)...)
-			}
-		}
-		return out
-	}
-	return []tea.Msg{rv.Interface()}
-}
-
-// TestOverlayClosed_Predicate locks the open→closed transition detector the
-// re-anchor guard keys off of.
-func TestOverlayClosed_Predicate(t *testing.T) {
-	m := newTestModel(t)
-	m.openSkillsMenu()
-	open := m
-	closed := open
-	closed.skillsMenuOpen = false
-	closed.skillsMenu = nil
-
-	if !open.overlayClosed(closed) {
-		t.Error("overlay open→closed should report closed")
-	}
-	if open.overlayClosed(open) {
-		t.Error("overlay still open: should not report closed")
-	}
-	if closed.overlayClosed(closed) {
-		t.Error("no overlay was open: should not report closed")
-	}
-}
-
-// TestRepaintViewport_ClearsAndReplaysHistory locks the recovery sequence:
-// a ClearScreen to reset the inline renderer, then the recorded scrollback
-// replayed through queuePrintln so the wiped viewport is restored.
-func TestRepaintViewport_ClearsAndReplaysHistory(t *testing.T) {
-	m := newTestModel(t)
-	m.historyLines = []string{"alpha scrollback", "beta scrollback"}
-	m.pendingCmds = nil
-	m.pendingPrintRows = nil
-	m.repaintViewport()
-
-	if len(m.pendingCmds) == 0 {
-		t.Fatal("repaintViewport queued nothing")
-	}
-	// First queued cmd is tea.ClearScreen — an empty-struct message, not a
-	// print line (which carries a non-empty body field).
-	first := reflect.ValueOf(m.pendingCmds[0]())
-	if first.Kind() != reflect.Struct || first.NumField() != 0 {
-		t.Errorf("first queued cmd should be ClearScreen (empty-struct msg), got %#v", first)
-	}
-	// Replayed history now accumulates in pendingPrintRows (flushPending
-	// joins it into one trailing Println behind the ClearScreen) rather
-	// than as separate pendingCmds entries — see pendingPrintRows' field
-	// doc for why per-row Println calls regressed under v2's renderer.
-	if len(m.pendingPrintRows) == 0 {
-		t.Fatal("repaintViewport queued no print rows")
-	}
-	joined := stripANSI(strings.Join(m.pendingPrintRows, "\n"))
-	if !strings.Contains(joined, "alpha scrollback") || !strings.Contains(joined, "beta scrollback") {
-		t.Errorf("repaintViewport should replay history lines, got %q", joined)
-	}
-}
-
-// TestResizeReplay_DoesNotDumpEntireHistory guards the resize bug where every
-// WindowSizeMsg replayed the complete native scrollback. Terminal emulators emit
-// many resize events while a user drags the window, so replaying thousands of
-// lines per event makes the whole session appear to scroll forever.
-func TestResizeReplay_DoesNotDumpEntireHistory(t *testing.T) {
-	m := newTestModel(t)
-	for i := 0; i < 1000; i++ {
-		m.historyLines = append(m.historyLines, "history line")
-	}
-	m.pendingCmds = nil
-
-	out, _ := m.update(tea.WindowSizeMsg{Width: 60, Height: 24})
-	mm := out.(Model)
-
-	printedHistory := 0
-	for _, msg := range flattenCmd(tea.Sequence(mm.pendingCmds...)) {
-		v := reflect.ValueOf(msg)
-		if v.Kind() == reflect.Struct && v.NumField() > 0 && strings.Contains(stripANSI(v.Field(0).String()), "history line") {
-			printedHistory++
-		}
-	}
-	if printedHistory >= len(m.historyLines) {
-		t.Fatalf("resize replayed full history: printed %d history lines for %d history lines", printedHistory, len(m.historyLines))
-	}
-	if printedHistory > m.height {
-		t.Fatalf("resize should replay only a bounded history tail, printed %d history lines for height %d", printedHistory, m.height)
-	}
-}
-
-func TestHistoryReplayTail_BoundsWrappedRows(t *testing.T) {
-	m := newTestModel(t)
-	m.width = 10
-	m.historyLines = []string{
-		"old one",
-		"old two",
-		strings.Repeat("x", 35),
-		"recent",
-	}
-
-	got := m.historyReplayTail(5)
-	want := []string{strings.Repeat("x", 35), "recent"}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("historyReplayTail = %#v, want %#v", got, want)
-	}
-}
-
-// replaysMarker reports whether cmd (and any sequenced children) replays a
-// scrollback line containing marker — i.e. whether a forced repaint fired.
-func replaysMarker(cmd tea.Cmd, marker string) bool {
-	for _, msg := range flattenCmd(cmd) {
-		v := reflect.ValueOf(msg)
-		if v.Kind() == reflect.Struct && v.NumField() > 0 &&
-			strings.Contains(stripANSI(v.Field(0).String()), marker) {
-			return true
-		}
-	}
-	return false
-}
-
-// TestOverlayClose_ReanchorGuard is the end-to-end guard for the missing
-// status-bar bug. A quiet overlay close (Esc, no scrollback emitted) leaves
-// the live footer stranded in inline mode, so it must force a redraw that
-// replays scrollback and re-anchors the frame to the terminal bottom. A
-// close that already emits a line (the menu's Check row) re-anchors via that
-// line, so the guard must NOT pile a second full replay on top.
-func TestOverlayClose_ReanchorGuard(t *testing.T) {
-	const marker = "conversation scrollback marker"
-
-	t.Run("quiet close replays scrollback", func(t *testing.T) {
-		m := newTestModel(t) // height 24 — the menu fits; close still strands the footer
-		m.appendLine(marker)
-		m.openSkillsMenu()
-		m.pendingCmds = nil // drop the appendLine emit; we only want the close's cmds
-
-		out, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
-		if out.(Model).skillsMenuOpen {
-			t.Fatal("Esc should have closed the menu")
-		}
-		if !replaysMarker(cmd, marker) {
-			t.Error("a quiet overlay close should replay scrollback to re-anchor the footer")
-		}
-	})
-
-	t.Run("close that emits a line does not double-repaint", func(t *testing.T) {
-		m := newTestModel(t)
-		m.skillTool = &agent.SkillTool{All: nil}
-		m.appendLine(marker)
-		m.openSkillsMenu()
-		// Walk to the Check row (Catalog, Install, Uninstall, Check, Update).
-		m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyDown})
-		m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyDown})
-		m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyDown})
-
-		out, cmd := applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter})
-		if out.skillsMenuOpen {
-			t.Fatal("Check should have closed the menu")
-		}
-		// Check emits its own line, which re-anchors the frame; the guard
-		// must skip the forced replay (no full history dump of the marker).
-		if replaysMarker(cmd, marker) {
-			t.Error("a close that already emits scrollback should not force a second full replay")
-		}
-	})
-}
-
 // Regression guard for the startup entry-banner bug: banners emitted at
 // construction time (run.go calls enterYoloMode / toggle* before the first
 // WindowSizeMsg) ran with m.width == 0, so queuePrintln wrapped them at the
-// 80-col fallback and the construction-time flush raced with the welcome
-// box — the banner "wraps at 80 and interleaves with the box" symptom. We
-// assert the banner is DEFERRED at width 0 and re-emitted at the real width
-// (one line, not 80-wrapped) below the box once the first size lands.
+// 80-col fallback. We assert the banner is DEFERRED at width 0 and re-emitted
+// at the real width (one line, not 80-wrapped) once the first size lands, while
+// the startup card remains hero chrome instead of transcript content.
 func TestStartupBanner_DeferredUntilWidthKnown(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	sess, err := session.New("test-startup", "/cwd")
@@ -2461,22 +2199,21 @@ func TestStartupBanner_DeferredUntilWidthKnown(t *testing.T) {
 
 	// Construction-time emission (as run.go does it) at unknown width.
 	m = enterYoloMode(m)
-	if len(m.pendingCmds) != 0 || len(m.pendingPrintRows) != 0 {
-		t.Errorf("entry banner must be deferred at width 0, got %d queued cmds, %d queued rows",
-			len(m.pendingCmds), len(m.pendingPrintRows))
+	if m.transcriptDirty || len(m.transcriptRows) != 0 {
+		t.Errorf("entry banner must be deferred at width 0, got dirty=%v, %d queued rows",
+			m.transcriptDirty, len(m.transcriptRows))
 	}
 	if len(m.historyLines) == 0 {
 		t.Fatal("entry banner should still be recorded into historyLines while deferred")
 	}
 
-	// First WindowSizeMsg at a WIDE terminal. Use the inner update so
-	// pendingPrintRows aren't drained by flushPending before we can inspect.
+	// First WindowSizeMsg at a WIDE terminal.
 	out, _ := m.update(tea.WindowSizeMsg{Width: 120, Height: 24})
 	mm := out.(Model)
 
 	var bodies []string
-	for _, raw := range mm.pendingPrintRows {
-		bodies = append(bodies, strings.TrimPrefix(stripANSI(raw), "\r\x1b[2K"))
+	for _, raw := range mm.transcriptRows {
+		bodies = append(bodies, stripANSI(raw))
 	}
 
 	boxIdx, bannerIdx := -1, -1
@@ -2493,14 +2230,11 @@ func TestStartupBanner_DeferredUntilWidthKnown(t *testing.T) {
 			}
 		}
 	}
-	if boxIdx < 0 {
-		t.Fatal("welcome box was not emitted on first WindowSizeMsg")
+	if boxIdx >= 0 {
+		t.Fatalf("startup card should be hero chrome, not transcript content; found at transcript row %d", boxIdx)
 	}
 	if bannerIdx < 0 {
 		t.Fatal("permission entry banner was not emitted on first WindowSizeMsg")
-	}
-	if bannerIdx < boxIdx {
-		t.Errorf("banner should render after the welcome box (box@%d, banner@%d)", boxIdx, bannerIdx)
 	}
 }
 

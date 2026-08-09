@@ -24,5 +24,12 @@ func init() {
 		Assistant: pin("#56b6c2"), // cyan
 		Code:      pin("#abb2bf"),
 		Warm:      pin("#d19a66"), // orange
+
+		// #282c34 is One Dark's canonical editor background — the
+		// slate backdrop the theme is recognized by across every port.
+		// Real terminal-background theming (OSC 11) repaints the
+		// terminal canvas itself to this, not just in-app chrome.
+		HasBackground: true,
+		Background:    pin("#282c34"),
 	})
 }

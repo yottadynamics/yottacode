@@ -367,6 +367,7 @@ func TestModel_TurnInterrupted_ResetsTouchedFlag(t *testing.T) {
 
 func TestModel_View_RendersLivePlanCardWhenPopulated(t *testing.T) {
 	m := newTestModel(t)
+	m.enteredConversation = true // live plan card only renders in the conversation layout, not the launch hero
 	m, _ = applyMsg(m, agentEventMsg{ev: agent.TodoUpdate{Todos: samplePlan()}})
 	view := stripANSI(m.View().Content)
 	if !strings.Contains(view, "Plan: 3 items (1 done)") {

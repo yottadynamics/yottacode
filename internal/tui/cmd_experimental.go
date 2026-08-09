@@ -17,7 +17,7 @@ import (
 // the [experimental] config block), so this surfaces state rather than changing
 // it.
 func cmdExperimental(m Model, _ []string) (Model, tea.Cmd) {
-	m.experimentalPanel = renderExperimentalPanel(m.experimentalEnabled, m.inlineOverlayWidth())
+	m.experimentalPanel = renderExperimentalPanel(m.experimentalEnabled, m.popupWidth())
 	m.experimentalOpen = true
 	return m, nil
 }

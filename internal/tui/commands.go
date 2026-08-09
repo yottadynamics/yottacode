@@ -218,7 +218,7 @@ func cmdHelp(m Model, _ []string) (Model, tea.Cmd) {
 
 func renderHelpPanel(m Model) string {
 	width := helpCommandWidth(m)
-	wrapWidth := m.inlineOverlayWidth() - 4
+	wrapWidth := m.popupWidth() - 4
 	if wrapWidth < 40 {
 		wrapWidth = 40
 	}
@@ -1401,12 +1401,15 @@ func cmdClear(m Model, _ []string) (Model, tea.Cmd) {
 	m.lastWatermarkPct = 0
 	m.nonConvergentAt = 0
 	m.nonConvergentWindow = 0
-	// Wipe the viewport so /clear lands on a clean canvas instead
-	// of tacking a confirmation line under the prior transcript.
-	// Mirrors the resize-replay path: ClearScreen, then re-emit the
-	// startup card under fresh-session chrome (the new session has
-	// only a system prompt, so isFreshSession() is true).
-	m.pendingCmds = append(m.pendingCmds, tea.ClearScreen)
+	// Wipe the owned transcript so /clear lands on a clean canvas
+	// instead of tacking a confirmation line under the prior
+	// transcript, then re-emit the startup card under fresh-session
+	// chrome (the new session has only a system prompt, so
+	// isFreshSession() is true). No terminal ClearScreen needed — the
+	// TUI owns the whole frame now, so an empty transcriptRows is all
+	// it takes for the next render to show a clean canvas.
+	m.transcriptRows = nil
+	m.transcriptDirty = true
 	if m.shouldShowStartupCard() {
 		m.appendRaw(renderStartupBox(m.version, m.commit, m.dirty, m.modelName, m.cwd, m.sess.ID, m.branch, m.memorySummary, m.providerProfile, m.startupTip(), m.width))
 		m.queuePrintln("")

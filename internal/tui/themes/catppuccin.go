@@ -26,5 +26,12 @@ func init() {
 		Assistant: pin("#94e2d5"), // teal
 		Code:      pin("#cdd6f4"), // text
 		Warm:      pin("#fab387"), // peach
+
+		// #1e1e2e is Catppuccin Mocha's "base" — the canonical dark
+		// backdrop the whole flavor is built around. Real terminal-
+		// background theming (OSC 11) repaints the terminal canvas
+		// itself to this, not just in-app chrome.
+		HasBackground: true,
+		Background:    pin("#1e1e2e"),
 	})
 }

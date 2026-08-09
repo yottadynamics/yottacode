@@ -14,6 +14,8 @@ type cheatsheetEntry struct {
 var cheatsheet = []cheatsheetEntry{
 	{"Enter", "submit message · execute slash command"},
 	{"↑ / ↓", "browse input history at edge of textarea; ↑ edits queued mid-turn input before delivery; navigate palette when open"},
+	{"PgUp / PgDn", "scroll the conversation transcript"},
+	{"Ctrl+Home / Ctrl+End", "jump to the top / bottom of the transcript"},
 	{"Tab", "complete highlighted slash command"},
 	{"/", "open the slash command palette"},
 	{"/loop", "repeat a prompt or slash command (e.g. /loop 5m …); /loop stop to end"},
@@ -26,24 +28,19 @@ var cheatsheet = []cheatsheetEntry{
 	{"@<path>", "attach a file's contents to the next message (cwd-confined)"},
 }
 
-// renderCheatsheet returns a centered, bordered overlay listing every
-// keyboard shortcut. Caller is responsible for placing it; we just render
-// the box.
-func renderCheatsheet(width int) string {
+// renderCheatsheet returns the borderless keyboard-shortcut body — like
+// every other picker/panel, framing and placement are the popup
+// compositor's job (popup.go), not this function's.
+func renderCheatsheet() string {
 	var b strings.Builder
 	b.WriteString(stylePathHeader.Render("Keyboard shortcuts") + "\n\n")
 	for _, e := range cheatsheet {
 		key := lipgloss.NewStyle().Foreground(colorBrand).Bold(true).Render(e.Key)
 		// Pad the key column for alignment.
-		padded := lipgloss.PlaceHorizontal(12, lipgloss.Left, key)
+		padded := lipgloss.PlaceHorizontal(21, lipgloss.Left, key)
 		b.WriteString("  " + padded + " " + e.Action + "\n")
 	}
 	b.WriteString("\n")
 	b.WriteString(styleFooter.Render("  esc to close"))
-
-	box := stylePaletteBox.Render(b.String())
-	if width > 0 {
-		return lipgloss.PlaceHorizontal(width, lipgloss.Center, box)
-	}
-	return box
+	return b.String()
 }

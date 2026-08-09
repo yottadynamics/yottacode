@@ -110,6 +110,11 @@ func TestSlash_QuitProducesQuitMsg(t *testing.T) {
 
 func TestSlash_PermissionsOpensPickerWithBothRows(t *testing.T) {
 	m := newTestModel(t)
+	// Tall enough that the centered popup and the top-anchored launch
+	// hero (/permissions no longer exits it — see enteredConversation's
+	// field doc) don't overlap; the default 24-row test height puts
+	// both in the same few rows.
+	m.height = 60
 	// Stand up a permissions store so SharedPath/LocalPath resolve.
 	p, err := permissionsLoadHelper(t, m.cwd, []string{"Bash(go *)"}, nil, []string{"Bash(rm *)"})
 	if err != nil {
@@ -146,19 +151,22 @@ func TestSlash_PermissionsOpensPickerWithBothRows(t *testing.T) {
 			t.Errorf("/permissions picker missing %q; got %q", want, v)
 		}
 	}
-	// Inline overlays render above the cmdline, with the status bar still
-	// directly below the cmdline. This pins the shared compositor used by
-	// slash-command submenus.
+	// Popups float over a persistent background (composePopup, popup.go)
+	// rather than replacing the footer, so the cmdline border and status
+	// bar dot stay visible in the same frame as the picker content —
+	// this pins that "float over, don't replace" invariant. Their
+	// relative text position no longer carries meaning once the popup is
+	// Z-composited on top (it can land at any row depending on centering
+	// math), so this only checks presence, not order.
 	plainView := stripANSI(v)
-	permIdx := strings.Index(plainView, "Permissions")
-	cmdIdx := strings.Index(plainView, "┌")
-	statusIdx := strings.Index(plainView, "●")
-	if permIdx < 0 || cmdIdx < 0 || statusIdx < 0 {
-		t.Fatalf("view missing overlay/cmdline/status markers:\n%s", plainView)
+	if !strings.Contains(plainView, "Permissions") {
+		t.Fatalf("view missing popup content:\n%s", plainView)
 	}
-	if !(permIdx < cmdIdx && cmdIdx < statusIdx) {
-		t.Errorf("expected overlay above cmdline and status below cmdline; positions permissions=%d cmd=%d status=%d\n%s",
-			permIdx, cmdIdx, statusIdx, plainView)
+	if !strings.Contains(plainView, "┌") {
+		t.Fatalf("view missing cmdline chrome (popup should float over it, not replace it):\n%s", plainView)
+	}
+	if !strings.Contains(plainView, "●") {
+		t.Fatalf("view missing status bar (popup should float over it, not replace it):\n%s", plainView)
 	}
 	// Picker must not regress into a state-dump (no rule listing).
 	for _, banned := range []string{"Bash(go *)", "Bash(rm *)"} {

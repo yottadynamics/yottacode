@@ -1,6 +1,6 @@
 # TUI slash commands
 
-Type `/` in the TUI to open the slash-command palette. The palette filters as you type, supports Tab completion, uses the same `❯` row cursor as the larger sub-pickers, renders above the cmdline, and can be dismissed with `Esc`.
+Type `/` in the TUI to open the slash-command palette. The palette filters as you type, supports Tab completion, uses the same `❯` row cursor as the larger sub-pickers, renders above the cmdline, and can be dismissed with `Esc`. Commands that open a full picker (`/model`, `/theme`, `/sessions`, `/mcp`, and the rest) render as a centered floating window over the conversation rather than replacing the cmdline area — the transcript and status bar stay visible around it.
 
 ## Command reference
 
@@ -570,5 +570,7 @@ Examples:
 - `Ctrl+D` exits when input is empty
 - `?` opens the cheatsheet when input is empty
 - `Shift+Tab` cycles agent modes: normal → auto → plan → normal
+- `PgUp` / `PgDn` scrolls the conversation transcript
+- `Ctrl+Home` / `Ctrl+End` jumps to the top / bottom of the transcript
 
-The TUI uses inline rendering rather than an alternate screen, so your terminal scrollback remains available.
+The TUI runs full-screen (alt-screen) with no mouse support — your terminal's own scrollback isn't available inside the alternate screen either, so scroll with `PgUp`/`PgDn`/`Ctrl+Home`/`Ctrl+End` above. Mouse is intentionally left unclaimed by the app so plain click+drag still gives you your terminal's own native text selection for copying text on screen, with no modifier key needed.

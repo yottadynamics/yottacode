@@ -976,9 +976,9 @@ func renderProviderPicker(p *providerPickerState, width int) string {
 		footerText = "↵ save · tab/shift+tab switch fields · esc back"
 	}
 	footer := styleFooter.Render(footerText)
-	// Inline-overlay shape: no rounded box, no horizontal centering.
-	// The parent renderInlineOverlay sits this body above the cmdline,
-	// so a second border would read as "modal floating on a modal".
+	// Deliberately borderless/uncentered: popupBox (popup.go) supplies
+	// the single rounded border and composePopup does the centering, so
+	// adding either here would read as "modal floating on a modal".
 	_ = width
 	return body + "\n\n" + footer
 }

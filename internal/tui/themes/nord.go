@@ -25,5 +25,12 @@ func init() {
 		Assistant: pin("#8fbcbb"), // frost-0 (teal)
 		Code:      pin("#d8dee9"), // snow storm 3
 		Warm:      pin("#d08770"), // aurora orange
+
+		// #2e3440 is Nord's "polar night 0" — the canonical darkest
+		// backdrop the palette is named after. Real terminal-background
+		// theming (OSC 11) repaints the terminal canvas itself to this,
+		// not just in-app chrome.
+		HasBackground: true,
+		Background:    pin("#2e3440"),
 	})
 }

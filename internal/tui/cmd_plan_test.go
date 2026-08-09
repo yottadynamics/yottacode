@@ -688,6 +688,7 @@ func TestToggleAutoMode_DoesNotExitYolo(t *testing.T) {
 // (bash auto-allows too, so "bash prompts" would be misleading).
 func TestBanner_AutoPlusYoloShowsBothLabels(t *testing.T) {
 	m, _ := newPlanModeTestModel(t)
+	m.enteredConversation = true // mode banners only render in the conversation layout, not the launch hero
 	m, _ = toggleAutoMode(m)
 	m = enterYoloMode(m)
 	view := stripANSI(m.View().Content)
@@ -709,6 +710,7 @@ func TestBanner_AutoPlusYoloShowsBothLabels(t *testing.T) {
 // plan-file basename / awaiting-message stays.
 func TestBanner_PlanPlusYoloShowsBothLabels(t *testing.T) {
 	m, _ := newPlanModeTestModel(t)
+	m.enteredConversation = true // mode banners only render in the conversation layout, not the launch hero
 	m, _ = cmdPlan(m, nil)
 	// Simulate the user having submitted their first plan-mode message,
 	// which is when the persistent plan banner first appears (PlanFile
@@ -729,6 +731,7 @@ func TestBanner_PlanPlusYoloShowsBothLabels(t *testing.T) {
 // no iteration cap".
 func TestYoloStandaloneBanner_RendersWhenAlone(t *testing.T) {
 	m, _ := newPlanModeTestModel(t)
+	m.enteredConversation = true // mode banners only render in the conversation layout, not the launch hero
 	m = enterYoloMode(m)
 	view := stripANSI(m.View().Content)
 	if !strings.Contains(view, YoloModeIcon+" yolo mode") {
@@ -790,6 +793,7 @@ func TestToggleAutoMode_ExitsPlanModeOnEntry(t *testing.T) {
 // Auto-mode banner renders above the cmdline while active.
 func TestAutoModeBanner_RendersWhenActive(t *testing.T) {
 	m, _ := newPlanModeTestModel(t)
+	m.enteredConversation = true // mode banners only render in the conversation layout, not the launch hero
 	m, _ = toggleAutoMode(m)
 	view := stripANSI(m.View().Content)
 	if !strings.Contains(view, "auto mode") {

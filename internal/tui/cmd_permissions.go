@@ -88,12 +88,13 @@ func (m Model) permissionsRowPath(idx int) string {
 	return ""
 }
 
-// renderPermissionsOverlay draws the inline picker. Same visual
-// language as /model and /provider — `renderMenuHeader` for the
-// title block, `renderMenuItem` for the rows, `styleFooter` for the
-// hotkey row at the bottom. No rounded box, no horizontal centering;
-// the parent renderInlineOverlay sits this body above the cmdline,
-// so a second border would read as "modal floating on a modal".
+// renderPermissionsOverlay draws the picker body. Same visual language
+// as /model and /provider — `renderMenuHeader` for the title block,
+// `renderMenuItem` for the rows, `styleFooter` for the hotkey row at the
+// bottom. Deliberately borderless/uncentered here — popupBox (popup.go)
+// supplies the single rounded border and composePopup does the
+// centering, so adding either here would read as "modal floating on a
+// modal".
 func renderPermissionsOverlay(m Model) string {
 	shared := ""
 	local := ""

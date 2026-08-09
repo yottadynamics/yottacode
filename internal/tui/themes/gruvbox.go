@@ -25,5 +25,12 @@ func init() {
 		Assistant: pin("#8ec07c"), // bright_aqua-2
 		Code:      pin("#ebdbb2"),
 		Warm:      pin("#fe8019"), // bright_orange
+
+		// #282828 is Gruvbox's canonical "dark medium" bg0 — the
+		// signature dark-brown backdrop the whole palette is built
+		// around. Real terminal-background theming (OSC 11) repaints
+		// the terminal canvas itself to this, not just in-app chrome.
+		HasBackground: true,
+		Background:    pin("#282828"),
 	})
 }
