@@ -6,7 +6,7 @@ import (
 	"os/exec"
 	"strings"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 
 	"github.com/yottadynamics/yottacode/internal/codemap"
 )
@@ -133,13 +133,13 @@ func (m Model) handleCodeMapLoaded(msg codeMapLoadedMsg) (Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m Model) updateCodeMapPicker(msg tea.KeyMsg) (Model, tea.Cmd) {
+func (m Model) updateCodeMapPicker(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 	p := m.codeMapPicker
 	if p == nil {
 		m.codeMapPickerOpen = false
 		return m, nil
 	}
-	switch msg.Type {
+	switch msg.Code {
 	case tea.KeyEsc:
 		m.codeMapPickerOpen = false
 		m.codeMapPicker = nil
@@ -163,9 +163,8 @@ func (m Model) updateCodeMapPicker(msg tea.KeyMsg) (Model, tea.Cmd) {
 		}
 		return m, nil
 	}
-	if msg.Type == tea.KeyRunes && len(msg.Runes) > 0 {
-		s := string(msg.Runes)
-		switch s {
+	if msg.Text != "" {
+		switch msg.Text {
 		case "j":
 			if p.cursor < len(p.rows)-1 {
 				p.cursor++
@@ -179,7 +178,7 @@ func (m Model) updateCodeMapPicker(msg tea.KeyMsg) (Model, tea.Cmd) {
 			p.status = "rebuilding code map…"
 			return m, m.loadCodeMapCmd(p.mode, p.filter, p.depth)
 		default:
-			p.filter += s
+			p.filter += msg.Text
 			p.rebuildRows()
 		}
 	}

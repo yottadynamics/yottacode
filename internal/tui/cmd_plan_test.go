@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 
 	"github.com/yottadynamics/yottacode/internal/adapter"
 	"github.com/yottadynamics/yottacode/internal/agent"
@@ -220,7 +220,7 @@ func TestPlanModeBanner_RendersInView(t *testing.T) {
 	m, _ := newPlanModeTestModel(t)
 	m, _ = cmdPlan(m, nil)
 	maybeFillPlanFile(&m, "plan task")
-	view := stripANSI(m.View())
+	view := stripANSI(m.View().Content)
 	if !strings.Contains(view, "plan mode") {
 		t.Errorf("plan-mode banner should appear above cmdline; got %q", view)
 	}
@@ -228,7 +228,7 @@ func TestPlanModeBanner_RendersInView(t *testing.T) {
 
 func TestPlanModeBanner_HiddenWhenInactive(t *testing.T) {
 	m, _ := newPlanModeTestModel(t)
-	view := stripANSI(m.View())
+	view := stripANSI(m.View().Content)
 	if strings.Contains(view, "plan mode") {
 		t.Errorf("banner should not appear before /plan; got %q", view)
 	}
@@ -241,7 +241,7 @@ func TestPlanModeBanner_NoSlugYet(t *testing.T) {
 	// until a slug resolves and we have a basename to show.
 	m, _ := newPlanModeTestModel(t)
 	m, _ = cmdPlan(m, nil)
-	view := stripANSI(m.View())
+	view := stripANSI(m.View().Content)
 	if strings.Contains(view, "awaiting your message") {
 		t.Errorf("banner should NOT carry the awaiting-message hint; got %q", view)
 	}
@@ -257,17 +257,17 @@ func TestShiftTab_CyclesAutoPlanNormal(t *testing.T) {
 	autoMode := m.cfg.AutoMode
 
 	// Step 1: normal → auto.
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyShiftTab})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift})
 	if !autoMode.IsActive() || planMode.IsActive() {
 		t.Errorf("step 1 (normal → auto): autoMode=%v planMode=%v", autoMode.IsActive(), planMode.IsActive())
 	}
 	// Step 2: auto → plan.
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyShiftTab})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift})
 	if autoMode.IsActive() || !planMode.IsActive() {
 		t.Errorf("step 2 (auto → plan): autoMode=%v planMode=%v", autoMode.IsActive(), planMode.IsActive())
 	}
 	// Step 3: plan → normal.
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyShiftTab})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift})
 	if autoMode.IsActive() || planMode.IsActive() {
 		t.Errorf("step 3 (plan → normal): autoMode=%v planMode=%v", autoMode.IsActive(), planMode.IsActive())
 	}
@@ -275,11 +275,11 @@ func TestShiftTab_CyclesAutoPlanNormal(t *testing.T) {
 
 func TestShiftTab_BlockedWhilePalettesOpen(t *testing.T) {
 	m, planMode := newPlanModeTestModel(t)
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Text: "/"})
 	if !m.paletteOpen {
 		t.Fatalf("typing '/' should open the slash palette")
 	}
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyShiftTab})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift})
 	if planMode.IsActive() {
 		t.Errorf("Shift+Tab should not toggle plan mode while the slash palette is open")
 	}
@@ -296,17 +296,17 @@ func TestShiftTab_CyclesMidTurn(t *testing.T) {
 	m.turnActive = true
 
 	// normal → auto, while the turn is running.
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyShiftTab})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift})
 	if !autoMode.IsActive() || planMode.IsActive() {
 		t.Errorf("mid-turn step 1 (normal → auto): autoMode=%v planMode=%v", autoMode.IsActive(), planMode.IsActive())
 	}
 	// auto → plan.
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyShiftTab})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift})
 	if autoMode.IsActive() || !planMode.IsActive() {
 		t.Errorf("mid-turn step 2 (auto → plan): autoMode=%v planMode=%v", autoMode.IsActive(), planMode.IsActive())
 	}
 	// plan → normal.
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyShiftTab})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift})
 	if autoMode.IsActive() || planMode.IsActive() {
 		t.Errorf("mid-turn step 3 (plan → normal): autoMode=%v planMode=%v", autoMode.IsActive(), planMode.IsActive())
 	}
@@ -319,7 +319,7 @@ func TestShiftTab_BlockedWhileApprovalPending(t *testing.T) {
 	m.turnActive = true
 	m.awaitingApproval = true
 	m.approvalTool = "write_file"
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyShiftTab})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift})
 	if m.cfg.AutoMode.IsActive() || planMode.IsActive() {
 		t.Errorf("Shift+Tab should not cycle modes while an approval modal is pending")
 	}
@@ -366,7 +366,7 @@ func TestExitPlanModeApprovalCard_RendersFromPlanFile(t *testing.T) {
 		t.Fatalf("ApprovalNeeded for exit_plan_mode should set awaitingApproval")
 	}
 	// The decision box (in View) carries only the hotkeys and title.
-	view := stripANSI(m.View())
+	view := stripANSI(m.View().Content)
 	for _, want := range []string{"Approve plan?", "auto-approval", "manual approval", "later", "keep planning"} {
 		if !strings.Contains(view, want) {
 			t.Errorf("approval card missing %q; got %q", want, view)
@@ -388,7 +388,7 @@ func TestExitPlanModeApprovalCard_RendersFromPlanFile(t *testing.T) {
 	}
 
 	// Press [A] — should send AllowOnce and flip plan mode off.
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Text: "a"})
 	select {
 	case d := <-m.decisions:
 		if d != agent.AllowOnce {
@@ -423,7 +423,7 @@ func TestExitPlanModeApprovalCard_SaveForLater(t *testing.T) {
 		t.Fatalf("test setup: ApprovalNeeded should open the modal")
 	}
 	// Press [L] for save-for-later.
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'l'}})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Text: "l"})
 	select {
 	case d := <-m.decisions:
 		if d != agent.SaveForLater {
@@ -690,7 +690,7 @@ func TestBanner_AutoPlusYoloShowsBothLabels(t *testing.T) {
 	m, _ := newPlanModeTestModel(t)
 	m, _ = toggleAutoMode(m)
 	m = enterYoloMode(m)
-	view := stripANSI(m.View())
+	view := stripANSI(m.View().Content)
 	if !strings.Contains(view, "auto mode") {
 		t.Errorf("banner should still show 'auto mode' label; got %q", view)
 	}
@@ -715,7 +715,7 @@ func TestBanner_PlanPlusYoloShowsBothLabels(t *testing.T) {
 	// non-empty is the gate — see model.go's banner switch).
 	m.cfg.PlanMode.PlanFile = "/tmp/plan-test.md"
 	m = enterYoloMode(m)
-	view := stripANSI(m.View())
+	view := stripANSI(m.View().Content)
 	if !strings.Contains(view, "plan mode") {
 		t.Errorf("banner should still show 'plan mode' label; got %q", view)
 	}
@@ -730,7 +730,7 @@ func TestBanner_PlanPlusYoloShowsBothLabels(t *testing.T) {
 func TestYoloStandaloneBanner_RendersWhenAlone(t *testing.T) {
 	m, _ := newPlanModeTestModel(t)
 	m = enterYoloMode(m)
-	view := stripANSI(m.View())
+	view := stripANSI(m.View().Content)
 	if !strings.Contains(view, YoloModeIcon+" yolo mode") {
 		t.Errorf("standalone yolo banner missing icon + label; got %q", view)
 	}
@@ -791,7 +791,7 @@ func TestToggleAutoMode_ExitsPlanModeOnEntry(t *testing.T) {
 func TestAutoModeBanner_RendersWhenActive(t *testing.T) {
 	m, _ := newPlanModeTestModel(t)
 	m, _ = toggleAutoMode(m)
-	view := stripANSI(m.View())
+	view := stripANSI(m.View().Content)
 	if !strings.Contains(view, "auto mode") {
 		t.Errorf("auto-mode banner should appear when active; got %q", view)
 	}
@@ -932,7 +932,7 @@ func TestExitPlanModeApprovalCard_AEntersAutoMode(t *testing.T) {
 		t.Fatalf("ApprovalNeeded for exit_plan_mode should open the modal")
 	}
 	// Press [A].
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Text: "a"})
 	select {
 	case d := <-m.decisions:
 		if d != agent.AllowOnce {
@@ -979,7 +979,7 @@ func TestExitPlanModeApprovalCard_AutoRoutingSwitchesToImplementer(t *testing.T)
 	m.turnErrCh = make(chan error, 1)
 	m, _ = m.handleAgentEventTea(agent.ApprovalNeeded{ToolName: "exit_plan_mode", ArgsJSON: `{}`})
 
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Text: "a"})
 	if m.modelName != "gpt-5.5-codex-mini" {
 		t.Fatalf("auto implementation should switch status model to implementer, got %q", m.modelName)
 	}
@@ -1016,7 +1016,7 @@ func TestExitPlanModeApprovalCard_MIsManualApproval(t *testing.T) {
 	if !m.awaitingApproval {
 		t.Fatalf("ApprovalNeeded for exit_plan_mode should open the modal")
 	}
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'m'}})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Text: "m"})
 	select {
 	case d := <-m.decisions:
 		if d != agent.AllowOnce {
@@ -1052,7 +1052,7 @@ func TestExitPlanModeApprovalCard_AdvertisesAllHotkeys(t *testing.T) {
 		ToolName: "exit_plan_mode",
 		ArgsJSON: `{}`,
 	})
-	view := stripANSI(m.View())
+	view := stripANSI(m.View().Content)
 	for _, want := range []string{"auto-approval", "manual approval", "later", "keep planning"} {
 		if !strings.Contains(view, want) {
 			t.Errorf("approval card missing hotkey label %q; got %q", want, view)
@@ -1123,7 +1123,7 @@ func TestCmdPlan_ListResumesPlan(t *testing.T) {
 	}
 
 	// Press Enter to resume the highlighted (newest) plan.
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	if !planMode.IsActive() {
 		t.Errorf("plan mode should be active after resuming")
 	}
@@ -1151,7 +1151,7 @@ func TestPlansPicker_EscClosesWithoutResuming(t *testing.T) {
 	if !m.plansPickerOpen {
 		t.Fatalf("test setup: picker should be open")
 	}
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEsc})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEsc})
 	if m.plansPickerOpen {
 		t.Errorf("Esc should close the picker")
 	}
@@ -1185,7 +1185,7 @@ func TestEnterPlanModeApprovalCard_YEntersAndDerivesPlanFile(t *testing.T) {
 	if !m.awaitingApproval {
 		t.Fatalf("ApprovalNeeded for enter_plan_mode should set awaitingApproval")
 	}
-	view := stripANSI(m.View())
+	view := stripANSI(m.View().Content)
 	for _, want := range []string{"Enter plan mode?", "enter plan mode", "stay in current mode"} {
 		if !strings.Contains(view, want) {
 			t.Errorf("enter card missing %q; got %q", want, view)
@@ -1196,7 +1196,7 @@ func TestEnterPlanModeApprovalCard_YEntersAndDerivesPlanFile(t *testing.T) {
 		t.Errorf("enter card must not offer always-allow; got %q", view)
 	}
 
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Text: "y"})
 	select {
 	case d := <-m.decisions:
 		if d != agent.AllowOnce {
@@ -1239,7 +1239,7 @@ func TestEnterPlanModeApprovalCard_NDeclines(t *testing.T) {
 	if !m.awaitingApproval {
 		t.Fatalf("test setup: ApprovalNeeded should open the modal")
 	}
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Text: "n"})
 	select {
 	case d := <-m.decisions:
 		if d != agent.Deny {
@@ -1272,7 +1272,7 @@ func TestEnterPlanModeApprovalCard_YExitsAutoMode(t *testing.T) {
 	m.decisions = make(chan agent.Decision, 1)
 	m.turnErrCh = make(chan error, 1)
 	m, _ = m.handleAgentEventTea(agent.ApprovalNeeded{ToolName: "enter_plan_mode", ArgsJSON: `{}`})
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	if m.cfg.AutoMode.IsActive() {
 		t.Errorf("auto mode should exit when plan mode enters via the tool")
 	}

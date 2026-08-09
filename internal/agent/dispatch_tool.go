@@ -70,6 +70,15 @@ type DispatchTool struct {
 
 	// LSPDisabled lists language IDs whose server launch is disabled by config.
 	LSPDisabled []string
+
+	// SandboxFactory, when non-nil, constructs a per-write-worker Sandbox
+	// (a fresh podman container mounted at the worker's worktree) — the
+	// same posture the parent session's own Sandbox uses, inherited by
+	// default rather than gated by a separate dispatch-level flag. Nil
+	// means dispatch write-workers run run_bash on the host, same as
+	// today. Read-only workers never need this: they reuse the parent's
+	// registry (and its Sandbox) via buildChildRegistry.
+	SandboxFactory SandboxFactory
 }
 
 func (t *DispatchTool) Name() string { return DispatchToolName }
@@ -202,6 +211,13 @@ type dispatchChild struct {
 	// removed at the end of its run (no commits, clean tree — nothing to
 	// keep), so the result can explain why the branch no longer exists.
 	reclaimed bool
+	// sandbox is this write worker's own Sandbox (a podman container
+	// mounted at c.worktree), built from DispatchTool.SandboxFactory when
+	// non-nil. Nil for read-only children (they reuse the parent's
+	// registry/Sandbox) and whenever sandboxing isn't configured. Closed
+	// exactly once, at whichever of runDispatchChild's two outcomes
+	// (panic-recovery or normal completion) actually happens.
+	sandbox Sandbox
 }
 
 func (t *DispatchTool) Execute(ctx context.Context, argsJSON string) (string, error) {
@@ -491,6 +507,11 @@ func (t *DispatchTool) runDispatchChild(ctx context.Context, c *dispatchChild, b
 			if !c.reclaimed {
 				c.reclaimed = reclaimEmptyWorktree(context.Background(), c.repoRoot, c.worktree, c.base)
 			}
+			// Same non-fatal, best-effort posture as reclaimEmptyWorktree
+			// above: a panic mid-run must not leak this worker's container.
+			if c.sandbox != nil {
+				_ = c.sandbox.Close()
+			}
 			t.Agent.Tasks.MarkDone(c.taskID, c.status, c.result, c.errored, c.tokens)
 			// A background worker's completion is surfaced ONLY via the
 			// async callback (the normal-return branch below). Without
@@ -555,8 +576,49 @@ func (t *DispatchTool) runDispatchChild(ctx context.Context, c *dispatchChild, b
 
 	opts := childRunOpts{bgPolicy: background}
 	if c.isWrite {
+		// A write worker's worktree is a different absolute path than
+		// whatever the parent session's own container has mounted, so it
+		// needs its own Sandbox — inherits the parent's sandboxing posture
+		// by default (see DispatchTool.SandboxFactory), no separate
+		// dispatch-level opt-in. Construction failure fails this worker
+		// loud rather than silently falling back to unsandboxed host
+		// execution, the same "never fall back on error" contract
+		// NewPodmanSandbox's caller follows at session startup.
+		//
+		// Gated on ToolAllowed("run_bash") — a worker whose config never
+		// grants run_bash has nothing for a Sandbox to cover, so it
+		// shouldn't pay container-creation cost or fail its task over a
+		// dependency it was never going to use.
+		if t.SandboxFactory != nil && c.cfg.ToolAllowed("run_bash") {
+			sb, err := t.SandboxFactory(childCtx, c.worktree, c.taskID)
+			if err != nil {
+				c.errored, c.status = true, subagents.TaskErrored
+				c.result = "error: sandbox: " + err.Error()
+				c.reclaimed = reclaimEmptyWorktree(context.Background(), c.repoRoot, c.worktree, c.base)
+				t.Agent.Tasks.MarkDone(c.taskID, c.status, c.result, c.errored, c.tokens)
+				if background {
+					tokensUsed, toolCalls := doneTokensAndCalls(t.Agent.Tasks, c.taskID, c.tokens)
+					t.Agent.fireBackgroundDone(SubagentBackgroundDone{
+						TaskID:       c.taskID,
+						AgentType:    c.cfg.Name,
+						Result:       c.result,
+						Errored:      true,
+						Duration:     time.Since(task.Started),
+						TokensUsed:   tokensUsed,
+						ToolCalls:    toolCalls,
+						Model:        childModel,
+						Branch:       c.branch,
+						BatchID:      batchID,
+						Reclaimed:    c.reclaimed,
+						NotifyOnDone: true,
+					})
+				}
+				return
+			}
+			c.sandbox = sb
+		}
 		childCwd := NewCwdRef(c.worktree)
-		opts.reg = t.buildWorktreeChildRegistry(c.cfg, childCwd, c.worktree, c.spec.Files, background)
+		opts.reg = t.buildWorktreeChildRegistry(c.cfg, childCwd, c.worktree, c.spec.Files, background, c.sandbox)
 		opts.cwd = childCwd
 		opts.extraSystemPrompt = writeScopePrompt(c.branch, c.spec.Files)
 	}
@@ -653,6 +715,13 @@ func (t *DispatchTool) runDispatchChild(ctx context.Context, c *dispatchChild, b
 		if c.commit == "" {
 			c.reclaimed = reclaimEmptyWorktree(commitCtx, c.repoRoot, c.worktree, c.base)
 		}
+		// Tear down this worker's own container, if it had one — every
+		// outcome, same as the reclaim above. The panic-recovery defer
+		// covers the other exit path; the two are mutually exclusive (this
+		// line only runs on normal return), so Close is called exactly once.
+		if c.sandbox != nil {
+			_ = c.sandbox.Close()
+		}
 	}
 
 	t.Agent.Tasks.MarkDone(c.taskID, status, result, errored, tokens)
@@ -709,7 +778,10 @@ func (t *DispatchTool) runDispatchChild(ctx context.Context, c *dispatchChild, b
 // child's worktree, then narrows it to the agent config's allowlist. The
 // core set already excludes the delegation tools (Agent/dispatch/integrate)
 // and exit_plan_mode, so a worker can't recurse.
-func (t *DispatchTool) buildWorktreeChildRegistry(cfg *subagents.AgentConfig, cwd *CwdRef, wtDir string, ownedFiles []string, background bool) *Registry {
+//
+// sandbox is this worker's own Sandbox (nil means host execution, same as
+// the parent session's own nil-Sandbox default) — see DispatchTool.SandboxFactory.
+func (t *DispatchTool) buildWorktreeChildRegistry(cfg *subagents.AgentConfig, cwd *CwdRef, wtDir string, ownedFiles []string, background bool, sandbox Sandbox) *Registry {
 	core := NewRegistry()
 	enableLSP := t.EnableLSP && !background
 	RegisterCoreCwdTools(core, cwd, CoreToolDeps{
@@ -725,6 +797,7 @@ func (t *DispatchTool) buildWorktreeChildRegistry(cfg *subagents.AgentConfig, cw
 		LSPManager:              nil,
 		EnableSyntaxRanges:      t.EnableSyntaxRanges,
 		EnableDocumentIngestion: t.EnableDocumentIngestion,
+		Sandbox:                 sandbox,
 	})
 	out := NewRegistry()
 	for _, tool := range core.Tools() {

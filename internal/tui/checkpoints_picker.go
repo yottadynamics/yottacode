@@ -4,7 +4,7 @@ import (
 	"strings"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 
 	"github.com/yottadynamics/yottacode/internal/checkpoint"
 )
@@ -73,7 +73,7 @@ func (m *Model) openCheckpointsPicker() {
 // open. On the prompt screen: Up/Down navigate, Enter advances to the
 // action menu, Esc closes. On the action menu: Up/Down navigate, Enter
 // commits, Esc returns to the prompt list.
-func (m Model) updateCheckpointsPicker(msg tea.KeyMsg) (Model, tea.Cmd) {
+func (m Model) updateCheckpointsPicker(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 	if m.checkpointsPicker == nil {
 		m.checkpointsPickerOpen = false
 		return m, nil
@@ -81,7 +81,7 @@ func (m Model) updateCheckpointsPicker(msg tea.KeyMsg) (Model, tea.Cmd) {
 	state := m.checkpointsPicker
 
 	if state.picked != nil {
-		switch msg.Type {
+		switch msg.Code {
 		case tea.KeyUp:
 			if state.actionIdx > 0 {
 				state.actionIdx--
@@ -106,7 +106,7 @@ func (m Model) updateCheckpointsPicker(msg tea.KeyMsg) (Model, tea.Cmd) {
 		return m, nil
 	}
 
-	switch msg.Type {
+	switch msg.Code {
 	case tea.KeyUp:
 		if state.cursor > 0 {
 			state.cursor--

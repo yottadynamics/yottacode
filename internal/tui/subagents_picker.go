@@ -3,7 +3,7 @@ package tui
 import (
 	"fmt"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 
 	"github.com/yottadynamics/yottacode/internal/subagents"
 )
@@ -71,14 +71,14 @@ func (m *Model) openSubagentsPickerInMode(mode subagentsPickerMode) {
 // Mirrors the navigation contract of the other inline overlays:
 // Up/Down to move, Enter to view, Esc to close. Additional keys:
 // `s` stops a running task; `r` refreshes the task list.
-func (m Model) updateSubagentsPicker(msg tea.KeyMsg) (Model, tea.Cmd) {
+func (m Model) updateSubagentsPicker(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 	if m.subagentsPicker == nil {
 		m.subagentsPickerOpen = false
 		return m, nil
 	}
 	p := m.subagentsPicker
 	rowCount := p.rowCount()
-	switch msg.Type {
+	switch msg.Code {
 	case tea.KeyUp:
 		if p.cursor > 0 {
 			p.cursor--
@@ -105,8 +105,8 @@ func (m Model) updateSubagentsPicker(msg tea.KeyMsg) (Model, tea.Cmd) {
 		m.subagentsPickerOpen = false
 		m.subagentsPicker = nil
 		return m, nil
-	case tea.KeyRunes:
-		switch string(msg.Runes) {
+	default:
+		switch msg.Text {
 		case "t":
 			// Toggle between tasks and types views without leaving
 			// the overlay. Cursor resets to 0 because the lists are

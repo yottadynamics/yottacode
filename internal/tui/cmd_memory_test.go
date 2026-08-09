@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 
 	"github.com/yottadynamics/yottacode/internal/memory"
 )
@@ -94,7 +94,7 @@ func TestSlash_MemoryIgnoresSearchArgs(t *testing.T) {
 	if m.memoryPicker.mode != memoryRootMode {
 		t.Errorf("/memory no longer has a search subcommand; got mode %v", m.memoryPicker.mode)
 	}
-	if strings.Contains(m.transcript.String(), "queue-writes") || strings.Contains(stripANSI(m.View()), "database queue") || strings.Contains(stripANSI(m.View()), "Search memories") {
+	if strings.Contains(m.transcript.String(), "queue-writes") || strings.Contains(stripANSI(m.View().Content), "database queue") || strings.Contains(stripANSI(m.View().Content), "Search memories") {
 		t.Errorf("/memory args should not run a search or print results")
 	}
 }
@@ -102,7 +102,7 @@ func TestSlash_MemoryIgnoresSearchArgs(t *testing.T) {
 func TestSlash_MemoryPickerViewIncludesAllRows(t *testing.T) {
 	m := newMemoryTestModel(t)
 	m, _ = typeAndEnter(t, m, "/memory")
-	v := stripANSI(m.View())
+	v := stripANSI(m.View().Content)
 	for _, want := range []string{
 		"Memory",
 		"Project context",
@@ -119,7 +119,7 @@ func TestSlash_MemoryPickerViewIncludesAllRows(t *testing.T) {
 func TestSlash_MemoryPickerEscClosesPicker(t *testing.T) {
 	m := newMemoryTestModel(t)
 	m, _ = typeAndEnter(t, m, "/memory")
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEsc})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEsc})
 	if m.memoryPickerOpen {
 		t.Errorf("Esc should close the memory picker")
 	}
@@ -134,7 +134,7 @@ func TestSlash_MemoryPickerArrowKeysClampToRange(t *testing.T) {
 
 	rowCount := m.memoryPicker.rowCount()
 	for i := 0; i < rowCount+2; i++ {
-		m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyDown})
+		m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyDown})
 	}
 	if m.memoryPicker.cursor != rowCount-1 {
 		t.Errorf("cursor should clamp at last row (%d); got %d",
@@ -142,7 +142,7 @@ func TestSlash_MemoryPickerArrowKeysClampToRange(t *testing.T) {
 	}
 
 	for i := 0; i < rowCount+2; i++ {
-		m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyUp})
+		m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyUp})
 	}
 	if m.memoryPicker.cursor != 0 {
 		t.Errorf("cursor should clamp at 0 (Project context); got %d", m.memoryPicker.cursor)
@@ -152,7 +152,7 @@ func TestSlash_MemoryPickerArrowKeysClampToRange(t *testing.T) {
 func TestSlash_MemoryPickerProjectRowOpensFile(t *testing.T) {
 	m := newMemoryTestModel(t)
 	m, _ = typeAndEnter(t, m, "/memory")
-	m, cmd := applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	m, cmd := applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	if m.memoryPickerOpen {
 		t.Errorf("Enter on row 0 should close the picker")
 	}
@@ -171,9 +171,9 @@ func TestSlash_MemoryPickerBrowseUserRow(t *testing.T) {
 	seedUserMemoryFile(t, "bravo", "fact 2")
 
 	m, _ = typeAndEnter(t, m, "/memory")
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyDown})
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyDown}) // cursor → row 2
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyDown})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyDown}) // cursor → row 2
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 
 	if !m.memoryPickerOpen {
 		t.Errorf("Enter on Browse row should keep the picker open")
@@ -201,9 +201,9 @@ func TestSlash_MemoryPickerBrowseProjectRow(t *testing.T) {
 
 	m, _ = typeAndEnter(t, m, "/memory")
 	for i := 0; i < 3; i++ {
-		m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyDown})
+		m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyDown})
 	}
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 
 	if m.memoryPicker == nil || m.memoryPicker.mode != memoryBrowseMode {
 		t.Fatalf("expected browse mode; got picker=%v", m.memoryPicker)
@@ -222,14 +222,14 @@ func TestMemoryPicker_BrowseDeleteRemovesFile(t *testing.T) {
 	path := seedUserMemoryFile(t, "drop-me", "fact")
 
 	m, _ = typeAndEnter(t, m, "/memory")
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyDown})
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyDown})
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter}) // enter Browse user memories
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyDown})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyDown})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // enter Browse user memories
 
 	if m.memoryPicker.mode != memoryBrowseMode {
 		t.Fatalf("expected browse mode")
 	}
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Text: "d"})
 
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Errorf("expected memory file to be deleted; stat err = %v", err)
@@ -250,13 +250,13 @@ func TestMemoryPicker_BrowseEscReturnsToRoot(t *testing.T) {
 	seedUserMemoryFile(t, "alpha", "fact")
 
 	m, _ = typeAndEnter(t, m, "/memory")
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyDown})
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyDown})
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyDown})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyDown})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	if m.memoryPicker.mode != memoryBrowseMode {
 		t.Fatalf("expected browse mode")
 	}
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEsc})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEsc})
 	if m.memoryPicker == nil || m.memoryPicker.mode != memoryRootMode {
 		t.Errorf("esc from browse should return to root; got picker=%v", m.memoryPicker)
 	}

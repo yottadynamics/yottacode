@@ -271,11 +271,12 @@ func Save(cfg Config, path string) error {
 }
 
 // encodeTunables renders only the [context], [retrieval], [memory], [lsp],
-// and [experimental] sections via the BurntSushi encoder. We marshal a trimmed
-// struct so the encoder doesn't try to emit [active], [[providers]], or
-// [router]. Memory/LSP/experimental must be included: Render rebuilds the file
-// from the struct, so any section left out of this list is silently DROPPED
-// from disk the next time a picker or wizard saves the config.
+// [sandbox], and [experimental] sections via the BurntSushi encoder. We
+// marshal a trimmed struct so the encoder doesn't try to emit [active],
+// [[providers]], or [router]. Memory/LSP/sandbox/experimental must be
+// included: Render rebuilds the file from the struct, so any section left
+// out of this list is silently DROPPED from disk the next time a picker or
+// wizard saves the config.
 func encodeTunables(cfg Config) (string, error) {
 	var trimmed = struct {
 		Context      ContextConfig   `toml:"context"`
@@ -283,6 +284,7 @@ func encodeTunables(cfg Config) (string, error) {
 		Cache        CacheConfig     `toml:"cache"`
 		Memory       MemoryConfig    `toml:"memory"`
 		LSP          LSPConfig       `toml:"lsp"`
+		Sandbox      SandboxConfig   `toml:"sandbox"`
 		Experimental map[string]bool `toml:"experimental"`
 	}{
 		Context:      cfg.Context,
@@ -290,6 +292,7 @@ func encodeTunables(cfg Config) (string, error) {
 		Cache:        cfg.Cache,
 		Memory:       cfg.Memory,
 		LSP:          cfg.LSP,
+		Sandbox:      cfg.Sandbox,
 		Experimental: cfg.Experimental,
 	}
 	var b strings.Builder

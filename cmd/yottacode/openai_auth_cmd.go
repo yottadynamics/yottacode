@@ -57,16 +57,13 @@ model tools cannot exfiltrate or overwrite them.
 }
 
 // newOpenAIAuthLoginCmd runs the PKCE + browser flow and persists
-// the resulting token set to disk, then probes each candidate model
-// to map this account's allow-list and persists that to a sibling
-// JSON. The per-candidate table goes to stdout (script-parseable);
-// progress + errors go to stderr.
-//
-// --candidates lets a maintainer test new model names without
-// rebuilding the binary.
+// the resulting token set to disk, then fetches this account's live
+// model catalog and probes each candidate against the Responses
+// endpoint to confirm this account can actually call it, persisting
+// the confirmed set to a sibling JSON. The per-candidate table goes
+// to stdout (script-parseable); progress + errors go to stderr.
 func newOpenAIAuthLoginCmd() *cobra.Command {
 	var storePath string
-	var candidatesCSV string
 	cmd := &cobra.Command{
 		Use:   "login",
 		Short: "Sign in with ChatGPT (browser OAuth), save tokens, and discover available models",
@@ -103,16 +100,12 @@ func newOpenAIAuthLoginCmd() *cobra.Command {
 				path,
 			)
 
-			candidates := openaiauth.DefaultCandidates
-			if candidatesCSV != "" {
-				candidates = splitCSV(candidatesCSV)
-				if len(candidates) == 0 {
-					return errors.New("--candidates: no model names parsed from value")
-				}
+			fmt.Fprintf(cmd.ErrOrStderr(), "\nfetching model catalog and verifying account access via %s\n\n", openaiauth.DefaultCodexEndpoint)
+			results, err := openaiauth.ScanWithToken(ctx, ts.AccessToken, openaiauth.ScanOptions{})
+			if err != nil {
+				fmt.Fprintf(cmd.ErrOrStderr(), "\nerror: %v; tokens remain saved, rerun login to retry\n", err)
+				return err
 			}
-
-			fmt.Fprintf(cmd.ErrOrStderr(), "\nscanning %d candidate models against %s\n\n", len(candidates), openaiauth.DefaultCodexEndpoint)
-			results := openaiauth.ScanWithToken(ctx, ts.AccessToken, openaiauth.ScanOptions{Candidates: candidates})
 			renderScanTable(cmd.OutOrStdout(), results)
 
 			ok := openaiauth.OKNames(results)
@@ -126,10 +119,9 @@ func newOpenAIAuthLoginCmd() *cobra.Command {
 				return fmt.Errorf("resolve models path: %w", err)
 			}
 			if err := openaiauth.SaveModels(modelsPath, openaiauth.ModelsFile{
-				ScannedAt:  time.Now().UTC(),
-				Candidates: append([]string(nil), candidates...),
-				Models:     ok,
-				Results:    append([]openaiauth.ScanResult(nil), results...),
+				ScannedAt:    time.Now().UTC(),
+				Models:       ok,
+				DisplayNames: openaiauth.OKDisplayNames(results),
 			}); err != nil {
 				return fmt.Errorf("save models file: %w", err)
 			}
@@ -138,7 +130,6 @@ func newOpenAIAuthLoginCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&storePath, "store", "", "Override token store path (default: ~/.yottacode/auth/openai-auth.json)")
-	cmd.Flags().StringVar(&candidatesCSV, "candidates", "", "Comma-separated candidate model names to probe (default: built-in DefaultCandidates). Use to test new names OpenAI ships before they land in the binary.")
 	return cmd
 }
 
@@ -153,7 +144,6 @@ func renderScanTable(w io.Writer, results []openaiauth.ScanResult) {
 		fmt.Fprintf(w, "%-22s %-7s %s\n", r.Name, r.Status, r.Detail)
 	}
 }
-
 
 // newOpenAIAuthLogoutCmd deletes the token store file. Does not
 // revoke the refresh_token at the OAuth server — Codex CLI doesn't

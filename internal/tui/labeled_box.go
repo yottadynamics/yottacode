@@ -3,7 +3,8 @@ package tui
 import (
 	"strings"
 
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/lipgloss/v2"
+	"charm.land/lipgloss/v2/compat"
 	"github.com/charmbracelet/x/ansi"
 )
 
@@ -72,7 +73,7 @@ func hardWrapLabeled(s string, capW int) []string {
 // width so a very long label (long tool name, long language count)
 // can't stretch the box past the same budget the body was wrapped to;
 // pass 0 to skip clamping.
-func renderLabeledBox(leftLabel, rightLabel string, bodyLines []string, capW int, borderColor lipgloss.AdaptiveColor) string {
+func renderLabeledBox(leftLabel, rightLabel string, bodyLines []string, capW int, borderColor compat.AdaptiveColor) string {
 	innerW := 0
 	for _, line := range bodyLines {
 		if w := ansi.StringWidth(line); w > innerW {

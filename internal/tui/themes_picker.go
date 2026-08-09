@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"strings"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 
 	"github.com/yottadynamics/yottacode/internal/config"
 	"github.com/yottadynamics/yottacode/internal/tui/themes"
@@ -62,13 +62,13 @@ func (m *Model) openThemePicker() {
 // updateThemePicker handles keystrokes while the picker is foreground.
 // Up/Down (and j/k) navigate; Enter commits + persists; Esc reverts
 // to the original theme and closes.
-func (m Model) updateThemePicker(msg tea.KeyMsg) (Model, tea.Cmd) {
+func (m Model) updateThemePicker(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 	if m.themePicker == nil {
 		m.themePickerOpen = false
 		return m, nil
 	}
 	p := m.themePicker
-	switch msg.Type {
+	switch msg.Code {
 	case tea.KeyEsc:
 		// Revert the live-applied preview before tearing down. Skip
 		// the write — Esc is the "I changed my mind" path, so the
@@ -109,12 +109,12 @@ func (m Model) updateThemePicker(msg tea.KeyMsg) (Model, tea.Cmd) {
 		m.themePickerOpen = false
 		m.themePicker = nil
 		return commitThemeChoice(m, chosen)
-	case tea.KeyRunes:
+	default:
 		// Vim-style j/k for users who use them in pickers like
 		// /sessions and /memory. Single-rune match — multi-char
 		// filtering isn't worth the complexity for a six-row list.
-		if len(msg.Runes) == 1 {
-			switch msg.Runes[0] {
+		if r := []rune(msg.Text); len(r) == 1 {
+			switch r[0] {
 			case 'j':
 				if p.cursor < len(p.entries)-1 {
 					p.cursor++
@@ -129,7 +129,6 @@ func (m Model) updateThemePicker(msg tea.KeyMsg) (Model, tea.Cmd) {
 		}
 		return m, nil
 	}
-	return m, nil
 }
 
 // applyHighlightedTheme is the post-navigation hook: switch the
@@ -400,4 +399,3 @@ func wrapForWidth(s string, width int) string {
 	}
 	return b.String()
 }
-

@@ -5,8 +5,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/charmbracelet/lipgloss"
-	"github.com/muesli/termenv"
+	"charm.land/lipgloss/v2"
+	"charm.land/lipgloss/v2/compat"
+	"github.com/charmbracelet/colorprofile"
 )
 
 // ansiRe strips terminal color codes from highlighter output so tests
@@ -15,6 +16,14 @@ import (
 var ansiRe = regexp.MustCompile(`\x1b\[[0-9;]*m`)
 
 func stripANSI(s string) string { return ansiRe.ReplaceAllString(s, "") }
+
+func stripANSILines(xs []string) []string {
+	out := make([]string, len(xs))
+	for i, x := range xs {
+		out[i] = stripANSI(x)
+	}
+	return out
+}
 
 func TestRenderEditDiff_HappyPath(t *testing.T) {
 	args := `{"path":"main.go","old_string":"foo","new_string":"bar"}`
@@ -102,10 +111,10 @@ func TestIntralineSpan(t *testing.T) {
 // test` lipgloss renders plain ASCII, which would make every style
 // indistinguishable.
 func TestRenderEditDiff_IntralineEmphasis(t *testing.T) {
-	prevProfile := lipgloss.ColorProfile()
-	lipgloss.SetColorProfile(termenv.TrueColor)
-	lipgloss.SetHasDarkBackground(true)
-	t.Cleanup(func() { lipgloss.SetColorProfile(prevProfile) })
+	prevProfile := lipgloss.Writer.Profile
+	lipgloss.Writer.Profile = colorprofile.TrueColor
+	compat.HasDarkBackground = true
+	t.Cleanup(func() { lipgloss.Writer.Profile = prevProfile })
 
 	args := `{"path":"x.go","old_string":"count := 1","new_string":"count := 2"}`
 	got, ok := renderEditDiff(args)
@@ -130,10 +139,10 @@ func TestRenderEditDiff_IntralineEmphasis(t *testing.T) {
 // The card-body variant takes the same intraline path for paired
 // replacements and keeps the marker + gutter chrome.
 func TestEditFileDiffRows_IntralinePairing(t *testing.T) {
-	prevProfile := lipgloss.ColorProfile()
-	lipgloss.SetColorProfile(termenv.TrueColor)
-	lipgloss.SetHasDarkBackground(true)
-	t.Cleanup(func() { lipgloss.SetColorProfile(prevProfile) })
+	prevProfile := lipgloss.Writer.Profile
+	lipgloss.Writer.Profile = colorprofile.TrueColor
+	compat.HasDarkBackground = true
+	t.Cleanup(func() { lipgloss.Writer.Profile = prevProfile })
 
 	args := `{"path":"x.go","old_string":"limit = 10","new_string":"limit = 99"}`
 	rows, ok := editFileDiffRows(args, 80)

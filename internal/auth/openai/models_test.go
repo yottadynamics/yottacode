@@ -30,9 +30,9 @@ func TestSaveLoadModelsRoundTrip(t *testing.T) {
 	path := filepath.Join(dir, "models.json")
 
 	in := ModelsFile{
-		ScannedAt:  time.Date(2026, 5, 6, 12, 0, 0, 0, time.UTC),
-		Candidates: []string{"gpt-5.5", "gpt-5.4"},
-		Models:     []string{"gpt-5.5"},
+		ScannedAt:    time.Date(2026, 5, 6, 12, 0, 0, 0, time.UTC),
+		Models:       []string{"gpt-5.5"},
+		DisplayNames: map[string]string{"gpt-5.5": "GPT-5.5"},
 	}
 	if err := SaveModels(path, in); err != nil {
 		t.Fatalf("SaveModels: %v", err)
@@ -47,8 +47,8 @@ func TestSaveLoadModelsRoundTrip(t *testing.T) {
 	if len(out.Models) != 1 || out.Models[0] != "gpt-5.5" {
 		t.Errorf("Models = %v, want [gpt-5.5]", out.Models)
 	}
-	if len(out.Candidates) != 2 {
-		t.Errorf("Candidates = %v, want 2 entries", out.Candidates)
+	if out.DisplayNames["gpt-5.5"] != "GPT-5.5" {
+		t.Errorf("DisplayNames[gpt-5.5] = %q, want GPT-5.5", out.DisplayNames["gpt-5.5"])
 	}
 }
 

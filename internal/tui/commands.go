@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 
 	"github.com/yottadynamics/yottacode/internal/adapter"
 	copilotauth "github.com/yottadynamics/yottacode/internal/auth/copilot"
@@ -73,6 +73,7 @@ func init() {
 		{Name: "provider", Help: "select a new provider (subcommands: list, use, add, remove, models)", Run: cmdProviderEntry},
 		{Name: "effort", Help: "set reasoning effort for providers that support it (default · low · medium · high)", Run: cmdEffort},
 		{Name: "advisor", Help: "show or toggle advisor/implementer routing (subcommands: on, off)", Run: cmdAdvisor},
+		{Name: "sandbox", Help: "choose how run_bash executes — podman sandbox (auto-allow/regular) or no sandbox", Run: cmdSandbox},
 		{Name: "sessions", Help: "open the sessions menu (or /sessions <id|name> to resume directly)", Run: cmdSessions},
 		// No Args: a bare /memory must execute on Enter (one keystroke) to
 		// open the edit/browse/reindex picker. Manual memory search is not a

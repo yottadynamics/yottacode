@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 
 	"github.com/yottadynamics/yottacode/internal/adapter"
 	"github.com/yottadynamics/yottacode/internal/catalog"
@@ -43,7 +43,7 @@ func TestModelPicker_EscClosesWithoutChange(t *testing.T) {
 	m := newTestModel(t)
 	originalModel := m.modelName
 	m, _ = typeAndEnter(t, m, "/model")
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEsc})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEsc})
 	if m.modelPickerOpen {
 		t.Errorf("Esc should close the picker")
 	}
@@ -69,16 +69,16 @@ func TestModelPicker_ArrowsNavigateLoadedList(t *testing.T) {
 	if m.modelPicker.cursor != 0 {
 		t.Fatalf("cursor should start at 0, got %d", m.modelPicker.cursor)
 	}
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyDown})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyDown})
 	if m.modelPicker.cursor != 1 {
 		t.Errorf("Down should advance cursor; got %d", m.modelPicker.cursor)
 	}
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyDown})
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyDown}) // bounded at last
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyDown})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyDown}) // bounded at last
 	if m.modelPicker.cursor != 2 {
 		t.Errorf("Down should clamp at last entry; got %d", m.modelPicker.cursor)
 	}
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyUp})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyUp})
 	if m.modelPicker.cursor != 1 {
 		t.Errorf("Up should retreat cursor; got %d", m.modelPicker.cursor)
 	}
@@ -162,7 +162,7 @@ default_model = "claude-sonnet-4-5@20250929"
 		t.Fatalf("active provider cursor = %q, want Gemini active model", got)
 	}
 
-	m, fetchCmd := applyMsg(m, tea.KeyMsg{Type: tea.KeyRight})
+	m, fetchCmd := applyMsg(m, tea.KeyPressMsg{Code: tea.KeyRight})
 	if fetchCmd == nil {
 		t.Fatal("provider cycle returned no fetch command")
 	}
@@ -173,7 +173,7 @@ default_model = "claude-sonnet-4-5@20250929"
 	if got := m.modelPicker.entries[m.modelPicker.cursor].ID; got != "claude-sonnet-4-5@20250929" {
 		t.Fatalf("cycled provider cursor = %q, want the Claude provider default_model", got)
 	}
-	if view := stripANSI(m.View()); !strings.Contains(view, "✓ —") {
+	if view := stripANSI(m.View().Content); !strings.Contains(view, "✓ —") {
 		t.Errorf("view should mark the Claude provider default row; got:\n%s", view)
 	}
 }
@@ -184,7 +184,7 @@ default_model = "claude-sonnet-4-5@20250929"
 func TestModelPicker_ViewIncludesBanner(t *testing.T) {
 	m := newTestModel(t)
 	m, _ = typeAndEnter(t, m, "/model")
-	got := m.View()
+	got := m.View().Content
 	if !strings.Contains(stripANSI(got), "Model") {
 		t.Errorf("View should include 'Model' banner; got:\n%s", got)
 	}
@@ -200,7 +200,7 @@ func TestModelPicker_ViewIncludesBanner(t *testing.T) {
 func TestModelPicker_ViewIncludesCacheResetNote(t *testing.T) {
 	m := newTestModel(t)
 	m, _ = typeAndEnter(t, m, "/model")
-	got := stripANSI(m.View())
+	got := stripANSI(m.View().Content)
 	if !strings.Contains(got, "resets the provider's prompt cache") {
 		t.Errorf("picker header should proactively note the cache-reset fact; got:\n%s", got)
 	}
@@ -218,7 +218,7 @@ func TestModelPicker_LoadErrorIsVisibleInView(t *testing.T) {
 		entries: nil,
 		err:     errors.New("network down"),
 	})
-	got := stripANSI(m.View())
+	got := stripANSI(m.View().Content)
 	if !strings.Contains(got, "network down") {
 		t.Errorf("View should surface fetch error; got:\n%s", got)
 	}
@@ -265,7 +265,7 @@ default_model = "qwen3.5:9b"
 	// Press Enter on the lone model. Without the auto-adopt fix
 	// this errors with "no active provider"; with the fix the
 	// picker closes and Active.Provider is set to "ollama".
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	if m.modelPickerOpen {
 		t.Errorf("Enter should close picker after committing; got open")
 	}
@@ -320,7 +320,7 @@ default_model = "other-model"
 	cmd := m.openModelPicker(prov)
 	m, _ = applyMsg(m, cmd())
 	pre := m.transcript.String()
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	post := m.transcript.String()[len(pre):]
 	if !strings.Contains(post, "prompt cache resets") {
 		t.Errorf("picker-driven mid-session model switch should warn about the cache reset; new transcript:\n%s", post)
@@ -343,7 +343,7 @@ func TestModelPicker_ScrollWindowKeepsCursorVisible(t *testing.T) {
 
 	// Down past the bottom of the window scrolls.
 	for i := 0; i < 10; i++ {
-		m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyDown})
+		m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyDown})
 	}
 	if m.modelPicker.cursor != 10 {
 		t.Errorf("cursor should be at 10; got %d", m.modelPicker.cursor)
@@ -357,20 +357,20 @@ func TestModelPicker_ScrollWindowKeepsCursorVisible(t *testing.T) {
 
 	// PgDn jumps a window.
 	before := m.modelPicker.cursor
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyPgDown})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyPgDown})
 	if m.modelPicker.cursor != before+m.modelPicker.visibleRows {
 		t.Errorf("PgDn should advance by visibleRows (%d); cursor went %d → %d",
 			m.modelPicker.visibleRows, before, m.modelPicker.cursor)
 	}
 
 	// End jumps to the last entry.
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnd})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnd})
 	if m.modelPicker.cursor != len(entries)-1 {
 		t.Errorf("End should land on last entry; got %d", m.modelPicker.cursor)
 	}
 
 	// Home jumps back to 0 and resets the window.
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyHome})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyHome})
 	if m.modelPicker.cursor != 0 || m.modelPicker.windowTop != 0 {
 		t.Errorf("Home should reset cursor + windowTop; got cursor=%d windowTop=%d",
 			m.modelPicker.cursor, m.modelPicker.windowTop)
@@ -392,7 +392,7 @@ func TestModelPicker_ViewHidesOffWindowEntriesAndShowsHints(t *testing.T) {
 	m.modelPicker.windowTop = 0
 	m.modelPicker.cursor = 0
 
-	got := stripANSI(m.View())
+	got := stripANSI(m.View().Content)
 	// First five visible.
 	for i := 0; i < 5; i++ {
 		want := fmt.Sprintf("m-%02d", i)
@@ -462,7 +462,7 @@ default_model = "llama3.1:8b"
 		t.Fatalf("expected 2 providers in picker; got %d", len(m.modelPicker.allProviders))
 	}
 	// Right cycles to ollama.
-	m, fetchCmd := applyMsg(m, tea.KeyMsg{Type: tea.KeyRight})
+	m, fetchCmd := applyMsg(m, tea.KeyPressMsg{Code: tea.KeyRight})
 	if m.modelPicker.provider.Name != "ollama" {
 		t.Errorf("Right should cycle to ollama; provider = %q", m.modelPicker.provider.Name)
 	}
@@ -470,7 +470,7 @@ default_model = "llama3.1:8b"
 		t.Errorf("Right should return a fetch cmd for the new provider")
 	}
 	// Left cycles back to anthropic.
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyLeft})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyLeft})
 	if m.modelPicker.provider.Name != "anthropic" {
 		t.Errorf("Left should cycle back to anthropic; provider = %q", m.modelPicker.provider.Name)
 	}
@@ -490,7 +490,7 @@ func TestModelPicker_ViewProviderCycleHint(t *testing.T) {
 		{Name: "a", Kind: "anthropic", BaseURL: "x"},
 		{Name: "b", Kind: "openai", BaseURL: "y"},
 	}
-	got := stripANSI(m.View())
+	got := stripANSI(m.View().Content)
 	if !strings.Contains(got, "[ a ]") {
 		t.Errorf("View should bracket the active provider; got:\n%s", got)
 	}
@@ -499,7 +499,7 @@ func TestModelPicker_ViewProviderCycleHint(t *testing.T) {
 	}
 	// Reduce to one provider — strip should disappear.
 	m.modelPicker.allProviders = m.modelPicker.allProviders[:1]
-	got = stripANSI(m.View())
+	got = stripANSI(m.View().Content)
 	if strings.Contains(got, "[ a ]") {
 		t.Errorf("View should not bracket-tab a single-provider open; got:\n%s", got)
 	}
@@ -561,11 +561,11 @@ default_model = "nvidia/nemotron-3-super-120b-a12b"
 	}
 
 	// Move to the unconfigured llama model and Enter.
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyDown})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyDown})
 	if got := m.modelPicker.entries[m.modelPicker.cursor].ID; got != "meta/llama-3.1-405b-instruct" {
 		t.Fatalf("cursor should be on llama; got %q", got)
 	}
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	if !m.modelPickerOpen {
 		t.Errorf("Enter on unconfigured per-model-key row should NOT close picker")
 	}
@@ -595,10 +595,10 @@ func TestModelPicker_PerModelKeyHintAppearsForNvidiaOnly(t *testing.T) {
 	}
 	cmd := m.openModelPicker(nvidia)
 	m, _ = applyMsg(m, cmd())
-	if !strings.Contains(stripANSI(m.View()), "per-model API keys") {
+	if !strings.Contains(stripANSI(m.View().Content), "per-model API keys") {
 		t.Errorf("NVIDIA picker should show the per-model-key hint")
 	}
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEsc})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEsc})
 
 	// 2) Anthropic — no hint.
 	anthropic := config.Provider{
@@ -608,10 +608,10 @@ func TestModelPicker_PerModelKeyHintAppearsForNvidiaOnly(t *testing.T) {
 	}
 	cmd = m.openModelPicker(anthropic)
 	m, _ = applyMsg(m, cmd())
-	if strings.Contains(stripANSI(m.View()), "per-model API keys") {
+	if strings.Contains(stripANSI(m.View().Content), "per-model API keys") {
 		t.Errorf("Anthropic picker should NOT show per-model-key hint")
 	}
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEsc})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEsc})
 
 	// 3) Ollama — no hint either (free-form, but local).
 	ollama := config.Provider{
@@ -621,7 +621,7 @@ func TestModelPicker_PerModelKeyHintAppearsForNvidiaOnly(t *testing.T) {
 	}
 	cmd = m.openModelPicker(ollama)
 	m, _ = applyMsg(m, cmd())
-	if strings.Contains(stripANSI(m.View()), "per-model API keys") {
+	if strings.Contains(stripANSI(m.View().Content), "per-model API keys") {
 		t.Errorf("Ollama picker should NOT show per-model-key hint")
 	}
 }
@@ -696,7 +696,7 @@ func TestModelPicker_RendersClaudeCodeStyleCursorAndCheck(t *testing.T) {
 	prov := config.Provider{Name: "anthropic", Kind: "anthropic", BaseURL: "https://api.anthropic.com"}
 	cmd := m.openModelPicker(prov)
 	m, _ = applyMsg(m, cmd())
-	got := stripANSI(m.View())
+	got := stripANSI(m.View().Content)
 	if !strings.Contains(got, "❯") {
 		t.Errorf("View should include ❯ cursor; got:\n%s", got)
 	}
@@ -717,7 +717,7 @@ func TestModelPicker_LongNamesTruncateForAlignment(t *testing.T) {
 	prov := config.Provider{Name: "nvidia", Kind: "openai-compatible", BaseURL: "https://integrate.api.nvidia.com/v1"}
 	cmd := m.openModelPicker(prov)
 	m, _ = applyMsg(m, cmd())
-	got := stripANSI(m.View())
+	got := stripANSI(m.View().Content)
 	// The full long name shouldn't appear verbatim — it should be
 	// truncated with a trailing ellipsis.
 	if strings.Contains(got, long) {
@@ -786,7 +786,7 @@ default_model = "nvidia/nemotron"
 	)
 	cmd := m.openModelPicker(prov)
 	m, _ = applyMsg(m, cmd())
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 
 	if m.modelPickerOpen {
 		t.Fatalf("Enter should close picker")
@@ -871,8 +871,8 @@ default_model = "qwen3.5:9b"
 	m, _ = applyMsg(m, cmd())
 	// The picker auto-cursors to the active model (qwen3.5:9b at
 	// index 0). Move down to llama3:8b (index 1) and confirm.
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyDown})
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyDown})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 
 	if m.modelPickerOpen {
 		t.Fatalf("Enter should close the picker after committing")
@@ -937,7 +937,7 @@ default_model = "gpt-4o"
 	m, _ = applyMsg(m, cmd())
 
 	pre := m.transcript.String()
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	if m.modelPickerOpen {
 		t.Fatalf("Enter should close the picker after committing")
 	}

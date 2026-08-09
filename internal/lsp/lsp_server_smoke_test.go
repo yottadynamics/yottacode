@@ -10,7 +10,13 @@ import (
 )
 
 func TestGoplsSmoke(t *testing.T) {
-	smokeLanguageServer(t, Language{ID: "go", Name: "Go", Extensions: []string{".go"}, Command: []string{"gopls"}}, ".", "NewClient")
+	// Give gopls a tiny, self-contained Go workspace so it doesn't try to
+	// index the entire yottacode project (which is too large for the smoke
+	// test timeout). The other language smoke tests all use temp roots.
+	root := t.TempDir()
+	writeSmokeFile(t, root, "go.mod", "module gopls-smoke\n\ngo 1.26.3\n")
+	writeSmokeFile(t, root, "main.go", "package main\n\nfunc smokeTarget() int { return 1 }\n\nfunc main() {}\n")
+	smokeLanguageServer(t, Language{ID: "go", Name: "Go", Extensions: []string{".go"}, Command: []string{"gopls"}}, root, "smokeTarget")
 }
 
 func TestTypeScriptLanguageServerSmoke(t *testing.T) {
@@ -114,7 +120,7 @@ func smokeLanguageServer(t *testing.T, lang Language, root, query string) {
 func smokeWorkflowPath(root string, lang Language) string {
 	switch lang.ID {
 	case "go":
-		return filepath.Join(root, "internal", "lsp", "client.go")
+		return filepath.Join(root, "main.go")
 	case "typescript":
 		return filepath.Join(root, "index.ts")
 	case "python":

@@ -4,8 +4,10 @@ import (
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"image/color"
+
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2/compat"
 
 	"github.com/yottadynamics/yottacode/internal/agent"
 	"github.com/yottadynamics/yottacode/internal/tui/themes"
@@ -26,8 +28,8 @@ func TestPathTrustStyles_FollowTheme(t *testing.T) {
 		p, _ := themes.Get(name)
 		checks := []struct {
 			label string
-			got   lipgloss.TerminalColor
-			want  lipgloss.AdaptiveColor
+			got   color.Color
+			want  compat.AdaptiveColor
 		}{
 			{"title", stylePathTrustTitle.GetForeground(), p.Warning},
 			{"hint", stylePathTrustBodyHint.GetForeground(), p.Dim},
@@ -35,7 +37,7 @@ func TestPathTrustStyles_FollowTheme(t *testing.T) {
 			{"reject", stylePathTrustReject.GetForeground(), p.Error},
 		}
 		for _, c := range checks {
-			if c.got != lipgloss.TerminalColor(c.want) {
+			if c.got != color.Color(c.want) {
 				t.Errorf("theme %s: %s = %v, want palette role %v", name, c.label, c.got, c.want)
 			}
 		}
@@ -92,13 +94,13 @@ func TestPathTrustModal_AcceptsHotkeyWhileTurnActive(t *testing.T) {
 		key  tea.KeyMsg
 		want agent.Decision
 	}{
-		{"allow-once-1", tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'1'}}, agent.PathAllowOnce},
-		{"trust-session-2", tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'2'}}, agent.PathTrustSession},
-		{"reject-3", tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'3'}}, agent.Deny},
-		{"reject-esc", tea.KeyMsg{Type: tea.KeyEsc}, agent.Deny},
-		{"allow-once-o", tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'o'}}, agent.PathAllowOnce},
-		{"trust-session-t", tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'t'}}, agent.PathTrustSession},
-		{"reject-n", tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}}, agent.Deny},
+		{"allow-once-1", tea.KeyPressMsg{Text: "1"}, agent.PathAllowOnce},
+		{"trust-session-2", tea.KeyPressMsg{Text: "2"}, agent.PathTrustSession},
+		{"reject-3", tea.KeyPressMsg{Text: "3"}, agent.Deny},
+		{"reject-esc", tea.KeyPressMsg{Code: tea.KeyEsc}, agent.Deny},
+		{"allow-once-o", tea.KeyPressMsg{Text: "o"}, agent.PathAllowOnce},
+		{"trust-session-t", tea.KeyPressMsg{Text: "t"}, agent.PathTrustSession},
+		{"reject-n", tea.KeyPressMsg{Text: "n"}, agent.Deny},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

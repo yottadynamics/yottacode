@@ -64,6 +64,13 @@ const (
 	// server launch still happens lazily only when a semantic tool is used.
 	LSPCodeIntelligence Feature = "lsp_code_intelligence"
 
+	// Sandbox enables routing run_bash through a session-scoped podman
+	// container (config.SandboxConfig.Backend = "podman") instead of the
+	// host directly. Opt-in first because the container-lifecycle,
+	// hardening-flag set, and credential-passthrough model haven't been
+	// exercised outside this design's own review yet.
+	Sandbox Feature = "sandbox"
+
 	// SyntaxRanges is a graduated no-op flag kept recognized for one release
 	// so old configs don't warn or break. The syntax_range tool is now
 	// default-on for Go, TypeScript/JavaScript, Python, and Rust.
@@ -80,6 +87,7 @@ func All() []Feature {
 		Dispatch,
 		DocumentIngestion,
 		LSPCodeIntelligence,
+		Sandbox,
 		SyntaxRanges,
 	}
 }
@@ -109,6 +117,8 @@ func Description(f Feature) string {
 		return "The read_document agent tool. Bounded, provenance-labeled text extraction for CSV, TSV, JSON, JSONL, XML, and HTML files — a structured alternative to read_file for these formats."
 	case LSPCodeIntelligence:
 		return "LSP Code Intelligence has graduated to GA; this flag is recognized as a no-op for compatibility."
+	case Sandbox:
+		return "Run run_bash inside a session-scoped rootless podman container (network=none, project-dir-only mount, capability-dropped) instead of the host directly. Set [sandbox].backend = \"podman\" in config.toml to activate once enabled."
 	case SyntaxRanges:
 		return "Offline syntax ranges have graduated to GA for Go, TypeScript/JavaScript, Python, and Rust; this flag is recognized as a no-op for compatibility."
 	default:

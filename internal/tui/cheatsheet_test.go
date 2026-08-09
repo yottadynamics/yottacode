@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 )
 
 func TestCheatsheet_RendersAllEntries(t *testing.T) {
@@ -30,11 +30,11 @@ func TestCheatsheet_QuestionMarkOpensOverlay(t *testing.T) {
 	if m.cheatsheetOpen {
 		t.Fatalf("fresh model shouldn't have cheatsheet open")
 	}
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'?'}})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Text: "?"})
 	if !m.cheatsheetOpen {
 		t.Errorf("? on empty input should open cheatsheet")
 	}
-	v := m.View()
+	v := m.View().Content
 	if !strings.Contains(v, "Keyboard shortcuts") {
 		t.Errorf("View should render cheatsheet overlay: %q", v)
 	}
@@ -44,9 +44,9 @@ func TestCheatsheet_QuestionMarkInsideMessageDoesNotOpen(t *testing.T) {
 	m := newTestModel(t)
 	// Type some content first so input is not empty.
 	for _, r := range "hi" {
-		m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m, _ = applyMsg(m, tea.KeyPressMsg{Text: string(r)})
 	}
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'?'}})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Text: "?"})
 	if m.cheatsheetOpen {
 		t.Errorf("? inside a message should pass through to textinput, not open overlay")
 	}
@@ -55,7 +55,7 @@ func TestCheatsheet_QuestionMarkInsideMessageDoesNotOpen(t *testing.T) {
 func TestCheatsheet_AnyKeyDismisses(t *testing.T) {
 	m := newTestModel(t)
 	m.cheatsheetOpen = true
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Text: "x"})
 	if m.cheatsheetOpen {
 		t.Errorf("any key should close the cheatsheet")
 	}

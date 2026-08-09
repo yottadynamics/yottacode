@@ -5,8 +5,8 @@ import (
 	"os"
 	"strings"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 
 	"github.com/yottadynamics/yottacode/internal/adapter"
 	"github.com/yottadynamics/yottacode/internal/catalog"
@@ -141,7 +141,7 @@ func (m *Model) openRouterPicker() {
 }
 
 // updateRouterPicker routes keystrokes to the menu or the model sub-list.
-func (m Model) updateRouterPicker(msg tea.KeyMsg) (Model, tea.Cmd) {
+func (m Model) updateRouterPicker(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 	p := m.routerPicker
 	if p == nil {
 		m.routerPickerOpen = false
@@ -152,7 +152,7 @@ func (m Model) updateRouterPicker(msg tea.KeyMsg) (Model, tea.Cmd) {
 	}
 
 	p.note = ""
-	switch msg.Type {
+	switch msg.Code {
 	case tea.KeyEsc:
 		return m.closeRouterPicker()
 	case tea.KeyUp:
@@ -169,9 +169,9 @@ func (m Model) updateRouterPicker(msg tea.KeyMsg) (Model, tea.Cmd) {
 		return m.clearFallbackRow()
 	case tea.KeyEnter:
 		return m.activateRouterMenuRow()
-	case tea.KeyRunes:
-		if len(msg.Runes) == 1 {
-			switch msg.Runes[0] {
+	default:
+		if r := []rune(msg.Text); len(r) == 1 {
+			switch r[0] {
 			case 'j':
 				if p.cursor < routerMenuRows-1 {
 					p.cursor++
@@ -186,7 +186,6 @@ func (m Model) updateRouterPicker(msg tea.KeyMsg) (Model, tea.Cmd) {
 		}
 		return m, nil
 	}
-	return m, nil
 }
 
 // clearFallbackRow drops the fallback(s) of the slot under the cursor when
@@ -246,10 +245,10 @@ func (m Model) activateRouterMenuRow() (Model, tea.Cmd) {
 // updateRouterModelList handles keystrokes inside the model sub-list.
 // Enter sets the row (persists + applies + returns to the menu); Esc backs
 // out without changing anything.
-func (m Model) updateRouterModelList(msg tea.KeyMsg) (Model, tea.Cmd) {
+func (m Model) updateRouterModelList(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 	p := m.routerPicker
 	n := len(p.models)
-	switch msg.Type {
+	switch msg.Code {
 	case tea.KeyEsc:
 		p.selecting = ""
 		return m, nil
@@ -283,9 +282,9 @@ func (m Model) updateRouterModelList(msg tea.KeyMsg) (Model, tea.Cmd) {
 		sel := p.selecting
 		p.selecting = ""
 		return m.commitRouterEntry(sel, ref)
-	case tea.KeyRunes:
-		if len(msg.Runes) == 1 {
-			switch msg.Runes[0] {
+	default:
+		if r := []rune(msg.Text); len(r) == 1 {
+			switch r[0] {
 			case 'j':
 				if p.modelCursor < n-1 {
 					p.modelCursor++
@@ -300,7 +299,6 @@ func (m Model) updateRouterModelList(msg tea.KeyMsg) (Model, tea.Cmd) {
 		}
 		return m, nil
 	}
-	return m, nil
 }
 
 // openModelList focuses the model sub-list for a primary ("fast"/"smart")

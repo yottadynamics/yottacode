@@ -102,12 +102,12 @@ func TestBuildWorktreeChildRegistry_BackgroundDisablesLSP(t *testing.T) {
 	}
 	cfg := &subagents.AgentConfig{Name: "lsp-worker", Tools: []string{"lsp_status"}}
 
-	bgReg := d.buildWorktreeChildRegistry(cfg, cwd, cwd.Get(), []string{"owned.go"}, true)
+	bgReg := d.buildWorktreeChildRegistry(cfg, cwd, cwd.Get(), []string{"owned.go"}, true, nil)
 	if _, ok := bgReg.Get("lsp_status"); ok {
 		t.Fatal("background dispatch workers must not register LSP tools that can spawn language-server processes")
 	}
 
-	fgReg := d.buildWorktreeChildRegistry(cfg, cwd, cwd.Get(), []string{"owned.go"}, false)
+	fgReg := d.buildWorktreeChildRegistry(cfg, cwd, cwd.Get(), []string{"owned.go"}, false, nil)
 	raw, ok := fgReg.Get("lsp_status")
 	if !ok {
 		t.Fatal("foreground dispatch worker should keep LSP tools")
@@ -132,13 +132,13 @@ func TestBuildWorktreeChildRegistry_DocumentIngestionPropagates(t *testing.T) {
 	cfg := &subagents.AgentConfig{Name: "doc-worker", Tools: []string{"read_document"}}
 
 	off := &DispatchTool{}
-	offReg := off.buildWorktreeChildRegistry(cfg, cwd, cwd.Get(), nil, false)
+	offReg := off.buildWorktreeChildRegistry(cfg, cwd, cwd.Get(), nil, false, nil)
 	if _, ok := offReg.Get("read_document"); ok {
 		t.Fatal("read_document should be absent from a worktree child when EnableDocumentIngestion is false")
 	}
 
 	on := &DispatchTool{EnableDocumentIngestion: true}
-	onReg := on.buildWorktreeChildRegistry(cfg, cwd, cwd.Get(), nil, false)
+	onReg := on.buildWorktreeChildRegistry(cfg, cwd, cwd.Get(), nil, false, nil)
 	if _, ok := onReg.Get("read_document"); !ok {
 		t.Fatal("read_document should be registered on a worktree child when EnableDocumentIngestion is true")
 	}

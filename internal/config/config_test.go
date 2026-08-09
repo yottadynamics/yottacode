@@ -46,6 +46,12 @@ func TestLoad_MissingFileReturnsDefaults(t *testing.T) {
 	}
 }
 
+func TestDefault_SandboxUsesNamedDefaultImage(t *testing.T) {
+	if got := Default().Sandbox.Image; got != DefaultSandboxImage {
+		t.Fatalf("Default().Sandbox.Image = %q, want %q", got, DefaultSandboxImage)
+	}
+}
+
 func TestLoad_AppliesOverrides(t *testing.T) {
 	src := `
 [context]
@@ -76,6 +82,27 @@ top_k = 5
 	}
 	if cfg.Retrieval.TopK != 5 {
 		t.Errorf("top_k = %d, want 5", cfg.Retrieval.TopK)
+	}
+}
+
+// TestLoad_SandboxRejectsMissingResourceLimits pins the sandbox's resource
+// contract: enabling podman without concrete cgroup limits must fail at config
+// load, not reach NewPodmanSandbox as --memory= / --cpus=0 / --pids-limit=0.
+func TestLoad_SandboxRejectsMissingResourceLimits(t *testing.T) {
+	for _, src := range []string{
+		`[sandbox]
+backend = "podman"
+memory = ""`,
+		`[sandbox]
+backend = "podman"
+cpus = 0`,
+		`[sandbox]
+backend = "podman"
+pids_limit = 0`,
+	} {
+		if _, err := Load(writeFile(t, src)); err == nil {
+			t.Fatalf("expected podman sandbox with missing/zero limit to fail load: %s", src)
+		}
 	}
 }
 

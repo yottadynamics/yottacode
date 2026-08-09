@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 
 	"github.com/yottadynamics/yottacode/internal/config"
 	"github.com/yottadynamics/yottacode/internal/tui/themes"
@@ -106,8 +106,10 @@ func cmdThemesSet(m Model, args []string) (Model, tea.Cmd) {
 // Returns the Model unchanged in field shape — only sub-component
 // internals are mutated.
 func refreshComponentStyles(m Model) Model {
-	m.textInput.FocusedStyle.Prompt = styleInputPrompt
-	m.textInput.BlurredStyle.Prompt = styleInputPrompt
+	tiStyles := m.textInput.Styles()
+	tiStyles.Focused.Prompt = styleInputPrompt
+	tiStyles.Blurred.Prompt = styleInputPrompt
+	m.textInput.SetStyles(tiStyles)
 	m.spinner.Style = styleSpinner
 	m.md = newMarkdownRenderer(m.width - 4)
 	return m

@@ -6,8 +6,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/charmbracelet/lipgloss"
-	"github.com/muesli/termenv"
+	"charm.land/lipgloss/v2"
+	"charm.land/lipgloss/v2/compat"
+	"github.com/charmbracelet/colorprofile"
 
 	"github.com/yottadynamics/yottacode/internal/agent"
 )
@@ -165,7 +166,7 @@ func TestToolCard_RunBashErrorExitColored(t *testing.T) {
 	// With empty stdout there's still one blank line between the two
 	// section markers — the `\n` after the empty stdout body.
 	out := "exit=2\n--- stdout ---\n\n--- stderr ---\nboom\n"
-	body := toolBodyLines("run_bash", out, false, "")
+	body := stripANSILines(toolBodyLines("run_bash", out, false, ""))
 	if !contains(body, "── stderr ──") {
 		t.Errorf("body should label the stderr section: %v", body)
 	}
@@ -600,6 +601,44 @@ func TestToolHeader_RewritesPerToolPreviews(t *testing.T) {
 	}
 }
 
+// run_bash's header is recomputed from argsJSON (see
+// TestToolHeader_RewritesPerToolPreviews), which would otherwise silently
+// swallow the "[podman]" sandbox tag RunBashTool.PreviewCall puts on
+// preview — a sandboxed run_bash card would then render identically to an
+// unsandboxed one. The tag must carry through.
+func TestToolHeader_RunBashCarriesSandboxTag(t *testing.T) {
+	got := toolHeader("run_bash", `{"command":"ls -la"}`, "[podman] run_bash: ls -la", 120, "")
+	if got != "[podman] Bash(ls -la)" {
+		t.Errorf("got %q, want sandbox tag preserved", got)
+	}
+}
+
+func TestToolHeader_RunBashOmitsTagWhenPreviewUntagged(t *testing.T) {
+	got := toolHeader("run_bash", `{"command":"ls -la"}`, "run_bash: ls -la", 120, "")
+	if got != "Bash(ls -la)" {
+		t.Errorf("got %q, want no tag prefix for an unsandboxed preview", got)
+	}
+}
+
+// TestToolHeader_MalformedSandboxTagDegradesGracefully pins the fail-safe
+// behavior documented on agent.Sandbox.Label(): a hypothetical future
+// Sandbox implementation whose label doesn't follow the "[name]" bracket
+// contract (see internal/agent/sandbox.go) must not crash or corrupt the
+// header — the tag is just silently absent, same as an untagged preview.
+func TestToolHeader_MalformedSandboxTagDegradesGracefully(t *testing.T) {
+	cases := []string{
+		"podman] run_bash: ls -la",  // missing leading [
+		"[podman run_bash: ls -la",  // missing "] " close
+		"[podman run_bash: ls -la]", // ] present but not after a name
+	}
+	for _, preview := range cases {
+		got := toolHeader("run_bash", `{"command":"ls -la"}`, preview, 120, "")
+		if got != "Bash(ls -la)" {
+			t.Errorf("preview %q: got %q, want the plain untagged header (malformed tags must degrade safely)", preview, got)
+		}
+	}
+}
+
 func TestToolHeader_MalformedWriteFileArgsFallsBackToPreview(t *testing.T) {
 	got := toolHeader("write_file", `{"path":`, "write_file(, 0 bytes)", 120, "")
 	if got != "write_file(, 0 bytes)" {
@@ -922,10 +961,10 @@ func TestRenderToolCard_RunBashKeepsTailOnOverflow(t *testing.T) {
 // under `go test` lipgloss renders plain ASCII, which would make the
 // tinted and neutral gutters indistinguishable.
 func TestRenderToolCard_ErroredGutterTintsFrameRed(t *testing.T) {
-	prevProfile := lipgloss.ColorProfile()
-	lipgloss.SetColorProfile(termenv.TrueColor)
-	lipgloss.SetHasDarkBackground(true)
-	t.Cleanup(func() { lipgloss.SetColorProfile(prevProfile) })
+	prevProfile := lipgloss.Writer.Profile
+	lipgloss.Writer.Profile = colorprofile.TrueColor
+	compat.HasDarkBackground = true
+	t.Cleanup(func() { lipgloss.Writer.Profile = prevProfile })
 
 	got := renderToolCard("run_bash", "run_bash: ./x", `{"command":"./x"}`,
 		"exit=1\n--- stdout ---\n--- stderr ---\nboom\n", true, 80, "", 0)
@@ -944,10 +983,10 @@ func TestRenderToolCard_ErroredGutterTintsFrameRed(t *testing.T) {
 // (The closing └ used to tint Success green, but a green corner on nearly
 // every card was too much green; the red error frame carries the signal.)
 func TestRenderToolCard_SuccessGutterIsNeutral(t *testing.T) {
-	prevProfile := lipgloss.ColorProfile()
-	lipgloss.SetColorProfile(termenv.TrueColor)
-	lipgloss.SetHasDarkBackground(true)
-	t.Cleanup(func() { lipgloss.SetColorProfile(prevProfile) })
+	prevProfile := lipgloss.Writer.Profile
+	lipgloss.Writer.Profile = colorprofile.TrueColor
+	compat.HasDarkBackground = true
+	t.Cleanup(func() { lipgloss.Writer.Profile = prevProfile })
 
 	got := renderToolCard("list_dir", "list_dir(.)", "", "d\tbin\nf\tmain.go\n", false, 80, "", 0)
 

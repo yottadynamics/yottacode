@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 
 	"github.com/yottadynamics/yottacode/internal/adapter"
 	"github.com/yottadynamics/yottacode/internal/catalog"
@@ -206,7 +206,7 @@ func (p *modelPickerState) clampCursorToWindow() {
 // updateModelPicker handles keystrokes while the picker is the
 // foreground modal. Returns the new model + any cmd to spawn (e.g.
 // a provider probe after a default-slot switch).
-func (m Model) updateModelPicker(msg tea.KeyMsg) (Model, tea.Cmd) {
+func (m Model) updateModelPicker(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 	if m.modelPicker == nil {
 		// Defensive: should never happen, but if state drifts close
 		// the picker rather than panic.
@@ -214,7 +214,7 @@ func (m Model) updateModelPicker(msg tea.KeyMsg) (Model, tea.Cmd) {
 		return m, nil
 	}
 	p := m.modelPicker
-	switch msg.Type {
+	switch msg.Code {
 	case tea.KeyEsc:
 		m.modelPickerOpen = false
 		m.modelPicker = nil

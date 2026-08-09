@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 
 	"github.com/yottadynamics/yottacode/internal/config"
 	"github.com/yottadynamics/yottacode/internal/mcp"
@@ -31,7 +31,7 @@ func TestMCPPicker_OpenShowsMenu(t *testing.T) {
 func TestMCPPicker_EscClosesMenu(t *testing.T) {
 	m := newTestModel(t)
 	m.openMCPPicker()
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEsc})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEsc})
 	if m.mcpPickerOpen {
 		t.Error("Esc on menu should close picker")
 	}
@@ -43,11 +43,11 @@ func TestMCPPicker_NavigateMenu(t *testing.T) {
 	if m.mcpPicker.menuCursor != 0 {
 		t.Fatalf("initial cursor = %d, want 0", m.mcpPicker.menuCursor)
 	}
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyDown})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyDown})
 	if m.mcpPicker.menuCursor != 1 {
 		t.Errorf("after down, cursor = %d, want 1", m.mcpPicker.menuCursor)
 	}
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyUp})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyUp})
 	if m.mcpPicker.menuCursor != 0 {
 		t.Errorf("after up, cursor = %d, want 0", m.mcpPicker.menuCursor)
 	}
@@ -57,7 +57,7 @@ func TestMCPPicker_EnterOnListOpensListMode(t *testing.T) {
 	m := newTestModel(t)
 	m.openMCPPicker()
 	// cursor=0 → List
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	if m.mcpPicker.mode != mcpListMode {
 		t.Errorf("mode = %d, want mcpListMode", m.mcpPicker.mode)
 	}
@@ -67,8 +67,8 @@ func TestMCPPicker_EnterOnAddOpensAddMode(t *testing.T) {
 	m := newTestModel(t)
 	m.openMCPPicker()
 	// Navigate to Add (index 1)
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyDown})
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyDown})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	if m.mcpPicker.mode != mcpAddMode {
 		t.Errorf("mode = %d, want mcpAddMode", m.mcpPicker.mode)
 	}
@@ -80,8 +80,8 @@ func TestMCPPicker_EnterOnAddOpensAddMode(t *testing.T) {
 func TestMCPPicker_EscFromListReturnsToMenu(t *testing.T) {
 	m := newTestModel(t)
 	m.openMCPPicker()
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter}) // → list
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEsc})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // → list
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEsc})
 	if m.mcpPicker.mode != mcpMenuMode {
 		t.Errorf("Esc from list should return to menu; mode = %d", m.mcpPicker.mode)
 	}
@@ -93,7 +93,7 @@ func TestMCPPicker_AddValidation(t *testing.T) {
 	m.openMCPPicker(mcpAddMode)
 
 	// Empty name → error
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	if m.mcpPicker == nil {
 		t.Fatal("picker should still be open on validation error")
 	}
@@ -134,7 +134,7 @@ command = "echo"
 	if len(m.mcpPicker.servers) == 0 {
 		t.Fatal("expected at least 1 server for removal")
 	}
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	if m.mcpPickerOpen {
 		t.Error("picker should close after remove")
 	}

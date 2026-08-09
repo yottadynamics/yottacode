@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 
 	"github.com/yottadynamics/yottacode/internal/adapter"
 	"github.com/yottadynamics/yottacode/internal/session"
@@ -34,7 +34,7 @@ func TestCmdUsage_OpensOverlayNotHistory(t *testing.T) {
 			beforeLines, len(m.historyLines))
 	}
 
-	v := m.View()
+	v := m.View().Content
 	if !strings.Contains(m.usagePanel, "──") {
 		t.Errorf("/usage should render with submenu horizontal rules: %q", m.usagePanel)
 	}
@@ -50,7 +50,7 @@ func TestCmdUsage_AnyKeyDismisses(t *testing.T) {
 	m.usageOpen = true
 	m.usagePanel = "stale body"
 
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Text: "x"})
 
 	if m.usageOpen {
 		t.Errorf("any key should close the usage overlay")

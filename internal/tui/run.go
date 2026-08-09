@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 
 	"github.com/yottadynamics/yottacode/internal/adapter"
 	"github.com/yottadynamics/yottacode/internal/agent"
@@ -152,6 +152,9 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 	}
 	sessionID = rt.Session.ID
 	defer rt.LSPManager.CloseAll()
+	if rt.CmdSandbox != nil {
+		defer func() { _ = rt.CmdSandbox.Close() }()
+	}
 
 	// `--summarized` (only meaningful when resuming): replace the loaded
 	// transcript with a structured summary injected into the system
@@ -835,4 +838,3 @@ func sensitiveRecallRoots(roots []string) []string {
 	}
 	return out
 }
-

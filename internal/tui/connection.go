@@ -1,7 +1,7 @@
 package tui
 
 import (
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/lipgloss/v2"
 )
 
 // connState represents the connection health for the configured
@@ -24,10 +24,33 @@ const (
 	connDown
 )
 
-// renderConnDot returns a single styled `●` whose color reflects state.
-// Maps to the canonical state palette: Success (green) when healthy,
-// Warning (amber) when degraded, Error (red) when offline, Dim
-// otherwise.
+// connDotGlyph returns the single-cell glyph for a connection state. Color
+// alone used to carry the state (every state rendered the same "●"), which
+// is invisible under NO_COLOR or to a colorblind user — the shape now also
+// distinguishes each state, mirroring the ✓/▸/· convention already used for
+// plan-step and approval-toast status elsewhere in the TUI:
+//
+//	● filled  — connOK: fully connected
+//	◐ half    — connDegraded: reachable, but something's off (e.g. model not
+//	            in the provider's list)
+//	○ hollow  — connDown: unreachable
+//	· mid dot — connUnknown: no probe result yet
+func connDotGlyph(state connState) string {
+	switch state {
+	case connOK:
+		return "●"
+	case connDegraded:
+		return "◐"
+	case connDown:
+		return "○"
+	default:
+		return "·"
+	}
+}
+
+// renderConnDot returns a single styled glyph whose shape AND color reflect
+// state. Maps to the canonical state palette: Success (green) when healthy,
+// Warning (amber) when degraded, Error (red) when offline, Dim otherwise.
 func renderConnDot(state connState) string {
 	style := lipgloss.NewStyle()
 	switch state {
@@ -40,5 +63,5 @@ func renderConnDot(state connState) string {
 	default:
 		style = style.Foreground(colorMuted)
 	}
-	return style.Render("●")
+	return style.Render(connDotGlyph(state))
 }

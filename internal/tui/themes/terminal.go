@@ -1,6 +1,9 @@
 package themes
 
-import "github.com/charmbracelet/lipgloss"
+import (
+	"charm.land/lipgloss/v2"
+	"charm.land/lipgloss/v2/compat"
+)
 
 // terminal is the main-branch look — the original AdaptiveColor
 // palette yottacode shipped with before the themes refactor. Every
@@ -26,17 +29,17 @@ func init() {
 		Description: "the main-branch look — adaptive colors that respect your terminal background",
 		Highlight:   "",
 
-		Accent:    lipgloss.AdaptiveColor{Light: "#0077a3", Dark: "#5fd7ff"},
+		Accent: compat.AdaptiveColor{Light: lipgloss.Color("#0077a3"), Dark: lipgloss.Color("#5fd7ff")},
 		// ANSI green so the success dot matches the user's terminal
 		// palette exactly — picked over a hex value on purpose.
-		Success:   lipgloss.AdaptiveColor{Light: "2", Dark: "10"},
-		Warning:   lipgloss.AdaptiveColor{Light: "#af5f00", Dark: "#ffaf5f"},
-		Error:     lipgloss.AdaptiveColor{Light: "#af0000", Dark: "#ff5f5f"},
-		Content:   lipgloss.AdaptiveColor{Light: "#202020", Dark: "#e4e4e4"},
-		Dim:       lipgloss.AdaptiveColor{Light: "#7a7a7a", Dark: "#787878"},
-		Rule:      lipgloss.AdaptiveColor{Light: "#b0b0b0", Dark: "#444444"},
-		Assistant: lipgloss.AdaptiveColor{Light: "#005f5f", Dark: "#87cdcd"},
-		Code:      lipgloss.AdaptiveColor{Light: "#404040", Dark: "#c0c0c0"},
-		Warm:      lipgloss.AdaptiveColor{Light: "#875f00", Dark: "#d7af00"},
+		Success:   compat.AdaptiveColor{Light: lipgloss.Color("2"), Dark: lipgloss.Color("10")},
+		Warning:   compat.AdaptiveColor{Light: lipgloss.Color("#af5f00"), Dark: lipgloss.Color("#ffaf5f")},
+		Error:     compat.AdaptiveColor{Light: lipgloss.Color("#af0000"), Dark: lipgloss.Color("#ff5f5f")},
+		Content:   compat.AdaptiveColor{Light: lipgloss.Color("#202020"), Dark: lipgloss.Color("#e4e4e4")},
+		Dim:       compat.AdaptiveColor{Light: lipgloss.Color("#7a7a7a"), Dark: lipgloss.Color("#787878")},
+		Rule:      compat.AdaptiveColor{Light: lipgloss.Color("#b0b0b0"), Dark: lipgloss.Color("#444444")},
+		Assistant: compat.AdaptiveColor{Light: lipgloss.Color("#005f5f"), Dark: lipgloss.Color("#87cdcd")},
+		Code:      compat.AdaptiveColor{Light: lipgloss.Color("#404040"), Dark: lipgloss.Color("#c0c0c0")},
+		Warm:      compat.AdaptiveColor{Light: lipgloss.Color("#875f00"), Dark: lipgloss.Color("#d7af00")},
 	})
 }

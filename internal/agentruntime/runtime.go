@@ -20,6 +20,7 @@ import (
 	"github.com/yottadynamics/yottacode/internal/memory"
 	"github.com/yottadynamics/yottacode/internal/permissions"
 	"github.com/yottadynamics/yottacode/internal/recall"
+	"github.com/yottadynamics/yottacode/internal/sandbox"
 	"github.com/yottadynamics/yottacode/internal/session"
 	"github.com/yottadynamics/yottacode/internal/skills"
 	"github.com/yottadynamics/yottacode/internal/subagents"
@@ -118,6 +119,11 @@ type Runtime struct {
 	PlanStore *agent.PlanStore
 	CwdRef    *agent.CwdRef
 
+	// CmdSandbox is the optional session-scoped command sandbox backing
+	// run_bash and worktree/dispatch sandbox inheritance. Nil preserves
+	// HostSandbox behavior.
+	CmdSandbox agent.Sandbox
+
 	FileCfg         config.Config
 	ExperimentalSet *experimental.Set
 	Mem             memory.Loaded
@@ -181,6 +187,9 @@ func (rt *Runtime) Close(ctx context.Context) {
 		reclaimCtx, cancel := context.WithTimeout(context.Background(), runtimeSubagentDrainGrace)
 		agent.ReclaimEmptyDispatchWorktrees(reclaimCtx, rt.SubagentTasks)
 		cancel()
+	}
+	if rt.CmdSandbox != nil {
+		_ = rt.CmdSandbox.Close()
 	}
 	if rt.MCPManager != nil {
 		rt.MCPManager.Stop(ctx)
@@ -366,6 +375,23 @@ func (b *Builder) Build(ctx context.Context, spec SessionSpec) (*Runtime, error)
 	}
 	rt.CodeMapProvider = codeMapProvider
 
+	// Podman command sandbox: opt-in via experimental sandbox plus
+	// [sandbox].backend = "podman". Construction failure is fatal; never
+	// fall back to HostSandbox when the user requested isolation.
+	var cmdSandbox agent.Sandbox
+	var sandboxFactory agent.SandboxFactory
+	if expSet.IsEnabled(experimental.Sandbox) && fileCfg.Sandbox.Backend == "podman" {
+		ps, err := sandbox.NewPodmanSandbox(ctx, fileCfg.Sandbox, sess.ID, cwd)
+		if err != nil {
+			return nil, fmt.Errorf("sandbox: %w", err)
+		}
+		cmdSandbox = ps
+		rt.CmdSandbox = cmdSandbox
+		sandboxFactory = func(ctx context.Context, wtDir, taskID string) (agent.Sandbox, error) {
+			return sandbox.NewPodmanSandbox(ctx, fileCfg.Sandbox, sess.ID+"-"+taskID, wtDir)
+		}
+	}
+
 	reg := agent.NewRegistry()
 	rt.Registry = reg
 	agent.RegisterCoreCwdTools(reg, cwdRef, agent.CoreToolDeps{
@@ -380,13 +406,14 @@ func (b *Builder) Build(ctx context.Context, spec SessionSpec) (*Runtime, error)
 		CodeMapProvider:         codeMapProvider,
 		EnableSyntaxRanges:      true,
 		EnableDocumentIngestion: expSet.IsEnabled(experimental.DocumentIngestion),
+		Sandbox:                 cmdSandbox,
 	})
 
 	// Git worktree tools. enter_worktree/exit_worktree call process-global
 	// os.Chdir() (see SessionSpec.DisableWorktreeTools) — unsafe for a
 	// multi-session-per-process host, so ACP excludes all nine of these.
 	if !spec.DisableWorktreeTools {
-		reg.Register(&agent.EnterWorktreeTool{Cwd: cwdRef})
+		reg.Register(&agent.EnterWorktreeTool{Cwd: cwdRef, Sandbox: cmdSandbox})
 		reg.Register(&agent.ExitWorktreeTool{Cwd: cwdRef})
 		reg.Register(&agent.WorktreeStatusTool{Cwd: cwdRef})
 		reg.Register(&agent.GitWorktreeListTool{Cwd: cwdRef})
@@ -513,6 +540,7 @@ func (b *Builder) Build(ctx context.Context, spec SessionSpec) (*Runtime, error)
 		EnableDocumentIngestion: expSet.IsEnabled(experimental.DocumentIngestion),
 		SupportsBackground:      spec.SupportsBackgroundDispatch,
 		Enabled:                 dispatchEnabled,
+		SandboxFactory:          sandboxFactory,
 	})
 	reg.Register(&agent.IntegrateTool{Cwd: cwdRef, Enabled: dispatchEnabled})
 

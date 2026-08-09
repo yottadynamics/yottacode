@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"github.com/yottadynamics/yottacode/internal/agent"
 	"github.com/yottadynamics/yottacode/internal/usercmd"
 )
@@ -113,7 +113,7 @@ func TestLoop_MultipleLoopsAndStatus(t *testing.T) {
 		t.Fatalf("the /loop panel should be a menu, not cards; got %q", panel)
 	}
 	// Any key dismisses the panel without disarming the loops.
-	m2, _ := applyMsg(m, tea.KeyMsg{Type: tea.KeyEsc})
+	m2, _ := applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEsc})
 	if m2.loopListOpen || m2.activeLoopCount() != 2 {
 		t.Fatalf("Esc should close the panel and keep both loops (open=%v, count=%d)", m2.loopListOpen, m2.activeLoopCount())
 	}
@@ -407,7 +407,7 @@ func TestLoop_ExitWarning(t *testing.T) {
 	if !strings.Contains(view, "Active loops will stop on exit") || !strings.Contains(view, firstLoop(t, m).id) {
 		t.Fatalf("exit warning = %q", view)
 	}
-	out, cmd = m.updateLoopExitConfirm(tea.KeyMsg{Type: tea.KeyEnter})
+	out, cmd = m.updateLoopExitConfirm(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = out.(Model)
 	if m.activeLoopCount() != 0 || cmd == nil {
 		t.Fatal("Exit anyway should stop loops and continue graceful exit")

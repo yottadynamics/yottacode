@@ -66,6 +66,11 @@ type Config struct {
 	// Subagents tunes the subagent subsystem (the Agent tool + background
 	// runs). Absent block falls through to the defaults below.
 	Subagents SubagentsConfig `toml:"subagents"`
+	// Sandbox controls whether run_bash executes inside a session-scoped
+	// podman container instead of directly on the host. Absent block or
+	// backend="none" (the default) keeps today's host-exec behavior; gated
+	// behind the "sandbox" experimental feature regardless of backend.
+	Sandbox SandboxConfig `toml:"sandbox"`
 }
 
 // SubagentsConfig tunes the subagent subsystem. SessionTokenBudget caps
@@ -77,6 +82,34 @@ type Config struct {
 type SubagentsConfig struct {
 	SessionTokenBudget int `toml:"session_token_budget"`
 }
+
+// SandboxConfig controls the run_bash command-execution backend. See
+// roadmap/sandbox-podman.md for the design this implements: a session-scoped
+// container, podman exec per command, project-dir-only mount, default-deny
+// network. EnvPassthrough names are forwarded via bare `-e NAME` (podman
+// reads the value from its own environment) so credential values never
+// appear in podman's argv/process list.
+type SandboxConfig struct {
+	Backend        string   `toml:"backend"` // "none" (default) | "podman"
+	Image          string   `toml:"image"`
+	Network        string   `toml:"network"` // "none" (default) | "host"
+	Mounts         []string `toml:"mounts"`
+	EnvPassthrough []string `toml:"env_passthrough"`
+	Memory         string   `toml:"memory"`
+	CPUs           float64  `toml:"cpus"`
+	PidsLimit      int      `toml:"pids_limit"`
+}
+
+// DefaultSandboxImage is the pinned base image for the experimental command
+// sandbox. Keep it as a named constant because the hardening baseline may move
+// as distro images receive security updates.
+const DefaultSandboxImage = "registry.access.redhat.com/ubi9/ubi:9.8-1785906690"
+
+// ValidSandboxBackends is the whitelist for SandboxConfig.Backend.
+var ValidSandboxBackends = []string{"none", "podman"}
+
+// ValidSandboxNetworks is the whitelist for SandboxConfig.Network.
+var ValidSandboxNetworks = []string{"none", "host"}
 
 // LSPConfig contains optional per-language server command overrides. Keys are
 // stable language IDs such as "go", "typescript", "python", and "rust".
@@ -596,6 +629,15 @@ func Default() Config {
 		Theme: ThemeConfig{
 			Name: defaultThemeName(),
 		},
+		Sandbox: SandboxConfig{
+			Backend:   "none",
+			Image:     DefaultSandboxImage,
+			Network:   "none",
+			Mounts:    []string{"."},
+			Memory:    "2g",
+			CPUs:      2,
+			PidsLimit: 256,
+		},
 	}
 }
 
@@ -970,6 +1012,34 @@ func Validate(cfg Config) error {
 			if err := cfg.validateModelRef(ref); err != nil {
 				return fmt.Errorf("router.advisor_model(s)[%d]: %w", i, err)
 			}
+		}
+	}
+	if cfg.Sandbox.Backend != "" && !inSlice(ValidSandboxBackends, cfg.Sandbox.Backend) {
+		return fmt.Errorf("sandbox.backend = %q invalid (expected one of %s)",
+			cfg.Sandbox.Backend, strings.Join(ValidSandboxBackends, ", "))
+	}
+	if cfg.Sandbox.Network != "" && !inSlice(ValidSandboxNetworks, cfg.Sandbox.Network) {
+		return fmt.Errorf("sandbox.network = %q invalid (expected one of %s)",
+			cfg.Sandbox.Network, strings.Join(ValidSandboxNetworks, ", "))
+	}
+	if cfg.Sandbox.CPUs < 0 {
+		return fmt.Errorf("sandbox.cpus = %v must be >= 0", cfg.Sandbox.CPUs)
+	}
+	if cfg.Sandbox.PidsLimit < 0 {
+		return fmt.Errorf("sandbox.pids_limit = %d must be >= 0", cfg.Sandbox.PidsLimit)
+	}
+	if cfg.Sandbox.Backend == "podman" {
+		if strings.TrimSpace(cfg.Sandbox.Image) == "" {
+			return fmt.Errorf("sandbox.image is required when sandbox.backend = %q", cfg.Sandbox.Backend)
+		}
+		if strings.TrimSpace(cfg.Sandbox.Memory) == "" {
+			return fmt.Errorf("sandbox.memory is required when sandbox.backend = %q", cfg.Sandbox.Backend)
+		}
+		if cfg.Sandbox.CPUs <= 0 {
+			return fmt.Errorf("sandbox.cpus = %v must be > 0 when sandbox.backend = %q", cfg.Sandbox.CPUs, cfg.Sandbox.Backend)
+		}
+		if cfg.Sandbox.PidsLimit <= 0 {
+			return fmt.Errorf("sandbox.pids_limit = %d must be > 0 when sandbox.backend = %q", cfg.Sandbox.PidsLimit, cfg.Sandbox.Backend)
 		}
 	}
 	return nil

@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 )
 
@@ -595,8 +595,8 @@ func renderLoopExitConfirm(m Model) string {
 	return b.String()
 }
 
-func (m Model) updateLoopExitConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.Type {
+func (m Model) updateLoopExitConfirm(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	switch msg.Code {
 	case tea.KeyEsc:
 		m.loopExitConfirmOpen = false
 		return m, nil

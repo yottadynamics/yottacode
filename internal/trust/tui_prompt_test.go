@@ -3,7 +3,7 @@ package trust
 import (
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 )
 
 func TestTrustPickerModel_StartsOnYes(t *testing.T) {
@@ -15,12 +15,12 @@ func TestTrustPickerModel_StartsOnYes(t *testing.T) {
 
 func TestTrustPickerModel_DownThenEnterReturnsNo(t *testing.T) {
 	m := trustPickerModel{cwd: "/home/me/repo"}
-	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	next, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyDown})
 	m = next.(trustPickerModel)
 	if m.index != 1 {
 		t.Fatalf("after down: index = %d, want 1", m.index)
 	}
-	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	next, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = next.(trustPickerModel)
 	if !m.answered {
 		t.Error("Enter should set answered=true")
@@ -35,7 +35,7 @@ func TestTrustPickerModel_DownThenEnterReturnsNo(t *testing.T) {
 
 func TestTrustPickerModel_EnterReturnsYesByDefault(t *testing.T) {
 	m := trustPickerModel{cwd: "/home/me/repo"}
-	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	next, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = next.(trustPickerModel)
 	if m.result != PromptYes {
 		t.Errorf("result = %v, want PromptYes", m.result)
@@ -47,7 +47,7 @@ func TestTrustPickerModel_EnterReturnsYesByDefault(t *testing.T) {
 
 func TestTrustPickerModel_EscReturnsNo(t *testing.T) {
 	m := trustPickerModel{cwd: "/home/me/repo"}
-	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	next, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
 	m = next.(trustPickerModel)
 	if m.result != PromptNo {
 		t.Errorf("result = %v, want PromptNo", m.result)
@@ -59,7 +59,7 @@ func TestTrustPickerModel_EscReturnsNo(t *testing.T) {
 
 func TestTrustPickerModel_UpClampsAtTop(t *testing.T) {
 	m := trustPickerModel{cwd: "/home/me/repo"}
-	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyUp})
+	next, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyUp})
 	m = next.(trustPickerModel)
 	if m.index != 0 {
 		t.Errorf("up from top: index = %d, want 0", m.index)
@@ -68,7 +68,7 @@ func TestTrustPickerModel_UpClampsAtTop(t *testing.T) {
 
 func TestTrustPickerModel_DownClampsAtBottom(t *testing.T) {
 	m := trustPickerModel{cwd: "/home/me/repo", index: 1}
-	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	next, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyDown})
 	m = next.(trustPickerModel)
 	if m.index != 1 {
 		t.Errorf("down from bottom: index = %d, want 1", m.index)
@@ -77,7 +77,7 @@ func TestTrustPickerModel_DownClampsAtBottom(t *testing.T) {
 
 func TestTrustPickerModel_ViewIncludesCwdAndOptions(t *testing.T) {
 	m := trustPickerModel{cwd: "/home/me/repo"}
-	view := m.View()
+	view := m.View().Content
 	for _, want := range []string{"Accessing workspace", "/home/me/repo", "1. Yes, I trust this folder", "2. No, exit"} {
 		if !containsLiteral(view, want) {
 			t.Errorf("view missing %q\nview was:\n%s", want, view)
@@ -87,7 +87,7 @@ func TestTrustPickerModel_ViewIncludesCwdAndOptions(t *testing.T) {
 
 func TestTrustPickerModel_ViewHiddenAfterAnswer(t *testing.T) {
 	m := trustPickerModel{cwd: "/home/me/repo", answered: true, result: PromptYes}
-	if v := m.View(); v != "" {
+	if v := m.View().Content; v != "" {
 		t.Errorf("answered view should be empty, got %q", v)
 	}
 }

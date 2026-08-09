@@ -45,17 +45,32 @@ func TestProbeConnectionState(t *testing.T) {
 	}
 }
 
-func TestRenderConnDot_PresentForEveryState(t *testing.T) {
-	// In a non-TTY test environment lipgloss strips ANSI codes, so we can't
-	// assert the dots LOOK different here. The real differentiation is the
-	// per-state Foreground call, which we trust. What we can verify: every
-	// state still renders the bullet glyph.
+// Regression: every state used to render the identical "●" glyph, colored
+// differently — invisible under NO_COLOR or to a colorblind user. Each
+// state must now have its own distinct, plain-text glyph so shape alone
+// (not just color) tells them apart.
+func TestRenderConnDot_DistinctGlyphPerState(t *testing.T) {
+	seen := map[string]connState{}
 	for label, state := range map[string]connState{
 		"ok": connOK, "degraded": connDegraded, "down": connDown, "unknown": connUnknown,
 	} {
-		if got := renderConnDot(state); !strings.Contains(got, "●") {
-			t.Errorf("dot for %s missing bullet glyph: %q", label, got)
+		got := stripANSI(renderConnDot(state))
+		if got == "" {
+			t.Errorf("dot for %s is empty", label)
+			continue
 		}
+		if prior, dup := seen[got]; dup {
+			t.Errorf("dot for %s (%q) is identical to %v — states must be shape-distinguishable without color", label, got, prior)
+		}
+		seen[got] = state
+	}
+}
+
+// The healthy state keeps its historical "●" glyph — only the other three
+// states change shape, so the common-case status bar look is unchanged.
+func TestRenderConnDot_OKKeepsFilledBullet(t *testing.T) {
+	if got := stripANSI(renderConnDot(connOK)); !strings.Contains(got, "●") {
+		t.Errorf("connOK dot = %q, want the filled bullet ●", got)
 	}
 }
 

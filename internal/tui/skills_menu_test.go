@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 
 	"github.com/yottadynamics/yottacode/internal/agent"
 	"github.com/yottadynamics/yottacode/internal/skills"
@@ -69,11 +69,11 @@ func TestSkillsMenu_OpenAndNavigate(t *testing.T) {
 	if m.skillsMenu.items[2].label != "Uninstall" {
 		t.Errorf("third item = %q, want Uninstall", m.skillsMenu.items[2].label)
 	}
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyDown})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyDown})
 	if m.skillsMenu.cursor != 1 {
 		t.Errorf("cursor after Down = %d, want 1", m.skillsMenu.cursor)
 	}
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEsc})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEsc})
 	if m.skillsMenuOpen {
 		t.Error("Esc should close the menu")
 	}
@@ -87,7 +87,7 @@ func TestSkillsMenu_CatalogOpensPicker(t *testing.T) {
 	m := newTestModel(t)
 	m.skillTool = &agent.SkillTool{All: nil}
 	m, _ = m.runSlash("/skills")
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter}) // Catalog is item 0
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // Catalog is item 0
 	if m.skillsMenuOpen {
 		t.Error("menu should close when Catalog is picked")
 	}
@@ -107,7 +107,7 @@ func TestCatalogPicker_TabCycles(t *testing.T) {
 		{Name: "beta", Description: "b", Source: skills.ScopeUser},
 	}}
 	m, _ = m.runSlash("/skills")
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter}) // Catalog
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // Catalog
 	if m.skillsPicker.tab != catalogTabOfficial {
 		t.Fatalf("initial tab = %v, want official", m.skillsPicker.tab)
 	}
@@ -116,7 +116,7 @@ func TestCatalogPicker_TabCycles(t *testing.T) {
 	}
 	// Move cursor forward so the post-Tab reset is observable.
 	m.skillsPicker.cursor = 0
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyTab})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyTab})
 	if m.skillsPicker.tab != catalogTabBundled {
 		t.Errorf("after Tab tab = %v, want bundled", m.skillsPicker.tab)
 	}
@@ -126,7 +126,7 @@ func TestCatalogPicker_TabCycles(t *testing.T) {
 	if m.skillsPicker.cursor != 0 {
 		t.Errorf("Tab should reset cursor to 0, got %d", m.skillsPicker.cursor)
 	}
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyTab})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyTab})
 	if m.skillsPicker.tab != catalogTabOfficial {
 		t.Errorf("second Tab should cycle to official")
 	}
@@ -143,23 +143,23 @@ func TestCatalogPicker_ArrowKeysSwitchTabs(t *testing.T) {
 		{Name: "beta", Description: "b", Source: skills.ScopeUser},
 	}}
 	m, _ = m.runSlash("/skills")
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter}) // Catalog
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // Catalog
 
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyRight})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyRight})
 	if m.skillsPicker.tab != catalogTabBundled {
 		t.Errorf("Right should switch to Bundled; got %v", m.skillsPicker.tab)
 	}
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyLeft})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyLeft})
 	if m.skillsPicker.tab != catalogTabOfficial {
 		t.Errorf("Left should switch back to Official; got %v", m.skillsPicker.tab)
 	}
 
 	// Up/Down at the edges must not flip tabs.
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyUp})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyUp})
 	if m.skillsPicker.tab != catalogTabOfficial {
 		t.Error("Up at row 0 should not switch tabs")
 	}
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyDown})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyDown})
 	if m.skillsPicker.tab != catalogTabOfficial {
 		t.Error("Down past last row should not switch tabs")
 	}
@@ -170,9 +170,9 @@ func TestCatalogPicker_RefreshShowsBusyThenUpdatesRows(t *testing.T) {
 	m := newTestModel(t)
 	m.skillTool = &agent.SkillTool{All: nil}
 	m, _ = m.runSlash("/skills")
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter}) // Catalog
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // Catalog
 
-	m, cmd := applyMsg(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+	m, cmd := applyMsg(m, tea.KeyPressMsg{Text: "r"})
 	if cmd == nil {
 		t.Fatal("refresh should return an async command")
 	}
@@ -197,10 +197,10 @@ func TestCatalogPicker_BusyIgnoresKeys(t *testing.T) {
 	m := newTestModel(t)
 	m.skillTool = &agent.SkillTool{All: []skills.Skill{{Name: "alpha", Description: "a", Source: skills.ScopeBuiltin}}}
 	m, _ = m.runSlash("/skills")
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	m.skillsPicker.busy = "refreshing official catalog…"
 
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyRight})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyRight})
 	if m.skillsPicker.tab != catalogTabOfficial {
 		t.Fatal("busy picker should ignore tab-switch keys")
 	}
@@ -229,13 +229,13 @@ func TestCatalogPicker_OfficialAlreadyInstalledIsNoop(t *testing.T) {
 	t.Setenv("HOME", home)
 	m.skillTool = &agent.SkillTool{All: []skills.Skill{{Name: "already-there", Description: "x", Source: skills.ScopeUser}}}
 	m, _ = m.runSlash("/skills")
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter}) // Catalog
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // Catalog
 
 	out := renderSkillsPicker(m.skillsPicker, 80)
 	if !strings.Contains(out, "[installed]") && !strings.Contains(out, "[installed/enabled]") {
 		t.Fatalf("render should mark installed official row: %q", out)
 	}
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeySpace}) // toggle installed row disabled
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeySpace}) // toggle installed row disabled
 	if m.skillsPicker.enabled["already-there"] {
 		t.Fatalf("Space should toggle installed official rows")
 	}
@@ -264,8 +264,8 @@ func TestCatalogPicker_UninstallOnInstalledTab(t *testing.T) {
 		{Name: "removeme", Description: "x", Source: skills.ScopeUser},
 	}}
 	m, _ = m.runSlash("/skills")
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter}) // Catalog
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("u")})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // Catalog
+	m, _ = applyMsg(m, tea.KeyPressMsg{Text: "u"})
 
 	if _, err := os.Stat(filepath.Join(home, "skills", "removeme")); !os.IsNotExist(err) {
 		t.Errorf("dir should be removed after u: err=%v", err)
@@ -285,9 +285,9 @@ func TestCatalogPicker_UninstallOnBuiltinTabRefuses(t *testing.T) {
 		{Name: "alpha", Description: "a", Source: skills.ScopeBuiltin},
 	}}
 	m, _ = m.runSlash("/skills")
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter}) // Catalog
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyRight}) // Official → Bundled
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("u")})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // Catalog
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyRight}) // Official → Bundled
+	m, _ = applyMsg(m, tea.KeyPressMsg{Text: "u"})
 	if m.skillsPicker.status == "" {
 		t.Error("expected a status hint when u is pressed on built-in tab")
 	}
@@ -311,18 +311,18 @@ func TestSkillsMenu_InstallRoundTrip(t *testing.T) {
 	m.skillTool = &agent.SkillTool{All: nil}
 	m, _ = m.runSlash("/skills")
 	// Walk to Install (item index 1) and Enter.
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyDown})
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyDown})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	if m.skillsMenu.mode != skillsMenuInstallInput {
 		t.Fatalf("expected install mode, got %v", m.skillsMenu.mode)
 	}
 	// Type the source one rune-message at a time — what the textinput
 	// would receive from the terminal.
 	for _, r := range src {
-		m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m, _ = applyMsg(m, tea.KeyPressMsg{Text: string(r)})
 	}
 	cmd := tea.Cmd(nil)
-	m, cmd = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	m, cmd = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	if cmd == nil {
 		t.Fatal("install should return an async command")
 	}
@@ -404,10 +404,10 @@ func TestCatalogPicker_EscCommits(t *testing.T) {
 	}}
 	m.skillTool.SetEnabled(map[string]bool{})
 	m, _ = m.runSlash("/skills")
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter}) // Catalog
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyRight}) // Official → Bundled
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeySpace}) // toggle alpha on
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEsc})   // expect: commits + returns to menu
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // Catalog
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyRight}) // Official → Bundled
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeySpace}) // toggle alpha on
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEsc})   // expect: commits + returns to menu
 	if !m.skillTool.IsEnabled("alpha") {
 		t.Error("Esc should commit the toggle to SkillTool.enabled")
 	}
@@ -431,8 +431,8 @@ func TestCatalogPicker_FilterNarrowsRows(t *testing.T) {
 		{Name: "gamma", Description: "third — alpha-ish", Source: skills.ScopeBuiltin},
 	}}
 	m, _ = m.runSlash("/skills")
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter}) // Catalog
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyRight}) // Official → Bundled
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // Catalog
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyRight}) // Official → Bundled
 
 	if got := len(m.skillsPicker.visibleRows()); got != 3 {
 		t.Fatalf("pre-filter rows = %d, want 3", got)
@@ -440,12 +440,12 @@ func TestCatalogPicker_FilterNarrowsRows(t *testing.T) {
 
 	// Enter filter mode and type "alpha" — alpha matches by name,
 	// gamma matches by description, beta doesn't match.
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Text: "/"})
 	if !m.skillsPicker.filterMode {
 		t.Fatal("/ should enter filter mode")
 	}
 	for _, r := range "alpha" {
-		m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m, _ = applyMsg(m, tea.KeyPressMsg{Text: string(r)})
 	}
 	visible := m.skillsPicker.visibleRows()
 	names := make([]string, 0, len(visible))
@@ -457,7 +457,7 @@ func TestCatalogPicker_FilterNarrowsRows(t *testing.T) {
 	}
 
 	// Esc clears the filter and exits filter mode.
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEsc})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEsc})
 	if m.skillsPicker.filter != "" || m.skillsPicker.filterMode {
 		t.Error("Esc should clear filter and exit filter mode")
 	}
@@ -518,10 +518,10 @@ func TestCatalogPicker_EscPersistsToConfig(t *testing.T) {
 	m.skillTool.SetEnabled(map[string]bool{})
 
 	m, _ = m.runSlash("/skills")
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter}) // Catalog
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyRight}) // Official → Bundled
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeySpace}) // toggle alpha on
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEsc})   // commit + save
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // Catalog
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyRight}) // Official → Bundled
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeySpace}) // toggle alpha on
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEsc})   // commit + save
 
 	cfgPath := filepath.Join(home, ".yottacode", "config.toml")
 	body, err := os.ReadFile(cfgPath)
@@ -587,8 +587,8 @@ func TestCatalogPicker_UninstallScrubsDefaultOn(t *testing.T) {
 	withOfficialCatalogStub(t, []skills.Skill{{Name: "temp-skill", Description: "official", Source: skills.ScopeOfficial}})
 
 	m, _ = m.runSlash("/skills")
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})                     // Catalog
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("u")}) // uninstall
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // Catalog
+	m, _ = applyMsg(m, tea.KeyPressMsg{Text: "u"})          // uninstall
 
 	got, err := os.ReadFile(cfgPath)
 	if err != nil {
@@ -609,10 +609,10 @@ func TestSkillsMenu_InstallShowsErrorInline(t *testing.T) {
 	m := newTestModel(t)
 	m.skillTool = &agent.SkillTool{All: nil}
 	m, _ = m.runSlash("/skills")
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyDown})
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyDown})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	// Empty submit → menu requires a source.
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	if !m.skillsMenuOpen {
 		t.Error("menu should stay open when install validation fails")
 	}
@@ -625,12 +625,12 @@ func TestSkillsMenu_InstallAsyncFailureStaysInline(t *testing.T) {
 	m := newTestModel(t)
 	m.skillTool = &agent.SkillTool{All: nil}
 	m, _ = m.runSlash("/skills")
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyDown})
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyDown})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	for _, r := range "./missing-skill" {
-		m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m, _ = applyMsg(m, tea.KeyPressMsg{Text: string(r)})
 	}
-	m, cmd := applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter})
+	m, cmd := applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	if cmd == nil || m.skillsMenu.busy == "" {
 		t.Fatal("install submit should enter busy state and return a command")
 	}
@@ -672,9 +672,9 @@ func TestSkillsMenu_UninstallRemovesSkill(t *testing.T) {
 	}}
 
 	m, _ = m.runSlash("/skills")
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyDown})  // Catalog → Install
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyDown})  // Install → Uninstall
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter}) // open uninstall picker
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyDown})  // Catalog → Install
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyDown})  // Install → Uninstall
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // open uninstall picker
 	if m.skillsMenu.mode != skillsMenuUninstallPick {
 		t.Fatalf("expected uninstall-pick mode, got %v", m.skillsMenu.mode)
 	}
@@ -682,7 +682,7 @@ func TestSkillsMenu_UninstallRemovesSkill(t *testing.T) {
 		t.Fatalf("uninstall list = %v, want [menu-remove]", m.skillsMenu.uninstallRows)
 	}
 
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter}) // remove the focused skill
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // remove the focused skill
 
 	if _, err := os.Stat(filepath.Join(home, "skills", "menu-remove")); !os.IsNotExist(err) {
 		t.Errorf("dir should be removed after Enter: err=%v", err)
@@ -707,9 +707,9 @@ func TestSkillsMenu_UninstallEmptyShowsStatus(t *testing.T) {
 		{Name: "alpha", Description: "a", Source: skills.ScopeBuiltin},
 	}}
 	m, _ = m.runSlash("/skills")
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyDown})  // → Install
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyDown})  // → Uninstall
-	m, _ = applyMsg(m, tea.KeyMsg{Type: tea.KeyEnter}) // attempt to open
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyDown})  // → Install
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyDown})  // → Uninstall
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // attempt to open
 	if m.skillsMenu.mode != skillsMenuSelect {
 		t.Errorf("no removable skills should keep select mode, got %v", m.skillsMenu.mode)
 	}
