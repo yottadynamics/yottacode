@@ -215,8 +215,8 @@ func TestSubagentDock_TabFocusIgnoresShiftTab(t *testing.T) {
 	if m.dockFocused {
 		t.Fatalf("Shift+Tab should cycle agent mode, not focus the subagent dock")
 	}
-	if !m.cfg.AutoMode.IsActive() {
-		t.Fatalf("Shift+Tab should cycle normal mode into auto mode")
+	if !m.cfg.PlanMode.IsActive() {
+		t.Fatalf("Shift+Tab should cycle normal mode into plan mode")
 	}
 }
 

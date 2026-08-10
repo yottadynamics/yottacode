@@ -66,9 +66,8 @@ func init() {
 	// workflow → config → git → utilities → rare-dangerous toggle → meta.
 	allSlash = []slashCommand{
 		// Workflow — most reached-for during active coding.
-		// Auto mode is intentionally NOT slash-invocable (mirroring
-		// Claude Code): auto via Shift+Tab or --permission-mode auto.
 		{Name: "plan", Help: "toggle plan mode — also Shift+Tab. Type `/plan list` to resume an earlier plan.", Run: cmdPlan},
+		{Name: "auto", Help: "toggle auto mode — also Shift+Tab and --permission-mode auto. Edits auto-allow; shell and git history still prompt.", Run: cmdAuto},
 		{Name: "model", Help: "open the model picker (subcommands: list [all], <name>)", Run: cmdModel},
 		{Name: "provider", Help: "select a new provider (subcommands: list, use, add, remove, models)", Run: cmdProviderEntry},
 		{Name: "effort", Help: "set reasoning effort for providers that support it (default · low · medium · high)", Run: cmdEffort},
@@ -136,7 +135,7 @@ func init() {
 
 // findSlash searches the built-in registry only. Used by registry
 // coverage tests that lock the built-in set ("is /init registered?",
-// "is /auto NOT registered?") and don't care about a session's
+// "is /auto registered?") and don't care about a session's
 // custom commands. The dispatcher uses the Model-bound variant below
 // so it can see custom commands too.
 func findSlash(name string) *slashCommand {
@@ -228,15 +227,16 @@ func renderHelpPanel(m Model) string {
 	b.WriteString("\n")
 
 	renderHelpCommonSection(&b, width, popupW)
-	renderHelpGroup(&b, "Workflow", allSlash[0:16], wrapWidth)
-	renderHelpGroup(&b, "Git", allSlash[16:24], wrapWidth)
-	renderHelpGroup(&b, "Integrations", allSlash[24:25], wrapWidth)
-	renderHelpGroup(&b, "Utilities", allSlash[25:36], wrapWidth)
-	renderHelpGroup(&b, "Mode", allSlash[36:37], wrapWidth)
-	renderHelpGroup(&b, "Meta", allSlash[37:], wrapWidth)
+	renderHelpGroup(&b, "Workflow", allSlash[0:18], wrapWidth)
+	renderHelpGroup(&b, "Git", allSlash[18:26], wrapWidth)
+	renderHelpGroup(&b, "Integrations", allSlash[26:27], wrapWidth)
+	renderHelpGroup(&b, "Utilities", allSlash[27:38], wrapWidth)
+	renderHelpGroup(&b, "Mode", allSlash[38:39], wrapWidth)
+	renderHelpGroup(&b, "Meta", allSlash[39:], wrapWidth)
 	if len(m.customSlash) > 0 {
 		renderHelpDetailSection(&b, "Custom commands", m.customSlash, width, popupW, m.cwd)
 	}
+
 	if len(m.skillSlash) > 0 {
 		renderHelpDetailSection(&b, "Skills", m.skillSlash, width, popupW, m.cwd)
 	}

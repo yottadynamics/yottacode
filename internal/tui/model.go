@@ -2239,8 +2239,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.lastEscAt = time.Now()
 			return m, nil
 		case "shift+tab":
-			// Cycle through normal → auto → plan → normal. Mirrors
-			// Claude Code's Shift+Tab, INCLUDING mid-turn: the loop
+			// Cycle through normal → plan → auto → yolo → normal. The loop
 			// reads the mode atomics on every tool dispatch and
 			// rebuilds the plan addendum per iteration, so a flip
 			// while the agent is working takes effect on its very

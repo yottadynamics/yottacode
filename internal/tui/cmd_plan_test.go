@@ -250,26 +250,32 @@ func TestPlanModeBanner_NoSlugYet(t *testing.T) {
 	}
 }
 
-// Shift+Tab now cycles through three states: normal → auto → plan →
-// normal. Each press moves one stop along the cycle.
-func TestShiftTab_CyclesAutoPlanNormal(t *testing.T) {
+// Shift+Tab cycles through normal → plan → auto → yolo → normal.
+// Each press moves one stop along the cycle.
+func TestShiftTab_CyclesPlanAutoYoloNormal_LegacyCoverage(t *testing.T) {
 	m, planMode := newPlanModeTestModel(t)
 	autoMode := m.cfg.AutoMode
+	yoloMode := m.cfg.YoloMode
 
-	// Step 1: normal → auto.
+	// Step 1: normal → plan.
 	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift})
-	if !autoMode.IsActive() || planMode.IsActive() {
-		t.Errorf("step 1 (normal → auto): autoMode=%v planMode=%v", autoMode.IsActive(), planMode.IsActive())
+	if autoMode.IsActive() || !planMode.IsActive() || yoloMode.IsActive() {
+		t.Errorf("step 1 (normal → plan): autoMode=%v planMode=%v yoloMode=%v", autoMode.IsActive(), planMode.IsActive(), yoloMode.IsActive())
 	}
-	// Step 2: auto → plan.
+	// Step 2: plan → auto.
 	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift})
-	if autoMode.IsActive() || !planMode.IsActive() {
-		t.Errorf("step 2 (auto → plan): autoMode=%v planMode=%v", autoMode.IsActive(), planMode.IsActive())
+	if !autoMode.IsActive() || planMode.IsActive() || yoloMode.IsActive() {
+		t.Errorf("step 2 (plan → auto): autoMode=%v planMode=%v yoloMode=%v", autoMode.IsActive(), planMode.IsActive(), yoloMode.IsActive())
 	}
-	// Step 3: plan → normal.
+	// Step 3: auto → yolo.
 	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift})
-	if autoMode.IsActive() || planMode.IsActive() {
-		t.Errorf("step 3 (plan → normal): autoMode=%v planMode=%v", autoMode.IsActive(), planMode.IsActive())
+	if autoMode.IsActive() || planMode.IsActive() || !yoloMode.IsActive() {
+		t.Errorf("step 3 (auto → yolo): autoMode=%v planMode=%v yoloMode=%v", autoMode.IsActive(), planMode.IsActive(), yoloMode.IsActive())
+	}
+	// Step 4: yolo → normal.
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift})
+	if autoMode.IsActive() || planMode.IsActive() || yoloMode.IsActive() {
+		t.Errorf("step 4 (yolo → normal): autoMode=%v planMode=%v yoloMode=%v", autoMode.IsActive(), planMode.IsActive(), yoloMode.IsActive())
 	}
 }
 
@@ -286,29 +292,34 @@ func TestShiftTab_BlockedWhilePalettesOpen(t *testing.T) {
 }
 
 // Shift+Tab works MID-TURN (mirrors Claude Code): the loop reads the
-// mode atomics on every tool dispatch, so flipping auto on partway
-// through a long implementation (or plan on, to pull the agent back to
-// read-only) applies from the agent's next tool call without killing
-// the turn. This used to be suppressed by a turnActive guard.
+// mode atomics on every tool dispatch, so flipping plan/auto/yolo on
+// partway through a long run applies from the agent's next tool call
+// without killing the turn. This used to be suppressed by a turnActive guard.
 func TestShiftTab_CyclesMidTurn(t *testing.T) {
 	m, planMode := newPlanModeTestModel(t)
 	autoMode := m.cfg.AutoMode
+	yoloMode := m.cfg.YoloMode
 	m.turnActive = true
 
-	// normal → auto, while the turn is running.
+	// normal → plan, while the turn is running.
 	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift})
-	if !autoMode.IsActive() || planMode.IsActive() {
-		t.Errorf("mid-turn step 1 (normal → auto): autoMode=%v planMode=%v", autoMode.IsActive(), planMode.IsActive())
+	if autoMode.IsActive() || !planMode.IsActive() || yoloMode.IsActive() {
+		t.Errorf("mid-turn step 1 (normal → plan): autoMode=%v planMode=%v yoloMode=%v", autoMode.IsActive(), planMode.IsActive(), yoloMode.IsActive())
 	}
-	// auto → plan.
+	// plan → auto.
 	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift})
-	if autoMode.IsActive() || !planMode.IsActive() {
-		t.Errorf("mid-turn step 2 (auto → plan): autoMode=%v planMode=%v", autoMode.IsActive(), planMode.IsActive())
+	if !autoMode.IsActive() || planMode.IsActive() || yoloMode.IsActive() {
+		t.Errorf("mid-turn step 2 (plan → auto): autoMode=%v planMode=%v yoloMode=%v", autoMode.IsActive(), planMode.IsActive(), yoloMode.IsActive())
 	}
-	// plan → normal.
+	// auto → yolo.
 	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift})
-	if autoMode.IsActive() || planMode.IsActive() {
-		t.Errorf("mid-turn step 3 (plan → normal): autoMode=%v planMode=%v", autoMode.IsActive(), planMode.IsActive())
+	if autoMode.IsActive() || planMode.IsActive() || !yoloMode.IsActive() {
+		t.Errorf("mid-turn step 3 (auto → yolo): autoMode=%v planMode=%v yoloMode=%v", autoMode.IsActive(), planMode.IsActive(), yoloMode.IsActive())
+	}
+	// yolo → normal.
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift})
+	if autoMode.IsActive() || planMode.IsActive() || yoloMode.IsActive() {
+		t.Errorf("mid-turn step 4 (yolo → normal): autoMode=%v planMode=%v yoloMode=%v", autoMode.IsActive(), planMode.IsActive(), yoloMode.IsActive())
 	}
 }
 
@@ -320,7 +331,7 @@ func TestShiftTab_BlockedWhileApprovalPending(t *testing.T) {
 	m.awaitingApproval = true
 	m.approvalTool = "write_file"
 	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift})
-	if m.cfg.AutoMode.IsActive() || planMode.IsActive() {
+	if m.cfg.AutoMode.IsActive() || planMode.IsActive() || m.cfg.YoloMode.IsActive() {
 		t.Errorf("Shift+Tab should not cycle modes while an approval modal is pending")
 	}
 }
@@ -764,7 +775,7 @@ func TestToggleAutoMode_Toggles(t *testing.T) {
 	// Both ends of the mode's lifetime show the keys: entry says how
 	// to move on, exit says how to get back.
 	out := stripANSI(m.transcript.String())
-	if !strings.Contains(out, "Shift+Tab cycles onward: auto → plan → normal") {
+	if !strings.Contains(out, "Shift+Tab cycles onward: auto → yolo → normal → plan") {
 		t.Errorf("entry log should carry the cycle keys; got %q", out)
 	}
 	if !strings.Contains(out, "○ auto mode · exited") || !strings.Contains(out, "re-enter with Shift+Tab") {
@@ -894,14 +905,13 @@ func TestRebuildTranscript_UnknownToolFallback(t *testing.T) {
 	}
 }
 
-// Slash registry: /plan and /yolo are invocable; /auto is NOT (auto
-// enters via Shift+Tab or --permission-mode auto). /yolo is the
+// Slash registry: /plan, /auto, and /yolo are invocable. /yolo is the
 // mid-session toggle for the yolo mode overlay (mirror of --yolo at
 // startup). Locks the registry so a future palette edit doesn't
-// accidentally re- or un-expose them.
-func TestSlashAuto_NotRegistered(t *testing.T) {
-	if findSlash("auto") != nil {
-		t.Errorf("/auto must not be a slash command — auto enters via Shift+Tab or --permission-mode auto")
+// accidentally hide them.
+func TestSlashAuto_Registered(t *testing.T) {
+	if findSlash("auto") == nil {
+		t.Errorf("/auto should be a slash command — it toggles auto mode mid-session")
 	}
 }
 

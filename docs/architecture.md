@@ -158,7 +158,7 @@ yottacode itself inside a container or devcontainer.
 ## Agent modes
 
 Two **modes** (mutually exclusive, control workflow shape) and one
-**startup-only overlay** (orthogonal, applies on top of any mode) sit
+**always-approve overlay** (orthogonal, applies on top of any mode) sit
 on top of the base approval flow:
 
 - **Plan mode** — read-only research state. Entered via `/plan`,
@@ -169,12 +169,11 @@ on top of the base approval flow:
   (implement with auto mode enabled), `[M]` manual approval
   (implement, per-tool prompts continue), `[L]` save for later, `[K]`
   keep refining. State lives on `agent.PlanModeState`.
-- **Auto mode** — implementation state. Entered via `Shift+Tab` or
-  `--permission-mode auto` (no slash command, mirroring Claude
-  Code). Mutating tools auto-allow except a safety floor
-  (`run_bash`, `git_commit`, `git_checkpoint`, `rollback`).
-  Effective iteration cap is 4× the configured `MaxIterations`.
-  State lives on `agent.AutoModeState`.
+- **Auto mode** — implementation state. Entered via `/auto`,
+  `Shift+Tab`, or `--permission-mode auto`. Mutating tools auto-allow
+  except a safety floor (`run_bash`, `git_commit`, `git_checkpoint`,
+  `rollback`). Effective iteration cap is 4× the configured
+  `MaxIterations`. State lives on `agent.AutoModeState`.
 - **Yolo mode overlay** — drops permission prompts on *all* tools (no
   safety floor) and removes the iteration cap entirely. Entered via
   `--yolo` at startup or `/yolo` mid-session (mirroring Claude
@@ -183,11 +182,10 @@ on top of the base approval flow:
   with a `⚠ yolo mode` suffix (the standalone banner reads
   `⚠ yolo mode`). State lives on `agent.YoloModeState`.
 
-`Shift+Tab` cycles through `normal → auto → plan → normal`. Yolo
-mode is intentionally **not** in the `Shift+Tab` cycle — entry is
-via the `--yolo` startup flag or the `/yolo` slash command, so the
-high-autonomy state stays a conscious decision rather than a key
-chord away.
+`Shift+Tab` cycles through `normal → plan → auto → yolo → normal`. The
+same states are slash-addressable with `/auto`, `/plan`, and `/yolo`;
+`/auto` keeps the safety floor while `/yolo` is the explicit
+always-approve path with no safety floor.
 
 ## Interrupts
 

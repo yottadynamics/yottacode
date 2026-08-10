@@ -36,7 +36,8 @@ Type `/` in the TUI to open the slash-command palette. The palette filters as yo
 | `/git-review-pr` | `[ref]` | Self-review an existing pull request. Ref is a number (`17`) or branch (`feature/x`); empty defaults to the current branch's PR. Fetches PR metadata + diff + check rollup via the typed `internal/github.Interface`, surfaces failing CI at the top, emits a structured review (Failing checks / Blockers / Suggestions / Nits). Output to scrollback only — posting back to GitHub is deferred to a future `--post` flag. |
 | `/code-review` | `[low\|medium\|high]` | Multi-agent review of the **local** diff (the current branch against its resolved base, or the uncommitted working tree when there are no commits ahead). The main agent reads the diff via the `code_review_context` tool, whose TUI card shows a digest (`base → head`, diff source, file/line counts, and true warnings only) while the model receives the full structured snapshot. It crafts review "angles", fans them out to read-only background subagents, dedups their candidate findings, verifies them, and emits one structured review (Blockers / Suggestions / Nits) to scrollback. Effort scales the fan-out: `low` (2 finders, no verification), `medium` (4 finders, verify uncertain findings), `high` (up to 8 finders, one verifier per finding). Background subagents are GA in the interactive TUI — no experimental flag required. Finders and verifiers are read-only by design — the `review` and `code-verifier` agent types carry no shell tool at all, so verification argues from the code rather than executing it. (For build/test probes, the separate `verification` agent type with `run_bash` remains available outside this command.) Output to scrollback only; the author owns the changes. |
 | `/plan` | — | Toggle plan mode (also `Shift+Tab`). Type `/plan list` to open a picker and resume an earlier plan. Agent todo cards can mark abandoned steps as skipped (`✗`) so changed-course plans do not remain visually pending. |
-| `/yolo` | — | Toggle yolo mode (also `--yolo` at startup). Auto-runs every tool with NO safety floor and raises the iteration cap to a large finite bound; explicit `deny` rules still win. Run `/yolo` again to restore approvals. See [Yolo mode](#yolo-mode). |
+| `/auto` | — | Toggle auto mode (also `Shift+Tab` and `--permission-mode auto`). Edits auto-allow; shell and git-history operations still prompt. See [Auto mode](#auto-mode). |
+| `/yolo` | — | Toggle yolo mode (also `Shift+Tab` and `--yolo` at startup). Auto-runs every tool with NO safety floor and raises the iteration cap to a large finite bound; explicit `deny` rules still win. Run `/yolo` again to restore approvals. See [Yolo mode](#yolo-mode). |
 | `/subagents` | `[list \| view <id> \| stop <id> \| stop batch <batch-id> \| types]` | List subagent runs, view a transcript (`Enter`), stop a running task (`s`) or a whole dispatch batch, inject a finished task's result into the conversation (`i`), or list available agent types. See [subagents.md](subagents.md). |
 | `/experimental` | — | List active experimental features and graduated compatibility flags. Graduated entries such as `background_subagents` and `lsp_code_intelligence` show as GA/no-op; active experiments such as `dispatch` show ON/off. Read-only; enabling active experiments happens via `--experimental <name>`, `YOTTACODE_EXPERIMENTAL`, or the `[experimental]` config block — see [experimental.md](experimental.md). |
 | `/mcp` | `[logs <name>]` | List configured MCP servers (status + tool count), or dump a server's recent stderr with `logs <name>`. See [mcp.md](mcp.md). |
@@ -45,7 +46,7 @@ Type `/` in the TUI to open the slash-command palette. The palette filters as yo
 
 Beyond the built-ins, you can ship your own slash commands by dropping markdown files in a `commands/` directory — see [Custom commands](#custom-commands).
 
-> **Auto mode is intentionally not a slash command** (mirroring Claude Code). Auto enters via `Shift+Tab` (cycle: `normal → auto → plan → normal`) or `yottacode --permission-mode auto` at startup. **Yolo mode** is the exception — it has a `/yolo` slash toggle in addition to `yottacode --yolo` at startup, because the danger lies in skipping prompts rather than in being hard to leave. See [Auto mode](#auto-mode) and [Yolo mode](#yolo-mode) below.
+> `Shift+Tab` cycles `normal → plan → auto → yolo → normal`. The same states are slash-addressable with `/auto`, `/plan`, and `/yolo`; `/auto` keeps the auto safety floor, while `/yolo` is the explicit always-approve path with no safety floor. See [Auto mode](#auto-mode) and [Yolo mode](#yolo-mode) below.
 
 ## Provider picker
 
@@ -428,7 +429,8 @@ If the plan file is missing or empty when `exit_plan_mode` is called, the TUI au
 
 ## Auto mode
 
-Press `Shift+Tab` from normal mode (or launch with `yottacode --permission-mode auto`) to enter auto mode — a state where mutating tools auto-allow without the per-tool approval modal. Reduces friction during a multi-step implementation when you trust the plan. Mirroring Claude Code, auto mode has no slash command; the entry points are the `Shift+Tab` cycle, the `--permission-mode auto` startup flag, and the plan-card's `[A]` auto-approval hotkey.
+Type `/auto`, advance to auto through `Shift+Tab` (`normal → plan → auto`), use the plan-card `[A]` hotkey, or launch with `yottacode --permission-mode auto` to enter auto mode — a state where mutating tools auto-allow without the per-tool approval modal. Reduces friction during a multi-step implementation when you trust the plan, while keeping shell and git-history operations behind prompts.
+
 
 Safety floor (always prompts even in auto mode):
 
@@ -439,17 +441,17 @@ Safety floor (always prompts even in auto mode):
 
 **`run_bash` carve-out for read-only inspection.** The model habitually opens implementation work with `cd <project> && grep …` chains. To keep auto-mode flow uninterrupted, a `run_bash` call auto-allows (without showing the modal) when every segment uses a verb from a built-in read-only allowlist (`ls`, `cat`, `head`, `tail`, `wc`, `grep`, `rg`, `find`, `awk`, `cut`, `sort`, `uniq`, `diff`, `cd`, `pwd`, `which`, `echo`, `date`, `tree`, `stat`, `file`, `du`, `df`, …) AND no segment carries a risk flag (no `>` redirects, no pipe-into-shell, no sudo). Anything mutating (`rm`, `mv`, `touch`, `mkdir`, `curl`, `go test`, `sed -i`, …) still prompts.
 
-Auto mode and plan mode are mutually exclusive — entering one exits the other. The two share the `Shift+Tab` chord:
+Auto mode and plan mode are mutually exclusive; yolo is an always-approve overlay. The three share the `Shift+Tab` chord:
 
 ```
-Shift+Tab cycle:  normal → auto → plan → normal
+Shift+Tab cycle:  normal → plan → auto → yolo → normal
 ```
 
-The chord works mid-turn too: the loop reads the mode flags on every tool dispatch, so the new mode applies from the agent's next tool call. Flip auto on partway through a long implementation to stop approving every edit, or flip plan on to pull the agent back to read-only — all without cancelling the turn. The chord is consumed by an open palette, and while an approval modal is pending its own hotkeys own the keyboard.
+The chord works mid-turn too: the loop reads the mode flags on every tool dispatch, so the new mode applies from the agent's next tool call. Press once to pull the agent into read-only planning, press again to move into bounded auto mode, or press again to enter yolo when you explicitly want always-approve — all without cancelling the turn. The chord is consumed by an open palette, and while an approval modal is pending its own hotkeys own the keyboard.
 
 The plan-approval card's `[A]` auto-approval hotkey is a shortcut: it approves the plan AND enters auto mode in one keystroke, so the agent can implement the approved plan with minimal friction. (Pick `[M]` instead if you want plan mode to exit but keep per-tool prompts.)
 
-Auto mode persists across turns until you toggle it off. The banner above the cmdline (`▸ auto mode · edits + read-only bash auto-allow; commits prompt · Shift+Tab cycles`) is always visible while active so the state isn't easy to forget — the trailing `Shift+Tab cycles` hint is how you leave (it drops first on narrow terminals). The entry log shows the full cycle (`auto → plan → normal`); the exit log shows the re-enter key.
+Auto mode persists across turns until you toggle it off. The banner above the cmdline (`▸ auto mode · edits + read-only bash auto-allow; commits prompt · Shift+Tab cycles`) is always visible while active so the state isn't easy to forget — the trailing `Shift+Tab cycles` hint is how you leave (it drops first on narrow terminals). The entry log shows the full cycle (`auto → yolo → normal → plan`); the exit log shows the re-enter key.
 
 The default per-turn iteration cap is 100; auto mode raises the effective cap to 400 (4×). If you still hit the cap on long implementations, run `/max-iterations 500` (sanity ceiling) or relaunch with `--yolo` (raises the cap to `max-iterations × 20`, at least 1000; see [Yolo mode](#yolo-mode)).
 
@@ -457,12 +459,12 @@ The default per-turn iteration cap is 100; auto mode raises the effective cap to
 
 Yolo mode is the unrestricted overlay — every tool auto-runs (`run_bash`, `git_commit`, edits, everything), and the iteration cap is raised to a generous but finite budget (`max-iterations × 20`, at least 1000) so a runaway model still terminates. Intended for unattended long-running implementations where you've decided no further oversight is needed. The startup flag is `--yolo`; the slash command is `/yolo`; the in-TUI banner label reads "yolo mode" (the codebase calls the overlay state "yolo" internally).
 
-There are two ways in:
+There are three ways in:
 
-- **`yottacode --yolo` at startup** — the original one-time opt-in. Recovery requires restarting yottacode without the flag.
-- **`/yolo` slash command** (mid-session toggle) — turns yolo mode on; running `/yolo` again turns it off. The escape hatch the one-time `--yolo` path never had.
+- **`yottacode --yolo` at startup** — the startup opt-in. Running `/yolo` later can turn the overlay off.
+- **`/yolo` slash command** — mid-session toggle; running `/yolo` again turns it off.
+- **`Shift+Tab` cycle** — the final always-approve stop after auto mode (`normal → plan → auto → yolo → normal`).
 
-Auto mode (`/auto`) is intentionally NOT slash-invocable (auto enters via `Shift+Tab` or `--permission-mode auto` only); yolo mode is the lone exception with a slash-toggle because its danger lies in skipping prompts, not in being hard to leave.
 
 The overlay is a **modifier**, not a mode — once active, it sits on top of normal, auto, or plan. Entering auto or plan via `Shift+Tab` does not turn yolo mode off. The yolo banner takes visual priority while it's on (it's the loudest signal), and when a mode (auto or plan) is also active, the mode banner picks up a `⚠ yolo mode` suffix instead.
 
@@ -571,7 +573,7 @@ The TUI shows a compact contextual `keys · …` hint row above the cmdline afte
 - `Ctrl+C` cancels the current turn; stops an armed `/loop`; quits when neither is active
 - `Ctrl+D` exits when input is empty
 - `?` opens the cheatsheet when input is empty
-- `Shift+Tab` cycles agent modes: normal → auto → plan → normal
+- `Shift+Tab` cycles agent modes: normal → plan → auto → yolo → normal
 - `PgUp` / `PgDn` scrolls the conversation transcript
 - `Ctrl+Home` / `Ctrl+End` jumps to the top / bottom of the transcript
 
