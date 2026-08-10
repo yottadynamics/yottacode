@@ -1,6 +1,6 @@
 # TUI slash commands
 
-Type `/` in the TUI to open the slash-command palette. The palette filters as you type, supports Tab completion, uses the same `❯` row cursor as the larger sub-pickers, renders above the cmdline, and can be dismissed with `Esc`. Commands that open a full picker (`/model`, `/theme`, `/sessions`, `/mcp`, and the rest) render as a centered floating window over the conversation rather than replacing the cmdline area — the transcript and status bar stay visible around it.
+Type `/` in the TUI to open the slash-command palette. The palette filters as you type, supports Tab completion, uses the same `❯` row cursor as the larger sub-pickers, renders above the cmdline, and can be dismissed with `Esc`. Command matching accepts prefixes, mid-name substrings, and short word-initial filters such as `/grp` for `/git-review-pr`. Commands that open a full picker (`/model`, `/theme`, `/sessions`, `/mcp`, and the rest) render as a centered floating window over the conversation rather than replacing the cmdline area — the transcript and status bar stay visible around it.
 
 ## Command reference
 
@@ -573,4 +573,4 @@ Examples:
 - `PgUp` / `PgDn` scrolls the conversation transcript
 - `Ctrl+Home` / `Ctrl+End` jumps to the top / bottom of the transcript
 
-The launch screen intentionally leaves mouse reporting off so your terminal owns normal click-drag selection, right-click/context-menu paste, and screenshot/text paste into the cmdline prompt before a conversation starts. Once the conversation transcript is visible, yottacode enables mouse reporting so wheel events scroll the in-app session history when the pointer is over the transcript, while wheel events over the cmdline browse prompt history. Popup/modal row clicks still work. Plain terminal-native text selection may require your terminal's mouse-bypass modifier in that state.
+Mouse reporting stays off during the launch screen and normal conversation so your terminal owns click-drag selection, right-click/context-menu paste, and screenshot/text paste into the cmdline prompt. Popup/modal row clicks temporarily enable mouse reporting while the popup is open, then return to terminal-native mouse behavior when it closes. Use `PgUp`/`PgDn`, `Ctrl+Home`/`Ctrl+End`, and keyboard picker navigation for transcript/palette movement when no popup is open.

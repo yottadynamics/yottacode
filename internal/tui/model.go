@@ -1076,10 +1076,10 @@ func New(parent context.Context, c Config) Model {
 	ti.CharLimit = 0
 	// Render the chevron only on the first display row; soft-wrapped and
 	// hard-newline continuations get a 2-col indent so the input reads as
-	// one block instead of "❯" repeating on every wrapped line.
+	// one block instead of "›" repeating on every wrapped line.
 	ti.SetPromptFunc(2, func(info textarea.PromptInfo) string {
 		if info.LineNumber == 0 {
-			return "❯ "
+			return "› "
 		}
 		return "  "
 	})
@@ -1100,11 +1100,9 @@ func New(parent context.Context, c Config) Model {
 	ti.Focus()
 
 	sp := spinner.New()
-	// spinner.Dot is the stock single-cell Braille rotation
-	// (`⣾⣽⣻⢿⡿⣟⣯⣷`) — calmer, narrower than the previous custom
-	// 4×4 grid. docs/TUI.md recommends Dot / Pulse / Points as the
-	// professional defaults Charm projects reach for.
-	sp.Spinner = spinner.Dot
+	// spinner.MiniDot is the v2 single-cell Braille spinner: tighter and less
+	// visually heavy than Dot's padded frames while still reading as active.
+	sp.Spinner = spinner.MiniDot
 	sp.Style = styleSpinner
 
 	// A loaded session may already contain user turns from a prior
@@ -2874,15 +2872,11 @@ func (m Model) skillsBusy() bool {
 func (m Model) View() tea.View {
 	v := tea.NewView(m.viewString())
 	v.AltScreen = true
-	// Mouse is enabled once the conversation transcript is visible, or while
-	// an overlay owns clickable UI. In alt-screen mode the terminal's native
-	// wheel target is the cmdline/input history, not yottacode's owned
-	// transcript viewport, so leaving mouse reporting off during a session
-	// makes the scroller move the wrong thing. Keep it off only on the
-	// launch hero so first-use copy/paste stays terminal-native before any
-	// session history exists; after that, wheel events belong to the app's
-	// transcript scroller and popups keep their ×/row click affordances.
-	if m.enteredConversation || m.popupOpen() {
+	// Keep terminal paste/select native during normal conversation. Mouse
+	// reporting captures right-click paste in several terminals; only enable it
+	// while a popup is open, where click targets are more valuable than native
+	// mouse paste.
+	if m.popupOpen() {
 		v.MouseMode = tea.MouseModeCellMotion
 	}
 	if m.originalTerminalBackground != nil {
@@ -3273,7 +3267,7 @@ type inputVRow struct {
 }
 
 // inputPromptW is the display width of the cmdline's prompt/indent
-// prefix ("❯ ") — shared by renderInputBody (which pads wrapped
+// prefix ("› ") — shared by renderInputBody (which pads wrapped
 // continuation rows to the same width) and resolveInputClick (which
 // subtracts it back out of a click's screen column).
 const inputPromptW = 2
@@ -3341,7 +3335,7 @@ func windowInputRows(rows []inputVRow, cursorVisRow, maxRows int) (windowed []in
 // with a visible cursor block at the cursor position. contentW is the
 // inner width of the box (terminal width minus border+padding).
 func (m Model) renderInputBody(contentW int) string {
-	const promptStr = "❯ "
+	const promptStr = "› "
 	wrapW := contentW - inputPromptW
 	if wrapW < 1 {
 		wrapW = 1
@@ -4147,7 +4141,7 @@ func (m *Model) preGrowTextarea() {
 //
 // We deliberately count *logical* lines (\n-separated) rather than wrapped
 // visual rows. Bubbles textarea's Height is a logical-line count and it
-// renders any unused logical-line slots as empty "❯ " prompt rows below
+// renders any unused logical-line slots as empty "› " prompt rows below
 // the content — sizing height by visual-row count makes a long single
 // line wrap to N rows AND adds N-1 empty padding rows below it. Letting
 // height stay at 1 for single-line input means a long line scrolls
@@ -5788,7 +5782,7 @@ const proseMaxWidth = 120
 // emitted to scrollback. It is 0: the conversation canvas is flush-left,
 // sharing a single column-0 edge with the chrome (startup box, input
 // frame, status bar). Structural glyphs — card gutters (┌ │ └), the
-// user-echo chevron (❯), banners — sit at column 0; the 2-space text
+// user-echo chevron (›), banners — sit at column 0; the 2-space text
 // indent users read comes from each element's own structure (the card
 // gutter's trailing space, styleAssistantBody's PaddingLeft(2)), NOT
 // from this margin.
@@ -6348,7 +6342,7 @@ func isUnicodeTableLine(line string) bool {
 }
 
 // renderUserBlock formats a user message for scrollback emission. The first
-// line gets the same chevron prompt (❯) used by the live input bar, so
+// line gets the same chevron prompt (›) used by the live input bar, so
 // scrollback echoes look like the text the user typed into the cmdline.
 // Continuation rows — whether from hard newlines or wrapping a large paste —
 // hang-indent under the prompt instead of repeating another chevron. This keeps
@@ -6365,7 +6359,7 @@ func isUnicodeTableLine(line string) bool {
 // quoted block instead of looking like a separate user submission on every
 // pasted line.
 func renderUserBlock(content string, width int) string {
-	const prefix = "❯ "
+	const prefix = "› "
 	prefixWidth := ansi.StringWidth(prefix)
 	bar := styleUserBar.Render(prefix)
 	indent := strings.Repeat(" ", prefixWidth)

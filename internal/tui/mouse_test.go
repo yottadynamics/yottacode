@@ -15,11 +15,11 @@ func TestView_LeavesMouseNativeBeforeConversationStarts(t *testing.T) {
 	}
 }
 
-func TestView_EnablesMouseForScrollableConversation(t *testing.T) {
+func TestView_KeepsMouseNativeForConversationPaste(t *testing.T) {
 	m := newTestModel(t)
 	m.enteredConversation = true
-	if got := m.View().MouseMode; got != tea.MouseModeCellMotion {
-		t.Errorf("View().MouseMode = %v, want MouseModeCellMotion", got)
+	if got := m.View().MouseMode; got != tea.MouseModeNone {
+		t.Errorf("View().MouseMode = %v, want MouseModeNone so terminal right-click paste remains native", got)
 	}
 }
 

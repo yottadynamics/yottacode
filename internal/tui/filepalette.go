@@ -154,14 +154,18 @@ func filterFilePalette(query string, entries []fileEntry) []fileEntry {
 			hits = append(hits, scored{e, 0})
 		case strings.HasPrefix(base, q):
 			hits = append(hits, scored{e, 1})
-		case strings.Contains(base, q):
+		case wordInitialsMatch(q, base):
 			hits = append(hits, scored{e, 2})
-		case strings.HasPrefix(full, q):
+		case strings.Contains(base, q):
 			hits = append(hits, scored{e, 3})
-		case strings.Contains(full, q):
+		case strings.HasPrefix(full, q):
 			hits = append(hits, scored{e, 4})
-		case isSubsequence(q, full):
+		case wordInitialsMatch(q, full):
 			hits = append(hits, scored{e, 5})
+		case strings.Contains(full, q):
+			hits = append(hits, scored{e, 6})
+		case isSubsequence(q, full):
+			hits = append(hits, scored{e, 7})
 		}
 	}
 	sort.SliceStable(hits, func(i, j int) bool {
@@ -198,6 +202,42 @@ func isSubsequence(needle, haystack string) bool {
 		}
 	}
 	return i == len(needle)
+}
+
+// wordInitialsMatch reports whether query characters match the starts of words
+// in candidate. Separators such as '-', '_', '/', and '.' open a new word; a
+// lower→upper transition does too. This keeps terse filters like "grp" useful
+// for "git-review-pr" and "mp" useful for "model_picker.go".
+func wordInitialsMatch(query, candidate string) bool {
+	if query == "" {
+		return true
+	}
+	qi := 0
+	prev := rune(0)
+	for i, r := range candidate {
+		start := i == 0 || isWordSeparator(prev) || isCamelBoundary(prev, r)
+		if start && r == rune(query[qi]) {
+			qi++
+			if qi == len(query) {
+				return true
+			}
+		}
+		prev = r
+	}
+	return false
+}
+
+func isWordSeparator(r rune) bool {
+	switch r {
+	case '-', '_', '/', '.', ' ':
+		return true
+	default:
+		return false
+	}
+}
+
+func isCamelBoundary(prev, cur rune) bool {
+	return prev >= 'a' && prev <= 'z' && cur >= 'A' && cur <= 'Z'
 }
 
 // filePaletteVisible caps how many entries the rendered palette shows.

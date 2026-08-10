@@ -1343,13 +1343,13 @@ func TestModel_SplashShowsProductName(t *testing.T) {
 func TestModel_PromptIsChevron(t *testing.T) {
 	m := newTestModel(t)
 	v := m.View().Content
-	if !strings.Contains(v, "❯") {
-		t.Errorf("input prompt should use ❯ chevron: %q", v)
+	if !strings.Contains(v, "›") {
+		t.Errorf("input prompt should use › chevron: %q", v)
 	}
 }
 
 // TestModel_PromptOnlyOnFirstWrappedRow guards against a regression where
-// the textarea repeated the "❯ " prompt on every soft-wrapped row of a
+// the textarea repeated the "› " prompt on every soft-wrapped row of a
 // long unbroken input. The expected behavior: chevron only on the first
 // display row, continuations get blank indent.
 func TestModel_PromptOnlyOnFirstWrappedRow(t *testing.T) {
@@ -1358,8 +1358,8 @@ func TestModel_PromptOnlyOnFirstWrappedRow(t *testing.T) {
 	m.textInput.SetValue(long)
 	m.fitTextareaHeight()
 	v := m.View().Content
-	if got := strings.Count(v, "❯"); got != 1 {
-		t.Errorf("expected exactly 1 ❯ in view for soft-wrapped input, got %d:\n%s", got, v)
+	if got := strings.Count(v, "›"); got != 1 {
+		t.Errorf("expected exactly 1 › in view for soft-wrapped input, got %d:\n%s", got, v)
 	}
 }
 
@@ -1412,7 +1412,7 @@ func TestModel_TypingPastWrapKeepsChevronVisible(t *testing.T) {
 		var c tea.Model = m
 		c, _ = c.Update(tea.KeyPressMsg{Text: "e"})
 		m = c.(Model)
-		if !strings.Contains(m.View().Content, "❯") {
+		if !strings.Contains(m.View().Content, "›") {
 			t.Fatalf("chevron missing from view after typing char %d (content len=%d, wrap=%d, height=%d)", i+1, i+1, wrap, m.textInput.Height())
 		}
 	}
@@ -2061,7 +2061,7 @@ func runeAt(s string, col int) rune {
 }
 
 // The flush-left canvas spec, encoded as column assertions: structural
-// glyphs (card gutters ┌ │ └, the user-echo chevron ❯, the status dot)
+// glyphs (card gutters ┌ │ └, the user-echo chevron ›, the status dot)
 // sit at column 0; the text they introduce sits at column 2 (glyph +
 // single space). This is the single source of truth for "everything
 // flush-left, text 2-space indented" and guards every renderer at once.
@@ -2093,7 +2093,7 @@ func TestFlushLeftCanvas_ColumnAlignment(t *testing.T) {
 		}
 	}
 
-	// User echo: ❯ at col 0, typed text at col 2.
+	// User echo: › at col 0, typed text at col 2.
 	userLines := strings.Split(stripANSI(renderUserBlock("hello", 80)), "\n")
 	var userRow string
 	for _, l := range userLines {
@@ -2101,8 +2101,8 @@ func TestFlushLeftCanvas_ColumnAlignment(t *testing.T) {
 			userRow = l
 		}
 	}
-	if runeAt(userRow, 0) != '❯' || runeAt(userRow, 2) != 'h' {
-		t.Errorf("user echo should be `❯ hello` (chevron col 0, text col 2), got %q", userRow)
+	if runeAt(userRow, 0) != '›' || runeAt(userRow, 2) != 'h' {
+		t.Errorf("user echo should be `› hello` (chevron col 0, text col 2), got %q", userRow)
 	}
 
 	// Assistant prose: text at col 2 via styleAssistantBody PaddingLeft(2).
@@ -2264,7 +2264,7 @@ func TestModel_ToolResultRendersUnifiedCard(t *testing.T) {
 func TestModel_TextareaStaysSingleRowForLongLine(t *testing.T) {
 	// A long single-line input should NOT grow the textarea vertically.
 	// Bubbles textarea Height is logical-line count and renders unused
-	// slots as empty "❯ " padding rows; growing on visual-row count
+	// slots as empty "› " padding rows; growing on visual-row count
 	// produces an N-row tall input with only the last row of typed
 	// text plus N-1 empty prompt rows below it. Letting height stay at
 	// 1 means the textarea handles overflow via its own horizontal scroll.
@@ -2359,11 +2359,11 @@ func TestModel_UserBlockUsesSingleInputChevron(t *testing.T) {
 	m := newTestModel(t)
 	m.appendLine(renderUserBlock("hello\nworld", m.width))
 	v := stripANSI(m.transcript.String())
-	if !strings.Contains(v, "❯ hello") || !strings.Contains(v, "  world") {
+	if !strings.Contains(v, "› hello") || !strings.Contains(v, "  world") {
 		t.Errorf("user block should render first-row chevron and continuation indent: %q", v)
 	}
-	if strings.Contains(v, "❯ world") {
-		t.Errorf("user block should not repeat ❯ prompt marker on pasted continuation: %q", v)
+	if strings.Contains(v, "› world") {
+		t.Errorf("user block should not repeat › prompt marker on pasted continuation: %q", v)
 	}
 	if strings.Contains(v, "▎ hello") {
 		t.Errorf("user block should not use the old ▎ marker: %q", v)
@@ -2371,7 +2371,7 @@ func TestModel_UserBlockUsesSingleInputChevron(t *testing.T) {
 }
 
 // A user input longer than the terminal width must be hard-wrapped with a
-// hanging indent under the single ❯ prompt. Without this, the terminal
+// hanging indent under the single › prompt. Without this, the terminal
 // auto-wraps continuation rows to column 0 or repeats the prompt, making one
 // pasted message look detached or split into multiple submissions.
 func TestRenderUserBlock_LongLineHangIndentsUnderPrompt(t *testing.T) {
@@ -2381,12 +2381,12 @@ func TestRenderUserBlock_LongLineHangIndentsUnderPrompt(t *testing.T) {
 	if len(rows) < 2 {
 		t.Fatalf("expected at least two rows after wrap, got %d: %q", len(rows), rows)
 	}
-	if !strings.HasPrefix(rows[0], "❯ ") {
-		t.Errorf("first row missing ❯ prefix: %q", rows[0])
+	if !strings.HasPrefix(rows[0], "› ") {
+		t.Errorf("first row missing › prefix: %q", rows[0])
 	}
 	for i, row := range rows[1:] {
-		if strings.HasPrefix(row, "❯ ") {
-			t.Errorf("continuation row %d should indent, not repeat ❯: %q", i+1, row)
+		if strings.HasPrefix(row, "› ") {
+			t.Errorf("continuation row %d should indent, not repeat ›: %q", i+1, row)
 		}
 		if !strings.HasPrefix(row, "  ") {
 			t.Errorf("continuation row %d missing hanging indent: %q", i+1, row)

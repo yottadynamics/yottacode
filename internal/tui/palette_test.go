@@ -101,10 +101,17 @@ func TestFilterPaletteAll_RanksAcrossCustomCommands(t *testing.T) {
 	}
 }
 
-func TestFilterPalette_LeadingSlashOptional(t *testing.T) {
-	got := filterPalette("perm")
-	if len(got) != 1 || got[0].Name != "permissions" {
-		t.Errorf("'perm' (without slash) should still match /permissions; got %+v", got)
+func TestFilterPalette_FuzzyInitialsFindHyphenatedCommand(t *testing.T) {
+	got := filterPalette("/grp")
+	if len(got) == 0 || got[0].Name != "git-review-pr" {
+		t.Fatalf("/grp should fuzzy-match /git-review-pr first; got %+v", got)
+	}
+}
+
+func TestFilterPalette_FuzzyAliasFindsCommand(t *testing.T) {
+	got := filterPalette("/ctx")
+	if len(got) == 0 || got[0].Name != "context" {
+		t.Fatalf("/ctx should fuzzy-match /context first; got %+v", got)
 	}
 }
 

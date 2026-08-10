@@ -140,7 +140,7 @@ func TestInput_HintsDisappearAfterFirstMessage(t *testing.T) {
 	}
 }
 
-// The chevron `❯` is Accent-colored and persistent — it stays
+// The chevron `›` is Success-colored and persistent — it stays
 // rendered whether the input is empty (placeholder branch) or
 // populated.
 func TestInput_ChevronStaysVisibleWithContent(t *testing.T) {
@@ -148,8 +148,12 @@ func TestInput_ChevronStaysVisibleWithContent(t *testing.T) {
 	for _, r := range "hello" {
 		m, _ = applyMsg(m, tea.KeyPressMsg{Text: string(r)})
 	}
-	if !strings.Contains(m.View().Content, "❯") {
-		t.Errorf("chevron should stay visible with content: %q", m.View().Content)
+	plain := stripANSI(m.View().Content)
+	if !strings.Contains(plain, "›") {
+		t.Errorf("chevron should stay visible with content: %q", plain)
+	}
+	if strings.Contains(plain, "❯") {
+		t.Errorf("input prompt should use the slimmer › chevron, not ❯: %q", plain)
 	}
 }
 
