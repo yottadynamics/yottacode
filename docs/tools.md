@@ -20,6 +20,7 @@ In addition to the built-ins, **MCP tools** register dynamically when an `[[mcp_
 | [`read_file`](#read_file) | none | Read a text or image file (png/jpg/gif/webp) with optional line offset/limit |
 | [`read_many_files`](#read_many_files) | none | Read multiple UTF-8 files in one call |
 | [`read_document`](#read_document) | none | *Experimental.* Bounded, structured extraction for CSV/TSV/JSON/JSONL/XML/HTML |
+| [`create_document`](#create_document) | required | *Experimental.* Generate xlsx (native) or docx/pdf (via pandoc) from structured content |
 | [`write_file`](#write_file) | required | Overwrite or create a file |
 | [`edit_file`](#edit_file) | required | Surgical `old_string`→`new_string` replacement |
 | [`edit_anchored`](#edit_anchored) | required | Anchor-validated line edits after anchored reads |
@@ -448,6 +449,65 @@ the same credential-path deny list.
 Not in scope for this tool: PDF, Office formats (docx/xlsx/pptx),
 `.md`/`.txt`/`.log` (already covered by `read_file`), and any file
 fetched from a URL — local files only.
+
+## create_document
+
+*Experimental* — enable with `--experimental document_generation`,
+`YOTTACODE_EXPERIMENTAL=document_generation`, or
+`[experimental] document_generation = true` in config. Generates a new
+xlsx, docx, or pdf file from structured content — the write-side
+counterpart to `read_document`. See
+[`document-generation.md`](document-generation.md) for the full design
+and setup.
+
+| Param | Type | Default | Notes |
+|---|---|---|---|
+| `format` | string | — | `xlsx`, `docx`, or `pdf` |
+| `output_path` | string | — | Path to write the generated document to |
+| `overwrite` | bool | `false` | Must be explicit to replace an existing output |
+| `content.sheets` | []object | — | xlsx only: one entry per sheet — `name`, `rows` (array of arrays of cells) |
+| `content.blocks` | []object | — | docx/pdf only: ordered content blocks |
+
+xlsx cell fields: `value` (string/number/bool), `formula` (without the
+leading `=`; overrides `value`), `bold`, `italic`, `number_format` (an
+Excel number format code, e.g. `0.00%` or `yyyy-mm-dd`).
+
+docx/pdf block fields: `type` (`heading`, `paragraph`, `list`, `table`, or
+`code`), `level` (heading 1-6), `text` (heading/paragraph/code), `ordered`
++ `items` (list), `header` + `rows` (table, string cells), `language`
+(code).
+
+```json
+{"format": "xlsx", "output_path": "report.xlsx", "content": {"sheets": [
+  {"name": "Q1", "rows": [
+    [{"value": "Item", "bold": true}, {"value": "Qty", "bold": true}],
+    [{"value": "Widgets"}, {"value": 42}],
+    [{"value": "Total"}, {"formula": "SUM(B2:B2)"}]
+  ]}
+]}}
+```
+
+```json
+{"format": "docx", "output_path": "notes.docx", "content": {"blocks": [
+  {"type": "heading", "level": 1, "text": "Weekly Notes"},
+  {"type": "paragraph", "text": "Summary of this week's work."},
+  {"type": "list", "items": ["Shipped X", "Fixed Y"]}
+]}}
+```
+
+**xlsx** is generated natively via `excelize` — no external tools, works
+regardless of sandbox configuration. **docx/pdf** run `pandoc` (pdf
+additionally needs `weasyprint` as pandoc's PDF engine), routed through
+whatever command sandbox is active: installed on the host when no sandbox
+is configured, or present in `[sandbox].image` when one is. A missing
+`pandoc` returns an actionable error naming where it was checked (host
+`PATH` or the sandbox label) rather than failing silently — see
+[`document-generation.md`](document-generation.md) for a reference
+Containerfile with everything docx/pdf generation needs.
+
+Always prompts for approval; refuses to overwrite an existing file unless
+`overwrite=true`. Not in scope: pptx generation, and any document
+*parsing* beyond what `read_document` already covers.
 
 ## write_file
 
