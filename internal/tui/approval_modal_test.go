@@ -55,6 +55,27 @@ func TestRenderApprovalModal_BracketsFirstNoInlinePermissionsDetail(t *testing.T
 	}
 }
 
+func TestRenderApprovalModal_HasPopupCloseGlyph(t *testing.T) {
+	m := newTestModel(t)
+	m.width = 80
+	m.awaitingApproval = true
+	m.approvalTool = "move_file"
+	m.approvalPreview = "move_file(a -> b)"
+	m.approvalArgs = `{"src":"a","dst":"b"}`
+
+	got := stripANSI(renderApprovalModal(m))
+	first := strings.SplitN(got, "\n", 2)[0]
+	if !strings.HasPrefix(first, "┌") || !strings.HasSuffix(first, "┐") {
+		t.Fatalf("approval modal should keep sharp decision-card corners, got %q", first)
+	}
+	if !strings.Contains(first, "×") {
+		t.Fatalf("approval modal top border should include close glyph, got %q", first)
+	}
+	if strings.Contains(first, "Approval needed") || strings.Contains(first, "move_file") || !strings.Contains(got, "Approval needed · move_file") {
+		t.Fatalf("close-glyph chrome should avoid crowded border labels and move title/tool into the body, got %q", got)
+	}
+}
+
 func TestRenderApprovalModal_UsesComfortableWidthWithoutOverflow(t *testing.T) {
 	m := newTestModel(t)
 	m.width = 80

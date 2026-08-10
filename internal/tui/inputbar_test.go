@@ -147,7 +147,10 @@ func TestKeyHints_IdleAfterFirstMessage(t *testing.T) {
 	m := newTestModel(t)
 	m.firstMessageSent = true
 	plain := stripANSI(m.renderKeyHintRow())
-	for _, want := range []string{"Enter send", "Ctrl+J newline", "/ commands", "@ files"} {
+	if !strings.HasPrefix(plain, "Shift+Tab: mode") {
+		t.Fatalf("idle key hints should lead with mode switching: %q", plain)
+	}
+	for _, want := range []string{"Enter: send", "Ctrl+J: new line", "/: commands", "@: files"} {
 		if !strings.Contains(plain, want) {
 			t.Fatalf("idle key hints missing %q: %q", want, plain)
 		}
@@ -164,7 +167,7 @@ func TestKeyHints_ApprovalFocus(t *testing.T) {
 	m.approvalAllowAlwaysOK = true
 	m.approvalDenyAlwaysOK = true
 	plain := stripANSI(m.renderKeyHintRow())
-	for _, want := range []string{"Y approve", "N reject", "A always", "D never", "Enter queue text"} {
+	for _, want := range []string{"Y: approve", "N: reject", "A: always", "D: never", "Enter: queue text"} {
 		if !strings.Contains(plain, want) {
 			t.Fatalf("approval key hints missing %q: %q", want, plain)
 		}
@@ -178,7 +181,7 @@ func TestKeyHints_PaletteFocus(t *testing.T) {
 	m.firstMessageSent = true
 	m.paletteOpen = true
 	plain := stripANSI(m.renderKeyHintRow())
-	if !strings.Contains(plain, "Tab complete") || !strings.Contains(plain, "Enter run") {
+	if !strings.Contains(plain, "Tab: complete") || !strings.Contains(plain, "Enter: run") {
 		t.Fatalf("palette key hints should describe palette actions: %q", plain)
 	}
 }

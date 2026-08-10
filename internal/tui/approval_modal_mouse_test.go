@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 
 	"github.com/yottadynamics/yottacode/internal/agent"
 )
@@ -62,5 +63,34 @@ func TestApprovalModal_ClickOutsideHotkeysIsNoop(t *testing.T) {
 	m, _ = applyMsg(m, tea.MouseClickMsg{X: 0, Y: 0})
 	if !m.awaitingApproval {
 		t.Errorf("a click outside any hotkey token should not resolve to a decision")
+	}
+}
+
+func TestApprovalModal_ClickCloseRejects(t *testing.T) {
+	m := newTestModel(t)
+	m.turnActive = true
+	m.eventsCh = make(chan agent.Event, 4)
+	m.decisions = make(chan agent.Decision, 1)
+	m.turnErrCh = make(chan error, 1)
+	m.awaitingApproval = true
+	m.approvalTool = "write_file"
+
+	box := renderApprovalModal(m)
+	ox, oy := m.popupOrigin(box)
+	w := lipgloss.Width(box)
+	m, cmd := applyMsg(m, tea.MouseClickMsg{X: ox + w - 2, Y: oy})
+	if cmd == nil {
+		t.Fatalf("clicking × should return a Cmd that resumes the event pump")
+	}
+	if m.awaitingApproval {
+		t.Errorf("clicking × should clear awaitingApproval")
+	}
+	select {
+	case d := <-m.decisions:
+		if d != agent.Deny {
+			t.Errorf("decision = %v, want Deny", d)
+		}
+	default:
+		t.Errorf("expected a deny decision on the channel")
 	}
 }

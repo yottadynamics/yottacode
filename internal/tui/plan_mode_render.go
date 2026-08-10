@@ -207,7 +207,11 @@ func renderPlanDecisionCard(title, toolName, hotkeys string, width int, hits ...
 	}
 	capW := capLabeledBoxWidth(width)
 
-	bodyLines := []string{""}
+	header := stylePlanApprovalTitle.Render(title)
+	if toolName != "" {
+		header += stylePlanApprovalTool.Render(" · " + toolName)
+	}
+	bodyLines := []string{labeledBoxIndent + header, ""}
 	for _, line := range hardWrapLabeled(hotkeys, capW) {
 		row := len(bodyLines)
 		indented := labeledBoxIndent + line
@@ -219,7 +223,7 @@ func renderPlanDecisionCard(title, toolName, hotkeys string, width int, hits ...
 	leftLabel := " " + stylePlanApprovalTitle.Render(title) + " "
 	rightLabel := " " + stylePlanApprovalTool.Render(toolName) + " "
 
-	return renderLabeledBox(leftLabel, rightLabel, bodyLines, capW, colorWarning)
+	return addPopupCloseGlyph(renderLabeledBox(leftLabel, rightLabel, bodyLines, capW, colorWarning))
 }
 
 // Plan-mode banner / approval styles. Bare declarations (no

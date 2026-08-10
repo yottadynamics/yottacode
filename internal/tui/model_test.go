@@ -774,6 +774,14 @@ func TestModel_ActiveTurnPreviewRowCapsBufferedNotices(t *testing.T) {
 	}
 }
 
+func TestModel_ActiveTurnPreviewRowEmptyUntilContent(t *testing.T) {
+	m := newTestModel(t)
+	m.turnActive = true
+	if got := m.renderActiveTurnPreviewRow(); got != "" {
+		t.Fatalf("tool-only active turns should not reserve blank LLM preview rows, got %q", stripANSI(got))
+	}
+}
+
 func TestModel_ReasoningPreviewClearsOnContent(t *testing.T) {
 	// Once the model finishes reasoning and starts writing the answer,
 	// the live reasoning preview should disappear so the view
@@ -2574,5 +2582,52 @@ func TestLastPathSegments(t *testing.T) {
 		if got := lastPathSegments(tc.in, tc.n); got != tc.want {
 			t.Errorf("lastPathSegments(%q, %d) = %q, want %q", tc.in, tc.n, got, tc.want)
 		}
+	}
+}
+
+func TestTranscriptFollowSurvivesFooterGrowth(t *testing.T) {
+	m := newTestModel(t)
+	m.enteredConversation = true
+	for i := 0; i < 30; i++ {
+		m.queuePrintln(fmt.Sprintf("row %02d", i))
+	}
+	m.refreshTranscriptViewport()
+	if !m.transcriptFollow || !m.transcriptViewport.AtBottom() {
+		t.Fatalf("test setup: transcript should start pinned to the bottom")
+	}
+
+	m.turnActive = true
+	m.livePlan = samplePlan()
+	m.livePlanTouched = true
+	m.refreshTranscriptViewport()
+	if !m.transcriptFollow {
+		t.Fatalf("footer-only growth must not clear follow intent")
+	}
+
+	m.queuePrintln("new row after footer growth")
+	m.refreshTranscriptViewport()
+	if !m.transcriptViewport.AtBottom() {
+		t.Fatalf("new output should stay visible after footer growth")
+	}
+}
+
+func TestTranscriptFollowStopsAfterManualScroll(t *testing.T) {
+	m := newTestModel(t)
+	m.enteredConversation = true
+	for i := 0; i < 30; i++ {
+		m.queuePrintln(fmt.Sprintf("row %02d", i))
+	}
+	m.refreshTranscriptViewport()
+
+	m.transcriptViewport.PageUp()
+	m.updateTranscriptFollowIntent()
+	if m.transcriptFollow {
+		t.Fatalf("manual scroll up should disable automatic follow")
+	}
+
+	m.queuePrintln("new row while reading history")
+	m.refreshTranscriptViewport()
+	if m.transcriptViewport.AtBottom() {
+		t.Fatalf("new output should not yank the viewport when user scrolled away")
 	}
 }
