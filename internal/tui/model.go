@@ -182,7 +182,7 @@ type Config struct {
 // conversation transcript viewport above the live footer. Native terminal
 // scrollback is unavailable inside alt-screen, so transcript history is kept in
 // transcriptRows and scrolled with PgUp/PgDn/Ctrl+Home/Ctrl+End while mouse
-// capture stays disabled so plain terminal text selection still works.
+// capture is enabled only after the conversation starts so wheel scrolling works.
 type Model struct {
 	parentCtx context.Context
 	cfg       agent.LoopConfig
@@ -2872,11 +2872,12 @@ func (m Model) skillsBusy() bool {
 func (m Model) View() tea.View {
 	v := tea.NewView(m.viewString())
 	v.AltScreen = true
-	// Keep terminal paste/select native during normal conversation. Mouse
-	// reporting captures right-click paste in several terminals; only enable it
-	// while a popup is open, where click targets are more valuable than native
-	// mouse paste.
-	if m.popupOpen() {
+	// Alt-screen has no native terminal scrollback, so wheel input must be
+	// captured once the transcript exists. Keep mouse native on the launch hero
+	// so pre-chat paste/selection works exactly like the shell, but enable cell
+	// motion for the conversation and popups; cell motion includes click, release,
+	// wheel, and drag events without the extra hover spam of all-motion mode.
+	if m.enteredConversation || m.popupOpen() {
 		v.MouseMode = tea.MouseModeCellMotion
 	}
 	if m.originalTerminalBackground != nil {
