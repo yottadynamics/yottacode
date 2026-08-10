@@ -95,7 +95,7 @@ func modelShortcutSwitch(m Model, newTag string) (Model, tea.Cmd) {
 	}
 	warnIfEffortNoop(&m, acfg)
 	warnIfCacheReset(&m, previousModel, newTag)
-	return m, runProviderProbe(m.parentCtx, acfg, false)
+	return m, nil
 }
 
 // warnIfCacheReset surfaces a status line when a mid-session /model

@@ -539,7 +539,7 @@ func shortenMiddle(s string, max int) string {
 
 // providerUse switches the active provider profile, adopts its
 // default_model (or active.model when [active] points at the same
-// profile), and refreshes the adapter + connection probe.
+// profile), and refreshes the adapter.
 func providerUse(m Model, name string) (Model, tea.Cmd) {
 	cfg := loadConfigForCommand(m)
 	p := cfg.FindProvider(name)
@@ -579,7 +579,7 @@ func providerUse(m Model, name string) (Model, tea.Cmd) {
 	m.appendLine(styleAuto.Render(statusOKLine("provider", fmt.Sprintf("switched to %s (model: %s)", name, newModel))))
 	warnIfEffortNoop(&m, acfg)
 	warnIfCacheReset(&m, previousModel, newModel)
-	cmds := []tea.Cmd{runProviderProbe(m.parentCtx, acfg, false)}
+	cmds := []tea.Cmd{}
 	// A provider switch changes the active model outside the picker path —
 	// discover its window from the live API too (the picker reads it from
 	// the list-models row; this path otherwise never would).
@@ -838,11 +838,10 @@ func applyProviderRemove(m Model, name string) (Model, tea.Cmd) {
 
 // invalidateAdapter clears every runtime field a chat turn or status
 // bar reads (adapter, model name, base URL, API key, provider profile,
-// status-bar provider tag, connection probe state). After this,
+// status-bar provider tag). After this,
 // startTurn refuses to fire and the status bar renders an empty model
-// slot with a muted/unknown dot — no leftover "nvidia-nim" tag from
-// the just-removed profile. Recovered by /provider use or
-// /provider add.
+// slot with no leftover "nvidia-nim" tag from the just-removed profile.
+// Recovered by /provider use or /provider add.
 func invalidateAdapter(m Model) Model {
 	m.cfg.Adapter = nil
 	// Also clear the AgentTool's Adapter so subagents don't use stale config
@@ -856,7 +855,6 @@ func invalidateAdapter(m Model) Model {
 	m.providerLabel = ""
 	m.providerProfile = adapter.ProviderProfile{}
 	m.sess.Model = ""
-	m.connection = connUnknown
 	return m
 }
 
@@ -1223,19 +1221,6 @@ func renderBool(v bool) string {
 	return "no"
 }
 
-func renderConnectionSummary(state connState) string {
-	switch state {
-	case connOK:
-		return "reachable"
-	case connDegraded:
-		return "degraded"
-	case connDown:
-		return "unreachable"
-	default:
-		return "unknown"
-	}
-}
-
 // sessionCacheKey returns the stable prompt_cache_key for this session
 // (its id), or "" when there is no session. Mirrors how the TUI/oneshot
 // runners seed opts.CacheKey so a mid-session model switch keeps the
@@ -1281,7 +1266,7 @@ func runProviderProbe(ctx context.Context, cfg adapter.Config, announce bool) te
 	}
 }
 
-func formatProviderProfile(profile adapter.ProviderProfile, baseURL string, connection connState) string {
+func formatProviderProfile(profile adapter.ProviderProfile, baseURL string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "provider: %s\n", renderProviderCommandValue(profile.Provider))
 	if profile.UsesResponsesAPI {
@@ -1304,9 +1289,6 @@ func formatProviderProfile(profile adapter.ProviderProfile, baseURL string, conn
 		renderBool(profile.SupportsXSearch),
 		renderBool(profile.SupportsCodeInterpreter),
 	)
-	b.WriteString("connection: ")
-	b.WriteString(renderConnectionSummary(connection))
-	b.WriteByte('\n')
 	if len(profile.Issues) == 0 && len(profile.Warnings) == 0 {
 		b.WriteString("checks: ok")
 	} else {
@@ -1322,7 +1304,7 @@ func formatProviderProfile(profile adapter.ProviderProfile, baseURL string, conn
 
 func formatProbeResult(result adapter.ProbeResult) string {
 	var b strings.Builder
-	b.WriteString(formatProviderProfile(result.Profile, result.BaseURL, probeConnectionState(result)))
+	b.WriteString(formatProviderProfile(result.Profile, result.BaseURL))
 	b.WriteByte('\n')
 	fmt.Fprintf(&b, "probe: endpoint=%s auth=%s model-visible=%s",
 		renderBool(result.EndpointReachable),
@@ -1339,22 +1321,6 @@ func formatProbeResult(result adapter.ProbeResult) string {
 		b.WriteString("\nresult: ok")
 	}
 	return strings.TrimRight(b.String(), "\n")
-}
-
-func probeConnectionState(result adapter.ProbeResult) connState {
-	switch {
-	case result.EndpointReachable && result.AuthOK && len(result.Issues) == 0:
-		return connOK
-	case result.EndpointReachable && result.AuthOK:
-		// Reachable and the key works, but something's off — typically the
-		// configured model wasn't found in the provider's model list
-		// (pagination, an Ollama :latest tag mismatch, or a stale
-		// allow-list). The connection itself is healthy, so that's
-		// degraded (amber), not down (red).
-		return connDegraded
-	default:
-		return connDown
-	}
 }
 
 func cmdClear(m Model, _ []string) (Model, tea.Cmd) {

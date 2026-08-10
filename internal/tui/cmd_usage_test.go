@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -445,5 +446,421 @@ func TestFormatInt_ThousandsSeparators(t *testing.T) {
 		if got := formatInt(in); got != want {
 			t.Errorf("formatInt(%d) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+// TestRenderToolStats_BreakdownAndErrors locks the per-tool-name table
+// shape: one row per tool, sorted by output tokens descending, with an
+// error count appended only for tools that had one.
+func TestRenderToolStats_BreakdownAndErrors(t *testing.T) {
+	s := &session.Session{
+		ToolStats: map[string]session.ToolStat{
+			"read_file": {Count: 40, OutputTokens: 2_000},
+			"bash":      {Count: 5, OutputTokens: 50, Errors: 2},
+			"grep":      {Count: 3, OutputTokens: 30},
+		},
+	}
+	got := renderToolStats(s)
+	for _, want := range []string{
+		"tools", "3 distinct",
+		"read_file", "40", "2,000",
+		"bash", "5", "2 errors",
+		"grep", "3",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q in:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "grep") && strings.Contains(got, "errors") {
+		lines := strings.Split(got, "\n")
+		for _, line := range lines {
+			if strings.Contains(line, "grep") && strings.Contains(line, "errors") {
+				t.Errorf("grep had no errors and should not show an errors clause: %q", line)
+			}
+		}
+	}
+}
+
+// TestRenderToolStats_FlagsOutlier: a tool whose output is far above the
+// table's mean is flagged, so a runaway call doesn't blend into the list.
+func TestRenderToolStats_FlagsOutlier(t *testing.T) {
+	s := &session.Session{
+		ToolStats: map[string]session.ToolStat{
+			"read_file": {Count: 1, OutputTokens: 100_000},
+			"bash":      {Count: 1, OutputTokens: 100},
+			"grep":      {Count: 1, OutputTokens: 100},
+		},
+	}
+	got := renderToolStats(s)
+	if !strings.Contains(got, "outlier") {
+		t.Errorf("expected the runaway tool flagged as an outlier in:\n%s", got)
+	}
+}
+
+// TestRenderToolStats_Empty confirms the section self-hides when the
+// session has no recorded tool calls, matching the other optional
+// /usage sections' self-hiding convention.
+func TestRenderToolStats_Empty(t *testing.T) {
+	if got := renderToolStats(&session.Session{}); got != "" {
+		t.Errorf("expected empty string with no tool stats; got %q", got)
+	}
+}
+
+// TestRenderToolStats_TieOrderIsDeterministic is the regression test for a
+// real flakiness bug: s.ToolStats is a map (Go randomizes range order) and
+// the sort had no tiebreaker, so two tools tied on OutputTokens could
+// render in a different relative order each time /usage opened. Runs the
+// render many times over the same tied input and requires identical output
+// every time.
+func TestRenderToolStats_TieOrderIsDeterministic(t *testing.T) {
+	s := &session.Session{
+		ToolStats: map[string]session.ToolStat{
+			"grep": {Count: 3, OutputTokens: 100},
+			"glob": {Count: 2, OutputTokens: 100}, // tied with grep
+			"read": {Count: 1, OutputTokens: 50},
+		},
+	}
+	first := renderToolStats(s)
+	for i := 0; i < 20; i++ {
+		if got := renderToolStats(s); got != first {
+			t.Fatalf("renderToolStats is nondeterministic on a tie:\nrun 0:\n%s\nrun %d:\n%s", first, i+1, got)
+		}
+	}
+	// The tiebreaker is alphabetical on tool name: "glob" before "grep".
+	if strings.Index(first, "glob") > strings.Index(first, "grep") {
+		t.Errorf("expected glob before grep (alphabetical tiebreak) in:\n%s", first)
+	}
+}
+
+// TestRenderSubagentDetail_ListsTasksAndFlagsOutlier locks the per-task
+// list shape and its outlier flagging, independent of the folded
+// per-model rollup renderSessionUsage already shows.
+func TestRenderSubagentDetail_ListsTasksAndFlagsOutlier(t *testing.T) {
+	s := &session.Session{
+		SubagentTasks: []subagents.TaskRecord{
+			{
+				ID: "abc12345", AgentType: "Explore", Status: subagents.TaskCompleted, ToolCalls: 5,
+				Started: time.Now().Add(-2 * time.Minute), Finished: time.Now(),
+				Usage: adapter.Usage{InputTokens: 100_000, OutputTokens: 5_000}, // outlier vs. the two below
+			},
+			{
+				ID: "def67890", AgentType: "Plan", Status: subagents.TaskCompleted, ToolCalls: 2,
+				Started: time.Now().Add(-1 * time.Minute), Finished: time.Now(),
+				Usage: adapter.Usage{InputTokens: 1_000, OutputTokens: 200},
+			},
+			{
+				ID: "ghi13579", AgentType: "Plan", Status: subagents.TaskCompleted, ToolCalls: 1,
+				Started: time.Now().Add(-1 * time.Minute), Finished: time.Now(),
+				Usage: adapter.Usage{InputTokens: 800, OutputTokens: 100},
+			},
+		},
+	}
+	got := renderSubagentDetail(s)
+	for _, want := range []string{"subagents", "3 tasks", "Explore", "Plan", "done", "outlier"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q in:\n%s", want, got)
+		}
+	}
+}
+
+// TestRenderSubagentDetail_Empty confirms the section self-hides for a
+// session with no subagent activity.
+func TestRenderSubagentDetail_Empty(t *testing.T) {
+	if got := renderSubagentDetail(&session.Session{}); got != "" {
+		t.Errorf("expected empty string with no subagent tasks; got %q", got)
+	}
+}
+
+// TestRenderSubagentDetail_ShowsCompactionCount: a subagent whose own
+// in-loop compaction fired shows "compacted Nx" on its row; a task that
+// never compacted shows no such clause.
+func TestRenderSubagentDetail_ShowsCompactionCount(t *testing.T) {
+	s := &session.Session{
+		SubagentTasks: []subagents.TaskRecord{
+			{
+				ID: "abc12345", AgentType: "Explore", Status: subagents.TaskCompleted,
+				Started: time.Now().Add(-time.Minute), Finished: time.Now(),
+				Usage: adapter.Usage{InputTokens: 1_000}, CompactionCount: 2,
+			},
+			{
+				ID: "def67890", AgentType: "Plan", Status: subagents.TaskCompleted,
+				Started: time.Now().Add(-time.Minute), Finished: time.Now(),
+				Usage: adapter.Usage{InputTokens: 800},
+			},
+		},
+	}
+	got := renderSubagentDetail(s)
+	if !strings.Contains(got, "compacted 2x") {
+		t.Errorf("expected the compacted task's row to show 'compacted 2x' in:\n%s", got)
+	}
+	for _, line := range strings.Split(got, "\n") {
+		if strings.Contains(line, "def67890") && strings.Contains(line, "compacted") {
+			t.Errorf("task with zero CompactionCount should not show a compacted clause: %q", line)
+		}
+	}
+}
+
+// TestCacheHitRate covers the derived cache-hit fraction: -1 (no row)
+// when there's no cache read activity, else CacheRead/(CacheRead+Input).
+func TestCacheHitRate(t *testing.T) {
+	if got := cacheHitRate(adapter.Usage{InputTokens: 1_000}); got != -1 {
+		t.Errorf("cacheHitRate with no cache reads = %v, want -1", got)
+	}
+	if got, want := cacheHitRate(adapter.Usage{InputTokens: 1_000, CacheReadTokens: 9_000}), 0.9; got != want {
+		t.Errorf("cacheHitRate = %v, want %v", got, want)
+	}
+}
+
+// TestFormatModelUsageBlock_CacheHitRateRow confirms the cache-hit row
+// appears only when the model actually has cache-read activity.
+func TestFormatModelUsageBlock_CacheHitRateRow(t *testing.T) {
+	withCache := formatModelUsageBlock("claude-sonnet-4-5", adapter.Usage{InputTokens: 1_000, CacheReadTokens: 9_000}, 20, true)
+	if !strings.Contains(withCache, "cache hit") || !strings.Contains(withCache, "90%") {
+		t.Errorf("expected a 90%% cache hit row in:\n%s", withCache)
+	}
+	noCache := formatModelUsageBlock("claude-sonnet-4-5", adapter.Usage{InputTokens: 1_000, OutputTokens: 200}, 20, true)
+	if strings.Contains(noCache, "cache hit") {
+		t.Errorf("cache hit row should be omitted without cache activity in:\n%s", noCache)
+	}
+}
+
+// TestFormatModelUsageBlock_CacheHitRateWidthNeverOverflows is the
+// regression test for a real column-alignment bug: with small token counts
+// but a high hit rate, "100%" (4 chars) is wider than every token count in
+// the block, and the shared column width must grow to fit it rather than
+// truncating/misaligning the row (and the divider line, which reuses the
+// same width).
+func TestFormatModelUsageBlock_CacheHitRateWidthNeverOverflows(t *testing.T) {
+	// InputTokens: 0 so the hit rate is exactly 100% — "100%" (4 chars) is
+	// wider than every token count here (all 3 digits or fewer), which is
+	// exactly the case that overflowed the shared column before the fix.
+	got := formatModelUsageBlock("m", adapter.Usage{OutputTokens: 20, CacheReadTokens: 80}, 5, true)
+	lines := strings.Split(strings.TrimRight(got, "\n"), "\n")
+	// runeLen, not len: the divider row is built from the multi-byte "─"
+	// box-drawing rune, so a raw byte-length comparison would report a
+	// false mismatch even when every row renders the same terminal width.
+	width := -1
+	for _, line := range lines {
+		if width == -1 {
+			width = runeLen(line)
+			continue
+		}
+		if runeLen(line) != width {
+			t.Errorf("row width inconsistent: %q is %d runes, want %d, in:\n%s", line, runeLen(line), width, got)
+		}
+	}
+	if !strings.Contains(got, "100%") {
+		t.Errorf("expected a 100%% cache hit row in:\n%s", got)
+	}
+}
+
+// TestRenderPeakTurn_PicksLargestTurn locks the "largest turn" callout:
+// it must pick the assistant turn with the highest reported usage, not
+// the last or the first.
+func TestRenderPeakTurn_PicksLargestTurn(t *testing.T) {
+	s := &session.Session{
+		Messages: []adapter.Message{
+			{Role: adapter.RoleUser, Content: "hi"},
+			{Role: adapter.RoleAssistant, Usage: &adapter.Usage{InputTokens: 100, OutputTokens: 50}},
+			{Role: adapter.RoleUser, Content: "more"},
+			{Role: adapter.RoleAssistant, Usage: &adapter.Usage{InputTokens: 8_000, OutputTokens: 200}}, // largest
+			{Role: adapter.RoleUser, Content: "one more"},
+			{Role: adapter.RoleAssistant, Usage: &adapter.Usage{InputTokens: 300, OutputTokens: 50}},
+		},
+	}
+	got := renderPeakTurn(s)
+	if !strings.Contains(got, "turn 2") {
+		t.Errorf("expected turn 2 (the largest) flagged; got %q", got)
+	}
+	if !strings.Contains(got, "8,200") {
+		t.Errorf("expected the largest turn's token total; got %q", got)
+	}
+}
+
+// TestRenderPeakTurn_NoUsageData confirms an empty result when no
+// assistant turn reported usage, rather than a misleading "turn 0".
+func TestRenderPeakTurn_NoUsageData(t *testing.T) {
+	s := &session.Session{Messages: []adapter.Message{{Role: adapter.RoleAssistant}}}
+	if got := renderPeakTurn(s); got != "" {
+		t.Errorf("expected empty string with no turn usage; got %q", got)
+	}
+}
+
+// TestRenderCompactionSummary locks the "compacted Nx / reclaimed ~X
+// tokens" line, summed across every recorded event.
+func TestRenderCompactionSummary(t *testing.T) {
+	s := &session.Session{
+		CompactionEvents: []session.CompactionRecord{
+			{Before: 100_000, After: 40_000, Auto: true},
+			{Before: 120_000, After: 50_000, Auto: false},
+		},
+	}
+	got := renderCompactionSummary(s)
+	for _, want := range []string{"compacted 2x", "reclaimed"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q in %q", want, got)
+		}
+	}
+}
+
+// TestRenderCompactionSummary_Empty confirms the line self-hides when
+// the session was never compacted.
+func TestRenderCompactionSummary_Empty(t *testing.T) {
+	if got := renderCompactionSummary(&session.Session{}); got != "" {
+		t.Errorf("expected empty string with no compaction events; got %q", got)
+	}
+}
+
+// TestRenderTodayRollup_PerSessionRowsSumToAggregate locks the expanded
+// daily rollup: it must still show the aggregate line, plus one row per
+// session with the current session marked.
+func TestRenderTodayRollup_PerSessionRowsSumToAggregate(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	s1, err := session.New("m", "/proj")
+	if err != nil {
+		t.Fatalf("New s1: %v", err)
+	}
+	s1.AddUsage("m", &adapter.Usage{InputTokens: 1_000_000})
+	if err := s1.Save(); err != nil {
+		t.Fatalf("Save s1: %v", err)
+	}
+
+	s2, err := session.New("m", "/proj")
+	if err != nil {
+		t.Fatalf("New s2: %v", err)
+	}
+	s2.AddUsage("m", &adapter.Usage{InputTokens: 200_000})
+	if err := s2.Save(); err != nil {
+		t.Fatalf("Save s2: %v", err)
+	}
+
+	got := renderTodayRollup(s2.ID)
+	for _, want := range []string{"today", "2 sessions", "(current)"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q in:\n%s", want, got)
+		}
+	}
+}
+
+// TestRenderTodayRollup_SkipsWhenOnlyCurrentSession confirms the rollup
+// self-hides when the current session is the only one today (the
+// per-session block above already covers it).
+func TestRenderTodayRollup_SkipsWhenOnlyCurrentSession(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	s, err := session.New("m", "/proj")
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	s.AddUsage("m", &adapter.Usage{InputTokens: 100})
+	if err := s.Save(); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	if got := renderTodayRollup(s.ID); got != "" {
+		t.Errorf("expected empty rollup with only one session today; got %q", got)
+	}
+}
+
+// TestLocalMidnight_UsesCallersLocation is the regression test for a real
+// timezone bug: time.Now().Truncate(24*time.Hour) rounds against the
+// UTC-referenced zero time, so a non-UTC caller would silently get the
+// most recent UTC midnight instead of their own — e.g. a UTC-5 user's 8pm
+// local session falls after UTC midnight and would be wrongly excluded
+// from "today". localMidnight must respect the input's own Location.
+func TestLocalMidnight_UsesCallersLocation(t *testing.T) {
+	utcMinus5 := time.FixedZone("UTC-5", -5*60*60)
+	// 8pm local on the 10th is 1am UTC on the 11th — a naive UTC-truncate
+	// would compute "today" as the 11th, excluding this moment's own day.
+	in := time.Date(2026, 3, 10, 20, 0, 0, 0, utcMinus5)
+
+	got := localMidnight(in)
+
+	if got.Year() != 2026 || got.Month() != 3 || got.Day() != 10 {
+		t.Errorf("localMidnight(%v) = %v, want midnight on the 10th (caller's own day)", in, got)
+	}
+	if got.Hour() != 0 || got.Minute() != 0 || got.Second() != 0 {
+		t.Errorf("localMidnight(%v) = %v, want exactly 00:00:00", in, got)
+	}
+	if got.Location() != utcMinus5 {
+		t.Errorf("localMidnight must preserve the input's Location; got %v", got.Location())
+	}
+}
+
+// TestWindowedUsagePanel_NoScrollWhenFits confirms short content passes
+// through unchanged — no scroll hint appended when everything already
+// fits on screen.
+func TestWindowedUsagePanel_NoScrollWhenFits(t *testing.T) {
+	m := newTestModel(t)
+	m.height = 40
+	m.usagePanel = "line1\nline2\nline3"
+	if got := m.windowedUsagePanel(); got != m.usagePanel {
+		t.Errorf("expected panel unchanged when it fits; got %q", got)
+	}
+}
+
+// TestWindowedUsagePanel_WindowsAndHints confirms content taller than the
+// terminal is sliced to the visible window and a scroll-position hint is
+// appended — the popup has no height clamp of its own (popup.go), so this
+// is what keeps a long panel from silently overflowing.
+func TestWindowedUsagePanel_WindowsAndHints(t *testing.T) {
+	m := newTestModel(t)
+	m.height = 10 // visible = 10 - 2 (border) - 1 (reserve) = 7
+	lines := make([]string, 20)
+	for i := range lines {
+		lines[i] = fmt.Sprintf("line%d", i)
+	}
+	m.usagePanel = strings.Join(lines, "\n")
+	m.usageScrollOffset = 0
+
+	got := m.windowedUsagePanel()
+	if !strings.Contains(got, "line0") {
+		t.Errorf("expected the first page to start at line0 in:\n%s", got)
+	}
+	if strings.Contains(got, "line7") {
+		t.Errorf("expected only 7 lines visible, but found line7 in:\n%s", got)
+	}
+	if !strings.Contains(got, "of 20 lines") {
+		t.Errorf("expected a scroll-position hint in:\n%s", got)
+	}
+}
+
+// TestUsageVisibleLines_NeverOverflowsAboveHardFloor is the regression test
+// for a real bug: the scroll-position hint line windowedUsagePanel appends
+// wasn't counted against usageVisibleLines' budget, so at small (but not
+// absurdly small) terminal heights the rendered box — content + hint + the
+// 2 popupBox border rows — exceeded the terminal. Checks every height down
+// to the true hard floor (below ~4 rows no bordered popup can render
+// anything, a limit shared by every popup in this package).
+func TestUsageVisibleLines_NeverOverflowsAboveHardFloor(t *testing.T) {
+	m := newTestModel(t)
+	lines := make([]string, 30)
+	for i := range lines {
+		lines[i] = "x"
+	}
+	m.usagePanel = strings.Join(lines, "\n")
+
+	for _, height := range []int{6, 8, 10, 24, 40} {
+		m.height = height
+		m.usageScrollOffset = 0
+		got := m.windowedUsagePanel()
+		rendered := len(strings.Split(got, "\n")) + 2 // + popupBox's 2 border rows
+		if rendered > height {
+			t.Errorf("height=%d: rendered box needs %d rows (content+hint+border), overflowing the terminal", height, rendered)
+		}
+	}
+}
+
+// TestUsageMaxScrollOffset locks the clamp so PgDn can't scroll past the
+// point where the last line is at the bottom of the visible window.
+func TestUsageMaxScrollOffset(t *testing.T) {
+	m := newTestModel(t)
+	m.height = 10 // visible = 7
+	lines := make([]string, 20)
+	for i := range lines {
+		lines[i] = "x"
+	}
+	m.usagePanel = strings.Join(lines, "\n")
+	if got, want := m.usageMaxScrollOffset(), 13; got != want { // 20 lines - 7 visible
+		t.Errorf("usageMaxScrollOffset() = %d, want %d", got, want)
 	}
 }

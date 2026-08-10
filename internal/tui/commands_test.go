@@ -179,10 +179,6 @@ func TestSlash_PermissionsOpensPickerWithBothRows(t *testing.T) {
 	if m.permissionsCursor != 0 {
 		t.Errorf("fresh picker should start with cursor on the shared row, got %d", m.permissionsCursor)
 	}
-	// The layout-order assertion below locates the status bar via its
-	// connection dot glyph, which is state-dependent (connUnknown's default
-	// glyph is "·", not "●") — pin a known state so the marker is stable.
-	m.connection = connOK
 	// Picker chrome lives in View() — the cmd no longer dumps to
 	// scrollback, so assert against the rendered view. Match the
 	// /model + /provider visual language: title, both row labels,
@@ -204,7 +200,7 @@ func TestSlash_PermissionsOpensPickerWithBothRows(t *testing.T) {
 	}
 	// Popups float over a persistent background (composePopup, popup.go)
 	// rather than replacing the footer, so the cmdline border and status
-	// bar dot stay visible in the same frame as the picker content —
+	// bar text stay visible in the same frame as the picker content —
 	// this pins that "float over, don't replace" invariant. Their
 	// relative text position no longer carries meaning once the popup is
 	// Z-composited on top (it can land at any row depending on centering
@@ -216,7 +212,7 @@ func TestSlash_PermissionsOpensPickerWithBothRows(t *testing.T) {
 	if !strings.Contains(plainView, "┌") {
 		t.Fatalf("view missing cmdline chrome (popup should float over it, not replace it):\n%s", plainView)
 	}
-	if !strings.Contains(plainView, "●") {
+	if !strings.Contains(plainView, "test-model") || !strings.Contains(plainView, "ctx ") {
 		t.Fatalf("view missing status bar (popup should float over it, not replace it):\n%s", plainView)
 	}
 	// Picker must not regress into a state-dump (no rule listing).
@@ -759,8 +755,8 @@ func TestSlash_ProviderAddOpenAIAuthStartsInlineLogin(t *testing.T) {
 // diagnostics dump moved to /doctor (and the underlying
 // formatProviderProfile is still callable). Verify the picker
 // opens and the diagnostics-builder still produces the expected
-// fields when called directly — that's what matters for the
-// connection / warning surface.
+// fields when called directly — that's what matters for provider
+// warning diagnostics.
 func TestSlash_ProviderOpensSubMenuPicker(t *testing.T) {
 	m := newTestModel(t)
 	m, _ = typeAndEnter(t, m, "/provider")
@@ -785,12 +781,11 @@ func TestFormatProviderProfile_RendersDiagnostics(t *testing.T) {
 		EnabledBuiltinTools:     []adapter.BuiltinToolKind{adapter.BuiltinToolWebSearch},
 		Warnings:                []string{"API key is empty for a remote provider"},
 	}
-	got := formatProviderProfile(profile, "https://api.openai.com/v1", connDown)
+	got := formatProviderProfile(profile, "https://api.openai.com/v1")
 	for _, want := range []string{
 		"provider: openai",
 		"api-style: responses",
 		"enabled tools: web_search",
-		"connection: unreachable",
 		"warning: API key is empty for a remote provider",
 	} {
 		if !strings.Contains(got, want) {

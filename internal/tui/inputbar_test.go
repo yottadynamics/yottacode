@@ -147,8 +147,8 @@ func TestKeyHints_IdleAfterFirstMessage(t *testing.T) {
 	m := newTestModel(t)
 	m.firstMessageSent = true
 	plain := stripANSI(m.renderKeyHintRow())
-	if !strings.HasPrefix(plain, "Shift+Tab: mode") {
-		t.Fatalf("idle key hints should lead with mode switching: %q", plain)
+	if !strings.HasPrefix(plain, strings.Repeat(" ", footerTextIndent(m.width))+"Shift+Tab: mode") {
+		t.Fatalf("idle key hints should lead with mode switching aligned to cmdline content: %q", plain)
 	}
 	for _, want := range []string{"Enter: send", "Ctrl+J: new line", "/: commands", "@: files"} {
 		if !strings.Contains(plain, want) {
@@ -204,8 +204,8 @@ func TestInput_ChevronStaysVisibleWithContent(t *testing.T) {
 }
 
 // renderModelName paints the model in Content (off-white), not
-// Accent. Earlier versions painted it cyan + bold which competed with
-// the connection dot for "active state" attention.
+// Accent. Earlier versions painted it cyan + bold, which made the model
+// label read like an active warning instead of stable identity.
 func TestRenderModelName_NotAccentColored(t *testing.T) {
 	got := renderModelName("test-model")
 	if !strings.Contains(stripANSI(got), "test-model") {
@@ -248,14 +248,53 @@ func TestStatusBar_NarrowTerminalKeepsModelAndCtx(t *testing.T) {
 // When the session runs inside a yottacode worktree, the status bar
 // shows "worktree: <name>" so users see at a glance where edits land.
 // Empty worktree on the main checkout renders no chip.
-func TestStatusBar_AutoModeNextToModel(t *testing.T) {
+func TestStatusBar_AutoModeRendersAsSeparateOrderedSegment(t *testing.T) {
 	m, _ := newPlanModeTestModel(t)
 	m, _ = applyMsg(m, tea.WindowSizeMsg{Width: 120, Height: 24})
 	m.modelName = "gpt-5.4"
+	m.provider = "openai"
 	m.cfg.AutoMode.Active.Store(true)
 	plain := stripANSI(m.renderStatus())
-	if !strings.Contains(plain, "gpt-5.4 auto") {
-		t.Fatalf("status bar should render auto next to model: %q", plain)
+	if strings.Contains(plain, "gpt-5.4 auto") {
+		t.Fatalf("status bar should not append auto to the model name anymore: %q", plain)
+	}
+	assertOrderedSubstrings(t, plain, []string{"gpt-5.4", "openai", "auto", "ctx ", "tools idle"})
+}
+
+func TestStatusBar_NoLeadingStatusGlyph(t *testing.T) {
+	m := newTestModel(t)
+	m, _ = applyMsg(m, tea.WindowSizeMsg{Width: 120, Height: 24})
+	plain := stripANSI(m.renderStatus())
+	if trimmed := strings.TrimLeft(plain, " "); strings.HasPrefix(trimmed, "●") || strings.HasPrefix(trimmed, "◐") || strings.HasPrefix(trimmed, "○") || strings.HasPrefix(trimmed, "·") {
+		t.Fatalf("status bar should lead with model text, not a connection glyph: %q", plain)
+	}
+}
+
+func TestFooterRowsAlignWithCmdlineContent(t *testing.T) {
+	m := newTestModel(t)
+	m.firstMessageSent = true
+	m.provider = "openai"
+	m, _ = applyMsg(m, tea.WindowSizeMsg{Width: 120, Height: 24})
+	status := stripANSI(m.renderStatus())
+	hints := stripANSI(m.renderKeyHintRow())
+	wantPrefix := strings.Repeat(" ", footerTextIndent(m.width))
+	if !strings.HasPrefix(status, wantPrefix+"test-model") {
+		t.Fatalf("status row should align with cmdline content column: %q", status)
+	}
+	if !strings.HasPrefix(hints, wantPrefix+"Shift+Tab") {
+		t.Fatalf("key hint row should align with cmdline content column: %q", hints)
+	}
+}
+
+func assertOrderedSubstrings(t *testing.T, s string, wants []string) {
+	t.Helper()
+	pos := -1
+	for _, want := range wants {
+		next := strings.Index(s[pos+1:], want)
+		if next < 0 {
+			t.Fatalf("missing %q after index %d in %q", want, pos, s)
+		}
+		pos += next + 1
 	}
 }
 
@@ -281,6 +320,17 @@ func TestStatusBar_RendersLocationChip(t *testing.T) {
 	plain := stripANSI(m.renderStatus())
 	if !strings.Contains(plain, "foo/bar (main)") {
 		t.Errorf("status bar should include the location chip 'foo/bar (main)': %q", plain)
+	}
+}
+
+func TestStatusBar_RendersGitAheadBehindArrows(t *testing.T) {
+	m := newTestModel(t)
+	m.gitAhead = 3
+	m.gitBehind = 1
+	m, _ = applyMsg(m, tea.WindowSizeMsg{Width: 120, Height: 24})
+	plain := stripANSI(m.renderStatus())
+	if !strings.Contains(plain, "↑3") || !strings.Contains(plain, "↓1") {
+		t.Fatalf("status bar should include git divergence arrows: %q", plain)
 	}
 }
 
@@ -320,6 +370,34 @@ func TestStatusBar_BranchRefreshesAfterGitSwitchWithGlobalFlags(t *testing.T) {
 	m = updated.(Model)
 	if m.branch != "feature/live-chip" {
 		t.Fatalf("branch = %q, want feature/live-chip", m.branch)
+	}
+}
+
+func TestGitAheadBehindReportsLocalDivergence(t *testing.T) {
+	tmp := statusBarGitRepo(t)
+	for _, args := range [][]string{
+		{"switch", "main"},
+		{"switch", "-c", "feature/ahead"},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = tmp
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(tmp, "ahead.txt"), []byte("ahead\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"add", "ahead.txt"}, {"commit", "-q", "-m", "ahead"}} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = tmp
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	got := gitAheadBehind(context.Background(), tmp)
+	if got.ahead != 1 || got.behind != 0 {
+		t.Fatalf("gitAheadBehind = ahead %d behind %d, want ahead 1 behind 0", got.ahead, got.behind)
 	}
 }
 

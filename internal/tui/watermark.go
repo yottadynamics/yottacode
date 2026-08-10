@@ -3,7 +3,6 @@ package tui
 import (
 	"fmt"
 	"math"
-	"strings"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
@@ -268,20 +267,13 @@ func (m Model) dominantContextBucket() (string, int) {
 	return name, tokens
 }
 
-// ctxBarWidth is the cell count of the visual fill bar in the ctx
-// segment. Six is wide enough to read at a glance and narrow enough
-// to fit on terminals as small as ~50 columns when paired with the
-// model + provider tags.
-const ctxBarWidth = 6
-
-// renderContextBar formats the `ctx ████░░ 4.3K / 128K (28%)` status
-// segment. The bar is six cells of `█`/`░` — a full-block + light-
-// shade pair renders reliably across monospace fonts. Earlier
-// versions used `▓` which was inconsistent.
+// renderContextBar formats the compact `ctx 4.3K / 128K (28%)` status
+// segment. The old six-cell graph was redundant with the percentage and used
+// scarce footer space, so the status dock now keeps only the numbers.
 //
 // Returns "" when the model's context window is unknown — the
 // percentage would be misleading without a denominator. Threshold
-// tiers paint the BAR (and the percentage) with: Content under
+// tiers paint the numeric usage with: Content under
 // warn_threshold, Warning amber once it crosses, Error red once it
 // crosses auto_threshold. The `ctx` label renders in Content too so
 // the whole status bar reads bright. Threshold knobs come from
@@ -309,20 +301,10 @@ func (m Model) renderContextBar() string {
 		color = colorWarning
 	}
 
-	filled := int(math.Round(pctFloat * float64(ctxBarWidth)))
-	if filled < 0 {
-		filled = 0
-	}
-	if filled > ctxBarWidth {
-		filled = ctxBarWidth
-	}
-	bar := strings.Repeat("█", filled) + strings.Repeat("░", ctxBarWidth-filled)
-
 	label := lipgloss.NewStyle().Foreground(colorContent).Render("ctx ")
-	graph := lipgloss.NewStyle().Foreground(color).Render(
-		bar + " " + formatTokens(m.contextTokens) + " / " + formatTokens(window) +
-			fmt.Sprintf(" (%d%%)", pct))
-	return label + graph
+	usage := lipgloss.NewStyle().Foreground(color).Render(
+		formatTokens(m.contextTokens) + " / " + formatTokens(window) + fmt.Sprintf(" (%d%%)", pct))
+	return label + usage
 }
 
 // formatTokens shrinks a raw token count to a status-bar-friendly

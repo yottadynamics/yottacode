@@ -14,7 +14,18 @@ import (
 	"github.com/yottadynamics/yottacode/internal/adapter"
 	"github.com/yottadynamics/yottacode/internal/cost"
 	"github.com/yottadynamics/yottacode/internal/session"
+	"github.com/yottadynamics/yottacode/internal/subagents"
 )
+
+// outlierMultiplier flags a row whose value exceeds this many times the
+// mean of its own table — the simple anomaly signal the tools, subagents,
+// and today's-sessions sections use to make a runaway call, task, or
+// session stand out instead of blending into an otherwise-plausible table.
+const outlierMultiplier = 2.5
+
+func flagOutlier(value, mean float64) bool {
+	return mean > 0 && value > mean*outlierMultiplier
+}
 
 // cmdUsage renders per-session token usage in a Claude-style per-model
 // breakdown, plus live rate limits and a provider-aware account block.
@@ -51,23 +62,92 @@ func cmdUsage(m Model, _ []string) (Model, tea.Cmd) {
 	}
 	m.usagePanel = renderUsagePanel(m)
 	m.usageOpen = true
+	m.usageScrollOffset = 0
 	return m, nil
+}
+
+// usageScrollReserve reserves one row for the scroll-position hint line
+// windowedUsagePanel appends whenever it truncates — without this the hint
+// itself would push the rendered box one row past what usageVisibleLines
+// promised.
+const usageScrollReserve = 1
+
+// usageVisibleLines returns how many lines of usagePanel fit in the popup
+// at the current terminal height. popupBox adds exactly 2 border rows
+// (RoundedBorder, no vertical padding — popup.go:42-49) and popupOrigin
+// clamps the box to the terminal rather than growing past it
+// (popup.go:87-90), so content taller than this would otherwise get
+// silently clipped instead of scrolling. Floors at 1 rather than a larger
+// arbitrary minimum: below roughly 4 terminal rows there's no room for a
+// bordered popup with any content regardless of this floor (2 border rows
+// + the hint alone already exceed that), a limit inherent to popupBox
+// itself and shared by every popup in this package, not something this
+// function can route around.
+func (m Model) usageVisibleLines() int {
+	n := m.height - 2 - usageScrollReserve
+	if n < 1 {
+		n = 1
+	}
+	return n
+}
+
+// usageMaxScrollOffset is the highest offset that still shows a full final
+// page — scrolling can't go further than "the last line is at the bottom."
+func (m Model) usageMaxScrollOffset() int {
+	lines := strings.Count(m.usagePanel, "\n") + 1
+	visible := m.usageVisibleLines()
+	if lines <= visible {
+		return 0
+	}
+	return lines - visible
+}
+
+// windowedUsagePanel returns the visible slice of usagePanel for the
+// current usageScrollOffset, with a scroll-position hint appended when the
+// content doesn't fit on one screen. Needed because popupBox has no height
+// clamp of its own — without this, the tool/subagent/session detail added
+// to /usage would overflow the terminal instead of scrolling.
+func (m Model) windowedUsagePanel() string {
+	if m.usagePanel == "" {
+		return m.usagePanel
+	}
+	allLines := strings.Split(m.usagePanel, "\n")
+	total := len(allLines)
+	visible := m.usageVisibleLines()
+	if total <= visible {
+		return m.usagePanel
+	}
+	offset := min(max(m.usageScrollOffset, 0), total-visible)
+	end := min(total, offset+visible)
+	shown := strings.Join(allLines[offset:end], "\n")
+	hint := fmt.Sprintf("── %d-%d of %d lines · ↑/↓ · PgUp/PgDn to scroll ──", offset+1, end, total)
+	return shown + "\n" + styleHint.Render(hint)
 }
 
 func renderUsagePanel(m Model) string {
 	var b strings.Builder
-	b.WriteString(renderMenuHeader("Usage", "Session tokens, rate limits, daily rollup, and account links.", m.popupWidth()))
+	b.WriteString(renderMenuHeader("Usage", "Tokens by model, tool, and subagent, plus cache, compaction, daily rollup, rate limits, and account links.", m.popupWidth()))
 	b.WriteString("\n")
 
 	b.WriteString(renderSessionUsage(m.sess))
 	b.WriteString("\n\n")
+
+	if tools := renderToolStats(m.sess); tools != "" {
+		b.WriteString(tools)
+		b.WriteString("\n\n")
+	}
+
+	if agents := renderSubagentDetail(m.sess); agents != "" {
+		b.WriteString(agents)
+		b.WriteString("\n\n")
+	}
 
 	if rl := renderRateLimits(m.providerProfile.Provider); rl != "" {
 		b.WriteString(rl)
 		b.WriteString("\n\n")
 	}
 
-	if rollup := renderTodayRollup(); rollup != "" {
+	if rollup := renderTodayRollup(m.sess.ID); rollup != "" {
 		b.WriteString(rollup)
 		b.WriteString("\n\n")
 	}
@@ -105,6 +185,14 @@ func renderSessionUsage(s *session.Session) string {
 	if metrics := renderSessionMetrics(s, len(models)); metrics != "" {
 		b.WriteByte('\n')
 		b.WriteString(metrics)
+		b.WriteByte('\n')
+	}
+	if peak := renderPeakTurn(s); peak != "" {
+		b.WriteString(peak)
+		b.WriteByte('\n')
+	}
+	if comp := renderCompactionSummary(s); comp != "" {
+		b.WriteString(comp)
 		b.WriteByte('\n')
 	}
 	b.WriteByte('\n')
@@ -228,6 +316,17 @@ func formatModelUsageBlock(model string, u adapter.Usage, modelWidth int, showTo
 	metricWidth := 11
 	valueWidth := maxUsageValueWidth(u)
 
+	rate := cacheHitRate(u)
+	var rateStr string
+	if rate >= 0 {
+		rateStr = fmt.Sprintf("%.0f%%", rate*100)
+		// The percentage string ("100%") can be wider than every token
+		// count in a session with small totals but a high hit rate — fold
+		// it into the shared column width so the row (and the divider
+		// line below, which reuses this same width) stays aligned.
+		valueWidth = max(valueWidth, len(rateStr))
+	}
+
 	rows := []usageMetricRow{
 		{"input", u.InputTokens},
 		{"output", u.OutputTokens},
@@ -249,6 +348,9 @@ func formatModelUsageBlock(model string, u adapter.Usage, modelWidth int, showTo
 			label = model
 		}
 		fmt.Fprintf(&b, "%-*s  %-*s %*s\n", labelWidth, label, metricWidth, row.label, valueWidth, formatInt(row.value))
+	}
+	if rate >= 0 {
+		fmt.Fprintf(&b, "%-*s  %-*s %*s\n", labelWidth, "", metricWidth, "cache hit", valueWidth, rateStr)
 	}
 	if showTotal {
 		fmt.Fprintf(&b, "%-*s  %s\n", labelWidth, "", strings.Repeat("─", metricWidth+1+valueWidth))
@@ -276,6 +378,185 @@ func usageHasDetailRows(u adapter.Usage) bool {
 	return u.CacheReadTokens > 0 || u.CacheCreationTokens > 0 || u.ReasoningTokens > 0
 }
 
+// cacheHitRate returns the fraction of cache-eligible input tokens actually
+// served from cache (CacheReadTokens / (CacheReadTokens + InputTokens)), or
+// -1 when there's no cache activity to report. A broken cache prefix (a
+// prompt-structure change that stops hitting the provider's cache) shows up
+// here as a hit rate falling toward 0 instead of silently vanishing into
+// the input-tokens total.
+func cacheHitRate(u adapter.Usage) float64 {
+	if u.CacheReadTokens <= 0 {
+		return -1
+	}
+	total := u.CacheReadTokens + u.InputTokens
+	if total <= 0 {
+		return -1
+	}
+	return float64(u.CacheReadTokens) / float64(total)
+}
+
+// renderPeakTurn finds the assistant turn with the largest token total and
+// surfaces it as a single line, so one outlier turn (a huge file dumped
+// into context, a runaway subagent report folded back in) is visible
+// instead of averaged away inside the session total.
+func renderPeakTurn(s *session.Session) string {
+	if s == nil {
+		return ""
+	}
+	turn, bestTurn := 0, 0
+	var bestTokens int64
+	for _, msg := range s.Messages {
+		if msg.Role != adapter.RoleAssistant {
+			continue
+		}
+		turn++
+		if msg.Usage == nil {
+			continue
+		}
+		if tok := totalTokensFor(*msg.Usage); tok > bestTokens {
+			bestTokens, bestTurn = tok, turn
+		}
+	}
+	if bestTurn == 0 {
+		return ""
+	}
+	return fmt.Sprintf("%-13sturn %d · %s tokens", "largest turn", bestTurn, formatInt(bestTokens))
+}
+
+// renderCompactionSummary surfaces how many times this session's own
+// history was compacted (auto or manual /summarize) and how many tokens
+// that reclaimed — spend from re-summarization that would otherwise be
+// invisible, folded silently into ordinary turn usage.
+func renderCompactionSummary(s *session.Session) string {
+	if s == nil || len(s.CompactionEvents) == 0 {
+		return ""
+	}
+	var reclaimed int
+	for _, e := range s.CompactionEvents {
+		if d := e.Before - e.After; d > 0 {
+			reclaimed += d
+		}
+	}
+	return fmt.Sprintf("%-13scompacted %dx · reclaimed ~%s tokens", "compaction", len(s.CompactionEvents), formatTokens(reclaimed))
+}
+
+// renderToolStats renders the main-thread per-tool-call breakdown: how many
+// times each tool ran, its approximate combined output size, and how many
+// calls errored. Main-thread only — subagent tool calls stay a single count
+// on subagents.Task.ToolCalls, not broken out by name (see the ToolStats
+// doc comment on session.Session). Rows sort by output tokens descending —
+// the tool most likely to be inflating input tokens on every later turn —
+// and a row whose output exceeds outlierMultiplier times the table's mean
+// is flagged so one runaway call stands out.
+func renderToolStats(s *session.Session) string {
+	if s == nil || len(s.ToolStats) == 0 {
+		return ""
+	}
+	type toolRow struct {
+		name string
+		session.ToolStat
+	}
+	rows := make([]toolRow, 0, len(s.ToolStats))
+	var totalTokens int64
+	for name, stat := range s.ToolStats {
+		rows = append(rows, toolRow{name, stat})
+		totalTokens += stat.OutputTokens
+	}
+	// name is the tiebreaker (map keys are unique) so two tools tied on
+	// OutputTokens render in the same order every time /usage opens —
+	// ranging over s.ToolStats above visits them in Go's randomized map
+	// order, and sort.Slice isn't stable, so without it a tie's relative
+	// order would vary run to run.
+	sort.Slice(rows, func(i, j int) bool {
+		if rows[i].OutputTokens != rows[j].OutputTokens {
+			return rows[i].OutputTokens > rows[j].OutputTokens
+		}
+		return rows[i].name < rows[j].name
+	})
+	mean := float64(totalTokens) / float64(len(rows))
+
+	nameWidth, valueWidth := 0, 0
+	for _, r := range rows {
+		nameWidth = max(nameWidth, len(r.name))
+		valueWidth = max(valueWidth, len(formatInt(r.OutputTokens)))
+	}
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "%-13s%d distinct\n", "tools", len(rows))
+	for _, r := range rows {
+		line := fmt.Sprintf("%-13s%-*s  %4d calls  %*s tokens", "", nameWidth, r.name, r.Count, valueWidth, formatInt(r.OutputTokens))
+		if r.Errors > 0 {
+			line += fmt.Sprintf("  %d errors", r.Errors)
+		}
+		if flagOutlier(float64(r.OutputTokens), mean) {
+			line = styleNoticeWarn.Render(line + "  ⚠ outlier")
+		}
+		b.WriteString(line)
+		b.WriteByte('\n')
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+// renderSubagentDetail lists each subagent task this session ran, one row
+// per task: agent type, duration, tokens, tool-call count, and status.
+// Complements the per-model subagent rollup already folded into the
+// session block above by making individual runs visible — a single
+// bloated subagent otherwise hides inside the combined model total. Flags
+// a row whose token spend exceeds outlierMultiplier times the list's mean.
+func renderSubagentDetail(s *session.Session) string {
+	if s == nil || len(s.SubagentTasks) == 0 {
+		return ""
+	}
+	tasks := append([]subagents.TaskRecord(nil), s.SubagentTasks...)
+	sort.Slice(tasks, func(i, j int) bool {
+		return taskTotalTokens(tasks[i]) > taskTotalTokens(tasks[j])
+	})
+	var totalTokens int64
+	agentWidth, valueWidth := 0, 0
+	for _, t := range tasks {
+		totalTokens += taskTotalTokens(t)
+		agentWidth = max(agentWidth, len(t.AgentType))
+		valueWidth = max(valueWidth, len(formatInt(taskTotalTokens(t))))
+	}
+	mean := float64(totalTokens) / float64(len(tasks))
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "%-13s%d %s\n", "subagents", len(tasks), usagePluralize("task", len(tasks)))
+	for _, t := range tasks {
+		dur := "running"
+		if !t.Finished.IsZero() {
+			dur = formatDuration(t.Finished.Sub(t.Started))
+		}
+		tok := taskTotalTokens(t)
+		idLabel := t.ID
+		if len(idLabel) > 8 {
+			idLabel = idLabel[:8]
+		}
+		line := fmt.Sprintf("%-13s%-8s  %-*s  %8s  %*s tokens  %2d tools  %s", "", idLabel, agentWidth, t.AgentType, dur, valueWidth, formatInt(tok), t.ToolCalls, t.Status.String())
+		if t.CompactionCount > 0 {
+			line += fmt.Sprintf("  compacted %dx", t.CompactionCount)
+		}
+		if flagOutlier(float64(tok), mean) {
+			line = styleNoticeWarn.Render(line + "  ⚠ outlier")
+		}
+		b.WriteString(line)
+		b.WriteByte('\n')
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+// taskTotalTokens returns the exact provider-reported total for a
+// persisted subagent task record, falling back to the ~4-char/token
+// estimate — the same basis subagents.Task.UsageTokens uses for the live
+// Task, duplicated here because TaskRecord (the persisted form) doesn't
+// carry that method.
+func taskTotalTokens(t subagents.TaskRecord) int64 {
+	if !t.Usage.IsZero() {
+		return t.Usage.InputTokens + t.Usage.OutputTokens + t.Usage.CacheReadTokens + t.Usage.CacheCreationTokens
+	}
+	return int64(t.TokensUsed)
+}
+
 // perModelEntry is one row of the /usage per-model breakdown (highest
 // spender first — matching Claude Code's /usage). Built by combinedModelUsage.
 type perModelEntry struct {
@@ -283,26 +564,58 @@ type perModelEntry struct {
 	Usage adapter.Usage
 }
 
+// localMidnight returns 00:00 in t's own location. Deliberately NOT
+// t.Truncate(24*time.Hour): Truncate rounds against the UTC-referenced zero
+// time, so for any non-UTC caller it silently snaps to the most recent UTC
+// midnight rather than the caller's own — a bug renderTodayRollup used to
+// have, made consequential once it started listing individual, outlier-
+// ranked sessions instead of only a hidden aggregate.
+func localMidnight(t time.Time) time.Time {
+	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, t.Location())
+}
+
 // renderTodayRollup scans every session created since 00:00 local and
-// emits a one-block token summary. Skips entirely when only the
+// emits a token summary followed by one row per session, largest first —
+// so a token spike on a given day is traceable to a specific session
+// instead of only visible as a daily total. Skips entirely when only the
 // current session is in scope (the per-session block above already
-// covers it).
-func renderTodayRollup() string {
-	startOfDay := time.Now().Truncate(24 * time.Hour)
-	summaries, err := session.UsageSince(startOfDay)
+// covers it). currentID marks this session's own row in the list.
+func renderTodayRollup(currentID string) string {
+	summaries, err := session.UsageSince(localMidnight(time.Now()))
 	if err != nil || len(summaries) <= 1 {
 		return ""
 	}
+	type dayRow struct {
+		session.SessionUsageSummary
+		tokens int64
+	}
+	rows := make([]dayRow, 0, len(summaries))
 	var totalTokens int64
 	for _, s := range summaries {
 		// Main thread + this session's subagent spend, so the daily tally
 		// matches the per-session block's combined total.
-		totalTokens += totalTokensFor(s.TotalUsage) + totalTokensFor(s.SubagentUsage().Total)
+		tok := totalTokensFor(s.TotalUsage) + totalTokensFor(s.SubagentUsage().Total)
+		rows = append(rows, dayRow{s, tok})
+		totalTokens += tok
 	}
+	sort.Slice(rows, func(i, j int) bool { return rows[i].tokens > rows[j].tokens })
+	mean := float64(totalTokens) / float64(len(rows))
 
 	var b strings.Builder
-	fmt.Fprintf(&b, "%-13s%d sessions · %s tokens", "today", len(summaries), formatTokens(int(totalTokens)))
-	return b.String()
+	fmt.Fprintf(&b, "%-13s%d sessions · %s tokens\n", "today", len(rows), formatTokens(int(totalTokens)))
+	for _, r := range rows {
+		label := formatSessionUsageTime(r.Created)
+		if r.ID == currentID {
+			label += " (current)"
+		}
+		line := fmt.Sprintf("%-13s%-24s%s tokens", "", label, formatTokens(int(r.tokens)))
+		if flagOutlier(float64(r.tokens), mean) {
+			line = styleNoticeWarn.Render(line + "  ⚠ outlier")
+		}
+		b.WriteString(line)
+		b.WriteByte('\n')
+	}
+	return strings.TrimRight(b.String(), "\n")
 }
 
 // renderRateLimits surfaces the live per-minute quota headroom parsed
