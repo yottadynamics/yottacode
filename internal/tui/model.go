@@ -2839,13 +2839,15 @@ func (m Model) skillsBusy() bool {
 func (m Model) View() tea.View {
 	v := tea.NewView(m.viewString())
 	v.AltScreen = true
-	// Mouse is enabled only while an overlay owns clickable UI. Enabling
-	// mouse reporting globally makes terminals send click-drag/right-click
-	// events to the app instead of their native selection and paste paths,
-	// which breaks the day-to-day copy/paste workflow in the prompt and
-	// transcript. Popups still opt in so their × close buttons and row
-	// clicks work; the base chat screen stays terminal-native.
-	if m.popupOpen() {
+	// Mouse is enabled once the conversation transcript is visible, or while
+	// an overlay owns clickable UI. In alt-screen mode the terminal's native
+	// wheel target is the cmdline/input history, not yottacode's owned
+	// transcript viewport, so leaving mouse reporting off during a session
+	// makes the scroller move the wrong thing. Keep it off only on the
+	// launch hero so first-use copy/paste stays terminal-native before any
+	// session history exists; after that, wheel events belong to the app's
+	// transcript scroller and popups keep their ×/row click affordances.
+	if m.enteredConversation || m.popupOpen() {
 		v.MouseMode = tea.MouseModeCellMotion
 	}
 	if m.originalTerminalBackground != nil {

@@ -8,14 +8,22 @@ import (
 	tea "charm.land/bubbletea/v2"
 )
 
-func TestView_LeavesMouseNativeOnBaseChatScreen(t *testing.T) {
+func TestView_LeavesMouseNativeBeforeConversationStarts(t *testing.T) {
 	m := newTestModel(t)
 	if got := m.View().MouseMode; got != tea.MouseModeNone {
 		t.Errorf("View().MouseMode = %v, want MouseModeNone", got)
 	}
 }
 
-func TestView_EnablesMouseOnlyForPopups(t *testing.T) {
+func TestView_EnablesMouseForScrollableConversation(t *testing.T) {
+	m := newTestModel(t)
+	m.enteredConversation = true
+	if got := m.View().MouseMode; got != tea.MouseModeCellMotion {
+		t.Errorf("View().MouseMode = %v, want MouseModeCellMotion", got)
+	}
+}
+
+func TestView_EnablesMouseForPopups(t *testing.T) {
 	m := newTestModel(t)
 	m.cheatsheetOpen = true
 	if got := m.View().MouseMode; got != tea.MouseModeCellMotion {
@@ -30,7 +38,7 @@ func newSelectableTranscriptModel(t *testing.T) Model {
 	t.Helper()
 	m := newTestModel(t)
 	m.enteredConversation = true
-	for i := 0; i < 50; i++ {
+	for i := range 50 {
 		m.appendLine(fmt.Sprintf("history line %d", i))
 	}
 	m, _ = applyMsg(m, tea.WindowSizeMsg{Width: 80, Height: 24})
@@ -43,15 +51,37 @@ func TestMouseWheel_ScrollsTranscript(t *testing.T) {
 		t.Fatalf("test setup: expected the viewport to start at the bottom")
 	}
 
-	m, _ = applyMsg(m, tea.MouseWheelMsg{Button: tea.MouseWheelUp})
+	m, _ = applyMsg(m, tea.MouseWheelMsg{X: 2, Y: 0, Button: tea.MouseWheelUp})
 	if m.transcriptViewport.AtBottom() {
-		t.Error("scrolling the wheel up should move the transcript viewport away from the bottom")
+		t.Error("scrolling the wheel up over the transcript should move the transcript viewport away from the bottom")
 	}
 
-	m, _ = applyMsg(m, tea.MouseWheelMsg{Button: tea.MouseWheelDown})
-	m, _ = applyMsg(m, tea.MouseWheelMsg{Button: tea.MouseWheelDown})
+	m, _ = applyMsg(m, tea.MouseWheelMsg{X: 2, Y: 0, Button: tea.MouseWheelDown})
+	m, _ = applyMsg(m, tea.MouseWheelMsg{X: 2, Y: 0, Button: tea.MouseWheelDown})
 	if !m.transcriptViewport.AtBottom() {
-		t.Error("scrolling the wheel back down should return the transcript viewport to the bottom")
+		t.Error("scrolling the wheel back down over the transcript should return the transcript viewport to the bottom")
+	}
+}
+
+func TestMouseWheel_OverCmdlineBrowsesInputHistory(t *testing.T) {
+	m := newSelectableTranscriptModel(t)
+	m.inputHistory = []string{"first command", "second command"}
+	if !m.transcriptViewport.AtBottom() {
+		t.Fatalf("test setup: expected the viewport to start at the bottom")
+	}
+
+	_, y := m.inputFrameOrigin()
+	m, _ = applyMsg(m, tea.MouseWheelMsg{X: 4, Y: y + 1, Button: tea.MouseWheelUp})
+	if got := m.textInput.Value(); got != "second command" {
+		t.Fatalf("wheel-up over cmdline should browse input history, got %q", got)
+	}
+	if !m.transcriptViewport.AtBottom() {
+		t.Error("wheel-up over cmdline should not scroll the transcript")
+	}
+
+	m, _ = applyMsg(m, tea.MouseWheelMsg{X: 4, Y: y + 1, Button: tea.MouseWheelDown})
+	if got := m.textInput.Value(); got != "" {
+		t.Errorf("wheel-down over cmdline should return to the empty draft, got %q", got)
 	}
 }
 

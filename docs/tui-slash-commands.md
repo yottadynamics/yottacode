@@ -573,4 +573,4 @@ Examples:
 - `PgUp` / `PgDn` scrolls the conversation transcript
 - `Ctrl+Home` / `Ctrl+End` jumps to the top / bottom of the transcript
 
-The base chat screen intentionally leaves mouse reporting off so your terminal owns normal click-drag selection, right-click/context-menu paste, and screenshot/text paste into the cmdline prompt. yottacode only enables mouse reporting while a popup/modal is open, where row clicks and the `×` close affordance need app-owned mouse events.
+The launch screen intentionally leaves mouse reporting off so your terminal owns normal click-drag selection, right-click/context-menu paste, and screenshot/text paste into the cmdline prompt before a conversation starts. Once the conversation transcript is visible, yottacode enables mouse reporting so wheel events scroll the in-app session history when the pointer is over the transcript, while wheel events over the cmdline browse prompt history. Popup/modal row clicks still work. Plain terminal-native text selection may require your terminal's mouse-bypass modifier in that state.

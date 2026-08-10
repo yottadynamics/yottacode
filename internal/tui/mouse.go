@@ -776,13 +776,27 @@ func (m Model) handleMouseRelease(msg tea.MouseReleaseMsg) (Model, tea.Cmd) {
 	return m.finalizeTranscriptSelection()
 }
 
-// handleMouseWheel routes wheel events to the transcript viewport's own
-// built-in scroll handling (bubbles/v2 already implements delta-based
-// ScrollUp/ScrollDown for tea.MouseWheelMsg when MouseWheelEnabled is
-// set — see New()) — a no-op while a popup owns the screen, the dock
-// has focus, or the launch hero (no viewport shown yet) is up.
+// handleMouseWheel routes wheel events by screen region: over the cmdline it
+// browses input history (same as Up/Down at the textarea edge), and over the
+// transcript it scrolls the owned viewport. Popups, focused dock, and the launch
+// hero keep wheel input inert because those surfaces own their own navigation.
 func (m Model) handleMouseWheel(msg tea.MouseWheelMsg) (Model, tea.Cmd) {
 	if m.popupOpen() || m.dockFocused || !m.enteredConversation {
+		return m, nil
+	}
+	footerHeight := lipgloss.Height(m.renderFooter())
+	transcriptHeight := m.height - footerHeight
+	if msg.Y >= transcriptHeight {
+		switch msg.Button {
+		case tea.MouseWheelUp:
+			if out, ok := m.historyBack(); ok {
+				return out, nil
+			}
+		case tea.MouseWheelDown:
+			if out, ok := m.historyForward(); ok {
+				return out, nil
+			}
+		}
 		return m, nil
 	}
 	var cmd tea.Cmd
