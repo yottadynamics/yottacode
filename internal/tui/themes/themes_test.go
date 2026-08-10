@@ -43,7 +43,9 @@ func sameColor(a, b color.Color) bool {
 var expectedThemes = []string{
 	// Head: universal default pinned to the top.
 	"terminal",
-	// Tail: alphabetical.
+	// Head: yottacode's polished dark theme stays one slot below the default.
+	"yottacode-dark",
+	// Tail: alphabetical after the curated head.
 	"catppuccin",
 	"dimmed",
 	"gruvbox",
@@ -229,6 +231,34 @@ func TestStudioDark_PaintsRecordingBackdrop(t *testing.T) {
 	}
 	if !colorEquals(p.Rule.Dark, "#008f4a") {
 		t.Errorf("studio-dark.Rule.Dark != balanced recording border green #008f4a")
+	}
+}
+
+func TestYottacodeDark_PaintsSlickEditorBackdrop(t *testing.T) {
+	p, ok := Get("yottacode-dark")
+	if !ok {
+		t.Fatalf("yottacode-dark theme not registered")
+	}
+	if !p.HasBackground {
+		t.Errorf("yottacode-dark.HasBackground = false, want true — the theme needs its model-editor backdrop")
+	}
+	if !colorEquals(p.Background.Dark, "#141414") || !colorEquals(p.Background.Light, "#141414") {
+		t.Errorf("yottacode-dark.Background != pinned Grok/Cursor base #141414")
+	}
+	if !colorEquals(p.Accent.Dark, "#7aa2f7") {
+		t.Errorf("yottacode-dark.Accent.Dark != GrokNight blue #7aa2f7")
+	}
+	if !colorEquals(p.Assistant.Dark, "#7dcfff") {
+		t.Errorf("yottacode-dark.Assistant.Dark != GrokNight cyan #7dcfff")
+	}
+	if !colorEquals(p.Success.Dark, "#9ece6a") {
+		t.Errorf("yottacode-dark.Success.Dark != GrokNight green #9ece6a")
+	}
+	if !colorEquals(p.Content.Dark, "#d8dee9") {
+		t.Errorf("yottacode-dark.Content.Dark != Cursor Dark editor foreground #d8dee9")
+	}
+	if !colorEquals(p.Rule.Dark, "#3a3a3a") {
+		t.Errorf("yottacode-dark.Rule.Dark != lifted readable border charcoal #3a3a3a")
 	}
 }
 
