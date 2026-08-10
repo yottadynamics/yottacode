@@ -2839,20 +2839,15 @@ func (m Model) skillsBusy() bool {
 func (m Model) View() tea.View {
 	v := tea.NewView(m.viewString())
 	v.AltScreen = true
-	// Full mouse support: click/release/wheel, plus motion only while a
-	// button is held (drag) — CellMotion, not AllMotion, since nothing
-	// needs hover-with-no-button-down events. This supersedes the
-	// earlier wheel-only attempt (see git history/docs/tui-slash-
-	// commands.md) that was reverted because claiming the mouse for
-	// wheel alone broke plain click+drag native text selection with no
-	// compensating capability. Now the app implements real click
-	// targets (mouse.go: cmdline cursor positioning, picker/menu items,
-	// tabs, approval hotkeys) and its own click-drag text selection
-	// (transcript_select.go, clipboard via tea.SetClipboard/OSC 52) —
-	// trading terminal-native selection for app-owned selection that
-	// actually coexists with everything else, rather than a bare
-	// tradeoff with nothing to show for it.
-	v.MouseMode = tea.MouseModeCellMotion
+	// Mouse is enabled only while an overlay owns clickable UI. Enabling
+	// mouse reporting globally makes terminals send click-drag/right-click
+	// events to the app instead of their native selection and paste paths,
+	// which breaks the day-to-day copy/paste workflow in the prompt and
+	// transcript. Popups still opt in so their × close buttons and row
+	// clicks work; the base chat screen stays terminal-native.
+	if m.popupOpen() {
+		v.MouseMode = tea.MouseModeCellMotion
+	}
 	if m.originalTerminalBackground != nil {
 		if hasThemeBackground {
 			v.BackgroundColor = themeBackground

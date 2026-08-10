@@ -573,4 +573,4 @@ Examples:
 - `PgUp` / `PgDn` scrolls the conversation transcript
 - `Ctrl+Home` / `Ctrl+End` jumps to the top / bottom of the transcript
 
-The TUI runs full-screen (alt-screen) with no mouse support — your terminal's own scrollback isn't available inside the alternate screen either, so scroll with `PgUp`/`PgDn`/`Ctrl+Home`/`Ctrl+End` above. Mouse is intentionally left unclaimed by the app so plain click+drag still gives you your terminal's own native text selection for copying text on screen, with no modifier key needed.
+The base chat screen intentionally leaves mouse reporting off so your terminal owns normal click-drag selection, right-click/context-menu paste, and screenshot/text paste into the cmdline prompt. yottacode only enables mouse reporting while a popup/modal is open, where row clicks and the `×` close affordance need app-owned mouse events.

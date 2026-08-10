@@ -8,8 +8,16 @@ import (
 	tea "charm.land/bubbletea/v2"
 )
 
-func TestView_EnablesFullMouseSupport(t *testing.T) {
+func TestView_LeavesMouseNativeOnBaseChatScreen(t *testing.T) {
 	m := newTestModel(t)
+	if got := m.View().MouseMode; got != tea.MouseModeNone {
+		t.Errorf("View().MouseMode = %v, want MouseModeNone", got)
+	}
+}
+
+func TestView_EnablesMouseOnlyForPopups(t *testing.T) {
+	m := newTestModel(t)
+	m.cheatsheetOpen = true
 	if got := m.View().MouseMode; got != tea.MouseModeCellMotion {
 		t.Errorf("View().MouseMode = %v, want MouseModeCellMotion", got)
 	}
