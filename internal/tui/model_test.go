@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -2116,6 +2117,35 @@ func TestFlushLeftCanvas_ColumnAlignment(t *testing.T) {
 	status := stripANSI(newTestModel(t).renderStatus())
 	if strings.HasPrefix(status, " ") {
 		t.Errorf("status bar should be flush-left (no leading inset), got %q", status)
+	}
+}
+
+func TestTranscriptViewport_FollowsOutputWhenFooterHeightChanges(t *testing.T) {
+	m := newTestModel(t)
+	m.enteredConversation = true
+	m.transcriptRows = nil
+	m.transcriptDirty = false
+	for i := range 50 {
+		m.appendLine(fmt.Sprintf("history line %d", i))
+	}
+	m, _ = applyMsg(m, tea.WindowSizeMsg{Width: 80, Height: 24})
+	if !m.transcriptViewport.AtBottom() {
+		t.Fatalf("test setup: expected transcript to start at bottom")
+	}
+
+	// Starting a turn grows the footer with live preview/thinking rows. The
+	// transcript should still treat the user as being at the bottom and keep
+	// following newly appended output, rather than appearing stuck until a
+	// manual wheel/page-scroll nudges the viewport.
+	m.turnActive = true
+	m.appendLine("fresh output after footer growth")
+	m, _ = applyMsg(m, cursorBlinkMsg{})
+
+	if !m.transcriptViewport.AtBottom() {
+		t.Fatal("transcript should keep following output when footer height changes while already at bottom")
+	}
+	if got := m.transcriptViewport.View(); !strings.Contains(stripANSI(got), "fresh output after footer growth") {
+		t.Fatalf("latest transcript output should be visible after footer growth; viewport = %q", stripANSI(got))
 	}
 }
 

@@ -3056,6 +3056,9 @@ func (m Model) aboveInputRows() []string {
 	if m.filePaletteOpen {
 		rows = append(rows, renderFilePalette(m.filePaletteFiltered, m.filePaletteIndex, m.filePaletteOffset, liveContentWidth(m.width)+4))
 	}
+	if hint := m.renderKeyHintRow(); hint != "" {
+		rows = append(rows, hint)
+	}
 	// Banner: one-line indicator above the input rule. Modes
 	// (plan/auto) are mutually exclusive; yolo mode is an
 	// orthogonal overlay flag whose `⚠ yolo mode` tag appends to
@@ -3090,6 +3093,78 @@ func (m Model) aboveInputRows() []string {
 		rows = append(rows, renderLoopBanner(m.loopBannerStates(), m.width))
 	}
 	return rows
+}
+
+// renderKeyHintRow returns the contextual keyboard help row that sits directly
+// above the cmdline. The row is intentionally computed from current focus state
+// instead of being static chrome: modal hotkeys, picker navigation, the live
+// subagent dock, and mid-turn queueing all mean different keys are safe at
+// different moments. Keeping that guidance in one place makes focus ownership
+// visible without requiring every overlay renderer to duplicate footer copy.
+func (m Model) renderKeyHintRow() string {
+	hints := m.contextualKeyHints()
+	if len(hints) == 0 {
+		return ""
+	}
+	line := "keys · " + strings.Join(hints, " · ")
+	width := liveContentWidth(m.width)
+	if width > 0 && lipgloss.Width(line) > width {
+		line = ansi.Truncate(line, width, "…")
+	}
+	return styleHint.Render(line)
+}
+
+// contextualKeyHints reports the active focus zone's most useful bindings. The
+// ordering mirrors update(): decision modals own the keyboard first, then
+// popups/pickers, then the dock, then active-turn queueing, and finally the idle
+// textarea. That makes the hint row a cheap runtime assertion about which
+// component currently owns Enter/Esc.
+func (m Model) contextualKeyHints() []string {
+	switch {
+	case m.awaitingPathTrust:
+		return []string{"1 once", "2 trust", "3 reject", "Enter queue text"}
+	case m.awaitingApproval && m.approvalTool == "exit_plan_mode":
+		return []string{"A auto", "M manual", "L later", "K keep planning"}
+	case m.awaitingApproval:
+		hints := []string{"Y approve", "N reject"}
+		if m.approvalAllowAlwaysOK {
+			hints = append(hints, "A always")
+		}
+		if m.approvalDenyAlwaysOK {
+			hints = append(hints, "D never")
+		}
+		return append(hints, "Enter queue text")
+	case m.loopExitConfirmOpen:
+		return []string{"←/→ choose", "Enter confirm", "Esc stay"}
+	case m.paletteOpen:
+		return []string{"↑↓ move", "Tab complete", "Enter run", "Esc close"}
+	case m.filePaletteOpen:
+		return []string{"↑↓ move", "Tab/Enter attach", "Esc close"}
+	case m.dockFocused:
+		return []string{"↑↓ task", "Enter transcript", "Esc input"}
+	case m.anyOverlayOpen():
+		// Full popups carry their own footer or close affordance. Do not add an
+		// extra below-popup hint row here: it changes the transcript viewport
+		// height while the popup is open and makes wheel/click no-ops look like
+		// scroll movement. Inline palettes and decision modals are handled above.
+		return nil
+	case m.turnActive:
+		hints := []string{"Enter queue", "Esc cancel", "Ctrl+J newline"}
+		if m.hasRunningSubagents() {
+			hints = append(hints, "Tab dock")
+		}
+		return append(hints, "Shift+Tab mode")
+	case !m.firstMessageSent:
+		// The fresh-session placeholder already carries onboarding hints inline;
+		// avoid echoing the same copy in a second row before the user has typed.
+		return nil
+	default:
+		hints := []string{"Enter send", "Ctrl+J newline", "/ commands", "@ files", "? help"}
+		if m.hasRunningSubagents() {
+			hints = append(hints, "Tab dock")
+		}
+		return append(hints, "Shift+Tab mode")
+	}
 }
 
 // renderFooter builds the live footer that sits below the transcript
@@ -3995,8 +4070,12 @@ func normalizePasteLineBreaks(rs []rune) []rune {
 // marker reads "[Image: filename.png]" and the decoded bytes are
 // stashed in m.pastedImages for attachment on submit.
 func (m Model) handleLargePaste(content string) (Model, tea.Cmd) {
+	content = strings.TrimRight(content, "\n")
 	m.pasteSeq++
 	lines := strings.Count(content, "\n") + 1
+	if content == "" {
+		lines = 0
+	}
 	marker := fmt.Sprintf("[Pasted text #%d: %d lines, %d bytes]", m.pasteSeq, lines, len(content))
 	if m.pastes == nil {
 		m.pastes = map[string]string{}
@@ -6734,15 +6813,17 @@ func (m *Model) resizeTranscriptViewport(footer string) {
 // banners/streaming previews/the dock come and go — recomputed here rather
 // than only on resize. Content resyncs from transcriptRows only when
 // transcriptDirty (new rows queued since the last call), and auto-follows
-// to the bottom only when the viewport was already there — so scrolling up
-// to read history mid-stream isn't yanked away by incoming output.
+// to the bottom only when the viewport was already there BEFORE the footer
+// resize. Capturing that intent first matters because live footer growth
+// can otherwise make AtBottom false and leave fresh output stuck just below
+// the visible transcript until the user scrolls.
 func (m *Model) refreshTranscriptViewport() {
+	wasAtBottom := m.transcriptViewport.AtBottom()
 	m.resizeTranscriptViewport(m.renderFooter())
 	if !m.transcriptDirty {
 		return
 	}
 	m.transcriptDirty = false
-	wasAtBottom := m.transcriptViewport.AtBottom()
 	// Goes through applyTranscriptHighlight (transcript_select.go)
 	// rather than a bare SetContentLines so a selection made mid-stream
 	// (new agent output arriving while the user is dragging or has just

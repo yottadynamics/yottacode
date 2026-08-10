@@ -562,7 +562,9 @@ Examples:
 
 ## Keyboard shortcuts
 
-- `Enter` submits (mid-turn: queue the new message for the next safe tool boundary)
+The TUI shows a compact contextual `keys · …` hint row above the cmdline after the first message. The row follows the active focus zone: idle input shows send/newline/palette shortcuts, palettes show movement and selection keys, approval/path-trust modals show their decision hotkeys, and active turns show queue/cancel keys.
+
+- `Enter` submits (mid-turn: queue the new message for the next safe tool boundary; while an approval/path-trust modal is focused, non-empty text is queued instead of being swallowed)
 - `Ctrl+J` inserts a newline
 - `Esc` cancels the current turn (alias for Ctrl+C, mirrors Claude Code); also stops an armed `/loop`
 - `Esc Esc` (idle, tapped within 500ms) opens the `/checkpoints` picker
@@ -572,5 +574,7 @@ Examples:
 - `Shift+Tab` cycles agent modes: normal → auto → plan → normal
 - `PgUp` / `PgDn` scrolls the conversation transcript
 - `Ctrl+Home` / `Ctrl+End` jumps to the top / bottom of the transcript
+
+Bracketed paste is normalized before it reaches the input: CR/CRLF line endings become LF, large or multi-line text is collapsed behind a `[Pasted text #N: …]` marker and expanded on submit, and a trailing transport newline is trimmed so paste summaries do not count a phantom blank line.
 
 Mouse reporting stays off during the launch screen and normal conversation so your terminal owns click-drag selection, right-click/context-menu paste, and screenshot/text paste into the cmdline prompt. Popup/modal row clicks temporarily enable mouse reporting while the popup is open, then return to terminal-native mouse behavior when it closes. Use `PgUp`/`PgDn`, `Ctrl+Home`/`Ctrl+End`, and keyboard picker navigation for transcript/palette movement when no popup is open.
