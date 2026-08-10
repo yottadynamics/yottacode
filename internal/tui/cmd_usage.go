@@ -56,7 +56,7 @@ func cmdUsage(m Model, _ []string) (Model, tea.Cmd) {
 
 func renderUsagePanel(m Model) string {
 	var b strings.Builder
-	b.WriteString(renderMenuHeader("Usage", "Session tokens, rate limits, daily rollup, and account links."))
+	b.WriteString(renderMenuHeader("Usage", "Session tokens, rate limits, daily rollup, and account links.", m.popupWidth()))
 	b.WriteString("\n")
 
 	b.WriteString(renderSessionUsage(m.sess))

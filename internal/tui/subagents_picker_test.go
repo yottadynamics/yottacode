@@ -33,7 +33,7 @@ func TestSubagentsPicker_ShowsLatestActivityForRunning(t *testing.T) {
 		},
 	}
 	state := &subagentsPickerState{mode: subagentsPickerModeTasks, tasks: tasks}
-	out := renderSubagentsPickerTasks(state, 120)
+	out := renderSubagentsPickerTasks(state, 120, nil)
 
 	if !strings.Contains(out, "reading auth.go") {
 		t.Errorf("running task row should show its latest activity; got:\n%s", out)

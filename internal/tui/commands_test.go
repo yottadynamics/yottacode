@@ -18,6 +18,57 @@ import (
 	"github.com/yottadynamics/yottacode/internal/session"
 )
 
+// TestRenderHelpPanel_LongSkillDescriptionWrapsWithinWidth is a
+// regression guard: a skill's Help text can be arbitrarily long
+// (author-written prose), and renderMenuItem's Desc column used to
+// render it unbounded — overflowing the popup's right border on a
+// narrow terminal instead of truncating in place like every other
+// picker row.
+func TestRenderHelpPanel_LongSkillDescriptionWrapsWithinWidth(t *testing.T) {
+	m := newTestModel(t)
+	m, _ = applyMsg(m, tea.WindowSizeMsg{Width: 60, Height: 24})
+	m.skillSlash = []slashCommand{
+		{Name: "my-skill", Help: "this is a deliberately long skill description that would overflow a narrow popup's right border if it were never truncated to fit the row"},
+	}
+
+	got := renderHelpPanel(m)
+	width := m.popupWidth()
+	for _, line := range strings.Split(got, "\n") {
+		if w := runeLen(stripANSI(line)); w > width {
+			t.Errorf("line exceeds popup width %d (got %d): %q", width, w, line)
+		}
+	}
+}
+
+// TestRenderHelpPanel_DividerMatchesBoxWidth mirrors the same
+// divider/box-width consistency guard as skills_menu_test.go's
+// TestSkillsMenu_DividerMatchesBoxWidth — renderMenuHeader now always
+// receives the same width the row content is bounded to.
+func TestRenderHelpPanel_DividerMatchesBoxWidth(t *testing.T) {
+	m := newTestModel(t)
+	m, _ = applyMsg(m, tea.WindowSizeMsg{Width: 60, Height: 24})
+	m.skillSlash = []slashCommand{
+		{Name: "my-skill", Help: "this is a deliberately long skill description that would overflow a narrow popup's right border if it were never truncated to fit the row"},
+	}
+
+	rendered := renderHelpPanel(m)
+	box := popupBox(rendered)
+	boxLines := strings.Split(box, "\n")
+	if len(boxLines) < 2 {
+		t.Fatalf("popup box has too few lines: %d", len(boxLines))
+	}
+	boxWidth := runeLen(stripANSI(boxLines[0]))
+
+	for _, line := range strings.Split(rendered, "\n") {
+		if !strings.Contains(stripANSI(line), "─") {
+			continue
+		}
+		if got := runeLen(stripANSI(line)) + 4; got != boxWidth {
+			t.Errorf("divider width (%d, +border/padding) does not match the box's own width (%d): %q", got, boxWidth, line)
+		}
+	}
+}
+
 // permissionsLoadHelper seeds <cwd>/.yottacode/permissions.json with
 // the given allow/ask/deny lists and returns a fresh Permissions
 // pointing at it. Used by /permissions slash-command tests so they

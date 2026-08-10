@@ -1,6 +1,11 @@
 package tui
 
-import "charm.land/lipgloss/v2"
+import (
+	"strings"
+
+	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
+)
 
 // popupMaxWidth caps a centered popup's content width well short of the
 // terminal's full width, unlike the old renderInlineOverlay's
@@ -35,11 +40,44 @@ func (m Model) popupWidth() int {
 // they're already a complete framed box; wrapping them again would read
 // as "a modal floating on a modal."
 func popupBox(body string) string {
-	return lipgloss.NewStyle().
+	box := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(colorBrand).
 		Padding(0, 1).
 		Render(body)
+	return addPopupCloseGlyph(box)
+}
+
+// addPopupCloseGlyph paints a small close affordance into the popup border. The
+// mouse handler treats the same top-right cells as an Esc click, so users who
+// discover mouse scrolling/clicking also get an obvious way to dismiss panels.
+func addPopupCloseGlyph(box string) string {
+	lines := strings.Split(box, "\n")
+	if len(lines) == 0 {
+		return box
+	}
+	width := lipgloss.Width(lines[0])
+	if width < 6 {
+		return box
+	}
+	plainTop := ansi.Strip(lines[0])
+	if runeLen(plainTop) != width || !strings.HasPrefix(plainTop, "╭") || !strings.HasSuffix(plainTop, "╮") {
+		return box
+	}
+	// Rebuild the top border instead of splicing into ANSI-styled bytes. The
+	// remaining border/body lines keep their original lipgloss styling.
+	closeGlyph := lipgloss.NewStyle().Foreground(colorMuted).Bold(true).Render("×")
+	lines[0] = "╭" + strings.Repeat("─", width-4) + " " + closeGlyph + "╮"
+	return strings.Join(lines, "\n")
+}
+
+// popupOrigin returns the screen (x,y) composePopup places box at — the
+// single formula both the compositor and every mouse click handler
+// (mouse.go) use, so a click handler's idea of "where the popup is" can
+// never drift from what was actually drawn.
+func (m Model) popupOrigin(box string) (x, y int) {
+	bw, bh := lipgloss.Width(box), lipgloss.Height(box)
+	return max((m.width-bw)/2, 0), max((m.height-bh)/2, 0)
 }
 
 // composePopup centers an already-framed box (either via popupBox for
@@ -51,9 +89,7 @@ func popupBox(body string) string {
 // place of the old renderInlineOverlay's "replace the whole footer"
 // approach.
 func (m Model) composePopup(background, box string) string {
-	bw, bh := lipgloss.Width(box), lipgloss.Height(box)
-	x := max((m.width-bw)/2, 0)
-	y := max((m.height-bh)/2, 0)
+	x, y := m.popupOrigin(box)
 	bg := lipgloss.NewLayer(background).Z(0)
 	fg := lipgloss.NewLayer(box).X(x).Y(y).Z(1)
 	return lipgloss.NewCompositor(bg, fg).Render()

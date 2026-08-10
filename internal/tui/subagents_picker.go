@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"strings"
 
 	tea "charm.land/bubbletea/v2"
 
@@ -202,14 +203,18 @@ func (p *subagentsPickerState) rowCount() int {
 // + relative age + tool count + truncated prompt as the description.
 // Cursor highlighting is handled by renderMenuItem (consistent with
 // every other inline picker).
-func renderSubagentsPicker(state *subagentsPickerState, width int) string {
-	if state.mode == subagentsPickerModeTypes {
-		return renderSubagentsPickerTypes(state, width)
+func renderSubagentsPicker(state *subagentsPickerState, width int, hits ...*pickerHits) string {
+	var h *pickerHits
+	if len(hits) > 0 {
+		h = hits[0]
 	}
-	return renderSubagentsPickerTasks(state, width)
+	if state.mode == subagentsPickerModeTypes {
+		return renderSubagentsPickerTypes(state, width, h)
+	}
+	return renderSubagentsPickerTasks(state, width, h)
 }
 
-func renderSubagentsPickerTasks(state *subagentsPickerState, _ int) string {
+func renderSubagentsPickerTasks(state *subagentsPickerState, _ int, h *pickerHits) string {
 	header := renderMenuHeader(
 		"Subagents — tasks",
 		"Enter views · i injects result · s stops · r refreshes · t shows types · Esc closes",
@@ -235,6 +240,8 @@ func renderSubagentsPickerTasks(state *subagentsPickerState, _ int) string {
 
 	body := header + "\n"
 	for i, t := range state.tasks {
+		row := strings.Count(body, "\n")
+		h.row(row, i)
 		label := fmt.Sprintf("%s · %s",
 			t.ID[:idLen],
 			truncateForRender(t.AgentType, maxAgentName))
@@ -282,7 +289,7 @@ func renderSubagentsPickerTasks(state *subagentsPickerState, _ int) string {
 // in the right column without wrapping (it's bounded by the
 // menuItemOpts row layout, so over-long descriptions truncate
 // rather than wrap — the full body lives in the agent's .md file).
-func renderSubagentsPickerTypes(state *subagentsPickerState, _ int) string {
+func renderSubagentsPickerTypes(state *subagentsPickerState, _ int, h *pickerHits) string {
 	header := renderMenuHeader(
 		"Subagents — agent types",
 		"r refreshes · t shows tasks · Esc closes",
@@ -307,6 +314,8 @@ func renderSubagentsPickerTypes(state *subagentsPickerState, _ int) string {
 
 	body := header + "\n"
 	for i, c := range state.types {
+		row := strings.Count(body, "\n")
+		h.row(row, i)
 		label := fmt.Sprintf("%-*s %-*s",
 			maxName, truncateForRender(c.Name, maxName),
 			sourceW, "["+c.Source+"]")

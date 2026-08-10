@@ -177,9 +177,13 @@ func commitThemeChoice(m Model, name string) (Model, tea.Cmd) {
 // terminal narrower than ~50 cols the two-pane layout degrades to a
 // stacked list-only render — the preview just isn't useful at that
 // size.
-func renderThemePicker(p *themePickerState, width int) string {
+func renderThemePicker(p *themePickerState, width int, hits ...*pickerHits) string {
+	var h *pickerHits
+	if len(hits) > 0 {
+		h = hits[0]
+	}
 	if width < 50 {
-		return renderThemePickerNarrow(p)
+		return renderThemePickerNarrow(p, h)
 	}
 	// leftWidth covers the longest theme name ("high-contrast" = 13)
 	// + the 2-col cursor marker + breathing room. 20 cols keeps the
@@ -194,15 +198,21 @@ func renderThemePicker(p *themePickerState, width int) string {
 		rightWidth = 30
 	}
 
-	left := renderThemeList(p, leftWidth)
+	header := renderMenuHeader("Themes", "↑↓ navigate · ↵ apply + persist · esc cancel", width)
+	// The list and preview panes sit side by side on the same rows —
+	// h.span (column-bounded, like a tab strip) keeps a click in the
+	// preview pane from resolving to a list row just because it shares
+	// that row's Y. h.row (whole-row) would be wrong here. rowOffset
+	// accounts for the header + blank line written ahead of the body.
+	rowOffset := strings.Count(header+"\n\n", "\n")
+	left := renderThemeList(p, leftWidth, h, rowOffset)
 	right := renderThemePreviewPane(p, rightWidth)
 
 	gutter := lipgloss.NewStyle().Width(gutterWidth).Render(" ")
 	body := lipgloss.JoinHorizontal(lipgloss.Top, left, gutter, right)
 
 	var b strings.Builder
-	b.WriteString(renderMenuHeader("Themes",
-		"↑↓ navigate · ↵ apply + persist · esc cancel"))
+	b.WriteString(header)
 	b.WriteString("\n\n")
 	b.WriteString(body)
 	return strings.TrimRight(b.String(), "\n")
@@ -213,12 +223,13 @@ func renderThemePicker(p *themePickerState, width int) string {
 // usable without packing two columns into space that can't hold
 // them. The hint at the bottom points users at /theme preview if
 // they want to see a sample anyway (one row at a time).
-func renderThemePickerNarrow(p *themePickerState) string {
+func renderThemePickerNarrow(p *themePickerState, h *pickerHits) string {
+	header := renderMenuHeader("Themes", "↑↓ navigate · ↵ apply · esc cancel", 46)
+	rowOffset := strings.Count(header+"\n", "\n")
 	var b strings.Builder
-	b.WriteString(renderMenuHeader("Themes",
-		"↑↓ navigate · ↵ apply · esc cancel"))
+	b.WriteString(header)
 	b.WriteString("\n")
-	b.WriteString(renderThemeList(p, 24))
+	b.WriteString(renderThemeList(p, 24, h, rowOffset))
 	b.WriteString("\n")
 	b.WriteString(styleHint.Render("  (widen terminal for live preview)"))
 	return strings.TrimRight(b.String(), "\n")
@@ -237,10 +248,15 @@ func renderThemePickerNarrow(p *themePickerState) string {
 // which made the arrow inconsistent across palettes. Pinning it to
 // Success keeps the "you are here" cue visually identical regardless
 // of the theme being previewed.
-func renderThemeList(p *themePickerState, width int) string {
+func renderThemeList(p *themePickerState, width int, h *pickerHits, rowOffset int) string {
 	cursorArrow := lipgloss.NewStyle().Foreground(colorSuccess).Bold(true).Render("❯ ")
+	// Every rendered line is exactly 2 (marker) + (width-3) (padOrTruncate)
+	// = width-1 display cells wide — the actual rendered pane width,
+	// used to bound clicks to this pane and not the preview beside it.
+	paneWidth := width - 1
 	var b strings.Builder
 	for i, name := range p.entries {
+		h.span(rowOffset+i, 0, paneWidth, i)
 		var marker, body string
 		switch {
 		case i == p.cursor:
@@ -300,7 +316,7 @@ func renderThemePreviewPane(p *themePickerState, width int) string {
 	// --- Header --------------------------------------------------
 	b.WriteString(styleAssistantHeader.Render(name))
 	b.WriteString("\n")
-	b.WriteString(stylePaletteItem.Render(wrapForWidth(pal.Description, width)))
+	b.WriteString(stylePaletteItem.Render(wrapPlain(pal.Description, width)))
 	b.WriteString("\n\n")
 
 	// --- Inline tokens row ---------------------------------------
@@ -377,25 +393,3 @@ func renderThemePreviewPane(p *themePickerState, width int) string {
 	return strings.TrimRight(b.String(), "\n")
 }
 
-// wrapForWidth breaks a string into lines no longer than width. Naive
-// word-boundary wrap — fine for short description strings that don't
-// contain runs of non-space punctuation longer than the column.
-func wrapForWidth(s string, width int) string {
-	if width <= 0 || len(s) <= width {
-		return s
-	}
-	var b strings.Builder
-	line := 0
-	for i, word := range strings.Fields(s) {
-		if i > 0 && line+1+len(word) > width {
-			b.WriteString("\n")
-			line = 0
-		} else if i > 0 {
-			b.WriteString(" ")
-			line++
-		}
-		b.WriteString(word)
-		line += len(word)
-	}
-	return b.String()
-}

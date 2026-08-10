@@ -441,11 +441,16 @@ func handleSkillsMenuUpdateDone(m Model, msg skillsMenuUpdateDoneMsg) (Model, te
 // renderSkillsMenu draws the overlay. Two layouts — list and install
 // prompt — share the same header so the user always knows which
 // overlay they're in.
-func renderSkillsMenu(state *skillsMenuState, _ int) string {
+func renderSkillsMenu(state *skillsMenuState, width int, hits ...*pickerHits) string {
+	var h *pickerHits
+	if len(hits) > 0 {
+		h = hits[0]
+	}
 	var b strings.Builder
 	b.WriteString(renderMenuHeader(
 		"Skills",
 		"Manage Agent Skills · Up/Down · Enter selects · Esc closes",
+		width,
 	))
 	b.WriteString("\n")
 	if state.busy != "" {
@@ -483,12 +488,15 @@ func renderSkillsMenu(state *skillsMenuState, _ int) string {
 			}
 		}
 		for i, sk := range state.uninstallRows {
+			row := strings.Count(b.String(), "\n")
+			h.row(row, i)
 			label := sk.Name + strings.Repeat(" ", maxName-len(sk.Name)) +
 				"  [" + string(sk.Source) + "]"
 			b.WriteString(renderMenuItem(menuItemOpts{
-				Label:  label,
-				Desc:   truncateForRender(sk.Description, 80),
-				Cursor: i == state.uninstallCursor,
+				Label:    label,
+				Desc:     truncateForRender(sk.Description, 80),
+				Cursor:   i == state.uninstallCursor,
+				MaxWidth: width,
 			}))
 			b.WriteByte('\n')
 		}
@@ -506,11 +514,14 @@ func renderSkillsMenu(state *skillsMenuState, _ int) string {
 		}
 	}
 	for i, it := range state.items {
+		row := strings.Count(b.String(), "\n")
+		h.row(row, i)
 		b.WriteString(renderMenuItem(menuItemOpts{
 			Label:      it.label,
 			LabelWidth: maxLabel,
 			Desc:       it.desc,
 			Cursor:     i == state.cursor,
+			MaxWidth:   width,
 		}))
 		b.WriteByte('\n')
 	}

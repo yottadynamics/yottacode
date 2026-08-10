@@ -658,13 +658,17 @@ func ensureProviderModel(cfg *config.Config, ref string) {
 
 // renderRouterPicker draws the menu, or the model sub-list when a row is
 // being filled.
-func renderRouterPicker(p *routerPickerState) string {
+func renderRouterPicker(p *routerPickerState, width int, hits ...*pickerHits) string {
+	var h *pickerHits
+	if len(hits) > 0 {
+		h = hits[0]
+	}
 	if p.selecting != "" {
-		return renderRouterModelList(p)
+		return renderRouterModelList(p, width, h)
 	}
 	cursorArrow := lipgloss.NewStyle().Foreground(colorSuccess).Bold(true).Render("❯ ")
 	var b strings.Builder
-	b.WriteString(renderMenuHeader("Model routing", "↑↓ navigate · ↵ select · esc cancel"))
+	b.WriteString(renderMenuHeader("Model routing", "↑↓ navigate · ↵ select · esc cancel", width))
 	b.WriteString("\n\n")
 
 	routingValue := routerModeLabel(p.mode)
@@ -678,7 +682,10 @@ func renderRouterPicker(p *routerPickerState) string {
 		{"Implementer", orNotSet(chainPrimary(p.fastChain))},
 		{"Fallback", fallbackValue(p.smartChain)},
 	}
+	valueBudget := width - 14 - 4 // marker(2) + label(14) + gap(2)
 	for i, r := range rows {
+		row := strings.Count(b.String(), "\n")
+		h.row(row, i)
 		marker := "  "
 		label := stylePaletteItem.Render(padOrTruncate(r.label, 14))
 		if i == p.cursor {
@@ -688,15 +695,15 @@ func renderRouterPicker(p *routerPickerState) string {
 		b.WriteString(marker)
 		b.WriteString(label)
 		b.WriteString("  ")
-		b.WriteString(styleEmpty.Render(r.value))
+		b.WriteString(styleEmpty.Render(truncateDisplay(r.value, valueBudget)))
 		b.WriteByte('\n')
 	}
 	b.WriteByte('\n')
-	b.WriteString(styleEmpty.Render(
-		"↵ set a model (or toggle Routing) · d clears a fallback · persists to config.toml"))
+	b.WriteString(styleEmpty.Render(wrapPlain(
+		"↵ set a model (or toggle Routing) · d clears a fallback · persists to config.toml", width)))
 	if p.note != "" {
 		b.WriteString("\n")
-		b.WriteString(styleError.Render(p.note))
+		b.WriteString(styleError.Render(wrapPlain(p.note, width)))
 	}
 	return strings.TrimRight(b.String(), "\n")
 }
@@ -716,7 +723,7 @@ func fallbackValue(chain []string) string {
 
 // renderRouterModelList draws the windowed model sub-list for the row being
 // filled, marking the current value with · and the cursor with ❯.
-func renderRouterModelList(p *routerPickerState) string {
+func renderRouterModelList(p *routerPickerState, width int, h *pickerHits) string {
 	cursorArrow := lipgloss.NewStyle().Foreground(colorSuccess).Bold(true).Render("❯ ")
 	slot, isFB := parseSlotSel(p.selecting)
 	title := "Select " + slot + " model"
@@ -726,7 +733,7 @@ func renderRouterModelList(p *routerPickerState) string {
 		current = chainFallback(p.chain(slot))
 	}
 	var b strings.Builder
-	b.WriteString(renderMenuHeader(title, "↑↓ navigate · ↵ select · esc back"))
+	b.WriteString(renderMenuHeader(title, "↑↓ navigate · ↵ select · esc back", width))
 	b.WriteString("\n\n")
 	if len(p.models) == 0 {
 		b.WriteString(styleEmpty.Render("no configured models — add a provider first"))
@@ -743,6 +750,8 @@ func renderRouterModelList(p *routerPickerState) string {
 	}
 	for i := p.windowTop; i < end; i++ {
 		e := p.models[i]
+		row := strings.Count(b.String(), "\n")
+		h.row(row, i)
 		marker := "  "
 		label := stylePaletteItem.Render(e.label)
 		switch {

@@ -49,6 +49,39 @@ func newFakeCodeloadForTUI(t *testing.T, files map[string]string) *httptest.Serv
 	}))
 }
 
+// TestSkillsMenu_DividerMatchesBoxWidth is a regression guard: the menu's
+// item descriptions ("browse official skills, installed skills, and
+// bundled fallback", etc.) used to render unbounded, so popupBox
+// auto-sized the box wide enough to fit them while renderMenuHeader's
+// divider stayed at its own independent (narrower, capped) default —
+// two horizontal rules visibly shorter than the box they sat in. Both
+// now derive from the same width param, so they can't drift apart.
+func TestSkillsMenu_DividerMatchesBoxWidth(t *testing.T) {
+	m := newTestModel(t)
+	m.skillTool = &agent.SkillTool{All: nil}
+	m, _ = m.runSlash("/skills")
+
+	width := m.popupWidth()
+	rendered := renderSkillsMenu(m.skillsMenu, width)
+	box := popupBox(rendered)
+	boxLines := strings.Split(box, "\n")
+	if len(boxLines) < 2 {
+		t.Fatalf("popup box has too few lines: %d", len(boxLines))
+	}
+	boxWidth := runeLen(stripANSI(boxLines[0]))
+
+	for _, line := range strings.Split(rendered, "\n") {
+		if !strings.Contains(stripANSI(line), "─") {
+			continue
+		}
+		// +4 accounts for popupBox's border (2) + padding (2), the same
+		// margin every content line sits inside of.
+		if got := runeLen(stripANSI(line)) + 4; got != boxWidth {
+			t.Errorf("divider width (%d, +border/padding) does not match the box's own width (%d): %q", got, boxWidth, line)
+		}
+	}
+}
+
 // TestSkillsMenu_OpenAndNavigate locks the menu's basic shape: four
 // rows, Down moves the cursor, Up retreats, Esc closes. Without this
 // a refactor that drops one menu item or reorders them goes

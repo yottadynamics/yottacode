@@ -95,7 +95,11 @@ func (m Model) permissionsRowPath(idx int) string {
 // supplies the single rounded border and composePopup does the
 // centering, so adding either here would read as "modal floating on a
 // modal".
-func renderPermissionsOverlay(m Model) string {
+func renderPermissionsOverlay(m Model, hits ...*pickerHits) string {
+	var h *pickerHits
+	if len(hits) > 0 {
+		h = hits[0]
+	}
 	shared := ""
 	local := ""
 	if m.perms != nil {
@@ -111,15 +115,19 @@ func renderPermissionsOverlay(m Model) string {
 		{Label: "local", Path: local},
 	}
 
+	width := m.popupWidth()
 	var b strings.Builder
 	b.WriteString(renderMenuHeader("Permissions",
-		"Edit a rule file in vim. The store re-reads on the next tool call."))
+		"Edit a rule file in vim. The store re-reads on the next tool call.", width))
 	b.WriteString("\n")
 	for i, row := range rows {
+		rowLine := strings.Count(b.String(), "\n")
+		h.row(rowLine, i)
+		path := truncateDisplayMiddle(row.Path, width-13)
 		b.WriteString(renderMenuItem(menuItemOpts{
 			Label:      row.Label,
 			LabelWidth: 8,
-			Desc:       row.Path,
+			Desc:       path,
 			Cursor:     i == m.permissionsCursor,
 		}))
 		b.WriteString("\n")

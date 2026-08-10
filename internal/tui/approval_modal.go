@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 )
 
 // renderApprovalModal lays out the approval prompt per the Phase 5
@@ -27,9 +28,14 @@ import (
 // prompt itself — after the user picks `[A]` we emit a toast
 // (`✓ Added Bash(go *) to permissions.local.json`) into scrollback.
 // Keeps the prompt focused on the immediate decision.
-func renderApprovalModal(m Model) string {
+const approvalModalMinInnerWidth = 64
+
+func renderApprovalModal(m Model, hits ...*pickerHits) string {
+	var h *pickerHits
+	if len(hits) > 0 {
+		h = hits[0]
+	}
 	body := approvalBodyFor(m)
-	hotkeys := approvalHotkeyGrid(m.approvalAllowAlwaysOK, m.approvalDerivedRule, m.approvalDenyAlwaysOK, m.approvalDerivedDenyRule)
 
 	// Expand tabs to spaces so width measurement matches what the
 	// terminal actually renders. ansi.StringWidth treats `\t` as
@@ -46,15 +52,28 @@ func renderApprovalModal(m Model) string {
 	// in a run_bash approval) would otherwise bleed past the right
 	// border — the row-padding loop in renderLabeledBox only pads,
 	// never trims.
-	capW := capLabeledBoxWidth(m.width)
+	capW := capApprovalBoxWidth(m.width)
 
-	bodyLines := []string{""}
+	bodyLines := []string{strings.Repeat(" ", approvalModalTargetInnerWidth(capW))}
 	for _, line := range hardWrapLabeled(body, capW) {
 		bodyLines = append(bodyLines, labeledBoxIndent+line)
 	}
 	bodyLines = append(bodyLines, "")
-	for _, line := range hardWrapLabeled(hotkeys, capW) {
-		bodyLines = append(bodyLines, labeledBoxIndent+line)
+	hotkeyRows := approvalHotkeyRows(m.approvalAllowAlwaysOK, m.approvalDerivedRule, m.approvalDenyAlwaysOK, m.approvalDerivedDenyRule)
+	if len(hotkeyRows) > 0 {
+		keyW, descW := approvalHotkeyColumnWidths(hotkeyRows, capW)
+		for _, key := range hotkeyRows {
+			for j, line := range hardWrapLabeled(key.desc, capW-labeledBoxIndentW-keyW-2) {
+				row := len(bodyLines)
+				prefix := strings.Repeat(" ", keyW+2)
+				if j == 0 {
+					prefix = fmt.Sprintf("%-*s  ", keyW, key.hotkey)
+				}
+				indented := labeledBoxIndent + prefix + truncateDisplay(line, descW)
+				bodyLines = append(bodyLines, indented)
+				registerBracketHotkeys(h, row, ansi.Strip(indented))
+			}
+		}
 	}
 	bodyLines = append(bodyLines, "")
 
@@ -91,26 +110,63 @@ func approvalBodyFor(m Model) string {
 	return styleApprovalCommand.Render(m.approvalPreview)
 }
 
-// approvalHotkeyGrid composes the [Y] yes / [N] no row, with the
-// optional [A] always hint on a second line when always-allow is
-// available for this tool. Brackets-first formatting is faster to
-// scan than `[y]es`-style mid-word brackets.
+// approvalHotkeyGrid composes the legacy plain-text hotkey block used by tests
+// and non-layout call sites. renderApprovalModal uses approvalHotkeyRows so each
+// action gets one aligned row in the modal instead of cramming Y/N onto one line.
 func approvalHotkeyGrid(allowAlways bool, derivedRule string, denyAlways bool, denyRule string) string {
-	primary := strings.Join([]string{
-		styleApprovalHotkey.Render("[Y]") + " " + styleApprovalChoice.Render("yes"),
-		strings.Repeat(" ", 6),
-		styleApprovalHotkey.Render("[N]") + " " + styleApprovalChoice.Render("no"),
-	}, "")
-	lines := []string{primary}
-	if allowAlways {
-		lines = append(lines, styleApprovalHotkey.Render("[A]")+" "+
-			styleApprovalChoiceDim.Render("always — adds "+derivedRule))
-	}
-	if denyAlways {
-		lines = append(lines, styleApprovalHotkey.Render("[D]")+" "+
-			styleApprovalChoiceDim.Render("never — adds "+denyRule))
+	rows := approvalHotkeyRows(allowAlways, derivedRule, denyAlways, denyRule)
+	lines := make([]string, 0, len(rows))
+	for _, row := range rows {
+		lines = append(lines, row.hotkey+" "+row.desc)
 	}
 	return strings.Join(lines, "\n")
+}
+
+type approvalHotkeyRow struct {
+	hotkey string
+	desc   string
+}
+
+func approvalHotkeyRows(allowAlways bool, derivedRule string, denyAlways bool, denyRule string) []approvalHotkeyRow {
+	rows := []approvalHotkeyRow{
+		{hotkey: styleApprovalHotkey.Render("[Y]"), desc: styleApprovalChoice.Render("yes — allow this call once")},
+		{hotkey: styleApprovalHotkey.Render("[N]"), desc: styleApprovalChoice.Render("no — reject this call")},
+	}
+	if allowAlways {
+		rows = append(rows, approvalHotkeyRow{
+			hotkey: styleApprovalHotkey.Render("[A]"),
+			desc:   styleApprovalChoiceDim.Render("always — adds "+derivedRule),
+		})
+	}
+	if denyAlways {
+		rows = append(rows, approvalHotkeyRow{
+			hotkey: styleApprovalHotkey.Render("[D]"),
+			desc:   styleApprovalChoiceDim.Render("never — adds "+denyRule),
+		})
+	}
+	return rows
+}
+
+func approvalHotkeyColumnWidths(rows []approvalHotkeyRow, capW int) (keyW, descW int) {
+	for _, row := range rows {
+		keyW = max(keyW, ansi.StringWidth(row.hotkey))
+		descW = max(descW, ansi.StringWidth(row.desc))
+	}
+	if capW > labeledBoxIndentW+keyW+2 {
+		descW = min(descW, capW-labeledBoxIndentW-keyW-2)
+	}
+	return keyW, max(descW, 1)
+}
+
+func capApprovalBoxWidth(termWidth int) int {
+	return capLabeledBoxWidth(termWidth)
+}
+
+func approvalModalTargetInnerWidth(capW int) int {
+	if capW <= 0 {
+		return approvalModalMinInnerWidth
+	}
+	return min(approvalModalMinInnerWidth, capW)
 }
 
 // approvalToast formats the post-decision confirmation that lands in

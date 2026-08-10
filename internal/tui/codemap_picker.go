@@ -363,7 +363,11 @@ func (p *codeMapPickerState) clampCursor() {
 	}
 }
 
-func renderCodeMapPicker(p *codeMapPickerState, width int) string {
+func renderCodeMapPicker(p *codeMapPickerState, width int, hits ...*pickerHits) string {
+	var h *pickerHits
+	if len(hits) > 0 {
+		h = hits[0]
+	}
 	if p == nil {
 		return styleEmpty.Render("(code map unavailable)")
 	}
@@ -372,7 +376,7 @@ func renderCodeMapPicker(p *codeMapPickerState, width int) string {
 	if p.filter != "" {
 		desc = fmt.Sprintf("filter %q · %s", p.filter, desc)
 	}
-	b.WriteString(renderMenuHeader("Code map", desc))
+	b.WriteString(renderMenuHeader("Code map", desc, width))
 	if p.loading {
 		b.WriteString(styleMeta.Render("  building code map…"))
 		return strings.TrimRight(b.String(), "\n")
@@ -407,6 +411,8 @@ func renderCodeMapPicker(p *codeMapPickerState, width int) string {
 		if row.label != "" {
 			desc = row.label + " · " + desc
 		}
+		bodyRow := strings.Count(b.String(), "\n")
+		h.row(bodyRow, i)
 		b.WriteString(renderMenuItem(menuItemOpts{Label: label, LabelWidth: labelWidth, Desc: desc, Cursor: i == p.cursor}))
 		b.WriteString("\n")
 	}

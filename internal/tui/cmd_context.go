@@ -142,7 +142,7 @@ func renderContextReport(m *Model) string {
 	buckets = append(buckets, contextBucket{"Free space", free, colorDim, false})
 
 	var out strings.Builder
-	out.WriteString(renderMenuHeader("Context", "Window usage, compaction status, and prompt contributors."))
+	out.WriteString(renderMenuHeader("Context", "Window usage, compaction status, and prompt contributors.", m.popupWidth()))
 	out.WriteString("\n")
 
 	out.WriteString(renderContextDiagnostics(m, buckets, used, window, sysTok, sysToolTokens+skillTokens+mcpToolTokens, convoTok))

@@ -384,9 +384,13 @@ func openInFileManager(path string) {
 	go func() { _ = cmd.Wait() }()
 }
 
-func renderMemoryPicker(p *memoryPickerState, _ int) string {
+func renderMemoryPicker(p *memoryPickerState, _ int, hits ...*pickerHits) string {
+	var h *pickerHits
+	if len(hits) > 0 {
+		h = hits[0]
+	}
 	if p.mode == memoryBrowseMode {
-		return renderMemoryBrowse(p)
+		return renderMemoryBrowse(p, h)
 	}
 	var b strings.Builder
 	b.WriteString(renderMenuHeader("Memory",
@@ -410,6 +414,8 @@ func renderMemoryPicker(p *memoryPickerState, _ int) string {
 		}{"Enable semantic search", "pull an embedding model via Ollama"})
 	}
 	for i, r := range rows {
+		row := strings.Count(b.String(), "\n")
+		h.row(row, i)
 		b.WriteString(renderMenuItem(menuItemOpts{
 			Number:     i + 1,
 			Label:      r.label,
@@ -426,7 +432,7 @@ func renderMemoryPicker(p *memoryPickerState, _ int) string {
 	return strings.TrimRight(b.String(), "\n")
 }
 
-func renderMemoryBrowse(p *memoryPickerState) string {
+func renderMemoryBrowse(p *memoryPickerState, h *pickerHits) string {
 	var b strings.Builder
 	header := "Browse " + p.browseScope + "-scope memories"
 	b.WriteString(renderMenuHeader(header,
@@ -451,6 +457,8 @@ func renderMemoryBrowse(p *memoryPickerState) string {
 			if desc == "" {
 				desc = abbrevHome(e.Path)
 			}
+			row := strings.Count(b.String(), "\n")
+			h.row(row, i)
 			b.WriteString(renderMenuItem(menuItemOpts{
 				Label:      label,
 				LabelWidth: 32,
@@ -618,7 +626,11 @@ func (m Model) handleEmbedSetupDone(msg embedSetupDoneMsg) (Model, tea.Cmd) {
 	return m.runMemoryReindex()
 }
 
-func (m Model) renderEmbedSetup() string {
+func (m Model) renderEmbedSetup(hits ...*pickerHits) string {
+	var h *pickerHits
+	if len(hits) > 0 {
+		h = hits[0]
+	}
 	var b strings.Builder
 	b.WriteString(renderMenuHeader("Enable Semantic Search",
 		"Pick an embedding model to pull via Ollama."))
@@ -630,6 +642,8 @@ func (m Model) renderEmbedSetup() string {
 	}
 
 	for i, em := range wizard.KnownEmbeddingModels {
+		row := strings.Count(b.String(), "\n")
+		h.row(row, i)
 		b.WriteString(renderMenuItem(menuItemOpts{
 			Number:     i + 1,
 			Label:      em.Name,

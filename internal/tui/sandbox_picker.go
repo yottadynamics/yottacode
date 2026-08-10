@@ -242,7 +242,11 @@ func commitSandboxMode(m Model, mode sandboxMode) (Model, tea.Cmd) {
 
 // renderSandboxPicker draws the three-row mode menu plus podman/image
 // detection status and the highlighted row's description.
-func renderSandboxPicker(p *sandboxPickerState) string {
+func renderSandboxPicker(p *sandboxPickerState, width int, hits ...*pickerHits) string {
+	var h *pickerHits
+	if len(hits) > 0 {
+		h = hits[0]
+	}
 	cursorArrow := lipgloss.NewStyle().Foreground(colorSuccess).Bold(true).Render("❯ ")
 	var b strings.Builder
 	// "podman" is hardcoded, not derived from config — it's the only
@@ -253,10 +257,12 @@ func renderSandboxPicker(p *sandboxPickerState) string {
 	if p.confirming {
 		help = "↵ confirm · esc back"
 	}
-	b.WriteString(renderMenuHeader("Sandbox (podman)", help))
+	b.WriteString(renderMenuHeader("Sandbox (podman)", help, width))
 	b.WriteString("\n\n")
 
 	for mode := sandboxMode(0); mode < sandboxModeCount; mode++ {
+		row := strings.Count(b.String(), "\n")
+		h.row(row, int(mode))
 		marker := "  "
 		label := stylePaletteItem.Render(sandboxModeLabel(mode))
 		if mode == p.cursor {
@@ -273,7 +279,7 @@ func renderSandboxPicker(p *sandboxPickerState) string {
 		b.WriteByte('\n')
 	}
 	b.WriteByte('\n')
-	b.WriteString(styleEmpty.Render(sandboxModeDescription(p.cursor)))
+	b.WriteString(styleEmpty.Render(wrapPlain(sandboxModeDescription(p.cursor), width)))
 	b.WriteByte('\n')
 
 	if p.cursor != sandboxModeOff {
@@ -283,15 +289,15 @@ func renderSandboxPicker(p *sandboxPickerState) string {
 			b.WriteString(styleEmpty.Render("checking podman…"))
 		case !p.status.Installed:
 			b.WriteString("\n")
-			b.WriteString(styleError.Render("podman not found on PATH — install podman before selecting this mode"))
+			b.WriteString(styleError.Render(wrapPlain("podman not found on PATH — install podman before selecting this mode", width)))
 		case !p.status.ImagePresent:
 			b.WriteString("\n")
-			b.WriteString(styleEmpty.Render("base image not pulled locally yet — podman will pull it on first use"))
+			b.WriteString(styleEmpty.Render(wrapPlain("base image not pulled locally yet — podman will pull it on first use", width)))
 		}
 	}
 	if p.confirming {
 		b.WriteString("\n")
-		b.WriteString(styleEmpty.Render("Press Enter again to persist " + sandboxModeLabel(p.cursor) + "; Esc returns to the picker without changing config."))
+		b.WriteString(styleEmpty.Render(wrapPlain("Press Enter again to persist "+sandboxModeLabel(p.cursor)+"; Esc returns to the picker without changing config.", width)))
 		b.WriteByte('\n')
 	}
 	if p.note != "" {

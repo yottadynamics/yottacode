@@ -268,7 +268,7 @@ func TestAnyOverlayOpen_SandboxPicker(t *testing.T) {
 
 func TestRenderSandboxPicker_ShowsThreeRowsAndCurrentCheckmark(t *testing.T) {
 	p := &sandboxPickerState{cursor: sandboxModeAutoAllow, current: sandboxModeOff, detected: true, status: sandbox.Status{Installed: true, ImagePresent: true}}
-	got := renderSandboxPicker(p)
+	got := renderSandboxPicker(p, 100)
 	for _, want := range []string{"Sandbox run_bash, with auto-allow", "Sandbox run_bash, with regular permissions", "No sandbox"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("render missing row %q:\n%s", want, got)
@@ -278,7 +278,7 @@ func TestRenderSandboxPicker_ShowsThreeRowsAndCurrentCheckmark(t *testing.T) {
 
 func TestRenderSandboxPicker_ConfirmationCopy(t *testing.T) {
 	p := &sandboxPickerState{cursor: sandboxModeRegular, confirming: true, detected: true, status: sandbox.Status{Installed: true, ImagePresent: true}}
-	got := renderSandboxPicker(p)
+	got := renderSandboxPicker(p, 100)
 	for _, want := range []string{"↵ confirm · esc back", "Press Enter again to persist Sandbox run_bash, with regular permissions"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("confirmation render missing %q:\n%s", want, got)
@@ -292,7 +292,7 @@ func TestRenderSandboxPicker_ConfirmationCopy(t *testing.T) {
 // missing just because the zero-value Status says Installed=false.
 func TestRenderSandboxPicker_ChecksBeforeDetectionArrives(t *testing.T) {
 	p := &sandboxPickerState{cursor: sandboxModeAutoAllow} // detected: false (zero value)
-	got := renderSandboxPicker(p)
+	got := renderSandboxPicker(p, 100)
 	if !strings.Contains(got, "checking podman") {
 		t.Errorf("expected a checking-podman state before detection arrives:\n%s", got)
 	}
@@ -303,7 +303,7 @@ func TestRenderSandboxPicker_ChecksBeforeDetectionArrives(t *testing.T) {
 
 func TestRenderSandboxPicker_WarnsWhenPodmanMissing(t *testing.T) {
 	p := &sandboxPickerState{cursor: sandboxModeAutoAllow, detected: true}
-	got := renderSandboxPicker(p)
+	got := renderSandboxPicker(p, 100)
 	if !strings.Contains(got, "podman not found on PATH") {
 		t.Errorf("expected a podman-missing warning:\n%s", got)
 	}
@@ -311,9 +311,32 @@ func TestRenderSandboxPicker_WarnsWhenPodmanMissing(t *testing.T) {
 
 func TestRenderSandboxPicker_NoWarningWhenModeIsOff(t *testing.T) {
 	p := &sandboxPickerState{cursor: sandboxModeOff, detected: true}
-	got := renderSandboxPicker(p)
+	got := renderSandboxPicker(p, 100)
 	if strings.Contains(got, "podman not found") {
 		t.Errorf("no-sandbox row should not show a podman warning:\n%s", got)
+	}
+}
+
+// TestRenderSandboxPicker_LongDescriptionWrapsWithinWidth is a
+// regression guard: the auto-allow mode's description is a long
+// sentence that used to render as one unwrapped line, bleeding past the
+// popup's right border (and often past the terminal's own right edge)
+// instead of wrapping like every other prose block in the picker
+// family.
+func TestRenderSandboxPicker_LongDescriptionWrapsWithinWidth(t *testing.T) {
+	p := &sandboxPickerState{cursor: sandboxModeAutoAllow, detected: true, status: sandbox.Status{Installed: true, ImagePresent: true}}
+	// Wide enough for the longest mode row label, narrow enough that the
+	// long description sentence must wrap onto multiple lines to prove
+	// the regression is actually fixed.
+	const width = 60
+	got := renderSandboxPicker(p, width)
+	for _, line := range strings.Split(got, "\n") {
+		if w := runeLen(stripANSI(line)); w > width {
+			t.Errorf("line exceeds width %d (got %d): %q", width, w, line)
+		}
+	}
+	if !strings.Contains(got, "run_bash executes inside a podman container") {
+		t.Errorf("wrapped description should still contain its full text (just split across lines):\n%s", got)
 	}
 }
 

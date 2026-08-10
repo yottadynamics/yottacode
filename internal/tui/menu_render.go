@@ -6,6 +6,7 @@ import (
 	"unicode/utf8"
 
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 )
 
 // menu_render.go centralizes the picker overlay layout so the model
@@ -67,9 +68,16 @@ type menuItemOpts struct {
 	// Zero means "render as-is, no padding/truncation."
 	LabelWidth int
 
-	// Desc is the right-column description text. Truncated
-	// implicitly by terminal wrap.
+	// Desc is the right-column description text.
 	Desc string
+
+	// MaxWidth is the total row budget (cursor + label + check + Desc,
+	// in display cells) Desc is truncated (with an ellipsis) to fit
+	// within — the row's own picker-content width, e.g. m.popupWidth().
+	// Zero means "render Desc as-is, no truncation" — the pre-existing
+	// behavior, kept for callers that haven't been updated yet or that
+	// already bound their own Desc length before calling in.
+	MaxWidth int
 
 	// Cursor adds the `❯ ` prefix and bolds the row in the
 	// brand color.
@@ -97,16 +105,20 @@ func renderMenuHeader(title, description string, widths ...int) string {
 	if len(widths) > 0 && widths[0] > 0 {
 		dividerWidth = widths[0]
 	}
+	if dividerWidth < 1 {
+		dividerWidth = 1
+	}
 	var b strings.Builder
-	b.WriteString(renderMenuDivider(dividerWidth))
-	b.WriteString("\n")
 	b.WriteString(styleSplashTitle.Render(title))
 	b.WriteString("\n")
 	if description != "" {
-		// Wrap description at ~80 cols for readability when the
-		// terminal is wide. Lipgloss handles this for us via the
-		// styled writer; we just trim trailing whitespace.
-		b.WriteString(styleMeta.Render(strings.TrimSpace(description)))
+		// wrapPlain, not a bare Style.Render — lipgloss only wraps when
+		// .Width(...) is set on the style, which this one isn't, so an
+		// unwrapped long description bled past the divider (and often
+		// the terminal's own right edge) on every picker that passed
+		// one. dividerWidth is the exact budget every other line in
+		// this header is already bound to.
+		b.WriteString(styleMeta.Render(wrapPlain(strings.TrimSpace(description), dividerWidth)))
 		b.WriteString("\n")
 	}
 	b.WriteString(renderMenuDivider(dividerWidth))
@@ -154,7 +166,19 @@ func renderMenuItem(o menuItemOpts) string {
 		label = truncateLabel(label, o.LabelWidth)
 		label = fmt.Sprintf("%-*s", o.LabelWidth, label)
 	}
-	body := cursor + label + " " + check + o.Desc
+	desc := o.Desc
+	if o.MaxWidth > 0 {
+		// prefix = cursor(2) + label column + gap(1) + check(2). label's
+		// own display width when LabelWidth is unset (i.e. rendered
+		// as-is, no padding) still has to be measured, not assumed 0.
+		labelW := o.LabelWidth
+		if labelW <= 0 {
+			labelW = ansi.StringWidth(label)
+		}
+		descBudget := o.MaxWidth - 2 - labelW - 1 - 2
+		desc = truncateDisplay(desc, descBudget)
+	}
+	body := cursor + label + " " + check + desc
 	switch {
 	case o.Disabled && o.Cursor:
 		// Cursor on a disabled row: muted + italic + underline so
@@ -186,6 +210,95 @@ func truncateLabel(s string, max int) string {
 		return s
 	}
 	return string([]rune(s)[:max-1]) + "…"
+}
+
+// truncateDisplay is truncateLabel's ANSI-aware counterpart, for Desc
+// strings that may already carry their own styling (e.g. the MCP server
+// list's per-status color, "running" vs "failed"). ansi.Truncate cuts
+// by display width rather than rune count and never breaks an escape
+// sequence mid-code, so a color applied earlier in the string doesn't
+// bleed past the cut or get corrupted. width<1 renders nothing rather
+// than a bare ellipsis, matching truncateLabel's own floor.
+func truncateDisplay(s string, width int) string {
+	if width < 1 {
+		return ""
+	}
+	if ansi.StringWidth(s) <= width {
+		return s
+	}
+	return ansi.Truncate(s, width, "…")
+}
+
+// truncateDisplayMiddle keeps both ends of a long identifier/path visible. That
+// is better for filesystem rows than suffix-only truncation because the basename
+// is usually the part users recognize, while the prefix still shows scope.
+func truncateDisplayMiddle(s string, width int) string {
+	if width < 1 {
+		return ""
+	}
+	if ansi.StringWidth(s) <= width {
+		return s
+	}
+	if width == 1 {
+		return "…"
+	}
+	plain := ansi.Strip(s)
+	runes := []rune(plain)
+	tailWidth := min(ansi.StringWidth(plain)/2, max(width/2, 1))
+	headWidth := width - tailWidth - 1
+	if headWidth < 1 {
+		headWidth = 1
+		tailWidth = width - 2
+	}
+	head := ansi.Truncate(plain, headWidth, "")
+	tail := displaySuffix(runes, tailWidth)
+	return head + "…" + tail
+}
+
+func displaySuffix(runes []rune, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	start := len(runes)
+	used := 0
+	for start > 0 {
+		w := ansi.StringWidth(string(runes[start-1]))
+		if w < 1 {
+			w = 1
+		}
+		if used+w > width {
+			break
+		}
+		used += w
+		start--
+	}
+	return string(runes[start:])
+}
+
+// wrapPlain breaks s into lines no longer than width, wrapping at word
+// boundaries. Naive — fine for short, unstyled description/prose
+// strings (picker footnotes, mode descriptions) that don't contain runs
+// of non-space punctuation longer than the column. Callers with
+// already-ANSI-styled text should wrap before styling, not after.
+func wrapPlain(s string, width int) string {
+	if width <= 0 || runeLen(s) <= width {
+		return s
+	}
+	var b strings.Builder
+	line := 0
+	for i, word := range strings.Fields(s) {
+		wordW := runeLen(word)
+		if i > 0 && line+1+wordW > width {
+			b.WriteString("\n")
+			line = 0
+		} else if i > 0 {
+			b.WriteString(" ")
+			line++
+		}
+		b.WriteString(word)
+		line += wordW
+	}
+	return b.String()
 }
 
 // runeLen is the display-width proxy used by the menu column math —

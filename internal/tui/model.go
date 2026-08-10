@@ -523,6 +523,16 @@ type Model struct {
 	// original on exit.
 	originalTerminalBackground color.Color
 
+	// transcriptSelecting is true between a mouse-down over the
+	// transcript viewport and the matching mouse-up (transcript_select.go).
+	// Anchor is where the drag started; head is the current (or final,
+	// after release) drag point — both are (contentLineIndex, runeCol)
+	// pairs into transcriptRows, not screen coordinates, so the
+	// selection stays correct as the drag crosses scroll-adjusted rows.
+	transcriptSelecting                                         bool
+	transcriptSelectionAnchorLine, transcriptSelectionAnchorCol int
+	transcriptSelectionHeadLine, transcriptSelectionHeadCol     int
+
 	// transcript is an append-only record of every line we've emitted to the
 	// terminal. View() does NOT render it (lines live in terminal scrollback);
 	// kept solely so tests can assert "this line was emitted." It also backs
@@ -1190,16 +1200,22 @@ func New(parent context.Context, c Config) Model {
 		recalledCount:          &atomic.Int32{},
 		textInput:              ti,
 		spinner:                sp,
-		md:                     newMarkdownRenderer(80),
-		inputHistoryIdx:        -1,
-		transcript:             &strings.Builder{},
-		streaming:              &strings.Builder{},
-		reasoning:              &strings.Builder{},
-		codeBlockBuf:           &strings.Builder{},
-		tableBuf:               &strings.Builder{},
-		livePlan:               livePlanInit,
-		firstMessageSent:       firstMessageSent,
-		contextTokens:          contextTokensInit,
+		// transcriptViewport is a zero-value viewport.Model field (never
+		// constructed via viewport.New()), so it never picks up that
+		// constructor's default MouseWheelEnabled=true — set explicitly
+		// here so real mouse-wheel events (routed through viewport's own
+		// built-in tea.MouseWheelMsg handling, mouse.go) actually scroll.
+		transcriptViewport: viewport.Model{MouseWheelEnabled: true},
+		md:                 newMarkdownRenderer(80),
+		inputHistoryIdx:    -1,
+		transcript:         &strings.Builder{},
+		streaming:          &strings.Builder{},
+		reasoning:          &strings.Builder{},
+		codeBlockBuf:       &strings.Builder{},
+		tableBuf:           &strings.Builder{},
+		livePlan:           livePlanInit,
+		firstMessageSent:   firstMessageSent,
+		contextTokens:      contextTokensInit,
 		// Cursor starts visible — the first blink tick (530ms after
 		// Init) flips it off, giving an unambiguous "yes the input is
 		// focused" cue on the very first frame.
@@ -2334,6 +2350,15 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, cmd
 		}
 
+	case tea.MouseClickMsg:
+		return m.handleMouseClick(msg)
+	case tea.MouseMotionMsg:
+		return m.handleMouseMotion(msg)
+	case tea.MouseReleaseMsg:
+		return m.handleMouseRelease(msg)
+	case tea.MouseWheelMsg:
+		return m.handleMouseWheel(msg)
+
 	case tea.PasteMsg:
 		// v2 delivers bracketed pastes as their own message type instead
 		// of a Paste-flagged key event. Bubbletea sets terminal line
@@ -2814,20 +2839,20 @@ func (m Model) skillsBusy() bool {
 func (m Model) View() tea.View {
 	v := tea.NewView(m.viewString())
 	v.AltScreen = true
-	// MouseMode deliberately left at its zero value (MouseModeNone): no
-	// mouse support. Claiming the mouse — even just for wheel events —
-	// takes plain click+drag away from the terminal's own native text
-	// selection (a terminal only lets Shift+drag bypass an app that has
-	// claimed the mouse, and even then, Shift held for the bypass also
-	// blocks wheel events from reaching the app, so scroll-while-
-	// selecting doesn't work either way). Native selection with no
-	// modifier needed is worth more than wheel-scroll, given
-	// PgUp/PgDn/Ctrl+Home/Ctrl+End already cover scrolling from the
-	// keyboard — see the mouse-wheel capability's brief existence and
-	// revert in git history/docs/tui-slash-commands.md if that tradeoff
-	// ever needs revisiting (e.g. with real in-app click-drag selection
-	// + OSC 52 clipboard copy, which tea.MouseClickMsg/MouseMotionMsg/
-	// MouseReleaseMsg and tea.SetClipboard would make buildable).
+	// Full mouse support: click/release/wheel, plus motion only while a
+	// button is held (drag) — CellMotion, not AllMotion, since nothing
+	// needs hover-with-no-button-down events. This supersedes the
+	// earlier wheel-only attempt (see git history/docs/tui-slash-
+	// commands.md) that was reverted because claiming the mouse for
+	// wheel alone broke plain click+drag native text selection with no
+	// compensating capability. Now the app implements real click
+	// targets (mouse.go: cmdline cursor positioning, picker/menu items,
+	// tabs, approval hotkeys) and its own click-drag text selection
+	// (transcript_select.go, clipboard via tea.SetClipboard/OSC 52) —
+	// trading terminal-native selection for app-owned selection that
+	// actually coexists with everything else, rather than a bare
+	// tradeoff with nothing to show for it.
+	v.MouseMode = tea.MouseModeCellMotion
 	if m.originalTerminalBackground != nil {
 		if hasThemeBackground {
 			v.BackgroundColor = themeBackground
@@ -2883,8 +2908,7 @@ func (m Model) viewString() string {
 // the hero because this function built its block by hand instead of
 // reusing that logic. Everything renders at normal full terminal
 // width — same as it always has; the startup card and input frame
-// already read as paired top/bottom chrome at that width (see
-// queuePrintlnFlush's doc).
+// already read as paired top/bottom chrome at that width.
 //
 // Uses lipgloss.Top (an exact 0.0 Position), not a fractional vPos —
 // charm.land/lipgloss/v2@v2.0.5's Place has a verified bug where any
@@ -2970,9 +2994,9 @@ func (m Model) activePopupBody() (box string, ok bool) {
 	case m.subagentsPickerOpen && m.subagentsPicker != nil:
 		return popupBox(renderSubagentsPicker(m.subagentsPicker, m.popupWidth())), true
 	case m.routerPickerOpen && m.routerPicker != nil:
-		return popupBox(renderRouterPicker(m.routerPicker)), true
+		return popupBox(renderRouterPicker(m.routerPicker, m.popupWidth())), true
 	case m.sandboxPickerOpen && m.sandboxPicker != nil:
-		return popupBox(renderSandboxPicker(m.sandboxPicker)), true
+		return popupBox(renderSandboxPicker(m.sandboxPicker, m.popupWidth())), true
 	case m.themePickerOpen && m.themePicker != nil:
 		return popupBox(renderThemePicker(m.themePicker, m.popupWidth())), true
 	case m.effortPickerOpen && m.effortPicker != nil:
@@ -3047,18 +3071,25 @@ func (m Model) aboveInputRows() []string {
 // the subagent dock. Also used by refreshTranscriptViewport purely to
 // measure its height (via lipgloss.Height) so the transcript viewport
 // above it is sized to fill exactly what's left.
-func (m Model) renderFooter() string {
-	parts := []string{}
+// footerPartsAboveInputFrame builds every part of the footer that
+// renders above the input frame — the live-turn/reasoning/streaming
+// preview, the live plan card, the thinking/summarizing row, and
+// aboveInputRows()'s banners/palette. Extracted out of renderFooter so
+// inputFrameOrigin (mouse.go) can measure exactly how many screen rows
+// sit above the input frame without re-deriving (and risking drift
+// from) this same conditional assembly.
+func (m Model) footerPartsAboveInputFrame() []string {
+	var parts []string
 	// During an active turn the live footer carries: a leading blank row
 	// (separates the live area from the user's just-emitted message in
-	// scrollback), the live reasoning preview if the model is thinking,
-	// the streaming content preview if the model is writing, the
-	// Thinking… indicator, and another blank row before the input box
+	// scrollback), two stable live-preview rows if the model is thinking
+	// or streaming content, the Thinking… indicator, and another blank row
+	// before the input box
 	// (lifts the indicator off the input so it reads as its own line,
 	// not stuck to the cmdline).
 	if m.turnActive {
 		parts = append(parts, "")
-		// Reserve one live-preview row for the whole active turn, even before
+		// Reserve two live-preview rows for the whole active turn, even before
 		// text arrives or after reasoning clears. Keeping the footer height fixed
 		// prevents the cmdline from bouncing while the LLM switches between
 		// thinking, streaming content, and tool calls.
@@ -3098,6 +3129,11 @@ func (m Model) renderFooter() string {
 	// disappearing while it's up; keyboard routing for the modal is
 	// handled separately in update(), ahead of the palette/textarea path.
 	parts = append(parts, m.aboveInputRows()...)
+	return parts
+}
+
+func (m Model) renderFooter() string {
+	parts := m.footerPartsAboveInputFrame()
 	parts = append(parts, m.renderInputFrame())
 
 	// Status bar sits directly below the cmdline. Earlier versions
@@ -3195,18 +3231,90 @@ func renderEmptyCursor(visible bool) string {
 	return lipgloss.NewStyle().Reverse(true).Render(" ")
 }
 
+// inputVRow is one wrapped visual row of the cmdline's textarea value:
+// its rendered text, the logical (\n-split) line it came from, and the
+// rune offset within that logical line where this visual row starts.
+type inputVRow struct {
+	text      string
+	logical   int
+	startChar int
+}
+
+// inputPromptW is the display width of the cmdline's prompt/indent
+// prefix ("❯ ") — shared by renderInputBody (which pads wrapped
+// continuation rows to the same width) and resolveInputClick (which
+// subtracts it back out of a click's screen column).
+const inputPromptW = 2
+
+// inputMaxRows caps how many wrapped visual rows of the cmdline are
+// shown at once — shared by renderInputBody (which windows the wrapped
+// rows to this many) and resolveInputClick (which must window the exact
+// same way to map a click back to the right row).
+const inputMaxRows = 6
+
+// wrapInputRows wraps a possibly-multi-line textarea value at wrapW and
+// locates which resulting visual row holds the cursor
+// (cursorLogicalRow, cursorLogicalCol) — the same geometry
+// renderInputBody paints. Shared with resolveInputClick (cmdline_click.go)
+// so the two can never drift apart: a click is resolved against the
+// exact same row layout the click's own screen position was rendered
+// from.
+func wrapInputRows(val string, wrapW, cursorLogicalRow, cursorLogicalCol int) (rows []inputVRow, cursorVisRow int) {
+	for li, line := range strings.Split(val, "\n") {
+		if line == "" {
+			rows = append(rows, inputVRow{logical: li})
+			continue
+		}
+		wrapped := ansi.Hardwrap(line, wrapW, true)
+		offset := 0
+		for _, r := range strings.Split(wrapped, "\n") {
+			rows = append(rows, inputVRow{text: r, logical: li, startChar: offset})
+			offset += len([]rune(r))
+		}
+	}
+	cursorVisRow = -1
+	for i, r := range rows {
+		if r.logical != cursorLogicalRow {
+			continue
+		}
+		end := r.startChar + len([]rune(r.text))
+		if cursorLogicalCol >= r.startChar && cursorLogicalCol <= end {
+			cursorVisRow = i
+		}
+	}
+	return rows, cursorVisRow
+}
+
+// windowInputRows caps rows at maxRows, scrolling the window so
+// cursorVisRow (an index into the UNWINDOWED rows slice) stays in view.
+// Returns the windowed slice and windowStart — the unwindowed index that
+// windowed[0] corresponds to, which resolveInputClick needs to map a
+// clicked row (an index into the windowed/visible slice) back to the
+// right inputVRow.
+func windowInputRows(rows []inputVRow, cursorVisRow, maxRows int) (windowed []inputVRow, windowStart int) {
+	if len(rows) <= maxRows {
+		return rows, 0
+	}
+	start := cursorVisRow - (maxRows - 1)
+	if start < 0 {
+		start = 0
+	}
+	if start+maxRows > len(rows) {
+		start = len(rows) - maxRows
+	}
+	return rows[start : start+maxRows], start
+}
+
 // renderInputBody is the inside of the input box: prompt + wrapped value
 // with a visible cursor block at the cursor position. contentW is the
 // inner width of the box (terminal width minus border+padding).
 func (m Model) renderInputBody(contentW int) string {
 	const promptStr = "❯ "
-	const maxRows = 6
-	promptW := lipgloss.Width(promptStr)
-	wrapW := contentW - promptW
+	wrapW := contentW - inputPromptW
 	if wrapW < 1 {
 		wrapW = 1
 	}
-	indent := strings.Repeat(" ", promptW)
+	indent := strings.Repeat(" ", inputPromptW)
 
 	val := m.textInput.Value()
 	if val == "" {
@@ -3238,52 +3346,8 @@ func (m Model) renderInputBody(contentW int) string {
 	info := m.textInput.LineInfo()
 	cursorLogicalCol := info.StartColumn + info.ColumnOffset
 
-	// Wrap each \n-separated logical line to wrapW. Track which logical
-	// row each visual row came from (so we know when to draw a fresh
-	// prompt vs. indent) and the char offset where the visual row starts.
-	type vrow struct {
-		text      string
-		logical   int
-		startChar int
-	}
-	var rows []vrow
-	for li, line := range strings.Split(val, "\n") {
-		if line == "" {
-			rows = append(rows, vrow{logical: li})
-			continue
-		}
-		wrapped := ansi.Hardwrap(line, wrapW, true)
-		offset := 0
-		for _, r := range strings.Split(wrapped, "\n") {
-			rows = append(rows, vrow{text: r, logical: li, startChar: offset})
-			offset += len([]rune(r))
-		}
-	}
-
-	// Find which visual row the cursor is on.
-	cursorVisRow := -1
-	for i, r := range rows {
-		if r.logical != cursorLogicalRow {
-			continue
-		}
-		end := r.startChar + len([]rune(r.text))
-		if cursorLogicalCol >= r.startChar && cursorLogicalCol <= end {
-			cursorVisRow = i
-		}
-	}
-
-	// Cap visible rows at maxRows; scroll so cursor stays in view.
-	start := 0
-	if len(rows) > maxRows {
-		start = cursorVisRow - (maxRows - 1)
-		if start < 0 {
-			start = 0
-		}
-		if start+maxRows > len(rows) {
-			start = len(rows) - maxRows
-		}
-		rows = rows[start : start+maxRows]
-	}
+	rows, cursorVisRow := wrapInputRows(val, wrapW, cursorLogicalRow, cursorLogicalCol)
+	rows, start := windowInputRows(rows, cursorVisRow, inputMaxRows)
 
 	out := make([]string, 0, len(rows))
 	for i, r := range rows {
@@ -3362,10 +3426,10 @@ func liveContentWidth(terminalWidth int) int {
 	return w
 }
 
-// renderActiveTurnPreviewRow returns the single reserved live-preview row used
-// while a turn is active. It deliberately returns a blank styled row when no
+// renderActiveTurnPreviewRow returns the reserved two-row live-preview area used
+// while a turn is active. It deliberately returns blank styled rows when no
 // preview text is available so the footer keeps a constant height and the
-// cmdline stays anchored instead of moving as reasoning appears or clears.
+// cmdline stays anchored instead of moving as reasoning appears, clears, or wraps.
 func (m Model) renderActiveTurnPreviewRow() string {
 	if !m.turnActive {
 		return ""
@@ -3375,21 +3439,22 @@ func (m Model) renderActiveTurnPreviewRow() string {
 	}
 	if m.streamingMode == streamContent {
 		// Inside buffered Markdown structures, show progress without varying the
-		// footer height. Plain prose uses the capped one-row streaming preview.
+		// footer height. Plain prose uses the capped two-row streaming preview.
 		switch {
 		case m.inCodeBlock:
 			return m.renderActiveTurnNotice(m.codeBlockNoticeText())
 		case m.inTable:
 			return m.renderActiveTurnNotice(m.tableNoticeText())
 		case m.streaming.Len() > 0:
-			return m.renderActiveTurnNotice(m.streaming.String())
+			return m.renderActiveTurnPreview(m.streaming.String())
 		}
 	}
-	return styleTurnFooter.Render(" ")
+	return renderStyledPreviewRows(nil, 2)
 }
 
-// renderActiveTurnNotice styles a single-row tail of an active-turn preview.
-// The style adds left padding, so reserve those columns before trimming.
+// renderActiveTurnNotice styles one-row status notices inside the two-row active
+// preview area. Buffered Markdown notices stay concise, with a blank row reserved
+// beneath them so switching back to prose preview never moves the input frame.
 func (m Model) renderActiveTurnNotice(s string) string {
 	width := liveContentWidth(m.width) - 2
 	if width <= 1 {
@@ -3397,12 +3462,12 @@ func (m Model) renderActiveTurnNotice(s string) string {
 	}
 	s = strings.TrimSpace(strings.ReplaceAll(s, "\n", " "))
 	if s == "" {
-		return styleTurnFooter.Render(" ")
+		return renderStyledPreviewRows(nil, 2)
 	}
 	if ansi.StringWidth(s) > width {
 		s = tailWithLeftEllipsis(s, width)
 	}
-	return styleTurnFooter.Render(s)
+	return renderStyledPreviewRows([]string{s}, 2)
 }
 
 // tailWithLeftEllipsis keeps the newest text within max display columns and
@@ -3418,11 +3483,68 @@ func tailWithLeftEllipsis(s string, max int) string {
 	return "…" + strings.TrimPrefix(s, "…")
 }
 
-// renderReasoningPreview returns the most recent live chain-of-thought text for
-// the in-progress turn, capped to one row. Reasoning streams can grow from zero
-// to many wrapped lines and then disappear when answer text starts; keeping this
-// preview single-line preserves the live footer height so the cmdline stays
-// visually anchored.
+// previewRows wraps text into at most maxRows display rows, returning the newest
+// rows with a leading ellipsis when older content was dropped. This keeps the
+// live stream readable without letting it grow enough to move the cmdline.
+func previewRows(s string, width, maxRows int) []string {
+	if width <= 1 || maxRows <= 0 {
+		return nil
+	}
+	s = strings.TrimSpace(strings.ReplaceAll(s, "\n", " "))
+	if s == "" {
+		return nil
+	}
+	words := strings.Fields(s)
+	if len(words) == 0 {
+		return nil
+	}
+	rows := make([]string, 0, len(words))
+	for _, word := range words {
+		for ansi.StringWidth(word) > width {
+			rows = append(rows, headByDisplayWidth(word, width))
+			word = trimLeadingByDisplayWidth(word, width)
+		}
+		if word == "" {
+			continue
+		}
+		last := len(rows) - 1
+		if last >= 0 && ansi.StringWidth(rows[last])+1+ansi.StringWidth(word) <= width {
+			rows[last] += " " + word
+			continue
+		}
+		rows = append(rows, word)
+	}
+	if len(rows) <= maxRows {
+		return rows
+	}
+	rows = append([]string(nil), rows[len(rows)-maxRows:]...)
+	rows[0] = "…" + strings.TrimPrefix(rows[0], "…")
+	if ansi.StringWidth(rows[0]) > width {
+		rows[0] = tailWithLeftEllipsis(rows[0], width)
+	}
+	return rows
+}
+
+// renderStyledPreviewRows applies the live preview style to exactly reservedRows
+// logical rows. Empty styled rows intentionally reserve space so active-turn
+// footer height stays stable across empty, one-line, and two-line previews.
+func renderStyledPreviewRows(rows []string, reservedRows int) string {
+	if reservedRows <= 0 {
+		return ""
+	}
+	for len(rows) < reservedRows {
+		rows = append([]string{" "}, rows...)
+	}
+	if len(rows) > reservedRows {
+		rows = rows[len(rows)-reservedRows:]
+	}
+	return styleTurnFooter.Render(strings.Join(rows, "\n"))
+}
+
+// renderReasoningPreview returns the most recent live thinking text for the
+// in-progress turn, capped to two unboxed rows. Reasoning can grow from zero to
+// many wrapped lines and then disappear when answer text starts; reserving two
+// preview rows preserves the live footer height so the cmdline stays anchored.
 func (m Model) renderReasoningPreview() string {
 	if m.reasoning.Len() == 0 {
 		return ""
@@ -3431,14 +3553,11 @@ func (m Model) renderReasoningPreview() string {
 	if width <= 1 {
 		return ""
 	}
-	body := strings.TrimSpace(strings.ReplaceAll(m.reasoning.String(), "\n", " "))
-	if body == "" {
+	rows := previewRows(m.reasoning.String(), width, 2)
+	if len(rows) == 0 {
 		return ""
 	}
-	if ansi.StringWidth(body) > width {
-		body = tailWithLeftEllipsis(body, width)
-	}
-	return styleTurnFooter.Render(body)
+	return renderStyledPreviewRows(rows, 2)
 }
 
 // renderCodeBlockNotice is the in-progress indicator shown in the live
@@ -3476,16 +3595,26 @@ func (m Model) tableNoticeText() string {
 	return fmt.Sprintf("…formatting table (%d rows, will render on close)", rows)
 }
 
+// renderActiveTurnPreview returns the trailing prose stream in a stable two-row
+// live preview. It is intentionally unboxed: the text should read like the
+// emerging assistant response while remaining visually subordinate to scrollback.
+func (m Model) renderActiveTurnPreview(s string) string {
+	width := liveContentWidth(m.width) - 2
+	if width <= 1 {
+		return ""
+	}
+	return renderStyledPreviewRows(previewRows(s, width, 2), 2)
+}
+
 // renderStreamingPreview returns the trailing partial prose line capped
-// to one terminal row. The model emits content incrementally; without
-// hard line breaks the in-flight buffer can grow past the terminal
-// width and wrap to multiple visual rows. Bubbletea's inline-mode
-// renderer counts logical lines, not wrapped rows, so when the buffer
-// commits and the live footer shrinks the renderer leaves the
-// previously-wrapped rows on screen as ghost text below the
-// scrollback emit — looks like the response is duplicated. Capping
-// the preview to one row keeps the live footer's visual height
-// matching its logical height.
+// to two terminal rows. The model emits content incrementally; without
+// hard line breaks the in-flight buffer can grow past the terminal width
+// and wrap to many visual rows. Bubbletea's inline-mode renderer counts
+// logical lines, not wrapped rows, so when the buffer commits and the
+// live footer shrinks the renderer leaves the previously-wrapped rows on
+// screen as ghost text below the scrollback emit — looks like the
+// response is duplicated. Capping the preview to two rows keeps the live
+// footer readable while matching its logical height.
 //
 // When the buffer exceeds the available width we show the trailing
 // portion of the text (the most recent content) prefixed with "…".
@@ -3498,11 +3627,43 @@ func (m Model) renderStreamingPreview() string {
 	if width <= 1 {
 		return ""
 	}
-	runes := []rune(s)
-	if len(runes) <= width {
+	rows := previewRows(s, width, 1)
+	if len(rows) == 0 {
+		return ""
+	}
+	return strings.Join(rows, "\n")
+}
+
+func headByDisplayWidth(s string, width int) string {
+	if width <= 0 || s == "" {
+		return ""
+	}
+	var b strings.Builder
+	used := 0
+	for _, r := range s {
+		rw := ansi.StringWidth(string(r))
+		if used+rw > width {
+			break
+		}
+		b.WriteRune(r)
+		used += rw
+	}
+	return b.String()
+}
+
+func trimLeadingByDisplayWidth(s string, width int) string {
+	if width <= 0 || s == "" {
 		return s
 	}
-	return "…" + string(runes[len(runes)-(width-1):])
+	used := 0
+	for i, r := range s {
+		rw := ansi.StringWidth(string(r))
+		if used+rw > width {
+			return s[i:]
+		}
+		used += rw
+	}
+	return ""
 }
 
 // renderThinkingRow is the live thinking indicator above the input, redrawn
@@ -6472,30 +6633,10 @@ func (m *Model) appendRaw(s string) {
 	m.queuePrintln(s)
 }
 
-// appendRawFlush is appendRaw for content that should emit at column 0
-// instead of the scrollbackLeftMargin gutter — currently just the startup
-// identity card, aligned with the flush-left input frame.
-func (m *Model) appendRawFlush(s string) {
-	if m.transcript.Len() > 0 {
-		m.transcript.WriteString("\n\n")
-	}
-	m.transcript.WriteString(s)
-	m.queuePrintlnFlush(s)
-}
-
 // queuePrintln appends s to the owned transcript buffer (transcriptRows),
 // pre-wrapped to the current terminal width. Used by appendRaw.
 func (m *Model) queuePrintln(s string) {
 	m.queuePrintlnIndented(s, scrollbackLeftMargin)
-}
-
-// queuePrintlnFlush emits s at column 0, bypassing scrollbackLeftMargin.
-// Used for the startup identity card, which is deliberately aligned with
-// the flush-left command-line input frame (also column 0) rather than the
-// inset conversation canvas — the two read as the session's top/bottom
-// chrome bookends.
-func (m *Model) queuePrintlnFlush(s string) {
-	m.queuePrintlnIndented(s, 0)
 }
 
 // queuePrintlnIndented hard-wraps s (ANSI-aware) to the current terminal
@@ -6575,7 +6716,13 @@ func (m *Model) refreshTranscriptViewport() {
 	}
 	m.transcriptDirty = false
 	wasAtBottom := m.transcriptViewport.AtBottom()
-	m.transcriptViewport.SetContentLines(m.transcriptRows)
+	// Goes through applyTranscriptHighlight (transcript_select.go)
+	// rather than a bare SetContentLines so a selection made mid-stream
+	// (new agent output arriving while the user is dragging or has just
+	// finished) gets recomputed against the fresh rows instead of
+	// silently dropped. It's a no-op passthrough to plain content when
+	// no selection is active.
+	m.applyTranscriptHighlight()
 	if wasAtBottom {
 		m.transcriptViewport.GotoBottom()
 	}

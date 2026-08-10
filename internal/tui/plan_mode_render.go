@@ -167,7 +167,7 @@ func renderPlanFileCard(planPath string) string {
 // Separating body from decision keeps the box small, lets the body
 // persist naturally after the user dismisses the modal, and avoids
 // truncation when the plan is long.
-func renderPlanApprovalCard(width int) string {
+func renderPlanApprovalCard(width int, hits ...*pickerHits) string {
 	hotkeys := stylePlanApprovalHotkey.Render("[A]") + " " +
 		stylePlanApprovalChoice.Render("auto-approval") +
 		"\n" +
@@ -179,7 +179,7 @@ func renderPlanApprovalCard(width int) string {
 		"\n" +
 		stylePlanApprovalHotkey.Render("[K]") + " " +
 		stylePlanApprovalChoice.Render("keep planning")
-	return renderPlanDecisionCard(PlanModeIcon+" Approve plan?", "exit_plan_mode", hotkeys, width)
+	return renderPlanDecisionCard(PlanModeIcon+" Approve plan?", "exit_plan_mode", hotkeys, width, hits...)
 }
 
 // renderEnterPlanApprovalCard renders the decision UI for an
@@ -187,25 +187,32 @@ func renderPlanApprovalCard(width int) string {
 // user picks whether the session actually switches. Two choices only;
 // deliberately no "always allow" (a derived rule would silently flip
 // modes on every future request, which defeats the handshake).
-func renderEnterPlanApprovalCard(width int) string {
+func renderEnterPlanApprovalCard(width int, hits ...*pickerHits) string {
 	hotkeys := stylePlanApprovalHotkey.Render("[Y]") + " " +
 		stylePlanApprovalChoice.Render("enter plan mode") +
 		"\n" +
 		stylePlanApprovalHotkey.Render("[N]") + " " +
 		stylePlanApprovalChoice.Render("stay in current mode")
-	return renderPlanDecisionCard(PlanModeIcon+" Enter plan mode?", "enter_plan_mode", hotkeys, width)
+	return renderPlanDecisionCard(PlanModeIcon+" Enter plan mode?", "enter_plan_mode", hotkeys, width, hits...)
 }
 
 // renderPlanDecisionCard is the shared bordered-box builder behind the
 // plan-mode decision cards: title on the top-left of the frame, tool
 // name on the top-right, hotkey rows in the body. Kept generic over
 // (title, toolName, hotkeys) so enter and exit render identically.
-func renderPlanDecisionCard(title, toolName, hotkeys string, width int) string {
+func renderPlanDecisionCard(title, toolName, hotkeys string, width int, hits ...*pickerHits) string {
+	var h *pickerHits
+	if len(hits) > 0 {
+		h = hits[0]
+	}
 	capW := capLabeledBoxWidth(width)
 
 	bodyLines := []string{""}
 	for _, line := range hardWrapLabeled(hotkeys, capW) {
-		bodyLines = append(bodyLines, labeledBoxIndent+line)
+		row := len(bodyLines)
+		indented := labeledBoxIndent + line
+		bodyLines = append(bodyLines, indented)
+		registerBracketHotkeys(h, row, ansi.Strip(indented))
 	}
 	bodyLines = append(bodyLines, "")
 

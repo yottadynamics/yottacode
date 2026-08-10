@@ -44,14 +44,55 @@ func TestRenderApprovalModal_BracketsFirstNoInlinePermissionsDetail(t *testing.T
 	m.approvalDerivedRule = "Bash(echo *)"
 
 	got := stripANSI(renderApprovalModal(m))
-	if !strings.Contains(got, "[Y] yes") || !strings.Contains(got, "[N] no") {
+	if !strings.Contains(got, "[Y]  yes") || !strings.Contains(got, "[N]  no") {
 		t.Errorf("hotkeys should be brackets-first: %q", got)
 	}
-	if !strings.Contains(got, "[A] always — adds Bash(echo *)") {
+	if !strings.Contains(got, "[A]  always — adds Bash(echo *)") {
 		t.Errorf("always-allow hint missing: %q", got)
 	}
 	if strings.Contains(got, "permissions.local.json") {
 		t.Errorf("permissions.local.json detail should move to the toast: %q", got)
+	}
+}
+
+func TestRenderApprovalModal_UsesComfortableWidthWithoutOverflow(t *testing.T) {
+	m := newTestModel(t)
+	m.width = 80
+	m.awaitingApproval = true
+	m.approvalTool = "run_bash"
+	m.approvalPreview = "echo hello"
+	m.approvalArgs = `{"command":"echo hello"}`
+
+	got := renderApprovalModal(m)
+	lines := strings.Split(got, "\n")
+	if len(lines) < 3 {
+		t.Fatalf("expected a multi-line modal, got %d lines", len(lines))
+	}
+	want := ansi.StringWidth(lines[0])
+	if want < approvalModalMinInnerWidth {
+		t.Fatalf("approval modal should keep a comfortable decision width, got outer width %d", want)
+	}
+	if want > m.width {
+		t.Fatalf("approval modal outer width = %d, terminal width = %d", want, m.width)
+	}
+	for i, line := range lines {
+		if w := ansi.StringWidth(line); w != want {
+			t.Errorf("line %d width = %d, want %d (right border drift)\n  line: %q", i, w, want, stripANSI(line))
+		}
+	}
+}
+
+func TestRenderApprovalModal_NarrowTerminalDoesNotOverflow(t *testing.T) {
+	m := newTestModel(t)
+	m.width = 60
+	m.awaitingApproval = true
+	m.approvalTool = "run_bash"
+	m.approvalPreview = "echo hello"
+	m.approvalArgs = `{"command":"echo hello"}`
+
+	first := strings.SplitN(renderApprovalModal(m), "\n", 2)[0]
+	if w := ansi.StringWidth(first); w > m.width {
+		t.Fatalf("approval modal outer width = %d, terminal width = %d", w, m.width)
 	}
 }
 
@@ -132,7 +173,7 @@ func TestRenderApprovalModal_ShowsNeverHint(t *testing.T) {
 	m.approvalDerivedDenyRule = "Bash(curl *)"
 
 	got := stripANSI(renderApprovalModal(m))
-	if !strings.Contains(got, "[D] never — adds Bash(curl *)") {
+	if !strings.Contains(got, "[D]  never — adds Bash(curl *)") {
 		t.Errorf("never/block hint missing: %q", got)
 	}
 	if strings.Contains(got, "[A] always") {

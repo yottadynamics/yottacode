@@ -184,13 +184,19 @@ func normalizedEffort(level string) string {
 // row per level with its short description. The active-on-open level is
 // marked with ·; the cursor row gets the ❯ arrow (pinned to Success so
 // it reads identically across themes, matching the theme picker).
-func renderEffortPicker(p *effortPickerState) string {
+func renderEffortPicker(p *effortPickerState, hits ...*pickerHits) string {
+	var h *pickerHits
+	if len(hits) > 0 {
+		h = hits[0]
+	}
 	cursorArrow := lipgloss.NewStyle().Foreground(colorSuccess).Bold(true).Render("❯ ")
 	var b strings.Builder
 	b.WriteString(renderMenuHeader("Reasoning effort",
 		"↑↓ navigate · ↵ apply · esc cancel"))
 	b.WriteString("\n\n")
 	for i, e := range p.entries {
+		row := strings.Count(b.String(), "\n")
+		h.row(row, i)
 		var marker, label string
 		switch {
 		case i == p.cursor:

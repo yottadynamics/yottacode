@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/yottadynamics/yottacode/internal/agent"
 )
@@ -38,7 +39,11 @@ var (
 //	[3] reject          model sees the original error
 //
 // The modal stays narrow and plain-text; no emoji.
-func renderPathTrustModal(m Model) string {
+func renderPathTrustModal(m Model, hits ...*pickerHits) string {
+	var h *pickerHits
+	if len(hits) > 0 {
+		h = hits[0]
+	}
 	req := m.pathTrustReq
 	capW := capLabeledBoxWidth(m.width)
 
@@ -63,7 +68,11 @@ func renderPathTrustModal(m Model) string {
 	}
 	body = append(body, "")
 	for _, line := range pathTrustHotkeys() {
+		row := len(body)
 		appendWrapped(line)
+		for r := row; r < len(body); r++ {
+			registerBracketHotkeys(h, r, ansi.Strip(body[r]))
+		}
 	}
 	body = append(body, "")
 

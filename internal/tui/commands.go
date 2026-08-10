@@ -217,16 +217,17 @@ func cmdHelp(m Model, _ []string) (Model, tea.Cmd) {
 }
 
 func renderHelpPanel(m Model) string {
+	popupW := m.popupWidth()
 	width := helpCommandWidth(m)
-	wrapWidth := m.popupWidth() - 4
+	wrapWidth := popupW - 4
 	if wrapWidth < 40 {
 		wrapWidth = 40
 	}
 	var b strings.Builder
-	b.WriteString(renderMenuHeader("Help", "Type / to search commands directly. Press ? for keyboard shortcuts."))
+	b.WriteString(renderMenuHeader("Help", "Type / to search commands directly. Press ? for keyboard shortcuts.", popupW))
 	b.WriteString("\n")
 
-	renderHelpCommonSection(&b, width)
+	renderHelpCommonSection(&b, width, popupW)
 	renderHelpGroup(&b, "Workflow", allSlash[0:16], wrapWidth)
 	renderHelpGroup(&b, "Git", allSlash[16:24], wrapWidth)
 	renderHelpGroup(&b, "Integrations", allSlash[24:25], wrapWidth)
@@ -234,10 +235,10 @@ func renderHelpPanel(m Model) string {
 	renderHelpGroup(&b, "Mode", allSlash[36:37], wrapWidth)
 	renderHelpGroup(&b, "Meta", allSlash[37:], wrapWidth)
 	if len(m.customSlash) > 0 {
-		renderHelpDetailSection(&b, "Custom commands", m.customSlash, width, m.cwd)
+		renderHelpDetailSection(&b, "Custom commands", m.customSlash, width, popupW, m.cwd)
 	}
 	if len(m.skillSlash) > 0 {
-		renderHelpDetailSection(&b, "Skills", m.skillSlash, width, m.cwd)
+		renderHelpDetailSection(&b, "Skills", m.skillSlash, width, popupW, m.cwd)
 	}
 
 	b.WriteString("\n")
@@ -245,7 +246,7 @@ func renderHelpPanel(m Model) string {
 	return strings.TrimRight(b.String(), "\n")
 }
 
-func renderHelpCommonSection(b *strings.Builder, width int) {
+func renderHelpCommonSection(b *strings.Builder, width, maxWidth int) {
 	b.WriteString(styleSplashTitle.Render("Common"))
 	b.WriteString("\n")
 	for _, item := range []slashCommand{
@@ -259,6 +260,7 @@ func renderHelpCommonSection(b *strings.Builder, width int) {
 			Label:      helpCommandLabel(item),
 			LabelWidth: width,
 			Desc:       item.Help,
+			MaxWidth:   maxWidth,
 		}))
 		b.WriteString("\n")
 	}
@@ -278,7 +280,7 @@ func renderHelpGroup(b *strings.Builder, title string, commands []slashCommand, 
 	}
 }
 
-func renderHelpDetailSection(b *strings.Builder, title string, commands []slashCommand, width int, cwd string) {
+func renderHelpDetailSection(b *strings.Builder, title string, commands []slashCommand, width, maxWidth int, cwd string) {
 	if len(commands) == 0 {
 		return
 	}
@@ -294,6 +296,7 @@ func renderHelpDetailSection(b *strings.Builder, title string, commands []slashC
 			Label:      helpCommandLabel(c),
 			LabelWidth: width,
 			Desc:       desc,
+			MaxWidth:   maxWidth,
 		}))
 		b.WriteString("\n")
 	}

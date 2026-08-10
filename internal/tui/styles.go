@@ -143,6 +143,12 @@ var (
 	styleWatermarkAlert   lipgloss.Style
 	styleWatermarkBox     lipgloss.Style
 	styleTurnFooter       lipgloss.Style
+	// styleTranscriptSelection highlights the live click-drag text
+	// selection over the transcript viewport (transcript_select.go) —
+	// applied via viewport.Model.HighlightStyle, the same field the
+	// bubbles viewport uses for its own (otherwise-unused-in-this-app)
+	// search-match highlighting.
+	styleTranscriptSelection lipgloss.Style
 
 	// activeThemeName tracks the palette in effect. Read by
 	// /themes show and config persistence so the user sees what's
@@ -349,6 +355,9 @@ func buildStyles(p themes.Palette) {
 	}
 
 	styleTurnFooter = lipgloss.NewStyle().Foreground(colorMuted).Italic(true).Faint(true).PaddingLeft(2).MarginTop(1)
+	// Reverse video on brand, same convention as stylePaletteSelected —
+	// legible against the terminal background regardless of theme.
+	styleTranscriptSelection = lipgloss.NewStyle().Foreground(colorBrand).Reverse(true)
 
 	// --- Styles whose declarations live in other files ---------
 	// These were previously declared with var-block initializers in
