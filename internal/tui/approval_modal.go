@@ -54,7 +54,11 @@ func renderApprovalModal(m Model, hits ...*pickerHits) string {
 	// never trims.
 	capW := capApprovalBoxWidth(m.width)
 
-	bodyLines := []string{strings.Repeat(" ", approvalModalTargetInnerWidth(capW))}
+	header := styleApprovalTitle.Render("Approval needed")
+	if m.approvalTool != "" {
+		header += styleApprovalTool.Render(" · " + m.approvalTool)
+	}
+	bodyLines := []string{labeledBoxIndent + header, strings.Repeat(" ", approvalModalTargetInnerWidth(capW))}
 	for _, line := range hardWrapLabeled(body, capW) {
 		bodyLines = append(bodyLines, labeledBoxIndent+line)
 	}
@@ -80,7 +84,7 @@ func renderApprovalModal(m Model, hits ...*pickerHits) string {
 	leftLabel := " " + styleApprovalTitle.Render("Approval needed") + " "
 	rightLabel := " " + styleApprovalTool.Render(m.approvalTool) + " "
 
-	return renderLabeledBox(leftLabel, rightLabel, bodyLines, capW, colorWarning)
+	return addPopupCloseGlyph(renderLabeledBox(leftLabel, rightLabel, bodyLines, capW, colorWarning))
 }
 
 // approvalBodyFor returns the focused, Content-styled body for the
@@ -135,13 +139,13 @@ func approvalHotkeyRows(allowAlways bool, derivedRule string, denyAlways bool, d
 	if allowAlways {
 		rows = append(rows, approvalHotkeyRow{
 			hotkey: styleApprovalHotkey.Render("[A]"),
-			desc:   styleApprovalChoiceDim.Render("always — adds "+derivedRule),
+			desc:   styleApprovalChoiceDim.Render("always — adds " + derivedRule),
 		})
 	}
 	if denyAlways {
 		rows = append(rows, approvalHotkeyRow{
 			hotkey: styleApprovalHotkey.Render("[D]"),
-			desc:   styleApprovalChoiceDim.Render("never — adds "+denyRule),
+			desc:   styleApprovalChoiceDim.Render("never — adds " + denyRule),
 		})
 	}
 	return rows

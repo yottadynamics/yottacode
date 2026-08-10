@@ -594,6 +594,9 @@ func (m Model) handleApprovalModalClick(msg tea.MouseClickMsg) (Model, tea.Cmd) 
 		box = renderApprovalModal(m, hits)
 	}
 	ox, oy := m.popupOrigin(box)
+	if out, cmd, closed := m.handlePopupCloseClick(box, msg); closed {
+		return out, cmd
+	}
 	row, col, ok := bodyPoint(box, ox, oy, msg.X, msg.Y)
 	if !ok {
 		return m, nil
@@ -801,5 +804,6 @@ func (m Model) handleMouseWheel(msg tea.MouseWheelMsg) (Model, tea.Cmd) {
 	}
 	var cmd tea.Cmd
 	m.transcriptViewport, cmd = m.transcriptViewport.Update(msg)
+	m.updateTranscriptFollowIntent()
 	return m, cmd
 }
