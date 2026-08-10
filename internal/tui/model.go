@@ -610,6 +610,14 @@ type Model struct {
 	// touch the transcript.
 	transcriptDirty bool
 
+	// transcriptFollow tracks whether fresh transcript output should remain pinned
+	// to the newest row. viewport.AtBottom() can flip false after the footer grows
+	// (live plan card, approval modal hint row, streaming preview) even though the
+	// user never intentionally scrolled away; keeping explicit follow intent avoids
+	// leaving new agent output just below the visible window until a mouse wheel
+	// event happens to snap the viewport back into range.
+	transcriptFollow bool
+
 	// historyLines records every conversation line emitted via appendLine —
 	// user blocks, assistant replies, tool calls, errors, footers — in the
 	// order they were emitted. Kept for /export and other consumers that
@@ -1204,6 +1212,7 @@ func New(parent context.Context, c Config) Model {
 		// here so real mouse-wheel events (routed through viewport's own
 		// built-in tea.MouseWheelMsg handling, mouse.go) actually scroll.
 		transcriptViewport: viewport.Model{MouseWheelEnabled: true},
+		transcriptFollow:   true,
 		md:                 newMarkdownRenderer(80),
 		inputHistoryIdx:    -1,
 		transcript:         &strings.Builder{},
@@ -1534,7 +1543,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.mcpPickerOpen {
 			return m.updateMCPPicker(msg)
 		}
-		// Transcript scrolling. No mouse support, and alt-screen mode owns
+		// Transcript scrolling. Alt-screen mode owns
 		// the whole frame (no native terminal scrollback to fall back on),
 		// so PgUp/PgDn/Ctrl+Home/Ctrl+End are the only way to read back
 		// through history. Arrow keys stay reserved for input history
@@ -1552,15 +1561,19 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			switch {
 			case msg.Code == tea.KeyPgUp:
 				m.transcriptViewport.PageUp()
+				m.updateTranscriptFollowIntent()
 				return m, nil
 			case msg.Code == tea.KeyPgDown:
 				m.transcriptViewport.PageDown()
+				m.updateTranscriptFollowIntent()
 				return m, nil
 			case msg.Code == tea.KeyHome && msg.Mod == tea.ModCtrl:
 				m.transcriptViewport.GotoTop()
+				m.transcriptFollow = false
 				return m, nil
 			case msg.Code == tea.KeyEnd && msg.Mod == tea.ModCtrl:
 				m.transcriptViewport.GotoBottom()
+				m.transcriptFollow = true
 				return m, nil
 			}
 		}
@@ -2226,8 +2239,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.lastEscAt = time.Now()
 			return m, nil
 		case "shift+tab":
-			// Cycle through normal → auto → plan → normal. Mirrors
-			// Claude Code's Shift+Tab, INCLUDING mid-turn: the loop
+			// Cycle through normal → plan → auto → yolo → normal. The loop
 			// reads the mode atomics on every tool dispatch and
 			// rebuilds the plan addendum per iteration, so a flip
 			// while the agent is working takes effect on its very
@@ -2909,6 +2921,7 @@ func (m Model) viewString() string {
 		// tests are the common case — never leave stale sizing on screen.
 		footer := m.renderFooter()
 		m.resizeTranscriptViewport(footer)
+		m.applyTranscriptFollowIntent()
 		background = lipgloss.JoinVertical(lipgloss.Left, m.transcriptViewport.View(), footer)
 	}
 
@@ -3106,7 +3119,7 @@ func (m Model) renderKeyHintRow() string {
 	if len(hints) == 0 {
 		return ""
 	}
-	line := "keys · " + strings.Join(hints, " · ")
+	line := strings.Join(hints, " · ")
 	width := liveContentWidth(m.width)
 	if width > 0 && lipgloss.Width(line) > width {
 		line = ansi.Truncate(line, width, "…")
@@ -3122,26 +3135,26 @@ func (m Model) renderKeyHintRow() string {
 func (m Model) contextualKeyHints() []string {
 	switch {
 	case m.awaitingPathTrust:
-		return []string{"1 once", "2 trust", "3 reject", "Enter queue text"}
+		return []string{"1: once", "2: trust", "3: reject", "Enter: queue text"}
 	case m.awaitingApproval && m.approvalTool == "exit_plan_mode":
-		return []string{"A auto", "M manual", "L later", "K keep planning"}
+		return []string{"A: auto", "M: manual", "L: later", "K: keep planning"}
 	case m.awaitingApproval:
-		hints := []string{"Y approve", "N reject"}
+		hints := []string{"Y: approve", "N: reject"}
 		if m.approvalAllowAlwaysOK {
-			hints = append(hints, "A always")
+			hints = append(hints, "A: always")
 		}
 		if m.approvalDenyAlwaysOK {
-			hints = append(hints, "D never")
+			hints = append(hints, "D: never")
 		}
-		return append(hints, "Enter queue text")
+		return append(hints, "Enter: queue text")
 	case m.loopExitConfirmOpen:
-		return []string{"←/→ choose", "Enter confirm", "Esc stay"}
+		return []string{"←/→: choose", "Enter: confirm", "Esc: stay"}
 	case m.paletteOpen:
-		return []string{"↑↓ move", "Tab complete", "Enter run", "Esc close"}
+		return []string{"↑↓: move", "Tab: complete", "Enter: run", "Esc: close"}
 	case m.filePaletteOpen:
-		return []string{"↑↓ move", "Tab/Enter attach", "Esc close"}
+		return []string{"↑↓: move", "Tab/Enter: attach", "Esc: close"}
 	case m.dockFocused:
-		return []string{"↑↓ task", "Enter transcript", "Esc input"}
+		return []string{"↑↓: task", "Enter: transcript", "Esc: input"}
 	case m.anyOverlayOpen():
 		// Full popups carry their own footer or close affordance. Do not add an
 		// extra below-popup hint row here: it changes the transcript viewport
@@ -3149,21 +3162,21 @@ func (m Model) contextualKeyHints() []string {
 		// scroll movement. Inline palettes and decision modals are handled above.
 		return nil
 	case m.turnActive:
-		hints := []string{"Enter queue", "Esc cancel", "Ctrl+J newline"}
+		hints := []string{"Shift+Tab: mode", "Enter: queue", "Esc: cancel", "Ctrl+J: new line"}
 		if m.hasRunningSubagents() {
-			hints = append(hints, "Tab dock")
+			hints = append(hints, "Tab: dock")
 		}
-		return append(hints, "Shift+Tab mode")
+		return hints
 	case !m.firstMessageSent:
 		// The fresh-session placeholder already carries onboarding hints inline;
 		// avoid echoing the same copy in a second row before the user has typed.
 		return nil
 	default:
-		hints := []string{"Enter send", "Ctrl+J newline", "/ commands", "@ files", "? help"}
+		hints := []string{"Shift+Tab: mode", "Enter: send", "Ctrl+J: new line", "/: commands", "@: files", "?: help"}
 		if m.hasRunningSubagents() {
-			hints = append(hints, "Tab dock")
+			hints = append(hints, "Tab: dock")
 		}
-		return append(hints, "Shift+Tab mode")
+		return hints
 	}
 }
 
@@ -3191,13 +3204,12 @@ func (m Model) footerPartsAboveInputFrame() []string {
 	// not stuck to the cmdline).
 	if m.turnActive {
 		parts = append(parts, "")
-		// Reserve two live-preview rows for the whole active turn, even before
-		// text arrives or after reasoning clears. Keeping the footer height fixed
-		// prevents the cmdline from bouncing while the LLM switches between
-		// thinking, streaming content, and tool calls.
-		parts = append(parts, m.renderActiveTurnPreviewRow())
-	} else if preview := m.renderReasoningPreview(); preview != "" {
-		parts = append(parts, preview)
+		// Show the live-preview rows only when there is reasoning/content/progress
+		// to show. Reserving blank rows for the whole turn created dead space
+		// above the plan card during tool-only work.
+		if preview := m.renderActiveTurnPreviewRow(); preview != "" {
+			parts = append(parts, preview)
+		}
 	} else if m.streamingMode == streamContent {
 		// Idle/test render path: keep provisional content visible even when a
 		// synthetic test doesn't mark a full turn active. Real active turns use
@@ -3528,10 +3540,10 @@ func liveContentWidth(terminalWidth int) int {
 	return w
 }
 
-// renderActiveTurnPreviewRow returns the reserved two-row live-preview area used
-// while a turn is active. It deliberately returns blank styled rows when no
-// preview text is available so the footer keeps a constant height and the
-// cmdline stays anchored instead of moving as reasoning appears, clears, or wraps.
+// renderActiveTurnPreviewRow returns the live preview area used while a turn is
+// active. It stays empty until there is reasoning/content/progress to show; blank
+// reserved rows looked like dead space above the plan card and wasted transcript
+// height on active turns that are only running tools.
 func (m Model) renderActiveTurnPreviewRow() string {
 	if !m.turnActive {
 		return ""
@@ -3551,7 +3563,7 @@ func (m Model) renderActiveTurnPreviewRow() string {
 			return m.renderActiveTurnPreview(m.streaming.String())
 		}
 	}
-	return renderStyledPreviewRows(nil, 2)
+	return ""
 }
 
 // renderActiveTurnNotice styles one-row status notices inside the two-row active
@@ -3564,7 +3576,7 @@ func (m Model) renderActiveTurnNotice(s string) string {
 	}
 	s = strings.TrimSpace(strings.ReplaceAll(s, "\n", " "))
 	if s == "" {
-		return renderStyledPreviewRows(nil, 2)
+		return ""
 	}
 	if ansi.StringWidth(s) > width {
 		s = tailWithLeftEllipsis(s, width)
@@ -3627,15 +3639,13 @@ func previewRows(s string, width, maxRows int) []string {
 	return rows
 }
 
-// renderStyledPreviewRows applies the live preview style to exactly reservedRows
-// logical rows. Empty styled rows intentionally reserve space so active-turn
-// footer height stays stable across empty, one-line, and two-line previews.
+// renderStyledPreviewRows applies the live preview style to the newest rows only.
 func renderStyledPreviewRows(rows []string, reservedRows int) string {
 	if reservedRows <= 0 {
 		return ""
 	}
-	for len(rows) < reservedRows {
-		rows = append([]string{" "}, rows...)
+	if len(rows) == 0 {
+		return ""
 	}
 	if len(rows) > reservedRows {
 		rows = rows[len(rows)-reservedRows:]
@@ -6803,6 +6813,16 @@ func (m *Model) resizeTranscriptViewport(footer string) {
 	m.transcriptViewport.SetHeight(h)
 }
 
+func (m *Model) updateTranscriptFollowIntent() {
+	m.transcriptFollow = m.transcriptViewport.AtBottom()
+}
+
+func (m *Model) applyTranscriptFollowIntent() {
+	if m.transcriptFollow {
+		m.transcriptViewport.GotoBottom()
+	}
+}
+
 // refreshTranscriptViewport keeps the owned scrollback viewport's size and
 // content current. Called once per Update tick (the single chokepoint,
 // mirroring the old flushPending idiom) so callers throughout the file
@@ -6813,14 +6833,11 @@ func (m *Model) resizeTranscriptViewport(footer string) {
 // banners/streaming previews/the dock come and go — recomputed here rather
 // than only on resize. Content resyncs from transcriptRows only when
 // transcriptDirty (new rows queued since the last call), and auto-follows
-// to the bottom only when the viewport was already there BEFORE the footer
-// resize. Capturing that intent first matters because live footer growth
-// can otherwise make AtBottom false and leave fresh output stuck just below
-// the visible transcript until the user scrolls.
+// when transcriptFollow says the user has not intentionally scrolled away.
 func (m *Model) refreshTranscriptViewport() {
-	wasAtBottom := m.transcriptViewport.AtBottom()
 	m.resizeTranscriptViewport(m.renderFooter())
 	if !m.transcriptDirty {
+		m.applyTranscriptFollowIntent()
 		return
 	}
 	m.transcriptDirty = false
@@ -6831,7 +6848,5 @@ func (m *Model) refreshTranscriptViewport() {
 	// silently dropped. It's a no-op passthrough to plain content when
 	// no selection is active.
 	m.applyTranscriptHighlight()
-	if wasAtBottom {
-		m.transcriptViewport.GotoBottom()
-	}
+	m.applyTranscriptFollowIntent()
 }

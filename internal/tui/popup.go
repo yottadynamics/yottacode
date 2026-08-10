@@ -61,13 +61,22 @@ func addPopupCloseGlyph(box string) string {
 		return box
 	}
 	plainTop := ansi.Strip(lines[0])
-	if runeLen(plainTop) != width || !strings.HasPrefix(plainTop, "╭") || !strings.HasSuffix(plainTop, "╮") {
+	if runeLen(plainTop) != width {
+		return box
+	}
+	left, right := "╭", "╮"
+	switch {
+	case strings.HasPrefix(plainTop, "╭") && strings.HasSuffix(plainTop, "╮"):
+		// Keep the shared rounded-popup chrome for picker/menu surfaces.
+	case strings.HasPrefix(plainTop, "┌") && strings.HasSuffix(plainTop, "┐"):
+		left, right = "┌", "┐"
+	default:
 		return box
 	}
 	// Rebuild the top border instead of splicing into ANSI-styled bytes. The
 	// remaining border/body lines keep their original lipgloss styling.
 	closeGlyph := lipgloss.NewStyle().Foreground(colorMuted).Bold(true).Render("×")
-	lines[0] = "╭" + strings.Repeat("─", width-4) + " " + closeGlyph + "╮"
+	lines[0] = left + strings.Repeat("─", width-4) + " " + closeGlyph + right
 	return strings.Join(lines, "\n")
 }
 
