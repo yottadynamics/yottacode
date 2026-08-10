@@ -6,15 +6,22 @@ import (
 	"github.com/yottadynamics/yottacode/internal/config"
 )
 
-// toggleAutoMode is the entry/exit helper used by the Shift+Tab cycle,
-// the plan-card [A] hotkey, and the --permission-mode auto startup
-// flag. Mirroring Claude Code, there is no /auto slash command —
-// users enter auto only via the keybinding or the startup flag.
+// cmdAuto is the slash-command handler for /auto. It jumps directly
+// to the implementation stop in the Shift+Tab cycle so users can enter
+// or exit auto mode without walking through plan/yolo.
+func cmdAuto(m Model, _ []string) (Model, tea.Cmd) {
+	return toggleAutoMode(m)
+}
+
+// toggleAutoMode is the entry/exit helper used by /auto, the
+// Shift+Tab cycle, the plan-card [A] hotkey, and the
+// --permission-mode auto startup flag.
 // Idempotent at the boundaries. Entering auto turns plan off
 // (mutually exclusive modes).
 func toggleAutoMode(m Model) (Model, tea.Cmd) {
 	state := m.cfg.AutoMode
 	if state == nil {
+		m.appendLine(styleError.Render("[auto] auto mode is not available in this build"))
 		return m, nil
 	}
 	if state.IsActive() {
@@ -34,14 +41,15 @@ func toggleAutoMode(m Model) (Model, tea.Cmd) {
 	}
 	m.appendLine(styleAutoBannerLabel.Render(SysMsg(SysState, "auto mode", "active")) +
 		" " + styleAutoBannerHint.Render("— edits auto-allow; run_bash, git_commit, git_checkpoint, rollback still prompt"))
-	m.appendLine(styleAutoBannerHint.Render("  Shift+Tab cycles onward: auto → plan → normal"))
+	m.appendLine(styleAutoBannerHint.Render("  Shift+Tab cycles onward: auto → yolo → normal → plan"))
 	// Visual breather between the entry log and the live banner.
 	m.appendLine("")
+
 	return m, nil
 }
 
 // exitAutoMode is the cleanup half of toggleAutoMode. Also reused by
-// the Shift+Tab cycle when moving auto → plan, and when the user
+// the Shift+Tab cycle when moving auto → yolo, and when the user
 // explicitly toggles off.
 func exitAutoMode(m *Model) {
 	state := m.cfg.AutoMode
@@ -56,31 +64,37 @@ func exitAutoMode(m *Model) {
 		" " + styleAutoBannerHint.Render("— re-enter with Shift+Tab"))
 }
 
-// cycleAgentMode cycles through normal → auto → plan → normal. The
-// three states the Shift+Tab chord traverses. Each transition reuses
-// the existing toggle helpers so the entry/exit log lines stay
-// consistent with /plan invocations and the startup flags.
+// cycleAgentMode cycles through normal → plan → auto → yolo → normal.
+// Each transition reuses existing helpers so the entry/exit log lines
+// stay consistent with slash commands and startup flags.
 func cycleAgentMode(m Model) (Model, tea.Cmd) {
 	autoOn := m.cfg.AutoMode.IsActive()
 	planOn := m.cfg.PlanMode.IsActive()
+	yoloOn := m.cfg.YoloMode.IsActive()
 	switch {
+	case yoloOn:
+		// Yolo → normal. Yolo is implemented as an overlay, but the
+		// cycle treats it as the final always-approve stop.
+		exitYoloMode(&m)
+		return m, nil
 	case !autoOn && !planOn:
-		// Normal → auto.
-		return toggleAutoMode(m)
-	case autoOn && !planOn:
-		// Auto → plan. toggleAutoMode would just turn auto off; we
-		// want to chain into plan, so do the transition directly so
-		// the entry banners appear in the right order in scrollback.
-		exitAutoMode(&m)
+		// Normal → plan.
 		return togglePlanMode(m)
 	case !autoOn && planOn:
-		// Plan → normal.
-		return togglePlanMode(m)
+		// Plan → auto. toggleAutoMode exits plan first, preserving the
+		// same cleanup path used by /auto.
+		return toggleAutoMode(m)
+	case autoOn && !planOn:
+		// Auto → yolo. Yolo is the always-approve stop after bounded
+		// auto mode, so clear auto before entering the overlay.
+		exitAutoMode(&m)
+		return enterYoloMode(m), nil
 	default:
-		// Defensive: both shouldn't be on simultaneously, but recover
-		// gracefully by clearing both.
+		// Defensive: these states shouldn't be on simultaneously, but
+		// recover gracefully by clearing every mode/overlay.
 		exitAutoMode(&m)
 		exitPlanMode(&m)
+		exitYoloMode(&m)
 		return m, nil
 	}
 }

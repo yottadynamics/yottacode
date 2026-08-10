@@ -133,8 +133,8 @@ Three independent safety layers stacked:
 
 **Persistence:** worktree state is filesystem + git; mode is a
 permission policy. They're orthogonal — a mode flip never touches
-the worktree. Cycling plan/auto/normal with `Shift+Tab` (or `/plan`)
-while you're inside a worktree leaves you in the same
+the worktree. Cycling plan/auto/yolo/normal with `Shift+Tab` (or
+`/plan`, `/auto`, `/yolo`) while you're inside a worktree leaves you in the same
 worktree, on the same branch, with the same uncommitted state.
 Concurrent yottacode in two worktrees of the same repo is safe —
 distinct cwds, distinct session records.

@@ -19,11 +19,11 @@ import (
 // their own — they just observe whichever flag is set.
 //
 // The pointer is shared between LoopConfig and the TUI Model so a
-// flip from Shift+Tab, the plan-card [A] hotkey, or the
+// flip from /auto, Shift+Tab, the plan-card [A] hotkey, or the
 // --permission-mode auto startup flag takes effect on the next
 // iteration with no reconstruction. atomic.Bool keeps that benign
-// race detector-clean. (There is deliberately no /auto slash command
-// — see the registry comment in tui/commands.go.)
+// race detector-clean. There is deliberately no agent/tool-layer
+// command that lets the model enable auto mode itself.
 type AutoModeState struct {
 	Active atomic.Bool
 }
@@ -41,9 +41,7 @@ func (a *AutoModeState) IsActive() bool {
 // hand over shell access or amend git history.
 //
 // To get true blanket auto-approval (including run_bash and commits),
-// launch with --yolo; that's the user-explicit
-// "yolo" path and is intentionally session-wide so it can't be toggled
-// away in the middle of a run (mirroring Claude Code).
+// use yolo mode; that's the user-explicit "always approve" path.
 func IsAutoModeSafetyFloor(toolName string) bool {
 	switch toolName {
 	case "run_bash", "run_tests", "git_commit", "git_checkpoint", "rollback":
