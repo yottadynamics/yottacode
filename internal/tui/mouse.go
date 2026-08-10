@@ -30,6 +30,7 @@ func (m Model) dismissStaticPopup() Model {
 	m.loopListOpen = false
 	m.usageOpen = false
 	m.usagePanel = ""
+	m.usageScrollOffset = 0
 	m.experimentalOpen = false
 	m.experimentalPanel = ""
 	m.helpOpen = false

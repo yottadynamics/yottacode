@@ -1040,6 +1040,7 @@ func (t *AgentTool) runChild(
 			if e.Err != nil {
 				emitActivity("context compaction skipped (summary failed) — continuing")
 			} else {
+				t.Tasks.IncrementCompactionCount(taskID)
 				emitActivity(fmt.Sprintf("compacted context ~%dK → ~%dK tokens", e.Before/1000, e.After/1000))
 			}
 		case ContextUsage:

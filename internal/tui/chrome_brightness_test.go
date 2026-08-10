@@ -22,7 +22,7 @@ import (
 //   - FRAMES/DIVIDERS (box borders, status-bar middle dots) read in Dim
 //     — brighter than the old Rule, but a step below the Content text.
 //
-// Only state signals (the connection dot, ctx warn/error tiers) stay
+// Only state signals (ctx warn/error tiers) stay
 // saturated. Escapes are derived from the live palette so the check
 // survives a theme reshuffle.
 func TestChromeReadsBright(t *testing.T) {
@@ -109,7 +109,6 @@ func TestChromeReadsBright(t *testing.T) {
 	offRule("startup card border", card)
 	offRule("cmdline box frame", m.renderInputFrame())
 
-	m.connection = connOK
 	m.providerLabel = "ollama" // ensure the provider divider renders
 	offRule("status bar dividers", m.renderStatus())
 }

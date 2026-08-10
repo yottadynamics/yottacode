@@ -56,6 +56,23 @@ type Session struct {
 	// empty dispatch worktrees. Omitted when empty so existing session files
 	// load unchanged.
 	SubagentTasks []subagents.TaskRecord `json:"subagent_tasks,omitempty"`
+	// ToolStats is a per-tool-name breakdown of main-thread tool calls —
+	// count, approximate output tokens, and error count. Keyed by tool
+	// name. Deliberately main-thread only (mirrors TotalUsage/ModelUsage):
+	// subagent tool calls stay a single count on subagents.Task.ToolCalls,
+	// not broken out by name. Omitted from JSON when empty so existing
+	// session files load unchanged.
+	ToolStats map[string]ToolStat `json:"tool_stats,omitempty"`
+	// CompactionEvents records each time this session's history was
+	// compacted, from either mechanism: the TUI's turn-boundary
+	// auto-summarize (or manual /summarize), and the main loop's own
+	// in-loop agent.ContextCompacted mid-turn self-compaction (wired
+	// whenever agentruntime.Build resolves a compaction window — not
+	// subagent-only, contrary to an earlier assumption here). Both record
+	// into the same slice so /usage can explain otherwise-invisible token
+	// spend from re-summarization regardless of which path fired. Omitted
+	// from JSON when empty.
+	CompactionEvents []CompactionRecord `json:"compaction_events,omitempty"`
 	// RestoredFrom records the archived snapshot this session was seeded
 	// from, when it was restored rather than started fresh. Provenance only
 	// — the restored session is a full independent session from here on.
@@ -601,6 +618,58 @@ func (s *Session) AddUsage(model string, u *adapter.Usage) {
 	prev := s.ModelUsage[model]
 	prev.Add(u)
 	s.ModelUsage[model] = prev
+}
+
+// ToolStat is one tool's accumulated main-thread call stats: how many times
+// it ran, its approximate combined output size in tokens (4-chars/token
+// heuristic, matching the estimate agent/compaction.go and cmd_summarize.go
+// already use for budgeting), and how many calls errored.
+type ToolStat struct {
+	Count        int   `json:"count"`
+	OutputTokens int64 `json:"output_tokens,omitempty"`
+	Errors       int   `json:"errors,omitempty"`
+}
+
+// AddToolStat records one main-thread tool call into the session's per-tool
+// breakdown. outputChars is the raw length of the tool result string;
+// converted to an approximate token count here so renderers don't repeat
+// the conversion. Safe to call with a nil receiver or empty name.
+func (s *Session) AddToolStat(name string, outputChars int, errored bool) {
+	if s == nil || name == "" {
+		return
+	}
+	if s.ToolStats == nil {
+		s.ToolStats = map[string]ToolStat{}
+	}
+	stat := s.ToolStats[name]
+	stat.Count++
+	stat.OutputTokens += int64((outputChars + 3) / 4)
+	if errored {
+		stat.Errors++
+	}
+	s.ToolStats[name] = stat
+}
+
+// CompactionRecord is one firing of this session's turn-boundary
+// auto-summarize (or manual /summarize). Before/After are the estimated
+// token counts immediately before and after the rewrite — the same figures
+// already surfaced in the scrollback receipt, just persisted here too.
+type CompactionRecord struct {
+	At     time.Time `json:"at"`
+	Before int       `json:"before"`
+	After  int       `json:"after"`
+	Auto   bool      `json:"auto,omitempty"`
+}
+
+// RecordCompaction appends one compaction event to the session's history.
+// Safe to call with a nil receiver.
+func (s *Session) RecordCompaction(before, after int, auto bool) {
+	if s == nil {
+		return
+	}
+	s.CompactionEvents = append(s.CompactionEvents, CompactionRecord{
+		At: time.Now(), Before: before, After: after, Auto: auto,
+	})
 }
 
 // SubagentUsageRollup aggregates a session's subagent token spend from its

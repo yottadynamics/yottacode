@@ -1167,3 +1167,118 @@ func TestSafePath_AllowsDotPrefixedNames(t *testing.T) {
 		}
 	}
 }
+
+// TestAddToolStat_Accumulates: repeated calls for the same tool name sum
+// count and approximate output tokens (4-chars/token) and count errors,
+// while a different tool name gets its own row. Nil-safe on both the
+// receiver and an empty name.
+func TestAddToolStat_Accumulates(t *testing.T) {
+	var nilSess *Session
+	nilSess.AddToolStat("read_file", 40, false) // must not panic
+
+	s := &Session{}
+	s.AddToolStat("", 40, false) // empty name is a no-op
+	if s.ToolStats != nil {
+		t.Fatalf("AddToolStat with empty name must not allocate ToolStats; got %+v", s.ToolStats)
+	}
+
+	s.AddToolStat("read_file", 40, false) // 10 tokens
+	s.AddToolStat("read_file", 8, true)   // 2 tokens, errored
+	s.AddToolStat("bash", 4, false)       // 1 token
+
+	if got, want := len(s.ToolStats), 2; got != want {
+		t.Fatalf("len(ToolStats) = %d, want %d", got, want)
+	}
+	rf := s.ToolStats["read_file"]
+	if rf.Count != 2 || rf.OutputTokens != 12 || rf.Errors != 1 {
+		t.Errorf("read_file stat = %+v, want {Count:2 OutputTokens:12 Errors:1}", rf)
+	}
+	b := s.ToolStats["bash"]
+	if b.Count != 1 || b.OutputTokens != 1 || b.Errors != 0 {
+		t.Errorf("bash stat = %+v, want {Count:1 OutputTokens:1 Errors:0}", b)
+	}
+}
+
+// TestRecordCompaction_Accumulates: each call appends a record; nil
+// receiver is a no-op rather than a panic.
+func TestRecordCompaction_Accumulates(t *testing.T) {
+	var nilSess *Session
+	nilSess.RecordCompaction(100, 40, true) // must not panic
+
+	s := &Session{}
+	s.RecordCompaction(1000, 400, true)
+	s.RecordCompaction(1200, 500, false)
+
+	if got, want := len(s.CompactionEvents), 2; got != want {
+		t.Fatalf("len(CompactionEvents) = %d, want %d", got, want)
+	}
+	if s.CompactionEvents[0].Before != 1000 || s.CompactionEvents[0].After != 400 || !s.CompactionEvents[0].Auto {
+		t.Errorf("CompactionEvents[0] = %+v, want {Before:1000 After:400 Auto:true}", s.CompactionEvents[0])
+	}
+	if s.CompactionEvents[1].Before != 1200 || s.CompactionEvents[1].After != 500 || s.CompactionEvents[1].Auto {
+		t.Errorf("CompactionEvents[1] = %+v, want {Before:1200 After:500 Auto:false}", s.CompactionEvents[1])
+	}
+}
+
+// TestSaveLoad_ToolStatsAndCompactionRoundtrip locks the persistence path
+// for the two new accumulators: a Save/Load cycle must preserve every
+// field, and an old session file written before these fields existed must
+// still load cleanly with both nil/empty.
+func TestSaveLoad_ToolStatsAndCompactionRoundtrip(t *testing.T) {
+	redirectHome(t)
+	s, err := New("m", "/proj")
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	s.AddToolStat("read_file", 400, false)
+	s.AddToolStat("bash", 40, true)
+	s.RecordCompaction(2000, 700, true)
+	if err := s.Save(); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	loaded, err := Load(s.ID)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got, want := loaded.ToolStats["read_file"].OutputTokens, int64(100); got != want {
+		t.Errorf("loaded read_file OutputTokens = %d, want %d", got, want)
+	}
+	if got, want := loaded.ToolStats["bash"].Errors, 1; got != want {
+		t.Errorf("loaded bash Errors = %d, want %d", got, want)
+	}
+	if got, want := len(loaded.CompactionEvents), 1; got != want {
+		t.Fatalf("loaded CompactionEvents has %d entries, want %d", got, want)
+	}
+	if got, want := loaded.CompactionEvents[0].Before, 2000; got != want {
+		t.Errorf("loaded CompactionEvents[0].Before = %d, want %d", got, want)
+	}
+
+	// A legacy session file written before these fields existed must still
+	// load cleanly, with both fields nil.
+	old := map[string]any{
+		"id": "20250101-000000.000000", "model": "m", "created": "2025-01-01T00:00:00Z",
+		"cwd": "/x", "messages": []any{},
+	}
+	b, err := json.MarshalIndent(old, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	dir, err := sessionsDir()
+	if err != nil {
+		t.Fatalf("sessionsDir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "20250101-000000.000000.json"), b, 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	legacy, err := Load("20250101-000000.000000")
+	if err != nil {
+		t.Fatalf("Load legacy: %v", err)
+	}
+	if legacy.ToolStats != nil {
+		t.Errorf("legacy.ToolStats = %+v, want nil", legacy.ToolStats)
+	}
+	if legacy.CompactionEvents != nil {
+		t.Errorf("legacy.CompactionEvents = %+v, want nil", legacy.CompactionEvents)
+	}
+}

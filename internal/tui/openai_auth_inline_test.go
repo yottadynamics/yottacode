@@ -247,10 +247,7 @@ default_model = "gpt-5.5"
 		t.Fatalf("SaveModels: %v", err)
 	}
 
-	m, cmd := handleInlineOpenAIAuthScanDone(m, inlineOpenAIAuthScanDoneMsg{models: []string{"gpt-5.5", "gpt-5.4-mini"}})
-	if cmd == nil {
-		t.Fatalf("active openai-auth scan success should refresh the provider")
-	}
+	m, _ = handleInlineOpenAIAuthScanDone(m, inlineOpenAIAuthScanDoneMsg{models: []string{"gpt-5.5", "gpt-5.4-mini"}})
 	events = m.cfg.Adapter.ChatStream(m.parentCtx, nil, nil)
 	first = <-events
 	if first.Err != nil && strings.Contains(first.Err.Error(), "no models discovered yet") {

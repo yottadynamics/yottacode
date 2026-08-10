@@ -317,6 +317,48 @@ func TestRegistry_ExportImportRoundTrip_Usage(t *testing.T) {
 	}
 }
 
+// TestRegistry_IncrementCompactionCount: repeated calls accumulate, and an
+// unknown id is a no-op rather than a panic — mirroring SetToolCalls'
+// nil-safety for an id the caller no longer holds a live task for.
+func TestRegistry_IncrementCompactionCount(t *testing.T) {
+	r := NewRegistry()
+	r.Add(&Task{ID: "sub1", Status: TaskRunning})
+
+	r.IncrementCompactionCount("sub1")
+	r.IncrementCompactionCount("sub1")
+	r.IncrementCompactionCount("ghost") // unknown id: no panic
+
+	got, ok := r.Get("sub1")
+	if !ok {
+		t.Fatal("task sub1 missing")
+	}
+	if got.CompactionCount != 2 {
+		t.Errorf("CompactionCount = %d, want 2", got.CompactionCount)
+	}
+}
+
+// TestRegistry_ExportImportRoundTrip_CompactionCount: a subagent's own
+// in-loop compaction count survives the Export→session-file→Import cycle,
+// so /usage still shows it after a session resume.
+func TestRegistry_ExportImportRoundTrip_CompactionCount(t *testing.T) {
+	r := NewRegistry()
+	r.Add(&Task{ID: "cctask0000000001", AgentType: "Explore", Status: TaskRunning})
+	r.IncrementCompactionCount("cctask0000000001")
+	r.IncrementCompactionCount("cctask0000000001")
+	r.MarkDone("cctask0000000001", TaskCompleted, "done", false, 111)
+
+	r2 := NewRegistry()
+	r2.Import(r.Export())
+
+	got, ok := r2.Get("cctask0000000001")
+	if !ok {
+		t.Fatal("task did not round-trip")
+	}
+	if got.CompactionCount != 2 {
+		t.Errorf("CompactionCount did not round-trip: got %d, want 2", got.CompactionCount)
+	}
+}
+
 func TestNewTaskID_NonEmpty(t *testing.T) {
 	a, b := NewTaskID(), NewTaskID()
 	if len(a) != 16 {

@@ -11,13 +11,9 @@ import (
 // implementation note. We use it here to assert plain text in the
 // rendered context-bar segment without coupling to ANSI escape codes.
 
-// renderContextBar emits `ctx ████░░ <used> / <max> (<pct>%)` —
-// label in Dim, then a six-cell █/░ fill bar, the abbreviated
-// used/max token counts, and the percentage in parentheses. Bar +
-// value are colored by tier (Dim under warn_threshold, Warning amber
-// once crossed, Error red once auto_threshold is crossed). The
-// legacy ▓ glyph rendered inconsistently across fonts; █ + ░ is the
-// chosen pair.
+// renderContextBar emits `ctx <used> / <max> (<pct>%)` — the compact
+// status form keeps the useful numbers and percentage without the old
+// six-cell graph.
 
 func TestSummaryConverged(t *testing.T) {
 	cases := []struct {
@@ -90,15 +86,10 @@ func TestRenderContextBar_BelowThreshold(t *testing.T) {
 	if !strings.Contains(plain, "10%") {
 		t.Errorf("context segment should report 10%%: %q", plain)
 	}
-	// 10% of a 6-cell bar rounds to 1 filled cell (█) + 5 empty cells (░).
-	if !strings.Contains(plain, "█") {
-		t.Errorf("context segment should include at least one filled cell at 10%%: %q", plain)
-	}
-	if !strings.Contains(plain, "░") {
-		t.Errorf("context segment should include empty cells at 10%%: %q", plain)
-	}
-	if strings.Contains(plain, "▓") {
-		t.Errorf("context segment should not render the legacy ▓ glyph: %q", plain)
+	for _, glyph := range []string{"█", "░", "▓"} {
+		if strings.Contains(plain, glyph) {
+			t.Errorf("context segment should not render graph glyph %q: %q", glyph, plain)
+		}
 	}
 }
 

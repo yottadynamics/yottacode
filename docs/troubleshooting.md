@@ -21,7 +21,7 @@ Or run:
 yottacode setup
 ```
 
-## Connection refused or red status dot
+## Connection refused or provider errors
 
 Check that the provider is running and the base URL is correct:
 

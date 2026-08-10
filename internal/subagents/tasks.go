@@ -78,10 +78,11 @@ type Task struct {
 	// turn from the child loop's AssistantMessage event, and is the number
 	// /usage folds into the session total. Zero (IsZero) for providers that
 	// don't report usage; readers fall back to the TokensUsed estimate there.
-	Usage          adapter.Usage
-	ToolCalls      int    // count of ToolStart events from the child
-	Model          string // model the child ran on when task-routed; "" = inherited the parent's model
-	TranscriptPath string
+	Usage           adapter.Usage
+	ToolCalls       int    // count of ToolStart events from the child
+	CompactionCount int    // number of times the child's own in-loop compaction fired (agent.ContextCompacted, Err == nil)
+	Model           string // model the child ran on when task-routed; "" = inherited the parent's model
+	TranscriptPath  string
 	// Branch / Worktree are set for dispatch write-subtasks that run in
 	// their own git worktree+branch. Empty for ordinary (shared-cwd)
 	// subagents. The integrate tool merges Branch into the integration
@@ -196,25 +197,26 @@ func (r *Registry) Add(t *Task) {
 // Worktree/Base/Branch fields are kept so a startup sweep can reclaim a
 // crashed session's empty dispatch worktrees.
 type TaskRecord struct {
-	ID             string        `json:"id"`
-	AgentType      string        `json:"agent_type"`
-	Prompt         string        `json:"prompt,omitempty"`
-	Status         TaskStatus    `json:"status"`
-	Result         string        `json:"result,omitempty"`
-	Errored        bool          `json:"errored,omitempty"`
-	Background     bool          `json:"background,omitempty"`
-	NotifyOnDone   bool          `json:"notify_on_done,omitempty"`
-	TranscriptPath string        `json:"transcript_path,omitempty"`
-	Started        time.Time     `json:"started,omitzero"`
-	Finished       time.Time     `json:"finished,omitzero"`
-	TokensUsed     int           `json:"tokens_used,omitempty"`
-	Usage          adapter.Usage `json:"usage,omitzero"`
-	ToolCalls      int           `json:"tool_calls,omitempty"`
-	Model          string        `json:"model,omitempty"`
-	Branch         string        `json:"branch,omitempty"`
-	Worktree       string        `json:"worktree,omitempty"`
-	Base           string        `json:"base,omitempty"`
-	BatchID        string        `json:"batch_id,omitempty"`
+	ID              string        `json:"id"`
+	AgentType       string        `json:"agent_type"`
+	Prompt          string        `json:"prompt,omitempty"`
+	Status          TaskStatus    `json:"status"`
+	Result          string        `json:"result,omitempty"`
+	Errored         bool          `json:"errored,omitempty"`
+	Background      bool          `json:"background,omitempty"`
+	NotifyOnDone    bool          `json:"notify_on_done,omitempty"`
+	TranscriptPath  string        `json:"transcript_path,omitempty"`
+	Started         time.Time     `json:"started,omitzero"`
+	Finished        time.Time     `json:"finished,omitzero"`
+	TokensUsed      int           `json:"tokens_used,omitempty"`
+	Usage           adapter.Usage `json:"usage,omitzero"`
+	ToolCalls       int           `json:"tool_calls,omitempty"`
+	CompactionCount int           `json:"compaction_count,omitempty"`
+	Model           string        `json:"model,omitempty"`
+	Branch          string        `json:"branch,omitempty"`
+	Worktree        string        `json:"worktree,omitempty"`
+	Base            string        `json:"base,omitempty"`
+	BatchID         string        `json:"batch_id,omitempty"`
 }
 
 // Export returns a serializable snapshot of every task for persistence in the
@@ -230,8 +232,10 @@ func (r *Registry) Export() []TaskRecord {
 			Result: t.Result, Errored: t.Errored, Background: t.Background,
 			NotifyOnDone: t.NotifyOnDone, TranscriptPath: t.TranscriptPath,
 			Started: t.Started, Finished: t.Finished, TokensUsed: t.TokensUsed,
-			Usage:     t.Usage,
-			ToolCalls: t.ToolCalls, Model: t.Model, Branch: t.Branch,
+			Usage:           t.Usage,
+			ToolCalls:       t.ToolCalls,
+			CompactionCount: t.CompactionCount,
+			Model:           t.Model, Branch: t.Branch,
 			Worktree: t.Worktree, Base: t.Base, BatchID: t.BatchID,
 		})
 	}
@@ -269,8 +273,10 @@ func (r *Registry) Import(records []TaskRecord) {
 			Result: result, Errored: errored, Background: rec.Background,
 			NotifyOnDone: rec.NotifyOnDone, TranscriptPath: rec.TranscriptPath,
 			Started: rec.Started, Finished: rec.Finished, TokensUsed: rec.TokensUsed,
-			Usage:     rec.Usage,
-			ToolCalls: rec.ToolCalls, Model: rec.Model, Branch: rec.Branch,
+			Usage:           rec.Usage,
+			ToolCalls:       rec.ToolCalls,
+			CompactionCount: rec.CompactionCount,
+			Model:           rec.Model, Branch: rec.Branch,
 			Worktree: rec.Worktree, Base: rec.Base, BatchID: rec.BatchID,
 			Historical: true,
 		}
@@ -685,6 +691,20 @@ func (r *Registry) SetToolCalls(id string, n int) {
 	defer r.mu.Unlock()
 	if t, ok := r.tasks[id]; ok {
 		t.ToolCalls = n
+	}
+}
+
+// IncrementCompactionCount records one successful firing of the child's own
+// in-loop compaction (agent.ContextCompacted with Err == nil) — the runner
+// calls this from its child-event loop alongside the existing activity-line
+// rendering, so /usage can show a subagent's own compaction history instead
+// of it being visible only as a transient activity string. A no-op for
+// unknown ids.
+func (r *Registry) IncrementCompactionCount(id string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if t, ok := r.tasks[id]; ok {
+		t.CompactionCount++
 	}
 }
 

@@ -101,6 +101,8 @@ type Config struct {
 	Commit            string   // short SHA the binary was built from; "" when unknown (go run, tarball)
 	Dirty             bool     // true when the build had uncommitted changes; renders a "*" beside the commit
 	Branch            string   // current git branch (empty if not in a repo)
+	GitAhead          int      // commits ahead of upstream/default branch; zero hides the arrow
+	GitBehind         int      // commits behind upstream/default branch; zero hides the arrow
 	ProjectRoots      []string // roots counting as this project (repo root + its worktree container); auto-recall's project scope matches them and everything below
 	SensitiveProject  bool     // this project is marked sensitive: no automatic recall injection at all
 	SensitiveRoots    []string // every sensitive root; their sessions never surface in any project's recall
@@ -221,6 +223,8 @@ type Model struct {
 	commit                 string
 	dirty                  bool
 	branch                 string
+	gitAhead               int
+	gitBehind              int
 	worktree               string // yottacode worktree name when session runs inside one
 	// currentPR is the open pull request number for the current branch.
 	// Zero means no PR has been detected (or GitHub/auth was unavailable).
@@ -761,6 +765,11 @@ type Model struct {
 	// doesn't re-fire the openai-auth backend probe); any key closes.
 	usageOpen  bool
 	usagePanel string
+	// usageScrollOffset is the first visible line of usagePanel — the panel
+	// grew past a single screen (per-tool/subagent/session detail), and
+	// popupBox has no height clamp of its own, so PgUp/PgDn window the
+	// content here instead. Any other key still closes the popup.
+	usageScrollOffset int
 
 	// Experimental overlay (/experimental). Read-only feature catalog rendered as
 	// an inline overlay, not scrollback, so feature-state inspection stays
@@ -898,9 +907,6 @@ type Model struct {
 
 	mcpPickerOpen bool
 	mcpPicker     *mcpPickerState
-
-	// Connection probe state for the status footer dot
-	connection connState
 
 	// Slash command palette state
 	paletteOpen     bool
@@ -1176,6 +1182,8 @@ func New(parent context.Context, c Config) Model {
 		commit:                 c.Commit,
 		dirty:                  c.Dirty,
 		branch:                 c.Branch,
+		gitAhead:               c.GitAhead,
+		gitBehind:              c.GitBehind,
 		projectRoots:           c.ProjectRoots,
 		sensitiveProject:       c.SensitiveProject,
 		sensitiveRoots:         c.SensitiveRoots,
@@ -1288,7 +1296,6 @@ func (m Model) Init() tea.Cmd {
 		// means the message never arrives — real-background repaint
 		// stays off for the whole session rather than guessing.
 		func() tea.Msg { return tea.RequestBackgroundColor() },
-		runProviderProbe(m.parentCtx, m.adapterConfig(m.modelName, m.baseURL), false),
 		// Drain the long-lived subagent inbox for the life of the
 		// program. A nil channel here is a programming error (New
 		// always allocates it), so we don't guard.
@@ -1362,7 +1369,6 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, cursorBlinkCmd()
 	}
 	if probe, ok := msg.(providerProbeMsg); ok {
-		m.connection = probeConnectionState(probe.result)
 		if probe.result.Profile.Provider != "" {
 			m.providerProfile = probe.result.Profile
 		}
@@ -1465,8 +1471,23 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if m.usageOpen {
+			switch msg.Code {
+			case tea.KeyUp:
+				m.usageScrollOffset = max(0, m.usageScrollOffset-1)
+				return m, nil
+			case tea.KeyDown:
+				m.usageScrollOffset = min(m.usageMaxScrollOffset(), m.usageScrollOffset+1)
+				return m, nil
+			case tea.KeyPgUp:
+				m.usageScrollOffset = max(0, m.usageScrollOffset-m.usageVisibleLines())
+				return m, nil
+			case tea.KeyPgDown:
+				m.usageScrollOffset = min(m.usageMaxScrollOffset(), m.usageScrollOffset+m.usageVisibleLines())
+				return m, nil
+			}
 			m.usageOpen = false
 			m.usagePanel = ""
+			m.usageScrollOffset = 0
 			return m, nil
 		}
 		if m.experimentalOpen {
@@ -2733,6 +2754,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Refresh estimated tokens from the new history so the status
 		// bar reflects the compaction immediately.
 		m.contextTokens = m.estimatedContextTokens(msg.newMessages)
+		m.sess.RecordCompaction(msg.tokensBefore, m.contextTokens, msg.auto)
 
 		// Non-convergence guard: when the compacted history is STILL at
 		// or above the auto threshold, the irreducible floor (system
@@ -3004,7 +3026,7 @@ func (m Model) activePopupBody() (box string, ok bool) {
 	case m.loopListOpen && m.activeLoopCount() > 0:
 		return popupBox(m.renderLoopListPanel()), true
 	case m.usageOpen:
-		return popupBox(m.usagePanel), true
+		return popupBox(m.windowedUsagePanel()), true
 	case m.experimentalOpen:
 		return popupBox(m.experimentalPanel), true
 	case m.helpOpen:
@@ -3120,11 +3142,15 @@ func (m Model) renderKeyHintRow() string {
 		return ""
 	}
 	line := strings.Join(hints, " · ")
+	indent := footerTextIndent(m.width)
 	width := liveContentWidth(m.width)
+	if width > indent {
+		width -= indent
+	}
 	if width > 0 && lipgloss.Width(line) > width {
 		line = ansi.Truncate(line, width, "…")
 	}
-	return styleHint.Render(line)
+	return strings.Repeat(" ", indent) + styleHint.Render(line)
 }
 
 // contextualKeyHints reports the active focus zone's most useful bindings. The
@@ -4336,44 +4362,30 @@ func (m Model) historyForward() (Model, bool) {
 	return m, true
 }
 
-// renderStatus is the persistent footer line — live, redrawn on every
-// Update. Two segments separated by Muted-colored middle dots:
+// renderStatus is the persistent footer line — live, redrawn on every Update.
+// The wide layout keeps status data in a separate dock below the cmdline box,
+// ordered by at-a-glance value:
 //
-//	● model · provider   ·   ctx ████░░ 4.3K / 128K (28%)
-//
-// Segment 1 carries the connection-state dot (the saturated state
-// signal), the model name and the provider profile name both in
-// Content (bright). Segment 2 is the visual context-window indicator —
-// see renderContextBar for thresholds. The middle dots render in Dim —
-// brighter than before, but a step below the Content segments so they
-// still read as dividers rather than content.
-//
-// A location chip trails the context bar: the working directory's last
-// two path segments (e.g. "foo/bar") plus the git branch in parens
-// ("foo/bar (main)"). The full absolute path is too wide for the footer,
-// but the trailing two segments are enough to orient which project you're
-// in — and the branch answers "where am I committing" at a glance.
+//	model · provider   ·   mode   ·   ctx 4.3K / 128K (28%)   ·   repo (branch)   ·   tools idle
 //
 // On a narrow terminal the cascade drops chips in ascending order of
 // at-a-glance value: provider tag, then the location chip (ambient — the
-// splash header showed dir+branch once at startup), then effort, then PR,
-// and finally the model's vendor prefix is stripped. The status dot,
-// model, and context bar are never dropped — they're the most critical
-// signals.
+// splash header showed dir+branch once at startup), then effort, then PR, and
+// finally the model's vendor prefix is stripped. Model, mode, and context are
+// the core signals.
 func (m Model) renderStatus() string {
-	dot := renderConnDot(m.connection)
 	modelName := m.modelName
-	modeSuffix := ""
+	modeLabel := ""
 	routingNote := ""
 	if m.cfg.AutoMode.IsActive() {
-		modeSuffix = "auto"
+		modeLabel = "auto"
 	}
 	if m.router != nil {
 		smart, fast := shortModelTag(m.router.SmartModel), shortModelTag(m.router.FastModel)
 		switch routerModeOrOff(m.routerMode) {
 		case config.RouterModeAuto:
-			if modeSuffix == "" {
-				modeSuffix = "auto"
+			if modeLabel == "" {
+				modeLabel = "auto"
 			}
 			// Plan mode already carries its own prominent banner; show the real
 			// advisor model here so the implementer half of the pair is not mistaken for the active planner.
@@ -4390,27 +4402,26 @@ func (m Model) renderStatus() string {
 			routingNote = "manual"
 		}
 	}
-	modelLabel := modelName
-	if modeSuffix != "" {
-		modelLabel += " " + modeSuffix
-	}
-	model := renderModelName(modelLabel)
+	model := renderModelName(modelName)
 	tag := m.providerLabel
 	if tag == "" {
 		tag = m.provider
 	}
 	provider := renderProviderTag(tag)
+	mode := renderModeStatus(modeLabel)
 	ctx := m.renderContextBar()
+	gitSeg := m.renderGitStatus()
 	pr := m.renderPRStatus()
 	effort := m.renderEffortStatus()
+	tools := m.renderToolStatus()
 
 	sep := lipgloss.NewStyle().Foreground(colorDim).Render("  ·  ")
 	innerSep := lipgloss.NewStyle().Foreground(colorDim).Render(" · ")
 
-	// First segment: dot + model-with-mode + (optional) provider tag. The provider
-	// is bound to the model cluster so it survives the same narrow-screen
-	// pressure until the explicit drop kicks in.
-	first := dot + "  " + model
+	// First segment: model + optional provider tag. The provider is bound to the
+	// model cluster so it survives the same narrow-screen pressure until the
+	// explicit drop kicks in.
+	first := model
 	if provider != "" {
 		first += innerSep + provider
 	}
@@ -4429,9 +4440,9 @@ func (m Model) renderStatus() string {
 	}
 
 	// Location chip: cwd's last two segments + git branch, e.g.
-	// "foo/bar (main)". Content-colored like the other trailing chips;
-	// plain text, no glyphs, per the no-emoji-in-TUI rule. Empty when the
-	// cwd is unknown (no chip rendered).
+	// "foo/bar (main)". If the branch is ahead/behind its base, append a
+	// compact arrow counter such as "↑3" so unpublished commits are visible
+	// without a noisy always-on git widget. Empty when the cwd is unknown.
 	locSeg := ""
 	if dir := lastPathSegments(m.cwd, 2); dir != "" {
 		label := dir
@@ -4443,11 +4454,20 @@ func (m Model) renderStatus() string {
 
 	build := func(head string, includeLoc, includePR, includeEffort bool) string {
 		segs := []string{head}
+		if mode != "" {
+			segs = append(segs, mode)
+		}
 		if ctx != "" {
 			segs = append(segs, ctx)
 		}
 		if includeLoc && locSeg != "" {
 			segs = append(segs, locSeg)
+		}
+		if includePR && gitSeg != "" {
+			segs = append(segs, gitSeg)
+		}
+		if tools != "" {
+			segs = append(segs, tools)
 		}
 		if includePR && pr != "" {
 			segs = append(segs, pr)
@@ -4458,15 +4478,14 @@ func (m Model) renderStatus() string {
 		if worktreeSeg != "" {
 			segs = append(segs, worktreeSeg)
 		}
-		if routingNote != "" && modeSuffix == "" {
+		if routingNote != "" && modeLabel == "" {
 			segs = append(segs, lipgloss.NewStyle().Foreground(colorDim).Render(routingNote))
 		}
-		// Flush-left: the status dot sits at column 0, aligned with the
-		// input frame's left border directly above it (and the flush-left
-		// scrollback canvas). An earlier 2-space inset trailed the old
-		// scrollback margin; with the canvas flush-left it just floated
-		// the bar 2 columns off the box edge.
-		return strings.Join(segs, sep)
+		// Align the footer text with the start of the cmdline content inside the
+		// bordered input box ("│ " + first content column), not with the outer
+		// frame. The status dock is separate chrome, but the left edge should
+		// visually snap to the user's typing column.
+		return strings.Repeat(" ", footerTextIndent(m.width)) + strings.Join(segs, sep)
 	}
 
 	w := m.width
@@ -4480,15 +4499,15 @@ func (m Model) renderStatus() string {
 	if lipgloss.Width(line) <= w {
 		return line
 	}
-	// Drop the provider tag first.
-	first = dot + "  " + model
-	line = build(first, true, true, true)
+	// Drop the location chip first — dir + branch is ambient orientation
+	// (the splash header already showed it once), so it yields before the
+	// provider/mode/context cluster requested for the main status dock.
+	line = build(first, false, true, true)
 	if lipgloss.Width(line) <= w {
 		return line
 	}
-	// Drop the location chip next — dir + branch is ambient orientation
-	// (the splash header already showed it once), so it yields before the
-	// workflow chips.
+	// Drop the provider tag next.
+	first = model
 	line = build(first, false, true, true)
 	if lipgloss.Width(line) <= w {
 		return line
@@ -4507,9 +4526,44 @@ func (m Model) renderStatus() string {
 	// Still too wide — strip the vendor prefix from the model (e.g.
 	// `nvidia/nemotron-…` → `nemotron-…`).
 	if idx := strings.LastIndex(m.modelName, "/"); idx >= 0 && idx < len(m.modelName)-1 {
-		first = dot + "  " + renderModelName(m.modelName[idx+1:])
+		first = renderModelName(m.modelName[idx+1:])
 	}
 	return build(first, false, false, false)
+}
+
+func footerTextIndent(width int) int {
+	return 0
+}
+
+func renderModeStatus(mode string) string {
+	if strings.TrimSpace(mode) == "" {
+		return ""
+	}
+	return lipgloss.NewStyle().Foreground(colorSuccess).Render(mode)
+}
+
+func (m Model) renderToolStatus() string {
+	if m.pendingToolName != "" {
+		return lipgloss.NewStyle().Foreground(colorContent).Render("tools " + m.pendingToolName)
+	}
+	if m.turnActive {
+		return lipgloss.NewStyle().Foreground(colorDim).Render("tools active")
+	}
+	return lipgloss.NewStyle().Foreground(colorDim).Render("tools idle")
+}
+
+func (m Model) renderGitStatus() string {
+	if m.gitAhead == 0 && m.gitBehind == 0 {
+		return ""
+	}
+	parts := make([]string, 0, 2)
+	if m.gitAhead > 0 {
+		parts = append(parts, fmt.Sprintf("↑%d", m.gitAhead))
+	}
+	if m.gitBehind > 0 {
+		parts = append(parts, fmt.Sprintf("↓%d", m.gitBehind))
+	}
+	return lipgloss.NewStyle().Foreground(colorContent).Render(strings.Join(parts, " "))
 }
 
 func (m Model) renderPRStatus() string {
@@ -4599,6 +4653,18 @@ func currentPRNumberFromGitHubEnv(ctx context.Context, cwd string) int {
 		return 0
 	}
 	return pulls[0].Number
+}
+
+func gitDivergenceChangingTool(toolName, argsJSON string) bool {
+	switch toolName {
+	case "git_commit", "git_commit_apply", "git_commit_amend", "git_commit_fixup", "git_push":
+		return true
+	case "git":
+		sub := tuiGitSubcommand(parseTUIToolGitArgs(argsJSON))
+		return sub == "commit" || sub == "push" || sub == "pull" || sub == "merge" || sub == "rebase" || sub == "reset"
+	default:
+		return false
+	}
 }
 
 func branchChangingGitTool(toolName, argsJSON string) bool {
@@ -4715,9 +4781,9 @@ func parsePositiveDecimal(s string) (int, error) {
 
 // renderProviderTag styles the provider label that sits next to the
 // model name in the status bar. Content — the status bar reads bright
-// so every segment is easy to spot; the connection dot and threshold
-// colors still carry the saturated "state" signal. Empty string when
-// the provider is unknown so the status bar can omit it cleanly.
+// so every segment is easy to spot; ctx threshold colors still carry
+// the saturated "state" signal. Empty string when the provider is
+// unknown so the status bar can omit it cleanly.
 func renderProviderTag(provider string) string {
 	provider = strings.TrimSpace(provider)
 	if provider == "" {
@@ -5407,9 +5473,17 @@ func (m Model) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 		m.toolsStarted++
 		m.turnToolCalls++
 	case agent.ToolResult:
+		m.sess.AddToolStat(e.ToolName, len(e.Output), e.Errored)
 		if !e.Errored && branchChangingGitTool(e.ToolName, m.pendingToolArgs) {
 			m.branch = gitBranch(m.parentCtx, m.cwd)
+			gitStatus := gitAheadBehind(m.parentCtx, m.cwd)
+			m.gitAhead = gitStatus.ahead
+			m.gitBehind = gitStatus.behind
 			m.currentPR = 0
+		} else if !e.Errored && gitDivergenceChangingTool(e.ToolName, m.pendingToolArgs) {
+			gitStatus := gitAheadBehind(m.parentCtx, m.cwd)
+			m.gitAhead = gitStatus.ahead
+			m.gitBehind = gitStatus.behind
 		}
 		if e.ToolName == "pr_read" || e.ToolName == "pr_review_context" {
 			m.currentPR = prNumberFromToolOutput(e.Output)
@@ -5519,6 +5593,9 @@ func (m Model) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 		// updates, so the literal-cwd arm of the scope match follows.
 		m.cwd = e.NewCwd
 		m.branch = gitBranch(m.parentCtx, e.NewCwd)
+		gitStatus := gitAheadBehind(m.parentCtx, e.NewCwd)
+		m.gitAhead = gitStatus.ahead
+		m.gitBehind = gitStatus.behind
 		m.currentPR = 0
 		// Compute the worktree name from the new path: any path under
 		// <some-repo>/.yottacode/worktrees/<name>/ identifies the name
@@ -5585,6 +5662,7 @@ func (m Model) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 		if e.SnapshotErr != nil {
 			m.lastContextCompaction += fmt.Sprintf(" · snapshot failed: %v", e.SnapshotErr)
 		}
+		m.sess.RecordCompaction(e.Before, e.After, true)
 		m.appendLine(renderCompactionNoticeLine(m.contextReductionLabel(e.Before, e.After), e.SnapshotPath, e.SnapshotErr, m.width))
 		m.refreshContextTokens()
 		m.compactionSeq++

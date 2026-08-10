@@ -907,8 +907,7 @@ func writeAPIKeyToEnv(name, value string) error {
 }
 
 // commitProviderUse persists the user's choice through providerops,
-// switches the running adapter + memory + connection probe, closes
-// the picker.
+// switches the running adapter + memory, closes the picker.
 func (m Model) commitProviderUse() (Model, tea.Cmd) {
 	p := m.providerPicker
 	if p == nil || p.usePickerCursor >= len(p.providers) {

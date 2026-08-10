@@ -556,7 +556,7 @@ func (m Model) switchActiveModelToRef(ref string) (Model, tea.Cmd) {
 	m.appendLine(styleAuto.Render(SysMsg(SysSuccess, "advisor", "active model", model)))
 	warnIfEffortNoop(&m, acfg)
 	warnIfCacheReset(&m, previousModel, model)
-	return m, runProviderProbe(m.parentCtx, acfg, false)
+	return m, nil
 }
 
 func (m Model) switchActiveModelToRouterRole(role string) (Model, tea.Cmd) {
@@ -628,7 +628,7 @@ func (m Model) switchActiveModelToRouterRole(role string) (Model, tea.Cmd) {
 	acfg := m.adapterConfig(model, m.baseURL)
 	warnIfEffortNoop(&m, acfg)
 	warnIfCacheReset(&m, previousModel, model)
-	return m, runProviderProbe(m.parentCtx, acfg, false)
+	return m, nil
 }
 
 // ensureProviderModel makes sure the model named in ref

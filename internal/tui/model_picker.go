@@ -337,8 +337,8 @@ func (m Model) handleModelPickerLoaded(msg modelPickerLoadedMsg) (Model, tea.Cmd
 }
 
 // commitModelChoice persists the user's selection through providerops,
-// closes the picker, and refreshes the active adapter + connection
-// probe so the next turn uses the new model.
+// closes the picker, and refreshes the active adapter so the next turn uses
+// the new model.
 // window is the chosen model's context window as reported by the
 // provider's list-models endpoint (0 when the provider reported none);
 // it's persisted onto the active provider so the watermark + summarize
@@ -428,7 +428,7 @@ func (m Model) commitModelChoice(chosen string, window int) (Model, tea.Cmd) {
 	m.appendLine(styleAuto.Render(statusLine("model", fmt.Sprintf("default → %s", chosen))))
 	warnIfEffortNoop(&m, acfg)
 	warnIfCacheReset(&m, previousModel, chosen)
-	cmds := []tea.Cmd{runProviderProbe(m.parentCtx, acfg, false)}
+	cmds := []tea.Cmd{}
 	// When the picker's list-models row carried no window for this model
 	// (NVIDIA NIM, thin proxies), discover it in the background from the
 	// live API and persist on return — non-blocking so the picker closes

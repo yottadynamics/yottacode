@@ -1257,8 +1257,8 @@ func TestModel_ErrorEventRendersInline(t *testing.T) {
 	}
 }
 
-// The status bar carries the dot+model+(provider tag) segment and a
-// `ctx ████░░ <used> / <max> (<pct>%)` segment. Cwd, branch, and the
+// The status bar carries the model, provider/mode where present, and a
+// compact `ctx <used> / <max> (<pct>%)` segment. Cwd, branch, and the
 // old "provider=foo" form all used to live here — removed because
 // they're set-and-forget keystroke noise. Surface for those lives in
 // the welcome card and the slash commands now.
@@ -1285,8 +1285,10 @@ func TestModel_StatusBarShowsModelAndContext(t *testing.T) {
 	if strings.Contains(plain, "ctx=") {
 		t.Errorf("status bar should not render the legacy ctx=N/N form: %q", plain)
 	}
-	if strings.Contains(plain, "▓") {
-		t.Errorf("status bar should not render the legacy ▓ block character: %q", plain)
+	for _, glyph := range []string{"█", "░", "▓"} {
+		if strings.Contains(plain, glyph) {
+			t.Errorf("status bar should not render ctx graph glyph %q: %q", glyph, plain)
+		}
 	}
 }
 
@@ -2120,11 +2122,11 @@ func TestFlushLeftCanvas_ColumnAlignment(t *testing.T) {
 		t.Errorf("prose should be 2-space indented (text at col 2), got %q", prose)
 	}
 
-	// Status bar: chrome flush-left — the leading rune is the connection
-	// dot at col 0, never a padding space.
+	// Status bar: separate footer text aligns with the cmdline content column,
+	// not the outer input-frame border.
 	status := stripANSI(newTestModel(t).renderStatus())
-	if strings.HasPrefix(status, " ") {
-		t.Errorf("status bar should be flush-left (no leading inset), got %q", status)
+	if !strings.HasPrefix(status, strings.Repeat(" ", footerTextIndent(80))+"test-model") {
+		t.Errorf("status bar should align with cmdline content, got %q", status)
 	}
 }
 

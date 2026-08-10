@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -30,6 +31,44 @@ func TestContextCompactedHandlerRefreshesAndBumpsSeq(t *testing.T) {
 	}
 	if got := m.transcript.String(); !strings.Contains(got, "◇ context · compacted") || !strings.Contains(got, "full history saved") {
 		t.Fatalf("transcript missing compaction status: %q", got)
+	}
+}
+
+// TestContextCompactedHandlerRecordsCompaction: the main loop's own
+// in-loop mid-turn self-compaction (agent.ContextCompacted, wired whenever
+// agentruntime.Build resolves a compaction window — not subagent-only)
+// must land in Session.CompactionEvents the same as the turn-boundary
+// /summarize path does, so /usage's "compacted Nx" count doesn't silently
+// miss this mechanism.
+func TestContextCompactedHandlerRecordsCompaction(t *testing.T) {
+	m := newTestModel(t)
+	m.sess.Messages = []adapter.Message{{Role: adapter.RoleUser, Content: "short"}}
+
+	out, _ := m.handleAgentEvent(agent.ContextCompacted{Before: 9000, After: 1000})
+	m = out.(Model)
+
+	if got := len(m.sess.CompactionEvents); got != 1 {
+		t.Fatalf("CompactionEvents has %d entries, want 1", got)
+	}
+	rec := m.sess.CompactionEvents[0]
+	if rec.Before != 9000 || rec.After != 1000 {
+		t.Errorf("CompactionEvents[0] = %+v, want {Before:9000 After:1000}", rec)
+	}
+}
+
+// TestContextCompactedHandlerSkipsRecordingOnError: a compaction attempt
+// that failed (Err set, history left untouched) must not be counted as a
+// real compaction — Before==After in that case anyway, so counting it
+// would inflate the event count without reclaiming anything.
+func TestContextCompactedHandlerSkipsRecordingOnError(t *testing.T) {
+	m := newTestModel(t)
+	m.sess.Messages = []adapter.Message{{Role: adapter.RoleUser, Content: "short"}}
+
+	out, _ := m.handleAgentEvent(agent.ContextCompacted{Before: 9000, After: 9000, Err: errors.New("summary call failed")})
+	m = out.(Model)
+
+	if got := len(m.sess.CompactionEvents); got != 0 {
+		t.Fatalf("CompactionEvents has %d entries, want 0 on a skipped/failed compaction", got)
 	}
 }
 

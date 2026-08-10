@@ -167,15 +167,16 @@ reasoning model, so this keeps the two in sync (the same as running
 your active model untouched.
 
 While routing is active, the status bar keeps the **active model** as the
-primary label and adds inline mode text: `auto` or `manual`. It does **not**
-show a separate `routing:` chip or an advisor:implementer pair in the main
-status display. Configuring the advisor model still switches your active model
-to it (see above), so advisor-led interactive turns remain aligned with the
-configured advisor while the inline mode label makes routing state visible.
+primary label and shows routing mode as the next status segment (`auto` when
+auto routing is active). It does **not** show a separate `routing:` chip or an
+advisor:implementer pair in the main status display. Configuring the advisor
+model still switches your active model to it (see above), so advisor-led
+interactive turns remain aligned with the configured advisor while the mode
+segment makes routing state visible without crowding the model/provider label.
 
 Plan mode is the exception only in that it still shows the actual advisor
 model as the active model; routing state remains visible through the same
-inline `auto` text instead of a separate routing chip.
+separate `auto` status segment instead of a separate routing chip.
 
 ### Why this saves money (and never costs more)
 

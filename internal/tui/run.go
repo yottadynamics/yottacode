@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -280,6 +281,9 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 		return err
 	}
 
+	branch := gitBranch(ctx, cwd)
+	gitStatus := gitAheadBehind(ctx, cwd)
+
 	model := New(ctx, Config{
 		Cfg:                    cfg,
 		Session:                rt.Session,
@@ -307,7 +311,9 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 		Version:                version.Current,
 		Commit:                 version.Commit(),
 		Dirty:                  version.Dirty(),
-		Branch:                 gitBranch(ctx, cwd),
+		Branch:                 branch,
+		GitAhead:               gitStatus.ahead,
+		GitBehind:              gitStatus.behind,
 		ProjectRoots:           projectRoots,
 		SensitiveProject:       sensitiveProject,
 		SensitiveRoots:         sensitiveRoots,
@@ -764,6 +770,57 @@ func gitBranch(ctx context.Context, cwd string) string {
 		return ""
 	}
 	return strings.TrimSpace(string(out))
+}
+
+type gitAheadBehindStatus struct {
+	ahead  int
+	behind int
+}
+
+// gitAheadBehind reports the current branch's divergence from its upstream when
+// configured, otherwise from the default branch. It is best-effort status chrome:
+// git missing, detached HEAD, no base, or command timeouts all collapse to zero.
+func gitAheadBehind(ctx context.Context, cwd string) gitAheadBehindStatus {
+	if _, err := exec.LookPath("git"); err != nil {
+		return gitAheadBehindStatus{}
+	}
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	base := strings.TrimSpace(gitCommandOutput(ctx, cwd, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"))
+	if base == "" {
+		base = strings.TrimSpace(gitCommandOutput(ctx, cwd, "symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"))
+	}
+	if base == "" {
+		for _, candidate := range []string{"origin/main", "origin/master", "origin/develop", "main", "master", "develop"} {
+			if strings.TrimSpace(gitCommandOutput(ctx, cwd, "rev-parse", "--verify", candidate)) != "" {
+				base = candidate
+				break
+			}
+		}
+	}
+	if base == "" {
+		return gitAheadBehindStatus{}
+	}
+	out := strings.TrimSpace(gitCommandOutput(ctx, cwd, "rev-list", "--left-right", "--count", base+"...HEAD"))
+	fields := strings.Fields(out)
+	if len(fields) != 2 {
+		return gitAheadBehindStatus{}
+	}
+	behind, errBehind := strconv.Atoi(fields[0])
+	ahead, errAhead := strconv.Atoi(fields[1])
+	if errBehind != nil || errAhead != nil || ahead < 0 || behind < 0 {
+		return gitAheadBehindStatus{}
+	}
+	return gitAheadBehindStatus{ahead: ahead, behind: behind}
+}
+
+func gitCommandOutput(ctx context.Context, cwd string, args ...string) string {
+	cmdArgs := append([]string{"-C", cwd}, args...)
+	out, err := exec.CommandContext(ctx, "git", cmdArgs...).Output()
+	if err != nil {
+		return ""
+	}
+	return string(out)
 }
 
 // sessionProjectRoots resolves every directory tree that counts as "this
