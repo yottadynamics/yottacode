@@ -1880,6 +1880,9 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		if m.awaitingPathTrust {
+			if queued, ok := m.queueInputDuringDecision(msg, "after path trust"); ok {
+				return queued, nil
+			}
 			// Inline path-trust elevation (Prompt 2). The three
 			// choices are independent of the normal approval modal
 			// — the model never sees an Allow/Deny here, only the
@@ -1916,6 +1919,9 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if m.awaitingApproval {
+			if queued, ok := m.queueInputDuringDecision(msg, "after approval"); ok {
+				return queued, nil
+			}
 			// exit_plan_mode is a different shape of approval — its
 			// keys mean "approve and execute" / "keep planning",
 			// never "always allow" (which would derive a permission
@@ -2788,6 +2794,35 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	}
 	return m, nil
+}
+
+// queueInputDuringDecision preserves a user's typed follow-up while a modal
+// decision owns Enter. Approval/path-trust shortcuts still take priority; any
+// other non-empty Enter queues the text so it cannot disappear silently behind
+// the focused decision UI.
+func (m Model) queueInputDuringDecision(msg tea.KeyPressMsg, label string) (Model, bool) {
+	if msg.String() != "enter" {
+		return m, false
+	}
+	input := strings.TrimSpace(m.textInput.Value())
+	if input == "" {
+		return m, false
+	}
+	input = m.expandPastes(input)
+	m.pastes = nil
+	m.pastedImages = nil
+	select {
+	case m.userMsgCh <- input:
+		m.textInput.SetValue("")
+		m.paletteOpen = false
+		m.paletteIndex = 0
+		m.paletteOffset = 0
+		m.appendLine(renderUserBlock(input, m.width))
+		m.appendLine(styleAuto.Render(SysMsg(SysQueue, "queue", label, truncateForRender(input, 80))))
+	default:
+		m.appendLine(styleAuto.Render(SysMsg(SysWarning, "queue", "already waiting", "↑ to edit")))
+	}
+	return m, true
 }
 
 // anyOverlayOpen reports whether a full-screen popup is open — the set of

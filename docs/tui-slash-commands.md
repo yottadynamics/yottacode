@@ -498,7 +498,7 @@ Pick a checkpoint and choose one of four actions:
 
 ## Interrupting a turn
 
-Pressing **Enter** while the agent is thinking queues whatever you typed for delivery at the next safe tool boundary without cancelling the active tool call. If the model finishes before it reaches a tool boundary, yottacode starts a fresh turn with the queued message after the current turn ends. A second queued message stays in the textarea and shows a queue-full notice instead of interrupting the session.
+Pressing **Enter** while the agent is thinking queues whatever you typed for delivery at the next safe tool boundary without cancelling the active tool call. If an approval or path-trust modal is open, the modal hotkeys still win, but any other non-empty Enter is queued visibly for delivery after the decision instead of being swallowed. If the model finishes before it reaches a tool boundary, yottacode starts a fresh turn with the queued message after the current turn ends. A second queued message stays in the textarea and shows a queue-full notice instead of interrupting the session.
 
 Press **Esc** or **Ctrl+C** while a turn is running to cancel without submitting. Any queued message is dropped; the textarea contents are preserved so a draft survives an accidental Esc.
 

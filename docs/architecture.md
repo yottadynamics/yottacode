@@ -199,7 +199,10 @@ active turn. The TUI sends the message through the per-turn `userMsgCh`;
 any delivered text to history as another user message. If the model
 finishes before a tool-round injection point, or if the one-message
 channel is already full, the TUI falls back to `pendingInputAfterTurn` so
-`turnEndedMsg` can auto-submit the message as the next turn.
+`turnEndedMsg` can auto-submit the message as the next turn. While an
+approval or path-trust modal is focused, the modal decision hotkeys keep
+priority; any other non-empty Enter queues the typed follow-up with an
+explicit queue receipt instead of silently discarding the draft.
 
 Before a queued message is delivered, pressing **Up** on an empty
 mid-turn textarea recalls it into the editor and drains it from the
