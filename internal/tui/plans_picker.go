@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
@@ -69,7 +70,11 @@ func (m Model) updatePlansPicker(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 
 // renderPlansPicker draws the overlay body. Each row is one plan with
 // its slug + relative-time hint, the newest plan at the top.
-func renderPlansPicker(state *plansPickerState, width int) string {
+func renderPlansPicker(state *plansPickerState, width int, hits ...*pickerHits) string {
+	var h *pickerHits
+	if len(hits) > 0 {
+		h = hits[0]
+	}
 	header := renderMenuHeader(
 		PlanModeIcon+" Resume a plan",
 		"Newest first. Enter resumes; Esc closes.",
@@ -82,6 +87,8 @@ func renderPlansPicker(state *plansPickerState, width int) string {
 	}
 	body := header + "\n"
 	for i, p := range state.plans {
+		row := strings.Count(body, "\n")
+		h.row(row, i)
 		body += renderMenuItem(menuItemOpts{
 			Label:      p.Slug,
 			LabelWidth: maxSlug,

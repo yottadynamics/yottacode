@@ -332,7 +332,7 @@ func TestRouterPicker_ShowsFallbackRow(t *testing.T) {
 	if len(m.routerPicker.fastChain) != 1 {
 		t.Errorf("fastChain = %v, want 1 entry", m.routerPicker.fastChain)
 	}
-	plain := stripANSI(renderRouterPicker(m.routerPicker))
+	plain := stripANSI(renderRouterPicker(m.routerPicker, 80))
 	if !strings.Contains(plain, "Fallback") || !strings.Contains(plain, "anthropic:claude-haiku-4-5") {
 		t.Errorf("expected the smart fallback row with its model: %q", plain)
 	}

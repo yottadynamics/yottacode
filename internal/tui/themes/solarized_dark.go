@@ -27,5 +27,12 @@ func init() {
 		Assistant: pin("#2aa198"), // cyan
 		Code:      pin("#eee8d5"), // base2 — high-contrast for fenced code
 		Warm:      pin("#cb4b16"), // orange
+
+		// #002b36 is Solarized's base03 — the canonical darkest
+		// background in Schoonover's precise L*a*b* ramp. Real
+		// terminal-background theming (OSC 11) repaints the terminal
+		// canvas itself to this, not just in-app chrome.
+		HasBackground: true,
+		Background:    pin("#002b36"),
 	})
 }

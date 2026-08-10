@@ -955,19 +955,23 @@ func (m Model) commitProviderRemove() (Model, tea.Cmd) {
 
 // renderProviderPicker draws the overlay. Mode-specific render
 // functions share the bordered box and footer.
-func renderProviderPicker(p *providerPickerState, width int) string {
+func renderProviderPicker(p *providerPickerState, width int, hits ...*pickerHits) string {
+	var h *pickerHits
+	if len(hits) > 0 {
+		h = hits[0]
+	}
 	var body string
 	switch p.mode {
 	case providerMenuMode:
-		body = renderProviderMenu(p)
+		body = renderProviderMenu(p, width, h)
 	case providerUsePickerMode:
-		body = renderProviderUseList(p, "Switch provider")
+		body = renderProviderUseList(p, width, "Switch provider", h)
 	case providerRemovePickerMode:
-		body = renderProviderUseList(p, "Remove provider")
+		body = renderProviderUseList(p, width, "Remove provider", h)
 	case providerAddKindMode:
-		body = renderProviderAddKind(p)
+		body = renderProviderAddKind(p, width, h)
 	case providerAddFieldsMode:
-		body = renderProviderAddFields(p)
+		body = renderProviderAddFields(p, width)
 	default:
 		body = styleEmpty.Render("(unknown picker state)")
 	}
@@ -976,19 +980,21 @@ func renderProviderPicker(p *providerPickerState, width int) string {
 		footerText = "↵ save · tab/shift+tab switch fields · esc back"
 	}
 	footer := styleFooter.Render(footerText)
-	// Inline-overlay shape: no rounded box, no horizontal centering.
-	// The parent renderInlineOverlay sits this body above the cmdline,
-	// so a second border would read as "modal floating on a modal".
+	// Deliberately borderless/uncentered: popupBox (popup.go) supplies
+	// the single rounded border and composePopup does the centering, so
+	// adding either here would read as "modal floating on a modal".
 	_ = width
 	return body + "\n\n" + footer
 }
 
-func renderProviderMenu(p *providerPickerState) string {
+func renderProviderMenu(p *providerPickerState, width int, h *pickerHits) string {
 	var b strings.Builder
 	b.WriteString(renderMenuHeader("Provider",
-		"Manage configured providers. Pick an action to continue."))
+		"Manage configured providers. Pick an action to continue.", width))
 	b.WriteString("\n")
 	for i, item := range p.menuItems {
+		row := strings.Count(b.String(), "\n")
+		h.row(row, i)
 		b.WriteString(renderMenuItem(menuItemOpts{
 			Number:     i + 1,
 			Label:      item.Label,
@@ -1004,12 +1010,14 @@ func renderProviderMenu(p *providerPickerState) string {
 // renderProviderAddKind shows the catalog list — the first stage
 // of /provider Add. Each row carries the provider name plus its
 // short Note so the user can pick by purpose, not by URL.
-func renderProviderAddKind(p *providerPickerState) string {
+func renderProviderAddKind(p *providerPickerState, width int, h *pickerHits) string {
 	var b strings.Builder
 	b.WriteString(renderMenuHeader("Add provider — pick a kind",
-		"Cloud providers need only an API key. Free-form endpoints (Ollama, custom) need URL + model + key."))
+		"Cloud providers need only an API key. Free-form endpoints (Ollama, custom) need URL + model + key.", width))
 	b.WriteString("\n")
 	for i, e := range p.addCatalog {
+		row := strings.Count(b.String(), "\n")
+		h.row(row, i)
 		desc := e.Note
 		b.WriteString(renderMenuItem(menuItemOpts{
 			Number:     i + 1,
@@ -1027,14 +1035,14 @@ func renderProviderAddKind(p *providerPickerState) string {
 // label, then the textinput's view (with a cursor on the focused
 // row). addInputErr is rendered above the fields when an input
 // check fails (missing name / base URL / default model).
-func renderProviderAddFields(p *providerPickerState) string {
+func renderProviderAddFields(p *providerPickerState, width int) string {
 	var b strings.Builder
 	title := "Add provider"
 	desc := "Fill in the fields and press Enter to save."
 	if p.addPicked != nil {
 		title = "Add provider — " + p.addPicked.Name
 	}
-	b.WriteString(renderMenuHeader(title, desc))
+	b.WriteString(renderMenuHeader(title, desc, width))
 	b.WriteString("\n")
 	if p.addInputErr != "" {
 		b.WriteString(styleError.Render("✗ " + p.addInputErr))
@@ -1149,19 +1157,21 @@ func renderProviderAddModelExtras(p *providerPickerState) string {
 	return ""
 }
 
-func renderProviderUseList(p *providerPickerState, title string) string {
+func renderProviderUseList(p *providerPickerState, width int, title string, h *pickerHits) string {
 	var b strings.Builder
 	desc := "Pick a provider to switch the running session to. Switching mid-session resets the provider's prompt cache — the next turn reprocesses full history."
 	if title == "Remove provider" {
 		desc = "Pick a provider to delete from your config. The active provider is cleared if removed."
 	}
-	b.WriteString(renderMenuHeader(title, desc))
+	b.WriteString(renderMenuHeader(title, desc, width))
 	b.WriteString("\n")
 	if len(p.providers) == 0 {
 		b.WriteString(styleEmpty.Render("  no providers configured — try /provider add"))
 		return strings.TrimRight(b.String(), "\n")
 	}
 	for i, prov := range p.providers {
+		row := strings.Count(b.String(), "\n")
+		h.row(row, i)
 		// Render the catalog identity (e.g. "nvidia-nim") when we can
 		// derive it from the profile name; falls back to Kind for
 		// hand-rolled or "custom" profiles that don't trace back to a

@@ -133,12 +133,17 @@ func (m Model) updateCheckpointsPicker(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 // renderCheckpointsPicker draws the active screen (prompt list or
 // action menu). Width is reserved for future right-align columns;
 // today the rows use the same renderMenuItem helper as other pickers.
-func renderCheckpointsPicker(state *checkpointsPickerState, _ int) string {
+func renderCheckpointsPicker(state *checkpointsPickerState, width int, hits ...*pickerHits) string {
+	var h *pickerHits
+	if len(hits) > 0 {
+		h = hits[0]
+	}
 	if state.picked != nil {
 		preview := truncatePromptPreview(state.picked.PromptPreview, 60)
 		header := renderMenuHeader(
 			"Restore from \""+preview+"\"",
 			"Pick an action. Enter commits; Esc returns.",
+			width,
 		)
 		body := header + "\n"
 		maxLabel := 0
@@ -148,11 +153,14 @@ func renderCheckpointsPicker(state *checkpointsPickerState, _ int) string {
 			}
 		}
 		for i, a := range checkpointsPickerActions {
+			row := strings.Count(body, "\n")
+			h.row(row, i)
 			body += renderMenuItem(menuItemOpts{
 				Label:      a.Label,
 				LabelWidth: maxLabel,
 				Desc:       a.Desc,
 				Cursor:     i == state.actionIdx,
+				MaxWidth:   width,
 			}) + "\n"
 		}
 		body += "\n" + styleAuto.Render("Bash and git mutations are not tracked.")
@@ -162,15 +170,19 @@ func renderCheckpointsPicker(state *checkpointsPickerState, _ int) string {
 	header := renderMenuHeader(
 		"Restore from a checkpoint",
 		"Newest first. Enter to pick. Esc closes.",
+		width,
 	)
 	const maxPreview = 60
 	body := header + "\n"
 	for i, en := range state.entries {
+		row := strings.Count(body, "\n")
+		h.row(row, i)
 		body += renderMenuItem(menuItemOpts{
 			Label:      truncatePromptPreview(en.PromptPreview, maxPreview),
 			LabelWidth: maxPreview,
 			Desc:       formatPlanAge(time.Since(en.Created)),
 			Cursor:     i == state.cursor,
+			MaxWidth:   width,
 		}) + "\n"
 	}
 	body += "\n" + styleAuto.Render("Bash and git mutations are not tracked.")

@@ -698,7 +698,14 @@ func stageSkillBodyForPager(sk skills.Skill) (string, error) {
 // with a check/uncheck glyph reflecting the working enablement
 // state, the skill name, its source tag, and a truncated description.
 // Cursor highlighting is handled by renderMenuItem.
-func renderSkillsPicker(state *skillsPickerState, _ int) string {
+func renderSkillsPicker(state *skillsPickerState, width int, hits ...*pickerHits) string {
+	if width < 1 {
+		width = menuDividerWidth
+	}
+	var h *pickerHits
+	if len(hits) > 0 {
+		h = hits[0]
+	}
 	hint := "←/→ switches view · / filters · Enter installs · r refreshes catalog · Esc closes"
 	if state.tab == catalogTabBundled {
 		hint = "←/→ switches view · / filters · Space toggles · Enter views body · a/n · Esc saves and closes"
@@ -706,14 +713,15 @@ func renderSkillsPicker(state *skillsPickerState, _ int) string {
 	if state.filterMode {
 		hint = "Type to filter · Backspace edits · Enter applies · Esc clears filter"
 	}
-	header := renderMenuHeader("Catalog", hint)
+	header := renderMenuHeader("Catalog", hint, width)
 	// Selection semantics — shown above the tab bar on both tabs because the
 	// checkbox is the model-autonomy gate; disk presence alone keeps slash
 	// invocation alive either way. Keep the status legend inline so the Official
 	// catalog's installed/enabled wording is self-explanatory.
 	tabIntro := styleMeta.Render(
 		"  Official status: not installed, installed, installed/enabled (available to the model this session). Bundled rows toggle model access.")
-	body := header + "\n" + tabIntro + "\n\n" + renderSkillsTabs(state.tab) + "\n"
+	tabRow := strings.Count(header+"\n"+tabIntro+"\n\n", "\n")
+	body := header + "\n" + tabIntro + "\n\n" + renderSkillsTabs(state.tab, h, tabRow) + "\n"
 	if state.filter != "" || state.filterMode {
 		filterLine := "  filter: " + state.filter
 		if state.filterMode {
@@ -788,6 +796,8 @@ func renderSkillsPicker(state *skillsPickerState, _ int) string {
 		}
 		sourcePad := strings.Repeat(" ", max(0, sourceW-runeCount(source)))
 		label := mark + " " + name + namePad + " " + source + sourcePad
+		row := strings.Count(body, "\n")
+		h.row(row, i)
 		body += renderMenuItem(menuItemOpts{
 			Label:  label,
 			Desc:   truncateForRender(sk.Description, 80),
@@ -800,10 +810,12 @@ func renderSkillsPicker(state *skillsPickerState, _ int) string {
 	return body
 }
 
-// renderSkillsTabs draws the three-tab bar shown above the catalog
-// rows. Active tab is bright + bracketed; inactive is muted. Plain
-// text only — no emoji, per the project's UI convention.
-func renderSkillsTabs(active skillsCatalogTab) string {
+// renderSkillsTabs draws the tab bar shown above the catalog rows.
+// Active tab is bright + bracketed; inactive is muted. Plain text
+// only — no emoji, per the project's UI convention.
+//
+// h/row register each tab's clickable column span (nil-safe).
+func renderSkillsTabs(active skillsCatalogTab, h *pickerHits, row int) string {
 	tabs := []struct {
 		label string
 		tab   skillsCatalogTab
@@ -812,12 +824,17 @@ func renderSkillsTabs(active skillsCatalogTab) string {
 		{"Bundled", catalogTabBundled},
 	}
 	var parts []string
+	col := 2 // leading "  "
 	for _, t := range tabs {
+		var seg string
 		if t.tab == active {
-			parts = append(parts, lipgloss.NewStyle().Foreground(colorSuccess).Bold(true).Render("["+t.label+"]"))
+			seg = lipgloss.NewStyle().Foreground(colorSuccess).Bold(true).Render("[" + t.label + "]")
 		} else {
-			parts = append(parts, styleMeta.Render(" "+t.label+" "))
+			seg = styleMeta.Render(" " + t.label + " ")
 		}
+		h.span(row, col, col+lipgloss.Width(seg), int(t.tab))
+		col += lipgloss.Width(seg) + 2 // "  " separator
+		parts = append(parts, seg)
 	}
 	return "  " + strings.Join(parts, "  ")
 }

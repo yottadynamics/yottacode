@@ -388,23 +388,20 @@ func renderLoopCard(ls loopState, width int) string {
 	return strings.Join(lines, "\n")
 }
 
-// renderLoopListPanel is the body of the bare-`/loop` overlay: a compact menu
+// renderLoopListPanel is the body of the bare-`/loop` popup: a compact menu
 // (one row per loop, house picker style via renderMenuItem) plus a stop/dismiss
-// hint. Rendered above the cmdline via renderInlineOverlay so checking loops
-// never clutters the transcript. Deliberately NOT the multi-line arm card —
+// hint. Rendered as a centered popup (popup.go) so checking loops never
+// clutters the transcript. Deliberately NOT the multi-line arm card —
 // this is a scannable list of what's running, keyed by ID for `/loop stop`.
 func (m Model) renderLoopListPanel() string {
 	ids := m.activeLoopIDs()
-	width := m.width
-	if width <= 0 {
-		width = 80
-	}
+	width := m.popupWidth()
 	label := "loops"
 	if len(ids) == 1 {
 		label = "loop"
 	}
 	var b strings.Builder
-	b.WriteString(renderMenuHeader(fmt.Sprintf("%d active %s", len(ids), label), ""))
+	b.WriteString(renderMenuHeader(fmt.Sprintf("%d active %s", len(ids), label), "", width))
 	b.WriteString("\n")
 
 	const labelW = 13
@@ -574,7 +571,11 @@ func requestGracefulExit(m Model) (tea.Model, tea.Cmd) {
 	return maybeStartExitSaveTurn(m)
 }
 
-func renderLoopExitConfirm(m Model) string {
+func renderLoopExitConfirm(m Model, hits ...*pickerHits) string {
+	var h *pickerHits
+	if len(hits) > 0 {
+		h = hits[0]
+	}
 	var b strings.Builder
 	b.WriteString(styleAssistantHeader.Render("Active loops will stop on exit"))
 	b.WriteString("\nThese local loops end when you exit — they do not run in the background:\n\n")
@@ -585,6 +586,8 @@ func renderLoopExitConfirm(m Model) string {
 	b.WriteString("\n")
 	options := []string{"Exit anyway", "Stay"}
 	for i, opt := range options {
+		row := strings.Count(b.String(), "\n")
+		h.row(row, i)
 		cursor := "  "
 		if i == m.loopExitConfirmCursor {
 			cursor = "❯ "

@@ -1043,6 +1043,18 @@ func TestSlowDurationTag_Threshold(t *testing.T) {
 	}
 }
 
+// Narrow slow-call headers clip the invocation before appending metadata. The
+// duration is useful, but it must not make the card wider than the narrow floor.
+func TestRenderCardHeader_NarrowSlowCallClipsBeforeDuration(t *testing.T) {
+	got := stripANSI(renderCardHeader("Bash("+strings.Repeat("go test ./... ", 4)+")", neutralGutter(), 4*time.Second, 28))
+	if !strings.Contains(got, " · 4s") {
+		t.Fatalf("slow header should keep duration tag, got %q", got)
+	}
+	if w := lipgloss.Width(got); w > 28 {
+		t.Fatalf("narrow slow header width = %d, want <= 28: %q", w, got)
+	}
+}
+
 func TestRenderToolCard_GrepCapsCustomRows(t *testing.T) {
 	var rows []string
 	for i := 1; i <= 101; i++ {
@@ -1093,6 +1105,21 @@ func TestRenderToolCard_CodeReviewContextUsesSummaryAndWarnings(t *testing.T) {
 	}
 	if !strings.Contains(got, "⚠ diff_capped") {
 		t.Fatalf("code review card should show true exception flags, got:\n%s", got)
+	}
+}
+
+// Very narrow terminals should still get a compact card shape instead of the
+// older 40-column floor that overflowed small panes. The floor is not allowed to
+// shrink below a readable invocation label.
+func TestRenderToolCard_NarrowTerminalUsesCompactFloor(t *testing.T) {
+	got := stripANSI(renderToolCard("list_dir", "list_dir(.)", `{"path":"."}`, "d\tbin\nf\tmain.go\n", false, 26, "", 0))
+	for _, line := range strings.Split(got, "\n") {
+		if w := lipgloss.Width(line); w > cardMinUsefulCols+20 { // body wraps may include path text, but the chrome should stay compact.
+			t.Fatalf("narrow card line unexpectedly wide (%d): %q\nfull:\n%s", w, line, got)
+		}
+	}
+	if !strings.Contains(got, "┌ List(.)") || !strings.Contains(got, "└ 2 entries") {
+		t.Fatalf("narrow card should keep header/footer shape, got:\n%s", got)
 	}
 }
 

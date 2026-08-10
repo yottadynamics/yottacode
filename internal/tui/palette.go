@@ -21,21 +21,30 @@ func (m *Model) openSlashPalette() {
 }
 
 // paletteMatchRank classifies how a command name matches the typed
-// filter: 0 = prefix match, 1 = substring match elsewhere in the
-// name, -1 = no match. Prefix matches rank above substring matches
-// so muscle-memory filters ("/mo" → /model) keep their position at
-// the top, while a mid-name search ("review" → /code-review,
-// /git-review-pr) still finds everything — prefix-only matching
-// made every /git-* and /code-* command invisible to the verb the
-// user actually thinks in.
+// filter. Lower ranks sort first: prefix, word-initial fuzzy, substring,
+// then no match. Prefix matches stay first so muscle-memory filters
+// ("/mo" → /model) keep their position, while initial queries like
+// "/grp" can still jump to /git-review-pr without noisy arbitrary
+// subsequence matches.
 func paletteMatchRank(name, typed string) int {
 	switch {
 	case typed == "", strings.HasPrefix(name, typed):
 		return 0
-	case strings.Contains(name, typed):
+	case commandAliasMatch(name, typed), wordInitialsMatch(typed, name):
 		return 1
+	case strings.Contains(name, typed):
+		return 2
 	}
 	return -1
+}
+
+func commandAliasMatch(name, typed string) bool {
+	switch typed {
+	case "ctx":
+		return name == "context"
+	default:
+		return false
+	}
 }
 
 // filterPalette returns the built-in slash commands matching the
@@ -50,16 +59,19 @@ func filterPalette(typed string) []slashCommand {
 	if typed == "" {
 		return allSlash
 	}
-	var prefix, substr []slashCommand
+	var prefix, fuzzy, substr []slashCommand
 	for _, c := range allSlash {
 		switch paletteMatchRank(c.Name, typed) {
 		case 0:
 			prefix = append(prefix, c)
 		case 1:
+			fuzzy = append(fuzzy, c)
+		case 2:
 			substr = append(substr, c)
 		}
 	}
-	return append(prefix, substr...)
+	out := append(prefix, fuzzy...)
+	return append(out, substr...)
 }
 
 // filterPalette (method) returns built-ins followed by the session's
@@ -69,20 +81,23 @@ func filterPalette(typed string) []slashCommand {
 // users can see and tab-complete their custom commands.
 func (m *Model) filterPaletteAll(typed string) []slashCommand {
 	typed = strings.ToLower(strings.TrimPrefix(typed, "/"))
-	var prefix, substr []slashCommand
+	var prefix, fuzzy, substr []slashCommand
 	collect := func(cmds []slashCommand) {
 		for _, c := range cmds {
 			switch paletteMatchRank(c.Name, typed) {
 			case 0:
 				prefix = append(prefix, c)
 			case 1:
+				fuzzy = append(fuzzy, c)
+			case 2:
 				substr = append(substr, c)
 			}
 		}
 	}
 	collect(allSlash)
 	collect(m.customSlash)
-	return append(prefix, substr...)
+	out := append(prefix, fuzzy...)
+	return append(out, substr...)
 }
 
 // slashPaletteVisible caps how many entries the rendered slash palette

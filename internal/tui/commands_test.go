@@ -18,6 +18,57 @@ import (
 	"github.com/yottadynamics/yottacode/internal/session"
 )
 
+// TestRenderHelpPanel_LongSkillDescriptionWrapsWithinWidth is a
+// regression guard: a skill's Help text can be arbitrarily long
+// (author-written prose), and renderMenuItem's Desc column used to
+// render it unbounded — overflowing the popup's right border on a
+// narrow terminal instead of truncating in place like every other
+// picker row.
+func TestRenderHelpPanel_LongSkillDescriptionWrapsWithinWidth(t *testing.T) {
+	m := newTestModel(t)
+	m, _ = applyMsg(m, tea.WindowSizeMsg{Width: 60, Height: 24})
+	m.skillSlash = []slashCommand{
+		{Name: "my-skill", Help: "this is a deliberately long skill description that would overflow a narrow popup's right border if it were never truncated to fit the row"},
+	}
+
+	got := renderHelpPanel(m)
+	width := m.popupWidth()
+	for _, line := range strings.Split(got, "\n") {
+		if w := runeLen(stripANSI(line)); w > width {
+			t.Errorf("line exceeds popup width %d (got %d): %q", width, w, line)
+		}
+	}
+}
+
+// TestRenderHelpPanel_DividerMatchesBoxWidth mirrors the same
+// divider/box-width consistency guard as skills_menu_test.go's
+// TestSkillsMenu_DividerMatchesBoxWidth — renderMenuHeader now always
+// receives the same width the row content is bounded to.
+func TestRenderHelpPanel_DividerMatchesBoxWidth(t *testing.T) {
+	m := newTestModel(t)
+	m, _ = applyMsg(m, tea.WindowSizeMsg{Width: 60, Height: 24})
+	m.skillSlash = []slashCommand{
+		{Name: "my-skill", Help: "this is a deliberately long skill description that would overflow a narrow popup's right border if it were never truncated to fit the row"},
+	}
+
+	rendered := renderHelpPanel(m)
+	box := popupBox(rendered)
+	boxLines := strings.Split(box, "\n")
+	if len(boxLines) < 2 {
+		t.Fatalf("popup box has too few lines: %d", len(boxLines))
+	}
+	boxWidth := runeLen(stripANSI(boxLines[0]))
+
+	for _, line := range strings.Split(rendered, "\n") {
+		if !strings.Contains(stripANSI(line), "─") {
+			continue
+		}
+		if got := runeLen(stripANSI(line)) + 4; got != boxWidth {
+			t.Errorf("divider width (%d, +border/padding) does not match the box's own width (%d): %q", got, boxWidth, line)
+		}
+	}
+}
+
 // permissionsLoadHelper seeds <cwd>/.yottacode/permissions.json with
 // the given allow/ask/deny lists and returns a fresh Permissions
 // pointing at it. Used by /permissions slash-command tests so they
@@ -110,6 +161,11 @@ func TestSlash_QuitProducesQuitMsg(t *testing.T) {
 
 func TestSlash_PermissionsOpensPickerWithBothRows(t *testing.T) {
 	m := newTestModel(t)
+	// Tall enough that the centered popup and the top-anchored launch
+	// hero (/permissions no longer exits it — see enteredConversation's
+	// field doc) don't overlap; the default 24-row test height puts
+	// both in the same few rows.
+	m.height = 60
 	// Stand up a permissions store so SharedPath/LocalPath resolve.
 	p, err := permissionsLoadHelper(t, m.cwd, []string{"Bash(go *)"}, nil, []string{"Bash(rm *)"})
 	if err != nil {
@@ -146,19 +202,22 @@ func TestSlash_PermissionsOpensPickerWithBothRows(t *testing.T) {
 			t.Errorf("/permissions picker missing %q; got %q", want, v)
 		}
 	}
-	// Inline overlays render above the cmdline, with the status bar still
-	// directly below the cmdline. This pins the shared compositor used by
-	// slash-command submenus.
+	// Popups float over a persistent background (composePopup, popup.go)
+	// rather than replacing the footer, so the cmdline border and status
+	// bar dot stay visible in the same frame as the picker content —
+	// this pins that "float over, don't replace" invariant. Their
+	// relative text position no longer carries meaning once the popup is
+	// Z-composited on top (it can land at any row depending on centering
+	// math), so this only checks presence, not order.
 	plainView := stripANSI(v)
-	permIdx := strings.Index(plainView, "Permissions")
-	cmdIdx := strings.Index(plainView, "┌")
-	statusIdx := strings.Index(plainView, "●")
-	if permIdx < 0 || cmdIdx < 0 || statusIdx < 0 {
-		t.Fatalf("view missing overlay/cmdline/status markers:\n%s", plainView)
+	if !strings.Contains(plainView, "Permissions") {
+		t.Fatalf("view missing popup content:\n%s", plainView)
 	}
-	if !(permIdx < cmdIdx && cmdIdx < statusIdx) {
-		t.Errorf("expected overlay above cmdline and status below cmdline; positions permissions=%d cmd=%d status=%d\n%s",
-			permIdx, cmdIdx, statusIdx, plainView)
+	if !strings.Contains(plainView, "┌") {
+		t.Fatalf("view missing cmdline chrome (popup should float over it, not replace it):\n%s", plainView)
+	}
+	if !strings.Contains(plainView, "●") {
+		t.Fatalf("view missing status bar (popup should float over it, not replace it):\n%s", plainView)
 	}
 	// Picker must not regress into a state-dump (no rule listing).
 	for _, banned := range []string{"Bash(go *)", "Bash(rm *)"} {

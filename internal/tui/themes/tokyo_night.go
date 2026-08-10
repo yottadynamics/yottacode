@@ -27,5 +27,12 @@ func init() {
 		Assistant: pin("#7dcfff"), // cyan
 		Code:      pin("#c0caf5"),
 		Warm:      pin("#ff9e64"), // orange
+
+		// #1a1b26 is Tokyo Night's canonical "Night" variant
+		// background — the deep navy the theme is recognized by. Real
+		// terminal-background theming (OSC 11) repaints the terminal
+		// canvas itself to this, not just in-app chrome.
+		HasBackground: true,
+		Background:    pin("#1a1b26"),
 	})
 }

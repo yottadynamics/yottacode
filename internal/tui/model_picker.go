@@ -156,6 +156,18 @@ func (m *Model) fetchPickerModels(p config.Provider, apiKey string) tea.Cmd {
 	}
 }
 
+// cyclePickerProviderTo jumps the picker directly to providerIdx==idx —
+// a direct tab click, unlike ←/→'s relative step. Reuses
+// cyclePickerProvider's body (by computing the equivalent delta) so the
+// actual reset/apiKey logic lives in exactly one place.
+func (m *Model) cyclePickerProviderTo(idx int) tea.Cmd {
+	p := m.modelPicker
+	if p == nil || idx < 0 || idx >= len(p.allProviders) || idx == p.providerIdx {
+		return nil
+	}
+	return m.cyclePickerProvider(idx - p.providerIdx)
+}
+
 // cyclePickerProvider switches the picker to the next/previous
 // configured provider (delta = +1 / -1). Resets the loading state
 // and returns a fetch cmd for the new provider's models. No-op
@@ -530,14 +542,19 @@ func (p *modelPickerState) currentModel() string {
 // hint is plain "current" text right-aligned. Long lists scroll
 // within a fixed window with "▲ N more" / "▼ N more" hints at the
 // boundaries.
-func renderModelPicker(p *modelPickerState, width int) string {
+func renderModelPicker(p *modelPickerState, width int, hits ...*pickerHits) string {
 	_ = width // reserved for future per-row truncation; the inline
 	// overlay no longer needs it for centering.
+	var h *pickerHits
+	if len(hits) > 0 {
+		h = hits[0]
+	}
 	var b strings.Builder
 	b.WriteString(renderMenuHeader("Model",
 		"Switching models mid-session resets the provider's prompt cache — the next turn reprocesses full history."))
 	if len(p.allProviders) > 1 {
-		b.WriteString(renderProviderTabStrip(p))
+		row := strings.Count(b.String(), "\n")
+		b.WriteString(renderProviderTabStrip(p, h, row))
 		b.WriteString("\n")
 	} else if len(p.allProviders) == 1 {
 		// Single-provider open: no strip needed, but show which
@@ -608,6 +625,8 @@ func renderModelPicker(p *modelPickerState, width int) string {
 			// Enter confirm or switch cleanly instead of starting at row 0.
 			activeModel := p.currentModel()
 			line := renderPickerRow(p.entries[i], i == p.cursor, activeModel, enabled, p.entries[i].Disabled)
+			row := strings.Count(b.String(), "\n")
+			h.row(row, i)
 			b.WriteString(line)
 			b.WriteString("\n")
 		}
@@ -632,10 +651,9 @@ func renderModelPicker(p *modelPickerState, width int) string {
 	footer := "↵ save · ↑↓ navigate · PgUp/PgDn jump · home/end · esc cancel"
 	b.WriteString(styleFooter.Render(footer))
 
-	// Inline-overlay shape: no rounded box, no horizontal
-	// centering. The parent renderInlineOverlay sits this body above
-	// the cmdline, so a second border would read as "modal floating
-	// on a modal".
+	// Deliberately borderless/uncentered: popupBox (popup.go) supplies
+	// the single rounded border and composePopup does the centering, so
+	// adding either here would read as "modal floating on a modal".
 	return strings.TrimRight(b.String(), "\n")
 }
 
@@ -646,16 +664,25 @@ func renderModelPicker(p *modelPickerState, width int) string {
 // miss — replaces the prose "Use ←/→ to switch provider" line that
 // users skipped right past. Indented two columns to align with the
 // rest of the picker chrome.
-func renderProviderTabStrip(p *modelPickerState) string {
+//
+// h/row register each tab's clickable column span (nil-safe — h may be
+// nil when the caller doesn't care about hit-testing, e.g. tests and
+// the render path itself before a click ever happens).
+func renderProviderTabStrip(p *modelPickerState, h *pickerHits, row int) string {
 	activeStyle := lipgloss.NewStyle().Foreground(colorAccent).Bold(true)
 	mutedStyle := lipgloss.NewStyle().Foreground(colorMuted)
 	tabs := make([]string, 0, len(p.allProviders))
+	col := 2 // leading "  "
 	for i, prov := range p.allProviders {
+		var seg string
 		if i == p.providerIdx {
-			tabs = append(tabs, activeStyle.Render("[ "+prov.Name+" ]"))
+			seg = activeStyle.Render("[ " + prov.Name + " ]")
 		} else {
-			tabs = append(tabs, mutedStyle.Render(prov.Name))
+			seg = mutedStyle.Render(prov.Name)
 		}
+		h.span(row, col, col+lipgloss.Width(seg), i)
+		col += lipgloss.Width(seg) + 3 // "   " separator between tabs
+		tabs = append(tabs, seg)
 	}
 	hint := mutedStyle.Render(fmt.Sprintf("←/→ switch (%d/%d)", p.providerIdx+1, len(p.allProviders)))
 	return "  " + strings.Join(tabs, "   ") + "    " + hint

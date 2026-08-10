@@ -127,7 +127,7 @@ func TestInput_HintsShowInlineBeforeFirstMessage(t *testing.T) {
 func TestInput_HintsDisappearAfterFirstMessage(t *testing.T) {
 	m := newTestModel(t)
 	m.firstMessageSent = true
-	plain := stripANSI(m.View().Content)
+	plain := stripANSI(m.renderInputBox())
 	for _, gone := range []string{"@ files", "↑↓ history"} {
 		if strings.Contains(plain, gone) {
 			t.Errorf("hint %q should be hidden after first message: %q", gone, plain)
@@ -140,7 +140,50 @@ func TestInput_HintsDisappearAfterFirstMessage(t *testing.T) {
 	}
 }
 
-// The chevron `❯` is Accent-colored and persistent — it stays
+// After onboarding, the TUI shows a contextual key-hint row above the cmdline.
+// This is focus-aware chrome: the idle textarea advertises send/newline/palette
+// keys instead of stale modal shortcuts.
+func TestKeyHints_IdleAfterFirstMessage(t *testing.T) {
+	m := newTestModel(t)
+	m.firstMessageSent = true
+	plain := stripANSI(m.renderKeyHintRow())
+	for _, want := range []string{"Enter send", "Ctrl+J newline", "/ commands", "@ files"} {
+		if !strings.Contains(plain, want) {
+			t.Fatalf("idle key hints missing %q: %q", want, plain)
+		}
+	}
+}
+
+// Decision modals own the keyboard. The key-hint row should make that focus
+// zone explicit and still mention that Enter queues typed text instead of
+// answering the approval implicitly.
+func TestKeyHints_ApprovalFocus(t *testing.T) {
+	m := newTestModel(t)
+	m.firstMessageSent = true
+	m.awaitingApproval = true
+	m.approvalAllowAlwaysOK = true
+	m.approvalDenyAlwaysOK = true
+	plain := stripANSI(m.renderKeyHintRow())
+	for _, want := range []string{"Y approve", "N reject", "A always", "D never", "Enter queue text"} {
+		if !strings.Contains(plain, want) {
+			t.Fatalf("approval key hints missing %q: %q", want, plain)
+		}
+	}
+}
+
+// Slash and file palettes are inline focus zones rather than popups. Their
+// hints must advertise completion/attach behavior, not the idle send shortcut.
+func TestKeyHints_PaletteFocus(t *testing.T) {
+	m := newTestModel(t)
+	m.firstMessageSent = true
+	m.paletteOpen = true
+	plain := stripANSI(m.renderKeyHintRow())
+	if !strings.Contains(plain, "Tab complete") || !strings.Contains(plain, "Enter run") {
+		t.Fatalf("palette key hints should describe palette actions: %q", plain)
+	}
+}
+
+// The chevron `›` is Success-colored and persistent — it stays
 // rendered whether the input is empty (placeholder branch) or
 // populated.
 func TestInput_ChevronStaysVisibleWithContent(t *testing.T) {
@@ -148,8 +191,12 @@ func TestInput_ChevronStaysVisibleWithContent(t *testing.T) {
 	for _, r := range "hello" {
 		m, _ = applyMsg(m, tea.KeyPressMsg{Text: string(r)})
 	}
-	if !strings.Contains(m.View().Content, "❯") {
-		t.Errorf("chevron should stay visible with content: %q", m.View().Content)
+	plain := stripANSI(m.View().Content)
+	if !strings.Contains(plain, "›") {
+		t.Errorf("chevron should stay visible with content: %q", plain)
+	}
+	if strings.Contains(plain, "❯") {
+		t.Errorf("input prompt should use the slimmer › chevron, not ❯: %q", plain)
 	}
 }
 

@@ -107,6 +107,24 @@ func TestFilterFilePalette_SubsequenceMatch(t *testing.T) {
 	}
 }
 
+func TestFilterFilePalette_FuzzyInitialsRankAboveLooseSubsequence(t *testing.T) {
+	entries := []fileEntry{
+		{Path: "internal/tui/mouse_picker.go"},
+		{Path: "internal/tui/model_picker.go"},
+		{Path: "internal/tui/mostly/possible.go"},
+	}
+	got := filterFilePalette("mp", entries)
+	if len(got) < 2 {
+		t.Fatalf("expected fuzzy file matches, got %+v", got)
+	}
+	if got[0].Path != "internal/tui/model_picker.go" && got[0].Path != "internal/tui/mouse_picker.go" {
+		t.Fatalf("mp should prioritize word-initial fuzzy matches; got %+v", got)
+	}
+	if got[len(got)-1].Path != "internal/tui/mostly/possible.go" {
+		t.Fatalf("loose subsequence should rank below word-initial matches; got %+v", got)
+	}
+}
+
 func TestFilterFilePalette_ReturnsAllMatches(t *testing.T) {
 	// Build a filtered set larger than the visible window. The palette
 	// is windowed at render time, not truncated at filter time, so the
@@ -121,7 +139,6 @@ func TestFilterFilePalette_ReturnsAllMatches(t *testing.T) {
 		t.Fatalf("filter returned %d matches; want %d (no truncation)", len(got), len(entries))
 	}
 }
-
 func TestRenderFilePalette_ShowsOverflowHints(t *testing.T) {
 	items := make([]fileEntry, 0, filePaletteVisible*2)
 	for i := 0; i < filePaletteVisible*2; i++ {

@@ -36,7 +36,7 @@ import (
 const (
 	cardBodyLineCap   = 10  // max body lines before we truncate with "…"
 	cardMaxWidthCap   = 120 // hard cap; finer cap is terminalWidth - 4
-	cardMinUsefulCols = 40  // width below which we don't bother padding the duration
+	cardMinUsefulCols = 28  // narrow-terminal floor that still leaves room for a readable verb label
 )
 
 // slowCallThreshold hides the header duration tag for calls that finish
@@ -492,19 +492,27 @@ func tailTruncatedTool(toolName string) bool {
 
 // renderCardHeader composes "┌ <preview>", tinting the opening glyph via
 // the card's gutter (Error red on a failed call, else neutral Dim), and
-// right-aligns a duration tag to the card's `width` edge when the call
-// was slow enough to warrant one (dur ≥ slowCallThreshold).
+// appends a compact duration tag when the call was slow enough to warrant one
+// (dur ≥ slowCallThreshold). On very narrow cards the preview is clipped again
+// after the duration is known so metadata never pushes the header past the card
+// floor.
 //
 //	┌ Bash(go test ./...)                                          4s
 //
 // The tag is silent on the sub-second calls that dominate — it appears
-// only when "how long did that take?" is a live question. On a narrow
-// card (< cardMinUsefulCols) the padding would be more gap than signal,
-// so we skip it and keep the bare header.
+// only when "how long did that take?" is a live question.
 func renderCardHeader(preview string, g cardGutter, dur time.Duration, width int) string {
-	head := g.top.Render("┌ ") + styleCardHeader.Render(preview)
 	tag := slowDurationTag(dur)
-	if tag == "" || width < cardMinUsefulCols {
+	if tag != "" {
+		meta := " · " + tag
+		budget := width - ansi.StringWidth("┌ ") - ansi.StringWidth(meta)
+		if budget < 8 {
+			budget = 8
+		}
+		preview = clipHeader(preview, budget)
+	}
+	head := g.top.Render("┌ ") + styleCardHeader.Render(preview)
+	if tag == "" {
 		return head
 	}
 	return head + styleCardMeta.Render(" · "+tag)

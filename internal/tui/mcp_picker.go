@@ -453,19 +453,23 @@ func commitMCPRemove(m *Model) (Model, tea.Cmd) {
 
 // --- renderers ---------------------------------------------------------------
 
-func renderMCPPicker(p *mcpPickerState, width int) string {
+func renderMCPPicker(p *mcpPickerState, width int, hits ...*pickerHits) string {
+	var h *pickerHits
+	if len(hits) > 0 {
+		h = hits[0]
+	}
 	var body string
 	switch p.mode {
 	case mcpMenuMode:
-		body = renderMCPMenu(p)
+		body = renderMCPMenu(p, width, h)
 	case mcpListMode:
-		body = renderMCPServerList(p, "MCP servers", false)
+		body = renderMCPServerList(p, "MCP servers", false, width, h)
 	case mcpAddMode:
 		body = renderMCPAddForm(p, width)
 	case mcpRemoveMode:
-		body = renderMCPServerList(p, "Remove MCP server", true)
+		body = renderMCPServerList(p, "Remove MCP server", true, width, h)
 	case mcpLogsMode:
-		body = renderMCPServerList(p, "View server logs", false)
+		body = renderMCPServerList(p, "View server logs", false, width, h)
 	default:
 		body = styleEmpty.Render("(unknown picker state)")
 	}
@@ -474,35 +478,37 @@ func renderMCPPicker(p *mcpPickerState, width int) string {
 		footerText = "enter save · tab/shift+tab switch fields · esc back"
 	}
 	footer := styleFooter.Render(footerText)
-	_ = width
 	return body + "\n\n" + footer
 }
 
-func renderMCPMenu(p *mcpPickerState) string {
+func renderMCPMenu(p *mcpPickerState, width int, h *pickerHits) string {
 	var b strings.Builder
 	b.WriteString(renderMenuHeader("MCP servers",
-		"Manage Model Context Protocol server lifecycle."))
+		"Manage Model Context Protocol server lifecycle.", width))
 	b.WriteString("\n")
 	for i, item := range p.menuItems {
+		row := strings.Count(b.String(), "\n")
+		h.row(row, i)
 		b.WriteString(renderMenuItem(menuItemOpts{
 			Number:     i + 1,
 			Label:      item.Label,
 			LabelWidth: 10,
 			Desc:       item.Subtitle,
 			Cursor:     i == p.menuCursor,
+			MaxWidth:   width,
 		}))
 		b.WriteString("\n")
 	}
 	return strings.TrimRight(b.String(), "\n")
 }
 
-func renderMCPServerList(p *mcpPickerState, title string, isRemove bool) string {
+func renderMCPServerList(p *mcpPickerState, title string, isRemove bool, width int, h *pickerHits) string {
 	var b strings.Builder
 	desc := "View server status and tool counts. Press Enter to view logs."
 	if isRemove {
 		desc = "Select a server to remove from config.toml."
 	}
-	b.WriteString(renderMenuHeader(title, desc))
+	b.WriteString(renderMenuHeader(title, desc, width))
 	b.WriteString("\n")
 	if len(p.servers) == 0 {
 		b.WriteString(styleEmpty.Render("  no MCP servers configured"))
@@ -522,11 +528,14 @@ func renderMCPServerList(p *mcpPickerState, title string, isRemove bool) string 
 		default:
 			detail = styleMCPMeta.Render(srv.Status)
 		}
+		row := strings.Count(b.String(), "\n")
+		h.row(row, i)
 		b.WriteString(renderMenuItem(menuItemOpts{
 			Label:      srv.Name,
 			LabelWidth: 20,
 			Desc:       detail,
 			Cursor:     i == p.listCursor,
+			MaxWidth:   width,
 		}))
 		b.WriteString("\n")
 	}
@@ -536,7 +545,7 @@ func renderMCPServerList(p *mcpPickerState, title string, isRemove bool) string 
 func renderMCPAddForm(p *mcpPickerState, width int) string {
 	var b strings.Builder
 	b.WriteString(renderMenuHeader("Add MCP server",
-		"Fill in the fields and press Enter to save. The server starts immediately."))
+		"Fill in the fields and press Enter to save. The server starts immediately.", width))
 	b.WriteString("\n")
 
 	if p.addInputErr != "" {

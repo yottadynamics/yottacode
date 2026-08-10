@@ -58,6 +58,33 @@ func TestInterrupt_EnterMidTurnQueuesOnChannel(t *testing.T) {
 	}
 }
 
+func TestInterrupt_EnterMidTurnApprovalQueuesOnChannel(t *testing.T) {
+	m := newTestModel(t)
+	cancels := installFakeTurn(t, &m)
+	m.awaitingApproval = true
+	m.textInput.SetValue("follow up")
+
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter})
+
+	select {
+	case got := <-m.userMsgCh:
+		if got != "follow up" {
+			t.Errorf("userMsgCh message = %q, want %q", got, "follow up")
+		}
+	default:
+		t.Errorf("Enter during approval should queue input on userMsgCh")
+	}
+	if got := cancels.Load(); got != 0 {
+		t.Errorf("approval-side queue must not cancel turn; got %d calls", got)
+	}
+	if got := m.textInput.Value(); got != "" {
+		t.Errorf("textInput.Value = %q, want empty", got)
+	}
+	if !strings.Contains(stripANSI(m.transcript.String()), SysMsg(SysQueue, "queue", "after approval", "follow up")) {
+		t.Fatalf("expected approval queue notice; transcript=%q", stripANSI(m.transcript.String()))
+	}
+}
+
 func TestInterrupt_QueuedEnterDoesNotRenderInterruptedFooter(t *testing.T) {
 	m := newTestModel(t)
 	_ = installFakeTurn(t, &m)

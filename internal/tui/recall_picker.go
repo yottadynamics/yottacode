@@ -197,15 +197,19 @@ func (m Model) updateRecallPreview(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 	return m, nil
 }
 
-func renderRecallPicker(p *recallPickerState, width int) string {
+func renderRecallPicker(p *recallPickerState, width int, hits ...*pickerHits) string {
 	_ = width
+	var h *pickerHits
+	if len(hits) > 0 {
+		h = hits[0]
+	}
 	if p.preview {
 		return renderRecallPreview(p)
 	}
-	return renderRecallList(p)
+	return renderRecallList(p, h)
 }
 
-func renderRecallList(p *recallPickerState) string {
+func renderRecallList(p *recallPickerState, h *pickerHits) string {
 	var b strings.Builder
 	matchCount := 0
 	for _, g := range p.groups {
@@ -218,6 +222,8 @@ func renderRecallList(p *recallPickerState) string {
 		b.WriteString(styleEmpty.Render("  (no matches)"))
 	} else {
 		for i, g := range p.groups {
+			row := strings.Count(b.String(), "\n")
+			h.row(row, i)
 			b.WriteString(renderMenuItem(menuItemOpts{
 				Label:      recallGroupLabel(g),
 				LabelWidth: 28,

@@ -101,10 +101,17 @@ func TestFilterPaletteAll_RanksAcrossCustomCommands(t *testing.T) {
 	}
 }
 
-func TestFilterPalette_LeadingSlashOptional(t *testing.T) {
-	got := filterPalette("perm")
-	if len(got) != 1 || got[0].Name != "permissions" {
-		t.Errorf("'perm' (without slash) should still match /permissions; got %+v", got)
+func TestFilterPalette_FuzzyInitialsFindHyphenatedCommand(t *testing.T) {
+	got := filterPalette("/grp")
+	if len(got) == 0 || got[0].Name != "git-review-pr" {
+		t.Fatalf("/grp should fuzzy-match /git-review-pr first; got %+v", got)
+	}
+}
+
+func TestFilterPalette_FuzzyAliasFindsCommand(t *testing.T) {
+	got := filterPalette("/ctx")
+	if len(got) == 0 || got[0].Name != "context" {
+		t.Fatalf("/ctx should fuzzy-match /context first; got %+v", got)
 	}
 }
 
@@ -130,44 +137,6 @@ func TestRenderPalette_MatchesInputFrameWidth(t *testing.T) {
 		if got := lipgloss.Width(file); got != frameW {
 			t.Errorf("width %d: file palette box is %d cols, input frame is %d — right edges must align",
 				width, got, frameW)
-		}
-	}
-}
-
-func TestRenderInlineOverlayInsetsBodyAndRule(t *testing.T) {
-	m := newTestModel(t)
-	m.width = 100
-	out := stripANSI(m.renderInlineOverlay("Sessions\nbody"))
-	lines := strings.Split(out, "\n")
-	if len(lines) < 3 {
-		t.Fatalf("overlay rendered too few lines: %q", out)
-	}
-	if strings.TrimRight(lines[0], " ") != " Sessions" || strings.TrimRight(lines[1], " ") != " body" {
-		t.Fatalf("overlay body should be inset by one column, got %q / %q", lines[0], lines[1])
-	}
-	if !strings.HasPrefix(lines[2], " ──") {
-		t.Fatalf("overlay separator should be inset by one column, got %q", lines[2])
-	}
-	if got := lipgloss.Width(strings.TrimRight(lines[2], " ")); got != m.width-inlineOverlayInset {
-		t.Fatalf("overlay separator width = %d, want %d", got, m.width-inlineOverlayInset)
-	}
-}
-
-func TestRenderInlineOverlayExpandsMenuRules(t *testing.T) {
-	m := newTestModel(t)
-	m.width = 100
-	out := stripANSI(m.renderInlineOverlay("────\nSessions\n────"))
-	lines := strings.Split(out, "\n")
-	if len(lines) < 3 {
-		t.Fatalf("overlay rendered too few lines: %q", out)
-	}
-	for _, idx := range []int{0, 2} {
-		trimmed := strings.TrimRight(lines[idx], " ")
-		if !strings.HasPrefix(trimmed, " ──") {
-			t.Fatalf("rule line %d should be inset and expanded, got %q", idx, lines[idx])
-		}
-		if got := lipgloss.Width(trimmed); got != m.width-inlineOverlayInset {
-			t.Fatalf("rule line %d width = %d, want %d", idx, got, m.width-inlineOverlayInset)
 		}
 	}
 }

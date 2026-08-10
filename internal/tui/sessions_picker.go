@@ -556,14 +556,18 @@ func (m Model) commitSessionsExport() (Model, tea.Cmd) {
 // renderSessionsPicker dispatches to the per-mode renderer and
 // stitches the footer. Mirrors renderProviderPicker's layout so the
 // two pickers feel like the same UI.
-func renderSessionsPicker(p *sessionsPickerState, width int) string {
+func renderSessionsPicker(p *sessionsPickerState, width int, hits ...*pickerHits) string {
+	var h *pickerHits
+	if len(hits) > 0 {
+		h = hits[0]
+	}
 	var body, footerText string
 	switch p.mode {
 	case sessionsMenuMode:
-		body = renderSessionsMenu(p, width)
+		body = renderSessionsMenu(p, width, h)
 		footerText = "↵ confirm · esc cancel · ↑↓ navigate"
 	case sessionsLoadListMode:
-		body = renderSessionsList(p, "Load session", loadListDescription(p), width)
+		body = renderSessionsList(p, "Load session", loadListDescription(p), width, h)
 		state := "off"
 		if p.summarized {
 			state = "on"
@@ -578,14 +582,14 @@ func renderSessionsPicker(p *sessionsPickerState, width int) string {
 		footerText = fmt.Sprintf("↵ resume · ctrl+s toggle summarized (%s) · esc back", state)
 	case sessionsRenameListMode:
 		body = renderSessionsList(p, "Rename session",
-			"Pick a session to label. The current session is marked ✓.", width)
+			"Pick a session to label. The current session is marked ✓.", width, h)
 		footerText = "↵ rename · esc back · ↑↓ navigate"
 	case sessionsRenameInputMode:
 		body = renderSessionsRenameInput(p, width)
 		footerText = "↵ save · esc back"
 	case sessionsExportListMode:
 		body = renderSessionsList(p, "Export session",
-			"Pick a session to export as Markdown. The current session is marked ✓.", width)
+			"Pick a session to export as Markdown. The current session is marked ✓.", width, h)
 		footerText = "↵ export · esc back · ↑↓ navigate"
 	case sessionsExportInputMode:
 		body = renderSessionsExportInput(p, width)
@@ -598,12 +602,14 @@ func renderSessionsPicker(p *sessionsPickerState, width int) string {
 	return body + "\n\n" + footer
 }
 
-func renderSessionsMenu(p *sessionsPickerState, width int) string {
+func renderSessionsMenu(p *sessionsPickerState, width int, h *pickerHits) string {
 	var b strings.Builder
 	b.WriteString(renderMenuHeader("Sessions",
 		"Resume, rename, or export a saved session.", width))
 	b.WriteString("\n")
 	for i, item := range p.menuItems {
+		row := strings.Count(b.String(), "\n")
+		h.row(row, i)
 		b.WriteString(renderMenuItem(menuItemOpts{
 			Label:      item.Label,
 			LabelWidth: 10,
@@ -631,7 +637,7 @@ func loadListDescription(p *sessionsPickerState) string {
 // N msgs · relative age. The footer note "showing the N most
 // recent" sits under the rows so users know /recall is the path for
 // older sessions.
-func renderSessionsList(p *sessionsPickerState, title, description string, width int) string {
+func renderSessionsList(p *sessionsPickerState, title, description string, width int, h *pickerHits) string {
 	var b strings.Builder
 	b.WriteString(renderMenuHeader(title, description, width))
 	b.WriteString("\n")
@@ -641,6 +647,8 @@ func renderSessionsList(p *sessionsPickerState, title, description string, width
 	}
 	layout := sessionsRowLayout(p.sessions, width)
 	for i, s := range p.sessions {
+		row := strings.Count(b.String(), "\n")
+		h.row(row, i)
 		b.WriteString(renderMenuItem(menuItemOpts{
 			Label:      sessionPickerLabel(s),
 			LabelWidth: sessionsLabelWidth,

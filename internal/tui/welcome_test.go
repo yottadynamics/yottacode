@@ -17,7 +17,7 @@ func TestWelcome_FreshSessionEmbedsMemoryTipInCard(t *testing.T) {
 	if !m.isFreshSession() {
 		t.Fatalf("brand-new model should be a fresh session")
 	}
-	v := m.transcript.String()
+	v := m.View().Content
 	if !strings.Contains(v, "USER.md") {
 		t.Errorf("memory tip should mention USER.md: %q", v)
 	}

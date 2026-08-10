@@ -61,3 +61,19 @@ func TestPaste_SmallPasteWithoutLineBreaksInsertsVerbatim(t *testing.T) {
 		t.Errorf("textarea = %q, want %q", got, "hello world")
 	}
 }
+
+// Bracketed multi-line pastes often include one terminal newline at the end.
+// The marker summary and round trip should describe the content, not count that
+// transport terminator as a phantom blank line.
+func TestPaste_TrimTrailingTransportNewline(t *testing.T) {
+	m := newTestModel(t)
+	m, _ = applyMsg(m, tea.PasteMsg{Content: "one\ntwo\n"})
+
+	got := m.textInput.Value()
+	if !strings.Contains(got, "[Pasted text #1: 2 lines, 7 bytes]") {
+		t.Fatalf("paste marker should ignore trailing transport newline, got %q", got)
+	}
+	if expanded := m.expandPastes(got); expanded != "one\ntwo" {
+		t.Fatalf("expanded paste = %q, want trimmed content", expanded)
+	}
+}

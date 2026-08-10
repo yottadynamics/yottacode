@@ -8,7 +8,7 @@ import (
 )
 
 func TestCheatsheet_RendersAllEntries(t *testing.T) {
-	out := renderCheatsheet(80)
+	out := renderCheatsheet()
 	for _, e := range cheatsheet {
 		// Strip surrounding spaces in the multi-key combos for the contains
 		// check (e.g., "↑ / ↓" should show up).
@@ -19,7 +19,7 @@ func TestCheatsheet_RendersAllEntries(t *testing.T) {
 }
 
 func TestCheatsheet_ShowsDismissHint(t *testing.T) {
-	out := renderCheatsheet(80)
+	out := renderCheatsheet()
 	if !strings.Contains(out, "esc to close") {
 		t.Errorf("dismiss hint missing: %q", out)
 	}

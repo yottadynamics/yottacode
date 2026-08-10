@@ -179,7 +179,7 @@ Large pastes are shown as a short marker to keep the input line usable. The full
 
 ## Terminal rendering looks odd after resize
 
-The TUI uses inline rendering so your terminal owns scrollback. If rendering becomes messy after a resize, clear the terminal or restart yottacode; the saved session can be resumed.
+The TUI runs full-screen (alt-screen) and re-renders the whole frame — including its own scrollable conversation transcript — on every resize, so this shouldn't come up in normal use. If your terminal emulator itself mishandles the resize (rare), restarting yottacode always recovers cleanly; the saved session can be resumed.
 
 ## Stale edit or patch target
 

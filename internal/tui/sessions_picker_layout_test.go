@@ -127,9 +127,16 @@ func TestRenderSessionsMenuHeaderSpansOverlayWidth(t *testing.T) {
 	if len(lines) == 0 {
 		t.Fatal("sessions picker rendered no lines")
 	}
-	if got := runeLen(lines[0]); got != 140 {
-		t.Fatalf("sessions top divider width = %d, want 140", got)
+	for _, line := range lines {
+		if !strings.Contains(line, "─") {
+			continue
+		}
+		if got := runeLen(line); got != 140 {
+			t.Fatalf("sessions divider width = %d, want 140", got)
+		}
+		return
 	}
+	t.Fatal("sessions picker rendered no divider")
 }
 
 // TestResumeSession_DoesNotPersistEmptyCurrent is the regression guard for
