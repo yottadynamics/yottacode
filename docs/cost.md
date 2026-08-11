@@ -23,8 +23,13 @@ largest turn turn 31 · 231,902 tokens (input 37,401 · output 812 · cache read
 compaction   compacted 2x · reclaimed ~418k tokens
 
 tools        3 distinct
-             read_file        6 calls  14,802 tokens  ⚠ outlier
+             read_file        6 calls  14,802 tokens
              git_diff_files   2 calls   5,104 tokens
+
+efficiency   avg 18K tokens/turn · 1 low-signal turn
+             repeated call  read_file({"path":"docs/cost.md"}) × 2
+             strategy guidance fired  apply_diff (1×)
+             waste estimate  ~4K tokens (repeated calls + failed-retry guidance)
 
 context      top retained context
              tool:read_file      14,802 tokens  ⚠ retained
@@ -84,6 +89,15 @@ splits it into input, output, cache-read, cache-write, and reasoning
 components so a spike is visible as fresh context, cache replay, or
 model output instead of one opaque total.
 
+The optional `efficiency` block calls out progress-cost smells that are
+more concrete than a generic outlier flag: average tokens per assistant
+turn, low-signal turns (large input with tiny output), exact-duplicate
+tool calls with the same arguments, repeated tool failures where the
+agent loop injected strategy guidance, and a floor waste estimate for
+repeated-call results plus failed-retry guidance. This is intentionally
+a conservative signal; ordinary high-token rows are no longer labelled
+as anomalies just because they are larger than the table mean.
+
 The optional `context` block explains *why future turns may stay high*:
 it estimates the largest retained transcript messages with the same
 4-chars-per-token heuristic used for tool-output stats, labels tool
@@ -95,7 +109,11 @@ One-model sessions with only input/output rows skip the per-model
 `total` separator so the explicit `session total` is not repeated
 back-to-back.
 
-### Live rate limits
+The daily rollup prints each session's short id. Pass that id to
+`/inspect <id>` to open a read-only turn-by-turn replay for a past
+session without resuming or replacing the live conversation.
+
+## Live rate limits
 
 OpenAI, Anthropic, and xAI return per-minute rate-limit headers on
 **every** successful response — no admin key, no extra request. A

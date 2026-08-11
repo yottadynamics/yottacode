@@ -782,6 +782,14 @@ type Model struct {
 	// history.
 	helpOpen  bool
 	helpPanel string
+	// Inspect overlay (/inspect). Read-only, scrollable turn-by-turn
+	// session replay — mirrors the usage overlay's own fields and
+	// scrolling shape (inspectPanel snapshotted at open time, any key
+	// closes except the scroll keys).
+	inspectOpen         bool
+	inspectPanel        string
+	inspectScrollOffset int
+
 	// Context report overlay (/context). Renders the context-window
 	// breakdown on the inline-overlay surface (above the cmdline) instead
 	// of in chat history, so the report — which is transient inspection,
@@ -1488,6 +1496,26 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.usageOpen = false
 			m.usagePanel = ""
 			m.usageScrollOffset = 0
+			return m, nil
+		}
+		if m.inspectOpen {
+			switch msg.Code {
+			case tea.KeyUp:
+				m.inspectScrollOffset = max(0, m.inspectScrollOffset-1)
+				return m, nil
+			case tea.KeyDown:
+				m.inspectScrollOffset = min(m.inspectMaxScrollOffset(), m.inspectScrollOffset+1)
+				return m, nil
+			case tea.KeyPgUp:
+				m.inspectScrollOffset = max(0, m.inspectScrollOffset-m.inspectVisibleLines())
+				return m, nil
+			case tea.KeyPgDown:
+				m.inspectScrollOffset = min(m.inspectMaxScrollOffset(), m.inspectScrollOffset+m.inspectVisibleLines())
+				return m, nil
+			}
+			m.inspectOpen = false
+			m.inspectPanel = ""
+			m.inspectScrollOffset = 0
 			return m, nil
 		}
 		if m.experimentalOpen {
@@ -2864,7 +2892,7 @@ func (m Model) queueInputDuringDecision(msg tea.KeyPressMsg, label string) (Mode
 // footer, not as a popup, so they don't drive the over-tall collapse this
 // guards.
 func (m Model) anyOverlayOpen() bool {
-	return m.cheatsheetOpen || m.loopListOpen || m.usageOpen || m.experimentalOpen || m.helpOpen || m.contextReportOpen ||
+	return m.cheatsheetOpen || m.loopListOpen || m.usageOpen || m.inspectOpen || m.experimentalOpen || m.helpOpen || m.contextReportOpen ||
 		m.permissionsOpen || m.modelPickerOpen || m.providerPickerOpen ||
 		m.embedSetupOpen || m.memoryPickerOpen || m.recallPickerOpen || m.codeMapPickerOpen || m.sessionsPickerOpen ||
 		m.plansPickerOpen || m.checkpointsPickerOpen || m.subagentsPickerOpen ||
@@ -3028,6 +3056,8 @@ func (m Model) activePopupBody() (box string, ok bool) {
 		return popupBox(m.renderLoopListPanel()), true
 	case m.usageOpen:
 		return popupBox(m.windowedUsagePanel()), true
+	case m.inspectOpen:
+		return popupBox(m.windowedInspectPanel()), true
 	case m.experimentalOpen:
 		return popupBox(m.experimentalPanel), true
 	case m.helpOpen:

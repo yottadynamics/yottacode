@@ -263,6 +263,13 @@ func repeatedToolFailureKey(toolName, output string) (string, bool) {
 	return toolName + "\x00" + strings.TrimSpace(line), true
 }
 
+// RepeatedToolFailureMarker prefixes the guidance repeatedToolFailureMessage
+// appends to a tool result once a failure repeats past the threshold.
+// Exported so /usage (internal/tui) can retroactively count these events by
+// scanning persisted tool-result content, without either package duplicating
+// the literal or /usage needing its own separate tracking.
+const RepeatedToolFailureMarker = "repeated tool failure ("
+
 func repeatedToolFailureMessage(toolName, output string, count int) string {
 	guidance := "change strategy before retrying"
 	switch toolName {
@@ -271,7 +278,7 @@ func repeatedToolFailureMessage(toolName, output string, count int) string {
 	case "apply_diff":
 		guidance = "rebuild a valid unified diff with correct file headers and hunk ranges, or make a smaller edit_file change"
 	}
-	return fmt.Sprintf("%s\n\nrepeated tool failure (%d×): %s", output, count, guidance)
+	return fmt.Sprintf("%s\n\n%s%d×): %s", output, RepeatedToolFailureMarker, count, guidance)
 }
 
 func applyRepeatedToolFailureGuard(toolName, output string, failures map[string]int) string {

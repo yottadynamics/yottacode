@@ -10,6 +10,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/yottadynamics/yottacode/internal/adapter"
+	"github.com/yottadynamics/yottacode/internal/agent"
 	"github.com/yottadynamics/yottacode/internal/session"
 	"github.com/yottadynamics/yottacode/internal/subagents"
 )
@@ -481,9 +482,35 @@ func TestRenderToolStats_BreakdownAndErrors(t *testing.T) {
 	}
 }
 
-// TestRenderToolStats_FlagsOutlier: a tool whose output is far above the
-// table's mean is flagged, so a runaway call doesn't blend into the list.
-func TestRenderToolStats_FlagsOutlier(t *testing.T) {
+// TestRenderToolStats_PluralizesCallsAndErrors is a regression for a real
+// /usage screenshot showing "1 calls" and "1 errors" for single-count rows —
+// ugly, and reads as a typo. Singular counts must use the singular word.
+func TestRenderToolStats_PluralizesCallsAndErrors(t *testing.T) {
+	s := &session.Session{
+		ToolStats: map[string]session.ToolStat{
+			"list_dir": {Count: 1, OutputTokens: 100, Errors: 1},
+			"grep":     {Count: 3, OutputTokens: 200, Errors: 2},
+		},
+	}
+	got := renderToolStats(s)
+	if !strings.Contains(got, "1 call ") {
+		t.Errorf("expected singular \"1 call\" for a single-count row in:\n%s", got)
+	}
+	if strings.Contains(got, "1 calls") {
+		t.Errorf("singular count must not say \"calls\":\n%s", got)
+	}
+	if strings.Contains(got, "1 errors") {
+		t.Errorf("singular error count must not say \"errors\":\n%s", got)
+	}
+	if !strings.Contains(got, "3 calls") || !strings.Contains(got, "2 errors") {
+		t.Errorf("expected plural forms for multi-count rows in:\n%s", got)
+	}
+}
+
+// TestRenderToolStats_NoLongerFlagsOutliers is a regression for removing the
+// "⚠ outlier" heuristic: it read as an error/problem even for perfectly
+// ordinary tools (e.g. a ~2.5x-of-the-mean read_file call), so it's gone.
+func TestRenderToolStats_NoLongerFlagsOutliers(t *testing.T) {
 	s := &session.Session{
 		ToolStats: map[string]session.ToolStat{
 			"read_file": {Count: 1, OutputTokens: 100_000},
@@ -491,9 +518,8 @@ func TestRenderToolStats_FlagsOutlier(t *testing.T) {
 			"grep":      {Count: 1, OutputTokens: 100},
 		},
 	}
-	got := renderToolStats(s)
-	if !strings.Contains(got, "outlier") {
-		t.Errorf("expected the runaway tool flagged as an outlier in:\n%s", got)
+	if got := renderToolStats(s); strings.Contains(got, "outlier") {
+		t.Errorf("outlier flagging should be removed from /usage:\n%s", got)
 	}
 }
 
@@ -532,16 +558,16 @@ func TestRenderToolStats_TieOrderIsDeterministic(t *testing.T) {
 	}
 }
 
-// TestRenderSubagentDetail_ListsTasksAndFlagsOutlier locks the per-task
-// list shape and its outlier flagging, independent of the folded
-// per-model rollup renderSessionUsage already shows.
-func TestRenderSubagentDetail_ListsTasksAndFlagsOutlier(t *testing.T) {
+// TestRenderSubagentDetail_ListsTasks locks the per-task list shape,
+// independent of the folded per-model rollup renderSessionUsage already
+// shows.
+func TestRenderSubagentDetail_ListsTasks(t *testing.T) {
 	s := &session.Session{
 		SubagentTasks: []subagents.TaskRecord{
 			{
 				ID: "abc12345", AgentType: "Explore", Status: subagents.TaskCompleted, ToolCalls: 5,
 				Started: time.Now().Add(-2 * time.Minute), Finished: time.Now(),
-				Usage: adapter.Usage{InputTokens: 100_000, OutputTokens: 5_000}, // outlier vs. the two below
+				Usage: adapter.Usage{InputTokens: 100_000, OutputTokens: 5_000},
 			},
 			{
 				ID: "def67890", AgentType: "Plan", Status: subagents.TaskCompleted, ToolCalls: 2,
@@ -556,10 +582,13 @@ func TestRenderSubagentDetail_ListsTasksAndFlagsOutlier(t *testing.T) {
 		},
 	}
 	got := renderSubagentDetail(s)
-	for _, want := range []string{"subagents", "3 tasks", "Explore", "Plan", "done", "outlier"} {
+	for _, want := range []string{"subagents", "3 tasks", "Explore", "Plan", "done"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("missing %q in:\n%s", want, got)
 		}
+	}
+	if strings.Contains(got, "outlier") {
+		t.Errorf("outlier flagging should be removed from /usage:\n%s", got)
 	}
 }
 
@@ -772,6 +801,215 @@ func TestRenderPeakTurn_ShowsCacheSplit(t *testing.T) {
 	}
 }
 
+// TestRenderEfficiencySummary_AveragesAndFlagsLowSignalTurns locks the
+// average-tokens-per-turn figure and the low-signal-turn count: a turn with
+// input far above lowSignalInputTokens and output far below
+// lowSignalOutputTokens (huge fixed cost, almost no new content) must be
+// counted; an ordinary turn must not.
+func TestRenderEfficiencySummary_AveragesAndFlagsLowSignalTurns(t *testing.T) {
+	s := &session.Session{
+		Messages: []adapter.Message{
+			{Role: adapter.RoleAssistant, Usage: &adapter.Usage{InputTokens: 26_000, OutputTokens: 20}}, // low-signal
+			{Role: adapter.RoleAssistant, Usage: &adapter.Usage{InputTokens: 2_000, OutputTokens: 1_000}},
+		},
+	}
+	got := renderEfficiencySummary(s)
+	if !strings.Contains(got, "efficiency") {
+		t.Errorf("missing section label in %q", got)
+	}
+	if !strings.Contains(got, "14K tokens/turn") {
+		t.Errorf("expected the average of the two turns' totals; got %q", got)
+	}
+	if !strings.Contains(got, "1 low-signal turn") {
+		t.Errorf("expected exactly one low-signal turn flagged; got %q", got)
+	}
+}
+
+// TestRenderEfficiencySummary_NoLowSignalTurns confirms ordinary turns don't
+// get flagged and the "low-signal" clause is omitted entirely rather than
+// printed as "0 low-signal turns".
+func TestRenderEfficiencySummary_NoLowSignalTurns(t *testing.T) {
+	s := &session.Session{
+		Messages: []adapter.Message{
+			{Role: adapter.RoleAssistant, Usage: &adapter.Usage{InputTokens: 1_000, OutputTokens: 500}},
+		},
+	}
+	if got := renderEfficiencySummary(s); strings.Contains(got, "low-signal") {
+		t.Errorf("expected no low-signal clause for an ordinary turn; got %q", got)
+	}
+}
+
+// TestRenderEfficiencySummary_Empty confirms the section self-hides for a
+// session with no assistant turn usage yet, matching the other optional
+// /usage sections' self-hiding convention.
+func TestRenderEfficiencySummary_Empty(t *testing.T) {
+	if got := renderEfficiencySummary(&session.Session{}); got != "" {
+		t.Errorf("expected empty string with no turn usage; got %q", got)
+	}
+}
+
+// TestRepeatedToolCallRows_FindsExactDuplicates is a regression for the
+// "silly agent behavior" ask: the same tool called twice with byte-identical
+// arguments can't have learned anything new from the first call, and must be
+// surfaced with its repeat count. A tool called with DIFFERENT arguments
+// must not be flagged as a repeat.
+func TestRepeatedToolCallRows_FindsExactDuplicates(t *testing.T) {
+	s := &session.Session{
+		Messages: []adapter.Message{
+			{Role: adapter.RoleAssistant, ToolCalls: []adapter.ToolCall{
+				{Name: "read_file", ArgsJSON: `{"path":"a.txt"}`},
+				{Name: "read_file", ArgsJSON: `{"path":"b.txt"}`},
+			}},
+			{Role: adapter.RoleAssistant, ToolCalls: []adapter.ToolCall{
+				{Name: "read_file", ArgsJSON: `{"path":"a.txt"}`},
+				{Name: "read_file", ArgsJSON: `{"path":"a.txt"}`},
+			}},
+		},
+	}
+	rows := repeatedToolCallRows(s)
+	if len(rows) != 1 {
+		t.Fatalf("expected exactly one repeated call group; got %v", rows)
+	}
+	if !strings.Contains(rows[0], "read_file") || !strings.Contains(rows[0], "× 3") {
+		t.Errorf("expected read_file flagged 3x; got %q", rows[0])
+	}
+	if strings.Contains(rows[0], "b.txt") {
+		t.Errorf("a call with different arguments must not be folded into the repeat count; got %q", rows[0])
+	}
+}
+
+// TestRepeatedToolCallRows_NoRepeats confirms distinct calls produce no rows.
+func TestRepeatedToolCallRows_NoRepeats(t *testing.T) {
+	s := &session.Session{
+		Messages: []adapter.Message{
+			{Role: adapter.RoleAssistant, ToolCalls: []adapter.ToolCall{
+				{Name: "read_file", ArgsJSON: `{"path":"a.txt"}`},
+				{Name: "grep", ArgsJSON: `{"pattern":"foo"}`},
+			}},
+		},
+	}
+	if rows := repeatedToolCallRows(s); rows != nil {
+		t.Errorf("expected no repeated-call rows; got %v", rows)
+	}
+}
+
+// TestRepeatedToolFailureRows_CountsGuardMarker is a regression covering
+// the free win: agent/loop.go's applyRepeatedToolFailureGuard already
+// injects agent.RepeatedToolFailureMarker into a tool result's persisted
+// content once a failure repeats past its threshold. /usage must count
+// those markers retroactively per tool, without any new tracking.
+func TestRepeatedToolFailureRows_CountsGuardMarker(t *testing.T) {
+	s := &session.Session{
+		Messages: []adapter.Message{
+			{Role: adapter.RoleAssistant, ToolCalls: []adapter.ToolCall{{ID: "call1", Name: "apply_diff"}}},
+			{Role: adapter.RoleTool, ToolCallID: "call1", Content: "error: hunk mismatch\n\n" + agent.RepeatedToolFailureMarker + "3×): rebuild a valid unified diff"},
+		},
+	}
+	rows := repeatedToolFailureRows(s)
+	if len(rows) != 1 {
+		t.Fatalf("expected exactly one tool's failures flagged; got %v", rows)
+	}
+	if !strings.Contains(rows[0], "apply_diff") || !strings.Contains(rows[0], "1×") {
+		t.Errorf("expected apply_diff flagged once; got %q", rows[0])
+	}
+}
+
+// TestRepeatedToolFailureRows_NoGuardFired confirms an ordinary tool error
+// (one that never crossed the repeated-failure threshold) produces no rows.
+func TestRepeatedToolFailureRows_NoGuardFired(t *testing.T) {
+	s := &session.Session{
+		Messages: []adapter.Message{
+			{Role: adapter.RoleAssistant, ToolCalls: []adapter.ToolCall{{ID: "call1", Name: "grep"}}},
+			{Role: adapter.RoleTool, ToolCallID: "call1", Content: "error: no matches"},
+		},
+	}
+	if rows := repeatedToolFailureRows(s); rows != nil {
+		t.Errorf("expected no rows without the guard marker; got %v", rows)
+	}
+}
+
+// TestRenderWasteEstimate_ChargesRepeatsAndFailures locks what the waste
+// estimate counts: the result tokens of a duplicate call's SECOND (not
+// first) occurrence, plus the full content of a tool result carrying the
+// repeated-failure guard marker.
+func TestRenderWasteEstimate_ChargesRepeatsAndFailures(t *testing.T) {
+	dupResult := strings.Repeat("x", 400) // ~100 tokens
+	failureContent := "error: hunk mismatch\n\n" + agent.RepeatedToolFailureMarker + "3×): rebuild a valid unified diff"
+	s := &session.Session{
+		Messages: []adapter.Message{
+			{Role: adapter.RoleAssistant, ToolCalls: []adapter.ToolCall{{ID: "call1", Name: "read_file", ArgsJSON: `{"path":"a.txt"}`}}},
+			{Role: adapter.RoleTool, ToolCallID: "call1", Content: dupResult},
+			{Role: adapter.RoleAssistant, ToolCalls: []adapter.ToolCall{
+				{ID: "call2", Name: "read_file", ArgsJSON: `{"path":"a.txt"}`}, // duplicate of call1
+				{ID: "call3", Name: "apply_diff"},
+			}},
+			{Role: adapter.RoleTool, ToolCallID: "call2", Content: dupResult},
+			{Role: adapter.RoleTool, ToolCallID: "call3", Content: failureContent},
+		},
+	}
+	got := renderWasteEstimate(s)
+	if !strings.Contains(got, "waste estimate") {
+		t.Fatalf("missing section label in %q", got)
+	}
+	// Exactly ONE copy of dupResult's tokens (the second occurrence — the
+	// first is legitimate, not waste) plus the failure content's tokens,
+	// using the same (len+3)/4 estimator the renderer itself uses.
+	wantTokens := (len(dupResult)+3)/4 + (len(failureContent)+3)/4
+	wantFragment := formatTokens(wantTokens)
+	if !strings.Contains(got, wantFragment) {
+		t.Errorf("expected estimate to contain %q (one dup occurrence + failure content); got %q", wantFragment, got)
+	}
+}
+
+// TestRenderWasteEstimate_Empty confirms a session with no repeats and no
+// guard firings reports no waste rather than "~0 tokens".
+func TestRenderWasteEstimate_Empty(t *testing.T) {
+	s := &session.Session{
+		Messages: []adapter.Message{
+			{Role: adapter.RoleAssistant, ToolCalls: []adapter.ToolCall{{ID: "call1", Name: "read_file", ArgsJSON: `{"path":"a.txt"}`}}},
+			{Role: adapter.RoleTool, ToolCallID: "call1", Content: "ok"},
+		},
+	}
+	if got := renderWasteEstimate(s); got != "" {
+		t.Errorf("expected empty string with nothing wasted; got %q", got)
+	}
+}
+
+// TestRenderEfficiencySection_ComposesSubParts locks the combined section
+// shape: the summary line plus a repeated-call row plus a repeated-failure
+// row plus the waste estimate, all under one section rather than four
+// separately-hiding blocks.
+func TestRenderEfficiencySection_ComposesSubParts(t *testing.T) {
+	s := &session.Session{
+		Messages: []adapter.Message{
+			{Role: adapter.RoleAssistant, Usage: &adapter.Usage{InputTokens: 1_000, OutputTokens: 500}, ToolCalls: []adapter.ToolCall{
+				{ID: "call1", Name: "read_file", ArgsJSON: `{"path":"a.txt"}`},
+			}},
+			{Role: adapter.RoleTool, ToolCallID: "call1", Content: "ok"},
+			{Role: adapter.RoleAssistant, Usage: &adapter.Usage{InputTokens: 1_000, OutputTokens: 500}, ToolCalls: []adapter.ToolCall{
+				{ID: "call2", Name: "read_file", ArgsJSON: `{"path":"a.txt"}`},
+				{ID: "call3", Name: "apply_diff"},
+			}},
+			{Role: adapter.RoleTool, ToolCallID: "call2", Content: "ok"},
+			{Role: adapter.RoleTool, ToolCallID: "call3", Content: "error: hunk mismatch\n\n" + agent.RepeatedToolFailureMarker + "3×): rebuild a valid unified diff"},
+		},
+	}
+	got := renderEfficiencySection(s)
+	for _, want := range []string{"efficiency", "tokens/turn", "repeated call", "read_file", "strategy guidance fired", "apply_diff", "waste estimate"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q in:\n%s", want, got)
+		}
+	}
+}
+
+// TestRenderEfficiencySection_Empty confirms the whole section self-hides
+// for a session with no assistant turn usage yet.
+func TestRenderEfficiencySection_Empty(t *testing.T) {
+	if got := renderEfficiencySection(&session.Session{}); got != "" {
+		t.Errorf("expected empty string with no turn usage; got %q", got)
+	}
+}
+
 // TestRenderRetainedContext_AttributesLargeToolOutput shows the causal view
 // behind high input-token totals: large retained tool messages are the blobs
 // that will be resent to the provider on later turns.
@@ -849,7 +1087,7 @@ func TestRenderTodayRollup_PerSessionRowsSumToAggregate(t *testing.T) {
 	}
 
 	got := renderTodayRollup(s2.ID)
-	for _, want := range []string{"today", "2 sessions", "(current)"} {
+	for _, want := range []string{"today", "2 sessions", "(current)", s1.ID[:8], s2.ID[:8]} {
 		if !strings.Contains(got, want) {
 			t.Errorf("missing %q in:\n%s", want, got)
 		}

@@ -38,6 +38,9 @@ func (m Model) dismissStaticPopup() Model {
 	m.usageOpen = false
 	m.usagePanel = ""
 	m.usageScrollOffset = 0
+	m.inspectOpen = false
+	m.inspectPanel = ""
+	m.inspectScrollOffset = 0
 	m.experimentalOpen = false
 	m.experimentalPanel = ""
 	m.helpOpen = false
@@ -726,7 +729,7 @@ func (m Model) handleMouseClick(msg tea.MouseClickMsg) (Model, tea.Cmd) {
 	if m.loopExitConfirmOpen {
 		return m.handleLoopExitConfirmClick(msg)
 	}
-	if m.cheatsheetOpen || m.loopListOpen || m.usageOpen || m.experimentalOpen || m.helpOpen || m.contextReportOpen {
+	if m.cheatsheetOpen || m.loopListOpen || m.usageOpen || m.inspectOpen || m.experimentalOpen || m.helpOpen || m.contextReportOpen {
 		return m.dismissStaticPopup(), nil
 	}
 	if m.modelPickerOpen {
