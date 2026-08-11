@@ -18,19 +18,32 @@ import (
 )
 
 // outlierMultiplier flags a row whose value exceeds this many times the
-// mean of its own table — the simple anomaly signal the tools, subagents,
-// and today's-sessions sections use to make a runaway call, task, or
-// session stand out instead of blending into an otherwise-plausible table.
+// mean of every OTHER row in its table — the simple anomaly signal the
+// tools, subagents, and today's-sessions sections use to make a runaway
+// call, task, or session stand out instead of blending into an otherwise-
+// plausible table.
 const outlierMultiplier = 2.5
+
+// flagOutlier reports whether value is far enough above the mean of every
+// OTHER row (excluding itself) to flag it. Excluding the row under test
+// matters: a mean computed over ALL rows lets a single dominant value pull
+// the comparison mean up toward itself, weakening the very threshold meant
+// to catch it — e.g. two tools at 10,000 and 100 tokens average to 5,050,
+// and 10,000 is not 2.5x that, even though it's 100x the other value.
+// total/count describe the full set including value; fewer than 2 rows
+// never flags (no "other rows" to compare against).
+func flagOutlier(value, total float64, count int) bool {
+	if count < 2 {
+		return false
+	}
+	otherMean := (total - value) / float64(count-1)
+	return otherMean > 0 && value > otherMean*outlierMultiplier
+}
 
 // retainedContextWarnTokens is the approximate size where one retained
 // transcript message is large enough to noticeably inflate every later turn.
 // The estimate uses the same 4-chars/token heuristic as ToolStats.
 const retainedContextWarnTokens = 8_000
-
-func flagOutlier(value, mean float64) bool {
-	return mean > 0 && value > mean*outlierMultiplier
-}
 
 // cmdUsage renders per-session token usage in a Claude-style per-model
 // breakdown, plus live rate limits and a provider-aware account block.
@@ -96,15 +109,27 @@ func (m Model) usageVisibleLines() int {
 	return n
 }
 
+// usageFullFitLines is the "does this need scrolling at all" budget —
+// just the 2 popupBox border rows, no hint reserve. Checked before
+// usageVisibleLines' smaller budget: content that fits here needs no hint,
+// so reserving a line for one would truncate a line of real content that
+// didn't need to be cut.
+func (m Model) usageFullFitLines() int {
+	n := m.height - 2
+	if n < 1 {
+		n = 1
+	}
+	return n
+}
+
 // usageMaxScrollOffset is the highest offset that still shows a full final
 // page — scrolling can't go further than "the last line is at the bottom."
 func (m Model) usageMaxScrollOffset() int {
 	lines := strings.Count(m.usagePanel, "\n") + 1
-	visible := m.usageVisibleLines()
-	if lines <= visible {
+	if lines <= m.usageFullFitLines() {
 		return 0
 	}
-	return lines - visible
+	return lines - m.usageVisibleLines()
 }
 
 // windowedUsagePanel returns the visible slice of usagePanel for the
@@ -118,10 +143,13 @@ func (m Model) windowedUsagePanel() string {
 	}
 	allLines := strings.Split(m.usagePanel, "\n")
 	total := len(allLines)
-	visible := m.usageVisibleLines()
-	if total <= visible {
+	if total <= m.usageFullFitLines() {
+		// Fits with room to spare for the border alone — no hint needed,
+		// so don't spend the smaller hint-reserving budget truncating a
+		// line that didn't need to be cut.
 		return m.usagePanel
 	}
+	visible := m.usageVisibleLines()
 	offset := min(max(m.usageScrollOffset, 0), total-visible)
 	end := min(total, offset+visible)
 	shown := strings.Join(allLines[offset:end], "\n")
@@ -388,17 +416,23 @@ func usageHasDetailRows(u adapter.Usage) bool {
 	return u.CacheReadTokens > 0 || u.CacheCreationTokens > 0 || u.ReasoningTokens > 0
 }
 
-// cacheHitRate returns the fraction of cache-eligible input tokens actually
-// served from cache (CacheReadTokens / (CacheReadTokens + InputTokens)), or
-// -1 when there's no cache activity to report. A broken cache prefix (a
-// prompt-structure change that stops hitting the provider's cache) shows up
-// here as a hit rate falling toward 0 instead of silently vanishing into
-// the input-tokens total.
+// cacheHitRate returns the fraction of this turn's prompt-side tokens
+// actually served from cache: CacheReadTokens / (CacheReadTokens +
+// InputTokens + CacheCreationTokens) — the same prompt-token basis
+// totalTokensFor uses elsewhere in this file, so a cache *write* (content
+// being cached for the first time this turn, not yet a hit) correctly
+// counts as a miss rather than being left out of the denominator. -1 only
+// when there's no cache activity at all (both CacheReadTokens and
+// CacheCreationTokens are zero) — nothing to report. Whenever caching IS in
+// play but CacheReadTokens is exactly 0 (a broken cache prefix: every turn
+// re-caches from scratch instead of hitting), this reports 0% rather than
+// hiding the row, since that's precisely the signal the feature exists to
+// surface.
 func cacheHitRate(u adapter.Usage) float64 {
-	if u.CacheReadTokens <= 0 {
+	if u.CacheReadTokens <= 0 && u.CacheCreationTokens <= 0 {
 		return -1
 	}
-	total := u.CacheReadTokens + u.InputTokens
+	total := u.CacheReadTokens + u.InputTokens + u.CacheCreationTokens
 	if total <= 0 {
 		return -1
 	}
@@ -564,7 +598,6 @@ func renderToolStats(s *session.Session) string {
 		}
 		return rows[i].name < rows[j].name
 	})
-	mean := float64(totalTokens) / float64(len(rows))
 
 	nameWidth, valueWidth := 0, 0
 	for _, r := range rows {
@@ -579,7 +612,7 @@ func renderToolStats(s *session.Session) string {
 		if r.Errors > 0 {
 			line += fmt.Sprintf("  %d errors", r.Errors)
 		}
-		if flagOutlier(float64(r.OutputTokens), mean) {
+		if flagOutlier(float64(r.OutputTokens), float64(totalTokens), len(rows)) {
 			line = styleNoticeWarn.Render(line + "  ⚠ outlier")
 		}
 		b.WriteString(line)
@@ -603,13 +636,13 @@ func renderSubagentDetail(s *session.Session) string {
 		return taskTotalTokens(tasks[i]) > taskTotalTokens(tasks[j])
 	})
 	var totalTokens int64
-	agentWidth, valueWidth := 0, 0
+	agentWidth, valueWidth, toolsWidth := 0, 0, 1
 	for _, t := range tasks {
 		totalTokens += taskTotalTokens(t)
 		agentWidth = max(agentWidth, len(t.AgentType))
 		valueWidth = max(valueWidth, len(formatInt(taskTotalTokens(t))))
+		toolsWidth = max(toolsWidth, len(strconv.Itoa(t.ToolCalls)))
 	}
-	mean := float64(totalTokens) / float64(len(tasks))
 
 	var b strings.Builder
 	fmt.Fprintf(&b, "%-13s%d %s\n", "subagents", len(tasks), usagePluralize("task", len(tasks)))
@@ -623,11 +656,11 @@ func renderSubagentDetail(s *session.Session) string {
 		if len(idLabel) > 8 {
 			idLabel = idLabel[:8]
 		}
-		line := fmt.Sprintf("%-13s%-8s  %-*s  %8s  %*s tokens  %2d tools  %s", "", idLabel, agentWidth, t.AgentType, dur, valueWidth, formatInt(tok), t.ToolCalls, t.Status.String())
+		line := fmt.Sprintf("%-13s%-8s  %-*s  %8s  %*s tokens  %*d tools  %s", "", idLabel, agentWidth, t.AgentType, dur, valueWidth, formatInt(tok), toolsWidth, t.ToolCalls, t.Status.String())
 		if t.CompactionCount > 0 {
 			line += fmt.Sprintf("  compacted %dx", t.CompactionCount)
 		}
-		if flagOutlier(float64(tok), mean) {
+		if flagOutlier(float64(tok), float64(totalTokens), len(tasks)) {
 			line = styleNoticeWarn.Render(line + "  ⚠ outlier")
 		}
 		b.WriteString(line)
@@ -690,7 +723,6 @@ func renderTodayRollup(currentID string) string {
 		totalTokens += tok
 	}
 	sort.Slice(rows, func(i, j int) bool { return rows[i].tokens > rows[j].tokens })
-	mean := float64(totalTokens) / float64(len(rows))
 
 	var b strings.Builder
 	fmt.Fprintf(&b, "%-13s%d sessions · %s tokens\n", "today", len(rows), formatTokens(int(totalTokens)))
@@ -700,7 +732,7 @@ func renderTodayRollup(currentID string) string {
 			label += " (current)"
 		}
 		line := fmt.Sprintf("%-13s%-24s%s tokens", "", label, formatTokens(int(r.tokens)))
-		if flagOutlier(float64(r.tokens), mean) {
+		if flagOutlier(float64(r.tokens), float64(totalTokens), len(rows)) {
 			line = styleNoticeWarn.Render(line + "  ⚠ outlier")
 		}
 		b.WriteString(line)
