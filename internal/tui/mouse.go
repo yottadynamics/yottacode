@@ -491,6 +491,28 @@ func (m Model) handleSessionsPickerClick(msg tea.MouseClickMsg) (Model, tea.Cmd)
 	return m.updateSessionsPicker(tea.KeyPressMsg{Code: tea.KeyEnter})
 }
 
+// handleInspectPickerClick resolves a click on a bare-/inspect row to the same
+// inspect action as Enter. The picker is navigation-only: clicking a row never
+// resumes or mutates the live conversation.
+func (m Model) handleInspectPickerClick(msg tea.MouseClickMsg) (Model, tea.Cmd) {
+	if m.inspectPicker == nil {
+		return m, nil
+	}
+	hits := &pickerHits{}
+	box := popupBox(renderInspectPicker(m.inspectPicker, m.popupWidth(), hits))
+	ox, oy := m.popupOrigin(box)
+	row, col, ok := bodyPoint(box, ox, oy, msg.X, msg.Y)
+	if !ok {
+		return m, nil
+	}
+	kind, index, _, ok := hits.resolve(row, col)
+	if !ok || kind != hitItem {
+		return m, nil
+	}
+	m.inspectPicker.cursor = index
+	return m.updateInspectPicker(tea.KeyPressMsg{Code: tea.KeyEnter})
+}
+
 // handleSubagentsPickerClick resolves a click on a subagents-picker row
 // (tasks or types view, same list shown by rowCount) to a cursor move +
 // synthesized Enter — a no-op in types mode, same as the keyboard,
@@ -773,6 +795,9 @@ func (m Model) handleMouseClick(msg tea.MouseClickMsg) (Model, tea.Cmd) {
 	}
 	if m.sessionsPickerOpen {
 		return m.handleSessionsPickerClick(msg)
+	}
+	if m.inspectPickerOpen {
+		return m.handleInspectPickerClick(msg)
 	}
 	if m.subagentsPickerOpen {
 		return m.handleSubagentsPickerClick(msg)

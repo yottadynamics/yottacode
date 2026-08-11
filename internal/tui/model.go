@@ -788,7 +788,10 @@ type Model struct {
 	// closes except the scroll keys).
 	inspectOpen         bool
 	inspectPanel        string
+	inspectSession      *session.Session
 	inspectScrollOffset int
+	inspectPickerOpen   bool
+	inspectPicker       *inspectPickerState
 
 	// Context report overlay (/context). Renders the context-window
 	// breakdown on the inline-overlay surface (above the cmdline) instead
@@ -1499,24 +1502,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if m.inspectOpen {
-			switch msg.Code {
-			case tea.KeyUp:
-				m.inspectScrollOffset = max(0, m.inspectScrollOffset-1)
-				return m, nil
-			case tea.KeyDown:
-				m.inspectScrollOffset = min(m.inspectMaxScrollOffset(), m.inspectScrollOffset+1)
-				return m, nil
-			case tea.KeyPgUp:
-				m.inspectScrollOffset = max(0, m.inspectScrollOffset-m.inspectVisibleLines())
-				return m, nil
-			case tea.KeyPgDown:
-				m.inspectScrollOffset = min(m.inspectMaxScrollOffset(), m.inspectScrollOffset+m.inspectVisibleLines())
-				return m, nil
-			}
-			m.inspectOpen = false
-			m.inspectPanel = ""
-			m.inspectScrollOffset = 0
-			return m, nil
+			return m.updateInspectPanel(msg)
 		}
 		if m.experimentalOpen {
 			m.experimentalOpen = false
@@ -1561,6 +1547,9 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.sessionsPickerOpen {
 			return m.updateSessionsPicker(msg)
+		}
+		if m.inspectPickerOpen {
+			return m.updateInspectPicker(msg)
 		}
 		if m.plansPickerOpen {
 			return m.updatePlansPicker(msg)
@@ -2894,7 +2883,7 @@ func (m Model) queueInputDuringDecision(msg tea.KeyPressMsg, label string) (Mode
 func (m Model) anyOverlayOpen() bool {
 	return m.cheatsheetOpen || m.loopListOpen || m.usageOpen || m.inspectOpen || m.experimentalOpen || m.helpOpen || m.contextReportOpen ||
 		m.permissionsOpen || m.modelPickerOpen || m.providerPickerOpen ||
-		m.embedSetupOpen || m.memoryPickerOpen || m.recallPickerOpen || m.codeMapPickerOpen || m.sessionsPickerOpen ||
+		m.embedSetupOpen || m.memoryPickerOpen || m.recallPickerOpen || m.codeMapPickerOpen || m.sessionsPickerOpen || m.inspectPickerOpen ||
 		m.plansPickerOpen || m.checkpointsPickerOpen || m.subagentsPickerOpen ||
 		m.routerPickerOpen || m.themePickerOpen || m.effortPickerOpen || m.skillsMenuOpen ||
 		m.skillsPickerOpen || m.mcpPickerOpen || m.sandboxPickerOpen
@@ -3080,6 +3069,8 @@ func (m Model) activePopupBody() (box string, ok bool) {
 		return popupBox(renderCodeMapPicker(m.codeMapPicker, m.popupWidth())), true
 	case m.sessionsPickerOpen && m.sessionsPicker != nil:
 		return popupBox(renderSessionsPicker(m.sessionsPicker, m.popupWidth())), true
+	case m.inspectPickerOpen && m.inspectPicker != nil:
+		return popupBox(renderInspectPicker(m.inspectPicker, m.popupWidth())), true
 	case m.plansPickerOpen && m.plansPicker != nil:
 		return popupBox(renderPlansPicker(m.plansPicker, m.popupWidth())), true
 	case m.checkpointsPickerOpen && m.checkpointsPicker != nil:

@@ -2,6 +2,8 @@ package tui
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
@@ -10,6 +12,18 @@ import (
 	"github.com/yottadynamics/yottacode/internal/agent"
 	"github.com/yottadynamics/yottacode/internal/session"
 )
+
+// inspectPickerRow is one selectable target in bare /inspect. The live row is
+// kept first so the previous no-argument behavior is still one Enter away.
+type inspectPickerRow struct {
+	info session.SessionInfo
+	live bool
+}
+
+type inspectPickerState struct {
+	rows   []inspectPickerRow
+	cursor int
+}
 
 // inspectArgsPreviewChars and inspectTextPreviewChars bound how much of a
 // tool call's arguments, and of a user/assistant message, /inspect shows
@@ -23,25 +37,152 @@ const (
 // what the user asked, what the assistant said, which tools ran with what
 // arguments and outcome, and per-turn token cost — the "what did it
 // actually do" answer /usage's aggregate tables can't give on their own.
-// With no argument it inspects the live session; an argument resolves
-// another session by exact id/name or a unique id prefix (the same short
-// id /usage's today rollup prints), entirely via session.Load — the
-// inspected session is never assigned to m.sess, so this can never
-// accidentally switch the live conversation.
+// With no argument it opens a session picker with the live session first;
+// passing an id/name/prefix still opens that session directly. The inspected
+// session is never assigned to m.sess, so this can never accidentally switch the
+// live conversation.
 func cmdInspect(m Model, args []string) (Model, tea.Cmd) {
-	var ref string
-	if len(args) > 0 {
-		ref = args[0]
+	if len(args) == 0 {
+		m.openInspectPicker()
+		return m, nil
 	}
+	ref := args[0]
 	s, err := resolveInspectSession(m.sess, ref)
 	if err != nil {
 		m.appendLine(styleError.Render(fmt.Sprintf("[inspect] %v", err)))
 		return m, nil
 	}
+	return m.openInspectSession(s), nil
+}
+
+// openInspectPicker builds the bare-/inspect chooser. It intentionally reuses
+// the session list row renderer so /inspect and /sessions scan the same way.
+func (m *Model) openInspectPicker() {
+	rows := []inspectPickerRow{}
+	if m.sess != nil {
+		rows = append(rows, inspectPickerRow{info: session.SessionInfo{
+			ID:       m.sess.ID,
+			Name:     m.sess.Name,
+			Model:    m.sess.Model,
+			Created:  m.sess.Created,
+			Messages: len(m.sess.Messages),
+			Summary:  "current live session",
+		}, live: true})
+	}
+	for _, info := range loadRecentSessions(true) {
+		if m.sess != nil && info.ID == m.sess.ID {
+			continue
+		}
+		rows = append(rows, inspectPickerRow{info: info})
+	}
+	if len(rows) == 0 {
+		m.appendLine(styleAuto.Render("(no sessions to inspect yet)"))
+		return
+	}
+	m.inspectPicker = &inspectPickerState{rows: rows}
+	m.inspectPickerOpen = true
+}
+
+func (m Model) updateInspectPicker(msg tea.KeyPressMsg) (Model, tea.Cmd) {
+	if m.inspectPicker == nil {
+		m.inspectPickerOpen = false
+		return m, nil
+	}
+	p := m.inspectPicker
+	switch msg.Code {
+	case tea.KeyEsc:
+		m.inspectPickerOpen = false
+		m.inspectPicker = nil
+		m.openSlashPalette()
+		return m, nil
+	case tea.KeyUp:
+		if p.cursor > 0 {
+			p.cursor--
+		}
+		return m, nil
+	case tea.KeyDown:
+		if p.cursor < len(p.rows)-1 {
+			p.cursor++
+		}
+		return m, nil
+	case tea.KeyEnter:
+		return m.commitInspectPick()
+	}
+	return m, nil
+}
+
+func (m Model) commitInspectPick() (Model, tea.Cmd) {
+	p := m.inspectPicker
+	if p == nil || p.cursor >= len(p.rows) {
+		return m, nil
+	}
+	row := p.rows[p.cursor]
+	m.inspectPickerOpen = false
+	m.inspectPicker = nil
+	if row.live {
+		return m.openInspectSession(m.sess), nil
+	}
+	s, err := session.Load(row.info.ID)
+	if err != nil {
+		m.appendLine(styleError.Render(SysMsg(SysFailure, "inspect", "load failed", err.Error())))
+		return m, nil
+	}
+	return m.openInspectSession(s), nil
+}
+
+func (m Model) openInspectSession(s *session.Session) Model {
+	m.inspectSession = s
 	m.inspectPanel = renderInspectPanel(s)
 	m.inspectOpen = true
 	m.inspectScrollOffset = 0
+	return m
+}
+
+func (m Model) updateInspectPanel(msg tea.KeyPressMsg) (Model, tea.Cmd) {
+	switch msg.Code {
+	case tea.KeyUp:
+		m.inspectScrollOffset = max(0, m.inspectScrollOffset-1)
+		return m, nil
+	case tea.KeyDown:
+		m.inspectScrollOffset = min(m.inspectMaxScrollOffset(), m.inspectScrollOffset+1)
+		return m, nil
+	case tea.KeyPgUp:
+		m.inspectScrollOffset = max(0, m.inspectScrollOffset-m.inspectVisibleLines())
+		return m, nil
+	case tea.KeyPgDown:
+		m.inspectScrollOffset = min(m.inspectMaxScrollOffset(), m.inspectScrollOffset+m.inspectVisibleLines())
+		return m, nil
+	}
+	if msg.Text == "e" {
+		return m.exportInspectedSession()
+	}
+	m.inspectOpen = false
+	m.inspectSession = nil
+	m.inspectPanel = ""
+	m.inspectScrollOffset = 0
 	return m, nil
+}
+
+func (m Model) exportInspectedSession() (Model, tea.Cmd) {
+	if m.inspectSession == nil {
+		m.appendLine(styleError.Render(SysMsg(SysFailure, "inspect", "export failed", "no inspected session")))
+		return m, nil
+	}
+	path := defaultInspectExportPath(m.cwd, m.inspectSession)
+	md := session.ExportMarkdown(m.inspectSession)
+	if err := os.WriteFile(path, []byte(md), 0o644); err != nil {
+		m.appendLine(styleError.Render(SysMsg(SysFailure, "inspect", "export failed", err.Error())))
+		return m, nil
+	}
+	m.appendLine(styleAuto.Render(SysMsg(SysSuccess, "inspect", "exported", fmt.Sprintf("%d bytes", len(md)), path)))
+	return m, nil
+}
+
+func defaultInspectExportPath(cwd string, s *session.Session) string {
+	if s == nil {
+		return filepath.Join(cwd, "inspect-session.md")
+	}
+	return defaultExportPath(cwd, session.SessionInfo{ID: s.ID, Name: s.Name})
 }
 
 // resolveInspectSession finds the session /inspect should render. No ref
@@ -57,6 +198,9 @@ func resolveInspectSession(live *session.Session, ref string) (*session.Session,
 		if live == nil {
 			return nil, fmt.Errorf("no active session")
 		}
+		return live, nil
+	}
+	if live != nil && (ref == live.ID || (live.Name != "" && ref == live.Name)) {
 		return live, nil
 	}
 	if s, err := session.Load(ref); err == nil {
@@ -210,7 +354,7 @@ func renderInspectPanel(s *session.Session) string {
 		}
 		b.WriteByte('\n')
 	}
-	b.WriteString(styleHint.Render("esc to close"))
+	b.WriteString(styleHint.Render("e export · esc to close"))
 	return strings.TrimRight(b.String(), "\n")
 }
 
@@ -254,4 +398,43 @@ func (m Model) windowedInspectPanel() string {
 	shown := strings.Join(allLines[offset:end], "\n")
 	hint := fmt.Sprintf("── %d-%d of %d lines · ↑/↓ · PgUp/PgDn to scroll ──", offset+1, end, total)
 	return shown + "\n" + styleHint.Render(hint)
+}
+
+func renderInspectPicker(p *inspectPickerState, width int, hits ...*pickerHits) string {
+	var h *pickerHits
+	if len(hits) > 0 {
+		h = hits[0]
+	}
+	var b strings.Builder
+	b.WriteString(renderMenuHeader("Inspect session", "Pick a recent session to inspect without resuming it. The live session is marked ✓.", width))
+	b.WriteString("\n")
+	if len(p.rows) == 0 {
+		b.WriteString(styleEmpty.Render("  (no sessions to inspect yet)"))
+	} else {
+		infos := make([]session.SessionInfo, 0, len(p.rows))
+		for _, row := range p.rows {
+			infos = append(infos, row.info)
+		}
+		layout := sessionsRowLayout(infos, width)
+		for i, row := range p.rows {
+			if h != nil {
+				h.row(strings.Count(b.String(), "\n"), i)
+			}
+			label := sessionPickerLabel(row.info)
+			if row.live {
+				label = "Current live session"
+			}
+			b.WriteString(renderMenuItem(menuItemOpts{
+				Label:      label,
+				LabelWidth: sessionsLabelWidth,
+				Desc:       sessionPickerDesc(row.info, layout),
+				Cursor:     i == p.cursor,
+				Checked:    row.live,
+			}))
+			b.WriteString("\n")
+		}
+	}
+	b.WriteString("\n")
+	b.WriteString(styleFooter.Render("↵ inspect · esc cancel · ↑↓ navigate"))
+	return strings.TrimRight(b.String(), "\n")
 }
