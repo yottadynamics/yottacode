@@ -1139,10 +1139,14 @@ func (m Model) handleMouseRelease(msg tea.MouseReleaseMsg) (Model, tea.Cmd) {
 
 // handleMouseWheel routes wheel events by screen region: over the cmdline it
 // browses input history (same as Up/Down at the textarea edge), and over the
-// transcript it scrolls the owned viewport. Popups, focused dock, and the launch
-// hero keep wheel input inert because those surfaces own their own navigation.
+// transcript it scrolls the owned viewport. Approval modals are an exception to
+// the usual popup capture rule: their full preview/body lives in transcript
+// history, so the wheel must keep scrolling that history while the modal is open.
 func (m Model) handleMouseWheel(msg tea.MouseWheelMsg) (Model, tea.Cmd) {
-	if m.popupOpen() || m.paletteOpen || m.filePaletteOpen || m.dockFocused || !m.enteredConversation {
+	if m.paletteOpen || m.filePaletteOpen || m.dockFocused || !m.enteredConversation {
+		return m, nil
+	}
+	if m.popupOpen() && !m.awaitingApproval {
 		return m, nil
 	}
 	footerHeight := lipgloss.Height(m.renderFooter())

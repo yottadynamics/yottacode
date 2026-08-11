@@ -2633,3 +2633,14 @@ func TestTranscriptFollowStopsAfterManualScroll(t *testing.T) {
 		t.Fatalf("new output should not yank the viewport when user scrolled away")
 	}
 }
+
+func TestView_RendersTranscriptScrollbarWhenScrollable(t *testing.T) {
+	m := newSelectableTranscriptModel(t)
+	m.awaitingApproval = true
+	m.approvalTool = "exit_plan_mode"
+
+	view := stripANSI(m.View().Content)
+	if !strings.Contains(view, "█") {
+		t.Fatalf("scrollable transcript should render a visible scrollbar; got %q", view)
+	}
+}

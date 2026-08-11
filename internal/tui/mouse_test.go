@@ -97,6 +97,34 @@ func TestMouseWheel_NoopWhilePopupOpen(t *testing.T) {
 	}
 }
 
+func TestMouseWheel_ScrollsTranscriptWhileApprovalPending(t *testing.T) {
+	m := newSelectableTranscriptModel(t)
+	m.awaitingApproval = true
+	m.approvalTool = "run_bash"
+	if !m.transcriptViewport.AtBottom() {
+		t.Fatalf("test setup: expected the viewport to start at the bottom")
+	}
+
+	m, _ = applyMsg(m, tea.MouseWheelMsg{X: 2, Y: 0, Button: tea.MouseWheelUp})
+	if m.transcriptViewport.AtBottom() {
+		t.Error("wheel-up should scroll transcript content even while a regular approval modal is open")
+	}
+}
+
+func TestMouseWheel_ScrollsTranscriptWhilePlanApprovalPending(t *testing.T) {
+	m := newSelectableTranscriptModel(t)
+	m.awaitingApproval = true
+	m.approvalTool = "exit_plan_mode"
+	if !m.transcriptViewport.AtBottom() {
+		t.Fatalf("test setup: expected the viewport to start at the bottom")
+	}
+
+	m, _ = applyMsg(m, tea.MouseWheelMsg{X: 2, Y: 0, Button: tea.MouseWheelUp})
+	if m.transcriptViewport.AtBottom() {
+		t.Error("wheel-up should scroll transcript content while the plan approval card is open")
+	}
+}
+
 func TestMouseWheel_NoopBeforeFirstMessage(t *testing.T) {
 	m := newTestModel(t)
 	if m.enteredConversation {
