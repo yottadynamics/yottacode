@@ -574,6 +574,14 @@ var readOnlyChildTools = map[string]bool{
 	ConsultAdvisorToolName:          true,
 }
 
+// IsReadOnlyTool reports whether a tool name is in the canonical read-only
+// set — tools that cannot mutate the user's workspace or execute arbitrary
+// commands. Used by the /usage efficiency section to distinguish verification-
+// loop re-calls (same args after a mutation) from genuine idle duplicates.
+func IsReadOnlyTool(name string) bool {
+	return readOnlyChildTools[name]
+}
+
 // agentIsReadOnly reports whether an agent definition is restricted to the
 // read-only tool set. A wildcard / inherit-all allowlist (empty Tools) is not
 // read-only because it can reach the full registry.

@@ -91,6 +91,23 @@ func TestAgentTool_ForegroundApprovalUnderGate_NoDeadlock(t *testing.T) {
 	}
 }
 
+// TestIsReadOnlyTool_Classification confirms the exported IsReadOnlyTool
+// function correctly classifies canonical read-only and mutating tools.
+func TestIsReadOnlyTool_Classification(t *testing.T) {
+	// Read-only tools must return true.
+	for _, name := range []string{"read_file", "grep", "glob", "lsp_diagnostics", "git_branch_status", "list_git_changed_files"} {
+		if !IsReadOnlyTool(name) {
+			t.Errorf("IsReadOnlyTool(%q) = false, want true", name)
+		}
+	}
+	// Mutating tools must return false.
+	for _, name := range []string{"edit_file", "write_file", "run_bash", "run_tests", "git_commit", "apply_diff"} {
+		if IsReadOnlyTool(name) {
+			t.Errorf("IsReadOnlyTool(%q) = true, want false", name)
+		}
+	}
+}
+
 // TestBuiltinRoles_DispatchClassification asserts the built-in roles classify
 // the way dispatch relies on: implement/test/docs are write-capable (→ isolated
 // worktree) and carry dispatch background defaults; review is read-only

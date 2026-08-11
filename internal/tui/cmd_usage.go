@@ -671,27 +671,50 @@ func renderEfficiencySummary(s *session.Session) string {
 }
 
 // repeatedToolCallRows finds tool calls issued more than once in this
-// session with the exact same arguments — a cheap, concrete "spinning"
-// signal, since re-running an identical call can't have learned anything
-// new from the first one. Sorted by repeat count descending, capped at
-// maxEfficiencyDetailRows.
+// session with the exact same arguments where no world-mutating tool ran
+// in between — genuine "spinning" duplicates, not verification-loop
+// re-calls (e.g. run_tests after each edit). Uses a mutation epoch that
+// advances whenever a non-read-only tool is seen; a duplicate only
+// counts when its epoch matches the previous occurrence's epoch.
+// Sorted by repeat count descending, capped at maxEfficiencyDetailRows.
 func repeatedToolCallRows(s *session.Session) []string {
 	if s == nil {
 		return nil
 	}
 	type callKey struct{ name, args string }
-	counts := map[callKey]int{}
+	// Per-key state: the epoch when we last saw this key, and how many
+	// idle (same-epoch) duplicates we've accumulated.
+	type keyState struct {
+		lastEpoch int
+		idle      int // duplicate occurrences with no intervening mutation
+	}
+	state := map[callKey]*keyState{}
 	var order []callKey
+	epoch := 0
+
 	for _, msg := range s.Messages {
 		if msg.Role != adapter.RoleAssistant {
 			continue
 		}
 		for _, call := range msg.ToolCalls {
-			k := callKey{call.Name, call.ArgsJSON}
-			if counts[k] == 0 {
-				order = append(order, k)
+			// Advance the mutation epoch for non-read-only tools.
+			if !agent.IsReadOnlyTool(call.Name) {
+				epoch++
 			}
-			counts[k]++
+			k := callKey{call.Name, call.ArgsJSON}
+			st, exists := state[k]
+			if !exists {
+				st = &keyState{lastEpoch: epoch}
+				state[k] = st
+				order = append(order, k)
+				continue
+			}
+			// Same key seen again — idle duplicate only if epoch hasn't
+			// advanced since the last occurrence of this exact key.
+			if epoch == st.lastEpoch {
+				st.idle++
+			}
+			st.lastEpoch = epoch
 		}
 	}
 	type repeatRow struct {
@@ -700,8 +723,8 @@ func repeatedToolCallRows(s *session.Session) []string {
 	}
 	var rows []repeatRow
 	for _, k := range order {
-		if counts[k] > 1 {
-			rows = append(rows, repeatRow{k, counts[k]})
+		if state[k].idle > 0 {
+			rows = append(rows, repeatRow{k, state[k].idle + 1})
 		}
 	}
 	if len(rows) == 0 {
@@ -779,39 +802,60 @@ func repeatedToolFailureRows(s *session.Session) []string {
 }
 
 // renderWasteEstimate sums estimated tokens for two unambiguous categories
-// of waste: the result of every exact-duplicate tool call past its first
-// occurrence (repeatedToolCallRows already found the duplicate groups; this
-// charges every occurrence after the first against its own result size),
-// and every tool-result message where the in-loop repeated-failure guard
-// fired (agent.RepeatedToolFailureMarker). This is a floor, not a full
-// accounting: it deliberately does NOT price low-signal turns or ordinary
-// retained context, since a turn or a retained blob can be expensive
-// without being unambiguously wasted — only these two categories are.
+// of waste: the result of every idle-duplicate tool call past its first
+// occurrence (same args, no intervening mutation — the same epoch logic
+// repeatedToolCallRows uses), and every tool-result message where the
+// in-loop repeated-failure guard fired (agent.RepeatedToolFailureMarker).
+// This is a floor, not a full accounting: it deliberately does NOT price
+// low-signal turns or ordinary retained context, since a turn or a
+// retained blob can be expensive without being unambiguously wasted —
+// only these two categories are.
 func renderWasteEstimate(s *session.Session) string {
 	if s == nil {
 		return ""
 	}
+	// Pre-index tool result sizes by call ID.
 	resultTokens := map[string]int64{}
 	for _, msg := range s.Messages {
 		if msg.Role == adapter.RoleTool {
 			resultTokens[msg.ToolCallID] = int64((len(msg.Content) + 3) / 4)
 		}
 	}
+
+	// Walk messages with the same mutation-epoch logic as
+	// repeatedToolCallRows: only charge waste for duplicates that
+	// occurred without an intervening world-mutating tool call.
 	var waste int64
 	type callKey struct{ name, args string }
-	seen := map[callKey]int{}
+	type keyState struct {
+		lastEpoch int
+	}
+	state := map[callKey]*keyState{}
+	epoch := 0
+
 	for _, msg := range s.Messages {
 		if msg.Role != adapter.RoleAssistant {
 			continue
 		}
 		for _, call := range msg.ToolCalls {
+			if !agent.IsReadOnlyTool(call.Name) {
+				epoch++
+			}
 			k := callKey{call.Name, call.ArgsJSON}
-			seen[k]++
-			if seen[k] > 1 {
+			st, exists := state[k]
+			if !exists {
+				state[k] = &keyState{lastEpoch: epoch}
+				continue
+			}
+			// Idle duplicate: same key, epoch hasn't advanced.
+			if epoch == st.lastEpoch {
 				waste += resultTokens[call.ID]
 			}
+			st.lastEpoch = epoch
 		}
 	}
+
+	// Add tokens from repeated-failure guard firings (separate signal).
 	for _, msg := range s.Messages {
 		if msg.Role == adapter.RoleTool && strings.Contains(msg.Content, agent.RepeatedToolFailureMarker) {
 			waste += int64((len(msg.Content) + 3) / 4)
