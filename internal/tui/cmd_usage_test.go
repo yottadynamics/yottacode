@@ -739,6 +739,9 @@ func TestRenderPeakTurn_PicksLargestTurn(t *testing.T) {
 	if !strings.Contains(got, "8,200") {
 		t.Errorf("expected the largest turn's token total; got %q", got)
 	}
+	if !strings.Contains(got, "input 8,000") || !strings.Contains(got, "output 200") {
+		t.Errorf("expected largest turn to explain its input/output split; got %q", got)
+	}
 }
 
 // TestRenderPeakTurn_NoUsageData confirms an empty result when no
@@ -747,6 +750,53 @@ func TestRenderPeakTurn_NoUsageData(t *testing.T) {
 	s := &session.Session{Messages: []adapter.Message{{Role: adapter.RoleAssistant}}}
 	if got := renderPeakTurn(s); got != "" {
 		t.Errorf("expected empty string with no turn usage; got %q", got)
+	}
+}
+
+// TestRenderPeakTurn_ShowsCacheSplit makes cache-heavy turns explainable: the
+// headline total alone cannot tell whether a spike came from fresh input or a
+// provider cache read replaying a stable prefix.
+func TestRenderPeakTurn_ShowsCacheSplit(t *testing.T) {
+	s := &session.Session{
+		Messages: []adapter.Message{
+			{Role: adapter.RoleAssistant, Usage: &adapter.Usage{InputTokens: 100, OutputTokens: 20}},
+			{Role: adapter.RoleAssistant, Usage: &adapter.Usage{InputTokens: 1_000, OutputTokens: 50, CacheReadTokens: 9_000, CacheCreationTokens: 300}},
+		},
+	}
+
+	got := renderPeakTurn(s)
+	for _, want := range []string{"turn 2", "10,350", "input 1,000", "output 50", "cache read 9,000", "cache write 300"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q in %q", want, got)
+		}
+	}
+}
+
+// TestRenderRetainedContext_AttributesLargeToolOutput shows the causal view
+// behind high input-token totals: large retained tool messages are the blobs
+// that will be resent to the provider on later turns.
+func TestRenderRetainedContext_AttributesLargeToolOutput(t *testing.T) {
+	s := &session.Session{
+		Messages: []adapter.Message{
+			{Role: adapter.RoleAssistant, ToolCalls: []adapter.ToolCall{{ID: "call_read", Name: "read_file"}}},
+			{Role: adapter.RoleTool, ToolCallID: "call_read", Content: strings.Repeat("x", retainedContextWarnTokens*4)},
+			{Role: adapter.RoleUser, Content: "small prompt"},
+		},
+	}
+
+	got := renderRetainedContext(s)
+	for _, want := range []string{"context", "top retained context", "tool:read_file", "8,000", "retained"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q in:\n%s", want, got)
+		}
+	}
+}
+
+// TestRenderRetainedContext_Empty confirms the retained-context section stays
+// hidden for an empty session instead of adding noise to /usage.
+func TestRenderRetainedContext_Empty(t *testing.T) {
+	if got := renderRetainedContext(&session.Session{}); got != "" {
+		t.Errorf("expected empty retained context for an empty session; got %q", got)
 	}
 }
 

@@ -40,6 +40,11 @@ func flagOutlier(value, total float64, count int) bool {
 	return otherMean > 0 && value > otherMean*outlierMultiplier
 }
 
+// retainedContextWarnTokens is the approximate size where one retained
+// transcript message is large enough to noticeably inflate every later turn.
+// The estimate uses the same 4-chars/token heuristic as ToolStats.
+const retainedContextWarnTokens = 8_000
+
 // cmdUsage renders per-session token usage in a Claude-style per-model
 // breakdown, plus live rate limits and a provider-aware account block.
 // It deliberately shows NO dollar estimate: providers don't expose a
@@ -162,6 +167,11 @@ func renderUsagePanel(m Model) string {
 
 	if tools := renderToolStats(m.sess); tools != "" {
 		b.WriteString(tools)
+		b.WriteString("\n\n")
+	}
+
+	if retained := renderRetainedContext(m.sess); retained != "" {
+		b.WriteString(retained)
 		b.WriteString("\n\n")
 	}
 
@@ -430,14 +440,14 @@ func cacheHitRate(u adapter.Usage) float64 {
 }
 
 // renderPeakTurn finds the assistant turn with the largest token total and
-// surfaces it as a single line, so one outlier turn (a huge file dumped
-// into context, a runaway subagent report folded back in) is visible
-// instead of averaged away inside the session total.
+// surfaces its input/output/cache split, so one outlier turn is visible and
+// explainable instead of averaged away inside the session total.
 func renderPeakTurn(s *session.Session) string {
 	if s == nil {
 		return ""
 	}
 	turn, bestTurn := 0, 0
+	var bestUsage adapter.Usage
 	var bestTokens int64
 	for _, msg := range s.Messages {
 		if msg.Role != adapter.RoleAssistant {
@@ -448,13 +458,94 @@ func renderPeakTurn(s *session.Session) string {
 			continue
 		}
 		if tok := totalTokensFor(*msg.Usage); tok > bestTokens {
-			bestTokens, bestTurn = tok, turn
+			bestTokens, bestTurn, bestUsage = tok, turn, *msg.Usage
 		}
 	}
 	if bestTurn == 0 {
 		return ""
 	}
-	return fmt.Sprintf("%-13sturn %d · %s tokens", "largest turn", bestTurn, formatInt(bestTokens))
+	parts := []string{
+		fmt.Sprintf("input %s", formatInt(bestUsage.InputTokens)),
+		fmt.Sprintf("output %s", formatInt(bestUsage.OutputTokens)),
+	}
+	if bestUsage.CacheReadTokens > 0 {
+		parts = append(parts, fmt.Sprintf("cache read %s", formatInt(bestUsage.CacheReadTokens)))
+	}
+	if bestUsage.CacheCreationTokens > 0 {
+		parts = append(parts, fmt.Sprintf("cache write %s", formatInt(bestUsage.CacheCreationTokens)))
+	}
+	if bestUsage.ReasoningTokens > 0 {
+		parts = append(parts, fmt.Sprintf("reasoning %s", formatInt(bestUsage.ReasoningTokens)))
+	}
+	return fmt.Sprintf("%-13sturn %d · %s tokens (%s)", "largest turn", bestTurn, formatInt(bestTokens), strings.Join(parts, " · "))
+}
+
+// renderRetainedContext lists the largest messages currently retained in the
+// transcript. These are the blobs most likely to inflate every later provider
+// input, which is the missing causal link when /usage flags a token outlier.
+func renderRetainedContext(s *session.Session) string {
+	if s == nil || len(s.Messages) == 0 {
+		return ""
+	}
+	callNames := map[string]string{}
+	for _, msg := range s.Messages {
+		if msg.Role != adapter.RoleAssistant {
+			continue
+		}
+		for _, call := range msg.ToolCalls {
+			if call.ID != "" && call.Name != "" {
+				callNames[call.ID] = call.Name
+			}
+		}
+	}
+	type retainedRow struct {
+		label  string
+		tokens int64
+	}
+	rows := make([]retainedRow, 0, len(s.Messages))
+	for _, msg := range s.Messages {
+		tokens := int64((len(msg.Content) + 3) / 4)
+		if tokens == 0 {
+			continue
+		}
+		label := string(msg.Role)
+		if msg.Role == adapter.RoleTool {
+			name := callNames[msg.ToolCallID]
+			if name == "" {
+				name = "unknown"
+			}
+			label = "tool:" + name
+		}
+		rows = append(rows, retainedRow{label: label, tokens: tokens})
+	}
+	if len(rows) == 0 {
+		return ""
+	}
+	sort.Slice(rows, func(i, j int) bool {
+		if rows[i].tokens != rows[j].tokens {
+			return rows[i].tokens > rows[j].tokens
+		}
+		return rows[i].label < rows[j].label
+	})
+	if len(rows) > 5 {
+		rows = rows[:5]
+	}
+	labelWidth, valueWidth := 0, 0
+	for _, r := range rows {
+		labelWidth = max(labelWidth, len(r.label))
+		valueWidth = max(valueWidth, len(formatInt(r.tokens)))
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "%-13stop retained context\n", "context")
+	for _, r := range rows {
+		line := fmt.Sprintf("%-13s%-*s  %*s tokens", "", labelWidth, r.label, valueWidth, formatInt(r.tokens))
+		if r.tokens >= retainedContextWarnTokens {
+			line = styleNoticeWarn.Render(line + "  ⚠ retained")
+		}
+		b.WriteString(line)
+		b.WriteByte('\n')
+	}
+	return strings.TrimRight(b.String(), "\n")
 }
 
 // renderCompactionSummary surfaces how many times this session's own
