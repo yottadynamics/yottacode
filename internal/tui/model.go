@@ -2973,7 +2973,7 @@ func (m Model) viewString() string {
 		footer := m.renderFooter()
 		m.resizeTranscriptViewport(footer)
 		m.applyTranscriptFollowIntent()
-		background = lipgloss.JoinVertical(lipgloss.Left, m.transcriptViewport.View(), footer)
+		background = lipgloss.JoinVertical(lipgloss.Left, m.renderTranscriptViewport(), footer)
 	}
 
 	// Popup layer: pickers, panels, and decision modals all render as a
@@ -6935,6 +6935,72 @@ func (m *Model) queuePrintlnIndented(s string, leftMargin int) {
 	m.transcriptDirty = true
 }
 
+// renderTranscriptViewport adds a one-column scrollbar beside the owned
+// transcript viewport when the transcript is longer than the visible frame.
+// yottacode runs in alt-screen, so users do not get a terminal-native scrollbar;
+// the in-frame rail makes it obvious that PgUp/PgDn and mouse wheel scrolling
+// can reveal more plan or approval context behind a modal.
+func (m Model) renderTranscriptViewport() string {
+	view := m.transcriptViewport.View()
+	if !m.transcriptScrollbarVisible() {
+		return view
+	}
+	lines := strings.Split(view, "\n")
+	height := m.transcriptViewport.Height()
+	if height <= 0 {
+		return view
+	}
+	for len(lines) < height {
+		lines = append(lines, "")
+	}
+	rail := m.renderTranscriptScrollbar(height)
+	out := make([]string, height)
+	contentWidth := max(m.width-1, 0)
+	for i := 0; i < height; i++ {
+		line := ""
+		if i < len(lines) {
+			line = lines[i]
+		}
+		line = ansi.Truncate(line, contentWidth, "")
+		line = lipgloss.NewStyle().Width(contentWidth).Render(line)
+		out[i] = line + rail[i]
+	}
+	return strings.Join(out, "\n")
+}
+
+// transcriptScrollbarVisible reports whether there is hidden transcript content
+// above or below the current viewport window.
+func (m Model) transcriptScrollbarVisible() bool {
+	return m.enteredConversation && m.transcriptViewport.Height() > 0 && len(m.transcriptRows) > m.transcriptViewport.Height()
+}
+
+// renderTranscriptScrollbar returns one glyph per visible transcript row. The
+// filled thumb uses the viewport's scroll percent, while the dim rail marks the
+// rest of the scrollable range without stealing much horizontal space.
+func (m Model) renderTranscriptScrollbar(height int) []string {
+	rail := make([]string, height)
+	for i := range rail {
+		rail[i] = lipgloss.NewStyle().Foreground(colorDim).Render("│")
+	}
+	if height <= 0 {
+		return rail
+	}
+	contentRows := len(m.transcriptRows)
+	thumbHeight := max(1, height*height/max(contentRows, height))
+	if thumbHeight > height {
+		thumbHeight = height
+	}
+	maxStart := height - thumbHeight
+	start := 0
+	if maxStart > 0 {
+		start = int(m.transcriptViewport.ScrollPercent()*float64(maxStart) + 0.5)
+	}
+	for i := start; i < start+thumbHeight && i < height; i++ {
+		rail[i] = lipgloss.NewStyle().Foreground(colorAccent).Render("█")
+	}
+	return rail
+}
+
 // resizeTranscriptViewport sizes transcriptViewport against footer's
 // rendered height, filling whatever's left of m.height. Split out from
 // refreshTranscriptViewport so viewString can call it too (idempotent,
@@ -6944,7 +7010,17 @@ func (m *Model) queuePrintlnIndented(s string, leftMargin int) {
 // Update still gets correctly-sized output instead of stale dimensions
 // left over from whenever Update last ran.
 func (m *Model) resizeTranscriptViewport(footer string) {
-	m.transcriptViewport.SetWidth(m.width)
+	// The transcript renders its own one-column scrollbar when it overflows, so
+	// reserve that column from the viewport content width to keep the scrollbar
+	// visible on the right edge instead of pushing the frame wider.
+	w := m.width
+	if m.transcriptScrollbarVisible() {
+		w--
+	}
+	if w < 0 {
+		w = 0
+	}
+	m.transcriptViewport.SetWidth(w)
 	h := m.height - lipgloss.Height(footer)
 	if h < 0 {
 		h = 0
