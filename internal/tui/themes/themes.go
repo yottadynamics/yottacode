@@ -126,13 +126,15 @@ func MustGet(name string) Palette {
 //  1. terminal — the universal "match my terminal" choice, works
 //     on every background; the safest pick when you don't know
 //     what to choose, and the default.
+//  2. yottacode-dark — the polished house dark theme users should see
+//     before the larger ecosystem-inspired tail.
 //
 // Anything else falls into the alphabetical tail so the order stays
 // predictable across adding new palettes. Registry map iteration in
 // Go is intentionally nondeterministic, so this function is also
 // where we lock the order — never rely on map traversal directly.
 func Names() []string {
-	head := []string{"terminal"}
+	head := []string{"terminal", "yottacode-dark"}
 	headSet := make(map[string]struct{}, len(head))
 	for _, n := range head {
 		headSet[n] = struct{}{}
