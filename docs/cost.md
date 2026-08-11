@@ -19,6 +19,16 @@ Usage
 
 session      3:30 PM today  (20260530-153012.482917)
 metrics      42 turns · 17 tools · 6 subagents · 2 models
+largest turn turn 31 · 231,902 tokens (input 37,401 · output 812 · cache read 193,689)
+compaction   compacted 2x · reclaimed ~418k tokens
+
+tools        3 distinct
+             read_file        6 calls  14,802 tokens  ⚠ outlier
+             git_diff_files   2 calls   5,104 tokens
+
+context      top retained context
+             tool:read_file      14,802 tokens  ⚠ retained
+             tool:git_diff_files  5,104 tokens
 
 claude-opus-4-7   input         265
                   output    103,432
@@ -68,9 +78,22 @@ tokens separately. Each model renders as a small ledger: input and
 output always appear, cache read/write and reasoning appear only when
 non-zero, and the `session total` line sums all model rows. A lightweight
 `metrics` row shows the current session's assistant turns, tool calls,
-subagents, and model count when those counts are non-zero; one-model
-sessions with only input/output rows skip the per-model `total` separator
-so the explicit `session total` is not repeated back-to-back.
+subagents, and model count when those counts are non-zero. The
+`largest turn` row calls out the single highest-spend assistant turn and
+splits it into input, output, cache-read, cache-write, and reasoning
+components so a spike is visible as fresh context, cache replay, or
+model output instead of one opaque total.
+
+The optional `context` block explains *why future turns may stay high*:
+it estimates the largest retained transcript messages with the same
+4-chars-per-token heuristic used for tool-output stats, labels tool
+results by tool name, and marks messages above the retained-context
+warning threshold. Large retained tool outputs — full file reads, diffs,
+PR templates, or command logs — are resent on later turns until the
+session is compacted or the transcript is otherwise shortened.
+One-model sessions with only input/output rows skip the per-model
+`total` separator so the explicit `session total` is not repeated
+back-to-back.
 
 ### Live rate limits
 
