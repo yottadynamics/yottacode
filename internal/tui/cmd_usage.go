@@ -131,7 +131,7 @@ func (m Model) windowedUsagePanel() string {
 	offset := min(max(m.usageScrollOffset, 0), total-visible)
 	end := min(total, offset+visible)
 	shown := strings.Join(allLines[offset:end], "\n")
-	hint := fmt.Sprintf("── %d-%d of %d lines · ↑/↓ · PgUp/PgDn to scroll ──", offset+1, end, total)
+	hint := fmt.Sprintf("── %d-%d of %d lines · wheel/click ↑↓ · PgUp/PgDn ──", offset+1, end, total)
 	return shown + "\n" + styleHint.Render(hint)
 }
 

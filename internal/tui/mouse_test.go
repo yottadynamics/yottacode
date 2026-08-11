@@ -3,9 +3,11 @@ package tui
 import (
 	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 )
 
 func TestView_LeavesMouseNativeBeforeConversationStarts(t *testing.T) {
@@ -84,6 +86,223 @@ func TestMouseWheel_OverCmdlineBrowsesInputHistory(t *testing.T) {
 	m, _ = applyMsg(m, tea.MouseWheelMsg{X: 4, Y: y + 1, Button: tea.MouseWheelDown})
 	if got := m.textInput.Value(); got != "" {
 		t.Errorf("wheel-down over cmdline should return to the empty draft, got %q", got)
+	}
+}
+
+func TestMouseWheel_ScrollsUsagePopup(t *testing.T) {
+	m := newTestModel(t)
+	m.height = 8
+	m.usageOpen = true
+	m.usagePanel = strings.Join([]string{
+		"usage header",
+		"line 1",
+		"line 2",
+		"line 3",
+		"line 4",
+		"line 5",
+		"line 6",
+		"line 7",
+	}, "\n")
+
+	m, _ = applyMsg(m, tea.MouseWheelMsg{Button: tea.MouseWheelDown})
+	if got := m.usageScrollOffset; got != popupMouseWheelLines {
+		t.Fatalf("wheel-down should scroll /usage popup content, offset = %d, want %d", got, popupMouseWheelLines)
+	}
+	if !m.usageOpen {
+		t.Fatal("wheel-scrolling /usage should keep the popup open")
+	}
+
+	m, _ = applyMsg(m, tea.MouseWheelMsg{Button: tea.MouseWheelUp})
+	if got := m.usageScrollOffset; got != 0 {
+		t.Fatalf("wheel-up should scroll /usage popup content back, offset = %d, want 0", got)
+	}
+}
+
+func TestMouseWheel_ScrollsInspectPopup(t *testing.T) {
+	m := newTestModel(t)
+	m.height = 8
+	m.inspectOpen = true
+	m.inspectPanel = strings.Join([]string{
+		"inspect header",
+		"turn 1",
+		"turn 2",
+		"turn 3",
+		"turn 4",
+		"turn 5",
+		"turn 6",
+		"turn 7",
+	}, "\n")
+
+	m, _ = applyMsg(m, tea.MouseWheelMsg{Button: tea.MouseWheelDown})
+	if got := m.inspectScrollOffset; got != popupMouseWheelLines {
+		t.Fatalf("wheel-down should scroll /inspect popup content, offset = %d, want %d", got, popupMouseWheelLines)
+	}
+	if !m.inspectOpen {
+		t.Fatal("wheel-scrolling /inspect should keep the popup open")
+	}
+}
+
+func TestMouseClick_UsageHintArrowsScrollWithoutClosing(t *testing.T) {
+	m := newTestModel(t)
+	m.width = 80
+	m.height = 8
+	m.usageOpen = true
+	m.usageScrollOffset = 1
+	m.usagePanel = strings.Join([]string{
+		"usage header",
+		"line 1",
+		"line 2",
+		"line 3",
+		"line 4",
+		"line 5",
+		"line 6",
+		"line 7",
+	}, "\n")
+	box, ok := m.activePopupBody()
+	if !ok {
+		t.Fatal("test setup: expected active popup body")
+	}
+	originX, originY := m.popupOrigin(box)
+	lastContentY := originY + lipgloss.Height(box) - 2
+
+	m, _ = applyMsg(m, tea.MouseClickMsg{X: originX + 4, Y: lastContentY})
+	if got := m.usageScrollOffset; got != 0 {
+		t.Fatalf("clicking the hint-row up side should scroll up, offset = %d, want 0", got)
+	}
+	if !m.usageOpen {
+		t.Fatal("clicking usage scroll controls should keep the popup open")
+	}
+
+	m, _ = applyMsg(m, tea.MouseClickMsg{X: originX + lipgloss.Width(box) - 5, Y: lastContentY})
+	if got := m.usageScrollOffset; got != 1 {
+		t.Fatalf("clicking the hint-row down side should scroll down, offset = %d, want 1", got)
+	}
+}
+
+func TestMouseClick_InspectHintArrowsScrollWithoutClosing(t *testing.T) {
+	m := newTestModel(t)
+	m.width = 80
+	m.height = 8
+	m.inspectOpen = true
+	m.inspectScrollOffset = 1
+	m.inspectPanel = strings.Join([]string{
+		"inspect header",
+		"turn 1",
+		"turn 2",
+		"turn 3",
+		"turn 4",
+		"turn 5",
+		"turn 6",
+		"turn 7",
+	}, "\n")
+	box, ok := m.activePopupBody()
+	if !ok {
+		t.Fatal("test setup: expected active popup body")
+	}
+	originX, originY := m.popupOrigin(box)
+	lastContentY := originY + lipgloss.Height(box) - 2
+
+	m, _ = applyMsg(m, tea.MouseClickMsg{X: originX + 4, Y: lastContentY})
+	if got := m.inspectScrollOffset; got != 0 {
+		t.Fatalf("clicking the hint-row up side should scroll up, offset = %d, want 0", got)
+	}
+	if !m.inspectOpen {
+		t.Fatal("clicking inspect scroll controls should keep the popup open")
+	}
+
+	m, _ = applyMsg(m, tea.MouseClickMsg{X: originX + lipgloss.Width(box) - 5, Y: lastContentY})
+	if got := m.inspectScrollOffset; got != 1 {
+		t.Fatalf("clicking the hint-row down side should scroll down, offset = %d, want 1", got)
+	}
+}
+
+func TestMouseClick_ScrollablePopupBodyDoesNotClose(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		open   func(*Model)
+		closed func(Model) bool
+	}{
+		{
+			name: "usage",
+			open: func(m *Model) {
+				m.usageOpen = true
+				m.usagePanel = strings.Join([]string{
+					"usage header",
+					"line 1",
+					"line 2",
+					"line 3",
+					"line 4",
+					"line 5",
+					"line 6",
+					"line 7",
+				}, "\n")
+			},
+			closed: func(m Model) bool { return !m.usageOpen },
+		},
+		{
+			name: "inspect",
+			open: func(m *Model) {
+				m.inspectOpen = true
+				m.inspectPanel = strings.Join([]string{
+					"inspect header",
+					"turn 1",
+					"turn 2",
+					"turn 3",
+					"turn 4",
+					"turn 5",
+					"turn 6",
+					"turn 7",
+				}, "\n")
+			},
+			closed: func(m Model) bool { return !m.inspectOpen },
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := newTestModel(t)
+			m.width = 80
+			m.height = 8
+			tc.open(&m)
+			box, ok := m.activePopupBody()
+			if !ok {
+				t.Fatal("test setup: expected active popup body")
+			}
+			originX, originY := m.popupOrigin(box)
+
+			m, _ = applyMsg(m, tea.MouseClickMsg{X: originX + 4, Y: originY + 2})
+			if tc.closed(m) {
+				t.Fatalf("clicking %s popup body should keep the scrollable popup open", tc.name)
+			}
+		})
+	}
+}
+
+func TestWindowedUsagePopup_KeepsRenderedHeightStableWhileScrolling(t *testing.T) {
+	m := newTestModel(t)
+	m.width = 80
+	m.height = 8
+	m.usageOpen = true
+	m.usagePanel = strings.Join([]string{
+		"usage header",
+		"line 1",
+		"line 2",
+		"line 3",
+		"line 4",
+		"line 5",
+		"line 6",
+		"line 7",
+	}, "\n")
+	before, ok := m.activePopupBody()
+	if !ok {
+		t.Fatal("test setup: expected active popup body")
+	}
+
+	m.usageScrollOffset = 2
+	after, ok := m.activePopupBody()
+	if !ok {
+		t.Fatal("test setup: expected active popup body after scrolling")
+	}
+	if lipgloss.Height(before) != lipgloss.Height(after) {
+		t.Fatalf("popup height changed while scrolling: before=%d after=%d", lipgloss.Height(before), lipgloss.Height(after))
 	}
 }
 
@@ -231,7 +450,7 @@ func TestMouseClick_DismissesStaticPopups(t *testing.T) {
 		check func(Model) bool
 	}{
 		{"cheatsheet", func(m *Model) { m.cheatsheetOpen = true }, func(m Model) bool { return m.cheatsheetOpen }},
-		{"usage", func(m *Model) { m.usageOpen = true; m.usagePanel = "x" }, func(m Model) bool { return m.usageOpen }},
+		{"usage", func(m *Model) { m.usageOpen = true; m.usagePanel = "x\ny" }, func(m Model) bool { return m.usageOpen }},
 		{"experimental", func(m *Model) { m.experimentalOpen = true }, func(m Model) bool { return m.experimentalOpen }},
 		{"help", func(m *Model) { m.helpOpen = true }, func(m Model) bool { return m.helpOpen }},
 		{"contextReport", func(m *Model) { m.contextReportOpen = true }, func(m Model) bool { return m.contextReportOpen }},
