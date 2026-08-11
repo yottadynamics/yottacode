@@ -43,7 +43,7 @@ func sameColor(a, b color.Color) bool {
 var expectedThemes = []string{
 	// Head: universal default pinned to the top.
 	"terminal",
-	// Head: yottacode's polished dark theme stays one slot below the default.
+	// Head: yotta's polished dark theme stays one slot below the default.
 	"yottacode-dark",
 	// Tail: alphabetical after the curated head.
 	"catppuccin",
@@ -234,40 +234,40 @@ func TestStudioDark_PaintsRecordingBackdrop(t *testing.T) {
 	}
 }
 
-func TestYottacodeDark_PaintsSlickEditorBackdrop(t *testing.T) {
+func TestYottaDark_PaintsYottaNightBackdrop(t *testing.T) {
 	p, ok := Get("yottacode-dark")
 	if !ok {
 		t.Fatalf("yottacode-dark theme not registered")
 	}
 	if !p.HasBackground {
-		t.Errorf("yottacode-dark.HasBackground = false, want true — the theme needs its model-editor backdrop")
+		t.Errorf("yottacode-dark.HasBackground = false, want true — the theme needs its charcoal backdrop")
 	}
-	if !colorEquals(p.Background.Dark, "#141414") || !colorEquals(p.Background.Light, "#141414") {
-		t.Errorf("yottacode-dark.Background != exact GrokNight BG_STORM #141414")
+	if !colorEquals(p.Background.Dark, "#121212") || !colorEquals(p.Background.Light, "#121212") {
+		t.Errorf("yottacode-dark.Background != pinned charcoal #121212")
 	}
-	if !colorEquals(p.Content.Dark, "#e1e1e1") {
-		t.Errorf("yottacode-dark.Content.Dark != exact GrokNight FG #e1e1e1")
+	if !colorEquals(p.Content.Dark, "#e8e8e8") {
+		t.Errorf("yottacode-dark.Content.Dark != bright primary text #e8e8e8")
 	}
-	if !colorEquals(p.Dim.Dark, "#6c6c6c") {
-		t.Errorf("yottacode-dark.Dim.Dark != exact GrokNight COMMENT #6c6c6c")
+	if !colorEquals(p.Dim.Dark, "#6a6a6a") {
+		t.Errorf("yottacode-dark.Dim.Dark != neutral muted gray #6a6a6a")
 	}
-	if !colorEquals(p.Rule.Dark, "#323237") {
-		t.Errorf("yottacode-dark.Rule.Dark != exact GrokNight prompt_border #323237")
+	if !colorEquals(p.Rule.Dark, "#1e1e1e") {
+		t.Errorf("yottacode-dark.Rule.Dark != subtle elevation #1e1e1e")
 	}
-	if !colorEquals(p.Accent.Dark, "#e0af68") {
-		t.Errorf("yottacode-dark.Accent.Dark != exact GrokNight YELLOW #e0af68")
+	if !colorEquals(p.Accent.Dark, "#bb9af7") {
+		t.Errorf("yottacode-dark.Accent.Dark != Grok magenta #bb9af7")
 	}
-	if !colorEquals(p.Assistant.Dark, "#bb9af7") {
-		t.Errorf("yottacode-dark.Assistant.Dark != exact GrokNight MAGENTA #bb9af7")
+	if !colorEquals(p.Assistant.Dark, "#00e5ff") {
+		t.Errorf("yottacode-dark.Assistant.Dark != Yotta signature cyan-teal #00e5ff")
 	}
 	if !colorEquals(p.Success.Dark, "#9ece6a") {
-		t.Errorf("yottacode-dark.Success.Dark != exact GrokNight GREEN #9ece6a")
+		t.Errorf("yottacode-dark.Success.Dark != Tokyo Night green #9ece6a")
 	}
 	if !colorEquals(p.Error.Dark, "#f7768e") {
-		t.Errorf("yottacode-dark.Error.Dark != exact GrokNight RED #f7768e")
+		t.Errorf("yottacode-dark.Error.Dark != Tokyo Night red #f7768e")
 	}
 	if !colorEquals(p.Warm.Dark, "#ff9e64") {
-		t.Errorf("yottacode-dark.Warm.Dark != exact GrokNight ORANGE #ff9e64")
+		t.Errorf("yottacode-dark.Warm.Dark != Tokyo Night orange #ff9e64")
 	}
 }
 
