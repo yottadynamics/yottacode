@@ -64,6 +64,46 @@ func popupCloseHit(box string, originX, originY, screenX, screenY int) bool {
 	return screenX >= originX+bw-3 && screenX <= originX+bw-2
 }
 
+// handleScrollableStaticPopupClick routes mouse clicks inside scrollable static
+// panels. The popup stays open; clicks on the hint row act like its ↑/↓ labels.
+func (m Model) handleScrollableStaticPopupClick(box string, msg tea.MouseClickMsg) (Model, bool) {
+	if m.usageOpen && m.usageMaxScrollOffset() == 0 {
+		return m, false
+	}
+	if m.inspectOpen && m.inspectMaxScrollOffset() == 0 {
+		return m, false
+	}
+	if !m.usageOpen && !m.inspectOpen {
+		return m, false
+	}
+	originX, originY := m.popupOrigin(box)
+	boxWidth := lipgloss.Width(box)
+	boxHeight := lipgloss.Height(box)
+	// The scroll hint lives on the final content row, just above the bottom
+	// border. Treat its left half as the ↑ affordance and its right half as ↓.
+	if msg.Y != originY+boxHeight-2 || msg.X < originX || msg.X >= originX+boxWidth {
+		return m, true
+	}
+	if msg.X-originX < boxWidth/2 {
+		return m.scrollPopupLines(-1), true
+	}
+	return m.scrollPopupLines(1), true
+}
+
+const popupMouseWheelLines = 3
+
+// scrollPopupLines applies keyboard-equivalent scrolling to whichever fixed
+// static popup is currently open, clamping at the popup content bounds.
+func (m Model) scrollPopupLines(delta int) Model {
+	if m.usageOpen {
+		m.usageScrollOffset = min(max(m.usageScrollOffset+delta, 0), m.usageMaxScrollOffset())
+	}
+	if m.inspectOpen {
+		m.inspectScrollOffset = min(max(m.inspectScrollOffset+delta, 0), m.inspectMaxScrollOffset())
+	}
+	return m
+}
+
 // handlePopupCloseClick centralizes the shared × affordance. It mirrors each
 // surface's Esc behavior instead of inventing a second close path.
 func (m Model) handlePopupCloseClick(box string, msg tea.MouseClickMsg) (Model, tea.Cmd, bool) {
@@ -713,6 +753,9 @@ func (m Model) handleMouseClick(msg tea.MouseClickMsg) (Model, tea.Cmd) {
 		if out, cmd, closed := m.handlePopupCloseClick(box, msg); closed {
 			return out, cmd
 		}
+		if out, ok := m.handleScrollableStaticPopupClick(box, msg); ok {
+			return out, nil
+		}
 	}
 	if m.awaitingPathTrust {
 		return m.handlePathTrustModalClick(msg)
@@ -1142,11 +1185,25 @@ func (m Model) handleMouseRelease(msg tea.MouseReleaseMsg) (Model, tea.Cmd) {
 // transcript it scrolls the owned viewport. Approval modals are an exception to
 // the usual popup capture rule: their full preview/body lives in transcript
 // history, so the wheel must keep scrolling that history while the modal is open.
+func (m Model) handlePopupWheel(msg tea.MouseWheelMsg) Model {
+	switch msg.Button {
+	case tea.MouseWheelUp:
+		return m.scrollPopupLines(-popupMouseWheelLines)
+	case tea.MouseWheelDown:
+		return m.scrollPopupLines(popupMouseWheelLines)
+	default:
+		return m
+	}
+}
+
 func (m Model) handleMouseWheel(msg tea.MouseWheelMsg) (Model, tea.Cmd) {
-	if m.paletteOpen || m.filePaletteOpen || m.dockFocused || !m.enteredConversation {
+	if m.paletteOpen || m.filePaletteOpen || m.dockFocused {
 		return m, nil
 	}
 	if m.popupOpen() && !m.awaitingApproval {
+		return m.handlePopupWheel(msg), nil
+	}
+	if !m.enteredConversation {
 		return m, nil
 	}
 	footerHeight := lipgloss.Height(m.renderFooter())
