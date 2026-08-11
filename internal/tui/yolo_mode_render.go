@@ -44,11 +44,8 @@ func renderYoloStandaloneBanner(width int) string {
 }
 
 var (
-	// Red + bold so this banner is unmistakable. We deliberately
-	// don't reuse the warning yellow that auto/plan use — yolo is
-	// the danger setting and the color must say so.
-	styleYoloBannerLabel    = lipgloss.NewStyle().Foreground(colorError).Bold(true)
-	styleYoloBannerHint     = lipgloss.NewStyle().Foreground(colorDim).Italic(true)
-	styleYoloBannerSep      = lipgloss.NewStyle().Foreground(colorRule)
-	styleYoloBannerActivity = lipgloss.NewStyle().Foreground(colorContent)
+	styleYoloBannerLabel    lipgloss.Style
+	styleYoloBannerHint     lipgloss.Style
+	styleYoloBannerSep      lipgloss.Style
+	styleYoloBannerActivity lipgloss.Style
 )

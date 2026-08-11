@@ -404,15 +404,15 @@ A skill may ship `scripts/`, `references/`, `assets/` subdirectories. The body r
 
 ## Plan mode
 
-`/plan` (or `Shift+Tab`) toggles plan mode — a read-only research state that mirrors Claude Code's `/plan`. The agent investigates the request, asks clarifying questions, and writes a plan file under `~/.yottacode/plans/<slug>.md`. While plan mode is on:
+`/plan` (or `Shift+Tab`) toggles plan mode — a read-only research state that mirrors Claude Code's `/plan`. The active state is visible immediately: the status bar shows a foreground-only `plan` mode chip, and a `▸ plan mode` banner appears above the cmdline as soon as the mode is entered (it adds the plan filename once the slug resolves). The agent investigates the request, asks clarifying questions, and writes a plan file under `~/.yottacode/plans/<slug>.md`. While plan mode is on:
 
 - Read-only tools (`read_file`, `grep`, `glob`, `list_*`, `git_log_file`, `fetch_url`, …) work normally.
 - `todo_write` works normally.
 - `write_file` / `edit_file` / `apply_diff` are blocked except when writing to the resolved plan file — writes to the plan file auto-allow without a prompt (it's the only legitimate mutation surface during planning).
 - Every other mutating tool (`run_bash`, `git_commit`, `git_stage_files`, …) returns a "tool unavailable in plan mode" message to the model.
-- A one-line banner immediately above the cmdline shows the mode, the plan file name (or "pending" before the file exists), and the exit keys (`exit with /plan or Shift+Tab`) — so how to leave the mode stays visible after the entry card scrolls away. The same keys are echoed on the entry card's footer and (as re-entry keys) on the exit log line.
+- A one-line banner immediately above the cmdline shows the mode right away, then the plan file name after the file exists, and the exit keys (`exit with /plan or Shift+Tab`) whenever there is room — so how to leave the mode stays visible after the entry card scrolls away. The same keys are echoed on the entry card's footer and (as re-entry keys) on the exit log line.
 
-`/plan` and `Shift+Tab` take no arguments — the plan slug is derived from the first user message of the plan-mode session. The banner shows "ready — your next message names the plan" until that message arrives. You can also launch directly into plan mode with `yottacode --permission-mode plan`.
+`/plan` and `Shift+Tab` take no arguments — the plan slug is derived from the first user message of the plan-mode session. The banner shows `▸ plan mode` immediately, then adds the resolved plan filename after that message arrives. You can also launch directly into plan mode with `yottacode --permission-mode plan`.
 
 **Model-requested entry.** Asking the agent to plan in natural language ("make a plan first", "drop into plan mode") makes it call the `enter_plan_mode` tool, which renders a `[Y]/[N]` confirmation card. `[Y]` runs the same entry sequence as `/plan` and derives the plan file from the message you just sent — the agent can start writing the plan in the same turn. `[N]` declines; the agent continues in the current mode. This entry request never auto-approves — not in auto mode, not under `--yolo` — and there is no model-side equivalent for auto mode: the agent cannot escalate its own permissions, only ask to restrict them.
 
@@ -451,7 +451,7 @@ The chord works mid-turn too: the loop reads the mode flags on every tool dispat
 
 The plan-approval card's `[A]` auto-approval hotkey is a shortcut: it approves the plan AND enters auto mode in one keystroke, so the agent can implement the approved plan with minimal friction. (Pick `[M]` instead if you want plan mode to exit but keep per-tool prompts.)
 
-Auto mode persists across turns until you toggle it off. The banner above the cmdline (`▸ auto mode · edits + read-only bash auto-allow; commits prompt · Shift+Tab cycles`) is always visible while active so the state isn't easy to forget — the trailing `Shift+Tab cycles` hint is how you leave (it drops first on narrow terminals). The entry log shows the full cycle (`auto → yolo → normal → plan`); the exit log shows the re-enter key.
+Auto mode persists across turns until you toggle it off. The foreground-only banner above the cmdline (`▸ auto mode · edits + read-only bash auto-allow; commits prompt · Shift+Tab cycles`) is always visible while active so the state isn't easy to forget — the trailing `Shift+Tab cycles` hint is how you leave (it drops first on narrow terminals). The entry log shows the full cycle (`auto → yolo → normal → plan`); the exit log shows the re-enter key.
 
 The default per-turn iteration cap is 100; auto mode raises the effective cap to 400 (4×). If you still hit the cap on long implementations, run `/max-iterations 500` (sanity ceiling) or relaunch with `--yolo` (raises the cap to `max-iterations × 20`, at least 1000; see [Yolo mode](#yolo-mode)).
 
@@ -468,7 +468,7 @@ There are three ways in:
 
 The overlay is a **modifier**, not a mode — once active, it sits on top of normal, auto, or plan. Entering auto or plan via `Shift+Tab` does not turn yolo mode off. The yolo banner takes visual priority while it's on (it's the loudest signal), and when a mode (auto or plan) is also active, the mode banner picks up a `⚠ yolo mode` suffix instead.
 
-Explicit `deny` rules in `.yottacode/permissions.json` still win — the yolo overlay is "skip prompts," not "ignore my policy." `Ctrl+C` is the escape hatch if a model goes into a runaway loop. The banner (`⚠ yolo mode · all tools auto-allow · no iteration cap`) renders in red so the state isn't easy to forget; when a mode (auto or plan) is also active, the mode banner picks up a `⚠ yolo mode` suffix instead.
+Explicit `deny` rules in `.yottacode/permissions.json` still win — the yolo overlay is "skip prompts," not "ignore my policy." `Ctrl+C` is the escape hatch if a model goes into a runaway loop. The banner (`⚠ yolo mode · all tools auto-allow · no iteration cap`) renders as foreground-only red/bold text so the state is loud without relying on unreadable background blocks; when a mode (auto or plan) is also active, the mode banner picks up a `⚠ yolo mode` suffix instead.
 
 Plan-mode state is per-launch — a new `yottacode` session starts in normal mode, and resuming an old session never re-enters plan mode automatically. Plan files persist on disk under `~/.yottacode/plans/`, sorted newest-first.
 

@@ -380,6 +380,20 @@ func buildStyles(p themes.Palette) {
 	stylePlanApprovalHotkey = lipgloss.NewStyle().Foreground(colorAccent).Bold(true)
 	stylePlanApprovalChoice = lipgloss.NewStyle().Foreground(colorContent)
 
+	// Auto-mode banner (auto_mode_render.go)
+	styleAutoBannerLabel = lipgloss.NewStyle().Foreground(colorSuccess).Bold(true)
+	styleAutoBannerHint = lipgloss.NewStyle().Foreground(colorDim).Italic(true)
+	styleAutoBannerSep = lipgloss.NewStyle().Foreground(colorRule)
+	styleAutoBannerActivity = lipgloss.NewStyle().Foreground(colorContent)
+
+	// Yolo-mode banner (yolo_mode_render.go). Foreground-only red keeps the danger
+	// state loud without reverse-video/background fills that can go unreadable
+	// against user terminals.
+	styleYoloBannerLabel = lipgloss.NewStyle().Foreground(colorError).Bold(true)
+	styleYoloBannerHint = lipgloss.NewStyle().Foreground(colorDim).Italic(true)
+	styleYoloBannerSep = lipgloss.NewStyle().Foreground(colorRule)
+	styleYoloBannerActivity = lipgloss.NewStyle().Foreground(colorContent)
+
 	// Approval modal (approval_modal.go)
 	styleApprovalTitle = lipgloss.NewStyle().Foreground(colorWarning).Bold(true)
 	styleApprovalTool = lipgloss.NewStyle().Foreground(colorDim)
