@@ -115,7 +115,7 @@ func init() {
 		{Name: "context", Help: "show context window usage breakdown", Run: cmdContext, PreservesTurn: true},
 		{Name: "experimental", Help: "list experimental features and which are enabled this session", Run: cmdExperimental, PreservesTurn: true},
 		{Name: "usage", Help: "show per-session token usage, today's rollup, and estimated cost", Run: cmdUsage, PreservesTurn: true},
-		{Name: "inspect", Args: "[session-id]", Help: "turn-by-turn session replay — tool calls, outcomes, tokens; omit the id for the current session", Run: cmdInspect, PreservesTurn: true},
+		{Name: "inspect", Args: "[session-id]", Help: "pick or open a read-only turn-by-turn session replay; press e inside the view to export Markdown", Run: cmdInspect, PreservesTurn: true},
 		{Name: "doctor", Help: "probe provider auth and model access", Run: cmdDoctor, PreservesTurn: true},
 		{Name: "redo", Help: "edit and re-run the most recent message", Run: cmdRedo},
 		{Name: "recall", Args: "<query>", Help: "full-text search across every saved session", Run: cmdRecall, PreservesTurn: true},

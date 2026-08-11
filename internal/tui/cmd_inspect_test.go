@@ -1,8 +1,11 @@
 package tui
 
 import (
+	"os"
 	"strings"
 	"testing"
+
+	tea "charm.land/bubbletea/v2"
 
 	"github.com/yottadynamics/yottacode/internal/adapter"
 	"github.com/yottadynamics/yottacode/internal/agent"
@@ -198,15 +201,77 @@ func TestRenderInspectPanel_EmptySession(t *testing.T) {
 	}
 }
 
-// TestCmdInspect_OpensOverlayForLiveSession confirms the no-arg path opens
-// the popup against the model's own live session.
-func TestCmdInspect_OpensOverlayForLiveSession(t *testing.T) {
+// TestCmdInspect_NoArgsOpensSessionPicker confirms bare /inspect is a TUI
+// chooser now, rather than immediately opening the live session panel.
+func TestCmdInspect_NoArgsOpensSessionPicker(t *testing.T) {
 	m := newTestModel(t)
 	m.sess.Messages = append(m.sess.Messages,
 		adapter.Message{Role: adapter.RoleUser, Content: "hi"},
 		adapter.Message{Role: adapter.RoleAssistant, Content: "hello", Usage: &adapter.Usage{InputTokens: 10, OutputTokens: 5}},
 	)
 	m, _ = cmdInspect(m, nil)
+	if !m.inspectPickerOpen {
+		t.Fatal("bare /inspect should open the session picker")
+	}
+	if m.inspectOpen {
+		t.Fatal("bare /inspect should not immediately open the inspect overlay")
+	}
+	if len(m.inspectPicker.rows) == 0 || !m.inspectPicker.rows[0].live {
+		t.Fatalf("first inspect picker row should be the live session: %+v", m.inspectPicker)
+	}
+}
+
+func TestInspectPicker_EnterOpensSelectedSession(t *testing.T) {
+	m := newTestModel(t)
+	m.sess.Messages = append(m.sess.Messages,
+		adapter.Message{Role: adapter.RoleUser, Content: "hi"},
+		adapter.Message{Role: adapter.RoleAssistant, Content: "hello", Usage: &adapter.Usage{InputTokens: 10, OutputTokens: 5}},
+	)
+	m, _ = cmdInspect(m, nil)
+
+	m, _ = m.updateInspectPicker(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if !m.inspectOpen {
+		t.Fatal("enter on inspect picker should open the selected session")
+	}
+	if m.inspectPickerOpen {
+		t.Fatal("opening a session should close the inspect picker")
+	}
+	if !strings.Contains(m.inspectPanel, "turn 1") {
+		t.Errorf("expected inspected session content in panel:\n%s", m.inspectPanel)
+	}
+}
+
+func TestInspectExport_WritesCurrentInspectedSession(t *testing.T) {
+	m := newTestModel(t)
+	m.cwd = t.TempDir()
+	m.sess.Messages = append(m.sess.Messages,
+		adapter.Message{Role: adapter.RoleUser, Content: "hi"},
+		adapter.Message{Role: adapter.RoleAssistant, Content: "hello", Usage: &adapter.Usage{InputTokens: 10, OutputTokens: 5}},
+	)
+	m.inspectSession = m.sess
+	m.inspectOpen = true
+	m.inspectPanel = renderInspectPanel(m.sess)
+
+	m, _ = m.updateInspectPanel(tea.KeyPressMsg{Text: "e"})
+	path := defaultInspectExportPath(m.cwd, m.sess)
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("expected inspect export at %s: %v", path, err)
+	}
+	if !strings.Contains(string(body), "# yottacode session") || !strings.Contains(string(body), "hello") {
+		t.Fatalf("exported markdown missing session content:\n%s", string(body))
+	}
+}
+
+// TestCmdInspect_ArgOpensOverlayForReferencedSession confirms the explicit-ref
+// path still opens directly, preserving the old quick lookup behavior.
+func TestCmdInspect_ArgOpensOverlayForReferencedSession(t *testing.T) {
+	m := newTestModel(t)
+	m.sess.Messages = append(m.sess.Messages,
+		adapter.Message{Role: adapter.RoleUser, Content: "hi"},
+		adapter.Message{Role: adapter.RoleAssistant, Content: "hello", Usage: &adapter.Usage{InputTokens: 10, OutputTokens: 5}},
+	)
+	m, _ = cmdInspect(m, []string{m.sess.ID})
 	if !m.inspectOpen {
 		t.Fatal("cmdInspect should open the inspect overlay")
 	}
