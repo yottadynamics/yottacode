@@ -1316,3 +1316,35 @@ func TestEnterPlanModeFromTool_IdempotentWhenAlreadyActive(t *testing.T) {
 		t.Errorf("already-active entry must not emit a duplicate entry card (%d → %d)", before, after)
 	}
 }
+
+func TestPlanModeBanner_RendersBeforeSlug(t *testing.T) {
+	m, _ := newPlanModeTestModel(t)
+	m.enteredConversation = true
+	m, _ = cmdPlan(m, nil)
+	if m.cfg.PlanMode.PlanFile != "" {
+		t.Fatalf("test setup: plan file should not be resolved yet")
+	}
+	view := stripANSI(m.View().Content)
+	if !strings.Contains(view, PlanModeIcon+" plan mode") {
+		t.Fatalf("plan banner should be visible immediately after entering plan mode; got %q", view)
+	}
+}
+
+func TestStatusBar_ShowsPlanMode(t *testing.T) {
+	m, _ := newPlanModeTestModel(t)
+	m, _ = cmdPlan(m, nil)
+	bar := stripANSI(m.renderStatus())
+	if !strings.Contains(bar, "plan") {
+		t.Fatalf("status bar should include plan mode while planning; got %q", bar)
+	}
+}
+
+func TestStatusBar_ShowsYoloOverlayWithMode(t *testing.T) {
+	m, _ := newPlanModeTestModel(t)
+	m, _ = toggleAutoMode(m)
+	m = enterYoloMode(m)
+	bar := stripANSI(m.renderStatus())
+	if !strings.Contains(bar, "auto+yolo") {
+		t.Fatalf("status bar should show yolo overlay with active mode; got %q", bar)
+	}
+}

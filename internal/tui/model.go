@@ -3107,14 +3107,7 @@ func (m Model) aboveInputRows() []string {
 	switch {
 	case m.paletteOpen, m.filePaletteOpen:
 		// suppressed
-	case m.cfg.PlanMode.IsActive() && m.cfg.PlanMode.PlanFile != "":
-		// Plan-mode banner is gated behind "the user has submitted
-		// their first message in this plan session" — PlanFile is
-		// empty between /plan-entry and the first user prompt, then
-		// set by maybeFillPlanFile or the resume picker. Hiding
-		// the banner during that window avoids stacking it
-		// immediately below the entry log's "plan mode active —
-		// read-only research…" line, which scanned as a duplicate.
+	case m.cfg.PlanMode.IsActive():
 		rows = append(rows, renderPlanModeBanner(computePlanBannerInfo(m), yoloOn, m.width))
 	case m.cfg.AutoMode.IsActive():
 		rows = append(rows, renderAutoModeBanner(yoloOn, m.width))
@@ -4376,17 +4369,22 @@ func (m Model) historyForward() (Model, bool) {
 // the core signals.
 func (m Model) renderStatus() string {
 	modelName := m.modelName
-	modeLabel := ""
+	modeLabels := make([]string, 0, 2)
 	routingNote := ""
-	if m.cfg.AutoMode.IsActive() {
-		modeLabel = "auto"
+	if m.cfg.PlanMode.IsActive() {
+		modeLabels = append(modeLabels, "plan")
+	} else if m.cfg.AutoMode.IsActive() {
+		modeLabels = append(modeLabels, "auto")
+	}
+	if m.cfg.YoloMode.IsActive() {
+		modeLabels = append(modeLabels, "yolo")
 	}
 	if m.router != nil {
 		smart, fast := shortModelTag(m.router.SmartModel), shortModelTag(m.router.FastModel)
 		switch routerModeOrOff(m.routerMode) {
 		case config.RouterModeAuto:
-			if modeLabel == "" {
-				modeLabel = "auto"
+			if len(modeLabels) == 0 {
+				modeLabels = append(modeLabels, "auto")
 			}
 			// Plan mode already carries its own prominent banner; show the real
 			// advisor model here so the implementer half of the pair is not mistaken for the active planner.
@@ -4409,7 +4407,7 @@ func (m Model) renderStatus() string {
 		tag = m.provider
 	}
 	provider := renderProviderTag(tag)
-	mode := renderModeStatus(modeLabel)
+	mode := renderModeStatus(modeLabels)
 	ctx := m.renderContextBar()
 	gitSeg := m.renderGitStatus()
 	pr := m.renderPRStatus()
@@ -4479,7 +4477,7 @@ func (m Model) renderStatus() string {
 		if worktreeSeg != "" {
 			segs = append(segs, worktreeSeg)
 		}
-		if routingNote != "" && modeLabel == "" {
+		if routingNote != "" && !modeLabelsContain(modeLabels, routingNote) {
 			segs = append(segs, lipgloss.NewStyle().Foreground(colorDim).Render(routingNote))
 		}
 		// Align the footer text with the start of the cmdline content inside the
@@ -4536,11 +4534,43 @@ func footerTextIndent(width int) int {
 	return 0
 }
 
-func renderModeStatus(mode string) string {
-	if strings.TrimSpace(mode) == "" {
+func modeLabelsContain(labels []string, needle string) bool {
+	for _, label := range labels {
+		if label == needle {
+			return true
+		}
+	}
+	return false
+}
+
+func renderModeStatus(modes []string) string {
+	if len(modes) == 0 {
 		return ""
 	}
-	return lipgloss.NewStyle().Foreground(colorSuccess).Render(mode)
+	parts := make([]string, 0, len(modes))
+	for _, mode := range modes {
+		mode = strings.TrimSpace(mode)
+		if mode == "" {
+			continue
+		}
+		parts = append(parts, renderModeStatusLabel(mode))
+	}
+	return strings.Join(parts, lipgloss.NewStyle().Foreground(colorDim).Render("+"))
+}
+
+func renderModeStatusLabel(mode string) string {
+	style := lipgloss.NewStyle().Bold(true)
+	switch mode {
+	case "plan":
+		style = style.Foreground(colorWarning)
+	case "auto":
+		style = style.Foreground(colorSuccess)
+	case "yolo":
+		style = style.Foreground(colorError)
+	default:
+		style = style.Foreground(colorContent)
+	}
+	return style.Render(mode)
 }
 
 func (m Model) renderToolStatus() string {

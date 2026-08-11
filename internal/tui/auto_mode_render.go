@@ -67,8 +67,8 @@ func renderAutoModeBanner(yoloOn bool, width int) string {
 }
 
 var (
-	styleAutoBannerLabel    = lipgloss.NewStyle().Foreground(colorAccent).Bold(true)
-	styleAutoBannerHint     = lipgloss.NewStyle().Foreground(colorDim).Italic(true)
-	styleAutoBannerSep      = lipgloss.NewStyle().Foreground(colorRule)
-	styleAutoBannerActivity = lipgloss.NewStyle().Foreground(colorContent)
+	styleAutoBannerLabel    lipgloss.Style
+	styleAutoBannerHint     lipgloss.Style
+	styleAutoBannerSep      lipgloss.Style
+	styleAutoBannerActivity lipgloss.Style
 )

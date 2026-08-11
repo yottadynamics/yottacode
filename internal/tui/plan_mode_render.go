@@ -41,9 +41,9 @@ const planExitKeysHint = "exit with /plan or Shift+Tab"
 // persistent "shift+tab to cycle" indicator — mid-session, the banner
 // is where the user looks to remember how to leave the mode):
 //
-//	◈ plan mode · i-want-to-imple…0dae3.md · exit with /plan or Shift+Tab
-//	◈ plan mode · exit with /plan or Shift+Tab
-//	◈ plan mode · i-want-to-imple…0dae3.md · ⚠ yolo · exit with /plan or Shift+Tab
+//	▸ plan mode · i-want-to-imple…0dae3.md · exit with /plan or Shift+Tab
+//	▸ plan mode · exit with /plan or Shift+Tab
+//	▸ plan mode · i-want-to-imple…0dae3.md · ⚠ yolo · exit with /plan or Shift+Tab
 //
 // Lowercase label is intentional — quieter than shouting PLAN MODE,
 // matches the surrounding "plan mode active" / "plan resumed"
@@ -86,7 +86,7 @@ func renderPlanModeBanner(info planBannerInfo, yoloOn bool, width int) string {
 
 // planBannerMiddleText is the segment after the mode label. Shows the
 // plan-file basename once a slug is resolved, or "" before that —
-// the empty case lets the banner render as just `◈ plan mode` while
+// the empty case lets the banner render as just `▸ plan mode` while
 // awaiting the first message, since the entry log right above the
 // cmdline already says "describe what you'd like planned in your
 // next message" and we'd otherwise repeat that hint on every redraw.
