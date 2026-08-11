@@ -1,32 +1,32 @@
 package themes
 
-// yottacodeDark is the polished house dark palette, grounded in the
-// public GrokNight token set and Cursor Dark's muted editor chrome. It
-// keeps the canvas at Grok/Cursor's shared #141414 black, uses soft
-// Nordic/Cursor foregrounds, and leans on blue/cyan/green accents instead
-// of a loud neon ramp so long model sessions stay calm.
+// yottacodeDark is the polished house dark palette, mapped directly
+// from xai-org/grok-build's GrokNight theme: a neutral #141414 main
+// background, #e1e1e1 primary text, the GrokNight grayscale ramp, and
+// TokyoNight accent colors. It keeps the TUI roles on source palette
+// constants instead of sampled/approximate screenshot colors.
 //
 // HasBackground=true pins both the in-app chrome and OSC 11 terminal
-// canvas to the same #141414 backdrop. That exact base is important: it
-// matches the documented GrokNight background and Cursor Dark's outer UI,
-// while the TUI's framed surfaces still get contrast from charcoal rules
-// and the syntax highlighter's darker code-block treatment.
+// canvas to GrokNight's BG_STORM (#141414). Grok Build also defines a
+// darker terminal bg (#0a0a0a) and highlight bg (#242424); yottacode's
+// single Background role uses the main TUI canvas color so the visible
+// surface matches the reference screenshot rather than pure black.
 func init() {
 	register(Palette{
 		Name:        "yottacode-dark",
-		Description: "yottacode dark — Grok/Cursor-inspired #141414 canvas with muted blue, cyan, and green accents",
+		Description: "yottacode dark — exact GrokNight #141414 canvas with #e1e1e1 text and TokyoNight accents",
 		Highlight:   "github-dark",
 
-		Accent:    pin("#7aa2f7"), // GrokNight blue for primary focus without Cursor's brighter button-blue pop
-		Success:   pin("#9ece6a"), // GrokNight green for approvals and completed state
-		Warning:   pin("#e0af68"), // GrokNight yellow/amber, close to Cursor Dark's warning tone
-		Error:     pin("#f7768e"), // GrokNight red/rose, softer than pure alert red
-		Content:   pin("#d8dee9"), // Cursor Dark editor foreground; softer than Grok's brighter #e1e1e1
-		Dim:       pin("#cccccc99"), // Cursor Dark secondary foreground for low-noise metadata
-		Rule:      pin("#3a3a3a"), // Cursor Dark border/input chrome charcoal, lifted for readable lines on #141414
-		Assistant: pin("#7dcfff"), // GrokNight cyan for model/assistant identity
-		Code:      pin("#e1e1e1"), // GrokNight foreground for code and preformatted text
-		Warm:      pin("#ff9e64"), // GrokNight orange for active/warm UI emphasis
+		Accent:    pin("#e0af68"), // GrokNight command/warning yellow for primary focus
+		Success:   pin("#9ece6a"), // GrokNight green
+		Warning:   pin("#e0af68"), // GrokNight yellow
+		Error:     pin("#f7768e"), // GrokNight red
+		Content:   pin("#e1e1e1"), // GrokNight primary text
+		Dim:       pin("#6c6c6c"), // GrokNight comment/muted gray
+		Rule:      pin("#323237"), // GrokNight prompt_border chrome
+		Assistant: pin("#bb9af7"), // GrokNight assistant/thinking magenta
+		Code:      pin("#c8c8c8"), // GrokNight secondary text for code/variables
+		Warm:      pin("#ff9e64"), // GrokNight path/orange
 
 		HasBackground: true,
 		Background:    pin("#141414"),

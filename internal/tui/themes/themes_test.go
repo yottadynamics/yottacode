@@ -243,22 +243,31 @@ func TestYottacodeDark_PaintsSlickEditorBackdrop(t *testing.T) {
 		t.Errorf("yottacode-dark.HasBackground = false, want true — the theme needs its model-editor backdrop")
 	}
 	if !colorEquals(p.Background.Dark, "#141414") || !colorEquals(p.Background.Light, "#141414") {
-		t.Errorf("yottacode-dark.Background != pinned Grok/Cursor base #141414")
+		t.Errorf("yottacode-dark.Background != exact GrokNight BG_STORM #141414")
 	}
-	if !colorEquals(p.Accent.Dark, "#7aa2f7") {
-		t.Errorf("yottacode-dark.Accent.Dark != GrokNight blue #7aa2f7")
+	if !colorEquals(p.Content.Dark, "#e1e1e1") {
+		t.Errorf("yottacode-dark.Content.Dark != exact GrokNight FG #e1e1e1")
 	}
-	if !colorEquals(p.Assistant.Dark, "#7dcfff") {
-		t.Errorf("yottacode-dark.Assistant.Dark != GrokNight cyan #7dcfff")
+	if !colorEquals(p.Dim.Dark, "#6c6c6c") {
+		t.Errorf("yottacode-dark.Dim.Dark != exact GrokNight COMMENT #6c6c6c")
+	}
+	if !colorEquals(p.Rule.Dark, "#323237") {
+		t.Errorf("yottacode-dark.Rule.Dark != exact GrokNight prompt_border #323237")
+	}
+	if !colorEquals(p.Accent.Dark, "#e0af68") {
+		t.Errorf("yottacode-dark.Accent.Dark != exact GrokNight YELLOW #e0af68")
+	}
+	if !colorEquals(p.Assistant.Dark, "#bb9af7") {
+		t.Errorf("yottacode-dark.Assistant.Dark != exact GrokNight MAGENTA #bb9af7")
 	}
 	if !colorEquals(p.Success.Dark, "#9ece6a") {
-		t.Errorf("yottacode-dark.Success.Dark != GrokNight green #9ece6a")
+		t.Errorf("yottacode-dark.Success.Dark != exact GrokNight GREEN #9ece6a")
 	}
-	if !colorEquals(p.Content.Dark, "#d8dee9") {
-		t.Errorf("yottacode-dark.Content.Dark != Cursor Dark editor foreground #d8dee9")
+	if !colorEquals(p.Error.Dark, "#f7768e") {
+		t.Errorf("yottacode-dark.Error.Dark != exact GrokNight RED #f7768e")
 	}
-	if !colorEquals(p.Rule.Dark, "#3a3a3a") {
-		t.Errorf("yottacode-dark.Rule.Dark != lifted readable border charcoal #3a3a3a")
+	if !colorEquals(p.Warm.Dark, "#ff9e64") {
+		t.Errorf("yottacode-dark.Warm.Dark != exact GrokNight ORANGE #ff9e64")
 	}
 }
 
