@@ -39,12 +39,20 @@ func (m Model) popupWidth() int {
 // already self-border via renderLabeledBox are NOT passed through this —
 // they're already a complete framed box; wrapping them again would read
 // as "a modal floating on a modal."
-func popupBox(body string) string {
-	box := lipgloss.NewStyle().
+//
+// An optional width argument pins the box to a fixed cell width so the
+// popup stays stable as content changes (e.g. scrolling /usage past
+// lines of varying length). When omitted, lipgloss auto-sizes to the
+// content's natural width — fine for static one-screen popups.
+func popupBox(body string, width ...int) string {
+	style := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(colorBrand).
-		Padding(0, 1).
-		Render(body)
+		Padding(0, 1)
+	if len(width) > 0 && width[0] > 0 {
+		style = style.Width(width[0])
+	}
+	box := style.Render(body)
 	return addPopupCloseGlyph(box)
 }
 

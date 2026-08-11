@@ -3055,15 +3055,15 @@ func (m Model) activePopupBody() (box string, ok bool) {
 	case m.loopListOpen && m.activeLoopCount() > 0:
 		return popupBox(m.renderLoopListPanel()), true
 	case m.usageOpen:
-		return popupBox(m.windowedUsagePanel()), true
+		return popupBox(m.windowedUsagePanel(), m.popupWidth()), true
 	case m.inspectOpen:
-		return popupBox(m.windowedInspectPanel()), true
+		return popupBox(m.windowedInspectPanel(), m.popupWidth()), true
 	case m.experimentalOpen:
 		return popupBox(m.experimentalPanel), true
 	case m.helpOpen:
-		return popupBox(m.helpPanel), true
+		return popupBox(m.helpPanel, m.popupWidth()), true
 	case m.contextReportOpen:
-		return popupBox(m.contextReportBody), true
+		return popupBox(m.contextReportBody, m.popupWidth()), true
 	case m.permissionsOpen:
 		return popupBox(renderPermissionsOverlay(m)), true
 	case m.modelPickerOpen && m.modelPicker != nil:

@@ -893,6 +893,86 @@ func TestRepeatedToolCallRows_NoRepeats(t *testing.T) {
 	}
 }
 
+// TestRepeatedToolCallRows_SkipsVerificationLoop confirms that the same
+// read-only tool called with identical args is NOT flagged as a repeat
+// when a world-mutating tool ran in between — the canonical pattern is
+// run_tests → edit_file → run_tests, where both run_tests calls are
+// legitimate verification, not idle spinning.
+func TestRepeatedToolCallRows_SkipsVerificationLoop(t *testing.T) {
+	s := &session.Session{
+		Messages: []adapter.Message{
+			{Role: adapter.RoleAssistant, ToolCalls: []adapter.ToolCall{
+				{Name: "run_tests", ArgsJSON: `{"command":"go test ./..."}`},
+			}},
+			{Role: adapter.RoleAssistant, ToolCalls: []adapter.ToolCall{
+				{Name: "edit_file", ArgsJSON: `{"path":"a.go","old_string":"x","new_string":"y"}`},
+			}},
+			{Role: adapter.RoleAssistant, ToolCalls: []adapter.ToolCall{
+				{Name: "run_tests", ArgsJSON: `{"command":"go test ./..."}`},
+			}},
+			{Role: adapter.RoleAssistant, ToolCalls: []adapter.ToolCall{
+				{Name: "edit_file", ArgsJSON: `{"path":"b.go","old_string":"a","new_string":"b"}`},
+			}},
+			{Role: adapter.RoleAssistant, ToolCalls: []adapter.ToolCall{
+				{Name: "run_tests", ArgsJSON: `{"command":"go test ./..."}`},
+			}},
+			{Role: adapter.RoleAssistant, ToolCalls: []adapter.ToolCall{
+				{Name: "lsp_changed_files_diagnostics", ArgsJSON: `{"max_files":20}`},
+			}},
+			{Role: adapter.RoleAssistant, ToolCalls: []adapter.ToolCall{
+				{Name: "edit_file", ArgsJSON: `{"path":"c.go","old_string":"p","new_string":"q"}`},
+			}},
+			{Role: adapter.RoleAssistant, ToolCalls: []adapter.ToolCall{
+				{Name: "lsp_changed_files_diagnostics", ArgsJSON: `{"max_files":20}`},
+			}},
+		},
+	}
+	rows := repeatedToolCallRows(s)
+	if len(rows) != 0 {
+		t.Errorf("verification-loop calls should not be flagged as repeats; got %v", rows)
+	}
+}
+
+// TestRepeatedToolCallRows_MixedIdleAndVerification ensures that idle
+// duplicates (no mutation in between) are still caught even when the
+// session also contains verification-loop calls that should be skipped.
+func TestRepeatedToolCallRows_MixedIdleAndVerification(t *testing.T) {
+	s := &session.Session{
+		Messages: []adapter.Message{
+			// Idle duplicate: git_branch_status called twice with no mutation.
+			{Role: adapter.RoleAssistant, ToolCalls: []adapter.ToolCall{
+				{Name: "git_branch_status", ArgsJSON: `{}`},
+			}},
+			{Role: adapter.RoleAssistant, ToolCalls: []adapter.ToolCall{
+				{Name: "git_branch_status", ArgsJSON: `{}`},
+			}},
+			// Verification loop: run_tests with edit_file in between.
+			{Role: adapter.RoleAssistant, ToolCalls: []adapter.ToolCall{
+				{Name: "run_tests", ArgsJSON: `{"command":"go test ./..."}`},
+			}},
+			{Role: adapter.RoleAssistant, ToolCalls: []adapter.ToolCall{
+				{Name: "edit_file", ArgsJSON: `{"path":"a.go","old_string":"x","new_string":"y"}`},
+			}},
+			{Role: adapter.RoleAssistant, ToolCalls: []adapter.ToolCall{
+				{Name: "run_tests", ArgsJSON: `{"command":"go test ./..."}`},
+			}},
+		},
+	}
+	rows := repeatedToolCallRows(s)
+	if len(rows) != 1 {
+		t.Fatalf("expected exactly one repeated-call group (git_branch_status); got %v", rows)
+	}
+	if !strings.Contains(rows[0], "git_branch_status") {
+		t.Errorf("expected git_branch_status flagged; got %q", rows[0])
+	}
+	if !strings.Contains(rows[0], "× 2") {
+		t.Errorf("expected count 2; got %q", rows[0])
+	}
+	if strings.Contains(rows[0], "run_tests") {
+		t.Errorf("run_tests should not be flagged (verification loop); got %q", rows[0])
+	}
+}
+
 // TestRepeatedToolFailureRows_CountsGuardMarker is a regression covering
 // the free win: agent/loop.go's applyRepeatedToolFailureGuard already
 // injects agent.RepeatedToolFailureMarker into a tool result's persisted
@@ -972,6 +1052,27 @@ func TestRenderWasteEstimate_Empty(t *testing.T) {
 	}
 	if got := renderWasteEstimate(s); got != "" {
 		t.Errorf("expected empty string with nothing wasted; got %q", got)
+	}
+}
+
+// TestRenderWasteEstimate_SkipsVerificationLoop confirms that re-running
+// the same tool after a mutation (the edit→test loop) does not accumulate
+// waste tokens — the second call is a legitimate verification, not idle
+// spinning.
+func TestRenderWasteEstimate_SkipsVerificationLoop(t *testing.T) {
+	testResult := strings.Repeat("t", 800) // ~200 tokens per result
+	s := &session.Session{
+		Messages: []adapter.Message{
+			{Role: adapter.RoleAssistant, ToolCalls: []adapter.ToolCall{{ID: "c1", Name: "run_tests", ArgsJSON: `{"command":"go test ./..."}`}}},
+			{Role: adapter.RoleTool, ToolCallID: "c1", Content: testResult},
+			{Role: adapter.RoleAssistant, ToolCalls: []adapter.ToolCall{{ID: "c2", Name: "edit_file", ArgsJSON: `{"path":"a.go"}`}}},
+			{Role: adapter.RoleTool, ToolCallID: "c2", Content: "ok"},
+			{Role: adapter.RoleAssistant, ToolCalls: []adapter.ToolCall{{ID: "c3", Name: "run_tests", ArgsJSON: `{"command":"go test ./..."}`}}},
+			{Role: adapter.RoleTool, ToolCallID: "c3", Content: testResult},
+		},
+	}
+	if got := renderWasteEstimate(s); got != "" {
+		t.Errorf("verification-loop calls should produce zero waste; got %q", got)
 	}
 }
 
