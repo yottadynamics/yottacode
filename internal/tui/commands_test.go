@@ -128,6 +128,42 @@ func TestSlash_HelpListsAllCommands(t *testing.T) {
 	}
 }
 
+// TestSlash_HelpGroupBoundariesMatchRegistry is a regression test for a
+// near-miss: renderHelpPanel partitions allSlash into named groups with
+// hardcoded slice index literals (allSlash[27:39] etc., see the calls in
+// this file's renderHelpPanel). Inserting or removing any command before
+// the end of the registry silently shifts every later boundary — the
+// compiler can't catch it, since the ranges are just integers, so a
+// command quietly renders under the wrong group heading. /yolo is the
+// registry's sole "Mode" entry and /help + /quit are "Meta" — if the
+// boundaries drift, one of them lands in the wrong group's text region.
+func TestSlash_HelpGroupBoundariesMatchRegistry(t *testing.T) {
+	m, _ := typeAndEnter(t, newTestModel(t), "/help")
+	content := m.helpPanel
+
+	modeIdx := strings.Index(content, "Mode")
+	metaIdx := strings.Index(content, "Meta")
+	if modeIdx == -1 || metaIdx == -1 {
+		t.Fatalf("expected Mode and Meta group headers in help output:\n%s", content)
+	}
+	if metaIdx < modeIdx {
+		t.Fatalf("expected Meta to render after Mode; got Mode=%d Meta=%d", modeIdx, metaIdx)
+	}
+	if yoloIdx := strings.Index(content, "/yolo"); yoloIdx < modeIdx || yoloIdx > metaIdx {
+		t.Errorf("/yolo must render inside the Mode group (between its header at %d and Meta's at %d); got %d", modeIdx, metaIdx, yoloIdx)
+	}
+	// /quit only ever appears in Meta. /help also appears once in the
+	// "Common" quick-reference list above every group (by design — see
+	// renderHelpCommonSection) — its LAST occurrence is the one that
+	// must land inside Meta.
+	if idx := strings.Index(content, "/quit"); idx < metaIdx {
+		t.Errorf("/quit must render inside the Meta group (after its header at %d); got %d", metaIdx, idx)
+	}
+	if idx := strings.LastIndex(content, "/help"); idx < metaIdx {
+		t.Errorf("/help's grouped entry must render inside the Meta group (after its header at %d); got %d", metaIdx, idx)
+	}
+}
+
 // /help renders as a transient overlay so the dense command catalog stays out
 // of transcript history while remaining visible above the cmdline.
 func TestSlash_HelpOpensOverlay(t *testing.T) {
