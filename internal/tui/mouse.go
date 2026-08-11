@@ -20,6 +20,13 @@ func (m Model) popupOpen() bool {
 	return m.anyOverlayOpen() || m.awaitingApproval || m.awaitingPathTrust || m.loopExitConfirmOpen
 }
 
+// interactiveMouseOpen reports whether yottacode currently owns an explicit
+// interactive surface that benefits from mouse reporting. Normal conversation
+// mouse stays terminal-native so right-click menus, paste, and selection work.
+func (m Model) interactiveMouseOpen() bool {
+	return m.popupOpen() || m.paletteOpen || m.filePaletteOpen
+}
+
 // dismissStaticPopup closes whichever any-key-dismiss static panel is
 // open — cheatsheet, bare-/loop status, usage, experimental, help,
 // context-report — mirroring the identical dismiss logic the KeyPressMsg
@@ -595,9 +602,6 @@ func (m Model) handleApprovalModalClick(msg tea.MouseClickMsg) (Model, tea.Cmd) 
 		box = renderApprovalModal(m, hits)
 	}
 	ox, oy := m.popupOrigin(box)
-	if out, cmd, closed := m.handlePopupCloseClick(box, msg); closed {
-		return out, cmd
-	}
 	row, col, ok := bodyPoint(box, ox, oy, msg.X, msg.Y)
 	if !ok {
 		return m, nil
@@ -651,6 +655,49 @@ func (m Model) handleEmbedSetupClick(msg tea.MouseClickMsg) (Model, tea.Cmd) {
 	return m.updateEmbedSetup(tea.KeyPressMsg{Code: tea.KeyEnter})
 }
 
+// handleSlashPaletteClick turns a main slash-palette row click into the same
+// highlighted-row Enter path as the keyboard, so args-required commands fill
+// their prefix and no-args commands run immediately.
+func (m Model) handleSlashPaletteClick(msg tea.MouseClickMsg) (Model, tea.Cmd) {
+	if !m.paletteOpen || len(m.paletteFiltered) == 0 {
+		return m, nil
+	}
+	row, ok := m.inlinePaletteRow(msg.Y, len(m.paletteFiltered), slashPaletteVisible, m.paletteOffset)
+	if !ok {
+		return m, nil
+	}
+	m.paletteIndex = m.paletteOffset + row
+	chosen := m.paletteFiltered[m.paletteIndex]
+	if chosen.Args != "" {
+		m.textInput.SetValue("/" + chosen.Name + " ")
+		m.textInput.CursorEnd()
+		m.paletteOpen = false
+		m.paletteIndex = 0
+		m.paletteOffset = 0
+		return m, nil
+	}
+	m.textInput.SetValue("")
+	m.paletteOpen = false
+	m.paletteIndex = 0
+	m.paletteOffset = 0
+	return m.runSlash("/" + chosen.Name)
+}
+
+// handleFilePaletteClick turns an @file palette row click into the same attach
+// path as Enter/Tab, preserving directory expansion behavior.
+func (m Model) handleFilePaletteClick(msg tea.MouseClickMsg) (Model, tea.Cmd) {
+	if !m.filePaletteOpen || len(m.filePaletteFiltered) == 0 {
+		return m, nil
+	}
+	row, ok := m.inlinePaletteRow(msg.Y, len(m.filePaletteFiltered), filePaletteVisible, m.filePaletteOffset)
+	if !ok {
+		return m, nil
+	}
+	m.filePaletteIndex = m.filePaletteOffset + row
+	out, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	return out.(Model), cmd
+}
+
 // handleMouseClick resolves a mouse-down event to whichever surface is
 // currently showing it: a decision modal (dispatched to its own click
 // handler), a picker popup (dispatched to that picker's own click
@@ -659,19 +706,25 @@ func (m Model) handleEmbedSetupClick(msg tea.MouseClickMsg) (Model, tea.Cmd) {
 // cmdline click-to-cursor there; until then, a footer click just clears
 // any stray selection).
 func (m Model) handleMouseClick(msg tea.MouseClickMsg) (Model, tea.Cmd) {
+	if box, ok := m.activePopupBody(); ok {
+		if out, cmd, closed := m.handlePopupCloseClick(box, msg); closed {
+			return out, cmd
+		}
+	}
 	if m.awaitingPathTrust {
 		return m.handlePathTrustModalClick(msg)
 	}
 	if m.awaitingApproval {
 		return m.handleApprovalModalClick(msg)
 	}
+	if m.paletteOpen {
+		return m.handleSlashPaletteClick(msg)
+	}
+	if m.filePaletteOpen {
+		return m.handleFilePaletteClick(msg)
+	}
 	if m.loopExitConfirmOpen {
 		return m.handleLoopExitConfirmClick(msg)
-	}
-	if box, ok := m.activePopupBody(); ok {
-		if out, cmd, closed := m.handlePopupCloseClick(box, msg); closed {
-			return out, cmd
-		}
 	}
 	if m.cheatsheetOpen || m.loopListOpen || m.usageOpen || m.experimentalOpen || m.helpOpen || m.contextReportOpen {
 		return m.dismissStaticPopup(), nil
@@ -754,14 +807,315 @@ func (m Model) handleMouseClick(msg tea.MouseClickMsg) (Model, tea.Cmd) {
 // drag can't start under one) clears the selection instead of
 // continuing to extend it invisibly behind the popup.
 func (m Model) handleMouseMotion(msg tea.MouseMotionMsg) (Model, tea.Cmd) {
+	if m.popupOpen() || m.paletteOpen || m.filePaletteOpen {
+		return m.handleMouseHover(msg)
+	}
 	if !m.transcriptSelecting {
 		return m, nil
 	}
-	if m.popupOpen() {
-		m.clearTranscriptSelection()
-		return m, nil
-	}
 	return m.extendTranscriptSelection(msg)
+}
+
+// handleMouseHover moves the active selector for scoped interactive surfaces.
+// It only runs while yottacode has intentionally enabled all-motion reporting
+// for a popup or inline palette; ordinary conversation hover remains native to
+// the terminal so context menus and copy/paste are not intercepted.
+func (m Model) handleMouseHover(msg tea.MouseMotionMsg) (Model, tea.Cmd) {
+	if m.transcriptSelecting {
+		m.clearTranscriptSelection()
+	}
+	if m.paletteOpen {
+		return m.handleSlashPaletteHover(msg), nil
+	}
+	if m.filePaletteOpen {
+		return m.handleFilePaletteHover(msg), nil
+	}
+	return m.handlePopupHover(msg), nil
+}
+
+// handleSlashPaletteHover maps a mouse position over the inline slash palette
+// to the same highlighted row the Up/Down keys would select.
+func (m Model) handleSlashPaletteHover(msg tea.MouseMotionMsg) Model {
+	if !m.paletteOpen || len(m.paletteFiltered) == 0 {
+		return m
+	}
+	row, ok := m.inlinePaletteRow(msg.Y, len(m.paletteFiltered), slashPaletteVisible, m.paletteOffset)
+	if !ok {
+		return m
+	}
+	m.paletteIndex = m.paletteOffset + row
+	return m
+}
+
+// handleFilePaletteHover maps a mouse position over the inline @file palette
+// to the same highlighted row the Up/Down keys would select.
+func (m Model) handleFilePaletteHover(msg tea.MouseMotionMsg) Model {
+	if !m.filePaletteOpen || len(m.filePaletteFiltered) == 0 {
+		return m
+	}
+	row, ok := m.inlinePaletteRow(msg.Y, len(m.filePaletteFiltered), filePaletteVisible, m.filePaletteOffset)
+	if !ok {
+		return m
+	}
+	m.filePaletteIndex = m.filePaletteOffset + row
+	return m
+}
+
+// inlinePaletteRow resolves a screen row to a visible row inside the palette
+// stacked above the input frame. The rendered palettes have a top border, a
+// title, a divider, and optional overflow hint rows before selectable rows.
+func (m Model) inlinePaletteRow(screenY, total, visible, offset int) (int, bool) {
+	paletteTop := m.inlinePaletteTop()
+	if total > visible && offset > 0 {
+		paletteTop++
+	}
+	row := screenY - paletteTop - 3 // top border, title, and divider are non-selectable
+	visibleRows := min(total, visible)
+	if row < 0 || row >= visibleRows {
+		return 0, false
+	}
+	return row, true
+}
+
+// inlinePaletteTop returns the screen row where the slash/file palette's top
+// border is rendered. The hero layout is top-anchored above the first message;
+// conversation layout palettes live at the top of the footer.
+func (m Model) inlinePaletteTop() int {
+	if !m.enteredConversation {
+		box := renderStartupBox(m.version, m.commit, m.dirty, m.modelName, m.cwd, m.sess.ID, m.branch, m.memorySummary, m.providerProfile, m.startupTip(), m.width)
+		return 1 + lipgloss.Height(box) + 1
+	}
+	paletteTop := m.height - lipgloss.Height(m.renderFooter())
+	if m.turnActive {
+		// The live-turn footer owns a separator, two preview rows, and a
+		// spacer before aboveInputRows renders palette content.
+		paletteTop += 4
+	} else if preview := m.renderReasoningPreview(); preview != "" {
+		paletteTop += lipgloss.Height(preview) + 1
+	}
+	return paletteTop
+}
+
+// handlePopupHover dispatches hover movement to the open modal or picker using
+// the same hit regions as click handling, but only moves cursors; it never
+// synthesizes Enter or commits an action.
+func (m Model) handlePopupHover(msg tea.MouseMotionMsg) Model {
+	if m.awaitingPathTrust || m.awaitingApproval {
+		return m
+	}
+	if m.loopExitConfirmOpen {
+		hits := &pickerHits{}
+		box := popupBox(renderLoopExitConfirm(m, hits))
+		if _, index, _, ok := m.resolvePopupHover(box, hits, msg.X, msg.Y); ok {
+			m.loopExitConfirmCursor = index
+		}
+		return m
+	}
+	if m.modelPickerOpen && m.modelPicker != nil {
+		hits := &pickerHits{}
+		box := popupBox(renderModelPicker(m.modelPicker, m.popupWidth(), hits))
+		if kind, index, _, ok := m.resolvePopupHover(box, hits, msg.X, msg.Y); ok && kind == hitItem {
+			m.modelPicker.cursor = index
+			m.modelPicker.clampCursorToWindow()
+		}
+		return m
+	}
+	if m.checkpointsPickerOpen && m.checkpointsPicker != nil {
+		hits := &pickerHits{}
+		box := popupBox(renderCheckpointsPicker(m.checkpointsPicker, m.popupWidth(), hits))
+		if _, index, _, ok := m.resolvePopupHover(box, hits, msg.X, msg.Y); ok {
+			if m.checkpointsPicker.picked != nil {
+				m.checkpointsPicker.actionIdx = index
+			} else {
+				m.checkpointsPicker.cursor = index
+			}
+		}
+		return m
+	}
+	if m.skillsPickerOpen && m.skillsPicker != nil {
+		hits := &pickerHits{}
+		box := popupBox(renderSkillsPicker(m.skillsPicker, m.popupWidth(), hits))
+		if kind, index, _, ok := m.resolvePopupHover(box, hits, msg.X, msg.Y); ok {
+			switch kind {
+			case hitTab:
+				if m.skillsPicker.busy == "" && !m.skillsPicker.filterMode {
+					m.skillsPicker.tab = skillsCatalogTab(index)
+					m.skillsPicker.cursor = 0
+					m.skillsPicker.status = ""
+				}
+			case hitItem:
+				m.skillsPicker.cursor = index
+			}
+		}
+		return m
+	}
+	if m.memoryPickerOpen && m.memoryPicker != nil {
+		hits := &pickerHits{}
+		box := popupBox(renderMemoryPicker(m.memoryPicker, m.popupWidth(), hits))
+		if _, index, _, ok := m.resolvePopupHover(box, hits, msg.X, msg.Y); ok {
+			if m.memoryPicker.mode == memoryBrowseMode {
+				m.memoryPicker.entryCursor = index
+			} else {
+				m.memoryPicker.cursor = index
+			}
+		}
+		return m
+	}
+	if m.codeMapPickerOpen && m.codeMapPicker != nil {
+		hits := &pickerHits{}
+		box := popupBox(renderCodeMapPicker(m.codeMapPicker, m.popupWidth(), hits))
+		if _, index, _, ok := m.resolvePopupHover(box, hits, msg.X, msg.Y); ok {
+			m.codeMapPicker.cursor = index
+		}
+		return m
+	}
+	if m.effortPickerOpen && m.effortPicker != nil {
+		hits := &pickerHits{}
+		box := popupBox(renderEffortPicker(m.effortPicker, hits))
+		if _, index, _, ok := m.resolvePopupHover(box, hits, msg.X, msg.Y); ok {
+			m.effortPicker.cursor = index
+		}
+		return m
+	}
+	if m.mcpPickerOpen && m.mcpPicker != nil {
+		hits := &pickerHits{}
+		box := popupBox(renderMCPPicker(m.mcpPicker, m.popupWidth(), hits))
+		if _, index, _, ok := m.resolvePopupHover(box, hits, msg.X, msg.Y); ok {
+			if m.mcpPicker.mode == mcpMenuMode {
+				m.mcpPicker.menuCursor = index
+			} else {
+				m.mcpPicker.listCursor = index
+			}
+		}
+		return m
+	}
+	if m.recallPickerOpen && m.recallPicker != nil {
+		hits := &pickerHits{}
+		box := popupBox(renderRecallPicker(m.recallPicker, m.popupWidth(), hits))
+		if _, index, _, ok := m.resolvePopupHover(box, hits, msg.X, msg.Y); ok {
+			m.recallPicker.cursor = index
+		}
+		return m
+	}
+	if m.routerPickerOpen && m.routerPicker != nil {
+		hits := &pickerHits{}
+		box := popupBox(renderRouterPicker(m.routerPicker, m.popupWidth(), hits))
+		if _, index, _, ok := m.resolvePopupHover(box, hits, msg.X, msg.Y); ok {
+			if m.routerPicker.selecting != "" {
+				m.routerPicker.modelCursor = index
+				m.routerPicker.clampWindow()
+			} else {
+				m.routerPicker.cursor = index
+			}
+		}
+		return m
+	}
+	if m.providerPickerOpen && m.providerPicker != nil {
+		hits := &pickerHits{}
+		box := popupBox(renderProviderPicker(m.providerPicker, m.popupWidth(), hits))
+		if _, index, _, ok := m.resolvePopupHover(box, hits, msg.X, msg.Y); ok {
+			switch m.providerPicker.mode {
+			case providerMenuMode:
+				m.providerPicker.menuCursor = index
+			case providerUsePickerMode, providerRemovePickerMode:
+				m.providerPicker.usePickerCursor = index
+			case providerAddKindMode:
+				m.providerPicker.addKindCursor = index
+			}
+		}
+		return m
+	}
+	if m.sandboxPickerOpen && m.sandboxPicker != nil {
+		hits := &pickerHits{}
+		box := popupBox(renderSandboxPicker(m.sandboxPicker, m.popupWidth(), hits))
+		if _, index, _, ok := m.resolvePopupHover(box, hits, msg.X, msg.Y); ok && sandboxMode(index) != m.sandboxPicker.cursor {
+			m.sandboxPicker.cursor = sandboxMode(index)
+			m.sandboxPicker.confirming = false
+		}
+		return m
+	}
+	if m.plansPickerOpen && m.plansPicker != nil {
+		hits := &pickerHits{}
+		box := popupBox(renderPlansPicker(m.plansPicker, m.popupWidth(), hits))
+		if _, index, _, ok := m.resolvePopupHover(box, hits, msg.X, msg.Y); ok {
+			m.plansPicker.cursor = index
+		}
+		return m
+	}
+	if m.skillsMenuOpen && m.skillsMenu != nil {
+		hits := &pickerHits{}
+		box := popupBox(renderSkillsMenu(m.skillsMenu, m.popupWidth(), hits))
+		if _, index, _, ok := m.resolvePopupHover(box, hits, msg.X, msg.Y); ok {
+			if m.skillsMenu.mode == skillsMenuUninstallPick {
+				m.skillsMenu.uninstallCursor = index
+			} else {
+				m.skillsMenu.cursor = index
+			}
+		}
+		return m
+	}
+	if m.sessionsPickerOpen && m.sessionsPicker != nil {
+		hits := &pickerHits{}
+		box := popupBox(renderSessionsPicker(m.sessionsPicker, m.popupWidth(), hits))
+		if _, index, _, ok := m.resolvePopupHover(box, hits, msg.X, msg.Y); ok {
+			switch m.sessionsPicker.mode {
+			case sessionsMenuMode:
+				m.sessionsPicker.menuCursor = index
+			case sessionsLoadListMode, sessionsRenameListMode, sessionsExportListMode:
+				m.sessionsPicker.listCursor = index
+			}
+		}
+		return m
+	}
+	if m.subagentsPickerOpen && m.subagentsPicker != nil {
+		hits := &pickerHits{}
+		box := popupBox(renderSubagentsPicker(m.subagentsPicker, m.popupWidth(), hits))
+		if _, index, _, ok := m.resolvePopupHover(box, hits, msg.X, msg.Y); ok {
+			m.subagentsPicker.cursor = index
+			m.subagentsPicker.status = ""
+		}
+		return m
+	}
+	if m.themePickerOpen && m.themePicker != nil {
+		hits := &pickerHits{}
+		box := popupBox(renderThemePicker(m.themePicker, m.popupWidth(), hits))
+		if kind, index, _, ok := m.resolvePopupHover(box, hits, msg.X, msg.Y); ok && (kind == hitItem || kind == hitTab) {
+			m.themePicker.cursor = index
+			m = applyHighlightedTheme(m)
+		}
+		return m
+	}
+	if m.permissionsOpen {
+		hits := &pickerHits{}
+		box := popupBox(renderPermissionsOverlay(m, hits))
+		if _, index, _, ok := m.resolvePopupHover(box, hits, msg.X, msg.Y); ok {
+			m.permissionsCursor = index
+		}
+		return m
+	}
+	if m.embedSetupOpen {
+		hits := &pickerHits{}
+		box := popupBox(m.renderEmbedSetup(hits))
+		if _, index, _, ok := m.resolvePopupHover(box, hits, msg.X, msg.Y); ok {
+			m.embedSetupCursor = index
+		}
+	}
+	return m
+}
+
+// resolvePopupHover converts a screen coordinate into a registered picker hit
+// for the already-rendered popup body.
+func (m Model) resolvePopupHover(box string, hits *pickerHits, x, y int) (hitKind, int, string, bool) {
+	ox, oy := m.popupOrigin(box)
+	row, col, ok := bodyPoint(box, ox, oy, x, y)
+	if !ok {
+		return 0, 0, "", false
+	}
+	kind, index, key, ok := hits.resolve(row, col)
+	if !ok || kind == hitHotkey {
+		return 0, 0, "", false
+	}
+	return kind, index, key, true
 }
 
 // handleMouseRelease finalizes an in-progress transcript selection,
@@ -785,7 +1139,7 @@ func (m Model) handleMouseRelease(msg tea.MouseReleaseMsg) (Model, tea.Cmd) {
 // transcript it scrolls the owned viewport. Popups, focused dock, and the launch
 // hero keep wheel input inert because those surfaces own their own navigation.
 func (m Model) handleMouseWheel(msg tea.MouseWheelMsg) (Model, tea.Cmd) {
-	if m.popupOpen() || m.dockFocused || !m.enteredConversation {
+	if m.popupOpen() || m.paletteOpen || m.filePaletteOpen || m.dockFocused || !m.enteredConversation {
 		return m, nil
 	}
 	footerHeight := lipgloss.Height(m.renderFooter())

@@ -2906,12 +2906,13 @@ func (m Model) skillsBusy() bool {
 func (m Model) View() tea.View {
 	v := tea.NewView(m.viewString())
 	v.AltScreen = true
-	// Alt-screen has no native terminal scrollback, so wheel input must be
-	// captured once the transcript exists. Keep mouse native on the launch hero
-	// so pre-chat paste/selection works exactly like the shell, but enable cell
-	// motion for the conversation and popups; cell motion includes click, release,
-	// wheel, and drag events without the extra hover spam of all-motion mode.
-	if m.enteredConversation || m.popupOpen() {
+	// Capture cell-motion during normal conversation so click-drag transcript
+	// selection can auto-copy on release. Escalate to all-motion only while a
+	// picker or decision surface is open; that scoped capture lets hover move
+	// selectors without adding idle hover spam to the transcript.
+	if m.interactiveMouseOpen() {
+		v.MouseMode = tea.MouseModeAllMotion
+	} else if m.enteredConversation {
 		v.MouseMode = tea.MouseModeCellMotion
 	}
 	if m.originalTerminalBackground != nil {
