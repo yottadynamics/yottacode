@@ -12,6 +12,34 @@ import (
 	"github.com/yottadynamics/yottacode/internal/config"
 )
 
+func TestMouseHover_MovesModelPickerSelectorWithoutSelecting(t *testing.T) {
+	m := newTestModel(t)
+	m, _ = typeAndEnter(t, m, "/model")
+	m, _ = applyMsg(m, modelPickerLoadedMsg{
+		entries: []catalog.Model{
+			{ID: "a", Provider: "session"},
+			{ID: "b", Provider: "session"},
+			{ID: "c", Provider: "session"},
+		},
+	})
+	m.modelPicker.cursor = 0
+	x, y, ok := screenPointForItem(m, 2)
+	if !ok {
+		t.Fatalf("could not locate a screen point for model-picker row 2")
+	}
+
+	m, cmd := applyMsg(m, tea.MouseMotionMsg{X: x, Y: y})
+	if cmd != nil {
+		t.Fatalf("hover should not trigger a command, got %T", cmd)
+	}
+	if got := m.modelPicker.cursor; got != 2 {
+		t.Fatalf("model picker cursor after hover = %d, want 2", got)
+	}
+	if !m.modelPickerOpen {
+		t.Fatal("hover should only move the selector, not select and close the picker")
+	}
+}
+
 // screenPointForItem re-renders the open model picker with a fresh hit
 // accumulator (mirroring handleModelPickerClick's own approach) and
 // returns an absolute screen point that lands on the given item index —

@@ -15,19 +15,19 @@ func TestView_LeavesMouseNativeBeforeConversationStarts(t *testing.T) {
 	}
 }
 
-func TestView_EnablesMouseForConversationWheel(t *testing.T) {
+func TestView_EnablesConversationSelectionMouse(t *testing.T) {
 	m := newTestModel(t)
 	m.enteredConversation = true
 	if got := m.View().MouseMode; got != tea.MouseModeCellMotion {
-		t.Errorf("View().MouseMode = %v, want MouseModeCellMotion so wheel scrolling reaches the owned transcript", got)
+		t.Errorf("View().MouseMode = %v, want MouseModeCellMotion so drag selection can auto-copy", got)
 	}
 }
 
-func TestView_EnablesMouseForPopups(t *testing.T) {
+func TestView_EnablesAllMotionForInteractiveSurfaces(t *testing.T) {
 	m := newTestModel(t)
 	m.cheatsheetOpen = true
-	if got := m.View().MouseMode; got != tea.MouseModeCellMotion {
-		t.Errorf("View().MouseMode = %v, want MouseModeCellMotion", got)
+	if got := m.View().MouseMode; got != tea.MouseModeAllMotion {
+		t.Errorf("View().MouseMode = %v, want MouseModeAllMotion", got)
 	}
 }
 
@@ -50,10 +50,12 @@ func TestMouseWheel_ScrollsTranscript(t *testing.T) {
 	if !m.transcriptViewport.AtBottom() {
 		t.Fatalf("test setup: expected the viewport to start at the bottom")
 	}
+	m.paletteOpen = true
+	m.paletteFiltered = m.filterPaletteAll("/")
 
 	m, _ = applyMsg(m, tea.MouseWheelMsg{X: 2, Y: 0, Button: tea.MouseWheelUp})
-	if m.transcriptViewport.AtBottom() {
-		t.Error("scrolling the wheel up over the transcript should move the transcript viewport away from the bottom")
+	if !m.transcriptViewport.AtBottom() {
+		t.Error("scrolling the wheel should stay inert while the slash palette owns mouse input")
 	}
 
 	m, _ = applyMsg(m, tea.MouseWheelMsg{X: 2, Y: 0, Button: tea.MouseWheelDown})

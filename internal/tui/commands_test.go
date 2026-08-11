@@ -1396,6 +1396,51 @@ func TestPalette_TabCompletes(t *testing.T) {
 	}
 }
 
+func TestPalette_MouseHoverMovesIndex(t *testing.T) {
+	m := newTestModel(t)
+	m, _ = applyMsg(m, tea.WindowSizeMsg{Width: 80, Height: 24})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Text: "/"})
+	if !m.paletteOpen {
+		t.Fatalf("palette should be open after typing '/'")
+	}
+
+	// The inline palette starts immediately after the startup card on the hero.
+	// Its first selectable command row is below the top border, title, and
+	// divider rows.
+	paletteTop := m.inlinePaletteTop()
+	m, cmd := applyMsg(m, tea.MouseMotionMsg{X: 4, Y: paletteTop + 3})
+	if cmd != nil {
+		t.Fatalf("hover should not trigger a command, got %T", cmd)
+	}
+	if got := m.paletteIndex; got != 0 {
+		t.Fatalf("hover over first command row set paletteIndex = %d, want 0", got)
+	}
+
+	m, _ = applyMsg(m, tea.MouseMotionMsg{X: 4, Y: paletteTop + 5})
+	if got := m.paletteIndex; got != 2 {
+		t.Fatalf("hover over third command row set paletteIndex = %d, want 2", got)
+	}
+}
+
+func TestPalette_MouseClickRunsMainSlashCommand(t *testing.T) {
+	m := newTestModel(t)
+	m, _ = applyMsg(m, tea.WindowSizeMsg{Width: 80, Height: 24})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Text: "/"})
+	if !m.paletteOpen {
+		t.Fatalf("palette should be open after typing '/'")
+	}
+	target := 2 // /model is a visible no-args picker command near the top.
+
+	paletteTop := m.inlinePaletteTop()
+	m, _ = applyMsg(m, tea.MouseClickMsg{X: 4, Y: paletteTop + 3 + target})
+	if !m.modelPickerOpen || m.modelPicker == nil {
+		t.Fatalf("click should execute /model and open the model picker")
+	}
+	if m.paletteOpen {
+		t.Fatal("palette should close after click execution")
+	}
+}
+
 func TestPalette_DownArrowMovesIndex(t *testing.T) {
 	m := newTestModel(t)
 	m, _ = applyMsg(m, tea.KeyPressMsg{Text: "/"})
