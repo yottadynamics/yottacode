@@ -600,14 +600,78 @@ func TestRenderSubagentDetail_ShowsCompactionCount(t *testing.T) {
 	}
 }
 
+// TestRenderSubagentDetail_ToolsColumnAlignsAtThreeDigits is the regression
+// test for a real formatting bug: the tools-count field used a hardcoded
+// %2d, unlike every other column in the row (which derive their width from
+// the actual data). A dispatch/Explore-style subagent easily makes 100+
+// tool calls, which silently misaligned that row relative to its siblings.
+func TestRenderSubagentDetail_ToolsColumnAlignsAtThreeDigits(t *testing.T) {
+	// Token totals are deliberately close (not a 2.5x outlier either way)
+	// so neither row gets outlier-styled — this test is purely about
+	// column width, not outlier flagging (covered separately).
+	s := &session.Session{
+		SubagentTasks: []subagents.TaskRecord{
+			{
+				ID: "abc12345", AgentType: "Explore", Status: subagents.TaskCompleted, ToolCalls: 134,
+				Started: time.Now().Add(-time.Minute), Finished: time.Now(),
+				Usage: adapter.Usage{InputTokens: 100_000},
+			},
+			{
+				ID: "def67890", AgentType: "Plan", Status: subagents.TaskCompleted, ToolCalls: 3,
+				Started: time.Now().Add(-time.Minute), Finished: time.Now(),
+				Usage: adapter.Usage{InputTokens: 60_000},
+			},
+		},
+	}
+	got := renderSubagentDetail(s)
+	lines := strings.Split(strings.TrimRight(got, "\n"), "\n")
+	if len(lines) < 3 {
+		t.Fatalf("expected a header + 2 rows, got %d lines:\n%s", len(lines), got)
+	}
+	width := runeLen(lines[1])
+	for _, line := range lines[1:] {
+		if runeLen(line) != width {
+			t.Errorf("row width inconsistent: %q is %d runes, want %d (tools column must widen for the 3-digit count), in:\n%s", line, runeLen(line), width, got)
+		}
+	}
+}
+
 // TestCacheHitRate covers the derived cache-hit fraction: -1 (no row)
 // when there's no cache read activity, else CacheRead/(CacheRead+Input).
 func TestCacheHitRate(t *testing.T) {
 	if got := cacheHitRate(adapter.Usage{InputTokens: 1_000}); got != -1 {
-		t.Errorf("cacheHitRate with no cache reads = %v, want -1", got)
+		t.Errorf("cacheHitRate with no cache activity = %v, want -1", got)
 	}
 	if got, want := cacheHitRate(adapter.Usage{InputTokens: 1_000, CacheReadTokens: 9_000}), 0.9; got != want {
 		t.Errorf("cacheHitRate = %v, want %v", got, want)
+	}
+}
+
+// TestCacheHitRate_BrokenCacheShowsZeroNotHidden is the regression test for
+// a real bug: a session where the cache prefix just broke has
+// CacheReadTokens=0 but real CacheCreationTokens (everything got re-cached
+// fresh instead of hitting) — the old guard treated CacheReadTokens<=0 as
+// "no cache activity" and hid the row entirely, silencing exactly the
+// signal this feature exists to surface. Caching IS in play here
+// (CacheCreationTokens>0), so this must report 0%, not -1.
+func TestCacheHitRate_BrokenCacheShowsZeroNotHidden(t *testing.T) {
+	got := cacheHitRate(adapter.Usage{InputTokens: 100, CacheCreationTokens: 9_900})
+	if got != 0 {
+		t.Errorf("cacheHitRate with broken cache (reads=0, writes>0) = %v, want 0 (shown, not hidden)", got)
+	}
+}
+
+// TestCacheHitRate_IncludesCacheCreationInDenominator is the regression
+// test for a real accuracy bug: the denominator omitted CacheCreationTokens,
+// so a turn with CacheReadTokens=100, InputTokens=100, and
+// CacheCreationTokens=9,800 (10,000 real prompt tokens, only 1% actually
+// cache-served) reported a wildly inflated 50% hit rate instead of ~1% —
+// inconsistent with totalTokensFor, which always includes
+// CacheCreationTokens in the prompt-token basis.
+func TestCacheHitRate_IncludesCacheCreationInDenominator(t *testing.T) {
+	got := cacheHitRate(adapter.Usage{InputTokens: 100, CacheReadTokens: 100, CacheCreationTokens: 9_800})
+	if want := 0.01; got != want {
+		t.Errorf("cacheHitRate = %v, want %v (100 / 10,000 total prompt tokens)", got, want)
 	}
 }
 
@@ -795,6 +859,31 @@ func TestWindowedUsagePanel_NoScrollWhenFits(t *testing.T) {
 	m.usagePanel = "line1\nline2\nline3"
 	if got := m.windowedUsagePanel(); got != m.usagePanel {
 		t.Errorf("expected panel unchanged when it fits; got %q", got)
+	}
+}
+
+// TestWindowedUsagePanel_ExactFitNeedsNoHint is the regression test for a
+// real bug: the visible-lines budget always reserved one line for the
+// scroll hint even when content would fit the popup with zero truncation,
+// so a panel exactly (height-2) lines long got needlessly cut by one line
+// and shown with a hint the user then had to scroll past to see content
+// that should have been visible on open.
+func TestWindowedUsagePanel_ExactFitNeedsNoHint(t *testing.T) {
+	m := newTestModel(t)
+	m.height = 12 // border-only budget = 10; content is exactly 10 lines
+	lines := make([]string, 10)
+	for i := range lines {
+		lines[i] = fmt.Sprintf("line%d", i)
+	}
+	m.usagePanel = strings.Join(lines, "\n")
+	m.usageScrollOffset = 0
+
+	got := m.windowedUsagePanel()
+	if got != m.usagePanel {
+		t.Errorf("content exactly fitting the border-only budget should render unchanged with no hint; got:\n%s", got)
+	}
+	if m.usageMaxScrollOffset() != 0 {
+		t.Errorf("usageMaxScrollOffset() = %d, want 0 — nothing to scroll to when content already fits", m.usageMaxScrollOffset())
 	}
 }
 
