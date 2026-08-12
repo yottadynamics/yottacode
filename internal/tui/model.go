@@ -3112,7 +3112,7 @@ func (m Model) activePopupBody() (box string, ok bool) {
 	case m.experimentalOpen:
 		return popupBox(m.experimentalPanel), true
 	case m.helpOpen:
-		return popupBox(m.windowedHelpPanel(), m.popupWidth()), true
+		return popupBox(m.windowedHelpPanel(), m.helpPopupWidth()), true
 	case m.contextReportOpen:
 		return popupBox(m.contextReportBody, m.popupWidth()), true
 	case m.permissionsOpen:

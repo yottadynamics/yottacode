@@ -68,14 +68,17 @@ func popupCloseHit(box string, originX, originY, screenX, screenY int) bool {
 // handleScrollableStaticPopupClick routes mouse clicks inside scrollable static
 // panels. The popup stays open; clicks on the hint row act like its ↑/↓ labels.
 func (m Model) handleScrollableStaticPopupClick(box string, msg tea.MouseClickMsg) (Model, bool) {
-	if m.usageOpen && m.usageMaxScrollOffset() == 0 {
-		return m, false
-	}
-	if m.inspectOpen && m.inspectMaxScrollOffset() == 0 {
-		return m, false
-	}
-	if m.helpOpen && m.helpMaxScrollOffset() == 0 {
-		return m, false
+	if m.helpOpen {
+		if m.helpMaxScrollOffset() == 0 {
+			return m, true
+		}
+	} else {
+		if m.usageOpen && m.usageMaxScrollOffset() == 0 {
+			return m, false
+		}
+		if m.inspectOpen && m.inspectMaxScrollOffset() == 0 {
+			return m, false
+		}
 	}
 	if !m.usageOpen && !m.inspectOpen && !m.helpOpen {
 		return m, false
