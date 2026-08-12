@@ -55,6 +55,11 @@ type CoreToolDeps struct {
 	// tool (bounded CSV/TSV/JSON/JSONL/XML/HTML extraction).
 	EnableDocumentIngestion bool
 
+	// EnableDocumentGeneration registers the experimental create_document
+	// tool (xlsx generation via excelize; docx/pdf generation via pandoc,
+	// routed through Sandbox).
+	EnableDocumentGeneration bool
+
 	// EnableSyntaxRanges registers offline parser-backed range-selection tools.
 	// The actual edits still flow through anchored reads and edit_anchored.
 	EnableSyntaxRanges bool
@@ -87,7 +92,10 @@ func RegisterCoreCwdTools(reg *Registry, cwd *CwdRef, deps CoreToolDeps) {
 	reg.Register(&ReadFileTool{Cwd: cwd, DenyReadPaths: deps.DenyReads, SupportsImages: deps.SupportsImages})
 	reg.Register(&ReadManyFilesTool{Cwd: cwd, DenyReadPaths: deps.DenyReads})
 	if deps.EnableDocumentIngestion {
-		reg.Register(&ReadDocumentTool{Cwd: cwd, DenyReadPaths: deps.DenyReads})
+		reg.Register(&ReadDocumentTool{Cwd: cwd, DenyReadPaths: deps.DenyReads, Sandbox: deps.Sandbox})
+	}
+	if deps.EnableDocumentGeneration {
+		reg.Register(&CreateDocumentTool{Cwd: cwd, WriteOpts: wo, DenyReadPaths: deps.DenyReads, Sandbox: deps.Sandbox})
 	}
 	reg.Register(&WriteFileTool{Cwd: cwd, WriteOpts: wo, LSPManager: deps.LSPManager, LSPServers: deps.LSPServers})
 	reg.Register(&EditFileTool{Cwd: cwd, WriteOpts: wo, LSPManager: deps.LSPManager, LSPServers: deps.LSPServers})

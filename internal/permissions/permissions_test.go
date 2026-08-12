@@ -348,6 +348,31 @@ func TestEvaluate_GithubCreateIssueRulesBind(t *testing.T) {
 	}
 }
 
+// Regression: create_document shipped with no targetFor mapping, so it
+// fell through to Target{} and a Document(*) deny rule — including the
+// Deny-under-BypassPermissions guarantee everything else honors — never
+// bound to it. Same bug class as TestEvaluate_GithubCreateIssueRulesBind.
+func TestEvaluate_CreateDocumentRulesBind(t *testing.T) {
+	cwd := t.TempDir()
+	seed(t, filepath.Join(cwd, ".yottacode", "permissions.json"),
+		nil, nil, []string{"Document(*)"})
+	p, _ := Load(cwd)
+	args := `{"format":"docx","output_path":"report.docx","content":{"blocks":[]}}`
+	if got := p.Evaluate("create_document", args); got != Deny {
+		t.Errorf("Document(*) deny must bind to create_document; got %v", got)
+	}
+}
+
+func TestTargetFor_CreateDocumentDescriptor(t *testing.T) {
+	got := targetFor("create_document", `{"format":"xlsx","output_path":"reports/q1.xlsx"}`, "/work")
+	if got.PermName != "Document" {
+		t.Fatalf("PermName = %q, want Document", got.PermName)
+	}
+	if got.Descriptor != "xlsx reports/q1.xlsx" {
+		t.Errorf("Descriptor = %q, want %q", got.Descriptor, "xlsx reports/q1.xlsx")
+	}
+}
+
 func TestEvaluate_GithubDenyOverridesAllow(t *testing.T) {
 	// Same precedence as Bash — Deny beats Allow regardless of
 	// rule order. Pin so future precedence refactors don't break

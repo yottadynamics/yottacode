@@ -169,6 +169,37 @@ func (t *boundedTextBuilder) String() string {
 	return s
 }
 
+// buildLabeledUnitSections turns units (already the requested [startNum,
+// startNum+len(units)) range of discrete document units — PDF pages,
+// pptx slides) into labeled sections, stopping once the running total
+// would exceed maxChars — same budget-stop shape as formatCSVRows, so a
+// single oversized unit is truncated via boundedString rather than
+// silently dropping the rest of the document. noun labels each section
+// ("page", "slide") and the warnings it produces.
+func buildLabeledUnitSections(units []string, startNum, maxChars int, noun string) ([]DocumentSection, []string) {
+	var sections []DocumentSection
+	var warnings []string
+	used := 0
+	for i, text := range units {
+		num := startNum + i
+		remaining := maxChars - used
+		if remaining <= 0 {
+			warnings = append(warnings, fmt.Sprintf("stopped at the %d-character preview cap after %s %d", maxChars, noun, num-1))
+			break
+		}
+		body := text
+		if len(body) > remaining {
+			body = boundedString(body, remaining)
+			sections = append(sections, DocumentSection{Label: fmt.Sprintf("%s %d", noun, num), Text: body})
+			warnings = append(warnings, fmt.Sprintf("%s %d truncated at the %d-character preview cap", noun, num, maxChars))
+			break
+		}
+		sections = append(sections, DocumentSection{Label: fmt.Sprintf("%s %d", noun, num), Text: body})
+		used += len(body)
+	}
+	return sections, warnings
+}
+
 // hasMoreAfterCap reports whether r has at least one more byte
 // available beyond whatever a caller already consumed through
 // io.LimitReader(r, cap). Call this only after that limited read has

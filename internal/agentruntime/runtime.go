@@ -395,18 +395,19 @@ func (b *Builder) Build(ctx context.Context, spec SessionSpec) (*Runtime, error)
 	reg := agent.NewRegistry()
 	rt.Registry = reg
 	agent.RegisterCoreCwdTools(reg, cwdRef, agent.CoreToolDeps{
-		WriteOpts:               writeOpts,
-		DenyReads:               denyReads,
-		SupportsImages:          ad.Profile().SupportsImages,
-		EnableLSP:               true,
-		LSPManager:              lspManager,
-		LSPServers:              fileCfg.LSP.Servers,
-		LSPDisabled:             fileCfg.LSP.Disabled,
-		EnableCodeMap:           expSet.IsEnabled(experimental.CodeMap),
-		CodeMapProvider:         codeMapProvider,
-		EnableSyntaxRanges:      true,
-		EnableDocumentIngestion: expSet.IsEnabled(experimental.DocumentIngestion),
-		Sandbox:                 cmdSandbox,
+		WriteOpts:                writeOpts,
+		DenyReads:                denyReads,
+		SupportsImages:           ad.Profile().SupportsImages,
+		EnableLSP:                true,
+		LSPManager:               lspManager,
+		LSPServers:               fileCfg.LSP.Servers,
+		LSPDisabled:              fileCfg.LSP.Disabled,
+		EnableCodeMap:            expSet.IsEnabled(experimental.CodeMap),
+		CodeMapProvider:          codeMapProvider,
+		EnableSyntaxRanges:       true,
+		EnableDocumentIngestion:  expSet.IsEnabled(experimental.DocumentIngestion),
+		EnableDocumentGeneration: expSet.IsEnabled(experimental.DocumentGeneration),
+		Sandbox:                  cmdSandbox,
 	})
 
 	// Git worktree tools. enter_worktree/exit_worktree call process-global
@@ -531,16 +532,17 @@ func (b *Builder) Build(ctx context.Context, spec SessionSpec) (*Runtime, error)
 
 	dispatchEnabled := expSet.IsEnabled(experimental.Dispatch)
 	reg.Register(&agent.DispatchTool{
-		Agent:                   agentTool,
-		SupportsImages:          ad.Profile().SupportsImages,
-		EnableLSP:               true,
-		LSPServers:              fileCfg.LSP.Servers,
-		LSPDisabled:             fileCfg.LSP.Disabled,
-		EnableSyntaxRanges:      true,
-		EnableDocumentIngestion: expSet.IsEnabled(experimental.DocumentIngestion),
-		SupportsBackground:      spec.SupportsBackgroundDispatch,
-		Enabled:                 dispatchEnabled,
-		SandboxFactory:          sandboxFactory,
+		Agent:                    agentTool,
+		SupportsImages:           ad.Profile().SupportsImages,
+		EnableLSP:                true,
+		LSPServers:               fileCfg.LSP.Servers,
+		LSPDisabled:              fileCfg.LSP.Disabled,
+		EnableSyntaxRanges:       true,
+		EnableDocumentIngestion:  expSet.IsEnabled(experimental.DocumentIngestion),
+		EnableDocumentGeneration: expSet.IsEnabled(experimental.DocumentGeneration),
+		SupportsBackground:       spec.SupportsBackgroundDispatch,
+		Enabled:                  dispatchEnabled,
+		SandboxFactory:           sandboxFactory,
 	})
 	reg.Register(&agent.IntegrateTool{Cwd: cwdRef, Enabled: dispatchEnabled})
 

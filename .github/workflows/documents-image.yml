@@ -1,0 +1,129 @@
+# Builds, smoke-tests, and publishes the yottacode-documents container
+# image (infra/documents.Containerfile) to ghcr.io. Pull requests build and
+# smoke-test the image without publishing; main, manual, and weekly runs publish
+# after the same smoke gate. The weekly rebuild keeps pandoc/poppler/weasyprint
+# CVE patches landing on a schedule rather than only when someone remembers to
+# rebuild. See docs/document-generation.md and roadmap/document-generation.md's
+# "Image build, publish, and consume mechanics" for the design this implements.
+#
+# linux/amd64 only for now — there is no established multi-arch position
+# for this image anywhere in the repo (unlike the CLI binary itself, which
+# goreleaser cross-builds for linux+darwin, amd64+arm64). Add buildx/qemu
+# here if arm64 support becomes a real need; not attempted in this first
+# pass since it adds real cross-build risk this workflow can't be
+# exercised against before merge.
+#
+# The push job needs GHCR package-write access from the repo's own
+# GITHUB_TOKEN (standard for publishing to ghcr.io under the same
+# owner/org as the repo) — no extra secret required, but the repository's
+# package visibility/permissions still need to be checked once the first
+# real run happens.
+
+name: Documents image
+
+on:
+  workflow_dispatch: {}
+  pull_request:
+    paths:
+      - infra/documents.Containerfile
+      - .github/workflows/documents-image.yml
+  push:
+    branches: [main]
+    paths:
+      - infra/documents.Containerfile
+      - .github/workflows/documents-image.yml
+  schedule:
+    # Weekly rebuild for upstream pandoc/poppler/weasyprint CVE patches — the
+    # cadence roadmap/document-generation.md specifies, not tied to any
+    # yottacode CLI release.
+    - cron: '0 6 * * 1'
+
+permissions:
+  contents: read
+
+env:
+  IMAGE_NAME: ghcr.io/yottadynamics/yottacode-documents
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install podman
+        run: sudo apt-get update && sudo apt-get install -y podman
+
+      - name: Build image
+        run: podman build -t documents-image -f infra/documents.Containerfile .
+
+      - name: Save image for downstream jobs
+        run: podman save -o documents-image.tar documents-image
+
+      - name: Upload image artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: documents-image
+          path: documents-image.tar
+          retention-days: 1
+
+  smoke-test:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install podman
+        run: sudo apt-get update && sudo apt-get install -y podman
+
+      - name: Download image artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: documents-image
+
+      - name: Load image
+        run: podman load -i documents-image.tar
+
+      - name: Smoke test — pandoc, weasyprint, poppler
+        # Re-run the same production toolchain checks from the Containerfile
+        # against the actual built image before anything gets pushed.
+        run: |
+          podman run --rm documents-image sh -c '
+            set -e
+            pandoc --version
+            weasyprint --version
+            pdftotext -v
+            pdfinfo -v
+            echo "# Smoke test" > /tmp/fixture.md
+            pandoc -f markdown -t docx -o /tmp/fixture.docx /tmp/fixture.md
+            pandoc -f markdown -t pdf --pdf-engine=weasyprint -o /tmp/fixture.pdf /tmp/fixture.md
+            pdftotext /tmp/fixture.pdf - | grep "Smoke test"
+            pdfinfo /tmp/fixture.pdf | grep "Pages"
+          '
+
+  push:
+    needs: smoke-test
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Install podman
+        run: sudo apt-get update && sudo apt-get install -y podman
+
+      - name: Download image artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: documents-image
+
+      - name: Load image
+        run: podman load -i documents-image.tar
+
+      - name: Log in to ghcr.io
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | podman login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Tag and push (rolling latest + immutable date tag)
+        run: |
+          DATE_TAG=$(date -u +%Y-%m-%d)
+          podman tag documents-image "${IMAGE_NAME}:${DATE_TAG}"
+          podman tag documents-image "${IMAGE_NAME}:latest"
+          podman push "${IMAGE_NAME}:${DATE_TAG}"
+          podman push "${IMAGE_NAME}:latest"

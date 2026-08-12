@@ -34,6 +34,10 @@ const (
 	// context window.
 	DefaultMaxChars = 20000
 
+	// DefaultMaxPages bounds how many PDF pages, or pptx slides, an
+	// extractor reads text from. Every other extractor ignores it.
+	DefaultMaxPages = 50
+
 	// MaxAllowedBytes is the ceiling on a caller-supplied MaxBytes.
 	// MaxBytes is the only cap that needs one: MaxRows and MaxChars are
 	// transitively bounded by it (no extractor can sample more rows or
@@ -65,11 +69,12 @@ type ExtractRequest struct {
 	MaxRows  int
 
 	// Offset is where the preview window starts, counted in whatever
-	// unit that format's preview is made of: data rows for CSV/TSV,
-	// records for JSONL, characters for the JSON/XML/HTML text preview.
-	// One name rather than row_offset/char_offset because every result
-	// labels the window it actually returned ("rows 201-400 of 5000"),
-	// so the unit is unambiguous exactly where it's read.
+	// unit that format's preview is made of: data rows for CSV/TSV/xlsx,
+	// records for JSONL, characters for the JSON/XML/HTML/docx text
+	// preview, pages for PDF, slides for pptx. One name rather than
+	// row_offset/char_offset because every result labels the window it
+	// actually returned ("rows 201-400 of 5000"), so the unit is
+	// unambiguous exactly where it's read.
 	//
 	// Skipping still requires streaming through what came before —
 	// rows are variable-length and a quoted field may contain newlines,
@@ -85,6 +90,10 @@ type ExtractRequest struct {
 	// a header of bare years, or a headerless file whose first row
 	// happens to be all text. Ignored by non-tabular extractors.
 	HasHeader *bool
+
+	// MaxPages bounds how many PDF pages are read. PDF-only; every other
+	// extractor ignores it.
+	MaxPages int
 }
 
 func (r ExtractRequest) withDefaults() ExtractRequest {
@@ -103,6 +112,9 @@ func (r ExtractRequest) withDefaults() ExtractRequest {
 	if r.MaxRows <= 0 {
 		r.MaxRows = DefaultMaxRows
 	}
+	if r.MaxPages <= 0 {
+		r.MaxPages = DefaultMaxPages
+	}
 	return r
 }
 
@@ -111,7 +123,7 @@ func (r ExtractRequest) withDefaults() ExtractRequest {
 // without having read the content yet.
 type DocumentMetadata struct {
 	// Kind is the extractor's short format name: "csv", "tsv", "json",
-	// "jsonl", "xml", or "html".
+	// "jsonl", "xml", "html", "pdf", "xlsx", "docx", or "pptx".
 	Kind string
 
 	// SizeBytes is the source file's size on disk (not the bounded

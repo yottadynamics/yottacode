@@ -60,6 +60,10 @@ type DispatchTool struct {
 	// read_document tool surface as the parent session.
 	EnableDocumentIngestion bool
 
+	// EnableDocumentGeneration lets dispatch workers use the same
+	// create_document tool surface as the parent session.
+	EnableDocumentGeneration bool
+
 	// EnableLSP lets dispatch workers expose the same LSP tool surface as the
 	// parent session, while writes still flow through the worker's owned-file
 	// WriteOpts.
@@ -585,11 +589,13 @@ func (t *DispatchTool) runDispatchChild(ctx context.Context, c *dispatchChild, b
 		// execution, the same "never fall back on error" contract
 		// NewPodmanSandbox's caller follows at session startup.
 		//
-		// Gated on ToolAllowed("run_bash") — a worker whose config never
-		// grants run_bash has nothing for a Sandbox to cover, so it
-		// shouldn't pay container-creation cost or fail its task over a
-		// dependency it was never going to use.
-		if t.SandboxFactory != nil && c.cfg.ToolAllowed("run_bash") {
+		// Gated on ToolAllowed("run_bash") OR ToolAllowed("create_document")
+		// — either tool depends on Sandbox (create_document's docx/pdf/pptx
+		// paths route through it too, same as run_bash), so a worker
+		// granted neither has nothing for a Sandbox to cover and shouldn't
+		// pay container-creation cost or fail its task over a dependency
+		// it was never going to use.
+		if t.SandboxFactory != nil && (c.cfg.ToolAllowed("run_bash") || c.cfg.ToolAllowed("create_document")) {
 			sb, err := t.SandboxFactory(childCtx, c.worktree, c.taskID)
 			if err != nil {
 				c.errored, c.status = true, subagents.TaskErrored
@@ -794,10 +800,11 @@ func (t *DispatchTool) buildWorktreeChildRegistry(cfg *subagents.AgentConfig, cw
 		// Background workers are unattended, so they must not spawn language-server
 		// binaries. Foreground workers may use LSP tools, but still do not share the
 		// parent manager because eviction is process-level and not lease-aware.
-		LSPManager:              nil,
-		EnableSyntaxRanges:      t.EnableSyntaxRanges,
-		EnableDocumentIngestion: t.EnableDocumentIngestion,
-		Sandbox:                 sandbox,
+		LSPManager:               nil,
+		EnableSyntaxRanges:       t.EnableSyntaxRanges,
+		EnableDocumentIngestion:  t.EnableDocumentIngestion,
+		EnableDocumentGeneration: t.EnableDocumentGeneration,
+		Sandbox:                  sandbox,
 	})
 	out := NewRegistry()
 	for _, tool := range core.Tools() {
