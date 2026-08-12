@@ -68,6 +68,51 @@ func TestGenerateXLSXFormulaStripsLeadingEquals(t *testing.T) {
 	}
 }
 
+func TestGenerateXLSXBareEqualsFormulaFallsBackToValue(t *testing.T) {
+	model := SheetModel{Sheets: []Sheet{{
+		Rows: [][]Cell{{{Value: "fallback text", Formula: "="}}},
+	}}}
+	data, err := GenerateXLSX(model)
+	if err != nil {
+		t.Fatalf("GenerateXLSX: %v", err)
+	}
+	f, err := excelize.OpenReader(bytes.NewReader(data))
+	if err != nil {
+		t.Fatalf("OpenReader: %v", err)
+	}
+	defer f.Close()
+	got, err := f.GetCellValue("Sheet1", "A1")
+	if err != nil || got != "fallback text" {
+		t.Errorf("A1 value = %q, %v; want %q (bare '=' formula should fall back to Value)", got, err, "fallback text")
+	}
+	formula, err := f.GetCellFormula("Sheet1", "A1")
+	if err != nil || formula != "" {
+		t.Errorf("A1 formula = %q, %v; want empty", formula, err)
+	}
+}
+
+func TestGenerateXLSXDuplicateSheetNameErrors(t *testing.T) {
+	model := SheetModel{Sheets: []Sheet{
+		{Name: "Data", Rows: [][]Cell{{{Value: "first"}}}},
+		{Name: "Data", Rows: [][]Cell{{{Value: "second"}}}},
+	}}
+	if _, err := GenerateXLSX(model); err == nil {
+		t.Fatal("expected an error for duplicate sheet names")
+	}
+}
+
+func TestGenerateXLSXExplicitNameCollidesWithDefault(t *testing.T) {
+	// Sheet 0 is unnamed (defaults to "Sheet1"); sheet 1 explicitly claims
+	// that same default name — must still be caught as a collision.
+	model := SheetModel{Sheets: []Sheet{
+		{Rows: [][]Cell{{{Value: "first"}}}},
+		{Name: "Sheet1", Rows: [][]Cell{{{Value: "second"}}}},
+	}}
+	if _, err := GenerateXLSX(model); err == nil {
+		t.Fatal("expected an error when an explicit name collides with an earlier sheet's default name")
+	}
+}
+
 func TestGenerateXLSXBoldItalicNumberFormat(t *testing.T) {
 	model := SheetModel{Sheets: []Sheet{{
 		Rows: [][]Cell{

@@ -1215,6 +1215,8 @@ func dispatchBackgroundApprovalPolicy(tool Tool, argsJSON string) (Decision, str
 		return Deny, "denied run_tests (tests execute code and are disabled for unattended dispatch workers; run the task in the foreground to approve tests)", true
 	case "run_bash":
 		return Deny, "denied run_bash (shell is disabled for unattended dispatch workers; run this task in the foreground to approve shell/tests)", true
+	case "create_document":
+		return Deny, "denied create_document (document generation needs a human — run this task in the foreground to approve it)", true
 	}
 	if !safeUnattendedReadOnlyTool(name) {
 		return Deny, "denied " + name + " (not auto-allowed for unattended dispatch workers; needs a human)", true

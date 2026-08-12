@@ -183,9 +183,10 @@ func TestDispatchSandbox_CloseCalledOnceOnPanicRecovery(t *testing.T) {
 }
 
 // TestDispatchSandbox_SkipsConstructionWhenWorkerCantUseRunBash: a write
-// worker whose AgentConfig.Tools allowlist doesn't include run_bash has
-// nothing for a Sandbox to cover — it must not pay container-creation
-// cost or fail its task over a dependency it was never going to use.
+// worker whose AgentConfig.Tools allowlist includes neither run_bash nor
+// create_document — the two tools that depend on Sandbox — has nothing
+// for a Sandbox to cover. It must not pay container-creation cost or fail
+// its task over a dependency it was never going to use.
 func TestDispatchSandbox_SkipsConstructionWhenWorkerCantUseRunBash(t *testing.T) {
 	auto := &AutoModeState{}
 	auto.Active.Store(true)
@@ -225,5 +226,52 @@ func TestDispatchSandbox_SkipsConstructionWhenWorkerCantUseRunBash(t *testing.T)
 
 	if factoryCalled {
 		t.Error("SandboxFactory should not be called for a worker whose Tools allowlist excludes run_bash")
+	}
+}
+
+// TestDispatchSandbox_ConstructsForCreateDocumentEvenWithoutRunBash pins
+// that create_document still gets a Sandbox when granted to a worker: docx/pdf
+// depend on Sandbox exactly like run_bash, so a worker granted create_document
+// but not run_bash must not silently fall back to host pandoc execution.
+
+func TestDispatchSandbox_ConstructsForCreateDocumentEvenWithoutRunBash(t *testing.T) {
+	auto := &AutoModeState{}
+	auto.Active.Store(true)
+	at := &AgentTool{
+		Configs: []subagents.AgentConfig{{
+			Name:  "writer-docgen-no-bash",
+			Tools: []string{"write_file", "read_file", "create_document"}, // no run_bash
+		}},
+		Tasks:          subagents.NewRegistry(),
+		Adapter:        dispatchWriteStreamer{},
+		ParentRegistry: NewRegistry(),
+		AutoMode:       auto,
+		PlanMode:       &PlanModeState{},
+		YoloMode:       &YoloModeState{},
+		Cwd:            NewCwdRef(t.TempDir()),
+		TranscriptDir:  t.TempDir(),
+	}
+	factoryCalled := false
+	d := &DispatchTool{
+		Agent:   at,
+		Enabled: true,
+		SandboxFactory: func(ctx context.Context, wtDir, taskID string) (Sandbox, error) {
+			factoryCalled = true
+			return &spySandbox{}, nil
+		},
+	}
+
+	c := &dispatchChild{
+		spec:     dispatchTaskSpec{Prompt: "p", Description: "d", Files: []string{"x.docx"}},
+		cfg:      &at.Configs[0],
+		isWrite:  true,
+		worktree: t.TempDir(),
+	}
+	at.Tasks.Add(d.prepareDispatchChild(c, "batch-1", false))
+
+	d.runDispatchChild(context.Background(), c, "batch-1", false, nil, nil)
+
+	if !factoryCalled {
+		t.Error("SandboxFactory should be called for a worker whose Tools allowlist includes create_document, even without run_bash")
 	}
 }

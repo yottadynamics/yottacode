@@ -314,6 +314,16 @@ func TestDispatchBackgroundPolicyIsExplicitAllowlist(t *testing.T) {
 	if !handled || decision != Deny || !strings.Contains(note, "not auto-allowed") {
 		t.Fatalf("fetch_url should be denied by unattended network policy, got decision=%v note=%q handled=%v", decision, note, handled)
 	}
+
+	// create_document is explicitly denied for unattended workers even
+	// though xlsx/pptx generation is native: every format writes an output
+	// document, and docx/pdf may still shell out through pandoc.
+
+	createDoc := &mockTool{name: "create_document", requiresApproval: true}
+	decision, note, handled = dispatchBackgroundApprovalPolicy(createDoc, `{}`)
+	if !handled || decision != Deny || !strings.Contains(note, "create_document") || !strings.Contains(note, "needs a human") {
+		t.Fatalf("create_document should be explicitly denied with a specific reason, got decision=%v note=%q handled=%v", decision, note, handled)
+	}
 }
 
 // AgentTool is ParallelSafe — multiple Agent calls from the same

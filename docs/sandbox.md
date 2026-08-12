@@ -171,13 +171,13 @@ resource-limit flags.
   `--security-opt=no-new-privileges`, private cgroups, no swap beyond the memory
   limit, a `noexec,nosuid,nodev` `/tmp`, SELinux `:Z` bind labels, and configured
   `pids_limit`/`memory`/`cpus` caps.
-- **`run_bash` and `create_document`'s docx/pdf path are sandboxed.** Git,
-  GitHub, MCP, provider calls, and file tools still run on the host. The
-  hardline blocklist stays outside the sandbox because a blocked command can
-  still destroy the mounted project tree. See
-  [`document-generation.md`](document-generation.md) for how `create_document`
-  routes its `pandoc` calls through this same seam — the first tool besides
-  `run_bash` to use it.
+- **`run_bash`, `create_document`'s docx/pdf paths, and
+  `read_document`'s PDF path are sandboxed.** Git, GitHub, MCP, provider
+  calls, and the other file tools still run on the host. The hardline
+  blocklist stays outside the sandbox because a blocked command can still
+  destroy the mounted project tree. See [`document-generation.md`](document-generation.md)
+  for how the document tools route their `pandoc`/`pdftotext` calls
+  through this same seam — the first tools besides `run_bash` to use it.
 
 ## Dispatch interaction
 

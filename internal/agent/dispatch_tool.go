@@ -589,11 +589,13 @@ func (t *DispatchTool) runDispatchChild(ctx context.Context, c *dispatchChild, b
 		// execution, the same "never fall back on error" contract
 		// NewPodmanSandbox's caller follows at session startup.
 		//
-		// Gated on ToolAllowed("run_bash") — a worker whose config never
-		// grants run_bash has nothing for a Sandbox to cover, so it
-		// shouldn't pay container-creation cost or fail its task over a
-		// dependency it was never going to use.
-		if t.SandboxFactory != nil && c.cfg.ToolAllowed("run_bash") {
+		// Gated on ToolAllowed("run_bash") OR ToolAllowed("create_document")
+		// — either tool depends on Sandbox (create_document's docx/pdf/pptx
+		// paths route through it too, same as run_bash), so a worker
+		// granted neither has nothing for a Sandbox to cover and shouldn't
+		// pay container-creation cost or fail its task over a dependency
+		// it was never going to use.
+		if t.SandboxFactory != nil && (c.cfg.ToolAllowed("run_bash") || c.cfg.ToolAllowed("create_document")) {
 			sb, err := t.SandboxFactory(childCtx, c.worktree, c.taskID)
 			if err != nil {
 				c.errored, c.status = true, subagents.TaskErrored

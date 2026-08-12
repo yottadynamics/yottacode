@@ -48,9 +48,22 @@ func GenerateXLSX(model SheetModel) ([]byte, error) {
 	// excelize.NewFile() starts with one default sheet ("Sheet1"); rename
 	// it to the first requested sheet instead of creating a redundant
 	// extra tab, then create the rest.
+	//
+	// excelize's own NewSheet/SetSheetName silently reuse the existing
+	// sheet's index on a name collision instead of erroring — without the
+	// seenNames check below, two sheets sharing a name (explicit
+	// duplicates, or a later sheet named e.g. "Sheet1" colliding with an
+	// earlier unnamed sheet's auto-generated default) would silently
+	// write into the same tab, with the second sheet's data overwriting
+	// the first's and no error surfaced.
 	styles := map[styleKey]int{}
+	seenNames := make(map[string]bool, len(model.Sheets))
 	for i, sheet := range model.Sheets {
 		name := sheetName(sheet, i)
+		if seenNames[name] {
+			return nil, fmt.Errorf("xlsx: duplicate sheet name %q (sheet %d)", name, i)
+		}
+		seenNames[name] = true
 		if i == 0 {
 			if err := f.SetSheetName("Sheet1", name); err != nil {
 				return nil, fmt.Errorf("xlsx: rename default sheet: %w", err)
@@ -89,11 +102,15 @@ func writeSheet(f *excelize.File, name string, sheet Sheet, styles map[styleKey]
 			if err != nil {
 				return fmt.Errorf("cell (%d,%d): %w", r, c, err)
 			}
-			if cell.Formula != "" {
-				// excelize expects a formula without the leading "="; strip
-				// one if present so a caller that writes "=SUM(...)" out of
-				// habit doesn't end up with a literal doubled "=" cell.
-				formula := strings.TrimPrefix(cell.Formula, "=")
+			// excelize expects a formula without the leading "="; strip one
+			// if present so a caller that writes "=SUM(...)" out of habit
+			// doesn't end up with a literal doubled "=" cell. A bare "="
+			// (no expression) trims to empty — excelize.SetCellFormula
+			// treats an empty formula as "clear any formula", so that case
+			// falls through to the Value branch instead of silently
+			// discarding Value and leaving the cell blank.
+			formula := strings.TrimPrefix(cell.Formula, "=")
+			if formula != "" {
 				if err := f.SetCellFormula(name, ref, formula); err != nil {
 					return fmt.Errorf("cell %s formula: %w", ref, err)
 				}

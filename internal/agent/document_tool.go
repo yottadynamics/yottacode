@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -26,24 +27,60 @@ type ReadDocumentTool struct {
 	DenyReadPaths []string
 
 	// Registry is the format dispatch table. Nil uses the production
-	// Phase A registry (CSV/TSV/JSON/JSONL/XML/HTML); tests can inject
-	// a fake.
+	// registry (CSV/TSV/JSON/JSONL/XML/HTML, plus PDF when Sandbox lets
+	// pdftotext/pdfinfo run); tests can inject a fake.
 	Registry *documents.Registry
+
+	// Sandbox is nil-safe: a nil Sandbox behaves exactly like HostSandbox,
+	// mirroring RunBashTool.Sandbox and CreateDocumentTool.Sandbox. Only
+	// consulted for PDF and docx's optional pandoc tier — every other
+	// format (and docx's own native fallback) is pure Go and never
+	// shells out.
+	Sandbox Sandbox
+}
+
+func (t *ReadDocumentTool) sandbox() Sandbox {
+	if t.Sandbox != nil {
+		return t.Sandbox
+	}
+	return HostSandbox{}
 }
 
 func (t *ReadDocumentTool) registry() *documents.Registry {
 	if t.Registry != nil {
 		return t.Registry
 	}
-	return documents.NewRegistry()
+	reg := documents.NewRegistryWithDocxTier(t.runSandboxCommand)
+	reg.Register(&documents.PDFExtractor{Run: t.runSandboxCommand})
+	return reg
+}
+
+// runSandboxCommand implements documents.CommandRunner by routing through
+// the same Sandbox seam RunBashTool/CreateDocumentTool use — the whole
+// point being that a podman-backed sandbox has its own PATH and
+// filesystem view, independent of the host's, so PDF/docx parsing is
+// sandboxed exactly like docx/pdf generation already is. Shared by both
+// PDFExtractor and DocxExtractor's optional pandoc tier — one
+// Sandbox-routing helper, not a copy per extractor.
+func (t *ReadDocumentTool) runSandboxCommand(ctx context.Context, command string) ([]byte, []byte, error) {
+	c := t.sandbox().Command(ctx, command, t.Cwd.Get())
+	var stdout, stderr bytes.Buffer
+	c.Stdout = &cappedWriter{buf: &stdout}
+	c.Stderr = &cappedWriter{buf: &stderr}
+	err := c.Run()
+	return stdout.Bytes(), stderr.Bytes(), err
 }
 
 func (t *ReadDocumentTool) Name() string { return "read_document" }
 
 func (t *ReadDocumentTool) Description() string {
-	return "Extract bounded, structured text from a CSV, TSV, JSON, JSONL, XML, or HTML file. " +
-		"Returns a structure summary (columns, JSON shape, XML/HTML title and headings) plus a capped content preview, " +
+	return "Extract bounded, structured text from a CSV, TSV, JSON, JSONL, XML, HTML, PDF, xlsx, docx, or pptx file. " +
+		"Returns a structure summary (columns, JSON shape, XML/HTML title and headings, PDF page count, xlsx sheet names, docx paragraph/heading counts, pptx slide count) plus a capped content preview, " +
 		"with every truncation reported explicitly rather than silently cut. " +
+		"PDF extraction runs pdftotext/pdfinfo, which must be reachable through the active command sandbox " +
+		"(installed on the host when no sandbox is configured, or present in the sandbox's [sandbox].image); " +
+		"an encrypted or scanned/image-only PDF is reported as a warning rather than an error, since it's still a valid result to hand back. " +
+		"xlsx/docx/pptx are parsed natively (no external tools): xlsx returns one section per sheet, docx returns the document body as one section with headings rendered as '# '-prefixed lines, pptx returns one section per slide in slide order. " +
 		"Use this when you need to ANALYZE the data — read_file's raw line-based view shears a CSV field's " +
 		"embedded newline into a bogus extra row and returns HTML/XML markup noise verbatim. " +
 		"Keep using read_file when you intend to EDIT the file: only read_file's cat -n output feeds " +
@@ -51,7 +88,7 @@ func (t *ReadDocumentTool) Description() string {
 		"That matters most for .json/.xml/.html, which are often source files you are editing rather than data you are reading. " +
 		"Handles real-world export quirks: a UTF-8 BOM is stripped, a semicolon/tab/pipe-delimited .csv is detected rather than collapsed into one column, " +
 		"and a file with no header row is recognized instead of losing its first record to the column names. " +
-		"Use max_rows/max_chars to resize the preview, offset to page past the rows/records you have already seen, " +
+		"Use max_rows/max_chars to resize the preview, max_pages for PDF pages or pptx slides, offset to page past what you have already seen, " +
 		"max_bytes to read further into a file that hit the byte cap, " +
 		"and has_header to override header detection when it guessed wrong."
 }
@@ -62,7 +99,7 @@ func (t *ReadDocumentTool) Schema() map[string]any {
 		"properties": map[string]any{
 			"path": map[string]any{
 				"type":        "string",
-				"description": "Absolute or cwd-relative path to a .csv, .tsv, .json, .jsonl, .xml, .html, or .htm file",
+				"description": "Absolute or cwd-relative path to a .csv, .tsv, .json, .jsonl, .xml, .html, .htm, .pdf, .xlsx, .docx, or .pptx file",
 			},
 			"max_rows": map[string]any{
 				"type":        "integer",
@@ -71,6 +108,10 @@ func (t *ReadDocumentTool) Schema() map[string]any {
 			"max_chars": map[string]any{
 				"type":        "integer",
 				"description": fmt.Sprintf("Maximum characters of extracted text to return (default %d).", documents.DefaultMaxChars),
+			},
+			"max_pages": map[string]any{
+				"type":        "integer",
+				"description": fmt.Sprintf("PDF or pptx only: maximum pages/slides to read text from (default %d).", documents.DefaultMaxPages),
 			},
 			"offset": map[string]any{
 				"type":        "integer",
@@ -99,6 +140,7 @@ type readDocumentArgs struct {
 	MaxRows  int    `json:"max_rows"`
 	MaxChars int    `json:"max_chars"`
 	MaxBytes int64  `json:"max_bytes"`
+	MaxPages int    `json:"max_pages"`
 	Offset   int    `json:"offset"`
 
 	// HasHeader is a pointer so an omitted key stays distinguishable
@@ -137,6 +179,7 @@ func (t *ReadDocumentTool) Execute(ctx context.Context, argsJSON string) (string
 		MaxRows:   a.MaxRows,
 		MaxChars:  a.MaxChars,
 		MaxBytes:  a.MaxBytes,
+		MaxPages:  a.MaxPages,
 		Offset:    a.Offset,
 		HasHeader: a.HasHeader,
 	})

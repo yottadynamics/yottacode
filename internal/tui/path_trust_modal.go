@@ -105,7 +105,7 @@ func addAllowedPathToWriteTools(reg *agent.Registry, path string) {
 	if reg == nil || path == "" {
 		return
 	}
-	for _, name := range []string{"write_file", "edit_file", "apply_diff", "mkdir", "copy_file", "move_file", "delete_file"} {
+	for _, name := range []string{"write_file", "edit_file", "apply_diff", "mkdir", "copy_file", "move_file", "delete_file", "create_document"} {
 		t, ok := reg.Get(name)
 		if !ok {
 			continue
@@ -124,6 +124,8 @@ func addAllowedPathToWriteTools(reg *agent.Registry, path string) {
 		case *agent.MoveFileTool:
 			tt.WriteOpts.AllowedPaths = appendDedup(tt.WriteOpts.AllowedPaths, path)
 		case *agent.DeleteFileTool:
+			tt.WriteOpts.AllowedPaths = appendDedup(tt.WriteOpts.AllowedPaths, path)
+		case *agent.CreateDocumentTool:
 			tt.WriteOpts.AllowedPaths = appendDedup(tt.WriteOpts.AllowedPaths, path)
 		}
 	}
