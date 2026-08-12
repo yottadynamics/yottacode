@@ -465,6 +465,12 @@ var ErrNoSessionInCwd = errors.New("no saved session in this directory")
 // to render and resume them differently, asks for them.
 type ListOptions struct {
 	IncludeArchived bool
+	// Offset skips this many newest rows before returning results. It lets TUI
+	// pickers page through large session stores without decoding every session
+	// file before the first screen can render.
+	Offset int
+	// Limit caps returned rows. A non-positive limit preserves the legacy full list.
+	Limit int
 }
 
 // List returns every saved live session's metadata, newest first. Doesn't
@@ -484,6 +490,11 @@ func ListWith(opts ListOptions) ([]SessionInfo, error) {
 	if err != nil {
 		return nil, err
 	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() > entries[j].Name() })
+	if opts.Limit > 0 && opts.IncludeArchived {
+		return listPageWithArchives(dir, entries, opts.Offset, opts.Limit)
+	}
+	need := opts.Offset + opts.Limit
 	var out []SessionInfo
 	models := map[string]string{} // session id -> model, for labelling archives
 	for _, e := range entries {
@@ -515,12 +526,130 @@ func ListWith(opts ListOptions) ([]SessionInfo, error) {
 			Worktree: s.Worktree,
 			Summary:  s.Summary(),
 		})
+		// Once enough live rows have been decoded, a non-archive page can stop.
+		// Directory entries are sorted newest-first by timestamp-like filename, so
+		// later files cannot affect this page.
+		if !opts.IncludeArchived && opts.Limit > 0 && len(out) >= need {
+			break
+		}
 	}
 	if opts.IncludeArchived {
 		out = append(out, listSnapshots(dir, entries, models)...)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID > out[j].ID })
+	if opts.Offset > 0 {
+		if opts.Offset >= len(out) {
+			return nil, nil
+		}
+		out = out[opts.Offset:]
+	}
+	if opts.Limit > 0 && len(out) > opts.Limit {
+		out = out[:opts.Limit]
+	}
 	return out, nil
+}
+
+// ListPage returns one newest-first page of session metadata. It is a named
+// wrapper around ListWith so UI code reads as pagination instead of a full-list
+// scan followed by slicing.
+func ListPage(opts ListOptions, offset, limit int) ([]SessionInfo, error) {
+	opts.Offset = offset
+	opts.Limit = limit
+	return ListWith(opts)
+}
+
+// listPageWithArchives returns a bounded page for archive-aware pickers. It
+// preserves the legacy archive ordering by combining each live session with its
+// richest archive before applying offset/limit, but stops as soon as the page and
+// has-next probe are filled instead of decoding the entire live session store.
+func listPageWithArchives(dir string, entries []os.DirEntry, offset, limit int) ([]SessionInfo, error) {
+	if limit <= 0 {
+		return nil, nil
+	}
+	archiveBest := richestSnapshots(dir, entries)
+	seen := 0
+	out := make([]SessionInfo, 0, limit)
+	appendRow := func(row SessionInfo) bool {
+		if seen >= offset && len(out) < limit {
+			out = append(out, row)
+		}
+		seen++
+		return len(out) >= limit
+	}
+	for _, e := range entries {
+		if e.IsDir() || !isSessionFile(e.Name()) {
+			continue
+		}
+		p := filepath.Join(dir, e.Name())
+		b, err := os.ReadFile(p)
+		if err != nil {
+			continue
+		}
+		var s Session
+		if err := json.Unmarshal(b, &s); err != nil {
+			continue
+		}
+		if !s.HasExchange() {
+			continue
+		}
+		row := SessionInfo{
+			ID:       s.ID,
+			Name:     s.Name,
+			Model:    s.Model,
+			Created:  s.Created,
+			Messages: len(s.Messages),
+			Worktree: s.Worktree,
+			Summary:  s.Summary(),
+		}
+		if appendRow(row) {
+			break
+		}
+		if archive, ok := archiveBest[s.ID]; ok {
+			archive.Model = s.Model
+			if appendRow(archive) {
+				break
+			}
+		}
+	}
+	return out, nil
+}
+
+// richestSnapshots chooses the archive with the most messages for each parent
+// session. It still scans snapshot files, which are usually far fewer than live
+// sessions and are needed only for archive-aware picker pages.
+func richestSnapshots(dir string, entries []os.DirEntry) map[string]SessionInfo {
+	best := map[string]SessionInfo{}
+	for _, e := range entries {
+		if e.IsDir() || !isSnapshotFile(e.Name()) {
+			continue
+		}
+		b, err := os.ReadFile(filepath.Join(dir, e.Name()))
+		if err != nil {
+			continue
+		}
+		var payload snapshotPayload
+		if err := json.Unmarshal(b, &payload); err != nil {
+			continue
+		}
+		id := strings.TrimSuffix(e.Name(), ".json")
+		parent := snapshotParentID(id)
+		probe := Session{Messages: payload.Messages}
+		if !probe.HasExchange() {
+			continue
+		}
+		if cur, ok := best[parent]; ok && cur.Messages >= len(payload.Messages) {
+			continue
+		}
+		best[parent] = SessionInfo{
+			ID:         id,
+			Created:    payload.Captured,
+			Messages:   len(payload.Messages),
+			Summary:    probe.Summary(),
+			Archived:   true,
+			ArchivedOf: parent,
+		}
+	}
+	return best
 }
 
 // listSnapshots returns one row per snapshotted session: the archive that

@@ -55,6 +55,8 @@ Each row in the `/sessions` picker carries a one-line gist of what the session w
   20260721-033419.065349    why is the build flaky?             ·  gpt-5.5 · 40 msgs · 9h ago
 ```
 
+The picker loads saved sessions one page at a time, so opening `/sessions` stays responsive even when the sessions directory is large. Use `PgUp`/`PgDn` to move between pages; `/recall <query>` remains the better path when you are searching older history by content.
+
 The gist is read from the session's own transcript — nothing is generated and no model is called, so it costs nothing and applies to sessions you already have. Sessions renamed via **Rename** show the name in the left column instead of the id. On a narrow terminal the model name drops out first to keep the gist visible; narrower still, rows fall back to metadata only.
 
 ## Resume a session
