@@ -69,6 +69,54 @@ func TestRenderHelpPanel_DividerMatchesBoxWidth(t *testing.T) {
 	}
 }
 
+func TestHelpPopup_PageDownScrollsInsteadOfClosing(t *testing.T) {
+	m := newTestModel(t)
+	m.height = 8
+	m, _ = cmdHelp(m, nil)
+	if !m.helpOpen {
+		t.Fatal("test setup: help should be open")
+	}
+
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyPgDown})
+	if !m.helpOpen {
+		t.Fatal("PgDn should scroll the help popup, not close it")
+	}
+	if m.helpScrollOffset == 0 && m.helpMaxScrollOffset() > 0 {
+		t.Fatal("PgDn should advance the help scroll offset")
+	}
+
+	m, _ = applyMsg(m, tea.KeyPressMsg{Text: "x"})
+	if m.helpOpen {
+		t.Fatal("non-scroll keys should still dismiss the help popup")
+	}
+}
+
+func TestHelpPopup_CanScrollToBottom(t *testing.T) {
+	m := newTestModel(t)
+	m.height = 8
+	m, _ = cmdHelp(m, nil)
+	if maxOffset := m.helpMaxScrollOffset(); maxOffset <= 0 {
+		t.Fatalf("test setup: help should require scrolling, maxOffset=%d", maxOffset)
+	}
+
+	for i := 0; i < 100; i++ {
+		m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyPgDown})
+	}
+	if got, want := m.helpScrollOffset, m.helpMaxScrollOffset(); got != want {
+		t.Fatalf("repeated PgDn should clamp at bottom offset; got %d want %d", got, want)
+	}
+	lastLine := strings.Split(m.helpPanel, "\n")[strings.Count(m.helpPanel, "\n")]
+	if !strings.Contains(m.windowedHelpPanel(), lastLine) {
+		t.Fatalf("bottom window should include final help line %q; got:\n%s", lastLine, m.windowedHelpPanel())
+	}
+
+	m.helpScrollOffset = 0
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnd})
+	if got, want := m.helpScrollOffset, m.helpMaxScrollOffset(); got != want {
+		t.Fatalf("End should jump to bottom offset; got %d want %d", got, want)
+	}
+}
+
 // permissionsLoadHelper seeds <cwd>/.yottacode/permissions.json with
 // the given allow/ask/deny lists and returns a fresh Permissions
 // pointing at it. Used by /permissions slash-command tests so they

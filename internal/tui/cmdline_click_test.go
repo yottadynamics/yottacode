@@ -46,7 +46,7 @@ func TestCmdlineClick_MultiLineMovesTextCursor(t *testing.T) {
 	}
 }
 
-func TestCmdlineClick_EmptyValueIsNoop(t *testing.T) {
+func TestCmdlineClick_EmptyValueFlashesFocusWithoutTyping(t *testing.T) {
 	m := newTestModel(t)
 	m.enteredConversation = true
 
@@ -54,6 +54,30 @@ func TestCmdlineClick_EmptyValueIsNoop(t *testing.T) {
 	m, _ = applyMsg(m, tea.MouseClickMsg{X: ox + 4, Y: oy + 1})
 	if m.textInput.Value() != "" {
 		t.Errorf("clicking an empty cmdline should not insert or change anything; got %q", m.textInput.Value())
+	}
+	if !m.cmdlineClickFlash {
+		t.Fatal("clicking an empty cmdline should trigger the focus-color pulse")
+	}
+
+	m, _ = applyMsg(m, cmdlineClickFlashDoneMsg{})
+	if m.cmdlineClickFlash {
+		t.Fatal("focus-color pulse should clear after its timer message")
+	}
+}
+
+func TestCmdlineClick_HeroEmptyValueFlashesFocus(t *testing.T) {
+	m := newTestModel(t)
+	if m.enteredConversation {
+		t.Fatal("test setup: fresh model should still be on the welcome screen")
+	}
+
+	ox, oy := m.inputFrameOrigin()
+	m, _ = applyMsg(m, tea.MouseClickMsg{X: ox + 4, Y: oy + 1})
+	if !m.cmdlineClickFlash {
+		t.Fatal("clicking the welcome-screen cmdline should trigger the focus-color pulse")
+	}
+	if m.enteredConversation {
+		t.Fatal("clicking the welcome-screen cmdline should not start the conversation")
 	}
 }
 

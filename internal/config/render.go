@@ -7,6 +7,8 @@ import (
 	"strings"
 
 	"github.com/BurntSushi/toml"
+
+	"github.com/yottadynamics/yottacode/internal/tui/themes"
 )
 
 // Render produces the canonical TOML body for a Config. Stable
@@ -51,7 +53,7 @@ func Render(cfg Config) string {
 	// other than the default — keeps the file minimal for users who
 	// never touched /themes. Load() backfills DefaultName when the
 	// section is absent, so omitting it here is lossless.
-	if name := strings.TrimSpace(cfg.Theme.Name); name != "" && name != "terminal" {
+	if name := strings.TrimSpace(cfg.Theme.Name); name != "" && name != themes.DefaultName {
 		b.WriteString("[theme]\n")
 		fmt.Fprintf(&b, "name = %q\n\n", name)
 	}

@@ -175,15 +175,14 @@ func (m *Model) applyTranscriptHighlight() {
 		if start >= end {
 			continue
 		}
-			// lipgloss.StyleRanges' Range.Start/End are display-cell
-			// positions. Convert the selected rune boundaries back to display
-			// columns so table glyphs and wide characters highlight under the
-			// same cells the mouse drag crossed.
-			plain := ansi.Strip(highlighted[i])
-			highlighted[i] = lipgloss.StyleRanges(highlighted[i], lipgloss.NewRange(runeIndexToDisplayColumn(plain, start), runeIndexToDisplayColumn(plain, end), styleTranscriptSelection))
-		}
-		m.transcriptViewport.SetContentLines(highlighted)
-
+		// lipgloss.StyleRanges' Range.Start/End are display-cell
+		// positions. Convert the selected rune boundaries back to display
+		// columns so table glyphs and wide characters highlight under the
+		// same cells the mouse drag crossed.
+		plain := ansi.Strip(highlighted[i])
+		highlighted[i] = lipgloss.StyleRanges(highlighted[i], lipgloss.NewRange(runeIndexToDisplayColumn(plain, start), runeIndexToDisplayColumn(plain, end), styleTranscriptSelection))
+	}
+	m.transcriptViewport.SetContentLines(highlighted)
 }
 
 // transcriptSelectionByteRange returns the [start,end) byte range

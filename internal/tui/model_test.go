@@ -827,13 +827,13 @@ func TestModel_ThinkingRowAboveInputWhenActive(t *testing.T) {
 	}
 	// The textarea (with its placeholder) must remain visible — the user
 	// can compose their next message while the agent works.
-	if !strings.Contains(v, "ask anything") {
+	if !strings.Contains(v, "build anything") {
 		t.Errorf("input row should still be visible during a turn; got %q", v)
 	}
 	// Verify the Thinking indicator appears BEFORE the input prompt in
 	// the rendered output (i.e., above it).
 	thinkingIdx := strings.Index(v, "thinking")
-	promptIdx := strings.Index(v, "ask anything")
+	promptIdx := strings.Index(v, "build anything")
 	if thinkingIdx >= promptIdx {
 		t.Errorf("thinking row should render above input prompt; thinking@%d input@%d", thinkingIdx, promptIdx)
 	}
@@ -1306,14 +1306,8 @@ func TestModel_HeaderShowsBrandingAndVersion(t *testing.T) {
 	m, _ = applyMsg(m, tea.WindowSizeMsg{Width: 100, Height: 24})
 	// The startup box is launch hero chrome, not transcript content.
 	v := m.View().Content
-	if !strings.Contains(v, "YottaCode") || !strings.Contains(v, "v9.9.9") {
+	if !strings.Contains(v, "yottacode") || !strings.Contains(v, "v9.9.9") {
 		t.Errorf("startup box missing branding/version: %q", v)
-	}
-	if !strings.Contains(v, "qwen3.5") {
-		t.Errorf("startup box missing model: %q", v)
-	}
-	if !strings.Contains(v, "/some/path") {
-		t.Errorf("startup box missing cwd: %q", v)
 	}
 }
 
@@ -1346,7 +1340,7 @@ func TestModel_NewSeedsContextTokensFromResumedSession(t *testing.T) {
 func TestModel_SplashShowsProductName(t *testing.T) {
 	m := newTestModel(t)
 	v := m.View().Content
-	if !strings.Contains(v, "YottaCode") {
+	if !strings.Contains(v, "yottacode") {
 		t.Errorf("startup box should show product name: %q", v)
 	}
 }
@@ -1368,7 +1362,7 @@ func TestModel_PromptOnlyOnFirstWrappedRow(t *testing.T) {
 	long := strings.Repeat("e", 400)
 	m.textInput.SetValue(long)
 	m.fitTextareaHeight()
-	v := m.View().Content
+	v := m.renderInputFrame()
 	if got := strings.Count(v, "›"); got != 1 {
 		t.Errorf("expected exactly 1 › in view for soft-wrapped input, got %d:\n%s", got, v)
 	}
@@ -1527,8 +1521,8 @@ func TestModel_HeaderShowsMemoryWhenLoaded(t *testing.T) {
 		MemorySummary: "USER+PROJECT",
 	})
 	m, _ = applyMsg(m, tea.WindowSizeMsg{Width: 120, Height: 24})
-	if !strings.Contains(m.View().Content, "mem=USER+PROJECT") {
-		t.Errorf("startup box should show memory summary")
+	if strings.Contains(m.View().Content, "mem=USER+PROJECT") {
+		t.Errorf("welcome card should not duplicate memory summary")
 	}
 }
 

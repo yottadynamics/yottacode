@@ -1,6 +1,9 @@
 package tui
 
 import (
+	"fmt"
+	"image/color"
+
 	"charm.land/lipgloss/v2"
 	"charm.land/lipgloss/v2/compat"
 
@@ -46,6 +49,34 @@ import (
 // anything tries to render it — so every color var needs an explicit,
 // render-safe default instead of relying on Go's zero value.
 var zeroAdaptiveColor = compat.AdaptiveColor{Light: lipgloss.NoColor{}, Dark: lipgloss.NoColor{}}
+
+func brightenColor(c color.Color, amount uint32) color.Color {
+	if c == nil {
+		return c
+	}
+	r, g, b, a := c.RGBA()
+	if a == 0 {
+		return c
+	}
+	boost := func(v uint32) uint8 {
+		v8 := v >> 8
+		v8 += amount
+		if v8 > 255 {
+			v8 = 255
+		}
+		return uint8(v8)
+	}
+	return lipgloss.Color(fmt.Sprintf("#%02x%02x%02x", boost(r), boost(g), boost(b)))
+}
+
+func brightenAdaptiveColor(c compat.AdaptiveColor, amount uint32) compat.AdaptiveColor {
+	return compat.AdaptiveColor{
+		Light: brightenColor(c.Light, amount),
+		Dark:  brightenColor(c.Dark, amount),
+	}
+}
+
+var cmdlineClickBorderColor = zeroAdaptiveColor
 
 var (
 	// --- live color slots ---------------------------------------
@@ -207,6 +238,7 @@ func buildStyles(p themes.Palette) {
 	colorError = p.Error
 	colorContent = p.Content
 	colorDim = p.Dim
+	cmdlineClickBorderColor = brightenAdaptiveColor(p.Dim, 36)
 	colorMuted = p.Dim     // legacy alias: "muted text" maps to Dim
 	colorBrand = p.Success // legacy alias: brand mark = green/success
 	colorAssistant = p.Assistant

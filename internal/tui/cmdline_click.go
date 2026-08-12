@@ -9,13 +9,24 @@ import (
 // top-left corner (the "┌" of renderInputFrame's border) — the anchor
 // resolveInputClick needs to convert a screen click into a row/col
 // inside the frame. x is always 0: the input frame spans the full
-// terminal width. y is the transcript viewport's height (everything
-// above the footer) plus however many rows footerPartsAboveInputFrame
-// contributes ahead of the frame itself. Scoped to the entered-
-// conversation layout only — the hero launch screen centers its own
-// block differently and isn't covered here, mirroring
-// beginTranscriptSelection's same early-exit precedent for that state.
+// terminal width. In the conversation layout, y is the transcript
+// viewport's height plus any above-cmdline footer rows. In the launch
+// hero, y is the startup card block height plus the spacer above the
+// cmdline. Keeping both paths here lets cmdline click-to-focus work
+// before the first message as well as after conversation starts.
 func (m Model) inputFrameOrigin() (x, y int) {
+	if !m.enteredConversation {
+		box := renderStartupBox(m.version, m.commit, m.dirty, m.startupTip(), m.welcomeCursor, m.width)
+		// renderHero joins: leading blank, startup box, spacer, above-input rows,
+		// input frame. The block is top-placed, so y is just the joined height above
+		// the input frame.
+		y = 1 + lipgloss.Height(box) + 1
+		above := m.aboveInputRows()
+		if len(above) > 0 {
+			y += lipgloss.Height(lipgloss.JoinVertical(lipgloss.Left, above...))
+		}
+		return 0, y
+	}
 	footerHeight := lipgloss.Height(m.renderFooter())
 	transcriptHeight := m.height - footerHeight
 	above := m.footerPartsAboveInputFrame()
@@ -30,14 +41,12 @@ func (m Model) inputFrameOrigin() (x, y int) {
 // target inside the cmdline's textarea value — the inverse of
 // renderInputBody's own wrap/window geometry, built from the exact same
 // wrapInputRows/windowInputRows helpers so the two can never disagree
-// about where a given row/column actually is. ok=false when the value
-// is empty (nothing to click into) or the point falls outside the
-// frame's interior (border, status bar, dock).
+// about where a given row/column actually is. Empty input still resolves
+// to (0,0) so clicks can focus the cmdline and trigger visual feedback.
+// ok=false when the point falls outside the frame's interior (border,
+// status bar, dock).
 func (m Model) resolveInputClick(screenX, screenY int) (logicalLine, col int, ok bool) {
 	val := m.textInput.Value()
-	if val == "" {
-		return 0, 0, false
-	}
 	ox, oy := m.inputFrameOrigin()
 	// renderInputFrame: row 0 is the top border, body rows start at 1;
 	// column 0 is "│ " (border + one padding cell) — same +1/+2 offsets
@@ -52,6 +61,12 @@ func (m Model) resolveInputClick(screenX, screenY int) (logicalLine, col int, ok
 	wrapW := contentW - inputPromptW
 	if wrapW < 1 {
 		wrapW = 1
+	}
+	if val == "" {
+		if row == 0 {
+			return 0, 0, true
+		}
+		return 0, 0, false
 	}
 	cursorLogicalRow := m.textInput.Line()
 	info := m.textInput.LineInfo()

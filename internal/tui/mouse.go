@@ -24,7 +24,7 @@ func (m Model) popupOpen() bool {
 // interactive surface that benefits from mouse reporting. Normal conversation
 // mouse stays terminal-native so right-click menus, paste, and selection work.
 func (m Model) interactiveMouseOpen() bool {
-	return m.popupOpen() || m.paletteOpen || m.filePaletteOpen
+	return m.welcomeVisible() || m.popupOpen() || m.paletteOpen || m.filePaletteOpen
 }
 
 // dismissStaticPopup closes whichever any-key-dismiss static panel is
@@ -45,6 +45,7 @@ func (m Model) dismissStaticPopup() Model {
 	m.experimentalPanel = ""
 	m.helpOpen = false
 	m.helpPanel = ""
+	m.helpScrollOffset = 0
 	m.contextReportOpen = false
 	m.contextReportBody = ""
 	return m
@@ -73,7 +74,10 @@ func (m Model) handleScrollableStaticPopupClick(box string, msg tea.MouseClickMs
 	if m.inspectOpen && m.inspectMaxScrollOffset() == 0 {
 		return m, false
 	}
-	if !m.usageOpen && !m.inspectOpen {
+	if m.helpOpen && m.helpMaxScrollOffset() == 0 {
+		return m, false
+	}
+	if !m.usageOpen && !m.inspectOpen && !m.helpOpen {
 		return m, false
 	}
 	originX, originY := m.popupOrigin(box)
@@ -100,6 +104,9 @@ func (m Model) scrollPopupLines(delta int) Model {
 	}
 	if m.inspectOpen {
 		m.inspectScrollOffset = min(max(m.inspectScrollOffset+delta, 0), m.inspectMaxScrollOffset())
+	}
+	if m.helpOpen {
+		m.helpScrollOffset = min(max(m.helpScrollOffset+delta, 0), m.helpMaxScrollOffset())
 	}
 	return m
 }
@@ -854,6 +861,14 @@ func (m Model) handleMouseClick(msg tea.MouseClickMsg) (Model, tea.Cmd) {
 	if m.embedSetupOpen {
 		return m.handleEmbedSetupClick(msg)
 	}
+	if m.welcomeVisible() {
+		if line, col, ok := m.resolveInputClick(msg.X, msg.Y); ok {
+			m.cmdlineClickFlash = true
+			setTextInputCursor(&m.textInput, line, col)
+			return m, cmdlineClickFlashCmd()
+		}
+		return m.handleWelcomeClick(msg)
+	}
 	if m.anyOverlayOpen() {
 		return m, nil // the 6 any-key-dismiss static panels (cheatsheet, loop-list, usage, experimental, help, context-report) — already dispatched above via dismissStaticPopup
 	}
@@ -867,9 +882,40 @@ func (m Model) handleMouseClick(msg tea.MouseClickMsg) (Model, tea.Cmd) {
 	}
 	m.clearTranscriptSelection()
 	if line, col, ok := m.resolveInputClick(msg.X, msg.Y); ok {
+		m.cmdlineClickFlash = true
 		setTextInputCursor(&m.textInput, line, col)
+		return m, cmdlineClickFlashCmd()
 	}
 	return m, nil
+}
+
+func (m Model) handleWelcomeClick(msg tea.MouseClickMsg) (Model, tea.Cmd) {
+	if idx, ok := m.welcomeActionAt(msg.X, msg.Y); ok {
+		m.welcomeCursor = idx
+		return m.activateWelcomeCursor()
+	}
+	return m, nil
+}
+
+func (m Model) handleWelcomeHover(msg tea.MouseMotionMsg) Model {
+	if idx, ok := m.welcomeActionAt(msg.X, msg.Y); ok {
+		m.welcomeCursor = idx
+	}
+	return m
+}
+
+func (m Model) welcomeActionAt(screenX, screenY int) (int, bool) {
+	box := renderStartupBox(m.version, m.commit, m.dirty, m.startupTip(), m.welcomeCursor, m.width)
+	row, col, ok := bodyPoint(box, 0, 1, screenX, screenY)
+	if !ok || col < 0 {
+		return 0, false
+	}
+	// Body row 5 is the first action: blank, title, blank, welcome, blank.
+	idx := row - 5
+	if idx < 0 || idx >= len(welcomeActions()) {
+		return 0, false
+	}
+	return idx, true
 }
 
 // handleMouseMotion extends an in-progress transcript selection. A
@@ -878,7 +924,7 @@ func (m Model) handleMouseClick(msg tea.MouseClickMsg) (Model, tea.Cmd) {
 // drag can't start under one) clears the selection instead of
 // continuing to extend it invisibly behind the popup.
 func (m Model) handleMouseMotion(msg tea.MouseMotionMsg) (Model, tea.Cmd) {
-	if m.popupOpen() || m.paletteOpen || m.filePaletteOpen {
+	if m.welcomeVisible() || m.popupOpen() || m.paletteOpen || m.filePaletteOpen {
 		return m.handleMouseHover(msg)
 	}
 	if !m.transcriptSelecting {
@@ -900,6 +946,9 @@ func (m Model) handleMouseHover(msg tea.MouseMotionMsg) (Model, tea.Cmd) {
 	}
 	if m.filePaletteOpen {
 		return m.handleFilePaletteHover(msg), nil
+	}
+	if m.welcomeVisible() {
+		return m.handleWelcomeHover(msg), nil
 	}
 	return m.handlePopupHover(msg), nil
 }
@@ -953,7 +1002,7 @@ func (m Model) inlinePaletteRow(screenY, total, visible, offset int) (int, bool)
 // conversation layout palettes live at the top of the footer.
 func (m Model) inlinePaletteTop() int {
 	if !m.enteredConversation {
-		box := renderStartupBox(m.version, m.commit, m.dirty, m.modelName, m.cwd, m.sess.ID, m.branch, m.memorySummary, m.providerProfile, m.startupTip(), m.width)
+		box := renderStartupBox(m.version, m.commit, m.dirty, m.startupTip(), m.welcomeCursor, m.width)
 		return 1 + lipgloss.Height(box) + 1
 	}
 	paletteTop := m.height - lipgloss.Height(m.renderFooter())

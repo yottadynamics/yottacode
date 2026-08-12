@@ -21,7 +21,7 @@ func TestWelcome_FreshSessionEmbedsMemoryTipInCard(t *testing.T) {
 	if !strings.Contains(v, "USER.md") {
 		t.Errorf("memory tip should mention USER.md: %q", v)
 	}
-	if !strings.Contains(v, "tip:") {
+	if !strings.Contains(v, "Tip") {
 		t.Errorf("tip prefix should appear inside the startup card: %q", v)
 	}
 }

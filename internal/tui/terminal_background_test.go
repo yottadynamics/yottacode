@@ -97,6 +97,7 @@ func TestThemesPicker_EscRevertsRealBackgroundToo(t *testing.T) {
 	}
 
 	m := newTestModel(t)
+	ApplyTheme("terminal") // start on a non-backgrounded theme after New applies defaults
 	m, _ = m.runSlash("/theme")
 	for i := 0; i < len(m.themePicker.entries) && m.themePicker.entries[m.themePicker.cursor] != "gruvbox"; i++ {
 		m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyDown})
