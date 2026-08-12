@@ -303,8 +303,8 @@ const (
 	yoloIterationMultiplier = 20
 	// yoloIterationFloor is the minimum yolo budget, so a small
 	// --max-iterations doesn't starve an unattended run. With the
-	// default cap of 50 this is also the effective ceiling (50*20 ==
-	// 1000), matching a sane "runaway backstop" default.
+	// default cap of 128 this yields a 2560-turn yolo budget,
+	// while smaller custom caps still get a sane runaway backstop.
 	yoloIterationFloor = 1000
 )
 

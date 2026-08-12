@@ -133,8 +133,8 @@ func TestMaxIterationsDefault(t *testing.T) {
 	if flag == nil {
 		t.Fatalf("max-iterations flag is not registered")
 	}
-	if flag.DefValue != "100" {
-		t.Fatalf("max-iterations default = %q, want 100", flag.DefValue)
+	if flag.DefValue != "128" {
+		t.Fatalf("max-iterations default = %q, want 128", flag.DefValue)
 	}
 }
 
