@@ -351,10 +351,14 @@ func TestLoadRecentSessions_ArchivesArePerMode(t *testing.T) {
 		}
 		return n
 	}
-	if got := countArchived(loadRecentSessions(true)); got != 1 {
+	loadRows := func(includeArchived bool) []session.SessionInfo {
+		rows, _ := loadSessionPage(includeArchived, 0)
+		return rows
+	}
+	if got := countArchived(loadRows(true)); got != 1 {
 		t.Errorf("Load/Export list should offer the archive, got %d archived rows", got)
 	}
-	if got := countArchived(loadRecentSessions(false)); got != 0 {
+	if got := countArchived(loadRows(false)); got != 0 {
 		t.Errorf("Rename list must not offer archives, got %d", got)
 	}
 }
