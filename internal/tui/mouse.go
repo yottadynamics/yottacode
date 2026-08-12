@@ -733,7 +733,7 @@ func (m Model) handleSlashPaletteClick(msg tea.MouseClickMsg) (Model, tea.Cmd) {
 	}
 	m.paletteIndex = m.paletteOffset + row
 	chosen := m.paletteFiltered[m.paletteIndex]
-	if chosen.Args != "" {
+	if slashArgsRequired(chosen.Args) {
 		m.textInput.SetValue("/" + chosen.Name + " ")
 		m.textInput.CursorEnd()
 		m.paletteOpen = false

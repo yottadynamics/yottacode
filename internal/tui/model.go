@@ -1817,7 +1817,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// partial text in the textarea.
 				if m.paletteOpen && len(m.paletteFiltered) > 0 && !strings.Contains(input, " ") {
 					chosen := m.paletteFiltered[m.paletteIndex]
-					if chosen.Args != "" {
+					if slashArgsRequired(chosen.Args) {
 						m.textInput.SetValue("/" + chosen.Name + " ")
 						m.textInput.CursorEnd()
 						m.paletteOpen = false
@@ -2319,7 +2319,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			input := strings.TrimSpace(m.textInput.Value())
 			if m.paletteOpen && len(m.paletteFiltered) > 0 && !strings.Contains(input, " ") {
 				chosen := m.paletteFiltered[m.paletteIndex]
-				if chosen.Args != "" {
+				if slashArgsRequired(chosen.Args) {
 					m.textInput.SetValue("/" + chosen.Name + " ")
 					m.textInput.CursorEnd()
 					m.paletteOpen = false

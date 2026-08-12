@@ -17,7 +17,10 @@ import (
 // sessions. The picker is for the just-here-recently case; reaching
 // further back is /recall's job. The list footer tells users this so
 // older sessions don't feel hidden.
-const sessionsRecentLimit = 15
+const (
+	sessionsRecentLimit = 60
+	sessionsPageSize    = 15
+)
 
 // Session-row layout. sessionsLabelWidth is the id/name column; the gist
 // column takes what's left after the trailing metadata, clamped to
@@ -75,6 +78,7 @@ type sessionsPickerState struct {
 	// goes Rename → menu → Resume in the same picker session.
 	sessions   []session.SessionInfo
 	listCursor int
+	listOffset int
 
 	// picked is the row the user confirmed in a list sub-picker;
 	// rename/export forms read it to know which session to mutate.
@@ -157,6 +161,7 @@ func (m Model) updateSessionsPicker(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 			if p.listCursor > 0 {
 				p.listCursor--
 			}
+			p.ensureListCursorVisible()
 		}
 		return m, nil
 	case tea.KeyDown:
@@ -169,6 +174,21 @@ func (m Model) updateSessionsPicker(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 			if p.listCursor < len(p.sessions)-1 {
 				p.listCursor++
 			}
+			p.ensureListCursorVisible()
+		}
+		return m, nil
+	case tea.KeyPgUp:
+		switch p.mode {
+		case sessionsLoadListMode, sessionsRenameListMode, sessionsExportListMode:
+			p.listCursor = max(0, p.listCursor-sessionsPageSize)
+			p.ensureListCursorVisible()
+		}
+		return m, nil
+	case tea.KeyPgDown:
+		switch p.mode {
+		case sessionsLoadListMode, sessionsRenameListMode, sessionsExportListMode:
+			p.listCursor = min(len(p.sessions)-1, p.listCursor+sessionsPageSize)
+			p.ensureListCursorVisible()
 		}
 		return m, nil
 	case tea.KeyEnter:
@@ -241,6 +261,7 @@ func (m Model) dispatchSessionsMenu() (Model, tea.Cmd) {
 	}
 	p.mode = item.Action
 	p.listCursor = 0
+	p.listOffset = 0
 	// Default the cursor to the running session for Rename — most
 	// "name this session" intents target the one you're in. Load and
 	// Export start at the top of the list (newest first), since
@@ -632,6 +653,17 @@ func loadListDescription(p *sessionsPickerState) string {
 	return desc
 }
 
+func (p *sessionsPickerState) ensureListCursorVisible() {
+	if p.listCursor < p.listOffset {
+		p.listOffset = p.listCursor
+	}
+	if p.listCursor >= p.listOffset+sessionsPageSize {
+		p.listOffset = p.listCursor - sessionsPageSize + 1
+	}
+	maxOffset := max(len(p.sessions)-sessionsPageSize, 0)
+	p.listOffset = min(max(p.listOffset, 0), maxOffset)
+}
+
 // renderSessionsList draws the latest-N session table for resume,
 // rename, and export. Each row: id-or-name (label column) · model ·
 // N msgs · relative age. The footer note "showing the N most
@@ -646,7 +678,10 @@ func renderSessionsList(p *sessionsPickerState, title, description string, width
 		return strings.TrimRight(b.String(), "\n")
 	}
 	layout := sessionsRowLayout(p.sessions, width)
-	for i, s := range p.sessions {
+	p.ensureListCursorVisible()
+	end := min(p.listOffset+sessionsPageSize, len(p.sessions))
+	for i := p.listOffset; i < end; i++ {
+		s := p.sessions[i]
 		row := strings.Count(b.String(), "\n")
 		h.row(row, i)
 		b.WriteString(renderMenuItem(menuItemOpts{
@@ -660,8 +695,8 @@ func renderSessionsList(p *sessionsPickerState, title, description string, width
 	}
 	b.WriteString("\n")
 	b.WriteString(styleMeta.Render(
-		fmt.Sprintf("  showing the %d most recent · use /recall <query> to search older sessions",
-			len(p.sessions))))
+		fmt.Sprintf("  showing %d-%d of %d recent · PgUp/PgDn page · use /recall <query> to search older sessions",
+			p.listOffset+1, end, len(p.sessions))))
 	return strings.TrimRight(b.String(), "\n")
 }
 

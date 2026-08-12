@@ -67,7 +67,7 @@ func init() {
 	allSlash = []slashCommand{
 		// Workflow — most reached-for during active coding.
 		{Name: "plan", Help: "toggle plan mode — also Shift+Tab. Type `/plan list` to resume an earlier plan.", Run: cmdPlan},
-		{Name: "auto", Help: "toggle auto mode — also Shift+Tab and --permission-mode auto. Edits auto-allow; shell and git history still prompt.", Run: cmdAuto},
+		{Name: "auto", Help: "toggle auto mode for edit approvals", Run: cmdAuto},
 		{Name: "model", Help: "open the model picker (subcommands: list [all], <name>)", Run: cmdModel},
 		{Name: "provider", Help: "select a new provider (subcommands: list, use, add, remove, models)", Run: cmdProviderEntry},
 		{Name: "effort", Help: "set reasoning effort for providers that support it (default · low · medium · high)", Run: cmdEffort},
@@ -115,7 +115,7 @@ func init() {
 		{Name: "context", Help: "show context window usage breakdown", Run: cmdContext, PreservesTurn: true},
 		{Name: "experimental", Help: "list experimental features and which are enabled this session", Run: cmdExperimental, PreservesTurn: true},
 		{Name: "usage", Help: "show per-session token usage, today's rollup, and estimated cost", Run: cmdUsage, PreservesTurn: true},
-		{Name: "inspect", Args: "[session-id]", Help: "pick or open a read-only turn-by-turn session replay; press e inside the view to export Markdown", Run: cmdInspect, PreservesTurn: true},
+		{Name: "inspect", Help: "pick a session for read-only turn-by-turn replay; press e inside the view to export Markdown", Run: cmdInspect, PreservesTurn: true},
 		{Name: "doctor", Help: "probe provider auth and model access", Run: cmdDoctor, PreservesTurn: true},
 		{Name: "redo", Help: "edit and re-run the most recent message", Run: cmdRedo},
 		{Name: "recall", Args: "<query>", Help: "full-text search across every saved session", Run: cmdRecall, PreservesTurn: true},
@@ -170,6 +170,11 @@ func (m *Model) findSlash(name string) *slashCommand {
 		}
 	}
 	return nil
+}
+
+func slashArgsRequired(args string) bool {
+	args = strings.TrimSpace(args)
+	return args != "" && strings.HasPrefix(args, "<")
 }
 
 // runSlash dispatches based on an input line ("/foo arg1 arg2"), recording

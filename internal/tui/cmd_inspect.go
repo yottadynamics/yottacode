@@ -23,6 +23,7 @@ type inspectPickerRow struct {
 type inspectPickerState struct {
 	rows   []inspectPickerRow
 	cursor int
+	offset int
 }
 
 // inspectArgsPreviewChars and inspectTextPreviewChars bound how much of a
@@ -99,11 +100,21 @@ func (m Model) updateInspectPicker(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 		if p.cursor > 0 {
 			p.cursor--
 		}
+		p.ensureCursorVisible()
 		return m, nil
 	case tea.KeyDown:
 		if p.cursor < len(p.rows)-1 {
 			p.cursor++
 		}
+		p.ensureCursorVisible()
+		return m, nil
+	case tea.KeyPgUp:
+		p.cursor = max(0, p.cursor-sessionsPageSize)
+		p.ensureCursorVisible()
+		return m, nil
+	case tea.KeyPgDown:
+		p.cursor = min(len(p.rows)-1, p.cursor+sessionsPageSize)
+		p.ensureCursorVisible()
 		return m, nil
 	case tea.KeyEnter:
 		return m.commitInspectPick()
@@ -400,6 +411,17 @@ func (m Model) windowedInspectPanel() string {
 	return shown + "\n" + styleHint.Render(hint)
 }
 
+func (p *inspectPickerState) ensureCursorVisible() {
+	if p.cursor < p.offset {
+		p.offset = p.cursor
+	}
+	if p.cursor >= p.offset+sessionsPageSize {
+		p.offset = p.cursor - sessionsPageSize + 1
+	}
+	maxOffset := max(len(p.rows)-sessionsPageSize, 0)
+	p.offset = min(max(p.offset, 0), maxOffset)
+}
+
 func renderInspectPicker(p *inspectPickerState, width int, hits ...*pickerHits) string {
 	var h *pickerHits
 	if len(hits) > 0 {
@@ -416,7 +438,10 @@ func renderInspectPicker(p *inspectPickerState, width int, hits ...*pickerHits) 
 			infos = append(infos, row.info)
 		}
 		layout := sessionsRowLayout(infos, width)
-		for i, row := range p.rows {
+		p.ensureCursorVisible()
+		end := min(p.offset+sessionsPageSize, len(p.rows))
+		for i := p.offset; i < end; i++ {
+			row := p.rows[i]
 			if h != nil {
 				h.row(strings.Count(b.String(), "\n"), i)
 			}
@@ -435,6 +460,6 @@ func renderInspectPicker(p *inspectPickerState, width int, hits ...*pickerHits) 
 		}
 	}
 	b.WriteString("\n")
-	b.WriteString(styleFooter.Render("↵ inspect · esc cancel · ↑↓ navigate"))
+	b.WriteString(styleFooter.Render("↵ inspect · esc cancel · ↑↓ navigate · PgUp/PgDn page"))
 	return strings.TrimRight(b.String(), "\n")
 }
