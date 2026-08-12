@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -260,6 +261,54 @@ func TestInspectExport_WritesCurrentInspectedSession(t *testing.T) {
 	}
 	if !strings.Contains(string(body), "# yottacode session") || !strings.Contains(string(body), "hello") {
 		t.Fatalf("exported markdown missing session content:\n%s", string(body))
+	}
+}
+
+func TestInspectTypedSlashOpensPicker(t *testing.T) {
+	m := newTestModel(t)
+	m.textInput.SetValue("/inspect")
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	if !m.inspectPickerOpen {
+		t.Fatal("typing /inspect and pressing Enter should open the inspect picker")
+	}
+	if m.inspectOpen {
+		t.Fatal("typing /inspect should not open the current-session inspect panel directly")
+	}
+}
+
+func TestInspectSlashPaletteSelectionOpensPicker(t *testing.T) {
+	m := newTestModel(t)
+	m.textInput.SetValue("/ins")
+	m.paletteFiltered = []slashCommand{{Name: "inspect", Args: "[session-id]", Run: cmdInspect, PreservesTurn: true}}
+	m.paletteOpen = true
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	if !m.inspectPickerOpen {
+		t.Fatal("selecting /inspect from the slash palette should execute it when the args are optional")
+	}
+}
+
+func TestInspectPickerPagesSessionRows(t *testing.T) {
+	p := &inspectPickerState{}
+	for i := range sessionsPageSize + 3 {
+		p.rows = append(p.rows, inspectPickerRow{info: session.SessionInfo{ID: fmt.Sprintf("20260101-%06d.000000", i)}})
+	}
+	m := newTestModel(t)
+	m.inspectPicker = p
+	m.inspectPickerOpen = true
+
+	m, _ = m.updateInspectPicker(tea.KeyPressMsg{Code: tea.KeyPgDown})
+	if got, want := m.inspectPicker.cursor, sessionsPageSize; got != want {
+		t.Fatalf("cursor after page down = %d, want %d", got, want)
+	}
+	if m.inspectPicker.offset == 0 {
+		t.Fatal("page down should advance the visible inspect page")
+	}
+	rendered := renderInspectPicker(m.inspectPicker, 120)
+	if strings.Contains(rendered, "20260101-000000") {
+		t.Fatalf("paged inspect picker should not render first-page rows:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "PgUp/PgDn page") {
+		t.Fatalf("paged inspect picker should expose page controls:\n%s", rendered)
 	}
 }
 
