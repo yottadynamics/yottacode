@@ -52,6 +52,20 @@ func applyMsg(m Model, msg tea.Msg) (Model, tea.Cmd) {
 	return out.(Model), cmd
 }
 
+func TestModel_WelcomeEnterActivatesSelectedShortcut(t *testing.T) {
+	m := newTestModel(t)
+	m.welcomeCursor = int(welcomeHelp)
+
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter})
+
+	if !m.helpOpen {
+		t.Fatalf("Enter on the highlighted welcome action should open help")
+	}
+	if m.textInput.Value() != "" {
+		t.Fatalf("welcome activation should not type into the prompt, got %q", m.textInput.Value())
+	}
+}
+
 func TestModel_WindowSizeMakesItReady(t *testing.T) {
 	m := newTestModel(t)
 	if !m.ready {

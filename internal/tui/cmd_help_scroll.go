@@ -26,6 +26,17 @@ func (m Model) helpPopupWidth() int {
 	return w
 }
 
+func (m Model) helpPopupContentWidth() int {
+	// popupBox's fixed width includes the rounded border and horizontal padding.
+	// Size help text and dividers to the actual interior so the content reaches
+	// the right padding without forcing the window wider than requested.
+	w := m.helpPopupWidth() - 4
+	if w < 1 {
+		w = 1
+	}
+	return w
+}
+
 func (m Model) helpVisibleLines() int {
 	// Help includes dense headers that can wrap inside the framed popup on narrow
 	// or short terminals. Keep a two-row reserve for the scroll hint/wrapping so
@@ -61,7 +72,7 @@ func (m Model) helpRenderedLines() int {
 }
 
 func (m Model) helpPanelRows() []string {
-	wrapWidth := m.helpPopupWidth()
+	wrapWidth := m.helpPopupContentWidth()
 	if wrapWidth < 1 {
 		wrapWidth = 1
 	}
