@@ -6,7 +6,7 @@ Type `/` in the TUI to open the slash-command palette. The palette filters as yo
 
 | Command | Args | What it does |
 |---|---|---|
-| `/help` | — | List all commands with help text |
+| `/help` | — | List all commands in a scrollable popup. Use wheel, ↑/↓, PgUp/PgDn, Home/End to scroll; Esc or the `×` closes it. |
 | `/quit` | — | Exit yottacode |
 | `/clear` | — | Save the current session and start a fresh one |
 | `/map` | `[query]` | Open the experimental code map. `/map here` shows changed files and their immediate import neighborhood; Enter inserts the selected file/symbol as an `@path` prompt reference. Other modes stay under the same command: `/map deps <path>`, `/map dependents <path>`, `/map impact [--depth N\|all] <path>`, `/map cycles [path]`, and `/map diagram [path]`. Enable with `--experimental code_map`. |

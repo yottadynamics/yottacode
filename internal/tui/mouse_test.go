@@ -256,6 +256,23 @@ func TestMouseClick_ScrollablePopupBodyDoesNotClose(t *testing.T) {
 			},
 			closed: func(m Model) bool { return !m.inspectOpen },
 		},
+		{
+			name: "help",
+			open: func(m *Model) {
+				m.helpOpen = true
+				m.helpPanel = strings.Join([]string{
+					"help header",
+					"command 1",
+					"command 2",
+					"command 3",
+					"command 4",
+					"command 5",
+					"command 6",
+					"command 7",
+				}, "\n")
+			},
+			closed: func(m Model) bool { return !m.helpOpen },
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			m := newTestModel(t)
@@ -273,6 +290,62 @@ func TestMouseClick_ScrollablePopupBodyDoesNotClose(t *testing.T) {
 				t.Fatalf("clicking %s popup body should keep the scrollable popup open", tc.name)
 			}
 		})
+	}
+}
+
+func TestMouseWheel_ScrollsHelpPopupWhenRenderedLinesOverflow(t *testing.T) {
+	m := newTestModel(t)
+	m.width = 60
+	m.height = 8
+	m.helpOpen = true
+	m.helpPanel = strings.Join([]string{
+		"Help",
+		"/first this command has a deliberately long description that wraps across several rendered terminal rows",
+		"/second this command also wraps across several rendered terminal rows",
+		"/third this command also wraps across several rendered terminal rows",
+	}, "\n")
+	if maxOffset := m.helpMaxScrollOffset(); maxOffset <= 0 {
+		t.Fatalf("wrapped help content should require scrolling, maxOffset=%d", maxOffset)
+	}
+
+	m, _ = applyMsg(m, tea.MouseWheelMsg{Button: tea.MouseWheelDown})
+	if got := m.helpScrollOffset; got == 0 {
+		t.Fatal("wheel-down should scroll /help when rendered rows overflow even if logical line count is small")
+	}
+	if !m.helpOpen {
+		t.Fatal("wheel-scrolling /help should keep the popup open")
+	}
+}
+
+func TestMouseClick_HelpPopupClickDoesNotDismissWhenNotScrollable(t *testing.T) {
+	m := newTestModel(t)
+	m.width = 80
+	m.height = 24
+	m.helpOpen = true
+	m.helpPanel = "Help\n/help show this list"
+	box, ok := m.activePopupBody()
+	if !ok {
+		t.Fatal("test setup: expected active popup body")
+	}
+	originX, originY := m.popupOrigin(box)
+
+	m, _ = applyMsg(m, tea.MouseClickMsg{X: originX + 4, Y: originY + 2})
+	if !m.helpOpen {
+		t.Fatal("clicking inside /help should keep the popup open; Esc or × closes it")
+	}
+}
+
+func TestHelpPopup_RenderedHeightNeverExceedsTerminal(t *testing.T) {
+	m := newTestModel(t)
+	m.width = 80
+	m.height = 8
+	m, _ = cmdHelp(m, nil)
+	box, ok := m.activePopupBody()
+	if !ok {
+		t.Fatal("test setup: expected active help popup")
+	}
+	if got := lipgloss.Height(box); got > m.height {
+		t.Fatalf("help popup height = %d, want <= terminal height %d", got, m.height)
 	}
 }
 
@@ -452,7 +525,6 @@ func TestMouseClick_DismissesStaticPopups(t *testing.T) {
 		{"cheatsheet", func(m *Model) { m.cheatsheetOpen = true }, func(m Model) bool { return m.cheatsheetOpen }},
 		{"usage", func(m *Model) { m.usageOpen = true; m.usagePanel = "x\ny" }, func(m Model) bool { return m.usageOpen }},
 		{"experimental", func(m *Model) { m.experimentalOpen = true }, func(m Model) bool { return m.experimentalOpen }},
-		{"help", func(m *Model) { m.helpOpen = true }, func(m Model) bool { return m.helpOpen }},
 		{"contextReport", func(m *Model) { m.contextReportOpen = true }, func(m Model) bool { return m.contextReportOpen }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
