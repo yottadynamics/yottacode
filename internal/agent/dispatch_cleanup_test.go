@@ -135,6 +135,42 @@ func TestDispatch_Foreground_EmptyWorktreesReclaimed(t *testing.T) {
 	eventuallyNoDispatchWorktrees(t, repoRoot, dispatchWorktreeDirs(d.Agent.Tasks))
 }
 
+// TestDispatch_Foreground_ManyEmptyWorktreesReclaimed stresses the macOS CI
+// flake from PR 200: several foreground no-op workers all finish together and
+// try to remove their empty git worktrees. The reclaim path must serialize git's
+// repo-global worktree metadata updates so every empty branch and directory is
+// removed before dispatch returns.
+func TestDispatch_Foreground_ManyEmptyWorktreesReclaimed(t *testing.T) {
+	repoRoot := dispatchTestRepo(t)
+	d := newDispatchToolE2E(t, repoRoot)
+	d.Agent.Adapter = dispatchNoopStreamer{}
+
+	out, err := d.Execute(context.Background(), `{"goal":"x","background":false,"tasks":[
+		{"subagent_type":"writer","description":"a","prompt":"do nothing","files":["alpha.txt"]},
+		{"subagent_type":"writer","description":"b","prompt":"do nothing","files":["beta.txt"]},
+		{"subagent_type":"writer","description":"c","prompt":"do nothing","files":["gamma.txt"]},
+		{"subagent_type":"writer","description":"d","prompt":"do nothing","files":["delta.txt"]},
+		{"subagent_type":"writer","description":"e","prompt":"do nothing","files":["epsilon.txt"]},
+		{"subagent_type":"writer","description":"f","prompt":"do nothing","files":["zeta.txt"]},
+		{"subagent_type":"writer","description":"g","prompt":"do nothing","files":["eta.txt"]},
+		{"subagent_type":"writer","description":"h","prompt":"do nothing","files":["theta.txt"]}
+	]}`)
+	if err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	if strings.Count(out, "empty worktree and branch reclaimed") != MaxForegroundSubagents {
+		t.Errorf("result should report every reclaim, got:\n%s", out)
+	}
+	if !strings.Contains(out, "nothing to integrate") {
+		t.Errorf("expected 'nothing to integrate', got:\n%s", out)
+	}
+	dirs := dispatchWorktreeDirs(d.Agent.Tasks)
+	if len(dirs) != MaxForegroundSubagents {
+		t.Fatalf("expected %d worktree tasks, got %d", MaxForegroundSubagents, len(dirs))
+	}
+	eventuallyNoDispatchWorktrees(t, repoRoot, dirs)
+}
+
 // TestDispatch_Foreground_ErroredCleanWorktreeReclaimed: a FAILED worker that
 // left nothing behind (clean tree, empty branch) has nothing to recover — its
 // worktree + branch are reclaimed too. Before the fix, any errored worker

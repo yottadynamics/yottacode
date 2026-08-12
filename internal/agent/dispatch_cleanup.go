@@ -4,10 +4,13 @@ import (
 	"context"
 	"os"
 	"strings"
+	"sync"
 
 	"github.com/yottadynamics/yottacode/internal/subagents"
 	"github.com/yottadynamics/yottacode/internal/worktree"
 )
+
+var dispatchReclaimMu sync.Mutex
 
 // reclaimEmptyWorktree removes a dispatch worker's worktree (and its
 // worktree-* branch, via worktree.Remove) when they hold nothing worth
@@ -27,6 +30,14 @@ func reclaimEmptyWorktree(ctx context.Context, repoRoot, wtDir, base string) boo
 	if repoRoot == "" || wtDir == "" || base == "" {
 		return false
 	}
+
+	// Git worktree metadata is repo-global: removing a linked worktree updates
+	// .git/worktrees and branch refs in the main repo. Dispatch workers finish
+	// concurrently, so serialize the final prove-empty-and-remove sequence to
+	// avoid one cleanup racing another through git's shared worktree state.
+	dispatchReclaimMu.Lock()
+	defer dispatchReclaimMu.Unlock()
+
 	// No commits beyond base?
 	if out, err := gitOutput(ctx, wtDir, "rev-list", "-1", base+"..HEAD"); err != nil || strings.TrimSpace(out) != "" {
 		return false
