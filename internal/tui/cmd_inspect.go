@@ -21,9 +21,13 @@ type inspectPickerRow struct {
 }
 
 type inspectPickerState struct {
-	rows   []inspectPickerRow
-	cursor int
-	offset int
+	rows    []inspectPickerRow
+	cursor  int
+	offset  int
+	page    int
+	hasPrev bool
+	hasNext bool
+	live    *session.SessionInfo
 }
 
 // inspectArgsPreviewChars and inspectTextPreviewChars bound how much of a
@@ -59,29 +63,51 @@ func cmdInspect(m Model, args []string) (Model, tea.Cmd) {
 // openInspectPicker builds the bare-/inspect chooser. It intentionally reuses
 // the session list row renderer so /inspect and /sessions scan the same way.
 func (m *Model) openInspectPicker() {
-	rows := []inspectPickerRow{}
+	p := &inspectPickerState{}
 	if m.sess != nil {
-		rows = append(rows, inspectPickerRow{info: session.SessionInfo{
+		live := session.SessionInfo{
 			ID:       m.sess.ID,
 			Name:     m.sess.Name,
 			Model:    m.sess.Model,
 			Created:  m.sess.Created,
 			Messages: len(m.sess.Messages),
 			Summary:  "current live session",
-		}, live: true})
+		}
+		p.live = &live
 	}
-	for _, info := range loadRecentSessions(true) {
-		if m.sess != nil && info.ID == m.sess.ID {
+	p.loadPage(0)
+	if len(p.rows) == 0 {
+		m.appendLine(styleAuto.Render("(no sessions to inspect yet)"))
+		return
+	}
+	m.inspectPicker = p
+	m.inspectPickerOpen = true
+}
+
+// loadPage refreshes the saved-session page while keeping the live row pinned
+// above page 1. Like /sessions, it fetches only one backend page plus a has-next
+// probe instead of decoding the whole session store.
+func (p *inspectPickerState) loadPage(page int) {
+	if page < 0 {
+		page = 0
+	}
+	rows := []inspectPickerRow{}
+	if page == 0 && p.live != nil {
+		rows = append(rows, inspectPickerRow{info: *p.live, live: true})
+	}
+	sessionRows, hasNext := loadSessionPage(true, page)
+	for _, info := range sessionRows {
+		if p.live != nil && info.ID == p.live.ID {
 			continue
 		}
 		rows = append(rows, inspectPickerRow{info: info})
 	}
-	if len(rows) == 0 {
-		m.appendLine(styleAuto.Render("(no sessions to inspect yet)"))
-		return
-	}
-	m.inspectPicker = &inspectPickerState{rows: rows}
-	m.inspectPickerOpen = true
+	p.rows = rows
+	p.cursor = 0
+	p.offset = 0
+	p.page = page
+	p.hasPrev = page > 0
+	p.hasNext = hasNext
 }
 
 func (m Model) updateInspectPicker(msg tea.KeyPressMsg) (Model, tea.Cmd) {
@@ -109,10 +135,20 @@ func (m Model) updateInspectPicker(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 		p.ensureCursorVisible()
 		return m, nil
 	case tea.KeyPgUp:
+		if p.cursor == 0 && p.hasPrev {
+			p.loadPage(p.page - 1)
+			p.cursor = max(0, len(p.rows)-1)
+			p.ensureCursorVisible()
+			return m, nil
+		}
 		p.cursor = max(0, p.cursor-sessionsPageSize)
 		p.ensureCursorVisible()
 		return m, nil
 	case tea.KeyPgDown:
+		if p.cursor >= len(p.rows)-1 && p.hasNext {
+			p.loadPage(p.page + 1)
+			return m, nil
+		}
 		p.cursor = min(len(p.rows)-1, p.cursor+sessionsPageSize)
 		p.ensureCursorVisible()
 		return m, nil
@@ -460,6 +496,8 @@ func renderInspectPicker(p *inspectPickerState, width int, hits ...*pickerHits) 
 		}
 	}
 	b.WriteString("\n")
-	b.WriteString(styleFooter.Render("↵ inspect · esc cancel · ↑↓ navigate · PgUp/PgDn page"))
+	b.WriteString(styleMeta.Render(fmt.Sprintf("  page %d · showing %d-%d · %s · PgUp/PgDn page", p.page+1, p.page*sessionsPageSize+p.offset+1, p.page*sessionsPageSize+min(p.offset+sessionsPageSize, len(p.rows)), pageAvailability(p.hasPrev, p.hasNext))))
+	b.WriteString("\n")
+	b.WriteString(styleFooter.Render("↵ inspect · esc cancel · ↑↓ navigate"))
 	return strings.TrimRight(b.String(), "\n")
 }

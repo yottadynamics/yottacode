@@ -13,14 +13,11 @@ import (
 	"github.com/yottadynamics/yottacode/internal/session"
 )
 
-// sessionsRecentLimit caps the picker list to the N most recent saved
-// sessions. The picker is for the just-here-recently case; reaching
-// further back is /recall's job. The list footer tells users this so
-// older sessions don't feel hidden.
-const (
-	sessionsRecentLimit = 60
-	sessionsPageSize    = 15
-)
+// sessionsPageSize is both the backend page size and the number of visible rows
+// for /sessions and /inspect browsing. Fetching one page at a time keeps large
+// session stores from blocking the picker while still giving PgUp/PgDn a simple
+// mental model: one keypress equals one saved-session page.
+const sessionsPageSize = 15
 
 // Session-row layout. sessionsLabelWidth is the id/name column; the gist
 // column takes what's left after the trailing metadata, clamped to
@@ -76,9 +73,13 @@ type sessionsPickerState struct {
 	// enters a list mode. We refresh on every transition rather than
 	// only on open so a freshly-renamed entry shows up if the user
 	// goes Rename → menu → Resume in the same picker session.
-	sessions   []session.SessionInfo
-	listCursor int
-	listOffset int
+	sessions            []session.SessionInfo
+	listCursor          int
+	listOffset          int
+	listPage            int
+	listHasPrev         bool
+	listHasNext         bool
+	listIncludeArchived bool
 
 	// picked is the row the user confirmed in a list sub-picker;
 	// rename/export forms read it to know which session to mutate.
@@ -180,6 +181,12 @@ func (m Model) updateSessionsPicker(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 	case tea.KeyPgUp:
 		switch p.mode {
 		case sessionsLoadListMode, sessionsRenameListMode, sessionsExportListMode:
+			if p.listCursor == 0 && p.listHasPrev {
+				p.loadListPage(p.listIncludeArchived, p.listPage-1)
+				p.listCursor = max(0, len(p.sessions)-1)
+				p.ensureListCursorVisible()
+				return m, nil
+			}
 			p.listCursor = max(0, p.listCursor-sessionsPageSize)
 			p.ensureListCursorVisible()
 		}
@@ -187,6 +194,10 @@ func (m Model) updateSessionsPicker(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 	case tea.KeyPgDown:
 		switch p.mode {
 		case sessionsLoadListMode, sessionsRenameListMode, sessionsExportListMode:
+			if p.listCursor >= len(p.sessions)-1 && p.listHasNext {
+				p.loadListPage(p.listIncludeArchived, p.listPage+1)
+				return m, nil
+			}
 			p.listCursor = min(len(p.sessions)-1, p.listCursor+sessionsPageSize)
 			p.ensureListCursorVisible()
 		}
@@ -251,8 +262,8 @@ func (m Model) dispatchSessionsMenu() (Model, tea.Cmd) {
 		return m.enterSessionsResumeInput()
 	}
 	// Rename is the one list action an archive can't serve — see
-	// loadRecentSessions.
-	p.sessions = loadRecentSessions(item.Action != sessionsRenameListMode)
+	// loadSessionPage.
+	p.loadListPage(item.Action != sessionsRenameListMode, 0)
 	if len(p.sessions) == 0 {
 		m.sessionsPickerOpen = false
 		m.sessionsPicker = nil
@@ -278,28 +289,45 @@ func (m Model) dispatchSessionsMenu() (Model, tea.Cmd) {
 	return m, nil
 }
 
-// loadRecentSessions returns up to sessionsRecentLimit metadata rows,
-// newest first. Wraps session.ListWith with the truncation so callers
-// don't have to remember the cap. Returns nil on error or empty.
+// loadListPage refreshes one saved-session page for a list-mode picker. It asks
+// for one extra row as a cheap has-next probe, but keeps only the visible page.
+func (p *sessionsPickerState) loadListPage(includeArchived bool, page int) {
+	if page < 0 {
+		page = 0
+	}
+	rows, hasNext := loadSessionPage(includeArchived, page)
+	p.sessions = rows
+	p.listCursor = 0
+	p.listOffset = 0
+	p.listPage = page
+	p.listHasPrev = page > 0
+	p.listHasNext = hasNext
+	p.listIncludeArchived = includeArchived
+}
+
+// loadSessionPage returns one newest-first page of metadata. includeArchived is
+// per-mode rather than global, because an archive is only meaningful for some
+// actions:
 //
-// includeArchived is per-mode rather than global, because an archive is only
-// meaningful for some actions:
-//
-//   - Load / Export: yes. The archive is frequently the only surviving copy
+//   - Load / Export / Inspect: yes. The archive is frequently the only surviving copy
 //     of pre-compaction history, so both opening and exporting it are the
 //     point of surfacing it at all.
 //   - Rename: no. An archive has no persisted Name field to set — renaming
 //     one resolves the id through loadSnapshot and would write a brand-new
 //     duplicate session instead of labelling anything.
-func loadRecentSessions(includeArchived bool) []session.SessionInfo {
-	all, err := session.ListWith(session.ListOptions{IncludeArchived: includeArchived})
+func loadSessionPage(includeArchived bool, page int) ([]session.SessionInfo, bool) {
+	if page < 0 {
+		page = 0
+	}
+	all, err := session.ListPage(session.ListOptions{IncludeArchived: includeArchived}, page*sessionsPageSize, sessionsPageSize+1)
 	if err != nil {
-		return nil
+		return nil, false
 	}
-	if len(all) > sessionsRecentLimit {
-		all = all[:sessionsRecentLimit]
+	hasNext := len(all) > sessionsPageSize
+	if hasNext {
+		all = all[:sessionsPageSize]
 	}
-	return all
+	return all, hasNext
 }
 
 // commitSessionsLoad loads the picked session into the running
@@ -695,9 +723,22 @@ func renderSessionsList(p *sessionsPickerState, title, description string, width
 	}
 	b.WriteString("\n")
 	b.WriteString(styleMeta.Render(
-		fmt.Sprintf("  showing %d-%d of %d recent · PgUp/PgDn page · use /recall <query> to search older sessions",
-			p.listOffset+1, end, len(p.sessions))))
+		fmt.Sprintf("  page %d · showing %d-%d · %s · PgUp/PgDn page · /recall searches all sessions",
+			p.listPage+1, p.listPage*sessionsPageSize+p.listOffset+1, p.listPage*sessionsPageSize+end, pageAvailability(p.listHasPrev, p.listHasNext))))
 	return strings.TrimRight(b.String(), "\n")
+}
+
+func pageAvailability(hasPrev, hasNext bool) string {
+	switch {
+	case hasPrev && hasNext:
+		return "prev/next available"
+	case hasPrev:
+		return "prev available"
+	case hasNext:
+		return "next available"
+	default:
+		return "end of list"
+	}
 }
 
 // sessionPickerLabel is the left-column identifier. Prefer Name when
