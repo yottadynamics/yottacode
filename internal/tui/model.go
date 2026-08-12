@@ -1638,6 +1638,8 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case tea.KeyDown:
 				m.welcomeCursor = clampWelcomeCursor(m.welcomeCursor + 1)
 				return m, nil
+			case tea.KeyEnter:
+				return m.activateWelcomeCursor()
 			}
 		}
 		// Transcript scrolling. Alt-screen mode owns

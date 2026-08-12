@@ -224,7 +224,7 @@ func cmdHelp(m Model, _ []string) (Model, tea.Cmd) {
 }
 
 func renderHelpPanel(m Model) string {
-	popupW := m.popupWidth()
+	popupW := m.helpPopupContentWidth()
 	width := helpCommandWidth(m)
 	wrapWidth := popupW - 4
 	if wrapWidth < 40 {

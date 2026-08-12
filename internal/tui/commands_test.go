@@ -32,7 +32,7 @@ func TestRenderHelpPanel_LongSkillDescriptionWrapsWithinWidth(t *testing.T) {
 	}
 
 	got := renderHelpPanel(m)
-	width := m.popupWidth()
+	width := m.helpPopupContentWidth()
 	for _, line := range strings.Split(got, "\n") {
 		if w := runeLen(stripANSI(line)); w > width {
 			t.Errorf("line exceeds popup width %d (got %d): %q", width, w, line)
@@ -52,7 +52,7 @@ func TestRenderHelpPanel_DividerMatchesBoxWidth(t *testing.T) {
 	}
 
 	rendered := renderHelpPanel(m)
-	box := popupBox(rendered)
+	box := popupBox(rendered, m.helpPopupWidth())
 	boxLines := strings.Split(box, "\n")
 	if len(boxLines) < 2 {
 		t.Fatalf("popup box has too few lines: %d", len(boxLines))
@@ -65,6 +65,24 @@ func TestRenderHelpPanel_DividerMatchesBoxWidth(t *testing.T) {
 		}
 		if got := runeLen(stripANSI(line)) + 4; got != boxWidth {
 			t.Errorf("divider width (%d, +border/padding) does not match the box's own width (%d): %q", got, boxWidth, line)
+		}
+	}
+}
+
+func TestRenderHelpPanel_UsesExpandedHelpPopupWidth(t *testing.T) {
+	m := newTestModel(t)
+	m, _ = applyMsg(m, tea.WindowSizeMsg{Width: 160, Height: 40})
+
+	rendered := renderHelpPanel(m)
+	want := m.helpPopupContentWidth()
+	if m.helpPopupWidth() <= m.popupWidth() {
+		t.Fatalf("test setup: help popup width should exceed generic popup width, got help=%d generic=%d", m.helpPopupWidth(), m.popupWidth())
+	}
+
+	for _, line := range strings.Split(rendered, "\n") {
+		plain := stripANSI(line)
+		if strings.Contains(plain, "─") && runeLen(plain) != want {
+			t.Fatalf("help divider should span expanded help width %d, got %d: %q", want, runeLen(plain), line)
 		}
 	}
 }
