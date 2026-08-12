@@ -82,14 +82,14 @@ func TestInput_HasNoBorder(t *testing.T) {
 	}
 }
 
-// The placeholder is the short `ask anything…` form, not the four-hint
+// The placeholder is the short `build anything…` form, not the four-hint
 // preamble that used to live inline. The hints have moved to a
 // separate footer line — see TestInput_HintFooterShowsBeforeFirstMessage.
 func TestInput_PlaceholderIsShort(t *testing.T) {
 	m := newTestModel(t)
 	plain := stripANSI(m.renderInputBox())
-	if !strings.Contains(plain, "ask anything…") {
-		t.Errorf("input placeholder should be 'ask anything…': %q", plain)
+	if !strings.Contains(plain, "build anything…") {
+		t.Errorf("input placeholder should be 'build anything…': %q", plain)
 	}
 	if strings.Contains(plain, "/ for commands") || strings.Contains(plain, "@path to attach") {
 		t.Errorf("input placeholder should not embed the four-hint preamble: %q", plain)
@@ -111,7 +111,7 @@ func TestInput_HintsShowInlineBeforeFirstMessage(t *testing.T) {
 	}
 	// Hints share the same line as the placeholder.
 	for _, line := range strings.Split(plain, "\n") {
-		if strings.Contains(line, "ask anything…") {
+		if strings.Contains(line, "build anything…") {
 			if !strings.Contains(line, "↑↓ history") {
 				t.Errorf("hints should be inlined on the placeholder row: %q", line)
 			}
@@ -135,7 +135,7 @@ func TestInput_HintsDisappearAfterFirstMessage(t *testing.T) {
 	}
 	// The placeholder itself stays visible on the empty input — only
 	// the trailing hints disappear.
-	if !strings.Contains(plain, "ask anything…") {
+	if !strings.Contains(plain, "build anything…") {
 		t.Errorf("placeholder should still render after first message: %q", plain)
 	}
 }
@@ -615,7 +615,7 @@ func TestInput_EnclosedInBorderedBox(t *testing.T) {
 	lines := strings.Split(plain, "\n")
 	cmdIdx := -1
 	for i, line := range lines {
-		if strings.Contains(line, "ask anything…") {
+		if strings.Contains(line, "build anything…") {
 			cmdIdx = i
 			break
 		}

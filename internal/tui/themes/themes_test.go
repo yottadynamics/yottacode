@@ -34,17 +34,17 @@ func sameColor(a, b color.Color) bool {
 }
 
 // expectedThemes is the registered set this binary ships, in the
-// canonical display order Names() returns: head (terminal and
-// yottacode-dark) then the alphabetical tail. Lock it in a test so a
+// canonical display order Names() returns: head (yottacode-dark and
+// terminal) then the alphabetical tail. Lock it in a test so a
 // future palette refactor that accidentally drops a theme or reshuffles
 // the head surfaces loudly instead of silently shipping the wrong list.
 // Add a new theme by inserting here in the correct slot AND in init() of
 // the corresponding file.
 var expectedThemes = []string{
-	// Head: universal default pinned to the top.
-	"terminal",
-	// Head: yotta's polished dark theme stays one slot below the default.
+	// Head: yotta's polished dark theme is the default.
 	"yottacode-dark",
+	// Head: universal terminal-adaptive fallback stays near the top.
+	"terminal",
 	// Tail: alphabetical after the curated head.
 	"catppuccin",
 	"dimmed",
@@ -71,14 +71,13 @@ func TestNames_ReturnsAllRegisteredInDisplayOrder(t *testing.T) {
 	}
 }
 
-// terminal must lead the picker — it's the universal "match my
-// terminal" theme, the safe pick regardless of bg, and the user
-// asked for it to sit on top. Pin the contract so a future
-// alphabetical-only sort doesn't silently demote it.
-func TestNames_TerminalLeadsTheList(t *testing.T) {
+// yottacode-dark leads the picker because it is the default first-run
+// experience and the polished house theme. Terminal stays second as the
+// adaptive fallback for users who want their own terminal palette.
+func TestNames_YottaCodeDarkLeadsTheList(t *testing.T) {
 	got := Names()
-	if len(got) == 0 || got[0] != "terminal" {
-		t.Errorf("Names()[0] = %q, want \"terminal\" (full list: %v)", got, got)
+	if len(got) < 2 || got[0] != "yottacode-dark" || got[1] != "terminal" {
+		t.Errorf("Names() head = %v, want [yottacode-dark terminal]", got)
 	}
 }
 

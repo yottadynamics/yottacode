@@ -74,6 +74,7 @@ func init() {
 		{Name: "advisor", Help: "show or toggle advisor/implementer routing (subcommands: on, off)", Run: cmdAdvisor},
 		{Name: "sandbox", Help: "choose how run_bash executes — podman sandbox (auto-allow/regular) or no sandbox", Run: cmdSandbox},
 		{Name: "sessions", Help: "open the sessions menu (or /sessions <id|name> to resume directly)", Run: cmdSessions},
+		{Name: "worktree", Help: "create a new yottacode-managed worktree", Run: cmdWorktree},
 		// No Args: a bare /memory must execute on Enter (one keystroke) to
 		// open the edit/browse/reindex picker. Manual memory search is not a
 		// TUI slash surface; the agent keeps the memory_search tool.
@@ -218,6 +219,7 @@ func (m Model) dispatchSlash(input string) (Model, tea.Cmd) {
 func cmdHelp(m Model, _ []string) (Model, tea.Cmd) {
 	m.helpPanel = renderHelpPanel(m)
 	m.helpOpen = true
+	m.helpScrollOffset = 0
 	return m, nil
 }
 
@@ -233,12 +235,12 @@ func renderHelpPanel(m Model) string {
 	b.WriteString("\n")
 
 	renderHelpCommonSection(&b, width, popupW)
-	renderHelpGroup(&b, "Workflow", allSlash[0:18], wrapWidth)
-	renderHelpGroup(&b, "Git", allSlash[18:26], wrapWidth)
-	renderHelpGroup(&b, "Integrations", allSlash[26:27], wrapWidth)
-	renderHelpGroup(&b, "Utilities", allSlash[27:39], wrapWidth)
-	renderHelpGroup(&b, "Mode", allSlash[39:40], wrapWidth)
-	renderHelpGroup(&b, "Meta", allSlash[40:], wrapWidth)
+	renderHelpGroup(&b, "Workflow", allSlash[0:19], wrapWidth)
+	renderHelpGroup(&b, "Git", allSlash[19:27], wrapWidth)
+	renderHelpGroup(&b, "Integrations", allSlash[27:28], wrapWidth)
+	renderHelpGroup(&b, "Utilities", allSlash[28:40], wrapWidth)
+	renderHelpGroup(&b, "Mode", allSlash[40:41], wrapWidth)
+	renderHelpGroup(&b, "Meta", allSlash[41:], wrapWidth)
 	if len(m.customSlash) > 0 {
 		renderHelpDetailSection(&b, "Custom commands", m.customSlash, width, popupW, m.cwd)
 	}
@@ -1386,7 +1388,7 @@ func cmdClear(m Model, _ []string) (Model, tea.Cmd) {
 	m.transcriptRows = nil
 	m.transcriptDirty = true
 	if m.shouldShowStartupCard() {
-		m.appendRaw(renderStartupBox(m.version, m.commit, m.dirty, m.modelName, m.cwd, m.sess.ID, m.branch, m.memorySummary, m.providerProfile, m.startupTip(), m.width))
+		m.appendRaw(renderStartupBox(m.version, m.commit, m.dirty, m.startupTip(), m.welcomeCursor, m.width))
 		m.queuePrintln("")
 	}
 	m.appendLine(styleAuto.Render(SysMsg(SysState, "clear", "new session", newSess.ID)))

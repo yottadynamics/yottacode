@@ -10,10 +10,10 @@ import (
 	"charm.land/lipgloss/v2"
 )
 
-func TestView_LeavesMouseNativeBeforeConversationStarts(t *testing.T) {
+func TestView_EnablesAllMotionForWelcomeBeforeConversationStarts(t *testing.T) {
 	m := newTestModel(t)
-	if got := m.View().MouseMode; got != tea.MouseModeNone {
-		t.Errorf("View().MouseMode = %v, want MouseModeNone", got)
+	if got := m.View().MouseMode; got != tea.MouseModeAllMotion {
+		t.Errorf("View().MouseMode = %v, want MouseModeAllMotion for welcome hover", got)
 	}
 }
 

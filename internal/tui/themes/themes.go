@@ -72,11 +72,9 @@ type Palette struct {
 var registry = map[string]func() Palette{}
 
 // DefaultName is the palette used when config.toml's [theme] section
-// is empty or the named theme is missing. "terminal" is the universal
-// safe pick — its AdaptiveColor pairs respect whatever background
-// the user's terminal reports, so it boots cleanly on dark and light
-// terminals alike.
-const DefaultName = "terminal"
+// is empty or the named theme is missing. yottacode-dark is the polished
+// house dark theme and the default first-run experience.
+const DefaultName = "yottacode-dark"
 
 // pin returns an AdaptiveColor whose light and dark values are the
 // same — used by themes that intentionally don't react to the
@@ -123,18 +121,16 @@ func MustGet(name string) Palette {
 // hand-curated head followed by alphabetical for the rest. The head
 // pins themes the user most often wants to reach first:
 //
-//  1. terminal — the universal "match my terminal" choice, works
-//     on every background; the safest pick when you don't know
-//     what to choose, and the default.
-//  2. yottacode-dark — the polished house dark theme users should see
-//     before the larger ecosystem-inspired tail.
+//  1. yottacode-dark — the polished house dark theme and default.
+//  2. terminal — the universal "match my terminal" fallback for users
+//     who prefer their own terminal palette/background.
 //
 // Anything else falls into the alphabetical tail so the order stays
 // predictable across adding new palettes. Registry map iteration in
 // Go is intentionally nondeterministic, so this function is also
 // where we lock the order — never rely on map traversal directly.
 func Names() []string {
-	head := []string{"terminal", "yottacode-dark"}
+	head := []string{"yottacode-dark", "terminal"}
 	headSet := make(map[string]struct{}, len(head))
 	for _, n := range head {
 		headSet[n] = struct{}{}

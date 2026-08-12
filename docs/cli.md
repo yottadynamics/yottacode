@@ -40,6 +40,15 @@ yottacode
 
 The TUI is best for multi-turn coding work. It provides streaming output, slash commands, approval modals, session controls, and inline scrollback.
 
+Fresh sessions open on a welcome card. Hover an action to select it, click to activate it, or use the shortcut shown at the right edge of the row. The cmdline placeholder invites users to build anything; clicking the cmdline briefly brightens the existing border color so the terminal UI feels focusable:
+
+- `Ctrl+W` — New worktree
+- `Ctrl+R` — Resume session
+- `Ctrl+P` — Enter plan mode
+- `?` — Help / cheatsheet when input is empty
+
+The welcome card intentionally stays action-only. Runtime state such as model, provider, branch, directory, memory, context, and tool status lives in the cmdline/status bar instead of being duplicated in the card.
+
 Useful keys:
 
 - `Enter` — submit

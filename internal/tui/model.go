@@ -491,6 +491,11 @@ type Model struct {
 	// in New.
 	recalledCount *atomic.Int32
 
+	// welcomeCursor is the selected row in the fresh-session launch menu.
+	// Keyboard arrows, hover, and clicks all move this cursor before invoking
+	// the same command handlers the slash-command paths use.
+	welcomeCursor int
+
 	// UI components
 	textInput textarea.Model
 	spinner   spinner.Model
@@ -780,8 +785,9 @@ type Model struct {
 	// Help overlay (/help). Read-only command catalog rendered as an inline
 	// overlay so the dense command list stays readable and out of transcript
 	// history.
-	helpOpen  bool
-	helpPanel string
+	helpOpen         bool
+	helpPanel        string
+	helpScrollOffset int
 	// Inspect overlay (/inspect). Read-only, scrollable turn-by-turn
 	// session replay — mirrors the usage overlay's own fields and
 	// scrolling shape (inspectPanel snapshotted at open time, any key
@@ -966,6 +972,11 @@ type Model struct {
 	// wide; visibility just swaps reverse-video on for the block.
 	cursorVisible bool
 
+	// cmdlineClickFlash briefly promotes the input frame border color after
+	// a mouse click lands in the cmdline. The pulse gives the terminal UI a
+	// tactile "this is focused" response without adding a persistent focus mode.
+	cmdlineClickFlash bool
+
 	// openAIAuthPending tracks an in-flight inline OAuth login from
 	// /provider add openai-auth. Non-nil between the URL-ready and
 	// done messages — the program holds it so a Ctrl-C path can
@@ -1024,6 +1035,8 @@ type prStatusMsg struct {
 // it for the lifetime of the process.
 type cursorBlinkMsg struct{}
 
+type cmdlineClickFlashDoneMsg struct{}
+
 // cursorBlinkInterval is the half-cycle between visible→invisible
 // transitions. 530ms matches the long-standing default in xterm and
 // most terminal emulators; faster reads as agitated, slower reads as
@@ -1035,6 +1048,14 @@ const cursorBlinkInterval = 530 * time.Millisecond
 func cursorBlinkCmd() tea.Cmd {
 	return tea.Tick(cursorBlinkInterval, func(time.Time) tea.Msg {
 		return cursorBlinkMsg{}
+	})
+}
+
+const cmdlineClickFlashDuration = 350 * time.Millisecond
+
+func cmdlineClickFlashCmd() tea.Cmd {
+	return tea.Tick(cmdlineClickFlashDuration, func(time.Time) tea.Msg {
+		return cmdlineClickFlashDoneMsg{}
 	})
 }
 
@@ -1097,7 +1118,7 @@ func New(parent context.Context, c Config) Model {
 	// (an empty input ready to type into). The onboarding hints have
 	// migrated to a separate footer line that disappears after the
 	// first message — see renderInputHintFooter.
-	ti.Placeholder = "ask anything…"
+	ti.Placeholder = "build anything…"
 	ti.CharLimit = 0
 	// Render the chevron only on the first display row; soft-wrapped and
 	// hard-newline continuations get a 2-col indent so the input reads as
@@ -1379,6 +1400,10 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.cursorVisible = !m.cursorVisible
 		return m, cursorBlinkCmd()
 	}
+	if _, ok := msg.(cmdlineClickFlashDoneMsg); ok {
+		m.cmdlineClickFlash = false
+		return m, nil
+	}
 	if probe, ok := msg.(providerProbeMsg); ok {
 		if probe.result.Profile.Provider != "" {
 			m.providerProfile = probe.result.Profile
@@ -1510,8 +1535,29 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if m.helpOpen {
+			switch msg.Code {
+			case tea.KeyUp:
+				m.helpScrollOffset = max(0, m.helpScrollOffset-1)
+				return m, nil
+			case tea.KeyDown:
+				m.helpScrollOffset = min(m.helpMaxScrollOffset(), m.helpScrollOffset+1)
+				return m, nil
+			case tea.KeyPgUp:
+				m.helpScrollOffset = max(0, m.helpScrollOffset-m.helpVisibleLines())
+				return m, nil
+			case tea.KeyPgDown:
+				m.helpScrollOffset = min(m.helpMaxScrollOffset(), m.helpScrollOffset+m.helpVisibleLines())
+				return m, nil
+			case tea.KeyHome:
+				m.helpScrollOffset = 0
+				return m, nil
+			case tea.KeyEnd:
+				m.helpScrollOffset = m.helpMaxScrollOffset()
+				return m, nil
+			}
 			m.helpOpen = false
 			m.helpPanel = ""
+			m.helpScrollOffset = 0
 			return m, nil
 		}
 		if m.contextReportOpen {
@@ -1580,6 +1626,19 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.mcpPickerOpen {
 			return m.updateMCPPicker(msg)
+		}
+		if action, ok := m.welcomeShortcutAction(msg); ok {
+			return m.activateWelcomeAction(action)
+		}
+		if m.welcomeVisible() && strings.TrimSpace(m.textInput.Value()) == "" {
+			switch msg.Code {
+			case tea.KeyUp:
+				m.welcomeCursor = clampWelcomeCursor(m.welcomeCursor - 1)
+				return m, nil
+			case tea.KeyDown:
+				m.welcomeCursor = clampWelcomeCursor(m.welcomeCursor + 1)
+				return m, nil
+			}
 		}
 		// Transcript scrolling. Alt-screen mode owns
 		// the whole frame (no native terminal scrollback to fall back on),
@@ -1884,6 +1943,9 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// and state-changing slash commands are the explicit stop
 				// paths.
 				if input == "" {
+					if m.welcomeVisible() {
+						return m.activateWelcomeCursor()
+					}
 					return m, nil
 				}
 				input = m.expandPastes(input)
@@ -2998,7 +3060,7 @@ func (m Model) viewString() string {
 // earlier "center-upper" attempt (a fractional vPos) render at the
 // bottom of the screen instead of the top.
 func (m Model) renderHero() string {
-	box := renderStartupBox(m.version, m.commit, m.dirty, m.modelName, m.cwd, m.sess.ID, m.branch, m.memorySummary, m.providerProfile, m.startupTip(), m.width)
+	box := renderStartupBox(m.version, m.commit, m.dirty, m.startupTip(), m.welcomeCursor, m.width)
 	// Leading blank row: a little breathing room off the terminal's top
 	// edge rather than the card butting flush against row 0.
 	parts := append([]string{"", box, ""}, m.aboveInputRows()...)
@@ -3050,7 +3112,7 @@ func (m Model) activePopupBody() (box string, ok bool) {
 	case m.experimentalOpen:
 		return popupBox(m.experimentalPanel), true
 	case m.helpOpen:
-		return popupBox(m.helpPanel, m.popupWidth()), true
+		return popupBox(m.windowedHelpPanel(), m.popupWidth()), true
 	case m.contextReportOpen:
 		return popupBox(m.contextReportBody, m.popupWidth()), true
 	case m.permissionsOpen:
@@ -3342,6 +3404,11 @@ func (m Model) renderInputFrame() string {
 		return m.textInput.View()
 	}
 	ruleStyle := lipgloss.NewStyle().Foreground(colorDim)
+	if m.cmdlineClickFlash {
+		// Pulse with a brighter version of the normal border hue. A different
+		// accent color read like a state change instead of tactile focus feedback.
+		ruleStyle = lipgloss.NewStyle().Foreground(cmdlineClickBorderColor)
+	}
 	boxW := m.width
 	innerW := boxW - 4 // space inside "│ " ... " │"
 	if innerW < 1 {
@@ -3479,13 +3546,13 @@ func (m Model) renderInputBody(contentW int) string {
 		// is fixed at column 0 so the placeholder doesn't shift as
 		// the cursor toggles visible/invisible.
 		cur := renderEmptyCursor(m.cursorVisible)
-		placeholder := "ask anything…"
+		placeholder := "build anything…"
 		if m.cfg.PlanMode.IsActive() {
 			// Surface the mode in the placeholder too — even if the
 			// status bar / above-cmdline banner are hidden by a
 			// narrow terminal or palette overlay, the empty-state
 			// prompt will still call it out.
-			placeholder = "ask anything… (plan mode)"
+			placeholder = "build anything… (plan mode)"
 		}
 		ph := styleInputPlaceholder.Render(placeholder)
 		row := styleInputPrompt.Render(promptStr) + cur + ph

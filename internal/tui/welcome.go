@@ -5,10 +5,173 @@ import (
 	"strings"
 	"time"
 
+	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
 	"github.com/yottadynamics/yottacode/internal/adapter"
 )
+
+// welcomeAction identifies one selectable launch action in the fresh-session
+// welcome card. It is intentionally separate from slashCommand names because
+// the card uses product-language labels while activation reuses existing command
+// handlers where possible.
+type welcomeAction int
+
+const (
+	welcomeNewWorktree welcomeAction = iota
+	welcomeResumeSession
+	welcomeEnterPlanMode
+	welcomeHelp
+)
+
+type welcomeActionItem struct {
+	Action   welcomeAction
+	Label    string
+	Shortcut string
+}
+
+func welcomeActions() []welcomeActionItem {
+	return []welcomeActionItem{
+		{Action: welcomeNewWorktree, Label: "New worktree", Shortcut: "ctrl+w"},
+		{Action: welcomeResumeSession, Label: "Resume session", Shortcut: "ctrl+r"},
+		{Action: welcomeEnterPlanMode, Label: "Enter plan mode", Shortcut: "ctrl+p"},
+		{Action: welcomeHelp, Label: "Help", Shortcut: "?"},
+	}
+}
+
+func clampWelcomeCursor(cursor int) int {
+	items := welcomeActions()
+	if cursor < 0 {
+		return 0
+	}
+	if cursor >= len(items) {
+		return len(items) - 1
+	}
+	return cursor
+}
+
+// welcomeVisible reports whether the launch card is currently an interactive
+// menu. Once a conversation starts, or while any overlay owns input, mouse
+// capture returns to the existing transcript/popup behavior.
+func (m Model) welcomeVisible() bool {
+	return !m.turnActive && !m.enteredConversation && m.isFreshSession() && !m.popupOpen() && !m.paletteOpen && !m.filePaletteOpen
+}
+
+func (m Model) welcomeShortcutAction(msg tea.KeyPressMsg) (welcomeAction, bool) {
+	if !m.welcomeVisible() {
+		return 0, false
+	}
+	switch msg.String() {
+	case "ctrl+r":
+		return welcomeResumeSession, true
+	case "ctrl+p":
+		return welcomeEnterPlanMode, true
+	case "ctrl+w":
+		return welcomeNewWorktree, true
+	}
+	return 0, false
+}
+
+func (m Model) activateWelcomeCursor() (Model, tea.Cmd) {
+	items := welcomeActions()
+	idx := clampWelcomeCursor(m.welcomeCursor)
+	if idx >= len(items) {
+		return m, nil
+	}
+	return m.activateWelcomeAction(items[idx].Action)
+}
+
+func (m Model) activateWelcomeAction(action welcomeAction) (Model, tea.Cmd) {
+	switch action {
+	case welcomeResumeSession:
+		return cmdSessions(m, nil)
+	case welcomeEnterPlanMode:
+		return cmdPlan(m, nil)
+	case welcomeNewWorktree:
+		return cmdWorktree(m, nil)
+	case welcomeHelp:
+		return cmdHelp(m, nil)
+	default:
+		return m, nil
+	}
+}
+
+// welcomeActionRow renders one action row with a stable label column and a
+// right-aligned shortcut. The active row owns the chevron; inactive rows keep
+// the same indentation with blank padding so labels never jitter.
+func welcomeActionRow(item welcomeActionItem, selected bool, innerWidth int) string {
+	const indent = "   "
+	prefix := "  "
+	labelStyle := styleSplashInfo
+	shortcutStyle := styleSplashLabel
+	if selected {
+		prefix = styleSplashTitle.Render("› ")
+		labelStyle = styleSplashTitle
+		shortcutStyle = styleSplashTitle
+	}
+	left := indent + prefix + labelStyle.Render(item.Label)
+	shortcut := shortcutStyle.Render(item.Shortcut)
+	pad := innerWidth - lipgloss.Width(left) - lipgloss.Width(shortcut)
+	if pad < 1 {
+		pad = 1
+	}
+	return left + strings.Repeat(" ", pad) + shortcut
+}
+
+// startupInfoRow is kept for provider/detail panels that still render compact
+// label/value rows outside the welcome card.
+type startupInfoRow struct {
+	Key   string
+	Value string
+}
+
+func renderStartupRows(rows []startupInfoRow) []string {
+	maxKey := 0
+	for _, row := range rows {
+		if len(row.Key) > maxKey {
+			maxKey = len(row.Key)
+		}
+	}
+	out := make([]string, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, labelRow(row.Key, maxKey, row.Value))
+	}
+	return out
+}
+
+// labelRow renders one "label  value" pair. No colon — alignment alone
+// communicates the relationship and reads cleaner.
+func labelRow(key string, keyWidth int, value string) string {
+	label := fmt.Sprintf("%-*s", keyWidth, key)
+	return styleSplashLabel.Render(label) + "  " + value
+}
+
+func renderProviderSummary(profile adapter.ProviderProfile) string {
+	name := string(profile.Provider)
+	if name == "" {
+		name = string(adapter.ProviderOpenAICompatible)
+	}
+	if len(profile.Issues) > 0 {
+		name += " !"
+	} else if len(profile.Warnings) > 0 {
+		name += " ?"
+	}
+	if profile.UsesResponsesAPI {
+		return styleSplashLabel.Render(name + " · responses")
+	}
+	return styleSplashLabel.Render(name)
+}
+
+func renderBuiltinTools(profile adapter.ProviderProfile) string {
+	if len(profile.EnabledBuiltinTools) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(profile.EnabledBuiltinTools))
+	for _, t := range profile.EnabledBuiltinTools {
+		parts = append(parts, string(t))
+	}
+	return strings.Join(parts, " + ")
+}
 
 // isFreshSession reports whether the session has no user/assistant exchange
 // yet (a system-only state). Used to decide whether to surface the welcome
