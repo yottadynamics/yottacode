@@ -23,8 +23,8 @@ These work for the TUI and `run` mode.
 | `--enable-x-search` | `YOTTACODE_ENABLE_X_SEARCH` | no | Enable xAI `x_search` |
 | `--enable-code-interpreter` | `YOTTACODE_ENABLE_CODE_INTERPRETER` | no | Enable hosted code interpreter when supported |
 | `--allow-paths` | `YOTTACODE_ALLOW_PATHS` | no | Extra write roots |
-| `--yolo` | — | no | Dangerous: skip approval prompts and remove iteration cap (yolo mode overlay). Explicit deny rules still apply. Launch-only; use `/yolo` to toggle mid-session. |
-| `--max-iterations` | — | no | Tool-call cap per turn; default `100` (auto raises to `400`; `--yolo` removes the cap) |
+| `--yolo` | — | no | Dangerous: skip approval prompts and raise the iteration cap (yolo mode overlay). Explicit deny rules still apply. Launch-only; use `/yolo` to toggle mid-session. |
+| `--max-iterations` | — | no | Tool-call cap per turn; default `128` (auto raises to `512`; `--yolo` raises to `2560` by default) |
 | `--permission-mode` | — | no | TUI only — startup mode: `default` \| `plan` \| `auto`. Mirrors Claude Code's `--permission-mode`. |
 | `--plan-resume` | — | no | TUI only — resume a saved plan by slug/substring (implies `--permission-mode plan`) |
 | `--resume` | — | no | Resume a session by id or name |
