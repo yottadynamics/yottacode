@@ -86,7 +86,7 @@ Watch the Ollama setup walkthrough: [Get started with yottacode and Ollama](http
 <details><summary><b>Manual install (pinned version, no installer script)</b></summary>
 
 ```bash
-export VERSION=<latest-release> # for example: 0.3.0
+export VERSION=<latest-release> # for example: 0.4.0
 # Swap linux/darwin and amd64/arm64 to match your machine
 curl -fsSL https://github.com/yottadynamics/yottacode/releases/download/v${VERSION}/yottacode_${VERSION}_linux_amd64.tar.gz \
   | tar -xz

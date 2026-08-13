@@ -14,11 +14,11 @@ This page covers every install path plus post-install configuration. For the fas
 curl -fsSL https://raw.githubusercontent.com/yottadynamics/yottacode/main/install.sh | bash
 ```
 
-The script detects your OS/arch (Linux + macOS, amd64 + arm64), resolves the latest GitHub release (or honors `VERSION=0.3.0` if set), verifies the archive against `SHA256SUMS`, and installs to `$HOME/.yottacode/bin/yottacode`. No `sudo` required. It then offers to append a `PATH` export to your shell rc file (zsh / bash / fish / sh detected from `$SHELL`), backing up the rc first.
+The script detects your OS/arch (Linux + macOS, amd64 + arm64), resolves the latest GitHub release (or honors `VERSION=0.4.0` if set), verifies the archive against `SHA256SUMS`, and installs to `$HOME/.yottacode/bin/yottacode`. No `sudo` required. It then offers to append a `PATH` export to your shell rc file (zsh / bash / fish / sh detected from `$SHELL`), backing up the rc first.
 
 Useful flags and env:
 
-- `VERSION=0.3.0` — pin a version instead of "latest".
+- `VERSION=0.4.0` — pin a version instead of "latest".
 - `INSTALL_DIR=/custom/path` — override the install location.
 - `--no-modify-rc` — skip the rc-file edit (useful when you manage `PATH` yourself).
 - `--yes` / `-y` — non-interactive: assume "yes" to prompts (required in CI).
@@ -31,8 +31,8 @@ Re-running the installer upgrades in place: same flow, the rc edit is detected a
 `yottacode` checks GitHub for a newer release once per day on startup. The check is asynchronous, cached at `~/.yottacode/cache/update-check.json`, and runs **only** when the root interactive command launches into a real terminal — `yottacode run`, `yottacode --version`, scripts, and pipes never trigger it. When a newer release exists, you'll see a one-line prompt before the TUI starts:
 
 ```
-yottacode 0.3.0 is available (you have 0.2.0).
-Release notes: https://github.com/yottadynamics/yottacode/releases/tag/v0.3.0
+yottacode 0.4.0 is available (you have 0.3.0).
+Release notes: https://github.com/yottadynamics/yottacode/releases/tag/v0.4.0
 Install now? [y/N]:
 ```
 
