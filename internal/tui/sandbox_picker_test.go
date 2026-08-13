@@ -14,25 +14,77 @@ import (
 
 func TestCurrentSandboxMode(t *testing.T) {
 	off := config.Config{Sandbox: config.SandboxConfig{Backend: "none"}}
-	if got := currentSandboxMode(off, false, nil); got != sandboxModeOff {
+	if got := currentSandboxMode(off, false, false, nil); got != sandboxModeOff {
 		t.Errorf("backend=none should be sandboxModeOff, got %v", got)
 	}
 
 	on := config.Config{Sandbox: config.SandboxConfig{Backend: "podman"}}
-	if got := currentSandboxMode(on, false, nil); got != sandboxModeOff {
+	if got := currentSandboxMode(on, false, false, nil); got != sandboxModeOff {
 		t.Errorf("backend=podman without session experimental gate should be sandboxModeOff, got %v", got)
 	}
-	if got := currentSandboxMode(on, true, nil); got != sandboxModeRegular {
-		t.Errorf("backend=podman with session experimental gate and nil autoMode should be sandboxModeRegular, got %v", got)
+	if got := currentSandboxMode(on, true, false, nil); got != sandboxModeOff {
+		t.Errorf("backend=podman without a live sandbox should be sandboxModeOff, got %v", got)
+	}
+	if got := currentSandboxMode(on, true, true, nil); got != sandboxModeRegular {
+		t.Errorf("backend=podman with a live sandbox and nil autoMode should be sandboxModeRegular, got %v", got)
 	}
 
 	auto := &agent.AutoModeState{}
-	if got := currentSandboxMode(on, true, auto); got != sandboxModeRegular {
+	if got := currentSandboxMode(on, true, true, auto); got != sandboxModeRegular {
 		t.Errorf("backend=podman with inactive autoMode should be sandboxModeRegular, got %v", got)
 	}
 	auto.Active.Store(true)
-	if got := currentSandboxMode(on, true, auto); got != sandboxModeAutoAllow {
+	if got := currentSandboxMode(on, true, true, auto); got != sandboxModeAutoAllow {
 		t.Errorf("backend=podman with active autoMode should be sandboxModeAutoAllow, got %v", got)
+	}
+}
+
+func TestSandboxPicker_ShowsConfiguredButInactiveRestartState(t *testing.T) {
+	m := newTestModel(t)
+	m.cfg.AutoMode = &agent.AutoModeState{}
+	m.experimentalEnabled = []string{string(experimental.Sandbox)}
+	m.fileCfg = config.Default()
+	m.fileCfg.Sandbox.Backend = "podman"
+	if err := writeConfig(m.fileCfg); err != nil {
+		t.Fatalf("write test config: %v", err)
+	}
+	m.sandboxActive = false
+
+	m, _ = m.openSandboxPicker()
+
+	if m.sandboxPicker.current != sandboxModeOff {
+		t.Fatalf("live sandbox mode should be off until restart, got %v", m.sandboxPicker.current)
+	}
+	if m.sandboxPicker.configured != sandboxModeRegular {
+		t.Fatalf("configured sandbox mode should show podman persisted, got %v", m.sandboxPicker.configured)
+	}
+	got := renderSandboxPicker(m.sandboxPicker, 100)
+	for _, want := range []string{"Configured: sandbox on", "Active: sandbox off — restart required"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("configured-but-inactive picker missing %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestUpdateSandboxPicker_BlocksPodmanWhenRestartRequired(t *testing.T) {
+	m := newTestModel(t)
+	m.cfg.AutoMode = &agent.AutoModeState{}
+	m.experimentalEnabled = []string{string(experimental.Sandbox)}
+	m.fileCfg = config.Default()
+	m.fileCfg.Sandbox.Backend = "podman"
+	if err := writeConfig(m.fileCfg); err != nil {
+		t.Fatalf("write test config: %v", err)
+	}
+	m.sandboxActive = false
+	m, _ = m.openSandboxPicker()
+	m.sandboxPicker.cursor = sandboxModeRegular
+
+	m, _ = m.updateSandboxPicker(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if !m.sandboxPickerOpen {
+		t.Fatal("restart-required Podman choice should stay in the picker")
+	}
+	if !strings.Contains(m.sandboxPicker.note, "Restart yottacode") {
+		t.Fatalf("expected restart-required note, got %q", m.sandboxPicker.note)
 	}
 }
 
@@ -268,9 +320,9 @@ func TestAnyOverlayOpen_SandboxPicker(t *testing.T) {
 }
 
 func TestRenderSandboxPicker_ShowsThreeRowsAndCurrentCheckmark(t *testing.T) {
-	p := &sandboxPickerState{cursor: sandboxModeAutoAllow, current: sandboxModeOff, detected: true, status: sandbox.Status{Installed: true, ImagePresent: true}}
+	p := &sandboxPickerState{cursor: sandboxModeAutoAllow, current: sandboxModeOff, configured: sandboxModeOff, detected: true, status: sandbox.Status{Installed: true, ImagePresent: true}}
 	got := renderSandboxPicker(p, 100)
-	for _, want := range []string{"Sandbox run_bash, with auto-allow", "Sandbox run_bash, with regular permissions", "No sandbox"} {
+	for _, want := range []string{"Sandbox run_bash, with auto-allow", "Sandbox run_bash, regular permissions", "No sandbox"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("render missing row %q:\n%s", want, got)
 		}
@@ -278,14 +330,14 @@ func TestRenderSandboxPicker_ShowsThreeRowsAndCurrentCheckmark(t *testing.T) {
 }
 
 func TestRenderSandboxPicker_StatusLineHighlightsCurrentMode(t *testing.T) {
-	on := &sandboxPickerState{cursor: sandboxModeRegular, current: sandboxModeRegular, experimentalOn: true, detected: true, status: sandbox.Status{Installed: true, ImagePresent: true}}
-	if got := sandboxStatusLine(on); got != "Current: sandbox on · experimental on" {
+	on := &sandboxPickerState{cursor: sandboxModeRegular, current: sandboxModeRegular, configured: sandboxModeRegular, sandboxActive: true, experimentalOn: true, detected: true, status: sandbox.Status{Installed: true, ImagePresent: true}}
+	if got := sandboxStatusLine(on); got != "Configured: sandbox on\nActive: sandbox on · experimental on" {
 		t.Fatalf("sandbox on status line = %q", got)
 	}
 
-	off := &sandboxPickerState{cursor: sandboxModeRegular, current: sandboxModeOff, detected: true, status: sandbox.Status{Installed: true, ImagePresent: true}}
+	off := &sandboxPickerState{cursor: sandboxModeRegular, current: sandboxModeOff, configured: sandboxModeOff, detected: true, status: sandbox.Status{Installed: true, ImagePresent: true}}
 	got := renderSandboxPicker(off, 100)
-	for _, want := range []string{"Current: sandbox off · experimental off", "Enable: --experimental sandbox", "[A] Apply selection"} {
+	for _, want := range []string{"Configured: sandbox off", "Active: sandbox off · experimental off", "Enable: --experimental sandbox", "[A] Apply selection"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("render missing concise top status %q:\n%s", want, got)
 		}
