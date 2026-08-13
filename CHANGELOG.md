@@ -6,409 +6,118 @@ the project uses semantic versioning once it's past `1.0.0`.
 
 ## Unreleased
 
+_No unreleased changes yet._
+
+## 0.4.0 — 2026-08-12
+
+> Public launch cut — broad daily-driver improvements across providers, TUI,
+> memory/recall, subagents, LSP/code intelligence, GitHub PR workflows,
+> document/media tools, and safety hardening. This release intentionally does
+> not claim the deferred v0.5.0 launch-polish items: Homebrew, full paid-provider
+> cost estimates, complete launch asset set, or broad PDF/Office ingestion.
+
 ### Added
 
-feature/anthropic-config-updates
-- **Prompt-cache awareness for mid-session model/provider switches.**
-  Every provider's prompt cache is keyed to the specific model's
-  weights — switching models mid-session always burns whatever cache
-  existed, regardless of provider. yottacode now surfaces this instead
-  of leaving it invisible until the next turn runs slow:
-  - A status-line warning after any of the five call sites that change
-    the active model mid-session: `/model <name>`, the model picker,
-    `/provider use <name>`, and the two router-role switches (Plan
-    mode swaps onto the advisor model, Auto mode onto the implementer,
-    when `/advisor` routing is on).
-  - A proactive note in the `/model` and `/provider` → "Switch
-    provider" picker headers, visible before committing to a switch.
-  - **`cache.anthropic_ttl`** — a new config.toml opt-in (`"1h"`,
-    default `"5m"`) that extends Anthropic's cache breakpoint TTL, so
-    sessions resumed after a longer idle gap, or Plan/Auto round-trips
-    with a routed advisor/implementer pair, have a real chance to hit
-    cache instead of always missing after 5 minutes. Costs 2x on cache
-    writes instead of 1.25x — off by default since it's a genuine
-    cost/latency tradeoff, not a universal win. Anthropic-only; other
-    providers manage their own cache eviction with no client-exposed
-    TTL. See [`yottacode-roadmap/prompt-caching.md`](yottacode-roadmap/prompt-caching.md).
+- **Advisor/implementer model routing** with `/advisor`, routed Plan/Auto mode
+  switches, advisor fallback wording, and the `consult_advisor` tool for routed
+  implementer sessions. (#131, #139, #146, #147)
+- **Google Vertex AI provider support** for Vertex-hosted Claude and Gemini
+  models using Application Default Credentials, curated model lists, provider
+  docs, and reasoning-effort plumbing. (#109)
+- **Recurring task loops** via `/loop`, the `loop_control` self-stop tool, and a
+  higher default max-iteration ceiling for longer agent workflows. (#104, #108,
+  #112, #212)
+- **Automatic semantic session recall** with sensitive-project quarantine,
+  recall picker polish, worktree/repo-root scope fixes, vector cleanup, debug
+  logging, and opt-out behavior for `retrieval.session_recall.top_k = 0`. (#103,
+  #107, #113, #121)
+- **Memory maintenance and capture upgrades** including periodic capture
+  reminders, quick-capture defaults, audit/health/proposal reports,
+  approval-gated curation, archive maintenance, and harder save/search
+  consistency. (#114, #115, #116, #117, #163, #164)
+- **Background subagents, local code review, and dispatch improvements** covering
+  promoted background workers, local review workflows, batch stop commands,
+  token-budget enforcement, atomic concurrency admission, completion wakeups,
+  safer worker shutdown, orphaned worktree reclamation, and serialized worktree
+  cleanup. (#79, #98, #101, #160, #184, #210)
+- **GitHub PR workflow helpers** for PR CI context: checking failed logs, rerunning
+  failed jobs, watching PR checks, and typed PR check-waiting. (#178, #179)
+- **GA LSP code intelligence** with startup install hints, status/advisory cards,
+  diagnostics, document symbols, signature help, type definitions,
+  implementations, code-action previews, rename/format previews, selection
+  ranges, document highlights, safer WorkspaceEdit application, smoke coverage,
+  and changed-file diagnostic summaries. (#126, #127, #128, #133, #135, #142,
+  #150, #165, #169, #175, #177, #180, #188)
+- **GA `syntax_range` structural ranges** for Go, TypeScript/JavaScript, Python,
+  and Rust, plus offline symbol fallback improvements for code-map/LSP surfaces.
+  (#157, #181)
+- **Experimental Code Map** for repo snapshots, Go import impact/cycles, and
+  Mermaid diagrams. (#136)
+- **Structured document ingestion** through experimental `read_document` with
+  Phase A CSV/TSV/JSON/JSONL/XML/HTML extraction, `offset` paging, `max_bytes`,
+  BOM/delimiter/header/JSONL hardening, capped XML/HTML previews, truncation
+  warnings, and agent-prompt discoverability. (#183, #185)
+- **Experimental document generation workflow** and docs for local xlsx/pptx/docx
+  /pdf-oriented document generation surfaces. (#209)
+- **Local marketing video tools** for prompt-driven ffmpeg/ffprobe composition,
+  polished video templates, and docs. (#132, #170, #171)
+- **ACP server adapter** for Agent Client Protocol integration. (#193)
+- **Experimental Podman command sandbox** plus sandbox picker flow fixes. (#190,
+  #192)
+- **Official skills catalog installs** and visible skills progress indicators.
+  (#110, #124)
+- **TUI session inspect and usage-efficiency tooling** with session picker/export,
+  paged session and inspect pickers, usage outlier attribution, cache metric
+  fixes, and false-positive cleanup. (#201, #202, #203, #205, #207, #208, #211)
+- **New themes and theme polish** including `studio-dark`, `yottacode-dark`,
+  README/demo assets, and recording-oriented palettes. (#168, #173, #200)
+- **Mode and permission UX updates** including `/yolo`, `/auto`, full mode-cycle
+  controls, immediate foreground-only mode indicators, and yolo terminology.
+  (#122, #196, #199)
 
-- **`read_document` can page through a file with `offset`** (still behind
-  `--experimental document_ingestion`). A 10k-row CSV previously showed
-  only its first `max_rows` and nothing else was reachable — raising
-  `max_chars` just re-rendered the same prefix — so "find the rows where
-  X" had to drop to `run_bash`. `offset` moves the preview window, in
-  whatever unit that format's preview is made of: data rows for CSV/TSV,
-  records for JSONL, characters for JSON/XML/HTML. One parameter rather
-  than separate row/char variants because every result labels the window
-  it returned (`rows 201-400`, `JSONL line 412`), so the unit is
-  unambiguous where it's read. The CSV header repeats on every page,
-  JSONL line labels stay absolute, row counts keep reporting the file's
-  true total, and an offset past the end is reported rather than coming
-  back as an empty window indistinguishable from an empty file. Skipped
-  rows are parsed and discarded, never retained, so deep paging costs
-  time rather than memory. Every text preview — including the raw
-  fallback a byte-capped `.json` falls back to — windows through one
-  shared helper, so no path can quietly return page 1 forever.
+### Changed
 
-- **`read_document` now takes `max_bytes`** (still behind
-  `--experimental document_ingestion`). The 5 MiB read cap was previously
-  unreachable from the tool, so a result that warned "source file exceeds
-  the byte cap" left the model with no recourse except dropping to
-  `run_bash`. It can now raise the allowance up to a 32 MiB ceiling —
-  and an over-ceiling request is reported as clamped rather than quietly
-  honored at a smaller value. `max_bytes` is the only cap that needs a
-  ceiling: `max_rows` and `max_chars` are transitively bounded by it.
-
-- **`/subagents stop batch <batch-id>`** — cancel every running worker in one
-  dispatch batch. A batch is up to 8 workers; stopping them previously meant
-  finding and typing each task id while the rest kept spending tokens. The
-  batch id is on the dock header. `/subagents stop <id-prefix>` still stops a
-  single worker.
+- **TUI rendering was substantially redesigned**: fullscreen owned transcript,
+  popup compositor, Charm v2 migration, startup/welcome redesign, status-bar
+  polish, scroll/picker/menu improvements, grouped read/tool cards, approval
+  modal scrolling, mouse selection/hover polish, and more consistent slash
+  submenu overlays. (#140, #141, #143, #144, #148, #149, #151, #152, #153, #154,
+  #159, #167, #176, #191, #194, #195, #197, #198, #204, #206, #213, #214)
+- **README and public positioning were refreshed** with adoption-focused copy,
+  traction positioning, and a GIF-based demo path that renders reliably on
+  GitHub. (#172, #173, #174)
+- **Model catalog and provider resolution improved**: live model catalog fetches
+  for OpenAI auth, declared model fallback for non-curated providers, filtering
+  non-chat models from pickers, host-qualified model ids, reasoning metadata for
+  versioned/provider-qualified ids, and safer provider fallback behavior. (#99,
+  #119, #123, #189)
+- **Tool output and recoverability UX improved** with compact anchored-edit error
+  cards, anchored edit recovery, clearer patch failure notices, argument
+  tolerance, and bounded tool-call/log output. (#125, #129, #156, #162, #187)
+- **Prompt-cache behavior is now explicit** for mid-session model/provider
+  switches, and Anthropic cache TTL is configurable. (#186)
+- **Documentation guidance was corrected** where the experimental-feature
+  graduation process did not match how the project actually keeps old flags
+  recognized after GA. (#185)
 
 ### Fixed
 
-- **`run_bash` and `pr_check_logs` could each dump enough CI-log text into
-  a single tool result to blow through a session's token budget.**
-  `run_bash`'s per-stream output cap was 1 MiB — on its own a large
-  fraction of any model's context window — so shelling out to something
-  like `gh run view --log-failed` on a noisy CI job could burn through a
-  request in one call. That cap is now 256 KiB, matching the ceiling
-  already used elsewhere for tool output. Separately, `pr_check_logs`'s
-  `max_lines` was documented as "capped at 2000" but the cap was never
-  enforced: a caller passing a much larger value got that many lines per
-  failed job, per run, with no ceiling. `max_lines` is now actually
-  clamped to the documented cap.
+- **Security and permission hardening** for approval controls and `apply_diff`
+  path validation, including JSON-escaped patch handling that previously could
+  bypass deny-listed write paths. (#125, #164)
+- **PR tools now resolve the live branch after entering a worktree**, avoiding PR
+  operations accidentally targeting the startup checkout. (#134)
+- **Session resume, picker gists, archive restore, image-token accounting, queued
+  mid-turn input editing, and transcript scratch leakage** were fixed or polished.
+  (#118, #121, #137)
+- **Large file and log handling is safer**: `read_file` can page beyond the first
+  512 KiB, `run_bash` output is capped at 256 KiB, and `pr_check_logs` now clamps
+  its documented `max_lines` ceiling. (#185, #187)
+- **LSP and dispatch CI flakes were hardened**, including gopls smoke-test temp
+  workspaces and a longer dispatch cleanup deadline. (#166, #188)
+- **TUI scroll and popup defects** were fixed in transcript, approval, inspect,
+  session, mouse, and help-popup flows. (#195, #204, #206, #211, #214)
 
-- **`read_file` can now reach past the first 512 KiB of a file.** The
-  reader took a fixed 512 KiB prefix and applied `offset` to lines within
-  *that buffer*, so every line beyond the prefix was unreachable — and
-  asking for one returned an **empty string**, indistinguishable from a
-  genuine end-of-file. On a 30,000-line log, reads silently stopped
-  working somewhere around line 14,000, and a caller paging through it
-  would conclude the file ended there. Lines before the window are now
-  streamed past and discarded, so `offset` can start anywhere while the
-  512 KiB budget still caps what a single call *returns*. Reaching a
-  distant offset costs time rather than memory, including across a
-  multi-megabyte single line, and an empty result now means only "past
-  the last line".
-
-- **`/experimental` renders as aligned columns again.** Feature names were
-  padded to a hardcoded 18 columns, but the catalog's longest name
-  (`lsp_code_intelligence`, 21) overflowed that and pushed its own `[GA]`
-  marker out of the column, so the list read as ragged. The name column is
-  now sized from the catalog itself. Descriptions, which are full
-  sentences, moved onto their own wrapped lines instead of running off the
-  right edge and being clipped mid-word by the terminal.
-
-- **`read_document` handles real-world export quirks** (still behind
-  `--experimental document_ingestion`). Three cases that each produced a
-  *wrong* answer indistinguishable from a right one:
-  - **A UTF-8 BOM no longer corrupts the read.** Windows Excel writes one
-    by default. In CSV it became part of the first column's name, so `id`
-    arrived as `<BOM>id` and every later match on that column silently
-    missed. In JSON it was worse than degraded — `encoding/json` rejects
-    the whole document with `invalid character 'ï'`, making a BOM-prefixed
-    file entirely unreadable. In JSONL it made line 1 unparseable, which
-    was then counted as a malformed line and dropped.
-  - **Semicolon/tab/pipe-delimited `.csv` is detected.** Excel writes
-    `;`-delimited CSV in every European locale; read as comma-delimited,
-    every line collapsed into one column and reported as a valid
-    one-column table. The delimiter is now sniffed from the first line
-    (counted outside quotes, so `"last, first",age` doesn't fool it), and
-    a non-default choice is reported. `.tsv` is not sniffed.
-  - **A `.json` file holding JSONL is recognized.** Read as one document
-    it doesn't degrade, it errors — `encoding/json` rejects the second
-    value and the entire file comes back unusable. Whole-document parse
-    failure now retries line-oriented, and reports the reinterpretation.
-    The bar is strict (every non-blank line must parse, and there must be
-    more than one) so a genuinely broken file still returns its original
-    `invalid JSON` error, which is the more useful answer.
-  - **One oversized JSONL record no longer suppresses the rest.** Hitting
-    the character budget stopped sampling outright, so a single fat
-    record early in a file discarded every later one — on a 7-record
-    file with one big row, 1 record came back instead of 6. Oversized
-    records are now skipped individually and counted; because labels are
-    absolute source line numbers, the gap is visible rather than
-    misleading.
-  - **Headerless files keep their first record.** Row 1 was taken as
-    column names unconditionally, which both lost that row and mislabeled
-    every column. A first row containing a number is now read as data and
-    the decision is stated; the new `has_header` argument overrides it in
-    either direction for the ambiguous cases (a real header of bare years).
-
-- **`read_document` no longer buffers a whole XML/HTML document to return a
-  preview** (still behind `--experimental document_ingestion`). Both
-  extractors accumulated the file's entire visible text and only then cut
-  it to `max_chars`, so memory scaled with the document rather than the
-  preview — waste that became worth fixing once `max_bytes` could be
-  raised toward 32 MiB. Text is now retained only up to the cap while the
-  true total is tracked separately, so the "showing the first N of M
-  characters" warning stays exact. HTML's heading collection had the same
-  shape (every heading gathered, ten ever shown) and is capped the same
-  way, now reporting the full count. Measured on an ~8 MB XML file:
-  53.5 MB/op → 36.8 MB/op, with output byte-identical.
-
-- **`read_document` names which cap truncated a JSONL sample** (still behind
-  `--experimental document_ingestion`). The CSV extractor already reported
-  its reason; the JSONL path returned a bare `showing 10 of 250 records`,
-  and a single oversized record tripping the character budget rendered as
-  `showing 0 of 250 records` with no cause at all — leaving no way to tell
-  whether to raise `max_rows` or `max_chars`.
-
-- **`read_document` is now discoverable to the model.** It was missing from
-  the system prompt's tool list entirely, so the only signal telling the
-  model when to prefer it over `read_file` was its own schema description.
-  It now appears in the list with an explicit routing rule: analyze
-  structured data with `read_document`, but keep using `read_file` when you
-  intend to edit the file, since only `read_file`'s `cat -n` output feeds
-  `edit_file` and `edit_anchored`.
-
-- **Dispatch pre-GA hardening** (still behind `--experimental dispatch`) — four
-  defects that only surface once the feature is relied on:
-  - **Background batches now re-prompt the agent when they finish.** Background
-    is the default for write batches, but its completion event never asked for a
-    wake, so the fan-out → `integrate` workflow stalled after the workers
-    finished until the user happened to type something. The wake is coalesced
-    per batch: an 8-worker batch produces **one** turn carrying all eight
-    results, not eight turns with partial pictures.
-  - **Dispatch now respects the session subagent token budget.**
-    `[subagents] session_token_budget` was enforced for single subagents but not
-    for dispatch, even though dispatch children deplete it — leaving the one
-    fan-out path the cost backstop couldn't stop. A batch over budget is
-    refused before any worktree is created.
-  - **The background concurrency cap is now enforced atomically.** The cap was
-    counted in `dispatch` but applied when each worker registered itself, so a
-    batch could overshoot; the whole batch is now admitted or rejected in one
-    locked step.
-  - **Quitting no longer abandons a worker mid-commit.** A worker's
-    auto-commit runs detached from cancellation so finished work is never
-    lost — which meant shutdown couldn't stop it, only outrun it, and a
-    `git add -A` plus a lint pre-commit hook routinely lost that race, leaving
-    a stale `index.lock` to hand-repair. Teardown now keeps the 3s grace
-    window for ordinary workers but waits out a commit that's actually in
-    flight (up to 30s), printing why so the pause doesn't read as a hang.
-  - **Orphaned dispatch worktrees are reclaimed at start-up.** A session killed
-    before its task records were saved used to leave empty worktrees that no
-    later session could attribute. Start-up now also scans
-    `git worktree list`, keeping (as before) anything holding commits or
-    uncommitted work.
-  See [docs/dispatch.md](docs/dispatch.md).
-
-- **`docs/experimental.md` described a graduation process the project doesn't
-  follow** — it said a graduating feature's constant is dropped so
-  `Recognized()` returns false and old configs warn. Every actual graduation did
-  the opposite (keep the constant, add it to `IsGraduated()`, stay silent).
-  Following the written steps would have made every existing config warn at
-  start-up. The checklist now matches practice.
-
-### Added
-
-- **`syntax_range` graduates to GA, now covering all four LSP languages** —
-  the offline, no-server structural edit-range tool previously only
-  understood Go (via `go/parser`). It now also covers TypeScript/JavaScript
-  and Rust (a shared brace-depth scanner) and Python (an indentation-depth
-  scanner), both built on chroma's existing pure-Go tokenizers rather than
-  adding a CGO/tree-sitter dependency. The same parser-backed layer upgrades
-  `code_map`'s offline symbol fallback and `lsp_status`'s `syntax=` column
-  for those three languages from `regex` to `parser`. The `syntax_ranges`
-  experimental flag is now a no-op kept for one release for compatibility.
-  See [docs/tools.md](docs/tools.md#syntax_range).
-
-- **`studio-dark` theme** — a recording-first TUI palette for yottacode
-  demos and screenshares. It uses a near-black charcoal backdrop, crisp
-  off-white text, punchy yottacode green accents, brighter metadata, and
-  compression-safe warning/error colors so terminal recordings stay readable on
-  YouTube/X.
-  Select it with `/theme studio-dark`; see [docs/themes.md](docs/themes.md).
-
-- **Google Vertex AI support** — two provider kinds serving models from your
-  own GCP project, billed to your Google Cloud account: `vertex-anthropic`
-  (Claude, via `:streamRawPredict`) and `vertex` (Gemini, via the project's
-  OpenAI-compatible chat shim). Both authenticate with Application Default
-  Credentials (`gcloud auth application-default login`) and mint a fresh
-  access token per request, so sessions no longer die when a manually
-  exported token expires. Project and location live in `base_url`; there is
-  no `api_key_env`. Claude defaults to `locations/global`; Gemini uses the
-  regional OpenAI-compatible shim. Claude ids take Vertex's `@version` suffix
-  (`claude-sonnet-4-5@20250929`), Gemini ids are publisher-namespaced
-  (`google/gemini-2.5-pro`).
-  Model lists are curated from the local models.dev snapshot, filtered to
-  the family each kind can drive. `/effort` steers both families — Claude
-  via the extended-thinking budget, Gemini via the shim's
-  `reasoning_effort` enum. See [docs/providers.md](docs/providers.md).
-
-- **Periodic memory-capture reminder** — every Nth user message (default 6,
-  `[memory] capture_reminder_every_turns`, `0` disables) now carries a
-  mid-session reminder to persist durable learnings. It closes a real gap: the
-  pre-compaction reminder only fires if a session crosses the summarize
-  watermark, and the final-turn-on-quit pass needs a graceful exit — so a
-  medium session ended with `Ctrl+C` previously got no reinforcement at all.
-  The reminder rides a message you were already sending (history copy only, so
-  the transcript is unchanged), costs no extra turn, and stands down when a
-  pre-compaction reminder is already pending. The exit-save activity bar also
-  dropped from two turns to one: a single exchange routinely carries a
-  correction or a decision-and-why, and the old bar silently skipped it.
-
-- **`memory_save` quick capture** — `scope`, `type`, and `description` are now
-  optional; only `name` and `content` are required. The five-field ceremony
-  competed with the primary task at exactly the moment something durable
-  surfaced. Omitted fields default to `user` scope, type `note`, and a
-  description derived from the body's first line. The full form is unchanged.
-
-- **Sensitive projects** — `yottacode sensitive add [path]` marks a repository
-  as excluded from automatic session recall, for PHI/medical and similarly
-  regulated work. Everything about recall is local except the one thing that
-  matters: an injected excerpt egresses to the cloud LLM with the turn. A
-  marked project is quarantined in **both** directions — nothing is
-  auto-injected into its prompts, and its conversations never surface in any
-  other project's recall regardless of `retrieval.session_recall.scope`, so
-  widening scope to `"user"` can't carry PHI into an unrelated repo. Sessions
-  are still indexed and the manual `session_recall` tool still reaches them;
-  the gate is about what leaves automatically. Marking covers every subfolder,
-  is announced at session start, and lives in
-  `~/.yottacode/sensitive-roots.json` — deny-listed like `trusted-roots.json`
-  so the model can't un-mark a repo. `list`/`add`/`remove`/`clear` subcommands.
-  See [docs/security-and-allow-lists.md](docs/security-and-allow-lists.md#sensitive-projects).
-
-- **`memory audit` / `memory_audit`** — the CLI command and agent tool now share
-  the same read-only curation report. The command is for humans and scripts; the
-  tool lets an explicit curation turn inspect the queue, fetch full entries with
-  `memory_get`, then consolidate with ordinary `memory_save`/`memory_forget`
-  calls. Every issue includes created-date provenance, age, and an action hint;
-  quick-capture notes older than 30 days are marked as priority curation work.
-  `--plan` / `{"plan":true}` groups issues into read-only curation batches so
-  humans or agents can work through duplicates, note promotion, scope moves, and
-  cleanup in a safer order. `memory_curate_apply` can apply only mechanical,
-  approval-gated fixes for empty entries and portable project memories; subjective
-  rewrites, merges, and note promotion still require explicit memory saves.
-  `--propose` / `{"propose":true}` drafts source-backed proposals for those
-  subjective cases without applying them. New `memory_save` writes also carry
-  optional `source_session` / `source_turn` provenance when session metadata is
-  available, and audit/proposal output renders that source for later trust checks.
-  Same-name `memory_save` updates now also report a compact changed-fields
-  summary for type, description, source, and body changes, making recoverable
-  archive-backed overwrites visible immediately. `memory health` and
-  `memory_audit({"summary":true})` expose aggregate health counts so humans and
-  agents can see whether memory needs attention without dumping the full audit
-  queue. `memory archive list` and dry-run-first `memory archive prune` provide
-  explicit archive retention, with an approval-gated `memory_archive_prune` tool
-  for actual deletion. Mechanical `memory_curate_apply` actions now append JSONL
-  curation history under `.history/` so later agents can see why a memory was
-  moved or removed. No audit path mutates memory on its own.
-
-### Fixed
-
-- **`apply_diff` no longer lets a JSON-escaped diff bypass the write deny
-  list.** A diff whose newlines arrived as the literal `\n` escape sequence was
-  repaired into a real patch *after* its target paths were parsed and validated,
-  so validation ran on a single garbage "path" that matched no deny entry — then
-  `git apply` wrote the real, repaired target. A model could patch
-  `.yottacode/permissions.local.json` (self-granting a permissions rule) or any
-  other deny-listed path this way. The repair now runs before parsing, so the
-  bytes validated are the bytes applied. The same reordering fixes a spurious
-  "diff contains no recognizable file headers" rejection of escaped diffs the
-  repair would have made applyable, and that rejection now quotes the diff it
-  received so a genuinely headerless patch is debuggable instead of opaque.
-- **`retrieval.session_recall.top_k = 0` now injects nothing.** It fell through
-  to an internal default of ten, so the value you'd set to turn injection off
-  delivered more than the default of three.
-- **Deleted sessions are evicted from the recall index.** Removing a session's
-  JSON left its rows behind forever, so `/recall` and semantic search kept
-  surfacing conversations whose transcript was gone. The startup backfill now
-  prunes them.
-- **Worktrees share their repository's recall.** yottacode worktrees live
-  outside the repo tree, so a worktree session and a main-checkout session
-  could never recall each other despite being the same work. Project scope now
-  covers the repo root and its worktree container both.
-- **Automatic session recall now covers the whole repository.** Project scope
-  matched `cwd` by exact string equality, so a session started in any
-  subdirectory was silently invisible to recall — and from a subdirectory the
-  repo's own history was invisible too. The repo root is now resolved once at
-  startup and scope matches it plus everything below it. Sessions recorded
-  outside that root (yottacode worktrees) still match on their exact path, so
-  nothing that worked before stops working. Other projects are still never
-  injected.
-- **Session-recall vectors no longer leak.** Re-indexing a session rewrote its
-  FTS rows but left `message_vectors` rows behind for messages that had
-  disappeared — after auto-summarize replaced the transcript with a synopsis,
-  for instance. They were inert for search but accumulated forever and were
-  re-scanned by every semantic query. Cleanup now runs in the same transaction
-  as the re-index.
-- **`YOTTACODE_RECALL_DEBUG` now logs near-misses.** It previously recorded only
-  excerpts that had already cleared `min_score`, and nothing at all on a turn
-  that injected nothing — so it could never answer the question it exists for,
-  "is the threshold too high?". Each search now logs every candidate with its
-  cosine score marked `injected` or `dropped`, including zero-hit turns. The
-  debug pass searches wider but re-applies the real threshold before injecting,
-  so enabling it never changes what the model sees.
-
-- `[[providers.models]]` is no longer silently ignored for non-curated
-  provider kinds. `catalog.List` went straight to the live `/models` fetch
-  and never read the declared list, so endpoints that implement
-  `chat/completions` but no `/models` route left the picker empty even
-  when the user had written out their models by hand. Declared models are
-  now merged in for every kind and stand in when a live fetch fails; the
-  fetch error still surfaces so an unreachable endpoint can't look healthy.
-- The model picker no longer offers embedding and text-to-speech models as
-  chat models. The models.dev family filter selects on an id prefix
-  (`gemini`), which swept in `gemini-embedding-001` and the `-tts`
-  variants. Image models are deliberately kept — they take a chat-shaped
-  request.
-- `yotta-models refresh` now backfills `max_output` from models.dev, not
-  just `context_window`. A vendor API that reports neither (OpenAI's
-  `/v1/models`) left every one of its models with `max_output: 0`, which
-  reads as "unknown" and downgrades budget-based reasoning to a
-  conservative default. First-party values are still never overwritten —
-  models.dev only fills what the vendor omitted.
-- Context windows now resolve for host-qualified model ids.
-  `ResolveWindowForProvider` consulted only the generated catalog, which
-  carries no rows for kinds sourced from the models.dev snapshot and
-  matches ids verbatim — so a `vertex` profile serving
-  `google/gemini-2.5-pro` missed every layer and landed on
-  `context.default_window`, reporting 128k for a 1M-context model and
-  firing auto-summarize at an eighth of the real budget. Resolution now
-  falls back to the provider's own curated list, which is host-scoped:
-  the same id legitimately differs per backend (`gemini-2.5-pro` is 1M on
-  Vertex, 128k through Copilot), and that distinction is exactly what a
-  per-model-id lookup destroys.
-- `catalog.ReasoningInfo` now resolves host-qualified model ids. Vertex and
-  resellers qualify the vendor's id three ways, and none of them matched
-  the catalog before: a publisher prefix (`google/gemini-2.5-pro`,
-  OpenRouter's `anthropic/claude-*`), an `@default` suffix meaning "latest"
-  (`claude-opus-4-8@default`), and an `@date` snapshot pin
-  (`claude-sonnet-4-5@20250929`) that the vendor's own catalog spells with
-  a dash (`claude-sonnet-4-5-20250929`). Such models read as uncatalogued
-  and silently lost their extended-thinking budget, falling back to a
-  conservative cap instead of the model's real max-output scaling.
-
-- Provider resolution no longer lets the `claude-*` / `gemini-*` model-tag
-  fallback override an explicitly configured provider. The fallback exists to
-  recognize corporate gateways at unknown hostnames, but it fired even when
-  the provider was already known — which would have routed a Vertex config to
-  `api.anthropic.com` with a credential that host rejects.
-- `catalog.ReasoningInfo` now falls back to the base id when a model carries a
-  version suffix (`claude-opus-4-8@default`). Such models previously read as
-  uncatalogued and silently lost their extended-thinking budget.
-
-### Added
-
-- **The TUI's underlying Bubble Tea/Lip Gloss/Bubbles/Glamour dependencies moved
-  to their v2 lines** (v1 has been feature-frozen since 2025-09-17). No
-  intended visible behavior change on its own — this lands the flicker-free
-  "Cursed" renderer for streaming/diff redraws and an explicit color-profile
-  model that the theme system now routes through — but it's a real dependency
-  bump worth flagging if a terminal renders differently than before. Mouse
-  support remains intentionally off (it was already opt-in and unused).
-- **Picker overlays (`/model`, `/provider`, `/sessions`, `/mcp`, `/skills`,
-  `/themes`, and friends) no longer overflow on narrow terminals.** Their
-  divider width was pinned to a fixed 72 columns; the status bar and tool
-  cards already degraded gracefully below that width, pickers didn't. The
-  divider now tracks the live terminal width, still capped at 72 on anything
-  wide enough to afford it — wide-terminal layouts are unchanged.
-- **The connection status dot is no longer color-only.** All four states
-  (healthy, degraded, down, unknown) rendered the identical `●` glyph in
-  different colors — invisible under `NO_COLOR` or to a colorblind user. Each
-  state now has its own shape too: `●` filled (healthy), `◐` half (degraded),
-  `○` hollow (down), `·` dot (unknown).
 
 ## 0.3.0 — 2026-06-10
 
