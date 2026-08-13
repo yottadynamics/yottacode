@@ -19,7 +19,56 @@ import (
 func cmdExperimental(m Model, _ []string) (Model, tea.Cmd) {
 	m.experimentalPanel = renderExperimentalPanel(m.experimentalEnabled, m.popupWidth())
 	m.experimentalOpen = true
+	m.experimentalScrollOffset = 0
 	return m, nil
+}
+
+const experimentalScrollReserve = 1
+
+// experimentalVisibleLines reserves one row for the scroll hint when the
+// feature catalog grows taller than the terminal. The catalog text is rendered
+// once at open time, then windowed from the snapshot just like /context.
+func (m Model) experimentalVisibleLines() int {
+	n := m.height - 2 - experimentalScrollReserve
+	if n < 1 {
+		n = 1
+	}
+	return n
+}
+
+func (m Model) experimentalFullFitLines() int {
+	n := m.height - 2
+	if n < 1 {
+		n = 1
+	}
+	return n
+}
+
+func (m Model) experimentalMaxScrollOffset() int {
+	lines := strings.Count(m.experimentalPanel, "\n") + 1
+	if lines <= m.experimentalFullFitLines() {
+		return 0
+	}
+	return lines - m.experimentalVisibleLines()
+}
+
+// windowedExperimentalPanel keeps the /experimental popup bounded while still
+// allowing the whole catalog to be inspected with keyboard or mouse scrolling.
+func (m Model) windowedExperimentalPanel() string {
+	if m.experimentalPanel == "" {
+		return m.experimentalPanel
+	}
+	allLines := strings.Split(m.experimentalPanel, "\n")
+	total := len(allLines)
+	if total <= m.experimentalFullFitLines() {
+		return m.experimentalPanel
+	}
+	visible := m.experimentalVisibleLines()
+	offset := min(max(m.experimentalScrollOffset, 0), total-visible)
+	end := min(total, offset+visible)
+	shown := strings.Join(allLines[offset:end], "\n")
+	hint := fmt.Sprintf("── %d-%d of %d lines · wheel/click ↑↓ · PgUp/PgDn ──", offset+1, end, total)
+	return shown + "\n" + styleHint.Render(hint)
 }
 
 // renderExperimentalPanel draws the catalog. Callers that know the live

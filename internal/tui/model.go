@@ -731,7 +731,8 @@ type Model struct {
 	// loopListOpen shows the active-loop panel (bare `/loop`) as a dismissable
 	// inline overlay above the cmdline, instead of writing loop cards into the
 	// session transcript. Any key closes it.
-	loopListOpen bool
+	loopListOpen         bool
+	loopListScrollOffset int
 
 	// paragraphStart tracks blank-line boundaries so the first line
 	// of each new prose paragraph gets 2 extra spaces of indent.
@@ -787,8 +788,9 @@ type Model struct {
 	// Experimental overlay (/experimental). Read-only feature catalog rendered as
 	// an inline overlay, not scrollback, so feature-state inspection stays
 	// transient like /usage and /context.
-	experimentalOpen  bool
-	experimentalPanel string
+	experimentalOpen         bool
+	experimentalPanel        string
+	experimentalScrollOffset int
 
 	// Help overlay (/help). Read-only command catalog rendered as an inline
 	// overlay so the dense command list stays readable and out of transcript
@@ -814,8 +816,9 @@ type Model struct {
 	// time (the report reads memory files from disk and walks the skill
 	// set, too heavy to recompute every frame); any key dismisses it,
 	// mirroring the cheatsheet.
-	contextReportOpen bool
-	contextReportBody string
+	contextReportOpen         bool
+	contextReportBody         string
+	contextReportScrollOffset int
 
 	// Permissions picker (/permissions). Two-row picker (shared /
 	// local) modelled on /memory's three-row picker — Up/Down
@@ -1509,10 +1512,25 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if m.loopListOpen {
-			// Any key dismisses the bare-/loop status panel (mirrors the
-			// cheatsheet). Intercepted here, ahead of the Esc/Ctrl+C
-			// loop-stop handlers, so closing the panel never disarms loops.
+			// Intercepted here, ahead of the Esc/Ctrl+C loop-stop handlers, so
+			// closing the panel never disarms loops. Scroll keys inspect tall
+			// loop lists; any other key dismisses the status panel.
+			switch msg.Code {
+			case tea.KeyUp:
+				m.loopListScrollOffset = max(0, m.loopListScrollOffset-1)
+				return m, nil
+			case tea.KeyDown:
+				m.loopListScrollOffset = min(m.loopListMaxScrollOffset(), m.loopListScrollOffset+1)
+				return m, nil
+			case tea.KeyPgUp:
+				m.loopListScrollOffset = max(0, m.loopListScrollOffset-m.loopListVisibleLines())
+				return m, nil
+			case tea.KeyPgDown:
+				m.loopListScrollOffset = min(m.loopListMaxScrollOffset(), m.loopListScrollOffset+m.loopListVisibleLines())
+				return m, nil
+			}
 			m.loopListOpen = false
+			m.loopListScrollOffset = 0
 			return m, nil
 		}
 		if m.usageOpen {
@@ -1539,8 +1557,23 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateInspectPanel(msg)
 		}
 		if m.experimentalOpen {
+			switch msg.Code {
+			case tea.KeyUp:
+				m.experimentalScrollOffset = max(0, m.experimentalScrollOffset-1)
+				return m, nil
+			case tea.KeyDown:
+				m.experimentalScrollOffset = min(m.experimentalMaxScrollOffset(), m.experimentalScrollOffset+1)
+				return m, nil
+			case tea.KeyPgUp:
+				m.experimentalScrollOffset = max(0, m.experimentalScrollOffset-m.experimentalVisibleLines())
+				return m, nil
+			case tea.KeyPgDown:
+				m.experimentalScrollOffset = min(m.experimentalMaxScrollOffset(), m.experimentalScrollOffset+m.experimentalVisibleLines())
+				return m, nil
+			}
 			m.experimentalOpen = false
 			m.experimentalPanel = ""
+			m.experimentalScrollOffset = 0
 			return m, nil
 		}
 		if m.helpOpen {
@@ -1570,8 +1603,23 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if m.contextReportOpen {
+			switch msg.Code {
+			case tea.KeyUp:
+				m.contextReportScrollOffset = max(0, m.contextReportScrollOffset-1)
+				return m, nil
+			case tea.KeyDown:
+				m.contextReportScrollOffset = min(m.contextReportMaxScrollOffset(), m.contextReportScrollOffset+1)
+				return m, nil
+			case tea.KeyPgUp:
+				m.contextReportScrollOffset = max(0, m.contextReportScrollOffset-m.contextReportVisibleLines())
+				return m, nil
+			case tea.KeyPgDown:
+				m.contextReportScrollOffset = min(m.contextReportMaxScrollOffset(), m.contextReportScrollOffset+m.contextReportVisibleLines())
+				return m, nil
+			}
 			m.contextReportOpen = false
 			m.contextReportBody = ""
+			m.contextReportScrollOffset = 0
 			return m, nil
 		}
 		if m.permissionsOpen {
@@ -3115,17 +3163,17 @@ func (m Model) activePopupBody() (box string, ok bool) {
 	case m.cheatsheetOpen:
 		return popupBox(renderCheatsheet()), true
 	case m.loopListOpen && m.activeLoopCount() > 0:
-		return popupBox(m.renderLoopListPanel()), true
+		return popupBox(m.windowedLoopListPanel()), true
 	case m.usageOpen:
 		return popupBox(m.windowedUsagePanel(), m.popupWidth()), true
 	case m.inspectOpen:
 		return popupBox(m.windowedInspectPanel(), m.popupWidth()), true
 	case m.experimentalOpen:
-		return popupBox(m.experimentalPanel), true
+		return popupBox(m.windowedExperimentalPanel()), true
 	case m.helpOpen:
 		return popupBox(m.windowedHelpPanel(), m.helpPopupWidth()), true
 	case m.contextReportOpen:
-		return popupBox(m.contextReportBody, m.popupWidth()), true
+		return popupBox(m.windowedContextReportBody(), m.popupWidth()), true
 	case m.permissionsOpen:
 		return popupBox(renderPermissionsOverlay(m)), true
 	case m.modelPickerOpen && m.modelPicker != nil:

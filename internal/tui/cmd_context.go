@@ -81,7 +81,59 @@ func cmdContext(m Model, _ []string) (Model, tea.Cmd) {
 		"\n\n" + styleHint.Render("esc to close")
 	m.contextReportBody = report
 	m.contextReportOpen = true
+	m.contextReportScrollOffset = 0
 	return m, nil
+}
+
+const contextReportScrollReserve = 1
+
+// contextReportVisibleLines returns how many report rows fit inside the popup
+// when a scroll-position hint is present. The report can grow with memory files,
+// MCP servers, and skills, so it needs the same bounded-overlay treatment as
+// /usage and /inspect instead of relying on popupBox to fit an unbounded body.
+func (m Model) contextReportVisibleLines() int {
+	n := m.height - 2 - contextReportScrollReserve
+	if n < 1 {
+		n = 1
+	}
+	return n
+}
+
+func (m Model) contextReportFullFitLines() int {
+	n := m.height - 2
+	if n < 1 {
+		n = 1
+	}
+	return n
+}
+
+func (m Model) contextReportMaxScrollOffset() int {
+	lines := strings.Count(m.contextReportBody, "\n") + 1
+	if lines <= m.contextReportFullFitLines() {
+		return 0
+	}
+	return lines - m.contextReportVisibleLines()
+}
+
+// windowedContextReportBody returns the visible slice of /context plus a scroll
+// hint when the full report would overflow the terminal. Keeping the popup
+// height stable prevents mouse clicks on the body from falling through to the
+// generic static-popup dismissal path while users scroll.
+func (m Model) windowedContextReportBody() string {
+	if m.contextReportBody == "" {
+		return m.contextReportBody
+	}
+	allLines := strings.Split(m.contextReportBody, "\n")
+	total := len(allLines)
+	if total <= m.contextReportFullFitLines() {
+		return m.contextReportBody
+	}
+	visible := m.contextReportVisibleLines()
+	offset := min(max(m.contextReportScrollOffset, 0), total-visible)
+	end := min(total, offset+visible)
+	shown := strings.Join(allLines[offset:end], "\n")
+	hint := fmt.Sprintf("── %d-%d of %d lines · wheel/click ↑↓ · PgUp/PgDn ──", offset+1, end, total)
+	return shown + "\n" + styleHint.Render(hint)
 }
 
 // renderContextReport assembles the full /context view: header,

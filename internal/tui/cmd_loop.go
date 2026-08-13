@@ -26,6 +26,7 @@ func cmdLoop(m Model, args []string) (Model, tea.Cmd) {
 		// writing cards into the session — the transcript shouldn't fill with a
 		// status readout every time the user checks their loops.
 		m.loopListOpen = true
+		m.loopListScrollOffset = 0
 		return m, nil
 	}
 
@@ -424,6 +425,56 @@ func (m Model) renderLoopListPanel() string {
 	b.WriteString("\n")
 	b.WriteString(styleAutoBannerHint.Render("/loop stop <id> to stop one · /loop stop all · any key to dismiss"))
 	return b.String()
+}
+
+const loopListScrollReserve = 1
+
+// loopListVisibleLines reserves space for the scroll hint when enough active
+// loops exist to push the status popup past the terminal height.
+func (m Model) loopListVisibleLines() int {
+	n := m.height - 2 - loopListScrollReserve
+	if n < 1 {
+		n = 1
+	}
+	return n
+}
+
+func (m Model) loopListFullFitLines() int {
+	n := m.height - 2
+	if n < 1 {
+		n = 1
+	}
+	return n
+}
+
+func (m Model) loopListMaxScrollOffset() int {
+	panel := m.renderLoopListPanel()
+	lines := strings.Count(panel, "\n") + 1
+	if lines <= m.loopListFullFitLines() {
+		return 0
+	}
+	return lines - m.loopListVisibleLines()
+}
+
+// windowedLoopListPanel windows the bare-/loop status panel so many active
+// loops remain inspectable without leaking clicks or wheel events through a
+// popup taller than the terminal.
+func (m Model) windowedLoopListPanel() string {
+	panel := m.renderLoopListPanel()
+	if panel == "" {
+		return panel
+	}
+	allLines := strings.Split(panel, "\n")
+	total := len(allLines)
+	if total <= m.loopListFullFitLines() {
+		return panel
+	}
+	visible := m.loopListVisibleLines()
+	offset := min(max(m.loopListScrollOffset, 0), total-visible)
+	end := min(total, offset+visible)
+	shown := strings.Join(allLines[offset:end], "\n")
+	hint := fmt.Sprintf("── %d-%d of %d lines · wheel/click ↑↓ · PgUp/PgDn ──", offset+1, end, total)
+	return shown + "\n" + styleHint.Render(hint)
 }
 
 // compactDuration renders a loop interval without trailing zero units
