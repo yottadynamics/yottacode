@@ -1,6 +1,6 @@
 module github.com/yottadynamics/yottacode
 
-go 1.26.3
+go 1.26.5
 
 require (
 	charm.land/bubbles/v2 v2.1.1
@@ -77,12 +77,12 @@ require (
 	github.com/tidwall/pretty v1.2.1 // indirect
 	github.com/tidwall/sjson v1.2.5
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
-	github.com/yuin/goldmark v1.7.13 // indirect
+	github.com/yuin/goldmark v1.7.17 // indirect
 	github.com/yuin/goldmark-emoji v1.0.6 // indirect
 	golang.org/x/net v0.56.0
 	golang.org/x/sys v0.46.0 // indirect
 	golang.org/x/term v0.44.0
-	golang.org/x/text v0.38.0 // indirect
+	golang.org/x/text v0.39.0 // indirect
 	modernc.org/libc v1.72.0 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect

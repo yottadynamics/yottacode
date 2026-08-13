@@ -21,9 +21,9 @@ approach before you invest the time.
 
 ## Development environment
 
-Requirements: **Go 1.26+** (see [`go.mod`](go.mod) for the exact version).
-yottacode is a single, pure-Go binary with no CGo, so the toolchain is all you
-need.
+Requirements: **Go 1.26+**; use the exact patch version in [`go.mod`](go.mod)
+when validating security fixes or reproducing CI locally. yottacode is a single,
+pure-Go binary with no CGo, so the toolchain is all you need.
 
 Supported platforms are **Linux** and **macOS** (amd64 and arm64). There is no
 native Windows build — Windows contributors should work inside WSL.

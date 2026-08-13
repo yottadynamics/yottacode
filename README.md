@@ -195,6 +195,7 @@ go build -o yottacode ./cmd/yottacode
 ```bash
 go test ./...                    # unit tests — fast, no network
 go vet ./...                     # static checks
+govulncheck ./...                # reachable dependency/toolchain CVEs
 go test -race ./...              # race detector
 go test -cover ./...             # coverage
 go test -tags=integration ./...  # live-provider tests (needs API keys)
