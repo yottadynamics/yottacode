@@ -8,7 +8,7 @@ import (
 
 func TestSandboxPicker_ClickRowAppliesSelection(t *testing.T) {
 	m := newTestModel(t)
-	m.sandboxPicker = &sandboxPickerState{cursor: sandboxModeOff, current: sandboxModeOff, experimentalOn: true, detected: true}
+	m.sandboxPicker = &sandboxPickerState{cursor: sandboxModeOff, current: sandboxModeOff, configured: sandboxModeOff, experimentalOn: true, detected: true}
 	m.sandboxPickerOpen = true
 
 	hits := &pickerHits{}

@@ -120,12 +120,12 @@ three-row picker:
 - **No sandbox** — persists `backend = "none"`, today's default; if this picker
   previously enabled auto-allow, it also turns that live auto mode back off.
 
-The picker shows a concise top status line (`Current: sandbox on/off ·
-experimental on/off`) and highlights whether the current session is actually
-sandboxed. It does not enable experimental features. If `experimental sandbox` is
-off, Podman rows are blocked with a short hint; enable the gate with
-`--experimental sandbox`, `YOTTACODE_EXPERIMENTAL=sandbox`, or
-`[experimental] sandbox = true`, then restart.
+The picker shows separate configured/live state (`Configured: sandbox on/off` and
+`Active: sandbox on/off`). If config already says Podman but the current session
+was started before the sandbox container existed, it renders `Active: sandbox off
+— restart required`; sandbox rows are marked for the next session and cannot be
+selected again until yottacode is restarted. This prevents a config-only change
+from looking like live isolation.
 
 The backend selection does **not** hot-swap the running session. The tool
 registry gets its `Sandbox` once during session startup, and the Podman

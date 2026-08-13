@@ -288,6 +288,7 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 		Cfg:                    cfg,
 		Session:                rt.Session,
 		ExperimentalEnabled:    rt.ExperimentalSet.EnabledNames(),
+		SandboxActive:          rt.CmdSandbox != nil,
 		Permissions:            rt.Permissions,
 		Recall:                 idx,
 		ModelName:              rt.Model,

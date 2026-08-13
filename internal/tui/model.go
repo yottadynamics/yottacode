@@ -130,6 +130,10 @@ type Config struct {
 	// on; empty means none are enabled.
 	ExperimentalEnabled []string
 
+	// SandboxActive reports whether this session actually constructed a
+	// command sandbox at startup. Later config writes do not hot-swap run_bash.
+	SandboxActive bool
+
 	// AgentTool is the dispatch tool registered on Cfg.Registry. The
 	// TUI keeps a typed reference so the slash command can introspect
 	// the resolved agent list, and so the background-done callback
@@ -398,6 +402,10 @@ type Model struct {
 	// this session (sorted). The /experimental overlay renders the full
 	// catalog and marks these on.
 	experimentalEnabled []string
+	// sandboxActive is true only when this session's tool registry was built
+	// with a command sandbox. It deliberately does not follow later /sandbox
+	// config writes, because run_bash cannot hot-swap backends.
+	sandboxActive bool
 
 	// mcpManager owns the lifecycle of every configured MCP client.
 	// Nil when the session has no MCP servers configured. The /mcp
@@ -1234,6 +1242,7 @@ func New(parent context.Context, c Config) Model {
 		subagentTasks:          c.Subagents,
 		subagentTool:           c.AgentTool,
 		experimentalEnabled:    c.ExperimentalEnabled,
+		sandboxActive:          c.SandboxActive,
 		mcpManager:             c.MCPManager,
 		subagentInbox:          make(chan agent.SubagentBackgroundDone, 32),
 		banneredSubagentDone:   map[string]bool{},

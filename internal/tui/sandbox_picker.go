@@ -28,12 +28,18 @@ const (
 )
 
 // sandboxModeLabel is the row text shown in the picker.
-func sandboxModeLabel(mode sandboxMode) string {
+func sandboxModeLabel(mode sandboxMode) string { return sandboxModeLabelFor(mode, false) }
+
+func sandboxModeLabelFor(mode sandboxMode, nextSessionOnly bool) string {
+	prefix := ""
+	if nextSessionOnly && mode != sandboxModeOff {
+		prefix = "Next session: "
+	}
 	switch mode {
 	case sandboxModeAutoAllow:
-		return "Sandbox run_bash, with auto-allow"
+		return prefix + "Sandbox run_bash, with auto-allow"
 	case sandboxModeRegular:
-		return "Sandbox run_bash, with regular permissions"
+		return prefix + "Sandbox run_bash, regular permissions"
 	default:
 		return "No sandbox"
 	}
@@ -48,9 +54,9 @@ func sandboxModeLabel(mode sandboxMode) string {
 func sandboxModeDescription(mode sandboxMode) string {
 	switch mode {
 	case sandboxModeAutoAllow:
-		return "run_bash executes inside a podman container (network=none, project-dir-only mount) and this session's auto mode turns on: edits auto-apply; run_bash, git_commit, git_checkpoint, and rollback still prompt for approval, same as auto mode everywhere else — now running inside the sandbox once approved."
+		return "After restart, run_bash executes inside a podman container (network=none, project-dir-only mount) and this session's auto mode turns on: edits auto-apply; run_bash, git_commit, git_checkpoint, and rollback still prompt for approval, same as auto mode everywhere else."
 	case sandboxModeRegular:
-		return "run_bash executes inside a podman container (network=none, project-dir-only mount). Approval works exactly as it does today — every run_bash call still prompts."
+		return "After restart, run_bash executes inside a podman container (network=none, project-dir-only mount). Approval works exactly as it does today — every run_bash call still prompts."
 	default:
 		return "run_bash executes directly on the host, same as today. Approval and the hardline blocklist are the only guardrails."
 	}
@@ -60,8 +66,10 @@ func sandboxModeDescription(mode sandboxMode) string {
 type sandboxPickerState struct {
 	cursor         sandboxMode
 	current        sandboxMode // the mode active when the picker opened
+	configured     sandboxMode // the backend persisted in config.toml
 	status         sandbox.Status
 	experimentalOn bool
+	sandboxActive  bool
 	// detected is false until the async sandboxDetectMsg from
 	// openSandboxPicker's sandboxDetectCmd arrives — the render shows a
 	// "checking…" state until then instead of a stale zero-value Status.
@@ -70,13 +78,22 @@ type sandboxPickerState struct {
 }
 
 // currentSandboxMode derives the active mode from this session's feature gate,
-// on-disk config, and live auto-mode state. A persisted podman backend is not
-// live unless this session started with the sandbox experiment enabled.
-func currentSandboxMode(cfg config.Config, experimentalOn bool, autoMode *agent.AutoModeState) sandboxMode {
-	if !experimentalOn || cfg.Sandbox.Backend != "podman" {
+// on-disk config, startup sandbox state, and live auto-mode state.
+func currentSandboxMode(cfg config.Config, experimentalOn, sandboxActive bool, autoMode *agent.AutoModeState) sandboxMode {
+	if !experimentalOn || !sandboxActive || cfg.Sandbox.Backend != "podman" {
 		return sandboxModeOff
 	}
 	if autoMode != nil && autoMode.IsActive() {
+		return sandboxModeAutoAllow
+	}
+	return sandboxModeRegular
+}
+
+func configuredSandboxMode(cfg config.Config, sandboxActive bool, autoMode *agent.AutoModeState) sandboxMode {
+	if cfg.Sandbox.Backend != "podman" {
+		return sandboxModeOff
+	}
+	if sandboxActive && autoMode != nil && autoMode.IsActive() {
 		return sandboxModeAutoAllow
 	}
 	return sandboxModeRegular
@@ -95,11 +112,14 @@ func currentSandboxMode(cfg config.Config, experimentalOn bool, autoMode *agent.
 func (m Model) openSandboxPicker() (Model, tea.Cmd) {
 	cfg := loadConfigForCommand(m)
 	experimentalOn := sandboxExperimentActive(m.experimentalEnabled)
-	current := currentSandboxMode(cfg, experimentalOn, m.cfg.AutoMode)
+	current := currentSandboxMode(cfg, experimentalOn, m.sandboxActive, m.cfg.AutoMode)
+	configured := configuredSandboxMode(cfg, m.sandboxActive, m.cfg.AutoMode)
 	m.sandboxPicker = &sandboxPickerState{
 		cursor:         current,
 		current:        current,
+		configured:     configured,
 		experimentalOn: experimentalOn,
+		sandboxActive:  m.sandboxActive,
 	}
 	m.sandboxPickerOpen = true
 	return m, sandboxDetectCmd(m.parentCtx, cfg.Sandbox.Image)
@@ -190,6 +210,10 @@ func applySandboxMode(m Model, mode sandboxMode) (Model, tea.Cmd) {
 		m.sandboxPicker.note = "Experimental sandbox is off. Enable with --experimental sandbox, then restart."
 		return m, nil
 	}
+	if mode != sandboxModeOff && m.sandboxPicker != nil && m.sandboxPicker.configured != sandboxModeOff && !m.sandboxPicker.sandboxActive {
+		m.sandboxPicker.note = "Restart yottacode to activate the configured sandbox before selecting sandbox options again."
+		return m, nil
+	}
 	return commitSandboxMode(m, mode)
 }
 
@@ -242,6 +266,7 @@ func commitSandboxMode(m Model, mode sandboxMode) (Model, tea.Cmd) {
 	m.appendLine(styleAuto.Render(SysMsg(SysSuccess, "sandbox", sandboxModeLabel(mode), detail)))
 	if p := m.sandboxPicker; p != nil {
 		p.current = mode
+		p.configured = mode
 	}
 	return m.closeSandboxPicker()
 }
@@ -275,13 +300,14 @@ func renderSandboxPicker(p *sandboxPickerState, width int, hits ...*pickerHits) 
 		row := strings.Count(b.String(), "\n")
 		h.row(row, int(mode))
 		marker := "  "
-		label := stylePaletteItem.Render(sandboxModeLabel(mode))
+		labelText := sandboxModeLabelFor(mode, mode != sandboxModeOff && !p.sandboxActive && p.configured != sandboxModeOff)
+		label := stylePaletteItem.Render(labelText)
 		if mode == p.cursor {
 			marker = cursorArrow
-			label = stylePaletteSelected.Render(sandboxModeLabel(mode))
+			label = stylePaletteSelected.Render(labelText)
 		}
 		check := "  "
-		if mode == p.current {
+		if mode == p.configured {
 			check = styleEmpty.Render("✓ ")
 		}
 		b.WriteString(marker)
@@ -323,15 +349,21 @@ func renderSandboxPicker(p *sandboxPickerState, width int, hits ...*pickerHits) 
 }
 
 func sandboxStatusLine(p *sandboxPickerState) string {
-	mode := "off"
+	configured := "off"
+	if p.configured != sandboxModeOff {
+		configured = "on"
+	}
+	active := "off"
 	if p.current != sandboxModeOff {
-		mode = "on"
+		active = "on"
+	} else if p.configured != sandboxModeOff && !p.sandboxActive {
+		active = "off — restart required"
 	}
 	experiment := "off"
 	if p.experimentalOn {
 		experiment = "on"
 	}
-	return "Current: sandbox " + mode + " · experimental " + experiment
+	return "Configured: sandbox " + configured + "\nActive: sandbox " + active + " · experimental " + experiment
 }
 
 func renderSandboxStatusLine(p *sandboxPickerState) string {
