@@ -70,8 +70,8 @@ Standing rules:
   does belongs behind the `//go:build integration` tag.
 - A change is not done until `go test ./...` is green.
 
-CI (`.github/workflows/go.yml`) runs build, vet, and tests on every pull
-request; it must pass before a PR can merge.
+CI (`.github/workflows/go.yml`) runs build, vet, vulnerability scanning, and tests
+on every pull request; it must pass before a PR can merge.
 
 ## Pull request workflow
 

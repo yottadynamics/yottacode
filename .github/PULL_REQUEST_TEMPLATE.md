@@ -14,6 +14,7 @@
 
 - [ ] `go test ./...` passes
 - [ ] `go vet ./...` is clean
+- [ ] `govulncheck ./...` reports no reachable vulnerabilities
 - [ ] Tests added or updated — a new capability ships with tests, a bug fix ships with a regression test
 - [ ] Docs updated in the same change if behavior or surface changed (relevant `docs/` guide)
 - [ ] PR is focused on one logical change
