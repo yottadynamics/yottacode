@@ -35,6 +35,7 @@ func (m Model) interactiveMouseOpen() bool {
 func (m Model) dismissStaticPopup() Model {
 	m.cheatsheetOpen = false
 	m.loopListOpen = false
+	m.loopListScrollOffset = 0
 	m.usageOpen = false
 	m.usagePanel = ""
 	m.usageScrollOffset = 0
@@ -43,11 +44,13 @@ func (m Model) dismissStaticPopup() Model {
 	m.inspectScrollOffset = 0
 	m.experimentalOpen = false
 	m.experimentalPanel = ""
+	m.experimentalScrollOffset = 0
 	m.helpOpen = false
 	m.helpPanel = ""
 	m.helpScrollOffset = 0
 	m.contextReportOpen = false
 	m.contextReportBody = ""
+	m.contextReportScrollOffset = 0
 	return m
 }
 
@@ -73,14 +76,23 @@ func (m Model) handleScrollableStaticPopupClick(box string, msg tea.MouseClickMs
 			return m, true
 		}
 	} else {
+		if m.loopListOpen && m.loopListMaxScrollOffset() == 0 {
+			return m, false
+		}
 		if m.usageOpen && m.usageMaxScrollOffset() == 0 {
 			return m, false
 		}
 		if m.inspectOpen && m.inspectMaxScrollOffset() == 0 {
 			return m, false
 		}
+		if m.experimentalOpen && m.experimentalMaxScrollOffset() == 0 {
+			return m, false
+		}
+		if m.contextReportOpen && m.contextReportMaxScrollOffset() == 0 {
+			return m, false
+		}
 	}
-	if !m.usageOpen && !m.inspectOpen && !m.helpOpen {
+	if !m.loopListOpen && !m.usageOpen && !m.inspectOpen && !m.experimentalOpen && !m.helpOpen && !m.contextReportOpen {
 		return m, false
 	}
 	originX, originY := m.popupOrigin(box)
@@ -102,14 +114,23 @@ const popupMouseWheelLines = 3
 // scrollPopupLines applies keyboard-equivalent scrolling to whichever fixed
 // static popup is currently open, clamping at the popup content bounds.
 func (m Model) scrollPopupLines(delta int) Model {
+	if m.loopListOpen {
+		m.loopListScrollOffset = min(max(m.loopListScrollOffset+delta, 0), m.loopListMaxScrollOffset())
+	}
 	if m.usageOpen {
 		m.usageScrollOffset = min(max(m.usageScrollOffset+delta, 0), m.usageMaxScrollOffset())
 	}
 	if m.inspectOpen {
 		m.inspectScrollOffset = min(max(m.inspectScrollOffset+delta, 0), m.inspectMaxScrollOffset())
 	}
+	if m.experimentalOpen {
+		m.experimentalScrollOffset = min(max(m.experimentalScrollOffset+delta, 0), m.experimentalMaxScrollOffset())
+	}
 	if m.helpOpen {
 		m.helpScrollOffset = min(max(m.helpScrollOffset+delta, 0), m.helpMaxScrollOffset())
+	}
+	if m.contextReportOpen {
+		m.contextReportScrollOffset = min(max(m.contextReportScrollOffset+delta, 0), m.contextReportMaxScrollOffset())
 	}
 	return m
 }

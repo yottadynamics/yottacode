@@ -5,10 +5,30 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 )
+
+func openScrollableLoopList(m *Model) {
+	m.loopListOpen = true
+	m.loops = map[string]loopState{}
+	m.loopOrder = nil
+	now := time.Now()
+	for i := 0; i < 8; i++ {
+		id := fmt.Sprintf("loop-%d", i)
+		m.loopOrder = append(m.loopOrder, id)
+		m.loops[id] = loopState{
+			id:        id,
+			active:    true,
+			interval:  time.Minute,
+			remaining: -1,
+			payload:   fmt.Sprintf("payload %d", i),
+			expiresAt: now.Add(time.Hour),
+		}
+	}
+}
 
 func TestView_EnablesAllMotionForWelcomeBeforeConversationStarts(t *testing.T) {
 	m := newTestModel(t)
@@ -142,6 +162,68 @@ func TestMouseWheel_ScrollsInspectPopup(t *testing.T) {
 	}
 }
 
+func TestMouseWheel_ScrollsContextReportPopup(t *testing.T) {
+	m := newTestModel(t)
+	m.height = 8
+	m.contextReportOpen = true
+	m.contextReportBody = strings.Join([]string{
+		"context header",
+		"line 1",
+		"line 2",
+		"line 3",
+		"line 4",
+		"line 5",
+		"line 6",
+		"line 7",
+	}, "\n")
+
+	m, _ = applyMsg(m, tea.MouseWheelMsg{Button: tea.MouseWheelDown})
+	if got := m.contextReportScrollOffset; got != popupMouseWheelLines {
+		t.Fatalf("wheel-down should scroll /context popup content, offset = %d, want %d", got, popupMouseWheelLines)
+	}
+	if !m.contextReportOpen {
+		t.Fatal("wheel-scrolling /context should keep the popup open")
+	}
+}
+
+func TestMouseWheel_ScrollsExperimentalPopup(t *testing.T) {
+	m := newTestModel(t)
+	m.height = 8
+	m.experimentalOpen = true
+	m.experimentalPanel = strings.Join([]string{
+		"experimental header",
+		"line 1",
+		"line 2",
+		"line 3",
+		"line 4",
+		"line 5",
+		"line 6",
+		"line 7",
+	}, "\n")
+
+	m, _ = applyMsg(m, tea.MouseWheelMsg{Button: tea.MouseWheelDown})
+	if got := m.experimentalScrollOffset; got != popupMouseWheelLines {
+		t.Fatalf("wheel-down should scroll /experimental popup content, offset = %d, want %d", got, popupMouseWheelLines)
+	}
+	if !m.experimentalOpen {
+		t.Fatal("wheel-scrolling /experimental should keep the popup open")
+	}
+}
+
+func TestMouseWheel_ScrollsLoopListPopup(t *testing.T) {
+	m := newTestModel(t)
+	m.height = 8
+	openScrollableLoopList(&m)
+
+	m, _ = applyMsg(m, tea.MouseWheelMsg{Button: tea.MouseWheelDown})
+	if got := m.loopListScrollOffset; got != popupMouseWheelLines {
+		t.Fatalf("wheel-down should scroll /loop popup content, offset = %d, want %d", got, popupMouseWheelLines)
+	}
+	if !m.loopListOpen {
+		t.Fatal("wheel-scrolling /loop should keep the popup open")
+	}
+}
+
 func TestMouseClick_UsageHintArrowsScrollWithoutClosing(t *testing.T) {
 	m := newTestModel(t)
 	m.width = 80
@@ -216,6 +298,107 @@ func TestMouseClick_InspectHintArrowsScrollWithoutClosing(t *testing.T) {
 	}
 }
 
+func TestMouseClick_ContextReportHintArrowsScrollWithoutClosing(t *testing.T) {
+	m := newTestModel(t)
+	m.width = 80
+	m.height = 8
+	m.contextReportOpen = true
+	m.contextReportScrollOffset = 1
+	m.contextReportBody = strings.Join([]string{
+		"context header",
+		"line 1",
+		"line 2",
+		"line 3",
+		"line 4",
+		"line 5",
+		"line 6",
+		"line 7",
+	}, "\n")
+	box, ok := m.activePopupBody()
+	if !ok {
+		t.Fatal("test setup: expected active popup body")
+	}
+	originX, originY := m.popupOrigin(box)
+	lastContentY := originY + lipgloss.Height(box) - 2
+
+	m, _ = applyMsg(m, tea.MouseClickMsg{X: originX + 4, Y: lastContentY})
+	if got := m.contextReportScrollOffset; got != 0 {
+		t.Fatalf("clicking the hint-row up side should scroll up, offset = %d, want 0", got)
+	}
+	if !m.contextReportOpen {
+		t.Fatal("clicking context scroll controls should keep the popup open")
+	}
+
+	m, _ = applyMsg(m, tea.MouseClickMsg{X: originX + lipgloss.Width(box) - 5, Y: lastContentY})
+	if got := m.contextReportScrollOffset; got != 1 {
+		t.Fatalf("clicking the hint-row down side should scroll down, offset = %d, want 1", got)
+	}
+}
+
+func TestMouseClick_ExperimentalHintArrowsScrollWithoutClosing(t *testing.T) {
+	m := newTestModel(t)
+	m.width = 80
+	m.height = 8
+	m.experimentalOpen = true
+	m.experimentalScrollOffset = 1
+	m.experimentalPanel = strings.Join([]string{
+		"experimental header",
+		"line 1",
+		"line 2",
+		"line 3",
+		"line 4",
+		"line 5",
+		"line 6",
+		"line 7",
+	}, "\n")
+	box, ok := m.activePopupBody()
+	if !ok {
+		t.Fatal("test setup: expected active popup body")
+	}
+	originX, originY := m.popupOrigin(box)
+	lastContentY := originY + lipgloss.Height(box) - 2
+
+	m, _ = applyMsg(m, tea.MouseClickMsg{X: originX + 4, Y: lastContentY})
+	if got := m.experimentalScrollOffset; got != 0 {
+		t.Fatalf("clicking the hint-row up side should scroll up, offset = %d, want 0", got)
+	}
+	if !m.experimentalOpen {
+		t.Fatal("clicking experimental scroll controls should keep the popup open")
+	}
+
+	m, _ = applyMsg(m, tea.MouseClickMsg{X: originX + lipgloss.Width(box) - 5, Y: lastContentY})
+	if got := m.experimentalScrollOffset; got != 1 {
+		t.Fatalf("clicking the hint-row down side should scroll down, offset = %d, want 1", got)
+	}
+}
+
+func TestMouseClick_LoopListHintArrowsScrollWithoutClosing(t *testing.T) {
+	m := newTestModel(t)
+	m.width = 80
+	m.height = 8
+	openScrollableLoopList(&m)
+	m.loopListScrollOffset = 1
+	box, ok := m.activePopupBody()
+	if !ok {
+		t.Fatal("test setup: expected active popup body")
+	}
+	originX, originY := m.popupOrigin(box)
+	lastContentY := originY + lipgloss.Height(box) - 2
+
+	m, _ = applyMsg(m, tea.MouseClickMsg{X: originX + 4, Y: lastContentY})
+	if got := m.loopListScrollOffset; got != 0 {
+		t.Fatalf("clicking the hint-row up side should scroll up, offset = %d, want 0", got)
+	}
+	if !m.loopListOpen {
+		t.Fatal("clicking loop-list scroll controls should keep the popup open")
+	}
+
+	m, _ = applyMsg(m, tea.MouseClickMsg{X: originX + lipgloss.Width(box) - 5, Y: lastContentY})
+	if got := m.loopListScrollOffset; got != 1 {
+		t.Fatalf("clicking the hint-row down side should scroll down, offset = %d, want 1", got)
+	}
+}
+
 func TestMouseClick_ScrollablePopupBodyDoesNotClose(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -272,6 +455,45 @@ func TestMouseClick_ScrollablePopupBodyDoesNotClose(t *testing.T) {
 				}, "\n")
 			},
 			closed: func(m Model) bool { return !m.helpOpen },
+		},
+		{
+			name: "contextReport",
+			open: func(m *Model) {
+				m.contextReportOpen = true
+				m.contextReportBody = strings.Join([]string{
+					"context header",
+					"line 1",
+					"line 2",
+					"line 3",
+					"line 4",
+					"line 5",
+					"line 6",
+					"line 7",
+				}, "\n")
+			},
+			closed: func(m Model) bool { return !m.contextReportOpen },
+		},
+		{
+			name: "experimental",
+			open: func(m *Model) {
+				m.experimentalOpen = true
+				m.experimentalPanel = strings.Join([]string{
+					"experimental header",
+					"line 1",
+					"line 2",
+					"line 3",
+					"line 4",
+					"line 5",
+					"line 6",
+					"line 7",
+				}, "\n")
+			},
+			closed: func(m Model) bool { return !m.experimentalOpen },
+		},
+		{
+			name:   "loopList",
+			open:   openScrollableLoopList,
+			closed: func(m Model) bool { return !m.loopListOpen },
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -370,6 +592,86 @@ func TestWindowedUsagePopup_KeepsRenderedHeightStableWhileScrolling(t *testing.T
 	}
 
 	m.usageScrollOffset = 2
+	after, ok := m.activePopupBody()
+	if !ok {
+		t.Fatal("test setup: expected active popup body after scrolling")
+	}
+	if lipgloss.Height(before) != lipgloss.Height(after) {
+		t.Fatalf("popup height changed while scrolling: before=%d after=%d", lipgloss.Height(before), lipgloss.Height(after))
+	}
+}
+
+func TestWindowedContextReportPopup_KeepsRenderedHeightStableWhileScrolling(t *testing.T) {
+	m := newTestModel(t)
+	m.width = 80
+	m.height = 8
+	m.contextReportOpen = true
+	m.contextReportBody = strings.Join([]string{
+		"context header",
+		"line 1",
+		"line 2",
+		"line 3",
+		"line 4",
+		"line 5",
+		"line 6",
+		"line 7",
+	}, "\n")
+	before, ok := m.activePopupBody()
+	if !ok {
+		t.Fatal("test setup: expected active popup body")
+	}
+
+	m.contextReportScrollOffset = 2
+	after, ok := m.activePopupBody()
+	if !ok {
+		t.Fatal("test setup: expected active popup body after scrolling")
+	}
+	if lipgloss.Height(before) != lipgloss.Height(after) {
+		t.Fatalf("popup height changed while scrolling: before=%d after=%d", lipgloss.Height(before), lipgloss.Height(after))
+	}
+}
+
+func TestWindowedExperimentalPopup_KeepsRenderedHeightStableWhileScrolling(t *testing.T) {
+	m := newTestModel(t)
+	m.width = 80
+	m.height = 8
+	m.experimentalOpen = true
+	m.experimentalPanel = strings.Join([]string{
+		"experimental header",
+		"line 1",
+		"line 2",
+		"line 3",
+		"line 4",
+		"line 5",
+		"line 6",
+		"line 7",
+	}, "\n")
+	before, ok := m.activePopupBody()
+	if !ok {
+		t.Fatal("test setup: expected active popup body")
+	}
+
+	m.experimentalScrollOffset = 2
+	after, ok := m.activePopupBody()
+	if !ok {
+		t.Fatal("test setup: expected active popup body after scrolling")
+	}
+	if lipgloss.Height(before) != lipgloss.Height(after) {
+		t.Fatalf("popup height changed while scrolling: before=%d after=%d", lipgloss.Height(before), lipgloss.Height(after))
+	}
+}
+
+func TestWindowedLoopListPopup_KeepsRenderedHeightStableWhileScrolling(t *testing.T) {
+	m := newTestModel(t)
+	m.width = 80
+	m.height = 8
+	openScrollableLoopList(&m)
+	before, ok := m.activePopupBody()
+	if !ok {
+		t.Fatal("test setup: expected active popup body")
+	}
+
+	m.loopListScrollOffset = 2
 	after, ok := m.activePopupBody()
 	if !ok {
 		t.Fatal("test setup: expected active popup body after scrolling")
