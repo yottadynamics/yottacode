@@ -37,6 +37,14 @@ jobs:
       - name: Vet
         run: go vet ./...
 
+      - name: Vulnerability scan
+        # Keep dependency and toolchain CVEs visible on every PR. govulncheck
+        # traces reachable symbols, so this gates exploitable call paths without
+        # blocking on unused vulnerable modules.
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...
+
       - name: Test
         # -short skips demo/visualization tests whose stdout would
         # otherwise trip GitHub Actions' Go problem-matcher and surface
