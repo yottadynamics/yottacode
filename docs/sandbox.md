@@ -111,21 +111,28 @@ three-row picker:
     No sandbox
 ```
 
-- **Sandbox, with auto-allow** — persists `[sandbox].backend = "podman"`,
-  enables `[experimental].sandbox`, and turns on this session's live auto mode
-  for edits. `run_bash`, `git_commit`, `git_checkpoint`, and `rollback` still
-  prompt because they stay in auto mode's safety floor.
-- **Sandbox, with regular permissions** — persists the same podman backend and
-  leaves live auto mode untouched.
+- **Sandbox, with auto-allow** — when the sandbox experiment is already active,
+  persists `[sandbox].backend = "podman"` and turns on this session's live auto
+  mode for edits. `run_bash`, `git_commit`, `git_checkpoint`, and `rollback`
+  still prompt because they stay in auto mode's safety floor.
+- **Sandbox, with regular permissions** — when the sandbox experiment is already
+  active, persists the same podman backend and leaves live auto mode untouched.
 - **No sandbox** — persists `backend = "none"`, today's default; if this picker
   previously enabled auto-allow, it also turns that live auto mode back off.
 
-The backend selection does **not** hot-swap the running session. `RunBashTool`
-gets its `Sandbox` once, during session startup. Restart yottacode or start a
-new session for backend changes to affect command execution. The picker requires
-an explicit second Enter before it writes config, then always says restart/new
-session is required so users do not mistake a config write for a live isolation
-change.
+The picker shows a concise top status line (`Current: sandbox on/off ·
+experimental on/off`) and highlights whether the current session is actually
+sandboxed. It does not enable experimental features. If `experimental sandbox` is
+off, Podman rows are blocked with a short hint; enable the gate with
+`--experimental sandbox`, `YOTTACODE_EXPERIMENTAL=sandbox`, or
+`[experimental] sandbox = true`, then restart.
+
+The backend selection does **not** hot-swap the running session. The tool
+registry gets its `Sandbox` once during session startup, and the Podman
+container is created with that session's cwd mounted. Restart yottacode or start
+a new session for backend changes to affect command execution. Enter (or the
+`[A] Apply selection` action) writes config and always says restart/new session
+is required so users do not mistake a config write for a live isolation change.
 
 The picker also runs a local, network-free detection pass (`podman image exists
 <image>`) and shows warnings if Podman is missing or if the configured base

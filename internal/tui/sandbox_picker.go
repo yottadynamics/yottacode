@@ -6,6 +6,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/yottadynamics/yottacode/internal/agent"
 	"github.com/yottadynamics/yottacode/internal/config"
@@ -57,25 +58,22 @@ func sandboxModeDescription(mode sandboxMode) string {
 
 // sandboxPickerState owns the /sandbox overlay.
 type sandboxPickerState struct {
-	cursor  sandboxMode
-	current sandboxMode // the mode active when the picker opened
-	status  sandbox.Status
+	cursor         sandboxMode
+	current        sandboxMode // the mode active when the picker opened
+	status         sandbox.Status
+	experimentalOn bool
 	// detected is false until the async sandboxDetectMsg from
 	// openSandboxPicker's sandboxDetectCmd arrives — the render shows a
 	// "checking…" state until then instead of a stale zero-value Status.
 	detected bool
-	// confirming gates config writes behind an explicit second Enter. Selecting
-	// a row previews the exact mode first; only the confirmation step persists
-	// config.toml or flips live auto mode.
-	confirming bool
-	note       string
+	note     string
 }
 
-// currentSandboxMode derives the active mode from on-disk config plus this
-// session's live auto-mode state (auto mode is session-runtime, never
-// persisted — see internal/agent/auto_mode.go).
-func currentSandboxMode(cfg config.Config, autoMode *agent.AutoModeState) sandboxMode {
-	if cfg.Sandbox.Backend != "podman" {
+// currentSandboxMode derives the active mode from this session's feature gate,
+// on-disk config, and live auto-mode state. A persisted podman backend is not
+// live unless this session started with the sandbox experiment enabled.
+func currentSandboxMode(cfg config.Config, experimentalOn bool, autoMode *agent.AutoModeState) sandboxMode {
+	if !experimentalOn || cfg.Sandbox.Backend != "podman" {
 		return sandboxModeOff
 	}
 	if autoMode != nil && autoMode.IsActive() {
@@ -96,10 +94,12 @@ func currentSandboxMode(cfg config.Config, autoMode *agent.AutoModeState) sandbo
 // sandboxDetectMsg arrives and Update stores the result.
 func (m Model) openSandboxPicker() (Model, tea.Cmd) {
 	cfg := loadConfigForCommand(m)
-	current := currentSandboxMode(cfg, m.cfg.AutoMode)
+	experimentalOn := sandboxExperimentActive(m.experimentalEnabled)
+	current := currentSandboxMode(cfg, experimentalOn, m.cfg.AutoMode)
 	m.sandboxPicker = &sandboxPickerState{
-		cursor:  current,
-		current: current,
+		cursor:         current,
+		current:        current,
+		experimentalOn: experimentalOn,
 	}
 	m.sandboxPickerOpen = true
 	return m, sandboxDetectCmd(m.parentCtx, cfg.Sandbox.Image)
@@ -127,46 +127,45 @@ func (m Model) updateSandboxPicker(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 	p.note = ""
 	switch msg.Code {
 	case tea.KeyEsc:
-		if p.confirming {
-			p.confirming = false
-			return m, nil
-		}
 		return m.closeSandboxPicker()
 	case tea.KeyUp:
 		if p.cursor > 0 {
 			p.cursor--
 		}
-		p.confirming = false
 		return m, nil
 	case tea.KeyDown:
 		if p.cursor < sandboxModeCount-1 {
 			p.cursor++
 		}
-		p.confirming = false
 		return m, nil
 	case tea.KeyEnter:
-		if !p.confirming {
-			p.confirming = true
-			return m, nil
-		}
-		return commitSandboxMode(m, p.cursor)
+		return applySandboxMode(m, p.cursor)
 	default:
 		if r := []rune(msg.Text); len(r) == 1 {
 			switch r[0] {
+			case 'a', 'A':
+				return applySandboxMode(m, p.cursor)
 			case 'j':
 				if p.cursor < sandboxModeCount-1 {
 					p.cursor++
 				}
-				p.confirming = false
 			case 'k':
 				if p.cursor > 0 {
 					p.cursor--
 				}
-				p.confirming = false
 			}
 		}
 		return m, nil
 	}
+}
+
+func sandboxExperimentActive(enabled []string) bool {
+	for _, name := range enabled {
+		if name == string(experimental.Sandbox) {
+			return true
+		}
+	}
+	return false
 }
 
 // closeSandboxPicker dismisses the picker. It does not reopen the slash palette:
@@ -180,6 +179,18 @@ func (m Model) closeSandboxPicker() (Model, tea.Cmd) {
 	m.paletteOffset = 0
 	m.textInput.SetValue("")
 	return m, nil
+}
+
+// applySandboxMode enforces the experimental gate before persisting a picker
+// selection. The TUI may observe and explain experimental state, but it must not
+// enable experimental features on the user's behalf; that stays a startup/config
+// concern handled by --experimental, YOTTACODE_EXPERIMENTAL, or [experimental].
+func applySandboxMode(m Model, mode sandboxMode) (Model, tea.Cmd) {
+	if mode != sandboxModeOff && m.sandboxPicker != nil && !m.sandboxPicker.experimentalOn {
+		m.sandboxPicker.note = "Experimental sandbox is off. Enable with --experimental sandbox, then restart."
+		return m, nil
+	}
+	return commitSandboxMode(m, mode)
 }
 
 // commitSandboxMode persists the chosen mode to config.toml and applies
@@ -198,10 +209,6 @@ func commitSandboxMode(m Model, mode sandboxMode) (Model, tea.Cmd) {
 		cfg.Sandbox.Backend = "none"
 	default:
 		cfg.Sandbox.Backend = "podman"
-		if cfg.Experimental == nil {
-			cfg.Experimental = map[string]bool{}
-		}
-		cfg.Experimental[string(experimental.Sandbox)] = true
 	}
 	if err := config.Validate(cfg); err != nil {
 		m.appendLine(styleError.Render(SysMsg(SysFailure, "sandbox", "validation", err.Error())))
@@ -235,7 +242,6 @@ func commitSandboxMode(m Model, mode sandboxMode) (Model, tea.Cmd) {
 	m.appendLine(styleAuto.Render(SysMsg(SysSuccess, "sandbox", sandboxModeLabel(mode), detail)))
 	if p := m.sandboxPicker; p != nil {
 		p.current = mode
-		p.confirming = false
 	}
 	return m.closeSandboxPicker()
 }
@@ -253,12 +259,17 @@ func renderSandboxPicker(p *sandboxPickerState, width int, hits ...*pickerHits) 
 	// real backend today (config.ValidSandboxBackends is "none"|"podman"),
 	// and the picker's whole purpose is choosing whether THIS backend is
 	// active. Generalize if a second backend ever lands.
-	help := "↑↓ navigate · ↵ preview change · esc close"
-	if p.confirming {
-		help = "↵ confirm · esc back"
-	}
+	help := "↑↓ navigate · ↵/a apply · esc close"
 	b.WriteString(renderMenuHeader("Sandbox (podman)", help, width))
 	b.WriteString("\n\n")
+
+	b.WriteString(renderSandboxStatusLine(p))
+	b.WriteString("\n")
+	if !p.experimentalOn {
+		b.WriteString(styleEmpty.Render(wrapPlain("Enable: --experimental sandbox or [experimental].sandbox = true, then restart.", width)))
+		b.WriteString("\n")
+	}
+	b.WriteString("\n")
 
 	for mode := sandboxMode(0); mode < sandboxModeCount; mode++ {
 		row := strings.Count(b.String(), "\n")
@@ -295,14 +306,38 @@ func renderSandboxPicker(p *sandboxPickerState, width int, hits ...*pickerHits) 
 			b.WriteString(styleEmpty.Render(wrapPlain("base image not pulled locally yet — podman will pull it on first use", width)))
 		}
 	}
-	if p.confirming {
-		b.WriteString("\n")
-		b.WriteString(styleEmpty.Render(wrapPlain("Press Enter again to persist "+sandboxModeLabel(p.cursor)+"; Esc returns to the picker without changing config.", width)))
-		b.WriteByte('\n')
+	b.WriteString("\n")
+	actionsRow := strings.Count(b.String(), "\n")
+	apply := "[A] Apply selection"
+	cancel := "[Esc] Close"
+	if h != nil {
+		h.hotkeySpan(actionsRow, 0, ansi.StringWidth(apply), "a")
 	}
+	b.WriteString(styleHint.Render(apply + "   " + cancel))
+	b.WriteByte('\n')
 	if p.note != "" {
 		b.WriteString("\n")
 		b.WriteString(styleError.Render(p.note))
 	}
 	return strings.TrimRight(b.String(), "\n")
+}
+
+func sandboxStatusLine(p *sandboxPickerState) string {
+	mode := "off"
+	if p.current != sandboxModeOff {
+		mode = "on"
+	}
+	experiment := "off"
+	if p.experimentalOn {
+		experiment = "on"
+	}
+	return "Current: sandbox " + mode + " · experimental " + experiment
+}
+
+func renderSandboxStatusLine(p *sandboxPickerState) string {
+	style := lipgloss.NewStyle().Foreground(colorError).Bold(true)
+	if p.current != sandboxModeOff {
+		style = lipgloss.NewStyle().Foreground(colorSuccess).Bold(true)
+	}
+	return style.Render(sandboxStatusLine(p))
 }

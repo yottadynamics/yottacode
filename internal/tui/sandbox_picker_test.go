@@ -8,26 +8,30 @@ import (
 
 	"github.com/yottadynamics/yottacode/internal/agent"
 	"github.com/yottadynamics/yottacode/internal/config"
+	"github.com/yottadynamics/yottacode/internal/experimental"
 	"github.com/yottadynamics/yottacode/internal/sandbox"
 )
 
 func TestCurrentSandboxMode(t *testing.T) {
 	off := config.Config{Sandbox: config.SandboxConfig{Backend: "none"}}
-	if got := currentSandboxMode(off, nil); got != sandboxModeOff {
+	if got := currentSandboxMode(off, false, nil); got != sandboxModeOff {
 		t.Errorf("backend=none should be sandboxModeOff, got %v", got)
 	}
 
 	on := config.Config{Sandbox: config.SandboxConfig{Backend: "podman"}}
-	if got := currentSandboxMode(on, nil); got != sandboxModeRegular {
-		t.Errorf("backend=podman with nil autoMode should be sandboxModeRegular, got %v", got)
+	if got := currentSandboxMode(on, false, nil); got != sandboxModeOff {
+		t.Errorf("backend=podman without session experimental gate should be sandboxModeOff, got %v", got)
+	}
+	if got := currentSandboxMode(on, true, nil); got != sandboxModeRegular {
+		t.Errorf("backend=podman with session experimental gate and nil autoMode should be sandboxModeRegular, got %v", got)
 	}
 
 	auto := &agent.AutoModeState{}
-	if got := currentSandboxMode(on, auto); got != sandboxModeRegular {
+	if got := currentSandboxMode(on, true, auto); got != sandboxModeRegular {
 		t.Errorf("backend=podman with inactive autoMode should be sandboxModeRegular, got %v", got)
 	}
 	auto.Active.Store(true)
-	if got := currentSandboxMode(on, auto); got != sandboxModeAutoAllow {
+	if got := currentSandboxMode(on, true, auto); got != sandboxModeAutoAllow {
 		t.Errorf("backend=podman with active autoMode should be sandboxModeAutoAllow, got %v", got)
 	}
 }
@@ -77,52 +81,48 @@ func TestUpdateSandboxPicker_UpDownNavigatesAndEscCloses(t *testing.T) {
 	}
 }
 
-func TestUpdateSandboxPicker_EnterRequiresExplicitConfirmation(t *testing.T) {
+func TestUpdateSandboxPicker_EnterAppliesSelection(t *testing.T) {
+	m := newTestModel(t)
+	m.cfg.AutoMode = &agent.AutoModeState{}
+	m.experimentalEnabled = []string{string(experimental.Sandbox)}
+	m, _ = m.openSandboxPicker()
+	m.sandboxPicker.cursor = sandboxModeRegular
+
+	m, _ = m.updateSandboxPicker(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if m.sandboxPickerOpen {
+		t.Fatal("Enter should apply the selected sandbox mode and close the picker")
+	}
+	reloaded, err := config.LoadDefault()
+	if err != nil {
+		t.Fatalf("reload after apply Enter: %v", err)
+	}
+	if reloaded.Sandbox.Backend != "podman" {
+		t.Fatalf("sandbox backend = %q, want podman", reloaded.Sandbox.Backend)
+	}
+	if reloaded.Experimental["sandbox"] {
+		t.Fatal("/sandbox must not enable experimental features")
+	}
+}
+
+func TestUpdateSandboxPicker_BlocksPodmanWhenExperimentOff(t *testing.T) {
 	m := newTestModel(t)
 	m.cfg.AutoMode = &agent.AutoModeState{}
 	m, _ = m.openSandboxPicker()
 	m.sandboxPicker.cursor = sandboxModeRegular
 
-	// First Enter only arms confirmation. It must not write config or close the
-	// picker because changing command isolation is too safety-sensitive for a
-	// single list-selection keypress.
 	m, _ = m.updateSandboxPicker(tea.KeyPressMsg{Code: tea.KeyEnter})
-	if !m.sandboxPickerOpen || m.sandboxPicker == nil || !m.sandboxPicker.confirming {
-		t.Fatalf("first Enter should keep the picker open in confirming state: open=%v picker=%#v", m.sandboxPickerOpen, m.sandboxPicker)
+	if !m.sandboxPickerOpen {
+		t.Fatal("experiment-off Podman choice should stay in the picker")
+	}
+	if !strings.Contains(m.sandboxPicker.note, "Experimental sandbox is off") {
+		t.Fatalf("expected concise experimental-gate note, got %q", m.sandboxPicker.note)
 	}
 	reloaded, err := config.LoadDefault()
 	if err != nil {
-		t.Fatalf("reload after preview Enter: %v", err)
+		t.Fatalf("reload after blocked apply: %v", err)
 	}
 	if reloaded.Sandbox.Backend == "podman" {
-		t.Fatal("first Enter should not persist the sandbox backend")
-	}
-
-	m, _ = m.updateSandboxPicker(tea.KeyPressMsg{Code: tea.KeyEnter})
-	if m.sandboxPickerOpen {
-		t.Fatal("second Enter should confirm and close the picker")
-	}
-	reloaded, err = config.LoadDefault()
-	if err != nil {
-		t.Fatalf("reload after confirm Enter: %v", err)
-	}
-	if reloaded.Sandbox.Backend != "podman" {
-		t.Fatalf("confirmed sandbox backend = %q, want podman", reloaded.Sandbox.Backend)
-	}
-}
-
-func TestUpdateSandboxPicker_EscFromConfirmationReturnsToPicker(t *testing.T) {
-	m := newTestModel(t)
-	m, _ = m.openSandboxPicker()
-	m.sandboxPicker.cursor = sandboxModeRegular
-	m.sandboxPicker.confirming = true
-
-	m, _ = m.updateSandboxPicker(tea.KeyPressMsg{Code: tea.KeyEsc})
-	if !m.sandboxPickerOpen {
-		t.Fatal("Esc from confirmation should return to the picker, not close it")
-	}
-	if m.sandboxPicker.confirming {
-		t.Fatal("Esc from confirmation should clear confirming state")
+		t.Fatal("blocked Podman choice should not persist sandbox backend")
 	}
 }
 
@@ -141,9 +141,10 @@ func TestUpdateSandboxPicker_EscCloseDoesNotReopenSlashPalette(t *testing.T) {
 }
 
 // TestCommitSandboxMode_AutoAllowPersistsAndActivatesAutoMode is the
-// end-to-end path: choosing auto-allow must persist [sandbox].backend =
-// "podman" + [experimental].sandbox = true to config.toml, AND turn on
-// this session's live auto mode (the "auto-allow is auto mode" mapping).
+// low-level persistence path: choosing auto-allow persists [sandbox].backend =
+// "podman" and turns on this session's live auto mode. The applySandboxMode
+// wrapper owns the experimental gate; commitSandboxMode must not mutate
+// [experimental] on its own.
 func TestCommitSandboxMode_AutoAllowPersistsAndActivatesAutoMode(t *testing.T) {
 	m := newTestModel(t)
 	m.cfg.AutoMode = &agent.AutoModeState{}
@@ -161,8 +162,8 @@ func TestCommitSandboxMode_AutoAllowPersistsAndActivatesAutoMode(t *testing.T) {
 	if reloaded.Sandbox.Backend != "podman" {
 		t.Errorf("Sandbox.Backend = %q, want podman", reloaded.Sandbox.Backend)
 	}
-	if !reloaded.Experimental["sandbox"] {
-		t.Error("experimental.sandbox should be persisted true")
+	if reloaded.Experimental["sandbox"] {
+		t.Error("commitSandboxMode must not enable experimental.sandbox")
 	}
 	if err := config.Validate(reloaded); err != nil {
 		t.Errorf("persisted config should validate: %v", err)
@@ -276,12 +277,17 @@ func TestRenderSandboxPicker_ShowsThreeRowsAndCurrentCheckmark(t *testing.T) {
 	}
 }
 
-func TestRenderSandboxPicker_ConfirmationCopy(t *testing.T) {
-	p := &sandboxPickerState{cursor: sandboxModeRegular, confirming: true, detected: true, status: sandbox.Status{Installed: true, ImagePresent: true}}
-	got := renderSandboxPicker(p, 100)
-	for _, want := range []string{"↵ confirm · esc back", "Press Enter again to persist Sandbox run_bash, with regular permissions"} {
+func TestRenderSandboxPicker_StatusLineHighlightsCurrentMode(t *testing.T) {
+	on := &sandboxPickerState{cursor: sandboxModeRegular, current: sandboxModeRegular, experimentalOn: true, detected: true, status: sandbox.Status{Installed: true, ImagePresent: true}}
+	if got := sandboxStatusLine(on); got != "Current: sandbox on · experimental on" {
+		t.Fatalf("sandbox on status line = %q", got)
+	}
+
+	off := &sandboxPickerState{cursor: sandboxModeRegular, current: sandboxModeOff, detected: true, status: sandbox.Status{Installed: true, ImagePresent: true}}
+	got := renderSandboxPicker(off, 100)
+	for _, want := range []string{"Current: sandbox off · experimental off", "Enable: --experimental sandbox", "[A] Apply selection"} {
 		if !strings.Contains(got, want) {
-			t.Errorf("confirmation render missing %q:\n%s", want, got)
+			t.Errorf("render missing concise top status %q:\n%s", want, got)
 		}
 	}
 }
@@ -330,7 +336,7 @@ func TestRenderSandboxPicker_LongDescriptionWrapsWithinWidth(t *testing.T) {
 	// the regression is actually fixed.
 	const width = 60
 	got := renderSandboxPicker(p, width)
-	for _, line := range strings.Split(got, "\n") {
+	for line := range strings.SplitSeq(got, "\n") {
 		if w := runeLen(stripANSI(line)); w > width {
 			t.Errorf("line exceeds width %d (got %d): %q", width, w, line)
 		}
