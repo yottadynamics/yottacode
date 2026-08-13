@@ -434,10 +434,8 @@ func (m Model) handleProviderPickerClick(msg tea.MouseClickMsg) (Model, tea.Cmd)
 }
 
 // handleSandboxPickerClick resolves a click on a sandbox-mode row to a
-// cursor move + synthesized Enter — same two-step preview/confirm flow
-// as the keyboard: the first click on a row previews it, a second click
-// on the (now-current) cursor row confirms and persists, matching
-// updateSandboxPicker's own p.confirming gate.
+// cursor move + immediate apply. The keyboard path does the same: Enter
+// persists the highlighted row, while Esc closes without changing config.
 func (m Model) handleSandboxPickerClick(msg tea.MouseClickMsg) (Model, tea.Cmd) {
 	if m.sandboxPicker == nil {
 		return m, nil
@@ -453,11 +451,8 @@ func (m Model) handleSandboxPickerClick(msg tea.MouseClickMsg) (Model, tea.Cmd) 
 	if !ok || kind != hitItem {
 		return m, nil
 	}
-	if sandboxMode(index) != m.sandboxPicker.cursor {
-		m.sandboxPicker.confirming = false
-	}
 	m.sandboxPicker.cursor = sandboxMode(index)
-	return m.updateSandboxPicker(tea.KeyPressMsg{Code: tea.KeyEnter})
+	return applySandboxMode(m, m.sandboxPicker.cursor)
 }
 
 // handlePlansPickerClick resolves a click on a saved-plan row to a
@@ -1151,12 +1146,12 @@ func (m Model) handlePopupHover(msg tea.MouseMotionMsg) Model {
 	if m.sandboxPickerOpen && m.sandboxPicker != nil {
 		hits := &pickerHits{}
 		box := popupBox(renderSandboxPicker(m.sandboxPicker, m.popupWidth(), hits))
-		if _, index, _, ok := m.resolvePopupHover(box, hits, msg.X, msg.Y); ok && sandboxMode(index) != m.sandboxPicker.cursor {
+		if _, index, _, ok := m.resolvePopupHover(box, hits, msg.X, msg.Y); ok {
 			m.sandboxPicker.cursor = sandboxMode(index)
-			m.sandboxPicker.confirming = false
 		}
 		return m
 	}
+
 	if m.plansPickerOpen && m.plansPicker != nil {
 		hits := &pickerHits{}
 		box := popupBox(renderPlansPicker(m.plansPicker, m.popupWidth(), hits))
