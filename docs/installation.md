@@ -118,7 +118,7 @@ yottacode does not guess a default model or endpoint. The fastest post-install p
 yottacode setup
 ```
 
-The wizard writes `~/.yottacode/config.toml` and `~/.yottacode/.env`, probes providers where possible, and can be rerun later with `/setup` from inside the TUI.
+The wizard writes `~/.yottacode/config.toml` and `~/.yottacode/.env`, probes providers where possible, and can be rerun later with `/setup` from inside the TUI. Before writing, it shows a review panel with the destination paths, active provider/model, optional router/search settings, and explicit `Write config`, `Back`, and `Abort` actions.
 
 ## Or configure manually
 
