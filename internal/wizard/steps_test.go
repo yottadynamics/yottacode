@@ -944,13 +944,88 @@ func TestValidationDoneMsg_SetsNotice(t *testing.T) {
 	}
 }
 
+// TestReviewActionPicker locks in the review screen's explicit final
+// actions. The user should be able to see and focus Write, Back, or
+// Abort before any config or secret file is written.
+func TestReviewActionPicker(t *testing.T) {
+	m := newWizardModel(context.Background(), Options{})
+	m.width = 100
+	idx := catalogIndex("anthropic")
+	m.inputs[idx].chosenModel = "claude-sonnet-4-6"
+	m.inputs[idx].configured = true
+	m.activeCursor = 0
+	m.finalPlan = m.assemblePlan()
+	m.reviewBody = m.finalPlan.RenderTOML()
+	m.step = stepReview
+
+	out := stripANSI(m.viewReview())
+	if !strings.Contains(out, "Action") || !strings.Contains(out, "Write config") || !strings.Contains(out, "Back") || !strings.Contains(out, "Abort") {
+		t.Fatalf("review screen should render focused action picker; got:\n%s", out)
+	}
+
+	updated, _ := m.updateReview(tea.KeyPressMsg{Code: tea.KeyDown})
+	wm := updated.(wizardModel)
+	if wm.reviewCursor != 1 {
+		t.Fatalf("Down should move review action cursor to Back; got %d", wm.reviewCursor)
+	}
+	updated, _ = wm.updateReview(tea.KeyPressMsg{Code: tea.KeyEnter})
+	wm = updated.(wizardModel)
+	if wm.step != stepActive {
+		t.Fatalf("Enter on Back action should return to active selection; got %v", wm.step)
+	}
+}
+
+func TestReviewFooterShowsShortcutKeys(t *testing.T) {
+	m := newWizardModel(context.Background(), Options{})
+	m.step = stepReview
+
+	footer := stripANSI(m.footerKeys(100))
+	for _, want := range []string{"enter select", "y write", "n abort", "b back"} {
+		if !strings.Contains(footer, want) {
+			t.Fatalf("review footer should advertise %q; got %q", want, footer)
+		}
+	}
+}
+
+func TestReviewActionPickerResetsOnEntry(t *testing.T) {
+	m := newWizardModel(context.Background(), Options{})
+	idx := catalogIndex("anthropic")
+	m.inputs[idx].chosenModel = "claude-sonnet-4-6"
+	m.inputs[idx].configured = true
+	m.step = stepActive
+	m.reviewCursor = 2
+
+	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	wm := updated.(wizardModel)
+	if wm.step != stepReview {
+		t.Fatalf("Active+enter should advance to review; got %v", wm.step)
+	}
+	if wm.reviewCursor != 0 {
+		t.Fatalf("review cursor should reset to Write config on entry; got %d", wm.reviewCursor)
+	}
+}
+
+func TestReviewActionPickerWriteDefault(t *testing.T) {
+	m := newWizardModel(context.Background(), Options{})
+	m.step = stepReview
+	m.reviewCursor = 0
+
+	updated, cmd := m.updateReview(tea.KeyPressMsg{Code: tea.KeyEnter})
+	wm := updated.(wizardModel)
+	if wm.step != stepWriting {
+		t.Fatalf("Enter on default review action should start writing; got %v", wm.step)
+	}
+	if cmd == nil {
+		t.Fatalf("starting write should return command")
+	}
+}
+
 // TestWizardFlow_SkipsRouterStep guards the decision to hide the
 // router picker from first-run UX (multi-provider failover only fires
 // on early failures — invisible in the happy path, so it adds friction
-// for a feature most users won't see fire). Forward flow Active → must
-// land on AutoMemory, and AutoMemory's goBack must return to Active —
-// both bypassing stepRouter. The router engine + its config block
-// stay; only the wizard step is hidden.
+// for a feature most users won't see fire). Forward flow Active → Review
+// and the Review back-edge both bypass stepRouter. The router engine +
+// its config block stay; only the wizard step is hidden.
 func TestWizardFlow_SkipsRouterStep(t *testing.T) {
 	m := newWizardModel(context.Background(), Options{})
 	idx := catalogIndex("anthropic")

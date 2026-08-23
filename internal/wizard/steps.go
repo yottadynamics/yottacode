@@ -160,7 +160,8 @@ type wizardModel struct {
 	routerCursor  int // 0 = no, 1 = fallback-chain, 2 = cheap-first
 
 	// Review.
-	reviewBody string
+	reviewBody   string
+	reviewCursor int
 
 	// Global.
 	width, height int
@@ -930,7 +931,7 @@ func (m wizardModel) footerKeys(width int) string {
 	case stepActive, stepRouter:
 		plain = "↑↓ choose · enter continue · esc back"
 	case stepReview:
-		plain = "y write · n abort · b back · ↑↓ scroll"
+		plain = "↑↓ choose · enter select · y write · n abort · b back"
 	}
 	if plain == "" {
 		return ""
@@ -2217,6 +2218,7 @@ func (m wizardModel) updateActive(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		// stepNumber mapping.
 		m.finalPlan = m.assemblePlan()
 		m.reviewBody = m.finalPlan.RenderTOML()
+		m.reviewCursor = 0
 		m.step = stepReview
 	}
 	return m, nil
@@ -2292,6 +2294,7 @@ func (m wizardModel) updateRouter(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.err = nil
 		m.finalPlan = m.assemblePlan()
 		m.reviewBody = m.finalPlan.RenderTOML()
+		m.reviewCursor = 0
 		m.step = stepReview
 	}
 	return m, nil
@@ -2346,19 +2349,30 @@ func (m wizardModel) viewRouter() string {
 
 func (m wizardModel) updateReview(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
-	case "y", "enter":
-		m.step = stepWriting
-		plan := m.finalPlan
-		opts := m.opts
-		return m, tea.Batch(m.spin.Tick, func() tea.Msg {
-			oc, err := Apply(plan, WriteOptions{
-				ConfigPath:   opts.ConfigPath,
-				EnvPath:      opts.EnvPath,
-				Force:        opts.Force,
-				SkipEnvWrite: opts.SkipEnvWrite || plan.SkipEnvWrite,
-			})
-			return writeDoneMsg{outcome: oc, err: err}
-		})
+	case "up", "k":
+		if m.reviewCursor > 0 {
+			m.reviewCursor--
+		}
+	case "down", "j", "tab":
+		if m.reviewCursor < 2 {
+			m.reviewCursor++
+		}
+	case "shift+tab":
+		if m.reviewCursor > 0 {
+			m.reviewCursor--
+		}
+	case "y":
+		return m.startWrite()
+	case "enter":
+		switch m.reviewCursor {
+		case 0:
+			return m.startWrite()
+		case 1:
+			m.step = stepActive
+		case 2:
+			m.aborted = true
+			return m, tea.Quit
+		}
 	case "n":
 		m.aborted = true
 		return m, tea.Quit
@@ -2366,6 +2380,24 @@ func (m wizardModel) updateReview(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.step = stepActive
 	}
 	return m, nil
+}
+
+// startWrite transitions from the review screen to the async disk-write
+// phase. It is shared by the legacy y shortcut and the focused action
+// picker so both paths run exactly the same write code.
+func (m wizardModel) startWrite() (tea.Model, tea.Cmd) {
+	m.step = stepWriting
+	plan := m.finalPlan
+	opts := m.opts
+	return m, tea.Batch(m.spin.Tick, func() tea.Msg {
+		oc, err := Apply(plan, WriteOptions{
+			ConfigPath:   opts.ConfigPath,
+			EnvPath:      opts.EnvPath,
+			Force:        opts.Force,
+			SkipEnvWrite: opts.SkipEnvWrite || plan.SkipEnvWrite,
+		})
+		return writeDoneMsg{outcome: oc, err: err}
+	})
 }
 
 func (m wizardModel) viewReview() string {
@@ -2414,6 +2446,25 @@ func (m wizardModel) viewReview() string {
 	if m.existingCfg && m.opts.Force {
 		b.WriteString("  " + styleWarn.Render(truncate("--force: existing config will be backed up to *.bak-<ts>", w)) + "\n\n")
 	}
+	b.WriteString("\n  " + styleHeading.Render("Action") + "\n")
+	actions := []struct {
+		label string
+		desc  string
+	}{
+		{"Write config", "save config.toml and any entered keys"},
+		{"Back", "return to default model selection"},
+		{"Abort", "exit without writing"},
+	}
+	for i, action := range actions {
+		line := action.label + "  " + action.desc
+		if i == m.reviewCursor {
+			b.WriteString(m.renderRowBar(line) + "\n")
+			continue
+		}
+		budget := w - lipgloss.Width(action.label) - 4
+		b.WriteString("  " + action.label + "  " + styleMuted.Render(truncate(action.desc, budget)) + "\n")
+	}
+	b.WriteString("\n")
 
 	// File preview.
 	b.WriteString("  " + styleHeading.Render("config.toml preview") + "\n")
