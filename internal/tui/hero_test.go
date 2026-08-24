@@ -50,12 +50,12 @@ func TestHero_PickerSlashCommandDoesNotExitHero(t *testing.T) {
 	}
 }
 
-func TestHero_StaysExitedAfterClear(t *testing.T) {
+func TestHero_ReturnsAfterClear(t *testing.T) {
 	m := newTestModel(t)
 	m.enteredConversation = true
 	m, _ = cmdClear(m, nil)
-	if !m.enteredConversation {
-		t.Error("enteredConversation is one-way — /clear must not revert to the launch hero mid-session")
+	if m.enteredConversation {
+		t.Error("/clear should restore the interactive launch hero for the fresh session")
 	}
 }
 

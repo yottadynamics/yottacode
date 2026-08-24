@@ -37,6 +37,25 @@ func TestView_EnablesAllMotionForWelcomeBeforeConversationStarts(t *testing.T) {
 	}
 }
 
+func TestMouseHover_WelcomeWorksAfterClear(t *testing.T) {
+	m := newTestModel(t)
+	m.enteredConversation = true
+	m.welcomeCursor = int(welcomeNewWorktree)
+	m, _ = cmdClear(m, nil)
+	if got := m.View().MouseMode; got != tea.MouseModeAllMotion {
+		t.Fatalf("View().MouseMode after /clear = %v, want MouseModeAllMotion for restored welcome hover", got)
+	}
+
+	// The welcome card is rendered with one leading blank row. bodyPoint maps
+	// screenY to body rows by subtracting originY and the border; body row 6 is
+	// the second menu action (Resume session), so this motion should move the
+	// cursor off the default New worktree row.
+	m, _ = applyMsg(m, tea.MouseMotionMsg{X: 6, Y: 8})
+	if got := welcomeAction(m.welcomeCursor); got != welcomeResumeSession {
+		t.Fatalf("hover after /clear selected %v, want %v", got, welcomeResumeSession)
+	}
+}
+
 func TestView_EnablesConversationSelectionMouse(t *testing.T) {
 	m := newTestModel(t)
 	m.enteredConversation = true

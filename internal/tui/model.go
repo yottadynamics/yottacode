@@ -512,21 +512,21 @@ type Model struct {
 	height    int
 	ready     bool
 
-	// enteredConversation is a one-way flag: false shows the top-anchored
-	// launch hero (startup card + cmdline) instead of the top-anchored
-	// transcript viewport; true shows the normal conversation layout
-	// permanently for the rest of the session. Set on a plain chat
-	// message (the "enter" key case) and, belt-and-suspenders, whenever
-	// a real agent turn actually starts (startTurnWithDisplay) or an
-	// agentEventMsg arrives. Deliberately NOT set just because a slash
-	// command was typed — most slash commands only open a picker or
-	// print a quick lookup (/theme, /model, /permissions), and popping
-	// out to the conversation layout for those left the cmdline jumping
-	// to the bottom of an otherwise-still-empty screen, with a
-	// leftover gap once the picker closed. Also deliberately NOT
-	// re-derived from len(historyLines)==0 or similar, so a /clear
-	// later in the session can't accidentally flip back to the hero —
-	// re-centering the whole UI mid-session would be disorienting.
+	// enteredConversation selects between the launch hero and the normal
+	// conversation layout. False shows the top-anchored launch hero
+	// (startup card + cmdline) before the first prompt; true shows the
+	// top-anchored transcript viewport after a conversation starts. It is
+	// set on a plain chat message (the Enter key case) and, belt-and-
+	// suspenders, whenever a real agent turn actually starts
+	// (startTurnWithDisplay) or an agentEventMsg arrives. Deliberately NOT
+	// set just because a slash command was typed — most slash commands only
+	// open a picker or print a quick lookup (/theme, /model,
+	// /permissions), and popping out to the conversation layout for those
+	// left the cmdline jumping to the bottom of an otherwise-still-empty
+	// screen, with a leftover gap once the picker closed. /clear is the one
+	// intentional reset: it creates a new fresh session and returns to the
+	// interactive launch hero so its mouse hover/click handling is active
+	// again.
 	enteredConversation bool
 
 	// originalTerminalBackground is the terminal's real background

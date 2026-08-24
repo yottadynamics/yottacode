@@ -1380,17 +1380,16 @@ func cmdClear(m Model, _ []string) (Model, tea.Cmd) {
 	m.nonConvergentWindow = 0
 	// Wipe the owned transcript so /clear lands on a clean canvas
 	// instead of tacking a confirmation line under the prior
-	// transcript, then re-emit the startup card under fresh-session
-	// chrome (the new session has only a system prompt, so
-	// isFreshSession() is true). No terminal ClearScreen needed — the
-	// TUI owns the whole frame now, so an empty transcriptRows is all
-	// it takes for the next render to show a clean canvas.
+	// transcript. /clear starts a real fresh session, so restore the
+	// interactive launch hero instead of appending a static copy of the
+	// welcome card into scrollback; the hero path owns all-motion mouse
+	// capture, hover, and clicks for the top menu. No terminal ClearScreen
+	// needed — the TUI owns the whole frame now, so an empty transcriptRows
+	// plus enteredConversation=false is all it takes for the next render to
+	// show a clean canvas.
 	m.transcriptRows = nil
 	m.transcriptDirty = true
-	if m.shouldShowStartupCard() {
-		m.appendRaw(renderStartupBox(m.version, m.commit, m.dirty, m.startupTip(), m.welcomeCursor, m.width))
-		m.queuePrintln("")
-	}
+	m.enteredConversation = false
 	m.appendLine(styleAuto.Render(SysMsg(SysState, "clear", "new session", newSess.ID)))
 	// A /clear starts a fresh conversation, so an armed /loop from the old
 	// session must not bleed into it (and its arm line was just wiped, so
