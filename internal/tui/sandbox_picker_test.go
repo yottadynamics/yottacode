@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -404,18 +405,38 @@ func TestRenderSandboxPicker_LongDescriptionWrapsWithinWidth(t *testing.T) {
 // goroutine, per the codebase's runProviderProbe/providerProbeMsg
 // pattern for exactly this kind of external-process probe.
 func TestOpenSandboxPicker_ReturnsAsyncDetectionCmd(t *testing.T) {
+	detectCalls := 0
+	oldDetect := sandboxDetectStatus
+	sandboxDetectStatus = func(_ context.Context, image string) sandbox.Status {
+		detectCalls++
+		if image == "" {
+			t.Error("detection should receive the configured sandbox image")
+		}
+		return sandbox.Status{Installed: true, ImagePresent: true}
+	}
+	t.Cleanup(func() { sandboxDetectStatus = oldDetect })
+
 	m := newTestModel(t)
 	m, cmd := m.openSandboxPicker()
 	if cmd == nil {
 		t.Fatal("openSandboxPicker should return a tea.Cmd to run detection asynchronously")
 	}
+	if detectCalls != 0 {
+		t.Fatal("openSandboxPicker must not run detection inline")
+	}
 	if m.sandboxPicker.detected {
 		t.Error("detected should start false — the picker hasn't heard back from the async probe yet")
 	}
 	msg := cmd()
+	if detectCalls != 1 {
+		t.Fatalf("cmd() should run exactly one detection pass, got %d", detectCalls)
+	}
 	det, ok := msg.(sandboxDetectMsg)
 	if !ok {
 		t.Fatalf("cmd() returned %T, want sandboxDetectMsg", msg)
+	}
+	if !det.status.Installed || !det.status.ImagePresent {
+		t.Fatalf("cmd() should return the stubbed detection status, got %+v", det.status)
 	}
 	m, _ = applyMsg(m, det)
 	if !m.sandboxPicker.detected {
