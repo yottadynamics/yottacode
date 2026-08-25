@@ -232,8 +232,8 @@ func (t *CreateDocumentTool) PreviewCall(argsJSON string) string {
 	_ = json.Unmarshal([]byte(argsJSON), &a)
 	preview := fmt.Sprintf("create_document(%s -> %s)", a.Format, a.OutputPath)
 	if needsCommandSandbox(a.Format) {
-		if sb := t.sandbox(); sb.Label() != (HostSandbox{}).Label() {
-			preview = sb.Label() + " " + preview
+		if sb := t.sandbox(); LabelForProfile(sb, SandboxProfileDocuments) != (HostSandbox{}).Label() {
+			preview = LabelForProfile(sb, SandboxProfileDocuments) + " " + preview
 		}
 	}
 	return preview
@@ -273,8 +273,8 @@ func (t *CreateDocumentTool) Execute(ctx context.Context, argsJSON string) (stri
 		return "", fmt.Errorf("create_document: output: %w", err)
 	}
 	sb := t.sandbox()
-	if needsCommandSandbox(a.Format) && sb.Label() != (HostSandbox{}).Label() {
-		if err := checkSandboxWorkspaceBoundary(output, cwd, t.WriteOpts, sb.Label()); err != nil {
+	if needsCommandSandbox(a.Format) && LabelForProfile(sb, SandboxProfileDocuments) != (HostSandbox{}).Label() {
+		if err := checkSandboxWorkspaceBoundary(output, cwd, t.WriteOpts, LabelForProfile(sb, SandboxProfileDocuments)); err != nil {
 			return "", fmt.Errorf("create_document: %w", err)
 		}
 	}
@@ -438,15 +438,14 @@ func (t *CreateDocumentTool) generateViaPandoc(ctx context.Context, a createDocu
 	defer os.Remove(tmpOutput)
 
 	cmdLine := buildPandocCommand(a.Format, tmpOutput, tmpMDPath)
-	c := sb.Command(ctx, cmdLine, cwd)
+	c := CommandInProfile(ctx, sb, SandboxProfileDocuments, cmdLine, cwd)
 	var stdout, stderr bytes.Buffer
 	c.Stdout = &cappedWriter{buf: &stdout}
 	c.Stderr = &cappedWriter{buf: &stderr}
 	if err := c.Run(); err != nil {
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
+		if exitErr, ok := errors.AsType[*exec.ExitError](err); ok {
 			note := ""
-			if exitErr.ExitCode() == podmanInfraExitCode && sb.Label() == podmanSandboxLabel {
+			if exitErr.ExitCode() == podmanInfraExitCode && isPodmanSandboxLabel(LabelForProfile(sb, SandboxProfileDocuments)) {
 				note = "NOTE: exit=125 is podman's own convention for a podman-level failure (not pandoc's exit code) — the sandbox container itself may need attention (see /sandbox). "
 			}
 			return "", fmt.Errorf("create_document: %spandoc failed (exit=%d): %s", note, exitErr.ExitCode(), strings.TrimSpace(stderr.String()))
@@ -458,7 +457,7 @@ func (t *CreateDocumentTool) generateViaPandoc(ctx context.Context, a createDocu
 		return "", fmt.Errorf("create_document: %w", err)
 	}
 
-	label := sb.Label()
+	label := LabelForProfile(sb, SandboxProfileDocuments)
 	if label == (HostSandbox{}).Label() {
 		label = "host"
 	}
@@ -522,7 +521,7 @@ func (t *CreateDocumentTool) generatePPTX(a createDocumentArgs, output, cwd stri
 // own PATH, independent of the host's. See
 // roadmap/document-generation.md's "Sandbox integration".
 func checkCommandAvailable(ctx context.Context, sb Sandbox, cwd, name string) error {
-	c := sb.Command(ctx, "command -v "+shellQuoteSingle(name), cwd)
+	c := CommandInProfile(ctx, sb, SandboxProfileDocuments, "command -v "+shellQuoteSingle(name), cwd)
 	var out bytes.Buffer
 	c.Stdout = &cappedWriter{buf: &out}
 	c.Stderr = &cappedWriter{buf: &out}
@@ -530,12 +529,12 @@ func checkCommandAvailable(ctx context.Context, sb Sandbox, cwd, name string) er
 	if err == nil {
 		return nil
 	}
-	where := sb.Label()
+	where := LabelForProfile(sb, SandboxProfileDocuments)
 	if where == (HostSandbox{}).Label() {
 		where = "host PATH"
 	}
 	var exitErr *exec.ExitError
-	if errors.As(err, &exitErr) && exitErr.ExitCode() == podmanInfraExitCode && sb.Label() == podmanSandboxLabel {
+	if errors.As(err, &exitErr) && exitErr.ExitCode() == podmanInfraExitCode && isPodmanSandboxLabel(LabelForProfile(sb, SandboxProfileDocuments)) {
 		// Mirrors generateViaPandoc's own exit-125 handling: without this,
 		// a dead/misconfigured sandbox container surfaces as an ordinary-
 		// looking "not found", steering the model toward reinstalling a

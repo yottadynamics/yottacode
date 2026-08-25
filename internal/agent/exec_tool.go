@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"strings"
 )
 
 // RunBashTool runs a shell command in cwd via /bin/sh -c. Always requires
@@ -103,7 +104,7 @@ func (t *RunBashTool) Execute(ctx context.Context, argsJSON string) (string, err
 	exit := c.ProcessState.ExitCode()
 	result := fmt.Sprintf("exit=%d\n--- stdout ---\n%s\n--- stderr ---\n%s",
 		exit, stdout.String(), stderr.String())
-	if exit == podmanInfraExitCode && t.sandbox().Label() == podmanSandboxLabel {
+	if exit == podmanInfraExitCode && isPodmanSandboxLabel(t.sandbox().Label()) {
 		// podman's own exit-code convention (125 = podman itself failed —
 		// bad container/cwd/image/network setup; 126/127 = the invoked
 		// command couldn't be found/run; anything else passes the
@@ -128,6 +129,10 @@ const (
 	podmanInfraExitCode = 125
 	podmanSandboxLabel  = "[podman-sandbox]"
 )
+
+func isPodmanSandboxLabel(label string) bool {
+	return label == podmanSandboxLabel || strings.HasPrefix(label, "[podman:")
+}
 
 // cappedWriter drops bytes past runBashMaxStreamBytes and emits a
 // `[output truncated]` notice in-band so the model sees the cap.
