@@ -309,25 +309,25 @@ func TestStandaloneBackgroundPolicyIsExplicitReadOnlyAllowlist(t *testing.T) {
 
 func TestDispatchBackgroundPolicyIsExplicitAllowlist(t *testing.T) {
 	write := &mockTool{name: "write_file", requiresApproval: true}
-	decision, note, handled := dispatchBackgroundApprovalPolicy(write, `{}`)
+	decision, note, handled := dispatchBackgroundApprovalPolicy(write, `{}`, false)
 	if !handled || decision != AllowOnce || !strings.Contains(note, "owned-file scoped") {
 		t.Fatalf("write_file should be allowed once, got decision=%v note=%q handled=%v", decision, note, handled)
 	}
 
 	read := &mockTool{name: "read_file"}
-	decision, note, handled = dispatchBackgroundApprovalPolicy(read, `{}`)
+	decision, note, handled = dispatchBackgroundApprovalPolicy(read, `{}`, false)
 	if !handled || decision != AllowOnce || !strings.Contains(note, "read-only allowlist") {
 		t.Fatalf("read_file should be explicitly allowed by dispatch background policy, got decision=%v note=%q handled=%v", decision, note, handled)
 	}
 
 	gitRead := &mockTool{name: "git_diff_files"}
-	decision, note, handled = dispatchBackgroundApprovalPolicy(gitRead, `{}`)
+	decision, note, handled = dispatchBackgroundApprovalPolicy(gitRead, `{}`, false)
 	if !handled || decision != Deny || !strings.Contains(note, "not auto-allowed") {
 		t.Fatalf("git_diff_files should be denied by explicit unattended allowlist, got decision=%v note=%q handled=%v", decision, note, handled)
 	}
 
 	fetch := &mockTool{name: "fetch_url"}
-	decision, note, handled = dispatchBackgroundApprovalPolicy(fetch, `{}`)
+	decision, note, handled = dispatchBackgroundApprovalPolicy(fetch, `{}`, false)
 	if !handled || decision != Deny || !strings.Contains(note, "not auto-allowed") {
 		t.Fatalf("fetch_url should be denied by unattended network policy, got decision=%v note=%q handled=%v", decision, note, handled)
 	}
@@ -337,9 +337,18 @@ func TestDispatchBackgroundPolicyIsExplicitAllowlist(t *testing.T) {
 	// document, and docx/pdf may still shell out through pandoc.
 
 	createDoc := &mockTool{name: "create_document", requiresApproval: true}
-	decision, note, handled = dispatchBackgroundApprovalPolicy(createDoc, `{}`)
+	decision, note, handled = dispatchBackgroundApprovalPolicy(createDoc, `{}`, false)
 	if !handled || decision != Deny || !strings.Contains(note, "create_document") || !strings.Contains(note, "needs a human") {
 		t.Fatalf("create_document should be explicitly denied with a specific reason, got decision=%v note=%q handled=%v", decision, note, handled)
+	}
+
+	// create_document stays denied even when this worker IS sandboxed —
+	// sandboxing only relaxes run_bash/run_tests (see below); create_document
+	// is denied for a different reason ("needs a human"), unrelated to shell
+	// confinement.
+	decision, note, handled = dispatchBackgroundApprovalPolicy(createDoc, `{}`, true)
+	if !handled || decision != Deny || !strings.Contains(note, "needs a human") {
+		t.Fatalf("create_document should stay denied even when sandboxed, got decision=%v note=%q handled=%v", decision, note, handled)
 	}
 }
 

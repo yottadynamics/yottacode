@@ -3,12 +3,55 @@ package agent
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
 
+	"github.com/yottadynamics/yottacode/internal/adapter"
 	"github.com/yottadynamics/yottacode/internal/subagents"
 )
+
+// dispatchBashStreamer is a stateless test adapter: on the first call for a
+// child it emits a run_bash tool call with the command named after
+// "TESTBASH:" in the user prompt; once a tool result is in the history it
+// echoes that result back as the final reply, so a test can assert on the
+// sandboxed command's actual stdout having reached the worker's final
+// result. Mirrors dispatchWriteStreamer in dispatch_tool_test.go.
+type dispatchBashStreamer struct{}
+
+func (dispatchBashStreamer) ChatStream(_ context.Context, msgs []adapter.Message, _ []adapter.Tool) <-chan adapter.StreamEvent {
+	out := make(chan adapter.StreamEvent, 4)
+	var toolResult string
+	userPrompt := ""
+	for _, m := range msgs {
+		if m.Role == adapter.RoleTool {
+			toolResult = m.Content
+		}
+		if m.Role == adapter.RoleUser {
+			userPrompt = m.Content
+		}
+	}
+	go func() {
+		defer close(out)
+		if toolResult != "" {
+			out <- sseDone("done: " + toolResult)
+			return
+		}
+		command := extractTestBashCommand(userPrompt)
+		args := fmt.Sprintf(`{"command":%q}`, command)
+		out <- sseDone("", adapter.ToolCall{ID: "c1", Name: "run_bash", ArgsJSON: args})
+	}()
+	return out
+}
+
+func extractTestBashCommand(prompt string) string {
+	_, rest, found := strings.Cut(prompt, "TESTBASH:")
+	if !found {
+		return "echo default"
+	}
+	return strings.TrimSpace(rest)
+}
 
 // TestBuildWorktreeChildRegistry_NilSandboxMeansHostDefault pins that a
 // dispatch worker built without a Sandbox behaves exactly like the parent
@@ -183,10 +226,10 @@ func TestDispatchSandbox_CloseCalledOnceOnPanicRecovery(t *testing.T) {
 }
 
 // TestDispatchSandbox_SkipsConstructionWhenWorkerCantUseRunBash: a write
-// worker whose AgentConfig.Tools allowlist includes neither run_bash nor
-// create_document — the two tools that depend on Sandbox — has nothing
-// for a Sandbox to cover. It must not pay container-creation cost or fail
-// its task over a dependency it was never going to use.
+// worker whose AgentConfig.Tools allowlist includes none of run_bash,
+// run_tests, or create_document — the tools that depend on Sandbox — has
+// nothing for a Sandbox to cover. It must not pay container-creation cost or
+// fail its task over a dependency it was never going to use.
 func TestDispatchSandbox_SkipsConstructionWhenWorkerCantUseRunBash(t *testing.T) {
 	auto := &AutoModeState{}
 	auto.Active.Store(true)
@@ -273,5 +316,105 @@ func TestDispatchSandbox_ConstructsForCreateDocumentEvenWithoutRunBash(t *testin
 
 	if !factoryCalled {
 		t.Error("SandboxFactory should be called for a worker whose Tools allowlist includes create_document, even without run_bash")
+	}
+}
+
+// TestDispatchSandbox_ConstructsForRunTestsEvenWithoutRunBash mirrors the
+// create_document case above: a worker granted run_tests but not run_bash
+// still needs its own Sandbox, since run_tests routes through it too (see
+// RunTestsTool.sandbox) and dispatchBackgroundApprovalPolicy only allows an
+// unattended run_tests call when this worker is actually sandboxed.
+func TestDispatchSandbox_ConstructsForRunTestsEvenWithoutRunBash(t *testing.T) {
+	auto := &AutoModeState{}
+	auto.Active.Store(true)
+	at := &AgentTool{
+		Configs: []subagents.AgentConfig{{
+			Name:  "writer-tests-no-bash",
+			Tools: []string{"write_file", "read_file", "run_tests"}, // no run_bash
+		}},
+		Tasks:          subagents.NewRegistry(),
+		Adapter:        dispatchWriteStreamer{},
+		ParentRegistry: NewRegistry(),
+		AutoMode:       auto,
+		PlanMode:       &PlanModeState{},
+		YoloMode:       &YoloModeState{},
+		Cwd:            NewCwdRef(t.TempDir()),
+		TranscriptDir:  t.TempDir(),
+	}
+	factoryCalled := false
+	d := &DispatchTool{
+		Agent:   at,
+		Enabled: true,
+		SandboxFactory: func(ctx context.Context, wtDir, taskID string) (Sandbox, error) {
+			factoryCalled = true
+			return &spySandbox{}, nil
+		},
+	}
+
+	c := &dispatchChild{
+		spec:     dispatchTaskSpec{Prompt: "p", Description: "d", Files: []string{"x.go"}},
+		cfg:      &at.Configs[0],
+		isWrite:  true,
+		worktree: t.TempDir(),
+	}
+	at.Tasks.Add(d.prepareDispatchChild(c, "batch-1", false))
+
+	d.runDispatchChild(context.Background(), c, "batch-1", false, nil, nil)
+
+	if !factoryCalled {
+		t.Error("SandboxFactory should be called for a worker whose Tools allowlist includes run_tests, even without run_bash")
+	}
+}
+
+// TestDispatchSandbox_MarksOptsSandboxedWhenConstructed drives a full
+// background write-worker run and confirms run_bash — denied without a
+// sandbox — is ALLOWED once DispatchTool.SandboxFactory successfully builds
+// one for this worker: the end-to-end wiring from SandboxFactory through
+// childRunOpts.sandboxed into dispatchBackgroundApprovalPolicy.
+func TestDispatchSandbox_MarksOptsSandboxedWhenConstructed(t *testing.T) {
+	auto := &AutoModeState{}
+	auto.Active.Store(true)
+	at := &AgentTool{
+		Configs: []subagents.AgentConfig{{
+			Name:  "writer-bash",
+			Tools: []string{"write_file", "read_file", "run_bash"},
+		}},
+		Tasks:          subagents.NewRegistry(),
+		Adapter:        dispatchBashStreamer{},
+		ParentRegistry: NewRegistry(),
+		AutoMode:       auto,
+		PlanMode:       &PlanModeState{},
+		YoloMode:       &YoloModeState{},
+		Cwd:            NewCwdRef(t.TempDir()),
+		TranscriptDir:  t.TempDir(),
+	}
+	d := &DispatchTool{
+		Agent:              at,
+		Enabled:            true,
+		SupportsBackground: true,
+		SandboxFactory: func(ctx context.Context, wtDir, taskID string) (Sandbox, error) {
+			return &spySandbox{label: "[podman]"}, nil
+		},
+	}
+
+	c := &dispatchChild{
+		spec:     dispatchTaskSpec{Prompt: "TESTBASH:echo confined", Description: "d", Files: []string{"x.go"}},
+		cfg:      &at.Configs[0],
+		isWrite:  true,
+		worktree: t.TempDir(),
+	}
+	at.Tasks.Add(d.prepareDispatchChild(c, "batch-1", true))
+
+	d.runDispatchChild(context.Background(), c, "batch-1", true, nil, nil)
+
+	snap, ok := at.Tasks.Get(c.taskID)
+	if !ok {
+		t.Fatalf("task not registered")
+	}
+	if snap.Errored {
+		t.Fatalf("worker errored, want run_bash allowed under sandbox: %s", snap.Result)
+	}
+	if !strings.Contains(snap.Result, "confined") {
+		t.Errorf("result = %q, want it to contain the sandboxed run_bash's stdout", snap.Result)
 	}
 }

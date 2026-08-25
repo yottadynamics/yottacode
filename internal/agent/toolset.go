@@ -127,7 +127,7 @@ func RegisterCoreCwdTools(reg *Registry, cwd *CwdRef, deps CoreToolDeps) {
 	reg.Register(&GitCheckpointTool{Cwd: cwd})
 	reg.Register(&RollbackTool{Cwd: cwd, LSPManager: deps.LSPManager})
 
-	reg.Register(&RunTestsTool{Cwd: cwd})
+	reg.Register(&RunTestsTool{Cwd: cwd, Sandbox: deps.Sandbox})
 	reg.Register(&RunBashTool{Cwd: cwd, Sandbox: deps.Sandbox})
 
 	reg.Register(&MediaProbeTool{Cwd: cwd, DenyReadPaths: deps.DenyReads})
