@@ -131,9 +131,14 @@ type sandboxDetectMsg struct {
 	status sandbox.Status
 }
 
+// sandboxDetectStatus is a package seam for tests. The production path uses
+// sandbox.DetectStatus, but unit tests can replace it so they never start real
+// podman probes or create rootless container storage under t.TempDir.
+var sandboxDetectStatus = sandbox.DetectStatus
+
 func sandboxDetectCmd(ctx context.Context, image string) tea.Cmd {
 	return func() tea.Msg {
-		return sandboxDetectMsg{status: sandbox.DetectStatus(ctx, image)}
+		return sandboxDetectMsg{status: sandboxDetectStatus(ctx, image)}
 	}
 }
 
