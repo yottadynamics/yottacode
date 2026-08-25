@@ -122,25 +122,34 @@ func TestBuildWorktreeChildRegistry_BackgroundDisablesLSP(t *testing.T) {
 }
 
 // TestBuildWorktreeChildRegistry_DocumentIngestionPropagates is a
-// regression for the parity gap: EnableDocumentIngestion must reach
+// regression for the parity gap: AllowPDFIngestion must reach
 // dispatch/worktree-child workers the same way EnableLSP and
-// EnableSyntaxRanges already do, so a subagent can use read_document
-// whenever the parent session has the document_ingestion experimental
-// feature enabled.
+// EnableSyntaxRanges already do, so a subagent's read_document PDF gate
+// matches the parent session's document_ingestion experimental feature.
+// read_document itself is always registered now — only its PDF format is
+// gated — so this checks the propagated field, not tool presence.
 func TestBuildWorktreeChildRegistry_DocumentIngestionPropagates(t *testing.T) {
 	cwd := NewCwdRef(t.TempDir())
 	cfg := &subagents.AgentConfig{Name: "doc-worker", Tools: []string{"read_document"}}
 
 	off := &DispatchTool{}
 	offReg := off.buildWorktreeChildRegistry(cfg, cwd, cwd.Get(), nil, false, nil)
-	if _, ok := offReg.Get("read_document"); ok {
-		t.Fatal("read_document should be absent from a worktree child when EnableDocumentIngestion is false")
+	offRaw, ok := offReg.Get("read_document")
+	if !ok {
+		t.Fatal("read_document should always be registered on a worktree child, regardless of AllowPDFIngestion")
+	}
+	if offRaw.(*ReadDocumentTool).SubprocessFormatsEnabled {
+		t.Fatal("read_document's PDF gate should be off when AllowPDFIngestion is false")
 	}
 
-	on := &DispatchTool{EnableDocumentIngestion: true}
+	on := &DispatchTool{AllowPDFIngestion: true}
 	onReg := on.buildWorktreeChildRegistry(cfg, cwd, cwd.Get(), nil, false, nil)
-	if _, ok := onReg.Get("read_document"); !ok {
-		t.Fatal("read_document should be registered on a worktree child when EnableDocumentIngestion is true")
+	onRaw, ok := onReg.Get("read_document")
+	if !ok {
+		t.Fatal("read_document should be registered on a worktree child")
+	}
+	if !onRaw.(*ReadDocumentTool).SubprocessFormatsEnabled {
+		t.Fatal("read_document's PDF gate should be on when AllowPDFIngestion is true")
 	}
 }
 

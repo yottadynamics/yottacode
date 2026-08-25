@@ -37,6 +37,20 @@ type ReadDocumentTool struct {
 	// format (and docx's own native fallback) is pure Go and never
 	// shells out.
 	Sandbox Sandbox
+
+	// SubprocessFormatsEnabled gates .pdf specifically — the one format
+	// with no native fallback: PDFExtractor always needs pdftotext/
+	// pdfinfo reachable through the sandbox. Every other format
+	// (csv/tsv/json/jsonl/xml/html/xlsx/docx/pptx) is pure Go and
+	// unaffected; docx's optional pandoc tier degrades silently to its
+	// native tier when pandoc is unavailable, so it isn't gated by this
+	// field either. document_ingestion graduated to GA (see
+	// internal/experimental/features.go), so every real caller wires
+	// this true unconditionally; the field stays as a structural on/off
+	// switch for a caller that wants PDF excluded for reasons of its
+	// own. A missing pdftotext/pdfinfo binary is reported separately by
+	// PDFExtractor, not by this field.
+	SubprocessFormatsEnabled bool
 }
 
 func (t *ReadDocumentTool) sandbox() Sandbox {
@@ -51,8 +65,23 @@ func (t *ReadDocumentTool) registry() *documents.Registry {
 		return t.Registry
 	}
 	reg := documents.NewRegistryWithDocxTier(t.runSandboxCommand)
-	reg.Register(&documents.PDFExtractor{Run: t.runSandboxCommand})
+	reg.Register(&documents.PDFExtractor{Run: t.runSandboxCommand, ResolveScript: t.resolvePyHelperScript})
 	return reg
+}
+
+// resolvePyHelperScript implements documents.ScriptResolver, routing
+// through the same Sandbox-awareness runSandboxCommand already has: a
+// podman-backed sandbox already has the driver scripts baked into its
+// image by infra/documents.Containerfile, so it gets the fixed in-image
+// path; everything else (HostSandbox, or any other future backend)
+// materializes the embedded script under pyHelperCacheDir.
+func (t *ReadDocumentTool) resolvePyHelperScript(script documents.PyHelperScript) (string, error) {
+	cacheDir, err := pyHelperCacheDir()
+	if err != nil {
+		return "", err
+	}
+	isPodman := isPodmanSandboxLabel(LabelForProfile(t.sandbox(), SandboxProfileDocuments))
+	return documents.ResolvePyHelperScript(script, isPodman, cacheDir)
 }
 
 // runSandboxCommand implements documents.CommandRunner by routing through
@@ -77,9 +106,14 @@ func (t *ReadDocumentTool) Description() string {
 	return "Extract bounded, structured text from a CSV, TSV, JSON, JSONL, XML, HTML, PDF, xlsx, docx, or pptx file. " +
 		"Returns a structure summary (columns, JSON shape, XML/HTML title and headings, PDF page count, xlsx sheet names, docx paragraph/heading counts, pptx slide count) plus a capped content preview, " +
 		"with every truncation reported explicitly rather than silently cut. " +
-		"PDF extraction runs pdftotext/pdfinfo, which must be reachable through the active command sandbox " +
-		"(installed on the host when no sandbox is configured, or present in the sandbox's [sandbox].image); " +
-		"an encrypted or scanned/image-only PDF is reported as a warning rather than an error, since it's still a valid result to hand back. " +
+		"PDF extraction runs pdftotext/pdfinfo, which must be reachable through the documents sandbox profile " +
+		"(installed on the host when no sandbox is configured, or present in [sandbox].documents_image); " +
+		"a missing binary returns an actionable error naming exactly where it looked, rather than failing " +
+		"silently. An encrypted or scanned/image-only PDF is reported as a warning rather than an error, " +
+		"since it's still a valid result to hand back. When python3+pdfplumber are also reachable through that " +
+		"same documents profile or host PATH, detected tables are returned as additional 'page N table M' " +
+		"sections with pipe-joined rows; this tier is best-effort and silently absent (not an error or " +
+		"warning) when python3/pdfplumber aren't available, or a page genuinely has no tables. " +
 		"xlsx/docx/pptx are parsed natively (no external tools): xlsx returns one section per sheet, docx returns the document body as one section with headings rendered as '# '-prefixed lines, pptx returns one section per slide in slide order. " +
 		"Use this when you need to ANALYZE the data — read_file's raw line-based view shears a CSV field's " +
 		"embedded newline into a bogus extra row and returns HTML/XML markup noise verbatim. " +
@@ -167,6 +201,9 @@ func (t *ReadDocumentTool) Execute(ctx context.Context, argsJSON string) (string
 	p := resolvePath(t.Cwd.Get(), a.Path)
 	if err := ValidateReadPath(p, t.DenyReadPaths); err != nil {
 		return "", fmt.Errorf("read_document: %w", err)
+	}
+	if strings.HasSuffix(strings.ToLower(p), ".pdf") && !t.SubprocessFormatsEnabled {
+		return "", fmt.Errorf("read_document: PDF extraction is disabled in this configuration")
 	}
 
 	ex := t.registry().Lookup(p)

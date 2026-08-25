@@ -26,6 +26,13 @@ type CommandRunner func(ctx context.Context, command string) (stdout, stderr []b
 // a subprocess — Run must be supplied by the caller (see CommandRunner).
 type PDFExtractor struct {
 	Run CommandRunner
+
+	// ResolveScript enables the optional pdfplumber-backed table-
+	// extraction tier (see extractTables). Nil-safe: a nil resolver
+	// just skips that tier, same as a nil Run skips extraction
+	// entirely — the primary pdftotext-based text extraction never
+	// depends on this field.
+	ResolveScript ScriptResolver
 }
 
 func (e *PDFExtractor) Match(path string) bool {
@@ -71,12 +78,10 @@ func (e *PDFExtractor) Extract(ctx context.Context, req ExtractRequest) (Extract
 	// -layout preserves column/table alignment as spaced plain text
 	// instead of poppler's default reading-order reflow, which collapses
 	// a table's columns into one run-together line. Real fidelity gain
-	// for tabular PDF content with no new dependency or architecture —
-	// see roadmap/document-generation.md's Docling-deferral precedent
-	// for why a pdfplumber-based structured-table tier stays deferred
-	// instead (it would need read_document to write a temp script file,
-	// a new side effect for what's otherwise a pure-read, no-approval
-	// tool).
+	// for tabular PDF content with no new dependency or architecture.
+	// The optional pdfplumber-backed tier below goes further (real
+	// structured rows/columns, not just preserved alignment) when
+	// ResolveScript is wired.
 	cmd := fmt.Sprintf("pdftotext -layout -f %d -l %d %s -", startPage, endPage, shellQuote(req.Path))
 	out, stderrOut, err := e.Run(ctx, cmd)
 	if err != nil {
@@ -92,6 +97,14 @@ func (e *PDFExtractor) Extract(ctx context.Context, req ExtractRequest) (Extract
 	pages := splitPDFPages(string(out))
 	sections, sectionsWarnings := buildLabeledUnitSections(pages, startPage, req.MaxChars, "page")
 	warnings = append(warnings, sectionsWarnings...)
+
+	// Best-effort, additive only: a missing script/python/pdfplumber, or
+	// a page with genuinely no tables, must never turn a working
+	// plain-text result into an error or even a warning — this tier is
+	// pure upside when it works and silent when it doesn't.
+	if tableSections := e.extractTables(ctx, req.Path, startPage, endPage); len(tableSections) > 0 {
+		sections = append(sections, tableSections...)
+	}
 
 	if totalPages > 0 && endPage < totalPages {
 		warnings = append(warnings, fmt.Sprintf("showing pages %d-%d of %d (page cap)", startPage, endPage, totalPages))
@@ -169,4 +182,31 @@ func allPagesBlank(pages []string) bool {
 // dependency-direction note).
 func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// extractTables runs the optional pdfplumber-backed table-extraction
+// tier over path's startPage-endPage range and returns rendered
+// DocumentSections — nil on any failure (no ResolveScript/Run wired,
+// script unresolvable, python3/pdfplumber missing, malformed output) so
+// the caller can treat this purely additively. See buildTableSections'
+// doc comment for the section shape and buildTableExtractionCommand for
+// the exact command line.
+func (e *PDFExtractor) extractTables(ctx context.Context, path string, startPage, endPage int) []DocumentSection {
+	if e.Run == nil || e.ResolveScript == nil {
+		return nil
+	}
+	scriptPath, err := e.ResolveScript(ScriptExtractPDFTables)
+	if err != nil {
+		return nil
+	}
+	cmd := buildTableExtractionCommand(scriptPath, path, startPage, endPage)
+	out, _, err := e.Run(ctx, cmd)
+	if err != nil {
+		return nil
+	}
+	pages, err := parsePythonTableJSON(out)
+	if err != nil {
+		return nil
+	}
+	return buildTableSections(pages)
 }

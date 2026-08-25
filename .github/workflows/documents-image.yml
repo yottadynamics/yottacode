@@ -3,8 +3,12 @@
 # smoke-test the image without publishing; main, manual, and weekly runs publish
 # after the same smoke gate. The weekly rebuild keeps pandoc/poppler/weasyprint
 # CVE patches landing on a schedule rather than only when someone remembers to
-# rebuild. See docs/document-generation.md and roadmap/document-generation.md's
-# "Image build, publish, and consume mechanics" for the design this implements.
+# rebuild, and is also the only thing that will catch pdfplumber/python-docx
+# drifting against pyhelpers/*.py's real behavior between manual reviews of
+# their pinned versions in the Containerfile. See docs/document-generation.md
+# and roadmap/document-generation.md's "Image build, publish, and consume
+# mechanics" / "Python-in-container implementation plan" for the design this
+# implements.
 #
 # linux/amd64 only for now — there is no established multi-arch position
 # for this image anywhere in the repo (unlike the CLI binary itself, which
@@ -81,22 +85,51 @@ jobs:
       - name: Load image
         run: podman load -i documents-image.tar
 
-      - name: Smoke test — pandoc, weasyprint, poppler
+      - name: Smoke test — pandoc, weasyprint, poppler, pdfplumber, python-docx
         # Re-run the same production toolchain checks from the Containerfile
-        # against the actual built image before anything gets pushed.
+        # against the actual built image before anything gets pushed. The
+        # pdfplumber/python-docx checks below go further than the
+        # Containerfile's own build-time "does it import" check: they run
+        # the real pyhelpers/*.py scripts against real generated fixtures
+        # and assert on real extracted/substituted content, so a pdfplumber
+        # or python-docx release that changes behavior (not just one that
+        # fails to import) gets caught here before it reaches ghcr.io.
         run: |
-          podman run --rm documents-image sh -c '
+          podman run --rm -i documents-image sh <<'SH'
             set -e
             pandoc --version
             weasyprint --version
             pdftotext -v
             pdfinfo -v
+            python3 --version
             echo "# Smoke test" > /tmp/fixture.md
             pandoc -f markdown -t docx -o /tmp/fixture.docx /tmp/fixture.md
             pandoc -f markdown -t pdf --pdf-engine=weasyprint -o /tmp/fixture.pdf /tmp/fixture.md
             pdftotext /tmp/fixture.pdf - | grep "Smoke test"
             pdfinfo /tmp/fixture.pdf | grep "Pages"
-          '
+
+            # PDF table extraction (pdfplumber): a pandoc/weasyprint table
+            # has no visible cell borders, which is exactly the case
+            # extract_pdf_tables.py falls back to a text-alignment
+            # detection strategy for (see the script itself for why) —
+            # this fixture exercises that fallback, not just the happy path.
+            printf '%s\n' '# Report' '' '| Name | Qty |' '| --- | --- |' '| Widget | 3 |' > /tmp/table.md
+            pandoc -f markdown -t pdf --pdf-engine=weasyprint -o /tmp/table.pdf /tmp/table.md
+            python3 /opt/yottacode/doc-helpers/extract_pdf_tables.py /tmp/table.pdf > /tmp/tables.json
+            python3 -c 'import json, sys; data=json.load(open(sys.argv[1], encoding="utf-8")); rows=[row for page in data.get("pages", []) for table in page.get("tables", []) for row in table.get("rows", [])]; assert any("Widget" in row and "3" in row for row in rows), data' /tmp/tables.json
+
+            # docx template-fill (python-docx): build a template with a
+            # placeholder, fill it, and verify the substitution round-trips
+            # by reading the *output* back through pandoc as an independent
+            # verifier, rather than trusting the fill scripts own report of
+            # what it did.
+            printf '%s\n' 'Dear {{name}}, your total is {{total}}.' > /tmp/template.md
+            pandoc -f markdown -t docx -o /tmp/template.docx /tmp/template.md
+            python3 -c 'import json; json.dump({"name":"Smoke Test","total":"42"}, open("/tmp/replacements.json", "w", encoding="utf-8"))'
+            python3 /opt/yottacode/doc-helpers/fill_docx_template.py /tmp/template.docx /tmp/filled.docx /tmp/replacements.json > /tmp/fill-status.json
+            python3 -c 'import json, sys; data=json.load(open(sys.argv[1], encoding="utf-8")); assert data.get("replacements_applied") == 1, data' /tmp/fill-status.json
+            pandoc -f docx -t plain /tmp/filled.docx | grep -q "Smoke Test"
+          SH
 
   push:
     needs: smoke-test

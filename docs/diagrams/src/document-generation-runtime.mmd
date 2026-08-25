@@ -1,0 +1,75 @@
+---
+title: Document generation — runtime flow
+---
+sequenceDiagram
+    %% Author: YottaDynamics | Scope: create_document runtime behavior in this PR
+    %% Purpose: Show which paths are pure Go, which paths shell out, and where failures surface.
+
+    actor Model as Model / user
+    participant Tool as CreateDocumentTool<br/>internal/agent
+    participant Paths as Path validation<br/>read/write policy
+    participant Docs as internal/documents<br/>pure Go library
+    participant Sandbox as Sandbox<br/>host or podman
+    participant Helpers as Python helpers<br/>embedded or in-image
+    participant FS as Workspace files
+
+    Model->>Tool: create_document(format, output_path, content, template?)
+    Tool->>Paths: ValidateWritePath(output_path)
+    Paths-->>Tool: output allowed or targeted error
+
+    alt format = xlsx
+        Tool->>Docs: GenerateXLSX(content.sheets)
+        Docs-->>Tool: .xlsx bytes
+        Tool->>FS: atomic placeOutputFile(output_path)
+        FS-->>Model: generated xlsx (native)
+    else format = pptx
+        opt slide image paths
+            Tool->>Paths: ValidateReadPath(slide.image)
+            Paths-->>Tool: image allowed or targeted error
+        end
+        Tool->>Docs: GeneratePPTX(content.slides)
+        Docs-->>Tool: .pptx bytes
+        Tool->>FS: atomic placeOutputFile(output_path)
+        FS-->>Model: generated pptx (native)
+    else format = docx and template set
+        Tool->>Paths: ValidateReadPath(template)
+        Paths-->>Tool: template allowed or targeted error
+        Tool->>Sandbox: command -v python3
+        alt python3 missing in active environment
+            Sandbox-->>Model: actionable missing-python3 error naming host PATH or sandbox
+        else python3 exists
+            Tool->>Helpers: resolve fill_docx_template.py
+            Helpers-->>Tool: host cache path or /opt/yottacode/doc-helpers path
+            Tool->>Sandbox: python3 fill_docx_template.py template tmpOutput replacements.json
+            alt python-docx missing or script fails
+                Sandbox-->>Model: docx template fill failed with stderr
+            else helper succeeds
+                Sandbox-->>Tool: JSON status {replacements_applied}
+                Tool->>FS: atomic placeOutputFile(output_path)
+                FS-->>Model: generated docx from template
+            end
+        end
+    else format = docx/pdf from content.blocks
+        opt image blocks
+            Tool->>Paths: ValidateReadPath(block.path)
+            Paths-->>Tool: image allowed or targeted error
+        end
+        Tool->>Docs: RenderMarkdown(DocAST)
+        Docs-->>Tool: markdown temp input
+        Tool->>Sandbox: command -v pandoc
+        alt pandoc missing
+            Sandbox-->>Model: actionable missing-pandoc error
+        else pdf also needs weasyprint
+            Tool->>Sandbox: command -v weasyprint
+            alt weasyprint missing
+                Sandbox-->>Model: actionable missing-weasyprint error
+            else dependencies exist
+                Tool->>Sandbox: pandoc -f markdown -t docx/pdf ...
+                Sandbox-->>Tool: generated temp output
+                Tool->>FS: atomic placeOutputFile(output_path)
+                FS-->>Model: generated docx/pdf via pandoc
+            end
+        end
+    else template with non-docx format
+        Tool-->>Model: targeted validation error: template is only supported for format=docx
+    end

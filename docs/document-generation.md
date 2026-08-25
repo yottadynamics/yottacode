@@ -1,4 +1,4 @@
-# Document generation (experimental)
+# Document generation
 
 `create_document` generates a new `xlsx`, `docx`, `pdf`, or `pptx` file
 from structured content — the write-side counterpart to
@@ -12,9 +12,25 @@ Only those subprocess-backed paths route through the same command
 [excelize]: https://github.com/xuri/excelize
 [sandbox-doc]: sandbox.md
 
-> **Status: experimental.** Enable with `--experimental document_generation`,
-> `YOTTACODE_EXPERIMENTAL=document_generation`, or
-> `[experimental] document_generation = true` in config.
+> **Status: GA.** `create_document` and `read_document` are both
+> default-on for every format — no flag needed, including docx/pdf
+> generation and PDF extraction. `document_generation`/`document_ingestion`
+> are graduated no-op compatibility flags (see [experimental.md](experimental.md));
+> an existing `--experimental document_generation` in your config is
+> harmless and can be removed at your convenience. What GA does **not**
+> mean: pandoc/weasyprint/poppler are bundled or auto-installed. If
+> they're not reachable via host `PATH` or `[sandbox].documents_image`, docx/pdf
+> generation and PDF extraction return an actionable error naming
+> exactly where they looked, rather than the tool being unavailable or
+> failing silently — see [Requirements](#requirements) below.
+>
+> **Security note:** unlike the rest of `read_document` (pure Go, memory-safe
+> parsing), PDF extraction and docx's optional richer-parsing tier shell
+> out to `pdftotext`/`pandoc` — native, non-memory-safe parsers — over
+> file content `read_document` never requires approval to read. Point
+> `[sandbox].backend = "podman"` at the published `yottacode-documents`
+> image (see below) if you want that parsing isolated from the host,
+> particularly for files from a less-trusted source.
 
 ## Three generation paths
 
@@ -65,17 +81,34 @@ argument reference and examples.
 
 ## Requirements
 
-| Format | Requires |
+| Capability | Requires |
 |---|---|
-| xlsx | Nothing — pure Go |
-| docx | `pandoc` on `PATH` (host) or in `[sandbox].documents_image` |
-| pdf | `pandoc` **and** `weasyprint` on `PATH` (host) or in `[sandbox].documents_image` |
-| pptx | Nothing — pure Go |
+| xlsx generation/parsing | Nothing — pure Go |
+| pptx generation/parsing | Nothing — pure Go |
+| docx generation (from `content.blocks`) | `pandoc` on `PATH` (host) or in `[sandbox].documents_image` |
+| pdf generation | `pandoc` **and** `weasyprint` on `PATH` (host) or in `[sandbox].documents_image` |
+| docx rich parsing (tables, formatting) | `pandoc` on `PATH` (host) or in `[sandbox].documents_image` |
+| PDF table extraction | `python3` **and** `pdfplumber` on `PATH` (host) or in `[sandbox].documents_image` |
+| docx template-fill (`format=docx` + `template`) | `python3` **and** `python-docx` on `PATH` (host) or in `[sandbox].documents_image` |
 
 
-If a required subprocess binary for docx/pdf isn't reachable through the
-active sandbox, `create_document` returns an error naming exactly where it
-looked (`host PATH` or the sandbox's label) instead of failing silently.
+If a required subprocess binary isn't reachable through the active
+sandbox, `create_document`/`read_document` returns an error naming
+exactly where it looked (`host PATH` or the sandbox's label) instead of
+failing silently. PDF table extraction is the one exception: it's a
+best-effort *additional* tier layered on top of `read_document`'s
+always-available plain-text PDF result, so a missing `python3`/
+`pdfplumber` degrades silently to that plain-text result rather than
+producing any error or warning at all — the same way docx's own
+optional `pandoc`-based rich-parsing tier already degrades silently to
+its native structure-only tier.
+
+`python3` itself needs no separate install step on top of
+`pandoc`/`weasyprint`: on the documents image, `weasyprint` already
+pulls it in transitively via its own apt dependency chain. On a bare
+host, whatever already provides `python3` for other purposes is
+sufficient — only `pdfplumber`/`python-docx` (`pip install pdfplumber
+python-docx`) are specific to these two capabilities.
 
 
 ## Using the reference `documents` image
@@ -83,40 +116,56 @@ looked (`host PATH` or the sandbox's label) instead of failing silently.
 [`infra/documents.Containerfile`](../infra/documents.Containerfile) bundles
 only the production subprocess dependencies the current code invokes:
 `pandoc` for docx/pdf generation and optional rich docx parsing,
-`weasyprint` for PDF generation, and `poppler-utils` (`pdftotext`/
-`pdfinfo`) for PDF text extraction. xlsx and pptx paths are native Go and
-never use this image.
+`weasyprint` for PDF generation, `poppler-utils` (`pdftotext`/`pdfinfo`)
+for PDF text extraction, `pdfplumber` (pip) for PDF table extraction,
+and `python-docx` (pip) for docx template-fill generation. xlsx and
+pptx paths are native Go and never use this image.
 
 
 [roadmap-doc]: ../roadmap/document-generation.md
 
-A CI workflow that builds, smoke-tests, and publishes this image exists
-(`.github/workflows/documents-image.yml`, manual `workflow_dispatch` plus
-a weekly rebuild for CVE patches), but it's **never been run** — nobody
-with registry access has triggered it yet, so
-`ghcr.io/yottadynamics/yottacode-documents` isn't live. Build it locally
-in the meantime:
+A CI workflow builds, smoke-tests, and publishes this image
+(`.github/workflows/documents-image.yml`): on demand via
+`workflow_dispatch`, on a push to `main` touching the Containerfile or
+the workflow itself, and on a weekly schedule (Mondays 06:00 UTC) that
+keeps pandoc/poppler/weasyprint CVE patches landing on a schedule. **The
+weekly rebuild has run and published** —
+`ghcr.io/yottadynamics/yottacode-documents:latest` (plus a same-day
+immutable date tag, e.g. `:2026-08-24`) is live on ghcr.io. Point the
+command sandbox at it (the still-experimental `sandbox` flag gates the
+podman sandbox itself, not document generation — see the security note
+above for why you'd want this):
+
+```toml
+[experimental]
+sandbox = true
+
+[sandbox]
+backend = "podman"
+image   = "ghcr.io/yottadynamics/yottacode-documents:latest"
+```
+
+To build the same image locally instead — for testing a Containerfile
+change before it merges, or if you'd rather not pull from ghcr.io — run:
 
 ```sh
 podman build -t yottacode-documents -f infra/documents.Containerfile .
 ```
 
-Then point the document sandbox profile at it and enable both experimental
-flags:
+Then point the document sandbox profile at it:
 
 ```toml
 [experimental]
-sandbox             = true
-document_generation = true
+sandbox = true
 
 [sandbox]
 backend         = "podman"
 documents_image = "yottacode-documents"
 ```
 
-Once the workflow has actually been run at least once, the published tag
-works the same way — `documents_image = "ghcr.io/yottadynamics/yottacode-documents:latest"`
-— with no other config changes. `run_bash` keeps using `[sandbox].image`.
+The published tag works the same way —
+`documents_image = "ghcr.io/yottadynamics/yottacode-documents:latest"`
+— and `run_bash` keeps using `[sandbox].image`.
 
 Everything else about the sandbox — lifecycle, mounts, network policy,
 hardening — is unchanged; see [`sandbox.md`](sandbox.md) for the full
@@ -134,19 +183,47 @@ reference.
 
 ## Known limitations
 
-- xlsx/docx/pptx parsing (roadmap Phase C) and PDF parsing (Phase B) are
-  both done, structural-only: no tables, images, complex formatting, or
-  embedded objects — that's pandoc's job, and only wired for generation
-  so far, not parsing.
+- Parsing fidelity varies by format:
+  - **xlsx**: native-only (`excelize`) — full fidelity for cell
+    values/formulas, no rich per-run text formatting, embedded charts,
+    or images.
+  - **docx**: two tiers — a `pandoc` tier (tables and inline bold/italic
+    preserved, rendered as GitHub-flavored Markdown) when the active
+    command sandbox can reach `pandoc`, falling back to a native
+    zip/XML walk (headings/paragraphs only, no tables) when it can't.
+    This is the one format whose richer parse tier is already wired,
+    not just its generation path.
+  - **pptx**: native-only and text-only (title/body/notes per slide) —
+    no tables, images, or formatting extraction, and no `pandoc` tier
+    wired for pptx parsing.
+  - **PDF**: `pdftotext -layout` always runs and preserves column/table
+    alignment as spaced plain text — this is never affected by anything
+    below. When `python3`+`pdfplumber` are also reachable, real
+    structured tables are additionally returned as `page N table M`
+    sections — best-effort and silent (not a warning) when that
+    dependency isn't available or a page genuinely has no tables.
+    Verified working on real single-table pages, including small ones
+    (2 columns × 2 rows). **Known gap, verified, not yet solved**: two
+    separate tables on the same page with only a small amount of prose
+    between them can be merged into one garbled result, fragmenting the
+    prose into spurious cells — pdfplumber's word-alignment heuristic
+    has no reliable way to tell "two tables with text between them"
+    apart from "one wide table" using alignment alone. A cell-length-based
+    confidence filter was tried and rejected: the signal was real but too
+    weak to trust without a much larger validation corpus (a legitimate
+    table of short codes would false-positive). The primary
+    `pdftotext`-based text extraction is unaffected either way — this
+    only risks a wrong-looking *bonus* section alongside still-correct
+    plain text, never a corrupted primary result. A deeper Docling-based
+    tier remains deferred (see `roadmap/document-generation.md`'s
+    Docling-deferral precedent) — this multi-table case is a concrete
+    data point for revisiting that decision, not a reason to hand-tune
+    the heuristic further blind.
 - pptx generation covers title + bullets + speaker notes + one image per
   slide in a fixed native-Go layout — no tables, charts, multiple images
   per slide, custom template themes, or precise image positioning yet.
   `image_alt` is written to the picture description field for consumers
   that surface OOXML alt text.
-- No published `yottacode-documents` image yet — the publish workflow
-  exists (`.github/workflows/documents-image.yml`) but has never been
-  triggered; build the Containerfile locally until someone with registry
-  access runs it.
 - `create_document` only ever writes local files; there is no URL output
   or cloud storage integration.
 - Table cells and free text are Markdown-escaped before reaching pandoc,
@@ -160,3 +237,17 @@ reference.
   inline images within a paragraph, no image sizing/positioning control.
   pptx slides support one `image` per slide the same way — no inline
   images within bullet text.
+- docx template-fill (`format=docx` + `template`) matches `{{name}}`
+  tokens against each paragraph's full concatenated text, not run by
+  run — this is deliberate, not a gap: Word commonly splits one
+  visually-contiguous placeholder across multiple `<w:r>` runs
+  (spell-check, autocorrect), and matching per-run would miss those.
+  Verified against a real 3-run split (`Dear {{na` / `me}}, your total
+  is ` / `{{total}}.`) — it matches correctly. The real trade-off is
+  formatting, not matching: a paragraph that has a replaced token in it
+  collapses to its first run's formatting, losing any formatting
+  variation *within that paragraph specifically* (e.g. one bolded word
+  elsewhere in the same sentence) — every other paragraph, and every
+  paragraph with no match, is completely untouched. Verified working
+  inside table cells, headers, and footers too, not just body
+  paragraphs.

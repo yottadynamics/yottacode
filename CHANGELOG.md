@@ -6,7 +6,37 @@ the project uses semantic versioning once it's past `1.0.0`.
 
 ## Unreleased
 
-_No unreleased changes yet._
+### Added
+
+- **PDF table extraction and docx template-fill generation**, via
+  `python3`+`pdfplumber`/`python-docx` routed through the same command
+  sandbox `pandoc`/`weasyprint` already use. `read_document`'s PDF path
+  now returns detected tables as additional `page N table M` sections
+  when that dependency is reachable — best-effort, silently absent
+  otherwise, on top of the always-available plain-text result.
+  `create_document`'s `format=docx` gains a `template`/
+  `content.replacements` mode that fills `{{name}}` tokens in an
+  existing docx in place instead of generating a new one from
+  `content.blocks`. `infra/documents.Containerfile` now stages both
+  Python packages (pip, pinned versions); a host-only session with no
+  podman sandbox gets the same driver scripts via the yottacode binary's
+  own embedded copy, materialized to `~/.yottacode/cache/doc-helpers/`
+  on first use — no separate install step beyond `pip install
+  pdfplumber python-docx` themselves. See
+  [`document-generation.md`](docs/document-generation.md#requirements).
+
+### Changed
+
+- **`create_document` and `read_document` graduated to GA for every format,
+  including docx/pdf generation and PDF extraction.** Both tools are now
+  fully default-on — no experimental flag needed. `document_generation`/
+  `document_ingestion` become graduated no-op compatibility flags. A missing
+  `pandoc`/`weasyprint`/`pdftotext` binary returns an actionable error
+  naming exactly where it looked (host `PATH` or `[sandbox].image`), rather
+  than the tool being absent or failing silently. See
+  [`document-generation.md`](docs/document-generation.md), including its
+  new security note on unsandboxed native parsing for PDF/docx's optional
+  richer-parsing tier.
 
 ## 0.4.0 — 2026-08-12
 
