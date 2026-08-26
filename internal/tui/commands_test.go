@@ -1524,6 +1524,28 @@ func TestPalette_MouseHoverMovesIndex(t *testing.T) {
 	}
 }
 
+func TestPalette_MouseHoverCurrentRowIsNoop(t *testing.T) {
+	m := newTestModel(t)
+	m, _ = applyMsg(m, tea.WindowSizeMsg{Width: 80, Height: 24})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Text: "/"})
+	if !m.paletteOpen {
+		t.Fatalf("palette should be open after typing '/'")
+	}
+
+	paletteTop := m.inlinePaletteTop()
+	beforeFiltered := m.paletteFiltered
+	m, cmd := applyMsg(m, tea.MouseMotionMsg{X: 4, Y: paletteTop + 3})
+	if cmd != nil {
+		t.Fatalf("hover should not trigger a command, got %T", cmd)
+	}
+	if got := m.paletteIndex; got != 0 {
+		t.Fatalf("hover over current command row set paletteIndex = %d, want 0", got)
+	}
+	if &m.paletteFiltered[0] != &beforeFiltered[0] {
+		t.Fatal("hovering the current slash row should not rebuild the filtered command slice")
+	}
+}
+
 func TestPalette_MouseClickRunsMainSlashCommand(t *testing.T) {
 	m := newTestModel(t)
 	m, _ = applyMsg(m, tea.WindowSizeMsg{Width: 80, Height: 24})

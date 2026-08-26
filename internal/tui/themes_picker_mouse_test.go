@@ -58,6 +58,39 @@ func TestThemesPicker_ClickListRowCommitsAndPersists(t *testing.T) {
 	}
 }
 
+func TestThemesPicker_HoverCurrentRowDoesNotRefreshPreview(t *testing.T) {
+	t.Cleanup(func() { ApplyTheme(themes.DefaultName) })
+	m := newTestModel(t)
+	m, _ = applyMsg(m, tea.WindowSizeMsg{Width: 120, Height: 30})
+	m, _ = m.runSlash("/theme")
+
+	hits := &pickerHits{}
+	box := popupBox(renderThemePicker(m.themePicker, m.popupWidth(), hits))
+	ox, oy := m.popupOrigin(box)
+	var x, y int
+	found := false
+	for _, r := range hits.regions {
+		if (r.Kind == hitItem || r.Kind == hitTab) && r.Index == m.themePicker.cursor {
+			x, y, found = ox+2, oy+1+r.Row, true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("could not locate a screen point for current theme row %d", m.themePicker.cursor)
+	}
+
+	beforeRenderer := m.md
+	beforeTheme := ActiveTheme()
+	m, _ = applyMsg(m, tea.MouseMotionMsg{X: x, Y: y})
+
+	if ActiveTheme() != beforeTheme {
+		t.Fatalf("hovering the already-selected theme changed ActiveTheme from %q to %q", beforeTheme, ActiveTheme())
+	}
+	if m.md != beforeRenderer {
+		t.Fatal("hovering the already-selected theme should not refresh component styles")
+	}
+}
+
 func TestThemesPicker_ClickPreviewPaneIsNoop(t *testing.T) {
 	t.Cleanup(func() { ApplyTheme(themes.DefaultName) })
 	m := newTestModel(t)

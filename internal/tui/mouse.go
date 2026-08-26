@@ -917,20 +917,26 @@ func (m Model) handleWelcomeClick(msg tea.MouseClickMsg) (Model, tea.Cmd) {
 }
 
 func (m Model) handleWelcomeHover(msg tea.MouseMotionMsg) Model {
-	if idx, ok := m.welcomeActionAt(msg.X, msg.Y); ok {
+	if idx, ok := m.welcomeActionAt(msg.X, msg.Y); ok && m.welcomeCursor != idx {
 		m.welcomeCursor = idx
 	}
 	return m
 }
 
 func (m Model) welcomeActionAt(screenX, screenY int) (int, bool) {
-	box := renderStartupBox(m.version, m.commit, m.dirty, m.startupTip(), m.welcomeCursor, m.width)
-	row, col, ok := bodyPoint(box, 0, 1, screenX, screenY)
-	if !ok || col < 0 {
+	// The launch card is always rendered at column 0 with one top spacer row. Its
+	// action rows follow the frame top plus: blank, title, blank, prompt, blank.
+	// Keep this hit-test arithmetic-only because terminals can emit a MouseMotionMsg
+	// for every pixel while all-motion hover is enabled; re-rendering the welcome
+	// card here makes idle mouse movement visibly laggy.
+	const (
+		frameTop       = 1
+		firstActionRow = frameTop + 1 + 5
+	)
+	if screenX < 0 || screenX >= m.width || screenY < firstActionRow {
 		return 0, false
 	}
-	// Body row 5 is the first action: blank, title, blank, welcome, blank.
-	idx := row - 5
+	idx := screenY - firstActionRow
 	if idx < 0 || idx >= len(welcomeActions()) {
 		return 0, false
 	}
@@ -982,7 +988,11 @@ func (m Model) handleSlashPaletteHover(msg tea.MouseMotionMsg) Model {
 	if !ok {
 		return m
 	}
-	m.paletteIndex = m.paletteOffset + row
+	idx := m.paletteOffset + row
+	if m.paletteIndex == idx {
+		return m
+	}
+	m.paletteIndex = idx
 	return m
 }
 
@@ -996,7 +1006,11 @@ func (m Model) handleFilePaletteHover(msg tea.MouseMotionMsg) Model {
 	if !ok {
 		return m
 	}
-	m.filePaletteIndex = m.filePaletteOffset + row
+	idx := m.filePaletteOffset + row
+	if m.filePaletteIndex == idx {
+		return m
+	}
+	m.filePaletteIndex = idx
 	return m
 }
 
@@ -1219,8 +1233,10 @@ func (m Model) handlePopupHover(msg tea.MouseMotionMsg) Model {
 		hits := &pickerHits{}
 		box := popupBox(renderThemePicker(m.themePicker, m.popupWidth(), hits))
 		if kind, index, _, ok := m.resolvePopupHover(box, hits, msg.X, msg.Y); ok && (kind == hitItem || kind == hitTab) {
-			m.themePicker.cursor = index
-			m = applyHighlightedTheme(m)
+			if m.themePicker.cursor != index {
+				m.themePicker.cursor = index
+				m = applyHighlightedTheme(m)
+			}
 		}
 		return m
 	}

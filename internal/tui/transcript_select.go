@@ -34,6 +34,9 @@ func (m Model) extendTranscriptSelection(msg tea.MouseMotionMsg) (Model, tea.Cmd
 	if !ok {
 		return m, nil
 	}
+	if m.transcriptSelectionHeadLine == line && m.transcriptSelectionHeadCol == col {
+		return m, nil
+	}
 	m.transcriptSelectionHeadLine, m.transcriptSelectionHeadCol = line, col
 	m.applyTranscriptHighlight()
 	return m, nil
