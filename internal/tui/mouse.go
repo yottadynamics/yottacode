@@ -14,11 +14,11 @@ func (m Model) popupOpen() bool {
 	return m.anyOverlayOpen() || m.awaitingApproval || m.awaitingPathTrust || m.loopExitConfirmOpen
 }
 
-// interactiveMouseOpen reports whether yottacode currently owns an explicit
-// surface that benefits from mouse reporting. Safety confirmation modals stay
-// keyboard-only so mouse movement/clicks cannot delay or mis-trigger approvals.
+// interactiveMouseOpen is intentionally false: yottacode no longer enables
+// all-motion mouse handling for hover/click UI. The only supported mouse input
+// is the wheel, via the session transcript viewport after a conversation starts.
 func (m Model) interactiveMouseOpen() bool {
-	return m.welcomeVisible() || m.anyOverlayOpen() || m.awaitingPathTrust || m.loopExitConfirmOpen || m.paletteOpen || m.filePaletteOpen
+	return false
 }
 
 // dismissStaticPopup closes whichever any-key-dismiss static panel is
@@ -783,121 +783,11 @@ func (m Model) handleFilePaletteClick(msg tea.MouseClickMsg) (Model, tea.Cmd) {
 	return out.(Model), cmd
 }
 
-// handleMouseClick resolves a mouse-down event to whichever surface is
-// currently showing it: approval modals deliberately ignore mouse input,
-// path-trust/loop confirmation modals dispatch to their own handlers, picker
-// popups dispatch to their picker handlers, and — with nothing open — the
-// transcript begins text selection while the footer handles cmdline focus.
+// handleMouseClick ignores every click. Wheel scrolling is the only supported
+// mouse behavior; buttons, popup rows, cmdline focus, and transcript selection
+// stay keyboard/native-terminal owned so accidental terminal mouse events cannot
+// activate UI or interfere with copying text.
 func (m Model) handleMouseClick(msg tea.MouseClickMsg) (Model, tea.Cmd) {
-	if m.awaitingApproval {
-		return m, nil
-	}
-	if box, ok := m.activePopupBody(); ok {
-		if out, cmd, closed := m.handlePopupCloseClick(box, msg); closed {
-			return out, cmd
-		}
-		if out, ok := m.handleScrollableStaticPopupClick(box, msg); ok {
-			return out, nil
-		}
-	}
-	if m.awaitingPathTrust {
-		return m.handlePathTrustModalClick(msg)
-	}
-
-	if m.paletteOpen {
-		return m.handleSlashPaletteClick(msg)
-	}
-	if m.filePaletteOpen {
-		return m.handleFilePaletteClick(msg)
-	}
-	if m.loopExitConfirmOpen {
-		return m.handleLoopExitConfirmClick(msg)
-	}
-	if m.cheatsheetOpen || m.loopListOpen || m.usageOpen || m.inspectOpen || m.experimentalOpen || m.helpOpen || m.contextReportOpen {
-		return m.dismissStaticPopup(), nil
-	}
-	if m.modelPickerOpen {
-		return m.handleModelPickerClick(msg)
-	}
-	if m.checkpointsPickerOpen {
-		return m.handleCheckpointsPickerClick(msg)
-	}
-	if m.skillsPickerOpen {
-		return m.handleSkillsPickerClick(msg)
-	}
-	if m.memoryPickerOpen {
-		return m.handleMemoryPickerClick(msg)
-	}
-	if m.codeMapPickerOpen {
-		return m.handleCodeMapPickerClick(msg)
-	}
-	if m.effortPickerOpen {
-		return m.handleEffortPickerClick(msg)
-	}
-	if m.mcpPickerOpen {
-		return m.handleMCPPickerClick(msg)
-	}
-	if m.recallPickerOpen {
-		return m.handleRecallPickerClick(msg)
-	}
-	if m.routerPickerOpen {
-		return m.handleRouterPickerClick(msg)
-	}
-	if m.providerPickerOpen {
-		return m.handleProviderPickerClick(msg)
-	}
-	if m.sandboxPickerOpen {
-		return m.handleSandboxPickerClick(msg)
-	}
-	if m.plansPickerOpen {
-		return m.handlePlansPickerClick(msg)
-	}
-	if m.skillsMenuOpen {
-		return m.handleSkillsMenuClick(msg)
-	}
-	if m.sessionsPickerOpen {
-		return m.handleSessionsPickerClick(msg)
-	}
-	if m.inspectPickerOpen {
-		return m.handleInspectPickerClick(msg)
-	}
-	if m.subagentsPickerOpen {
-		return m.handleSubagentsPickerClick(msg)
-	}
-	if m.themePickerOpen {
-		return m.handleThemePickerClick(msg)
-	}
-	if m.permissionsOpen {
-		return m.handlePermissionsOverlayClick(msg)
-	}
-	if m.embedSetupOpen {
-		return m.handleEmbedSetupClick(msg)
-	}
-	if m.welcomeVisible() {
-		if line, col, ok := m.resolveInputClick(msg.X, msg.Y); ok {
-			m.cmdlineClickFlash = true
-			setTextInputCursor(&m.textInput, line, col)
-			return m, cmdlineClickFlashCmd()
-		}
-		return m.handleWelcomeClick(msg)
-	}
-	if m.anyOverlayOpen() {
-		return m, nil // the 6 any-key-dismiss static panels (cheatsheet, loop-list, usage, experimental, help, context-report) — already dispatched above via dismissStaticPopup
-	}
-	if !m.enteredConversation {
-		return m, nil // launch hero has no scrollable transcript to select
-	}
-	footerHeight := lipgloss.Height(m.renderFooter())
-	transcriptHeight := m.height - footerHeight
-	if msg.Y < transcriptHeight {
-		return m.beginTranscriptSelection(msg)
-	}
-	m.clearTranscriptSelection()
-	if line, col, ok := m.resolveInputClick(msg.X, msg.Y); ok {
-		m.cmdlineClickFlash = true
-		setTextInputCursor(&m.textInput, line, col)
-		return m, cmdlineClickFlashCmd()
-	}
 	return m, nil
 }
 
@@ -942,13 +832,8 @@ func (m Model) welcomeActionAt(screenX, screenY int) (int, bool) {
 // drag can't start under one) clears the selection instead of
 // continuing to extend it invisibly behind the popup.
 func (m Model) handleMouseMotion(msg tea.MouseMotionMsg) (Model, tea.Cmd) {
-	if m.welcomeVisible() || m.popupOpen() || m.paletteOpen || m.filePaletteOpen {
-		return m.handleMouseHover(msg)
-	}
-	if !m.transcriptSelecting {
-		return m, nil
-	}
-	return m.extendTranscriptSelection(msg)
+	m.clearTranscriptSelection()
+	return m, nil
 }
 
 // handleMouseHover moves the active selector for scoped interactive surfaces.
@@ -1266,65 +1151,31 @@ func (m Model) resolvePopupHover(box string, hits *pickerHits, x, y int) (hitKin
 	return kind, index, key, true
 }
 
-// handleMouseRelease finalizes an in-progress transcript selection,
-// copying the selected text to the clipboard. Updates the head point
-// from the release's own coordinates first — a terminal isn't
-// guaranteed to fire a motion event at the exact release position, so
-// finalizing against only the last motion update could clip the final
-// pixel of a fast drag.
+// handleMouseRelease ignores button release events. yottacode does not implement
+// mouse selection/click behavior anymore; the terminal owns those gestures.
 func (m Model) handleMouseRelease(msg tea.MouseReleaseMsg) (Model, tea.Cmd) {
-	if !m.transcriptSelecting {
-		return m, nil
-	}
-	if line, col, ok := m.screenToContentPoint(msg.X, msg.Y); ok {
-		m.transcriptSelectionHeadLine, m.transcriptSelectionHeadCol = line, col
-	}
-	return m.finalizeTranscriptSelection()
+	m.clearTranscriptSelection()
+	return m, nil
 }
 
-// handleMouseWheel routes wheel events by screen region: over the cmdline it
-// browses input history (same as Up/Down at the textarea edge), and over the
-// transcript it scrolls the owned viewport. Approval modals are an exception to
-// the usual popup capture rule: their full preview/body lives in transcript
-// history, so the wheel must keep scrolling that history while the modal is open.
+// handleMouseWheel scrolls the owned session transcript and nothing else. The
+// wheel deliberately does not browse prompt history or scroll/activate popups;
+// keyboard controls remain the only interaction path outside transcript scroll.
 func (m Model) handlePopupWheel(msg tea.MouseWheelMsg) Model {
-	switch msg.Button {
-	case tea.MouseWheelUp:
-		return m.scrollPopupLines(-popupMouseWheelLines)
-	case tea.MouseWheelDown:
-		return m.scrollPopupLines(popupMouseWheelLines)
-	default:
-		return m
-	}
+	return m
 }
 
 func (m Model) handleMouseWheel(msg tea.MouseWheelMsg) (Model, tea.Cmd) {
-	if m.paletteOpen || m.filePaletteOpen || m.dockFocused {
-		return m, nil
-	}
-	if m.popupOpen() && !m.awaitingApproval {
-		return m.handlePopupWheel(msg), nil
-	}
 	if !m.enteredConversation {
 		return m, nil
 	}
-	footerHeight := lipgloss.Height(m.renderFooter())
-	transcriptHeight := m.height - footerHeight
-	if msg.Y >= transcriptHeight {
-		switch msg.Button {
-		case tea.MouseWheelUp:
-			if out, ok := m.historyBack(); ok {
-				return out, nil
-			}
-		case tea.MouseWheelDown:
-			if out, ok := m.historyForward(); ok {
-				return out, nil
-			}
-		}
+	switch msg.Button {
+	case tea.MouseWheelUp, tea.MouseWheelDown:
+		var cmd tea.Cmd
+		m.transcriptViewport, cmd = m.transcriptViewport.Update(msg)
+		m.updateTranscriptFollowIntent()
+		return m, cmd
+	default:
 		return m, nil
 	}
-	var cmd tea.Cmd
-	m.transcriptViewport, cmd = m.transcriptViewport.Update(msg)
-	m.updateTranscriptFollowIntent()
-	return m, cmd
 }

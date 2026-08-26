@@ -1498,7 +1498,7 @@ func TestPalette_TabCompletes(t *testing.T) {
 	}
 }
 
-func TestPalette_MouseHoverMovesIndex(t *testing.T) {
+func TestPalette_MouseHoverIsIgnored(t *testing.T) {
 	m := newTestModel(t)
 	m, _ = applyMsg(m, tea.WindowSizeMsg{Width: 80, Height: 24})
 	m, _ = applyMsg(m, tea.KeyPressMsg{Text: "/"})
@@ -1519,8 +1519,8 @@ func TestPalette_MouseHoverMovesIndex(t *testing.T) {
 	}
 
 	m, _ = applyMsg(m, tea.MouseMotionMsg{X: 4, Y: paletteTop + 5})
-	if got := m.paletteIndex; got != 2 {
-		t.Fatalf("hover over third command row set paletteIndex = %d, want 2", got)
+	if got := m.paletteIndex; got != 0 {
+		t.Fatalf("hover over third command row set paletteIndex = %d, want unchanged 0", got)
 	}
 }
 
@@ -1546,7 +1546,7 @@ func TestPalette_MouseHoverCurrentRowIsNoop(t *testing.T) {
 	}
 }
 
-func TestPalette_MouseClickRunsMainSlashCommand(t *testing.T) {
+func TestPalette_MouseClickIsIgnored(t *testing.T) {
 	m := newTestModel(t)
 	m, _ = applyMsg(m, tea.WindowSizeMsg{Width: 80, Height: 24})
 	m, _ = applyMsg(m, tea.KeyPressMsg{Text: "/"})
@@ -1556,12 +1556,15 @@ func TestPalette_MouseClickRunsMainSlashCommand(t *testing.T) {
 	target := 2 // /model is a visible no-args picker command near the top.
 
 	paletteTop := m.inlinePaletteTop()
-	m, _ = applyMsg(m, tea.MouseClickMsg{X: 4, Y: paletteTop + 3 + target})
-	if !m.modelPickerOpen || m.modelPicker == nil {
-		t.Fatalf("click should execute /model and open the model picker")
+	m, cmd := applyMsg(m, tea.MouseClickMsg{X: 4, Y: paletteTop + 3 + target})
+	if cmd != nil {
+		t.Fatalf("palette click should not produce commands, got %T", cmd)
 	}
-	if m.paletteOpen {
-		t.Fatal("palette should close after click execution")
+	if m.modelPickerOpen || m.modelPicker != nil {
+		t.Fatalf("click should not execute /model or open the model picker")
+	}
+	if !m.paletteOpen {
+		t.Fatal("palette should stay open after ignored click")
 	}
 }
 
