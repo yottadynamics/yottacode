@@ -924,13 +924,19 @@ func (m Model) handleWelcomeHover(msg tea.MouseMotionMsg) Model {
 }
 
 func (m Model) welcomeActionAt(screenX, screenY int) (int, bool) {
-	box := renderStartupBox(m.version, m.commit, m.dirty, m.startupTip(), m.welcomeCursor, m.width)
-	row, col, ok := bodyPoint(box, 0, 1, screenX, screenY)
-	if !ok || col < 0 {
+	// The launch card is always rendered at column 0 with one top spacer row. Its
+	// action rows follow the frame top plus: blank, title, blank, prompt, blank.
+	// Keep this hit-test arithmetic-only because terminals can emit a MouseMotionMsg
+	// for every pixel while all-motion hover is enabled; re-rendering the welcome
+	// card here makes idle mouse movement visibly laggy.
+	const (
+		frameTop       = 1
+		firstActionRow = frameTop + 1 + 5
+	)
+	if screenX < 0 || screenX >= m.width || screenY < firstActionRow {
 		return 0, false
 	}
-	// Body row 5 is the first action: blank, title, blank, welcome, blank.
-	idx := row - 5
+	idx := screenY - firstActionRow
 	if idx < 0 || idx >= len(welcomeActions()) {
 		return 0, false
 	}

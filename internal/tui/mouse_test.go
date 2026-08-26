@@ -37,6 +37,41 @@ func TestView_EnablesAllMotionForWelcomeBeforeConversationStarts(t *testing.T) {
 	}
 }
 
+func TestWelcomeActionAtUsesStableRowsWithoutRenderedHitTest(t *testing.T) {
+	m := newTestModel(t)
+	m.width = 80
+	m.welcomeCursor = int(welcomeHelp)
+
+	tests := []struct {
+		name string
+		x    int
+		y    int
+		want welcomeAction
+		ok   bool
+	}{
+		{"negative x misses", -1, 6, 0, false},
+		{"past width misses", 80, 6, 0, false},
+		{"before actions misses", 6, 5, 0, false},
+		{"new worktree row", 6, 7, welcomeNewWorktree, true},
+		{"resume session row", 6, 8, welcomeResumeSession, true},
+		{"plan row", 6, 9, welcomeEnterPlanMode, true},
+		{"help row", 6, 10, welcomeHelp, true},
+		{"after actions misses", 6, 11, 0, false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := m.welcomeActionAt(tc.x, tc.y)
+			if ok != tc.ok {
+				t.Fatalf("welcomeActionAt(%d, %d) ok = %v, want %v", tc.x, tc.y, ok, tc.ok)
+			}
+			if ok && welcomeAction(got) != tc.want {
+				t.Fatalf("welcomeActionAt(%d, %d) = %v, want %v", tc.x, tc.y, welcomeAction(got), tc.want)
+			}
+		})
+	}
+}
+
 func TestView_EnablesConversationSelectionMouse(t *testing.T) {
 	m := newTestModel(t)
 	m.enteredConversation = true
