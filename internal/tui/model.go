@@ -187,8 +187,9 @@ type Config struct {
 // (alt-screen): the app owns the whole frame, including a scrollable
 // conversation transcript viewport above the live footer. Native terminal
 // scrollback is unavailable inside alt-screen, so transcript history is kept in
-// transcriptRows and scrolled with PgUp/PgDn/Ctrl+Home/Ctrl+End while mouse
-// capture is enabled only after the conversation starts so wheel scrolling works.
+// transcriptRows and scrolled with PgUp/PgDn/Ctrl+Home/Ctrl+End or the mouse
+// wheel after the conversation starts. Other mouse gestures are deliberately
+// ignored so clicks, hover, and drag selection stay owned by the terminal.
 type Model struct {
 	parentCtx context.Context
 	cfg       agent.LoopConfig
@@ -3044,13 +3045,11 @@ func (m Model) skillsBusy() bool {
 func (m Model) View() tea.View {
 	v := tea.NewView(m.viewString())
 	v.AltScreen = true
-	// Capture cell-motion during normal conversation so click-drag transcript
-	// selection can auto-copy on release. Escalate to all-motion only while a
-	// picker or decision surface is open; that scoped capture lets hover move
-	// selectors without adding idle hover spam to the transcript.
-	if m.interactiveMouseOpen() {
-		v.MouseMode = tea.MouseModeAllMotion
-	} else if m.enteredConversation {
+	// Enable the narrowest mouse reporting only after the conversation starts so
+	// wheel events can scroll the owned transcript viewport. Clicks, releases,
+	// drags, and hover/motion events are ignored in update(); terminal text
+	// selection and popup safety decisions remain keyboard/native-terminal owned.
+	if m.enteredConversation {
 		v.MouseMode = tea.MouseModeCellMotion
 	}
 	if m.originalTerminalBackground != nil {
