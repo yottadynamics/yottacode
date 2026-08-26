@@ -50,12 +50,27 @@ func TestHero_PickerSlashCommandDoesNotExitHero(t *testing.T) {
 	}
 }
 
-func TestHero_ReturnsAfterClear(t *testing.T) {
+func TestHero_StaysExitedAfterClear(t *testing.T) {
 	m := newTestModel(t)
 	m.enteredConversation = true
 	m, _ = cmdClear(m, nil)
-	if m.enteredConversation {
-		t.Error("/clear should restore the interactive launch hero for the fresh session")
+	if !m.enteredConversation {
+		t.Error("enteredConversation is one-way — /clear must not revert to the launch hero mid-session")
+	}
+}
+
+func TestClear_AppendsStaticWelcomeWithoutAllMotionMouse(t *testing.T) {
+	m := newTestModel(t)
+	m.enteredConversation = true
+	m.welcomeCursor = int(welcomeNewWorktree)
+
+	m, _ = cmdClear(m, nil)
+
+	if got := m.View().MouseMode; got != tea.MouseModeCellMotion {
+		t.Fatalf("View().MouseMode after /clear = %v, want MouseModeCellMotion to avoid all-motion mouse lag", got)
+	}
+	if rows := strings.Join(m.transcriptRows, "\n"); !strings.Contains(stripANSI(rows), "New worktree") {
+		t.Fatalf("/clear should append a static welcome card into the transcript; rows:\n%s", rows)
 	}
 }
 
