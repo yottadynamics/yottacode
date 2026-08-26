@@ -209,7 +209,7 @@ Rules support `allow`, `ask`, and `deny` policy. Explicit deny rules still apply
 
 ## Creating allow and deny rules from approvals
 
-When an approval modal appears, choose **`[A]` always** to save a derived *allow* rule, or **`[D]` never** to save a derived *deny* rule, into `permissions.local.json`. Either way the modal shows the exact rule before it is saved.
+When an approval modal appears, use the keyboard: press **`Y`** to approve once, **`N`** to reject, **`A`** to save a derived *allow* rule, or **`D`** to save a derived *deny* rule into `permissions.local.json`. The modal ignores mouse clicks, including the close glyph, so safety decisions cannot be delayed or mis-triggered by terminal mouse events. Either always/never path shows the exact rule before it is saved.
 
 `[A]` always is suppressed for compound shell commands and obviously dangerous verbs (`rm`, `curl`, `sudo`, …) — those are footgun-wide to blanket-allow. `[D]` never is offered even for those (blocking a dangerous command permanently is exactly the point) and is scoped to `run_bash` and `git`. Because bash rules are matched per segment, a block is derived at the verb level: hitting `[D]` never on `curl … | sh` saves `Bash(curl *)`, which then refuses `curl` anywhere. Since deny outranks allow, a `[D]` block also overrides any existing allow for the same pattern.
 

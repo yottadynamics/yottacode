@@ -5,26 +5,20 @@ import (
 	"charm.land/lipgloss/v2"
 )
 
-// popupOpen reports whether any decision modal or picker popup is
-// currently intercepting input. anyOverlayOpen (model.go) already covers
-// every picker/panel flag activePopupBody's branches key off of; the
-// three additional flags here (awaitingApproval/awaitingPathTrust/
-// loopExitConfirmOpen) are deliberately kept OUT of anyOverlayOpen
-// itself (it has its own callers/tests with a narrower meaning) rather
-// than widening that function for this. All three now have real
-// per-surface click handling (handleApprovalModalClick,
-// handlePathTrustModalClick, handleLoopExitConfirmClick) — clicking
-// blank chrome on any of them still no-ops, same as it does on the
-// keyboard side for keys a picker doesn't bind.
+// popupOpen reports whether any decision modal or picker popup is currently
+// intercepting keyboard input. anyOverlayOpen (model.go) already covers every
+// picker/panel flag activePopupBody's branches key off of; the additional
+// modal flags here are deliberately kept OUT of anyOverlayOpen itself because
+// that helper has callers/tests with a narrower overlay meaning.
 func (m Model) popupOpen() bool {
 	return m.anyOverlayOpen() || m.awaitingApproval || m.awaitingPathTrust || m.loopExitConfirmOpen
 }
 
 // interactiveMouseOpen reports whether yottacode currently owns an explicit
-// interactive surface that benefits from mouse reporting. Normal conversation
-// mouse stays terminal-native so right-click menus, paste, and selection work.
+// surface that benefits from mouse reporting. Safety confirmation modals stay
+// keyboard-only so mouse movement/clicks cannot delay or mis-trigger approvals.
 func (m Model) interactiveMouseOpen() bool {
-	return m.welcomeVisible() || m.popupOpen() || m.paletteOpen || m.filePaletteOpen
+	return m.welcomeVisible() || m.anyOverlayOpen() || m.awaitingPathTrust || m.loopExitConfirmOpen || m.paletteOpen || m.filePaletteOpen
 }
 
 // dismissStaticPopup closes whichever any-key-dismiss static panel is
@@ -790,13 +784,14 @@ func (m Model) handleFilePaletteClick(msg tea.MouseClickMsg) (Model, tea.Cmd) {
 }
 
 // handleMouseClick resolves a mouse-down event to whichever surface is
-// currently showing it: a decision modal (dispatched to its own click
-// handler), a picker popup (dispatched to that picker's own click
-// handler — every picker/panel has one now), or — with nothing open —
-// the transcript (begins a text selection) vs. the footer (Phase E adds
-// cmdline click-to-cursor there; until then, a footer click just clears
-// any stray selection).
+// currently showing it: approval modals deliberately ignore mouse input,
+// path-trust/loop confirmation modals dispatch to their own handlers, picker
+// popups dispatch to their picker handlers, and — with nothing open — the
+// transcript begins text selection while the footer handles cmdline focus.
 func (m Model) handleMouseClick(msg tea.MouseClickMsg) (Model, tea.Cmd) {
+	if m.awaitingApproval {
+		return m, nil
+	}
 	if box, ok := m.activePopupBody(); ok {
 		if out, cmd, closed := m.handlePopupCloseClick(box, msg); closed {
 			return out, cmd
@@ -808,9 +803,7 @@ func (m Model) handleMouseClick(msg tea.MouseClickMsg) (Model, tea.Cmd) {
 	if m.awaitingPathTrust {
 		return m.handlePathTrustModalClick(msg)
 	}
-	if m.awaitingApproval {
-		return m.handleApprovalModalClick(msg)
-	}
+
 	if m.paletteOpen {
 		return m.handleSlashPaletteClick(msg)
 	}
