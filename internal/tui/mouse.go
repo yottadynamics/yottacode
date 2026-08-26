@@ -917,7 +917,7 @@ func (m Model) handleWelcomeClick(msg tea.MouseClickMsg) (Model, tea.Cmd) {
 }
 
 func (m Model) handleWelcomeHover(msg tea.MouseMotionMsg) Model {
-	if idx, ok := m.welcomeActionAt(msg.X, msg.Y); ok {
+	if idx, ok := m.welcomeActionAt(msg.X, msg.Y); ok && m.welcomeCursor != idx {
 		m.welcomeCursor = idx
 	}
 	return m
@@ -982,7 +982,11 @@ func (m Model) handleSlashPaletteHover(msg tea.MouseMotionMsg) Model {
 	if !ok {
 		return m
 	}
-	m.paletteIndex = m.paletteOffset + row
+	idx := m.paletteOffset + row
+	if m.paletteIndex == idx {
+		return m
+	}
+	m.paletteIndex = idx
 	return m
 }
 
@@ -996,7 +1000,11 @@ func (m Model) handleFilePaletteHover(msg tea.MouseMotionMsg) Model {
 	if !ok {
 		return m
 	}
-	m.filePaletteIndex = m.filePaletteOffset + row
+	idx := m.filePaletteOffset + row
+	if m.filePaletteIndex == idx {
+		return m
+	}
+	m.filePaletteIndex = idx
 	return m
 }
 
@@ -1219,8 +1227,10 @@ func (m Model) handlePopupHover(msg tea.MouseMotionMsg) Model {
 		hits := &pickerHits{}
 		box := popupBox(renderThemePicker(m.themePicker, m.popupWidth(), hits))
 		if kind, index, _, ok := m.resolvePopupHover(box, hits, msg.X, msg.Y); ok && (kind == hitItem || kind == hitTab) {
-			m.themePicker.cursor = index
-			m = applyHighlightedTheme(m)
+			if m.themePicker.cursor != index {
+				m.themePicker.cursor = index
+				m = applyHighlightedTheme(m)
+			}
 		}
 		return m
 	}

@@ -772,6 +772,30 @@ func TestTranscriptSelection_ClickDragReleaseCopiesToClipboard(t *testing.T) {
 	}
 }
 
+func viewportLinesPtr(t *testing.T, m Model) uintptr {
+	t.Helper()
+	lines := reflect.ValueOf(m.transcriptViewport).FieldByName("lines")
+	if !lines.IsValid() || lines.Len() == 0 {
+		t.Fatal("expected viewport lines to be populated")
+	}
+	return lines.Pointer()
+}
+
+func TestTranscriptSelection_ExtendingToSameCellKeepsViewportContent(t *testing.T) {
+	m := newSelectableTranscriptModel(t)
+	m, _ = applyMsg(m, tea.MouseClickMsg{X: 0, Y: 0})
+	m, _ = applyMsg(m, tea.MouseMotionMsg{X: 12, Y: 0})
+	beforeLinesPtr := viewportLinesPtr(t, m)
+
+	m, cmd := applyMsg(m, tea.MouseMotionMsg{X: 12, Y: 0})
+	if cmd != nil {
+		t.Fatalf("drag motion should not trigger a command, got %T", cmd)
+	}
+	if got := viewportLinesPtr(t, m); got != beforeLinesPtr {
+		t.Fatal("dragging within the same transcript cell should not rebuild viewport lines")
+	}
+}
+
 func TestTranscriptSelection_ClickWithNoDragCopiesNothing(t *testing.T) {
 	m := newSelectableTranscriptModel(t)
 	m, _ = applyMsg(m, tea.MouseClickMsg{X: 5, Y: 0})
