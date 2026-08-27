@@ -1808,10 +1808,9 @@ There is no *in-process* sandbox, and there will not be one — yottacode
 keeps its core small and does not ship bwrap/firejail/landlock backends.
 By default the command runs directly on the host. Two ways to add real
 isolation: run yottacode itself inside a container or devcontainer
-(covers every tool, all-or-nothing), or enable the experimental command
-sandbox (`[sandbox] backend = "podman"`, behind `--experimental sandbox`)
-to route just `run_bash` through a session-scoped rootless Podman
-container instead — see [sandbox.md](sandbox.md).
+(covers every tool, all-or-nothing), or enable the command sandbox
+(`[sandbox] backend = "podman"`) to route supported command execution through
+lazy rootless Podman profile containers instead — see [sandbox.md](sandbox.md).
 
 ## git
 

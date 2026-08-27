@@ -141,8 +141,8 @@ on the mode:
     process substitution) and `run_bash` isn't path-confined once allowed —
     so auto-allowing either would be an arbitrary-code-execution surface for
     a worker nobody is watching. **Allowed when this worker is sandboxed**
-    (the parent session has the experimental [command sandbox](sandbox.md)
-    enabled — `[sandbox] backend = "podman"`): each write worker gets its own
+    (the parent session has the [command sandbox](sandbox.md) enabled —
+    `[sandbox] backend = "podman"`): each write worker gets its own
     container mounted at its own worktree, so the blast radius is the
     container, the same bet worktree-confined file writes already make.
     Without a sandbox, a task that genuinely needs shell/tests must run in
@@ -246,7 +246,7 @@ it to move on to `integrate`.
   than leaking them, then sweeps the session's dispatch worktrees one last
   time so workers the bounded drain gave up on don't leak empty worktrees
   either. The sweep keeps committed and dirty worktrees, same as above.
-- When the parent session has the experimental [command sandbox](sandbox.md)
+- When the parent session has the [command sandbox](sandbox.md)
   enabled (`[sandbox] backend = "podman"`), every write worker gets its
   **own** container mounted at its own worktree — inherited automatically,
   no separate dispatch-level opt-in. This also unlocks unattended `run_bash`
@@ -270,7 +270,7 @@ Sharp edges we know about:
   deterministic shell floor are guardrails, not isolation. For untrusted or
   high-stakes work, run yottacode itself inside a VM/container.
 - **Unattended `run_bash` and `run_tests` need the command sandbox.** Without
-  the experimental [command sandbox](sandbox.md) enabled, background workers
+  the [command sandbox](sandbox.md) enabled, background workers
   can write owned files but cannot run shell, tests, or even a compiler — so a
   background worker commits code nothing has verified. Enabling
   `[sandbox] backend = "podman"` lifts this: each write worker gets its own

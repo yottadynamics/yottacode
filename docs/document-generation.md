@@ -133,13 +133,11 @@ weekly rebuild has run and published** —
 `ghcr.io/yottadynamics/yottacode-documents:latest` (plus a same-day
 immutable date tag, e.g. `:2026-08-24`) is live on ghcr.io. Enable the
 command sandbox, then let document tools use this image through the documents
-profile (the still-experimental `sandbox` flag gates the podman sandbox itself,
-not document generation — see the security note above for why you'd want this):
+profile (the `sandbox` compatibility flag is no longer required; set
+`[sandbox].backend = "podman"` to enable the podman sandbox itself, not
+document generation — see the security note above for why you'd want this):
 
 ```toml
-[experimental]
-sandbox = true
-
 [sandbox]
 backend         = "podman"
 documents_image = "ghcr.io/yottadynamics/yottacode-documents:latest"
@@ -155,9 +153,6 @@ podman build -t yottacode-documents -f infra/documents.Containerfile .
 Then point the document sandbox profile at it:
 
 ```toml
-[experimental]
-sandbox = true
-
 [sandbox]
 backend         = "podman"
 documents_image = "yottacode-documents"

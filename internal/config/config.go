@@ -69,8 +69,8 @@ type Config struct {
 	Subagents SubagentsConfig `toml:"subagents"`
 	// Sandbox controls whether run_bash executes inside a session-scoped
 	// podman container instead of directly on the host. Absent block or
-	// backend="none" (the default) keeps today's host-exec behavior; gated
-	// behind the "sandbox" experimental feature regardless of backend.
+	// backend="none" (the default) keeps host-exec behavior; backend="podman"
+	// creates lazy rootless Podman profile containers for supported command paths.
 	Sandbox SandboxConfig `toml:"sandbox"`
 }
 
@@ -103,9 +103,9 @@ type SandboxConfig struct {
 	PidsLimit      int      `toml:"pids_limit"`
 }
 
-// DefaultSandboxImage is the pinned base image for the experimental command
-// sandbox. Keep it as a named constant because the hardening baseline may move
-// as distro images receive security updates.
+// DefaultSandboxImage is the pinned base image for the command sandbox. Keep it
+// as a named constant because the hardening baseline may move as distro images
+// receive security updates.
 const DefaultSandboxImage = "registry.access.redhat.com/ubi9/ubi:9.8-1785906690"
 
 // DefaultSandboxDocumentsImage includes the document subprocess dependencies
