@@ -18,11 +18,26 @@
 # document paths invoke:
 #   - pandoc: create_document docx/pdf, and read_document docx rich tier
 #   - weasyprint: create_document pdf engine
-#   - poppler-utils: read_document pdf (pdftotext/pdfinfo)
+#   - poppler-utils: read_document pdf (pdftotext/pdfinfo), and pdf2image's
+#     rasterization backend for the OCR tier below
 #   - pdfplumber (pip): read_document's PDF table-extraction tier
 #     (internal/documents/pyhelpers/extract_pdf_tables.py)
 #   - python-docx (pip): create_document's docx template-fill path
 #     (internal/documents/pyhelpers/fill_docx_template.py)
+#   - tesseract-ocr, pytesseract + pdf2image (pip): read_document's PDF
+#     OCR fallback tier, tried only when a PDF has no embedded text
+#     layer at all (internal/documents/pyhelpers/extract_pdf_ocr.py)
+#
+# Debian's tesseract-ocr package bundles only the "eng" (English)
+# language pack — read_document's ocr_lang parameter (Tesseract
+# language codes, e.g. "fra", "eng+fra") only works for a language
+# whose traineddata is actually installed here. Add more via
+# `apt-get install tesseract-ocr-<lang>` (or the tesseract-ocr-all
+# metapackage for every language, at a real size cost) in a
+# .yottacode/swarm.dockerfile layered on top of this image — not added
+# to this default image, to keep it from silently growing every time a
+# new language is wanted, mirroring the same reasoning that keeps
+# LibreOffice out until a code path actually needs it.
 #
 # python3 itself is not installed explicitly above — weasyprint already
 # pulls it in transitively via its own apt dependency chain (confirmed by
@@ -48,6 +63,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     pandoc \
     poppler-utils \
     weasyprint \
+    tesseract-ocr \
     python3-pip \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
@@ -60,7 +76,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # rebuild doesn't silently pick up a breaking upstream release.
 RUN pip install --no-cache-dir --break-system-packages \
     pdfplumber==0.11.10 \
-    python-docx==1.2.0
+    python-docx==1.2.0 \
+    pytesseract==0.3.13 \
+    pdf2image==1.17.0
 
 # The driver scripts' canonical source lives at
 # internal/documents/pyhelpers/*.py, embedded into the yottacode binary
@@ -76,7 +94,8 @@ RUN pandoc --version \
     && pdftotext -v \
     && pdfinfo -v \
     && weasyprint --version \
-    && python3 -c "import pdfplumber, docx" \
+    && tesseract --version \
+    && python3 -c "import pdfplumber, docx, pytesseract, pdf2image" \
     && python3 -m py_compile /opt/yottacode/doc-helpers/*.py
 
 CMD ["sleep", "infinity"]

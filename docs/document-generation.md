@@ -25,9 +25,10 @@ Only those subprocess-backed paths route through the same command
 > failing silently — see [Requirements](#requirements) below.
 >
 > **Security note:** unlike the rest of `read_document` (pure Go, memory-safe
-> parsing), PDF extraction and docx's optional richer-parsing tier shell
-> out to `pdftotext`/`pandoc` — native, non-memory-safe parsers — over
-> file content `read_document` never requires approval to read. Point
+> parsing), PDF extraction, docx's optional richer-parsing tier, and the
+> PDF OCR fallback shell out to `pdftotext`/`pandoc`/`pdf2image`
+> (`pdftoppm`) — native, non-memory-safe parsers — over file content
+> `read_document` never requires approval to read. Point
 > `[sandbox].backend = "podman"` at the published `yottacode-documents`
 > image (see below) if you want that parsing isolated from the host,
 > particularly for files from a less-trusted source.
@@ -90,16 +91,19 @@ argument reference and examples.
 | docx rich parsing (tables, formatting) | `pandoc` on `PATH` (host) or in `[sandbox].documents_image` |
 | PDF table extraction | `python3` **and** `pdfplumber` on `PATH` (host) or in `[sandbox].documents_image` |
 | docx template-fill (`format=docx` + `template`) | `python3` **and** `python-docx` on `PATH` (host) or in `[sandbox].documents_image` |
+| PDF OCR fallback (scanned/image-only pages) | `python3`, `pytesseract`, `pdf2image`, **and** the `tesseract-ocr` binary on `PATH` (host) or in `[sandbox].documents_image` |
 
 
 If a required subprocess binary isn't reachable through the active
 sandbox, `create_document`/`read_document` returns an error naming
 exactly where it looked (`host PATH` or the sandbox's label) instead of
-failing silently. PDF table extraction is the one exception: it's a
-best-effort *additional* tier layered on top of `read_document`'s
-always-available plain-text PDF result, so a missing `python3`/
-`pdfplumber` degrades silently to that plain-text result rather than
-producing any error or warning at all — the same way docx's own
+failing silently. PDF table extraction and the PDF OCR fallback are the
+exceptions: both are best-effort *additional* tiers layered on top of
+`read_document`'s always-available plain-text PDF result, so a missing
+`python3`/`pdfplumber` or `python3`/`pytesseract`/`pdf2image`/
+`tesseract-ocr` degrades silently to that plain-text result (or, for
+OCR, to the existing "may be scanned/image-only" warning) rather than
+producing any error or warning of its own — the same way docx's own
 optional `pandoc`-based rich-parsing tier already degrades silently to
 its native structure-only tier.
 
@@ -107,8 +111,10 @@ its native structure-only tier.
 `pandoc`/`weasyprint`: on the documents image, `weasyprint` already
 pulls it in transitively via its own apt dependency chain. On a bare
 host, whatever already provides `python3` for other purposes is
-sufficient — only `pdfplumber`/`python-docx` (`pip install pdfplumber
-python-docx`) are specific to these two capabilities.
+sufficient — only `pdfplumber`/`python-docx`/`pytesseract`/`pdf2image`
+(`pip install pdfplumber python-docx pytesseract pdf2image`) plus the
+separate `tesseract-ocr` binary (not a pip package) are specific to
+these capabilities.
 
 
 ## Using the reference `documents` image
@@ -118,8 +124,10 @@ only the production subprocess dependencies the current code invokes:
 `pandoc` for docx/pdf generation and optional rich docx parsing,
 `weasyprint` for PDF generation, `poppler-utils` (`pdftotext`/`pdfinfo`)
 for PDF text extraction, `pdfplumber` (pip) for PDF table extraction,
-and `python-docx` (pip) for docx template-fill generation. xlsx and
-pptx paths are native Go and never use this image.
+`python-docx` (pip) for docx template-fill generation, and
+`tesseract-ocr` plus `pytesseract`/`pdf2image` (pip) for the PDF OCR
+fallback tier. xlsx and pptx paths are native Go and never use this
+image.
 
 
 [roadmap-doc]: ../roadmap/document-generation.md
@@ -214,6 +222,32 @@ reference.
     Docling-deferral precedent) — this multi-table case is a concrete
     data point for revisiting that decision, not a reason to hand-tune
     the heuristic further blind.
+  - **PDF OCR fallback**: best-effort, tried per contiguous run of
+    pages `pdftotext`'s primary extraction found no text on at all — a
+    scanned/image-only PDF, or just the scanned pages of a
+    partially-scanned one. OCR only runs over the specific blank
+    page range(s), not the whole requested window, so a document mixing
+    real-text and scanned pages doesn't pay OCR's cost on its
+    already-good pages, and a fully-scanned document still gets exactly
+    one OCR call spanning the whole window (unchanged from before
+    per-page detection existed). Recognized text is returned as
+    additional `page N (ocr)` sections with a warning naming how many
+    pages had no text layer and how many of those OCR actually
+    recovered (all of them, in the common case, or a partial count when
+    recognition fails on some), since it may contain recognition errors
+    unlike the rest of a PDF's extraction. Silently absent (not a
+    warning of its own) when `python3`/`pytesseract`/`pdf2image`/
+    `tesseract-ocr` aren't reachable — the existing "may be
+    scanned/image-only" warning covers that case, as it always has.
+    `read_document`'s `ocr_lang` param picks the Tesseract language
+    (default English) — the published `documents` image bundles only
+    the English language pack (Debian's `tesseract-ocr` package
+    default), so a non-English `ocr_lang` needs a custom image layering
+    the matching `tesseract-ocr-<lang>` package on top (see
+    `infra/documents.Containerfile`'s comment for the exact escape
+    hatch) or a host install of that language pack; requesting an
+    uninstalled language degrades the same as any other missing OCR
+    dependency, silently, not as an error.
 - pptx generation covers title + bullets + speaker notes + one image per
   slide in a fixed native-Go layout — no tables, charts, multiple images
   per slide, custom template themes, or precise image positioning yet.

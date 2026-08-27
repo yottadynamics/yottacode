@@ -94,6 +94,14 @@ type ExtractRequest struct {
 	// MaxPages bounds how many PDF pages are read. PDF-only; every other
 	// extractor ignores it.
 	MaxPages int
+
+	// OCRLang is the Tesseract language code (or "+"-joined codes, e.g.
+	// "eng+fra") passed to the optional PDF OCR fallback tier. PDF-only;
+	// every other extractor ignores it. Empty means "let pytesseract use
+	// its own default" (English), not "OCR disabled" — the tier's
+	// availability is controlled by whether the dependency is reachable
+	// at all, not by this field.
+	OCRLang string
 }
 
 func (r ExtractRequest) withDefaults() ExtractRequest {

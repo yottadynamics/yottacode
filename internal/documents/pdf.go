@@ -28,10 +28,12 @@ type PDFExtractor struct {
 	Run CommandRunner
 
 	// ResolveScript enables the optional pdfplumber-backed table-
-	// extraction tier (see extractTables). Nil-safe: a nil resolver
-	// just skips that tier, same as a nil Run skips extraction
-	// entirely — the primary pdftotext-based text extraction never
-	// depends on this field.
+	// extraction tier (see extractTables) and the optional
+	// pytesseract-backed OCR tier (see extractOCR) — both are named by
+	// PyHelperScript, so one resolver serves either. Nil-safe: a nil
+	// resolver just skips both tiers, same as a nil Run skips
+	// extraction entirely — the primary pdftotext-based text extraction
+	// never depends on this field.
 	ResolveScript ScriptResolver
 }
 
@@ -109,8 +111,33 @@ func (e *PDFExtractor) Extract(ctx context.Context, req ExtractRequest) (Extract
 	if totalPages > 0 && endPage < totalPages {
 		warnings = append(warnings, fmt.Sprintf("showing pages %d-%d of %d (page cap)", startPage, endPage, totalPages))
 	}
-	if allPagesBlank(pages) {
-		warnings = append(warnings, "extracted text is empty across every returned page; this PDF may be scanned/image-only (OCR is not supported)")
+	if blankRanges := blankPageRanges(pages); len(blankRanges) > 0 {
+		// Best-effort OCR fallback, tried per contiguous run of blank
+		// pages rather than only when the whole requested window is
+		// blank — so a partially-scanned document (some pages with a
+		// real text layer, some without) still gets OCR on the pages
+		// that actually need it, without paying OCR's real cost on
+		// pages that already have good text. Same silent-absent
+		// contract as the table tier: a missing script/python/tesseract
+		// never turns this into an error, only a less specific warning.
+		totalBlank := 0
+		var ocrSections []DocumentSection
+		for _, r := range blankRanges {
+			totalBlank += r.endIdx - r.startIdx + 1
+			absStart := startPage + r.startIdx
+			absEnd := startPage + r.endIdx
+			ocrSections = append(ocrSections, e.extractOCR(ctx, req.Path, absStart, absEnd, req.OCRLang)...)
+		}
+		if len(ocrSections) > 0 {
+			sections = append(sections, ocrSections...)
+			if len(ocrSections) == totalBlank {
+				warnings = append(warnings, fmt.Sprintf("primary text extraction found no embedded text layer on %d page(s); text below was recovered via OCR (tesseract) and may contain recognition errors", totalBlank))
+			} else {
+				warnings = append(warnings, fmt.Sprintf("primary text extraction found no embedded text layer on %d page(s); OCR (tesseract) recovered text for %d of them (may contain recognition errors) — the rest remain blank", totalBlank, len(ocrSections)))
+			}
+		} else {
+			warnings = append(warnings, fmt.Sprintf("extracted text is empty on %d of %d returned page(s); this PDF may be partially or fully scanned/image-only (install tesseract-ocr, pytesseract, and pdf2image for an OCR fallback, or point [sandbox].documents_image at an image that includes them)", totalBlank, len(pages)))
+		}
 	}
 
 	return ExtractResult{
@@ -166,13 +193,39 @@ func splitPDFPages(out string) []string {
 	return pages
 }
 
-func allPagesBlank(pages []string) bool {
-	for _, p := range pages {
-		if strings.TrimSpace(p) != "" {
-			return false
+// blankPageRange is one contiguous run of blank pages, as 0-indexed
+// positions into the pages slice Extract already built (not absolute
+// PDF page numbers — the caller adds startPage to convert).
+type blankPageRange struct{ startIdx, endIdx int }
+
+// blankPageRanges finds every contiguous run of blank pages in pages,
+// in order. A "fully scanned" document (every page blank) collapses to
+// exactly one range spanning the whole slice — the same span the OCR
+// tier used to be triggered over before per-page detection, so that
+// case's behavior is unchanged. A partially-scanned document yields
+// one range per contiguous blank run, letting the caller OCR only the
+// pages that actually need it.
+func blankPageRanges(pages []string) []blankPageRange {
+	var ranges []blankPageRange
+	inRange := false
+	var cur blankPageRange
+	for i, p := range pages {
+		if strings.TrimSpace(p) == "" {
+			if !inRange {
+				cur = blankPageRange{startIdx: i, endIdx: i}
+				inRange = true
+			} else {
+				cur.endIdx = i
+			}
+		} else if inRange {
+			ranges = append(ranges, cur)
+			inRange = false
 		}
 	}
-	return len(pages) > 0
+	if inRange {
+		ranges = append(ranges, cur)
+	}
+	return ranges
 }
 
 // shellQuote wraps s in POSIX single quotes, escaping any embedded single
@@ -209,4 +262,32 @@ func (e *PDFExtractor) extractTables(ctx context.Context, path string, startPage
 		return nil
 	}
 	return buildTableSections(pages)
+}
+
+// extractOCR runs the optional pytesseract-backed OCR tier over path's
+// startPage-endPage range and returns rendered DocumentSections — nil
+// on any failure (no ResolveScript/Run wired, script unresolvable,
+// python3/pytesseract/pdf2image/tesseract missing, malformed output,
+// or an OCRLang naming a language pack that isn't installed) so the
+// caller can treat this purely additively, the same contract
+// extractTables already has. See buildOCRSections' doc comment for the
+// section shape and buildPDFOCRCommand for the exact command line.
+func (e *PDFExtractor) extractOCR(ctx context.Context, path string, startPage, endPage int, lang string) []DocumentSection {
+	if e.Run == nil || e.ResolveScript == nil {
+		return nil
+	}
+	scriptPath, err := e.ResolveScript(ScriptExtractPDFOCR)
+	if err != nil {
+		return nil
+	}
+	cmd := buildPDFOCRCommand(scriptPath, path, startPage, endPage, lang)
+	out, _, err := e.Run(ctx, cmd)
+	if err != nil {
+		return nil
+	}
+	pages, err := parsePythonOCRJSON(out)
+	if err != nil {
+		return nil
+	}
+	return buildOCRSections(pages)
 }

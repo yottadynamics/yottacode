@@ -204,3 +204,131 @@ func TestPDFExtractor_RealPdfplumberTwoTablesDoesNotBreakPlainText(t *testing.T)
 		t.Fatalf("expected a primary %q section regardless of table-tier confusion, got sections: %+v", "page 1", res.Sections)
 	}
 }
+
+// TestPDFExtractor_RealPytesseractOCRRoundTrip generates a real
+// image-only PDF (a rasterized page with no embedded text layer, via
+// pdftoppm converting a normal pandoc/weasyprint PDF to a PNG and
+// pandoc converting the bare image back into a PDF), then verifies the
+// OCR tier recovers real, recognizable text out of it via the real
+// extract_pdf_ocr.py + pytesseract/pdf2image/tesseract — not a fake
+// ResolveScript/Run.
+func TestPDFExtractor_RealPytesseractOCRRoundTrip(t *testing.T) {
+	requireBinary(t, "pandoc")
+	requireBinary(t, "weasyprint")
+	requireBinary(t, "pdftotext")
+	requireBinary(t, "pdfinfo")
+	requireBinary(t, "pdftoppm")
+	requirePythonModule(t, "pytesseract")
+	requirePythonModule(t, "pdf2image")
+
+	dir := t.TempDir()
+	mdPath := filepath.Join(dir, "fixture.md")
+	textPdfPath := filepath.Join(dir, "fixture-text.pdf")
+	imagePrefix := filepath.Join(dir, "fixture-page")
+	imageOnlyPdfPath := filepath.Join(dir, "fixture-image-only.pdf")
+	const marker = "PDFExtractorOCRMarkerText12345"
+
+	if err := os.WriteFile(mdPath, []byte("# Heading\n\n"+marker+"\n"), 0o644); err != nil {
+		t.Fatalf("write fixture markdown: %v", err)
+	}
+	genCmd := exec.Command("pandoc", "-f", "markdown", "-t", "pdf", "--pdf-engine=weasyprint", "-o", textPdfPath, mdPath)
+	if out, err := genCmd.CombinedOutput(); err != nil {
+		t.Fatalf("generate fixture text pdf: %v: %s", err, out)
+	}
+
+	// Rasterize the text PDF to a PNG, then wrap the bare image back
+	// into a PDF via pandoc — the result has pixels that read the
+	// marker text but no embedded text layer at all, exactly the
+	// "scanned/image-only" case the OCR tier exists for.
+	rasterCmd := exec.Command("pdftoppm", "-png", "-r", "200", textPdfPath, imagePrefix)
+	if out, err := rasterCmd.CombinedOutput(); err != nil {
+		t.Fatalf("rasterize fixture pdf: %v: %s", err, out)
+	}
+	imagePath := imagePrefix + "-1.png"
+	if _, err := os.Stat(imagePath); err != nil {
+		t.Fatalf("expected rasterized page at %s: %v", imagePath, err)
+	}
+	wrapCmd := exec.Command("pandoc", "-t", "pdf", "--pdf-engine=weasyprint", "-o", imageOnlyPdfPath)
+	wrapCmd.Stdin = strings.NewReader("![](" + imagePath + ")")
+	if out, err := wrapCmd.CombinedOutput(); err != nil {
+		t.Fatalf("wrap rasterized image into a pdf: %v: %s", err, out)
+	}
+
+	cacheDir := t.TempDir()
+	e := &PDFExtractor{
+		Run: hostCommandRunner(t),
+		ResolveScript: func(script PyHelperScript) (string, error) {
+			return ResolvePyHelperScript(script, false, cacheDir)
+		},
+	}
+	res, err := e.Extract(context.Background(), ExtractRequest{Path: imageOnlyPdfPath})
+	if err != nil {
+		t.Fatalf("Extract: %v", err)
+	}
+
+	found := false
+	for _, sec := range res.Sections {
+		if strings.Contains(sec.Label, "ocr") && strings.Contains(sec.Text, marker) {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected an OCR section containing the fixture's marker text %q, got sections: %+v", marker, res.Sections)
+	}
+	warned := false
+	for _, w := range res.Warnings {
+		if strings.Contains(w, "recovered via OCR") {
+			warned = true
+		}
+	}
+	if !warned {
+		t.Errorf("expected an OCR-provenance warning, got %v", res.Warnings)
+	}
+}
+
+// TestPDFExtractor_RealPytesseractOCRDoesNotAffectNormalPDF is the
+// "does no harm" contract test for the OCR tier: a normal PDF with a
+// real text layer must never invoke OCR at all, and its extraction
+// must be identical to the no-OCR-wired case.
+func TestPDFExtractor_RealPytesseractOCRDoesNotAffectNormalPDF(t *testing.T) {
+	requireBinary(t, "pandoc")
+	requireBinary(t, "weasyprint")
+	requireBinary(t, "pdftotext")
+	requireBinary(t, "pdfinfo")
+	requirePythonModule(t, "pytesseract")
+	requirePythonModule(t, "pdf2image")
+
+	dir := t.TempDir()
+	mdPath := filepath.Join(dir, "fixture.md")
+	pdfPath := filepath.Join(dir, "fixture.pdf")
+	const marker = "PDFExtractorOCRDoesNoHarmMarker12345"
+	if err := os.WriteFile(mdPath, []byte("# Heading\n\n"+marker+"\n"), 0o644); err != nil {
+		t.Fatalf("write fixture markdown: %v", err)
+	}
+	genCmd := exec.Command("pandoc", "-f", "markdown", "-t", "pdf", "--pdf-engine=weasyprint", "-o", pdfPath, mdPath)
+	if out, err := genCmd.CombinedOutput(); err != nil {
+		t.Fatalf("generate fixture pdf: %v: %s", err, out)
+	}
+
+	cacheDir := t.TempDir()
+	e := &PDFExtractor{
+		Run: hostCommandRunner(t),
+		ResolveScript: func(script PyHelperScript) (string, error) {
+			return ResolvePyHelperScript(script, false, cacheDir)
+		},
+	}
+	res, err := e.Extract(context.Background(), ExtractRequest{Path: pdfPath})
+	if err != nil {
+		t.Fatalf("Extract: %v", err)
+	}
+	for _, sec := range res.Sections {
+		if strings.Contains(sec.Label, "ocr") {
+			t.Errorf("expected no OCR section for a PDF with a real text layer, got %+v", sec)
+		}
+	}
+	for _, w := range res.Warnings {
+		if strings.Contains(w, "OCR") {
+			t.Errorf("expected no OCR-related warning for a PDF with a real text layer, got %v", res.Warnings)
+		}
+	}
+}

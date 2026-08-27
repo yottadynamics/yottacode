@@ -109,11 +109,13 @@ func (t *ReadDocumentTool) Description() string {
 		"PDF extraction runs pdftotext/pdfinfo, which must be reachable through the documents sandbox profile " +
 		"(installed on the host when no sandbox is configured, or present in [sandbox].documents_image); " +
 		"a missing binary returns an actionable error naming exactly where it looked, rather than failing " +
-		"silently. An encrypted or scanned/image-only PDF is reported as a warning rather than an error, " +
-		"since it's still a valid result to hand back. When python3+pdfplumber are also reachable through that " +
+		"silently. An encrypted PDF is reported as a warning rather than an error, since it's still a valid " +
+		"result to hand back. When python3+pdfplumber are also reachable through that " +
 		"same documents profile or host PATH, detected tables are returned as additional 'page N table M' " +
 		"sections with pipe-joined rows; this tier is best-effort and silently absent (not an error or " +
 		"warning) when python3/pdfplumber aren't available, or a page genuinely has no tables. " +
+		"A PDF page with no embedded text layer falls back to OCR when python3+pytesseract+pdf2image+tesseract-ocr are reachable the same way, " +
+		"returning recognized text as additional 'page N (ocr)' sections with a warning that the text may contain recognition errors; use ocr_lang if the PDF isn't in English. " +
 		"xlsx/docx/pptx are parsed natively (no external tools): xlsx returns one section per sheet, docx returns the document body as one section with headings rendered as '# '-prefixed lines, pptx returns one section per slide in slide order. " +
 		"Use this when you need to ANALYZE the data — read_file's raw line-based view shears a CSV field's " +
 		"embedded newline into a bogus extra row and returns HTML/XML markup noise verbatim. " +
@@ -161,6 +163,10 @@ func (t *ReadDocumentTool) Schema() map[string]any {
 					"Maximum bytes to read from the source file (default %d, ceiling %d). Raise this when a result warns that the file exceeded the byte cap.",
 					documents.DefaultMaxBytes, documents.MaxAllowedBytes),
 			},
+			"ocr_lang": map[string]any{
+				"type":        "string",
+				"description": "PDF only: Tesseract language code for the OCR fallback tier (e.g. \"fra\", \"deu\"), or several joined with \"+\" for mixed-language text (e.g. \"eng+fra\"). Omit for the default, English. Only used when the PDF has no embedded text layer at all; ignored otherwise. The requested language pack must be installed wherever pdftotext/tesseract run — an unavailable one degrades silently like any other missing OCR dependency.",
+			},
 		},
 		"required": []string{"path"},
 	}
@@ -176,6 +182,7 @@ type readDocumentArgs struct {
 	MaxBytes int64  `json:"max_bytes"`
 	MaxPages int    `json:"max_pages"`
 	Offset   int    `json:"offset"`
+	OCRLang  string `json:"ocr_lang"`
 
 	// HasHeader is a pointer so an omitted key stays distinguishable
 	// from an explicit false: absent means "auto-detect", which is a
@@ -219,6 +226,7 @@ func (t *ReadDocumentTool) Execute(ctx context.Context, argsJSON string) (string
 		MaxPages:  a.MaxPages,
 		Offset:    a.Offset,
 		HasHeader: a.HasHeader,
+		OCRLang:   a.OCRLang,
 	})
 	if err != nil {
 		return "", fmt.Errorf("read_document: %w", err)
