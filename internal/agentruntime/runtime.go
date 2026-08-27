@@ -20,7 +20,6 @@ import (
 	"github.com/yottadynamics/yottacode/internal/memory"
 	"github.com/yottadynamics/yottacode/internal/permissions"
 	"github.com/yottadynamics/yottacode/internal/recall"
-	"github.com/yottadynamics/yottacode/internal/sandbox"
 	"github.com/yottadynamics/yottacode/internal/session"
 	"github.com/yottadynamics/yottacode/internal/skills"
 	"github.com/yottadynamics/yottacode/internal/subagents"
@@ -123,6 +122,9 @@ type Runtime struct {
 	// run_bash and worktree/dispatch sandbox inheritance. Nil preserves
 	// HostSandbox behavior.
 	CmdSandbox agent.Sandbox
+
+	// SandboxManager owns lazy per-profile containers when sandboxing is enabled.
+	SandboxManager *SandboxManager
 
 	FileCfg         config.Config
 	ExperimentalSet *experimental.Set
@@ -378,17 +380,19 @@ func (b *Builder) Build(ctx context.Context, spec SessionSpec) (*Runtime, error)
 	// Podman command sandbox: opt-in via experimental sandbox plus
 	// [sandbox].backend = "podman". Construction failure is fatal; never
 	// fall back to HostSandbox when the user requested isolation.
+	//
+	// The manager itself is created at startup, but profile containers are lazy:
+	// run_bash gets the default image on first use, while document subprocess
+	// tools get the documents image only when they need it.
 	var cmdSandbox agent.Sandbox
 	var sandboxFactory agent.SandboxFactory
 	if expSet.IsEnabled(experimental.Sandbox) && fileCfg.Sandbox.Backend == "podman" {
-		ps, err := sandbox.NewPodmanSandbox(ctx, fileCfg.Sandbox, sess.ID, cwd)
-		if err != nil {
-			return nil, fmt.Errorf("sandbox: %w", err)
-		}
-		cmdSandbox = ps
+		mgr := NewSandboxManager(fileCfg.Sandbox, sess.ID, cwd, podmanSandboxConstructor)
+		rt.SandboxManager = mgr
+		cmdSandbox = mgr.Handler()
 		rt.CmdSandbox = cmdSandbox
 		sandboxFactory = func(ctx context.Context, wtDir, taskID string) (agent.Sandbox, error) {
-			return sandbox.NewPodmanSandbox(ctx, fileCfg.Sandbox, sess.ID+"-"+taskID, wtDir)
+			return NewSandboxManager(fileCfg.Sandbox, sess.ID+"-"+taskID, wtDir, podmanSandboxConstructor).Handler(), nil
 		}
 	}
 

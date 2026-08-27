@@ -50,6 +50,9 @@ func TestDefault_SandboxUsesNamedDefaultImage(t *testing.T) {
 	if got := Default().Sandbox.Image; got != DefaultSandboxImage {
 		t.Fatalf("Default().Sandbox.Image = %q, want %q", got, DefaultSandboxImage)
 	}
+	if got := Default().Sandbox.DocumentsImage; got != DefaultSandboxDocumentsImage {
+		t.Fatalf("Default().Sandbox.DocumentsImage = %q, want %q", got, DefaultSandboxDocumentsImage)
+	}
 }
 
 func TestLoad_AppliesOverrides(t *testing.T) {
@@ -99,6 +102,9 @@ cpus = 0`,
 		`[sandbox]
 backend = "podman"
 pids_limit = 0`,
+		`[sandbox]
+backend = "podman"
+documents_image = ""`,
 	} {
 		if _, err := Load(writeFile(t, src)); err == nil {
 			t.Fatalf("expected podman sandbox with missing/zero limit to fail load: %s", src)

@@ -28,13 +28,17 @@ import (
 type EnterWorktreeTool struct {
 	Cwd *CwdRef
 	// Sandbox is nil when run_bash executes on the host (today's
-	// default). Non-nil means a container-backed Sandbox (e.g.
-	// PodmanSandbox) is active for this session — Execute then refuses:
-	// the container only has the session's ORIGINAL cwd bind-mounted
-	// (set once at session startup), so swapping CwdRef to a worktree
-	// path would point every subsequent run_bash's `podman exec -w` at a
-	// directory the container can't see, silently breaking it.
+	// default). A container-backed Sandbox blocks worktree entry only after it
+	// has a live container/profile mounted at the session's original cwd;
+	// lazy profile handlers with no live profiles are still safe to move. Once
+	// a profile exists, swapping CwdRef to a worktree would point subsequent
+	// sandboxed `podman exec -w` calls at a directory the existing container
+	// cannot see, silently breaking them.
 	Sandbox Sandbox
+}
+
+type liveProfileSandbox interface {
+	LiveProfiles() []SandboxProfile
 }
 
 func (t *EnterWorktreeTool) Name() string { return "enter_worktree" }
@@ -103,7 +107,7 @@ func (t *EnterWorktreeTool) Execute(ctx context.Context, argsJSON string) (strin
 	if a.Base != "fresh" && a.Base != "head" {
 		return "", fmt.Errorf("enter_worktree: base must be 'fresh' or 'head', got %q", a.Base)
 	}
-	if t.Sandbox != nil {
+	if sandboxHasLiveMount(t.Sandbox) {
 		return "", fmt.Errorf("enter_worktree: not available while the podman command sandbox is active for this session — the container only has the original session directory mounted, and there's no way to remount it mid-session. Start a fresh session already inside a worktree instead (`yottacode --worktree <name>`), or restart without sandbox before entering a worktree")
 	}
 
@@ -205,4 +209,14 @@ func (t *EnterWorktreeTool) swapCwd(newDir string) error {
 		return fmt.Errorf("enter_worktree: chdir %s: %w", newDir, err)
 	}
 	return nil
+}
+
+func sandboxHasLiveMount(sb Sandbox) bool {
+	if sb == nil {
+		return false
+	}
+	if lps, ok := sb.(liveProfileSandbox); ok {
+		return len(lps.LiveProfiles()) > 0
+	}
+	return true
 }

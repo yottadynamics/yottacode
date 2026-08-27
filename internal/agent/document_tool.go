@@ -63,7 +63,7 @@ func (t *ReadDocumentTool) registry() *documents.Registry {
 // PDFExtractor and DocxExtractor's optional pandoc tier — one
 // Sandbox-routing helper, not a copy per extractor.
 func (t *ReadDocumentTool) runSandboxCommand(ctx context.Context, command string) ([]byte, []byte, error) {
-	c := t.sandbox().Command(ctx, command, t.Cwd.Get())
+	c := CommandInProfile(ctx, t.sandbox(), SandboxProfileDocuments, command, t.Cwd.Get())
 	var stdout, stderr bytes.Buffer
 	c.Stdout = &cappedWriter{buf: &stdout}
 	c.Stderr = &cappedWriter{buf: &stderr}

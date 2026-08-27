@@ -88,6 +88,31 @@ func TestEnterWorktreeRejectsWhenSandboxActive(t *testing.T) {
 	}
 }
 
+type lazySandboxNoLiveProfiles struct{ spySandbox }
+
+func (s lazySandboxNoLiveProfiles) LiveProfiles() []SandboxProfile { return nil }
+
+type lazySandboxWithLiveProfiles struct{ spySandbox }
+
+func (s lazySandboxWithLiveProfiles) LiveProfiles() []SandboxProfile {
+	return []SandboxProfile{SandboxProfileDefault}
+}
+
+func TestEnterWorktreeAllowsLazySandboxBeforeProfileCreated(t *testing.T) {
+	repo := mkRepoForAgent(t)
+	tool := &EnterWorktreeTool{Cwd: NewCwdRef(repo), Sandbox: &lazySandboxNoLiveProfiles{}}
+	_, err := tool.Execute(context.Background(), `{"name":"x","base":"head"}`)
+	require.NoError(t, err)
+}
+
+func TestEnterWorktreeRejectsLazySandboxWithLiveProfile(t *testing.T) {
+	repo := mkRepoForAgent(t)
+	tool := &EnterWorktreeTool{Cwd: NewCwdRef(repo), Sandbox: &lazySandboxWithLiveProfiles{}}
+	_, err := tool.Execute(context.Background(), `{"name":"x","base":"head"}`)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "podman command sandbox is active")
+}
+
 // TestEnterWorktreeAllowsWhenSandboxNil confirms the common (no sandbox)
 // case is unaffected — a nil Sandbox field behaves exactly as before this
 // guard existed.

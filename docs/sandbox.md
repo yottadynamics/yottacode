@@ -30,10 +30,14 @@ flowchart LR
     Blocklist -- blocked --> Deny[Return BLOCKED]
     Blocklist -- allowed --> Seam[agent.Sandbox interface]
     Seam -- nil sandbox --> Host[/Host /bin/sh -c/]
-    Seam -- podman sandbox --> Exec[podman exec -w cwd]
-    Exec --> Container[(Session Podman container)]
+    Seam -- podman default profile --> Exec[podman exec -w cwd]
+    Seam -- podman documents profile --> DocExec[podman exec -w cwd]
+    Exec --> Container[(Default session container)]
+    DocExec --> DocContainer[(Documents session container)]
     Container --> Mount[(Project bind mount only)]
+    DocContainer --> Mount
     Container -. network=none by default .-> Net[No network egress]
+    DocContainer -. network=none by default .-> Net
 
     Agent --> FileTools[read/write/edit tools]
     FileTools --> HostFS[(Host filesystem)]
@@ -64,20 +68,20 @@ flowchart TB
     ParentContainer --> ParentMount[(Parent cwd mount)]
 ```
 
-Write workers get their own containers because their worktrees are different
+Write workers get their own lazy sandbox manager because their worktrees are different
 absolute paths than the parent session's mounted cwd. Read-only workers reuse
-the parent registry and therefore the parent sandbox container; their concurrent
-commands share that container's `memory`/`cpus`/`pids_limit` budget.
+the parent registry and therefore the parent sandbox manager; their concurrent
+commands share those profile containers' `memory`/`cpus`/`pids_limit` budget.
 
 ## Implementation map
 
 | Area | Files | Responsibility |
 |---|---|---|
-| Sandbox seam | `internal/agent/sandbox.go`, `internal/agent/exec_tool.go` | Defines `Sandbox`, keeps nil as host execution, labels sandboxed `run_bash`, and annotates Podman infrastructure exit code 125. |
-| Podman lifecycle | `internal/sandbox/podman.go`, `internal/sandbox/detect.go` | Starts one rootless container per session/worker, builds `podman exec`, validates mounts, detects local Podman/image state, and tears containers down. |
-| Session wiring | `internal/tui/run.go`, `internal/oneshot/oneshot.go` | Creates the session sandbox only when the experimental flag is enabled and `[sandbox].backend = "podman"`; never falls back to host execution on startup failure. |
+| Sandbox seam | `internal/agent/sandbox.go`, `internal/agent/exec_tool.go` | Defines `Sandbox` and optional `ProfiledSandbox`, keeps nil as host execution, labels sandboxed commands, and annotates Podman infrastructure exit code 125. |
+| Podman lifecycle | `internal/sandbox/podman.go`, `internal/sandbox/detect.go` | Starts one rootless container for a requested manager profile, builds `podman exec`, validates mounts, detects local Podman/image state, and tears containers down. |
+| Session wiring | `internal/agentruntime/runtime.go`, `internal/agentruntime/sandbox_manager.go` | Creates a lazy per-profile sandbox manager only when the experimental flag is enabled and `[sandbox].backend = "podman"`; never falls back to host execution on profile creation failure. |
 | Dispatch inheritance | `internal/agent/dispatch_tool.go` | Gives each write worker a worker-scoped sandbox mounted at that worker's worktree; read-only workers reuse the parent registry. |
-| Worktree guard | `internal/agent/enter_worktree_tool.go` | Refuses mid-session worktree swaps while a sandbox is active because the running container cannot be remounted. |
+| Worktree guard | `internal/agent/enter_worktree_tool.go` | Refuses mid-session worktree swaps once a lazy sandbox profile has created a live container, because that container cannot be remounted. |
 | TUI control | `internal/tui/sandbox_picker.go`, `internal/tui/cmd_sandbox.go` | Persists sandbox mode, toggles live auto mode when requested, probes Podman/image availability, and tells users a restart/new session is required for backend changes. |
 | Config/docs | `internal/config/config.go`, `docs/sandbox.md` | Owns defaults, validation, and user-facing contract. |
 
@@ -88,17 +92,21 @@ commands share that container's `memory`/`cpus`/`pids_limit` budget.
    when `backend = "podman"`.
 2. The TUI or oneshot entry point checks both gates: experimental `sandbox` is
    enabled and `[sandbox].backend = "podman"`.
-3. `sandbox.NewPodmanSandbox` validates the mount root, removes any leftover
-   container with the deterministic session name, starts `podman run -d ...
-   sleep infinity`, and returns an `agent.Sandbox` implementation.
-4. `RegisterCoreCwdTools` injects that sandbox into `RunBashTool`. A nil value
-   keeps the previous host behavior.
-5. Each `run_bash` call still checks the hardline blocklist before the sandbox
+3. `RegisterCoreCwdTools` injects a stable sandbox handler into command-capable
+   tools. A nil value keeps the previous host behavior.
+4. Each tool chooses its profile from intent: `run_bash` uses `default`, while
+   `create_document` docx/pdf and `read_document` PDF subprocess paths use
+   `documents`. Native document paths do not shell out.
+5. On first use of a profile, `SandboxManager` calls `sandbox.NewPodmanSandbox`,
+   which validates the mount root, removes any leftover container with the
+   deterministic profile name, starts `podman run -d ... sleep infinity`, and
+   returns an `agent.Sandbox` implementation.
+6. Each `run_bash` call still checks the hardline blocklist before the sandbox
    sees the command. Allowed commands run through `Sandbox.Command` with the
    current cwd.
-6. On cancellation, `PodmanSandbox.Command` best-effort kills the marked process
+7. On cancellation, `PodmanSandbox.Command` best-effort kills the marked process
    inside the container before killing the local `podman exec` client. Session
-   teardown calls `Close`, which removes the long-lived container.
+   teardown closes the manager, which removes every live profile container.
 
 ## `/sandbox`
 
@@ -147,6 +155,7 @@ sandbox = true
 [sandbox]
 backend         = "podman"      # "none" (default) | "podman"
 image           = "registry.access.redhat.com/ubi9/ubi:9.8-1785906690"
+documents_image = "ghcr.io/yottadynamics/yottacode-documents:latest"
 network         = "none"        # "none" (default) | "host"
 mounts          = ["."]         # project-relative only; cannot escape root
 env_passthrough = []            # opt-in credential injection, e.g. ["GITHUB_TOKEN"]
@@ -155,15 +164,16 @@ cpus            = 2
 pids_limit      = 256
 ```
 
-When `backend = "podman"`, `image`, `memory`, positive `cpus`, and positive
+When `backend = "podman"`, `image`, `documents_image`, `memory`, positive `cpus`, and positive
 `pids_limit` are required. This prevents Podman from receiving empty or zero
-resource-limit flags.
+resource-limit flags. `image` is the default profile used by `run_bash`;
+`documents_image` is the profile automatically used by document subprocess tools.
 
 ## What's isolated, and what isn't
 
-- **One container per session**, not per command — `podman run -d ... sleep
-  infinity` on session start, `podman exec` for every `run_bash` call, and
-  `podman rm -f` on session end. A fresh container per command would forget
+- **One container per used profile per session**, not per command — `podman run -d ... sleep
+  infinity` on first profile use, `podman exec` for every sandboxed command,
+  and `podman rm -f` on session end. A fresh container per command would forget
   installed packages and background state between commands.
 - **Filesystem**: the project root is mounted at the same absolute path inside
   the container as on the host. Optional `mounts` entries are project-relative
@@ -184,27 +194,30 @@ resource-limit flags.
   blocklist stays outside the sandbox because a blocked command can still
   destroy the mounted project tree. See [`document-generation.md`](document-generation.md)
   for how the document tools route their `pandoc`/`pdftotext` calls
-  through this same seam — the first tools besides `run_bash` to use it.
+  through the documents profile while `run_bash` stays on the default profile.
 
 ## Dispatch interaction
 
-When [dispatch](dispatch.md) write-workers run, each gets its **own** container
-mounted at its own worktree whenever the parent session has podman sandboxing
-on. Read-only dispatch workers do not get separate containers; they share the
-parent tool registry and parent sandbox.
+When [dispatch](dispatch.md) write-workers run, each gets its **own** lazy
+sandbox manager mounted at its own worktree whenever the parent session has
+podman sandboxing on. Read-only dispatch workers do not get separate managers;
+they share the parent tool registry and parent sandbox manager.
 
-This means concurrent read-only workers' `run_bash` calls and the parent
-session's own `run_bash` calls all execute inside one shared container. Size
-`[sandbox]` resource limits with that in mind if read-only workers run tests or
-linters concurrently.
+This means concurrent read-only workers' sandboxed commands and the parent
+session's own sandboxed commands all execute inside the same per-profile
+containers. Size `[sandbox]` resource limits with that in mind if read-only
+workers run tests or linters concurrently.
 
 ## Worktree interaction
 
-`enter_worktree` is blocked while a command sandbox is active. The session
-container was created with the original cwd mounted; after a mid-session cwd
-swap, `podman exec -w <new-worktree>` would point at a path the container cannot
-see. Start yottacode directly inside the worktree (`yottacode --worktree <name>`)
-or restart without sandbox before entering a worktree.
+`enter_worktree` is blocked only after a lazy sandbox profile has created a
+live container. That container was created with the original cwd mounted; after
+a mid-session cwd swap, `podman exec -w <new-worktree>` would point at a path
+the container cannot see. A freshly-started sandbox-enabled session that has not
+run `run_bash` or a subprocess-backed document path yet has no live container,
+so it can still enter a worktree safely. Once a profile is live, start yottacode
+directly inside the worktree (`yottacode --worktree <name>`) or restart without
+sandbox before entering a worktree.
 
 ## Known limitations
 

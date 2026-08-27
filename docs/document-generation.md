@@ -54,10 +54,10 @@ flowchart LR
   renderer embeds one local PNG/JPEG/GIF image per slide when supplied.
 
 
-Every docx/pdf subprocess invocation (`pandoc`/`weasyprint`) runs through
-whatever [`agent.Sandbox`][sandbox-doc] the session has: directly on the
-host when no sandbox is configured, or via `podman exec` when
-`[sandbox].backend = "podman"` — the exact same seam `run_bash` uses.
+Every docx/pdf subprocess invocation (`pandoc`/`weasyprint`) runs through the
+documents sandbox profile when `[sandbox].backend = "podman"`. The agent chooses
+that profile automatically from the tool path; users do not switch sandboxes by
+hand. When sandboxing is off, the same commands run on the host PATH.
 
 
 See [`tools.md#create_document`](tools.md#create_document) for the full
@@ -68,8 +68,8 @@ argument reference and examples.
 | Format | Requires |
 |---|---|
 | xlsx | Nothing — pure Go |
-| docx | `pandoc` on `PATH` (host) or in `[sandbox].image` |
-| pdf | `pandoc` **and** `weasyprint` on `PATH` (host) or in `[sandbox].image` |
+| docx | `pandoc` on `PATH` (host) or in `[sandbox].documents_image` |
+| pdf | `pandoc` **and** `weasyprint` on `PATH` (host) or in `[sandbox].documents_image` |
 | pptx | Nothing — pure Go |
 
 
@@ -101,7 +101,8 @@ in the meantime:
 podman build -t yottacode-documents -f infra/documents.Containerfile .
 ```
 
-Then point the command sandbox at it and enable both experimental flags:
+Then point the document sandbox profile at it and enable both experimental
+flags:
 
 ```toml
 [experimental]
@@ -109,13 +110,13 @@ sandbox             = true
 document_generation = true
 
 [sandbox]
-backend = "podman"
-image   = "yottacode-documents"
+backend         = "podman"
+documents_image = "yottacode-documents"
 ```
 
 Once the workflow has actually been run at least once, the published tag
-works the same way — `image = "ghcr.io/yottadynamics/yottacode-documents:latest"`
-— with no other config changes.
+works the same way — `documents_image = "ghcr.io/yottadynamics/yottacode-documents:latest"`
+— with no other config changes. `run_bash` keeps using `[sandbox].image`.
 
 Everything else about the sandbox — lifecycle, mounts, network policy,
 hardening — is unchanged; see [`sandbox.md`](sandbox.md) for the full
