@@ -122,7 +122,7 @@ func (m Model) openSandboxPicker() (Model, tea.Cmd) {
 		sandboxActive:  m.sandboxActive,
 	}
 	m.sandboxPickerOpen = true
-	return m, sandboxDetectCmd(m.parentCtx, cfg.Sandbox.Image)
+	return m, sandboxDetectCmd(m.parentCtx, cfg.Sandbox.Image, cfg.Sandbox.DocumentsImage)
 }
 
 // sandboxDetectMsg carries the result of an async sandbox.DetectStatus
@@ -134,11 +134,13 @@ type sandboxDetectMsg struct {
 // sandboxDetectStatus is a package seam for tests. The production path uses
 // sandbox.DetectStatus, but unit tests can replace it so they never start real
 // podman probes or create rootless container storage under t.TempDir.
-var sandboxDetectStatus = sandbox.DetectStatus
+var sandboxDetectStatus = func(ctx context.Context, image, documentsImage string) sandbox.Status {
+	return sandbox.DetectStatus(ctx, image, documentsImage)
+}
 
-func sandboxDetectCmd(ctx context.Context, image string) tea.Cmd {
+func sandboxDetectCmd(ctx context.Context, image, documentsImage string) tea.Cmd {
 	return func() tea.Msg {
-		return sandboxDetectMsg{status: sandboxDetectStatus(ctx, image)}
+		return sandboxDetectMsg{status: sandboxDetectStatus(ctx, image, documentsImage)}
 	}
 }
 
@@ -215,8 +217,16 @@ func applySandboxMode(m Model, mode sandboxMode) (Model, tea.Cmd) {
 		m.sandboxPicker.note = "Experimental sandbox is off. Enable with --experimental sandbox, then restart."
 		return m, nil
 	}
+	if mode != sandboxModeOff && m.sandboxPicker != nil && m.sandboxPicker.detected && !m.sandboxPicker.status.Installed {
+		m.sandboxPicker.note = "Podman is not installed or not on PATH. Install Podman before enabling the sandbox."
+		return m, nil
+	}
 	if mode != sandboxModeOff && m.sandboxPicker != nil && m.sandboxPicker.configured != sandboxModeOff && !m.sandboxPicker.sandboxActive {
 		m.sandboxPicker.note = "Restart yottacode to activate the configured sandbox before selecting sandbox options again."
+		return m, nil
+	}
+	if mode != sandboxModeOff && m.sandboxPicker != nil && !m.sandboxPicker.detected {
+		m.sandboxPicker.note = "Still checking Podman availability. Try again once the check finishes."
 		return m, nil
 	}
 	return commitSandboxMode(m, mode)
@@ -267,7 +277,7 @@ func commitSandboxMode(m Model, mode sandboxMode) (Model, tea.Cmd) {
 		exitAutoMode(&m)
 	}
 
-	detail := "persisted — restart yottacode (or start a new session) to activate"
+	detail := sandboxCommitDetail(mode, m.sandboxActive)
 	m.appendLine(styleAuto.Render(SysMsg(SysSuccess, "sandbox", sandboxModeLabel(mode), detail)))
 	if p := m.sandboxPicker; p != nil {
 		p.current = mode
@@ -332,9 +342,15 @@ func renderSandboxPicker(p *sandboxPickerState, width int, hits ...*pickerHits) 
 		case !p.status.Installed:
 			b.WriteString("\n")
 			b.WriteString(styleError.Render(wrapPlain("podman not found on PATH — install podman before selecting this mode", width)))
-		case !p.status.ImagePresent:
-			b.WriteString("\n")
-			b.WriteString(styleEmpty.Render(wrapPlain("base image not pulled locally yet — podman will pull it on first use", width)))
+		default:
+			if !p.status.ImagePresent {
+				b.WriteString("\n")
+				b.WriteString(styleEmpty.Render(wrapPlain("base image not pulled locally yet — podman will pull it on first use", width)))
+			}
+			if !p.status.DocumentsImagePresent {
+				b.WriteString("\n")
+				b.WriteString(styleEmpty.Render(wrapPlain("documents image not pulled locally yet — document tools will pull it on first use", width)))
+			}
 		}
 	}
 	b.WriteString("\n")
@@ -377,4 +393,14 @@ func renderSandboxStatusLine(p *sandboxPickerState) string {
 		style = lipgloss.NewStyle().Foreground(colorSuccess).Bold(true)
 	}
 	return style.Render(sandboxStatusLine(p))
+}
+
+func sandboxCommitDetail(mode sandboxMode, sandboxActive bool) string {
+	if sandboxActive && mode != sandboxModeOff {
+		return "persisted — this session can lazily start unused sandbox profiles; backend changes still require a new session"
+	}
+	if sandboxActive && mode == sandboxModeOff {
+		return "persisted — this session keeps its existing sandbox until you restart or start a new session"
+	}
+	return "persisted — restart yottacode (or start a new session) to activate"
 }

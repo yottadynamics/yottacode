@@ -140,6 +140,8 @@ func TestUpdateSandboxPicker_EnterAppliesSelection(t *testing.T) {
 	m.experimentalEnabled = []string{string(experimental.Sandbox)}
 	m, _ = m.openSandboxPicker()
 	m.sandboxPicker.cursor = sandboxModeRegular
+	m.sandboxPicker.detected = true
+	m.sandboxPicker.status = sandbox.Status{Installed: true, ImagePresent: true, DocumentsImagePresent: true}
 
 	m, _ = m.updateSandboxPicker(tea.KeyPressMsg{Code: tea.KeyEnter})
 	if m.sandboxPickerOpen {
@@ -176,6 +178,55 @@ func TestUpdateSandboxPicker_BlocksPodmanWhenExperimentOff(t *testing.T) {
 	}
 	if reloaded.Sandbox.Backend == "podman" {
 		t.Fatal("blocked Podman choice should not persist sandbox backend")
+	}
+}
+
+func TestUpdateSandboxPicker_BlocksPodmanWhenMissing(t *testing.T) {
+	m := newTestModel(t)
+	m.cfg.AutoMode = &agent.AutoModeState{}
+	m.experimentalEnabled = []string{string(experimental.Sandbox)}
+	m, _ = m.openSandboxPicker()
+	m.sandboxPicker.cursor = sandboxModeRegular
+	m.sandboxPicker.detected = true
+	m.sandboxPicker.status = sandbox.Status{Installed: false}
+
+	m, _ = m.updateSandboxPicker(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if !m.sandboxPickerOpen {
+		t.Fatal("podman-missing choice should stay in the picker")
+	}
+	if !strings.Contains(m.sandboxPicker.note, "Podman is not installed") {
+		t.Fatalf("expected podman-missing note, got %q", m.sandboxPicker.note)
+	}
+	reloaded, err := config.LoadDefault()
+	if err != nil {
+		t.Fatalf("reload after blocked apply: %v", err)
+	}
+	if reloaded.Sandbox.Backend == "podman" {
+		t.Fatal("blocked Podman choice should not persist sandbox backend")
+	}
+}
+
+func TestUpdateSandboxPicker_WaitsForPodmanDetectionBeforePersisting(t *testing.T) {
+	m := newTestModel(t)
+	m.cfg.AutoMode = &agent.AutoModeState{}
+	m.experimentalEnabled = []string{string(experimental.Sandbox)}
+	m, _ = m.openSandboxPicker()
+	m.sandboxPicker.cursor = sandboxModeRegular
+	m.sandboxPicker.detected = false
+
+	m, _ = m.updateSandboxPicker(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if !m.sandboxPickerOpen {
+		t.Fatal("pending detection choice should stay in the picker")
+	}
+	if !strings.Contains(m.sandboxPicker.note, "Still checking Podman availability") {
+		t.Fatalf("expected pending-detection note, got %q", m.sandboxPicker.note)
+	}
+	reloaded, err := config.LoadDefault()
+	if err != nil {
+		t.Fatalf("reload after blocked apply: %v", err)
+	}
+	if reloaded.Sandbox.Backend == "podman" {
+		t.Fatal("pending detection should not persist sandbox backend")
 	}
 }
 
@@ -261,7 +312,21 @@ func TestCommitSandboxMode_BackendChoiceAlwaysSaysRestartRequired(t *testing.T) 
 
 	got := strings.Join(m.historyLines, "\n")
 	if !strings.Contains(got, "restart yottacode") {
-		t.Fatalf("sandbox commit should always surface restart requirement, got:\n%s", got)
+		t.Fatalf("inactive sandbox commit should surface restart requirement, got:\n%s", got)
+	}
+}
+
+func TestCommitSandboxMode_ActiveSessionMentionsLazyProfiles(t *testing.T) {
+	m := newTestModel(t)
+	m.cfg.AutoMode = &agent.AutoModeState{}
+	m.sandboxActive = true
+	m.sandboxPicker = &sandboxPickerState{}
+
+	m, _ = commitSandboxMode(m, sandboxModeRegular)
+
+	got := strings.Join(m.historyLines, "\n")
+	if !strings.Contains(got, "lazily start unused sandbox profiles") {
+		t.Fatalf("active sandbox commit should mention lazy profile recovery, got:\n%s", got)
 	}
 }
 
@@ -407,12 +472,15 @@ func TestRenderSandboxPicker_LongDescriptionWrapsWithinWidth(t *testing.T) {
 func TestOpenSandboxPicker_ReturnsAsyncDetectionCmd(t *testing.T) {
 	detectCalls := 0
 	oldDetect := sandboxDetectStatus
-	sandboxDetectStatus = func(_ context.Context, image string) sandbox.Status {
+	sandboxDetectStatus = func(_ context.Context, image, documentsImage string) sandbox.Status {
 		detectCalls++
 		if image == "" {
 			t.Error("detection should receive the configured sandbox image")
 		}
-		return sandbox.Status{Installed: true, ImagePresent: true}
+		if documentsImage == "" {
+			t.Error("detection should receive the configured documents image")
+		}
+		return sandbox.Status{Installed: true, ImagePresent: true, DocumentsImagePresent: true}
 	}
 	t.Cleanup(func() { sandboxDetectStatus = oldDetect })
 
@@ -441,5 +509,17 @@ func TestOpenSandboxPicker_ReturnsAsyncDetectionCmd(t *testing.T) {
 	m, _ = applyMsg(m, det)
 	if !m.sandboxPicker.detected {
 		t.Error("Update should mark detected true after receiving sandboxDetectMsg")
+	}
+}
+
+func TestRenderSandboxPicker_WarnsWhenDocumentsImageMissing(t *testing.T) {
+	p := &sandboxPickerState{
+		cursor:   sandboxModeRegular,
+		detected: true,
+		status:   sandbox.Status{Installed: true, ImagePresent: true},
+	}
+	got := renderSandboxPicker(p, 100)
+	if !strings.Contains(got, "documents image not pulled locally yet") {
+		t.Fatalf("expected documents-image warning, got:\n%s", got)
 	}
 }

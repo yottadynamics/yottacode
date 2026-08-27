@@ -24,6 +24,11 @@ var podmanSandboxConstructor SandboxConstructor = func(ctx context.Context, cfg 
 	return sandbox.NewPodmanSandbox(ctx, cfg, id, mountRoot)
 }
 
+// SandboxConfigReloader returns the latest config.toml snapshot before a lazy
+// profile is created. It lets a session recover from a bad documents_image by
+// editing config and retrying, without rebuilding the entire tool registry.
+type SandboxConfigReloader func() (config.Config, error)
+
 // SandboxManager owns the command-sandbox lifecycle for one session or dispatch
 // worker. It lazily creates one container per requested profile and never tracks
 // a user-facing "active" profile: tools route each command by intent.
@@ -32,10 +37,17 @@ type SandboxManager struct {
 	sessionID   string
 	mountRoot   string
 	constructor SandboxConstructor
+	reloader    SandboxConfigReloader
 
 	mu        sync.Mutex
 	sandboxes map[agent.SandboxProfile]agent.Sandbox
+	creating  map[agent.SandboxProfile]chan sandboxCreateResult
 	closed    bool
+}
+
+type sandboxCreateResult struct {
+	sandbox agent.Sandbox
+	err     error
 }
 
 // NewSandboxManager returns a manager for an enabled sandbox backend. The first
@@ -48,7 +60,15 @@ func NewSandboxManager(cfg config.SandboxConfig, sessionID, mountRoot string, co
 		mountRoot:   mountRoot,
 		constructor: constructor,
 		sandboxes:   make(map[agent.SandboxProfile]agent.Sandbox),
+		creating:    make(map[agent.SandboxProfile]chan sandboxCreateResult),
 	}
+}
+
+// SetConfigReloader installs an optional live config reload hook used only for
+// profiles that have not yet created a container. Existing live containers keep
+// their startup config until the session ends, preserving mount/image stability.
+func (m *SandboxManager) SetConfigReloader(reloader SandboxConfigReloader) {
+	m.reloader = reloader
 }
 
 // Handler returns the stable agent.Sandbox implementation injected into tools.
@@ -94,6 +114,7 @@ func (m *SandboxManager) Close() error {
 	}
 	m.closed = true
 	m.sandboxes = make(map[agent.SandboxProfile]agent.Sandbox)
+	m.creating = make(map[agent.SandboxProfile]chan sandboxCreateResult)
 	m.mu.Unlock()
 
 	var errs []error
@@ -117,6 +138,11 @@ func (m *SandboxManager) sandbox(ctx context.Context, profile agent.SandboxProfi
 		m.mu.Unlock()
 		return sb, nil
 	}
+	if ch := m.creating[profile]; ch != nil {
+		m.mu.Unlock()
+		res := <-ch
+		return res.sandbox, res.err
+	}
 	if m.closed {
 		m.mu.Unlock()
 		return nil, errors.New("sandbox manager is closed")
@@ -125,47 +151,68 @@ func (m *SandboxManager) sandbox(ctx context.Context, profile agent.SandboxProfi
 		m.mu.Unlock()
 		return nil, errors.New("no sandbox constructor configured")
 	}
-	cfg := m.profileConfig(profile)
 	id := m.profileID(profile)
 	mountRoot := m.mountRoot
 	constructor := m.constructor
+	ch := make(chan sandboxCreateResult, 1)
+	m.creating[profile] = ch
 	m.mu.Unlock()
 
-	// Container creation may pull/start Podman and can be slow. Do not hold the
-	// manager lock across that boundary: Close must still be able to tear down
-	// already-live profile containers while another profile is being created.
-	sb, err := constructor(ctx, cfg, id, mountRoot)
+	res := sandboxCreateResult{}
+	cfg, err := m.profileConfig(profile)
 	if err != nil {
-		return nil, err
+		res.err = err
+	} else {
+		// Container creation may pull/start Podman and can be slow. Do not hold the
+		// manager lock across that boundary: Close must still be able to tear down
+		// already-live profile containers while another profile is being created.
+		res.sandbox, res.err = constructor(ctx, cfg, id, mountRoot)
 	}
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	delete(m.creating, profile)
 	if m.closed {
-		// Close won the race while the profile was being created. Tear down the
+		// Close won the race while the profile was being created. Tear down any
 		// just-created sandbox so shutdown does not leak a container.
-		_ = sb.Close()
-		return nil, errors.New("sandbox manager is closed")
+		if res.sandbox != nil {
+			_ = res.sandbox.Close()
+		}
+		res = sandboxCreateResult{err: errors.New("sandbox manager is closed")}
 	}
-	if existing := m.sandboxes[profile]; existing != nil {
-		// A concurrent caller won the race while this profile was being created.
-		// Close the duplicate immediately so only the canonical sandbox is owned
-		// by the manager and later returned by LiveProfiles/Close.
-		_ = sb.Close()
-		return existing, nil
+	if res.err == nil && res.sandbox != nil {
+		m.sandboxes[profile] = res.sandbox
 	}
-	m.sandboxes[profile] = sb
-	return sb, nil
+	ch <- res
+	close(ch)
+	return res.sandbox, res.err
 }
 
-func (m *SandboxManager) profileConfig(profile agent.SandboxProfile) config.SandboxConfig {
-	cfg := m.baseConfig
+func (m *SandboxManager) profileConfig(profile agent.SandboxProfile) (config.SandboxConfig, error) {
+	cfg, err := m.latestSandboxConfig()
 	if profile == agent.SandboxProfileDocuments {
-		if doc := m.baseConfig.DocumentsProfile(); doc.Image != "" {
+		if doc := cfg.DocumentsProfile(); doc.Image != "" {
 			cfg = doc
 		}
 	}
-	return cfg
+	return cfg, err
+}
+
+func (m *SandboxManager) latestSandboxConfig() (config.SandboxConfig, error) {
+	if m.reloader == nil {
+		return m.baseConfig, nil
+	}
+	latest, err := m.reloader()
+	if err != nil {
+		return config.SandboxConfig{}, fmt.Errorf("reload config: %w", err)
+	}
+	if latest.Sandbox.Backend != "podman" {
+		return config.SandboxConfig{}, fmt.Errorf("sandbox backend is now %q; restart yottacode to change sandbox backends", latest.Sandbox.Backend)
+	}
+	m.mu.Lock()
+	m.baseConfig = latest.Sandbox
+	m.mu.Unlock()
+	return latest.Sandbox, nil
 }
 
 func (m *SandboxManager) profileID(profile agent.SandboxProfile) string {

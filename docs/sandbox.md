@@ -98,9 +98,12 @@ commands share those profile containers' `memory`/`cpus`/`pids_limit` budget.
    `create_document` docx/pdf and `read_document` PDF subprocess paths use
    `documents`. Native document paths do not shell out.
 5. On first use of a profile, `SandboxManager` calls `sandbox.NewPodmanSandbox`,
-   which validates the mount root, removes any leftover container with the
-   deterministic profile name, starts `podman run -d ... sleep infinity`, and
-   returns an `agent.Sandbox` implementation.
+   using the latest `config.toml` for profiles that are not live yet. That lets
+   a user fix `[sandbox].documents_image` and retry a document tool without
+   rebuilding the whole tool registry. The manager validates the mount root,
+   removes any leftover container with the deterministic profile name, starts
+   `podman run -d ... sleep infinity`, and returns an `agent.Sandbox`
+   implementation.
 6. Each `run_bash` call still checks the hardline blocklist before the sandbox
    sees the command. Allowed commands run through `Sandbox.Command` with the
    current cwd.
@@ -143,11 +146,12 @@ a new session for backend changes to affect command execution. Enter (or the
 is required so users do not mistake a config write for a live isolation change.
 
 The picker also runs a local, network-free detection pass (`podman image exists
-<image>`) and shows warnings if Podman is missing or if the configured base
-image has not been pulled yet.
+<image>`) for both `[sandbox].image` and `[sandbox].documents_image`. It shows a
+hard warning if Podman is missing. Missing images are non-fatal because Podman
+can pull them on first use; if the pull/start fails, the tool fails closed with
+the Podman error instead of falling back to the host.
 
 ## Config
-
 ```toml
 [experimental]
 sandbox = true
@@ -168,6 +172,10 @@ When `backend = "podman"`, `image`, `documents_image`, `memory`, positive `cpus`
 `pids_limit` are required. This prevents Podman from receiving empty or zero
 resource-limit flags. `image` is the default profile used by `run_bash`;
 `documents_image` is the profile automatically used by document subprocess tools.
+
+Unused profiles reload this block before their first container starts, so fixing
+`documents_image` mid-session is enough for the next document-tool attempt. A
+backend change (`podman` ↔ `none`) still needs a new session.
 
 ## What's isolated, and what isn't
 
@@ -223,6 +231,10 @@ run `run_bash` or a subprocess-backed document path yet has no live container,
 so it can still enter a worktree safely. Once a profile is live, start yottacode
 directly inside the worktree (`yottacode --worktree <name>`) or restart without
 sandbox before entering a worktree.
+
+Changing an image for a profile that is already live also needs a new session:
+the running container keeps the image it started with. The live-reload behavior
+only applies to profiles that have not created a container yet.
 
 ## Known limitations
 
