@@ -43,6 +43,143 @@ func writePptxFixture(t *testing.T, dir string, slideTexts []string) string {
 	return path
 }
 
+// writePptxTableFixture builds a single-slide .pptx whose slide has a
+// text shape (bodyText) followed by a bare DrawingML <a:tbl> built from
+// rows. The parser tracks table structure purely by local element name
+// ("tbl"/"tr"/"tc"/"t"), so the table doesn't need the full real
+// <p:graphicFrame><a:graphic><a:graphicData> wrapper a real pptx has
+// around it — only the <a:tbl> itself matters for what's being tested.
+func writePptxTableFixture(t *testing.T, dir, bodyText string, rows [][]string) string {
+	t.Helper()
+	path := filepath.Join(dir, "deck.pptx")
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatalf("create fixture: %v", err)
+	}
+	defer f.Close()
+	zw := zip.NewWriter(f)
+	w, err := zw.Create("ppt/slides/slide1.xml")
+	if err != nil {
+		t.Fatalf("create zip entry: %v", err)
+	}
+	var tbl strings.Builder
+	tbl.WriteString(`<a:tbl>`)
+	for _, row := range rows {
+		tbl.WriteString(`<a:tr>`)
+		for _, cell := range row {
+			tbl.WriteString(`<a:tc><a:txBody><a:p><a:r><a:t>` + cell + `</a:t></a:r></a:p></a:txBody></a:tc>`)
+		}
+		tbl.WriteString(`</a:tr>`)
+	}
+	tbl.WriteString(`</a:tbl>`)
+	xmlDoc := `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
+		`<p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" ` +
+		`xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">` +
+		`<p:cSld><p:spTree><p:sp><p:txBody><a:p><a:r><a:t>` + bodyText + `</a:t></a:r></a:p></p:txBody></p:sp>` +
+		tbl.String() +
+		`</p:spTree></p:cSld></p:sld>`
+	if _, err := w.Write([]byte(xmlDoc)); err != nil {
+		t.Fatalf("write zip entry: %v", err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatalf("close zip writer: %v", err)
+	}
+	return path
+}
+
+func TestPptxExtractorTableSectionRendered(t *testing.T) {
+	dir := t.TempDir()
+	path := writePptxTableFixture(t, dir, "Slide intro text", [][]string{
+		{"Name", "Qty"},
+		{"Widget", "3"},
+	})
+
+	e := &PptxExtractor{}
+	res, err := e.Extract(context.Background(), ExtractRequest{Path: path})
+	if err != nil {
+		t.Fatalf("Extract: %v", err)
+	}
+
+	var tableSec *DocumentSection
+	for i := range res.Sections {
+		if res.Sections[i].Label == "slide 1 table 1" {
+			tableSec = &res.Sections[i]
+		}
+	}
+	if tableSec == nil {
+		t.Fatalf("expected a %q section, got: %+v", "slide 1 table 1", res.Sections)
+	}
+	want := "Name | Qty\nWidget | 3"
+	if tableSec.Text != want {
+		t.Errorf("table section text = %q, want %q", tableSec.Text, want)
+	}
+}
+
+// TestPptxExtractorTableTextStillInPlainSlideSection confirms the
+// additive contract: a table's cell text still appears in the regular
+// "slide N" section too (run together with the rest, same fidelity as
+// before), not removed now that it also has a clean table section —
+// mirroring PDF's own "duplicate at lower fidelity" precedent.
+func TestPptxExtractorTableTextStillInPlainSlideSection(t *testing.T) {
+	dir := t.TempDir()
+	path := writePptxTableFixture(t, dir, "Slide intro text", [][]string{
+		{"Name", "Qty"},
+		{"Widget", "3"},
+	})
+
+	e := &PptxExtractor{}
+	res, err := e.Extract(context.Background(), ExtractRequest{Path: path})
+	if err != nil {
+		t.Fatalf("Extract: %v", err)
+	}
+	var plainSec *DocumentSection
+	for i := range res.Sections {
+		if res.Sections[i].Label == "slide 1" {
+			plainSec = &res.Sections[i]
+		}
+	}
+	if plainSec == nil {
+		t.Fatalf("expected a %q section, got: %+v", "slide 1", res.Sections)
+	}
+	for _, want := range []string{"Slide intro text", "Name", "Qty", "Widget", "3"} {
+		if !strings.Contains(plainSec.Text, want) {
+			t.Errorf("plain slide text missing %q: %q", want, plainSec.Text)
+		}
+	}
+}
+
+func TestPptxExtractorEmptyTableSkipped(t *testing.T) {
+	dir := t.TempDir()
+	path := writePptxTableFixture(t, dir, "No real table here", [][]string{{"", ""}, {"  ", ""}})
+
+	e := &PptxExtractor{}
+	res, err := e.Extract(context.Background(), ExtractRequest{Path: path})
+	if err != nil {
+		t.Fatalf("Extract: %v", err)
+	}
+	for _, sec := range res.Sections {
+		if strings.Contains(sec.Label, "table") {
+			t.Errorf("expected an all-blank table to be skipped, got %+v", sec)
+		}
+	}
+}
+
+func TestPptxExtractorNoTableProducesNoTableSections(t *testing.T) {
+	dir := t.TempDir()
+	path := writePptxFixture(t, dir, []string{"Just plain text, no table"})
+
+	e := &PptxExtractor{}
+	res, err := e.Extract(context.Background(), ExtractRequest{Path: path})
+	if err != nil {
+		t.Fatalf("Extract: %v", err)
+	}
+	for _, sec := range res.Sections {
+		if strings.Contains(sec.Label, "table") {
+			t.Errorf("expected no table sections for a slide with no table, got %+v", sec)
+		}
+	}
+}
+
 func TestPptxExtractorMatch(t *testing.T) {
 	e := &PptxExtractor{}
 	if !e.Match("deck.pptx") || !e.Match("DECK.PPTX") {
