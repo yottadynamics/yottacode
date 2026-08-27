@@ -35,6 +35,7 @@ type SandboxManager struct {
 
 	mu        sync.Mutex
 	sandboxes map[agent.SandboxProfile]agent.Sandbox
+	closed    bool
 }
 
 // NewSandboxManager returns a manager for an enabled sandbox backend. The first
@@ -91,6 +92,7 @@ func (m *SandboxManager) Close() error {
 	for _, sb := range m.sandboxes {
 		sandboxes = append(sandboxes, sb)
 	}
+	m.closed = true
 	m.sandboxes = make(map[agent.SandboxProfile]agent.Sandbox)
 	m.mu.Unlock()
 
@@ -107,18 +109,50 @@ func (m *SandboxManager) sandbox(ctx context.Context, profile agent.SandboxProfi
 	if profile == "" {
 		profile = agent.SandboxProfileDefault
 	}
+	if m == nil {
+		return agent.HostSandbox{}, nil
+	}
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	if sb := m.sandboxes[profile]; sb != nil {
+		m.mu.Unlock()
 		return sb, nil
 	}
+	if m.closed {
+		m.mu.Unlock()
+		return nil, errors.New("sandbox manager is closed")
+	}
 	if m.constructor == nil {
+		m.mu.Unlock()
 		return nil, errors.New("no sandbox constructor configured")
 	}
 	cfg := m.profileConfig(profile)
-	sb, err := m.constructor(ctx, cfg, m.profileID(profile), m.mountRoot)
+	id := m.profileID(profile)
+	mountRoot := m.mountRoot
+	constructor := m.constructor
+	m.mu.Unlock()
+
+	// Container creation may pull/start Podman and can be slow. Do not hold the
+	// manager lock across that boundary: Close must still be able to tear down
+	// already-live profile containers while another profile is being created.
+	sb, err := constructor(ctx, cfg, id, mountRoot)
 	if err != nil {
 		return nil, err
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.closed {
+		// Close won the race while the profile was being created. Tear down the
+		// just-created sandbox so shutdown does not leak a container.
+		_ = sb.Close()
+		return nil, errors.New("sandbox manager is closed")
+	}
+	if existing := m.sandboxes[profile]; existing != nil {
+		// A concurrent caller won the race while this profile was being created.
+		// Close the duplicate immediately so only the canonical sandbox is owned
+		// by the manager and later returned by LiveProfiles/Close.
+		_ = sb.Close()
+		return existing, nil
 	}
 	m.sandboxes[profile] = sb
 	return sb, nil
@@ -170,6 +204,9 @@ func (h SandboxHandler) Command(ctx context.Context, command, cwd string) *exec.
 }
 
 func (h SandboxHandler) CommandProfile(ctx context.Context, profile agent.SandboxProfile, command, cwd string) *exec.Cmd {
+	if h.manager == nil {
+		return agent.HostSandbox{}.Command(ctx, command, cwd)
+	}
 	return h.manager.Command(ctx, profile, command, cwd)
 }
 
@@ -178,11 +215,27 @@ func (h SandboxHandler) Label() string {
 }
 
 func (h SandboxHandler) LabelProfile(profile agent.SandboxProfile) string {
+	if h.manager == nil {
+		return agent.HostSandbox{}.Label()
+	}
 	return h.manager.Label(profile)
 }
 
 func (h SandboxHandler) Close() error {
+	if h.manager == nil {
+		return nil
+	}
 	return h.manager.Close()
+}
+
+// LiveProfiles exposes the manager's mounted profiles to worktree guards. An
+// empty result means the lazy handler exists but no container has mounted the
+// original cwd yet, so an in-session worktree swap is still safe.
+func (h SandboxHandler) LiveProfiles() []agent.SandboxProfile {
+	if h.manager == nil {
+		return nil
+	}
+	return h.manager.LiveProfiles()
 }
 
 func failingCommand(ctx context.Context, err error) *exec.Cmd {

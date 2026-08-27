@@ -81,7 +81,7 @@ commands share those profile containers' `memory`/`cpus`/`pids_limit` budget.
 | Podman lifecycle | `internal/sandbox/podman.go`, `internal/sandbox/detect.go` | Starts one rootless container for a requested manager profile, builds `podman exec`, validates mounts, detects local Podman/image state, and tears containers down. |
 | Session wiring | `internal/agentruntime/runtime.go`, `internal/agentruntime/sandbox_manager.go` | Creates a lazy per-profile sandbox manager only when the experimental flag is enabled and `[sandbox].backend = "podman"`; never falls back to host execution on profile creation failure. |
 | Dispatch inheritance | `internal/agent/dispatch_tool.go` | Gives each write worker a worker-scoped sandbox mounted at that worker's worktree; read-only workers reuse the parent registry. |
-| Worktree guard | `internal/agent/enter_worktree_tool.go` | Refuses mid-session worktree swaps while a sandbox is active because the running container cannot be remounted. |
+| Worktree guard | `internal/agent/enter_worktree_tool.go` | Refuses mid-session worktree swaps once a lazy sandbox profile has created a live container, because that container cannot be remounted. |
 | TUI control | `internal/tui/sandbox_picker.go`, `internal/tui/cmd_sandbox.go` | Persists sandbox mode, toggles live auto mode when requested, probes Podman/image availability, and tells users a restart/new session is required for backend changes. |
 | Config/docs | `internal/config/config.go`, `docs/sandbox.md` | Owns defaults, validation, and user-facing contract. |
 
@@ -194,7 +194,7 @@ resource-limit flags. `image` is the default profile used by `run_bash`;
   blocklist stays outside the sandbox because a blocked command can still
   destroy the mounted project tree. See [`document-generation.md`](document-generation.md)
   for how the document tools route their `pandoc`/`pdftotext` calls
-  through this same seam — the first tools besides `run_bash` to use it.
+  through the documents profile while `run_bash` stays on the default profile.
 
 ## Dispatch interaction
 
@@ -210,11 +210,14 @@ workers run tests or linters concurrently.
 
 ## Worktree interaction
 
-`enter_worktree` is blocked while a command sandbox is active. The session
-container was created with the original cwd mounted; after a mid-session cwd
-swap, `podman exec -w <new-worktree>` would point at a path the container cannot
-see. Start yottacode directly inside the worktree (`yottacode --worktree <name>`)
-or restart without sandbox before entering a worktree.
+`enter_worktree` is blocked only after a lazy sandbox profile has created a
+live container. That container was created with the original cwd mounted; after
+a mid-session cwd swap, `podman exec -w <new-worktree>` would point at a path
+the container cannot see. A freshly-started sandbox-enabled session that has not
+run `run_bash` or a subprocess-backed document path yet has no live container,
+so it can still enter a worktree safely. Once a profile is live, start yottacode
+directly inside the worktree (`yottacode --worktree <name>`) or restart without
+sandbox before entering a worktree.
 
 ## Known limitations
 

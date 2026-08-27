@@ -322,11 +322,12 @@ markup noise (scripts, styles, tags) verbatim instead of the content
 underneath.
 
 PDF extraction runs `pdftotext`/`pdfinfo` (poppler), routed through the
-same command sandbox `create_document`'s docx/pdf path uses: installed on
-the host when no sandbox is configured, or present in `[sandbox].image`
-when one is. Each page becomes its own labeled section (`page 3`); an
-encrypted or scanned/image-only PDF comes back as a warning, not an
-error, since that's still a valid, actionable result.
+same documents sandbox profile `create_document`'s docx/pdf path uses:
+installed on the host when no sandbox is configured, or present in
+`[sandbox].documents_image` when one is. Each page becomes its own
+labeled section (`page 3`); an encrypted or scanned/image-only PDF
+comes back as a warning, not an error, since that's still a valid,
+actionable result.
 
 xlsx, docx, and pptx are parsed natively — no external tools, no
 sandbox involved, work identically on every platform. xlsx (via
@@ -550,10 +551,10 @@ native Go renderer uses one fixed production-safe layout).
 **xlsx** and **pptx** are generated natively in Go — no external tools,
 works regardless of sandbox configuration. **docx/pdf** run `pandoc` (pdf
 additionally needs `weasyprint` as pandoc's PDF engine), routed through
-whatever command sandbox is active: installed on the host when no sandbox
-is configured, or present in `[sandbox].image` when one is. A missing
-binary returns an actionable error naming where it was checked (host
-`PATH` or the sandbox label) rather than failing silently — see
+the documents sandbox profile: installed on the host when no sandbox is
+configured, or present in `[sandbox].documents_image` when one is. A
+missing binary returns an actionable error naming where it was checked
+(host `PATH` or the sandbox label) rather than failing silently — see
 [`document-generation.md`](document-generation.md) for a reference
 Containerfile with everything docx/pdf generation and PDF extraction need.
 

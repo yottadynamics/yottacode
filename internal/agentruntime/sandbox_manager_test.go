@@ -93,6 +93,54 @@ func TestSandboxManager_CloseClosesCreatedProfiles(t *testing.T) {
 	}
 }
 
+func TestSandboxManager_CloseDoesNotWaitForSlowProfileCreation(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	defaultSandbox := &managerSpySandbox{label: "[default]"}
+	mgr := NewSandboxManager(config.Default().Sandbox, "sess", t.TempDir(), func(ctx context.Context, cfg config.SandboxConfig, id, mountRoot string) (agent.Sandbox, error) {
+		if id == "sess" {
+			return defaultSandbox, nil
+		}
+		close(started)
+		<-release
+		return &managerSpySandbox{label: "[documents]"}, nil
+	})
+
+	_ = mgr.Command(context.Background(), agent.SandboxProfileDefault, "true", t.TempDir())
+	done := make(chan struct{})
+	go func() {
+		_ = mgr.Command(context.Background(), agent.SandboxProfileDocuments, "true", t.TempDir())
+		close(done)
+	}()
+	<-started
+
+	if err := mgr.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if defaultSandbox.closeCount != 1 {
+		t.Fatalf("default closeCount = %d, want 1", defaultSandbox.closeCount)
+	}
+	close(release)
+	<-done
+	if profiles := mgr.LiveProfiles(); len(profiles) != 0 {
+		t.Fatalf("LiveProfiles after Close = %v, want none", profiles)
+	}
+}
+
+func TestSandboxHandler_ZeroValueIsSafe(t *testing.T) {
+	var h SandboxHandler
+	if got := h.Label(); got != (agent.HostSandbox{}).Label() {
+		t.Fatalf("zero-value label = %q, want host label", got)
+	}
+	if err := h.Close(); err != nil {
+		t.Fatalf("zero-value Close: %v", err)
+	}
+	out, err := h.Command(context.Background(), "printf ok", t.TempDir()).CombinedOutput()
+	if err != nil || string(out) != "ok" {
+		t.Fatalf("zero-value Command output=%q err=%v", out, err)
+	}
+}
+
 type assertErr string
 
 func (e assertErr) Error() string { return string(e) }
