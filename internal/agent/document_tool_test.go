@@ -191,18 +191,30 @@ func TestReadDocumentTool_NoApprovalNeeded(t *testing.T) {
 	}
 }
 
+// TestRegisterCoreCwdTools_DocumentIngestionGate checks that read_document
+// is always registered (GA for every format but PDF) and that
+// AllowPDFIngestion controls only the tool's PDF-specific gate, not its
+// presence.
 func TestRegisterCoreCwdTools_DocumentIngestionGate(t *testing.T) {
 	cwd := NewCwdRef(t.TempDir())
 	reg := NewRegistry()
 	RegisterCoreCwdTools(reg, cwd, CoreToolDeps{WriteOpts: WritePathOptions{Cwd: cwd}})
-	if reg.Names()["read_document"] {
-		t.Fatal("read_document should be absent when document_ingestion is disabled")
+	raw, ok := reg.Get("read_document")
+	if !ok {
+		t.Fatal("read_document should always be registered, regardless of AllowPDFIngestion")
+	}
+	if raw.(*ReadDocumentTool).SubprocessFormatsEnabled {
+		t.Fatal("read_document's PDF gate should be off by default")
 	}
 
 	reg = NewRegistry()
-	RegisterCoreCwdTools(reg, cwd, CoreToolDeps{WriteOpts: WritePathOptions{Cwd: cwd}, EnableDocumentIngestion: true})
-	if !reg.Names()["read_document"] {
-		t.Fatal("read_document should be registered when document_ingestion is enabled")
+	RegisterCoreCwdTools(reg, cwd, CoreToolDeps{WriteOpts: WritePathOptions{Cwd: cwd}, AllowPDFIngestion: true})
+	raw, ok = reg.Get("read_document")
+	if !ok {
+		t.Fatal("read_document should be registered")
+	}
+	if !raw.(*ReadDocumentTool).SubprocessFormatsEnabled {
+		t.Fatal("read_document's PDF gate should be on when AllowPDFIngestion is true")
 	}
 }
 
@@ -248,14 +260,34 @@ func TestReadDocumentTool_PDFRoutesThroughSandbox(t *testing.T) {
 // the real host path end to end: without a sandbox, PDF extraction shells
 // out directly (HostSandbox), and since pdftotext isn't installed on the
 // test host, Execute must surface a clear error rather than silently
-// returning an empty result.
+// returning an empty result. SubprocessFormatsEnabled is set so this
+// test reaches PDFExtractor's own error, not the earlier gate — see
+// TestReadDocumentTool_PDFBlockedWithoutSubprocessGate for that.
 func TestReadDocumentTool_PDFMissingPdftotextIsAnActionableError(t *testing.T) {
+	tmp := t.TempDir()
+	writeFile(t, tmp, "doc.pdf", "not a real pdf, just needs to exist")
+	tool := &ReadDocumentTool{Cwd: NewCwdRef(tmp), SubprocessFormatsEnabled: true}
+	_, err := tool.Execute(context.Background(), `{"path":"doc.pdf"}`)
+	if err == nil {
+		t.Fatal("expected an error since pdftotext/pdfinfo aren't installed on the test host")
+	}
+}
+
+// TestReadDocumentTool_PDFDisabledViaSubprocessGate is the regression for
+// the field itself: read_document is fully GA (document_ingestion
+// graduated — see internal/experimental/features.go), so every real
+// caller wires SubprocessFormatsEnabled true unconditionally, but the
+// field remains a real on/off switch for a caller that constructs the
+// tool directly with it left false. Every other format is unaffected —
+// see TestReadDocumentTool_XLSXEndToEnd, which doesn't set this field
+// yet already succeeds.
+func TestReadDocumentTool_PDFDisabledViaSubprocessGate(t *testing.T) {
 	tmp := t.TempDir()
 	writeFile(t, tmp, "doc.pdf", "not a real pdf, just needs to exist")
 	tool := &ReadDocumentTool{Cwd: NewCwdRef(tmp)}
 	_, err := tool.Execute(context.Background(), `{"path":"doc.pdf"}`)
-	if err == nil {
-		t.Fatal("expected an error since pdftotext/pdfinfo aren't installed on the test host")
+	if err == nil || !strings.Contains(err.Error(), "disabled in this configuration") {
+		t.Fatalf("expected an error explaining PDF is disabled, got %v", err)
 	}
 }
 
@@ -308,5 +340,40 @@ func TestReadDocumentTool_DocxPandocTierReachableThroughDefaultRegistry(t *testi
 	}
 	if docxEx.Run == nil {
 		t.Fatal("expected the default registry's DocxExtractor to have Run wired (the pandoc tier), got nil — the richer registration is being shadowed by NewRegistry's own native-only entry")
+	}
+}
+
+// TestReadDocumentTool_ResolvePyHelperScript_PodmanUsesInImagePath is
+// the regression for the wiring itself (not just pdf.go's own tier
+// logic, already covered by internal/documents' pdf_tables_test.go): a
+// podman-labeled sandbox must resolve to the fixed in-image path with
+// no filesystem access at all.
+func TestReadDocumentTool_ResolvePyHelperScript_PodmanUsesInImagePath(t *testing.T) {
+	tool := &ReadDocumentTool{Sandbox: &fakeSandbox{label: podmanSandboxLabel}}
+	got, err := tool.resolvePyHelperScript(documents.ScriptExtractPDFTables)
+	if err != nil {
+		t.Fatalf("resolvePyHelperScript: %v", err)
+	}
+	want := documents.DocumentsImageHelperDir + "/extract_pdf_tables.py"
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+// TestReadDocumentTool_ResolvePyHelperScript_HostMaterializesToCache
+// covers the non-podman path — HOME is redirected to a temp dir so the
+// test never touches the real user's ~/.yottacode/cache/doc-helpers.
+func TestReadDocumentTool_ResolvePyHelperScript_HostMaterializesToCache(t *testing.T) {
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+
+	tool := &ReadDocumentTool{} // no Sandbox set -> HostSandbox
+	got, err := tool.resolvePyHelperScript(documents.ScriptFillDocxTemplate)
+	if err != nil {
+		t.Fatalf("resolvePyHelperScript: %v", err)
+	}
+	want := filepath.Join(fakeHome, ".yottacode", "cache", "doc-helpers", "fill_docx_template.py")
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
 	}
 }

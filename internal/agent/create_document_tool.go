@@ -36,6 +36,19 @@ type CreateDocumentTool struct {
 	// mirroring RunBashTool.Sandbox. Only consulted for docx/pdf — xlsx and
 	// pptx are native Go paths and never shell out.
 	Sandbox Sandbox
+
+	// SubprocessFormatsEnabled gates format=docx and format=pdf, which
+	// shell out to pandoc (pdf additionally needs weasyprint) — see
+	// needsCommandSandbox. xlsx and pptx are pure Go with no subprocess
+	// and are never gated by this field. document_generation graduated
+	// to GA (see internal/experimental/features.go), so every real
+	// caller wires this true unconditionally; the field stays as a
+	// structural on/off switch for a caller that wants docx/pdf excluded
+	// for reasons of its own (mirrors CoreToolDeps.EnableLSP's own
+	// always-true-but-still-a-field shape). A missing pandoc/weasyprint
+	// binary is reported separately by checkCommandAvailable, not by
+	// this field.
+	SubprocessFormatsEnabled bool
 }
 
 func (t *CreateDocumentTool) sandbox() Sandbox {
@@ -50,16 +63,25 @@ func (t *CreateDocumentTool) Name() string { return "create_document" }
 func (t *CreateDocumentTool) Description() string {
 	return "Generate an xlsx, docx, pdf, or pptx file from structured content. " +
 		"For format=xlsx, set content.sheets (native, no external tools required). " +
+		"For format=pptx, set content.slides (title/bullets/notes/layout/image per slide); " +
+		"an image references an existing local file by path (validated the same way a docx/pdf image " +
+		"block is); generation is native Go and needs no python3/python-pptx runtime. " +
 		"For format=docx or format=pdf, set content.blocks (heading/paragraph/list/table/code/image); " +
 		"a heading/paragraph/list-item can use plain text or spans (bold/italic inline formatting) " +
 		"and an image block references an existing local file by path (validated the same way read_file " +
 		"validates a read path — denied credential paths, no path traversal). " +
-		"generation runs pandoc, which must be reachable through the active command sandbox " +
-		"(installed on the host when no sandbox is configured, or present in the sandbox's [sandbox].image). " +
-		"pdf additionally requires weasyprint as pandoc's PDF engine. " +
-		"For format=pptx, set content.slides (title/bullets/notes/layout/image per slide); " +
-		"an image references an existing local file by path (validated the same way an image block is); " +
-		"generation is native Go and needs no python3/python-pptx runtime. " +
+		"generation runs pandoc, which must be reachable through the documents sandbox profile " +
+		"(installed on the host when no sandbox is configured, or present in [sandbox].documents_image); " +
+		"pdf additionally requires weasyprint as pandoc's PDF engine — a missing binary returns an " +
+		"actionable error naming exactly where it looked, rather than failing silently. " +
+		"For format=docx, set template (path to an existing docx) plus content.replacements " +
+		"instead of content.blocks to fill an existing document in place rather than generating a new " +
+		"one from scratch: every {{name}} token found in the template (including inside tables, headers, " +
+		"and footers) is replaced with replacements[name], preserving formatting outside affected " +
+		"paragraphs — a paragraph containing a replaced token loses formatting variation *within* that " +
+		"paragraph specifically (collapses to its first run's style), everything else is untouched. " +
+		"Runs python3+python-docx through the same documents sandbox profile as pandoc; a missing binary returns " +
+		"the same kind of actionable error. " +
 		"Always requires approval; refuses to overwrite an existing file unless overwrite=true."
 }
 
@@ -79,17 +101,33 @@ func (t *CreateDocumentTool) Schema() map[string]any {
 				"type":        "boolean",
 				"description": "Allow replacing an existing output file (default false)",
 			},
+			"template": map[string]any{
+				"type": "string",
+				"description": "format=docx only: path to an existing docx file to fill in place of generating a new one from content.blocks. " +
+					"Every {{name}} token found in the template's text (including inside tables, headers, and footers) is replaced " +
+					"with content.replacements[name]; a paragraph with no matching token is left completely untouched. " +
+					"Validated as a read path the same way an image block's path is (denied credential paths, no path traversal).",
+			},
 			"content": map[string]any{
 				"type":        "object",
-				"description": "Document content: set sheets for format=xlsx, blocks for format=docx/pdf, or slides for format=pptx",
+				"description": "Document content: set sheets for format=xlsx, blocks for format=docx/pdf (ignored when template is set), replacements for format=docx with template set, or slides for format=pptx",
 				"properties": map[string]any{
-					"sheets": createDocumentSheetsSchema(),
-					"blocks": createDocumentBlocksSchema(),
-					"slides": createDocumentSlidesSchema(),
+					"sheets":       createDocumentSheetsSchema(),
+					"blocks":       createDocumentBlocksSchema(),
+					"slides":       createDocumentSlidesSchema(),
+					"replacements": createDocumentReplacementsSchema(),
 				},
 			},
 		},
 		"required": []string{"format", "output_path", "content"},
+	}
+}
+
+func createDocumentReplacementsSchema() map[string]any {
+	return map[string]any{
+		"type":                 "object",
+		"description":          "format=docx with template set only: flat {name: value} map: every {{name}} token in the template is replaced with value.",
+		"additionalProperties": map[string]any{"type": "string"},
 	}
 }
 
@@ -175,13 +213,15 @@ type createDocumentArgs struct {
 	Format     string                    `json:"format"`
 	OutputPath string                    `json:"output_path"`
 	Overwrite  bool                      `json:"overwrite"`
+	Template   string                    `json:"template"`
 	Content    createDocumentContentArgs `json:"content"`
 }
 
 type createDocumentContentArgs struct {
-	Sheets []createDocumentSheetArg `json:"sheets"`
-	Blocks []createDocumentBlockArg `json:"blocks"`
-	Slides []createDocumentSlideArg `json:"slides"`
+	Sheets       []createDocumentSheetArg `json:"sheets"`
+	Blocks       []createDocumentBlockArg `json:"blocks"`
+	Slides       []createDocumentSlideArg `json:"slides"`
+	Replacements map[string]string        `json:"replacements"`
 }
 
 type createDocumentSlideArg struct {
@@ -266,6 +306,12 @@ func (t *CreateDocumentTool) Execute(ctx context.Context, argsJSON string) (stri
 	if strings.TrimSpace(a.OutputPath) == "" {
 		return "", errors.New("create_document: output_path is required")
 	}
+	if needsCommandSandbox(a.Format) && !t.SubprocessFormatsEnabled {
+		return "", fmt.Errorf("create_document: format=%s is disabled in this configuration", a.Format)
+	}
+	if strings.TrimSpace(a.Template) != "" && a.Format != "docx" {
+		return "", fmt.Errorf("create_document: template is only supported for format=docx, got format=%s", a.Format)
+	}
 
 	cwd := t.Cwd.Get()
 	output := resolvePath(cwd, a.OutputPath)
@@ -289,12 +335,14 @@ func (t *CreateDocumentTool) Execute(ctx context.Context, argsJSON string) (stri
 		}
 	}
 
-	switch a.Format {
-	case "xlsx":
+	switch {
+	case a.Format == "xlsx":
 		return t.generateXLSX(a, output)
-	case "pptx":
+	case a.Format == "pptx":
 		return t.generatePPTX(a, output, cwd)
-	default:
+	case a.Format == "docx" && strings.TrimSpace(a.Template) != "":
+		return t.generateDocxFromTemplate(ctx, a, output, cwd)
+	default: // docx (no template) or pdf
 		return t.generateViaPandoc(ctx, a, output, cwd)
 	}
 }
@@ -464,6 +512,113 @@ func (t *CreateDocumentTool) generateViaPandoc(ctx context.Context, a createDocu
 	return fmt.Sprintf("generated %s via pandoc (%s): %s\n", a.Format, label, output), nil
 }
 
+// resolvePyHelperScript implements documents.ScriptResolver, mirroring
+// ReadDocumentTool.resolvePyHelperScript exactly (same cache directory,
+// same podman-vs-host dispatch) so both tools materialize into the
+// same place rather than each picking its own.
+func (t *CreateDocumentTool) resolvePyHelperScript(script documents.PyHelperScript) (string, error) {
+	cacheDir, err := pyHelperCacheDir()
+	if err != nil {
+		return "", err
+	}
+	isPodman := isPodmanSandboxLabel(LabelForProfile(t.sandbox(), SandboxProfileDocuments))
+	return documents.ResolvePyHelperScript(script, isPodman, cacheDir)
+}
+
+// generateDocxFromTemplate fills {{name}} tokens in an existing docx via
+// the fill_docx_template.py driver script (python-docx), instead of
+// generating a new docx from content.blocks via pandoc — see
+// roadmap/document-generation.md's "Python-in-container implementation
+// plan". Reuses the same Sandbox/shell-quoting/atomic-placement/exit-125
+// handling generateViaPandoc already established for docx/pdf; the only
+// new trust boundary is Template itself, which is a read path validated
+// exactly like an image block's path (ValidateReadPath + the credential
+// deny-list) — this tool's second-ever read path after images.
+func (t *CreateDocumentTool) generateDocxFromTemplate(ctx context.Context, a createDocumentArgs, output, cwd string) (string, error) {
+	templatePath := resolvePath(cwd, a.Template)
+	if err := ValidateReadPath(templatePath, t.DenyReadPaths); err != nil {
+		return "", fmt.Errorf("create_document: template: %w", err)
+	}
+
+	sb := t.sandbox()
+	if err := checkCommandAvailable(ctx, sb, cwd, "python3"); err != nil {
+		return "", err
+	}
+	scriptPath, err := t.resolvePyHelperScript(documents.ScriptFillDocxTemplate)
+	if err != nil {
+		return "", fmt.Errorf("create_document: resolve docx template helper script: %w", err)
+	}
+
+	if err := os.MkdirAll(filepath.Dir(output), 0o755); err != nil {
+		return "", fmt.Errorf("create_document: mkdir output dir: %w", err)
+	}
+
+	replJSON, err := json.Marshal(a.Content.Replacements)
+	if err != nil {
+		return "", fmt.Errorf("create_document: marshal replacements: %w", err)
+	}
+	replFile, err := os.CreateTemp(filepath.Dir(output), ".yc-docgen-*.json")
+	if err != nil {
+		return "", fmt.Errorf("create_document: create temp replacements file: %w", err)
+	}
+	replPath := replFile.Name()
+	defer os.Remove(replPath)
+	if _, err := replFile.Write(replJSON); err != nil {
+		replFile.Close()
+		return "", fmt.Errorf("create_document: write temp replacements file: %w", err)
+	}
+	if err := replFile.Close(); err != nil {
+		return "", fmt.Errorf("create_document: close temp replacements file: %w", err)
+	}
+
+	// Same reasoning as generateViaPandoc's tmpOutput: the script's own
+	// output-path argument always overwrites unconditionally, so the
+	// overwrite guard has to live at the placeOutputFile rename below.
+	tmpOutput := fmt.Sprintf("%s.yc-docgen-%d%s", strings.TrimSuffix(output, filepath.Ext(output)), time.Now().UnixNano(), filepath.Ext(output))
+	defer os.Remove(tmpOutput)
+
+	cmdLine := buildDocxTemplateCommand(scriptPath, templatePath, tmpOutput, replPath)
+	c := CommandInProfile(ctx, sb, SandboxProfileDocuments, cmdLine, cwd)
+	var stdout, stderr bytes.Buffer
+	c.Stdout = &cappedWriter{buf: &stdout}
+	c.Stderr = &cappedWriter{buf: &stderr}
+	if err := c.Run(); err != nil {
+		if exitErr, ok := errors.AsType[*exec.ExitError](err); ok {
+			note := ""
+			if exitErr.ExitCode() == podmanInfraExitCode && isPodmanSandboxLabel(LabelForProfile(sb, SandboxProfileDocuments)) {
+				note = "NOTE: exit=125 is podman's own convention for a podman-level failure (not the script's own exit code) — the sandbox container itself may need attention (see /sandbox). "
+			}
+			return "", fmt.Errorf("create_document: %sdocx template fill failed (exit=%d): %s", note, exitErr.ExitCode(), strings.TrimSpace(stderr.String()))
+		}
+		return "", fmt.Errorf("create_document: docx template fill: %w", err)
+	}
+
+	if err := placeOutputFile(tmpOutput, output, a.Overwrite); err != nil {
+		return "", fmt.Errorf("create_document: %w", err)
+	}
+
+	label := LabelForProfile(sb, SandboxProfileDocuments)
+	if label == (HostSandbox{}).Label() {
+		label = "host"
+	}
+	return fmt.Sprintf("generated docx from template via python-docx (%s): %s (%d replacements applied)\n",
+		label, output, parseReplacementsAppliedCount(stdout.Bytes())), nil
+}
+
+// parseReplacementsAppliedCount best-effort parses
+// fill_docx_template.py's stdout status JSON. A parse failure returns 0
+// rather than an error — the docx was already generated successfully by
+// this point; this count is informational only.
+func parseReplacementsAppliedCount(stdout []byte) int {
+	var status struct {
+		ReplacementsApplied int `json:"replacements_applied"`
+	}
+	if err := json.Unmarshal(stdout, &status); err != nil {
+		return 0
+	}
+	return status.ReplacementsApplied
+}
+
 // buildPandocCommand builds the /bin/sh -c command line Sandbox.Command
 // runs. Pure function (no I/O) so its output shape is unit-testable
 // without pandoc installed.
@@ -476,6 +631,17 @@ func buildPandocCommand(format, output, mdPath string) string {
 	default:
 		return ""
 	}
+}
+
+// buildDocxTemplateCommand builds the /bin/sh -c command line
+// generateDocxFromTemplate runs. Pure function (no I/O), mirroring
+// buildPandocCommand's own shape, so its output is unit-testable
+// without python installed. Argument order matches
+// pyhelpers/fill_docx_template.py's own: template, output,
+// replacements-JSON.
+func buildDocxTemplateCommand(scriptPath, templatePath, output, replacementsPath string) string {
+	return fmt.Sprintf("python3 %s %s %s %s",
+		shellQuoteSingle(scriptPath), shellQuoteSingle(templatePath), shellQuoteSingle(output), shellQuoteSingle(replacementsPath))
 }
 
 // generatePPTX builds a pptx from content.slides via the native Go
@@ -542,9 +708,9 @@ func checkCommandAvailable(ctx context.Context, sb Sandbox, cwd, name string) er
 		return fmt.Errorf("create_document: NOTE: exit=125 is podman's own convention for a podman-level failure (not a missing-%s finding) — the sandbox container itself may need attention (see /sandbox). probe output: %s", name, strings.TrimSpace(out.String()))
 	}
 	if probe := strings.TrimSpace(out.String()); probe != "" {
-		return fmt.Errorf("create_document: %s not found (checked via %s): %s; install it, or point [sandbox].image at an image that includes it — see docs/document-generation.md for a reference Containerfile", name, where, probe)
+		return fmt.Errorf("create_document: %s not found (checked via %s): %s; install it, or point [sandbox].documents_image at an image that includes it — see docs/document-generation.md for a reference Containerfile", name, where, probe)
 	}
-	return fmt.Errorf("create_document: %s not found (checked via %s); install it, or point [sandbox].image at an image that includes it — see docs/document-generation.md for a reference Containerfile", name, where)
+	return fmt.Errorf("create_document: %s not found (checked via %s); install it, or point [sandbox].documents_image at an image that includes it — see docs/document-generation.md for a reference Containerfile", name, where)
 }
 
 // shellQuoteSingle wraps s in POSIX single quotes so it is safe to embed

@@ -512,7 +512,23 @@ type runTestsArgs struct {
 	Path    string `json:"path"`
 }
 
-type RunTestsTool struct{ Cwd *CwdRef }
+// RunTestsTool runs a test command in cwd via /bin/sh -c. Command execution
+// routes through Sandbox — nil selects HostSandbox (today's direct-on-host
+// behavior), same contract as RunBashTool (see exec_tool.go).
+type RunTestsTool struct {
+	Cwd *CwdRef
+	// Sandbox is nil-safe: a nil Sandbox behaves exactly like HostSandbox,
+	// so every call site that doesn't set it keeps today's behavior.
+	Sandbox Sandbox
+}
+
+// sandbox returns t.Sandbox, or HostSandbox{} when unset.
+func (t *RunTestsTool) sandbox() Sandbox {
+	if t.Sandbox != nil {
+		return t.Sandbox
+	}
+	return HostSandbox{}
+}
 
 func (t *RunTestsTool) Name() string { return "run_tests" }
 func (t *RunTestsTool) Description() string {
@@ -536,7 +552,11 @@ func (t *RunTestsTool) PreviewCall(argsJSON string) string {
 	if root == "" {
 		root = "."
 	}
-	return fmt.Sprintf("run_tests(%s in %s)", cmd, root)
+	preview := fmt.Sprintf("run_tests(%s in %s)", cmd, root)
+	if sb := t.sandbox(); sb.Label() != (HostSandbox{}).Label() {
+		preview = sb.Label() + " " + preview
+	}
+	return preview
 }
 
 func (t *RunTestsTool) Execute(ctx context.Context, argsJSON string) (string, error) {
@@ -549,8 +569,16 @@ func (t *RunTestsTool) Execute(ctx context.Context, argsJSON string) (string, er
 	if err != nil {
 		return "", fmt.Errorf("run_tests: %w", err)
 	}
-	cmd := exec.CommandContext(ctx, "/bin/sh", "-c", command)
-	cmd.Dir = root
+	// Hardline floor: run_tests executes the same shell surface as
+	// run_bash (and can be auto-approved for sandboxed background
+	// dispatch workers), so catastrophic commands must be refused at
+	// this execution chokepoint regardless of approval mode. Returning a
+	// recoverable result keeps the model informed without running the
+	// command.
+	if blocked, reason := IsHardlineCommand(command); blocked {
+		return fmt.Sprintf("BLOCKED (hardline): %s. This command is on the unconditional blocklist and cannot be run through the agent — not even with --yolo. If you genuinely need it, run it yourself in a terminal outside the agent.", reason), nil
+	}
+	cmd := t.sandbox().Command(ctx, command, root)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &capped{buf: &stdout, max: 1 << 20}
 	cmd.Stderr = &capped{buf: &stderr, max: 1 << 20}
@@ -563,7 +591,8 @@ func (t *RunTestsTool) Execute(ctx context.Context, argsJSON string) (string, er
 	if runErr != nil && !errors.As(runErr, &exitErr) {
 		return "", fmt.Errorf("run_tests: %w", runErr)
 	}
-	return fmt.Sprintf("$ %s\nexit=%d\n--- stdout ---\n%s--- stderr ---\n%s", command, exit, stdout.String(), stderr.String()), nil
+	result := fmt.Sprintf("$ %s\nexit=%d\n--- stdout ---\n%s--- stderr ---\n%s", command, exit, stdout.String(), stderr.String())
+	return podmanInfraNote(t.sandbox(), exit, result), nil
 }
 
 func normalizeRunTestsCommand(command string) string {

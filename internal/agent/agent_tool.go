@@ -680,6 +680,15 @@ type childRunOpts struct {
 	// hardline floor still applies, and writes stay confined to the worktree
 	// by the child registry's WriteOpts.
 	bgPolicy bool
+	// sandboxed reports whether this dispatch write worker's mutating
+	// shell/test calls are routed through its own per-worker Sandbox (see
+	// DispatchTool.SandboxFactory) rather than the host. Only set by
+	// dispatch write children — read-only dispatch children share the
+	// parent's own registry/Sandbox directly and leave this false. Threads
+	// into dispatchBackgroundApprovalPolicy so an unattended (background)
+	// worker's run_bash/run_tests calls are allowed exactly when a
+	// container bounds their blast radius, denied on the host fallback.
+	sandboxed bool
 	// standaloneBackgroundPolicy makes ordinary Agent(run_in_background:true)
 	// runs deny approval-requiring tools before parent auto/yolo modes can approve
 	// them. Read-only/no-approval tools still execute normally. Dispatch
@@ -764,7 +773,7 @@ func (t *AgentTool) runChild(
 		YoloMode:          t.YoloMode, // shared (process-wide once entered)
 	}
 	if opts.bgPolicy {
-		childCfg.BackgroundApprovalPolicy = dispatchBackgroundApprovalPolicy
+		childCfg.BackgroundApprovalPolicy = dispatchBackgroundApprovalPolicyFor(opts.sandboxed)
 	} else if opts.standaloneBackgroundPolicy {
 		childCfg.BackgroundApprovalPolicy = standaloneBackgroundApprovalPolicy
 	}
@@ -981,7 +990,7 @@ func (t *AgentTool) runChild(
 			verdict := Deny
 			note := fmt.Sprintf("auto-denied %s (background subagent cannot prompt; allowlist the tool in permissions.json if needed)", e.ToolName)
 			if opts.bgPolicy {
-				verdict, note = backgroundWorkerDecision(e.ToolName, e.ArgsJSON)
+				verdict, note = backgroundWorkerDecision(e.ToolName, e.ArgsJSON, opts.sandboxed)
 			}
 			select {
 			case childDecisions <- verdict:
@@ -1192,6 +1201,17 @@ func stripUnattendedProcessTools(reg *Registry) {
 	}
 }
 
+// dispatchBackgroundApprovalPolicyFor closes dispatchBackgroundApprovalPolicy
+// over one dispatch worker's sandboxed-ness, producing the function value
+// LoopConfig.BackgroundApprovalPolicy expects. sandboxed-ness is decided per
+// worker (see childRunOpts.sandboxed), not per feature, so this is a closure
+// rather than a package-level policy constant.
+func dispatchBackgroundApprovalPolicyFor(sandboxed bool) func(Tool, string) (Decision, string, bool) {
+	return func(tool Tool, argsJSON string) (Decision, string, bool) {
+		return dispatchBackgroundApprovalPolicy(tool, argsJSON, sandboxed)
+	}
+}
+
 // dispatchBackgroundApprovalPolicy is the deterministic approval policy for an
 // unattended dispatch worker that can't prompt a human. It mirrors how hermes
 // and Claude Code gate unattended subagents: allow the safe, contained
@@ -1202,18 +1222,23 @@ func stripUnattendedProcessTools(reg *Registry) {
 //   - File-mutation tools are allowed: the worktree child registry confines
 //     their writes to the isolated worktree AND to the dispatch worker's owned
 //     file set via WriteOpts, so the blast radius is the worker's branch.
-//   - run_tests is DENIED for unattended workers: tests execute arbitrary Go
-//     code from the worker's worktree and can also be influenced by GOFLAGS.
-//   - run_bash is DENIED for unattended workers (GA posture). The
-//     "read-only shell" classifier (IsAutoModeSafeBash) is a first-token
-//     check that is bypassable (env/command wrappers, process substitution),
-//     and run_bash isn't path-confined once allowed — so auto-allowing it is
-//     an arbitrary-code-execution surface for a worker nobody is watching.
-//     A task that genuinely needs shell must run in the foreground (a human
-//     approves) until the token-aware classifier lands.
+//   - run_tests and run_bash execute arbitrary code from the worker's
+//     worktree (tests can also be steered by GOFLAGS; the "read-only shell"
+//     classifier, IsAutoModeSafeBash, is a first-token check that's
+//     bypassable via env/command wrappers or process substitution, and
+//     run_bash isn't path-confined once allowed). For an unsandboxed
+//     (host-executing) worker that makes both an arbitrary-code-execution
+//     surface for nobody-is-watching background workers, so they stay
+//     DENIED. When sandboxed is true — this worker's commands run inside its
+//     own per-worker container (see DispatchTool.SandboxFactory) — the blast
+//     radius is the container, the same bet write_file already makes via
+//     worktree confinement, so both are ALLOWED. "Confine, don't classify":
+//     roadmap/dispatch-v3-collaboration.md § "0d revisited". A task that
+//     needs shell/tests without a sandbox must run in the foreground (a
+//     human approves).
 //   - Everything else (git_commit, the unified git tool, fetch, …) is denied;
 //     the worker's commit happens via dispatch's own auto-commit.
-func dispatchBackgroundApprovalPolicy(tool Tool, argsJSON string) (Decision, string, bool) {
+func dispatchBackgroundApprovalPolicy(tool Tool, argsJSON string, sandboxed bool) (Decision, string, bool) {
 	name := tool.Name()
 	switch name {
 	case "write_file", "edit_file", "edit_anchored", "apply_diff", "mkdir", "copy_file", "move_file", "delete_file":
@@ -1221,9 +1246,15 @@ func dispatchBackgroundApprovalPolicy(tool Tool, argsJSON string) (Decision, str
 	case "lsp_apply_workspace_edit":
 		return Deny, "denied lsp_apply_workspace_edit (workspace edits can partially apply across files; run this task in the foreground to approve it)", true
 	case "run_tests":
-		return Deny, "denied run_tests (tests execute code and are disabled for unattended dispatch workers; run the task in the foreground to approve tests)", true
+		if sandboxed {
+			return AllowOnce, "allowed run_tests (confined to this worker's own sandbox container)", true
+		}
+		return Deny, "denied run_tests (tests execute code and are disabled for unattended dispatch workers without a sandbox; run the task in the foreground to approve tests, or enable [sandbox] backend = \"podman\")", true
 	case "run_bash":
-		return Deny, "denied run_bash (shell is disabled for unattended dispatch workers; run this task in the foreground to approve shell/tests)", true
+		if sandboxed {
+			return AllowOnce, "allowed run_bash (confined to this worker's own sandbox container)", true
+		}
+		return Deny, "denied run_bash (shell is disabled for unattended dispatch workers without a sandbox; run this task in the foreground to approve shell/tests, or enable [sandbox] backend = \"podman\")", true
 	case "create_document":
 		return Deny, "denied create_document (document generation needs a human — run this task in the foreground to approve it)", true
 	}
@@ -1235,9 +1266,9 @@ func dispatchBackgroundApprovalPolicy(tool Tool, argsJSON string) (Decision, str
 	}
 	return AllowOnce, "allowed " + name + " (dispatch background read-only allowlist)", true
 }
-func backgroundWorkerDecision(toolName, argsJSON string) (Decision, string) {
+func backgroundWorkerDecision(toolName, argsJSON string, sandboxed bool) (Decision, string) {
 	tool := namedApprovalTool{name: toolName}
-	decision, note, _ := dispatchBackgroundApprovalPolicy(tool, argsJSON)
+	decision, note, _ := dispatchBackgroundApprovalPolicy(tool, argsJSON, sandboxed)
 	return decision, note
 }
 

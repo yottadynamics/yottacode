@@ -311,8 +311,12 @@ Each file gets its own `[truncated]` marker if needed.
 
 ## read_document
 
-*Experimental — enable with `--experimental document_ingestion` (see
-[experimental.md](experimental.md)).*
+*GA for every format, including PDF; the `document_ingestion` flag is a
+no-op kept for one release for compatibility (see
+[experimental.md](experimental.md)). PDF extraction needs
+`pdftotext`/`pdfinfo` reachable via host `PATH` or `[sandbox].documents_image` — a
+missing binary returns an actionable error naming exactly where it
+looked, not a silent failure.*
 
 Extract bounded, structured text from a CSV, TSV, JSON, JSONL, XML, HTML,
 PDF, xlsx, docx, or pptx file. Use it when you need to **analyze** data in
@@ -327,7 +331,12 @@ installed on the host when no sandbox is configured, or present in
 `[sandbox].documents_image` when one is. Each page becomes its own
 labeled section (`page 3`); an encrypted or scanned/image-only PDF
 comes back as a warning, not an error, since that's still a valid,
-actionable result.
+actionable result. When `python3`+`pdfplumber` are also reachable through
+that same documents profile or host PATH, detected tables come back as
+additional `page N table M` sections with pipe-joined rows — best-effort
+and completely silent (no warning either) when that dependency isn't
+available or a page genuinely has no tables; see
+[`document-generation.md`](document-generation.md#requirements).
 
 xlsx, docx, and pptx are parsed natively — no external tools, no
 sandbox involved, work identically on every platform. xlsx (via
@@ -482,11 +491,13 @@ falling back silently.
 
 ## create_document
 
-*Experimental* — enable with `--experimental document_generation`,
-`YOTTACODE_EXPERIMENTAL=document_generation`, or
-`[experimental] document_generation = true` in config. Generates a new
-xlsx, docx, pdf, or pptx file from structured content — the write-side
-counterpart to `read_document`. See
+*GA for every format, including docx/pdf; the `document_generation` flag
+is a no-op kept for one release for compatibility (see
+[experimental.md](experimental.md)). docx/pdf need `pandoc`/`weasyprint`
+reachable via host `PATH` or `[sandbox].documents_image` — a missing binary
+returns an actionable error naming exactly where it looked, not a
+silent failure.* Generates a new xlsx, docx, pdf, or pptx file from
+structured content — the write-side counterpart to `read_document`. See
 [`document-generation.md`](document-generation.md) for the full design
 and setup.
 
@@ -495,9 +506,11 @@ and setup.
 | `format` | string | — | `xlsx`, `docx`, `pdf`, or `pptx` |
 | `output_path` | string | — | Path to write the generated document to |
 | `overwrite` | bool | `false` | Must be explicit to replace an existing output |
+| `template` | string | — | `format=docx` only: path to an existing docx to fill instead of generating a new one from `content.blocks` — see below |
 | `content.sheets` | []object | — | xlsx only: one entry per sheet — `name`, `rows` (array of arrays of cells) |
-| `content.blocks` | []object | — | docx/pdf only: ordered content blocks |
+| `content.blocks` | []object | — | docx/pdf only, ignored when `template` is set: ordered content blocks |
 | `content.slides` | []object | — | pptx only: one entry per slide |
+| `content.replacements` | object | — | `format=docx` with `template` set only: flat `{name: value}` map |
 
 xlsx cell fields: `value` (string/number/bool), `formula` (without the
 leading `=`; overrides `value`), `bold`, `italic`, `number_format` (an
@@ -518,6 +531,22 @@ pptx slide fields: `title`, `bullets` (array of strings), `notes`
 read path the same way `read_file` validates one) + `image_alt` (written
 to the picture description field), and `layout` (currently advisory; the
 native Go renderer uses one fixed production-safe layout).
+
+`format=docx` with `template` set fills an existing document instead of
+generating a new one: every `{{name}}` token found anywhere in the
+template (paragraphs, table cells, headers, footers) is replaced with
+`content.replacements[name]`. `template` is validated as a read path the
+same way an image block's `path` is. Runs `python3`+`python-docx`
+through the active command sandbox — see
+[`document-generation.md`](document-generation.md#requirements) for the
+dependency story and the per-paragraph formatting trade-off (a paragraph
+with a replaced token collapses to its first run's style; every other
+paragraph is untouched).
+
+```json
+{"format": "docx", "output_path": "invoice.docx", "template": "templates/invoice.docx",
+ "content": {"replacements": {"customer_name": "Jane Doe", "total": "$42.00"}}}
+```
 
 ```json
 {"format": "xlsx", "output_path": "report.xlsx", "content": {"sheets": [

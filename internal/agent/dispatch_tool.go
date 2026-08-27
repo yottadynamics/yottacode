@@ -56,13 +56,16 @@ type DispatchTool struct {
 	// EnableSyntaxRanges lets dispatch workers use the same offline range-selection surface.
 	EnableSyntaxRanges bool
 
-	// EnableDocumentIngestion lets dispatch workers use the same
-	// read_document tool surface as the parent session.
-	EnableDocumentIngestion bool
+	// AllowPDFIngestion lets dispatch workers use the same read_document
+	// PDF gate as the parent session — see CoreToolDeps.AllowPDFIngestion.
+	// read_document itself is always available to workers regardless.
+	AllowPDFIngestion bool
 
-	// EnableDocumentGeneration lets dispatch workers use the same
-	// create_document tool surface as the parent session.
-	EnableDocumentGeneration bool
+	// AllowDocxPdfGeneration lets dispatch workers use the same
+	// create_document docx/pdf gate as the parent session — see
+	// CoreToolDeps.AllowDocxPdfGeneration. create_document itself is
+	// always available to workers regardless.
+	AllowDocxPdfGeneration bool
 
 	// EnableLSP lets dispatch workers expose the same LSP tool surface as the
 	// parent session, while writes still flow through the worker's owned-file
@@ -588,14 +591,7 @@ func (t *DispatchTool) runDispatchChild(ctx context.Context, c *dispatchChild, b
 		// loud rather than silently falling back to unsandboxed host
 		// execution, the same "never fall back on error" contract
 		// NewPodmanSandbox's caller follows at session startup.
-		//
-		// Gated on ToolAllowed("run_bash") OR ToolAllowed("create_document")
-		// — either tool depends on Sandbox (create_document's docx/pdf/pptx
-		// paths route through it too, same as run_bash), so a worker
-		// granted neither has nothing for a Sandbox to cover and shouldn't
-		// pay container-creation cost or fail its task over a dependency
-		// it was never going to use.
-		if t.SandboxFactory != nil && (c.cfg.ToolAllowed("run_bash") || c.cfg.ToolAllowed("create_document")) {
+		if t.SandboxFactory != nil && dispatchChildNeedsSandbox(c.cfg) {
 			sb, err := t.SandboxFactory(childCtx, c.worktree, c.taskID)
 			if err != nil {
 				c.errored, c.status = true, subagents.TaskErrored
@@ -627,6 +623,13 @@ func (t *DispatchTool) runDispatchChild(ctx context.Context, c *dispatchChild, b
 		opts.reg = t.buildWorktreeChildRegistry(c.cfg, childCwd, c.worktree, c.spec.Files, background, c.sandbox)
 		opts.cwd = childCwd
 		opts.extraSystemPrompt = writeScopePrompt(c.branch, c.spec.Files)
+		// Threads into dispatchBackgroundApprovalPolicy: a background write
+		// worker's run_bash/run_tests calls are allowed exactly when this
+		// worker's own container bounds their blast radius, denied on the
+		// host fallback. Only meaningful for write children — read-only
+		// dispatch children share the parent's own registry/Sandbox
+		// directly (see buildChildRegistry) and never set this.
+		opts.sandboxed = c.sandbox != nil
 	}
 
 	result, errored, status, tokens := t.Agent.runChild(
@@ -780,6 +783,16 @@ func (t *DispatchTool) runDispatchChild(ctx context.Context, c *dispatchChild, b
 	})
 }
 
+// dispatchChildNeedsSandbox reports whether cfg's granted toolset can reach
+// Sandbox-routed execution: run_bash and run_tests execute inside it when
+// sandboxed, and create_document's docx/pdf/pptx paths route through it too.
+// A worker granted none of these has nothing for a Sandbox to cover and
+// shouldn't pay container-creation cost or fail its task over a dependency
+// it was never going to use.
+func dispatchChildNeedsSandbox(cfg *subagents.AgentConfig) bool {
+	return cfg.ToolAllowed("run_bash") || cfg.ToolAllowed("run_tests") || cfg.ToolAllowed("create_document")
+}
+
 // buildWorktreeChildRegistry builds the core cwd-bound toolset pinned to the
 // child's worktree, then narrows it to the agent config's allowlist. The
 // core set already excludes the delegation tools (Agent/dispatch/integrate)
@@ -800,11 +813,11 @@ func (t *DispatchTool) buildWorktreeChildRegistry(cfg *subagents.AgentConfig, cw
 		// Background workers are unattended, so they must not spawn language-server
 		// binaries. Foreground workers may use LSP tools, but still do not share the
 		// parent manager because eviction is process-level and not lease-aware.
-		LSPManager:               nil,
-		EnableSyntaxRanges:       t.EnableSyntaxRanges,
-		EnableDocumentIngestion:  t.EnableDocumentIngestion,
-		EnableDocumentGeneration: t.EnableDocumentGeneration,
-		Sandbox:                  sandbox,
+		LSPManager:             nil,
+		EnableSyntaxRanges:     t.EnableSyntaxRanges,
+		AllowPDFIngestion:      t.AllowPDFIngestion,
+		AllowDocxPdfGeneration: t.AllowDocxPdfGeneration,
+		Sandbox:                sandbox,
 	})
 	out := NewRegistry()
 	for _, tool := range core.Tools() {

@@ -1,0 +1,59 @@
+---
+title: Document ingestion — runtime flow
+---
+sequenceDiagram
+    %% Author: YottaDynamics | Scope: read_document runtime behavior in this PR
+    %% Purpose: Explain default-on ingestion, PDF subprocess dependencies, and optional table extraction.
+
+    actor Model as Model / user
+    participant Tool as ReadDocumentTool<br/>internal/agent
+    participant Paths as ValidateReadPath<br/>credential deny-list
+    participant Registry as documents.Registry
+    participant Native as Native extractors<br/>CSV/JSON/XML/HTML/XLSX/DOCX/PPTX
+    participant PDF as PDFExtractor<br/>pdftotext + optional tables
+    participant Sandbox as Sandbox<br/>host or podman
+    participant Helper as extract_pdf_tables.py<br/>pdfplumber
+
+    Model->>Tool: read_document(path, caps)
+    Tool->>Paths: ValidateReadPath(path)
+    Paths-->>Tool: allowed or credential-path error
+    Tool->>Registry: Lookup(path extension)
+
+    alt pure/native formats
+        Registry->>Native: Extract(request with caps)
+        Native-->>Tool: metadata + capped sections + warnings
+        Tool-->>Model: structured result
+    else PDF
+        Registry->>PDF: Extract(request with caps)
+        PDF->>Sandbox: pdfinfo path
+        alt pdfinfo fails
+            PDF->>PDF: add warning: page count unavailable
+        else pdfinfo succeeds
+            Sandbox-->>PDF: total page count
+        end
+        PDF->>Sandbox: pdftotext -layout -f start -l end path -
+        alt encrypted PDF
+            PDF-->>Tool: warning result, no text extracted
+            Tool-->>Model: structured warning result
+        else pdftotext missing or fails
+            PDF-->>Model: actionable pdftotext error
+        else plain text succeeds
+            Sandbox-->>PDF: page text
+            PDF->>PDF: build page sections under max_chars
+            opt optional table tier
+                PDF->>Helper: ResolveScript(extract_pdf_tables.py)
+                Helper-->>PDF: host cache path or in-image path
+                PDF->>Sandbox: python3 extract_pdf_tables.py path --start --end
+                alt python3/pdfplumber/helper unavailable or malformed output
+                    PDF->>PDF: silently skip table sections
+                else table extraction succeeds
+                    Sandbox-->>PDF: JSON pages/tables/rows
+                    PDF->>PDF: append page N table M sections
+                end
+            end
+            PDF-->>Tool: metadata + page sections + optional table sections
+            Tool-->>Model: structured result
+        end
+    else unsupported extension
+        Registry-->>Model: unsupported format error
+    end

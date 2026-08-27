@@ -66,10 +66,34 @@ func TestCreateDocumentXLSXRequiresSheets(t *testing.T) {
 
 func TestCreateDocumentDocxRequiresBlocks(t *testing.T) {
 	tmp := t.TempDir()
-	tool := &CreateDocumentTool{Cwd: NewCwdRef(tmp), WriteOpts: WritePathOptions{Cwd: NewCwdRef(tmp)}}
+	tool := &CreateDocumentTool{Cwd: NewCwdRef(tmp), WriteOpts: WritePathOptions{Cwd: NewCwdRef(tmp)}, SubprocessFormatsEnabled: true}
 	_, err := tool.Execute(context.Background(), `{"format":"docx","output_path":"out.docx","content":{}}`)
 	if err == nil || !strings.Contains(err.Error(), "content.blocks is required") {
 		t.Fatalf("expected content.blocks validation error, got %v", err)
+	}
+}
+
+// TestCreateDocumentDocxPdfDisabledViaSubprocessGate is the regression
+// for the field itself: create_document is fully GA (document_generation
+// graduated — see internal/experimental/features.go), so every real
+// caller wires SubprocessFormatsEnabled true unconditionally, but the
+// field remains a real on/off switch for a caller that constructs the
+// tool directly with it left false. xlsx and pptx must be unaffected —
+// see TestCreateDocumentXLSXGeneratesRealFile and
+// TestCreateDocumentPptxGeneratesRealFile, neither of which sets this
+// field yet both already succeed.
+func TestCreateDocumentDocxPdfDisabledViaSubprocessGate(t *testing.T) {
+	for _, format := range []string{"docx", "pdf"} {
+		tmp := t.TempDir()
+		tool := &CreateDocumentTool{Cwd: NewCwdRef(tmp), WriteOpts: WritePathOptions{Cwd: NewCwdRef(tmp)}}
+		args := `{"format":"` + format + `","output_path":"out.` + format + `","content":{"blocks":[{"type":"paragraph","text":"hi"}]}}`
+		_, err := tool.Execute(context.Background(), args)
+		if err == nil {
+			t.Fatalf("format=%s: expected an error when SubprocessFormatsEnabled is false", format)
+		}
+		if !strings.Contains(err.Error(), "disabled in this configuration") {
+			t.Errorf("format=%s: expected the error to explain the format is disabled, got %v", format, err)
+		}
 	}
 }
 
@@ -123,9 +147,10 @@ func TestCreateDocumentXLSXOverwriteGuard(t *testing.T) {
 func TestCreateDocumentDocxMissingPandoc(t *testing.T) {
 	tmp := t.TempDir()
 	tool := &CreateDocumentTool{
-		Cwd:       NewCwdRef(tmp),
-		WriteOpts: WritePathOptions{Cwd: NewCwdRef(tmp)},
-		Sandbox:   &fakeSandbox{label: "[podman-sandbox]", fail: true},
+		Cwd:                      NewCwdRef(tmp),
+		WriteOpts:                WritePathOptions{Cwd: NewCwdRef(tmp)},
+		Sandbox:                  &fakeSandbox{label: "[podman-sandbox]", fail: true},
+		SubprocessFormatsEnabled: true,
 	}
 	args := `{"format":"docx","output_path":"out.docx","content":{"blocks":[{"type":"paragraph","text":"hi"}]}}`
 	_, err := tool.Execute(context.Background(), args)
@@ -140,14 +165,30 @@ func TestCreateDocumentDocxMissingPandoc(t *testing.T) {
 func TestCreateDocumentPDFMissingWeasyprint(t *testing.T) {
 	tmp := t.TempDir()
 	tool := &CreateDocumentTool{
-		Cwd:       NewCwdRef(tmp),
-		WriteOpts: WritePathOptions{Cwd: NewCwdRef(tmp)},
-		Sandbox:   &fakeSandbox{label: "[podman-sandbox]", missing: "weasyprint"},
+		Cwd:                      NewCwdRef(tmp),
+		WriteOpts:                WritePathOptions{Cwd: NewCwdRef(tmp)},
+		Sandbox:                  &fakeSandbox{label: "[podman-sandbox]", missing: "weasyprint"},
+		SubprocessFormatsEnabled: true,
 	}
 	args := `{"format":"pdf","output_path":"out.pdf","content":{"blocks":[{"type":"paragraph","text":"hi"}]}}`
 	_, err := tool.Execute(context.Background(), args)
 	if err == nil || !strings.Contains(err.Error(), "weasyprint not found") {
 		t.Fatalf("expected 'weasyprint not found' error, got %v", err)
+	}
+}
+
+// TestCreateDocumentTemplateRejectedForNonDocxFormats prevents mixed-mode
+// tool calls from silently ignoring template. The schema advertises template as
+// docx-only, so invalid combinations should fail before any generator runs.
+func TestCreateDocumentTemplateRejectedForNonDocxFormats(t *testing.T) {
+	for _, format := range []string{"xlsx", "pdf", "pptx"} {
+		tmp := t.TempDir()
+		tool := &CreateDocumentTool{Cwd: NewCwdRef(tmp), WriteOpts: WritePathOptions{Cwd: NewCwdRef(tmp)}, SubprocessFormatsEnabled: true}
+		args := `{"format":"` + format + `","output_path":"out.` + format + `","template":"template.docx","content":{"sheets":[{"rows":[[{"value":"x"}]]}],"blocks":[{"type":"paragraph","text":"hi"}],"slides":[{"title":"hi"}]}}`
+		_, err := tool.Execute(context.Background(), args)
+		if err == nil || !strings.Contains(err.Error(), "template is only supported for format=docx") {
+			t.Fatalf("format=%s: expected docx-only template validation error, got %v", format, err)
+		}
 	}
 }
 
@@ -245,9 +286,10 @@ func TestCreateDocumentImageBlockRejectsDeniedPath(t *testing.T) {
 		t.Fatalf("seed image: %v", err)
 	}
 	tool := &CreateDocumentTool{
-		Cwd:           NewCwdRef(tmp),
-		WriteOpts:     WritePathOptions{Cwd: NewCwdRef(tmp)},
-		DenyReadPaths: []string{secret},
+		Cwd:                      NewCwdRef(tmp),
+		WriteOpts:                WritePathOptions{Cwd: NewCwdRef(tmp)},
+		DenyReadPaths:            []string{secret},
+		SubprocessFormatsEnabled: true,
 	}
 	args := `{"format":"docx","output_path":"out.docx","content":{"blocks":[{"type":"image","path":"secret.png","alt":"x"}]}}`
 	_, err := tool.Execute(context.Background(), args)
@@ -258,7 +300,7 @@ func TestCreateDocumentImageBlockRejectsDeniedPath(t *testing.T) {
 
 func TestCreateDocumentImageBlockRequiresPath(t *testing.T) {
 	tmp := t.TempDir()
-	tool := &CreateDocumentTool{Cwd: NewCwdRef(tmp), WriteOpts: WritePathOptions{Cwd: NewCwdRef(tmp)}}
+	tool := &CreateDocumentTool{Cwd: NewCwdRef(tmp), WriteOpts: WritePathOptions{Cwd: NewCwdRef(tmp)}, SubprocessFormatsEnabled: true}
 	args := `{"format":"docx","output_path":"out.docx","content":{"blocks":[{"type":"image","alt":"missing path"}]}}`
 	_, err := tool.Execute(context.Background(), args)
 	if err == nil || !strings.Contains(err.Error(), "image path is required") {
@@ -278,7 +320,7 @@ func TestCreateDocumentImageBlockValidPathPassesValidation(t *testing.T) {
 	if err := os.WriteFile(img, []byte("fake png bytes"), 0o644); err != nil {
 		t.Fatalf("seed image: %v", err)
 	}
-	tool := &CreateDocumentTool{Cwd: NewCwdRef(tmp), WriteOpts: WritePathOptions{Cwd: NewCwdRef(tmp)}}
+	tool := &CreateDocumentTool{Cwd: NewCwdRef(tmp), WriteOpts: WritePathOptions{Cwd: NewCwdRef(tmp)}, SubprocessFormatsEnabled: true}
 	args := `{"format":"docx","output_path":"out.docx","content":{"blocks":[{"type":"image","path":"logo.png","alt":"Logo"}]}}`
 	_, err := tool.Execute(context.Background(), args)
 	if err == nil || !strings.Contains(err.Error(), "pandoc not found") {
@@ -442,9 +484,10 @@ func TestCreateDocumentSandboxedPandocRequiresWorkspaceOutput(t *testing.T) {
 	outside := filepath.Join(t.TempDir(), "out.docx")
 	cwd := NewCwdRef(tmp)
 	tool := &CreateDocumentTool{
-		Cwd:       cwd,
-		WriteOpts: WritePathOptions{Cwd: cwd, AllowedPaths: []string{filepath.Dir(outside)}},
-		Sandbox:   &fakeSandbox{label: "[podman-sandbox]"},
+		Cwd:                      cwd,
+		WriteOpts:                WritePathOptions{Cwd: cwd, AllowedPaths: []string{filepath.Dir(outside)}},
+		Sandbox:                  &fakeSandbox{label: "[podman-sandbox]"},
+		SubprocessFormatsEnabled: true,
 	}
 	args := `{"format":"docx","output_path":"` + outside + `","content":{"blocks":[{"type":"paragraph","text":"hi"}]}}`
 	_, err := tool.Execute(context.Background(), args)
@@ -598,5 +641,130 @@ func TestCheckCommandAvailable_IncludesProbeOutput(t *testing.T) {
 	err := checkCommandAvailable(context.Background(), sb, t.TempDir(), "pandoc")
 	if err == nil || !strings.Contains(err.Error(), "custom probe diagnostic") {
 		t.Fatalf("expected the probe's captured output in the error, got %v", err)
+	}
+}
+
+func TestBuildDocxTemplateCommand(t *testing.T) {
+	cmd := buildDocxTemplateCommand(
+		"/opt/yottacode/doc-helpers/fill_docx_template.py",
+		"/tmp/a b.docx", "/tmp/out.docx", "/tmp/repl.json")
+	if !strings.HasPrefix(cmd, "python3 ") {
+		t.Errorf("expected command to start with 'python3 ', got %q", cmd)
+	}
+	for _, want := range []string{
+		"'/opt/yottacode/doc-helpers/fill_docx_template.py'",
+		`'/tmp/a b.docx'`,
+		"'/tmp/out.docx'",
+		"'/tmp/repl.json'",
+	} {
+		if !strings.Contains(cmd, want) {
+			t.Errorf("expected command to contain %q, got %q", want, cmd)
+		}
+	}
+}
+
+func TestParseReplacementsAppliedCount(t *testing.T) {
+	if got := parseReplacementsAppliedCount([]byte(`{"replacements_applied": 3}`)); got != 3 {
+		t.Errorf("got %d, want 3", got)
+	}
+	if got := parseReplacementsAppliedCount([]byte("not json")); got != 0 {
+		t.Errorf("expected 0 for malformed input, got %d", got)
+	}
+}
+
+// TestCreateDocumentDocxTemplateRejectsDeniedPath is the template-path
+// regression for the same credential-denylist enforcement
+// TestCreateDocumentImageBlockRejectsDeniedPath locks for docx/pdf image
+// blocks — template is create_document's third-ever read path.
+func TestCreateDocumentDocxTemplateRejectsDeniedPath(t *testing.T) {
+	tmp := t.TempDir()
+	secret := filepath.Join(tmp, "secret.docx")
+	if err := os.WriteFile(secret, []byte("x"), 0o644); err != nil {
+		t.Fatalf("seed template: %v", err)
+	}
+	tool := &CreateDocumentTool{
+		Cwd:                      NewCwdRef(tmp),
+		WriteOpts:                WritePathOptions{Cwd: NewCwdRef(tmp)},
+		DenyReadPaths:            []string{secret},
+		SubprocessFormatsEnabled: true,
+	}
+	args := `{"format":"docx","output_path":"out.docx","template":"secret.docx","content":{"replacements":{"x":"y"}}}`
+	_, err := tool.Execute(context.Background(), args)
+	if err == nil || !strings.Contains(err.Error(), "template") {
+		t.Fatalf("expected a template-path denial error, got %v", err)
+	}
+}
+
+// TestCreateDocumentDocxTemplateMissingPython3 confirms the template
+// path is deterministically gated on python3 the same way the pandoc
+// path is gated on pandoc — using fakeSandbox rather than real host
+// state so the test doesn't depend on whether python3 happens to be
+// installed on the machine running it.
+func TestCreateDocumentDocxTemplateMissingPython3(t *testing.T) {
+	tmp := t.TempDir()
+	template := filepath.Join(tmp, "template.docx")
+	if err := os.WriteFile(template, []byte("x"), 0o644); err != nil {
+		t.Fatalf("seed template: %v", err)
+	}
+	tool := &CreateDocumentTool{
+		Cwd:                      NewCwdRef(tmp),
+		WriteOpts:                WritePathOptions{Cwd: NewCwdRef(tmp)},
+		Sandbox:                  &fakeSandbox{label: "[podman-sandbox]", missing: "python3"},
+		SubprocessFormatsEnabled: true,
+	}
+	args := `{"format":"docx","output_path":"out.docx","template":"template.docx","content":{"replacements":{"x":"y"}}}`
+	_, err := tool.Execute(context.Background(), args)
+	if err == nil || !strings.Contains(err.Error(), "python3 not found") {
+		t.Fatalf("expected a 'python3 not found' error, got %v", err)
+	}
+}
+
+// TestCreateDocumentDocxTemplateValidPathReachesPython3Check confirms a
+// legitimate in-workspace template path clears validation and reaches
+// the python3-availability check — not rejected as a read-path
+// violation. Mirrors TestCreateDocumentImageBlockValidPathPassesValidation.
+func TestCreateDocumentDocxTemplateValidPathReachesPython3Check(t *testing.T) {
+	tmp := t.TempDir()
+	template := filepath.Join(tmp, "template.docx")
+	if err := os.WriteFile(template, []byte("x"), 0o644); err != nil {
+		t.Fatalf("seed template: %v", err)
+	}
+	tool := &CreateDocumentTool{
+		Cwd:                      NewCwdRef(tmp),
+		WriteOpts:                WritePathOptions{Cwd: NewCwdRef(tmp)},
+		Sandbox:                  &fakeSandbox{label: "[podman-sandbox]", missing: "python3"},
+		SubprocessFormatsEnabled: true,
+	}
+	args := `{"format":"docx","output_path":"out.docx","template":"template.docx","content":{"replacements":{"x":"y"}}}`
+	_, err := tool.Execute(context.Background(), args)
+	if err == nil || !strings.Contains(err.Error(), "python3 not found") {
+		t.Fatalf("expected to get past template validation to the python3-availability check, got %v", err)
+	}
+}
+
+// TestCreateDocumentDocxTemplateEmptyContentBlocksIsNotAnError confirms
+// setting template takes create_document down the template-fill branch
+// instead of the pandoc content.blocks branch, which would otherwise
+// fail on a different, misleading validation error (content.blocks is
+// required) since no blocks are set here at all.
+func TestCreateDocumentDocxTemplateEmptyContentBlocksIsNotAnError(t *testing.T) {
+	tmp := t.TempDir()
+	template := filepath.Join(tmp, "template.docx")
+	if err := os.WriteFile(template, []byte("x"), 0o644); err != nil {
+		t.Fatalf("seed template: %v", err)
+	}
+	tool := &CreateDocumentTool{
+		Cwd:                      NewCwdRef(tmp),
+		WriteOpts:                WritePathOptions{Cwd: NewCwdRef(tmp)},
+		Sandbox:                  &fakeSandbox{label: "[podman-sandbox]", missing: "python3"},
+		SubprocessFormatsEnabled: true,
+	}
+	// No content.blocks at all -- must not trip generateViaPandoc's
+	// "content.blocks is required" check, since template routes to a
+	// different method entirely.
+	args := `{"format":"docx","output_path":"out.docx","template":"template.docx","content":{"replacements":{"x":"y"}}}`
+	_, err := tool.Execute(context.Background(), args)
+	if err == nil || strings.Contains(err.Error(), "content.blocks is required") {
+		t.Fatalf("expected the template branch to be taken (not the pandoc content.blocks branch), got %v", err)
 	}
 }

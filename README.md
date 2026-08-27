@@ -38,9 +38,93 @@ For engineers who want terminal-agent agency without vendor lock-in, cloud data 
 - **Agent-managed memory that compounds.** yottacode captures durable user and project context, retrieves only what matters each turn, and helps keep memory clean over time.
 - **Typed GitHub + worktree workflows.** Issues, PR reviews, check status, commits, pushes, PR creation, PR updates, comments, and isolated worktrees are first-class tools instead of fragile shell transcripts.
 - **GA code intelligence without IDE lock-in.** LSP tools are default-on for Go, TypeScript/JavaScript, Python, and Rust; servers run locally, start lazily, and are never installed without approval. Offline, no-server structural edit ranges (`syntax_range`) cover the same four languages.
+- **Read and generate real documents.** `read_document`/`create_document` cover csv, tsv, json, xml, html, xlsx, docx, and pptx; xlsx/pptx generation is pure Go (excelize, native OOXML), no external dependency required. docx/pdf generation and PDF extraction route through the same command sandbox as `run_bash`.
 - **Plan mode as a real permission boundary.** yottacode can investigate read-only, produce a plan, and only then move into implementation with approvals, path validation, diffs, and checkpoints.
 - **Local-first by design.** Sessions, memory, checkpoints, and project rules are plain files under `~/.yottacode/`; there is no telemetry or analytics, and code only leaves your machine for the model provider you choose.
 - **A growing skills ecosystem.** Reusable Agent Skills let teams package repeatable workflows; see [`yottacode-skills`](https://github.com/yottadynamics/yottacode-skills).
+
+---
+
+## Architecture at a glance
+
+![yottacode architecture diagram](assets/yottacode-architecture.svg)
+
+A local-first agent loop connects terminal UX, typed tools, durable memory, worktree isolation, and model-provider choice while keeping approvals and privacy boundaries visible.
+
+<details>
+<summary>Mermaid source for GitHub-native rendering</summary>
+
+```mermaid
+---
+title: yottacode — technical architecture
+---
+flowchart LR
+    %% README-level technical architecture. Full source lives in docs/diagrams/src/yottacode-architecture.mmd.
+    Engineer([Engineer])
+
+    subgraph Interfaces[User interfaces]
+        Cobra[cmd/yottacode<br/>Cobra CLI]
+        TUI[internal/tui<br/>Bubble Tea transcript + approvals]
+        OneShot[internal/oneshot<br/>stdout/stderr run mode]
+    end
+
+    subgraph AgentCore[Agent runtime]
+        CLIResolve[internal/cli<br/>options + config resolution]
+        Turn[internal/agent.Turn<br/>streaming loop + tool rounds]
+        Events[typed event bus<br/>content, reasoning, tools, approvals]
+        Modes[mode gates<br/>plan · normal · auto · yolo]
+        Perms[internal/permissions<br/>deny → overlay → allow → ask]
+        Registry[tool registry<br/>typed schemas + write-path validation]
+    end
+
+    subgraph LocalTools[Local tool surface]
+        FS[filesystem tools<br/>read, edit, apply diff, anchors]
+        Git[git + GitHub tools<br/>branch, commit, PR, checks]
+        LSP[LSP + syntax ranges<br/>Go · TS/JS · Python · Rust]
+        Shell[run_bash<br/>approval-gated host command]
+    end
+
+    subgraph State[Local persistence]
+        Session[internal/session<br/>durable transcripts]
+        Memory[internal/memory<br/>user + project context]
+        Recall[internal/recall<br/>SQLite + FTS5]
+        Rules[~/.yottacode + .yottacode<br/>plain-file config and policy]
+    end
+
+    subgraph Parallel[Delegation + isolation]
+        Subagents[internal/subagents<br/>Explore · Plan · implement · review · test]
+        Dispatch[dispatch / integrate<br/>owned-file workers]
+        Worktrees[git worktrees<br/>isolated branches + merges]
+    end
+
+    subgraph Models[Model adapter layer]
+        Router[internal/adapter router<br/>advisor / implementer roles]
+        Providers[OpenAI · Anthropic · Gemini/Vertex<br/>xAI · Ollama · compatible APIs]
+    end
+
+    Engineer --> Cobra --> CLIResolve
+    CLIResolve --> TUI --> Turn
+    CLIResolve --> OneShot --> Turn
+    Turn --> Events --> TUI
+    Events --> OneShot
+    Turn --> Modes --> Perms --> Registry
+    Turn --> Registry
+    Registry --> FS
+    Registry --> Git
+    Registry --> LSP
+    Registry --> Shell
+    Registry --> Session
+    Registry --> Memory
+    Registry --> Recall
+    Registry --> Rules
+    Registry --> Subagents --> Turn
+    Registry --> Dispatch --> Worktrees --> Git
+    Turn --> Router --> Providers --> Router --> Turn
+```
+
+For package-level internals and extension seams, see [`docs/architecture.md`](docs/architecture.md). Diagram source lives in [`docs/diagrams/src/yottacode-architecture.mmd`](docs/diagrams/src/yottacode-architecture.mmd).
+
+</details>
 
 ---
 

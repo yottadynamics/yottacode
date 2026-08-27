@@ -188,13 +188,13 @@ resource-limit flags. `image` is the default profile used by `run_bash`;
   `--security-opt=no-new-privileges`, private cgroups, no swap beyond the memory
   limit, a `noexec,nosuid,nodev` `/tmp`, SELinux `:Z` bind labels, and configured
   `pids_limit`/`memory`/`cpus` caps.
-- **`run_bash`, `create_document`'s docx/pdf paths, and
+- **`run_bash`, `run_tests`, `create_document`'s docx/pdf paths, and
   `read_document`'s PDF path are sandboxed.** Git, GitHub, MCP, provider
   calls, and the other file tools still run on the host. The hardline
   blocklist stays outside the sandbox because a blocked command can still
   destroy the mounted project tree. See [`document-generation.md`](document-generation.md)
   for how the document tools route their `pandoc`/`pdftotext` calls
-  through the documents profile while `run_bash` stays on the default profile.
+  through the documents profile while `run_bash` and `run_tests` stay on the default profile.
 
 ## Dispatch interaction
 
@@ -202,6 +202,11 @@ When [dispatch](dispatch.md) write-workers run, each gets its **own** lazy
 sandbox manager mounted at its own worktree whenever the parent session has
 podman sandboxing on. Read-only dispatch workers do not get separate managers;
 they share the parent tool registry and parent sandbox manager.
+
+This is also what unlocks unattended `run_bash`/`run_tests` for **background**
+(unattended) dispatch write workers: those calls are denied outright when the
+worker runs on the host (see [dispatch.md](dispatch.md#approvals)), and
+allowed once the worker's own container bounds their blast radius.
 
 This means concurrent read-only workers' sandboxed commands and the parent
 session's own sandboxed commands all execute inside the same per-profile
