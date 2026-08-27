@@ -34,6 +34,11 @@ const (
 	// ScriptFillDocxTemplate wraps python-docx: replaces {{name}}
 	// tokens in an existing docx and saves the result.
 	ScriptFillDocxTemplate PyHelperScript = "fill_docx_template.py"
+
+	// ScriptExtractPDFOCR wraps pytesseract+pdf2image: prints
+	// {"pages": [{"page": N, "text": "..."}]} for a PDF with no
+	// embedded text layer.
+	ScriptExtractPDFOCR PyHelperScript = "extract_pdf_ocr.py"
 )
 
 // DocumentsImageHelperDir is the fixed path infra/documents.Containerfile

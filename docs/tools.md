@@ -19,8 +19,9 @@ In addition to the built-ins, **MCP tools** register dynamically when an `[[mcp_
 |---|---|---|
 | [`read_file`](#read_file) | none | Read a text or image file (png/jpg/gif/webp) with optional line offset/limit |
 | [`read_many_files`](#read_many_files) | none | Read multiple UTF-8 files in one call |
-| [`read_document`](#read_document) | none | *Experimental.* Bounded, structured extraction for CSV/TSV/JSON/JSONL/XML/HTML/PDF |
-| [`create_document`](#create_document) | required | *Experimental.* Generate xlsx/pptx (native) or docx/pdf (via pandoc) from structured content |
+| [`read_document`](#read_document) | none | Bounded, structured extraction for CSV/TSV/JSON/JSONL/XML/HTML/PDF/xlsx/docx/pptx |
+| [`search_document`](#search_document) | none | Ranked, query-based retrieval over a document's extracted content |
+| [`create_document`](#create_document) | required | Generate xlsx/pptx (native) or docx/pdf (via pandoc) from structured content |
 | [`write_file`](#write_file) | required | Overwrite or create a file |
 | [`edit_file`](#edit_file) | required | Surgical `old_string`→`new_string` replacement |
 | [`edit_anchored`](#edit_anchored) | required | Anchor-validated line edits after anchored reads |
@@ -329,14 +330,23 @@ PDF extraction runs `pdftotext`/`pdfinfo` (poppler), routed through the
 same documents sandbox profile `create_document`'s docx/pdf path uses:
 installed on the host when no sandbox is configured, or present in
 `[sandbox].documents_image` when one is. Each page becomes its own
-labeled section (`page 3`); an encrypted or scanned/image-only PDF
-comes back as a warning, not an error, since that's still a valid,
-actionable result. When `python3`+`pdfplumber` are also reachable through
-that same documents profile or host PATH, detected tables come back as
-additional `page N table M` sections with pipe-joined rows — best-effort
-and completely silent (no warning either) when that dependency isn't
-available or a page genuinely has no tables; see
-[`document-generation.md`](document-generation.md#requirements).
+labeled section (`page 3`); an encrypted PDF comes back as a warning,
+not an error, since that's still a valid, actionable result. When
+`python3`+`pdfplumber` are also reachable through that same documents
+profile or host PATH, detected tables come back as additional
+`page N table M` sections with pipe-joined rows — best-effort and
+completely silent (no warning either) when that dependency isn't
+available or a page genuinely has no tables. A page with no embedded
+text layer at all falls back to OCR when
+`python3`+`pytesseract`+`pdf2image`+`tesseract-ocr` are reachable the
+same way — per page, not just when the whole requested range is blank,
+so a partially-scanned document (some pages with real text, some
+without) still gets OCR only on the pages that actually need it:
+recognized text comes back as additional `page N (ocr)` sections with a
+warning that the text may contain recognition errors, since it isn't as
+reliable as the rest of a PDF's extraction; without that dependency,
+it's the same "may be scanned/image-only" warning as before, no OCR
+section. See [`document-generation.md`](document-generation.md#requirements).
 
 xlsx, docx, and pptx are parsed natively — no external tools, no
 sandbox involved, work identically on every platform. xlsx (via
@@ -373,6 +383,7 @@ in the model's judgement rather than in an automatic dispatch inside
 | `offset` | int | `0` | Where the preview window starts — data rows for CSV/TSV/xlsx, records for JSONL, characters for JSON/XML/HTML/docx, pages for PDF, slides for pptx |
 | `has_header` | bool | auto | CSV/TSV only: whether row 1 holds column names. Omitted means auto-detect |
 | `max_bytes` | int | `5 MiB` | Max bytes read from the source file. Raise it when a result warns the file exceeded the byte cap; clamped to a 32 MiB ceiling, and the clamp is reported as a warning rather than applied silently |
+| `ocr_lang` | string | English | PDF only: Tesseract language code (`fra`, `deu`, ...) or `+`-joined codes (`eng+fra`) for the OCR fallback tier. Only used when a PDF has no embedded text layer at all; the requested language pack must be installed wherever OCR runs |
 
 ### Paging
 
@@ -488,6 +499,50 @@ fetched from a URL — local files only. PDF text extraction requires
 [`document-generation.md`](document-generation.md); with no sandbox and
 no host install, PDF calls fail with an actionable error rather than
 falling back silently.
+
+## search_document
+
+Query-based retrieval over a document's extracted content — use this
+instead of paging `read_document` with `offset` when you don't know
+which page, sheet, or section of a large file holds what you need.
+
+Internally it runs the exact same extraction `read_document` would
+(same format dispatch, same PDF-availability rules, same path-trust
+boundary), splits the result into paragraph-sized chunks, and ranks
+them against your query with the same BM25 engine `memory_search` uses
+— keyword-based ranking, not exact substring matching, so word order
+and minor phrasing differences don't prevent a match. Results come back
+numbered, scored, and labeled with their location (`page 4 (part 2)`,
+`Sheet1`, `document body`), each with a short snippet, ranked most
+relevant first.
+
+| Param | Type | Default | Notes |
+|---|---|---|---|
+| `path` | string | — | Absolute or cwd-relative; same supported extensions as `read_document` |
+| `query` | string | — | Search query — keywords work better than a long natural-language sentence |
+| `max_results` | int | `10` | Maximum number of ranked matches to return |
+| `ocr_lang` | string | English | PDF only: Tesseract language code for the OCR fallback tier, same as `read_document`'s `ocr_lang` |
+
+```
+search_document(path="quarterly_report.pdf", query="capital expenditure forecast")
+
+found 2 matches for "capital expenditure forecast" in quarterly_report.pdf:
+
+1. page 14 (score=3.241)
+   Capital expenditure for the coming fiscal year is forecast to increase...
+
+2. page 22 (score=1.008)
+   ...prior capital expenditure decisions informed this year's forecast...
+```
+
+A query that matches nothing returns a plain string (`no matching text
+found for "..." in ...`), not an error — the same "not-found is a valid
+result" convention `read_document` and `memory_search` both follow.
+
+Read-only, no approval — same trust posture as `read_document`,
+including the same credential-path deny list. Nothing is indexed or
+persisted between calls: each call re-extracts and re-ranks the file
+fresh, so results always reflect the file's current on-disk content.
 
 ## create_document
 

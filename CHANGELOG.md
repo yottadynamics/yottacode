@@ -25,6 +25,38 @@ the project uses semantic versioning once it's past `1.0.0`.
   pdfplumber python-docx` themselves. See
   [`document-generation.md`](docs/document-generation.md#requirements).
 
+- **PDF OCR fallback**, via `python3`+`pytesseract`+`pdf2image` (backed
+  by `tesseract-ocr`), routed through the same command sandbox as the
+  PDF table-extraction tier. `read_document`'s PDF path now recovers
+  text from a page with no embedded text layer at all as additional
+  `page N (ocr)` sections, with a warning noting the text came from OCR
+  and may contain recognition errors. Per-page, not just whole-document:
+  a partially-scanned PDF (some pages with real text, some without)
+  gets OCR only on the pages that actually need it, not the whole
+  window — a fully-scanned document still gets one OCR call over the
+  whole range, unchanged from the initial version of this feature.
+  Best-effort and silently absent — falling back to the existing "may
+  be scanned/image-only" warning — when the dependencies aren't
+  reachable. A new `ocr_lang` param (Tesseract language code, or
+  `+`-joined codes for mixed-language text; also on `search_document`)
+  picks the OCR language; defaults to English, which is the only
+  language pack the published `documents` image bundles by default —
+  see `infra/documents.Containerfile` for the escape hatch to add more.
+  `infra/documents.Containerfile` now stages `tesseract-ocr` (apt) and
+  `pytesseract`/`pdf2image` (pip, pinned); the host-fallback path reuses
+  the same embedded-script materialization `pdfplumber`/`python-docx`
+  already use. See
+  [`document-generation.md`](docs/document-generation.md#requirements).
+
+- **`search_document(path, query, max_results?, ocr_lang?)`** — a new
+  read-only, no-approval agent tool for query-based retrieval over a
+  document's extracted content, for when you don't know which
+  page/section of a large PDF/docx/xlsx holds what you need. Reuses
+  `read_document`'s own extraction pipeline and `internal/memory`'s
+  BM25 ranking engine; returns numbered, scored, snippeted results
+  ranked by relevance instead of requiring blind `offset` paging. See
+  [`tools.md`](docs/tools.md#search_document).
+
 ### Changed
 
 - **`create_document` and `read_document` graduated to GA for every format,

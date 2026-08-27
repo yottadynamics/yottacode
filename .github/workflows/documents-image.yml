@@ -85,15 +85,16 @@ jobs:
       - name: Load image
         run: podman load -i documents-image.tar
 
-      - name: Smoke test — pandoc, weasyprint, poppler, pdfplumber, python-docx
+      - name: Smoke test — pandoc, weasyprint, poppler, pdfplumber, python-docx, tesseract
         # Re-run the same production toolchain checks from the Containerfile
         # against the actual built image before anything gets pushed. The
-        # pdfplumber/python-docx checks below go further than the
+        # pdfplumber/python-docx/OCR checks below go further than the
         # Containerfile's own build-time "does it import" check: they run
         # the real pyhelpers/*.py scripts against real generated fixtures
-        # and assert on real extracted/substituted content, so a pdfplumber
-        # or python-docx release that changes behavior (not just one that
-        # fails to import) gets caught here before it reaches ghcr.io.
+        # and assert on real extracted/substituted/recognized content, so a
+        # pdfplumber, python-docx, or pytesseract release that changes
+        # behavior (not just one that fails to import) gets caught here
+        # before it reaches ghcr.io.
         run: |
           podman run --rm -i documents-image sh <<'SH'
             set -e
@@ -101,6 +102,7 @@ jobs:
             weasyprint --version
             pdftotext -v
             pdfinfo -v
+            tesseract --version
             python3 --version
             echo "# Smoke test" > /tmp/fixture.md
             pandoc -f markdown -t docx -o /tmp/fixture.docx /tmp/fixture.md
@@ -129,6 +131,19 @@ jobs:
             python3 /opt/yottacode/doc-helpers/fill_docx_template.py /tmp/template.docx /tmp/filled.docx /tmp/replacements.json > /tmp/fill-status.json
             python3 -c 'import json, sys; data=json.load(open(sys.argv[1], encoding="utf-8")); assert data.get("replacements_applied") == 1, data' /tmp/fill-status.json
             pandoc -f docx -t plain /tmp/filled.docx | grep -q "Smoke Test"
+
+            # PDF OCR fallback (pytesseract/pdf2image): rasterize a normal
+            # text PDF to a PNG, then wrap the bare image back into a PDF
+            # with no embedded text layer at all — the exact
+            # "scanned/image-only" case extract_pdf_ocr.py exists for —
+            # and assert the recognized text via an independent verifier
+            # rather than trusting the script's own report.
+            printf '%s\n' '# OCR Smoke Test' '' 'RecognizeThisMarkerText' > /tmp/ocr-source.md
+            pandoc -f markdown -t pdf --pdf-engine=weasyprint -o /tmp/ocr-source.pdf /tmp/ocr-source.md
+            pdftoppm -png -r 200 /tmp/ocr-source.pdf /tmp/ocr-page
+            printf '%s\n' '![](/tmp/ocr-page-1.png)' | pandoc -t pdf --pdf-engine=weasyprint -o /tmp/ocr-image-only.pdf
+            python3 /opt/yottacode/doc-helpers/extract_pdf_ocr.py /tmp/ocr-image-only.pdf > /tmp/ocr.json
+            python3 -c 'import json, sys; data=json.load(open(sys.argv[1], encoding="utf-8")); text="".join(p.get("text", "") for p in data.get("pages", [])); assert "RecognizeThisMarkerText" in text, data' /tmp/ocr.json
           SH
 
   push:

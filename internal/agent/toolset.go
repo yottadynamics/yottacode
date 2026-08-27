@@ -95,6 +95,7 @@ func RegisterCoreCwdTools(reg *Registry, cwd *CwdRef, deps CoreToolDeps) {
 	reg.Register(&ReadFileTool{Cwd: cwd, DenyReadPaths: deps.DenyReads, SupportsImages: deps.SupportsImages})
 	reg.Register(&ReadManyFilesTool{Cwd: cwd, DenyReadPaths: deps.DenyReads})
 	reg.Register(&ReadDocumentTool{Cwd: cwd, DenyReadPaths: deps.DenyReads, Sandbox: deps.Sandbox, SubprocessFormatsEnabled: deps.AllowPDFIngestion})
+	reg.Register(&SearchDocumentTool{Cwd: cwd, DenyReadPaths: deps.DenyReads, Sandbox: deps.Sandbox, SubprocessFormatsEnabled: deps.AllowPDFIngestion})
 	reg.Register(&CreateDocumentTool{Cwd: cwd, WriteOpts: wo, DenyReadPaths: deps.DenyReads, Sandbox: deps.Sandbox, SubprocessFormatsEnabled: deps.AllowDocxPdfGeneration})
 	reg.Register(&WriteFileTool{Cwd: cwd, WriteOpts: wo, LSPManager: deps.LSPManager, LSPServers: deps.LSPServers})
 	reg.Register(&EditFileTool{Cwd: cwd, WriteOpts: wo, LSPManager: deps.LSPManager, LSPServers: deps.LSPServers})

@@ -123,6 +123,26 @@ func TestReadDocumentTool_PassesCapsThrough(t *testing.T) {
 	}
 }
 
+// TestReadDocumentTool_PassesOCRLangThrough covers the ocr_lang arg ->
+// ExtractRequest.OCRLang plumbing, the same way
+// TestReadDocumentTool_PassesCapsThrough covers the numeric caps.
+func TestReadDocumentTool_PassesOCRLangThrough(t *testing.T) {
+	tmp := t.TempDir()
+	writeFile(t, tmp, "data.csv", "id,name\n1,Widget\n")
+
+	fake := &capturingExtractor{}
+	reg := &documents.Registry{}
+	reg.Register(fake)
+
+	tool := &ReadDocumentTool{Cwd: NewCwdRef(tmp), Registry: reg}
+	if _, err := tool.Execute(context.Background(), `{"path":"data.csv","ocr_lang":"fra"}`); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if fake.got.OCRLang != "fra" {
+		t.Errorf("OCRLang = %q, want %q", fake.got.OCRLang, "fra")
+	}
+}
+
 // TestReadDocumentTool_OmittedHasHeaderStaysNil: an absent key must mean
 // "auto-detect", which is a different instruction than an explicit
 // false. Decoding into a plain bool would collapse the two.
