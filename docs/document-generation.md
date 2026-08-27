@@ -131,18 +131,18 @@ the workflow itself, and on a weekly schedule (Mondays 06:00 UTC) that
 keeps pandoc/poppler/weasyprint CVE patches landing on a schedule. **The
 weekly rebuild has run and published** —
 `ghcr.io/yottadynamics/yottacode-documents:latest` (plus a same-day
-immutable date tag, e.g. `:2026-08-24`) is live on ghcr.io. Point the
-command sandbox at it (the still-experimental `sandbox` flag gates the
-podman sandbox itself, not document generation — see the security note
-above for why you'd want this):
+immutable date tag, e.g. `:2026-08-24`) is live on ghcr.io. Enable the
+command sandbox, then let document tools use this image through the documents
+profile (the still-experimental `sandbox` flag gates the podman sandbox itself,
+not document generation — see the security note above for why you'd want this):
 
 ```toml
 [experimental]
 sandbox = true
 
 [sandbox]
-backend = "podman"
-image   = "ghcr.io/yottadynamics/yottacode-documents:latest"
+backend         = "podman"
+documents_image = "ghcr.io/yottadynamics/yottacode-documents:latest"
 ```
 
 To build the same image locally instead — for testing a Containerfile

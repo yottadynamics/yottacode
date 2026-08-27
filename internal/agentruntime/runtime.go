@@ -378,8 +378,10 @@ func (b *Builder) Build(ctx context.Context, spec SessionSpec) (*Runtime, error)
 	rt.CodeMapProvider = codeMapProvider
 
 	// Podman command sandbox: opt-in via experimental sandbox plus
-	// [sandbox].backend = "podman". Construction failure is fatal; never
-	// fall back to HostSandbox when the user requested isolation.
+	// [sandbox].backend = "podman". Manager construction is intentionally cheap
+	// and does not require Podman or any image to be present yet. Profile startup
+	// failures later fail closed at the tool call that needed the profile; they
+	// never fall back to HostSandbox when the user requested isolation.
 	//
 	// The manager itself is created at startup, but profile containers are lazy:
 	// run_bash gets the default image on first use, while document subprocess
@@ -388,11 +390,14 @@ func (b *Builder) Build(ctx context.Context, spec SessionSpec) (*Runtime, error)
 	var sandboxFactory agent.SandboxFactory
 	if expSet.IsEnabled(experimental.Sandbox) && fileCfg.Sandbox.Backend == "podman" {
 		mgr := NewSandboxManager(fileCfg.Sandbox, sess.ID, cwd, podmanSandboxConstructor)
+		mgr.SetConfigReloader(config.LoadDefault)
 		rt.SandboxManager = mgr
 		cmdSandbox = mgr.Handler()
 		rt.CmdSandbox = cmdSandbox
 		sandboxFactory = func(ctx context.Context, wtDir, taskID string) (agent.Sandbox, error) {
-			return NewSandboxManager(fileCfg.Sandbox, sess.ID+"-"+taskID, wtDir, podmanSandboxConstructor).Handler(), nil
+			workerMgr := NewSandboxManager(fileCfg.Sandbox, sess.ID+"-"+taskID, wtDir, podmanSandboxConstructor)
+			workerMgr.SetConfigReloader(config.LoadDefault)
+			return workerMgr.Handler(), nil
 		}
 	}
 

@@ -4,7 +4,10 @@ import (
 	"context"
 	"os/exec"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/yottadynamics/yottacode/internal/agent"
 	"github.com/yottadynamics/yottacode/internal/config"
@@ -13,18 +16,23 @@ import (
 type managerSpySandbox struct {
 	label       string
 	closeCount  int
+	mu          sync.Mutex
 	commandsRun []string
 }
 
 func (s *managerSpySandbox) Command(ctx context.Context, command, cwd string) *exec.Cmd {
+	s.mu.Lock()
 	s.commandsRun = append(s.commandsRun, command)
+	s.mu.Unlock()
 	return exec.CommandContext(ctx, "/bin/sh", "-c", "true")
 }
 
 func (s *managerSpySandbox) Label() string { return s.label }
 
 func (s *managerSpySandbox) Close() error {
+	s.mu.Lock()
 	s.closeCount++
+	s.mu.Unlock()
 	return nil
 }
 
@@ -124,6 +132,119 @@ func TestSandboxManager_CloseDoesNotWaitForSlowProfileCreation(t *testing.T) {
 	<-done
 	if profiles := mgr.LiveProfiles(); len(profiles) != 0 {
 		t.Fatalf("LiveProfiles after Close = %v, want none", profiles)
+	}
+}
+
+func TestSandboxManager_ReloadsConfigBeforeLazyDocumentsProfile(t *testing.T) {
+	var calls []string
+	cfg := config.Default().Sandbox
+	cfg.DocumentsImage = "old-documents-image"
+	mgr := NewSandboxManager(cfg, "sess", t.TempDir(), func(ctx context.Context, cfg config.SandboxConfig, id, mountRoot string) (agent.Sandbox, error) {
+		calls = append(calls, id+":"+cfg.Image)
+		return &managerSpySandbox{label: "[" + id + "]"}, nil
+	})
+	mgr.SetConfigReloader(func() (config.Config, error) {
+		latest := config.Default()
+		latest.Sandbox.Backend = "podman"
+		latest.Sandbox.DocumentsImage = "fixed-documents-image"
+		return latest, nil
+	})
+
+	cmd := mgr.Command(context.Background(), agent.SandboxProfileDocuments, "true", t.TempDir())
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("documents command failed: %v (%s)", err, out)
+	}
+
+	if len(calls) != 1 || calls[0] != "sess-documents:fixed-documents-image" {
+		t.Fatalf("constructor calls = %v, want lazy documents profile with reloaded image", calls)
+	}
+}
+
+func TestSandboxManager_DoesNotReloadAlreadyLiveProfile(t *testing.T) {
+	var calls []string
+	cfg := config.Default().Sandbox
+	cfg.Image = "startup-default-image"
+	mgr := NewSandboxManager(cfg, "sess", t.TempDir(), func(ctx context.Context, cfg config.SandboxConfig, id, mountRoot string) (agent.Sandbox, error) {
+		calls = append(calls, id+":"+cfg.Image)
+		return &managerSpySandbox{label: "[" + id + "]"}, nil
+	})
+	mgr.SetConfigReloader(func() (config.Config, error) {
+		latest := config.Default()
+		latest.Sandbox.Backend = "podman"
+		latest.Sandbox.Image = "changed-default-image"
+		return latest, nil
+	})
+
+	for range 2 {
+		cmd := mgr.Command(context.Background(), agent.SandboxProfileDefault, "true", t.TempDir())
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("default command failed: %v (%s)", err, out)
+		}
+	}
+
+	if len(calls) != 1 || calls[0] != "sess:changed-default-image" {
+		t.Fatalf("constructor calls = %v, want one creation using reloaded startup image", calls)
+	}
+}
+
+func TestSandboxManager_ReloadBackendChangeFailsClosed(t *testing.T) {
+	mgr := NewSandboxManager(config.Default().Sandbox, "sess", t.TempDir(), func(ctx context.Context, cfg config.SandboxConfig, id, mountRoot string) (agent.Sandbox, error) {
+		return &managerSpySandbox{label: "[unexpected]"}, nil
+	})
+	mgr.SetConfigReloader(func() (config.Config, error) { return config.Default(), nil })
+
+	cmd := mgr.Command(context.Background(), agent.SandboxProfileDocuments, "echo should-not-run", t.TempDir())
+	out, err := cmd.CombinedOutput()
+	if err == nil || !strings.Contains(string(out), "restart yottacode to change sandbox backends") || strings.Contains(string(out), "should-not-run") {
+		t.Fatalf("backend change should fail closed without running the command; out=%q err=%v", out, err)
+	}
+}
+
+func TestSandboxManager_ConcurrentFirstUseCreatesOneProfileContainer(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var constructorCalls atomic.Int32
+	mgr := NewSandboxManager(config.Default().Sandbox, "sess", t.TempDir(), func(ctx context.Context, cfg config.SandboxConfig, id, mountRoot string) (agent.Sandbox, error) {
+		constructorCalls.Add(1)
+		close(started)
+		<-release
+		return &managerSpySandbox{label: "[" + id + "]"}, nil
+	})
+
+	firstDone := make(chan error, 1)
+	go func() {
+		_, err := mgr.Command(context.Background(), agent.SandboxProfileDocuments, "true", t.TempDir()).CombinedOutput()
+		firstDone <- err
+	}()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("first constructor did not start")
+	}
+
+	secondDone := make(chan error, 1)
+	go func() {
+		_, err := mgr.Command(context.Background(), agent.SandboxProfileDocuments, "true", t.TempDir()).CombinedOutput()
+		secondDone <- err
+	}()
+	time.Sleep(50 * time.Millisecond)
+	if got := constructorCalls.Load(); got != 1 {
+		t.Fatalf("constructor calls while first creation in flight = %d, want 1", got)
+	}
+
+	close(release)
+	for i, ch := range []chan error{firstDone, secondDone} {
+		select {
+		case err := <-ch:
+			if err != nil {
+				t.Fatalf("command %d failed: %v", i+1, err)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("command %d did not finish", i+1)
+		}
+	}
+	if got := constructorCalls.Load(); got != 1 {
+		t.Fatalf("constructor calls after both commands = %d, want 1", got)
 	}
 }
 
