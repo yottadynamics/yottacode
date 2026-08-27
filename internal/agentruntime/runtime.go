@@ -377,8 +377,8 @@ func (b *Builder) Build(ctx context.Context, spec SessionSpec) (*Runtime, error)
 	}
 	rt.CodeMapProvider = codeMapProvider
 
-	// Podman command sandbox: opt-in via experimental sandbox plus
-	// [sandbox].backend = "podman". Manager construction is intentionally cheap
+	// Podman command sandbox: enabled by [sandbox].backend = "podman".
+	// Manager construction is intentionally cheap
 	// and does not require Podman or any image to be present yet. Profile startup
 	// failures later fail closed at the tool call that needed the profile; they
 	// never fall back to HostSandbox when the user requested isolation.
@@ -388,7 +388,7 @@ func (b *Builder) Build(ctx context.Context, spec SessionSpec) (*Runtime, error)
 	// tools get the documents image only when they need it.
 	var cmdSandbox agent.Sandbox
 	var sandboxFactory agent.SandboxFactory
-	if expSet.IsEnabled(experimental.Sandbox) && fileCfg.Sandbox.Backend == "podman" {
+	if fileCfg.Sandbox.Backend == "podman" {
 		mgr := NewSandboxManager(fileCfg.Sandbox, sess.ID, cwd, podmanSandboxConstructor)
 		mgr.SetConfigReloader(config.LoadDefault)
 		rt.SandboxManager = mgr

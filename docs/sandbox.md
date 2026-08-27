@@ -1,4 +1,4 @@
-# Command sandbox (experimental)
+# Command sandbox
 
 `run_bash` normally executes directly on the host: the only guardrails are
 approval and the hardline blocklist in `internal/agent/exec_tool.go`. The
@@ -11,10 +11,11 @@ MCP tools, the TUI, and provider traffic are not inside the container.
 
 [Podman]: https://podman.io/
 
-> **Status: experimental.** Enable with `--experimental sandbox`,
-> `YOTTACODE_EXPERIMENTAL=sandbox`, or `[experimental] sandbox = true` in
-> config, **and** set `[sandbox] backend = "podman"`. The flag alone does not
-> turn it on. Requires `podman` installed and on `PATH`.
+> **Status: GA.** Enable by setting `[sandbox] backend = "podman"` in
+> config. Requires `podman` installed and on `PATH`; if Podman or the required
+> image cannot start, sandboxed tools fail closed and never fall back to host
+> execution. The old `sandbox` experimental flag is recognized as a no-op for
+> compatibility and can be removed at your convenience.
 
 ## Architecture
 
@@ -23,7 +24,7 @@ MCP tools, the TUI, and provider traffic are not inside the container.
 title: Command sandbox runtime boundary
 ---
 flowchart LR
-    %% Author: YottaDynamics | Scope: current experimental command sandbox
+    %% Author: YottaDynamics | Scope: current command sandbox
     User[User approval] --> Agent[Agent tool loop]
     Agent --> RB[RunBashTool]
     RB --> Blocklist{Hardline blocklist}
@@ -79,7 +80,7 @@ commands share those profile containers' `memory`/`cpus`/`pids_limit` budget.
 |---|---|---|
 | Sandbox seam | `internal/agent/sandbox.go`, `internal/agent/exec_tool.go` | Defines `Sandbox` and optional `ProfiledSandbox`, keeps nil as host execution, labels sandboxed commands, and annotates Podman infrastructure exit code 125. |
 | Podman lifecycle | `internal/sandbox/podman.go`, `internal/sandbox/detect.go` | Starts one rootless container for a requested manager profile, builds `podman exec`, validates mounts, detects local Podman/image state, and tears containers down. |
-| Session wiring | `internal/agentruntime/runtime.go`, `internal/agentruntime/sandbox_manager.go` | Creates a lazy per-profile sandbox manager only when the experimental flag is enabled and `[sandbox].backend = "podman"`; never falls back to host execution on profile creation failure. |
+| Session wiring | `internal/agentruntime/runtime.go`, `internal/agentruntime/sandbox_manager.go` | Creates a lazy per-profile sandbox manager when `[sandbox].backend = "podman"`; never falls back to host execution on profile creation failure. |
 | Dispatch inheritance | `internal/agent/dispatch_tool.go` | Gives each write worker a worker-scoped sandbox mounted at that worker's worktree; read-only workers reuse the parent registry. |
 | Worktree guard | `internal/agent/enter_worktree_tool.go` | Refuses mid-session worktree swaps once a lazy sandbox profile has created a live container, because that container cannot be remounted. |
 | TUI control | `internal/tui/sandbox_picker.go`, `internal/tui/cmd_sandbox.go` | Persists sandbox mode, toggles live auto mode when requested, probes Podman/image availability, and tells users a restart/new session is required for backend changes. |
@@ -90,8 +91,7 @@ commands share those profile containers' `memory`/`cpus`/`pids_limit` budget.
 1. Config loads onto defaults, then `config.Validate` rejects invalid sandbox
    backends, networks, missing Podman resource limits, and zero CPU/PID limits
    when `backend = "podman"`.
-2. The TUI or oneshot entry point checks both gates: experimental `sandbox` is
-   enabled and `[sandbox].backend = "podman"`.
+2. The TUI or oneshot entry point checks `[sandbox].backend = "podman"`.
 3. `RegisterCoreCwdTools` injects a stable sandbox handler into command-capable
    tools. A nil value keeps the previous host behavior.
 4. Each tool chooses its profile from intent: `run_bash` uses `default`, while
@@ -153,9 +153,6 @@ the Podman error instead of falling back to the host.
 
 ## Config
 ```toml
-[experimental]
-sandbox = true
-
 [sandbox]
 backend         = "podman"      # "none" (default) | "podman"
 image           = "registry.access.redhat.com/ubi9/ubi:9.8-1785906690"

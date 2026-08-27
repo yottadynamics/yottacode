@@ -125,11 +125,10 @@ Two ways to add real isolation, at different granularities:
 - **Run yottacode itself inside a container or devcontainer** — protects
   every tool (not just shell commands), portable across host distros, but
   all-or-nothing and external to the binary.
-- **The experimental command sandbox** (`[sandbox] backend = "podman"`,
-  behind `--experimental sandbox`) — yottacode itself keeps running on the
-  host, but `run_bash` executes inside a session-scoped rootless Podman
-  container with a default-deny network and a project-dir-only mount. Only
-  `run_bash` is covered in v1. See [sandbox.md](sandbox.md).
+- **The command sandbox** (`[sandbox] backend = "podman"`) — yottacode
+  itself keeps running on the host, but `run_bash`, `run_tests`, and document
+  subprocess paths execute inside lazy rootless Podman profile containers with
+  a default-deny network and project-dir-only mounts. See [sandbox.md](sandbox.md).
 
 ## Provider Diagnostics
 

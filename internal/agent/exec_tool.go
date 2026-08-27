@@ -12,8 +12,8 @@ import (
 
 // RunBashTool runs a shell command in cwd via /bin/sh -c. Always requires
 // approval. Command execution routes through Sandbox — nil selects
-// HostSandbox (today's direct-on-host behavior); a config/experimental-flag
-// gated PodmanSandbox (internal/sandbox) provides real isolation.
+// HostSandbox (today's direct-on-host behavior); a configured PodmanSandbox
+// (internal/sandbox) provides real isolation.
 type RunBashTool struct {
 	Cwd *CwdRef
 	// Sandbox is nil-safe: a nil Sandbox behaves exactly like HostSandbox,

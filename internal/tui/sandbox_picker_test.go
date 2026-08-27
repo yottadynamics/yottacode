@@ -9,33 +9,29 @@ import (
 
 	"github.com/yottadynamics/yottacode/internal/agent"
 	"github.com/yottadynamics/yottacode/internal/config"
-	"github.com/yottadynamics/yottacode/internal/experimental"
 	"github.com/yottadynamics/yottacode/internal/sandbox"
 )
 
 func TestCurrentSandboxMode(t *testing.T) {
 	off := config.Config{Sandbox: config.SandboxConfig{Backend: "none"}}
-	if got := currentSandboxMode(off, false, false, nil); got != sandboxModeOff {
+	if got := currentSandboxMode(off, false, nil); got != sandboxModeOff {
 		t.Errorf("backend=none should be sandboxModeOff, got %v", got)
 	}
 
 	on := config.Config{Sandbox: config.SandboxConfig{Backend: "podman"}}
-	if got := currentSandboxMode(on, false, false, nil); got != sandboxModeOff {
-		t.Errorf("backend=podman without session experimental gate should be sandboxModeOff, got %v", got)
-	}
-	if got := currentSandboxMode(on, true, false, nil); got != sandboxModeOff {
+	if got := currentSandboxMode(on, false, nil); got != sandboxModeOff {
 		t.Errorf("backend=podman without a live sandbox should be sandboxModeOff, got %v", got)
 	}
-	if got := currentSandboxMode(on, true, true, nil); got != sandboxModeRegular {
+	if got := currentSandboxMode(on, true, nil); got != sandboxModeRegular {
 		t.Errorf("backend=podman with a live sandbox and nil autoMode should be sandboxModeRegular, got %v", got)
 	}
 
 	auto := &agent.AutoModeState{}
-	if got := currentSandboxMode(on, true, true, auto); got != sandboxModeRegular {
+	if got := currentSandboxMode(on, true, auto); got != sandboxModeRegular {
 		t.Errorf("backend=podman with inactive autoMode should be sandboxModeRegular, got %v", got)
 	}
 	auto.Active.Store(true)
-	if got := currentSandboxMode(on, true, true, auto); got != sandboxModeAutoAllow {
+	if got := currentSandboxMode(on, true, auto); got != sandboxModeAutoAllow {
 		t.Errorf("backend=podman with active autoMode should be sandboxModeAutoAllow, got %v", got)
 	}
 }
@@ -43,7 +39,6 @@ func TestCurrentSandboxMode(t *testing.T) {
 func TestSandboxPicker_ShowsConfiguredButInactiveRestartState(t *testing.T) {
 	m := newTestModel(t)
 	m.cfg.AutoMode = &agent.AutoModeState{}
-	m.experimentalEnabled = []string{string(experimental.Sandbox)}
 	m.fileCfg = config.Default()
 	m.fileCfg.Sandbox.Backend = "podman"
 	if err := writeConfig(m.fileCfg); err != nil {
@@ -70,7 +65,6 @@ func TestSandboxPicker_ShowsConfiguredButInactiveRestartState(t *testing.T) {
 func TestUpdateSandboxPicker_BlocksPodmanWhenRestartRequired(t *testing.T) {
 	m := newTestModel(t)
 	m.cfg.AutoMode = &agent.AutoModeState{}
-	m.experimentalEnabled = []string{string(experimental.Sandbox)}
 	m.fileCfg = config.Default()
 	m.fileCfg.Sandbox.Backend = "podman"
 	if err := writeConfig(m.fileCfg); err != nil {
@@ -137,7 +131,6 @@ func TestUpdateSandboxPicker_UpDownNavigatesAndEscCloses(t *testing.T) {
 func TestUpdateSandboxPicker_EnterAppliesSelection(t *testing.T) {
 	m := newTestModel(t)
 	m.cfg.AutoMode = &agent.AutoModeState{}
-	m.experimentalEnabled = []string{string(experimental.Sandbox)}
 	m, _ = m.openSandboxPicker()
 	m.sandboxPicker.cursor = sandboxModeRegular
 	m.sandboxPicker.detected = true
@@ -154,37 +147,11 @@ func TestUpdateSandboxPicker_EnterAppliesSelection(t *testing.T) {
 	if reloaded.Sandbox.Backend != "podman" {
 		t.Fatalf("sandbox backend = %q, want podman", reloaded.Sandbox.Backend)
 	}
-	if reloaded.Experimental["sandbox"] {
-		t.Fatal("/sandbox must not enable experimental features")
-	}
-}
-
-func TestUpdateSandboxPicker_BlocksPodmanWhenExperimentOff(t *testing.T) {
-	m := newTestModel(t)
-	m.cfg.AutoMode = &agent.AutoModeState{}
-	m, _ = m.openSandboxPicker()
-	m.sandboxPicker.cursor = sandboxModeRegular
-
-	m, _ = m.updateSandboxPicker(tea.KeyPressMsg{Code: tea.KeyEnter})
-	if !m.sandboxPickerOpen {
-		t.Fatal("experiment-off Podman choice should stay in the picker")
-	}
-	if !strings.Contains(m.sandboxPicker.note, "Experimental sandbox is off") {
-		t.Fatalf("expected concise experimental-gate note, got %q", m.sandboxPicker.note)
-	}
-	reloaded, err := config.LoadDefault()
-	if err != nil {
-		t.Fatalf("reload after blocked apply: %v", err)
-	}
-	if reloaded.Sandbox.Backend == "podman" {
-		t.Fatal("blocked Podman choice should not persist sandbox backend")
-	}
 }
 
 func TestUpdateSandboxPicker_BlocksPodmanWhenMissing(t *testing.T) {
 	m := newTestModel(t)
 	m.cfg.AutoMode = &agent.AutoModeState{}
-	m.experimentalEnabled = []string{string(experimental.Sandbox)}
 	m, _ = m.openSandboxPicker()
 	m.sandboxPicker.cursor = sandboxModeRegular
 	m.sandboxPicker.detected = true
@@ -209,7 +176,6 @@ func TestUpdateSandboxPicker_BlocksPodmanWhenMissing(t *testing.T) {
 func TestUpdateSandboxPicker_WaitsForPodmanDetectionBeforePersisting(t *testing.T) {
 	m := newTestModel(t)
 	m.cfg.AutoMode = &agent.AutoModeState{}
-	m.experimentalEnabled = []string{string(experimental.Sandbox)}
 	m, _ = m.openSandboxPicker()
 	m.sandboxPicker.cursor = sandboxModeRegular
 	m.sandboxPicker.detected = false
@@ -246,9 +212,8 @@ func TestUpdateSandboxPicker_EscCloseDoesNotReopenSlashPalette(t *testing.T) {
 
 // TestCommitSandboxMode_AutoAllowPersistsAndActivatesAutoMode is the
 // low-level persistence path: choosing auto-allow persists [sandbox].backend =
-// "podman" and turns on this session's live auto mode. The applySandboxMode
-// wrapper owns the experimental gate; commitSandboxMode must not mutate
-// [experimental] on its own.
+// "podman" and turns on this session's live auto mode. commitSandboxMode must
+// not mutate the legacy [experimental] compatibility flag on its own.
 func TestCommitSandboxMode_AutoAllowPersistsAndActivatesAutoMode(t *testing.T) {
 	m := newTestModel(t)
 	m.cfg.AutoMode = &agent.AutoModeState{}
@@ -396,14 +361,14 @@ func TestRenderSandboxPicker_ShowsThreeRowsAndCurrentCheckmark(t *testing.T) {
 }
 
 func TestRenderSandboxPicker_StatusLineHighlightsCurrentMode(t *testing.T) {
-	on := &sandboxPickerState{cursor: sandboxModeRegular, current: sandboxModeRegular, configured: sandboxModeRegular, sandboxActive: true, experimentalOn: true, detected: true, status: sandbox.Status{Installed: true, ImagePresent: true}}
-	if got := sandboxStatusLine(on); got != "Configured: sandbox on\nActive: sandbox on · experimental on" {
+	on := &sandboxPickerState{cursor: sandboxModeRegular, current: sandboxModeRegular, configured: sandboxModeRegular, sandboxActive: true, detected: true, status: sandbox.Status{Installed: true, ImagePresent: true}}
+	if got := sandboxStatusLine(on); got != "Configured: sandbox on\nActive: sandbox on" {
 		t.Fatalf("sandbox on status line = %q", got)
 	}
 
 	off := &sandboxPickerState{cursor: sandboxModeRegular, current: sandboxModeOff, configured: sandboxModeOff, detected: true, status: sandbox.Status{Installed: true, ImagePresent: true}}
 	got := renderSandboxPicker(off, 100)
-	for _, want := range []string{"Configured: sandbox off", "Active: sandbox off · experimental off", "Enable: --experimental sandbox", "[A] Apply selection"} {
+	for _, want := range []string{"Configured: sandbox off", "Active: sandbox off", "[A] Apply selection"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("render missing concise top status %q:\n%s", want, got)
 		}
