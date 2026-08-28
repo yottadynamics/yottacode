@@ -352,12 +352,12 @@ func sandboxStatusLine(p *sandboxPickerState) string {
 		configured = "on"
 	}
 	active := "off"
-	if p.current != sandboxModeOff {
+	if p.configured == sandboxModeOff && p.sandboxActive {
+		active = "on — restart required to disable"
+	} else if p.current != sandboxModeOff {
 		active = "on"
 	} else if p.configured != sandboxModeOff && !p.sandboxActive {
 		active = "off — restart required"
-	} else if p.configured == sandboxModeOff && p.sandboxActive {
-		active = "on — restart required to disable"
 	}
 	return "Configured: sandbox " + configured + "\nActive: sandbox " + active
 }

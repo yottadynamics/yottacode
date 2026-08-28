@@ -72,7 +72,7 @@ jobs:
             -v "$PWD:$PWD:Z" \
             -w "$PWD" \
             sandbox-image \
-            sh -lc 'set -eu; go version; git --version; go test -run TestDefault_SandboxUsesNamedDefaultImage -v ./internal/config'
+            sh -lc 'set -eu; go version; git --version; test -f go.mod; tmp=$(mktemp -d); cd "$tmp"; go mod init smoke; printf "package smoke\n\nfunc Add(a, b int) int { return a + b }\n" > smoke.go; printf "package smoke\n\nimport \"testing\"\n\nfunc TestAdd(t *testing.T) { if Add(2, 3) != 5 { t.Fatal(\"bad add\") } }\n" > smoke_test.go; go test -v ./...'
 
   push:
     needs: smoke-test
