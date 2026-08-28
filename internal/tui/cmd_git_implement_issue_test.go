@@ -31,18 +31,34 @@ func TestGitImplementIssueDirective_InlinesIssueNumber(t *testing.T) {
 	}
 }
 
-func TestGitImplementIssueDirective_PinsPlanModeCheckpoint(t *testing.T) {
-	// The plan-mode gate is the load-bearing safety checkpoint.
-	// Pin the directive's mention so a future trim doesn't silently
-	// remove it.
+func TestGitImplementIssueDirective_GatesOnIssueDetailSufficiency(t *testing.T) {
+	// The issue-read checkpoint is the load-bearing safety gate: the
+	// command should not plan or edit until the issue has enough detail.
 	d := gitImplementIssueDirective(42)
 	for _, want := range []string{
-		"exit_plan_mode",
-		"plan-mode checkpoint",
-		"load-bearing safety gate",
+		"Step 2 — validate issue detail sufficiency",
+		"missing expected vs actual behavior",
+		"missing reproduction steps",
+		"missing acceptance criteria",
+		"Do NOT research code, draft a plan, create a branch, write tests, or edit files",
 	} {
 		if !strings.Contains(d, want) {
-			t.Errorf("directive missing plan-mode anchor %q\nfull:\n%s", want, d)
+			t.Errorf("directive missing issue-detail gate %q\nfull:\n%s", want, d)
+		}
+	}
+	if strings.Contains(d, "load-bearing safety gate of this command") {
+		t.Errorf("directive must not describe plan mode as the command's load-bearing gate\nfull:\n%s", d)
+	}
+}
+
+func TestGitImplementIssueDirective_PlanModeIsOptionalFallback(t *testing.T) {
+	d := gitImplementIssueDirective(42)
+	if strings.Contains(d, "CALL exit_plan_mode") || strings.Contains(d, "Do NOT skip this step") {
+		t.Errorf("directive must not require exit_plan_mode as the only checkpoint\nfull:\n%s", d)
+	}
+	for _, want := range []string{"If exit_plan_mode is available", "If exit_plan_mode is not available", "normal scrollback message"} {
+		if !strings.Contains(d, want) {
+			t.Errorf("directive missing plan-mode fallback wording %q\nfull:\n%s", want, d)
 		}
 	}
 }
@@ -53,7 +69,7 @@ func TestGitImplementIssueDirective_PinsReproStepForBugs(t *testing.T) {
 	// edit doesn't drop the regression-test discipline.
 	d := gitImplementIssueDirective(42)
 	for _, want := range []string{
-		"Step 2.5",
+		"Step 3.5",
 		`"bug"`,
 		"reproduces the buggy behavior",
 		"regression test",

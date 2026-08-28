@@ -29,13 +29,26 @@ typed snapshot under section headers (## state, ## issue,
   re-runs the command after confirming.
 - All clean → proceed to Step 2.
 
-Step 2 — research the codebase. Use read_file, grep, glob,
+Step 2 — validate issue detail sufficiency before touching the
+codebase. Read the issue body and comments in ## issue / ## comments
+and decide whether they contain enough information to implement safely:
+- Bugs need expected vs actual behavior plus reproduction steps or a
+  narrow observable failure.
+- Features need acceptance criteria or a concrete user-visible outcome.
+- Refactors/docs tasks need a clear target area and desired end state.
+If the issue is too vague, missing expected vs actual behavior,
+missing reproduction steps, missing acceptance criteria, or otherwise
+unclear, STOP and surface "[git-implement-issue] issue #` + num + `
+needs more detail before implementation" followed by the specific
+questions to ask. Do NOT research code, draft a plan, create a branch,
+write tests, or edit files until the issue is clear enough.
+
+Step 3 — research the codebase. Use read_file, grep, glob,
 list_dir to find the relevant files and understand the existing
-code. Read the issue body and comments in ## issue / ## comments
-to frame the change. NO write_file / edit_file / apply_diff /
+code. NO write_file / edit_file / apply_diff /
 mkdir at this stage; this is the research phase.
 
-Step 2.5 (bug-shaped issues only) — if the issue is labeled
+Step 3.5 (bug-shaped issues only) — if the issue is labeled
 "bug" (visible in ## issue's labels=… line), or unlabeled with a
 body that describes a defect (words like "error", "broken",
 "doesn't work", "fails", "crashes"), write a failing test that
@@ -51,37 +64,37 @@ for clearer steps before proceeding". Skip this step for
 feature / enhancement / refactor / docs issues — there's nothing
 to reproduce.
 
-Step 3 — draft an implementation plan. CALL exit_plan_mode with
-a markdown plan covering: which files to change, what change to
-make in each, and (for bugs) which test verifies the fix. This
-fires the approval modal — the user reviews the plan and either
-approves (you proceed to Step 4) or rejects (you stop and adjust).
-Do NOT skip this step. The plan-mode checkpoint is the
-load-bearing safety gate of this command. If exit_plan_mode is not
-available in this session, instead surface the plan as a single
-scrollback message and STOP for user confirmation.
+Step 4 — draft an implementation checkpoint. The checkpoint should be
+a markdown plan covering: which files to change, what change to make
+in each, and (for bugs) which test verifies the fix. If exit_plan_mode
+is available, call it with that plan so the user can approve from the
+plan modal. If exit_plan_mode is not available, surface the same plan
+as a normal scrollback message and STOP for user confirmation. Plan
+mode is an optional presentation/safety surface here; the issue-detail
+validation in Step 2 is the core gate that prevents under-specified
+implementation.
 
-Step 4 — create a fresh feature branch via the unified git tool:
+Step 5 — create a fresh feature branch via the unified git tool:
 git({"args":["checkout","-b","fix/issue-` + num + `-<short-slug>"]}).
 <short-slug> is derived from the issue title: lowercase, only
 [a-z0-9-], words joined by dashes, capped at ~30 characters. If
 the branch name collides with an existing branch, append "-2"
 (then "-3", etc.) before retrying.
 
-Step 5 — implement the changes per the approved plan. Use
+Step 6 — implement the changes per the approved plan. Use
 write_file / edit_file / apply_diff / mkdir as needed. Stay
 within the scope of the plan; if the implementation surfaces a
 need to expand scope, STOP and surface the discovery rather than
 silently expanding.
 
-Step 6 — call run_tests. If tests fail:
+Step 7 — call run_tests. If tests fail:
 - Surface the failure verbatim.
 - Do NOT auto-fix. Do NOT iterate.
 - Do NOT stage, commit, push, or open a PR.
 - STOP and let the user decide.
-If tests pass, proceed to Step 7.
+If tests pass, proceed to Step 8.
 
-Step 7 — stage and commit. Call git_stage_files with the changed
+Step 8 — stage and commit. Call git_stage_files with the changed
 paths, then git_commit_context to generate the message context,
 then git_commit_apply to compose and run the commit. The commit
 subject should be a short imperative verb summary of the change;
@@ -91,12 +104,12 @@ NOT include "Closes #` + num + `" in the commit message — that goes
 in the PR body so the issue closes when the PR merges (the human
 review gate), not when the commit lands.
 
-Step 8 — call git_push. This sets the upstream and pushes the new
+Step 9 — call git_push. This sets the upstream and pushes the new
 branch to origin. The push tool will surface failures (detached
 HEAD, push-rejected); do NOT force-push and do NOT amend on
 failure. STOP and let the user diagnose.
 
-Step 9 — open the draft PR via pr_create. base="main" (unless
+Step 10 — open the draft PR via pr_create. base="main" (unless
 the repo's default branch is different — check the issue body or
 the prior /git-create-pr conventions). draft=true. Body must
 include:
