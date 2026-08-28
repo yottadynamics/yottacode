@@ -86,6 +86,30 @@ won't copy its target's bytes into the worktree.
 Commit `.worktreeinclude` to the repo so every contributor's
 worktrees inherit the same setup.
 
+### What is safe to list
+
+`.worktreeinclude` is for **safe local-only files** — things a fresh
+worktree needs to be useful but that are not tracked by git:
+
+```
+# <repo>/.worktreeinclude
+.env.example
+.devcontainer/devcontainer.json
+config/local.example.toml
+testdata/local-fixtures/**
+```
+
+Prefer examples and non-secret configuration. Do **not** list real
+secrets here: a copied API key, token, private `.env`, or credential
+file would land in every contributor's worktree and become impossible
+to rotate cleanly. If a user intentionally copies local secrets for
+their own machine, that is their local workflow decision — it should
+stay out of the committed `.worktreeinclude` so it is never
+propagated to other contributors.
+
+Missing files are silently skipped, so listing a file that only some
+machines have is safe.
+
 ## Agent surface
 
 The agent reaches the same machinery through three tools, all of
