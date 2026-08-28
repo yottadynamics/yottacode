@@ -78,10 +78,10 @@ type sandboxPickerState struct {
 // currentSandboxMode derives the active mode from on-disk config, startup
 // sandbox state, and live auto-mode state.
 func currentSandboxMode(cfg config.Config, sandboxActive bool, autoMode *agent.AutoModeState) sandboxMode {
-	if !sandboxActive || cfg.Sandbox.Backend != "podman" {
+	if !sandboxActive {
 		return sandboxModeOff
 	}
-	if autoMode != nil && autoMode.IsActive() {
+	if cfg.Sandbox.Backend == "podman" && autoMode != nil && autoMode.IsActive() {
 		return sandboxModeAutoAllow
 	}
 	return sandboxModeRegular
@@ -261,8 +261,8 @@ func commitSandboxMode(m Model, mode sandboxMode) (Model, tea.Cmd) {
 	detail := sandboxCommitDetail(mode, m.sandboxActive)
 	m.appendLine(styleAuto.Render(SysMsg(SysSuccess, "sandbox", sandboxModeLabel(mode), detail)))
 	if p := m.sandboxPicker; p != nil {
-		p.current = mode
-		p.configured = mode
+		p.current = currentSandboxMode(cfg, m.sandboxActive, m.cfg.AutoMode)
+		p.configured = configuredSandboxMode(cfg, m.sandboxActive, m.cfg.AutoMode)
 	}
 	return m.closeSandboxPicker()
 }
@@ -356,6 +356,8 @@ func sandboxStatusLine(p *sandboxPickerState) string {
 		active = "on"
 	} else if p.configured != sandboxModeOff && !p.sandboxActive {
 		active = "off — restart required"
+	} else if p.configured == sandboxModeOff && p.sandboxActive {
+		active = "on — restart required to disable"
 	}
 	return "Configured: sandbox " + configured + "\nActive: sandbox " + active
 }

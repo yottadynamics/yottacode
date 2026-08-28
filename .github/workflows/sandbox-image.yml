@@ -1,0 +1,105 @@
+# Builds, smoke-tests, and publishes the default yottacode command sandbox
+# image (infra/sandbox.Containerfile) to ghcr.io. Pull requests build and
+# smoke-test the image without publishing; main, manual, and weekly runs publish
+# after the same smoke gate. The weekly rebuild keeps UBI/package CVE fixes
+# flowing even when the CLI itself has no release.
+
+name: Sandbox image
+
+on:
+  workflow_dispatch: {}
+  pull_request:
+    paths:
+      - infra/sandbox.Containerfile
+      - .github/workflows/sandbox-image.yml
+  push:
+    branches: [main]
+    paths:
+      - infra/sandbox.Containerfile
+      - .github/workflows/sandbox-image.yml
+  schedule:
+    - cron: '0 7 * * 1'
+
+permissions:
+  contents: read
+
+env:
+  IMAGE_NAME: ghcr.io/yottadynamics/yottacode-sandbox
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install podman
+        run: sudo apt-get update && sudo apt-get install -y podman
+
+      - name: Build image
+        run: podman build -t sandbox-image -f infra/sandbox.Containerfile .
+
+      - name: Save image for downstream jobs
+        run: podman save -o sandbox-image.tar sandbox-image
+
+      - name: Upload image artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sandbox-image
+          path: sandbox-image.tar
+          retention-days: 1
+
+  smoke-test:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install podman
+        run: sudo apt-get update && sudo apt-get install -y podman
+
+      - name: Download image artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: sandbox-image
+
+      - name: Load image
+        run: podman load -i sandbox-image.tar
+
+      - name: Smoke test — Go toolchain and mounted repo
+        run: |
+          podman run --rm \
+            --network=none \
+            -v "$PWD:$PWD:Z" \
+            -w "$PWD" \
+            sandbox-image \
+            sh -lc 'set -eu; go version; git --version; go test -run TestDefault_SandboxUsesNamedDefaultImage -v ./internal/config'
+
+  push:
+    needs: smoke-test
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Install podman
+        run: sudo apt-get update && sudo apt-get install -y podman
+
+      - name: Download image artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: sandbox-image
+
+      - name: Load image
+        run: podman load -i sandbox-image.tar
+
+      - name: Log in to ghcr.io
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | podman login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Tag and push (rolling latest + immutable date tag)
+        run: |
+          DATE_TAG=$(date -u +%Y-%m-%d)
+          podman tag sandbox-image "${IMAGE_NAME}:${DATE_TAG}"
+          podman tag sandbox-image "${IMAGE_NAME}:latest"
+          podman push "${IMAGE_NAME}:${DATE_TAG}"
+          podman push "${IMAGE_NAME}:latest"

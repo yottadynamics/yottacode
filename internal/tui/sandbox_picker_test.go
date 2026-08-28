@@ -36,6 +36,13 @@ func TestCurrentSandboxMode(t *testing.T) {
 	}
 }
 
+func TestCurrentSandboxMode_ActiveSessionStaysActiveAfterConfigOff(t *testing.T) {
+	off := config.Config{Sandbox: config.SandboxConfig{Backend: "none"}}
+	if got := currentSandboxMode(off, true, nil); got != sandboxModeRegular {
+		t.Fatalf("active session after persisted-off config = %v, want sandboxModeRegular", got)
+	}
+}
+
 func TestSandboxPicker_ShowsConfiguredButInactiveRestartState(t *testing.T) {
 	m := newTestModel(t)
 	m.cfg.AutoMode = &agent.AutoModeState{}
@@ -295,6 +302,32 @@ func TestCommitSandboxMode_ActiveSessionMentionsLazyProfiles(t *testing.T) {
 	}
 }
 
+func TestCommitSandboxMode_OffKeepsActiveSessionVisible(t *testing.T) {
+	m := newTestModel(t)
+	m.cfg.AutoMode = &agent.AutoModeState{}
+	m.sandboxActive = true
+	m.sandboxPicker = &sandboxPickerState{current: sandboxModeRegular}
+
+	m, _ = commitSandboxMode(m, sandboxModeOff)
+
+	if m.sandboxPicker != nil {
+		t.Fatal("commitSandboxMode should close the picker")
+	}
+	reloaded, err := config.LoadDefault()
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if reloaded.Sandbox.Backend != "none" {
+		t.Fatalf("Sandbox.Backend = %q, want none", reloaded.Sandbox.Backend)
+	}
+	got := strings.Join(m.historyLines, "\n")
+	for _, want := range []string{"No sandbox", "this session keeps its existing sandbox"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("expected %q in sandbox commit output, got:\n%s", want, got)
+		}
+	}
+}
+
 // TestCommitSandboxMode_OffTurnsAutoModeBackOff: switching to "no sandbox"
 // from an auto-allow state (this picker's own `current` says the live
 // auto mode is attributable to a prior auto-allow pick) must not leave a
@@ -357,6 +390,11 @@ func TestRenderSandboxPicker_ShowsThreeRowsAndCurrentCheckmark(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Errorf("render missing row %q:\n%s", want, got)
 		}
+	}
+
+	disabling := &sandboxPickerState{cursor: sandboxModeOff, current: sandboxModeRegular, configured: sandboxModeOff, sandboxActive: true, detected: true, status: sandbox.Status{Installed: true, ImagePresent: true}}
+	if got := sandboxStatusLine(disabling); got != "Configured: sandbox off\nActive: sandbox on — restart required to disable" {
+		t.Fatalf("disabled-but-active status = %q", got)
 	}
 }
 
