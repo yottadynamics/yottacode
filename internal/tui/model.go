@@ -3158,7 +3158,7 @@ func (m Model) activePopupBody() (box string, ok bool) {
 			return renderApprovalModal(m), true
 		}
 	case m.loopExitConfirmOpen:
-		return popupBox(renderLoopExitConfirm(m)), true
+		return keyboardOnlyPopupBox(renderLoopExitConfirm(m)), true
 	case m.cheatsheetOpen:
 		return popupBox(renderCheatsheet()), true
 	case m.loopListOpen && m.activeLoopCount() > 0:
