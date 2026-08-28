@@ -48,7 +48,7 @@ Yes. Use `/recall <query>` in the TUI. yottacode indexes saved sessions with loc
 
 ## Does yottacode sandbox commands?
 
-No. There is no in-process sandbox. Use a container or devcontainer for real isolation.
+Yes, for approved shell commands when you opt in. Set `[sandbox] backend = "podman"` to run `run_bash`, `run_tests`, and document subprocess helpers inside the published command/document sandbox images. File tools, git, GitHub, provider calls, and the TUI still run on the host. See [Command sandbox](sandbox.md).
 
 ## Can I auto-approve trusted commands?
 

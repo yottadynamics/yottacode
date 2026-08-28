@@ -1,8 +1,9 @@
 # Builds, smoke-tests, and publishes the default yottacode command sandbox
 # image (infra/sandbox.Containerfile) to ghcr.io. Pull requests build and
-# smoke-test the image without publishing; main, manual, and weekly runs publish
-# after the same smoke gate. The weekly rebuild keeps UBI/package CVE fixes
-# flowing even when the CLI itself has no release.
+# smoke-test the image without publishing; main, release-tag, manual, and weekly
+# runs publish after the same smoke gate. The push job also verifies an
+# anonymous pull so a private/unlinked GHCR package fails before users discover
+# it at sandbox startup.
 
 name: Sandbox image
 
@@ -11,11 +12,14 @@ on:
   pull_request:
     paths:
       - infra/sandbox.Containerfile
+      - scripts/smoke/sandbox-image.sh
       - .github/workflows/sandbox-image.yml
   push:
     branches: [main]
+    tags: ['v*']
     paths:
       - infra/sandbox.Containerfile
+      - scripts/smoke/sandbox-image.sh
       - .github/workflows/sandbox-image.yml
   schedule:
     - cron: '0 7 * * 1'
@@ -39,7 +43,7 @@ jobs:
         run: podman build -t sandbox-image -f infra/sandbox.Containerfile .
 
       - name: Save image for downstream jobs
-        run: podman save -o sandbox-image.tar sandbox-image
+        run: podman save -o sandbox-image.tar localhost/sandbox-image:latest
 
       - name: Upload image artifact
         uses: actions/upload-artifact@v4
@@ -72,7 +76,7 @@ jobs:
             -v "$PWD:$PWD:Z" \
             -w "$PWD" \
             sandbox-image \
-            sh -lc 'set -eu; go version; git --version; test -f go.mod; tmp=$(mktemp -d); cd "$tmp"; go mod init smoke; printf "package smoke\n\nfunc Add(a, b int) int { return a + b }\n" > smoke.go; printf "package smoke\n\nimport \"testing\"\n\nfunc TestAdd(t *testing.T) { if Add(2, 3) != 5 { t.Fatal(\"bad add\") } }\n" > smoke_test.go; go test -v ./...'
+            sh -lc 'sh ./scripts/smoke/sandbox-image.sh'
 
   push:
     needs: smoke-test
@@ -96,10 +100,21 @@ jobs:
       - name: Log in to ghcr.io
         run: echo "${{ secrets.GITHUB_TOKEN }}" | podman login ghcr.io -u "${{ github.actor }}" --password-stdin
 
-      - name: Tag and push (rolling latest + immutable date tag)
+      - name: Tag and push (release tag + rolling latest + immutable date tag)
         run: |
+          TAG_NAME="${GITHUB_REF_NAME:-}"
           DATE_TAG=$(date -u +%Y-%m-%d)
+          if [ "${GITHUB_REF_TYPE:-}" = "tag" ] && [ -n "$TAG_NAME" ]; then
+            podman tag sandbox-image "${IMAGE_NAME}:${TAG_NAME}"
+            podman push "${IMAGE_NAME}:${TAG_NAME}"
+          fi
           podman tag sandbox-image "${IMAGE_NAME}:${DATE_TAG}"
           podman tag sandbox-image "${IMAGE_NAME}:latest"
           podman push "${IMAGE_NAME}:${DATE_TAG}"
           podman push "${IMAGE_NAME}:latest"
+
+      - name: Verify anonymous pull
+        run: |
+          podman logout ghcr.io || true
+          podman rmi "${IMAGE_NAME}:latest" || true
+          podman pull "${IMAGE_NAME}:latest"

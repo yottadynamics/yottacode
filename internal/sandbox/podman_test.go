@@ -106,8 +106,8 @@ func TestSandboxMountPathsAddsManagedWorktreeRoot(t *testing.T) {
 	mountRoot := filepath.Join(t.TempDir(), "repo")
 	got := sandboxMountPaths(mountRoot, []string{mountRoot})
 	want := worktree.SlugDir(mountRoot)
-	if len(got) != 2 || got[0].Path != mountRoot || got[0].SELinuxLabel != "Z" || got[1].Path != want || got[1].SELinuxLabel != "z" {
-		t.Fatalf("sandboxMountPaths = %+v, want [%s:Z %s:z]", got, mountRoot, want)
+	if len(got) != 2 || got[0].Path != mountRoot || got[0].SELinuxLabel != "z" || got[1].Path != want || got[1].SELinuxLabel != "z" {
+		t.Fatalf("sandboxMountPaths = %+v, want [%s:z %s:z]", got, mountRoot, want)
 	}
 }
 

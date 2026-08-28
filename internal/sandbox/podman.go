@@ -146,9 +146,10 @@ func NewPodmanSandbox(ctx context.Context, cfg config.SandboxConfig, id, mountRo
 		return nil, err
 	}
 	for _, m := range sandboxMountPaths(mountRoot, mounts) {
-		// :Z relabels configured project mounts for this container's EXCLUSIVE
-		// use under SELinux. The managed worktree root uses :z because multiple
-		// sessions for the same repo slug may legitimately mount it at once.
+		// :z relabels configured project mounts for SHARED container use under
+		// SELinux. Multiple yottacode sessions can legitimately mount the same
+		// checkout; exclusive :Z would let a later session steal access from
+		// an already-running sandbox container.
 		args = append(args, "-v", m.Path+":"+m.Path+":"+m.SELinuxLabel)
 	}
 	args = append(args, "-w", mountRoot)
@@ -192,7 +193,7 @@ type sandboxMountPath struct {
 func sandboxMountPaths(mountRoot string, configured []string) []sandboxMountPath {
 	out := make([]sandboxMountPath, 0, len(configured)+1)
 	for _, m := range configured {
-		out = append(out, sandboxMountPath{Path: m, SELinuxLabel: "Z"})
+		out = append(out, sandboxMountPath{Path: m, SELinuxLabel: "z"})
 	}
 	worktreeRoot := worktree.SlugDir(mountRoot)
 	if err := os.MkdirAll(worktreeRoot, 0o755); err != nil {

@@ -248,6 +248,58 @@ func TestSandboxManager_ConcurrentFirstUseCreatesOneProfileContainer(t *testing.
 	}
 }
 
+func TestSandboxManager_WaitingCallerHonorsContextDuringProfileCreation(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	mgr := NewSandboxManager(config.Default().Sandbox, "sess", t.TempDir(), func(ctx context.Context, cfg config.SandboxConfig, id, mountRoot string) (agent.Sandbox, error) {
+		close(started)
+		<-release
+		return &managerSpySandbox{label: "[documents]"}, nil
+	})
+
+	firstDone := make(chan error, 1)
+	go func() {
+		_, err := mgr.Command(context.Background(), agent.SandboxProfileDocuments, "true", t.TempDir()).CombinedOutput()
+		firstDone <- err
+	}()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("first constructor did not start")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	secondDone := make(chan string, 1)
+	go func() {
+		out, err := mgr.Command(ctx, agent.SandboxProfileDocuments, "true", t.TempDir()).CombinedOutput()
+		if err != nil {
+			secondDone <- string(out)
+			return
+		}
+		secondDone <- ""
+	}()
+	cancel()
+
+	select {
+	case out := <-secondDone:
+		if !strings.Contains(out, context.Canceled.Error()) {
+			t.Fatalf("waiting caller output = %q, want context cancellation", out)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("waiting caller stayed blocked after its context was canceled")
+	}
+
+	close(release)
+	select {
+	case err := <-firstDone:
+		if err != nil {
+			t.Fatalf("first command failed after release: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("first command did not finish")
+	}
+}
+
 func TestSandboxHandler_ZeroValueIsSafe(t *testing.T) {
 	var h SandboxHandler
 	if got := h.Label(); got != (agent.HostSandbox{}).Label() {
