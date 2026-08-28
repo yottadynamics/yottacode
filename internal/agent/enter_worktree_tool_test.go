@@ -70,17 +70,17 @@ func TestEnterWorktreeRejectsBadBase(t *testing.T) {
 	require.Error(t, err)
 }
 
-// TestEnterWorktreeRejectsWhenSandboxActive: a container-backed Sandbox
-// only has the session's original cwd bind-mounted, so swapping CwdRef to
-// a worktree path would point every subsequent run_bash exec at a
-// directory the container can't see. enter_worktree must refuse loudly
-// rather than let that happen silently.
+// TestEnterWorktreeRejectsWhenSandboxActive: an opaque container-backed Sandbox
+// may only have the session's original cwd bind-mounted, so swapping CwdRef to
+// a worktree path would point every subsequent run_bash exec at a directory the
+// container can't see. enter_worktree must refuse loudly rather than let that
+// happen silently.
 func TestEnterWorktreeRejectsWhenSandboxActive(t *testing.T) {
 	repo := mkRepoForAgent(t)
 	tool := &EnterWorktreeTool{Cwd: NewCwdRef(repo), Sandbox: &spySandbox{label: "[podman]"}}
 	_, err := tool.Execute(context.Background(), `{"name":"x","base":"head"}`)
 	require.Error(t, err)
-	require.Contains(t, err.Error(), "podman command sandbox is active")
+	require.Contains(t, err.Error(), "cannot see this worktree path")
 	// No worktree should have been created — the refusal must happen
 	// before any side effect.
 	if _, statErr := os.Stat(worktree.Dir(repo, "x")); !os.IsNotExist(statErr) {
@@ -91,12 +91,21 @@ func TestEnterWorktreeRejectsWhenSandboxActive(t *testing.T) {
 type lazySandboxNoLiveProfiles struct{ spySandbox }
 
 func (s lazySandboxNoLiveProfiles) LiveProfiles() []SandboxProfile { return nil }
+func (s lazySandboxNoLiveProfiles) VisiblePath(string) bool        { return false }
 
 type lazySandboxWithLiveProfiles struct{ spySandbox }
 
 func (s lazySandboxWithLiveProfiles) LiveProfiles() []SandboxProfile {
 	return []SandboxProfile{SandboxProfileDefault}
 }
+func (s lazySandboxWithLiveProfiles) VisiblePath(string) bool { return false }
+
+type lazySandboxWithVisibleWorktree struct{ spySandbox }
+
+func (s lazySandboxWithVisibleWorktree) LiveProfiles() []SandboxProfile {
+	return []SandboxProfile{SandboxProfileDefault}
+}
+func (s lazySandboxWithVisibleWorktree) VisiblePath(string) bool { return true }
 
 func TestEnterWorktreeAllowsLazySandboxBeforeProfileCreated(t *testing.T) {
 	repo := mkRepoForAgent(t)
@@ -105,12 +114,19 @@ func TestEnterWorktreeAllowsLazySandboxBeforeProfileCreated(t *testing.T) {
 	require.NoError(t, err)
 }
 
-func TestEnterWorktreeRejectsLazySandboxWithLiveProfile(t *testing.T) {
+func TestEnterWorktreeAllowsLazySandboxWhenWorktreeVisible(t *testing.T) {
+	repo := mkRepoForAgent(t)
+	tool := &EnterWorktreeTool{Cwd: NewCwdRef(repo), Sandbox: &lazySandboxWithVisibleWorktree{}}
+	_, err := tool.Execute(context.Background(), `{"name":"x","base":"head"}`)
+	require.NoError(t, err)
+}
+
+func TestEnterWorktreeRejectsLazySandboxWithLiveProfileAndHiddenWorktree(t *testing.T) {
 	repo := mkRepoForAgent(t)
 	tool := &EnterWorktreeTool{Cwd: NewCwdRef(repo), Sandbox: &lazySandboxWithLiveProfiles{}}
 	_, err := tool.Execute(context.Background(), `{"name":"x","base":"head"}`)
 	require.Error(t, err)
-	require.Contains(t, err.Error(), "podman command sandbox is active")
+	require.Contains(t, err.Error(), "cannot see this worktree path")
 }
 
 // TestEnterWorktreeAllowsWhenSandboxNil confirms the common (no sandbox)

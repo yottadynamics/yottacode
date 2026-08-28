@@ -53,6 +53,9 @@ func TestDefault_SandboxUsesNamedDefaultImage(t *testing.T) {
 	if got := Default().Sandbox.DocumentsImage; got != DefaultSandboxDocumentsImage {
 		t.Fatalf("Default().Sandbox.DocumentsImage = %q, want %q", got, DefaultSandboxDocumentsImage)
 	}
+	if !strings.Contains(DefaultSandboxImage, "yottacode-sandbox") {
+		t.Fatalf("DefaultSandboxImage = %q, want official yottacode sandbox image", DefaultSandboxImage)
+	}
 }
 
 func TestLoad_AppliesOverrides(t *testing.T) {
