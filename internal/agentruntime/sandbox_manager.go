@@ -223,7 +223,7 @@ func (m *SandboxManager) profileID(profile agent.SandboxProfile) string {
 }
 
 // LiveProfiles returns the profiles that have created containers. It is used by
-// worktree guards so changing cwd cannot strand live containers with stale
+// worktree guards so changing cwd cannot strand live containers with unseen
 // mounts.
 func (m *SandboxManager) LiveProfiles() []agent.SandboxProfile {
 	if m == nil {
@@ -237,6 +237,17 @@ func (m *SandboxManager) LiveProfiles() []agent.SandboxProfile {
 	}
 	slices.Sort(out)
 	return out
+}
+
+// VisiblePath reports whether a sandboxed command can run with path as its cwd.
+// The Podman sandbox mounts both the session root and this repo's managed
+// worktree storage, so an in-session enter_worktree is safe for yottacode-
+// managed worktrees even after a profile container is live.
+func (m *SandboxManager) VisiblePath(path string) bool {
+	if m == nil {
+		return false
+	}
+	return sandbox.PathVisibleFromMountRoot(path, m.mountRoot)
 }
 
 // SandboxHandler is the stable sandbox value registered with tools. It routes
@@ -283,6 +294,13 @@ func (h SandboxHandler) LiveProfiles() []agent.SandboxProfile {
 		return nil
 	}
 	return h.manager.LiveProfiles()
+}
+
+func (h SandboxHandler) VisiblePath(path string) bool {
+	if h.manager == nil {
+		return false
+	}
+	return h.manager.VisiblePath(path)
 }
 
 func failingCommand(ctx context.Context, err error) *exec.Cmd {

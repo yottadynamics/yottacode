@@ -41,6 +41,10 @@ type liveProfileSandbox interface {
 	LiveProfiles() []SandboxProfile
 }
 
+type visiblePathSandbox interface {
+	VisiblePath(path string) bool
+}
+
 func (t *EnterWorktreeTool) Name() string { return "enter_worktree" }
 
 func (t *EnterWorktreeTool) Description() string {
@@ -107,9 +111,6 @@ func (t *EnterWorktreeTool) Execute(ctx context.Context, argsJSON string) (strin
 	if a.Base != "fresh" && a.Base != "head" {
 		return "", fmt.Errorf("enter_worktree: base must be 'fresh' or 'head', got %q", a.Base)
 	}
-	if sandboxHasLiveMount(t.Sandbox) {
-		return "", fmt.Errorf("enter_worktree: not available while the podman command sandbox is active for this session — the container only has the original session directory mounted, and there's no way to remount it mid-session. Start a fresh session already inside a worktree instead (`yottacode --worktree <name>`), or restart without sandbox before entering a worktree")
-	}
 
 	repoRoot, err := worktree.ResolveRepoRoot(ctx, t.Cwd.Get())
 	if err != nil {
@@ -128,6 +129,9 @@ func (t *EnterWorktreeTool) Execute(ctx context.Context, argsJSON string) (strin
 
 	wtDir := worktree.Dir(repoRoot, name)
 	branch := worktree.Branch(name)
+	if sandboxBlocksWorktree(t.Sandbox, wtDir) {
+		return "", fmt.Errorf("enter_worktree: not available while the podman command sandbox has a live container that cannot see this worktree path (%s). If you just selected No sandbox, that only changed config for the next session; this session keeps its existing live container. Clear or skip any todo plan that depends on this worktree before ending the turn, then start yottacode directly inside the worktree (`yottacode --worktree %s`) or restart without sandbox", wtDir, name)
+	}
 
 	// If a worktree with this path already exists, attach to it
 	// instead of erroring. The agent calling enter_worktree with a
@@ -211,12 +215,16 @@ func (t *EnterWorktreeTool) swapCwd(newDir string) error {
 	return nil
 }
 
-func sandboxHasLiveMount(sb Sandbox) bool {
+func sandboxBlocksWorktree(sb Sandbox, path string) bool {
 	if sb == nil {
 		return false
 	}
 	if lps, ok := sb.(liveProfileSandbox); ok {
-		return len(lps.LiveProfiles()) > 0
+		if len(lps.LiveProfiles()) == 0 {
+			return false
+		}
+		visible, ok := sb.(visiblePathSandbox)
+		return !ok || !visible.VisiblePath(path)
 	}
 	return true
 }

@@ -15,6 +15,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
@@ -23,6 +24,7 @@ import (
 	"time"
 
 	"github.com/yottadynamics/yottacode/internal/config"
+	"github.com/yottadynamics/yottacode/internal/worktree"
 )
 
 // podmanLookPath is swapped in tests to simulate podman being missing
@@ -143,13 +145,11 @@ func NewPodmanSandbox(ctx context.Context, cfg config.SandboxConfig, id, mountRo
 	if err != nil {
 		return nil, err
 	}
-	for _, m := range mounts {
-		// :Z relabels the mount for this container's EXCLUSIVE use under
-		// SELinux (a no-op, confirmed harmless, on non-SELinux hosts).
-		// Exclusive (not :z/shared) is correct here — each session's or
-		// worker's mount root is never mounted into more than one
-		// container at a time.
-		args = append(args, "-v", m+":"+m+":Z")
+	for _, m := range sandboxMountPaths(mountRoot, mounts) {
+		// :Z relabels configured project mounts for this container's EXCLUSIVE
+		// use under SELinux. The managed worktree root uses :z because multiple
+		// sessions for the same repo slug may legitimately mount it at once.
+		args = append(args, "-v", m.Path+":"+m.Path+":"+m.SELinuxLabel)
 	}
 	args = append(args, "-w", mountRoot)
 	for _, envName := range cfg.EnvPassthrough {
@@ -180,6 +180,37 @@ func NewPodmanSandbox(ctx context.Context, cfg config.SandboxConfig, id, mountRo
 	return &PodmanSandbox{name: name}, nil
 }
 
+type sandboxMountPath struct {
+	Path         string
+	SELinuxLabel string
+}
+
+// sandboxMountPaths extends user-configured project-relative mounts with this
+// repo's managed worktree storage. yottacode worktrees live outside the repo
+// checkout under ~/.yottacode/worktrees/<slug>/, so mounting only mountRoot
+// strands an already-live sandbox when enter_worktree later swaps cwd there.
+func sandboxMountPaths(mountRoot string, configured []string) []sandboxMountPath {
+	out := make([]sandboxMountPath, 0, len(configured)+1)
+	for _, m := range configured {
+		out = append(out, sandboxMountPath{Path: m, SELinuxLabel: "Z"})
+	}
+	worktreeRoot := worktree.SlugDir(mountRoot)
+	if err := os.MkdirAll(worktreeRoot, 0o755); err != nil {
+		return out
+	}
+	for _, m := range configured {
+		if sameOrContains(m, worktreeRoot) || sameOrContains(worktreeRoot, m) {
+			return out
+		}
+	}
+	return append(out, sandboxMountPath{Path: worktreeRoot, SELinuxLabel: "z"})
+}
+
+// PathVisibleFromMountRoot mirrors sandboxMountPaths without creating anything.
+func PathVisibleFromMountRoot(path, mountRoot string) bool {
+	return sameOrContains(mountRoot, path) || sameOrContains(worktree.SlugDir(mountRoot), path)
+}
+
 // mountPaths resolves cfg.Mounts (relative to mountRoot, "." meaning
 // mountRoot itself) into an absolute, de-duplicated list that always
 // includes mountRoot — the common single-mount case collapses to exactly
@@ -208,6 +239,22 @@ func mountPaths(mounts []string, mountRoot string) ([]string, error) {
 		out = append(out, abs)
 	}
 	return out, nil
+}
+
+func sameOrContains(root, path string) bool {
+	if root == "" || path == "" {
+		return false
+	}
+	root = filepath.Clean(root)
+	path = filepath.Clean(path)
+	if root == path {
+		return true
+	}
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return false
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 // Command returns a `podman exec` into this sandbox's container. Mirrors

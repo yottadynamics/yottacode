@@ -4,7 +4,8 @@
 approval and the hardline blocklist in `internal/agent/exec_tool.go`. The
 command sandbox adds a real isolation boundary underneath that: approved
 `run_bash` commands execute inside a rootless [Podman] container with a
-default-deny network and a filesystem that only sees the project tree.
+default-deny network and a filesystem that only sees the project tree plus the
+repo's managed yottacode worktree root.
 
 yottacode itself still runs on the host. File tools, git tools, GitHub tools,
 MCP tools, the TUI, and provider traffic are not inside the container.
@@ -35,8 +36,9 @@ flowchart LR
     Seam -- podman documents profile --> DocExec[podman exec -w cwd]
     Exec --> Container[(Default session container)]
     DocExec --> DocContainer[(Documents session container)]
-    Container --> Mount[(Project bind mount only)]
+    Container --> Mount[(Project + managed worktree mounts)]
     DocContainer --> Mount
+    Mount --> Worktrees[(Managed worktree root)]
     Container -. network=none by default .-> Net[No network egress]
     DocContainer -. network=none by default .-> Net
 
@@ -82,7 +84,7 @@ commands share those profile containers' `memory`/`cpus`/`pids_limit` budget.
 | Podman lifecycle | `internal/sandbox/podman.go`, `internal/sandbox/detect.go` | Starts one rootless container for a requested manager profile, builds `podman exec`, validates mounts, detects local Podman/image state, and tears containers down. |
 | Session wiring | `internal/agentruntime/runtime.go`, `internal/agentruntime/sandbox_manager.go` | Creates a lazy per-profile sandbox manager when `[sandbox].backend = "podman"`; never falls back to host execution on profile creation failure. |
 | Dispatch inheritance | `internal/agent/dispatch_tool.go` | Gives each write worker a worker-scoped sandbox mounted at that worker's worktree; read-only workers reuse the parent registry. |
-| Worktree guard | `internal/agent/enter_worktree_tool.go` | Refuses mid-session worktree swaps once a lazy sandbox profile has created a live container, because that container cannot be remounted. |
+| Worktree guard | `internal/agent/enter_worktree_tool.go` | Allows mid-session swaps only when the live sandbox can see the target worktree path; yottacode-managed worktrees are pre-mounted. |
 | TUI control | `internal/tui/sandbox_picker.go`, `internal/tui/cmd_sandbox.go` | Persists sandbox mode, toggles live auto mode when requested, probes Podman/image availability, and tells users a restart/new session is required for backend changes. |
 | Config/docs | `internal/config/config.go`, `docs/sandbox.md` | Owns defaults, validation, and user-facing contract. |
 
@@ -144,6 +146,9 @@ container is created with that session's cwd mounted. Restart yottacode or start
 a new session for backend changes to affect command execution. Enter (or the
 `[A] Apply selection` action) writes config and always says restart/new session
 is required so users do not mistake a config write for a live isolation change.
+If you choose **No sandbox** from an active sandboxed session, the picker persists
+`backend = "none"` for the next session but continues to show `Active: sandbox on
+— restart required to disable` for the current one.
 
 The picker also runs a local, network-free detection pass (`podman image exists
 <image>`) for both `[sandbox].image` and `[sandbox].documents_image`. It shows a
@@ -155,7 +160,7 @@ the Podman error instead of falling back to the host.
 ```toml
 [sandbox]
 backend         = "podman"      # "none" (default) | "podman"
-image           = "registry.access.redhat.com/ubi9/ubi:9.8-1785906690"
+image           = "ghcr.io/yottadynamics/yottacode-sandbox:latest"
 documents_image = "ghcr.io/yottadynamics/yottacode-documents:latest"
 network         = "none"        # "none" (default) | "host"
 mounts          = ["."]         # project-relative only; cannot escape root
@@ -184,7 +189,10 @@ backend change (`podman` ↔ `none`) still needs a new session.
   the container as on the host. Optional `mounts` entries are project-relative
   subpaths; absolute paths and `..` escapes are rejected so config cannot widen
   the container's filesystem view outside the project root. Host-side file tools
-  still edit the same tree directly.
+  still edit the same tree directly. yottacode also mounts the repo's managed
+  worktree root (`~/.yottacode/worktrees/<slug>/`) so `enter_worktree` can move a
+  live sandboxed session into a yottacode-managed worktree without remounting the
+  container.
 - **Network**: `--network=none` by default. There is no allowlist mode yet; it
   is all-or-nothing via `network = "host"`.
 - **Credentials**: nothing is injected by default. `env_passthrough` forwards
@@ -220,14 +228,13 @@ workers run tests or linters concurrently.
 
 ## Worktree interaction
 
-`enter_worktree` is blocked only after a lazy sandbox profile has created a
-live container. That container was created with the original cwd mounted; after
-a mid-session cwd swap, `podman exec -w <new-worktree>` would point at a path
-the container cannot see. A freshly-started sandbox-enabled session that has not
-run `run_bash` or a subprocess-backed document path yet has no live container,
-so it can still enter a worktree safely. Once a profile is live, start yottacode
-directly inside the worktree (`yottacode --worktree <name>`) or restart without
-sandbox before entering a worktree.
+`enter_worktree` is allowed only when every already-live sandbox container can
+see the target cwd. The normal yottacode-managed path is safe: session containers
+mount both the repo checkout and `~/.yottacode/worktrees/<slug>/`, so a later
+`podman exec -w <managed-worktree>` has a visible working directory. The guard
+still refuses opaque or third-party sandbox implementations that cannot prove the
+new path is mounted; otherwise the next `run_bash` would fail inside Podman even
+though host-side file tools could read the worktree.
 
 Changing an image for a profile that is already live also needs a new session:
 the running container keeps the image it started with. The live-reload behavior
@@ -237,7 +244,9 @@ only applies to profiles that have not created a container yet.
 
 - No network allowlist — `network = "none"` or `network = "host"` only.
 - No credential-stripping egress proxy.
-- No published `yottacode/sandbox` base image yet — bring your own via
-  `[sandbox].image`.
+- The default `ghcr.io/yottadynamics/yottacode-sandbox:latest` image includes
+  Go, git, make, gcc/glibc headers for cgo, and common archive/diff tools. It is
+  enough for yottacode's own `go test`/`go vet` flow, but project-specific stacks
+  can still set `[sandbox].image` to a custom image.
 - Not tested on macOS Podman machine latency; Linux rootless Podman is the
   supported path today.
