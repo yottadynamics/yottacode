@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/yottadynamics/yottacode/internal/adapter"
 	"github.com/yottadynamics/yottacode/internal/contextwindow"
@@ -124,12 +125,12 @@ type LoopConfig struct {
 
 	// UserMessages, when non-nil, is checked (non-blocking) after
 	// each tool round completes. If a message is pending, it's
-	// appended to history as a RoleUser message and the loop
-	// continues — the next streamIteration sees the user's input
-	// alongside the tool results. This lets the TUI inject
-	// additive instructions ("also check the tests") without
-	// cancelling the active turn.
-	UserMessages <-chan string
+	// appended to history as a RoleUser message using the original
+	// enqueue timestamp, then the loop continues — the next
+	// streamIteration sees the user's input alongside the tool results.
+	// This lets the TUI inject additive instructions ("also check the
+	// tests") without cancelling the active turn.
+	UserMessages <-chan UserMessage
 
 	// HistoryLock, when non-nil, serializes this loop's mutations and
 	// snapshots of the history slice against concurrent reads on another
@@ -153,6 +154,16 @@ type LoopConfig struct {
 	// provider rejects the request. nil disables it; the TUI and oneshot
 	// leave it unset and manage context at their own boundaries.
 	Compaction *CompactionConfig
+}
+
+// UserMessage is an additive user instruction queued while a turn is
+// already running. Timestamp is captured at enqueue time (usually when the
+// user pressed Enter), not when the loop later gets a safe injection point
+// after a tool round, so persisted session chronology stays accurate even
+// when a tool runs for a long time before the message is delivered.
+type UserMessage struct {
+	Content   string
+	Timestamp time.Time
 }
 
 // CompactionConfig parameterizes in-loop compaction (LoopConfig.Compaction).
@@ -186,6 +197,7 @@ type CompactionConfig struct {
 	// recovery must still work on a full or unavailable disk.
 	PreCompact func([]adapter.Message) (string, error)
 }
+
 
 // CheckpointWriter is the slice of the checkpoint store the agent loop
 // depends on. Defining it here keeps internal/checkpoint out of the
@@ -239,10 +251,11 @@ type loopState struct {
 }
 
 type toolExecResult struct {
-	content string
-	images  []adapter.ImageBlock
-	denied  bool
-	err     error
+	content        string
+	images         []adapter.ImageBlock
+	denied         bool
+	approvalSource string
+	err            error
 }
 
 const (
@@ -507,19 +520,21 @@ func Turn(
 			// have matching tool_result), so appending a user
 			// message here pairs naturally with the next
 			// streamIteration call.
-			if cfg.UserMessages != nil {
-				select {
-				case msg := <-cfg.UserMessages:
-					if msg != "" {
-						appendHistory(cfg, state.history, adapter.Message{
-							Role:    adapter.RoleUser,
-							Content: msg,
-						})
-						_ = send(ctx, events, UserMessageAppended{Content: msg})
+				if cfg.UserMessages != nil {
+					select {
+					case msg := <-cfg.UserMessages:
+						if msg.Content != "" {
+							appendHistory(cfg, state.history, adapter.Message{
+								Role:      adapter.RoleUser,
+								Content:   msg.Content,
+								Timestamp: &msg.Timestamp,
+							})
+							_ = send(ctx, events, UserMessageAppended{Content: msg.Content})
+						}
+					default:
 					}
-				default:
 				}
-			}
+
 			continue
 		}
 
@@ -590,7 +605,22 @@ func streamIteration(
 	// (Gemini rejects it; Claude 4.6+ treats it as prefill). No-op for an
 	// already-alternating history — see mergeAdjacentAssistant.
 	msgs = mergeAdjacentAssistant(msgs)
+	start := time.Now()
 	stream := cfg.Adapter.ChatStream(ctx, msgs, tools)
+
+	// firstTokenAt is the wall-clock moment the first visible content or
+	// reasoning token arrived — time-to-first-token. Left zero (and
+	// TTFTMs left nil on final, below) for a message with no visible
+	// streamed token at all — a pure tool-call turn where the provider
+	// went straight to EventDone, which reads as "not applicable" rather
+	// than a fabricated zero.
+	var firstTokenAt time.Time
+	// fallbackCount/fallbackReason track adapter.MultiStreamer falling
+	// through to a different candidate before this call succeeded — see
+	// EventFallback below. Zero/empty in the overwhelmingly common
+	// single-provider case.
+	var fallbackCount int
+	var fallbackReason string
 
 	// Accumulate streamed content tokens into a buffer alongside the
 	// normal send. If ctx is cancelled mid-stream (user hit Enter / Esc
@@ -610,10 +640,16 @@ func streamIteration(
 	for ev := range stream {
 		switch ev.Kind {
 		case adapter.EventReasoning:
+			if firstTokenAt.IsZero() {
+				firstTokenAt = time.Now()
+			}
 			if err := send(ctx, events, ReasoningToken{Text: ev.Token}); err != nil {
 				return partialAssistantMessage(&contentBuf), err
 			}
 		case adapter.EventTokenDelta:
+			if firstTokenAt.IsZero() {
+				firstTokenAt = time.Now()
+			}
 			contentBuf.WriteString(ev.Token)
 			if err := send(ctx, events, ContentToken{Text: ev.Token}); err != nil {
 				return partialAssistantMessage(&contentBuf), err
@@ -631,6 +667,8 @@ func streamIteration(
 				return partialAssistantMessage(&contentBuf), err
 			}
 		case adapter.EventFallback:
+			fallbackCount++
+			fallbackReason = ev.FallbackReason
 			if err := send(ctx, events, Fallback{
 				From:   ev.FallbackFrom,
 				To:     ev.FallbackTo,
@@ -654,6 +692,16 @@ func streamIteration(
 			return partialAssistantMessage(&contentBuf), ctxErr
 		}
 		return nil, errors.New("agent: stream ended without a final message")
+	}
+	latency := time.Since(start).Milliseconds()
+	final.LatencyMS = &latency
+	if !firstTokenAt.IsZero() {
+		ttft := firstTokenAt.Sub(start).Milliseconds()
+		final.TTFTMs = &ttft
+	}
+	final.FallbackCount = fallbackCount
+	if fallbackCount > 0 {
+		final.FallbackReason = fallbackReason
 	}
 	return final, nil
 }
@@ -701,7 +749,7 @@ func executeToolCalls(
 			continue
 		}
 		tc := calls[0]
-		result, images, denied, err := executeToolCall(ctx, cfg, tc, events, decisions)
+		result, images, denied, approvalSource, err := executeToolCall(ctx, cfg, tc, events, decisions)
 		if err != nil {
 			if isCancelErr(err) {
 				appendSyntheticInterrupts(cfg, history, calls)
@@ -710,10 +758,11 @@ func executeToolCalls(
 		}
 		result = applyRepeatedToolFailureGuard(tc.Name, result, toolFailures)
 		appendHistory(cfg, history, adapter.Message{
-			Role:       adapter.RoleTool,
-			Content:    result,
-			Images:     images,
-			ToolCallID: tc.ID,
+			Role:           adapter.RoleTool,
+			Content:        result,
+			Images:         images,
+			ToolCallID:     tc.ID,
+			ApprovalSource: approvalSource,
 		})
 		if denied {
 			// Inform the model; it can choose to ask differently or give up.
@@ -732,11 +781,11 @@ func executeToolCalls(
 func appendSyntheticInterrupts(cfg LoopConfig, history *[]adapter.Message, calls []adapter.ToolCall) {
 	withHistoryLock(cfg, func() {
 		for _, tc := range calls {
-			*history = append(*history, adapter.Message{
+			*history = append(*history, stampNow(adapter.Message{
 				Role:       adapter.RoleTool,
 				Content:    interruptedToolResult,
 				ToolCallID: tc.ID,
-			})
+			}))
 		}
 	})
 }
@@ -753,14 +802,17 @@ func appendToolResultsWithInterrupts(cfg LoopConfig, history *[]adapter.Message,
 	withHistoryLock(cfg, func() {
 		for i, tc := range calls {
 			content := results[i].content
+			approvalSource := results[i].approvalSource
 			if results[i].err != nil || content == "" {
 				content = interruptedToolResult
+				approvalSource = ""
 			}
-			*history = append(*history, adapter.Message{
-				Role:       adapter.RoleTool,
-				Content:    content,
-				ToolCallID: tc.ID,
-			})
+			*history = append(*history, stampNow(adapter.Message{
+				Role:           adapter.RoleTool,
+				Content:        content,
+				ToolCallID:     tc.ID,
+				ApprovalSource: approvalSource,
+			}))
 		}
 	})
 }
@@ -812,8 +864,8 @@ func executeToolCallsParallel(
 		wg.Add(1)
 		go func(i int, tc adapter.ToolCall) {
 			defer wg.Done()
-			result, images, denied, err := executeToolCall(gateCtx, cfg, tc, events, decisions)
-			results[i] = toolExecResult{content: result, images: images, denied: denied, err: err}
+			result, images, denied, approvalSource, err := executeToolCall(gateCtx, cfg, tc, events, decisions)
+			results[i] = toolExecResult{content: result, images: images, denied: denied, approvalSource: approvalSource, err: err}
 			if err != nil {
 				errCh <- err
 			}
@@ -842,12 +894,13 @@ func appendToolResults(cfg LoopConfig, history *[]adapter.Message, calls []adapt
 	withHistoryLock(cfg, func() {
 		for i, tc := range calls {
 			content := applyRepeatedToolFailureGuard(tc.Name, results[i].content, toolFailures)
-			*history = append(*history, adapter.Message{
-				Role:       adapter.RoleTool,
-				Content:    content,
-				Images:     results[i].images,
-				ToolCallID: tc.ID,
-			})
+			*history = append(*history, stampNow(adapter.Message{
+				Role:           adapter.RoleTool,
+				Content:        content,
+				Images:         results[i].images,
+				ToolCallID:     tc.ID,
+				ApprovalSource: results[i].approvalSource,
+			}))
 		}
 	})
 }
@@ -891,7 +944,7 @@ func executeToolCall(
 	tc adapter.ToolCall,
 	events chan<- Event,
 	decisions <-chan Decision,
-) (out string, images []adapter.ImageBlock, denied bool, err error) {
+) (out string, images []adapter.ImageBlock, denied bool, approvalSource string, err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			// Mirror the normal tool-error path (see below): surface the
@@ -900,27 +953,42 @@ func executeToolCall(
 			// closes out the tool card instead of leaving it "running".
 			msg := "error: " + panicToError("tool "+tc.Name, r).Error()
 			_ = send(ctx, events, ToolResult{ToolName: tc.Name, Output: msg, Errored: true})
-			out, images, denied, err = msg, nil, false, nil
+			out, images, denied, approvalSource, err = msg, nil, false, "", nil
 		}
 	}()
 	return executeToolCallImpl(ctx, cfg, tc, events, decisions)
 }
 
+// executeToolCallImpl's fifth return value, approvalSource, records how
+// this call got permission to run — one of the ApprovalAuto Source
+// strings already sent to the events channel ("yolo-mode", "auto-mode",
+// "auto-mode-safe-bash", "plan-mode-allow", "plan-mode-block",
+// "permissions", "deny-rule", or a background-policy note) for every
+// auto-approved or auto-blocked path, or "user" for any outcome that
+// actually went through promptForApproval (approved or denied alike —
+// deniedResultForMultimodal's own denied bool already distinguishes
+// those two, and promptForApproval's finer Decision value — AllowOnce
+// vs AllowAlways vs SaveForLater vs DenyAlways — isn't threaded out
+// today, so "user" is deliberately coarse rather than guessed at).
+// Empty for an error/abort path where no real approval decision was
+// ever reached (unknown tool, a channel send failing on a cancelled
+// ctx), so the log can tell "nothing decided" from "decided.
 func executeToolCallImpl(
 	ctx context.Context,
 	cfg LoopConfig,
 	tc adapter.ToolCall,
 	events chan<- Event,
 	decisions <-chan Decision,
-) (string, []adapter.ImageBlock, bool, error) {
+) (string, []adapter.ImageBlock, bool, string, error) {
 	tool, ok := cfg.Registry.Get(tc.Name)
 	if !ok {
-		return fmt.Sprintf("error: unknown tool %q", tc.Name), nil, false, nil
+		return fmt.Sprintf("error: unknown tool %q", tc.Name), nil, false, "", nil
 	}
 	argsJSON := coerceArgsToSchema(tc.ArgsJSON, tool.Schema())
 	normalizedTC := tc
 	normalizedTC.ArgsJSON = argsJSON
 	preview := tool.PreviewCall(argsJSON)
+	var approvalSource string
 
 	// Plan-mode gate runs BEFORE permissions evaluation: explicit deny
 	// rules still beat the gate (the model never gets to call a denied
@@ -933,7 +1001,7 @@ func executeToolCallImpl(
 			_ = send(ctx, events, ApprovalAuto{
 				ToolName: tool.Name(), Preview: preview, Source: "plan-mode-block",
 			})
-			return msg, nil, true, nil
+			return msg, nil, true, "plan-mode-block", nil
 		}
 	}
 
@@ -950,7 +1018,7 @@ func executeToolCallImpl(
 		_ = send(ctx, events, ApprovalAuto{
 			ToolName: tool.Name(), Preview: preview, Source: "deny-rule", RuleSource: verdictRule.Source,
 		})
-		return "denied by permissions.json deny rule", nil, true, nil
+		return "denied by permissions.json deny rule", nil, true, "deny-rule", nil
 	}
 
 	// Background policy runs before the mode chain so unattended children cannot
@@ -960,15 +1028,16 @@ func executeToolCallImpl(
 		if decision, note, handled := cfg.BackgroundApprovalPolicy(tool, argsJSON); handled {
 			if decision == Deny {
 				_ = send(ctx, events, ApprovalAuto{ToolName: tool.Name(), Preview: preview, Source: note})
-				return note, nil, true, nil
+				return note, nil, true, note, nil
 			}
 			if decision == AllowOnce || decision == AllowAlways {
 				if err := send(ctx, events, ApprovalAuto{ToolName: tool.Name(), Preview: preview, Source: note}); err != nil {
-					return "", nil, false, err
+					return "", nil, false, "", err
 				}
+				approvalSource = note
 				goto approved
 			}
-			return fmt.Sprintf("invalid background approval decision for %s", tool.Name()), nil, true, nil
+			return fmt.Sprintf("invalid background approval decision for %s", tool.Name()), nil, true, "", nil
 		}
 	}
 
@@ -990,44 +1059,61 @@ func executeToolCallImpl(
 		// picks HOW to proceed ([A]uto vs [M]anual on exit), which no
 		// auto-approval source can answer.
 		if denied, savedForLater, err := promptForApproval(ctx, cfg, tool, normalizedTC, preview, events, decisions); err != nil || denied || savedForLater {
-			return deniedResultForMultimodal(tool.Name(), denied, savedForLater, err)
+			content, images, d, rerr := deniedResultForMultimodal(tool.Name(), denied, savedForLater, err)
+			src := "user"
+			if rerr != nil {
+				src = ""
+			}
+			return content, images, d, src, rerr
 		}
+		approvalSource = "user"
 	case cfg.YoloMode.IsActive():
 		if err := send(ctx, events, ApprovalAuto{
 			ToolName: tool.Name(), Preview: preview, Source: "yolo-mode",
 		}); err != nil {
-			return "", nil, false, err
+			return "", nil, false, "", err
 		}
+		approvalSource = "yolo-mode"
 	case cfg.PlanMode.IsActive() && IsPlanFileWrite(tool.Name(), argsJSON, cfg.PlanMode.PlanFile):
 		if err := send(ctx, events, ApprovalAuto{
 			ToolName: tool.Name(), Preview: preview, Source: "plan-mode-allow",
 		}); err != nil {
-			return "", nil, false, err
+			return "", nil, false, "", err
 		}
+		approvalSource = "plan-mode-allow"
 	case cfg.AutoMode.IsActive() && tool.Name() == "run_bash" && IsAutoModeSafeBash(argsJSON, cfg.Cwd):
 		if err := send(ctx, events, ApprovalAuto{
 			ToolName: tool.Name(), Preview: preview, Source: "auto-mode-safe-bash",
 		}); err != nil {
-			return "", nil, false, err
+			return "", nil, false, "", err
 		}
+		approvalSource = "auto-mode-safe-bash"
 	case cfg.AutoMode.IsActive() && !IsAutoModeSafetyFloor(tool.Name()):
 		if err := send(ctx, events, ApprovalAuto{
 			ToolName: tool.Name(), Preview: preview, Source: "auto-mode",
 		}); err != nil {
-			return "", nil, false, err
+			return "", nil, false, "", err
 		}
+		approvalSource = "auto-mode"
 	default:
 		switch verdict {
 		case permissions.Allow:
 			if err := send(ctx, events, ApprovalAuto{
 				ToolName: tool.Name(), Preview: preview, Source: "permissions", RuleSource: verdictRule.Source,
 			}); err != nil {
-				return "", nil, false, err
+				return "", nil, false, "", err
 			}
+			approvalSource = "permissions"
 		case permissions.Ask:
 			if denied, savedForLater, err := promptForApproval(ctx, cfg, tool, normalizedTC, preview, events, decisions); err != nil || denied || savedForLater {
-				return deniedResultForMultimodal(tool.Name(), denied, savedForLater, err)
+				content, images, d, rerr := deniedResultForMultimodal(tool.Name(), denied, savedForLater, err)
+				src := "user"
+				if rerr != nil {
+					src = ""
+				}
+				return content, images, d, src, rerr
 			}
+			approvalSource = "user"
 		default:
 			if tool.RequiresApproval(argsJSON) {
 				// No boundary-tool carve-out needed here: case 0 of the
@@ -1037,12 +1123,19 @@ func executeToolCallImpl(
 					if err := send(ctx, events, ApprovalAuto{
 						ToolName: tool.Name(), Preview: preview, Source: "yolo-mode",
 					}); err != nil {
-						return "", nil, false, err
+						return "", nil, false, "", err
 					}
+					approvalSource = "yolo-mode"
 				} else {
 					if denied, savedForLater, err := promptForApproval(ctx, cfg, tool, normalizedTC, preview, events, decisions); err != nil || denied || savedForLater {
-						return deniedResultForMultimodal(tool.Name(), denied, savedForLater, err)
+						content, images, d, rerr := deniedResultForMultimodal(tool.Name(), denied, savedForLater, err)
+						src := "user"
+						if rerr != nil {
+							src = ""
+						}
+						return content, images, d, src, rerr
 					}
+					approvalSource = "user"
 				}
 			}
 		}
@@ -1050,7 +1143,7 @@ func executeToolCallImpl(
 
 approved:
 	if err := send(ctx, events, ToolStart{ToolName: tool.Name(), Preview: preview, ArgsJSON: argsJSON}); err != nil {
-		return "", nil, false, err
+		return "", nil, false, "", err
 	}
 	// Attach the parent's events + decisions channels so tools that
 	// need to participate in the parent's approval flow (today:
@@ -1106,9 +1199,10 @@ approved:
 		if elev, ok := pathElevation(err); ok {
 			d, derr := promptForPathElevation(ctx, tool.Name(), elev, argsJSON, events, decisions)
 			if derr != nil {
-				return "", nil, false, derr
+				return "", nil, false, approvalSource, derr
 			}
 			if d != Deny {
+				approvalSource = "user-path-elevation"
 				if mm, ok := tool.(MultimodalTool); ok {
 					var res MultimodalResult
 					res, err = mm.ExecuteMultimodal(toolCtx, argsJSON)
@@ -1116,19 +1210,22 @@ approved:
 				} else {
 					out, err = tool.Execute(toolCtx, argsJSON)
 				}
+			} else {
+				approvalSource = "user-path-elevation-denied"
 			}
 		}
 	}
 	if err != nil {
 		if isCancelErr(err) {
-			return "", nil, false, err
+			return "", nil, false, approvalSource, err
 		}
+
 		if ctx.Err() != nil {
-			return "", nil, false, ctx.Err()
+			return "", nil, false, approvalSource, ctx.Err()
 		}
 		msg := fmt.Sprintf("error: %v", err)
 		_ = send(ctx, events, ToolResult{ToolName: tool.Name(), Output: msg, Errored: true})
-		return msg, nil, false, nil
+		return msg, nil, false, approvalSource, nil
 	}
 	if err := send(ctx, events, ToolResult{ToolName: tool.Name(), Output: out, Errored: false}); err != nil {
 		// Tool ran to completion but ctx fired before we could
@@ -1137,7 +1234,7 @@ approved:
 		// dropped intentionally: a model that interrupted mid-tool
 		// will see uniform "interrupted by user" markers across the
 		// batch instead of one stale real result amid synthetic ones.
-		return "", nil, false, err
+		return "", nil, false, approvalSource, err
 	}
 	if cfg.Cwd != nil {
 		if after := cfg.Cwd.Get(); after != cwdBefore {
@@ -1149,7 +1246,7 @@ approved:
 			_ = send(ctx, events, TodoUpdate{Todos: store.Snapshot()})
 		}
 	}
-	return out, images, false, nil
+	return out, images, false, approvalSource, nil
 }
 
 // planAware is the optional capability marker for tools that maintain

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"golang.org/x/term"
 
 	"github.com/yottadynamics/yottacode/internal/adapter"
 	copilotauth "github.com/yottadynamics/yottacode/internal/auth/copilot"
@@ -116,7 +117,7 @@ func init() {
 		{Name: "context", Help: "show context window usage breakdown", Run: cmdContext, PreservesTurn: true},
 		{Name: "experimental", Help: "list experimental features and which are enabled this session", Run: cmdExperimental, PreservesTurn: true},
 		{Name: "usage", Help: "show per-session token usage, today's rollup, and estimated cost", Run: cmdUsage, PreservesTurn: true},
-		{Name: "inspect", Help: "pick a session for read-only turn-by-turn replay; press e inside the view to export Markdown", Run: cmdInspect, PreservesTurn: true},
+		{Name: "inspect", Help: "pick a session for read-only turn-by-turn replay; press e inside the view to export Markdown + JSONL", Run: cmdInspect, PreservesTurn: true},
 		{Name: "doctor", Help: "probe provider auth and model access", Run: cmdDoctor, PreservesTurn: true},
 		{Name: "redo", Help: "edit and re-run the most recent message", Run: cmdRedo},
 		{Name: "recall", Args: "<query>", Help: "full-text search across every saved session", Run: cmdRecall, PreservesTurn: true},
@@ -197,6 +198,13 @@ func (m Model) runSlash(input string) (Model, tea.Cmd) {
 // it in input history. runSlash wraps this for user-typed commands; the
 // /loop scheduler calls it directly so a repeating loop doesn't stuff the
 // same command into ↑-history on every iteration.
+//
+// When the command leaves a popup open, its own Cmd is batched with
+// refreshWindowSizeCmd — see that function's doc comment for why. Gated on
+// anyOverlayOpen (rather than running unconditionally on every command)
+// so a command like /quit that returns tea.Quit directly isn't wrapped in
+// a tea.BatchMsg for no reason, and so this self-maintains as new popups
+// get added instead of needing a per-command opt-in flag.
 func (m Model) dispatchSlash(input string) (Model, tea.Cmd) {
 	fields := strings.Fields(input)
 	if len(fields) == 0 || !strings.HasPrefix(fields[0], "/") {
@@ -208,7 +216,41 @@ func (m Model) dispatchSlash(input string) (Model, tea.Cmd) {
 		m.appendLine(styleError.Render(fmt.Sprintf("unknown command: /%s — try /help", name)))
 		return m, nil
 	}
-	return cmd.Run(m, fields[1:])
+	next, runCmd := cmd.Run(m, fields[1:])
+	if next.anyOverlayOpen() {
+		return next, tea.Batch(refreshWindowSizeCmd(), runCmd)
+	}
+	return next, runCmd
+}
+
+// refreshWindowSizeCmd re-queries the real terminal size directly (an
+// ioctl via golang.org/x/term, the same call bubbletea's own checkResize
+// makes internally) and feeds the result back through the exact same
+// tea.WindowSizeMsg handling every live resize already goes through —
+// no new message type or Update case needed.
+//
+// Exists because bubbletea v2's only resize-detection mechanism is a
+// SIGWINCH signal handler private to the bubbletea package, with no
+// exported way for application code to force a recheck. tmux is known to
+// drop SIGWINCH in some circumstances (a resize while the pane isn't the
+// focused one, certain reattach/nested-session setups), which leaves
+// m.width/m.height stuck at a stale value — every popup sizes its layout
+// off m.height (see windowedInspectPanel and its /usage equivalent), so a
+// stale height means a popup keeps computing against a terminal that no
+// longer exists: content overflows the real screen with no border,
+// footer, or scroll hint visible, because the windowing math never
+// realizes it needs to window at all.
+//
+// A no-op in the common case (the query returns the same size Update
+// already has); self-correcting in the stale case.
+func refreshWindowSizeCmd() tea.Cmd {
+	return func() tea.Msg {
+		w, h, err := term.GetSize(int(os.Stdout.Fd()))
+		if err != nil {
+			return nil
+		}
+		return tea.WindowSizeMsg{Width: w, Height: h}
+	}
 }
 
 // --- handlers --------------------------------------------------------------

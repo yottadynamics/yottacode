@@ -154,6 +154,7 @@ yottacode sessions resume <id-or-name> --summarized
 yottacode sessions rename <id-or-name> <new-name>
 yottacode sessions export <id-or-name>
 yottacode sessions export <id-or-name> path.md --force
+yottacode sessions export <id-or-name> path.jsonl --force
 ```
 
 Sessions are saved automatically after completed turns in `~/.yottacode/sessions/`.

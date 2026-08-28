@@ -431,11 +431,13 @@ func composeSummarizedHistory(history []adapter.Message, summary string, windowT
 	// compressed history never opens (after the system prompt) with an
 	// assistant turn — invalid for Claude/Gemini (see summaryUserPreamble).
 	turnLabel := fmt.Sprintf("turn %d", len(userIdxs))
+	compressedAt := time.Now()
 	out = append(out,
-		adapter.Message{Role: adapter.RoleUser, Content: summaryUserPreamble},
+		adapter.Message{Role: adapter.RoleUser, Content: summaryUserPreamble, Timestamp: &compressedAt},
 		adapter.Message{
-			Role:    adapter.RoleAssistant,
-			Content: "[Session summary — compressed at " + turnLabel + "]\n\n" + summary,
+			Role:      adapter.RoleAssistant,
+			Content:   "[Session summary — compressed at " + turnLabel + "]\n\n" + summary,
+			Timestamp: &compressedAt,
 		},
 	)
 

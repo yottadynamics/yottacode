@@ -871,7 +871,7 @@ func TestModel_EnterMidTurnQueuesNotSubmits(t *testing.T) {
 	m := newTestModel(t)
 	m.turnActive = true
 	m.turnCancel = func() {}
-	m.userMsgCh = make(chan string, 1)
+	m.userMsgCh = make(chan agent.UserMessage, 1)
 	for _, r := range "queued" {
 		m, _ = applyMsg(m, tea.KeyPressMsg{Text: string(r)})
 	}
@@ -882,8 +882,11 @@ func TestModel_EnterMidTurnQueuesNotSubmits(t *testing.T) {
 	}
 	select {
 	case got := <-m.userMsgCh:
-		if got != "queued" {
-			t.Errorf("queued input = %q, want queued", got)
+		if got.Content != "queued" {
+			t.Errorf("queued input = %q, want queued", got.Content)
+		}
+		if got.Timestamp.IsZero() {
+			t.Error("queued input should carry an enqueue timestamp")
 		}
 	default:
 		t.Errorf("Enter during a turn should queue input on userMsgCh")
@@ -985,7 +988,7 @@ func TestModel_RegularMessageMidTurnQueuesForResubmission(t *testing.T) {
 	m := newTestModel(t)
 	m.turnActive = true
 	m.turnCancel = func() {}
-	m.userMsgCh = make(chan string, 1)
+	m.userMsgCh = make(chan agent.UserMessage, 1)
 	for _, r := range "hello world" {
 		m, _ = applyMsg(m, tea.KeyPressMsg{Text: string(r)})
 	}
@@ -996,8 +999,11 @@ func TestModel_RegularMessageMidTurnQueuesForResubmission(t *testing.T) {
 	}
 	select {
 	case got := <-m.userMsgCh:
-		if got != "hello world" {
-			t.Errorf("queued input = %q, want hello world", got)
+		if got.Content != "hello world" {
+			t.Errorf("queued input = %q, want hello world", got.Content)
+		}
+		if got.Timestamp.IsZero() {
+			t.Error("queued input should carry an enqueue timestamp")
 		}
 	default:
 		t.Errorf("regular Enter should queue on userMsgCh")

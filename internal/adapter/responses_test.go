@@ -75,6 +75,12 @@ func TestResponses_StreamsReasoningAndContent(t *testing.T) {
 	if final.StopReason != "" {
 		t.Errorf("final.StopReason = %q, want empty", final.StopReason)
 	}
+	if final.Model != "gpt-5-thinking" {
+		t.Errorf("final.Model = %q, want the adapter's configured model", final.Model)
+	}
+	if final.Provider == "" {
+		t.Error("final.Provider should be stamped, got empty")
+	}
 }
 
 // TestResponses_StreamsFunctionCall verifies that an output_item.added

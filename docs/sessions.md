@@ -102,10 +102,12 @@ Names are convenience labels. The canonical identity is still the session id.
 ```bash
 yottacode sessions export <id-or-name>
 yottacode sessions export <id-or-name> path.md
+yottacode sessions export <id-or-name> path.jsonl
 yottacode sessions export <id-or-name> path.md --force
+yottacode sessions export <id-or-name> path.jsonl --force
 ```
 
-Export writes a readable Markdown transcript with turns, tool calls, and tool output. System messages are omitted.
+Export writes a readable Markdown transcript by default and for `.md` paths. Use a `.jsonl` path to write a structured newline-delimited JSON log for tooling. System messages are omitted from both formats.
 
 ## Search sessions with recall
 

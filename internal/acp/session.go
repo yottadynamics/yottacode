@@ -191,9 +191,11 @@ func (s *acpSession) prompt(ctx context.Context, conn *coderacp.AgentSideConnect
 		}
 		text = built
 	}
+	submitted := time.Now()
 	s.rt.Session.Messages = append(s.rt.Session.Messages, adapter.Message{
-		Role:    adapter.RoleUser,
-		Content: text,
+		Role:      adapter.RoleUser,
+		Content:   text,
+		Timestamp: &submitted,
 	})
 
 	turnCtx, cancel := context.WithCancel(ctx)

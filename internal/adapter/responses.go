@@ -281,7 +281,9 @@ func (a *responsesAdapter) ChatStream(ctx context.Context, messages []Message, t
 				}
 				return ""
 			}(),
-			Usage: usage,
+			Usage:    usage,
+			Model:    a.model,
+			Provider: string(a.profile.Provider),
 		}
 		out <- StreamEvent{Kind: EventDone, Final: &final}
 	}()
