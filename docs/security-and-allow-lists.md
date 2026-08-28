@@ -132,15 +132,15 @@ Trust controls separate into **modes** (workflow shape, mutually exclusive) and 
 
 Auto mode has no slash command (intentionally off the palette and the `Shift+Tab` cycle so it can't be triggered by accident). Yolo mode, also off the `Shift+Tab` cycle, is the lone exception with a slash toggle (`/yolo`): opt in via the `--yolo` startup flag (one-way per process — restart without the flag to recover) or via `/yolo` mid-session (toggle on, then `/yolo` again to toggle off). The yolo banner (`⚠ yolo mode`) takes precedence visually while it's on; when a mode (auto or plan) is also active, the mode banner picks up a `⚠ yolo mode` suffix.
 
-## No in-process sandbox
+## Optional Podman command sandbox
 
-yottacode does not sandbox tools inside its own process. `run_bash`, file edits, git commands, and other tools run on the host.
+By default, yottacode does not sandbox tools inside its own process. `run_bash`, file edits, git commands, and other tools run on the host unless you opt into the Podman command sandbox.
 
-`run_bash` is also *not* confined by the path deny lists that protect the structured file tools: a shell command can read `~/.ssh` or write `.git/hooks/` even though `read_file` / `write_file` cannot. As a partial mitigation, the run_bash approval modal flags — in every mode — when a command references a credential store (`~/.ssh`, `~/.aws`, `.env`, …) or a git hook, so `cat ~/.ssh/id_rsa` and `> .git/hooks/pre-commit` don't render as ordinary commands. It is a prompt aid, not a boundary — the boundary is the container.
+When `[sandbox] backend = "podman"` is enabled, approved `run_bash`/`run_tests` commands and document subprocess helpers run inside GHCR-published containers with no network by default, constrained mounts, and resource limits. File tools, git, GitHub, provider calls, MCP tools, and the TUI still run on the host; run yottacode itself inside a container or devcontainer when you need every tool isolated.
 
-For real isolation, run yottacode itself inside a container or devcontainer. That isolates every tool, not just shell commands.
+When sandboxing is off, `run_bash` is also *not* confined by the path deny lists that protect the structured file tools: a shell command can read `~/.ssh` or write `.git/hooks/` even though `read_file` / `write_file` cannot. The approval modal flags credential-store and git-hook references as a prompt aid, but the real boundary is the optional container sandbox or an outer container/devcontainer.
 
-This is a deliberate scope choice: yottacode does not ship bwrap, firejail, landlock, or pluggable sandbox backends.
+See [Command sandbox](sandbox.md) for the config, images, and runtime boundary.
 
 ## Write-path validation
 

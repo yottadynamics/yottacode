@@ -156,6 +156,12 @@ hard warning if Podman is missing. Missing images are non-fatal because Podman
 can pull them on first use; if the pull/start fails, the tool fails closed with
 the Podman error instead of falling back to the host.
 
+The release workflow publishes both sandbox images when a GitHub Release is
+published, tagging them with the release tag (for example `v0.4.0`), a UTC date
+tag, and `latest`. Each image workflow also logs out of GHCR and verifies an
+anonymous `podman pull` after publishing so a private or unlinked package fails
+in CI instead of at user startup.
+
 ## Config
 ```toml
 [sandbox]
@@ -189,10 +195,12 @@ backend change (`podman` ↔ `none`) still needs a new session.
   the container as on the host. Optional `mounts` entries are project-relative
   subpaths; absolute paths and `..` escapes are rejected so config cannot widen
   the container's filesystem view outside the project root. Host-side file tools
-  still edit the same tree directly. yottacode also mounts the repo's managed
-  worktree root (`~/.yottacode/worktrees/<slug>/`) so `enter_worktree` can move a
-  live sandboxed session into a yottacode-managed worktree without remounting the
-  container.
+  still edit the same tree directly. Project/worktree mounts use SELinux shared
+  relabeling (`:z`) so multiple yottacode sessions can mount the same checkout
+  without stealing access from one another. yottacode also mounts the repo's
+  managed worktree root (`~/.yottacode/worktrees/<slug>/`) so `enter_worktree`
+  can move a live sandboxed session into a yottacode-managed worktree without
+  remounting the container.
 - **Network**: `--network=none` by default. There is no allowlist mode yet; it
   is all-or-nothing via `network = "host"`.
 - **Credentials**: nothing is injected by default. `env_passthrough` forwards

@@ -11,8 +11,10 @@
 # This image is intentionally a general-purpose engineering baseline, not a
 # language-server or document-processing image. It includes the Go toolchain and
 # common POSIX/build tools needed by yottacode's own `go test`/`go vet` flows.
-# Project-specific stacks should still layer their own image and point
-# `[sandbox].image` at it.
+# It also includes GitHub CLI (`gh`) because yottacode prompts and existing user
+# workflows sometimes shell out for PR state transitions that typed tools do not
+# yet cover. GitHub auth is still explicit: pass `GH_TOKEN`/`GITHUB_TOKEN` via
+# `[sandbox].env_passthrough` only when a sandboxed command needs it.
 #
 # Base image: UBI 9.8, matching yottacode's sandbox hardening baseline. The Go
 # toolchain is copied from the official Go image so the version can track go.mod
@@ -33,6 +35,7 @@ ENV PATH="/usr/local/go/bin:${PATH}"
 # working C compiler.
 RUN dnf -y install \
     ca-certificates \
+    'dnf-command(config-manager)' \
     diffutils \
     findutils \
     gcc \
@@ -44,12 +47,14 @@ RUN dnf -y install \
     tar \
     unzip \
     xz \
+    && dnf config-manager --add-repo https://cli.github.com/packages/rpm/gh-cli.repo \
+    && dnf -y install gh \
     && dnf clean all \
     && rm -rf /var/cache/dnf
 
 # Build-time smoke catches broken tags or PATH mistakes before CI publishes the
 # image. Runtime smoke in .github/workflows/sandbox-image.yml exercises a mounted
 # checkout through Podman, which is the production shape yottacode uses.
-RUN go version && git --version && make --version
+RUN go version && git --version && gh --version && make --version
 
 CMD ["sleep", "infinity"]

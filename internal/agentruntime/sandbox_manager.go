@@ -140,8 +140,12 @@ func (m *SandboxManager) sandbox(ctx context.Context, profile agent.SandboxProfi
 	}
 	if ch := m.creating[profile]; ch != nil {
 		m.mu.Unlock()
-		res := <-ch
-		return res.sandbox, res.err
+		select {
+		case res := <-ch:
+			return res.sandbox, res.err
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
 	}
 	if m.closed {
 		m.mu.Unlock()

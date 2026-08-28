@@ -1,27 +1,11 @@
 # Builds, smoke-tests, and publishes the yottacode-documents container
 # image (infra/documents.Containerfile) to ghcr.io. Pull requests build and
-# smoke-test the image without publishing; main, manual, and weekly runs publish
-# after the same smoke gate. The weekly rebuild keeps pandoc/poppler/weasyprint
-# CVE patches landing on a schedule rather than only when someone remembers to
-# rebuild, and is also the only thing that will catch pdfplumber/python-docx
-# drifting against pyhelpers/*.py's real behavior between manual reviews of
-# their pinned versions in the Containerfile. See docs/document-generation.md
-# and roadmap/document-generation.md's "Image build, publish, and consume
-# mechanics" / "Python-in-container implementation plan" for the design this
-# implements.
+# smoke-test the image without publishing; main, release-tag, manual, and weekly
+# runs publish after the same smoke gate.
 #
-# linux/amd64 only for now — there is no established multi-arch position
-# for this image anywhere in the repo (unlike the CLI binary itself, which
-# goreleaser cross-builds for linux+darwin, amd64+arm64). Add buildx/qemu
-# here if arm64 support becomes a real need; not attempted in this first
-# pass since it adds real cross-build risk this workflow can't be
-# exercised against before merge.
-#
-# The push job needs GHCR package-write access from the repo's own
-# GITHUB_TOKEN (standard for publishing to ghcr.io under the same
-# owner/org as the repo) — no extra secret required, but the repository's
-# package visibility/permissions still need to be checked once the first
-# real run happens.
+# The push job verifies an anonymous pull after publish. That catches the
+# production failure mode where GHCR accepts the push but the org package is
+# private or not linked publicly enough for end users to pull.
 
 name: Documents image
 
@@ -30,16 +14,20 @@ on:
   pull_request:
     paths:
       - infra/documents.Containerfile
+      - internal/documents/pyhelpers/**
+      - scripts/smoke/documents-image.sh
       - .github/workflows/documents-image.yml
   push:
     branches: [main]
+    tags: ['v*']
     paths:
       - infra/documents.Containerfile
+      - internal/documents/pyhelpers/**
+      - scripts/smoke/documents-image.sh
       - .github/workflows/documents-image.yml
   schedule:
-    # Weekly rebuild for upstream pandoc/poppler/weasyprint CVE patches — the
-    # cadence roadmap/document-generation.md specifies, not tied to any
-    # yottacode CLI release.
+    # Weekly rebuild for upstream pandoc/poppler/weasyprint CVE patches — not
+    # tied to any yottacode CLI release.
     - cron: '0 6 * * 1'
 
 permissions:
@@ -61,7 +49,7 @@ jobs:
         run: podman build -t documents-image -f infra/documents.Containerfile .
 
       - name: Save image for downstream jobs
-        run: podman save -o documents-image.tar documents-image
+        run: podman save -o documents-image.tar localhost/documents-image:latest
 
       - name: Upload image artifact
         uses: actions/upload-artifact@v4
@@ -74,6 +62,8 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+
       - name: Install podman
         run: sudo apt-get update && sudo apt-get install -y podman
 
@@ -86,65 +76,13 @@ jobs:
         run: podman load -i documents-image.tar
 
       - name: Smoke test — pandoc, weasyprint, poppler, pdfplumber, python-docx, tesseract
-        # Re-run the same production toolchain checks from the Containerfile
-        # against the actual built image before anything gets pushed. The
-        # pdfplumber/python-docx/OCR checks below go further than the
-        # Containerfile's own build-time "does it import" check: they run
-        # the real pyhelpers/*.py scripts against real generated fixtures
-        # and assert on real extracted/substituted/recognized content, so a
-        # pdfplumber, python-docx, or pytesseract release that changes
-        # behavior (not just one that fails to import) gets caught here
-        # before it reaches ghcr.io.
+        # Re-run the production helper scripts against generated fixtures, not
+        # just import checks, before anything reaches ghcr.io.
         run: |
-          podman run --rm -i documents-image sh <<'SH'
-            set -e
-            pandoc --version
-            weasyprint --version
-            pdftotext -v
-            pdfinfo -v
-            tesseract --version
-            python3 --version
-            echo "# Smoke test" > /tmp/fixture.md
-            pandoc -f markdown -t docx -o /tmp/fixture.docx /tmp/fixture.md
-            pandoc -f markdown -t pdf --pdf-engine=weasyprint -o /tmp/fixture.pdf /tmp/fixture.md
-            pdftotext /tmp/fixture.pdf - | grep "Smoke test"
-            pdfinfo /tmp/fixture.pdf | grep "Pages"
-
-            # PDF table extraction (pdfplumber): a pandoc/weasyprint table
-            # has no visible cell borders, which is exactly the case
-            # extract_pdf_tables.py falls back to a text-alignment
-            # detection strategy for (see the script itself for why) —
-            # this fixture exercises that fallback, not just the happy path.
-            printf '%s\n' '# Report' '' '| Name | Qty |' '| --- | --- |' '| Widget | 3 |' > /tmp/table.md
-            pandoc -f markdown -t pdf --pdf-engine=weasyprint -o /tmp/table.pdf /tmp/table.md
-            python3 /opt/yottacode/doc-helpers/extract_pdf_tables.py /tmp/table.pdf > /tmp/tables.json
-            python3 -c 'import json, sys; data=json.load(open(sys.argv[1], encoding="utf-8")); rows=[row for page in data.get("pages", []) for table in page.get("tables", []) for row in table.get("rows", [])]; assert any("Widget" in row and "3" in row for row in rows), data' /tmp/tables.json
-
-            # docx template-fill (python-docx): build a template with a
-            # placeholder, fill it, and verify the substitution round-trips
-            # by reading the *output* back through pandoc as an independent
-            # verifier, rather than trusting the fill scripts own report of
-            # what it did.
-            printf '%s\n' 'Dear {{name}}, your total is {{total}}.' > /tmp/template.md
-            pandoc -f markdown -t docx -o /tmp/template.docx /tmp/template.md
-            python3 -c 'import json; json.dump({"name":"Smoke Test","total":"42"}, open("/tmp/replacements.json", "w", encoding="utf-8"))'
-            python3 /opt/yottacode/doc-helpers/fill_docx_template.py /tmp/template.docx /tmp/filled.docx /tmp/replacements.json > /tmp/fill-status.json
-            python3 -c 'import json, sys; data=json.load(open(sys.argv[1], encoding="utf-8")); assert data.get("replacements_applied") == 1, data' /tmp/fill-status.json
-            pandoc -f docx -t plain /tmp/filled.docx | grep -q "Smoke Test"
-
-            # PDF OCR fallback (pytesseract/pdf2image): rasterize a normal
-            # text PDF to a PNG, then wrap the bare image back into a PDF
-            # with no embedded text layer at all — the exact
-            # "scanned/image-only" case extract_pdf_ocr.py exists for —
-            # and assert the recognized text via an independent verifier
-            # rather than trusting the script's own report.
-            printf '%s\n' '# OCR Smoke Test' '' 'RecognizeThisMarkerText' > /tmp/ocr-source.md
-            pandoc -f markdown -t pdf --pdf-engine=weasyprint -o /tmp/ocr-source.pdf /tmp/ocr-source.md
-            pdftoppm -png -r 200 /tmp/ocr-source.pdf /tmp/ocr-page
-            printf '%s\n' '![](/tmp/ocr-page-1.png)' | pandoc -t pdf --pdf-engine=weasyprint -o /tmp/ocr-image-only.pdf
-            python3 /opt/yottacode/doc-helpers/extract_pdf_ocr.py /tmp/ocr-image-only.pdf > /tmp/ocr.json
-            python3 -c 'import json, sys; data=json.load(open(sys.argv[1], encoding="utf-8")); text="".join(p.get("text", "") for p in data.get("pages", [])); assert "RecognizeThisMarkerText" in text, data' /tmp/ocr.json
-          SH
+          podman run --rm \
+            -v "$PWD/scripts/smoke:/smoke-scripts:Z" \
+            documents-image \
+            sh -lc 'sh /smoke-scripts/documents-image.sh'
 
   push:
     needs: smoke-test
@@ -168,10 +106,21 @@ jobs:
       - name: Log in to ghcr.io
         run: echo "${{ secrets.GITHUB_TOKEN }}" | podman login ghcr.io -u "${{ github.actor }}" --password-stdin
 
-      - name: Tag and push (rolling latest + immutable date tag)
+      - name: Tag and push (release tag + rolling latest + immutable date tag)
         run: |
+          TAG_NAME="${GITHUB_REF_NAME:-}"
           DATE_TAG=$(date -u +%Y-%m-%d)
+          if [ "${GITHUB_REF_TYPE:-}" = "tag" ] && [ -n "$TAG_NAME" ]; then
+            podman tag documents-image "${IMAGE_NAME}:${TAG_NAME}"
+            podman push "${IMAGE_NAME}:${TAG_NAME}"
+          fi
           podman tag documents-image "${IMAGE_NAME}:${DATE_TAG}"
           podman tag documents-image "${IMAGE_NAME}:latest"
           podman push "${IMAGE_NAME}:${DATE_TAG}"
           podman push "${IMAGE_NAME}:latest"
+
+      - name: Verify anonymous pull
+        run: |
+          podman logout ghcr.io || true
+          podman rmi "${IMAGE_NAME}:latest" || true
+          podman pull "${IMAGE_NAME}:latest"
