@@ -14,8 +14,8 @@ func TestPlanApprovalCardsHaveNoPopupCloseGlyph(t *testing.T) {
 		name   string
 		render func(int) string
 	}{
-		{"exit", renderPlanApprovalCard},
-		{"enter", renderEnterPlanApprovalCard},
+		{"exit", func(width int) string { return renderPlanApprovalCard(width) }},
+		{"enter", func(width int) string { return renderEnterPlanApprovalCard(width) }},
 	} {
 		t.Run(card.name, func(t *testing.T) {
 			first := strings.SplitN(stripANSI(card.render(80)), "\n", 2)[0]
