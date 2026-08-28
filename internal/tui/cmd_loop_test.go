@@ -407,6 +407,14 @@ func TestLoop_ExitWarning(t *testing.T) {
 	if !strings.Contains(view, "Active loops will stop on exit") || !strings.Contains(view, firstLoop(t, m).id) {
 		t.Fatalf("exit warning = %q", view)
 	}
+	box, ok := m.activePopupBody()
+	if !ok {
+		t.Fatal("loop exit confirmation should render as the active popup body")
+	}
+	first := strings.SplitN(stripANSI(box), "\n", 2)[0]
+	if strings.Contains(first, "×") {
+		t.Fatalf("loop exit confirmation should not include a mouse-only close glyph, got %q", first)
+	}
 	out, cmd = m.updateLoopExitConfirm(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = out.(Model)
 	if m.activeLoopCount() != 0 || cmd == nil {

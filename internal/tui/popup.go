@@ -29,22 +29,21 @@ func (m Model) popupWidth() int {
 	return w
 }
 
-// popupBox wraps a borderless picker/panel body (render*Picker output,
-// the cheatsheet, /usage, /help, ...) in the shared rounded popup
-// border. Deliberately different from renderInputFrame's sharp corners
-// (model.go) and from the labeled-box family's sharp corners
-// (labeled_box.go, startup.go, used by approval/path-trust/plan-approval
-// decision cards) — floating windows read as "lifted" cards distinct
-// from the structural, always-there cmdline chrome. Decision cards that
-// already self-border via renderLabeledBox are NOT passed through this —
-// they're already a complete framed box; wrapping them again would read
-// as "a modal floating on a modal."
-//
-// An optional width argument pins the box to a fixed cell width so the
-// popup stays stable as content changes (e.g. scrolling /usage past
-// lines of varying length). When omitted, lipgloss auto-sizes to the
-// content's natural width — fine for static one-screen popups.
+// popupBox renders the standard dismissable popup chrome. Use
+// keyboardOnlyPopupBox for modal confirmations whose visible affordances are
+// keyboard hints; those surfaces intentionally avoid a mouse-only close glyph.
 func popupBox(body string, width ...int) string {
+	box := renderPopupBox(body, width...)
+	return addPopupCloseGlyph(box)
+}
+
+// keyboardOnlyPopupBox wraps a popup body without adding the shared close glyph.
+// It keeps keyboard-only confirmation dialogs from looking mouse-clickable.
+func keyboardOnlyPopupBox(body string, width ...int) string {
+	return renderPopupBox(body, width...)
+}
+
+func renderPopupBox(body string, width ...int) string {
 	style := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(colorBrand).
@@ -52,8 +51,7 @@ func popupBox(body string, width ...int) string {
 	if len(width) > 0 && width[0] > 0 {
 		style = style.Width(width[0])
 	}
-	box := style.Render(body)
-	return addPopupCloseGlyph(box)
+	return style.Render(body)
 }
 
 // addPopupCloseGlyph paints a small close affordance into the popup border. The
