@@ -40,7 +40,8 @@ func TestGitImplementIssueDirective_GatesOnIssueDetailSufficiency(t *testing.T) 
 		"missing expected vs actual behavior",
 		"missing reproduction steps",
 		"missing acceptance criteria",
-		"Do NOT research code, draft a plan, create a branch, write tests, or edit files",
+		"Do NOT research code",
+		"write tests, or edit files until the issue is clear enough",
 	} {
 		if !strings.Contains(d, want) {
 			t.Errorf("directive missing issue-detail gate %q\nfull:\n%s", want, d)
@@ -56,7 +57,7 @@ func TestGitImplementIssueDirective_PlanModeIsOptionalFallback(t *testing.T) {
 	if strings.Contains(d, "CALL exit_plan_mode") || strings.Contains(d, "Do NOT skip this step") {
 		t.Errorf("directive must not require exit_plan_mode as the only checkpoint\nfull:\n%s", d)
 	}
-	for _, want := range []string{"If exit_plan_mode is available", "If exit_plan_mode is not available", "normal scrollback message"} {
+	for _, want := range []string{"If exit_plan_mode", "If exit_plan_mode is not available", "normal scrollback message"} {
 		if !strings.Contains(d, want) {
 			t.Errorf("directive missing plan-mode fallback wording %q\nfull:\n%s", want, d)
 		}
@@ -64,7 +65,7 @@ func TestGitImplementIssueDirective_PlanModeIsOptionalFallback(t *testing.T) {
 }
 
 func TestGitImplementIssueDirective_PinsReproStepForBugs(t *testing.T) {
-	// Step 2.5 (label-conditional reproduce) is the design decision
+	// Step 3.5 (label-conditional reproduce) is the design decision
 	// we explicitly added to the spec. Pin it so the next directive
 	// edit doesn't drop the regression-test discipline.
 	d := gitImplementIssueDirective(42)

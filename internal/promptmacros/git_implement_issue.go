@@ -67,8 +67,8 @@ to reproduce.
 Step 4 — draft an implementation checkpoint. The checkpoint should be
 a markdown plan covering: which files to change, what change to make
 in each, and (for bugs) which test verifies the fix. If exit_plan_mode
-is available, call it with that plan so the user can approve from the
-plan modal. If exit_plan_mode is not available, surface the same plan
+is available, use it to surface the checkpoint in the plan modal so the
+user can approve it. If exit_plan_mode is not available, surface the same plan
 as a normal scrollback message and STOP for user confirmation. Plan
 mode is an optional presentation/safety surface here; the issue-detail
 validation in Step 2 is the core gate that prevents under-specified
