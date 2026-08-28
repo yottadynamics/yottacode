@@ -84,7 +84,7 @@ func renderApprovalModal(m Model, hits ...*pickerHits) string {
 	leftLabel := " " + styleApprovalTitle.Render("Approval needed") + " "
 	rightLabel := " " + styleApprovalTool.Render(m.approvalTool) + " "
 
-	return addPopupCloseGlyph(renderLabeledBox(leftLabel, rightLabel, bodyLines, capW, colorWarning))
+	return renderLabeledBox(leftLabel, rightLabel, bodyLines, capW, colorWarning)
 }
 
 // approvalBodyFor returns the focused, Content-styled body for the

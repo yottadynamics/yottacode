@@ -223,7 +223,7 @@ func renderPlanDecisionCard(title, toolName, hotkeys string, width int, hits ...
 	leftLabel := " " + stylePlanApprovalTitle.Render(title) + " "
 	rightLabel := " " + stylePlanApprovalTool.Render(toolName) + " "
 
-	return addPopupCloseGlyph(renderLabeledBox(leftLabel, rightLabel, bodyLines, capW, colorWarning))
+	return renderLabeledBox(leftLabel, rightLabel, bodyLines, capW, colorWarning)
 }
 
 // Plan-mode banner / approval styles. Bare declarations (no
