@@ -217,13 +217,20 @@ func TestPrompt_UnknownSessionIdErrors(t *testing.T) {
 // cancelled — the fixture for proving session/cancel actually reaches
 // and interrupts an in-flight turn, not just that Prompt returns
 // eventually.
-type blockingStreamer struct{ started chan struct{} }
+type blockingStreamer struct {
+	started chan struct{}
+	once    sync.Once
+}
 
 func (s *blockingStreamer) ChatStream(ctx context.Context, _ []adapter.Message, _ []adapter.Tool) <-chan adapter.StreamEvent {
 	out := make(chan adapter.StreamEvent)
 	go func() {
 		defer close(out)
-		close(s.started)
+		// The ACP runtime can retry or re-enter ChatStream for the same
+		// fixture while cancelling an in-flight prompt. Signal the first
+		// start only; closing started twice would panic and hide the
+		// cancellation behavior this test is meant to verify.
+		s.once.Do(func() { close(s.started) })
 		<-ctx.Done()
 	}()
 	return out
