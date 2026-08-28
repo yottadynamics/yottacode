@@ -1,12 +1,30 @@
 package tui
 
 import (
+	"strings"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/yottadynamics/yottacode/internal/agent"
 )
+
+func TestPlanApprovalCardsHaveNoPopupCloseGlyph(t *testing.T) {
+	for _, card := range []struct {
+		name   string
+		render func(int) string
+	}{
+		{"exit", func(width int) string { return renderPlanApprovalCard(width) }},
+		{"enter", func(width int) string { return renderEnterPlanApprovalCard(width) }},
+	} {
+		t.Run(card.name, func(t *testing.T) {
+			first := strings.SplitN(stripANSI(card.render(80)), "\n", 2)[0]
+			if strings.Contains(first, "×") {
+				t.Fatalf("plan approval top border should not include a mouse-only close glyph: %q", first)
+			}
+		})
+	}
+}
 
 func TestExitPlanApprovalCard_ClickKeepPlanningIsIgnored(t *testing.T) {
 	m := newTestModel(t)

@@ -55,7 +55,7 @@ func TestRenderApprovalModal_BracketsFirstNoInlinePermissionsDetail(t *testing.T
 	}
 }
 
-func TestRenderApprovalModal_HasPopupCloseGlyph(t *testing.T) {
+func TestRenderApprovalModal_HasNoPopupCloseGlyph(t *testing.T) {
 	m := newTestModel(t)
 	m.width = 80
 	m.awaitingApproval = true
@@ -68,11 +68,11 @@ func TestRenderApprovalModal_HasPopupCloseGlyph(t *testing.T) {
 	if !strings.HasPrefix(first, "┌") || !strings.HasSuffix(first, "┐") {
 		t.Fatalf("approval modal should keep sharp decision-card corners, got %q", first)
 	}
-	if !strings.Contains(first, "×") {
-		t.Fatalf("approval modal top border should include close glyph, got %q", first)
+	if strings.Contains(first, "×") {
+		t.Fatalf("approval modal top border should not include a mouse-only close glyph, got %q", first)
 	}
-	if strings.Contains(first, "Approval needed") || strings.Contains(first, "move_file") || !strings.Contains(got, "Approval needed · move_file") {
-		t.Fatalf("close-glyph chrome should avoid crowded border labels and move title/tool into the body, got %q", got)
+	if !strings.Contains(first, "Approval needed") || !strings.Contains(first, "move_file") {
+		t.Fatalf("approval modal top border should retain its labels, got %q", first)
 	}
 }
 
