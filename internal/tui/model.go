@@ -744,6 +744,7 @@ type Model struct {
 	approvalTool     string
 	approvalPreview  string
 	approvalArgs     string
+	approvalScrollOffset int
 	// approvalAllowAlwaysOK gates the [a]lways-allow keypress. Set
 	// true when DeriveAllowRule can produce a sensible pattern from
 	// this call; false for compound shell commands and other shapes
@@ -1288,6 +1289,7 @@ func (m *Model) clearPendingDecisionUI() {
 	m.approvalTool = ""
 	m.approvalPreview = ""
 	m.approvalArgs = ""
+	m.approvalScrollOffset = 0
 	m.approvalAllowAlwaysOK = false
 	m.approvalDerivedRule = ""
 	m.approvalDenyAlwaysOK = false
@@ -2090,6 +2092,9 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if m.awaitingApproval {
+			if scrolled, ok := m.updateApprovalScroll(msg); ok {
+				return scrolled, nil
+			}
 			if queued, ok := m.queueInputDuringDecision(msg, "after approval"); ok {
 				return queued, nil
 			}
@@ -5597,6 +5602,7 @@ func (m Model) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 		m.approvalTool = e.ToolName
 		m.approvalPreview = e.Preview
 		m.approvalArgs = e.ArgsJSON
+		m.approvalScrollOffset = 0
 		// Pre-derive the "always allow" pattern so the modal can show
 		// the user exactly what rule they'd be saving. Suppressed
 		// (approvalAllowAlwaysOK = false) for compound shell commands

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 )
@@ -58,25 +59,23 @@ func renderApprovalModal(m Model, hits ...*pickerHits) string {
 	if m.approvalTool != "" {
 		header += styleApprovalTool.Render(" · " + m.approvalTool)
 	}
+	previewLines := approvalPreviewLines(body, capW)
+	hotkeyRows := approvalHotkeyRows(m.approvalAllowAlwaysOK, m.approvalDerivedRule, m.approvalDenyAlwaysOK, m.approvalDerivedDenyRule)
+	hotkeyLines := approvalHotkeyLines(hotkeyRows, capW)
+	previewBudget := approvalPreviewBudget(m.height, len(hotkeyLines))
+	previewLines, hint := windowApprovalPreviewLines(previewLines, previewBudget, m.approvalScrollOffset)
+
 	bodyLines := []string{labeledBoxIndent + header, strings.Repeat(" ", approvalModalTargetInnerWidth(capW))}
-	for _, line := range hardWrapLabeled(body, capW) {
-		bodyLines = append(bodyLines, labeledBoxIndent+line)
+	bodyLines = append(bodyLines, previewLines...)
+	if hint != "" {
+		bodyLines = append(bodyLines, labeledBoxIndent+styleHint.Render(hint))
 	}
 	bodyLines = append(bodyLines, "")
-	hotkeyRows := approvalHotkeyRows(m.approvalAllowAlwaysOK, m.approvalDerivedRule, m.approvalDenyAlwaysOK, m.approvalDerivedDenyRule)
 	if len(hotkeyRows) > 0 {
-		keyW, descW := approvalHotkeyColumnWidths(hotkeyRows, capW)
-		for _, key := range hotkeyRows {
-			for j, line := range hardWrapLabeled(key.desc, capW-labeledBoxIndentW-keyW-2) {
-				row := len(bodyLines)
-				prefix := strings.Repeat(" ", keyW+2)
-				if j == 0 {
-					prefix = fmt.Sprintf("%-*s  ", keyW, key.hotkey)
-				}
-				indented := labeledBoxIndent + prefix + truncateDisplay(line, descW)
-				bodyLines = append(bodyLines, indented)
-				registerBracketHotkeys(h, row, ansi.Strip(indented))
-			}
+		for _, line := range hotkeyLines {
+			row := len(bodyLines)
+			bodyLines = append(bodyLines, line)
+			registerBracketHotkeys(h, row, ansi.Strip(line))
 		}
 	}
 	bodyLines = append(bodyLines, "")
@@ -85,6 +84,33 @@ func renderApprovalModal(m Model, hits ...*pickerHits) string {
 	rightLabel := " " + styleApprovalTool.Render(m.approvalTool) + " "
 
 	return renderLabeledBox(leftLabel, rightLabel, bodyLines, capW, colorWarning)
+}
+
+func approvalPreviewLines(body string, capW int) []string {
+	wrapped := hardWrapLabeled(body, capW)
+	lines := make([]string, 0, len(wrapped))
+	for _, line := range wrapped {
+		lines = append(lines, labeledBoxIndent+line)
+	}
+	return lines
+}
+
+func approvalHotkeyLines(rows []approvalHotkeyRow, capW int) []string {
+	if len(rows) == 0 {
+		return nil
+	}
+	keyW, descW := approvalHotkeyColumnWidths(rows, capW)
+	var lines []string
+	for _, key := range rows {
+		for j, line := range hardWrapLabeled(key.desc, capW-labeledBoxIndentW-keyW-2) {
+			prefix := strings.Repeat(" ", keyW+2)
+			if j == 0 {
+				prefix = fmt.Sprintf("%-*s  ", keyW, key.hotkey)
+			}
+			lines = append(lines, labeledBoxIndent+prefix+truncateDisplay(line, descW))
+		}
+	}
+	return lines
 }
 
 // approvalBodyFor returns the focused, Content-styled body for the
@@ -164,6 +190,68 @@ func approvalHotkeyColumnWidths(rows []approvalHotkeyRow, capW int) (keyW, descW
 
 func capApprovalBoxWidth(termWidth int) int {
 	return capLabeledBoxWidth(termWidth)
+}
+
+func approvalPreviewBudget(termHeight, hotkeyLineCount int) int {
+	if termHeight <= 0 {
+		return 0
+	}
+	// The approval box has two border rows plus fixed interior rows for the
+	// title, title/body spacer, body/hotkey spacer, hotkeys, and trailing spacer.
+	// When a preview is clipped, reserve one more row for the scroll hint so the
+	// approval/rejection controls remain visible at the bottom of the modal.
+	budget := termHeight - 2 - 4 - hotkeyLineCount - 1
+	if budget < 1 {
+		return 1
+	}
+	return budget
+}
+
+func windowApprovalPreviewLines(lines []string, budget, offset int) ([]string, string) {
+	if budget <= 0 || len(lines) <= budget {
+		return lines, ""
+	}
+	maxOffset := len(lines) - budget
+	offset = min(max(offset, 0), maxOffset)
+	end := min(len(lines), offset+budget)
+	hint := fmt.Sprintf("── %d-%d of %d lines · ↑/↓ · PgUp/PgDn ──", offset+1, end, len(lines))
+	return lines[offset:end], hint
+}
+
+func (m Model) approvalVisiblePreviewLines() int {
+	body := strings.ReplaceAll(approvalBodyFor(m), "\t", "    ")
+	hotkeys := approvalHotkeyLines(approvalHotkeyRows(m.approvalAllowAlwaysOK, m.approvalDerivedRule, m.approvalDenyAlwaysOK, m.approvalDerivedDenyRule), capApprovalBoxWidth(m.width))
+	budget := approvalPreviewBudget(m.height, len(hotkeys))
+	if budget <= 0 {
+		return len(approvalPreviewLines(body, capApprovalBoxWidth(m.width)))
+	}
+	return budget
+}
+
+func (m Model) approvalMaxScrollOffset() int {
+	body := strings.ReplaceAll(approvalBodyFor(m), "\t", "    ")
+	lines := approvalPreviewLines(body, capApprovalBoxWidth(m.width))
+	return max(len(lines)-m.approvalVisiblePreviewLines(), 0)
+}
+
+func (m Model) updateApprovalScroll(msg tea.KeyPressMsg) (Model, bool) {
+	maxOffset := m.approvalMaxScrollOffset()
+	if maxOffset == 0 {
+		return m, false
+	}
+	switch msg.Code {
+	case tea.KeyUp:
+		m.approvalScrollOffset = max(0, m.approvalScrollOffset-1)
+	case tea.KeyDown:
+		m.approvalScrollOffset = min(maxOffset, m.approvalScrollOffset+1)
+	case tea.KeyPgUp:
+		m.approvalScrollOffset = max(0, m.approvalScrollOffset-m.approvalVisiblePreviewLines())
+	case tea.KeyPgDown:
+		m.approvalScrollOffset = min(maxOffset, m.approvalScrollOffset+m.approvalVisiblePreviewLines())
+	default:
+		return m, false
+	}
+	return m, true
 }
 
 func approvalModalTargetInnerWidth(capW int) int {
