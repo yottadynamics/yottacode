@@ -273,7 +273,9 @@ func TestSandboxManager_WaitingCallerHonorsContextDuringProfileCreation(t *testi
 	go func() {
 		out, err := mgr.Command(ctx, agent.SandboxProfileDocuments, "true", t.TempDir()).CombinedOutput()
 		if err != nil {
-			secondDone <- string(out)
+			// A canceled context can stop the synthetic failure command before
+			// /bin/sh starts, so keep both stderr output and exec's own error.
+			secondDone <- string(out) + err.Error()
 			return
 		}
 		secondDone <- ""
@@ -283,7 +285,7 @@ func TestSandboxManager_WaitingCallerHonorsContextDuringProfileCreation(t *testi
 	select {
 	case out := <-secondDone:
 		if !strings.Contains(out, context.Canceled.Error()) {
-			t.Fatalf("waiting caller output = %q, want context cancellation", out)
+			t.Fatalf("waiting caller output/error = %q, want context cancellation", out)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("waiting caller stayed blocked after its context was canceled")

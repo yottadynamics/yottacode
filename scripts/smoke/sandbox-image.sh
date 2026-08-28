@@ -6,6 +6,8 @@ set -eu
 
 go version
 git --version
+gh --version
+make --version
 test -f go.mod
 
 tmp=$(mktemp -d)
