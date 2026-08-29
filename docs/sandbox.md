@@ -4,8 +4,10 @@
 approval and the hardline blocklist in `internal/agent/exec_tool.go`. The
 command sandbox adds a real isolation boundary underneath that: approved
 `run_bash` commands execute inside a rootless [Podman] container with a
-default-deny network and a filesystem that only sees the project tree plus the
-repo's managed yottacode worktree root.
+filesystem that only sees the project tree plus the repo's managed yottacode
+worktree root. Network access temporarily defaults to host networking so normal
+developer commands can download dependencies until yottacode has a narrower
+egress allowlist.
 
 yottacode itself still runs on the host. File tools, git tools, GitHub tools,
 MCP tools, the TUI, and provider traffic are not inside the container.
@@ -39,8 +41,8 @@ flowchart LR
     Container --> Mount[(Project + managed worktree mounts)]
     DocContainer --> Mount
     Mount --> Worktrees[(Managed worktree root)]
-    Container -. network=none by default .-> Net[No network egress]
-    DocContainer -. network=none by default .-> Net
+    Container -. network=host temporary default .-> Net[Host network]
+    DocContainer -. network=host temporary default .-> Net
 
     Agent --> FileTools[read/write/edit tools]
     FileTools --> HostFS[(Host filesystem)]
@@ -168,7 +170,7 @@ in CI instead of at user startup.
 backend         = "podman"      # "none" (default) | "podman"
 image           = "ghcr.io/yottadynamics/yottacode-sandbox:latest"
 documents_image = "ghcr.io/yottadynamics/yottacode-documents:latest"
-network         = "none"        # "none" (default) | "host"
+network         = "host"        # "none" | "host" (temporary default)
 mounts          = ["."]         # project-relative only; cannot escape root
 env_passthrough = []            # opt-in credential injection, e.g. ["GITHUB_TOKEN"]
 memory          = "2g"
@@ -201,8 +203,9 @@ backend change (`podman` ↔ `none`) still needs a new session.
   managed worktree root (`~/.yottacode/worktrees/<slug>/`) so `enter_worktree`
   can move a live sandboxed session into a yottacode-managed worktree without
   remounting the container.
-- **Network**: `--network=none` by default. There is no allowlist mode yet; it
-  is all-or-nothing via `network = "host"`.
+- **Network**: `--network=host` is the temporary default so commands such as
+  `go get` work inside the sandbox. There is no allowlist mode yet; choose
+  `network = "none"` for no egress.
 - **Credentials**: nothing is injected by default. `env_passthrough` forwards
   named variables with bare `-e NAME`, so values do not appear in Podman's argv.
 - **Hardening**: the container uses `--userns=keep-id`, `--cap-drop=ALL`,
@@ -250,7 +253,7 @@ only applies to profiles that have not created a container yet.
 
 ## Known limitations
 
-- No network allowlist — `network = "none"` or `network = "host"` only.
+- No network allowlist yet — `network = "host"` or `network = "none"` only.
 - No credential-stripping egress proxy.
 - The default `ghcr.io/yottadynamics/yottacode-sandbox:latest` image includes
   Go, git, make, gcc/glibc headers for cgo, and common archive/diff tools. It is

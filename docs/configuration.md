@@ -128,7 +128,8 @@ Two ways to add real isolation, at different granularities:
 - **The command sandbox** (`[sandbox] backend = "podman"`) — yottacode
   itself keeps running on the host, but `run_bash`, `run_tests`, and document
   subprocess paths execute inside lazy rootless Podman profile containers with
-  a default-deny network and project-dir-only mounts. See [sandbox.md](sandbox.md).
+  a host-networked sandbox (temporarily, until egress allowlists land) and
+  project-dir-only mounts. See [sandbox.md](sandbox.md).
 
 ## Provider Diagnostics
 
