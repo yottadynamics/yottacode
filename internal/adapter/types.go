@@ -1,5 +1,7 @@
 package adapter
 
+import "time"
+
 // Role enumerates the speakers in a conversation.
 type Role string
 
@@ -68,6 +70,52 @@ type Message struct {
 	// that didn't observe usage data leave it unset, and the /usage
 	// command can tell the difference.
 	Usage *Usage `json:"usage,omitempty"`
+	// Timestamp records when this message was appended to the session's
+	// history: submit time for a user message, completion time for an
+	// assistant or tool-result message. Pointer so nil ("recorded before
+	// this field existed") is distinguishable from a genuine zero time,
+	// same reasoning as Usage above; omitted from JSON when unset so
+	// existing session files load byte-identical until the first message
+	// carries one.
+	Timestamp *time.Time `json:"timestamp,omitempty"`
+	// Model and Provider record which model/provider actually produced
+	// this message — set by the adapter implementation itself (its own
+	// configured model string and provider profile) at the point it
+	// builds its EventDone Final, not derived later. Distinct from
+	// Session.Model (the session's configured default): with
+	// multi-provider fallback (MultiStreamer) or a mid-session /model
+	// switch, a given assistant message's actual model can differ from
+	// the session's headline model. Empty for user/tool messages and for
+	// a partial reply preserved from a cancelled stream (the generic
+	// buffer-based builder has no adapter context to stamp).
+	Model    string `json:"model,omitempty"`
+	Provider string `json:"provider,omitempty"`
+	// LatencyMS is the end-to-end wall-clock time, in milliseconds, for
+	// the streaming call that produced this message: request dispatch to
+	// EventDone. TTFTMs is time-to-first-token — the delay before the
+	// first visible content or reasoning token arrived. Pointers so nil
+	// ("not measured" — a partial/cancelled reply, or a message that
+	// predates this field) is distinguishable from a genuine 0.
+	LatencyMS *int64 `json:"latency_ms,omitempty"`
+	TTFTMs    *int64 `json:"ttft_ms,omitempty"`
+	// FallbackCount is how many times adapter.MultiStreamer fell through
+	// to a different candidate before this message's stream succeeded —
+	// 0 (and omitted) for the overwhelmingly common single-provider, no-
+	// fallback case. FallbackReason is the last pre-success failure's
+	// reason, present only when FallbackCount > 0.
+	FallbackCount  int    `json:"fallback_count,omitempty"`
+	FallbackReason string `json:"fallback_reason,omitempty"`
+	// ApprovalSource records how a RoleTool message's call got permission
+	// to run: one of the ApprovalAuto Source strings the agent loop
+	// already sends to the TUI ("yolo-mode", "auto-mode",
+	// "auto-mode-safe-bash", "plan-mode-allow", "plan-mode-block",
+	// "permissions", "deny-rule", or a background-policy note), or "user"
+	// for any outcome that went through the interactive approval prompt
+	// (approved or denied alike — Content's own "denied by user" /
+	// "error:" prefix already distinguishes those). Empty when no
+	// approval decision was ever reached (unknown tool, an aborted call)
+	// or for a message that predates this field.
+	ApprovalSource string `json:"approval_source,omitempty"`
 }
 
 // Usage is the per-turn token breakdown reported by the provider.

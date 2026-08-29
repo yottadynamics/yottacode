@@ -306,6 +306,8 @@ func (a *anthropicAdapter) ChatStream(ctx context.Context, messages []Message, t
 			ToolCalls:  toolCalls,
 			StopReason: stopReason,
 			Usage:      usage,
+			Model:      a.model,
+			Provider:   string(a.profile.Provider),
 		}}
 	}()
 	return out

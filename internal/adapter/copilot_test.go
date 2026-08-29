@@ -226,6 +226,12 @@ func TestCopilotChatStreamSuccess(t *testing.T) {
 	if final.StopReason != "stop" {
 		t.Errorf("stop reason = %q, want %q", final.StopReason, "stop")
 	}
+	if final.Model != "gpt-4o" {
+		t.Errorf("final.Model = %q, want the adapter's configured model", final.Model)
+	}
+	if final.Provider != string(ProviderCopilot) {
+		t.Errorf("final.Provider = %q, want %q", final.Provider, ProviderCopilot)
+	}
 }
 
 func TestCopilotChatStreamRefreshOn401(t *testing.T) {

@@ -20,7 +20,7 @@ func installFakeTurn(t *testing.T, m *Model) *atomic.Int32 {
 	var calls atomic.Int32
 	m.turnActive = true
 	m.turnCancel = func() { calls.Add(1) }
-	m.userMsgCh = make(chan string, 1)
+	m.userMsgCh = make(chan agent.UserMessage, 1)
 	return &calls
 }
 
@@ -41,8 +41,11 @@ func TestInterrupt_EnterMidTurnQueuesOnChannel(t *testing.T) {
 	// Message should be on the channel, not in pendingInputAfterTurn.
 	select {
 	case got := <-m.userMsgCh:
-		if got != "follow up" {
-			t.Errorf("userMsgCh message = %q, want %q", got, "follow up")
+		if got.Content != "follow up" {
+			t.Errorf("userMsgCh message = %q, want %q", got.Content, "follow up")
+		}
+		if got.Timestamp.IsZero() {
+			t.Error("queued message should carry the original enqueue timestamp")
 		}
 	default:
 		t.Errorf("userMsgCh should have the queued message")
@@ -68,8 +71,11 @@ func TestInterrupt_EnterMidTurnApprovalQueuesOnChannel(t *testing.T) {
 
 	select {
 	case got := <-m.userMsgCh:
-		if got != "follow up" {
-			t.Errorf("userMsgCh message = %q, want %q", got, "follow up")
+		if got.Content != "follow up" {
+			t.Errorf("userMsgCh message = %q, want %q", got.Content, "follow up")
+		}
+		if got.Timestamp.IsZero() {
+			t.Error("queued approval-side message should carry the original enqueue timestamp")
 		}
 	default:
 		t.Errorf("Enter during approval should queue input on userMsgCh")
@@ -117,7 +123,7 @@ func TestInterrupt_UpMidTurnRecallsQueuedMessageForEditing(t *testing.T) {
 	}
 	select {
 	case got := <-m.userMsgCh:
-		t.Fatalf("Up should drain queued delivery; still had %q", got)
+		t.Fatalf("Up should drain queued delivery; still had %q", got.Content)
 	default:
 	}
 	if got := cancels.Load(); got != 0 {
@@ -144,8 +150,11 @@ func TestInterrupt_UpMidTurnCanReviseAndRequeueQueuedMessage(t *testing.T) {
 
 	select {
 	case got := <-m.userMsgCh:
-		if got != "follow up revised" {
-			t.Fatalf("requeued message = %q, want revised text", got)
+		if got.Content != "follow up revised" {
+			t.Fatalf("requeued message = %q, want revised text", got.Content)
+		}
+		if got.Timestamp.IsZero() {
+			t.Fatal("requeued message should carry a fresh enqueue timestamp")
 		}
 	default:
 		t.Fatalf("revised message should be queued")
@@ -176,14 +185,14 @@ func TestInterrupt_EnterMidTurnOverflowDoesNotCancel(t *testing.T) {
 
 	select {
 	case got := <-m.userMsgCh:
-		if got != "first" {
-			t.Fatalf("first queued message changed: got %q", got)
+		if got.Content != "first" {
+			t.Fatalf("first queued message changed: got %q", got.Content)
 		}
 	default:
 		t.Fatalf("first queued message should remain pending")
 	}
-	if m.pendingInputAfterTurn != "" {
-		t.Errorf("pendingInputAfterTurn should stay empty; got %q", m.pendingInputAfterTurn)
+	if m.pendingInputAfterTurn.Content != "" {
+		t.Errorf("pendingInputAfterTurn should stay empty; got %q", m.pendingInputAfterTurn.Content)
 	}
 	if got := cancels.Load(); got != 0 {
 		t.Errorf("turnCancel should not fire on queue overflow; got %d", got)
@@ -206,11 +215,11 @@ func TestInterrupt_EmptyEnterMidTurnIsSilent(t *testing.T) {
 
 	select {
 	case msg := <-m.userMsgCh:
-		t.Errorf("userMsgCh should be empty on bare Enter; got %q", msg)
+		t.Errorf("userMsgCh should be empty on bare Enter; got %q", msg.Content)
 	default:
 	}
-	if m.pendingInputAfterTurn != "" {
-		t.Errorf("pendingInputAfterTurn should stay empty; got %q", m.pendingInputAfterTurn)
+	if m.pendingInputAfterTurn.Content != "" {
+		t.Errorf("pendingInputAfterTurn should stay empty; got %q", m.pendingInputAfterTurn.Content)
 	}
 	if got := cancels.Load(); got != 0 {
 		t.Errorf("bare Enter must not cancel; cancel count = %d", got)
@@ -236,11 +245,11 @@ func TestInterrupt_CtrlCMidTurnCancelsAndDrainsChannel(t *testing.T) {
 
 	select {
 	case msg := <-m.userMsgCh:
-		t.Errorf("Ctrl+C should drain userMsgCh; got %q", msg)
+		t.Errorf("Ctrl+C should drain userMsgCh; got %q", msg.Content)
 	default:
 	}
-	if m.pendingInputAfterTurn != "" {
-		t.Errorf("Ctrl+C should clear pendingInputAfterTurn; got %q", m.pendingInputAfterTurn)
+	if m.pendingInputAfterTurn.Content != "" {
+		t.Errorf("Ctrl+C should clear pendingInputAfterTurn; got %q", m.pendingInputAfterTurn.Content)
 	}
 	if got := cancels.Load(); got < 1 {
 		t.Errorf("Ctrl+C must call turnCancel; count = %d", got)
@@ -274,11 +283,11 @@ func TestInterrupt_EscBehavesLikeCtrlC(t *testing.T) {
 
 	select {
 	case msg := <-m.userMsgCh:
-		t.Errorf("Esc should drain userMsgCh; got %q", msg)
+		t.Errorf("Esc should drain userMsgCh; got %q", msg.Content)
 	default:
 	}
-	if m.pendingInputAfterTurn != "" {
-		t.Errorf("Esc should clear pendingInputAfterTurn; got %q", m.pendingInputAfterTurn)
+	if m.pendingInputAfterTurn.Content != "" {
+		t.Errorf("Esc should clear pendingInputAfterTurn; got %q", m.pendingInputAfterTurn.Content)
 	}
 	if got := cancels.Load(); got < 1 {
 		t.Errorf("Esc must call turnCancel; count = %d", got)
@@ -301,8 +310,8 @@ func TestInterrupt_TurnEndedDrainsUndeliveredMessage(t *testing.T) {
 	m, _ = applyMsg(m, turnEndedMsg{})
 
 	// The undelivered message should have been auto-submitted.
-	if m.pendingInputAfterTurn != "" {
-		t.Errorf("turnEnded must consume the queue; pendingInputAfterTurn = %q", m.pendingInputAfterTurn)
+	if m.pendingInputAfterTurn.Content != "" {
+		t.Errorf("turnEnded must consume the queue; pendingInputAfterTurn = %q", m.pendingInputAfterTurn.Content)
 	}
 	if !strings.Contains(m.transcript.String(), "no provider configured") {
 		t.Errorf("expected startTurn to fire after queue auto-submit; transcript=%q", m.transcript.String())
@@ -316,13 +325,13 @@ func TestInterrupt_TurnEndedWithoutQueueLeavesNoTrace(t *testing.T) {
 	m := newTestModel(t)
 	m.turnActive = true
 	m.turnCancel = func() {}
-	m.userMsgCh = make(chan string, 1)
+	m.userMsgCh = make(chan agent.UserMessage, 1)
 	pre := m.transcript.String()
 
 	m, _ = applyMsg(m, turnEndedMsg{})
 
-	if m.pendingInputAfterTurn != "" {
-		t.Errorf("pendingInputAfterTurn should stay empty; got %q", m.pendingInputAfterTurn)
+	if m.pendingInputAfterTurn.Content != "" {
+		t.Errorf("pendingInputAfterTurn should stay empty; got %q", m.pendingInputAfterTurn.Content)
 	}
 	if m.turnActive {
 		t.Errorf("turnActive should flip to false")
@@ -350,10 +359,10 @@ func TestInterrupt_SlashMidTurnDrainsChannel(t *testing.T) {
 
 	select {
 	case msg := <-m.userMsgCh:
-		t.Errorf("slash command should drain userMsgCh; got %q", msg)
+		t.Errorf("slash command should drain userMsgCh; got %q", msg.Content)
 	default:
 	}
-	if m.pendingInputAfterTurn != "" {
-		t.Errorf("pendingInputAfterTurn should be cleared; got %q", m.pendingInputAfterTurn)
+	if m.pendingInputAfterTurn.Content != "" {
+		t.Errorf("pendingInputAfterTurn should be cleared; got %q", m.pendingInputAfterTurn.Content)
 	}
 }

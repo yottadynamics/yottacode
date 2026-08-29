@@ -1206,6 +1206,8 @@ func (a *openAIAuthAdapter) consumeSSE(ctx context.Context, body io.Reader, out 
 		ToolCalls: finalCalls,
 		Citations: dedupeCitations(citations),
 		Usage:     usage,
+		Model:     a.model,
+		Provider:  string(a.profile.Provider),
 	}
 	if messageStatus == "incomplete" {
 		final.StopReason = "incomplete"

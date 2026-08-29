@@ -247,4 +247,4 @@ Include:
 - provider and model
 - `yottacode doctor` output, redacted
 - a minimal reproducer
-- exported session Markdown if relevant: `yottacode sessions export <id-or-name>`
+- exported session Markdown or JSONL if relevant: `yottacode sessions export <id-or-name>`

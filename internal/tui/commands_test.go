@@ -1236,6 +1236,49 @@ func TestSessionsPicker_ExportFlow(t *testing.T) {
 	}
 }
 
+// TestSessionsPicker_ExportJSONLByExtension verifies /sessions Export writes the
+// structured event log when the user chooses a .jsonl output path.
+func TestSessionsPicker_ExportJSONLByExtension(t *testing.T) {
+	m := newTestModel(t)
+	m.sess.Messages = append(m.sess.Messages,
+		adapter.Message{Role: adapter.RoleUser, Content: "hello"},
+		adapter.Message{Role: adapter.RoleAssistant, Content: "world"},
+	)
+	if err := m.sess.Save(); err != nil {
+		t.Fatalf("seed save: %v", err)
+	}
+	tmp := t.TempDir()
+	m.cwd = tmp
+
+	m, _ = typeAndEnter(t, m, "/sessions")
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyDown})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyDown})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyDown})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	for i, info := range m.sessionsPicker.sessions {
+		if info.ID == m.sess.ID {
+			m.sessionsPicker.listCursor = i
+			break
+		}
+	}
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter})
+
+	out := filepath.Join(tmp, "out.jsonl")
+	m.sessionsPicker.input.SetValue(out)
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	contents, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatalf("export log not written: %v", err)
+	}
+	body := string(contents)
+	if !strings.Contains(body, `"type":"session"`) || !strings.Contains(body, `"type":"user"`) {
+		t.Fatalf("exported JSONL missing structured records:\n%s", body)
+	}
+	if !strings.Contains(m.transcript.String(), "✓ export · wrote log") {
+		t.Errorf("export should report log success: %q", m.transcript.String())
+	}
+}
+
 // TestSessionsPicker_LoadSummarizedToggle verifies pressing `s`
 // while the Load list has focus flips the summarized state.
 func TestSessionsPicker_LoadSummarizedToggle(t *testing.T) {

@@ -97,9 +97,11 @@ func Run(ctx context.Context, opts cli.ChatOptions, prompt string) error {
 			}
 		}
 	}
+	submitted := time.Now()
 	rt.Session.Messages = append(rt.Session.Messages, adapter.Message{
-		Role:    adapter.RoleUser,
-		Content: prompt,
+		Role:      adapter.RoleUser,
+		Content:   prompt,
+		Timestamp: &submitted,
 	})
 
 	turnErr := stream(ctx, rt.Cfg, &rt.Session.Messages, os.Stdout, os.Stderr)

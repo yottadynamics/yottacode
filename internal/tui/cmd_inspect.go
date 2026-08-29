@@ -2,8 +2,6 @@ package tui
 
 import (
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
@@ -200,9 +198,6 @@ func (m Model) updateInspectPanel(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 		m.inspectScrollOffset = min(m.inspectMaxScrollOffset(), m.inspectScrollOffset+m.inspectVisibleLines())
 		return m, nil
 	}
-	if msg.Text == "e" {
-		return m.exportInspectedSession()
-	}
 	m.inspectOpen = false
 	m.inspectSession = nil
 	m.inspectPanel = ""
@@ -210,27 +205,6 @@ func (m Model) updateInspectPanel(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m Model) exportInspectedSession() (Model, tea.Cmd) {
-	if m.inspectSession == nil {
-		m.appendLine(styleError.Render(SysMsg(SysFailure, "inspect", "export failed", "no inspected session")))
-		return m, nil
-	}
-	path := defaultInspectExportPath(m.cwd, m.inspectSession)
-	md := session.ExportMarkdown(m.inspectSession)
-	if err := os.WriteFile(path, []byte(md), 0o644); err != nil {
-		m.appendLine(styleError.Render(SysMsg(SysFailure, "inspect", "export failed", err.Error())))
-		return m, nil
-	}
-	m.appendLine(styleAuto.Render(SysMsg(SysSuccess, "inspect", "exported", fmt.Sprintf("%d bytes", len(md)), path)))
-	return m, nil
-}
-
-func defaultInspectExportPath(cwd string, s *session.Session) string {
-	if s == nil {
-		return filepath.Join(cwd, "inspect-session.md")
-	}
-	return defaultExportPath(cwd, session.SessionInfo{ID: s.ID, Name: s.Name})
-}
 
 // resolveInspectSession finds the session /inspect should render. No ref
 // targets the live in-memory session (so a running conversation can be
@@ -274,18 +248,23 @@ func resolveInspectSession(live *session.Session, ref string) (*session.Session,
 }
 
 // inspectToolCallView is one tool call rendered inside a turn: its name, a
-// truncated argument preview, and the outcome once the matching tool
-// result lands ("ok" until then).
+// truncated argument preview, the outcome once the matching tool result
+// lands ("ok" until then), and — when that outcome isn't "ok" — a truncated
+// preview of the tool result's own content, so a scan of the turn list
+// shows why a call failed instead of just that it did.
 type inspectToolCallView struct {
-	name   string
-	args   string
-	status string
+	name         string
+	args         string
+	status       string
+	errorPreview string
 }
 
 // inspectTurnView is one assistant turn: the user message that preceded it
 // (if any arrived since the last turn), the assistant's own text, its tool
-// calls, per-turn usage, and the same low-signal flag /usage's efficiency
-// section uses.
+// calls, per-turn usage, the same low-signal flag /usage's efficiency
+// section uses, and a stopFlag when the provider's own StopReason says the
+// turn didn't end normally (cut off, or blocked by a safety/content
+// filter) — see inspectStopFlag.
 type inspectTurnView struct {
 	n           int
 	userPreview string
@@ -293,6 +272,34 @@ type inspectTurnView struct {
 	assistant   string
 	toolCalls   []inspectToolCallView
 	lowSignal   bool
+	stopFlag    string
+}
+
+// inspectStopFlag maps a provider's raw StopReason to the short label
+// /inspect shows on a turn — silent for the normal completion reasons
+// (end_turn, stop, tool_use/tool_calls, "") and flagged for the two kinds
+// worth a second look: the response was cut off before it finished, or a
+// safety/content filter intervened. Providers spell these differently —
+// Anthropic uses max_tokens/refusal, OpenAI-compatible APIs use length/
+// content_filter, the ChatGPT/Responses API uses incomplete, and Gemini
+// alone has half a dozen distinct uppercase safety-stop values (SAFETY,
+// RECITATION, PROHIBITED_CONTENT, ...) — so this matches by lowercased
+// keyword rather than an exact enum.
+func inspectStopFlag(reason string) string {
+	r := strings.ToLower(reason)
+	switch {
+	case r == "":
+		return ""
+	case strings.Contains(r, "max_token"), r == "length", r == "incomplete":
+		return "truncated"
+	case strings.Contains(r, "safety"), strings.Contains(r, "filter"),
+		strings.Contains(r, "recitation"), strings.Contains(r, "refusal"),
+		strings.Contains(r, "prohibited"), strings.Contains(r, "blocklist"),
+		strings.Contains(r, "spii"):
+		return "filtered"
+	default:
+		return ""
+	}
 }
 
 // buildInspectTurns walks a session's messages once, in order, and groups
@@ -320,6 +327,7 @@ func buildInspectTurns(s *session.Session) []inspectTurnView {
 				userPreview: pendingUser,
 				usage:       msg.Usage,
 				assistant:   truncateForRender(msg.Content, inspectTextPreviewChars),
+				stopFlag:    inspectStopFlag(msg.StopReason),
 			}
 			pendingUser = ""
 			if msg.Usage != nil && msg.Usage.InputTokens > lowSignalInputTokens && msg.Usage.OutputTokens < lowSignalOutputTokens {
@@ -345,14 +353,46 @@ func buildInspectTurns(s *session.Session) []inspectTurnView {
 			status := "ok"
 			if strings.HasPrefix(msg.Content, "error:") {
 				status = "error"
-				if strings.Contains(msg.Content, agent.RepeatedToolFailureMarker) {
+				content := msg.Content
+				if idx := strings.Index(content, agent.RepeatedToolFailureMarker); idx >= 0 {
 					status = "error — guidance fired"
+					content = content[:idx]
 				}
+				turns[at.turn].toolCalls[at.call].errorPreview = truncateForRender(strings.TrimSpace(content), inspectTextPreviewChars)
 			}
 			turns[at.turn].toolCalls[at.call].status = status
 		}
 	}
 	return turns
+}
+
+// inspectDetailTokens renders the optional cache/reasoning clause appended
+// right after a turn's tokens summary. Dropped entirely when the usage
+// carries neither (the common case) so plain turns render exactly as
+// before; a turn that both wrote and read cache in the same call shows
+// both ("cache 13K write · 141K read").
+func inspectDetailTokens(u *adapter.Usage) string {
+	if u == nil {
+		return ""
+	}
+	var cacheParts []string
+	if u.CacheCreationTokens > 0 {
+		cacheParts = append(cacheParts, formatTokens(int(u.CacheCreationTokens))+" write")
+	}
+	if u.CacheReadTokens > 0 {
+		cacheParts = append(cacheParts, formatTokens(int(u.CacheReadTokens))+" read")
+	}
+	var parts []string
+	if len(cacheParts) > 0 {
+		parts = append(parts, "cache "+strings.Join(cacheParts, " · "))
+	}
+	if u.ReasoningTokens > 0 {
+		parts = append(parts, "reasoning "+formatTokens(int(u.ReasoningTokens)))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return "  " + strings.Join(parts, " · ")
 }
 
 // renderInspectPanel is the full popup body for /inspect: a header naming
@@ -376,15 +416,24 @@ func renderInspectPanel(s *session.Session) string {
 	}
 	for _, t := range turns {
 		tokens := ""
+		detail := ""
 		if t.usage != nil {
 			tokens = fmt.Sprintf("  %s tokens (in %s · out %s)",
 				formatTokens(int(totalTokensFor(*t.usage))), formatTokens(int(t.usage.InputTokens)), formatTokens(int(t.usage.OutputTokens)))
+			detail = inspectDetailTokens(t.usage)
+		}
+		var flagParts []string
+		if t.stopFlag != "" {
+			flagParts = append(flagParts, styleNoticeWarn.Render(t.stopFlag))
+		}
+		if t.lowSignal {
+			flagParts = append(flagParts, styleNoticeWarn.Render("low-signal"))
 		}
 		flag := ""
-		if t.lowSignal {
-			flag = "  " + styleNoticeWarn.Render("low-signal")
+		if len(flagParts) > 0 {
+			flag = "  " + strings.Join(flagParts, "  ")
 		}
-		fmt.Fprintf(&b, "turn %d%s%s\n", t.n, tokens, flag)
+		fmt.Fprintf(&b, "turn %d%s%s%s\n", t.n, tokens, detail, flag)
 		if t.userPreview != "" {
 			fmt.Fprintf(&b, "  you        %s\n", t.userPreview)
 		}
@@ -392,16 +441,22 @@ func renderInspectPanel(s *session.Session) string {
 			fmt.Fprintf(&b, "  assistant  %s\n", t.assistant)
 		}
 		for _, c := range t.toolCalls {
-			line := fmt.Sprintf("  %s(%s)", c.name, c.args)
-			if c.status != "ok" {
-				line = styleNoticeWarn.Render(fmt.Sprintf("%s  %s", line, c.status))
+			fmt.Fprintf(&b, "  %s(%s)\n", c.name, c.args)
+			if c.status == "ok" {
+				continue
 			}
-			b.WriteString(line)
+			errDetail := c.errorPreview
+			if errDetail == "" {
+				errDetail = c.status
+			} else if c.status == "error — guidance fired" {
+				errDetail += "  — guidance fired"
+			}
+			b.WriteString(styleNoticeWarn.Render("    " + errDetail))
 			b.WriteByte('\n')
 		}
 		b.WriteByte('\n')
 	}
-	b.WriteString(styleHint.Render("e export · esc to close"))
+	b.WriteString(styleHint.Render("exports live under /sessions · esc to close"))
 	return strings.TrimRight(b.String(), "\n")
 }
 
