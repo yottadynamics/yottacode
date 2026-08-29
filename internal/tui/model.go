@@ -2637,6 +2637,23 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, tea.Batch(loopCmds...)
 
+	case exitSaveTimeoutMsg:
+		// The final memory turn on quit ran past exitSaveTimeout — cancel
+		// it exactly as Esc/Ctrl+C would so the quit it's blocking still
+		// completes. Safe no-op if the turn already ended on its own:
+		// exitSavePending is never cleared back to false (it's only ever
+		// set once, right before this turn starts), but turnCancel is
+		// nil by then — cleared unconditionally at the top of
+		// turnEndedMsg — so the guard below still holds.
+		if m.exitSavePending && m.turnActive && m.turnCancel != nil {
+			// Mark this as an intentional local stop before canceling so the
+			// TurnInterrupted event is rendered as a calm cancellation marker
+			// instead of being suppressed as internal cancellation noise.
+			m.turnCancelRequested = true
+			m.turnCancel()
+		}
+		return m, nil
+
 	case turnEndedMsg:
 		m.turnActive = false
 		// If this turn was a /loop prose iteration and the agent called
@@ -2936,18 +2953,18 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch {
 		case !converged:
 			culprit, culpritTok := m.dominantContextBucket()
-			recall := recallCommandForSnapshot(msg.snapshotPath)
+			snap := snapshotResumeHint(msg.snapshotPath)
 			m.lastContextSummary = fmt.Sprintf("non-convergent at %d%%; largest bucket %s (~%s)", int(nonConvergentPct*100), culprit, formatTokens(culpritTok))
 			m.appendLine(styleWatermarkAlert.Render(SysMsg(
 				SysWarning, "context", "summarized but still "+fmt.Sprintf("%d%%", int(nonConvergentPct*100)),
 				fmt.Sprintf("largest %s ~%s", culprit, formatTokens(culpritTok)),
-				"auto paused", "/context for details", recall)))
+				"auto paused", "/context for details", snap)))
 		case msg.auto:
 			m.lastContextSummary = fmt.Sprintf("auto summarized %s → %s", formatTokens(msg.tokensBefore), formatTokens(m.contextTokens))
-			m.appendLine(styleAuto.Render(SysMsg(SysContext, "context", "summarized", m.contextReductionLabel(msg.tokensBefore, m.contextTokens), "full history saved", recallCommandForSnapshot(msg.snapshotPath))))
+			m.appendLine(styleAuto.Render(SysMsg(SysContext, "context", "summarized", m.contextReductionLabel(msg.tokensBefore, m.contextTokens), "full history saved", snapshotResumeHint(msg.snapshotPath))))
 		default:
 			m.lastContextSummary = fmt.Sprintf("manual summarized %s → %s", formatTokens(msg.tokensBefore), formatTokens(m.contextTokens))
-			m.appendLine(styleAuto.Render(SysMsg(SysContext, "context", "summarized", m.contextReductionLabel(msg.tokensBefore, m.contextTokens), "full history saved", recallCommandForSnapshot(msg.snapshotPath))))
+			m.appendLine(styleAuto.Render(SysMsg(SysContext, "context", "summarized", m.contextReductionLabel(msg.tokensBefore, m.contextTokens), "full history saved", snapshotResumeHint(msg.snapshotPath))))
 		}
 		if len(m.pendingSubagentWakes) > 0 {
 			// A notify_on_done completion may have arrived while summarization

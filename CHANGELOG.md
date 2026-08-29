@@ -179,6 +179,25 @@ the project uses semantic versioning once it's past `1.0.0`.
   workspaces and a longer dispatch cleanup deadline. (#166, #188)
 - **TUI scroll and popup defects** were fixed in transcript, approval, inspect,
   session, mouse, and help-popup flows. (#195, #204, #206, #211, #214)
+- **Context-compaction recovery banners now point at a working command.**
+  Auto/manual `/summarize` and mid-turn compaction used to suggest a
+  `/recall <session-id>` command that could never actually match anything
+  — `/recall` is a full-text search over message content, not a session-id
+  lookup — so the suggested recovery step reliably failed. The banner now
+  prints a copyable `yottacode sessions resume <id>` command that reopens
+  the full pre-compression transcript as a fresh session. Retained
+  tool-message capping is also budget-aware now: a single turn with many
+  large tool results is capped by their *combined* size against the
+  retain budget instead of each message independently, fixing sessions
+  that could re-trigger auto-summarize repeatedly without ever converging
+  under the threshold.
+- **Quitting can no longer hang indefinitely.** `/quit` and idle Ctrl+D run
+  one final turn so the model can save durable memories before the
+  session context is gone — that turn had no deadline of its own, so a
+  slow or unresponsive provider could hold the app open with no way out
+  short of remembering to press Esc. It's now bounded to 20s; past that
+  the turn is canceled exactly as Esc/Ctrl+C would, and the quit
+  completes on its own.
 
 
 ## 0.3.0 — 2026-06-10

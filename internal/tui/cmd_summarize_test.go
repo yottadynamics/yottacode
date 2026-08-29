@@ -293,6 +293,12 @@ func TestComposeSummarizedHistory_TruncatesGiantToolResult(t *testing.T) {
 	// One user turn whose tool result is 200K chars (~50K tokens) —
 	// well above maxRetainedToolTokens (4K). The recent-turn always-
 	// keep rule applies, but the tool message itself gets truncated.
+	//
+	// With a single oversized tool message, capRetainedToolBudget's
+	// underlying DistributeBudget takes its sum<=totalBudget fast path
+	// (demand already fits with room to spare), so this also guards
+	// that the budget-aware cap reproduces the old single-message
+	// behavior exactly when there's nothing to redistribute.
 	giant := strings.Repeat("y", 200_000)
 	history := []adapter.Message{
 		{Role: adapter.RoleSystem, Content: "SYS"},
@@ -317,6 +323,126 @@ func TestComposeSummarizedHistory_TruncatesGiantToolResult(t *testing.T) {
 	}
 	if estimateMessageTokens(*toolMsg) > maxRetainedToolTokens+50 {
 		t.Errorf("truncated tool tokens = %d, want ≤ %d", estimateMessageTokens(*toolMsg), maxRetainedToolTokens+50)
+	}
+}
+
+// TestComposeSummarizedHistory_ManyOversizedToolMessagesFitBudget is the
+// regression test for the reported real-world failure: a single retained
+// turn with many (not just one) oversized tool results. The old
+// per-message-only cap bounded each message but not their sum — 30
+// messages capped independently to maxRetainedToolTokens (4096) could
+// still total ~123K tokens against an 82K retain budget, landing
+// compaction back at ~85% (auto_threshold) instead of converging.
+// TestCapRetainedToolBudget_ManyOversizedFitBudget is a direct unit test
+// on capRetainedToolBudget itself, not just its integration-level caller
+// composeSummarizedHistory below — mirroring the agent package's direct
+// TestCapRetainedToolMessages_ManyOversizedFitBudget so a divergence
+// introduced only in this copy isn't caught solely by the (slower,
+// harder-to-pinpoint) integration test.
+func TestCapRetainedToolBudget_ManyOversizedFitBudget(t *testing.T) {
+	const n = 30
+	toolContent := strings.Repeat("z", 20_000) // ~5000 tokens, above maxRetainedToolTokens (4096)
+	var tail []adapter.Message
+	for i := 0; i < n; i++ {
+		tail = append(tail,
+			adapter.Message{Role: adapter.RoleAssistant, Content: "step"},
+			adapter.Message{Role: adapter.RoleTool, Content: toolContent},
+		)
+	}
+
+	budget := 20_000
+	out := capRetainedToolBudget(tail, budget)
+	if len(out) != len(tail) {
+		t.Fatalf("message count changed: got %d, want %d", len(out), len(tail))
+	}
+	toolCount, toolTokens := 0, 0
+	for _, m := range out {
+		if m.Role != adapter.RoleTool {
+			continue
+		}
+		toolCount++
+		toolTokens += estimateMessageTokens(m)
+	}
+	if toolCount != n {
+		t.Fatalf("expected all %d tool messages to survive (none dropped), got %d", n, toolCount)
+	}
+	if toolTokens > budget {
+		t.Fatalf("retained tool tokens %d exceed budget %d", toolTokens, budget)
+	}
+}
+
+func TestComposeSummarizedHistory_ManyOversizedToolMessagesFitBudget(t *testing.T) {
+	const n = 30
+	history := []adapter.Message{
+		{Role: adapter.RoleSystem, Content: "SYS"},
+		{Role: adapter.RoleUser, Content: "ask"},
+	}
+	toolContent := strings.Repeat("z", 20_000) // ~5000 tokens, above maxRetainedToolTokens
+	for i := 0; i < n; i++ {
+		history = append(history,
+			adapter.Message{Role: adapter.RoleAssistant, Content: fmt.Sprintf("step %d", i)},
+			adapter.Message{Role: adapter.RoleTool, Content: toolContent, ToolCallID: fmt.Sprintf("t%d", i)},
+		)
+	}
+
+	windowTokens := 205_000 // mirrors the reported real numbers
+	budget := retainBudgetFor(windowTokens)
+	out := composeSummarizedHistory(history, "## Decisions made\n(none)", windowTokens)
+
+	toolCount, toolTokens := 0, 0
+	for _, m := range out {
+		if m.Role != adapter.RoleTool {
+			continue
+		}
+		toolCount++
+		toolTokens += estimateMessageTokens(m)
+	}
+	if toolCount != n {
+		t.Fatalf("expected all %d tool messages to survive (none dropped), got %d", n, toolCount)
+	}
+	if toolTokens > budget {
+		t.Fatalf("retained tool tokens %d exceed retain budget %d", toolTokens, budget)
+	}
+}
+
+// TestComposeSummarizedHistory_FloorPreventsDegenerateTruncation covers
+// the mathematically infeasible case: so many oversized tool messages that
+// even an equal split at minRetainedToolTokens would exceed the budget.
+// Every message should still keep a real fragment (>= the floor), never
+// collapse to just the truncation marker.
+func TestComposeSummarizedHistory_FloorPreventsDegenerateTruncation(t *testing.T) {
+	const n = 50
+	history := []adapter.Message{
+		{Role: adapter.RoleSystem, Content: "SYS"},
+		{Role: adapter.RoleUser, Content: "ask"},
+	}
+	toolContent := strings.Repeat("z", 20_000)
+	for i := 0; i < n; i++ {
+		history = append(history,
+			adapter.Message{Role: adapter.RoleAssistant, Content: fmt.Sprintf("step %d", i)},
+			adapter.Message{Role: adapter.RoleTool, Content: toolContent, ToolCallID: fmt.Sprintf("t%d", i)},
+		)
+	}
+
+	// A tiny window pins retainBudgetFor to its floor (minRetainBudget =
+	// 4096), far below what n * minRetainedToolTokens would need.
+	out := composeSummarizedHistory(history, "## Decisions made\n(none)", 1000)
+
+	toolCount := 0
+	for _, m := range out {
+		if m.Role != adapter.RoleTool {
+			continue
+		}
+		toolCount++
+		if estimateMessageTokens(m) < minRetainedToolTokens {
+			t.Errorf("tool message truncated below floor: %d tokens", estimateMessageTokens(m))
+		}
+		if strings.TrimSuffix(m.Content, compactionMarker) == "" {
+			t.Errorf("tool message collapsed to just the marker, no real content survived")
+		}
+	}
+	if toolCount != n {
+		t.Fatalf("expected all %d tool messages to survive (none dropped outright), got %d", n, toolCount)
 	}
 }
 
@@ -677,6 +803,86 @@ func TestSummaryDoneMsg_ErrorResetsWatermark(t *testing.T) {
 	}
 	if !strings.Contains(m.transcript.String(), SysMsg(SysFailure, "summarize", "failed", context.DeadlineExceeded.Error())) {
 		t.Errorf("error should be surfaced in transcript; got %q", m.transcript.String())
+	}
+}
+
+func TestSnapshotResumeHint_RealPath(t *testing.T) {
+	path := "/fake/home/.yottacode/sessions/abc-pre-summary-20260101-000000.json"
+	got := snapshotResumeHint(path)
+	want := "yottacode sessions resume abc-pre-summary-20260101-000000"
+	if got != want {
+		t.Fatalf("snapshotResumeHint(%q) = %q, want %q", path, got, want)
+	}
+	if strings.Contains(got, "/recall") {
+		t.Fatalf("resume hint must not suggest the dead /recall command, got %q", got)
+	}
+}
+
+func TestSnapshotResumeHint_EmptyPath(t *testing.T) {
+	if got := snapshotResumeHint(""); got != "" {
+		t.Fatalf("empty path should produce an empty hint, got %q", got)
+	}
+	if got := snapshotResumeHint("   "); got != "" {
+		t.Fatalf("whitespace-only path should produce an empty hint, got %q", got)
+	}
+}
+
+// TestSummaryDoneMsg_ConvergedBannerPointsAtRealSnapshot and
+// TestSummaryDoneMsg_NonConvergentBannerPointsAtRealSnapshot are the
+// regression tests for the dead "/recall <session-id>" suggestion: every
+// summarization banner (converged or not) used to synthesize a /recall
+// command from the snapshot path that /recall's full-text search could
+// never actually match. They must now offer a working `yottacode sessions
+// resume <id>` command instead — session.Load already special-cases a
+// snapshot id (session.IsSnapshotID) and restores it as a fresh session.
+func TestSummaryDoneMsg_ConvergedBannerPointsAtRealSnapshot(t *testing.T) {
+	m := newTestModel(t)
+	m.fileCfg = config.Default()
+	m.fileCfg.Context.DefaultWindow = 10_000
+	m.summarizing = true
+
+	snap := "/fake/home/.yottacode/sessions/sess1-pre-summary-20260101-000000.json"
+	small := adapter.Message{Role: adapter.RoleAssistant, Content: strings.Repeat("x", 400)} // ~100 tokens, well under threshold
+	m, _ = applyMsg(m, summaryDoneMsg{
+		auto:         true,
+		newMessages:  []adapter.Message{small},
+		snapshotPath: snap,
+		tokensBefore: 9000,
+	})
+
+	plain := stripANSI(m.transcript.String())
+	if !strings.Contains(plain, "yottacode sessions resume sess1-pre-summary-20260101-000000") {
+		t.Fatalf("expected banner to offer a working resume command, got %q", plain)
+	}
+	if strings.Contains(plain, "/recall ") {
+		t.Fatalf("banner must not suggest a dead /recall command, got %q", plain)
+	}
+}
+
+func TestSummaryDoneMsg_NonConvergentBannerPointsAtRealSnapshot(t *testing.T) {
+	m := newTestModel(t)
+	m.fileCfg = config.Default()
+	m.fileCfg.Context.DefaultWindow = 10_000 // auto_threshold default 0.85 -> 8500 tokens
+	m.summarizing = true
+
+	snap := "/fake/home/.yottacode/sessions/sess1-pre-summary-20260101-000000.json"
+	big := adapter.Message{Role: adapter.RoleAssistant, Content: strings.Repeat("x", 40_000)} // ~10000 tokens, over threshold
+	m, _ = applyMsg(m, summaryDoneMsg{
+		auto:         true,
+		newMessages:  []adapter.Message{big},
+		snapshotPath: snap,
+		tokensBefore: 200_000,
+	})
+
+	plain := stripANSI(m.transcript.String())
+	if !strings.Contains(plain, "auto paused") {
+		t.Fatalf("expected the non-convergent banner to fire, got %q", plain)
+	}
+	if !strings.Contains(plain, "yottacode sessions resume sess1-pre-summary-20260101-000000") {
+		t.Fatalf("expected banner to offer a working resume command, got %q", plain)
+	}
+	if strings.Contains(plain, "/recall ") {
+		t.Fatalf("banner must not suggest a dead /recall command, got %q", plain)
 	}
 }
 
