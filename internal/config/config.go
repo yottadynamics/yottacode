@@ -86,16 +86,17 @@ type SubagentsConfig struct {
 
 // SandboxConfig controls the run_bash command-execution backend. See
 // roadmap/sandbox-podman.md for the design this implements: long-lived
-// containers, podman exec per command, project-dir-only mount, default-deny
-// network. EnvPassthrough names are forwarded via bare `-e NAME` (podman
-// reads the value from its own environment) so credential values never
-// appear in podman's argv/process list. DocumentsImage is the built-in
-// secondary profile image used automatically by document-tool subprocess paths.
+// containers, podman exec per command, project-dir-only mount, and a temporary
+// host-network default until yottacode grows per-destination egress allowlists.
+// EnvPassthrough names are forwarded via bare `-e NAME` (podman reads the value
+// from its own environment) so credential values never appear in podman's argv/
+// process list. DocumentsImage is the built-in secondary profile image used
+// automatically by document-tool subprocess paths.
 type SandboxConfig struct {
 	Backend        string   `toml:"backend"` // "none" (default) | "podman"
 	Image          string   `toml:"image"`
 	DocumentsImage string   `toml:"documents_image"`
-	Network        string   `toml:"network"` // "none" (default) | "host"
+	Network        string   `toml:"network"` // "none" | "host" (temporary default)
 	Mounts         []string `toml:"mounts"`
 	EnvPassthrough []string `toml:"env_passthrough"`
 	Memory         string   `toml:"memory"`
@@ -640,7 +641,7 @@ func Default() Config {
 			Backend:        "none",
 			Image:          DefaultSandboxImage,
 			DocumentsImage: DefaultSandboxDocumentsImage,
-			Network:        "none",
+			Network:        "host",
 			Mounts:         []string{"."},
 			Memory:         "2g",
 			CPUs:           2,
