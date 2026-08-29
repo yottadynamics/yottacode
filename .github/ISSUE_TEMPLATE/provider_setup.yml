@@ -1,0 +1,133 @@
+name: Provider setup help
+description: Get help configuring a provider, model, or OpenAI-compatible endpoint
+title: "[Provider]: "
+labels: ["provider", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for filing a provider setup issue. Please search
+        [existing issues](https://github.com/yottadynamics/yottacode/issues)
+        first to avoid duplicates.
+
+        Do not paste API keys, access tokens, secrets, or private endpoints. Redact
+        sensitive values before submitting logs, base URLs, or config snippets.
+  - type: input
+    id: version
+    attributes:
+      label: yottacode version
+      description: Output of `yottacode --version`.
+      placeholder: "v0.4.0"
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      description: yottacode supports Linux and macOS. Windows is supported only through WSL.
+      options:
+        - Linux
+        - macOS (Apple Silicon / arm64)
+        - macOS (Intel / amd64)
+        - WSL (Windows Subsystem for Linux)
+    validations:
+      required: true
+  - type: dropdown
+    id: provider
+    attributes:
+      label: Provider
+      description: Which provider are you trying to configure?
+      options:
+        - Anthropic
+        - OpenAI
+        - Gemini
+        - Google Vertex AI
+        - xAI
+        - Ollama
+        - Copilot
+        - OpenAI-compatible endpoint
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: model
+    attributes:
+      label: Model name
+      description: Exact model name you configured or selected.
+      placeholder: "gpt-4.1, claude-3-5-sonnet-latest, llama3.1, ..."
+    validations:
+      required: true
+  - type: input
+    id: base-url
+    attributes:
+      label: Base URL or endpoint
+      description: Redact secrets, private hostnames, tenant IDs, and tokens. Use a sanitized example when needed.
+      placeholder: "https://api.example.com/v1 or http://localhost:11434 (redacted if private)"
+    validations:
+      required: false
+  - type: dropdown
+    id: doctor
+    attributes:
+      label: Does `yottacode doctor` pass?
+      description: Run `yottacode doctor` before submitting if possible.
+      options:
+        - "Yes"
+        - "No"
+        - "I have not run it yet"
+    validations:
+      required: true
+  - type: checkboxes
+    id: failure-area
+    attributes:
+      label: Where does setup fail?
+      description: Select every area that matches the failure.
+      options:
+        - label: Authentication
+        - label: Model listing
+        - label: Model not found
+        - label: Streaming response
+        - label: Tool calls
+        - label: Rate limits or quota
+        - label: Local server not running
+        - label: OpenAI-compatible endpoint behavior
+        - label: Other provider or model setup behavior
+  - type: textarea
+    id: config
+    attributes:
+      label: Relevant configuration
+      description: Paste only the relevant redacted config. Remove API keys, tokens, secrets, and private endpoints.
+      placeholder: |
+        provider: openai-compatible
+        model: example-model
+        base_url: https://redacted.example/v1
+      render: yaml
+    validations:
+      required: false
+  - type: textarea
+    id: logs
+    attributes:
+      label: Redacted logs or output
+      description: Include relevant command output, stderr, or `yottacode doctor` output. Remove API keys, tokens, secrets, and private endpoints.
+      render: shell
+    validations:
+      required: false
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What did you expect yottacode to do instead?
+    validations:
+      required: true
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Pre-submission checklist
+      options:
+        - label: I searched existing issues and did not find a duplicate.
+          required: true
+        - label: I ran `yottacode doctor` or explained why I could not.
+          required: true
+        - label: I removed API keys, tokens, secrets, private hostnames, and private endpoints from this report.
+          required: true
+        - label: I confirmed the provider/model works outside yottacode if possible, or explained why I could not.
+          required: true
