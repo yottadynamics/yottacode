@@ -619,7 +619,7 @@ func requestGracefulExit(m Model) (tea.Model, tea.Cmd) {
 		m.loopExitConfirmCursor = 0
 		return m, nil
 	}
-	return maybeStartExitSaveTurn(m)
+	return requestWorktreeAwareGracefulExit(m)
 }
 
 func renderLoopExitConfirm(m Model, hits ...*pickerHits) string {

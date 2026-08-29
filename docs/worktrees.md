@@ -141,6 +141,12 @@ distinct cwds, distinct session records.
 
 ## Cleanup behavior
 
+When you press `Ctrl+C` from an interactive TUI session inside a yottacode-managed
+worktree, yottacode pauses before exiting and asks whether to remove the worktree
+or keep it in place. `Esc` cancels the exit. Choosing remove force-removes the
+worktree and deletes the matching `worktree-*` branch; choosing keep exits without
+touching the worktree.
+
 | Context                            | Clean tree (no uncommitted, untracked, or unpushed work)  | Dirty tree                                        |
 |------------------------------------|----------------------------------------------------------|---------------------------------------------------|
 | TUI session, `exit_worktree`       | Auto-removes worktree + branch                            | Keeps the worktree, returns "use cleanup=remove" hint |

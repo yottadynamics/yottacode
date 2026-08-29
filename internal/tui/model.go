@@ -730,6 +730,17 @@ type Model struct {
 	loopExitConfirmOpen   bool
 	loopExitConfirmCursor int
 
+	// worktreeExitConfirmOpen asks users launched from a yottacode-managed
+	// worktree what should happen to that worktree before the process exits.
+	// Ctrl+C used to hard-quit from these sessions, leaving cleanup to the
+	// user. The selected cleanup is applied after Bubble Tea restores the
+	// terminal, so destructive git worktree removal never runs while the TUI is
+	// still standing inside the directory it is about to delete.
+	worktreeExitConfirmOpen bool
+	worktreeExitConfirmName string
+	worktreeExitCleanup     string
+	worktreeExitGraceful    bool
+
 	// loopListOpen shows the active-loop panel (bare `/loop`) as a dismissable
 	// inline overlay above the cmdline, instead of writing loop cards into the
 	// session transcript. Any key closes it.
@@ -741,10 +752,10 @@ type Model struct {
 	paragraphStart bool
 
 	// Approval modal state
-	awaitingApproval bool
-	approvalTool     string
-	approvalPreview  string
-	approvalArgs     string
+	awaitingApproval     bool
+	approvalTool         string
+	approvalPreview      string
+	approvalArgs         string
 	approvalScrollOffset int
 	// approvalAllowAlwaysOK gates the [a]lways-allow keypress. Set
 	// true when DeriveAllowRule can produce a sensible pattern from
@@ -1508,6 +1519,9 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyPressMsg:
+		if m.worktreeExitConfirmOpen {
+			return m.updateWorktreeExitConfirm(msg)
+		}
 		if m.loopExitConfirmOpen {
 			return m.updateLoopExitConfirm(msg)
 		}
@@ -2379,7 +2393,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// ending this way are covered mid-flight by the periodic
 			// capture reminder (captureReminderDue), not by
 			// overloading this key with a model call.
-			return m, tea.Quit
+			return requestImmediateExit(m)
 		case "ctrl+d":
 			// Deliberate idle exit — same graceful path as /quit (final
 			// memory turn when warranted).
@@ -3031,7 +3045,7 @@ func (m Model) anyOverlayOpen() bool {
 		m.embedSetupOpen || m.memoryPickerOpen || m.recallPickerOpen || m.codeMapPickerOpen || m.sessionsPickerOpen || m.inspectPickerOpen ||
 		m.plansPickerOpen || m.checkpointsPickerOpen || m.subagentsPickerOpen ||
 		m.routerPickerOpen || m.themePickerOpen || m.effortPickerOpen || m.skillsMenuOpen ||
-		m.skillsPickerOpen || m.mcpPickerOpen || m.sandboxPickerOpen
+		m.skillsPickerOpen || m.mcpPickerOpen || m.sandboxPickerOpen || m.worktreeExitConfirmOpen
 }
 
 // hasRunningSubagents reports whether any subagent task is currently
@@ -3182,6 +3196,8 @@ func (m Model) activePopupBody() (box string, ok bool) {
 		}
 	case m.loopExitConfirmOpen:
 		return keyboardOnlyPopupBox(renderLoopExitConfirm(m)), true
+	case m.worktreeExitConfirmOpen:
+		return renderWorktreeExitConfirm(m), true
 	case m.cheatsheetOpen:
 		return popupBox(renderCheatsheet()), true
 	case m.loopListOpen && m.activeLoopCount() > 0:
@@ -3333,6 +3349,8 @@ func (m Model) contextualKeyHints() []string {
 		return append(hints, "Enter: queue text")
 	case m.loopExitConfirmOpen:
 		return []string{"←/→: choose", "Enter: confirm", "Esc: stay"}
+	case m.worktreeExitConfirmOpen:
+		return []string{"R: remove", "K: keep", "Esc: cancel"}
 	case m.paletteOpen:
 		return []string{"↑↓: move", "Tab: complete", "Enter: run", "Esc: close"}
 	case m.filePaletteOpen:
