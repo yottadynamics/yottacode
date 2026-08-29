@@ -423,3 +423,69 @@ func TestExitSave_CtrlDMidTurnHardQuits(t *testing.T) {
 	_, cmd := applyMsg(m, tea.KeyPressMsg{Code: 'd', Mod: tea.ModCtrl})
 	assertQuits(t, cmd, "mid-turn Ctrl+D")
 }
+
+// --- exit-save timeout (bounds worst-case exit latency) ---
+
+func TestExitSave_StartsFinalTurnBatchesTimeoutCmd(t *testing.T) {
+	m := exitReadyModel(t)
+	out, cmd := maybeStartExitSaveTurn(m)
+	if cmd == nil {
+		t.Fatalf("expected a Cmd batch, got nil")
+	}
+	m2 := out.(Model)
+	defer m2.turnCancel()
+	// tea.Batch's Cmd returns a BatchMsg immediately without running the
+	// sub-commands itself (the runtime dispatches those); invoking it here
+	// must not block on the 20s timer or the network call it's wrapping.
+	if _, ok := cmd().(tea.BatchMsg); !ok {
+		t.Errorf("expected the turn-start Cmd and the timeout Cmd to be batched together")
+	}
+}
+
+func TestExitSaveTimeoutMsg_CancelsInFlightExitSaveTurn(t *testing.T) {
+	m := exitReadyModel(t)
+	m.exitSavePending = true
+	m.turnActive = true
+	canceled := false
+	m.turnCancel = func() { canceled = true }
+
+	out, cmd := applyMsg(m, exitSaveTimeoutMsg{})
+	if cmd != nil {
+		t.Errorf("exitSaveTimeoutMsg should produce no further Cmd, got one")
+	}
+	if !canceled {
+		t.Errorf("exitSaveTimeoutMsg must cancel the in-flight exit-save turn")
+	}
+	if !out.turnCancelRequested {
+		t.Errorf("exitSaveTimeoutMsg must mark the cancellation as requested so the interrupted turn renders visibly")
+	}
+}
+
+func TestExitSaveTimeoutMsg_NoOpAfterTurnAlreadyEnded(t *testing.T) {
+	// turnEndedMsg unconditionally clears turnCancel to nil before this
+	// could ever race it — a stale timer firing after that must be a
+	// harmless no-op, not a nil-func panic.
+	m := exitReadyModel(t)
+	m.exitSavePending = true
+	m.turnActive = false
+	m.turnCancel = nil
+
+	if _, cmd := applyMsg(m, exitSaveTimeoutMsg{}); cmd != nil {
+		t.Errorf("stale exitSaveTimeoutMsg should produce no Cmd")
+	}
+}
+
+func TestExitSaveTimeoutMsg_NoOpForUnrelatedTurn(t *testing.T) {
+	// Defense in depth: even if this message somehow arrived while a
+	// normal (non-exit-save) turn is running, it must not interrupt it.
+	m := exitReadyModel(t)
+	m.exitSavePending = false
+	m.turnActive = true
+	canceled := false
+	m.turnCancel = func() { canceled = true }
+
+	applyMsg(m, exitSaveTimeoutMsg{})
+	if canceled {
+		t.Errorf("exitSaveTimeoutMsg must not cancel a turn that isn't the exit-save pass")
+	}
+}

@@ -447,14 +447,36 @@ func TestModel_UserMessageAppendedRendersSystemMessage(t *testing.T) {
 
 func TestModel_ContextCompactedRendersSystemMessage(t *testing.T) {
 	m := newTestModel(t)
-	m, _ = applyMsg(m, agentEventMsg{ev: agent.ContextCompacted{Before: 221000, After: 36000, SnapshotPath: "/tmp/foo.json"}})
+	snap := "/tmp/sess1-pre-summary-20260101-000000.json"
+	m, _ = applyMsg(m, agentEventMsg{ev: agent.ContextCompacted{Before: 221000, After: 36000, SnapshotPath: snap}})
 	plain := stripANSI(m.transcript.String())
 	want := "◇ context · compacted · 172% → 28% · full history saved"
 	if !strings.Contains(plain, want) {
 		t.Fatalf("expected context compaction line %q, got %q", want, plain)
 	}
-	if strings.Contains(plain, "/tmp/foo.json") {
-		t.Fatalf("context compaction should not render as a card, got %q", plain)
+	// The banner must offer a working resume command (previously it
+	// suggested a dead "/recall <session-id>" command instead).
+	if !strings.Contains(plain, "yottacode sessions resume sess1-pre-summary-20260101-000000") {
+		t.Fatalf("expected banner to offer a working resume command, got %q", plain)
+	}
+	// The full snapshot path (directory + .json) must never leak into
+	// scrollback — only the bare resume id (docs/tools.md: "the full
+	// snapshot path is intentionally omitted from normal scrollback").
+	if strings.Contains(plain, snap) {
+		t.Fatalf("full snapshot path must not appear in scrollback, got %q", plain)
+	}
+}
+
+// TestModel_ContextCompactedIgnoresNonSnapshotPath guards
+// snapshotResumeHint's validation: a SnapshotPath that doesn't actually
+// look like a compaction snapshot (no session.SnapshotMarker) must not
+// produce a bogus, non-functional "sessions resume <garbage>" suggestion.
+func TestModel_ContextCompactedIgnoresNonSnapshotPath(t *testing.T) {
+	m := newTestModel(t)
+	m, _ = applyMsg(m, agentEventMsg{ev: agent.ContextCompacted{Before: 221000, After: 36000, SnapshotPath: "/tmp/foo.json"}})
+	plain := stripANSI(m.transcript.String())
+	if strings.Contains(plain, "sessions resume") {
+		t.Fatalf("non-snapshot-shaped path should not produce a resume command, got %q", plain)
 	}
 }
 

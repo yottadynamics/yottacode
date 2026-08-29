@@ -138,8 +138,9 @@ func compact(ctx context.Context, cfg LoopConfig, history *[]adapter.Message, ev
 	if firstUser < 0 {
 		return false, nil // no task anchor — nothing sensible to compact
 	}
-	tailStart := chooseCompactionTailStart(h, firstUser, int(compactionTargetRatio(cc)*float64(cc.Window)))
-	capped, cappedChanged := capRetainedToolMessages(h, tailStart)
+	tailBudget := int(compactionTargetRatio(cc) * float64(cc.Window))
+	tailStart := chooseCompactionTailStart(h, firstUser, tailBudget)
+	capped, cappedChanged := capRetainedToolMessages(h, tailStart, tailBudget)
 	if cappedChanged {
 		h = capped
 	}
@@ -216,33 +217,51 @@ func preCompactSnapshot(cc *CompactionConfig, history []adapter.Message) (string
 
 const (
 	maxRetainedToolTokens        = 4096
+	minRetainedToolTokens        = 256
 	retainedToolCompactionMarker = "…(truncated by compaction)"
 )
 
-func capRetainedToolMessages(h []adapter.Message, tailStart int) ([]adapter.Message, bool) {
+// capRetainedToolMessages shrinks h[tailStart:]'s tool messages so their
+// COMBINED token cost fits budgetTokens whenever achievable without
+// truncating any one below minRetainedToolTokens, via the shared
+// contextwindow.ToolBudgetCaps — also used by the TUI's capRetainedToolBudget
+// (internal/tui/cmd_summarize.go), which needs the identical algorithm for
+// its own tail. Only the message-shaping details below (truncation marker,
+// lazy-copy plumbing, return shape) differ per caller. A per-message-only
+// cap (each oversize tool message truncated independently to
+// maxRetainedToolTokens) bounds each message but not their sum: a tail with
+// many moderately-large tool results (e.g. 30+ tool calls before the
+// retained tail's anchor) could still total several times budgetTokens.
+func capRetainedToolMessages(h []adapter.Message, tailStart, budgetTokens int) ([]adapter.Message, bool) {
 	if tailStart < 0 {
 		tailStart = 0
 	}
 	if tailStart > len(h) {
 		tailStart = len(h)
 	}
+	tail := h[tailStart:]
+	toolIdxs, raw, caps := contextwindow.ToolBudgetCaps(tail, budgetTokens, maxRetainedToolTokens, minRetainedToolTokens)
+	if len(toolIdxs) == 0 {
+		return h, false
+	}
+
 	var out []adapter.Message
 	changed := false
-	for i := tailStart; i < len(h); i++ {
-		m := h[i]
-		if m.Role != adapter.RoleTool || estimateMsgTokens(m) <= maxRetainedToolTokens {
+	for k, i := range toolIdxs {
+		m := tail[i]
+		if raw[k] <= caps[k] {
 			continue
 		}
 		if out == nil {
 			out = append([]adapter.Message(nil), h...)
 		}
-		maxChars := maxRetainedToolTokens * 4
+		maxChars := caps[k] * 4
 		if maxChars <= len(retainedToolCompactionMarker) {
 			m.Content = retainedToolCompactionMarker
 		} else {
 			m.Content = m.Content[:maxChars-len(retainedToolCompactionMarker)] + retainedToolCompactionMarker
 		}
-		out[i] = m
+		out[tailStart+i] = m
 		changed = true
 	}
 	if !changed {

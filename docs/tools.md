@@ -247,9 +247,10 @@ verbatim (per-tool body shaping is bypassed for errors).
 
 Successful context summarization and mid-turn compaction now use the shared
 system-message grammar (`◇ context · summarized/compacted · ...`) and print a
-literal `/recall <session-id>` command when a pre-summary snapshot is available.
-The full snapshot path is intentionally omitted from normal scrollback; it
-remains recoverable through sessions/recall tooling.
+copyable `yottacode sessions resume <id>` command when a pre-summary snapshot
+is available — running it reopens the full pre-compression transcript as a
+fresh session. The full snapshot path is intentionally omitted from normal
+scrollback; only the resume id is shown.
 
 ## read_file
 
