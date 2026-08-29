@@ -107,6 +107,27 @@ history when building each request, so a bad call can no longer wedge the
 session. **Upgrading resolves it.** If a session started on an older build is
 still stuck, begin a new session to drop the already-poisoned history.
 
+## Sandboxed tests cannot resolve DNS or execute Go test binaries
+
+If sandboxed `run_tests` fails with `lookup proxy.golang.org on [::1]:53` (or a
+similar loopback DNS refusal), upgrade yottacode so new sandbox sessions get the
+default runtime DNS resolvers. If your network requires internal resolvers,
+override them in config instead of baking `/etc/resolv.conf` into an image:
+
+```toml
+[sandbox]
+backend = "podman"
+dns = ["10.0.0.53"] # example VPN/corporate resolver IP
+```
+
+If sandboxed Go tests fail with `fork/exec /tmp/go-build.../*.test: permission
+denied`, upgrade yottacode. Sandboxed `run_tests` now keeps `/tmp` mounted
+`noexec` for hardening but exports `TMPDIR`, `GOTMPDIR`, `GOCACHE`, and
+`GOMODCACHE` under `/var/tmp/yottacode-go/<workspace>/` inside the sandbox so Go
+can compile and execute test binaries safely without leaving repo-root `.cache/`,
+`.config/`, `.yottacode/tmp/`, `.scratch/`, or `go/` directories that would
+break later `go test ./...` discovery or workspace-root tests.
+
 ## The trust prompt fires on every launch
 
 The first-launch trust prompt records cwd in `~/.yottacode/trusted-roots.json` on Yes. If you see it again on a directory you already accepted, the cwd is most likely a fresh path (different absolute path, different worktree, different bind-mount). List and add directly:

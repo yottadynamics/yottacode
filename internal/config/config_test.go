@@ -66,6 +66,43 @@ func TestDefault_SandboxUsesHostNetwork(t *testing.T) {
 	}
 }
 
+func TestDefault_SandboxUsesDefaultDNS(t *testing.T) {
+	if !reflect.DeepEqual(Default().Sandbox.DNS, DefaultSandboxDNS) {
+		t.Fatalf("Default().Sandbox.DNS = %v, want %v", Default().Sandbox.DNS, DefaultSandboxDNS)
+	}
+}
+
+func TestLoad_SandboxDNS(t *testing.T) {
+	src := `[sandbox]
+backend = "podman"
+dns = ["1.1.1.1", "2606:4700:4700::1111"]
+`
+	cfg, err := Load(writeFile(t, src))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	want := []string{"1.1.1.1", "2606:4700:4700::1111"}
+	if !reflect.DeepEqual(cfg.Sandbox.DNS, want) {
+		t.Fatalf("Sandbox.DNS = %v, want %v", cfg.Sandbox.DNS, want)
+	}
+}
+
+func TestLoad_RejectsInvalidSandboxDNS(t *testing.T) {
+	for _, dns := range []string{"", "localhost", "1.2.3.999"} {
+		src := `[sandbox]
+backend = "podman"
+dns = ["` + dns + `"]
+`
+		_, err := Load(writeFile(t, src))
+		if err == nil {
+			t.Fatalf("expected invalid sandbox.dns %q to fail", dns)
+		}
+		if !strings.Contains(err.Error(), "sandbox.dns") {
+			t.Fatalf("error should mention sandbox.dns, got %v", err)
+		}
+	}
+}
+
 func TestLoad_AppliesOverrides(t *testing.T) {
 	src := `
 [context]

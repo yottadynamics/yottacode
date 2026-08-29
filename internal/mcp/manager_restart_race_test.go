@@ -10,11 +10,13 @@ import (
 	"github.com/yottadynamics/yottacode/internal/mcp"
 )
 
-// TestManager_ConcurrentRestartsConverge fires many restarts of the same
-// server simultaneously. The per-server generation guard must ensure exactly
-// one client survives in the manager and that client is healthy and callable —
-// no leaked/stale client left registered, no torn state. Run with -race to
-// confirm the generation accounting and map writes are coherent.
+// TestManager_ConcurrentRestartsConverge fires overlapping restarts of the same
+// server. The count stays deliberately modest so the test validates restart
+// convergence without exhausting process limits in sandboxed unit-test runs. The
+// per-server generation guard must ensure exactly one client survives in the
+// manager and that client is healthy and callable — no leaked/stale client left
+// registered, no torn state. Run with -race to confirm the generation accounting
+// and map writes are coherent.
 //
 // Before the generation guard, overlapping restarts each published their own
 // rebuilt client, so the last writer could clobber a still-starting one and
@@ -28,7 +30,7 @@ func TestManager_ConcurrentRestartsConverge(t *testing.T) {
 	defer cancel()
 	mgr.Start(ctx)
 
-	const restarts = 12
+	const restarts = 4
 	var wg sync.WaitGroup
 	wg.Add(restarts)
 	for i := 0; i < restarts; i++ {

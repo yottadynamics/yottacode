@@ -17,6 +17,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -93,10 +94,13 @@ type SubagentsConfig struct {
 // process list. DocumentsImage is the built-in secondary profile image used
 // automatically by document-tool subprocess paths.
 type SandboxConfig struct {
-	Backend        string   `toml:"backend"` // "none" (default) | "podman"
-	Image          string   `toml:"image"`
-	DocumentsImage string   `toml:"documents_image"`
-	Network        string   `toml:"network"` // "none" | "host" (temporary default)
+	Backend        string `toml:"backend"` // "none" (default) | "podman"
+	Image          string `toml:"image"`
+	DocumentsImage string `toml:"documents_image"`
+	Network        string `toml:"network"` // "none" | "host" (temporary default)
+	// DNS optionally passes explicit resolver IPs to Podman at container start.
+	// Empty uses Podman's default resolver behavior for the selected network.
+	DNS            []string `toml:"dns"`
 	Mounts         []string `toml:"mounts"`
 	EnvPassthrough []string `toml:"env_passthrough"`
 	Memory         string   `toml:"memory"`
@@ -112,6 +116,10 @@ const DefaultSandboxImage = "ghcr.io/yottadynamics/yottacode-sandbox:latest"
 // DefaultSandboxDocumentsImage includes the document subprocess dependencies
 // used by create_document docx/pdf and read_document PDF extraction.
 const DefaultSandboxDocumentsImage = "ghcr.io/yottadynamics/yottacode-documents:latest"
+
+// DefaultSandboxDNS avoids loopback resolver inheritance inside rootless Podman.
+// Users on VPN/corporate networks can override this with their resolver IPs.
+var DefaultSandboxDNS = []string{"1.1.1.1", "8.8.8.8"}
 
 // ValidSandboxBackends is the whitelist for SandboxConfig.Backend.
 var ValidSandboxBackends = []string{"none", "podman"}
@@ -642,6 +650,7 @@ func Default() Config {
 			Image:          DefaultSandboxImage,
 			DocumentsImage: DefaultSandboxDocumentsImage,
 			Network:        "host",
+			DNS:            append([]string(nil), DefaultSandboxDNS...),
 			Mounts:         []string{"."},
 			Memory:         "2g",
 			CPUs:           2,
@@ -1040,6 +1049,15 @@ func Validate(cfg Config) error {
 	if cfg.Sandbox.Network != "" && !inSlice(ValidSandboxNetworks, cfg.Sandbox.Network) {
 		return fmt.Errorf("sandbox.network = %q invalid (expected one of %s)",
 			cfg.Sandbox.Network, strings.Join(ValidSandboxNetworks, ", "))
+	}
+	for i, raw := range cfg.Sandbox.DNS {
+		server := strings.TrimSpace(raw)
+		if server == "" {
+			return fmt.Errorf("sandbox.dns[%d] must not be empty", i)
+		}
+		if _, err := netip.ParseAddr(server); err != nil {
+			return fmt.Errorf("sandbox.dns[%d] = %q invalid (expected an IP address): %w", i, raw, err)
+		}
 	}
 	if cfg.Sandbox.CPUs < 0 {
 		return fmt.Errorf("sandbox.cpus = %v must be >= 0", cfg.Sandbox.CPUs)
@@ -1639,4 +1657,23 @@ capture_reminder_every_turns = 6
 # implementer_model = "anthropic:claude-haiku-4-5"
 # # or a failover chain for a slot:
 # # advisor_models = ["anthropic:claude-opus-4-6", "openai:gpt-4o"]
+
+# ---------------------------------------------------------------------
+# Command sandbox (opt-in). The /sandbox command writes this block for you.
+# Runtime DNS defaults to public resolvers so rootless Podman does not inherit
+# a host loopback stub such as [::1]:53 that is unreachable inside the
+# container. Override dns with your VPN/corporate resolver IPs if needed.
+# ---------------------------------------------------------------------
+
+# [sandbox]
+# backend         = "podman"
+# image           = "ghcr.io/yottadynamics/yottacode-sandbox:latest"
+# documents_image = "ghcr.io/yottadynamics/yottacode-documents:latest"
+# network         = "host"
+# dns             = ["1.1.1.1", "8.8.8.8"]
+# mounts          = ["."]
+# env_passthrough = []
+# memory          = "2g"
+# cpus            = 2
+# pids_limit      = 256
 `
