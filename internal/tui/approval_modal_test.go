@@ -34,6 +34,23 @@ func TestRenderApprovalModal_CapsAt120OnWideTerminal(t *testing.T) {
 
 // Brackets-first hotkeys, command-only-bright, no permissions.local.json
 // inline detail. The toast carries that detail post-decision.
+func TestRenderApprovalModal_DoesNotDuplicateTitleInBody(t *testing.T) {
+	m := newTestModel(t)
+	m.width = 80
+	m.awaitingApproval = true
+	m.approvalTool = "run_tests"
+	m.approvalPreview = "go test ./..."
+	m.approvalArgs = `{"command":"go test ./..."}`
+
+	got := stripANSI(renderApprovalModal(m))
+	if count := strings.Count(got, "Approval needed"); count != 1 {
+		t.Fatalf("approval title rendered %d times, want 1:\n%s", count, got)
+	}
+	if !strings.Contains(strings.SplitN(got, "\n", 2)[0], "run_tests") {
+		t.Fatalf("approval modal top border should retain tool label, got %q", strings.SplitN(got, "\n", 2)[0])
+	}
+}
+
 func TestRenderApprovalModal_BracketsFirstNoInlinePermissionsDetail(t *testing.T) {
 	m := newTestModel(t)
 	m.width = 80
