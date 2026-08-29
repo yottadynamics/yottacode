@@ -1,6 +1,7 @@
 package session
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -70,12 +71,25 @@ const repeatedToolFailureMarker = "repeated tool failure ("
 // jsonlHeader is the first line of a session's JSONL export — the file's
 // own metadata, so it's self-describing without needing the filename.
 type jsonlHeader struct {
-	Type    string    `json:"type"`
-	ID      string    `json:"id"`
-	Name    string    `json:"name,omitempty"`
-	Model   string    `json:"model"`
-	Cwd     string    `json:"cwd"`
-	Created time.Time `json:"created"`
+	Type string `json:"type"`
+	// SchemaVersion is bumped only for incompatible JSONL shape changes. The
+	// v1 contract is additive: consumers should ignore unknown fields and key
+	// behavior from type/schema_version instead of positional line assumptions.
+	SchemaVersion int       `json:"schema_version"`
+	ID            string    `json:"id"`
+	Name          string    `json:"name,omitempty"`
+	Model         string    `json:"model"`
+	Cwd           string    `json:"cwd"`
+	Created       time.Time `json:"created"`
+}
+
+// jsonlImage is metadata for a persisted tool-result image. JSONL exports are
+// activity logs, not replay bundles, so they do not embed raw binary payloads;
+// the digest and byte count let teams correlate evidence without bloating logs.
+type jsonlImage struct {
+	MediaType string `json:"media_type,omitempty"`
+	Bytes     int    `json:"bytes"`
+	SHA256    string `json:"sha256"`
 }
 
 // jsonlEvent is one line of a session's JSONL export: a user message, an
@@ -112,6 +126,8 @@ type jsonlEvent struct {
 	// permission to run (see adapter.Message.ApprovalSource's doc
 	// comment for the possible values).
 	ApprovalSource string `json:"approval_source,omitempty"`
+	// Images: tool_result lines only — metadata for any persisted image outputs.
+	Images []jsonlImage `json:"images,omitempty"`
 }
 
 // jsonlCompaction is one compaction event line, sourced from
@@ -152,12 +168,12 @@ type jsonlSummary struct {
 // message, tool call, and tool result — meant to be grepped, diffed, and
 // piped through jq, not read top to bottom. It complements ExportMarkdown
 // rather than replacing it: the markdown export stays the narrative
-// document for pasting into a PR or issue; this is the session's log.
+// document for pasting into a PR or issue; this is the structured activity log
+// for local/team tooling.
 //
-// Deliberately full-fidelity — no truncation. /inspect's scan view trims
-// aggressively because it renders in a fixed-height terminal popup; an
-// export file has no such constraint, and truncating it would just make
-// it a worse log.
+// Deliberately no text truncation. /inspect's scan view trims aggressively
+// because it renders in a fixed-height terminal popup; an export file has no
+// such constraint, and truncating text would make it a worse log.
 //
 // Turn numbers match /inspect's own scheme (each RoleAssistant message
 // starts a new turn) so the two views cross-reference directly: a tool
@@ -179,12 +195,13 @@ func ExportJSONL(s *Session) string {
 	}
 
 	writeLine(jsonlHeader{
-		Type:    "session",
-		ID:      s.ID,
-		Name:    s.Name,
-		Model:   s.Model,
-		Cwd:     s.Cwd,
-		Created: s.Created,
+		Type:          "session",
+		SchemaVersion: 1,
+		ID:            s.ID,
+		Name:          s.Name,
+		Model:         s.Model,
+		Cwd:           s.Cwd,
+		Created:       s.Created,
 	})
 
 	for _, c := range s.CompactionEvents {
@@ -267,6 +284,7 @@ func ExportJSONL(s *Session) string {
 				Status:         status,
 				Content:        msg.Content,
 				ApprovalSource: msg.ApprovalSource,
+				Images:         jsonlImages(msg.Images),
 			})
 		}
 	}
@@ -303,6 +321,22 @@ func argsRawJSON(s string) json.RawMessage {
 		return nil
 	}
 	return json.RawMessage(b)
+}
+
+// jsonlImages converts persisted image payloads into stable audit metadata.
+// Raw bytes are intentionally excluded: teams need to know that the agent saw
+// an image and correlate it by digest, without turning every session export
+// into a large binary bundle.
+func jsonlImages(images []adapter.ImageBlock) []jsonlImage {
+	if len(images) == 0 {
+		return nil
+	}
+	out := make([]jsonlImage, 0, len(images))
+	for _, img := range images {
+		sum := sha256.Sum256(img.Data)
+		out = append(out, jsonlImage{MediaType: img.MediaType, Bytes: len(img.Data), SHA256: fmt.Sprintf("%x", sum)})
+	}
+	return out
 }
 
 // citationLabel renders one Citation into the short form that appears

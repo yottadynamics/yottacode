@@ -107,7 +107,13 @@ yottacode sessions export <id-or-name> path.md --force
 yottacode sessions export <id-or-name> path.jsonl --force
 ```
 
-Export writes a readable Markdown transcript by default and for `.md` paths. Use a `.jsonl` path to write a structured newline-delimited JSON log for tooling. System messages are omitted from both formats.
+Export writes a readable Markdown transcript by default and for `.md` paths. Use a `.jsonl` path to write a structured newline-delimited activity log for team audit, debugging, local tooling, diffing, and `jq` analysis. System messages are omitted from both formats.
+
+JSONL exports are not sanitized sharing artifacts: they include user messages, assistant messages, tool-call arguments, tool results, token usage, model/provider metadata, latency, fallback, approval-source fields, compaction records, and image output metadata (media type, byte count, SHA-256 digest). Review the file before sharing it outside your environment, because tool output can contain local paths, command output, pasted text, or secrets that appeared during the session. Raw image bytes are not embedded; use the digest to correlate exported log lines with separately retained evidence.
+
+The first JSONL line is a `type: "session"` header with `schema_version: 1`; incompatible schema changes will bump that version, while compatible releases may add fields. Consumers should ignore unknown fields and branch on each line's `type`.
+
+Line order is stable but not globally chronological: the file writes the session header, then compaction records, then message/tool events, then a final `type: "session_summary"` aggregate. Sort event lines by `ts` if you need a strict timeline across compactions and messages.
 
 ## Search sessions with recall
 

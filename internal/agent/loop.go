@@ -198,7 +198,6 @@ type CompactionConfig struct {
 	PreCompact func([]adapter.Message) (string, error)
 }
 
-
 // CheckpointWriter is the slice of the checkpoint store the agent loop
 // depends on. Defining it here keeps internal/checkpoint out of the
 // agent's import surface and lets tests substitute a recording fake.
@@ -520,20 +519,20 @@ func Turn(
 			// have matching tool_result), so appending a user
 			// message here pairs naturally with the next
 			// streamIteration call.
-				if cfg.UserMessages != nil {
-					select {
-					case msg := <-cfg.UserMessages:
-						if msg.Content != "" {
-							appendHistory(cfg, state.history, adapter.Message{
-								Role:      adapter.RoleUser,
-								Content:   msg.Content,
-								Timestamp: &msg.Timestamp,
-							})
-							_ = send(ctx, events, UserMessageAppended{Content: msg.Content})
-						}
-					default:
+			if cfg.UserMessages != nil {
+				select {
+				case msg := <-cfg.UserMessages:
+					if msg.Content != "" {
+						appendHistory(cfg, state.history, adapter.Message{
+							Role:      adapter.RoleUser,
+							Content:   msg.Content,
+							Timestamp: &msg.Timestamp,
+						})
+						_ = send(ctx, events, UserMessageAppended{Content: msg.Content})
 					}
+				default:
 				}
+			}
 
 			continue
 		}
@@ -972,7 +971,7 @@ func executeToolCall(
 // today, so "user" is deliberately coarse rather than guessed at).
 // Empty for an error/abort path where no real approval decision was
 // ever reached (unknown tool, a channel send failing on a cancelled
-// ctx), so the log can tell "nothing decided" from "decided.
+// ctx), so the log can tell "nothing decided" from "decided".
 func executeToolCallImpl(
 	ctx context.Context,
 	cfg LoopConfig,
@@ -1261,13 +1260,13 @@ type planAware interface {
 // pathElevation extracts the inline path-trust elevation signal
 // from a tool's error return. The write-path validator returns a
 // *ErrPathOutsideWorkspace exactly in the case Prompt 2 wants to
-// catch; this helper isolates the errors.As call so loop.go's
+// catch; this helper isolates the errors.AsType call so loop.go's
 // runTool stays narrow.
 func pathElevation(err error) (*ErrPathOutsideWorkspace, bool) {
-	var sentinel *ErrPathOutsideWorkspace
-	if errors.As(err, &sentinel) {
+	if sentinel, ok := errors.AsType[*ErrPathOutsideWorkspace](err); ok {
 		return sentinel, true
 	}
+
 	return nil, false
 }
 

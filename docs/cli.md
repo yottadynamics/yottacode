@@ -157,7 +157,7 @@ yottacode sessions export <id-or-name> path.md --force
 yottacode sessions export <id-or-name> path.jsonl --force
 ```
 
-Sessions are saved automatically after completed turns in `~/.yottacode/sessions/`.
+Sessions are saved automatically after completed turns in `~/.yottacode/sessions/`. Export paths ending in `.jsonl` write a schema-versioned structured activity log for team audit and debugging; review it before sharing because prompts, tool args/results, paths, command output, and image metadata can contain sensitive local context.
 
 ## Memory
 

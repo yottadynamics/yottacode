@@ -60,7 +60,7 @@ Beyond the built-ins, you can ship your own slash commands by dropping markdown 
 - Recent sessions are shown newest first.
 - `/sessions <id-or-name>` resumes directly.
 - Press `s` in the list, or `Ctrl+S` in the resume input, to toggle summarized resume for large transcripts.
-- Export writes `.md` Markdown transcripts for sharing or `.jsonl` structured logs for tooling, based on the path extension.
+- Export writes `.md` Markdown transcripts for sharing or `.jsonl` schema-versioned structured activity logs for team audit/debugging, based on the path extension. Review JSONL files before sharing them because prompts, tool args/results, paths, command output, and image metadata can contain sensitive local context.
 
 `/recall <query>` searches older saved sessions by content and opens a transient results overlay below the cmdline. Results are grouped by session with a hit count, so one noisy conversation does not fill the whole list. Summarization receipts print a literal `/recall <session-id>` command when full history was snapshotted, so you can copy the id directly instead of parsing the snapshot filename. Use `↑`/`↓` to select a session, `Enter` to preview matches with the neighboring turn before and after each hit, `↑`/`↓` or `PgUp`/`PgDn` to scroll long previews, `s` to toggle summarized resume, `Enter` again to resume it, and `Esc` to go back or close. Results are not appended to the conversation transcript, so recall searches do not pollute session scrollback.
 

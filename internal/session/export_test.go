@@ -122,8 +122,8 @@ func TestExportJSONL_HeaderLineFirst(t *testing.T) {
 	if h["type"] != "session" || h["id"] != "test-id" || h["name"] != "demo" || h["model"] != "qwen3.5" || h["cwd"] != "/tmp/x" {
 		t.Errorf("header line wrong: %+v", h)
 	}
-	if !strings.HasPrefix(h["created"].(string), "2026-04-25") {
-		t.Errorf("header created = %v, want prefix 2026-04-25", h["created"])
+	if h["schema_version"] != float64(1) || !strings.HasPrefix(h["created"].(string), "2026-04-25") {
+		t.Errorf("header schema_version/created wrong: schema_version=%v created=%v", h["schema_version"], h["created"])
 	}
 }
 
@@ -330,6 +330,39 @@ func TestExportJSONL_ToolResultCarriesApprovalSource(t *testing.T) {
 	}
 	if result == nil || result["approval_source"] != "yolo-mode" {
 		t.Errorf("tool_result approval_source = %v, want %q", result["approval_source"], "yolo-mode")
+	}
+}
+
+// TestExportJSONL_ToolResultCarriesImageMetadata confirms multimodal tool
+// results are visible in the activity log without embedding raw binary bytes.
+func TestExportJSONL_ToolResultCarriesImageMetadata(t *testing.T) {
+	s := &Session{
+		ID: "x", Model: "m", Created: time.Now(),
+		Messages: []adapter.Message{
+			{Role: adapter.RoleAssistant, ToolCalls: []adapter.ToolCall{{ID: "c1", Name: "read_file", ArgsJSON: `{"path":"shot.png"}`}}},
+			{Role: adapter.RoleTool, ToolCallID: "c1", Content: "[image: shot.png]", Images: []adapter.ImageBlock{{MediaType: "image/png", Data: []byte("png-bytes")}}},
+		},
+	}
+	lines := jsonlLines(t, ExportJSONL(s))
+	var result map[string]any
+	for _, l := range lines {
+		if l["type"] == "tool_result" {
+			result = l
+		}
+	}
+	images, ok := result["images"].([]any)
+	if !ok || len(images) != 1 {
+		t.Fatalf("tool_result images = %#v, want one metadata entry", result["images"])
+	}
+	img := images[0].(map[string]any)
+	if img["media_type"] != "image/png" || img["bytes"] != float64(len("png-bytes")) {
+		t.Errorf("image metadata wrong: %+v", img)
+	}
+	if sha, ok := img["sha256"].(string); !ok || len(sha) != 64 {
+		t.Errorf("image sha256 = %v, want 64-char hex digest", img["sha256"])
+	}
+	if strings.Contains(ExportJSONL(s), "png-bytes") {
+		t.Error("JSONL activity log should not embed raw image bytes")
 	}
 }
 

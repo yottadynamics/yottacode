@@ -1271,7 +1271,7 @@ func TestSessionsPicker_ExportJSONLByExtension(t *testing.T) {
 		t.Fatalf("export log not written: %v", err)
 	}
 	body := string(contents)
-	if !strings.Contains(body, `"type":"session"`) || !strings.Contains(body, `"role":"user"`) {
+	if !strings.Contains(body, `"type":"session"`) || !strings.Contains(body, `"type":"user"`) {
 		t.Fatalf("exported JSONL missing structured records:\n%s", body)
 	}
 	if !strings.Contains(m.transcript.String(), "✓ export · wrote log") {
