@@ -229,6 +229,11 @@ func commitSandboxMode(m Model, mode sandboxMode) (Model, tea.Cmd) {
 		cfg.Sandbox.Backend = "none"
 	default:
 		cfg.Sandbox.Backend = "podman"
+		// The picker is an enable-sandbox UX, not a low-level network editor.
+		// Keep the enabled default usable for developer commands such as `go test`
+		// by restoring host networking and default resolvers when users turn it on.
+		cfg.Sandbox.Network = "host"
+		cfg.Sandbox.DNS = append([]string(nil), config.DefaultSandboxDNS...)
 	}
 	if err := config.Validate(cfg); err != nil {
 		m.appendLine(styleError.Render(SysMsg(SysFailure, "sandbox", "validation", err.Error())))

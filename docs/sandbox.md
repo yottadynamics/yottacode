@@ -127,11 +127,14 @@ three-row picker:
 ```
 
 - **Sandbox, with auto-allow** — when the sandbox experiment is already active,
-  persists `[sandbox].backend = "podman"` and turns on this session's live auto
-  mode for edits. `run_bash`, `git_commit`, `git_checkpoint`, and `rollback`
-  still prompt because they stay in auto mode's safety floor.
+  persists `[sandbox].backend = "podman"`, restores the default networked sandbox
+  settings (`network = "host"`, default `dns` resolvers), and turns on this
+  session's live auto mode for edits. `run_bash`, `git_commit`,
+  `git_checkpoint`, and `rollback` still prompt because they stay in auto mode's
+  safety floor.
 - **Sandbox, with regular permissions** — when the sandbox experiment is already
-  active, persists the same podman backend and leaves live auto mode untouched.
+  active, persists the same podman backend/default network settings and leaves
+  live auto mode untouched.
 - **No sandbox** — persists `backend = "none"`, today's default; if this picker
   previously enabled auto-allow, it also turns that live auto mode back off.
 
@@ -171,6 +174,7 @@ backend         = "podman"      # "none" (default) | "podman"
 image           = "ghcr.io/yottadynamics/yottacode-sandbox:latest"
 documents_image = "ghcr.io/yottadynamics/yottacode-documents:latest"
 network         = "host"        # "none" | "host" (temporary default)
+dns             = ["1.1.1.1", "8.8.8.8"] # default resolvers passed as podman --dns
 mounts          = ["."]         # project-relative only; cannot escape root
 env_passthrough = []            # opt-in credential injection, e.g. ["GITHUB_TOKEN"]
 memory          = "2g"
@@ -205,13 +209,22 @@ backend change (`podman` ↔ `none`) still needs a new session.
   remounting the container.
 - **Network**: `--network=host` is the temporary default so commands such as
   `go get` work inside the sandbox. There is no allowlist mode yet; choose
-  `network = "none"` for no egress.
+  `network = "none"` for no egress. For networked sandboxes, yottacode passes
+  default `--dns` resolvers (`1.1.1.1`, `8.8.8.8`) so rootless Podman does not
+  inherit a host loopback stub such as `[::1]:53` that is unreachable inside the
+  container. Override `dns` with your VPN/corporate resolver IPs if public DNS
+  is not appropriate. Prefer runtime DNS config over baking `/etc/resolv.conf`
+  into a custom image, because Podman regenerates resolver state for each run.
 - **Credentials**: nothing is injected by default. `env_passthrough` forwards
   named variables with bare `-e NAME`, so values do not appear in Podman's argv.
 - **Hardening**: the container uses `--userns=keep-id`, `--cap-drop=ALL`,
   `--security-opt=no-new-privileges`, private cgroups, no swap beyond the memory
   limit, a `noexec,nosuid,nodev` `/tmp`, SELinux `:Z` bind labels, and configured
-  `pids_limit`/`memory`/`cpus` caps.
+  `pids_limit`/`memory`/`cpus` caps. Sandboxed `run_tests` keeps `/tmp` noexec
+  and points Go at executable scratch/cache directories inside the sandbox
+  (`/var/tmp/yottacode-go/<workspace>/`) via `TMPDIR`, `GOTMPDIR`, `GOCACHE`,
+  and `GOMODCACHE`, avoiding repo-root cache pollution from `.cache/`,
+  `.config/`, `.yottacode/tmp/`, `.scratch/`, or `go/`.
 - **`run_bash`, `run_tests`, `create_document`'s docx/pdf paths, and
   `read_document`'s PDF path are sandboxed.** Git, GitHub, MCP, provider
   calls, and the other file tools still run on the host. The hardline
@@ -253,7 +266,8 @@ only applies to profiles that have not created a container yet.
 
 ## Known limitations
 
-- No network allowlist yet — `network = "host"` or `network = "none"` only.
+- No network allowlist yet — `network = "host"` or `network = "none"` only;
+  optional `dns` entries can override resolver IPs but do not restrict egress.
 - No credential-stripping egress proxy.
 - The default `ghcr.io/yottadynamics/yottacode-sandbox:latest` image includes
   Go, git, make, gcc/glibc headers for cgo, and common archive/diff tools. It is

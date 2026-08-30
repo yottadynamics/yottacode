@@ -113,6 +113,33 @@ func NewPodmanSandbox(ctx context.Context, cfg config.SandboxConfig, id, mountRo
 	// is the overwhelmingly common case and not worth surfacing.
 	_ = removeContainer(ctx, name)
 
+	args, err := podmanRunArgs(cfg, name, mountRoot)
+	if err != nil {
+		return nil, err
+	}
+
+	cmd := exec.CommandContext(ctx, "podman", args...)
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &out
+	if err := cmd.Run(); err != nil {
+		// `-d` detaches: the podman daemon can finish creating and
+		// starting the container server-side even though ctx cancellation
+		// killed OUR client before it read the result. Clean up
+		// best-effort so a caller that gives up on the returned error
+		// doesn't leave an orphaned container behind. Uses a fresh
+		// context, not ctx — ctx itself may be why we're here (already
+		// canceled), and this cleanup must still get to run.
+		_ = removeContainer(context.Background(), name)
+		return nil, fmt.Errorf("sandbox: podman run failed: %w (output: %s)", err, strings.TrimSpace(out.String()))
+	}
+	return &PodmanSandbox{name: name}, nil
+}
+
+// podmanRunArgs builds the podman run argv after mount-root validation.
+// Keeping this pure lets unit tests pin security-sensitive flags (including
+// DNS) without starting a real container.
+func podmanRunArgs(cfg config.SandboxConfig, name, mountRoot string) ([]string, error) {
 	args := []string{
 		"run", "-d", "--name", name,
 		// Namespace isolation (PID/IPC/UTS/mount/user/network) is podman's
@@ -141,6 +168,14 @@ func NewPodmanSandbox(ctx context.Context, cfg config.SandboxConfig, id, mountRo
 		fmt.Sprintf("--network=%s", cfg.Network),
 		fmt.Sprintf("--tmpfs=/tmp:rw,noexec,nosuid,nodev,size=%s", tmpTmpfsSize),
 	}
+	// Podman rejects --dns together with --network=none. No egress means no
+	// resolver is usable anyway, so only pass DNS for networked sandboxes.
+	for _, server := range sandboxDNSForNetwork(cfg.Network, cfg.DNS) {
+		// DNS is runtime configuration, not image state: Podman owns
+		// resolv.conf generation for each container, so pass explicit
+		// resolvers as run flags instead of baking them into the image.
+		args = append(args, "--dns", strings.TrimSpace(server))
+	}
 	mounts, err := mountPaths(cfg.Mounts, mountRoot)
 	if err != nil {
 		return nil, err
@@ -162,23 +197,14 @@ func NewPodmanSandbox(ctx context.Context, cfg config.SandboxConfig, id, mountRo
 		args = append(args, "-e", envName)
 	}
 	args = append(args, cfg.Image, "sleep", "infinity")
+	return args, nil
+}
 
-	cmd := exec.CommandContext(ctx, "podman", args...)
-	var out bytes.Buffer
-	cmd.Stdout = &out
-	cmd.Stderr = &out
-	if err := cmd.Run(); err != nil {
-		// `-d` detaches: the podman daemon can finish creating and
-		// starting the container server-side even though ctx cancellation
-		// killed OUR client before it read the result. Clean up
-		// best-effort so a caller that gives up on the returned error
-		// doesn't leave an orphaned container behind. Uses a fresh
-		// context, not ctx — ctx itself may be why we're here (already
-		// canceled), and this cleanup must still get to run.
-		_ = removeContainer(context.Background(), name)
-		return nil, fmt.Errorf("sandbox: podman run failed: %w (output: %s)", err, strings.TrimSpace(out.String()))
+func sandboxDNSForNetwork(network string, dns []string) []string {
+	if strings.TrimSpace(network) == "none" {
+		return nil
 	}
-	return &PodmanSandbox{name: name}, nil
+	return dns
 }
 
 type sandboxMountPath struct {

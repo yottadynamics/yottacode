@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -265,6 +266,12 @@ func TestCommitSandboxMode_RegularDoesNotActivateAutoMode(t *testing.T) {
 	}
 	if reloaded.Sandbox.Backend != "podman" {
 		t.Errorf("Sandbox.Backend = %q, want podman", reloaded.Sandbox.Backend)
+	}
+	if reloaded.Sandbox.Network != "host" {
+		t.Errorf("Sandbox.Network = %q, want host when /sandbox enables podman", reloaded.Sandbox.Network)
+	}
+	if !reflect.DeepEqual(reloaded.Sandbox.DNS, config.DefaultSandboxDNS) {
+		t.Errorf("Sandbox.DNS = %v, want default DNS when /sandbox enables podman", reloaded.Sandbox.DNS)
 	}
 }
 

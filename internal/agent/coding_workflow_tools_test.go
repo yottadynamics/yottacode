@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/yottadynamics/yottacode/internal/worktree"
 )
 
 func TestApplyDiffTool_AppliesPatch(t *testing.T) {
@@ -474,8 +476,8 @@ func TestRunTestsTool_HardlineFloorAfterDefaultNormalization(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
-	if spy.gotCommand != "go test ./..." {
-		t.Errorf("Sandbox.Command got command %q, want default go test ./...", spy.gotCommand)
+	if !strings.HasSuffix(spy.gotCommand, "&& go test ./...") {
+		t.Errorf("Sandbox.Command got command %q, want wrapped default go test ./...", spy.gotCommand)
 	}
 	if strings.Contains(out, "BLOCKED (hardline)") {
 		t.Errorf("default test command should not be hardline-blocked, got: %q", out)
@@ -506,14 +508,85 @@ func TestRunTestsTool_ExecuteRoutesThroughSandbox(t *testing.T) {
 	if spy.callCount != 1 {
 		t.Errorf("Sandbox.Command called %d times, want 1", spy.callCount)
 	}
-	if spy.gotCommand != "printf via-sandbox" {
-		t.Errorf("Sandbox.Command got command %q", spy.gotCommand)
+	if !strings.HasSuffix(spy.gotCommand, "&& printf via-sandbox") {
+		t.Errorf("Sandbox.Command got command %q, want wrapped printf command", spy.gotCommand)
 	}
 	if spy.gotCwd != dir {
 		t.Errorf("Sandbox.Command got cwd %q, want %q", spy.gotCwd, dir)
 	}
 	if !strings.Contains(out, "via-sandbox") {
 		t.Errorf("output missing command's stdout: %q", out)
+	}
+}
+
+func TestRunTestsTool_SandboxedGoTestsUseExecutableProjectDirs(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	dir := gitInit(t)
+	assertSandboxedGoTestScratch(t, dir)
+}
+
+func TestRunTestsTool_SandboxedGoTestsUseSameScratchFromManagedWorktree(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo := gitInit(t)
+	writeFile(t, repo, "README.md", "root\n")
+	gitCommit(t, repo, "initial")
+
+	wtDir := worktree.Dir(repo, "feature")
+	if err := os.MkdirAll(filepath.Dir(wtDir), 0o755); err != nil {
+		t.Fatalf("mkdir worktree parent: %v", err)
+	}
+	if err := runGit(repo, "worktree", "add", "-q", "-b", "feature", wtDir); err != nil {
+		t.Fatalf("git worktree add: %v", err)
+	}
+	t.Cleanup(func() { _ = runGit(repo, "worktree", "remove", "--force", wtDir) })
+
+	assertSandboxedGoTestScratch(t, wtDir)
+}
+
+func assertSandboxedGoTestScratch(t *testing.T, cwd string) {
+	t.Helper()
+	spy := &spySandbox{label: "[podman-sandbox]"}
+	tool := &RunTestsTool{Cwd: NewCwdRef(cwd), Sandbox: spy}
+	out, err := tool.Execute(context.Background(), `{"command":"printf go-env"}`)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	repoScratch := filepath.Join("/var/tmp", "yottacode-go", safeScratchName(cwd))
+	for _, fragment := range []string{
+		"mkdir -p '" + filepath.Join(repoScratch, "tmp") + "' '" + filepath.Join(repoScratch, "cache") + "' '" + filepath.Join(repoScratch, "modcache") + "'",
+		"export TMPDIR='" + filepath.Join(repoScratch, "tmp") + "' GOTMPDIR='" + filepath.Join(repoScratch, "tmp") + "' GOCACHE='" + filepath.Join(repoScratch, "cache") + "' GOMODCACHE='" + filepath.Join(repoScratch, "modcache") + "'",
+	} {
+		if !strings.Contains(spy.gotCommand, fragment) {
+			t.Fatalf("sandbox command missing %s: %q", fragment, spy.gotCommand)
+		}
+		if !strings.Contains(out, fragment) {
+			t.Fatalf("reported command missing %s: %q", fragment, out)
+		}
+	}
+	if !strings.Contains(spy.gotCommand, repoScratch) {
+		t.Fatalf("sandbox command should use container-internal scratch storage %s, got %q", repoScratch, spy.gotCommand)
+	}
+	for _, forbidden := range []string{
+		filepath.Join(cwd, ".yottacode", "tmp", "go"),
+		filepath.Join(cwd, ".scratch"),
+		filepath.Join(filepath.Dir(cwd), "."+filepath.Base(cwd)+"-go-scratch"),
+	} {
+		if strings.Contains(spy.gotCommand, forbidden) {
+			t.Fatalf("sandbox command must not use host worktree scratch path %s: %q", forbidden, spy.gotCommand)
+		}
+	}
+
+	// Regression: repo-root Go caches make `go test ./...` descend into
+	// downloaded modules and fail with "outside main module" setup errors.
+	for _, polluted := range []string{
+		filepath.Join(cwd, ".cache"),
+		filepath.Join(cwd, ".config"),
+		filepath.Join(cwd, "go"),
+		filepath.Join(cwd, ".yottacode", "tmp", "go"),
+	} {
+		if _, err := os.Stat(polluted); !os.IsNotExist(err) {
+			t.Fatalf("sandboxed run_tests polluted repo root with %s", polluted)
+		}
 	}
 }
 

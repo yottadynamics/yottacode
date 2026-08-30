@@ -578,7 +578,12 @@ func (t *RunTestsTool) Execute(ctx context.Context, argsJSON string) (string, er
 	if blocked, reason := IsHardlineCommand(command); blocked {
 		return fmt.Sprintf("BLOCKED (hardline): %s. This command is on the unconditional blocklist and cannot be run through the agent — not even with --yolo. If you genuinely need it, run it yourself in a terminal outside the agent.", reason), nil
 	}
-	cmd := t.sandbox().Command(ctx, command, root)
+	sandbox := t.sandbox()
+	runCommand, err := t.prepareRunTestsCommand(command, sandbox, root)
+	if err != nil {
+		return "", fmt.Errorf("run_tests: %w", err)
+	}
+	cmd := sandbox.Command(ctx, runCommand, root)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &capped{buf: &stdout, max: 1 << 20}
 	cmd.Stderr = &capped{buf: &stderr, max: 1 << 20}
@@ -591,7 +596,7 @@ func (t *RunTestsTool) Execute(ctx context.Context, argsJSON string) (string, er
 	if runErr != nil && !errors.As(runErr, &exitErr) {
 		return "", fmt.Errorf("run_tests: %w", runErr)
 	}
-	result := fmt.Sprintf("$ %s\nexit=%d\n--- stdout ---\n%s--- stderr ---\n%s", command, exit, stdout.String(), stderr.String())
+	result := fmt.Sprintf("$ %s\nexit=%d\n--- stdout ---\n%s--- stderr ---\n%s", runCommand, exit, stdout.String(), stderr.String())
 	return podmanInfraNote(t.sandbox(), exit, result), nil
 }
 
@@ -601,6 +606,16 @@ func normalizeRunTestsCommand(command string) string {
 		return "go test ./..."
 	}
 	return command
+}
+
+func safeScratchName(path string) string {
+	name := strings.ToLower(filepath.Base(filepath.Clean(path)))
+	name = regexp.MustCompile(`[^a-z0-9._-]+`).ReplaceAllString(name, "-")
+	name = strings.Trim(name, ".-")
+	if name == "" {
+		return "workspace"
+	}
+	return name
 }
 
 func (t *RunTestsTool) resolveRunTestsRoot(path string) (string, error) {
@@ -614,4 +629,32 @@ func (t *RunTestsTool) resolveRunTestsRoot(path string) (string, error) {
 		root = filepath.Clean(root)
 	}
 	return root, nil
+}
+
+func (t *RunTestsTool) prepareRunTestsCommand(command string, sandbox Sandbox, root string) (string, error) {
+	if sandbox.Label() == (HostSandbox{}).Label() {
+		return command, nil
+	}
+	base := filepath.Clean(root)
+	// Keep every sandbox Go scratch/cache directory outside the checked-out
+	// tree and outside /tmp. Repo-local caches make `go test ./...` descend into
+	// downloaded modules, while /tmp is intentionally noexec and space-limited in
+	// the Podman sandbox. A container-internal /var/tmp path avoids host/worktree
+	// bind-mount permissions and works the same from the main checkout or a
+	// managed worktree.
+	goScratch := filepath.ToSlash(filepath.Join("/var/tmp", "yottacode-go", safeScratchName(base)))
+	goTmp := filepath.Join(goScratch, "tmp")
+	goCache := filepath.Join(goScratch, "cache")
+	goModCache := filepath.Join(goScratch, "modcache")
+
+	// The Podman sandbox intentionally mounts /tmp as noexec, but `go test`
+	// writes and executes test binaries from GOTMPDIR. Keep /tmp hardened while
+	// giving Go an executable project-mounted scratch/cache area. Use exports
+	// rather than an `env ... <command>` prefix so shell builtins and compound
+	// test commands keep working exactly as they do on the host path.
+	return strings.Join([]string{
+		"mkdir -p " + strings.Join([]string{shellQuoteSingle(goTmp), shellQuoteSingle(goCache), shellQuoteSingle(goModCache)}, " "),
+		"export TMPDIR=" + shellQuoteSingle(goTmp) + " GOTMPDIR=" + shellQuoteSingle(goTmp) + " GOCACHE=" + shellQuoteSingle(goCache) + " GOMODCACHE=" + shellQuoteSingle(goModCache),
+		command,
+	}, " && "), nil
 }

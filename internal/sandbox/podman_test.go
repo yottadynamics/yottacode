@@ -123,6 +123,52 @@ func TestPathVisibleFromMountRootIncludesManagedWorktrees(t *testing.T) {
 	}
 }
 
+func TestPodmanRunArgsIncludesConfiguredDNS(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	mountRoot := filepath.Join(t.TempDir(), "repo")
+	cfg := config.SandboxConfig{
+		Image:     "sandbox-image",
+		Network:   "host",
+		DNS:       []string{"1.1.1.1", "8.8.8.8"},
+		Mounts:    []string{"."},
+		Memory:    "256m",
+		CPUs:      1,
+		PidsLimit: 128,
+	}
+	args, err := podmanRunArgs(cfg, "yc-test", mountRoot)
+	if err != nil {
+		t.Fatalf("podmanRunArgs: %v", err)
+	}
+	joined := " " + strings.Join(args, " ") + " "
+	if !strings.Contains(joined, " --dns 1.1.1.1 ") || !strings.Contains(joined, " --dns 8.8.8.8 ") {
+		t.Fatalf("podman args missing configured DNS servers: %v", args)
+	}
+}
+
+func TestPodmanRunArgsOmitsDNSWhenNetworkNone(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	mountRoot := filepath.Join(t.TempDir(), "repo")
+	cfg := config.SandboxConfig{
+		Image:     "sandbox-image",
+		Network:   "none",
+		DNS:       []string{"1.1.1.1", "8.8.8.8"},
+		Mounts:    []string{"."},
+		Memory:    "256m",
+		CPUs:      1,
+		PidsLimit: 128,
+	}
+	args, err := podmanRunArgs(cfg, "yc-test", mountRoot)
+	if err != nil {
+		t.Fatalf("podmanRunArgs: %v", err)
+	}
+	joined := " " + strings.Join(args, " ") + " "
+	if strings.Contains(joined, " --dns ") {
+		t.Fatalf("podman args must not include DNS with --network=none: %v", args)
+	}
+}
+
 // Sanity: sandbox names must survive a real exec.Command construction —
 // this doesn't run podman, just confirms Command builds a well-formed argv.
 func TestPodmanSandbox_CommandBuildsExpectedArgv(t *testing.T) {
