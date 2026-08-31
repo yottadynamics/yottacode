@@ -23,6 +23,31 @@ func TestGitBranchStatusTool(t *testing.T) {
 	}
 }
 
+func TestGitBranchStatusTool_SummarizesGeneratedLocalArtifacts(t *testing.T) {
+	tmp := gitInit(t)
+	writeFile(t, tmp, "f.txt", "v1\n")
+	gitCommit(t, tmp, "base")
+	writeFile(t, tmp, ".cache/go-build/00/a", "compiled\n")
+	writeFile(t, tmp, ".config/go/telemetry/local/go@v1.count", "counter\n")
+	writeFile(t, tmp, "go/pkg/mod/example.com/mod@v1.0.0/go.mod", "module example.com/mod\n")
+
+	tool := &GitBranchStatusTool{Cwd: NewCwdRef(tmp)}
+	out, err := tool.Execute(context.Background(), `{}`)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	for _, leaked := range []string{".cache/go-build/00/a", ".config/go/telemetry/local/go@v1.count", "go/pkg/mod/example.com/mod@v1.0.0/go.mod"} {
+		if strings.Contains(out, leaked) {
+			t.Fatalf("generated artifact %q leaked into branch status:\n%s", leaked, out)
+		}
+	}
+	for _, want := range []string{"dirty=true", "omitted 3 generated local artifact file(s) under .cache/, .config/, go/"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("branch status missing %q:\n%s", want, out)
+		}
+	}
+}
+
 func TestGitShowFileAtRevTool(t *testing.T) {
 	tmp := gitInit(t)
 	writeFile(t, tmp, "f.txt", "v1\n")

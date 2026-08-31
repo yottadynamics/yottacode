@@ -25,10 +25,18 @@ func (t *PRReadinessContextTool) Execute(ctx context.Context, _ string) (string,
 		cwd = t.Cwd.Get()
 	}
 	branch, _ := gitOutput(ctx, cwd, "branch", "--show-current")
-	status, _ := gitOutput(ctx, cwd, "status", "--short")
+	status, _ := gitOutput(ctx, cwd, "status", "--short", "--untracked-files=no")
 	files, _ := gitOutput(ctx, cwd, "diff", "--name-only", "HEAD")
 	if strings.TrimSpace(files) == "" {
 		files, _ = gitOutput(ctx, cwd, "diff", "--cached", "--name-only")
+	}
+	untracked, _ := boundedUntrackedFiles(ctx, cwd)
+	dirty := strings.TrimSpace(status) != "" || strings.TrimSpace(untracked) != ""
+	var artifactSummary string
+	for _, line := range splitNonEmptyLines(untracked) {
+		if strings.HasPrefix(line, "omitted ") {
+			artifactSummary = line
+		}
 	}
 	var docs, tests bool
 	for _, f := range strings.Fields(files) {
@@ -41,10 +49,15 @@ func (t *PRReadinessContextTool) Execute(ctx context.Context, _ string) (string,
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "branch: %s\n", emptyAs(branch, "unknown"))
-	fmt.Fprintf(&b, "dirty: %s\n", yesNo(strings.TrimSpace(status) != ""))
+	fmt.Fprintf(&b, "dirty: %s\n", yesNo(dirty))
 	fmt.Fprintf(&b, "changed_files:\n%s\n", indentOrNone(files))
 	fmt.Fprintf(&b, "docs_touched: %s\n", yesNo(docs))
 	fmt.Fprintf(&b, "tests_touched: %s\n", yesNo(tests))
+	fmt.Fprintf(&b, "artifact_cleanup_required: %s\n", yesNo(artifactSummary != ""))
+	if artifactSummary != "" {
+		fmt.Fprintf(&b, "generated_artifacts: %s\n", artifactSummary)
+		b.WriteString("cleanup: remove repo-local generated artifact directories before opening a PR\n")
+	}
 	if !docs {
 		b.WriteString("hint: no docs changed; confirm this is not user-facing behavior\n")
 	}

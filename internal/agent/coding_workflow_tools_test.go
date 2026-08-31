@@ -399,6 +399,55 @@ func TestListGitChangedFilesTool_NoChanges(t *testing.T) {
 	}
 }
 
+func TestListGitChangedFilesTool_SummarizesGeneratedLocalArtifacts(t *testing.T) {
+	tmp := gitInit(t)
+	writeFile(t, tmp, "tracked.txt", "v1\n")
+	gitCommit(t, tmp, "base")
+	writeFile(t, tmp, "tracked.txt", "v2\n")
+	writeFile(t, tmp, ".cache/go-build/00/a", "compiled\n")
+	writeFile(t, tmp, ".config/go/telemetry/local/go@v1.count", "counter\n")
+	writeFile(t, tmp, "go/pkg/mod/example.com/mod@v1.0.0/go.mod", "module example.com/mod\n")
+	writeFile(t, tmp, "scratch.txt", "keep me\n")
+
+	tool := &ListGitChangedFilesTool{Cwd: NewCwdRef(tmp)}
+	out, err := tool.Execute(context.Background(), `{}`)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	for _, leaked := range []string{".cache/go-build/00/a", ".config/go/telemetry/local/go@v1.count", "go/pkg/mod/example.com/mod@v1.0.0/go.mod"} {
+		if strings.Contains(out, leaked) {
+			t.Fatalf("generated artifact %q leaked into changed-file output:\n%s", leaked, out)
+		}
+	}
+	for _, want := range []string{"tracked.txt", "scratch.txt", "omitted 3 generated local artifact file(s) under .cache/, .config/, go/"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("changed-file output missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestListGitChangedFilesTool_SummarizesIgnoredGeneratedLocalArtifacts(t *testing.T) {
+	tmp := gitInit(t)
+	writeFile(t, tmp, ".gitignore", "/.cache/\n/.config/\n")
+	writeFile(t, tmp, "tracked.txt", "v1\n")
+	gitRun(t, tmp, "add", ".gitignore", "tracked.txt")
+	gitCommit(t, tmp, "base")
+	writeFile(t, tmp, ".cache/go-build/00/a", "compiled\n")
+	writeFile(t, tmp, ".config/go/telemetry/local/go@v1.count", "counter\n")
+
+	tool := &ListGitChangedFilesTool{Cwd: NewCwdRef(tmp)}
+	out, err := tool.Execute(context.Background(), `{}`)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if strings.Contains(out, ".cache/go-build/00/a") || strings.Contains(out, ".config/go/telemetry/local/go@v1.count") {
+		t.Fatalf("ignored generated artifact leaked into changed files:\n%s", out)
+	}
+	if !strings.Contains(out, "omitted 2 generated local artifact file(s) under .cache/, .config/") {
+		t.Fatalf("expected ignored artifact summary, got:\n%s", out)
+	}
+}
+
 func TestGitCheckpointAndRollback(t *testing.T) {
 	tmp := gitInit(t)
 	writeFile(t, tmp, "f.txt", "v1\n")
@@ -553,8 +602,15 @@ func assertSandboxedGoTestScratch(t *testing.T, cwd string) {
 	}
 	repoScratch := filepath.Join("/var/tmp", "yottacode-go", safeScratchName(cwd))
 	for _, fragment := range []string{
-		"mkdir -p '" + filepath.Join(repoScratch, "tmp") + "' '" + filepath.Join(repoScratch, "cache") + "' '" + filepath.Join(repoScratch, "modcache") + "'",
-		"export TMPDIR='" + filepath.Join(repoScratch, "tmp") + "' GOTMPDIR='" + filepath.Join(repoScratch, "tmp") + "' GOCACHE='" + filepath.Join(repoScratch, "cache") + "' GOMODCACHE='" + filepath.Join(repoScratch, "modcache") + "'",
+		"mkdir -p '" + filepath.Join(repoScratch, "tmp") + "' '" + filepath.Join(repoScratch, "cache") + "' '" + filepath.Join(repoScratch, "modcache") + "' '" + filepath.Join(repoScratch, "xdg-cache") + "' '" + filepath.Join(repoScratch, "xdg-config") + "'",
+		"HOME='" + repoScratch + "'",
+		"XDG_CACHE_HOME='" + filepath.Join(repoScratch, "xdg-cache") + "'",
+		"XDG_CONFIG_HOME='" + filepath.Join(repoScratch, "xdg-config") + "'",
+		"TMPDIR='" + filepath.Join(repoScratch, "tmp") + "'",
+		"GOTMPDIR='" + filepath.Join(repoScratch, "tmp") + "'",
+		"GOCACHE='" + filepath.Join(repoScratch, "cache") + "'",
+		"GOMODCACHE='" + filepath.Join(repoScratch, "modcache") + "'",
+		"GOTELEMETRY='off'",
 	} {
 		if !strings.Contains(spy.gotCommand, fragment) {
 			t.Fatalf("sandbox command missing %s: %q", fragment, spy.gotCommand)

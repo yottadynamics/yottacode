@@ -147,6 +147,8 @@ type PRContext struct {
 	PRTemplate        string
 	PRTemplatePath    string // relative to cwd
 	PRTemplateCapped  bool
+	ArtifactSummary   string
+	ArtifactCleanup   bool
 }
 
 // BuildPRContext is the deterministic core of pr_context. Returns
@@ -200,6 +202,14 @@ func BuildPRContext(ctx context.Context, cwd, explicitBase string) (PRContext, e
 
 	snap.PushedToOrigin = branchOnOrigin(ctx, cwd, snap.CurrentBranch)
 	snap.GhAvailable = github.IsGhAvailable(ctx)
+
+	untracked, _ := boundedUntrackedFiles(ctx, cwd)
+	for _, line := range splitNonEmptyLines(untracked) {
+		if strings.HasPrefix(line, "omitted ") {
+			snap.ArtifactSummary = line
+			snap.ArtifactCleanup = true
+		}
+	}
 
 	snap.PRTemplatePath, snap.PRTemplate, snap.PRTemplateCapped =
 		loadPRTemplate(cwd)
@@ -278,11 +288,15 @@ func loadPRTemplate(cwd string) (path, body string, capped bool) {
 // AheadCount, PushedToOrigin, GhAvailable).
 func renderPRContext(s PRContext) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "## state\nresolved_base=%s\nbase_resolution=%s\ncurrent_branch=%s\nbase_equals_current=%v\nahead_count=%d\npushed_to_origin=%v\ngh_available=%v\n",
+	fmt.Fprintf(&b, "## state\nresolved_base=%s\nbase_resolution=%s\ncurrent_branch=%s\nbase_equals_current=%v\nahead_count=%d\npushed_to_origin=%v\ngh_available=%v\nartifact_cleanup_required=%v\n",
 		s.ResolvedBase, s.BaseResolution, s.CurrentBranch,
-		s.BaseEqualsCurrent, s.AheadCount, s.PushedToOrigin, s.GhAvailable)
+		s.BaseEqualsCurrent, s.AheadCount, s.PushedToOrigin, s.GhAvailable, s.ArtifactCleanup)
 	if s.AheadCountErr != "" {
 		fmt.Fprintf(&b, "ahead_count_error=%s\n", s.AheadCountErr)
+	}
+	if s.ArtifactSummary != "" {
+		fmt.Fprintf(&b, "generated_artifacts=%s\n", s.ArtifactSummary)
+		b.WriteString("cleanup=remove repo-local generated artifact directories before opening a PR\n")
 	}
 
 	b.WriteString("\n## diff.stat\n")

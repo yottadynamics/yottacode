@@ -142,6 +142,52 @@ func TestBuildCommitContext_UntrackedListed(t *testing.T) {
 	}
 }
 
+func TestBuildCommitContext_SummarizesGeneratedLocalArtifacts(t *testing.T) {
+	tmp := gitInit(t)
+	writeFile(t, tmp, "tracked.txt", "v1\n")
+	gitCommit(t, tmp, "base")
+	writeFile(t, tmp, ".cache/go-build/00/a", "compiled\n")
+	writeFile(t, tmp, ".config/go/telemetry/local/go@v1.count", "counter\n")
+	writeFile(t, tmp, "go/pkg/mod/example.com/mod@v1.0.0/go.mod", "module example.com/mod\n")
+	writeFile(t, tmp, "scratch.txt", "keep me\n")
+
+	snap, err := BuildCommitContext(context.Background(), tmp)
+	if err != nil {
+		t.Fatalf("BuildCommitContext: %v", err)
+	}
+	rendered := renderCommitContext(snap)
+	for _, leaked := range []string{".cache/go-build/00/a", ".config/go/telemetry/local/go@v1.count", "go/pkg/mod/example.com/mod@v1.0.0/go.mod"} {
+		if strings.Contains(rendered, leaked) {
+			t.Fatalf("generated artifact %q leaked into commit context:\n%s", leaked, rendered)
+		}
+	}
+	for _, want := range []string{"scratch.txt", "omitted 3 generated local artifact file(s) under .cache/, .config/, go/"} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("commit context missing %q:\n%s", want, rendered)
+		}
+	}
+}
+
+func TestBuildCommitContext_SummarizesIgnoredGeneratedLocalArtifacts(t *testing.T) {
+	tmp := gitInit(t)
+	writeFile(t, tmp, ".gitignore", "/.cache/\n/.config/\n/go/\n/.local/\n")
+	writeFile(t, tmp, "tracked.txt", "v1\n")
+	gitRun(t, tmp, "add", ".gitignore", "tracked.txt")
+	gitCommit(t, tmp, "base")
+	writeFile(t, tmp, ".cache/go-build/00/a", "compiled\n")
+	writeFile(t, tmp, ".config/go/telemetry/local/go@v1.count", "counter\n")
+	writeFile(t, tmp, ".local/state/gh/device-id", "id\n")
+
+	snap, err := BuildCommitContext(context.Background(), tmp)
+	if err != nil {
+		t.Fatalf("BuildCommitContext: %v", err)
+	}
+	got := strings.Join(snap.Untracked, "\n")
+	if !strings.Contains(got, "omitted 3 generated local artifact file(s) under .cache/, .config/, .local/") {
+		t.Fatalf("expected ignored artifact summary, got %q", got)
+	}
+}
+
 func TestApplyCommit_EmptyStaging(t *testing.T) {
 	tmp := gitInit(t)
 	writeFile(t, tmp, "f.txt", "v1\n")
@@ -312,4 +358,3 @@ func TestCapString_TrimsToNewlineBoundary(t *testing.T) {
 		t.Errorf("expected truncation before 'line three' line, got %q", got)
 	}
 }
-

@@ -11,6 +11,11 @@ import (
 func writeFile(t *testing.T, dir, name, body string) string {
 	t.Helper()
 	p := filepath.Join(dir, name)
+	// Tests frequently create nested repo paths; mirror real file-tool behavior
+	// by materializing parent directories before writing the fixture file.
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		t.Fatalf("setup mkdir: %v", err)
+	}
 	if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
 		t.Fatalf("setup write: %v", err)
 	}

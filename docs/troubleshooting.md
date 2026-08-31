@@ -124,9 +124,15 @@ If sandboxed Go tests fail with `fork/exec /tmp/go-build.../*.test: permission
 denied`, upgrade yottacode. Sandboxed `run_tests` now keeps `/tmp` mounted
 `noexec` for hardening but exports `TMPDIR`, `GOTMPDIR`, `GOCACHE`, and
 `GOMODCACHE` under `/var/tmp/yottacode-go/<workspace>/` inside the sandbox so Go
-can compile and execute test binaries safely without leaving repo-root `.cache/`,
-`.config/`, `.yottacode/tmp/`, `.scratch/`, or `go/` directories that would
+can compile and execute test binaries safely. It also redirects `HOME`,
+`XDG_CACHE_HOME`, and `XDG_CONFIG_HOME` into that scratch area and disables Go
+telemetry with `GOTELEMETRY=off`, so tests should not leave repo-root `.cache/`,
+`.config/`, `.local/`, `.yottacode/tmp/`, `.scratch/`, or `go/` directories that would
 break later `go test ./...` discovery or workspace-root tests.
+
+If an older run already created those directories, remove them before opening a
+PR. Git status/readiness tools summarize those generated roots instead of
+printing every file, but the tree should still be cleaned before review.
 
 ## The trust prompt fires on every launch
 

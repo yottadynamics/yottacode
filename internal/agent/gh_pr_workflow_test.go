@@ -361,6 +361,53 @@ func TestBuildPRContext_NoOriginNoTemplate(t *testing.T) {
 	}
 }
 
+func TestBuildPRContext_FlagsGeneratedLocalArtifacts(t *testing.T) {
+	tmp := gitInit(t)
+	writeFile(t, tmp, "f.txt", "v1\n")
+	gitCommit(t, tmp, "base")
+	writeFile(t, tmp, ".cache/go-build/00/a", "compiled\n")
+	writeFile(t, tmp, ".config/go/telemetry/local/go@v1.count", "counter\n")
+	writeFile(t, tmp, "go/pkg/mod/example.com/mod@v1.0.0/go.mod", "module example.com/mod\n")
+
+	snap, err := BuildPRContext(context.Background(), tmp, "main")
+	if err != nil {
+		t.Fatalf("BuildPRContext: %v", err)
+	}
+	out := renderPRContext(snap)
+	for _, leaked := range []string{".cache/go-build/00/a", ".config/go/telemetry/local/go@v1.count", "go/pkg/mod/example.com/mod@v1.0.0/go.mod"} {
+		if strings.Contains(out, leaked) {
+			t.Fatalf("generated artifact %q leaked into PR context:\n%s", leaked, out)
+		}
+	}
+	for _, want := range []string{"artifact_cleanup_required=true", "generated_artifacts=omitted 3 generated local artifact file(s) under .cache/, .config/, go/", "cleanup=remove repo-local generated artifact directories before opening a PR"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("PR context missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestBuildPRContext_FlagsIgnoredGeneratedLocalArtifacts(t *testing.T) {
+	tmp := gitInit(t)
+	writeFile(t, tmp, ".gitignore", "/.cache/\n/.config/\n")
+	writeFile(t, tmp, "f.txt", "v1\n")
+	gitRun(t, tmp, "add", ".gitignore", "f.txt")
+	gitCommit(t, tmp, "base")
+	writeFile(t, tmp, ".cache/go-build/00/a", "compiled\n")
+	writeFile(t, tmp, ".config/go/telemetry/local/go@v1.count", "counter\n")
+
+	snap, err := BuildPRContext(context.Background(), tmp, "main")
+	if err != nil {
+		t.Fatalf("BuildPRContext: %v", err)
+	}
+	out := renderPRContext(snap)
+	if strings.Contains(out, ".cache/go-build/00/a") || strings.Contains(out, ".config/go/telemetry/local/go@v1.count") {
+		t.Fatalf("ignored generated artifact leaked into PR context:\n%s", out)
+	}
+	if !strings.Contains(out, "artifact_cleanup_required=true") || !strings.Contains(out, "omitted 2 generated local artifact file(s) under .cache/, .config/") {
+		t.Fatalf("expected ignored artifact cleanup warning, got:\n%s", out)
+	}
+}
+
 func TestGHPRCreateTool_RoundsThroughTool(t *testing.T) {
 	tmp := gitRepoOnBranch(t, "feature/live-head")
 

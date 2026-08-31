@@ -53,6 +53,25 @@ func TestChangedSourceFilesDeduplicatesAndRespectsMaxFiles(t *testing.T) {
 	}
 }
 
+func TestChangedSourceFilesSkipsGeneratedLocalArtifacts(t *testing.T) {
+	repo := initGitRepoForChangedFilesTest(t)
+	writeFile(t, repo, "tracked.go", "package main\nvar tracked = 1\n")
+	gitAddAndCommit(t, repo, "tracked.go")
+	writeFile(t, repo, "tracked.go", "package main\nvar tracked = 2\n")
+	writeFile(t, repo, ".cache/generated.go", "package cache\n")
+	writeFile(t, repo, ".config/go/telemetry/local/generated.go", "package local\n")
+	writeFile(t, repo, "go/pkg/mod/example.com/mod@v1.0.0/generated.go", "package mod\n")
+
+	got, err := changedSourceFiles(context.Background(), repo, 0)
+	if err != nil {
+		t.Fatalf("changedSourceFiles: %v", err)
+	}
+	want := []string{"tracked.go"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("changedSourceFiles() = %#v, want %#v", got, want)
+	}
+}
+
 func initGitRepoForChangedFilesTest(t *testing.T) string {
 	t.Helper()
 	repo := t.TempDir()

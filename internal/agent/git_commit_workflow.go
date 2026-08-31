@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strings"
 )
@@ -108,18 +109,18 @@ func (t *GitCommitContextTool) Execute(ctx context.Context, _ string) (string, e
 // directly (without a tool-call round trip) and the test suite can
 // assert on each field rather than parsing the rendered string.
 type CommitContext struct {
-	Branch          string
-	StagedEmpty     bool
-	StagedNameStat  string
-	StagedDiff      string
-	StagedDiffCap   bool
-	RecentSubjects  []string
-	BranchCommits   []string
-	ProseDiff       string
-	ProseDiffCap    bool
-	Unstaged        []string
-	Untracked       []string
-	DetectedStyle   string // "conventional" | "ticket-prefix" | "plain"
+	Branch         string
+	StagedEmpty    bool
+	StagedNameStat string
+	StagedDiff     string
+	StagedDiffCap  bool
+	RecentSubjects []string
+	BranchCommits  []string
+	ProseDiff      string
+	ProseDiffCap   bool
+	Unstaged       []string
+	Untracked      []string
+	DetectedStyle  string // "conventional" | "ticket-prefix" | "plain"
 }
 
 // BuildCommitContext is the deterministic core of git_commit_context.
@@ -166,7 +167,7 @@ func BuildCommitContext(ctx context.Context, cwd string) (CommitContext, error) 
 
 	unstaged, _ := gitOutput(ctx, cwd, "diff", "--name-only")
 	snap.Unstaged = splitNonEmptyLines(unstaged)
-	untracked, _ := gitOutput(ctx, cwd, "ls-files", "--others", "--exclude-standard")
+	untracked, _ := boundedUntrackedFiles(ctx, cwd)
 	snap.Untracked = splitNonEmptyLines(untracked)
 
 	return snap, nil
@@ -340,13 +341,13 @@ func (t *GitCommitApplyTool) PreviewCall(argsJSON string) string {
 // reads the struct directly for branching ("did the commit land?
 // surface unstaged/untracked footer" vs "denied? quote it; bail").
 type CommitResult struct {
-	Committed    bool
-	SHA          string
-	StagedEmpty  bool
+	Committed     bool
+	SHA           string
+	StagedEmpty   bool
 	ValidationErr string
-	HookError    string
-	Unstaged     []string
-	Untracked    []string
+	HookError     string
+	Unstaged      []string
+	Untracked     []string
 }
 
 func (t *GitCommitApplyTool) Execute(ctx context.Context, argsJSON string) (string, error) {
@@ -407,7 +408,7 @@ func ApplyCommit(ctx context.Context, cwd, message string) (CommitResult, error)
 		if errors.As(runErr, &exitErr) {
 			res.HookError = strings.TrimSpace(string(out))
 			res.Unstaged = collectFilesLines(ctx, cwd, "diff", "--name-only")
-			res.Untracked = collectFilesLines(ctx, cwd, "ls-files", "--others", "--exclude-standard")
+			res.Untracked = splitNonEmptyLines(mustBoundedUntrackedFiles(ctx, cwd))
 			return res, nil
 		}
 		return res, fmt.Errorf("commit: %w", runErr)
@@ -417,7 +418,7 @@ func ApplyCommit(ctx context.Context, cwd, message string) (CommitResult, error)
 	sha, _ := gitOutput(ctx, cwd, "rev-parse", "HEAD")
 	res.SHA = strings.TrimSpace(sha)
 	res.Unstaged = collectFilesLines(ctx, cwd, "diff", "--name-only")
-	res.Untracked = collectFilesLines(ctx, cwd, "ls-files", "--others", "--exclude-standard")
+	res.Untracked = splitNonEmptyLines(mustBoundedUntrackedFiles(ctx, cwd))
 	return res, nil
 }
 
@@ -523,4 +524,89 @@ func splitNonEmptyLines(s string) []string {
 func collectFilesLines(ctx context.Context, cwd string, args ...string) []string {
 	out, _ := gitOutput(ctx, cwd, args...)
 	return splitNonEmptyLines(out)
+}
+
+func mustBoundedUntrackedFiles(ctx context.Context, cwd string) string {
+	out, _ := boundedUntrackedFiles(ctx, cwd)
+	return out
+}
+
+func boundedUntrackedFiles(ctx context.Context, cwd string) (string, error) {
+	kept, summary, err := collectBoundedUntrackedFiles(ctx, cwd)
+	if err != nil {
+		return "", err
+	}
+	if summary.count > 0 {
+		kept = append(kept, summary.line())
+	}
+	if len(kept) == 0 {
+		return "", nil
+	}
+	return strings.Join(kept, "\n") + "\n", nil
+}
+
+func collectBoundedUntrackedFiles(ctx context.Context, cwd string) ([]string, generatedArtifactSummary, error) {
+	raw, err := gitOutput(ctx, cwd, "ls-files", "--others", "--exclude-standard")
+	if err != nil {
+		return nil, generatedArtifactSummary{}, err
+	}
+	ignored, _ := gitOutput(ctx, cwd, "ls-files", "--others", "--ignored", "--exclude-standard")
+	var kept []string
+	var summary generatedArtifactSummary
+	for _, line := range splitNonEmptyLines(raw) {
+		if summary.add(line) {
+			continue
+		}
+		kept = append(kept, line)
+	}
+	for _, line := range splitNonEmptyLines(ignored) {
+		// Generated artifact directories are normally ignored after the repo-level
+		// guardrail lands, but PR/readiness tools still need to know cleanup is
+		// required instead of silently treating the working tree as PR-ready.
+		summary.add(line)
+	}
+	return kept, summary, nil
+}
+
+type generatedArtifactSummary struct {
+	count int
+	roots map[string]bool
+}
+
+func (s *generatedArtifactSummary) add(path string) bool {
+	root, ok := generatedArtifactRoot(path)
+	if !ok {
+		return false
+	}
+	if s.roots == nil {
+		s.roots = map[string]bool{}
+	}
+	s.count++
+	s.roots[root] = true
+	return true
+}
+
+func (s generatedArtifactSummary) line() string {
+	return fmt.Sprintf("omitted %d generated local artifact file(s) under %s", s.count, strings.Join(generatedArtifactRoots(s.roots), ", "))
+}
+
+func generatedArtifactRoot(path string) (string, bool) {
+	slash := filepath.ToSlash(strings.TrimSpace(path))
+	for _, root := range []string{".cache/", ".config/", "go/", ".local/", ".yottacode/tmp/go/", ".scratch/"} {
+		if strings.HasPrefix(slash, root) {
+			return strings.TrimSuffix(root, "/") + "/", true
+		}
+	}
+	return "", false
+}
+
+func generatedArtifactRoots(seen map[string]bool) []string {
+	ordered := []string{".cache/", ".config/", "go/", ".local/", ".yottacode/tmp/go/", ".scratch/"}
+	var out []string
+	for _, root := range ordered {
+		if seen[root] {
+			out = append(out, root)
+		}
+	}
+	return out
 }
