@@ -57,6 +57,16 @@ the project uses semantic versioning once it's past `1.0.0`.
   ranked by relevance instead of requiring blind `offset` paging. See
   [`tools.md`](docs/tools.md#search_document).
 
+- **`[subagents] max_concurrent_subagents`** makes the session-wide
+  subagent concurrency cap (previously a fixed 8) configurable — shared
+  by `dispatch` workers and standalone `Agent` spawns alike, since they
+  contend for the same provider streams and (with the command sandbox
+  enabled) concurrent containers. Defaults to 8. `dispatch`'s own
+  per-call task-decomposition limit (also 8) is now a separate, fixed
+  constant, so raising the concurrency cap no longer silently raises how
+  many subtasks one `dispatch` call may request. See
+  [`configuration.md`](docs/configuration.md#subagents).
+
 - **Configurable pptx image placement and richer pptx image extraction.**
   `create_document`'s pptx slides gain `image_layout` (`left`/`right`/`full`
   presets) and explicit `image_left`/`image_top`/`image_width`/`image_height`
@@ -115,6 +125,36 @@ the project uses semantic versioning once it's past `1.0.0`.
   [`document-generation.md`](docs/document-generation.md), including its
   new security note on unsandboxed native parsing for PDF/docx's optional
   richer-parsing tier.
+
+### Fixed
+
+- **`dispatch`'s file-partition safety guarantee had real holes.** A worker
+  that ended errored (e.g. it left out-of-scope changes uncommitted) could
+  still have its branch recommended for `integrate` if it had an earlier
+  legitimate commit — the per-task report, the background wake message, and
+  the live-dock badge now all check the errored/failed state, not just
+  commit presence. The commit-time ownership scan also missed a rename's
+  SOURCE path (only the destination was checked, so `git mv` could smuggle
+  a sibling task's file in undetected), misparsed a `git status` rename
+  line by scanning for literal `" -> "` text instead of the actual status
+  code (misfiring on an untracked file whose name happens to contain that
+  substring), and missed a same-file-different-case collision on
+  case-insensitive filesystems (macOS). A new dispatch call now also checks
+  its file claims against every other still-running dispatch task's
+  claims, not just its own batch, closing a cross-call collision gap.
+- **Dispatch worker lifecycle and leak fixes.** A late panic (e.g. inside
+  the async completion callback, which runs after the real result is
+  already recorded) could overwrite an already-successfully-completed
+  task's result with a fabricated panic message; the panic-recovery path
+  now skips entirely once the task is already terminal. A foreground
+  worker whose sandbox failed to construct, or that panicked, previously
+  left its scrollback card stuck "running" forever — both paths now emit
+  the completion event. `get_subagent_result`'s wait no longer leaks a
+  registry channel on every timed-out poll, and an adversarial
+  `wait_seconds` value can no longer integer-overflow past its own 10-minute
+  clamp. Worktree cleanup on a mid-batch failure now uses a
+  cancellation-detached context so it can't be cut short by the very
+  cancellation that triggered it.
 
 ## 0.4.0 — 2026-08-12
 

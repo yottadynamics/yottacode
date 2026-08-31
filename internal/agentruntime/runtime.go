@@ -533,14 +533,15 @@ func (b *Builder) Build(ctx context.Context, spec SessionSpec) (*Runtime, error)
 		ResolveWindow: func(model string) int {
 			return catalog.ResolveWindowForProvider(fileCfg.ProviderKindForModel(model), model, fileCfg.ContextWindowOverride(model), fileCfg.Context.DefaultWindow)
 		},
-		Permissions:      perms,
-		YoloMode:         yoloMode,
-		PlanMode:         planMode,
-		AutoMode:         autoMode,
-		Cwd:              cwdRef,
-		TranscriptDir:    transcriptDir,
-		MaxSessionTokens: fileCfg.SubagentSessionTokenBudget(),
-		AllowBackground:  spec.SupportsBackgroundDispatch,
+		Permissions:            perms,
+		YoloMode:               yoloMode,
+		PlanMode:               planMode,
+		AutoMode:               autoMode,
+		Cwd:                    cwdRef,
+		TranscriptDir:          transcriptDir,
+		MaxSessionTokens:       fileCfg.SubagentSessionTokenBudget(),
+		MaxConcurrentSubagents: fileCfg.SubagentMaxConcurrent(),
+		AllowBackground:        spec.SupportsBackgroundDispatch,
 	}
 	reg.Register(agentTool)
 	reg.Register(&agent.GetSubagentResultTool{Tasks: subagentTasks})

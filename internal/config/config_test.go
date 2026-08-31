@@ -1481,3 +1481,46 @@ func TestThemeName_HonorsNoColorEnv(t *testing.T) {
 		t.Errorf("empty NO_COLOR must not trigger monochrome; got %q", cfg.Theme.Name)
 	}
 }
+
+// TestSubagentMaxConcurrent mirrors the existing SubagentSessionTokenBudget
+// resolver's contract: <=0 (unset, or an invalid negative/zero override)
+// falls through to the conservative default rather than disabling the cap.
+func TestSubagentMaxConcurrent(t *testing.T) {
+	cases := []struct {
+		name string
+		set  int
+		want int
+	}{
+		{"unset falls through to default", 0, DefaultMaxConcurrentSubagents},
+		{"negative falls through to default", -3, DefaultMaxConcurrentSubagents},
+		{"positive override wins", 16, 16},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := Config{Subagents: SubagentsConfig{MaxConcurrentSubagents: tc.set}}
+			if got := c.SubagentMaxConcurrent(); got != tc.want {
+				t.Errorf("SubagentMaxConcurrent() = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestLoad_ParsesSubagentsMaxConcurrent is the config-file round-trip: the
+// TOML key must actually reach SubagentsConfig.MaxConcurrentSubagents.
+func TestLoad_ParsesSubagentsMaxConcurrent(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	if err := os.WriteFile(path, []byte("[subagents]\nmax_concurrent_subagents = 12\n"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Subagents.MaxConcurrentSubagents != 12 {
+		t.Errorf("Subagents.MaxConcurrentSubagents = %d, want 12", cfg.Subagents.MaxConcurrentSubagents)
+	}
+	if got := cfg.SubagentMaxConcurrent(); got != 12 {
+		t.Errorf("SubagentMaxConcurrent() = %d, want 12", got)
+	}
+}

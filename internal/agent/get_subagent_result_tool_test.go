@@ -333,6 +333,62 @@ func TestGetSubagentResultTool_WaitOnAlreadyCompletedReturnsImmediately(t *testi
 	}
 }
 
+// TestClampWaitSeconds is the integer-overflow regression: converting
+// wait_seconds to a Duration via a raw `time.Duration(n) * time.Second`
+// can overflow int64 for a sufficiently large n (multiplying by 1e9),
+// silently producing a small/wrong duration that slips past both the <=0
+// and >max clamps that were meant to bound it. clampWaitSeconds must compare
+// in the seconds domain first so no intermediate value can overflow.
+func TestClampWaitSeconds(t *testing.T) {
+	cases := []struct {
+		name string
+		in   int
+		want time.Duration
+	}{
+		{"zero uses default", 0, getSubagentResultDefaultWait},
+		{"negative uses default", -5, getSubagentResultDefaultWait},
+		{"normal value passes through", 30, 30 * time.Second},
+		{"over max clamps to max", 9999, getSubagentResultMaxWait},
+		{"exactly max passes through", 600, getSubagentResultMaxWait},
+		// This is the value the review identified: naive int64 nanosecond
+		// arithmetic wraps it to ~290ms — nowhere near "still running after
+		// 600s", the correct clamp.
+		{"overflow-inducing value clamps to max, not wraps", 18446744074, getSubagentResultMaxWait},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := clampWaitSeconds(tc.in); got != tc.want {
+				t.Errorf("clampWaitSeconds(%d) = %v, want %v", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestGetSubagentResultTool_TimeoutDeregistersWaiter is the WaitFor-leak
+// regression: after a wait times out, the tool must give up its waiter slot
+// (CancelWaiter) instead of leaving a channel registered in the registry for
+// the rest of the task's run — a model polling a stuck subagent across
+// several turns is exactly the documented usage pattern that would
+// otherwise leak one channel per poll.
+func TestGetSubagentResultTool_TimeoutDeregistersWaiter(t *testing.T) {
+	reg := subagents.NewRegistry()
+	reg.Add(&subagents.Task{
+		ID:      "leaktest12345678",
+		Started: time.Now(),
+		Status:  subagents.TaskRunning,
+	})
+	tool := &GetSubagentResultTool{Tasks: reg}
+
+	args, _ := json.Marshal(map[string]any{"task_id": "leaktest", "wait_seconds": 1})
+	if _, err := tool.Execute(context.Background(), string(args)); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	if n := reg.WaiterCount("leaktest12345678"); n != 0 {
+		t.Errorf("waiters for the timed-out task = %d, want 0 (the tool must deregister on timeout)", n)
+	}
+}
+
 // TestRegistry_WaitForBroadcastsToMultipleWaiters verifies that
 // multiple concurrent WaitFor calls on the same task all unblock
 // when MarkDone fires (channel close, not send). The
