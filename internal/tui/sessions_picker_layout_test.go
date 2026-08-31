@@ -2,6 +2,7 @@ package tui
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,10 +10,13 @@ import (
 	"time"
 
 	"charm.land/bubbles/v2/textinput"
+	tea "charm.land/bubbletea/v2"
 
 	"github.com/yottadynamics/yottacode/internal/adapter"
 	"github.com/yottadynamics/yottacode/internal/session"
 )
+
+func testSessionID(i int) string { return fmt.Sprintf("20260101-%06d.000000", i) }
 
 func gistRows() []session.SessionInfo {
 	return []session.SessionInfo{
@@ -137,6 +141,31 @@ func TestRenderSessionsMenuHeaderSpansOverlayWidth(t *testing.T) {
 		return
 	}
 	t.Fatal("sessions picker rendered no divider")
+}
+
+func TestSessionsListPagesRows(t *testing.T) {
+	p := &sessionsPickerState{mode: sessionsLoadListMode}
+	for i := range sessionsPageSize + 3 {
+		p.sessions = append(p.sessions, session.SessionInfo{ID: testSessionID(i), Summary: fmt.Sprintf("session %d", i)})
+	}
+	m := newTestModel(t)
+	m.sessionsPicker = p
+	m.sessionsPickerOpen = true
+
+	m, _ = m.updateSessionsPicker(tea.KeyPressMsg{Code: tea.KeyPgDown})
+	if got, want := m.sessionsPicker.listCursor, sessionsPageSize; got != want {
+		t.Fatalf("cursor after page down = %d, want %d", got, want)
+	}
+	if m.sessionsPicker.listOffset == 0 {
+		t.Fatal("page down should advance the visible sessions page")
+	}
+	rendered := renderSessionsList(m.sessionsPicker, "Load session", "Pick one.", 120, &pickerHits{})
+	if strings.Contains(rendered, testSessionID(0)) {
+		t.Fatalf("paged sessions picker should not render first-page rows:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "PgUp/PgDn page") {
+		t.Fatalf("paged sessions picker should expose page controls:\n%s", rendered)
+	}
 }
 
 // TestResumeSession_DoesNotPersistEmptyCurrent is the regression guard for
@@ -322,10 +351,14 @@ func TestLoadRecentSessions_ArchivesArePerMode(t *testing.T) {
 		}
 		return n
 	}
-	if got := countArchived(loadRecentSessions(true)); got != 1 {
+	loadRows := func(includeArchived bool) []session.SessionInfo {
+		rows, _ := loadSessionPage(includeArchived, 0)
+		return rows
+	}
+	if got := countArchived(loadRows(true)); got != 1 {
 		t.Errorf("Load/Export list should offer the archive, got %d archived rows", got)
 	}
-	if got := countArchived(loadRecentSessions(false)); got != 0 {
+	if got := countArchived(loadRows(false)); got != 0 {
 		t.Errorf("Rename list must not offer archives, got %d", got)
 	}
 }

@@ -50,6 +50,80 @@ func TestDefault_SandboxUsesNamedDefaultImage(t *testing.T) {
 	if got := Default().Sandbox.Image; got != DefaultSandboxImage {
 		t.Fatalf("Default().Sandbox.Image = %q, want %q", got, DefaultSandboxImage)
 	}
+	if got := Default().Sandbox.DocumentsImage; got != DefaultSandboxDocumentsImage {
+		t.Fatalf("Default().Sandbox.DocumentsImage = %q, want %q", got, DefaultSandboxDocumentsImage)
+	}
+	if !strings.Contains(DefaultSandboxImage, "yottacode-sandbox") {
+		t.Fatalf("DefaultSandboxImage = %q, want official yottacode sandbox image", DefaultSandboxImage)
+	}
+}
+
+func TestDefault_SandboxUsesHostNetwork(t *testing.T) {
+	// Host networking is the intentional default: it shares the host's network
+	// stack directly, so whatever network-layer policy the host/organization
+	// already enforces (transparent proxy, firewall) already covers sandboxed
+	// commands for free. An in-house egress allowlist was considered and
+	// declined for exactly this reason (see roadmap/sandbox-podman.md).
+	if got := Default().Sandbox.Network; got != "host" {
+		t.Fatalf("Default().Sandbox.Network = %q, want host", got)
+	}
+}
+
+func TestDefault_SandboxUsesNamedDiskQuota(t *testing.T) {
+	if got := Default().Sandbox.Disk; got != DefaultSandboxDisk {
+		t.Fatalf("Default().Sandbox.Disk = %d, want %d", got, DefaultSandboxDisk)
+	}
+}
+
+func TestLoad_RejectsNegativeSandboxDisk(t *testing.T) {
+	src := `[sandbox]
+backend = "podman"
+disk = -1
+`
+	_, err := Load(writeFile(t, src))
+	if err == nil {
+		t.Fatal("expected negative sandbox.disk to fail")
+	}
+	if !strings.Contains(err.Error(), "sandbox.disk") {
+		t.Fatalf("error should mention sandbox.disk, got %v", err)
+	}
+}
+
+func TestDefault_SandboxUsesDefaultDNS(t *testing.T) {
+	if !reflect.DeepEqual(Default().Sandbox.DNS, DefaultSandboxDNS) {
+		t.Fatalf("Default().Sandbox.DNS = %v, want %v", Default().Sandbox.DNS, DefaultSandboxDNS)
+	}
+}
+
+func TestLoad_SandboxDNS(t *testing.T) {
+	src := `[sandbox]
+backend = "podman"
+dns = ["1.1.1.1", "2606:4700:4700::1111"]
+`
+	cfg, err := Load(writeFile(t, src))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	want := []string{"1.1.1.1", "2606:4700:4700::1111"}
+	if !reflect.DeepEqual(cfg.Sandbox.DNS, want) {
+		t.Fatalf("Sandbox.DNS = %v, want %v", cfg.Sandbox.DNS, want)
+	}
+}
+
+func TestLoad_RejectsInvalidSandboxDNS(t *testing.T) {
+	for _, dns := range []string{"", "localhost", "1.2.3.999"} {
+		src := `[sandbox]
+backend = "podman"
+dns = ["` + dns + `"]
+`
+		_, err := Load(writeFile(t, src))
+		if err == nil {
+			t.Fatalf("expected invalid sandbox.dns %q to fail", dns)
+		}
+		if !strings.Contains(err.Error(), "sandbox.dns") {
+			t.Fatalf("error should mention sandbox.dns, got %v", err)
+		}
+	}
 }
 
 func TestLoad_AppliesOverrides(t *testing.T) {
@@ -99,6 +173,9 @@ cpus = 0`,
 		`[sandbox]
 backend = "podman"
 pids_limit = 0`,
+		`[sandbox]
+backend = "podman"
+documents_image = ""`,
 	} {
 		if _, err := Load(writeFile(t, src)); err == nil {
 			t.Fatalf("expected podman sandbox with missing/zero limit to fail load: %s", src)

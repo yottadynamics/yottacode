@@ -14,7 +14,7 @@ func TestGoplsSmoke(t *testing.T) {
 	// index the entire yottacode project (which is too large for the smoke
 	// test timeout). The other language smoke tests all use temp roots.
 	root := t.TempDir()
-	writeSmokeFile(t, root, "go.mod", "module gopls-smoke\n\ngo 1.26.3\n")
+	writeSmokeFile(t, root, "go.mod", "module gopls-smoke\n\ngo 1.26.6\n")
 	writeSmokeFile(t, root, "main.go", "package main\n\nfunc smokeTarget() int { return 1 }\n\nfunc main() {}\n")
 	smokeLanguageServer(t, Language{ID: "go", Name: "Go", Extensions: []string{".go"}, Command: []string{"gopls"}}, root, "smokeTarget")
 }

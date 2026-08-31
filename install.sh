@@ -7,7 +7,7 @@
 #   curl -fsSL https://raw.githubusercontent.com/yottadynamics/yottacode/main/install.sh | bash
 #
 # Env:
-#   VERSION       Pin a version (e.g. 0.3.0). Defaults to latest release.
+#   VERSION       Pin a version (e.g. 0.4.0). Defaults to latest release.
 #   INSTALL_DIR   Override install location. Defaults to $HOME/.yottacode/bin.
 #   NO_COLOR      Disable ANSI colors.
 #

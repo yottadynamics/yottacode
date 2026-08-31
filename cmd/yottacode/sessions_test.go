@@ -237,6 +237,32 @@ func TestSessionsExport_RefusesOverwriteWithoutForce(t *testing.T) {
 	}
 }
 
+func TestSessionsExport_WritesJSONLForJSONLPath(t *testing.T) {
+	seedSessions(t)
+	tmp := t.TempDir()
+	out := filepath.Join(tmp, "alpha.jsonl")
+
+	cmd := newCLI()
+	var stdout strings.Builder
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stdout)
+	cmd.SetArgs([]string{"sessions", "export", "alpha", out})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+
+	body, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatalf("export file not written: %v", err)
+	}
+	if !strings.Contains(string(body), `"type":"session"`) || !strings.Contains(string(body), `"type":"user"`) {
+		t.Fatalf("exported JSONL missing structured records:\n%s", body)
+	}
+	if !strings.Contains(stdout.String(), "wrote log") {
+		t.Errorf("JSONL export should report log output; got %q", stdout.String())
+	}
+}
+
 func TestSessionsExport_DefaultsToCwdWhenPathOmitted(t *testing.T) {
 	seedSessions(t)
 	tmp := t.TempDir()

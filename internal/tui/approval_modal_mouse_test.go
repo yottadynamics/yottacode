@@ -9,9 +9,9 @@ import (
 	"github.com/yottadynamics/yottacode/internal/agent"
 )
 
-// [Y] and [N] share one row in the hotkey grid — this pins that a click
-// resolves to whichever bracket it's actually over, not just "the row."
-func TestApprovalModal_ClickNoOnSharedRow(t *testing.T) {
+// Approval modals are safety prompts, so mouse clicks must not resolve to a
+// decision. Keyboard input remains the only approval path.
+func TestApprovalModal_ClickHotkeyIsIgnored(t *testing.T) {
 	m := newTestModel(t)
 	m.turnActive = true
 	m.eventsCh = make(chan agent.Event, 4)
@@ -35,19 +35,17 @@ func TestApprovalModal_ClickNoOnSharedRow(t *testing.T) {
 	}
 
 	m, cmd := applyMsg(m, tea.MouseClickMsg{X: x, Y: y})
-	if cmd == nil {
-		t.Fatalf("clicking [N] must return a Cmd that resumes the event pump")
+	if cmd != nil {
+		t.Fatalf("clicking [N] should not resume the event pump")
 	}
-	if m.awaitingApproval {
-		t.Errorf("clicking [N] should clear awaitingApproval")
+	if !m.awaitingApproval {
+		t.Errorf("clicking [N] should leave awaitingApproval true")
 	}
 	select {
 	case d := <-m.decisions:
-		if d != agent.Deny {
-			t.Errorf("decision = %v, want Deny", d)
-		}
+		t.Errorf("mouse click should not send a decision; got %v", d)
 	default:
-		t.Errorf("expected a decision on the channel")
+		// Expected: approval decisions are keyboard-only.
 	}
 }
 
@@ -66,7 +64,7 @@ func TestApprovalModal_ClickOutsideHotkeysIsNoop(t *testing.T) {
 	}
 }
 
-func TestApprovalModal_ClickCloseRejects(t *testing.T) {
+func TestApprovalModal_ClickCloseIsIgnored(t *testing.T) {
 	m := newTestModel(t)
 	m.turnActive = true
 	m.eventsCh = make(chan agent.Event, 4)
@@ -79,18 +77,16 @@ func TestApprovalModal_ClickCloseRejects(t *testing.T) {
 	ox, oy := m.popupOrigin(box)
 	w := lipgloss.Width(box)
 	m, cmd := applyMsg(m, tea.MouseClickMsg{X: ox + w - 2, Y: oy})
-	if cmd == nil {
-		t.Fatalf("clicking × should return a Cmd that resumes the event pump")
+	if cmd != nil {
+		t.Fatalf("clicking × should not resume the event pump")
 	}
-	if m.awaitingApproval {
-		t.Errorf("clicking × should clear awaitingApproval")
+	if !m.awaitingApproval {
+		t.Errorf("clicking × should leave awaitingApproval true")
 	}
 	select {
 	case d := <-m.decisions:
-		if d != agent.Deny {
-			t.Errorf("decision = %v, want Deny", d)
-		}
+		t.Errorf("mouse close should not send a decision; got %v", d)
 	default:
-		t.Errorf("expected a deny decision on the channel")
+		// Expected: approval decisions are keyboard-only.
 	}
 }

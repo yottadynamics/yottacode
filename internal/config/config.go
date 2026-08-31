@@ -17,9 +17,11 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/BurntSushi/toml"
@@ -68,8 +70,8 @@ type Config struct {
 	Subagents SubagentsConfig `toml:"subagents"`
 	// Sandbox controls whether run_bash executes inside a session-scoped
 	// podman container instead of directly on the host. Absent block or
-	// backend="none" (the default) keeps today's host-exec behavior; gated
-	// behind the "sandbox" experimental feature regardless of backend.
+	// backend="none" (the default) keeps host-exec behavior; backend="podman"
+	// creates lazy rootless Podman profile containers for supported command paths.
 	Sandbox SandboxConfig `toml:"sandbox"`
 }
 
@@ -84,26 +86,63 @@ type SubagentsConfig struct {
 }
 
 // SandboxConfig controls the run_bash command-execution backend. See
-// roadmap/sandbox-podman.md for the design this implements: a session-scoped
-// container, podman exec per command, project-dir-only mount, default-deny
-// network. EnvPassthrough names are forwarded via bare `-e NAME` (podman
-// reads the value from its own environment) so credential values never
-// appear in podman's argv/process list.
+// roadmap/sandbox-podman.md for the design this implements: long-lived
+// containers, podman exec per command, project-dir-only mount, and a temporary
+// host-network default until yottacode grows per-destination egress allowlists.
+// EnvPassthrough names are forwarded via bare `-e NAME` (podman reads the value
+// from its own environment) so credential values never appear in podman's argv/
+// process list. DocumentsImage is the built-in secondary profile image used
+// automatically by document-tool subprocess paths.
 type SandboxConfig struct {
-	Backend        string   `toml:"backend"` // "none" (default) | "podman"
-	Image          string   `toml:"image"`
-	Network        string   `toml:"network"` // "none" (default) | "host"
+	Backend        string `toml:"backend"` // "none" (default) | "podman"
+	Image          string `toml:"image"`
+	DocumentsImage string `toml:"documents_image"`
+	// Network is "none" | "host" (default). "host" shares the machine's
+	// network stack directly rather than sitting behind an in-house
+	// egress allowlist: with no separate network namespace to police,
+	// whatever network-layer policy the host/organization already
+	// enforces (a transparent proxy, a firewall) already covers sandboxed
+	// commands the same as any other host process. For an explicit
+	// (non-transparent) corporate proxy, forward it via EnvPassthrough
+	// (HTTP_PROXY/HTTPS_PROXY/NO_PROXY); for a hard deny-all independent
+	// of any external trust, use "none".
+	Network string `toml:"network"`
+	// DNS optionally passes explicit resolver IPs to Podman at container start.
+	// Empty uses Podman's default resolver behavior for the selected network.
+	DNS            []string `toml:"dns"`
 	Mounts         []string `toml:"mounts"`
 	EnvPassthrough []string `toml:"env_passthrough"`
 	Memory         string   `toml:"memory"`
 	CPUs           float64  `toml:"cpus"`
 	PidsLimit      int      `toml:"pids_limit"`
+	// Disk caps the container's writable-layer disk usage in megabytes
+	// (0 = no quota attempted). Only takes effect when the host's storage
+	// driver actually supports --storage-opt size= (overlay on XFS with
+	// pquota; most Linux hosts run ext4 and don't) — silently skipped
+	// with a logged note otherwise, never a startup failure. See
+	// storageOptSupported in internal/sandbox/hostcaps.go.
+	Disk int `toml:"disk"`
 }
 
-// DefaultSandboxImage is the pinned base image for the experimental command
-// sandbox. Keep it as a named constant because the hardening baseline may move
-// as distro images receive security updates.
-const DefaultSandboxImage = "registry.access.redhat.com/ubi9/ubi:9.8-1785906690"
+// DefaultSandboxImage is the official command sandbox image. Keep it as a named
+// constant because the hardening baseline and Go toolchain version move as the
+// image receives security and toolchain updates.
+const DefaultSandboxImage = "ghcr.io/yottadynamics/yottacode-sandbox:latest"
+
+// DefaultSandboxDocumentsImage includes the document subprocess dependencies
+// used by create_document docx/pdf and read_document PDF extraction.
+const DefaultSandboxDocumentsImage = "ghcr.io/yottadynamics/yottacode-documents:latest"
+
+// DefaultSandboxDNS avoids loopback resolver inheritance inside rootless Podman.
+// Users on VPN/corporate networks can override this with their resolver IPs.
+var DefaultSandboxDNS = []string{"1.1.1.1", "8.8.8.8"}
+
+// DefaultSandboxDisk caps the sandbox container's writable-layer disk usage
+// in megabytes. Larger than the 2g Memory default since a writable layer
+// holding installed toolchains/deps typically needs more room than the
+// process's RAM ceiling. Only enforced when the host's storage driver
+// supports it (see SandboxConfig.Disk); otherwise this is a no-op.
+const DefaultSandboxDisk = 4096
 
 // ValidSandboxBackends is the whitelist for SandboxConfig.Backend.
 var ValidSandboxBackends = []string{"none", "podman"}
@@ -630,15 +669,28 @@ func Default() Config {
 			Name: defaultThemeName(),
 		},
 		Sandbox: SandboxConfig{
-			Backend:   "none",
-			Image:     DefaultSandboxImage,
-			Network:   "none",
-			Mounts:    []string{"."},
-			Memory:    "2g",
-			CPUs:      2,
-			PidsLimit: 256,
+			Backend:        "none",
+			Image:          DefaultSandboxImage,
+			DocumentsImage: DefaultSandboxDocumentsImage,
+			Network:        "host",
+			DNS:            append([]string(nil), DefaultSandboxDNS...),
+			Mounts:         []string{"."},
+			Memory:         "2g",
+			CPUs:           2,
+			PidsLimit:      256,
+			Disk:           DefaultSandboxDisk,
 		},
 	}
+}
+
+// DocumentsProfile returns the sandbox config for document-tool subprocesses.
+func (s SandboxConfig) DocumentsProfile() SandboxConfig {
+	if image := strings.TrimSpace(s.DocumentsImage); image != "" {
+		s.Image = image
+	} else {
+		s.Image = DefaultSandboxDocumentsImage
+	}
+	return s
 }
 
 // DefaultPath returns ~/.yottacode/config.toml.
@@ -1022,15 +1074,30 @@ func Validate(cfg Config) error {
 		return fmt.Errorf("sandbox.network = %q invalid (expected one of %s)",
 			cfg.Sandbox.Network, strings.Join(ValidSandboxNetworks, ", "))
 	}
+	for i, raw := range cfg.Sandbox.DNS {
+		server := strings.TrimSpace(raw)
+		if server == "" {
+			return fmt.Errorf("sandbox.dns[%d] must not be empty", i)
+		}
+		if _, err := netip.ParseAddr(server); err != nil {
+			return fmt.Errorf("sandbox.dns[%d] = %q invalid (expected an IP address): %w", i, raw, err)
+		}
+	}
 	if cfg.Sandbox.CPUs < 0 {
 		return fmt.Errorf("sandbox.cpus = %v must be >= 0", cfg.Sandbox.CPUs)
 	}
 	if cfg.Sandbox.PidsLimit < 0 {
 		return fmt.Errorf("sandbox.pids_limit = %d must be >= 0", cfg.Sandbox.PidsLimit)
 	}
+	if cfg.Sandbox.Disk < 0 {
+		return fmt.Errorf("sandbox.disk = %d must be >= 0", cfg.Sandbox.Disk)
+	}
 	if cfg.Sandbox.Backend == "podman" {
 		if strings.TrimSpace(cfg.Sandbox.Image) == "" {
 			return fmt.Errorf("sandbox.image is required when sandbox.backend = %q", cfg.Sandbox.Backend)
+		}
+		if strings.TrimSpace(cfg.Sandbox.DocumentsImage) == "" {
+			return fmt.Errorf("sandbox.documents_image is required when sandbox.backend = %q", cfg.Sandbox.Backend)
 		}
 		if strings.TrimSpace(cfg.Sandbox.Memory) == "" {
 			return fmt.Errorf("sandbox.memory is required when sandbox.backend = %q", cfg.Sandbox.Backend)
@@ -1223,12 +1290,7 @@ func providerKeyEnvHint(p *Provider) string {
 }
 
 func inSlice(ss []string, s string) bool {
-	for _, x := range ss {
-		if x == s {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(ss, s)
 }
 
 // FindProvider returns a pointer to the provider with the given name,
@@ -1622,4 +1684,23 @@ capture_reminder_every_turns = 6
 # implementer_model = "anthropic:claude-haiku-4-5"
 # # or a failover chain for a slot:
 # # advisor_models = ["anthropic:claude-opus-4-6", "openai:gpt-4o"]
+
+# ---------------------------------------------------------------------
+# Command sandbox (opt-in). The /sandbox command writes this block for you.
+# Runtime DNS defaults to public resolvers so rootless Podman does not inherit
+# a host loopback stub such as [::1]:53 that is unreachable inside the
+# container. Override dns with your VPN/corporate resolver IPs if needed.
+# ---------------------------------------------------------------------
+
+# [sandbox]
+# backend         = "podman"
+# image           = "ghcr.io/yottadynamics/yottacode-sandbox:latest"
+# documents_image = "ghcr.io/yottadynamics/yottacode-documents:latest"
+# network         = "host"
+# dns             = ["1.1.1.1", "8.8.8.8"]
+# mounts          = ["."]
+# env_passthrough = []
+# memory          = "2g"
+# cpus            = 2
+# pids_limit      = 256
 `

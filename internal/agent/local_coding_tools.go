@@ -13,6 +13,14 @@ import (
 
 const (
 	defaultReadManyMaxFiles = 20
+
+	// maxReadManyTotalBytes bounds the combined output of a single
+	// read_many_files call. Each file is already capped at maxReadBytes,
+	// but with up to defaultReadManyMaxFiles files that still allows one
+	// call to return up to 10 MiB. A batch that size lands in history and
+	// gets resent verbatim on every subsequent turn until the session is
+	// summarized, so the aggregate needs its own, tighter ceiling.
+	maxReadManyTotalBytes = 2 * 1024 * 1024 // 2 MiB
 )
 
 type DeleteFileTool struct {
@@ -315,7 +323,7 @@ type ReadManyFilesTool struct {
 
 func (t *ReadManyFilesTool) Name() string { return "read_many_files" }
 func (t *ReadManyFilesTool) Description() string {
-	return "Read multiple UTF-8 text files from disk in one call. Optional offset and limit apply to each file. Set anchors=true to prefix each returned line with line#anchor. Returns clearly separated sections per file."
+	return fmt.Sprintf("Read multiple UTF-8 text files from disk in one call. Optional offset and limit apply to each file. Set anchors=true to prefix each returned line with line#anchor. Returns clearly separated sections per file. Combined output across all files in one call is capped at %d bytes; remaining files past the cap are listed but not read, and can be requested in a follow-up call.", maxReadManyTotalBytes)
 }
 func (t *ReadManyFilesTool) Schema() map[string]any {
 	return map[string]any{
@@ -364,6 +372,12 @@ func (t *ReadManyFilesTool) Execute(ctx context.Context, argsJSON string) (strin
 	sort.Strings(paths)
 	var b strings.Builder
 	for i, rel := range paths {
+		if b.Len() >= maxReadManyTotalBytes {
+			skipped := paths[i:]
+			fmt.Fprintf(&b, "\n…[read budget exceeded (%d bytes); %d file(s) not read: %s — request them in a separate call]",
+				maxReadManyTotalBytes, len(skipped), strings.Join(skipped, ", "))
+			break
+		}
 		p := resolvePath(t.Cwd.Get(), rel)
 		if err := ValidateReadPath(p, t.DenyReadPaths); err != nil {
 			return "", fmt.Errorf("read_many_files: %w", err)
@@ -401,22 +415,22 @@ func (t *ReadManyFilesTool) Execute(ctx context.Context, argsJSON string) (strin
 			b.WriteString("\n")
 		}
 		fmt.Fprintf(&b, "==> %s <==\n", rel)
-			if anchors {
-				text := string(buf[:n])
-				text = strings.TrimSuffix(text, "\n")
-				if text != "" {
-					lines := strings.Split(text, "\n")
-					anchored := buildAnchoredLines(lines, 1)
-					for j, line := range anchored {
-						fmt.Fprintf(&b, "%6d#%s\t%s", line.LineNumber, line.Hash, line.Content)
-						if j < len(anchored)-1 || truncated {
-							b.WriteByte('\n')
-						}
+		if anchors {
+			text := string(buf[:n])
+			text = strings.TrimSuffix(text, "\n")
+			if text != "" {
+				lines := strings.Split(text, "\n")
+				anchored := buildAnchoredLines(lines, 1)
+				for j, line := range anchored {
+					fmt.Fprintf(&b, "%6d#%s\t%s", line.LineNumber, line.Hash, line.Content)
+					if j < len(anchored)-1 || truncated {
+						b.WriteByte('\n')
 					}
 				}
-			} else {
-				b.Write(buf[:n])
 			}
+		} else {
+			b.Write(buf[:n])
+		}
 		if truncated {
 			b.WriteString("\n…[truncated]")
 		}

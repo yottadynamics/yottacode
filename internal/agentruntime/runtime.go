@@ -124,6 +124,9 @@ type Runtime struct {
 	// HostSandbox behavior.
 	CmdSandbox agent.Sandbox
 
+	// SandboxManager owns lazy per-profile containers when sandboxing is enabled.
+	SandboxManager *SandboxManager
+
 	FileCfg         config.Config
 	ExperimentalSet *experimental.Set
 	Mem             memory.Loaded
@@ -375,38 +378,52 @@ func (b *Builder) Build(ctx context.Context, spec SessionSpec) (*Runtime, error)
 	}
 	rt.CodeMapProvider = codeMapProvider
 
-	// Podman command sandbox: opt-in via experimental sandbox plus
-	// [sandbox].backend = "podman". Construction failure is fatal; never
-	// fall back to HostSandbox when the user requested isolation.
+	// Podman command sandbox: enabled by [sandbox].backend = "podman".
+	// Manager construction is intentionally cheap
+	// and does not require Podman or any image to be present yet. Profile startup
+	// failures later fail closed at the tool call that needed the profile; they
+	// never fall back to HostSandbox when the user requested isolation.
+	//
+	// The manager itself is created at startup, but profile containers are lazy:
+	// run_bash gets the default image on first use, while document subprocess
+	// tools get the documents image only when they need it.
 	var cmdSandbox agent.Sandbox
 	var sandboxFactory agent.SandboxFactory
-	if expSet.IsEnabled(experimental.Sandbox) && fileCfg.Sandbox.Backend == "podman" {
-		ps, err := sandbox.NewPodmanSandbox(ctx, fileCfg.Sandbox, sess.ID, cwd)
-		if err != nil {
-			return nil, fmt.Errorf("sandbox: %w", err)
-		}
-		cmdSandbox = ps
+	if fileCfg.Sandbox.Backend == "podman" {
+		// Best-effort: reclaims yc-* containers left stuck non-running by a
+		// crashed or interrupted-teardown prior session (see PruneOrphaned's
+		// doc comment for why State, not age, is the safety filter). Errors
+		// are swallowed the same way podman.removeContainer's own callers
+		// already do for best-effort cleanup elsewhere in this package.
+		_ = sandbox.PruneOrphaned(ctx)
+		mgr := NewSandboxManager(fileCfg.Sandbox, sess.ID, cwd, podmanSandboxConstructor)
+		mgr.SetConfigReloader(config.LoadDefault)
+		rt.SandboxManager = mgr
+		cmdSandbox = mgr.Handler()
 		rt.CmdSandbox = cmdSandbox
 		sandboxFactory = func(ctx context.Context, wtDir, taskID string) (agent.Sandbox, error) {
-			return sandbox.NewPodmanSandbox(ctx, fileCfg.Sandbox, sess.ID+"-"+taskID, wtDir)
+			workerMgr := NewSandboxManager(fileCfg.Sandbox, sess.ID+"-"+taskID, wtDir, podmanSandboxConstructor)
+			workerMgr.SetConfigReloader(config.LoadDefault)
+			return workerMgr.Handler(), nil
 		}
 	}
 
 	reg := agent.NewRegistry()
 	rt.Registry = reg
 	agent.RegisterCoreCwdTools(reg, cwdRef, agent.CoreToolDeps{
-		WriteOpts:               writeOpts,
-		DenyReads:               denyReads,
-		SupportsImages:          ad.Profile().SupportsImages,
-		EnableLSP:               true,
-		LSPManager:              lspManager,
-		LSPServers:              fileCfg.LSP.Servers,
-		LSPDisabled:             fileCfg.LSP.Disabled,
-		EnableCodeMap:           expSet.IsEnabled(experimental.CodeMap),
-		CodeMapProvider:         codeMapProvider,
-		EnableSyntaxRanges:      true,
-		EnableDocumentIngestion: expSet.IsEnabled(experimental.DocumentIngestion),
-		Sandbox:                 cmdSandbox,
+		WriteOpts:              writeOpts,
+		DenyReads:              denyReads,
+		SupportsImages:         ad.Profile().SupportsImages,
+		EnableLSP:              true,
+		LSPManager:             lspManager,
+		LSPServers:             fileCfg.LSP.Servers,
+		LSPDisabled:            fileCfg.LSP.Disabled,
+		EnableCodeMap:          expSet.IsEnabled(experimental.CodeMap),
+		CodeMapProvider:        codeMapProvider,
+		EnableSyntaxRanges:     true,
+		AllowPDFIngestion:      true,
+		AllowDocxPdfGeneration: true,
+		Sandbox:                cmdSandbox,
 	})
 
 	// Git worktree tools. enter_worktree/exit_worktree call process-global
@@ -531,16 +548,17 @@ func (b *Builder) Build(ctx context.Context, spec SessionSpec) (*Runtime, error)
 
 	dispatchEnabled := expSet.IsEnabled(experimental.Dispatch)
 	reg.Register(&agent.DispatchTool{
-		Agent:                   agentTool,
-		SupportsImages:          ad.Profile().SupportsImages,
-		EnableLSP:               true,
-		LSPServers:              fileCfg.LSP.Servers,
-		LSPDisabled:             fileCfg.LSP.Disabled,
-		EnableSyntaxRanges:      true,
-		EnableDocumentIngestion: expSet.IsEnabled(experimental.DocumentIngestion),
-		SupportsBackground:      spec.SupportsBackgroundDispatch,
-		Enabled:                 dispatchEnabled,
-		SandboxFactory:          sandboxFactory,
+		Agent:                  agentTool,
+		SupportsImages:         ad.Profile().SupportsImages,
+		EnableLSP:              true,
+		LSPServers:             fileCfg.LSP.Servers,
+		LSPDisabled:            fileCfg.LSP.Disabled,
+		EnableSyntaxRanges:     true,
+		AllowPDFIngestion:      true,
+		AllowDocxPdfGeneration: true,
+		SupportsBackground:     spec.SupportsBackgroundDispatch,
+		Enabled:                dispatchEnabled,
+		SandboxFactory:         sandboxFactory,
 	})
 	reg.Register(&agent.IntegrateTool{Cwd: cwdRef, Enabled: dispatchEnabled})
 

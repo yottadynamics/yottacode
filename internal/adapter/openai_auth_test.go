@@ -549,6 +549,12 @@ func TestChatStreamSuccess(t *testing.T) {
 	if got := strings.Join(tokens, ""); got != "hi there" {
 		t.Errorf("combined deltas = %q, want %q", got, "hi there")
 	}
+	if final.Model != "gpt-5.5" {
+		t.Errorf("final.Model = %q, want the adapter's configured model", final.Model)
+	}
+	if final.Provider != string(ProviderOpenAIAuth) {
+		t.Errorf("final.Provider = %q, want %q", final.Provider, ProviderOpenAIAuth)
+	}
 
 	// Verify required headers were sent.
 	if len(fb.captured) != 1 {

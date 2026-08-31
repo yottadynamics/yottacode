@@ -52,11 +52,11 @@ func TestRenderStartupBox_OmitsSandboxAndChecks(t *testing.T) {
 	if !strings.Contains(got, "v0.4.0") || !strings.Contains(got, "abc1234") {
 		t.Errorf("startup box title should show version + commit: %q", got)
 	}
-	if !strings.Contains(got, "provider") || !strings.Contains(got, "openai") {
-		t.Errorf("startup box should show provider: %q", got)
+	if strings.Contains(got, "provider") || strings.Contains(got, "openai") {
+		t.Errorf("startup box should not duplicate provider details: %q", got)
 	}
-	if !strings.Contains(got, "tools") || !strings.Contains(got, "web_search") {
-		t.Errorf("startup box should show enabled built-in tools: %q", got)
+	if strings.Contains(got, "tools") || strings.Contains(got, "web_search") {
+		t.Errorf("startup box should not duplicate enabled built-in tools: %q", got)
 	}
 }
 

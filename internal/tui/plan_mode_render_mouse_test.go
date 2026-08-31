@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"strings"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
@@ -8,7 +9,24 @@ import (
 	"github.com/yottadynamics/yottacode/internal/agent"
 )
 
-func TestExitPlanApprovalCard_ClickKeepPlanning(t *testing.T) {
+func TestPlanApprovalCardsHaveNoPopupCloseGlyph(t *testing.T) {
+	for _, card := range []struct {
+		name   string
+		render func(int) string
+	}{
+		{"exit", func(width int) string { return renderPlanApprovalCard(width) }},
+		{"enter", func(width int) string { return renderEnterPlanApprovalCard(width) }},
+	} {
+		t.Run(card.name, func(t *testing.T) {
+			first := strings.SplitN(stripANSI(card.render(80)), "\n", 2)[0]
+			if strings.Contains(first, "×") {
+				t.Fatalf("plan approval top border should not include a mouse-only close glyph: %q", first)
+			}
+		})
+	}
+}
+
+func TestExitPlanApprovalCard_ClickKeepPlanningIsIgnored(t *testing.T) {
 	m := newTestModel(t)
 	m.turnActive = true
 	m.eventsCh = make(chan agent.Event, 4)
@@ -32,23 +50,21 @@ func TestExitPlanApprovalCard_ClickKeepPlanning(t *testing.T) {
 	}
 
 	m, cmd := applyMsg(m, tea.MouseClickMsg{X: x, Y: y})
-	if cmd == nil {
-		t.Fatalf("clicking [K] must return a Cmd that resumes the event pump")
+	if cmd != nil {
+		t.Fatalf("clicking [K] should not resume the event pump")
 	}
-	if m.awaitingApproval {
-		t.Errorf("clicking [K] should clear awaitingApproval")
+	if !m.awaitingApproval {
+		t.Errorf("clicking [K] should leave awaitingApproval true")
 	}
 	select {
 	case d := <-m.decisions:
-		if d != agent.Deny {
-			t.Errorf("decision = %v, want Deny", d)
-		}
+		t.Errorf("mouse click should not send a decision; got %v", d)
 	default:
-		t.Errorf("expected a decision on the channel")
+		// Expected: plan approvals are keyboard-only.
 	}
 }
 
-func TestEnterPlanApprovalCard_ClickYes(t *testing.T) {
+func TestEnterPlanApprovalCard_ClickYesIsIgnored(t *testing.T) {
 	m := newTestModel(t)
 	m.turnActive = true
 	m.eventsCh = make(chan agent.Event, 4)
@@ -72,18 +88,16 @@ func TestEnterPlanApprovalCard_ClickYes(t *testing.T) {
 	}
 
 	m, cmd := applyMsg(m, tea.MouseClickMsg{X: x, Y: y})
-	if cmd == nil {
-		t.Fatalf("clicking [Y] must return a Cmd that resumes the event pump")
+	if cmd != nil {
+		t.Fatalf("clicking [Y] should not resume the event pump")
 	}
-	if m.awaitingApproval {
-		t.Errorf("clicking [Y] should clear awaitingApproval")
+	if !m.awaitingApproval {
+		t.Errorf("clicking [Y] should leave awaitingApproval true")
 	}
 	select {
 	case d := <-m.decisions:
-		if d != agent.AllowOnce {
-			t.Errorf("decision = %v, want AllowOnce", d)
-		}
+		t.Errorf("mouse click should not send a decision; got %v", d)
 	default:
-		t.Errorf("expected a decision on the channel")
+		// Expected: plan approvals are keyboard-only.
 	}
 }

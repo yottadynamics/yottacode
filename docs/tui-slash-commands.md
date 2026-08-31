@@ -6,13 +6,14 @@ Type `/` in the TUI to open the slash-command palette. The palette filters as yo
 
 | Command | Args | What it does |
 |---|---|---|
-| `/help` | — | List all commands with help text |
+| `/help` | — | List all commands in a scrollable popup. Use wheel, ↑/↓, PgUp/PgDn, Home/End to scroll; Esc or the `×` closes it. |
 | `/quit` | — | Exit yottacode |
 | `/clear` | — | Save the current session and start a fresh one |
 | `/map` | `[query]` | Open the experimental code map. `/map here` shows changed files and their immediate import neighborhood; Enter inserts the selected file/symbol as an `@path` prompt reference. Other modes stay under the same command: `/map deps <path>`, `/map dependents <path>`, `/map impact [--depth N\|all] <path>`, `/map cycles [path]`, and `/map diagram [path]`. Enable with `--experimental code_map`. |
-| `/permissions` | — | Print shared and local permission file paths |
+| `/permissions` | — | Open the shared/local permission files and show advisory warnings for broad or shadowed rules |
 | `/system` | — | Show the active system prompt, including injected memory |
-| `/usage` | — | Show per-session token totals by model, a per-tool call/token/error breakdown, per-subagent task detail, cache hit rate, the session's largest turn, compaction history, today's sessions individually (largest first, current session marked), live rate-limit headroom (including both Codex quota windows on a ChatGPT subscription), and a per-provider billing-dashboard link. Anomalous rows (tool, subagent, or session well above the average) are flagged. Scrolls with ↑/↓ or PgUp/PgDn when content exceeds the terminal. No dollar estimate — token counts are exact, but cost would need an unmaintainable price table. See [cost.md](cost.md). |
+| `/usage` | — | Show per-session token totals by model, a per-tool call/token/error breakdown, efficiency signals (low-signal turns, repeated identical tool calls, repeated-failure guidance, and a floor waste estimate), per-subagent task detail, cache hit rate, the session's largest turn, compaction history, today's sessions individually (largest first, current session marked with an inspectable short id), live rate-limit headroom (including both Codex quota windows on a ChatGPT subscription), and a per-provider billing-dashboard link. Scrolls with ↑/↓ or PgUp/PgDn when content exceeds the terminal. No dollar estimate — token counts are exact, but cost would need an unmaintainable price table. See [cost.md](cost.md). |
+| `/inspect` | — | Open a paged picker over the live session plus saved sessions, then inspect the selected session in a read-only, scrollable turn-by-turn replay without resuming it. Direct `/inspect <session-id>` still works for known ids/names/unique short ids, but the command is picker-first in the TUI. Shows each user prompt preview, assistant preview, tool calls with truncated args, tool outcomes, per-turn tokens, and low-signal markers without switching the live conversation. Export sessions from `/sessions` instead. |
 | `/sessions` | `[id\|name]` | Open the sessions picker or resume a known session directly |
 | `/model` | `<name>` | Switch the active model for this session |
 | `/provider` | — | Show resolved provider, API style, built-ins, capabilities, and diagnostics |
@@ -22,7 +23,7 @@ Type `/` in the TUI to open the slash-command palette. The palette filters as yo
 | `/doctor` | — | Probe the provider `/models` endpoint |
 | `/redo` | — | Rewind the last user message and put it back in the input box |
 | `/recall` | `<query>` | Search saved sessions in an interactive results overlay |
-| `/summarize` | — | Compress the current session after snapshotting it. Successful automatic compaction lands as one compact system-message row with the before/after context size, `full history saved`, and a copyable `/recall <session-id>` command; warning color is reserved for failures or non-convergent summaries. |
+| `/summarize` | — | Compress the current session after snapshotting it. Successful automatic compaction lands as one compact system-message row with the before/after context size, `full history saved`, and a copyable `yottacode sessions resume <id>` command that reopens the full pre-compression transcript as a fresh session; warning color is reserved for failures or non-convergent summaries. |
 | `/checkpoints` | — | Open the checkpoints picker — also `Esc Esc`. Restore conversation, files, or both to any prior prompt |
 | `/memory` | — | Edit curated memory or browse agent-managed memories |
 | `/video` | `[edit\|analyze] <path>` or `prompt <goal>` | Guide media workflows: clean up one recording, or plan an asset-based marketing video from docs/screenshots/clips and render only after approval |
@@ -59,9 +60,11 @@ Beyond the built-ins, you can ship your own slash commands by dropping markdown 
 - Recent sessions are shown newest first.
 - `/sessions <id-or-name>` resumes directly.
 - Press `s` in the list, or `Ctrl+S` in the resume input, to toggle summarized resume for large transcripts.
-- Export writes a Markdown transcript suitable for sharing or archiving.
+- Export writes `.md` Markdown transcripts for sharing or `.jsonl` schema-versioned structured activity logs for team audit/debugging, based on the path extension. Review JSONL files before sharing them because prompts, tool args/results, paths, command output, and image metadata can contain sensitive local context.
 
-`/recall <query>` searches older saved sessions by content and opens a transient results overlay below the cmdline. Results are grouped by session with a hit count, so one noisy conversation does not fill the whole list. Summarization receipts print a literal `/recall <session-id>` command when full history was snapshotted, so you can copy the id directly instead of parsing the snapshot filename. Use `↑`/`↓` to select a session, `Enter` to preview matches with the neighboring turn before and after each hit, `↑`/`↓` or `PgUp`/`PgDn` to scroll long previews, `s` to toggle summarized resume, `Enter` again to resume it, and `Esc` to go back or close. Results are not appended to the conversation transcript, so recall searches do not pollute session scrollback.
+`/recall <query>` searches older saved sessions by content and opens a transient results overlay below the cmdline. Results are grouped by session with a hit count, so one noisy conversation does not fill the whole list. Use `↑`/`↓` to select a session, `Enter` to preview matches with the neighboring turn before and after each hit, `↑`/`↓` or `PgUp`/`PgDn` to scroll long previews, `s` to toggle summarized resume, `Enter` again to resume it, and `Esc` to go back or close. Results are not appended to the conversation transcript, so recall searches do not pollute session scrollback.
+
+Compaction (auto or manual `/summarize`) snapshots the full pre-compression transcript before compressing and prints a copyable `yottacode sessions resume <id>` command in the receipt — run it (outside the TUI, or after quitting) to reopen that transcript verbatim as a fresh session, rather than parsing the snapshot filename by hand.
 
 ## Memory picker
 
@@ -144,7 +147,7 @@ Custom commands are a **prompt shortcut, not a permission bypass**. Typing `/rel
 Three ways to reduce friction on commands you trust:
 
 - **Auto mode** (`Shift+Tab` or `yottacode --permission-mode auto`) — edits auto-allow; `run_bash`, `git_commit`, `git_checkpoint`, and `rollback` remain in the safety floor and still prompt. See [Auto mode](#auto-mode).
-- **`.yottacode/permissions.json` allow rules** — pre-approve specific shell invocations or tool patterns (`allow: ["Bash(go test*)", "Bash(go mod tidy)"]`). Rules apply equally to commands the agent calls from a custom-command turn and to anything else.
+- **`.yottacode/permissions.json` allow rules** — pre-approve specific typed tools or shell invocations (`allow: ["Tests(go *)", "Github(read_*)", "Edit(docs/**)"]`). Rules apply equally to commands the agent calls from a custom-command turn and to anything else.
 - **`yottacode --yolo`** — everything auto-runs, with a high but finite iteration budget. Use only for fully-trusted scripted runs. See [Yolo mode](#yolo-mode).
 
 Per-command `allowed-tools:` frontmatter (a Claude Code feature that scopes which tools a command can call) is **not** supported in v1; the closest equivalent today is auto mode plus an `.yottacode/permissions.json` allow list. See [Out of scope](#out-of-scope-for-now).
@@ -453,11 +456,11 @@ The plan-approval card's `[A]` auto-approval hotkey is a shortcut: it approves t
 
 Auto mode persists across turns until you toggle it off. The foreground-only banner above the cmdline (`▸ auto mode · edits + read-only bash auto-allow; commits prompt · Shift+Tab cycles`) is always visible while active so the state isn't easy to forget — the trailing `Shift+Tab cycles` hint is how you leave (it drops first on narrow terminals). The entry log shows the full cycle (`auto → yolo → normal → plan`); the exit log shows the re-enter key.
 
-The default per-turn iteration cap is 100; auto mode raises the effective cap to 400 (4×). If you still hit the cap on long implementations, run `/max-iterations 500` (sanity ceiling) or relaunch with `--yolo` (raises the cap to `max-iterations × 20`, at least 1000; see [Yolo mode](#yolo-mode)).
+The default per-turn iteration cap is 128; auto mode raises the effective cap to 512 (4×). If you still hit the cap on long implementations, run `/max-iterations 500` (sanity ceiling) or relaunch with `--yolo` (raises the cap to `max-iterations × 20`, 2560 by default and at least 1000; see [Yolo mode](#yolo-mode)).
 
 ## Yolo mode
 
-Yolo mode is the unrestricted overlay — every tool auto-runs (`run_bash`, `git_commit`, edits, everything), and the iteration cap is raised to a generous but finite budget (`max-iterations × 20`, at least 1000) so a runaway model still terminates. Intended for unattended long-running implementations where you've decided no further oversight is needed. The startup flag is `--yolo`; the slash command is `/yolo`; the in-TUI banner label reads "yolo mode" (the codebase calls the overlay state "yolo" internally).
+Yolo mode is the unrestricted overlay — every tool auto-runs (`run_bash`, `git_commit`, edits, everything), and the iteration cap is raised to a generous but finite budget (`max-iterations × 20`, 2560 by default and at least 1000) so a runaway model still terminates. Intended for unattended long-running implementations where you've decided no further oversight is needed. The startup flag is `--yolo`; the slash command is `/yolo`; the in-TUI banner label reads "yolo mode" (the codebase calls the overlay state "yolo" internally).
 
 There are three ways in:
 
@@ -579,4 +582,5 @@ The TUI shows a compact contextual `keys · …` hint row above the cmdline afte
 
 Bracketed paste is normalized before it reaches the input: CR/CRLF line endings become LF, large or multi-line text is collapsed behind a `[Pasted text #N: …]` marker and expanded on submit, and a trailing transport newline is trimmed so paste summaries do not count a phantom blank line.
 
-During normal conversation, yottacode captures click-drag selection inside the transcript and automatically copies the selected text to the clipboard on mouse release, so copying does not require a right-click menu. Inline slash/file palettes, popup pickers, and decision modals temporarily enable scoped all-motion reporting; hover moves the active selector there and clicks activate the highlighted row. Use `PgUp`/`PgDn` and `Ctrl+Home`/`Ctrl+End` for transcript movement.
+Use the mouse wheel, `PgUp`/`PgDn`, and `Ctrl+Home`/`Ctrl+End` for transcript movement. Other mouse gestures are intentionally disabled: clicks, hover, drag selection, popup controls, approval decisions, and cmdline focus all stay keyboard/native-terminal owned. When transcript history overflows the frame, a slim right-edge scrollbar shows the current position. Approval and plan modals still leave wheel scrolling available for the transcript so long previews remain readable before you decide. Static scrollable popups such as `/usage` and `/inspect` use keyboard scrolling (↑/↓, PgUp/PgDn, Home/End where shown) rather than mouse controls.
+

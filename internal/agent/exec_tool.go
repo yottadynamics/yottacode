@@ -7,12 +7,13 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"strings"
 )
 
 // RunBashTool runs a shell command in cwd via /bin/sh -c. Always requires
 // approval. Command execution routes through Sandbox — nil selects
-// HostSandbox (today's direct-on-host behavior); a config/experimental-flag
-// gated PodmanSandbox (internal/sandbox) provides real isolation.
+// HostSandbox (today's direct-on-host behavior); a configured PodmanSandbox
+// (internal/sandbox) provides real isolation.
 type RunBashTool struct {
 	Cwd *CwdRef
 	// Sandbox is nil-safe: a nil Sandbox behaves exactly like HostSandbox,
@@ -103,19 +104,26 @@ func (t *RunBashTool) Execute(ctx context.Context, argsJSON string) (string, err
 	exit := c.ProcessState.ExitCode()
 	result := fmt.Sprintf("exit=%d\n--- stdout ---\n%s\n--- stderr ---\n%s",
 		exit, stdout.String(), stderr.String())
-	if exit == podmanInfraExitCode && t.sandbox().Label() == podmanSandboxLabel {
-		// podman's own exit-code convention (125 = podman itself failed —
-		// bad container/cwd/image/network setup; 126/127 = the invoked
-		// command couldn't be found/run; anything else passes the
-		// contained command's own exit code straight through). Without
-		// this note, a dead or misconfigured sandbox container surfaces
-		// as an ordinary-looking exit=125 with podman's own error text
-		// sitting in the stderr slot, indistinguishable in shape from
-		// the user's own command failing — nothing tells the model this
-		// is an infrastructure problem rather than a scripting one.
-		result = "NOTE: exit=125 is podman's own convention for a podman-level failure (not the command's exit code) — the sandbox container itself may need attention (see /sandbox). " + result
+	return podmanInfraNote(t.sandbox(), exit, result), nil
+}
+
+// podmanInfraNote prepends podman's own exit-code-125 disambiguation note to
+// result when exit==125 AND sb is actually podman-backed (matched by Label(),
+// not type — internal/agent stays unaware of any concrete Sandbox
+// implementation, see internal/sandbox/podman.go's package doc). 125 is podman
+// itself failing (bad container/cwd/image/network setup), not the contained
+// command's own exit code; 126/127 mean the invoked command couldn't be
+// found/run; anything else passes the contained command's exit code straight
+// through. Without this note, a dead or misconfigured sandbox container surfaces
+// as an ordinary-looking exit=125 with podman's own error text sitting in the
+// stderr slot, indistinguishable in shape from the command itself failing.
+// Shared by RunBashTool and RunTestsTool, the two tools whose commands can run
+// inside the sandbox.
+func podmanInfraNote(sb Sandbox, exit int, result string) string {
+	if exit == podmanInfraExitCode && isPodmanSandboxLabel(sb.Label()) {
+		return "NOTE: exit=125 is podman's own convention for a podman-level failure (not the command's exit code) — the sandbox container itself may need attention (see /sandbox). " + result
 	}
-	return result, nil
+	return result
 }
 
 // podmanInfraExitCode and podmanSandboxLabel encode just enough of
@@ -128,6 +136,10 @@ const (
 	podmanInfraExitCode = 125
 	podmanSandboxLabel  = "[podman-sandbox]"
 )
+
+func isPodmanSandboxLabel(label string) bool {
+	return label == podmanSandboxLabel || strings.HasPrefix(label, "[podman:")
+}
 
 // cappedWriter drops bytes past runBashMaxStreamBytes and emits a
 // `[output truncated]` notice in-band so the model sees the cap.

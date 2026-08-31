@@ -23,8 +23,8 @@ These work for the TUI and `run` mode.
 | `--enable-x-search` | `YOTTACODE_ENABLE_X_SEARCH` | no | Enable xAI `x_search` |
 | `--enable-code-interpreter` | `YOTTACODE_ENABLE_CODE_INTERPRETER` | no | Enable hosted code interpreter when supported |
 | `--allow-paths` | `YOTTACODE_ALLOW_PATHS` | no | Extra write roots |
-| `--yolo` | — | no | Dangerous: skip approval prompts and remove iteration cap (yolo mode overlay). Explicit deny rules still apply. Launch-only; use `/yolo` to toggle mid-session. |
-| `--max-iterations` | — | no | Tool-call cap per turn; default `100` (auto raises to `400`; `--yolo` removes the cap) |
+| `--yolo` | — | no | Dangerous: skip approval prompts and raise the iteration cap (yolo mode overlay). Explicit deny rules still apply. Launch-only; use `/yolo` to toggle mid-session. |
+| `--max-iterations` | — | no | Tool-call cap per turn; default `128` (auto raises to `512`; `--yolo` raises to `2560` by default) |
 | `--permission-mode` | — | no | TUI only — startup mode: `default` \| `plan` \| `auto`. Mirrors Claude Code's `--permission-mode`. |
 | `--plan-resume` | — | no | TUI only — resume a saved plan by slug/substring (implies `--permission-mode plan`) |
 | `--resume` | — | no | Resume a session by id or name |
@@ -39,6 +39,15 @@ yottacode
 ```
 
 The TUI is best for multi-turn coding work. It provides streaming output, slash commands, approval modals, session controls, and inline scrollback.
+
+Fresh sessions open on a welcome card. Hover an action to select it, click to activate it, or use the shortcut shown at the right edge of the row. The cmdline placeholder invites users to build anything; clicking the cmdline briefly brightens the existing border color so the terminal UI feels focusable:
+
+- `Ctrl+W` — New worktree
+- `Ctrl+R` — Resume session
+- `Ctrl+P` — Enter plan mode
+- `?` — Help / cheatsheet when input is empty
+
+The welcome card intentionally stays action-only. Runtime state such as model, provider, branch, directory, memory, context, and tool status lives in the cmdline/status bar instead of being duplicated in the card.
 
 Useful keys:
 
@@ -57,7 +66,7 @@ See [TUI slash commands](tui-slash-commands.md).
 yottacode run "summarize this repo"
 ```
 
-Use `run` for scripts, CI jobs, or shell pipelines. stdout contains the final assistant response. stderr contains reasoning, progress, and tool status.
+Use `run` for scripts, CI jobs, or shell pipelines. stdout contains the final assistant response. stderr contains reasoning, progress, and tool status. Pass `--json` when an integration needs a machine-readable final receipt on stderr with the run status, iteration count, tool counts, and changed files reported by `list_git_changed_files`; stdout remains answer-only so redirects stay clean. Status values are stable enough for automation: `success`, `approval_required`, `blocked_needs_clarification`, `tests_failed`, `policy_denied`, `provider_error`, and `iteration_cap`.
 
 Examples:
 
@@ -67,6 +76,47 @@ yottacode run "write a changelog entry for the current git diff"
 
 ```bash
 yottacode run --max-iterations 100 "implement step 3 of the plan we drafted yesterday"
+```
+
+```bash
+yottacode run --json "resolve the current issue and summarize changed files"
+```
+
+### What `yottacode run` can automate
+
+`run` is designed for non-interactive jobs where another system owns the trigger and yottacode owns the engineering loop. Common uses include:
+
+- **Ticket triage:** summarize a bug report, identify likely files, and return a recommended fix path.
+- **Issue resolution:** work from a GitHub issue, make code changes, run tests, and summarize the resulting diff.
+- **Customer-request drafting:** convert a support request into implementation notes, acceptance criteria, or a candidate patch.
+- **CI/reporting jobs:** inspect a failing build log or current diff and emit a clean Markdown report on stdout.
+- **Release chores:** draft changelog entries, migration notes, or PR descriptions from repository context.
+
+For automation, keep stdout as the human-readable artifact and parse the final `--json` receipt from stderr. A ticket system can route on `status`: retry `provider_error`, ask a human on `approval_required` or `blocked_needs_clarification`, and attach `changed_files` to the ticket or PR record.
+
+Example GitHub Issue workflow:
+
+```bash
+yottacode run --json "Read issue #123, implement the smallest safe fix, run relevant tests, and summarize the diff"
+```
+
+Example support-ticket workflow:
+
+```bash
+yottacode run --json "Customer reports that export fails for empty projects. Reproduce from the codebase, fix if clear, otherwise return BLOCKED: with the clarification needed. Run relevant tests."
+```
+
+`--json` appends a final stderr object shaped like:
+
+```json
+{
+  "status": "success",
+  "iterations": 3,
+  "tools": {
+    "list_git_changed_files": { "count": 1 }
+  },
+  "changed_files": ["internal/example.go", "docs/cli.md"]
+}
 ```
 
 ## Setup
@@ -145,9 +195,10 @@ yottacode sessions resume <id-or-name> --summarized
 yottacode sessions rename <id-or-name> <new-name>
 yottacode sessions export <id-or-name>
 yottacode sessions export <id-or-name> path.md --force
+yottacode sessions export <id-or-name> path.jsonl --force
 ```
 
-Sessions are saved automatically after completed turns in `~/.yottacode/sessions/`.
+Sessions are saved automatically after completed turns in `~/.yottacode/sessions/`. Export paths ending in `.jsonl` write a schema-versioned structured activity log for team audit and debugging; review it before sharing because prompts, tool args/results, paths, command output, and image metadata can contain sensitive local context.
 
 ## Memory
 

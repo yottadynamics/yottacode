@@ -2,6 +2,7 @@ package session
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -338,6 +339,34 @@ func TestList_NewestFirst(t *testing.T) {
 	}
 	if infos[0].Name != "labelled" {
 		t.Errorf("Name didn't round-trip: %+v", infos[0])
+	}
+}
+
+func TestListWith_PagesNewestFirst(t *testing.T) {
+	redirectHome(t)
+	var ids []string
+	for i := range 5 {
+		s, _ := New("m", "/x")
+		s.Messages = []adapter.Message{{Role: adapter.RoleUser, Content: fmt.Sprintf("prompt %d", i)}}
+		if err := s.Save(); err != nil {
+			t.Fatalf("Save %d: %v", i, err)
+		}
+		ids = append(ids, s.ID)
+		time.Sleep(2 * time.Millisecond)
+	}
+
+	infos, err := ListPage(ListOptions{}, 1, 2)
+	if err != nil {
+		t.Fatalf("ListPage: %v", err)
+	}
+	if len(infos) != 2 {
+		t.Fatalf("page len = %d, want 2", len(infos))
+	}
+	if infos[0].ID != ids[3] || infos[1].ID != ids[2] {
+		t.Fatalf("page ids = [%s %s], want [%s %s]", infos[0].ID, infos[1].ID, ids[3], ids[2])
+	}
+	if infos[0].Summary != "prompt 3" {
+		t.Errorf("paged row should still carry summary, got %q", infos[0].Summary)
 	}
 }
 

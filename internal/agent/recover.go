@@ -5,6 +5,7 @@ import (
 	"os"
 	"runtime/debug"
 	"slices"
+	"time"
 
 	"github.com/yottadynamics/yottacode/internal/adapter"
 )
@@ -23,8 +24,28 @@ func withHistoryLock(cfg LoopConfig, fn func()) {
 	fn()
 }
 
-// appendHistory appends msgs to the history slice under the history lock.
+// stampNow sets msg.Timestamp to the current time unless the caller
+// already set one — a partial reply preserved from a cancelled stream, for
+// instance, keeps whatever time it was built with. This is the single
+// choke point every RoleAssistant/RoleTool message appended by the loop
+// passes through (directly via appendHistory, or via the sibling
+// append*Interrupts/appendToolResults helpers that bypass it but call this
+// the same way), so patching new append sites never means remembering to
+// add a stamp by hand.
+func stampNow(msg adapter.Message) adapter.Message {
+	if msg.Timestamp == nil {
+		t := time.Now()
+		msg.Timestamp = &t
+	}
+	return msg
+}
+
+// appendHistory appends msgs to the history slice under the history lock,
+// stamping each with stampNow first.
 func appendHistory(cfg LoopConfig, history *[]adapter.Message, msgs ...adapter.Message) {
+	for i := range msgs {
+		msgs[i] = stampNow(msgs[i])
+	}
 	withHistoryLock(cfg, func() { *history = append(*history, msgs...) })
 }
 

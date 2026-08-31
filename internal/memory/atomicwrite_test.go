@@ -42,7 +42,9 @@ func TestAtomicWrite_ConcurrentNoCorruptionOrTempLeak(t *testing.T) {
 
 	var wg sync.WaitGroup
 	errs := make(chan error, 64)
-	for range 24 {
+	// Keep enough concurrent writers to exercise the unique-temp race without
+	// exhausting thread quotas in sandboxed test runs.
+	for range 6 {
 		for i := range payloads {
 			wg.Add(1)
 			go func(p string) {

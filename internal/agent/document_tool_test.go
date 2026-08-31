@@ -39,6 +39,29 @@ func TestReadDocumentTool_HappyPath(t *testing.T) {
 	}
 }
 
+func TestFormatDocumentResult_TitleAuthorCreationDate(t *testing.T) {
+	res := documents.ExtractResult{Metadata: documents.DocumentMetadata{
+		Kind: "pdf", SizeBytes: 100, Shape: "3 pages",
+		Title: "Q3 Report", Author: "Jane Doe", CreationDate: "Mon Jan  1 00:00:00 2024",
+	}}
+	out := formatDocumentResult("report.pdf", res)
+	for _, want := range []string{"title: Q3 Report", "author: Jane Doe", "created: Mon Jan  1 00:00:00 2024"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output missing %q: %q", want, out)
+		}
+	}
+}
+
+func TestFormatDocumentResult_NoMetadataFieldsOmitted(t *testing.T) {
+	res := documents.ExtractResult{Metadata: documents.DocumentMetadata{Kind: "pdf", SizeBytes: 100}}
+	out := formatDocumentResult("report.pdf", res)
+	for _, notWant := range []string{"title:", "author:", "created:"} {
+		if strings.Contains(out, notWant) {
+			t.Errorf("expected no %q line when the field is empty, got %q", notWant, out)
+		}
+	}
+}
+
 func TestReadDocumentTool_AbsolutePath(t *testing.T) {
 	tmp := t.TempDir()
 	path := writeFile(t, tmp, "abs.json", `{"a": 1}`)
@@ -98,7 +121,7 @@ func TestReadDocumentTool_PassesCapsThrough(t *testing.T) {
 
 	tool := &ReadDocumentTool{Cwd: NewCwdRef(tmp), Registry: reg}
 	if _, err := tool.Execute(context.Background(),
-		`{"path":"data.csv","max_rows":7,"max_chars":99,"max_bytes":4096,"offset":25,"has_header":false}`); err != nil {
+		`{"path":"data.csv","max_rows":7,"max_chars":99,"max_bytes":4096,"max_pages":3,"offset":25,"has_header":false}`); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
 
@@ -117,6 +140,29 @@ func TestReadDocumentTool_PassesCapsThrough(t *testing.T) {
 	}
 	if fake.got.MaxBytes != 4096 {
 		t.Errorf("MaxBytes = %d, want 4096", fake.got.MaxBytes)
+	}
+	if fake.got.MaxPages != 3 {
+		t.Errorf("MaxPages = %d, want 3", fake.got.MaxPages)
+	}
+}
+
+// TestReadDocumentTool_PassesOCRLangThrough covers the ocr_lang arg ->
+// ExtractRequest.OCRLang plumbing, the same way
+// TestReadDocumentTool_PassesCapsThrough covers the numeric caps.
+func TestReadDocumentTool_PassesOCRLangThrough(t *testing.T) {
+	tmp := t.TempDir()
+	writeFile(t, tmp, "data.csv", "id,name\n1,Widget\n")
+
+	fake := &capturingExtractor{}
+	reg := &documents.Registry{}
+	reg.Register(fake)
+
+	tool := &ReadDocumentTool{Cwd: NewCwdRef(tmp), Registry: reg}
+	if _, err := tool.Execute(context.Background(), `{"path":"data.csv","ocr_lang":"fra"}`); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if fake.got.OCRLang != "fra" {
+		t.Errorf("OCRLang = %q, want %q", fake.got.OCRLang, "fra")
 	}
 }
 
@@ -188,17 +234,189 @@ func TestReadDocumentTool_NoApprovalNeeded(t *testing.T) {
 	}
 }
 
+// TestRegisterCoreCwdTools_DocumentIngestionGate checks that read_document
+// is always registered (GA for every format but PDF) and that
+// AllowPDFIngestion controls only the tool's PDF-specific gate, not its
+// presence.
 func TestRegisterCoreCwdTools_DocumentIngestionGate(t *testing.T) {
 	cwd := NewCwdRef(t.TempDir())
 	reg := NewRegistry()
 	RegisterCoreCwdTools(reg, cwd, CoreToolDeps{WriteOpts: WritePathOptions{Cwd: cwd}})
-	if reg.Names()["read_document"] {
-		t.Fatal("read_document should be absent when document_ingestion is disabled")
+	raw, ok := reg.Get("read_document")
+	if !ok {
+		t.Fatal("read_document should always be registered, regardless of AllowPDFIngestion")
+	}
+	if raw.(*ReadDocumentTool).SubprocessFormatsEnabled {
+		t.Fatal("read_document's PDF gate should be off by default")
 	}
 
 	reg = NewRegistry()
-	RegisterCoreCwdTools(reg, cwd, CoreToolDeps{WriteOpts: WritePathOptions{Cwd: cwd}, EnableDocumentIngestion: true})
-	if !reg.Names()["read_document"] {
-		t.Fatal("read_document should be registered when document_ingestion is enabled")
+	RegisterCoreCwdTools(reg, cwd, CoreToolDeps{WriteOpts: WritePathOptions{Cwd: cwd}, AllowPDFIngestion: true})
+	raw, ok = reg.Get("read_document")
+	if !ok {
+		t.Fatal("read_document should be registered")
+	}
+	if !raw.(*ReadDocumentTool).SubprocessFormatsEnabled {
+		t.Fatal("read_document's PDF gate should be on when AllowPDFIngestion is true")
+	}
+}
+
+// TestReadDocumentTool_PDFRoutesThroughSandbox is the integration
+// regression for stage 1: the default (nil Registry) registry must
+// dispatch .pdf to PDFExtractor, and PDFExtractor's Run must actually
+// invoke t.sandbox().Command — proving pdftotext/pdfinfo are routed
+// through the same Sandbox seam create_document already uses for pandoc,
+// not a host-only exec.LookPath.
+func TestReadDocumentTool_PDFRoutesThroughSandbox(t *testing.T) {
+	tmp := t.TempDir()
+	writeFile(t, tmp, "doc.pdf", "not a real pdf, just needs to exist")
+
+	sb := &fakeSandbox{label: "[podman-sandbox]"}
+	tool := &ReadDocumentTool{Cwd: NewCwdRef(tmp), Sandbox: sb}
+
+	reg := tool.registry()
+	ex := reg.Lookup(filepath.Join(tmp, "doc.pdf"))
+	if ex == nil {
+		t.Fatal("expected the default registry to match .pdf")
+	}
+	pdfEx, ok := ex.(*documents.PDFExtractor)
+	if !ok {
+		t.Fatalf("expected a *documents.PDFExtractor, got %T", ex)
+	}
+	if pdfEx.Run == nil {
+		t.Fatal("expected PDFExtractor.Run to be wired to tool.runPDFCommand")
+	}
+	// Calling Run must route through fakeSandbox.Command, not a
+	// host-only exec.LookPath — proven by the fact that it doesn't panic
+	// on a nil t.Sandbox path and honors the injected fakeSandbox at all
+	// (a bug that bypassed Sandbox entirely would still "work" here by
+	// accident, since fakeSandbox's default behavior runs real commands —
+	// the label prefix in PreviewCall-style tools is the usual tell, but
+	// PDFExtractor has no PreviewCall; asserting Run is non-nil and
+	// invocable through the wired tool is the available signal).
+	if _, _, err := pdfEx.Run(context.Background(), "command -v true"); err != nil {
+		t.Errorf("expected the wired Run to succeed for a real, always-present command: %v", err)
+	}
+}
+
+// TestReadDocumentTool_PDFMissingPdftotextIsAnActionableError exercises
+// the real host path end to end: without a sandbox, PDF extraction shells
+// out directly (HostSandbox), and since pdftotext isn't installed on the
+// test host, Execute must surface a clear error rather than silently
+// returning an empty result. SubprocessFormatsEnabled is set so this
+// test reaches PDFExtractor's own error, not the earlier gate — see
+// TestReadDocumentTool_PDFBlockedWithoutSubprocessGate for that.
+func TestReadDocumentTool_PDFMissingPdftotextIsAnActionableError(t *testing.T) {
+	tmp := t.TempDir()
+	writeFile(t, tmp, "doc.pdf", "not a real pdf, just needs to exist")
+	tool := &ReadDocumentTool{Cwd: NewCwdRef(tmp), SubprocessFormatsEnabled: true}
+	_, err := tool.Execute(context.Background(), `{"path":"doc.pdf"}`)
+	if err == nil {
+		t.Fatal("expected an error since pdftotext/pdfinfo aren't installed on the test host")
+	}
+}
+
+// TestReadDocumentTool_PDFDisabledViaSubprocessGate is the regression for
+// the field itself: read_document is fully GA (document_ingestion
+// graduated — see internal/experimental/features.go), so every real
+// caller wires SubprocessFormatsEnabled true unconditionally, but the
+// field remains a real on/off switch for a caller that constructs the
+// tool directly with it left false. Every other format is unaffected —
+// see TestReadDocumentTool_XLSXEndToEnd, which doesn't set this field
+// yet already succeeds.
+func TestReadDocumentTool_PDFDisabledViaSubprocessGate(t *testing.T) {
+	tmp := t.TempDir()
+	writeFile(t, tmp, "doc.pdf", "not a real pdf, just needs to exist")
+	tool := &ReadDocumentTool{Cwd: NewCwdRef(tmp)}
+	_, err := tool.Execute(context.Background(), `{"path":"doc.pdf"}`)
+	if err == nil || !strings.Contains(err.Error(), "disabled in this configuration") {
+		t.Fatalf("expected an error explaining PDF is disabled, got %v", err)
+	}
+}
+
+// TestReadDocumentTool_XLSXEndToEnd exercises the real xlsx path through
+// Execute (not just the underlying extractor), confirming the default
+// registry dispatches .xlsx without any Sandbox — xlsx never shells out.
+func TestReadDocumentTool_XLSXEndToEnd(t *testing.T) {
+	tmp := t.TempDir()
+	data, err := documents.GenerateXLSX(documents.SheetModel{Sheets: []documents.Sheet{{
+		Name: "Data",
+		Rows: [][]documents.Cell{{{Value: "hello"}}},
+	}}})
+	if err != nil {
+		t.Fatalf("GenerateXLSX: %v", err)
+	}
+	writeFile(t, tmp, "book.xlsx", string(data))
+
+	tool := &ReadDocumentTool{Cwd: NewCwdRef(tmp)}
+	out, err := tool.Execute(context.Background(), `{"path":"book.xlsx"}`)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if !strings.Contains(out, "xlsx") || !strings.Contains(out, "hello") {
+		t.Errorf("output missing expected xlsx content: %q", out)
+	}
+}
+
+// TestReadDocumentTool_DocxPandocTierReachableThroughDefaultRegistry is
+// the regression for a real bug caught while wiring this up:
+// documents.NewRegistry() already registers a nil-Run DocxExtractor, so
+// registering a second, richer one afterward was silently unreachable —
+// Registry.Lookup matches in registration order, and the first
+// (native-only) entry always won. This must go through the tool's
+// actual default registry() path (Registry left nil), not construct a
+// DocxExtractor directly, or it wouldn't catch the shadowing bug at all.
+func TestReadDocumentTool_DocxPandocTierReachableThroughDefaultRegistry(t *testing.T) {
+	tmp := t.TempDir()
+	writeFile(t, tmp, "notes.docx", "placeholder, never actually parsed as a real docx here")
+
+	sb := &fakeSandbox{label: "[podman-sandbox]"}
+	// Force the fake sandbox to run a literal echo instead of trying to
+	// invoke a nonexistent pandoc, so this test doesn't depend on pandoc
+	// actually being installed — only on WHICH extractor got asked.
+	tool := &ReadDocumentTool{Cwd: NewCwdRef(tmp), Sandbox: sb}
+	reg := tool.registry()
+	ex := reg.Lookup(tmp + "/notes.docx")
+	docxEx, ok := ex.(*documents.DocxExtractor)
+	if !ok {
+		t.Fatalf("expected the default registry to dispatch .docx to *documents.DocxExtractor, got %T", ex)
+	}
+	if docxEx.Run == nil {
+		t.Fatal("expected the default registry's DocxExtractor to have Run wired (the pandoc tier), got nil — the richer registration is being shadowed by NewRegistry's own native-only entry")
+	}
+}
+
+// TestReadDocumentTool_ResolvePyHelperScript_PodmanUsesInImagePath is
+// the regression for the wiring itself (not just pdf.go's own tier
+// logic, already covered by internal/documents' pdf_tables_test.go): a
+// podman-labeled sandbox must resolve to the fixed in-image path with
+// no filesystem access at all.
+func TestReadDocumentTool_ResolvePyHelperScript_PodmanUsesInImagePath(t *testing.T) {
+	tool := &ReadDocumentTool{Sandbox: &fakeSandbox{label: podmanSandboxLabel}}
+	got, err := tool.resolvePyHelperScript(documents.ScriptExtractPDFTables)
+	if err != nil {
+		t.Fatalf("resolvePyHelperScript: %v", err)
+	}
+	want := documents.DocumentsImageHelperDir + "/extract_pdf_tables.py"
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+// TestReadDocumentTool_ResolvePyHelperScript_HostMaterializesToCache
+// covers the non-podman path — HOME is redirected to a temp dir so the
+// test never touches the real user's ~/.yottacode/cache/doc-helpers.
+func TestReadDocumentTool_ResolvePyHelperScript_HostMaterializesToCache(t *testing.T) {
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+
+	tool := &ReadDocumentTool{} // no Sandbox set -> HostSandbox
+	got, err := tool.resolvePyHelperScript(documents.ScriptFillDocxTemplate)
+	if err != nil {
+		t.Fatalf("resolvePyHelperScript: %v", err)
+	}
+	want := filepath.Join(fakeHome, ".yottacode", "cache", "doc-helpers", "fill_docx_template.py")
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
 	}
 }

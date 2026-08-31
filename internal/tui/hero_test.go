@@ -15,10 +15,10 @@ func TestHero_ShownBeforeFirstMessage(t *testing.T) {
 		t.Fatal("fresh model should not have entered conversation yet")
 	}
 	v := stripANSI(m.View().Content)
-	if !strings.Contains(v, "YottaCode") {
+	if !strings.Contains(v, "yottacode") {
 		t.Errorf("hero should show the startup identity card; got %q", v)
 	}
-	if !strings.Contains(v, "ask anything") {
+	if !strings.Contains(v, "build anything") {
 		t.Errorf("hero should still show the cmdline below the card; got %q", v)
 	}
 }
@@ -59,6 +59,21 @@ func TestHero_StaysExitedAfterClear(t *testing.T) {
 	}
 }
 
+func TestClear_AppendsStaticWelcomeWithoutAllMotionMouse(t *testing.T) {
+	m := newTestModel(t)
+	m.enteredConversation = true
+	m.welcomeCursor = int(welcomeNewWorktree)
+
+	m, _ = cmdClear(m, nil)
+
+	if got := m.View().MouseMode; got != tea.MouseModeCellMotion {
+		t.Fatalf("View().MouseMode after /clear = %v, want MouseModeCellMotion to avoid all-motion mouse lag", got)
+	}
+	if rows := strings.Join(m.transcriptRows, "\n"); !strings.Contains(stripANSI(rows), "New worktree") {
+		t.Fatalf("/clear should append a static welcome card into the transcript; rows:\n%s", rows)
+	}
+}
+
 func TestHero_PopupsRenderOverHeroBackground(t *testing.T) {
 	m := newTestModel(t)
 	// Wide enough that the popup (content capped at popupMaxWidth) leaves
@@ -72,7 +87,7 @@ func TestHero_PopupsRenderOverHeroBackground(t *testing.T) {
 	if !strings.Contains(v, "Keyboard shortcuts") {
 		t.Errorf("popups should render over the hero background too, not just the conversation layout; got %q", v)
 	}
-	if !strings.Contains(v, "YottaCode") {
+	if !strings.Contains(v, "yottacode") {
 		t.Errorf("the hero background should still be visible around the popup; got %q", v)
 	}
 }
@@ -97,7 +112,7 @@ func TestRenderHero_AnchorsNearTopOfScreen(t *testing.T) {
 	lines := strings.Split(stripANSI(m.renderHero()), "\n")
 	cardRow := -1
 	for i, line := range lines {
-		if strings.Contains(line, "YottaCode") {
+		if strings.Contains(line, "yottacode") {
 			cardRow = i
 			break
 		}
@@ -105,8 +120,8 @@ func TestRenderHero_AnchorsNearTopOfScreen(t *testing.T) {
 	if cardRow < 0 {
 		t.Fatalf("could not locate the identity card in the hero render:\n%s", strings.Join(lines, "\n"))
 	}
-	if cardRow > 2 {
-		t.Errorf("hero card should anchor within a couple rows of the top edge, got row %d of %d", cardRow, m.height)
+	if cardRow > 3 {
+		t.Errorf("hero card should anchor within the top welcome area, got row %d of %d", cardRow, m.height)
 	}
 }
 

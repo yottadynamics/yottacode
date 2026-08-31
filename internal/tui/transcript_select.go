@@ -34,6 +34,9 @@ func (m Model) extendTranscriptSelection(msg tea.MouseMotionMsg) (Model, tea.Cmd
 	if !ok {
 		return m, nil
 	}
+	if m.transcriptSelectionHeadLine == line && m.transcriptSelectionHeadCol == col {
+		return m, nil
+	}
 	m.transcriptSelectionHeadLine, m.transcriptSelectionHeadCol = line, col
 	m.applyTranscriptHighlight()
 	return m, nil
@@ -175,15 +178,14 @@ func (m *Model) applyTranscriptHighlight() {
 		if start >= end {
 			continue
 		}
-			// lipgloss.StyleRanges' Range.Start/End are display-cell
-			// positions. Convert the selected rune boundaries back to display
-			// columns so table glyphs and wide characters highlight under the
-			// same cells the mouse drag crossed.
-			plain := ansi.Strip(highlighted[i])
-			highlighted[i] = lipgloss.StyleRanges(highlighted[i], lipgloss.NewRange(runeIndexToDisplayColumn(plain, start), runeIndexToDisplayColumn(plain, end), styleTranscriptSelection))
-		}
-		m.transcriptViewport.SetContentLines(highlighted)
-
+		// lipgloss.StyleRanges' Range.Start/End are display-cell
+		// positions. Convert the selected rune boundaries back to display
+		// columns so table glyphs and wide characters highlight under the
+		// same cells the mouse drag crossed.
+		plain := ansi.Strip(highlighted[i])
+		highlighted[i] = lipgloss.StyleRanges(highlighted[i], lipgloss.NewRange(runeIndexToDisplayColumn(plain, start), runeIndexToDisplayColumn(plain, end), styleTranscriptSelection))
+	}
+	m.transcriptViewport.SetContentLines(highlighted)
 }
 
 // transcriptSelectionByteRange returns the [start,end) byte range

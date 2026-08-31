@@ -348,6 +348,31 @@ func TestEvaluate_GithubCreateIssueRulesBind(t *testing.T) {
 	}
 }
 
+// Regression: create_document shipped with no targetFor mapping, so it
+// fell through to Target{} and a Document(*) deny rule — including the
+// Deny-under-BypassPermissions guarantee everything else honors — never
+// bound to it. Same bug class as TestEvaluate_GithubCreateIssueRulesBind.
+func TestEvaluate_CreateDocumentRulesBind(t *testing.T) {
+	cwd := t.TempDir()
+	seed(t, filepath.Join(cwd, ".yottacode", "permissions.json"),
+		nil, nil, []string{"Document(*)"})
+	p, _ := Load(cwd)
+	args := `{"format":"docx","output_path":"report.docx","content":{"blocks":[]}}`
+	if got := p.Evaluate("create_document", args); got != Deny {
+		t.Errorf("Document(*) deny must bind to create_document; got %v", got)
+	}
+}
+
+func TestTargetFor_CreateDocumentDescriptor(t *testing.T) {
+	got := targetFor("create_document", `{"format":"xlsx","output_path":"reports/q1.xlsx"}`, "/work")
+	if got.PermName != "Document" {
+		t.Fatalf("PermName = %q, want Document", got.PermName)
+	}
+	if got.Descriptor != "xlsx reports/q1.xlsx" {
+		t.Errorf("Descriptor = %q, want %q", got.Descriptor, "xlsx reports/q1.xlsx")
+	}
+}
+
 func TestEvaluate_GithubDenyOverridesAllow(t *testing.T) {
 	// Same precedence as Bash — Deny beats Allow regardless of
 	// rule order. Pin so future precedence refactors don't break
@@ -737,6 +762,113 @@ func TestEnsureFiles_PreservesExistingContent(t *testing.T) {
 	}
 }
 
+func TestLintWarnings_FlagsRiskyLocalAllowRules(t *testing.T) {
+	cwd := t.TempDir()
+	seed(t, filepath.Join(cwd, ".yottacode", "permissions.local.json"), []string{
+		"Bash(gh *)",
+		"Bash(python3 *)",
+		"Bash(sed *)",
+		"Git(-C *)",
+		"Delete(" + filepath.ToSlash(cwd) + "/**)",
+		"Github(*)",
+		"MCP(*)",
+	}, nil, nil)
+	p, err := Load(cwd)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	warnings := p.LintWarnings()
+	joined := strings.Join(warnings, "\n")
+	for _, want := range []string{
+		"Bash(gh *)",
+		"Bash(python3 *)",
+		"Bash(sed *)",
+		"Git(-C *)",
+		"Delete(" + filepath.ToSlash(cwd) + "/**)",
+		"Github(*)",
+		"MCP(*)",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("warnings missing %q:\n%s", want, joined)
+		}
+	}
+}
+
+func TestLintWarnings_FlagsAllowRulesShadowedByDeny(t *testing.T) {
+	cwd := t.TempDir()
+	seed(t, filepath.Join(cwd, ".yottacode", "permissions.json"),
+		[]string{"Bash(curl *)", "Github(read_*)"}, nil, []string{"Bash(curl *)"})
+	p, err := Load(cwd)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	warnings := p.LintWarnings()
+	joined := strings.Join(warnings, "\n")
+	if !strings.Contains(joined, "Bash(curl *)") || !strings.Contains(joined, "shadowed by deny") {
+		t.Fatalf("expected shadowed allow warning, got:\n%s", joined)
+	}
+	if strings.Contains(joined, "Github(read_*)") {
+		t.Fatalf("non-shadowed allow should not warn, got:\n%s", joined)
+	}
+}
+
+func TestLintWarnings_FlagsObviousDenySupersetShadowing(t *testing.T) {
+	cwd := t.TempDir()
+	seed(t, filepath.Join(cwd, ".yottacode", "permissions.json"),
+		[]string{"Bash(go test *)", "Github(read_*)", "Delete(docs/**)"}, nil,
+		[]string{"Bash(*)", "Github(*)", "Delete(**)"})
+	p, err := Load(cwd)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	warnings := p.LintWarnings()
+	joined := strings.Join(warnings, "\n")
+	for _, want := range []string{"Bash(go test *)", "Github(read_*)", "Delete(docs/**)"} {
+		if !strings.Contains(joined, want) || !strings.Contains(joined, "shadowed by deny") {
+			t.Errorf("expected shadow warning for %q, got:\n%s", want, joined)
+		}
+	}
+}
+
+func TestLintWarnings_DoesNotFlagUnrelatedDenyRules(t *testing.T) {
+	cwd := t.TempDir()
+	seed(t, filepath.Join(cwd, ".yottacode", "permissions.json"),
+		[]string{"Bash(go test *)", "Github(read_*)", "Delete(docs/**)"}, nil,
+		[]string{"Bash(rm *)", "Github(create_pr)", "Delete(tmp/**)"})
+	p, err := Load(cwd)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	warnings := p.LintWarnings()
+	joined := strings.Join(warnings, "\n")
+	for _, unwanted := range []string{"Bash(go test *)", "Github(read_*)", "Delete(docs/**)"} {
+		if strings.Contains(joined, unwanted+" in permissions.json is shadowed") {
+			t.Errorf("unexpected shadow warning for %q:\n%s", unwanted, joined)
+		}
+	}
+}
+
+func TestLintWarnings_FlagsUnknownRulePrefixes(t *testing.T) {
+	cwd := t.TempDir()
+	seed(t, filepath.Join(cwd, ".yottacode", "permissions.json"),
+		[]string{"Shell(go test *)"}, []string{"OldTool(*)"}, []string{"Network(*)"})
+	p, err := Load(cwd)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	warnings := p.LintWarnings()
+	joined := strings.Join(warnings, "\n")
+	for _, want := range []string{"Shell(go test *)", "OldTool(*)", "Network(*)"} {
+		if !strings.Contains(joined, want) || !strings.Contains(joined, "unknown rule prefix") {
+			t.Errorf("expected unknown-prefix warning for %q, got:\n%s", want, joined)
+		}
+	}
+}
 func TestStringGlobMatch(t *testing.T) {
 	cases := []struct {
 		pat, val string

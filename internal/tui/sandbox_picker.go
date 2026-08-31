@@ -6,10 +6,10 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/yottadynamics/yottacode/internal/agent"
 	"github.com/yottadynamics/yottacode/internal/config"
-	"github.com/yottadynamics/yottacode/internal/experimental"
 	"github.com/yottadynamics/yottacode/internal/sandbox"
 )
 
@@ -27,12 +27,18 @@ const (
 )
 
 // sandboxModeLabel is the row text shown in the picker.
-func sandboxModeLabel(mode sandboxMode) string {
+func sandboxModeLabel(mode sandboxMode) string { return sandboxModeLabelFor(mode, false) }
+
+func sandboxModeLabelFor(mode sandboxMode, nextSessionOnly bool) string {
+	prefix := ""
+	if nextSessionOnly && mode != sandboxModeOff {
+		prefix = "Next session: "
+	}
 	switch mode {
 	case sandboxModeAutoAllow:
-		return "Sandbox run_bash, with auto-allow"
+		return prefix + "Sandbox run_bash, with auto-allow"
 	case sandboxModeRegular:
-		return "Sandbox run_bash, with regular permissions"
+		return prefix + "Sandbox run_bash, regular permissions"
 	default:
 		return "No sandbox"
 	}
@@ -47,9 +53,9 @@ func sandboxModeLabel(mode sandboxMode) string {
 func sandboxModeDescription(mode sandboxMode) string {
 	switch mode {
 	case sandboxModeAutoAllow:
-		return "run_bash executes inside a podman container (network=none, project-dir-only mount) and this session's auto mode turns on: edits auto-apply; run_bash, git_commit, git_checkpoint, and rollback still prompt for approval, same as auto mode everywhere else — now running inside the sandbox once approved."
+		return "After restart, run_bash executes inside a podman container (network=none, project-dir-only mount) and this session's auto mode turns on: edits auto-apply; run_bash, git_commit, git_checkpoint, and rollback still prompt for approval, same as auto mode everywhere else."
 	case sandboxModeRegular:
-		return "run_bash executes inside a podman container (network=none, project-dir-only mount). Approval works exactly as it does today — every run_bash call still prompts."
+		return "After restart, run_bash executes inside a podman container (network=none, project-dir-only mount). Approval works exactly as it does today — every run_bash call still prompts."
 	default:
 		return "run_bash executes directly on the host, same as today. Approval and the hardline blocklist are the only guardrails."
 	}
@@ -57,28 +63,35 @@ func sandboxModeDescription(mode sandboxMode) string {
 
 // sandboxPickerState owns the /sandbox overlay.
 type sandboxPickerState struct {
-	cursor  sandboxMode
-	current sandboxMode // the mode active when the picker opened
-	status  sandbox.Status
+	cursor        sandboxMode
+	current       sandboxMode // the mode active when the picker opened
+	configured    sandboxMode // the backend persisted in config.toml
+	status        sandbox.Status
+	sandboxActive bool
 	// detected is false until the async sandboxDetectMsg from
 	// openSandboxPicker's sandboxDetectCmd arrives — the render shows a
 	// "checking…" state until then instead of a stale zero-value Status.
 	detected bool
-	// confirming gates config writes behind an explicit second Enter. Selecting
-	// a row previews the exact mode first; only the confirmation step persists
-	// config.toml or flips live auto mode.
-	confirming bool
-	note       string
+	note     string
 }
 
-// currentSandboxMode derives the active mode from on-disk config plus this
-// session's live auto-mode state (auto mode is session-runtime, never
-// persisted — see internal/agent/auto_mode.go).
-func currentSandboxMode(cfg config.Config, autoMode *agent.AutoModeState) sandboxMode {
+// currentSandboxMode derives the active mode from on-disk config, startup
+// sandbox state, and live auto-mode state.
+func currentSandboxMode(cfg config.Config, sandboxActive bool, autoMode *agent.AutoModeState) sandboxMode {
+	if !sandboxActive {
+		return sandboxModeOff
+	}
+	if cfg.Sandbox.Backend == "podman" && autoMode != nil && autoMode.IsActive() {
+		return sandboxModeAutoAllow
+	}
+	return sandboxModeRegular
+}
+
+func configuredSandboxMode(cfg config.Config, sandboxActive bool, autoMode *agent.AutoModeState) sandboxMode {
 	if cfg.Sandbox.Backend != "podman" {
 		return sandboxModeOff
 	}
-	if autoMode != nil && autoMode.IsActive() {
+	if sandboxActive && autoMode != nil && autoMode.IsActive() {
 		return sandboxModeAutoAllow
 	}
 	return sandboxModeRegular
@@ -96,13 +109,16 @@ func currentSandboxMode(cfg config.Config, autoMode *agent.AutoModeState) sandbo
 // sandboxDetectMsg arrives and Update stores the result.
 func (m Model) openSandboxPicker() (Model, tea.Cmd) {
 	cfg := loadConfigForCommand(m)
-	current := currentSandboxMode(cfg, m.cfg.AutoMode)
+	current := currentSandboxMode(cfg, m.sandboxActive, m.cfg.AutoMode)
+	configured := configuredSandboxMode(cfg, m.sandboxActive, m.cfg.AutoMode)
 	m.sandboxPicker = &sandboxPickerState{
-		cursor:  current,
-		current: current,
+		cursor:        current,
+		current:       current,
+		configured:    configured,
+		sandboxActive: m.sandboxActive,
 	}
 	m.sandboxPickerOpen = true
-	return m, sandboxDetectCmd(m.parentCtx, cfg.Sandbox.Image)
+	return m, sandboxDetectCmd(m.parentCtx, cfg.Sandbox.Image, cfg.Sandbox.DocumentsImage)
 }
 
 // sandboxDetectMsg carries the result of an async sandbox.DetectStatus
@@ -111,9 +127,16 @@ type sandboxDetectMsg struct {
 	status sandbox.Status
 }
 
-func sandboxDetectCmd(ctx context.Context, image string) tea.Cmd {
+// sandboxDetectStatus is a package seam for tests. The production path uses
+// sandbox.DetectStatus, but unit tests can replace it so they never start real
+// podman probes or create rootless container storage under t.TempDir.
+var sandboxDetectStatus = func(ctx context.Context, image, documentsImage string) sandbox.Status {
+	return sandbox.DetectStatus(ctx, image, documentsImage)
+}
+
+func sandboxDetectCmd(ctx context.Context, image, documentsImage string) tea.Cmd {
 	return func() tea.Msg {
-		return sandboxDetectMsg{status: sandbox.DetectStatus(ctx, image)}
+		return sandboxDetectMsg{status: sandboxDetectStatus(ctx, image, documentsImage)}
 	}
 }
 
@@ -127,42 +150,32 @@ func (m Model) updateSandboxPicker(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 	p.note = ""
 	switch msg.Code {
 	case tea.KeyEsc:
-		if p.confirming {
-			p.confirming = false
-			return m, nil
-		}
 		return m.closeSandboxPicker()
 	case tea.KeyUp:
 		if p.cursor > 0 {
 			p.cursor--
 		}
-		p.confirming = false
 		return m, nil
 	case tea.KeyDown:
 		if p.cursor < sandboxModeCount-1 {
 			p.cursor++
 		}
-		p.confirming = false
 		return m, nil
 	case tea.KeyEnter:
-		if !p.confirming {
-			p.confirming = true
-			return m, nil
-		}
-		return commitSandboxMode(m, p.cursor)
+		return applySandboxMode(m, p.cursor)
 	default:
 		if r := []rune(msg.Text); len(r) == 1 {
 			switch r[0] {
+			case 'a', 'A':
+				return applySandboxMode(m, p.cursor)
 			case 'j':
 				if p.cursor < sandboxModeCount-1 {
 					p.cursor++
 				}
-				p.confirming = false
 			case 'k':
 				if p.cursor > 0 {
 					p.cursor--
 				}
-				p.confirming = false
 			}
 		}
 		return m, nil
@@ -182,6 +195,24 @@ func (m Model) closeSandboxPicker() (Model, tea.Cmd) {
 	return m, nil
 }
 
+// applySandboxMode validates local Podman readiness before persisting a picker
+// selection. Missing images are warnings only because Podman can pull on first use.
+func applySandboxMode(m Model, mode sandboxMode) (Model, tea.Cmd) {
+	if mode != sandboxModeOff && m.sandboxPicker != nil && m.sandboxPicker.detected && !m.sandboxPicker.status.Installed {
+		m.sandboxPicker.note = "Podman is not installed or not on PATH. Install Podman before enabling the sandbox."
+		return m, nil
+	}
+	if mode != sandboxModeOff && m.sandboxPicker != nil && m.sandboxPicker.configured != sandboxModeOff && !m.sandboxPicker.sandboxActive {
+		m.sandboxPicker.note = "Restart yottacode to activate the configured sandbox before selecting sandbox options again."
+		return m, nil
+	}
+	if mode != sandboxModeOff && m.sandboxPicker != nil && !m.sandboxPicker.detected {
+		m.sandboxPicker.note = "Still checking Podman availability. Try again once the check finishes."
+		return m, nil
+	}
+	return commitSandboxMode(m, mode)
+}
+
 // commitSandboxMode persists the chosen mode to config.toml and applies
 // what can apply live this session.
 //
@@ -198,10 +229,11 @@ func commitSandboxMode(m Model, mode sandboxMode) (Model, tea.Cmd) {
 		cfg.Sandbox.Backend = "none"
 	default:
 		cfg.Sandbox.Backend = "podman"
-		if cfg.Experimental == nil {
-			cfg.Experimental = map[string]bool{}
-		}
-		cfg.Experimental[string(experimental.Sandbox)] = true
+		// The picker is an enable-sandbox UX, not a low-level network editor.
+		// Keep the enabled default usable for developer commands such as `go test`
+		// by restoring host networking and default resolvers when users turn it on.
+		cfg.Sandbox.Network = "host"
+		cfg.Sandbox.DNS = append([]string(nil), config.DefaultSandboxDNS...)
 	}
 	if err := config.Validate(cfg); err != nil {
 		m.appendLine(styleError.Render(SysMsg(SysFailure, "sandbox", "validation", err.Error())))
@@ -231,11 +263,11 @@ func commitSandboxMode(m Model, mode sandboxMode) (Model, tea.Cmd) {
 		exitAutoMode(&m)
 	}
 
-	detail := "persisted — restart yottacode (or start a new session) to activate"
+	detail := sandboxCommitDetail(mode, m.sandboxActive)
 	m.appendLine(styleAuto.Render(SysMsg(SysSuccess, "sandbox", sandboxModeLabel(mode), detail)))
 	if p := m.sandboxPicker; p != nil {
-		p.current = mode
-		p.confirming = false
+		p.current = currentSandboxMode(cfg, m.sandboxActive, m.cfg.AutoMode)
+		p.configured = configuredSandboxMode(cfg, m.sandboxActive, m.cfg.AutoMode)
 	}
 	return m.closeSandboxPicker()
 }
@@ -253,24 +285,26 @@ func renderSandboxPicker(p *sandboxPickerState, width int, hits ...*pickerHits) 
 	// real backend today (config.ValidSandboxBackends is "none"|"podman"),
 	// and the picker's whole purpose is choosing whether THIS backend is
 	// active. Generalize if a second backend ever lands.
-	help := "↑↓ navigate · ↵ preview change · esc close"
-	if p.confirming {
-		help = "↵ confirm · esc back"
-	}
+	help := "↑↓ navigate · ↵/a apply · esc close"
 	b.WriteString(renderMenuHeader("Sandbox (podman)", help, width))
 	b.WriteString("\n\n")
+
+	b.WriteString(renderSandboxStatusLine(p))
+	b.WriteString("\n")
+	b.WriteString("\n")
 
 	for mode := sandboxMode(0); mode < sandboxModeCount; mode++ {
 		row := strings.Count(b.String(), "\n")
 		h.row(row, int(mode))
 		marker := "  "
-		label := stylePaletteItem.Render(sandboxModeLabel(mode))
+		labelText := sandboxModeLabelFor(mode, mode != sandboxModeOff && !p.sandboxActive && p.configured != sandboxModeOff)
+		label := stylePaletteItem.Render(labelText)
 		if mode == p.cursor {
 			marker = cursorArrow
-			label = stylePaletteSelected.Render(sandboxModeLabel(mode))
+			label = stylePaletteSelected.Render(labelText)
 		}
 		check := "  "
-		if mode == p.current {
+		if mode == p.configured {
 			check = styleEmpty.Render("✓ ")
 		}
 		b.WriteString(marker)
@@ -290,19 +324,63 @@ func renderSandboxPicker(p *sandboxPickerState, width int, hits ...*pickerHits) 
 		case !p.status.Installed:
 			b.WriteString("\n")
 			b.WriteString(styleError.Render(wrapPlain("podman not found on PATH — install podman before selecting this mode", width)))
-		case !p.status.ImagePresent:
-			b.WriteString("\n")
-			b.WriteString(styleEmpty.Render(wrapPlain("base image not pulled locally yet — podman will pull it on first use", width)))
+		default:
+			if !p.status.ImagePresent {
+				b.WriteString("\n")
+				b.WriteString(styleEmpty.Render(wrapPlain("base image not pulled locally yet — podman will pull it on first use", width)))
+			}
+			if !p.status.DocumentsImagePresent {
+				b.WriteString("\n")
+				b.WriteString(styleEmpty.Render(wrapPlain("documents image not pulled locally yet — document tools will pull it on first use", width)))
+			}
 		}
 	}
-	if p.confirming {
-		b.WriteString("\n")
-		b.WriteString(styleEmpty.Render(wrapPlain("Press Enter again to persist "+sandboxModeLabel(p.cursor)+"; Esc returns to the picker without changing config.", width)))
-		b.WriteByte('\n')
+	b.WriteString("\n")
+	actionsRow := strings.Count(b.String(), "\n")
+	apply := "[A] Apply selection"
+	cancel := "[Esc] Close"
+	if h != nil {
+		h.hotkeySpan(actionsRow, 0, ansi.StringWidth(apply), "a")
 	}
+	b.WriteString(styleHint.Render(apply + "   " + cancel))
+	b.WriteByte('\n')
 	if p.note != "" {
 		b.WriteString("\n")
 		b.WriteString(styleError.Render(p.note))
 	}
 	return strings.TrimRight(b.String(), "\n")
+}
+
+func sandboxStatusLine(p *sandboxPickerState) string {
+	configured := "off"
+	if p.configured != sandboxModeOff {
+		configured = "on"
+	}
+	active := "off"
+	if p.configured == sandboxModeOff && p.sandboxActive {
+		active = "on — restart required to disable"
+	} else if p.current != sandboxModeOff {
+		active = "on"
+	} else if p.configured != sandboxModeOff && !p.sandboxActive {
+		active = "off — restart required"
+	}
+	return "Configured: sandbox " + configured + "\nActive: sandbox " + active
+}
+
+func renderSandboxStatusLine(p *sandboxPickerState) string {
+	style := lipgloss.NewStyle().Foreground(colorError).Bold(true)
+	if p.current != sandboxModeOff {
+		style = lipgloss.NewStyle().Foreground(colorSuccess).Bold(true)
+	}
+	return style.Render(sandboxStatusLine(p))
+}
+
+func sandboxCommitDetail(mode sandboxMode, sandboxActive bool) string {
+	if sandboxActive && mode != sandboxModeOff {
+		return "persisted — this session can lazily start unused sandbox profiles; backend changes still require a new session"
+	}
+	if sandboxActive && mode == sandboxModeOff {
+		return "persisted — this session keeps its existing sandbox until you restart or start a new session"
+	}
+	return "persisted — restart yottacode (or start a new session) to activate"
 }

@@ -1,6 +1,6 @@
 # Themes
 
-The yottacode TUI ships with twelve built-in color palettes. Switch between them with `/theme` — an interactive picker with a live preview pane — or pin one in `~/.yottacode/config.toml` so every new session boots into it.
+The yottacode TUI ships with thirteen built-in color palettes. Switch between them with `/theme` — an interactive picker with a live preview pane — or pin one in `~/.yottacode/config.toml` so every new session boots into it.
 
 ## The picker
 
@@ -28,13 +28,14 @@ Both apply, persist, and report `[theme] switched to "<name>" (persisted)`.
 
 ## Built-in palettes
 
-Order matches what the picker displays: `terminal` leads (the universal-safe and default pick), then alphabetical.
+Order matches what the picker displays: `yottacode-dark` leads as the polished house dark theme and default pick, `terminal` sits second as the universal-safe terminal-adaptive fallback, then the rest are alphabetical.
 
 A theme marked **real bg** repaints your terminal emulator's actual background color (not just in-app chrome) the moment you preview or apply it — see [Real terminal background](#real-terminal-background) below.
 
 | Name | Description | Chroma style |
 |---|---|---|
-| `terminal` (default) | The main-branch look — adaptive colors that respect your terminal background. Foreground colors are spelled as `AdaptiveColor` light/dark pairs (dark text on a light terminal, light text on a dark terminal); the ✓ success dot stays on ANSI green (2/10) so it matches your terminal palette exactly. The "what yottacode looked like before themes" theme. Never touches your real terminal background — that's the point of this one. | terminal default (`monokai`) |
+| `yottacode-dark` (default) **(real bg)** | YottaCode's signature dark — a neutral charcoal base (`#121212`) with Tokyo Night-inspired accents, Grok magenta as the primary, and a bright cyan-teal Yotta signature on the assistant role. Modeled closely on GrokNight; reads as "carbon dark" rather than the blue dark of tokyo-night. | `tokyonight-night` |
+| `terminal` | The main-branch look — adaptive colors that respect your terminal background. Foreground colors are spelled as `AdaptiveColor` light/dark pairs (dark text on a light terminal, light text on a dark terminal); the ✓ success dot stays on ANSI green (2/10) so it matches your terminal palette exactly. The "what yottacode looked like before themes" theme. Never touches your real terminal background — that's the point of this one. | terminal default (`monokai`) |
 | `catppuccin` **(real bg)** | Catppuccin Mocha — pastel lavender, peach, and teal on warm dark (`#1e1e2e`). The most-requested community theme of the last few years. | `catppuccin-mocha` |
 | `dimmed` **(real bg)** | GitHub Dark Dimmed — soft graphite slate (`#22272e`) with muted blue/green accents on a `#adbac7` foreground. GitHub's own "easier on the eyes" alternative to full dark mode. | `github-dark` |
 | `gruvbox` **(real bg)** | Warm retro — burnt orange, mustard yellow, and sage green on dark brown (`#282828`). The popular Vim colorscheme. | `gruvbox` |
@@ -53,6 +54,7 @@ Themes marked **real bg** above repaint your terminal emulator's actual backgrou
 
 What to expect:
 
+- **Default first-run look.** Fresh installs boot into `yottacode-dark`, including its real charcoal background. Pin `terminal` if you want yottacode to inherit your terminal palette/background instead.
 - **Live preview, live revert.** Browsing the picker repaints your real terminal background on every cursor move, same as every other role; `Esc` puts it back exactly as it was.
 - **Restored on exit, always.** yottacode captures your terminal's original background at startup and writes it back before handing the terminal back to your shell — on a normal quit, on Ctrl+C, and on a crash (anywhere the process gets a chance to run its shutdown path; `kill -9` is the one exception nothing can defer through, same as any other cleanup in the app).
 - **Silently skipped on unsupported terminals.** yottacode queries your terminal for OSC 11 support once at startup. If nothing answers — some SSH hops without escape-sequence passthrough, tmux without `set -g allow-passthrough on`, a handful of older or headless terminals — the whole feature is a no-op for that session: themes still switch every other color, they just don't touch the real background. Nothing is retried or reported as an error.
@@ -60,7 +62,7 @@ What to expect:
 
 ## Why there's no true "light" theme
 
-Foreground colors alone can't fake a light theme on a dark terminal — `AdaptiveColor` picks between a light-mode and dark-mode variant, but every role still has to render *something*, and text tuned for a dark backdrop reads poorly no matter which variant you pick if the canvas underneath stays dark. Real terminal-background theming (above) closes part of this gap for the themes that opt in, but none of the twelve palettes here currently ship a light-mode background — the closest is `low-contrast`, which stays close to body text without replacing your terminal's own background.
+Foreground colors alone can't fake a light theme on a dark terminal — `AdaptiveColor` picks between a light-mode and dark-mode variant, but every role still has to render *something*, and text tuned for a dark backdrop reads poorly no matter which variant you pick if the canvas underneath stays dark. Real terminal-background theming (above) closes part of this gap for the themes that opt in, but none of the thirteen palettes here currently ship a light-mode background — the closest is `low-contrast`, which stays close to body text without replacing your terminal's own background.
 
 If you want the full light experience, run yottacode in a terminal whose background is light, or pin a themed background to a light hex color if you maintain your own theme (see "Adding a theme" below).
 
@@ -73,17 +75,17 @@ The picker's Enter (or `/theme set <name>`) writes:
 name = "dimmed"
 ```
 
-to `~/.yottacode/config.toml`. The default theme (`terminal`) is *not* persisted — omitting the section keeps the file minimal for users who never touched the command.
+to `~/.yottacode/config.toml`. The default theme (`yottacode-dark`) is *not* persisted — omitting the section keeps the file minimal for users who never touched the command.
 
 A typo in the persisted `name` is rejected at load time:
 
 ```
-config: ~/.yottacode/config.toml: theme.name = "termnal" is not a registered theme (try one of terminal, catppuccin, dimmed, gruvbox, high-contrast, low-contrast, no-color, nord, one-dark, solarized-dark, studio-dark, tokyo-night)
+config: ~/.yottacode/config.toml: theme.name = "termnal" is not a registered theme (try one of terminal, yottacode-dark, catppuccin, dimmed, gruvbox, high-contrast, low-contrast, no-color, nord, one-dark, solarized-dark, studio-dark, tokyo-night)
 ```
 
 ## Adding a theme (for contributors)
 
-Drop an `internal/tui/themes/<name>.go` file with a single `init()` that calls `register(Palette{ Name: …, Description: …, Highlight: …, Accent: …, …})`. The TUI's `styles.go` builds every UI style from those role colors; nothing else needs editing for the new theme to surface in the picker. Tests in `themes_test.go` assert the registered set — append the new name to `expectedThemes` in the right slot (head pins `terminal` first; the tail is alphabetical) so the registry-coverage test stays accurate.
+Drop an `internal/tui/themes/<name>.go` file with a single `init()` that calls `register(Palette{ Name: …, Description: …, Highlight: …, Accent: …, …})`. The TUI's `styles.go` builds every UI style from those role colors; nothing else needs editing for the new theme to surface in the picker. Tests in `themes_test.go` assert the registered set — append the new name to `expectedThemes` in the right slot (the curated head pins `yottacode-dark` first and `terminal` second; the tail is alphabetical) so the registry-coverage test stays accurate.
 
 Lock the theme contract:
 

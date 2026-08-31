@@ -19,7 +19,9 @@ In addition to the built-ins, **MCP tools** register dynamically when an `[[mcp_
 |---|---|---|
 | [`read_file`](#read_file) | none | Read a text or image file (png/jpg/gif/webp) with optional line offset/limit |
 | [`read_many_files`](#read_many_files) | none | Read multiple UTF-8 files in one call |
-| [`read_document`](#read_document) | none | *Experimental.* Bounded, structured extraction for CSV/TSV/JSON/JSONL/XML/HTML |
+| [`read_document`](#read_document) | none | Bounded, structured extraction for CSV/TSV/JSON/JSONL/XML/HTML/PDF/xlsx/docx/pptx |
+| [`search_document`](#search_document) | none | Ranked, query-based retrieval over a document's extracted content |
+| [`create_document`](#create_document) | required | Generate xlsx/pptx (native) or docx/pdf (via pandoc) from structured content |
 | [`write_file`](#write_file) | required | Overwrite or create a file |
 | [`edit_file`](#edit_file) | required | Surgical `old_string`→`new_string` replacement |
 | [`edit_anchored`](#edit_anchored) | required | Anchor-validated line edits after anchored reads |
@@ -245,9 +247,10 @@ verbatim (per-tool body shaping is bypassed for errors).
 
 Successful context summarization and mid-turn compaction now use the shared
 system-message grammar (`◇ context · summarized/compacted · ...`) and print a
-literal `/recall <session-id>` command when a pre-summary snapshot is available.
-The full snapshot path is intentionally omitted from normal scrollback; it
-remains recoverable through sessions/recall tooling.
+copyable `yottacode sessions resume <id>` command when a pre-summary snapshot
+is available — running it reopens the full pre-compression transcript as a
+fresh session. The full snapshot path is intentionally omitted from normal
+scrollback; only the resume id is shown.
 
 ## read_file
 
@@ -310,14 +313,78 @@ Each file gets its own `[truncated]` marker if needed.
 
 ## read_document
 
-*Experimental — enable with `--experimental document_ingestion` (see
-[experimental.md](experimental.md)).*
+*GA for every format, including PDF; the `document_ingestion` flag is a
+no-op kept for one release for compatibility (see
+[experimental.md](experimental.md)). PDF extraction needs
+`pdftotext`/`pdfinfo` reachable via host `PATH` or `[sandbox].documents_image` — a
+missing binary returns an actionable error naming exactly where it
+looked, not a silent failure.*
 
-Extract bounded, structured text from a CSV, TSV, JSON, JSONL, XML, or
-HTML file. Use it when you need to **analyze** data in one of these
-formats: `read_file`'s raw line-based view shears a CSV field's embedded
-newline into a bogus extra row, and dumps HTML/XML markup noise (scripts,
-styles, tags) verbatim instead of the content underneath.
+Extract bounded, structured text from a CSV, TSV, JSON, JSONL, XML, HTML,
+PDF, xlsx, docx, or pptx file. Use it when you need to **analyze** data in
+one of these formats: `read_file`'s raw line-based view shears a CSV
+field's embedded newline into a bogus extra row, and dumps HTML/XML
+markup noise (scripts, styles, tags) verbatim instead of the content
+underneath.
+
+PDF extraction runs `pdftotext`/`pdfinfo` (poppler), routed through the
+same documents sandbox profile `create_document`'s docx/pdf path uses:
+installed on the host when no sandbox is configured, or present in
+`[sandbox].documents_image` when one is. Each page becomes its own
+labeled section (`page 3`); `pdfinfo`'s own `Title`/`Author`/
+`CreationDate` fields, when present, come back as `title`/`author`/
+`created` lines above the preview. An encrypted PDF comes back as a
+warning, not an error, since that's still a valid, actionable result —
+detected from `pdfinfo`'s structural `Encrypted` field when it reports
+one, falling back to a `pdftotext`-stderr heuristic otherwise (older
+poppler, or a failed `pdfinfo` call). When `python3`+`pdfplumber` are
+also reachable through that same documents profile or host PATH,
+detected tables come back as additional `page N table M` sections with
+pipe-joined rows, and detected images as `page N image M` sections
+(placed size in inches, plus the source image's own pixel resolution
+when known — never image bytes; both ride in one `pdfplumber` call,
+since both just read properties off the same already-open page) —
+best-effort and completely silent (no warning either) when that
+dependency isn't available or a page genuinely has neither. A page with no embedded
+text layer at all falls back to OCR when
+`python3`+`pytesseract`+`pdf2image`+`tesseract-ocr` are reachable the
+same way — per page, not just when the whole requested range is blank,
+so a partially-scanned document (some pages with real text, some
+without) still gets OCR only on the pages that actually need it:
+recognized text comes back as additional `page N (ocr)` sections with a
+warning that the text may contain recognition errors, since it isn't as
+reliable as the rest of a PDF's extraction; without that dependency,
+it's the same "may be scanned/image-only" warning as before, no OCR
+section. See [`document-generation.md`](document-generation.md#requirements).
+
+xlsx, docx, and pptx are parsed natively — no external tools, no
+sandbox involved, work identically on every platform. xlsx (via
+[excelize], the same library `create_document` uses for generation)
+returns one section per sheet (`sheet Q1`), plus a `sheet Q1 formulas`
+section for cells that have one (`excelize.GetRows` only ever returns a
+cell's cached computed value, never the formula, and a freshly
+generated formula cell has no cached value at all — this section is the
+only way to see what actually computes a cell; scoped to whichever rows
+the row/char-capped preview already included), a `sheet Q1 merged
+cells` section when any exist, and a `sheet Q1 image <cell>-N` section
+per embedded picture (type, pixel size, alt text). docx is a native
+zip/XML walk of `word/document.xml`: one `document body` section, with
+`HeadingN` paragraph styles rendered as `#`-prefixed lines so structure
+survives in the text preview, plus a `document image N` section per
+inline picture — independent of whether that native tier or the richer
+`pandoc` tier served the body text. pptx walks `ppt/slides/slideN.xml`
+in numeric slide order, one section per slide (`slide 3`) —
+`max_pages`/`offset` page through slides the same way they page through
+PDF pages — plus a `slide N table M` section (pipe-joined rows) for
+each DrawingML table found on that slide, and a `slide N image M`
+section (file name, size, alt text) for each picture. Every image/
+picture section across all three formats is metadata only, never image
+bytes; read the media file directly via `read_file` if you need the
+actual image. None of the three attempt rich per-run text formatting or
+embedded charts/objects (excelize itself has no chart-*reading* API,
+only chart-writing); that tier is still unbuilt.
+
+[excelize]: https://github.com/xuri/excelize
 
 **Analyze with `read_document`, edit with `read_file`.** The two tools
 are not interchangeable by file extension. `read_file` returns `cat -n`
@@ -333,12 +400,14 @@ in the model's judgement rather than in an automatic dispatch inside
 
 | Param | Type | Default | Notes |
 |---|---|---|---|
-| `path` | string | — | Absolute or cwd-relative; extension must be `.csv`, `.tsv`, `.json`, `.jsonl`, `.xml`, `.html`, or `.htm` |
-| `max_rows` | int | `200` | Max CSV/TSV rows or JSONL records sampled into the preview |
+| `path` | string | — | Absolute or cwd-relative; extension must be `.csv`, `.tsv`, `.json`, `.jsonl`, `.xml`, `.html`, `.htm`, `.pdf`, `.xlsx`, `.docx`, or `.pptx` |
+| `max_rows` | int | `200` | Max CSV/TSV/xlsx rows or JSONL records sampled into the preview |
 | `max_chars` | int | `20000` | Max characters of extracted text returned |
-| `offset` | int | `0` | Where the preview window starts — data rows for CSV/TSV, records for JSONL, characters for JSON/XML/HTML |
+| `max_pages` | int | `50` | PDF or pptx only: max pages/slides to read text from |
+| `offset` | int | `0` | Where the preview window starts — data rows for CSV/TSV/xlsx, records for JSONL, characters for JSON/XML/HTML/docx, pages for PDF, slides for pptx |
 | `has_header` | bool | auto | CSV/TSV only: whether row 1 holds column names. Omitted means auto-detect |
 | `max_bytes` | int | `5 MiB` | Max bytes read from the source file. Raise it when a result warns the file exceeded the byte cap; clamped to a 32 MiB ceiling, and the clamp is reported as a warning rather than applied silently |
+| `ocr_lang` | string | English | PDF only: Tesseract language code (`fra`, `deu`, ...) or `+`-joined codes (`eng+fra`) for the OCR fallback tier. Only used when a PDF has no embedded text layer at all; the requested language pack must be installed wherever OCR runs |
 
 ### Paging
 
@@ -445,9 +514,169 @@ text; the streaming extractors grow only linearly with the allowance.
 Read-only, no approval — same trust posture as `read_file`, including
 the same credential-path deny list.
 
-Not in scope for this tool: PDF, Office formats (docx/xlsx/pptx),
+Not in scope for this tool: full-fidelity Office parsing (rich per-run
+text formatting, embedded charts/objects, actual image bytes — table
+structure and picture metadata are extracted for docx/pptx, and
+formulas/merged cells/picture metadata for xlsx, but xlsx/docx/pptx
+text extraction otherwise stays structural, not full-fidelity), legacy
+binary `.doc`/`.xls`/`.ppt`,
 `.md`/`.txt`/`.log` (already covered by `read_file`), and any file
-fetched from a URL — local files only.
+fetched from a URL — local files only. PDF text extraction requires
+`pdftotext`/`pdfinfo` reachable through the active command sandbox — see
+[`document-generation.md`](document-generation.md); with no sandbox and
+no host install, PDF calls fail with an actionable error rather than
+falling back silently.
+
+## search_document
+
+Query-based retrieval over a document's extracted content — use this
+instead of paging `read_document` with `offset` when you don't know
+which page, sheet, or section of a large file holds what you need.
+
+Internally it runs the exact same extraction `read_document` would
+(same format dispatch, same PDF-availability rules, same path-trust
+boundary), splits the result into paragraph-sized chunks, and ranks
+them against your query with the same BM25 engine `memory_search` uses
+— keyword-based ranking, not exact substring matching, so word order
+and minor phrasing differences don't prevent a match. Results come back
+numbered, scored, and labeled with their location (`page 4 (part 2)`,
+`Sheet1`, `document body`), each with a short snippet, ranked most
+relevant first.
+
+| Param | Type | Default | Notes |
+|---|---|---|---|
+| `path` | string | — | Absolute or cwd-relative; same supported extensions as `read_document` |
+| `query` | string | — | Search query — keywords work better than a long natural-language sentence |
+| `max_results` | int | `10` | Maximum number of ranked matches to return |
+| `ocr_lang` | string | English | PDF only: Tesseract language code for the OCR fallback tier, same as `read_document`'s `ocr_lang` |
+
+```
+search_document(path="quarterly_report.pdf", query="capital expenditure forecast")
+
+found 2 matches for "capital expenditure forecast" in quarterly_report.pdf:
+
+1. page 14 (score=3.241)
+   Capital expenditure for the coming fiscal year is forecast to increase...
+
+2. page 22 (score=1.008)
+   ...prior capital expenditure decisions informed this year's forecast...
+```
+
+A query that matches nothing returns a plain string (`no matching text
+found for "..." in ...`), not an error — the same "not-found is a valid
+result" convention `read_document` and `memory_search` both follow.
+
+Read-only, no approval — same trust posture as `read_document`,
+including the same credential-path deny list. Nothing is indexed or
+persisted between calls: each call re-extracts and re-ranks the file
+fresh, so results always reflect the file's current on-disk content.
+
+## create_document
+
+*GA for every format, including docx/pdf; the `document_generation` flag
+is a no-op kept for one release for compatibility (see
+[experimental.md](experimental.md)). docx/pdf need `pandoc`/`weasyprint`
+reachable via host `PATH` or `[sandbox].documents_image` — a missing binary
+returns an actionable error naming exactly where it looked, not a
+silent failure.* Generates a new xlsx, docx, pdf, or pptx file from
+structured content — the write-side counterpart to `read_document`. See
+[`document-generation.md`](document-generation.md) for the full design
+and setup.
+
+| Param | Type | Default | Notes |
+|---|---|---|---|
+| `format` | string | — | `xlsx`, `docx`, `pdf`, or `pptx` |
+| `output_path` | string | — | Path to write the generated document to |
+| `overwrite` | bool | `false` | Must be explicit to replace an existing output |
+| `template` | string | — | `format=docx` only: path to an existing docx to fill instead of generating a new one from `content.blocks` — see below |
+| `content.sheets` | []object | — | xlsx only: one entry per sheet — `name`, `rows` (array of arrays of cells) |
+| `content.blocks` | []object | — | docx/pdf only, ignored when `template` is set: ordered content blocks |
+| `content.slides` | []object | — | pptx only: one entry per slide |
+| `content.replacements` | object | — | `format=docx` with `template` set only: flat `{name: value}` map |
+
+xlsx cell fields: `value` (string/number/bool), `formula` (without the
+leading `=`; overrides `value`), `bold`, `italic`, `number_format` (an
+Excel number format code, e.g. `0.00%` or `yyyy-mm-dd`).
+
+docx/pdf block fields: `type` (`heading`, `paragraph`, `list`, `table`,
+`code`, or `image`), `level` (heading 1-6), `text` (heading/paragraph/code
+plain text), `spans` (heading/paragraph: inline-formatted runs —
+`[{"text": ..., "bold": ..., "italic": ...}]` — overrides `text` when
+set), `ordered` + `items` (list plain text) + `item_spans` (list: parallel
+to `items`, one `spans` array per item, overrides that item's plain
+text), `header` + `rows` (table, string cells), `language` (code), `path`
++ `alt` (image: local file path — validated as a read path the same way
+`read_file` validates one — and alt text).
+
+pptx slide fields: `title`, `bullets` (array of strings), `notes`
+(speaker notes), `image` (local PNG/JPEG/GIF file path — validated as a
+read path the same way `read_file` validates one) + `image_alt` (written
+to the picture description field), and `layout` (currently advisory; the
+native Go renderer uses one fixed production-safe layout). An image's
+placement defaults to a fixed right-half layout; set `image_layout` to
+`left`, `right`, or `full` for a preset, or set all four of
+`image_left`/`image_top`/`image_width`/`image_height` (inches) for an
+exact bounding box — the two are mutually exclusive, and an explicit
+box must fit within the 13.33in x 7.5in (16:9) slide.
+
+`format=docx` with `template` set fills an existing document instead of
+generating a new one: every `{{name}}` token found anywhere in the
+template (paragraphs, table cells, headers, footers) is replaced with
+`content.replacements[name]`. `template` is validated as a read path the
+same way an image block's `path` is. Runs `python3`+`python-docx`
+through the active command sandbox — see
+[`document-generation.md`](document-generation.md#requirements) for the
+dependency story and the per-paragraph formatting trade-off (a paragraph
+with a replaced token collapses to its first run's style; every other
+paragraph is untouched).
+
+```json
+{"format": "docx", "output_path": "invoice.docx", "template": "templates/invoice.docx",
+ "content": {"replacements": {"customer_name": "Jane Doe", "total": "$42.00"}}}
+```
+
+```json
+{"format": "xlsx", "output_path": "report.xlsx", "content": {"sheets": [
+  {"name": "Q1", "rows": [
+    [{"value": "Item", "bold": true}, {"value": "Qty", "bold": true}],
+    [{"value": "Widgets"}, {"value": 42}],
+    [{"value": "Total"}, {"formula": "SUM(B2:B2)"}]
+  ]}
+]}}
+```
+
+```json
+{"format": "docx", "output_path": "notes.docx", "content": {"blocks": [
+  {"type": "heading", "level": 1, "text": "Weekly Notes"},
+  {"type": "paragraph", "spans": [
+    {"text": "Summary: "}, {"text": "shipped early", "bold": true}, {"text": "."}
+  ]},
+  {"type": "list", "items": ["Shipped X", "Fixed Y"]},
+  {"type": "image", "path": "assets/chart.png", "alt": "Weekly progress chart"}
+]}}
+```
+
+```json
+{"format": "pptx", "output_path": "deck.pptx", "content": {"slides": [
+  {"title": "Weekly Update", "layout": "title_only"},
+  {"title": "Progress", "bullets": ["Shipped X", "Fixed Y"], "notes": "Mention the Y fix took longer than expected"},
+  {"title": "Growth chart", "image": "assets/chart.png", "image_alt": "Weekly growth chart"}
+]}}
+```
+
+**xlsx** and **pptx** are generated natively in Go — no external tools,
+works regardless of sandbox configuration. **docx/pdf** run `pandoc` (pdf
+additionally needs `weasyprint` as pandoc's PDF engine), routed through
+the documents sandbox profile: installed on the host when no sandbox is
+configured, or present in `[sandbox].documents_image` when one is. A
+missing binary returns an actionable error naming where it was checked
+(host `PATH` or the sandbox label) rather than failing silently — see
+[`document-generation.md`](document-generation.md) for a reference
+Containerfile with everything docx/pdf generation and PDF extraction need.
+
+Always prompts for approval; refuses to overwrite an existing file unless
+`overwrite=true`. Not in scope: any document *parsing* beyond what
+`read_document` already covers.
 
 ## write_file
 
@@ -1666,10 +1895,9 @@ There is no *in-process* sandbox, and there will not be one — yottacode
 keeps its core small and does not ship bwrap/firejail/landlock backends.
 By default the command runs directly on the host. Two ways to add real
 isolation: run yottacode itself inside a container or devcontainer
-(covers every tool, all-or-nothing), or enable the experimental command
-sandbox (`[sandbox] backend = "podman"`, behind `--experimental sandbox`)
-to route just `run_bash` through a session-scoped rootless Podman
-container instead — see [sandbox.md](sandbox.md).
+(covers every tool, all-or-nothing), or enable the command sandbox
+(`[sandbox] backend = "podman"`) to route supported command execution through
+lazy rootless Podman profile containers instead — see [sandbox.md](sandbox.md).
 
 ## git
 

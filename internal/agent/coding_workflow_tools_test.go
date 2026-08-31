@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/yottadynamics/yottacode/internal/worktree"
 )
 
 func TestApplyDiffTool_AppliesPatch(t *testing.T) {
@@ -442,5 +444,191 @@ func TestRunTestsTool_ReportsFailureAsData(t *testing.T) {
 	}
 	if !strings.Contains(out, "exit=7") || !strings.Contains(out, "nope") {
 		t.Errorf("out = %q", out)
+	}
+}
+
+// TestRunTestsTool_HardlineFloor matches run_bash's hardline execution
+// chokepoint: run_tests is also arbitrary shell, and sandboxed background
+// dispatch workers may auto-approve it, so catastrophic commands must be
+// blocked here regardless of host vs Sandbox execution.
+func TestRunTestsTool_HardlineFloor(t *testing.T) {
+	spy := &spySandbox{label: "[podman]"}
+	tool := &RunTestsTool{Cwd: NewCwdRef(t.TempDir()), Sandbox: spy}
+	out, err := tool.Execute(context.Background(), `{"command":"true && rm -rf /"}`)
+	if err != nil {
+		t.Fatalf("hardline should return a recoverable result, got err: %v", err)
+	}
+	if !strings.Contains(out, "BLOCKED (hardline)") {
+		t.Errorf("expected hardline block, got: %s", out)
+	}
+	if spy.callCount != 0 {
+		t.Errorf("hardline command reached Sandbox.Command %d times, want 0", spy.callCount)
+	}
+}
+
+// TestRunTestsTool_HardlineFloorAfterDefaultNormalization proves the default
+// test command still normalizes first, then passes the hardline check as an
+// ordinary safe command.
+func TestRunTestsTool_HardlineFloorAfterDefaultNormalization(t *testing.T) {
+	spy := &spySandbox{label: "[podman]"}
+	tool := &RunTestsTool{Cwd: NewCwdRef(t.TempDir()), Sandbox: spy}
+	out, err := tool.Execute(context.Background(), `{}`)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if !strings.HasSuffix(spy.gotCommand, "&& go test ./...") {
+		t.Errorf("Sandbox.Command got command %q, want wrapped default go test ./...", spy.gotCommand)
+	}
+	if strings.Contains(out, "BLOCKED (hardline)") {
+		t.Errorf("default test command should not be hardline-blocked, got: %q", out)
+	}
+}
+
+// Nil Sandbox must behave exactly like an explicit HostSandbox{} — same
+// back-compat contract RunBashTool relies on (see exec_tool_test.go).
+func TestRunTestsTool_NilSandboxDefaultsToHost(t *testing.T) {
+	tool := &RunTestsTool{Cwd: NewCwdRef(t.TempDir())}
+	if _, ok := tool.sandbox().(HostSandbox); !ok {
+		t.Errorf("nil Sandbox should default to HostSandbox, got %T", tool.sandbox())
+	}
+}
+
+// Execute must route the command and cwd through Sandbox.Command rather than
+// building exec.Command inline — this is the seam's whole point, and what
+// lets a background dispatch worker's run_tests calls be confined to its own
+// container (see dispatchBackgroundApprovalPolicy).
+func TestRunTestsTool_ExecuteRoutesThroughSandbox(t *testing.T) {
+	dir := t.TempDir()
+	spy := &spySandbox{label: "[podman]"}
+	tool := &RunTestsTool{Cwd: NewCwdRef(dir), Sandbox: spy}
+	out, err := tool.Execute(context.Background(), `{"command":"printf via-sandbox"}`)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if spy.callCount != 1 {
+		t.Errorf("Sandbox.Command called %d times, want 1", spy.callCount)
+	}
+	if !strings.HasSuffix(spy.gotCommand, "&& printf via-sandbox") {
+		t.Errorf("Sandbox.Command got command %q, want wrapped printf command", spy.gotCommand)
+	}
+	if spy.gotCwd != dir {
+		t.Errorf("Sandbox.Command got cwd %q, want %q", spy.gotCwd, dir)
+	}
+	if !strings.Contains(out, "via-sandbox") {
+		t.Errorf("output missing command's stdout: %q", out)
+	}
+}
+
+func TestRunTestsTool_SandboxedGoTestsUseExecutableProjectDirs(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	dir := gitInit(t)
+	assertSandboxedGoTestScratch(t, dir)
+}
+
+func TestRunTestsTool_SandboxedGoTestsUseSameScratchFromManagedWorktree(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo := gitInit(t)
+	writeFile(t, repo, "README.md", "root\n")
+	gitCommit(t, repo, "initial")
+
+	wtDir := worktree.Dir(repo, "feature")
+	if err := os.MkdirAll(filepath.Dir(wtDir), 0o755); err != nil {
+		t.Fatalf("mkdir worktree parent: %v", err)
+	}
+	if err := runGit(repo, "worktree", "add", "-q", "-b", "feature", wtDir); err != nil {
+		t.Fatalf("git worktree add: %v", err)
+	}
+	t.Cleanup(func() { _ = runGit(repo, "worktree", "remove", "--force", wtDir) })
+
+	assertSandboxedGoTestScratch(t, wtDir)
+}
+
+func assertSandboxedGoTestScratch(t *testing.T, cwd string) {
+	t.Helper()
+	spy := &spySandbox{label: "[podman-sandbox]"}
+	tool := &RunTestsTool{Cwd: NewCwdRef(cwd), Sandbox: spy}
+	out, err := tool.Execute(context.Background(), `{"command":"printf go-env"}`)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	repoScratch := filepath.Join("/var/tmp", "yottacode-go", safeScratchName(cwd))
+	for _, fragment := range []string{
+		"mkdir -p '" + filepath.Join(repoScratch, "tmp") + "' '" + filepath.Join(repoScratch, "cache") + "' '" + filepath.Join(repoScratch, "modcache") + "'",
+		"export TMPDIR='" + filepath.Join(repoScratch, "tmp") + "' GOTMPDIR='" + filepath.Join(repoScratch, "tmp") + "' GOCACHE='" + filepath.Join(repoScratch, "cache") + "' GOMODCACHE='" + filepath.Join(repoScratch, "modcache") + "'",
+	} {
+		if !strings.Contains(spy.gotCommand, fragment) {
+			t.Fatalf("sandbox command missing %s: %q", fragment, spy.gotCommand)
+		}
+		if !strings.Contains(out, fragment) {
+			t.Fatalf("reported command missing %s: %q", fragment, out)
+		}
+	}
+	if !strings.Contains(spy.gotCommand, repoScratch) {
+		t.Fatalf("sandbox command should use container-internal scratch storage %s, got %q", repoScratch, spy.gotCommand)
+	}
+	for _, forbidden := range []string{
+		filepath.Join(cwd, ".yottacode", "tmp", "go"),
+		filepath.Join(cwd, ".scratch"),
+		filepath.Join(filepath.Dir(cwd), "."+filepath.Base(cwd)+"-go-scratch"),
+	} {
+		if strings.Contains(spy.gotCommand, forbidden) {
+			t.Fatalf("sandbox command must not use host worktree scratch path %s: %q", forbidden, spy.gotCommand)
+		}
+	}
+
+	// Regression: repo-root Go caches make `go test ./...` descend into
+	// downloaded modules and fail with "outside main module" setup errors.
+	for _, polluted := range []string{
+		filepath.Join(cwd, ".cache"),
+		filepath.Join(cwd, ".config"),
+		filepath.Join(cwd, "go"),
+		filepath.Join(cwd, ".yottacode", "tmp", "go"),
+	} {
+		if _, err := os.Stat(polluted); !os.IsNotExist(err) {
+			t.Fatalf("sandboxed run_tests polluted repo root with %s", polluted)
+		}
+	}
+}
+
+// PreviewCall prefixes the Sandbox's label for scrollback, mirroring
+// RunBashTool's convention, but only when it differs from HostSandbox's.
+func TestRunTestsTool_PreviewCallLabelsNonHostSandbox(t *testing.T) {
+	tool := &RunTestsTool{Cwd: NewCwdRef(t.TempDir()), Sandbox: &spySandbox{label: "[podman]"}}
+	got := tool.PreviewCall(`{}`)
+	if !strings.HasPrefix(got, "[podman] ") {
+		t.Errorf("PreviewCall = %q, want [podman] prefix", got)
+	}
+}
+
+func TestRunTestsTool_PreviewCallOmitsHostLabel(t *testing.T) {
+	tool := &RunTestsTool{Cwd: NewCwdRef(t.TempDir())}
+	got := tool.PreviewCall(`{}`)
+	if strings.HasPrefix(got, "[") {
+		t.Errorf("PreviewCall = %q, unsandboxed preview should not carry a bracket tag", got)
+	}
+}
+
+// Podman's own exit=125 convention must be disambiguated for run_tests too,
+// now that it can run inside a podman-backed sandbox — otherwise a dead or
+// misconfigured container looks exactly like a test suite that exited 125.
+func TestRunTestsTool_Exit125AnnotatedOnlyForPodman(t *testing.T) {
+	tool := &RunTestsTool{Cwd: NewCwdRef(t.TempDir()), Sandbox: &exitCodeSandbox{label: "[podman-sandbox]", code: 125}}
+	out, err := tool.Execute(context.Background(), `{}`)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if !strings.Contains(out, "NOTE: exit=125 is podman's own convention") {
+		t.Errorf("expected the podman exit=125 note, got: %q", out)
+	}
+}
+
+func TestRunTestsTool_Exit125NotAnnotatedForHost(t *testing.T) {
+	tool := &RunTestsTool{Cwd: NewCwdRef(t.TempDir())}
+	out, err := tool.Execute(context.Background(), `{"command":"exit 125"}`)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if strings.Contains(out, "NOTE: exit=125") {
+		t.Errorf("host execution exiting 125 is an ordinary exit code, not a podman failure — got: %q", out)
 	}
 }

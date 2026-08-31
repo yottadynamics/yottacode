@@ -52,11 +52,21 @@ const (
 	// for opt-in users while the decomposition + unattended-worker UX settles.
 	Dispatch Feature = "dispatch"
 
-	// DocumentIngestion enables the read_document agent tool: bounded,
-	// provenance-labeled text extraction for CSV, TSV, JSON, JSONL, XML,
-	// and HTML files. Opt-in first because it's a brand-new tool surface
-	// whose caps and format coverage haven't been exercised on real
-	// files yet.
+	// DocumentGeneration is a graduated no-op flag kept recognized for
+	// one release so old configs don't warn or break. create_document is
+	// now fully default-on for every format, including docx/pdf (via
+	// pandoc, routed through the active command sandbox — pdf also
+	// needs weasyprint): a missing binary returns an actionable error
+	// naming where it looked, the same graceful-degrade posture
+	// LSPCodeIntelligence already established for a missing server.
+	DocumentGeneration Feature = "document_generation"
+
+	// DocumentIngestion is a graduated no-op flag kept recognized for
+	// one release so old configs don't warn or break. read_document is
+	// now fully default-on for every format, including PDF (via
+	// pdftotext/pdfinfo, routed through the active command sandbox): a
+	// missing binary returns an actionable error naming where it
+	// looked, the same posture DocumentGeneration's docx/pdf uses.
 	DocumentIngestion Feature = "document_ingestion"
 
 	// LSPCodeIntelligence is a graduated no-op flag kept recognized for one
@@ -64,11 +74,10 @@ const (
 	// server launch still happens lazily only when a semantic tool is used.
 	LSPCodeIntelligence Feature = "lsp_code_intelligence"
 
-	// Sandbox enables routing run_bash through a session-scoped podman
-	// container (config.SandboxConfig.Backend = "podman") instead of the
-	// host directly. Opt-in first because the container-lifecycle,
-	// hardening-flag set, and credential-passthrough model haven't been
-	// exercised outside this design's own review yet.
+	// Sandbox is a graduated no-op flag kept recognized for one release so
+	// old configs don't warn or break. The command sandbox is now governed by
+	// config.SandboxConfig.Backend: set [sandbox].backend = "podman" to route
+	// supported command execution through the lazy Podman sandbox manager.
 	Sandbox Feature = "sandbox"
 
 	// SyntaxRanges is a graduated no-op flag kept recognized for one release
@@ -85,6 +94,7 @@ func All() []Feature {
 		BackgroundSubagents,
 		CodeMap,
 		Dispatch,
+		DocumentGeneration,
 		DocumentIngestion,
 		LSPCodeIntelligence,
 		Sandbox,
@@ -94,7 +104,7 @@ func All() []Feature {
 
 func IsGraduated(f Feature) bool {
 	switch f {
-	case BackgroundSubagents, LSPCodeIntelligence, SyntaxRanges:
+	case BackgroundSubagents, DocumentGeneration, DocumentIngestion, LSPCodeIntelligence, Sandbox, SyntaxRanges:
 		return true
 	default:
 		return false
@@ -113,12 +123,14 @@ func Description(f Feature) string {
 		return "Repository code map. Builds a read-only structure index for the /map TUI overlay and code-map agent tools, using LSP when available and approximate fallback symbols otherwise."
 	case Dispatch:
 		return "Dispatch + integrate tools. Fan a batch of subtasks out to concurrent subagents (write-capable ones in isolated git worktrees, partitioned by file ownership), then merge committed branches into one integration branch for a PR."
+	case DocumentGeneration:
+		return "create_document has graduated to GA for every format, including docx/pdf; this flag is recognized as a no-op for compatibility."
 	case DocumentIngestion:
-		return "The read_document agent tool. Bounded, provenance-labeled text extraction for CSV, TSV, JSON, JSONL, XML, and HTML files — a structured alternative to read_file for these formats."
+		return "read_document has graduated to GA for every format, including PDF; this flag is recognized as a no-op for compatibility."
 	case LSPCodeIntelligence:
 		return "LSP Code Intelligence has graduated to GA; this flag is recognized as a no-op for compatibility."
 	case Sandbox:
-		return "Run run_bash inside a session-scoped rootless podman container (network=none, project-dir-only mount, capability-dropped) instead of the host directly. Set [sandbox].backend = \"podman\" in config.toml to activate once enabled."
+		return "The command sandbox has graduated to GA; this flag is recognized as a no-op for compatibility. Set [sandbox].backend = \"podman\" in config.toml to route supported command execution through the lazy Podman sandbox manager."
 	case SyntaxRanges:
 		return "Offline syntax ranges have graduated to GA for Go, TypeScript/JavaScript, Python, and Rust; this flag is recognized as a no-op for compatibility."
 	default:

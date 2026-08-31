@@ -8,7 +8,8 @@ Building, testing, and extending yottacode.
 go build -o yottacode ./cmd/yottacode
 ```
 
-Requirements: Go 1.26+. The module is pure Go, so cross-compilation is
+Requirements: Go 1.26+. Use the exact patch version in `go.mod` when validating
+security fixes or reproducing CI locally. The module is pure Go, so cross-compilation is
 straightforward:
 
 ```bash
@@ -23,6 +24,8 @@ Windows build — Windows contributors should work inside WSL.
 
 ```bash
 go test ./...                     # unit tests, fast, no live deps
+go vet ./...                      # static checks
+govulncheck ./...                 # reachable dependency/toolchain CVEs
 go test -tags=integration ./...   # adds live-provider tests
 go test -race ./...
 go test -cover ./...

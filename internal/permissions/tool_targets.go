@@ -118,6 +118,15 @@ func targetFor(toolName, argsJSON, cwd string) Target {
 		return Target{PermName: "Media", Descriptor: "analyze " + relPath(extractPath(argsJSON), cwd)}
 	case "media_render":
 		return Target{PermName: "Media", Descriptor: "render " + relPath(extractField(argsJSON, "output"), cwd)}
+	case "create_document":
+		// Distinct from "Write" (write_file/edit_file/...): create_document
+		// also shells out to pandoc for docx/pdf, so a Document(...) rule can
+		// be scoped independently of plain file writes even though every format Verb-prefixed
+		// descriptor, same shape as media_probe/media_analyze/media_render
+		// above — IsPath deliberately omitted (defaults false) to match
+		// their precedent: a "<verb> <path>" descriptor is matched as a
+		// free-form glob, not routed through doublestar's pure-path matcher.
+		return Target{PermName: "Document", Descriptor: extractField(argsJSON, "format") + " " + relPath(extractField(argsJSON, "output_path"), cwd)}
 	case "fetch_url":
 		return Target{PermName: "Fetch", Descriptor: normalizeFetchDescriptor(extractField(argsJSON, "url"))}
 	case "web_search":

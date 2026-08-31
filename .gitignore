@@ -52,3 +52,6 @@ go.work.sum
 # Private planning notes live outside the public repo
 roadmap
 
+# Local tool state accidentally created when HOME points at the repo
+.config/
+

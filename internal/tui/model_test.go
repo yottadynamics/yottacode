@@ -52,6 +52,20 @@ func applyMsg(m Model, msg tea.Msg) (Model, tea.Cmd) {
 	return out.(Model), cmd
 }
 
+func TestModel_WelcomeEnterActivatesSelectedShortcut(t *testing.T) {
+	m := newTestModel(t)
+	m.welcomeCursor = int(welcomeHelp)
+
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter})
+
+	if !m.helpOpen {
+		t.Fatalf("Enter on the highlighted welcome action should open help")
+	}
+	if m.textInput.Value() != "" {
+		t.Fatalf("welcome activation should not type into the prompt, got %q", m.textInput.Value())
+	}
+}
+
 func TestModel_WindowSizeMakesItReady(t *testing.T) {
 	m := newTestModel(t)
 	if !m.ready {
@@ -408,6 +422,31 @@ func TestModel_StreamingUnclosedTableRendersOnCommit(t *testing.T) {
 	}
 }
 
+func TestRenderPermissionsOverlayShowsWarnings(t *testing.T) {
+	m := newTestModel(t)
+	if err := m.perms.AddAllow("Bash(gh *)"); err != nil {
+		t.Fatalf("AddAllow Bash: %v", err)
+	}
+	if err := m.perms.AddAllow("Github(*)"); err != nil {
+		t.Fatalf("AddAllow Github: %v", err)
+	}
+	perms, err := permissions.Load(m.cwd)
+	if err != nil {
+		t.Fatalf("Load permissions: %v", err)
+	}
+	m.perms = perms
+
+	plain := stripANSI(renderPermissionsOverlay(m))
+	if !strings.Contains(plain, "Policy warnings") {
+		t.Fatalf("expected policy warning section, got %q", plain)
+	}
+	for _, want := range []string{"Bash(gh *)", "Github(*)"} {
+		if !strings.Contains(plain, want) {
+			t.Errorf("warning overlay missing %q: %q", want, plain)
+		}
+	}
+}
+
 func TestModel_ApprovalAutoRendersSystemMessage(t *testing.T) {
 	m := newTestModel(t)
 	m, _ = applyMsg(m, agentEventMsg{ev: agent.ApprovalAuto{Source: "auto-mode", Preview: `grep("auto mode" in internal/tui)`}})
@@ -433,14 +472,36 @@ func TestModel_UserMessageAppendedRendersSystemMessage(t *testing.T) {
 
 func TestModel_ContextCompactedRendersSystemMessage(t *testing.T) {
 	m := newTestModel(t)
-	m, _ = applyMsg(m, agentEventMsg{ev: agent.ContextCompacted{Before: 221000, After: 36000, SnapshotPath: "/tmp/foo.json"}})
+	snap := "/tmp/sess1-pre-summary-20260101-000000.json"
+	m, _ = applyMsg(m, agentEventMsg{ev: agent.ContextCompacted{Before: 221000, After: 36000, SnapshotPath: snap}})
 	plain := stripANSI(m.transcript.String())
 	want := "◇ context · compacted · 172% → 28% · full history saved"
 	if !strings.Contains(plain, want) {
 		t.Fatalf("expected context compaction line %q, got %q", want, plain)
 	}
-	if strings.Contains(plain, "/tmp/foo.json") {
-		t.Fatalf("context compaction should not render as a card, got %q", plain)
+	// The banner must offer a working resume command (previously it
+	// suggested a dead "/recall <session-id>" command instead).
+	if !strings.Contains(plain, "yottacode sessions resume sess1-pre-summary-20260101-000000") {
+		t.Fatalf("expected banner to offer a working resume command, got %q", plain)
+	}
+	// The full snapshot path (directory + .json) must never leak into
+	// scrollback — only the bare resume id (docs/tools.md: "the full
+	// snapshot path is intentionally omitted from normal scrollback").
+	if strings.Contains(plain, snap) {
+		t.Fatalf("full snapshot path must not appear in scrollback, got %q", plain)
+	}
+}
+
+// TestModel_ContextCompactedIgnoresNonSnapshotPath guards
+// snapshotResumeHint's validation: a SnapshotPath that doesn't actually
+// look like a compaction snapshot (no session.SnapshotMarker) must not
+// produce a bogus, non-functional "sessions resume <garbage>" suggestion.
+func TestModel_ContextCompactedIgnoresNonSnapshotPath(t *testing.T) {
+	m := newTestModel(t)
+	m, _ = applyMsg(m, agentEventMsg{ev: agent.ContextCompacted{Before: 221000, After: 36000, SnapshotPath: "/tmp/foo.json"}})
+	plain := stripANSI(m.transcript.String())
+	if strings.Contains(plain, "sessions resume") {
+		t.Fatalf("non-snapshot-shaped path should not produce a resume command, got %q", plain)
 	}
 }
 
@@ -827,13 +888,13 @@ func TestModel_ThinkingRowAboveInputWhenActive(t *testing.T) {
 	}
 	// The textarea (with its placeholder) must remain visible — the user
 	// can compose their next message while the agent works.
-	if !strings.Contains(v, "ask anything") {
+	if !strings.Contains(v, "build anything") {
 		t.Errorf("input row should still be visible during a turn; got %q", v)
 	}
 	// Verify the Thinking indicator appears BEFORE the input prompt in
 	// the rendered output (i.e., above it).
 	thinkingIdx := strings.Index(v, "thinking")
-	promptIdx := strings.Index(v, "ask anything")
+	promptIdx := strings.Index(v, "build anything")
 	if thinkingIdx >= promptIdx {
 		t.Errorf("thinking row should render above input prompt; thinking@%d input@%d", thinkingIdx, promptIdx)
 	}
@@ -857,7 +918,7 @@ func TestModel_EnterMidTurnQueuesNotSubmits(t *testing.T) {
 	m := newTestModel(t)
 	m.turnActive = true
 	m.turnCancel = func() {}
-	m.userMsgCh = make(chan string, 1)
+	m.userMsgCh = make(chan agent.UserMessage, 1)
 	for _, r := range "queued" {
 		m, _ = applyMsg(m, tea.KeyPressMsg{Text: string(r)})
 	}
@@ -868,8 +929,11 @@ func TestModel_EnterMidTurnQueuesNotSubmits(t *testing.T) {
 	}
 	select {
 	case got := <-m.userMsgCh:
-		if got != "queued" {
-			t.Errorf("queued input = %q, want queued", got)
+		if got.Content != "queued" {
+			t.Errorf("queued input = %q, want queued", got.Content)
+		}
+		if got.Timestamp.IsZero() {
+			t.Error("queued input should carry an enqueue timestamp")
 		}
 	default:
 		t.Errorf("Enter during a turn should queue input on userMsgCh")
@@ -971,7 +1035,7 @@ func TestModel_RegularMessageMidTurnQueuesForResubmission(t *testing.T) {
 	m := newTestModel(t)
 	m.turnActive = true
 	m.turnCancel = func() {}
-	m.userMsgCh = make(chan string, 1)
+	m.userMsgCh = make(chan agent.UserMessage, 1)
 	for _, r := range "hello world" {
 		m, _ = applyMsg(m, tea.KeyPressMsg{Text: string(r)})
 	}
@@ -982,8 +1046,11 @@ func TestModel_RegularMessageMidTurnQueuesForResubmission(t *testing.T) {
 	}
 	select {
 	case got := <-m.userMsgCh:
-		if got != "hello world" {
-			t.Errorf("queued input = %q, want hello world", got)
+		if got.Content != "hello world" {
+			t.Errorf("queued input = %q, want hello world", got.Content)
+		}
+		if got.Timestamp.IsZero() {
+			t.Error("queued input should carry an enqueue timestamp")
 		}
 	default:
 		t.Errorf("regular Enter should queue on userMsgCh")
@@ -1306,14 +1373,8 @@ func TestModel_HeaderShowsBrandingAndVersion(t *testing.T) {
 	m, _ = applyMsg(m, tea.WindowSizeMsg{Width: 100, Height: 24})
 	// The startup box is launch hero chrome, not transcript content.
 	v := m.View().Content
-	if !strings.Contains(v, "YottaCode") || !strings.Contains(v, "v9.9.9") {
+	if !strings.Contains(v, "yottacode") || !strings.Contains(v, "v9.9.9") {
 		t.Errorf("startup box missing branding/version: %q", v)
-	}
-	if !strings.Contains(v, "qwen3.5") {
-		t.Errorf("startup box missing model: %q", v)
-	}
-	if !strings.Contains(v, "/some/path") {
-		t.Errorf("startup box missing cwd: %q", v)
 	}
 }
 
@@ -1346,7 +1407,7 @@ func TestModel_NewSeedsContextTokensFromResumedSession(t *testing.T) {
 func TestModel_SplashShowsProductName(t *testing.T) {
 	m := newTestModel(t)
 	v := m.View().Content
-	if !strings.Contains(v, "YottaCode") {
+	if !strings.Contains(v, "yottacode") {
 		t.Errorf("startup box should show product name: %q", v)
 	}
 }
@@ -1368,7 +1429,7 @@ func TestModel_PromptOnlyOnFirstWrappedRow(t *testing.T) {
 	long := strings.Repeat("e", 400)
 	m.textInput.SetValue(long)
 	m.fitTextareaHeight()
-	v := m.View().Content
+	v := m.renderInputFrame()
 	if got := strings.Count(v, "›"); got != 1 {
 		t.Errorf("expected exactly 1 › in view for soft-wrapped input, got %d:\n%s", got, v)
 	}
@@ -1527,8 +1588,8 @@ func TestModel_HeaderShowsMemoryWhenLoaded(t *testing.T) {
 		MemorySummary: "USER+PROJECT",
 	})
 	m, _ = applyMsg(m, tea.WindowSizeMsg{Width: 120, Height: 24})
-	if !strings.Contains(m.View().Content, "mem=USER+PROJECT") {
-		t.Errorf("startup box should show memory summary")
+	if strings.Contains(m.View().Content, "mem=USER+PROJECT") {
+		t.Errorf("welcome card should not duplicate memory summary")
 	}
 }
 
@@ -2631,5 +2692,16 @@ func TestTranscriptFollowStopsAfterManualScroll(t *testing.T) {
 	m.refreshTranscriptViewport()
 	if m.transcriptViewport.AtBottom() {
 		t.Fatalf("new output should not yank the viewport when user scrolled away")
+	}
+}
+
+func TestView_RendersTranscriptScrollbarWhenScrollable(t *testing.T) {
+	m := newSelectableTranscriptModel(t)
+	m.awaitingApproval = true
+	m.approvalTool = "exit_plan_mode"
+
+	view := stripANSI(m.View().Content)
+	if !strings.Contains(view, "█") {
+		t.Fatalf("scrollable transcript should render a visible scrollbar; got %q", view)
 	}
 }

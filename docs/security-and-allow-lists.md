@@ -111,14 +111,16 @@ Approval prompts can be answered once or turned into a reusable allow rule. Auto
 
 Tool calls flow through layered gates in this order:
 
-1. **`Deny` rules** in `permissions.json` always win.
-2. **Plan-mode gate** (only when plan mode is active) — blocks every mutating tool except `todo_write`, `exit_plan_mode`, and writes to the resolved plan file. Returns a structured error to the model so it can switch to a read-only or plan-file alternative.
-3. **Yolo mode auto-allow** (when `--yolo` was passed at startup or `/yolo` toggled the overlay on) — every tool auto-allows silently. No safety floor.
-4. **Plan-mode auto-allow** — writes to the resolved plan file are the model's only legitimate mutation surface while planning; they auto-allow without a prompt.
-5. **Auto-mode auto-allow** (only when auto mode is active) — non-safety-floor mutating tools auto-allow. Safety floor (`run_bash`, `git_commit`, `git_checkpoint`, `rollback`) normally still prompts, with one carve-out: `run_bash` calls whose every segment uses a verb from a built-in read-only allowlist (`ls`, `cat`, `head`, `tail`, `wc`, `grep`, `rg`, `find`, `awk`, `cut`, `sort`, `uniq`, `diff`, `cd`, `pwd`, `which`, `echo`, `date`, `tree`, `stat`, `file`, `du`, `df`, …) AND carries no risk flag (no `>` redirects, no pipe-into-shell, no sudo) auto-allow under Source `auto-mode-safe-bash`. The intent: a model's habitual `cd <project> && grep …` chain doesn't break flow, while any mutation (rm, mv, touch, curl, go test, sed -i, …) still prompts.
-6. **`Allow` rules** in `permissions.json` skip the prompt.
-7. **`Ask` rules** force a prompt even on tools that would normally auto-execute.
-8. **Tool-default policy** (the tool's own `RequiresApproval`) prompts mutating tools and auto-executes read-only ones.
+1. **`Deny` rules** in `permissions.json` and `permissions.local.json` always win.
+2. **Plan-mode block** (only when plan mode is active) — blocks every mutating tool except `todo_write`, `exit_plan_mode`, and writes to the resolved plan file. Returns a structured error to the model so it can switch to a read-only or plan-file alternative.
+3. **Unattended background-worker policy** (only for background subagents) — allows worktree-confined file edits but denies host shell, tests, git commits, and network-facing mutations unless that worker is running inside the command sandbox.
+4. **Plan boundary tools** (`enter_plan_mode`, `exit_plan_mode`) always prompt. The approval card is the mode-change handshake, so auto/yolo/allow rules do not bypass it.
+5. **Yolo mode auto-allow** (when `--yolo` was passed at startup, `/yolo` toggled the overlay on, or the Shift+Tab cycle reaches yolo) — every non-boundary tool auto-allows. No safety floor.
+6. **Plan-mode auto-allow** — writes to the resolved plan file are the model's only legitimate mutation surface while planning; they auto-allow without a prompt.
+7. **Auto-mode auto-allow** (only when auto mode is active) — non-safety-floor mutating tools auto-allow. Safety floor (`run_bash`, `run_tests`, `git_commit`, `git_checkpoint`, `rollback`, `enter_worktree`, `exit_worktree`) normally still prompts, with one carve-out: `run_bash` calls whose every segment uses a verb from a built-in read-only allowlist (`ls`, `cat`, `head`, `tail`, `wc`, `grep`, `rg`, `find`, `awk`, `cut`, `sort`, `uniq`, `diff`, `cd`, `pwd`, `which`, `echo`, `date`, `tree`, `stat`, `file`, `du`, `df`, …) AND carries no risk flag (no `>` redirects, no pipe-into-shell, no sudo, no credential-store path) auto-allow under Source `auto-mode-safe-bash`. The intent: a model's habitual `cd <project> && grep …` chain doesn't break flow, while any mutation (rm, mv, touch, curl, go test, sed -i, …) still prompts.
+8. **`Allow` rules** in permission files skip the prompt.
+9. **`Ask` rules** force a prompt even on tools that would normally auto-execute.
+10. **Tool-default policy** (the tool's own `RequiresApproval`) prompts mutating tools and auto-executes read-only ones.
 
 `Deny` always wins, including over yolo mode. `--yolo` / `/yolo` is "skip prompts," not "ignore my policy."
 
@@ -127,20 +129,20 @@ Trust controls separate into **modes** (workflow shape, mutually exclusive) and 
 | Surface | Entry point | Effect |
 |---|---|---|
 | Plan mode | `/plan` · `Shift+Tab` · `--permission-mode plan` | Read-only research; gated to plan file; ends with `exit_plan_mode` |
-| Auto mode | `Shift+Tab` · `--permission-mode auto` (no slash command) | Edits auto, bash/commits prompt, 4× iteration cap |
-| Yolo mode | `--yolo` at startup · `/yolo` mid-session toggle | Drops all prompts, no iteration cap; sits on top of any mode |
+| Auto mode | `/auto` · `Shift+Tab` · `--permission-mode auto` | Edits auto, bash/tests/commits/worktree shifts prompt, 4× iteration cap |
+| Yolo mode | `--yolo` at startup · `/yolo` · `Shift+Tab` | Drops all non-boundary prompts, finite high iteration cap; sits on top of any mode |
 
-Auto mode has no slash command (intentionally off the palette and the `Shift+Tab` cycle so it can't be triggered by accident). Yolo mode, also off the `Shift+Tab` cycle, is the lone exception with a slash toggle (`/yolo`): opt in via the `--yolo` startup flag (one-way per process — restart without the flag to recover) or via `/yolo` mid-session (toggle on, then `/yolo` again to toggle off). The yolo banner (`⚠ yolo mode`) takes precedence visually while it's on; when a mode (auto or plan) is also active, the mode banner picks up a `⚠ yolo mode` suffix.
+Auto mode has a slash command (`/auto`) and is also part of the `Shift+Tab` cycle for fast in-session changes. Yolo mode is the explicit always-approve stop in the same cycle and has its own slash toggle (`/yolo`): opt in via the `--yolo` startup flag or via `/yolo` mid-session, then `/yolo` again or cycle back to normal to turn it off. The yolo banner (`⚠ yolo mode`) takes precedence visually while it's on; when a mode (auto or plan) is also active, the mode banner picks up a `⚠ yolo mode` suffix.
 
-## No in-process sandbox
+## Optional Podman command sandbox
 
-yottacode does not sandbox tools inside its own process. `run_bash`, file edits, git commands, and other tools run on the host.
+By default, yottacode does not sandbox tools inside its own process. `run_bash`, file edits, git commands, and other tools run on the host unless you opt into the Podman command sandbox.
 
-`run_bash` is also *not* confined by the path deny lists that protect the structured file tools: a shell command can read `~/.ssh` or write `.git/hooks/` even though `read_file` / `write_file` cannot. As a partial mitigation, the run_bash approval modal flags — in every mode — when a command references a credential store (`~/.ssh`, `~/.aws`, `.env`, …) or a git hook, so `cat ~/.ssh/id_rsa` and `> .git/hooks/pre-commit` don't render as ordinary commands. It is a prompt aid, not a boundary — the boundary is the container.
+When `[sandbox] backend = "podman"` is enabled, approved `run_bash`/`run_tests` commands and document subprocess helpers run inside GHCR-published containers with no network by default, constrained mounts, and resource limits. File tools, git, GitHub, provider calls, MCP tools, and the TUI still run on the host; run yottacode itself inside a container or devcontainer when you need every tool isolated.
 
-For real isolation, run yottacode itself inside a container or devcontainer. That isolates every tool, not just shell commands.
+When sandboxing is off, `run_bash` is also *not* confined by the path deny lists that protect the structured file tools: a shell command can read `~/.ssh` or write `.git/hooks/` even though `read_file` / `write_file` cannot. The approval modal flags credential-store and git-hook references as a prompt aid, but the real boundary is the optional container sandbox or an outer container/devcontainer.
 
-This is a deliberate scope choice: yottacode does not ship bwrap, firejail, landlock, or pluggable sandbox backends.
+See [Command sandbox](sandbox.md) for the config, images, and runtime boundary.
 
 ## Write-path validation
 
@@ -199,7 +201,8 @@ Add this to `.gitignore`:
 ```json
 {
   "permissions": {
-    "allow": ["Bash(go test *)", "Edit(internal/**)"],
+    "allow": ["Tests(go *)", "Github(read_*)", "Edit(internal/**)"],
+    "ask": ["Github(create_pr)", "Read(**/.env*)"],
     "deny": ["Bash(rm *)"]
   }
 }
@@ -209,18 +212,22 @@ Rules support `allow`, `ask`, and `deny` policy. Explicit deny rules still apply
 
 ## Creating allow and deny rules from approvals
 
-When an approval modal appears, choose **`[A]` always** to save a derived *allow* rule, or **`[D]` never** to save a derived *deny* rule, into `permissions.local.json`. Either way the modal shows the exact rule before it is saved.
+When an approval modal appears, use the keyboard: press **`Y`** to approve once, **`N`** to reject, **`A`** to save a derived *allow* rule, or **`D`** to save a derived *deny* rule into `permissions.local.json`. The modal ignores mouse clicks, including the close glyph, so safety decisions cannot be delayed or mis-triggered by terminal mouse events. Either always/never path shows the exact rule before it is saved.
 
 `[A]` always is suppressed for compound shell commands and obviously dangerous verbs (`rm`, `curl`, `sudo`, …) — those are footgun-wide to blanket-allow. `[D]` never is offered even for those (blocking a dangerous command permanently is exactly the point) and is scoped to `run_bash` and `git`. Because bash rules are matched per segment, a block is derived at the verb level: hitting `[D]` never on `curl … | sh` saves `Bash(curl *)`, which then refuses `curl` anywhere. Since deny outranks allow, a `[D]` block also overrides any existing allow for the same pattern.
 
 Examples:
 
-- `Bash(go test *)`
-- `Edit(internal/**)`
-- `Write(docs/**)`
-- `Git(commit *)`
-- `MCP(filesystem/read_*)` — allow filesystem MCP server's read tools (see [MCP](mcp.md))
-- `MCP(github/*)` — allow every tool from the GitHub MCP server
+- `Tests(go *)` — allow `run_tests` invocations that use Go.
+- `Git(status *)` — allow the unified `git` tool's status subcommand; most read-only Git helpers already run without prompts.
+- `Github(read_*)` — allow native GitHub read helpers without allowing PR/issue writes.
+- `Edit(internal/**)` — allow edits under one source tree.
+- `Write(docs/**)` — allow new/overwritten files under docs.
+- `Document(xlsx reports/**)` — allow generated spreadsheets in a reports directory.
+- `MCP(filesystem/read_*)` — allow filesystem MCP server's read tools (see [MCP](mcp.md)).
+- `MCP(github/*)` — allow every tool from the GitHub MCP server; prefer narrower server/tool rules when possible.
+
+`/permissions` also highlights risky-but-valid rules, such as broad `Bash(gh *)`, `Bash(python*)`, `Git(-C *)`, namespace-wide `Github(*)` / `MCP(*)`, repo-wide delete allows, and allow rules shadowed by deny rules. Warnings are advisory only: yottacode still honors the policy file exactly as written.
 
 ## Yolo mode (the danger setting)
 

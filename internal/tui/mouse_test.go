@@ -2,38 +2,37 @@ package tui
 
 import (
 	"fmt"
-	"reflect"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
 )
 
-func TestView_LeavesMouseNativeBeforeConversationStarts(t *testing.T) {
+func TestView_DisablesMouseBeforeConversationStarts(t *testing.T) {
 	m := newTestModel(t)
-	if got := m.View().MouseMode; got != tea.MouseModeNone {
-		t.Errorf("View().MouseMode = %v, want MouseModeNone", got)
+	if got := m.View().MouseMode; got != 0 {
+		t.Errorf("View().MouseMode = %v, want disabled before transcript exists", got)
 	}
 }
 
-func TestView_EnablesConversationSelectionMouse(t *testing.T) {
+func TestView_EnablesWheelOnlyMouseForConversation(t *testing.T) {
 	m := newTestModel(t)
 	m.enteredConversation = true
 	if got := m.View().MouseMode; got != tea.MouseModeCellMotion {
-		t.Errorf("View().MouseMode = %v, want MouseModeCellMotion so drag selection can auto-copy", got)
+		t.Errorf("View().MouseMode = %v, want MouseModeCellMotion for wheel scrolling", got)
 	}
 }
 
-func TestView_EnablesAllMotionForInteractiveSurfaces(t *testing.T) {
+func TestView_DoesNotEnableAllMotionForInteractiveSurfaces(t *testing.T) {
 	m := newTestModel(t)
+	m.enteredConversation = true
 	m.cheatsheetOpen = true
-	if got := m.View().MouseMode; got != tea.MouseModeAllMotion {
-		t.Errorf("View().MouseMode = %v, want MouseModeAllMotion", got)
+	if got := m.View().MouseMode; got == tea.MouseModeAllMotion {
+		t.Errorf("View().MouseMode = %v, want no all-motion mouse handling", got)
 	}
 }
 
-// newSelectableTranscriptModel builds a model with real, multi-line
-// transcript content and a known viewport size, ready for mouse
-// selection/scroll tests.
+// newSelectableTranscriptModel builds a model with real, multi-line transcript
+// content and a known viewport size, ready for mouse-wheel scroll tests.
 func newSelectableTranscriptModel(t *testing.T) Model {
 	t.Helper()
 	m := newTestModel(t)
@@ -50,50 +49,43 @@ func TestMouseWheel_ScrollsTranscript(t *testing.T) {
 	if !m.transcriptViewport.AtBottom() {
 		t.Fatalf("test setup: expected the viewport to start at the bottom")
 	}
-	m.paletteOpen = true
-	m.paletteFiltered = m.filterPaletteAll("/")
 
 	m, _ = applyMsg(m, tea.MouseWheelMsg{X: 2, Y: 0, Button: tea.MouseWheelUp})
-	if !m.transcriptViewport.AtBottom() {
-		t.Error("scrolling the wheel should stay inert while the slash palette owns mouse input")
+	if m.transcriptViewport.AtBottom() {
+		t.Error("wheel-up should scroll the transcript viewport away from the bottom")
 	}
 
 	m, _ = applyMsg(m, tea.MouseWheelMsg{X: 2, Y: 0, Button: tea.MouseWheelDown})
 	m, _ = applyMsg(m, tea.MouseWheelMsg{X: 2, Y: 0, Button: tea.MouseWheelDown})
 	if !m.transcriptViewport.AtBottom() {
-		t.Error("scrolling the wheel back down over the transcript should return the transcript viewport to the bottom")
+		t.Error("wheel-down should return the transcript viewport to the bottom")
 	}
 }
 
-func TestMouseWheel_OverCmdlineBrowsesInputHistory(t *testing.T) {
+func TestMouseWheel_IgnoresScreenRegionAndScrollsTranscript(t *testing.T) {
 	m := newSelectableTranscriptModel(t)
 	m.inputHistory = []string{"first command", "second command"}
-	if !m.transcriptViewport.AtBottom() {
-		t.Fatalf("test setup: expected the viewport to start at the bottom")
-	}
-
 	_, y := m.inputFrameOrigin()
-	m, _ = applyMsg(m, tea.MouseWheelMsg{X: 4, Y: y + 1, Button: tea.MouseWheelUp})
-	if got := m.textInput.Value(); got != "second command" {
-		t.Fatalf("wheel-up over cmdline should browse input history, got %q", got)
-	}
-	if !m.transcriptViewport.AtBottom() {
-		t.Error("wheel-up over cmdline should not scroll the transcript")
-	}
 
-	m, _ = applyMsg(m, tea.MouseWheelMsg{X: 4, Y: y + 1, Button: tea.MouseWheelDown})
+	m, _ = applyMsg(m, tea.MouseWheelMsg{X: 4, Y: y + 1, Button: tea.MouseWheelUp})
 	if got := m.textInput.Value(); got != "" {
-		t.Errorf("wheel-down over cmdline should return to the empty draft, got %q", got)
+		t.Fatalf("wheel over cmdline should not browse input history, got %q", got)
+	}
+	if m.transcriptViewport.AtBottom() {
+		t.Error("wheel over cmdline should still scroll the transcript")
 	}
 }
 
-func TestMouseWheel_NoopWhilePopupOpen(t *testing.T) {
+func TestMouseWheel_ScrollsTranscriptWhilePopupOpen(t *testing.T) {
 	m := newSelectableTranscriptModel(t)
 	m.cheatsheetOpen = true
 
 	m, _ = applyMsg(m, tea.MouseWheelMsg{Button: tea.MouseWheelUp})
-	if !m.transcriptViewport.AtBottom() {
-		t.Error("wheel scroll should be a no-op while a popup is open")
+	if m.transcriptViewport.AtBottom() {
+		t.Error("wheel scroll should still move transcript while a popup is open")
+	}
+	if !m.cheatsheetOpen {
+		t.Error("wheel scrolling should not close popups")
 	}
 }
 
@@ -102,119 +94,59 @@ func TestMouseWheel_NoopBeforeFirstMessage(t *testing.T) {
 	if m.enteredConversation {
 		t.Fatal("test setup: fresh model should still be on the launch hero")
 	}
-	// Should not panic or otherwise misbehave against a transcriptViewport
-	// with no content — the hero has nothing to scroll.
 	m, _ = applyMsg(m, tea.MouseWheelMsg{Button: tea.MouseWheelUp})
 	if m.transcriptSelecting {
 		t.Error("wheel scroll on the hero should not start a selection")
 	}
 }
 
-// clipboardText extracts the string payload from a tea.SetClipboard Cmd
-// via reflection — the underlying setClipboardMsg type is unexported,
-// but its Kind is String, so reflect.Value.String() returns the real
-// content directly.
-func clipboardText(t *testing.T, cmd tea.Cmd) string {
-	t.Helper()
-	if cmd == nil {
-		t.Fatal("expected a clipboard Cmd, got nil")
-	}
-	msg := cmd()
-	v := reflect.ValueOf(msg)
-	if v.Kind() != reflect.String {
-		t.Fatalf("expected a string-kind clipboard message, got %T", msg)
-	}
-	return v.String()
-}
-
-func TestTranscriptSelection_ClickDragReleaseCopiesToClipboard(t *testing.T) {
+func TestMouseClick_IsNoop(t *testing.T) {
 	m := newSelectableTranscriptModel(t)
-	// AtBottom, so the last visible row is "history line 49".
-	m, _ = applyMsg(m, tea.MouseClickMsg{X: 0, Y: 0})
-	if !m.transcriptSelecting {
-		t.Fatalf("mouse-down over the transcript should begin a selection")
-	}
-	m, _ = applyMsg(m, tea.MouseMotionMsg{X: 12, Y: 0})
-	if !m.transcriptSelecting {
-		t.Fatalf("motion mid-drag should keep the selection active")
-	}
-
-	var cmd tea.Cmd
-	m, cmd = applyMsg(m, tea.MouseReleaseMsg{X: 12, Y: 0})
-	if m.transcriptSelecting {
-		t.Error("release should end the drag")
-	}
-	got := clipboardText(t, cmd)
-	if got == "" {
-		t.Error("release should copy non-empty selected text to the clipboard")
-	}
-}
-
-func TestTranscriptSelection_ClickWithNoDragCopiesNothing(t *testing.T) {
-	m := newSelectableTranscriptModel(t)
-	m, _ = applyMsg(m, tea.MouseClickMsg{X: 5, Y: 0})
-	m, cmd := applyMsg(m, tea.MouseReleaseMsg{X: 5, Y: 0})
+	m, cmd := applyMsg(m, tea.MouseClickMsg{X: 0, Y: 0})
 	if cmd != nil {
-		t.Errorf("a click with no drag should not produce a clipboard write, got a non-nil Cmd")
+		t.Fatalf("clicks should not produce commands, got %T", cmd)
 	}
 	if m.transcriptSelecting {
-		t.Error("release should always end the drag, even a no-op one")
+		t.Fatal("clicking the transcript should not start yottacode-owned selection")
 	}
 }
 
-func TestTranscriptSelection_ClearedWhenPopupOpensMidDrag(t *testing.T) {
-	m := newSelectableTranscriptModel(t)
-	m, _ = applyMsg(m, tea.MouseClickMsg{X: 0, Y: 0})
-	if !m.transcriptSelecting {
-		t.Fatalf("test setup: expected an active selection")
-	}
-	m.cheatsheetOpen = true
-
-	m, _ = applyMsg(m, tea.MouseMotionMsg{X: 10, Y: 0})
-	if m.transcriptSelecting {
-		t.Error("a popup opening mid-drag should clear the selection, not keep extending it")
-	}
-}
-
-func TestTranscriptSelection_NoSelectionOnHero(t *testing.T) {
+func TestMouseClick_DoesNotActivateWelcomeAction(t *testing.T) {
 	m := newTestModel(t)
-	if m.enteredConversation {
-		t.Fatal("test setup: fresh model should still be on the launch hero")
+	m, cmd := applyMsg(m, tea.MouseClickMsg{X: 6, Y: 10})
+	if cmd != nil {
+		t.Fatalf("welcome clicks should not produce commands, got %T", cmd)
 	}
-	m, _ = applyMsg(m, tea.MouseClickMsg{X: 0, Y: 0})
-	if m.transcriptSelecting {
-		t.Error("clicking on the launch hero should not begin a transcript selection")
+	if m.helpOpen {
+		t.Fatal("clicking the welcome Help row should not open help")
 	}
 }
 
-func TestTranscriptSelection_NoopWhilePopupOpen(t *testing.T) {
+func TestMouseMotion_ClearsStaleSelectionAndDoesNotHover(t *testing.T) {
+	m := newTestModel(t)
+	m.welcomeCursor = int(welcomeNewWorktree)
+	m.transcriptSelecting = true
+
+	m, cmd := applyMsg(m, tea.MouseMotionMsg{X: 6, Y: 10})
+	if cmd != nil {
+		t.Fatalf("mouse motion should not produce commands, got %T", cmd)
+	}
+	if m.transcriptSelecting {
+		t.Fatal("mouse motion should clear stale yottacode-owned selection state")
+	}
+	if got := welcomeAction(m.welcomeCursor); got != welcomeNewWorktree {
+		t.Fatalf("hover should not move welcome cursor, got %v", got)
+	}
+}
+
+func TestMouseRelease_IsNoop(t *testing.T) {
 	m := newSelectableTranscriptModel(t)
-	m.cheatsheetOpen = true
-	m, _ = applyMsg(m, tea.MouseClickMsg{X: 0, Y: 0})
-	if m.transcriptSelecting {
-		t.Error("clicking while a popup is open should not begin a transcript selection")
+	m.transcriptSelecting = true
+	m, cmd := applyMsg(m, tea.MouseReleaseMsg{X: 12, Y: 0})
+	if cmd != nil {
+		t.Fatalf("mouse release should not copy to clipboard, got %T", cmd)
 	}
-}
-
-func TestMouseClick_DismissesStaticPopups(t *testing.T) {
-	for _, tc := range []struct {
-		name  string
-		open  func(*Model)
-		check func(Model) bool
-	}{
-		{"cheatsheet", func(m *Model) { m.cheatsheetOpen = true }, func(m Model) bool { return m.cheatsheetOpen }},
-		{"usage", func(m *Model) { m.usageOpen = true; m.usagePanel = "x" }, func(m Model) bool { return m.usageOpen }},
-		{"experimental", func(m *Model) { m.experimentalOpen = true }, func(m Model) bool { return m.experimentalOpen }},
-		{"help", func(m *Model) { m.helpOpen = true }, func(m Model) bool { return m.helpOpen }},
-		{"contextReport", func(m *Model) { m.contextReportOpen = true }, func(m Model) bool { return m.contextReportOpen }},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			m := newTestModel(t)
-			tc.open(&m)
-			m, _ = applyMsg(m, tea.MouseClickMsg{X: 3, Y: 3})
-			if tc.check(m) {
-				t.Errorf("clicking anywhere should dismiss the %s popup", tc.name)
-			}
-		})
+	if m.transcriptSelecting {
+		t.Fatal("mouse release should clear stale selection state")
 	}
 }

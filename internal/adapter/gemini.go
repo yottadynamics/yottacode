@@ -194,6 +194,8 @@ func (g *geminiAdapter) ChatStream(ctx context.Context, messages []Message, tool
 			ToolCalls:  toolCalls,
 			StopReason: stopReason,
 			Usage:      usage,
+			Model:      g.model,
+			Provider:   string(g.profile.Provider),
 		}}
 	}()
 	return out

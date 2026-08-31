@@ -105,6 +105,9 @@ func TestDefaultSystemPrompt_KeepsActionDirectives(t *testing.T) {
 		"call todo_write BEFORE you start work",
 		"Do NOT call todo_write for trivial single-step requests",
 		"Creating or updating a todo card is NOT itself a request for permission",
+		"If a setup/precondition failure makes the plan impossible in this session",
+		"mark the blocked step and dependent future steps as skipped",
+		"Pass an empty list when the plan is done or no longer relevant",
 		// Closing-out directive: non-trivial work should end with a
 		// structured shipped-summary (theme + files, tests, verification
 		// commands, git state) rather than a one-line "done" — mirrors

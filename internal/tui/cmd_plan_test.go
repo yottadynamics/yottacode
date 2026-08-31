@@ -229,7 +229,7 @@ func TestPlanModeBanner_RendersInView(t *testing.T) {
 func TestPlanModeBanner_HiddenWhenInactive(t *testing.T) {
 	m, _ := newPlanModeTestModel(t)
 	view := stripANSI(m.View().Content)
-	if strings.Contains(view, "plan mode") {
+	if strings.Contains(view, "◈ plan mode") {
 		t.Errorf("banner should not appear before /plan; got %q", view)
 	}
 }

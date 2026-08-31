@@ -2,19 +2,16 @@
 
 # yottacode
 
-**Sovereign terminal AI coding agent.**  
-Any model. Durable memory. Real GitOps. Your machine, your rules.
+**Sovereign AI coding agent for your terminal.**  
+Any model. Durable memory. Real GitHub workflows. Local by default.
 
-Model-agnostic · Agent-managed memory · Typed GitHub workflows · Approval-first by design
+Model-agnostic · Agent-managed memory · Typed GitHub tools · Approval-first by design
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Go](https://img.shields.io/badge/Go-1.26+-00ADD8?logo=go&logoColor=white)](https://go.dev)
-[![Pure Go](https://img.shields.io/badge/Pure%20Go-no%20Node%20%7C%20no%20Python%20%7C%20no%20CGo-00ADD8?logo=go&logoColor=white)](docs/development.md)
-[![No telemetry](https://img.shields.io/badge/Telemetry-none-1f6feb)](docs/security-and-allow-lists.md)
 [![Release](https://img.shields.io/github/v/release/yottadynamics/yottacode?color=green)](https://github.com/yottadynamics/yottacode/releases)
 [![CI](https://github.com/yottadynamics/yottacode/actions/workflows/go.yml/badge.svg)](https://github.com/yottadynamics/yottacode/actions/workflows/go.yml)
 [![Docs](https://img.shields.io/badge/Docs-yottacode.ai-1f6feb)](https://yottacode.ai/docs/)
-[![Stars](https://img.shields.io/github/stars/yottadynamics/yottacode?color=yellow)](https://github.com/yottadynamics/yottacode/stargazers)
 
 [Getting Started](https://yottacode.ai/docs/get-started/) •  [Agent Core](https://yottacode.ai/docs/core/) •  [Memory](https://yottacode.ai/docs/memory/) •  [Providers](https://yottacode.ai/docs/providers/) •  [Models](https://yottacode.ai/docs/models-mcp/) •  [Workflow](https://yottacode.ai/docs/workflow/) •  [Reference](https://yottacode.ai/docs/reference/)
 
@@ -27,20 +24,6 @@ Model-agnostic · Agent-managed memory · Typed GitHub workflows · Approval-fir
 An end-to-end agentic development workflow: plan mode → branch → implement → tests → commit → push → create PR.
 
 ![yottacode GitOps demo](assets/yottacode-gitops-readme.gif)
-
----
-
-## What makes yottacode different
-
-For engineers who want terminal-agent agency without vendor lock-in, cloud data leakage, or black-box behavior.
-
-- **Any model, zero lock-in.** Native adapters for OpenAI, Anthropic, Gemini, Google Vertex AI, xAI, ChatGPT/Copilot OAuth, OpenAI-compatible endpoints, and local Ollama — switch providers or models mid-session with `/model`.
-- **Agent-managed memory that compounds.** yottacode captures durable user and project context, retrieves only what matters each turn, and helps keep memory clean over time.
-- **Typed GitHub + worktree workflows.** Issues, PR reviews, check status, commits, pushes, PR creation, PR updates, comments, and isolated worktrees are first-class tools instead of fragile shell transcripts.
-- **GA code intelligence without IDE lock-in.** LSP tools are default-on for Go, TypeScript/JavaScript, Python, and Rust; servers run locally, start lazily, and are never installed without approval. Offline, no-server structural edit ranges (`syntax_range`) cover the same four languages.
-- **Plan mode as a real permission boundary.** yottacode can investigate read-only, produce a plan, and only then move into implementation with approvals, path validation, diffs, and checkpoints.
-- **Local-first by design.** Sessions, memory, checkpoints, and project rules are plain files under `~/.yottacode/`; there is no telemetry or analytics, and code only leaves your machine for the model provider you choose.
-- **A growing skills ecosystem.** Reusable Agent Skills let teams package repeatable workflows; see [`yottacode-skills`](https://github.com/yottadynamics/yottacode-skills).
 
 ---
 
@@ -86,7 +69,7 @@ Watch the Ollama setup walkthrough: [Get started with yottacode and Ollama](http
 <details><summary><b>Manual install (pinned version, no installer script)</b></summary>
 
 ```bash
-export VERSION=<latest-release> # for example: 0.3.0
+export VERSION=<latest-release> # for example: 0.4.0
 # Swap linux/darwin and amd64/arm64 to match your machine
 curl -fsSL https://github.com/yottadynamics/yottacode/releases/download/v${VERSION}/yottacode_${VERSION}_linux_amd64.tar.gz \
   | tar -xz
@@ -100,6 +83,21 @@ Available archives: `yottacode_${VERSION}_{linux,darwin}_{amd64,arm64}.tar.gz`; 
 </details>
 
 More install options: [`docs/installation.md`](docs/installation.md).
+
+---
+
+## What makes yottacode different
+
+For engineers who want a local-first AI coding agent without vendor lock-in, cloud data leakage, or black-box behavior.
+
+- **Any model, zero lock-in.** Native adapters for OpenAI, Anthropic, Gemini, Google Vertex AI, xAI, ChatGPT/Copilot OAuth, OpenAI-compatible endpoints, and local Ollama — switch providers or models mid-session with `/model`.
+- **Agent-managed memory that compounds.** yottacode captures durable user and project context, retrieves only what matters each turn, and helps keep memory clean over time.
+- **Typed GitHub + worktree workflows.** Issues, PR reviews, check status, commits, pushes, PR creation, PR updates, comments, and isolated worktrees are first-class tools instead of fragile shell transcripts.
+- **GA code intelligence without IDE lock-in.** LSP tools are default-on for Go, TypeScript/JavaScript, Python, and Rust; servers run locally, start lazily, and are never installed without approval. Offline, no-server structural edit ranges (`syntax_range`) cover the same four languages.
+- **Read and generate real documents.** `read_document`/`create_document` cover csv, tsv, json, xml, html, xlsx, docx, and pptx; xlsx/pptx generation is pure Go (excelize, native OOXML), no external dependency required. docx/pdf generation and PDF extraction route through the same command sandbox as `run_bash`.
+- **Plan mode as a real permission boundary.** yottacode can investigate read-only, produce a plan, and only then move into implementation with approvals, path validation, diffs, and checkpoints.
+- **Local-first by design.** Sessions, memory, checkpoints, and project rules are plain files under `~/.yottacode/`; there is no telemetry or analytics, and code only leaves your machine for the model provider you choose.
+- **A growing skills ecosystem.** Reusable Agent Skills let teams package repeatable workflows; see [`yottacode-skills`](https://github.com/yottadynamics/yottacode-skills).
 
 ---
 
@@ -127,7 +125,7 @@ Autonomy is useful only when you can trust the loop, and trust starts with knowi
 - Plan mode investigates read-only first, then waits for approval before implementation.
 - **Data sovereignty by default.** Sessions, memory, and checkpoints are plain files on your machine under `~/.yottacode/`. Code only leaves the machine to reach the model provider you explicitly configure, and with local Ollama, nothing leaves at all.
 
-Tools run on the host with no in-process sandbox; use a container or devcontainer when you need stronger isolation. See [`docs/security-and-allow-lists.md`](docs/security-and-allow-lists.md).
+Tools run on the host by default. For stronger shell-command isolation, enable the optional Podman command sandbox with `[sandbox] backend = "podman"`; it runs approved `run_bash`/`run_tests` commands and document subprocess helpers in GHCR-published containers. See [`docs/sandbox.md`](docs/sandbox.md) and [`docs/security-and-allow-lists.md`](docs/security-and-allow-lists.md).
 
 ---
 
@@ -195,6 +193,7 @@ go build -o yottacode ./cmd/yottacode
 ```bash
 go test ./...                    # unit tests — fast, no network
 go vet ./...                     # static checks
+govulncheck ./...                # reachable dependency/toolchain CVEs
 go test -race ./...              # race detector
 go test -cover ./...             # coverage
 go test -tags=integration ./...  # live-provider tests (needs API keys)

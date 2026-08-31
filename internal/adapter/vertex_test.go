@@ -143,6 +143,65 @@ func TestVertex_NormalizesBareGeminiModelID(t *testing.T) {
 	}
 }
 
+func TestVertex_FinalMessageStampsModelAndProvider(t *testing.T) {
+	body := "data: {\"id\":\"1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ok\"}}]}\n\n" +
+		"data: {\"id\":\"1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n" +
+		"data: [DONE]\n\n"
+	srv, _ := vertexCapturingMockServer(t, body)
+
+	ad := newVertexAdapterFor(Config{
+		BaseURL: vertexGeminiBaseURL(srv.URL),
+		Model:   "gemini-2.5-pro",
+	}, &stubVertexTokens{token: "t"})
+
+	_, _, final, errs := drainEvents(ad.ChatStream(context.Background(), []Message{{Role: RoleUser, Content: "hi"}}, nil))
+	if len(errs) > 0 {
+		t.Fatalf("unexpected errors: %v", errs)
+	}
+	if final == nil {
+		t.Fatal("no final message")
+	}
+	if final.Model != "google/gemini-2.5-pro" {
+		t.Errorf("final.Model = %q, want normalized Vertex Gemini model", final.Model)
+	}
+	if final.Provider != string(ProviderVertex) {
+		t.Errorf("final.Provider = %q, want %q", final.Provider, ProviderVertex)
+	}
+}
+
+func TestVertexAnthropic_FinalMessageStampsModelAndProvider(t *testing.T) {
+	body := "event: message_start\n" +
+		"data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"role\":\"assistant\",\"content\":[],\"model\":\"claude-sonnet-4-5@20250929\"}}\n\n" +
+		"event: content_block_start\n" +
+		"data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n" +
+		"event: content_block_delta\n" +
+		"data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"ok\"}}\n\n" +
+		"event: message_delta\n" +
+		"data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":1}}\n\n" +
+		"event: message_stop\n" +
+		"data: {\"type\":\"message_stop\"}\n\n"
+	srv, _ := vertexCapturingMockServer(t, body)
+
+	ad := newVertexAnthropicAdapterFor(Config{
+		BaseURL: vertexAnthropicBaseURL(srv.URL),
+		Model:   "claude-sonnet-4-5@20250929",
+	}, &stubVertexTokens{token: "t"})
+
+	_, _, final, errs := drainEvents(ad.ChatStream(context.Background(), []Message{{Role: RoleUser, Content: "hi"}}, nil))
+	if len(errs) > 0 {
+		t.Fatalf("unexpected errors: %v", errs)
+	}
+	if final == nil {
+		t.Fatal("no final message")
+	}
+	if final.Model != "claude-sonnet-4-5@20250929" {
+		t.Errorf("final.Model = %q, want configured Vertex Anthropic model", final.Model)
+	}
+	if final.Provider != string(ProviderVertexAnthropic) {
+		t.Errorf("final.Provider = %q, want %q", final.Provider, ProviderVertexAnthropic)
+	}
+}
+
 // The whole reason vertex is a kind rather than an openai-compatible
 // profile: the credential must be minted per request, not once at
 // construction, because ADC tokens expire in ~1h.

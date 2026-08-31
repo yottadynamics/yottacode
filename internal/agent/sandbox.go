@@ -58,6 +58,47 @@ func (HostSandbox) Label() string { return "[no sandbox]" }
 
 func (HostSandbox) Close() error { return nil }
 
+// SandboxProfile names the command-execution environment a tool needs.
+// Tools choose profiles from their own implementation path, not from a
+// user-selected active profile: ordinary shell commands use the default
+// sandbox, while document subprocess helpers use the documents image.
+type SandboxProfile string
+
+const (
+	// SandboxProfileDefault is the general command sandbox used by run_bash.
+	SandboxProfileDefault SandboxProfile = "default"
+	// SandboxProfileDocuments is the sandbox with pandoc/poppler/python document
+	// helpers used by PDF/docx document tooling.
+	SandboxProfileDocuments SandboxProfile = "documents"
+)
+
+// ProfiledSandbox is implemented by a stable SandboxHandler that can route a
+// command to a specific sandbox profile without rebuilding the tool registry.
+// Plain Sandbox implementations implicitly mean SandboxProfileDefault.
+type ProfiledSandbox interface {
+	Sandbox
+	CommandProfile(ctx context.Context, profile SandboxProfile, command, cwd string) *exec.Cmd
+	LabelProfile(profile SandboxProfile) string
+}
+
+// CommandInProfile routes command through profile when sb supports profile
+// routing; otherwise it preserves the legacy single-sandbox behavior.
+func CommandInProfile(ctx context.Context, sb Sandbox, profile SandboxProfile, command, cwd string) *exec.Cmd {
+	if ps, ok := sb.(ProfiledSandbox); ok {
+		return ps.CommandProfile(ctx, profile, command, cwd)
+	}
+	return sb.Command(ctx, command, cwd)
+}
+
+// LabelForProfile returns the scrollback tag for profile-aware sandboxes while
+// preserving old labels for legacy Sandbox implementations.
+func LabelForProfile(sb Sandbox, profile SandboxProfile) string {
+	if ps, ok := sb.(ProfiledSandbox); ok {
+		return ps.LabelProfile(profile)
+	}
+	return sb.Label()
+}
+
 // SandboxFactory constructs a fresh, worker-scoped Sandbox for a dispatch
 // write-worker's isolated git worktree. wtDir is the worker's worktree
 // root (its mount point, if the returned Sandbox is container-backed);

@@ -12,25 +12,16 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/yottadynamics/yottacode/internal/adapter"
+	"github.com/yottadynamics/yottacode/internal/agent"
 	"github.com/yottadynamics/yottacode/internal/cost"
 	"github.com/yottadynamics/yottacode/internal/session"
 	"github.com/yottadynamics/yottacode/internal/subagents"
 )
 
-// outlierMultiplier flags a row whose value exceeds this many times the
-// mean of its own table — the simple anomaly signal the tools, subagents,
-// and today's-sessions sections use to make a runaway call, task, or
-// session stand out instead of blending into an otherwise-plausible table.
-const outlierMultiplier = 2.5
-
 // retainedContextWarnTokens is the approximate size where one retained
 // transcript message is large enough to noticeably inflate every later turn.
 // The estimate uses the same 4-chars/token heuristic as ToolStats.
 const retainedContextWarnTokens = 8_000
-
-func flagOutlier(value, mean float64) bool {
-	return mean > 0 && value > mean*outlierMultiplier
-}
 
 // cmdUsage renders per-session token usage in a Claude-style per-model
 // breakdown, plus live rate limits and a provider-aware account block.
@@ -96,15 +87,27 @@ func (m Model) usageVisibleLines() int {
 	return n
 }
 
+// usageFullFitLines is the "does this need scrolling at all" budget —
+// just the 2 popupBox border rows, no hint reserve. Checked before
+// usageVisibleLines' smaller budget: content that fits here needs no hint,
+// so reserving a line for one would truncate a line of real content that
+// didn't need to be cut.
+func (m Model) usageFullFitLines() int {
+	n := m.height - 2
+	if n < 1 {
+		n = 1
+	}
+	return n
+}
+
 // usageMaxScrollOffset is the highest offset that still shows a full final
 // page — scrolling can't go further than "the last line is at the bottom."
 func (m Model) usageMaxScrollOffset() int {
 	lines := strings.Count(m.usagePanel, "\n") + 1
-	visible := m.usageVisibleLines()
-	if lines <= visible {
+	if lines <= m.usageFullFitLines() {
 		return 0
 	}
-	return lines - visible
+	return lines - m.usageVisibleLines()
 }
 
 // windowedUsagePanel returns the visible slice of usagePanel for the
@@ -118,20 +121,23 @@ func (m Model) windowedUsagePanel() string {
 	}
 	allLines := strings.Split(m.usagePanel, "\n")
 	total := len(allLines)
-	visible := m.usageVisibleLines()
-	if total <= visible {
+	if total <= m.usageFullFitLines() {
+		// Fits with room to spare for the border alone — no hint needed,
+		// so don't spend the smaller hint-reserving budget truncating a
+		// line that didn't need to be cut.
 		return m.usagePanel
 	}
+	visible := m.usageVisibleLines()
 	offset := min(max(m.usageScrollOffset, 0), total-visible)
 	end := min(total, offset+visible)
 	shown := strings.Join(allLines[offset:end], "\n")
-	hint := fmt.Sprintf("── %d-%d of %d lines · ↑/↓ · PgUp/PgDn to scroll ──", offset+1, end, total)
+	hint := fmt.Sprintf("── %d-%d of %d lines · wheel/click ↑↓ · PgUp/PgDn ──", offset+1, end, total)
 	return shown + "\n" + styleHint.Render(hint)
 }
 
 func renderUsagePanel(m Model) string {
 	var b strings.Builder
-	b.WriteString(renderMenuHeader("Usage", "Tokens by model, tool, and subagent, plus cache, compaction, daily rollup, rate limits, and account links.", m.popupWidth()))
+	b.WriteString(renderMenuHeader("Usage", "Tokens by model, tool, and subagent, plus cache, compaction, efficiency, daily rollup, rate limits, and account links.", m.popupWidth()))
 	b.WriteString("\n")
 
 	b.WriteString(renderSessionUsage(m.sess))
@@ -144,6 +150,11 @@ func renderUsagePanel(m Model) string {
 
 	if retained := renderRetainedContext(m.sess); retained != "" {
 		b.WriteString(retained)
+		b.WriteString("\n\n")
+	}
+
+	if efficiency := renderEfficiencySection(m.sess); efficiency != "" {
+		b.WriteString(efficiency)
 		b.WriteString("\n\n")
 	}
 
@@ -388,17 +399,23 @@ func usageHasDetailRows(u adapter.Usage) bool {
 	return u.CacheReadTokens > 0 || u.CacheCreationTokens > 0 || u.ReasoningTokens > 0
 }
 
-// cacheHitRate returns the fraction of cache-eligible input tokens actually
-// served from cache (CacheReadTokens / (CacheReadTokens + InputTokens)), or
-// -1 when there's no cache activity to report. A broken cache prefix (a
-// prompt-structure change that stops hitting the provider's cache) shows up
-// here as a hit rate falling toward 0 instead of silently vanishing into
-// the input-tokens total.
+// cacheHitRate returns the fraction of this turn's prompt-side tokens
+// actually served from cache: CacheReadTokens / (CacheReadTokens +
+// InputTokens + CacheCreationTokens) — the same prompt-token basis
+// totalTokensFor uses elsewhere in this file, so a cache *write* (content
+// being cached for the first time this turn, not yet a hit) correctly
+// counts as a miss rather than being left out of the denominator. -1 only
+// when there's no cache activity at all (both CacheReadTokens and
+// CacheCreationTokens are zero) — nothing to report. Whenever caching IS in
+// play but CacheReadTokens is exactly 0 (a broken cache prefix: every turn
+// re-caches from scratch instead of hitting), this reports 0% rather than
+// hiding the row, since that's precisely the signal the feature exists to
+// surface.
 func cacheHitRate(u adapter.Usage) float64 {
-	if u.CacheReadTokens <= 0 {
+	if u.CacheReadTokens <= 0 && u.CacheCreationTokens <= 0 {
 		return -1
 	}
-	total := u.CacheReadTokens + u.InputTokens
+	total := u.CacheReadTokens + u.InputTokens + u.CacheCreationTokens
 	if total <= 0 {
 		return -1
 	}
@@ -536,9 +553,7 @@ func renderCompactionSummary(s *session.Session) string {
 // calls errored. Main-thread only — subagent tool calls stay a single count
 // on subagents.Task.ToolCalls, not broken out by name (see the ToolStats
 // doc comment on session.Session). Rows sort by output tokens descending —
-// the tool most likely to be inflating input tokens on every later turn —
-// and a row whose output exceeds outlierMultiplier times the table's mean
-// is flagged so one runaway call stands out.
+// the tool most likely to be inflating input tokens on every later turn.
 func renderToolStats(s *session.Session) string {
 	if s == nil || len(s.ToolStats) == 0 {
 		return ""
@@ -548,10 +563,8 @@ func renderToolStats(s *session.Session) string {
 		session.ToolStat
 	}
 	rows := make([]toolRow, 0, len(s.ToolStats))
-	var totalTokens int64
 	for name, stat := range s.ToolStats {
 		rows = append(rows, toolRow{name, stat})
-		totalTokens += stat.OutputTokens
 	}
 	// name is the tiebreaker (map keys are unique) so two tools tied on
 	// OutputTokens render in the same order every time /usage opens —
@@ -564,7 +577,6 @@ func renderToolStats(s *session.Session) string {
 		}
 		return rows[i].name < rows[j].name
 	})
-	mean := float64(totalTokens) / float64(len(rows))
 
 	nameWidth, valueWidth := 0, 0
 	for _, r := range rows {
@@ -575,12 +587,9 @@ func renderToolStats(s *session.Session) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "%-13s%d distinct\n", "tools", len(rows))
 	for _, r := range rows {
-		line := fmt.Sprintf("%-13s%-*s  %4d calls  %*s tokens", "", nameWidth, r.name, r.Count, valueWidth, formatInt(r.OutputTokens))
+		line := fmt.Sprintf("%-13s%-*s  %4d %-5s  %*s tokens", "", nameWidth, r.name, r.Count, usagePluralize("call", r.Count), valueWidth, formatInt(r.OutputTokens))
 		if r.Errors > 0 {
-			line += fmt.Sprintf("  %d errors", r.Errors)
-		}
-		if flagOutlier(float64(r.OutputTokens), mean) {
-			line = styleNoticeWarn.Render(line + "  ⚠ outlier")
+			line += fmt.Sprintf("  %d %s", r.Errors, usagePluralize("error", r.Errors))
 		}
 		b.WriteString(line)
 		b.WriteByte('\n')
@@ -588,12 +597,281 @@ func renderToolStats(s *session.Session) string {
 	return strings.TrimRight(b.String(), "\n")
 }
 
+// lowSignalInputTokens and lowSignalOutputTokens bound a "low-signal" turn:
+// a lot of input spent — mostly retained history, not new content — for
+// next to no new output. That's the shape of a turn that pays the
+// session's full fixed cost (system prompt, memory, tool schemas, prior
+// history) but visibly makes little progress.
+const (
+	lowSignalInputTokens  = 10_000
+	lowSignalOutputTokens = 50
+)
+
+// maxEfficiencyDetailRows caps how many repeated-tool-call or
+// repeated-failure rows the efficiency section lists, matching the top-5
+// convention renderRetainedContext already uses.
+const maxEfficiencyDetailRows = 5
+
+// renderEfficiencySection composes the /usage "efficiency" block: average
+// tokens spent per assistant turn and how many were low-signal, plus (when
+// present) exact-duplicate tool calls and tool calls that tripped the
+// in-loop repeated-failure guard. Everything here is derived from data the
+// session already persists (per-turn adapter.Usage, ToolCalls with their
+// ArgsJSON, and tool-result content) — no new tracking or storage.
+// Self-hides entirely when the session has no assistant turns yet.
+func renderEfficiencySection(s *session.Session) string {
+	summary := renderEfficiencySummary(s)
+	if summary == "" {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString(summary)
+	b.WriteByte('\n')
+	for _, row := range repeatedToolCallRows(s) {
+		fmt.Fprintf(&b, "%-13s%s\n", "", row)
+	}
+	for _, row := range repeatedToolFailureRows(s) {
+		fmt.Fprintf(&b, "%-13s%s\n", "", row)
+	}
+	if waste := renderWasteEstimate(s); waste != "" {
+		fmt.Fprintf(&b, "%-13s%s\n", "", waste)
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+// renderEfficiencySummary computes the average total tokens spent per
+// assistant turn and counts low-signal turns (see lowSignalInputTokens /
+// lowSignalOutputTokens), from the per-turn Usage already attached to each
+// RoleAssistant message. Returns "" when the session has no turn with
+// recorded usage yet.
+func renderEfficiencySummary(s *session.Session) string {
+	if s == nil {
+		return ""
+	}
+	var turns, lowSignal int
+	var totalTokens int64
+	for _, msg := range s.Messages {
+		if msg.Role != adapter.RoleAssistant || msg.Usage == nil {
+			continue
+		}
+		turns++
+		totalTokens += totalTokensFor(*msg.Usage)
+		if msg.Usage.InputTokens > lowSignalInputTokens && msg.Usage.OutputTokens < lowSignalOutputTokens {
+			lowSignal++
+		}
+	}
+	if turns == 0 {
+		return ""
+	}
+	line := fmt.Sprintf("%-13savg %s tokens/turn", "efficiency", formatTokens(int(totalTokens/int64(turns))))
+	if lowSignal > 0 {
+		line += fmt.Sprintf(" · %d low-signal %s", lowSignal, usagePluralize("turn", lowSignal))
+	}
+	return line
+}
+
+// repeatedToolCallRows finds tool calls issued more than once in this
+// session with the exact same arguments where no world-mutating tool ran
+// in between — genuine "spinning" duplicates, not verification-loop
+// re-calls (e.g. run_tests after each edit). Uses a mutation epoch that
+// advances whenever a non-read-only tool is seen; a duplicate only
+// counts when its epoch matches the previous occurrence's epoch.
+// Sorted by repeat count descending, capped at maxEfficiencyDetailRows.
+func repeatedToolCallRows(s *session.Session) []string {
+	if s == nil {
+		return nil
+	}
+	type callKey struct{ name, args string }
+	// Per-key state: the epoch when we last saw this key, and how many
+	// idle (same-epoch) duplicates we've accumulated.
+	type keyState struct {
+		lastEpoch int
+		idle      int // duplicate occurrences with no intervening mutation
+	}
+	state := map[callKey]*keyState{}
+	var order []callKey
+	epoch := 0
+
+	for _, msg := range s.Messages {
+		if msg.Role != adapter.RoleAssistant {
+			continue
+		}
+		for _, call := range msg.ToolCalls {
+			// Advance the mutation epoch for non-read-only tools.
+			if !agent.IsReadOnlyTool(call.Name) {
+				epoch++
+			}
+			k := callKey{call.Name, call.ArgsJSON}
+			st, exists := state[k]
+			if !exists {
+				st = &keyState{lastEpoch: epoch}
+				state[k] = st
+				order = append(order, k)
+				continue
+			}
+			// Same key seen again — idle duplicate only if epoch hasn't
+			// advanced since the last occurrence of this exact key.
+			if epoch == st.lastEpoch {
+				st.idle++
+			}
+			st.lastEpoch = epoch
+		}
+	}
+	type repeatRow struct {
+		callKey
+		count int
+	}
+	var rows []repeatRow
+	for _, k := range order {
+		if state[k].idle > 0 {
+			rows = append(rows, repeatRow{k, state[k].idle + 1})
+		}
+	}
+	if len(rows) == 0 {
+		return nil
+	}
+	sort.Slice(rows, func(i, j int) bool {
+		if rows[i].count != rows[j].count {
+			return rows[i].count > rows[j].count
+		}
+		return rows[i].name < rows[j].name
+	})
+	if len(rows) > maxEfficiencyDetailRows {
+		rows = rows[:maxEfficiencyDetailRows]
+	}
+	out := make([]string, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, fmt.Sprintf("repeated call  %s(%s) × %d", r.name, truncateForRender(r.args, 40), r.count))
+	}
+	return out
+}
+
+// repeatedToolFailureRows counts, per tool, how many times this session's
+// in-loop repeated-failure guard (agent.RepeatedToolFailureMarker, injected
+// by applyRepeatedToolFailureGuard) fired — i.e. the same tool failed the
+// same way enough times in a row that the loop injected strategy guidance
+// rather than letting it retry blind. Read retroactively from persisted
+// tool-result content; the guard itself already ran live during the turn.
+func repeatedToolFailureRows(s *session.Session) []string {
+	if s == nil {
+		return nil
+	}
+	callNames := map[string]string{}
+	for _, msg := range s.Messages {
+		if msg.Role != adapter.RoleAssistant {
+			continue
+		}
+		for _, call := range msg.ToolCalls {
+			if call.ID != "" && call.Name != "" {
+				callNames[call.ID] = call.Name
+			}
+		}
+	}
+	counts := map[string]int{}
+	var order []string
+	for _, msg := range s.Messages {
+		if msg.Role != adapter.RoleTool || !strings.Contains(msg.Content, agent.RepeatedToolFailureMarker) {
+			continue
+		}
+		name := callNames[msg.ToolCallID]
+		if name == "" {
+			name = "unknown"
+		}
+		if counts[name] == 0 {
+			order = append(order, name)
+		}
+		counts[name]++
+	}
+	if len(order) == 0 {
+		return nil
+	}
+	sort.Slice(order, func(i, j int) bool {
+		if counts[order[i]] != counts[order[j]] {
+			return counts[order[i]] > counts[order[j]]
+		}
+		return order[i] < order[j]
+	})
+	if len(order) > maxEfficiencyDetailRows {
+		order = order[:maxEfficiencyDetailRows]
+	}
+	out := make([]string, 0, len(order))
+	for _, name := range order {
+		out = append(out, fmt.Sprintf("strategy guidance fired  %s (%d×)", name, counts[name]))
+	}
+	return out
+}
+
+// renderWasteEstimate sums estimated tokens for two unambiguous categories
+// of waste: the result of every idle-duplicate tool call past its first
+// occurrence (same args, no intervening mutation — the same epoch logic
+// repeatedToolCallRows uses), and every tool-result message where the
+// in-loop repeated-failure guard fired (agent.RepeatedToolFailureMarker).
+// This is a floor, not a full accounting: it deliberately does NOT price
+// low-signal turns or ordinary retained context, since a turn or a
+// retained blob can be expensive without being unambiguously wasted —
+// only these two categories are.
+func renderWasteEstimate(s *session.Session) string {
+	if s == nil {
+		return ""
+	}
+	// Pre-index tool result sizes by call ID.
+	resultTokens := map[string]int64{}
+	for _, msg := range s.Messages {
+		if msg.Role == adapter.RoleTool {
+			resultTokens[msg.ToolCallID] = int64((len(msg.Content) + 3) / 4)
+		}
+	}
+
+	// Walk messages with the same mutation-epoch logic as
+	// repeatedToolCallRows: only charge waste for duplicates that
+	// occurred without an intervening world-mutating tool call.
+	var waste int64
+	type callKey struct{ name, args string }
+	type keyState struct {
+		lastEpoch int
+	}
+	state := map[callKey]*keyState{}
+	epoch := 0
+
+	for _, msg := range s.Messages {
+		if msg.Role != adapter.RoleAssistant {
+			continue
+		}
+		for _, call := range msg.ToolCalls {
+			if !agent.IsReadOnlyTool(call.Name) {
+				epoch++
+			}
+			k := callKey{call.Name, call.ArgsJSON}
+			st, exists := state[k]
+			if !exists {
+				state[k] = &keyState{lastEpoch: epoch}
+				continue
+			}
+			// Idle duplicate: same key, epoch hasn't advanced.
+			if epoch == st.lastEpoch {
+				waste += resultTokens[call.ID]
+			}
+			st.lastEpoch = epoch
+		}
+	}
+
+	// Add tokens from repeated-failure guard firings (separate signal).
+	for _, msg := range s.Messages {
+		if msg.Role == adapter.RoleTool && strings.Contains(msg.Content, agent.RepeatedToolFailureMarker) {
+			waste += int64((len(msg.Content) + 3) / 4)
+		}
+	}
+	if waste == 0 {
+		return ""
+	}
+	return fmt.Sprintf("waste estimate  ~%s tokens (repeated calls + failed-retry guidance)", formatTokens(int(waste)))
+}
+
 // renderSubagentDetail lists each subagent task this session ran, one row
 // per task: agent type, duration, tokens, tool-call count, and status.
 // Complements the per-model subagent rollup already folded into the
 // session block above by making individual runs visible — a single
-// bloated subagent otherwise hides inside the combined model total. Flags
-// a row whose token spend exceeds outlierMultiplier times the list's mean.
+// bloated subagent otherwise hides inside the combined model total.
 func renderSubagentDetail(s *session.Session) string {
 	if s == nil || len(s.SubagentTasks) == 0 {
 		return ""
@@ -602,14 +880,12 @@ func renderSubagentDetail(s *session.Session) string {
 	sort.Slice(tasks, func(i, j int) bool {
 		return taskTotalTokens(tasks[i]) > taskTotalTokens(tasks[j])
 	})
-	var totalTokens int64
-	agentWidth, valueWidth := 0, 0
+	agentWidth, valueWidth, toolsWidth := 0, 0, 1
 	for _, t := range tasks {
-		totalTokens += taskTotalTokens(t)
 		agentWidth = max(agentWidth, len(t.AgentType))
 		valueWidth = max(valueWidth, len(formatInt(taskTotalTokens(t))))
+		toolsWidth = max(toolsWidth, len(strconv.Itoa(t.ToolCalls)))
 	}
-	mean := float64(totalTokens) / float64(len(tasks))
 
 	var b strings.Builder
 	fmt.Fprintf(&b, "%-13s%d %s\n", "subagents", len(tasks), usagePluralize("task", len(tasks)))
@@ -623,12 +899,9 @@ func renderSubagentDetail(s *session.Session) string {
 		if len(idLabel) > 8 {
 			idLabel = idLabel[:8]
 		}
-		line := fmt.Sprintf("%-13s%-8s  %-*s  %8s  %*s tokens  %2d tools  %s", "", idLabel, agentWidth, t.AgentType, dur, valueWidth, formatInt(tok), t.ToolCalls, t.Status.String())
+		line := fmt.Sprintf("%-13s%-8s  %-*s  %8s  %*s tokens  %*d %-5s  %s", "", idLabel, agentWidth, t.AgentType, dur, valueWidth, formatInt(tok), toolsWidth, t.ToolCalls, usagePluralize("tool", t.ToolCalls), t.Status.String())
 		if t.CompactionCount > 0 {
 			line += fmt.Sprintf("  compacted %dx", t.CompactionCount)
-		}
-		if flagOutlier(float64(tok), mean) {
-			line = styleNoticeWarn.Render(line + "  ⚠ outlier")
 		}
 		b.WriteString(line)
 		b.WriteByte('\n')
@@ -690,7 +963,6 @@ func renderTodayRollup(currentID string) string {
 		totalTokens += tok
 	}
 	sort.Slice(rows, func(i, j int) bool { return rows[i].tokens > rows[j].tokens })
-	mean := float64(totalTokens) / float64(len(rows))
 
 	var b strings.Builder
 	fmt.Fprintf(&b, "%-13s%d sessions · %s tokens\n", "today", len(rows), formatTokens(int(totalTokens)))
@@ -699,10 +971,14 @@ func renderTodayRollup(currentID string) string {
 		if r.ID == currentID {
 			label += " (current)"
 		}
-		line := fmt.Sprintf("%-13s%-24s%s tokens", "", label, formatTokens(int(r.tokens)))
-		if flagOutlier(float64(r.tokens), mean) {
-			line = styleNoticeWarn.Render(line + "  ⚠ outlier")
+		// The short id lets /inspect <id> target a past session spotted
+		// here — without it there's no way to reference a row other than
+		// the current one.
+		idLabel := r.ID
+		if len(idLabel) > 8 {
+			idLabel = idLabel[:8]
 		}
+		line := fmt.Sprintf("%-13s%-24s%s tokens  %s", "", label, formatTokens(int(r.tokens)), styleHint.Render(idLabel))
 		b.WriteString(line)
 		b.WriteByte('\n')
 	}

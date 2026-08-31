@@ -134,17 +134,19 @@ on the mode:
   - **File writes/edits** — allowed only inside the worker's own worktree and
     declared `files` ownership, so the blast radius is its branch and its file
     partition.
-  - **`run_tests`** — **disabled** for unattended workers. Tests execute
-    arbitrary project code and inherit environment such as `GOFLAGS`, so they
-    need a foreground task where a human can approve them.
-  - **`run_bash`** — **disabled** for unattended workers. The
-    "read-only shell" classifier is a first-token check that can be bypassed
-    (e.g. `env`/`command` wrappers, process substitution) and `run_bash` isn't
-    path-confined once allowed, so auto-allowing it would be an arbitrary-code-
-    execution surface for a worker nobody is watching. A task that genuinely
-    needs shell must run in the **foreground** (where a human approves each
-    call). A token-aware classifier that re-enables safe read-only shell is
-    tracked as future work.
+  - **`run_tests` and `run_bash`** — **disabled for unattended workers running
+    on the host.** Tests execute arbitrary project code (and inherit
+    environment such as `GOFLAGS`); the "read-only shell" classifier is a
+    first-token check that can be bypassed (e.g. `env`/`command` wrappers,
+    process substitution) and `run_bash` isn't path-confined once allowed —
+    so auto-allowing either would be an arbitrary-code-execution surface for
+    a worker nobody is watching. **Allowed when this worker is sandboxed**
+    (the parent session has the [command sandbox](sandbox.md) enabled —
+    `[sandbox] backend = "podman"`): each write worker gets its own
+    container mounted at its own worktree, so the blast radius is the
+    container, the same bet worktree-confined file writes already make.
+    Without a sandbox, a task that genuinely needs shell/tests must run in
+    the **foreground** (where a human approves each call).
   - Other approval-requiring tools (git mutations, GitHub writes, etc.) are
     denied; the commit happens via dispatch's own auto-commit.
 - **Foreground children forward approvals to your modal** (serialized across
@@ -159,9 +161,11 @@ execution chokepoint **unconditionally**, even under `--yolo` or a background
 worker. They can't be run through the agent at all; run them yourself in a
 real terminal if you genuinely need to.
 
-> Note: the hardline floor and the read-only-shell policy are deterministic
-> pattern/allowlist checks, not a sandbox. For untrusted work, run yottacode
-> itself inside a container or VM.
+> Note: the hardline floor is a deterministic pattern/allowlist check, not a
+> sandbox — it stays on even for sandboxed workers, because a blocked command
+> could still destroy the mounted worktree. Without the command sandbox
+> enabled, dispatch workers have no container isolation at all; for untrusted
+> work, run yottacode itself inside a container or VM.
 
 ## Conflicts during integrate
 
@@ -242,10 +246,12 @@ it to move on to `integrate`.
   than leaking them, then sweeps the session's dispatch worktrees one last
   time so workers the bounded drain gave up on don't leak empty worktrees
   either. The sweep keeps committed and dirty worktrees, same as above.
-- When the parent session has the experimental [command sandbox](sandbox.md)
+- When the parent session has the [command sandbox](sandbox.md)
   enabled (`[sandbox] backend = "podman"`), every write worker gets its
   **own** container mounted at its own worktree — inherited automatically,
-  no separate dispatch-level opt-in. Container resource cost scales with
+  no separate dispatch-level opt-in. This also unlocks unattended `run_bash`
+  and `run_tests` for **background** write workers (see Approvals above) —
+  without a sandbox those stay denied. Container resource cost scales with
   the number of concurrent write workers, but each one is capped by the
   same `memory`/`cpus`/`pids_limit` as the parent session's container, so
   it's bounded per worker rather than unbounded. Read-only workers don't
@@ -263,18 +269,19 @@ Sharp edges we know about:
 - **The sandbox is not a container.** Worktree write-confinement + the
   deterministic shell floor are guardrails, not isolation. For untrusted or
   high-stakes work, run yottacode itself inside a VM/container.
-- **Unattended `run_bash` and `run_tests` are disabled.** Background workers can
-  write owned files, but cannot run shell, tests, or even a compiler — so a
-  background worker commits code nothing has verified. A task that needs any of
-  that must run in the foreground (`background: false`), where you approve each
-  call. This is deliberate: unlike file writes, which the worktree and owned-file
-  scope confine to the worker's own branch, shell has no confinement today, so
-  auto-allowing it would be arbitrary code execution for a worker nobody is
-  watching. The planned fix is to confine workers in a container rather than to
-  guess at command safety — tracked in
-  [`roadmap/dispatch-v3-collaboration.md`](../roadmap/dispatch-v3-collaboration.md#0d-revisited--unattended-shell-confine-dont-classify),
-  sequenced behind the command sandbox in
-  [`roadmap/sandbox-podman.md`](../roadmap/sandbox-podman.md).
+- **Unattended `run_bash` and `run_tests` need the command sandbox.** Without
+  the [command sandbox](sandbox.md) enabled, background workers
+  can write owned files but cannot run shell, tests, or even a compiler — so a
+  background worker commits code nothing has verified. Enabling
+  `[sandbox] backend = "podman"` lifts this: each write worker gets its own
+  container, and unattended shell/tests are confined to it (see Approvals in
+  [the model above](#approvals)). Without a sandbox, a task that needs shell
+  or tests must still run in the foreground (`background: false`), where you
+  approve each call — file writes remain the only thing an unsandboxed
+  background worker can do unattended, since the worktree and owned-file
+  scope confine those to the worker's own branch and shell has no equivalent
+  confinement on the host. "Confine, don't classify" —
+  [`roadmap/dispatch-v3-collaboration.md`](../roadmap/dispatch-v3-collaboration.md#0d-revisited--unattended-shell-confine-dont-classify).
 
 - **Kept worktrees accumulate until you integrate or discard them.** Empty
   worktrees are reclaimed automatically (per worker on finish, any outcome,

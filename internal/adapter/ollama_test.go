@@ -92,6 +92,12 @@ func TestAdapter_StreamsContent(t *testing.T) {
 	if len(final.ToolCalls) != 0 {
 		t.Errorf("unexpected tool calls: %+v", final.ToolCalls)
 	}
+	if final.Model != "test" {
+		t.Errorf("final.Model = %q, want the adapter's configured model", final.Model)
+	}
+	if final.Provider == "" {
+		t.Error("final.Provider should be stamped, got empty")
+	}
 }
 
 // A non-empty Config.CacheKey must ride the wire as prompt_cache_key on

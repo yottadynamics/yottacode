@@ -123,6 +123,43 @@ func TestPrompt_ContentStreamsToClientAsAgentMessageChunks(t *testing.T) {
 	}
 }
 
+// TestPrompt_StampsUserMessageTimestamp confirms the ACP submit site (the
+// one RoleUser append not covered by the shared agent-loop stampNow choke
+// point) sets Timestamp to the actual submit time.
+func TestPrompt_StampsUserMessageTimestamp(t *testing.T) {
+	h, sessionID := newPromptHarness(t, [][]adapter.StreamEvent{
+		{sseDone("Hello")},
+	})
+	ctx, cancel := withTimeout(t)
+	defer cancel()
+
+	before := time.Now()
+	if _, err := h.clientConn.Prompt(ctx, coderacp.PromptRequest{
+		SessionId: coderacp.SessionId(sessionID),
+		Prompt:    []coderacp.ContentBlock{coderacp.TextBlock("hi")},
+	}); err != nil {
+		t.Fatalf("Prompt: %v", err)
+	}
+	after := time.Now()
+
+	sess, _ := h.srv.session(sessionID)
+	var userMsg *adapter.Message
+	for i := range sess.rt.Session.Messages {
+		if sess.rt.Session.Messages[i].Role == adapter.RoleUser {
+			userMsg = &sess.rt.Session.Messages[i]
+		}
+	}
+	if userMsg == nil {
+		t.Fatal("expected a RoleUser message in the session")
+	}
+	if userMsg.Timestamp == nil {
+		t.Fatal("expected the submitted user message to carry a Timestamp")
+	}
+	if userMsg.Timestamp.Before(before) || userMsg.Timestamp.After(after) {
+		t.Errorf("Timestamp %v not within [%v, %v]", userMsg.Timestamp, before, after)
+	}
+}
+
 func TestPrompt_ApprovalNeeded_AllowOnceLetsToolRun(t *testing.T) {
 	h, sessionID := newPromptHarness(t, [][]adapter.StreamEvent{
 		{sseDone("", adapter.ToolCall{ID: "c1", Name: "danger", ArgsJSON: `{}`})},
@@ -217,13 +254,20 @@ func TestPrompt_UnknownSessionIdErrors(t *testing.T) {
 // cancelled — the fixture for proving session/cancel actually reaches
 // and interrupts an in-flight turn, not just that Prompt returns
 // eventually.
-type blockingStreamer struct{ started chan struct{} }
+type blockingStreamer struct {
+	started chan struct{}
+	once    sync.Once
+}
 
 func (s *blockingStreamer) ChatStream(ctx context.Context, _ []adapter.Message, _ []adapter.Tool) <-chan adapter.StreamEvent {
 	out := make(chan adapter.StreamEvent)
 	go func() {
 		defer close(out)
-		close(s.started)
+		// The ACP runtime can retry or re-enter ChatStream for the same
+		// fixture while cancelling an in-flight prompt. Signal the first
+		// start only; closing started twice would panic and hide the
+		// cancellation behavior this test is meant to verify.
+		s.once.Do(func() { close(s.started) })
 		<-ctx.Done()
 	}()
 	return out

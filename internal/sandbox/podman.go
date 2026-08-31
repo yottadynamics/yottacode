@@ -15,6 +15,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
@@ -23,6 +24,7 @@ import (
 	"time"
 
 	"github.com/yottadynamics/yottacode/internal/config"
+	"github.com/yottadynamics/yottacode/internal/worktree"
 )
 
 // podmanLookPath is swapped in tests to simulate podman being missing
@@ -111,56 +113,23 @@ func NewPodmanSandbox(ctx context.Context, cfg config.SandboxConfig, id, mountRo
 	// is the overwhelmingly common case and not worth surfacing.
 	_ = removeContainer(ctx, name)
 
-	args := []string{
-		"run", "-d", "--name", name,
-		// Namespace isolation (PID/IPC/UTS/mount/user/network) is podman's
-		// own default for every rootless container — verified via
-		// /proc/1/ns inside a throwaway container, not something these
-		// flags need to request. --cgroupns=private is set explicitly
-		// anyway rather than relying on that default, since it determines
-		// whether the cgroup limits below are even meaningful (a shared/
-		// host cgroup namespace would let the container see, and
-		// potentially reason about escaping, the host's cgroup tree).
-		"--cgroupns=private",
-		"--userns=keep-id",
-		"--cap-drop=ALL",
-		"--security-opt=no-new-privileges",
-		fmt.Sprintf("--pids-limit=%d", cfg.PidsLimit),
-		fmt.Sprintf("--memory=%s", cfg.Memory),
-		// Without an explicit --memory-swap, a process can spill past
-		// --memory into swap and the limit above stops being real
-		// pressure. Setting it equal to --memory disables swap for this
-		// container entirely (verified: memory.swap.max reads 0 with
-		// this pairing) rather than leaving it at podman's default
-		// (memory-swap unset, which lets the container swap up to double
-		// its memory limit — or unlimited, depending on host config).
-		fmt.Sprintf("--memory-swap=%s", cfg.Memory),
-		fmt.Sprintf("--cpus=%v", cfg.CPUs),
-		fmt.Sprintf("--network=%s", cfg.Network),
-		fmt.Sprintf("--tmpfs=/tmp:rw,noexec,nosuid,nodev,size=%s", tmpTmpfsSize),
+	// Both probes degrade to false rather than failing sandbox startup — a
+	// host that can't honor cgroup limits or a disk quota still gets a
+	// correctly filesystem/network-isolated sandbox, just without that one
+	// resource cap. Not surfaced as a live warning: container creation is
+	// lazy (first tool use, not session startup), so there is no session-
+	// startup hook to report through, and this package cannot write
+	// directly to the terminal without risking corrupting a live TUI
+	// screen. See hostcaps.go and docs/sandbox.md's Hardening section.
+	caps := hostCapabilities{
+		StorageOpt:   storageOptSupported(ctx, cfg.Image),
+		CgroupLimits: cgroupLimitsSupported(ctx, cfg.Image),
 	}
-	mounts, err := mountPaths(cfg.Mounts, mountRoot)
+
+	args, err := podmanRunArgs(cfg, name, mountRoot, caps)
 	if err != nil {
 		return nil, err
 	}
-	for _, m := range mounts {
-		// :Z relabels the mount for this container's EXCLUSIVE use under
-		// SELinux (a no-op, confirmed harmless, on non-SELinux hosts).
-		// Exclusive (not :z/shared) is correct here — each session's or
-		// worker's mount root is never mounted into more than one
-		// container at a time.
-		args = append(args, "-v", m+":"+m+":Z")
-	}
-	args = append(args, "-w", mountRoot)
-	for _, envName := range cfg.EnvPassthrough {
-		// Bare `-e NAME` (no `=value`): podman reads the value from its
-		// OWN process environment and forwards it into the container.
-		// The value itself never appears in podman's argv, so it never
-		// shows up in `ps`/`/proc/<pid>/cmdline` for other local users —
-		// the whole point of opt-in credential injection.
-		args = append(args, "-e", envName)
-	}
-	args = append(args, cfg.Image, "sleep", "infinity")
 
 	cmd := exec.CommandContext(ctx, "podman", args...)
 	var out bytes.Buffer
@@ -178,6 +147,126 @@ func NewPodmanSandbox(ctx context.Context, cfg config.SandboxConfig, id, mountRo
 		return nil, fmt.Errorf("sandbox: podman run failed: %w (output: %s)", err, strings.TrimSpace(out.String()))
 	}
 	return &PodmanSandbox{name: name}, nil
+}
+
+// podmanRunArgs builds the podman run argv after mount-root validation.
+// Keeping this pure lets unit tests pin security-sensitive flags (including
+// DNS) without starting a real container. caps gates the resource-limit
+// flags that not every host can honor — see hostCapabilities.
+func podmanRunArgs(cfg config.SandboxConfig, name, mountRoot string, caps hostCapabilities) ([]string, error) {
+	args := []string{
+		"run", "-d", "--name", name,
+		// Namespace isolation (PID/IPC/UTS/mount/user/network) is podman's
+		// own default for every rootless container — verified via
+		// /proc/1/ns inside a throwaway container, not something these
+		// flags need to request. --cgroupns=private is set explicitly
+		// anyway rather than relying on that default, since it determines
+		// whether the cgroup limits below are even meaningful (a shared/
+		// host cgroup namespace would let the container see, and
+		// potentially reason about escaping, the host's cgroup tree).
+		"--cgroupns=private",
+		"--userns=keep-id",
+		"--cap-drop=ALL",
+		"--security-opt=no-new-privileges",
+		fmt.Sprintf("--network=%s", cfg.Network),
+		fmt.Sprintf("--tmpfs=/tmp:rw,noexec,nosuid,nodev,size=%s", tmpTmpfsSize),
+	}
+	// Gated on caps.CgroupLimits: a host without the cpu/memory/pids
+	// cgroup controllers delegated to this process (unprivileged LXCs,
+	// some nested-container/CI/cloud-VM setups) fails EVERY container
+	// start with these flags present — see hostcaps.go. Degrading to no
+	// resource limits on such a host still gets a correctly filesystem/
+	// network-isolated sandbox, which is strictly better than no sandbox.
+	if caps.CgroupLimits {
+		args = append(args,
+			fmt.Sprintf("--pids-limit=%d", cfg.PidsLimit),
+			fmt.Sprintf("--memory=%s", cfg.Memory),
+			// Without an explicit --memory-swap, a process can spill past
+			// --memory into swap and the limit above stops being real
+			// pressure. Setting it equal to --memory disables swap for this
+			// container entirely (verified: memory.swap.max reads 0 with
+			// this pairing) rather than leaving it at podman's default
+			// (memory-swap unset, which lets the container swap up to double
+			// its memory limit — or unlimited, depending on host config).
+			fmt.Sprintf("--memory-swap=%s", cfg.Memory),
+			fmt.Sprintf("--cpus=%v", cfg.CPUs),
+		)
+	}
+	// Gated on caps.StorageOpt: only the overlay storage driver on XFS
+	// with pquota honors --storage-opt size= (most Linux hosts run ext4,
+	// where it errors every container start) — see hostcaps.go. cfg.Disk
+	// <= 0 means no quota was requested at all.
+	if caps.StorageOpt && cfg.Disk > 0 {
+		args = append(args, fmt.Sprintf("--storage-opt=size=%dm", cfg.Disk))
+	}
+	// Podman rejects --dns together with --network=none. No egress means no
+	// resolver is usable anyway, so only pass DNS for networked sandboxes.
+	for _, server := range sandboxDNSForNetwork(cfg.Network, cfg.DNS) {
+		// DNS is runtime configuration, not image state: Podman owns
+		// resolv.conf generation for each container, so pass explicit
+		// resolvers as run flags instead of baking them into the image.
+		args = append(args, "--dns", strings.TrimSpace(server))
+	}
+	mounts, err := mountPaths(cfg.Mounts, mountRoot)
+	if err != nil {
+		return nil, err
+	}
+	for _, m := range sandboxMountPaths(mountRoot, mounts) {
+		// :z relabels configured project mounts for SHARED container use under
+		// SELinux. Multiple yottacode sessions can legitimately mount the same
+		// checkout; exclusive :Z would let a later session steal access from
+		// an already-running sandbox container.
+		args = append(args, "-v", m.Path+":"+m.Path+":"+m.SELinuxLabel)
+	}
+	args = append(args, "-w", mountRoot)
+	for _, envName := range cfg.EnvPassthrough {
+		// Bare `-e NAME` (no `=value`): podman reads the value from its
+		// OWN process environment and forwards it into the container.
+		// The value itself never appears in podman's argv, so it never
+		// shows up in `ps`/`/proc/<pid>/cmdline` for other local users —
+		// the whole point of opt-in credential injection.
+		args = append(args, "-e", envName)
+	}
+	args = append(args, cfg.Image, "sleep", "infinity")
+	return args, nil
+}
+
+func sandboxDNSForNetwork(network string, dns []string) []string {
+	if strings.TrimSpace(network) == "none" {
+		return nil
+	}
+	return dns
+}
+
+type sandboxMountPath struct {
+	Path         string
+	SELinuxLabel string
+}
+
+// sandboxMountPaths extends user-configured project-relative mounts with this
+// repo's managed worktree storage. yottacode worktrees live outside the repo
+// checkout under ~/.yottacode/worktrees/<slug>/, so mounting only mountRoot
+// strands an already-live sandbox when enter_worktree later swaps cwd there.
+func sandboxMountPaths(mountRoot string, configured []string) []sandboxMountPath {
+	out := make([]sandboxMountPath, 0, len(configured)+1)
+	for _, m := range configured {
+		out = append(out, sandboxMountPath{Path: m, SELinuxLabel: "z"})
+	}
+	worktreeRoot := worktree.SlugDir(mountRoot)
+	if err := os.MkdirAll(worktreeRoot, 0o755); err != nil {
+		return out
+	}
+	for _, m := range configured {
+		if sameOrContains(m, worktreeRoot) || sameOrContains(worktreeRoot, m) {
+			return out
+		}
+	}
+	return append(out, sandboxMountPath{Path: worktreeRoot, SELinuxLabel: "z"})
+}
+
+// PathVisibleFromMountRoot mirrors sandboxMountPaths without creating anything.
+func PathVisibleFromMountRoot(path, mountRoot string) bool {
+	return sameOrContains(mountRoot, path) || sameOrContains(worktree.SlugDir(mountRoot), path)
 }
 
 // mountPaths resolves cfg.Mounts (relative to mountRoot, "." meaning
@@ -208,6 +297,22 @@ func mountPaths(mounts []string, mountRoot string) ([]string, error) {
 		out = append(out, abs)
 	}
 	return out, nil
+}
+
+func sameOrContains(root, path string) bool {
+	if root == "" || path == "" {
+		return false
+	}
+	root = filepath.Clean(root)
+	path = filepath.Clean(path)
+	if root == path {
+		return true
+	}
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return false
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 // Command returns a `podman exec` into this sandbox's container. Mirrors

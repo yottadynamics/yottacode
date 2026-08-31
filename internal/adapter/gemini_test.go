@@ -82,6 +82,12 @@ func TestGemini_StreamsTextContent(t *testing.T) {
 	if final.StopReason != "STOP" {
 		t.Errorf("final.StopReason = %q, want STOP", final.StopReason)
 	}
+	if final.Model != "gemini-2.5-flash" {
+		t.Errorf("final.Model = %q, want the adapter's configured model", final.Model)
+	}
+	if final.Provider != string(ProviderGemini) {
+		t.Errorf("final.Provider = %q, want %q", final.Provider, ProviderGemini)
+	}
 }
 
 func TestGemini_StreamsThinkingAsReasoning(t *testing.T) {

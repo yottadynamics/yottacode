@@ -51,9 +51,17 @@ type CoreToolDeps struct {
 	// EnableCodeMap registers the experimental read-only code-map tools.
 	EnableCodeMap bool
 
-	// EnableDocumentIngestion registers the experimental read_document
-	// tool (bounded CSV/TSV/JSON/JSONL/XML/HTML extraction).
-	EnableDocumentIngestion bool
+	// AllowPDFIngestion gates read_document's PDF format specifically —
+	// see ReadDocumentTool.SubprocessFormatsEnabled. read_document itself
+	// is always registered; every other format (csv/tsv/json/jsonl/xml/
+	// html/xlsx/docx/pptx) is pure Go and unaffected by this field.
+	AllowPDFIngestion bool
+
+	// AllowDocxPdfGeneration gates create_document's docx/pdf formats
+	// specifically — see CreateDocumentTool.SubprocessFormatsEnabled.
+	// create_document itself is always registered; xlsx and pptx are
+	// pure Go and unaffected by this field.
+	AllowDocxPdfGeneration bool
 
 	// EnableSyntaxRanges registers offline parser-backed range-selection tools.
 	// The actual edits still flow through anchored reads and edit_anchored.
@@ -86,9 +94,9 @@ func RegisterCoreCwdTools(reg *Registry, cwd *CwdRef, deps CoreToolDeps) {
 
 	reg.Register(&ReadFileTool{Cwd: cwd, DenyReadPaths: deps.DenyReads, SupportsImages: deps.SupportsImages})
 	reg.Register(&ReadManyFilesTool{Cwd: cwd, DenyReadPaths: deps.DenyReads})
-	if deps.EnableDocumentIngestion {
-		reg.Register(&ReadDocumentTool{Cwd: cwd, DenyReadPaths: deps.DenyReads})
-	}
+	reg.Register(&ReadDocumentTool{Cwd: cwd, DenyReadPaths: deps.DenyReads, Sandbox: deps.Sandbox, SubprocessFormatsEnabled: deps.AllowPDFIngestion})
+	reg.Register(&SearchDocumentTool{Cwd: cwd, DenyReadPaths: deps.DenyReads, Sandbox: deps.Sandbox, SubprocessFormatsEnabled: deps.AllowPDFIngestion})
+	reg.Register(&CreateDocumentTool{Cwd: cwd, WriteOpts: wo, DenyReadPaths: deps.DenyReads, Sandbox: deps.Sandbox, SubprocessFormatsEnabled: deps.AllowDocxPdfGeneration})
 	reg.Register(&WriteFileTool{Cwd: cwd, WriteOpts: wo, LSPManager: deps.LSPManager, LSPServers: deps.LSPServers})
 	reg.Register(&EditFileTool{Cwd: cwd, WriteOpts: wo, LSPManager: deps.LSPManager, LSPServers: deps.LSPServers})
 	reg.Register(&EditAnchoredTool{Cwd: cwd, WriteOpts: wo, LSPManager: deps.LSPManager, LSPServers: deps.LSPServers})
@@ -120,7 +128,7 @@ func RegisterCoreCwdTools(reg *Registry, cwd *CwdRef, deps CoreToolDeps) {
 	reg.Register(&GitCheckpointTool{Cwd: cwd})
 	reg.Register(&RollbackTool{Cwd: cwd, LSPManager: deps.LSPManager})
 
-	reg.Register(&RunTestsTool{Cwd: cwd})
+	reg.Register(&RunTestsTool{Cwd: cwd, Sandbox: deps.Sandbox})
 	reg.Register(&RunBashTool{Cwd: cwd, Sandbox: deps.Sandbox})
 
 	reg.Register(&MediaProbeTool{Cwd: cwd, DenyReadPaths: deps.DenyReads})

@@ -1,0 +1,67 @@
+---
+title: yottacode — technical architecture
+---
+flowchart LR
+    %% Author: YottaDynamics | Scope: current README-level system overview
+    Engineer([Engineer])
+
+    subgraph Interfaces[User interfaces]
+        Cobra[cmd/yottacode<br/>Cobra CLI]
+        TUI[internal/tui<br/>Bubble Tea transcript + approvals]
+        OneShot[internal/oneshot<br/>stdout/stderr run mode]
+    end
+
+    subgraph AgentCore[Agent runtime]
+        CLIResolve[internal/cli<br/>options + config resolution]
+        Turn[internal/agent.Turn<br/>streaming loop + tool rounds]
+        Events[typed event bus<br/>content, reasoning, tools, approvals]
+        Modes[mode gates<br/>plan · normal · auto · yolo]
+        Perms[internal/permissions<br/>deny → overlay → allow → ask]
+        Registry[tool registry<br/>typed schemas + write-path validation]
+    end
+
+    subgraph LocalTools[Local tool surface]
+        FS[filesystem tools<br/>read, edit, apply diff, anchors]
+        Git[git + GitHub tools<br/>branch, commit, PR, checks]
+        LSP[LSP + syntax ranges<br/>Go · TS/JS · Python · Rust]
+        Shell[run_bash<br/>approval-gated host command]
+        Docs[document tools<br/>read_document + create_document]
+    end
+
+    subgraph State[Local persistence]
+        Session[internal/session<br/>durable transcripts]
+        Memory[internal/memory<br/>user + project context]
+        Recall[internal/recall<br/>SQLite + FTS5]
+        Rules[~/.yottacode + .yottacode<br/>plain-file config and policy]
+    end
+
+    subgraph Parallel[Delegation + isolation]
+        Subagents[internal/subagents<br/>Explore · Plan · implement · review · test]
+        Dispatch[dispatch / integrate<br/>owned-file workers]
+        Worktrees[git worktrees<br/>isolated branches + merges]
+    end
+
+    subgraph Models[Model adapter layer]
+        Router[internal/adapter router<br/>advisor / implementer roles]
+        Providers[OpenAI · Anthropic · Gemini/Vertex<br/>xAI · Ollama · compatible APIs]
+    end
+
+    Engineer -->|starts session| Cobra -->|resolves options| CLIResolve
+    CLIResolve -->|interactive| TUI -->|runs turns| Turn
+    CLIResolve -->|one-shot| OneShot -->|runs turns| Turn
+    Turn -->|emits events| Events -->|renders| TUI
+    Events -->|streams| OneShot
+    Turn -->|checks mode| Modes -->|applies policy| Perms -->|authorizes| Registry
+    Turn -->|calls tools| Registry
+    Registry -->|read/write files| FS
+    Registry -->|git/GitHub workflows| Git
+    Registry -->|code navigation| LSP
+    Registry -->|approved commands| Shell
+    Registry -->|parse/generate files| Docs
+    Registry -->|persist session| Session
+    Registry -->|retrieve context| Memory
+    Registry -->|search history| Recall
+    Registry -->|load policy| Rules
+    Registry -->|delegate tasks| Subagents -->|child turns| Turn
+    Registry -->|parallel work| Dispatch -->|creates/merges| Worktrees -->|commits| Git
+    Turn -->|provider requests| Router -->|LLM APIs| Providers -->|stream replies| Router --> Turn

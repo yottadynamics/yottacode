@@ -34,16 +34,18 @@ func sameColor(a, b color.Color) bool {
 }
 
 // expectedThemes is the registered set this binary ships, in the
-// canonical display order Names() returns: head (terminal) then the
-// alphabetical tail. Lock it in a test so a future palette refactor
-// that accidentally drops a theme or reshuffles the head surfaces
-// loudly instead of silently shipping the wrong list. Add a new
-// theme by inserting here in the correct slot AND in init() of the
-// corresponding file.
+// canonical display order Names() returns: head (yottacode-dark and
+// terminal) then the alphabetical tail. Lock it in a test so a
+// future palette refactor that accidentally drops a theme or reshuffles
+// the head surfaces loudly instead of silently shipping the wrong list.
+// Add a new theme by inserting here in the correct slot AND in init() of
+// the corresponding file.
 var expectedThemes = []string{
-	// Head: universal default pinned to the top.
+	// Head: yotta's polished dark theme is the default.
+	"yottacode-dark",
+	// Head: universal terminal-adaptive fallback stays near the top.
 	"terminal",
-	// Tail: alphabetical.
+	// Tail: alphabetical after the curated head.
 	"catppuccin",
 	"dimmed",
 	"gruvbox",
@@ -69,14 +71,13 @@ func TestNames_ReturnsAllRegisteredInDisplayOrder(t *testing.T) {
 	}
 }
 
-// terminal must lead the picker — it's the universal "match my
-// terminal" theme, the safe pick regardless of bg, and the user
-// asked for it to sit on top. Pin the contract so a future
-// alphabetical-only sort doesn't silently demote it.
-func TestNames_TerminalLeadsTheList(t *testing.T) {
+// yottacode-dark leads the picker because it is the default first-run
+// experience and the polished house theme. Terminal stays second as the
+// adaptive fallback for users who want their own terminal palette.
+func TestNames_YottaCodeDarkLeadsTheList(t *testing.T) {
 	got := Names()
-	if len(got) == 0 || got[0] != "terminal" {
-		t.Errorf("Names()[0] = %q, want \"terminal\" (full list: %v)", got, got)
+	if len(got) < 2 || got[0] != "yottacode-dark" || got[1] != "terminal" {
+		t.Errorf("Names() head = %v, want [yottacode-dark terminal]", got)
 	}
 }
 
@@ -229,6 +230,43 @@ func TestStudioDark_PaintsRecordingBackdrop(t *testing.T) {
 	}
 	if !colorEquals(p.Rule.Dark, "#008f4a") {
 		t.Errorf("studio-dark.Rule.Dark != balanced recording border green #008f4a")
+	}
+}
+
+func TestYottaDark_PaintsYottaNightBackdrop(t *testing.T) {
+	p, ok := Get("yottacode-dark")
+	if !ok {
+		t.Fatalf("yottacode-dark theme not registered")
+	}
+	if !p.HasBackground {
+		t.Errorf("yottacode-dark.HasBackground = false, want true — the theme needs its charcoal backdrop")
+	}
+	if !colorEquals(p.Background.Dark, "#121212") || !colorEquals(p.Background.Light, "#121212") {
+		t.Errorf("yottacode-dark.Background != pinned charcoal #121212")
+	}
+	if !colorEquals(p.Content.Dark, "#e8e8e8") {
+		t.Errorf("yottacode-dark.Content.Dark != bright primary text #e8e8e8")
+	}
+	if !colorEquals(p.Dim.Dark, "#6a6a6a") {
+		t.Errorf("yottacode-dark.Dim.Dark != neutral muted gray #6a6a6a")
+	}
+	if !colorEquals(p.Rule.Dark, "#1e1e1e") {
+		t.Errorf("yottacode-dark.Rule.Dark != subtle elevation #1e1e1e")
+	}
+	if !colorEquals(p.Accent.Dark, "#bb9af7") {
+		t.Errorf("yottacode-dark.Accent.Dark != Grok magenta #bb9af7")
+	}
+	if !colorEquals(p.Assistant.Dark, "#00e5ff") {
+		t.Errorf("yottacode-dark.Assistant.Dark != Yotta signature cyan-teal #00e5ff")
+	}
+	if !colorEquals(p.Success.Dark, "#9ece6a") {
+		t.Errorf("yottacode-dark.Success.Dark != Tokyo Night green #9ece6a")
+	}
+	if !colorEquals(p.Error.Dark, "#f7768e") {
+		t.Errorf("yottacode-dark.Error.Dark != Tokyo Night red #f7768e")
+	}
+	if !colorEquals(p.Warm.Dark, "#ff9e64") {
+		t.Errorf("yottacode-dark.Warm.Dark != Tokyo Night orange #ff9e64")
 	}
 }
 

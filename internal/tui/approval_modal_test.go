@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 )
 
@@ -33,6 +34,23 @@ func TestRenderApprovalModal_CapsAt120OnWideTerminal(t *testing.T) {
 
 // Brackets-first hotkeys, command-only-bright, no permissions.local.json
 // inline detail. The toast carries that detail post-decision.
+func TestRenderApprovalModal_DoesNotDuplicateTitleInBody(t *testing.T) {
+	m := newTestModel(t)
+	m.width = 80
+	m.awaitingApproval = true
+	m.approvalTool = "run_tests"
+	m.approvalPreview = "go test ./..."
+	m.approvalArgs = `{"command":"go test ./..."}`
+
+	got := stripANSI(renderApprovalModal(m))
+	if count := strings.Count(got, "Approval needed"); count != 1 {
+		t.Fatalf("approval title rendered %d times, want 1:\n%s", count, got)
+	}
+	if !strings.Contains(strings.SplitN(got, "\n", 2)[0], "run_tests") {
+		t.Fatalf("approval modal top border should retain tool label, got %q", strings.SplitN(got, "\n", 2)[0])
+	}
+}
+
 func TestRenderApprovalModal_BracketsFirstNoInlinePermissionsDetail(t *testing.T) {
 	m := newTestModel(t)
 	m.width = 80
@@ -55,7 +73,7 @@ func TestRenderApprovalModal_BracketsFirstNoInlinePermissionsDetail(t *testing.T
 	}
 }
 
-func TestRenderApprovalModal_HasPopupCloseGlyph(t *testing.T) {
+func TestRenderApprovalModal_HasNoPopupCloseGlyph(t *testing.T) {
 	m := newTestModel(t)
 	m.width = 80
 	m.awaitingApproval = true
@@ -68,11 +86,11 @@ func TestRenderApprovalModal_HasPopupCloseGlyph(t *testing.T) {
 	if !strings.HasPrefix(first, "┌") || !strings.HasSuffix(first, "┐") {
 		t.Fatalf("approval modal should keep sharp decision-card corners, got %q", first)
 	}
-	if !strings.Contains(first, "×") {
-		t.Fatalf("approval modal top border should include close glyph, got %q", first)
+	if strings.Contains(first, "×") {
+		t.Fatalf("approval modal top border should not include a mouse-only close glyph, got %q", first)
 	}
-	if strings.Contains(first, "Approval needed") || strings.Contains(first, "move_file") || !strings.Contains(got, "Approval needed · move_file") {
-		t.Fatalf("close-glyph chrome should avoid crowded border labels and move title/tool into the body, got %q", got)
+	if !strings.Contains(first, "Approval needed") || !strings.Contains(first, "move_file") {
+		t.Fatalf("approval modal top border should retain its labels, got %q", first)
 	}
 }
 
@@ -114,6 +132,52 @@ func TestRenderApprovalModal_NarrowTerminalDoesNotOverflow(t *testing.T) {
 	first := strings.SplitN(renderApprovalModal(m), "\n", 2)[0]
 	if w := ansi.StringWidth(first); w > m.width {
 		t.Fatalf("approval modal outer width = %d, terminal width = %d", w, m.width)
+	}
+}
+
+func TestRenderApprovalModal_LongPreviewFitsViewportHeight(t *testing.T) {
+	m := newTestModel(t)
+	m.width = 80
+	m.height = 12
+	m.awaitingApproval = true
+	m.approvalTool = "run_bash"
+	m.approvalPreview = strings.Repeat("echo a very long approval preview\n", 20)
+	m.approvalArgs = `{"command":"` + strings.Repeat("echo a very long approval preview\\n", 20) + `"}`
+
+	got := stripANSI(renderApprovalModal(m))
+	if h := strings.Count(got, "\n") + 1; h > m.height {
+		t.Fatalf("approval modal height = %d, terminal height = %d", h, m.height)
+	}
+	for _, want := range []string{"Y]", "N]", "1-", "PgUp/PgDn"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("height-clamped approval modal missing %q: %q", want, got)
+		}
+	}
+}
+
+func TestApprovalModal_ArrowKeysScrollLongPreview(t *testing.T) {
+	m := newTestModel(t)
+	m.width = 80
+	m.height = 12
+	m.awaitingApproval = true
+	m.approvalTool = "run_bash"
+	m.approvalPreview = strings.Repeat("line\n", 40)
+	m.approvalArgs = `{"command":"` + strings.Repeat("line\\n", 40) + `"}`
+
+	maxOffset := m.approvalMaxScrollOffset()
+	if maxOffset <= 1 {
+		t.Fatalf("test setup should leave multiple scroll positions, max offset = %d", maxOffset)
+	}
+	m, cmd := applyMsg(m, tea.KeyPressMsg{Code: tea.KeyDown})
+	if cmd != nil {
+		t.Fatalf("scrolling approval preview should not resume the event pump")
+	}
+	if m.approvalScrollOffset != 1 {
+		t.Fatalf("approvalScrollOffset = %d, want 1", m.approvalScrollOffset)
+	}
+	m, _ = m.updateApprovalScroll(tea.KeyPressMsg{Code: tea.KeyPgDown})
+	if m.approvalScrollOffset <= 1 {
+		t.Fatalf("PgDown should advance approvalScrollOffset, got %d", m.approvalScrollOffset)
 	}
 }
 

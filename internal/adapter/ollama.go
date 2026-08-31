@@ -260,6 +260,8 @@ func (a *chatAdapter) ChatStream(ctx context.Context, messages []Message, tools 
 			Content:    content.String(),
 			StopReason: finishReason,
 			Usage:      usage,
+			Model:      a.model,
+			Provider:   string(a.profile.Provider),
 		}
 		for _, idx := range toolCallOrder {
 			final.ToolCalls = append(final.ToolCalls, *toolCallByIdx[idx])

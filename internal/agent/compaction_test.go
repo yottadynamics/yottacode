@@ -379,3 +379,37 @@ func TestChooseCompactionTailStart_SnapsToAssistant(t *testing.T) {
 		t.Errorf("zero budget tail start = %d, want %d", got, len(h))
 	}
 }
+
+// TestCapRetainedToolMessages_ManyOversizedFitBudget locks in the
+// sum-bounding contract: capping each oversize tool message
+// independently to maxRetainedToolTokens bounds each one but not their
+// SUM — 30 messages each just above the ceiling could total ~3x an
+// intended retain budget. capRetainedToolMessages must bound the total.
+func TestCapRetainedToolMessages_ManyOversizedFitBudget(t *testing.T) {
+	const n = 30
+	h := subagentHistory(n, 20_000) // ~5000 tokens/round, above maxRetainedToolTokens (4096)
+	tailStart := 2                  // right after the system+user header — cap the whole tail
+
+	budget := 20_000
+	out, changed := capRetainedToolMessages(h, tailStart, budget)
+	if !changed {
+		t.Fatal("expected capping to report a change")
+	}
+	if len(out) != len(h) {
+		t.Fatalf("message count changed: got %d, want %d", len(out), len(h))
+	}
+	toolCount, toolTokens := 0, 0
+	for _, m := range out[tailStart:] {
+		if m.Role != adapter.RoleTool {
+			continue
+		}
+		toolCount++
+		toolTokens += estimateMsgTokens(m)
+	}
+	if toolCount != n {
+		t.Fatalf("expected all %d tool messages to survive (none dropped), got %d", n, toolCount)
+	}
+	if toolTokens > budget {
+		t.Fatalf("retained tool tokens %d exceed budget %d", toolTokens, budget)
+	}
+}

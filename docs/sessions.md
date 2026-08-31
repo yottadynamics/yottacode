@@ -55,6 +55,8 @@ Each row in the `/sessions` picker carries a one-line gist of what the session w
   20260721-033419.065349    why is the build flaky?             ·  gpt-5.5 · 40 msgs · 1.2M tokens · 9h ago
 ```
 
+The picker loads saved sessions one page at a time, so opening `/sessions` stays responsive even when the sessions directory is large. Use `PgUp`/`PgDn` to move between pages; `/recall <query>` remains the better path when you are searching older history by content.
+
 The gist is read from the session's own transcript — nothing is generated and no model is called, so it costs nothing and applies to sessions you already have. The picker also shows token totals when a session reported usage; compact rows drop token and model metadata first so the gist stays readable. Sessions renamed via **Rename** show the name in the left column instead of the id. On a narrow terminal the model name drops out first to keep the gist visible; narrower still, rows fall back to metadata only.
 
 ## Resume a session
@@ -100,10 +102,18 @@ Names are convenience labels. The canonical identity is still the session id.
 ```bash
 yottacode sessions export <id-or-name>
 yottacode sessions export <id-or-name> path.md
+yottacode sessions export <id-or-name> path.jsonl
 yottacode sessions export <id-or-name> path.md --force
+yottacode sessions export <id-or-name> path.jsonl --force
 ```
 
-Export writes a readable Markdown transcript with turns, tool calls, and tool output. System messages are omitted.
+Export writes a readable Markdown transcript by default and for `.md` paths. Use a `.jsonl` path to write a structured newline-delimited activity log for team audit, debugging, local tooling, diffing, and `jq` analysis. System messages are omitted from both formats.
+
+JSONL exports are not sanitized sharing artifacts: they include user messages, assistant messages, tool-call arguments, tool results, token usage, model/provider metadata, latency, fallback, approval-source fields, compaction records, and image output metadata (media type, byte count, SHA-256 digest). Review the file before sharing it outside your environment, because tool output can contain local paths, command output, pasted text, or secrets that appeared during the session. Raw image bytes are not embedded; use the digest to correlate exported log lines with separately retained evidence.
+
+The first JSONL line is a `type: "session"` header with `schema_version: 1`; incompatible schema changes will bump that version, while compatible releases may add fields. Consumers should ignore unknown fields and branch on each line's `type`.
+
+Line order is stable but not globally chronological: the file writes the session header, then compaction records, then message/tool events, then a final `type: "session_summary"` aggregate. Sort event lines by `ts` if you need a strict timeline across compactions and messages.
 
 ## Search sessions with recall
 

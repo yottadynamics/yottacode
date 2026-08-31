@@ -131,3 +131,29 @@ func TestPathTrustModal_AcceptsHotkeyWhileTurnActive(t *testing.T) {
 		})
 	}
 }
+
+// TestAddAllowedPathToWriteTools_CoversCreateDocument is the regression
+// for review finding #6: create_document was missing from both the
+// tool-name list and the type-switch, so approving "allow once"/"trust
+// session" in the path-trust modal never updated
+// CreateDocumentTool.WriteOpts.AllowedPaths — the model's retry hit the
+// identical rejection right after the UI said the path was trusted.
+func TestAddAllowedPathToWriteTools_CoversCreateDocument(t *testing.T) {
+	cwd := t.TempDir()
+	cwdRef := agent.NewCwdRef(cwd)
+	reg := agent.NewRegistry()
+	tool := &agent.CreateDocumentTool{Cwd: cwdRef, WriteOpts: agent.WritePathOptions{Cwd: cwdRef}}
+	reg.Register(tool)
+
+	addAllowedPathToWriteTools(reg, "/outside/report.docx")
+
+	found := false
+	for _, p := range tool.WriteOpts.AllowedPaths {
+		if p == "/outside/report.docx" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected /outside/report.docx to be added to CreateDocumentTool.WriteOpts.AllowedPaths, got %v", tool.WriteOpts.AllowedPaths)
+	}
+}

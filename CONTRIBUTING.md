@@ -21,17 +21,31 @@ approach before you invest the time.
 
 ## Development environment
 
-Requirements: **Go 1.26+** (see [`go.mod`](go.mod) for the exact version).
-yottacode is a single, pure-Go binary with no CGo, so the toolchain is all you
-need.
+Requirements: **Go 1.26+**. CI currently uses the Go patch version configured in
+[`.github/workflows/go.yml`](.github/workflows/go.yml); use that exact patch
+version when validating security fixes or reproducing CI locally. yottacode is a
+single, pure-Go binary with no CGo, so the Go toolchain is all you need.
 
 Supported platforms are **Linux** and **macOS** (amd64 and arm64). There is no
 native Windows build — Windows contributors should work inside WSL.
 
-Build:
+First-time setup:
 
 ```bash
+git clone https://github.com/<your-user>/yottacode.git
+cd yottacode
+git remote add upstream https://github.com/yottadynamics/yottacode.git
+
+go version
+go mod download
 go build -o yottacode ./cmd/yottacode
+./yottacode --version
+```
+
+If you want to run yottacode locally after building it, run setup once:
+
+```bash
+./yottacode setup
 ```
 
 Cross-compilation is straightforward:
@@ -46,8 +60,18 @@ GOOS=linux  GOARCH=amd64 go build -o yottacode-linux-amd64  ./cmd/yottacode
 Run these before opening a PR:
 
 ```bash
-go test ./...   # unit tests — fast, no network or external services
-go vet ./...    # static checks
+go build -v ./...  # compile every package
+go test ./...      # unit tests — fast, no network or external services
+go vet ./...       # static checks
+```
+
+CI also runs `govulncheck ./...` for reachable dependency and toolchain CVEs.
+Install it locally when you are changing dependencies, provider code, security
+behavior, or release-sensitive paths:
+
+```bash
+go install golang.org/x/vuln/cmd/govulncheck@latest
+govulncheck ./...
 ```
 
 Encouraged for changes touching concurrency, providers, or live behavior:
@@ -68,24 +92,45 @@ Standing rules:
   guide in the same change.
 - Unit tests must not require network, GPU, or external services. Anything that
   does belongs behind the `//go:build integration` tag.
-- A change is not done until `go test ./...` is green.
+- Docs-only changes do not need Go tests unless they change commands, examples,
+  generated docs, or behavior described by tests.
+- A change is not done until the relevant local checks are green.
 
-CI (`.github/workflows/go.yml`) runs build, vet, and tests on every pull
-request; it must pass before a PR can merge.
+Testing guidance by change type:
+
+- CLI behavior: add or update focused tests under `cmd/yottacode/`.
+- Agent tools: cover schema, approval behavior, path validation, success, and
+  error cases under `internal/agent/`.
+- Provider or model behavior: test static diagnostics and active probes under
+  `internal/adapter/` before updating CLI or TUI rendering.
+- TUI changes: add focused command, rendering, or interaction tests under
+  `internal/tui/` where possible.
+- Documentation changes: verify links, commands, and examples you touched.
+
+CI (`.github/workflows/go.yml`) runs build, vet, vulnerability scanning, tests,
+race tests, LSP smoke tests, shellcheck, and installer smoke tests on pull
+requests; it must pass before a PR can merge.
 
 ## Pull request workflow
 
 1. Fork the repository and create a topic branch off `main`.
-2. Make your change, with tests and docs updated alongside the code.
-3. Run `go test ./...` and `go vet ./...` locally until green.
-4. Push your branch and open a pull request against
+2. For a good first issue, comment on the issue before starting so maintainers
+   know someone is working on it and can share any current context.
+3. Make your change, with tests and docs updated alongside the code.
+4. Run the relevant local checks until green. At minimum, run `go build -v ./...`,
+   `go test ./...`, and `go vet ./...` for code changes.
+5. Push your branch and open a pull request against
    `yottadynamics/yottacode:main`.
-5. Write a clear description: what changed, why, and how you tested it. Link the
+6. Write a clear description: what changed, why, and how you tested it. Link the
    issue it closes (e.g. `Closes #123`).
-6. Keep PRs focused — one logical change per PR is easier to review and revert.
+7. Keep PRs focused — one logical change per PR is easier to review and revert.
 
 Commit messages should be clear and imperative ("Add X", "Fix Y"). Squash noisy
 work-in-progress commits before requesting review.
+
+Small first PRs are welcome. If you get stuck, open a draft PR or comment on the
+issue with what you tried, the command that failed, and the relevant output.
+Maintainers are happy to help narrow the scope or point you at the right files.
 
 ## Project layout
 

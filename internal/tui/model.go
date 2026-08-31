@@ -130,6 +130,10 @@ type Config struct {
 	// on; empty means none are enabled.
 	ExperimentalEnabled []string
 
+	// SandboxActive reports whether this session actually constructed a
+	// command sandbox at startup. Later config writes do not hot-swap run_bash.
+	SandboxActive bool
+
 	// AgentTool is the dispatch tool registered on Cfg.Registry. The
 	// TUI keeps a typed reference so the slash command can introspect
 	// the resolved agent list, and so the background-done callback
@@ -183,8 +187,9 @@ type Config struct {
 // (alt-screen): the app owns the whole frame, including a scrollable
 // conversation transcript viewport above the live footer. Native terminal
 // scrollback is unavailable inside alt-screen, so transcript history is kept in
-// transcriptRows and scrolled with PgUp/PgDn/Ctrl+Home/Ctrl+End while mouse
-// capture is enabled only after the conversation starts so wheel scrolling works.
+// transcriptRows and scrolled with PgUp/PgDn/Ctrl+Home/Ctrl+End or the mouse
+// wheel after the conversation starts. Other mouse gestures are deliberately
+// ignored so clicks, hover, and drag selection stay owned by the terminal.
 type Model struct {
 	parentCtx context.Context
 	cfg       agent.LoopConfig
@@ -398,6 +403,10 @@ type Model struct {
 	// this session (sorted). The /experimental overlay renders the full
 	// catalog and marks these on.
 	experimentalEnabled []string
+	// sandboxActive is true only when this session's tool registry was built
+	// with a command sandbox. It deliberately does not follow later /sandbox
+	// config writes, because run_bash cannot hot-swap backends.
+	sandboxActive bool
 
 	// mcpManager owns the lifecycle of every configured MCP client.
 	// Nil when the session has no MCP servers configured. The /mcp
@@ -490,6 +499,11 @@ type Model struct {
 	// Reset each rebuild; 0 means no "recalled N" segment is shown. Allocated
 	// in New.
 	recalledCount *atomic.Int32
+
+	// welcomeCursor is the selected row in the fresh-session launch menu.
+	// Keyboard arrows, hover, and clicks all move this cursor before invoking
+	// the same command handlers the slash-command paths use.
+	welcomeCursor int
 
 	// UI components
 	textInput textarea.Model
@@ -686,8 +700,9 @@ type Model struct {
 	userTurnsThisLaunch int
 	// pendingInputAfterTurn captures a user message queued at a turn boundary
 	// when the model finished before it could consume userMsgCh. The
-	// turnEndedMsg handler picks it up and starts a fresh turn.
-	pendingInputAfterTurn string
+	// turnEndedMsg handler picks it up and starts a fresh turn while
+	// preserving the original enqueue timestamp.
+	pendingInputAfterTurn agent.UserMessage
 
 	// userMsgCh feeds mid-turn user messages into the agent loop's
 	// UserMessages channel. Created per-turn in startTurn; the loop
@@ -695,7 +710,7 @@ type Model struct {
 	// message to history without cancelling. Buffer of 1; overflow keeps
 	// the new text in the input box and warns instead of interrupting the
 	// active tool call.
-	userMsgCh chan string
+	userMsgCh chan agent.UserMessage
 
 	// loops holds every active /loop command in this TUI process. Loops are
 	// local/in-memory, keyed by a user-visible ID, and mutated only from the
@@ -715,20 +730,33 @@ type Model struct {
 	loopExitConfirmOpen   bool
 	loopExitConfirmCursor int
 
+	// worktreeExitConfirmOpen asks users launched from a yottacode-managed
+	// worktree what should happen to that worktree before the process exits.
+	// Ctrl+C used to hard-quit from these sessions, leaving cleanup to the
+	// user. The selected cleanup is applied after Bubble Tea restores the
+	// terminal, so destructive git worktree removal never runs while the TUI is
+	// still standing inside the directory it is about to delete.
+	worktreeExitConfirmOpen bool
+	worktreeExitConfirmName string
+	worktreeExitCleanup     string
+	worktreeExitGraceful    bool
+
 	// loopListOpen shows the active-loop panel (bare `/loop`) as a dismissable
 	// inline overlay above the cmdline, instead of writing loop cards into the
 	// session transcript. Any key closes it.
-	loopListOpen bool
+	loopListOpen         bool
+	loopListScrollOffset int
 
 	// paragraphStart tracks blank-line boundaries so the first line
 	// of each new prose paragraph gets 2 extra spaces of indent.
 	paragraphStart bool
 
 	// Approval modal state
-	awaitingApproval bool
-	approvalTool     string
-	approvalPreview  string
-	approvalArgs     string
+	awaitingApproval     bool
+	approvalTool         string
+	approvalPreview      string
+	approvalArgs         string
+	approvalScrollOffset int
 	// approvalAllowAlwaysOK gates the [a]lways-allow keypress. Set
 	// true when DeriveAllowRule can produce a sensible pattern from
 	// this call; false for compound shell commands and other shapes
@@ -774,14 +802,27 @@ type Model struct {
 	// Experimental overlay (/experimental). Read-only feature catalog rendered as
 	// an inline overlay, not scrollback, so feature-state inspection stays
 	// transient like /usage and /context.
-	experimentalOpen  bool
-	experimentalPanel string
+	experimentalOpen         bool
+	experimentalPanel        string
+	experimentalScrollOffset int
 
 	// Help overlay (/help). Read-only command catalog rendered as an inline
 	// overlay so the dense command list stays readable and out of transcript
 	// history.
-	helpOpen  bool
-	helpPanel string
+	helpOpen         bool
+	helpPanel        string
+	helpScrollOffset int
+	// Inspect overlay (/inspect). Read-only, scrollable turn-by-turn
+	// session replay — mirrors the usage overlay's own fields and
+	// scrolling shape (inspectPanel snapshotted at open time, any key
+	// closes except the scroll keys).
+	inspectOpen         bool
+	inspectPanel        string
+	inspectSession      *session.Session
+	inspectScrollOffset int
+	inspectPickerOpen   bool
+	inspectPicker       *inspectPickerState
+
 	// Context report overlay (/context). Renders the context-window
 	// breakdown on the inline-overlay surface (above the cmdline) instead
 	// of in chat history, so the report — which is transient inspection,
@@ -789,8 +830,9 @@ type Model struct {
 	// time (the report reads memory files from disk and walks the skill
 	// set, too heavy to recompute every frame); any key dismisses it,
 	// mirroring the cheatsheet.
-	contextReportOpen bool
-	contextReportBody string
+	contextReportOpen         bool
+	contextReportBody         string
+	contextReportScrollOffset int
 
 	// Permissions picker (/permissions). Two-row picker (shared /
 	// local) modelled on /memory's three-row picker — Up/Down
@@ -955,6 +997,11 @@ type Model struct {
 	// wide; visibility just swaps reverse-video on for the block.
 	cursorVisible bool
 
+	// cmdlineClickFlash briefly promotes the input frame border color after
+	// a mouse click lands in the cmdline. The pulse gives the terminal UI a
+	// tactile "this is focused" response without adding a persistent focus mode.
+	cmdlineClickFlash bool
+
 	// openAIAuthPending tracks an in-flight inline OAuth login from
 	// /provider add openai-auth. Non-nil between the URL-ready and
 	// done messages — the program holds it so a Ctrl-C path can
@@ -1013,6 +1060,8 @@ type prStatusMsg struct {
 // it for the lifetime of the process.
 type cursorBlinkMsg struct{}
 
+type cmdlineClickFlashDoneMsg struct{}
+
 // cursorBlinkInterval is the half-cycle between visible→invisible
 // transitions. 530ms matches the long-standing default in xterm and
 // most terminal emulators; faster reads as agitated, slower reads as
@@ -1024,6 +1073,14 @@ const cursorBlinkInterval = 530 * time.Millisecond
 func cursorBlinkCmd() tea.Cmd {
 	return tea.Tick(cursorBlinkInterval, func(time.Time) tea.Msg {
 		return cursorBlinkMsg{}
+	})
+}
+
+const cmdlineClickFlashDuration = 350 * time.Millisecond
+
+func cmdlineClickFlashCmd() tea.Cmd {
+	return tea.Tick(cmdlineClickFlashDuration, func(time.Time) tea.Msg {
+		return cmdlineClickFlashDoneMsg{}
 	})
 }
 
@@ -1086,7 +1143,7 @@ func New(parent context.Context, c Config) Model {
 	// (an empty input ready to type into). The onboarding hints have
 	// migrated to a separate footer line that disappears after the
 	// first message — see renderInputHintFooter.
-	ti.Placeholder = "ask anything…"
+	ti.Placeholder = "build anything…"
 	ti.CharLimit = 0
 	// Render the chevron only on the first display row; soft-wrapped and
 	// hard-newline continuations get a 2-col indent so the input reads as
@@ -1202,6 +1259,7 @@ func New(parent context.Context, c Config) Model {
 		subagentTasks:          c.Subagents,
 		subagentTool:           c.AgentTool,
 		experimentalEnabled:    c.ExperimentalEnabled,
+		sandboxActive:          c.SandboxActive,
 		mcpManager:             c.MCPManager,
 		subagentInbox:          make(chan agent.SubagentBackgroundDone, 32),
 		banneredSubagentDone:   map[string]bool{},
@@ -1243,6 +1301,7 @@ func (m *Model) clearPendingDecisionUI() {
 	m.approvalTool = ""
 	m.approvalPreview = ""
 	m.approvalArgs = ""
+	m.approvalScrollOffset = 0
 	m.approvalAllowAlwaysOK = false
 	m.approvalDerivedRule = ""
 	m.approvalDenyAlwaysOK = false
@@ -1368,6 +1427,10 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.cursorVisible = !m.cursorVisible
 		return m, cursorBlinkCmd()
 	}
+	if _, ok := msg.(cmdlineClickFlashDoneMsg); ok {
+		m.cmdlineClickFlash = false
+		return m, nil
+	}
 	if probe, ok := msg.(providerProbeMsg); ok {
 		if probe.result.Profile.Provider != "" {
 			m.providerProfile = probe.result.Profile
@@ -1456,6 +1519,9 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyPressMsg:
+		if m.worktreeExitConfirmOpen {
+			return m.updateWorktreeExitConfirm(msg)
+		}
 		if m.loopExitConfirmOpen {
 			return m.updateLoopExitConfirm(msg)
 		}
@@ -1464,10 +1530,25 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if m.loopListOpen {
-			// Any key dismisses the bare-/loop status panel (mirrors the
-			// cheatsheet). Intercepted here, ahead of the Esc/Ctrl+C
-			// loop-stop handlers, so closing the panel never disarms loops.
+			// Intercepted here, ahead of the Esc/Ctrl+C loop-stop handlers, so
+			// closing the panel never disarms loops. Scroll keys inspect tall
+			// loop lists; any other key dismisses the status panel.
+			switch msg.Code {
+			case tea.KeyUp:
+				m.loopListScrollOffset = max(0, m.loopListScrollOffset-1)
+				return m, nil
+			case tea.KeyDown:
+				m.loopListScrollOffset = min(m.loopListMaxScrollOffset(), m.loopListScrollOffset+1)
+				return m, nil
+			case tea.KeyPgUp:
+				m.loopListScrollOffset = max(0, m.loopListScrollOffset-m.loopListVisibleLines())
+				return m, nil
+			case tea.KeyPgDown:
+				m.loopListScrollOffset = min(m.loopListMaxScrollOffset(), m.loopListScrollOffset+m.loopListVisibleLines())
+				return m, nil
+			}
 			m.loopListOpen = false
+			m.loopListScrollOffset = 0
 			return m, nil
 		}
 		if m.usageOpen {
@@ -1490,19 +1571,73 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.usageScrollOffset = 0
 			return m, nil
 		}
+		if m.inspectOpen {
+			return m.updateInspectPanel(msg)
+		}
 		if m.experimentalOpen {
+			switch msg.Code {
+			case tea.KeyUp:
+				m.experimentalScrollOffset = max(0, m.experimentalScrollOffset-1)
+				return m, nil
+			case tea.KeyDown:
+				m.experimentalScrollOffset = min(m.experimentalMaxScrollOffset(), m.experimentalScrollOffset+1)
+				return m, nil
+			case tea.KeyPgUp:
+				m.experimentalScrollOffset = max(0, m.experimentalScrollOffset-m.experimentalVisibleLines())
+				return m, nil
+			case tea.KeyPgDown:
+				m.experimentalScrollOffset = min(m.experimentalMaxScrollOffset(), m.experimentalScrollOffset+m.experimentalVisibleLines())
+				return m, nil
+			}
 			m.experimentalOpen = false
 			m.experimentalPanel = ""
+			m.experimentalScrollOffset = 0
 			return m, nil
 		}
 		if m.helpOpen {
+			switch msg.Code {
+			case tea.KeyUp:
+				m.helpScrollOffset = max(0, m.helpScrollOffset-1)
+				return m, nil
+			case tea.KeyDown:
+				m.helpScrollOffset = min(m.helpMaxScrollOffset(), m.helpScrollOffset+1)
+				return m, nil
+			case tea.KeyPgUp:
+				m.helpScrollOffset = max(0, m.helpScrollOffset-m.helpVisibleLines())
+				return m, nil
+			case tea.KeyPgDown:
+				m.helpScrollOffset = min(m.helpMaxScrollOffset(), m.helpScrollOffset+m.helpVisibleLines())
+				return m, nil
+			case tea.KeyHome:
+				m.helpScrollOffset = 0
+				return m, nil
+			case tea.KeyEnd:
+				m.helpScrollOffset = m.helpMaxScrollOffset()
+				return m, nil
+			}
 			m.helpOpen = false
 			m.helpPanel = ""
+			m.helpScrollOffset = 0
 			return m, nil
 		}
 		if m.contextReportOpen {
+			switch msg.Code {
+			case tea.KeyUp:
+				m.contextReportScrollOffset = max(0, m.contextReportScrollOffset-1)
+				return m, nil
+			case tea.KeyDown:
+				m.contextReportScrollOffset = min(m.contextReportMaxScrollOffset(), m.contextReportScrollOffset+1)
+				return m, nil
+			case tea.KeyPgUp:
+				m.contextReportScrollOffset = max(0, m.contextReportScrollOffset-m.contextReportVisibleLines())
+				return m, nil
+			case tea.KeyPgDown:
+				m.contextReportScrollOffset = min(m.contextReportMaxScrollOffset(), m.contextReportScrollOffset+m.contextReportVisibleLines())
+				return m, nil
+			}
 			m.contextReportOpen = false
 			m.contextReportBody = ""
+			m.contextReportScrollOffset = 0
 			return m, nil
 		}
 		if m.permissionsOpen {
@@ -1534,6 +1669,9 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.sessionsPickerOpen {
 			return m.updateSessionsPicker(msg)
 		}
+		if m.inspectPickerOpen {
+			return m.updateInspectPicker(msg)
+		}
 		if m.plansPickerOpen {
 			return m.updatePlansPicker(msg)
 		}
@@ -1563,6 +1701,21 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.mcpPickerOpen {
 			return m.updateMCPPicker(msg)
+		}
+		if action, ok := m.welcomeShortcutAction(msg); ok {
+			return m.activateWelcomeAction(action)
+		}
+		if m.welcomeVisible() && strings.TrimSpace(m.textInput.Value()) == "" {
+			switch msg.Code {
+			case tea.KeyUp:
+				m.welcomeCursor = clampWelcomeCursor(m.welcomeCursor - 1)
+				return m, nil
+			case tea.KeyDown:
+				m.welcomeCursor = clampWelcomeCursor(m.welcomeCursor + 1)
+				return m, nil
+			case tea.KeyEnter:
+				return m.activateWelcomeCursor()
+			}
 		}
 		// Transcript scrolling. Alt-screen mode owns
 		// the whole frame (no native terminal scrollback to fall back on),
@@ -1717,18 +1870,18 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if strings.TrimSpace(m.textInput.Value()) == "" {
 					select {
 					case queued := <-m.userMsgCh:
-						if queued != "" {
-							m.textInput.SetValue(queued)
+						if queued.Content != "" {
+							m.textInput.SetValue(queued.Content)
 							m.textInput.CursorEnd()
 							m.appendLine(styleAuto.Render(SysMsg(SysReturn, "queue", "recalled for editing")))
 							return m, nil
 						}
 					default:
 					}
-					if m.pendingInputAfterTurn != "" {
+					if m.pendingInputAfterTurn.Content != "" {
 						queued := m.pendingInputAfterTurn
-						m.pendingInputAfterTurn = ""
-						m.textInput.SetValue(queued)
+						m.pendingInputAfterTurn = agent.UserMessage{}
+						m.textInput.SetValue(queued.Content)
 						m.textInput.CursorEnd()
 						m.appendLine(styleAuto.Render(SysMsg(SysReturn, "queue", "recalled for editing")))
 						return m, nil
@@ -1750,7 +1903,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.turnCancelRequested = true
 					m.turnCancel()
 				}
-				m.pendingInputAfterTurn = ""
+				m.pendingInputAfterTurn = agent.UserMessage{}
 				// Esc/Ctrl+C also disarms a running /loop — otherwise the
 				// turn cancel above fires turnEndedMsg and must not let a loop
 				// continue after the user explicitly stopped it.
@@ -1800,7 +1953,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// partial text in the textarea.
 				if m.paletteOpen && len(m.paletteFiltered) > 0 && !strings.Contains(input, " ") {
 					chosen := m.paletteFiltered[m.paletteIndex]
-					if chosen.Args != "" {
+					if slashArgsRequired(chosen.Args) {
 						m.textInput.SetValue("/" + chosen.Name + " ")
 						m.textInput.CursorEnd()
 						m.paletteOpen = false
@@ -1844,7 +1997,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					// A slash command typed mid-turn is a fresh user
 					// intent — drop any queued message so we don't
 					// auto-submit stale input after the turn unwinds.
-					m.pendingInputAfterTurn = ""
+					m.pendingInputAfterTurn = agent.UserMessage{}
 					select {
 					case <-m.userMsgCh:
 					default:
@@ -1867,13 +2020,16 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// and state-changing slash commands are the explicit stop
 				// paths.
 				if input == "" {
+					if m.welcomeVisible() {
+						return m.activateWelcomeCursor()
+					}
 					return m, nil
 				}
 				input = m.expandPastes(input)
 				m.pastes = nil
 				m.pastedImages = nil
 				select {
-				case m.userMsgCh <- input:
+				case m.userMsgCh <- agent.UserMessage{Content: input, Timestamp: time.Now()}:
 					m.textInput.SetValue("")
 					m.paletteOpen = false
 					m.paletteIndex = 0
@@ -1951,6 +2107,9 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if m.awaitingApproval {
+			if scrolled, ok := m.updateApprovalScroll(msg); ok {
+				return scrolled, nil
+			}
 			if queued, ok := m.queueInputDuringDecision(msg, "after approval"); ok {
 				return queued, nil
 			}
@@ -2234,7 +2393,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// ending this way are covered mid-flight by the periodic
 			// capture reminder (captureReminderDue), not by
 			// overloading this key with a model call.
-			return m, tea.Quit
+			return requestImmediateExit(m)
 		case "ctrl+d":
 			// Deliberate idle exit — same graceful path as /quit (final
 			// memory turn when warranted).
@@ -2302,7 +2461,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			input := strings.TrimSpace(m.textInput.Value())
 			if m.paletteOpen && len(m.paletteFiltered) > 0 && !strings.Contains(input, " ") {
 				chosen := m.paletteFiltered[m.paletteIndex]
-				if chosen.Args != "" {
+				if slashArgsRequired(chosen.Args) {
 					m.textInput.SetValue("/" + chosen.Name + " ")
 					m.textInput.CursorEnd()
 					m.paletteOpen = false
@@ -2498,6 +2657,23 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, tea.Batch(loopCmds...)
 
+	case exitSaveTimeoutMsg:
+		// The final memory turn on quit ran past exitSaveTimeout — cancel
+		// it exactly as Esc/Ctrl+C would so the quit it's blocking still
+		// completes. Safe no-op if the turn already ended on its own:
+		// exitSavePending is never cleared back to false (it's only ever
+		// set once, right before this turn starts), but turnCancel is
+		// nil by then — cleared unconditionally at the top of
+		// turnEndedMsg — so the guard below still holds.
+		if m.exitSavePending && m.turnActive && m.turnCancel != nil {
+			// Mark this as an intentional local stop before canceling so the
+			// TurnInterrupted event is rendered as a calm cancellation marker
+			// instead of being suppressed as internal cancellation noise.
+			m.turnCancelRequested = true
+			m.turnCancel()
+		}
+		return m, nil
+
 	case turnEndedMsg:
 		m.turnActive = false
 		// If this turn was a /loop prose iteration and the agent called
@@ -2561,7 +2737,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// check so the check knows whether a queued turn is imminent.
 		select {
 		case undelivered := <-m.userMsgCh:
-			if undelivered != "" && m.pendingInputAfterTurn == "" {
+			if undelivered.Content != "" && m.pendingInputAfterTurn.Content == "" {
 				m.pendingInputAfterTurn = undelivered
 			}
 		default:
@@ -2575,14 +2751,14 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// intent, and compressing now would yank context out from
 		// under the very message they just sent. The warn notice still
 		// prints here so it lands above the new user block.
-		ctxCmd := m.updateContextUsage(m.pendingInputAfterTurn == "")
+		ctxCmd := m.updateContextUsage(m.pendingInputAfterTurn.Content == "")
 		// If the user interrupted mid-turn by hitting Enter on a
 		// non-empty message, agent.Turn has already preserved history
 		// with synthetic tool_result entries — submit the queued
 		// message now as a fresh turn so the model sees the feedback.
-		if queued := m.pendingInputAfterTurn; queued != "" {
-			m.pendingInputAfterTurn = ""
-			next, cmd := m.startTurn(queued)
+		if queued := m.pendingInputAfterTurn; queued.Content != "" {
+			m.pendingInputAfterTurn = agent.UserMessage{}
+			next, cmd := m.startTurnQueued(queued)
 			return next, cmd
 		}
 		// Background completions that asked to wake the model (notify_on_done)
@@ -2797,18 +2973,18 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch {
 		case !converged:
 			culprit, culpritTok := m.dominantContextBucket()
-			recall := recallCommandForSnapshot(msg.snapshotPath)
+			snap := snapshotResumeHint(msg.snapshotPath)
 			m.lastContextSummary = fmt.Sprintf("non-convergent at %d%%; largest bucket %s (~%s)", int(nonConvergentPct*100), culprit, formatTokens(culpritTok))
 			m.appendLine(styleWatermarkAlert.Render(SysMsg(
 				SysWarning, "context", "summarized but still "+fmt.Sprintf("%d%%", int(nonConvergentPct*100)),
 				fmt.Sprintf("largest %s ~%s", culprit, formatTokens(culpritTok)),
-				"auto paused", "/context for details", recall)))
+				"auto paused", "/context for details", snap)))
 		case msg.auto:
 			m.lastContextSummary = fmt.Sprintf("auto summarized %s → %s", formatTokens(msg.tokensBefore), formatTokens(m.contextTokens))
-			m.appendLine(styleAuto.Render(SysMsg(SysContext, "context", "summarized", m.contextReductionLabel(msg.tokensBefore, m.contextTokens), "full history saved", recallCommandForSnapshot(msg.snapshotPath))))
+			m.appendLine(styleAuto.Render(SysMsg(SysContext, "context", "summarized", m.contextReductionLabel(msg.tokensBefore, m.contextTokens), "full history saved", snapshotResumeHint(msg.snapshotPath))))
 		default:
 			m.lastContextSummary = fmt.Sprintf("manual summarized %s → %s", formatTokens(msg.tokensBefore), formatTokens(m.contextTokens))
-			m.appendLine(styleAuto.Render(SysMsg(SysContext, "context", "summarized", m.contextReductionLabel(msg.tokensBefore, m.contextTokens), "full history saved", recallCommandForSnapshot(msg.snapshotPath))))
+			m.appendLine(styleAuto.Render(SysMsg(SysContext, "context", "summarized", m.contextReductionLabel(msg.tokensBefore, m.contextTokens), "full history saved", snapshotResumeHint(msg.snapshotPath))))
 		}
 		if len(m.pendingSubagentWakes) > 0 {
 			// A notify_on_done completion may have arrived while summarization
@@ -2844,7 +3020,7 @@ func (m Model) queueInputDuringDecision(msg tea.KeyPressMsg, label string) (Mode
 	m.pastes = nil
 	m.pastedImages = nil
 	select {
-	case m.userMsgCh <- input:
+	case m.userMsgCh <- agent.UserMessage{Content: input, Timestamp: time.Now()}:
 		m.textInput.SetValue("")
 		m.paletteOpen = false
 		m.paletteIndex = 0
@@ -2864,12 +3040,12 @@ func (m Model) queueInputDuringDecision(msg tea.KeyPressMsg, label string) (Mode
 // footer, not as a popup, so they don't drive the over-tall collapse this
 // guards.
 func (m Model) anyOverlayOpen() bool {
-	return m.cheatsheetOpen || m.loopListOpen || m.usageOpen || m.experimentalOpen || m.helpOpen || m.contextReportOpen ||
+	return m.cheatsheetOpen || m.loopListOpen || m.usageOpen || m.inspectOpen || m.experimentalOpen || m.helpOpen || m.contextReportOpen ||
 		m.permissionsOpen || m.modelPickerOpen || m.providerPickerOpen ||
-		m.embedSetupOpen || m.memoryPickerOpen || m.recallPickerOpen || m.codeMapPickerOpen || m.sessionsPickerOpen ||
+		m.embedSetupOpen || m.memoryPickerOpen || m.recallPickerOpen || m.codeMapPickerOpen || m.sessionsPickerOpen || m.inspectPickerOpen ||
 		m.plansPickerOpen || m.checkpointsPickerOpen || m.subagentsPickerOpen ||
 		m.routerPickerOpen || m.themePickerOpen || m.effortPickerOpen || m.skillsMenuOpen ||
-		m.skillsPickerOpen || m.mcpPickerOpen || m.sandboxPickerOpen
+		m.skillsPickerOpen || m.mcpPickerOpen || m.sandboxPickerOpen || m.worktreeExitConfirmOpen
 }
 
 // hasRunningSubagents reports whether any subagent task is currently
@@ -2906,13 +3082,11 @@ func (m Model) skillsBusy() bool {
 func (m Model) View() tea.View {
 	v := tea.NewView(m.viewString())
 	v.AltScreen = true
-	// Capture cell-motion during normal conversation so click-drag transcript
-	// selection can auto-copy on release. Escalate to all-motion only while a
-	// picker or decision surface is open; that scoped capture lets hover move
-	// selectors without adding idle hover spam to the transcript.
-	if m.interactiveMouseOpen() {
-		v.MouseMode = tea.MouseModeAllMotion
-	} else if m.enteredConversation {
+	// Enable the narrowest mouse reporting only after the conversation starts so
+	// wheel events can scroll the owned transcript viewport. Clicks, releases,
+	// drags, and hover/motion events are ignored in update(); terminal text
+	// selection and popup safety decisions remain keyboard/native-terminal owned.
+	if m.enteredConversation {
 		v.MouseMode = tea.MouseModeCellMotion
 	}
 	if m.originalTerminalBackground != nil {
@@ -2945,7 +3119,7 @@ func (m Model) viewString() string {
 		footer := m.renderFooter()
 		m.resizeTranscriptViewport(footer)
 		m.applyTranscriptFollowIntent()
-		background = lipgloss.JoinVertical(lipgloss.Left, m.transcriptViewport.View(), footer)
+		background = lipgloss.JoinVertical(lipgloss.Left, m.renderTranscriptViewport(), footer)
 	}
 
 	// Popup layer: pickers, panels, and decision modals all render as a
@@ -2981,7 +3155,7 @@ func (m Model) viewString() string {
 // earlier "center-upper" attempt (a fractional vPos) render at the
 // bottom of the screen instead of the top.
 func (m Model) renderHero() string {
-	box := renderStartupBox(m.version, m.commit, m.dirty, m.modelName, m.cwd, m.sess.ID, m.branch, m.memorySummary, m.providerProfile, m.startupTip(), m.width)
+	box := renderStartupBox(m.version, m.commit, m.dirty, m.startupTip(), m.welcomeCursor, m.width)
 	// Leading blank row: a little breathing room off the terminal's top
 	// edge rather than the card butting flush against row 0.
 	parts := append([]string{"", box, ""}, m.aboveInputRows()...)
@@ -3021,19 +3195,23 @@ func (m Model) activePopupBody() (box string, ok bool) {
 			return renderApprovalModal(m), true
 		}
 	case m.loopExitConfirmOpen:
-		return popupBox(renderLoopExitConfirm(m)), true
+		return keyboardOnlyPopupBox(renderLoopExitConfirm(m)), true
+	case m.worktreeExitConfirmOpen:
+		return renderWorktreeExitConfirm(m), true
 	case m.cheatsheetOpen:
 		return popupBox(renderCheatsheet()), true
 	case m.loopListOpen && m.activeLoopCount() > 0:
-		return popupBox(m.renderLoopListPanel()), true
+		return popupBox(m.windowedLoopListPanel()), true
 	case m.usageOpen:
-		return popupBox(m.windowedUsagePanel()), true
+		return popupBox(m.windowedUsagePanel(), m.popupWidth()), true
+	case m.inspectOpen:
+		return popupBox(m.windowedInspectPanel(), m.popupWidth()), true
 	case m.experimentalOpen:
-		return popupBox(m.experimentalPanel), true
+		return popupBox(m.windowedExperimentalPanel()), true
 	case m.helpOpen:
-		return popupBox(m.helpPanel), true
+		return popupBox(m.windowedHelpPanel(), m.helpPopupWidth()), true
 	case m.contextReportOpen:
-		return popupBox(m.contextReportBody), true
+		return popupBox(m.windowedContextReportBody(), m.popupWidth()), true
 	case m.permissionsOpen:
 		return popupBox(renderPermissionsOverlay(m)), true
 	case m.modelPickerOpen && m.modelPicker != nil:
@@ -3050,6 +3228,8 @@ func (m Model) activePopupBody() (box string, ok bool) {
 		return popupBox(renderCodeMapPicker(m.codeMapPicker, m.popupWidth())), true
 	case m.sessionsPickerOpen && m.sessionsPicker != nil:
 		return popupBox(renderSessionsPicker(m.sessionsPicker, m.popupWidth())), true
+	case m.inspectPickerOpen && m.inspectPicker != nil:
+		return popupBox(renderInspectPicker(m.inspectPicker, m.popupWidth())), true
 	case m.plansPickerOpen && m.plansPicker != nil:
 		return popupBox(renderPlansPicker(m.plansPicker, m.popupWidth())), true
 	case m.checkpointsPickerOpen && m.checkpointsPicker != nil:
@@ -3169,6 +3349,8 @@ func (m Model) contextualKeyHints() []string {
 		return append(hints, "Enter: queue text")
 	case m.loopExitConfirmOpen:
 		return []string{"←/→: choose", "Enter: confirm", "Esc: stay"}
+	case m.worktreeExitConfirmOpen:
+		return []string{"R: remove", "K: keep", "Esc: cancel"}
 	case m.paletteOpen:
 		return []string{"↑↓: move", "Tab: complete", "Enter: run", "Esc: close"}
 	case m.filePaletteOpen:
@@ -3321,6 +3503,11 @@ func (m Model) renderInputFrame() string {
 		return m.textInput.View()
 	}
 	ruleStyle := lipgloss.NewStyle().Foreground(colorDim)
+	if m.cmdlineClickFlash {
+		// Pulse with a brighter version of the normal border hue. A different
+		// accent color read like a state change instead of tactile focus feedback.
+		ruleStyle = lipgloss.NewStyle().Foreground(cmdlineClickBorderColor)
+	}
 	boxW := m.width
 	innerW := boxW - 4 // space inside "│ " ... " │"
 	if innerW < 1 {
@@ -3458,13 +3645,13 @@ func (m Model) renderInputBody(contentW int) string {
 		// is fixed at column 0 so the placeholder doesn't shift as
 		// the cursor toggles visible/invisible.
 		cur := renderEmptyCursor(m.cursorVisible)
-		placeholder := "ask anything…"
+		placeholder := "build anything…"
 		if m.cfg.PlanMode.IsActive() {
 			// Surface the mode in the placeholder too — even if the
 			// status bar / above-cmdline banner are hidden by a
 			// narrow terminal or palette overlay, the empty-state
 			// prompt will still call it out.
-			placeholder = "ask anything… (plan mode)"
+			placeholder = "build anything… (plan mode)"
 		}
 		ph := styleInputPlaceholder.Render(placeholder)
 		row := styleInputPrompt.Render(promptStr) + cur + ph
@@ -4908,6 +5095,13 @@ func (m Model) startTurn(input string) (tea.Model, tea.Cmd) {
 	return m.startTurnWithDisplay(input, "")
 }
 
+// startTurnQueued starts a fresh turn from a message that was queued while
+// another turn was active, preserving the enqueue timestamp in persisted
+// history instead of restamping it at delayed delivery time.
+func (m Model) startTurnQueued(msg agent.UserMessage) (tea.Model, tea.Cmd) {
+	return m.startTurnWithDisplayAt(msg.Content, "", msg.Timestamp)
+}
+
 // startSubagentWakeTurn drains the pending background-completion wakes
 // (notify_on_done) into a single turn that injects their results, so the
 // model is re-prompted to act on work it dispatched fire-and-forget. The
@@ -5142,6 +5336,10 @@ func (m Model) injectSubagentResult(task subagents.Task) (tea.Model, tea.Cmd, st
 // downstream prompts still carry the full input — only the visible
 // scrollback rendering is compressed.
 func (m Model) startTurnWithDisplay(input, displayLabel string) (tea.Model, tea.Cmd) {
+	return m.startTurnWithDisplayAt(input, displayLabel, time.Now())
+}
+func (m Model) startTurnWithDisplayAt(input, displayLabel string, submitted time.Time) (tea.Model, tea.Cmd) {
+
 	// Belt-and-suspenders alongside the "enter" key case: any turn
 	// starting — including a background subagent wake turn firing before
 	// the user has typed anything — is unambiguous evidence the
@@ -5237,9 +5435,10 @@ func (m Model) startTurnWithDisplay(input, displayLabel string) (tea.Model, tea.
 		m.pendingLSPSetupReminder = ""
 	}
 	m.sess.Messages = append(m.sess.Messages, adapter.Message{
-		Role:    adapter.RoleUser,
-		Content: content,
-		Images:  userImages,
+		Role:      adapter.RoleUser,
+		Content:   content,
+		Images:    userImages,
+		Timestamp: &submitted,
 	})
 	m.userTurnsThisLaunch++
 	// First user submission this launch — drops the onboarding hint
@@ -5276,7 +5475,7 @@ func (m Model) startTurnWithDisplay(input, displayLabel string) (tea.Model, tea.
 	m.decisions = make(chan agent.Decision, 1)
 	m.turnErrCh = make(chan error, 1)
 	m.turnCancelRequested = false
-	m.userMsgCh = make(chan string, 1)
+	m.userMsgCh = make(chan agent.UserMessage, 1)
 	m.cfg.UserMessages = m.userMsgCh
 	// Serialize the agent goroutine's history appends against this Update
 	// goroutine's reads of sess.Messages (token estimate, /context,
@@ -5451,6 +5650,7 @@ func (m Model) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 		m.approvalTool = e.ToolName
 		m.approvalPreview = e.Preview
 		m.approvalArgs = e.ArgsJSON
+		m.approvalScrollOffset = 0
 		// Pre-derive the "always allow" pattern so the modal can show
 		// the user exactly what rule they'd be saving. Suppressed
 		// (approvalAllowAlwaysOK = false) for compound shell commands
@@ -6905,6 +7105,72 @@ func (m *Model) queuePrintlnIndented(s string, leftMargin int) {
 	m.transcriptDirty = true
 }
 
+// renderTranscriptViewport adds a one-column scrollbar beside the owned
+// transcript viewport when the transcript is longer than the visible frame.
+// yottacode runs in alt-screen, so users do not get a terminal-native scrollbar;
+// the in-frame rail makes it obvious that PgUp/PgDn and mouse wheel scrolling
+// can reveal more plan or approval context behind a modal.
+func (m Model) renderTranscriptViewport() string {
+	view := m.transcriptViewport.View()
+	if !m.transcriptScrollbarVisible() {
+		return view
+	}
+	lines := strings.Split(view, "\n")
+	height := m.transcriptViewport.Height()
+	if height <= 0 {
+		return view
+	}
+	for len(lines) < height {
+		lines = append(lines, "")
+	}
+	rail := m.renderTranscriptScrollbar(height)
+	out := make([]string, height)
+	contentWidth := max(m.width-1, 0)
+	for i := 0; i < height; i++ {
+		line := ""
+		if i < len(lines) {
+			line = lines[i]
+		}
+		line = ansi.Truncate(line, contentWidth, "")
+		line = lipgloss.NewStyle().Width(contentWidth).Render(line)
+		out[i] = line + rail[i]
+	}
+	return strings.Join(out, "\n")
+}
+
+// transcriptScrollbarVisible reports whether there is hidden transcript content
+// above or below the current viewport window.
+func (m Model) transcriptScrollbarVisible() bool {
+	return m.enteredConversation && m.transcriptViewport.Height() > 0 && len(m.transcriptRows) > m.transcriptViewport.Height()
+}
+
+// renderTranscriptScrollbar returns one glyph per visible transcript row. The
+// filled thumb uses the viewport's scroll percent, while the dim rail marks the
+// rest of the scrollable range without stealing much horizontal space.
+func (m Model) renderTranscriptScrollbar(height int) []string {
+	rail := make([]string, height)
+	for i := range rail {
+		rail[i] = lipgloss.NewStyle().Foreground(colorDim).Render("│")
+	}
+	if height <= 0 {
+		return rail
+	}
+	contentRows := len(m.transcriptRows)
+	thumbHeight := max(1, height*height/max(contentRows, height))
+	if thumbHeight > height {
+		thumbHeight = height
+	}
+	maxStart := height - thumbHeight
+	start := 0
+	if maxStart > 0 {
+		start = int(m.transcriptViewport.ScrollPercent()*float64(maxStart) + 0.5)
+	}
+	for i := start; i < start+thumbHeight && i < height; i++ {
+		rail[i] = lipgloss.NewStyle().Foreground(colorAccent).Render("█")
+	}
+	return rail
+}
+
 // resizeTranscriptViewport sizes transcriptViewport against footer's
 // rendered height, filling whatever's left of m.height. Split out from
 // refreshTranscriptViewport so viewString can call it too (idempotent,
@@ -6914,7 +7180,17 @@ func (m *Model) queuePrintlnIndented(s string, leftMargin int) {
 // Update still gets correctly-sized output instead of stale dimensions
 // left over from whenever Update last ran.
 func (m *Model) resizeTranscriptViewport(footer string) {
-	m.transcriptViewport.SetWidth(m.width)
+	// The transcript renders its own one-column scrollbar when it overflows, so
+	// reserve that column from the viewport content width to keep the scrollbar
+	// visible on the right edge instead of pushing the frame wider.
+	w := m.width
+	if m.transcriptScrollbarVisible() {
+		w--
+	}
+	if w < 0 {
+		w = 0
+	}
+	m.transcriptViewport.SetWidth(w)
 	h := m.height - lipgloss.Height(footer)
 	if h < 0 {
 		h = 0

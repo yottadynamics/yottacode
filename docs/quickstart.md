@@ -48,7 +48,7 @@ yottacode setup
 
 <!-- Screenshot: drop ![Setup wizard](assets/setup-wizard.png) here once captured -->
 
-The wizard writes `~/.yottacode/config.toml` and `~/.yottacode/.env`, probes providers where possible, shows detected Ollama models in a picker, and can be rerun later with `/setup` from inside the TUI.
+The wizard writes `~/.yottacode/config.toml` and `~/.yottacode/.env`, probes providers where possible, shows detected Ollama models in a picker, and can be rerun later with `/setup` from inside the TUI. The final review screen shows the config path, `.env` write, active provider/model, and a focused action picker so you can write, go back, or abort before anything is saved.
 
 ### Or configure manually
 

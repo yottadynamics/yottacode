@@ -1,0 +1,126 @@
+# Builds, smoke-tests, and publishes the yottacode-documents container
+# image (infra/documents.Containerfile) to ghcr.io. Pull requests build and
+# smoke-test the image without publishing; main, release-tag, manual, and weekly
+# runs publish after the same smoke gate.
+#
+# The push job verifies an anonymous pull after publish. That catches the
+# production failure mode where GHCR accepts the push but the org package is
+# private or not linked publicly enough for end users to pull.
+
+name: Documents image
+
+on:
+  workflow_dispatch: {}
+  pull_request:
+    paths:
+      - infra/documents.Containerfile
+      - internal/documents/pyhelpers/**
+      - scripts/smoke/documents-image.sh
+      - .github/workflows/documents-image.yml
+  push:
+    branches: [main]
+    tags: ['v*']
+    paths:
+      - infra/documents.Containerfile
+      - internal/documents/pyhelpers/**
+      - scripts/smoke/documents-image.sh
+      - .github/workflows/documents-image.yml
+  schedule:
+    # Weekly rebuild for upstream pandoc/poppler/weasyprint CVE patches — not
+    # tied to any yottacode CLI release.
+    - cron: '0 6 * * 1'
+
+permissions:
+  contents: read
+
+env:
+  IMAGE_NAME: ghcr.io/yottadynamics/yottacode-documents
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install podman
+        run: sudo apt-get update && sudo apt-get install -y podman
+
+      - name: Build image
+        run: podman build -t documents-image -f infra/documents.Containerfile .
+
+      - name: Save image for downstream jobs
+        run: podman save -o documents-image.tar localhost/documents-image:latest
+
+      - name: Upload image artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: documents-image
+          path: documents-image.tar
+          retention-days: 1
+
+  smoke-test:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install podman
+        run: sudo apt-get update && sudo apt-get install -y podman
+
+      - name: Download image artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: documents-image
+
+      - name: Load image
+        run: podman load -i documents-image.tar
+
+      - name: Smoke test — pandoc, weasyprint, poppler, pdfplumber, python-docx, tesseract
+        # Re-run the production helper scripts against generated fixtures, not
+        # just import checks, before anything reaches ghcr.io.
+        run: |
+          podman run --rm \
+            -v "$PWD/scripts/smoke:/smoke-scripts:Z" \
+            documents-image \
+            sh -lc 'sh /smoke-scripts/documents-image.sh'
+
+  push:
+    needs: smoke-test
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Install podman
+        run: sudo apt-get update && sudo apt-get install -y podman
+
+      - name: Download image artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: documents-image
+
+      - name: Load image
+        run: podman load -i documents-image.tar
+
+      - name: Log in to ghcr.io
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | podman login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Tag and push (release tag + rolling latest + immutable date tag)
+        run: |
+          TAG_NAME="${GITHUB_REF_NAME:-}"
+          DATE_TAG=$(date -u +%Y-%m-%d)
+          if [ "${GITHUB_REF_TYPE:-}" = "tag" ] && [ -n "$TAG_NAME" ]; then
+            podman tag documents-image "${IMAGE_NAME}:${TAG_NAME}"
+            podman push "${IMAGE_NAME}:${TAG_NAME}"
+          fi
+          podman tag documents-image "${IMAGE_NAME}:${DATE_TAG}"
+          podman tag documents-image "${IMAGE_NAME}:latest"
+          podman push "${IMAGE_NAME}:${DATE_TAG}"
+          podman push "${IMAGE_NAME}:latest"
+
+      - name: Verify anonymous pull
+        run: |
+          podman logout ghcr.io || true
+          podman rmi "${IMAGE_NAME}:latest" || true
+          podman pull "${IMAGE_NAME}:latest"

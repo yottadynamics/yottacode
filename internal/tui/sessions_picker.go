@@ -13,11 +13,11 @@ import (
 	"github.com/yottadynamics/yottacode/internal/session"
 )
 
-// sessionsRecentLimit caps the picker list to the N most recent saved
-// sessions. The picker is for the just-here-recently case; reaching
-// further back is /recall's job. The list footer tells users this so
-// older sessions don't feel hidden.
-const sessionsRecentLimit = 15
+// sessionsPageSize is both the backend page size and the number of visible rows
+// for /sessions and /inspect browsing. Fetching one page at a time keeps large
+// session stores from blocking the picker while still giving PgUp/PgDn a simple
+// mental model: one keypress equals one saved-session page.
+const sessionsPageSize = 15
 
 // Session-row layout. sessionsLabelWidth is the id/name column; the gist
 // column takes what's left after the trailing metadata, clamped to
@@ -40,8 +40,9 @@ const (
 // recent-sessions list. Resume drops directly into a textinput that
 // accepts an id-or-name reference (the same shape the cobra
 // `yottacode sessions resume <ref>` subcommand takes). Rename and
-// Export each drop into a list sub-picker, then a textinput. Esc pops
-// back one level at every step.
+// Export each drop into a list sub-picker, then a textinput. Export
+// chooses Markdown transcript vs structured JSONL log from the output
+// extension. Esc pops back one level at every step.
 type sessionsPickerMode int
 
 const (
@@ -73,8 +74,13 @@ type sessionsPickerState struct {
 	// enters a list mode. We refresh on every transition rather than
 	// only on open so a freshly-renamed entry shows up if the user
 	// goes Rename → menu → Resume in the same picker session.
-	sessions   []session.SessionInfo
-	listCursor int
+	sessions            []session.SessionInfo
+	listCursor          int
+	listOffset          int
+	listPage            int
+	listHasPrev         bool
+	listHasNext         bool
+	listIncludeArchived bool
 
 	// picked is the row the user confirmed in a list sub-picker;
 	// rename/export forms read it to know which session to mutate.
@@ -111,7 +117,7 @@ func (m *Model) openSessionsPicker() {
 			{Label: "Load", Subtitle: "pick a session from the recent list", Action: sessionsLoadListMode},
 			{Label: "Resume", Subtitle: "type a session id or name to resume directly", Action: sessionsResumeInputMode},
 			{Label: "Rename", Subtitle: "label the current or another session for quick reference", Action: sessionsRenameListMode},
-			{Label: "Export", Subtitle: "write a session out as a Markdown transcript", Action: sessionsExportListMode},
+			{Label: "Export", Subtitle: "write .md transcripts or .jsonl structured logs", Action: sessionsExportListMode},
 		},
 		activeID: m.sess.ID,
 	}
@@ -157,6 +163,7 @@ func (m Model) updateSessionsPicker(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 			if p.listCursor > 0 {
 				p.listCursor--
 			}
+			p.ensureListCursorVisible()
 		}
 		return m, nil
 	case tea.KeyDown:
@@ -169,6 +176,31 @@ func (m Model) updateSessionsPicker(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 			if p.listCursor < len(p.sessions)-1 {
 				p.listCursor++
 			}
+			p.ensureListCursorVisible()
+		}
+		return m, nil
+	case tea.KeyPgUp:
+		switch p.mode {
+		case sessionsLoadListMode, sessionsRenameListMode, sessionsExportListMode:
+			if p.listCursor == 0 && p.listHasPrev {
+				p.loadListPage(p.listIncludeArchived, p.listPage-1)
+				p.listCursor = max(0, len(p.sessions)-1)
+				p.ensureListCursorVisible()
+				return m, nil
+			}
+			p.listCursor = max(0, p.listCursor-sessionsPageSize)
+			p.ensureListCursorVisible()
+		}
+		return m, nil
+	case tea.KeyPgDown:
+		switch p.mode {
+		case sessionsLoadListMode, sessionsRenameListMode, sessionsExportListMode:
+			if p.listCursor >= len(p.sessions)-1 && p.listHasNext {
+				p.loadListPage(p.listIncludeArchived, p.listPage+1)
+				return m, nil
+			}
+			p.listCursor = min(len(p.sessions)-1, p.listCursor+sessionsPageSize)
+			p.ensureListCursorVisible()
 		}
 		return m, nil
 	case tea.KeyEnter:
@@ -231,8 +263,8 @@ func (m Model) dispatchSessionsMenu() (Model, tea.Cmd) {
 		return m.enterSessionsResumeInput()
 	}
 	// Rename is the one list action an archive can't serve — see
-	// loadRecentSessions.
-	p.sessions = loadRecentSessions(item.Action != sessionsRenameListMode)
+	// loadSessionPage.
+	p.loadListPage(item.Action != sessionsRenameListMode, 0)
 	if len(p.sessions) == 0 {
 		m.sessionsPickerOpen = false
 		m.sessionsPicker = nil
@@ -241,6 +273,7 @@ func (m Model) dispatchSessionsMenu() (Model, tea.Cmd) {
 	}
 	p.mode = item.Action
 	p.listCursor = 0
+	p.listOffset = 0
 	// Default the cursor to the running session for Rename — most
 	// "name this session" intents target the one you're in. Load and
 	// Export start at the top of the list (newest first), since
@@ -257,28 +290,45 @@ func (m Model) dispatchSessionsMenu() (Model, tea.Cmd) {
 	return m, nil
 }
 
-// loadRecentSessions returns up to sessionsRecentLimit metadata rows,
-// newest first. Wraps session.ListWith with the truncation so callers
-// don't have to remember the cap. Returns nil on error or empty.
+// loadListPage refreshes one saved-session page for a list-mode picker. It asks
+// for one extra row as a cheap has-next probe, but keeps only the visible page.
+func (p *sessionsPickerState) loadListPage(includeArchived bool, page int) {
+	if page < 0 {
+		page = 0
+	}
+	rows, hasNext := loadSessionPage(includeArchived, page)
+	p.sessions = rows
+	p.listCursor = 0
+	p.listOffset = 0
+	p.listPage = page
+	p.listHasPrev = page > 0
+	p.listHasNext = hasNext
+	p.listIncludeArchived = includeArchived
+}
+
+// loadSessionPage returns one newest-first page of metadata. includeArchived is
+// per-mode rather than global, because an archive is only meaningful for some
+// actions:
 //
-// includeArchived is per-mode rather than global, because an archive is only
-// meaningful for some actions:
-//
-//   - Load / Export: yes. The archive is frequently the only surviving copy
+//   - Load / Export / Inspect: yes. The archive is frequently the only surviving copy
 //     of pre-compaction history, so both opening and exporting it are the
 //     point of surfacing it at all.
 //   - Rename: no. An archive has no persisted Name field to set — renaming
 //     one resolves the id through loadSnapshot and would write a brand-new
 //     duplicate session instead of labelling anything.
-func loadRecentSessions(includeArchived bool) []session.SessionInfo {
-	all, err := session.ListWith(session.ListOptions{IncludeArchived: includeArchived})
+func loadSessionPage(includeArchived bool, page int) ([]session.SessionInfo, bool) {
+	if page < 0 {
+		page = 0
+	}
+	all, err := session.ListPage(session.ListOptions{IncludeArchived: includeArchived}, page*sessionsPageSize, sessionsPageSize+1)
 	if err != nil {
-		return nil
+		return nil, false
 	}
-	if len(all) > sessionsRecentLimit {
-		all = all[:sessionsRecentLimit]
+	hasNext := len(all) > sessionsPageSize
+	if hasNext {
+		all = all[:sessionsPageSize]
 	}
-	return all
+	return all, hasNext
 }
 
 // commitSessionsLoad loads the picked session into the running
@@ -483,7 +533,7 @@ func (m Model) enterSessionsExportInput() (Model, tea.Cmd) {
 	chosen := p.sessions[p.listCursor]
 	p.picked = &chosen
 	in := textinput.New()
-	in.Placeholder = "path/to/transcript.md"
+	in.Placeholder = "path/to/transcript.md or path/to/log.jsonl"
 	in.SetValue(defaultExportPath(m.cwd, chosen))
 	in.Prompt = ""
 	in.CharLimit = 256
@@ -513,10 +563,26 @@ func defaultExportPath(cwd string, info session.SessionInfo) string {
 	return filepath.Join(cwd, base+".md")
 }
 
-// commitSessionsExport loads the picked session (or reuses the
-// in-memory one when picking the active session), renders to
-// markdown, and writes to the path the user typed. Relative paths
-// are resolved against cwd.
+type sessionExportFormat int
+
+const (
+	sessionExportMarkdown sessionExportFormat = iota
+	sessionExportJSONL
+)
+
+// sessionExportFormatForPath keeps /sessions Export as one flow while making
+// the artifact explicit: .jsonl writes the structured log, everything else
+// remains the long-standing Markdown transcript default.
+func sessionExportFormatForPath(path string) sessionExportFormat {
+	if strings.EqualFold(filepath.Ext(path), ".jsonl") {
+		return sessionExportJSONL
+	}
+	return sessionExportMarkdown
+}
+
+// commitSessionsExport loads the picked session (or reuses the in-memory one
+// when picking the active session), renders the requested format, and writes to
+// the path the user typed. Relative paths are resolved against cwd.
 func (m Model) commitSessionsExport() (Model, tea.Cmd) {
 	p := m.sessionsPicker
 	if p == nil || p.picked == nil {
@@ -542,20 +608,27 @@ func (m Model) commitSessionsExport() (Model, tea.Cmd) {
 		}
 		sess = loaded
 	}
-	md := session.ExportMarkdown(sess)
-	if err := os.WriteFile(path, []byte(md), 0o644); err != nil {
+
+	format := sessionExportFormatForPath(path)
+	body := session.ExportMarkdown(sess)
+	label := "transcript"
+	if format == sessionExportJSONL {
+		body = session.ExportJSONL(sess)
+		label = "log"
+	}
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
 		p.inputErr = err.Error()
 		return m, nil
 	}
 	m.sessionsPickerOpen = false
 	m.sessionsPicker = nil
-	m.appendLine(styleAuto.Render(SysMsg(SysSuccess, "export", "wrote transcript", fmt.Sprintf("%d bytes", len(md)), path)))
+	m.appendLine(styleAuto.Render(SysMsg(SysSuccess, "export", "wrote "+label, fmt.Sprintf("%d bytes", len(body)), path)))
 	return m, nil
 }
 
-// renderSessionsPicker dispatches to the per-mode renderer and
-// stitches the footer. Mirrors renderProviderPicker's layout so the
-// two pickers feel like the same UI.
+// renderSessionsPicker dispatches to the per-mode renderer and stitches the
+// footer. Mirrors renderProviderPicker's layout so the two pickers feel like
+// the same UI.
 func renderSessionsPicker(p *sessionsPickerState, width int, hits ...*pickerHits) string {
 	var h *pickerHits
 	if len(hits) > 0 {
@@ -589,11 +662,11 @@ func renderSessionsPicker(p *sessionsPickerState, width int, hits ...*pickerHits
 		footerText = "↵ save · esc back"
 	case sessionsExportListMode:
 		body = renderSessionsList(p, "Export session",
-			"Pick a session to export as Markdown. The current session is marked ✓.", width, h)
+			"Pick a session to export. Use .md for transcript or .jsonl for the structured log. The current session is marked ✓.", width, h)
 		footerText = "↵ export · esc back · ↑↓ navigate"
 	case sessionsExportInputMode:
 		body = renderSessionsExportInput(p, width)
-		footerText = "↵ write · esc back"
+		footerText = "↵ write · .md transcript · .jsonl log · esc back"
 	default:
 		body = styleEmpty.Render("(unknown picker state)")
 		footerText = "esc cancel"
@@ -621,9 +694,8 @@ func renderSessionsMenu(p *sessionsPickerState, width int, h *pickerHits) string
 	return strings.TrimRight(b.String(), "\n")
 }
 
-// loadListDescription tweaks the description string to mention the
-// summarized toggle so users discover it without having to read the
-// footer's `s` hint.
+// loadListDescription tweaks the description string to mention the summarized
+// toggle so users discover it without having to read the footer's `s` hint.
 func loadListDescription(p *sessionsPickerState) string {
 	desc := "Pick a session to load. Press `s` to toggle --summarized for large sessions."
 	if p.summarized {
@@ -632,11 +704,21 @@ func loadListDescription(p *sessionsPickerState) string {
 	return desc
 }
 
-// renderSessionsList draws the latest-N session table for resume,
-// rename, and export. Each row: id-or-name (label column) · model ·
-// N msgs · relative age. The footer note "showing the N most
-// recent" sits under the rows so users know /recall is the path for
-// older sessions.
+func (p *sessionsPickerState) ensureListCursorVisible() {
+	if p.listCursor < p.listOffset {
+		p.listOffset = p.listCursor
+	}
+	if p.listCursor >= p.listOffset+sessionsPageSize {
+		p.listOffset = p.listCursor - sessionsPageSize + 1
+	}
+	maxOffset := max(len(p.sessions)-sessionsPageSize, 0)
+	p.listOffset = min(max(p.listOffset, 0), maxOffset)
+}
+
+// renderSessionsList draws the latest-N session table for resume, rename, and
+// export. Each row: id-or-name (label column) · model · N msgs · relative age.
+// The footer note "showing the N most recent" sits under the rows so users know
+// /recall is the path for older sessions.
 func renderSessionsList(p *sessionsPickerState, title, description string, width int, h *pickerHits) string {
 	var b strings.Builder
 	b.WriteString(renderMenuHeader(title, description, width))
@@ -646,7 +728,10 @@ func renderSessionsList(p *sessionsPickerState, title, description string, width
 		return strings.TrimRight(b.String(), "\n")
 	}
 	layout := sessionsRowLayout(p.sessions, width)
-	for i, s := range p.sessions {
+	p.ensureListCursorVisible()
+	end := min(p.listOffset+sessionsPageSize, len(p.sessions))
+	for i := p.listOffset; i < end; i++ {
+		s := p.sessions[i]
 		row := strings.Count(b.String(), "\n")
 		h.row(row, i)
 		b.WriteString(renderMenuItem(menuItemOpts{
@@ -660,15 +745,27 @@ func renderSessionsList(p *sessionsPickerState, title, description string, width
 	}
 	b.WriteString("\n")
 	b.WriteString(styleMeta.Render(
-		fmt.Sprintf("  showing the %d most recent · use /recall <query> to search older sessions",
-			len(p.sessions))))
+		fmt.Sprintf("  page %d · showing %d-%d · %s · PgUp/PgDn page · /recall searches all sessions",
+			p.listPage+1, p.listPage*sessionsPageSize+p.listOffset+1, p.listPage*sessionsPageSize+end, pageAvailability(p.listHasPrev, p.listHasNext))))
 	return strings.TrimRight(b.String(), "\n")
 }
 
-// sessionPickerLabel is the left-column identifier. Prefer Name when
-// set (friendlier — matches how the user thinks of the session); fall
-// back to the timestamp id. Long names truncate via the LabelWidth
-// pass in renderMenuItem.
+func pageAvailability(hasPrev, hasNext bool) string {
+	switch {
+	case hasPrev && hasNext:
+		return "prev/next available"
+	case hasPrev:
+		return "prev available"
+	case hasNext:
+		return "next available"
+	default:
+		return "end of list"
+	}
+}
+
+// sessionPickerLabel is the left-column identifier. Prefer Name when set
+// (friendlier — matches how the user thinks of the session); fall back to the
+// timestamp id. Long names truncate via the LabelWidth pass in renderMenuItem.
 func sessionPickerLabel(s session.SessionInfo) string {
 	if s.Name != "" {
 		return s.Name
@@ -682,6 +779,7 @@ func sessionPickerLabel(s session.SessionInfo) string {
 	}
 	return s.ID
 }
+
 
 // sessionPickerDesc is the right-hand column: the session's one-line gist
 // followed by model · N msgs · age. Age is computed from
@@ -834,7 +932,7 @@ func renderSessionsExportInput(p *sessionsPickerState, width int) string {
 		})
 	}
 	b.WriteString(renderMenuHeader(title,
-		"Confirm or edit the path. Relative paths resolve against the current directory.", width))
+		"Confirm or edit the path. Use .md for transcript or .jsonl for the structured log.", width))
 	b.WriteString("\n")
 	if p.inputErr != "" {
 		b.WriteString(styleError.Render("✗ " + p.inputErr))

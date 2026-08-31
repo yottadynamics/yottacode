@@ -33,7 +33,7 @@ func TestExecuteToolCall_RecoversPanic(t *testing.T) {
 	events := make(chan Event, 16)
 	decisions := make(chan Decision, 1)
 
-	out, _, denied, err := executeToolCall(
+	out, _, denied, _, err := executeToolCall(
 		context.Background(), cfg,
 		adapter.ToolCall{ID: "1", Name: "boom", ArgsJSON: "{}"},
 		events, decisions,

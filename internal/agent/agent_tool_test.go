@@ -91,6 +91,23 @@ func TestAgentTool_ForegroundApprovalUnderGate_NoDeadlock(t *testing.T) {
 	}
 }
 
+// TestIsReadOnlyTool_Classification confirms the exported IsReadOnlyTool
+// function correctly classifies canonical read-only and mutating tools.
+func TestIsReadOnlyTool_Classification(t *testing.T) {
+	// Read-only tools must return true.
+	for _, name := range []string{"read_file", "grep", "glob", "lsp_diagnostics", "git_branch_status", "list_git_changed_files"} {
+		if !IsReadOnlyTool(name) {
+			t.Errorf("IsReadOnlyTool(%q) = false, want true", name)
+		}
+	}
+	// Mutating tools must return false.
+	for _, name := range []string{"edit_file", "write_file", "run_bash", "run_tests", "git_commit", "apply_diff"} {
+		if IsReadOnlyTool(name) {
+			t.Errorf("IsReadOnlyTool(%q) = true, want false", name)
+		}
+	}
+}
+
 // TestBuiltinRoles_DispatchClassification asserts the built-in roles classify
 // the way dispatch relies on: implement/test/docs are write-capable (→ isolated
 // worktree) and carry dispatch background defaults; review is read-only
@@ -292,27 +309,46 @@ func TestStandaloneBackgroundPolicyIsExplicitReadOnlyAllowlist(t *testing.T) {
 
 func TestDispatchBackgroundPolicyIsExplicitAllowlist(t *testing.T) {
 	write := &mockTool{name: "write_file", requiresApproval: true}
-	decision, note, handled := dispatchBackgroundApprovalPolicy(write, `{}`)
+	decision, note, handled := dispatchBackgroundApprovalPolicy(write, `{}`, false)
 	if !handled || decision != AllowOnce || !strings.Contains(note, "owned-file scoped") {
 		t.Fatalf("write_file should be allowed once, got decision=%v note=%q handled=%v", decision, note, handled)
 	}
 
 	read := &mockTool{name: "read_file"}
-	decision, note, handled = dispatchBackgroundApprovalPolicy(read, `{}`)
+	decision, note, handled = dispatchBackgroundApprovalPolicy(read, `{}`, false)
 	if !handled || decision != AllowOnce || !strings.Contains(note, "read-only allowlist") {
 		t.Fatalf("read_file should be explicitly allowed by dispatch background policy, got decision=%v note=%q handled=%v", decision, note, handled)
 	}
 
 	gitRead := &mockTool{name: "git_diff_files"}
-	decision, note, handled = dispatchBackgroundApprovalPolicy(gitRead, `{}`)
+	decision, note, handled = dispatchBackgroundApprovalPolicy(gitRead, `{}`, false)
 	if !handled || decision != Deny || !strings.Contains(note, "not auto-allowed") {
 		t.Fatalf("git_diff_files should be denied by explicit unattended allowlist, got decision=%v note=%q handled=%v", decision, note, handled)
 	}
 
 	fetch := &mockTool{name: "fetch_url"}
-	decision, note, handled = dispatchBackgroundApprovalPolicy(fetch, `{}`)
+	decision, note, handled = dispatchBackgroundApprovalPolicy(fetch, `{}`, false)
 	if !handled || decision != Deny || !strings.Contains(note, "not auto-allowed") {
 		t.Fatalf("fetch_url should be denied by unattended network policy, got decision=%v note=%q handled=%v", decision, note, handled)
+	}
+
+	// create_document is explicitly denied for unattended workers even
+	// though xlsx/pptx generation is native: every format writes an output
+	// document, and docx/pdf may still shell out through pandoc.
+
+	createDoc := &mockTool{name: "create_document", requiresApproval: true}
+	decision, note, handled = dispatchBackgroundApprovalPolicy(createDoc, `{}`, false)
+	if !handled || decision != Deny || !strings.Contains(note, "create_document") || !strings.Contains(note, "needs a human") {
+		t.Fatalf("create_document should be explicitly denied with a specific reason, got decision=%v note=%q handled=%v", decision, note, handled)
+	}
+
+	// create_document stays denied even when this worker IS sandboxed —
+	// sandboxing only relaxes run_bash/run_tests (see below); create_document
+	// is denied for a different reason ("needs a human"), unrelated to shell
+	// confinement.
+	decision, note, handled = dispatchBackgroundApprovalPolicy(createDoc, `{}`, true)
+	if !handled || decision != Deny || !strings.Contains(note, "needs a human") {
+		t.Fatalf("create_document should stay denied even when sandboxed, got decision=%v note=%q handled=%v", decision, note, handled)
 	}
 }
 

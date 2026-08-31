@@ -1831,8 +1831,8 @@ func renderQueueNoticeLine(kind, detail, footer string, termWidth int) string {
 func renderCompactionNoticeLine(reduction, snapshotPath string, snapshotErr error, termWidth int) string {
 	_ = termWidth
 	details := []string{reduction, "full history saved"}
-	if recall := recallCommandForSnapshot(snapshotPath); recall != "" {
-		details = append(details, recall)
+	if detail := snapshotResumeHint(snapshotPath); detail != "" {
+		details = append(details, detail)
 	}
 	if snapshotErr != nil {
 		details = append(details, "snapshot failed: "+snapshotErr.Error())

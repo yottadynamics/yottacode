@@ -32,7 +32,7 @@ func TestRenderHelpPanel_LongSkillDescriptionWrapsWithinWidth(t *testing.T) {
 	}
 
 	got := renderHelpPanel(m)
-	width := m.popupWidth()
+	width := m.helpPopupContentWidth()
 	for _, line := range strings.Split(got, "\n") {
 		if w := runeLen(stripANSI(line)); w > width {
 			t.Errorf("line exceeds popup width %d (got %d): %q", width, w, line)
@@ -52,7 +52,7 @@ func TestRenderHelpPanel_DividerMatchesBoxWidth(t *testing.T) {
 	}
 
 	rendered := renderHelpPanel(m)
-	box := popupBox(rendered)
+	box := popupBox(rendered, m.helpPopupWidth())
 	boxLines := strings.Split(box, "\n")
 	if len(boxLines) < 2 {
 		t.Fatalf("popup box has too few lines: %d", len(boxLines))
@@ -66,6 +66,72 @@ func TestRenderHelpPanel_DividerMatchesBoxWidth(t *testing.T) {
 		if got := runeLen(stripANSI(line)) + 4; got != boxWidth {
 			t.Errorf("divider width (%d, +border/padding) does not match the box's own width (%d): %q", got, boxWidth, line)
 		}
+	}
+}
+
+func TestRenderHelpPanel_UsesExpandedHelpPopupWidth(t *testing.T) {
+	m := newTestModel(t)
+	m, _ = applyMsg(m, tea.WindowSizeMsg{Width: 160, Height: 40})
+
+	rendered := renderHelpPanel(m)
+	want := m.helpPopupContentWidth()
+	if m.helpPopupWidth() <= m.popupWidth() {
+		t.Fatalf("test setup: help popup width should exceed generic popup width, got help=%d generic=%d", m.helpPopupWidth(), m.popupWidth())
+	}
+
+	for _, line := range strings.Split(rendered, "\n") {
+		plain := stripANSI(line)
+		if strings.Contains(plain, "─") && runeLen(plain) != want {
+			t.Fatalf("help divider should span expanded help width %d, got %d: %q", want, runeLen(plain), line)
+		}
+	}
+}
+
+func TestHelpPopup_PageDownScrollsInsteadOfClosing(t *testing.T) {
+	m := newTestModel(t)
+	m.height = 8
+	m, _ = cmdHelp(m, nil)
+	if !m.helpOpen {
+		t.Fatal("test setup: help should be open")
+	}
+
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyPgDown})
+	if !m.helpOpen {
+		t.Fatal("PgDn should scroll the help popup, not close it")
+	}
+	if m.helpScrollOffset == 0 && m.helpMaxScrollOffset() > 0 {
+		t.Fatal("PgDn should advance the help scroll offset")
+	}
+
+	m, _ = applyMsg(m, tea.KeyPressMsg{Text: "x"})
+	if m.helpOpen {
+		t.Fatal("non-scroll keys should still dismiss the help popup")
+	}
+}
+
+func TestHelpPopup_CanScrollToBottom(t *testing.T) {
+	m := newTestModel(t)
+	m.height = 8
+	m, _ = cmdHelp(m, nil)
+	if maxOffset := m.helpMaxScrollOffset(); maxOffset <= 0 {
+		t.Fatalf("test setup: help should require scrolling, maxOffset=%d", maxOffset)
+	}
+
+	for i := 0; i < 100; i++ {
+		m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyPgDown})
+	}
+	if got, want := m.helpScrollOffset, m.helpMaxScrollOffset(); got != want {
+		t.Fatalf("repeated PgDn should clamp at bottom offset; got %d want %d", got, want)
+	}
+	lastLine := strings.Split(m.helpPanel, "\n")[strings.Count(m.helpPanel, "\n")]
+	if !strings.Contains(m.windowedHelpPanel(), lastLine) {
+		t.Fatalf("bottom window should include final help line %q; got:\n%s", lastLine, m.windowedHelpPanel())
+	}
+
+	m.helpScrollOffset = 0
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnd})
+	if got, want := m.helpScrollOffset, m.helpMaxScrollOffset(); got != want {
+		t.Fatalf("End should jump to bottom offset; got %d want %d", got, want)
 	}
 }
 
@@ -125,6 +191,42 @@ func TestSlash_HelpListsAllCommands(t *testing.T) {
 	}
 	if !strings.Contains(content, "──") || !strings.Contains(content, "Common") || !strings.Contains(content, "Workflow") || !strings.Contains(content, "Git") {
 		t.Errorf("/help should use grouped submenu chrome: %q", content)
+	}
+}
+
+// TestSlash_HelpGroupBoundariesMatchRegistry is a regression test for a
+// near-miss: renderHelpPanel partitions allSlash into named groups with
+// hardcoded slice index literals (allSlash[27:39] etc., see the calls in
+// this file's renderHelpPanel). Inserting or removing any command before
+// the end of the registry silently shifts every later boundary — the
+// compiler can't catch it, since the ranges are just integers, so a
+// command quietly renders under the wrong group heading. /yolo is the
+// registry's sole "Mode" entry and /help + /quit are "Meta" — if the
+// boundaries drift, one of them lands in the wrong group's text region.
+func TestSlash_HelpGroupBoundariesMatchRegistry(t *testing.T) {
+	m, _ := typeAndEnter(t, newTestModel(t), "/help")
+	content := m.helpPanel
+
+	modeIdx := strings.Index(content, "Mode")
+	metaIdx := strings.Index(content, "Meta")
+	if modeIdx == -1 || metaIdx == -1 {
+		t.Fatalf("expected Mode and Meta group headers in help output:\n%s", content)
+	}
+	if metaIdx < modeIdx {
+		t.Fatalf("expected Meta to render after Mode; got Mode=%d Meta=%d", modeIdx, metaIdx)
+	}
+	if yoloIdx := strings.Index(content, "/yolo"); yoloIdx < modeIdx || yoloIdx > metaIdx {
+		t.Errorf("/yolo must render inside the Mode group (between its header at %d and Meta's at %d); got %d", modeIdx, metaIdx, yoloIdx)
+	}
+	// /quit only ever appears in Meta. /help also appears once in the
+	// "Common" quick-reference list above every group (by design — see
+	// renderHelpCommonSection) — its LAST occurrence is the one that
+	// must land inside Meta.
+	if idx := strings.Index(content, "/quit"); idx < metaIdx {
+		t.Errorf("/quit must render inside the Meta group (after its header at %d); got %d", metaIdx, idx)
+	}
+	if idx := strings.LastIndex(content, "/help"); idx < metaIdx {
+		t.Errorf("/help's grouped entry must render inside the Meta group (after its header at %d); got %d", metaIdx, idx)
 	}
 }
 
@@ -1134,6 +1236,49 @@ func TestSessionsPicker_ExportFlow(t *testing.T) {
 	}
 }
 
+// TestSessionsPicker_ExportJSONLByExtension verifies /sessions Export writes the
+// structured event log when the user chooses a .jsonl output path.
+func TestSessionsPicker_ExportJSONLByExtension(t *testing.T) {
+	m := newTestModel(t)
+	m.sess.Messages = append(m.sess.Messages,
+		adapter.Message{Role: adapter.RoleUser, Content: "hello"},
+		adapter.Message{Role: adapter.RoleAssistant, Content: "world"},
+	)
+	if err := m.sess.Save(); err != nil {
+		t.Fatalf("seed save: %v", err)
+	}
+	tmp := t.TempDir()
+	m.cwd = tmp
+
+	m, _ = typeAndEnter(t, m, "/sessions")
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyDown})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyDown})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyDown})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	for i, info := range m.sessionsPicker.sessions {
+		if info.ID == m.sess.ID {
+			m.sessionsPicker.listCursor = i
+			break
+		}
+	}
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter})
+
+	out := filepath.Join(tmp, "out.jsonl")
+	m.sessionsPicker.input.SetValue(out)
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	contents, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatalf("export log not written: %v", err)
+	}
+	body := string(contents)
+	if !strings.Contains(body, `"type":"session"`) || !strings.Contains(body, `"type":"user"`) {
+		t.Fatalf("exported JSONL missing structured records:\n%s", body)
+	}
+	if !strings.Contains(m.transcript.String(), "✓ export · wrote log") {
+		t.Errorf("export should report log success: %q", m.transcript.String())
+	}
+}
+
 // TestSessionsPicker_LoadSummarizedToggle verifies pressing `s`
 // while the Load list has focus flips the summarized state.
 func TestSessionsPicker_LoadSummarizedToggle(t *testing.T) {
@@ -1396,7 +1541,7 @@ func TestPalette_TabCompletes(t *testing.T) {
 	}
 }
 
-func TestPalette_MouseHoverMovesIndex(t *testing.T) {
+func TestPalette_MouseHoverIsIgnored(t *testing.T) {
 	m := newTestModel(t)
 	m, _ = applyMsg(m, tea.WindowSizeMsg{Width: 80, Height: 24})
 	m, _ = applyMsg(m, tea.KeyPressMsg{Text: "/"})
@@ -1417,12 +1562,34 @@ func TestPalette_MouseHoverMovesIndex(t *testing.T) {
 	}
 
 	m, _ = applyMsg(m, tea.MouseMotionMsg{X: 4, Y: paletteTop + 5})
-	if got := m.paletteIndex; got != 2 {
-		t.Fatalf("hover over third command row set paletteIndex = %d, want 2", got)
+	if got := m.paletteIndex; got != 0 {
+		t.Fatalf("hover over third command row set paletteIndex = %d, want unchanged 0", got)
 	}
 }
 
-func TestPalette_MouseClickRunsMainSlashCommand(t *testing.T) {
+func TestPalette_MouseHoverCurrentRowIsNoop(t *testing.T) {
+	m := newTestModel(t)
+	m, _ = applyMsg(m, tea.WindowSizeMsg{Width: 80, Height: 24})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Text: "/"})
+	if !m.paletteOpen {
+		t.Fatalf("palette should be open after typing '/'")
+	}
+
+	paletteTop := m.inlinePaletteTop()
+	beforeFiltered := m.paletteFiltered
+	m, cmd := applyMsg(m, tea.MouseMotionMsg{X: 4, Y: paletteTop + 3})
+	if cmd != nil {
+		t.Fatalf("hover should not trigger a command, got %T", cmd)
+	}
+	if got := m.paletteIndex; got != 0 {
+		t.Fatalf("hover over current command row set paletteIndex = %d, want 0", got)
+	}
+	if &m.paletteFiltered[0] != &beforeFiltered[0] {
+		t.Fatal("hovering the current slash row should not rebuild the filtered command slice")
+	}
+}
+
+func TestPalette_MouseClickIsIgnored(t *testing.T) {
 	m := newTestModel(t)
 	m, _ = applyMsg(m, tea.WindowSizeMsg{Width: 80, Height: 24})
 	m, _ = applyMsg(m, tea.KeyPressMsg{Text: "/"})
@@ -1432,12 +1599,15 @@ func TestPalette_MouseClickRunsMainSlashCommand(t *testing.T) {
 	target := 2 // /model is a visible no-args picker command near the top.
 
 	paletteTop := m.inlinePaletteTop()
-	m, _ = applyMsg(m, tea.MouseClickMsg{X: 4, Y: paletteTop + 3 + target})
-	if !m.modelPickerOpen || m.modelPicker == nil {
-		t.Fatalf("click should execute /model and open the model picker")
+	m, cmd := applyMsg(m, tea.MouseClickMsg{X: 4, Y: paletteTop + 3 + target})
+	if cmd != nil {
+		t.Fatalf("palette click should not produce commands, got %T", cmd)
 	}
-	if m.paletteOpen {
-		t.Fatal("palette should close after click execution")
+	if m.modelPickerOpen || m.modelPicker != nil {
+		t.Fatalf("click should not execute /model or open the model picker")
+	}
+	if !m.paletteOpen {
+		t.Fatal("palette should stay open after ignored click")
 	}
 }
 

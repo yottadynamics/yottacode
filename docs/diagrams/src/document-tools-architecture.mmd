@@ -1,0 +1,83 @@
+---
+title: Document tools — architecture and trust boundaries
+---
+flowchart LR
+    %% Author: YottaDynamics | Scope: current document ingestion/generation implementation
+    %% Purpose: Explain the Python helper, sandbox, and pure-Go boundaries added for document tools.
+
+    User([User / model tool call])
+
+    subgraph AgentBoundary[internal/agent — tool boundary]
+        ReadDoc[ReadDocumentTool<br/>read_document]
+        CreateDoc[CreateDocumentTool<br/>create_document]
+        ValidateRead[ValidateReadPath<br/>credential deny-list]
+        ValidateWrite[ValidateWritePath<br/>workspace / allow-path policy]
+        Sandbox[Sandbox interface<br/>HostSandbox or PodmanSandbox]
+        HelperResolve[resolvePyHelperScript<br/>podman path or host cache]
+    end
+
+    subgraph DocumentsCore[internal/documents — content library]
+        Registry[Registry<br/>format dispatch]
+        Native[Native extract/generate<br/>csv · json · html · xlsx · pptx · docx fallback]
+        PDF[PDFExtractor<br/>pdftotext/pdfinfo]
+        DocAST[DocAST renderer<br/>Markdown for pandoc]
+        PySeams[CommandRunner + ScriptResolver<br/>interfaces only]
+    end
+
+    subgraph PythonHelpers[Python helper drivers]
+        FillDocx[fill_docx_template.py<br/>python-docx]
+        ExtractTables[extract_pdf_tables.py<br/>pdfplumber]
+    end
+
+    subgraph Execution[Execution environment]
+        Host[Host PATH<br/>direct subprocess]
+        Podman[Podman session container<br/>configured image]
+        DefaultUBI[Default UBI sandbox image<br/>general-purpose, document deps may be missing]
+        DocsImage[yottacode-documents image<br/>pandoc · weasyprint · poppler · python libs]
+    end
+
+    subgraph Storage[Local files]
+        SourceDocs[Input documents/images/templates]
+        OutputDocs[Generated output files]
+        Cache[~/.yottacode/cache/doc-helpers<br/>host materialized scripts, 0644]
+    end
+
+    User -->|read file| ReadDoc
+    User -->|generate file, approval required| CreateDoc
+
+    ReadDoc -->|input path| ValidateRead --> SourceDocs
+    CreateDoc -->|output path| ValidateWrite --> OutputDocs
+    CreateDoc -->|image/template read paths| ValidateRead
+
+    ReadDoc --> Registry --> Native
+    ReadDoc --> Registry --> PDF
+    CreateDoc -->|xlsx/pptx native| Native
+    CreateDoc -->|docx/pdf blocks| DocAST
+
+    PDF -->|subprocess command| PySeams
+    DocAST -->|pandoc command| Sandbox
+    CreateDoc -->|template mode| HelperResolve --> FillDocx
+    PDF -->|optional table tier| HelperResolve --> ExtractTables
+
+    HelperResolve -->|host sandbox| Cache
+    HelperResolve -->|podman sandbox| DocsImage
+
+    PySeams --> Sandbox
+    Sandbox -->|nil / host| Host
+    Sandbox -->|podman| Podman
+    Podman --> DefaultUBI
+    Podman --> DocsImage
+
+    FillDocx -->|runs through Sandbox| Host
+    FillDocx -->|runs through Sandbox| Podman
+    ExtractTables -->|runs through Sandbox| Host
+    ExtractTables -->|runs through Sandbox| Podman
+
+    classDef trust fill:#16231d,stroke:#6bf0ad,color:#e8fff2;
+    classDef seam fill:#20211a,stroke:#f5d76e,color:#fff7cf;
+    classDef risk fill:#2a1717,stroke:#ff7a7a,color:#ffe8e8;
+    classDef ext fill:#18202b,stroke:#8ab4ff,color:#edf4ff;
+    class AgentBoundary,DocumentsCore trust;
+    class PySeams,HelperResolve seam;
+    class DefaultUBI risk;
+    class Host,Podman,DocsImage,PythonHelpers,Storage ext;

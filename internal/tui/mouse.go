@@ -5,26 +5,20 @@ import (
 	"charm.land/lipgloss/v2"
 )
 
-// popupOpen reports whether any decision modal or picker popup is
-// currently intercepting input. anyOverlayOpen (model.go) already covers
-// every picker/panel flag activePopupBody's branches key off of; the
-// three additional flags here (awaitingApproval/awaitingPathTrust/
-// loopExitConfirmOpen) are deliberately kept OUT of anyOverlayOpen
-// itself (it has its own callers/tests with a narrower meaning) rather
-// than widening that function for this. All three now have real
-// per-surface click handling (handleApprovalModalClick,
-// handlePathTrustModalClick, handleLoopExitConfirmClick) — clicking
-// blank chrome on any of them still no-ops, same as it does on the
-// keyboard side for keys a picker doesn't bind.
+// popupOpen reports whether any decision modal or picker popup is currently
+// intercepting keyboard input. anyOverlayOpen (model.go) already covers every
+// picker/panel flag activePopupBody's branches key off of; the additional
+// modal flags here are deliberately kept OUT of anyOverlayOpen itself because
+// that helper has callers/tests with a narrower overlay meaning.
 func (m Model) popupOpen() bool {
 	return m.anyOverlayOpen() || m.awaitingApproval || m.awaitingPathTrust || m.loopExitConfirmOpen
 }
 
-// interactiveMouseOpen reports whether yottacode currently owns an explicit
-// interactive surface that benefits from mouse reporting. Normal conversation
-// mouse stays terminal-native so right-click menus, paste, and selection work.
+// interactiveMouseOpen is intentionally false: yottacode no longer enables
+// all-motion mouse handling for hover/click UI. The only supported mouse input
+// is the wheel, via the session transcript viewport after a conversation starts.
 func (m Model) interactiveMouseOpen() bool {
-	return m.popupOpen() || m.paletteOpen || m.filePaletteOpen
+	return false
 }
 
 // dismissStaticPopup closes whichever any-key-dismiss static panel is
@@ -35,15 +29,22 @@ func (m Model) interactiveMouseOpen() bool {
 func (m Model) dismissStaticPopup() Model {
 	m.cheatsheetOpen = false
 	m.loopListOpen = false
+	m.loopListScrollOffset = 0
 	m.usageOpen = false
 	m.usagePanel = ""
 	m.usageScrollOffset = 0
+	m.inspectOpen = false
+	m.inspectPanel = ""
+	m.inspectScrollOffset = 0
 	m.experimentalOpen = false
 	m.experimentalPanel = ""
+	m.experimentalScrollOffset = 0
 	m.helpOpen = false
 	m.helpPanel = ""
+	m.helpScrollOffset = 0
 	m.contextReportOpen = false
 	m.contextReportBody = ""
+	m.contextReportScrollOffset = 0
 	return m
 }
 
@@ -59,6 +60,73 @@ func popupCloseHit(box string, originX, originY, screenX, screenY int) bool {
 		return false
 	}
 	return screenX >= originX+bw-3 && screenX <= originX+bw-2
+}
+
+// handleScrollableStaticPopupClick routes mouse clicks inside scrollable static
+// panels. The popup stays open; clicks on the hint row act like its ↑/↓ labels.
+func (m Model) handleScrollableStaticPopupClick(box string, msg tea.MouseClickMsg) (Model, bool) {
+	if m.helpOpen {
+		if m.helpMaxScrollOffset() == 0 {
+			return m, true
+		}
+	} else {
+		if m.loopListOpen && m.loopListMaxScrollOffset() == 0 {
+			return m, false
+		}
+		if m.usageOpen && m.usageMaxScrollOffset() == 0 {
+			return m, false
+		}
+		if m.inspectOpen && m.inspectMaxScrollOffset() == 0 {
+			return m, false
+		}
+		if m.experimentalOpen && m.experimentalMaxScrollOffset() == 0 {
+			return m, false
+		}
+		if m.contextReportOpen && m.contextReportMaxScrollOffset() == 0 {
+			return m, false
+		}
+	}
+	if !m.loopListOpen && !m.usageOpen && !m.inspectOpen && !m.experimentalOpen && !m.helpOpen && !m.contextReportOpen {
+		return m, false
+	}
+	originX, originY := m.popupOrigin(box)
+	boxWidth := lipgloss.Width(box)
+	boxHeight := lipgloss.Height(box)
+	// The scroll hint lives on the final content row, just above the bottom
+	// border. Treat its left half as the ↑ affordance and its right half as ↓.
+	if msg.Y != originY+boxHeight-2 || msg.X < originX || msg.X >= originX+boxWidth {
+		return m, true
+	}
+	if msg.X-originX < boxWidth/2 {
+		return m.scrollPopupLines(-1), true
+	}
+	return m.scrollPopupLines(1), true
+}
+
+const popupMouseWheelLines = 3
+
+// scrollPopupLines applies keyboard-equivalent scrolling to whichever fixed
+// static popup is currently open, clamping at the popup content bounds.
+func (m Model) scrollPopupLines(delta int) Model {
+	if m.loopListOpen {
+		m.loopListScrollOffset = min(max(m.loopListScrollOffset+delta, 0), m.loopListMaxScrollOffset())
+	}
+	if m.usageOpen {
+		m.usageScrollOffset = min(max(m.usageScrollOffset+delta, 0), m.usageMaxScrollOffset())
+	}
+	if m.inspectOpen {
+		m.inspectScrollOffset = min(max(m.inspectScrollOffset+delta, 0), m.inspectMaxScrollOffset())
+	}
+	if m.experimentalOpen {
+		m.experimentalScrollOffset = min(max(m.experimentalScrollOffset+delta, 0), m.experimentalMaxScrollOffset())
+	}
+	if m.helpOpen {
+		m.helpScrollOffset = min(max(m.helpScrollOffset+delta, 0), m.helpMaxScrollOffset())
+	}
+	if m.contextReportOpen {
+		m.contextReportScrollOffset = min(max(m.contextReportScrollOffset+delta, 0), m.contextReportMaxScrollOffset())
+	}
+	return m
 }
 
 // handlePopupCloseClick centralizes the shared × affordance. It mirrors each
@@ -381,10 +449,8 @@ func (m Model) handleProviderPickerClick(msg tea.MouseClickMsg) (Model, tea.Cmd)
 }
 
 // handleSandboxPickerClick resolves a click on a sandbox-mode row to a
-// cursor move + synthesized Enter — same two-step preview/confirm flow
-// as the keyboard: the first click on a row previews it, a second click
-// on the (now-current) cursor row confirms and persists, matching
-// updateSandboxPicker's own p.confirming gate.
+// cursor move + immediate apply. The keyboard path does the same: Enter
+// persists the highlighted row, while Esc closes without changing config.
 func (m Model) handleSandboxPickerClick(msg tea.MouseClickMsg) (Model, tea.Cmd) {
 	if m.sandboxPicker == nil {
 		return m, nil
@@ -400,11 +466,8 @@ func (m Model) handleSandboxPickerClick(msg tea.MouseClickMsg) (Model, tea.Cmd) 
 	if !ok || kind != hitItem {
 		return m, nil
 	}
-	if sandboxMode(index) != m.sandboxPicker.cursor {
-		m.sandboxPicker.confirming = false
-	}
 	m.sandboxPicker.cursor = sandboxMode(index)
-	return m.updateSandboxPicker(tea.KeyPressMsg{Code: tea.KeyEnter})
+	return applySandboxMode(m, m.sandboxPicker.cursor)
 }
 
 // handlePlansPickerClick resolves a click on a saved-plan row to a
@@ -486,6 +549,28 @@ func (m Model) handleSessionsPickerClick(msg tea.MouseClickMsg) (Model, tea.Cmd)
 		return m, nil
 	}
 	return m.updateSessionsPicker(tea.KeyPressMsg{Code: tea.KeyEnter})
+}
+
+// handleInspectPickerClick resolves a click on a bare-/inspect row to the same
+// inspect action as Enter. The picker is navigation-only: clicking a row never
+// resumes or mutates the live conversation.
+func (m Model) handleInspectPickerClick(msg tea.MouseClickMsg) (Model, tea.Cmd) {
+	if m.inspectPicker == nil {
+		return m, nil
+	}
+	hits := &pickerHits{}
+	box := popupBox(renderInspectPicker(m.inspectPicker, m.popupWidth(), hits))
+	ox, oy := m.popupOrigin(box)
+	row, col, ok := bodyPoint(box, ox, oy, msg.X, msg.Y)
+	if !ok {
+		return m, nil
+	}
+	kind, index, _, ok := hits.resolve(row, col)
+	if !ok || kind != hitItem {
+		return m, nil
+	}
+	m.inspectPicker.cursor = index
+	return m.updateInspectPicker(tea.KeyPressMsg{Code: tea.KeyEnter})
 }
 
 // handleSubagentsPickerClick resolves a click on a subagents-picker row
@@ -668,7 +753,7 @@ func (m Model) handleSlashPaletteClick(msg tea.MouseClickMsg) (Model, tea.Cmd) {
 	}
 	m.paletteIndex = m.paletteOffset + row
 	chosen := m.paletteFiltered[m.paletteIndex]
-	if chosen.Args != "" {
+	if slashArgsRequired(chosen.Args) {
 		m.textInput.SetValue("/" + chosen.Name + " ")
 		m.textInput.CursorEnd()
 		m.paletteOpen = false
@@ -698,107 +783,47 @@ func (m Model) handleFilePaletteClick(msg tea.MouseClickMsg) (Model, tea.Cmd) {
 	return out.(Model), cmd
 }
 
-// handleMouseClick resolves a mouse-down event to whichever surface is
-// currently showing it: a decision modal (dispatched to its own click
-// handler), a picker popup (dispatched to that picker's own click
-// handler — every picker/panel has one now), or — with nothing open —
-// the transcript (begins a text selection) vs. the footer (Phase E adds
-// cmdline click-to-cursor there; until then, a footer click just clears
-// any stray selection).
+// handleMouseClick ignores every click. Wheel scrolling is the only supported
+// mouse behavior; buttons, popup rows, cmdline focus, and transcript selection
+// stay keyboard/native-terminal owned so accidental terminal mouse events cannot
+// activate UI or interfere with copying text.
 func (m Model) handleMouseClick(msg tea.MouseClickMsg) (Model, tea.Cmd) {
-	if box, ok := m.activePopupBody(); ok {
-		if out, cmd, closed := m.handlePopupCloseClick(box, msg); closed {
-			return out, cmd
-		}
-	}
-	if m.awaitingPathTrust {
-		return m.handlePathTrustModalClick(msg)
-	}
-	if m.awaitingApproval {
-		return m.handleApprovalModalClick(msg)
-	}
-	if m.paletteOpen {
-		return m.handleSlashPaletteClick(msg)
-	}
-	if m.filePaletteOpen {
-		return m.handleFilePaletteClick(msg)
-	}
-	if m.loopExitConfirmOpen {
-		return m.handleLoopExitConfirmClick(msg)
-	}
-	if m.cheatsheetOpen || m.loopListOpen || m.usageOpen || m.experimentalOpen || m.helpOpen || m.contextReportOpen {
-		return m.dismissStaticPopup(), nil
-	}
-	if m.modelPickerOpen {
-		return m.handleModelPickerClick(msg)
-	}
-	if m.checkpointsPickerOpen {
-		return m.handleCheckpointsPickerClick(msg)
-	}
-	if m.skillsPickerOpen {
-		return m.handleSkillsPickerClick(msg)
-	}
-	if m.memoryPickerOpen {
-		return m.handleMemoryPickerClick(msg)
-	}
-	if m.codeMapPickerOpen {
-		return m.handleCodeMapPickerClick(msg)
-	}
-	if m.effortPickerOpen {
-		return m.handleEffortPickerClick(msg)
-	}
-	if m.mcpPickerOpen {
-		return m.handleMCPPickerClick(msg)
-	}
-	if m.recallPickerOpen {
-		return m.handleRecallPickerClick(msg)
-	}
-	if m.routerPickerOpen {
-		return m.handleRouterPickerClick(msg)
-	}
-	if m.providerPickerOpen {
-		return m.handleProviderPickerClick(msg)
-	}
-	if m.sandboxPickerOpen {
-		return m.handleSandboxPickerClick(msg)
-	}
-	if m.plansPickerOpen {
-		return m.handlePlansPickerClick(msg)
-	}
-	if m.skillsMenuOpen {
-		return m.handleSkillsMenuClick(msg)
-	}
-	if m.sessionsPickerOpen {
-		return m.handleSessionsPickerClick(msg)
-	}
-	if m.subagentsPickerOpen {
-		return m.handleSubagentsPickerClick(msg)
-	}
-	if m.themePickerOpen {
-		return m.handleThemePickerClick(msg)
-	}
-	if m.permissionsOpen {
-		return m.handlePermissionsOverlayClick(msg)
-	}
-	if m.embedSetupOpen {
-		return m.handleEmbedSetupClick(msg)
-	}
-	if m.anyOverlayOpen() {
-		return m, nil // the 6 any-key-dismiss static panels (cheatsheet, loop-list, usage, experimental, help, context-report) — already dispatched above via dismissStaticPopup
-	}
-	if !m.enteredConversation {
-		return m, nil // launch hero has no scrollable transcript to select
-	}
-	footerHeight := lipgloss.Height(m.renderFooter())
-	transcriptHeight := m.height - footerHeight
-	if msg.Y < transcriptHeight {
-		return m.beginTranscriptSelection(msg)
-	}
-	m.clearTranscriptSelection()
-	if line, col, ok := m.resolveInputClick(msg.X, msg.Y); ok {
-		setTextInputCursor(&m.textInput, line, col)
+	return m, nil
+}
+
+func (m Model) handleWelcomeClick(msg tea.MouseClickMsg) (Model, tea.Cmd) {
+	if idx, ok := m.welcomeActionAt(msg.X, msg.Y); ok {
+		m.welcomeCursor = idx
+		return m.activateWelcomeCursor()
 	}
 	return m, nil
+}
+
+func (m Model) handleWelcomeHover(msg tea.MouseMotionMsg) Model {
+	if idx, ok := m.welcomeActionAt(msg.X, msg.Y); ok && m.welcomeCursor != idx {
+		m.welcomeCursor = idx
+	}
+	return m
+}
+
+func (m Model) welcomeActionAt(screenX, screenY int) (int, bool) {
+	// The launch card is always rendered at column 0 with one top spacer row. Its
+	// action rows follow the frame top plus: blank, title, blank, prompt, blank.
+	// Keep this hit-test arithmetic-only because terminals can emit a MouseMotionMsg
+	// for every pixel while all-motion hover is enabled; re-rendering the welcome
+	// card here makes idle mouse movement visibly laggy.
+	const (
+		frameTop       = 1
+		firstActionRow = frameTop + 1 + 5
+	)
+	if screenX < 0 || screenX >= m.width || screenY < firstActionRow {
+		return 0, false
+	}
+	idx := screenY - firstActionRow
+	if idx < 0 || idx >= len(welcomeActions()) {
+		return 0, false
+	}
+	return idx, true
 }
 
 // handleMouseMotion extends an in-progress transcript selection. A
@@ -807,13 +832,8 @@ func (m Model) handleMouseClick(msg tea.MouseClickMsg) (Model, tea.Cmd) {
 // drag can't start under one) clears the selection instead of
 // continuing to extend it invisibly behind the popup.
 func (m Model) handleMouseMotion(msg tea.MouseMotionMsg) (Model, tea.Cmd) {
-	if m.popupOpen() || m.paletteOpen || m.filePaletteOpen {
-		return m.handleMouseHover(msg)
-	}
-	if !m.transcriptSelecting {
-		return m, nil
-	}
-	return m.extendTranscriptSelection(msg)
+	m.clearTranscriptSelection()
+	return m, nil
 }
 
 // handleMouseHover moves the active selector for scoped interactive surfaces.
@@ -830,6 +850,9 @@ func (m Model) handleMouseHover(msg tea.MouseMotionMsg) (Model, tea.Cmd) {
 	if m.filePaletteOpen {
 		return m.handleFilePaletteHover(msg), nil
 	}
+	if m.welcomeVisible() {
+		return m.handleWelcomeHover(msg), nil
+	}
 	return m.handlePopupHover(msg), nil
 }
 
@@ -843,7 +866,11 @@ func (m Model) handleSlashPaletteHover(msg tea.MouseMotionMsg) Model {
 	if !ok {
 		return m
 	}
-	m.paletteIndex = m.paletteOffset + row
+	idx := m.paletteOffset + row
+	if m.paletteIndex == idx {
+		return m
+	}
+	m.paletteIndex = idx
 	return m
 }
 
@@ -857,7 +884,11 @@ func (m Model) handleFilePaletteHover(msg tea.MouseMotionMsg) Model {
 	if !ok {
 		return m
 	}
-	m.filePaletteIndex = m.filePaletteOffset + row
+	idx := m.filePaletteOffset + row
+	if m.filePaletteIndex == idx {
+		return m
+	}
+	m.filePaletteIndex = idx
 	return m
 }
 
@@ -882,7 +913,7 @@ func (m Model) inlinePaletteRow(screenY, total, visible, offset int) (int, bool)
 // conversation layout palettes live at the top of the footer.
 func (m Model) inlinePaletteTop() int {
 	if !m.enteredConversation {
-		box := renderStartupBox(m.version, m.commit, m.dirty, m.modelName, m.cwd, m.sess.ID, m.branch, m.memorySummary, m.providerProfile, m.startupTip(), m.width)
+		box := renderStartupBox(m.version, m.commit, m.dirty, m.startupTip(), m.welcomeCursor, m.width)
 		return 1 + lipgloss.Height(box) + 1
 	}
 	paletteTop := m.height - lipgloss.Height(m.renderFooter())
@@ -1028,12 +1059,12 @@ func (m Model) handlePopupHover(msg tea.MouseMotionMsg) Model {
 	if m.sandboxPickerOpen && m.sandboxPicker != nil {
 		hits := &pickerHits{}
 		box := popupBox(renderSandboxPicker(m.sandboxPicker, m.popupWidth(), hits))
-		if _, index, _, ok := m.resolvePopupHover(box, hits, msg.X, msg.Y); ok && sandboxMode(index) != m.sandboxPicker.cursor {
+		if _, index, _, ok := m.resolvePopupHover(box, hits, msg.X, msg.Y); ok {
 			m.sandboxPicker.cursor = sandboxMode(index)
-			m.sandboxPicker.confirming = false
 		}
 		return m
 	}
+
 	if m.plansPickerOpen && m.plansPicker != nil {
 		hits := &pickerHits{}
 		box := popupBox(renderPlansPicker(m.plansPicker, m.popupWidth(), hits))
@@ -1080,8 +1111,10 @@ func (m Model) handlePopupHover(msg tea.MouseMotionMsg) Model {
 		hits := &pickerHits{}
 		box := popupBox(renderThemePicker(m.themePicker, m.popupWidth(), hits))
 		if kind, index, _, ok := m.resolvePopupHover(box, hits, msg.X, msg.Y); ok && (kind == hitItem || kind == hitTab) {
-			m.themePicker.cursor = index
-			m = applyHighlightedTheme(m)
+			if m.themePicker.cursor != index {
+				m.themePicker.cursor = index
+				m = applyHighlightedTheme(m)
+			}
 		}
 		return m
 	}
@@ -1118,47 +1151,31 @@ func (m Model) resolvePopupHover(box string, hits *pickerHits, x, y int) (hitKin
 	return kind, index, key, true
 }
 
-// handleMouseRelease finalizes an in-progress transcript selection,
-// copying the selected text to the clipboard. Updates the head point
-// from the release's own coordinates first — a terminal isn't
-// guaranteed to fire a motion event at the exact release position, so
-// finalizing against only the last motion update could clip the final
-// pixel of a fast drag.
+// handleMouseRelease ignores button release events. yottacode does not implement
+// mouse selection/click behavior anymore; the terminal owns those gestures.
 func (m Model) handleMouseRelease(msg tea.MouseReleaseMsg) (Model, tea.Cmd) {
-	if !m.transcriptSelecting {
-		return m, nil
-	}
-	if line, col, ok := m.screenToContentPoint(msg.X, msg.Y); ok {
-		m.transcriptSelectionHeadLine, m.transcriptSelectionHeadCol = line, col
-	}
-	return m.finalizeTranscriptSelection()
+	m.clearTranscriptSelection()
+	return m, nil
 }
 
-// handleMouseWheel routes wheel events by screen region: over the cmdline it
-// browses input history (same as Up/Down at the textarea edge), and over the
-// transcript it scrolls the owned viewport. Popups, focused dock, and the launch
-// hero keep wheel input inert because those surfaces own their own navigation.
+// handleMouseWheel scrolls the owned session transcript and nothing else. The
+// wheel deliberately does not browse prompt history or scroll/activate popups;
+// keyboard controls remain the only interaction path outside transcript scroll.
+func (m Model) handlePopupWheel(msg tea.MouseWheelMsg) Model {
+	return m
+}
+
 func (m Model) handleMouseWheel(msg tea.MouseWheelMsg) (Model, tea.Cmd) {
-	if m.popupOpen() || m.paletteOpen || m.filePaletteOpen || m.dockFocused || !m.enteredConversation {
+	if !m.enteredConversation {
 		return m, nil
 	}
-	footerHeight := lipgloss.Height(m.renderFooter())
-	transcriptHeight := m.height - footerHeight
-	if msg.Y >= transcriptHeight {
-		switch msg.Button {
-		case tea.MouseWheelUp:
-			if out, ok := m.historyBack(); ok {
-				return out, nil
-			}
-		case tea.MouseWheelDown:
-			if out, ok := m.historyForward(); ok {
-				return out, nil
-			}
-		}
+	switch msg.Button {
+	case tea.MouseWheelUp, tea.MouseWheelDown:
+		var cmd tea.Cmd
+		m.transcriptViewport, cmd = m.transcriptViewport.Update(msg)
+		m.updateTranscriptFollowIntent()
+		return m, cmd
+	default:
 		return m, nil
 	}
-	var cmd tea.Cmd
-	m.transcriptViewport, cmd = m.transcriptViewport.Update(msg)
-	m.updateTranscriptFollowIntent()
-	return m, cmd
 }
