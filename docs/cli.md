@@ -82,6 +82,30 @@ yottacode run --max-iterations 100 "implement step 3 of the plan we drafted yest
 yottacode run --json "resolve the current issue and summarize changed files"
 ```
 
+### What `yottacode run` can automate
+
+`run` is designed for non-interactive jobs where another system owns the trigger and yottacode owns the engineering loop. Common uses include:
+
+- **Ticket triage:** summarize a bug report, identify likely files, and return a recommended fix path.
+- **Issue resolution:** work from a GitHub issue, make code changes, run tests, and summarize the resulting diff.
+- **Customer-request drafting:** convert a support request into implementation notes, acceptance criteria, or a candidate patch.
+- **CI/reporting jobs:** inspect a failing build log or current diff and emit a clean Markdown report on stdout.
+- **Release chores:** draft changelog entries, migration notes, or PR descriptions from repository context.
+
+For automation, keep stdout as the human-readable artifact and parse the final `--json` receipt from stderr. A ticket system can route on `status`: retry `provider_error`, ask a human on `approval_required` or `blocked_needs_clarification`, and attach `changed_files` to the ticket or PR record.
+
+Example GitHub Issue workflow:
+
+```bash
+yottacode run --json "Read issue #123, implement the smallest safe fix, run relevant tests, and summarize the diff"
+```
+
+Example support-ticket workflow:
+
+```bash
+yottacode run --json "Customer reports that export fails for empty projects. Reproduce from the codebase, fix if clear, otherwise return BLOCKED: with the clarification needed. Run relevant tests."
+```
+
 `--json` appends a final stderr object shaped like:
 
 ```json
