@@ -200,6 +200,60 @@ func buildLabeledUnitSections(units []string, startNum, maxChars int, noun strin
 	return sections, warnings
 }
 
+// appendSectionsWithinCharCap appends additive sections (tables, images, OCR)
+// without letting them bypass the caller's MaxChars preview budget. The primary
+// page/slide/sheet text may already have consumed some or all of the budget;
+// bonus sections must then truncate or disappear just like later pages do.
+func appendSectionsWithinCharCap(sections []DocumentSection, warnings []string, extra []DocumentSection, maxChars int, noun string) ([]DocumentSection, []string) {
+	used := sectionsTextLen(sections)
+	for _, sec := range extra {
+		remaining := maxChars - used
+		if remaining <= 0 {
+			warnings = append(warnings, fmt.Sprintf("stopped before %s %q at the %d-character preview cap", noun, sec.Label, maxChars))
+			break
+		}
+		body := sec.Text
+		if len(body) > remaining {
+			body = truncateSectionText(body, remaining)
+			sections = append(sections, DocumentSection{Label: sec.Label, Text: body})
+			warnings = append(warnings, fmt.Sprintf("%s %q truncated at the %d-character preview cap", noun, sec.Label, maxChars))
+			break
+		}
+		sections = append(sections, sec)
+		used += len(sec.Text)
+	}
+	return sections, warnings
+}
+
+// sectionsTextLen sums only section bodies, matching the preview-cap unit that
+// buildLabeledUnitSections has always enforced. Labels are provenance, not
+// extracted document content, so they do not count against MaxChars.
+func sectionsTextLen(sections []DocumentSection) int {
+	used := 0
+	for _, sec := range sections {
+		used += len(sec.Text)
+	}
+	return used
+}
+
+// truncateSectionText keeps additive sections within the remaining preview
+// budget exactly. boundedString appends a human-readable marker beyond maxChars,
+// which is useful for standalone body previews but would let additive sections
+// exceed the global MaxChars contract this helper enforces.
+func truncateSectionText(s string, maxChars int) string {
+	if maxChars <= 0 {
+		return ""
+	}
+	if len(s) <= maxChars {
+		return s
+	}
+	cut := maxChars
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut]
+}
+
 // hasMoreAfterCap reports whether r has at least one more byte
 // available beyond whatever a caller already consumed through
 // io.LimitReader(r, cap). Call this only after that limited read has
@@ -220,4 +274,20 @@ func hasMoreAfterCap(r io.Reader) bool {
 	var probe [1]byte
 	n, _ := r.Read(probe[:])
 	return n > 0
+}
+
+// countingReader wraps another reader and records the number of bytes handed
+// to its caller. XML extractors use it around an io.LimitReader when they need
+// a cumulative decompressed-size budget across multiple zip entries: text
+// length is not a proxy for XML bytes consumed, because a huge slide can contain
+// little visible text.
+type countingReader struct {
+	r io.Reader
+	n int64
+}
+
+func (r *countingReader) Read(p []byte) (int, error) {
+	n, err := r.r.Read(p)
+	r.n += int64(n)
+	return n, err
 }

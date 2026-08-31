@@ -551,27 +551,40 @@ env      = { GITHUB_PERSONAL_ACCESS_TOKEN = "$GITHUB_PAT" }
 
 ## Subagents
 
-The `[subagents]` block bounds cumulative subagent spend per session —
-a backstop against an enthusiastic (or adversarial) prompt fanning out
-unbounded child loops on your API key. The per-child iteration cap and
-the concurrency cap bound one wave; this bounds the session total.
+The `[subagents]` block bounds cumulative subagent spend AND concurrency
+per session — a backstop against an enthusiastic (or adversarial) prompt
+fanning out unbounded child loops on your API key.
 
 ```toml
 [subagents]
-session_token_budget = 8000000   # estimated tokens; default 8M
+session_token_budget    = 8000000   # estimated tokens; default 8M
+max_concurrent_subagents = 8        # concurrent running subagents; default 8
 ```
 
-The figure is in **estimated** tokens (the same 4-chars-per-token
-heuristic the status bar uses), counted across every finished subagent
-in the session. Once the budget is exhausted, new spawns return a
-recoverable error to the model instead of running. The cap is always
-on: values `<= 0` fall back to the 8M default rather than disabling it
-— a deliberate floor, since the budget exists precisely for sessions
-nobody is watching. Completed spend is counted, so one in-flight wave
-can overshoot by at most the concurrency cap.
+`session_token_budget` is in **estimated** tokens (the same
+4-chars-per-token heuristic the status bar uses), counted across every
+finished subagent in the session. Once the budget is exhausted, new
+spawns return a recoverable error to the model instead of running. The
+cap is always on: values `<= 0` fall back to the 8M default rather
+than disabling it — a deliberate floor, since the budget exists
+precisely for sessions nobody is watching. Completed spend is counted,
+so one in-flight wave can overshoot by at most the concurrency cap.
+
+`max_concurrent_subagents` bounds how many subagents — standalone
+`Agent`-tool spawns and `dispatch` workers together, foreground and
+background alike — may be running at once. They share one cap because
+they contend for the same resource: concurrent provider streams (and,
+with the [command sandbox](sandbox.md) enabled, concurrent containers).
+The default of 8 is conservative; raise it if your API rate-limit tier
+and machine can support more concurrent work, lower it if either is
+tighter. Values `<= 0` fall back to the default rather than disabling
+the cap. This does NOT change how many subtasks a single `dispatch`
+call may request in one decomposition (see
+[dispatch.md](dispatch.md#limits--notes)) — that stays fixed
+independently of this session-wide total.
 
 See [subagents.md](subagents.md) for the agent types, background
-dispatch, and `notify_on_done` wake semantics this budget guards.
+dispatch, and `notify_on_done` wake semantics these bounds guard.
 
 ## Model routing
 

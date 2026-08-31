@@ -94,6 +94,102 @@ func TestModel_ViewBeforeReadyDoesNotCrash(t *testing.T) {
 	}
 }
 
+func TestModel_TerminalTitleIdle(t *testing.T) {
+	m := newTestModel(t)
+	m.cwd = "/tmp/projects/yottacode"
+	m.branch = "feature/title"
+
+	got := m.View().WindowTitle
+	if got != "○ · yottacode · feature/title · yottacode" {
+		t.Fatalf("terminal title = %q", got)
+	}
+}
+
+func TestModel_TerminalTitleWorkingUsesLiveFrame(t *testing.T) {
+	m := newTestModel(t)
+	m.cwd = "/tmp/projects/yottacode"
+	m.branch = "feature/title"
+	m.turnActive = true
+	m.turnStart = time.Now().Add(-275 * time.Millisecond)
+
+	got := m.View().WindowTitle
+	if !strings.HasPrefix(got, "◓ · yottacode · feature/title · yottacode") {
+		t.Fatalf("terminal title should use second live working frame, got %q", got)
+	}
+}
+
+func TestModel_TerminalTitleWorkingFallsBackToFirstFrame(t *testing.T) {
+	m := newTestModel(t)
+	m.cwd = "/tmp/projects/yottacode"
+	m.pendingToolName = "run_tests"
+
+	got := m.View().WindowTitle
+	if got != "◐ · yottacode · yottacode" {
+		t.Fatalf("terminal title = %q", got)
+	}
+}
+
+func TestModel_TerminalTitleNeedsInputForApproval(t *testing.T) {
+	m := newTestModel(t)
+	m.cwd = "/tmp/projects/yottacode"
+	m.branch = "feature/title"
+	m.turnActive = true
+	m.awaitingApproval = true
+
+	got := m.View().WindowTitle
+	if got != "◆ · yottacode · feature/title · yottacode" {
+		t.Fatalf("terminal title = %q", got)
+	}
+}
+
+func TestModel_TerminalTitleNeedsInputForPathTrust(t *testing.T) {
+	m := newTestModel(t)
+	m.cwd = "/tmp/projects/yottacode"
+	m.awaitingPathTrust = true
+
+	got := m.View().WindowTitle
+	if got != "◆ · yottacode · yottacode" {
+		t.Fatalf("terminal title = %q", got)
+	}
+}
+
+func TestModel_TerminalTitleQueuedInput(t *testing.T) {
+	m := newTestModel(t)
+	m.cwd = "/tmp/projects/yottacode"
+	m.branch = "feature/title"
+	m.turnActive = true
+	m.userMsgCh = make(chan agent.UserMessage, 1)
+	m.userMsgCh <- agent.UserMessage{Content: "follow up", Timestamp: time.Now()}
+
+	got := m.View().WindowTitle
+	if got != "↵ · yottacode · feature/title · yottacode" {
+		t.Fatalf("terminal title = %q", got)
+	}
+}
+
+func TestModel_TerminalTitlePendingQueuedInput(t *testing.T) {
+	m := newTestModel(t)
+	m.cwd = "/tmp/projects/yottacode"
+	m.pendingInputAfterTurn = agent.UserMessage{Content: "follow up", Timestamp: time.Now()}
+
+	got := m.View().WindowTitle
+	if got != "↵ · yottacode · yottacode" {
+		t.Fatalf("terminal title = %q", got)
+	}
+}
+
+func TestModel_TerminalTitleWorktreeWinsOverBranch(t *testing.T) {
+	m := newTestModel(t)
+	m.cwd = "/tmp/projects/yottacode"
+	m.branch = "feature/title"
+	m.worktree = "tab-title"
+
+	got := m.View().WindowTitle
+	if got != "○ · yottacode · wt:tab-title · yottacode" {
+		t.Fatalf("terminal title = %q", got)
+	}
+}
+
 func TestModel_LargePasteShowsPlaceholderInsteadOfStretchingCmdline(t *testing.T) {
 	m := newTestModel(t)
 	// Simulate a bracketed paste of a large block — well over the
@@ -419,6 +515,31 @@ func TestModel_StreamingUnclosedTableRendersOnCommit(t *testing.T) {
 	}
 	if m.inTable {
 		t.Errorf("commit should exit table state")
+	}
+}
+
+func TestRenderPermissionsOverlayShowsWarnings(t *testing.T) {
+	m := newTestModel(t)
+	if err := m.perms.AddAllow("Bash(gh *)"); err != nil {
+		t.Fatalf("AddAllow Bash: %v", err)
+	}
+	if err := m.perms.AddAllow("Github(*)"); err != nil {
+		t.Fatalf("AddAllow Github: %v", err)
+	}
+	perms, err := permissions.Load(m.cwd)
+	if err != nil {
+		t.Fatalf("Load permissions: %v", err)
+	}
+	m.perms = perms
+
+	plain := stripANSI(renderPermissionsOverlay(m))
+	if !strings.Contains(plain, "Policy warnings") {
+		t.Fatalf("expected policy warning section, got %q", plain)
+	}
+	for _, want := range []string{"Bash(gh *)", "Github(*)"} {
+		if !strings.Contains(plain, want) {
+			t.Errorf("warning overlay missing %q: %q", want, plain)
+		}
 	}
 }
 

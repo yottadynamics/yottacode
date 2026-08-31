@@ -1,0 +1,37 @@
+# Runs internal/sandbox's real-podman integration suite
+# (podman_integration_test.go), which is gated behind YOTTACODE_SANDBOX_E2E=1
+# and therefore never runs in go.yml's per-PR `go test -short ./...`. Nightly
+# + on-demand only: these tests start real containers and pull a real image,
+# too slow for per-PR gating. This is the only CI coverage that exercises the
+# actual `podman run`/`podman exec` behavior rather than just argv-building
+# unit tests — see docs/sandbox.md and roadmap/sandbox-podman.md.
+
+name: Sandbox E2E
+
+on:
+  workflow_dispatch: {}
+  schedule:
+    - cron: '0 6 * * *'
+
+permissions:
+  contents: read
+
+jobs:
+  integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.6'
+          cache: true
+
+      - name: Install podman
+        run: sudo apt-get update && sudo apt-get install -y podman
+
+      - name: Real-podman sandbox integration tests
+        env:
+          YOTTACODE_SANDBOX_E2E: '1'
+        run: go test -v -run TestIntegration ./internal/sandbox/...

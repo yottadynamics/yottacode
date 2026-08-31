@@ -194,6 +194,14 @@ func ValidateWritePath(path string, opts WritePathOptions) error {
 // pathWithinOwnedScope reports whether abs is covered by a dispatch worker's
 // declared ownership set. File ownership is exact; directory ownership is
 // explicit via a trailing separator or an existing directory.
+//
+// Comparisons fold case on dispatchCaseInsensitiveFS (see dispatch_tool.go)
+// via pathsEqualCaseAware/pathUnderCaseAware — this is the actual write-time
+// enforcement path (called from ValidateWritePath below) AND, via pathOwned,
+// the commit-time out-of-scope scan, so a worker whose own write or
+// committed change lands under a case-variant of its declared ownership
+// (e.g. owns "Utils.go", writes "utils.go" — the same file on macOS) must
+// match here, not just in the declaration-time overlap check.
 func pathWithinOwnedScope(abs string, opts WritePathOptions) bool {
 	cwd := opts.Cwd.Get()
 	for _, raw := range opts.OwnedPaths {
@@ -213,11 +221,11 @@ func pathWithinOwnedScope(abs string, opts WritePathOptions) bool {
 		if !opts.AllowSymlinks {
 			ownedAbs = resolveWriteTarget(ownedAbs)
 		}
-		if abs == ownedAbs {
+		if pathsEqualCaseAware(abs, ownedAbs) {
 			return true
 		}
 		if strings.HasSuffix(raw, "/") || strings.HasSuffix(raw, string(filepath.Separator)) || isDir(ownedAbs) {
-			if pathUnder(abs, ownedAbs) {
+			if pathUnderCaseAware(abs, ownedAbs) {
 				return true
 			}
 		}

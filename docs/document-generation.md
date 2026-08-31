@@ -129,9 +129,6 @@ for PDF text extraction, `pdfplumber` (pip) for PDF table extraction,
 fallback tier. xlsx and pptx paths are native Go and never use this
 image.
 
-
-[roadmap-doc]: ../roadmap/document-generation.md
-
 A CI workflow builds, smoke-tests, and publishes this image
 (`.github/workflows/documents-image.yml`): on demand via
 `workflow_dispatch`, on a push to `main` touching the Containerfile or
@@ -188,25 +185,47 @@ reference.
 
 - Parsing fidelity varies by format:
   - **xlsx**: native-only (`excelize`) — full fidelity for cell
-    values/formulas, no rich per-run text formatting, embedded charts,
-    or images.
-  - **docx**: two tiers — a `pandoc` tier (tables and inline bold/italic
-    preserved, rendered as GitHub-flavored Markdown) when the active
-    command sandbox can reach `pandoc`, falling back to a native
-    zip/XML walk (headings/paragraphs only, no tables) when it can't.
-    This is the one format whose richer parse tier is already wired,
-    not just its generation path.
-  - **pptx**: native-only and text-only (title/body/notes per slide) —
-    no tables, images, or formatting extraction, and no `pandoc` tier
-    wired for pptx parsing.
+    values, additionally returning a `sheet X formulas` section (per
+    cell that has one; `excelize.GetRows` only ever returns a cell's
+    cached computed value, never the formula behind it — and a freshly
+    generated formula cell has no cached value at all, so without this
+    it reads as blank), a `sheet X merged cells` section when any exist,
+    and a `sheet X image <cell>-N` section per embedded picture (type,
+    pixel size, alt text). No rich per-run text formatting or embedded
+    charts (excelize has no chart-reading API, only chart-writing).
+  - **docx**: two tiers for body text — a `pandoc` tier (tables and
+    inline bold/italic preserved, rendered as GitHub-flavored Markdown)
+    when the active command sandbox can reach `pandoc`, falling back to
+    a native zip/XML walk (headings/paragraphs only, no tables) when it
+    can't. This is the one format whose richer text tier is already
+    wired, not just its generation path. Independent of which tier
+    served the text, a `document image N` section (file name, size, alt
+    text) is returned per inline picture found in `word/document.xml`.
+  - **pptx**: native-only (title/body/notes per slide), additionally
+    returning `slide N table M` sections (pipe-joined rows) for
+    DrawingML tables and `slide N image M` sections (file name, size,
+    alt text — never image bytes) for pictures. No rich per-run text
+    formatting extraction, and no `pandoc` tier wired for pptx parsing.
   - **PDF**: `pdftotext -layout` always runs and preserves column/table
     alignment as spaced plain text — this is never affected by anything
-    below. When `python3`+`pdfplumber` are also reachable, real
-    structured tables are additionally returned as `page N table M`
-    sections — best-effort and silent (not a warning) when that
-    dependency isn't available or a page genuinely has no tables.
-    Verified working on real single-table pages, including small ones
-    (2 columns × 2 rows). **Known gap, verified, not yet solved**: two
+    below. `pdfinfo` (already run for the page count) also supplies
+    `Title`/`Author`/`CreationDate`, surfaced above the content preview
+    when present, and a structural `Encrypted: yes/no` field used as
+    the primary encrypted-PDF signal — more robust than the previous
+    sole reliance on grepping `pdftotext`'s stderr for wording that
+    isn't guaranteed stable across poppler versions, which remains as
+    the fallback when `pdfinfo` doesn't report the field at all. When
+    `python3`+`pdfplumber` are also reachable, real structured tables
+    are additionally returned as `page N table M` sections, and
+    detected images as `page N image M` sections (placed size in
+    inches, plus the source image's own pixel resolution when
+    determinable — never image bytes) — both ride in the same
+    `extract_pdf_tables.py` call, since both just read properties off
+    the same already-open page object; best-effort and silent (not a
+    warning) when that dependency isn't available or a page genuinely
+    has neither. Verified working on real single-table pages, including
+    small ones (2 columns × 2 rows), and on a real embedded image.
+    **Known gap, verified, not yet solved**: two
     separate tables on the same page with only a small amount of prose
     between them can be merged into one garbled result, fragmenting the
     prose into spurious cells — pdfplumber's word-alignment heuristic
@@ -218,10 +237,10 @@ reference.
     `pdftotext`-based text extraction is unaffected either way — this
     only risks a wrong-looking *bonus* section alongside still-correct
     plain text, never a corrupted primary result. A deeper Docling-based
-    tier remains deferred (see `roadmap/document-generation.md`'s
-    Docling-deferral precedent) — this multi-table case is a concrete
-    data point for revisiting that decision, not a reason to hand-tune
-    the heuristic further blind.
+    tier remains deferred (see this doc's own Docling-deferral
+    precedent, above) — this multi-table case is a concrete data point
+    for revisiting that decision, not a reason to hand-tune the
+    heuristic further blind.
   - **PDF OCR fallback**: best-effort, tried per contiguous run of
     pages `pdftotext`'s primary extraction found no text on at all — a
     scanned/image-only PDF, or just the scanned pages of a
@@ -249,8 +268,12 @@ reference.
     uninstalled language degrades the same as any other missing OCR
     dependency, silently, not as an error.
 - pptx generation covers title + bullets + speaker notes + one image per
-  slide in a fixed native-Go layout — no tables, charts, multiple images
-  per slide, custom template themes, or precise image positioning yet.
+  slide — no tables, charts, multiple images per slide, or custom
+  template themes yet. The image's placement defaults to a fixed
+  right-half layout; `image_layout` picks a `left`/`right`/`full`
+  preset, or `image_left`/`image_top`/`image_width`/`image_height`
+  (inches) set an exact bounding box — the two are mutually exclusive,
+  and an explicit box must fit within the 13.33in x 7.5in slide.
   `image_alt` is written to the picture description field for consumers
   that surface OOXML alt text.
 - `create_document` only ever writes local files; there is no URL output
@@ -264,8 +287,9 @@ reference.
 - docx/pdf blocks support one `image` type (local file path + alt text,
   validated as a read path the same way `read_file` validates one) — no
   inline images within a paragraph, no image sizing/positioning control.
-  pptx slides support one `image` per slide the same way — no inline
-  images within bullet text.
+  pptx slides support one `image` per slide the same way (with
+  `image_layout`/explicit bounds for sizing/positioning, see above) —
+  no inline images within bullet text.
 - docx template-fill (`format=docx` + `template`) matches `{{name}}`
   tokens against each paragraph's full concatenated text, not run by
   run — this is deliberate, not a gap: Word commonly splits one

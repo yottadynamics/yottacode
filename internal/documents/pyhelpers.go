@@ -10,7 +10,7 @@ import (
 
 // pyHelperScripts embeds the Python driver scripts that back the
 // optional PDF-table-extraction and docx-template-fill tiers — see
-// roadmap/document-generation.md's "Python-in-container implementation
+// docs/document-generation.md's "Python-in-container implementation
 // plan". This is the single source of truth for their content;
 // infra/documents.Containerfile's COPY instruction bakes the same
 // files (read from disk at image-build time, not from this embed) into

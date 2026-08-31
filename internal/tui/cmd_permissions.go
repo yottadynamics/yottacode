@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"os"
 	"strings"
 
@@ -120,6 +121,16 @@ func renderPermissionsOverlay(m Model, hits ...*pickerHits) string {
 	b.WriteString(renderMenuHeader("Permissions",
 		"Edit a rule file in vim. The store re-reads on the next tool call.", width))
 	b.WriteString("\n")
+	warnings := m.permissionsWarnings()
+	if len(warnings) > 0 {
+		b.WriteString(styleNoticeWarn.Render("Policy warnings"))
+		b.WriteString("\n")
+		for _, warning := range warnings {
+			b.WriteString(styleHint.Render("  • " + truncateDisplayMiddle(warning, width-4)))
+			b.WriteString("\n")
+		}
+		b.WriteString("\n")
+	}
 	for i, row := range rows {
 		rowLine := strings.Count(b.String(), "\n")
 		h.row(rowLine, i)
@@ -135,6 +146,20 @@ func renderPermissionsOverlay(m Model, hits ...*pickerHits) string {
 	b.WriteString("\n")
 	b.WriteString(styleFooter.Render("↵ open in vim · esc back · ↑↓ navigate"))
 	return strings.TrimRight(b.String(), "\n")
+}
+
+func (m Model) permissionsWarnings() []string {
+	if m.perms == nil {
+		return nil
+	}
+	warnings := m.perms.LintWarnings()
+	const maxWarnings = 4
+	if len(warnings) <= maxWarnings {
+		return warnings
+	}
+	out := append([]string{}, warnings[:maxWarnings]...)
+	out = append(out, fmt.Sprintf("%d more warning(s); open the files to review", len(warnings)-maxWarnings))
+	return out
 }
 
 // tildeifyHome rewrites a $HOME-prefixed path with a leading ~ for display.

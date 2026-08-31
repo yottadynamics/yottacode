@@ -273,3 +273,33 @@ func TestIntegration_CancelKillsProcessInsideContainer(t *testing.T) {
 		t.Errorf("expected the canceled command to be killed inside the container, got: %q", out)
 	}
 }
+
+// TestIntegration_StorageOptProbeMatchesRealPodman exercises the real (not
+// faked) storage-opt capability probe against this host's actual podman
+// install. The result is host-dependent (ext4 vs overlay+XFS+pquota), so
+// this only asserts the probe completes cleanly against a real image —
+// hostcaps_test.go's unit tests cover the decision logic itself against
+// faked podman output.
+func TestIntegration_StorageOptProbeMatchesRealPodman(t *testing.T) {
+	skipUnlessPodmanE2E(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	// probeStorageOptSupported (not the cached storageOptSupported wrapper)
+	// so this test's result doesn't depend on whichever test in this file
+	// happens to run first and populate the process-wide cache.
+	_ = probeStorageOptSupported(ctx, testSandboxConfig().Image)
+}
+
+// TestIntegration_CgroupLimitsProbeMatchesRealPodman is
+// TestIntegration_StorageOptProbeMatchesRealPodman's counterpart for the
+// cgroup-limits probe.
+func TestIntegration_CgroupLimitsProbeMatchesRealPodman(t *testing.T) {
+	skipUnlessPodmanE2E(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	if !probeCgroupLimitsSupported(ctx, testSandboxConfig().Image) {
+		t.Error("expected cgroup resource limits (--cpus/--memory/--pids-limit) to be available on a normal CI/dev Linux host")
+	}
+}

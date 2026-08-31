@@ -49,6 +49,15 @@ Fresh sessions open on a welcome card. Hover an action to select it, click to ac
 
 The welcome card intentionally stays action-only. Runtime state such as model, provider, branch, directory, memory, context, and tool status lives in the cmdline/status bar instead of being duplicated in the card.
 
+Terminal tab/window titles use the compact form `<icon> · yottacode · <branch-or-worktree> · <dir>` so multiple sessions are distinguishable without opening each tab. The first icon is live-updated when the terminal supports title updates:
+
+- `◐` / `◓` / `◑` / `◒` — working; cycles while the agent turn, tool call, or summarizer is active
+- `◆` — needs input; an approval, path-trust prompt, or exit decision is waiting
+- `↵` — queued input; a follow-up message is waiting to be consumed
+- `○` — idle and ready for input
+
+Managed worktree names are shown as `wt:<name>` and take precedence over the branch label.
+
 Useful keys:
 
 - `Enter` — submit

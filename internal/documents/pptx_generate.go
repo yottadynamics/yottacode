@@ -26,7 +26,35 @@ type SlideModel struct {
 	Image    string
 	ImageAlt string
 	Layout   string
+
+	// ImageBounds is the image's placement on the slide, in EMU. Nil
+	// reproduces the original fixed right-half placement exactly, so a
+	// slide built before this field existed generates byte-identical
+	// output. Ignored when Image is empty. Presets and validation
+	// against slide dimensions live in the create_document tool layer
+	// (internal/agent), which owns the user-facing schema and error
+	// messages; this package only draws the rectangle it's given.
+	ImageBounds *ImageBounds
 }
+
+// ImageBounds is an explicit picture bounding box in EMU (English
+// Metric Units, the OOXML native length unit — 914400 EMU per inch).
+type ImageBounds struct {
+	X, Y, CX, CY int64
+}
+
+// SlideWidthEMU and SlideHeightEMU are the fixed widescreen (16:9)
+// slide dimensions GeneratePPTX always renders at (see
+// pptxPresentationXML). Exported so callers validating an
+// ImageBounds against the slide can do it without duplicating these
+// numbers.
+const (
+	SlideWidthEMU  int64 = 12192000
+	SlideHeightEMU int64 = 6858000
+	// EMUPerInch converts inches to/from EMU (the OOXML native length
+	// unit): 914400 EMU per inch, fixed by the OOXML spec.
+	EMUPerInch int64 = 914400
+)
 
 // GeneratePPTX renders slides into a minimal Office Open XML presentation.
 // It is pure Go: no python3, python-pptx, LibreOffice, or sandbox process is
@@ -213,7 +241,7 @@ func pptxPresentationXML(slideCount int) string {
 	for i := 1; i <= slideCount; i++ {
 		ids.WriteString(fmt.Sprintf(`<p:sldId id="%d" r:id="rId%d"/>`, 255+i, i))
 	}
-	return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><p:presentation xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"><p:sldMasterIdLst><p:sldMasterId id="2147483648" r:id="rId` + fmt.Sprint(slideCount+1) + `"/></p:sldMasterIdLst><p:sldIdLst>` + ids.String() + `</p:sldIdLst><p:sldSz cx="12192000" cy="6858000" type="wide"/><p:notesSz cx="6858000" cy="9144000"/></p:presentation>`
+	return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><p:presentation xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"><p:sldMasterIdLst><p:sldMasterId id="2147483648" r:id="rId` + fmt.Sprint(slideCount+1) + `"/></p:sldMasterIdLst><p:sldIdLst>` + ids.String() + `</p:sldIdLst><p:sldSz cx="` + fmt.Sprint(SlideWidthEMU) + `" cy="` + fmt.Sprint(SlideHeightEMU) + `" type="wide"/><p:notesSz cx="6858000" cy="9144000"/></p:presentation>`
 }
 
 func pptxPresentationRelsXML(slides []SlideModel) string {
@@ -254,7 +282,7 @@ func pptxSlideXML(slide SlideModel) string {
 		shapeID++
 	}
 	if strings.TrimSpace(slide.Image) != "" {
-		b.WriteString(pptxPictureShape(shapeID, slide.ImageAlt))
+		b.WriteString(pptxPictureShape(shapeID, slide.ImageAlt, slide.ImageBounds))
 	}
 	b.WriteString(`</p:spTree></p:cSld><p:clrMapOvr><a:masterClrMapping/></p:clrMapOvr></p:sld>`)
 	return b.String()
@@ -284,15 +312,26 @@ func pptxParagraph(text string, bullet bool, fontSize int, bold bool) string {
 	return fmt.Sprintf(`<a:p><a:pPr marL="342900" indent="-171450">%s</a:pPr><a:r><a:rPr lang="en-US" sz="%d" b="%s"/><a:t>%s</a:t></a:r><a:endParaRPr lang="en-US" sz="%d"/></a:p>`, bu, fontSize, boldAttr, xmlEsc(text), fontSize)
 }
 
-func pptxPictureShape(id int, alt string) string {
+// Default image placement: right half of a widescreen slide, unchanged
+// from before ImageBounds existed — a slide with no explicit bounds
+// generates byte-identical geometry to before this field was added.
+const (
+	pptxDefaultImageX  int64 = 6553200
+	pptxDefaultImageY  int64 = 1463040
+	pptxDefaultImageCX int64 = 5029200
+	pptxDefaultImageCY int64 = 3429000
+)
+
+func pptxPictureShape(id int, alt string, bounds *ImageBounds) string {
 	name := alt
 	if strings.TrimSpace(name) == "" {
 		name = "Picture"
 	}
-	// Images are placed on the right half of a widescreen slide. Text still
-	// remains readable for ordinary title+bullets+image decks; precise layout
-	// control can be added later without changing the public schema.
-	return fmt.Sprintf(`<p:pic><p:nvPicPr><p:cNvPr id="%d" name="%s" descr="%s"/><p:cNvPicPr><a:picLocks noChangeAspect="1"/></p:cNvPicPr><p:nvPr/></p:nvPicPr><p:blipFill><a:blip r:embed="rId2"/><a:stretch><a:fillRect/></a:stretch></p:blipFill><p:spPr><a:xfrm><a:off x="6553200" y="1463040"/><a:ext cx="5029200" cy="3429000"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></p:spPr></p:pic>`, id, xmlEsc(name), xmlEsc(alt))
+	x, y, cx, cy := pptxDefaultImageX, pptxDefaultImageY, pptxDefaultImageCX, pptxDefaultImageCY
+	if bounds != nil {
+		x, y, cx, cy = bounds.X, bounds.Y, bounds.CX, bounds.CY
+	}
+	return fmt.Sprintf(`<p:pic><p:nvPicPr><p:cNvPr id="%d" name="%s" descr="%s"/><p:cNvPicPr><a:picLocks noChangeAspect="1"/></p:cNvPicPr><p:nvPr/></p:nvPicPr><p:blipFill><a:blip r:embed="rId2"/><a:stretch><a:fillRect/></a:stretch></p:blipFill><p:spPr><a:xfrm><a:off x="%d" y="%d"/><a:ext cx="%d" cy="%d"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></p:spPr></p:pic>`, id, xmlEsc(name), xmlEsc(alt), x, y, cx, cy)
 }
 
 func pptxSlideRelsXML(index int, slide SlideModel) string {

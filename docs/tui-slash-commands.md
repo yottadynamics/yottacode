@@ -10,7 +10,7 @@ Type `/` in the TUI to open the slash-command palette. The palette filters as yo
 | `/quit` | — | Exit yottacode |
 | `/clear` | — | Save the current session and start a fresh one |
 | `/map` | `[query]` | Open the experimental code map. `/map here` shows changed files and their immediate import neighborhood; Enter inserts the selected file/symbol as an `@path` prompt reference. Other modes stay under the same command: `/map deps <path>`, `/map dependents <path>`, `/map impact [--depth N\|all] <path>`, `/map cycles [path]`, and `/map diagram [path]`. Enable with `--experimental code_map`. |
-| `/permissions` | — | Print shared and local permission file paths |
+| `/permissions` | — | Open the shared/local permission files and show advisory warnings for broad or shadowed rules |
 | `/system` | — | Show the active system prompt, including injected memory |
 | `/usage` | — | Show per-session token totals by model, a per-tool call/token/error breakdown, efficiency signals (low-signal turns, repeated identical tool calls, repeated-failure guidance, and a floor waste estimate), per-subagent task detail, cache hit rate, the session's largest turn, compaction history, today's sessions individually (largest first, current session marked with an inspectable short id), live rate-limit headroom (including both Codex quota windows on a ChatGPT subscription), and a per-provider billing-dashboard link. Scrolls with ↑/↓ or PgUp/PgDn when content exceeds the terminal. No dollar estimate — token counts are exact, but cost would need an unmaintainable price table. See [cost.md](cost.md). |
 | `/inspect` | — | Open a paged picker over the live session plus saved sessions, then inspect the selected session in a read-only, scrollable turn-by-turn replay without resuming it. Direct `/inspect <session-id>` still works for known ids/names/unique short ids, but the command is picker-first in the TUI. Shows each user prompt preview, assistant preview, tool calls with truncated args, tool outcomes, per-turn tokens, and low-signal markers without switching the live conversation. Export sessions from `/sessions` instead. |
@@ -147,7 +147,7 @@ Custom commands are a **prompt shortcut, not a permission bypass**. Typing `/rel
 Three ways to reduce friction on commands you trust:
 
 - **Auto mode** (`Shift+Tab` or `yottacode --permission-mode auto`) — edits auto-allow; `run_bash`, `git_commit`, `git_checkpoint`, and `rollback` remain in the safety floor and still prompt. See [Auto mode](#auto-mode).
-- **`.yottacode/permissions.json` allow rules** — pre-approve specific shell invocations or tool patterns (`allow: ["Bash(go test*)", "Bash(go mod tidy)"]`). Rules apply equally to commands the agent calls from a custom-command turn and to anything else.
+- **`.yottacode/permissions.json` allow rules** — pre-approve specific typed tools or shell invocations (`allow: ["Tests(go *)", "Github(read_*)", "Edit(docs/**)"]`). Rules apply equally to commands the agent calls from a custom-command turn and to anything else.
 - **`yottacode --yolo`** — everything auto-runs, with a high but finite iteration budget. Use only for fully-trusted scripted runs. See [Yolo mode](#yolo-mode).
 
 Per-command `allowed-tools:` frontmatter (a Claude Code feature that scopes which tools a command can call) is **not** supported in v1; the closest equivalent today is auto mode plus an `.yottacode/permissions.json` allow list. See [Out of scope](#out-of-scope-for-now).

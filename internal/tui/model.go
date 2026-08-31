@@ -752,10 +752,11 @@ type Model struct {
 	paragraphStart bool
 
 	// Approval modal state
-	awaitingApproval     bool
-	approvalTool         string
-	approvalPreview      string
-	approvalArgs         string
+	awaitingApproval bool
+	approvalTool     string
+	approvalPreview  string
+	approvalArgs     string
+
 	approvalScrollOffset int
 	// approvalAllowAlwaysOK gates the [a]lways-allow keypress. Set
 	// true when DeriveAllowRule can produce a sensible pattern from
@@ -3081,6 +3082,7 @@ func (m Model) skillsBusy() bool {
 // original rather than leaving whatever the last themed pick set.
 func (m Model) View() tea.View {
 	v := tea.NewView(m.viewString())
+	v.WindowTitle = m.terminalTitle()
 	v.AltScreen = true
 	// Enable the narrowest mouse reporting only after the conversation starts so
 	// wheel events can scroll the owned transcript viewport. Clicks, releases,
@@ -4760,6 +4762,76 @@ func renderModeStatusLabel(mode string) string {
 	return style.Render(mode)
 }
 
+// terminalTitle returns the compact, best-effort terminal tab/window label.
+// Bubble Tea emits it as a standard OSC title sequence, but terminals and
+// multiplexers decide whether to display or pass it through; unsupported
+// environments intentionally get no in-app warning.
+func (m Model) terminalTitle() string {
+	parts := []string{m.terminalTitleIcon(), "yottacode"}
+	if branch := m.terminalTitleBranchOrWorktree(); branch != "" {
+		parts = append(parts, branch)
+	}
+	if loc := m.terminalTitleLocation(); loc != "" {
+		parts = append(parts, loc)
+	}
+	return strings.Join(parts, " · ")
+}
+
+func (m Model) terminalTitleIcon() string {
+	if m.awaitingApproval || m.awaitingPathTrust || m.worktreeExitConfirmOpen || m.loopExitConfirmOpen {
+		return "◆"
+	}
+	if m.terminalTitleHasQueuedInput() {
+		return "↵"
+	}
+	if m.turnActive || m.summarizing || m.pendingToolName != "" {
+		return terminalTitleWorkingIcon(m.turnStart)
+	}
+	return "○"
+}
+
+func terminalTitleWorkingIcon(start time.Time) string {
+	frames := []string{"◐", "◓", "◑", "◒"}
+	if start.IsZero() {
+		return frames[0]
+	}
+	idx := int(time.Since(start)/(250*time.Millisecond)) % len(frames)
+	return frames[idx]
+}
+
+func (m Model) terminalTitleHasQueuedInput() bool {
+	if m.pendingInputAfterTurn.Content != "" {
+		return true
+	}
+	if m.userMsgCh == nil {
+		return false
+	}
+	return len(m.userMsgCh) > 0
+}
+
+func (m Model) terminalTitleBranchOrWorktree() string {
+	if m.worktree != "" {
+		return "wt:" + m.worktree
+	}
+	return strings.TrimSpace(m.branch)
+}
+
+func (m Model) terminalTitleLocation() string {
+	if dir := lastPathSegments(m.cwd, 1); dir != "" {
+		return dir
+	}
+	if dir := lastPathSegments(m.cwd, 2); dir != "" {
+		return dir
+	}
+	if m.sess != nil {
+		if name := strings.TrimSpace(m.sess.Name); name != "" {
+			return name
+		}
+		return strings.TrimSpace(m.sess.ID)
+	}
+	return ""
+}
+
 func (m Model) renderToolStatus() string {
 	if m.pendingToolName != "" {
 		return lipgloss.NewStyle().Foreground(colorContent).Render("tools " + m.pendingToolName)
@@ -5266,6 +5338,19 @@ func appendDispatchWakeMetadata(b *strings.Builder, w agent.SubagentBackgroundDo
 	if w.Branch != "" {
 		fmt.Fprintf(b, "Branch: %s\n", w.Branch)
 		switch {
+		// FailedWithCommit first: a worker can be BOTH Committed (its branch
+		// has an earlier, legitimate commit) AND Errored (e.g. it left
+		// out-of-scope changes uncommitted) — that combination must read as
+		// a failure, not as integrate-ready work. See
+		// SubagentBackgroundDone.FailedWithCommit/IntegrateReady — the
+		// shared rule every render site (this one, the dock badge, dispatch's
+		// own formatResult) goes through, so it can't drift between them.
+		case w.FailedWithCommit():
+			sha := w.CommitSHA
+			if sha == "" {
+				sha = "committed"
+			}
+			fmt.Fprintf(b, "Commit: %s, but the task FAILED — do not integrate without review (%s)\n", sha, w.CommitErr)
 		case w.Committed:
 			sha := w.CommitSHA
 			if sha == "" {
@@ -5280,7 +5365,7 @@ func appendDispatchWakeMetadata(b *strings.Builder, w agent.SubagentBackgroundDo
 			b.WriteString("Commit: no changes to merge yet\n")
 		}
 	}
-	if w.Committed && w.Branch != "" {
+	if w.IntegrateReady() && w.Branch != "" {
 		b.WriteString("Next: when every worker in this batch has finished, call integrate with the committed dispatch branch list.\n")
 	}
 }

@@ -20,6 +20,7 @@ import (
 	"github.com/yottadynamics/yottacode/internal/memory"
 	"github.com/yottadynamics/yottacode/internal/permissions"
 	"github.com/yottadynamics/yottacode/internal/recall"
+	"github.com/yottadynamics/yottacode/internal/sandbox"
 	"github.com/yottadynamics/yottacode/internal/session"
 	"github.com/yottadynamics/yottacode/internal/skills"
 	"github.com/yottadynamics/yottacode/internal/subagents"
@@ -389,6 +390,12 @@ func (b *Builder) Build(ctx context.Context, spec SessionSpec) (*Runtime, error)
 	var cmdSandbox agent.Sandbox
 	var sandboxFactory agent.SandboxFactory
 	if fileCfg.Sandbox.Backend == "podman" {
+		// Best-effort: reclaims yc-* containers left stuck non-running by a
+		// crashed or interrupted-teardown prior session (see PruneOrphaned's
+		// doc comment for why State, not age, is the safety filter). Errors
+		// are swallowed the same way podman.removeContainer's own callers
+		// already do for best-effort cleanup elsewhere in this package.
+		_ = sandbox.PruneOrphaned(ctx)
 		mgr := NewSandboxManager(fileCfg.Sandbox, sess.ID, cwd, podmanSandboxConstructor)
 		mgr.SetConfigReloader(config.LoadDefault)
 		rt.SandboxManager = mgr
@@ -526,14 +533,15 @@ func (b *Builder) Build(ctx context.Context, spec SessionSpec) (*Runtime, error)
 		ResolveWindow: func(model string) int {
 			return catalog.ResolveWindowForProvider(fileCfg.ProviderKindForModel(model), model, fileCfg.ContextWindowOverride(model), fileCfg.Context.DefaultWindow)
 		},
-		Permissions:      perms,
-		YoloMode:         yoloMode,
-		PlanMode:         planMode,
-		AutoMode:         autoMode,
-		Cwd:              cwdRef,
-		TranscriptDir:    transcriptDir,
-		MaxSessionTokens: fileCfg.SubagentSessionTokenBudget(),
-		AllowBackground:  spec.SupportsBackgroundDispatch,
+		Permissions:            perms,
+		YoloMode:               yoloMode,
+		PlanMode:               planMode,
+		AutoMode:               autoMode,
+		Cwd:                    cwdRef,
+		TranscriptDir:          transcriptDir,
+		MaxSessionTokens:       fileCfg.SubagentSessionTokenBudget(),
+		MaxConcurrentSubagents: fileCfg.SubagentMaxConcurrent(),
+		AllowBackground:        spec.SupportsBackgroundDispatch,
 	}
 	reg.Register(agentTool)
 	reg.Register(&agent.GetSubagentResultTool{Tasks: subagentTasks})
