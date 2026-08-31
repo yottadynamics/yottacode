@@ -104,7 +104,9 @@ jobs:
         run: |
           set -eu
           go install golang.org/x/tools/gopls@latest
-          npm install -g typescript-language-server pyright
+          # Pin TypeScript LS below 6.x because 6.x currently requires Node >=22.22.2,
+          # while GitHub's setup-node 22 image may lag that patch level.
+          npm install -g typescript-language-server@5.1.3 pyright
           curl -L https://github.com/rust-lang/rust-analyzer/releases/latest/download/rust-analyzer-x86_64-unknown-linux-gnu.gz -o /tmp/rust-analyzer.gz
           gzip -d /tmp/rust-analyzer.gz
           chmod +x /tmp/rust-analyzer
