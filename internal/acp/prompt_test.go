@@ -408,7 +408,9 @@ func TestPrompt_ConcurrentPromptForSameSessionIsRejected(t *testing.T) {
 		t.Fatal("expected the second concurrent Prompt call to be rejected")
 	}
 
-	if err := h.clientConn.Cancel(ctx, coderacp.CancelNotification{SessionId: coderacp.SessionId(sessionID)}); err != nil {
+	cancelCtx, cancelCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancelCancel()
+	if err := h.clientConn.Cancel(cancelCtx, coderacp.CancelNotification{SessionId: coderacp.SessionId(sessionID)}); err != nil {
 		t.Fatalf("Cancel: %v", err)
 	}
 	select {
