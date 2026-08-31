@@ -1,8 +1,10 @@
 package agent
 
 import (
+	"archive/zip"
 	"context"
 	"encoding/json"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -444,6 +446,199 @@ func TestCreateDocumentPptxImagePassesValidation(t *testing.T) {
 	}
 	if !strings.Contains(out, "generated pptx (native)") {
 		t.Fatalf("unexpected result: %q", out)
+	}
+}
+
+// TestSlideImageBoundsValidation covers slideImageBounds' actionable-error
+// contract for issue #7 (configurable pptx image placement): unknown
+// presets, mixing a preset with explicit bounds, partially-set explicit
+// bounds, non-positive/negative values, and bounds that overflow the slide.
+func TestSlideImageBoundsValidation(t *testing.T) {
+	f := func(v float64) *float64 { return &v }
+	cases := []struct {
+		name    string
+		slide   createDocumentSlideArg
+		wantErr string
+	}{
+		{
+			name:    "unset returns nil, no error",
+			slide:   createDocumentSlideArg{Image: "x.png"},
+			wantErr: "",
+		},
+		{
+			name:    "layout without image errors",
+			slide:   createDocumentSlideArg{ImageLayout: "left"},
+			wantErr: "no image was given",
+		},
+		{
+			name:    "explicit bounds without image errors",
+			slide:   createDocumentSlideArg{ImageLeft: f(0), ImageTop: f(0), ImageWidth: f(1), ImageHeight: f(1)},
+			wantErr: "no image was given",
+		},
+		{
+			name:    "layout and explicit bounds together errors",
+			slide:   createDocumentSlideArg{Image: "x.png", ImageLayout: "left", ImageLeft: f(0), ImageTop: f(0), ImageWidth: f(1), ImageHeight: f(1)},
+			wantErr: "not both",
+		},
+		{
+			name:    "unknown layout errors",
+			slide:   createDocumentSlideArg{Image: "x.png", ImageLayout: "center"},
+			wantErr: "unknown image_layout",
+		},
+		{
+			name:    "partial explicit bounds errors",
+			slide:   createDocumentSlideArg{Image: "x.png", ImageLeft: f(0), ImageTop: f(0), ImageWidth: f(1)},
+			wantErr: "must all be set together",
+		},
+		{
+			name:    "zero width errors",
+			slide:   createDocumentSlideArg{Image: "x.png", ImageLeft: f(0), ImageTop: f(0), ImageWidth: f(0), ImageHeight: f(1)},
+			wantErr: "must be positive",
+		},
+		{
+			name:    "negative left errors",
+			slide:   createDocumentSlideArg{Image: "x.png", ImageLeft: f(-1), ImageTop: f(0), ImageWidth: f(1), ImageHeight: f(1)},
+			wantErr: "must be non-negative",
+		},
+		{
+			name:    "width overflows slide errors",
+			slide:   createDocumentSlideArg{Image: "x.png", ImageLeft: f(10), ImageTop: f(0), ImageWidth: f(10), ImageHeight: f(1)},
+			wantErr: "exceeds the slide width",
+		},
+		{
+			name:    "height overflows slide errors",
+			slide:   createDocumentSlideArg{Image: "x.png", ImageLeft: f(0), ImageTop: f(6), ImageWidth: f(1), ImageHeight: f(5)},
+			wantErr: "exceeds the slide height",
+		},
+		{
+			name:    "explicit bounds exactly filling the slide is allowed",
+			slide:   createDocumentSlideArg{Image: "x.png", ImageLeft: f(0), ImageTop: f(0), ImageWidth: f(13.333333333333334), ImageHeight: f(7.5)},
+			wantErr: "",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := slideImageBounds(0, tc.slide)
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("expected no error, got %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("expected error containing %q, got %v", tc.wantErr, err)
+			}
+		})
+	}
+}
+
+// pptxSlide1XMLFromFile reads a generated pptx's ppt/slides/slide1.xml so
+// end-to-end tests can assert on the exact geometry create_document wrote,
+// without re-implementing an OOXML parser.
+func pptxSlide1XMLFromFile(t *testing.T, path string) string {
+	t.Helper()
+	zr, err := zip.OpenReader(path)
+	if err != nil {
+		t.Fatalf("open generated pptx: %v", err)
+	}
+	defer zr.Close()
+	for _, f := range zr.File {
+		if f.Name == "ppt/slides/slide1.xml" {
+			rc, err := f.Open()
+			if err != nil {
+				t.Fatalf("open slide1.xml: %v", err)
+			}
+			defer rc.Close()
+			b, err := io.ReadAll(rc)
+			if err != nil {
+				t.Fatalf("read slide1.xml: %v", err)
+			}
+			return string(b)
+		}
+	}
+	t.Fatalf("generated pptx has no ppt/slides/slide1.xml")
+	return ""
+}
+
+// TestCreateDocumentPptxImageLayoutPresets is the end-to-end version of
+// TestSlideImageBoundsValidation's "layout" cases: each preset must reach
+// the native renderer and produce distinct, correct geometry.
+func TestCreateDocumentPptxImageLayoutPresets(t *testing.T) {
+	cases := []struct {
+		layout  string
+		wantOff string
+		wantExt string
+	}{
+		{"right", `<a:off x="6553200" y="1463040"/>`, `<a:ext cx="5029200" cy="3429000"/>`},
+		{"left", `<a:off x="609600" y="1463040"/>`, `<a:ext cx="5029200" cy="3429000"/>`},
+		{"full", `<a:off x="0" y="0"/>`, `<a:ext cx="12192000" cy="6858000"/>`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.layout, func(t *testing.T) {
+			tmp := t.TempDir()
+			img := filepath.Join(tmp, "chart.png")
+			if err := os.WriteFile(img, minimalPNG(), 0o644); err != nil {
+				t.Fatalf("seed image: %v", err)
+			}
+			tool := &CreateDocumentTool{Cwd: NewCwdRef(tmp), WriteOpts: WritePathOptions{Cwd: NewCwdRef(tmp)}}
+			args := `{"format":"pptx","output_path":"out.pptx","content":{"slides":[{"title":"x","image":"chart.png","image_layout":"` + tc.layout + `"}]}}`
+			if _, err := tool.Execute(context.Background(), args); err != nil {
+				t.Fatalf("Execute: %v", err)
+			}
+			xml := pptxSlide1XMLFromFile(t, filepath.Join(tmp, "out.pptx"))
+			if !strings.Contains(xml, tc.wantOff) {
+				t.Errorf("layout=%s: expected offset %q in\n%s", tc.layout, tc.wantOff, xml)
+			}
+			if !strings.Contains(xml, tc.wantExt) {
+				t.Errorf("layout=%s: expected extent %q in\n%s", tc.layout, tc.wantExt, xml)
+			}
+		})
+	}
+}
+
+// TestCreateDocumentPptxImageExplicitBounds confirms image_left/top/width/
+// height (inches) convert to the correct EMU rectangle end to end.
+func TestCreateDocumentPptxImageExplicitBounds(t *testing.T) {
+	tmp := t.TempDir()
+	img := filepath.Join(tmp, "chart.png")
+	if err := os.WriteFile(img, minimalPNG(), 0o644); err != nil {
+		t.Fatalf("seed image: %v", err)
+	}
+	tool := &CreateDocumentTool{Cwd: NewCwdRef(tmp), WriteOpts: WritePathOptions{Cwd: NewCwdRef(tmp)}}
+	args := `{"format":"pptx","output_path":"out.pptx","content":{"slides":[{"title":"x","image":"chart.png",` +
+		`"image_left":1,"image_top":2,"image_width":3,"image_height":4}]}}`
+	if _, err := tool.Execute(context.Background(), args); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	xml := pptxSlide1XMLFromFile(t, filepath.Join(tmp, "out.pptx"))
+	wantOff := `<a:off x="914400" y="1828800"/>`
+	wantExt := `<a:ext cx="2743200" cy="3657600"/>`
+	if !strings.Contains(xml, wantOff) {
+		t.Errorf("expected offset %q in\n%s", wantOff, xml)
+	}
+	if !strings.Contains(xml, wantExt) {
+		t.Errorf("expected extent %q in\n%s", wantExt, xml)
+	}
+}
+
+// TestCreateDocumentPptxImageBoundsOverflowRejected is the end-to-end
+// version of TestSlideImageBoundsValidation's overflow case: Execute must
+// surface the actionable error, not a corrupted or clamped pptx.
+func TestCreateDocumentPptxImageBoundsOverflowRejected(t *testing.T) {
+	tmp := t.TempDir()
+	img := filepath.Join(tmp, "chart.png")
+	if err := os.WriteFile(img, minimalPNG(), 0o644); err != nil {
+		t.Fatalf("seed image: %v", err)
+	}
+	tool := &CreateDocumentTool{Cwd: NewCwdRef(tmp), WriteOpts: WritePathOptions{Cwd: NewCwdRef(tmp)}}
+	args := `{"format":"pptx","output_path":"out.pptx","content":{"slides":[{"title":"x","image":"chart.png",` +
+		`"image_left":10,"image_top":0,"image_width":10,"image_height":1}]}}`
+	_, err := tool.Execute(context.Background(), args)
+	if err == nil || !strings.Contains(err.Error(), "exceeds the slide width") {
+		t.Fatalf("expected an overflow validation error, got %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(tmp, "out.pptx")); statErr == nil {
+		t.Errorf("expected no output file to be written when validation fails")
 	}
 }
 

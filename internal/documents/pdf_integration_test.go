@@ -150,7 +150,7 @@ func TestPDFExtractor_RealPdfplumberTableRoundTrip(t *testing.T) {
 // small amount of prose between them into one garbled "table",
 // fragmenting the prose into spurious cells (verified manually:
 // "Second table:" split into "econd t"/"a"/"ble:") — see
-// roadmap/document-generation.md's Phasing item 4 and
+// docs/document-generation.md's Phasing item 4 and
 // docs/document-generation.md's Known limitations. This test does NOT
 // assert the table tier produces clean output here — it asserts the
 // "best-effort, additive, never harms the primary result" contract:

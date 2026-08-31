@@ -85,6 +85,77 @@ func TestPDFExtractorSplitsPagesWithLabels(t *testing.T) {
 	}
 }
 
+func TestPDFExtractorMetadataFromPdfinfo(t *testing.T) {
+	path := writePDFFixture(t, 10)
+	run := fakeRunner(t, map[string]fakeRunnerCall{
+		"pdfinfo":   {stdout: "Title:          Q3 Report\nAuthor:         Jane Doe\nCreationDate:   Mon Jan  1 00:00:00 2024\nPages:          1\n"},
+		"pdftotext": {stdout: "page one\f"},
+	})
+	e := &PDFExtractor{Run: run}
+	res, err := e.Extract(context.Background(), ExtractRequest{Path: path})
+	if err != nil {
+		t.Fatalf("Extract: %v", err)
+	}
+	if res.Metadata.Title != "Q3 Report" {
+		t.Errorf("Metadata.Title = %q, want %q", res.Metadata.Title, "Q3 Report")
+	}
+	if res.Metadata.Author != "Jane Doe" {
+		t.Errorf("Metadata.Author = %q, want %q", res.Metadata.Author, "Jane Doe")
+	}
+	if res.Metadata.CreationDate != "Mon Jan  1 00:00:00 2024" {
+		t.Errorf("Metadata.CreationDate = %q, want %q", res.Metadata.CreationDate, "Mon Jan  1 00:00:00 2024")
+	}
+}
+
+func TestPDFExtractorNoMetadataFieldsLeftEmpty(t *testing.T) {
+	path := writePDFFixture(t, 10)
+	run := fakeRunner(t, map[string]fakeRunnerCall{
+		"pdfinfo":   {stdout: "Pages:          1\n"},
+		"pdftotext": {stdout: "page one\f"},
+	})
+	e := &PDFExtractor{Run: run}
+	res, err := e.Extract(context.Background(), ExtractRequest{Path: path})
+	if err != nil {
+		t.Fatalf("Extract: %v", err)
+	}
+	if res.Metadata.Title != "" || res.Metadata.Author != "" || res.Metadata.CreationDate != "" {
+		t.Errorf("expected empty metadata fields when pdfinfo reports none, got %+v", res.Metadata)
+	}
+}
+
+// TestPDFExtractorEncryptedDetectedViaPdfinfoShortCircuits confirms the
+// robust path: when pdfinfo itself reports Encrypted: yes, Extract must
+// return the warning immediately without ever calling pdftotext at all
+// (a pdftotext stub that panics/fails would otherwise reveal a bug here).
+func TestPDFExtractorEncryptedDetectedViaPdfinfoShortCircuits(t *testing.T) {
+	path := writePDFFixture(t, 10)
+	pdftotextCalled := false
+	run := func(ctx context.Context, command string) ([]byte, []byte, error) {
+		if strings.HasPrefix(command, "pdfinfo") {
+			return []byte("Pages:          3\nEncrypted:      yes (print:no copy:no change:no addNotes:no)\n"), nil, nil
+		}
+		pdftotextCalled = true
+		return nil, nil, errAny
+	}
+	e := &PDFExtractor{Run: run}
+	res, err := e.Extract(context.Background(), ExtractRequest{Path: path})
+	if err != nil {
+		t.Fatalf("expected an encrypted PDF to be a warning, not an error: %v", err)
+	}
+	if pdftotextCalled {
+		t.Errorf("expected pdftotext never to be called once pdfinfo reported Encrypted: yes")
+	}
+	found := false
+	for _, w := range res.Warnings {
+		if strings.Contains(w, "encrypted") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected an encrypted-PDF warning, got %v", res.Warnings)
+	}
+}
+
 func TestPDFExtractorOffsetSkipsPagesViaPageRange(t *testing.T) {
 	path := writePDFFixture(t, 10)
 	var seenCmd string
@@ -246,7 +317,7 @@ func TestPDFExtractorRejectsOversizedFile(t *testing.T) {
 	}
 }
 
-func TestParsePDFInfoPages(t *testing.T) {
+func TestParsePDFInfo_Pages(t *testing.T) {
 	cases := map[string]int{
 		"Title: x\nPages:          12\nEncrypted: no\n": 12,
 		"Pages: 1\n":           1,
@@ -255,9 +326,55 @@ func TestParsePDFInfoPages(t *testing.T) {
 		"Pages:abc\n":          0,
 	}
 	for in, want := range cases {
-		if got := parsePDFInfoPages(in); got != want {
-			t.Errorf("parsePDFInfoPages(%q) = %d, want %d", in, got, want)
+		if got := parsePDFInfo(in).Pages; got != want {
+			t.Errorf("parsePDFInfo(%q).Pages = %d, want %d", in, got, want)
 		}
+	}
+}
+
+func TestParsePDFInfo_TitleAuthorCreationDate(t *testing.T) {
+	out := "Title:          Q3 Report\nAuthor:         Jane Doe\nCreationDate:   Mon Jan  1 00:00:00 2024\nPages:          3\n"
+	info := parsePDFInfo(out)
+	if info.Title != "Q3 Report" {
+		t.Errorf("Title = %q, want %q", info.Title, "Q3 Report")
+	}
+	if info.Author != "Jane Doe" {
+		t.Errorf("Author = %q, want %q", info.Author, "Jane Doe")
+	}
+	if info.CreationDate != "Mon Jan  1 00:00:00 2024" {
+		t.Errorf("CreationDate = %q, want %q", info.CreationDate, "Mon Jan  1 00:00:00 2024")
+	}
+}
+
+func TestParsePDFInfo_EmptyFieldsOmitted(t *testing.T) {
+	out := "Title:          \nSubject:        \nPages:          1\n"
+	info := parsePDFInfo(out)
+	if info.Title != "" {
+		t.Errorf("Title = %q, want empty for a blank pdfinfo field", info.Title)
+	}
+}
+
+func TestParsePDFInfo_Encrypted(t *testing.T) {
+	cases := []struct {
+		name          string
+		out           string
+		wantKnown     bool
+		wantEncrypted bool
+	}{
+		{"reported no", "Pages: 1\nEncrypted:      no\n", true, false},
+		{"reported yes with permission detail", "Pages: 1\nEncrypted:      yes (print:yes copy:no change:no addNotes:no)\n", true, true},
+		{"not reported at all", "Pages: 1\n", false, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			info := parsePDFInfo(tc.out)
+			if info.EncryptedKnown != tc.wantKnown {
+				t.Errorf("EncryptedKnown = %v, want %v", info.EncryptedKnown, tc.wantKnown)
+			}
+			if info.Encrypted != tc.wantEncrypted {
+				t.Errorf("Encrypted = %v, want %v", info.Encrypted, tc.wantEncrypted)
+			}
+		})
 	}
 }
 
