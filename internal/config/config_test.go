@@ -59,10 +59,33 @@ func TestDefault_SandboxUsesNamedDefaultImage(t *testing.T) {
 }
 
 func TestDefault_SandboxUsesHostNetwork(t *testing.T) {
-	// Host networking is a temporary default so sandboxed developer commands can
-	// download dependencies until yottacode grows a per-destination allowlist.
+	// Host networking is the intentional default: it shares the host's network
+	// stack directly, so whatever network-layer policy the host/organization
+	// already enforces (transparent proxy, firewall) already covers sandboxed
+	// commands for free. An in-house egress allowlist was considered and
+	// declined for exactly this reason (see roadmap/sandbox-podman.md).
 	if got := Default().Sandbox.Network; got != "host" {
 		t.Fatalf("Default().Sandbox.Network = %q, want host", got)
+	}
+}
+
+func TestDefault_SandboxUsesNamedDiskQuota(t *testing.T) {
+	if got := Default().Sandbox.Disk; got != DefaultSandboxDisk {
+		t.Fatalf("Default().Sandbox.Disk = %d, want %d", got, DefaultSandboxDisk)
+	}
+}
+
+func TestLoad_RejectsNegativeSandboxDisk(t *testing.T) {
+	src := `[sandbox]
+backend = "podman"
+disk = -1
+`
+	_, err := Load(writeFile(t, src))
+	if err == nil {
+		t.Fatal("expected negative sandbox.disk to fail")
+	}
+	if !strings.Contains(err.Error(), "sandbox.disk") {
+		t.Fatalf("error should mention sandbox.disk, got %v", err)
 	}
 }
 

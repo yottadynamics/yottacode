@@ -9,7 +9,7 @@ import (
 // Type; unused fields are left zero. Deliberately mirrors Pandoc's own
 // block shape (heading, paragraph, list, table, code, image) rather than
 // inventing a new schema, since Pandoc is the generation backend for
-// docx/pdf — see roadmap/document-generation.md.
+// docx/pdf — see docs/document-generation.md.
 type Block struct {
 	// Type selects which other fields apply: "heading", "paragraph",
 	// "list", "table", "code", or "image".
@@ -75,7 +75,7 @@ type Span struct {
 }
 
 // DocAST is the block-tree intermediate representation for docx/pdf
-// generation — see roadmap/document-generation.md's "Two canonical
+// generation — see docs/document-generation.md's "Two canonical
 // intermediate representations". Rendered to Pandoc-flavored Markdown by
 // RenderMarkdown, then handed to pandoc for the actual docx/pdf conversion.
 type DocAST struct {

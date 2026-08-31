@@ -113,7 +113,20 @@ func NewPodmanSandbox(ctx context.Context, cfg config.SandboxConfig, id, mountRo
 	// is the overwhelmingly common case and not worth surfacing.
 	_ = removeContainer(ctx, name)
 
-	args, err := podmanRunArgs(cfg, name, mountRoot)
+	// Both probes degrade to false rather than failing sandbox startup — a
+	// host that can't honor cgroup limits or a disk quota still gets a
+	// correctly filesystem/network-isolated sandbox, just without that one
+	// resource cap. Not surfaced as a live warning: container creation is
+	// lazy (first tool use, not session startup), so there is no session-
+	// startup hook to report through, and this package cannot write
+	// directly to the terminal without risking corrupting a live TUI
+	// screen. See hostcaps.go and docs/sandbox.md's Hardening section.
+	caps := hostCapabilities{
+		StorageOpt:   storageOptSupported(ctx, cfg.Image),
+		CgroupLimits: cgroupLimitsSupported(ctx, cfg.Image),
+	}
+
+	args, err := podmanRunArgs(cfg, name, mountRoot, caps)
 	if err != nil {
 		return nil, err
 	}
@@ -138,8 +151,9 @@ func NewPodmanSandbox(ctx context.Context, cfg config.SandboxConfig, id, mountRo
 
 // podmanRunArgs builds the podman run argv after mount-root validation.
 // Keeping this pure lets unit tests pin security-sensitive flags (including
-// DNS) without starting a real container.
-func podmanRunArgs(cfg config.SandboxConfig, name, mountRoot string) ([]string, error) {
+// DNS) without starting a real container. caps gates the resource-limit
+// flags that not every host can honor — see hostCapabilities.
+func podmanRunArgs(cfg config.SandboxConfig, name, mountRoot string, caps hostCapabilities) ([]string, error) {
 	args := []string{
 		"run", "-d", "--name", name,
 		// Namespace isolation (PID/IPC/UTS/mount/user/network) is podman's
@@ -154,19 +168,36 @@ func podmanRunArgs(cfg config.SandboxConfig, name, mountRoot string) ([]string, 
 		"--userns=keep-id",
 		"--cap-drop=ALL",
 		"--security-opt=no-new-privileges",
-		fmt.Sprintf("--pids-limit=%d", cfg.PidsLimit),
-		fmt.Sprintf("--memory=%s", cfg.Memory),
-		// Without an explicit --memory-swap, a process can spill past
-		// --memory into swap and the limit above stops being real
-		// pressure. Setting it equal to --memory disables swap for this
-		// container entirely (verified: memory.swap.max reads 0 with
-		// this pairing) rather than leaving it at podman's default
-		// (memory-swap unset, which lets the container swap up to double
-		// its memory limit — or unlimited, depending on host config).
-		fmt.Sprintf("--memory-swap=%s", cfg.Memory),
-		fmt.Sprintf("--cpus=%v", cfg.CPUs),
 		fmt.Sprintf("--network=%s", cfg.Network),
 		fmt.Sprintf("--tmpfs=/tmp:rw,noexec,nosuid,nodev,size=%s", tmpTmpfsSize),
+	}
+	// Gated on caps.CgroupLimits: a host without the cpu/memory/pids
+	// cgroup controllers delegated to this process (unprivileged LXCs,
+	// some nested-container/CI/cloud-VM setups) fails EVERY container
+	// start with these flags present — see hostcaps.go. Degrading to no
+	// resource limits on such a host still gets a correctly filesystem/
+	// network-isolated sandbox, which is strictly better than no sandbox.
+	if caps.CgroupLimits {
+		args = append(args,
+			fmt.Sprintf("--pids-limit=%d", cfg.PidsLimit),
+			fmt.Sprintf("--memory=%s", cfg.Memory),
+			// Without an explicit --memory-swap, a process can spill past
+			// --memory into swap and the limit above stops being real
+			// pressure. Setting it equal to --memory disables swap for this
+			// container entirely (verified: memory.swap.max reads 0 with
+			// this pairing) rather than leaving it at podman's default
+			// (memory-swap unset, which lets the container swap up to double
+			// its memory limit — or unlimited, depending on host config).
+			fmt.Sprintf("--memory-swap=%s", cfg.Memory),
+			fmt.Sprintf("--cpus=%v", cfg.CPUs),
+		)
+	}
+	// Gated on caps.StorageOpt: only the overlay storage driver on XFS
+	// with pquota honors --storage-opt size= (most Linux hosts run ext4,
+	// where it errors every container start) — see hostcaps.go. cfg.Disk
+	// <= 0 means no quota was requested at all.
+	if caps.StorageOpt && cfg.Disk > 0 {
+		args = append(args, fmt.Sprintf("--storage-opt=size=%dm", cfg.Disk))
 	}
 	// Podman rejects --dns together with --network=none. No egress means no
 	// resolver is usable anyway, so only pass DNS for networked sandboxes.

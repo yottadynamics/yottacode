@@ -39,6 +39,29 @@ func TestReadDocumentTool_HappyPath(t *testing.T) {
 	}
 }
 
+func TestFormatDocumentResult_TitleAuthorCreationDate(t *testing.T) {
+	res := documents.ExtractResult{Metadata: documents.DocumentMetadata{
+		Kind: "pdf", SizeBytes: 100, Shape: "3 pages",
+		Title: "Q3 Report", Author: "Jane Doe", CreationDate: "Mon Jan  1 00:00:00 2024",
+	}}
+	out := formatDocumentResult("report.pdf", res)
+	for _, want := range []string{"title: Q3 Report", "author: Jane Doe", "created: Mon Jan  1 00:00:00 2024"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output missing %q: %q", want, out)
+		}
+	}
+}
+
+func TestFormatDocumentResult_NoMetadataFieldsOmitted(t *testing.T) {
+	res := documents.ExtractResult{Metadata: documents.DocumentMetadata{Kind: "pdf", SizeBytes: 100}}
+	out := formatDocumentResult("report.pdf", res)
+	for _, notWant := range []string{"title:", "author:", "created:"} {
+		if strings.Contains(out, notWant) {
+			t.Errorf("expected no %q line when the field is empty, got %q", notWant, out)
+		}
+	}
+}
+
 func TestReadDocumentTool_AbsolutePath(t *testing.T) {
 	tmp := t.TempDir()
 	path := writeFile(t, tmp, "abs.json", `{"a": 1}`)
