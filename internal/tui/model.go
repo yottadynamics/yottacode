@@ -752,10 +752,11 @@ type Model struct {
 	paragraphStart bool
 
 	// Approval modal state
-	awaitingApproval     bool
-	approvalTool         string
-	approvalPreview      string
-	approvalArgs         string
+	awaitingApproval bool
+	approvalTool     string
+	approvalPreview  string
+	approvalArgs     string
+
 	approvalScrollOffset int
 	// approvalAllowAlwaysOK gates the [a]lways-allow keypress. Set
 	// true when DeriveAllowRule can produce a sensible pattern from

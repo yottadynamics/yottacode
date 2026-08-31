@@ -61,6 +61,10 @@ func renderApprovalModal(m Model, hits ...*pickerHits) string {
 	previewBudget := approvalPreviewBudget(m.height, len(hotkeyLines))
 	previewLines, hint := windowApprovalPreviewLines(previewLines, previewBudget, m.approvalScrollOffset)
 
+	// The border already carries the approval title and tool name. Keep the
+	// modal body focused on the preview so the title is not repeated inside
+	// the decision card.
+
 	bodyLines := []string{strings.Repeat(" ", approvalModalTargetInnerWidth(capW))}
 	bodyLines = append(bodyLines, previewLines...)
 	if hint != "" {

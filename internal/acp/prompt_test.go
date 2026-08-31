@@ -408,9 +408,17 @@ func TestPrompt_ConcurrentPromptForSameSessionIsRejected(t *testing.T) {
 		t.Fatal("expected the second concurrent Prompt call to be rejected")
 	}
 
-	if err := h.clientConn.Cancel(ctx, coderacp.CancelNotification{SessionId: coderacp.SessionId(sessionID)}); err != nil {
+	// Use a fresh context for the cancel notification. If the concurrent
+	// Prompt response is delayed under -race load, the orchestration context
+	// may be near its deadline; cancellation still needs its own delivery
+	// budget so this test reports the prompt behavior instead of a stale
+	// context on session/cancel.
+	cancelCtx, cancelCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancelCancel()
+	if err := h.clientConn.Cancel(cancelCtx, coderacp.CancelNotification{SessionId: coderacp.SessionId(sessionID)}); err != nil {
 		t.Fatalf("Cancel: %v", err)
 	}
+
 	select {
 	case err := <-promptErr:
 		if err != nil {

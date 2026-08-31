@@ -105,7 +105,9 @@ jobs:
           set -eu
           go install golang.org/x/tools/gopls@latest
           npm install -g typescript-language-server pyright
-          curl -L https://github.com/rust-lang/rust-analyzer/releases/latest/download/rust-analyzer-x86_64-unknown-linux-gnu.gz -o /tmp/rust-analyzer.gz
+          curl --fail --location --show-error --retry 5 --retry-all-errors --output /tmp/rust-analyzer.gz \
+            https://github.com/rust-lang/rust-analyzer/releases/latest/download/rust-analyzer-x86_64-unknown-linux-gnu.gz
+          gzip -t /tmp/rust-analyzer.gz
           gzip -d /tmp/rust-analyzer.gz
           chmod +x /tmp/rust-analyzer
           sudo mv /tmp/rust-analyzer /usr/local/bin/rust-analyzer

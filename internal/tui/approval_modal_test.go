@@ -73,6 +73,20 @@ func TestRenderApprovalModal_BracketsFirstNoInlinePermissionsDetail(t *testing.T
 	}
 }
 
+func TestRenderApprovalModal_DoesNotRepeatApprovalTitleInBody(t *testing.T) {
+	m := newTestModel(t)
+	m.width = 80
+	m.awaitingApproval = true
+	m.approvalTool = "run_tests"
+	m.approvalPreview = "run_tests go test ./..."
+	m.approvalArgs = `{"command":"go test ./..."}`
+
+	got := stripANSI(renderApprovalModal(m))
+	if count := strings.Count(got, "Approval needed"); count != 1 {
+		t.Fatalf("approval title count = %d, want 1 in modal border only:\n%s", count, got)
+	}
+}
+
 func TestRenderApprovalModal_HasNoPopupCloseGlyph(t *testing.T) {
 	m := newTestModel(t)
 	m.width = 80
