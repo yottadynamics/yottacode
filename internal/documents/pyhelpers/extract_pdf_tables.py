@@ -1,10 +1,25 @@
 #!/usr/bin/env python3
-"""Extract tables from a PDF via pdfplumber, printing one JSON object to
-stdout: {"pages": [{"page": N, "tables": [{"rows": [["a","b"], ...]}]}]}.
+"""Extract tables and image metadata from a PDF via pdfplumber, printing
+one JSON object to stdout:
+{"pages": [{"page": N, "tables": [{"rows": [["a","b"], ...]}],
+"images": [{"width_pt": .., "height_pt": .., "src_width_px": ..,
+"src_height_px": ..}]}]}.
 
-A page with no detected tables still appears with an empty "tables"
-list, so the caller can tell "checked, found nothing" apart from
-"never checked" (e.g. because --start/--end excluded it).
+Both ride in one script/subprocess call rather than two, since both
+just read properties off the same already-open pdfplumber Page object
+per page — no separate pass, no separate python3 invocation, no
+separate script-materialization cost for what's fundamentally the same
+per-page walk. width_pt/height_pt are the image's placed size on the
+page (PDF points, 72/inch); src_width_px/src_height_px are the source
+image's own intrinsic pixel resolution (pdfplumber's "srcsize"),
+omitted when pdfplumber couldn't determine it. Never the image bytes
+themselves — this is a metadata-only pass, same contract
+docx/pptx/xlsx image extraction already follows.
+
+A page with no detected tables/images still appears with empty
+"tables"/"images" lists, so the caller can tell "checked, found
+nothing" apart from "never checked" (e.g. because --start/--end
+excluded it).
 
 Usage: extract_pdf_tables.py <input.pdf> [--start N] [--end N]
 Exit 1 with a message on stderr for: pdfplumber not installed, the
@@ -58,6 +73,21 @@ def extract_page_tables(page):
     return out
 
 
+def extract_page_images(page):
+    out = []
+    for img in page.images:
+        entry = {
+            "width_pt": round(img.get("width") or 0, 2),
+            "height_pt": round(img.get("height") or 0, 2),
+        }
+        srcsize = img.get("srcsize")
+        if srcsize and len(srcsize) == 2 and srcsize[0] and srcsize[1]:
+            entry["src_width_px"] = int(srcsize[0])
+            entry["src_height_px"] = int(srcsize[1])
+        out.append(entry)
+    return out
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("input")
@@ -88,7 +118,11 @@ def main():
         pages_out = []
         for i in range(start - 1, end):
             page = pdf.pages[i]
-            pages_out.append({"page": i + 1, "tables": extract_page_tables(page)})
+            pages_out.append({
+                "page": i + 1,
+                "tables": extract_page_tables(page),
+                "images": extract_page_images(page),
+            })
 
         print(json.dumps({"pages": pages_out}))
         return 0

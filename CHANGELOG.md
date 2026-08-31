@@ -57,6 +57,52 @@ the project uses semantic versioning once it's past `1.0.0`.
   ranked by relevance instead of requiring blind `offset` paging. See
   [`tools.md`](docs/tools.md#search_document).
 
+- **Configurable pptx image placement and richer pptx image extraction.**
+  `create_document`'s pptx slides gain `image_layout` (`left`/`right`/`full`
+  presets) and explicit `image_left`/`image_top`/`image_width`/`image_height`
+  (inches) for exact bounding-box placement — mutually exclusive with each
+  other, validated against the 13.33in x 7.5in slide with actionable errors,
+  and fully backward-compatible: a slide with neither set generates the same
+  fixed right-half layout as before. `read_document`'s pptx path now also
+  returns a `slide N image M` section per picture — file name, size, and alt
+  text — the same metadata-only, never-image-bytes contract its existing
+  `slide N table M` sections already follow. See
+  [`document-generation.md`](docs/document-generation.md#known-limitations)
+  and [`tools.md`](docs/tools.md#create_document).
+
+- **xlsx formulas/merged cells/embedded pictures, and docx embedded
+  pictures, in `read_document`.** xlsx now returns a `sheet X formulas`
+  section for cells with a formula (`GetRows` only ever surfaces the
+  cached computed value, which is empty for a freshly generated formula
+  cell with nothing cached yet), a `sheet X merged cells` section when
+  any exist, and a `sheet X image <cell>-N` section per embedded
+  picture (type, pixel size, alt text). docx gains a `document image N`
+  section per inline picture, independent of whether the native or
+  `pandoc` tier served the body text. All new image/picture sections
+  are metadata only, matching pptx's existing contract — never image
+  bytes. See
+  [`document-generation.md`](docs/document-generation.md#known-limitations)
+  and [`tools.md`](docs/tools.md#read_document).
+
+- **PDF document metadata, more robust encrypted detection, and PDF
+  image metadata, in `read_document`.** `pdfinfo` output (already
+  fetched for the page count) now also supplies `Title`/`Author`/
+  `CreationDate`, surfaced as `title`/`author`/`created` lines above
+  the preview when present, and a structural `Encrypted: yes/no` field
+  used as the primary encrypted-PDF signal — short-circuits before even
+  attempting `pdftotext`, falling back to the previous stderr-text
+  heuristic only when `pdfinfo` doesn't report the field (older
+  poppler, or a failed `pdfinfo` call). `extract_pdf_tables.py` (the
+  optional `pdfplumber`-backed tier) now additionally reports detected
+  images per page — `page N image M` sections with placed size in
+  inches and, when determinable, the source image's own pixel
+  resolution — riding in the same script call as table extraction
+  rather than a second subprocess, since both just read properties off
+  the same already-open page. Metadata only, matching every other
+  format's image-section contract — never image bytes. See
+  [`document-generation.md`](docs/document-generation.md#known-limitations)
+  and [`tools.md`](docs/tools.md#read_document).
+
 ### Changed
 
 - **`create_document` and `read_document` graduated to GA for every format,

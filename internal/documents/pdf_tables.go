@@ -24,34 +24,60 @@ type pyTableExtractionOutput struct {
 		Tables []struct {
 			Rows [][]string `json:"rows"`
 		} `json:"tables"`
+		Images []struct {
+			WidthPt     float64 `json:"width_pt"`
+			HeightPt    float64 `json:"height_pt"`
+			SrcWidthPx  int     `json:"src_width_px"`
+			SrcHeightPx int     `json:"src_height_px"`
+		} `json:"images"`
 	} `json:"pages"`
 }
 
-// pageTables is one PDF page's detected tables, 1-indexed to match
-// pdftotext's own page numbering used elsewhere in this file. Each
-// table is plain rows — pdfplumber doesn't distinguish a header row
-// from body rows, so unlike Block's table type (built for generation,
-// where the caller supplies an explicit header) this has none to
-// preserve.
-type pageTables struct {
+// pdfImage is one image pdfplumber found on a PDF page: its placed
+// size on the page (WidthPt/HeightPt, PDF points) and, when
+// pdfplumber could determine it, the source image's own intrinsic
+// pixel resolution (SrcWidthPx/SrcHeightPx, both 0 when unknown).
+// Never the image bytes themselves.
+type pdfImage struct {
+	WidthPt, HeightPt       float64
+	SrcWidthPx, SrcHeightPx int
+}
+
+// pagePDFExtraction is one PDF page's detected tables and images,
+// 1-indexed to match pdftotext's own page numbering used elsewhere in
+// this file. Each table is plain rows — pdfplumber doesn't distinguish
+// a header row from body rows, so unlike Block's table type (built for
+// generation, where the caller supplies an explicit header) this has
+// none to preserve. Tables and images travel together because both
+// come from one extract_pdf_tables.py invocation (see that script's
+// own doc comment for why they ride in one subprocess call).
+type pagePDFExtraction struct {
 	Page   int
 	Tables [][][]string
+	Images []pdfImage
 }
 
 // parsePythonTableJSON parses extract_pdf_tables.py's stdout. Pure
 // function — no I/O, unit-testable with canned JSON.
-func parsePythonTableJSON(out []byte) ([]pageTables, error) {
+func parsePythonTableJSON(out []byte) ([]pagePDFExtraction, error) {
 	var parsed pyTableExtractionOutput
 	if err := json.Unmarshal(out, &parsed); err != nil {
 		return nil, fmt.Errorf("documents: parse table-extraction output: %w", err)
 	}
-	pages := make([]pageTables, 0, len(parsed.Pages))
+	pages := make([]pagePDFExtraction, 0, len(parsed.Pages))
 	for _, p := range parsed.Pages {
 		tables := make([][][]string, 0, len(p.Tables))
 		for _, t := range p.Tables {
 			tables = append(tables, t.Rows)
 		}
-		pages = append(pages, pageTables{Page: p.Page, Tables: tables})
+		images := make([]pdfImage, 0, len(p.Images))
+		for _, img := range p.Images {
+			images = append(images, pdfImage{
+				WidthPt: img.WidthPt, HeightPt: img.HeightPt,
+				SrcWidthPx: img.SrcWidthPx, SrcHeightPx: img.SrcHeightPx,
+			})
+		}
+		pages = append(pages, pagePDFExtraction{Page: p.Page, Tables: tables, Images: images})
 	}
 	return pages, nil
 }
@@ -63,7 +89,7 @@ func parsePythonTableJSON(out []byte) ([]pageTables, error) {
 // formats. Pages/tables with zero rows are skipped — pdfplumber can
 // return an empty table for a false-positive detection, and an empty
 // section would be noise, not signal.
-func buildTableSections(pages []pageTables) []DocumentSection {
+func buildTableSections(pages []pagePDFExtraction) []DocumentSection {
 	var sections []DocumentSection
 	for _, p := range pages {
 		for i, rows := range p.Tables {
@@ -86,8 +112,39 @@ func buildTableSections(pages []pageTables) []DocumentSection {
 	return sections
 }
 
+// buildPDFImageSections renders every image pdfplumber found across
+// pages as a labeled DocumentSection: "page N image M". Size is
+// reported in inches (points / 72), matching the unit pptx/docx image
+// sections already use; the source image's own pixel resolution is
+// appended when pdfplumber could determine it. Metadata only — never
+// image bytes, the same contract imageSectionText's callers follow for
+// docx/pptx/xlsx.
+func buildPDFImageSections(pages []pagePDFExtraction) []DocumentSection {
+	var sections []DocumentSection
+	for _, p := range pages {
+		for i, img := range p.Images {
+			var parts []string
+			if img.WidthPt > 0 && img.HeightPt > 0 {
+				text := fmt.Sprintf("size: %.2fin x %.2fin", img.WidthPt/72, img.HeightPt/72)
+				if img.SrcWidthPx > 0 && img.SrcHeightPx > 0 {
+					text += fmt.Sprintf(" (%dx%d px source)", img.SrcWidthPx, img.SrcHeightPx)
+				}
+				parts = append(parts, text)
+			}
+			if len(parts) == 0 {
+				continue
+			}
+			sections = append(sections, DocumentSection{
+				Label: fmt.Sprintf("page %d image %d", p.Page, i+1),
+				Text:  strings.Join(parts, ", "),
+			})
+		}
+	}
+	return sections
+}
+
 // buildTableExtractionCommand builds the shell command line
-// extractTables runs. Pure function (no I/O) so its output shape is
+// extractTablesAndImages runs. Pure function (no I/O) so its output shape is
 // unit-testable without python installed, mirroring
 // internal/agent's buildPandocCommand.
 func buildTableExtractionCommand(scriptPath, pdfPath string, startPage, endPage int) string {

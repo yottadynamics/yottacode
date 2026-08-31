@@ -331,13 +331,21 @@ PDF extraction runs `pdftotext`/`pdfinfo` (poppler), routed through the
 same documents sandbox profile `create_document`'s docx/pdf path uses:
 installed on the host when no sandbox is configured, or present in
 `[sandbox].documents_image` when one is. Each page becomes its own
-labeled section (`page 3`); an encrypted PDF comes back as a warning,
-not an error, since that's still a valid, actionable result. When
-`python3`+`pdfplumber` are also reachable through that same documents
-profile or host PATH, detected tables come back as additional
-`page N table M` sections with pipe-joined rows — best-effort and
-completely silent (no warning either) when that dependency isn't
-available or a page genuinely has no tables. A page with no embedded
+labeled section (`page 3`); `pdfinfo`'s own `Title`/`Author`/
+`CreationDate` fields, when present, come back as `title`/`author`/
+`created` lines above the preview. An encrypted PDF comes back as a
+warning, not an error, since that's still a valid, actionable result —
+detected from `pdfinfo`'s structural `Encrypted` field when it reports
+one, falling back to a `pdftotext`-stderr heuristic otherwise (older
+poppler, or a failed `pdfinfo` call). When `python3`+`pdfplumber` are
+also reachable through that same documents profile or host PATH,
+detected tables come back as additional `page N table M` sections with
+pipe-joined rows, and detected images as `page N image M` sections
+(placed size in inches, plus the source image's own pixel resolution
+when known — never image bytes; both ride in one `pdfplumber` call,
+since both just read properties off the same already-open page) —
+best-effort and completely silent (no warning either) when that
+dependency isn't available or a page genuinely has neither. A page with no embedded
 text layer at all falls back to OCR when
 `python3`+`pytesseract`+`pdf2image`+`tesseract-ocr` are reachable the
 same way — per page, not just when the whole requested range is blank,
@@ -352,14 +360,29 @@ section. See [`document-generation.md`](document-generation.md#requirements).
 xlsx, docx, and pptx are parsed natively — no external tools, no
 sandbox involved, work identically on every platform. xlsx (via
 [excelize], the same library `create_document` uses for generation)
-returns one section per sheet (`sheet Q1`). docx is a native zip/XML walk
-of `word/document.xml`: one `document body` section, with `HeadingN`
-paragraph styles rendered as `#`-prefixed lines so structure survives in
-the text preview. pptx walks `ppt/slides/slideN.xml` in numeric slide
-order, one section per slide (`slide 3`) — `max_pages`/`offset` page
-through slides the same way they page through PDF pages. None of the
-three attempt full-fidelity parsing (tables, images, complex formatting,
-embedded objects); that tier is still unbuilt.
+returns one section per sheet (`sheet Q1`), plus a `sheet Q1 formulas`
+section for cells that have one (`excelize.GetRows` only ever returns a
+cell's cached computed value, never the formula, and a freshly
+generated formula cell has no cached value at all — this section is the
+only way to see what actually computes a cell; scoped to whichever rows
+the row/char-capped preview already included), a `sheet Q1 merged
+cells` section when any exist, and a `sheet Q1 image <cell>-N` section
+per embedded picture (type, pixel size, alt text). docx is a native
+zip/XML walk of `word/document.xml`: one `document body` section, with
+`HeadingN` paragraph styles rendered as `#`-prefixed lines so structure
+survives in the text preview, plus a `document image N` section per
+inline picture — independent of whether that native tier or the richer
+`pandoc` tier served the body text. pptx walks `ppt/slides/slideN.xml`
+in numeric slide order, one section per slide (`slide 3`) —
+`max_pages`/`offset` page through slides the same way they page through
+PDF pages — plus a `slide N table M` section (pipe-joined rows) for
+each DrawingML table found on that slide, and a `slide N image M`
+section (file name, size, alt text) for each picture. Every image/
+picture section across all three formats is metadata only, never image
+bytes; read the media file directly via `read_file` if you need the
+actual image. None of the three attempt rich per-run text formatting or
+embedded charts/objects (excelize itself has no chart-*reading* API,
+only chart-writing); that tier is still unbuilt.
 
 [excelize]: https://github.com/xuri/excelize
 
@@ -491,9 +514,12 @@ text; the streaming extractors grow only linearly with the allowance.
 Read-only, no approval — same trust posture as `read_file`, including
 the same credential-path deny list.
 
-Not in scope for this tool: full-fidelity Office parsing (tables, images,
-complex formatting, embedded objects — xlsx/docx/pptx text extraction is
-structural, not full-fidelity), legacy binary `.doc`/`.xls`/`.ppt`,
+Not in scope for this tool: full-fidelity Office parsing (rich per-run
+text formatting, embedded charts/objects, actual image bytes — table
+structure and picture metadata are extracted for docx/pptx, and
+formulas/merged cells/picture metadata for xlsx, but xlsx/docx/pptx
+text extraction otherwise stays structural, not full-fidelity), legacy
+binary `.doc`/`.xls`/`.ppt`,
 `.md`/`.txt`/`.log` (already covered by `read_file`), and any file
 fetched from a URL — local files only. PDF text extraction requires
 `pdftotext`/`pdfinfo` reachable through the active command sandbox — see
@@ -586,7 +612,12 @@ pptx slide fields: `title`, `bullets` (array of strings), `notes`
 (speaker notes), `image` (local PNG/JPEG/GIF file path — validated as a
 read path the same way `read_file` validates one) + `image_alt` (written
 to the picture description field), and `layout` (currently advisory; the
-native Go renderer uses one fixed production-safe layout).
+native Go renderer uses one fixed production-safe layout). An image's
+placement defaults to a fixed right-half layout; set `image_layout` to
+`left`, `right`, or `full` for a preset, or set all four of
+`image_left`/`image_top`/`image_width`/`image_height` (inches) for an
+exact bounding box — the two are mutually exclusive, and an explicit
+box must fit within the 13.33in x 7.5in (16:9) slide.
 
 `format=docx` with `template` set fills an existing document instead of
 generating a new one: every `{{name}}` token found anywhere in the

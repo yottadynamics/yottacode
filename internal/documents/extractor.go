@@ -150,6 +150,16 @@ type DocumentMetadata struct {
 	// Shape is a free-form one-line structure summary: JSON top-level
 	// keys/types, the XML root element name, or the HTML <title>.
 	Shape string
+
+	// Title, Author, and CreationDate are the document's own embedded
+	// metadata, when the extractor found any — currently PDF only,
+	// read from pdfinfo's output (already fetched for the page count).
+	// CreationDate is poppler's own human-readable rendering of the
+	// PDF's internal date, not reparsed here. Empty when absent or not
+	// supported by the format.
+	Title        string
+	Author       string
+	CreationDate string
 }
 
 // DocumentSection is one labeled chunk of extracted text. Label carries

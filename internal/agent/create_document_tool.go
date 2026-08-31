@@ -18,7 +18,7 @@ import (
 // CreateDocumentTool generates an xlsx, docx, pdf, or pptx file from
 // structured content. xlsx and pptx are generated natively in Go; docx/pdf
 // go through pandoc, routed through the same Sandbox seam RunBashTool uses
-// — see roadmap/document-generation.md's "Sandbox integration".
+// — see docs/document-generation.md's "Sandbox integration".
 //
 // Always requires approval: it writes a new file, same trust class as
 // media_render/media_compose.
@@ -66,6 +66,9 @@ func (t *CreateDocumentTool) Description() string {
 		"For format=pptx, set content.slides (title/bullets/notes/layout/image per slide); " +
 		"an image references an existing local file by path (validated the same way a docx/pdf image " +
 		"block is); generation is native Go and needs no python3/python-pptx runtime. " +
+		"An image's placement defaults to a fixed right-half layout; set image_layout to left/right/full " +
+		"for a preset, or all four of image_left/image_top/image_width/image_height (inches) for an exact " +
+		"bounding box — the two are mutually exclusive, and an explicit box must fit within the 13.33in x 7.5in slide. " +
 		"For format=docx or format=pdf, set content.blocks (heading/paragraph/list/table/code/image); " +
 		"a heading/paragraph/list-item can use plain text or spans (bold/italic inline formatting) " +
 		"and an image block references an existing local file by path (validated the same way read_file " +
@@ -197,12 +200,17 @@ func createDocumentSlidesSchema() map[string]any {
 		"type":        "array",
 		"description": "pptx only: one entry per slide, in order",
 		"items": map[string]any{"type": "object", "properties": map[string]any{
-			"title":     map[string]any{"type": "string", "description": "Slide title"},
-			"bullets":   map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Bullet points for the slide body"},
-			"notes":     map[string]any{"type": "string", "description": "Optional speaker notes"},
-			"image":     map[string]any{"type": "string", "description": "Optional: local file path (absolute or cwd-relative) to an image for this slide, validated as a read path"},
-			"image_alt": map[string]any{"type": "string", "description": "image only: alt text written to the picture description field"},
-			"layout":    map[string]any{"type": "string", "description": "Slide layout hint: title, content, section, title_only, blank, or picture. Current Go renderer treats it as advisory and uses a fixed production-safe layout."},
+			"title":        map[string]any{"type": "string", "description": "Slide title"},
+			"bullets":      map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Bullet points for the slide body"},
+			"notes":        map[string]any{"type": "string", "description": "Optional speaker notes"},
+			"image":        map[string]any{"type": "string", "description": "Optional: local file path (absolute or cwd-relative) to an image for this slide, validated as a read path"},
+			"image_alt":    map[string]any{"type": "string", "description": "image only: alt text written to the picture description field"},
+			"image_layout": map[string]any{"type": "string", "description": "image only: placement preset — right (default, matches omitting this field), left, or full (edge-to-edge slide bleed). Mutually exclusive with image_left/image_top/image_width/image_height."},
+			"image_left":   map[string]any{"type": "number", "description": "image only: explicit left offset in inches from the slide's left edge. Must be set together with image_top/image_width/image_height; mutually exclusive with image_layout."},
+			"image_top":    map[string]any{"type": "number", "description": "image only: explicit top offset in inches from the slide's top edge. Must be set together with image_left/image_width/image_height."},
+			"image_width":  map[string]any{"type": "number", "description": "image only: explicit width in inches. Must be set together with image_left/image_top/image_height; the image must fit within the slide (13.33in x 7.5in, 16:9 widescreen)."},
+			"image_height": map[string]any{"type": "number", "description": "image only: explicit height in inches. Must be set together with image_left/image_top/image_width."},
+			"layout":       map[string]any{"type": "string", "description": "Slide layout hint: title, content, section, title_only, blank, or picture. Current Go renderer treats it as advisory and uses a fixed production-safe layout."},
 		}},
 	}
 }
@@ -225,12 +233,21 @@ type createDocumentContentArgs struct {
 }
 
 type createDocumentSlideArg struct {
-	Title    string   `json:"title"`
-	Bullets  []string `json:"bullets"`
-	Notes    string   `json:"notes"`
-	Image    string   `json:"image"`
-	ImageAlt string   `json:"image_alt"`
-	Layout   string   `json:"layout"`
+	Title       string   `json:"title"`
+	Bullets     []string `json:"bullets"`
+	Notes       string   `json:"notes"`
+	Image       string   `json:"image"`
+	ImageAlt    string   `json:"image_alt"`
+	ImageLayout string   `json:"image_layout"`
+	// ImageLeft/Top/Width/Height are pointers so an omitted field stays
+	// distinguishable from an explicit 0 (e.g. image_top=0 is a valid
+	// top-edge placement, not "unset") — same reasoning as
+	// readDocumentArgs.HasHeader.
+	ImageLeft   *float64 `json:"image_left"`
+	ImageTop    *float64 `json:"image_top"`
+	ImageWidth  *float64 `json:"image_width"`
+	ImageHeight *float64 `json:"image_height"`
+	Layout      string   `json:"layout"`
 }
 
 type createDocumentSheetArg struct {
@@ -528,7 +545,7 @@ func (t *CreateDocumentTool) resolvePyHelperScript(script documents.PyHelperScri
 // generateDocxFromTemplate fills {{name}} tokens in an existing docx via
 // the fill_docx_template.py driver script (python-docx), instead of
 // generating a new docx from content.blocks via pandoc — see
-// roadmap/document-generation.md's "Python-in-container implementation
+// docs/document-generation.md's "Python-in-container implementation
 // plan". Reuses the same Sandbox/shell-quoting/atomic-placement/exit-125
 // handling generateViaPandoc already established for docx/pdf; the only
 // new trust boundary is Template itself, which is a read path validated
@@ -655,7 +672,11 @@ func (t *CreateDocumentTool) generatePPTX(a createDocumentArgs, output, cwd stri
 	if err != nil {
 		return "", fmt.Errorf("create_document: %w", err)
 	}
-	data, err := documents.GeneratePPTX(toSlideModel(slides))
+	slideModels, err := toSlideModel(slides)
+	if err != nil {
+		return "", fmt.Errorf("create_document: %w", err)
+	}
+	data, err := documents.GeneratePPTX(slideModels)
 	if err != nil {
 		return "", fmt.Errorf("create_document: %w", err)
 	}
@@ -685,7 +706,7 @@ func (t *CreateDocumentTool) generatePPTX(a createDocumentArgs, output, cwd stri
 // exec.LookPath — the whole point of routing document-tool subprocess
 // calls through the Sandbox seam is that a podman-backed sandbox has its
 // own PATH, independent of the host's. See
-// roadmap/document-generation.md's "Sandbox integration".
+// docs/document-generation.md's "Sandbox integration".
 func checkCommandAvailable(ctx context.Context, sb Sandbox, cwd, name string) error {
 	c := CommandInProfile(ctx, sb, SandboxProfileDocuments, "command -v "+shellQuoteSingle(name), cwd)
 	var out bytes.Buffer
@@ -789,19 +810,101 @@ func resolveSlideImagePaths(slides []createDocumentSlideArg, cwd string, denyRea
 	return out, nil
 }
 
-func toSlideModel(slides []createDocumentSlideArg) []documents.SlideModel {
+func toSlideModel(slides []createDocumentSlideArg) ([]documents.SlideModel, error) {
 	out := make([]documents.SlideModel, len(slides))
 	for i, s := range slides {
+		bounds, err := slideImageBounds(i, s)
+		if err != nil {
+			return nil, err
+		}
 		out[i] = documents.SlideModel{
-			Title:    s.Title,
-			Bullets:  s.Bullets,
-			Notes:    s.Notes,
-			Image:    s.Image,
-			ImageAlt: s.ImageAlt,
-			Layout:   s.Layout,
+			Title:       s.Title,
+			Bullets:     s.Bullets,
+			Notes:       s.Notes,
+			Image:       s.Image,
+			ImageAlt:    s.ImageAlt,
+			Layout:      s.Layout,
+			ImageBounds: bounds,
 		}
 	}
-	return out
+	return out, nil
+}
+
+// imageBoundsEpsilon absorbs float64 rounding in the inches<->EMU
+// round trip (e.g. 13.333333333333334in back-converted from
+// documents.SlideWidthEMU) so a layout that exactly fills the slide
+// isn't rejected as "past the edge" by a fraction of an EMU.
+const imageBoundsEpsilon = 1e-6
+
+// slideImageBounds validates slide index i's image placement fields and
+// converts them to documents.ImageBounds (EMU), or returns nil (meaning
+// "use the built-in default placement") when none were set. Actionable,
+// 1-indexed-in-message errors live here rather than in internal/documents
+// because this is the schema/validation boundary — see resolveSlideImagePaths
+// for the same layering on the image-path side.
+func slideImageBounds(i int, s createDocumentSlideArg) (*documents.ImageBounds, error) {
+	explicit := []*float64{s.ImageLeft, s.ImageTop, s.ImageWidth, s.ImageHeight}
+	explicitCount := 0
+	for _, v := range explicit {
+		if v != nil {
+			explicitCount++
+		}
+	}
+	hasLayout := strings.TrimSpace(s.ImageLayout) != ""
+	hasExplicit := explicitCount > 0
+
+	msgSlide := i + 1
+
+	if !hasLayout && !hasExplicit {
+		return nil, nil
+	}
+	if hasLayout && hasExplicit {
+		return nil, fmt.Errorf("slide %d: set either image_layout or explicit image_left/image_top/image_width/image_height, not both", msgSlide)
+	}
+	if strings.TrimSpace(s.Image) == "" {
+		return nil, fmt.Errorf("slide %d: image_layout/image bounds are set but no image was given", msgSlide)
+	}
+
+	if hasExplicit {
+		if explicitCount != 4 {
+			return nil, fmt.Errorf("slide %d: image_left, image_top, image_width, and image_height must all be set together", msgSlide)
+		}
+		left, top, width, height := *s.ImageLeft, *s.ImageTop, *s.ImageWidth, *s.ImageHeight
+		if width <= 0 || height <= 0 {
+			return nil, fmt.Errorf("slide %d: image_width and image_height must be positive (got %g x %g)", msgSlide, width, height)
+		}
+		if left < 0 || top < 0 {
+			return nil, fmt.Errorf("slide %d: image_left and image_top must be non-negative (got %g, %g)", msgSlide, left, top)
+		}
+		slideWidthIn := float64(documents.SlideWidthEMU) / float64(documents.EMUPerInch)
+		slideHeightIn := float64(documents.SlideHeightEMU) / float64(documents.EMUPerInch)
+		if left+width > slideWidthIn+imageBoundsEpsilon {
+			return nil, fmt.Errorf("slide %d: image_left (%g) + image_width (%g) = %g exceeds the slide width of %.3gin", msgSlide, left, width, left+width, slideWidthIn)
+		}
+		if top+height > slideHeightIn+imageBoundsEpsilon {
+			return nil, fmt.Errorf("slide %d: image_top (%g) + image_height (%g) = %g exceeds the slide height of %.3gin", msgSlide, top, height, top+height, slideHeightIn)
+		}
+		return &documents.ImageBounds{
+			X:  int64(left * float64(documents.EMUPerInch)),
+			Y:  int64(top * float64(documents.EMUPerInch)),
+			CX: int64(width * float64(documents.EMUPerInch)),
+			CY: int64(height * float64(documents.EMUPerInch)),
+		}, nil
+	}
+
+	switch s.ImageLayout {
+	case "right":
+		return nil, nil // identical to the built-in default
+	case "left":
+		// Mirrors the built-in "right" preset: same margin (609600 EMU,
+		// 0.667in) from the slide's left edge that "right" leaves from
+		// the slide's right edge, same size.
+		return &documents.ImageBounds{X: 609600, Y: 1463040, CX: 5029200, CY: 3429000}, nil
+	case "full":
+		return &documents.ImageBounds{X: 0, Y: 0, CX: documents.SlideWidthEMU, CY: documents.SlideHeightEMU}, nil
+	default:
+		return nil, fmt.Errorf("slide %d: unknown image_layout %q (must be left, right, or full)", msgSlide, s.ImageLayout)
+	}
 }
 
 func toDocAST(blocks []createDocumentBlockArg) documents.DocAST {
