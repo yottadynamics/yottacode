@@ -33,11 +33,16 @@ func (t *GitBranchStatusTool) Execute(ctx context.Context, argsJSON string) (str
 		return "", fmt.Errorf("git_branch_status: %w", err)
 	}
 	upstream, _ := gitOutput(ctx, t.Cwd.Get(), "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}")
-	statusShort, err := gitOutput(ctx, t.Cwd.Get(), "status", "--short")
+	// Ask git for tracked/staged changes separately from untracked files so
+	// generated repo-local caches can be summarized instead of flooding context.
+	statusShort, err := gitOutput(ctx, t.Cwd.Get(), "status", "--short", "--untracked-files=no")
 	if err != nil {
 		return "", fmt.Errorf("git_branch_status: %w", err)
 	}
-	dirty := strings.TrimSpace(statusShort) != ""
+	untracked, _ := boundedUntrackedFiles(ctx, t.Cwd.Get())
+	statusForRender := strings.TrimRight(statusShort, "\n")
+	statusForRender = strings.TrimRight(statusForRender+"\n"+strings.TrimSpace(untracked), "\n")
+	dirty := strings.TrimSpace(statusForRender) != ""
 	aheadBehind := ""
 	if strings.TrimSpace(upstream) != "" {
 		counts, err := gitOutput(ctx, t.Cwd.Get(), "rev-list", "--left-right", "--count", "HEAD...@{upstream}")
@@ -59,8 +64,8 @@ func (t *GitBranchStatusTool) Execute(ctx context.Context, argsJSON string) (str
 	fmt.Fprintf(&b, "dirty=%v\n", dirty)
 	if dirty {
 		b.WriteString("--- status --short ---\n")
-		b.WriteString(statusShort)
-		if !strings.HasSuffix(statusShort, "\n") {
+		b.WriteString(statusForRender)
+		if !strings.HasSuffix(statusForRender, "\n") {
 			b.WriteString("\n")
 		}
 	}

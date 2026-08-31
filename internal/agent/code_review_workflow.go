@@ -198,6 +198,9 @@ type CodeReviewContext struct {
 	// a brand-new module would be invisible (and an untracked-only tree would
 	// look empty). Empty for the branch-vs-base source.
 	UntrackedFiles []string
+	// ArtifactSummary records generated repo-local cache/config artifacts without
+	// treating the summary as a file path or reviewable diff content.
+	ArtifactSummary string
 
 	CommitLog     []string // "<short-sha> <subject>"; empty for working-tree source
 	DetectedStyle string
@@ -306,8 +309,11 @@ func BuildCodeReviewContext(ctx context.Context, cwd, effort string) (CodeReview
 	// Read-only: foldUntracked synthesizes the per-file diff via
 	// `git diff --no-index` and never touches the index (no `git add -N`).
 	if snap.DiffSource == "working-tree" {
-		if others, err := gitOutput(ctx, cwd, "ls-files", "--others", "--exclude-standard"); err == nil {
-			snap.UntrackedFiles = splitNonEmptyLines(strings.TrimRight(others, "\n"))
+		if kept, summary, err := collectBoundedUntrackedFiles(ctx, cwd); err == nil {
+			snap.UntrackedFiles = kept
+			if summary.count > 0 {
+				snap.ArtifactSummary = summary.line()
+			}
 		}
 		snap.foldUntracked(ctx, cwd)
 	}
@@ -466,6 +472,9 @@ func renderCodeReviewContext(s CodeReviewContext) string {
 		s.NotFoundBase, s.EmptyRepo, s.DiffEmpty, s.DiffErr, s.DiffSource,
 		s.AheadCount, s.AheadCountErr, s.MergeBase, s.DiffBase, s.NoMergeBase, s.DiffCap,
 		s.ChangedCapped, s.DiffCapped)
+	if s.ArtifactSummary != "" {
+		fmt.Fprintf(&b, "generated_artifacts=%s\n", s.ArtifactSummary)
+	}
 
 	// STOP conditions — render only ## state and let the orchestrator
 	// surface the message. diff_err with an empty diff is a STOP too: a

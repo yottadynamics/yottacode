@@ -358,7 +358,8 @@ func (t *ListGitChangedFilesTool) Execute(ctx context.Context, argsJSON string) 
 	}
 	seen := map[string]bool{}
 	var out []string
-	appendLines := func(args ...string) error {
+	var artifacts generatedArtifactSummary
+	appendLines := func(filterArtifacts bool, args ...string) error {
 		cmd := exec.CommandContext(ctx, "git", args...)
 		cmd.Dir = t.Cwd.Get()
 		b, err := cmd.CombinedOutput()
@@ -370,25 +371,40 @@ func (t *ListGitChangedFilesTool) Execute(ctx context.Context, argsJSON string) 
 			if line == "" || seen[line] {
 				continue
 			}
+			if filterArtifacts && artifacts.add(line) {
+				continue
+			}
 			seen[line] = true
 			out = append(out, line)
 		}
 		return nil
 	}
 	if staged {
-		if err := appendLines("diff", "--name-only", "--cached"); err != nil {
+		if err := appendLines(false, "diff", "--name-only", "--cached"); err != nil {
 			return "", fmt.Errorf("list_git_changed_files: %w", err)
 		}
 	}
 	if unstaged {
-		if err := appendLines("diff", "--name-only"); err != nil {
+		if err := appendLines(false, "diff", "--name-only"); err != nil {
 			return "", fmt.Errorf("list_git_changed_files: %w", err)
 		}
 	}
 	if untracked {
-		if err := appendLines("ls-files", "--others", "--exclude-standard"); err != nil {
+		if err := appendLines(true, "ls-files", "--others", "--exclude-standard"); err != nil {
 			return "", fmt.Errorf("list_git_changed_files: %w", err)
 		}
+		cmd := exec.CommandContext(ctx, "git", "ls-files", "--others", "--ignored", "--exclude-standard")
+		cmd.Dir = t.Cwd.Get()
+		b, err := cmd.CombinedOutput()
+		if err != nil {
+			return "", fmt.Errorf("list_git_changed_files: git ls-files --others --ignored --exclude-standard: %s", strings.TrimSpace(string(b)))
+		}
+		for _, line := range splitNonEmptyLines(string(b)) {
+			artifacts.add(line)
+		}
+	}
+	if artifacts.count > 0 {
+		out = append(out, artifacts.line())
 	}
 	if len(out) == 0 {
 		return "(no changed files)\n", nil
@@ -646,6 +662,8 @@ func (t *RunTestsTool) prepareRunTestsCommand(command string, sandbox Sandbox, r
 	goTmp := filepath.Join(goScratch, "tmp")
 	goCache := filepath.Join(goScratch, "cache")
 	goModCache := filepath.Join(goScratch, "modcache")
+	goXDGCache := filepath.Join(goScratch, "xdg-cache")
+	goXDGConfig := filepath.Join(goScratch, "xdg-config")
 
 	// The Podman sandbox intentionally mounts /tmp as noexec, but `go test`
 	// writes and executes test binaries from GOTMPDIR. Keep /tmp hardened while
@@ -653,8 +671,8 @@ func (t *RunTestsTool) prepareRunTestsCommand(command string, sandbox Sandbox, r
 	// rather than an `env ... <command>` prefix so shell builtins and compound
 	// test commands keep working exactly as they do on the host path.
 	return strings.Join([]string{
-		"mkdir -p " + strings.Join([]string{shellQuoteSingle(goTmp), shellQuoteSingle(goCache), shellQuoteSingle(goModCache)}, " "),
-		"export TMPDIR=" + shellQuoteSingle(goTmp) + " GOTMPDIR=" + shellQuoteSingle(goTmp) + " GOCACHE=" + shellQuoteSingle(goCache) + " GOMODCACHE=" + shellQuoteSingle(goModCache),
+		"mkdir -p " + strings.Join([]string{shellQuoteSingle(goTmp), shellQuoteSingle(goCache), shellQuoteSingle(goModCache), shellQuoteSingle(goXDGCache), shellQuoteSingle(goXDGConfig)}, " "),
+		"export HOME=" + shellQuoteSingle(goScratch) + " XDG_CACHE_HOME=" + shellQuoteSingle(goXDGCache) + " XDG_CONFIG_HOME=" + shellQuoteSingle(goXDGConfig) + " TMPDIR=" + shellQuoteSingle(goTmp) + " GOTMPDIR=" + shellQuoteSingle(goTmp) + " GOCACHE=" + shellQuoteSingle(goCache) + " GOMODCACHE=" + shellQuoteSingle(goModCache) + " GOTELEMETRY='off'",
 		command,
 	}, " && "), nil
 }

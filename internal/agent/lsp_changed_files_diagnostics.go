@@ -182,6 +182,11 @@ func changedSourceFiles(ctx context.Context, cwd string, maxFiles int) ([]string
 			if line == "" || seen[line] {
 				continue
 			}
+			// Ignore generated cache/config trees before extension resolution so
+			// a polluted worktree does not crowd out real changed source files.
+			if _, ok := generatedArtifactRoot(line); ok {
+				continue
+			}
 			if _, ok := lspci.ResolveFile(line); !ok {
 				continue
 			}

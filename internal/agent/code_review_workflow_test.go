@@ -249,6 +249,32 @@ func TestCodeReviewContext_WorkingTreeUntracked(t *testing.T) {
 	}
 }
 
+func TestCodeReviewContext_SummarizesGeneratedLocalArtifacts(t *testing.T) {
+	tmp := gitInit(t)
+	writeFile(t, tmp, "f.txt", "v1\n")
+	gitCommit(t, tmp, "base")
+	writeFile(t, tmp, "newmod.go", "package x\n\nfunc New() int { return 1 }\n")
+	writeFile(t, tmp, ".cache/go-build/00/a", "compiled\n")
+	writeFile(t, tmp, ".config/go/telemetry/local/go@v1.count", "counter\n")
+	writeFile(t, tmp, "go/pkg/mod/example.com/mod@v1.0.0/go.mod", "module example.com/mod\n")
+
+	snap, err := BuildCodeReviewContext(context.Background(), tmp, "medium")
+	if err != nil {
+		t.Fatalf("BuildCodeReviewContext: %v", err)
+	}
+	out := renderCodeReviewContext(snap)
+	for _, leaked := range []string{".cache/go-build/00/a", ".config/go/telemetry/local/go@v1.count", "go/pkg/mod/example.com/mod@v1.0.0/go.mod"} {
+		if strings.Contains(out, leaked) {
+			t.Fatalf("generated artifact %q leaked into review context:\n%s", leaked, out)
+		}
+	}
+	for _, want := range []string{"newmod.go", "func New", "omitted 3 generated local artifact file(s) under .cache/, .config/, go/"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("review context missing %q:\n%s", want, out)
+		}
+	}
+}
+
 // TestCodeReviewContext_MergeBaseSurfacedExcludesBaseOnly: the snapshot
 // diffs merge-base..HEAD (not base-tip), so commits that landed on the
 // base AFTER divergence are excluded, and the merge-base SHA is surfaced

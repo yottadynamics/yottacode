@@ -25,6 +25,16 @@ profile.cov
 # Dependency directories (remove the comment below to include it)
 # vendor/
 
+# Repo-local Go/cache artifacts accidentally created by sandboxed or custom
+# test environments. yottacode tools also summarize these paths so a polluted
+# tree cannot flood model context with thousands of generated files.
+/.cache/
+/.config/
+/go/
+/.local/
+/.scratch/
+/.yottacode/tmp/go/
+
 # Go workspace file
 go.work
 go.work.sum

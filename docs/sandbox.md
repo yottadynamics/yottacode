@@ -255,7 +255,13 @@ backend change (`podman` ↔ `none`) still needs a new session.
   keeps `/tmp` noexec and points Go at executable scratch/cache directories
   inside the sandbox (`/var/tmp/yottacode-go/<workspace>/`) via `TMPDIR`,
   `GOTMPDIR`, `GOCACHE`, and `GOMODCACHE`, avoiding repo-root cache pollution
-  from `.cache/`, `.config/`, `.yottacode/tmp/`, `.scratch/`, or `go/`.
+  from `.cache/`, `.config/`, `.local/`, `.yottacode/tmp/`, `.scratch/`, or
+  `go/`.
+- Sandboxed `run_tests` also redirects `HOME`, `XDG_CACHE_HOME`, and
+  `XDG_CONFIG_HOME` into that same container-internal scratch area and sets
+  `GOTELEMETRY=off`. This keeps Go telemetry counters, module downloads, and
+  compiler caches out of the checked-out tree even when the host environment
+  would normally resolve them under the repository.
 - **`run_bash`, `run_tests`, `create_document`'s docx/pdf paths, and
   `read_document`'s PDF path are sandboxed.** Git, GitHub, MCP, provider
   calls, and the other file tools still run on the host. The hardline
