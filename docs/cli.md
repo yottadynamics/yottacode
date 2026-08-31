@@ -66,7 +66,7 @@ See [TUI slash commands](tui-slash-commands.md).
 yottacode run "summarize this repo"
 ```
 
-Use `run` for scripts, CI jobs, or shell pipelines. stdout contains the final assistant response. stderr contains reasoning, progress, and tool status.
+Use `run` for scripts, CI jobs, or shell pipelines. stdout contains the final assistant response. stderr contains reasoning, progress, and tool status. Pass `--json` when an integration needs a machine-readable final receipt on stderr with the run status, iteration count, tool counts, and changed files reported by `list_git_changed_files`; stdout remains answer-only so redirects stay clean. Status values are stable enough for automation: `success`, `approval_required`, `blocked_needs_clarification`, `tests_failed`, `policy_denied`, `provider_error`, and `iteration_cap`.
 
 Examples:
 
@@ -76,6 +76,23 @@ yottacode run "write a changelog entry for the current git diff"
 
 ```bash
 yottacode run --max-iterations 100 "implement step 3 of the plan we drafted yesterday"
+```
+
+```bash
+yottacode run --json "resolve the current issue and summarize changed files"
+```
+
+`--json` appends a final stderr object shaped like:
+
+```json
+{
+  "status": "success",
+  "iterations": 3,
+  "tools": {
+    "list_git_changed_files": { "count": 1 }
+  },
+  "changed_files": ["internal/example.go", "docs/cli.md"]
+}
 ```
 
 ## Setup
