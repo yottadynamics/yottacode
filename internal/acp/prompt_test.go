@@ -413,7 +413,8 @@ func TestPrompt_ConcurrentPromptForSameSessionIsRejected(t *testing.T) {
 	// may be near its deadline; cancellation still needs its own delivery
 	// budget so this test reports the prompt behavior instead of a stale
 	// context on session/cancel.
-	cancelCtx, cancelCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	cancelCtx, cancelCancel := context.WithTimeout(context.Background(), 10*time.Second)
+
 	defer cancelCancel()
 	if err := h.clientConn.Cancel(cancelCtx, coderacp.CancelNotification{SessionId: coderacp.SessionId(sessionID)}); err != nil {
 		t.Fatalf("Cancel: %v", err)

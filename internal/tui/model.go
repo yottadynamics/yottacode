@@ -3082,6 +3082,7 @@ func (m Model) skillsBusy() bool {
 // original rather than leaving whatever the last themed pick set.
 func (m Model) View() tea.View {
 	v := tea.NewView(m.viewString())
+	v.WindowTitle = m.terminalTitle()
 	v.AltScreen = true
 	// Enable the narrowest mouse reporting only after the conversation starts so
 	// wheel events can scroll the owned transcript viewport. Clicks, releases,
@@ -4759,6 +4760,76 @@ func renderModeStatusLabel(mode string) string {
 		style = style.Foreground(colorContent)
 	}
 	return style.Render(mode)
+}
+
+// terminalTitle returns the compact, best-effort terminal tab/window label.
+// Bubble Tea emits it as a standard OSC title sequence, but terminals and
+// multiplexers decide whether to display or pass it through; unsupported
+// environments intentionally get no in-app warning.
+func (m Model) terminalTitle() string {
+	parts := []string{m.terminalTitleIcon(), "yottacode"}
+	if branch := m.terminalTitleBranchOrWorktree(); branch != "" {
+		parts = append(parts, branch)
+	}
+	if loc := m.terminalTitleLocation(); loc != "" {
+		parts = append(parts, loc)
+	}
+	return strings.Join(parts, " · ")
+}
+
+func (m Model) terminalTitleIcon() string {
+	if m.awaitingApproval || m.awaitingPathTrust || m.worktreeExitConfirmOpen || m.loopExitConfirmOpen {
+		return "◆"
+	}
+	if m.terminalTitleHasQueuedInput() {
+		return "↵"
+	}
+	if m.turnActive || m.summarizing || m.pendingToolName != "" {
+		return terminalTitleWorkingIcon(m.turnStart)
+	}
+	return "○"
+}
+
+func terminalTitleWorkingIcon(start time.Time) string {
+	frames := []string{"◐", "◓", "◑", "◒"}
+	if start.IsZero() {
+		return frames[0]
+	}
+	idx := int(time.Since(start)/(250*time.Millisecond)) % len(frames)
+	return frames[idx]
+}
+
+func (m Model) terminalTitleHasQueuedInput() bool {
+	if m.pendingInputAfterTurn.Content != "" {
+		return true
+	}
+	if m.userMsgCh == nil {
+		return false
+	}
+	return len(m.userMsgCh) > 0
+}
+
+func (m Model) terminalTitleBranchOrWorktree() string {
+	if m.worktree != "" {
+		return "wt:" + m.worktree
+	}
+	return strings.TrimSpace(m.branch)
+}
+
+func (m Model) terminalTitleLocation() string {
+	if dir := lastPathSegments(m.cwd, 1); dir != "" {
+		return dir
+	}
+	if dir := lastPathSegments(m.cwd, 2); dir != "" {
+		return dir
+	}
+	if m.sess != nil {
+		if name := strings.TrimSpace(m.sess.Name); name != "" {
+			return name
+		}
+		return strings.TrimSpace(m.sess.ID)
+	}
+	return ""
 }
 
 func (m Model) renderToolStatus() string {
