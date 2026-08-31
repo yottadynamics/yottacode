@@ -1311,3 +1311,148 @@ func TestSaveLoad_ToolStatsAndCompactionRoundtrip(t *testing.T) {
 		t.Errorf("legacy.CompactionEvents = %+v, want nil", legacy.CompactionEvents)
 	}
 }
+
+// TestSessionCounts locks the shared basis SessionInfo's Turns/Tools/
+// TotalTokens derive from: only assistant messages count as turns, tool
+// calls sum across every assistant message, and tokens sum each message's
+// own per-turn Usage (nil-safe — a turn the adapter didn't report usage
+// for contributes 0, not a panic).
+func TestSessionCounts(t *testing.T) {
+	messages := []adapter.Message{
+		{Role: adapter.RoleSystem, Content: "sys"},
+		{Role: adapter.RoleUser, Content: "hi"},
+		{
+			Role:      adapter.RoleAssistant,
+			ToolCalls: []adapter.ToolCall{{Name: "read_file"}, {Name: "grep"}},
+			Usage:     &adapter.Usage{InputTokens: 1_000, OutputTokens: 200, CacheReadTokens: 500},
+		},
+		{Role: adapter.RoleTool, Content: "result"},
+		{Role: adapter.RoleAssistant, Usage: nil}, // no usage reported this turn
+		{
+			Role:  adapter.RoleAssistant,
+			Usage: &adapter.Usage{InputTokens: 300, CacheCreationTokens: 100},
+		},
+	}
+	turns, tools, tokens := sessionCounts(messages)
+	if turns != 3 {
+		t.Errorf("turns = %d, want 3 (assistant messages only)", turns)
+	}
+	if tools != 2 {
+		t.Errorf("tools = %d, want 2 (sum of ToolCalls across assistant messages)", tools)
+	}
+	if want := int64(1_000 + 200 + 500 + 300 + 100); tokens != want {
+		t.Errorf("tokens = %d, want %d", tokens, want)
+	}
+}
+
+// TestList_PopulatesTokenAndActivityStats locks SessionInfo's new fields
+// for a live session: Turns/Tools come from the message log, TotalTokens
+// combines main-thread usage with subagent spend (same basis /usage's
+// session total uses), and Subagents mirrors len(SubagentTasks).
+func TestList_PopulatesTokenAndActivityStats(t *testing.T) {
+	redirectHome(t)
+	s, err := New("m", "/x")
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	s.Messages = []adapter.Message{
+		{Role: adapter.RoleUser, Content: "go"},
+		{
+			Role:      adapter.RoleAssistant,
+			ToolCalls: []adapter.ToolCall{{Name: "bash"}},
+			Usage:     &adapter.Usage{InputTokens: 10_000, OutputTokens: 500},
+		},
+	}
+	s.SubagentTasks = []subagents.TaskRecord{
+		{ID: "sub1", Usage: adapter.Usage{InputTokens: 2_000, OutputTokens: 100}},
+	}
+	if err := s.Save(); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	infos, err := List()
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(infos) != 1 {
+		t.Fatalf("got %d infos", len(infos))
+	}
+	got := infos[0]
+	if got.Turns != 1 {
+		t.Errorf("Turns = %d, want 1", got.Turns)
+	}
+	if got.Tools != 1 {
+		t.Errorf("Tools = %d, want 1", got.Tools)
+	}
+	if got.Subagents != 1 {
+		t.Errorf("Subagents = %d, want 1", got.Subagents)
+	}
+	if want := int64(10_000 + 500 + 2_000 + 100); got.TotalTokens != want {
+		t.Errorf("TotalTokens = %d, want %d (main thread + subagent)", got.TotalTokens, want)
+	}
+}
+
+// TestList_ArchivedRowsPopulateStatsFromMessages confirms an archived
+// snapshot row computes Turns/Tools/TotalTokens from its own Messages —
+// the one field snapshotPayload reliably carries, unlike TotalUsage or
+// SubagentTasks, which aren't part of that payload shape at all.
+func TestList_ArchivedRowsPopulateStatsFromMessages(t *testing.T) {
+	home := redirectHome(t)
+	real, err := New("m", "/x")
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := withExchange(real).Save(); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	snapMessages := []adapter.Message{
+		{Role: adapter.RoleUser, Content: "pre-compaction turn"},
+		{
+			Role:      adapter.RoleAssistant,
+			Content:   "pre-compaction reply",
+			ToolCalls: []adapter.ToolCall{{Name: "grep"}},
+			Usage:     &adapter.Usage{InputTokens: 5_000, OutputTokens: 200},
+		},
+	}
+	payload := map[string]any{
+		"session_id": real.ID,
+		"captured":   time.Now().UTC(),
+		"messages":   snapMessages,
+	}
+	b, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal snapshot: %v", err)
+	}
+	dir := filepath.Join(home, ".yottacode", "sessions")
+	p := filepath.Join(dir, real.ID+SnapshotMarker+"20260721-101010.000000000.json")
+	if err := os.WriteFile(p, b, 0o600); err != nil {
+		t.Fatalf("write snapshot: %v", err)
+	}
+
+	infos, err := ListWith(ListOptions{IncludeArchived: true})
+	if err != nil {
+		t.Fatalf("ListWith: %v", err)
+	}
+	var archived *SessionInfo
+	for i, in := range infos {
+		if in.Archived {
+			archived = &infos[i]
+		}
+	}
+	if archived == nil {
+		t.Fatal("no archived row surfaced for the snapshot")
+	}
+	if archived.Turns != 1 {
+		t.Errorf("archived Turns = %d, want 1", archived.Turns)
+	}
+	if archived.Tools != 1 {
+		t.Errorf("archived Tools = %d, want 1", archived.Tools)
+	}
+	if want := int64(5_000 + 200); archived.TotalTokens != want {
+		t.Errorf("archived TotalTokens = %d, want %d", archived.TotalTokens, want)
+	}
+	if archived.Subagents != 0 {
+		t.Errorf("archived Subagents = %d, want 0 (not tracked in snapshotPayload)", archived.Subagents)
+	}
+}

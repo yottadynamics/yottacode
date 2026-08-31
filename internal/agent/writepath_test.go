@@ -1,12 +1,65 @@
 package agent
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+// TestValidateWritePath_OwnedScope_CaseInsensitiveFS is the regression for
+// the enforcement-path half of the case-insensitive-filesystem fix: the
+// declaration-time overlap check (validateWritePartition/pathsOverlap)
+// treating "Utils.go" and "utils.go" as the same claim is only half the
+// fix — a dispatch worker that OWNS "Utils.go" must also be allowed to
+// actually WRITE "utils.go" (the same file on macOS's default
+// case-insensitive-but-preserving APFS/HFS+), or the write-time gate denies
+// the worker's own legitimate file.
+func TestValidateWritePath_OwnedScope_CaseInsensitiveFS(t *testing.T) {
+	old := dispatchCaseInsensitiveFS
+	t.Cleanup(func() { dispatchCaseInsensitiveFS = old })
+
+	cwd := t.TempDir()
+	target := filepath.Join(cwd, "utils.go")
+	opts := WritePathOptions{Cwd: NewCwdRef(cwd), OwnedPaths: []string{"Utils.go"}}
+
+	dispatchCaseInsensitiveFS = false
+	if err := ValidateWritePath(target, opts); err == nil {
+		t.Fatal("case-sensitive filesystem: \"utils.go\" must NOT match an ownership claim of \"Utils.go\" — they're different files on Linux")
+	}
+
+	dispatchCaseInsensitiveFS = true
+	if err := ValidateWritePath(target, opts); err != nil {
+		t.Errorf("case-insensitive filesystem: \"utils.go\" must match an ownership claim of \"Utils.go\" (the same file on macOS), got %v", err)
+	}
+}
+
+// TestOutOfScopeWorkerChanges_CaseInsensitiveFS is pathOwned's (the
+// commit-time scan's) counterpart to the write-time gate test above — the
+// same case-fold must apply wherever OwnedPaths is checked, since pathOwned
+// delegates to the same pathWithinOwnedScope.
+func TestOutOfScopeWorkerChanges_CaseInsensitiveFS(t *testing.T) {
+	old := dispatchCaseInsensitiveFS
+	t.Cleanup(func() { dispatchCaseInsensitiveFS = old })
+
+	repo := dispatchTestRepo(t)
+	ctx := context.Background()
+	if err := os.WriteFile(filepath.Join(repo, "utils.go"), []byte("x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	dispatchCaseInsensitiveFS = false
+	if outside := outOfScopeWorkerChanges(ctx, repo, []string{"Utils.go"}); len(outside) == 0 {
+		t.Fatal("case-sensitive filesystem: writing utils.go should be flagged out-of-scope against an ownership claim of Utils.go")
+	}
+
+	dispatchCaseInsensitiveFS = true
+	if outside := outOfScopeWorkerChanges(ctx, repo, []string{"Utils.go"}); len(outside) != 0 {
+		t.Errorf("case-insensitive filesystem: writing utils.go must NOT be flagged out-of-scope against an ownership claim of Utils.go (the same file on macOS), got %v", outside)
+	}
+}
 
 func TestValidateWritePath_AllowsCwdRelative(t *testing.T) {
 	cwd := t.TempDir()

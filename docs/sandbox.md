@@ -5,9 +5,9 @@ approval and the hardline blocklist in `internal/agent/exec_tool.go`. The
 command sandbox adds a real isolation boundary underneath that: approved
 `run_bash` commands execute inside a rootless [Podman] container with a
 filesystem that only sees the project tree plus the repo's managed yottacode
-worktree root. Network access temporarily defaults to host networking so normal
-developer commands can download dependencies until yottacode has a narrower
-egress allowlist.
+worktree root. Network access defaults to host networking, deferring egress
+policy to whatever your organization already enforces at the network layer —
+see the Network bullet under "What's isolated, and what isn't" below.
 
 yottacode itself still runs on the host. File tools, git tools, GitHub tools,
 MCP tools, the TUI, and provider traffic are not inside the container.
@@ -41,8 +41,8 @@ flowchart LR
     Container --> Mount[(Project + managed worktree mounts)]
     DocContainer --> Mount
     Mount --> Worktrees[(Managed worktree root)]
-    Container -. network=host temporary default .-> Net[Host network]
-    DocContainer -. network=host temporary default .-> Net
+    Container -. network=host default .-> Net[Host network]
+    DocContainer -. network=host default .-> Net
 
     Agent --> FileTools[read/write/edit tools]
     FileTools --> HostFS[(Host filesystem)]
@@ -173,13 +173,14 @@ in CI instead of at user startup.
 backend         = "podman"      # "none" (default) | "podman"
 image           = "ghcr.io/yottadynamics/yottacode-sandbox:latest"
 documents_image = "ghcr.io/yottadynamics/yottacode-documents:latest"
-network         = "host"        # "none" | "host" (temporary default)
+network         = "host"        # "none" | "host" (default)
 dns             = ["1.1.1.1", "8.8.8.8"] # default resolvers passed as podman --dns
 mounts          = ["."]         # project-relative only; cannot escape root
 env_passthrough = []            # opt-in credential injection, e.g. ["GITHUB_TOKEN"]
 memory          = "2g"
 cpus            = 2
 pids_limit      = 256
+disk            = 4096          # MB; writable-layer quota where the host storage driver supports it
 ```
 
 When `backend = "podman"`, `image`, `documents_image`, `memory`, positive `cpus`, and positive
@@ -196,7 +197,12 @@ backend change (`podman` ↔ `none`) still needs a new session.
 - **One container per used profile per session**, not per command — `podman run -d ... sleep
   infinity` on first profile use, `podman exec` for every sandboxed command,
   and `podman rm -f` on session end. A fresh container per command would forget
-  installed packages and background state between commands.
+  installed packages and background state between commands. A crashed session
+  (or one interrupted mid-teardown) can leave its container stuck non-running
+  instead of removed; each new podman-backed session start also sweeps and
+  removes any `yc-*` container that isn't currently `running`, so these don't
+  accumulate indefinitely. A container still `running` is never touched by
+  this sweep, even if old — that state means some session is still using it.
 - **Filesystem**: the project root is mounted at the same absolute path inside
   the container as on the host. Optional `mounts` entries are project-relative
   subpaths; absolute paths and `..` escapes are rejected so config cannot widen
@@ -207,24 +213,49 @@ backend change (`podman` ↔ `none`) still needs a new session.
   managed worktree root (`~/.yottacode/worktrees/<slug>/`) so `enter_worktree`
   can move a live sandboxed session into a yottacode-managed worktree without
   remounting the container.
-- **Network**: `--network=host` is the temporary default so commands such as
-  `go get` work inside the sandbox. There is no allowlist mode yet; choose
-  `network = "none"` for no egress. For networked sandboxes, yottacode passes
-  default `--dns` resolvers (`1.1.1.1`, `8.8.8.8`) so rootless Podman does not
-  inherit a host loopback stub such as `[::1]:53` that is unreachable inside the
-  container. Override `dns` with your VPN/corporate resolver IPs if public DNS
-  is not appropriate. Prefer runtime DNS config over baking `/etc/resolv.conf`
-  into a custom image, because Podman regenerates resolver state for each run.
+- **Network**: `--network=host` is the intentional default, not a temporary
+  stopgap. It shares the host's network stack directly rather than sitting
+  behind an in-house egress allowlist — with no separate network namespace to
+  police, whatever network-layer policy your organization already enforces (a
+  transparent corporate proxy, a firewall) already covers sandboxed commands
+  the same as any other host process, at no extra config cost. If you route
+  through an explicit (non-transparent) corporate proxy, forward it into the
+  sandbox with `env_passthrough = ["HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY"]`.
+  For a hard deny-all independent of any external trust, choose
+  `network = "none"`. There is no in-house allowlist mode, and none is
+  planned — building and maintaining one would duplicate infrastructure most
+  deployments already have (see roadmap/sandbox-podman.md). For networked
+  sandboxes, yottacode passes default `--dns` resolvers (`1.1.1.1`, `8.8.8.8`)
+  so rootless Podman does not inherit a host loopback stub such as
+  `[::1]:53` that is unreachable inside the container. Override `dns` with
+  your VPN/corporate resolver IPs if public DNS is not appropriate. Prefer
+  runtime DNS config over baking `/etc/resolv.conf` into a custom image,
+  because Podman regenerates resolver state for each run.
 - **Credentials**: nothing is injected by default. `env_passthrough` forwards
   named variables with bare `-e NAME`, so values do not appear in Podman's argv.
 - **Hardening**: the container uses `--userns=keep-id`, `--cap-drop=ALL`,
   `--security-opt=no-new-privileges`, private cgroups, no swap beyond the memory
   limit, a `noexec,nosuid,nodev` `/tmp`, SELinux `:Z` bind labels, and configured
-  `pids_limit`/`memory`/`cpus` caps. Sandboxed `run_tests` keeps `/tmp` noexec
-  and points Go at executable scratch/cache directories inside the sandbox
-  (`/var/tmp/yottacode-go/<workspace>/`) via `TMPDIR`, `GOTMPDIR`, `GOCACHE`,
-  and `GOMODCACHE`, avoiding repo-root cache pollution from `.cache/`,
-  `.config/`, `.yottacode/tmp/`, `.scratch/`, or `go/`.
+  `pids_limit`/`memory`/`cpus` caps. `disk` additionally caps the container's
+  writable-layer disk usage (`--storage-opt size=`), so a runaway or malicious
+  command can't fill the host disk the way it could with only memory/CPU/pids
+  bounded — this only works on the `overlay` storage driver on XFS with pquota
+  (most Linux hosts run ext4 and don't), so yottacode probes for it once per
+  process and silently skips the flag when unsupported rather than failing
+  sandbox startup. The same graceful-degradation posture applies to
+  `pids_limit`/`memory`/`cpus` themselves: on a host without the corresponding
+  cgroup controllers delegated to this process (some nested-container/CI/
+  cloud-VM setups), those flags would otherwise fail every container start —
+  yottacode probes for that too and, if unsupported, starts the container
+  without resource limits rather than not starting it at all. Neither probe
+  result is surfaced as a live notice (container creation is lazy, on first
+  tool use, not at session startup, so there's no startup-time hook to report
+  through); check `podman inspect` on the running container if you need to
+  confirm which limits actually applied on your host. Sandboxed `run_tests`
+  keeps `/tmp` noexec and points Go at executable scratch/cache directories
+  inside the sandbox (`/var/tmp/yottacode-go/<workspace>/`) via `TMPDIR`,
+  `GOTMPDIR`, `GOCACHE`, and `GOMODCACHE`, avoiding repo-root cache pollution
+  from `.cache/`, `.config/`, `.yottacode/tmp/`, `.scratch/`, or `go/`.
 - **`run_bash`, `run_tests`, `create_document`'s docx/pdf paths, and
   `read_document`'s PDF path are sandboxed.** Git, GitHub, MCP, provider
   calls, and the other file tools still run on the host. The hardline
@@ -266,9 +297,13 @@ only applies to profiles that have not created a container yet.
 
 ## Known limitations
 
-- No network allowlist yet — `network = "host"` or `network = "none"` only;
-  optional `dns` entries can override resolver IPs but do not restrict egress.
+- No in-house network allowlist — `network = "host"` or `network = "none"`
+  only, by design (see the Network bullet above); optional `dns` entries
+  override resolver IPs but do not restrict egress.
 - No credential-stripping egress proxy.
+- No disk-quota enforcement on most Linux hosts — `disk` only takes effect on
+  the `overlay` storage driver on XFS with pquota (ext4, the common case,
+  doesn't support it); memory/CPU/pids limits are unaffected.
 - The default `ghcr.io/yottadynamics/yottacode-sandbox:latest` image includes
   Go, git, make, gcc/glibc headers for cgo, and common archive/diff tools. It is
   enough for yottacode's own `go test`/`go vet` flow, but project-specific stacks

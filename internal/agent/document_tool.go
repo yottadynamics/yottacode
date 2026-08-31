@@ -110,13 +110,20 @@ func (t *ReadDocumentTool) Description() string {
 		"(installed on the host when no sandbox is configured, or present in [sandbox].documents_image); " +
 		"a missing binary returns an actionable error naming exactly where it looked, rather than failing " +
 		"silently. An encrypted PDF is reported as a warning rather than an error, since it's still a valid " +
-		"result to hand back. When python3+pdfplumber are also reachable through that " +
+		"result to hand back — detected directly from pdfinfo's own Encrypted field when it reports one, " +
+		"falling back to a pdftotext-failure heuristic otherwise. The PDF's own Title/Author/CreationDate " +
+		"metadata, when present, are returned as title/author/created lines above the content preview. " +
+		"When python3+pdfplumber are also reachable through that " +
 		"same documents profile or host PATH, detected tables are returned as additional 'page N table M' " +
-		"sections with pipe-joined rows; this tier is best-effort and silently absent (not an error or " +
-		"warning) when python3/pdfplumber aren't available, or a page genuinely has no tables. " +
+		"sections with pipe-joined rows, and detected images as 'page N image M' sections (size in inches, plus " +
+		"source pixel resolution when known — never image bytes); this tier is best-effort and silently absent " +
+		"(not an error or warning) when python3/pdfplumber aren't available, or a page genuinely has neither. " +
 		"A PDF page with no embedded text layer falls back to OCR when python3+pytesseract+pdf2image+tesseract-ocr are reachable the same way, " +
 		"returning recognized text as additional 'page N (ocr)' sections with a warning that the text may contain recognition errors; use ocr_lang if the PDF isn't in English. " +
-		"xlsx/docx/pptx are parsed natively (no external tools): xlsx returns one section per sheet, docx returns the document body as one section with headings rendered as '# '-prefixed lines, pptx returns one section per slide in slide order. " +
+		"xlsx/docx/pptx are parsed natively (no external tools): xlsx returns one section per sheet, plus a 'sheet X formulas' section (only for cells actually shown in the preview window) since the sheet's own text always shows a cell's cached computed value, never its formula, a 'sheet X merged cells' section when any exist, and a 'sheet X image <cell>-N' section per embedded picture (type/pixel size/alt text). " +
+		"docx returns the document body as one section with headings rendered as '# '-prefixed lines, plus a 'document image N' section per inline picture (file name/size/alt-text metadata), present whichever text tier served the body. " +
+		"pptx returns one section per slide in slide order, plus a 'slide N table M' section for each detected table (pipe-joined rows) and a 'slide N image M' section per picture with file name/size/alt-text metadata. " +
+		"All picture/image sections across formats are metadata only — never image bytes; read the media file directly via read_file if you need the actual image. " +
 		"Use this when you need to ANALYZE the data — read_file's raw line-based view shears a CSV field's " +
 		"embedded newline into a bogus extra row and returns HTML/XML markup noise verbatim. " +
 		"Keep using read_file when you intend to EDIT the file: only read_file's cat -n output feeds " +
@@ -253,6 +260,15 @@ func formatDocumentResult(path string, res documents.ExtractResult) string {
 	fmt.Fprintf(&b, "%s (%s, %d bytes)\n", path, res.Metadata.Kind, res.Metadata.SizeBytes)
 	if res.Metadata.Shape != "" {
 		fmt.Fprintf(&b, "shape: %s\n", res.Metadata.Shape)
+	}
+	if res.Metadata.Title != "" {
+		fmt.Fprintf(&b, "title: %s\n", res.Metadata.Title)
+	}
+	if res.Metadata.Author != "" {
+		fmt.Fprintf(&b, "author: %s\n", res.Metadata.Author)
+	}
+	if res.Metadata.CreationDate != "" {
+		fmt.Fprintf(&b, "created: %s\n", res.Metadata.CreationDate)
 	}
 	if len(res.Metadata.Columns) > 0 {
 		fmt.Fprintf(&b, "columns: %s\n", strings.Join(res.Metadata.Columns, ", "))

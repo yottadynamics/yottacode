@@ -27,7 +27,7 @@ type Sheet struct {
 }
 
 // SheetModel is the intermediate representation for xlsx generation — see
-// roadmap/document-generation.md's "Two canonical intermediate
+// docs/document-generation.md's "Two canonical intermediate
 // representations". It is a thin wrapper over excelize's own object model
 // rather than a new invention, since excelize already owns xlsx generation
 // end to end (including formula recalculation), unlike the docx/pdf path.

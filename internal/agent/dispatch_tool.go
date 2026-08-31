@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/yottadynamics/yottacode/internal/subagents"
 	"github.com/yottadynamics/yottacode/internal/worktree"
@@ -20,6 +22,17 @@ const DispatchToolName = "dispatch"
 // into the combined dispatch result, so a batch of chatty children can't
 // blow the parent's context. The full reply is always in the transcript.
 const maxDispatchReplyChars = 4000
+
+// MaxDispatchTasksPerCall caps how many subtasks a single dispatch call may
+// decompose work into. Deliberately a FIXED constant, independent of
+// AgentTool.MaxConcurrentSubagents (config.SubagentMaxConcurrent): this
+// bounds decomposition granularity for one piece of work (rarely useful
+// past ~8 truly disjoint file-owned tasks, and a foreground read-only batch
+// of N children all reporting back at once has its own synthesis cost), not
+// the session's total concurrent spend — a user raising their concurrency
+// budget shouldn't silently also raise how many tasks one dispatch call can
+// request.
+const MaxDispatchTasksPerCall = 8
 
 // DispatchTool fans a batch of subtasks out to subagents that run
 // concurrently. Write batches usually return immediately and continue in
@@ -240,8 +253,8 @@ func (t *DispatchTool) Execute(ctx context.Context, argsJSON string) (string, er
 		return "error: dispatch needs at least 2 tasks (use the Agent tool for a single subagent)", nil
 	}
 
-	if len(a.Tasks) > MaxForegroundSubagents {
-		return fmt.Sprintf("error: dispatch supports at most %d concurrent subtasks (got %d); split into smaller batches", MaxForegroundSubagents, len(a.Tasks)), nil
+	if len(a.Tasks) > MaxDispatchTasksPerCall {
+		return fmt.Sprintf("error: dispatch supports at most %d concurrent subtasks (got %d); split into smaller batches", MaxDispatchTasksPerCall, len(a.Tasks)), nil
 	}
 
 	// Session-wide token budget, same backstop the Agent tool applies at spawn
@@ -279,8 +292,10 @@ func (t *DispatchTool) Execute(ctx context.Context, argsJSON string) (string, er
 	}
 
 	// Overlap guard: write subtasks must declare a non-overlapping file
-	// scope. This is what makes the branches merge cleanly by construction.
-	if msg := validateWritePartition(children); msg != "" {
+	// scope, checked both within this call AND against every other
+	// still-running dispatch task's claims. This is what makes the
+	// branches merge cleanly by construction.
+	if msg := validateWritePartition(children, t.Agent.Tasks); msg != "" {
 		return msg, nil
 	}
 
@@ -331,9 +346,14 @@ func (t *DispatchTool) Execute(ctx context.Context, argsJSON string) (string, er
 	// stale between the count and the inserts, which is exactly the race that
 	// made a bare check-then-Add wrong.
 	if runBackground {
-		if active := t.Agent.Tasks.ActiveCount(); active+len(children) > MaxBackgroundSubagents {
+		if active, limit := t.Agent.Tasks.ActiveCount(), t.Agent.backgroundCap(); active+len(children) > limit {
 			return fmt.Sprintf("error: dispatching %d background workers would exceed the cap of %d concurrent background subagents (currently %d running); wait for some to finish or stop them with /subagents stop, then retry",
-				len(children), MaxBackgroundSubagents, active), nil
+				len(children), limit, active), nil
+		}
+	} else {
+		if active, limit := t.Agent.Tasks.ActiveForegroundCount(), t.Agent.foregroundCap(); active+len(children) > limit {
+			return fmt.Sprintf("error: dispatching %d foreground subtasks would exceed the cap of %d concurrent foreground subagents (currently %d running); wait for some to finish, then retry",
+				len(children), limit, active), nil
 		}
 	}
 
@@ -341,8 +361,14 @@ func (t *DispatchTool) Execute(ctx context.Context, argsJSON string) (string, er
 	// we created so a half-built batch doesn't leak worktrees.
 	var created []string // worktree dirs, for cleanup on error
 	cleanup := func() {
+		// context.WithoutCancel: cleanup runs on the failure path of a call
+		// whose own ctx may already be canceled (e.g. the parent turn ended
+		// while worktree creation was still in progress) — a canceled ctx
+		// here would make git worktree remove fail immediately, leaking the
+		// worktrees/branches already created above instead of cleaning them.
+		cleanupCtx := context.WithoutCancel(ctx)
 		for _, dir := range created {
-			_ = worktree.Remove(ctx, repoRoot, dir, true)
+			_ = worktree.Remove(cleanupCtx, repoRoot, dir, true)
 		}
 	}
 	for i, c := range children {
@@ -379,17 +405,25 @@ func (t *DispatchTool) Execute(ctx context.Context, argsJSON string) (string, er
 		tasks[i] = t.prepareDispatchChild(c, batchID, runBackground)
 	}
 	if runBackground {
-		if !t.Agent.Tasks.TryReserveBatch(tasks, MaxBackgroundSubagents, false) {
+		limit := t.Agent.backgroundCap()
+		if !t.Agent.Tasks.TryReserveBatch(tasks, limit, false) {
 			cleanup()
 			return fmt.Sprintf("error: dispatching %d background workers would exceed the cap of %d concurrent background subagents (currently %d running); wait for some to finish or stop them with /subagents stop, then retry",
-				len(children), MaxBackgroundSubagents, t.Agent.Tasks.ActiveCount()), nil
+				len(children), limit, t.Agent.Tasks.ActiveCount()), nil
 		}
 	} else {
-		// Foreground batches are bounded by the MaxForegroundSubagents check at
-		// the top of Execute, and ParallelSafe==false keeps two dispatch calls
-		// from overlapping — so there is no cap to reserve against here.
-		for _, task := range tasks {
-			t.Agent.Tasks.Add(task)
+		// Foreground batches are already bounded by MaxDispatchTasksPerCall
+		// (this call's own task count, checked at the top of Execute) and
+		// ParallelSafe==false (no two dispatch calls run at once) — but that
+		// doesn't account for foreground subagents spawned by the Agent tool
+		// sharing the same registry/cap. Reserve atomically like the
+		// background path above rather than relying on those being the only
+		// admission routes forever.
+		limit := t.Agent.foregroundCap()
+		if !t.Agent.Tasks.TryReserveBatch(tasks, limit, true) {
+			cleanup()
+			return fmt.Sprintf("error: dispatching %d foreground subtasks would exceed the cap of %d concurrent foreground subagents (currently %d running); wait for some to finish, then retry",
+				len(children), limit, t.Agent.Tasks.ActiveForegroundCount()), nil
 		}
 	}
 
@@ -468,6 +502,7 @@ func (t *DispatchTool) prepareDispatchChild(c *dispatchChild, batchID string, ba
 		Worktree:       c.worktree,
 		Base:           c.base,
 		BatchID:        batchID,
+		Files:          c.spec.Files,
 		// A background batch re-prompts the model once its LAST worker finishes
 		// (the TUI coalesces pending wakes per BatchID) so the fan-out →
 		// integrate workflow completes on its own instead of stalling until the
@@ -496,64 +531,66 @@ func (t *DispatchTool) runDispatchChild(ctx context.Context, c *dispatchChild, b
 	transcriptPath := c.transcriptPath
 	childAdapter, childModel := c.adapter, c.model
 
+	// Declared here (assigned below) rather than at their original use site
+	// so the panic-recovery defer registered next can reference emitToParent
+	// — Go scopes a local variable from its declaration point, so the defer
+	// closure needs the `var` textually before it.
+	var emitToParent func(Event)
+	var decisions <-chan Decision
+
 	// A panic in this child's orchestration must not crash the user's
 	// session (background workers are detached; a foreground panic also
 	// skips wg.Done and would hang the batch). Convert it to an errored,
 	// done task. Panics inside the child's own runChild/turn are already
 	// caught there; this covers this function's own commit/merge logic.
 	defer func() {
-		if r := recover(); r != nil {
-			c.errored, c.status = true, subagents.TaskErrored
-			c.result = "error: " + panicToError("dispatch subagent "+c.cfg.Name, r).Error()
-			// Even a panicked worker must not leak an empty worktree. The
-			// helper re-derives emptiness itself (the panic may have struck
-			// before commit classification ran) and keeps anything it can't
-			// affirmatively prove is empty+clean. context.Background(), not
-			// WithoutCancel(ctx): the recover must never re-panic, and ctx
-			// itself may be the poison that got us here (e.g. nil).
-			if !c.reclaimed {
-				c.reclaimed = reclaimEmptyWorktree(context.Background(), c.repoRoot, c.worktree, c.base)
-			}
-			// Same non-fatal, best-effort posture as reclaimEmptyWorktree
-			// above: a panic mid-run must not leak this worker's container.
-			if c.sandbox != nil {
-				_ = c.sandbox.Close()
-			}
-			t.Agent.Tasks.MarkDone(c.taskID, c.status, c.result, c.errored, c.tokens)
-			// A background worker's completion is surfaced ONLY via the
-			// async callback (the normal-return branch below). Without
-			// firing it here too, a panic in this function's own
-			// orchestration leaves the inbox/dock waiting forever and
-			// integrate is never prompted. Foreground workers don't need
-			// it — their result is read from c after the batch's wg.Wait.
-			if background {
-				tokensUsed, toolCalls := doneTokensAndCalls(t.Agent.Tasks, c.taskID, c.tokens)
-				t.Agent.fireBackgroundDone(SubagentBackgroundDone{
-					TaskID:       c.taskID,
-					AgentType:    c.cfg.Name,
-					Result:       c.result,
-					Errored:      true,
-					Duration:     time.Since(task.Started),
-					TokensUsed:   tokensUsed,
-					ToolCalls:    toolCalls,
-					Model:        childModel,
-					Branch:       c.branch,
-					BatchID:      batchID,
-					Committed:    c.commit != "",
-					CommitSHA:    c.commit,
-					CommitErr:    c.commitErr,
-					Reclaimed:    c.reclaimed,
-					NotifyOnDone: true,
-				})
-			}
+		r := recover()
+		if r == nil {
+			return
+		}
+		// If the task already reached a terminal state, the real result is
+		// already recorded (MarkDone below already ran) and already reported
+		// (fireBackgroundDone/emitToParent already fired) — this panic struck
+		// in code that runs AFTER completion, e.g. inside
+		// fireBackgroundDone's own callback (which can run TUI code). Don't
+		// clobber a genuinely successful result with a fabricated panic
+		// message, and don't double-report completion. Mirrors AgentTool's
+		// analogous background-panic guard (agent_tool.go).
+		if snap, ok := t.Agent.Tasks.Get(c.taskID); ok && snap.Status != subagents.TaskRunning {
+			return
+		}
+		c.errored, c.status = true, subagents.TaskErrored
+		c.result = "error: " + panicToError("dispatch subagent "+c.cfg.Name, r).Error()
+		// Even a panicked worker must not leak an empty worktree. The
+		// helper re-derives emptiness itself (the panic may have struck
+		// before commit classification ran) and keeps anything it can't
+		// affirmatively prove is empty+clean. context.Background(), not
+		// WithoutCancel(ctx): the recover must never re-panic, and ctx
+		// itself may be the poison that got us here (e.g. nil).
+		if !c.reclaimed {
+			c.reclaimed = reclaimEmptyWorktree(context.Background(), c.repoRoot, c.worktree, c.base)
+		}
+		// Same non-fatal, best-effort posture as reclaimEmptyWorktree
+		// above: a panic mid-run must not leak this worker's container.
+		if c.sandbox != nil {
+			_ = c.sandbox.Close()
+		}
+		t.Agent.Tasks.MarkDone(c.taskID, c.status, c.result, c.errored, c.tokens)
+		// A background worker's completion is surfaced ONLY via the async
+		// callback; a foreground worker's via emitToParent — without firing
+		// one of these here too, a panic in this function's own
+		// orchestration leaves the caller (inbox/dock, or the foreground
+		// scrollback card) waiting forever.
+		if background {
+			t.Agent.fireBackgroundDone(t.backgroundDoneEvent(c, batchID, childModel, task.Started))
+		} else if emitToParent != nil {
+			emitToParent(t.doneEvent(c, batchID, childModel, task.Started))
 		}
 	}()
 
 	// Foreground forwards events/approvals to the parent; background runs
 	// silent (nil emit + nil decisions): no inline card spam, and the
 	// child auto-approves within its worktree so it never needs to prompt.
-	var emitToParent func(Event)
-	var decisions <-chan Decision
 	if !background {
 		// Critical events the child blocks on (ApprovalNeeded /
 		// PathTrustElevationNeeded) are delivered with a blocking send;
@@ -598,22 +635,14 @@ func (t *DispatchTool) runDispatchChild(ctx context.Context, c *dispatchChild, b
 				c.result = "error: sandbox: " + err.Error()
 				c.reclaimed = reclaimEmptyWorktree(context.Background(), c.repoRoot, c.worktree, c.base)
 				t.Agent.Tasks.MarkDone(c.taskID, c.status, c.result, c.errored, c.tokens)
+				// Report completion on whichever channel this posture uses —
+				// without this, a foreground worker's sandbox failure leaves
+				// its scrollback "start" card with no matching "done" and no
+				// aggregate signal beyond the eventual formatResult text.
 				if background {
-					tokensUsed, toolCalls := doneTokensAndCalls(t.Agent.Tasks, c.taskID, c.tokens)
-					t.Agent.fireBackgroundDone(SubagentBackgroundDone{
-						TaskID:       c.taskID,
-						AgentType:    c.cfg.Name,
-						Result:       c.result,
-						Errored:      true,
-						Duration:     time.Since(task.Started),
-						TokensUsed:   tokensUsed,
-						ToolCalls:    toolCalls,
-						Model:        childModel,
-						Branch:       c.branch,
-						BatchID:      batchID,
-						Reclaimed:    c.reclaimed,
-						NotifyOnDone: true,
-					})
+					t.Agent.fireBackgroundDone(t.backgroundDoneEvent(c, batchID, childModel, task.Started))
+				} else if emitToParent != nil {
+					emitToParent(t.doneEvent(c, batchID, childModel, task.Started))
 				}
 				return
 			}
@@ -706,7 +735,17 @@ func (t *DispatchTool) runDispatchChild(ctx context.Context, c *dispatchChild, b
 		if c.branch != "" {
 			if sha := branchTip(commitCtx, c.worktree, c.base); sha != "" {
 				c.commit = sha
-				c.commitErr = "" // the branch has commits after all
+				// Only clear commitErr — the "nothing to report" signal — when
+				// the worker isn't errored. An errored worker (e.g. the
+				// out-of-scope-changes branch above) can still have an earlier,
+				// legitimate commit on its branch; that fact is worth keeping
+				// (c.commit stays set), but the error reason must survive so
+				// formatResult/the dock never recommend this branch for
+				// integrate on the strength of a commit that predates the
+				// violation.
+				if !errored {
+					c.commitErr = "" // the branch has commits after all
+				}
 			} else if gitWorktreeDirty(commitCtx, c.worktree) {
 				if c.commitErr == "" {
 					c.commitErr = "ended without committing; uncommitted work left in " + c.worktree
@@ -740,47 +779,65 @@ func (t *DispatchTool) runDispatchChild(ctx context.Context, c *dispatchChild, b
 	c.errored = errored
 	c.tokens = tokens
 
-	tokensUsed, toolCalls := doneTokensAndCalls(t.Agent.Tasks, c.taskID, tokens)
 	if background {
 		// Async completion: route through the session-level callback (the
 		// long-lived inbox), the same path AgentTool background runs use,
 		// so it surfaces after the parent turn has ended. The empty-worktree
 		// reclaim already happened above (before MarkDone), uniformly with
-		// the foreground path.
-		t.Agent.fireBackgroundDone(SubagentBackgroundDone{
-			TaskID:     c.taskID,
-			AgentType:  c.cfg.Name,
-			Result:     result,
-			Errored:    errored,
-			Duration:   time.Since(task.Started),
-			TokensUsed: tokensUsed,
-			ToolCalls:  toolCalls,
-			Model:      childModel,
-			Branch:     c.branch,
-			BatchID:    batchID,
-			Committed:  c.commit != "",
-			CommitSHA:  c.commit,
-			CommitErr:  c.commitErr,
-			Reclaimed:  c.reclaimed,
-			// Wake the model with this batch's results. The TUI holds the wake
-			// until every worker sharing this BatchID has finished, so an
-			// 8-worker batch produces one wake turn, not eight.
-			NotifyOnDone: true,
-		})
+		// the foreground path. NotifyOnDone wakes the model with this
+		// batch's results — the TUI holds the wake until every worker
+		// sharing this BatchID has finished, so an 8-worker batch produces
+		// one wake turn, not eight.
+		t.Agent.fireBackgroundDone(t.backgroundDoneEvent(c, batchID, childModel, task.Started))
 		return
 	}
-	emitToParent(SubagentDone{
+	emitToParent(t.doneEvent(c, batchID, childModel, task.Started))
+}
+
+// backgroundDoneEvent builds this child's async completion event from its
+// current c.* fields (already updated by the caller before invoking this) —
+// the single source of truth for all three of runDispatchChild's exit paths
+// (panic-recovery, sandbox-construction failure, normal completion), so the
+// fields they report can no longer drift from each other the way three
+// hand-maintained struct literals previously did.
+func (t *DispatchTool) backgroundDoneEvent(c *dispatchChild, batchID, childModel string, started time.Time) SubagentBackgroundDone {
+	tokensUsed, toolCalls := doneTokensAndCalls(t.Agent.Tasks, c.taskID, c.tokens)
+	return SubagentBackgroundDone{
+		TaskID:       c.taskID,
+		AgentType:    c.cfg.Name,
+		Result:       c.result,
+		Errored:      c.errored,
+		Duration:     time.Since(started),
+		TokensUsed:   tokensUsed,
+		ToolCalls:    toolCalls,
+		Model:        childModel,
+		Branch:       c.branch,
+		BatchID:      batchID,
+		Committed:    c.commit != "",
+		CommitSHA:    c.commit,
+		CommitErr:    c.commitErr,
+		Reclaimed:    c.reclaimed,
+		NotifyOnDone: true,
+	}
+}
+
+// doneEvent is backgroundDoneEvent's foreground counterpart (a plain
+// SubagentDone, forwarded to the parent's scrollback instead of the
+// long-lived inbox). Same single-source-of-truth rationale.
+func (t *DispatchTool) doneEvent(c *dispatchChild, batchID, childModel string, started time.Time) SubagentDone {
+	tokensUsed, toolCalls := doneTokensAndCalls(t.Agent.Tasks, c.taskID, c.tokens)
+	return SubagentDone{
 		TaskID:     c.taskID,
 		AgentType:  c.cfg.Name,
-		Result:     result,
-		Errored:    errored,
-		Duration:   time.Since(task.Started),
+		Result:     c.result,
+		Errored:    c.errored,
+		Duration:   time.Since(started),
 		TokensUsed: tokensUsed,
 		ToolCalls:  toolCalls,
 		Model:      childModel,
 		Branch:     c.branch,
 		BatchID:    batchID,
-	})
+	}
 }
 
 // dispatchChildNeedsSandbox reports whether cfg's granted toolset can reach
@@ -828,11 +885,29 @@ func (t *DispatchTool) buildWorktreeChildRegistry(cfg *subagents.AgentConfig, cw
 	return out
 }
 
-// validateWritePartition enforces that write subtasks declare a file scope
-// and that no file is claimed by two write subtasks. Returns "" when valid,
-// or a recoverable error message naming the collisions / missing scopes.
-func validateWritePartition(children []*dispatchChild) string {
+// validateWritePartition enforces that write subtasks declare a file scope,
+// that no file is claimed by two write subtasks in THIS call, and that none
+// collides with a file already claimed by an OTHER still-running dispatch
+// task in tasks (a separate dispatch call, e.g. an earlier background batch
+// that hasn't finished yet — a purely within-call check can never see that
+// collision, and it otherwise only surfaces as a real merge conflict at
+// integrate). tasks may be nil in tests that only care about the within-call
+// check. Returns "" when valid, or a recoverable error message naming the
+// collisions / missing scopes.
+func validateWritePartition(children []*dispatchChild, tasks *subagents.Registry) string {
 	var claims []dispatchFileClaim
+	if tasks != nil {
+		for taskID, files := range tasks.ActiveFileClaims() {
+			owner := "an already-running dispatch task (" + shortTaskIDPrefix(taskID) + ")"
+			for _, f := range files {
+				key := filepath.Clean(strings.TrimSpace(f))
+				if key == "" || key == "." {
+					continue
+				}
+				claims = append(claims, dispatchFileClaim{path: key, owner: owner})
+			}
+		}
+	}
 	var missing []string
 	var collisions []string
 	for i, c := range children {
@@ -843,6 +918,7 @@ func validateWritePartition(children []*dispatchChild) string {
 			missing = append(missing, fmt.Sprintf("task %d (%s)", i+1, c.spec.Description))
 			continue
 		}
+		owner := fmt.Sprintf("task %d", i+1)
 		for _, f := range c.spec.Files {
 			key := filepath.Clean(strings.TrimSpace(f))
 			if key == "" || key == "." || key == ".." || filepath.IsAbs(key) || strings.HasPrefix(key, ".."+string(filepath.Separator)) {
@@ -850,10 +926,10 @@ func validateWritePartition(children []*dispatchChild) string {
 				continue
 			}
 			if prev, ok := overlappingDispatchClaim(claims, key); ok {
-				collisions = append(collisions, fmt.Sprintf("%q overlaps %q claimed by task %d and task %d", key, prev.path, prev.task, i+1))
+				collisions = append(collisions, fmt.Sprintf("%q overlaps %q claimed by %s and %s", key, prev.path, prev.owner, owner))
 				continue
 			}
-			claims = append(claims, dispatchFileClaim{path: key, task: i + 1})
+			claims = append(claims, dispatchFileClaim{path: key, owner: owner})
 		}
 	}
 	if len(missing) > 0 {
@@ -862,14 +938,23 @@ func validateWritePartition(children []*dispatchChild) string {
 	}
 	if len(collisions) > 0 {
 		return "error: write subtasks must own non-overlapping files (overlap causes merge conflicts). Conflicts: " +
-			strings.Join(collisions, "; ") + ". Re-partition so each file is owned by exactly one task."
+			strings.Join(collisions, "; ") + ". Re-partition so each file is owned by exactly one task, and wait for any conflicting in-flight dispatch batch to finish."
 	}
 	return ""
 }
 
+// shortTaskIDPrefix renders an 8-char id prefix for an error message,
+// tolerating shorter ids (test fixtures).
+func shortTaskIDPrefix(id string) string {
+	if len(id) > 8 {
+		return id[:8]
+	}
+	return id
+}
+
 type dispatchFileClaim struct {
-	path string
-	task int
+	path  string
+	owner string // display label: "task N" (this call) or an external task id
 }
 
 func overlappingDispatchClaim(claims []dispatchFileClaim, path string) (dispatchFileClaim, bool) {
@@ -881,8 +966,63 @@ func overlappingDispatchClaim(claims []dispatchFileClaim, path string) (dispatch
 	return dispatchFileClaim{}, false
 }
 
+// dispatchCaseInsensitiveFS controls whether dispatch's file-ownership path
+// comparisons fold case before comparing, matching macOS's default case-
+// insensitive-but-preserving APFS/HFS+ (the only supported platform where
+// two paths differing only by case — e.g. "Utils.go" vs "utils.go" — alias
+// the same file on disk; Linux is case-sensitive). A var, not an inline
+// runtime.GOOS check, so tests can exercise both branches regardless of the
+// host OS.
+//
+// Every comparison of a dispatch-owned path — the declaration-time overlap
+// check (pathsOverlap, below), the write-time gate (pathWithinOwnedScope in
+// writepath.go), and the commit-time scope scan (pathOwned, which delegates
+// to pathWithinOwnedScope) — must fold through THIS one flag via
+// pathsEqualCaseAware/pathUnderCaseAware. Fixing case-insensitivity in only
+// the declaration-time check (an earlier version of this fix did exactly
+// that) leaves an asymmetry: two different tasks claiming case-variant
+// paths get correctly rejected as overlapping, but a SINGLE task whose own
+// write or committed change lands under a case-variant of its own declared
+// path still gets denied/flagged as out-of-scope, because the enforcement
+// path used plain case-sensitive `==`/HasPrefix.
+var dispatchCaseInsensitiveFS = runtime.GOOS == "darwin"
+
+// pathsEqualCaseAware is the shared primitive every dispatch ownership
+// comparison uses for path equality — see dispatchCaseInsensitiveFS.
+func pathsEqualCaseAware(a, b string) bool {
+	if dispatchCaseInsensitiveFS {
+		return strings.EqualFold(a, b)
+	}
+	return a == b
+}
+
+// pathUnderCaseAware wraps pathUnder (writepath.go) with the same folding:
+// lowercasing both operands before the existing lexical containment check
+// doesn't change segment boundaries or the ".." escape logic, so it's safe
+// to fold this way without touching pathUnder's own (non-dispatch-specific)
+// behavior for its other callers.
+func pathUnderCaseAware(descendant, ancestor string) bool {
+	if dispatchCaseInsensitiveFS {
+		return pathUnder(strings.ToLower(descendant), strings.ToLower(ancestor))
+	}
+	return pathUnder(descendant, ancestor)
+}
+
+// pathsOverlap compares CLEANED, REPO-RELATIVE claim-key strings (not
+// filesystem-anchored absolute paths) — pathUnderCaseAware is deliberately
+// NOT used here: pathUnder's filepath.Abs(ancestor) would resolve a
+// relative key against this PROCESS's own cwd, not the dispatch worktree,
+// silently producing wrong answers. Pure lexical prefix comparison is what
+// this needs, with the same case-fold as every other ownership comparison.
 func pathsOverlap(a, b string) bool {
-	return a == b || strings.HasPrefix(a, b+string(filepath.Separator)) || strings.HasPrefix(b, a+string(filepath.Separator))
+	if pathsEqualCaseAware(a, b) {
+		return true
+	}
+	fa, fb := a, b
+	if dispatchCaseInsensitiveFS {
+		fa, fb = strings.ToLower(a), strings.ToLower(b)
+	}
+	return strings.HasPrefix(fa, fb+string(filepath.Separator)) || strings.HasPrefix(fb, fa+string(filepath.Separator))
 }
 
 // writeScopePrompt is the system-prompt addendum that tells a write subtask
@@ -907,8 +1047,17 @@ func commitSubject(agentType, description string) string {
 	}
 	subj := fmt.Sprintf("%s: %s", agentType, desc)
 	subj = strings.ReplaceAll(subj, "\n", " ")
+	// ApplyCommit's validator (CommitSubjectMaxLen) measures BYTES, so the cut
+	// point must stay a byte index — but a raw subj[:72] can land mid-rune for
+	// multi-byte UTF-8 (CJK, emoji in a task description), producing invalid
+	// UTF-8 in the resulting commit message. Walk back to the nearest rune
+	// boundary at or before 72 bytes instead.
 	if len(subj) > 72 {
-		subj = subj[:72]
+		cut := 72
+		for cut > 0 && !utf8.RuneStart(subj[cut]) {
+			cut--
+		}
+		subj = subj[:cut]
 	}
 	subj = strings.TrimRight(subj, ". ")
 	return subj
@@ -976,6 +1125,8 @@ func (t *DispatchTool) formatResult(goal, batchID string, children []*dispatchCh
 		if c.branch != "" {
 			fmt.Fprintf(&b, " · branch: %s", c.branch)
 			switch {
+			case failedWithCommit(c.commit != "", c.errored):
+				fmt.Fprintf(&b, " · has commit %s but FAILED (%s) — do not integrate without review", shortSHA(c.commit), c.commitErr)
 			case c.commit != "":
 				fmt.Fprintf(&b, " · committed %s", shortSHA(c.commit))
 			case c.commitErr != "":
@@ -997,7 +1148,11 @@ func (t *DispatchTool) formatResult(goal, batchID string, children []*dispatchCh
 	if hasWrite {
 		var branches []string
 		for _, c := range children {
-			if c.branch != "" && c.commit != "" {
+			// integrateReady: a worker that ended TaskErrored (e.g. it left
+			// out-of-scope changes uncommitted) must never be recommended for
+			// integrate just because its branch happens to carry an earlier,
+			// legitimate commit — see the per-task "FAILED" line above.
+			if c.branch != "" && integrateReady(c.commit != "", c.errored) {
 				branches = append(branches, c.branch)
 			}
 		}
@@ -1037,47 +1192,64 @@ func outOfScopeWorkerChanges(ctx context.Context, worktreeDir string, owned []st
 	}
 	var outside []string
 	for _, line := range splitNonEmptyLines(out) {
-		path := statusPath(line)
-		if path == "" {
-			continue
-		}
-		if !pathOwned(path, owned, worktreeDir) {
-			outside = append(outside, path)
+		for _, path := range statusPaths(line) {
+			if path == "" {
+				continue
+			}
+			if !pathOwned(path, owned, worktreeDir) {
+				outside = append(outside, path)
+			}
 		}
 	}
 	return outside
 }
 
-func statusPath(line string) string {
+// statusPaths returns the path(s) touched by one `git status --porcelain`
+// line: BOTH the source and destination for a genuine rename/copy line, one
+// path otherwise. A rename/copy is recognized only by its status code ('R'
+// or 'C' in either of the first two columns) — never by scanning the path
+// text for " -> ", which would misparse a plain untracked file whose name
+// literally contains that substring (e.g. "?? weird -> file.txt"). Checking
+// only the destination of a real rename would also miss it: `git mv` moving
+// a sibling task's file into this worker's own filename would pass with
+// only the destination checked, since the source (someone else's file) is
+// never looked at.
+// Residual ambiguity: strings.Cut finds the FIRST " -> ", so a rename whose
+// SOURCE filename itself contains that literal substring (e.g. renaming
+// "notes -> old.txt" to "new.txt") still splits wrong — git's porcelain v1
+// text format has no fully unambiguous encoding for this case. The only
+// complete fix is switching to `--porcelain=v2 -z` (NUL-separated fields,
+// no textual arrow at all), which is a real reparse (different column
+// layout, a rename score field, NUL-delimited records instead of
+// splitNonEmptyLines) — not worth it for a case this narrow; a source
+// filename containing " -> " is not something normal development produces.
+func statusPaths(line string) []string {
 	if len(line) < 4 {
-		return ""
+		return nil
 	}
+	code := line[:2]
 	p := strings.TrimSpace(line[3:])
-	if before, after, ok := strings.Cut(p, " -> "); ok {
-		_ = before
-		p = after
+	if strings.ContainsAny(code, "RC") {
+		if before, after, ok := strings.Cut(p, " -> "); ok {
+			return []string{unquoteStatusPath(before), unquoteStatusPath(after)}
+		}
 	}
+	return []string{unquoteStatusPath(p)}
+}
+
+func unquoteStatusPath(p string) string {
 	return strings.Trim(p, `"`)
 }
 
+// pathOwned reports whether path (worktree-relative) falls inside one of the
+// dispatch worker's owned scopes. Delegates to pathWithinOwnedScope — the
+// same check the write-time gate (ValidateWritePath) uses — instead of a
+// second, independently-diverged implementation, so a future ownership-edge-
+// case fix (or a future divergence like the missing symlink resolution this
+// replaced) can't land in only one of the two call sites.
 func pathOwned(path string, owned []string, worktreeDir string) bool {
-	for _, raw := range owned {
-		original := strings.TrimSpace(raw)
-		raw = filepath.Clean(original)
-		if raw == "" || raw == "." {
-			continue
-		}
-		if path == raw {
-			return true
-		}
-		candidate := filepath.Join(worktreeDir, raw)
-		if strings.HasSuffix(original, "/") || strings.HasSuffix(original, string(filepath.Separator)) || isDir(candidate) {
-			if pathUnder(filepath.Join(worktreeDir, path), candidate) {
-				return true
-			}
-		}
-	}
-	return false
+	abs := resolveWriteTarget(filepath.Clean(filepath.Join(worktreeDir, path)))
+	return pathWithinOwnedScope(abs, WritePathOptions{Cwd: NewCwdRef(worktreeDir), OwnedPaths: owned})
 }
 
 // branchTip returns the worktree branch's HEAD sha when it has at least one

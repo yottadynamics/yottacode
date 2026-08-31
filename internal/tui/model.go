@@ -752,10 +752,11 @@ type Model struct {
 	paragraphStart bool
 
 	// Approval modal state
-	awaitingApproval     bool
-	approvalTool         string
-	approvalPreview      string
-	approvalArgs         string
+	awaitingApproval bool
+	approvalTool     string
+	approvalPreview  string
+	approvalArgs     string
+
 	approvalScrollOffset int
 	// approvalAllowAlwaysOK gates the [a]lways-allow keypress. Set
 	// true when DeriveAllowRule can produce a sensible pattern from
@@ -5337,6 +5338,19 @@ func appendDispatchWakeMetadata(b *strings.Builder, w agent.SubagentBackgroundDo
 	if w.Branch != "" {
 		fmt.Fprintf(b, "Branch: %s\n", w.Branch)
 		switch {
+		// FailedWithCommit first: a worker can be BOTH Committed (its branch
+		// has an earlier, legitimate commit) AND Errored (e.g. it left
+		// out-of-scope changes uncommitted) — that combination must read as
+		// a failure, not as integrate-ready work. See
+		// SubagentBackgroundDone.FailedWithCommit/IntegrateReady — the
+		// shared rule every render site (this one, the dock badge, dispatch's
+		// own formatResult) goes through, so it can't drift between them.
+		case w.FailedWithCommit():
+			sha := w.CommitSHA
+			if sha == "" {
+				sha = "committed"
+			}
+			fmt.Fprintf(b, "Commit: %s, but the task FAILED — do not integrate without review (%s)\n", sha, w.CommitErr)
 		case w.Committed:
 			sha := w.CommitSHA
 			if sha == "" {
@@ -5351,7 +5365,7 @@ func appendDispatchWakeMetadata(b *strings.Builder, w agent.SubagentBackgroundDo
 			b.WriteString("Commit: no changes to merge yet\n")
 		}
 	}
-	if w.Committed && w.Branch != "" {
+	if w.IntegrateReady() && w.Branch != "" {
 		b.WriteString("Next: when every worker in this batch has finished, call integrate with the committed dispatch branch list.\n")
 	}
 }

@@ -81,8 +81,19 @@ type Config struct {
 // fanning out unbounded child loops on the user's API key (the per-child
 // iteration cap and the concurrency cap bound one wave, not the session
 // total). <=0 falls through to DefaultSubagentSessionTokenBudget.
+//
+// MaxConcurrentSubagents caps how many subagents (standalone Agent-tool
+// spawns AND dispatch workers together — they contend for the same
+// provider streams, so one shared cap is the correct resource model, not
+// two separate ones) may be TaskRunning at once per session, foreground and
+// background alike. The right number is environment-dependent — a higher
+// API rate-limit tier or more host capacity for concurrent sandbox
+// containers can support more than the conservative default; a modest key
+// or machine may want fewer. <=0 falls through to
+// DefaultMaxConcurrentSubagents (8).
 type SubagentsConfig struct {
-	SessionTokenBudget int `toml:"session_token_budget"`
+	SessionTokenBudget     int `toml:"session_token_budget"`
+	MaxConcurrentSubagents int `toml:"max_concurrent_subagents"`
 }
 
 // SandboxConfig controls the run_bash command-execution backend. See
@@ -97,7 +108,16 @@ type SandboxConfig struct {
 	Backend        string `toml:"backend"` // "none" (default) | "podman"
 	Image          string `toml:"image"`
 	DocumentsImage string `toml:"documents_image"`
-	Network        string `toml:"network"` // "none" | "host" (temporary default)
+	// Network is "none" | "host" (default). "host" shares the machine's
+	// network stack directly rather than sitting behind an in-house
+	// egress allowlist: with no separate network namespace to police,
+	// whatever network-layer policy the host/organization already
+	// enforces (a transparent proxy, a firewall) already covers sandboxed
+	// commands the same as any other host process. For an explicit
+	// (non-transparent) corporate proxy, forward it via EnvPassthrough
+	// (HTTP_PROXY/HTTPS_PROXY/NO_PROXY); for a hard deny-all independent
+	// of any external trust, use "none".
+	Network string `toml:"network"`
 	// DNS optionally passes explicit resolver IPs to Podman at container start.
 	// Empty uses Podman's default resolver behavior for the selected network.
 	DNS            []string `toml:"dns"`
@@ -106,6 +126,13 @@ type SandboxConfig struct {
 	Memory         string   `toml:"memory"`
 	CPUs           float64  `toml:"cpus"`
 	PidsLimit      int      `toml:"pids_limit"`
+	// Disk caps the container's writable-layer disk usage in megabytes
+	// (0 = no quota attempted). Only takes effect when the host's storage
+	// driver actually supports --storage-opt size= (overlay on XFS with
+	// pquota; most Linux hosts run ext4 and don't) — silently skipped
+	// with a logged note otherwise, never a startup failure. See
+	// storageOptSupported in internal/sandbox/hostcaps.go.
+	Disk int `toml:"disk"`
 }
 
 // DefaultSandboxImage is the official command sandbox image. Keep it as a named
@@ -120,6 +147,13 @@ const DefaultSandboxDocumentsImage = "ghcr.io/yottadynamics/yottacode-documents:
 // DefaultSandboxDNS avoids loopback resolver inheritance inside rootless Podman.
 // Users on VPN/corporate networks can override this with their resolver IPs.
 var DefaultSandboxDNS = []string{"1.1.1.1", "8.8.8.8"}
+
+// DefaultSandboxDisk caps the sandbox container's writable-layer disk usage
+// in megabytes. Larger than the 2g Memory default since a writable layer
+// holding installed toolchains/deps typically needs more room than the
+// process's RAM ceiling. Only enforced when the host's storage driver
+// supports it (see SandboxConfig.Disk); otherwise this is a no-op.
+const DefaultSandboxDisk = 4096
 
 // ValidSandboxBackends is the whitelist for SandboxConfig.Backend.
 var ValidSandboxBackends = []string{"none", "podman"}
@@ -149,6 +183,24 @@ func (c Config) SubagentSessionTokenBudget() int {
 		return c.Subagents.SessionTokenBudget
 	}
 	return DefaultSubagentSessionTokenBudget
+}
+
+// DefaultMaxConcurrentSubagents is the conservative default for how many
+// subagents (foreground or background, standalone Agent-tool spawns and
+// dispatch workers combined) may be running at once per session — enough
+// for genuine parallelism, low enough to keep API spend and (once the
+// command sandbox is enabled) concurrent container cost bounded if a model
+// gets enthusiastic. Override via `[subagents] max_concurrent_subagents = N`
+// once a user's rate-limit tier or machine can support more.
+const DefaultMaxConcurrentSubagents = 8
+
+// SubagentMaxConcurrent resolves the configured concurrency cap, applying
+// the conservative default when unset (<=0).
+func (c Config) SubagentMaxConcurrent() int {
+	if c.Subagents.MaxConcurrentSubagents > 0 {
+		return c.Subagents.MaxConcurrentSubagents
+	}
+	return DefaultMaxConcurrentSubagents
 }
 
 // SkillsConfig declares persistent Agent Skills behavior. DefaultOn
@@ -655,6 +707,7 @@ func Default() Config {
 			Memory:         "2g",
 			CPUs:           2,
 			PidsLimit:      256,
+			Disk:           DefaultSandboxDisk,
 		},
 	}
 }
@@ -1064,6 +1117,9 @@ func Validate(cfg Config) error {
 	}
 	if cfg.Sandbox.PidsLimit < 0 {
 		return fmt.Errorf("sandbox.pids_limit = %d must be >= 0", cfg.Sandbox.PidsLimit)
+	}
+	if cfg.Sandbox.Disk < 0 {
+		return fmt.Errorf("sandbox.disk = %d must be >= 0", cfg.Sandbox.Disk)
 	}
 	if cfg.Sandbox.Backend == "podman" {
 		if strings.TrimSpace(cfg.Sandbox.Image) == "" {

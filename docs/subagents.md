@@ -169,7 +169,8 @@ every turn boundary, so a completion that raced a busy UI still
 banners and (when requested) wakes. The user-driven counterpart is the
 `i` key in `/subagents` — inject any finished task's result on your
 own terms. Session-wide subagent spend is bounded by
-`[subagents] session_token_budget` (see
+`[subagents] session_token_budget`, and concurrency by
+`[subagents] max_concurrent_subagents` (see
 [configuration.md](configuration.md#subagents)).
 
 The trade is between **context isolation** (both variants give it),

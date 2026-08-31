@@ -518,6 +518,31 @@ func TestModel_StreamingUnclosedTableRendersOnCommit(t *testing.T) {
 	}
 }
 
+func TestRenderPermissionsOverlayShowsWarnings(t *testing.T) {
+	m := newTestModel(t)
+	if err := m.perms.AddAllow("Bash(gh *)"); err != nil {
+		t.Fatalf("AddAllow Bash: %v", err)
+	}
+	if err := m.perms.AddAllow("Github(*)"); err != nil {
+		t.Fatalf("AddAllow Github: %v", err)
+	}
+	perms, err := permissions.Load(m.cwd)
+	if err != nil {
+		t.Fatalf("Load permissions: %v", err)
+	}
+	m.perms = perms
+
+	plain := stripANSI(renderPermissionsOverlay(m))
+	if !strings.Contains(plain, "Policy warnings") {
+		t.Fatalf("expected policy warning section, got %q", plain)
+	}
+	for _, want := range []string{"Bash(gh *)", "Github(*)"} {
+		if !strings.Contains(plain, want) {
+			t.Errorf("warning overlay missing %q: %q", want, plain)
+		}
+	}
+}
+
 func TestModel_ApprovalAutoRendersSystemMessage(t *testing.T) {
 	m := newTestModel(t)
 	m, _ = applyMsg(m, agentEventMsg{ev: agent.ApprovalAuto{Source: "auto-mode", Preview: `grep("auto mode" in internal/tui)`}})
