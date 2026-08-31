@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -34,7 +35,7 @@ called from CI.
   list     list saved sessions (newest first), optionally as JSON
   resume   launch the TUI on a saved session
   rename   set the friendly name on a saved session
-  export   write a saved session to disk as Markdown`,
+  export   write a saved session to disk as Markdown or JSONL`,
 		Args: cobra.NoArgs,
 	}
 	cmd.AddCommand(
@@ -167,7 +168,7 @@ resume <name>'.`,
 	}
 }
 
-// newSessionsExportCmd writes a saved session out as Markdown.
+// newSessionsExportCmd writes a saved session out as Markdown or JSONL.
 // Path argument is optional; when omitted, the file lands in the
 // current working directory as <name-or-id>.md — matches the
 // default the in-TUI picker pre-fills into its path textinput.
@@ -178,10 +179,11 @@ func newSessionsExportCmd() *cobra.Command {
 	var force bool
 	cmd := &cobra.Command{
 		Use:   "export <id|name> [path]",
-		Short: "Write a saved session out as Markdown",
+		Short: "Write a saved session out as Markdown or JSONL",
 		Long: `Export renders a saved session into a Markdown document with each
-turn formatted (system messages omitted, tool output fenced). Useful
-for sharing in PRs/issues or archiving outside the JSON session store.
+turn formatted (system messages omitted, tool output fenced) by default and
+for .md paths. Use a .jsonl path to write a structured newline-delimited JSON
+log for scripting, diffing, or jq-based analysis.
 
 Identifier may be the session id or its name. When path is omitted
 the file lands in the current working directory as
@@ -233,11 +235,16 @@ passed.`,
 				}
 			}
 
-			md := session.ExportMarkdown(loaded)
-			if err := os.WriteFile(path, []byte(md), 0o644); err != nil {
+			body := session.ExportMarkdown(loaded)
+			label := "transcript"
+			if strings.EqualFold(filepath.Ext(path), ".jsonl") {
+				body = session.ExportJSONL(loaded)
+				label = "log"
+			}
+			if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
 				return err
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "wrote %d bytes to %s\n", len(md), path)
+			fmt.Fprintf(cmd.OutOrStdout(), "wrote %s (%d bytes) to %s\n", label, len(body), path)
 			return nil
 		},
 	}

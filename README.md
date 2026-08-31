@@ -125,7 +125,7 @@ Autonomy is useful only when you can trust the loop, and trust starts with knowi
 - Plan mode investigates read-only first, then waits for approval before implementation.
 - **Data sovereignty by default.** Sessions, memory, and checkpoints are plain files on your machine under `~/.yottacode/`. Code only leaves the machine to reach the model provider you explicitly configure, and with local Ollama, nothing leaves at all.
 
-Tools run on the host with no in-process sandbox; use a container or devcontainer when you need stronger isolation. See [`docs/security-and-allow-lists.md`](docs/security-and-allow-lists.md).
+Tools run on the host by default. For stronger shell-command isolation, enable the optional Podman command sandbox with `[sandbox] backend = "podman"`; it runs approved `run_bash`/`run_tests` commands and document subprocess helpers in GHCR-published containers. See [`docs/sandbox.md`](docs/sandbox.md) and [`docs/security-and-allow-lists.md`](docs/security-and-allow-lists.md).
 
 ---
 

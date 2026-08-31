@@ -406,6 +406,7 @@ Configuration (no built-in defaults — must be set via flag or env):
 			return oneshot.Run(cmd.Context(), *opts, prompt)
 		},
 	}
+	cmd.Flags().BoolVar(&opts.RunJSONStatus, "json", false, "Emit a machine-readable run status envelope to stderr")
 	return cmd
 }
 

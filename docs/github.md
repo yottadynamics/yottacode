@@ -67,14 +67,20 @@ bypasses the modal, but `deny` rules still apply.
 | `/git-update-pr [ref]` | Refreshes title/body to match the current commit list. |
 | `/git-review-pr [ref]` | Structured PR review: failing-checks summary, blockers, suggestions, nits. Output is local scrollback only. |
 | `/git-push` | Pushes the current branch (sets upstream on first push; surfaces the PR URL when one exists). |
-| `/git-implement-issue <n>` | End-to-end: fetch issue → research → plan mode → branch → implement → tests → commit → push → draft PR. |
+| `/git-implement-issue <n>` | End-to-end: fetch issue → validate details → research → checkpoint → branch → implement → tests → commit → push → draft PR. |
 
 When the current branch has an open GitHub pull request, the TUI status bar shows a compact `PR #<number>` chip. The lookup is best-effort: missing GitHub auth, non-GitHub remotes, or branches without an open PR simply omit the chip. If the branch diverges from its upstream or default branch, the same status area shows compact git arrows such as `↑3` for unpublished local commits and `↓1` for commits behind the base.
 
 `/git-implement-issue` is the largest of the bunch. Spec:
 [`yottacode-roadmap/git-fix-issue.md`](../yottacode-roadmap/git-fix-issue.md)
 (the design doc was written under the older `/git-fix-issue` name;
-the shipped command uses `/git-implement-issue`).
+the shipped command uses `/git-implement-issue`). Before it researches
+code or edits files, the directive asks the agent to verify that the
+issue has enough expected/actual behavior, reproduction detail, or
+acceptance criteria to implement confidently. Plan mode is only an
+optional approval surface for the checkpoint; if it is unavailable, the
+agent should show the same checkpoint in normal scrollback and stop for
+confirmation.
 
 ## Permissions
 

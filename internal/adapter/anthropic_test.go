@@ -134,6 +134,12 @@ func TestAnthropicAdapter_StreamsTextThinkingAndToolUse(t *testing.T) {
 	if final.StopReason != "tool_use" {
 		t.Errorf("stop reason = %q", final.StopReason)
 	}
+	if final.Model != "claude-sonnet-4-6" {
+		t.Errorf("final.Model = %q, want the adapter's configured model", final.Model)
+	}
+	if final.Provider != string(ProviderAnthropic) {
+		t.Errorf("final.Provider = %q, want %q", final.Provider, ProviderAnthropic)
+	}
 }
 
 // TestAnthropicAdapter_PreservesInputCacheUsage guards the message_delta

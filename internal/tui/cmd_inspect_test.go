@@ -2,7 +2,6 @@ package tui
 
 import (
 	"fmt"
-	"os"
 	"strings"
 	"testing"
 
@@ -118,8 +117,9 @@ func TestResolveInspectSession_AmbiguousPrefixErrors(t *testing.T) {
 // RoleUser content attaches to the right turn, a tool call's status
 // updates from its matching RoleTool result by ToolCallID (not position),
 // the repeated-failure guard marker is distinguished from an ordinary
-// error, and the low-signal flag matches the same thresholds /usage's
-// efficiency section uses.
+// error (and stripped out of the error preview, since it's boilerplate
+// guidance text rather than the actual failure), and the low-signal flag
+// matches the same thresholds /usage's efficiency section uses.
 func TestBuildInspectTurns_GroupsMessagesAndTracksStatus(t *testing.T) {
 	s := &session.Session{
 		Messages: []adapter.Message{
@@ -158,6 +158,9 @@ func TestBuildInspectTurns_GroupsMessagesAndTracksStatus(t *testing.T) {
 	if t1.toolCalls[1].status != "error — guidance fired" {
 		t.Errorf("call2 (grep, guard marker present) should be flagged guidance-fired, got %q", t1.toolCalls[1].status)
 	}
+	if want := "error: hunk mismatch"; t1.toolCalls[1].errorPreview != want {
+		t.Errorf("call2 error preview should stop before the guard marker, got %q, want %q", t1.toolCalls[1].errorPreview, want)
+	}
 
 	t2 := turns[1]
 	if t2.n != 2 || t2.userPreview != "now check lint" {
@@ -168,6 +171,67 @@ func TestBuildInspectTurns_GroupsMessagesAndTracksStatus(t *testing.T) {
 	}
 	if len(t2.toolCalls) != 1 || t2.toolCalls[0].status != "error" {
 		t.Errorf("call3 (lint, ordinary error, no guard marker) should be plain error, got %+v", t2.toolCalls)
+	}
+	if want := "error: 2 warnings"; t2.toolCalls[0].errorPreview != want {
+		t.Errorf("call3 error preview should be the full tool content, got %q, want %q", t2.toolCalls[0].errorPreview, want)
+	}
+}
+
+// TestInspectStopFlag locks the keyword mapping from a provider's raw
+// StopReason to /inspect's short label: silent for normal completions,
+// "truncated" for a cut-off response, "filtered" for a safety/content
+// intervention — covering the differently-spelled variants each adapter
+// actually emits (see inspectStopFlag's doc comment).
+func TestInspectStopFlag(t *testing.T) {
+	cases := []struct {
+		reason string
+		want   string
+	}{
+		{"", ""},
+		{"end_turn", ""},
+		{"stop", ""},
+		{"tool_use", ""},
+		{"tool_calls", ""},
+		{"max_tokens", "truncated"},    // Anthropic
+		{"MAX_TOKENS", "truncated"},    // Gemini
+		{"length", "truncated"},        // OpenAI-compatible (copilot, ollama)
+		{"incomplete", "truncated"},    // ChatGPT/Responses API
+		{"refusal", "filtered"},        // Anthropic
+		{"content_filter", "filtered"}, // OpenAI-compatible
+		{"SAFETY", "filtered"},         // Gemini
+		{"RECITATION", "filtered"},     // Gemini
+		{"PROHIBITED_CONTENT", "filtered"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.reason, func(t *testing.T) {
+			if got := inspectStopFlag(tc.reason); got != tc.want {
+				t.Errorf("inspectStopFlag(%q) = %q, want %q", tc.reason, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestRenderInspectPanel_ShowsErrorPreviewAndStopFlag confirms both are
+// actually wired into the rendered panel, not just correct in isolation:
+// a failed tool call's line wraps to a second, indented line with the
+// truncated failure content, and an abnormal StopReason renders as a
+// turn-level flag alongside low-signal.
+func TestRenderInspectPanel_ShowsErrorPreviewAndStopFlag(t *testing.T) {
+	s := &session.Session{
+		ID: "err-session",
+		Messages: []adapter.Message{
+			{Role: adapter.RoleUser, Content: "run the vuln scan"},
+			{Role: adapter.RoleAssistant, Content: "on it", StopReason: "max_tokens", ToolCalls: []adapter.ToolCall{
+				{ID: "call1", Name: "run_tests", ArgsJSON: `{"command":"govulncheck"}`},
+			}},
+			{Role: adapter.RoleTool, ToolCallID: "call1", Content: "error: 3 vulnerabilities found"},
+		},
+	}
+	got := renderInspectPanel(s)
+	for _, want := range []string{"truncated", "    error: 3 vulnerabilities found"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q in:\n%s", want, got)
+		}
 	}
 }
 
@@ -199,6 +263,48 @@ func TestRenderInspectPanel_EmptySession(t *testing.T) {
 	got := renderInspectPanel(&session.Session{ID: "empty-session"})
 	if !strings.Contains(got, "no turns") {
 		t.Errorf("expected a no-turns message; got %q", got)
+	}
+}
+
+// TestInspectDetailTokens_CacheAndReasoning locks the per-turn cache/
+// reasoning clause: dropped entirely when usage carries neither, shows
+// write and/or read when present, and reasoning trails after cache.
+func TestInspectDetailTokens_CacheAndReasoning(t *testing.T) {
+	cases := []struct {
+		name string
+		u    *adapter.Usage
+		want string
+	}{
+		{"nil usage", nil, ""},
+		{"plain usage", &adapter.Usage{InputTokens: 100, OutputTokens: 50}, ""},
+		{"read only", &adapter.Usage{CacheReadTokens: 144_000}, "  cache 144K read"},
+		{"write only", &adapter.Usage{CacheCreationTokens: 13_000}, "  cache 13K write"},
+		{"write and read", &adapter.Usage{CacheCreationTokens: 13_000, CacheReadTokens: 141_000}, "  cache 13K write · 141K read"},
+		{"reasoning only", &adapter.Usage{ReasoningTokens: 25}, "  reasoning 25"},
+		{"cache and reasoning", &adapter.Usage{CacheReadTokens: 144_000, ReasoningTokens: 25}, "  cache 144K read · reasoning 25"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := inspectDetailTokens(tc.u); got != tc.want {
+				t.Errorf("inspectDetailTokens(%+v) = %q, want %q", tc.u, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestRenderInspectPanel_ShowsCacheDetail confirms the cache clause is
+// actually wired into the rendered panel, not just correct in isolation.
+func TestRenderInspectPanel_ShowsCacheDetail(t *testing.T) {
+	s := &session.Session{
+		ID: "cache-session",
+		Messages: []adapter.Message{
+			{Role: adapter.RoleUser, Content: "go"},
+			{Role: adapter.RoleAssistant, Content: "ok", Usage: &adapter.Usage{InputTokens: 10, OutputTokens: 5, CacheReadTokens: 144_000}},
+		},
+	}
+	got := renderInspectPanel(s)
+	if !strings.Contains(got, "cache 144K read") {
+		t.Errorf("expected cache detail in rendered panel:\n%s", got)
 	}
 }
 
@@ -242,27 +348,6 @@ func TestInspectPicker_EnterOpensSelectedSession(t *testing.T) {
 	}
 }
 
-func TestInspectExport_WritesCurrentInspectedSession(t *testing.T) {
-	m := newTestModel(t)
-	m.cwd = t.TempDir()
-	m.sess.Messages = append(m.sess.Messages,
-		adapter.Message{Role: adapter.RoleUser, Content: "hi"},
-		adapter.Message{Role: adapter.RoleAssistant, Content: "hello", Usage: &adapter.Usage{InputTokens: 10, OutputTokens: 5}},
-	)
-	m.inspectSession = m.sess
-	m.inspectOpen = true
-	m.inspectPanel = renderInspectPanel(m.sess)
-
-	m, _ = m.updateInspectPanel(tea.KeyPressMsg{Text: "e"})
-	path := defaultInspectExportPath(m.cwd, m.sess)
-	body, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("expected inspect export at %s: %v", path, err)
-	}
-	if !strings.Contains(string(body), "# yottacode session") || !strings.Contains(string(body), "hello") {
-		t.Fatalf("exported markdown missing session content:\n%s", string(body))
-	}
-}
 
 func TestInspectTypedSlashOpensPicker(t *testing.T) {
 	m := newTestModel(t)

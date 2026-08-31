@@ -447,14 +447,36 @@ func TestModel_UserMessageAppendedRendersSystemMessage(t *testing.T) {
 
 func TestModel_ContextCompactedRendersSystemMessage(t *testing.T) {
 	m := newTestModel(t)
-	m, _ = applyMsg(m, agentEventMsg{ev: agent.ContextCompacted{Before: 221000, After: 36000, SnapshotPath: "/tmp/foo.json"}})
+	snap := "/tmp/sess1-pre-summary-20260101-000000.json"
+	m, _ = applyMsg(m, agentEventMsg{ev: agent.ContextCompacted{Before: 221000, After: 36000, SnapshotPath: snap}})
 	plain := stripANSI(m.transcript.String())
 	want := "◇ context · compacted · 172% → 28% · full history saved"
 	if !strings.Contains(plain, want) {
 		t.Fatalf("expected context compaction line %q, got %q", want, plain)
 	}
-	if strings.Contains(plain, "/tmp/foo.json") {
-		t.Fatalf("context compaction should not render as a card, got %q", plain)
+	// The banner must offer a working resume command (previously it
+	// suggested a dead "/recall <session-id>" command instead).
+	if !strings.Contains(plain, "yottacode sessions resume sess1-pre-summary-20260101-000000") {
+		t.Fatalf("expected banner to offer a working resume command, got %q", plain)
+	}
+	// The full snapshot path (directory + .json) must never leak into
+	// scrollback — only the bare resume id (docs/tools.md: "the full
+	// snapshot path is intentionally omitted from normal scrollback").
+	if strings.Contains(plain, snap) {
+		t.Fatalf("full snapshot path must not appear in scrollback, got %q", plain)
+	}
+}
+
+// TestModel_ContextCompactedIgnoresNonSnapshotPath guards
+// snapshotResumeHint's validation: a SnapshotPath that doesn't actually
+// look like a compaction snapshot (no session.SnapshotMarker) must not
+// produce a bogus, non-functional "sessions resume <garbage>" suggestion.
+func TestModel_ContextCompactedIgnoresNonSnapshotPath(t *testing.T) {
+	m := newTestModel(t)
+	m, _ = applyMsg(m, agentEventMsg{ev: agent.ContextCompacted{Before: 221000, After: 36000, SnapshotPath: "/tmp/foo.json"}})
+	plain := stripANSI(m.transcript.String())
+	if strings.Contains(plain, "sessions resume") {
+		t.Fatalf("non-snapshot-shaped path should not produce a resume command, got %q", plain)
 	}
 }
 
@@ -871,7 +893,7 @@ func TestModel_EnterMidTurnQueuesNotSubmits(t *testing.T) {
 	m := newTestModel(t)
 	m.turnActive = true
 	m.turnCancel = func() {}
-	m.userMsgCh = make(chan string, 1)
+	m.userMsgCh = make(chan agent.UserMessage, 1)
 	for _, r := range "queued" {
 		m, _ = applyMsg(m, tea.KeyPressMsg{Text: string(r)})
 	}
@@ -882,8 +904,11 @@ func TestModel_EnterMidTurnQueuesNotSubmits(t *testing.T) {
 	}
 	select {
 	case got := <-m.userMsgCh:
-		if got != "queued" {
-			t.Errorf("queued input = %q, want queued", got)
+		if got.Content != "queued" {
+			t.Errorf("queued input = %q, want queued", got.Content)
+		}
+		if got.Timestamp.IsZero() {
+			t.Error("queued input should carry an enqueue timestamp")
 		}
 	default:
 		t.Errorf("Enter during a turn should queue input on userMsgCh")
@@ -985,7 +1010,7 @@ func TestModel_RegularMessageMidTurnQueuesForResubmission(t *testing.T) {
 	m := newTestModel(t)
 	m.turnActive = true
 	m.turnCancel = func() {}
-	m.userMsgCh = make(chan string, 1)
+	m.userMsgCh = make(chan agent.UserMessage, 1)
 	for _, r := range "hello world" {
 		m, _ = applyMsg(m, tea.KeyPressMsg{Text: string(r)})
 	}
@@ -996,8 +1021,11 @@ func TestModel_RegularMessageMidTurnQueuesForResubmission(t *testing.T) {
 	}
 	select {
 	case got := <-m.userMsgCh:
-		if got != "hello world" {
-			t.Errorf("queued input = %q, want hello world", got)
+		if got.Content != "hello world" {
+			t.Errorf("queued input = %q, want hello world", got.Content)
+		}
+		if got.Timestamp.IsZero() {
+			t.Error("queued input should carry an enqueue timestamp")
 		}
 	default:
 		t.Errorf("regular Enter should queue on userMsgCh")

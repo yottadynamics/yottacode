@@ -208,6 +208,16 @@ func TestBuild_GitImplementIssue_ValidatesArgs(t *testing.T) {
 	}
 }
 
+func TestBuild_GitImplementIssue_EmitsIssueDetailGate(t *testing.T) {
+	d := GitImplementIssueDirective(42)
+	if !strings.Contains(d, "validate issue detail sufficiency") {
+		t.Fatalf("git-implement-issue must validate issue details before planning or editing:\n%s", d)
+	}
+	if strings.Contains(d, "load-bearing safety gate of this command") {
+		t.Fatalf("git-implement-issue must not make plan mode the core safety gate:\n%s", d)
+	}
+}
+
 func TestBuild_Init_UsesCwd(t *testing.T) {
 	m := MustGet("init")
 	dir := t.TempDir()

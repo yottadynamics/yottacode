@@ -12,6 +12,7 @@ package oneshot
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -97,12 +98,14 @@ func Run(ctx context.Context, opts cli.ChatOptions, prompt string) error {
 			}
 		}
 	}
+	submitted := time.Now()
 	rt.Session.Messages = append(rt.Session.Messages, adapter.Message{
-		Role:    adapter.RoleUser,
-		Content: prompt,
+		Role:      adapter.RoleUser,
+		Content:   prompt,
+		Timestamp: &submitted,
 	})
 
-	turnErr := stream(ctx, rt.Cfg, &rt.Session.Messages, os.Stdout, os.Stderr)
+	turnErr := streamWithOptions(ctx, rt.Cfg, &rt.Session.Messages, os.Stdout, os.Stderr, StreamOptions{JSONStatus: opts.RunJSONStatus})
 	rt.Session.Todos = rt.PlanStore.Snapshot()
 	if saveErr := rt.Session.Save(); saveErr != nil {
 		fmt.Fprintf(os.Stderr, "⚠ session save failed: %v\n", saveErr)
@@ -125,6 +128,31 @@ func injectRefsIntoSystem(sess *session.Session, refs []filerefs.Ref) {
 	}
 }
 
+// StreamOptions carries script-facing output switches for the oneshot event
+// drain. Keep this small: `run` stdout is deliberately stable, while stderr can
+// grow metadata needed by integrations.
+type StreamOptions struct {
+	JSONStatus bool
+}
+
+// ToolRunStatus summarizes one tool's execution count for the JSON status
+// envelope. Errored counts tool-level errors already surfaced to the model.
+type ToolRunStatus struct {
+	Count   int `json:"count"`
+	Errored int `json:"errored,omitempty"`
+}
+
+// RunStatus is the machine-readable receipt emitted by `yottacode run --json`.
+// Stdout still carries only the final assistant response; this envelope belongs
+// on stderr so shell pipelines and CI can parse metadata independently.
+type RunStatus struct {
+	Status       string                   `json:"status"`
+	Error        string                   `json:"error,omitempty"`
+	Iterations   int                      `json:"iterations"`
+	Tools        map[string]ToolRunStatus `json:"tools,omitempty"`
+	ChangedFiles []string                 `json:"changed_files,omitempty"`
+}
+
 // stream is the testable core: spawns the agent goroutine, drains events,
 // and writes them to the configured streams. ApprovalNeeded never fires
 // when cfg.BypassPermissions is true (the loop emits ApprovalAuto instead);
@@ -135,6 +163,16 @@ func stream(
 	cfg agent.LoopConfig,
 	history *[]adapter.Message,
 	stdout, stderr io.Writer,
+) error {
+	return streamWithOptions(ctx, cfg, history, stdout, stderr, StreamOptions{})
+}
+
+func streamWithOptions(
+	ctx context.Context,
+	cfg agent.LoopConfig,
+	history *[]adapter.Message,
+	stdout, stderr io.Writer,
+	opts StreamOptions,
 ) error {
 	events := make(chan agent.Event, 64)
 	decisions := make(chan agent.Decision, 1)
@@ -154,8 +192,19 @@ func stream(
 	}()
 
 	var firstErr error
+	status := RunStatus{
+		Status: "running",
+		Tools:  map[string]ToolRunStatus{},
+	}
+	changedSeen := map[string]bool{}
+	iterCapHit := false
+	policyDenied := false
+	runTestsFailedLast := false
+	finalContent := ""
 	for ev := range events {
 		switch e := ev.(type) {
+		case agent.IterationStart:
+			status.Iterations = e.Number
 		case agent.ContentToken:
 			fmt.Fprint(stdout, e.Text)
 		case agent.ReasoningToken:
@@ -172,10 +221,11 @@ func stream(
 			} else {
 				fmt.Fprintf(stderr, "[fallback] %s → %s [%s]\n", e.From, e.To, e.Policy)
 			}
-		case agent.AssistantMessage:
-			printCitations(stderr, e.Message.Citations)
 		case agent.ApprovalAuto:
 			fmt.Fprintf(stderr, "[%s] %s\n", e.Source, e.Preview)
+			if e.Source == "deny-rule" {
+				policyDenied = true
+			}
 		case agent.ApprovalNeeded:
 			err := fmt.Errorf("tool %q requires approval; add an allow rule to .yottacode/permissions.json, run interactively, or pass --yolo (DANGEROUS)", e.ToolName)
 			fmt.Fprintf(stderr, "✗ %v\n", err)
@@ -183,10 +233,17 @@ func stream(
 				firstErr = err
 			}
 			decisions <- agent.Deny
+
 		case agent.ToolStart:
 			fmt.Fprintf(stderr, "[tool] %s\n", e.Preview)
 		case agent.ToolResult:
-			_ = e // result feeds the model; nothing to print
+			recordToolStatus(&status, e)
+			if e.ToolName == "run_tests" {
+				runTestsFailedLast = runTestsFailed(e.Output)
+			}
+			if e.ToolName == "list_git_changed_files" && !e.Errored {
+				collectChangedFiles(&status, changedSeen, e.Output)
+			}
 		case agent.SubagentStart:
 			label := "foreground"
 			if e.Background {
@@ -214,6 +271,7 @@ func stream(
 			}
 			fmt.Fprintf(stderr, "[plan] %d items (%d done)\n", len(e.Todos), done)
 		case agent.IterCap:
+			iterCapHit = true
 			fmt.Fprintf(stderr, "[agent] hit %d/%d iterations — re-run with --max-iterations %d if the work was unfinished\n",
 				e.Max, e.Max, e.Max*2)
 		case agent.ErrorEvent:
@@ -226,6 +284,9 @@ func stream(
 			if firstErr == nil {
 				firstErr = e.Err
 			}
+		case agent.AssistantMessage:
+			printCitations(stderr, e.Message.Citations)
+			finalContent = e.Message.Content
 		case agent.TurnDone:
 			fmt.Fprintln(stdout)
 			// Footnote on stderr (so `> out.md` redirects don't get
@@ -254,7 +315,104 @@ func stream(
 	if firstErr != nil && errors.Is(firstErr, context.Canceled) {
 		return nil
 	}
+	status.Status = classifyRunStatus(runOutcome{
+		Err:          firstErr,
+		IterCapHit:   iterCapHit,
+		PolicyDenied: policyDenied,
+		TestsFailed:  runTestsFailedLast,
+		FinalContent: finalContent,
+	})
+	if firstErr != nil {
+		status.Error = firstErr.Error()
+	}
+	if opts.JSONStatus {
+		if err := emitJSONStatus(stderr, status); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
 	return firstErr
+}
+
+func recordToolStatus(status *RunStatus, e agent.ToolResult) {
+	if status.Tools == nil {
+		status.Tools = map[string]ToolRunStatus{}
+	}
+	tool := status.Tools[e.ToolName]
+	tool.Count++
+	if e.Errored {
+		tool.Errored++
+	}
+	status.Tools[e.ToolName] = tool
+}
+
+func collectChangedFiles(status *RunStatus, seen map[string]bool, output string) {
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || line == "(no changed files)" || seen[line] {
+			continue
+		}
+		seen[line] = true
+		status.ChangedFiles = append(status.ChangedFiles, line)
+	}
+}
+
+type runOutcome struct {
+	Err          error
+	IterCapHit   bool
+	PolicyDenied bool
+	TestsFailed  bool
+	FinalContent string
+}
+
+func classifyRunStatus(outcome runOutcome) string {
+	if outcome.IterCapHit {
+		return "iteration_cap"
+	}
+	if outcome.PolicyDenied {
+		return "policy_denied"
+	}
+	if outcome.TestsFailed {
+		return "tests_failed"
+	}
+	if looksBlockedForClarification(outcome.FinalContent) {
+		return "blocked_needs_clarification"
+	}
+	if outcome.Err == nil {
+		return "success"
+	}
+	msg := outcome.Err.Error()
+	if strings.Contains(msg, "requires approval") {
+		return "approval_required"
+	}
+	return "provider_error"
+}
+
+func runTestsFailed(output string) bool {
+	for _, line := range strings.Split(output, "\n") {
+		if !strings.HasPrefix(line, "exit=") {
+			continue
+		}
+		code := strings.TrimSpace(strings.TrimPrefix(line, "exit="))
+		if code == "" {
+			return false
+		}
+		return code != "0"
+	}
+	return false
+}
+
+func looksBlockedForClarification(content string) bool {
+	content = strings.ToLower(strings.TrimSpace(content))
+	return strings.HasPrefix(content, "blocked:") && strings.Contains(content, "clarification")
+}
+
+func emitJSONStatus(w io.Writer, status RunStatus) error {
+	if len(status.Tools) == 0 {
+		status.Tools = nil
+	}
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	return enc.Encode(status)
 }
 
 // truncateOneLine returns at most max chars of s, collapsing any

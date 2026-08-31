@@ -452,7 +452,23 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 		restoreTerminalBackground(capturedTerminalBackground)
 	}()
 	prog := tea.NewProgram(model)
-	_, runErr := prog.Run()
+	finalModel, runErr := prog.Run()
+	if fm, ok := finalModel.(Model); ok {
+		model = fm
+	}
+	// Apply the user's Ctrl+C worktree-exit choice after Bubble Tea has
+	// restored the terminal, keeping cleanup outside the renderer/update loop.
+	if cleanup := model.worktreeExitCleanup; cleanup != "" {
+		if repoRoot, err := cleanupCurrentWorktreeOnExitWithTimeout(model.cwd, model.worktreeExitConfirmName, cleanup); err != nil {
+			if runErr == nil {
+				runErr = err
+			} else {
+				fmt.Fprintf(os.Stderr, "worktree cleanup failed: %v\n", err)
+			}
+		} else if repoRoot != "" {
+			applyWorktreeExitRepoRoot(&model, cwdRef, repoRoot)
+		}
+	}
 	// Everything below is shutdown, and it must run on EVERY exit path.
 	// This used to be `if err != nil { return }`, which was wrong: Ctrl+C
 	// does not always reach us as a keystroke. Bubbletea only sees ^C as a

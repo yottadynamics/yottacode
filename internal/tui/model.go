@@ -700,8 +700,9 @@ type Model struct {
 	userTurnsThisLaunch int
 	// pendingInputAfterTurn captures a user message queued at a turn boundary
 	// when the model finished before it could consume userMsgCh. The
-	// turnEndedMsg handler picks it up and starts a fresh turn.
-	pendingInputAfterTurn string
+	// turnEndedMsg handler picks it up and starts a fresh turn while
+	// preserving the original enqueue timestamp.
+	pendingInputAfterTurn agent.UserMessage
 
 	// userMsgCh feeds mid-turn user messages into the agent loop's
 	// UserMessages channel. Created per-turn in startTurn; the loop
@@ -709,7 +710,7 @@ type Model struct {
 	// message to history without cancelling. Buffer of 1; overflow keeps
 	// the new text in the input box and warns instead of interrupting the
 	// active tool call.
-	userMsgCh chan string
+	userMsgCh chan agent.UserMessage
 
 	// loops holds every active /loop command in this TUI process. Loops are
 	// local/in-memory, keyed by a user-visible ID, and mutated only from the
@@ -729,6 +730,17 @@ type Model struct {
 	loopExitConfirmOpen   bool
 	loopExitConfirmCursor int
 
+	// worktreeExitConfirmOpen asks users launched from a yottacode-managed
+	// worktree what should happen to that worktree before the process exits.
+	// Ctrl+C used to hard-quit from these sessions, leaving cleanup to the
+	// user. The selected cleanup is applied after Bubble Tea restores the
+	// terminal, so destructive git worktree removal never runs while the TUI is
+	// still standing inside the directory it is about to delete.
+	worktreeExitConfirmOpen bool
+	worktreeExitConfirmName string
+	worktreeExitCleanup     string
+	worktreeExitGraceful    bool
+
 	// loopListOpen shows the active-loop panel (bare `/loop`) as a dismissable
 	// inline overlay above the cmdline, instead of writing loop cards into the
 	// session transcript. Any key closes it.
@@ -744,6 +756,7 @@ type Model struct {
 	approvalTool     string
 	approvalPreview  string
 	approvalArgs     string
+
 	approvalScrollOffset int
 	// approvalAllowAlwaysOK gates the [a]lways-allow keypress. Set
 	// true when DeriveAllowRule can produce a sensible pattern from
@@ -1507,6 +1520,9 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyPressMsg:
+		if m.worktreeExitConfirmOpen {
+			return m.updateWorktreeExitConfirm(msg)
+		}
 		if m.loopExitConfirmOpen {
 			return m.updateLoopExitConfirm(msg)
 		}
@@ -1855,18 +1871,18 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if strings.TrimSpace(m.textInput.Value()) == "" {
 					select {
 					case queued := <-m.userMsgCh:
-						if queued != "" {
-							m.textInput.SetValue(queued)
+						if queued.Content != "" {
+							m.textInput.SetValue(queued.Content)
 							m.textInput.CursorEnd()
 							m.appendLine(styleAuto.Render(SysMsg(SysReturn, "queue", "recalled for editing")))
 							return m, nil
 						}
 					default:
 					}
-					if m.pendingInputAfterTurn != "" {
+					if m.pendingInputAfterTurn.Content != "" {
 						queued := m.pendingInputAfterTurn
-						m.pendingInputAfterTurn = ""
-						m.textInput.SetValue(queued)
+						m.pendingInputAfterTurn = agent.UserMessage{}
+						m.textInput.SetValue(queued.Content)
 						m.textInput.CursorEnd()
 						m.appendLine(styleAuto.Render(SysMsg(SysReturn, "queue", "recalled for editing")))
 						return m, nil
@@ -1888,7 +1904,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.turnCancelRequested = true
 					m.turnCancel()
 				}
-				m.pendingInputAfterTurn = ""
+				m.pendingInputAfterTurn = agent.UserMessage{}
 				// Esc/Ctrl+C also disarms a running /loop — otherwise the
 				// turn cancel above fires turnEndedMsg and must not let a loop
 				// continue after the user explicitly stopped it.
@@ -1982,7 +1998,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					// A slash command typed mid-turn is a fresh user
 					// intent — drop any queued message so we don't
 					// auto-submit stale input after the turn unwinds.
-					m.pendingInputAfterTurn = ""
+					m.pendingInputAfterTurn = agent.UserMessage{}
 					select {
 					case <-m.userMsgCh:
 					default:
@@ -2014,7 +2030,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.pastes = nil
 				m.pastedImages = nil
 				select {
-				case m.userMsgCh <- input:
+				case m.userMsgCh <- agent.UserMessage{Content: input, Timestamp: time.Now()}:
 					m.textInput.SetValue("")
 					m.paletteOpen = false
 					m.paletteIndex = 0
@@ -2378,7 +2394,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// ending this way are covered mid-flight by the periodic
 			// capture reminder (captureReminderDue), not by
 			// overloading this key with a model call.
-			return m, tea.Quit
+			return requestImmediateExit(m)
 		case "ctrl+d":
 			// Deliberate idle exit — same graceful path as /quit (final
 			// memory turn when warranted).
@@ -2642,6 +2658,23 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, tea.Batch(loopCmds...)
 
+	case exitSaveTimeoutMsg:
+		// The final memory turn on quit ran past exitSaveTimeout — cancel
+		// it exactly as Esc/Ctrl+C would so the quit it's blocking still
+		// completes. Safe no-op if the turn already ended on its own:
+		// exitSavePending is never cleared back to false (it's only ever
+		// set once, right before this turn starts), but turnCancel is
+		// nil by then — cleared unconditionally at the top of
+		// turnEndedMsg — so the guard below still holds.
+		if m.exitSavePending && m.turnActive && m.turnCancel != nil {
+			// Mark this as an intentional local stop before canceling so the
+			// TurnInterrupted event is rendered as a calm cancellation marker
+			// instead of being suppressed as internal cancellation noise.
+			m.turnCancelRequested = true
+			m.turnCancel()
+		}
+		return m, nil
+
 	case turnEndedMsg:
 		m.turnActive = false
 		// If this turn was a /loop prose iteration and the agent called
@@ -2705,7 +2738,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// check so the check knows whether a queued turn is imminent.
 		select {
 		case undelivered := <-m.userMsgCh:
-			if undelivered != "" && m.pendingInputAfterTurn == "" {
+			if undelivered.Content != "" && m.pendingInputAfterTurn.Content == "" {
 				m.pendingInputAfterTurn = undelivered
 			}
 		default:
@@ -2719,14 +2752,14 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// intent, and compressing now would yank context out from
 		// under the very message they just sent. The warn notice still
 		// prints here so it lands above the new user block.
-		ctxCmd := m.updateContextUsage(m.pendingInputAfterTurn == "")
+		ctxCmd := m.updateContextUsage(m.pendingInputAfterTurn.Content == "")
 		// If the user interrupted mid-turn by hitting Enter on a
 		// non-empty message, agent.Turn has already preserved history
 		// with synthetic tool_result entries — submit the queued
 		// message now as a fresh turn so the model sees the feedback.
-		if queued := m.pendingInputAfterTurn; queued != "" {
-			m.pendingInputAfterTurn = ""
-			next, cmd := m.startTurn(queued)
+		if queued := m.pendingInputAfterTurn; queued.Content != "" {
+			m.pendingInputAfterTurn = agent.UserMessage{}
+			next, cmd := m.startTurnQueued(queued)
 			return next, cmd
 		}
 		// Background completions that asked to wake the model (notify_on_done)
@@ -2941,18 +2974,18 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch {
 		case !converged:
 			culprit, culpritTok := m.dominantContextBucket()
-			recall := recallCommandForSnapshot(msg.snapshotPath)
+			snap := snapshotResumeHint(msg.snapshotPath)
 			m.lastContextSummary = fmt.Sprintf("non-convergent at %d%%; largest bucket %s (~%s)", int(nonConvergentPct*100), culprit, formatTokens(culpritTok))
 			m.appendLine(styleWatermarkAlert.Render(SysMsg(
 				SysWarning, "context", "summarized but still "+fmt.Sprintf("%d%%", int(nonConvergentPct*100)),
 				fmt.Sprintf("largest %s ~%s", culprit, formatTokens(culpritTok)),
-				"auto paused", "/context for details", recall)))
+				"auto paused", "/context for details", snap)))
 		case msg.auto:
 			m.lastContextSummary = fmt.Sprintf("auto summarized %s → %s", formatTokens(msg.tokensBefore), formatTokens(m.contextTokens))
-			m.appendLine(styleAuto.Render(SysMsg(SysContext, "context", "summarized", m.contextReductionLabel(msg.tokensBefore, m.contextTokens), "full history saved", recallCommandForSnapshot(msg.snapshotPath))))
+			m.appendLine(styleAuto.Render(SysMsg(SysContext, "context", "summarized", m.contextReductionLabel(msg.tokensBefore, m.contextTokens), "full history saved", snapshotResumeHint(msg.snapshotPath))))
 		default:
 			m.lastContextSummary = fmt.Sprintf("manual summarized %s → %s", formatTokens(msg.tokensBefore), formatTokens(m.contextTokens))
-			m.appendLine(styleAuto.Render(SysMsg(SysContext, "context", "summarized", m.contextReductionLabel(msg.tokensBefore, m.contextTokens), "full history saved", recallCommandForSnapshot(msg.snapshotPath))))
+			m.appendLine(styleAuto.Render(SysMsg(SysContext, "context", "summarized", m.contextReductionLabel(msg.tokensBefore, m.contextTokens), "full history saved", snapshotResumeHint(msg.snapshotPath))))
 		}
 		if len(m.pendingSubagentWakes) > 0 {
 			// A notify_on_done completion may have arrived while summarization
@@ -2988,7 +3021,7 @@ func (m Model) queueInputDuringDecision(msg tea.KeyPressMsg, label string) (Mode
 	m.pastes = nil
 	m.pastedImages = nil
 	select {
-	case m.userMsgCh <- input:
+	case m.userMsgCh <- agent.UserMessage{Content: input, Timestamp: time.Now()}:
 		m.textInput.SetValue("")
 		m.paletteOpen = false
 		m.paletteIndex = 0
@@ -3013,7 +3046,7 @@ func (m Model) anyOverlayOpen() bool {
 		m.embedSetupOpen || m.memoryPickerOpen || m.recallPickerOpen || m.codeMapPickerOpen || m.sessionsPickerOpen || m.inspectPickerOpen ||
 		m.plansPickerOpen || m.checkpointsPickerOpen || m.subagentsPickerOpen ||
 		m.routerPickerOpen || m.themePickerOpen || m.effortPickerOpen || m.skillsMenuOpen ||
-		m.skillsPickerOpen || m.mcpPickerOpen || m.sandboxPickerOpen
+		m.skillsPickerOpen || m.mcpPickerOpen || m.sandboxPickerOpen || m.worktreeExitConfirmOpen
 }
 
 // hasRunningSubagents reports whether any subagent task is currently
@@ -3163,7 +3196,9 @@ func (m Model) activePopupBody() (box string, ok bool) {
 			return renderApprovalModal(m), true
 		}
 	case m.loopExitConfirmOpen:
-		return popupBox(renderLoopExitConfirm(m)), true
+		return keyboardOnlyPopupBox(renderLoopExitConfirm(m)), true
+	case m.worktreeExitConfirmOpen:
+		return renderWorktreeExitConfirm(m), true
 	case m.cheatsheetOpen:
 		return popupBox(renderCheatsheet()), true
 	case m.loopListOpen && m.activeLoopCount() > 0:
@@ -3315,6 +3350,8 @@ func (m Model) contextualKeyHints() []string {
 		return append(hints, "Enter: queue text")
 	case m.loopExitConfirmOpen:
 		return []string{"←/→: choose", "Enter: confirm", "Esc: stay"}
+	case m.worktreeExitConfirmOpen:
+		return []string{"R: remove", "K: keep", "Esc: cancel"}
 	case m.paletteOpen:
 		return []string{"↑↓: move", "Tab: complete", "Enter: run", "Esc: close"}
 	case m.filePaletteOpen:
@@ -5059,6 +5096,13 @@ func (m Model) startTurn(input string) (tea.Model, tea.Cmd) {
 	return m.startTurnWithDisplay(input, "")
 }
 
+// startTurnQueued starts a fresh turn from a message that was queued while
+// another turn was active, preserving the enqueue timestamp in persisted
+// history instead of restamping it at delayed delivery time.
+func (m Model) startTurnQueued(msg agent.UserMessage) (tea.Model, tea.Cmd) {
+	return m.startTurnWithDisplayAt(msg.Content, "", msg.Timestamp)
+}
+
 // startSubagentWakeTurn drains the pending background-completion wakes
 // (notify_on_done) into a single turn that injects their results, so the
 // model is re-prompted to act on work it dispatched fire-and-forget. The
@@ -5293,6 +5337,10 @@ func (m Model) injectSubagentResult(task subagents.Task) (tea.Model, tea.Cmd, st
 // downstream prompts still carry the full input — only the visible
 // scrollback rendering is compressed.
 func (m Model) startTurnWithDisplay(input, displayLabel string) (tea.Model, tea.Cmd) {
+	return m.startTurnWithDisplayAt(input, displayLabel, time.Now())
+}
+func (m Model) startTurnWithDisplayAt(input, displayLabel string, submitted time.Time) (tea.Model, tea.Cmd) {
+
 	// Belt-and-suspenders alongside the "enter" key case: any turn
 	// starting — including a background subagent wake turn firing before
 	// the user has typed anything — is unambiguous evidence the
@@ -5388,9 +5436,10 @@ func (m Model) startTurnWithDisplay(input, displayLabel string) (tea.Model, tea.
 		m.pendingLSPSetupReminder = ""
 	}
 	m.sess.Messages = append(m.sess.Messages, adapter.Message{
-		Role:    adapter.RoleUser,
-		Content: content,
-		Images:  userImages,
+		Role:      adapter.RoleUser,
+		Content:   content,
+		Images:    userImages,
+		Timestamp: &submitted,
 	})
 	m.userTurnsThisLaunch++
 	// First user submission this launch — drops the onboarding hint
@@ -5427,7 +5476,7 @@ func (m Model) startTurnWithDisplay(input, displayLabel string) (tea.Model, tea.
 	m.decisions = make(chan agent.Decision, 1)
 	m.turnErrCh = make(chan error, 1)
 	m.turnCancelRequested = false
-	m.userMsgCh = make(chan string, 1)
+	m.userMsgCh = make(chan agent.UserMessage, 1)
 	m.cfg.UserMessages = m.userMsgCh
 	// Serialize the agent goroutine's history appends against this Update
 	// goroutine's reads of sess.Messages (token estimate, /context,

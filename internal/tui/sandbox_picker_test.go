@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -33,6 +34,13 @@ func TestCurrentSandboxMode(t *testing.T) {
 	auto.Active.Store(true)
 	if got := currentSandboxMode(on, true, auto); got != sandboxModeAutoAllow {
 		t.Errorf("backend=podman with active autoMode should be sandboxModeAutoAllow, got %v", got)
+	}
+}
+
+func TestCurrentSandboxMode_ActiveSessionStaysActiveAfterConfigOff(t *testing.T) {
+	off := config.Config{Sandbox: config.SandboxConfig{Backend: "none"}}
+	if got := currentSandboxMode(off, true, nil); got != sandboxModeRegular {
+		t.Fatalf("active session after persisted-off config = %v, want sandboxModeRegular", got)
 	}
 }
 
@@ -259,6 +267,12 @@ func TestCommitSandboxMode_RegularDoesNotActivateAutoMode(t *testing.T) {
 	if reloaded.Sandbox.Backend != "podman" {
 		t.Errorf("Sandbox.Backend = %q, want podman", reloaded.Sandbox.Backend)
 	}
+	if reloaded.Sandbox.Network != "host" {
+		t.Errorf("Sandbox.Network = %q, want host when /sandbox enables podman", reloaded.Sandbox.Network)
+	}
+	if !reflect.DeepEqual(reloaded.Sandbox.DNS, config.DefaultSandboxDNS) {
+		t.Errorf("Sandbox.DNS = %v, want default DNS when /sandbox enables podman", reloaded.Sandbox.DNS)
+	}
 }
 
 // TestCommitSandboxMode_BackendChoiceAlwaysSaysRestartRequired pins the
@@ -292,6 +306,32 @@ func TestCommitSandboxMode_ActiveSessionMentionsLazyProfiles(t *testing.T) {
 	got := strings.Join(m.historyLines, "\n")
 	if !strings.Contains(got, "lazily start unused sandbox profiles") {
 		t.Fatalf("active sandbox commit should mention lazy profile recovery, got:\n%s", got)
+	}
+}
+
+func TestCommitSandboxMode_OffKeepsActiveSessionVisible(t *testing.T) {
+	m := newTestModel(t)
+	m.cfg.AutoMode = &agent.AutoModeState{}
+	m.sandboxActive = true
+	m.sandboxPicker = &sandboxPickerState{current: sandboxModeRegular}
+
+	m, _ = commitSandboxMode(m, sandboxModeOff)
+
+	if m.sandboxPicker != nil {
+		t.Fatal("commitSandboxMode should close the picker")
+	}
+	reloaded, err := config.LoadDefault()
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if reloaded.Sandbox.Backend != "none" {
+		t.Fatalf("Sandbox.Backend = %q, want none", reloaded.Sandbox.Backend)
+	}
+	got := strings.Join(m.historyLines, "\n")
+	for _, want := range []string{"No sandbox", "this session keeps its existing sandbox"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("expected %q in sandbox commit output, got:\n%s", want, got)
+		}
 	}
 }
 
@@ -357,6 +397,11 @@ func TestRenderSandboxPicker_ShowsThreeRowsAndCurrentCheckmark(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Errorf("render missing row %q:\n%s", want, got)
 		}
+	}
+
+	disabling := &sandboxPickerState{cursor: sandboxModeOff, current: sandboxModeRegular, configured: sandboxModeOff, sandboxActive: true, detected: true, status: sandbox.Status{Installed: true, ImagePresent: true}}
+	if got := sandboxStatusLine(disabling); got != "Configured: sandbox off\nActive: sandbox on — restart required to disable" {
+		t.Fatalf("disabled-but-active status = %q", got)
 	}
 }
 

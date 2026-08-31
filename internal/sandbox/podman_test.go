@@ -3,11 +3,13 @@ package sandbox
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/yottadynamics/yottacode/internal/agent"
 	"github.com/yottadynamics/yottacode/internal/config"
+	"github.com/yottadynamics/yottacode/internal/worktree"
 )
 
 // Compile-time proof PodmanSandbox satisfies agent.Sandbox — the whole
@@ -95,6 +97,75 @@ func TestMountPaths_DuplicatesCollapse(t *testing.T) {
 	}
 	if len(got) != 1 {
 		t.Errorf("mountPaths with repeated \".\" = %v, want single entry", got)
+	}
+}
+
+func TestSandboxMountPathsAddsManagedWorktreeRoot(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	mountRoot := filepath.Join(t.TempDir(), "repo")
+	got := sandboxMountPaths(mountRoot, []string{mountRoot})
+	want := worktree.SlugDir(mountRoot)
+	if len(got) != 2 || got[0].Path != mountRoot || got[0].SELinuxLabel != "z" || got[1].Path != want || got[1].SELinuxLabel != "z" {
+		t.Fatalf("sandboxMountPaths = %+v, want [%s:z %s:z]", got, mountRoot, want)
+	}
+}
+
+func TestPathVisibleFromMountRootIncludesManagedWorktrees(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	mountRoot := filepath.Join(t.TempDir(), "repo")
+	if !PathVisibleFromMountRoot(filepath.Join(mountRoot, "file.go"), mountRoot) {
+		t.Fatal("project path should be visible")
+	}
+	if !PathVisibleFromMountRoot(filepath.Join(worktree.SlugDir(mountRoot), "feature", "file.go"), mountRoot) {
+		t.Fatal("managed worktree path should be visible")
+	}
+}
+
+func TestPodmanRunArgsIncludesConfiguredDNS(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	mountRoot := filepath.Join(t.TempDir(), "repo")
+	cfg := config.SandboxConfig{
+		Image:     "sandbox-image",
+		Network:   "host",
+		DNS:       []string{"1.1.1.1", "8.8.8.8"},
+		Mounts:    []string{"."},
+		Memory:    "256m",
+		CPUs:      1,
+		PidsLimit: 128,
+	}
+	args, err := podmanRunArgs(cfg, "yc-test", mountRoot)
+	if err != nil {
+		t.Fatalf("podmanRunArgs: %v", err)
+	}
+	joined := " " + strings.Join(args, " ") + " "
+	if !strings.Contains(joined, " --dns 1.1.1.1 ") || !strings.Contains(joined, " --dns 8.8.8.8 ") {
+		t.Fatalf("podman args missing configured DNS servers: %v", args)
+	}
+}
+
+func TestPodmanRunArgsOmitsDNSWhenNetworkNone(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	mountRoot := filepath.Join(t.TempDir(), "repo")
+	cfg := config.SandboxConfig{
+		Image:     "sandbox-image",
+		Network:   "none",
+		DNS:       []string{"1.1.1.1", "8.8.8.8"},
+		Mounts:    []string{"."},
+		Memory:    "256m",
+		CPUs:      1,
+		PidsLimit: 128,
+	}
+	args, err := podmanRunArgs(cfg, "yc-test", mountRoot)
+	if err != nil {
+		t.Fatalf("podmanRunArgs: %v", err)
+	}
+	joined := " " + strings.Join(args, " ") + " "
+	if strings.Contains(joined, " --dns ") {
+		t.Fatalf("podman args must not include DNS with --network=none: %v", args)
 	}
 }
 

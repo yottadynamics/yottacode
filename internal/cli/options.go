@@ -119,6 +119,12 @@ type ChatOptions struct {
 	// router candidates) so all turns share one cache shard. Empty until
 	// set (e.g. the connection probe never sets it).
 	CacheKey string
+
+	// RunJSONStatus asks `yottacode run` to append a machine-readable status
+	// envelope to stderr after the turn finishes. Stdout remains final-answer
+	// only so existing shell pipelines can keep redirecting the assistant body
+	// without parsing around metadata.
+	RunJSONStatus bool
 }
 
 // ValidPermissionModes is the closed set the --permission-mode flag

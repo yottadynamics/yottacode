@@ -152,11 +152,15 @@ func TestRenderSystemNoticeLine_UsesOneLineGrammar(t *testing.T) {
 	}
 }
 
-func TestRenderCompactionNoticeLine_ShowsCompactRecallCommand(t *testing.T) {
-	got := stripANSI(renderCompactionNoticeLine("87% → 23%", "/home/me/.yottacode/sessions/20260727-155559.693248-pre-summary-20260727-164818.296261277.json", nil, 100))
-	want := "◇ context · compacted · 87% → 23% · full history saved · /recall 20260727-155559.693248"
+func TestRenderCompactionNoticeLine_ShowsResumeCommand(t *testing.T) {
+	path := "/home/me/.yottacode/sessions/20260727-155559.693248-pre-summary-20260727-164818.296261277.json"
+	got := stripANSI(renderCompactionNoticeLine("87% → 23%", path, nil, 100))
+	want := "◇ context · compacted · 87% → 23% · full history saved · yottacode sessions resume 20260727-155559.693248-pre-summary-20260727-164818.296261277"
 	if got != want {
 		t.Fatalf("unexpected compaction notice: %q", got)
+	}
+	if strings.Contains(got, "/recall ") {
+		t.Fatalf("compaction notice should not suggest a dead /recall command: %q", got)
 	}
 }
 

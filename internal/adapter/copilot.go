@@ -435,6 +435,8 @@ func (a *copilotAdapter) consumeSSE(ctx context.Context, body io.Reader, origToo
 		ToolCalls:  finalCalls,
 		StopReason: finishReason,
 		Usage:      usage,
+		Model:      a.model,
+		Provider:   string(a.profile.Provider),
 	}
 	out <- StreamEvent{Kind: EventDone, Final: &final}
 }

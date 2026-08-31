@@ -44,6 +44,48 @@ func TestCompact_ForceCapsRetainedToolWhenMiddleEmpty(t *testing.T) {
 	}
 }
 
+// TestCompact_ManyOversizedToolMessagesFitTailBudget is the compact()-level
+// wiring test for capRetainedToolMessages' budget-aware capping: many
+// tool results just above maxRetainedToolTokens, forcing real
+// redistribution. Verifies the tail budget compact() computes is
+// correctly threaded through to the cap, not just each message bounded
+// independently.
+func TestCompact_ManyOversizedToolMessagesFitTailBudget(t *testing.T) {
+	const n = 25
+	h := subagentHistory(n, 16_800) // ~4200 tokens/round, just above maxRetainedToolTokens (4096)
+	summarizer := &captureStreamer{reply: "## summary\n(compressed)"}
+	window := 80_000
+	cfg := LoopConfig{Compaction: &CompactionConfig{
+		Window:      window,
+		TargetRatio: 0.9,
+		Summarizer:  summarizer,
+	}}
+	events := make(chan Event, 2)
+
+	before := contextwindow.EstimateTokens(h)
+	changed, err := compact(context.Background(), cfg, &h, events, true)
+	if err != nil {
+		t.Fatalf("compact: %v", err)
+	}
+	if !changed {
+		t.Fatal("expected compaction to make progress")
+	}
+	if after := contextwindow.EstimateTokens(h); after >= before {
+		t.Fatalf("history did not shrink: before=%d after=%d", before, after)
+	}
+
+	tailBudget := int(compactionTargetRatio(cfg.Compaction) * float64(window))
+	toolTokens := 0
+	for _, m := range h {
+		if m.Role == adapter.RoleTool {
+			toolTokens += estimateMsgTokens(m)
+		}
+	}
+	if toolTokens > tailBudget {
+		t.Fatalf("retained tool tokens %d exceed the tail budget %d — capRetainedToolMessages must bound the SUM of retained tool content, not just each message individually", toolTokens, tailBudget)
+	}
+}
+
 func TestCompact_PreCompactPathAndErrorAreReported(t *testing.T) {
 	snapErr := errors.New("disk full")
 	h := subagentHistory(8, 800)

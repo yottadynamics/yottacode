@@ -3,6 +3,7 @@ package oneshot
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"sync"
@@ -125,6 +126,216 @@ func TestOneshot_ReasoningGoesToStderr(t *testing.T) {
 	}
 }
 
+func TestOneshot_JSONStatusReportsSuccessfulRun(t *testing.T) {
+	streamer := &scriptedStreamer{turns: [][]adapter.StreamEvent{
+		{sseToken("fixed"), sseDone("fixed")},
+	}}
+	cfg := agent.LoopConfig{Adapter: streamer, Registry: agent.NewRegistry(), MaxIterations: 3}
+	hist := []adapter.Message{{Role: adapter.RoleUser, Content: "fix ticket"}}
+
+	var stdout, stderr bytes.Buffer
+	err := streamWithOptions(context.Background(), cfg, &hist, &stdout, &stderr, StreamOptions{JSONStatus: true})
+	if err != nil {
+		t.Fatalf("streamWithOptions: %v", err)
+	}
+	if stdout.String() != "fixed\n" {
+		t.Fatalf("stdout = %q, want final answer only", stdout.String())
+	}
+
+	got := decodeJSONStatus(t, stderr.String())
+	if got.Status != "success" {
+		t.Fatalf("status = %q, want success; stderr=%q", got.Status, stderr.String())
+	}
+	if got.Error != "" {
+		t.Fatalf("unexpected json error: %q", got.Error)
+	}
+	if got.Iterations != 1 {
+		t.Fatalf("iterations = %d, want 1", got.Iterations)
+	}
+}
+
+func TestOneshot_JSONStatusClassifiesApprovalRequired(t *testing.T) {
+	streamer := &scriptedStreamer{turns: [][]adapter.StreamEvent{
+		{sseDone("", adapter.ToolCall{ID: "c1", Name: "danger", ArgsJSON: `{}`})},
+	}}
+	reg := agent.NewRegistry()
+	reg.Register(&fakeApprovalTool{name: "danger"})
+	cfg := agent.LoopConfig{Adapter: streamer, Registry: reg, MaxIterations: 3}
+	hist := []adapter.Message{{Role: adapter.RoleUser, Content: "go"}}
+
+	var stdout, stderr bytes.Buffer
+	err := streamWithOptions(context.Background(), cfg, &hist, &stdout, &stderr, StreamOptions{JSONStatus: true})
+	if err == nil {
+		t.Fatalf("expected approval error")
+	}
+
+	got := decodeJSONStatus(t, stderr.String())
+	if got.Status != "approval_required" {
+		t.Fatalf("status = %q, want approval_required; stderr=%q", got.Status, stderr.String())
+	}
+	if got.Error == "" || !strings.Contains(got.Error, "requires approval") {
+		t.Fatalf("json error should explain approval failure: %+v", got)
+	}
+}
+
+func TestOneshot_JSONStatusReportsChangedFilesAndTools(t *testing.T) {
+	streamer := &scriptedStreamer{turns: [][]adapter.StreamEvent{
+		{sseDone("", adapter.ToolCall{ID: "c1", Name: "list_git_changed_files", ArgsJSON: `{}`})},
+		{sseToken("done"), sseDone("done")},
+	}}
+	reg := agent.NewRegistry()
+	reg.Register(&fakeReadTool{name: "list_git_changed_files", result: "src/app.go\nREADME.md"})
+	cfg := agent.LoopConfig{Adapter: streamer, Registry: reg, MaxIterations: 4}
+	hist := []adapter.Message{{Role: adapter.RoleUser, Content: "inspect changes"}}
+
+	var stdout, stderr bytes.Buffer
+	if err := streamWithOptions(context.Background(), cfg, &hist, &stdout, &stderr, StreamOptions{JSONStatus: true}); err != nil {
+		t.Fatalf("streamWithOptions: %v", err)
+	}
+
+	got := decodeJSONStatus(t, stderr.String())
+	if got.Status != "success" {
+		t.Fatalf("status = %q, want success; stderr=%q", got.Status, stderr.String())
+	}
+	if got.Tools["list_git_changed_files"].Count != 1 {
+		t.Fatalf("list_git_changed_files count = %+v, want 1", got.Tools["list_git_changed_files"])
+	}
+	if len(got.ChangedFiles) != 2 || got.ChangedFiles[0] != "src/app.go" || got.ChangedFiles[1] != "README.md" {
+		t.Fatalf("changed files = %#v", got.ChangedFiles)
+	}
+}
+
+func TestOneshot_JSONStatusClassifiesProviderError(t *testing.T) {
+	streamer := &scriptedStreamer{turns: [][]adapter.StreamEvent{
+		{{Kind: adapter.EventErr, Err: errors.New("provider unavailable")}},
+	}}
+	cfg := agent.LoopConfig{Adapter: streamer, Registry: agent.NewRegistry(), MaxIterations: 3}
+	hist := []adapter.Message{{Role: adapter.RoleUser, Content: "x"}}
+
+	var stdout, stderr bytes.Buffer
+	err := streamWithOptions(context.Background(), cfg, &hist, &stdout, &stderr, StreamOptions{JSONStatus: true})
+	if err == nil {
+		t.Fatalf("expected provider error")
+	}
+
+	got := decodeJSONStatus(t, stderr.String())
+	if got.Status != "provider_error" {
+		t.Fatalf("status = %q, want provider_error; stderr=%q", got.Status, stderr.String())
+	}
+}
+
+func TestOneshot_JSONStatusClassifiesPolicyDenied(t *testing.T) {
+	if got := classifyRunStatus(runOutcome{PolicyDenied: true}); got != "policy_denied" {
+		t.Fatalf("status = %q, want policy_denied", got)
+	}
+}
+
+func TestOneshot_JSONStatusClassifiesTestsFailed(t *testing.T) {
+	streamer := &scriptedStreamer{turns: [][]adapter.StreamEvent{
+		{sseDone("", adapter.ToolCall{ID: "c1", Name: "run_tests", ArgsJSON: `{}`})},
+		{sseToken("tests failed"), sseDone("tests failed")},
+	}}
+	reg := agent.NewRegistry()
+	reg.Register(&fakeReadTool{name: "run_tests", result: "$ go test ./...\nexit=1\n--- stdout ---\nFAIL\n"})
+	cfg := agent.LoopConfig{Adapter: streamer, Registry: reg, MaxIterations: 4}
+	hist := []adapter.Message{{Role: adapter.RoleUser, Content: "test"}}
+
+	var stdout, stderr bytes.Buffer
+	if err := streamWithOptions(context.Background(), cfg, &hist, &stdout, &stderr, StreamOptions{JSONStatus: true}); err != nil {
+		t.Fatalf("streamWithOptions: %v", err)
+	}
+
+	got := decodeJSONStatus(t, stderr.String())
+	if got.Status != "tests_failed" {
+		t.Fatalf("status = %q, want tests_failed; stderr=%q", got.Status, stderr.String())
+	}
+}
+
+func TestOneshot_JSONStatusIgnoresCleanChangedFilesSentinel(t *testing.T) {
+	streamer := &scriptedStreamer{turns: [][]adapter.StreamEvent{
+		{sseDone("", adapter.ToolCall{ID: "c1", Name: "list_git_changed_files", ArgsJSON: `{}`})},
+		{sseToken("clean"), sseDone("clean")},
+	}}
+	reg := agent.NewRegistry()
+	reg.Register(&fakeReadTool{name: "list_git_changed_files", result: "(no changed files)"})
+	cfg := agent.LoopConfig{Adapter: streamer, Registry: reg, MaxIterations: 4}
+	hist := []adapter.Message{{Role: adapter.RoleUser, Content: "inspect clean tree"}}
+
+	var stdout, stderr bytes.Buffer
+	if err := streamWithOptions(context.Background(), cfg, &hist, &stdout, &stderr, StreamOptions{JSONStatus: true}); err != nil {
+		t.Fatalf("streamWithOptions: %v", err)
+	}
+
+	got := decodeJSONStatus(t, stderr.String())
+	if len(got.ChangedFiles) != 0 {
+		t.Fatalf("changed files = %#v, want empty", got.ChangedFiles)
+	}
+}
+
+func TestOneshot_JSONStatusSkipsErroredChangedFilesOutput(t *testing.T) {
+	status := RunStatus{}
+	changedSeen := map[string]bool{}
+	errored := agent.ToolResult{
+		ToolName: "list_git_changed_files",
+		Output:   "error: list_git_changed_files: git binary not found in PATH",
+		Errored:  true,
+	}
+
+	recordToolStatus(&status, errored)
+	if !errored.Errored {
+		collectChangedFiles(&status, changedSeen, errored.Output)
+	}
+
+	if len(status.ChangedFiles) != 0 {
+		t.Fatalf("changed files = %#v, want empty", status.ChangedFiles)
+	}
+	if status.Tools["list_git_changed_files"].Errored != 1 {
+		t.Fatalf("tool error count = %+v, want 1 errored", status.Tools["list_git_changed_files"])
+	}
+}
+
+func TestOneshot_RunTestsFailedParsesExitLine(t *testing.T) {
+	output := "$ printf 'exit=0' && go test ./...\n--- stdout ---\nexit=0\nFAIL\nexit=1\n--- stderr ---\n"
+	if runTestsFailed(output) {
+		t.Fatalf("runTestsFailed should ignore non-header exit lines")
+	}
+	if !runTestsFailed("$ go test ./...\nexit=1\n--- stdout ---\nFAIL\n") {
+		t.Fatalf("runTestsFailed should use the actual run_tests exit line")
+	}
+}
+
+func TestOneshot_JSONStatusClassifiesBlockedNeedsClarification(t *testing.T) {
+	streamer := &scriptedStreamer{turns: [][]adapter.StreamEvent{
+		{sseToken("BLOCKED: needs clarification from the ticket reporter"), sseDone("BLOCKED: needs clarification from the ticket reporter")},
+	}}
+	cfg := agent.LoopConfig{Adapter: streamer, Registry: agent.NewRegistry(), MaxIterations: 3}
+	hist := []adapter.Message{{Role: adapter.RoleUser, Content: "fix vague ticket"}}
+
+	var stdout, stderr bytes.Buffer
+	if err := streamWithOptions(context.Background(), cfg, &hist, &stdout, &stderr, StreamOptions{JSONStatus: true}); err != nil {
+		t.Fatalf("streamWithOptions: %v", err)
+	}
+
+	got := decodeJSONStatus(t, stderr.String())
+	if got.Status != "blocked_needs_clarification" {
+		t.Fatalf("status = %q, want blocked_needs_clarification; stderr=%q", got.Status, stderr.String())
+	}
+}
+
+func decodeJSONStatus(t *testing.T, output string) RunStatus {
+	t.Helper()
+	marker := "\n{\n  \"status\""
+	idx := strings.LastIndex(output, marker)
+	if idx < 0 {
+		t.Fatalf("stderr missing JSON status object: %q", output)
+	}
+	var got RunStatus
+	if err := json.Unmarshal([]byte(output[idx+1:]), &got); err != nil {
+		t.Fatalf("decode JSON status: %v\n%s", err, output[idx+1:])
+	}
+	return got
+}
+
 func TestOneshot_ApprovalNeededWithoutBypassErrors(t *testing.T) {
 	// A tool call that requires approval, with BypassPermissions=false:
 	// the loop emits ApprovalNeeded; oneshot must surface this as an
@@ -202,6 +413,22 @@ func (m *fakeApprovalTool) RequiresApproval(string) bool { return true }
 func (m *fakeApprovalTool) PreviewCall(string) string    { return m.name + "()" }
 func (m *fakeApprovalTool) Execute(_ context.Context, _ string) (string, error) {
 	return "should not run", nil
+}
+
+// fakeReadTool is an approval-free tool used to prove JSON status captures
+// tool execution counts and line-oriented changed-file output.
+type fakeReadTool struct {
+	name   string
+	result string
+}
+
+func (m *fakeReadTool) Name() string                 { return m.name }
+func (m *fakeReadTool) Description() string          { return "fake read" }
+func (m *fakeReadTool) Schema() map[string]any       { return map[string]any{"type": "object"} }
+func (m *fakeReadTool) RequiresApproval(string) bool { return false }
+func (m *fakeReadTool) PreviewCall(string) string    { return m.name + "()" }
+func (m *fakeReadTool) Execute(_ context.Context, _ string) (string, error) {
+	return m.result, nil
 }
 
 // Router-resolver mode-gating (routerModelResolver/routerResolve) is now

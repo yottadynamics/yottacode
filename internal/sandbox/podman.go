@@ -15,6 +15,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
@@ -23,6 +24,7 @@ import (
 	"time"
 
 	"github.com/yottadynamics/yottacode/internal/config"
+	"github.com/yottadynamics/yottacode/internal/worktree"
 )
 
 // podmanLookPath is swapped in tests to simulate podman being missing
@@ -111,6 +113,33 @@ func NewPodmanSandbox(ctx context.Context, cfg config.SandboxConfig, id, mountRo
 	// is the overwhelmingly common case and not worth surfacing.
 	_ = removeContainer(ctx, name)
 
+	args, err := podmanRunArgs(cfg, name, mountRoot)
+	if err != nil {
+		return nil, err
+	}
+
+	cmd := exec.CommandContext(ctx, "podman", args...)
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &out
+	if err := cmd.Run(); err != nil {
+		// `-d` detaches: the podman daemon can finish creating and
+		// starting the container server-side even though ctx cancellation
+		// killed OUR client before it read the result. Clean up
+		// best-effort so a caller that gives up on the returned error
+		// doesn't leave an orphaned container behind. Uses a fresh
+		// context, not ctx — ctx itself may be why we're here (already
+		// canceled), and this cleanup must still get to run.
+		_ = removeContainer(context.Background(), name)
+		return nil, fmt.Errorf("sandbox: podman run failed: %w (output: %s)", err, strings.TrimSpace(out.String()))
+	}
+	return &PodmanSandbox{name: name}, nil
+}
+
+// podmanRunArgs builds the podman run argv after mount-root validation.
+// Keeping this pure lets unit tests pin security-sensitive flags (including
+// DNS) without starting a real container.
+func podmanRunArgs(cfg config.SandboxConfig, name, mountRoot string) ([]string, error) {
 	args := []string{
 		"run", "-d", "--name", name,
 		// Namespace isolation (PID/IPC/UTS/mount/user/network) is podman's
@@ -139,17 +168,24 @@ func NewPodmanSandbox(ctx context.Context, cfg config.SandboxConfig, id, mountRo
 		fmt.Sprintf("--network=%s", cfg.Network),
 		fmt.Sprintf("--tmpfs=/tmp:rw,noexec,nosuid,nodev,size=%s", tmpTmpfsSize),
 	}
+	// Podman rejects --dns together with --network=none. No egress means no
+	// resolver is usable anyway, so only pass DNS for networked sandboxes.
+	for _, server := range sandboxDNSForNetwork(cfg.Network, cfg.DNS) {
+		// DNS is runtime configuration, not image state: Podman owns
+		// resolv.conf generation for each container, so pass explicit
+		// resolvers as run flags instead of baking them into the image.
+		args = append(args, "--dns", strings.TrimSpace(server))
+	}
 	mounts, err := mountPaths(cfg.Mounts, mountRoot)
 	if err != nil {
 		return nil, err
 	}
-	for _, m := range mounts {
-		// :Z relabels the mount for this container's EXCLUSIVE use under
-		// SELinux (a no-op, confirmed harmless, on non-SELinux hosts).
-		// Exclusive (not :z/shared) is correct here — each session's or
-		// worker's mount root is never mounted into more than one
-		// container at a time.
-		args = append(args, "-v", m+":"+m+":Z")
+	for _, m := range sandboxMountPaths(mountRoot, mounts) {
+		// :z relabels configured project mounts for SHARED container use under
+		// SELinux. Multiple yottacode sessions can legitimately mount the same
+		// checkout; exclusive :Z would let a later session steal access from
+		// an already-running sandbox container.
+		args = append(args, "-v", m.Path+":"+m.Path+":"+m.SELinuxLabel)
 	}
 	args = append(args, "-w", mountRoot)
 	for _, envName := range cfg.EnvPassthrough {
@@ -161,23 +197,45 @@ func NewPodmanSandbox(ctx context.Context, cfg config.SandboxConfig, id, mountRo
 		args = append(args, "-e", envName)
 	}
 	args = append(args, cfg.Image, "sleep", "infinity")
+	return args, nil
+}
 
-	cmd := exec.CommandContext(ctx, "podman", args...)
-	var out bytes.Buffer
-	cmd.Stdout = &out
-	cmd.Stderr = &out
-	if err := cmd.Run(); err != nil {
-		// `-d` detaches: the podman daemon can finish creating and
-		// starting the container server-side even though ctx cancellation
-		// killed OUR client before it read the result. Clean up
-		// best-effort so a caller that gives up on the returned error
-		// doesn't leave an orphaned container behind. Uses a fresh
-		// context, not ctx — ctx itself may be why we're here (already
-		// canceled), and this cleanup must still get to run.
-		_ = removeContainer(context.Background(), name)
-		return nil, fmt.Errorf("sandbox: podman run failed: %w (output: %s)", err, strings.TrimSpace(out.String()))
+func sandboxDNSForNetwork(network string, dns []string) []string {
+	if strings.TrimSpace(network) == "none" {
+		return nil
 	}
-	return &PodmanSandbox{name: name}, nil
+	return dns
+}
+
+type sandboxMountPath struct {
+	Path         string
+	SELinuxLabel string
+}
+
+// sandboxMountPaths extends user-configured project-relative mounts with this
+// repo's managed worktree storage. yottacode worktrees live outside the repo
+// checkout under ~/.yottacode/worktrees/<slug>/, so mounting only mountRoot
+// strands an already-live sandbox when enter_worktree later swaps cwd there.
+func sandboxMountPaths(mountRoot string, configured []string) []sandboxMountPath {
+	out := make([]sandboxMountPath, 0, len(configured)+1)
+	for _, m := range configured {
+		out = append(out, sandboxMountPath{Path: m, SELinuxLabel: "z"})
+	}
+	worktreeRoot := worktree.SlugDir(mountRoot)
+	if err := os.MkdirAll(worktreeRoot, 0o755); err != nil {
+		return out
+	}
+	for _, m := range configured {
+		if sameOrContains(m, worktreeRoot) || sameOrContains(worktreeRoot, m) {
+			return out
+		}
+	}
+	return append(out, sandboxMountPath{Path: worktreeRoot, SELinuxLabel: "z"})
+}
+
+// PathVisibleFromMountRoot mirrors sandboxMountPaths without creating anything.
+func PathVisibleFromMountRoot(path, mountRoot string) bool {
+	return sameOrContains(mountRoot, path) || sameOrContains(worktree.SlugDir(mountRoot), path)
 }
 
 // mountPaths resolves cfg.Mounts (relative to mountRoot, "." meaning
@@ -208,6 +266,22 @@ func mountPaths(mounts []string, mountRoot string) ([]string, error) {
 		out = append(out, abs)
 	}
 	return out, nil
+}
+
+func sameOrContains(root, path string) bool {
+	if root == "" || path == "" {
+		return false
+	}
+	root = filepath.Clean(root)
+	path = filepath.Clean(path)
+	if root == path {
+		return true
+	}
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return false
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 // Command returns a `podman exec` into this sandbox's container. Mirrors

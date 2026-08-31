@@ -1,6 +1,8 @@
 package tui
 
 import (
+	"time"
+
 	tea "charm.land/bubbletea/v2"
 )
 
@@ -91,6 +93,31 @@ func (m Model) captureReminderDue() bool {
 // exitSavePrompt body.
 const exitSaveDisplayLabel = "[memory] final pass — saving durable memories before exit (Esc to skip)"
 
+// exitSaveTimeout bounds the final memory turn's worst case: nothing else
+// in the agent loop puts a deadline on a turn's context (only user input —
+// Esc/Ctrl+C — or the turn completing cancels it), so a slow or
+// unresponsive provider could otherwise hold the app open indefinitely on
+// what the user experiences as "quit". 20s comfortably covers a normal
+// exit-save round trip (a short review-and-maybe-call-memory_save turn,
+// not a compression of the whole transcript) while still guaranteeing the
+// app always finishes exiting on its own.
+const exitSaveTimeout = 20 * time.Second
+
+// exitSaveTimeoutMsg fires once exitSaveTimeout elapses after the final
+// memory turn starts. If the turn is still running, it's canceled exactly
+// as Esc/Ctrl+C would — turnEndedMsg's exitSavePending branch then
+// completes the quit, same as any other way the turn can end. A stale
+// timer firing after the turn already finished on its own is a safe
+// no-op: m.turnCancel is nil by then (turnEndedMsg clears it
+// unconditionally before this could ever race it).
+type exitSaveTimeoutMsg struct{}
+
+func exitSaveTimeoutCmd() tea.Cmd {
+	return tea.Tick(exitSaveTimeout, func(time.Time) tea.Msg {
+		return exitSaveTimeoutMsg{}
+	})
+}
+
 // maybeStartExitSaveTurn either starts the final memory turn (the quit
 // completes when it ends — see the exitSavePending branch of
 // turnEndedMsg) or quits immediately when the final turn isn't
@@ -101,7 +128,8 @@ const exitSaveDisplayLabel = "[memory] final pass — saving durable memories be
 // idle). Ctrl+C always quits immediately — it's the "get me out now"
 // gesture and overloading it with a model call would betray that. While
 // the final turn runs, Esc/Ctrl+C cancels it (normal turn-interrupt
-// path) and the quit then completes; Ctrl+D hard-quits as ever.
+// path) and the quit then completes; Ctrl+D hard-quits as ever. So does
+// exitSaveTimeout, as a last resort the user doesn't have to invoke.
 func maybeStartExitSaveTurn(m Model) (tea.Model, tea.Cmd) {
 	if !m.fileCfg.Memory.FinalTurnOnQuit ||
 		m.cfg.Adapter == nil ||
@@ -116,5 +144,6 @@ func maybeStartExitSaveTurn(m Model) (tea.Model, tea.Cmd) {
 	// pre-compaction reminder riding the same message would just repeat
 	// it.
 	m.memoryNudgePending = false
-	return m.startTurnWithDisplay(exitSavePrompt, exitSaveDisplayLabel)
+	next, cmd := m.startTurnWithDisplay(exitSavePrompt, exitSaveDisplayLabel)
+	return next, tea.Batch(cmd, exitSaveTimeoutCmd())
 }

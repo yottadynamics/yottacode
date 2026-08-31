@@ -42,6 +42,12 @@ const minRetainBudget = 4096
 // shortening.
 const maxRetainedToolTokens = 4096
 
+// minRetainedToolTokens is the floor below which a retained tool
+// result's budget-aware cap will not shrink further — enough to keep a
+// meaningful fragment (not just the truncation marker) visible even
+// when many oversized tool messages compete for the same budget.
+const minRetainedToolTokens = 256
+
 // compactionMarker is appended to retained tool content that was
 // truncated by the budget. Distinct from the inline summarize-time
 // truncation marker so an audit can tell the two apart.
@@ -431,11 +437,13 @@ func composeSummarizedHistory(history []adapter.Message, summary string, windowT
 	// compressed history never opens (after the system prompt) with an
 	// assistant turn — invalid for Claude/Gemini (see summaryUserPreamble).
 	turnLabel := fmt.Sprintf("turn %d", len(userIdxs))
+	compressedAt := time.Now()
 	out = append(out,
-		adapter.Message{Role: adapter.RoleUser, Content: summaryUserPreamble},
+		adapter.Message{Role: adapter.RoleUser, Content: summaryUserPreamble, Timestamp: &compressedAt},
 		adapter.Message{
-			Role:    adapter.RoleAssistant,
-			Content: "[Session summary — compressed at " + turnLabel + "]\n\n" + summary,
+			Role:      adapter.RoleAssistant,
+			Content:   "[Session summary — compressed at " + turnLabel + "]\n\n" + summary,
+			Timestamp: &compressedAt,
 		},
 	)
 
@@ -443,15 +451,16 @@ func composeSummarizedHistory(history []adapter.Message, summary string, windowT
 		return out
 	}
 
-	keepFrom := chooseRetainStart(history, userIdxs, retainBudgetFor(windowTokens), retainTurnsAfterSummary)
+	budget := retainBudgetFor(windowTokens)
+	keepFrom := chooseRetainStart(history, userIdxs, budget, retainTurnsAfterSummary)
 	if keepFrom < 0 {
 		return out
 	}
-	for i := keepFrom; i < len(history); i++ {
-		if history[i].Role == adapter.RoleSystem {
+	for _, m := range capRetainedToolBudget(history[keepFrom:], budget) {
+		if m.Role == adapter.RoleSystem {
 			continue
 		}
-		out = append(out, capRetainedToolContent(history[i]))
+		out = append(out, m)
 	}
 	return out
 }
@@ -512,26 +521,68 @@ func chooseRetainStart(history []adapter.Message, userIdxs []int, budgetTokens, 
 	return keepFrom
 }
 
-// capRetainedToolContent truncates an oversize tool result so a
-// single giant payload (Agent report, large file read) can't blow
-// the retention budget on its own. Leaves user/assistant messages
-// untouched — those carry decisions and reasoning that survive
-// cleanly past compression. Returns a copy with capped Content
-// rather than mutating the input so callers can compare before/after.
-func capRetainedToolContent(m adapter.Message) adapter.Message {
-	if m.Role != adapter.RoleTool {
+// truncateToolMessage truncates an oversize tool result to capTokens so a
+// giant payload (Agent report, large file read) can't blow a retention
+// budget on its own. Leaves user/assistant messages untouched — those
+// carry decisions and reasoning that survive cleanly past compression.
+// Returns a copy with capped Content rather than mutating the input so
+// callers can compare before/after.
+//
+// The size check below is redundant on the one call site today —
+// capRetainedToolBudget already establishes raw > capTokens using a
+// cached estimate before calling this — but it's what makes the
+// function safe to call unconditionally for any future caller, and
+// EstimateMessage is a cheap len()-based calculation, not a content
+// scan, so paying it again here is not worth threading a "trust me"
+// bool through the signature to avoid.
+func truncateToolMessage(m adapter.Message, capTokens int) adapter.Message {
+	if m.Role != adapter.RoleTool || estimateMessageTokens(m) <= capTokens {
 		return m
 	}
-	if estimateMessageTokens(m) <= maxRetainedToolTokens {
-		return m
-	}
-	maxChars := maxRetainedToolTokens * 4
+	maxChars := capTokens * 4
 	if maxChars <= len(compactionMarker) {
 		m.Content = compactionMarker
 		return m
 	}
 	m.Content = m.Content[:maxChars-len(compactionMarker)] + compactionMarker
 	return m
+}
+
+// capRetainedToolBudget shrinks the retained tail's tool messages so their
+// COMBINED token cost fits budgetTokens whenever achievable without
+// truncating any one below minRetainedToolTokens, via the shared
+// contextwindow.ToolBudgetCaps — also used by the agent package's
+// capRetainedToolMessages (internal/agent/compaction.go), which needs the
+// identical algorithm for its own tail. Only the message-shaping details
+// below (truncation marker, lazy-copy plumbing, return shape) differ per
+// caller. Replaces a per-message-only cap (each oversize tool message
+// truncated independently to maxRetainedToolTokens): correct for one giant
+// payload, blind to a turn with MANY moderately-large tool results (e.g.
+// 30+ tool calls in the single always-retained newest turn), whose fixed
+// per-message caps could still sum to several times the retain budget.
+// Non-tool messages are untouched.
+func capRetainedToolBudget(tail []adapter.Message, budgetTokens int) []adapter.Message {
+	toolIdxs, raw, caps := contextwindow.ToolBudgetCaps(tail, budgetTokens, maxRetainedToolTokens, minRetainedToolTokens)
+	if len(toolIdxs) == 0 {
+		return tail
+	}
+
+	// Lazily allocate: the common case (a tail that already fits) needs
+	// no copy at all.
+	var out []adapter.Message
+	for k, i := range toolIdxs {
+		if raw[k] <= caps[k] {
+			continue
+		}
+		if out == nil {
+			out = append([]adapter.Message(nil), tail...)
+		}
+		out[i] = truncateToolMessage(out[i], caps[k])
+	}
+	if out == nil {
+		return tail
+	}
+	return out
 }
 
 // estimateMessageTokens estimates the token count of a single message.
@@ -580,21 +631,33 @@ func writePreSummarySnapshot(sessionID string, history []adapter.Message) (strin
 	return path, nil
 }
 
-// recallCommandForSnapshot turns a pre-summary snapshot path back into the
-// original session id the user can pass to /recall. Snapshot filenames are
-// intentionally longer than the recall id (<id>-pre-summary-<timestamp>.json),
-// so the UI must print the copyable command instead of asking the user to parse
-// the path by eye.
-func recallCommandForSnapshot(snapshotPath string) string {
+// snapshotResumeHint turns a pre-summary snapshot path into a copy-
+// pasteable command that actually restores the full pre-compression
+// history: `yottacode sessions resume <id>`, where id is the snapshot's
+// filename stem (written by writePreSummarySnapshot as
+// "<sessionID>-pre-summary-<stamp>"). session.Load already special-cases
+// an id containing session.SnapshotMarker (session.IsSnapshotID) and
+// routes it through loadSnapshot, which seeds a FRESH session from the
+// archived messages — the same mechanism internal/tui/run.go's
+// resumeHint uses for a live session's own id, just pointed at the
+// archive instead; this mirrors that established phrasing. A prior
+// version of this banner suggested "/recall <session-id>" instead — a
+// truncated id fed into cmdRecall's unrelated full-text FTS5 search,
+// which reliably produced "no matches" since /recall searches message
+// content, not session ids.
+func snapshotResumeHint(snapshotPath string) string {
 	if strings.TrimSpace(snapshotPath) == "" {
 		return ""
 	}
-	name := strings.TrimSuffix(filepath.Base(snapshotPath), ".json")
-	sessionID, _, ok := strings.Cut(name, session.SnapshotMarker)
-	if !ok || strings.TrimSpace(sessionID) == "" {
+	id := strings.TrimSuffix(filepath.Base(snapshotPath), ".json")
+	// Guard against a malformed/unexpected path the same way the id-
+	// extraction this replaced did: only emit a command for something
+	// session.Load will actually resolve as a snapshot (IsSnapshotID),
+	// rather than risk suggesting "yottacode sessions resume <garbage>".
+	if !session.IsSnapshotID(id) {
 		return ""
 	}
-	return "/recall " + sessionID
+	return "yottacode sessions resume " + id
 }
 
 // summarizeDeps carries the dependencies loadSummarizedSession needs.

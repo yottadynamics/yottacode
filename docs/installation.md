@@ -110,6 +110,19 @@ GOOS=linux  GOARCH=amd64 go build -o yottacode-linux-amd64  ./cmd/yottacode
 - macOS: supported by source builds and release binaries
 - Windows: not a release target; run yottacode under WSL
 
+## Sandbox image packages
+
+The optional Podman command sandbox pulls two GHCR images when enabled:
+
+- `ghcr.io/yottadynamics/yottacode-sandbox:latest` for `run_bash` and `run_tests`
+- `ghcr.io/yottadynamics/yottacode-documents:latest` for document subprocess helpers
+
+Published releases also tag both images with the release tag (for example
+`ghcr.io/yottadynamics/yottacode-sandbox:v0.4.0`) plus a UTC date tag. If a pull
+returns `401` or `not found`, the image package is private or not linked for
+anonymous pulls; the image workflows verify anonymous pulls after publish so that
+misconfiguration fails CI.
+
 ## Run the setup wizard (recommended)
 
 yottacode does not guess a default model or endpoint. The fastest post-install path is the interactive wizard:
