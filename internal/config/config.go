@@ -97,7 +97,16 @@ type SandboxConfig struct {
 	Backend        string `toml:"backend"` // "none" (default) | "podman"
 	Image          string `toml:"image"`
 	DocumentsImage string `toml:"documents_image"`
-	Network        string `toml:"network"` // "none" | "host" (temporary default)
+	// Network is "none" | "host" (default). "host" shares the machine's
+	// network stack directly rather than sitting behind an in-house
+	// egress allowlist: with no separate network namespace to police,
+	// whatever network-layer policy the host/organization already
+	// enforces (a transparent proxy, a firewall) already covers sandboxed
+	// commands the same as any other host process. For an explicit
+	// (non-transparent) corporate proxy, forward it via EnvPassthrough
+	// (HTTP_PROXY/HTTPS_PROXY/NO_PROXY); for a hard deny-all independent
+	// of any external trust, use "none".
+	Network string `toml:"network"`
 	// DNS optionally passes explicit resolver IPs to Podman at container start.
 	// Empty uses Podman's default resolver behavior for the selected network.
 	DNS            []string `toml:"dns"`
@@ -106,6 +115,13 @@ type SandboxConfig struct {
 	Memory         string   `toml:"memory"`
 	CPUs           float64  `toml:"cpus"`
 	PidsLimit      int      `toml:"pids_limit"`
+	// Disk caps the container's writable-layer disk usage in megabytes
+	// (0 = no quota attempted). Only takes effect when the host's storage
+	// driver actually supports --storage-opt size= (overlay on XFS with
+	// pquota; most Linux hosts run ext4 and don't) — silently skipped
+	// with a logged note otherwise, never a startup failure. See
+	// storageOptSupported in internal/sandbox/hostcaps.go.
+	Disk int `toml:"disk"`
 }
 
 // DefaultSandboxImage is the official command sandbox image. Keep it as a named
@@ -120,6 +136,13 @@ const DefaultSandboxDocumentsImage = "ghcr.io/yottadynamics/yottacode-documents:
 // DefaultSandboxDNS avoids loopback resolver inheritance inside rootless Podman.
 // Users on VPN/corporate networks can override this with their resolver IPs.
 var DefaultSandboxDNS = []string{"1.1.1.1", "8.8.8.8"}
+
+// DefaultSandboxDisk caps the sandbox container's writable-layer disk usage
+// in megabytes. Larger than the 2g Memory default since a writable layer
+// holding installed toolchains/deps typically needs more room than the
+// process's RAM ceiling. Only enforced when the host's storage driver
+// supports it (see SandboxConfig.Disk); otherwise this is a no-op.
+const DefaultSandboxDisk = 4096
 
 // ValidSandboxBackends is the whitelist for SandboxConfig.Backend.
 var ValidSandboxBackends = []string{"none", "podman"}
@@ -655,6 +678,7 @@ func Default() Config {
 			Memory:         "2g",
 			CPUs:           2,
 			PidsLimit:      256,
+			Disk:           DefaultSandboxDisk,
 		},
 	}
 }
@@ -1064,6 +1088,9 @@ func Validate(cfg Config) error {
 	}
 	if cfg.Sandbox.PidsLimit < 0 {
 		return fmt.Errorf("sandbox.pids_limit = %d must be >= 0", cfg.Sandbox.PidsLimit)
+	}
+	if cfg.Sandbox.Disk < 0 {
+		return fmt.Errorf("sandbox.disk = %d must be >= 0", cfg.Sandbox.Disk)
 	}
 	if cfg.Sandbox.Backend == "podman" {
 		if strings.TrimSpace(cfg.Sandbox.Image) == "" {

@@ -136,7 +136,7 @@ func TestPodmanRunArgsIncludesConfiguredDNS(t *testing.T) {
 		CPUs:      1,
 		PidsLimit: 128,
 	}
-	args, err := podmanRunArgs(cfg, "yc-test", mountRoot)
+	args, err := podmanRunArgs(cfg, "yc-test", mountRoot, hostCapabilities{StorageOpt: true, CgroupLimits: true})
 	if err != nil {
 		t.Fatalf("podmanRunArgs: %v", err)
 	}
@@ -159,13 +159,73 @@ func TestPodmanRunArgsOmitsDNSWhenNetworkNone(t *testing.T) {
 		CPUs:      1,
 		PidsLimit: 128,
 	}
-	args, err := podmanRunArgs(cfg, "yc-test", mountRoot)
+	args, err := podmanRunArgs(cfg, "yc-test", mountRoot, hostCapabilities{StorageOpt: true, CgroupLimits: true})
 	if err != nil {
 		t.Fatalf("podmanRunArgs: %v", err)
 	}
 	joined := " " + strings.Join(args, " ") + " "
 	if strings.Contains(joined, " --dns ") {
 		t.Fatalf("podman args must not include DNS with --network=none: %v", args)
+	}
+}
+
+func TestPodmanRunArgsOmitsResourceLimitsWhenCgroupUnsupported(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	mountRoot := filepath.Join(t.TempDir(), "repo")
+	cfg := config.SandboxConfig{
+		Image:     "sandbox-image",
+		Network:   "host",
+		Mounts:    []string{"."},
+		Memory:    "256m",
+		CPUs:      1,
+		PidsLimit: 128,
+	}
+	args, err := podmanRunArgs(cfg, "yc-test", mountRoot, hostCapabilities{StorageOpt: true, CgroupLimits: false})
+	if err != nil {
+		t.Fatalf("podmanRunArgs: %v", err)
+	}
+	joined := " " + strings.Join(args, " ") + " "
+	for _, want := range []string{"--pids-limit", "--memory", "--memory-swap", "--cpus"} {
+		if strings.Contains(joined, " "+want) {
+			t.Errorf("podman args must omit %s when CgroupLimits is unsupported: %v", want, args)
+		}
+	}
+}
+
+func TestPodmanRunArgsOmitsStorageOptWhenUnsupportedOrZeroDisk(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	mountRoot := filepath.Join(t.TempDir(), "repo")
+	baseCfg := config.SandboxConfig{
+		Image: "sandbox-image", Network: "host", Mounts: []string{"."},
+		Memory: "256m", CPUs: 1, PidsLimit: 128, Disk: 4096,
+	}
+
+	unsupported, err := podmanRunArgs(baseCfg, "yc-test", mountRoot, hostCapabilities{StorageOpt: false, CgroupLimits: true})
+	if err != nil {
+		t.Fatalf("podmanRunArgs: %v", err)
+	}
+	if strings.Contains(strings.Join(unsupported, " "), "--storage-opt") {
+		t.Errorf("podman args must omit --storage-opt when StorageOpt is unsupported: %v", unsupported)
+	}
+
+	zeroDisk := baseCfg
+	zeroDisk.Disk = 0
+	noQuota, err := podmanRunArgs(zeroDisk, "yc-test", mountRoot, hostCapabilities{StorageOpt: true, CgroupLimits: true})
+	if err != nil {
+		t.Fatalf("podmanRunArgs: %v", err)
+	}
+	if strings.Contains(strings.Join(noQuota, " "), "--storage-opt") {
+		t.Errorf("podman args must omit --storage-opt when Disk is 0: %v", noQuota)
+	}
+
+	supported, err := podmanRunArgs(baseCfg, "yc-test", mountRoot, hostCapabilities{StorageOpt: true, CgroupLimits: true})
+	if err != nil {
+		t.Fatalf("podmanRunArgs: %v", err)
+	}
+	if !strings.Contains(strings.Join(supported, " "), "--storage-opt=size=4096m") {
+		t.Errorf("podman args must include --storage-opt=size=4096m when supported and Disk > 0: %v", supported)
 	}
 }
 
