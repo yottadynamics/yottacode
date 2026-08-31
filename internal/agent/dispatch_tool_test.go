@@ -6,8 +6,10 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/yottadynamics/yottacode/internal/adapter"
 	"github.com/yottadynamics/yottacode/internal/subagents"
@@ -23,73 +25,121 @@ func TestValidateWritePartition(t *testing.T) {
 	mk := func(cfg *subagents.AgentConfig, files ...string) *dispatchChild {
 		return &dispatchChild{cfg: cfg, isWrite: !agentIsReadOnly(cfg), spec: dispatchTaskSpec{Files: files, Description: cfg.Name}}
 	}
+	// vwp wraps validateWritePartition with an empty registry — these
+	// subtests only exercise the within-call check. Cross-call collisions
+	// against the registry are covered separately below.
+	vwp := func(children []*dispatchChild) string {
+		return validateWritePartition(children, subagents.NewRegistry())
+	}
 
 	t.Run("disjoint ok", func(t *testing.T) {
-		got := validateWritePartition([]*dispatchChild{mk(writer, "a.go"), mk(writer, "b.go")})
+		got := vwp([]*dispatchChild{mk(writer, "a.go"), mk(writer, "b.go")})
 		if got != "" {
 			t.Errorf("expected ok, got %q", got)
 		}
 	})
 	t.Run("overlap rejected", func(t *testing.T) {
-		got := validateWritePartition([]*dispatchChild{mk(writer, "a.go", "shared.go"), mk(writer, "shared.go")})
+		got := vwp([]*dispatchChild{mk(writer, "a.go", "shared.go"), mk(writer, "shared.go")})
 		if !strings.Contains(got, "non-overlapping") {
 			t.Errorf("expected overlap rejection, got %q", got)
 		}
 	})
 	t.Run("missing files rejected", func(t *testing.T) {
-		got := validateWritePartition([]*dispatchChild{mk(writer), mk(writer, "b.go")})
+		got := vwp([]*dispatchChild{mk(writer), mk(writer, "b.go")})
 		if !strings.Contains(got, "must declare their `files`") {
 			t.Errorf("expected missing-files rejection, got %q", got)
 		}
 	})
 	t.Run("read-only tasks need no files", func(t *testing.T) {
-		got := validateWritePartition([]*dispatchChild{mk(reader), mk(writer, "b.go")})
+		got := vwp([]*dispatchChild{mk(reader), mk(writer, "b.go")})
 		if got != "" {
 			t.Errorf("read-only task should not need files, got %q", got)
 		}
 	})
 	t.Run("path normalization catches ./ overlap", func(t *testing.T) {
-		got := validateWritePartition([]*dispatchChild{mk(writer, "./a.go"), mk(writer, "a.go")})
+		got := vwp([]*dispatchChild{mk(writer, "./a.go"), mk(writer, "a.go")})
 		if !strings.Contains(got, "non-overlapping") {
 			t.Errorf("expected normalized overlap rejection, got %q", got)
 		}
 	})
 	t.Run("directory claim overlaps descendant file", func(t *testing.T) {
-		got := validateWritePartition([]*dispatchChild{mk(writer, "internal/api"), mk(writer, "internal/api/health.go")})
+		got := vwp([]*dispatchChild{mk(writer, "internal/api"), mk(writer, "internal/api/health.go")})
 		if !strings.Contains(got, "non-overlapping") {
 			t.Errorf("expected directory/file overlap rejection, got %q", got)
 		}
 	})
 	t.Run("descendant directory claim overlaps parent", func(t *testing.T) {
-		got := validateWritePartition([]*dispatchChild{mk(writer, "internal/api/health"), mk(writer, "internal/api")})
+		got := vwp([]*dispatchChild{mk(writer, "internal/api/health"), mk(writer, "internal/api")})
 		if !strings.Contains(got, "non-overlapping") {
 			t.Errorf("expected parent/child overlap rejection, got %q", got)
 		}
 	})
 	t.Run("sibling directories allowed", func(t *testing.T) {
-		got := validateWritePartition([]*dispatchChild{mk(writer, "internal/api"), mk(writer, "internal/app")})
+		got := vwp([]*dispatchChild{mk(writer, "internal/api"), mk(writer, "internal/app")})
 		if got != "" {
 			t.Errorf("sibling claims should be allowed, got %q", got)
 		}
 	})
 	t.Run("root claim rejected", func(t *testing.T) {
-		got := validateWritePartition([]*dispatchChild{mk(writer, "."), mk(writer, "foo.go")})
+		got := vwp([]*dispatchChild{mk(writer, "."), mk(writer, "foo.go")})
 		if !strings.Contains(got, "invalid broad ownership") || !strings.Contains(got, "non-overlapping") {
 			t.Errorf("expected root ownership rejection, got %q", got)
 		}
 	})
 	t.Run("blank claim rejected", func(t *testing.T) {
-		got := validateWritePartition([]*dispatchChild{mk(writer, "  ")})
+		got := vwp([]*dispatchChild{mk(writer, "  ")})
 		if !strings.Contains(got, "invalid broad ownership") {
 			t.Errorf("expected blank ownership rejection, got %q", got)
 		}
 	})
 	t.Run("parent and absolute claims rejected", func(t *testing.T) {
 		for _, claim := range []string{"..", "../", "../foo.go", "/tmp/foo.go"} {
-			got := validateWritePartition([]*dispatchChild{mk(writer, claim)})
+			got := vwp([]*dispatchChild{mk(writer, claim)})
 			if !strings.Contains(got, "invalid broad ownership") {
 				t.Errorf("claim %q: expected broad ownership rejection, got %q", claim, got)
 			}
+		}
+	})
+	t.Run("collides with an already-running dispatch task", func(t *testing.T) {
+		reg := subagents.NewRegistry()
+		reg.Add(&subagents.Task{ID: subagents.NewTaskID(), Status: subagents.TaskRunning, Files: []string{"shared.go"}})
+		got := validateWritePartition([]*dispatchChild{mk(writer, "shared.go")}, reg)
+		if !strings.Contains(got, "non-overlapping") || !strings.Contains(got, "already-running dispatch task") {
+			t.Errorf("expected cross-call collision rejection, got %q", got)
+		}
+	})
+	t.Run("no collision against a finished task's stale claim", func(t *testing.T) {
+		reg := subagents.NewRegistry()
+		done := &subagents.Task{ID: subagents.NewTaskID(), Status: subagents.TaskRunning, Files: []string{"shared.go"}}
+		reg.Add(done)
+		reg.MarkDone(done.ID, subagents.TaskCompleted, "ok", false, 0)
+		got := validateWritePartition([]*dispatchChild{mk(writer, "shared.go")}, reg)
+		if got != "" {
+			t.Errorf("a finished task's claim must not block a new one, got %q", got)
+		}
+	})
+	t.Run("nil registry skips the cross-call check", func(t *testing.T) {
+		got := validateWritePartition([]*dispatchChild{mk(writer, "a.go")}, nil)
+		if got != "" {
+			t.Errorf("expected ok with nil registry, got %q", got)
+		}
+	})
+	t.Run("case-insensitive filesystem catches a case-only collision", func(t *testing.T) {
+		old := dispatchCaseInsensitiveFS
+		dispatchCaseInsensitiveFS = true
+		defer func() { dispatchCaseInsensitiveFS = old }()
+		got := vwp([]*dispatchChild{mk(writer, "Utils.go"), mk(writer, "utils.go")})
+		if !strings.Contains(got, "non-overlapping") {
+			t.Errorf("expected case-insensitive collision rejection, got %q", got)
+		}
+	})
+	t.Run("case-sensitive filesystem allows a case-only difference", func(t *testing.T) {
+		old := dispatchCaseInsensitiveFS
+		dispatchCaseInsensitiveFS = false
+		defer func() { dispatchCaseInsensitiveFS = old }()
+		got := vwp([]*dispatchChild{mk(writer, "Utils.go"), mk(writer, "utils.go")})
+		if got != "" {
+			t.Errorf("case-sensitive filesystem should allow Utils.go and utils.go as distinct files, got %q", got)
 		}
 	})
 }
@@ -185,6 +235,340 @@ func TestCommitSubject(t *testing.T) {
 	}
 	if strings.HasSuffix(long, ".") {
 		t.Errorf("subject must not end with a period: %q", long)
+	}
+}
+
+// TestCommitSubject_MultiByteTruncationStaysValidUTF8 is the byte-safe
+// truncation regression: ApplyCommit's validator measures the subject in
+// BYTES (CommitSubjectMaxLen=72), so a raw subj[:72] byte slice can split a
+// multi-byte UTF-8 rune (CJK, emoji) straddling the cut point, producing an
+// invalid-UTF-8 commit subject. The cut must land on a rune boundary while
+// staying at or under 72 bytes.
+func TestCommitSubject_MultiByteTruncationStaysValidUTF8(t *testing.T) {
+	// A 3-byte-per-rune CJK description long enough to force truncation well
+	// past byte offset 72, landing mid-rune under the old raw slice.
+	desc := strings.Repeat("你", 40)
+	got := commitSubject("writer", desc)
+	if len(got) > 72 {
+		t.Fatalf("subject not capped: len=%d bytes: %q", len(got), got)
+	}
+	if !utf8.ValidString(got) {
+		t.Errorf("truncated subject is not valid UTF-8: %q", got)
+	}
+}
+
+// TestOutOfScopeWorkerChanges_RenameSourceChecked is the rename-source
+// regression: statusPaths previously kept only the DESTINATION of a rename
+// line, so `git mv other.txt owned.txt` (moving a file this worker never
+// owned into its own filename) passed unnoticed — only "owned.txt" (in
+// scope) was ever checked, never "other.txt" (someone else's file).
+func TestOutOfScopeWorkerChanges_RenameSourceChecked(t *testing.T) {
+	repo := dispatchTestRepo(t)
+	ctx := context.Background()
+	if err := os.WriteFile(filepath.Join(repo, "other.txt"), []byte("other\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"add", "-A"}, {"commit", "-m", "add other.txt"}} {
+		if _, err := gitOutput(ctx, repo, args...); err != nil {
+			t.Fatalf("git %v: %v", args, err)
+		}
+	}
+	if _, err := gitOutput(ctx, repo, "mv", "other.txt", "owned.txt"); err != nil {
+		t.Fatalf("git mv: %v", err)
+	}
+
+	outside := outOfScopeWorkerChanges(ctx, repo, []string{"owned.txt"})
+	if len(outside) == 0 {
+		t.Fatal("a rename whose SOURCE is out of scope must be flagged, even though the destination is owned")
+	}
+	found := false
+	for _, p := range outside {
+		if p == "other.txt" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected the rename SOURCE %q among out-of-scope paths, got %v", "other.txt", outside)
+	}
+}
+
+// TestOutOfScopeWorkerChanges_ArrowInFilenameNotMisparsedAsRename is the
+// status-line-parsing regression: statusPaths previously split on the raw
+// text " -> " with no check that the line's status code actually denotes a
+// rename/copy (R/C), so a plain untracked file whose NAME contains that
+// literal substring got misparsed and truncated to whatever followed it.
+func TestOutOfScopeWorkerChanges_ArrowInFilenameNotMisparsedAsRename(t *testing.T) {
+	repo := dispatchTestRepo(t)
+	ctx := context.Background()
+	weird := "weird -> file.txt"
+	if err := os.WriteFile(filepath.Join(repo, weird), []byte("x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	outside := outOfScopeWorkerChanges(ctx, repo, []string{"owned.txt"})
+	found := false
+	for _, p := range outside {
+		if p == weird {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected the untracked file to be reported by its FULL literal name %q, got %v", weird, outside)
+	}
+}
+
+// TestFormatResult_ErroredWorkerBranchExcludedFromIntegrate is the
+// integrate-recommendation regression: a worker that ended TaskErrored (e.g.
+// it left out-of-scope changes uncommitted) can still have a real commit on
+// its branch from earlier in its run. formatResult's "call integrate with
+// branches [...]" recommendation must exclude that branch even though
+// c.commit is non-empty — recommending it would defeat dispatch's whole
+// partition-by-files safety story for exactly the case it's meant to catch.
+func TestFormatResult_ErroredWorkerBranchExcludedFromIntegrate(t *testing.T) {
+	writer := &subagents.AgentConfig{Name: "writer"}
+	d := &DispatchTool{}
+	children := []*dispatchChild{
+		{
+			cfg: writer, isWrite: true,
+			spec:      dispatchTaskSpec{Description: "bad", Files: []string{"a.go"}},
+			status:    subagents.TaskErrored,
+			errored:   true,
+			branch:    "worktree-dispatch-x-1",
+			commit:    "deadbeef",
+			commitErr: "out-of-scope changes left uncommitted: rogue.go",
+		},
+		{
+			cfg: writer, isWrite: true,
+			spec:   dispatchTaskSpec{Description: "good", Files: []string{"b.go"}},
+			status: subagents.TaskCompleted,
+			branch: "worktree-dispatch-x-2",
+			commit: "cafebabe",
+		},
+	}
+	out := d.formatResult("goal", "batch-1", children, true)
+
+	parts := strings.SplitN(out, "Next:", 2)
+	if len(parts) != 2 {
+		t.Fatalf("expected a 'Next: call integrate' recommendation, got:\n%s", out)
+	}
+	if strings.Contains(parts[1], "worktree-dispatch-x-1") {
+		t.Errorf("errored worker's branch leaked into the integrate recommendation: %s", parts[1])
+	}
+	if !strings.Contains(parts[1], "worktree-dispatch-x-2") {
+		t.Errorf("healthy worker's branch missing from the integrate recommendation: %s", parts[1])
+	}
+	if !strings.Contains(out, "FAILED") {
+		t.Errorf("expected the errored-but-committed worker's per-task line to say FAILED:\n%s", out)
+	}
+}
+
+// TestDispatchPanic_DoesNotClobberAlreadyCompletedResult is the state-
+// integrity regression: the panic-recovery defer used to unconditionally
+// overwrite c.result/c.errored and re-call MarkDone, even for a panic that
+// struck AFTER the real MarkDone already recorded a successful result (e.g.
+// inside fireBackgroundDone's own callback). MarkDone's own contract
+// overwrites Result/Errored unconditionally on a second call, so an
+// unguarded second call would silently replace a genuine success with a
+// fabricated panic message. The defer must skip entirely once the task is
+// already terminal.
+func TestDispatchPanic_DoesNotClobberAlreadyCompletedResult(t *testing.T) {
+	repoRoot := dispatchTestRepo(t)
+	d := newDispatchToolE2E(t, repoRoot)
+	d.SupportsBackground = true
+
+	// Panic on the FIRST fireBackgroundDone invocation only — by the time
+	// this callback runs, runDispatchChild's normal-completion path has
+	// ALREADY called the real MarkDone with the genuine result (the
+	// callback is the very next thing it does), so this panic strikes in
+	// normal (non-recover) code, exactly the scenario the file's own
+	// comments call out ("fireBackgroundDone, or the onBackgroundDone
+	// callback that runs TUI code"). It IS still caught by
+	// runDispatchChild's top-level defer (which wraps the whole function
+	// body), so the guard added there is what's under test.
+	var panicOnce sync.Once
+	var mu sync.Mutex
+	fireCounts := map[string]int{}
+	d.Agent.SetBackgroundDoneCallback(func(e SubagentBackgroundDone) {
+		mu.Lock()
+		fireCounts[e.TaskID]++
+		mu.Unlock()
+		fired := false
+		panicOnce.Do(func() { fired = true })
+		if fired {
+			panic("boom inside fireBackgroundDone callback")
+		}
+	})
+
+	if _, err := d.Execute(context.Background(), `{"goal":"two files","tasks":[
+		{"subagent_type":"writer","description":"a","prompt":"TESTWRITE:alpha.txt","files":["alpha.txt"]},
+		{"subagent_type":"writer","description":"b","prompt":"TESTWRITE:beta.txt","files":["beta.txt"]}
+	]}`); err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	waitForTasksDone(t, d.Agent.Tasks, 2, 5*time.Second)
+
+	for _, tk := range d.Agent.Tasks.List() {
+		mu.Lock()
+		n := fireCounts[tk.ID]
+		mu.Unlock()
+		if n != 1 {
+			t.Errorf("task %s: fireBackgroundDone callback invoked %d times, want exactly 1 — a panic inside it must not cause the recover to re-fire it", tk.ID[:8], n)
+		}
+		if tk.Status != subagents.TaskCompleted {
+			t.Errorf("task %s: Status = %v, want TaskCompleted — a panic in code that runs AFTER the real MarkDone must not overwrite an already-terminal task", tk.ID[:8], tk.Status)
+		}
+		if tk.Errored {
+			t.Errorf("task %s: Errored = true, want false — the real success must survive the later panic", tk.ID[:8])
+		}
+		if strings.Contains(tk.Result, "boom inside fireBackgroundDone callback") || strings.Contains(tk.Result, "dispatch subagent") {
+			t.Errorf("task %s: Result was clobbered with a fabricated panic message: %q", tk.ID[:8], tk.Result)
+		}
+	}
+}
+
+// TestDispatchSandbox_ForegroundConstructionFailureEmitsSubagentDone is the
+// scrollback-hang regression: a foreground write worker whose sandbox fails
+// to construct must still emit SubagentDone to the parent (the same channel
+// that painted its SubagentStart card), or that card is left permanently
+// "running" in the scrollback even though the task itself is correctly
+// marked errored.
+func TestDispatchSandbox_ForegroundConstructionFailureEmitsSubagentDone(t *testing.T) {
+	auto := &AutoModeState{}
+	auto.Active.Store(true)
+	at := &AgentTool{
+		Configs:        []subagents.AgentConfig{{Name: "writer"}},
+		Tasks:          subagents.NewRegistry(),
+		Adapter:        dispatchWriteStreamer{},
+		ParentRegistry: NewRegistry(),
+		AutoMode:       auto,
+		PlanMode:       &PlanModeState{},
+		YoloMode:       &YoloModeState{},
+		Cwd:            NewCwdRef(t.TempDir()),
+		TranscriptDir:  t.TempDir(),
+	}
+	wantErr := fmt.Errorf("podman not found in PATH")
+	d := &DispatchTool{
+		Agent:   at,
+		Enabled: true,
+		SandboxFactory: func(ctx context.Context, wtDir, taskID string) (Sandbox, error) {
+			return nil, wantErr
+		},
+	}
+
+	c := &dispatchChild{
+		spec:     dispatchTaskSpec{Prompt: "p", Description: "d", Files: []string{"x.go"}},
+		cfg:      &at.Configs[0],
+		isWrite:  true,
+		worktree: t.TempDir(),
+	}
+	at.Tasks.Add(d.prepareDispatchChild(c, "batch-1", false))
+
+	// events is passed directly as runDispatchChild's parentEvents argument.
+	events := make(chan Event, 8)
+	d.runDispatchChild(context.Background(), c, "batch-1", false, events, nil)
+	close(events)
+
+	sawStart, sawDone := false, false
+	for ev := range events {
+		switch ev.(type) {
+		case SubagentStart:
+			sawStart = true
+		case SubagentDone:
+			sawDone = true
+		}
+	}
+	if !sawStart {
+		t.Fatal("test setup: expected a SubagentStart event")
+	}
+	if !sawDone {
+		t.Error("a foreground worker whose sandbox failed to construct must still emit SubagentDone, or its scrollback card is stuck 'running' forever")
+	}
+}
+
+// TestDispatchPanic_ForegroundEmitsSubagentDone mirrors
+// TestBackgroundDispatchPanicStillFiresDoneCallback for the foreground path:
+// a panic in runDispatchChild's own orchestration must still emit
+// SubagentDone to the parent so a foreground child's scrollback card
+// resolves, not just its registry record.
+func TestDispatchPanic_ForegroundEmitsSubagentDone(t *testing.T) {
+	auto := &AutoModeState{}
+	auto.Active.Store(true)
+	at := &AgentTool{
+		Configs:        []subagents.AgentConfig{{Name: "writer"}},
+		Tasks:          subagents.NewRegistry(),
+		Adapter:        dispatchWriteStreamer{},
+		ParentRegistry: NewRegistry(),
+		AutoMode:       auto,
+		PlanMode:       &PlanModeState{},
+		YoloMode:       &YoloModeState{},
+		Cwd:            NewCwdRef(t.TempDir()),
+		TranscriptDir:  t.TempDir(),
+	}
+	d := &DispatchTool{Agent: at, Enabled: true}
+
+	c := &dispatchChild{
+		spec: dispatchTaskSpec{Prompt: "p", Description: "d"},
+		cfg:  &at.Configs[0],
+	}
+	at.Tasks.Add(d.prepareDispatchChild(c, "batch-1", false))
+
+	// events is passed directly as runDispatchChild's parentEvents argument
+	// (forwardToParent uses it as-is, independent of ctx) — no need to also
+	// thread it through a context value here.
+	events := make(chan Event, 8)
+
+	// nil ctx is deliberate — makes context.WithCancel(ctx) panic AFTER the
+	// recover is armed, taking the same recover path as
+	// TestBackgroundDispatchPanicStillFiresDoneCallback. forwardToParent's
+	// SubagentStart emission (which runs before that point) sends on
+	// parentEvents directly and never touches ctx for a non-blocking event,
+	// so it's unaffected by ctx being nil.
+	//nolint:staticcheck // SA1012: intentional nil ctx to force the panic
+	d.runDispatchChild(nil, c, "batch-1", false, events, nil)
+	close(events)
+
+	sawDone := false
+	for ev := range events {
+		if _, ok := ev.(SubagentDone); ok {
+			sawDone = true
+		}
+	}
+	if !sawDone {
+		t.Error("a foreground panic must still emit SubagentDone so the scrollback card resolves")
+	}
+}
+
+// TestDispatch_ForegroundRespectsConcurrencyCap is the defense-in-depth
+// regression for foreground admission: unlike every other admission path in
+// this file, the foreground branch used to insert its tasks with a bare
+// Add loop instead of an atomic TryReserveBatch, relying on convention
+// (ParallelSafe=false, no reentrant foreground-spawn route) rather than code
+// to stay under MaxForegroundSubagents.
+func TestDispatch_ForegroundRespectsConcurrencyCap(t *testing.T) {
+	repoRoot := dispatchTestRepo(t)
+	d := newDispatchToolE2E(t, repoRoot)
+	d.SupportsBackground = false
+
+	// Saturate the foreground cap with already-running tasks.
+	for i := 0; i < MaxForegroundSubagents; i++ {
+		d.Agent.Tasks.Add(&subagents.Task{
+			ID:     subagents.NewTaskID(),
+			Status: subagents.TaskRunning,
+		})
+	}
+
+	out, err := d.Execute(context.Background(), `{"goal":"x","background":false,"tasks":[
+		{"subagent_type":"writer","description":"a","prompt":"TESTWRITE:alpha.txt","files":["alpha.txt"]},
+		{"subagent_type":"writer","description":"b","prompt":"TESTWRITE:beta.txt","files":["beta.txt"]}
+	]}`)
+	if err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	if !strings.Contains(out, "exceed") {
+		t.Errorf("expected the foreground cap to reject the batch, got:\n%s", out)
+	}
+	if branches := gitListBranches(t, repoRoot, "worktree-dispatch-*"); len(branches) != 0 {
+		t.Errorf("rejected batch leaked worktree branches: %v", branches)
 	}
 }
 
@@ -587,6 +971,70 @@ func TestDispatch_Background_EnforcesMaxConcurrent(t *testing.T) {
 	// The rejection must happen before any worktree is created.
 	if branches := gitListBranches(t, repoRoot, "worktree-dispatch-*"); len(branches) != 0 {
 		t.Errorf("rejected batch leaked worktree branches: %v", branches)
+	}
+}
+
+// TestDispatch_ConcurrencyCap_ConfigOverride is the configurable-cap
+// regression for dispatch specifically: DispatchTool shares AgentTool's
+// resolved cap (t.Agent.MaxConcurrentSubagents), so a session configured for
+// more headroom lets a dispatch batch through where the fixed default of 8
+// would have rejected it — while the per-call decomposition limit
+// (MaxDispatchTasksPerCall) stays fixed at 8 regardless.
+func TestDispatch_ConcurrencyCap_ConfigOverride(t *testing.T) {
+	repoRoot := dispatchTestRepo(t)
+	d := newDispatchToolE2E(t, repoRoot)
+	d.SupportsBackground = true
+	d.Agent.MaxConcurrentSubagents = 10
+
+	// Pre-seed AT the fixed default of 8 (already at/over what the old code
+	// would allow) — the coming 2-task batch brings the total to 10, still
+	// within the configured override.
+	for i := 0; i < 8; i++ {
+		d.Agent.Tasks.Add(&subagents.Task{
+			ID:         subagents.NewTaskID(),
+			Status:     subagents.TaskRunning,
+			Background: true,
+		})
+	}
+
+	out, err := d.Execute(context.Background(), `{"goal":"x","tasks":[
+		{"subagent_type":"writer","description":"a","prompt":"TESTWRITE:alpha.txt","files":["alpha.txt"]},
+		{"subagent_type":"writer","description":"b","prompt":"TESTWRITE:beta.txt","files":["beta.txt"]}
+	]}`)
+	if err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	if strings.Contains(out, "exceed") {
+		t.Errorf("a batch that stays under the configured override of 10 must not be rejected, got:\n%s", out)
+	}
+
+	// Release the synthetic saturation tasks after the admission check so the
+	// helper below only waits on real workers that can actually finish.
+	for _, tk := range d.Agent.Tasks.List() {
+		if tk.Background && tk.Branch == "" {
+			d.Agent.Tasks.MarkDone(tk.ID, subagents.TaskCompleted, "synthetic cap fixture", false, 0)
+		}
+	}
+	// Join the accepted background batch before issuing the independent
+	// decomposition-limit probe below. Otherwise those workers can still be
+	// committing into their temp worktrees while testing.TempDir cleanup starts,
+	// causing a flaky "directory not empty" cleanup failure unrelated to the
+	// cap behavior under test.
+	waitForTasksDone(t, d.Agent.Tasks, 10, 5*time.Second)
+
+	// The per-call decomposition limit is independent of the override: 9
+	// tasks in one call still exceeds MaxDispatchTasksPerCall (8) even
+	// though the session's concurrency override (10) would allow them to run.
+	tasks := make([]string, MaxDispatchTasksPerCall+1)
+	for i := range tasks {
+		tasks[i] = fmt.Sprintf(`{"subagent_type":"writer","description":"t%d","prompt":"TESTWRITE:f%d.txt","files":["f%d.txt"]}`, i, i, i)
+	}
+	out, err = d.Execute(context.Background(), fmt.Sprintf(`{"goal":"x","tasks":[%s]}`, strings.Join(tasks, ",")))
+	if err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	if !strings.Contains(out, fmt.Sprintf("at most %d concurrent subtasks", MaxDispatchTasksPerCall)) {
+		t.Errorf("raising the session concurrency cap must not raise the fixed per-call task limit of %d, got:\n%s", MaxDispatchTasksPerCall, out)
 	}
 }
 

@@ -81,8 +81,19 @@ type Config struct {
 // fanning out unbounded child loops on the user's API key (the per-child
 // iteration cap and the concurrency cap bound one wave, not the session
 // total). <=0 falls through to DefaultSubagentSessionTokenBudget.
+//
+// MaxConcurrentSubagents caps how many subagents (standalone Agent-tool
+// spawns AND dispatch workers together — they contend for the same
+// provider streams, so one shared cap is the correct resource model, not
+// two separate ones) may be TaskRunning at once per session, foreground and
+// background alike. The right number is environment-dependent — a higher
+// API rate-limit tier or more host capacity for concurrent sandbox
+// containers can support more than the conservative default; a modest key
+// or machine may want fewer. <=0 falls through to
+// DefaultMaxConcurrentSubagents (8).
 type SubagentsConfig struct {
-	SessionTokenBudget int `toml:"session_token_budget"`
+	SessionTokenBudget     int `toml:"session_token_budget"`
+	MaxConcurrentSubagents int `toml:"max_concurrent_subagents"`
 }
 
 // SandboxConfig controls the run_bash command-execution backend. See
@@ -149,6 +160,24 @@ func (c Config) SubagentSessionTokenBudget() int {
 		return c.Subagents.SessionTokenBudget
 	}
 	return DefaultSubagentSessionTokenBudget
+}
+
+// DefaultMaxConcurrentSubagents is the conservative default for how many
+// subagents (foreground or background, standalone Agent-tool spawns and
+// dispatch workers combined) may be running at once per session — enough
+// for genuine parallelism, low enough to keep API spend and (once the
+// command sandbox is enabled) concurrent container cost bounded if a model
+// gets enthusiastic. Override via `[subagents] max_concurrent_subagents = N`
+// once a user's rate-limit tier or machine can support more.
+const DefaultMaxConcurrentSubagents = 8
+
+// SubagentMaxConcurrent resolves the configured concurrency cap, applying
+// the conservative default when unset (<=0).
+func (c Config) SubagentMaxConcurrent() int {
+	if c.Subagents.MaxConcurrentSubagents > 0 {
+		return c.Subagents.MaxConcurrentSubagents
+	}
+	return DefaultMaxConcurrentSubagents
 }
 
 // SkillsConfig declares persistent Agent Skills behavior. DefaultOn

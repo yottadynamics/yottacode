@@ -30,17 +30,20 @@ const AgentToolName = "Agent"
 // this package don't all need to be updated at once.
 const agentToolName = AgentToolName
 
-// MaxBackgroundSubagents caps how many background subagents may be
-// running concurrently per session. Hit the cap → the tool rejects
-// the call with a recoverable error message the model can adapt
-// around. 8 is a round number that matches what most users informally
-// do — enough for genuine parallelism, low enough to keep API spend
-// bounded if a model gets enthusiastic.
+// MaxBackgroundSubagents is the DEFAULT cap on how many background
+// subagents may be running concurrently per session, used whenever
+// AgentTool.MaxConcurrentSubagents is unset (<=0) — see that field and
+// config.DefaultMaxConcurrentSubagents. Hit the cap → the tool rejects the
+// call with a recoverable error message the model can adapt around. 8 is a
+// round number that matches what most users informally do — enough for
+// genuine parallelism, low enough to keep API spend bounded if a model gets
+// enthusiastic.
 const MaxBackgroundSubagents = 8
 
-// MaxForegroundSubagents caps how many foreground subagents may be
-// running concurrently per session. Foreground spawns are no longer
-// serialized (AgentTool.ParallelSafe returns true), so a parent that
+// MaxForegroundSubagents is the DEFAULT cap on how many foreground
+// subagents may be running concurrently per session, used whenever
+// AgentTool.MaxConcurrentSubagents is unset (<=0). Foreground spawns are no
+// longer serialized (AgentTool.ParallelSafe returns true), so a parent that
 // emits N Agent calls in one assistant message fans them out via the
 // loop's parallel-batch path. The cap matches the background ceiling
 // because the cost profile is the same: every concurrent child holds
@@ -49,6 +52,30 @@ const MaxBackgroundSubagents = 8
 // the model can react to by waiting on the in-flight children before
 // dispatching more.
 const MaxForegroundSubagents = 8
+
+// backgroundCap resolves the effective background-concurrency cap: the
+// configured override when set, else the package default. DispatchTool
+// (same package) shares this via t.Agent.backgroundCap() — a single
+// resolver used by every admission path so the configured value and the
+// default can never drift between the standalone Agent tool and dispatch.
+func (t *AgentTool) backgroundCap() int {
+	if t.MaxConcurrentSubagents > 0 {
+		return t.MaxConcurrentSubagents
+	}
+	return MaxBackgroundSubagents
+}
+
+// foregroundCap is backgroundCap's foreground counterpart. Kept as a
+// separate method (not just an alias) even though both currently resolve
+// from the same MaxConcurrentSubagents field, matching MaxForegroundSubagents
+// intentionally tracking MaxBackgroundSubagents today — a future need to
+// split them only touches these two methods, not every call site.
+func (t *AgentTool) foregroundCap() int {
+	if t.MaxConcurrentSubagents > 0 {
+		return t.MaxConcurrentSubagents
+	}
+	return MaxForegroundSubagents
+}
 
 // childChildIterationCap is the iteration budget every child subagent
 // runs under. We deliberately do NOT apply the auto-mode 4× multiplier
@@ -193,6 +220,16 @@ type AgentTool struct {
 	// disables the budget (unbounded). Wired from
 	// config.SubagentSessionTokenBudget by the TUI/oneshot setup.
 	MaxSessionTokens int
+
+	// MaxConcurrentSubagents overrides the default concurrency cap
+	// (MaxBackgroundSubagents / MaxForegroundSubagents) for BOTH foreground
+	// and background admission — dispatch workers and standalone Agent-tool
+	// spawns contend for the same provider streams, so one shared cap is
+	// the correct resource model. <=0 (the zero value most tests leave this
+	// at) falls through to the package default via backgroundCap /
+	// foregroundCap below. Wired from config.SubagentMaxConcurrent by the
+	// TUI/oneshot setup.
+	MaxConcurrentSubagents int
 
 	// SystemPromptSuffix is appended to the agent definition's body
 	// when building the child's system prompt. Used to inject runtime
@@ -409,14 +446,16 @@ func (t *AgentTool) Execute(ctx context.Context, argsJSON string) (string, error
 	// TOTAL running concurrency (countForegroundOnly=false, matching the old
 	// ActiveCount check); foreground bounds only foreground running tasks.
 	if a.RunInBackground {
-		if !t.Tasks.TryReserve(task, MaxBackgroundSubagents, false) {
+		limit := t.backgroundCap()
+		if !t.Tasks.TryReserve(task, limit, false) {
 			return fmt.Sprintf("error: at most %d background subagents may run concurrently (current: %d); wait for one to finish or stop it with /subagents stop <id>",
-				MaxBackgroundSubagents, t.Tasks.ActiveCount()), nil
+				limit, t.Tasks.ActiveCount()), nil
 		}
 	} else {
-		if !t.Tasks.TryReserve(task, MaxForegroundSubagents, true) {
+		limit := t.foregroundCap()
+		if !t.Tasks.TryReserve(task, limit, true) {
 			return fmt.Sprintf("error: at most %d foreground subagents may run concurrently (current: %d); wait for one of the in-flight subagents to finish before dispatching more",
-				MaxForegroundSubagents, t.Tasks.ActiveForegroundCount()), nil
+				limit, t.Tasks.ActiveForegroundCount()), nil
 		}
 	}
 
@@ -1603,10 +1642,27 @@ func (tr *transcriptFile) close() {
 	}
 }
 
+// truncate cuts s to at most max RUNES (not bytes) with a trailing ellipsis
+// when it overflows, so a multi-byte UTF-8 character (CJK, emoji) straddling
+// the cut point is never split into invalid UTF-8. Called on every
+// PreviewCall line, SubagentStart prompt, and dispatch reply preview, so
+// the common case (a string already at or under max) is worth keeping
+// allocation-free: the byte-length check below is a valid fast path
+// because rune count can never exceed byte count, and only the truncation
+// branch pays for a UTF-8 scan — via range over the string, which yields
+// each rune's byte offset without ever materializing a []rune of content
+// we're about to discard.
 func truncate(s string, max int) string {
 	s = strings.TrimSpace(s)
 	if len(s) <= max {
 		return s
 	}
-	return s[:max] + "…"
+	n := 0
+	for i := range s {
+		if n == max {
+			return s[:i] + "…"
+		}
+		n++
+	}
+	return s
 }

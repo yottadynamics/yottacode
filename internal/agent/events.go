@@ -333,6 +333,42 @@ type SubagentBackgroundDone struct {
 	Reclaimed bool
 }
 
+// IntegrateReady reports whether this worker's branch is safe to recommend
+// for `integrate`: it produced a commit AND the task did not end errored.
+// A worker can be BOTH Committed (an earlier, legitimate commit on its
+// branch) and Errored (e.g. it left out-of-scope changes uncommitted) —
+// that combination must never read as ready. Every render site that
+// decides whether to suggest integrating this branch (the wake-turn
+// message, the live-dock badge) must go through this method, not
+// re-derive the rule, so a future fourth site can't reintroduce the bug
+// this one closes: three sites (dispatch's own formatResult, the wake
+// message, and the dock badge) independently needed the identical
+// Committed-but-Errored guard added at once.
+func (e SubagentBackgroundDone) IntegrateReady() bool {
+	return integrateReady(e.Committed, e.Errored)
+}
+
+// FailedWithCommit reports the Committed-but-Errored combination
+// IntegrateReady excludes — the case worth flagging distinctly in a
+// render, rather than silently falling through to a generic "not ready"
+// state.
+func (e SubagentBackgroundDone) FailedWithCommit() bool {
+	return failedWithCommit(e.Committed, e.Errored)
+}
+
+// integrateReady and failedWithCommit are the shared, type-agnostic form of
+// SubagentBackgroundDone's two predicates above — dispatch's own
+// formatResult works from a *dispatchChild's commit/errored fields directly
+// (not a SubagentBackgroundDone), so it calls these instead of the methods,
+// but every render site funnels through these same two boolean expressions.
+func integrateReady(committed, errored bool) bool {
+	return committed && !errored
+}
+
+func failedWithCommit(committed, errored bool) bool {
+	return committed && errored
+}
+
 func (ReasoningToken) event()           {}
 func (ContentToken) event()             {}
 func (StreamProgress) event()           {}

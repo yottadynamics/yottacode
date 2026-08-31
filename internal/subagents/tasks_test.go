@@ -515,3 +515,73 @@ func TestCommittingCount(t *testing.T) {
 	}
 	r.SetCommitting("nonexistent", true) // must not panic
 }
+
+// TestActiveFileClaims is the cross-call collision regression: it must
+// report Files only for currently-Running tasks (dispatch's
+// validateWritePartition uses this to catch a NEW dispatch call claiming a
+// file an earlier, still-running call already owns), and must NOT report a
+// terminal task's stale claim, which would otherwise permanently block that
+// file from ever being claimed again.
+func TestActiveFileClaims(t *testing.T) {
+	r := NewRegistry()
+	r.Add(&Task{ID: "running-1", Status: TaskRunning, Files: []string{"a.go", "b.go"}})
+	r.Add(&Task{ID: "running-2", Status: TaskRunning}) // read-only: no Files
+	done := &Task{ID: "done-1", Status: TaskRunning, Files: []string{"c.go"}}
+	r.Add(done)
+	r.MarkDone(done.ID, TaskCompleted, "ok", false, 0)
+
+	claims := r.ActiveFileClaims()
+	if len(claims) != 1 {
+		t.Fatalf("ActiveFileClaims returned %d entries, want 1 (only running-1 has Files and is Running): %+v", len(claims), claims)
+	}
+	got := claims["running-1"]
+	if len(got) != 2 || got[0] != "a.go" || got[1] != "b.go" {
+		t.Errorf("running-1 claims = %v, want [a.go b.go]", got)
+	}
+	if _, ok := claims["done-1"]; ok {
+		t.Error("a finished task's claim must not appear — it would permanently block that file")
+	}
+}
+
+// TestCancelWaiter is the WaitFor-leak regression: a caller that stops
+// waiting (timeout, ctx cancellation) before the task finishes must be able
+// to deregister its own channel, or the registry accumulates one
+// unreachable entry per abandoned wait for the task's remaining lifetime.
+func TestCancelWaiter(t *testing.T) {
+	r := NewRegistry()
+	r.Add(&Task{ID: "t1", Status: TaskRunning})
+
+	w1 := r.WaitFor("t1")
+	w2 := r.WaitFor("t1")
+	if n := len(r.waiters["t1"]); n != 2 {
+		t.Fatalf("waiters[t1] = %d, want 2 after two WaitFor calls", n)
+	}
+
+	r.CancelWaiter("t1", w1)
+	if n := len(r.waiters["t1"]); n != 1 {
+		t.Fatalf("waiters[t1] = %d after canceling one waiter, want 1", n)
+	}
+	// w1 itself must not have been closed by CancelWaiter (only MarkDone
+	// signals completion) — a caller that gave up must not see a false
+	// "done" if it (incorrectly) selected on it again.
+	select {
+	case <-w1:
+		t.Error("CancelWaiter must not close the channel, only deregister it")
+	default:
+	}
+
+	// Canceling an unknown/already-removed channel is a no-op, not a panic.
+	r.CancelWaiter("t1", w1)
+	r.CancelWaiter("nonexistent-task", w1)
+	if n := len(r.waiters["t1"]); n != 1 {
+		t.Errorf("re-canceling an already-removed waiter changed the count: got %d, want 1", n)
+	}
+
+	// The remaining waiter still gets signaled normally.
+	r.MarkDone("t1", TaskCompleted, "done", false, 0)
+	select {
+	case <-w2:
+	default:
+		t.Error("the un-canceled waiter should have been closed by MarkDone")
+	}
+}

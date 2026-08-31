@@ -211,7 +211,9 @@ it to move on to `integrate`.
 
 ## Limits & notes
 
-- At most 8 subtasks per `dispatch` call (the foreground concurrency cap).
+- At most 8 subtasks per `dispatch` call — a fixed decomposition-granularity
+  limit, independent of the session-wide concurrency cap below (raising that
+  cap does not raise how many subtasks one call may request).
 - Dispatch spends against the session-wide subagent token budget
   (`[subagents] session_token_budget` in `~/.yottacode/config.toml`) and is
   refused once that budget is exhausted — before any worktree is created. A
@@ -224,8 +226,12 @@ it to move on to `integrate`.
 - Child subagents cannot dispatch further (no recursion): `dispatch`,
   `integrate`, and `Agent` are stripped from every child's toolset.
 - At most 8 **background** workers run concurrently across the whole
-  session — repeated background dispatch calls are rejected once the live
-  count would exceed the cap (wait for some to finish, or `/subagents stop`).
+  session (shared with the standalone `Agent` tool's own background/
+  foreground spawns — they contend for the same provider streams) —
+  repeated background dispatch calls are rejected once the live count would
+  exceed the cap (wait for some to finish, or `/subagents stop`). Configurable
+  via `[subagents] max_concurrent_subagents` in `~/.yottacode/config.toml`
+  (default 8) — see [configuration.md](configuration.md#subagents).
 - Stop a whole batch with `/subagents stop batch <batch-id>` (the id on the
   dock header); `/subagents stop <id-prefix>` still stops one worker.
 - Every worker reclaims its own worktree+branch the moment it finishes if
@@ -280,8 +286,20 @@ Sharp edges we know about:
   approve each call — file writes remain the only thing an unsandboxed
   background worker can do unattended, since the worktree and owned-file
   scope confine those to the worker's own branch and shell has no equivalent
-  confinement on the host. "Confine, don't classify" —
-  [`roadmap/dispatch-v3-collaboration.md`](../roadmap/dispatch-v3-collaboration.md#0d-revisited--unattended-shell-confine-dont-classify).
+  confinement on the host. "Confine, don't classify" — see the internal
+  `dispatch-v3-collaboration` roadmap doc, § "0d revisited — unattended
+  shell: confine, don't classify" (not published in this repo).
+
+- **The sandbox's blast-radius story assumes you've also set
+  `[sandbox] network = "none"`.** `network = "host"` is the sandbox
+  feature's own [temporary default](sandbox.md) — an unattended background
+  worker inside a container still gets full host network access unless you
+  override this. "The blast radius is the container" (above) is true for
+  filesystem/process isolation regardless, but an untrusted or
+  LLM-authored command run unattended can still exfiltrate data over the
+  network under the default. Set `network = "none"` if you dispatch
+  background write workers with `run_bash`/`run_tests` against
+  code/prompts you don't fully trust.
 
 - **Kept worktrees accumulate until you integrate or discard them.** Empty
   worktrees are reclaimed automatically (per worker on finish, any outcome,
@@ -303,9 +321,12 @@ Sharp edges we know about:
   yottacode worktree remove <path>   # remove a specific one
   ```
 
-- **The concurrency cap is per session, not per task tree.** The 8-background
-  limit is a flat cap; there's no tree-wide budget yet, so deeply nested or
-  rapid-fire dispatching is bounded only coarsely.
+- **The concurrency cap is per session, not per task tree.** It's a flat cap
+  (configurable via `[subagents] max_concurrent_subagents`, default 8); there's
+  no tree-wide budget yet, so rapid-fire dispatching is bounded only coarsely.
+  (There's no genuine "tree" beyond one level today — dispatch children cannot
+  themselves dispatch — so this mainly matters across several separate
+  dispatch/Agent calls sharing the one session-wide pool.)
 - **A shutdown mid-commit can still, rarely, leave a stale `index.lock`.**
   A worker's auto-commit deliberately runs detached from cancellation so
   just-finished work is never lost, which means quitting can't stop it — only
@@ -314,6 +335,6 @@ Sharp edges we know about:
   so this needs a wedged pre-commit hook to happen at all. If it does, the next
   `git` op in that worktree will tell you; clear the lock and retry.
 
-These are tracked for the next iteration in
-[`roadmap/dispatch-v3-collaboration.md`](../roadmap/dispatch-v3-collaboration.md)
-(Layer 0).
+These are tracked for the next iteration in the internal
+`dispatch-v3-collaboration` roadmap doc (Layer 0; not published in this
+repo).

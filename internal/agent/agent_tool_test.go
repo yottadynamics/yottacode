@@ -8,10 +8,35 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/yottadynamics/yottacode/internal/adapter"
 	"github.com/yottadynamics/yottacode/internal/subagents"
 )
+
+// TestTruncate_RuneSafe is the multi-byte-truncation regression: cutting by
+// byte index (the old `s[:max]`) can split a multi-byte UTF-8 rune (CJK,
+// emoji), producing invalid UTF-8 in every preview string built with
+// truncate (PreviewCall lines, SubagentStart prompts, dispatch reply
+// previews, ...). truncate must cut by RUNE count instead.
+func TestTruncate_RuneSafe(t *testing.T) {
+	// 10 three-byte-per-rune CJK characters, cut to 4 runes.
+	got := truncate(strings.Repeat("你", 10), 4)
+	want := "你你你你…"
+	if got != want {
+		t.Errorf("truncate(10x CJK, 4) = %q, want %q", got, want)
+	}
+	if !utf8.ValidString(got) {
+		t.Errorf("truncate produced invalid UTF-8: %q", got)
+	}
+	// ASCII behavior is unchanged.
+	if got := truncate("hello world", 5); got != "hello…" {
+		t.Errorf("truncate(ASCII) = %q, want %q", got, "hello…")
+	}
+	if got := truncate("short", 100); got != "short" {
+		t.Errorf("truncate under max should be unchanged, got %q", got)
+	}
+}
 
 // TestDoneTokensAndCalls is the regression for the completion-stats gap: the
 // child's exact provider tally must win over the rough estimate at EVERY
@@ -462,6 +487,65 @@ func TestAgentTool_ForegroundCapEnforced(t *testing.T) {
 	if !strings.Contains(out, fmt.Sprintf("at most %d", MaxForegroundSubagents)) {
 		t.Errorf("output should name the cap value %d; got %q", MaxForegroundSubagents, out)
 	}
+}
+
+// TestAgentTool_ConcurrencyCap_ConfigOverride is the configurable-cap
+// regression: MaxConcurrentSubagents must override the package default for
+// BOTH foreground and background admission, and an AgentTool that leaves it
+// unset (the zero value most tests use) must keep the default 8 — i.e. this
+// is purely additive, not a behavior change for existing callers.
+func TestAgentTool_ConcurrencyCap_ConfigOverride(t *testing.T) {
+	cfg := subagents.AgentConfig{Name: "x", Description: "x", Prompt: "x", Source: "test"}
+
+	t.Run("foreground respects a lower override", func(t *testing.T) {
+		tool, _ := newTestAgentTool(t, []subagents.AgentConfig{cfg}, nil, false)
+		tool.MaxConcurrentSubagents = 2
+		for i := 0; i < 2; i++ {
+			tool.Tasks.Add(&subagents.Task{ID: subagents.NewTaskID(), AgentType: "x", Status: subagents.TaskRunning})
+		}
+		args := mustJSON(t, agentArgs{SubagentType: "x", Prompt: "hello"})
+		out, err := tool.Execute(context.Background(), args)
+		if err != nil {
+			t.Fatalf("Execute err = %v, want nil", err)
+		}
+		if !strings.Contains(out, "at most 2") {
+			t.Errorf("output should name the overridden cap of 2, got %q", out)
+		}
+	})
+
+	t.Run("background respects a higher override", func(t *testing.T) {
+		auto := &AutoModeState{}
+		auto.Active.Store(true)
+		tool, _ := newTestAgentTool(t, []subagents.AgentConfig{cfg}, dispatchWriteStreamer{}, true)
+		tool.AutoMode = auto
+		tool.MaxConcurrentSubagents = 16
+		for i := 0; i < 10; i++ { // above the default 8, below the override of 16
+			tool.Tasks.Add(&subagents.Task{ID: subagents.NewTaskID(), AgentType: "x", Status: subagents.TaskRunning, Background: true})
+		}
+		args := mustJSON(t, agentArgs{SubagentType: "x", Prompt: "hello", RunInBackground: true})
+		out, err := tool.Execute(context.Background(), args)
+		if err != nil {
+			t.Fatalf("Execute err = %v, want nil", err)
+		}
+		if strings.Contains(out, "may run concurrently") {
+			t.Errorf("10 running tasks must not trip a cap of 16, got %q", out)
+		}
+	})
+
+	t.Run("unset field keeps the default", func(t *testing.T) {
+		tool, _ := newTestAgentTool(t, []subagents.AgentConfig{cfg}, nil, false)
+		for i := 0; i < MaxForegroundSubagents; i++ {
+			tool.Tasks.Add(&subagents.Task{ID: subagents.NewTaskID(), AgentType: "x", Status: subagents.TaskRunning})
+		}
+		args := mustJSON(t, agentArgs{SubagentType: "x", Prompt: "hello"})
+		out, err := tool.Execute(context.Background(), args)
+		if err != nil {
+			t.Fatalf("Execute err = %v, want nil", err)
+		}
+		if !strings.Contains(out, fmt.Sprintf("at most %d", MaxForegroundSubagents)) {
+			t.Errorf("an AgentTool with MaxConcurrentSubagents unset should keep the default cap of %d, got %q", MaxForegroundSubagents, out)
+		}
+	})
 }
 
 // A read-only agent definition with `background: true` should dispatch as

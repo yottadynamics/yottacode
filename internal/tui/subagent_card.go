@@ -163,7 +163,13 @@ func renderSubagentBackgroundDone(e agent.SubagentBackgroundDone) string {
 		// Commit state, so the async banner doesn't imply integrate-ready
 		// work on an empty/rejected branch. A committed worker shows its
 		// short SHA; one that produced nothing committable shows the reason.
+		// FailedWithCommit is checked first — see its doc comment: a worker
+		// can be both Committed and Errored, and that must read as a
+		// failure, not as done. Same shared rule the wake message
+		// (appendDispatchWakeMetadata) and dispatch's own formatResult use.
 		switch {
+		case e.FailedWithCommit():
+			header += styleSubagentErr.Render(" · has commit " + shortCommit(e.CommitSHA) + " but FAILED")
 		case e.Committed:
 			header += styleSubagentMeta.Render(" · committed " + shortCommit(e.CommitSHA))
 		case e.CommitErr != "":

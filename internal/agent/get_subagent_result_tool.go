@@ -100,7 +100,7 @@ func (t *GetSubagentResultTool) ParallelSafe(string) bool { return true }
 
 func (t *GetSubagentResultTool) PreviewCall(argsJSON string) string {
 	a := parseGetSubagentResultArgs(argsJSON)
-	return fmt.Sprintf("get_subagent_result(%s)", truncateForPreview(a.TaskID, 16))
+	return fmt.Sprintf("get_subagent_result(%s)", truncate(a.TaskID, 16))
 }
 
 type getSubagentResultArgs struct {
@@ -144,13 +144,7 @@ func (t *GetSubagentResultTool) Execute(ctx context.Context, argsJSON string) (s
 	// model would call, get "still running," and immediately pivot
 	// to doing the subagent's work itself, wasting the subagent.
 	if task.Status == subagents.TaskRunning {
-		waitDur := time.Duration(a.WaitSeconds) * time.Second
-		if waitDur <= 0 {
-			waitDur = getSubagentResultDefaultWait
-		}
-		if waitDur > getSubagentResultMaxWait {
-			waitDur = getSubagentResultMaxWait
-		}
+		waitDur := clampWaitSeconds(a.WaitSeconds)
 		waiter := t.Tasks.WaitFor(task.ID)
 		select {
 		case <-waiter:
@@ -162,13 +156,19 @@ func (t *GetSubagentResultTool) Execute(ctx context.Context, argsJSON string) (s
 				task = updated
 			}
 		case <-time.After(waitDur):
-			// Timeout — render whatever the current state is.
-			// Falls through to the normal still-running formatter
-			// below if the task is genuinely stuck.
+			// Timeout — render whatever the current state is. Falls
+			// through to the normal still-running formatter below if
+			// the task is genuinely stuck. Give up the waiter slot: the
+			// task is still running, so MarkDone won't close (and pop)
+			// it for potentially a long time yet, and a model that
+			// polls this tool repeatedly on the same still-running task
+			// would otherwise leak one registered channel per poll.
+			t.Tasks.CancelWaiter(task.ID, waiter)
 			if updated, ok := t.Tasks.Get(task.ID); ok {
 				task = updated
 			}
 		case <-ctx.Done():
+			t.Tasks.CancelWaiter(task.ID, waiter)
 			return "", ctx.Err()
 		}
 	}
@@ -247,13 +247,19 @@ func (t *GetSubagentResultTool) Execute(ctx context.Context, argsJSON string) (s
 	return b.String(), nil
 }
 
-// truncateForPreview cuts s to n chars with a trailing ellipsis when
-// it overflows. Mirrors agent_tool.go's `truncate` but local to this
-// file so the tool is self-contained.
-func truncateForPreview(s string, n int) string {
-	s = strings.TrimSpace(s)
-	if len(s) <= n {
-		return s
+// clampWaitSeconds converts the model-supplied wait_seconds into a bounded
+// Duration. Comparing in the SECONDS domain before ever multiplying by
+// time.Second (1e9) is deliberate: time.Duration(a.WaitSeconds) * time.Second
+// can overflow int64 for a sufficiently large input (e.g. 18446744074 wraps
+// to ~0.29s), silently returning almost instantly instead of honoring the
+// "blocks for up to N seconds" contract or clamping to the real max.
+// Comparing before multiplying keeps every intermediate value small.
+func clampWaitSeconds(waitSeconds int) time.Duration {
+	if waitSeconds <= 0 {
+		return getSubagentResultDefaultWait
 	}
-	return s[:n] + "…"
+	if waitSeconds > int(getSubagentResultMaxWait/time.Second) {
+		return getSubagentResultMaxWait
+	}
+	return time.Duration(waitSeconds) * time.Second
 }

@@ -98,6 +98,14 @@ type Task struct {
 	// render them together and the parent can refer to the batch. Empty
 	// for standalone Agent dispatches.
 	BatchID string
+	// Files is the write-scope a dispatch write worker declared ownership
+	// of (dispatchTaskSpec.Files). Recorded on the registry record (not just
+	// held locally in dispatchChild) so validateWritePartition can also
+	// check a NEW dispatch call's claims against every OTHER still-running
+	// dispatch task's claims — catching the case where two separate
+	// dispatch calls, each internally non-overlapping, claim the same file
+	// across calls. Empty for read-only and non-dispatch tasks.
+	Files []string
 	// Committing marks the window where a dispatch write-worker is staging and
 	// committing its worktree to Branch. That work deliberately runs on a
 	// cancellation-detached context so a just-finished worker still saves its
@@ -368,6 +376,54 @@ func (r *Registry) BatchActiveCount(batchID string) int {
 		}
 	}
 	return n
+}
+
+// ActiveFileClaims returns the declared Files ownership of every currently
+// TaskRunning task that has one, keyed by task ID. dispatch's
+// validateWritePartition uses this to catch a collision BETWEEN two separate
+// dispatch calls (e.g. two background batches issued in different turns),
+// which a purely within-call overlap check can never see — each call's own
+// task list can be internally disjoint while still claiming a file an
+// earlier, still-running call already owns.
+func (r *Registry) ActiveFileClaims() map[string][]string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	out := make(map[string][]string)
+	for id, t := range r.tasks {
+		if t.Status == TaskRunning && len(t.Files) > 0 {
+			out[id] = append([]string(nil), t.Files...)
+		}
+	}
+	return out
+}
+
+// CancelWaiter removes ch from id's waiter list without closing it. Used by a
+// caller that stops waiting before the task finishes (a timeout or ctx
+// cancellation in get_subagent_result) so its channel doesn't sit in the
+// registry for the rest of the task's run — WaitFor has no other way to
+// deregister, and only MarkDone otherwise drains the list. A no-op if the
+// task already went terminal (MarkDone already closed and popped the whole
+// entry) or if ch isn't found.
+func (r *Registry) CancelWaiter(id string, ch <-chan struct{}) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	list := r.waiters[id]
+	for i, w := range list {
+		if w == ch {
+			r.waiters[id] = append(list[:i], list[i+1:]...)
+			return
+		}
+	}
+}
+
+// WaiterCount returns how many channels are currently registered on id's
+// waiter list. Exists mainly so callers/tests outside this package can
+// confirm CancelWaiter actually deregisters (get_subagent_result's
+// timeout/ctx-cancel paths) without reaching into unexported state.
+func (r *Registry) WaiterCount(id string) int {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return len(r.waiters[id])
 }
 
 // Get returns a snapshot of the named task or (nil, false). The returned
