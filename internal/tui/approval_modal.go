@@ -55,17 +55,16 @@ func renderApprovalModal(m Model, hits ...*pickerHits) string {
 	// never trims.
 	capW := capApprovalBoxWidth(m.width)
 
-	header := styleApprovalTitle.Render("Approval needed")
-	if m.approvalTool != "" {
-		header += styleApprovalTool.Render(" · " + m.approvalTool)
-	}
 	previewLines := approvalPreviewLines(body, capW)
 	hotkeyRows := approvalHotkeyRows(m.approvalAllowAlwaysOK, m.approvalDerivedRule, m.approvalDenyAlwaysOK, m.approvalDerivedDenyRule)
 	hotkeyLines := approvalHotkeyLines(hotkeyRows, capW)
 	previewBudget := approvalPreviewBudget(m.height, len(hotkeyLines))
 	previewLines, hint := windowApprovalPreviewLines(previewLines, previewBudget, m.approvalScrollOffset)
 
-	bodyLines := []string{labeledBoxIndent + header, strings.Repeat(" ", approvalModalTargetInnerWidth(capW))}
+	// The border already carries the approval title and tool name. Keep the
+	// modal body focused on the preview so the title is not repeated inside
+	// the decision card.
+	bodyLines := []string{strings.Repeat(" ", approvalModalTargetInnerWidth(capW))}
 	bodyLines = append(bodyLines, previewLines...)
 	if hint != "" {
 		bodyLines = append(bodyLines, labeledBoxIndent+styleHint.Render(hint))
