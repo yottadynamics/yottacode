@@ -506,14 +506,22 @@ func ListWith(opts ListOptions) ([]SessionInfo, error) {
 		if !s.HasExchange() {
 			continue
 		}
+		turns, tools, tokens := sessionCounts(s.Messages)
+		for _, st := range s.SubagentTasks {
+			tokens += st.Usage.InputTokens + st.Usage.OutputTokens + st.Usage.CacheCreationTokens + st.Usage.CacheReadTokens
+		}
 		out = append(out, SessionInfo{
-			ID:       s.ID,
-			Name:     s.Name,
-			Model:    s.Model,
-			Created:  s.Created,
-			Messages: len(s.Messages),
-			Worktree: s.Worktree,
-			Summary:  s.Summary(),
+			ID:          s.ID,
+			Name:        s.Name,
+			Model:       s.Model,
+			Created:     s.Created,
+			Messages:    len(s.Messages),
+			Worktree:    s.Worktree,
+			Summary:     s.Summary(),
+			Turns:       turns,
+			Tools:       tools,
+			TotalTokens: tokens,
+			Subagents:   len(s.SubagentTasks),
 		})
 	}
 	if opts.IncludeArchived {
@@ -559,14 +567,18 @@ func listSnapshots(dir string, entries []os.DirEntry, models map[string]string) 
 		if cur, ok := best[parent]; ok && cur.Messages >= len(payload.Messages) {
 			continue
 		}
+		turns, tools, tokens := sessionCounts(payload.Messages)
 		best[parent] = SessionInfo{
-			ID:         id,
-			Model:      models[parent],
-			Created:    payload.Captured,
-			Messages:   len(payload.Messages),
-			Summary:    probe.Summary(),
-			Archived:   true,
-			ArchivedOf: parent,
+			ID:          id,
+			Model:       models[parent],
+			Created:     payload.Captured,
+			Messages:    len(payload.Messages),
+			Summary:     probe.Summary(),
+			Archived:    true,
+			ArchivedOf:  parent,
+			Turns:       turns,
+			Tools:       tools,
+			TotalTokens: tokens,
 		}
 	}
 	out := make([]SessionInfo, 0, len(best))
@@ -597,6 +609,38 @@ type SessionInfo struct {
 	// captured from (which may no longer exist).
 	Archived   bool
 	ArchivedOf string
+	// Turns and Tools are derived from the message log (see sessionCounts) —
+	// the one thing both live sessions and archived snapshots reliably
+	// carry, so both report these on the same basis.
+	Turns int
+	Tools int
+	// TotalTokens is the combined main-thread + subagent token spend for a
+	// live session (same basis /usage's session total uses), or main-thread
+	// only for an archived snapshot — snapshotPayload carries no subagent
+	// index, so that spend isn't recoverable there.
+	TotalTokens int64
+	// Subagents is len(SubagentTasks); always 0 for archived snapshots.
+	Subagents int
+}
+
+// sessionCounts derives turn count, tool-call count, and total tokens
+// directly from a message log. Used for both live sessions and archived
+// pre-compaction snapshots, since Messages is the one field both reliably
+// carry — a live session's per-message Usage sums to exactly the same
+// total as its own TotalUsage (both are populated from the same per-turn
+// AddUsage call), so this is safe to use as the shared basis for both.
+func sessionCounts(messages []adapter.Message) (turns, tools int, totalTokens int64) {
+	for _, msg := range messages {
+		if msg.Role != adapter.RoleAssistant {
+			continue
+		}
+		turns++
+		tools += len(msg.ToolCalls)
+		if msg.Usage != nil {
+			totalTokens += msg.Usage.InputTokens + msg.Usage.OutputTokens + msg.Usage.CacheCreationTokens + msg.Usage.CacheReadTokens
+		}
+	}
+	return turns, tools, totalTokens
 }
 
 // AddUsage records the per-turn usage that just landed on an

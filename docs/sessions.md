@@ -51,11 +51,11 @@ In the TUI:
 Each row in the `/sessions` picker carries a one-line gist of what the session was about, taken from its first prompt:
 
 ```text
-❯ 20260721-120951.089901    add retry logic to the fetcher      ·  gpt-5.5 · 12 msgs · 1h ago
-  20260721-033419.065349    why is the build flaky?             ·  gpt-5.5 · 40 msgs · 9h ago
+❯ 20260721-120951.089901    add retry logic to the fetcher      ·  gpt-5.5 · 12 msgs · 185K tokens · 1h ago
+  20260721-033419.065349    why is the build flaky?             ·  gpt-5.5 · 40 msgs · 1.2M tokens · 9h ago
 ```
 
-The gist is read from the session's own transcript — nothing is generated and no model is called, so it costs nothing and applies to sessions you already have. Sessions renamed via **Rename** show the name in the left column instead of the id. On a narrow terminal the model name drops out first to keep the gist visible; narrower still, rows fall back to metadata only.
+The gist is read from the session's own transcript — nothing is generated and no model is called, so it costs nothing and applies to sessions you already have. The picker also shows token totals when a session reported usage; compact rows drop token and model metadata first so the gist stays readable. Sessions renamed via **Rename** show the name in the left column instead of the id. On a narrow terminal the model name drops out first to keep the gist visible; narrower still, rows fall back to metadata only.
 
 ## Resume a session
 

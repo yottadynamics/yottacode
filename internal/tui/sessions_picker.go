@@ -728,7 +728,7 @@ func sessionPickerMeta(s session.SessionInfo, compact bool) string {
 	// Model is genuinely empty for a session restored from an ORPHANED
 	// archive: loadSnapshot inherits model/cwd from the parent, and an
 	// orphan has no parent left to inherit from.
-	parts := make([]string, 0, 3)
+	parts := make([]string, 0, 4)
 	if compact {
 		if s.Archived {
 			parts = append(parts, "archived")
@@ -736,7 +736,14 @@ func sessionPickerMeta(s session.SessionInfo, compact bool) string {
 	} else if lead != "" {
 		parts = append(parts, lead)
 	}
-	parts = append(parts, fmt.Sprintf("%d %s", s.Messages, plural), age)
+	parts = append(parts, fmt.Sprintf("%d %s", s.Messages, plural))
+	// Token total is shed under the same space pressure as the model name
+	// (dropped in compact mode) — self-hides per row when a session never
+	// reported usage, rather than printing a misleading "0 tokens".
+	if !compact && s.TotalTokens > 0 {
+		parts = append(parts, formatTokens(int(s.TotalTokens))+" tokens")
+	}
+	parts = append(parts, age)
 	return strings.Join(parts, " · ")
 }
 

@@ -368,3 +368,28 @@ func TestSessionPickerMeta_OmitsEmptyModel(t *testing.T) {
 		t.Errorf("archived row should lead with 'archived', got %q", arch)
 	}
 }
+
+// TestSessionPickerMeta_ShowsTokensWhenAvailable locks the session picker's
+// richer activity metadata: token counts are useful in normal rows, but compact
+// rows drop them alongside the model name to preserve room for the gist.
+func TestSessionPickerMeta_ShowsTokensWhenAvailable(t *testing.T) {
+	got := sessionPickerMeta(session.SessionInfo{
+		Model:       "gpt-5.5",
+		Messages:    12,
+		TotalTokens: 185_000,
+		Created:     time.Now(),
+	}, false)
+	if !strings.Contains(got, "185K tokens") {
+		t.Errorf("meta should include formatted token count, got %q", got)
+	}
+
+	withoutUsage := sessionPickerMeta(session.SessionInfo{Messages: 12, Created: time.Now()}, false)
+	if strings.Contains(withoutUsage, "0 tokens") {
+		t.Errorf("meta should hide absent usage instead of printing 0 tokens, got %q", withoutUsage)
+	}
+
+	compact := sessionPickerMeta(session.SessionInfo{Messages: 12, TotalTokens: 185_000, Created: time.Now()}, true)
+	if strings.Contains(compact, "tokens") {
+		t.Errorf("compact meta should drop token counts, got %q", compact)
+	}
+}
