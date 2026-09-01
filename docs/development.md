@@ -193,6 +193,7 @@ cmd/yottacode/                cobra root command
 cmd/yotta-models/             model-catalog refresh tool
 internal/cli/                 option resolution
 internal/adapter/             provider streaming layer
+internal/edit/                edit reliability libraries for safe file patching
 internal/agent/               turn loop, tools, approvals
 internal/permissions/         allow / ask / deny rules
 internal/github/              typed go-github adapter and PR/issue tools

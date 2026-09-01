@@ -191,7 +191,7 @@ func TestIsAutoModeSafetyFloor(t *testing.T) {
 		}
 	}
 	for _, name := range []string{
-		"write_file", "edit_file", "apply_diff", "mkdir", "copy_file", "move_file",
+		"write_file", "edit_file", "apply_hashline", "apply_diff", "mkdir", "copy_file", "move_file",
 		"delete_file", "git_stage_files", "git_unstage_files", "read_file", "grep",
 		// The plain git_worktree_* wrappers are narrow, explicit, and
 		// recoverable; they stay auto-allowed in auto mode.

@@ -17,7 +17,7 @@ func TestLoadBuiltins_NewRoles(t *testing.T) {
 	}
 
 	writeTools := map[string]bool{
-		"write_file": true, "edit_file": true, "apply_diff": true,
+		"write_file": true, "edit_file": true, "apply_hashline": true, "apply_diff": true,
 		"mkdir": true, "copy_file": true, "move_file": true, "delete_file": true,
 	}
 	hasWrite := func(c AgentConfig) bool {

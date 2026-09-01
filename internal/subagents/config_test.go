@@ -143,7 +143,7 @@ func TestLoadBuiltins_VerificationPresent(t *testing.T) {
 	if !verif.ToolAllowed("run_bash") {
 		t.Errorf("verification must have run_bash to actually exercise builds/tests")
 	}
-	for _, denied := range []string{"write_file", "apply_diff", "delete_file", "git_commit"} {
+	for _, denied := range []string{"write_file", "apply_hashline", "apply_diff", "delete_file", "git_commit"} {
 		if verif.ToolAllowed(denied) {
 			t.Errorf("verification must NOT have %q in its allowlist", denied)
 		}

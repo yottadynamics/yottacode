@@ -1,7 +1,7 @@
 ---
 name: implement
 description: Implements one well-scoped component or change end-to-end in its own worktree. In dispatch fan-out, write tasks run in isolated background worktrees; standalone Agent calls run foreground unless run_in_background is explicitly requested. Returns a short summary of what it changed.
-tools: [read_file, read_many_files, grep, glob, list_dir, list_project_structure, write_file, edit_file, apply_diff, mkdir, copy_file, move_file, delete_file, run_tests, run_bash, git_diff_files, git_show_file_at_rev, fetch_url, consult_advisor]
+tools: [read_file, read_many_files, grep, glob, list_dir, list_project_structure, write_file, edit_file, apply_hashline, apply_diff, mkdir, copy_file, move_file, delete_file, run_tests, run_bash, git_diff_files, git_show_file_at_rev, fetch_url, consult_advisor]
 background: true
 ---
 

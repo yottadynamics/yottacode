@@ -246,7 +246,7 @@ func applyPlanFileToWriteTools(reg *agent.Registry, planFile string) {
 	if reg == nil {
 		return
 	}
-	for _, name := range []string{"write_file", "edit_file", "apply_diff"} {
+	for _, name := range []string{"write_file", "edit_file", "apply_hashline", "apply_diff"} {
 		t, ok := reg.Get(name)
 		if !ok {
 			continue
@@ -255,6 +255,8 @@ func applyPlanFileToWriteTools(reg *agent.Registry, planFile string) {
 		case *agent.WriteFileTool:
 			tt.WriteOpts.PlanModeAllowedFile = planFile
 		case *agent.EditFileTool:
+			tt.WriteOpts.PlanModeAllowedFile = planFile
+		case *agent.ApplyHashlineTool:
 			tt.WriteOpts.PlanModeAllowedFile = planFile
 		case *agent.ApplyDiffTool:
 			tt.WriteOpts.PlanModeAllowedFile = planFile
