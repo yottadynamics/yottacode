@@ -3,6 +3,8 @@ package tui
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -540,6 +542,57 @@ func TestRenderPermissionsOverlayShowsWarnings(t *testing.T) {
 		if !strings.Contains(plain, want) {
 			t.Errorf("warning overlay missing %q: %q", want, plain)
 		}
+	}
+}
+
+func TestCmdPermissionsReloadsRulesFromDisk(t *testing.T) {
+	m := newTestModel(t)
+	dir := filepath.Join(m.cwd, ".yottacode")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatalf("MkdirAll permissions dir: %v", err)
+	}
+	localPath := filepath.Join(dir, "permissions.local.json")
+	if err := os.WriteFile(localPath, []byte(`{"permissions":{"allow":["Bash(gh *)"]}}`), 0o600); err != nil {
+		t.Fatalf("seed local permissions: %v", err)
+	}
+
+	m, _ = cmdPermissions(m, nil)
+	plain := stripANSI(renderPermissionsOverlay(m))
+	if !strings.Contains(plain, "Bash(gh *)") {
+		t.Fatalf("/permissions should reload newly written local rules, got %q", plain)
+	}
+
+	if err := os.WriteFile(localPath, []byte(`{"permissions":{"allow":[]}}`), 0o600); err != nil {
+		t.Fatalf("clear local permissions: %v", err)
+	}
+	m.permissionsOpen = false
+
+	m, _ = cmdPermissions(m, nil)
+	plain = stripANSI(renderPermissionsOverlay(m))
+	if strings.Contains(plain, "Bash(gh *)") || strings.Contains(plain, "Policy warnings") {
+		t.Fatalf("/permissions should reload cleared local rules, got %q", plain)
+	}
+}
+
+func TestCmdPermissionsKeepsExistingRulesOnReloadError(t *testing.T) {
+	m := newTestModel(t)
+	if err := m.perms.AddAllow("Bash(gh *)"); err != nil {
+		t.Fatalf("AddAllow Bash: %v", err)
+	}
+	dir := filepath.Join(m.cwd, ".yottacode")
+	localPath := filepath.Join(dir, "permissions.local.json")
+	if err := os.WriteFile(localPath, []byte(`{"permissions":`), 0o600); err != nil {
+		t.Fatalf("write malformed local permissions: %v", err)
+	}
+
+	m, _ = cmdPermissions(m, nil)
+	plain := stripANSI(m.transcript.String())
+	if !strings.Contains(plain, "[permissions] reload:") {
+		t.Fatalf("reload error should be surfaced, got %q", plain)
+	}
+	plain = stripANSI(renderPermissionsOverlay(m))
+	if !strings.Contains(plain, "Bash(gh *)") {
+		t.Fatalf("reload error should preserve existing in-memory rules, got %q", plain)
 	}
 }
 

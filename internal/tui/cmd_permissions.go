@@ -17,14 +17,18 @@ const permissionsRowCount = 2
 // cmdline. Two rows — `shared` (~/.yottacode/permissions.json) and
 // `local` (./.yottacode/permissions.local.json) — Up/Down navigates,
 // Enter suspends to vim on the chosen file, Esc closes. The store
-// re-reads both files on the next tool call, so there's no explicit
-// reload step. Inline subcommands (edit/reload/add) were removed in
-// favour of "open the file in your editor and the next tool call
-// picks up the change".
+// reloads both files every time the picker opens, so edits made in vim
+// are reflected the next time the user runs /permissions.
 func cmdPermissions(m Model, _ []string) (Model, tea.Cmd) {
 	if m.perms == nil {
 		m.appendLine(styleError.Render("[permissions] permissions store unavailable in this session"))
 		return m, nil
+	}
+	if err := m.perms.Reload(); err != nil {
+		// Keep the existing in-memory policy active when a just-edited file is
+		// malformed, but surface the parse/read failure immediately so the
+		// user can reopen /permissions and fix it without guessing.
+		m.appendLine(styleError.Render("[permissions] reload: " + err.Error()))
 	}
 	m.permissionsOpen = true
 	m.permissionsCursor = 0
@@ -119,7 +123,7 @@ func renderPermissionsOverlay(m Model, hits ...*pickerHits) string {
 	width := m.popupWidth()
 	var b strings.Builder
 	b.WriteString(renderMenuHeader("Permissions",
-		"Edit a rule file in vim. The store re-reads on the next tool call.", width))
+		"Edit a rule file in vim. Rules reload each time this picker opens.", width))
 	b.WriteString("\n")
 	warnings := m.permissionsWarnings()
 	if len(warnings) > 0 {

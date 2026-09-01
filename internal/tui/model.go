@@ -839,8 +839,8 @@ type Model struct {
 	// local) modelled on /memory's three-row picker — Up/Down
 	// navigates, Enter suspends to vim on the chosen rule file, Esc
 	// closes. Rendered as a centered popup (popup.go). The store
-	// re-reads both files on the next tool call, so there's no explicit
-	// reload step.
+	// reloads both files every time /permissions opens so warnings and
+	// rules reflect direct edits without restarting the TUI.
 	permissionsOpen   bool
 	permissionsCursor int
 
