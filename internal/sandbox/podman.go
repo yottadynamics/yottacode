@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/yottadynamics/yottacode/internal/config"
+	"github.com/yottadynamics/yottacode/internal/sandboxcache"
 	"github.com/yottadynamics/yottacode/internal/worktree"
 )
 
@@ -218,6 +219,28 @@ func podmanRunArgs(cfg config.SandboxConfig, name, mountRoot string, caps hostCa
 		// an already-running sandbox container.
 		args = append(args, "-v", m.Path+":"+m.Path+":"+m.SELinuxLabel)
 	}
+	goCacheDir, err := sandboxcache.GoHostCacheDir()
+	if err != nil {
+		return nil, err
+	}
+	if err := os.MkdirAll(goCacheDir, 0o755); err != nil {
+		return nil, fmt.Errorf("sandbox: create go cache dir: %w", err)
+	}
+	// Bind-mounted (not container-internal /var/tmp) so Go's build/module
+	// cache survives container recreation across sessions — every new
+	// session starts a fresh container (see NewPodmanSandbox's doc comment),
+	// and without this, run_tests pays a full `go mod download` plus full
+	// recompile on its first Go command every single session. Measured: ~60s
+	// cold vs ~2s once this cache is warm, on this repo's dependency set.
+	// Shared across all profiles/repos/sessions on purpose, exactly like a
+	// host's own $GOCACHE/$GOMODCACHE — both are content-addressed and safe
+	// for concurrent multi-process use (the same guarantee two host terminals
+	// building the same repo already rely on). Read from
+	// internal/agent/coding_workflow_tools.go's prepareRunTestsCommand; the
+	// shared sandboxcache helper keeps both packages in lockstep without
+	// making internal/agent import internal/sandbox.
+
+	args = append(args, "-v", goCacheDir+":"+goCacheDir+":z")
 	args = append(args, "-w", mountRoot)
 	for _, envName := range cfg.EnvPassthrough {
 		// Bare `-e NAME` (no `=value`): podman reads the value from its

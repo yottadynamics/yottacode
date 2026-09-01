@@ -177,8 +177,8 @@ network         = "host"        # "none" | "host" (default)
 dns             = ["1.1.1.1", "8.8.8.8"] # default resolvers passed as podman --dns
 mounts          = ["."]         # project-relative only; cannot escape root
 env_passthrough = []            # opt-in credential injection, e.g. ["GITHUB_TOKEN"]
-memory          = "2g"
-cpus            = 2
+memory          = "4g"
+cpus            = 4
 pids_limit      = 256
 disk            = 4096          # MB; writable-layer quota where the host storage driver supports it
 ```
@@ -212,7 +212,9 @@ backend change (`podman` ↔ `none`) still needs a new session.
   without stealing access from one another. yottacode also mounts the repo's
   managed worktree root (`~/.yottacode/worktrees/<slug>/`) so `enter_worktree`
   can move a live sandboxed session into a yottacode-managed worktree without
-  remounting the container.
+  remounting the container, and a single shared cache directory
+  (`~/.yottacode/sandbox-go-cache/`) used to persist Go's build/module cache
+  across sessions — see the `run_tests` note below.
 - **Network**: `--network=host` is the intentional default, not a temporary
   stopgap. It shares the host's network stack directly rather than sitting
   behind an in-house egress allowlist — with no separate network namespace to
@@ -252,16 +254,29 @@ backend change (`podman` ↔ `none`) still needs a new session.
   tool use, not at session startup, so there's no startup-time hook to report
   through); check `podman inspect` on the running container if you need to
   confirm which limits actually applied on your host. Sandboxed `run_tests`
-  keeps `/tmp` noexec and points Go at executable scratch/cache directories
-  inside the sandbox (`/var/tmp/yottacode-go/<workspace>/`) via `TMPDIR`,
-  `GOTMPDIR`, `GOCACHE`, and `GOMODCACHE`, avoiding repo-root cache pollution
-  from `.cache/`, `.config/`, `.local/`, `.yottacode/tmp/`, `.scratch/`, or
-  `go/`.
-- Sandboxed `run_tests` also redirects `HOME`, `XDG_CACHE_HOME`, and
-  `XDG_CONFIG_HOME` into that same container-internal scratch area and sets
-  `GOTELEMETRY=off`. This keeps Go telemetry counters, module downloads, and
-  compiler caches out of the checked-out tree even when the host environment
-  would normally resolve them under the repository.
+  keeps `/tmp` noexec and points `TMPDIR`, `GOTMPDIR`, `HOME`,
+  `XDG_CACHE_HOME`, and `XDG_CONFIG_HOME` at a per-workspace, container-internal
+  scratch directory (`/var/tmp/yottacode-go/<workspace>/`), avoiding repo-root
+  cache pollution from `.cache/`, `.config/`, `.local/`, `.yottacode/tmp/`,
+  `.scratch/`, or `go/`. It also sets `GOTELEMETRY=off`, keeping Go telemetry
+  counters out of the checked-out tree even when the host environment would
+  normally resolve them under the repository.
+- `GOCACHE` and `GOMODCACHE`, by contrast, point at the shared, host-mounted
+  `~/.yottacode/sandbox-go-cache/` directory above — not the per-workspace
+  scratch dir — so Go's build and module cache survive container recreation
+  across sessions. Every session starts a fresh container (see "One container
+  per used profile per session" above), so without this, the first Go command
+  of every session paid a full `go mod download` plus full recompile;
+  measured on this repo's own dependency set, that's roughly a minute cold vs.
+  a couple of seconds once the cache is warm. The directory is shared across
+  every repo, worktree, and session on the machine, exactly like a host's own
+  `$GOCACHE`/`$GOMODCACHE` — both are content-addressed and safe for
+  concurrent use, so nothing about sandboxing changes that trust model. It
+  grows like any Go cache directory, unbounded and outside `disk`'s
+  writable-layer quota (a bind mount isn't part of the container's own
+  overlay filesystem, so `--storage-opt size=` never sees it); reclaim space
+  with `go clean -cache -modcache` using those two env vars, or delete the
+  directory outright.
 - **`run_bash`, `run_tests`, `create_document`'s docx/pdf paths, and
   `read_document`'s PDF path are sandboxed.** Git, GitHub, MCP, provider
   calls, and the other file tools still run on the host. The hardline

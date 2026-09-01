@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/yottadynamics/yottacode/internal/config"
+	"github.com/yottadynamics/yottacode/internal/sandboxcache"
 )
 
 // Real-podman integration coverage for PodmanSandbox. Starts an actual
@@ -187,6 +188,59 @@ func TestIntegration_CgroupAndNamespaceHardening(t *testing.T) {
 		t.Fatalf("exec mount read/write probe: %v", err)
 	} else if strings.TrimSpace(out) != "still-writable" {
 		t.Errorf("mount read/write probe = %q, want still-writable", out)
+	}
+}
+
+// TestIntegration_GoCacheMountPersistsAcrossContainers is the real-podman
+// counterpart to the podmanRunArgs unit tests: writes a marker file into the
+// shared go-cache bind mount from inside one container, closes it (removing
+// that container — see NewPodmanSandbox's doc comment, a fresh container per
+// session), starts a second container under a different session id, and
+// confirms the marker is still there. This is the actual regression this
+// mount exists to fix — every session used to get a brand-new, empty
+// GOCACHE/GOMODCACHE, forcing a full `go mod download` plus full recompile
+// on the first Go command of every single session.
+func TestIntegration_GoCacheMountPersistsAcrossContainers(t *testing.T) {
+	skipUnlessPodmanE2E(t)
+	// Deliberately NOT faking $HOME here (unlike the podmanRunArgs unit
+	// tests): this test execs the real podman client, which reads $HOME
+	// itself for its own rootless storage config — redirecting it breaks
+	// podman's own bookkeeping, not just this test's target path.
+
+	dir := t.TempDir()
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	goCacheDir, err := sandboxcache.GoHostCacheDir()
+	if err != nil {
+		t.Fatalf("GoHostCacheDir: %v", err)
+	}
+	markerPath := goCacheDir + "/cache/e2e-test-session-one-marker"
+	t.Cleanup(func() { _ = os.Remove(markerPath) })
+
+	first, err := NewPodmanSandbox(ctx, testSandboxConfig(), "e2e-gocache-session-1", dir)
+	if err != nil {
+		t.Fatalf("NewPodmanSandbox (first): %v", err)
+	}
+	if _, err := runInSandbox(t, first, dir, "mkdir -p '"+goCacheDir+"/cache' && echo from-session-one > '"+markerPath+"'"); err != nil {
+		t.Fatalf("exec write marker: %v", err)
+	}
+	if err := first.Close(); err != nil {
+		t.Fatalf("Close (first): %v", err)
+	}
+
+	second, err := NewPodmanSandbox(ctx, testSandboxConfig(), "e2e-gocache-session-2", dir)
+	if err != nil {
+		t.Fatalf("NewPodmanSandbox (second): %v", err)
+	}
+	defer func() { _ = second.Close() }()
+
+	out, err := runInSandbox(t, second, dir, "cat '"+markerPath+"'")
+	if err != nil {
+		t.Fatalf("exec read marker from second container: %v", err)
+	}
+	if strings.TrimSpace(out) != "from-session-one" {
+		t.Errorf("marker written by first container's session not visible from second container's session: got %q", out)
 	}
 }
 
