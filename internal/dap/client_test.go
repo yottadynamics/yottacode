@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"os/exec"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -242,6 +243,25 @@ func TestClientRequestTimeout(t *testing.T) {
 	}
 }
 
+func TestClientPreservesLifecycleEventWhenEventBufferFull(t *testing.T) {
+	client := &Client{events: make(chan godap.EventMessage, 1)}
+	client.deliverEvent(&godap.OutputEvent{Event: godap.Event{Event: "output"}})
+	client.deliverEvent(&godap.StoppedEvent{Event: godap.Event{Event: "stopped"}, Body: godap.StoppedEventBody{Reason: "breakpoint", ThreadId: 7}})
+
+	select {
+	case ev := <-client.Events():
+		stopped, ok := ev.(*godap.StoppedEvent)
+		if !ok || stopped.Body.ThreadId != 7 {
+			t.Fatalf("event = %#v, want stopped thread 7", ev)
+		}
+	default:
+		t.Fatal("no lifecycle event delivered")
+	}
+	if !client.EventOverflow() {
+		t.Fatal("EventOverflow = false, want dropped-output signal")
+	}
+}
+
 func TestClientReportsMalformedFrame(t *testing.T) {
 	t.Parallel()
 
@@ -263,6 +283,24 @@ func TestClientReportsMalformedFrame(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for malformed frame error")
+	}
+}
+
+func TestSafeStringAllowsConcurrentWriteAndRead(t *testing.T) {
+	var buf safeString
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 1000; i++ {
+			_, _ = buf.Write([]byte("stderr\n"))
+		}
+	}()
+	for i := 0; i < 1000; i++ {
+		_ = buf.String()
+	}
+	<-done
+	if got := buf.String(); !strings.Contains(got, "stderr") {
+		t.Fatalf("safeString content = %q, want stderr", got)
 	}
 }
 

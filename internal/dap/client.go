@@ -53,11 +53,12 @@ type Client struct {
 	pending map[int]chan godap.ResponseMessage
 	closed  bool
 
-	writeMu sync.Mutex
-	eventMu sync.Mutex
-	events  chan godap.EventMessage
-	done    chan error
-	once    sync.Once
+	writeMu       sync.Mutex
+	eventMu       sync.Mutex
+	events        chan godap.EventMessage
+	eventOverflow bool
+	done          chan error
+	once          sync.Once
 }
 
 // NewClient starts the reader loop for conn and returns a DAP client bound to
@@ -86,6 +87,14 @@ func NewClient(conn io.ReadWriteCloser, opts ClientOptions) (*Client, error) {
 // Events returns the asynchronous event stream from the debug adapter. The
 // stream closes when the client closes or the adapter transport fails.
 func (c *Client) Events() <-chan godap.EventMessage { return c.events }
+
+// EventOverflow reports whether any adapter events were dropped because the
+// consumer fell behind. Lifecycle events are preserved preferentially.
+func (c *Client) EventOverflow() bool {
+	c.eventMu.Lock()
+	defer c.eventMu.Unlock()
+	return c.eventOverflow
+}
 
 // Done reports why the reader loop ended. A nil error means the client was
 // closed intentionally.
@@ -401,9 +410,31 @@ func (c *Client) deliverEvent(ev godap.EventMessage) {
 	}
 	select {
 	case c.events <- ev:
+		return
 	default:
-		// Output/progress storms should not block the protocol reader. The large
-		// buffer keeps state-changing events available for normal debugger flows.
+	}
+	if isLifecycleEvent(ev) {
+		c.eventOverflow = true
+		select {
+		case <-c.events:
+		default:
+		}
+		select {
+		case c.events <- ev:
+		default:
+			c.eventOverflow = true
+		}
+		return
+	}
+	c.eventOverflow = true
+}
+
+func isLifecycleEvent(ev godap.EventMessage) bool {
+	switch ev.(type) {
+	case *godap.StoppedEvent, *godap.TerminatedEvent, *godap.ExitedEvent:
+		return true
+	default:
+		return false
 	}
 }
 
@@ -461,7 +492,7 @@ type Session struct {
 
 	stdin  io.WriteCloser
 	stdout io.ReadCloser
-	stderr strings.Builder
+	stderr *safeString
 }
 
 // StartSession starts a debug adapter process and wires its stdio to a Client.
@@ -492,9 +523,9 @@ func StartSession(ctx context.Context, opts SessionOptions) (*Session, error) {
 		return nil, fmt.Errorf("start DAP adapter: %w", err)
 	}
 
-	sess := &Session{Cmd: cmd, stdin: stdin, stdout: stdout}
+	sess := &Session{Cmd: cmd, stdin: stdin, stdout: stdout, stderr: &safeString{}}
 	go func() {
-		_, _ = io.Copy(&sess.stderr, stderr)
+		_, _ = io.Copy(sess.stderr, stderr)
 	}()
 	client, err := NewClient(readWriteCloser{Reader: stdout, Writer: stdin, close: func() error {
 		_ = stdin.Close()
@@ -526,6 +557,23 @@ func (s *Session) Close(ctx context.Context) error {
 		return fmt.Errorf("DAP adapter exited: %w: %s", err, strings.TrimSpace(s.stderr.String()))
 	}
 	return nil
+}
+
+type safeString struct {
+	mu  sync.Mutex
+	buf strings.Builder
+}
+
+func (s *safeString) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buf.Write(p)
+}
+
+func (s *safeString) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buf.String()
 }
 
 type readWriteCloser struct {
