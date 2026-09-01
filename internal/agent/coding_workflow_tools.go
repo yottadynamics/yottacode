@@ -14,6 +14,7 @@ import (
 
 	lspci "github.com/yottadynamics/yottacode/internal/lsp"
 	"github.com/yottadynamics/yottacode/internal/permissions"
+	"github.com/yottadynamics/yottacode/internal/sandboxcache"
 )
 
 type ApplyDiffTool struct {
@@ -660,10 +661,23 @@ func (t *RunTestsTool) prepareRunTestsCommand(command string, sandbox Sandbox, r
 	// managed worktree.
 	goScratch := filepath.ToSlash(filepath.Join("/var/tmp", "yottacode-go", safeScratchName(base)))
 	goTmp := filepath.Join(goScratch, "tmp")
-	goCache := filepath.Join(goScratch, "cache")
-	goModCache := filepath.Join(goScratch, "modcache")
 	goXDGCache := filepath.Join(goScratch, "xdg-cache")
 	goXDGConfig := filepath.Join(goScratch, "xdg-config")
+
+	// GOCACHE/GOMODCACHE point at the persistent host directory
+	// internal/sandbox.NewPodmanSandbox bind-mounts into every sandbox
+	// container — NOT the per-workspace, container-ephemeral goScratch above.
+	// Every new session starts a fresh container, so an ephemeral cache pays a
+	// full `go mod download` plus full recompile on the first Go command of
+	// every single session (measured: ~60s cold vs ~2s warm on this repo's
+	// dependency set). Shared across all workspaces/sessions on purpose,
+	// exactly like a host's own $GOCACHE/$GOMODCACHE.
+	goCacheRoot, err := sandboxcache.GoHostCacheDir()
+	if err != nil {
+		return "", err
+	}
+	goCache := filepath.Join(goCacheRoot, "cache")
+	goModCache := filepath.Join(goCacheRoot, "modcache")
 
 	// The Podman sandbox intentionally mounts /tmp as noexec, but `go test`
 	// writes and executes test binaries from GOTMPDIR. Keep /tmp hardened while

@@ -704,8 +704,12 @@ func Default() Config {
 			Network:        "host",
 			DNS:            append([]string(nil), DefaultSandboxDNS...),
 			Mounts:         []string{"."},
-			Memory:         "2g",
-			CPUs:           2,
+			// 4 CPUs / 4g balances a meaningfully faster cold `go build`/`go
+			// test` (parallel package compilation) against staying usable on
+			// a modest laptop; see docs/sandbox.md's Config section for the
+			// measured cold-build CPU sensitivity behind this default.
+			Memory:         "4g",
+			CPUs:           4,
 			PidsLimit:      256,
 			Disk:           DefaultSandboxDisk,
 		},
@@ -1729,7 +1733,7 @@ capture_reminder_every_turns = 6
 # dns             = ["1.1.1.1", "8.8.8.8"]
 # mounts          = ["."]
 # env_passthrough = []
-# memory          = "2g"
-# cpus            = 2
+# memory          = "4g"
+# cpus            = 4
 # pids_limit      = 256
 `

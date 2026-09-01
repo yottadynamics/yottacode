@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/yottadynamics/yottacode/internal/sandboxcache"
 	"github.com/yottadynamics/yottacode/internal/worktree"
 )
 
@@ -569,13 +570,11 @@ func TestRunTestsTool_ExecuteRoutesThroughSandbox(t *testing.T) {
 }
 
 func TestRunTestsTool_SandboxedGoTestsUseExecutableProjectDirs(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
 	dir := gitInit(t)
 	assertSandboxedGoTestScratch(t, dir)
 }
 
 func TestRunTestsTool_SandboxedGoTestsUseSameScratchFromManagedWorktree(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
 	repo := gitInit(t)
 	writeFile(t, repo, "README.md", "root\n")
 	gitCommit(t, repo, "initial")
@@ -594,6 +593,8 @@ func TestRunTestsTool_SandboxedGoTestsUseSameScratchFromManagedWorktree(t *testi
 
 func assertSandboxedGoTestScratch(t *testing.T, cwd string) {
 	t.Helper()
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
 	spy := &spySandbox{label: "[podman-sandbox]"}
 	tool := &RunTestsTool{Cwd: NewCwdRef(cwd), Sandbox: spy}
 	out, err := tool.Execute(context.Background(), `{"command":"printf go-env"}`)
@@ -601,15 +602,22 @@ func assertSandboxedGoTestScratch(t *testing.T, cwd string) {
 		t.Fatalf("Execute: %v", err)
 	}
 	repoScratch := filepath.Join("/var/tmp", "yottacode-go", safeScratchName(cwd))
+	// GOCACHE/GOMODCACHE live under a persistent, HOME-rooted directory
+	// (bind-mounted by internal/sandbox.NewPodmanSandbox into every
+	// container — see internal/sandboxcache), NOT the per-workspace,
+	// container-ephemeral repoScratch below: a fresh container per session
+	// would otherwise force a full `go mod download` plus full recompile on
+	// every session's first Go command.
+	goCacheRoot := filepath.Join(fakeHome, ".yottacode", sandboxcache.GoCacheHomeSubdir)
 	for _, fragment := range []string{
-		"mkdir -p '" + filepath.Join(repoScratch, "tmp") + "' '" + filepath.Join(repoScratch, "cache") + "' '" + filepath.Join(repoScratch, "modcache") + "' '" + filepath.Join(repoScratch, "xdg-cache") + "' '" + filepath.Join(repoScratch, "xdg-config") + "'",
+		"mkdir -p '" + filepath.Join(repoScratch, "tmp") + "' '" + filepath.Join(goCacheRoot, "cache") + "' '" + filepath.Join(goCacheRoot, "modcache") + "' '" + filepath.Join(repoScratch, "xdg-cache") + "' '" + filepath.Join(repoScratch, "xdg-config") + "'",
 		"HOME='" + repoScratch + "'",
 		"XDG_CACHE_HOME='" + filepath.Join(repoScratch, "xdg-cache") + "'",
 		"XDG_CONFIG_HOME='" + filepath.Join(repoScratch, "xdg-config") + "'",
 		"TMPDIR='" + filepath.Join(repoScratch, "tmp") + "'",
 		"GOTMPDIR='" + filepath.Join(repoScratch, "tmp") + "'",
-		"GOCACHE='" + filepath.Join(repoScratch, "cache") + "'",
-		"GOMODCACHE='" + filepath.Join(repoScratch, "modcache") + "'",
+		"GOCACHE='" + filepath.Join(goCacheRoot, "cache") + "'",
+		"GOMODCACHE='" + filepath.Join(goCacheRoot, "modcache") + "'",
 		"GOTELEMETRY='off'",
 	} {
 		if !strings.Contains(spy.gotCommand, fragment) {

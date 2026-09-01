@@ -122,17 +122,34 @@ dns = ["10.0.0.53"] # example VPN/corporate resolver IP
 
 If sandboxed Go tests fail with `fork/exec /tmp/go-build.../*.test: permission
 denied`, upgrade yottacode. Sandboxed `run_tests` now keeps `/tmp` mounted
-`noexec` for hardening but exports `TMPDIR`, `GOTMPDIR`, `GOCACHE`, and
-`GOMODCACHE` under `/var/tmp/yottacode-go/<workspace>/` inside the sandbox so Go
-can compile and execute test binaries safely. It also redirects `HOME`,
-`XDG_CACHE_HOME`, and `XDG_CONFIG_HOME` into that scratch area and disables Go
-telemetry with `GOTELEMETRY=off`, so tests should not leave repo-root `.cache/`,
-`.config/`, `.local/`, `.yottacode/tmp/`, `.scratch/`, or `go/` directories that would
-break later `go test ./...` discovery or workspace-root tests.
+`noexec` for hardening but exports `TMPDIR`, `GOTMPDIR`, `HOME`,
+`XDG_CACHE_HOME`, and `XDG_CONFIG_HOME` under `/var/tmp/yottacode-go/<workspace>/`
+inside the sandbox so Go can compile and execute test binaries safely, and
+disables Go telemetry with `GOTELEMETRY=off`, so tests should not leave
+repo-root `.cache/`, `.config/`, `.local/`, `.yottacode/tmp/`, `.scratch/`, or
+`go/` directories that would break later `go test ./...` discovery or
+workspace-root tests.
 
 If an older run already created those directories, remove them before opening a
 PR. Git status/readiness tools summarize those generated roots instead of
 printing every file, but the tree should still be cleaned before review.
+
+## Sandboxed `run_tests` feels slow, especially on the first Go command of a session
+
+`GOCACHE` and `GOMODCACHE` point at a shared, host-mounted
+`~/.yottacode/sandbox-go-cache/` directory that persists across sessions (a
+fresh sandbox container is created per session — see docs/sandbox.md). If
+you're on an older yottacode build, that cache instead lived inside the
+container's own ephemeral filesystem and was destroyed with the container at
+session end, so every new session paid a full `go mod download` plus full
+recompile on its first Go command. Upgrading resolves it; if tests still feel
+slow on every session's first run after upgrading, confirm
+`~/.yottacode/sandbox-go-cache/` exists and is growing between runs (`du -sh
+~/.yottacode/sandbox-go-cache`) — an empty or unchanging directory usually
+means the running yottacode binary/session predates this fix; rebuild/restart
+and retest. `sandbox.cpus` (default 4) also caps how parallel a cold
+build/test run can be; raising it further in config.toml trades host
+resources for faster sandboxed builds.
 
 ## The trust prompt fires on every launch
 

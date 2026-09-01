@@ -3,12 +3,14 @@ package sandbox
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/yottadynamics/yottacode/internal/agent"
 	"github.com/yottadynamics/yottacode/internal/config"
+	"github.com/yottadynamics/yottacode/internal/sandboxcache"
 	"github.com/yottadynamics/yottacode/internal/worktree"
 )
 
@@ -143,6 +145,66 @@ func TestPodmanRunArgsIncludesConfiguredDNS(t *testing.T) {
 	joined := " " + strings.Join(args, " ") + " "
 	if !strings.Contains(joined, " --dns 1.1.1.1 ") || !strings.Contains(joined, " --dns 8.8.8.8 ") {
 		t.Fatalf("podman args missing configured DNS servers: %v", args)
+	}
+}
+
+// TestPodmanRunArgsMountsPersistentGoCacheDir guards the fix for slow
+// sandboxed Go tests: every session starts a fresh container (see
+// NewPodmanSandbox's doc comment), so without a host-persisted mount for
+// GOCACHE/GOMODCACHE (set by internal/agent's prepareRunTestsCommand under
+// this exact path — see internal/sandboxcache), each new session pays
+// a full `go mod download` plus full recompile on its first Go command.
+func TestPodmanRunArgsMountsPersistentGoCacheDir(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	mountRoot := filepath.Join(t.TempDir(), "repo")
+	cfg := config.SandboxConfig{
+		Image:     "sandbox-image",
+		Network:   "host",
+		Mounts:    []string{"."},
+		Memory:    "256m",
+		CPUs:      1,
+		PidsLimit: 128,
+	}
+	args, err := podmanRunArgs(cfg, "yc-test", mountRoot, hostCapabilities{StorageOpt: true, CgroupLimits: true})
+	if err != nil {
+		t.Fatalf("podmanRunArgs: %v", err)
+	}
+	wantDir := filepath.Join(home, ".yottacode", sandboxcache.GoCacheHomeSubdir)
+	wantMount := "-v " + wantDir + ":" + wantDir + ":z"
+	if !strings.Contains(strings.Join(args, " "), wantMount) {
+		t.Fatalf("podman args missing persistent go cache mount %q: %v", wantMount, args)
+	}
+	if info, err := os.Stat(wantDir); err != nil || !info.IsDir() {
+		t.Fatalf("expected podmanRunArgs to create %s, stat error: %v", wantDir, err)
+	}
+}
+
+// TestPodmanRunArgsGoCacheDirIsHomeRootedNotWorktreeScoped: the cache mount
+// must be a single directory shared across every repo/worktree/session (like
+// a host's own $GOCACHE/$GOMODCACHE), not nested under mountRoot — otherwise
+// it would either violate the project-mount boundary (mountPaths rejects
+// paths outside mountRoot) or fail to persist once a worktree is removed.
+func TestPodmanRunArgsGoCacheDirIsHomeRootedNotWorktreeScoped(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	mountRootA := filepath.Join(t.TempDir(), "repo-a")
+	mountRootB := filepath.Join(t.TempDir(), "repo-b")
+	cfg := config.SandboxConfig{Image: "sandbox-image", Network: "host", Mounts: []string{"."}, Memory: "256m", CPUs: 1, PidsLimit: 128}
+
+	argsA, err := podmanRunArgs(cfg, "yc-a", mountRootA, hostCapabilities{StorageOpt: true, CgroupLimits: true})
+	if err != nil {
+		t.Fatalf("podmanRunArgs(a): %v", err)
+	}
+	argsB, err := podmanRunArgs(cfg, "yc-b", mountRootB, hostCapabilities{StorageOpt: true, CgroupLimits: true})
+	if err != nil {
+		t.Fatalf("podmanRunArgs(b): %v", err)
+	}
+	wantMount := "-v " + filepath.Join(home, ".yottacode", sandboxcache.GoCacheHomeSubdir)
+	for _, args := range [][]string{argsA, argsB} {
+		if !strings.Contains(strings.Join(args, " "), wantMount) {
+			t.Fatalf("expected the same shared go cache mount %q regardless of mount root, got %v", wantMount, args)
+		}
 	}
 }
 
