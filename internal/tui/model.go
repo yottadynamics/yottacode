@@ -44,6 +44,7 @@ import (
 	"github.com/yottadynamics/yottacode/internal/session"
 	"github.com/yottadynamics/yottacode/internal/skills"
 	"github.com/yottadynamics/yottacode/internal/subagents"
+	"github.com/yottadynamics/yottacode/internal/update"
 	"github.com/yottadynamics/yottacode/internal/usercmd"
 	"github.com/yottadynamics/yottacode/internal/worktree"
 )
@@ -70,6 +71,9 @@ type Config struct {
 	Session     *session.Session
 	Permissions *permissions.Permissions
 	Recall      *recall.Index // optional; nil disables /recall
+	// UpdateCheck carries the optional release-check result from the CLI layer.
+	// The TUI waits on it from Init so slow GitHub/DNS never blocks first paint.
+	UpdateCheck <-chan update.Result
 	ModelName   string
 	BaseURL     string
 	APIKey      string
@@ -224,13 +228,16 @@ type Model struct {
 	sensitiveRoots         []string // sensitive roots excluded from every recall search
 	perms                  *permissions.Permissions
 	recall                 *recall.Index
-	version                string
-	commit                 string
-	dirty                  bool
-	branch                 string
-	gitAhead               int
-	gitBehind              int
-	worktree               string // yottacode worktree name when session runs inside one
+	// updateCheck receives the startup release-check result. It is consumed from
+	// Init so slow GitHub/DNS never blocks first paint.
+	updateCheck <-chan update.Result
+	version     string
+	commit      string
+	dirty       bool
+	branch      string
+	gitAhead    int
+	gitBehind   int
+	worktree    string // yottacode worktree name when session runs inside one
 	// currentPR is the open pull request number for the current branch.
 	// Zero means no PR has been detected (or GitHub/auth was unavailable).
 	currentPR int
@@ -1236,6 +1243,7 @@ func New(parent context.Context, c Config) Model {
 		cwd:                    c.Cwd,
 		perms:                  c.Permissions,
 		recall:                 c.Recall,
+		updateCheck:            c.UpdateCheck,
 		version:                c.Version,
 		commit:                 c.Commit,
 		dirty:                  c.Dirty,
@@ -1335,6 +1343,10 @@ func (m *Model) finishDecisionUI() tea.Cmd {
 	return nil
 }
 
+type updateCheckMsg struct {
+	result update.Result
+}
+
 func (m Model) Init() tea.Cmd {
 	// Deliberately do NOT start m.spinner.Tick here. The spinner's
 	// thinking indicator is only visible during a turn (renderThinkingRow
@@ -1367,6 +1379,9 @@ func (m Model) Init() tea.Cmd {
 		// so window lookups for hosted providers (NVIDIA NIM, …) resolve
 		// instantly without waiting on the ~2MB fetch.
 		func() tea.Msg { catalog.WarmModelsDev(); return nil },
+	}
+	if c := waitForUpdateCheck(m.updateCheck); c != nil {
+		cmds = append(cmds, c)
 	}
 	// Auto-discover the active model's context window when it's unknown
 	// (windowless OpenAI-compatible endpoint, no override). Background +
@@ -1418,6 +1433,10 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.skillsMenu.busyFrame = m.spinner.View()
 		}
 		return m, cmd
+	}
+	if msg, ok := msg.(updateCheckMsg); ok {
+		m.handleUpdateCheck(msg.result)
+		return m, nil
 	}
 	if _, ok := msg.(cursorBlinkMsg); ok {
 		// Toggle and re-arm. Unlike the spinner tick, the cursor
@@ -4955,6 +4974,33 @@ func gitDivergenceChangingTool(toolName, argsJSON string) bool {
 	default:
 		return false
 	}
+}
+
+func waitForUpdateCheck(ch <-chan update.Result) tea.Cmd {
+	if ch == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		res, ok := <-ch
+		if !ok || !res.NewVersion {
+			return nil
+		}
+		return updateCheckMsg{result: res}
+	}
+}
+
+func (m *Model) handleUpdateCheck(res update.Result) {
+	if !res.NewVersion {
+		return
+	}
+	parts := []string{
+		fmt.Sprintf("%s available", res.Latest),
+		fmt.Sprintf("current %s", res.Current),
+	}
+	if strings.TrimSpace(res.URL) != "" {
+		parts = append(parts, res.URL)
+	}
+	m.appendLine(styleAuto.Render(SysMsg(SysWarning, "update", "new release", parts...)))
 }
 
 func branchChangingGitTool(toolName, argsJSON string) bool {

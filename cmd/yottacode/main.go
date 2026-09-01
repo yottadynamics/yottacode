@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -11,7 +10,6 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
-	"time"
 
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
@@ -160,10 +158,9 @@ func newRootCmd(opts *cli.ChatOptions) *cobra.Command {
 		Version: version.Full(),
 		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// Fire the update check early so cache-miss latency overlaps
-			// with cli.Resolve / wizard / continue-resolution. Returns
-			// nil when the check is opted out — caller treats nil as
-			// "nothing to consume."
+			// Fire the update check early so cache-miss latency overlaps with
+			// session construction. The TUI consumes the result after first paint
+			// so slow GitHub/DNS never makes startup look hung.
 			updateCh := maybeStartUpdateCheck(cmd.Context())
 			if err := cli.Resolve(opts); err != nil {
 				if shouldAutoLaunchSetup(*opts) {
@@ -187,8 +184,7 @@ func newRootCmd(opts *cli.ChatOptions) *cobra.Command {
 			if err := ensureWorktree(cmd.Context(), opts); err != nil {
 				return err
 			}
-			maybePromptUpgrade(cmd.Context(), updateCh)
-			return tui.Run(cmd.Context(), *opts)
+			return tui.Run(cmd.Context(), *opts, updateCh)
 		},
 	}
 	return cmd
@@ -219,62 +215,6 @@ func maybeStartUpdateCheck(ctx context.Context) <-chan update.Result {
 		return nil
 	}
 	return update.CheckBackground(ctx)
-}
-
-// maybePromptUpgrade consumes the update channel with a short timeout
-// and, if a newer release exists, asks the user whether to install it.
-// On "y" the function downloads the release, verifies it against the
-// published SHA256SUMS, replaces the running binary, and exits the process
-// on success — the running binary does not exec the new one. On anything
-// else (including timeout, channel close, or "n"), control returns to
-// the caller and the TUI launches normally.
-func maybePromptUpgrade(ctx context.Context, ch <-chan update.Result) {
-	if ch == nil {
-		return
-	}
-	var r update.Result
-	select {
-	case res, ok := <-ch:
-		if !ok {
-			return
-		}
-		r = res
-	case <-time.After(1500 * time.Millisecond):
-		return
-	}
-	if !r.NewVersion {
-		return
-	}
-	fmt.Fprintf(os.Stderr, "yottacode %s is available (you have %s).\n", r.Latest, r.Current)
-	if r.URL != "" {
-		fmt.Fprintf(os.Stderr, "Release notes: %s\n", r.URL)
-	}
-	fmt.Fprint(os.Stderr, "Install now? [y/N]: ")
-	reader := bufio.NewReader(os.Stdin)
-	line, err := reader.ReadString('\n')
-	if err != nil && line == "" {
-		return
-	}
-	answer := strings.ToLower(strings.TrimSpace(line))
-	if answer != "y" && answer != "yes" {
-		return
-	}
-	fmt.Fprintln(os.Stderr, "Downloading and verifying release...")
-	if err := runInstaller(ctx, r.Latest); err != nil {
-		fmt.Fprintf(os.Stderr, "Upgrade failed (%v). Continuing with current version.\n", err)
-		fmt.Fprintln(os.Stderr, "To upgrade manually: curl -fsSL https://raw.githubusercontent.com/yottadynamics/yottacode/main/install.sh | bash")
-		return
-	}
-	fmt.Fprintln(os.Stderr, "yottacode upgraded. Run 'yottacode' again to start with the new version.")
-	os.Exit(0)
-}
-
-// runInstaller upgrades in-process: download the release archive for the
-// requested version, verify it against the release's SHA256SUMS, and replace
-// the running binary. Unlike the previous `curl … | bash` path, nothing is
-// piped to a shell and an unverified download is rejected.
-func runInstaller(ctx context.Context, ver string) error {
-	return update.InstallRelease(ctx, ver)
 }
 
 // shouldAutoLaunchSetup reports whether a Resolve failure should

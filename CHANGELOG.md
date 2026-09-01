@@ -128,6 +128,13 @@ the project uses semantic versioning once it's past `1.0.0`.
 
 ### Fixed
 
+- **TUI startup no longer pauses on update prompts.** The daily GitHub
+  release check still starts from the root interactive command and still
+  honors `YOTTACODE_NO_UPDATE_CHECK=1`, but the TUI now consumes the result
+  after first paint and renders a one-line in-session notice when a newer
+  release exists. Slow DNS/GitHub, cache misses, or unattended terminals no
+  longer delay the initial screen.
+
 - **`dispatch`'s file-partition safety guarantee had real holes.** A worker
   that ended errored (e.g. it left out-of-scope changes uncommitted) could
   still have its branch recommended for `integrate` if it had an earlier
