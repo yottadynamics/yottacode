@@ -35,8 +35,11 @@ func newPlanModeTestModel(t *testing.T) (Model, *agent.PlanModeState) {
 	cwd := t.TempDir()
 	cwdRef := agent.NewCwdRef(cwd)
 	reg := agent.NewRegistry()
+	// Plan mode mutates the registered write tools in-place, including the
+	// hashline path used for stale-read-safe edits.
 	reg.Register(&agent.WriteFileTool{Cwd: cwdRef})
 	reg.Register(&agent.EditFileTool{Cwd: cwdRef})
+	reg.Register(&agent.ApplyHashlineTool{Cwd: cwdRef})
 	reg.Register(&agent.ApplyDiffTool{Cwd: cwdRef})
 	reg.Register(&agent.ExitPlanModeTool{})
 	cfg := agent.LoopConfig{Registry: reg, MaxIterations: 5, PlanMode: planMode, AutoMode: autoMode, YoloMode: yoloMode}
@@ -177,7 +180,7 @@ func TestCmdPlan_WriteToolsCarryAllowedFile(t *testing.T) {
 	if want == "" {
 		t.Fatalf("test setup: plan file should be filled after the first message")
 	}
-	for _, name := range []string{"write_file", "edit_file", "apply_diff"} {
+	for _, name := range []string{"write_file", "edit_file", "apply_hashline", "apply_diff"} {
 		t.Run(name, func(t *testing.T) {
 			tool, ok := m.cfg.Registry.Get(name)
 			if !ok {
@@ -189,6 +192,8 @@ func TestCmdPlan_WriteToolsCarryAllowedFile(t *testing.T) {
 				got = tt.WriteOpts.PlanModeAllowedFile
 			case *agent.EditFileTool:
 				got = tt.WriteOpts.PlanModeAllowedFile
+			case *agent.ApplyHashlineTool:
+				got = tt.WriteOpts.PlanModeAllowedFile
 			case *agent.ApplyDiffTool:
 				got = tt.WriteOpts.PlanModeAllowedFile
 			}
@@ -199,13 +204,15 @@ func TestCmdPlan_WriteToolsCarryAllowedFile(t *testing.T) {
 	}
 	// Exit and confirm the allowance is cleared.
 	m, _ = cmdPlan(m, nil)
-	for _, name := range []string{"write_file", "edit_file", "apply_diff"} {
+	for _, name := range []string{"write_file", "edit_file", "apply_hashline", "apply_diff"} {
 		tool, _ := m.cfg.Registry.Get(name)
 		var got string
 		switch tt := tool.(type) {
 		case *agent.WriteFileTool:
 			got = tt.WriteOpts.PlanModeAllowedFile
 		case *agent.EditFileTool:
+			got = tt.WriteOpts.PlanModeAllowedFile
+		case *agent.ApplyHashlineTool:
 			got = tt.WriteOpts.PlanModeAllowedFile
 		case *agent.ApplyDiffTool:
 			got = tt.WriteOpts.PlanModeAllowedFile

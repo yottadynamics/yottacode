@@ -87,6 +87,14 @@ func TestTools_Metadata(t *testing.T) {
 			wantSchemaRequired:   []string{"path"},
 		},
 		{
+			tool:                 &ApplyHashlineTool{Cwd: NewCwdRef(cwd), WriteOpts: WritePathOptions{Cwd: NewCwdRef(cwd)}},
+			wantName:             "apply_hashline",
+			wantApproval:         true,
+			previewArgsJSON:      `{"path":"x.go","offset":0,"length":3,"hash":"2c26b46b68ffc68f","old":"foo","new":"bar"}`,
+			wantPreviewSubstring: "x.go",
+			wantSchemaRequired:   []string{"path"},
+		},
+		{
 			tool:                 &ApplyDiffTool{Cwd: NewCwdRef(cwd)},
 			wantName:             "apply_diff",
 			wantApproval:         true,

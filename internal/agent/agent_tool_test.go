@@ -126,7 +126,7 @@ func TestIsReadOnlyTool_Classification(t *testing.T) {
 		}
 	}
 	// Mutating tools must return false.
-	for _, name := range []string{"edit_file", "write_file", "run_bash", "run_tests", "git_commit", "apply_diff"} {
+	for _, name := range []string{"edit_file", "write_file", "run_bash", "run_tests", "git_commit", "apply_hashline", "apply_diff"} {
 		if IsReadOnlyTool(name) {
 			t.Errorf("IsReadOnlyTool(%q) = true, want false", name)
 		}

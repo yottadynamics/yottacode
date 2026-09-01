@@ -162,7 +162,15 @@ func approvalHotkeyRows(allowAlways bool, derivedRule string, denyAlways bool, d
 		{hotkey: styleApprovalHotkey.Render("[Y]"), desc: styleApprovalChoice.Render("yes — allow this call once")},
 		{hotkey: styleApprovalHotkey.Render("[N]"), desc: styleApprovalChoice.Render("no — reject this call")},
 	}
+	// [S] shares allowAlways's gate: it needs the same derivable pattern
+	// as [A], just kept in memory instead of written to
+	// permissions.local.json — the middle ground between "once" and
+	// "forever".
 	if allowAlways {
+		rows = append(rows, approvalHotkeyRow{
+			hotkey: styleApprovalHotkey.Render("[S]"),
+			desc:   styleApprovalChoiceDim.Render("session — allow " + derivedRule + " for this session"),
+		})
 		rows = append(rows, approvalHotkeyRow{
 			hotkey: styleApprovalHotkey.Render("[A]"),
 			desc:   styleApprovalChoiceDim.Render("always — adds " + derivedRule),
@@ -267,6 +275,14 @@ func approvalModalTargetInnerWidth(capW int) int {
 // receipt of what got persisted.
 func approvalToast(rule string) string {
 	return styleApprovalToast.Render(fmt.Sprintf("✓ Added %s to permissions.local.json", rule))
+}
+
+// approvalSessionToast is approvalToast's mirror for the "[S] session"
+// path — deliberately worded to make clear the grant is memory-only and
+// gone on restart, since it uses the same styling as the persisted-rule
+// toast and the difference matters.
+func approvalSessionToast(rule string) string {
+	return styleApprovalToast.Render(fmt.Sprintf("✓ Allowed %s for this session (not saved to disk)", rule))
 }
 
 // approvalDenyToast is approvalToast's mirror for the "[D] never" path —

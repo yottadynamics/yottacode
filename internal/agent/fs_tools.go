@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/yottadynamics/yottacode/internal/adapter"
+	"github.com/yottadynamics/yottacode/internal/edit/hashline"
 	lspci "github.com/yottadynamics/yottacode/internal/lsp"
 )
 
@@ -126,7 +127,7 @@ func (t *ReadFileTool) readText(ctx context.Context, a readFileArgs) (string, er
 	}
 	defer f.Close()
 
-	selected, truncated, err := readLineWindow(ctx, f, startLine, limit, maxReadBytes)
+	selected, selectedBytes, startByte, truncated, err := readLineWindow(ctx, f, startLine, limit, maxReadBytes)
 	if err != nil {
 		return "", fmt.Errorf("read_file: %w", err)
 	}
@@ -136,6 +137,13 @@ func (t *ReadFileTool) readText(ctx context.Context, a readFileArgs) (string, er
 
 	anchored := buildAnchoredLines(selected, startLine)
 	var sb strings.Builder
+	if a.Anchors {
+		receipt, err := hashline.HashSpan(selectedBytes, 0, len(selectedBytes))
+		if err != nil {
+			return "", fmt.Errorf("read_file: %w", err)
+		}
+		fmt.Fprintf(&sb, "# hashline path=%s offset=%d length=%d hash=%s\n", a.Path, startByte, len(selectedBytes), receipt.Hash)
+	}
 	for i, line := range anchored {
 		if a.Anchors {
 			fmt.Fprintf(&sb, "%6d#%s\t%s", line.LineNumber, line.Hash, line.Content)
@@ -164,71 +172,82 @@ func (t *ReadFileTool) readText(ctx context.Context, a readFileArgs) (string, er
 // A window starting past the last line returns no lines and no error,
 // matching the tool's long-standing "offset past EOF yields empty"
 // contract.
-func readLineWindow(ctx context.Context, r io.Reader, startLine, limit, maxBytes int) ([]string, bool, error) {
+func readLineWindow(ctx context.Context, r io.Reader, startLine, limit, maxBytes int) ([]string, []byte, int, bool, error) {
 	br := bufio.NewReaderSize(r, readWindowBufSize)
+	startByte := 0
 
 	for n := 1; n < startLine; n++ {
 		if err := ctx.Err(); err != nil {
-			return nil, false, err
+			return nil, nil, 0, false, err
 		}
-		if err := discardLine(br); err != nil {
+		skipped, err := discardLine(br)
+		startByte += skipped
+		if err != nil {
 			if errors.Is(err, io.EOF) {
-				return nil, false, nil
+				return nil, nil, startByte, false, nil
 			}
-			return nil, false, err
+			return nil, nil, startByte, false, err
 		}
 	}
 
 	var (
 		lines []string
 		used  int
+		span  []byte
 	)
 	for len(lines) < limit {
 		if err := ctx.Err(); err != nil {
-			return nil, false, err
+			return nil, nil, startByte, false, err
 		}
 		line, readErr := br.ReadString('\n')
 		if readErr != nil && !errors.Is(readErr, io.EOF) {
-			return nil, false, readErr
+			return nil, nil, startByte, false, readErr
 		}
 		atEOF := errors.Is(readErr, io.EOF)
 		if line == "" && atEOF {
-			return lines, false, nil
+			return lines, span, startByte, false, nil
 		}
-		line = strings.TrimSuffix(line, "\n")
+		lineBytes := []byte(line)
+		lineText := strings.TrimSuffix(line, "\n")
 
-		if used+len(line)+1 > maxBytes {
+		if used+len(lineBytes) > maxBytes {
 			// A single line that alone blows the budget still has to
-			// return something rather than nothing.
+			// return something rather than nothing. The receipt covers exactly
+			// the returned byte prefix, not the full overlong source line.
 			if len(lines) == 0 {
-				lines = append(lines, line[:min(len(line), maxBytes)])
+				keep := min(len(lineBytes), maxBytes)
+				span = append(span, lineBytes[:keep]...)
+				lines = append(lines, strings.TrimSuffix(string(lineBytes[:keep]), "\n"))
 			}
-			return lines, true, nil
+			return lines, span, startByte, true, nil
 		}
-		lines = append(lines, line)
-		used += len(line) + 1 // the newline counts toward the budget
+		lines = append(lines, lineText)
+		span = append(span, lineBytes...)
+		used += len(lineBytes)
 		if atEOF {
-			return lines, false, nil
+			return lines, span, startByte, false, nil
 		}
 	}
 
 	// Stopped on the line limit — the marker depends on whether
 	// anything is actually left after the window.
 	_, peekErr := br.Peek(1)
-	return lines, peekErr == nil, nil
+	return lines, span, startByte, peekErr == nil, nil
 }
 
 // discardLine consumes bytes through the next newline without retaining
 // them. ReadSlice reports ErrBufferFull when a line is longer than the
 // buffer, so looping on that skips even a pathologically long line in
 // bounded memory.
-func discardLine(br *bufio.Reader) error {
+func discardLine(br *bufio.Reader) (int, error) {
+	total := 0
 	for {
-		_, err := br.ReadSlice('\n')
+		chunk, err := br.ReadSlice('\n')
+		total += len(chunk)
 		if errors.Is(err, bufio.ErrBufferFull) {
 			continue
 		}
-		return err
+		return total, err
 	}
 }
 

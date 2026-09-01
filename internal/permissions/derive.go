@@ -156,13 +156,20 @@ func derivePathPattern(desc, cwd string, normalize PathNormalizer) (string, bool
 	if parent == "" || parent == "/" {
 		return "", false
 	}
-	if isSystemRoot(parent) {
-		return "", false
-	}
 	if home, err := os.UserHomeDir(); err == nil && home != "" {
-		if parent == filepath.ToSlash(home) {
+		homeSlash := filepath.ToSlash(filepath.Clean(home))
+		if parent == homeSlash {
 			return "", false
 		}
+		// Test sandboxes and some managed environments place HOME under a
+		// normally suppressed system prefix such as /var/tmp. A child of HOME is
+		// still user-owned workspace, so allow the narrower home-subtree grant.
+		if strings.HasPrefix(parent, homeSlash+"/") {
+			return parent + "/**", true
+		}
+	}
+	if isSystemRoot(parent) {
+		return "", false
 	}
 	return parent + "/**", true
 }

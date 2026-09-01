@@ -178,9 +178,10 @@ func TestAutoModeState_IsActiveNilSafe(t *testing.T) {
 
 func TestIsAutoModeSafetyFloor(t *testing.T) {
 	for _, name := range []string{
-		// run_bash and run_tests execute arbitrary commands; git history
+		// run_bash, run_tests, and debug_start execute arbitrary commands;
+		// debug_eval can evaluate code in a running process; git history
 		// mutations are hard to reverse.
-		"run_bash", "run_tests", "git_commit", "git_checkpoint", "rollback",
+		"run_bash", "run_tests", "debug_start", "debug_eval", "git_commit", "git_checkpoint", "rollback",
 		// enter_worktree / exit_worktree shift the agent's working
 		// context (and exit's force-remove is destructive); always
 		// prompt regardless of mode.
@@ -191,7 +192,7 @@ func TestIsAutoModeSafetyFloor(t *testing.T) {
 		}
 	}
 	for _, name := range []string{
-		"write_file", "edit_file", "apply_diff", "mkdir", "copy_file", "move_file",
+		"write_file", "edit_file", "apply_hashline", "apply_diff", "mkdir", "copy_file", "move_file",
 		"delete_file", "git_stage_files", "git_unstage_files", "read_file", "grep",
 		// The plain git_worktree_* wrappers are narrow, explicit, and
 		// recoverable; they stay auto-allowed in auto mode.

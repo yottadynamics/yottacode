@@ -25,7 +25,8 @@ In addition to the built-ins, **MCP tools** register dynamically when an `[[mcp_
 | [`write_file`](#write_file) | required | Overwrite or create a file |
 | [`edit_file`](#edit_file) | required | Surgical `old_string`→`new_string` replacement |
 | [`edit_anchored`](#edit_anchored) | required | Anchor-validated line edits after anchored reads |
-| [`apply_diff`](#apply_diff) | required | Apply a unified diff patch |
+| [`apply_hashline`](#apply_hashline) | required | Apply content-hash anchored text edits |
+| [`apply_diff`](#apply_diff) | required | Apply a legacy unified diff patch |
 | [`mkdir`](#mkdir) | required | Create a directory and missing parents |
 | [`copy_file`](#copy_file) | required | Copy a file to a new path |
 | [`move_file`](#move_file) | required | Move or rename a file or directory |
@@ -60,6 +61,14 @@ In addition to the built-ins, **MCP tools** register dynamically when an `[[mcp_
 | [`git_checkpoint`](#git_checkpoint) | required | Create a local checkpoint commit |
 | [`rollback`](#rollback) | required | Reset the repo to an earlier commit |
 | [`run_tests`](#run_tests) | required | Run the repo's test command |
+| [`debug_start`](debug.md) | required | Start one Go debug session through `dlv dap` |
+| [`debug_breakpoint`](debug.md) | none | Set a Go source breakpoint by file and line |
+| [`debug_continue`](debug.md) | none | Continue a Go debug session and wait up to 30s for a stop event |
+| [`debug_step`](debug.md) | none | Step a Go debug session with next/stepIn/stepOut |
+| [`debug_stack`](debug.md) | none | Return Go debug stack frames |
+| [`debug_vars`](debug.md) | none | Return variables for a Go debug frame or variables reference |
+| [`debug_eval`](debug.md) | required | Evaluate a Go debug expression in the selected frame/context |
+| [`debug_stop`](debug.md) | none | Stop the active Go debug session and tear down Delve |
 | [`media_probe`](#media_probe) | none | Inspect audio/video metadata with ffprobe |
 | [`media_analyze`](#media_analyze) | none | Detect silence/fluff candidates with ffmpeg |
 | [`media_compose`](#media_compose) | required | Assemble title cards, images, and clips into a draft MP4 with ffmpeg templates/effects |
@@ -158,6 +167,7 @@ tool-call log; the TUI renames it for readability. Mapping:
 | `edit_file` | `Edit(<path>, single\|all)` |
 | `edit_anchored` | `edit_anchored(<path>, N ops)` |
 | `syntax_range` | `Syntax(range <path>:<line>:<character>)` |
+| `apply_hashline` | `Patch(hashline <path>)` |
 | `apply_diff` | `Patch(apply)` |
 | `mkdir` | `Mkdir(<path>)` |
 | `copy_file` | `Copy(<src> → <dst>)` |
@@ -264,7 +274,9 @@ block that vision-capable models can see directly.
 | `path` | string | — | Absolute or cwd-relative |
 | `offset` | int | `1` | 1-indexed start line (text files only) |
 | `limit` | int | `2000` | Max lines to return (text files only) |
-| `anchors` | bool | `false` | When true, prefix text rows as `line#anchor\tcontent` |
+| `anchors` | bool | `false` | When true, prefix text rows as `line#anchor\tcontent` and include a hashline receipt for the exact returned byte span |
+
+When `anchors=true`, text output starts with a receipt line such as `# hashline path=main.go offset=0 length=128 hash=…`. The hash is over the exact bytes returned in the read window, including original line endings. Use that receipt with [`apply_hashline`](#apply_hashline) when you want the next edit to fail safely if the file changed after the read.
 
 **Paging large files.** A single read returns at most 512 KiB of content;
 when more follows the window, the output ends in `…[truncated]`. That
@@ -309,7 +321,7 @@ Returns sections in the form:
 <content>
 ```
 
-Each file gets its own `[truncated]` marker if needed.
+Each file gets its own `[truncated]` marker if needed. With `anchors=true`, each section also starts with `# hashline path=… offset=… length=… hash=…`; the hash covers exactly the returned bytes for that section and can be passed to [`apply_hashline`](#apply_hashline).
 
 ## read_document
 
@@ -740,10 +752,28 @@ Output rows are `kind name [detail]\tpath:startLine:startColumn-endLine:endColum
 
 Covers Go (standard library parser), TypeScript/JavaScript and Rust (a shared chroma-token brace-depth scanner), and Python (a chroma-token indentation scanner). Other languages should use `lsp_selection_ranges` when a language server is installed. GA; the `syntax_ranges` flag is a no-op kept for one release for compatibility.
 
+## apply_hashline
+
+Apply one or more content-hash anchored text edits to a single file. This is the safest patch path after a fresh `read_file` or `read_many_files` with `anchors=true`: the tool verifies the old byte span by hash before writing, relocates only when the old span appears uniquely near the recorded offset, and otherwise returns a recoverable stale/ambiguous-anchor error with a suggested re-read range. It never applies a guess.
+
+| Param | Type | Default | Notes |
+|---|---|---|---|
+| `path` | string | — | File to edit; absolute or cwd-relative |
+| `offset` | int | — | Byte offset from the hashline receipt |
+| `length` | int | — | Byte length from the hashline receipt |
+| `hash` | string | — | 16-hex SHA-256 prefix from the receipt |
+| `old` | string | — | Exact old text covered by the anchor |
+| `new` | string | — | Replacement text; may be empty |
+| `hunks` | []object | — | Optional multi-hunk form using the same `offset`/`length`/`hash`/`old`/`new` fields per hunk |
+
+Always prompts for approval, validates the same write-path rules as `edit_file`, and writes atomically via same-directory temp file plus rename. On success it returns a capped unified diff. On `stale_anchor` or `ambiguous_anchor`, re-read the suggested range with `anchors=true`, copy the current text and receipt, then retry.
+
 ## apply_diff
 
-Apply a unified diff patch using `git apply`. This is better than
-`edit_file` for multi-hunk changes across one or more files.
+Apply a legacy unified diff patch using `git apply`. Prefer
+[`apply_hashline`](#apply_hashline) for edits after a fresh `read_file` or
+`read_many_files` receipt; keep `apply_diff` for broad unified diffs, generated
+patches, or multi-file changes that do not have hashline anchors.
 
 | Param | Type | Default |
 |---|---|---|
@@ -762,10 +792,12 @@ applying. Malformed patch syntax (`corrupt patch`, bare `@@`, invalid
 hunk headers) and stale context (`patch does not apply`) are classified
 separately so the TUI can show compact recovery guidance instead of the
 raw patch payload. Stale-context failures should prompt a fresh read —
-often with `anchors=true` — and a fallback to `edit_anchored` when the
-change no longer applies cleanly as a unified diff. A `Deny(Edit(<pattern>))` rule applies if any target
-path matches; an `Allow(Edit(<pattern>))` rule auto-approves only when
-every target path matches (mixed-path diffs still prompt).
+often with `anchors=true` — and retry with `apply_hashline` when the
+change can be expressed against a current hashline receipt. Use
+`edit_anchored` only when a line anchor is the safer fit. A
+`Deny(Edit(<pattern>))` rule applies if any target path matches; an
+`Allow(Edit(<pattern>))` rule auto-approves only when every target path
+matches (mixed-path diffs still prompt).
 
 ## mkdir
 
@@ -1385,6 +1417,19 @@ Run a test command in the repo. Defaults to `go test ./...`.
 | `path` | string | `.` |
 
 Prompts for approval in foreground use. Background dispatch workers cannot run `run_tests` because tests execute project code without a human approval surface.
+
+## Go debug tools
+
+Go debugger tools are backed by `dlv dap`; see [`debug.md`](debug.md) for the
+full workflow and policy. `debug_start` always prompts because it executes the
+selected program or test package. `debug_eval` also prompts because expression
+evaluation is more powerful than passive inspection. The remaining debug tools
+operate inside the already-approved live session without another prompt.
+
+v1 allows one live Go debug session per yottacode session. `debug_continue` and
+`debug_step` wait up to 30 seconds for a stop event, then report `still running
+after 30s`. yottacode resolves `dlv` from `PATH` only and never downloads
+binaries.
 
 ## media_probe
 

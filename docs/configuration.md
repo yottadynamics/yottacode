@@ -341,10 +341,9 @@ works and how to inspect or prune it.
 
 `USER.md`, `YOTTACODE.md`, and both `permissions*.json` files are safe to
 edit directly — opening either memory file via `/memory` (yottacode
-suspends to `vim`) reloads on exit, and external edits to either
-`permissions*.json` are picked up automatically on the next tool call
-(run `/permissions` to print the two paths). Session files and the FTS
-index are application-managed.
+suspends to `vim`) reloads on exit, and opening `/permissions` reloads
+both permission files from disk before showing paths or policy warnings.
+Session files and the FTS index are application-managed.
 
 `USER.md` is in the agent's write-deny list (global preferences are
 out of scope for a project-scoped agent to curate). `YOTTACODE.md` is

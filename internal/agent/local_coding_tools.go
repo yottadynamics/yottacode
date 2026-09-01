@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/yottadynamics/yottacode/internal/edit/hashline"
 )
 
 const (
@@ -416,6 +418,11 @@ func (t *ReadManyFilesTool) Execute(ctx context.Context, argsJSON string) (strin
 		}
 		fmt.Fprintf(&b, "==> %s <==\n", rel)
 		if anchors {
+			receipt, err := hashline.HashSpan(buf[:n], 0, n)
+			if err != nil {
+				return "", fmt.Errorf("read_many_files: %s: %w", p, err)
+			}
+			fmt.Fprintf(&b, "# hashline path=%s offset=%d length=%d hash=%s\n", rel, offset, n, receipt.Hash)
 			text := string(buf[:n])
 			text = strings.TrimSuffix(text, "\n")
 			if text != "" {

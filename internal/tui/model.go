@@ -846,8 +846,8 @@ type Model struct {
 	// local) modelled on /memory's three-row picker — Up/Down
 	// navigates, Enter suspends to vim on the chosen rule file, Esc
 	// closes. Rendered as a centered popup (popup.go). The store
-	// re-reads both files on the next tool call, so there's no explicit
-	// reload step.
+	// reloads both files every time /permissions opens so warnings and
+	// rules reflect direct edits without restarting the TUI.
 	permissionsOpen   bool
 	permissionsCursor int
 
@@ -2245,6 +2245,17 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, nil
 				}
 				answered = true
+			case "s", "S":
+				if m.approvalAllowAlwaysOK {
+					rule := m.approvalDerivedRule
+					if !m.sendDecision(agent.AllowSession) {
+						return m, nil
+					}
+					answered = true
+					if rule != "" {
+						m.appendLine(approvalSessionToast(rule))
+					}
+				}
 			case "a", "A":
 				if m.approvalAllowAlwaysOK {
 					rule := m.approvalDerivedRule
@@ -3362,12 +3373,17 @@ func (m Model) contextualKeyHints() []string {
 	case m.awaitingApproval:
 		hints := []string{"Y: approve", "N: reject"}
 		if m.approvalAllowAlwaysOK {
-			hints = append(hints, "A: always")
+			hints = append(hints, "S: session", "A: always")
 		}
 		if m.approvalDenyAlwaysOK {
 			hints = append(hints, "D: never")
 		}
-		return append(hints, "Enter: queue text")
+		// Shortened from "Enter: queue text" (still used by the other
+		// hint rows) — the [S] addition above put this row within a
+		// couple of characters of an 80-col truncation; trimming the
+		// least essential hint's wording buys headroom instead of
+		// dropping a whole hotkey out of the row.
+		return append(hints, "Enter: queue")
 	case m.loopExitConfirmOpen:
 		return []string{"←/→: choose", "Enter: confirm", "Esc: stay"}
 	case m.worktreeExitConfirmOpen:

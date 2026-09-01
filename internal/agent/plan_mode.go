@@ -225,7 +225,7 @@ func PlanFilePath(slug string) (string, error) {
 }
 
 // IsPlanFileWrite reports whether this tool call is one of the
-// mutating tools (write_file / edit_file / apply_diff) targeting the
+// mutating tools (write_file / edit_file / apply_hashline / apply_diff) targeting the
 // resolved plan file. The loop uses this to auto-approve those writes
 // in plan mode — they're the model's only legitimate mutation surface
 // while planning, so prompting on every edit is friction with no value
@@ -237,7 +237,7 @@ func IsPlanFileWrite(name, argsJSON, planFile string) bool {
 		return false
 	}
 	switch name {
-	case "write_file", "edit_file", "apply_diff":
+	case "write_file", "edit_file", "apply_hashline", "apply_diff":
 		target := pathFromWriteToolArgs(name, argsJSON)
 		return target != "" && samePath(target, planFile)
 	}
@@ -303,7 +303,7 @@ func iterationToolFilter(planActive, loopActive bool) func(string) bool {
 // Allowlist:
 //   - exit_plan_mode: the only way out of plan mode.
 //   - todo_write: progress tracking, no side effects.
-//   - write_file/edit_file/apply_diff: only when the target path equals
+//   - write_file/edit_file/apply_hashline/apply_diff: only when the target path equals
 //     planFile. Any other write target is blocked.
 //   - any tool whose RequiresApproval returns false: the implicit
 //     "read-only" classification (read_file, grep, glob, list_*,
@@ -317,7 +317,7 @@ func PlanModeGate(tool Tool, argsJSON, planFile string) (string, bool) {
 	switch name {
 	case "exit_plan_mode", "todo_write":
 		return "", false
-	case "write_file", "edit_file", "apply_diff":
+	case "write_file", "edit_file", "apply_hashline", "apply_diff":
 		if planFile != "" {
 			target := pathFromWriteToolArgs(name, argsJSON)
 			if target != "" && samePath(target, planFile) {

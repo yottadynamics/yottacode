@@ -218,6 +218,51 @@ func TestEvaluate_DenyBeatsAllow(t *testing.T) {
 	}
 }
 
+func TestEvaluate_AskOverridesAllow(t *testing.T) {
+	cwd := t.TempDir()
+	seed(t, filepath.Join(cwd, ".yottacode", "permissions.json"),
+		[]string{"Read(**)"}, []string{"Read(**/.env*)"}, nil)
+	p, _ := Load(cwd)
+
+	decision, rule := p.EvaluateWithRule("read_file", `{"path":"sub/.env.local"}`)
+	if decision != Ask {
+		t.Fatalf("broad allow + sensitive ask = %v via %+v, want Ask", decision, rule)
+	}
+	if rule.Tool != "Read" || rule.Pattern != "**/.env*" {
+		t.Fatalf("matching rule = %+v, want the ask rule", rule)
+	}
+}
+
+func TestEvaluate_AskOverridesSessionAllow(t *testing.T) {
+	cwd := t.TempDir()
+	seed(t, filepath.Join(cwd, ".yottacode", "permissions.json"),
+		nil, []string{"Read(**/.env*)"}, nil)
+	p, _ := Load(cwd)
+	if err := p.AddSessionAllow("Read(**)"); err != nil {
+		t.Fatalf("AddSessionAllow: %v", err)
+	}
+
+	if got := p.Evaluate("read_file", `{"path":"sub/.env.local"}`); got != Ask {
+		t.Fatalf("session allow + sensitive ask = %v, want Ask", got)
+	}
+}
+
+func TestEvaluate_AskOverridesAllowForMultiTarget(t *testing.T) {
+	cwd := t.TempDir()
+	seed(t, filepath.Join(cwd, ".yottacode", "permissions.json"),
+		[]string{"Read(**)"}, []string{"Read(**/.env*)"}, nil)
+	p, _ := Load(cwd)
+
+	args := `{"paths":["README.md","sub/.env.local"]}`
+	decision, rule := p.EvaluateWithRule("read_many_files", args)
+	if decision != Ask {
+		t.Fatalf("multi-target broad allow + sensitive ask = %v via %+v, want Ask", decision, rule)
+	}
+	if rule.Tool != "Read" || rule.Pattern != "**/.env*" {
+		t.Fatalf("matching rule = %+v, want the ask rule", rule)
+	}
+}
+
 func TestEvaluate_AskOverridesDefault(t *testing.T) {
 	cwd := t.TempDir()
 	seed(t, filepath.Join(cwd, ".yottacode", "permissions.json"),

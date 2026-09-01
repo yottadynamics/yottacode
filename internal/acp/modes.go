@@ -100,7 +100,7 @@ func applyMode(rt *agentruntime.Runtime, id coderacp.SessionModeId) {
 	}
 }
 
-// applyPlanFileToWriteTools restricts write_file/edit_file/apply_diff to
+// applyPlanFileToWriteTools restricts write_file/edit_file/apply_hashline/apply_diff to
 // planFile only (or clears the restriction when planFile is ""),
 // duplicated from internal/tui/cmd_plan.go since that function is
 // private to the tui package. Kept in exact sync — see that file if this
@@ -109,7 +109,7 @@ func applyPlanFileToWriteTools(reg *agent.Registry, planFile string) {
 	if reg == nil {
 		return
 	}
-	for _, name := range []string{"write_file", "edit_file", "apply_diff"} {
+	for _, name := range []string{"write_file", "edit_file", "apply_hashline", "apply_diff"} {
 		t, ok := reg.Get(name)
 		if !ok {
 			continue
@@ -118,6 +118,8 @@ func applyPlanFileToWriteTools(reg *agent.Registry, planFile string) {
 		case *agent.WriteFileTool:
 			tt.WriteOpts.PlanModeAllowedFile = planFile
 		case *agent.EditFileTool:
+			tt.WriteOpts.PlanModeAllowedFile = planFile
+		case *agent.ApplyHashlineTool:
 			tt.WriteOpts.PlanModeAllowedFile = planFile
 		case *agent.ApplyDiffTool:
 			tt.WriteOpts.PlanModeAllowedFile = planFile

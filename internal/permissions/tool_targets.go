@@ -82,7 +82,7 @@ func targetFor(toolName, argsJSON, cwd string) Target {
 		return Target{PermName: "Read", Descriptors: descs, Multi: true, IsPath: true}
 	case "write_file":
 		return Target{PermName: "Write", Descriptor: relPath(extractPath(argsJSON), cwd), IsPath: true}
-	case "edit_file":
+	case "edit_file", "apply_hashline":
 		return Target{PermName: "Edit", Descriptor: relPath(extractPath(argsJSON), cwd), IsPath: true}
 	case "apply_diff":
 		// apply_diff carries a unified-diff blob in `diff`. Parse the
@@ -198,6 +198,22 @@ func targetFor(toolName, argsJSON, cwd string) Target {
 		return Target{PermName: "Github", Descriptor: "create_issue"}
 	}
 	return Target{}
+}
+
+// SupportsToolName reports whether toolName produces a permission target
+// at all — i.e. whether calls to it can ever be governed by permissions.json
+// / permissions.local.json rules. targetFor returns an empty Target.PermName
+// for any tool name it doesn't recognize, which Evaluate treats the same as
+// "no rule matched" (Default). That's the right behavior for the agent loop,
+// but a caller presenting the distinction to a human — `yottacode
+// permissions test` — needs to tell "no rule matched, falls back to the
+// tool's own approval policy" apart from "this tool isn't subject to
+// permission-file matching in the first place", hence this export.
+func SupportsToolName(toolName string) bool {
+	if strings.HasPrefix(toolName, "mcp/") {
+		return true
+	}
+	return targetFor(toolName, "{}", "").PermName != ""
 }
 
 func extractCommand(argsJSON string) string {
