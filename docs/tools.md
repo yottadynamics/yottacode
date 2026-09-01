@@ -26,7 +26,7 @@ In addition to the built-ins, **MCP tools** register dynamically when an `[[mcp_
 | [`edit_file`](#edit_file) | required | Surgical `old_string`→`new_string` replacement |
 | [`edit_anchored`](#edit_anchored) | required | Anchor-validated line edits after anchored reads |
 | [`apply_hashline`](#apply_hashline) | required | Apply content-hash anchored text edits |
-| [`apply_diff`](#apply_diff) | required | Apply a unified diff patch |
+| [`apply_diff`](#apply_diff) | required | Apply a legacy unified diff patch |
 | [`mkdir`](#mkdir) | required | Create a directory and missing parents |
 | [`copy_file`](#copy_file) | required | Copy a file to a new path |
 | [`move_file`](#move_file) | required | Move or rename a file or directory |
@@ -762,8 +762,10 @@ Always prompts for approval, validates the same write-path rules as `edit_file`,
 
 ## apply_diff
 
-Apply a unified diff patch using `git apply`. This is better than
-`edit_file` for multi-hunk changes across one or more files.
+Apply a legacy unified diff patch using `git apply`. Prefer
+[`apply_hashline`](#apply_hashline) for edits after a fresh `read_file` or
+`read_many_files` receipt; keep `apply_diff` for broad unified diffs, generated
+patches, or multi-file changes that do not have hashline anchors.
 
 | Param | Type | Default |
 |---|---|---|
@@ -782,10 +784,12 @@ applying. Malformed patch syntax (`corrupt patch`, bare `@@`, invalid
 hunk headers) and stale context (`patch does not apply`) are classified
 separately so the TUI can show compact recovery guidance instead of the
 raw patch payload. Stale-context failures should prompt a fresh read —
-often with `anchors=true` — and a fallback to `edit_anchored` when the
-change no longer applies cleanly as a unified diff. A `Deny(Edit(<pattern>))` rule applies if any target
-path matches; an `Allow(Edit(<pattern>))` rule auto-approves only when
-every target path matches (mixed-path diffs still prompt).
+often with `anchors=true` — and retry with `apply_hashline` when the
+change can be expressed against a current hashline receipt. Use
+`edit_anchored` only when a line anchor is the safer fit. A
+`Deny(Edit(<pattern>))` rule applies if any target path matches; an
+`Allow(Edit(<pattern>))` rule auto-approves only when every target path
+matches (mixed-path diffs still prompt).
 
 ## mkdir
 
