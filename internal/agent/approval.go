@@ -45,4 +45,15 @@ const (
 	// compound commands — those are exactly the calls a user most wants to
 	// block permanently. Scope is currently run_bash + git.
 	DenyAlways
+	// AllowSession permits this call and asks the loop to derive a
+	// pattern from it (same permissions.DeriveAllowRule as AllowAlways)
+	// but keeps the resulting rule in memory only, via
+	// Permissions.AddSessionAllow — never written to
+	// permissions.local.json. The grant lasts for the remainder of this
+	// process and disappears on restart; it also can't be accidentally
+	// erased (or leaked to a teammate) by a `/permissions` file edit and
+	// reload. The middle ground between AllowOnce (this call only) and
+	// AllowAlways (persisted forever). Offered under the same
+	// derivability gate as AllowAlways.
+	AllowSession
 )

@@ -167,7 +167,7 @@ func TestKeyHints_ApprovalFocus(t *testing.T) {
 	m.approvalAllowAlwaysOK = true
 	m.approvalDenyAlwaysOK = true
 	plain := stripANSI(m.renderKeyHintRow())
-	for _, want := range []string{"Y: approve", "N: reject", "A: always", "D: never", "Enter: queue text"} {
+	for _, want := range []string{"Y: approve", "N: reject", "S: session", "A: always", "D: never", "Enter: queue"} {
 		if !strings.Contains(plain, want) {
 			t.Fatalf("approval key hints missing %q: %q", want, plain)
 		}

@@ -70,6 +70,7 @@ func newCLI() *cobra.Command {
 		newCopilotAuthCmd(),
 		newTrustCmd(),
 		newSensitiveCmd(),
+		newPermissionsCmd(),
 		newWorktreeCmd(),
 		newMcpCmd(),
 		newSkillsCmd(),

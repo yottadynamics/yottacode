@@ -1040,13 +1040,37 @@ func executeToolCallImpl(
 		}
 	}
 
+	// An explicit Ask rule is the user's standing "always confirm this"
+	// policy, on the same footing as Deny above — not a suggestion the
+	// active mode gets to override. Checked here, ahead of the
+	// yolo/plan-mode/auto-mode branches below, so e.g.
+	// Ask(["Read(**/.env*)"]) still prompts under --yolo or /auto instead
+	// of being silently swallowed by whichever overlay happens to be on.
+	// Plan-boundary tools are unaffected (enter/exit_plan_mode have no
+	// permission target, so verdict is always Default for them); background
+	// workers are unaffected too (already routed above by
+	// BackgroundApprovalPolicy, before this check runs).
+	if verdict == permissions.Ask {
+		if denied, savedForLater, err := promptForApproval(ctx, cfg, tool, normalizedTC, preview, events, decisions); err != nil || denied || savedForLater {
+			content, images, d, rerr := deniedResultForMultimodal(tool.Name(), denied, savedForLater, err)
+			src := "user"
+			if rerr != nil {
+				src = ""
+			}
+			return content, images, d, src, rerr
+		}
+		approvalSource = "user"
+		goto approved
+	}
+
 	// Mode-priority approval chain. Order matters:
 	//   0. Plan-mode boundary tools: always prompt (the approval is
 	//      the TUI's mode-flip handshake — see isPlanBoundaryTool).
 	//   1. Yolo: auto-allow every other tool (no safety floor).
 	//   2. Plan-mode auto-allow for the plan file.
 	//   3. Auto-mode auto-allow for non-floor tools.
-	//   4. Default: permissions verdict → tool's own RequiresApproval.
+	//   4. Default: permissions verdict (Allow only — Ask is handled
+	//      above) → tool's own RequiresApproval.
 	switch {
 	case isPlanBoundaryTool(tool.Name()):
 		// Without this case, yolo / auto / bypass / a permissions
@@ -1103,17 +1127,10 @@ func executeToolCallImpl(
 				return "", nil, false, "", err
 			}
 			approvalSource = "permissions"
-		case permissions.Ask:
-			if denied, savedForLater, err := promptForApproval(ctx, cfg, tool, normalizedTC, preview, events, decisions); err != nil || denied || savedForLater {
-				content, images, d, rerr := deniedResultForMultimodal(tool.Name(), denied, savedForLater, err)
-				src := "user"
-				if rerr != nil {
-					src = ""
-				}
-				return content, images, d, src, rerr
-			}
-			approvalSource = "user"
 		default:
+			// permissions.Ask can't reach here — handled unconditionally
+			// above, before this switch, so an explicit Ask rule survives
+			// yolo/auto/plan overlays instead of being shadowed by them.
 			if tool.RequiresApproval(argsJSON) {
 				// No boundary-tool carve-out needed here: case 0 of the
 				// mode-priority switch catches enter/exit_plan_mode
@@ -1396,6 +1413,27 @@ func promptForApproval(
 				_ = send(ctx, events, ApprovalAuto{
 					ToolName: tool.Name(),
 					Preview:  "saved rule: " + rule,
+					Source:   "permissions",
+				})
+			}
+		}
+	}
+	if d == AllowSession && cfg.Permissions != nil {
+		// Same derivation as AllowAlways (including the worktree-name
+		// normalization), but the grant lands in Permissions.sessionAllow
+		// instead of permissions.local.json — memory-only, gone on
+		// restart, immune to a `/permissions` file edit + reload.
+		if rule, ok := permissions.DeriveAllowRule(tool.Name(), tc.ArgsJSON, cfg.Cwd.Get(), worktree.NormalizeForRule); ok {
+			if err := cfg.Permissions.AddSessionAllow(rule); err != nil {
+				_ = send(ctx, events, ApprovalAuto{
+					ToolName: tool.Name(),
+					Preview:  fmt.Sprintf("[warn] could not allow %q for this session: %v", rule, err),
+					Source:   "permissions",
+				})
+			} else {
+				_ = send(ctx, events, ApprovalAuto{
+					ToolName: tool.Name(),
+					Preview:  "allowed for this session (not saved to disk): " + rule,
 					Source:   "permissions",
 				})
 			}

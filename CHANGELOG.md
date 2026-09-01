@@ -8,6 +8,26 @@ the project uses semantic versioning once it's past `1.0.0`.
 
 ### Added
 
+- **Session-scoped permission grants.** The approval modal gains an `[S]`
+  hotkey alongside `[Y]`/`[A]`/`[N]`/`[D]`: it derives the same pattern
+  `[A]` would, but keeps the resulting allow rule in memory only, for the
+  rest of the current process — nothing is written to
+  `permissions.local.json`, so the grant can't outlive the session, leak
+  into a teammate's checkout, or need cleaning up later. The middle
+  ground between "just this once" (`[Y]`) and "forever" (`[A]`). See
+  [`security-and-allow-lists.md`](docs/security-and-allow-lists.md#creating-allow-and-deny-rules-from-approvals).
+
+- **`yottacode permissions test` dry-run command.** Runs a hypothetical
+  tool call through the exact same rule evaluator the agent loop uses —
+  no tool call is actually executed — and prints the verdict plus the
+  matching rule (or an explanation that nothing matched). `bash "<cmd>"`
+  is accepted as shorthand for `run_bash '{"command":"<cmd>"}'` so
+  testing the most common rule type, `Bash(...)`, never requires
+  hand-quoted JSON. Meant to make hand-written rules (per-segment Bash
+  splitting, path globs vs. free-form string globs, ratcheted
+  multi-target batch semantics) verifiable before they're trusted. See
+  [`security-and-allow-lists.md`](docs/security-and-allow-lists.md#testing-a-rule-before-you-trust-it).
+
 - **PDF table extraction and docx template-fill generation**, via
   `python3`+`pdfplumber`/`python-docx` routed through the same command
   sandbox `pandoc`/`weasyprint` already use. `read_document`'s PDF path
@@ -128,6 +148,16 @@ the project uses semantic versioning once it's past `1.0.0`.
 
 ### Fixed
 
+- **Explicit `Ask` permission rules were silently bypassed under yolo and
+  auto mode.** A rule like `Ask(["Read(**/.env*)"])` reads as a standing
+  "always confirm this" policy, but the yolo/auto-mode/plan-mode-allow
+  auto-approve branches were checked before the loop ever consulted the
+  `Ask` verdict — so the rule was quietly skipped whenever one of those
+  overlays was active, matching only its documented (and tested) `Deny`
+  counterpart in surviving `--yolo`. `Ask` now sits at the same
+  precedence tier as `Deny`: it prompts regardless of which mode overlay
+  is on. See
+  [`security-and-allow-lists.md`](docs/security-and-allow-lists.md#gate-precedence).
 - **`dispatch`'s file-partition safety guarantee had real holes.** A worker
   that ended errored (e.g. it left out-of-scope changes uncommitted) could
   still have its branch recommended for `integrate` if it had an earlier
