@@ -38,6 +38,16 @@ Standing rules:
 - Bug fixes should ship with a regression test.
 - A change is not done until `go test ./...` is green.
 
+## Debug Adapter Protocol Client
+
+The low-level Debug Adapter Protocol client lives in [`internal/dap`](../internal/dap).
+It uses [`github.com/google/go-dap`](https://pkg.go.dev/github.com/google/go-dap)
+for protocol structs and Content-Length framing, while yottacode owns the
+stdio process supervision, request/response correlation, request timeouts,
+asynchronous event stream, and guaranteed disconnect/kill teardown policy.
+Keep debugger UI and Go/Delve-specific failed-test workflows outside this
+package so the protocol client remains reusable.
+
 ## Adding A Built-In Tool
 
 Implement [`agent.Tool`](../internal/agent/tools.go). Core cwd-bound tools
