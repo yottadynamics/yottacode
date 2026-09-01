@@ -110,6 +110,65 @@ func TestGoDebugContinueReportsStillRunning(t *testing.T) {
 	}
 }
 
+func TestGoDebugFirstContinueAfterConfigurationWaitsWithoutContinueRequest(t *testing.T) {
+	client := newFakeGoDebugClient()
+	client.events <- &godap.StoppedEvent{Body: godap.StoppedEventBody{Reason: "breakpoint", ThreadId: 7}}
+	manager := newGoDebugManager(NewCwdRef(t.TempDir()))
+	manager.session = &goDebugSession{client: client}
+
+	out, err := (&DebugContinueTool{goDebugTool: goDebugTool{manager: manager, name: "debug_continue"}}).Execute(context.Background(), `{}`)
+	if err != nil {
+		t.Fatalf("debug_continue: %v", err)
+	}
+	if client.configurationDoneCalls != 1 {
+		t.Fatalf("ConfigurationDone calls = %d, want 1", client.configurationDoneCalls)
+	}
+	if client.continueCalls != 0 {
+		t.Fatalf("Continue calls = %d, want no initial continue before first stop", client.continueCalls)
+	}
+	if !strings.Contains(out, "stopped: reason=breakpoint thread=7") {
+		t.Fatalf("debug_continue output = %q", out)
+	}
+}
+
+func TestGoDebugEndedEventClearsActiveSession(t *testing.T) {
+	client := newFakeGoDebugClient()
+	client.events <- &godap.ExitedEvent{Body: godap.ExitedEventBody{ExitCode: 0}}
+	manager := newGoDebugManager(NewCwdRef(t.TempDir()))
+	manager.session = &goDebugSession{client: client}
+
+	out, err := manager.waitForStop(context.Background(), time.Second)
+	if err != nil {
+		t.Fatalf("waitForStop: %v", err)
+	}
+	if !strings.Contains(out, "debuggee exited with code 0") {
+		t.Fatalf("waitForStop output = %q", out)
+	}
+	if manager.session != nil {
+		t.Fatal("ended debug session should be cleared")
+	}
+}
+
+func TestCleanupRegistryToolsStopsGoDebugSession(t *testing.T) {
+	client := newFakeGoDebugClient()
+	var canceled bool
+	manager := newGoDebugManager(NewCwdRef(t.TempDir()))
+	start := &DebugStartTool{goDebugTool: goDebugTool{manager: manager, name: "debug_start"}}
+	manager.session = &goDebugSession{client: client, cancel: func() { canceled = true }}
+	reg := NewRegistry()
+	reg.Register(start)
+
+	if err := CleanupRegistryTools(context.Background(), reg); err != nil {
+		t.Fatalf("CleanupRegistryTools: %v", err)
+	}
+	if manager.session != nil {
+		t.Fatal("cleanup should clear active debug session")
+	}
+	if client.closeCalls != 1 || !canceled {
+		t.Fatalf("cleanup closeCalls=%d canceled=%t, want close and cancel", client.closeCalls, canceled)
+	}
+}
+
 func TestGoDebugWaitForStopReportsStillRunning(t *testing.T) {
 	client := newFakeGoDebugClient()
 	manager := newGoDebugManager(NewCwdRef(t.TempDir()))
@@ -166,6 +225,7 @@ func TestRegisterCoreCwdToolsRegistersGoDebugTools(t *testing.T) {
 
 type fakeGoDebugClient struct {
 	initializeCalls        int
+	configurationDoneCalls int
 	launchArgs             map[string]any
 	continueCalls          int
 	lastVariablesReference int
@@ -181,7 +241,7 @@ type fakeGoDebugClient struct {
 }
 
 func newFakeGoDebugClient() *fakeGoDebugClient {
-	return &fakeGoDebugClient{events: make(chan godap.EventMessage)}
+	return &fakeGoDebugClient{events: make(chan godap.EventMessage, 16)}
 }
 
 func (f *fakeGoDebugClient) Initialize(context.Context, godap.InitializeRequestArguments) (godap.Capabilities, error) {
@@ -198,7 +258,10 @@ func (f *fakeGoDebugClient) Launch(_ context.Context, args map[string]any) error
 func (f *fakeGoDebugClient) SetBreakpoints(context.Context, godap.SetBreakpointsArguments) (godap.SetBreakpointsResponseBody, error) {
 	return godap.SetBreakpointsResponseBody{Breakpoints: []godap.Breakpoint{{Verified: true, Line: 12}}}, nil
 }
-func (f *fakeGoDebugClient) ConfigurationDone(context.Context) error { return nil }
+func (f *fakeGoDebugClient) ConfigurationDone(context.Context) error {
+	f.configurationDoneCalls++
+	return nil
+}
 func (f *fakeGoDebugClient) Continue(context.Context, godap.ContinueArguments) (godap.ContinueResponseBody, error) {
 	f.continueCalls++
 	return godap.ContinueResponseBody{AllThreadsContinued: true}, nil

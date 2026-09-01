@@ -61,6 +61,7 @@ type goDebugManager struct {
 	session    *goDebugSession
 	threadID   int
 	configured bool
+	stopped    bool
 	start      func(context.Context, *CwdRef, debugStartArgs) (*goDebugSession, error)
 }
 
@@ -131,6 +132,7 @@ func (m *goDebugManager) startSession(ctx context.Context, a debugStartArgs) (st
 	m.session = started
 	m.threadID = 0
 	m.configured = false
+	m.stopped = false
 
 	if _, err := started.client.Initialize(ctx, godap.InitializeRequestArguments{AdapterID: "go", LinesStartAt1: true, ColumnsStartAt1: true}); err != nil {
 		_ = started.close(ctx)
@@ -188,12 +190,34 @@ func (m *goDebugManager) ensureConfigurationDone(ctx context.Context, sess *goDe
 	return nil
 }
 
-func (m *goDebugManager) rememberThread(id int) {
+func (m *goDebugManager) markStoppedThread(id int) {
 	if id == 0 {
 		return
 	}
 	m.mu.Lock()
 	m.threadID = id
+	m.stopped = true
+	m.mu.Unlock()
+}
+
+func (m *goDebugManager) markRunning() {
+	m.mu.Lock()
+	m.stopped = false
+	m.mu.Unlock()
+}
+
+func (m *goDebugManager) shouldSendContinue(providedThreadID int) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.configured && m.stopped && (providedThreadID != 0 || m.threadID != 0)
+}
+
+func (m *goDebugManager) markEnded() {
+	m.mu.Lock()
+	m.session = nil
+	m.threadID = 0
+	m.configured = false
+	m.stopped = false
 	m.mu.Unlock()
 }
 
@@ -223,6 +247,13 @@ func (m *goDebugManager) stop(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("debug_stop: %w", err)
 	}
 	return "stopped Go debug session", nil
+}
+
+// Cleanup closes a live debug session without requiring the caller to know
+// whether one exists. Runtime shutdown uses this to avoid orphaning Delve.
+func (m *goDebugManager) Cleanup(ctx context.Context) error {
+	_, err := m.stop(ctx)
+	return err
 }
 
 func (s *goDebugSession) close(ctx context.Context) error {
@@ -381,6 +412,10 @@ func newGoDebugTools(cwd *CwdRef) []Tool {
 
 func (t goDebugTool) Name() string { return t.name }
 
+func (t goDebugTool) Cleanup(ctx context.Context) error {
+	return t.manager.Cleanup(ctx)
+}
+
 // DebugStartTool starts one Delve DAP session. It always requires approval
 // because it executes the user's program or tests.
 type DebugStartTool struct{ goDebugTool }
@@ -469,8 +504,11 @@ func (t *DebugContinueTool) Execute(ctx context.Context, argsJSON string) (strin
 	if err := t.manager.ensureConfigurationDone(ctx, sess); err != nil {
 		return "", fmt.Errorf("debug_continue: configurationDone: %w", err)
 	}
-	if _, err := sess.client.Continue(ctx, godap.ContinueArguments{ThreadId: t.manager.currentThread(a.ThreadID)}); err != nil {
-		return "", fmt.Errorf("debug_continue: %w", err)
+	if t.manager.shouldSendContinue(a.ThreadID) {
+		if _, err := sess.client.Continue(ctx, godap.ContinueArguments{ThreadId: t.manager.currentThread(a.ThreadID)}); err != nil {
+			return "", fmt.Errorf("debug_continue: %w", err)
+		}
+		t.manager.markRunning()
 	}
 	return t.manager.waitForStop(ctx, debugDefaultContinueTimeout)
 }
@@ -521,6 +559,7 @@ func (t *DebugStepTool) Execute(ctx context.Context, argsJSON string) (string, e
 	if err != nil {
 		return "", fmt.Errorf("debug_step: %w", err)
 	}
+	t.manager.markRunning()
 	return t.manager.waitForStop(ctx, debugDefaultContinueTimeout)
 }
 
@@ -539,11 +578,13 @@ func (m *goDebugManager) waitForStop(ctx context.Context, timeout time.Duration)
 			}
 			switch e := ev.(type) {
 			case *godap.StoppedEvent:
-				m.rememberThread(e.Body.ThreadId)
+				m.markStoppedThread(e.Body.ThreadId)
 				return fmt.Sprintf("stopped: reason=%s thread=%d", e.Body.Reason, e.Body.ThreadId), nil
 			case *godap.TerminatedEvent:
+				m.markEnded()
 				return "debug session terminated", nil
 			case *godap.ExitedEvent:
+				m.markEnded()
 				return fmt.Sprintf("debuggee exited with code %d", e.Body.ExitCode), nil
 			}
 		case <-timer.C:
