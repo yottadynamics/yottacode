@@ -11,8 +11,9 @@ import (
 // AutoModeState is the per-session, runtime-mutable auto-mode flag the
 // loop reads on every tool dispatch. When active, mutating tools that
 // would normally hit an approval modal auto-allow with Source=auto-mode
-// — EXCEPT for the safety floor (run_bash, git_commit, git_checkpoint,
-// rollback), which always prompt regardless of mode.
+// — EXCEPT for the safety floor (run_bash, run_tests, debug_start,
+// debug_eval, git_commit, git_checkpoint, rollback), which always prompts
+// regardless of mode.
 //
 // Mutually exclusive with plan mode at the TUI layer: entering one
 // turns the other off. The loop-level gates don't enforce this on
@@ -35,7 +36,8 @@ func (a *AutoModeState) IsActive() bool {
 
 // IsAutoModeSafetyFloor returns true for tools whose approval prompt
 // must NOT be skipped by auto mode. These are the calls that run
-// arbitrary code (run_bash) or write permanent / hard-to-reverse
+// arbitrary code (run_bash, run_tests, debug_start), can evaluate code
+// in a running process (debug_eval), or write permanent / hard-to-reverse
 // history (git_commit, git_checkpoint, rollback). The user opted into
 // auto mode to skip edit-by-edit approval friction — not to silently
 // hand over shell access or amend git history.
@@ -44,7 +46,7 @@ func (a *AutoModeState) IsActive() bool {
 // use yolo mode; that's the user-explicit "always approve" path.
 func IsAutoModeSafetyFloor(toolName string) bool {
 	switch toolName {
-	case "run_bash", "run_tests", "git_commit", "git_checkpoint", "rollback":
+	case "run_bash", "run_tests", "debug_start", "debug_eval", "git_commit", "git_checkpoint", "rollback":
 		return true
 	case "enter_worktree", "exit_worktree":
 		// Worktree entry/exit shifts what the agent is "working on"

@@ -170,6 +170,7 @@ func (rt *Runtime) Close(ctx context.Context) {
 	if rt == nil {
 		return
 	}
+	_ = agent.CleanupRegistryTools(ctx, rt.Registry)
 	if rt.SubagentTasks != nil {
 		if rt.SubagentTasks.CancelAll() > 0 {
 			deadline := time.NewTimer(runtimeSubagentDrainGrace)

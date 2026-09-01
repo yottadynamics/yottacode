@@ -61,6 +61,14 @@ In addition to the built-ins, **MCP tools** register dynamically when an `[[mcp_
 | [`git_checkpoint`](#git_checkpoint) | required | Create a local checkpoint commit |
 | [`rollback`](#rollback) | required | Reset the repo to an earlier commit |
 | [`run_tests`](#run_tests) | required | Run the repo's test command |
+| [`debug_start`](debug.md) | required | Start one Go debug session through `dlv dap` |
+| [`debug_breakpoint`](debug.md) | none | Set a Go source breakpoint by file and line |
+| [`debug_continue`](debug.md) | none | Continue a Go debug session and wait up to 30s for a stop event |
+| [`debug_step`](debug.md) | none | Step a Go debug session with next/stepIn/stepOut |
+| [`debug_stack`](debug.md) | none | Return Go debug stack frames |
+| [`debug_vars`](debug.md) | none | Return variables for a Go debug frame or variables reference |
+| [`debug_eval`](debug.md) | required | Evaluate a Go debug expression in the selected frame/context |
+| [`debug_stop`](debug.md) | none | Stop the active Go debug session and tear down Delve |
 | [`media_probe`](#media_probe) | none | Inspect audio/video metadata with ffprobe |
 | [`media_analyze`](#media_analyze) | none | Detect silence/fluff candidates with ffmpeg |
 | [`media_compose`](#media_compose) | required | Assemble title cards, images, and clips into a draft MP4 with ffmpeg templates/effects |
@@ -1409,6 +1417,19 @@ Run a test command in the repo. Defaults to `go test ./...`.
 | `path` | string | `.` |
 
 Prompts for approval in foreground use. Background dispatch workers cannot run `run_tests` because tests execute project code without a human approval surface.
+
+## Go debug tools
+
+Go debugger tools are backed by `dlv dap`; see [`debug.md`](debug.md) for the
+full workflow and policy. `debug_start` always prompts because it executes the
+selected program or test package. `debug_eval` also prompts because expression
+evaluation is more powerful than passive inspection. The remaining debug tools
+operate inside the already-approved live session without another prompt.
+
+v1 allows one live Go debug session per yottacode session. `debug_continue` and
+`debug_step` wait up to 30 seconds for a stop event, then report `still running
+after 30s`. yottacode resolves `dlv` from `PATH` only and never downloads
+binaries.
 
 ## media_probe
 
