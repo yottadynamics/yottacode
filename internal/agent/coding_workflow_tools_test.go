@@ -485,6 +485,75 @@ func TestRunTestsTool_DefaultAndCustomCommand(t *testing.T) {
 	}
 }
 
+func TestRunTestsTool_HostGoCommandUsesRepoCleanScratch(t *testing.T) {
+	tmp := gitInit(t)
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(tmp, ".config"))
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(tmp, ".cache"))
+	runCommand, err := (&RunTestsTool{}).prepareRunTestsCommand("go env GOTELEMETRY XDG_CONFIG_HOME GOCACHE GOMODCACHE", HostSandbox{}, tmp)
+	if err != nil {
+		t.Fatalf("prepareRunTestsCommand: %v", err)
+	}
+	goScratch := filepath.Join(fakeHome, ".yottacode", "host-go", safeScratchName(tmp))
+	for _, fragment := range []string{
+		"HOME='" + goScratch + "'",
+		"XDG_CONFIG_HOME='" + filepath.Join(goScratch, "xdg-config") + "'",
+		"XDG_CACHE_HOME='" + filepath.Join(goScratch, "xdg-cache") + "'",
+		"GOCACHE='" + filepath.Join(goScratch, "cache") + "'",
+		"GOMODCACHE='" + filepath.Join(goScratch, "modcache") + "'",
+		"GOTELEMETRY='off'",
+	} {
+		if !strings.Contains(runCommand, fragment) {
+			t.Fatalf("host Go command missing %s: %q", fragment, runCommand)
+		}
+	}
+	for _, polluted := range []string{
+		filepath.Join(tmp, ".config"),
+		filepath.Join(tmp, ".cache"),
+		filepath.Join(tmp, "go"),
+	} {
+		if _, err := os.Stat(polluted); !os.IsNotExist(err) {
+			t.Fatalf("host run_tests command preparation polluted repo root with %s", polluted)
+		}
+	}
+}
+
+func TestRunTestsTool_DetectsGoCommands(t *testing.T) {
+	cases := []struct {
+		name    string
+		command string
+		want    bool
+	}{
+		{name: "default go", command: "go test ./...", want: true},
+		{name: "env assignment", command: "GOFLAGS=-count=1 go test ./...", want: true},
+		{name: "absolute path", command: "/usr/local/go/bin/go test ./...", want: true},
+		{name: "relative path", command: "./bin/go test ./...", want: true},
+		{name: "compound", command: "printf ok && go test ./...", want: true},
+		{name: "subshell", command: "(go test ./...)", want: true},
+		{name: "non go", command: "printf go test", want: false},
+		{name: "word containing go", command: "cargo test ./...", want: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := runTestsCommandUsesGo(tc.command); got != tc.want {
+				t.Fatalf("runTestsCommandUsesGo(%q) = %v, want %v", tc.command, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestRunTestsTool_HostNonGoCommandKeepsLegacyEnvironment(t *testing.T) {
+	tmp := t.TempDir()
+	runCommand, err := (&RunTestsTool{}).prepareRunTestsCommand("printf ok", HostSandbox{}, tmp)
+	if err != nil {
+		t.Fatalf("prepareRunTestsCommand: %v", err)
+	}
+	if runCommand != "printf ok" {
+		t.Fatalf("non-Go host command should not be wrapped in Go scratch env: %q", runCommand)
+	}
+}
+
 func TestRunTestsTool_ReportsFailureAsData(t *testing.T) {
 	tmp := t.TempDir()
 	tool := &RunTestsTool{Cwd: NewCwdRef(tmp)}

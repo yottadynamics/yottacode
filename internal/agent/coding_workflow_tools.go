@@ -15,6 +15,7 @@ import (
 	lspci "github.com/yottadynamics/yottacode/internal/lsp"
 	"github.com/yottadynamics/yottacode/internal/permissions"
 	"github.com/yottadynamics/yottacode/internal/sandboxcache"
+	"github.com/yottadynamics/yottacode/internal/shellseg"
 )
 
 type ApplyDiffTool struct {
@@ -650,8 +651,43 @@ func (t *RunTestsTool) resolveRunTestsRoot(path string) (string, error) {
 
 func (t *RunTestsTool) prepareRunTestsCommand(command string, sandbox Sandbox, root string) (string, error) {
 	if sandbox.Label() == (HostSandbox{}).Label() {
-		return command, nil
+		if !runTestsCommandUsesGo(command) {
+			return command, nil
+		}
+		return prepareHostGoRunTestsCommand(command, root)
 	}
+	return prepareSandboxedGoRunTestsCommand(command, root)
+}
+
+// goSegmentRE detects command segments that invoke Go directly, including common
+// absolute or relative paths to the binary, without wrapping unrelated commands.
+var goSegmentRE = regexp.MustCompile(`^(?:[A-Za-z_][A-Za-z0-9_]*=[^[:space:]]+[[:space:]]+)*(?:[./~[:alnum:]_-]+/)*go(?:[[:space:]]|$)`)
+
+func runTestsCommandUsesGo(command string) bool {
+	for _, segment := range shellseg.Split(command) {
+		text := strings.TrimLeft(segment.Text, " \t(")
+		if goSegmentRE.MatchString(text) {
+			return true
+		}
+	}
+	return false
+}
+
+func prepareHostGoRunTestsCommand(command, root string) (string, error) {
+	base := filepath.Clean(root)
+	goScratch, err := sandboxcache.HostGoScratchDir(base)
+	if err != nil {
+		return "", err
+	}
+	goTmp := filepath.Join(goScratch, "tmp")
+	goCache := filepath.Join(goScratch, "cache")
+	goModCache := filepath.Join(goScratch, "modcache")
+	goXDGCache := filepath.Join(goScratch, "xdg-cache")
+	goXDGConfig := filepath.Join(goScratch, "xdg-config")
+	return joinGoRunTestsEnv(command, goScratch, goTmp, goCache, goModCache, goXDGCache, goXDGConfig), nil
+}
+
+func prepareSandboxedGoRunTestsCommand(command, root string) (string, error) {
 	base := filepath.Clean(root)
 	// Keep every sandbox Go scratch/cache directory outside the checked-out
 	// tree and outside /tmp. Repo-local caches make `go test ./...` descend into
@@ -678,15 +714,19 @@ func (t *RunTestsTool) prepareRunTestsCommand(command string, sandbox Sandbox, r
 	}
 	goCache := filepath.Join(goCacheRoot, "cache")
 	goModCache := filepath.Join(goCacheRoot, "modcache")
+	return joinGoRunTestsEnv(command, goScratch, goTmp, goCache, goModCache, goXDGCache, goXDGConfig), nil
+}
 
+func joinGoRunTestsEnv(command, goScratch, goTmp, goCache, goModCache, goXDGCache, goXDGConfig string) string {
 	// The Podman sandbox intentionally mounts /tmp as noexec, but `go test`
-	// writes and executes test binaries from GOTMPDIR. Keep /tmp hardened while
-	// giving Go an executable project-mounted scratch/cache area. Use exports
-	// rather than an `env ... <command>` prefix so shell builtins and compound
-	// test commands keep working exactly as they do on the host path.
+	// writes and executes test binaries from GOTMPDIR. Host execution gets the
+	// same repo-clean HOME/XDG/TMPDIR treatment so Go telemetry and cache files
+	// cannot appear under the checkout when a caller's environment points there.
+	// Use exports rather than an `env ... <command>` prefix so shell builtins and
+	// compound test commands keep working exactly as they do on the host path.
 	return strings.Join([]string{
 		"mkdir -p " + strings.Join([]string{shellQuoteSingle(goTmp), shellQuoteSingle(goCache), shellQuoteSingle(goModCache), shellQuoteSingle(goXDGCache), shellQuoteSingle(goXDGConfig)}, " "),
 		"export HOME=" + shellQuoteSingle(goScratch) + " XDG_CACHE_HOME=" + shellQuoteSingle(goXDGCache) + " XDG_CONFIG_HOME=" + shellQuoteSingle(goXDGConfig) + " TMPDIR=" + shellQuoteSingle(goTmp) + " GOTMPDIR=" + shellQuoteSingle(goTmp) + " GOCACHE=" + shellQuoteSingle(goCache) + " GOMODCACHE=" + shellQuoteSingle(goModCache) + " GOTELEMETRY='off'",
 		command,
-	}, " && "), nil
+	}, " && ")
 }
