@@ -1008,7 +1008,7 @@ func (t *AgentTool) runChild(
 					return "", true, subagents.TaskCanceled, 0
 				}
 				switch verdict {
-				case AllowOnce, AllowAlways:
+				case AllowOnce, AllowAlways, AllowSession:
 					emitActivity(fmt.Sprintf("approved %s", e.ToolName))
 				case Deny:
 					emitActivity(fmt.Sprintf("denied %s", e.ToolName))

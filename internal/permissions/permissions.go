@@ -42,9 +42,10 @@
 //     args, glob pattern, URL, …) with `*` = "any sequence" and `?` =
 //     "any single char".
 //
-// Decision precedence: Deny > Allow > Ask > Default. Default means "the
+// Decision precedence: Deny > Ask > Allow > Default. Default means "the
 // tool's own RequiresApproval policy decides" (i.e. the agent loop's
-// pre-existing behavior).
+// pre-existing behavior). Ask outranks allow so a broad convenience allow
+// cannot suppress an explicit "always confirm this sensitive target" rule.
 package permissions
 
 import (
@@ -131,6 +132,13 @@ type Permissions struct {
 	deny     []Rule
 	allow    []Rule
 	ask      []Rule
+	// sessionAllow holds Allow rules granted via the approval modal's
+	// "[S] allow for this session" answer. In-memory only — AddSessionAllow
+	// never touches disk, so a grant here evaporates on process exit and,
+	// unlike allow/ask/deny, is untouched by Reload (re-reading the files
+	// from disk must not silently erase a session grant the user is
+	// actively relying on).
+	sessionAllow []Rule
 	// localPath is .yottacode/permissions.local.json — the only file
 	// AddAllow ever writes to. The shared permissions.json is never
 	// touched by the agent so a team's committable file stays under
@@ -257,14 +265,14 @@ func parseRule(raw, source string) (Rule, error) {
 	return Rule{Tool: m[1], Pattern: m[2], Source: source}, nil
 }
 
-// Evaluate runs the precedence chain (deny > allow > ask) against a
+// Evaluate runs the precedence chain (deny > ask > allow) against a
 // single tool call described by toolName + argsJSON. Returns Default
 // when no rule matches, leaving the existing approval flow in charge.
 //
 // Multi-target calls (Target.Descriptors set, e.g. apply_diff touching
 // several files) use ratcheted semantics: Deny if any path is denied,
-// Allow only if every path matches an allow rule, Ask if any path
-// matches ask. The conservative Allow rule prevents a diff that mixes
+// Ask if any path matches ask, Allow only if every path matches an
+// allow rule. The conservative Allow rule prevents a diff that mixes
 // rule-covered and unknown paths from skipping the modal.
 func (p *Permissions) Evaluate(toolName, argsJSON string) Decision {
 	decision, _ := p.EvaluateWithRule(toolName, argsJSON)
@@ -291,11 +299,14 @@ func (p *Permissions) EvaluateWithRule(toolName, argsJSON string) (Decision, Rul
 	if rule, ok := matchFirst(target, p.deny, p.cwd); ok {
 		return Deny, rule
 	}
+	if rule, ok := matchFirst(target, p.ask, p.cwd); ok {
+		return Ask, rule
+	}
 	if rule, ok := matchFirst(target, p.allow, p.cwd); ok {
 		return Allow, rule
 	}
-	if rule, ok := matchFirst(target, p.ask, p.cwd); ok {
-		return Ask, rule
+	if rule, ok := matchFirst(target, p.sessionAllow, p.cwd); ok {
+		return Allow, rule
 	}
 	return Default, Rule{}
 }
@@ -339,11 +350,20 @@ func (p *Permissions) evaluateMultiWithRule(target Target) (Decision, Rule) {
 	if _, anyDeny, rule := hit(p.deny); anyDeny {
 		return Deny, rule
 	}
-	if allAllow, _, rule := hit(p.allow); allAllow {
-		return Allow, rule
-	}
 	if _, anyAsk, rule := hit(p.ask); anyAsk {
 		return Ask, rule
+	}
+	allowRules := p.allow
+	if len(p.sessionAllow) > 0 {
+		// Every descriptor must match EITHER a persisted allow rule or a
+		// session-scoped one — a single combined list keeps that an
+		// "all descriptors, either source" check instead of two separate
+		// all-or-nothing passes that a batch split across both sources
+		// would fail. Only allocated when session grants actually exist.
+		allowRules = append(append([]Rule{}, p.allow...), p.sessionAllow...)
+	}
+	if allAllow, _, rule := hit(allowRules); allAllow {
+		return Allow, rule
 	}
 	return Default, Rule{}
 }
@@ -389,6 +409,37 @@ func (p *Permissions) AddAllow(rule string) error {
 		return err
 	}
 	return os.Rename(tmp, p.localPath)
+}
+
+// AddSessionAllow appends an in-memory-only allow rule — the "[S] allow
+// for this session" approval answer. Unlike AddAllow, nothing is written
+// to disk: the grant lives only in p.sessionAllow for the lifetime of
+// this Permissions value (one process), so it can't outlive the session
+// or leak into a teammate's permissions.local.json. Idempotent against
+// both the session list and the already-persisted allow list — no point
+// keeping an in-memory duplicate of a rule that's already on disk.
+func (p *Permissions) AddSessionAllow(rule string) error {
+	parsed, err := parseRule(rule, "session")
+	if err != nil {
+		return err
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	alreadyPresent := func(existing Rule) bool {
+		return existing.Tool == parsed.Tool && existing.Pattern == parsed.Pattern
+	}
+	for _, existing := range p.allow {
+		if alreadyPresent(existing) {
+			return nil
+		}
+	}
+	for _, existing := range p.sessionAllow {
+		if alreadyPresent(existing) {
+			return nil
+		}
+	}
+	p.sessionAllow = append(p.sessionAllow, parsed)
+	return nil
 }
 
 // AddDeny appends a rule to the deny[] list of permissions.local.json

@@ -112,17 +112,17 @@ Approval prompts can be answered once or turned into a reusable allow rule. Auto
 Tool calls flow through layered gates in this order:
 
 1. **`Deny` rules** in `permissions.json` and `permissions.local.json` always win.
-2. **Plan-mode block** (only when plan mode is active) — blocks every mutating tool except `todo_write`, `exit_plan_mode`, and writes to the resolved plan file. Returns a structured error to the model so it can switch to a read-only or plan-file alternative.
-3. **Unattended background-worker policy** (only for background subagents) — allows worktree-confined file edits but denies host shell, tests, git commits, and network-facing mutations unless that worker is running inside the command sandbox.
-4. **Plan boundary tools** (`enter_plan_mode`, `exit_plan_mode`) always prompt. The approval card is the mode-change handshake, so auto/yolo/allow rules do not bypass it.
-5. **Yolo mode auto-allow** (when `--yolo` was passed at startup, `/yolo` toggled the overlay on, or the Shift+Tab cycle reaches yolo) — every non-boundary tool auto-allows. No safety floor.
-6. **Plan-mode auto-allow** — writes to the resolved plan file are the model's only legitimate mutation surface while planning; they auto-allow without a prompt.
-7. **Auto-mode auto-allow** (only when auto mode is active) — non-safety-floor mutating tools auto-allow. Safety floor (`run_bash`, `run_tests`, `git_commit`, `git_checkpoint`, `rollback`, `enter_worktree`, `exit_worktree`) normally still prompts, with one carve-out: `run_bash` calls whose every segment uses a verb from a built-in read-only allowlist (`ls`, `cat`, `head`, `tail`, `wc`, `grep`, `rg`, `find`, `awk`, `cut`, `sort`, `uniq`, `diff`, `cd`, `pwd`, `which`, `echo`, `date`, `tree`, `stat`, `file`, `du`, `df`, …) AND carries no risk flag (no `>` redirects, no pipe-into-shell, no sudo, no credential-store path) auto-allow under Source `auto-mode-safe-bash`. The intent: a model's habitual `cd <project> && grep …` chain doesn't break flow, while any mutation (rm, mv, touch, curl, go test, sed -i, …) still prompts.
-8. **`Allow` rules** in permission files skip the prompt.
-9. **`Ask` rules** force a prompt even on tools that would normally auto-execute.
+2. **Plan-mode block** (only when plan mode is active) — blocks every mutating tool except `todo_write`, `exit_plan_mode`, and writes to the resolved plan file. Returns a structured error to the model so it can switch to a read-only or plan-file alternative. Beats an `Ask` rule too: plan mode's read-only invariant isn't something a confirm-and-proceed prompt should be able to soften.
+3. **Unattended background-worker policy** (only for background subagents) — allows worktree-confined file edits but denies host shell, tests, git commits, and network-facing mutations unless that worker is running inside the command sandbox. Background workers have no human to answer a prompt, so they're routed to this deterministic policy before `Ask` or any mode overlay ever applies.
+4. **`Ask` rules** force a prompt even on tools that would normally auto-execute, and even when yolo, auto mode, or plan-mode's plan-file auto-allow is on. An explicit `Ask` rule is a standing "always confirm this" policy, not a default the active mode gets to override — the same footing as `Deny`, just for a prompt instead of a refusal.
+5. **Plan boundary tools** (`enter_plan_mode`, `exit_plan_mode`) always prompt. The approval card is the mode-change handshake, so auto/yolo/allow rules do not bypass it.
+6. **Yolo mode auto-allow** (when `--yolo` was passed at startup, `/yolo` toggled the overlay on, or the Shift+Tab cycle reaches yolo) — every remaining non-boundary tool auto-allows. No safety floor.
+7. **Plan-mode auto-allow** — writes to the resolved plan file are the model's only legitimate mutation surface while planning; they auto-allow without a prompt.
+8. **Auto-mode auto-allow** (only when auto mode is active) — non-safety-floor mutating tools auto-allow. Safety floor (`run_bash`, `run_tests`, `git_commit`, `git_checkpoint`, `rollback`, `enter_worktree`, `exit_worktree`) normally still prompts, with one carve-out: `run_bash` calls whose every segment uses a verb from a built-in read-only allowlist (`ls`, `cat`, `head`, `tail`, `wc`, `grep`, `rg`, `find`, `awk`, `cut`, `sort`, `uniq`, `diff`, `cd`, `pwd`, `which`, `echo`, `date`, `tree`, `stat`, `file`, `du`, `df`, …) AND carries no risk flag (no `>` redirects, no pipe-into-shell, no sudo, no credential-store path) auto-allow under Source `auto-mode-safe-bash`. The intent: a model's habitual `cd <project> && grep …` chain doesn't break flow, while any mutation (rm, mv, touch, curl, go test, sed -i, …) still prompts.
+9. **`Allow` rules** in permission files skip the prompt.
 10. **Tool-default policy** (the tool's own `RequiresApproval`) prompts mutating tools and auto-executes read-only ones.
 
-`Deny` always wins, including over yolo mode. `--yolo` / `/yolo` is "skip prompts," not "ignore my policy."
+`Deny` and `Ask` both survive every mode overlay, yolo included — the same "written on purpose" reasoning applies to both, not just to `Deny`. `--yolo` / `/yolo` is "skip prompts," not "ignore my policy."
 
 Trust controls separate into **modes** (workflow shape, mutually exclusive) and the **yolo mode overlay** (orthogonal, applies on top of any mode):
 
@@ -212,9 +212,11 @@ Rules support `allow`, `ask`, and `deny` policy. Explicit deny rules still apply
 
 ## Creating allow and deny rules from approvals
 
-When an approval modal appears, use the keyboard: press **`Y`** to approve once, **`N`** to reject, **`A`** to save a derived *allow* rule, or **`D`** to save a derived *deny* rule into `permissions.local.json`. The modal ignores mouse clicks, including the close glyph, so safety decisions cannot be delayed or mis-triggered by terminal mouse events. Either always/never path shows the exact rule before it is saved.
+When an approval modal appears, use the keyboard: press **`Y`** to approve once, **`S`** to allow for the rest of this session, **`A`** to save a derived *allow* rule, **`N`** to reject, or **`D`** to save a derived *deny* rule into `permissions.local.json`. The modal ignores mouse clicks, including the close glyph, so safety decisions cannot be delayed or mis-triggered by terminal mouse events. Every always/never/session path shows the exact rule before it takes effect.
 
-`[A]` always is suppressed for compound shell commands and obviously dangerous verbs (`rm`, `curl`, `sudo`, …) — those are footgun-wide to blanket-allow. `[D]` never is offered even for those (blocking a dangerous command permanently is exactly the point) and is scoped to `run_bash` and `git`. Because bash rules are matched per segment, a block is derived at the verb level: hitting `[D]` never on `curl … | sh` saves `Bash(curl *)`, which then refuses `curl` anywhere. Since deny outranks allow, a `[D]` block also overrides any existing allow for the same pattern.
+`[S]` session and `[A]` always derive the identical pattern and share the same suppression rules (see below) — the only difference is where the rule lives. `[A]` appends it to `permissions.local.json`, so it survives restarts and is visible to `/permissions`. `[S]` keeps it in memory only, for the rest of the current process: nothing is written to disk, so it can't outlive the session, leak into a teammate's checkout, or need cleaning up later. Use `[S]` for a rule you only want for this one exploratory session; use `[A]` for one you'd make again next time.
+
+`[A]`/`[S]` are suppressed for compound shell commands and obviously dangerous verbs (`rm`, `curl`, `sudo`, …) — those are footgun-wide to blanket-allow, temporarily or not. `[D]` never is offered even for those (blocking a dangerous command permanently is exactly the point) and is scoped to `run_bash` and `git`. Because bash rules are matched per segment, a block is derived at the verb level: hitting `[D]` never on `curl … | sh` saves `Bash(curl *)`, which then refuses `curl` anywhere. Since deny outranks allow, a `[D]` block also overrides any existing allow (persisted or session-scoped) for the same pattern.
 
 Examples:
 
@@ -228,6 +230,23 @@ Examples:
 - `MCP(github/*)` — allow every tool from the GitHub MCP server; prefer narrower server/tool rules when possible.
 
 `/permissions` also highlights risky-but-valid rules, such as broad `Bash(gh *)`, `Bash(python*)`, `Git(-C *)`, namespace-wide `Github(*)` / `MCP(*)`, repo-wide delete allows, and allow rules shadowed by deny rules. Warnings are advisory only: yottacode still honors the policy file exactly as written.
+
+## Testing a rule before you trust it
+
+The matching semantics — per-segment Bash splitting, doublestar path globs vs. free-form string globs, ratcheted "any-deny / all-allow / any-ask" evaluation for batch calls — are subtle enough that a hand-written rule can look right and match wrong. `yottacode permissions test` runs a hypothetical call through the exact same evaluator the agent loop uses, from the current directory's rule files, without executing anything:
+
+```bash
+yottacode permissions test bash "git push origin main --force"
+# tool:    run_bash
+# args:    {"command":"git push origin main --force"}
+# verdict: ask
+# matched: Ask(git push *)  [permissions.local.json]
+
+yottacode permissions test run_bash '{"command":"go test ./..."}'
+yottacode permissions test edit_file '{"path":"internal/foo.go"}'
+```
+
+`<tool>` is the internal tool name (`run_bash`, `write_file`, `edit_file`, `git`, `read_file`, `fetch_url`, …; see [tools.md](tools.md)); `bash` is accepted as a shorthand for `run_bash` and, only for that alias, the second argument may be a bare command string instead of JSON. A tool name with no permission mapping at all (nothing yottacode's rule engine ever looks at) reports `verdict: n/a` rather than a misleading `default`.
 
 ## Yolo mode (the danger setting)
 

@@ -200,6 +200,22 @@ func targetFor(toolName, argsJSON, cwd string) Target {
 	return Target{}
 }
 
+// SupportsToolName reports whether toolName produces a permission target
+// at all — i.e. whether calls to it can ever be governed by permissions.json
+// / permissions.local.json rules. targetFor returns an empty Target.PermName
+// for any tool name it doesn't recognize, which Evaluate treats the same as
+// "no rule matched" (Default). That's the right behavior for the agent loop,
+// but a caller presenting the distinction to a human — `yottacode
+// permissions test` — needs to tell "no rule matched, falls back to the
+// tool's own approval policy" apart from "this tool isn't subject to
+// permission-file matching in the first place", hence this export.
+func SupportsToolName(toolName string) bool {
+	if strings.HasPrefix(toolName, "mcp/") {
+		return true
+	}
+	return targetFor(toolName, "{}", "").PermName != ""
+}
+
 func extractCommand(argsJSON string) string {
 	var a struct {
 		Command string `json:"command"`
