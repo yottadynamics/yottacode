@@ -66,14 +66,17 @@ func TestReadFileTool_Anchors(t *testing.T) {
 		t.Fatalf("Execute: %v", err)
 	}
 	lines := strings.Split(out, "\n")
-	if len(lines) != 2 {
-		t.Fatalf("anchored output lines = %d, want 2: %q", len(lines), out)
+	if len(lines) != 3 {
+		t.Fatalf("anchored output lines = %d, want receipt + 2 lines: %q", len(lines), out)
 	}
-	if !strings.Contains(lines[0], "#") || !strings.Contains(lines[0], "\talpha") {
-		t.Fatalf("first anchored line malformed: %q", lines[0])
+	if !strings.Contains(lines[0], "# hashline path=f.txt offset=0 length=11 hash=") {
+		t.Fatalf("receipt line = %q", lines[0])
 	}
-	if !strings.Contains(lines[1], "#") || !strings.Contains(lines[1], "\tbeta") {
-		t.Fatalf("second anchored line malformed: %q", lines[1])
+	if !strings.Contains(lines[1], "#") || !strings.Contains(lines[1], "\talpha") {
+		t.Fatalf("first anchored line malformed: %q", lines[1])
+	}
+	if !strings.Contains(lines[2], "#") || !strings.Contains(lines[2], "\tbeta") {
+		t.Fatalf("second anchored line malformed: %q", lines[2])
 	}
 }
 

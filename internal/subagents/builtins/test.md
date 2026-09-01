@@ -1,7 +1,7 @@
 ---
 name: test
 description: Writes or updates tests for a given component and runs them. Owns the test files only — pairs cleanly with an implement task on the same component (different files). In dispatch fan-out, write tasks run in isolated background worktrees; standalone Agent calls run foreground unless run_in_background is explicitly requested. Returns what it covered and the pass/fail result.
-tools: [read_file, read_many_files, grep, glob, list_dir, list_project_structure, write_file, edit_file, apply_diff, run_tests, run_bash, git_diff_files, fetch_url, consult_advisor]
+tools: [read_file, read_many_files, grep, glob, list_dir, list_project_structure, write_file, edit_file, apply_hashline, apply_diff, run_tests, run_bash, git_diff_files, fetch_url, consult_advisor]
 background: true
 ---
 

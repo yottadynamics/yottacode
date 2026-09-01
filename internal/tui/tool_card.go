@@ -987,6 +987,13 @@ func recoverableToolErrorBody(toolName, output, cwd string) []string {
 			}
 			return []string{"stale anchor — re-read the target block with anchors=true and retry with current line#anchor values"}
 		}
+	case "apply_hashline":
+		if strings.Contains(trimmed, "stale_anchor") {
+			return []string{"stale hashline anchor — re-read the suggested range with anchors=true and retry"}
+		}
+		if strings.Contains(trimmed, "ambiguous_anchor") {
+			return []string{"ambiguous hashline anchor — re-read a larger unique range with anchors=true and retry"}
+		}
 	case "apply_diff":
 		switch agent.ClassifyPatchFailure(trimmed) {
 		case agent.PatchFailureMalformed:
@@ -1017,6 +1024,13 @@ func recoverableToolErrorFooter(toolName, output string) string {
 		}
 		if strings.Contains(output, "stale anchor") {
 			return "recoverable: stale anchor"
+		}
+	case "apply_hashline":
+		if strings.Contains(output, "stale_anchor") {
+			return "recoverable: stale hashline anchor"
+		}
+		if strings.Contains(output, "ambiguous_anchor") {
+			return "recoverable: ambiguous hashline anchor"
 		}
 	case "apply_diff":
 		switch agent.ClassifyPatchFailure(output) {
@@ -1440,6 +1454,10 @@ func toolHeader(toolName, argsJSON, preview string, maxWidth int, cwd string) st
 			selector = fmt.Sprintf("#%d", a.Index)
 		}
 		return clipHeader(fmt.Sprintf("LSP(code action %s %s:%d:%d)", selector, short(a.Path), a.Line, a.Character), headerBudget)
+	case "apply_hashline":
+		var a struct{ Path string }
+		_ = json.Unmarshal([]byte(argsJSON), &a)
+		return clipHeader(fmt.Sprintf("Patch(hashline %s)", short(a.Path)), headerBudget)
 	case "apply_diff":
 		// apply_diff carries a `diff` blob — no path field. Best we can
 		// do is label it as a patch op; the body shows the actual hunks.

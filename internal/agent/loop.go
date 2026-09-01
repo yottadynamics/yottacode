@@ -286,7 +286,9 @@ func repeatedToolFailureMessage(toolName, output string, count int) string {
 	guidance := "change strategy before retrying"
 	switch toolName {
 	case "edit_file":
-		guidance = "read the current file contents and retry with an exact old_string, or use apply_diff with fresh context"
+		guidance = "read the current file contents and retry with an exact old_string, or use apply_hashline with fresh anchors"
+	case "apply_hashline":
+		guidance = "re-read the suggested range with anchors=true, then retry with the current hashline receipt"
 	case "apply_diff":
 		guidance = "rebuild a valid unified diff with correct file headers and hunk ranges, or make a smaller edit_file change"
 	}

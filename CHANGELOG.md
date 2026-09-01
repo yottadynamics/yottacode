@@ -8,6 +8,8 @@ the project uses semantic versioning once it's past `1.0.0`.
 
 ### Added
 
+- **Hashline edit reliability tools** add `internal/edit/hashline`, read receipts on `read_file`/`read_many_files` when `anchors=true`, and the approval-gated `apply_hashline` tool. Hashline anchors hash the exact byte span that was read, reject stale or ambiguous matches instead of guessing, and write through same-directory temp files plus rename for atomic single-file edits.
+
 - **PDF table extraction and docx template-fill generation**, via
   `python3`+`pdfplumber`/`python-docx` routed through the same command
   sandbox `pandoc`/`weasyprint` already use. `read_document`'s PDF path

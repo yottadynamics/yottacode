@@ -1280,7 +1280,7 @@ func dispatchBackgroundApprovalPolicyFor(sandboxed bool) func(Tool, string) (Dec
 func dispatchBackgroundApprovalPolicy(tool Tool, argsJSON string, sandboxed bool) (Decision, string, bool) {
 	name := tool.Name()
 	switch name {
-	case "write_file", "edit_file", "edit_anchored", "apply_diff", "mkdir", "copy_file", "move_file", "delete_file":
+	case "write_file", "edit_file", "edit_anchored", "apply_hashline", "apply_diff", "mkdir", "copy_file", "move_file", "delete_file":
 		return AllowOnce, "allowed " + name + " (dispatch worktree + owned-file scoped write)", true
 	case "lsp_apply_workspace_edit":
 		return Deny, "denied lsp_apply_workspace_edit (workspace edits can partially apply across files; run this task in the foreground to approve it)", true
@@ -1608,7 +1608,7 @@ func langForTool(name string) string {
 	switch name {
 	case "run_bash", "run_tests":
 		return "bash"
-	case "edit_file", "apply_diff", "git_diff_files":
+	case "edit_file", "apply_hashline", "apply_diff", "git_diff_files":
 		return "diff"
 	}
 	return ""
