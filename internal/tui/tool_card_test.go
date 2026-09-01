@@ -573,6 +573,7 @@ func TestToolHeader_RewritesPerToolPreviews(t *testing.T) {
 		{"read_file", `{"path":"foo.go"}`, "read_file(foo.go)", "Read(foo.go)"},
 		{"read_file", `{"path":"foo.go","offset":10,"limit":20}`, "read_file(foo.go, offset=10, limit=20)", "Read(foo.go @ L10+20)"},
 		{"edit_file", `{"path":"foo.go","replace_all":true}`, "edit_file(foo.go, all)", "Edit(foo.go, all)"},
+		{"apply_hashline", `{"path":"foo.go","hunks":[{"offset":0,"length":3,"hash":"2c26b46b68ffc68f","old":"foo","new":"bar"}]}`, "apply_hashline(foo.go, 1 hunks)", "Patch(hashline foo.go)"},
 		{"list_dir", `{"path":"internal"}`, "list_dir(internal)", "List(internal)"},
 		{"list_dir", `{}`, "list_dir(.)", "List(.)"},
 		{"grep", `{"pattern":"foo","path":"."}`, `grep("foo" in .)`, `Grep("foo")`},

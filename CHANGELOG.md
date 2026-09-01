@@ -8,6 +8,7 @@ the project uses semantic versioning once it's past `1.0.0`.
 
 ### Added
 
+worktree-permissions-fine-grained-review
 - **Session-scoped permission grants.** The approval modal gains an `[S]`
   hotkey alongside `[Y]`/`[A]`/`[N]`/`[D]`: it derives the same pattern
   `[A]` would, but keeps the resulting allow rule in memory only, for the
@@ -27,6 +28,8 @@ the project uses semantic versioning once it's past `1.0.0`.
   splitting, path globs vs. free-form string globs, ratcheted
   multi-target batch semantics) verifiable before they're trusted. See
   [`security-and-allow-lists.md`](docs/security-and-allow-lists.md#testing-a-rule-before-you-trust-it).
+
+- **Hashline edit reliability tools** add `internal/edit/hashline`, read receipts on `read_file`/`read_many_files` when `anchors=true`, and the approval-gated `apply_hashline` tool. Hashline anchors hash the exact byte span that was read, reject stale or ambiguous matches instead of guessing, and write through same-directory temp files plus rename for atomic single-file edits.
 
 - **PDF table extraction and docx template-fill generation**, via
   `python3`+`pdfplumber`/`python-docx` routed through the same command

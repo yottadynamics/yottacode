@@ -2,6 +2,8 @@ package agent
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"sync"
 
 	"github.com/yottadynamics/yottacode/internal/adapter"
@@ -22,6 +24,33 @@ type Tool interface {
 	RequiresApproval(argsJSON string) bool
 	PreviewCall(argsJSON string) string
 	Execute(ctx context.Context, argsJSON string) (string, error)
+}
+
+// CleanupTool is an optional capability marker for tools that own session-scoped
+// resources. Runtime shutdown calls Cleanup on registered tools so long-lived
+// subprocesses are not orphaned when the user exits without an explicit stop.
+type CleanupTool interface {
+	Cleanup(ctx context.Context) error
+}
+
+// CleanupRegistryTools runs best-effort cleanup for every registered cleanup
+// tool. It returns a joined error so callers can log/report without skipping
+// later cleanup hooks.
+func CleanupRegistryTools(ctx context.Context, r *Registry) error {
+	if r == nil {
+		return nil
+	}
+	var errs []error
+	for _, t := range r.Tools() {
+		ct, ok := t.(CleanupTool)
+		if !ok {
+			continue
+		}
+		if err := ct.Cleanup(ctx); err != nil {
+			errs = append(errs, fmt.Errorf("cleanup %s: %w", t.Name(), err))
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // ParallelSafeTool is an optional capability marker for tools that can run

@@ -82,7 +82,7 @@ func targetFor(toolName, argsJSON, cwd string) Target {
 		return Target{PermName: "Read", Descriptors: descs, Multi: true, IsPath: true}
 	case "write_file":
 		return Target{PermName: "Write", Descriptor: relPath(extractPath(argsJSON), cwd), IsPath: true}
-	case "edit_file":
+	case "edit_file", "apply_hashline":
 		return Target{PermName: "Edit", Descriptor: relPath(extractPath(argsJSON), cwd), IsPath: true}
 	case "apply_diff":
 		// apply_diff carries a unified-diff blob in `diff`. Parse the
