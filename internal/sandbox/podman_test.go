@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -138,7 +139,7 @@ func TestPodmanRunArgsIncludesConfiguredDNS(t *testing.T) {
 		CPUs:      1,
 		PidsLimit: 128,
 	}
-	args, err := podmanRunArgs(cfg, "yc-test", mountRoot, hostCapabilities{StorageOpt: true, CgroupLimits: true})
+	args, err := podmanRunArgs(cfg, "yc-test", mountRoot, hostCapabilities{StorageOpt: true, CgroupLimits: true}, sandboxOwner{PID: 4242})
 	if err != nil {
 		t.Fatalf("podmanRunArgs: %v", err)
 	}
@@ -166,7 +167,7 @@ func TestPodmanRunArgsMountsPersistentGoCacheDir(t *testing.T) {
 		CPUs:      1,
 		PidsLimit: 128,
 	}
-	args, err := podmanRunArgs(cfg, "yc-test", mountRoot, hostCapabilities{StorageOpt: true, CgroupLimits: true})
+	args, err := podmanRunArgs(cfg, "yc-test", mountRoot, hostCapabilities{StorageOpt: true, CgroupLimits: true}, sandboxOwner{PID: 4242})
 	if err != nil {
 		t.Fatalf("podmanRunArgs: %v", err)
 	}
@@ -192,11 +193,11 @@ func TestPodmanRunArgsGoCacheDirIsHomeRootedNotWorktreeScoped(t *testing.T) {
 	mountRootB := filepath.Join(t.TempDir(), "repo-b")
 	cfg := config.SandboxConfig{Image: "sandbox-image", Network: "host", Mounts: []string{"."}, Memory: "256m", CPUs: 1, PidsLimit: 128}
 
-	argsA, err := podmanRunArgs(cfg, "yc-a", mountRootA, hostCapabilities{StorageOpt: true, CgroupLimits: true})
+	argsA, err := podmanRunArgs(cfg, "yc-a", mountRootA, hostCapabilities{StorageOpt: true, CgroupLimits: true}, sandboxOwner{PID: 4242})
 	if err != nil {
 		t.Fatalf("podmanRunArgs(a): %v", err)
 	}
-	argsB, err := podmanRunArgs(cfg, "yc-b", mountRootB, hostCapabilities{StorageOpt: true, CgroupLimits: true})
+	argsB, err := podmanRunArgs(cfg, "yc-b", mountRootB, hostCapabilities{StorageOpt: true, CgroupLimits: true}, sandboxOwner{PID: 4242})
 	if err != nil {
 		t.Fatalf("podmanRunArgs(b): %v", err)
 	}
@@ -221,7 +222,7 @@ func TestPodmanRunArgsOmitsDNSWhenNetworkNone(t *testing.T) {
 		CPUs:      1,
 		PidsLimit: 128,
 	}
-	args, err := podmanRunArgs(cfg, "yc-test", mountRoot, hostCapabilities{StorageOpt: true, CgroupLimits: true})
+	args, err := podmanRunArgs(cfg, "yc-test", mountRoot, hostCapabilities{StorageOpt: true, CgroupLimits: true}, sandboxOwner{PID: 4242})
 	if err != nil {
 		t.Fatalf("podmanRunArgs: %v", err)
 	}
@@ -243,7 +244,7 @@ func TestPodmanRunArgsOmitsResourceLimitsWhenCgroupUnsupported(t *testing.T) {
 		CPUs:      1,
 		PidsLimit: 128,
 	}
-	args, err := podmanRunArgs(cfg, "yc-test", mountRoot, hostCapabilities{StorageOpt: true, CgroupLimits: false})
+	args, err := podmanRunArgs(cfg, "yc-test", mountRoot, hostCapabilities{StorageOpt: true, CgroupLimits: false}, sandboxOwner{PID: 4242})
 	if err != nil {
 		t.Fatalf("podmanRunArgs: %v", err)
 	}
@@ -264,7 +265,7 @@ func TestPodmanRunArgsOmitsStorageOptWhenUnsupportedOrZeroDisk(t *testing.T) {
 		Memory: "256m", CPUs: 1, PidsLimit: 128, Disk: 4096,
 	}
 
-	unsupported, err := podmanRunArgs(baseCfg, "yc-test", mountRoot, hostCapabilities{StorageOpt: false, CgroupLimits: true})
+	unsupported, err := podmanRunArgs(baseCfg, "yc-test", mountRoot, hostCapabilities{StorageOpt: false, CgroupLimits: true}, sandboxOwner{PID: 4242})
 	if err != nil {
 		t.Fatalf("podmanRunArgs: %v", err)
 	}
@@ -274,7 +275,7 @@ func TestPodmanRunArgsOmitsStorageOptWhenUnsupportedOrZeroDisk(t *testing.T) {
 
 	zeroDisk := baseCfg
 	zeroDisk.Disk = 0
-	noQuota, err := podmanRunArgs(zeroDisk, "yc-test", mountRoot, hostCapabilities{StorageOpt: true, CgroupLimits: true})
+	noQuota, err := podmanRunArgs(zeroDisk, "yc-test", mountRoot, hostCapabilities{StorageOpt: true, CgroupLimits: true}, sandboxOwner{PID: 4242})
 	if err != nil {
 		t.Fatalf("podmanRunArgs: %v", err)
 	}
@@ -282,12 +283,78 @@ func TestPodmanRunArgsOmitsStorageOptWhenUnsupportedOrZeroDisk(t *testing.T) {
 		t.Errorf("podman args must omit --storage-opt when Disk is 0: %v", noQuota)
 	}
 
-	supported, err := podmanRunArgs(baseCfg, "yc-test", mountRoot, hostCapabilities{StorageOpt: true, CgroupLimits: true})
+	supported, err := podmanRunArgs(baseCfg, "yc-test", mountRoot, hostCapabilities{StorageOpt: true, CgroupLimits: true}, sandboxOwner{PID: 4242})
 	if err != nil {
 		t.Fatalf("podmanRunArgs: %v", err)
 	}
 	if !strings.Contains(strings.Join(supported, " "), "--storage-opt=size=4096m") {
 		t.Errorf("podman args must include --storage-opt=size=4096m when supported and Disk > 0: %v", supported)
+	}
+}
+
+// TestPodmanRunArgsIncludesOwnerLabels guards the reap.go fix directly:
+// PruneOrphaned can only tell an abandoned "running" container from a
+// genuinely active one if every container is stamped with its owner's PID
+// (and start time, when available) at creation time.
+func TestPodmanRunArgsIncludesOwnerLabels(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	mountRoot := filepath.Join(t.TempDir(), "repo")
+	cfg := config.SandboxConfig{Image: "sandbox-image", Network: "host", Mounts: []string{"."}, Memory: "256m", CPUs: 1, PidsLimit: 128}
+
+	withTicks, err := podmanRunArgs(cfg, "yc-test", mountRoot, hostCapabilities{StorageOpt: true, CgroupLimits: true}, sandboxOwner{PID: 4242, StartTicks: 987654, HaveStartTicks: true})
+	if err != nil {
+		t.Fatalf("podmanRunArgs: %v", err)
+	}
+	joined := strings.Join(withTicks, " ")
+	if !strings.Contains(joined, "--label yottacode.owner_pid=4242") {
+		t.Errorf("podman args missing owner_pid label: %v", withTicks)
+	}
+	if !strings.Contains(joined, "--label yottacode.owner_started=987654") {
+		t.Errorf("podman args missing owner_started label: %v", withTicks)
+	}
+
+	withoutTicks, err := podmanRunArgs(cfg, "yc-test", mountRoot, hostCapabilities{StorageOpt: true, CgroupLimits: true}, sandboxOwner{PID: 4242, HaveStartTicks: false})
+	if err != nil {
+		t.Fatalf("podmanRunArgs: %v", err)
+	}
+	joined = strings.Join(withoutTicks, " ")
+	if !strings.Contains(joined, "--label yottacode.owner_pid=4242") {
+		t.Errorf("podman args missing owner_pid label: %v", withoutTicks)
+	}
+	if strings.Contains(joined, "yottacode.owner_started") {
+		t.Errorf("podman args must omit owner_started label when start ticks are unknown: %v", withoutTicks)
+	}
+}
+
+// TestProcessStartTicks_SelfProcess covers the real /proc read on Linux
+// (the only platform where it can succeed — see processStartTicks): two
+// reads of this still-running test process must agree, and CurrentSandboxOwner
+// must surface HaveStartTicks=true here.
+func TestProcessStartTicks_SelfProcess(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("processStartTicks only reads /proc, which only exists on linux")
+	}
+	pid := os.Getpid()
+	first, ok := processStartTicks(pid)
+	if !ok {
+		t.Fatal("processStartTicks(self) ok = false, want true on linux")
+	}
+	if first <= 0 {
+		t.Errorf("processStartTicks(self) = %d, want a positive tick count", first)
+	}
+	second, ok := processStartTicks(pid)
+	if !ok || second != first {
+		t.Errorf("processStartTicks(self) is not stable across reads: %d then %d (ok=%v)", first, second, ok)
+	}
+}
+
+func TestProcessStartTicks_NoSuchProcess(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("processStartTicks only reads /proc, which only exists on linux")
+	}
+	if _, ok := processStartTicks(1 << 30); ok {
+		t.Error("processStartTicks for a nonexistent pid, want ok=false")
 	}
 }
 

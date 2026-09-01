@@ -19,6 +19,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -127,7 +128,7 @@ func NewPodmanSandbox(ctx context.Context, cfg config.SandboxConfig, id, mountRo
 		CgroupLimits: cgroupLimitsSupported(ctx, cfg.Image),
 	}
 
-	args, err := podmanRunArgs(cfg, name, mountRoot, caps)
+	args, err := podmanRunArgs(cfg, name, mountRoot, caps, currentSandboxOwner())
 	if err != nil {
 		return nil, err
 	}
@@ -150,13 +151,74 @@ func NewPodmanSandbox(ctx context.Context, cfg config.SandboxConfig, id, mountRo
 	return &PodmanSandbox{name: name}, nil
 }
 
+// sandboxOwner identifies the yottacode process starting a container,
+// stamped as podman labels so a later PruneOrphaned run (this process's own
+// next session, or a different one) can tell "still owned by a live
+// process" from "abandoned" without relying on container state alone —
+// state can't distinguish "running because a session is genuinely still
+// using it" from "running because nothing ever told it to stop" (see
+// reap.go). StartTicks disambiguates PID reuse: two processes can share a
+// PID number over time, but not the same kernel-reported start time, so a
+// prune check comparing both catches a reused PID that would otherwise
+// read as "still alive".
+type sandboxOwner struct {
+	PID            int
+	StartTicks     int64
+	HaveStartTicks bool
+}
+
+// currentSandboxOwner reads this process's own PID and start time. Split
+// out from podmanRunArgs so that function can stay a pure, easily-tested
+// argv builder — tests construct a sandboxOwner literal directly instead of
+// depending on the real calling process's identity.
+func currentSandboxOwner() sandboxOwner {
+	pid := os.Getpid()
+	ticks, ok := processStartTicks(pid)
+	return sandboxOwner{PID: pid, StartTicks: ticks, HaveStartTicks: ok}
+}
+
+// processStartTicks reads pid's start time from /proc/<pid>/stat, field 22
+// (starttime, in clock ticks since boot — not wall-clock, so no timezone or
+// clock-skew handling needed: two reads of the same still-running process
+// always agree). Returns ok=false on any read/parse failure, notably on
+// macOS where /proc doesn't exist — the owner label is then written
+// without a start-time guard, and reap.go's ownerAlive falls back to a
+// plain PID-existence check there. Field 2 (comm) can itself contain
+// spaces or parentheses, so parsing starts after the LAST ')' rather than
+// splitting the whole line on whitespace.
+func processStartTicks(pid int) (int64, bool) {
+	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+	if err != nil {
+		return 0, false
+	}
+	i := bytes.LastIndexByte(data, ')')
+	if i < 0 || i+2 >= len(data) {
+		return 0, false
+	}
+	// fields[0] here is field 3 (state) of the full stat line; starttime is
+	// field 22 overall, i.e. index 22-3=19 in this post-comm slice.
+	fields := strings.Fields(string(data[i+2:]))
+	const startTimeIndex = 19
+	if len(fields) <= startTimeIndex {
+		return 0, false
+	}
+	ticks, err := strconv.ParseInt(fields[startTimeIndex], 10, 64)
+	if err != nil {
+		return 0, false
+	}
+	return ticks, true
+}
+
 // podmanRunArgs builds the podman run argv after mount-root validation.
 // Keeping this pure lets unit tests pin security-sensitive flags (including
 // DNS) without starting a real container. caps gates the resource-limit
-// flags that not every host can honor — see hostCapabilities.
-func podmanRunArgs(cfg config.SandboxConfig, name, mountRoot string, caps hostCapabilities) ([]string, error) {
+// flags that not every host can honor — see hostCapabilities. owner is
+// stamped as labels so PruneOrphaned can later tell a genuinely abandoned
+// container from one still backing a live session (see reap.go).
+func podmanRunArgs(cfg config.SandboxConfig, name, mountRoot string, caps hostCapabilities, owner sandboxOwner) ([]string, error) {
 	args := []string{
 		"run", "-d", "--name", name,
+		"--label", fmt.Sprintf("yottacode.owner_pid=%d", owner.PID),
 		// Namespace isolation (PID/IPC/UTS/mount/user/network) is podman's
 		// own default for every rootless container — verified via
 		// /proc/1/ns inside a throwaway container, not something these
@@ -171,6 +233,9 @@ func podmanRunArgs(cfg config.SandboxConfig, name, mountRoot string, caps hostCa
 		"--security-opt=no-new-privileges",
 		fmt.Sprintf("--network=%s", cfg.Network),
 		fmt.Sprintf("--tmpfs=/tmp:rw,noexec,nosuid,nodev,size=%s", tmpTmpfsSize),
+	}
+	if owner.HaveStartTicks {
+		args = append(args, "--label", fmt.Sprintf("yottacode.owner_started=%d", owner.StartTicks))
 	}
 	// Gated on caps.CgroupLimits: a host without the cpu/memory/pids
 	// cgroup controllers delegated to this process (unprivileged LXCs,

@@ -198,11 +198,11 @@ backend change (`podman` ↔ `none`) still needs a new session.
   infinity` on first profile use, `podman exec` for every sandboxed command,
   and `podman rm -f` on session end. A fresh container per command would forget
   installed packages and background state between commands. A crashed session
-  (or one interrupted mid-teardown) can leave its container stuck non-running
-  instead of removed; each new podman-backed session start also sweeps and
-  removes any `yc-*` container that isn't currently `running`, so these don't
-  accumulate indefinitely. A container still `running` is never touched by
-  this sweep, even if old — that state means some session is still using it.
+  (or one interrupted mid-teardown) can leave its profile container behind;
+  startup pruning reclaims stale `yc-*` containers after a grace period. Running
+  containers are only pruned when yottacode can confirm that the labeled owner
+  process is gone, so active sessions and unlabeled legacy containers are left
+  alone.
 - **Filesystem**: the project root is mounted at the same absolute path inside
   the container as on the host. Optional `mounts` entries are project-relative
   subpaths; absolute paths and `..` escapes are rejected so config cannot widen
