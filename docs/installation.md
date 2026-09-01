@@ -28,15 +28,13 @@ Re-running the installer upgrades in place: same flow, the rc edit is detected a
 
 ## Updating
 
-`yottacode` checks GitHub for a newer release once per day on startup. The check is asynchronous, cached at `~/.yottacode/cache/update-check.json`, and runs **only** when the root interactive command launches into a real terminal — `yottacode run`, `yottacode --version`, scripts, and pipes never trigger it. When a newer release exists, you'll see a one-line prompt before the TUI starts:
+`yottacode` checks GitHub for a newer release once per day on TUI startup. The check runs in the background after the TUI starts, is cached at `~/.yottacode/cache/update-check.json`, and runs **only** when the root interactive command launches into a real terminal — `yottacode run`, `yottacode --version`, scripts, and pipes never trigger it. GitHub, DNS, or network slowness never blocks first paint. When a newer release exists, you'll see a one-line in-session notice:
 
 ```
-yottacode 0.4.0 is available (you have 0.3.0).
-Release notes: https://github.com/yottadynamics/yottacode/releases/tag/v0.4.0
-Install now? [y/N]:
+⚠ update · new release · 0.4.0 available · current 0.3.0 · https://github.com/yottadynamics/yottacode/releases/tag/v0.4.0
 ```
 
-Answer `y` and the installer runs in the foreground; yottacode exits cleanly once it's done so you can re-launch on the new binary. Answer anything else and the TUI starts as normal.
+To upgrade, re-run the installer or download the new release from the linked release notes.
 
 To disable the check entirely (CI, privacy, sandboxes): `export YOTTACODE_NO_UPDATE_CHECK=1`. To force a refresh: `rm ~/.yottacode/cache/update-check.json`.
 

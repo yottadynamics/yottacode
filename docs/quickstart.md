@@ -32,7 +32,7 @@ Verify the install:
 yottacode --version
 ```
 
-After install, yottacode checks GitHub for a newer release once a day on startup and offers to upgrade before the TUI starts. Set `YOTTACODE_NO_UPDATE_CHECK=1` to disable. Windows users should run yottacode under WSL.
+After install, yottacode checks GitHub for a newer release once a day on TUI startup and shows an in-session notice when one is available. The check runs in the background so GitHub availability does not block the TUI from opening. Set `YOTTACODE_NO_UPDATE_CHECK=1` to disable it entirely. Windows users should run yottacode under WSL.
 
 For build-from-source, cross-compile, and pinned-archive paths, see [Installation](installation.md).
 

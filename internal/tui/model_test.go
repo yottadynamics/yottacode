@@ -18,6 +18,7 @@ import (
 	"github.com/yottadynamics/yottacode/internal/agent"
 	"github.com/yottadynamics/yottacode/internal/permissions"
 	"github.com/yottadynamics/yottacode/internal/session"
+	"github.com/yottadynamics/yottacode/internal/update"
 )
 
 // newTestModel returns a Model with stubbed wiring suitable for unit tests
@@ -79,6 +80,71 @@ func TestModel_WindowSizeMakesItReady(t *testing.T) {
 	// through unchanged.
 	if want := 80 - scrollbackLeftMargin; m.width != want {
 		t.Errorf("model width = %d, want %d (terminal 80 - margin %d)", m.width, want, scrollbackLeftMargin)
+	}
+}
+
+func TestModel_UpdateCheckDoesNotBlockInit(t *testing.T) {
+	m := newTestModel(t)
+	ch := make(chan update.Result)
+	m.updateCheck = ch
+
+	start := time.Now()
+	cmd := m.Init()
+	if elapsed := time.Since(start); elapsed > 50*time.Millisecond {
+		t.Fatalf("Init blocked on update check for %s", elapsed)
+	}
+	if cmd == nil {
+		t.Fatal("Init should return a batch command that waits asynchronously")
+	}
+}
+
+func TestWaitForUpdateCheckIgnoresClosedOrCurrentRelease(t *testing.T) {
+	closed := make(chan update.Result)
+	close(closed)
+	if msg := waitForUpdateCheck(closed)(); msg != nil {
+		t.Fatalf("closed update channel should produce no message, got %T", msg)
+	}
+
+	current := make(chan update.Result, 1)
+	current <- update.Result{Current: "0.5.0", Latest: "0.5.0", NewVersion: false}
+	close(current)
+	if msg := waitForUpdateCheck(current)(); msg != nil {
+		t.Fatalf("non-new release should produce no message, got %T", msg)
+	}
+}
+
+func TestWaitForUpdateCheckDeliversNewRelease(t *testing.T) {
+	ch := make(chan update.Result, 1)
+	want := update.Result{Current: "0.4.0", Latest: "0.5.0", NewVersion: true}
+	ch <- want
+	close(ch)
+
+	msg, ok := waitForUpdateCheck(ch)().(updateCheckMsg)
+	if !ok {
+		t.Fatalf("new release should produce updateCheckMsg, got %T", msg)
+	}
+	if msg.result != want {
+		t.Fatalf("update result = %+v, want %+v", msg.result, want)
+	}
+}
+
+func TestModel_UpdateCheckResultRendersNotice(t *testing.T) {
+	m := newTestModel(t)
+	m.transcriptRows = nil
+	m.transcript.Reset()
+
+	m, _ = applyMsg(m, updateCheckMsg{result: update.Result{
+		Current:    "0.4.0",
+		Latest:     "0.5.0",
+		URL:        "https://example.test/release",
+		NewVersion: true,
+	}})
+
+	got := stripANSI(m.transcript.String())
+	for _, want := range []string{"⚠ update", "new release", "0.5.0 available", "current 0.4.0", "https://example.test/release"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("update notice missing %q in %q", want, got)
+		}
 	}
 }
 

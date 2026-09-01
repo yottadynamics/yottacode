@@ -29,6 +29,7 @@ These work for the TUI and `run` mode.
 | `--plan-resume` | — | no | TUI only — resume a saved plan by slug/substring (implies `--permission-mode plan`) |
 | `--resume` | — | no | Resume a session by id or name |
 | `--continue` / `-c` | — | no | Resume the most recent session in the current directory (mirrors `claude --continue`). Mutually exclusive with `--resume`. |
+| — | `YOTTACODE_NO_UPDATE_CHECK` | no | Set to `1` to disable the once-a-day GitHub release check on TUI startup. |
 
 Precedence is flags, then environment variables, then config file where supported, then a clean error for missing required values.
 

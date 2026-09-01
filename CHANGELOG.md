@@ -151,6 +151,12 @@ worktree-permissions-fine-grained-review
 
 ### Fixed
 
+- **TUI startup no longer pauses on update prompts.** The daily GitHub
+  release check still starts from the root interactive command and still
+  honors `YOTTACODE_NO_UPDATE_CHECK=1`, but the TUI now consumes the result
+  after first paint and renders a one-line in-session notice when a newer
+  release exists. Slow DNS/GitHub, cache misses, or unattended terminals no
+  longer delay the initial screen.
 - **Explicit `Ask` permission rules were silently bypassed under yolo and
   auto mode.** A rule like `Ask(["Read(**/.env*)"])` reads as a standing
   "always confirm this" policy, but the yolo/auto-mode/plan-mode-allow

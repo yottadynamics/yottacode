@@ -34,6 +34,7 @@ The same provider flags also apply to `yottacode doctor`.
 | `--allow-paths` | `YOTTACODE_ALLOW_PATHS` | no | Comma-separated extra write roots in addition to the current working directory |
 | `--permission-mode` | — | no | Startup permission mode: `default` (no startup mode), `plan` (read-only research; describe the task as your first message), or `auto` (edits auto-allow; bash & commits still prompt). Mirrors Claude Code's `--permission-mode`. No-op for `yottacode run`. |
 | `--plan-resume` | — | no | Resume an existing plan by slug or substring (matched against `~/.yottacode/plans/`, newest-first). Implies `--permission-mode plan`. No-op for `yottacode run`. |
+| — | `YOTTACODE_NO_UPDATE_CHECK` | no | Set to `1` to disable the once-a-day GitHub release check on TUI startup. |
 
 Precedence is:
 

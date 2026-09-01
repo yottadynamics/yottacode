@@ -78,6 +78,10 @@ func TestEvaluate_TildePatternMatchesAbsoluteValue(t *testing.T) {
 // whole sibling tree. Hand-writing `Write(~/Desktop/**)` is also fine;
 // the matcher expands either form.
 func TestDeriveAllowRule_OutOfCwdAnchorsAtParent(t *testing.T) {
+	// Use a stable fake home under /home instead of the test process HOME. The
+	// sandboxed test runner deliberately sets HOME under /var/tmp, and /var/**
+	// is a suppressed system-root prefix for one-click allow-rule derivation.
+	t.Setenv("HOME", "/home/yottacode-test")
 	home, err := os.UserHomeDir()
 	if err != nil {
 		t.Skipf("UserHomeDir unavailable: %v", err)

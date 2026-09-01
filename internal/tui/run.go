@@ -27,6 +27,7 @@ import (
 	"github.com/yottadynamics/yottacode/internal/skills"
 	"github.com/yottadynamics/yottacode/internal/subagents"
 	"github.com/yottadynamics/yottacode/internal/trust"
+	"github.com/yottadynamics/yottacode/internal/update"
 	"github.com/yottadynamics/yottacode/internal/usercmd"
 	"github.com/yottadynamics/yottacode/internal/version"
 	"github.com/yottadynamics/yottacode/internal/wizard"
@@ -103,7 +104,7 @@ func pluralizeWorkers(n int) string {
 // Run wires up session, permissions, adapter, and tools, then drives
 // the Bubbletea program. The non-interactive sibling is oneshot.Run, which
 // shares the same ChatOptions but emits one turn to stdout and exits.
-func Run(ctx context.Context, opts cli.ChatOptions) error {
+func Run(ctx context.Context, opts cli.ChatOptions, updateCheck ...<-chan update.Result) error {
 	cwd, err := os.Getwd()
 	if err != nil {
 		return err
@@ -179,6 +180,10 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 	cwdRef := rt.CwdRef
 	fileCfg := rt.FileCfg
 	ad := rt.Adapter
+	var updateCh <-chan update.Result
+	if len(updateCheck) > 0 {
+		updateCh = updateCheck[0]
+	}
 
 	// GitHub tool suite (PR/Issue composites + git_push) and the
 	// WebSearchTool fallback are registered by Build now — shared with
@@ -287,6 +292,7 @@ func Run(ctx context.Context, opts cli.ChatOptions) error {
 	model := New(ctx, Config{
 		Cfg:                    cfg,
 		Session:                rt.Session,
+		UpdateCheck:            updateCh,
 		ExperimentalEnabled:    rt.ExperimentalSet.EnabledNames(),
 		SandboxActive:          rt.CmdSandbox != nil,
 		Permissions:            rt.Permissions,
