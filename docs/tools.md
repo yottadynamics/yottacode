@@ -1384,7 +1384,7 @@ Run a test command in the repo. Defaults to `go test ./...`.
 | `command` | string | `go test ./...` |
 | `path` | string | `.` |
 
-Prompts for approval in foreground use. Background dispatch workers cannot run `run_tests` because tests execute project code without a human approval surface.
+Prompts for approval in foreground use. When a command invokes Go, `run_tests` sets `HOME`, `TMPDIR`/`GOTMPDIR`, `XDG_CACHE_HOME`, `XDG_CONFIG_HOME`, `GOCACHE`, `GOMODCACHE`, and `GOTELEMETRY=off` to yottacode-owned scratch/cache paths so Go cannot leave repo-root `.cache/`, `.config/`, `.local/`, or `go/` artifacts. Background dispatch workers cannot run `run_tests` because tests execute project code without a human approval surface.
 
 ## media_probe
 

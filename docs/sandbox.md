@@ -258,10 +258,12 @@ backend change (`podman` ↔ `none`) still needs a new session.
   `XDG_CACHE_HOME`, and `XDG_CONFIG_HOME` at a per-workspace, container-internal
   scratch directory (`/var/tmp/yottacode-go/<workspace>/`), avoiding repo-root
   cache pollution from `.cache/`, `.config/`, `.local/`, `.yottacode/tmp/`,
-  `.scratch/`, or `go/`. It also sets `GOTELEMETRY=off`, keeping Go telemetry
-  counters out of the checked-out tree even when the host environment would
-  normally resolve them under the repository.
-- `GOCACHE` and `GOMODCACHE`, by contrast, point at the shared, host-mounted
+  `.scratch/`, or `go/`. Unsandboxed host `run_tests` applies the same
+  repo-clean environment for Go commands under `~/.yottacode/host-go/<workspace>/`.
+  Both paths also set `GOTELEMETRY=off`, keeping Go telemetry counters out of the
+  checked-out tree even when the host environment would normally resolve them
+  under the repository.
+- `GOCACHE` and `GOMODCACHE` for sandboxed runs point at the shared, host-mounted
   `~/.yottacode/sandbox-go-cache/` directory above — not the per-workspace
   scratch dir — so Go's build and module cache survive container recreation
   across sessions. Every session starts a fresh container (see "One container
