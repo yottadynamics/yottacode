@@ -517,14 +517,15 @@ func TestDispatchPanic_ForegroundEmitsSubagentDone(t *testing.T) {
 	// thread it through a context value here.
 	events := make(chan Event, 8)
 
-	// nil ctx is deliberate — makes context.WithCancel(ctx) panic AFTER the
-	// recover is armed, taking the same recover path as
-	// TestBackgroundDispatchPanicStillFiresDoneCallback. forwardToParent's
-	// SubagentStart emission (which runs before that point) sends on
-	// parentEvents directly and never touches ctx for a non-blocking event,
-	// so it's unaffected by ctx being nil.
-	//nolint:staticcheck // SA1012: intentional nil ctx to force the panic
-	d.runDispatchChild(nil, c, "batch-1", false, events, nil)
+	withSuppressedPanicRecoveryStderr(t, func() {
+		// nil ctx is deliberate — makes context.WithCancel(ctx) panic AFTER the
+		// recover is armed, taking the same recover path as
+		// TestBackgroundDispatchPanicStillFiresDoneCallback. forwardToParent's
+		// SubagentStart emission (which runs before that point) sends on
+		// parentEvents directly and never touches ctx for a non-blocking event,
+		// so it's unaffected by ctx being nil.
+		d.runDispatchChild(panicContextForDispatchPanicTest(), c, "batch-1", false, events, nil)
+	})
 	close(events)
 
 	sawDone := false

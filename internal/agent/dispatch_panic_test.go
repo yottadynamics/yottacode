@@ -47,11 +47,12 @@ func TestBackgroundDispatchPanicStillFiresDoneCallback(t *testing.T) {
 	// has to do the same two steps itself.
 	at.Tasks.Add(d.prepareDispatchChild(c, "batch-1", true))
 
-	// background=true; the nil ctx is deliberate — it makes
-	// context.WithCancel panic after the recover is armed, standing in for a
-	// commit/merge-logic panic.
-	//nolint:staticcheck // SA1012: intentional nil ctx to force the panic
-	d.runDispatchChild(nil, c, "batch-1", true, nil, nil)
+	withSuppressedPanicRecoveryStderr(t, func() {
+		// background=true; the nil ctx is deliberate — it makes
+		// context.WithCancel panic after the recover is armed, standing in for a
+		// commit/merge-logic panic.
+		d.runDispatchChild(panicContextForDispatchPanicTest(), c, "batch-1", true, nil, nil)
+	})
 
 	// The recover ran (panic did not escape) and marked the task done+errored.
 	snap, ok := at.Tasks.Get(c.taskID)
