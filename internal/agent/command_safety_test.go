@@ -114,6 +114,53 @@ func TestRunBash_HardlineFloor(t *testing.T) {
 	}
 }
 
+// TestIsPrivilegeEscalationCommand catches command segments that can hand the
+// terminal an OS-owned password prompt. These commands must fail before the
+// shell starts so a model-initiated command cannot hang on sudo/doas/pkexec.
+func TestIsPrivilegeEscalationCommand(t *testing.T) {
+	blocked := []string{
+		"sudo apt update",
+		"sudo -E make install",
+		"doas pkg_add ripgrep",
+		"pkexec systemctl restart docker",
+		"echo ok && sudo apt update",
+		"env FOO=1 sudo apt update",
+	}
+	for _, c := range blocked {
+		if ok, reason := IsPrivilegeEscalationCommand(c); !ok {
+			t.Errorf("expected privilege escalation block for %q, got reason %q", c, reason)
+		}
+	}
+
+	allowed := []string{
+		"echo sudo apt update",
+		"grep sudo README.md",
+		"printf '%s\\n' doas pkexec",
+	}
+	for _, c := range allowed {
+		if ok, reason := IsPrivilegeEscalationCommand(c); ok {
+			t.Errorf("did not expect privilege escalation block for %q (matched %q)", c, reason)
+		}
+	}
+}
+
+// TestRunBash_PrivilegeEscalationFloor verifies sudo-like commands are a
+// recoverable tool refusal, not a spawned process that can prompt for a password.
+func TestRunBash_PrivilegeEscalationFloor(t *testing.T) {
+	tool := &RunBashTool{Cwd: NewCwdRef(t.TempDir())}
+
+	out, err := tool.Execute(context.Background(), `{"command":"sudo apt update"}`)
+	if err != nil {
+		t.Fatalf("privilege escalation should return a recoverable result, got err: %v", err)
+	}
+	if !strings.Contains(out, "BLOCKED (privilege escalation)") {
+		t.Errorf("expected privilege escalation block, got: %s", out)
+	}
+	if !strings.Contains(out, "Run the command yourself") {
+		t.Errorf("expected manual-run guidance, got: %s", out)
+	}
+}
+
 // TestBackgroundWorkerDecision pins the deterministic unattended-worker
 // policy for an UNSANDBOXED (host-executing) worker: worktree-confined
 // writes are allowed; shell, tests, and other approval-requiring floor tools
