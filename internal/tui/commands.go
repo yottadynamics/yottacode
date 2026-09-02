@@ -118,7 +118,7 @@ func init() {
 		{Name: "experimental", Help: "list experimental features and which are enabled this session", Run: cmdExperimental, PreservesTurn: true},
 		{Name: "usage", Help: "show per-session token usage, today's rollup, and estimated cost", Run: cmdUsage, PreservesTurn: true},
 		{Name: "inspect", Help: "pick a session for read-only turn-by-turn replay; export sessions from /sessions", Run: cmdInspect, PreservesTurn: true},
-		{Name: "doctor", Help: "probe provider auth and model access", Run: cmdDoctor, PreservesTurn: true},
+		{Name: "doctor", Help: "probe provider auth and model access (CLI doctor also checks GitHub/LSP/media/sandbox)", Run: cmdDoctor, PreservesTurn: true},
 		{Name: "redo", Help: "edit and re-run the most recent message", Run: cmdRedo},
 		{Name: "recall", Args: "<query>", Help: "full-text search across every saved session", Run: cmdRecall, PreservesTurn: true},
 		{Name: "checkpoints", Help: "open the checkpoints picker — also Esc Esc", Run: cmdCheckpoints},

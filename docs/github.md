@@ -133,14 +133,15 @@ invalidation API.
 
 The typed client captures `X-RateLimit-Remaining` from every
 response. `RateLimit()` on the client returns the most recent
-snapshot. The doctor surfaces it in `--- github ---`:
+snapshot. The doctor surfaces it in the grouped GitHub section:
 
 ```text
---- github ---
-token: present (source=env)
-probe: reachable=yes auth=yes user=octocat
-rate: 4500/5000 remaining (resets in 45m0s)
-github: ok
+GitHub:
+  status: ok
+  token: present (source=env)
+  auth: ok (user=octocat)
+  endpoint: reachable=yes
+  rate: 4500/5000 remaining (resets in 45m0s)
 ```
 
 Soft-warn threshold is 100 remaining. `Snapshot.IsLow()` reports

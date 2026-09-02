@@ -17,6 +17,11 @@ import (
 // it into the same "result: ok / issues / warnings" trailer the
 // provider probe uses.
 type GitHubProbeResult struct {
+	// Status and Skipped are additive JSON fields used by the grouped doctor
+	// report. Skipped is true when --no-github intentionally bypassed the probe.
+	Status  doctorStatus `json:"status"`
+	Skipped bool         `json:"skipped,omitempty"`
+
 	// TokenSource is which tier of the auth chain supplied the
 	// token: "env" (GITHUB_TOKEN), "gh" (gh auth token), "file"
 	// (~/.yottacode/github.json), or "" when no token was found.
@@ -62,8 +67,12 @@ type GitHubProbeResult struct {
 // Returns a populated GitHubProbeResult; never panics, never
 // returns an error (the doctor's contract is "always render
 // something").
-func probeGitHub(ctx context.Context) GitHubProbeResult {
-	res := GitHubProbeResult{}
+func probeGitHub(ctx context.Context) (res GitHubProbeResult) {
+	defer func() {
+		if res.Status == "" {
+			res.Status = statusFromIssuesWarnings(res.Issues, res.Warnings)
+		}
+	}()
 
 	// Step 1: walk the auth chain in a probe-friendly way (no
 	// process-wide sync.Once cache; the doctor may run multiple
@@ -116,6 +125,7 @@ func probeGitHub(ctx context.Context) GitHubProbeResult {
 		res.Warnings = append(res.Warnings,
 			fmt.Sprintf("rate limit low: %d/%d remaining", res.Rate.Remaining, res.Rate.Limit))
 	}
+	res.Status = statusFromIssuesWarnings(res.Issues, res.Warnings)
 	return res
 }
 

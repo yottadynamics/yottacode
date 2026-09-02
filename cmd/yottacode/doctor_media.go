@@ -13,6 +13,7 @@ var mediaDoctorLookPath = exec.LookPath
 // workflow. yottacode never installs these binaries; it only tells the user
 // what is present so media tools fail predictably.
 type MediaDoctorResult struct {
+	Status        doctorStatus        `json:"status"`
 	FFmpeg        MediaDoctorBinary   `json:"ffmpeg"`
 	FFprobe       MediaDoctorBinary   `json:"ffprobe"`
 	Transcription []MediaDoctorBinary `json:"transcription,omitempty"`
@@ -47,6 +48,7 @@ func probeMediaDoctor(ctx context.Context) MediaDoctorResult {
 	if !result.Transcription[0].Installed && !result.Transcription[1].Installed {
 		result.Warnings = append(result.Warnings, "local caption transcription is unavailable; media editing still works without captions")
 	}
+	result.Status = statusFromIssuesWarnings(result.Issues, result.Warnings)
 	return result
 }
 

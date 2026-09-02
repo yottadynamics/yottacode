@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"strings"
 	"time"
 
@@ -15,6 +14,7 @@ import (
 // feature. It stays independent of the session-owned LSP manager because doctor
 // is a preflight command, not a chat session.
 type LSPDoctorResult struct {
+	Status    doctorStatus        `json:"status"`
 	Enabled   bool                `json:"enabled"`
 	Languages []LSPDoctorLanguage `json:"languages,omitempty"`
 	Manager   LSPDoctorManager    `json:"manager"`
@@ -44,10 +44,10 @@ type LSPDoctorManager struct {
 func probeLSPDoctor(ctx context.Context, _ cli.ChatOptions, cfg config.Config) LSPDoctorResult {
 	langs, err := lsp.DetectWorkspace(ctx, ".", 2000)
 	if err != nil {
-		return LSPDoctorResult{Enabled: true, Error: err.Error()}
+		return LSPDoctorResult{Status: doctorStatusIssue, Enabled: true, Error: err.Error()}
 	}
 	langs = lsp.ApplyOverridesToDetected(langs, cfg.LSP.Servers)
-	out := LSPDoctorResult{Enabled: true, Manager: LSPDoctorManager{MaxServers: lsp.DefaultManagerMaxServers()}, Note: "default-on; servers are local subprocesses and are never auto-installed"}
+	out := LSPDoctorResult{Status: doctorStatusOK, Enabled: true, Manager: LSPDoctorManager{MaxServers: lsp.DefaultManagerMaxServers()}, Note: "default-on; servers are local subprocesses and are never auto-installed"}
 	for _, lang := range langs {
 		probe := "missing"
 		caps := ""
@@ -77,48 +77,16 @@ func probeLSPDoctor(ctx context.Context, _ cli.ChatOptions, cfg config.Config) L
 			Capabilities:    caps,
 			Override:        len(cfg.LSP.Servers[lang.ID]) > 0,
 		})
+		if strings.HasPrefix(probe, "failed:") {
+			out.Status = doctorStatusIssue
+		} else if probe == "missing" && out.Status == doctorStatusOK {
+			out.Status = doctorStatusWarning
+		}
 	}
 	if len(out.Languages) == 0 {
 		out.Note = "enabled; no supported languages detected in this workspace"
 	}
 	return out
-}
-
-func renderLSPDoctor(result LSPDoctorResult) string {
-	var b strings.Builder
-	b.WriteString("\n\nLSP Code Intelligence:\n")
-	fmt.Fprintf(&b, "feature: %s", yesNo(result.Enabled))
-	if result.Note != "" {
-		fmt.Fprintf(&b, " (%s)", result.Note)
-	}
-	if result.Error != "" {
-		fmt.Fprintf(&b, "\nerror: %s", result.Error)
-		return b.String()
-	}
-	if result.Enabled && result.Manager.MaxServers > 0 {
-		fmt.Fprintf(&b, "\nmanager: max_servers=%d (runtime open/start/reuse stats are available in lsp_status)", result.Manager.MaxServers)
-	}
-	for _, lang := range result.Languages {
-		status := "missing"
-		if lang.ServerAvailable {
-			status = "installed"
-		}
-		override := ""
-		if lang.Override {
-			override = " override=yes"
-		}
-		fmt.Fprintf(&b, "\n- %s: files=%d server=%s status=%s%s", lang.Name, lang.Files, strings.Join(lang.Command, " "), status, override)
-		if !lang.ServerAvailable && lang.InstallHint != "" {
-			fmt.Fprintf(&b, "\n  hint: %s", lang.InstallHint)
-		}
-		if lang.Probe != "" {
-			fmt.Fprintf(&b, "\n  probe: %s", lang.Probe)
-		}
-		if lang.Capabilities != "" {
-			fmt.Fprintf(&b, "\n  capabilities: %s", lang.Capabilities)
-		}
-	}
-	return b.String()
 }
 
 func installHintIfMissing(lang lsp.DetectedLanguage) string {
