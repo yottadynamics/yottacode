@@ -3,9 +3,9 @@
 # yottacode
 
 **Sovereign AI coding agent for your terminal.**  
-Any model. Durable memory. Real GitHub workflows. Local by default.
+A local-first coding agent that turns issues into tested pull requests while you stay in control of every model, command, and file change.
 
-Model-agnostic · Agent-managed memory · Typed GitHub tools · Approval-first by design
+Model-agnostic · Local-first · Approval-first · GitHub-ready
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Go](https://img.shields.io/badge/Go-1.26+-00ADD8?logo=go&logoColor=white)](https://go.dev)
@@ -13,17 +13,22 @@ Model-agnostic · Agent-managed memory · Typed GitHub tools · Approval-first b
 [![CI](https://github.com/yottadynamics/yottacode/actions/workflows/go.yml/badge.svg)](https://github.com/yottadynamics/yottacode/actions/workflows/go.yml)
 [![Docs](https://img.shields.io/badge/Docs-yottacode.ai-1f6feb)](https://yottacode.ai/docs/)
 
-[Getting Started](https://yottacode.ai/docs/get-started/) •  [Agent Core](https://yottacode.ai/docs/core/) •  [Memory](https://yottacode.ai/docs/memory/) •  [Providers](https://yottacode.ai/docs/providers/) •  [Models](https://yottacode.ai/docs/models-mcp/) •  [Workflow](https://yottacode.ai/docs/workflow/) •  [Reference](https://yottacode.ai/docs/reference/)
+[Getting started](https://yottacode.ai/docs/get-started/) • [Docs](https://yottacode.ai/docs/) • [Providers](docs/providers.md) • [Security](docs/security-and-allow-lists.md) • [GitHub](docs/github.md) • [Contributing](CONTRIBUTING.md)
+
+<table width="92%" cellpadding="0" cellspacing="0">
+  <tr>
+    <td align="left" bgcolor="#161b22" height="30">
+      &nbsp;&nbsp;<font color="#ff5f56">●</font>&nbsp;<font color="#ffbd2e">●</font>&nbsp;<font color="#27c93f">●</font>&nbsp;&nbsp;&nbsp;<sub><strong>yottacode</strong></sub>
+    </td>
+  </tr>
+  <tr>
+    <td bgcolor="#0d1117" align="center">
+      <img src="assets/yottacode-readme.gif" alt="yottacode GitOps demo" width="100%">
+    </td>
+  </tr>
+</table>
 
 </div>
-
----
-
-## From prompt to pull request, without leaving your terminal
-
-An end-to-end agentic development workflow: plan mode → branch → implement → tests → commit → push → create PR.
-
-![yottacode GitOps demo](assets/yottacode-gitops-readme.gif)
 
 ---
 
@@ -32,10 +37,8 @@ An end-to-end agentic development workflow: plan mode → branch → implement �
 Install on Linux or macOS:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/yottadynamics/yottacode/main/install.sh | bash
+curl -fsSL https://yottacode.ai/cli/install.sh | bash
 ```
-
-Prefer to read it first? [View `install.sh`](https://github.com/yottadynamics/yottacode/blob/main/install.sh).
 
 Run setup once:
 
@@ -43,30 +46,46 @@ Run setup once:
 yottacode setup
 ```
 
-Open a repository and start with a real task:
+Open a repository and try a read-only first task:
 
 ```bash
+cd your-repo
 yottacode
 ```
 
-Try prompts like:
+Then ask:
 
-- `Review this repo and suggest the safest first bug to fix.`
-- `Find why the tests are failing, explain the issue, then propose a fix.`
-- `Update this GitOps YAML for the new image tag and show me the diff before any commit.`
+```text
+Review this repo, identify one low-risk improvement, and show me a plan before editing.
+```
 
-### Prefer local models?
+<details><summary><b>Prefer local models?</b></summary>
 
 Start with Ollama if you want to try yottacode without API keys:
 
 ```bash
-ollama pull <model>   # e.g. qwen2.5-coder, llama3.1, deepseek-coder-v2
+ollama pull qwen2.5-coder   # or llama3.1 / deepseek-coder-v2
 yottacode setup
 ```
 
 Watch the Ollama setup walkthrough: [Get started with yottacode and Ollama](https://www.youtube.com/watch?v=BRLFqMnvVPk).
 
-<details><summary><b>Manual install (pinned version, no installer script)</b></summary>
+</details>
+
+<details><summary><b>Prefer a hosted provider?</b></summary>
+
+Configure a hosted model during setup, or set the matching environment variable before running yottacode:
+
+```bash
+export OPENAI_API_KEY=...
+yottacode setup
+```
+
+See [`docs/providers.md`](docs/providers.md) for OpenAI, Anthropic, Gemini, Google Vertex AI, xAI, ChatGPT/Copilot OAuth, Ollama, and OpenAI-compatible provider setup.
+
+</details>
+
+<details><summary><b>Manual install: pinned version, no installer script</b></summary>
 
 ```bash
 export VERSION=<latest-release> # for example: 0.4.0
@@ -86,46 +105,71 @@ More install options: [`docs/installation.md`](docs/installation.md).
 
 ---
 
-## What makes yottacode different
+## Why yottacode?
 
-For engineers who want a local-first AI coding agent without vendor lock-in, cloud data leakage, or black-box behavior.
-
-- **Any model, zero lock-in.** Native adapters for OpenAI, Anthropic, Gemini, Google Vertex AI, xAI, ChatGPT/Copilot OAuth, OpenAI-compatible endpoints, and local Ollama — switch providers or models mid-session with `/model`.
-- **Agent-managed memory that compounds.** yottacode captures durable user and project context, retrieves only what matters each turn, and helps keep memory clean over time.
-- **Typed GitHub + worktree workflows.** Issues, PR reviews, check status, commits, pushes, PR creation, PR updates, comments, and isolated worktrees are first-class tools instead of fragile shell transcripts.
-- **GA code intelligence without IDE lock-in.** LSP tools are default-on for Go, TypeScript/JavaScript, Python, and Rust; servers run locally, start lazily, and are never installed without approval. Offline, no-server structural edit ranges (`syntax_range`) cover the same four languages.
-- **Read and generate real documents.** `read_document`/`create_document` cover csv, tsv, json, xml, html, xlsx, docx, and pptx; xlsx/pptx generation is pure Go (excelize, native OOXML), no external dependency required. docx/pdf generation and PDF extraction route through the same command sandbox as `run_bash`.
-- **Plan mode as a real permission boundary.** yottacode can investigate read-only, produce a plan, and only then move into implementation with approvals, path validation, diffs, and checkpoints.
-- **Local-first by design.** Sessions, memory, checkpoints, and project rules are plain files under `~/.yottacode/`; there is no telemetry or analytics, and code only leaves your machine for the model provider you choose.
-- **A growing skills ecosystem.** Reusable Agent Skills let teams package repeatable workflows; see [`yottacode-skills`](https://github.com/yottadynamics/yottacode-skills).
-
----
-
-## Best first tasks
-
-- **Review before you merge.** Ask yottacode to inspect a PR, summarize the risk, check failing CI, and suggest follow-up work.
-- **Fix a failing test.** Let it read the failure, trace the relevant code, propose a fix, edit the repo, and rerun checks with your approval.
-- **Ship a GitOps change.** Update YAML, preserve a reviewable diff, and carry the change through branch → commit → push → PR.
-- **Learn an unfamiliar repo.** Use local session recall and project memory so explanations get sharper as yottacode learns the codebase.
-- **Package repeatable workflows.** Install or write Agent Skills for team-specific reviews, release checklists, migrations, and runbooks.
-- **Turn an issue into a draft PR.** Move from issue context to plan, implementation, tests, commit, push, and PR without leaving the terminal.
-
-See the full command reference in [`docs/tui-slash-commands.md`](docs/tui-slash-commands.md) and [`docs/cli.md`](docs/cli.md). Browse reusable workflows in [`yottacode-skills`](https://github.com/yottadynamics/yottacode-skills).
+| If you want... | yottacode gives you... |
+|---|---|
+| Model choice | OpenAI, Anthropic, Gemini, Google Vertex AI, xAI, ChatGPT/Copilot OAuth, Ollama, NVIDIA NIM-compatible workflows, vLLM, OpenRouter, Together, and other `/v1`-compatible endpoints |
+| Local-first control | Plain-file sessions, memory, approvals, checkpoints, and no telemetry |
+| Real repo workflows | Branches, commits, PRs, CI checks, reviews, issues, comments, and isolated worktrees |
+| Team-safe automation | Permission rules, path validation, approval previews, plan mode, and rollback checkpoints |
+| LSP code intelligence | Local LSP tools for Go, TypeScript/JavaScript, Python, and Rust |
+| One-shot automation | `yottacode run` for CI/CD, ticket resolution, and scripted workflow automation |
+| IDE integration | ACP protocol support so yottacode can connect to compatible IDEs and agent frontends |
+| Repeatable team workflows | Agent Skills for review checklists, runbooks, releases, migrations, and project-specific playbooks |
 
 ---
 
 ## Built for control and privacy
 
-Autonomy is useful only when you can trust the loop, and trust starts with knowing where your data lives: **no telemetry, no analytics, plain files under `~/.yottacode/`, and model traffic only to providers you configure.**
+Autonomy is useful only when you can trust the loop. yottacode is designed around explicit control: **no telemetry, no analytics, plain files under `~/.yottacode/`, and model traffic only to providers you configure.**
 
-- Mutating tools pause for approval with a diff or command preview.
-- Path validation confines edits to the working tree and blocks risky targets like secrets and SSH/cloud credentials.
-- Project rules can `allow`, `ask`, or `deny` specific tools and paths for team-shared policy.
-- Checkpoints let you roll back conversation state, file changes, or both.
-- Plan mode investigates read-only first, then waits for approval before implementation.
-- **Data sovereignty by default.** Sessions, memory, and checkpoints are plain files on your machine under `~/.yottacode/`. Code only leaves the machine to reach the model provider you explicitly configure, and with local Ollama, nothing leaves at all.
+| Control | What it means |
+|---|---|
+| Approval-first mutations | File writes, shell commands, git operations, and other risky actions pause for approval with a diff, command, or write preview. |
+| Path validation | Edits stay inside the working tree and block risky targets like secrets and SSH/cloud credentials. |
+| Project permissions | Team rules can `allow`, `ask`, or `deny` specific tools and paths. |
+| Plan mode | yottacode can investigate read-only first, produce a plan, and wait before implementation. |
+| Checkpoints and rollback | Conversation and repo changes can be checkpointed and rolled back. |
+| Local model option | Ollama keeps model traffic on your machine. |
+| Plain-file memory | User and project memory live under `~/.yottacode/` and can be inspected or deleted. |
 
 Tools run on the host by default. For stronger shell-command isolation, enable the optional Podman command sandbox with `[sandbox] backend = "podman"`; it runs approved `run_bash`/`run_tests` commands and document subprocess helpers in GHCR-published containers. See [`docs/sandbox.md`](docs/sandbox.md) and [`docs/security-and-allow-lists.md`](docs/security-and-allow-lists.md).
+
+Provider costs depend on the model you choose. yottacode reports token usage where providers expose it; see [`docs/cost.md`](docs/cost.md) for current cost-tracking behavior.
+
+---
+
+## Use yottacode when your terminal session becomes the workflow
+
+- **You are reviewing a PR and need more than a summary.** Ask yottacode to read the diff, inspect the touched code, check CI, identify risk, and draft the exact follow-up comment.
+- **A test is failing and the fix is not obvious.** Let yottacode reproduce the failure, trace callers, patch the code, add a regression test, and rerun checks before you commit.
+- **You need to make a safe infrastructure or GitOps change.** Update YAML, Helm values, Terraform, or deployment config with approval-gated diffs instead of copy-pasting snippets between chat and your editor.
+- **You are jumping into a repo you do not know yet.** Use plan mode, LSP, file search, memory, and session recall to map the codebase before anything mutates.
+- **You want an agent to carry the boring GitHub steps.** Turn an issue into a branch, commits, CI inspection, PR body, and reviewer-ready summary without leaving the TUI.
+- **You need model choice without changing your workflow.** Start with local Ollama, use a cloud model when needed, and switch providers mid-session without moving the task to another tool.
+
+Browse reusable workflows in [`yottacode-skills`](https://github.com/yottadynamics/yottacode-skills).
+
+---
+
+## Project status
+
+yottacode is pre-1.0 and actively developed. The CLI, config, and on-disk formats are still stabilizing, but the core terminal workflow is usable today for real repositories.
+
+Good first areas for contributors:
+
+- Docs, examples, and first-run polish.
+- Provider adapters and setup diagnostics.
+- Workflow skills for real engineering tasks.
+- Bug reports from real terminal sessions.
+- Tests around approval, GitHub, memory, and worktree behavior.
+
+---
+
+## Support the project
+
+If yottacode looks useful, a GitHub star helps the project reach more developers, attract contributors, and grow the ecosystem. Bug reports, setup feedback, and workflow ideas are just as valuable — [open an issue](https://github.com/yottadynamics/yottacode/issues/new/choose).
 
 ---
 
@@ -158,29 +202,17 @@ Browse the full documentation online at **[yottacode.ai/docs](https://yottacode.
 
 ## Contributing
 
-yottacode is built in the open and contributions are very welcome — from typo fixes to new tools and provider adapters. The full guide lives in **[CONTRIBUTING.md](CONTRIBUTING.md)**; here's the short version.
+yottacode is built in the open, and contributions are welcome — from typo fixes and docs improvements to provider adapters, workflow skills, and core agent features.
 
-**Ways to contribute**
+Before opening a PR, please keep changes focused, include tests/docs for behavior changes, and make sure `go test ./...` and `go vet ./...` pass.
 
-- **Report a bug** or **request a feature** with the [issue templates](https://github.com/yottadynamics/yottacode/issues/new/choose).
-- **Improve the docs** — the in-repo [`docs/`](docs/) guides or the published site at [yottacode.ai/docs](https://yottacode.ai/docs/).
-- **Open a pull request** for a fix or feature. Planning something big? File an issue first so we can align on the approach.
-
-**Before you open a PR**
-
-- Keep it focused — one logical change, with a clear description and the issue it closes (`Closes #123`).
-- Ship **code, tests, and docs together**: every feature needs tests, every bug fix needs a regression test that fails before and passes after, and behavior changes update the matching `docs/` guide.
-- Make sure `go test ./...` and `go vet ./...` pass — CI runs build, vet, and tests on every PR and must be green before merge.
-
-**Where things plug in** — adding a built-in tool, a slash command, or a model adapter is a well-defined seam; see the [Development](#development) section and [`docs/development.md`](docs/development.md) for build, test, and extension details.
-
-**Security and conduct** — please don't file public issues for vulnerabilities. Use GitHub's "Report a vulnerability" button under the repository's **Security** tab, or follow the private reporting path in **[SECURITY.md](SECURITY.md)**. Community standards are in **[CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)**.
+See **[CONTRIBUTING.md](CONTRIBUTING.md)** for the full guide. Please report vulnerabilities privately through **[SECURITY.md](SECURITY.md)**, not public issues.
 
 ---
 
 ## Development
 
-yottacode is a single, pure-Go binary (no CGo) targeting **Go 1.26+** on Linux and macOS (amd64/arm64).
+yottacode is a single, pure-Go binary targeting **Go 1.26+** on Linux and macOS (amd64/arm64).
 
 **Build**
 
@@ -196,20 +228,10 @@ go vet ./...                     # static checks
 govulncheck ./...                # reachable dependency/toolchain CVEs
 go test -race ./...              # race detector
 go test -cover ./...             # coverage
-go test -tags=integration ./...  # live-provider tests (needs API keys)
+go test -tags=integration ./...  # live-provider tests, needs API keys
 ```
 
-**Where to extend** — most feature work lands on a well-defined seam:
-
-- **A built-in tool** — implement `agent.Tool` and register it in `internal/tui/run.go` and `internal/oneshot/oneshot.go`.
-- **A slash command** — add an entry in `internal/tui/commands.go`.
-- **A provider adapter** — extend `internal/adapter`; the agent loop depends only on the streaming interface.
-
-See [`docs/development.md`](docs/development.md) for the full guide — project layout, the model-catalog refresh, provider diagnostics, and release versioning.
-
----
-
-If yottacode is useful to you, starring the repo is the single highest-leverage thing you can do right now. It directly affects how many other engineers discover it. Found a bug or have an idea? [Issues](https://github.com/yottadynamics/yottacode/issues/new/choose) are always welcome.
+Most extension work lands in a documented seam: built-in tools, slash commands, provider adapters, MCP integration, skills, and TUI workflows. See [`docs/development.md`](docs/development.md) for the full guide — project layout, the model-catalog refresh, provider diagnostics, and release versioning.
 
 ---
 
