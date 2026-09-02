@@ -1938,6 +1938,8 @@ each stream capped at 256 KiB; truncation is announced in the result.
 
 After approval, host `run_bash` detects when inherited `HOME`, `TMPDIR`, or XDG cache/config/data/state variables point inside the current checkout. In that polluted-env case it redirects those variables to yottacode-owned scratch paths under `~/.yottacode/host-shell/<workspace>/` before running the command. This keeps tools that follow freedesktop defaults from leaking repo-root `.local/`, `.cache/`, or `.config/` directories. If a command intentionally needs the real home directory, pass the required path explicitly instead of relying on inherited `HOME`.
 
+`run_bash` refuses command segments that invoke `sudo`, `doas`, or `pkexec` before starting the shell. Those privilege frontends can hand the terminal an OS-owned password prompt that yottacode cannot render as an approval card, cancel reliably, or audit, so the safe path is to run the elevated command yourself in a separate terminal and then ask yottacode to continue.
+
 There is no *in-process* sandbox, and there will not be one — yottacode
 keeps its core small and does not ship bwrap/firejail/landlock backends.
 By default the command runs directly on the host. Two ways to add real

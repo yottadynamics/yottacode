@@ -185,6 +185,13 @@ var hardlineRe = []struct {
 	{regexp.MustCompile(cmdStart + `telinit\s+[06]\b`), "telinit 0/6 (shutdown/reboot)"},
 }
 
+// privilegeEscalationRe matches command-position privilege escalation tools.
+// They are blocked before shell execution because sudo/doas/pkexec can hand the
+// terminal an OS password prompt that the agent cannot own, render, or safely
+// recover from. Matching command position keeps harmless prose searches such as
+// `grep sudo README.md` on the normal execution path.
+var privilegeEscalationRe = regexp.MustCompile(`(?i)^\s*(env\s+(\S+=\S*\s+)*|exec\s+|nohup\s+|setsid\s+|time\s+)*(sudo|doas|pkexec)(\s|$)`)
+
 // IsHardlineCommand reports whether any segment of cmd matches the
 // unconditional hardline blocklist, with a human-readable reason. The
 // run_bash execution floor calls this to refuse catastrophic commands
@@ -204,6 +211,19 @@ func IsHardlineCommand(cmd string) (bool, string) {
 			if p.re.MatchString(s) {
 				return true, p.reason
 			}
+		}
+	}
+	return false, ""
+}
+
+// IsPrivilegeEscalationCommand reports whether any command segment invokes a
+// privilege-escalation frontend in command position. The run_bash execution
+// floor uses this to fail fast before a terminal-owned password prompt can
+// appear or hang the agent.
+func IsPrivilegeEscalationCommand(cmd string) (bool, string) {
+	for _, seg := range SplitCommand(cmd) {
+		if privilegeEscalationRe.MatchString(seg.Text) {
+			return true, "interactive privilege escalation via sudo/doas/pkexec"
 		}
 	}
 	return false, ""

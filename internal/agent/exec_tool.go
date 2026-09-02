@@ -92,15 +92,19 @@ func (t *RunBashTool) Execute(ctx context.Context, argsJSON string) (string, err
 	if blocked, reason := IsHardlineCommand(a.Command); blocked {
 		return fmt.Sprintf("BLOCKED (hardline): %s. This command is on the unconditional blocklist and cannot be run through the agent — not even with --yolo. If you genuinely need it, run it yourself in a terminal outside the agent.", reason), nil
 	}
-	runCommand, err := prepareRunBashCommand(a.Command, t.sandbox(), t.Cwd.Get())
+	if blocked, reason := IsPrivilegeEscalationCommand(a.Command); blocked {
+		return fmt.Sprintf("BLOCKED (privilege escalation): %s. Commands that can prompt for an OS password are refused before execution so the terminal cannot hang on an agent-initiated sudo prompt. Run the command yourself in a terminal outside the agent, then ask yottacode to continue.", reason), nil
+	}
+	preparedCommand, err := prepareRunBashCommand(a.Command, t.sandbox(), t.Cwd.Get())
 	if err != nil {
 		return "", fmt.Errorf("run_bash: %w", err)
 	}
 
-	c := t.sandbox().Command(ctx, runCommand, t.Cwd.Get())
+	c := t.sandbox().Command(ctx, preparedCommand, t.Cwd.Get())
 	var stdout, stderr bytes.Buffer
 	c.Stdout = &cappedWriter{buf: &stdout}
 	c.Stderr = &cappedWriter{buf: &stderr}
+
 	runErr := c.Run()
 	var exitErr *exec.ExitError
 	if runErr != nil && !errors.As(runErr, &exitErr) {
