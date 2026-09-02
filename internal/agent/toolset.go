@@ -1,6 +1,8 @@
 package agent
 
 import (
+	"time"
+
 	"github.com/yottadynamics/yottacode/internal/codemap"
 	lspci "github.com/yottadynamics/yottacode/internal/lsp"
 )
@@ -70,6 +72,14 @@ type CoreToolDeps struct {
 	// Sandbox is the command-execution backend for run_bash. Nil selects
 	// HostSandbox (today's direct-on-host behavior) — see RunBashTool.sandbox.
 	Sandbox Sandbox
+
+	// MediaMaxThreads caps ffmpeg's decode/filter/encode thread count for
+	// media_analyze/media_render/media_compose. <=0 falls through to
+	// mediaDefaultMaxThreads — see config.MediaConfig.MaxThreads.
+	MediaMaxThreads int
+	// MediaRenderTimeout bounds how long a single ffmpeg invocation in
+	// those tools may run. <=0 falls through to mediaDefaultRenderTimeout.
+	MediaRenderTimeout time.Duration
 }
 
 // RegisterCoreCwdTools registers the core working-directory-bound tools —
@@ -136,9 +146,9 @@ func RegisterCoreCwdTools(reg *Registry, cwd *CwdRef, deps CoreToolDeps) {
 	}
 
 	reg.Register(&MediaProbeTool{Cwd: cwd, DenyReadPaths: deps.DenyReads})
-	reg.Register(&MediaAnalyzeTool{Cwd: cwd, DenyReadPaths: deps.DenyReads})
-	reg.Register(&MediaComposeTool{Cwd: cwd, DenyReadPaths: deps.DenyReads, WriteOpts: wo})
-	reg.Register(&MediaRenderTool{Cwd: cwd, DenyReadPaths: deps.DenyReads, WriteOpts: wo})
+	reg.Register(&MediaAnalyzeTool{Cwd: cwd, DenyReadPaths: deps.DenyReads, MaxThreads: deps.MediaMaxThreads, RenderTimeout: deps.MediaRenderTimeout})
+	reg.Register(&MediaComposeTool{Cwd: cwd, DenyReadPaths: deps.DenyReads, WriteOpts: wo, MaxThreads: deps.MediaMaxThreads, RenderTimeout: deps.MediaRenderTimeout})
+	reg.Register(&MediaRenderTool{Cwd: cwd, DenyReadPaths: deps.DenyReads, WriteOpts: wo, MaxThreads: deps.MediaMaxThreads, RenderTimeout: deps.MediaRenderTimeout})
 
 	reg.Register(&ListDirTool{Cwd: cwd})
 	reg.Register(&ListProjectStructureTool{Cwd: cwd})

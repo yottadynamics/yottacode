@@ -425,6 +425,8 @@ func (b *Builder) Build(ctx context.Context, spec SessionSpec) (*Runtime, error)
 		AllowPDFIngestion:      true,
 		AllowDocxPdfGeneration: true,
 		Sandbox:                cmdSandbox,
+		MediaMaxThreads:        fileCfg.MediaMaxThreads(),
+		MediaRenderTimeout:     time.Duration(fileCfg.MediaRenderTimeoutSeconds()) * time.Second,
 	})
 
 	// Git worktree tools. enter_worktree/exit_worktree call process-global
@@ -561,6 +563,8 @@ func (b *Builder) Build(ctx context.Context, spec SessionSpec) (*Runtime, error)
 		SupportsBackground:     spec.SupportsBackgroundDispatch,
 		Enabled:                dispatchEnabled,
 		SandboxFactory:         sandboxFactory,
+		MediaMaxThreads:        fileCfg.MediaMaxThreads(),
+		MediaRenderTimeout:     time.Duration(fileCfg.MediaRenderTimeoutSeconds()) * time.Second,
 	})
 	reg.Register(&agent.IntegrateTool{Cwd: cwdRef, Enabled: dispatchEnabled})
 

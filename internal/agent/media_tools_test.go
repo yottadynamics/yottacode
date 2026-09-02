@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestSummarizeMediaProbe(t *testing.T) {
@@ -211,6 +213,142 @@ func TestBuildMediaRenderArgsProfiles(t *testing.T) {
 	}
 }
 
+// TestMediaResolveMaxThreadsDefault guards the resource-starvation fix:
+// media_analyze/media_render/media_compose used to run ffmpeg with no
+// thread cap at all (all cores, normal scheduling priority), which let a
+// heavy render starve the desktop's own processes under CPU contention.
+// <=0 must fall through to the conservative default, never "unlimited".
+func TestMediaResolveMaxThreadsDefault(t *testing.T) {
+	for _, in := range []int{0, -1, -100} {
+		if got := mediaResolveMaxThreads(in); got != mediaDefaultMaxThreads {
+			t.Errorf("mediaResolveMaxThreads(%d) = %d, want %d", in, got, mediaDefaultMaxThreads)
+		}
+	}
+	if got := mediaResolveMaxThreads(2); got != 2 {
+		t.Errorf("mediaResolveMaxThreads(2) = %d, want 2", got)
+	}
+}
+
+func TestBuildMediaRenderArgsBoundsThreads(t *testing.T) {
+	args, err := buildMediaRenderArgs("in.mp4", "out.mp4", "youtube_16x9", mediaRenderArgs{Overwrite: true, MaxThreads: 3})
+	if err != nil {
+		t.Fatalf("buildMediaRenderArgs: %v", err)
+	}
+	joined := strings.Join(args, " ")
+	for _, want := range []string{"-filter_threads 3", "-filter_complex_threads 3", "-threads 3"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("render args missing %q:\n%s", want, joined)
+		}
+	}
+}
+
+func TestBuildMediaGIFRenderArgsBoundsThreads(t *testing.T) {
+	args, err := buildMediaRenderArgs("in.mp4", "out.gif", "gif_preview", mediaRenderArgs{Overwrite: true, MaxThreads: 3})
+	if err != nil {
+		t.Fatalf("buildMediaRenderArgs: %v", err)
+	}
+	joined := strings.Join(args, " ")
+	for _, want := range []string{"-filter_threads 3", "-filter_complex_threads 3"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("gif render args missing %q:\n%s", want, joined)
+		}
+	}
+}
+
+func TestBuildMediaComposeArgsBoundsThreads(t *testing.T) {
+	cwd := t.TempDir()
+	args, err := buildMediaComposeArgs(cwd, filepath.Join(cwd, "out.mp4"), mediaComposeArgs{
+		Output:     "out.mp4",
+		MaxThreads: 3,
+		Segments: []mediaComposeSegment{
+			{Type: "title", Text: "Hi", Duration: 1},
+			{Type: "clip", Path: "raw/demo.mp4"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("buildMediaComposeArgs: %v", err)
+	}
+	joined := strings.Join(args, " ")
+	for _, want := range []string{"-filter_threads 3", "-filter_complex_threads 3", "-threads 3"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("compose args missing %q:\n%s", want, joined)
+		}
+	}
+}
+
+// TestRunMediaCommandExecutesAndReports guards runMediaCommand's contract:
+// best-effort renice must never swallow the command's own success/failure,
+// since that's how media_render/media_compose/media_analyze report ffmpeg
+// errors back to the caller.
+func TestRunMediaCommandExecutesAndReports(t *testing.T) {
+	if err := runMediaCommand(exec.CommandContext(context.Background(), "true")); err != nil {
+		t.Fatalf("runMediaCommand(true): %v", err)
+	}
+	if err := runMediaCommand(exec.CommandContext(context.Background(), "false")); err == nil {
+		t.Fatal("runMediaCommand(false): expected an error, got nil")
+	}
+}
+
+// TestMediaRenderPreviewFlagsExpensiveRenders guards the approval-prompt
+// warning for the two costliest media_render shapes: gif_preview_large
+// (heaviest filter chain of any profile) and rendering 3+ profiles in one
+// call. A cheap single-profile MP4 render must NOT carry the warning, so
+// it doesn't lose meaning through overuse.
+func TestMediaRenderPreviewFlagsExpensiveRenders(t *testing.T) {
+	tool := &MediaRenderTool{}
+	cases := []struct {
+		name      string
+		args      string
+		expensive bool
+	}{
+		{"single cheap profile", `{"input":"in.mp4","output":"out.mp4","profiles":["youtube_16x9"]}`, false},
+		{"gif_preview_large", `{"input":"in.mp4","output":"out.gif","profiles":["gif_preview_large"]}`, true},
+		{"trimmed gif_preview_large", `{"input":"in.mp4","output":"out.gif","profiles":[" gif_preview_large "]}`, true},
+		{"three profiles", `{"input":"in.mp4","output":"out.mp4","profiles":["youtube_16x9","x_16x9","gif_preview"]}`, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			preview := tool.PreviewCall(tc.args)
+			got := strings.Contains(preview, "CPU-intensive")
+			if got != tc.expensive {
+				t.Errorf("PreviewCall(%s) = %q, want CPU-intensive warning=%v", tc.args, preview, tc.expensive)
+			}
+		})
+	}
+}
+
+func TestMediaAnalyzeReportsDetectorTimeout(t *testing.T) {
+	oldLookPath := mediaLookPath
+	mediaLookPath = func(string) (string, error) { return "/usr/bin/ffmpeg", nil }
+	t.Cleanup(func() { mediaLookPath = oldLookPath })
+
+	oldCmdCtx := mediaCommandContext
+	mediaCommandContext = func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		if name == "ffprobe" {
+			return exec.CommandContext(ctx, "printf", `{"streams":[{"codec_type":"video"}]}`)
+		}
+		return exec.CommandContext(ctx, "sleep", "5")
+	}
+	t.Cleanup(func() { mediaCommandContext = oldCmdCtx })
+
+	cwd := t.TempDir()
+	input := filepath.Join(cwd, "demo.mp4")
+	if err := os.WriteFile(input, []byte("not real media"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	tool := &MediaAnalyzeTool{
+		Cwd:           NewCwdRef(cwd),
+		RenderTimeout: 100 * time.Millisecond,
+	}
+	got, err := tool.Execute(context.Background(), `{"path":"demo.mp4","detectors":["visual_idle"]}`)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if !strings.Contains(got, "visual_idle failed") {
+		t.Fatalf("analysis must report detector timeout/cancel instead of silently returning no cuts:\n%s", got)
+	}
+}
+
 func TestMediaProbeMissingFFprobe(t *testing.T) {
 	oldLookPath := mediaLookPath
 	mediaLookPath = func(string) (string, error) { return "", os.ErrNotExist }
@@ -320,6 +458,35 @@ func TestBuildMediaComposeArgsTitleImageClip(t *testing.T) {
 	}
 }
 
+// TestMediaComposeFilterNormalizesSARAfterScale guards against a regression
+// where ffmpeg's concat filter rejected mixed segments with
+// "Input link ... parameters ... do not match". scale's
+// force_original_aspect_ratio math recomputes a compensating sample aspect
+// ratio (e.g. 83160:83159) whenever a clip's source resolution doesn't
+// divide the canvas exactly, and pad doesn't reset it — so a clip segment's
+// SAR can drift off 1:1 while a title/image segment's stays exactly 1:1,
+// and concat refuses to join them. setsar=1 must run again after
+// scale/pad, not just before.
+func TestMediaComposeFilterNormalizesSARAfterScale(t *testing.T) {
+	filter, err := mediaComposeFilter(mediaComposeArgs{
+		Segments: []mediaComposeSegment{
+			{Type: "title", Text: "Hi", Duration: 1},
+			{Type: "clip", Path: "raw/demo.mp4"},
+		},
+	}, []int{0, 1}, 1920, 1080, 30)
+	if err != nil {
+		t.Fatalf("mediaComposeFilter: %v", err)
+	}
+	for segment := range strings.SplitSeq(filter, ";") {
+		if !strings.Contains(segment, "scale=") {
+			continue
+		}
+		if !strings.Contains(segment, "format=yuv420p,setsar=1") {
+			t.Fatalf("segment filter must re-apply setsar=1 right after scale/pad/format, so every segment's SAR is exactly 1:1 before concat:\n%s", segment)
+		}
+	}
+}
+
 func TestEscapeFFmpegDrawTextDisablesExpansion(t *testing.T) {
 	filter := mediaComposeTitleFilter(mediaComposeSegment{Type: "title", Text: "50% faster: it's ok"})
 	for _, want := range []string{"50% faster\\: it\\'s ok", "expansion=none"} {
@@ -389,5 +556,38 @@ func TestMediaComposeMissingFFmpeg(t *testing.T) {
 	_, err := tool.Execute(context.Background(), `{"output":"out/promo.mp4","segments":[{"type":"title","text":"Hi","duration":1}]}`)
 	if err == nil || !strings.Contains(err.Error(), "ffmpeg binary not found") {
 		t.Fatalf("err = %v, want missing ffmpeg", err)
+	}
+}
+
+// TestMediaComposeExecuteEnforcesRenderTimeout guards the other half of the
+// resource-starvation fix: a bounded RenderTimeout must actually cancel a
+// runaway ffmpeg invocation instead of letting it (and the tool call) hang
+// indefinitely. Substitutes a 5s sleep for ffmpeg and asserts Execute
+// returns well before that, once RenderTimeout elapses.
+func TestMediaComposeExecuteEnforcesRenderTimeout(t *testing.T) {
+	oldLookPath := mediaLookPath
+	mediaLookPath = func(string) (string, error) { return "/usr/bin/ffmpeg", nil }
+	t.Cleanup(func() { mediaLookPath = oldLookPath })
+
+	oldCmdCtx := mediaCommandContext
+	mediaCommandContext = func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		return exec.CommandContext(ctx, "sleep", "5")
+	}
+	t.Cleanup(func() { mediaCommandContext = oldCmdCtx })
+
+	cwd := t.TempDir()
+	tool := &MediaComposeTool{
+		Cwd:           NewCwdRef(cwd),
+		WriteOpts:     WritePathOptions{Cwd: NewCwdRef(cwd)},
+		RenderTimeout: 100 * time.Millisecond,
+	}
+	start := time.Now()
+	_, err := tool.Execute(context.Background(), `{"output":"out/promo.mp4","overwrite":true,"segments":[{"type":"title","text":"Hi","duration":1}]}`)
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("Execute: expected a timeout error, got nil")
+	}
+	if elapsed > 2*time.Second {
+		t.Fatalf("Execute took %v to return; RenderTimeout=100ms should have canceled the 5s sleep well before that", elapsed)
 	}
 }

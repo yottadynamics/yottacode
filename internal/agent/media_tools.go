@@ -9,9 +9,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
+	"time"
 )
 
 const mediaMaxOutputBytes = 256 * 1024
@@ -21,6 +24,75 @@ var mediaLookPath = exec.LookPath
 type mediaExecFunc func(context.Context, string, ...string) *exec.Cmd
 
 var mediaCommandContext mediaExecFunc = exec.CommandContext
+
+// mediaDefaultMaxThreads mirrors config.DefaultMediaMaxThreads. Kept as a
+// separate package-local constant — same convention as
+// MaxBackgroundSubagents/MaxForegroundSubagents in agent_tool.go — so this
+// package doesn't need to import internal/config for a fallback number.
+const mediaDefaultMaxThreads = 4
+
+// mediaDefaultRenderTimeout mirrors config.DefaultMediaRenderTimeoutSeconds.
+const mediaDefaultRenderTimeout = 30 * time.Minute
+
+// mediaNiceness is the OS scheduling priority (see setpriority(2); higher =
+// lower priority) applied to every ffmpeg/ffprobe child process. Unbounded
+// CPU/thread usage at normal priority let a heavy render starve the
+// desktop's own interactive processes under contention badly enough to
+// freeze the session — see docs/video-tools.md "Resource usage". Niceness
+// only affects scheduling priority under contention, not total CPU used;
+// mediaResolveMaxThreads bounds that separately.
+const mediaNiceness = 10
+
+// mediaResolveMaxThreads applies the conservative package default when the
+// tool wasn't configured with an explicit positive cap.
+func mediaResolveMaxThreads(maxThreads int) int {
+	if maxThreads <= 0 {
+		return mediaDefaultMaxThreads
+	}
+	return maxThreads
+}
+
+// mediaResolveTimeout applies the conservative package default when the
+// tool wasn't configured with an explicit positive timeout.
+func mediaResolveTimeout(configured time.Duration) time.Duration {
+	if configured > 0 {
+		return configured
+	}
+	return mediaDefaultRenderTimeout
+}
+
+// mediaFilterThreadArgs bounds ffmpeg's filtergraph thread pool — the CPU
+// cost of scale/pad/concat/drawtext/silencedetect/freezedetect chains.
+// These are true global options: order in argv doesn't matter.
+func mediaFilterThreadArgs(maxThreads int) []string {
+	n := strconv.Itoa(mediaResolveMaxThreads(maxThreads))
+	return []string{"-filter_threads", n, "-filter_complex_threads", n}
+}
+
+// mediaDecodeThreadArgs bounds decoder thread count for a single input.
+// Must be placed before the -i it modifies.
+func mediaDecodeThreadArgs(maxThreads int) []string {
+	return []string{"-threads", strconv.Itoa(mediaResolveMaxThreads(maxThreads))}
+}
+
+// mediaEncoderThreadArgs bounds the video encoder's thread count. Must be
+// placed after the codec it modifies (-c:v ...) and before the output path
+// — the standard `ffmpeg ... -c:v libx264 -threads N out.mp4` idiom.
+func mediaEncoderThreadArgs(maxThreads int) []string {
+	return []string{"-threads", strconv.Itoa(mediaResolveMaxThreads(maxThreads))}
+}
+
+// runMediaCommand starts cmd, best-effort lowers its OS scheduling priority
+// (see mediaNiceness), then waits for it to finish. Renice failure
+// (permission, unsupported platform) is silently ignored — it's a
+// nice-to-have on top of the thread cap, not a correctness requirement.
+func runMediaCommand(cmd *exec.Cmd) error {
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	_ = syscall.Setpriority(syscall.PRIO_PROCESS, cmd.Process.Pid, mediaNiceness)
+	return cmd.Wait()
+}
 
 // MediaProbeTool inspects a media file through ffprobe without sending the
 // media bytes to the model. The result is a compact metadata snapshot the agent
@@ -75,7 +147,7 @@ func (t *MediaProbeTool) Execute(ctx context.Context, argsJSON string) (string, 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &capped{buf: &stdout, max: mediaMaxOutputBytes}
 	cmd.Stderr = &capped{buf: &stderr, max: 32 * 1024}
-	if err := cmd.Run(); err != nil {
+	if err := runMediaCommand(cmd); err != nil {
 		return "", fmt.Errorf("media_probe: ffprobe failed: %w; stderr=%q", err, stderr.String())
 	}
 	return summarizeMediaProbe(stdout.Bytes())
@@ -88,6 +160,13 @@ func (t *MediaProbeTool) Execute(ctx context.Context, argsJSON string) (string, 
 type MediaAnalyzeTool struct {
 	Cwd           *CwdRef
 	DenyReadPaths []string
+	// MaxThreads caps ffmpeg's decode/filter thread count for the
+	// silence/freeze detector passes. <=0 falls through to
+	// mediaDefaultMaxThreads. See config.MediaConfig.MaxThreads.
+	MaxThreads int
+	// RenderTimeout bounds how long the detector passes may run. <=0
+	// falls through to mediaDefaultRenderTimeout.
+	RenderTimeout time.Duration
 }
 
 func (t *MediaAnalyzeTool) Name() string { return "media_analyze" }
@@ -165,6 +244,8 @@ func (t *MediaAnalyzeTool) Execute(ctx context.Context, argsJSON string) (string
 	if _, err := mediaLookPath("ffmpeg"); err != nil {
 		return "", errors.New("media_analyze: ffmpeg binary not found in PATH; install ffmpeg first")
 	}
+	ctx, cancel := context.WithTimeout(ctx, mediaResolveTimeout(t.RenderTimeout))
+	defer cancel()
 	probe, _ := probeMediaFile(ctx, t.Cwd.Get(), input)
 	detectors := selectMediaDetectors(mode, a.Detectors, probe)
 	var candidates []mediaCandidate
@@ -176,7 +257,7 @@ func (t *MediaAnalyzeTool) Execute(ctx context.Context, argsJSON string) (string
 				notes = append(notes, "audio_silence skipped: no audio stream")
 				continue
 			}
-			cuts, err := runAudioSilenceDetect(ctx, t.Cwd.Get(), input, threshold, minSilence)
+			cuts, err := runAudioSilenceDetect(ctx, t.Cwd.Get(), input, threshold, minSilence, t.MaxThreads)
 			if err != nil {
 				notes = append(notes, err.Error())
 				continue
@@ -189,7 +270,7 @@ func (t *MediaAnalyzeTool) Execute(ctx context.Context, argsJSON string) (string
 				notes = append(notes, "visual_idle skipped: no video stream")
 				continue
 			}
-			cuts, err := runVisualFreezeDetect(ctx, t.Cwd.Get(), input, visualNoise, minIdle)
+			cuts, err := runVisualFreezeDetect(ctx, t.Cwd.Get(), input, visualNoise, minIdle, t.MaxThreads)
 			if err != nil {
 				notes = append(notes, err.Error())
 				continue
@@ -226,6 +307,13 @@ type MediaRenderTool struct {
 	Cwd           *CwdRef
 	DenyReadPaths []string
 	WriteOpts     WritePathOptions
+	// MaxThreads caps ffmpeg's decode/filter/encode thread count for every
+	// profile rendered. <=0 falls through to mediaDefaultMaxThreads. See
+	// config.MediaConfig.MaxThreads.
+	MaxThreads int
+	// RenderTimeout bounds how long each profile's ffmpeg invocation may
+	// run. <=0 falls through to mediaDefaultRenderTimeout.
+	RenderTimeout time.Duration
 }
 
 func (t *MediaRenderTool) Name() string { return "media_render" }
@@ -263,7 +351,20 @@ func (t *MediaRenderTool) PreviewCall(argsJSON string) string {
 	if len(profiles) == 0 {
 		profiles = []string{"youtube_16x9"}
 	}
-	return fmt.Sprintf("media_render(%s -> %s profiles=%s)", a.Input, a.Output, strings.Join(profiles, ","))
+	preview := fmt.Sprintf("media_render(%s -> %s profiles=%s)", a.Input, a.Output, strings.Join(profiles, ","))
+	if mediaRenderIsExpensive(profiles) {
+		preview += " -- CPU-intensive: full-length GIF/multi-profile renders can take minutes and compete with the desktop for CPU"
+	}
+	return preview
+}
+
+// mediaRenderIsExpensive flags render requests worth a stronger approval
+// warning: gif_preview_large runs the heaviest filter chain (palettegen/
+// paletteuse over the full frame range) of any profile, and rendering
+// three or more profiles in one call multiplies that cost sequentially.
+func mediaRenderIsExpensive(profiles []string) bool {
+	profiles = normalizedMediaProfiles(profiles)
+	return len(profiles) >= 3 || slices.Contains(profiles, "gif_preview_large")
 }
 func (t *MediaRenderTool) PathsToSnapshot(cwd, argsJSON string) []string {
 	var a mediaRenderArgs
@@ -328,6 +429,7 @@ func (t *MediaRenderTool) Execute(ctx context.Context, argsJSON string) (string,
 			return "", errors.New("media_render: cut_ranges remove the entire file; approve at least one keep range")
 		}
 	}
+	a.MaxThreads = t.MaxThreads
 	profiles := normalizedMediaProfiles(a.Profiles)
 	var rendered []string
 	for i, profile := range profiles {
@@ -335,12 +437,15 @@ func (t *MediaRenderTool) Execute(ctx context.Context, argsJSON string) (string,
 		if err != nil {
 			return "", fmt.Errorf("media_render: %w", err)
 		}
-		cmd := mediaCommandContext(ctx, "ffmpeg", args...)
+		profileCtx, cancel := context.WithTimeout(ctx, mediaResolveTimeout(t.RenderTimeout))
+		cmd := mediaCommandContext(profileCtx, "ffmpeg", args...)
 		cmd.Dir = t.Cwd.Get()
 		var stdout, stderr bytes.Buffer
 		cmd.Stdout = &capped{buf: &stdout, max: 32 * 1024}
 		cmd.Stderr = &capped{buf: &stderr, max: mediaMaxOutputBytes}
-		if err := cmd.Run(); err != nil {
+		err = runMediaCommand(cmd)
+		cancel()
+		if err != nil {
 			return "", fmt.Errorf("media_render: ffmpeg failed for %s: %w; stderr=%q", profile, err, stderr.String())
 		}
 		rendered = append(rendered, outs[i])
@@ -358,6 +463,13 @@ type MediaComposeTool struct {
 	Cwd           *CwdRef
 	DenyReadPaths []string
 	WriteOpts     WritePathOptions
+	// MaxThreads caps ffmpeg's decode/filter/encode thread count. <=0
+	// falls through to mediaDefaultMaxThreads. See
+	// config.MediaConfig.MaxThreads.
+	MaxThreads int
+	// RenderTimeout bounds how long the ffmpeg invocation may run. <=0
+	// falls through to mediaDefaultRenderTimeout.
+	RenderTimeout time.Duration
 }
 
 func (t *MediaComposeTool) Name() string { return "media_compose" }
@@ -441,16 +553,19 @@ func (t *MediaComposeTool) Execute(ctx context.Context, argsJSON string) (string
 	if err := os.MkdirAll(filepath.Dir(output), 0o755); err != nil {
 		return "", fmt.Errorf("media_compose: mkdir output dir: %w", err)
 	}
+	a.MaxThreads = t.MaxThreads
 	args, err := buildMediaComposeArgs(cwd, output, a)
 	if err != nil {
 		return "", fmt.Errorf("media_compose: %w", err)
 	}
+	ctx, cancel := context.WithTimeout(ctx, mediaResolveTimeout(t.RenderTimeout))
+	defer cancel()
 	cmd := mediaCommandContext(ctx, "ffmpeg", args...)
 	cmd.Dir = cwd
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &capped{buf: &stdout, max: 32 * 1024}
 	cmd.Stderr = &capped{buf: &stderr, max: mediaMaxOutputBytes}
-	if err := cmd.Run(); err != nil {
+	if err := runMediaCommand(cmd); err != nil {
 		return "", fmt.Errorf("media_compose: ffmpeg failed: %w; stderr=%q", err, stderr.String())
 	}
 	return "rendered:\n" + output + "\n", nil
@@ -464,6 +579,9 @@ type mediaComposeArgs struct {
 	FPS             float64               `json:"fps"`
 	BackgroundColor string                `json:"background_color"`
 	Overwrite       bool                  `json:"overwrite"`
+	// MaxThreads is set internally from MediaComposeTool.MaxThreads after
+	// unmarshaling — never model-controlled.
+	MaxThreads int `json:"-"`
 }
 
 type mediaComposeSegment struct {
@@ -581,6 +699,7 @@ func buildMediaComposeArgs(cwd, output string, a mediaComposeArgs) ([]string, er
 		return nil, fmt.Errorf("background_color %q must be a hex color like #0b0f0d or a simple ffmpeg color name", background)
 	}
 	args := []string{"-hide_banner"}
+	args = append(args, mediaFilterThreadArgs(a.MaxThreads)...)
 	if a.Overwrite {
 		args = append(args, "-y")
 	} else {
@@ -592,14 +711,17 @@ func buildMediaComposeArgs(cwd, output string, a mediaComposeArgs) ([]string, er
 		segmentInputs[i] = -1
 		switch strings.TrimSpace(segment.Type) {
 		case "title":
+			args = append(args, mediaDecodeThreadArgs(a.MaxThreads)...)
 			args = append(args, "-f", "lavfi", "-t", fmtSeconds(segment.Duration), "-i", fmt.Sprintf("color=c=%s:s=%dx%d:r=%s", background, width, height, fmtNumber(fps)))
 			segmentInputs[i] = inputIndex
 			inputIndex++
 		case "image":
+			args = append(args, mediaDecodeThreadArgs(a.MaxThreads)...)
 			args = append(args, "-loop", "1", "-t", fmtSeconds(segment.Duration), "-i", resolvePath(cwd, segment.Path))
 			segmentInputs[i] = inputIndex
 			inputIndex++
 		case "clip":
+			args = append(args, mediaDecodeThreadArgs(a.MaxThreads)...)
 			args = append(args, "-i", resolvePath(cwd, segment.Path))
 			segmentInputs[i] = inputIndex
 			inputIndex++
@@ -614,8 +736,9 @@ func buildMediaComposeArgs(cwd, output string, a mediaComposeArgs) ([]string, er
 		"-map", "[vout]",
 		"-an",
 		"-c:v", "libx264", "-preset", "medium", "-crf", "20",
-		"-movflags", "+faststart", output,
 	)
+	args = append(args, mediaEncoderThreadArgs(a.MaxThreads)...)
+	args = append(args, "-movflags", "+faststart", output)
 	return args, nil
 }
 
@@ -684,7 +807,14 @@ func mediaComposeFilter(a mediaComposeArgs, inputs []int, width, height int, fps
 				base += "setpts=PTS-STARTPTS,"
 			}
 		}
-		fmt.Fprintf(&segmentFilter, "%ssetsar=1,fps=%s,scale=%d:%d:force_original_aspect_ratio=decrease,pad=%d:%d:(ow-iw)/2:(oh-ih)/2,format=yuv420p,", base, fmtNumber(fps), width, height, width, height)
+		// setsar=1 runs both before AND after scale/pad: scale's
+		// force_original_aspect_ratio math recomputes a compensating SAR
+		// (e.g. 83160:83159) whenever the source aspect ratio doesn't divide
+		// the canvas exactly, and pad doesn't reset it. Without the trailing
+		// setsar=1, that near-1-but-not-1 SAR mismatches segments (title/
+		// image) whose SAR stayed exactly 1:1, and concat refuses to join
+		// them ("Input link ... parameters ... do not match").
+		fmt.Fprintf(&segmentFilter, "%ssetsar=1,fps=%s,scale=%d:%d:force_original_aspect_ratio=decrease,pad=%d:%d:(ow-iw)/2:(oh-ih)/2,format=yuv420p,setsar=1,", base, fmtNumber(fps), width, height, width, height)
 		segmentFilter.WriteString(mediaComposeImageMotionFilter(segment, width, height, fps))
 		segmentFilter.WriteString(mediaComposeTemplateFilter(segment))
 		segmentFilter.WriteString(mediaComposeTitleFilter(segment))
@@ -802,6 +932,10 @@ type mediaRenderArgs struct {
 	Speed        float64      `json:"speed"`
 	Overwrite    bool         `json:"overwrite"`
 	HasAudio     bool         `json:"-"`
+	// MaxThreads is set internally from MediaRenderTool.MaxThreads after
+	// unmarshaling — never model-controlled — so a render can't
+	// unilaterally claim every core on the host via tool-call args.
+	MaxThreads int `json:"-"`
 }
 
 type mediaStream struct {
@@ -901,27 +1035,43 @@ func parseSilenceDetect(stderr string, minDuration float64) []mediaRange {
 	return cuts
 }
 
-func runAudioSilenceDetect(ctx context.Context, cwd, input string, threshold, minDuration float64) ([]mediaRange, error) {
+func runAudioSilenceDetect(ctx context.Context, cwd, input string, threshold, minDuration float64, maxThreads int) ([]mediaRange, error) {
 	filter := fmt.Sprintf("silencedetect=noise=%.1fdB:d=%.3f", threshold, minDuration)
-	args := []string{"-hide_banner", "-nostats", "-i", input, "-af", filter, "-f", "null", "-"}
+	args := append(mediaDecodeThreadArgs(maxThreads), "-hide_banner", "-nostats")
+	args = append(args, mediaFilterThreadArgs(maxThreads)...)
+	args = append(args, "-i", input, "-af", filter, "-f", "null", "-")
 	cmd := mediaCommandContext(ctx, "ffmpeg", args...)
 	cmd.Dir = cwd
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &capped{buf: &stdout, max: 8 * 1024}
 	cmd.Stderr = &capped{buf: &stderr, max: mediaMaxOutputBytes}
-	_ = cmd.Run() // silencedetect reports through stderr; parse whatever was produced.
+	if err := runMediaCommand(cmd); err != nil {
+		cuts := parseSilenceDetect(stderr.String(), minDuration)
+		if len(cuts) > 0 {
+			return cuts, nil
+		}
+		return nil, fmt.Errorf("audio_silence failed: %w", err)
+	}
 	return parseSilenceDetect(stderr.String(), minDuration), nil
 }
 
-func runVisualFreezeDetect(ctx context.Context, cwd, input string, noiseThreshold, minDuration float64) ([]mediaRange, error) {
+func runVisualFreezeDetect(ctx context.Context, cwd, input string, noiseThreshold, minDuration float64, maxThreads int) ([]mediaRange, error) {
 	filter := fmt.Sprintf("freezedetect=n=%.6f:d=%.3f", noiseThreshold, minDuration)
-	args := []string{"-hide_banner", "-nostats", "-i", input, "-vf", filter, "-an", "-f", "null", "-"}
+	args := append(mediaDecodeThreadArgs(maxThreads), "-hide_banner", "-nostats")
+	args = append(args, mediaFilterThreadArgs(maxThreads)...)
+	args = append(args, "-i", input, "-vf", filter, "-an", "-f", "null", "-")
 	cmd := mediaCommandContext(ctx, "ffmpeg", args...)
 	cmd.Dir = cwd
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &capped{buf: &stdout, max: 8 * 1024}
 	cmd.Stderr = &capped{buf: &stderr, max: mediaMaxOutputBytes}
-	_ = cmd.Run() // freezedetect reports through stderr; parse whatever was produced.
+	if err := runMediaCommand(cmd); err != nil {
+		cuts := parseFreezeDetect(stderr.String(), minDuration)
+		if len(cuts) > 0 {
+			return cuts, nil
+		}
+		return nil, fmt.Errorf("visual_idle failed: %w", err)
+	}
 	return parseFreezeDetect(stderr.String(), minDuration), nil
 }
 
@@ -1153,11 +1303,13 @@ func buildMediaRenderArgs(input, output, profile string, a mediaRenderArgs) ([]s
 		return nil, err
 	}
 	args := []string{"-hide_banner"}
+	args = append(args, mediaFilterThreadArgs(a.MaxThreads)...)
 	if a.Overwrite {
 		args = append(args, "-y")
 	} else {
 		args = append(args, "-n")
 	}
+	args = append(args, mediaDecodeThreadArgs(a.MaxThreads)...)
 	args = append(args, "-i", input)
 	if len(a.KeepRanges) > 1 {
 		complex, err := mediaConcatFilter(a.KeepRanges, vf, a.HasAudio)
@@ -1170,22 +1322,21 @@ func buildMediaRenderArgs(input, output, profile string, a mediaRenderArgs) ([]s
 		} else {
 			args = append(args, "-an")
 		}
-		args = append(args,
-			"-c:v", "libx264", "-preset", "medium", "-crf", "20",
-			"-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", output,
-		)
+		args = append(args, "-c:v", "libx264", "-preset", "medium", "-crf", "20")
+		args = append(args, mediaEncoderThreadArgs(a.MaxThreads)...)
+		args = append(args, "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", output)
 		return args, nil
 	}
 	if len(a.KeepRanges) == 1 {
 		r := a.KeepRanges[0]
 		args = append(args, "-ss", fmtSeconds(r.Start), "-to", fmtSeconds(r.End))
 	}
-	args = append(args,
-		"-vf", vf,
+	args = append(args, "-vf", vf,
 		"-af", "loudnorm=I=-16:TP=-1.5:LRA=11",
 		"-c:v", "libx264", "-preset", "medium", "-crf", "20",
-		"-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", output,
 	)
+	args = append(args, mediaEncoderThreadArgs(a.MaxThreads)...)
+	args = append(args, "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", output)
 	return args, nil
 }
 
@@ -1268,15 +1419,17 @@ func buildMediaGIFRenderArgs(input, output, profile string, a mediaRenderArgs) (
 		if err != nil {
 			return nil, err
 		}
-		return mediaGIFArgs(input, output, a.Overwrite, complex), nil
+		return mediaGIFArgs(input, output, a.Overwrite, complex, a.MaxThreads), nil
 	}
 	complex := "[0:v]" + gifFilter + "[vout]"
 	args := []string{"-hide_banner"}
+	args = append(args, mediaFilterThreadArgs(a.MaxThreads)...)
 	if a.Overwrite {
 		args = append(args, "-y")
 	} else {
 		args = append(args, "-n")
 	}
+	args = append(args, mediaDecodeThreadArgs(a.MaxThreads)...)
 	args = append(args, "-i", input)
 	if len(a.KeepRanges) == 1 {
 		r := a.KeepRanges[0]
@@ -1286,13 +1439,18 @@ func buildMediaGIFRenderArgs(input, output, profile string, a mediaRenderArgs) (
 	return args, nil
 }
 
-func mediaGIFArgs(input, output string, overwrite bool, filterComplex string) []string {
+// mediaGIFArgs bounds decode/filter threads (see mediaFilterThreadArgs)
+// but not encoder threads: ffmpeg's gif encoder doesn't support
+// multithreading, so -threads there would be a no-op.
+func mediaGIFArgs(input, output string, overwrite bool, filterComplex string, maxThreads int) []string {
 	args := []string{"-hide_banner"}
+	args = append(args, mediaFilterThreadArgs(maxThreads)...)
 	if overwrite {
 		args = append(args, "-y")
 	} else {
 		args = append(args, "-n")
 	}
+	args = append(args, mediaDecodeThreadArgs(maxThreads)...)
 	args = append(args, "-i", input, "-filter_complex", filterComplex, "-map", "[vout]", "-loop", "0", output)
 	return args
 }
