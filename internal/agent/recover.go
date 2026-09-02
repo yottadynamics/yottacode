@@ -2,9 +2,11 @@ package agent
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"runtime/debug"
 	"slices"
+	"sync"
 	"time"
 
 	"github.com/yottadynamics/yottacode/internal/adapter"
@@ -65,6 +67,14 @@ func setHistory(cfg LoopConfig, history *[]adapter.Message, next []adapter.Messa
 	withHistoryLock(cfg, func() { *history = next })
 }
 
+// panicOutput is the process-wide sink for recovered panic diagnostics. It
+// defaults to stderr in production and is swappable in tests so expected
+// recovery cases do not print scary stack traces in normal `go test` output.
+var panicOutput = struct {
+	sync.RWMutex
+	w io.Writer
+}{w: os.Stderr}
+
 // panicToError converts a recovered panic value into an error, writing
 // the stack to stderr for diagnosis while returning a concise,
 // model-safe message. The agent funnels model-driven work through many
@@ -78,6 +88,8 @@ func setHistory(cfg LoopConfig, history *[]adapter.Message, next []adapter.Messa
 //		}
 //	}()
 func panicToError(what string, r any) error {
-	fmt.Fprintf(os.Stderr, "yottacode: recovered panic in %s: %v\n%s\n", what, r, debug.Stack())
+	panicOutput.RLock()
+	defer panicOutput.RUnlock()
+	fmt.Fprintf(panicOutput.w, "yottacode: recovered panic in %s: %v\n%s\n", what, r, debug.Stack())
 	return fmt.Errorf("%s panicked: %v", what, r)
 }

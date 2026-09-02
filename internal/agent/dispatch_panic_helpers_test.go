@@ -2,7 +2,6 @@ package agent
 
 import (
 	"context"
-	"os"
 	"testing"
 	"time"
 )
@@ -28,16 +27,10 @@ func (panicOnDoneContext) Value(any) any               { return nil }
 func withSuppressedPanicRecoveryStderr(t *testing.T, fn func()) {
 	t.Helper()
 
-	oldStderr := os.Stderr
-	devNull, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
-	if err != nil {
-		t.Fatalf("open %s: %v", os.DevNull, err)
-	}
-	os.Stderr = devNull
-	defer func() {
-		os.Stderr = oldStderr
-		_ = devNull.Close()
-	}()
-
+	setPanicOutputForTest(t, discardPanicOutput{})
 	fn()
 }
+
+type discardPanicOutput struct{}
+
+func (discardPanicOutput) Write(p []byte) (int, error) { return len(p), nil }
