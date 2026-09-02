@@ -228,7 +228,7 @@ type MediaConfig struct {
 // enough to leave headroom for the desktop compositor and other
 // interactive work on typical developer machines. Override via
 // `[media] max_threads = N`.
-const DefaultMediaMaxThreads = 4
+const DefaultMediaMaxThreads = 2
 
 // MediaMaxThreads resolves the configured ffmpeg thread cap, applying the
 // conservative default when unset (<=0).

@@ -276,6 +276,22 @@ func TestBuildMediaComposeArgsBoundsThreads(t *testing.T) {
 	}
 }
 
+// TestMediaDefaultsLeaveDesktopHeadroom captures the safest default for
+// desktop rendering: ffmpeg should not get enough worker threads to starve the
+// compositor on common developer machines. Users can still opt into faster
+// renders with [media] max_threads when the host has spare CPU.
+func TestMediaDefaultsLeaveDesktopHeadroom(t *testing.T) {
+	if got := mediaResolveMaxThreads(0); got != 2 {
+		t.Fatalf("mediaResolveMaxThreads(0) = %d, want desktop-safe default 2", got)
+	}
+	if got := mediaResolveMaxThreads(-1); got != 2 {
+		t.Fatalf("mediaResolveMaxThreads(-1) = %d, want desktop-safe default 2", got)
+	}
+	if got := mediaResolveMaxThreads(6); got != 6 {
+		t.Fatalf("mediaResolveMaxThreads(6) = %d, want explicit override", got)
+	}
+}
+
 // TestRunMediaCommandExecutesAndReports guards runMediaCommand's contract:
 // best-effort renice must never swallow the command's own success/failure,
 // since that's how media_render/media_compose/media_analyze report ffmpeg

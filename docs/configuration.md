@@ -594,7 +594,7 @@ on your machine, not sandboxed or metered by default.
 
 ```toml
 [media]
-max_threads = 4              # ffmpeg decode/filter/encode thread cap; default 4
+max_threads = 2              # ffmpeg decode/filter/encode thread cap; default 2
 render_timeout_seconds = 1800 # per-invocation wall-clock timeout; default 30 min
 ```
 
