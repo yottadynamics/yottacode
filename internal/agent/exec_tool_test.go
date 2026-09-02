@@ -3,7 +3,9 @@ package agent
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -22,6 +24,28 @@ func TestRunBashTool_EchoCapturesStdout(t *testing.T) {
 	}
 }
 
+func TestRunBashTool_IsolatesHomeAndXDGFromRepoRoot(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(dir, ".cache"))
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(dir, ".config"))
+	t.Setenv("XDG_DATA_HOME", filepath.Join(dir, ".local", "share"))
+	t.Setenv("XDG_STATE_HOME", filepath.Join(dir, ".local", "state"))
+
+	tool := &RunBashTool{Cwd: NewCwdRef(dir)}
+	out, err := tool.Execute(context.Background(), `{"command":"mkdir -p \"$HOME/.local/state/probe\" \"$XDG_CACHE_HOME/probe\" \"$XDG_CONFIG_HOME/probe\" \"$XDG_DATA_HOME/probe\" \"$XDG_STATE_HOME/probe\" && printf '%s\\n' \"$HOME\""}`)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	for _, leaked := range []string{".local", ".cache", ".config"} {
+		if _, err := os.Stat(filepath.Join(dir, leaked)); !os.IsNotExist(err) {
+			t.Fatalf("run_bash leaked repo-root %s with output %q: %v", leaked, out, err)
+		}
+	}
+	if !strings.Contains(out, filepath.Join(".yottacode", "host-shell")) {
+		t.Fatalf("run_bash output should show isolated HOME, got %q", out)
+	}
+}
 func TestRunBashTool_ReportsNonZeroExit(t *testing.T) {
 	tool := &RunBashTool{Cwd: NewCwdRef(t.TempDir())}
 	out, err := tool.Execute(context.Background(), `{"command":"exit 42"}`)

@@ -29,6 +29,14 @@ func HostGoScratchDir(workspace string) (string, error) {
 	return yottacodeCacheDir("host-go", safePathName(workspace))
 }
 
+// HostShellScratchDir returns ~/.yottacode/host-shell/<workspace>, the
+// host-side scratch directory used by unsandboxed run_bash calls. Keeping
+// HOME/XDG/TMPDIR here prevents approved shell commands from leaking freedesktop
+// state/cache directories into the repo when the parent environment is polluted.
+func HostShellScratchDir(workspace string) (string, error) {
+	return yottacodeCacheDir("host-shell", safePathName(workspace))
+}
+
 func yottacodeCacheDir(parts ...string) (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
