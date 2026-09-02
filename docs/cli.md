@@ -169,7 +169,7 @@ yottacode doctor
 yottacode doctor --json
 ```
 
-`doctor` probes the provider `/models` endpoint and reports reachability, auth status, model visibility, provider capabilities, configuration warnings, and optional local tooling readiness such as LSP servers and media-editing binaries. The JSON form is intended for scripts.
+`doctor` prints a grep-friendly report with a top-level summary and consistent sections for provider, GitHub, LSP, media, and sandbox checks. It probes the provider `/models` endpoint for reachability, auth status, model visibility, provider capabilities, and bounded model-list samples; GitHub can be skipped with `--no-github`. The JSON form is intended for scripts and keeps the provider fields at the top level for compatibility while adding nested section/status objects.
 
 ## ChatGPT OAuth
 

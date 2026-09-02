@@ -173,8 +173,7 @@ yottacode doctor
 yottacode doctor --json
 ```
 
-`yottacode doctor` exits non-zero when issues are found. It also reports optional local-tool readiness, including LSP code intelligence and media editing (`ffmpeg`/`ffprobe`, plus optional local transcription). `--json` emits a
-stable machine-readable payload.
+`yottacode doctor` exits non-zero when blocking issues are found. Its text output is a grep-friendly report with a top-level `Summary:` and consistent `Provider:`, `GitHub:`, `LSP Code Intelligence:`, `Media Editing:`, and `Sandbox:` sections. Warnings are non-blocking and show as `status: warning`; intentional skips such as `--no-github` show as `status: skipped`. Provider model lists are bounded in text output with a count plus a short sample. `--json` emits a stable machine-readable payload.
 
 ### `doctor --json` shape
 
@@ -190,8 +189,14 @@ Top-level fields:
 - `available_models`
 - `issues`
 - `warnings`
+- `summary`
+- `provider_section`
+- `github`
 - `lsp_code_intelligence`
 - `media_editing`
+- `sandbox`
+
+The nested `summary`, `provider_section`, `github`, `lsp_code_intelligence`, `media_editing`, and `sandbox` objects are additive. Existing scripts that read provider fields such as `endpoint_reachable`, `auth_ok`, `model_visible`, `issues`, and `warnings` from the top level keep working.
 
 The nested `profile` object includes:
 

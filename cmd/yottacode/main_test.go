@@ -52,6 +52,13 @@ func TestDoctorCmd_JSONOutput(t *testing.T) {
 		AuthOK            bool     `json:"auth_ok"`
 		ModelVisible      bool     `json:"model_visible"`
 		AvailableModels   []string `json:"available_models"`
+		Summary           struct {
+			GitHub string `json:"github"`
+		} `json:"summary"`
+		GitHub struct {
+			Status  string `json:"status"`
+			Skipped bool   `json:"skipped"`
+		} `json:"github"`
 	}
 	if err := json.Unmarshal([]byte(out.String()), &got); err != nil {
 		t.Fatalf("decode typed json: %v\n%s", err, out.String())
@@ -61,6 +68,9 @@ func TestDoctorCmd_JSONOutput(t *testing.T) {
 	}
 	if len(got.AvailableModels) != 2 {
 		t.Fatalf("available models = %+v", got.AvailableModels)
+	}
+	if got.Summary.GitHub != "skipped" || got.GitHub.Status != "skipped" || !got.GitHub.Skipped {
+		t.Fatalf("github skip status = summary %q section %+v", got.Summary.GitHub, got.GitHub)
 	}
 }
 

@@ -356,15 +356,16 @@ func newDoctorCmd(opts *cli.ChatOptions) *cobra.Command {
 	var noGitHub bool
 	cmd := &cobra.Command{
 		Use:   "doctor",
-		Short: "Probe provider auth, model visibility, and resolved diagnostics",
-		Long: `Doctor runs a lightweight active probe against the configured endpoint.
-It resolves the provider profile, calls /models, and reports:
+		Short: "Run a grouped setup diagnostics report",
+		Long: `Doctor runs a lightweight setup diagnostics report.
+It resolves the provider profile, probes provider model visibility, and reports
+optional local integrations in the same summary + section shape:
 
-  - endpoint reachability
-  - authentication status
-  - whether the selected model is visible
-  - resolved provider-native capability diagnostics
+  - provider reachability, auth, selected model visibility, and provider tools
   - GitHub auth + rate-limit snapshot (skip with --no-github)
+  - LSP code intelligence server readiness
+  - media editing binary readiness
+  - sandbox backend and Go cache visibility
 
 Use --json for scripting.`,
 		Args: cobra.NoArgs,
@@ -378,60 +379,42 @@ Use --json for scripting.`,
 			}
 			mediaResult := probeMediaDoctor(cmd.Context())
 			lspResult := probeLSPDoctor(cmd.Context(), *opts, fileCfg)
-			result := adapter.Probe(cmd.Context(), adapterConfigFromOptions(*opts))
-			// --no-github skips the GitHub side entirely. Used by
-			// scripted / CI invocations that don't have a token
-			// configured and shouldn't have doctor exit non-zero on
-			// "no GitHub token found". Also keeps doctor side-effect
-			// free for callers that only care about the provider
-			// probe.
-			if noGitHub {
-				if jsonOutput {
-					enc := json.NewEncoder(cmd.OutOrStdout())
-					enc.SetIndent("", "  ")
-					combined := struct {
-						adapter.ProbeResult
-						LSP   LSPDoctorResult   `json:"lsp_code_intelligence"`
-						Media MediaDoctorResult `json:"media_editing"`
-					}{ProbeResult: result, LSP: lspResult, Media: mediaResult}
-					if err := enc.Encode(combined); err != nil {
-						return err
-					}
-				} else {
-					fmt.Fprintln(cmd.OutOrStdout(), formatDoctorResult(result)+renderLSPDoctor(lspResult)+renderMediaDoctor(mediaResult))
-				}
-				if len(result.Issues) > 0 {
-					return errors.New("doctor found issues")
-				}
-				return nil
+			providerResult := adapter.Probe(cmd.Context(), adapterConfigFromOptions(*opts))
+			sandboxResult := probeSandboxDoctor(fileCfg.Sandbox)
+			githubResult := GitHubProbeResult{Status: doctorStatusSkipped, Skipped: true}
+			if !noGitHub {
+				githubResult = probeGitHub(cmd.Context())
 			}
-			ghResult := probeGitHub(cmd.Context())
+			summary := newDoctorSummary(providerResult, githubResult, lspResult, mediaResult, sandboxResult)
 			if jsonOutput {
-				// JSON envelope: provider-probe fields stay at top
-				// level (back-compat — external scripts already
-				// parse `endpoint_reachable`, `auth_ok`, etc.), and
-				// the GitHub section lives under a sibling `github`
-				// key. Embedding ProbeResult flattens its fields.
+				// JSON envelope: provider-probe fields stay at top level for
+				// backward compatibility. New grouped report objects are additive.
 				enc := json.NewEncoder(cmd.OutOrStdout())
 				enc.SetIndent("", "  ")
 				combined := struct {
 					adapter.ProbeResult
-					GitHub GitHubProbeResult `json:"github"`
-					LSP    LSPDoctorResult   `json:"lsp_code_intelligence"`
-					Media  MediaDoctorResult `json:"media_editing"`
+					Summary  DoctorSummary       `json:"summary"`
+					Provider DoctorSectionStatus `json:"provider_section"`
+					GitHub   GitHubProbeResult   `json:"github"`
+					LSP      LSPDoctorResult     `json:"lsp_code_intelligence"`
+					Media    MediaDoctorResult   `json:"media_editing"`
+					Sandbox  SandboxDoctorResult `json:"sandbox"`
 				}{
-					ProbeResult: result,
-					GitHub:      ghResult,
+					ProbeResult: providerResult,
+					Summary:     summary,
+					Provider:    DoctorSectionStatus{Status: summary.Provider},
+					GitHub:      githubResult,
 					LSP:         lspResult,
 					Media:       mediaResult,
+					Sandbox:     sandboxResult,
 				}
 				if err := enc.Encode(combined); err != nil {
 					return err
 				}
 			} else {
-				fmt.Fprintln(cmd.OutOrStdout(), formatDoctorResult(result)+renderGitHubProbe(ghResult)+renderLSPDoctor(lspResult)+renderMediaDoctor(mediaResult))
+				fmt.Fprintln(cmd.OutOrStdout(), formatDoctorReport(summary, providerResult, githubResult, lspResult, mediaResult, sandboxResult))
 			}
-			if len(result.Issues) > 0 || len(ghResult.Issues) > 0 {
+			if len(providerResult.Issues) > 0 || (!githubResult.Skipped && len(githubResult.Issues) > 0) {
 				return errors.New("doctor found issues")
 			}
 			return nil
@@ -530,53 +513,6 @@ func splitCSV(s string) []string {
 		}
 	}
 	return out
-}
-
-func formatDoctorResult(result adapter.ProbeResult) string {
-	var b strings.Builder
-	fmt.Fprintf(&b, "provider: %s\n", providerLabel(result.Profile.Provider))
-	if result.Profile.UsesResponsesAPI {
-		b.WriteString("api-style: responses\n")
-	} else {
-		b.WriteString("api-style: chat-completions\n")
-	}
-	if result.BaseURL != "" {
-		fmt.Fprintf(&b, "base-url: %s\n", result.BaseURL)
-	}
-	if result.Model != "" {
-		fmt.Fprintf(&b, "model: %s\n", result.Model)
-	}
-	if len(result.Profile.EnabledBuiltinTools) > 0 {
-		parts := make([]string, 0, len(result.Profile.EnabledBuiltinTools))
-		for _, tool := range result.Profile.EnabledBuiltinTools {
-			parts = append(parts, string(tool))
-		}
-		fmt.Fprintf(&b, "enabled tools: %s\n", strings.Join(parts, " + "))
-	} else {
-		b.WriteString("enabled tools: none\n")
-	}
-	fmt.Fprintf(&b, "probe: endpoint=%s auth=%s model-visible=%s",
-		yesNo(result.EndpointReachable),
-		yesNo(result.AuthOK),
-		yesNo(result.ModelVisible),
-	)
-	if result.HTTPStatus != 0 {
-		fmt.Fprintf(&b, " status=%d", result.HTTPStatus)
-	}
-	if len(result.AvailableModels) > 0 {
-		fmt.Fprintf(&b, "\nmodels: %s", strings.Join(result.AvailableModels, ", "))
-	}
-	if len(result.Issues) == 0 && len(result.Warnings) == 0 {
-		b.WriteString("\nresult: ok")
-	} else {
-		for _, issue := range result.Issues {
-			fmt.Fprintf(&b, "\nissue: %s", issue)
-		}
-		for _, warning := range result.Warnings {
-			fmt.Fprintf(&b, "\nwarning: %s", warning)
-		}
-	}
-	return b.String()
 }
 
 func providerLabel(provider adapter.Provider) string {
