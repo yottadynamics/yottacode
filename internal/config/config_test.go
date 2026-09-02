@@ -1525,6 +1525,12 @@ func TestLoad_ParsesSubagentsMaxConcurrent(t *testing.T) {
 	}
 }
 
+func TestDefaultMediaMaxThreadsIsDesktopSafe(t *testing.T) {
+	if DefaultMediaMaxThreads != 2 {
+		t.Fatalf("DefaultMediaMaxThreads = %d, want desktop-safe default 2", DefaultMediaMaxThreads)
+	}
+}
+
 func TestMediaMaxThreads(t *testing.T) {
 	cases := []struct {
 		name string

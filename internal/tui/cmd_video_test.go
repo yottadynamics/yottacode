@@ -37,7 +37,7 @@ func TestVideoDirectivePromptSubmitsCreativeWorkflow(t *testing.T) {
 	if display != "/video prompt Create a release teaser" {
 		t.Fatalf("display = %q", display)
 	}
-	for _, want := range []string{"storyboard", "script/caption", "media_compose", "media_render", "Stop for user approval", "asset-based video creation", "branded templates", "simple motion"} {
+	for _, want := range []string{"storyboard", "script/caption", "media_compose", "media_render", "Stop for user approval", "asset-based video creation", "branded templates", "simple motion", "multiple recordings", "inspect it"} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("video prompt directive missing %q:\n%s", want, prompt)
 		}

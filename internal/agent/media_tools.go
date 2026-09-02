@@ -29,7 +29,7 @@ var mediaCommandContext mediaExecFunc = exec.CommandContext
 // separate package-local constant — same convention as
 // MaxBackgroundSubagents/MaxForegroundSubagents in agent_tool.go — so this
 // package doesn't need to import internal/config for a fallback number.
-const mediaDefaultMaxThreads = 4
+const mediaDefaultMaxThreads = 2
 
 // mediaDefaultRenderTimeout mirrors config.DefaultMediaRenderTimeoutSeconds.
 const mediaDefaultRenderTimeout = 30 * time.Minute
