@@ -1524,3 +1524,70 @@ func TestLoad_ParsesSubagentsMaxConcurrent(t *testing.T) {
 		t.Errorf("SubagentMaxConcurrent() = %d, want 12", got)
 	}
 }
+
+func TestMediaMaxThreads(t *testing.T) {
+	cases := []struct {
+		name string
+		set  int
+		want int
+	}{
+		{"unset falls through to default", 0, DefaultMediaMaxThreads},
+		{"negative falls through to default", -3, DefaultMediaMaxThreads},
+		{"positive override wins", 8, 8},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := Config{Media: MediaConfig{MaxThreads: tc.set}}
+			if got := c.MediaMaxThreads(); got != tc.want {
+				t.Errorf("MediaMaxThreads() = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestMediaRenderTimeoutSeconds(t *testing.T) {
+	cases := []struct {
+		name string
+		set  int
+		want int
+	}{
+		{"unset falls through to default", 0, DefaultMediaRenderTimeoutSeconds},
+		{"negative falls through to default", -3, DefaultMediaRenderTimeoutSeconds},
+		{"positive override wins", 60, 60},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := Config{Media: MediaConfig{RenderTimeoutSeconds: tc.set}}
+			if got := c.MediaRenderTimeoutSeconds(); got != tc.want {
+				t.Errorf("MediaRenderTimeoutSeconds() = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestLoad_ParsesMediaConfig is the config-file round-trip: the [media]
+// TOML keys must actually reach MediaConfig and survive a config save
+// (see encodeTunables' trimmed struct in render.go) — the resource-bound
+// fix for ffmpeg starving the desktop under CPU/IO contention only works
+// if a user's [media] block isn't silently dropped by the config wizard.
+func TestLoad_ParsesMediaConfig(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	if err := os.WriteFile(path, []byte("[media]\nmax_threads = 6\nrender_timeout_seconds = 120\n"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := cfg.MediaMaxThreads(); got != 6 {
+		t.Errorf("MediaMaxThreads() = %d, want 6", got)
+	}
+	if got := cfg.MediaRenderTimeoutSeconds(); got != 120 {
+		t.Errorf("MediaRenderTimeoutSeconds() = %d, want 120", got)
+	}
+	body := Render(cfg)
+	if !strings.Contains(body, "[media]") || !strings.Contains(body, "max_threads = 6") {
+		t.Errorf("Render(cfg) dropped the [media] section:\n%s", body)
+	}
+}

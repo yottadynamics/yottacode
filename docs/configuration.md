@@ -586,6 +586,28 @@ independently of this session-wide total.
 See [subagents.md](subagents.md) for the agent types, background
 dispatch, and `notify_on_done` wake semantics these bounds guard.
 
+## Media (video/audio tools)
+
+The `[media]` block bounds the `ffmpeg`/`ffprobe` subprocesses launched by
+`media_analyze`, `media_render`, and `media_compose` — real CPU-bound work
+on your machine, not sandboxed or metered by default.
+
+```toml
+[media]
+max_threads = 4              # ffmpeg decode/filter/encode thread cap; default 4
+render_timeout_seconds = 1800 # per-invocation wall-clock timeout; default 30 min
+```
+
+`max_threads` bounds `-threads`/`-filter_threads`/`-filter_complex_threads`
+so one render can't unilaterally claim every core on the host. Every
+ffmpeg/ffprobe child process also runs at a lowered OS scheduling
+priority (best-effort, silently skipped if the OS refuses it) so it
+yields to your desktop compositor and other interactive work under
+contention. `render_timeout_seconds` bounds a single invocation so a
+malformed filter graph or unexpectedly huge input can't hang a tool call
+indefinitely. Values `<= 0` fall back to the defaults above. See
+[video-tools.md](video-tools.md#resource-usage).
+
 ## Model routing
 
 The `[router]` block hosts two independent, opt-in features.

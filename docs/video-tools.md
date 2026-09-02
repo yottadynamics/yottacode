@@ -88,6 +88,28 @@ Use `media_render` after a recording cleanup or after `media_compose` creates a 
 
 `media_render` can also burn in captions, prepend intro/outro clips, render sped-up GIFs, and apply approved `cut_ranges` or `keep_ranges`.
 
+## Resource usage
+
+`media_analyze`, `media_render`, and `media_compose` all shell out to `ffmpeg`/`ffprobe`. These are real CPU-bound subprocesses running on your machine, not sandboxed or metered by default — a large render (long source clips, multiple export profiles in one call, or `gif_preview_large`'s palette-generation filter chain) can run for minutes and compete with everything else on your desktop for CPU.
+
+Every ffmpeg invocation from these tools is bounded two ways:
+
+- **Thread cap.** Decode, filter, and encode threads are capped (`-threads`/`-filter_threads`/`-filter_complex_threads`), so a render can't unilaterally claim every core on the host. Default 4; override with `[media] max_threads = N` in `config.toml`.
+- **Scheduling priority.** Every ffmpeg/ffprobe child process runs at a lowered OS scheduling priority (nice), so it yields to your desktop compositor and other interactive work under contention instead of competing with them at equal priority. This is best-effort and silently skipped if the OS refuses it — it never blocks the render.
+- **Wall-clock timeout.** Each invocation is bounded so a malformed filter graph or unexpectedly huge input can't hang a tool call indefinitely. Default 30 minutes; override with `[media] render_timeout_seconds = N`.
+
+```toml
+[media]
+max_threads = 4
+render_timeout_seconds = 1800
+```
+
+Practical guidance:
+
+- For a new edit, render one profile against the approved range before rendering every requested profile — `/video`'s workflow does this by default.
+- Prefer `gif_preview` over `gif_preview_large` unless you specifically need the larger/longer variant; it's the most CPU-intensive profile, and `media_render`'s approval prompt flags it (and any 3+ profile request) explicitly.
+- On a machine with limited swap, avoid starting another heavy video/GPU workload (e.g. hardware-accelerated video playback) while a render is in progress.
+
 ## Boundaries
 
 This workflow does not generate synthetic video scenes, AI b-roll, voiceover, or music by itself. Those can be added later as separate provider/tool integrations. Today, yottacode can make polished local asset-based videos from the materials you provide and the storyboard you approve.

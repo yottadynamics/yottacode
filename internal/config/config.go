@@ -73,6 +73,10 @@ type Config struct {
 	// backend="none" (the default) keeps host-exec behavior; backend="podman"
 	// creates lazy rootless Podman profile containers for supported command paths.
 	Sandbox SandboxConfig `toml:"sandbox"`
+	// Media bounds ffmpeg/ffprobe subprocess resource usage for the
+	// media_analyze/media_render/media_compose tools. Absent block falls
+	// through to the conservative defaults below.
+	Media MediaConfig `toml:"media"`
 }
 
 // SubagentsConfig tunes the subagent subsystem. SessionTokenBudget caps
@@ -201,6 +205,53 @@ func (c Config) SubagentMaxConcurrent() int {
 		return c.Subagents.MaxConcurrentSubagents
 	}
 	return DefaultMaxConcurrentSubagents
+}
+
+// MediaConfig bounds ffmpeg/ffprobe subprocess resource usage for the
+// media_analyze/media_render/media_compose tools. Unbounded ffmpeg runs
+// (all cores, normal scheduling priority, no wall-clock cap) can starve an
+// interactive desktop session under sustained CPU/IO contention — see
+// docs/video-tools.md.
+type MediaConfig struct {
+	// MaxThreads caps ffmpeg's decode/filter/encode thread count
+	// (-threads/-filter_threads/-filter_complex_threads). <=0 falls
+	// through to DefaultMediaMaxThreads.
+	MaxThreads int `toml:"max_threads"`
+	// RenderTimeoutSeconds bounds how long a single media_analyze/
+	// media_render/media_compose ffmpeg invocation may run before it's
+	// canceled. <=0 falls through to DefaultMediaRenderTimeoutSeconds.
+	RenderTimeoutSeconds int `toml:"render_timeout_seconds"`
+}
+
+// DefaultMediaMaxThreads is the conservative default thread cap for ffmpeg
+// subprocesses — enough for a render to still be reasonably fast, low
+// enough to leave headroom for the desktop compositor and other
+// interactive work on typical developer machines. Override via
+// `[media] max_threads = N`.
+const DefaultMediaMaxThreads = 4
+
+// MediaMaxThreads resolves the configured ffmpeg thread cap, applying the
+// conservative default when unset (<=0).
+func (c Config) MediaMaxThreads() int {
+	if c.Media.MaxThreads > 0 {
+		return c.Media.MaxThreads
+	}
+	return DefaultMediaMaxThreads
+}
+
+// DefaultMediaRenderTimeoutSeconds bounds how long a single ffmpeg
+// invocation may run — a backstop against a malformed filter graph or an
+// unexpectedly huge input hanging the tool call indefinitely. Override via
+// `[media] render_timeout_seconds = N`.
+const DefaultMediaRenderTimeoutSeconds = 30 * 60
+
+// MediaRenderTimeoutSeconds resolves the configured ffmpeg wall-clock
+// timeout in seconds, applying the conservative default when unset (<=0).
+func (c Config) MediaRenderTimeoutSeconds() int {
+	if c.Media.RenderTimeoutSeconds > 0 {
+		return c.Media.RenderTimeoutSeconds
+	}
+	return DefaultMediaRenderTimeoutSeconds
 }
 
 // SkillsConfig declares persistent Agent Skills behavior. DefaultOn
@@ -708,10 +759,10 @@ func Default() Config {
 			// test` (parallel package compilation) against staying usable on
 			// a modest laptop; see docs/sandbox.md's Config section for the
 			// measured cold-build CPU sensitivity behind this default.
-			Memory:         "4g",
-			CPUs:           4,
-			PidsLimit:      256,
-			Disk:           DefaultSandboxDisk,
+			Memory:    "4g",
+			CPUs:      4,
+			PidsLimit: 256,
+			Disk:      DefaultSandboxDisk,
 		},
 	}
 }

@@ -58,7 +58,7 @@ Use the public media tools, not shell commands, unless a tool reports a missing 
 2. Call media_analyze with mode="auto". If the probe shows a silent terminal demo or the auto analysis skips audio, also consider mode="terminal_demo" when you need tighter visual-idle candidates.
 3. Propose an edit plan with candidate cut ranges and explain why each range should or should not be removed. Be conservative: do not remove meaningful terminal output, command results, or transitions the viewer needs.
 4. Stop for user approval before rendering. Do not call media_render until the user approves exact cut_ranges or keep_ranges.
-5. After approval, call media_render with the approved ranges and profiles ["youtube_16x9", "x_16x9"]. If the user asks for a shareable GIF or teaser loop, include "gif_preview" or "gif_preview_large" too; use speed=1.5 or speed=2 when the clip has slow terminal pauses and the user wants it sped up. Use a clear output base path under out/.
+5. After approval, call media_render with the approved ranges and profiles ["youtube_16x9", "x_16x9"]. ffmpeg renders are CPU-heavy; for a first render of a new edit, prefer one profile against the approved range before rendering every requested profile, so a bad cut doesn't cost a full multi-profile render. If the user asks for a shareable GIF or teaser loop, include "gif_preview" (not "gif_preview_large") unless they specifically ask for the larger/longer variant — it's the most CPU-intensive profile and should not be the default. Use speed=1.5 or speed=2 when the clip has slow terminal pauses and the user wants it sped up. Use a clear output base path under out/.
 
 Keep all output in the normal conversation.`, path, mode), "/video " + trimmed
 }
@@ -76,7 +76,7 @@ Workflow:
 3. If the goal references media recordings, call media_probe on each recording and use media_analyze for candidate cuts when cleanup is needed.
 4. Draft a storyboard before rendering. Include target duration, audience, hook, ordered segments, script/caption text, referenced assets, proposed output profiles, and any cut_ranges or keep_ranges.
 5. Stop for user approval before rendering. Do not call media_compose or media_render until the user approves the exact storyboard and media ranges.
-6. After approval, use media_compose to assemble title cards, screenshots/images, and approved clip segments into a draft MP4. Prefer branded templates, lower-third captions, simple fades, and image zoom/pan motion when they make the result clearer. Then use media_render for final YouTube/X/GIF profile exports when requested.
+6. After approval, use media_compose to assemble title cards, screenshots/images, and approved clip segments into a draft MP4. Prefer branded templates, lower-third captions, simple fades, and image zoom/pan motion when they make the result clearer. Then use media_render for final YouTube/X/GIF profile exports when requested — render one profile first to confirm the draft looks right before rendering every requested profile, and don't default to "gif_preview_large" (the most CPU-intensive profile) unless the user specifically asks for it.
 
 Phase 1 boundary:
 - This is asset-based video creation: script, storyboard, title cards, captions, branded templates, simple motion, cuts, sequencing, and local ffmpeg rendering.

@@ -80,6 +80,12 @@ type DispatchTool struct {
 	// always available to workers regardless.
 	AllowDocxPdfGeneration bool
 
+	// MediaMaxThreads and MediaRenderTimeout carry the parent session's
+	// ffmpeg resource bounds to dispatch workers' media_analyze/
+	// media_render/media_compose tools — see CoreToolDeps.MediaMaxThreads.
+	MediaMaxThreads    int
+	MediaRenderTimeout time.Duration
+
 	// EnableLSP lets dispatch workers expose the same LSP tool surface as the
 	// parent session, while writes still flow through the worker's owned-file
 	// WriteOpts.
@@ -875,6 +881,8 @@ func (t *DispatchTool) buildWorktreeChildRegistry(cfg *subagents.AgentConfig, cw
 		AllowPDFIngestion:      t.AllowPDFIngestion,
 		AllowDocxPdfGeneration: t.AllowDocxPdfGeneration,
 		Sandbox:                sandbox,
+		MediaMaxThreads:        t.MediaMaxThreads,
+		MediaRenderTimeout:     t.MediaRenderTimeout,
 	})
 	out := NewRegistry()
 	for _, tool := range core.Tools() {
