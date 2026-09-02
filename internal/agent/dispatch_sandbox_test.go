@@ -215,10 +215,11 @@ func TestDispatchSandbox_CloseCalledOnceOnPanicRecovery(t *testing.T) {
 	spy := &spySandbox{label: "[podman]"}
 	c.sandbox = spy // stand in for a SandboxFactory result — the panic fires before construction would run
 
-	// nil ctx is deliberate — makes context.WithCancel(ctx) panic, taking
-	// the recover path. See TestBackgroundDispatchPanicStillFiresDoneCallback.
-	//nolint:staticcheck // SA1012: intentional nil ctx to force the panic
-	d.runDispatchChild(nil, c, "batch-1", true, nil, nil)
+	withSuppressedPanicRecoveryStderr(t, func() {
+		// nil ctx is deliberate — makes context.WithCancel(ctx) panic, taking
+		// the recover path. See TestBackgroundDispatchPanicStillFiresDoneCallback.
+		d.runDispatchChild(panicContextForDispatchPanicTest(), c, "batch-1", true, nil, nil)
+	})
 
 	if spy.closeCount != 1 {
 		t.Errorf("Close called %d times on panic recovery, want exactly 1", spy.closeCount)
