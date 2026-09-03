@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 
+	tea "charm.land/bubbletea/v2"
+
 	"github.com/yottadynamics/yottacode/internal/codemap"
 )
 
@@ -37,6 +39,28 @@ func TestCodeMapPickerFilter(t *testing.T) {
 	n, _ := idx.Node(p.rows[0].id)
 	if n.Name != "Run" {
 		t.Fatalf("filtered row = %+v", n)
+	}
+}
+
+// A bracketed paste while the code-map picker is open must land in
+// the filter buffer, not leak through to the hidden main chat
+// textarea underneath the popup. Regression test for the bubbletea v2
+// migration: pastes arrive as tea.PasteMsg, distinct from the
+// msg.Text accumulation updateCodeMapPicker uses for typed runes.
+func TestCodeMapPickerFilterAcceptsPaste(t *testing.T) {
+	idx := testCodeMapIndex(t)
+	p := &codeMapPickerState{index: idx, mode: codeMapModeStructure, expanded: map[codemap.NodeID]bool{idx.Root(): true}}
+	p.rebuildRows()
+	m := newTestModel(t)
+	m.codeMapPickerOpen = true
+	m.codeMapPicker = p
+
+	m, _ = applyMsg(m, tea.PasteMsg{Content: "Run"})
+	if m.codeMapPicker.filter != "Run" {
+		t.Fatalf("paste should fill the filter buffer; got %q", m.codeMapPicker.filter)
+	}
+	if got := m.textInput.Value(); got != "" {
+		t.Errorf("paste should not leak into the main chat textarea; got %q", got)
 	}
 }
 

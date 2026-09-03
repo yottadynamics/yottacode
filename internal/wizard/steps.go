@@ -741,6 +741,17 @@ func (m wizardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.copilotErr = msg.err
 		m.step = stepDone
 		return m, tea.Quit
+	case tea.PasteMsg:
+		// v2 delivers bracketed pastes as their own message type rather
+		// than folding them into KeyPressMsg like v1's Paste-flagged
+		// runes did — this wizard's Update never gained a case for it,
+		// so a paste into the key/baseURL/project/model field was
+		// silently dropped. Only stepConfigure has free-text fields.
+		if m.step == stepConfigure && !m.embedSubStep {
+			return m.updateConfigurePaste(msg)
+		}
+		return m, nil
+
 	case tea.KeyPressMsg:
 		// Global keys.
 		switch msg.String() {
@@ -1670,6 +1681,32 @@ func (m wizardModel) updateConfigure(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				}
 			}
 		} else {
+			in.customModel, cmd = in.customModel.Update(msg)
+		}
+	}
+	return m, cmd
+}
+
+// updateConfigurePaste forwards a bracketed paste to whichever
+// per-provider field currently has focus, mirroring the per-field tail
+// of updateConfigure above. Paste carries no navigation semantics (no
+// Tab/Enter/model-picker-cursor to intercept), so this is a direct
+// handoff to the focused textinput.
+func (m wizardModel) updateConfigurePaste(msg tea.PasteMsg) (tea.Model, tea.Cmd) {
+	if m.configIdx >= len(m.inputs) {
+		return m, nil
+	}
+	in := &m.inputs[m.configIdx]
+	var cmd tea.Cmd
+	switch m.fieldKind() {
+	case "key":
+		in.key, cmd = in.key.Update(msg)
+	case "project":
+		in.project, cmd = in.project.Update(msg)
+	case "baseURL":
+		in.baseURL, cmd = in.baseURL.Update(msg)
+	case "model":
+		if !m.modelPickerActive(*in) {
 			in.customModel, cmd = in.customModel.Update(msg)
 		}
 	}

@@ -248,6 +248,22 @@ func (m Model) updateSessionsPicker(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 	return m, nil
 }
 
+// updateSessionsPickerPaste forwards a bracketed paste to the shared
+// input textinput when one of the free-text sub-modes (Resume, Rename,
+// Export) is focused, mirroring the tail of updateSessionsPicker above.
+func updateSessionsPickerPaste(m Model, msg tea.PasteMsg) (Model, tea.Cmd) {
+	p := m.sessionsPicker
+	if p == nil {
+		return m, nil
+	}
+	if (p.mode == sessionsResumeInputMode || p.mode == sessionsRenameInputMode || p.mode == sessionsExportInputMode) && p.input.Focused() {
+		var cmd tea.Cmd
+		p.input, cmd = p.input.Update(msg)
+		return m, cmd
+	}
+	return m, nil
+}
+
 // dispatchSessionsMenu transitions from the top-level menu into the
 // chosen sub-picker. List-based actions (Load, Rename, Export) refresh
 // the sessions snapshot so the list reflects on-disk state. Resume

@@ -194,6 +194,16 @@ worktree-permissions-fine-grained-review
   clamp. Worktree cleanup on a mid-batch failure now uses a
   cancellation-detached context so it can't be cut short by the very
   cancellation that triggered it.
+- **Pasting into TUI popups silently failed after the bubbletea v2
+  migration.** v2 delivers a bracketed paste as its own message type
+  instead of folding it into a keypress like v1 did, and none of the
+  popups with a focused text field had grown a handler for it — a paste
+  either leaked through to the hidden main chat input underneath the
+  popup, or (in the standalone `yottacode setup` wizard, a separate
+  program) was dropped outright. Fixed everywhere it mattered: the Add
+  Provider and Add MCP server forms, sessions rename/export/resume,
+  skills install, the `/map` and skills-catalog filter boxes, and every
+  field in `yottacode setup`.
 
 ## 0.4.0 — 2026-08-12
 

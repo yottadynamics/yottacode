@@ -219,6 +219,20 @@ func (m Model) updateMCPAdd(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 	return m, nil
 }
 
+// updateMCPPickerPaste forwards a bracketed paste to the focused
+// add-server textinput. Only mcpAddMode has free-text fields — the
+// list/remove/logs sub-modes are selection-only, so paste is a no-op
+// there.
+func updateMCPPickerPaste(m Model, msg tea.PasteMsg) (Model, tea.Cmd) {
+	p := m.mcpPicker
+	if p == nil || p.mode != mcpAddMode || p.addFocused >= len(p.addFields) {
+		return m, nil
+	}
+	var cmd tea.Cmd
+	p.addFields[p.addFocused], cmd = p.addFields[p.addFocused].Update(msg)
+	return m, cmd
+}
+
 func cycleMCPAddFocus(p *mcpPickerState, delta int) {
 	n := len(p.addFields)
 	if n == 0 {

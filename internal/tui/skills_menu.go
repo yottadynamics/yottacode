@@ -193,6 +193,19 @@ func updateSkillsMenuInstallInput(m Model, msg tea.KeyPressMsg) (Model, tea.Cmd)
 	return m, cmd
 }
 
+// updateSkillsMenuPaste forwards a bracketed paste to the install
+// textinput when it's the focused field, mirroring
+// updateSkillsMenuInstallInput above.
+func updateSkillsMenuPaste(m Model, msg tea.PasteMsg) (Model, tea.Cmd) {
+	state := m.skillsMenu
+	if state == nil || state.mode != skillsMenuInstallInput {
+		return m, nil
+	}
+	var cmd tea.Cmd
+	state.input, cmd = state.input.Update(msg)
+	return m, cmd
+}
+
 // skillsMenuOpenCatalog closes the menu and opens the existing
 // picker. The picker carries its own tab state so the layered
 // overlay model stays simple: one inline overlay at a time.

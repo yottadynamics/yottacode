@@ -2587,13 +2587,41 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleMouseWheel(msg)
 
 	case tea.PasteMsg:
-		// v2 delivers bracketed pastes as their own message type instead
-		// of a Paste-flagged key event. Bubbletea sets terminal line
-		// breaks as CR (or CRLF), not LF — normalize before any routing
-		// so every consumer (the image-path check, the large-paste
-		// detour, the textarea) sees the single '\n' convention. A raw
-		// CR that survives to submit overprints the transcript echo from
-		// column 0, mangling the line into garbage.
+		// Picker overlays with a focused free-text field (Add Provider,
+		// Add MCP server, sessions rename/export/resume, skills install,
+		// the /map and skills-catalog filter boxes) need first crack at
+		// a paste, same as they do for KeyPressMsg above — otherwise it
+		// falls through to the main textarea, which is hidden underneath.
+		// v2 delivers bracketed pastes as their own message type rather
+		// than folding them into KeyPressMsg like v1's Paste-flagged
+		// runes, so each of these overlays needs its own paste hook
+		// alongside its existing key hook.
+		if m.providerPickerOpen && m.providerPicker != nil {
+			return updateProviderPickerPaste(m, msg)
+		}
+		if m.mcpPickerOpen && m.mcpPicker != nil {
+			return updateMCPPickerPaste(m, msg)
+		}
+		if m.sessionsPickerOpen && m.sessionsPicker != nil {
+			return updateSessionsPickerPaste(m, msg)
+		}
+		if m.skillsMenuOpen && m.skillsMenu != nil {
+			return updateSkillsMenuPaste(m, msg)
+		}
+		if m.codeMapPickerOpen && m.codeMapPicker != nil {
+			return updateCodeMapPickerPaste(m, msg)
+		}
+		if m.skillsPickerOpen && m.skillsPicker != nil {
+			return updateSkillsPickerPaste(m, msg)
+		}
+		// Below this point the paste is destined for the main textarea.
+		// Bubbletea sets terminal line breaks as CR (or CRLF), not LF —
+		// normalize before any routing so every consumer (the image-path
+		// check, the large-paste detour, the textarea) sees the single
+		// '\n' convention. A raw CR that survives to submit overprints
+		// the transcript echo from column 0, mangling the line into
+		// garbage. The overlay paths above skip this: bubbles' textinput
+		// sanitizes pasted control characters itself.
 		content := string(normalizePasteLineBreaks([]rune(msg.Content)))
 		// Intercept image pastes before any other handling. Terminals
 		// paste image paths as file:/// URLs or raw paths — detect

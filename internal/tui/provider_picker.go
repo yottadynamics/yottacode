@@ -279,6 +279,20 @@ func (m Model) updateProviderPicker(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 	return m, nil
 }
 
+// updateProviderPickerPaste forwards a bracketed paste to the focused
+// add-fields textinput, mirroring the tail of updateProviderPicker
+// above. Paste carries no navigation semantics (no Tab/Esc/Enter to
+// intercept), so unlike the keypress path this is a direct handoff.
+func updateProviderPickerPaste(m Model, msg tea.PasteMsg) (Model, tea.Cmd) {
+	p := m.providerPicker
+	if p == nil || p.mode != providerAddFieldsMode || p.addFocused >= len(p.addFields) || p.familyPickerActive() {
+		return m, nil
+	}
+	var cmd tea.Cmd
+	p.addFields[p.addFocused], cmd = p.addFields[p.addFocused].Update(msg)
+	return m, cmd
+}
+
 // curatedPickerActive reports whether the form is currently sitting
 // on the "Default model" field AND a non-empty curated model list is
 // loaded. Up/Down should drive the catalog cursor in that combination
