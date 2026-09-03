@@ -986,6 +986,17 @@ func TestAgentTool_BackgroundSurvivesClosedTurnChannel(t *testing.T) {
 // callback, which in the TUI runs UI code) must be recovered, not crash the
 // whole process. The run already reached its terminal state before the
 // notification, so the result is preserved (TaskCompleted, not clobbered).
+func waitForCapturedPanicOutput(t *testing.T, captured func() string, needle string) string {
+	t.Helper()
+	for range 100 {
+		if stderr := captured(); strings.Contains(stderr, needle) {
+			return stderr
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	return captured()
+}
+
 func TestAgentTool_BackgroundGoroutineRecoversPanic(t *testing.T) {
 	streamer := &scriptedStreamer{turns: [][]adapter.StreamEvent{
 		{sseDone("done reviewing")},
@@ -1005,6 +1016,8 @@ func TestAgentTool_BackgroundGoroutineRecoversPanic(t *testing.T) {
 		panic("boom in onBackgroundDone")
 	})
 
+	capturedStderr := capturePanicOutput(t)
+
 	ctx := WithParentEvents(context.Background(), make(chan Event, 64))
 	if _, err := tool.Execute(ctx, mustJSON(t, agentArgs{SubagentType: "review", Prompt: "p", RunInBackground: true})); err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -1014,6 +1027,10 @@ func TestAgentTool_BackgroundGoroutineRecoversPanic(t *testing.T) {
 	case <-fired:
 	case <-time.After(5 * time.Second):
 		t.Fatal("background completion callback never fired")
+	}
+
+	if stderr := waitForCapturedPanicOutput(t, capturedStderr, "boom in onBackgroundDone"); !strings.Contains(stderr, "boom in onBackgroundDone") {
+		t.Fatalf("expected recovered panic in captured stderr, got %q", stderr)
 	}
 
 	// Process survived (we're still running). The task reached its real

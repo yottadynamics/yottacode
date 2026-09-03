@@ -1,8 +1,11 @@
 package agent
 
 import (
+	"bytes"
 	"context"
+	"io"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/yottadynamics/yottacode/internal/adapter"
@@ -22,6 +25,46 @@ func (p *panickyTool) Execute(context.Context, string) (string, error) {
 	panic("boom inside tool Execute")
 }
 
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+func setPanicOutputForTest(t interface{ Cleanup(func()) }, w io.Writer) {
+	panicOutput.Lock()
+	old := panicOutput.w
+	panicOutput.w = w
+	panicOutput.Unlock()
+	t.Cleanup(func() {
+		panicOutput.Lock()
+		panicOutput.w = old
+		panicOutput.Unlock()
+	})
+}
+
+func capturePanicOutput(t *testing.T) func() string {
+	t.Helper()
+
+	var buf lockedBuffer
+	setPanicOutputForTest(t, &buf)
+	return func() string {
+		t.Helper()
+		return buf.String()
+	}
+}
+
 // TestExecuteToolCall_RecoversPanic verifies a panicking tool degrades to
 // a recoverable error tool_result (nil turn error) instead of an uncaught
 // panic that crashes the process. Regression for the release audit's
@@ -33,11 +76,15 @@ func TestExecuteToolCall_RecoversPanic(t *testing.T) {
 	events := make(chan Event, 16)
 	decisions := make(chan Decision, 1)
 
+	capturedStderr := capturePanicOutput(t)
 	out, _, denied, _, err := executeToolCall(
 		context.Background(), cfg,
 		adapter.ToolCall{ID: "1", Name: "boom", ArgsJSON: "{}"},
 		events, decisions,
 	)
+	if stderr := capturedStderr(); !strings.Contains(stderr, "boom inside tool Execute") {
+		t.Fatalf("expected recovered panic in captured stderr, got %q", stderr)
+	}
 	if err != nil {
 		t.Fatalf("panic should surface as tool_result content, not a turn error: %v", err)
 	}
@@ -63,7 +110,11 @@ func TestExecuteToolCallsParallel_RecoversPanic(t *testing.T) {
 	}
 	events := make(chan Event, 32)
 
+	capturedStderr := capturePanicOutput(t)
 	results, _ := executeToolCallsParallel(context.Background(), cfg, calls, events, nil)
+	if stderr := capturedStderr(); !strings.Contains(stderr, "boom inside tool Execute") {
+		t.Fatalf("expected recovered panic in captured stderr, got %q", stderr)
+	}
 	if len(results) != 2 {
 		t.Fatalf("want 2 results, got %d", len(results))
 	}
