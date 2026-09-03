@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 
+	tea "charm.land/bubbletea/v2"
+
 	"github.com/yottadynamics/yottacode/internal/agent"
 	"github.com/yottadynamics/yottacode/internal/skills"
 )
@@ -34,6 +36,26 @@ func TestSkillsSlash_BareOpensMenu(t *testing.T) {
 	}
 	if m.skillsPickerOpen {
 		t.Fatal("/skills should NOT open the picker directly anymore")
+	}
+}
+
+// A bracketed paste while the skills catalog's `/` filter is active
+// must land in the filter buffer, not leak through to the hidden main
+// chat textarea underneath the popup. Regression test for the
+// bubbletea v2 migration: pastes arrive as tea.PasteMsg, distinct
+// from the msg.Text accumulation updateSkillsPickerFilter uses for
+// typed runes.
+func TestSkillsPicker_FilterAcceptsPaste(t *testing.T) {
+	m := newTestModel(t)
+	m.skillsPickerOpen = true
+	m.skillsPicker = &skillsPickerState{filterMode: true}
+
+	m, _ = applyMsg(m, tea.PasteMsg{Content: "brainstorm"})
+	if m.skillsPicker.filter != "brainstorm" {
+		t.Fatalf("paste should fill the filter buffer; got %q", m.skillsPicker.filter)
+	}
+	if got := m.textInput.Value(); got != "" {
+		t.Errorf("paste should not leak into the main chat textarea; got %q", got)
 	}
 }
 

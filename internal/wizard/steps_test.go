@@ -332,6 +332,30 @@ func TestUpdateConfigure_DownArrowDrivesCuratedPicker(t *testing.T) {
 	}
 }
 
+// TestUpdate_PasteFillsFocusedConfigureField is a regression test for
+// the bubbletea v2 migration: v2 delivers bracketed pastes as their
+// own tea.PasteMsg instead of folding them into KeyPressMsg like v1's
+// Paste-flagged runes, and wizardModel.Update never grew a case for
+// it — so pasting an API key into `yottacode setup` was silently
+// dropped. Routes the paste through the top-level Update (not
+// updateConfigurePaste directly) to exercise the actual dispatch.
+func TestUpdate_PasteFillsFocusedConfigureField(t *testing.T) {
+	anthropic := *FindCatalogEntry("anthropic")
+	m := newWizardModel(context.Background(), Options{})
+	in := m.newProviderInputs(anthropic)
+	in.field = 0 // key field
+	m.inputs = []providerInputs{in}
+	m.configIdx = 0
+	m.step = stepConfigure
+	m.focusActiveConfigField()
+
+	updated, _ := m.Update(tea.PasteMsg{Content: "sk-pasted-secret"})
+	wm := updated.(wizardModel)
+	if got := wm.inputs[0].key.Value(); got != "sk-pasted-secret" {
+		t.Fatalf("paste should fill the focused key field; got %q", got)
+	}
+}
+
 // TestUpdateConfigure_OllamaDetectedModelsUsePicker verifies that a
 // reachable Ollama instance with detected models gets the same picker
 // UX as curated providers instead of a text box plus passive

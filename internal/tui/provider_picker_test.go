@@ -461,6 +461,46 @@ func TestProviderPicker_AddCloudKindBuildsForm(t *testing.T) {
 	}
 }
 
+// A bracketed paste (tea.PasteMsg) into the Add-Provider form must
+// land in the focused field rather than leaking through to the hidden
+// main chat textarea underneath the popup — regression test for the
+// bubbletea v2 migration, which delivers paste as its own message type
+// instead of folding it into KeyPressMsg.
+func TestProviderPicker_AddFieldsAcceptPaste(t *testing.T) {
+	m := newTestModel(t)
+	m, _ = typeAndEnter(t, m, "/provider")
+	for _, item := range m.providerPicker.menuItems {
+		if item.Label == "Add" {
+			break
+		}
+		m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyDown})
+	}
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // → addKindMode
+	m = navigateToKind(t, m, "anthropic")
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // → addFieldsMode
+
+	// The Name field is focused first (pre-filled with the catalog
+	// default, e.g. "anthropic"); paste should insert at the cursor
+	// rather than being dropped.
+	m, _ = applyMsg(m, tea.PasteMsg{Content: "-pasted-name"})
+	if got := m.providerPicker.addFields[m.providerPicker.addFocused].Value(); !strings.Contains(got, "-pasted-name") {
+		t.Fatalf("paste should land in the focused field; got %q", got)
+	}
+	if got := m.textInput.Value(); got != "" {
+		t.Errorf("paste should not leak into the main chat textarea; got %q", got)
+	}
+
+	// Tab to the API key field and paste a key there too.
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyTab})
+	for m.providerPicker.addLabels[m.providerPicker.addFocused] != "API key" {
+		m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyTab})
+	}
+	m, _ = applyMsg(m, tea.PasteMsg{Content: "sk-pasted-secret"})
+	if got := m.providerPicker.addFields[m.providerPicker.addFocused].Value(); got != "sk-pasted-secret" {
+		t.Fatalf("paste should fill the API key field; got %q", got)
+	}
+}
+
 // Esc from the add-fields screen pops back to kind-pick (rather
 // than closing the picker entirely).
 func TestProviderPicker_AddEscFromFieldsPopsToKindList(t *testing.T) {

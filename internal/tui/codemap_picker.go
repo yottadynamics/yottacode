@@ -185,6 +185,21 @@ func (m Model) updateCodeMapPicker(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 	return m, nil
 }
 
+// updateCodeMapPickerPaste appends a bracketed paste to the filter
+// buffer, mirroring the msg.Text accumulation at the tail of
+// updateCodeMapPicker above. The filter is a plain string (no
+// textinput.Model), so unlike the other popups this is a direct
+// append rather than a delegated Update call.
+func updateCodeMapPickerPaste(m Model, msg tea.PasteMsg) (Model, tea.Cmd) {
+	p := m.codeMapPicker
+	if p == nil || msg.Content == "" {
+		return m, nil
+	}
+	p.filter += msg.Content
+	p.rebuildRows()
+	return m, nil
+}
+
 func (m Model) acceptCodeMapSelection() Model {
 	p := m.codeMapPicker
 	if p == nil || p.index == nil || p.cursor < 0 || p.cursor >= len(p.rows) {

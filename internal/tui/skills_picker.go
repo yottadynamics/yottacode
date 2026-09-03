@@ -383,6 +383,20 @@ func updateSkillsPickerFilter(m Model, p *skillsPickerState, msg tea.KeyPressMsg
 	}
 }
 
+// updateSkillsPickerPaste appends a bracketed paste to the filter
+// buffer when filter mode is active, mirroring the msg.Text branch of
+// updateSkillsPickerFilter above. Like the code-map filter, this is a
+// plain string (no textinput.Model), so it's a direct append.
+func updateSkillsPickerPaste(m Model, msg tea.PasteMsg) (Model, tea.Cmd) {
+	p := m.skillsPicker
+	if p == nil || !p.filterMode || msg.Content == "" {
+		return m, nil
+	}
+	p.filter += msg.Content
+	p.cursor = 0
+	return m, nil
+}
+
 // refreshOfficialCatalogFromPicker updates the local metadata cache on explicit
 // user request. Normal Catalog browsing is offline; this is the only picker path
 // that contacts GitHub without installing a skill.
