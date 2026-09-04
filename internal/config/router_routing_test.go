@@ -166,15 +166,67 @@ smart_model = "anthropic:claude-opus-4-6"
 	}
 }
 
-func TestRouter_RejectsUnresolvableChainEntry(t *testing.T) {
+// TestRouter_UnresolvableChainEntryLoadsButFailsToResolve locks in the fix
+// for a lockout bug: a router chain entry that no longer resolves (its
+// provider got deleted or an auth got revoked, independently of the
+// [router] block) must not fail config.Load — that would brick every
+// command (TUI, run, ACP all call Load/LoadDefault) over one stale
+// reference. The failure surfaces later, at actual resolution
+// (ResolveRouterChains), where agentruntime.Build treats it as a
+// recoverable warning instead of a fatal error. It also locks in the
+// follow-up fix: the still-good PRIMARY in this chain must survive —
+// one bad fallback must not discard an otherwise-usable primary.
+func TestRouter_UnresolvableChainEntryLoadsButFailsToResolve(t *testing.T) {
 	src := routingConfigSrc + `
 [router]
 mode         = "auto"
 fast_model   = "anthropic:claude-haiku-4-5"
 smart_models = ["anthropic:claude-opus-4-6", "ghost:model"]
 `
-	if _, err := Load(writeFile(t, src)); err == nil {
-		t.Fatal("expected an error for an unresolvable chain entry")
+	cfg, err := Load(writeFile(t, src))
+	if err != nil {
+		t.Fatalf("Load must succeed despite the unresolvable chain entry: %v", err)
+	}
+	_, advisor, err := cfg.ResolveRouterChains()
+	if err == nil {
+		t.Fatal("expected a non-nil error describing the unresolvable \"ghost:model\" entry")
+	} else if !strings.Contains(err.Error(), "ghost") {
+		t.Errorf("error = %v, want it to name the unresolvable provider", err)
+	}
+	if len(advisor) != 1 || advisor[0].Model != "claude-opus-4-6" {
+		t.Errorf("advisor = %+v, want the good primary to survive despite the bad fallback", advisor)
+	}
+}
+
+// TestRouter_ChainWithBadFallbackKeepsGoodPrimary is the direct
+// regression test for the finding surfaced by code review: a failover
+// chain used to be all-or-nothing — ANY unresolvable entry (even a
+// secondary fallback) discarded the WHOLE chain, including an otherwise
+// perfectly good primary. That meant a session with mode="auto" and a
+// working advisor_model but one stale advisor_models fallback would lose
+// advisor/implementer routing entirely, even though the primary alone
+// would have worked. ResolveRouterChains must now skip only the broken
+// entry and keep resolving the rest.
+func TestRouter_ChainWithBadFallbackKeepsGoodPrimary(t *testing.T) {
+	src := routingConfigSrc + `
+[router]
+mode               = "auto"
+implementer_model  = "anthropic:claude-haiku-4-5"
+advisor_models     = ["anthropic:claude-opus-4-6", "ghost:model"]
+`
+	cfg, err := Load(writeFile(t, src))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	implementer, advisor, err := cfg.ResolveRouterChains()
+	if len(implementer) != 1 || implementer[0].Model != "claude-haiku-4-5" {
+		t.Errorf("implementer = %+v, want the single-model implementer chain untouched", implementer)
+	}
+	if len(advisor) != 1 || advisor[0].Model != "claude-opus-4-6" {
+		t.Fatalf("advisor = %+v, want the good primary to survive despite the bad fallback (err=%v)", advisor, err)
+	}
+	if err == nil {
+		t.Error("expected a non-nil error describing the dropped fallback, even though the chain still resolved")
 	}
 }
 
@@ -222,16 +274,23 @@ fast_model = "anthropic:claude-haiku-4-5"
 	}
 }
 
-func TestRouter_RejectsUnresolvableModel(t *testing.T) {
+// TestRouter_UnresolvableModelLoadsButFailsToResolve is the single-model
+// (non-chain) counterpart of TestRouter_UnresolvableChainEntryLoadsButFailsToResolve:
+// a model that's no longer in the provider's declared list must not fail
+// config.Load, only actual resolution.
+func TestRouter_UnresolvableModelLoadsButFailsToResolve(t *testing.T) {
 	src := routingConfigSrc + `
 [router]
 mode        = "auto"
 fast_model  = "anthropic:no-such-model"
 smart_model = "anthropic:claude-opus-4-6"
 `
-	_, err := Load(writeFile(t, src))
-	if err == nil || !strings.Contains(err.Error(), "implementer_model") {
-		t.Fatalf("expected fast_model resolution error, got %v", err)
+	cfg, err := Load(writeFile(t, src))
+	if err != nil {
+		t.Fatalf("Load must succeed despite the unresolvable model: %v", err)
+	}
+	if _, _, err := cfg.ResolveRouterChains(); err == nil || !strings.Contains(err.Error(), "implementer_model") {
+		t.Fatalf("expected fast_model resolution error from ResolveRouterChains, got %v", err)
 	}
 }
 

@@ -213,6 +213,35 @@ func TestBuildRouterAdapters_StalePairErrorsEvenWhenOff(t *testing.T) {
 	}
 }
 
+// TestBuildRouterAdapters_BadFallbackKeepsGoodPrimary is the direct
+// regression test for a code-review finding: BuildRouterAdapters used to
+// discard an entire slot's chain the moment ANY entry failed to resolve
+// — including a perfectly good PRIMARY, if only a secondary fallback was
+// stale. A session with a working advisor model and one bad
+// advisor_models fallback must keep routing on the working primary, not
+// lose the advisor/implementer pair entirely.
+func TestBuildRouterAdapters_BadFallbackKeepsGoodPrimary(t *testing.T) {
+	cfg := routingTestConfig()
+	cfg.Router.Mode = config.RouterModeAuto
+	cfg.Router.FastModel = "anthropic:claude-haiku-4-5"
+	cfg.Router.SmartModels = []string{"anthropic:claude-opus-4-6", "ghost-provider:some-model"}
+	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+
+	ra, err := BuildRouterAdapters(cfg, ChatOptions{})
+	if ra == nil {
+		t.Fatalf("expected a non-nil RouterAdapters built from the surviving primary (err=%v)", err)
+	}
+	if ra.AdvisorModel != "claude-opus-4-6" {
+		t.Errorf("AdvisorModel = %q, want the good primary claude-opus-4-6", ra.AdvisorModel)
+	}
+	if ra.Advisor == nil {
+		t.Error("Advisor adapter must still be built from the surviving primary")
+	}
+	if err == nil {
+		t.Error("expected a non-nil error describing the dropped fallback, even though the pair still resolved")
+	}
+}
+
 // Slot chains dispatch in WRITTEN order and ignore [router].policy —
 // that knob orders the candidates router only. Pinned by building with
 // a policy name pickPolicy rejects: chains must succeed anyway (they

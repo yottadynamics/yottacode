@@ -960,7 +960,16 @@ default_model = "claude-sonnet-4-6"
 	}
 }
 
-func TestLoad_RejectsRouterUnknownProvider(t *testing.T) {
+// TestLoad_RouterUnknownProviderLoadsButFailsToResolve locks in the fix
+// for a lockout bug shared with the advisor/implementer pair (see
+// internal/config/router_routing_test.go's
+// TestRouter_UnresolvableChainEntryLoadsButFailsToResolve): a candidate
+// naming a provider that's since been deleted must not fail config.Load
+// — every command calls Load/LoadDefault, so that would brick the whole
+// app over environment drift outside the [router] block. The failure now
+// surfaces at ResolveCandidates, which agentruntime.Build treats as a
+// recoverable warning.
+func TestLoad_RouterUnknownProviderLoadsButFailsToResolve(t *testing.T) {
 	src := `
 [router]
 enabled    = true
@@ -975,16 +984,54 @@ default_model = "claude-sonnet-4-6"
   [[providers.models]]
   name = "claude-sonnet-4-6"
 `
-	_, err := Load(writeFile(t, src))
-	if err == nil {
-		t.Fatal("expected error when candidate names a missing provider")
+	cfg, err := Load(writeFile(t, src))
+	if err != nil {
+		t.Fatalf("Load must succeed despite the unresolvable candidate: %v", err)
 	}
-	if !strings.Contains(err.Error(), "ghost") {
+	if _, err := cfg.ResolveCandidates(); err == nil {
+		t.Fatal("expected ResolveCandidates to fail when a candidate names a missing provider")
+	} else if !strings.Contains(err.Error(), "ghost") {
 		t.Errorf("error should mention provider name %q, got %q", "ghost", err)
 	}
 }
 
-func TestLoad_RejectsRouterUnknownModel(t *testing.T) {
+// TestLoad_RouterCandidatesWithOneBadEntryKeepsTheGoodOnes is the
+// candidates-router counterpart of
+// internal/config/router_routing_test.go's
+// TestRouter_ChainWithBadFallbackKeepsGoodPrimary: candidates ARE a
+// failover list, so one stale entry among several must not discard every
+// other still-usable one.
+func TestLoad_RouterCandidatesWithOneBadEntryKeepsTheGoodOnes(t *testing.T) {
+	src := `
+[router]
+enabled    = true
+candidates = ["anthropic:claude-sonnet-4-6", "ghost:some-model"]
+
+[[providers]]
+name          = "anthropic"
+kind          = "anthropic"
+base_url      = "https://api.anthropic.com"
+default_model = "claude-sonnet-4-6"
+
+  [[providers.models]]
+  name = "claude-sonnet-4-6"
+`
+	cfg, err := Load(writeFile(t, src))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	resolved, err := cfg.ResolveCandidates()
+	if len(resolved) != 1 || resolved[0].Model != "claude-sonnet-4-6" {
+		t.Fatalf("resolved = %+v, want the good candidate to survive despite the bad one (err=%v)", resolved, err)
+	}
+	if err == nil {
+		t.Error("expected a non-nil error describing the dropped candidate, even though one still resolved")
+	}
+}
+
+// TestLoad_RouterUnknownModelLoadsButFailsToResolve is the single-model
+// counterpart of TestLoad_RouterUnknownProviderLoadsButFailsToResolve.
+func TestLoad_RouterUnknownModelLoadsButFailsToResolve(t *testing.T) {
 	src := `
 [router]
 enabled    = true
@@ -999,11 +1046,13 @@ default_model = "claude-sonnet-4-6"
   [[providers.models]]
   name = "claude-sonnet-4-6"
 `
-	_, err := Load(writeFile(t, src))
-	if err == nil {
-		t.Fatal("expected error when candidate names a missing model")
+	cfg, err := Load(writeFile(t, src))
+	if err != nil {
+		t.Fatalf("Load must succeed despite the unresolvable model: %v", err)
 	}
-	if !strings.Contains(err.Error(), "claude-undefined") {
+	if _, err := cfg.ResolveCandidates(); err == nil {
+		t.Fatal("expected ResolveCandidates to fail when a candidate names a missing model")
+	} else if !strings.Contains(err.Error(), "claude-undefined") {
 		t.Errorf("error should mention model name, got %q", err)
 	}
 }
@@ -1053,7 +1102,11 @@ default_model = "claude-sonnet-4-6"
 	}
 }
 
-func TestLoad_RejectsRouterCandidateWithoutDefaultModel(t *testing.T) {
+// TestLoad_RouterCandidateWithoutDefaultModelLoadsButFailsToResolve: same
+// graceful-degrade treatment as the other router resolvability tests
+// above — a bare candidate needing a provider default_model that isn't
+// set is a resolve-time failure, not a load-time one.
+func TestLoad_RouterCandidateWithoutDefaultModelLoadsButFailsToResolve(t *testing.T) {
 	src := `
 [router]
 enabled    = true
@@ -1067,9 +1120,12 @@ base_url = "https://api.anthropic.com"
   [[providers.models]]
   name = "claude-sonnet-4-6"
 `
-	_, err := Load(writeFile(t, src))
-	if err == nil {
-		t.Fatal("expected error when bare candidate has no default_model")
+	cfg, err := Load(writeFile(t, src))
+	if err != nil {
+		t.Fatalf("Load must succeed despite the missing default_model: %v", err)
+	}
+	if _, err := cfg.ResolveCandidates(); err == nil {
+		t.Fatal("expected ResolveCandidates to fail when a bare candidate has no default_model")
 	}
 }
 

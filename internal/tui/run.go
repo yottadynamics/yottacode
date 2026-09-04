@@ -147,6 +147,9 @@ func Run(ctx context.Context, opts cli.ChatOptions, updateCheck ...<-chan update
 		// tea.Cmd (cmd_mcp.go) so slow/hanging npx-based servers don't
 		// delay first paint.
 		DeferMCPStart: true,
+		// /advisor on flips routing live mid-session — the pair must be
+		// pre-resolved at startup for that to work.
+		SupportsLiveRouterToggle: true,
 	}
 	rt, err := agentruntime.NewBuilder().Build(ctx, spec)
 	if err != nil {

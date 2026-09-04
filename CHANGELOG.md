@@ -204,6 +204,41 @@ worktree-permissions-fine-grained-review
   Provider and Add MCP server forms, sessions rename/export/resume,
   skills install, the `/map` and skills-catalog filter boxes, and every
   field in `yottacode setup`.
+- **A stale `[router]` advisor/implementer pair could warn, or even lock
+  the whole app out.** Three related fixes: (1) `yottacode run` warned
+  about an unrelated pair even with `mode = "off"` — session construction
+  is shared with the TUI/ACP, which do need the pair pre-resolved at
+  startup with routing off (it's what lets `/advisor on`, or ACP's
+  "Advisor routing" toggle, flip routing on instantly mid-session), but a
+  one-shot `run` has no such live toggle to prepare for and was paying
+  the same eager resolution anyway; it now skips resolving the pair
+  entirely whenever routing is off. (2) Turning routing on and then
+  deleting the underlying provider/model (or letting its auth expire)
+  used to be fatal twice over: `config.Validate` hard-failed
+  `config.Load` itself — discarding the user's entire config and
+  breaking every command, since the TUI, `run`, and ACP all call
+  `Load`/`LoadDefault` — and even past that, session construction had its
+  own separate fatal check for exactly this case. Both now degrade to a
+  warning: a pair that fails to resolve, in any mode, falls back to the
+  active/default model and leaves the session usable; `[router].mode`
+  staying "auto"/"manual" with a broken pair now correctly reports live
+  routing as off rather than claiming a toggle that silently does
+  nothing. (3) The advisor pair's model-existence check moved from
+  config-load time to actual resolution time, so it can no longer nuke
+  an otherwise-valid config over environment drift it doesn't control.
+  (4) The same lockout shape existed in the separate, opt-in
+  `[router].candidates` multi-provider failover feature (`enabled =
+  true`) — a deleted candidate provider/model hard-failed `config.Load`
+  the same way; it gets the identical fix, degrading to a warning and
+  falling back to the plain adapter instead. (5) A failover chain
+  (`advisor_models` / `implementer_models` / `router.candidates`) was
+  all-or-nothing at resolution: one stale entry — even a secondary
+  fallback — discarded the whole chain, including an otherwise-working
+  primary. Resolution now skips only the broken entry and keeps the
+  rest, so a session with a working advisor model and one bad fallback
+  stays fully routed on the surviving primary instead of losing routing
+  entirely; a chain with nothing left usable is still treated as
+  unresolved.
 
 ## 0.4.0 — 2026-08-12
 

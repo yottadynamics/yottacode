@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -86,6 +87,50 @@ func TestBuildRouter_BuildsCandidatesInOrder(t *testing.T) {
 	}
 	if cands[1].Tier != adapter.TierBalanced {
 		t.Errorf("second candidate tier = %q, want %q", cands[1].Tier, adapter.TierBalanced)
+	}
+}
+
+// TestBuildRouter_OneUnresolvableCandidateStillBuildsWithTheRest locks in
+// the fix for a code-review finding: BuildRouter used to discard the
+// ENTIRE candidates list the moment any single one failed to resolve,
+// even when every other candidate was fine. A deleted provider among
+// several configured ones must degrade to a smaller-but-working router,
+// not to no router at all.
+func TestBuildRouter_OneUnresolvableCandidateStillBuildsWithTheRest(t *testing.T) {
+	cfg := config.Default()
+	cfg.Router = config.RouterConfig{
+		Enabled:    true,
+		Candidates: []string{"anthropic:claude-haiku-4-5", "ghost:some-model"},
+	}
+	cfg.Providers = []config.Provider{
+		{
+			Name:         "anthropic",
+			Kind:         "anthropic",
+			BaseURL:      "https://api.anthropic.com",
+			APIKeyEnv:    "ANTHROPIC_API_KEY",
+			DefaultModel: "claude-haiku-4-5",
+			Models: []config.Model{
+				{Name: "claude-haiku-4-5", Tier: "cheap"},
+			},
+		},
+	}
+	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+
+	client, err := BuildRouter(cfg, ChatOptions{})
+	if client == nil {
+		t.Fatalf("expected a non-nil router built from the surviving candidate (err=%v)", err)
+	}
+	if err == nil {
+		t.Error("expected a non-nil error describing the dropped \"ghost\" candidate, even though the router still built")
+	} else if !strings.Contains(err.Error(), "ghost") {
+		t.Errorf("error = %v, want it to name the unresolvable provider", err)
+	}
+	router, ok := client.(*adapter.MultiStreamer)
+	if !ok {
+		t.Fatalf("BuildRouter returned %T, want *adapter.MultiStreamer", client)
+	}
+	if cands := router.Candidates(); len(cands) != 1 || cands[0].Label != "anthropic/claude-haiku-4-5" {
+		t.Errorf("Candidates() = %+v, want only the surviving anthropic candidate", cands)
 	}
 }
 

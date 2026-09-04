@@ -69,12 +69,16 @@ type Runtime struct {
 	ChatOptions cli.ChatOptions
 
 	// RoutingAuto is the session-live mirror of fileCfg.Router.RoutingAuto()
-	// at construction — whether subagent dispatch/summarization currently
-	// route through RouterAdapters' implementer/advisor pair. Distinct from
-	// FileCfg.Router.Mode (the on-disk setting Build read once): this field
-	// is what SetAdvisorRouting toggles, session-only, matching
-	// internal/tui/cmd_router.go's own m.routerMode/RouterModeAuto split
-	// between "what's persisted" and "what's live."
+	// at construction, ANDed with the pair having actually resolved —
+	// whether subagent dispatch/summarization currently route through
+	// RouterAdapters' implementer/advisor pair. A persisted mode="auto"
+	// whose pair failed to resolve (see Build's warning) reports false
+	// here rather than claiming a toggle that silently does nothing.
+	// Distinct from FileCfg.Router.Mode (the on-disk setting Build read
+	// once): this field is what SetAdvisorRouting toggles, session-only,
+	// matching internal/tui/cmd_router.go's own
+	// m.routerMode/RouterModeAuto split between "what's persisted" and
+	// "what's live."
 	RoutingAuto bool
 
 	// GHClient is the typed GitHub client backing the pr_*/issue_*/
@@ -292,24 +296,44 @@ func (b *Builder) Build(ctx context.Context, spec SessionSpec) (*Runtime, error)
 		baseSys += "\n\n" + agent.DispatchPromptAddendum
 	}
 
-	// Adapter + router. BuildRouter failures are always fatal (both
-	// current callers agree on this). BuildRouterAdapters failures are
-	// only fatal when routing is actually enabled — otherwise a stale
-	// advisor/implementer pair must not block an unrouted session (TUI's
-	// more lenient behavior; picked as canonical per the divergence
-	// policy below).
+	// Adapter + router. Neither BuildRouter (the opt-in
+	// [router].candidates multi-provider failover feature) nor
+	// BuildRouterAdapters (the advisor/implementer task-routing pair) is
+	// fatal on failure: a stale or newly-unresolvable reference (a
+	// deleted provider, a revoked authentication) must not brick session
+	// construction for TUI, run, or ACP — each degrades to a warning and
+	// falls back toward the plain adapter, exactly as if that feature
+	// were off. This mirrors config.Validate's own choice not to
+	// hard-fail config.Load over the same class of error (see its
+	// Router.Enabled/RoutingEnabled comments). When routing is off, only
+	// attempt the advisor/implementer resolve at all for callers that
+	// support flipping it on live (see SupportsLiveRouterToggle) —
+	// oneshot has no such toggle, so a leftover/misconfigured pair it
+	// will never use shouldn't even be looked at.
+	// BuildRouter/BuildRouterAdapters return a non-nil result ALONGSIDE a
+	// non-nil error on partial resolution (some candidates/chain entries
+	// skipped, but at least one survivor per slot) — that's a warning to
+	// surface, not a reason to discard an otherwise-usable router. Only a
+	// nil result means nothing there resolved at all.
 	var ad adapter.Client
 	router, err := cli.BuildRouter(fileCfg, opts)
 	if err != nil {
-		return nil, err
-	}
-	routerAdapters, err := cli.BuildRouterAdapters(fileCfg, opts)
-	if err != nil {
-		if fileCfg.Router.RoutingEnabled() {
-			return nil, err
+		if router != nil {
+			rt.Warnings = append(rt.Warnings, "warning: [router] candidates partially unresolved, continuing with the rest: "+err.Error())
+		} else {
+			rt.Warnings = append(rt.Warnings, "warning: [router] candidates unresolved, continuing without failover: "+err.Error())
 		}
-		rt.Warnings = append(rt.Warnings, "warning: [advisor] pair unresolved (routing is off, continuing without it): "+err.Error())
-		routerAdapters = nil
+	}
+	var routerAdapters *cli.RouterAdapters
+	if fileCfg.Router.RoutingEnabled() || spec.SupportsLiveRouterToggle {
+		routerAdapters, err = cli.BuildRouterAdapters(fileCfg, opts)
+		if err != nil {
+			if routerAdapters != nil {
+				rt.Warnings = append(rt.Warnings, "warning: [advisor] pair partially unresolved, continuing with the rest: "+err.Error())
+			} else {
+				rt.Warnings = append(rt.Warnings, "warning: [advisor] pair unresolved, continuing without routing: "+err.Error())
+			}
+		}
 	}
 	if fileCfg.Router.RoutingEnabled() && routerAdapters != nil && routerAdapters.Advisor != nil {
 		ad = routerAdapters.Advisor
@@ -328,7 +352,12 @@ func (b *Builder) Build(ctx context.Context, spec SessionSpec) (*Runtime, error)
 	rt.RouterAdapters = routerAdapters
 	rt.Model = opts.Model
 	rt.ChatOptions = opts
-	rt.RoutingAuto = fileCfg.Router.RoutingAuto()
+	// Mirrors fileCfg.Router.RoutingAuto() only when the pair actually
+	// resolved — persisted mode="auto" with an unresolved pair must report
+	// live routing as off, not claim a toggle that silently does nothing
+	// (see the warning appended above).
+	routingAuto := fileCfg.Router.RoutingAuto() && routerAdapters != nil
+	rt.RoutingAuto = routingAuto
 
 	rt.RawSystemPrompt = baseSys
 	composedBase := appendSkillsSection(composeSystemPrompt(baseSys, ad.Profile()), skillsRes.Skills)
@@ -531,7 +560,7 @@ func (b *Builder) Build(ctx context.Context, spec SessionSpec) (*Runtime, error)
 		FastModel:          routerImplementerModel(routerAdapters),
 		SmartAdapter:       routerAdvisor(routerAdapters),
 		SmartModel:         routerAdvisorModel(routerAdapters),
-		RouteAuto:          fileCfg.Router.RoutingAuto(),
+		RouteAuto:          routingAuto,
 		ModelResolver:      routerModelResolver(routerAdapters, fileCfg.Router.RoutingEnabled()),
 		ResolveWindow: func(model string) int {
 			return catalog.ResolveWindowForProvider(fileCfg.ProviderKindForModel(model), model, fileCfg.ContextWindowOverride(model), fileCfg.Context.DefaultWindow)

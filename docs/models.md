@@ -98,11 +98,15 @@ see below) or by hand via the `[router]` block in
 `"<provider>:<model>"` grammar as the multi-provider router's
 `candidates`. Both are required when `mode` is not `off`. Provider names
 refer to your `[[providers]]` blocks, and the model must be listed in
-that provider's `models` (typos are rejected at load time). Legacy
-`smart_model` and `fast_model` still load as aliases for advisor and
-implementer, but new writes use the role-named keys. Reasoning effort is
-session-wide: set it with `/effort` or `--reasoning-effort`, not with
-per-role router fields.
+that provider's `models` — the `/advisor` picker rejects a typo
+immediately, before it writes. A reference that was valid but later
+stops resolving (its provider got removed, or its auth was revoked)
+isn't treated as a config error: routing just falls back to your active
+model for that session with a one-line warning, rather than refusing to
+start. Legacy `smart_model` and `fast_model` still load as aliases for
+advisor and implementer, but new writes use the role-named keys.
+Reasoning effort is session-wide: set it with `/effort` or
+`--reasoning-effort`, not with per-role router fields.
 
 ### Failover chains
 
@@ -123,8 +127,13 @@ order (the `policy` knob orders the multi-provider candidates router
 only, not these slots). On an error before any output the call falls
 through to the next entry, sharing the health knobs with the
 multi-provider router (a flapping provider is skipped until it
-recovers). There is no router-level timeout — a hung call is bounded
-by the underlying adapter/provider timeouts, not by the chain. So an
+recovers). This is distinct from an entry that simply doesn't resolve at
+all (a deleted provider, a model no longer in `providers.models`): that
+one is dropped when the chain is built, and the next entry silently
+becomes the effective primary — a session degrades to fewer fallback
+slots rather than losing the whole chain over one stale entry. There is
+no router-level timeout — a hung call is bounded by the underlying
+adapter/provider timeouts, not by the chain. So an
 advisor consultation, subagent, or summarization call survives a
 role-model outage instead of failing. A slot uses the singular **or**
 the plural form, not both.

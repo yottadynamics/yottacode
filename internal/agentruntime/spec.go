@@ -73,4 +73,19 @@ type SessionSpec struct {
 	// is exactly what they want (acp's session/new must return only
 	// once the session is actually ready).
 	DeferMCPStart bool
+
+	// SupportsLiveRouterToggle controls whether Build attempts
+	// cli.BuildRouterAdapters even when [router].mode is "off". TUI and
+	// ACP are long-lived and let a user flip routing on mid-session
+	// (/advisor on, or ACP's "Advisor routing" session config option) —
+	// both need the advisor/implementer pair pre-resolved at startup so
+	// that toggle can work instantly and so the pair's mere presence can
+	// be checked (see internal/tui/cmd_router.go's routerOn and
+	// internal/acp/config_options.go's sessionConfigOptions). oneshot has
+	// no such toggle — a single `yottacode run` never flips [router].mode
+	// mid-session — so it leaves this false: with routing off, Build
+	// skips resolving the pair entirely rather than surfacing a stale or
+	// misconfigured advisor pair's resolution error as a confusing
+	// warning for a session that would never use it anyway.
+	SupportsLiveRouterToggle bool
 }

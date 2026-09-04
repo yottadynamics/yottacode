@@ -420,10 +420,20 @@ func commitRouterChain(m Model, slot string, chain []string) (Model, tea.Cmd) {
 		return m, nil
 	}
 	m.fileCfg = cfg
+	// BuildRouterAdapters returns (nil, nil) when the OTHER slot isn't
+	// configured yet (not an error — the picker lets you set one slot at
+	// a time), (ra, err) both non-nil for a partial resolution (one
+	// entry in the chain just written didn't resolve, but another — e.g.
+	// the primary — did: apply it and say so, rather than rejecting the
+	// whole pick over one bad fallback entry), and (nil, err) only when
+	// NOTHING in the chain resolves at all — the sole hard-failure case.
 	ra, err := cli.BuildRouterAdapters(cfg, m.opts)
-	if err != nil {
+	if ra == nil && err != nil {
 		m.appendLine(styleError.Render(SysMsg(SysFailure, "advisor", "rebuild adapters", err.Error())))
 		return m, nil
+	}
+	if err != nil {
+		m.appendLine(styleAuto.Render(SysMsg(SysState, "advisor", "partially resolved", err.Error())))
 	}
 	m.router = ra
 	if routerModeOrOff(m.routerMode) == config.RouterModeAuto {

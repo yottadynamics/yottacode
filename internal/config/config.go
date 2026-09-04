@@ -1078,33 +1078,12 @@ func Validate(cfg Config) error {
 			return fmt.Errorf("router.health_failure_threshold = %d must be >= 0",
 				cfg.Router.HealthFailureThreshold)
 		}
-		for i, raw := range cfg.Router.Candidates {
-			provider, model, err := ParseCandidate(raw)
-			if err != nil {
-				return fmt.Errorf("router.candidates[%d]: %w", i, err)
-			}
-			p := cfg.FindProvider(provider)
-			if p == nil {
-				return fmt.Errorf("router.candidates[%d]: provider %q not found in [[providers]]",
-					i, provider)
-			}
-			if model != "" {
-				found := false
-				for _, m := range p.Models {
-					if m.Name == model {
-						found = true
-						break
-					}
-				}
-				if !found {
-					return fmt.Errorf("router.candidates[%d]: model %q not in providers[%q].models",
-						i, model, provider)
-				}
-			} else if p.DefaultModel == "" {
-				return fmt.Errorf("router.candidates[%d]: provider %q has no default_model; specify <provider>:<model>",
-					i, provider)
-			}
-		}
+		// Deliberately NOT checked here: that each candidate actually
+		// resolves to a currently-configured provider/model — same
+		// reasoning as the RoutingEnabled block below. resolveCandidate
+		// (via ResolveCandidates) checks this at actual use, where
+		// agentruntime.Build's caller treats a failure as a non-fatal
+		// warning instead of losing the whole session.
 	}
 
 	if cfg.Router.Mode != "" && !inSlice(ValidRouterModes, cfg.Router.Mode) {
@@ -1139,16 +1118,17 @@ func Validate(cfg Config) error {
 		if len(advisorChain) == 0 {
 			return fmt.Errorf("router.mode = %q requires router.advisor_model (or advisor_models)", cfg.Router.Mode)
 		}
-		for i, ref := range implementerChain {
-			if err := cfg.validateModelRef(ref); err != nil {
-				return fmt.Errorf("router.implementer_model(s)[%d]: %w", i, err)
-			}
-		}
-		for i, ref := range advisorChain {
-			if err := cfg.validateModelRef(ref); err != nil {
-				return fmt.Errorf("router.advisor_model(s)[%d]: %w", i, err)
-			}
-		}
+		// Deliberately NOT checked here: that each chain entry actually
+		// resolves to a currently-configured provider/model. Providers get
+		// deleted or reauthenticated independently of the [router] block,
+		// and this validation runs on every config.Load — every command,
+		// every launch. Hard-failing here would make Load discard the
+		// user's entire config (see Load's Validate-error branch) and
+		// break every caller (TUI, run, ACP) over a stale router
+		// reference alone. resolveChain/ResolveRouterModels check
+		// resolvability at actual use, where agentruntime.Build's caller
+		// already treats a failure as a non-fatal "pair unresolved"
+		// warning instead of losing the whole session.
 	}
 	if cfg.Sandbox.Backend != "" && !inSlice(ValidSandboxBackends, cfg.Sandbox.Backend) {
 		return fmt.Errorf("sandbox.backend = %q invalid (expected one of %s)",
@@ -1229,25 +1209,47 @@ type ResolvedCandidate struct {
 }
 
 // ResolveCandidates parses each router.candidates entry and resolves it
-// against the provider catalog. Validate has already been called by
-// Load, so the caller knows every candidate refers to a real provider
-// and a real model — but ResolveCandidates is callable independently
-// for tests and for /router introspection.
+// against the provider catalog, skipping (not aborting the whole list
+// over) any individual entry that fails — candidates ARE a failover
+// list, so one stale entry must not zero out every other still-usable
+// one. Validate does NOT pre-confirm these resolve (see its Router.Enabled
+// comment) — a deleted provider or model is an expected, recoverable
+// outcome here, not a programming error. Returns the resolved subset in
+// original order, plus a non-nil error describing every skipped entry
+// whenever at least one was skipped — even when the result is non-empty.
+// The caller (cli.BuildRouter) must check len(result) rather than
+// err == nil alone: a non-empty result with a non-nil error is a
+// partial, still-usable resolution; an empty result means nothing in
+// router.candidates resolved. Also callable independently for tests and
+// /router introspection.
 func (c *Config) ResolveCandidates() ([]ResolvedCandidate, error) {
 	out := make([]ResolvedCandidate, 0, len(c.Router.Candidates))
+	var skipped []string
 	for i, raw := range c.Router.Candidates {
 		rc, err := c.resolveCandidate(raw)
 		if err != nil {
-			return nil, fmt.Errorf("router.candidates[%d]: %w", i, err)
+			skipped = append(skipped, fmt.Sprintf("[%d] %q: %v", i, raw, err))
+			continue
 		}
 		out = append(out, rc)
 	}
-	return out, nil
+	if len(skipped) == 0 {
+		return out, nil
+	}
+	return out, fmt.Errorf("router.candidates: %s", strings.Join(skipped, "; "))
 }
 
-// resolveCandidate parses one "<provider>" or "<provider>:<model>"
-// string and resolves it to a concrete provider profile + model + tier.
-// Shared by ResolveCandidates and ResolveRouterModels.
+// resolveCandidate parses one "<provider>" or "<provider>:<model>" string
+// and resolves it to a concrete provider profile + model + tier. Requires
+// the provider to be configured and, when a model is named explicitly,
+// that it's actually listed in that provider's models — this is the same
+// strictness Validate used to enforce at load time for both
+// router.candidates and the advisor/implementer pair; it now lives here
+// instead so a resolution failure (deleted provider, removed model,
+// revoked auth) is a recoverable, resolve-time error rather than one that
+// takes down config.Load for every command. Shared by ResolveCandidates
+// (the [router].candidates failover feature) and resolveChain/
+// ResolveRouterModels (the advisor/implementer task-routing pair).
 func (c *Config) resolveCandidate(raw string) (ResolvedCandidate, error) {
 	providerName, model, err := ParseCandidate(raw)
 	if err != nil {
@@ -1257,54 +1259,33 @@ func (c *Config) resolveCandidate(raw string) (ResolvedCandidate, error) {
 	if p == nil {
 		return ResolvedCandidate{}, fmt.Errorf("provider %q not configured", providerName)
 	}
-	if model == "" {
+	explicit := model != ""
+	if !explicit {
+		if p.DefaultModel == "" {
+			return ResolvedCandidate{}, fmt.Errorf("provider %q has no default_model; specify <provider>:<model>", providerName)
+		}
 		model = p.DefaultModel
 	}
-	if model == "" {
-		return ResolvedCandidate{}, fmt.Errorf("provider %q has no default_model; specify <provider>:<model>", providerName)
-	}
 	var tier string
+	listed := false
 	for _, m := range p.Models {
 		if m.Name == model {
 			tier = m.Tier
+			listed = true
 			break
 		}
+	}
+	if explicit && !listed {
+		return ResolvedCandidate{}, fmt.Errorf("model %q not in providers[%q].models", model, providerName)
 	}
 	return ResolvedCandidate{Provider: *p, Model: model, Tier: tier}, nil
 }
 
-// validateModelRef strictly validates a "<provider>" or
-// "<provider>:<model>" reference: the provider must exist and the model
-// (when given) must be listed in providers.models. Mirrors the
-// router.candidates membership check so router.fast_model / smart_model
-// reject typos at load time rather than silently routing to a model the
-// provider never declared.
-func (c *Config) validateModelRef(raw string) error {
-	provider, model, err := ParseCandidate(raw)
-	if err != nil {
-		return err
-	}
-	p := c.FindProvider(provider)
-	if p == nil {
-		return fmt.Errorf("provider %q not found in [[providers]]", provider)
-	}
-	if model == "" {
-		if p.DefaultModel == "" {
-			return fmt.Errorf("provider %q has no default_model; specify <provider>:<model>", provider)
-		}
-		return nil
-	}
-	for _, m := range p.Models {
-		if m.Name == model {
-			return nil
-		}
-	}
-	return fmt.Errorf("model %q not in providers[%q].models", model, provider)
-}
-
-// ResolveRouterModels resolves the implementer and advisor primary models named
-// in the [router] block. Callable only when routing is enabled (Mode != off);
-// Validate has already confirmed both strings resolve.
+// ResolveRouterModels resolves the implementer and advisor primary models
+// named in the [router] block. Callable only when routing is enabled (Mode
+// != off). Like ResolveCandidates, Validate does NOT pre-confirm these
+// strings resolve — callers must handle the error rather than assume
+// success.
 func (c *Config) ResolveRouterModels() (implementer, advisor ResolvedCandidate, err error) {
 	implementerChain := c.Router.ImplementerChain()
 	if len(implementerChain) == 0 {
@@ -1314,42 +1295,77 @@ func (c *Config) ResolveRouterModels() (implementer, advisor ResolvedCandidate, 
 	if len(advisorChain) == 0 {
 		return ResolvedCandidate{}, ResolvedCandidate{}, fmt.Errorf("router.advisor_model: empty")
 	}
-	implementer, err = c.resolveCandidate(implementerChain[0])
-	if err != nil {
+	if implementer, err = c.resolveCandidate(implementerChain[0]); err != nil {
 		return ResolvedCandidate{}, ResolvedCandidate{}, fmt.Errorf("router.implementer_model: %w", err)
 	}
-	advisor, err = c.resolveCandidate(advisorChain[0])
-	if err != nil {
+	if advisor, err = c.resolveCandidate(advisorChain[0]); err != nil {
 		return ResolvedCandidate{}, ResolvedCandidate{}, fmt.Errorf("router.advisor_model: %w", err)
 	}
 	return implementer, advisor, nil
 }
 
 // ResolveRouterChains resolves the implementer and advisor failover chains
-// to ordered candidate lists — primary first, then fallbacks. Validate has
-// confirmed every entry resolves.
+// to ordered candidate lists — primary first, then fallbacks (a surviving
+// fallback naturally becomes the new index-0 "primary" when the
+// configured primary itself is the one that fails to resolve — exactly
+// the behavior a failover chain promises). See ResolveRouterModels: a
+// resolution failure here (deleted provider, model no longer in
+// providers.models) is an expected, recoverable outcome. A slot with NO
+// surviving entry is a hard failure (nil, nil, err); a slot with at
+// least one surviving entry but some others skipped returns that subset
+// alongside a non-nil error describing what was dropped — callers must
+// check the returned slices, not just err == nil, and may treat a
+// non-empty result with a non-nil error as a soft, keep-going warning
+// rather than total failure.
 func (c *Config) ResolveRouterChains() (implementer, advisor []ResolvedCandidate, err error) {
-	if implementer, err = c.resolveChain(c.Router.ImplementerChain()); err != nil {
-		return nil, nil, fmt.Errorf("router.implementer_model(s): %w", err)
+	implementerChain := c.Router.ImplementerChain()
+	if len(implementerChain) == 0 {
+		return nil, nil, errors.New("router.implementer_model(s): empty")
 	}
-	if advisor, err = c.resolveChain(c.Router.AdvisorChain()); err != nil {
-		return nil, nil, fmt.Errorf("router.advisor_model(s): %w", err)
+	advisorChain := c.Router.AdvisorChain()
+	if len(advisorChain) == 0 {
+		return nil, nil, errors.New("router.advisor_model(s): empty")
+	}
+	implementer, implErr := c.resolveChain(implementerChain)
+	if len(implementer) == 0 {
+		return nil, nil, fmt.Errorf("router.implementer_model(s): %w", implErr)
+	}
+	advisor, advErr := c.resolveChain(advisorChain)
+	if len(advisor) == 0 {
+		return nil, nil, fmt.Errorf("router.advisor_model(s): %w", advErr)
+	}
+	switch {
+	case implErr != nil && advErr != nil:
+		return implementer, advisor, fmt.Errorf("router.implementer_model(s): %v; router.advisor_model(s): %v", implErr, advErr)
+	case implErr != nil:
+		return implementer, advisor, fmt.Errorf("router.implementer_model(s): %w", implErr)
+	case advErr != nil:
+		return implementer, advisor, fmt.Errorf("router.advisor_model(s): %w", advErr)
 	}
 	return implementer, advisor, nil
 }
 
-// resolveChain resolves each ref in a model chain. Mirrors
-// ResolveCandidates but for an arbitrary list.
+// resolveChain resolves each ref in a model chain, skipping (not
+// aborting the whole chain over) any individual entry that fails — a
+// failover chain's whole point is redundancy, so one stale entry must
+// not take down every other still-working one. Mirrors ResolveCandidates
+// but for an arbitrary list; see its doc comment for the
+// non-empty-result-with-non-nil-error contract.
 func (c *Config) resolveChain(refs []string) ([]ResolvedCandidate, error) {
 	out := make([]ResolvedCandidate, 0, len(refs))
+	var skipped []string
 	for i, raw := range refs {
 		rc, err := c.resolveCandidate(raw)
 		if err != nil {
-			return nil, fmt.Errorf("[%d]: %w", i, err)
+			skipped = append(skipped, fmt.Sprintf("[%d] %q: %v", i, raw, err))
+			continue
 		}
 		out = append(out, rc)
 	}
-	return out, nil
+	if len(skipped) == 0 {
+		return out, nil
+	}
+	return out, errors.New(strings.Join(skipped, "; "))
 }
 
 // providerKeyEnvHint returns the env var name to suggest in error

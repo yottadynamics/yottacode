@@ -14,9 +14,16 @@ import (
 
 // BuildRouter returns a multi-provider router as adapter.Client when
 // cfg.Router.Enabled, otherwise returns (nil, nil) to signal "use the
-// single-adapter dispatch path." Errors only on misconfiguration that
-// Validate didn't catch (e.g., an env-backed API key is missing at
-// runtime even though api_key_env was declared).
+// single-adapter dispatch path." Errors on misconfiguration Validate
+// doesn't catch — an env-backed API key missing at runtime even though
+// api_key_env was declared, or (deliberately, see Validate's
+// Router.Enabled comment) a candidate whose provider/model no longer
+// resolves. The caller (agentruntime.Build) treats either as non-fatal:
+// a warning. When at least one candidate still resolves, the returned
+// client is non-nil AND the error is non-nil (a partial-resolution
+// warning to surface, not a reason to discard the client) — only a
+// fully-empty candidate list returns (nil, error); callers must check
+// which case applies rather than assuming err == nil on success.
 //
 // Each candidate's adapter is built via adapter.NewWithConfig with the
 // same builtin-tool / search flags that the primary adapter would have
@@ -28,12 +35,13 @@ func BuildRouter(cfg config.Config, opts ChatOptions) (adapter.Client, error) {
 		return nil, nil
 	}
 	resolved, err := cfg.ResolveCandidates()
-	if err != nil {
-		return nil, fmt.Errorf("router: %w", err)
-	}
 	if len(resolved) == 0 {
+		if err != nil {
+			return nil, fmt.Errorf("router: %w", err)
+		}
 		return nil, nil
 	}
+	softErr := err // non-nil means some candidates were skipped but at least one survived
 	candidates := make([]adapter.Candidate, 0, len(resolved))
 	for _, rc := range resolved {
 		adCfg := candidateAdapterConfig(rc, opts, cfg.Cache.AnthropicTTL)
@@ -50,7 +58,14 @@ func BuildRouter(cfg config.Config, opts ChatOptions) (adapter.Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	return adapter.NewMultiStreamer(candidates, policy, adapter.WithHealth(healthOptionsFromConfig(cfg.Router)))
+	multi, err := adapter.NewMultiStreamer(candidates, policy, adapter.WithHealth(healthOptionsFromConfig(cfg.Router)))
+	if err != nil {
+		return nil, err
+	}
+	if softErr != nil {
+		return multi, fmt.Errorf("router: %w", softErr)
+	}
+	return multi, nil
 }
 
 // RouterAdapters bundles the resolved advisor/implementer adapters for
@@ -84,15 +99,21 @@ type RouterAdapters struct {
 // multi-model chain yields a *MultiStreamer that fails over primary →
 // fallbacks using the same health knobs as the candidates router. Returns
 // (nil, nil) only when a slot is unconfigured — building is decoupled from
-// Mode so the `/router` command can flip routing on live.
+// Mode so the `/router` command can flip routing on live. When a chain has
+// at least one surviving entry per slot but lost others (a stale
+// fallback), the returned *RouterAdapters is non-nil AND the error is
+// non-nil (a partial-resolution warning to surface, not a reason to
+// discard the pair) — only a slot with NOTHING usable returns (nil,
+// error); callers must check which case applies.
 func BuildRouterAdapters(cfg config.Config, opts ChatOptions) (*RouterAdapters, error) {
 	if len(cfg.Router.ImplementerChain()) == 0 || len(cfg.Router.AdvisorChain()) == 0 {
 		return nil, nil
 	}
 	implementerChain, advisorChain, err := cfg.ResolveRouterChains()
-	if err != nil {
+	if len(implementerChain) == 0 || len(advisorChain) == 0 {
 		return nil, fmt.Errorf("router: %w", err)
 	}
+	softErr := err // non-nil means some chain entries were skipped but each slot still has a survivor
 	// Memoize by provider+model, not model alone: a failover chain can name
 	// the SAME model on two providers (e.g. "openai:gpt-4o",
 	// "azure:gpt-4o"). Keying on model only would collapse distinct clients.
@@ -173,6 +194,9 @@ func BuildRouterAdapters(cfg config.Config, opts ChatOptions) (*RouterAdapters, 
 		// get() memoizes by provider+model, so a model already built for a
 		// chain is reused here rather than rebuilt.
 		return get(rc)
+	}
+	if softErr != nil {
+		return ra, fmt.Errorf("router: %w", softErr)
 	}
 	return ra, nil
 }
