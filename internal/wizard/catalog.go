@@ -71,7 +71,11 @@ var Catalog = []CatalogEntry{
 	{Name: "google-vertex", Kind: "vertex", BaseURL: "https://us-central1-aiplatform.googleapis.com/v1/projects/PROJECT/locations/us-central1/endpoints/openapi", APIKeyEnv: "", Note: "Google Vertex AI (choose Gemini or Claude; gcloud ADC)"},
 	{Name: "nvidia-nim", Kind: "openai-compatible", BaseURL: "https://integrate.api.nvidia.com/v1", APIKeyEnv: "NVIDIA_API_KEY", Note: "NVIDIA NIM — OpenAI-compatible endpoint at build.nvidia.com"},
 	{Name: "ollama", Kind: "ollama", BaseURL: "http://localhost:11434/v1", APIKeyEnv: "", Note: "local models via Ollama (auto-probed on localhost:11434)"},
-	{Name: "custom", Kind: "openai-compatible", BaseURL: "", APIKeyEnv: "", Note: "Custom OpenAI-compatible endpoint (vLLM, Llama Stack, Groq, Fireworks, OpenRouter, Together, ...)"},
+	// APIKeyEnv is non-empty so the configure screen shows a key field
+	// (many of the gateways below — Groq, Fireworks, OpenRouter,
+	// Together — require one); a genuinely keyless target (local vLLM,
+	// Llama Stack) still works via the existing ctrl+s skip-key flow.
+	{Name: "custom", Kind: "openai-compatible", BaseURL: "", APIKeyEnv: "CUSTOM_API_KEY", Note: "Custom OpenAI-compatible endpoint (vLLM, Llama Stack, Groq, Fireworks, OpenRouter, Together, ...)"},
 }
 
 // VertexFamily identifies which concrete Vertex API surface the combined
