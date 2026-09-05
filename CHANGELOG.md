@@ -151,6 +151,17 @@ worktree-permissions-fine-grained-review
 
 ### Fixed
 
+- **Go debug tools (`debug_eval`, `debug_step`, and friends) could report a
+  spurious "DAP session closed" or timeout error for a request that had
+  actually already succeeded.** The DAP client's response wait raced the
+  response-delivery channel against both the session-close and per-request
+  deadline signals; when a reply and one of those signals landed close
+  together, Go's `select` could nondeterministically report the failure
+  instead of the real, already-received result — most likely on a slow
+  `evaluate`/`stackTrace` near its timeout, or a step/continue issued right
+  before the debug session tears down. Each request now owns its outcome
+  end-to-end, so a delivered response always wins over a concurrent
+  close or deadline.
 - **TUI startup no longer pauses on update prompts.** The daily GitHub
   release check still starts from the root interactive command and still
   honors `YOTTACODE_NO_UPDATE_CHECK=1`, but the TUI now consumes the result

@@ -50,7 +50,7 @@ type Client struct {
 
 	mu      sync.Mutex
 	seq     int
-	pending map[int]chan godap.ResponseMessage
+	pending map[int]chan pendingResult
 	closed  bool
 
 	writeMu       sync.Mutex
@@ -76,7 +76,7 @@ func NewClient(conn io.ReadWriteCloser, opts ClientOptions) (*Client, error) {
 		conn:           conn,
 		br:             bufio.NewReader(conn),
 		requestTimeout: timeout,
-		pending:        make(map[int]chan godap.ResponseMessage),
+		pending:        make(map[int]chan pendingResult),
 		events:         make(chan godap.EventMessage, 1024),
 		done:           make(chan error, 1),
 	}
@@ -319,26 +319,52 @@ func (c *Client) roundTrip(ctx context.Context, req godap.RequestMessage) (godap
 	}
 	defer cancel()
 
+	return awaitResponse(waitCtx, ch)
+}
+
+// pendingResult carries the one outcome a registered request's channel ever
+// receives: either the matching response or the error that ended the
+// session first. Routing both through a single per-request channel (rather
+// than racing the response channel against the client-wide done channel)
+// means a request's outcome can never be ambiguous: whichever of
+// deliverResponse or closeWith wins the mutex first is authoritative, and
+// awaitResponse only ever has to pick between "this request settled" and
+// "the caller gave up waiting."
+type pendingResult struct {
+	resp godap.ResponseMessage
+	err  error
+}
+
+// awaitResponse resolves one pending request's outcome. It is split out of
+// roundTrip so it is unit testable without depending on goroutine
+// scheduling.
+func awaitResponse(waitCtx context.Context, ch chan pendingResult) (godap.ResponseMessage, error) {
 	select {
-	case resp := <-ch:
-		if errResp, ok := resp.(*godap.ErrorResponse); ok {
-			return nil, dapError(errResp)
-		}
-		return resp, nil
+	case res := <-ch:
+		return res.resp, res.err
 	case <-waitCtx.Done():
+		// The request may have settled concurrently with the deadline firing;
+		// prefer an already-delivered outcome over reporting a timeout.
+		select {
+		case res := <-ch:
+			return res.resp, res.err
+		default:
+		}
 		if errors.Is(waitCtx.Err(), context.DeadlineExceeded) {
 			return nil, ErrRequestTimeout
 		}
 		return nil, waitCtx.Err()
-	case err := <-c.done:
-		if err == nil {
-			return nil, ErrSessionClosed
-		}
-		return nil, err
 	}
 }
 
-func (c *Client) register(req godap.RequestMessage) (int, chan godap.ResponseMessage, error) {
+func responseOrError(resp godap.ResponseMessage) pendingResult {
+	if errResp, ok := resp.(*godap.ErrorResponse); ok {
+		return pendingResult{err: dapError(errResp)}
+	}
+	return pendingResult{resp: resp}
+}
+
+func (c *Client) register(req godap.RequestMessage) (int, chan pendingResult, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.closed {
@@ -348,7 +374,7 @@ func (c *Client) register(req godap.RequestMessage) (int, chan godap.ResponseMes
 	seq := c.seq
 	req.GetRequest().Seq = seq
 	req.GetRequest().Type = "request"
-	ch := make(chan godap.ResponseMessage, 1)
+	ch := make(chan pendingResult, 1)
 	c.pending[seq] = ch
 	return seq, ch, nil
 }
@@ -394,7 +420,7 @@ func (c *Client) deliverResponse(resp godap.ResponseMessage) {
 		return
 	}
 	select {
-	case ch <- resp:
+	case ch <- responseOrError(resp):
 	default:
 	}
 }
@@ -443,10 +469,23 @@ func (c *Client) closeWith(err error) {
 		c.eventMu.Lock()
 		c.mu.Lock()
 		c.closed = true
-		c.pending = make(map[int]chan godap.ResponseMessage)
+		pending := c.pending
+		c.pending = make(map[int]chan pendingResult)
 		c.mu.Unlock()
 		close(c.events)
 		c.eventMu.Unlock()
+
+		waiterErr := err
+		if waiterErr == nil {
+			waiterErr = ErrSessionClosed
+		}
+		for _, ch := range pending {
+			select {
+			case ch <- pendingResult{err: waiterErr}:
+			default:
+			}
+		}
+
 		c.done <- err
 		close(c.done)
 	})

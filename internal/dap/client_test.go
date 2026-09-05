@@ -222,6 +222,96 @@ func TestClientSupportsLaunchAttachSteppingAndEvaluate(t *testing.T) {
 	}
 }
 
+// TestAwaitResponsePrefersDeliveredResponseOverDeadline covers the race
+// where a request's outcome is delivered to ch at (or scheduler-adjacent to)
+// the moment waitCtx's deadline fires. Both cases become select-ready, and
+// Go's select picks uniformly among ready cases, so without the fallback
+// recheck this could report ErrRequestTimeout for a request that already
+// settled. Run many iterations so a reintroduced race (~50% failure chance
+// per iteration) is caught reliably.
+func TestAwaitResponsePrefersDeliveredResponseOverDeadline(t *testing.T) {
+	t.Parallel()
+
+	for i := range 500 {
+		ch := make(chan pendingResult, 1)
+		ch <- pendingResult{resp: &godap.EvaluateResponse{
+			Response: godap.Response{ProtocolMessage: godap.ProtocolMessage{Type: "response"}, Success: true, Command: "evaluate"},
+			Body:     godap.EvaluateResponseBody{Result: "42"},
+		}}
+		waitCtx, cancel := context.WithCancel(context.Background())
+		cancel()
+
+		resp, err := awaitResponse(waitCtx, ch)
+		if err != nil {
+			t.Fatalf("iteration %d: awaitResponse: %v", i, err)
+		}
+		eval, ok := resp.(*godap.EvaluateResponse)
+		if !ok || eval.Body.Result != "42" {
+			t.Fatalf("iteration %d: resp = %#v, want evaluate response with result 42", i, resp)
+		}
+	}
+}
+
+// TestAwaitResponseSurfacesErrorResponseDeliveredByClose covers the
+// close-triggered path (closeWith pushing a session-close outcome into a
+// still-registered request's channel) carrying a *godap.ErrorResponse rather
+// than a plain error, exercising responseOrError's dapError conversion from
+// that source.
+func TestAwaitResponseSurfacesErrorResponseDeliveredByClose(t *testing.T) {
+	t.Parallel()
+
+	ch := make(chan pendingResult, 1)
+	ch <- responseOrError(&godap.ErrorResponse{
+		Response: godap.Response{ProtocolMessage: godap.ProtocolMessage{Type: "response"}, Success: false, Command: "evaluate"},
+		Body:     godap.ErrorResponseBody{Error: &godap.ErrorMessage{Format: "boom"}},
+	})
+
+	_, err := awaitResponse(context.Background(), ch)
+	if err == nil || !strings.Contains(err.Error(), "boom") {
+		t.Fatalf("awaitResponse err = %v, want error containing %q", err, "boom")
+	}
+}
+
+// TestCloseWithDeliversDistinctErrorToEachConcurrentWaiter guards against
+// the multi-waiter regression the old shared done channel had: only the
+// first of several concurrently blocked requests could observe closeWith's
+// real error, and every other waiter fell back to the generic
+// ErrSessionClosed. Each request now owns its own outcome channel, so
+// closeWith must deliver the real error to every one of them.
+func TestCloseWithDeliversDistinctErrorToEachConcurrentWaiter(t *testing.T) {
+	t.Parallel()
+
+	server := newFakeServer(t, func(t *testing.T, c net.Conn) {
+		_ = readDAPMessage(t, c)
+		_ = readDAPMessage(t, c)
+		_, _ = c.Write([]byte("Content-Length: nope\r\n\r\n{}"))
+	})
+	defer server.Close()
+
+	client, err := NewClient(server, ClientOptions{RequestTimeout: 5 * time.Second})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	defer client.Close(context.Background())
+
+	var wg sync.WaitGroup
+	errs := make([]error, 2)
+	for i := range errs {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			_, errs[i] = client.Evaluate(context.Background(), godap.EvaluateArguments{Expression: "x"})
+		}(i)
+	}
+	wg.Wait()
+
+	for i, err := range errs {
+		if !errors.Is(err, ErrProtocolMalformed) {
+			t.Fatalf("waiter %d error = %v, want ErrProtocolMalformed", i, err)
+		}
+	}
+}
+
 func TestClientRequestTimeout(t *testing.T) {
 	t.Parallel()
 
@@ -291,11 +381,11 @@ func TestSafeStringAllowsConcurrentWriteAndRead(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		for i := 0; i < 1000; i++ {
+		for range 1000 {
 			_, _ = buf.Write([]byte("stderr\n"))
 		}
 	}()
-	for i := 0; i < 1000; i++ {
+	for range 1000 {
 		_ = buf.String()
 	}
 	<-done
