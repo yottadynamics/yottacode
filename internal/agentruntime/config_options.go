@@ -36,13 +36,14 @@ func RebuildAdapterForEffort(rt *Runtime, level string) error {
 	}
 	rt.ChatOptions.ReasoningEffort = level
 
-	routerAdapters, err := cli.BuildRouterAdapters(rt.FileCfg, rt.ChatOptions)
-	if err != nil {
-		// Non-fatal, mirrors Build's own tolerance for a stale/unresolved
-		// pair: keep going on a plain adapter rather than losing an
-		// otherwise-working session over a rebuild hiccup.
-		routerAdapters = nil
-	}
+	// A non-nil routerAdapters alongside a non-nil err is a partial
+	// resolution (some chain entries skipped, at least one survivor per
+	// slot) — adopt it rather than discarding it. Only a nil result
+	// (nothing usable at all) falls through to the plain-adapter path
+	// below, mirroring Build's own tolerance for a stale/unresolved pair:
+	// keep going rather than losing an otherwise-working session over a
+	// rebuild hiccup.
+	routerAdapters, _ := cli.BuildRouterAdapters(rt.FileCfg, rt.ChatOptions)
 
 	var ad adapter.Client
 	if rt.FileCfg.Router.RoutingEnabled() && routerAdapters != nil && routerAdapters.Advisor != nil {

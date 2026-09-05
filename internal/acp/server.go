@@ -202,6 +202,10 @@ func (s *Server) sessionSpec(cwd string, mcpServers []coderacp.McpServer) agentr
 		// only once the session is actually ready, so MCP starts
 		// synchronously inside Build.
 		DeferMCPStart: false,
+		// The "Advisor routing" session config option (config_options.go)
+		// can flip routing live mid-session — the pair must be
+		// pre-resolved at startup for that to work.
+		SupportsLiveRouterToggle: true,
 	}
 }
 

@@ -87,8 +87,12 @@ func refreshRouterAdapters(m *Model) {
 	if m.router == nil {
 		return
 	}
-	ra, err := cli.BuildRouterAdapters(loadConfigForCommand(*m), m.opts)
-	if err != nil || ra == nil {
+	// A non-nil ra alongside a non-nil error is a partial resolution
+	// (some chain entries skipped, at least one survivor per slot) —
+	// adopt it rather than discarding it and leaving the fully-stale
+	// pair in place; only a nil ra means nothing usable came back.
+	ra, _ := cli.BuildRouterAdapters(loadConfigForCommand(*m), m.opts)
+	if ra == nil {
 		return
 	}
 	m.router = ra
