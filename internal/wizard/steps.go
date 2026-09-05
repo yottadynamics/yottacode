@@ -1862,9 +1862,11 @@ func (m wizardModel) viewConfigure() string {
 			line := "• skipped — set $" + in.entry.APIKeyEnv + " before launching"
 			b.WriteString(styleHint.Render(truncate(line, w-2)))
 		default:
-			b.WriteString(in.key.View())
+			keyView := in.key.View()
+			b.WriteString(keyView)
 			b.WriteString("  ")
-			b.WriteString(validationGlyph(in, m.spin.View()))
+			glyphWidth := w - lipgloss.Width(keyView) - 2
+			b.WriteString(validationGlyph(in, m.spin.View(), glyphWidth))
 		}
 		b.WriteString("\n  ")
 		b.WriteString(styleDim.Render(truncate("env var: $"+in.entry.APIKeyEnv, w-2)))
@@ -2206,9 +2208,16 @@ func fieldHeading(label string, active bool) string {
 	return styleMuted.Render("  " + label)
 }
 
-func validationGlyph(in providerInputs, spinView string) string {
+// validationGlyph renders the key-field's trailing status text,
+// clipped to maxWidth visible chars. It sits on the same line as the
+// key textinput, which already claims most of the row's width budget
+// — an unbounded validation detail (upstream error text especially)
+// would push the line past the terminal width and wrap the rest of
+// the screen. Truncate the plain label before styling so we never
+// slice through an ANSI escape.
+func validationGlyph(in providerInputs, spinView string, maxWidth int) string {
 	if in.validating {
-		return styleHint.Render(spinView + " checking…")
+		return styleHint.Render(truncate(spinView+" checking…", maxWidth))
 	}
 	switch in.validation.Status {
 	case ValidationOK:
@@ -2219,14 +2228,14 @@ func validationGlyph(in providerInputs, spinView string) string {
 		if d := in.validation.Detail; d != "" && d != "ok" {
 			label = "key valid · " + d
 		}
-		return styleOK.Render("✓ " + label)
+		return styleOK.Render(truncate("✓ "+label, maxWidth))
 	case ValidationFailed:
-		return styleErr.Render("✗ " + in.validation.Detail)
+		return styleErr.Render(truncate("✗ "+in.validation.Detail, maxWidth))
 	}
 	if in.validation.Detail != "" {
-		return styleDim.Render("· " + in.validation.Detail)
+		return styleDim.Render(truncate("· "+in.validation.Detail, maxWidth))
 	}
-	return styleDim.Render("  enter validate")
+	return styleDim.Render(truncate("  enter validate", maxWidth))
 }
 
 // =============================================================================

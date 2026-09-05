@@ -803,7 +803,7 @@ func TestCatalog_NvidiaNoteNo404(t *testing.T) {
 // ctrl+v is universally paste; the old label fought muscle memory.
 func TestValidationGlyph_HintLabel(t *testing.T) {
 	in := providerInputs{} // unstarted
-	got := stripANSI(validationGlyph(in, ""))
+	got := stripANSI(validationGlyph(in, "", 200))
 	if !strings.Contains(got, "enter validate") {
 		t.Errorf("default hint should say 'enter validate'; got %q", got)
 	}
@@ -820,12 +820,12 @@ func TestValidationGlyph_OKLabel(t *testing.T) {
 	in := providerInputs{
 		validation: ValidationResult{Status: ValidationOK, Detail: "ok"},
 	}
-	got := stripANSI(validationGlyph(in, ""))
+	got := stripANSI(validationGlyph(in, "", 200))
 	if !strings.Contains(got, "key valid") {
 		t.Errorf("OK glyph should say 'key valid'; got %q", got)
 	}
 	in.validation.Detail = "47 models"
-	got = stripANSI(validationGlyph(in, ""))
+	got = stripANSI(validationGlyph(in, "", 200))
 	if !strings.Contains(got, "key valid · 47 models") {
 		t.Errorf("OK glyph should preserve non-trivial detail; got %q", got)
 	}
@@ -1117,15 +1117,28 @@ func TestFocusActiveConfigField_KeyAndBaseURL(t *testing.T) {
 	m.inputs = []providerInputs{m.newProviderInputs(custom)}
 	m.configIdx = 0
 
-	// field 0 = key (custom has APIKeyEnv = "" actually — it's
-	// user-entered, but envHas is false too, so fieldKind goes
-	// straight to "model" via the empty-APIKeyEnv branch). For a
-	// concrete key-field test, use anthropic.
+	// field 0 = key. Regression coverage for the bug where "custom"
+	// carried APIKeyEnv = "" and fieldKind fell through the
+	// empty-APIKeyEnv branch straight to "model", so the configure
+	// screen never showed a key field at all — every custom endpoint
+	// that actually requires a bearer token (Groq, Fireworks,
+	// OpenRouter, Together, ...) was unconfigurable via the wizard.
+	m.inputs[0].field = 0
+	cmd := m.focusActiveConfigField()
+	if cmd == nil {
+		t.Fatalf("expected focus cmd for key field; got nil")
+	}
+	if !m.inputs[0].key.Focused() {
+		t.Errorf("key should be focused for custom on field=0 (APIKeyEnv must be non-empty)")
+	}
+
+	// anthropic covers the same field=0 key-focus path for a
+	// non-free-form provider, so a future refactor can't regress one
+	// without the other.
 	anth := *FindCatalogEntry("anthropic")
 	m.inputs = []providerInputs{m.newProviderInputs(anth)}
 	m.inputs[0].field = 0
-
-	cmd := m.focusActiveConfigField()
+	cmd = m.focusActiveConfigField()
 	if cmd == nil {
 		t.Fatalf("expected focus cmd for key field; got nil")
 	}
