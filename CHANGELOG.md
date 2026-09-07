@@ -8,6 +8,12 @@ the project uses semantic versioning once it's past `1.0.0`.
 
 ### Added
 
+- **Headless memory recall.** `yottacode memory recall --query <text>` now
+  exposes the production memory ranker to scripts, CI, and external benchmarks,
+  with user/project/all scope selection, configurable top-K, human-readable or
+  stable JSON output, normalized relevance scores, and the same semantic-to-BM25
+  fallback used by live sessions. See [`memory.md`](docs/memory.md#headless-recall-and-external-benchmarks).
+
 worktree-permissions-fine-grained-review
 - **Session-scoped permission grants.** The approval modal gains an `[S]`
   hotkey alongside `[Y]`/`[A]`/`[N]`/`[D]`: it derives the same pattern
