@@ -208,6 +208,9 @@ func (rt *Runtime) Close(ctx context.Context) {
 	if rt.RecallIndex != nil {
 		_ = rt.RecallIndex.Close()
 	}
+	if cached, ok := rt.CodeMapProvider.(*codemap.CachedProvider); ok {
+		cached.Close()
+	}
 }
 
 // Builder constructs a Runtime from a SessionSpec. Stateless — safe to
@@ -404,7 +407,14 @@ func (b *Builder) Build(ctx context.Context, spec SessionSpec) (*Runtime, error)
 	rt.LSPManager = lspManager
 	var codeMapProvider codemap.Provider
 	if expSet.IsEnabled(experimental.CodeMap) {
-		codeMapProvider = &codemap.CachedProvider{Options: codemap.BuildOptions{Root: cwd, Source: codemap.LSPSource{Manager: lspManager, Servers: fileCfg.LSP.Servers, Root: cwd}}}
+		cached := &codemap.CachedProvider{Options: codemap.BuildOptions{Root: cwd, Source: codemap.LSPSource{Manager: lspManager, Servers: fileCfg.LSP.Servers, Root: cwd}}}
+		// StartWatch is a soft-failure best-effort call: on any setup problem
+		// it silently leaves the provider on its per-call fingerprint-walk
+		// fallback, so its error is not worth surfacing as a runtime warning.
+		// The watch's own lifetime is independent of this build call's ctx —
+		// it runs until rt.Close cancels it via cached.Close below.
+		_ = cached.StartWatch(context.Background())
+		codeMapProvider = cached
 	}
 	rt.CodeMapProvider = codeMapProvider
 
