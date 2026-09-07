@@ -15,12 +15,14 @@ mechanical, later step — see `docs/experimental.md`).
   JavaScript, Python, Rust) otherwise, falling back further to regex symbols
   for other languages.
 - Import edges: Go resolved module-path-first from `go.mod`, then
-  package-name fallback, never landing an edge on a `_test.go` file (they're
-  excluded from a package's compiled surface for an external importer, so
-  they can only ever be an edge *source*, never a target — this also stops
-  an external test file's `package foo_test` clause from silently shadowing
-  the real package name for its directory); TypeScript/JavaScript resolved
-  for relative
+  package-name fallback, narrowed to the specific file(s) whose exported
+  symbols the importing file actually references (see "Precision" below),
+  and never landing an edge on a `_test.go` file (they're excluded from a
+  package's compiled surface for an external importer, so they can only
+  ever be an edge *source*, never a target — this also stops an external
+  test file's `package foo_test` clause from silently shadowing the real
+  package name for its directory); TypeScript/JavaScript resolved for
+  relative
   specifiers (file-based resolution, trying common extensions and
   `index.*`); Python resolved for both absolute and relative
   (`from . import x`-style, including the multi-line parenthesized form)
@@ -112,16 +114,24 @@ hierarchy is symbol-position-scoped and live, unlike the file-level import
 graph) and not added to the TUI `/map impact` view (it would add an LSP
 round-trip to a keystroke-driven picker).
 
-**Known limitation, not fixed here:** Go import edges are package-level —
-importing a package edges to every non-test file in it, not just the ones
-whose exported symbols are actually referenced. `_test.go` files are
-excluded (see "Current slice"), which removes a real chunk of the noise,
-but a `depends on`/`code_impact`/diagram view for a file that imports a
-large package can still list more files than are individually relevant.
-Narrowing to actually-referenced files would need identifier-usage analysis
-(which selector expressions the importing file actually uses), a
-meaningfully larger change than the edge-resolution work in this phase —
-left for a future pass if it proves to matter in practice.
+**Precision:** Go import edges narrow to the specific file(s) whose exported
+symbols the importing file actually references, not every file in the
+imported package. `internal/codemap/builder.go`'s `parseGoImports` walks
+the full file body (not just the import declarations) collecting, for each
+bare identifier used as a `x.Y` selector's receiver, which names were
+selected off it; `buildGoImportEdges`/`goImportTargets` then only edges to
+files in the target package that declare one of the names referenced via
+that package's own identifier. This is a best-effort heuristic, not a type
+checker: it can't distinguish a package identifier from a local variable or
+struct receiver of the same name (rare in practice), and it doesn't track
+import aliases — either case, along with a blank/dot import or a referenced
+name matching no known package-level symbol (e.g. a struct method), falls
+back to every non-test file in the package rather than losing the edge
+entirely. Precision narrowing is strictly additive on top of the file-level
+resolution: it can only shrink what was already found, never regress it.
+On this repo, `internal/codemap/provider.go` importing `internal/lsp`
+(30+ files) now edges to exactly the one file it actually calls
+(`languages.go`, via `lsp.ResolveFile`).
 
 ## Phase 5 — Live index and bounded export surfaces (done)
 

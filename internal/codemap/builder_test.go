@@ -5,6 +5,94 @@ import (
 	"testing"
 )
 
+// TestBuildGoImportEdgesNarrowToReferencedSymbol covers the core
+// symbol-level precision case: a package with two files, where the
+// importer only calls one of them's exported function. The edge should
+// land on just that file, not the whole package directory.
+func TestBuildGoImportEdgesNarrowToReferencedSymbol(t *testing.T) {
+	root := t.TempDir()
+	write(t, root, "go.mod", "module example.com/test\n")
+	write(t, root, "internal/app/app.go", "package app\n\nimport \"example.com/test/internal/lib\"\n\nfunc Run() { lib.Foo() }\n")
+	write(t, root, "internal/lib/foo.go", "package lib\n\nfunc Foo() {}\n")
+	write(t, root, "internal/lib/bar.go", "package lib\n\nfunc Bar() {}\n")
+
+	idx, err := Build(context.Background(), BuildOptions{Root: root})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	deps := idx.Dependencies("internal/app/app.go", 10)
+	if len(deps) != 1 || deps[0].RelPath != "internal/lib/foo.go" {
+		t.Fatalf("dependencies = %+v, want only internal/lib/foo.go (bar.go's Bar is never referenced)", deps)
+	}
+}
+
+// TestBuildGoImportEdgesIncludeEveryReferencedFile covers referencing
+// symbols from more than one file in the same package — both should be
+// edge targets, and only those two.
+func TestBuildGoImportEdgesIncludeEveryReferencedFile(t *testing.T) {
+	root := t.TempDir()
+	write(t, root, "go.mod", "module example.com/test\n")
+	write(t, root, "internal/app/app.go", "package app\n\nimport \"example.com/test/internal/lib\"\n\nfunc Run() {\n\tlib.Foo()\n\tlib.Bar()\n}\n")
+	write(t, root, "internal/lib/foo.go", "package lib\n\nfunc Foo() {}\n")
+	write(t, root, "internal/lib/bar.go", "package lib\n\nfunc Bar() {}\n")
+	write(t, root, "internal/lib/baz.go", "package lib\n\nfunc Baz() {}\n")
+
+	idx, err := Build(context.Background(), BuildOptions{Root: root})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	deps := idx.Dependencies("internal/app/app.go", 10)
+	byPath := map[string]bool{}
+	for _, d := range deps {
+		byPath[d.RelPath] = true
+	}
+	if len(deps) != 2 || !byPath["internal/lib/foo.go"] || !byPath["internal/lib/bar.go"] {
+		t.Fatalf("dependencies = %+v, want exactly foo.go and bar.go (baz.go's Baz is never referenced)", deps)
+	}
+}
+
+// TestBuildGoImportEdgesFallBackWhenReferencedNameUnmatched covers the
+// safety net: when the referenced identifier doesn't match any known
+// package-level symbol (e.g. it's a method call, which this best-effort
+// analysis can't distinguish from a package-level function by name alone),
+// the edge falls back to every file in the package rather than losing the
+// dependency entirely.
+func TestBuildGoImportEdgesFallBackWhenReferencedNameUnmatched(t *testing.T) {
+	root := t.TempDir()
+	write(t, root, "go.mod", "module example.com/test\n")
+	write(t, root, "internal/app/app.go", "package app\n\nimport \"example.com/test/internal/lib\"\n\nfunc Run() { lib.New().Method() }\n")
+	write(t, root, "internal/lib/lib.go", "package lib\n\ntype T struct{}\n\nfunc New() T { return T{} }\nfunc (T) Method() {}\n")
+
+	idx, err := Build(context.Background(), BuildOptions{Root: root})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	deps := idx.Dependencies("internal/app/app.go", 10)
+	if len(deps) != 1 || deps[0].RelPath != "internal/lib/lib.go" {
+		t.Fatalf("dependencies = %+v, want internal/lib/lib.go (New is a real package-level match)", deps)
+	}
+}
+
+// TestBuildGoImportEdgesFallBackForBlankImport covers a blank import
+// (`_ "pkg"`, used only for side effects): there's no selector usage to
+// analyze at all, so this must fall back to the whole package rather than
+// producing zero edges for an import that's genuinely there.
+func TestBuildGoImportEdgesFallBackForBlankImport(t *testing.T) {
+	root := t.TempDir()
+	write(t, root, "go.mod", "module example.com/test\n")
+	write(t, root, "internal/app/app.go", "package app\n\nimport _ \"example.com/test/internal/lib\"\n\nfunc Run() {}\n")
+	write(t, root, "internal/lib/lib.go", "package lib\n\nfunc init() {}\n")
+
+	idx, err := Build(context.Background(), BuildOptions{Root: root})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	deps := idx.Dependencies("internal/app/app.go", 10)
+	if len(deps) != 1 || deps[0].RelPath != "internal/lib/lib.go" {
+		t.Fatalf("dependencies = %+v, want internal/lib/lib.go (blank import has no selector usage to narrow by)", deps)
+	}
+}
+
 // TestBuildGoImportEdgesExcludeTestFiles guards a real bug found via live
 // testing against this repo: importing a package created an edge to EVERY
 // file in its directory, _test.go files included — but _test.go files are

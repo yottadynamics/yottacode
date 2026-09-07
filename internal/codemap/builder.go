@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"go/ast"
 	"go/parser"
 	"go/token"
 	"os"
@@ -71,8 +72,17 @@ type buildState struct {
 	children map[NodeID][]NodeID
 	own      map[NodeID]Stats
 
-	goImports   map[string][]string
-	goPackages  map[string]string
+	goImports  map[string][]string
+	goPackages map[string]string
+	// goSelectors maps a Go file's rel path to, for each bare identifier
+	// used as the receiver of a "x.Y" selector expression anywhere in the
+	// file, the set of symbol names selected off it. Most such identifiers
+	// are local variables/struct receivers, not package references — only
+	// entries matching an actually-imported package's identifier are ever
+	// consulted (see goImportTargets) — so collecting all of them here is
+	// harmless. Used to narrow an import edge to the specific file(s) that
+	// declare a referenced symbol instead of the whole target package.
+	goSelectors map[string]map[string][]string
 	tsImports   map[string][]string
 	pyImports   map[string][]string
 	rustImports map[string][]string
@@ -109,6 +119,7 @@ func newBuildState(opts BuildOptions) (*buildState, error) {
 		own:         map[NodeID]Stats{},
 		goImports:   map[string][]string{},
 		goPackages:  map[string]string{},
+		goSelectors: map[string]map[string][]string{},
 		tsImports:   map[string][]string{},
 		pyImports:   map[string][]string{},
 		rustImports: map[string][]string{},
@@ -215,9 +226,10 @@ func (st *buildState) upsertFile(ctx context.Context, path string) {
 	}
 	switch lang.ID {
 	case "go":
-		imports, pkg, err := parseGoImports(path)
+		imports, pkg, selectors, err := parseGoImports(path)
 		if err == nil {
 			st.goImports[rel] = imports
+			st.goSelectors[rel] = selectors
 			// A _test.go file's own package clause must never define what
 			// package a directory resolves to for an external importer: an
 			// external test file (`package foo_test`) sharing a directory
@@ -284,6 +296,7 @@ func (st *buildState) removeFile(rel string) {
 		st.children[old.Parent] = removeNodeID(st.children[old.Parent], fid)
 	}
 	delete(st.goImports, rel)
+	delete(st.goSelectors, rel)
 	delete(st.tsImports, rel)
 	delete(st.pyImports, rel)
 	delete(st.rustImports, rel)
@@ -332,7 +345,7 @@ func (st *buildState) removeDirRecursive(rel string) {
 // buildState).
 func (st *buildState) finalize() *CodeIndex {
 	aggregateStats(st.rootID, st.nodes, st.children, st.own)
-	edges := buildGoImportEdges(st.goImports, st.goPackages, st.nodes, st.modulePath)
+	edges := buildGoImportEdges(st.goImports, st.goPackages, st.goSelectors, st.nodes, st.modulePath)
 	edges = append(edges, buildTSImportEdges(st.tsImports, st.nodes)...)
 	edges = append(edges, buildPythonImportEdges(st.pyImports, st.nodes)...)
 	edges = append(edges, buildRustImportEdges(st.rustImports, st.nodes)...)
@@ -436,17 +449,37 @@ func countLOC(path string) (int, error) {
 	return lines, s.Err()
 }
 
-func parseGoImports(path string) ([]string, string, error) {
+// parseGoImports parses one Go file's import paths, package name, and the
+// set of symbol names selected off each bare identifier used as a "x.Y"
+// expression's receiver anywhere in the file body. The latter lets
+// buildGoImportEdges narrow an import edge to the specific file(s) in the
+// target package that declare a symbol actually referenced — most
+// identifiers this collects are local variables or struct receivers, not
+// package references, but only entries matching an import's own package
+// name are ever consulted, so collecting all of them is harmless. Full-body
+// parsing (not parser.ImportsOnly) is required to see the body at all.
+func parseGoImports(path string) (imports []string, pkgName string, usedSelectors map[string][]string, err error) {
 	fset := token.NewFileSet()
-	file, err := parser.ParseFile(fset, path, nil, parser.ImportsOnly)
+	file, err := parser.ParseFile(fset, path, nil, parser.SkipObjectResolution)
 	if err != nil {
-		return nil, "", err
+		return nil, "", nil, err
 	}
-	imports := make([]string, 0, len(file.Imports))
+	imports = make([]string, 0, len(file.Imports))
 	for _, spec := range file.Imports {
 		imports = append(imports, strings.Trim(spec.Path.Value, "\"`"))
 	}
-	return imports, file.Name.Name, nil
+	usedSelectors = map[string][]string{}
+	ast.Inspect(file, func(n ast.Node) bool {
+		sel, ok := n.(*ast.SelectorExpr)
+		if !ok {
+			return true
+		}
+		if ident, ok := sel.X.(*ast.Ident); ok {
+			usedSelectors[ident.Name] = append(usedSelectors[ident.Name], sel.Sel.Name)
+		}
+		return true
+	})
+	return imports, file.Name.Name, usedSelectors, nil
 }
 
 func readGoModulePath(path string) string {
@@ -465,7 +498,17 @@ func readGoModulePath(path string) string {
 	return ""
 }
 
-func buildGoImportEdges(importsByFile map[string][]string, packages map[string]string, nodes map[NodeID]Node, modulePath string) []Edge {
+// buildGoImportEdges resolves each file's import paths to a target
+// directory, then narrows the edge to the specific non-test file(s) in that
+// directory that declare a symbol actually referenced via the package's
+// identifier in the importing file's body (see goImportTargets) — falling
+// back to every non-test file in the directory when no usage information
+// is available (a blank/dot import, an aliased import, or a parse
+// failure), so the precision narrowing is strictly additive: it can only
+// shrink an edge set from what the previous file-level resolution
+// produced, never lose an edge for an import that's genuinely used but
+// whose usage this best-effort analysis couldn't pin down.
+func buildGoImportEdges(importsByFile map[string][]string, packages map[string]string, selectorsByFile map[string]map[string][]string, nodes map[NodeID]Node, modulePath string) []Edge {
 	if len(importsByFile) == 0 {
 		return nil
 	}
@@ -476,25 +519,47 @@ func buildGoImportEdges(importsByFile map[string][]string, packages map[string]s
 		}
 		pkgToDirs[pkg] = append(pkgToDirs[pkg], dir)
 	}
+
+	// Precompute once (not per import): each directory's non-test file IDs,
+	// and each directory's exported-symbol-name -> declaring-file-IDs map.
+	dirFiles := map[string][]NodeID{}
+	fileDir := map[NodeID]string{}
+	for id, node := range nodes {
+		if node.Kind != NodeFile || strings.HasSuffix(node.RelPath, "_test.go") {
+			continue
+		}
+		dir := parentRel(node.RelPath)
+		dirFiles[dir] = append(dirFiles[dir], id)
+		fileDir[id] = dir
+	}
+	symbolFiles := map[string]map[string][]NodeID{}
+	for _, node := range nodes {
+		if node.Kind != NodeSymbol {
+			continue
+		}
+		dir, ok := fileDir[node.Parent]
+		if !ok {
+			continue
+		}
+		if symbolFiles[dir] == nil {
+			symbolFiles[dir] = map[string][]NodeID{}
+		}
+		symbolFiles[dir][node.Name] = append(symbolFiles[dir][node.Name], node.Parent)
+	}
+
 	var edges []Edge
 	seen := map[string]bool{}
 	for rel, imports := range importsByFile {
 		from := fileID(rel)
 		fromDir := parentRel(rel)
+		selectors := selectorsByFile[rel]
 		for _, imp := range imports {
 			targetDir := resolveGoImportDir(imp, fromDir, pkgToDirs, modulePath)
 			if targetDir == "" {
 				continue
 			}
-			for id, node := range nodes {
-				if node.Kind != NodeFile || parentRel(node.RelPath) != targetDir || node.ID == from {
-					continue
-				}
-				// _test.go files are never part of a package's importable
-				// surface — the Go compiler excludes them when compiling
-				// the package for an external importer — so they can never
-				// legitimately be an import-edge target, only a source.
-				if strings.HasSuffix(node.RelPath, "_test.go") {
+			for _, id := range goImportTargets(targetDir, packages[targetDir], selectors, dirFiles, symbolFiles) {
+				if id == from {
 					continue
 				}
 				key := string(from) + "\x00" + string(id) + "\x00" + imp
@@ -507,6 +572,40 @@ func buildGoImportEdges(importsByFile map[string][]string, packages map[string]s
 		}
 	}
 	return edges
+}
+
+// goImportTargets narrows an import's edge targets to the files in
+// targetDir that declare a symbol actually referenced via targetPkg (the
+// target directory's own package name — the identifier an unaliased import
+// uses in code) in the importing file's selector usages. It falls back to
+// every non-test file in targetDir when there's no usage information for
+// that identifier (nothing selected off it — a blank/dot import or an
+// aliased import whose alias differs from targetPkg, which this best-effort
+// analysis doesn't track) or when the referenced names don't match any
+// known symbol in the package (e.g. a struct method rather than a
+// package-level declaration) — either way, recall never regresses below
+// what file-level resolution already provided.
+func goImportTargets(targetDir, targetPkg string, selectors map[string][]string, dirFiles map[string][]NodeID, symbolFiles map[string]map[string][]NodeID) []NodeID {
+	all := dirFiles[targetDir]
+	usedSymbols := selectors[targetPkg]
+	if len(usedSymbols) == 0 {
+		return all
+	}
+	bySymbol := symbolFiles[targetDir]
+	seen := map[NodeID]bool{}
+	var matched []NodeID
+	for _, sym := range usedSymbols {
+		for _, id := range bySymbol[sym] {
+			if !seen[id] {
+				seen[id] = true
+				matched = append(matched, id)
+			}
+		}
+	}
+	if len(matched) == 0 {
+		return all
+	}
+	return matched
 }
 
 func resolveGoImportDir(imp, fromDir string, pkgToDirs map[string][]string, modulePath string) string {

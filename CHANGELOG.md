@@ -33,6 +33,17 @@ the project uses semantic versioning once it's past `1.0.0`.
   MB on this repo) rather than something a Mermaid diagram can usefully
   render. See [`code-map.md`](docs/code-map.md).
 
+- **Code Map's Go import edges narrow to actually-referenced files.**
+  Importing a package used to edge to every non-test file in it; now
+  `buildGoImportEdges` walks the importing file's body for `pkg.Symbol`
+  selector usages and only edges to the file(s) that declare a referenced
+  symbol, falling back to the whole package when usage can't be determined
+  (a blank/dot import, an aliased import, or a name matching no known
+  symbol) so recall never regresses below the previous file-level
+  resolution. On this repo, a file importing `internal/lsp` (30+ files)
+  now edges to just the one file it actually calls. See
+  [`code-map.md`](docs/code-map.md).
+
 worktree-permissions-fine-grained-review
 - **Session-scoped permission grants.** The approval modal gains an `[S]`
   hotkey alongside `[Y]`/`[A]`/`[N]`/`[D]`: it derives the same pattern
