@@ -5,6 +5,31 @@ import (
 	"testing"
 )
 
+// TestBuildGoImportsFallsBackOnBodySyntaxError guards a regression the
+// symbol-usage analysis introduced: parsing the full file body (needed to
+// find selector usages) fails outright on a body syntax error, whereas the
+// original imports-only parsing tolerated one just fine. A file mid-edit
+// with a syntax error in its body is exactly the state the watcher's
+// incremental re-index sees while a user is actively typing — it must
+// still contribute its import edges (falling back to whole-package
+// resolution, since selector usage can't be determined), not lose them
+// entirely until the syntax error is fixed.
+func TestBuildGoImportsFallsBackOnBodySyntaxError(t *testing.T) {
+	root := t.TempDir()
+	write(t, root, "go.mod", "module example.com/test\n")
+	write(t, root, "internal/lib/lib.go", "package lib\n\nfunc Use() {}\n")
+	write(t, root, "internal/app/app.go", "package app\n\nimport \"example.com/test/internal/lib\"\n\nfunc Run() {\n\tlib.Use(\n")
+
+	idx, err := Build(context.Background(), BuildOptions{Root: root})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	deps := idx.Dependencies("internal/app/app.go", 10)
+	if len(deps) != 1 || deps[0].RelPath != "internal/lib/lib.go" {
+		t.Fatalf("dependencies = %+v, want internal/lib/lib.go even with a body syntax error", deps)
+	}
+}
+
 // TestBuildGoImportEdgesNarrowToReferencedSymbol covers the core
 // symbol-level precision case: a package with two files, where the
 // importer only calls one of them's exported function. The edge should

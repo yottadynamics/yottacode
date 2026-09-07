@@ -460,13 +460,21 @@ func countLOC(path string) (int, error) {
 // parsing (not parser.ImportsOnly) is required to see the body at all.
 func parseGoImports(path string) (imports []string, pkgName string, usedSelectors map[string][]string, err error) {
 	fset := token.NewFileSet()
-	file, err := parser.ParseFile(fset, path, nil, parser.SkipObjectResolution)
-	if err != nil {
-		return nil, "", nil, err
-	}
-	imports = make([]string, 0, len(file.Imports))
-	for _, spec := range file.Imports {
-		imports = append(imports, strings.Trim(spec.Path.Value, "\"`"))
+	file, ferr := parser.ParseFile(fset, path, nil, parser.SkipObjectResolution)
+	if ferr != nil {
+		// Full-body parsing failed — most commonly a file mid-edit with a
+		// syntax error in its body, exactly the state the watcher's
+		// incremental re-index sees while a user is actively typing. Fall
+		// back to imports-only parsing (which only needs a valid import
+		// block, not a valid body) so the file still contributes its
+		// import edges, just without selector-usage data — those edges
+		// fall back to whole-package resolution (see goImportTargets)
+		// instead of being lost entirely until the syntax error is fixed.
+		file, ferr = parser.ParseFile(fset, path, nil, parser.ImportsOnly)
+		if ferr != nil {
+			return nil, "", nil, ferr
+		}
+		return goImportPaths(file), file.Name.Name, nil, nil
 	}
 	usedSelectors = map[string][]string{}
 	ast.Inspect(file, func(n ast.Node) bool {
@@ -479,7 +487,15 @@ func parseGoImports(path string) (imports []string, pkgName string, usedSelector
 		}
 		return true
 	})
-	return imports, file.Name.Name, usedSelectors, nil
+	return goImportPaths(file), file.Name.Name, usedSelectors, nil
+}
+
+func goImportPaths(file *ast.File) []string {
+	imports := make([]string, 0, len(file.Imports))
+	for _, spec := range file.Imports {
+		imports = append(imports, strings.Trim(spec.Path.Value, "\"`"))
+	}
+	return imports
 }
 
 func readGoModulePath(path string) string {

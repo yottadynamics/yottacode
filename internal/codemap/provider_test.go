@@ -241,6 +241,33 @@ func TestCachedProviderIncrementalUpdateAddsNewFileAndEdge(t *testing.T) {
 	}
 }
 
+// TestCachedProviderIncrementalUpdateRefreshesSymbolUsage guards the
+// interaction between the symbol-level Go-edge precision work and the
+// incremental patch path: goSelectors must be re-derived (not stale) when a
+// file is re-indexed, so an edit that switches which symbol is referenced
+// updates the edge target, not just append to it.
+func TestCachedProviderIncrementalUpdateRefreshesSymbolUsage(t *testing.T) {
+	root := t.TempDir()
+	write(t, root, "go.mod", "module example.com/test\n")
+	write(t, root, "internal/app/app.go", "package app\n\nimport \"example.com/test/internal/lib\"\n\nfunc Run() { lib.Foo() }\n")
+	write(t, root, "internal/lib/foo.go", "package lib\n\nfunc Foo() {}\n")
+	write(t, root, "internal/lib/bar.go", "package lib\n\nfunc Bar() {}\n")
+	p := newIncrementalTestProvider(t, BuildOptions{Root: root})
+
+	first, _ := p.Index(context.Background())
+	deps := first.Dependencies("internal/app/app.go", 10)
+	if len(deps) != 1 || deps[0].RelPath != "internal/lib/foo.go" {
+		t.Fatalf("initial dependencies = %+v, want internal/lib/foo.go", deps)
+	}
+
+	write(t, root, "internal/app/app.go", "package app\n\nimport \"example.com/test/internal/lib\"\n\nfunc Run() { lib.Bar() }\n")
+	idx := triggerIncremental(t, p, filepath.Join(root, "internal/app/app.go"))
+	deps = idx.Dependencies("internal/app/app.go", 10)
+	if len(deps) != 1 || deps[0].RelPath != "internal/lib/bar.go" {
+		t.Fatalf("dependencies after switching usage = %+v, want only internal/lib/bar.go (not both, and not still foo.go)", deps)
+	}
+}
+
 func TestCachedProviderIncrementalUpdateRemovesDeletedFile(t *testing.T) {
 	root := t.TempDir()
 	write(t, root, "a.go", "package main\nfunc A() {}\n")
