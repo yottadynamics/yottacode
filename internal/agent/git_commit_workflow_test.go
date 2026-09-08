@@ -149,6 +149,8 @@ func TestBuildCommitContext_SummarizesGeneratedLocalArtifacts(t *testing.T) {
 	writeFile(t, tmp, ".cache/go-build/00/a", "compiled\n")
 	writeFile(t, tmp, ".config/go/telemetry/local/go@v1.count", "counter\n")
 	writeFile(t, tmp, "go/pkg/mod/example.com/mod@v1.0.0/go.mod", "module example.com/mod\n")
+	writeFile(t, tmp, ".yottacode/host-go/workspace/cache", "compiled\n")
+	writeFile(t, tmp, ".yottacode/host-shell/workspace/tmp", "scratch\n")
 	writeFile(t, tmp, "scratch.txt", "keep me\n")
 
 	snap, err := BuildCommitContext(context.Background(), tmp)
@@ -156,12 +158,12 @@ func TestBuildCommitContext_SummarizesGeneratedLocalArtifacts(t *testing.T) {
 		t.Fatalf("BuildCommitContext: %v", err)
 	}
 	rendered := renderCommitContext(snap)
-	for _, leaked := range []string{".cache/go-build/00/a", ".config/go/telemetry/local/go@v1.count", "go/pkg/mod/example.com/mod@v1.0.0/go.mod"} {
+	for _, leaked := range []string{".cache/go-build/00/a", ".config/go/telemetry/local/go@v1.count", "go/pkg/mod/example.com/mod@v1.0.0/go.mod", ".yottacode/host-go/workspace/cache", ".yottacode/host-shell/workspace/tmp"} {
 		if strings.Contains(rendered, leaked) {
 			t.Fatalf("generated artifact %q leaked into commit context:\n%s", leaked, rendered)
 		}
 	}
-	for _, want := range []string{"scratch.txt", "omitted 3 generated local artifact file(s) under .cache/, .config/, go/"} {
+	for _, want := range []string{"scratch.txt", "omitted 5 generated local artifact file(s) under .cache/, .config/, go/, .yottacode/host-go/, .yottacode/host-shell/"} {
 		if !strings.Contains(rendered, want) {
 			t.Fatalf("commit context missing %q:\n%s", want, rendered)
 		}

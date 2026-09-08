@@ -46,6 +46,34 @@ func TestRunBashTool_IsolatesHomeAndXDGFromRepoRoot(t *testing.T) {
 		t.Fatalf("run_bash output should show isolated HOME, got %q", out)
 	}
 }
+func TestRunBashTool_PreservesSafeHostEnvironment(t *testing.T) {
+	dir := t.TempDir()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	got, err := prepareRunBashCommand("printf ok", HostSandbox{}, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "printf ok" {
+		t.Fatalf("safe host command environment was replaced: %q", got)
+	}
+}
+
+func TestRunBashTool_GoCommandAlwaysUsesSafeEnvironment(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", t.TempDir())
+	got, err := prepareRunBashCommand("go version", HostSandbox{}, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"GOTMPDIR=", "GOCACHE=", "GOMODCACHE=", "GOTELEMETRY='off'"} {
+		if !strings.Contains(got, key) {
+			t.Errorf("wrapped Go command missing %s: %q", key, got)
+		}
+	}
+}
+
 func TestRunBashTool_ReportsNonZeroExit(t *testing.T) {
 	tool := &RunBashTool{Cwd: NewCwdRef(t.TempDir())}
 	out, err := tool.Execute(context.Background(), `{"command":"exit 42"}`)

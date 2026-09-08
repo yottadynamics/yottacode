@@ -592,7 +592,7 @@ func (s generatedArtifactSummary) line() string {
 
 func generatedArtifactRoot(path string) (string, bool) {
 	slash := filepath.ToSlash(strings.TrimSpace(path))
-	for _, root := range []string{".cache/", ".config/", "go/", ".local/", ".yottacode/tmp/go/", ".scratch/"} {
+	for _, root := range []string{".cache/", ".config/", "go/", ".local/", ".yottacode/tmp/go/", ".yottacode/host-go/", ".yottacode/host-shell/", ".scratch/"} {
 		if strings.HasPrefix(slash, root) {
 			return strings.TrimSuffix(root, "/") + "/", true
 		}
@@ -601,7 +601,7 @@ func generatedArtifactRoot(path string) (string, bool) {
 }
 
 func generatedArtifactRoots(seen map[string]bool) []string {
-	ordered := []string{".cache/", ".config/", "go/", ".local/", ".yottacode/tmp/go/", ".scratch/"}
+	ordered := []string{".cache/", ".config/", "go/", ".local/", ".yottacode/tmp/go/", ".yottacode/host-go/", ".yottacode/host-shell/", ".scratch/"}
 	var out []string
 	for _, root := range ordered {
 		if seen[root] {

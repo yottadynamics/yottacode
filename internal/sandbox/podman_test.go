@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/yottadynamics/yottacode/internal/agent"
 	"github.com/yottadynamics/yottacode/internal/config"
@@ -144,6 +145,9 @@ func TestPodmanRunArgsIncludesConfiguredDNS(t *testing.T) {
 		t.Fatalf("podmanRunArgs: %v", err)
 	}
 	joined := " " + strings.Join(args, " ") + " "
+	if !strings.Contains(joined, " --init ") {
+		t.Fatalf("podman args missing --init lifecycle guard: %v", args)
+	}
 	if !strings.Contains(joined, " --dns 1.1.1.1 ") || !strings.Contains(joined, " --dns 8.8.8.8 ") {
 		t.Fatalf("podman args missing configured DNS servers: %v", args)
 	}
@@ -171,7 +175,10 @@ func TestPodmanRunArgsMountsPersistentGoCacheDir(t *testing.T) {
 	if err != nil {
 		t.Fatalf("podmanRunArgs: %v", err)
 	}
-	wantDir := filepath.Join(home, ".yottacode", sandboxcache.GoCacheHomeSubdir)
+	wantDir, err := sandboxcache.GoHostCacheDirForWorkspace(mountRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
 	wantMount := "-v " + wantDir + ":" + wantDir + ":z"
 	if !strings.Contains(strings.Join(args, " "), wantMount) {
 		t.Fatalf("podman args missing persistent go cache mount %q: %v", wantMount, args)
@@ -181,12 +188,11 @@ func TestPodmanRunArgsMountsPersistentGoCacheDir(t *testing.T) {
 	}
 }
 
-// TestPodmanRunArgsGoCacheDirIsHomeRootedNotWorktreeScoped: the cache mount
+// TestPodmanRunArgsGoCacheDirIsCanonicalNotWorktreeScoped: the cache mount
 // must be a single directory shared across every repo/worktree/session (like
-// a host's own $GOCACHE/$GOMODCACHE), not nested under mountRoot — otherwise
-// it would either violate the project-mount boundary (mountPaths rejects
-// paths outside mountRoot) or fail to persist once a worktree is removed.
-func TestPodmanRunArgsGoCacheDirIsHomeRootedNotWorktreeScoped(t *testing.T) {
+// a host's own $GOCACHE/$GOMODCACHE), not nested under mountRoot or inherited
+// HOME — otherwise command preparation can disagree with sandbox startup.
+func TestPodmanRunArgsGoCacheDirIsCanonicalNotWorktreeScoped(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	mountRootA := filepath.Join(t.TempDir(), "repo-a")
@@ -201,7 +207,11 @@ func TestPodmanRunArgsGoCacheDirIsHomeRootedNotWorktreeScoped(t *testing.T) {
 	if err != nil {
 		t.Fatalf("podmanRunArgs(b): %v", err)
 	}
-	wantMount := "-v " + filepath.Join(home, ".yottacode", sandboxcache.GoCacheHomeSubdir)
+	cacheDir, err := sandboxcache.GoHostCacheDirForWorkspace(mountRootA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantMount := "-v " + cacheDir
 	for _, args := range [][]string{argsA, argsB} {
 		if !strings.Contains(strings.Join(args, " "), wantMount) {
 			t.Fatalf("expected the same shared go cache mount %q regardless of mount root, got %v", wantMount, args)
@@ -349,6 +359,16 @@ func TestProcessStartTicks_SelfProcess(t *testing.T) {
 	}
 }
 
+func TestParseProcessStartTicks_CommMayContainSpacesAndParens(t *testing.T) {
+	// State through starttime (field 22); the embedded ')' proves parsing uses
+	// comm's final delimiter rather than whitespace or its first parenthesis.
+	stat := []byte("77 (worker name ) helper) S 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 424242 23")
+	got, ok := parseProcessStartTicks(stat)
+	if !ok || got != 424242 {
+		t.Fatalf("parseProcessStartTicks = %d, %v; want 424242, true", got, ok)
+	}
+}
+
 func TestProcessStartTicks_NoSuchProcess(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("processStartTicks only reads /proc, which only exists on linux")
@@ -380,6 +400,30 @@ func TestPodmanSandbox_CommandBuildsExpectedArgv(t *testing.T) {
 	}
 	if cmd.Cancel == nil {
 		t.Error("Command should set cmd.Cancel to kill the in-container process on cancellation")
+	}
+}
+
+func TestMarkedProcessKillScriptRecursesAndWaits(t *testing.T) {
+	script := markedProcessKillScript("__marker__", 250*time.Millisecond)
+	for _, want := range []string{
+		`scan_descendants()`,
+		`while [ "$changed" = 1 ]`,
+		`kill -TERM "$v"`,
+		`kill -0 "$v"`,
+		`[ "$i" -lt 2 ]`,
+		`kill -KILL "$v"`,
+	} {
+		if !strings.Contains(script, want) {
+			t.Errorf("kill script missing %q:\n%s", want, script)
+		}
+	}
+	// Initial discovery plus one rescan in each TERM/KILL iteration closes the
+	// race where a signal handler forks another descendant.
+	if got := strings.Count(script, "scan_descendants"); got != 4 {
+		t.Errorf("kill script has %d scan references, want declaration + 3 phases", got)
+	}
+	if got := strings.Count(script, `kill -0 "$v"`); got != 2 {
+		t.Errorf("kill script has %d bounded liveness loops, want 2", got)
 	}
 }
 

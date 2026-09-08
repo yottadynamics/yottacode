@@ -71,7 +71,7 @@ jobs:
 
       - name: Smoke test — Go toolchain and mounted repo
         run: |
-          podman run --rm \
+          podman run --rm --init \
             --network=none \
             -v "$PWD:$PWD:Z" \
             -w "$PWD" \

@@ -941,6 +941,60 @@ func TestBranchTip(t *testing.T) {
 	}
 }
 
+type blockingDispatchStreamer struct {
+	started chan struct{}
+}
+
+func (s blockingDispatchStreamer) ChatStream(ctx context.Context, _ []adapter.Message, _ []adapter.Tool) <-chan adapter.StreamEvent {
+	out := make(chan adapter.StreamEvent)
+	go func() {
+		defer close(out)
+		select {
+		case s.started <- struct{}{}:
+		default:
+		}
+		<-ctx.Done()
+	}()
+	return out
+}
+
+// TestDispatch_Background_CancelRegisteredBeforeReturn guards the former launch
+// race: once Execute returns a task handle, stopping it must already have a
+// registered child context rather than depending on goroutine scheduling.
+func TestDispatch_Background_CancelRegisteredBeforeReturn(t *testing.T) {
+	repoRoot := dispatchTestRepo(t)
+	d := newDispatchToolE2E(t, repoRoot)
+	d.SupportsBackground = true
+	// Make this a read-only child so the lifecycle assertion does not depend on
+	// worktree creation; explicitly requesting background still exercises the
+	// same pre-launch registration path.
+	d.Agent.Configs[0].Tools = []string{"read_file"}
+	started := make(chan struct{}, 1)
+	d.Agent.Adapter = blockingDispatchStreamer{started: started}
+
+	out, err := d.Execute(context.Background(), `{"goal":"wait","background":true,"tasks":[{"subagent_type":"writer","description":"wait a","prompt":"wait","files":[]},{"subagent_type":"writer","description":"wait b","prompt":"wait","files":[]}]}`)
+	if err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	if strings.HasPrefix(out, "error:") {
+		t.Fatalf("dispatch rejected test task: %s", out)
+	}
+	tasks := d.Agent.Tasks.List()
+	if len(tasks) != 2 {
+		t.Fatalf("tasks = %d, want 2", len(tasks))
+	}
+	for _, task := range tasks {
+		if !d.Agent.Tasks.Cancel(task.ID) {
+			t.Fatalf("task %s was returned before its cancellation context was registered", task.ID)
+		}
+		select {
+		case <-d.Agent.Tasks.WaitFor(task.ID):
+		case <-time.After(3 * time.Second):
+			t.Fatalf("canceled background dispatch %s did not finish", task.ID)
+		}
+	}
+}
+
 // TestDispatch_Background_EnforcesMaxConcurrent is the P3 regression: a
 // background dispatch must respect MaxBackgroundSubagents (repeated calls
 // would otherwise stack unbounded detached workers), and a rejected batch

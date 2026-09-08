@@ -446,6 +446,9 @@ func (t *AgentTool) Execute(ctx context.Context, argsJSON string) (string, error
 	// TOTAL running concurrency (countForegroundOnly=false, matching the old
 	// ActiveCount check); foreground bounds only foreground running tasks.
 	if a.RunInBackground {
+		if err := backgroundResourcePreflight(); err != nil {
+			return "error: background subagent admission denied: " + err.Error() + "; stop completed/stuck work or restart the session, then retry", nil
+		}
 		limit := t.backgroundCap()
 		if !t.Tasks.TryReserve(task, limit, false) {
 			return fmt.Sprintf("error: at most %d background subagents may run concurrently (current: %d); wait for one to finish or stop it with /subagents stop <id>",
