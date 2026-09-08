@@ -56,6 +56,39 @@ func drainEvents(ch <-chan StreamEvent) (tokens, reasoning []string, final *Mess
 	return
 }
 
+func TestAdapter_SendsConfiguredHeaders(t *testing.T) {
+	body := sseBody(`{"id":"c1","object":"chat.completion.chunk","created":1,"model":"test","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		for key, want := range map[string]string{
+			"HTTP-Referer":            "https://yottacode.ai",
+			"X-OpenRouter-Title":      "yottacode",
+			"X-OpenRouter-Categories": "cli-agent",
+		} {
+			if got := r.Header.Get(key); got != want {
+				t.Errorf("%s = %q, want %q", key, got, want)
+			}
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = fmt.Fprint(w, body)
+	}))
+	defer srv.Close()
+
+	ad := NewWithConfig(Config{
+		BaseURL: srv.URL,
+		APIKey:  "key",
+		Model:   "test",
+		Headers: map[string]string{
+			"HTTP-Referer":            "https://yottacode.ai",
+			"X-OpenRouter-Title":      "yottacode",
+			"X-OpenRouter-Categories": "cli-agent",
+		},
+	})
+	_, _, _, errs := drainEvents(ad.ChatStream(context.Background(), []Message{{Role: RoleUser, Content: "hi"}}, nil))
+	if len(errs) > 0 {
+		t.Fatalf("unexpected errors: %v", errs)
+	}
+}
+
 func TestAdapter_StreamsContent(t *testing.T) {
 	body := sseBody(
 		`{"id":"c1","object":"chat.completion.chunk","created":1,"model":"test","choices":[{"index":0,"delta":{"role":"assistant","content":"Hel"},"finish_reason":null}]}`,

@@ -84,7 +84,9 @@ func mergeProviders(existing []config.Provider, plan []PlanProvider) []config.Pr
 	out := make([]config.Provider, 0, len(existing)+len(plan))
 	for _, e := range existing {
 		if pp, hit := planByName[e.Name]; hit {
-			out = append(out, planProviderToConfig(pp))
+			planned := planProviderToConfig(pp)
+			planned.Headers = mergeProviderHeaders(pp.Headers, e.Headers)
+			out = append(out, planned)
 			planSeen[e.Name] = true
 		} else {
 			out = append(out, e)
@@ -99,6 +101,23 @@ func mergeProviders(existing []config.Provider, plan []PlanProvider) []config.Pr
 	return out
 }
 
+func mergeProviderHeaders(defaults, existing map[string]string) map[string]string {
+	merged := cloneHeaders(existing)
+	if merged == nil && len(defaults) > 0 {
+		merged = make(map[string]string, len(defaults))
+	}
+	existingNames := make(map[string]struct{}, len(existing))
+	for key := range existing {
+		existingNames[strings.ToLower(key)] = struct{}{}
+	}
+	for key, value := range defaults {
+		if _, found := existingNames[strings.ToLower(key)]; !found {
+			merged[key] = value
+		}
+	}
+	return merged
+}
+
 func planProviderToConfig(pp PlanProvider) config.Provider {
 	// pp.Models intentionally dropped; see plan.go::Plan.ToConfig
 	// for why (catalog.gen.json owns the curated list now).
@@ -107,6 +126,7 @@ func planProviderToConfig(pp PlanProvider) config.Provider {
 		Kind:         pp.Kind,
 		BaseURL:      pp.BaseURL,
 		APIKeyEnv:    pp.APIKeyEnv,
+		Headers:      cloneHeaders(pp.Headers),
 		DefaultModel: pp.DefaultModel,
 	}
 }

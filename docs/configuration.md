@@ -45,6 +45,23 @@ Precedence is:
 
 Resolution lives in [`internal/cli/options.go`](../internal/cli/options.go).
 
+### Provider request headers
+
+A provider profile can attach non-secret metadata to supported upstream HTTP requests:
+
+```toml
+[[providers]]
+name = "gateway"
+kind = "openai-compatible"
+base_url = "https://gateway.example/v1"
+api_key_env = "GATEWAY_API_KEY"
+
+  [providers.headers]
+  "X-Project-Id" = "engineering"
+```
+
+Header names must use valid HTTP token characters, and values cannot contain control characters such as CR or LF. Header values are stored in plaintext in `config.toml`. Do not put API keys, tokens, or other secrets in this map; keep credentials in the environment through `api_key_env`. OpenAI-family and Ollama chat requests, active diagnostics, live model discovery, and Ollama context discovery consume the map. Provider families with different HTTP/auth clients retain the configuration but warn that the headers are ignored.
+
 ## Examples
 
 ```bash
@@ -147,6 +164,7 @@ Examples of diagnostics:
 - `x_search` filters used on a non-xAI endpoint
 - empty API keys for remote providers
 - suspicious provider/model mismatches such as `grok-*` on `openai`
+- provider headers configured for an adapter family that cannot consume them
 
 Use `/provider` to inspect the resolved static state, or `/doctor` to run an
 active `/models` probe against the configured endpoint.

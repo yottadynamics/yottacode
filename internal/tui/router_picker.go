@@ -488,7 +488,7 @@ func (m Model) completePendingEnable() (Model, tea.Cmd) {
 // this session, the active conversation model is switched to it — the
 // smart model is the user's primary capable model.
 func (m Model) closeRouterPicker() (Model, tea.Cmd) {
-	target := routerActiveSwitchTarget(m.routerPicker, m.modelName)
+	target := routerActiveSwitchTarget(m.routerPicker)
 	m.routerPickerOpen = false
 	m.routerPicker = nil
 	m.openSlashPalette()
@@ -502,7 +502,7 @@ func (m Model) closeRouterPicker() (Model, tea.Cmd) {
 // should switch to on close: the configured smart primary, but only when
 // it changed this session and names a model different from the current
 // active one. Empty means no switch.
-func routerActiveSwitchTarget(p *routerPickerState, activeModel string) string {
+func routerActiveSwitchTarget(p *routerPickerState) string {
 	if p == nil {
 		return ""
 	}
@@ -510,8 +510,7 @@ func routerActiveSwitchTarget(p *routerPickerState, activeModel string) string {
 	if smart == "" || smart == p.initialSmart {
 		return ""
 	}
-	_, model, err := config.ParseCandidate(smart)
-	if err != nil || model == "" || model == activeModel {
+	if _, model, err := config.ParseCandidate(smart); err != nil || model == "" {
 		return ""
 	}
 	return smart
@@ -538,6 +537,8 @@ func (m Model) switchActiveModelToRef(ref string) (Model, tea.Cmd) {
 	if p.Kind != "" {
 		m.provider = p.Kind
 	}
+	m.opts.Headers = cloneHeaders(p.Headers)
+	m.apiKey = ""
 	if p.APIKeyEnv != "" {
 		if v := os.Getenv(p.APIKeyEnv); v != "" {
 			m.apiKey = v
@@ -587,6 +588,27 @@ func (m Model) switchActiveModelToRouterRole(role string) (Model, tea.Cmd) {
 	if ref == "" || model == "" || ad == nil {
 		return m, nil
 	}
+	// Resolve the target profile even when both roles use the same model name;
+	// endpoint, credentials, and metadata are provider-scoped rather than model-scoped.
+	provName, _, err := config.ParseCandidate(ref)
+	if err == nil {
+		cfg := loadConfigForCommand(m)
+		if p := cfg.FindProvider(provName); p != nil {
+			if p.BaseURL != "" {
+				m.baseURL = p.BaseURL
+			}
+			if p.Kind != "" {
+				m.provider = p.Kind
+			}
+			m.opts.Headers = cloneHeaders(p.Headers)
+			m.apiKey = ""
+			if p.APIKeyEnv != "" {
+				if v := os.Getenv(p.APIKeyEnv); v != "" {
+					m.apiKey = v
+				}
+			}
+		}
+	}
 	if m.modelName == model {
 		// Same-model role switches are still meaningful because routing state
 		// and the live tool registry can change independently of the active
@@ -603,23 +625,6 @@ func (m Model) switchActiveModelToRouterRole(role string) (Model, tea.Cmd) {
 		syncMainConsultAdvisorTool(&m)
 		warnIfEffortNoop(&m, m.adapterConfig(model, m.baseURL))
 		return m, nil
-	}
-	provName, _, err := config.ParseCandidate(ref)
-	if err == nil {
-		cfg := loadConfigForCommand(m)
-		if p := cfg.FindProvider(provName); p != nil {
-			if p.BaseURL != "" {
-				m.baseURL = p.BaseURL
-			}
-			if p.Kind != "" {
-				m.provider = p.Kind
-			}
-			if p.APIKeyEnv != "" {
-				if v := os.Getenv(p.APIKeyEnv); v != "" {
-					m.apiKey = v
-				}
-			}
-		}
 	}
 	m.cfg.Adapter = ad
 	if m.subagentTool != nil {

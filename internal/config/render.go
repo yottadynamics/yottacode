@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/BurntSushi/toml"
@@ -68,6 +69,17 @@ func Render(cfg Config) string {
 		}
 		if p.DefaultModel != "" {
 			fmt.Fprintf(&b, "default_model = %q\n", p.DefaultModel)
+		}
+		if len(p.Headers) > 0 {
+			keys := make([]string, 0, len(p.Headers))
+			for key := range p.Headers {
+				keys = append(keys, key)
+			}
+			sort.Strings(keys)
+			b.WriteString("\n  [providers.headers]\n")
+			for _, key := range keys {
+				fmt.Fprintf(&b, "  %q = %q\n", key, p.Headers[key])
+			}
 		}
 		for _, m := range p.Models {
 			b.WriteString("\n  [[providers.models]]\n")

@@ -17,6 +17,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net/http"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -602,6 +603,11 @@ type Provider struct {
 	// up at adapter-construction time, NOT stored here.
 	APIKeyEnv string `toml:"api_key_env"`
 
+	// Headers are non-secret metadata sent with supported provider HTTP
+	// requests. Values are stored as plaintext in config.toml; credentials
+	// belong in APIKeyEnv instead.
+	Headers map[string]string `toml:"headers"`
+
 	// DefaultModel is the model name to adopt when /provider use
 	// switches to this provider. Must appear in Models when set.
 	DefaultModel string `toml:"default_model"`
@@ -876,6 +882,30 @@ func EnsureDefault(path string) (string, error) {
 	return path, nil
 }
 
+func validHTTPHeaderName(name string) bool {
+	if name == "" {
+		return false
+	}
+	const separators = "()<>@,;:\\\"/[]?={} \t"
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		if c <= 0x20 || c >= 0x7f || strings.ContainsRune(separators, rune(c)) {
+			return false
+		}
+	}
+	return true
+}
+
+func validHTTPHeaderValue(value string) bool {
+	for i := 0; i < len(value); i++ {
+		c := value[i]
+		if c == '\r' || c == '\n' || c == 0x7f || (c < 0x20 && c != '\t') {
+			return false
+		}
+	}
+	return true
+}
+
 // Validate enforces ranges and consistency across the loaded config.
 // Returns a clean error rather than silently clamping — clamping means
 // the user's intent is lost.
@@ -979,6 +1009,23 @@ func Validate(cfg Config) error {
 		}
 		if strings.TrimSpace(p.BaseURL) == "" {
 			return fmt.Errorf("providers[%q]: base_url is required", p.Name)
+		}
+		seenHeaderNames := make(map[string]string, len(p.Headers))
+		for name, value := range p.Headers {
+			if strings.TrimSpace(name) == "" {
+				return fmt.Errorf("providers[%q].headers: header name is required", p.Name)
+			}
+			if !validHTTPHeaderName(name) {
+				return fmt.Errorf("providers[%q].headers: invalid header name %q", p.Name, name)
+			}
+			foldedName := strings.ToLower(name)
+			if previous, duplicate := seenHeaderNames[foldedName]; duplicate {
+				return fmt.Errorf("providers[%q].headers: duplicate header names %q and %q", p.Name, previous, name)
+			}
+			seenHeaderNames[foldedName] = name
+			if !validHTTPHeaderValue(value) {
+				return fmt.Errorf("providers[%q].headers[%q]: invalid value", p.Name, http.CanonicalHeaderKey(name))
+			}
 		}
 		modelNames := make(map[string]struct{}, len(p.Models))
 		for j, m := range p.Models {

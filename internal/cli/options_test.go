@@ -327,6 +327,32 @@ default_model = "gpt-4o"
 	}
 }
 
+func TestResolve_ExplicitBaseURLDoesNotInheritProfileHeaders(t *testing.T) {
+	home := isolatedHome(t)
+	mustWriteFile(t, filepath.Join(home, ".yottacode", "config.toml"), `
+[active]
+provider = "openrouter"
+model = "openai/gpt-4o"
+[[providers]]
+name = "openrouter"
+kind = "openai-compatible"
+base_url = "https://openrouter.ai/api/v1"
+api_key_env = "OPENROUTER_API_KEY"
+[providers.headers]
+HTTP-Referer = "https://yottacode.ai"
+`)
+	t.Setenv(EnvModel, "")
+	t.Setenv(EnvBaseURL, "")
+	t.Setenv(EnvAPIKey, "")
+	opts := ChatOptions{BaseURL: "https://private.example/v1"}
+	if err := Resolve(&opts); err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if len(opts.Headers) != 0 {
+		t.Fatalf("profile headers leaked to explicit endpoint: %#v", opts.Headers)
+	}
+}
+
 // TestResolve_DotEnvLoadsAPIKey verifies that an api key in
 // ~/.yottacode/.env is visible via os.Getenv after Resolve, so the
 // profile lookup picks it up. We don't pre-set ANTHROPIC_API_KEY here.
