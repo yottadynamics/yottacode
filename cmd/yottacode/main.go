@@ -347,7 +347,8 @@ Configuration (no built-in defaults — must be set via flag or env):
 			return oneshot.Run(cmd.Context(), *opts, prompt)
 		},
 	}
-	cmd.Flags().BoolVar(&opts.RunJSONStatus, "json", false, "Emit a machine-readable run status envelope to stderr")
+	cmd.Flags().StringVar(&opts.RunFormat, "format", cli.RunFormatText, "Output format: text or json")
+	cmd.Flags().BoolVar(&opts.RunJSONStatus, "json", false, "Append the legacy machine-readable run status receipt to stderr")
 	return cmd
 }
 

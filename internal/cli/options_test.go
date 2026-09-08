@@ -590,6 +590,56 @@ func TestResolve_PermissionMode_RejectsInvalid(t *testing.T) {
 	}
 }
 
+// Run output format is a closed, normalized value because scripts rely on a
+// deterministic stdout contract rather than silently accepting misspellings.
+func TestResolve_RunFormat_AcceptedValues(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+	}{
+		{"", RunFormatText},
+		{"text", RunFormatText},
+		{"json", RunFormatJSON},
+		{"  JSON  ", RunFormatJSON},
+	}
+	for _, tc := range cases {
+		t.Run(tc.in, func(t *testing.T) {
+			isolatedHome(t)
+			t.Setenv(EnvModel, "m")
+			t.Setenv(EnvBaseURL, "http://x/v1")
+			opts := ChatOptions{RunFormat: tc.in}
+			if err := Resolve(&opts); err != nil {
+				t.Fatalf("Resolve(%q): %v", tc.in, err)
+			}
+			if opts.RunFormat != tc.want {
+				t.Fatalf("RunFormat = %q, want %q", opts.RunFormat, tc.want)
+			}
+		})
+	}
+}
+
+func TestResolve_RunFormat_RejectsInvalid(t *testing.T) {
+	isolatedHome(t)
+	t.Setenv(EnvModel, "m")
+	t.Setenv(EnvBaseURL, "http://x/v1")
+	opts := ChatOptions{RunFormat: "yaml"}
+	err := Resolve(&opts)
+	if err == nil || !strings.Contains(err.Error(), "--format") {
+		t.Fatalf("Resolve error = %v, want invalid --format error", err)
+	}
+}
+
+func TestResolve_RunFormat_RejectsLegacyJSONCombination(t *testing.T) {
+	isolatedHome(t)
+	t.Setenv(EnvModel, "m")
+	t.Setenv(EnvBaseURL, "http://x/v1")
+	opts := ChatOptions{RunFormat: RunFormatJSON, RunJSONStatus: true}
+	err := Resolve(&opts)
+	if err == nil || !strings.Contains(err.Error(), "cannot be combined") {
+		t.Fatalf("Resolve error = %v, want conflicting JSON flags error", err)
+	}
+}
+
 // --yolo (BypassPermissions internally) is an
 // independent bool flag. The Resolve path does not touch it; this
 // test just locks the field stays untouched and accepts both values.

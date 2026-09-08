@@ -8,6 +8,8 @@ the project uses semantic versioning once it's past `1.0.0`.
 
 ### Added
 
+- **Structured `yottacode run` output and CI recipes.** `--format json` emits one stable stdout object with content, tool-call summaries, provider usage, exit reason, nullable error, and session id while preserving shell exit semantics. Default text stdout remains answer-only and gains clearer, consistently prefixed stderr status lines; the legacy `--json` stderr receipt remains available for compatibility. See [`run-recipes.md`](docs/run-recipes.md) for PR description, codemod, test-triage, dependency-audit, and changelog workflows.
+
 worktree-permissions-fine-grained-review
 - **Session-scoped permission grants.** The approval modal gains an `[S]`
   hotkey alongside `[Y]`/`[A]`/`[N]`/`[D]`: it derives the same pattern

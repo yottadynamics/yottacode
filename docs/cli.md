@@ -76,58 +76,89 @@ See [TUI slash commands](tui-slash-commands.md).
 yottacode run "summarize this repo"
 ```
 
-Use `run` for scripts, CI jobs, or shell pipelines. stdout contains the final assistant response. stderr contains reasoning, progress, and tool status. Pass `--json` when an integration needs a machine-readable final receipt on stderr with the run status, iteration count, tool counts, and changed files reported by `list_git_changed_files`; stdout remains answer-only so redirects stay clean. Status values are stable enough for automation: `success`, `approval_required`, `blocked_needs_clarification`, `tests_failed`, `policy_denied`, `provider_error`, and `iteration_cap`.
+Use `run` for scripts, CI jobs, and shell pipelines. The run-specific output
+flags are:
 
-Examples:
+| Flag | Default | Purpose |
+|---|---|---|
+| `--format text\|json` | `text` | Select answer-only text or one structured stdout object |
+| `--json` | off | Append the legacy status receipt to stderr; retained for compatibility |
 
-```bash
-yottacode run "write a changelog entry for the current git diff"
-```
+### Text output
 
-```bash
-yottacode run --max-iterations 100 "implement step 3 of the plan we drafted yesterday"
-```
-
-```bash
-yottacode run --json "resolve the current issue and summarize changed files"
-```
-
-### What `yottacode run` can automate
-
-`run` is designed for non-interactive jobs where another system owns the trigger and yottacode owns the engineering loop. Common uses include:
-
-- **Ticket triage:** summarize a bug report, identify likely files, and return a recommended fix path.
-- **Issue resolution:** work from a GitHub issue, make code changes, run tests, and summarize the resulting diff.
-- **Customer-request drafting:** convert a support request into implementation notes, acceptance criteria, or a candidate patch.
-- **CI/reporting jobs:** inspect a failing build log or current diff and emit a clean Markdown report on stdout.
-- **Release chores:** draft changelog entries, migration notes, or PR descriptions from repository context.
-
-For automation, keep stdout as the human-readable artifact and parse the final `--json` receipt from stderr. A ticket system can route on `status`: retry `provider_error`, ask a human on `approval_required` or `blocked_needs_clarification`, and attach `changed_files` to the ticket or PR record.
-
-Example GitHub Issue workflow:
+Text mode preserves the existing streamed assistant-content stdout contract, including
+its terminating newline. Reasoning and consistently prefixed operational status
+lines go to stderr, so redirects remain clean:
 
 ```bash
-yottacode run --json "Read issue #123, implement the smallest safe fix, run relevant tests, and summarize the diff"
+yottacode run "write a changelog entry for the current git diff" > draft.md
 ```
 
-Example support-ticket workflow:
+### Structured JSON output
+
+`--format json` buffers the answer and emits exactly one newline-terminated JSON
+object to stdout after the turn:
 
 ```bash
-yottacode run --json "Customer reports that export fails for empty projects. Reproduce from the codebase, fix if clear, otherwise return BLOCKED: with the clarification needed. Run relevant tests."
+yottacode run --format json "triage the failures in test-output.txt" | jq .
 ```
-
-`--json` appends a final stderr object shaped like:
 
 ```json
 {
-  "status": "success",
-  "iterations": 3,
-  "tools": {
-    "list_git_changed_files": { "count": 1 }
+  "content": "The failure starts in...",
+  "tool_calls": [
+    {"name": "read_file", "summary": "read_file(test-output.txt)"}
+  ],
+  "usage": {
+    "input_tokens": 1240,
+    "output_tokens": 380,
+    "cache_read_tokens": 900
   },
-  "changed_files": ["internal/example.go", "docs/cli.md"]
+  "exit_reason": "ok",
+  "error": null,
+  "session_id": "20260908-143012.123456"
 }
 ```
+
+All six top-level fields are always present. `usage` is the shared
+`adapter.Usage` shape; individual zero-value counters are omitted and should be
+read as zero. `tool_calls` is an empty array when no yottacode tool ran. Each
+summary is the bounded, human-readable call preview and deliberately excludes
+full tool results.
+
+Stable `exit_reason` values are:
+
+- `ok` — the turn reached a final answer.
+- `error` — the turn failed; `error` contains the message.
+- `iter_cap` — the agent exhausted `--max-iterations` before a final answer.
+
+`--format json` does not change process exit behavior. Failed turns still return
+a non-zero shell status, while iteration-cap behavior remains unchanged. Capture
+the status explicitly when a script needs to parse failed results:
+
+```bash
+set +e
+yottacode run --format json "inspect the failing build" > result.json
+run_status=$?
+set -e
+jq . result.json
+exit "$run_status"
+```
+
+Operational progress remains on stderr and never contaminates the JSON stdout
+object. Errors that occur before an agent turn starts, such as invalid flags or
+missing provider configuration, retain the normal CLI error output because no
+run result or session exists yet.
+
+### Legacy `--json` receipt
+
+The older `--json` flag remains compatible: stdout is still answer-only text and
+a final receipt is appended to stderr with statuses such as `success`,
+`approval_required`, `tests_failed`, or `iteration_cap`. Do not combine it with
+`--format json`; new integrations should use the structured stdout contract.
+
+See [the five `yottacode run` recipes](run-recipes.md) for PR descriptions,
+codemods, test triage, dependency-audit summaries, and changelog drafting.
 
 ## Setup
 
