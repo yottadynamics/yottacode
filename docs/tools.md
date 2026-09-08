@@ -115,6 +115,16 @@ In addition to the built-ins, **MCP tools** register dynamically when an `[[mcp_
 | [`Agent`](#agent) | none | Dispatch a typed subagent that runs in its own context window; see [subagents.md](subagents.md) |
 | [`dispatch`](#dispatch) | none | Experimental behind `dispatch`; fan multiple independent subtasks out to concurrent subagents |
 | [`integrate`](#integrate) | none | Experimental behind `dispatch`; merge dispatch worker branches into one PR-ready integration branch |
+| [`browser_status`](#browser_status) | none | Experimental behind `browser`; report browser manager state (binary, active session, URL, profile dir) |
+| [`browser_navigate`](#browser_navigate) | required | Experimental behind `browser`; navigate the active page, lazily launching an isolated headless session |
+| [`browser_screenshot`](#browser_screenshot) | required | Experimental behind `browser`; capture a PNG of the page or one element |
+| [`browser_inspect`](#browser_inspect) | required | Experimental behind `browser`; return an accessibility-tree text snapshot of the page or one element |
+| [`browser_click`](#browser_click) | required | Experimental behind `browser`; click the element matching a selector |
+| [`browser_type`](#browser_type) | required | Experimental behind `browser`; type into a field, optionally submitting with Enter |
+| [`browser_hotkey`](#browser_hotkey) | required | Experimental behind `browser`; send a key or key combo to the page |
+| [`browser_scroll`](#browser_scroll) | required | Experimental behind `browser`; scroll an element into view, or scroll the page by direction/delta |
+| [`browser_wait`](#browser_wait) | none | Experimental behind `browser`; wait for a selector/text/network-idle condition |
+| [`browser_close`](#browser_close) | none | Experimental behind `browser`; close the browser session and remove its temp profile |
 
 "Approval = required" means the tool always pauses for a `y` / `a` /
 `N` from the user, unless an `allow` rule in
@@ -2124,6 +2134,187 @@ Merge dispatch worker branches into one integration branch in a dedicated worktr
 | `base` | string | `HEAD` | Base ref for a newly created integration branch. |
 
 No approval. On clean success it reports the integration branch to push/open a PR from and reclaims merged worker worktrees/branches where safe.
+
+## browser_status
+
+Experimental behind `browser` (see [experimental.md](experimental.md)).
+The `browser_*` tools drive a real, headless Chrome/Chromium instance
+over the Chrome DevTools Protocol via
+[`go-rod/rod`](https://github.com/go-rod/rod) — no Node.js, no
+Playwright. The manager is session-scoped: at most one browser process
+and one active page, launched lazily on the first call that needs it,
+sharing one isolated temp profile directory for the whole session. See
+[security-and-allow-lists.md](security-and-allow-lists.md#browser-automation)
+for the full safety posture.
+
+`browser_status` reports the binary path found (if any), whether a
+session is active, its current URL, and its profile directory. It
+never launches a browser.
+
+| Param | Type | Default |
+|---|---|---|
+| _(none)_ | | |
+
+No approval.
+
+## browser_navigate
+
+Navigate the single active page to a URL, waiting for the given
+lifecycle event before returning. Lazily launches the browser
+(discovering a system Chrome/Chromium binary and creating the isolated
+profile directory) on the first call in a session.
+
+| Param | Type | Default | Notes |
+|---|---|---|---|
+| `url` | string | — | Required |
+| `wait_until` | string | `load` | `load`, `domcontentloaded`, or `networkidle` |
+
+Always prompts for approval.
+
+## browser_screenshot
+
+Capture a PNG screenshot of the current page, or of one element if
+`selector` is given. Returns an image block like `read_file` does for
+an image file — including the same degrade-to-text-label behavior when
+the active model doesn't accept image input.
+
+| Param | Type | Default | Notes |
+|---|---|---|---|
+| `selector` | string | — | CSS selector to screenshot just that element |
+| `full_page` | boolean | `false` | Capture the full scrollable page, not just the viewport. Ignored when `selector` is set. |
+
+Always prompts for approval — a screenshot can surface on-screen
+private data even without clicking anything.
+
+## browser_inspect
+
+Return an accessibility-tree text snapshot (indented role/name/value
+outline) of the current page, or of one element's subtree if
+`selector` is given. The token-cheap way to "read" a page without a
+screenshot.
+
+| Param | Type | Default | Notes |
+|---|---|---|---|
+| `selector` | string | — | CSS selector to scope the snapshot to that element's subtree |
+
+Always prompts for approval — same privacy rationale as
+`browser_screenshot`.
+
+## browser_click
+
+Click the element matching a CSS selector, waiting for it to become
+interactable first.
+
+| Param | Type | Default |
+|---|---|---|
+| `selector` | string | — (required) |
+
+Always prompts for approval.
+
+## browser_type
+
+Clear and type text into the element matching a CSS selector, waiting
+for it to become interactable first.
+
+| Param | Type | Default | Notes |
+|---|---|---|---|
+| `selector` | string | — | Required |
+| `text` | string | — | Required |
+| `submit` | boolean | `false` | Press Enter after typing |
+
+Always prompts for approval.
+
+## browser_hotkey
+
+Send a `"+"`-joined key spec to the page, e.g. `"Enter"` or
+`"Control+a"`. The last token is pressed and released; every earlier
+token is held down as a modifier for its duration.
+
+| Param | Type | Default |
+|---|---|---|
+| `keys` | string | — (required) |
+
+Always prompts for approval.
+
+## browser_scroll
+
+Scroll an element into view (if `selector` is given — `direction`/
+`delta_x`/`delta_y` are ignored in that case), or scroll the page by a
+direction (a default ~400px magnitude) or an explicit pixel delta.
+
+| Param | Type | Default | Notes |
+|---|---|---|---|
+| `selector` | string | — | Scroll this element into view |
+| `direction` | string | — | `up`, `down`, `left`, or `right` |
+| `delta_x` / `delta_y` | number | — | Explicit pixel delta; overrides `direction` |
+
+Always prompts for approval.
+
+## browser_wait
+
+Wait for a CSS selector to become visible, for text to appear anywhere
+on the page, and/or for the network to go idle.
+
+| Param | Type | Default | Notes |
+|---|---|---|---|
+| `selector` | string | — | Wait for this selector to become visible |
+| `text` | string | — | Wait for this text to appear on the page |
+| `network_idle` | boolean | `false` | Wait for the network to go idle |
+| `timeout_ms` | integer | built-in | Deadline in milliseconds |
+
+No approval — it blocks on an already-visible condition and never
+launches the browser: a session that was never started has nothing to
+wait for yet.
+
+## browser_close
+
+Close the browser session and remove its isolated temp profile
+directory. Idempotent — safe to call more than once, and also runs
+automatically at session shutdown (`CleanupRegistryTools`) even if
+never called explicitly.
+
+| Param | Type | Default |
+|---|---|---|
+| _(none)_ | | |
+
+No approval — it only ever reduces capability.
+
+---
+
+v1 scope for the whole `browser_*` family: headless only (no visible
+window), one browser/one page per session (no multi-tab, no
+`ParallelSafeTool`), a fresh isolated profile per session (never your
+real, logged-in Chrome — no cookies, history, or saved logins), and no
+`dispatch` worker access. With `--experimental browser` unset, every
+`browser_*` tool call returns an explanatory message and takes no
+action. With it set but no system Chrome/Chromium found, the first
+call fails with an actionable error naming the paths searched — the
+same "detect, don't download" posture `read_document` uses for
+`pdftotext`/`pandoc`.
+
+A JS-initiated dialog (`alert`/`confirm`/`prompt`/`beforeunload`) is
+auto-dismissed rather than left to block the page — there's no human
+to click it, and dismissing (not accepting) is the safer default since
+`confirm()` can gate its own destructive action beyond what the
+triggering click's approval covered.
+
+Every action is bounded by a 60s default timeout unless the caller's
+own context is already tighter (`browser_wait`'s `timeout_ms` overrides
+it directly). A single browser process serves the whole session, so
+without this bound an unreachable site, a `load` event that never
+fires, or a Chrome binary that starts but never opens its debug port
+wouldn't just fail that one call — it would wedge every later
+`browser_*` call, including `browser_close`, until the process itself
+was killed. Hitting the timeout returns a recoverable error instead.
+
+If the browser process itself dies (crashes, gets OOM-killed, or is
+killed externally) the next action detects this — a cheap process
+liveness check, not a CDP round-trip — and transparently relaunches a
+fresh session rather than failing forever with an opaque
+dead-connection error. `browser_status` reports the crashed session as
+inactive without recovering it itself (it never changes state);
+`browser_wait` reports an error rather than silently claiming its
+condition was satisfied when nothing was actually checked.
 
 ## issue_read
 

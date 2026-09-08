@@ -1112,6 +1112,8 @@ func stripANSI(s string) string {
 // already worked, just so a future refactor of the switch can't
 // accidentally regress them while fixing the model case.
 func TestFocusActiveConfigField_KeyAndBaseURL(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "")
+	t.Setenv("CUSTOM_API_KEY", "")
 	custom := *FindCatalogEntry("custom")
 	m := newWizardModel(context.Background(), Options{})
 	m.inputs = []providerInputs{m.newProviderInputs(custom)}

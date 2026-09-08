@@ -19,6 +19,7 @@ one release so existing configs don't break.
 | Name | Status | What it enables |
 | --- | --- | --- |
 | `background_subagents` | **graduated** (GA) | `run_in_background:true` on the Agent tool — fire-and-forget subagent dispatch with `get_subagent_result` for fetching. **Now generally available in the interactive TUI**; the flag is a no-op kept for one release so existing configs don't break. Foreground subagents are always available; background is read-only by default (standalone), with write-capable unattended work routed through dispatch. |
+| `browser` | experimental | The `browser_status`/`browser_navigate`/`browser_screenshot`/`browser_inspect`/`browser_click`/`browser_type`/`browser_hotkey`/`browser_scroll`/`browser_wait`/`browser_close` tools — drive a real, headless Chrome/Chromium instance over CDP via `go-rod/rod`, no Node.js/Playwright. A fresh isolated profile per session (never your real, logged-in browser); headless only; one browser/one page per session; not available to `dispatch` workers. See [tools.md](tools.md#browser_status) and [security-and-allow-lists.md](security-and-allow-lists.md#browser-automation). |
 | `code_map` | experimental | Repository structure map. Adds the `/map` TUI overlay and read-only `code_map`, `code_symbols`, `code_structure_projection`, `code_dependencies`, `code_dependents`, `code_impact`, `code_cycles`, and `code_map_diagram` agent tools. The TUI includes `/map here` for changed-file neighborhoods and Enter-to-insert `@path` prompt refs, plus structure, dependency, impact, cycle, and Mermaid diagram modes. The index is LSP-backed when available and falls back to approximate regex symbols. Future call graph views will stay under `/map` instead of adding more slash commands. See [code-map.md](code-map.md). |
 | `dispatch` | experimental | The `dispatch` + `integrate` tools — fan a batch of subtasks out to concurrent subagents (write-capable ones in isolated git worktrees, partitioned by file ownership), then merge committed branches into one integration branch for a PR. See [dispatch.md](dispatch.md), incl. its Known Limitations. |
 | `document_generation` | **graduated** (GA) | `create_document` is now default-on for every format, including docx/pdf (via `pandoc`, routed through the active command sandbox; pdf also needs `weasyprint`). The flag is a no-op kept for one release so existing configs don't break. A missing pandoc/weasyprint binary returns an actionable error naming exactly where it looked, rather than failing silently. See [document-generation.md](document-generation.md). |
@@ -66,6 +67,7 @@ cleaner than threading the flag everywhere.
 ```toml
 [experimental]
 background_subagents = true
+browser = true                  # optional: enables browser_* tools (needs a system Chrome/Chromium)
 code_map = true                 # optional: enables /map and code-map agent tools
 lsp_code_intelligence = true    # GA/no-op compatibility flag
 syntax_ranges = true            # GA/no-op compatibility flag

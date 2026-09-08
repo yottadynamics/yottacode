@@ -8,6 +8,29 @@ the project uses semantic versioning once it's past `1.0.0`.
 
 ### Added
 
+- **`browser_*` tools (experimental).** Ten new agent tools —
+  `browser_status`, `browser_navigate`, `browser_screenshot`,
+  `browser_inspect`, `browser_click`, `browser_type`, `browser_hotkey`,
+  `browser_scroll`, `browser_wait`, `browser_close` — drive a real,
+  headless Chrome/Chromium instance over the Chrome DevTools Protocol
+  via `go-rod/rod`, with no Node.js or Playwright dependency. A fresh,
+  isolated temp profile per session (never your real, logged-in
+  browser), headless-only, one browser/one page per session, and not
+  available to `dispatch` workers. Every action tool prompts for
+  approval, including the two read-only ones (screenshot, inspect),
+  since either can surface on-screen private data. JS-initiated dialogs
+  (`alert`/`confirm`/`prompt`/`beforeunload`) are auto-dismissed so a
+  page that pops one can't hang a tool call, and every action is
+  bounded by a default 60s timeout so a single hung page can't wedge
+  the whole session (including `browser_close`) forever. If the
+  browser process itself crashes or is killed, the next action
+  transparently relaunches a fresh session instead of failing forever
+  with an opaque dead-connection error. Off by default; enable with
+  `--experimental browser`. See
+  [`tools.md`](docs/tools.md#browser_status),
+  [`experimental.md`](docs/experimental.md), and
+  [`security-and-allow-lists.md`](docs/security-and-allow-lists.md#browser-automation).
+
 worktree-permissions-fine-grained-review
 - **Session-scoped permission grants.** The approval modal gains an `[S]`
   hotkey alongside `[Y]`/`[A]`/`[N]`/`[D]`: it derives the same pattern

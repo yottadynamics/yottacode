@@ -144,6 +144,46 @@ When sandboxing is off, `run_bash` is also *not* confined by the path deny lists
 
 See [Command sandbox](sandbox.md) for the config, images, and runtime boundary.
 
+## Browser automation
+
+The `browser_*` tools (experimental behind `--experimental browser`; see
+[experimental.md](experimental.md) and [tools.md](tools.md#browser_status))
+drive a real, headless Chrome/Chromium instance over the Chrome
+DevTools Protocol. They carry their own, stricter safety posture on
+top of the normal approval model:
+
+- **Isolated profile only.** Every session gets a fresh, empty temp
+  profile directory — no cookies, history, saved logins, or
+  extensions from your real Chrome. The tools cannot act as "you" on
+  any site you're signed into, and there is no flag to opt into your
+  real profile in v1. `browser_close` (explicit, or automatic at
+  session shutdown) removes the profile directory.
+- **Headless only.** No visible window in v1, so behavior doesn't
+  silently degrade on a headless remote host or CI box.
+- **Approval on every action that reads or changes page state** —
+  `browser_navigate`, `browser_screenshot`, `browser_inspect`,
+  `browser_click`, `browser_type`, `browser_hotkey`, and
+  `browser_scroll` all prompt. This includes the two read-only tools:
+  a screenshot or an accessibility-tree snapshot can surface on-screen
+  private data (an inbox, a logged-in dashboard, a form someone else
+  left filled in) even though nothing was clicked. `browser_status`,
+  `browser_wait`, and `browser_close` are the only exceptions — they
+  report existing state, block on an already-visible condition, or
+  only reduce capability, so none of them can expose anything an
+  already-approved call hasn't already shown.
+- **One browser, one page, no parallelism.** The tools don't implement
+  `ParallelSafeTool`, so calls always serialize through the same
+  approval queue as everything else.
+- **Not available to `dispatch` workers.** A dispatch worker never
+  sees the `browser_*` tools, regardless of whether `browser` is
+  enabled for the parent session — concurrent browser sessions across
+  workers multiply this surface in a way the single-session design
+  hasn't been proven against yet.
+- **Not routed through the command sandbox.** `run_bash`'s Podman
+  sandbox doesn't apply here — rod launches the Chromium process
+  directly, not via a shell command. Containerizing the browser itself
+  is a possible future addition, not a v1 guarantee.
+
 ## Write-path validation
 
 Mutating filesystem tools are constrained before they run:

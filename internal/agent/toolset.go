@@ -69,6 +69,17 @@ type CoreToolDeps struct {
 	// The actual edits still flow through anchored reads and edit_anchored.
 	EnableSyntaxRanges bool
 
+	// EnableBrowser gates the browser_* tools behind the experimental
+	// `browser` feature. Deliberately left false in dispatch's
+	// buildWorktreeChildRegistry call so worktree-child workers never get
+	// this surface — see roadmap/v0.5.0/j1-browser-automation-rod.md's
+	// dispatch-exclusion scope note.
+	EnableBrowser bool
+
+	// BrowserSession is the shared, session-scoped browser manager the
+	// browser_* tools drive. Nil is only safe when EnableBrowser is false.
+	BrowserSession browserSession
+
 	// Sandbox is the command-execution backend for run_bash. Nil selects
 	// HostSandbox (today's direct-on-host behavior) — see RunBashTool.sandbox.
 	Sandbox Sandbox
@@ -167,6 +178,19 @@ func RegisterCoreCwdTools(reg *Registry, cwd *CwdRef, deps CoreToolDeps) {
 	}
 	if deps.EnableSyntaxRanges {
 		reg.Register(&SyntaxRangeTool{Cwd: cwd, DenyReadPaths: deps.DenyReads})
+	}
+	if deps.EnableBrowser {
+		base := browserToolBase{Session: deps.BrowserSession, Enabled: true}
+		reg.Register(&BrowserStatusTool{browserToolBase: base})
+		reg.Register(&BrowserNavigateTool{browserToolBase: base})
+		reg.Register(&BrowserScreenshotTool{browserToolBase: base, SupportsImages: deps.SupportsImages})
+		reg.Register(&BrowserInspectTool{browserToolBase: base})
+		reg.Register(&BrowserClickTool{browserToolBase: base})
+		reg.Register(&BrowserTypeTool{browserToolBase: base})
+		reg.Register(&BrowserHotkeyTool{browserToolBase: base})
+		reg.Register(&BrowserScrollTool{browserToolBase: base})
+		reg.Register(&BrowserWaitTool{browserToolBase: base})
+		reg.Register(&BrowserCloseTool{browserToolBase: base})
 	}
 	if deps.EnableLSP {
 		base := lspToolBase{Cwd: cwd, DenyReadPaths: deps.DenyReads, NewClient: deps.LSPClientFactory, Servers: deps.LSPServers, Disabled: disabledLSPSet(deps.LSPDisabled), Manager: deps.LSPManager}
