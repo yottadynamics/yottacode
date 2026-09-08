@@ -59,6 +59,11 @@ type SessionSpec struct {
 	// which agent.CompactionConfig treats as "no snapshot taken."
 	PreCompact func(history []adapter.Message) (string, error)
 
+	// DeferStartupChecks leaves display-only and best-effort probes to an
+	// interactive caller after its first frame. Non-TUI callers keep the
+	// synchronous validation behavior.
+	DeferStartupChecks bool
+
 	// DeferMCPStart skips starting the MCP manager and registering its
 	// tools inside Build. Build still constructs Runtime.MCPManager (via
 	// mcp.NewManager) so the caller has something to Start() later — it

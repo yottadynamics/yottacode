@@ -309,6 +309,13 @@ func (c *Client) Capabilities() Capabilities {
 // still running. Errors are intentionally swallowed by callers via defer; the
 // tool result has already been produced by this point.
 func (c *Client) Close() error {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	return c.CloseContext(ctx)
+}
+
+// CloseContext is Close with a caller-controlled return bound.
+func (c *Client) CloseContext(ctx context.Context) error {
 	if c == nil {
 		return nil
 	}
@@ -320,27 +327,36 @@ func (c *Client) Close() error {
 	c.closed = true
 	c.mu.Unlock()
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-	func() {
+	protocolDone := make(chan struct{})
+	go func() {
 		c.mu.Lock()
-		defer c.mu.Unlock()
-		_, _ = c.requestLocked(ctx, "shutdown", nil)
-		_ = c.notifyLocked("exit", nil)
+		if c.stdin != nil && c.stdoutRaw != nil {
+			_, _ = c.requestLocked(ctx, "shutdown", nil)
+			_ = c.notifyLocked("exit", nil)
+		}
+		c.mu.Unlock()
+		close(protocolDone)
 	}()
+	select {
+	case <-protocolDone:
+	case <-ctx.Done():
+	}
 	if c.stdin != nil {
 		_ = c.stdin.Close()
 	}
-	if c.cmd != nil && c.cmd.Process != nil {
-		select {
-		case err := <-c.processWaitCh():
-			return err
-		case <-time.After(time.Second):
-			c.killProcess()
-			<-c.processWaitCh()
-		}
+	if c.cmd == nil || c.cmd.Process == nil {
+		return ctx.Err()
 	}
-	return nil
+	select {
+	case err := <-c.processWaitCh():
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		return err
+	case <-ctx.Done():
+		c.killProcess()
+		return ctx.Err()
+	}
 }
 
 // WorkspaceSymbols runs workspace/symbol and returns normalized results.

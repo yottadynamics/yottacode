@@ -168,6 +168,9 @@ func (c *StdioClient) Start(ctx context.Context) error {
 	if c.started {
 		return fmt.Errorf("mcp(%s): already started", c.name)
 	}
+	if c.stopped {
+		return fmt.Errorf("mcp(%s): client is stopped", c.name)
+	}
 
 	bin, err := exec.LookPath(c.command)
 	if err != nil {
@@ -308,8 +311,8 @@ func (c *StdioClient) CallTool(ctx context.Context, toolName, argsJSON string) (
 // Stop closes the SDK session, which closes the subprocess stdin and
 // triggers the graceful-shutdown ladder (close → wait → SIGTERM → kill)
 // implemented in the SDK's pipeRWC. The subprocess-lifetime context is
-// then cancelled as a backstop in case session.Close left a zombie.
-// Idempotent — repeat calls return nil.
+// canceled first so child teardown begins before the potentially blocking
+// protocol/session close. Idempotent — repeat calls return nil.
 func (c *StdioClient) Stop(ctx context.Context) error {
 	c.mu.Lock()
 	session := c.session
@@ -324,14 +327,25 @@ func (c *StdioClient) Stop(ctx context.Context) error {
 	if alreadyStopped {
 		return nil
 	}
-	var err error
-	if session != nil {
-		err = session.Close()
-	}
+	// Cancel the child before protocol close: SDK Close can wait on a peer that
+	// never responds, while cancellation immediately starts process teardown.
 	if procCancel != nil {
 		procCancel()
 	}
-	return err
+	if session == nil {
+		return nil
+	}
+	errCh := make(chan error, 1)
+	go func() { errCh <- session.Close() }()
+	select {
+	case err := <-errCh:
+		if err != nil && procCancel != nil && strings.Contains(err.Error(), "signal: killed") {
+			return nil
+		}
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // StderrTail returns the recent stderr lines captured from the

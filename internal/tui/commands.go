@@ -490,9 +490,8 @@ func isPathContinuation(c byte) bool {
 }
 
 func cmdQuit(m Model, _ []string) (Model, tea.Cmd) {
-	// Graceful exit: give the model one final turn to persist durable
-	// memories before the session context is gone (config
-	// [memory] final_turn_on_quit; skipped for low-activity sessions).
+	// Quitting never starts model work; session persistence remains in the
+	// normal turn-completion path.
 	out, cmd := requestGracefulExit(m)
 	return out.(Model), cmd
 }

@@ -306,10 +306,8 @@ func (m *Manager) Remove(ctx context.Context, name string) error {
 	return nil
 }
 
-// Stop shuts every client down concurrently. Each Stop call is bounded
-// by the SDK's TerminateGracePeriod (closing stdin, then SIGTERM,
-// then SIGKILL); the caller's ctx is forwarded so a cancelled
-// shutdown surfaces quickly.
+// Stop shuts every client down concurrently. It returns as soon as every client
+// has stopped or ctx expires; a misbehaving transport cannot hold process teardown.
 func (m *Manager) Stop(ctx context.Context) {
 	m.mu.RLock()
 	clients := make([]Client, 0, len(m.order))
@@ -320,6 +318,7 @@ func (m *Manager) Stop(ctx context.Context) {
 	}
 	m.mu.RUnlock()
 
+	done := make(chan struct{})
 	var wg sync.WaitGroup
 	wg.Add(len(clients))
 	for _, c := range clients {
@@ -329,5 +328,12 @@ func (m *Manager) Stop(ctx context.Context) {
 			_ = c.Stop(ctx)
 		}()
 	}
-	wg.Wait()
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-ctx.Done():
+	}
 }

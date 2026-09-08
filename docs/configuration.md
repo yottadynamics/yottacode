@@ -34,7 +34,8 @@ The same provider flags also apply to `yottacode doctor`.
 | `--allow-paths` | `YOTTACODE_ALLOW_PATHS` | no | Comma-separated extra write roots in addition to the current working directory |
 | `--permission-mode` | — | no | Startup permission mode: `default` (no startup mode), `plan` (read-only research; describe the task as your first message), or `auto` (edits auto-allow; bash & commits still prompt). Mirrors Claude Code's `--permission-mode`. No-op for `yottacode run`. |
 | `--plan-resume` | — | no | Resume an existing plan by slug or substring (matched against `~/.yottacode/plans/`, newest-first). Implies `--permission-mode plan`. No-op for `yottacode run`. |
-| — | `YOTTACODE_NO_UPDATE_CHECK` | no | Set to `1` to disable the once-a-day GitHub release check on TUI startup. |
+| — | `YOTTACODE_NO_UPDATE_CHECK` | no | Set to `1` to disable the once-a-day GitHub release check on TUI startup. A cached notice is shown immediately while an expired entry refreshes after first paint. |
+| — | `YOTTACODE_STARTUP_TRACE` | no | Set to `1` to print timestamped startup milestones (including first `View`) to stderr for launch-latency diagnosis. |
 
 Precedence is:
 
@@ -295,18 +296,14 @@ retention_days = 30   # set to 0 to fall back to the 30-day default; smaller val
 
 See [`tui-slash-commands.md`](tui-slash-commands.md#checkpoints---checkpoints--esc-esc) for the full feature.
 
-### Final memory turn on quit
+### Memory capture during sessions
 
-A graceful exit (`/quit` or `Ctrl+D` while idle) runs one last agent turn prompting the model to persist durable learnings via `memory_save` before the session context is gone. The turn renders in the transcript like any other; `Esc` or `Ctrl+C` skips it and completes the quit, and `Ctrl+C` as the quit gesture itself always exits immediately. A session with no turns started this launch quits instantly. Disable for always-instant exits:
-
-```toml
-[memory]
-final_turn_on_quit = false
-```
+A graceful exit (`/quit` or `Ctrl+D` while idle) saves the session and returns without making another provider request. Durable memory is captured during ordinary turns through the standing agent guidance, the periodic reminder below, and the pre-compaction reminder. Saved transcripts remain available through session resume and `session_recall`.
 
 ### Periodic capture reminder
 
-Every Nth user message carries a mid-session reminder to persist anything durable the model hasn't saved yet. It covers the sessions the other reinforcement points miss: those that never reach the auto-summarize watermark, and those ended with `Ctrl+C` (which never runs the final turn above). It is appended to a message you were sending anyway — not an extra turn, and not a per-turn nudge — and it stands down when a pre-compaction reminder is already pending.
+Every Nth user message carries a mid-session reminder to persist anything durable the model hasn't saved yet. It covers sessions that never reach the auto-summarize watermark without adding a provider call during shutdown. It is appended to a message you were sending anyway — not an extra turn, and not a per-turn nudge — and it stands down when a pre-compaction reminder is already pending.
+
 
 ```toml
 [memory]

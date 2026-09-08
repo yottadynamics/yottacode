@@ -97,6 +97,9 @@ func (c *HTTPClient) Start(ctx context.Context) error {
 	if c.started {
 		return fmt.Errorf("mcp(%s): already started", c.name)
 	}
+	if c.stopped {
+		return fmt.Errorf("mcp(%s): client is stopped", c.name)
+	}
 
 	connCtx, cancelConn := context.WithCancel(context.Background())
 

@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/yottadynamics/yottacode/internal/adapter"
 	"github.com/yottadynamics/yottacode/internal/agent"
@@ -52,6 +53,39 @@ func mustBuild(t *testing.T, spec SessionSpec) *Runtime {
 		t.Fatalf("Build: %v", err)
 	}
 	return rt
+}
+
+type blockingCleanupTool struct {
+	agent.Tool
+	started chan struct{}
+}
+
+func (t blockingCleanupTool) Cleanup(ctx context.Context) error {
+	close(t.started)
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+func TestRuntimeCloseBoundsBackgroundContext(t *testing.T) {
+	oldTimeout := runtimeCloseTimeout
+	runtimeCloseTimeout = 20 * time.Millisecond
+	t.Cleanup(func() { runtimeCloseTimeout = oldTimeout })
+
+	reg := agent.NewRegistry()
+	started := make(chan struct{})
+	base := &agent.MemorySearchTool{}
+	reg.Register(blockingCleanupTool{Tool: base, started: started})
+	rt := &Runtime{Registry: reg}
+	begin := time.Now()
+	rt.Close(context.Background())
+	select {
+	case <-started:
+	default:
+		t.Fatal("cleanup hook was not called")
+	}
+	if elapsed := time.Since(begin); elapsed > 200*time.Millisecond {
+		t.Fatalf("Close exceeded internal deadline: %v", elapsed)
+	}
 }
 
 // TestBuild_CoreToolsRegistered locks in that Build wires the shared core

@@ -290,22 +290,18 @@ saved yet, including decisions, rationale, gotchas, and how things work.
    asking the model to persist anything durable it hasn't saved yet. This
    exists because the other two mid-session points have narrow triggers:
    the pre-compaction reminder only fires if a session crosses the
-   summarize watermark (most never do), and the final turn needs a
-   graceful quit — so a medium session ended with `Ctrl+C` previously got
-   no reinforcement at all beyond the standing prompt. It rides a message
+   summarize watermark (most never do), while quitting intentionally starts no
+   extra AI turn — so a medium session ended with `Ctrl+C` needs capture during
+   ordinary work. It rides a message
    you were sending anyway (history copy only, like the pre-compaction
    reminder), so it costs no extra turn, and it stands down when a
    pre-compaction reminder is already pending — that one is more urgent
    and asks for the same thing. Set to `0` to disable.
-4. **Final turn on quit** (`[memory] final_turn_on_quit`, default
-   `true`). A graceful exit — `/quit` or `Ctrl+D` while idle — runs one
-   last visible turn prompting the model to save unsaved durable
-   learnings — including decisions, rationale, gotchas, and subsystem
-   knowledge — then completes the quit when the turn ends. `Esc` or
-   `Ctrl+C` during the turn skips it (cancels and quits); `Ctrl+C` *as*
-   the quit gesture always exits immediately, no final turn — those
-   sessions are covered by the periodic reminder above. A session with no
-   turns started this launch quits instantly.
+4. **No hidden final turn on quit.** `/quit`, `Ctrl+D`, and `Ctrl+C` do not
+   make an additional provider request. Durable knowledge must be captured
+   in-band via `memory_save`, with the periodic and pre-compaction reminders
+   above providing reinforcement. The session transcript is still saved and
+   remains available through resume and `session_recall`.
 
 The save-side behavior is gated by an eval mirroring the retrieval one:
 `go test ./internal/agent -run Proactivity -v` runs fixture turns that

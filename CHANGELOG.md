@@ -8,6 +8,13 @@ the project uses semantic versioning once it's past `1.0.0`.
 
 ### Added
 
+- **Responsive startup and bounded shutdown lifecycle.** The TUI now paints
+  before optional provider/embedding, Git/LSP, diagnostics, and maintenance
+  probes; `YOTTACODE_STARTUP_TRACE=1` timestamps launch milestones. Update
+  notices use stale-while-revalidate caching. Quitting starts no hidden final
+  AI turn, and MCP/LSP/recall teardown shares a bounded deadline so hanging
+  protocol peers or background embedding cannot indefinitely delay exit.
+
 worktree-permissions-fine-grained-review
 - **Session-scoped permission grants.** The approval modal gains an `[S]`
   hotkey alongside `[Y]`/`[A]`/`[N]`/`[D]`: it derives the same pattern
