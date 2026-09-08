@@ -234,8 +234,9 @@ output. A few tools have card-specific body shapes:
   footer reports the response body size. The model still receives the
   full content; the user is spared 64+ KiB of minified markup.
 - **`code_review_context`** shows the `## summary` digest and only true
-  exception flags in the card; the full structured diff snapshot still goes
-  to the model.
+  exception flags in the card; the default medium diff snapshot is capped at
+  24 KiB to keep retained context compact. Use `effort=high` when a larger
+  diff is required.
 - **`read_file` / `write_file`** show no body — the footer's
   `N lines · M bytes` / `wrote N bytes` carries the entire signal. When
   multiple successful summary-only read cards land consecutively (`read_file`,
@@ -311,7 +312,7 @@ round-trips.
 |---|---|---|---|
 | `paths` | []string or string | — | Required; max 20 files; a single string is accepted for one file |
 | `offset` | int | `0` | Bytes; negatives clamped to 0 |
-| `limit` | int | `524288` | Per-file cap |
+| `limit` | int | `524288` | Per-file cap; the combined output of one call is capped at 512 KiB |
 | `anchors` | bool | `false` | When true, prefix each returned text line with `line#anchor\tcontent` |
 
 Returns sections in the form:
@@ -1409,7 +1410,10 @@ Always prompts for approval.
 
 ## run_tests
 
-Run a test command in the repo. Defaults to `go test ./...`.
+Run a test command in the repo. Defaults to `go test ./...`. Successful runs
+return only the command and `exit=0`; failed runs return the nonzero exit code
+and a bounded tail of combined failure output so repeated test loops do not
+fill model context with routine successful logs.
 
 | Param | Type | Default |
 |---|---|---|

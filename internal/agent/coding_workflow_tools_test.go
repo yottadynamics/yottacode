@@ -480,8 +480,27 @@ func TestRunTestsTool_DefaultAndCustomCommand(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
-	if !strings.Contains(out, "exit=0") || !strings.Contains(out, "ok") {
-		t.Errorf("out = %q", out)
+	if out != "$ printf ok\nexit=0" {
+		t.Errorf("successful output = %q, want compact exit status", out)
+	}
+}
+
+func TestRunTestsTool_FailureOutputIsBounded(t *testing.T) {
+	tool := &RunTestsTool{Cwd: NewCwdRef(t.TempDir())}
+	out, err := tool.Execute(context.Background(), `{"command":"printf failure >&2; exit 7"}`)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if !strings.Contains(out, "exit=7") || !strings.Contains(out, "failure") {
+		t.Fatalf("failure output = %q", out)
+	}
+	large := strings.Repeat("x", runTestsFailureTailBytes+100)
+	got := tailRunTestsOutput(large, "")
+	if len(got) > runTestsFailureTailBytes+len("…[failure output truncated]\n") {
+		t.Fatalf("failure tail exceeded bound: %d bytes", len(got))
+	}
+	if !strings.Contains(got, "[failure output truncated]") {
+		t.Fatalf("large failure output missing truncation marker")
 	}
 }
 

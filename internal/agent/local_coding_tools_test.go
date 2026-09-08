@@ -262,19 +262,13 @@ func TestReadManyFilesTool_Anchors(t *testing.T) {
 }
 
 // TestReadManyFilesTool_EnforcesAggregateBudget is a regression for the
-// /usage-flagged inefficiency: each file is capped at maxReadBytes, but
-// with up to defaultReadManyMaxFiles files that still allowed a single
-// call to return up to 10 MiB, all of which then got resent verbatim on
-// every subsequent turn until the session was summarized. The aggregate
-// cap must stop reading once the combined output crosses the budget and
+// /usage-flagged inefficiency: each file is capped at maxReadBytes, but a
+// batch can still return a large result that gets replayed on later turns.
+// The aggregate cap must stop reading before the result grows too large and
 // list the remaining files instead of silently reading them anyway.
 func TestReadManyFilesTool_EnforcesAggregateBudget(t *testing.T) {
 	tmp := t.TempDir()
-	// maxReadManyTotalBytes is an exact multiple of the per-file cap
-	// (maxReadBytes), so four files each at the per-file cap exhaust the
-	// aggregate budget (plus header overhead pushes it over); a fifth
-	// file must then be skipped rather than read.
-	big := strings.Repeat("x", maxReadBytes)
+	big := strings.Repeat("x", maxReadManyTotalBytes/2)
 	writeFile(t, tmp, "a.txt", big)
 	writeFile(t, tmp, "b.txt", big)
 	writeFile(t, tmp, "c.txt", big)
@@ -285,8 +279,8 @@ func TestReadManyFilesTool_EnforcesAggregateBudget(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
-	if !strings.Contains(out, "==> a.txt <==") || !strings.Contains(out, "==> d.txt <==") {
-		t.Errorf("files within budget should still be read: missing a.txt or d.txt section")
+	if !strings.Contains(out, "==> a.txt <==") || !strings.Contains(out, "==> b.txt <==") {
+		t.Errorf("files within budget should still be read: missing a.txt or b.txt section")
 	}
 	if strings.Contains(out, "should not be read") {
 		t.Errorf("file past the aggregate budget must not be read: %q", out)

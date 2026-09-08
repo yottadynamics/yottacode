@@ -590,6 +590,9 @@ func renderToolStats(s *session.Session) string {
 		line := fmt.Sprintf("%-13s%-*s  %4d %-5s  %*s tokens", "", nameWidth, r.name, r.Count, usagePluralize("call", r.Count), valueWidth, formatInt(r.OutputTokens))
 		if r.Errors > 0 {
 			line += fmt.Sprintf("  %d %s", r.Errors, usagePluralize("error", r.Errors))
+			if r.Count > 0 {
+				line += fmt.Sprintf(" (%.0f%%)", float64(r.Errors)/float64(r.Count)*100)
+			}
 		}
 		b.WriteString(line)
 		b.WriteByte('\n')
