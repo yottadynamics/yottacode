@@ -816,6 +816,16 @@ func TestLoop_ParallelSafeReadOnlyToolsRunConcurrently(t *testing.T) {
 	}
 }
 
+type parallelReadTool struct{}
+
+func (parallelReadTool) Name() string                                    { return "read_file" }
+func (parallelReadTool) Description() string                             { return "stateless parallel read test tool" }
+func (parallelReadTool) Schema() map[string]any                          { return map[string]any{"type": "object"} }
+func (parallelReadTool) RequiresApproval(string) bool                    { return false }
+func (parallelReadTool) ParallelSafe(string) bool                        { return true }
+func (parallelReadTool) PreviewCall(string) string                       { return "read_file()" }
+func (parallelReadTool) Execute(context.Context, string) (string, error) { return "body", nil }
+
 func TestLoop_ParallelResultsApplyRepeatedReadGuidance(t *testing.T) {
 	call := func(id string) adapter.ToolCall {
 		return adapter.ToolCall{ID: id, Name: "read_file", ArgsJSON: `{}`}
@@ -825,7 +835,7 @@ func TestLoop_ParallelResultsApplyRepeatedReadGuidance(t *testing.T) {
 		{sseToken("done"), sseDone("done")},
 	}}
 	reg := NewRegistry()
-	reg.Register(&mockTool{name: "read_file", parallelSafe: true, output: "body"})
+	reg.Register(parallelReadTool{})
 	cfg := LoopConfig{Adapter: streamer, Registry: reg, MaxIterations: 5}
 	hist := []adapter.Message{{Role: adapter.RoleUser, Content: "read"}}
 	if _, err := runTurnSync(t, context.Background(), cfg, &hist, nil); err != nil {
