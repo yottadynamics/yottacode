@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"unicode"
 )
 
 // NodeID is stable within one workspace snapshot. IDs are repo-relative where
@@ -86,6 +87,13 @@ type ImpactResult struct {
 	DirectDependents     []Node
 	TransitiveDependents []Node
 	Cycles               [][]Node
+}
+
+// ContextSuggestion is a file worth attaching as context and the reason it
+// was selected.
+type ContextSuggestion struct {
+	File   Node
+	Reason string
 }
 
 // MaxDepthAll means dependency traversal should continue until exhausted.
@@ -272,6 +280,158 @@ func (i *CodeIndex) Filter(query string, max int) []Node {
 		}
 	}
 	return out
+}
+
+// SuggestedContext returns a small, deterministic set of files related to
+// the supplied files or directory prefixes. Changed targets rank first,
+// followed by their imports, importers, and likely tests.
+func (i *CodeIndex) SuggestedContext(paths []string, max int) []ContextSuggestion {
+	if i == nil {
+		return nil
+	}
+	if max <= 0 || max > 8 {
+		max = 8
+	}
+	targets := i.contextTargets(paths)
+	if len(targets) == 0 {
+		return nil
+	}
+
+	out := make([]ContextSuggestion, 0, max)
+	seen := make(map[NodeID]bool)
+	add := func(nodes []Node, reason string) {
+		for _, node := range nodes {
+			if len(out) >= max || node.Kind != NodeFile || seen[node.ID] || strings.IndexFunc(node.RelPath, unicode.IsSpace) >= 0 {
+				continue
+			}
+			seen[node.ID] = true
+			out = append(out, ContextSuggestion{File: node, Reason: reason})
+		}
+	}
+
+	add(targets, "changed")
+	add(i.contextEdgeFiles(targets, true), "imported by target")
+	add(i.contextEdgeFiles(targets, false), "imports target")
+	add(i.contextTestFiles(targets), "test for target")
+	return out
+}
+
+func (i *CodeIndex) contextTargets(paths []string) []Node {
+	files := make(map[string]Node)
+	for _, id := range i.order {
+		node := i.nodes[id]
+		if node.Kind == NodeFile {
+			files[filepath.ToSlash(filepath.Clean(node.RelPath))] = node
+		}
+	}
+
+	selected := make(map[NodeID]Node)
+	for _, path := range paths {
+		key := filepath.Clean(strings.TrimSpace(path))
+		if key == "" {
+			continue
+		}
+		if filepath.IsAbs(key) {
+			rel, err := filepath.Rel(i.root, key)
+			if err != nil {
+				continue
+			}
+			key = rel
+		}
+		key = filepath.ToSlash(filepath.Clean(key))
+		if node, ok := files[key]; ok {
+			selected[node.ID] = node
+			continue
+		}
+		prefix := strings.TrimSuffix(key, "/") + "/"
+		for rel, node := range files {
+			if key == "." || strings.HasPrefix(rel, prefix) {
+				selected[node.ID] = node
+			}
+		}
+	}
+	return sortedContextNodes(selected)
+}
+
+func (i *CodeIndex) contextEdgeFiles(targets []Node, outgoing bool) []Node {
+	selected := make(map[NodeID]Node)
+	for _, target := range targets {
+		edges := i.edgesOut[target.ID]
+		if !outgoing {
+			edges = i.edgesIn[target.ID]
+		}
+		for _, edge := range edges {
+			if edge.Kind != EdgeImports {
+				continue
+			}
+			id := edge.To
+			if !outgoing {
+				id = edge.From
+			}
+			if node, ok := i.nodes[id]; ok && node.Kind == NodeFile {
+				selected[id] = node
+			}
+		}
+	}
+	return sortedContextNodes(selected)
+}
+
+func (i *CodeIndex) contextTestFiles(targets []Node) []Node {
+	selected := make(map[NodeID]Node)
+	for _, target := range targets {
+		if isTestPath(target.RelPath) {
+			continue
+		}
+		for _, id := range i.order {
+			candidate := i.nodes[id]
+			if candidate.Kind == NodeFile && likelyTestFor(candidate.RelPath, target.RelPath) {
+				selected[id] = candidate
+			}
+		}
+	}
+	return sortedContextNodes(selected)
+}
+
+func likelyTestFor(candidate, target string) bool {
+	candidate = filepath.ToSlash(filepath.Clean(candidate))
+	target = filepath.ToSlash(filepath.Clean(target))
+	if filepath.Dir(candidate) != filepath.Dir(target) {
+		return false
+	}
+	targetBase := filepath.Base(target)
+	targetExt := filepath.Ext(targetBase)
+	targetStem := strings.TrimSuffix(targetBase, targetExt)
+	candidateBase := filepath.Base(candidate)
+	candidateExt := filepath.Ext(candidateBase)
+	if candidateExt != targetExt {
+		return false
+	}
+	candidateStem := strings.TrimSuffix(candidateBase, candidateExt)
+	return candidateStem == targetStem+"_test" || candidateStem == targetStem+".test" || candidateStem == targetStem+".spec"
+}
+
+func isTestPath(path string) bool {
+	base := filepath.Base(path)
+	stem := strings.TrimSuffix(base, filepath.Ext(base))
+	return strings.HasSuffix(stem, "_test") || strings.HasSuffix(stem, ".test") || strings.HasSuffix(stem, ".spec")
+}
+
+func sortedContextNodes(nodes map[NodeID]Node) []Node {
+	out := make([]Node, 0, len(nodes))
+	for _, node := range nodes {
+		out = append(out, node)
+	}
+	sort.Slice(out, func(a, b int) bool { return contextNodeLess(out[a], out[b]) })
+	return out
+}
+
+func contextNodeLess(a, b Node) bool {
+	aPath := filepath.ToSlash(filepath.Clean(a.RelPath))
+	bPath := filepath.ToSlash(filepath.Clean(b.RelPath))
+	if aPath != bPath {
+		return aPath < bPath
+	}
+	return a.ID < b.ID
 }
 
 // Dependencies returns outgoing import edges for a matching file node.

@@ -27,8 +27,19 @@ Shipped in the MVP:
   - `/map impact [--depth N|all] <path>`
   - `/map cycles [path]`
   - `/map diagram [path]`
+- `/map here` explicitly assembles context: it deterministically ranks up to 8
+  high-signal changed or related files (and may return fewer), labels each with
+  its reason (`changed`, `imported by target`, `imports target`, or `test for
+  target`), and lets `a` insert the whole set as `@path` prompt references.
+  Paths containing whitespace are omitted because the current whitespace-delimited
+  `@path` syntax cannot represent them safely.
 - Enter on a file or symbol inserts an `@path` prompt reference so the existing
   file-ref injection path attaches the source to the next turn.
+- `/context` reports the latest turn's attached `@path` references under
+  `Working set`.
+- When `code_map` is enabled, the model prompt recommends the indexed tools for
+  orientation and requires relevant results to be verified against source with
+  `read_file` or `read_many_files` before editing.
 - Read-only agent tools:
   - `code_map`
   - `code_symbols`
@@ -39,23 +50,28 @@ Shipped in the MVP:
   - `code_cycles`
   - `code_map_diagram`
 
-## Phase 1 — Suggested context
+## Phase 1 — Suggested context (shipped)
 
-Make `/map here` answer: **what should I attach before asking the agent?**
+`/map here` answers: **what should I attach before asking the agent?**
 
-Planned work:
+Shipped:
 
-- Rank changed files and their neighbors instead of just listing them.
-- Add a `Suggested context` section with 3–8 high-signal files.
-- Include likely tests and docs near the changed area.
-- Add an `a` key to attach all suggested context as `@path` refs.
-- Explain why each suggestion is present: changed, imports target, imported by
-  target, test for target, docs for target.
-
-Exit criteria:
-
-- A developer can run `/map here`, press `a`, and get a good prompt context set
-  for coding/reviewing the current change.
+- Rank changed files first, then imports, importers, and likely tests.
+- Show a deterministic `Suggested context` section with up to 8 unique,
+  high-signal files; sparse results are expected.
+- Explain why each suggestion is present: changed, imported by target, imports
+  target, or test for target.
+- Press `a` to insert every suggestion into the prompt as an `@path` reference;
+  the existing file-ref path attaches those sources when the turn is sent. This
+  is explicit assembly: opening `/map here` does not attach or inject files by
+  itself.
+- Omit paths containing whitespace until `@path` gains a quoting or escaping
+  syntax; inserting them today would attach only the prefix before the first space.
+- Show the latest turn's attached `@path` references in `/context` under
+  `Working set`.
+- Gate model guidance with `code_map`: when enabled, it prefers Code Map for
+  orientation and verifies relevant indexed results with `read_file` or
+  `read_many_files` before editing.
 
 ## Phase 2 — Better impact view
 
@@ -68,7 +84,6 @@ Planned work:
   - files that import this
   - transitive dependents
   - likely tests
-  - likely docs/config
   - cycles involving the target
 - Rank by proximity and relevance.
 - Add an agent-friendly impact projection that is compact enough to inject into
@@ -76,7 +91,7 @@ Planned work:
 
 Exit criteria:
 
-- The impact view is useful for deciding which files/tests/docs to inspect or
+- The impact view is useful for deciding which files/tests to inspect or
   attach before editing.
 
 ## Phase 3 — Subsystem overview
@@ -107,7 +122,7 @@ Planned work:
 
 Exit criteria:
 
-- Code Map is useful outside Go repos, and Go results include tests/docs with
+- Code Map is useful outside Go repos, and Go results include likely tests with
   fewer false positives.
 
 ## Phase 5 — Live index and ecosystem surfaces

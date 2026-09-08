@@ -5,10 +5,12 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+	"unicode"
 
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/yottadynamics/yottacode/internal/codemap"
+	"github.com/yottadynamics/yottacode/internal/filerefs"
 )
 
 const codeMapVisibleRows = 28
@@ -27,18 +29,19 @@ const (
 )
 
 type codeMapPickerState struct {
-	index     *codemap.CodeIndex
-	rows      []codeMapRow
-	mode      codeMapMode
-	depth     int
-	expanded  map[codemap.NodeID]bool
-	cursor    int
-	filter    string
-	hereFiles []string
-	diagram   string
-	status    string
-	loading   bool
-	err       string
+	index       *codemap.CodeIndex
+	rows        []codeMapRow
+	mode        codeMapMode
+	depth       int
+	expanded    map[codemap.NodeID]bool
+	cursor      int
+	filter      string
+	hereFiles   []string
+	suggestions []codemap.ContextSuggestion
+	diagram     string
+	status      string
+	loading     bool
+	err         string
 }
 
 type codeMapRow struct {
@@ -165,6 +168,12 @@ func (m Model) updateCodeMapPicker(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 	}
 	if msg.Text != "" {
 		switch msg.Text {
+		case "a":
+			if p.mode == codeMapModeHere {
+				return m.attachAllCodeMapSuggestions(), nil
+			}
+			p.filter += msg.Text
+			p.rebuildRows()
 		case "j":
 			if p.cursor < len(p.rows)-1 {
 				p.cursor++
@@ -222,6 +231,32 @@ func (m Model) acceptCodeMapSelection() Model {
 		p.status = "inserted @" + path
 	}
 	m.insertCodeMapRef(path)
+	m.codeMapPickerOpen = false
+	m.codeMapPicker = nil
+	return m
+}
+
+func (m Model) attachAllCodeMapSuggestions() Model {
+	p := m.codeMapPicker
+	if p == nil || p.mode != codeMapModeHere {
+		return m
+	}
+	if len(p.suggestions) == 0 {
+		p.status = "no suggested context to attach"
+		return m
+	}
+	existing := make(map[string]bool)
+	for _, ref := range filerefs.Parse(m.textInput.Value()) {
+		existing[ref.Path] = true
+	}
+	for _, suggestion := range p.suggestions {
+		path := strings.TrimSpace(suggestion.File.RelPath)
+		if path == "" || strings.IndexFunc(path, unicode.IsSpace) >= 0 || existing[path] {
+			continue
+		}
+		m.insertCodeMapRef(path)
+		existing[path] = true
+	}
 	m.codeMapPickerOpen = false
 	m.codeMapPicker = nil
 	return m
@@ -327,44 +362,20 @@ func (p *codeMapPickerState) rebuildRows() {
 }
 
 func (p *codeMapPickerState) rebuildHereRows() {
+	p.suggestions = nil
 	if len(p.hereFiles) == 0 {
 		p.status = "no changed files found; pass a path: /map here <path>"
 		p.clampCursor()
 		return
 	}
-	seen := map[codemap.NodeID]bool{}
-	for _, path := range p.hereFiles {
-		matches := p.index.Filter(path, 20)
-		for _, n := range matches {
-			if n.Kind != codemap.NodeFile || seen[n.ID] {
-				continue
-			}
-			p.rows = append(p.rows, codeMapRow{id: n.ID, label: "changed"})
-			seen[n.ID] = true
-			for _, dep := range p.index.Dependencies(n.RelPath, 8) {
-				if !seen[dep.ID] {
-					p.rows = append(p.rows, codeMapRow{id: dep.ID, label: "imports"})
-					seen[dep.ID] = true
-				}
-			}
-			for _, dependent := range p.index.Dependents(n.RelPath, 8) {
-				if !seen[dependent.ID] {
-					p.rows = append(p.rows, codeMapRow{id: dependent.ID, label: "imported by"})
-					seen[dependent.ID] = true
-				}
-			}
-			for _, sym := range p.index.SymbolsForFile(n.RelPath) {
-				if !seen[sym.ID] {
-					p.rows = append(p.rows, codeMapRow{id: sym.ID, depth: 1, label: "symbol"})
-					seen[sym.ID] = true
-				}
-			}
-		}
+	p.suggestions = p.index.SuggestedContext(p.hereFiles, 8)
+	for _, suggestion := range p.suggestions {
+		p.rows = append(p.rows, codeMapRow{id: suggestion.File.ID, label: suggestion.Reason})
 	}
 	if len(p.rows) == 0 {
-		p.status = "no indexed matches for changed files"
+		p.status = "no suggested context for changed files"
 	} else {
-		p.status = fmt.Sprintf("%d relevant entries around %d file(s)", len(p.rows), len(p.hereFiles))
+		p.status = fmt.Sprintf("%d suggested context file(s) around %d changed file(s)", len(p.rows), len(p.hereFiles))
 	}
 	p.clampCursor()
 }
@@ -388,6 +399,9 @@ func renderCodeMapPicker(p *codeMapPickerState, width int, hits ...*pickerHits) 
 	}
 	var b strings.Builder
 	desc := string(p.mode) + " · ↑↓/jk navigate · type filters · backspace edits · ↵ expand/select · r rebuild · esc closes"
+	if p.mode == codeMapModeHere {
+		desc = string(p.mode) + " · ↑↓/jk navigate · a attach all · ↵ select · r rebuild · esc closes"
+	}
 	if p.filter != "" {
 		desc = fmt.Sprintf("filter %q · %s", p.filter, desc)
 	}
@@ -405,12 +419,19 @@ func renderCodeMapPicker(p *codeMapPickerState, width int, hits ...*pickerHits) 
 		if p.status != "" {
 			b.WriteString("\n" + styleMeta.Render("  "+p.status))
 		}
-		b.WriteString("\n" + styleFooter.Render("modes: /map · /map deps <path> · /map dependents <path> · /map impact [--depth N|all] <path> · /map cycles [path] · /map diagram [path]"))
+		b.WriteString("\n" + codeMapFooter())
 		return strings.TrimRight(b.String(), "\n")
 	}
 	if len(p.rows) == 0 {
 		b.WriteString(styleEmpty.Render("  (no indexed files or symbols)"))
+		if p.status != "" {
+			b.WriteString("\n" + styleMeta.Render("  "+p.status))
+		}
+		b.WriteString("\n" + codeMapFooter())
 		return strings.TrimRight(b.String(), "\n")
+	}
+	if p.mode == codeMapModeHere {
+		b.WriteString(styleMeta.Render("  Suggested context") + "\n")
 	}
 	start := 0
 	if p.cursor >= codeMapVisibleRows {
@@ -434,8 +455,12 @@ func renderCodeMapPicker(p *codeMapPickerState, width int, hits ...*pickerHits) 
 	if p.status != "" {
 		b.WriteString("\n" + styleMeta.Render("  "+p.status))
 	}
-	b.WriteString("\n" + styleFooter.Render("modes: /map · /map deps <path> · /map dependents <path> · /map impact [--depth N|all] <path> · /map cycles [path] · /map diagram [path]"))
+	b.WriteString("\n" + codeMapFooter())
 	return strings.TrimRight(b.String(), "\n")
+}
+
+func codeMapFooter() string {
+	return styleFooter.Render("modes: /map · /map deps <path> · /map dependents <path> · /map impact [--depth N|all] <path> · /map cycles [path] · /map diagram [path] · /map here [path]")
 }
 
 func cycleLabel(cycle []codemap.Node) string {

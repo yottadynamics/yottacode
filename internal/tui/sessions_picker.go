@@ -437,6 +437,7 @@ func (m Model) resumeSession(id string, summarized bool) (Model, tea.Cmd) {
 		}
 	}
 	m.sess = loaded
+	m.clearFileRefs()
 	m.transcript.Reset()
 	m.streaming.Reset()
 	m.streamingMode = streamIdle
@@ -795,7 +796,6 @@ func sessionPickerLabel(s session.SessionInfo) string {
 	}
 	return s.ID
 }
-
 
 // sessionPickerDesc is the right-hand column: the session's one-line gist
 // followed by model · N msgs · age. Age is computed from

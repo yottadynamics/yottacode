@@ -8,6 +8,12 @@ the project uses semantic versioning once it's past `1.0.0`.
 
 ### Added
 
+- **Explicit Code Map context assembly.** With experimental `code_map` enabled,
+  `/map here` deterministically suggests up to 8 high-signal changed or related
+  files (and may return fewer) with reasons, `a` inserts the set as `@path` refs, `/context` reports the
+  latest turn's refs as its `Working set`, and gated model guidance requires
+  relevant map results to be verified against source before editing.
+
 worktree-permissions-fine-grained-review
 - **Session-scoped permission grants.** The approval modal gains an `[S]`
   hotkey alongside `[Y]`/`[A]`/`[N]`/`[D]`: it derives the same pattern

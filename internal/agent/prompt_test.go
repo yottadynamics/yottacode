@@ -140,6 +140,28 @@ func TestDefaultSystemPrompt_KeepsActionDirectives(t *testing.T) {
 	}
 }
 
+func TestCodeMapPromptAddendum_KeepsCoreDirectives(t *testing.T) {
+	for _, want := range []string{
+		"code_map or code_structure_projection",
+		"code_symbols",
+		"graph tools",
+		"syntax_range",
+		"Fall back to list_project_structure",
+		"unavailable or their index is insufficient",
+		"approximate navigation aid",
+		"Verify relevant indexed results against the source",
+		"before making edits",
+	} {
+		if !strings.Contains(CodeMapPromptAddendum, want) {
+			t.Errorf("CodeMapPromptAddendum is missing required directive %q", want)
+		}
+	}
+
+	if strings.Contains(DefaultSystemPrompt, "## Code Map navigation") {
+		t.Error("Code Map steering must remain separate from DefaultSystemPrompt")
+	}
+}
+
 // PlanModeAddendum is what the loop prepends to the system message
 // when /plan is active. It's not part of DefaultSystemPrompt but
 // shares the same load-bearing copy invariants — guard the directives

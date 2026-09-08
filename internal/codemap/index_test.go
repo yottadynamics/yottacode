@@ -163,6 +163,97 @@ func TestImpactIncludesTransitiveDependentsAndCycles(t *testing.T) {
 	}
 }
 
+func TestSuggestedContextRanksRelatedFiles(t *testing.T) {
+	root := t.TempDir()
+	rootID := NodeID("dir:.")
+	files := []string{"internal/app/app.go", "internal/app/app_test.go", "internal/lib/lib.go", "internal/use/use.go"}
+	nodes := map[NodeID]Node{rootID: {ID: rootID, Kind: NodeDirectory, RelPath: "."}}
+	children := map[NodeID][]NodeID{rootID: {}}
+	for _, rel := range files {
+		id := NodeID("file:" + rel)
+		nodes[id] = Node{ID: id, Parent: rootID, Kind: NodeFile, Name: filepath.Base(rel), RelPath: rel}
+		children[rootID] = append(children[rootID], id)
+	}
+	edges := []Edge{
+		{From: "file:internal/app/app.go", To: "file:internal/lib/lib.go", Kind: EdgeImports},
+		{From: "file:internal/use/use.go", To: "file:internal/app/app.go", Kind: EdgeImports},
+	}
+	idx := NewIndex(root, rootID, nodes, children, edges)
+
+	got := idx.SuggestedContext([]string{"internal/app/app.go"}, 8)
+	var rows []string
+	for _, suggestion := range got {
+		if suggestion.File.Kind != NodeFile {
+			t.Fatalf("suggestion is not a file: %+v", suggestion)
+		}
+		rows = append(rows, suggestion.File.RelPath+":"+suggestion.Reason)
+	}
+	want := []string{
+		"internal/app/app.go:changed",
+		"internal/lib/lib.go:imported by target",
+		"internal/use/use.go:imports target",
+		"internal/app/app_test.go:test for target",
+	}
+	if strings.Join(rows, "|") != strings.Join(want, "|") {
+		t.Fatalf("suggestions = %v, want %v", rows, want)
+	}
+
+	reversed := idx.SuggestedContext([]string{"internal/app", "internal/app/app.go"}, 3)
+	if len(reversed) != 3 || reversed[0].File.RelPath != "internal/app/app.go" || reversed[1].File.RelPath != "internal/app/app_test.go" || reversed[2].File.RelPath != "internal/lib/lib.go" {
+		t.Fatalf("directory suggestions = %+v", reversed)
+	}
+	if got := idx.SuggestedContext([]string{filepath.Join(root, "internal/app/app.go")}, 1); len(got) != 1 || got[0].File.RelPath != "internal/app/app.go" {
+		t.Fatalf("absolute target suggestions = %+v", got)
+	}
+	if got := idx.SuggestedContext([]string{"app.go"}, 8); len(got) != 0 {
+		t.Fatalf("non-exact target suggestions = %+v, want none", got)
+	}
+	deduped := idx.SuggestedContext([]string{"internal/app/app.go", "internal/lib/lib.go"}, 8)
+	if len(deduped) < 2 || deduped[0].File.RelPath != "internal/app/app.go" || deduped[1].File.RelPath != "internal/lib/lib.go" || deduped[1].Reason != "changed" {
+		t.Fatalf("deduplicated suggestions = %+v, want both changed files first", deduped)
+	}
+}
+
+func TestSuggestedContextTestConventionsAndBounds(t *testing.T) {
+	rootID := NodeID("dir:.")
+	files := []string{"web/foo.ts", "web/foo.test.ts", "web/bar.ts", "web/bar.spec.ts", "tiny.go", "with space.go", "many/a.go", "many/b.go", "many/c.go", "many/d.go", "many/e.go", "many/f.go", "many/g.go", "many/h.go", "many/i.go"}
+	nodes := map[NodeID]Node{rootID: {ID: rootID, Kind: NodeDirectory, RelPath: "."}}
+	children := map[NodeID][]NodeID{rootID: {}}
+	for _, rel := range files {
+		id := NodeID("file:" + rel)
+		nodes[id] = Node{ID: id, Parent: rootID, Kind: NodeFile, Name: filepath.Base(rel), RelPath: rel}
+		children[rootID] = append(children[rootID], id)
+	}
+	idx := NewIndex(t.TempDir(), rootID, nodes, children)
+
+	for _, tc := range []struct {
+		target string
+		want   string
+	}{{"web/foo.ts", "web/foo.test.ts"}, {"web/bar.ts", "web/bar.spec.ts"}} {
+		t.Run(tc.target, func(t *testing.T) {
+			got := idx.SuggestedContext([]string{tc.target}, 8)
+			if len(got) != 2 || got[1].File.RelPath != tc.want || got[1].Reason != "test for target" {
+				t.Fatalf("suggestions = %+v, want paired test %s", got, tc.want)
+			}
+		})
+	}
+	if got := idx.SuggestedContext([]string{"tiny.go"}, 99); len(got) != 1 {
+		t.Fatalf("sparse suggestions = %d, want 1", len(got))
+	}
+	if got := idx.SuggestedContext([]string{"with space.go"}, 8); len(got) != 0 {
+		t.Fatalf("whitespace path suggestions = %+v, want none", got)
+	}
+	if got := idx.SuggestedContext([]string{"web"}, 2); len(got) != 2 {
+		t.Fatalf("bounded suggestions = %d, want 2", len(got))
+	}
+	if got := idx.SuggestedContext([]string{"many"}, 0); len(got) != 8 {
+		t.Fatalf("default suggestions = %d, want 8", len(got))
+	}
+	if got := idx.SuggestedContext([]string{"many"}, 99); len(got) != 8 {
+		t.Fatalf("clamped suggestions = %d, want 8", len(got))
+	}
+}
+
 func relPaths(nodes []Node) []string {
 	out := make([]string, 0, len(nodes))
 	for _, n := range nodes {
