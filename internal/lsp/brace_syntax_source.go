@@ -113,6 +113,7 @@ type braceFrame struct {
 	detail      string
 	startOffset int
 	nameOffset  int
+	braceOffset int
 	endOffset   int
 }
 
@@ -206,7 +207,7 @@ func (s braceSyntaxSource) RangesFromSource(ctx context.Context, path string, sr
 	if item, ok := syntaxRangeFromBytes(text, SyntaxKindFile, filepath.Base(path), "scanner", 0, len(src)); ok {
 		ranges = append(ranges, item)
 	}
-	extra, scanWarnings, err := braceTokenRanges(text, tokens, target, s.spec, frames)
+	extra, scanWarnings, err := braceTokenRanges(ctx, text, tokens, target, s.spec, frames)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -237,12 +238,19 @@ type offsetToken struct {
 // braceTokenRanges extracts only constructs whose delimiters can be balanced
 // exactly. Incomplete constructs are omitted and reported rather than extended
 // to EOF.
-func braceTokenRanges(text string, tokens []chroma.Token, target int, spec braceLanguageSpec, frames []braceFrame) ([]SyntaxRange, []string, error) {
+func braceTokenRanges(ctx context.Context, text string, tokens []chroma.Token, target int, spec braceLanguageSpec, frames []braceFrame) ([]SyntaxRange, []string, error) {
 	flat := offsetTokens(tokens)
+	matching := delimiterPairs(flat)
+	errorPrefix := errorTokenPrefix(flat)
+	methodHeaders := declarationHeaderParens(frames, matching, flat)
 	var ranges []SyntaxRange
 	var warnings []string
 	warnedError := false
+	warnedCall := false
 	for i, item := range flat {
+		if err := ctx.Err(); err != nil {
+			return nil, nil, err
+		}
 		if item.tok.Type == chroma.Error {
 			if !warnedError {
 				warnings = append(warnings, "scanner encountered unrecognized syntax; ranges crossing that token were omitted")
@@ -250,14 +258,17 @@ func braceTokenRanges(text string, tokens []chroma.Token, target int, spec brace
 			}
 			continue
 		}
-		if item.tok.Value == "(" && braceCallCandidate(flat, i, spec) {
-			endIndex, ok := matchingDelimiterIndex(flat, i, "(", ")")
+		if item.tok.Value == "(" && braceCallCandidate(flat, i, spec, methodHeaders) {
+			endIndex, ok := matching[i]
 			if !ok {
-				warnings = append(warnings, "scanner found unclosed call delimiter; incomplete call was omitted")
+				if !warnedCall {
+					warnings = append(warnings, "scanner found unclosed call delimiter; incomplete calls were omitted")
+					warnedCall = true
+				}
 				continue
 			}
 			startIndex := calleeStartIndex(flat, i-1)
-			if tokenRangeHasError(flat, startIndex, endIndex) {
+			if tokenRangeHasError(errorPrefix, startIndex, endIndex) {
 				continue
 			}
 			start, end := flat[startIndex].start, flat[endIndex].end
@@ -310,8 +321,54 @@ func offsetTokens(tokens []chroma.Token) []offsetToken {
 	return flat
 }
 
-func braceCallCandidate(tokens []offsetToken, i int, spec braceLanguageSpec) bool {
+func declarationHeaderParens(frames []braceFrame, matches map[int]int, tokens []offsetToken) map[int]bool {
+	headers := make(map[int]bool)
+	methodBraces := make(map[int]bool)
+	var interfaces []braceFrame
+	for _, frame := range frames {
+		if frame.kind == "method" {
+			methodBraces[frame.braceOffset] = true
+		}
+		if frame.kind == "interface" {
+			interfaces = append(interfaces, frame)
+		}
+	}
+	for i, token := range tokens {
+		if token.tok.Value != "(" || i == 0 || tokens[i-1].tok.Type.Category() != chroma.Name {
+			continue
+		}
+		end, ok := matches[i]
+		if !ok {
+			continue
+		}
+		for next := end + 1; next < len(tokens); next++ {
+			switch tokens[next].tok.Value {
+			case ";":
+				for _, frame := range interfaces {
+					if tokens[i].start > frame.braceOffset && tokens[next].end < frame.endOffset {
+						headers[i] = true
+						break
+					}
+				}
+				next = len(tokens)
+			case "{":
+				if methodBraces[tokens[next].start] {
+					headers[i] = true
+				}
+				next = len(tokens)
+			case "}", "=":
+				next = len(tokens)
+			}
+		}
+	}
+	return headers
+}
+
+func braceCallCandidate(tokens []offsetToken, i int, spec braceLanguageSpec, methodHeaders map[int]bool) bool {
 	if i <= 0 || !braceCallCallee(tokens[i-1].tok, spec) {
+		return false
+	}
+	if methodHeaders[i] {
 		return false
 	}
 	if i >= 2 && tokens[i-2].tok.Value == "!" {
@@ -341,20 +398,34 @@ func braceCallCallee(tok chroma.Token, spec braceLanguageSpec) bool {
 	return true
 }
 
-func matchingDelimiterIndex(tokens []offsetToken, at int, open, close string) (int, bool) {
-	depth := 0
-	for i := at; i < len(tokens); i++ {
-		switch tokens[i].tok.Value {
-		case open:
-			depth++
-		case close:
-			depth--
-			if depth == 0 {
-				return i, true
+// delimiterPairs pairs balanced delimiters in one linear pass. Mismatched
+// closers invalidate the current opener instead of being treated as balanced.
+func delimiterPairs(tokens []offsetToken) map[int]int {
+	matching := make(map[int]int)
+	type opener struct {
+		index int
+		value string
+	}
+	var stack []opener
+	for i, token := range tokens {
+		switch token.tok.Value {
+		case "(", "[", "{":
+			stack = append(stack, opener{index: i, value: token.tok.Value})
+		case ")", "]", "}":
+			if len(stack) == 0 || !delimitersMatch(stack[len(stack)-1].value, token.tok.Value) {
+				stack = nil
+				continue
 			}
+			open := stack[len(stack)-1]
+			stack = stack[:len(stack)-1]
+			matching[open.index] = i
 		}
 	}
-	return 0, false
+	return matching
+}
+
+func delimitersMatch(open, close string) bool {
+	return open == "(" && close == ")" || open == "[" && close == "]" || open == "{" && close == "}"
 }
 
 func calleeStartIndex(tokens []offsetToken, end int) int {
@@ -365,13 +436,19 @@ func calleeStartIndex(tokens []offsetToken, end int) int {
 	return start
 }
 
-func tokenRangeHasError(tokens []offsetToken, start, end int) bool {
-	for i := start; i <= end; i++ {
-		if tokens[i].tok.Type == chroma.Error {
-			return true
+func errorTokenPrefix(tokens []offsetToken) []int {
+	prefix := make([]int, len(tokens)+1)
+	for i, token := range tokens {
+		prefix[i+1] = prefix[i]
+		if token.tok.Type == chroma.Error {
+			prefix[i+1]++
 		}
 	}
-	return false
+	return prefix
+}
+
+func tokenRangeHasError(prefix []int, start, end int) bool {
+	return start >= 0 && end >= start && end+1 < len(prefix) && prefix[end+1] > prefix[start]
 }
 
 func braceStatementStart(text string, tokens []offsetToken, i int) bool {
@@ -410,28 +487,34 @@ func braceStatementEnd(text string, tokens []offsetToken, start int, allowNewlin
 func braceFieldRanges(text string, tokens []offsetToken, frames []braceFrame, target int) []SyntaxRange {
 	var ranges []SyntaxRange
 	for _, frame := range frames {
-		if frame.kind != "class" && frame.kind != "interface" && frame.kind != "struct" {
+		if (frame.kind != "class" && frame.kind != "interface" && frame.kind != "struct") || !byteContains(frame.startOffset, frame.endOffset, target) {
 			continue
 		}
-		depth, statementStart := 0, -1
+		braceDepth, delimiterDepth, statementStart := 0, 0, -1
 		for i, item := range tokens {
-			if item.start <= frame.startOffset || item.end >= frame.endOffset {
+			if item.start <= frame.braceOffset || item.end >= frame.endOffset {
 				continue
 			}
 			switch item.tok.Value {
 			case "{":
-				depth++
+				braceDepth++
 			case "}":
-				if depth > 0 {
-					depth--
+				if braceDepth > 0 {
+					braceDepth--
+				}
+			case "(", "[", "<":
+				delimiterDepth++
+			case ")", "]", ">":
+				if delimiterDepth > 0 {
+					delimiterDepth--
 				}
 			case ";", ",":
-				if depth == 0 && statementStart >= 0 {
+				if braceDepth == 0 && delimiterDepth == 0 && statementStart >= 0 {
 					ranges = appendFieldRange(text, ranges, tokens[statementStart:i+1], target)
 					statementStart = -1
 				}
 			default:
-				if depth == 0 && statementStart < 0 {
+				if braceDepth == 0 && statementStart < 0 {
 					statementStart = i
 				}
 			}
@@ -441,7 +524,12 @@ func braceFieldRanges(text string, tokens []offsetToken, frames []braceFrame, ta
 }
 
 func appendFieldRange(text string, ranges []SyntaxRange, statement []offsetToken, target int) []SyntaxRange {
-	if len(statement) < 2 || statement[0].tok.Type.Category() != chroma.Name {
+	modifiers := map[string]bool{"public": true, "private": true, "protected": true, "readonly": true, "static": true, "declare": true, "pub": true}
+	startIndex := 0
+	for startIndex < len(statement) && modifiers[statement[startIndex].tok.Value] {
+		startIndex++
+	}
+	if len(statement)-startIndex < 2 || statement[startIndex].tok.Type.Category() != chroma.Name {
 		return ranges
 	}
 	for _, item := range statement {
@@ -453,7 +541,7 @@ func appendFieldRange(text string, ranges []SyntaxRange, statement []offsetToken
 	if !byteContains(start, end, target) {
 		return ranges
 	}
-	if r, ok := syntaxRangeFromBytes(text, SyntaxKindField, statement[0].tok.Value, "scanner", start, end); ok {
+	if r, ok := syntaxRangeFromBytes(text, SyntaxKindField, statement[startIndex].tok.Value, "scanner", start, end); ok {
 		return append(ranges, r)
 	}
 	return ranges
@@ -511,7 +599,7 @@ func braceFrames(ctx context.Context, spec braceLanguageSpec, tokens []chroma.To
 }
 
 func resolveBraceFrame(spec braceLanguageSpec, pending []chroma.Token, pendingOffsets []int, braceOffset int, stack []braceFrame) braceFrame {
-	f := braceFrame{startOffset: braceOffset, nameOffset: braceOffset}
+	f := braceFrame{startOffset: braceOffset, nameOffset: braceOffset, braceOffset: braceOffset}
 	if len(pending) > 0 {
 		f.startOffset = pendingOffsets[0]
 		f.nameOffset = pendingOffsets[0]

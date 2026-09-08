@@ -276,6 +276,21 @@ def run():
 	}
 }
 
+func TestPythonSyntaxSourceWarnsOnMismatchedDelimiter(t *testing.T) {
+	path := writePythonFixture(t, "mismatch.py", "x = (]\ndef ok():\n    return 1\n")
+	lang, _ := ResolveFile(path)
+	result, _, err := SyntaxFileRanges(context.Background(), lang, path, Position{Line: 2, Character: 4})
+	if err != nil {
+		t.Fatalf("SyntaxFileRanges: %v", err)
+	}
+	if len(result.Warnings) == 0 {
+		t.Fatalf("expected a delimiter warning, got %#v", result)
+	}
+	if !hasSyntaxKind(result.Ranges, SyntaxKindFunction) {
+		t.Fatalf("recovery must preserve later functions: %#v", result.Ranges)
+	}
+}
+
 func TestPythonSyntaxSourceRangesHonorsCanceledContext(t *testing.T) {
 	path := writePythonFixture(t, "cancel.py", "def run():\n    return 1\n")
 	ctx, cancel := context.WithCancel(context.Background())

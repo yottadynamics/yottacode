@@ -11,9 +11,14 @@ import (
 	lspci "github.com/yottadynamics/yottacode/internal/lsp"
 )
 
-// SyntaxRangeTool exposes parser-backed enclosing ranges without starting a
-// language server. Agents use the returned anchor_read hints to re-read the
-// chosen range with anchors before applying edit_anchored.
+const (
+	maxSyntaxRangeReceiptBytes = 64 * 1024
+	maxSyntaxRangeOutputBytes  = 256 * 1024
+)
+
+// SyntaxRangeTool exposes offline AST/scanner ranges without starting a
+// language server. Each result includes a line-oriented anchored-read hint and
+// a byte-exact receipt suitable for apply_hashline.
 type SyntaxRangeTool struct {
 	Cwd           *CwdRef
 	DenyReadPaths []string
@@ -73,13 +78,44 @@ func (t *SyntaxRangeTool) Execute(ctx context.Context, argsJSON string) (string,
 		if err != nil {
 			return "", fmt.Errorf("syntax_range: %w", err)
 		}
-		fmt.Fprintf(&b, "%s\t%s\tlines=%d-%d\tbytes=%d-%d\toffset=%d\tlength=%d\thash=%s\tanchor_read=%s", syntaxRangeLabel(r), displayRange(path, r.Range), r.Range.Start.Line+1, r.Range.End.Line+1, r.StartByte, r.EndByte, anchor.Offset, anchor.Length, anchor.Hash, anchorReadHint(path, r.Range))
-		b.WriteByte('\n')
+		var row string
+		if anchor.Length <= maxSyntaxRangeReceiptBytes {
+			receipt, err := json.Marshal(map[string]any{
+				"offset": anchor.Offset,
+				"length": anchor.Length,
+				"hash":   anchor.Hash,
+				"old":    string(result.Source[r.StartByte:r.EndByte]),
+			})
+			if err != nil {
+				return "", fmt.Errorf("syntax_range: encode receipt: %w", err)
+			}
+			row = fmt.Sprintf("%s\t%s\tlines=%d-%d\tbytes=%d-%d\tanchor_read=%s\treceipt=%s\n", syntaxRangeLabel(r), displayRange(path, r.Range), r.Range.Start.Line+1, r.Range.End.Line+1, r.StartByte, r.EndByte, anchorReadHint(path, r.Range), receipt)
+		} else {
+			row = fmt.Sprintf("%s\t%s\tlines=%d-%d\tbytes=%d-%d\tanchor_read=%s\treceipt_omitted=span_exceeds_%d_bytes\n", syntaxRangeLabel(r), displayRange(path, r.Range), r.Range.Start.Line+1, r.Range.End.Line+1, r.StartByte, r.EndByte, anchorReadHint(path, r.Range), maxSyntaxRangeReceiptBytes)
+		}
+		if b.Len()+len(row) > maxSyntaxRangeOutputBytes {
+			fmt.Fprintf(&b, "…[truncated at %d output bytes]\n", maxSyntaxRangeOutputBytes)
+			break
+		}
+		b.WriteString(row)
 	}
-	for _, warning := range result.Warnings {
-		fmt.Fprintf(&b, "warning: %s\n", warning)
+	if len(result.Warnings) > 0 {
+		fmt.Fprintf(&b, "warning: %s\n", strings.Join(uniqueWarnings(result.Warnings), "; "))
 	}
 	return b.String(), nil
+}
+
+func uniqueWarnings(warnings []string) []string {
+	seen := make(map[string]bool, len(warnings))
+	unique := make([]string, 0, len(warnings))
+	for _, warning := range warnings {
+		if warning == "" || seen[warning] {
+			continue
+		}
+		seen[warning] = true
+		unique = append(unique, warning)
+	}
+	return unique
 }
 
 func (t *SyntaxRangeTool) cwd() string {

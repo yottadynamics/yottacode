@@ -19,6 +19,10 @@ const (
 	SyntaxKindImportBlock SyntaxKind = "import_block"
 	SyntaxKindField       SyntaxKind = "field"
 	SyntaxKindFile        SyntaxKind = "file"
+	SyntaxKindBlock       SyntaxKind = "block"
+	SyntaxKindControl     SyntaxKind = "control"
+	SyntaxKindDeclaration SyntaxKind = "declaration"
+	SyntaxKindContainer   SyntaxKind = "container"
 )
 
 // SyntaxSymbolSource extracts structural symbols without starting a language
@@ -95,6 +99,28 @@ func SyntaxMode(languageID string) string {
 	return "none"
 }
 
+func canonicalSyntaxKind(kind SyntaxKind) SyntaxKind {
+	switch kind {
+	case SyntaxKindFunction, SyntaxKindMethod, SyntaxKindType, SyntaxKindCall, SyntaxKindImportBlock, SyntaxKindField, SyntaxKindFile,
+		SyntaxKindBlock, SyntaxKindControl, SyntaxKindDeclaration, SyntaxKindContainer:
+		return kind
+	case "class", "interface", "enum", "struct", "trait":
+		return SyntaxKindType
+	case "fn":
+		return SyntaxKindFunction
+	case "constant", "variable", "value":
+		return SyntaxKindDeclaration
+	case "impl", "mod", "namespace", "object":
+		return SyntaxKindContainer
+	default:
+		return SyntaxKindControl
+	}
+}
+
+func isCanonicalSyntaxKind(kind SyntaxKind) bool {
+	return canonicalSyntaxKind(kind) == kind
+}
+
 func syntaxFileSymbols(ctx context.Context, lang Language, path string) ([]Symbol, bool, error) {
 	syntaxSourcesMu.RLock()
 	source, ok := syntaxSources[lang.ID]
@@ -129,12 +155,7 @@ func SyntaxFileRanges(ctx context.Context, lang Language, path string, pos Posit
 	}
 	for i := range items {
 		item := &items[i]
-		switch item.Kind {
-		case "class", "interface", "enum", "struct", "trait":
-			item.Kind = SyntaxKindType
-		case "fn":
-			item.Kind = SyntaxKindFunction
-		}
+		item.Kind = canonicalSyntaxKind(item.Kind)
 		// Scanner ranges historically used "parser" as a generic provenance.
 		// Keep names/details but report the backend honestly.
 		if SyntaxMode(lang.ID) == "scanner" && item.Detail == "parser" {

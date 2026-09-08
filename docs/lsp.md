@@ -4,7 +4,7 @@ LSP Code Intelligence connects yottacode tools to local Language Server Protocol
 
 The separate `code_map` feature (still experimental) reuses this LSP surface when available to build the `/map` structure overlay and code-map agent tools. If a language server is missing, the map falls back to offline syntax symbols: Go uses its AST parser, while TypeScript/JavaScript, Python, and Rust use structural scanners. Dependency and impact queries currently use resolvable in-workspace Go imports, including transitive dependents, import-cycle detection, and Mermaid diagram output; `lsp_impact` can combine those import edges with live LSP references, calls, hover, and diagnostics.
 
-`syntax_ranges` (now GA) exposes one piece of that offline layer directly as `syntax_range`: a read-only selector using Go's AST parser and conservative structural scanners for TypeScript/JavaScript, Python, and Rust. It returns exact byte spans and hashline receipts for local edit targeting. `lsp_selection_ranges` remains the server-backed option.
+`syntax_ranges` (now GA) exposes one piece of that offline layer directly as `syntax_range`: a read-only selector using Go's AST parser and conservative structural scanners for TypeScript/JavaScript, Python, and Rust. It returns exact byte spans and directly consumable hashline receipts containing the exact old source text. `lsp_selection_ranges` remains the server-backed option.
 
 The old `lsp_code_intelligence` and `syntax_ranges` experimental flags are still recognized as GA/no-op compatibility flags for one release so existing configs keep working.
 

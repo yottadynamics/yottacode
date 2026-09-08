@@ -72,6 +72,47 @@ func TestBraceSyntaxSourceTypeScriptCallUsesFullDottedCallee(t *testing.T) {
 	t.Fatalf("expected call range, got %#v", ranges)
 }
 
+func TestBraceSyntaxSourceDoesNotTreatMethodHeaderAsCall(t *testing.T) {
+	path := writeBraceFixture(t, "methods.ts", "interface Shape {\n  render(value: string): void;\n}\nclass Widget {\n  method<T>(value: T): Promise<T> { return value; }\n}\n")
+	for _, pos := range []Position{{Line: 1, Character: 12}, {Line: 4, Character: 15}} {
+		ranges, err := braceSyntaxSource{spec: tsBraceSpec}.Ranges(context.Background(), path, pos)
+		if err != nil {
+			t.Fatalf("Ranges: %v", err)
+		}
+		for _, r := range ranges {
+			if r.Kind == SyntaxKindCall {
+				t.Fatalf("method declaration must not be emitted as a call: %#v", ranges)
+			}
+		}
+	}
+}
+
+func TestBraceSyntaxSourceDirectFields(t *testing.T) {
+	cases := []struct {
+		name string
+		spec braceLanguageSpec
+		file string
+		body string
+		pos  Position
+	}{
+		{name: "typescript class", spec: tsBraceSpec, file: "class.ts", body: "class Widget {\n  value: [string, number];\n}\n", pos: Position{Line: 1, Character: 10}},
+		{name: "typescript interface", spec: tsBraceSpec, file: "interface.ts", body: "interface Widget {\n  readonly value: [string, number];\n}\n", pos: Position{Line: 1, Character: 12}},
+		{name: "rust struct", spec: rustBraceSpec, file: "field.rs", body: "struct Widget {\n  pub value: HashMap<String, usize>,\n}\n", pos: Position{Line: 1, Character: 8}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := writeBraceFixture(t, tc.file, tc.body)
+			ranges, err := braceSyntaxSource{spec: tc.spec}.Ranges(context.Background(), path, tc.pos)
+			if err != nil {
+				t.Fatalf("Ranges: %v", err)
+			}
+			if !hasSyntaxKind(ranges, SyntaxKindField) {
+				t.Fatalf("direct field missing: %#v", ranges)
+			}
+		})
+	}
+}
+
 func TestBraceSyntaxSourceDoesNotTreatDeclarationParametersAsCall(t *testing.T) {
 	cases := []struct {
 		name string
@@ -221,6 +262,18 @@ function run() {}
 	}
 	if !haveClass || !haveMethod || !haveFunc {
 		t.Fatalf("missing expected symbols: class=%v method=%v func=%v; all=%#v", haveClass, haveMethod, haveFunc, symbols)
+	}
+}
+
+func TestBraceSyntaxSourceDeduplicatesMalformedCallWarnings(t *testing.T) {
+	path := writeBraceFixture(t, "malformed.ts", "function run() { f(f(f(f( }\n")
+	lang, _ := ResolveFile(path)
+	result, _, err := SyntaxFileRanges(context.Background(), lang, path, Position{})
+	if err != nil {
+		t.Fatalf("SyntaxFileRanges: %v", err)
+	}
+	if len(result.Warnings) > 2 {
+		t.Fatalf("warnings must be bounded and deduplicated, got %#v", result.Warnings)
 	}
 }
 

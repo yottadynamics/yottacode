@@ -113,6 +113,24 @@ func hasSyntaxKind(ranges []SyntaxRange, kind SyntaxKind) bool {
 	return false
 }
 
+func TestSyntaxRangeKindsAreCanonical(t *testing.T) {
+	src := "package p\nconst answer = 42\nvar name = \"x\"\n"
+	path := filepath.Join(t.TempDir(), "kinds.go")
+	if err := os.WriteFile(path, []byte(src), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	lang, _ := ResolveFile(path)
+	result, _, err := SyntaxFileRanges(context.Background(), lang, path, Position{Line: 1, Character: 7})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range result.Ranges {
+		if !isCanonicalSyntaxKind(r.Kind) {
+			t.Fatalf("non-canonical kind %q in %#v", r.Kind, result.Ranges)
+		}
+	}
+}
+
 func TestSyntaxRangeUTF16AndCRLF(t *testing.T) {
 	src := "package p\r\nfunc f() { println(\"🐾\") }\r\n"
 	path := filepath.Join(t.TempDir(), "unicode.go")

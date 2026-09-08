@@ -30,7 +30,7 @@ var pySymbolKinds = map[string]bool{"function": true, "method": true, "class": t
 // as a token inside an open (), [], or {} — Python has no def-expression,
 // class-expression, try-expression, except/finally clause, with-expression,
 // while-expression, or bare elif outside an if-statement. If one shows up as
-// the first token on a physical line while bracketDepth is still > 0, the
+// the first token on a physical line while len(bracketStack) is still > 0, the
 // depth count has necessarily drifted (an unclosed bracket upstream, e.g.
 // malformed or mid-edit source) rather than the source legitimately
 // continuing an expression, so it's safe to resynchronize. `if`/`else`/`for`
@@ -153,8 +153,10 @@ func (s pythonSyntaxSource) RangesFromSource(ctx context.Context, path string, s
 }
 func pythonTokenRanges(ctx context.Context, text string, tokens []chroma.Token, target int, frames []pyFrame) ([]SyntaxRange, []string, error) {
 	flat := offsetTokens(tokens)
+	matching := delimiterPairs(flat)
 	var ranges []SyntaxRange
 	var warnings []string
+	warnedCall := false
 	for i, item := range flat {
 		if err := ctx.Err(); err != nil {
 			return nil, nil, err
@@ -163,9 +165,12 @@ func pythonTokenRanges(ctx context.Context, text string, tokens []chroma.Token, 
 			warnings = append(warnings, "scanner encountered unrecognized syntax; uncertain ranges were omitted")
 		}
 		if item.tok.Value == "(" && pythonCallCandidate(flat, i) {
-			endIndex, ok := matchingDelimiterIndex(flat, i, "(", ")")
+			endIndex, ok := matching[i]
 			if !ok {
-				warnings = append(warnings, "scanner found unclosed call delimiter; incomplete call was omitted")
+				if !warnedCall {
+					warnings = append(warnings, "scanner found unclosed or mismatched call delimiter; incomplete calls were omitted")
+					warnedCall = true
+				}
 				continue
 			}
 			startIndex := calleeStartIndex(flat, i-1)
@@ -205,9 +210,9 @@ func pythonTokenRanges(ctx context.Context, text string, tokens []chroma.Token, 
 			}
 			line := text[lineStart:lineEnd]
 			indent := len(line) - len(strings.TrimLeft(line, " \t"))
-			if indent > class.indent && !pythonInsideNestedFrame(frames, class, lineStart) {
+			if indent > class.indent && byteContains(lineStart+indent, lineEnd, target) && !pythonInsideNestedFrame(frames, class, lineStart) {
 				name, ok := pythonFieldName(flat, lineStart+indent, lineEnd)
-				if ok && byteContains(lineStart+indent, lineEnd, target) {
+				if ok {
 					if r, ok := syntaxRangeFromBytes(text, SyntaxKindField, name, "scanner", lineStart+indent, lineEnd); ok {
 						ranges = append(ranges, r)
 					}
@@ -221,6 +226,15 @@ func pythonTokenRanges(ctx context.Context, text string, tokens []chroma.Token, 
 	}
 	return ranges, warnings, nil
 }
+func appendUniqueWarning(warnings []string, warning string) []string {
+	for _, existing := range warnings {
+		if existing == warning {
+			return warnings
+		}
+	}
+	return append(warnings, warning)
+}
+
 func pythonInsideNestedFrame(frames []pyFrame, class pyFrame, offset int) bool {
 	for _, frame := range frames {
 		if frame.startOffset != class.startOffset && frame.startOffset >= class.startOffset && frame.endOffset <= class.endOffset && byteContains(frame.startOffset, frame.endOffset, offset) {
@@ -314,7 +328,7 @@ func pythonFramesWithWarnings(ctx context.Context, tokens []chroma.Token) ([]pyF
 	offset := 0
 	lineStart := 0
 	lastContentEnd := 0
-	bracketDepth := 0
+	bracketStack := []string{}
 	var warnings []string
 	prevLineEnd := 0
 	atLineStart := true
@@ -390,7 +404,7 @@ func pythonFramesWithWarnings(ctx context.Context, tokens []chroma.Token) ([]pyF
 			lastNL := strings.LastIndex(tok.Value, "\n")
 			offset += len(tok.Value)
 			physicalLineStart = offset - (len(tok.Value) - lastNL - 1)
-			if bracketDepth == 0 {
+			if len(bracketStack) == 0 {
 				handleLine()
 				lineStart = physicalLineStart
 			}
@@ -400,17 +414,17 @@ func pythonFramesWithWarnings(ctx context.Context, tokens []chroma.Token) ([]pyF
 		if !isBlank && cat != chroma.Comment {
 			// Resync: a pure statement keyword can never legally appear
 			// inside an open bracket, so seeing one as the first token of a
-			// physical line while bracketDepth is still > 0 means the count
+			// physical line while a delimiter remains open means the scanner
 			// has drifted (an unclosed bracket somewhere upstream) rather
 			// than a legitimately continuing expression. Recover instead of
 			// silently losing the rest of the file to a single local error:
 			// flush (and discard — it won't satisfy the trailing ':' check)
 			// whatever had accumulated in the phantom line, and start fresh
 			// as if this keyword began a new logical line at depth 0.
-			if bracketDepth > 0 && atLineStart && cat == chroma.Keyword && pyResyncKeywords[tok.Value] {
+			if len(bracketStack) > 0 && atLineStart && cat == chroma.Keyword && pyResyncKeywords[tok.Value] {
 				handleLine()
 				warnings = append(warnings, "scanner recovered after an unclosed bracket; incomplete ranges were omitted")
-				bracketDepth = 0
+				bracketStack = bracketStack[:0]
 				lineStart = physicalLineStart
 			}
 			atLineStart = false
@@ -419,10 +433,13 @@ func pythonFramesWithWarnings(ctx context.Context, tokens []chroma.Token) ([]pyF
 			if cat == chroma.Punctuation {
 				switch tok.Value {
 				case "(", "[", "{":
-					bracketDepth++
+					bracketStack = append(bracketStack, tok.Value)
 				case ")", "]", "}":
-					if bracketDepth > 0 {
-						bracketDepth--
+					if len(bracketStack) == 0 || !delimitersMatch(bracketStack[len(bracketStack)-1], tok.Value) {
+						warnings = appendUniqueWarning(warnings, "scanner recovered after a mismatched bracket; incomplete ranges were omitted")
+						bracketStack = bracketStack[:0]
+					} else {
+						bracketStack = bracketStack[:len(bracketStack)-1]
 					}
 				}
 			}
@@ -433,7 +450,7 @@ func pythonFramesWithWarnings(ctx context.Context, tokens []chroma.Token) ([]pyF
 		offset += len(tok.Value)
 	}
 	handleLine()
-	if bracketDepth != 0 {
+	if len(bracketStack) != 0 {
 		warnings = append(warnings, "scanner found an unclosed bracket at end of file; incomplete ranges were omitted")
 	}
 	closeTo(0, lastContentEnd)

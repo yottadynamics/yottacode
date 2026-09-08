@@ -2,6 +2,9 @@ package agent
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -95,6 +98,55 @@ impl Widget {
 		if !strings.Contains(out, want) {
 			t.Fatalf("output missing %q:\n%s", want, out)
 		}
+	}
+}
+
+func TestSyntaxRangeToolReceiptIncludesExactOldText(t *testing.T) {
+	dir := t.TempDir()
+	source := "package main\r\nfunc run() { println(\"🐾\") }\r\n"
+	writeFile(t, dir, "main.go", source)
+	tool := &SyntaxRangeTool{Cwd: NewCwdRef(dir)}
+	out, err := tool.Execute(context.Background(), `{"path":"main.go","line":1,"character":15}`)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	line := strings.Split(out, "\n")[0]
+	field := strings.Split(line, "\treceipt=")
+	if len(field) != 2 {
+		t.Fatalf("missing structured receipt:\n%s", out)
+	}
+	var receipt struct {
+		Offset int    `json:"offset"`
+		Length int    `json:"length"`
+		Hash   string `json:"hash"`
+		Old    string `json:"old"`
+	}
+	if err := json.Unmarshal([]byte(field[1]), &receipt); err != nil {
+		t.Fatalf("decode receipt: %v", err)
+	}
+	if receipt.Old != source[receipt.Offset:receipt.Offset+receipt.Length] {
+		t.Fatalf("old text does not match receipt span: %#v", receipt)
+	}
+	sum := sha256.Sum256([]byte(receipt.Old))
+	if got := hex.EncodeToString(sum[:])[:16]; got != receipt.Hash {
+		t.Fatalf("hash = %q, want %q", receipt.Hash, got)
+	}
+}
+
+func TestSyntaxRangeToolOmitsOversizedReceipt(t *testing.T) {
+	dir := t.TempDir()
+	source := "package main\n// " + strings.Repeat("x", maxSyntaxRangeReceiptBytes) + "\nfunc run() {}\n"
+	writeFile(t, dir, "large.go", source)
+	tool := &SyntaxRangeTool{Cwd: NewCwdRef(dir)}
+	out, err := tool.Execute(context.Background(), `{"path":"large.go","line":2,"character":5}`)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if !strings.Contains(out, "receipt_omitted=span_exceeds_") {
+		t.Fatalf("expected oversized receipt marker:\n%s", out)
+	}
+	if len(out) > maxSyntaxRangeReceiptBytes {
+		t.Fatalf("output grew with oversized source: %d bytes", len(out))
 	}
 }
 
