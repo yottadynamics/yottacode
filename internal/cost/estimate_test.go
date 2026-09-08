@@ -7,7 +7,9 @@ import (
 )
 
 func TestForUsageUnavailableCacheDimensions(t *testing.T) {
-	got := ForUsage("https://api.anthropic.com/v1", "anthropic", "claude-sonnet-4-5", adapter.Usage{InputTokens: 1, CacheReadTokens: 1})
+	// This catalog entry has ordinary input/output prices but no cache-read
+	// price, so cache usage must not be priced by falling back to input cost.
+	got := ForUsage("https://api.anthropic.com/v1", "anthropic", "claude-sonnet-4-20250514", adapter.Usage{InputTokens: 1, CacheReadTokens: 1})
 	if got.Available {
 		t.Fatalf("missing cache price should remain unavailable: %+v", got)
 	}
