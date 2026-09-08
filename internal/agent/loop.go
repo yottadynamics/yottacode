@@ -242,10 +242,25 @@ func CheckpointFromContext(ctx context.Context) (sessionID, cpID string) {
 	return sessionID, cpID
 }
 
+type duplicateReadKey struct{ name, args string }
+
+type duplicateReadState struct {
+	lastEpoch int
+	count     int
+}
+
+// duplicateReadTracker distinguishes idle repeated reads from legitimate
+// rechecks after a mutation. State is scoped to one Turn, like failure streaks.
+type duplicateReadTracker struct {
+	epoch int
+	calls map[duplicateReadKey]duplicateReadState
+}
+
 type loopState struct {
 	iteration                int
 	history                  *[]adapter.Message
 	toolFailures             map[string]int
+	duplicateReads           duplicateReadTracker
 	overflowRecoveryAttempts int
 }
 
@@ -262,7 +277,10 @@ const (
 	continueReasonTruncatedOutput = "truncated_output"
 )
 
-const repeatedToolFailureThreshold = 3
+const (
+	repeatedToolFailureThreshold = 3
+	repeatedReadCallThreshold    = 3
+)
 
 func repeatedToolFailureKey(toolName, output string) (string, bool) {
 	if !strings.HasPrefix(output, "error:") {
@@ -308,6 +326,41 @@ func applyRepeatedToolFailureGuard(toolName, output string, failures map[string]
 		return output
 	}
 	return repeatedToolFailureMessage(toolName, output, failures[key])
+}
+
+// applyRepeatedReadCallGuard appends model-visible guidance after the third
+// exact successful read-only call in one mutation epoch. It deliberately does
+// not block execution: a read can observe external changes, and exact equality
+// alone is not strong enough evidence to discard a result.
+func applyRepeatedReadCallGuard(toolName, argsJSON, output string, denied bool, tracker *duplicateReadTracker) string {
+	if tracker == nil {
+		return output
+	}
+	failed := denied || strings.HasPrefix(strings.TrimSpace(output), "error:")
+	if !IsReadOnlyTool(toolName) {
+		if !failed {
+			tracker.epoch++
+		}
+		return output
+	}
+	if failed {
+		return output
+	}
+	if tracker.calls == nil {
+		tracker.calls = make(map[duplicateReadKey]duplicateReadState)
+	}
+	key := duplicateReadKey{name: toolName, args: argsJSON}
+	state, exists := tracker.calls[key]
+	if !exists || state.lastEpoch != tracker.epoch {
+		tracker.calls[key] = duplicateReadState{lastEpoch: tracker.epoch, count: 1}
+		return output
+	}
+	state.count++
+	tracker.calls[key] = state
+	if state.count < repeatedReadCallThreshold {
+		return output
+	}
+	return fmt.Sprintf("%s\n\nrepeated read-only tool call (%d×): this exact query already returned usable evidence in the current workspace state. Use the existing result, switch strategy (prefer Code Map/LSP or a narrower query), or finish the task instead of repeating it.", output, state.count)
 }
 
 const (
@@ -498,7 +551,7 @@ func Turn(
 			}); err != nil {
 				return err
 			}
-			if err := executeToolCalls(ctx, cfg, final.ToolCalls, history, events, decisions, state.toolFailures); err != nil {
+			if err := executeToolCalls(ctx, cfg, final.ToolCalls, history, events, decisions, state.toolFailures, &state.duplicateReads); err != nil {
 				if isCancelErr(err) {
 					// executeToolCalls has already appended synthetic
 					// tool_result entries for any orphaned calls before
@@ -728,24 +781,20 @@ func executeToolCalls(
 	events chan<- Event,
 	decisions <-chan Decision,
 	toolFailures map[string]int,
+	duplicateReads *duplicateReadTracker,
 ) error {
 	for len(calls) > 0 {
 		if batch := parallelBatchSize(cfg, calls); batch > 1 {
 			results, err := executeToolCallsParallel(ctx, cfg, calls[:batch], events, decisions)
 			if err != nil {
 				if isCancelErr(err) {
-					// Mixed-state batch: completed workers keep their
-					// real result; cancelled / errored workers get the
-					// synthetic interrupt marker. Then every queued
-					// call after this batch (none started) gets the
-					// marker too. History must end with a tool_result
-					// for every tool_use in the assistant message.
+					// Preserve completed results and pair unstarted calls on cancellation.
 					appendToolResultsWithInterrupts(cfg, history, calls[:batch], results)
 					appendSyntheticInterrupts(cfg, history, calls[batch:])
 				}
 				return err
 			}
-			appendToolResults(cfg, history, calls[:batch], results, toolFailures)
+			appendToolResults(cfg, history, calls[:batch], results, toolFailures, duplicateReads)
 			calls = calls[batch:]
 			continue
 		}
@@ -758,6 +807,7 @@ func executeToolCalls(
 			return err
 		}
 		result = applyRepeatedToolFailureGuard(tc.Name, result, toolFailures)
+		result = applyRepeatedReadCallGuard(tc.Name, tc.ArgsJSON, result, denied, duplicateReads)
 		appendHistory(cfg, history, adapter.Message{
 			Role:           adapter.RoleTool,
 			Content:        result,
@@ -891,10 +941,11 @@ func executeToolCallsParallel(
 	return results, errors.Join(errs...)
 }
 
-func appendToolResults(cfg LoopConfig, history *[]adapter.Message, calls []adapter.ToolCall, results []toolExecResult, toolFailures map[string]int) {
+func appendToolResults(cfg LoopConfig, history *[]adapter.Message, calls []adapter.ToolCall, results []toolExecResult, toolFailures map[string]int, duplicateReads *duplicateReadTracker) {
 	withHistoryLock(cfg, func() {
 		for i, tc := range calls {
 			content := applyRepeatedToolFailureGuard(tc.Name, results[i].content, toolFailures)
+			content = applyRepeatedReadCallGuard(tc.Name, tc.ArgsJSON, content, results[i].denied, duplicateReads)
 			*history = append(*history, stampNow(adapter.Message{
 				Role:           adapter.RoleTool,
 				Content:        content,

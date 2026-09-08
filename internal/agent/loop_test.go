@@ -395,6 +395,67 @@ func TestLoop_RepeatedToolFailureAddsStrategyGuidance(t *testing.T) {
 	}
 }
 
+func TestRepeatedReadCallGuard(t *testing.T) {
+	t.Run("warns on third successful exact read", func(t *testing.T) {
+		tracker := &duplicateReadTracker{}
+		for call := 1; call <= 3; call++ {
+			got := applyRepeatedReadCallGuard("read_file", `{"path":"x.go"}`, "body", false, tracker)
+			if call < 3 && got != "body" {
+				t.Fatalf("call %d unexpectedly warned: %q", call, got)
+			}
+			if call == 3 && !strings.Contains(got, "repeated read-only tool call (3×)") {
+				t.Fatalf("third call missing guidance: %q", got)
+			}
+		}
+	})
+
+	t.Run("mutation starts a new epoch", func(t *testing.T) {
+		tracker := &duplicateReadTracker{}
+		for range 2 {
+			_ = applyRepeatedReadCallGuard("grep", `{"pattern":"Thing"}`, "match", false, tracker)
+		}
+		_ = applyRepeatedReadCallGuard("edit_file", `{}`, "edited", false, tracker)
+		got := applyRepeatedReadCallGuard("grep", `{"pattern":"Thing"}`, "match", false, tracker)
+		if strings.Contains(got, "repeated read-only") {
+			t.Fatalf("post-mutation read reused old epoch: %q", got)
+		}
+	})
+
+	t.Run("distinct arguments and failures do not warn", func(t *testing.T) {
+		tracker := &duplicateReadTracker{}
+		for i, args := range []string{`{"path":"a.go"}`, `{"path":"b.go"}`, `{"path":"c.go"}`} {
+			got := applyRepeatedReadCallGuard("read_file", args, "body", false, tracker)
+			if strings.Contains(got, "repeated read-only") {
+				t.Fatalf("distinct call %d warned: %q", i, got)
+			}
+		}
+		for range 3 {
+			got := applyRepeatedReadCallGuard("read_file", `{"path":"missing.go"}`, "error: missing", false, tracker)
+			if strings.Contains(got, "repeated read-only") {
+				t.Fatalf("failure should be handled by failure guard: %q", got)
+			}
+		}
+	})
+
+	t.Run("denied calls neither warn nor reset", func(t *testing.T) {
+		tracker := &duplicateReadTracker{}
+		for range 2 {
+			_ = applyRepeatedReadCallGuard("read_file", `{"path":"x.go"}`, "body", false, tracker)
+		}
+		_ = applyRepeatedReadCallGuard("edit_file", `{}`, "denied by user", true, tracker)
+		got := applyRepeatedReadCallGuard("read_file", `{"path":"x.go"}`, "body", false, tracker)
+		if !strings.Contains(got, "repeated read-only tool call (3×)") {
+			t.Fatalf("denied mutation reset unchanged-workspace epoch: %q", got)
+		}
+		for range 3 {
+			got = applyRepeatedReadCallGuard("read_file", `{"path":"secret"}`, "denied by permissions.json deny rule", true, tracker)
+			if strings.Contains(got, "repeated read-only") {
+				t.Fatalf("denied read claimed usable evidence: %q", got)
+			}
+		}
+	})
+}
+
 func TestLoop_BypassPermissionsAutoApproves(t *testing.T) {
 	streamer := &scriptedStreamer{turns: [][]adapter.StreamEvent{
 		{sseDone("", adapter.ToolCall{ID: "c1", Name: "run_bash", ArgsJSON: `{"command":"echo hi"}`})},
@@ -752,6 +813,32 @@ func TestLoop_ParallelSafeReadOnlyToolsRunConcurrently(t *testing.T) {
 	}
 	if elapsed := time.Since(start); elapsed >= 220*time.Millisecond {
 		t.Fatalf("parallel-safe tools ran too slowly, elapsed=%v", elapsed)
+	}
+}
+
+func TestLoop_ParallelResultsApplyRepeatedReadGuidance(t *testing.T) {
+	call := func(id string) adapter.ToolCall {
+		return adapter.ToolCall{ID: id, Name: "read_file", ArgsJSON: `{}`}
+	}
+	streamer := &scriptedStreamer{turns: [][]adapter.StreamEvent{
+		{sseDone("", call("c1"), call("c2"), call("c3"))},
+		{sseToken("done"), sseDone("done")},
+	}}
+	reg := NewRegistry()
+	reg.Register(&mockTool{name: "read_file", parallelSafe: true, output: "body"})
+	cfg := LoopConfig{Adapter: streamer, Registry: reg, MaxIterations: 5}
+	hist := []adapter.Message{{Role: adapter.RoleUser, Content: "read"}}
+	if _, err := runTurnSync(t, context.Background(), cfg, &hist, nil); err != nil {
+		t.Fatalf("Turn: %v", err)
+	}
+	var guided int
+	for _, msg := range hist {
+		if msg.Role == adapter.RoleTool && strings.Contains(msg.Content, "repeated read-only tool call (3×)") {
+			guided++
+		}
+	}
+	if guided != 1 {
+		t.Fatalf("guided results = %d, want 1; history=%+v", guided, hist)
 	}
 }
 

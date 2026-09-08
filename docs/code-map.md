@@ -39,6 +39,14 @@ Shipped in the MVP:
   - `code_cycles`
   - `code_map_diagram`
 
+When `code_map` is enabled, stock `Explore` and `Plan` subagents use the cached
+index as their first pass for repository structure, symbol discovery, imports,
+dependents, cycles, and blast radius. They use LSP for source-position identity
+and live references/call relationships, then targeted text search for literals,
+docs/config, unsupported languages, or missing capabilities. Code Map remains
+feature-gated: when disabled, its names are removed cleanly from stock child
+allowlists without startup warnings.
+
 ## Phase 1 — Suggested context
 
 Make `/map here` answer: **what should I attach before asking the agent?**
@@ -92,7 +100,8 @@ Planned work:
 Exit criteria:
 
 - A developer unfamiliar with an area can use `/map internal/foo` to orient
-  themselves quickly without reading every file.
+  themselves quickly without reading every file, and an Explore/Plan subagent
+  can use the same indexed projection before spending context on source reads.
 
 ## Phase 4 — Language coverage and precision
 

@@ -8,6 +8,13 @@ the project uses semantic versioning once it's past `1.0.0`.
 
 ### Added
 
+- **Semantic-first research subagents.** The stock `Explore` and `Plan` roles
+  now receive read-only LSP navigation and feature-gated Code Map queries, use
+  indexed/semantic relationships before targeted grep and file reads, and keep
+  an evidence ledger to avoid restarting broad discovery. The shared agent loop
+  also adds strategy guidance after a third exact successful read-only call in
+  an unchanged workspace while preserving legitimate post-mutation rechecks.
+
 worktree-permissions-fine-grained-review
 - **Session-scoped permission grants.** The approval modal gains an `[S]`
   hotkey alongside `[Y]`/`[A]`/`[N]`/`[D]`: it derives the same pattern

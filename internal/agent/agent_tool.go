@@ -576,6 +576,8 @@ func (t *AgentTool) Execute(ctx context.Context, argsJSON string) (string, error
 var readOnlyChildTools = map[string]bool{
 	"read_file":                     true,
 	"read_many_files":               true,
+	"read_document":                 true,
+	"search_document":               true,
 	"grep":                          true,
 	"glob":                          true,
 	"list_dir":                      true,
@@ -583,6 +585,12 @@ var readOnlyChildTools = map[string]bool{
 	"git_log_file":                  true,
 	"git_blame_lines":               true,
 	"git_diff_files":                true,
+	"git_diff_stat":                 true,
+	"git_diff_staged":               true,
+	"git_diff_unstaged":             true,
+	"git_commits_between":           true,
+	"git_branch_ahead_behind":       true,
+	"git_branch_diff":               true,
 	"git_show_file_at_rev":          true,
 	"git_branch_status":             true,
 	"list_git_changed_files":        true,
@@ -610,6 +618,16 @@ var readOnlyChildTools = map[string]bool{
 	"lsp_format_preview":            true,
 	"lsp_call_hierarchy":            true,
 	"lsp_impact":                    true,
+	"syntax_range":                  true,
+	"pr_readiness_context":          true,
+	"code_map":                      true,
+	"code_symbols":                  true,
+	"code_structure_projection":     true,
+	"code_dependencies":             true,
+	"code_dependents":               true,
+	"code_impact":                   true,
+	"code_cycles":                   true,
+	"code_map_diagram":              true,
 	ConsultAdvisorToolName:          true,
 }
 
@@ -1222,7 +1240,7 @@ func safeUnattendedReadOnlyTool(name string) bool {
 	if !readOnlyChildTools[name] {
 		return false
 	}
-	if strings.HasPrefix(name, "lsp_") || strings.HasPrefix(name, "media_") || strings.HasPrefix(name, "git_") || name == "list_git_changed_files" || name == "fetch_url" {
+	if strings.HasPrefix(name, "lsp_") || strings.HasPrefix(name, "media_") || strings.HasPrefix(name, "git_") || name == "list_git_changed_files" || name == "fetch_url" || name == "read_document" || name == "search_document" || name == "pr_readiness_context" {
 		return false
 	}
 	return name != ConsultAdvisorToolName
@@ -1234,7 +1252,7 @@ func safeUnattendedReadOnlyTool(name string) bool {
 // otherwise look read-only.
 func stripUnattendedProcessTools(reg *Registry) {
 	for name := range reg.Names() {
-		if strings.HasPrefix(name, "lsp_") || strings.HasPrefix(name, "media_") {
+		if strings.HasPrefix(name, "lsp_") || strings.HasPrefix(name, "media_") || name == "read_document" || name == "search_document" {
 			reg.Deregister(name)
 		}
 	}

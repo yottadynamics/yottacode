@@ -101,6 +101,20 @@ func loadDir(dir, source string) ([]AgentConfig, []string) {
 	return out, warnings
 }
 
+// optionalBuiltinTools are feature-gated tools intentionally named by stock
+// agent definitions. A disabled feature removes them from the live registry;
+// that is normal degradation, not a broken built-in worth warning about.
+var optionalBuiltinTools = map[string]bool{
+	"code_map":                  true,
+	"code_symbols":              true,
+	"code_structure_projection": true,
+	"code_dependencies":         true,
+	"code_dependents":           true,
+	"code_impact":               true,
+	"code_cycles":               true,
+	"code_map_diagram":          true,
+}
+
 // validateToolAllowlists drops unknown tool names from each config's
 // allowlist and produces a warning per dropped entry. Unknown names
 // don't fail the load — the agent is still useful with the rest of
@@ -115,6 +129,11 @@ func validateToolAllowlists(configs []AgentConfig, valid map[string]bool) []stri
 		for _, name := range configs[i].Tools {
 			if valid[name] {
 				kept = append(kept, name)
+				continue
+			}
+			// Stock definitions may advertise feature-gated read tools. Keep custom
+			// definitions strict so misspellings and unavailable tools stay visible.
+			if configs[i].Source == "builtin" && optionalBuiltinTools[name] {
 				continue
 			}
 			warnings = append(warnings, fmt.Sprintf(
