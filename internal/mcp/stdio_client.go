@@ -3,7 +3,6 @@ package mcp
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -31,14 +30,6 @@ const TerminateGracePeriod = 3 * time.Second
 // so a chatty server doesn't grow memory unbounded.
 const stderrBufLines = 200
 
-// clientName / clientVersion identify yottacode to MCP servers in the
-// `initialize` handshake. clientVersion is overridable via build flags
-// later — keeping it a const for v1.
-const (
-	clientName    = "yottacode"
-	clientVersion = "0.0.0"
-)
-
 // StdioClient launches an MCP server as a stdio subprocess, performs
 // the initialize handshake, and proxies tools/list + tools/call. Wraps
 // the official Go SDK's CommandTransport — we don't re-implement
@@ -59,13 +50,10 @@ type StdioClient struct {
 	// stderr — we plug a buffer in directly via cmd.Stderr.
 	stderr *ringBuffer
 
-	// Live state (mutated only by Start / Stop, guarded by mu).
-	mu         sync.Mutex
-	session    *sdk.ClientSession
+	// Live state (mutated only by Start / Stop, guarded by ops.mu).
+	ops        sessionOps
 	procCancel context.CancelFunc // cancels the subprocess context; invoked after session.Close
-	started    bool
 	stopped    bool
-	tools      []ToolDescriptor // cached after Start
 }
 
 // Warnings returns the (immutable post-construction) list of warnings
@@ -162,12 +150,20 @@ func (c *StdioClient) Name() string { return c.name }
 // regardless of the caller-supplied ctx — slow servers don't hang the
 // whole session.
 func (c *StdioClient) Start(ctx context.Context) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if c.started {
+	c.ops.mu.Lock()
+	if c.ops.started || c.ops.starting {
+		c.ops.mu.Unlock()
 		return fmt.Errorf("mcp(%s): already started", c.name)
 	}
+	c.ops.starting = true
+	c.ops.mu.Unlock()
+	defer func() {
+		c.ops.mu.Lock()
+		if !c.ops.started {
+			c.ops.starting = false
+		}
+		c.ops.mu.Unlock()
+	}()
 
 	bin, err := exec.LookPath(c.command)
 	if err != nil {
@@ -190,7 +186,7 @@ func (c *StdioClient) Start(ctx context.Context) error {
 
 	client := sdk.NewClient(&sdk.Implementation{
 		Name:    clientName,
-		Version: clientVersion,
+		Version: clientVersion(),
 	}, nil)
 
 	transport := &sdk.CommandTransport{
@@ -204,105 +200,39 @@ func (c *StdioClient) Start(ctx context.Context) error {
 		return fmt.Errorf("mcp(%s): connect: %w", c.name, err)
 	}
 
-	c.session = session
+	c.ops.bind(session)
 	c.procCancel = procCancel
-	c.started = true
 
 	// Eager catalog fetch — the agent registry needs the descriptors
 	// at session start anyway, and any tools/list failure during
 	// Start surfaces as a startup error (which the manager renders
 	// per-server) rather than at first tool invocation.
-	tools, err := c.fetchTools(initCtx)
-	if err != nil {
+	if _, err := c.ops.fetchTools(initCtx); err != nil {
 		_ = session.Close()
 		procCancel()
-		c.session = nil
+		c.ops.clear()
 		c.procCancel = nil
-		c.started = false
 		return fmt.Errorf("mcp(%s): list tools: %w", c.name, err)
 	}
-	c.tools = tools
 	return nil
 }
 
 // ListTools returns the cached catalog from Start. Returns an error if
 // Start hasn't been called or already failed.
 func (c *StdioClient) ListTools(ctx context.Context) ([]ToolDescriptor, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if !c.started {
-		return nil, ErrNotStarted
-	}
-	// Copy to defend against caller mutation; tools slice rarely
-	// changes after Start so the allocation is fine.
-	out := make([]ToolDescriptor, len(c.tools))
-	copy(out, c.tools)
-	return out, nil
+	c.ops.mu.RLock()
+	defer c.ops.mu.RUnlock()
+	return c.ops.listTools()
 }
 
-// fetchTools queries tools/list and translates the SDK's Tool shape
-// into our transport-agnostic ToolDescriptor. Must be called with c.mu
-// held by Start (the eager fetch path) or unlocked from a request
-// goroutine in the future when we add live refresh.
-func (c *StdioClient) fetchTools(ctx context.Context) ([]ToolDescriptor, error) {
-	res, err := c.session.ListTools(ctx, nil)
-	if err != nil {
-		return nil, err
-	}
-	out := make([]ToolDescriptor, 0, len(res.Tools))
-	for _, t := range res.Tools {
-		if t == nil {
-			continue
-		}
-		schema, _ := toSchemaMap(t.InputSchema)
-		readOnly := false
-		if t.Annotations != nil {
-			readOnly = t.Annotations.ReadOnlyHint
-		}
-		out = append(out, ToolDescriptor{
-			Name:         t.Name,
-			Description:  t.Description,
-			InputSchema:  schema,
-			ReadOnlyHint: readOnly,
-		})
-	}
-	return out, nil
+// RefreshTools re-queries tools/list and replaces the cached catalog.
+func (c *StdioClient) RefreshTools(ctx context.Context) ([]ToolDescriptor, error) {
+	return c.ops.fetchTools(ctx)
 }
 
 // CallTool invokes the named tool with the raw JSON arguments payload.
-// argsJSON is the literal payload the model emitted; we unmarshal into
-// map[string]any and pass through to the SDK.
 func (c *StdioClient) CallTool(ctx context.Context, toolName, argsJSON string) (CallResult, error) {
-	c.mu.Lock()
-	session := c.session
-	started := c.started
-	c.mu.Unlock()
-
-	if !started || session == nil {
-		return CallResult{}, ErrNotStarted
-	}
-
-	var args map[string]any
-	trimmed := strings.TrimSpace(argsJSON)
-	if trimmed != "" && trimmed != "null" {
-		if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
-			return CallResult{}, fmt.Errorf("mcp(%s/%s): invalid argument JSON: %w",
-				c.name, toolName, err)
-		}
-	}
-
-	res, err := session.CallTool(ctx, &sdk.CallToolParams{
-		Name:      toolName,
-		Arguments: args,
-	})
-	if err != nil {
-		return CallResult{}, fmt.Errorf("mcp(%s/%s): %w", c.name, toolName, err)
-	}
-
-	return CallResult{
-		Text:    extractText(res),
-		IsError: res.IsError,
-	}, nil
+	return c.ops.callTool(ctx, c.name, toolName, argsJSON)
 }
 
 // Stop closes the SDK session, which closes the subprocess stdin and
@@ -311,15 +241,14 @@ func (c *StdioClient) CallTool(ctx context.Context, toolName, argsJSON string) (
 // then cancelled as a backstop in case session.Close left a zombie.
 // Idempotent — repeat calls return nil.
 func (c *StdioClient) Stop(ctx context.Context) error {
-	c.mu.Lock()
-	session := c.session
+	c.ops.mu.Lock()
+	session := c.ops.session
 	procCancel := c.procCancel
 	alreadyStopped := c.stopped
 	c.stopped = true
-	c.session = nil
 	c.procCancel = nil
-	c.started = false
-	c.mu.Unlock()
+	c.ops.mu.Unlock()
+	c.ops.clear()
 
 	if alreadyStopped {
 		return nil
@@ -334,133 +263,16 @@ func (c *StdioClient) Stop(ctx context.Context) error {
 	return err
 }
 
-// StderrTail returns the recent stderr lines captured from the
-// subprocess. Exposed for the /mcp logs subcommand.
-func (c *StdioClient) StderrTail() []string {
+// LogTail returns the recent stderr lines captured from the subprocess.
+// Satisfies mcp.LogSource so /mcp logs works uniformly across transports.
+func (c *StdioClient) LogTail() []string {
 	return c.stderr.Lines()
 }
 
-// extractText flattens a CallToolResult into the single text string
-// the agent.Tool.Execute contract expects. Text content blocks pass
-// through verbatim; non-text blocks (image / audio / resource link /
-// embedded resource) become explicit placeholder markers so the model
-// learns that *something* was returned but yottacode's v1 bridge
-// dropped it — far better than silently returning an empty string,
-// which would make the model retry the same call or hallucinate
-// content.
-//
-// StructuredContent is used as a fallback when no TextContent blocks
-// were present. The SDK's typed-output handler path auto-populates
-// Content with a stringified copy of StructuredContent, so this
-// branch only matters when a server populates StructuredContent
-// directly and leaves Content empty or non-textual.
-//
-// Multi-block results are joined with newlines.
-func extractText(res *sdk.CallToolResult) string {
-	if res == nil {
-		return ""
-	}
-	parts := make([]string, 0, len(res.Content))
-	textSeen := false
-	for _, c := range res.Content {
-		switch tc := c.(type) {
-		case *sdk.TextContent:
-			if tc != nil {
-				parts = append(parts, tc.Text)
-				textSeen = true
-			}
-		case *sdk.ImageContent:
-			if tc != nil {
-				parts = append(parts, fmt.Sprintf(
-					"[image omitted: %s, %d bytes — yottacode v1 tools-only bridge passes text only]",
-					orDefault(tc.MIMEType, "image/unknown"), len(tc.Data)))
-			}
-		case *sdk.AudioContent:
-			if tc != nil {
-				parts = append(parts, fmt.Sprintf(
-					"[audio omitted: %s, %d bytes — yottacode v1 tools-only bridge passes text only]",
-					orDefault(tc.MIMEType, "audio/unknown"), len(tc.Data)))
-			}
-		case *sdk.ResourceLink:
-			if tc != nil {
-				parts = append(parts, fmt.Sprintf(
-					"[resource link omitted: %s (%s) — yottacode v1 does not fetch MCP resources]",
-					tc.URI, orDefault(tc.MIMEType, "unknown")))
-			}
-		case *sdk.EmbeddedResource:
-			if tc != nil {
-				var uri string
-				if tc.Resource != nil {
-					uri = tc.Resource.URI
-				}
-				parts = append(parts, fmt.Sprintf(
-					"[embedded resource omitted: %s — yottacode v1 does not fetch MCP resources]",
-					orDefault(uri, "<no uri>")))
-			}
-		default:
-			// Future-proof: a content type the SDK adds later
-			// (or a custom one we haven't matched) still surfaces
-			// as a marker rather than vanishing.
-			if c != nil {
-				parts = append(parts, fmt.Sprintf("[unsupported content type %T omitted]", c))
-			}
-		}
-	}
-	if res.StructuredContent != nil && !textSeen {
-		if b, err := json.Marshal(res.StructuredContent); err == nil {
-			parts = append(parts, string(b))
-		}
-	}
-	return strings.Join(parts, "\n")
-}
-
-func orDefault(s, fallback string) string {
-	if s == "" {
-		return fallback
-	}
-	return s
-}
-
-// toSchemaMap normalizes the SDK's `any`-typed InputSchema (which is
-// json.RawMessage when received from a server) into the map[string]any
-// shape the rest of yottacode expects. Falls back to an empty schema
-// when the server omitted one — the model will refuse to call the tool
-// without args, which is the right failure mode.
-func toSchemaMap(raw any) (map[string]any, bool) {
-	if raw == nil {
-		return map[string]any{}, false
-	}
-	switch v := raw.(type) {
-	case map[string]any:
-		return v, true
-	case json.RawMessage:
-		var m map[string]any
-		if err := json.Unmarshal(v, &m); err == nil {
-			return m, true
-		}
-	case []byte:
-		var m map[string]any
-		if err := json.Unmarshal(v, &m); err == nil {
-			return m, true
-		}
-	}
-	// Last-resort: round-trip via json — covers the SDK's typed
-	// jsonschema.Schema struct without us importing the schema lib.
-	b, err := json.Marshal(raw)
-	if err == nil {
-		var m map[string]any
-		if err := json.Unmarshal(b, &m); err == nil {
-			return m, true
-		}
-	}
-	return map[string]any{}, false
-}
-
 // mergeEnv combines the inherited environment with per-server overrides.
-// Values in extra may contain $VAR references; they're expanded against
-// the inherited env using os.Expand semantics. Unresolved $VARs are
-// left as the literal string (the subprocess will get a missing-env
-// error, which surfaces clearly in its stderr).
+// Values in extra may contain $VAR references; os.Expand substitutes unset
+// variables with the empty string, and envExpansionWarnings surfaces those
+// missing references before the subprocess starts.
 func mergeEnv(base []string, extra map[string]string) []string {
 	if len(extra) == 0 {
 		return base
