@@ -80,7 +80,7 @@ In addition to the built-ins, **MCP tools** register dynamically when an `[[mcp_
 | [`lsp_symbols`](#lsp_symbols) | none | Search workspace symbols through an installed language server |
 | [`lsp_document_symbols`](#lsp_document_symbols) | none | List structural symbols declared in one source file |
 | [`lsp_document_highlights`](#lsp_document_highlights) | none | Show current-file symbol reads/writes/text occurrences |
-| [`syntax_range`](#syntax_range) | none | Offline parser-backed syntax ranges around a source position |
+| [`syntax_range`](#syntax_range) | none | Offline Go AST / cross-language scanner ranges and hashline receipts around a source position |
 | [`lsp_selection_ranges`](#lsp_selection_ranges) | none | Show server-backed nested syntax ranges around a source position |
 | [`lsp_definition`](#lsp_definition) | none | Find definition locations for a source position through an installed language server |
 | [`lsp_type_definition`](#lsp_type_definition) | none | Find type definition locations for a source position through an installed language server |
@@ -739,7 +739,7 @@ Always prompts for approval.
 
 ## syntax_range
 
-Return offline parser-backed syntax ranges around a source position. This is a read-only helper for choosing a local edit target before an anchored read/edit; it does not replace LSP semantic tools and it never writes files.
+Return offline syntax ranges around a source position. Go uses its standard-library AST parser; TypeScript/JavaScript, Python, and Rust use conservative structural scanners. This read-only helper chooses a local edit target and never writes files.
 
 | Param | Type | Default | Notes |
 |---|---|---|---|
@@ -748,9 +748,9 @@ Return offline parser-backed syntax ranges around a source position. This is a r
 | `character` | int | — | Zero-based UTF-16 character offset |
 | `max_results` | int | `50` | Clamped to `500` |
 
-Output rows are `kind name [detail]\tpath:startLine:startColumn-endLine:endColumn\tlines=A-B\tanchor_read={...}`. Ranges are ordered smallest-to-largest so the agent can choose a nearby block, function, method, type, or file. The `anchor_read` JSON is a suggested `read_file` call with `anchors=true`; after that read, use `edit_anchored` for the actual write.
+Output rows include `kind name [detail]`, the LSP range, one-based lines, exact half-open `bytes=start-end`, and an `offset`/`length`/`hash` receipt. The hash is the first 16 hexadecimal characters of SHA-256 over exactly those bytes, with no normalization, and can be passed directly to `apply_hashline` with the selected source as `old`. Ranges are ordered smallest-to-largest. Canonical kinds are `function`, `method`, `type`, `call`, `import_block`, `field`, and `file`; control-flow and block kinds may also be returned. Recoverable warnings are printed after ranges and are not hidden by `max_results`.
 
-Covers Go (standard library parser), TypeScript/JavaScript and Rust (a shared chroma-token brace-depth scanner), and Python (a chroma-token indentation scanner). Other languages should use `lsp_selection_ranges` when a language server is installed. GA; the `syntax_ranges` flag is a no-op kept for one release for compatibility.
+Covers Go (standard library parser), TypeScript/JavaScript (including `.mjs` and `.cjs`) and Rust (a shared Chroma-token brace-depth scanner), and Python (a Chroma-token indentation scanner). Scanner backends emit only constructs with unambiguous boundaries and omit uncertain or incomplete calls, imports, and fields. Other languages should use `lsp_selection_ranges` when a language server is installed. GA; the `syntax_ranges` flag is a no-op kept for one release for compatibility.
 
 ## apply_hashline
 

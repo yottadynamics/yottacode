@@ -46,7 +46,7 @@ func TestSyntaxRangeToolExecuteTypeScriptRanges(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
-	for _, want := range []string{"method [Widget]", "class Widget", "anchor_read=", `"anchors":true`, path} {
+	for _, want := range []string{"method [Widget]", "type Widget", "anchor_read=", `"anchors":true`, path} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("output missing %q:\n%s", want, out)
 		}
@@ -66,7 +66,7 @@ func TestSyntaxRangeToolExecutePythonRanges(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
-	for _, want := range []string{"method [Widget]", "class Widget", "anchor_read=", `"anchors":true`, path} {
+	for _, want := range []string{"method [Widget]", "type Widget", "anchor_read=", `"anchors":true`, path} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("output missing %q:\n%s", want, out)
 		}
@@ -91,7 +91,7 @@ impl Widget {
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
-	for _, want := range []string{"fn greet [Widget]", "impl Widget", "anchor_read=", `"anchors":true`, path} {
+	for _, want := range []string{"method greet [Widget]", "impl Widget", "anchor_read=", `"anchors":true`, path} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("output missing %q:\n%s", want, out)
 		}

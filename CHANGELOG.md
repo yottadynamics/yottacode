@@ -8,6 +8,8 @@ the project uses semantic versioning once it's past `1.0.0`.
 
 ### Added
 
+- **Hardened `syntax_range` selection contract.** Canonical kinds, exact half-open byte spans, hashline-compatible receipts, immutable request snapshots, honest parser/scanner capability labels, recoverable warnings, and `.mjs`/`.cjs` resolution make offline structural selection safer for downstream edits.
+
 worktree-permissions-fine-grained-review
 - **Session-scoped permission grants.** The approval modal gains an `[S]`
   hotkey alongside `[Y]`/`[A]`/`[N]`/`[D]`: it derives the same pattern

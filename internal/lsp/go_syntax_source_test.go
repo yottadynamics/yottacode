@@ -20,17 +20,17 @@ func run() {
 	if err != nil {
 		t.Fatalf("Ranges: %v", err)
 	}
-	if len(ranges) < 4 {
-		t.Fatalf("expected block/if/function/file ranges, got %#v", ranges)
+	if len(ranges) < 5 {
+		t.Fatalf("expected call/block/if/function/file ranges, got %#v", ranges)
 	}
-	wantPrefix := []string{"block", "if", "block", "function"}
+	wantPrefix := []SyntaxKind{"call", "block", "if", "block", "function"}
 	for i, want := range wantPrefix {
 		if ranges[i].Kind != want {
 			t.Fatalf("ranges[%d].Kind = %q, want %q; all=%#v", i, ranges[i].Kind, want, ranges)
 		}
 	}
-	if ranges[3].Name != "run" {
-		t.Fatalf("function range name = %q, want run", ranges[3].Name)
+	if ranges[4].Name != "run" {
+		t.Fatalf("function range name = %q, want run", ranges[4].Name)
 	}
 }
 
@@ -71,12 +71,12 @@ func TestGoSyntaxSourceRangesRejectsInvalidPosition(t *testing.T) {
 
 func TestSyntaxFileRangesReportsUnsupportedSource(t *testing.T) {
 	lang := Language{ID: "ruby"}
-	ranges, ok, err := SyntaxFileRanges(context.Background(), lang, "app.rb", Position{})
+	result, ok, err := SyntaxFileRanges(context.Background(), lang, "app.rb", Position{})
 	if err != nil {
 		t.Fatalf("SyntaxFileRanges: %v", err)
 	}
-	if ok || ranges != nil {
-		t.Fatalf("ruby should not have parser-backed ranges: ok=%v ranges=%#v", ok, ranges)
+	if ok || result.Ranges != nil {
+		t.Fatalf("ruby should not have parser-backed ranges: ok=%v ranges=%#v", ok, result.Ranges)
 	}
 }
 

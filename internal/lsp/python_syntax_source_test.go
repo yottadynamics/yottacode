@@ -21,7 +21,7 @@ func TestPythonSyntaxSourceRangesOrdering(t *testing.T) {
 	if len(ranges) < 4 {
 		t.Fatalf("expected if/method/class/file ranges, got %#v", ranges)
 	}
-	wantPrefix := []string{"if", "method", "class", "file"}
+	wantPrefix := []SyntaxKind{"if", "method", "type", "file"}
 	for i, want := range wantPrefix {
 		if ranges[i].Kind != want {
 			t.Fatalf("ranges[%d].Kind = %q, want %q; all=%#v", i, ranges[i].Kind, want, ranges)
@@ -29,6 +29,19 @@ func TestPythonSyntaxSourceRangesOrdering(t *testing.T) {
 	}
 	if ranges[1].Name != "method" || ranges[1].Detail != "Widget" {
 		t.Fatalf("method range = %#v", ranges[1])
+	}
+}
+
+func TestPythonSyntaxSourceDoesNotTreatDefinitionParametersAsCall(t *testing.T) {
+	path := writePythonFixture(t, "definition.py", "def run(value):\n    return value\n")
+	ranges, err := pythonSyntaxSource{}.Ranges(context.Background(), path, Position{Line: 0, Character: 8})
+	if err != nil {
+		t.Fatalf("Ranges: %v", err)
+	}
+	for _, r := range ranges {
+		if r.Kind == SyntaxKindCall {
+			t.Fatalf("definition parameters must not be emitted as a call: %#v", ranges)
+		}
 	}
 }
 
@@ -43,13 +56,13 @@ func TestPythonSyntaxSourceDedentClosesBlock(t *testing.T) {
 		t.Fatalf("Ranges: %v", err)
 	}
 	for _, r := range ranges {
-		if r.Kind == "if" {
-			t.Fatalf("dedented `if` block should not contain line 3, got %#v", r)
+		if r.Kind == SyntaxKind("if") {
+			t.Fatalf("dedented if block should not contain line 3, got %#v", r)
 		}
 	}
 	var haveFunc bool
 	for _, r := range ranges {
-		if r.Kind == "function" && r.Name == "run" {
+		if r.Kind == SyntaxKindFunction && r.Name == "run" {
 			haveFunc = true
 			if r.Range.End.Line != 3 {
 				t.Fatalf("function range should extend through the dedented return, got %#v", r)
@@ -79,7 +92,7 @@ func TestPythonSyntaxSourceIgnoresColonInDocstring(t *testing.T) {
 	}
 	var haveFunc bool
 	for _, r := range ranges {
-		if r.Kind == "function" && r.Name == "run" {
+		if r.Kind == SyntaxKindFunction && r.Name == "run" {
 			haveFunc = true
 		}
 	}
@@ -107,7 +120,7 @@ func TestPythonSyntaxSourceMultilineHeaderWraps(t *testing.T) {
 			}
 			var haveFunc bool
 			for _, r := range ranges {
-				if r.Kind == "function" && r.Name == "run" {
+				if r.Kind == SyntaxKindFunction && r.Name == "run" {
 					haveFunc = true
 				}
 			}
@@ -126,7 +139,7 @@ func TestPythonSyntaxSourceMultilineHeaderNestedBrackets(t *testing.T) {
 	}
 	var haveFunc bool
 	for _, r := range ranges {
-		if r.Kind == "function" && r.Name == "run" {
+		if r.Kind == SyntaxKindFunction && r.Name == "run" {
 			haveFunc = true
 		}
 	}
@@ -141,7 +154,7 @@ func TestPythonSyntaxSourceMultilineNonBlockDoesNotOpenFrame(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Ranges: %v", err)
 	}
-	if len(ranges) != 1 || ranges[0].Kind != "file" {
+	if len(ranges) != 1 || ranges[0].Kind != SyntaxKindFile {
 		t.Fatalf("a multi-line dict literal is not a block; expected only the file range, got %#v", ranges)
 	}
 }
@@ -154,7 +167,7 @@ func TestPythonSyntaxSourceResyncAfterUnclosedBracket(t *testing.T) {
 	}
 	var haveOther bool
 	for _, r := range ranges {
-		if r.Kind == "function" && r.Name == "other" {
+		if r.Kind == SyntaxKindFunction && r.Name == "other" {
 			haveOther = true
 		}
 	}
@@ -172,16 +185,14 @@ func TestPythonSyntaxSourceResyncPreservesEnclosingClass(t *testing.T) {
 	var method, class SyntaxRange
 	for _, r := range ranges {
 		switch r.Kind {
-		case "method":
+		case SyntaxKindMethod:
 			method = r
-		case "class":
+		case SyntaxKindType:
 			class = r
 		}
 	}
 	// Resync must compute the recovered line's indent from the true start of
-	// its physical line, not from the resync keyword's own token offset —
-	// otherwise the recovered frame reads as indent 0, which incorrectly
-	// closes (and truncates the range of) the still-open enclosing class.
+	// its physical line so the enclosing class remains open.
 	if method.Name != "method" || method.Detail != "Widget" {
 		t.Fatalf("resync must still attribute the recovered method to its enclosing class, got %#v", method)
 	}
@@ -198,7 +209,7 @@ func TestPythonSyntaxSourceComprehensionKeywordsDoNotTriggerResync(t *testing.T)
 	}
 	var haveFunc bool
 	for _, r := range ranges {
-		if r.Kind == "function" && r.Name == "run" {
+		if r.Kind == SyntaxKindFunction && r.Name == "run" {
 			haveFunc = true
 		}
 	}
@@ -218,7 +229,7 @@ func TestPythonSyntaxSourceAsyncDef(t *testing.T) {
 	}
 	var method SyntaxRange
 	for _, r := range ranges {
-		if r.Kind == "method" {
+		if r.Kind == SyntaxKindMethod {
 			method = r
 			break
 		}

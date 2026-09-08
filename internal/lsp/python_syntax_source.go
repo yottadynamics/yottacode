@@ -2,6 +2,7 @@ package lsp
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -56,6 +57,8 @@ type pyFrame struct {
 
 type pythonSyntaxSource struct{}
 
+func (pythonSyntaxSource) SyntaxMode() string { return "scanner" }
+
 func (pythonSyntaxSource) tokensFor(path string) (string, []chroma.Token, error) {
 	return chromaTokensForFile(path, "python")
 }
@@ -95,52 +98,215 @@ func (s pythonSyntaxSource) Symbols(ctx context.Context, path string) ([]Symbol,
 	return out, nil
 }
 
-// Ranges returns parser-backed enclosing ranges for a position in a Python
-// file. It is intentionally structural (indentation-depth over a token
-// stream, not full grammar) so it runs without a language server. Block
-// headers may span multiple physical lines via an open paren/bracket/brace
-// (Python's implicit line-continuation rule); pythonFrames tracks bracket
-// depth so those still flatten into one logical line.
+// Ranges returns enclosing ranges for callers that do not need the immutable
+// source snapshot. It delegates to the same scanner path used by syntax_range.
 func (s pythonSyntaxSource) Ranges(ctx context.Context, path string, pos Position) ([]SyntaxRange, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	text, tokens, err := s.tokensFor(path)
+	src, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
+	}
+	ranges, _, err := s.RangesFromSource(ctx, path, src, pos)
+	return ranges, err
+}
+
+func (s pythonSyntaxSource) RangesFromSource(ctx context.Context, path string, src []byte, pos Position) ([]SyntaxRange, []string, error) {
+	text, tokens, err := chromaTokensForSource(src, "python")
+	if err != nil {
+		return nil, nil, err
 	}
 	target, err := OffsetForPosition(text, pos)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	frames, err := pythonFrames(ctx, tokens)
+	frames, frameWarnings, err := pythonFramesWithWarnings(ctx, tokens)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	var ranges []SyntaxRange
 	for _, f := range frames {
-		if target < f.startOffset || target > f.endOffset {
+		if byteContains(f.startOffset, f.endOffset, target) {
+			kind := SyntaxKind(f.kind)
+			if kind == "class" {
+				kind = SyntaxKindType
+			}
+			if kind == "fn" {
+				kind = SyntaxKindFunction
+			}
+			if item, ok := syntaxRangeFromBytes(text, kind, f.name, containerOrDefault(f.detail), f.startOffset, f.endOffset); ok {
+				ranges = append(ranges, item)
+			}
+		}
+	}
+	if item, ok := syntaxRangeFromBytes(text, SyntaxKindFile, filepath.Base(path), "scanner", 0, len(src)); ok {
+		ranges = append(ranges, item)
+	}
+	extra, warnings, err := pythonTokenRanges(ctx, text, tokens, target, frames)
+	if err != nil {
+		return nil, nil, err
+	}
+	ranges = append(ranges, extra...)
+	warnings = append(frameWarnings, warnings...)
+	return ranges, warnings, nil
+}
+func pythonTokenRanges(ctx context.Context, text string, tokens []chroma.Token, target int, frames []pyFrame) ([]SyntaxRange, []string, error) {
+	flat := offsetTokens(tokens)
+	var ranges []SyntaxRange
+	var warnings []string
+	for i, item := range flat {
+		if err := ctx.Err(); err != nil {
+			return nil, nil, err
+		}
+		if item.tok.Type == chroma.Error && len(warnings) == 0 {
+			warnings = append(warnings, "scanner encountered unrecognized syntax; uncertain ranges were omitted")
+		}
+		if item.tok.Value == "(" && pythonCallCandidate(flat, i) {
+			endIndex, ok := matchingDelimiterIndex(flat, i, "(", ")")
+			if !ok {
+				warnings = append(warnings, "scanner found unclosed call delimiter; incomplete call was omitted")
+				continue
+			}
+			startIndex := calleeStartIndex(flat, i-1)
+			start, end := flat[startIndex].start, flat[endIndex].end
+			if byteContains(start, end, target) {
+				name := strings.TrimSpace(text[start:flat[i].start])
+				if r, ok := syntaxRangeFromBytes(text, SyntaxKindCall, name, "scanner", start, end); ok {
+					ranges = append(ranges, r)
+				}
+			}
+		}
+		if (item.tok.Value == "import" || item.tok.Value == "from") && pythonStatementStart(text, item.start) {
+			end, ok := pythonStatementEndTokens(text, flat, i)
+			if !ok {
+				warnings = append(warnings, "scanner found incomplete import declaration; range was omitted")
+				continue
+			}
+			if byteContains(item.start, end, target) {
+				if r, ok := syntaxRangeFromBytes(text, SyntaxKindImportBlock, "", "scanner", item.start, end); ok {
+					ranges = append(ranges, r)
+				}
+			}
+		}
+	}
+	// Class-suite assignments are fields only when directly indented under the
+	// class, never when nested in a method or another block.
+	for _, class := range frames {
+		if class.kind != "class" || !byteContains(class.startOffset, class.endOffset, target) {
 			continue
 		}
-		start, err1 := PositionForOffset(text, f.startOffset)
-		end, err2 := PositionForOffset(text, f.endOffset)
-		if err1 != nil || err2 != nil {
-			continue
+		lineStart := class.startOffset
+		for lineStart < class.endOffset {
+			nl := strings.IndexByte(text[lineStart:class.endOffset], '\n')
+			lineEnd := class.endOffset
+			if nl >= 0 {
+				lineEnd = lineStart + nl
+			}
+			line := text[lineStart:lineEnd]
+			indent := len(line) - len(strings.TrimLeft(line, " \t"))
+			if indent > class.indent && !pythonInsideNestedFrame(frames, class, lineStart) {
+				name, ok := pythonFieldName(flat, lineStart+indent, lineEnd)
+				if ok && byteContains(lineStart+indent, lineEnd, target) {
+					if r, ok := syntaxRangeFromBytes(text, SyntaxKindField, name, "scanner", lineStart+indent, lineEnd); ok {
+						ranges = append(ranges, r)
+					}
+				}
+			}
+			if nl < 0 {
+				break
+			}
+			lineStart = lineEnd + 1
 		}
-		ranges = append(ranges, SyntaxRange{Kind: f.kind, Name: f.name, Detail: containerOrDefault(f.detail), Range: TextRange{Start: start, End: end}})
 	}
-	if fileEnd, err := PositionForOffset(text, len(text)); err == nil {
-		ranges = append(ranges, SyntaxRange{Kind: "file", Name: filepath.Base(path), Detail: "parser", Range: TextRange{Start: Position{}, End: fileEnd}})
+	return ranges, warnings, nil
+}
+func pythonInsideNestedFrame(frames []pyFrame, class pyFrame, offset int) bool {
+	for _, frame := range frames {
+		if frame.startOffset != class.startOffset && frame.startOffset >= class.startOffset && frame.endOffset <= class.endOffset && byteContains(frame.startOffset, frame.endOffset, offset) {
+			return true
+		}
 	}
-	return sortSyntaxRanges(dedupeSyntaxRanges(ranges)), nil
+	return false
+}
+
+func pythonStatementStart(text string, offset int) bool {
+	line := strings.LastIndex(text[:offset], "\n") + 1
+	return strings.TrimSpace(text[line:offset]) == ""
+}
+
+func pythonCallCandidate(tokens []offsetToken, i int) bool {
+	if i <= 0 || tokens[i-1].tok.Type.Category() != chroma.Name {
+		return false
+	}
+	for j := i - 2; j >= 0; j-- {
+		switch tokens[j].tok.Value {
+		case ";", ":", "=", "return", "yield", ",":
+			return true
+		case "def", "class", "if", "for", "while", "with", "except":
+			return false
+		}
+	}
+	return true
+}
+
+func pythonStatementEndTokens(text string, tokens []offsetToken, start int) (int, bool) {
+	depth := 0
+	for i := start + 1; i < len(tokens); i++ {
+		switch tokens[i].tok.Value {
+		case "(", "[", "{":
+			depth++
+		case ")", "]", "}":
+			if depth == 0 {
+				return 0, false
+			}
+			depth--
+		case ";":
+			if depth == 0 {
+				return tokens[i].end, true
+			}
+		}
+		gap := text[tokens[i-1].end:tokens[i].start]
+		if depth == 0 && strings.Contains(gap, "\n") && !strings.HasSuffix(strings.TrimRight(text[:tokens[i].start], " \t\r\n"), "\\") {
+			return tokens[i-1].end, true
+		}
+	}
+	if depth == 0 && start+1 < len(tokens) {
+		return tokens[len(tokens)-1].end, true
+	}
+	return 0, false
+}
+
+func pythonFieldName(tokens []offsetToken, start, end int) (string, bool) {
+	var line []offsetToken
+	for _, item := range tokens {
+		if item.start >= start && item.end <= end {
+			line = append(line, item)
+		}
+	}
+	if len(line) < 2 || line[0].tok.Type.Category() != chroma.Name {
+		return "", false
+	}
+	for _, item := range line[1:] {
+		switch item.tok.Value {
+		case "=":
+			return line[0].tok.Value, true
+		case "(", ")", ".", ",":
+			return "", false
+		}
+	}
+	return "", false
 }
 
 // pythonFrames walks the token stream once, grouping tokens into logical
 // lines and tracking an indent stack. A later line whose indent is <= an
-// open block's indent closes that block (and any more deeply nested ones);
-// this mirrors Python's own off-side-rule block structure without building a
-// full grammar.
+// open block's indent closes that block.
 func pythonFrames(ctx context.Context, tokens []chroma.Token) ([]pyFrame, error) {
+	frames, _, err := pythonFramesWithWarnings(ctx, tokens)
+	return frames, err
+}
+
+func pythonFramesWithWarnings(ctx context.Context, tokens []chroma.Token) ([]pyFrame, []string, error) {
 	var frames []pyFrame
 	var stack []pyFrame
 	var lineTokens []chroma.Token
@@ -148,29 +314,10 @@ func pythonFrames(ctx context.Context, tokens []chroma.Token) ([]pyFrame, error)
 	offset := 0
 	lineStart := 0
 	lastContentEnd := 0
-	// bracketDepth tracks open (unmatched) (), [], {} — Python's implicit
-	// line-continuation rule suspends logical-line splitting inside any of
-	// them, e.g. a wrapped `def run(\n    a,\n    b,\n):` parameter list.
-	// Runs for the whole file, not per-line: it only returns to 0 once every
-	// opened bracket closes, which is exactly when line-splitting may resume.
 	bracketDepth := 0
-	// prevLineEnd is lastContentEnd as of the end of the previous non-blank
-	// line — the correct close offset when a later line dedents past an open
-	// block. Using the live lastContentEnd instead would extend the closing
-	// block's range through the dedented line's own content, since
-	// lastContentEnd is already updated with that line's tokens by the time
-	// handleLine sees it.
+	var warnings []string
 	prevLineEnd := 0
-	// atLineStart tracks whether we haven't yet seen real content since the
-	// last physical newline — independent of bracketDepth/structural line
-	// breaks, so the resync check below can tell "first token of a physical
-	// line" even while still nominally inside an open bracket.
 	atLineStart := true
-	// physicalLineStart is the offset where the current physical line began
-	// (before any leading whitespace), updated on every real newline
-	// regardless of bracketDepth. Resync needs this rather than the resync
-	// keyword token's own offset — indent is measured from the true start of
-	// the line, not from wherever leading whitespace happened to end.
 	physicalLineStart := 0
 
 	closeTo := func(indent, endOffset int) {
@@ -225,7 +372,7 @@ func pythonFrames(ctx context.Context, tokens []chroma.Token) ([]pyFrame, error)
 
 	for _, tok := range tokens {
 		if err := ctx.Err(); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		cat := tok.Type.Category()
 		isBlank := cat == chroma.Text && strings.TrimSpace(tok.Value) == ""
@@ -262,6 +409,7 @@ func pythonFrames(ctx context.Context, tokens []chroma.Token) ([]pyFrame, error)
 			// as if this keyword began a new logical line at depth 0.
 			if bracketDepth > 0 && atLineStart && cat == chroma.Keyword && pyResyncKeywords[tok.Value] {
 				handleLine()
+				warnings = append(warnings, "scanner recovered after an unclosed bracket; incomplete ranges were omitted")
 				bracketDepth = 0
 				lineStart = physicalLineStart
 			}
@@ -285,6 +433,9 @@ func pythonFrames(ctx context.Context, tokens []chroma.Token) ([]pyFrame, error)
 		offset += len(tok.Value)
 	}
 	handleLine()
+	if bracketDepth != 0 {
+		warnings = append(warnings, "scanner found an unclosed bracket at end of file; incomplete ranges were omitted")
+	}
 	closeTo(0, lastContentEnd)
-	return frames, nil
+	return frames, warnings, nil
 }
