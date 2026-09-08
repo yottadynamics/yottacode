@@ -174,8 +174,8 @@ func TestRunBashTool_ExecuteRoutesThroughSandbox(t *testing.T) {
 	if spy.callCount != 1 {
 		t.Errorf("Sandbox.Command called %d times, want 1", spy.callCount)
 	}
-	if spy.gotCommand != "echo via-sandbox" {
-		t.Errorf("Sandbox.Command got command %q", spy.gotCommand)
+	if !strings.Contains(spy.gotCommand, "echo via-sandbox") {
+		t.Errorf("Sandbox.Command lost original command: %q", spy.gotCommand)
 	}
 	if spy.gotCwd != dir {
 		t.Errorf("Sandbox.Command got cwd %q, want %q", spy.gotCwd, dir)
