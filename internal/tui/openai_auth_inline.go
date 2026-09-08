@@ -129,6 +129,8 @@ func handleInlineOpenAIAuthURL(m Model, msg inlineOpenAIAuthURLMsg) (Model, tea.
 	}
 	m.openAIAuthPending = msg.pending
 	m.appendLine(styleAuto.Render(statusActionLine("openai-auth", "browser opened; sign in to finish")))
+	m.appendLine(styleAuto.Render(statusHintLine("if it didn't open, paste this URL into your browser:")))
+	m.appendLine(stylePathHeader.Render(msg.pending.AuthURL))
 	return m, waitInlineOpenAIAuthLoginCmd(m.parentCtx, msg.pending)
 }
 
