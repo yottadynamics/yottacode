@@ -8,6 +8,16 @@ the project uses semantic versioning once it's past `1.0.0`.
 
 ### Added
 
+- **Default-on commit and PR attribution.** Commits drafted through `git_commit_apply`
+  or auto-created by dispatch workers now end with GitHub's standard
+  `Co-authored-by: yottacode <325888353+yottacode-agent@users.noreply.github.com>`
+  trailer, linking the contribution to the public `yottacode-agent` profile.
+  Created and updated PR descriptions end with a small yottacode link, with
+  repeated updates kept idempotent. Set `[attribution] disabled = true` to
+  remove both, or override `trailer` for commit attribution only. Conversation
+  comments remain untouched. See
+  [`configuration.md`](docs/configuration.md#commit-and-pr-attribution).
+
 worktree-permissions-fine-grained-review
 - **Session-scoped permission grants.** The approval modal gains an `[S]`
   hotkey alongside `[Y]`/`[A]`/`[N]`/`[D]`: it derives the same pattern
