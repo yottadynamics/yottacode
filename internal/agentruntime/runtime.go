@@ -551,6 +551,8 @@ func (b *Builder) Build(ctx context.Context, spec SessionSpec) (*Runtime, error)
 		Configs:            subRes.Configs,
 		Tasks:              subagentTasks,
 		Adapter:            ad,
+		PricingBaseURL:     opts.BaseURL,
+		PricingProvider:    string(ad.Profile().Provider),
 		ParentRegistry:     reg,
 		ImplementerAdapter: routerImplementer(routerAdapters),
 		ImplementerModel:   routerImplementerModel(routerAdapters),

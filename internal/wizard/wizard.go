@@ -238,6 +238,12 @@ func providersForOptions(ctx context.Context, opts Options) ([]CatalogEntry, err
 			}
 			seen[name] = true
 			if e := FindCatalogEntry(name); e != nil {
+				// Custom OpenAI-compatible providers require an endpoint before
+				// non-interactive plans can be validated. Interactive setup fills it
+				// in later, but --from-env must not select the placeholder entry.
+				if e.Name == "custom" && strings.TrimSpace(e.BaseURL) == "" {
+					continue
+				}
 				out = append(out, *e)
 			}
 		}
@@ -388,4 +394,3 @@ func buildPlanFromOptions(ctx context.Context, opts Options) (Plan, error) {
 	}
 	return plan, nil
 }
-
