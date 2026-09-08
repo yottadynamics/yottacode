@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -339,13 +340,34 @@ func (c *StdioClient) Stop(ctx context.Context) error {
 	go func() { errCh <- session.Close() }()
 	select {
 	case err := <-errCh:
-		if err != nil && procCancel != nil && strings.Contains(err.Error(), "signal: killed") {
+		if procCancel != nil && isExpectedShutdownErr(err) {
+			// Canceling the child before the protocol close races the SDK's
+			// graceful-shutdown ladder: session.Close may observe the child
+			// already torn down and report context.Canceled, a signal kill, or
+			// another cancellation-shaped error. Those are the expected outcome
+			// of the cancel-first ordering, not transport failures to surface.
 			return nil
 		}
 		return err
 	case <-ctx.Done():
 		return ctx.Err()
 	}
+}
+
+// isExpectedShutdownErr reports whether err is a cancellation/kill the
+// cancel-first Stop ordering deliberately produces during teardown, as
+// opposed to a transport failure worth returning to the caller. A nil
+// err is a clean shutdown and reports true so callers can branch on a
+// single gate.
+func isExpectedShutdownErr(err error) bool {
+	if err == nil {
+		return true
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	// The SDK can surface the subprocess kill as a non-sentinel error string.
+	return strings.Contains(err.Error(), "signal: killed")
 }
 
 // StderrTail returns the recent stderr lines captured from the
