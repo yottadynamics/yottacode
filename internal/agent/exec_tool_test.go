@@ -42,8 +42,8 @@ func TestRunBashTool_IsolatesHomeAndXDGFromRepoRoot(t *testing.T) {
 			t.Fatalf("run_bash leaked repo-root %s with output %q: %v", leaked, out, err)
 		}
 	}
-	if !strings.Contains(out, filepath.Join(".yottacode", "host-shell")) {
-		t.Fatalf("run_bash output should show isolated HOME, got %q", out)
+	if !strings.Contains(out, "host-shell") || strings.Contains(out, dir) {
+		t.Fatalf("run_bash output should show an isolated host-shell scratch path outside the workspace, got %q", out)
 	}
 }
 func TestRunBashTool_PreservesSafeHostEnvironment(t *testing.T) {
