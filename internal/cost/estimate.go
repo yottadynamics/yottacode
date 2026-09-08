@@ -26,6 +26,9 @@ func ForUsage(baseURL, provider string, model string, u adapter.Usage) Estimate 
 	if read == 0 && u.CacheReadTokens > 0 {
 		return Estimate{}
 	}
+	if write == 0 && u.CacheCreationTokens > 0 {
+		return Estimate{}
+	}
 	usd := float64(u.InputTokens)*in/1e6 +
 		float64(u.OutputTokens)*out/1e6 +
 		float64(u.CacheReadTokens)*read/1e6 +
