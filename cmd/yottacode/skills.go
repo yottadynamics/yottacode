@@ -72,7 +72,12 @@ Accepted source shapes:
   https://raw.githubusercontent.com/owner/repo/<ref>/path/to/skill/SKILL.md
                               GitHub URLs (copies resources from archive)
 
-Refuses to overwrite an existing install unless --force is set.`,
+Refuses to overwrite an existing install unless --force is set.
+
+Official and local-path installs are enabled for future sessions
+automatically (written into config.toml's [skills] default_on).
+GitHub/URL installs stay disabled until you review and enable them
+via /skills in a session — they may carry scripts you haven't seen.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			res, err := skills.Install(skills.InstallOptions{
@@ -86,6 +91,16 @@ Refuses to overwrite an existing install unless --force is set.`,
 				res.Skill.Name, res.SourceType, res.Dir)
 			for _, w := range res.Warnings {
 				fmt.Fprintf(cmd.ErrOrStderr(), "warning: %s\n", w)
+			}
+			switch res.SourceType {
+			case skills.SourceOfficial, skills.SourceLocal:
+				if err := skills.EnableDefaultOn(res.Skill.Name); err != nil {
+					fmt.Fprintf(cmd.ErrOrStderr(), "warning: enable for future sessions: %s\n", err)
+				} else {
+					fmt.Fprintf(cmd.OutOrStdout(), "enabled for future sessions ([skills] default_on in config.toml)\n")
+				}
+			default:
+				fmt.Fprintf(cmd.OutOrStdout(), "not enabled — open a session and run /skills to review and enable it\n")
 			}
 			return nil
 		},

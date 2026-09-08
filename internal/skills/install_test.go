@@ -193,6 +193,58 @@ func TestInstall_URL_SingleFile(t *testing.T) {
 	}
 }
 
+// TestInstall_RawGitHubURLWithToken locks the fix for private-repo raw
+// GitHub links: a raw.githubusercontent.com URL carrying a `?token=...`
+// query string must be fetched as a single-file GET (query preserved
+// verbatim) rather than routed through the codeload.github.com archive
+// path, which can't use that token and 404s on a private repo. The
+// server asserts the query string arrives intact.
+func TestInstall_RawGitHubURLWithToken(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("token") != "abc123" {
+			http.Error(w, "missing token", http.StatusForbidden)
+			return
+		}
+		_, _ = w.Write([]byte(sampleSkillBody))
+	}))
+	defer srv.Close()
+	// The source string must carry the literal raw.githubusercontent.com
+	// host so classifySource takes the isRawGitHubBlobURL branch under
+	// test; the transport below redirects that host to the local server
+	// so no real network call happens.
+	client := &http.Client{Transport: redirectToTransport{target: srv.Listener.Addr().String()}}
+
+	dest := t.TempDir()
+	res, err := Install(InstallOptions{
+		Source:     "https://raw.githubusercontent.com/owner/repo/main/skills/sample/SKILL.md?token=abc123",
+		DestRoot:   dest,
+		HTTPClient: client,
+	})
+	if err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	if res.SourceType != SourceURL {
+		t.Errorf("source type = %q, want url (archive path can't use a raw-blob token)", res.SourceType)
+	}
+	if _, err := os.Stat(filepath.Join(dest, "sample", "SKILL.md")); err != nil {
+		t.Errorf("SKILL.md missing: %v", err)
+	}
+}
+
+// redirectToTransport rewrites every request's host to target before
+// dispatching over plain HTTP, so a test can hand Install a source URL
+// with a real hostname (needed for classifySource's host-based checks)
+// while the actual bytes come from a local httptest server.
+type redirectToTransport struct{ target string }
+
+func (rt redirectToTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	out := req.Clone(req.Context())
+	out.URL.Scheme = "http"
+	out.URL.Host = rt.target
+	out.Host = rt.target
+	return http.DefaultTransport.RoundTrip(out)
+}
+
 // TestInstall_URL_RejectsNonSkillMd is the guard for the literal
 // reading of the design notes: URL installs accept exactly
 // `https://.../SKILL.md`, nothing else.
@@ -419,6 +471,8 @@ func TestClassifySource(t *testing.T) {
 		{"owner/repo", SourceGitHub},
 		{"owner/repo/skills/foo", SourceGitHub},
 		{"not a source", ""},
+		{"https://raw.githubusercontent.com/owner/repo/main/skills/foo/SKILL.md", SourceGitHub},
+		{"https://raw.githubusercontent.com/owner/repo/main/skills/foo/SKILL.md?token=abc123", SourceURL},
 	}
 	for _, c := range cases {
 		t.Run(c.in, func(t *testing.T) {
