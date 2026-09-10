@@ -122,6 +122,23 @@ func TestBuild_GitUpdatePR_TrimsAndSplicesRef(t *testing.T) {
 	}
 }
 
+func TestBuild_GitUpdatePR_PreservesExistingMarkdownInstruction(t *testing.T) {
+	directive := GitUpdatePRDirective("")
+	for _, phrase := range []string{
+		"Treat the existing body as authoritative Markdown",
+		"preserve its section order, headings, lists, tables, badges, links, HTML/details blocks",
+		"Do not normalize, rewrap, or remove Markdown formatting",
+		"If the existing body is empty, use the standard skeleton",
+	} {
+		if !strings.Contains(directive, phrase) {
+			t.Fatalf("git-update-pr directive missing preservation instruction %q:\n%s", phrase, directive)
+		}
+	}
+	if strings.Contains(directive, "BODY: regenerate from") {
+		t.Fatal("git-update-pr must not instruct the model to regenerate an existing body")
+	}
+}
+
 func TestBuild_GitUpdatePR_QuotesRef(t *testing.T) {
 	got := GitUpdatePRDirective("bad\"\nextra")
 	if !strings.Contains(got, `ref="bad\"\nextra"`) {
