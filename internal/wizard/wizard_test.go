@@ -77,7 +77,7 @@ func TestRunPrintOnlyDoesNotWrite(t *testing.T) {
 func TestRunFromEnvAutoEnables(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "x1")
 	t.Setenv("OPENAI_API_KEY", "x2")
-	for _, k := range []string{"GEMINI_API_KEY", "XAI_API_KEY", "NVIDIA_API_KEY"} {
+	for _, k := range []string{"GEMINI_API_KEY", "XAI_API_KEY", "NVIDIA_API_KEY", "CUSTOM_API_KEY"} {
 		t.Setenv(k, "")
 	}
 

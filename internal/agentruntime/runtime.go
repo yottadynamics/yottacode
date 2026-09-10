@@ -9,6 +9,7 @@ import (
 
 	"github.com/yottadynamics/yottacode/internal/adapter"
 	"github.com/yottadynamics/yottacode/internal/agent"
+	"github.com/yottadynamics/yottacode/internal/browser"
 	"github.com/yottadynamics/yottacode/internal/catalog"
 	"github.com/yottadynamics/yottacode/internal/cli"
 	"github.com/yottadynamics/yottacode/internal/codemap"
@@ -448,6 +449,12 @@ func (b *Builder) Build(ctx context.Context, spec SessionSpec) (*Runtime, error)
 		}
 	}
 
+	// browser.NewManager is cheap and side-effect-free — same posture as
+	// the ghClient construction below: no process is spawned, no binary
+	// discovery happens, until the first browser_* tool call actually
+	// needs it (see Manager.ensureLocked).
+	browserMgr := browser.NewManager()
+
 	reg := agent.NewRegistry()
 	rt.Registry = reg
 	agent.RegisterCoreCwdTools(reg, cwdRef, agent.CoreToolDeps{
@@ -463,6 +470,8 @@ func (b *Builder) Build(ctx context.Context, spec SessionSpec) (*Runtime, error)
 		EnableSyntaxRanges:     true,
 		AllowPDFIngestion:      true,
 		AllowDocxPdfGeneration: true,
+		EnableBrowser:          expSet.IsEnabled(experimental.Browser),
+		BrowserSession:         browserMgr,
 		Sandbox:                cmdSandbox,
 		MediaMaxThreads:        fileCfg.MediaMaxThreads(),
 		MediaRenderTimeout:     time.Duration(fileCfg.MediaRenderTimeoutSeconds()) * time.Second,
