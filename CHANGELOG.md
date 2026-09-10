@@ -8,6 +8,42 @@ the project uses semantic versioning once it's past `1.0.0`.
 
 ### Added
 
+- **Code Map's full 5-phase roadmap** (`--experimental code_map`, still
+  experimental). `/map here` now ranks a suggested-context list (changed
+  files, direct import neighbors, likely tests, likely docs) with `a` to
+  attach it all in one keystroke; `/map impact` groups by proximity and adds
+  likely tests/docs, and `code_impact` gains a compact `format: "summary"`
+  projection plus a best-effort live `include_calls` LSP callers/callees
+  supplement; filtering `/map` to an exact directory renders a subsystem
+  overview (entry points, public surface, core types, tests, key
+  dependencies); import-edge resolution now covers TypeScript/JavaScript,
+  Python, and Rust alongside Go — Rust resolution walks the crate's actual
+  module tree, correctly handling `self::`/`super::` and a leaf file's own
+  submodules, and Go import edges never land on a `_test.go` file (a
+  package's compiled surface for an external importer never includes its
+  tests, and an external test file's package clause could previously
+  shadow the real package name for its directory); and the index is
+  watcher-backed (`fsnotify`): a changed file
+  is incrementally re-derived and patched into the persistent graph rather
+  than triggering a full workspace re-walk, with a safe fingerprint-walk
+  fallback for oversized repos or watch setup failures. `code_map_diagram`/
+  `code_structure_projection` gain a `to_file` export for output too large
+  for one turn's context window — `code_map_diagram`'s export requires a
+  focus path, since an unfocused one is the full repo import graph (several
+  MB on this repo) rather than something a Mermaid diagram can usefully
+  render. See [`code-map.md`](docs/code-map.md).
+
+- **Code Map's Go import edges narrow to actually-referenced files.**
+  Importing a package used to edge to every non-test file in it; now
+  `buildGoImportEdges` walks the importing file's body for `pkg.Symbol`
+  selector usages and only edges to the file(s) that declare a referenced
+  symbol, falling back to the whole package when usage can't be determined
+  (a blank/dot import, an aliased import, or a name matching no known
+  symbol) so recall never regresses below the previous file-level
+  resolution. On this repo, a file importing `internal/lsp` (30+ files)
+  now edges to just the one file it actually calls. See
+  [`code-map.md`](docs/code-map.md).
+
 worktree-permissions-fine-grained-review
 - **Session-scoped permission grants.** The approval modal gains an `[S]`
   hotkey alongside `[Y]`/`[A]`/`[N]`/`[D]`: it derives the same pattern

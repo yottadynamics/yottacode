@@ -163,6 +163,49 @@ func TestImpactIncludesTransitiveDependentsAndCycles(t *testing.T) {
 	}
 }
 
+func TestImpactIncludesLikelyTestsAndDocs(t *testing.T) {
+	root := t.TempDir()
+	write(t, root, "go.mod", "module example.com/test\n")
+	write(t, root, "internal/app/app.go", "package app\n\nfunc Run() {}\n")
+	write(t, root, "internal/app/app_test.go", "package app\n\nimport \"testing\"\n\nfunc TestRun(t *testing.T) {}\n")
+	write(t, root, "docs/app.md", "# App\nDocs for the app package.\n")
+
+	idx, err := Build(context.Background(), BuildOptions{Root: root})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	impact := idx.Impact("internal/app/app.go", MaxDepthAll, 10)
+	if len(impact.LikelyTests) != 1 || impact.LikelyTests[0].RelPath != "internal/app/app_test.go" {
+		t.Fatalf("LikelyTests = %+v", impact.LikelyTests)
+	}
+	if len(impact.LikelyDocs) != 1 || impact.LikelyDocs[0].RelPath != "docs/app.md" {
+		t.Fatalf("LikelyDocs = %+v", impact.LikelyDocs)
+	}
+}
+
+func TestImpactRanksDirectDependentsByProximity(t *testing.T) {
+	root := t.TempDir()
+	rootID := NodeID("dir:.")
+	target := NodeID("file:a/target.go")
+	sameDir := NodeID("file:a/zzz.go")
+	otherDir := NodeID("file:b/c/aaa.go")
+	nodes := map[NodeID]Node{
+		rootID:   {ID: rootID, Kind: NodeDirectory, RelPath: "."},
+		target:   {ID: target, Parent: rootID, Kind: NodeFile, Name: "target.go", RelPath: "a/target.go"},
+		sameDir:  {ID: sameDir, Parent: rootID, Kind: NodeFile, Name: "zzz.go", RelPath: "a/zzz.go"},
+		otherDir: {ID: otherDir, Parent: rootID, Kind: NodeFile, Name: "aaa.go", RelPath: "b/c/aaa.go"},
+	}
+	edges := []Edge{
+		{From: sameDir, To: target, Kind: EdgeImports},
+		{From: otherDir, To: target, Kind: EdgeImports},
+	}
+	idx := NewIndex(root, rootID, nodes, map[NodeID][]NodeID{}, edges)
+	dependents := idx.Dependents("a/target.go", 10)
+	if len(dependents) != 2 || dependents[0].RelPath != "a/zzz.go" {
+		t.Fatalf("dependents = %+v, want same-directory file ranked first despite alphabetical order", dependents)
+	}
+}
+
 func relPaths(nodes []Node) []string {
 	out := make([]string, 0, len(nodes))
 	for _, n := range nodes {
