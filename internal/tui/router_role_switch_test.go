@@ -70,6 +70,9 @@ func TestSwitchActiveModelToRouterRole_AdvisorAndImplementer(t *testing.T) {
 	if m.provider != "anthropic" || m.baseURL != "https://api.anthropic.com" || m.apiKey != "anthropic-key" {
 		t.Fatalf("provider fields after advisor switch = (%q, %q, %q)", m.provider, m.baseURL, m.apiKey)
 	}
+	if m.opts.Headers["X-Role"] != "advisor" {
+		t.Fatalf("advisor headers = %#v", m.opts.Headers)
+	}
 	if m.providerProfile.Provider != adapter.ProviderAnthropic {
 		t.Fatalf("providerProfile = %s, want anthropic", m.providerProfile.Provider)
 	}
@@ -89,6 +92,9 @@ func TestSwitchActiveModelToRouterRole_AdvisorAndImplementer(t *testing.T) {
 	}
 	if m.provider != "openai" || m.baseURL != "https://api.openai.com/v1" || m.apiKey != "openai-key" {
 		t.Fatalf("provider fields after implementer switch = (%q, %q, %q)", m.provider, m.baseURL, m.apiKey)
+	}
+	if len(m.opts.Headers) != 0 {
+		t.Fatalf("advisor headers leaked to implementer: %#v", m.opts.Headers)
 	}
 	if m.providerProfile.Provider != adapter.ProviderOpenAI {
 		t.Fatalf("providerProfile = %s, want openai", m.providerProfile.Provider)
@@ -265,6 +271,7 @@ func seedRoleSwitchConfig(t *testing.T) {
 			Kind:         "anthropic",
 			BaseURL:      "https://api.anthropic.com",
 			APIKeyEnv:    "ANTHROPIC_API_KEY",
+			Headers:      map[string]string{"X-Role": "advisor"},
 			DefaultModel: "claude-opus-4-6",
 			Models:       []config.Model{{Name: "claude-opus-4-6", Tier: "expensive"}},
 		},

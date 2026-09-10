@@ -27,7 +27,7 @@ func TestLiveOpenAICompatible_CapturesContextWindow(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	models, err := liveOpenAICompatible(context.Background(), "openai-compatible", srv.URL, "key")
+	models, err := liveOpenAICompatible(context.Background(), "openai-compatible", srv.URL, "key", nil)
 	if err != nil {
 		t.Fatalf("liveOpenAICompatible: %v", err)
 	}
@@ -50,6 +50,52 @@ func TestLiveOpenAICompatible_CapturesContextWindow(t *testing.T) {
 		if m.ContextWindow != w {
 			t.Errorf("model %q: ContextWindow = %d, want %d", m.ID, m.ContextWindow, w)
 		}
+	}
+}
+
+func TestLiveOpenAICompatible_SendsHeadersBeforeAuthorization(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("HTTP-Referer"); got != "https://yottacode.ai" {
+			t.Errorf("HTTP-Referer = %q", got)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer key" {
+			t.Errorf("Authorization = %q", got)
+		}
+		_, _ = w.Write([]byte(`{"data":[]}`))
+	}))
+	defer srv.Close()
+	_, err := liveOpenAICompatible(context.Background(), "openai-compatible", srv.URL, "key", map[string]string{
+		"HTTP-Referer":  "https://yottacode.ai",
+		"Authorization": "Bearer wrong",
+	})
+	if err != nil {
+		t.Fatalf("liveOpenAICompatible: %v", err)
+	}
+}
+
+func TestLiveOllama_SendsConfiguredHeaders(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("X-Project-Id"); got != "engineering" {
+			t.Errorf("X-Project-Id = %q", got)
+		}
+		_, _ = w.Write([]byte(`{"models":[]}`))
+	}))
+	defer srv.Close()
+	if _, err := Live(context.Background(), "ollama", srv.URL+"/v1", "", map[string]string{"X-Project-Id": "engineering"}); err != nil {
+		t.Fatalf("Live: %v", err)
+	}
+}
+
+func TestOllamaContextWindow_SendsConfiguredHeaders(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("X-Project-Id"); got != "engineering" {
+			t.Errorf("X-Project-Id = %q", got)
+		}
+		_, _ = w.Write([]byte(`{"model_info":{"llama.context_length":8192}}`))
+	}))
+	defer srv.Close()
+	if got := ollamaContextWindow(context.Background(), srv.URL, "llama", map[string]string{"X-Project-Id": "engineering"}); got != 8192 {
+		t.Fatalf("context window = %d", got)
 	}
 }
 

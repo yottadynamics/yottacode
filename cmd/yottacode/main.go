@@ -347,7 +347,8 @@ Configuration (no built-in defaults — must be set via flag or env):
 			return oneshot.Run(cmd.Context(), *opts, prompt)
 		},
 	}
-	cmd.Flags().BoolVar(&opts.RunJSONStatus, "json", false, "Emit a machine-readable run status envelope to stderr")
+	cmd.Flags().StringVar(&opts.RunFormat, "format", cli.RunFormatText, "Output format: text or json")
+	cmd.Flags().BoolVar(&opts.RunJSONStatus, "json", false, "Append the legacy machine-readable run status receipt to stderr")
 	return cmd
 }
 
@@ -485,6 +486,7 @@ func adapterConfigFromOptions(opts cli.ChatOptions) adapter.Config {
 	return adapter.Config{
 		BaseURL:                opts.BaseURL,
 		APIKey:                 opts.APIKey,
+		Headers:                cloneHeaders(opts.Headers),
 		Model:                  opts.Model,
 		ProviderOverride:       adapter.Provider(providerOverride),
 		ReasoningEffort:        opts.ReasoningEffort,
@@ -499,6 +501,17 @@ func adapterConfigFromOptions(opts cli.ChatOptions) adapter.Config {
 		XSearchFromDate:        strings.TrimSpace(opts.XSearchFromDate),
 		XSearchToDate:          strings.TrimSpace(opts.XSearchToDate),
 	}
+}
+
+func cloneHeaders(src map[string]string) map[string]string {
+	if len(src) == 0 {
+		return nil
+	}
+	dst := make(map[string]string, len(src))
+	for key, value := range src {
+		dst[key] = value
+	}
+	return dst
 }
 
 func splitCSV(s string) []string {

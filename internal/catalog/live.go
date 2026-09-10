@@ -26,7 +26,7 @@ import (
 // Errors surface so callers can render "couldn't reach API"; they
 // should not silently fall back, since for Ollama a failed probe
 // usually means the daemon isn't running and the user needs to know.
-func Live(ctx context.Context, kind, baseURL, apiKey string) ([]Model, error) {
+func Live(ctx context.Context, kind, baseURL, apiKey string, headers ...map[string]string) ([]Model, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -37,9 +37,17 @@ func Live(ctx context.Context, kind, baseURL, apiKey string) ([]Model, error) {
 	}
 	switch kind {
 	case "openai", "openai-compatible":
-		return liveOpenAICompatible(ctx, kind, baseURL, apiKey)
+		var requestHeaders map[string]string
+		if len(headers) > 0 {
+			requestHeaders = headers[0]
+		}
+		return liveOpenAICompatible(ctx, kind, baseURL, apiKey, requestHeaders)
 	case "ollama":
-		return liveOllama(ctx, baseURL)
+		var requestHeaders map[string]string
+		if len(headers) > 0 {
+			requestHeaders = headers[0]
+		}
+		return liveOllama(ctx, baseURL, requestHeaders)
 	default:
 		return nil, fmt.Errorf("catalog: live fetch unsupported for kind %q", kind)
 	}
@@ -50,7 +58,7 @@ func Live(ctx context.Context, kind, baseURL, apiKey string) ([]Model, error) {
 // the long tail of OpenAI-shape endpoints — xAI, Groq, OpenRouter,
 // NVIDIA NIM, Together, vLLM. Response is {data: [{id, ...}]}; we
 // keep only the id since the rest is non-uniform across providers.
-func liveOpenAICompatible(ctx context.Context, kind, baseURL, apiKey string) ([]Model, error) {
+func liveOpenAICompatible(ctx context.Context, kind, baseURL, apiKey string, headers map[string]string) ([]Model, error) {
 	if strings.TrimSpace(baseURL) == "" {
 		return nil, errors.New("openai-compatible: empty base URL")
 	}
@@ -58,6 +66,9 @@ func liveOpenAICompatible(ctx context.Context, kind, baseURL, apiKey string) ([]
 		strings.TrimRight(baseURL, "/")+"/models", nil)
 	if err != nil {
 		return nil, err
+	}
+	for key, value := range headers {
+		req.Header.Set(key, value)
 	}
 	if apiKey != "" {
 		req.Header.Set("Authorization", "Bearer "+apiKey)
@@ -104,7 +115,7 @@ func liveOpenAICompatible(ctx context.Context, kind, baseURL, apiKey string) ([]
 // models. The base URL on Ollama profiles typically ends in /v1 (the
 // OpenAI-compatible shim path), but /api/tags lives at the root, so
 // we strip a trailing /v1 before composing the URL. No auth.
-func liveOllama(ctx context.Context, baseURL string) ([]Model, error) {
+func liveOllama(ctx context.Context, baseURL string, headers map[string]string) ([]Model, error) {
 	if strings.TrimSpace(baseURL) == "" {
 		return nil, errors.New("ollama: empty base URL")
 	}
@@ -113,6 +124,9 @@ func liveOllama(ctx context.Context, baseURL string) ([]Model, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/api/tags", nil)
 	if err != nil {
 		return nil, err
+	}
+	for key, value := range headers {
+		req.Header.Set(key, value)
 	}
 	body, err := doLive(req)
 	if err != nil {
@@ -160,7 +174,7 @@ func liveOllama(ctx context.Context, baseURL string) ([]Model, error) {
 // baseURL is the Ollama profile's URL; it usually ends in /v1 (the
 // OpenAI-compatible shim), but /api/show lives at the root, so a trailing
 // /v1 is stripped — mirroring liveOllama.
-func ollamaContextWindow(ctx context.Context, baseURL, model string) int {
+func ollamaContextWindow(ctx context.Context, baseURL, model string, headers ...map[string]string) int {
 	if strings.TrimSpace(baseURL) == "" || strings.TrimSpace(model) == "" {
 		return 0
 	}
@@ -178,6 +192,11 @@ func ollamaContextWindow(ctx context.Context, baseURL, model string) int {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/api/show", bytes.NewReader(payload))
 	if err != nil {
 		return 0
+	}
+	if len(headers) > 0 {
+		for key, value := range headers[0] {
+			req.Header.Set(key, value)
+		}
 	}
 	req.Header.Set("Content-Type", "application/json")
 	body, err := doLive(req)

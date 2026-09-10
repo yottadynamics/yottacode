@@ -259,16 +259,11 @@ func (b *Builder) Build(ctx context.Context, spec SessionSpec) (*Runtime, error)
 	prFooter := fileCfg.Attribution.PRFooter()
 	rt.FileCfg = fileCfg
 
-	var embedClient *memory.EmbedClient
-	if s := fileCfg.Retrieval.Strategy; s == "semantic" || s == "auto" {
-		ec := memory.NewEmbedClient("", fileCfg.Retrieval.EmbeddingModel)
-		if reachable, installed := ec.Status(ctx); installed {
-			ec.Timeout = memory.InteractiveEmbedTimeout
-			embedClient = ec
-		} else if reachable {
-			rt.Warnings = append(rt.Warnings, fmt.Sprintf(
-				"memory: embedding model %q not installed — using BM25 (run: ollama pull %s)", ec.Model, ec.Model))
-		}
+	embedClient, embedReachable := memory.ResolveEmbedClient(ctx, fileCfg.Retrieval.Strategy, fileCfg.Retrieval.EmbeddingModel, "")
+	if embedClient == nil && embedReachable {
+		rt.Warnings = append(rt.Warnings, fmt.Sprintf(
+			"memory: embedding model %q not installed — using BM25 (run: ollama pull %s)",
+			fileCfg.Retrieval.EmbeddingModel, fileCfg.Retrieval.EmbeddingModel))
 	}
 	rt.EmbedClient = embedClient
 
@@ -724,6 +719,7 @@ func adapterConfig(opts cli.ChatOptions, fileCfg config.Config) adapter.Config {
 	return adapter.Config{
 		BaseURL:                opts.BaseURL,
 		APIKey:                 opts.APIKey,
+		Headers:                cloneStringMap(opts.Headers),
 		Model:                  opts.Model,
 		ProviderOverride:       adapter.Provider(strings.TrimSpace(opts.ProviderKind)),
 		ReasoningEffort:        opts.ReasoningEffort,
@@ -742,6 +738,17 @@ func adapterConfig(opts cli.ChatOptions, fileCfg config.Config) adapter.Config {
 		XSearchFromDate:        strings.TrimSpace(opts.XSearchFromDate),
 		XSearchToDate:          strings.TrimSpace(opts.XSearchToDate),
 	}
+}
+
+func cloneStringMap(src map[string]string) map[string]string {
+	if len(src) == 0 {
+		return nil
+	}
+	dst := make(map[string]string, len(src))
+	for key, value := range src {
+		dst[key] = value
+	}
+	return dst
 }
 
 func preflight(ctx context.Context, cfg adapter.Config) error {

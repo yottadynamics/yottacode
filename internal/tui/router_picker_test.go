@@ -2,12 +2,15 @@ package tui
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/yottadynamics/yottacode/internal/agent"
+	"github.com/yottadynamics/yottacode/internal/cli"
 	"github.com/yottadynamics/yottacode/internal/config"
 	"github.com/yottadynamics/yottacode/internal/session"
 )
@@ -417,21 +420,26 @@ func TestRouterPicker_AddAndClearSmartFallback(t *testing.T) {
 func TestRouterActiveSwitchTarget(t *testing.T) {
 	// Smart changed this session and differs from the active model → switch.
 	p := &routerPickerState{smartChain: []string{"anthropic:claude-opus-4-6"}, initialSmart: ""}
-	if got := routerActiveSwitchTarget(p, "claude-haiku-4-5"); got != "anthropic:claude-opus-4-6" {
+	if got := routerActiveSwitchTarget(p); got != "anthropic:claude-opus-4-6" {
 		t.Errorf("changed smart should switch the active model, got %q", got)
 	}
 	// Unchanged this session (initial == current) → no switch.
 	p2 := &routerPickerState{smartChain: []string{"anthropic:claude-opus-4-6"}, initialSmart: "anthropic:claude-opus-4-6"}
-	if got := routerActiveSwitchTarget(p2, "claude-haiku-4-5"); got != "" {
+	if got := routerActiveSwitchTarget(p2); got != "" {
 		t.Errorf("unchanged smart should not switch, got %q", got)
 	}
-	// Changed but the smart model is already the active one → no switch.
+	// A changed smart ref always refreshes the adapter, even when its model
+	// name matches the current model; provider identity can still differ.
 	p3 := &routerPickerState{smartChain: []string{"anthropic:claude-opus-4-6"}, initialSmart: ""}
-	if got := routerActiveSwitchTarget(p3, "claude-opus-4-6"); got != "" {
-		t.Errorf("smart already active should not switch, got %q", got)
+	if got := routerActiveSwitchTarget(p3); got != "anthropic:claude-opus-4-6" {
+		t.Errorf("changed smart ref should switch, got %q", got)
+	}
+	p4 := &routerPickerState{smartChain: []string{"openrouter:shared-model"}, initialSmart: ""}
+	if got := routerActiveSwitchTarget(p4); got != "openrouter:shared-model" {
+		t.Errorf("same model on another provider should switch, got %q", got)
 	}
 	// No smart configured → no switch.
-	if got := routerActiveSwitchTarget(&routerPickerState{}, "x"); got != "" {
+	if got := routerActiveSwitchTarget(&routerPickerState{}); got != "" {
 		t.Errorf("no smart should not switch, got %q", got)
 	}
 }
@@ -545,6 +553,62 @@ func TestSwitchActiveModelToRef_WarnsWhenEffortBecomesNoop(t *testing.T) {
 	post := m.transcript.String()[len(pre):]
 	if !strings.Contains(post, "no-op on this model") {
 		t.Errorf("switching to gpt-4o (non-reasoning) should re-surface the no-op warning; new transcript:\n%s", post)
+	}
+}
+
+func TestSwitchActiveModelToRef_ReplacesProviderHeaders(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	dir := filepath.Join(home, ".yottacode")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "config.toml"), []byte(`
+[[providers]]
+name = "openrouter"
+kind = "openai-compatible"
+base_url = "https://openrouter.ai/api/v1"
+[providers.headers]
+HTTP-Referer = "https://yottacode.ai"
+[[providers]]
+name = "other"
+kind = "openai-compatible"
+base_url = "https://other.example/v1"
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	m := Model{opts: cli.ChatOptions{Headers: map[string]string{"Stale": "value"}}, cfg: agent.LoopConfig{}, transcript: &strings.Builder{}}
+	m, _ = m.switchActiveModelToRef("openrouter:model")
+	if m.opts.Headers["HTTP-Referer"] != "https://yottacode.ai" {
+		t.Fatalf("OpenRouter headers missing: %#v", m.opts.Headers)
+	}
+	m, _ = m.switchActiveModelToRef("other:model")
+	if len(m.opts.Headers) != 0 {
+		t.Fatalf("stale OpenRouter headers retained: %#v", m.opts.Headers)
+	}
+}
+
+func TestSwitchActiveModelToRef_ClearsStaleAPIKey(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	dir := filepath.Join(home, ".yottacode")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "config.toml"), []byte(`
+[[providers]]
+name = "openrouter"
+kind = "openai-compatible"
+base_url = "https://openrouter.ai/api/v1"
+api_key_env = "OPENROUTER_API_KEY"
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("OPENROUTER_API_KEY", "")
+	m := Model{apiKey: "old-provider-key", cfg: agent.LoopConfig{}, transcript: &strings.Builder{}}
+	m, _ = m.switchActiveModelToRef("openrouter:model")
+	if m.apiKey != "" {
+		t.Fatalf("stale API key retained: %q", m.apiKey)
 	}
 }
 

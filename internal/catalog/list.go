@@ -134,7 +134,7 @@ func List(ctx context.Context, p config.Provider, apiKey string) ([]Model, error
 	if curatedKinds[p.Kind] {
 		return annotateVertexAccess(p, MergeModels(Curated(p.Kind), declared)), nil
 	}
-	live, err := Live(ctx, p.Kind, p.BaseURL, apiKey)
+	live, err := Live(ctx, p.Kind, p.BaseURL, apiKey, p.Headers)
 	if err != nil {
 		return declared, err
 	}
@@ -250,7 +250,7 @@ func DiscoverContextWindow(ctx context.Context, p config.Provider, apiKey, model
 	// length — query it directly for just this model (cheaper than listing
 	// every model and enriching each).
 	if p.Kind == "ollama" {
-		if w := ollamaContextWindow(ctx, p.BaseURL, model); w > 0 {
+		if w := ollamaContextWindow(ctx, p.BaseURL, model, p.Headers); w > 0 {
 			return w, "from ollama /api/show"
 		}
 		// Fall through to models.dev (covers ollama-cloud); local Ollama
