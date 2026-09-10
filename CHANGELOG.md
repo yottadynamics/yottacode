@@ -9,6 +9,8 @@ the project uses semantic versioning once it's past `1.0.0`.
 ### Added
 
 - **Hardened `syntax_range` selection contract.** Canonical kinds, exact half-open byte spans, hashline-compatible receipts, immutable request snapshots, honest parser/scanner capability labels, recoverable warnings, and `.mjs`/`.cjs` resolution make offline structural selection safer for downstream edits.
+- **Default-on commit and PR attribution.** Commits drafted through `git_commit_apply` or auto-created by dispatch workers now end with GitHub's standard `Co-authored-by` trailer. Created and updated PR descriptions include an idempotent yottacode link; attribution can be disabled in configuration.
+- **Code Map's full 5-phase roadmap** remains experimental: `/map here` suggests context, `/map impact` groups blast radius, language import resolution covers TypeScript/JavaScript, Python, and Rust, Go edges narrow to referenced files, and the index supports watcher-backed updates and bounded file exports. See [`code-map.md`](docs/code-map.md).
 
 worktree-permissions-fine-grained-review
 - **Session-scoped permission grants.** The approval modal gains an `[S]`

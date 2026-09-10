@@ -137,6 +137,31 @@ func TestGitStageUnstageAndCommitTools(t *testing.T) {
 	}
 }
 
+func TestGitCommitTool_AppendsTrailerAndPreviewsIt(t *testing.T) {
+	tmp := gitInit(t)
+	writeFile(t, tmp, "f.txt", "v1\n")
+	stage := &GitStageFilesTool{Cwd: NewCwdRef(tmp)}
+	if _, err := stage.Execute(context.Background(), `{"paths":["f.txt"]}`); err != nil {
+		t.Fatalf("stage: %v", err)
+	}
+
+	const trailer = "Co-authored-by: custom <custom@example.com>  "
+	commit := &GitCommitTool{Cwd: NewCwdRef(tmp), Trailer: trailer}
+	if preview := commit.PreviewCall(`{"message":"add f"}`); !strings.Contains(preview, trailer) {
+		t.Fatalf("preview hides trailer: %q", preview)
+	}
+	if _, err := commit.Execute(context.Background(), `{"message":"add f"}`); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	body, err := gitOutput(context.Background(), tmp, "log", "-1", "--format=%B")
+	if err != nil {
+		t.Fatalf("git log: %v", err)
+	}
+	if got, want := strings.TrimSuffix(body, "\n"), "add f\n\n"+trailer; got != want {
+		t.Fatalf("commit body = %q, want %q", got, want)
+	}
+}
+
 func TestGitStageFilesTool_AllMode(t *testing.T) {
 	tmp := gitInit(t)
 	// Seed an initial commit so HEAD exists and the "tracked-modified"

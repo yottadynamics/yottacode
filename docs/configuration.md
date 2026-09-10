@@ -256,6 +256,38 @@ Most state lives under `~/.yottacode/`:
   config.toml                    tunables (context watermarks, retrieval, memory, checkpoints)
 ```
 
+### Commit and PR attribution
+
+Commits and pull-request descriptions drafted through yottacode carry honest,
+default-on attribution. Commit messages end with GitHub's standard co-author
+trailer, using the ID-based noreply address associated with the public
+[`yottacode-agent`](https://github.com/yottacode-agent) account:
+
+```text
+Co-authored-by: yottacode <325888353+yottacode-agent@users.noreply.github.com>
+```
+
+Created and updated PR descriptions end with:
+
+```markdown
+---
+Drafted with [yottacode](https://yottacode.ai)
+```
+
+Repeated PR updates do not duplicate an exact footer already present as the
+final block. Disable both attribution surfaces globally, or replace only the
+commit trailer, in `~/.yottacode/config.toml`:
+
+```toml
+[attribution]
+disabled = true
+# trailer = "Co-authored-by: my-agent <noreply@example.com>"
+```
+
+An absent block means enabled. `trailer` is used verbatim for commits only; the
+PR footer remains the standard human-readable yottacode link. Changes apply on
+the next session start.
+
 ### Context watermarks
 
 The `[context]` block controls how aggressively yottacode reacts as the active model's context window fills:
