@@ -15,9 +15,11 @@ import (
 // Lives in this package because both internal/tui and internal/oneshot
 // consume it.
 type ChatOptions struct {
-	Model        string
-	BaseURL      string
-	APIKey       string
+	Model   string
+	BaseURL string
+	APIKey  string
+	// Headers are non-secret provider metadata resolved from config profiles.
+	Headers      map[string]string
 	SystemPrompt string
 	Resume       string
 	// Continue requests that, when set, the CLI resume the most recent
@@ -204,6 +206,7 @@ const (
 // $YOTTACODE_MODEL" message.
 func Resolve(opts *ChatOptions) error {
 	loadDotEnvFiles()
+	profileMaySupplyBaseURL := opts.BaseURL == "" && os.Getenv(EnvBaseURL) == ""
 
 	if opts.Model == "" {
 		opts.Model = os.Getenv(EnvModel)
@@ -218,7 +221,7 @@ func Resolve(opts *ChatOptions) error {
 		opts.Provider = os.Getenv(EnvProvider)
 	}
 
-	applyProviderProfile(opts)
+	applyProviderProfile(opts, profileMaySupplyBaseURL)
 	if opts.ReasoningEffort == "" {
 		opts.ReasoningEffort = os.Getenv(EnvReasoningEffort)
 	}
@@ -304,6 +307,17 @@ func Resolve(opts *ChatOptions) error {
 	return nil
 }
 
+func cloneHeaders(src map[string]string) map[string]string {
+	if len(src) == 0 {
+		return nil
+	}
+	dst := make(map[string]string, len(src))
+	for key, value := range src {
+		dst[key] = value
+	}
+	return dst
+}
+
 // envTruthy reports whether the given env-var value should be treated as
 // "yes." Used for boolean env flags so users can write any of the
 // usual incantations without us caring.
@@ -343,7 +357,7 @@ func loadDotEnvFiles() {
 // API keys are looked up via the profile's api_key_env name — the
 // actual secret is expected to live in the live OS environment
 // (potentially populated by .env above).
-func applyProviderProfile(opts *ChatOptions) {
+func applyProviderProfile(opts *ChatOptions, profileMaySupplyBaseURL bool) {
 	cfg, err := config.LoadDefault()
 	if err != nil {
 		// Surface the config load error to stderr so the user can
@@ -402,5 +416,10 @@ func applyProviderProfile(opts *ChatOptions) {
 	}
 	if opts.APIKey == "" && p.APIKeyEnv != "" {
 		opts.APIKey = os.Getenv(p.APIKeyEnv)
+	}
+	if profileMaySupplyBaseURL {
+		opts.Headers = cloneHeaders(p.Headers)
+	} else {
+		opts.Headers = nil
 	}
 }

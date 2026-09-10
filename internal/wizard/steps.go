@@ -2666,6 +2666,7 @@ func (m wizardModel) assemblePlan() Plan {
 			Kind:         entry.Kind,
 			BaseURL:      entry.BaseURL,
 			APIKeyEnv:    entry.APIKeyEnv,
+			Headers:      cloneHeaders(entry.Headers),
 			DefaultModel: in.chosenModel,
 		}
 		// Custom and Vertex providers derive their base URL from fields the

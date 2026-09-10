@@ -80,6 +80,20 @@ default_model = "gpt-4o"
 	}
 }
 
+func TestProviderPicker_OpenRouterPresetIsListed(t *testing.T) {
+	m := newTestModel(t)
+	m.openProviderPicker()
+	for _, entry := range m.providerPicker.addCatalog {
+		if entry.Name == "openrouter" {
+			if entry.Kind != "openai-compatible" || entry.Headers["HTTP-Referer"] != "https://yottacode.ai" {
+				t.Fatalf("openrouter entry = %+v", entry)
+			}
+			return
+		}
+	}
+	t.Fatal("openrouter not listed in TUI provider catalog")
+}
+
 // /provider with no args opens the sub-menu in menu mode with the
 // expected items (Use, Add, Remove). List was retired and folded
 // into Use — same screen, list + switch in one step.

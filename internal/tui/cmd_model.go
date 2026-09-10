@@ -10,6 +10,7 @@ import (
 	"github.com/yottadynamics/yottacode/internal/adapter"
 	"github.com/yottadynamics/yottacode/internal/catalog"
 	"github.com/yottadynamics/yottacode/internal/config"
+	"github.com/yottadynamics/yottacode/internal/wizard"
 )
 
 // cmdModel dispatches /model. The bare invocation opens the picker
@@ -56,6 +57,9 @@ func modelShortcutSwitch(m Model, newTag string) (Model, tea.Cmd) {
 	cfg := loadConfigForCommand(m)
 	newBaseURL := m.baseURL
 	newAPIKey := m.apiKey
+	newHeaders := cloneHeaders(m.opts.Headers)
+	newProvider := m.provider
+	newProviderLabel := m.providerLabel
 	switchedProfile := ""
 	for i := range cfg.Providers {
 		p := &cfg.Providers[i]
@@ -65,17 +69,24 @@ func modelShortcutSwitch(m Model, newTag string) (Model, tea.Cmd) {
 		if p.BaseURL != "" {
 			newBaseURL = p.BaseURL
 		}
+		newAPIKey = ""
 		if p.APIKeyEnv != "" {
 			if v := os.Getenv(p.APIKeyEnv); v != "" {
 				newAPIKey = v
 			}
 		}
+		newHeaders = cloneHeaders(p.Headers)
+		newProvider = p.Kind
+		newProviderLabel = wizard.CatalogIdentity(p.Name)
 		switchedProfile = p.Name
 		break
 	}
 
 	m.apiKey = newAPIKey
 	m.baseURL = newBaseURL
+	m.opts.Headers = newHeaders
+	m.provider = newProvider
+	m.providerLabel = newProviderLabel
 	acfg := m.adapterConfig(newTag, newBaseURL)
 	ad := adapter.NewWithConfig(acfg)
 	m.cfg.Adapter = ad

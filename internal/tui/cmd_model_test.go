@@ -63,6 +63,50 @@ func TestFormatProviderModels_GeminiListsMergedCatalog(t *testing.T) {
 // level that applied cleanly on the old model must be re-flagged as a
 // no-op the moment the new model can't use it — otherwise the setting
 // silently stops applying with nothing telling the user.
+func TestModelShortcut_AdHocModelKeepsCurrentAPIKey(t *testing.T) {
+	m := newTestModel(t)
+	m.apiKey = "current-key"
+	seedConfigTOML(t, `
+[[providers]]
+name = "openai"
+kind = "openai"
+base_url = "https://api.openai.com/v1"
+`)
+	m, _ = modelShortcutSwitch(m, "unlisted-model")
+	if m.apiKey != "current-key" {
+		t.Fatalf("ad-hoc model cleared current API key: %q", m.apiKey)
+	}
+}
+
+func TestModelShortcut_ReplacesProviderHeaders(t *testing.T) {
+	m := newTestModel(t)
+	seedConfigTOML(t, `
+[[providers]]
+name = "openrouter"
+kind = "openai-compatible"
+base_url = "https://openrouter.ai/api/v1"
+[providers.headers]
+HTTP-Referer = "https://yottacode.ai"
+  [[providers.models]]
+  name = "openai/gpt-4o"
+[[providers]]
+name = "other"
+kind = "openai-compatible"
+base_url = "https://other.example/v1"
+  [[providers.models]]
+  name = "other/model"
+`)
+	m.opts.Headers = map[string]string{"Stale": "value"}
+	m, _ = modelShortcutSwitch(m, "openai/gpt-4o")
+	if m.opts.Headers["HTTP-Referer"] != "https://yottacode.ai" {
+		t.Fatalf("OpenRouter headers missing: %#v", m.opts.Headers)
+	}
+	m, _ = modelShortcutSwitch(m, "other/model")
+	if len(m.opts.Headers) != 0 {
+		t.Fatalf("stale headers retained: %#v", m.opts.Headers)
+	}
+}
+
 func TestModelShortcut_WarnsWhenEffortBecomesNoop(t *testing.T) {
 	m := newTestModel(t)
 	seedConfigTOML(t, `

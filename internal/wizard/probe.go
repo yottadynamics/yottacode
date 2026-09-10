@@ -234,6 +234,9 @@ func ValidateKey(ctx context.Context, e CatalogEntry, key string) ValidationResu
 	if err != nil {
 		return ValidationResult{Status: ValidationUnknown, Detail: err.Error()}
 	}
+	for k, v := range e.Headers {
+		req.Header.Set(k, v)
+	}
 	if headerKey != "" {
 		req.Header.Set(headerKey, headerVal)
 	}

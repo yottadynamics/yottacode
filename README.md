@@ -81,7 +81,7 @@ export OPENAI_API_KEY=...
 yottacode setup
 ```
 
-See [`docs/providers.md`](docs/providers.md) for OpenAI, Anthropic, Gemini, Google Vertex AI, xAI, ChatGPT/Copilot OAuth, Ollama, and OpenAI-compatible provider setup.
+See [`docs/providers.md`](docs/providers.md) for OpenAI, OpenRouter, Anthropic, Gemini, Google Vertex AI, xAI, ChatGPT/Copilot OAuth, Ollama, and other OpenAI-compatible provider setup.
 
 </details>
 
@@ -109,7 +109,7 @@ More install options: [`docs/installation.md`](docs/installation.md).
 
 | If you want... | yottacode gives you... |
 |---|---|
-| Model choice | OpenAI, Anthropic, Gemini, Google Vertex AI, xAI, ChatGPT/Copilot OAuth, Ollama, NVIDIA NIM-compatible workflows, vLLM, OpenRouter, Together, and other `/v1`-compatible endpoints |
+| Model choice | OpenAI, first-class OpenRouter setup, Anthropic, Gemini, Google Vertex AI, xAI, ChatGPT/Copilot OAuth, Ollama, NVIDIA NIM-compatible workflows, vLLM, Together, and other `/v1`-compatible endpoints |
 | Local-first control | Plain-file sessions, memory, approvals, checkpoints, and no telemetry |
 | Real repo workflows | Branches, commits, PRs, CI checks, reviews, issues, comments, and isolated worktrees |
 | Team-safe automation | Permission rules, path validation, approval previews, plan mode, and rollback checkpoints |
