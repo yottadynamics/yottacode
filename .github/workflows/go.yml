@@ -116,9 +116,9 @@ jobs:
           gzip -d /tmp/rust-analyzer.gz
           chmod +x /tmp/rust-analyzer
           sudo mv /tmp/rust-analyzer /usr/local/bin/rust-analyzer
-          gzip -d /tmp/rust-analyzer.gz
-          chmod +x /tmp/rust-analyzer
-          sudo mv /tmp/rust-analyzer /usr/local/bin/rust-analyzer
+
+      - name: Real-server LSP smoke tests
+        env:
           YOTTACODE_LSP_SMOKE_REQUIRED: '1'
         run: |
           set -eu
