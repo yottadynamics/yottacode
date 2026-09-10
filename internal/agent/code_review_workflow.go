@@ -28,13 +28,11 @@ import (
 
 const (
 	// codeReviewDiffCap{Low,Medium,High} bound the diff body the review
-	// snapshot surfaces, scaled by effort. Medium matches
-	// prReviewDiffCap (64 KiB — covers most reasonable changes); low
-	// tightens it for a quick scan; high widens it for a deep audit.
-	// A larger diff surfaces a truncation marker rather than blowing
-	// the prompt cache.
+	// snapshot surfaces. Keep the default medium cap compact because the full
+	// snapshot is retained and replayed in later turns. High remains available
+	// when a deep audit explicitly needs more context.
 	codeReviewDiffCapLow    = 32 * 1024
-	codeReviewDiffCapMedium = 64 * 1024
+	codeReviewDiffCapMedium = 24 * 1024
 	codeReviewDiffCapHigh   = 128 * 1024
 
 	// codeReviewChangedFilesCap bounds the name-status list. Generous
