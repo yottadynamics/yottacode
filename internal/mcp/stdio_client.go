@@ -158,10 +158,32 @@ func (c *StdioClient) Start(ctx context.Context) error {
 		c.ops.mu.Unlock()
 		return fmt.Errorf("mcp(%s): already started", c.name)
 	}
-
 	if c.stopped {
+		c.ops.mu.Unlock()
 		return fmt.Errorf("mcp(%s): client is stopped", c.name)
 	}
+	c.ops.starting = true
+	c.ops.mu.Unlock()
+	// This block is a merge-conflict-resolution fix, not a new
+	// mechanism: main's Start (see internal/mcp/stdio_client.go on
+	// main, added by #321 "Harden MCP transports and lifecycle
+	// management") already locks only for this check-and-set, then
+	// unlocks before the slow work below — bind and fetchTools each
+	// take c.ops.mu themselves, and it is NOT reentrant, so holding it
+	// across those calls self-deadlocks the goroutine the moment bind
+	// runs, and every return before that point leaks the lock forever,
+	// wedging every future ListTools/CallTool/Stop on this client. This
+	// branch's own `stopped` check got added against an older,
+	// whole-function-locked version of Start, and merging main back in
+	// silently lost main's fix while keeping the old locking shape.
+	// This restores main's pattern with the stopped check folded in.
+	defer func() {
+		c.ops.mu.Lock()
+		if !c.ops.started {
+			c.ops.starting = false
+		}
+		c.ops.mu.Unlock()
+	}()
 
 	bin, err := exec.LookPath(c.command)
 	if err != nil {
