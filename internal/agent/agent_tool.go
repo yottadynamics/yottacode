@@ -773,6 +773,12 @@ func (t *AgentTool) runChild(
 	childModel string,
 	opts childRunOpts,
 ) (result string, errored bool, status subagents.TaskStatus, tokensUsed int) {
+	// Set once childEvents exists (below), so the panic-recovery defer
+	// below — registered here, before that declaration — can still
+	// reach it via this forward reference. nil until then, which the
+	// recover handler treats as "the child Turn goroutine was never
+	// started, so there's nothing to drain."
+	var childEventsForDrain chan Event
 	// A panic anywhere in the child's orchestration (drain loop, approval
 	// forwarding) must not crash the parent's interactive session — degrade
 	// it to an errored subagent the model/dock can see. Tool panics inside
@@ -782,8 +788,25 @@ func (t *AgentTool) runChild(
 		if r := recover(); r != nil {
 			result = "error: " + panicToError("subagent "+cfg.Name, r).Error()
 			errored, status = true, subagents.TaskErrored
+			// Same reasoning as cancelExit below: a panic here means we
+			// stop ranging over childEvents while the child's Turn
+			// goroutine may still be mid-unwind with more events to
+			// send, including a context.Background()-guarded terminal
+			// send that has no cancellation fallback if the buffer is
+			// full. Keep draining in the background so it can always
+			// finish and exit rather than leak.
+			if childEventsForDrain != nil {
+				drainChildEvents(childEventsForDrain)
+			}
 		}
 	}()
+	// Every OTHER exit path (normal completion below, and cancelExit)
+	// already closes the transcript explicitly; this is the backstop for
+	// a panic recovered by the defer above, which previously returned
+	// through it without ever closing the file. close() is idempotent
+	// (nils tr.f), so this is a harmless no-op when an explicit close
+	// already ran.
+	defer transcript.close()
 	childReg := opts.reg
 	if childReg == nil {
 		childReg = t.buildChildRegistry(cfg)
@@ -891,6 +914,7 @@ func (t *AgentTool) runChild(
 	}
 
 	childEvents := make(chan Event, 64)
+	childEventsForDrain = childEvents
 	childDecisions := make(chan Decision, 1)
 	errCh := make(chan error, 1)
 
@@ -953,6 +977,44 @@ func (t *AgentTool) runChild(
 		if emitToParent != nil {
 			emitToParent(SubagentProgress{TaskID: taskID, AgentType: cfg.Name, Activity: activity})
 		}
+	}
+
+	// cancelExit finalizes an early bailout from the approval-forwarding
+	// switch below (the parent's ctx went Done while relaying an approval
+	// or path-trust decision). Without this, those returns skipped the
+	// same bookkeeping the normal exit path performs at the bottom of
+	// runChild — SetToolCalls, writeOutcome, and closing the transcript
+	// — leaking the transcript's *os.File and leaving its stats frozen at
+	// zero even when the child had already done real work.
+	//
+	// The child's own Turn goroutine is still unwinding on the same
+	// (now-cancelled) ctx and has more sending to do before it exits —
+	// at minimum a synthetic tool_result for the orphaned tool_use, then
+	// a terminal TurnInterrupted/ErrorEvent. That terminal send
+	// deliberately uses context.Background() (loop.go) so a cancelled
+	// ctx can't itself drop the notification, which means it has no
+	// cancellation fallback if childEvents' buffer is ever full with
+	// nobody reading it. Once we stop ranging over childEvents below,
+	// keep a background drain alive so Turn can always finish sending
+	// and return — the drained events are discarded (the transcript is
+	// already closed and the task is already final) and the goroutine
+	// exits on its own once Turn closes childEvents.
+	cancelExit := func() (string, bool, subagents.TaskStatus, int) {
+		t.Tasks.SetToolCalls(taskID, toolCallCount)
+		transcript.writeOutcome("runner_canceled (parent-turn-canceled-or-deadline): approval forwarding interrupted", "")
+		transcript.close()
+		drainChildEvents(childEvents)
+		// tokensUsed is 0, not an EstimateTokens(history) read: the
+		// child's own Turn goroutine is still unwinding on the same
+		// cancelled ctx and may still be concurrently mutating history
+		// (its own orphan-repair for the tool_use it was mid-approval
+		// on) — reading it here without waiting for errCh would race
+		// that write (found by -race: a concurrent read/append on the
+		// same backing slice). doneTokensAndCalls already prefers the
+		// registry's own thread-safe Task.Usage (updated via AddUsage
+		// on every completed turn) over this estimate when it's
+		// available, so the estimate is only ever a fallback anyway.
+		return "", true, subagents.TaskCanceled, 0
 	}
 
 	for ev := range childEvents {
@@ -1034,14 +1096,14 @@ func (t *AgentTool) runChild(
 				case <-ctx.Done():
 					unlock()
 					flushRepeat()
-					return "", true, subagents.TaskCanceled, 0
+					return cancelExit()
 				}
 				unlock()
 				select {
 				case childDecisions <- verdict:
 				case <-ctx.Done():
 					flushRepeat()
-					return "", true, subagents.TaskCanceled, 0
+					return cancelExit()
 				}
 				switch verdict {
 				case AllowOnce, AllowAlways, AllowSession:
@@ -1071,7 +1133,7 @@ func (t *AgentTool) runChild(
 			case childDecisions <- verdict:
 			case <-ctx.Done():
 				flushRepeat()
-				return "", true, subagents.TaskCanceled, 0
+				return cancelExit()
 			}
 			emitActivity(note)
 		case PathTrustElevationNeeded:
@@ -1102,14 +1164,14 @@ func (t *AgentTool) runChild(
 				case <-ctx.Done():
 					unlock()
 					flushRepeat()
-					return "", true, subagents.TaskCanceled, 0
+					return cancelExit()
 				}
 				unlock()
 				select {
 				case childDecisions <- verdict:
 				case <-ctx.Done():
 					flushRepeat()
-					return "", true, subagents.TaskCanceled, 0
+					return cancelExit()
 				}
 				if verdict == PathAllowOnce || verdict == PathTrustSession {
 					emitActivity(fmt.Sprintf("path-trust granted for %s", e.Path))
@@ -1125,7 +1187,7 @@ func (t *AgentTool) runChild(
 			case childDecisions <- Deny:
 			case <-ctx.Done():
 				flushRepeat()
-				return "", true, subagents.TaskCanceled, 0
+				return cancelExit()
 			}
 			emitActivity(fmt.Sprintf("auto-denied out-of-workspace write to %s (unattended worker is sandboxed; it cannot escape its worktree)", e.Path))
 		case ContextCompacted:
@@ -1214,6 +1276,23 @@ func (t *AgentTool) runChild(
 	transcript.writeOutcome(outcome, result)
 	transcript.close()
 	return result, errored, status, tokensUsed
+}
+
+// drainChildEvents keeps consuming ch in the background until it's
+// closed, discarding everything. runChild's two early-exit paths
+// (cancelExit and the panic-recovery defer) stop ranging over
+// childEvents themselves before the child's own Turn goroutine is
+// necessarily done sending — without a reader, a full channel buffer
+// would block that goroutine forever, most dangerously on its
+// context.Background()-guarded terminal event (TurnInterrupted /
+// ErrorEvent — see loop.go's isCancelErr branch), which has no
+// cancellation fallback of its own. The spawned goroutine exits on its
+// own once the sender closes ch.
+func drainChildEvents(ch <-chan Event) {
+	go func() {
+		for range ch {
+		}
+	}()
 }
 
 // doneTokensAndCalls resolves the completion-card stats for a finished
@@ -1672,9 +1751,14 @@ func (tr *transcriptFile) writeOutcome(outcome, result string) {
 	}
 }
 
+// close is idempotent — callers on more than one exit path (runChild's
+// panic-recovery defer runs alongside its normal-completion and
+// cancelExit closes) may all call it for the same transcript, and only
+// the first should actually touch the *os.File.
 func (tr *transcriptFile) close() {
 	if tr.f != nil {
 		_ = tr.f.Close()
+		tr.f = nil
 	}
 }
 

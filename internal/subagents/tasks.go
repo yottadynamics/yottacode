@@ -443,6 +443,7 @@ func (r *Registry) Get(id string) (*Task, bool) {
 	}
 	cp := *t
 	cp.Activities = append([]string(nil), t.Activities...)
+	cp.Files = append([]string(nil), t.Files...)
 	return &cp, true
 }
 
@@ -472,6 +473,7 @@ func (r *Registry) FindByPrefix(prefix string) (*Task, bool) {
 	}
 	cp := *match
 	cp.Activities = append([]string(nil), match.Activities...)
+	cp.Files = append([]string(nil), match.Files...)
 	return &cp, true
 }
 
@@ -484,6 +486,7 @@ func (r *Registry) List() []Task {
 	for _, t := range r.tasks {
 		cp := *t
 		cp.Activities = append([]string(nil), t.Activities...)
+		cp.Files = append([]string(nil), t.Files...)
 		out = append(out, cp)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Started.After(out[j].Started) })

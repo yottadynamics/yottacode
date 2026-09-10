@@ -15,13 +15,17 @@ import (
 )
 
 // interruptedToolResult is the synthetic tool_result content injected for
-// every tool_use that was orphaned by a user-initiated cancel — either
-// because the call was queued in the same batch but never executed, or
-// because the call started but was killed mid-flight. Every provider
-// rejects an assistant message whose tool_use blocks lack matching
-// tool_result entries on the next request, so this content goes in the
-// history before Turn returns. The string is also what the model sees on
-// the next turn, hence the plain English wording.
+// every tool_use left orphaned when a batch aborts early — a
+// user-initiated cancel, a context deadline, or any other error
+// executeToolCall(s) returns (e.g. the approval-decisions channel closing
+// out from under a pending prompt) — whether because the call was queued
+// in the same batch but never executed, or because it started but was
+// killed mid-flight. Every provider rejects an assistant message whose
+// tool_use blocks lack matching tool_result entries on the next request
+// — some (like the Codex/openai-auth backend) reject it immediately and
+// unrecoverably — so this content goes in the history before Turn
+// returns, regardless of why the batch aborted. The string is also what
+// the model sees on the next turn, hence the plain English wording.
 const interruptedToolResult = "interrupted by user"
 
 // Streamer is the slice of the adapter the loop actually depends on. Defining
@@ -553,11 +557,12 @@ func Turn(
 			}
 			if err := executeToolCalls(ctx, cfg, final.ToolCalls, history, events, decisions, state.toolFailures, &state.duplicateReads); err != nil {
 				if isCancelErr(err) {
-					// executeToolCalls has already appended synthetic
-					// tool_result entries for any orphaned calls before
-					// returning, so history is valid. Count how many of
-					// the call slice landed as synthetic so the UI can
-					// render "N tool calls cancelled."
+					// executeToolCalls repairs history for any abort, not
+					// just this one, so history is valid either way here.
+					// Count how many of the call slice landed as synthetic
+					// so the UI can render "N tool calls cancelled" — only
+					// meaningful for the cancel-labeled UI event below; a
+					// non-cancel error takes the ErrorEvent branch instead.
 					orphans := countOrphanedToolResults(snapshotHistory(cfg, history), final.ToolCalls)
 					_ = send(context.Background(), events, TurnInterrupted{
 						PartialContent: final.Content,
@@ -787,11 +792,14 @@ func executeToolCalls(
 		if batch := parallelBatchSize(cfg, calls); batch > 1 {
 			results, err := executeToolCallsParallel(ctx, cfg, calls[:batch], events, decisions)
 			if err != nil {
-				if isCancelErr(err) {
-					// Preserve completed results and pair unstarted calls on cancellation.
-					appendToolResultsWithInterrupts(cfg, history, calls[:batch], results)
-					appendSyntheticInterrupts(cfg, history, calls[batch:])
-				}
+				// Preserve completed results and pair unstarted calls with a
+				// synthetic marker on ANY abort — cancellation or a genuine
+				// error alike. A non-cancel error must repair history just as
+				// surely as a cancel does: an unpaired tool_use here isn't
+				// just cosmetically wrong, it will 400 the next request
+				// against a strict backend (see interruptedToolResult).
+				appendToolResultsWithInterrupts(cfg, history, calls[:batch], results)
+				appendSyntheticInterrupts(cfg, history, calls[batch:])
 				return err
 			}
 			appendToolResults(cfg, history, calls[:batch], results, toolFailures, duplicateReads)
@@ -801,9 +809,9 @@ func executeToolCalls(
 		tc := calls[0]
 		result, images, denied, approvalSource, err := executeToolCall(ctx, cfg, tc, events, decisions)
 		if err != nil {
-			if isCancelErr(err) {
-				appendSyntheticInterrupts(cfg, history, calls)
-			}
+			// Same reasoning as the parallel branch above: repair on any
+			// abort, not just a cancellation.
+			appendSyntheticInterrupts(cfg, history, calls)
 			return err
 		}
 		result = applyRepeatedToolFailureGuard(tc.Name, result, toolFailures)
