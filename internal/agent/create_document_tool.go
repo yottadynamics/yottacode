@@ -709,13 +709,21 @@ func (t *CreateDocumentTool) generatePPTX(a createDocumentArgs, output, cwd stri
 // docs/document-generation.md's "Sandbox integration".
 func checkCommandAvailable(ctx context.Context, sb Sandbox, cwd, name string) error {
 	c := CommandInProfile(ctx, sb, SandboxProfileDocuments, "command -v "+shellQuoteSingle(name), cwd)
-	var out bytes.Buffer
-	c.Stdout = &cappedWriter{buf: &out}
-	c.Stderr = &cappedWriter{buf: &out}
+	// Separate buffers per stream, not one shared between Stdout and
+	// Stderr: exec.Cmd copies each in its own goroutine, so two
+	// cappedWriters pointing at the same *bytes.Buffer race on every
+	// Write/Len call (cappedWriter itself does no locking — it isn't
+	// meant to be shared). Concatenated after Run returns for the
+	// probe text below; this check has no need for real-time
+	// interleaving, only the combined diagnostic output.
+	var stdout, stderr bytes.Buffer
+	c.Stdout = &cappedWriter{buf: &stdout}
+	c.Stderr = &cappedWriter{buf: &stderr}
 	err := c.Run()
 	if err == nil {
 		return nil
 	}
+	out := stdout.String() + stderr.String()
 	where := LabelForProfile(sb, SandboxProfileDocuments)
 	if where == (HostSandbox{}).Label() {
 		where = "host PATH"
@@ -726,9 +734,9 @@ func checkCommandAvailable(ctx context.Context, sb Sandbox, cwd, name string) er
 		// a dead/misconfigured sandbox container surfaces as an ordinary-
 		// looking "not found", steering the model toward reinstalling a
 		// tool that was never actually missing.
-		return fmt.Errorf("create_document: NOTE: exit=125 is podman's own convention for a podman-level failure (not a missing-%s finding) — the sandbox container itself may need attention (see /sandbox). probe output: %s", name, strings.TrimSpace(out.String()))
+		return fmt.Errorf("create_document: NOTE: exit=125 is podman's own convention for a podman-level failure (not a missing-%s finding) — the sandbox container itself may need attention (see /sandbox). probe output: %s", name, strings.TrimSpace(out))
 	}
-	if probe := strings.TrimSpace(out.String()); probe != "" {
+	if probe := strings.TrimSpace(out); probe != "" {
 		return fmt.Errorf("create_document: %s not found (checked via %s): %s; install it, or point [sandbox].documents_image at an image that includes it — see docs/document-generation.md for a reference Containerfile", name, where, probe)
 	}
 	return fmt.Errorf("create_document: %s not found (checked via %s); install it, or point [sandbox].documents_image at an image that includes it — see docs/document-generation.md for a reference Containerfile", name, where)

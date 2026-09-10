@@ -164,6 +164,14 @@ func TestCreateDocumentDocxMissingPandoc(t *testing.T) {
 	}
 }
 
+// TestCreateDocumentPDFMissingWeasyprint also doubles as the regression
+// test for a data race in checkCommandAvailable: it used to point Cmd's
+// Stdout and Stderr at two separate cappedWriters wrapping the SAME
+// *bytes.Buffer, and exec.Cmd copies each stream from its own goroutine,
+// so both raced on that shared buffer's Write/Len calls. Run this test
+// with -race (already part of CI, .github/workflows/go.yml) to verify —
+// it reliably exercises the real "command -v weasyprint" subprocess and
+// its two concurrent stream-copying goroutines.
 func TestCreateDocumentPDFMissingWeasyprint(t *testing.T) {
 	tmp := t.TempDir()
 	tool := &CreateDocumentTool{

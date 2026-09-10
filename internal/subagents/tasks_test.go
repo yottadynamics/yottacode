@@ -88,6 +88,46 @@ func TestRegistry_AddGetList(t *testing.T) {
 	}
 }
 
+// TestRegistry_GetListFindByPrefix_FilesNotAliased guards the same
+// copy-safety contract Get/List/FindByPrefix already document and apply
+// to Activities: a caller mutating the []string it got back must never
+// reach into the registry's live backing array without the lock. Files
+// was missed when that contract was implemented — Get/List/FindByPrefix
+// each did `cp := *t` (a shallow copy) and then deep-copied only
+// Activities, leaving Files aliased to the stored task's slice.
+func TestRegistry_GetListFindByPrefix_FilesNotAliased(t *testing.T) {
+	r := NewRegistry()
+	r.Add(&Task{ID: "aaaa1111", Started: time.Now(), Files: []string{"a.go", "b.go"}})
+
+	mutateAndCheck := func(name string, files []string) {
+		t.Helper()
+		files[0] = "MUTATED"
+		got, ok := r.Get("aaaa1111")
+		if !ok {
+			t.Fatalf("%s: Get: task not found", name)
+		}
+		if got.Files[0] == "MUTATED" {
+			t.Errorf("%s: mutating the returned Files slice corrupted the registry's stored task", name)
+		}
+	}
+
+	if got, ok := r.Get("aaaa1111"); ok {
+		mutateAndCheck("Get", got.Files)
+	} else {
+		t.Fatal("Get: task not found")
+	}
+	if got, ok := r.FindByPrefix("aaaa"); ok {
+		mutateAndCheck("FindByPrefix", got.Files)
+	} else {
+		t.Fatal("FindByPrefix: task not found")
+	}
+	list := r.List()
+	if len(list) != 1 {
+		t.Fatalf("List len = %d, want 1", len(list))
+	}
+	mutateAndCheck("List", list[0].Files)
+}
+
 func TestRegistry_FindByPrefix(t *testing.T) {
 	r := NewRegistry()
 	r.Add(&Task{ID: "abc12345", Started: time.Now()})
