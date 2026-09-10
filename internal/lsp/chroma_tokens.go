@@ -18,14 +18,10 @@ var chromaTokeniseOptions = &chroma.TokeniseOptions{State: "root", EnsureLF: fal
 // chromaTokensForFile reads path and tokenizes it with the named chroma
 // lexer. Returns the raw file text alongside the flat token stream so callers
 // can walk tokens while tracking byte offsets into that same text.
-func chromaTokensForFile(path, lexerName string) (string, []chroma.Token, error) {
+func chromaTokensForSource(src []byte, lexerName string) (string, []chroma.Token, error) {
 	lexer := lexers.Get(lexerName)
 	if lexer == nil {
 		return "", nil, fmt.Errorf("chroma: no lexer registered for %q", lexerName)
-	}
-	src, err := os.ReadFile(path)
-	if err != nil {
-		return "", nil, err
 	}
 	text := string(src)
 	iter, err := lexer.Tokenise(chromaTokeniseOptions, text)
@@ -33,4 +29,14 @@ func chromaTokensForFile(path, lexerName string) (string, []chroma.Token, error)
 		return "", nil, err
 	}
 	return text, iter.Tokens(), nil
+}
+
+// chromaTokensForFile preserves the symbol extraction wrapper while range
+// dispatch uses chromaTokensForSource with its already-read snapshot.
+func chromaTokensForFile(path, lexerName string) (string, []chroma.Token, error) {
+	src, err := os.ReadFile(path)
+	if err != nil {
+		return "", nil, err
+	}
+	return chromaTokensForSource(src, lexerName)
 }

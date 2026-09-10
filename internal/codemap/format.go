@@ -106,6 +106,8 @@ func FormatImpact(result ImpactResult, max int) string {
 	writeSection("direct dependencies", result.DirectDependencies)
 	writeSection("direct dependents", result.DirectDependents)
 	writeSection("transitive dependents", result.TransitiveDependents)
+	writeSection("likely tests", result.LikelyTests)
+	writeSection("likely docs/config", result.LikelyDocs)
 	b.WriteString("cycles\n")
 	if len(result.Cycles) == 0 {
 		b.WriteString("  (none)\n")
@@ -125,6 +127,80 @@ func FormatImpact(result ImpactResult, max int) string {
 			fmt.Fprintf(&b, "  %s\n", strings.Join(parts, " -> "))
 		}
 	}
+	return b.String()
+}
+
+// FormatImpactSummary renders a compact, counts-plus-top-names version of an
+// impact result, sized to inject into planning-turn context without spending
+// the full FormatImpact token budget. max caps how many names are listed per
+// group (default 3); it does not limit the counts themselves.
+func FormatImpactSummary(result ImpactResult, max int) string {
+	if result.Target.ID == "" {
+		return "(no impact target)\n"
+	}
+	if max <= 0 {
+		max = 3
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "impact summary\t%s\n", result.Target.RelPath)
+	writeCounted := func(title string, nodes []Node) {
+		if len(nodes) == 0 {
+			fmt.Fprintf(&b, "%s: none\n", title)
+			return
+		}
+		top := nodes
+		if len(top) > max {
+			top = top[:max]
+		}
+		names := make([]string, 0, len(top))
+		for _, n := range top {
+			names = append(names, n.RelPath)
+		}
+		suffix := ""
+		if len(nodes) > len(top) {
+			suffix = fmt.Sprintf(" (+%d more)", len(nodes)-len(top))
+		}
+		fmt.Fprintf(&b, "%s (%d): %s%s\n", title, len(nodes), strings.Join(names, ", "), suffix)
+	}
+	writeCounted("direct dependencies", result.DirectDependencies)
+	writeCounted("direct dependents", result.DirectDependents)
+	writeCounted("transitive dependents", result.TransitiveDependents)
+	writeCounted("likely tests", result.LikelyTests)
+	writeCounted("likely docs/config", result.LikelyDocs)
+	fmt.Fprintf(&b, "cycles: %d\n", len(result.Cycles))
+	return b.String()
+}
+
+// FormatSubsystemOverview renders a subsystem overview: entry points, public
+// surface, core types, tests, and key dependencies for one directory.
+func FormatSubsystemOverview(o SubsystemOverview, max int) string {
+	if o.Dir.ID == "" {
+		return "(no subsystem found)\n"
+	}
+	if max <= 0 {
+		max = 50
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "subsystem\t%s\n", o.Dir.RelPath)
+	writeSection := func(title string, nodes []Node) {
+		fmt.Fprintf(&b, "%s\n", title)
+		if len(nodes) == 0 {
+			b.WriteString("  (none)\n")
+			return
+		}
+		for i, n := range nodes {
+			if i >= max {
+				fmt.Fprintf(&b, "  …[truncated at %d results]\n", max)
+				break
+			}
+			fmt.Fprintf(&b, "  %s\t%s\t%s\n", locationText(n), displayName(n), statsText(n))
+		}
+	}
+	writeSection("entry points", o.EntryPoints)
+	writeSection("public surface", o.PublicSurface)
+	writeSection("core types", o.CoreTypes)
+	writeSection("tests", o.Tests)
+	writeSection("key dependencies", o.KeyDependencies)
 	return b.String()
 }
 

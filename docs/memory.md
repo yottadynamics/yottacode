@@ -441,7 +441,7 @@ yottacode supports three scoring strategies, selectable via config:
 
 **Semantic** layers local embeddings on top when a local Ollama server is available with an embedding model installed. Vector sidecars (`.vec` files) are stored alongside memory `.md` files and generated automatically on `memory_save`. The combined score blends BM25 (which excels at exact matches like file paths and function names) with cosine similarity (which captures conceptual relationships) — by default **60% BM25 / 40% cosine**, tunable via `retrieval.semantic_weight` (the cosine fraction; BM25 gets the rest). Raise it to trust meaning-based matches more on paraphrased queries, lower it (or set `0.0`) to lean on exact keywords. Because the blended score is re-normalized to top=1.0, only the ratio matters. A sidecar produced by a *different* embedding model than the one in use is skipped for the cosine term (cross-model vectors aren't comparable) — that entry simply ranks on BM25 until `memory reindex` rebuilds it.
 
-**Score normalization & `min_score`.** All strategies normalize their top match to 1.0, so `retrieval.min_score` means the same thing regardless of strategy — and doesn't silently start dropping every memory the moment `auto` resolves to `semantic` (Ollama present).
+**Score normalization & `min_score`.** All strategies normalize their top match to 1.0, so `retrieval.min_score` means the same thing regardless of strategy — and doesn't silently start dropping every memory the moment `auto` resolves to `semantic` (Ollama present). Scores are relative within one candidate corpus, not probabilities: changing scope or adding memories can change numeric scores even when rank order remains stable.
 
 **Interactive timeout & fallback.** On the synchronous, user-facing paths — both per-turn retrieval and `memory_save` — the embedding call is bounded by a short ~2s timeout. If Ollama is slow or goes away mid-session, retrieval falls back to BM25 for that turn and `memory_save` still completes (the `.md` is written; only the `.vec` is skipped, with a note to run `memory reindex` later) — neither blocks the UI. Batch `memory reindex` keeps the longer 30s timeout.
 
@@ -562,6 +562,7 @@ The same actions are exposed as non-interactive subcommands so CI or one-off she
 
 ```
 yottacode memory list [--scope user|project]   # default: project
+yottacode memory recall --query <text> [--scope all|user|project] [--top-k N] [--format text|json]
 yottacode memory forget --scope <s> <name>
 yottacode memory reindex                       # generate .vec sidecars for all memories
 yottacode memory audit                         # read-only curation report for notes/duplicates/scope/body issues
@@ -571,6 +572,14 @@ yottacode memory health                        # show compact read-only memory h
 yottacode memory archive list                  # summarize archived prior memory versions
 yottacode memory archive prune --dry-run       # preview explicit archive pruning
 ```
+
+#### Headless recall and external benchmarks
+
+`memory recall` exposes the same configured selector used for live per-turn memory injection without starting the TUI or an agent session. Text is the default output; `--format json` returns a stable envelope containing the query and ranked results with `name`, `scope`, `type`, `score`, `description`, and full `body` fields. `--scope all` applies the same project-over-user shadowing as live injection, while an explicit `user` or `project` scope searches that scope directly.
+
+An explicit recall request runs even when automatic retrieval is disabled, but otherwise preserves `retrieval.strategy`, `semantic_weight`, `min_score`, `max_bytes`, and the configured `top_k` unless `--top-k` overrides it. Semantic and `auto` queries use the same Ollama availability probe and BM25 fallback as live sessions. Scores are normalized relative relevance values within that query, not probabilities; with the default `min_score = 0`, zero-score tail candidates may be returned. Empty stores and queries filtered entirely by `min_score` produce `"results": []` in JSON.
+
+For external memory benchmarks, this command makes the query side exercise yottacode's real ranker. Benchmark methodology must still state how turns were ingested: saving every turn synthetically measures ranking over an artificially complete corpus, while running the real agent loop measures yottacode's agent-curated memory behavior at substantially higher cost. No benchmark-specific ingestion behavior is built into `memory recall`.
 
 `memory health` and `memory_audit({"summary":true})` expose the compact
 health layer: total memories, total issues, quick notes, old quick notes,

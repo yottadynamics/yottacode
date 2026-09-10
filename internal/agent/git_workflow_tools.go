@@ -319,7 +319,11 @@ func (t *GitCreateBranchTool) Execute(ctx context.Context, argsJSON string) (str
 	return out, nil
 }
 
-type GitCommitTool struct{ Cwd *CwdRef }
+type GitCommitTool struct {
+	Cwd *CwdRef
+	// Trailer is appended to the approved commit message. Empty disables attribution.
+	Trailer string
+}
 
 func (t *GitCommitTool) Name() string { return "git_commit" }
 func (t *GitCommitTool) Description() string {
@@ -336,7 +340,7 @@ func (t *GitCommitTool) PreviewCall(argsJSON string) string {
 		Message string `json:"message"`
 	}
 	_ = json.Unmarshal([]byte(argsJSON), &a)
-	return fmt.Sprintf("git_commit(%q)", a.Message)
+	return fmt.Sprintf("git_commit(%q)", appendCommitTrailer(a.Message, t.Trailer))
 }
 func (t *GitCommitTool) Execute(ctx context.Context, argsJSON string) (string, error) {
 	var a struct {
@@ -348,7 +352,8 @@ func (t *GitCommitTool) Execute(ctx context.Context, argsJSON string) (string, e
 	if strings.TrimSpace(a.Message) == "" {
 		return "", errors.New("git_commit: message is required")
 	}
-	if _, err := gitOutput(ctx, t.Cwd.Get(), "commit", "-m", a.Message); err != nil {
+	fullMessage := appendCommitTrailer(a.Message, t.Trailer)
+	if _, err := gitOutputWithInput(ctx, t.Cwd.Get(), fullMessage, "commit", "--cleanup=verbatim", "-F", "-"); err != nil {
 		return "", fmt.Errorf("git_commit: %w", err)
 	}
 	hash, err := gitOutput(ctx, t.Cwd.Get(), "rev-parse", "HEAD")
@@ -474,6 +479,22 @@ func (t *GitMergeBaseTool) Execute(ctx context.Context, argsJSON string) (string
 		return "", fmt.Errorf("git_merge_base: %w", err)
 	}
 	return out, nil
+}
+
+func gitOutputWithInput(ctx context.Context, cwd, input string, args ...string) (string, error) {
+	// Keep stdin-based git mutations shell-free so commit text is passed exactly
+	// as approved, including quotes, dollar signs, and attribution trailers.
+	if _, err := exec.LookPath("git"); err != nil {
+		return "", errors.New("git binary not found in PATH")
+	}
+	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd.Dir = cwd
+	cmd.Stdin = strings.NewReader(input)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("git %s: %s", strings.Join(args, " "), strings.TrimSpace(string(out)))
+	}
+	return string(out), nil
 }
 
 func gitOutput(ctx context.Context, cwd string, args ...string) (string, error) {

@@ -556,6 +556,52 @@ base_url = "http://localhost:11434/v1"
 	}
 }
 
+func TestLoad_ParsesAndValidatesProviderHeaders(t *testing.T) {
+	src := `
+[[providers]]
+name = "openrouter"
+kind = "openai-compatible"
+base_url = "https://openrouter.ai/api/v1"
+[providers.headers]
+HTTP-Referer = "https://yottacode.ai"
+X-OpenRouter-Title = "yottacode"
+`
+	cfg, err := Load(writeFile(t, src))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := cfg.Providers[0].Headers["HTTP-Referer"]; got != "https://yottacode.ai" {
+		t.Fatalf("HTTP-Referer = %q", got)
+	}
+
+	for _, tc := range []struct {
+		name  string
+		value string
+		want  string
+	}{
+		{name: "blank name", value: "ok", want: "header name is required"},
+		{name: "invalid name", value: "ok", want: "invalid header name"},
+		{name: "invalid value", value: "line\nbreak", want: "invalid value"},
+		{name: "duplicate name", value: "ok", want: "duplicate header names"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg.Providers[0].Headers = map[string]string{" ": tc.value}
+			if tc.name == "invalid name" {
+				cfg.Providers[0].Headers = map[string]string{"Bad Header": tc.value}
+			}
+			if tc.name == "invalid value" {
+				cfg.Providers[0].Headers = map[string]string{"X-Test": tc.value}
+			}
+			if tc.name == "duplicate name" {
+				cfg.Providers[0].Headers = map[string]string{"X-Test": tc.value, "x-test": tc.value}
+			}
+			if err := Validate(cfg); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("Validate = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
 func TestProviderKindForModel(t *testing.T) {
 	cfg := Config{
 		Active: Active{Provider: "codex"},

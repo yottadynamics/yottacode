@@ -172,6 +172,40 @@ func TestStatus_ReachableButModelMissing(t *testing.T) {
 	}
 }
 
+func TestResolveEmbedClient(t *testing.T) {
+	t.Run("skips probe for lexical strategy", func(t *testing.T) {
+		client, reachable := ResolveEmbedClient(context.Background(), "bm25", "model", "http://localhost:1")
+		if client != nil || reachable {
+			t.Fatalf("ResolveEmbedClient = (%v, %v), want (nil, false)", client, reachable)
+		}
+	})
+
+	t.Run("returns interactive client when model is installed", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			json.NewEncoder(w).Encode(map[string]any{"models": []map[string]string{{"name": "model:latest"}}})
+		}))
+		defer srv.Close()
+		client, reachable := ResolveEmbedClient(context.Background(), "auto", "model", srv.URL)
+		if client == nil || !reachable {
+			t.Fatalf("ResolveEmbedClient = (%v, %v), want client and reachable", client, reachable)
+		}
+		if client.Timeout != InteractiveEmbedTimeout {
+			t.Fatalf("timeout = %s, want %s", client.Timeout, InteractiveEmbedTimeout)
+		}
+	})
+
+	t.Run("reports reachable server with missing model", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			json.NewEncoder(w).Encode(map[string]any{"models": []map[string]string{{"name": "other"}}})
+		}))
+		defer srv.Close()
+		client, reachable := ResolveEmbedClient(context.Background(), "semantic", "model", srv.URL)
+		if client != nil || !reachable {
+			t.Fatalf("ResolveEmbedClient = (%v, %v), want (nil, true)", client, reachable)
+		}
+	})
+}
+
 func TestStatus_OllamaDown(t *testing.T) {
 	client := NewEmbedClient("http://localhost:1", "nomic-embed-text")
 	reachable, installed := client.Status(context.Background())

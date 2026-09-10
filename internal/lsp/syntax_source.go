@@ -2,32 +2,62 @@ package lsp
 
 import (
 	"context"
+	"fmt"
+	"os"
 	"strings"
 	"sync"
 )
 
+// SyntaxKind is a stable, language-independent structural range kind.
+type SyntaxKind string
+
+const (
+	SyntaxKindFunction    SyntaxKind = "function"
+	SyntaxKindMethod      SyntaxKind = "method"
+	SyntaxKindType        SyntaxKind = "type"
+	SyntaxKindCall        SyntaxKind = "call"
+	SyntaxKindImportBlock SyntaxKind = "import_block"
+	SyntaxKindField       SyntaxKind = "field"
+	SyntaxKindFile        SyntaxKind = "file"
+	SyntaxKindBlock       SyntaxKind = "block"
+	SyntaxKindControl     SyntaxKind = "control"
+	SyntaxKindDeclaration SyntaxKind = "declaration"
+	SyntaxKindContainer   SyntaxKind = "container"
+)
+
 // SyntaxSymbolSource extracts structural symbols without starting a language
-// server. Parser-backed implementations give yottacode an offline structure
-// layer; languages without one keep using the conservative regex fallback.
+// server. Implementations may use a grammar parser or a conservative scanner.
 type SyntaxSymbolSource interface {
 	Symbols(ctx context.Context, path string) ([]Symbol, error)
 }
 
-// SyntaxRange is one parser-backed structural range containing a source
-// position. Ranges use the same zero-based UTF-16 coordinates as LSP so agents
-// can compare parser output with lsp_selection_ranges without translation.
+// SyntaxRange is one structural range containing a source position. Byte bounds
+// are exact, half-open offsets into the immutable Source snapshot returned with
+// the range. Range uses zero-based LSP UTF-16 coordinates.
 type SyntaxRange struct {
-	Kind   string
-	Name   string
-	Detail string
-	Range  TextRange
+	Kind      SyntaxKind
+	Name      string
+	Detail    string
+	Range     TextRange
+	StartByte int
+	EndByte   int
 }
 
-// SyntaxRangeSource is the optional extension for parser backends that can
-// return enclosing edit-target ranges, not just top-level symbols.
-type SyntaxRangeSource interface {
-	Ranges(ctx context.Context, path string, pos Position) ([]SyntaxRange, error)
+// SyntaxRangeResult keeps ranges and diagnostics tied to the bytes that were
+// parsed. Warnings are recoverable: all returned ranges remain safe to use.
+type SyntaxRangeResult struct {
+	Source   []byte
+	Ranges   []SyntaxRange
+	Warnings []string
 }
+
+// SyntaxRangeSource is the optional extension for offline range backends. The
+// caller supplies the one immutable file snapshot used for all offsets.
+type SyntaxRangeSource interface {
+	RangesFromSource(ctx context.Context, path string, src []byte, pos Position) ([]SyntaxRange, []string, error)
+}
+
+type syntaxModeSource interface{ SyntaxMode() string }
 
 var (
 	syntaxSourcesMu sync.RWMutex
@@ -35,8 +65,7 @@ var (
 )
 
 // RegisterSyntaxSymbolSource installs an offline symbol extractor for a stable
-// language ID such as "go" or "typescript". Later registrations replace earlier
-// ones so tests and future language packs can override the built-in default.
+// language ID. Later registrations replace earlier ones for tests and packs.
 func RegisterSyntaxSymbolSource(languageID string, source SyntaxSymbolSource) {
 	languageID = strings.TrimSpace(strings.ToLower(languageID))
 	if languageID == "" {
@@ -51,20 +80,45 @@ func RegisterSyntaxSymbolSource(languageID string, source SyntaxSymbolSource) {
 	syntaxSources[languageID] = source
 }
 
-// SyntaxMode reports the offline structure backend available for a language.
-// The value is intentionally compact because lsp_status prints it per language.
+// SyntaxMode reports whether the offline backend is a grammar parser, a
+// structural scanner, a regex fallback, or unavailable.
 func SyntaxMode(languageID string) string {
 	languageID = strings.TrimSpace(strings.ToLower(languageID))
 	syntaxSourcesMu.RLock()
-	_, ok := syntaxSources[languageID]
+	source, ok := syntaxSources[languageID]
 	syntaxSourcesMu.RUnlock()
 	if ok {
+		if mode, ok := source.(syntaxModeSource); ok {
+			return mode.SyntaxMode()
+		}
 		return "parser"
 	}
 	if _, ok := fallbackSymbolPatterns[languageID]; ok {
 		return "regex"
 	}
 	return "none"
+}
+
+func canonicalSyntaxKind(kind SyntaxKind) SyntaxKind {
+	switch kind {
+	case SyntaxKindFunction, SyntaxKindMethod, SyntaxKindType, SyntaxKindCall, SyntaxKindImportBlock, SyntaxKindField, SyntaxKindFile,
+		SyntaxKindBlock, SyntaxKindControl, SyntaxKindDeclaration, SyntaxKindContainer:
+		return kind
+	case "class", "interface", "enum", "struct", "trait":
+		return SyntaxKindType
+	case "fn":
+		return SyntaxKindFunction
+	case "constant", "variable", "value":
+		return SyntaxKindDeclaration
+	case "impl", "mod", "namespace", "object":
+		return SyntaxKindContainer
+	default:
+		return SyntaxKindControl
+	}
+}
+
+func isCanonicalSyntaxKind(kind SyntaxKind) bool {
+	return canonicalSyntaxKind(kind) == kind
 }
 
 func syntaxFileSymbols(ctx context.Context, lang Language, path string) ([]Symbol, bool, error) {
@@ -78,19 +132,50 @@ func syntaxFileSymbols(ctx context.Context, lang Language, path string) ([]Symbo
 	return items, true, err
 }
 
-// SyntaxFileRanges returns parser-backed enclosing ranges for a source file.
-// The boolean is false when the language has no range-capable parser source.
-func SyntaxFileRanges(ctx context.Context, lang Language, path string, pos Position) ([]SyntaxRange, bool, error) {
+// SyntaxFileRanges reads path exactly once and returns ranges, warnings, and
+// the snapshot from which every byte offset was derived.
+func SyntaxFileRanges(ctx context.Context, lang Language, path string, pos Position) (SyntaxRangeResult, bool, error) {
 	syntaxSourcesMu.RLock()
 	source, ok := syntaxSources[lang.ID]
 	syntaxSourcesMu.RUnlock()
 	if !ok {
-		return nil, false, nil
+		return SyntaxRangeResult{}, false, nil
 	}
 	rangeSource, ok := source.(SyntaxRangeSource)
 	if !ok {
-		return nil, false, nil
+		return SyntaxRangeResult{}, false, nil
 	}
-	items, err := rangeSource.Ranges(ctx, path, pos)
-	return items, true, err
+	src, err := os.ReadFile(path)
+	if err != nil {
+		return SyntaxRangeResult{}, true, err
+	}
+	items, warnings, err := rangeSource.RangesFromSource(ctx, path, src, pos)
+	if err != nil {
+		return SyntaxRangeResult{}, true, err
+	}
+	for i := range items {
+		item := &items[i]
+		item.Kind = canonicalSyntaxKind(item.Kind)
+		// Scanner ranges historically used "parser" as a generic provenance.
+		// Keep names/details but report the backend honestly.
+		if SyntaxMode(lang.ID) == "scanner" && item.Detail == "parser" {
+			item.Detail = "scanner"
+		}
+		if item.StartByte < 0 || item.EndByte < item.StartByte || item.EndByte > len(src) {
+			return SyntaxRangeResult{}, true, fmt.Errorf("invalid syntax byte range %d:%d for %d-byte source", item.StartByte, item.EndByte, len(src))
+		}
+	}
+	return SyntaxRangeResult{Source: src, Ranges: sortSyntaxRanges(dedupeSyntaxRanges(items)), Warnings: warnings}, true, nil
+}
+
+func syntaxRangeFromBytes(text string, kind SyntaxKind, name, detail string, start, end int) (SyntaxRange, bool) {
+	if start < 0 || end < start || end > len(text) {
+		return SyntaxRange{}, false
+	}
+	sp, err1 := PositionForOffset(text, start)
+	ep, err2 := PositionForOffset(text, end)
+	if err1 != nil || err2 != nil {
+		return SyntaxRange{}, false
+	}
+	return SyntaxRange{Kind: kind, Name: name, Detail: detail, StartByte: start, EndByte: end, Range: TextRange{Start: sp, End: ep}}, true
 }

@@ -1116,11 +1116,10 @@ func TestFocusActiveConfigField_KeyAndBaseURL(t *testing.T) {
 	t.Setenv("CUSTOM_API_KEY", "")
 	custom := *FindCatalogEntry("custom")
 	m := newWizardModel(context.Background(), Options{})
+	m.envSnap = EnvSnapshot{Present: map[string]bool{}}
 	m.inputs = []providerInputs{m.newProviderInputs(custom)}
 	m.configIdx = 0
-
 	// field 0 = key. Regression coverage for the bug where "custom"
-	// carried APIKeyEnv = "" and fieldKind fell through the
 	// empty-APIKeyEnv branch straight to "model", so the configure
 	// screen never showed a key field at all — every custom endpoint
 	// that actually requires a bearer token (Groq, Fireworks,
@@ -1130,6 +1129,7 @@ func TestFocusActiveConfigField_KeyAndBaseURL(t *testing.T) {
 	if cmd == nil {
 		t.Fatalf("expected focus cmd for key field; got nil")
 	}
+	_ = cmd()
 	if !m.inputs[0].key.Focused() {
 		t.Errorf("key should be focused for custom on field=0 (APIKeyEnv must be non-empty)")
 	}
@@ -1144,6 +1144,7 @@ func TestFocusActiveConfigField_KeyAndBaseURL(t *testing.T) {
 	if cmd == nil {
 		t.Fatalf("expected focus cmd for key field; got nil")
 	}
+	_ = cmd()
 	if !m.inputs[0].key.Focused() {
 		t.Errorf("key should be focused on field=0 with non-empty APIKeyEnv")
 	}

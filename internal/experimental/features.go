@@ -142,7 +142,7 @@ func Description(f Feature) string {
 	case Sandbox:
 		return "The command sandbox has graduated to GA; this flag is recognized as a no-op for compatibility. Set [sandbox].backend = \"podman\" in config.toml to route supported command execution through the lazy Podman sandbox manager."
 	case SyntaxRanges:
-		return "Offline syntax ranges have graduated to GA for Go, TypeScript/JavaScript, Python, and Rust; this flag is recognized as a no-op for compatibility."
+		return "Offline syntax ranges have graduated to GA for Go (AST parser) and TypeScript/JavaScript, Python, and Rust (structural scanners), with exact byte spans and hashline receipts; this flag is recognized as a no-op for compatibility."
 	default:
 		return ""
 	}

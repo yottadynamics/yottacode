@@ -3,7 +3,35 @@ package wizard
 import (
 	"strings"
 	"testing"
+
+	"github.com/yottadynamics/yottacode/internal/config"
 )
+
+func TestMergeProviders_PreservesExistingHeaders(t *testing.T) {
+	existing := []config.Provider{{
+		Name: "openrouter", Headers: map[string]string{
+			"http-referer":       "https://custom.example",
+			"X-Corporate-Header": "keep-me",
+		},
+	}}
+	planned := []PlanProvider{{
+		Name: "openrouter", Kind: "openai-compatible", BaseURL: "https://openrouter.ai/api/v1",
+		Headers: map[string]string{
+			"HTTP-Referer":       "https://yottacode.ai",
+			"X-OpenRouter-Title": "yottacode",
+		},
+	}}
+	got := mergeProviders(existing, planned)
+	if got[0].Headers["http-referer"] != "https://custom.example" {
+		t.Fatalf("customized header overwritten: %#v", got[0].Headers)
+	}
+	if _, duplicated := got[0].Headers["HTTP-Referer"]; duplicated {
+		t.Fatalf("case-insensitive header duplicated: %#v", got[0].Headers)
+	}
+	if got[0].Headers["X-Corporate-Header"] != "keep-me" || got[0].Headers["X-OpenRouter-Title"] != "yottacode" {
+		t.Fatalf("headers were not merged: %#v", got[0].Headers)
+	}
+}
 
 // TestPlanRenderTOML walks the canonical render path and checks
 // every required section appears in order. We don't compare against
