@@ -34,6 +34,11 @@ const maxDispatchReplyChars = 4000
 // request.
 const MaxDispatchTasksPerCall = 8
 
+// dispatchFinalizeTimeout bounds commit/classification and cleanup after child
+// cancellation. These operations ignore the parent cancellation long enough to
+// save recoverable work, but must not keep shutdown alive indefinitely.
+const dispatchFinalizeTimeout = 30 * time.Second
+
 // DispatchTool fans a batch of subtasks out to subagents that run
 // concurrently. Write batches usually return immediately and continue in
 // background worktrees; all-read batches wait and return their findings
@@ -225,6 +230,11 @@ type dispatchChild struct {
 	adapter        Streamer
 	model          string
 	transcriptPath string
+	// runCtx/cancel are created and registered for every child before fan-out.
+	// This keeps an immediately arriving stop from landing between goroutine
+	// launch and cancel registration.
+	runCtx context.Context
+	cancel context.CancelFunc
 	// filled after the run
 	status  subagents.TaskStatus
 	result  string
@@ -356,6 +366,9 @@ func (t *DispatchTool) Execute(ctx context.Context, argsJSON string) (string, er
 	// stale between the count and the inserts, which is exactly the race that
 	// made a bare check-then-Add wrong.
 	if runBackground {
+		if err := backgroundResourcePreflight(); err != nil {
+			return "error: background dispatch admission denied: " + err.Error() + "; stop completed/stuck work or restart the session, then retry", nil
+		}
 		if active, limit := t.Agent.Tasks.ActiveCount(), t.Agent.backgroundCap(); active+len(children) > limit {
 			return fmt.Sprintf("error: dispatching %d background workers would exceed the cap of %d concurrent background subagents (currently %d running); wait for some to finish or stop them with /subagents stop, then retry",
 				len(children), limit, active), nil
@@ -371,13 +384,14 @@ func (t *DispatchTool) Execute(ctx context.Context, argsJSON string) (string, er
 	// we created so a half-built batch doesn't leak worktrees.
 	var created []string // worktree dirs, for cleanup on error
 	cleanup := func() {
-		// context.WithoutCancel: cleanup runs on the failure path of a call
-		// whose own ctx may already be canceled (e.g. the parent turn ended
-		// while worktree creation was still in progress) — a canceled ctx
-		// here would make git worktree remove fail immediately, leaking the
-		// worktrees/branches already created above instead of cleaning them.
-		cleanupCtx := context.WithoutCancel(ctx)
+		// Failure cleanup must outlive a canceled dispatch call, but cannot
+		// block it forever on a wedged git process or filesystem.
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.WithoutCancel(ctx), dispatchFinalizeTimeout)
+		defer cleanupCancel()
 		for _, dir := range created {
+			if cleanupCtx.Err() != nil {
+				break
+			}
 			_ = worktree.Remove(cleanupCtx, repoRoot, dir, true)
 		}
 	}
@@ -437,32 +451,41 @@ func (t *DispatchTool) Execute(ctx context.Context, argsJSON string) (string, er
 		}
 	}
 
+	// Create and register every child context before launching any worker. A
+	// /subagents stop (or shutdown CancelAll) can otherwise observe a reserved
+	// task whose goroutine has not attached its cancel func yet and be lost.
+	var gatedCtx context.Context
+	var parentEvents chan<- Event
+	var parentDecisions <-chan Decision
 	if runBackground {
-		// Detach each worker from the parent turn (context.Background) so
-		// it survives the turn ending. Workers auto-approve within their
-		// worktree; completion lands via the background-done callback (the
-		// dock + /subagents reflect live state from the registry). Return
-		// immediately with the batch handle.
+		gatedCtx = context.Background()
+	} else {
+		// Foreground dispatch fans children out itself, so serialize approval
+		// round-trips on the parent's single decisions channel + modal.
+		gatedCtx = WithApprovalGate(ctx, &sync.Mutex{})
+		parentEvents = ParentEvents(ctx)
+		parentDecisions = ParentDecisions(ctx)
+	}
+	for _, c := range children {
+		c.runCtx, c.cancel = context.WithCancel(gatedCtx)
+		t.Agent.Tasks.AttachCancel(c.taskID, c.cancel)
+	}
+
+	if runBackground {
+		// Detached workers survive the parent turn; completion lands through the
+		// background callback and live state remains available in the registry.
 		for _, c := range children {
-			go t.runDispatchChild(context.Background(), c, batchID, true, nil, nil)
+			go t.runDispatchChild(c.runCtx, c, batchID, true, nil, nil)
 		}
 		return t.formatBackgroundResult(a.Goal, batchID, children, bgNote), nil
 	}
-
-	// Foreground: dispatch fans children out itself (not via the loop's
-	// parallel batch), so it installs the approval gate that serializes
-	// their approval round-trips on the single decisions channel + modal.
-	gate := &sync.Mutex{}
-	gatedCtx := WithApprovalGate(ctx, gate)
-	parentEvents := ParentEvents(ctx)
-	parentDecisions := ParentDecisions(ctx)
 
 	var wg sync.WaitGroup
 	for _, c := range children {
 		wg.Add(1)
 		go func(c *dispatchChild) {
 			defer wg.Done()
-			t.runDispatchChild(gatedCtx, c, batchID, false, parentEvents, parentDecisions)
+			t.runDispatchChild(c.runCtx, c, batchID, false, parentEvents, parentDecisions)
 		}(c)
 	}
 	wg.Wait()
@@ -574,11 +597,13 @@ func (t *DispatchTool) runDispatchChild(ctx context.Context, c *dispatchChild, b
 		// Even a panicked worker must not leak an empty worktree. The
 		// helper re-derives emptiness itself (the panic may have struck
 		// before commit classification ran) and keeps anything it can't
-		// affirmatively prove is empty+clean. context.Background(), not
-		// WithoutCancel(ctx): the recover must never re-panic, and ctx
-		// itself may be the poison that got us here (e.g. nil).
+		// affirmatively prove is empty+clean. A fresh bounded context, not
+		// WithoutCancel(ctx): the recover must never re-panic, and ctx itself may
+		// be the poison that got us here (e.g. nil).
 		if !c.reclaimed {
-			c.reclaimed = reclaimEmptyWorktree(context.Background(), c.repoRoot, c.worktree, c.base)
+			cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), dispatchFinalizeTimeout)
+			c.reclaimed = reclaimEmptyWorktree(cleanupCtx, c.repoRoot, c.worktree, c.base)
+			cleanupCancel()
 		}
 		// Same non-fatal, best-effort posture as reclaimEmptyWorktree
 		// above: a panic mid-run must not leak this worker's container.
@@ -624,9 +649,12 @@ func (t *DispatchTool) runDispatchChild(ctx context.Context, c *dispatchChild, b
 		RunInBackground: background,
 	})
 
-	childCtx, cancel := context.WithCancel(ctx)
-	t.Agent.Tasks.AttachCancel(c.taskID, cancel)
-	defer cancel()
+	// Execute creates and registers this context before fan-out. Keep ownership
+	// here so all normal and panic exits release it. Direct unit invocations may
+	// omit it, hence the nil guard.
+	if c.cancel != nil {
+		defer c.cancel()
+	}
 
 	opts := childRunOpts{bgPolicy: background}
 	if c.isWrite {
@@ -639,11 +667,13 @@ func (t *DispatchTool) runDispatchChild(ctx context.Context, c *dispatchChild, b
 		// execution, the same "never fall back on error" contract
 		// NewPodmanSandbox's caller follows at session startup.
 		if t.SandboxFactory != nil && dispatchChildNeedsSandbox(c.cfg) {
-			sb, err := t.SandboxFactory(childCtx, c.worktree, c.taskID)
+			sb, err := t.SandboxFactory(ctx, c.worktree, c.taskID)
 			if err != nil {
 				c.errored, c.status = true, subagents.TaskErrored
 				c.result = "error: sandbox: " + err.Error()
-				c.reclaimed = reclaimEmptyWorktree(context.Background(), c.repoRoot, c.worktree, c.base)
+				cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), dispatchFinalizeTimeout)
+				c.reclaimed = reclaimEmptyWorktree(cleanupCtx, c.repoRoot, c.worktree, c.base)
+				cleanupCancel()
 				t.Agent.Tasks.MarkDone(c.taskID, c.status, c.result, c.errored, c.tokens)
 				// Report completion on whichever channel this posture uses —
 				// without this, a foreground worker's sandbox failure leaves
@@ -672,7 +702,7 @@ func (t *DispatchTool) runDispatchChild(ctx context.Context, c *dispatchChild, b
 	}
 
 	result, errored, status, tokens := t.Agent.runChild(
-		childCtx, c.taskID, c.cfg, c.spec.Prompt, transcript,
+		ctx, c.taskID, c.cfg, c.spec.Prompt, transcript,
 		emitToParent, decisions, childAdapter, childModel, opts,
 	)
 
@@ -702,12 +732,14 @@ func (t *DispatchTool) runDispatchChild(ctx context.Context, c *dispatchChild, b
 		// whose parent turn is being canceled would see gitWorktreeDirty error
 		// out (canceled ctx) → false → skip its own commit, defeating the
 		// commit-on-cancel intent this block exists for.
-		commitCtx := context.WithoutCancel(ctx)
+		// Detach from the canceled parent to save recoverable work, but retain a
+		// hard deadline so a stuck hook/git process cannot pin session shutdown.
+		commitCtx, commitCancel := context.WithTimeout(context.WithoutCancel(ctx), dispatchFinalizeTimeout)
+		defer commitCancel()
 		// Detaching from cancellation is what saves the work — but it also means
-		// session teardown can't stop this, only outrun it. Flag the window so
-		// the shutdown drain waits for a commit that's genuinely in flight
-		// rather than abandoning it on a flat deadline and leaving a stale
-		// index.lock behind.
+		// session teardown cannot stop this before dispatchFinalizeTimeout. Flag
+		// the window so shutdown waits while a commit is genuinely in flight
+		// rather than abandoning it early and leaving a stale index.lock behind.
 		//
 		// The defer clears it at FUNCTION exit, deliberately: that covers the
 		// worktree reclaim below (also worth waiting for) and the panic path.

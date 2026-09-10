@@ -98,4 +98,7 @@ RUN pandoc --version \
     && python3 -c "import pdfplumber, docx, pytesseract, pdf2image" \
     && python3 -m py_compile /opt/yottacode/doc-helpers/*.py
 
+# PodmanSandbox launches this image with --init so orphaned document subprocesses
+# are reaped. Keep a conventional termination signal for init forwarding.
+STOPSIGNAL SIGTERM
 CMD ["sleep", "infinity"]

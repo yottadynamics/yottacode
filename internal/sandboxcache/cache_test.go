@@ -1,14 +1,38 @@
 package sandboxcache
 
 import (
+	"fmt"
+	"os"
 	"path/filepath"
 	"testing"
 )
 
-// TestGoHostCacheDirUsesYottacodeHome verifies the shared cache helper stays
-// rooted in ~/.yottacode, which is the path both podman startup and run_tests
-// command preparation must agree on for cache persistence.
-func TestGoHostCacheDirUsesYottacodeHome(t *testing.T) {
+func TestWorkspaceSafeCacheOutsideRepoHome(t *testing.T) {
+	repo := t.TempDir()
+	t.Setenv("HOME", repo)
+	for _, fn := range []struct {
+		name string
+		call func(string) (string, error)
+	}{
+		{"go scratch", HostGoScratchDir},
+		{"shell scratch", HostShellScratchDir},
+		{"sandbox cache", GoHostCacheDirForWorkspace},
+	} {
+		t.Run(fn.name, func(t *testing.T) {
+			got, err := fn.call(repo)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if PathWithinWorkspace(got, repo) {
+				t.Fatalf("cache %q is inside workspace %q", got, repo)
+			}
+		})
+	}
+}
+
+// TestGoHostCacheDirUsesCanonicalHostPath verifies startup and command
+// preparation share a HOME-independent path, including when HOME is workspace.
+func TestGoHostCacheDirUsesCanonicalHostPath(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 
@@ -16,8 +40,12 @@ func TestGoHostCacheDirUsesYottacodeHome(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GoHostCacheDir: %v", err)
 	}
-	want := filepath.Join(home, ".yottacode", GoCacheHomeSubdir)
+	want := filepath.Join(string(filepath.Separator), "var", "tmp", fmt.Sprintf("yottacode-%d", os.Getuid()), GoCacheHomeSubdir)
 	if got != want {
 		t.Fatalf("GoHostCacheDir() = %q, want %q", got, want)
+	}
+	fromWorkspace, err := GoHostCacheDirForWorkspace(home)
+	if err != nil || fromWorkspace != got {
+		t.Fatalf("GoHostCacheDirForWorkspace() = %q, %v; want %q", fromWorkspace, err, got)
 	}
 }

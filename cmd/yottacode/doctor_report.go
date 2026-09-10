@@ -2,9 +2,11 @@ package main
 
 import (
 	"fmt"
+	"golang.org/x/sys/unix"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -46,15 +48,27 @@ type DoctorSummary struct {
 // SandboxDoctorResult reports sandbox configuration and Go cache visibility.
 // It is intentionally cheap and local: no Podman process is started by doctor.
 type SandboxDoctorResult struct {
-	Status       doctorStatus `json:"status"`
-	Backend      string       `json:"backend"`
-	Image        string       `json:"image,omitempty"`
-	GoCacheDir   string       `json:"go_cache_dir,omitempty"`
-	GoCacheBytes int64        `json:"go_cache_bytes,omitempty"`
-	Warnings     []string     `json:"warnings,omitempty"`
-	Issues       []string     `json:"issues,omitempty"`
-	Hints        []string     `json:"hints,omitempty"`
-	Skipped      bool         `json:"skipped,omitempty"`
+	Status       doctorStatus         `json:"status"`
+	Backend      string               `json:"backend"`
+	Image        string               `json:"image,omitempty"`
+	GoCacheDir   string               `json:"go_cache_dir,omitempty"`
+	GoCacheBytes int64                `json:"go_cache_bytes,omitempty"`
+	PIDCurrent   int64                `json:"pid_current,omitempty"`
+	PIDMax       int64                `json:"pid_max,omitempty"`
+	PIDRemaining int64                `json:"pid_remaining,omitempty"`
+	PIDUnlimited bool                 `json:"pid_unlimited,omitempty"`
+	ZombieCount  int                  `json:"zombie_count"`
+	Resources    []DoctorPathResource `json:"resources,omitempty"`
+	Warnings     []string             `json:"warnings,omitempty"`
+	Issues       []string             `json:"issues,omitempty"`
+	Hints        []string             `json:"hints,omitempty"`
+	Skipped      bool                 `json:"skipped,omitempty"`
+}
+
+type DoctorPathResource struct {
+	Path       string `json:"path"`
+	FreeBytes  uint64 `json:"free_bytes"`
+	FreeInodes uint64 `json:"free_inodes"`
 }
 
 func newDoctorSummary(provider adapter.ProbeResult, github GitHubProbeResult, lsp LSPDoctorResult, media MediaDoctorResult, sandbox SandboxDoctorResult) DoctorSummary {
@@ -86,6 +100,7 @@ func probeSandboxDoctor(cfg config.SandboxConfig) SandboxDoctorResult {
 	if result.Backend == "" {
 		result.Backend = "none"
 	}
+	probeLocalResources(&result)
 	if result.Backend == "none" {
 		result.Status = doctorStatusSkipped
 		result.Skipped = true
@@ -106,7 +121,7 @@ func probeSandboxDoctor(cfg config.SandboxConfig) SandboxDoctorResult {
 	size, err := dirSize(cacheDir)
 	if err != nil {
 		if os.IsNotExist(err) {
-			result.Status = doctorStatusOK
+			result.Status = statusFromIssuesWarnings(result.Issues, result.Warnings)
 			result.Hints = append(result.Hints, "sandbox Go cache has not been created yet; it appears after the first sandboxed Go test/build")
 			return result
 		}
@@ -118,11 +133,127 @@ func probeSandboxDoctor(cfg config.SandboxConfig) SandboxDoctorResult {
 	if size > 2*1024*1024*1024 {
 		result.Status = doctorStatusWarning
 		result.Warnings = append(result.Warnings, fmt.Sprintf("sandbox Go cache exceeds 2 GB (%s)", humanBytes(size)))
-		result.Hints = append(result.Hints, "run `go clean -cache -modcache` inside a sandboxed shell, or remove ~/.yottacode/sandbox-go-cache when no sandboxed Go jobs are running")
+		result.Hints = append(result.Hints, "run `go clean -cache -modcache` inside a sandboxed shell, or remove /var/tmp/yottacode-<uid>/sandbox-go-cache when no sandboxed Go jobs are running")
 		return result
 	}
-	result.Status = doctorStatusOK
+	result.Status = statusFromIssuesWarnings(result.Issues, result.Warnings)
 	return result
+}
+
+func probeLocalResources(result *SandboxDoctorResult) {
+	if dir, ok := doctorCgroupDir(); ok {
+		current, currentErr := doctorReadInt(filepath.Join(dir, "pids.current"))
+		maxData, maxErr := os.ReadFile(filepath.Join(dir, "pids.max"))
+		if currentErr == nil && maxErr == nil {
+			result.PIDCurrent = current
+			maxText := strings.TrimSpace(string(maxData))
+			if maxText == "max" {
+				result.PIDUnlimited = true
+			} else if max, err := strconv.ParseInt(maxText, 10, 64); err == nil {
+				result.PIDMax = max
+				result.PIDRemaining = max - current
+				if result.PIDRemaining < 32 {
+					result.Warnings = append(result.Warnings, fmt.Sprintf("cgroup has only %d PID slots remaining", result.PIDRemaining))
+				}
+			}
+		}
+	}
+	result.ZombieCount = doctorZombieCount("/proc")
+	if result.ZombieCount >= 512 {
+		result.Warnings = append(result.Warnings, fmt.Sprintf("%d zombie processes consume PID capacity", result.ZombieCount))
+	}
+
+	paths := []string{os.TempDir(), "/var/tmp"}
+	if cache, err := sandboxcache.GoHostCacheDir(); err == nil {
+		paths = append(paths, cache)
+	}
+	if cwd, err := os.Getwd(); err == nil {
+		if scratch, err := sandboxcache.HostGoScratchDir(cwd); err == nil {
+			paths = append(paths, scratch)
+		}
+		if scratch, err := sandboxcache.HostShellScratchDir(cwd); err == nil {
+			paths = append(paths, scratch)
+		}
+	}
+	seen := map[string]bool{}
+	for _, path := range paths {
+		path = filepath.Clean(path)
+		if seen[path] {
+			continue
+		}
+		seen[path] = true
+		probe := path
+		for {
+			if _, err := os.Stat(probe); err == nil {
+				break
+			} else if !os.IsNotExist(err) {
+				result.Warnings = append(result.Warnings, fmt.Sprintf("cannot inspect resource path %s: %v", path, err))
+				probe = ""
+				break
+			}
+			parent := filepath.Dir(probe)
+			if parent == probe {
+				probe = ""
+				break
+			}
+			probe = parent
+		}
+		if probe == "" {
+			continue
+		}
+		var stat unix.Statfs_t
+		if err := unix.Statfs(probe, &stat); err != nil {
+			result.Warnings = append(result.Warnings, fmt.Sprintf("cannot inspect resource path %s: %v", path, err))
+			continue
+		}
+		result.Resources = append(result.Resources, DoctorPathResource{Path: path, FreeBytes: stat.Bavail * uint64(stat.Bsize), FreeInodes: stat.Ffree})
+	}
+}
+
+func doctorCgroupDir() (string, bool) {
+	data, err := os.ReadFile("/proc/self/cgroup")
+	if err != nil {
+		return "", false
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		parts := strings.SplitN(line, ":", 3)
+		if len(parts) == 3 && parts[0] == "0" && parts[1] == "" {
+			return filepath.Join("/sys/fs/cgroup", strings.TrimPrefix(filepath.Clean(parts[2]), "/")), true
+		}
+	}
+	return "", false
+}
+
+func doctorReadInt(path string) (int64, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return 0, err
+	}
+	return strconv.ParseInt(strings.TrimSpace(string(data)), 10, 64)
+}
+
+func doctorZombieCount(procRoot string) int {
+	entries, err := os.ReadDir(procRoot)
+	if err != nil {
+		return 0
+	}
+	count := 0
+	for _, entry := range entries {
+		if _, err := strconv.Atoi(entry.Name()); err != nil {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(procRoot, entry.Name(), "stat"))
+		if err != nil {
+			continue
+		}
+		if close := strings.LastIndexByte(string(data), ')'); close >= 0 {
+			fields := strings.Fields(string(data[close+1:]))
+			if len(fields) > 0 && fields[0] == "Z" {
+				count++
+			}
+		}
+	}
+	return count
 }
 
 func dirSize(path string) (int64, error) {
@@ -282,8 +413,18 @@ func renderSandboxSection(b *strings.Builder, result SandboxDoctorResult) {
 	b.WriteString("\nSandbox:\n")
 	fmt.Fprintf(b, "  status: %s\n", result.Status)
 	fmt.Fprintf(b, "  backend: %s\n", result.Backend)
+	if result.PIDUnlimited {
+		fmt.Fprintf(b, "  cgroup pids: current=%d max=unlimited\n", result.PIDCurrent)
+	} else if result.PIDMax > 0 {
+		fmt.Fprintf(b, "  cgroup pids: current=%d max=%d remaining=%d\n", result.PIDCurrent, result.PIDMax, result.PIDRemaining)
+	}
+	fmt.Fprintf(b, "  zombies: %d\n", result.ZombieCount)
+	for _, resource := range result.Resources {
+		fmt.Fprintf(b, "  resource path: %s free=%s inodes=%d\n", resource.Path, humanBytes(int64(resource.FreeBytes)), resource.FreeInodes)
+	}
 	if result.Skipped {
 		b.WriteString("  skipped: sandbox backend is none\n")
+		renderIssuesWarnings(b, "  ", result.Issues, result.Warnings)
 		return
 	}
 	if result.Image != "" {
