@@ -317,6 +317,11 @@ func buildPlanFromOptions(ctx context.Context, opts Options) (Plan, error) {
 		// long as default_model is empty too — but the wizard's
 		// non-interactive path can't pick a free-form model out of
 		// thin air, so error if that's the active provider).
+		if e.Name == "custom" && strings.TrimSpace(pp.BaseURL) == "" {
+			// Environment presence alone must not create an invalid custom
+			// profile; interactive setup is required to supply its endpoint.
+			continue
+		}
 		plan.Providers = append(plan.Providers, pp)
 	}
 

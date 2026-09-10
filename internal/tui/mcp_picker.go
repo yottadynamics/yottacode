@@ -271,17 +271,17 @@ func (m Model) updateMCPLogs(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 				m.appendLine(styleAuto.Render(SysMsg(SysWarning, "mcp", "no live client", name)))
 				return m, nil
 			}
-			sc, ok := client.(*mcp.StdioClient)
+			src, ok := client.(mcp.LogSource)
 			if !ok {
-				m.appendLine(styleAuto.Render(SysMsg(SysState, "mcp", "no stderr", name, "non-stdio transport")))
+				m.appendLine(styleAuto.Render(SysMsg(SysState, "mcp", "no logs available", name)))
 				return m, nil
 			}
-			lines := sc.StderrTail()
+			lines := src.LogTail()
 			if len(lines) == 0 {
-				m.appendLine(styleAuto.Render(SysMsg(SysState, "mcp", "no stderr yet", name)))
+				m.appendLine(styleAuto.Render(SysMsg(SysState, "mcp", "no log output yet", name)))
 				return m, nil
 			}
-			m.appendLine(styleMCPHeader.Render(fmt.Sprintf("-- %s -- stderr (last %d lines) --", name, len(lines))))
+			m.appendLine(styleMCPHeader.Render(fmt.Sprintf("-- %s -- logs (last %d lines) --", name, len(lines))))
 			for _, ln := range lines {
 				m.appendLine(ln)
 			}

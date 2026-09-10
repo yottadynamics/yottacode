@@ -41,12 +41,14 @@ type Config struct {
 	Active      Active            `toml:"active"`
 	Providers   []Provider        `toml:"providers"`
 	Checkpoints CheckpointsConfig `toml:"checkpoints"`
+	// MCP controls global policy for configured Model Context Protocol
+	// servers: annotation trust, call bounds, and model-visible payload caps.
+	MCP MCPConfig `toml:"mcp"`
 	// MCPServers lists Model Context Protocol servers launched at
-	// session start. Each entry becomes a stdio subprocess whose
-	// advertised tools register into the agent tool registry under
-	// the mcp/<name>/<tool> namespace. v1 supports stdio transport
-	// only; absence of a `transport` field means adding HTTP/SSE
-	// later is non-breaking.
+	// session start. Each entry becomes a client whose advertised tools
+	// register into the agent tool registry under the mcp/<name>/<tool>
+	// namespace. Supported transports are stdio, streamable HTTP, and
+	// legacy SSE; an empty transport value means stdio.
 	MCPServers []MCPServer `toml:"mcp_servers"`
 	Theme      ThemeConfig `toml:"theme"`
 	// LSP carries optional command overrides for the experimental
@@ -121,6 +123,79 @@ func (a AttributionConfig) PRFooter() string {
 		return ""
 	}
 	return DefaultPRAttributionFooter
+}
+
+// MCPConfig controls global Model Context Protocol client behavior. The
+// defaults are deliberately conservative: server annotations are treated as
+// advisory, every call has a bounded runtime, and large results are truncated
+// before they enter the model context.
+type MCPConfig struct {
+	// ApprovalMode selects how much trust yottacode places in server-declared
+	// tool annotations. "ask" ignores readOnlyHint (default). "allow-readonly"
+	// honors readOnlyHint only for servers named in TrustAnnotations. The
+	// "yolo-inherit" value is accepted for explicit compatibility with the
+	// global yolo path, but is not recommended in docs.
+	ApprovalMode string `toml:"approval_mode"`
+	// TrustAnnotations names MCP servers whose readOnlyHint annotations may
+	// suppress approval when ApprovalMode is "allow-readonly". Server names use
+	// the same validated MCPServer.Name values.
+	TrustAnnotations []string `toml:"trust_annotations"`
+	// CallTimeoutSeconds bounds each tools/call invocation. Zero disables this
+	// extra backstop and leaves only the parent turn context.
+	CallTimeoutSeconds int `toml:"call_timeout_seconds"`
+	// MaxResultBytes caps the flattened tool result before it is returned to the
+	// model. Zero falls through to DefaultMCPMaxResultBytes.
+	MaxResultBytes int `toml:"max_result_bytes"`
+
+	// RequireTLS rejects http:// URLs for remote (http/sse) MCP servers
+	// except to a loopback host (127.0.0.1, localhost, ::1). Defaults to
+	// true — an explicit false is needed to reach a plaintext remote
+	// server, which almost never a good idea outside local development.
+	RequireTLS bool `toml:"require_tls"`
+
+	// AllowedHosts, when non-empty, restricts every remote MCP server to an
+	// exact (case-insensitive) host match from this list — no "*." globs
+	// in v1. Empty means any https host is reachable (subject to
+	// RequireTLS).
+	AllowedHosts []string `toml:"allowed_hosts"`
+}
+
+const (
+	MCPApprovalAsk           = "ask"
+	MCPApprovalAllowReadonly = "allow-readonly"
+	MCPApprovalYoloInherit   = "yolo-inherit"
+
+	DefaultMCPCallTimeoutSeconds = 60
+	DefaultMCPMaxResultBytes     = 262144
+)
+
+var ValidMCPApprovalModes = []string{MCPApprovalAsk, MCPApprovalAllowReadonly, MCPApprovalYoloInherit}
+
+// TrustsAnnotations reports whether readOnlyHint may suppress approval for the
+// named server under the configured MCP approval policy.
+func (m MCPConfig) TrustsAnnotations(server string) bool {
+	if m.ApprovalMode != MCPApprovalAllowReadonly {
+		return false
+	}
+	return slices.Contains(m.TrustAnnotations, server)
+}
+
+// MCPCallTimeout resolves the configured tools/call timeout in seconds. A
+// negative value should have been rejected by Validate; zero intentionally means
+// no extra timeout.
+func (c Config) MCPCallTimeout() int {
+	if c.MCP.CallTimeoutSeconds < 0 {
+		return DefaultMCPCallTimeoutSeconds
+	}
+	return c.MCP.CallTimeoutSeconds
+}
+
+// MCPMaxResultBytes resolves the configured model-visible MCP result cap.
+func (c Config) MCPMaxResultBytes() int {
+	if c.MCP.MaxResultBytes > 0 {
+		return c.MCP.MaxResultBytes
+	}
+	return DefaultMCPMaxResultBytes
 }
 
 // SubagentsConfig tunes the subagent subsystem. SessionTokenBudget caps
@@ -721,11 +796,30 @@ type MCPServer struct {
 	URL string `toml:"url"`
 
 	// Headers are set on every outgoing request to URL — e.g. an
-	// Authorization bearer token. http/sse only.
+	// Authorization bearer token. Values may use $VAR substitution from
+	// yottacode's process env, resolved at connect time — never written
+	// back to config.toml. http/sse only.
 	Headers map[string]string `toml:"headers"`
 
-	// Disabled skips this entry at session start without removing it
-	// from the config file. Useful for temporarily quieting a
+	// TLSCAFile is a path to a PEM-encoded CA bundle used, in addition to
+	// the system roots, when verifying URL's certificate. Does not disable
+	// certificate verification or the require_tls policy. http/sse only.
+	TLSCAFile string `toml:"tls_ca_file"`
+
+	// Include, when non-empty, restricts the registered tool catalog to
+	// names matching at least one glob (e.g. "get_*", "create_pull_request").
+	// Applied after tools/list, before Exclude and before the C0 safety
+	// floor's description fencing.
+	Include []string `toml:"include"`
+
+	// Exclude drops tool names matching any glob from the registered
+	// catalog, applied after Include.
+	Exclude []string `toml:"exclude"`
+
+	// Disabled skips starting this entry's client at session start without
+	// removing it from the config file — but the entry still shows up in
+	// /mcp with a "disabled" status, so it can be re-enabled without
+	// hand-editing config.toml. Useful for temporarily quieting a
 	// misbehaving server.
 	Disabled bool `toml:"disabled"`
 }
@@ -788,6 +882,12 @@ func Default() Config {
 		},
 		Memory: MemoryConfig{
 			CaptureReminderEveryTurns: 6,
+		},
+		MCP: MCPConfig{
+			ApprovalMode:       MCPApprovalAsk,
+			CallTimeoutSeconds: DefaultMCPCallTimeoutSeconds,
+			MaxResultBytes:     DefaultMCPMaxResultBytes,
+			RequireTLS:         true,
 		},
 		Theme: ThemeConfig{
 			Name: defaultThemeName(),
@@ -872,6 +972,12 @@ func Load(path string) (Config, error) {
 	}
 	if strings.TrimSpace(cfg.Retrieval.SessionRecall.Scope) == "" {
 		cfg.Retrieval.SessionRecall.Scope = "project"
+	}
+	if cfg.MCP.ApprovalMode == "" {
+		cfg.MCP.ApprovalMode = MCPApprovalAsk
+	}
+	if cfg.MCP.MaxResultBytes == 0 {
+		cfg.MCP.MaxResultBytes = DefaultMCPMaxResultBytes
 	}
 	if err := Validate(cfg); err != nil {
 		return Default(), fmt.Errorf("config: %s: %w", path, err)
@@ -1003,6 +1109,26 @@ func Validate(cfg Config) error {
 	if cfg.Memory.CaptureReminderEveryTurns < 0 {
 		return fmt.Errorf("memory.capture_reminder_every_turns = %d must be >= 0 (0 = disabled)",
 			cfg.Memory.CaptureReminderEveryTurns)
+	}
+	if cfg.MCP.ApprovalMode != "" && !inSlice(ValidMCPApprovalModes, cfg.MCP.ApprovalMode) {
+		return fmt.Errorf("mcp.approval_mode = %q invalid (expected one of %s)",
+			cfg.MCP.ApprovalMode, strings.Join(ValidMCPApprovalModes, ", "))
+	}
+	if cfg.MCP.CallTimeoutSeconds < 0 {
+		return fmt.Errorf("mcp.call_timeout_seconds = %d must be >= 0 (0 = no extra timeout)", cfg.MCP.CallTimeoutSeconds)
+	}
+	if cfg.MCP.MaxResultBytes != 0 && cfg.MCP.MaxResultBytes < 4096 {
+		return fmt.Errorf("mcp.max_result_bytes = %d too small (minimum 4096)", cfg.MCP.MaxResultBytes)
+	}
+	for _, server := range cfg.MCP.TrustAnnotations {
+		if !mcpNameRE.MatchString(server) {
+			return fmt.Errorf("mcp.trust_annotations contains invalid server name %q (must match %s)", server, mcpNameRE.String())
+		}
+	}
+	for _, host := range cfg.MCP.AllowedHosts {
+		if strings.Contains(host, "*") {
+			return fmt.Errorf("mcp.allowed_hosts entry %q must be an exact host — no \"*\" globs in v1", host)
+		}
 	}
 	validLSP := map[string]bool{}
 	for _, lang := range []string{"go", "typescript", "python", "rust"} {

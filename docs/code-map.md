@@ -44,6 +44,15 @@ mechanical, later step — see `docs/experimental.md`).
   - `code_cycles`
   - `code_map_diagram` (`to_file` writes the full diagram to disk)
 
+When `code_map` is enabled, stock `Explore` and `Plan` subagents use the cached
+index as their first pass for repository structure, symbol discovery, imports,
+dependents, cycles, and blast radius. They use LSP for source-position identity
+and live references/call relationships, then targeted text search for literals,
+docs/config, unsupported languages, or missing capabilities. Code Map remains
+feature-gated: when disabled, its names are removed cleanly from stock child
+allowlists without startup warnings.
+
+## Phase 1 — Suggested context (done)
 ## Phase 1 — Suggested context (done)
 
 `/map here` ranks the changed files' neighborhood — `codemap.SuggestedContext`
@@ -140,6 +149,7 @@ pass — yottacode is MCP-client-only by design (`internal/mcp` is a client
 for external servers only) and will not ship a server exposing its own
 tools.
 
+## Non-goals
 ## Non-goals
 
 - Adding more top-level slash commands such as `/outline`, `/deps`, or

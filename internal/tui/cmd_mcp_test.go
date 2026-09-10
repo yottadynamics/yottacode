@@ -65,7 +65,7 @@ func TestSlash_MCPListsConfiguredServersWithStatus(t *testing.T) {
 	m := newTestModel(t)
 	mgr := mcp.NewManager([]config.MCPServer{
 		{Name: "fake", Command: "/no/such/binary/yottacode-mcp-test"},
-	})
+	}, 0, mcp.Policy{})
 	mgr.Start(t.Context())
 	m.mcpManager = mgr
 
@@ -83,7 +83,7 @@ func TestSlash_MCPLogsRequiresServerName(t *testing.T) {
 	m := newTestModel(t)
 	mgr := mcp.NewManager([]config.MCPServer{
 		{Name: "fake", Command: "/no/such/binary/yottacode-mcp-test"},
-	})
+	}, 0, mcp.Policy{})
 	mgr.Start(t.Context())
 	m.mcpManager = mgr
 
@@ -98,7 +98,7 @@ func TestSlash_MCPLogsUnknownServer(t *testing.T) {
 	m := newTestModel(t)
 	mgr := mcp.NewManager([]config.MCPServer{
 		{Name: "fake", Command: "/no/such/binary/yottacode-mcp-test"},
-	})
+	}, 0, mcp.Policy{})
 	mgr.Start(t.Context())
 	m.mcpManager = mgr
 
@@ -113,7 +113,7 @@ func TestSlash_MCPRestartWithoutNameShowsUsage(t *testing.T) {
 	m := newTestModel(t)
 	mgr := mcp.NewManager([]config.MCPServer{
 		{Name: "fake", Command: "/no/such/binary/yottacode-mcp-test"},
-	})
+	}, 0, mcp.Policy{})
 	mgr.Start(t.Context())
 	m.mcpManager = mgr
 
@@ -128,7 +128,7 @@ func TestSlash_MCPRestartUnknownServer(t *testing.T) {
 	m := newTestModel(t)
 	mgr := mcp.NewManager([]config.MCPServer{
 		{Name: "fake", Command: "/no/such/binary/yottacode-mcp-test"},
-	})
+	}, 0, mcp.Policy{})
 	mgr.Start(t.Context())
 	m.mcpManager = mgr
 
@@ -143,7 +143,7 @@ func TestSlash_MCPRestartFailedServerSurfacesError(t *testing.T) {
 	m := newTestModel(t)
 	mgr := mcp.NewManager([]config.MCPServer{
 		{Name: "fake", Command: "/no/such/binary/yottacode-mcp-test"},
-	})
+	}, 0, mcp.Policy{})
 	mgr.Start(t.Context())
 	m.mcpManager = mgr
 
@@ -221,13 +221,193 @@ func TestSlash_MCPAddHandlesQuotedCommand(t *testing.T) {
 	}
 }
 
+func TestSlash_MCPAddWarnsOnStragglerFlagAfterCommand(t *testing.T) {
+	m := newTestModel(t)
+	seedConfigTOML(t, "")
+
+	// --disabled placed after --command's args is swallowed as a literal
+	// argument to "echo" rather than parsed as /mcp add's own flag — this
+	// must not happen silently.
+	m, _ = typeAndEnter(t, m, "/mcp add off --command echo --disabled")
+	content := m.transcript.String()
+	if !strings.Contains(content, `"--disabled"`) || !strings.Contains(content, "looks like") {
+		t.Errorf("expected a straggler-flag warning; got %q", content)
+	}
+	cfg, err := config.LoadDefault()
+	if err != nil {
+		t.Fatalf("reload config: %v", err)
+	}
+	if len(cfg.MCPServers) != 1 || cfg.MCPServers[0].Disabled {
+		t.Errorf("the server should NOT actually be disabled (that's the bug this warns about); got %+v", cfg.MCPServers)
+	}
+}
+
+func TestSlash_MCPAddHTTPTransportPersists(t *testing.T) {
+	m := newTestModel(t)
+	seedConfigTOML(t, "")
+
+	m, _ = typeAndEnter(t, m, `/mcp add linear --transport http --url https://mcp.linear.app/mcp --header Authorization=Bearer secret-token`)
+	content := m.transcript.String()
+	if !strings.Contains(content, "linear") {
+		t.Fatalf("/mcp add should confirm; got %q", content)
+	}
+	cfg, err := config.LoadDefault()
+	if err != nil {
+		t.Fatalf("reload config: %v", err)
+	}
+	if len(cfg.MCPServers) != 1 {
+		t.Fatalf("expected 1 MCP server; got %d", len(cfg.MCPServers))
+	}
+	s := cfg.MCPServers[0]
+	if s.Transport != "http" || s.URL != "https://mcp.linear.app/mcp" {
+		t.Errorf("server = %+v, want transport=http url=https://mcp.linear.app/mcp", s)
+	}
+	if s.Headers["Authorization"] != "Bearer secret-token" {
+		t.Errorf("headers[Authorization] = %q", s.Headers["Authorization"])
+	}
+}
+
+func TestSlash_MCPAddRejectsCommandAndURLTogether(t *testing.T) {
+	m := newTestModel(t)
+	seedConfigTOML(t, "")
+
+	// --url must precede --command: --command consumes every token after
+	// it verbatim as the executable + args, by design.
+	m, _ = typeAndEnter(t, m, `/mcp add bad --url https://example.com/mcp --command npx server`)
+	content := m.transcript.String()
+	if !strings.Contains(content, "cannot combine") {
+		t.Errorf("combining --command with --url should be rejected; got %q", content)
+	}
+}
+
+func TestSlash_MCPAddRejectsPlaintextRemoteURL(t *testing.T) {
+	m := newTestModel(t)
+	seedConfigTOML(t, "")
+
+	m, _ = typeAndEnter(t, m, `/mcp add insecure --transport http --url http://evil.example/mcp`)
+	content := m.transcript.String()
+	if !strings.Contains(content, "policy") {
+		t.Errorf("plaintext remote URL should be rejected by policy; got %q", content)
+	}
+	cfg, err := config.LoadDefault()
+	if err != nil {
+		t.Fatalf("reload config: %v", err)
+	}
+	if len(cfg.MCPServers) != 0 {
+		t.Error("a policy-rejected add must not be persisted")
+	}
+}
+
+func TestSlash_MCPAddDisabledSkipsStart(t *testing.T) {
+	m := newTestModel(t)
+	seedConfigTOML(t, "")
+	mgr := mcp.NewManager(nil, 0, mcp.Policy{})
+	m.mcpManager = mgr
+
+	bin := buildMCPEchoServer(t)
+	m, _ = typeAndEnter(t, m, "/mcp add off --disabled --command "+bin)
+	content := m.transcript.String()
+	if !strings.Contains(content, "disabled") {
+		t.Errorf("expected confirmation the server was added disabled; got %q", content)
+	}
+	if mgr.Client("off") != nil {
+		t.Error("a --disabled add must not hot-start a live client")
+	}
+	cfg, err := config.LoadDefault()
+	if err != nil {
+		t.Fatalf("reload config: %v", err)
+	}
+	if len(cfg.MCPServers) != 1 || !cfg.MCPServers[0].Disabled {
+		t.Errorf("expected one disabled server; got %+v", cfg.MCPServers)
+	}
+}
+
+func TestSlash_MCPEnableDisableRoundTrip(t *testing.T) {
+	m := newTestModel(t)
+	seedConfigTOML(t, "")
+	bin := buildMCPEchoServer(t)
+
+	mgr := mcp.NewManager([]config.MCPServer{{Name: "echo", Command: bin}}, 0, mcp.Policy{})
+	results := mgr.Start(t.Context())
+	if len(results) != 1 || results[0].Err != nil {
+		t.Fatalf("echo server should start cleanly; got %+v", results)
+	}
+	m.mcpManager = mgr
+	m.handleMCPStartupDone(results)
+	// writeConfig reads/writes m.fileCfg's backing file — seed it to match
+	// the manager's view so /mcp disable's config lookup finds "echo".
+	seedConfigTOML(t, `
+[[mcp_servers]]
+name    = "echo"
+command = "`+bin+`"
+`)
+
+	reg := m.cfg.Registry
+	if _, ok := reg.Get("mcp/echo/echo"); !ok {
+		t.Fatal("expected mcp/echo/echo registered before disabling")
+	}
+
+	m, _ = typeAndEnter(t, m, "/mcp disable echo")
+	content := m.transcript.String()
+	if !strings.Contains(content, "disabled") {
+		t.Errorf("expected disable confirmation; got %q", content)
+	}
+	if mgr.Client("echo") != nil {
+		t.Error("Disable should remove the live client")
+	}
+	if _, ok := reg.Get("mcp/echo/echo"); ok {
+		t.Error("Disable should deregister the server's tools")
+	}
+
+	m, _ = typeAndEnter(t, m, "/mcp enable echo")
+	content = m.transcript.String()
+	if !strings.Contains(content, "enabled") {
+		t.Errorf("expected enable confirmation; got %q", content)
+	}
+	if mgr.Client("echo") == nil {
+		t.Error("Enable should leave a live client behind")
+	}
+	if _, ok := reg.Get("mcp/echo/echo"); !ok {
+		t.Error("Enable should re-register the server's tools")
+	}
+}
+
+func TestSlash_MCPToolsListsCatalogWithFilterMarkers(t *testing.T) {
+	m := newTestModel(t)
+	seedConfigTOML(t, `
+[[mcp_servers]]
+name    = "echo"
+command = "`+buildMCPEchoServer(t)+`"
+include = ["echo"]
+`)
+	cfg := loadConfigForCommand(m)
+	mgr := mcp.NewManager(cfg.MCPServers, 0, mcp.Policy{})
+	results := mgr.Start(t.Context())
+	if len(results) != 1 || results[0].Err != nil {
+		t.Fatalf("echo server should start cleanly; got %+v", results)
+	}
+	m.mcpManager = mgr
+
+	m, _ = typeAndEnter(t, m, "/mcp tools echo")
+	content := m.transcript.String()
+	if !strings.Contains(content, "echo") {
+		t.Errorf("tools listing should include the echo tool; got %q", content)
+	}
+	if !strings.Contains(content, "hidden") {
+		t.Errorf("non-included tools (slow, flaky, crash) should show as hidden; got %q", content)
+	}
+	if !strings.Contains(content, "shown") {
+		t.Errorf("the included echo tool should show as shown; got %q", content)
+	}
+}
+
 func TestMCPStartupDoneRegistersTools(t *testing.T) {
 	m := newTestModel(t)
 
 	bin := buildMCPEchoServer(t)
 	mgr := mcp.NewManager([]config.MCPServer{
 		{Name: "echo", Command: bin},
-	})
+	}, 0, mcp.Policy{})
 	m.mcpManager = mgr
 
 	results := mgr.Start(t.Context())
@@ -247,7 +427,7 @@ func TestMCPStartupDoneSkipsFailedServers(t *testing.T) {
 	m := newTestModel(t)
 	mgr := mcp.NewManager([]config.MCPServer{
 		{Name: "broken", Command: "/no/such/binary/yottacode-async-test"},
-	})
+	}, 0, mcp.Policy{})
 	m.mcpManager = mgr
 
 	results := mgr.Start(t.Context())

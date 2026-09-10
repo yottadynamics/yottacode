@@ -584,7 +584,7 @@ common starter for a Go project:
 
 ## MCP servers
 
-yottacode is a client for Anthropic's Model Context Protocol. Each `[[mcp_servers]]` block in `~/.yottacode/config.toml` launches a subprocess at session start and registers its tools under the `mcp/<name>/<tool>` namespace.
+yottacode is a client for Anthropic's Model Context Protocol. Each `[[mcp_servers]]` block in `~/.yottacode/config.toml` launches a server at session start (stdio subprocess, streamable HTTP, or SSE) and registers its tools under the `mcp/<name>/<tool>` namespace. A separate `[mcp]` block sets global policy: how much yottacode trusts server-declared annotations, and bounds on call time and result size.
 
 ```toml
 [[mcp_servers]]
@@ -597,9 +597,14 @@ name     = "github"
 command  = "npx"
 args     = ["-y", "@modelcontextprotocol/server-github"]
 env      = { GITHUB_PERSONAL_ACCESS_TOKEN = "$GITHUB_PAT" }
+
+[mcp]
+approval_mode        = "ask"
+call_timeout_seconds  = 60
+max_result_bytes      = 262144
 ```
 
-`env` values support `$VAR` substitution from yottacode's process environment so secrets stay out of the config file. v1 supports stdio transport only. See [`mcp.md`](mcp.md) for the full reference, including permission rules (`MCP(...)`), the `/mcp` slash command, and a curated server list.
+`env` values support `$VAR` substitution from yottacode's process environment so secrets stay out of the config file. See [`mcp.md`](mcp.md) for the full reference, including transports, the `[mcp]` policy block, permission rules (`MCP(...)`), the `/mcp` slash command, and a curated server list.
 
 ## Subagents
 

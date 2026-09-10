@@ -293,24 +293,30 @@ func Save(cfg Config, path string) error {
 // next time a picker or wizard saves the config.
 func encodeTunables(cfg Config) (string, error) {
 	var trimmed = struct {
-		Context      ContextConfig     `toml:"context"`
-		Retrieval    RetrievalConfig   `toml:"retrieval"`
-		Cache        CacheConfig       `toml:"cache"`
-		Memory       struct {
+		Context   ContextConfig   `toml:"context"`
+		Retrieval RetrievalConfig `toml:"retrieval"`
+		Cache     CacheConfig     `toml:"cache"`
+
+		Memory struct {
 			CaptureReminderEveryTurns int `toml:"capture_reminder_every_turns"`
 		} `toml:"memory"`
+		MCP MCPConfig `toml:"mcp"`
+
 		LSP          LSPConfig         `toml:"lsp"`
 		Sandbox      SandboxConfig     `toml:"sandbox"`
 		Media        MediaConfig       `toml:"media"`
 		Attribution  AttributionConfig `toml:"attribution"`
 		Experimental map[string]bool   `toml:"experimental"`
 	}{
+
 		Context:   cfg.Context,
 		Retrieval: cfg.Retrieval,
 		Cache:     cfg.Cache,
 		Memory: struct {
 			CaptureReminderEveryTurns int `toml:"capture_reminder_every_turns"`
 		}{CaptureReminderEveryTurns: cfg.Memory.CaptureReminderEveryTurns},
+		MCP: cfg.MCP,
+
 		LSP:          cfg.LSP,
 		Sandbox:      cfg.Sandbox,
 		Media:        cfg.Media,

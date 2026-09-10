@@ -146,7 +146,7 @@ args    = ["-y", "podman-mcp-server@latest"]
 		t.Fatalf("config.LoadDefault: %v", err)
 	}
 
-	mgr := mcp.NewManager(cfg.MCPServers)
+	mgr := mcp.NewManager(cfg.MCPServers, 0, mcp.Policy{})
 	t.Cleanup(func() { mgr.Stop(context.Background()) })
 
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
@@ -273,7 +273,7 @@ args    = ["-y", "@modelcontextprotocol/server-filesystem", "` + workspace + `"]
 	}
 
 	// 3) Build + start manager — same call as internal/tui/run.go.
-	mgr := mcp.NewManager(cfg.MCPServers)
+	mgr := mcp.NewManager(cfg.MCPServers, 0, mcp.Policy{})
 	t.Cleanup(func() { mgr.Stop(context.Background()) })
 
 	startCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)

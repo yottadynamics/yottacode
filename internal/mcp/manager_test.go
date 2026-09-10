@@ -2,16 +2,21 @@ package mcp_test
 
 import (
 	"context"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
+
+	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/yottadynamics/yottacode/internal/config"
 	"github.com/yottadynamics/yottacode/internal/mcp"
 )
 
 func TestManagerStopReturnsWhenContextExpires(t *testing.T) {
-	mgr := mcp.NewManager([]config.MCPServer{{Name: "hung", Transport: "http", URL: "http://127.0.0.1:0"}})
+	mgr := mcp.NewManager([]config.MCPServer{{Name: "hung", Transport: "http", URL: "http://127.0.0.1:0"}}, 0, mcp.Policy{})
 	client := mgr.Client("hung")
 	// A fake Client cannot be injected through the public constructor, so use an
 	// HTTP client whose Stop is already idempotent and verify an expired context
@@ -39,7 +44,7 @@ func managerWithMixedServers(t *testing.T) *mcp.Manager {
 	return mcp.NewManager([]config.MCPServer{
 		{Name: "echo", Command: bin},
 		{Name: "broken", Command: "/no/such/binary/yottacode-mgr-test"},
-	})
+	}, 0, mcp.Policy{})
 }
 
 func TestManager_StartReturnsResultsInRegistrationOrder(t *testing.T) {
@@ -126,14 +131,101 @@ func TestManager_NamesEnumeratesRegistered(t *testing.T) {
 	}
 }
 
-func TestManager_DisabledServerIsExcluded(t *testing.T) {
+// TestManager_DisabledServerStaysVisibleWithNoClient is a regression test
+// for the K2 disabled-server-visibility fix: a disabled entry used to be
+// dropped from the manager entirely (invisible to /mcp, indistinguishable
+// from "never configured"). It now stays in Names()/Statuses() with a
+// Disabled StartResult and no live client, so it can be re-enabled without
+// hand-editing config.toml.
+func TestManager_DisabledServerStaysVisibleWithNoClient(t *testing.T) {
 	bin := buildEchoServer(t)
 	mgr := mcp.NewManager([]config.MCPServer{
 		{Name: "echo", Command: bin},
 		{Name: "off", Command: bin, Disabled: true},
-	})
-	if names := mgr.Names(); len(names) != 1 || names[0] != "echo" {
-		t.Errorf("disabled server should be dropped at construction; got Names=%v", names)
+	}, 0, mcp.Policy{})
+
+	names := mgr.Names()
+	if len(names) != 2 || names[0] != "echo" || names[1] != "off" {
+		t.Fatalf("disabled server should stay registered; got Names=%v", names)
+	}
+	if mgr.Client("off") != nil {
+		t.Error("disabled server should have no live client")
+	}
+	if got := mgr.Status("off"); !got.Disabled {
+		t.Errorf("Status(off) = %+v, want Disabled=true", got)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	results := mgr.Start(ctx)
+	if len(results) != 1 || results[0].Name != "echo" {
+		t.Errorf("Start should only attempt enabled servers; got %+v", results)
+	}
+	if got := mgr.Status("off"); !got.Disabled {
+		t.Errorf("Start must not clobber the disabled entry's status; got %+v", got)
+	}
+}
+
+func TestManager_EnableStartsADisabledServer(t *testing.T) {
+	bin := buildEchoServer(t)
+	mgr := mcp.NewManager([]config.MCPServer{
+		{Name: "off", Command: bin, Disabled: true},
+	}, 0, mcp.Policy{})
+	t.Cleanup(func() { mgr.Stop(context.Background()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	result, err := mgr.Enable(ctx, "off")
+	if err != nil {
+		t.Fatalf("Enable: %v", err)
+	}
+	if result.Err != nil {
+		t.Fatalf("Enable(off).Err = %v; want clean start", result.Err)
+	}
+	if result.Disabled {
+		t.Error("Enable should clear Disabled on success")
+	}
+	if mgr.Client("off") == nil {
+		t.Error("Enable should leave a live client behind")
+	}
+}
+
+func TestManager_DisableStopsAnEnabledServer(t *testing.T) {
+	mgr := managerWithMixedServers(t)
+	t.Cleanup(func() { mgr.Stop(context.Background()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	mgr.Start(ctx)
+
+	if err := mgr.Disable(ctx, "echo"); err != nil {
+		t.Fatalf("Disable: %v", err)
+	}
+	if mgr.Client("echo") != nil {
+		t.Error("Disable should remove the live client")
+	}
+	if got := mgr.Status("echo"); !got.Disabled {
+		t.Errorf("Status(echo) after Disable = %+v, want Disabled=true", got)
+	}
+	// Names() must still include it — this is the visibility fix, not a Remove.
+	found := false
+	for _, n := range mgr.Names() {
+		if n == "echo" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("Disable must not remove the server from Names()")
+	}
+}
+
+func TestManager_EnableDisableUnknownServerErrors(t *testing.T) {
+	mgr := mcp.NewManager(nil, 0, mcp.Policy{})
+	if _, err := mgr.Enable(context.Background(), "ghost"); err == nil {
+		t.Error("Enable(ghost) should error — no such server")
+	}
+	if err := mgr.Disable(context.Background(), "ghost"); err == nil {
+		t.Error("Disable(ghost) should error — no such server")
 	}
 }
 
@@ -149,7 +241,7 @@ func TestManager_SelectsClientTypeByTransport(t *testing.T) {
 		{Name: "stdio-explicit", Transport: "stdio", Command: bin},
 		{Name: "http", Transport: "http", URL: "http://127.0.0.1:0"},
 		{Name: "sse", Transport: "sse", URL: "http://127.0.0.1:0"},
-	})
+	}, 0, mcp.Policy{})
 
 	if _, ok := mgr.Client("stdio-default").(*mcp.StdioClient); !ok {
 		t.Errorf("stdio-default = %T, want *mcp.StdioClient", mgr.Client("stdio-default"))
@@ -241,7 +333,7 @@ func TestManager_StartSurfacesEnvWarnings(t *testing.T) {
 			Command: bin,
 			Env:     map[string]string{"FOO": "$YOTTACODE_TEST_DEFINITELY_UNSET_VAR_XYZ"},
 		},
-	})
+	}, 0, mcp.Policy{})
 	t.Cleanup(func() { mgr.Stop(context.Background()) })
 
 	results := mgr.Start(context.Background())
@@ -259,7 +351,7 @@ func TestManager_StartSurfacesEnvWarnings(t *testing.T) {
 
 func TestManager_AddRegistersAndStartsServer(t *testing.T) {
 	bin := buildEchoServer(t)
-	mgr := mcp.NewManager(nil)
+	mgr := mcp.NewManager(nil, 0, mcp.Policy{})
 	t.Cleanup(func() { mgr.Stop(context.Background()) })
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -290,7 +382,7 @@ func TestManager_AddDuplicateReturnsError(t *testing.T) {
 	bin := buildEchoServer(t)
 	mgr := mcp.NewManager([]config.MCPServer{
 		{Name: "echo", Command: bin},
-	})
+	}, 0, mcp.Policy{})
 	t.Cleanup(func() { mgr.Stop(context.Background()) })
 
 	_, err := mgr.Add(context.Background(), config.MCPServer{
@@ -306,7 +398,7 @@ func TestManager_AddDuplicateReturnsError(t *testing.T) {
 }
 
 func TestManager_AddBrokenServerRecordsFailure(t *testing.T) {
-	mgr := mcp.NewManager(nil)
+	mgr := mcp.NewManager(nil, 0, mcp.Policy{})
 	t.Cleanup(func() { mgr.Stop(context.Background()) })
 
 	result, err := mgr.Add(context.Background(), config.MCPServer{
@@ -330,7 +422,7 @@ func TestManager_RemoveStopsAndDropsServer(t *testing.T) {
 	mgr := mcp.NewManager([]config.MCPServer{
 		{Name: "echo", Command: bin},
 		{Name: "other", Command: bin},
-	})
+	}, 0, mcp.Policy{})
 	t.Cleanup(func() { mgr.Stop(context.Background()) })
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -355,7 +447,7 @@ func TestManager_RemoveStopsAndDropsServer(t *testing.T) {
 }
 
 func TestManager_RemoveUnknownReturnsError(t *testing.T) {
-	mgr := mcp.NewManager(nil)
+	mgr := mcp.NewManager(nil, 0, mcp.Policy{})
 	err := mgr.Remove(context.Background(), "ghost")
 	if err == nil {
 		t.Fatal("Remove(ghost) should error")
@@ -366,7 +458,7 @@ func TestManager_RemoveUnknownReturnsError(t *testing.T) {
 }
 
 func TestManager_NoServersIsCleanNoop(t *testing.T) {
-	mgr := mcp.NewManager(nil)
+	mgr := mcp.NewManager(nil, 0, mcp.Policy{})
 	if results := mgr.Start(context.Background()); len(results) != 0 {
 		t.Errorf("empty manager Start should return 0 results; got %d", len(results))
 	}
@@ -374,4 +466,81 @@ func TestManager_NoServersIsCleanNoop(t *testing.T) {
 		t.Errorf("empty manager Names should be empty; got %v", names)
 	}
 	mgr.Stop(context.Background())
+}
+
+// TestManager_ThreadsConfiguredMaxResultBytes is a regression test for a bug
+// found while wiring the C0 safety floor: the client-layer result cap used
+// to be silently pinned to a hardcoded default regardless of what config.toml
+// said, because NewManager never threaded max_result_bytes into the clients
+// it constructed. A larger-than-262144 configured value was inert, and a
+// smaller one risked slicing through the cap's own truncation marker.
+func TestManager_ThreadsConfiguredMaxResultBytes(t *testing.T) {
+	bin := buildEchoServer(t)
+	const resultCap = 200
+	mgr := mcp.NewManager([]config.MCPServer{{Name: "echo", Command: bin}}, resultCap, mcp.Policy{})
+	t.Cleanup(func() { mgr.Stop(context.Background()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if results := mgr.Start(ctx); results[0].Err != nil {
+		t.Fatalf("Start: %v", results[0].Err)
+	}
+
+	big := strings.Repeat("x", 1000)
+	res, err := mgr.Client("echo").CallTool(ctx, "echo", `{"text":"`+big+`"}`)
+	if err != nil {
+		t.Fatalf("CallTool: %v", err)
+	}
+	if len(res.Text) > resultCap+120 { // cap + room for the truncation marker itself
+		t.Fatalf("result length = %d, want truncated near the configured %d-byte cap", len(res.Text), resultCap)
+	}
+	if !strings.Contains(res.Text, fmt.Sprintf("kept the first %d bytes", resultCap)) {
+		t.Errorf("expected a truncation marker citing the configured cap (%d); got %q", resultCap, res.Text)
+	}
+}
+
+// TestManager_FullHTTPChainInitializeListCall exercises initialize +
+// tools/list + tools/call over HTTP through the full production path —
+// Manager builds the client, starts it, and CallTool goes through the same
+// mcp.Client interface the agent bridge uses — mirroring the stdio
+// integration coverage above but for the remote transport, hermetically
+// (an in-process httptest server, no external tool required).
+func TestManager_FullHTTPChainInitializeListCall(t *testing.T) {
+	srv := sdk.NewServer(&sdk.Implementation{Name: "test-http-server", Version: "test"}, nil)
+	sdk.AddTool(srv, &sdk.Tool{
+		Name:        "echo",
+		Description: "Returns the input prefixed with 'echo:'.",
+		Annotations: &sdk.ToolAnnotations{ReadOnlyHint: true},
+	}, func(_ context.Context, _ *sdk.CallToolRequest, args struct {
+		Text string `json:"text"`
+	}) (*sdk.CallToolResult, any, error) {
+		return &sdk.CallToolResult{
+			Content: []sdk.Content{&sdk.TextContent{Text: "echo:" + args.Text}},
+		}, nil, nil
+	})
+	ts := httptest.NewServer(sdk.NewStreamableHTTPHandler(func(*http.Request) *sdk.Server { return srv }, nil))
+	t.Cleanup(ts.Close)
+
+	mgr := mcp.NewManager([]config.MCPServer{
+		{Name: "remote", Transport: "http", URL: ts.URL},
+	}, 0, mcp.Policy{})
+	t.Cleanup(func() { mgr.Stop(context.Background()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	results := mgr.Start(ctx)
+	if len(results) != 1 || results[0].Err != nil {
+		t.Fatalf("Start: %+v", results)
+	}
+	if results[0].ToolCount != 1 {
+		t.Errorf("ToolCount = %d, want 1", results[0].ToolCount)
+	}
+
+	res, err := mgr.Client("remote").CallTool(ctx, "echo", `{"text":"hi"}`)
+	if err != nil {
+		t.Fatalf("CallTool: %v", err)
+	}
+	if res.Text != "echo:hi" {
+		t.Errorf("CallTool result = %q, want %q", res.Text, "echo:hi")
+	}
 }

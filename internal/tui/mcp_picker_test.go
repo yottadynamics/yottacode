@@ -106,7 +106,7 @@ func TestMCPPicker_ListWithServers(t *testing.T) {
 	m := newTestModel(t)
 	mgr := mcp.NewManager([]config.MCPServer{
 		{Name: "fake", Command: "/no/such/binary/yottacode-picker-test"},
-	})
+	}, 0, mcp.Policy{})
 	mgr.Start(t.Context())
 	m.mcpManager = mgr
 
@@ -156,7 +156,7 @@ func TestSlash_MCPListStillWorks(t *testing.T) {
 	m := newTestModel(t)
 	mgr := mcp.NewManager([]config.MCPServer{
 		{Name: "fake", Command: "/no/such/binary/yottacode-picker-test"},
-	})
+	}, 0, mcp.Policy{})
 	mgr.Start(t.Context())
 	m.mcpManager = mgr
 

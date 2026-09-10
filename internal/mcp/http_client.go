@@ -2,11 +2,13 @@ package mcp
 
 import (
 	"context"
-	"encoding/json"
+	"crypto/tls"
+	"crypto/x509"
 	"fmt"
+	"net"
 	"net/http"
-	"strings"
-	"sync"
+	"net/url"
+	"os"
 	"time"
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
@@ -20,18 +22,26 @@ import (
 // — we don't re-implement JSON-RPC framing or the SSE wire format.
 type HTTPClient struct {
 	// Config inputs (set once, read-only after construction):
-	name    string
-	url     string
-	headers map[string]string
-	useSSE  bool
+	name      string
+	url       string
+	headers   map[string]string // already $VAR-expanded — see NewHTTPClient
+	useSSE    bool
+	policy    Policy
+	tlsCAFile string
 
-	// Live state (mutated only by Start/Stop, guarded by mu). Mirrors
+	// warnings holds header $VAR expansion warnings computed at
+	// construction time, mirroring StdioClient.Warnings' contract.
+	warnings []string
+
+	// Live state (mutated only by Start/Stop, guarded by ops.mu). Mirrors
 	// StdioClient's shape exactly — see that file's field comments.
-	mu      sync.Mutex
-	session *sdk.ClientSession
-	started bool
+	ops     sessionOps
 	stopped bool
-	tools   []ToolDescriptor
+
+	// logs captures connect errors, HTTP status lines, and transport
+	// errors — never response bodies — for /mcp logs. Redacted before
+	// being recorded; see logf.
+	logs *ringBuffer
 
 	// cancelConn cancels the connection's own long-lived context (see
 	// Start). Set once Start succeeds; called by Stop to release it.
@@ -44,12 +54,127 @@ type HTTPClient struct {
 // 2025-03-26 spec's transport, the default); both implement the same
 // mcp.Transport interface StdioClient's sdk.CommandTransport does, so
 // client.Connect's call shape is identical across all three.
-func NewHTTPClient(name, url string, headers map[string]string, useSSE bool) *HTTPClient {
-	return &HTTPClient{name: name, url: url, headers: headers, useSSE: useSSE}
+//
+// headers may contain $VAR references, expanded here against the process
+// environment (os.Expand semantics — an unresolved $VAR becomes the empty
+// string, same as stdio's mergeEnv); headerExpansionWarnings surfaces any
+// unresolved references via Warnings(). policy and tlsCAFile bound what
+// Start is willing to connect to — see Policy and buildTransport.
+func NewHTTPClient(name, url string, headers map[string]string, useSSE bool, policy Policy, tlsCAFile string) *HTTPClient {
+	warnings := headerExpansionWarnings(name, headers)
+	if tlsCAFile != "" {
+		if _, err := os.Stat(tlsCAFile); err != nil {
+			// Soft warning, not a load-time failure: the file may simply
+			// not exist yet at config-load time. Start (via buildTransport)
+			// still hard-fails if it's genuinely missing when connecting.
+			warnings = append(warnings, fmt.Sprintf("mcp(%s): tls_ca_file %q: %v", name, tlsCAFile, err))
+		}
+	}
+	return &HTTPClient{
+		name:      name,
+		url:       url,
+		headers:   expandHeaders(headers),
+		useSSE:    useSSE,
+		policy:    policy,
+		tlsCAFile: tlsCAFile,
+		warnings:  warnings,
+		logs:      newRingBuffer(stderrBufLines),
+	}
 }
 
 // Name returns the configured server name.
 func (c *HTTPClient) Name() string { return c.name }
+
+// Warnings returns the (immutable post-construction) list of warnings
+// recorded for this client — unresolved $VAR references in the
+// configured headers block. Mirrors StdioClient.Warnings.
+func (c *HTTPClient) Warnings() []string {
+	out := make([]string, len(c.warnings))
+	copy(out, c.warnings)
+	return out
+}
+
+// LogTail returns the last ~200 lines of connect errors, HTTP status
+// lines, and transport errors — never response bodies. Satisfies
+// mcp.LogSource so /mcp logs works uniformly across transports.
+func (c *HTTPClient) LogTail() []string { return c.logs.Lines() }
+
+// logf records a redacted, formatted line to the client's log tail.
+func (c *HTTPClient) logf(format string, args ...any) {
+	c.logs.push(Redact(fmt.Sprintf(format, args...)))
+}
+
+// expandHeaders resolves $VAR references in header values against the
+// process environment. Mirrors mergeEnv's os.Expand semantics: an
+// unresolved $VAR becomes the empty string, not the literal text. Never
+// mutates config — callers keep the literal $VAR string in config.toml;
+// only this in-memory copy is expanded.
+func expandHeaders(headers map[string]string) map[string]string {
+	if len(headers) == 0 {
+		return headers
+	}
+	out := make(map[string]string, len(headers))
+	for k, v := range headers {
+		out[k] = os.Expand(v, os.Getenv)
+	}
+	return out
+}
+
+// headerExpansionWarnings mirrors envExpansionWarnings for HTTP headers:
+// one warning per $VAR reference that isn't set in yottacode's process
+// environment.
+func headerExpansionWarnings(name string, headers map[string]string) []string {
+	if len(headers) == 0 {
+		return nil
+	}
+	var out []string
+	for k, v := range headers {
+		for _, varName := range referencedVars(v) {
+			if _, set := os.LookupEnv(varName); !set {
+				out = append(out, fmt.Sprintf("mcp(%s): header %s references $%s which is unset; header will be sent empty",
+					name, k, varName))
+			}
+		}
+	}
+	return out
+}
+
+// buildTransport constructs a fresh *http.Transport for this client — not
+// shared with any other server, and not a fallback to http.DefaultTransport
+// (see the doc comment on the old headerTransport.base field this replaces
+// as the norm: a nil base silently fell back to the process-wide default
+// transport, so every HTTP MCP server shared one connection pool). A short
+// ResponseHeaderTimeout bounds a server that accepts the connection but
+// never responds; tlsCAFile, if set, adds a custom CA root without
+// disabling certificate verification. DialContext's Control hook
+// (Policy.DialControl) defeats DNS rebinding of a hostname-configured
+// server — see its doc comment.
+func (c *HTTPClient) buildTransport() (*http.Transport, error) {
+	var host string
+	if u, err := url.Parse(c.url); err == nil {
+		host = u.Hostname()
+	}
+	t := &http.Transport{
+		ResponseHeaderTimeout: 30 * time.Second,
+		TLSClientConfig:       &tls.Config{MinVersion: tls.VersionTLS12},
+		DialContext: (&net.Dialer{
+			Control: c.policy.DialControl(host),
+		}).DialContext,
+	}
+	if c.tlsCAFile == "" {
+		return t, nil
+	}
+	pem, err := os.ReadFile(c.tlsCAFile)
+	if err != nil {
+		return nil, fmt.Errorf("tls_ca_file %q: %w", c.tlsCAFile, err)
+	}
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(pem) {
+		return nil, fmt.Errorf("tls_ca_file %q: no certificates found", c.tlsCAFile)
+	}
+	t.TLSClientConfig.RootCAs = pool
+	return t, nil
+}
 
 // headerTransport injects a fixed set of headers (e.g. an Authorization
 // bearer token) into every outgoing request. Neither
@@ -91,24 +216,49 @@ func (t *headerTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 // against a timer, using a separate cancel-only context for the
 // connection itself, avoids that for both transports.
 func (c *HTTPClient) Start(ctx context.Context) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if c.started {
+	c.ops.mu.Lock()
+	if c.ops.started || c.ops.starting {
+		c.ops.mu.Unlock()
 		return fmt.Errorf("mcp(%s): already started", c.name)
 	}
+
 	if c.stopped {
+		c.ops.mu.Unlock()
 		return fmt.Errorf("mcp(%s): client is stopped", c.name)
+	}
+	c.ops.starting = true
+	c.ops.mu.Unlock()
+	defer func() {
+		c.ops.mu.Lock()
+		if !c.ops.started {
+			c.ops.starting = false
+		}
+		c.ops.mu.Unlock()
+	}()
+
+	if err := c.policy.CheckURL(c.url); err != nil {
+		c.logf("policy: %v", err)
+		return fmt.Errorf("mcp(%s): %w", c.name, err)
+
 	}
 
 	connCtx, cancelConn := context.WithCancel(context.Background())
 
 	client := sdk.NewClient(&sdk.Implementation{
 		Name:    clientName,
-		Version: clientVersion,
+		Version: clientVersion(),
 	}, nil)
 
-	httpClient := &http.Client{Transport: &headerTransport{headers: c.headers}}
+	baseTransport, err := c.buildTransport()
+	if err != nil {
+		cancelConn()
+		c.logf("transport setup: %v", err)
+		return fmt.Errorf("mcp(%s): %w", c.name, err)
+	}
+	httpClient := &http.Client{
+		Transport:     &headerTransport{base: baseTransport, headers: c.headers},
+		CheckRedirect: c.policy.CheckRedirect,
+	}
 
 	var transport sdk.Transport
 	if c.useSSE {
@@ -132,19 +282,21 @@ func (c *HTTPClient) Start(ctx context.Context) error {
 	case result = <-resultCh:
 	case <-time.After(InitializeTimeout):
 		cancelConn()
+		c.logf("connect: timed out after %s", InitializeTimeout)
 		return fmt.Errorf("mcp(%s): connect: timed out after %s", c.name, InitializeTimeout)
 	case <-ctx.Done():
 		cancelConn()
+		c.logf("connect: %v", ctx.Err())
 		return fmt.Errorf("mcp(%s): connect: %w", c.name, ctx.Err())
 	}
 	if result.err != nil {
 		cancelConn()
+		c.logf("connect: %v", result.err)
 		return fmt.Errorf("mcp(%s): connect: %w", c.name, result.err)
 	}
 	session := result.session
 
-	c.session = session
-	c.started = true
+	c.ops.bind(session)
 	c.cancelConn = cancelConn
 
 	// Eager catalog fetch — same rationale as StdioClient.Start: the
@@ -155,110 +307,49 @@ func (c *HTTPClient) Start(ctx context.Context) error {
 	// one call returns, since it only governs this request/response
 	// round trip, not the underlying persistent connection (connCtx).
 	fetchCtx, cancelFetch := context.WithTimeout(ctx, InitializeTimeout)
-	tools, err := c.fetchTools(fetchCtx)
+	_, err = c.ops.fetchTools(fetchCtx)
 	cancelFetch()
 	if err != nil {
 		_ = session.Close()
 		cancelConn()
-		c.session = nil
-		c.started = false
+		c.ops.clear()
 		c.cancelConn = nil
+		c.logf("list tools: %v", err)
 		return fmt.Errorf("mcp(%s): list tools: %w", c.name, err)
 	}
-	c.tools = tools
 	return nil
 }
 
 // ListTools returns the cached catalog from Start. Returns an error if
 // Start hasn't been called or already failed.
 func (c *HTTPClient) ListTools(ctx context.Context) ([]ToolDescriptor, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if !c.started {
-		return nil, ErrNotStarted
-	}
-	out := make([]ToolDescriptor, len(c.tools))
-	copy(out, c.tools)
-	return out, nil
+	c.ops.mu.RLock()
+	defer c.ops.mu.RUnlock()
+	return c.ops.listTools()
 }
 
-// fetchTools queries tools/list and translates the SDK's Tool shape
-// into our transport-agnostic ToolDescriptor — identical logic to
-// StdioClient.fetchTools (duplicated rather than shared: both are small,
-// and the two Client implementations otherwise share nothing stateful
-// to hang a common helper off of).
-func (c *HTTPClient) fetchTools(ctx context.Context) ([]ToolDescriptor, error) {
-	res, err := c.session.ListTools(ctx, nil)
-	if err != nil {
-		return nil, err
-	}
-	out := make([]ToolDescriptor, 0, len(res.Tools))
-	for _, t := range res.Tools {
-		if t == nil {
-			continue
-		}
-		schema, _ := toSchemaMap(t.InputSchema)
-		readOnly := false
-		if t.Annotations != nil {
-			readOnly = t.Annotations.ReadOnlyHint
-		}
-		out = append(out, ToolDescriptor{
-			Name:         t.Name,
-			Description:  t.Description,
-			InputSchema:  schema,
-			ReadOnlyHint: readOnly,
-		})
-	}
-	return out, nil
+// RefreshTools re-queries tools/list and replaces the cached catalog.
+func (c *HTTPClient) RefreshTools(ctx context.Context) ([]ToolDescriptor, error) {
+	return c.ops.fetchTools(ctx)
 }
 
 // CallTool invokes the named tool with the raw JSON arguments payload.
 func (c *HTTPClient) CallTool(ctx context.Context, toolName, argsJSON string) (CallResult, error) {
-	c.mu.Lock()
-	session := c.session
-	started := c.started
-	c.mu.Unlock()
-
-	if !started || session == nil {
-		return CallResult{}, ErrNotStarted
-	}
-
-	var args map[string]any
-	trimmed := strings.TrimSpace(argsJSON)
-	if trimmed != "" && trimmed != "null" {
-		if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
-			return CallResult{}, fmt.Errorf("mcp(%s/%s): invalid argument JSON: %w",
-				c.name, toolName, err)
-		}
-	}
-
-	res, err := session.CallTool(ctx, &sdk.CallToolParams{
-		Name:      toolName,
-		Arguments: args,
-	})
-	if err != nil {
-		return CallResult{}, fmt.Errorf("mcp(%s/%s): %w", c.name, toolName, err)
-	}
-
-	return CallResult{
-		Text:    extractText(res),
-		IsError: res.IsError,
-	}, nil
+	return c.ops.callTool(ctx, c.name, toolName, argsJSON)
 }
 
 // Stop closes the SDK session (which tears down the HTTP/SSE
 // connection) and releases the connection context Start created.
 // Idempotent — repeat calls return nil.
 func (c *HTTPClient) Stop(ctx context.Context) error {
-	c.mu.Lock()
-	session := c.session
+	c.ops.mu.Lock()
+	session := c.ops.session
 	cancelConn := c.cancelConn
 	alreadyStopped := c.stopped
 	c.stopped = true
-	c.session = nil
-	c.started = false
 	c.cancelConn = nil
-	c.mu.Unlock()
+	c.ops.mu.Unlock()
+	c.ops.clear()
 
 	if alreadyStopped || session == nil {
 		if cancelConn != nil {

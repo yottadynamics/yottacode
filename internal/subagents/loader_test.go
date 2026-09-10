@@ -107,3 +107,41 @@ func TestLoadAll_DropsUnknownTools(t *testing.T) {
 		t.Errorf("warnings did not mention %q: %v", wantWarn, res.Warnings)
 	}
 }
+
+func TestLoadAll_SilentlyDropsDisabledOptionalBuiltinTools(t *testing.T) {
+	t.Setenv("YOTTACODE_HOME", t.TempDir())
+	res, err := LoadAll(t.TempDir(), map[string]bool{
+		"read_file":  true,
+		"grep":       true,
+		"lsp_status": true,
+	})
+	if err != nil {
+		t.Fatalf("LoadAll: %v", err)
+	}
+	for _, warning := range res.Warnings {
+		if strings.Contains(warning, "code_") {
+			t.Fatalf("disabled optional Code Map tool produced warning: %q", warning)
+		}
+	}
+	explore := Find(res.Configs, "Explore")
+	if explore == nil {
+		t.Fatal("Explore missing")
+	}
+	if explore.ToolAllowed("code_map") {
+		t.Error("disabled code_map remained in effective allowlist")
+	}
+	if !explore.ToolAllowed("lsp_status") {
+		t.Error("available lsp_status was dropped")
+	}
+}
+
+func TestValidateToolAllowlists_CustomOptionalToolStillWarns(t *testing.T) {
+	configs := []AgentConfig{{Name: "Custom", Source: "project", Tools: []string{"code_map"}}}
+	warnings := validateToolAllowlists(configs, map[string]bool{"read_file": true})
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "code_map") {
+		t.Fatalf("warnings = %v, want custom code_map warning", warnings)
+	}
+	if len(configs[0].Tools) != 0 {
+		t.Fatalf("Tools = %v, want disabled tool dropped", configs[0].Tools)
+	}
+}
