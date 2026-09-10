@@ -184,10 +184,9 @@ func (m *Model) cyclePickerProvider(delta int) tea.Cmd {
 	p.loadErr = nil
 	p.cursor = 0
 	p.windowTop = 0
-	// API key for the new provider may differ; pull it fresh from
-	// the profile's APIKeyEnv (or fall back to whatever the session
-	// already had).
-	apiKey := m.apiKey
+	// Credentials are provider-scoped; never reuse the live session key when
+	// cycling to a different endpoint.
+	apiKey := ""
 	if p.provider.APIKeyEnv != "" {
 		if v := os.Getenv(p.provider.APIKeyEnv); v != "" {
 			apiKey = v
@@ -406,6 +405,8 @@ func (m Model) commitModelChoice(chosen string, window int) (Model, tea.Cmd) {
 		m.baseURL = pickerProv.BaseURL
 		m.provider = string(detectKindAsProvider(pickerProv.Kind))
 		m.providerLabel = wizard.CatalogIdentity(pickerProv.Name)
+		m.opts.Headers = cloneHeaders(pickerProv.Headers)
+		m.apiKey = ""
 		if pickerProv.APIKeyEnv != "" {
 			if v := os.Getenv(pickerProv.APIKeyEnv); v != "" {
 				m.apiKey = v
@@ -808,6 +809,11 @@ func truncateErr(s string, max int) string {
 // only --model + --base-url and no [[providers]] entry.
 func (m Model) providerProfileForModel() config.Provider {
 	cfg := loadConfigForCommand(m)
+	if cfg.Active.Provider != "" {
+		if active := cfg.FindProvider(cfg.Active.Provider); active != nil && active.BaseURL == m.baseURL {
+			return *active
+		}
+	}
 	for _, p := range cfg.Providers {
 		if p.BaseURL == m.baseURL {
 			return p

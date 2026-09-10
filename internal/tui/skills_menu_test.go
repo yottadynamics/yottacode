@@ -129,9 +129,12 @@ func TestSkillsMenu_CatalogOpensPicker(t *testing.T) {
 	}
 }
 
-// TestCatalogPicker_TabCycles confirms Tab flips between Official and Bundled
-// and resets the cursor. Without the reset, the user can sit on a row index past
-// the end of the new tab's visible set.
+// TestCatalogPicker_TabCycles confirms Tab cycles Official → Bundled →
+// Custom → Official and resets the cursor each step. Without the reset,
+// the user can sit on a row index past the end of the new tab's visible
+// set. "beta" (ScopeUser, not in the official catalog stub) exercises the
+// Custom tab: it must not appear under Official (no catalog name match)
+// or Bundled (not ScopeBuiltin) — only Custom.
 func TestCatalogPicker_TabCycles(t *testing.T) {
 	withOfficialCatalogStub(t, []skills.Skill{{Name: "official-alpha", Description: "o", Source: skills.ScopeOfficial}})
 	m := newTestModel(t)
@@ -160,8 +163,15 @@ func TestCatalogPicker_TabCycles(t *testing.T) {
 		t.Errorf("Tab should reset cursor to 0, got %d", m.skillsPicker.cursor)
 	}
 	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyTab})
+	if m.skillsPicker.tab != catalogTabCustom {
+		t.Errorf("second Tab should cycle to custom, got %v", m.skillsPicker.tab)
+	}
+	if visible := m.skillsPicker.visibleRows(); len(visible) != 1 || visible[0].Name != "beta" {
+		t.Errorf("custom visible rows = %v, want [beta]", visible)
+	}
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyTab})
 	if m.skillsPicker.tab != catalogTabOfficial {
-		t.Errorf("second Tab should cycle to official")
+		t.Errorf("third Tab should cycle back to official, got %v", m.skillsPicker.tab)
 	}
 }
 
@@ -195,6 +205,67 @@ func TestCatalogPicker_ArrowKeysSwitchTabs(t *testing.T) {
 	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyDown})
 	if m.skillsPicker.tab != catalogTabOfficial {
 		t.Error("Down past last row should not switch tabs")
+	}
+}
+
+// TestCatalogPicker_RescanPicksUpCLIInstall covers the real gap the Catalog
+// picker had: a skill installed via a separate `yottacode skills install`
+// invocation while this session is already running doesn't reach
+// SkillTool.All (a session-start snapshot) until something explicitly
+// reloads it. Before pressing `r` the install is invisible; after, it
+// shows up under Custom (not in the official catalog stub) without
+// disturbing the pre-existing builtin fixture, which survives the rescan
+// because it's a real embedded skill LoadAll rediscovers on its own.
+func TestCatalogPicker_RescanPicksUpCLIInstall(t *testing.T) {
+	withOfficialCatalogStub(t, nil)
+	home := t.TempDir()
+	t.Setenv("YOTTACODE_HOME", home)
+
+	// Seed the session-start snapshot with the real builtin set (not a
+	// minimal hand-rolled fixture) so the post-rescan "new skills found"
+	// count reflects only the genuinely new CLI install, not every real
+	// builtin the fixture happened to omit.
+	m := newTestModel(t)
+	m.skillTool = &agent.SkillTool{All: skills.LoadBuiltins()}
+	m, _ = m.runSlash("/skills")
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // Catalog
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyRight}) // Official -> Bundled
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyRight}) // Bundled -> Custom
+	if visible := m.skillsPicker.visibleRows(); len(visible) != 0 {
+		t.Fatalf("before any install, custom visible = %v, want none", visible)
+	}
+
+	// A separate `yottacode skills install` process running while this
+	// session stays open — it never touches m.skillTool directly.
+	src := t.TempDir()
+	body := "---\nname: cli-installed\ndescription: installed out of band\n---\nBody\n"
+	if err := os.WriteFile(filepath.Join(src, "SKILL.md"), []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := skills.Install(skills.InstallOptions{Source: src}); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	if visible := m.skillsPicker.visibleRows(); len(visible) != 0 {
+		t.Fatalf("still stale before pressing r, custom visible = %v", visible)
+	}
+
+	m, _ = applyMsg(m, tea.KeyPressMsg{Text: "r"})
+	if !strings.Contains(m.skillsPicker.status, "1 new skill") {
+		t.Errorf("status = %q, want it to mention 1 new skill found", m.skillsPicker.status)
+	}
+	visible := m.skillsPicker.visibleRows()
+	if len(visible) != 1 || visible[0].Name != "cli-installed" {
+		t.Fatalf("after rescan, custom visible = %v, want [cli-installed]", visible)
+	}
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyLeft}) // Custom -> Bundled
+	found := false
+	for _, sk := range m.skillsPicker.visibleRows() {
+		if sk.Name == "brainstorming" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("real builtin fixture should survive the rescan on the Bundled tab")
 	}
 }
 
@@ -298,6 +369,50 @@ func TestCatalogPicker_UninstallOnInstalledTab(t *testing.T) {
 	}}
 	m, _ = m.runSlash("/skills")
 	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // Catalog
+	m, _ = applyMsg(m, tea.KeyPressMsg{Text: "u"})
+
+	if _, err := os.Stat(filepath.Join(home, "skills", "removeme")); !os.IsNotExist(err) {
+		t.Errorf("dir should be removed after u: err=%v", err)
+	}
+	if skills.Find(m.skillTool.All, "removeme") != nil {
+		t.Error("registry should have refreshed after uninstall")
+	}
+}
+
+// TestCatalogPicker_UninstallOnCustomTab covers the Custom tab's uninstall
+// path: a skill installed from a source that isn't in the official catalog
+// stub only appears under Custom (not Official, since it has no catalog
+// name match), and `u` there must remove it just like the Official tab's
+// uninstall does.
+func TestCatalogPicker_UninstallOnCustomTab(t *testing.T) {
+	withOfficialCatalogStub(t, nil)
+	home := t.TempDir()
+	t.Setenv("YOTTACODE_HOME", home)
+	t.Setenv("HOME", home)
+
+	src := t.TempDir()
+	body := "---\nname: removeme\ndescription: per-row uninstall fixture\n---\nBody\n"
+	if err := os.WriteFile(filepath.Join(src, "SKILL.md"), []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := skills.Install(skills.InstallOptions{Source: src}); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+
+	m := newTestModel(t)
+	m.skillTool = &agent.SkillTool{All: []skills.Skill{
+		{Name: "removeme", Description: "x", Source: skills.ScopeUser},
+	}}
+	m, _ = m.runSlash("/skills")
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // Catalog
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyRight}) // Official → Bundled
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyRight}) // Bundled → Custom
+	if m.skillsPicker.tab != catalogTabCustom {
+		t.Fatalf("tab = %v, want custom", m.skillsPicker.tab)
+	}
+	if visible := m.skillsPicker.visibleRows(); len(visible) != 1 || visible[0].Name != "removeme" {
+		t.Fatalf("custom visible rows = %v, want [removeme]", visible)
+	}
 	m, _ = applyMsg(m, tea.KeyPressMsg{Text: "u"})
 
 	if _, err := os.Stat(filepath.Join(home, "skills", "removeme")); !os.IsNotExist(err) {

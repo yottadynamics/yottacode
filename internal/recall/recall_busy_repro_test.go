@@ -7,11 +7,11 @@ import (
 	"time"
 )
 
-// TestIndexSessionSQLiteBusyRepro intentionally holds a write transaction on
-// one recall connection while another connection attempts a single indexing
-// transaction. It reproduces the user-visible TUI warning path that the retry
-// wrapper now suppresses for transient locks:
-// `recall: upsert session: database is locked (5) (SQLITE_BUSY)`.
+// TestIndexSessionSQLiteBusyRepro documents the low-level SQLite failure that
+// can occur when a separate process holds the writer lock. IndexSession's public
+// retry path is covered by TestIndexSessionRetriesTransientSQLiteBusy; this test
+// keeps the original error visible without presenting it as an unexpected test
+// failure.
 func TestIndexSessionSQLiteBusyRepro(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "locked.sqlite")
 	locker, err := openAt(dbPath)
@@ -46,13 +46,11 @@ func TestIndexSessionSQLiteBusyRepro(t *testing.T) {
 		t.Fatal("IndexSession succeeded while another connection held a write lock")
 	}
 	got := err.Error()
-	t.Logf("reproduced recall index failure: %s", got)
+	t.Logf("expected low-level recall lock error: %s", got)
 	if !strings.Contains(got, "recall: upsert session") || !strings.Contains(got, "SQLITE_BUSY") {
 		t.Fatalf("IndexSession error = %q, want recall upsert SQLITE_BUSY", got)
 	}
-}
-
-// TestIndexSessionRetriesTransientSQLiteBusy holds SQLite's writer lock only
+} // TestIndexSessionRetriesTransientSQLiteBusy holds SQLite's writer lock only
 // briefly. IndexSession should retry the transient SQLITE_BUSY and eventually
 // index successfully instead of leaking the warning to the TUI.
 func TestIndexSessionRetriesTransientSQLiteBusy(t *testing.T) {

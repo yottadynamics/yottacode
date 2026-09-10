@@ -253,7 +253,10 @@ func NewClient(ctx context.Context, lang Language, root string) (*Client, error)
 	c.readTimeout = defaultRequestTimeout
 	c.diagSettle = 1200 * time.Millisecond
 	if err := c.initialize(startCtx); err != nil {
-		_ = c.Close()
+		closeErr := c.Close()
+		if closeErr != nil {
+			err = fmt.Errorf("%w; process exit: %v", err, closeErr)
+		}
 		return nil, fmt.Errorf("%w: %v", ErrServerStartFailed, err)
 	}
 	return c, nil

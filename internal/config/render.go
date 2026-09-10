@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/BurntSushi/toml"
@@ -68,6 +69,17 @@ func Render(cfg Config) string {
 		}
 		if p.DefaultModel != "" {
 			fmt.Fprintf(&b, "default_model = %q\n", p.DefaultModel)
+		}
+		if len(p.Headers) > 0 {
+			keys := make([]string, 0, len(p.Headers))
+			for key := range p.Headers {
+				keys = append(keys, key)
+			}
+			sort.Strings(keys)
+			b.WriteString("\n  [providers.headers]\n")
+			for _, key := range keys {
+				fmt.Fprintf(&b, "  %q = %q\n", key, p.Headers[key])
+			}
 		}
 		for _, m := range p.Models {
 			b.WriteString("\n  [[providers.models]]\n")
@@ -273,24 +285,25 @@ func Save(cfg Config, path string) error {
 }
 
 // encodeTunables renders only the [context], [retrieval], [memory], [lsp],
-// [sandbox], [media], and [experimental] sections via the BurntSushi
+// [sandbox], [media], [attribution], and [experimental] sections via the BurntSushi
 // encoder. We marshal a trimmed struct so the encoder doesn't try to emit
 // [active], [[providers]], or [router]. Memory/LSP/sandbox/media/
-// experimental must be included: Render rebuilds the file from the struct,
+// attribution/experimental must be included: Render rebuilds the file from the struct,
 // so any section left out of this list is silently DROPPED from disk the
 // next time a picker or wizard saves the config.
 func encodeTunables(cfg Config) (string, error) {
 	var trimmed = struct {
-		Context   ContextConfig   `toml:"context"`
-		Retrieval RetrievalConfig `toml:"retrieval"`
-		Cache     CacheConfig     `toml:"cache"`
-		Memory    struct {
+		Context      ContextConfig     `toml:"context"`
+		Retrieval    RetrievalConfig   `toml:"retrieval"`
+		Cache        CacheConfig       `toml:"cache"`
+		Memory       struct {
 			CaptureReminderEveryTurns int `toml:"capture_reminder_every_turns"`
 		} `toml:"memory"`
-		LSP          LSPConfig       `toml:"lsp"`
-		Sandbox      SandboxConfig   `toml:"sandbox"`
-		Media        MediaConfig     `toml:"media"`
-		Experimental map[string]bool `toml:"experimental"`
+		LSP          LSPConfig         `toml:"lsp"`
+		Sandbox      SandboxConfig     `toml:"sandbox"`
+		Media        MediaConfig       `toml:"media"`
+		Attribution  AttributionConfig `toml:"attribution"`
+		Experimental map[string]bool   `toml:"experimental"`
 	}{
 		Context:   cfg.Context,
 		Retrieval: cfg.Retrieval,
@@ -301,6 +314,7 @@ func encodeTunables(cfg Config) (string, error) {
 		LSP:          cfg.LSP,
 		Sandbox:      cfg.Sandbox,
 		Media:        cfg.Media,
+		Attribution:  cfg.Attribution,
 		Experimental: cfg.Experimental,
 	}
 	var b strings.Builder

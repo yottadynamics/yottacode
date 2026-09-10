@@ -604,7 +604,7 @@ func providerUse(m Model, name string) (Model, tea.Cmd) {
 	case p.DefaultModel != "":
 		newModel = p.DefaultModel
 	}
-	newKey := m.apiKey
+	newKey := ""
 	if p.APIKeyEnv != "" {
 		if v := os.Getenv(p.APIKeyEnv); v != "" {
 			newKey = v
@@ -612,6 +612,7 @@ func providerUse(m Model, name string) (Model, tea.Cmd) {
 	}
 	m.baseURL = p.BaseURL
 	m.apiKey = newKey
+	m.opts.Headers = cloneHeaders(p.Headers)
 	m.modelName = newModel
 	m.provider = string(detectKindAsProvider(p.Kind))
 	m.providerLabel = wizard.CatalogIdentity(p.Name)
@@ -1286,6 +1287,7 @@ func (m Model) adapterConfig(modelName, baseURL string) adapter.Config {
 	return adapter.Config{
 		BaseURL:                baseURL,
 		APIKey:                 m.apiKey,
+		Headers:                cloneHeaders(m.opts.Headers),
 		Model:                  modelName,
 		ProviderOverride:       adapter.Provider(strings.TrimSpace(m.provider)),
 		ReasoningEffort:        m.reasoningEffort,
@@ -1304,6 +1306,17 @@ func (m Model) adapterConfig(modelName, baseURL string) adapter.Config {
 		XSearchFromDate:        strings.TrimSpace(m.xSearchFromDate),
 		XSearchToDate:          strings.TrimSpace(m.xSearchToDate),
 	}
+}
+
+func cloneHeaders(src map[string]string) map[string]string {
+	if len(src) == 0 {
+		return nil
+	}
+	dst := make(map[string]string, len(src))
+	for key, value := range src {
+		dst[key] = value
+	}
+	return dst
 }
 
 func runProviderProbe(ctx context.Context, cfg adapter.Config, announce bool) tea.Cmd {

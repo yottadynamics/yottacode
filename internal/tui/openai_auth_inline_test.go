@@ -29,8 +29,10 @@ func TestHandleInlineOpenAIAuthURL_Success(t *testing.T) {
 		t.Errorf("expected wait cmd; got nil")
 	}
 	out := stripANSI(m.transcript.String())
-	if !strings.Contains(out, "browser opened") {
-		t.Errorf("transcript missing 'browser opened':\n%s", out)
+	for _, want := range []string{"browser opened", "https://auth.openai.com/oauth/authorize?test=1"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("transcript missing %q:\n%s", want, out)
+		}
 	}
 }
 

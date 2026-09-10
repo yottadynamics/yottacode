@@ -56,6 +56,8 @@ default_model = "<your-model-id>"
 
 Do not put raw API keys in `config.toml`. Use `api_key_env` and set the secret in your shell environment or in `~/.yottacode/.env` through the setup wizard.
 
+Provider profiles may include a `headers` table for non-secret request metadata. Values are plaintext in `config.toml`, so never store credentials there. Supported OpenAI-family requests, diagnostics, and live model discovery send these headers; adapter families that cannot consume them report a diagnostic warning.
+
 ## OpenAI
 
 ```bash
@@ -251,6 +253,27 @@ export YOTTACODE_X_SEARCH_ALLOWED_HANDLES=xai
 export YOTTACODE_X_SEARCH_FROM_DATE=2026-01-01
 export YOTTACODE_X_SEARCH_TO_DATE=2026-12-31
 ```
+
+## OpenRouter
+
+Choose **OpenRouter** in `yottacode setup` or the TUI `/provider` → **Add** list. It is a first-class preset backed by the standard `openai-compatible` adapter, with `https://openrouter.ai/api/v1` and `OPENROUTER_API_KEY` pre-filled; enter any OpenRouter model ID supported by your account.
+
+The preset automatically writes and sends yottacode's public attribution metadata:
+
+```toml
+[[providers]]
+name = "openrouter"
+kind = "openai-compatible"
+base_url = "https://openrouter.ai/api/v1"
+api_key_env = "OPENROUTER_API_KEY"
+
+  [providers.headers]
+  "HTTP-Referer" = "https://yottacode.ai"
+  "X-OpenRouter-Categories" = "cli-agent"
+  "X-OpenRouter-Title" = "yottacode"
+```
+
+`HTTP-Referer` identifies the app; the title and coding category control its display in OpenRouter rankings, app pages, and model Apps tabs. The values remain editable after setup. OpenRouter is a third party in the request path; regulated workloads that require direct or organization-owned model routing should use an appropriate direct provider or private gateway instead.
 
 ## Custom OpenAI-compatible endpoints
 

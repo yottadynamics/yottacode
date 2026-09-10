@@ -90,7 +90,7 @@ func TestFallbackFileSymbolsUsesParserSourceForTypeScript(t *testing.T) {
 }
 
 func TestSyntaxModeReportsFallbackCapability(t *testing.T) {
-	cases := map[string]string{"go": "parser", "typescript": "parser", "python": "parser", "rust": "parser", "ruby": "none"}
+	cases := map[string]string{"go": "parser", "typescript": "scanner", "python": "scanner", "rust": "scanner", "ruby": "none"}
 	for id, want := range cases {
 		if got := SyntaxMode(id); got != want {
 			t.Fatalf("SyntaxMode(%q) = %q, want %q", id, got, want)

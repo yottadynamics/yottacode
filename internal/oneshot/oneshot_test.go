@@ -11,6 +11,7 @@ import (
 
 	"github.com/yottadynamics/yottacode/internal/adapter"
 	"github.com/yottadynamics/yottacode/internal/agent"
+	"github.com/yottadynamics/yottacode/internal/cli"
 )
 
 // scriptedStreamer is a duplicate of the one in internal/agent — kept here
@@ -74,8 +75,8 @@ func TestOneshot_ContentGoesToStdout(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stream: %v", err)
 	}
-	if !strings.Contains(stdout.String(), "Hello") {
-		t.Errorf("stdout missing content: %q", stdout.String())
+	if stdout.String() != "Hello\n" {
+		t.Errorf("stdout = %q, want byte-for-byte answer output", stdout.String())
 	}
 	if strings.Contains(stderr.String(), "Hello") {
 		t.Errorf("content leaked to stderr: %q", stderr.String())
@@ -96,8 +97,8 @@ func TestOneshot_EmitsThoughtForFootnoteOnStderr(t *testing.T) {
 	if err := stream(context.Background(), cfg, &hist, &stdout, &stderr); err != nil {
 		t.Fatalf("stream: %v", err)
 	}
-	if !strings.Contains(stderr.String(), "› Thought for") {
-		t.Errorf("stderr should carry the 'Thought for Ns' footnote: %q", stderr.String())
+	if !strings.Contains(stderr.String(), "[done] thought for") {
+		t.Errorf("stderr should carry the completion timing status: %q", stderr.String())
 	}
 	if strings.Contains(stdout.String(), "Thought for") {
 		t.Errorf("footnote should not leak to stdout (it'd corrupt redirects): %q", stdout.String())
@@ -123,6 +124,155 @@ func TestOneshot_ReasoningGoesToStderr(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "answer") {
 		t.Errorf("answer missing from stdout: %q", stdout.String())
+	}
+}
+
+func TestOneshot_JSONFormatProducesStructuredResult(t *testing.T) {
+	usage := &adapter.Usage{InputTokens: 1240, OutputTokens: 380, CacheReadTokens: 900}
+	streamer := &scriptedStreamer{turns: [][]adapter.StreamEvent{
+		{{Kind: adapter.EventDone, Final: &adapter.Message{Role: adapter.RoleAssistant, ToolCalls: []adapter.ToolCall{{ID: "c1", Name: "read_file", ArgsJSON: `{"path":"README.md"}`}}, Usage: &adapter.Usage{InputTokens: 100, OutputTokens: 20}}}},
+		{{Kind: adapter.EventTokenDelta, Token: "done"}, {Kind: adapter.EventDone, Final: &adapter.Message{Role: adapter.RoleAssistant, Content: "done", Usage: usage}}},
+	}}
+	reg := agent.NewRegistry()
+	reg.Register(&fakeReadTool{name: "read_file", result: "contents"})
+	cfg := agent.LoopConfig{Adapter: streamer, Registry: reg, MaxIterations: 4}
+	hist := []adapter.Message{{Role: adapter.RoleUser, Content: "inspect"}}
+
+	var stdout, stderr bytes.Buffer
+	err := streamWithOptions(context.Background(), cfg, &hist, &stdout, &stderr, StreamOptions{Format: cli.RunFormatJSON, SessionID: "session-123"})
+	if err != nil {
+		t.Fatalf("streamWithOptions: %v", err)
+	}
+	var got RunResult
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("decode result: %v\n%s", err, stdout.String())
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(stdout.Bytes(), &raw); err != nil {
+		t.Fatalf("decode raw result: %v", err)
+	}
+	for _, field := range []string{"content", "tool_calls", "usage", "exit_reason", "error", "session_id"} {
+		if _, ok := raw[field]; !ok {
+			t.Fatalf("JSON result missing stable field %q: %s", field, stdout.String())
+		}
+	}
+	if got.Content != "done" || got.ExitReason != ExitReasonOK || got.Error != nil || got.SessionID != "session-123" {
+		t.Fatalf("result = %+v", got)
+	}
+	wantUsage := adapter.Usage{InputTokens: 1340, OutputTokens: 400, CacheReadTokens: 900}
+	if got.Usage != wantUsage {
+		t.Fatalf("usage = %+v, want %+v", got.Usage, wantUsage)
+	}
+	if len(got.ToolCalls) != 1 || got.ToolCalls[0].Name != "read_file" || got.ToolCalls[0].Summary != "read_file()" {
+		t.Fatalf("tool calls = %+v", got.ToolCalls)
+	}
+}
+
+func TestOneshot_JSONFormatCombinesTruncatedOutputContinuations(t *testing.T) {
+	streamer := &scriptedStreamer{turns: [][]adapter.StreamEvent{
+		{{Kind: adapter.EventTokenDelta, Token: "first "}, {Kind: adapter.EventDone, Final: &adapter.Message{Role: adapter.RoleAssistant, Content: "first ", StopReason: "length"}}},
+		{{Kind: adapter.EventTokenDelta, Token: "second"}, {Kind: adapter.EventDone, Final: &adapter.Message{Role: adapter.RoleAssistant, Content: "second"}}},
+	}}
+	cfg := agent.LoopConfig{Adapter: streamer, Registry: agent.NewRegistry(), MaxIterations: 3}
+	hist := []adapter.Message{{Role: adapter.RoleUser, Content: "write"}}
+
+	var stdout, stderr bytes.Buffer
+	if err := streamWithOptions(context.Background(), cfg, &hist, &stdout, &stderr, StreamOptions{Format: cli.RunFormatJSON}); err != nil {
+		t.Fatalf("streamWithOptions: %v", err)
+	}
+	var got RunResult
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("decode result: %v", err)
+	}
+	if got.Content != "first second" {
+		t.Fatalf("content = %q, want combined continuation", got.Content)
+	}
+}
+
+func TestOneshot_JSONFormatCancellationIsError(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	cfg := agent.LoopConfig{Adapter: &scriptedStreamer{}, Registry: agent.NewRegistry(), MaxIterations: 3}
+	hist := []adapter.Message{{Role: adapter.RoleUser, Content: "x"}}
+
+	var stdout, stderr bytes.Buffer
+	err := streamWithOptions(ctx, cfg, &hist, &stdout, &stderr, StreamOptions{Format: cli.RunFormatJSON})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v, want context cancellation", err)
+	}
+	var got RunResult
+	if decodeErr := json.Unmarshal(stdout.Bytes(), &got); decodeErr != nil {
+		t.Fatalf("decode result: %v\n%s", decodeErr, stdout.String())
+	}
+	if got.ExitReason != ExitReasonError || got.Error == nil {
+		t.Fatalf("result = %+v, want structured cancellation error", got)
+	}
+}
+
+func TestOneshot_JSONFormatBoundsToolSummary(t *testing.T) {
+	longPreview := strings.Repeat("x", 300)
+	streamer := &scriptedStreamer{turns: [][]adapter.StreamEvent{
+		{sseDone("", adapter.ToolCall{ID: "c1", Name: "long", ArgsJSON: `{}`})},
+		{sseToken("done"), sseDone("done")},
+	}}
+	reg := agent.NewRegistry()
+	reg.Register(&fakeReadTool{name: "long", result: "ok", preview: longPreview})
+	cfg := agent.LoopConfig{Adapter: streamer, Registry: reg, MaxIterations: 3}
+	hist := []adapter.Message{{Role: adapter.RoleUser, Content: "x"}}
+
+	var stdout, stderr bytes.Buffer
+	if err := streamWithOptions(context.Background(), cfg, &hist, &stdout, &stderr, StreamOptions{Format: cli.RunFormatJSON}); err != nil {
+		t.Fatalf("streamWithOptions: %v", err)
+	}
+	var got RunResult
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("decode result: %v", err)
+	}
+	if len(got.ToolCalls) != 1 || len(got.ToolCalls[0].Summary) > 243 {
+		t.Fatalf("tool calls = %+v, want bounded summary", got.ToolCalls)
+	}
+}
+
+func TestOneshot_JSONFormatEmitsErrorResultAndReturnsError(t *testing.T) {
+	streamer := &scriptedStreamer{turns: [][]adapter.StreamEvent{
+		{{Kind: adapter.EventErr, Err: errors.New("provider unavailable")}},
+	}}
+	cfg := agent.LoopConfig{Adapter: streamer, Registry: agent.NewRegistry(), MaxIterations: 3}
+	hist := []adapter.Message{{Role: adapter.RoleUser, Content: "x"}}
+
+	var stdout, stderr bytes.Buffer
+	err := streamWithOptions(context.Background(), cfg, &hist, &stdout, &stderr, StreamOptions{Format: cli.RunFormatJSON})
+	if err == nil || !strings.Contains(err.Error(), "provider unavailable") {
+		t.Fatalf("error = %v", err)
+	}
+	var got RunResult
+	if decodeErr := json.Unmarshal(stdout.Bytes(), &got); decodeErr != nil {
+		t.Fatalf("decode result: %v\n%s", decodeErr, stdout.String())
+	}
+	if got.ExitReason != ExitReasonError || got.Error == nil || *got.Error != "provider unavailable" {
+		t.Fatalf("result = %+v", got)
+	}
+}
+
+func TestOneshot_JSONFormatMapsIterationCap(t *testing.T) {
+	streamer := &scriptedStreamer{turns: [][]adapter.StreamEvent{
+		{sseDone("", adapter.ToolCall{ID: "c1", Name: "read_file", ArgsJSON: `{}`})},
+	}}
+	reg := agent.NewRegistry()
+	reg.Register(&fakeReadTool{name: "read_file", result: "contents"})
+	cfg := agent.LoopConfig{Adapter: streamer, Registry: reg, MaxIterations: 1}
+	hist := []adapter.Message{{Role: adapter.RoleUser, Content: "loop"}}
+
+	var stdout, stderr bytes.Buffer
+	if err := streamWithOptions(context.Background(), cfg, &hist, &stdout, &stderr, StreamOptions{Format: cli.RunFormatJSON}); err != nil {
+		t.Fatalf("streamWithOptions: %v", err)
+	}
+	var got RunResult
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("decode result: %v\n%s", err, stdout.String())
+	}
+	if got.ExitReason != ExitReasonIterCap {
+		t.Fatalf("exit_reason = %q, want %q", got.ExitReason, ExitReasonIterCap)
 	}
 }
 
@@ -418,15 +568,21 @@ func (m *fakeApprovalTool) Execute(_ context.Context, _ string) (string, error) 
 // fakeReadTool is an approval-free tool used to prove JSON status captures
 // tool execution counts and line-oriented changed-file output.
 type fakeReadTool struct {
-	name   string
-	result string
+	name    string
+	result  string
+	preview string
 }
 
 func (m *fakeReadTool) Name() string                 { return m.name }
 func (m *fakeReadTool) Description() string          { return "fake read" }
 func (m *fakeReadTool) Schema() map[string]any       { return map[string]any{"type": "object"} }
 func (m *fakeReadTool) RequiresApproval(string) bool { return false }
-func (m *fakeReadTool) PreviewCall(string) string    { return m.name + "()" }
+func (m *fakeReadTool) PreviewCall(string) string {
+	if m.preview != "" {
+		return m.preview
+	}
+	return m.name + "()"
+}
 func (m *fakeReadTool) Execute(_ context.Context, _ string) (string, error) {
 	return m.result, nil
 }

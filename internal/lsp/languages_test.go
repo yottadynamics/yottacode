@@ -14,6 +14,8 @@ func TestResolveFileMapsSupportedExtensions(t *testing.T) {
 		"app.ts":        "typescript",
 		"app.tsx":       "typescript",
 		"plain.js":      "typescript",
+		"module.mjs":    "typescript",
+		"common.cjs":    "typescript",
 		"component.JSX": "typescript",
 		"script.py":     "python",
 		"lib.rs":        "rust",
@@ -78,9 +80,13 @@ func TestDetectWorkspaceAggregatesLanguagesAndSkipsHeavyDirs(t *testing.T) {
 			t.Errorf("detected language missing metadata: %+v", lang)
 		}
 		switch lang.ID {
-		case "go", "typescript", "python", "rust":
+		case "go":
 			if SyntaxMode(lang.ID) != "parser" {
 				t.Errorf("%s should report parser syntax fallback", lang.ID)
+			}
+		case "typescript", "python", "rust":
+			if SyntaxMode(lang.ID) != "scanner" {
+				t.Errorf("%s should report scanner syntax fallback", lang.ID)
 			}
 		}
 	}
