@@ -365,6 +365,18 @@ func googleOfflineAccessURL(authURL string) string {
 // process — every real caller leaves it at the default.
 var openBrowserFunc = openBrowser
 
+// SetOpenBrowserFuncForTest overrides the browser-launch hook and returns
+// a restore func, for tests outside this package that exercise the OAuth
+// flow (internal/tui's `/mcp auth` tests) and can't reach the unexported
+// openBrowserFunc directly. In-package tests should set openBrowserFunc
+// themselves instead — this exists only for the cross-package case.
+// Never called by production code.
+func SetOpenBrowserFuncForTest(f func(string) error) (restore func()) {
+	orig := openBrowserFunc
+	openBrowserFunc = f
+	return func() { openBrowserFunc = orig }
+}
+
 // openBrowser launches the user's default browser at url, best-effort —
 // a failure here just means the caller's printed/surfaced URL is the
 // user's only path in, not a fatal error. Mirrors
