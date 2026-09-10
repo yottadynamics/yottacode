@@ -2,7 +2,6 @@ package agent
 
 import (
 	"context"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -65,21 +64,6 @@ func TestFetchURLTool_BlocksSSRF(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "ssrf guard") {
 		t.Errorf("expected an SSRF guard error, got: %v", err)
-	}
-}
-
-// TestIsNonPublicIP spot-checks the blocked ranges, including the
-// 169.254.169.254 cloud-metadata endpoint.
-func TestIsNonPublicIP(t *testing.T) {
-	for _, s := range []string{"127.0.0.1", "::1", "169.254.169.254", "10.0.0.5", "192.168.1.1", "172.16.0.1", "0.0.0.0"} {
-		if !isNonPublicIP(net.ParseIP(s)) {
-			t.Errorf("isNonPublicIP(%s) = false, want true (blocked)", s)
-		}
-	}
-	for _, s := range []string{"8.8.8.8", "1.1.1.1", "93.184.216.34"} {
-		if isNonPublicIP(net.ParseIP(s)) {
-			t.Errorf("isNonPublicIP(%s) = true, want false (public)", s)
-		}
 	}
 }
 

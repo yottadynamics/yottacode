@@ -1441,6 +1441,9 @@ func (m wizardModel) fieldKind() string {
 		// the project/location live inside base_url and the catalog
 		// entry is only a PROJECT template, so setup must stop on the
 		// Base URL field.
+		if in.entry.Name == "custom" {
+			return "key"
+		}
 		if in.entry.APIKeyEnv == "" || in.envHas {
 			if in.entry.Kind == "vertex" || in.entry.Kind == "vertex-anthropic" {
 				return "project"

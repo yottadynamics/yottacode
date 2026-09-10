@@ -1172,7 +1172,16 @@ func executeToolCallImpl(
 		}
 		approvalSource = "auto-mode"
 	default:
-		switch verdict {
+		effectiveVerdict := verdict
+		if effectiveVerdict == permissions.Allow && globAllowCannotCoverDestructiveMCP(tool, verdictRule) {
+			// A wildcard allow rule (e.g. MCP(github/*)) must never
+			// silently cover a tool the server marked destructive —
+			// only an exact MCP(server/tool) rule can. Falling through
+			// to the default case routes it through the tool's own
+			// RequiresApproval, which always prompts for Destructive.
+			effectiveVerdict = permissions.Default
+		}
+		switch effectiveVerdict {
 		case permissions.Allow:
 			if err := send(ctx, events, ApprovalAuto{
 				ToolName: tool.Name(), Preview: preview, Source: "permissions", RuleSource: verdictRule.Source,
