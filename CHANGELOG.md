@@ -8,6 +8,68 @@ the project uses semantic versioning once it's past `1.0.0`.
 
 ### Added
 
+harden-syntax-range-selection
+- **Hardened `syntax_range` selection contract.** Canonical kinds, exact half-open byte spans, hashline-compatible receipts, immutable request snapshots, honest parser/scanner capability labels, recoverable warnings, and `.mjs`/`.cjs` resolution make offline structural selection safer for downstream edits.
+- **Default-on commit and PR attribution.** Commits drafted through `git_commit_apply` or auto-created by dispatch workers now end with GitHub's standard `Co-authored-by` trailer. Created and updated PR descriptions include an idempotent yottacode link; attribution can be disabled in configuration.
+- **Code Map's full 5-phase roadmap** remains experimental: `/map here` suggests context, `/map impact` groups blast radius, language import resolution covers TypeScript/JavaScript, Python, and Rust, Go edges narrow to referenced files, and the index supports watcher-backed updates and bounded file exports. See [`code-map.md`](docs/code-map.md).
+
+worktree-mighty-running-dolphin
+- **Structured `yottacode run` output and CI recipes.** `--format json` emits one stable stdout object with content, tool-call summaries, provider usage, exit reason, nullable error, and session id while preserving shell exit semantics. Default text stdout remains answer-only and gains clearer, consistently prefixed stderr status lines; the legacy `--json` stderr receipt remains available for compatibility. See [`run-recipes.md`](docs/run-recipes.md) for PR description, codemod, test-triage, dependency-audit, and changelog workflows.
+
+worktree-vivid-gliding-koala
+- **Headless memory recall.** `yottacode memory recall --query <text>` now
+  exposes the production memory ranker to scripts, CI, and external benchmarks,
+  with user/project/all scope selection, configurable top-K, human-readable or
+  stable JSON output, normalized relevance scores, and the same semantic-to-BM25
+  fallback used by live sessions. See [`memory.md`](docs/memory.md#headless-recall-and-external-benchmarks).
+
+feature/commit-pr-attribution
+- **Default-on commit and PR attribution.** Commits drafted through `git_commit_apply`
+  or auto-created by dispatch workers now end with GitHub's standard
+  `Co-authored-by: yottacode <325888353+yottacode-agent@users.noreply.github.com>`
+  trailer, linking the contribution to the public `yottacode-agent` profile.
+  Created and updated PR descriptions end with a small yottacode link, with
+  repeated updates kept idempotent. Set `[attribution] disabled = true` to
+  remove both, or override `trailer` for commit attribution only. Conversation
+  comments remain untouched. See
+  [`configuration.md`](docs/configuration.md#commit-and-pr-attribution).
+
+- **Code Map's full 5-phase roadmap** (`--experimental code_map`, still
+  experimental). `/map here` now ranks a suggested-context list (changed
+  files, direct import neighbors, likely tests, likely docs) with `a` to
+  attach it all in one keystroke; `/map impact` groups by proximity and adds
+  likely tests/docs, and `code_impact` gains a compact `format: "summary"`
+  projection plus a best-effort live `include_calls` LSP callers/callees
+  supplement; filtering `/map` to an exact directory renders a subsystem
+  overview (entry points, public surface, core types, tests, key
+  dependencies); import-edge resolution now covers TypeScript/JavaScript,
+  Python, and Rust alongside Go — Rust resolution walks the crate's actual
+  module tree, correctly handling `self::`/`super::` and a leaf file's own
+  submodules, and Go import edges never land on a `_test.go` file (a
+  package's compiled surface for an external importer never includes its
+  tests, and an external test file's package clause could previously
+  shadow the real package name for its directory); and the index is
+  watcher-backed (`fsnotify`): a changed file
+  is incrementally re-derived and patched into the persistent graph rather
+  than triggering a full workspace re-walk, with a safe fingerprint-walk
+  fallback for oversized repos or watch setup failures. `code_map_diagram`/
+  `code_structure_projection` gain a `to_file` export for output too large
+  for one turn's context window — `code_map_diagram`'s export requires a
+  focus path, since an unfocused one is the full repo import graph (several
+  MB on this repo) rather than something a Mermaid diagram can usefully
+  render. See [`code-map.md`](docs/code-map.md).
+
+- **Code Map's Go import edges narrow to actually-referenced files.**
+  Importing a package used to edge to every non-test file in it; now
+  `buildGoImportEdges` walks the importing file's body for `pkg.Symbol`
+  selector usages and only edges to the file(s) that declare a referenced
+  symbol, falling back to the whole package when usage can't be determined
+  (a blank/dot import, an aliased import, or a name matching no known
+  symbol) so recall never regresses below the previous file-level
+  resolution. On this repo, a file importing `internal/lsp` (30+ files)
+  now edges to just the one file it actually calls. See
+  [`code-map.md`](docs/code-map.md).
+
 worktree-permissions-fine-grained-review
 - **Session-scoped permission grants.** The approval modal gains an `[S]`
   hotkey alongside `[Y]`/`[A]`/`[N]`/`[D]`: it derives the same pattern

@@ -16,13 +16,10 @@ import (
 const (
 	defaultReadManyMaxFiles = 20
 
-	// maxReadManyTotalBytes bounds the combined output of a single
-	// read_many_files call. Each file is already capped at maxReadBytes,
-	// but with up to defaultReadManyMaxFiles files that still allows one
-	// call to return up to 10 MiB. A batch that size lands in history and
-	// gets resent verbatim on every subsequent turn until the session is
-	// summarized, so the aggregate needs its own, tighter ceiling.
-	maxReadManyTotalBytes = 2 * 1024 * 1024 // 2 MiB
+	// A batch that size lands in history and gets resent verbatim on every
+	// subsequent turn until the session is summarized, so keep the aggregate
+	// ceiling deliberately small. Larger files should be requested separately.
+	maxReadManyTotalBytes = 512 * 1024 // 512 KiB
 )
 
 type DeleteFileTool struct {

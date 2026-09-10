@@ -327,6 +327,46 @@ default_model = "other-model"
 	}
 }
 
+func TestModelChoice_ReplacesProviderHeaders(t *testing.T) {
+	m := newTestModel(t)
+	m.opts.Headers = map[string]string{"Stale": "value"}
+	m.modelPicker = &modelPickerState{provider: config.Provider{
+		Name: "openrouter", Kind: "openai-compatible", BaseURL: "https://openrouter.ai/api/v1",
+		Headers: map[string]string{"HTTP-Referer": "https://yottacode.ai"},
+	}}
+	m.modelPickerOpen = true
+	m.fileCfg.Providers = []config.Provider{m.modelPicker.provider}
+	m.fileCfg.Active.Provider = "openrouter"
+	m.fileCfg.Active.Model = "openai/gpt-4o"
+	if err := config.Save(m.fileCfg, ""); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+	m.sess.Model = "old"
+
+	m, _ = m.commitModelChoice("openai/gpt-4o", 0)
+	if m.opts.Headers["HTTP-Referer"] != "https://yottacode.ai" || len(m.opts.Headers) != 1 {
+		t.Fatalf("provider headers not replaced: %#v", m.opts.Headers)
+	}
+}
+
+func TestProviderProfileForModel_PrefersActiveProfileAtSharedURL(t *testing.T) {
+	m := newTestModel(t)
+	cfg := config.Default()
+	cfg.Active.Provider = "work"
+	cfg.Providers = []config.Provider{
+		{Name: "personal", Kind: "openai-compatible", BaseURL: "https://openrouter.ai/api/v1", Headers: map[string]string{"X-Profile": "personal"}},
+		{Name: "work", Kind: "openai-compatible", BaseURL: "https://openrouter.ai/api/v1", Headers: map[string]string{"X-Profile": "work"}},
+	}
+	if err := config.Save(cfg, ""); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+	m.baseURL = "https://openrouter.ai/api/v1"
+	got := m.providerProfileForModel()
+	if got.Name != "work" || got.Headers["X-Profile"] != "work" {
+		t.Fatalf("profile = %+v", got)
+	}
+}
+
 // Long lists must stay within the visibleRows window. The cursor
 // stays in the visible window; "▼ N more below" appears below the
 // visible slice. PgDn jumps a page; Home/End reach the boundaries.

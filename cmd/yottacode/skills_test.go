@@ -185,6 +185,24 @@ func TestSkillsCLI_InstallOfficialShortcut(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(home, "skills", "sample", "SKILL.md")); err != nil {
 		t.Errorf("official skill not installed: %v", err)
 	}
+	// Official installs must be usable without a separate /skills trip —
+	// the CLI has no live session to call SkillTool.Enable on, so it has
+	// to persist the enablement into config.toml's [skills] default_on
+	// instead. See TestEnableDefaultOn in internal/skills for the helper
+	// this delegates to.
+	if !strings.Contains(out, "enabled for future sessions") {
+		t.Errorf("install output missing enable confirmation: %q", out)
+	}
+	// config.Save resolves via os.UserHomeDir()+".yottacode", independently
+	// of YOTTACODE_HOME (which only steers skills/session state) — hence
+	// the different join here than the skills-dir checks above.
+	cfgData, err := os.ReadFile(filepath.Join(home, ".yottacode", "config.toml"))
+	if err != nil {
+		t.Fatalf("read config.toml: %v", err)
+	}
+	if !strings.Contains(string(cfgData), `default_on = ["sample"]`) {
+		t.Errorf("config.toml missing default_on entry: %s", cfgData)
+	}
 }
 
 // TestSkillsCLI_InstallSkillsSHURL verifies skills.sh page URLs install via the
@@ -223,6 +241,16 @@ func TestSkillsCLI_InstallSkillsSHURL(t *testing.T) {
 	}
 	if !strings.Contains(out, "installed sample (github)") {
 		t.Fatalf("unexpected output: %q", out)
+	}
+	// GitHub/URL sources may carry scripts the user hasn't reviewed, so
+	// unlike official/local installs above, these must NOT be silently
+	// enabled — the CLI should point at /skills instead of touching
+	// config.toml.
+	if !strings.Contains(out, "not enabled") {
+		t.Errorf("install output missing not-enabled hint: %q", out)
+	}
+	if cfgData, err := os.ReadFile(filepath.Join(home, ".yottacode", "config.toml")); err == nil && strings.Contains(string(cfgData), "default_on") {
+		t.Errorf("github install should not touch default_on: %s", cfgData)
 	}
 	data, err := os.ReadFile(filepath.Join(home, "skills", skills.LockfileName))
 	if err != nil {

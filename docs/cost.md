@@ -1,16 +1,24 @@
-# Usage and cost (`/usage`)
+# Usage and estimated cost (`/usage`)
 
-`/usage` shows how many tokens the current session has spent — per
-model, plus a rolling total across every session created today — along
-with live rate-limit headroom and a provider-aware account block.
+`/usage` shows exact provider-reported token usage and, when models.dev has
+pricing for the active deployment, a public-list-price estimate. The estimate
+is useful for understanding approximate resource consumption and comparing
+models, but it is not an invoice.
 
-**It does not show a dollar estimate.** Token *counts* are reported by
-the provider and are exact, but a dollar *figure* would require a price
-per model, and no provider exposes per-model pricing through the
-inference API. The only way to price tokens is a hand-maintained table
-that drifts the moment a provider changes rates or ships a new model —
-so rather than print a number we can't stand behind, `/usage` links
-each provider's billing dashboard, the authoritative source for spend.
+Prices are refreshed through the existing offline-first models.dev catalog and
+are stored with each recorded turn when available. A missing price is never
+reported as `$0`; the UI keeps the exact token count and says pricing is
+unavailable. Local/free providers show `not applicable`. Subscription
+providers may show a **list-price equivalent** for comparison, followed by
+`not billed per request`.
+
+The provider billing dashboard remains authoritative for actual spend. Public
+list prices can be stale, differ by deployment, and do not include credits,
+discounts, enterprise agreements, subscription plans, quotas, or negotiated
+rates. Input, output, cache-read, and cache-write rates may differ; reasoning
+tokens are already included in provider output totals and are not charged a
+second time.
+
 
 ## What `/usage` shows
 

@@ -58,6 +58,16 @@ Every write goes through the approval modal — the modal renders the
 full title + body before the call lands. `--yolo`
 bypasses the modal, but `deny` rules still apply.
 
+Commits drafted through `git_commit_apply`, including commits auto-created after
+unattended dispatch workers finish, carry a standard `Co-authored-by` trailer for the public
+[`yottacode-agent`](https://github.com/yottacode-agent) account by default.
+`pr_create` and `pr_update` similarly append `Drafted with
+[yottacode](https://yottacode.ai)` as a final footer; updates do not duplicate
+an exact footer already in that position. `pr_add_comment` is deliberately
+unchanged so conversation comments are never stamped. Disable both surfaces
+with `[attribution] disabled = true`, or customize the commit trailer only;
+see [configuration.md](configuration.md#commit-and-pr-attribution).
+
 ## Slash commands
 
 | Command | Flow |

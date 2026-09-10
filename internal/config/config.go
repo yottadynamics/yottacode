@@ -17,6 +17,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net/http"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -79,6 +80,49 @@ type Config struct {
 	// media_analyze/media_render/media_compose tools. Absent block falls
 	// through to the conservative defaults below.
 	Media MediaConfig `toml:"media"`
+	// Attribution controls honest authorship markers on commit messages and PR
+	// bodies drafted through yottacode. The zero value is deliberately enabled;
+	// set Disabled to opt out of both surfaces.
+	Attribution AttributionConfig `toml:"attribution"`
+}
+
+const (
+	// DefaultCommitAttributionTrailer is GitHub's standard co-author trailer for
+	// the public yottacode-agent account. Its ID-based noreply address remains
+	// associated if the account is renamed.
+	DefaultCommitAttributionTrailer = "Co-authored-by: yottacode <325888353+yottacode-agent@users.noreply.github.com>"
+	// DefaultPRAttributionFooter is the human-readable attribution used in PR
+	// descriptions; Co-authored-by has no special meaning outside git messages.
+	DefaultPRAttributionFooter = "---\nDrafted with [yottacode](https://yottacode.ai)"
+)
+
+// AttributionConfig controls the optional attribution appended to drafted git
+// commits and PR descriptions. Trailer overrides only commit attribution; PR
+// attribution intentionally remains a stable human-readable footer.
+type AttributionConfig struct {
+	Disabled bool   `toml:"disabled"`
+	Trailer  string `toml:"trailer"`
+}
+
+// CommitTrailer resolves the commit trailer for a session. Empty means
+// attribution is disabled.
+func (a AttributionConfig) CommitTrailer() string {
+	if a.Disabled {
+		return ""
+	}
+	if a.Trailer != "" {
+		return a.Trailer
+	}
+	return DefaultCommitAttributionTrailer
+}
+
+// PRFooter resolves the fixed PR footer for a session. Empty means attribution
+// is disabled.
+func (a AttributionConfig) PRFooter() string {
+	if a.Disabled {
+		return ""
+	}
+	return DefaultPRAttributionFooter
 }
 
 // MCPConfig controls global Model Context Protocol client behavior. The
@@ -677,6 +721,11 @@ type Provider struct {
 	// up at adapter-construction time, NOT stored here.
 	APIKeyEnv string `toml:"api_key_env"`
 
+	// Headers are non-secret metadata sent with supported provider HTTP
+	// requests. Values are stored as plaintext in config.toml; credentials
+	// belong in APIKeyEnv instead.
+	Headers map[string]string `toml:"headers"`
+
 	// DefaultModel is the model name to adopt when /provider use
 	// switches to this provider. Must appear in Models when set.
 	DefaultModel string `toml:"default_model"`
@@ -982,6 +1031,30 @@ func EnsureDefault(path string) (string, error) {
 	return path, nil
 }
 
+func validHTTPHeaderName(name string) bool {
+	if name == "" {
+		return false
+	}
+	const separators = "()<>@,;:\\\"/[]?={} \t"
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		if c <= 0x20 || c >= 0x7f || strings.ContainsRune(separators, rune(c)) {
+			return false
+		}
+	}
+	return true
+}
+
+func validHTTPHeaderValue(value string) bool {
+	for i := 0; i < len(value); i++ {
+		c := value[i]
+		if c == '\r' || c == '\n' || c == 0x7f || (c < 0x20 && c != '\t') {
+			return false
+		}
+	}
+	return true
+}
+
 // Validate enforces ranges and consistency across the loaded config.
 // Returns a clean error rather than silently clamping — clamping means
 // the user's intent is lost.
@@ -1105,6 +1178,23 @@ func Validate(cfg Config) error {
 		}
 		if strings.TrimSpace(p.BaseURL) == "" {
 			return fmt.Errorf("providers[%q]: base_url is required", p.Name)
+		}
+		seenHeaderNames := make(map[string]string, len(p.Headers))
+		for name, value := range p.Headers {
+			if strings.TrimSpace(name) == "" {
+				return fmt.Errorf("providers[%q].headers: header name is required", p.Name)
+			}
+			if !validHTTPHeaderName(name) {
+				return fmt.Errorf("providers[%q].headers: invalid header name %q", p.Name, name)
+			}
+			foldedName := strings.ToLower(name)
+			if previous, duplicate := seenHeaderNames[foldedName]; duplicate {
+				return fmt.Errorf("providers[%q].headers: duplicate header names %q and %q", p.Name, previous, name)
+			}
+			seenHeaderNames[foldedName] = name
+			if !validHTTPHeaderValue(value) {
+				return fmt.Errorf("providers[%q].headers[%q]: invalid value", p.Name, http.CanonicalHeaderKey(name))
+			}
 		}
 		modelNames := make(map[string]struct{}, len(p.Models))
 		for j, m := range p.Models {
@@ -1636,6 +1726,13 @@ const DefaultsTOML = `# yottacode configuration
 # Values out of range are rejected at load time, not silently clamped.
 # Unknown sections and keys are also rejected so typos surface
 # immediately.
+
+[attribution]
+# Add honest attribution to commits and pull-request descriptions drafted by
+# yottacode. Set disabled = true to opt out of both. The optional trailer value
+# overrides commit attribution only; PR descriptions keep the standard footer.
+disabled = false
+# trailer = "Co-authored-by: my-agent <noreply@example.com>"
 
 [context]
 # Context-window watermarks. As the running conversation fills the active

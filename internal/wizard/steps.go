@@ -505,9 +505,15 @@ func (m wizardModel) viewOpenAIAuthLogin() string {
 	if m.openAIAuthURL != "" {
 		b.WriteString("\n  ")
 		b.WriteString(styleHint.Render("If it didn't, paste this URL into your browser:"))
-		b.WriteString("\n  ")
-		b.WriteString(stylePathHL.Render(truncate(m.openAIAuthURL, w-2)))
 		b.WriteString("\n")
+		// Keep the complete URL visible. Wrapping at rune boundaries makes
+		// terminal selection copy the full value instead of copying a
+		// display-truncated URL with an ellipsis.
+		for _, line := range wrapURL(m.openAIAuthURL, w-2) {
+			b.WriteString("  ")
+			b.WriteString(stylePathHL.Render(line))
+			b.WriteString("\n")
+		}
 	}
 	b.WriteString("\n  ")
 	b.WriteString(styleMuted.Render("Ctrl-C to cancel."))
@@ -2663,6 +2669,7 @@ func (m wizardModel) assemblePlan() Plan {
 			Kind:         entry.Kind,
 			BaseURL:      entry.BaseURL,
 			APIKeyEnv:    entry.APIKeyEnv,
+			Headers:      cloneHeaders(entry.Headers),
 			DefaultModel: in.chosenModel,
 		}
 		// Custom and Vertex providers derive their base URL from fields the
@@ -2821,4 +2828,24 @@ func truncate(s string, width int) string {
 		return s
 	}
 	return string(runes[:width-1]) + "…"
+}
+
+// wrapURL splits a URL into terminal-width lines without changing its bytes.
+// Keeping the original URL intact is important because terminal selection is
+// the most portable way to copy it across local, SSH, and headless sessions.
+func wrapURL(url string, width int) []string {
+	if width < 1 {
+		return []string{url}
+	}
+	runes := []rune(url)
+	lines := make([]string, 0, (len(runes)+width-1)/width)
+	for len(runes) > 0 {
+		n := width
+		if len(runes) < n {
+			n = len(runes)
+		}
+		lines = append(lines, string(runes[:n]))
+		runes = runes[n:]
+	}
+	return lines
 }

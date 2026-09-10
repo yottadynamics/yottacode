@@ -348,6 +348,8 @@ func renderPRContext(s PRContext) string {
 type GHPRCreateTool struct {
 	Cwd *CwdRef
 	GH  github.Interface
+	// Footer is appended to validated PR bodies. Empty disables attribution.
+	Footer string
 }
 
 func (t *GHPRCreateTool) Name() string { return "pr_create" }
@@ -394,14 +396,17 @@ func (t *GHPRCreateTool) RequiresApproval(string) bool { return true }
 
 func (t *GHPRCreateTool) PreviewCall(argsJSON string) string {
 	var a struct {
-		Base, Title string
-		Draft       bool
+		Base  string `json:"base"`
+		Title string `json:"title"`
+		Body  string `json:"body"`
+		Draft bool   `json:"draft"`
 	}
 	_ = json.Unmarshal([]byte(argsJSON), &a)
+	preview := fmt.Sprintf("pr_create(base=%s, title=%q)", a.Base, a.Title)
 	if a.Draft {
-		return fmt.Sprintf("pr_create(base=%s, title=%q, draft=true)", a.Base, a.Title)
+		preview = fmt.Sprintf("pr_create(base=%s, title=%q, draft=true)", a.Base, a.Title)
 	}
-	return fmt.Sprintf("pr_create(base=%s, title=%q)", a.Base, a.Title)
+	return appendPRFooter(preview+"\n\n"+a.Body, t.Footer)
 }
 
 // PRCreateResult is the typed envelope CreatePR returns. Same shape
@@ -444,7 +449,7 @@ func (t *GHPRCreateTool) Execute(ctx context.Context, argsJSON string) (string, 
 		Title: a.Title,
 		Body:  a.Body,
 		Draft: a.Draft,
-	})
+	}, t.Footer)
 	if err != nil {
 		return "", fmt.Errorf("pr_create: %w", err)
 	}
@@ -482,7 +487,7 @@ func livePRRefOrExplicit(ctx context.Context, cwd *CwdRef, ref string) (string, 
 // can't make the call; we surface that as GitHubUnavailable=true so the
 // caller can fall through to draft-only instead of treating it as
 // an opaque error.
-func CreatePR(ctx context.Context, client github.Interface, req github.CreatePRRequest) (PRCreateResult, error) {
+func CreatePR(ctx context.Context, client github.Interface, req github.CreatePRRequest, footer ...string) (PRCreateResult, error) {
 	var res PRCreateResult
 
 	if v := validatePRTitle(req.Title); v != "" {
@@ -496,6 +501,9 @@ func CreatePR(ctx context.Context, client github.Interface, req github.CreatePRR
 	if strings.TrimSpace(req.Base) == "" {
 		res.ValidationErr = "base is empty"
 		return res, nil
+	}
+	if len(footer) > 0 {
+		req.Body = appendPRFooter(req.Body, footer[0])
 	}
 
 	out, err := client.CreatePR(ctx, req)
@@ -549,6 +557,8 @@ func validatePRTitle(title string) string {
 type GHPRUpdateTool struct {
 	Cwd *CwdRef
 	GH  github.Interface
+	// Footer is appended to validated PR bodies. Empty disables attribution.
+	Footer string
 }
 
 func (t *GHPRUpdateTool) Name() string { return "pr_update" }
@@ -592,13 +602,16 @@ func (t *GHPRUpdateTool) RequiresApproval(string) bool { return true }
 
 func (t *GHPRUpdateTool) PreviewCall(argsJSON string) string {
 	var a struct {
-		Ref, Title string
+		Ref   string `json:"ref"`
+		Title string `json:"title"`
+		Body  string `json:"body"`
 	}
 	_ = json.Unmarshal([]byte(argsJSON), &a)
-	if a.Ref == "" {
-		return fmt.Sprintf("pr_update(title=%q)", a.Title)
+	preview := fmt.Sprintf("pr_update(title=%q)", a.Title)
+	if a.Ref != "" {
+		preview = fmt.Sprintf("pr_update(ref=%s, title=%q)", a.Ref, a.Title)
 	}
-	return fmt.Sprintf("pr_update(ref=%s, title=%q)", a.Ref, a.Title)
+	return appendPRFooter(preview+"\n\n"+a.Body, t.Footer)
 }
 
 // PRUpdateResult is the typed envelope UpdatePR returns. Same
@@ -635,7 +648,7 @@ func (t *GHPRUpdateTool) Execute(ctx context.Context, argsJSON string) (string, 
 		Ref:   ref,
 		Title: a.Title,
 		Body:  a.Body,
-	})
+	}, t.Footer)
 	if err != nil {
 		return "", fmt.Errorf("pr_update: %w", err)
 	}
@@ -651,7 +664,7 @@ func (t *GHPRUpdateTool) Execute(ctx context.Context, argsJSON string) (string, 
 // The Interface's ErrPRNotFound and ErrGitHubUnavailable get folded
 // into typed envelope fields so callers branch on flags rather
 // than err strings.
-func UpdatePR(ctx context.Context, client github.Interface, req github.UpdatePRRequest) (PRUpdateResult, error) {
+func UpdatePR(ctx context.Context, client github.Interface, req github.UpdatePRRequest, footer ...string) (PRUpdateResult, error) {
 	var res PRUpdateResult
 
 	if v := validatePRTitle(req.Title); v != "" {
@@ -661,6 +674,9 @@ func UpdatePR(ctx context.Context, client github.Interface, req github.UpdatePRR
 	if strings.TrimSpace(req.Body) == "" {
 		res.ValidationErr = "body is empty (would clobber the existing PR description)"
 		return res, nil
+	}
+	if len(footer) > 0 {
+		req.Body = appendPRFooter(req.Body, footer[0])
 	}
 
 	out, err := client.UpdatePR(ctx, req)
@@ -680,6 +696,20 @@ func UpdatePR(ctx context.Context, client github.Interface, req github.UpdatePRR
 	res.URL = out.URL
 	res.Number = out.Number
 	return res, nil
+}
+
+// appendPRFooter adds one final Markdown block while preserving disabled calls
+// byte-for-byte. Rewriting an already-attributed PR is idempotent.
+func appendPRFooter(body, footer string) string {
+	if footer == "" {
+		return body
+	}
+	trimmedBody := strings.TrimRight(body, "\n")
+	trimmedFooter := strings.Trim(footer, "\n")
+	if strings.HasSuffix(trimmedBody, "\n\n"+trimmedFooter) || trimmedBody == trimmedFooter {
+		return body
+	}
+	return trimmedBody + "\n\n" + trimmedFooter
 }
 
 // renderPRUpdateResult shapes the result envelope for the model.
