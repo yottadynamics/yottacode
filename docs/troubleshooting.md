@@ -151,19 +151,49 @@ printing every file, but the tree should still be cleaned before review.
 ## Sandboxed `run_tests` feels slow, especially on the first Go command of a session
 
 `GOCACHE` and `GOMODCACHE` point at a shared, host-mounted
-`~/.yottacode/sandbox-go-cache/` directory that persists across sessions (a
+`/var/tmp/yottacode-<uid>/sandbox-go-cache/` directory that persists across sessions (a
 fresh sandbox container is created per session — see docs/sandbox.md). If
 you're on an older yottacode build, that cache instead lived inside the
 container's own ephemeral filesystem and was destroyed with the container at
 session end, so every new session paid a full `go mod download` plus full
 recompile on its first Go command. Upgrading resolves it; if tests still feel
 slow on every session's first run after upgrading, confirm
-`~/.yottacode/sandbox-go-cache/` exists and is growing between runs (`du -sh
-~/.yottacode/sandbox-go-cache`) — an empty or unchanging directory usually
+`/var/tmp/yottacode-<uid>/sandbox-go-cache/` exists and is growing between runs (`du -sh
+/var/tmp/yottacode-$(id -u)/sandbox-go-cache`) — an empty or unchanging directory usually
 means the running yottacode binary/session predates this fix; rebuild/restart
 and retest. `sandbox.cpus` (default 4) also caps how parallel a cold
 build/test run can be; raising it further in config.toml trades host
 resources for faster sandboxed builds.
+
+## Tests or background agents fail with PID/resource errors
+
+Run `yottacode doctor` and inspect the Sandbox section. On Linux it reports the
+current cgroup's `pids.current`, `pids.max`, remaining PID slots, zombie count,
+and free bytes/inodes for local scratch and cache paths without starting
+Podman. Errors such as `resource temporarily unavailable`, `cannot fork`, or
+`fork/exec` usually mean PID capacity is exhausted; `no space left on device`
+may mean either bytes or inodes are exhausted. `run_tests` reports these as a
+typed `environment_failure` with bounded command output and does not retry.
+
+Background Agent/dispatch admission keeps a small absolute PID reserve so the
+TUI and recovery commands can still run. Stop completed or stuck subagents
+first. If zombies or leaked children remain, exit and restart yottacode (and,
+if the cgroup is owned by a container/service, restart that owner) so its init
+process can reap children. A generic foreground `run_bash` is intentionally
+still available for diagnosis and cleanup.
+
+When no sandboxed jobs or yottacode sessions are running, caches may be removed
+safely; they are rebuilt on demand:
+
+```bash
+rm -rf /var/tmp/yottacode-$(id -u)/sandbox-go-cache
+rm -rf ~/.yottacode/host-go ~/.yottacode/host-shell
+```
+
+Do not remove those directories while commands are using them. Repo-local
+`.yottacode/host-go` or `.yottacode/host-shell` directories indicate an older
+or inherited workspace-local HOME; remove them after stopping jobs and before
+opening a PR.
 
 ## The trust prompt fires on every launch
 

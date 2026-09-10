@@ -21,6 +21,7 @@ import (
 	"github.com/yottadynamics/yottacode/internal/catalog"
 	"github.com/yottadynamics/yottacode/internal/config"
 	"github.com/yottadynamics/yottacode/internal/dotenv"
+	"github.com/yottadynamics/yottacode/internal/filerefs"
 	"github.com/yottadynamics/yottacode/internal/promptmacros"
 	"github.com/yottadynamics/yottacode/internal/providerops"
 	"github.com/yottadynamics/yottacode/internal/session"
@@ -1411,10 +1412,11 @@ func cmdClear(m Model, _ []string) (Model, tea.Cmd) {
 	if sysContent != "" {
 		newSess.Messages = append(newSess.Messages, adapter.Message{
 			Role:    adapter.RoleSystem,
-			Content: sysContent,
+			Content: filerefs.Inject(sysContent, nil),
 		})
 	}
 	m.sess = newSess
+	m.activeFileRefs = nil
 	m.transcript.Reset()
 	m.streaming.Reset()
 	m.streamingMode = streamIdle

@@ -43,6 +43,13 @@ const (
 	// GA in the interactive TUI; the flag no longer gates behavior.
 	BackgroundSubagents Feature = "background_subagents"
 
+	// Browser enables the browser_* tool surface: navigate/screenshot/
+	// inspect/click/type/hotkey/scroll/wait/status/close against a real,
+	// headless Chrome/Chromium instance driven over CDP via go-rod. Starts
+	// experimental while the isolated-profile-only, headless-only v1
+	// safety posture settles — see docs/security-and-allow-lists.md.
+	Browser Feature = "browser"
+
 	// CodeMap enables the read-only repository structure map. It starts as an
 	// outline-first graph index shared by the TUI and agent tools while the
 	// dependency/impact-query UX settles.
@@ -92,6 +99,7 @@ const (
 func All() []Feature {
 	return []Feature{
 		BackgroundSubagents,
+		Browser,
 		CodeMap,
 		Dispatch,
 		DocumentGeneration,
@@ -119,6 +127,8 @@ func Description(f Feature) string {
 	switch f {
 	case BackgroundSubagents:
 		return "Background subagents have graduated to GA in the interactive TUI; this flag is recognized as a no-op for compatibility."
+	case Browser:
+		return "browser_* tools. Navigate, screenshot, inspect, and interact with a real headless Chrome/Chromium instance over CDP via go-rod, using a fresh isolated profile per session (no cookies/history/saved logins from your real browser)."
 	case CodeMap:
 		return "Repository code map. Builds a read-only structure index for the /map TUI overlay and code-map agent tools, using LSP when available and approximate fallback symbols otherwise."
 	case Dispatch:

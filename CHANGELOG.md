@@ -16,6 +16,30 @@ the project uses semantic versioning once it's past `1.0.0`.
   AI turn, and MCP/LSP/recall teardown shares a bounded deadline so hanging
   protocol peers or background embedding cannot indefinitely delay exit.
 
+- **`browser_*` tools (experimental).** Ten new agent tools —
+  `browser_status`, `browser_navigate`, `browser_screenshot`,
+  `browser_inspect`, `browser_click`, `browser_type`, `browser_hotkey`,
+  `browser_scroll`, `browser_wait`, `browser_close` — drive a real,
+  headless Chrome/Chromium instance over the Chrome DevTools Protocol
+  via `go-rod/rod`, with no Node.js or Playwright dependency. A fresh,
+  isolated temp profile per session (never your real, logged-in
+  browser), headless-only, one browser/one page per session, and not
+  available to `dispatch` workers. Every action tool prompts for
+  approval, including the two read-only ones (screenshot, inspect),
+  since either can surface on-screen private data. JS-initiated dialogs
+  (`alert`/`confirm`/`prompt`/`beforeunload`) are auto-dismissed so a
+  page that pops one can't hang a tool call, and every action is
+  bounded by a default 60s timeout so a single hung page can't wedge
+  the whole session (including `browser_close`) forever. If the
+  browser process itself crashes or is killed, the next action
+  transparently relaunches a fresh session instead of failing forever
+  with an opaque dead-connection error. Off by default; enable with
+  `--experimental browser`. See
+  [`tools.md`](docs/tools.md#browser_status),
+  [`experimental.md`](docs/experimental.md), and
+  [`security-and-allow-lists.md`](docs/security-and-allow-lists.md#browser-automation).
+
+- **Explicit Code Map context assembly.** Experimental `/map here` now ranks up to eight high-signal changed or related files, labels each suggestion, and lets `a` attach them as explicit `@path` references. `/context` shows the latest turn working set, and stale references are cleared across turns, `/clear`, and session resume.
 
 - **Semantic-first research subagents.** The stock `Explore` and `Plan` roles
   now receive read-only LSP navigation and feature-gated Code Map queries, use

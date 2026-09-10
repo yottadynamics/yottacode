@@ -328,6 +328,36 @@ func TestIntegration_CancelKillsProcessInsideContainer(t *testing.T) {
 	}
 }
 
+// TestIntegration_CancelKillsDescendantTreeInsideContainer guards nested
+// shells/background helpers: cancellation must reach grandchildren, not only
+// the marker shell and its direct child.
+func TestIntegration_CancelKillsDescendantTreeInsideContainer(t *testing.T) {
+	skipUnlessPodmanE2E(t)
+
+	dir := t.TempDir()
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	s, err := NewPodmanSandbox(ctx, testSandboxConfig(), "e2e-cancel-tree", dir)
+	if err != nil {
+		t.Fatalf("NewPodmanSandbox: %v", err)
+	}
+	defer func() { _ = s.Close() }()
+
+	execCtx, execCancel := context.WithTimeout(context.Background(), time.Second)
+	cmd := s.Command(execCtx, `sh -c 'sh -c "sleep 4; touch /tmp/grandchild-survived" &' && wait`, dir)
+	_ = cmd.Run()
+	execCancel()
+	time.Sleep(5 * time.Second)
+
+	out, err := runInSandbox(t, s, dir, "test -f /tmp/grandchild-survived && echo SURVIVED || echo KILLED")
+	if err != nil {
+		t.Fatalf("exec check: %v", err)
+	}
+	if !strings.Contains(out, "KILLED") {
+		t.Errorf("canceled grandchild survived inside container: %q", out)
+	}
+}
+
 // TestIntegration_StorageOptProbeMatchesRealPodman exercises the real (not
 // faked) storage-opt capability probe against this host's actual podman
 // install. The result is host-dependent (ext4 vs overlay+XFS+pquota), so

@@ -11,6 +11,7 @@ require (
 	github.com/anthropics/anthropic-sdk-go v1.68.0
 	github.com/coder/acp-go-sdk v0.13.5
 	github.com/fsnotify/fsnotify v1.10.1
+	github.com/go-rod/rod v0.116.2
 	github.com/google/go-dap v0.12.0
 	github.com/google/go-github/v66 v66.0.0
 	github.com/modelcontextprotocol/go-sdk v1.7.0
@@ -18,6 +19,7 @@ require (
 	github.com/spf13/cobra v1.10.2
 	github.com/stretchr/testify v1.12.1
 	github.com/xuri/excelize/v2 v2.11.0
+	github.com/ysmood/gson v0.7.3
 	golang.org/x/oauth2 v0.36.0
 	gopkg.in/yaml.v3 v3.0.1
 )
@@ -43,6 +45,10 @@ require (
 	github.com/xuri/efp v0.0.1 // indirect
 	github.com/xuri/nfp v0.0.2-0.20250530014748-2ddeb826f9a9 // indirect
 	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
+	github.com/ysmood/fetchup v0.2.3 // indirect
+	github.com/ysmood/goob v0.4.0 // indirect
+	github.com/ysmood/got v0.40.0 // indirect
+	github.com/ysmood/leakless v0.9.0 // indirect
 	go.yaml.in/yaml/v3 v3.0.5 // indirect
 	go.yaml.in/yaml/v4 v4.0.0-rc.2 // indirect
 	golang.org/x/crypto v0.55.0 // indirect
@@ -83,7 +89,7 @@ require (
 	github.com/yuin/goldmark v1.8.5 // indirect
 	github.com/yuin/goldmark-emoji v1.0.6 // indirect
 	golang.org/x/net v0.58.0
-	golang.org/x/sys v0.47.0 // indirect
+	golang.org/x/sys v0.47.0
 	golang.org/x/term v0.45.0
 	golang.org/x/text v0.41.0 // indirect
 	modernc.org/libc v1.75.6 // indirect

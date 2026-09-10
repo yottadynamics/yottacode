@@ -142,7 +142,11 @@ type Task struct {
 	// neither starts with a drained budget nor re-banners/re-wakes on old
 	// background results.
 	Historical bool
-	cancel     context.CancelFunc
+	// cancelRequested closes the reservation-to-run race: a stop arriving after
+	// admission but before the runner attaches its context is remembered and
+	// fired immediately by AttachCancel.
+	cancelRequested bool
+	cancel          context.CancelFunc
 }
 
 // Duration returns how long the task ran. For still-running tasks,
@@ -617,23 +621,26 @@ func (r *Registry) AppendActivity(id, line string) {
 	}
 }
 
-// Cancel invokes the task's cancel func (if any) so the underlying
-// agent.Turn goroutine returns at the next context check. Marks
-// CanceledByUser=true so the runner's outcome message can attribute
-// the cancellation to /subagents stop rather than to a parent-turn
-// cancellation or a context deadline. The MarkDone(TaskCanceled)
-// follow-up is the responsibility of the goroutine itself when it
-// observes the canceled context.
+// Cancel records a stop request for a running task and invokes its cancel func
+// when one is already attached. If cancellation races admission, AttachCancel
+// observes the pending request and cancels the child before it starts work. Marks
+// CanceledByUser=true so the runner's outcome message can attribute the
+// cancellation to /subagents stop rather than to a parent-turn cancellation or
+// deadline. The MarkDone(TaskCanceled) follow-up is the responsibility of the
+// goroutine itself when it observes the canceled context.
 func (r *Registry) Cancel(id string) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	t, ok := r.tasks[id]
-	if !ok || t.cancel == nil {
+	if !ok || t.Status != TaskRunning {
 		return false
 	}
 	t.CanceledByUser = true
-	t.cancel()
-	t.cancel = nil
+	t.cancelRequested = true
+	if t.cancel != nil {
+		t.cancel()
+		t.cancel = nil
+	}
 	return true
 }
 
@@ -642,19 +649,23 @@ func (r *Registry) Cancel(id string) bool {
 // stop at their next context check. Used on session shutdown so background
 // workers (which run on context.Background() to survive the parent turn)
 // don't leak their goroutines and provider SSE streams past TUI exit.
-// Returns the number of tasks signaled. Like Cancel, it does not mark the
-// tasks done — each goroutine does that when it observes the canceled
+// Returns the number of newly requested cancellations. Like Cancel, it does not
+// mark tasks done — each goroutine does that when it observes the canceled
 // context; callers that need to wait for the drain can poll ActiveCount.
 func (r *Registry) CancelAll() int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	n := 0
 	for _, t := range r.tasks {
+		if t.Status != TaskRunning || t.cancelRequested {
+			continue
+		}
+		t.cancelRequested = true
 		if t.cancel != nil {
 			t.cancel()
 			t.cancel = nil
-			n++
 		}
+		n++
 	}
 	return n
 }
@@ -673,12 +684,15 @@ func (r *Registry) CancelBatch(batchID string) int {
 	defer r.mu.Unlock()
 	n := 0
 	for _, t := range r.tasks {
-		if t.BatchID != batchID || t.cancel == nil {
+		if t.BatchID != batchID || t.Status != TaskRunning || t.cancelRequested {
 			continue
 		}
 		t.CanceledByUser = true
-		t.cancel()
-		t.cancel = nil
+		t.cancelRequested = true
+		if t.cancel != nil {
+			t.cancel()
+			t.cancel = nil
+		}
 		n++
 	}
 	return n
@@ -765,12 +779,17 @@ func (r *Registry) IncrementCompactionCount(id string) {
 }
 
 // AttachCancel records the cancel func so /subagents stop has a way to
-// interrupt the child loop. Must be called before the goroutine
-// starts; later AttachCancel calls overwrite.
+// interrupt the child loop. Must be called before the goroutine starts. If a
+// stop raced registry admission and arrived first, the new context is canceled
+// synchronously instead of losing that request.
 func (r *Registry) AttachCancel(id string, cancel context.CancelFunc) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if t, ok := r.tasks[id]; ok {
+	if t, ok := r.tasks[id]; ok && t.Status == TaskRunning {
+		if t.cancelRequested {
+			cancel()
+			return
+		}
 		t.cancel = cancel
 	}
 }

@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 
 	"github.com/yottadynamics/yottacode/internal/sandboxcache"
@@ -121,64 +120,28 @@ func (t *RunBashTool) Execute(ctx context.Context, argsJSON string) (string, err
 }
 
 func prepareRunBashCommand(command string, sandbox Sandbox, root string) (string, error) {
-	if sandbox.Label() != (HostSandbox{}).Label() || !runBashEnvLeaksIntoRoot(root) {
+	withGo := runTestsCommandUsesGo(command)
+	// Ordinary host commands should retain the user's real HOME and XDG config.
+	// Redirect only when inherited state points into the checkout; Go commands
+	// are always wrapped because the toolchain also writes implicit cache,
+	// telemetry, and executable temporary files.
+	if sandbox.Label() == (HostSandbox{}).Label() && !withGo && !runBashEnvLeaksIntoRoot(root) {
 		return command, nil
 	}
-	base := filepath.Clean(root)
-	shellScratch, err := sandboxcache.HostShellScratchDir(base)
+	env, err := commandEnvironment(root, sandbox.Label() != (HostSandbox{}).Label(), withGo)
 	if err != nil {
 		return "", err
 	}
-	shellTmp := filepath.Join(shellScratch, "tmp")
-	xdgCache := filepath.Join(shellScratch, "xdg-cache")
-	xdgConfig := filepath.Join(shellScratch, "xdg-config")
-	xdgData := filepath.Join(shellScratch, "xdg-data")
-	xdgState := filepath.Join(shellScratch, "xdg-state")
-	return joinRunBashEnv(command, shellScratch, shellTmp, xdgCache, xdgConfig, xdgData, xdgState), nil
+	return env.wrap(command, withGo), nil
 }
 
 func runBashEnvLeaksIntoRoot(root string) bool {
 	for _, key := range []string{"HOME", "XDG_CACHE_HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "TMPDIR"} {
-		if pathIsWithinRoot(os.Getenv(key), root) {
+		if sandboxcache.PathWithinWorkspace(os.Getenv(key), root) {
 			return true
 		}
 	}
 	return false
-}
-
-func pathIsWithinRoot(path, root string) bool {
-	if strings.TrimSpace(path) == "" {
-		return false
-	}
-	absPath, err := filepath.Abs(path)
-	if err != nil {
-		return false
-	}
-	absRoot, err := filepath.Abs(root)
-	if err != nil {
-		return false
-	}
-	if absPath == absRoot {
-		return true
-	}
-	rel, err := filepath.Rel(absRoot, absPath)
-	if err != nil {
-		return false
-	}
-	return rel != "." && !strings.HasPrefix(rel, "..") && !filepath.IsAbs(rel)
-}
-
-func joinRunBashEnv(command, home, tmp, xdgCache, xdgConfig, xdgData, xdgState string) string {
-	// Host run_bash executes arbitrary approved commands directly on the
-	// workstation. Keep HOME/XDG/TMPDIR away from the checkout so tools that
-	// follow freedesktop defaults (GitHub CLIs, Podman helpers, language tools)
-	// cannot leak repo-root .local/.cache/.config directories just because the
-	// parent process inherited a bad HOME or XDG value.
-	return strings.Join([]string{
-		"mkdir -p " + strings.Join([]string{shellQuoteSingle(tmp), shellQuoteSingle(xdgCache), shellQuoteSingle(xdgConfig), shellQuoteSingle(xdgData), shellQuoteSingle(xdgState)}, " "),
-		"export HOME=" + shellQuoteSingle(home) + " TMPDIR=" + shellQuoteSingle(tmp) + " XDG_CACHE_HOME=" + shellQuoteSingle(xdgCache) + " XDG_CONFIG_HOME=" + shellQuoteSingle(xdgConfig) + " XDG_DATA_HOME=" + shellQuoteSingle(xdgData) + " XDG_STATE_HOME=" + shellQuoteSingle(xdgState),
-		command,
-	}, " && ")
 }
 
 // podmanInfraNote prepends podman's own exit-code-125 disambiguation note to

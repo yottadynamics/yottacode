@@ -965,6 +965,11 @@ type Model struct {
 	paletteIndex    int
 	paletteOffset   int // first visible row when filtered list overflows the window
 
+	// activeFileRefs is the snapshot injected for the current turn. It is
+	// retained only for /context attribution; token accounting continues to
+	// derive from the rewritten system message.
+	activeFileRefs []filerefs.Ref
+
 	// File palette state — opens when the user types `@` (at start-of-
 	// word) so they can pick a file from cwd by tab-completion instead
 	// of typing the path by hand. The palette is mutually exclusive
@@ -1136,6 +1141,16 @@ func New(parent context.Context, c Config) Model {
 	// their style values.
 	if c.FileCfg.Context.DefaultWindow == 0 {
 		c.FileCfg = config.Default()
+	}
+	// File references are turn-local context. A persisted session may contain the
+	// last turn's injected block, but resuming it must start with no active refs.
+	if c.Session != nil {
+		for i := range c.Session.Messages {
+			if c.Session.Messages[i].Role == adapter.RoleSystem {
+				c.Session.Messages[i].Content = filerefs.Inject(c.Session.Messages[i].Content, nil)
+				break
+			}
+		}
 	}
 
 	// Apply the configured theme BEFORE building any sub-component

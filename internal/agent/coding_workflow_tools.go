@@ -14,7 +14,6 @@ import (
 
 	lspci "github.com/yottadynamics/yottacode/internal/lsp"
 	"github.com/yottadynamics/yottacode/internal/permissions"
-	"github.com/yottadynamics/yottacode/internal/sandboxcache"
 	"github.com/yottadynamics/yottacode/internal/shellseg"
 )
 
@@ -596,6 +595,13 @@ func (t *RunTestsTool) Execute(ctx context.Context, argsJSON string) (string, er
 	if blocked, reason := IsHardlineCommand(command); blocked {
 		return fmt.Sprintf("BLOCKED (hardline): %s. This command is on the unconditional blocklist and cannot be run through the agent — not even with --yolo. If you genuinely need it, run it yourself in a terminal outside the agent.", reason), nil
 	}
+	if err := resourcePreflight(root); err != nil {
+		var health *ResourceHealthError
+		if errors.As(err, &health) {
+			return formatRunTestsEnvironmentFailure(health.Kind, err.Error(), ""), nil
+		}
+		return "", fmt.Errorf("run_tests: %w", err)
+	}
 	sandbox := t.sandbox()
 	runCommand, err := t.prepareRunTestsCommand(command, sandbox, root)
 	if err != nil {
@@ -610,44 +616,52 @@ func (t *RunTestsTool) Execute(ctx context.Context, argsJSON string) (string, er
 	if cmd.ProcessState != nil {
 		exit = cmd.ProcessState.ExitCode()
 	}
+	rawResult := fmt.Sprintf("$ %s\nexit=%d\n--- stdout ---\n%s--- stderr ---\n%s", runCommand, exit, stdout.String(), stderr.String())
+	result := summarizeRunTestsResult(runCommand, exit, stdout.String(), stderr.String())
+	if runErr != nil {
+		var exitErr *exec.ExitError
+		kind := ResourceFailureUnknown
+		if errors.As(runErr, &exitErr) {
+			// A started test process may print arbitrary assertion text. Only
+			// narrow runtime/resource signatures are inspected for exit errors.
+			kind = ClassifyResourceFailure(runErr.Error() + "\n" + stdout.String() + "\n" + stderr.String())
+		} else {
+			kind = classifyProcessStartFailure(runErr)
+		}
+		if kind != ResourceFailureUnknown {
+			return formatRunTestsEnvironmentFailure(kind, "test command could not run in the current environment", rawResult), nil
+		}
+	}
 	var exitErr *exec.ExitError
 	if runErr != nil && !errors.As(runErr, &exitErr) {
 		return "", fmt.Errorf("run_tests: %w", runErr)
 	}
-	result := summarizeRunTestsResult(runCommand, exit, stdout.String(), stderr.String())
 	return podmanInfraNote(t.sandbox(), exit, result), nil
 }
 
+func formatRunTestsEnvironmentFailure(kind ResourceFailureKind, detail, evidence string) string {
+	out := fmt.Sprintf("environment_failure=%s: %s; tests were not retried", kind, detail)
+	if strings.TrimSpace(evidence) != "" { out += "\n--- bounded evidence ---\n" + evidence }
+	return out
+}
+
 const (
-	// runTestsMaxStreamBytes bounds process output while the command is running.
-	// The model-facing result is reduced further by summarizeRunTestsResult.
-	runTestsMaxStreamBytes   = 1 << 20
+	runTestsMaxStreamBytes = 1 << 20
 	runTestsFailureTailBytes = 16 << 10
 )
 
-// summarizeRunTestsResult keeps successful test calls effectively free in model
-// context and retains only a bounded diagnostic tail for failures.
 func summarizeRunTestsResult(command string, exit int, stdout, stderr string) string {
-	if exit == 0 {
-		return fmt.Sprintf("$ %s\nexit=0", command)
-	}
+	if exit == 0 { return fmt.Sprintf("$ %s\nexit=0", command) }
 	var output strings.Builder
 	output.WriteString(fmt.Sprintf("$ %s\nexit=%d\n", command, exit))
-	if failure := tailRunTestsOutput(stderr, stdout); failure != "" {
-		output.WriteString("--- failure output ---\n")
-		output.WriteString(failure)
-	}
+	if failure := tailRunTestsOutput(stderr, stdout); failure != "" { output.WriteString("--- failure output ---\n" + failure) }
 	return output.String()
 }
 
 func tailRunTestsOutput(stderr, stdout string) string {
 	combined := strings.TrimSpace(strings.Join([]string{strings.TrimSpace(stderr), strings.TrimSpace(stdout)}, "\n"))
-	if combined == "" {
-		return ""
-	}
-	if len(combined) <= runTestsFailureTailBytes {
-		return combined
-	}
+	if combined == "" { return "" }
+	if len(combined) <= runTestsFailureTailBytes { return combined }
 	return "…[failure output truncated]\n" + combined[len(combined)-runTestsFailureTailBytes:]
 }
 
@@ -683,13 +697,15 @@ func (t *RunTestsTool) resolveRunTestsRoot(path string) (string, error) {
 }
 
 func (t *RunTestsTool) prepareRunTestsCommand(command string, sandbox Sandbox, root string) (string, error) {
-	if sandbox.Label() == (HostSandbox{}).Label() {
-		if !runTestsCommandUsesGo(command) {
-			return command, nil
-		}
-		return prepareHostGoRunTestsCommand(command, root)
+	withGo := runTestsCommandUsesGo(command) || sandbox.Label() != (HostSandbox{}).Label()
+	if !withGo && sandbox.Label() == (HostSandbox{}).Label() {
+		return command, nil
 	}
-	return prepareSandboxedGoRunTestsCommand(command, root)
+	env, err := commandEnvironment(root, sandbox.Label() != (HostSandbox{}).Label(), withGo)
+	if err != nil {
+		return "", err
+	}
+	return env.wrap(command, withGo), nil
 }
 
 // goSegmentRE detects command segments that invoke Go directly, including common
@@ -704,62 +720,4 @@ func runTestsCommandUsesGo(command string) bool {
 		}
 	}
 	return false
-}
-
-func prepareHostGoRunTestsCommand(command, root string) (string, error) {
-	base := filepath.Clean(root)
-	goScratch, err := sandboxcache.HostGoScratchDir(base)
-	if err != nil {
-		return "", err
-	}
-	goTmp := filepath.Join(goScratch, "tmp")
-	goCache := filepath.Join(goScratch, "cache")
-	goModCache := filepath.Join(goScratch, "modcache")
-	goXDGCache := filepath.Join(goScratch, "xdg-cache")
-	goXDGConfig := filepath.Join(goScratch, "xdg-config")
-	return joinGoRunTestsEnv(command, goScratch, goTmp, goCache, goModCache, goXDGCache, goXDGConfig), nil
-}
-
-func prepareSandboxedGoRunTestsCommand(command, root string) (string, error) {
-	base := filepath.Clean(root)
-	// Keep every sandbox Go scratch/cache directory outside the checked-out
-	// tree and outside /tmp. Repo-local caches make `go test ./...` descend into
-	// downloaded modules, while /tmp is intentionally noexec and space-limited in
-	// the Podman sandbox. A container-internal /var/tmp path avoids host/worktree
-	// bind-mount permissions and works the same from the main checkout or a
-	// managed worktree.
-	goScratch := filepath.ToSlash(filepath.Join("/var/tmp", "yottacode-go", safeScratchName(base)))
-	goTmp := filepath.Join(goScratch, "tmp")
-	goXDGCache := filepath.Join(goScratch, "xdg-cache")
-	goXDGConfig := filepath.Join(goScratch, "xdg-config")
-
-	// GOCACHE/GOMODCACHE point at the persistent host directory
-	// internal/sandbox.NewPodmanSandbox bind-mounts into every sandbox
-	// container — NOT the per-workspace, container-ephemeral goScratch above.
-	// Every new session starts a fresh container, so an ephemeral cache pays a
-	// full `go mod download` plus full recompile on the first Go command of
-	// every single session (measured: ~60s cold vs ~2s warm on this repo's
-	// dependency set). Shared across all workspaces/sessions on purpose,
-	// exactly like a host's own $GOCACHE/$GOMODCACHE.
-	goCacheRoot, err := sandboxcache.GoHostCacheDir()
-	if err != nil {
-		return "", err
-	}
-	goCache := filepath.Join(goCacheRoot, "cache")
-	goModCache := filepath.Join(goCacheRoot, "modcache")
-	return joinGoRunTestsEnv(command, goScratch, goTmp, goCache, goModCache, goXDGCache, goXDGConfig), nil
-}
-
-func joinGoRunTestsEnv(command, goScratch, goTmp, goCache, goModCache, goXDGCache, goXDGConfig string) string {
-	// The Podman sandbox intentionally mounts /tmp as noexec, but `go test`
-	// writes and executes test binaries from GOTMPDIR. Host execution gets the
-	// same repo-clean HOME/XDG/TMPDIR treatment so Go telemetry and cache files
-	// cannot appear under the checkout when a caller's environment points there.
-	// Use exports rather than an `env ... <command>` prefix so shell builtins and
-	// compound test commands keep working exactly as they do on the host path.
-	return strings.Join([]string{
-		"mkdir -p " + strings.Join([]string{shellQuoteSingle(goTmp), shellQuoteSingle(goCache), shellQuoteSingle(goModCache), shellQuoteSingle(goXDGCache), shellQuoteSingle(goXDGConfig)}, " "),
-		"export HOME=" + shellQuoteSingle(goScratch) + " XDG_CACHE_HOME=" + shellQuoteSingle(goXDGCache) + " XDG_CONFIG_HOME=" + shellQuoteSingle(goXDGConfig) + " TMPDIR=" + shellQuoteSingle(goTmp) + " GOTMPDIR=" + shellQuoteSingle(goTmp) + " GOCACHE=" + shellQuoteSingle(goCache) + " GOMODCACHE=" + shellQuoteSingle(goModCache) + " GOTELEMETRY='off'",
-		command,
-	}, " && ")
 }

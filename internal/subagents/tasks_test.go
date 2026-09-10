@@ -11,6 +11,37 @@ import (
 	"github.com/yottadynamics/yottacode/internal/adapter"
 )
 
+func TestRegistry_CancelBeforeAttachIsDelivered(t *testing.T) {
+	r := NewRegistry()
+	r.Add(&Task{ID: "race", Status: TaskRunning})
+
+	if !r.Cancel("race") {
+		t.Fatal("Cancel before AttachCancel should remember the stop request")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	r.AttachCancel("race", cancel)
+	select {
+	case <-ctx.Done():
+	case <-time.After(time.Second):
+		t.Fatal("AttachCancel did not deliver the pending cancellation")
+	}
+}
+
+func TestRegistry_CancelAllBeforeAttachIsDelivered(t *testing.T) {
+	r := NewRegistry()
+	r.Add(&Task{ID: "race", Status: TaskRunning})
+	if n := r.CancelAll(); n != 1 {
+		t.Fatalf("CancelAll signaled %d tasks, want 1 reserved task", n)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	r.AttachCancel("race", cancel)
+	select {
+	case <-ctx.Done():
+	case <-time.After(time.Second):
+		t.Fatal("AttachCancel did not deliver pending CancelAll")
+	}
+}
+
 // TestRegistry_CancelAll is the P3 shutdown regression: CancelAll must fire
 // every running task's attached cancel func (so detached background workers
 // don't leak past session exit) and be idempotent.

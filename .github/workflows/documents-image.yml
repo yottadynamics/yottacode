@@ -79,7 +79,7 @@ jobs:
         # Re-run the production helper scripts against generated fixtures, not
         # just import checks, before anything reaches ghcr.io.
         run: |
-          podman run --rm \
+          podman run --rm --init \
             -v "$PWD/scripts/smoke:/smoke-scripts:Z" \
             documents-image \
             sh -lc 'sh /smoke-scripts/documents-image.sh'

@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"strings"
 	"testing"
 
@@ -1113,9 +1112,8 @@ func stripANSI(s string) string {
 // already worked, just so a future refactor of the switch can't
 // accidentally regress them while fixing the model case.
 func TestFocusActiveConfigField_KeyAndBaseURL(t *testing.T) {
-	if strings.TrimSpace(os.Getenv("CUSTOM_API_KEY")) != "" {
-		t.Setenv("CUSTOM_API_KEY", "")
-	}
+	t.Setenv("ANTHROPIC_API_KEY", "")
+	t.Setenv("CUSTOM_API_KEY", "")
 	custom := *FindCatalogEntry("custom")
 	m := newWizardModel(context.Background(), Options{})
 	m.envSnap = EnvSnapshot{Present: map[string]bool{}}

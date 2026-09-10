@@ -97,6 +97,61 @@ func TestInjectFileRefs_EndToEndWithRealFile(t *testing.T) {
 	}
 }
 
+// TestInjectFileRefs_SnapshotsActiveRefs verifies /context attribution owns its
+// slice and that each injection replaces, rather than appends to, the prior turn.
+func TestInjectFileRefs_SnapshotsActiveRefs(t *testing.T) {
+	m := newTestModel(t)
+	m.sess.Messages = []adapter.Message{{Role: adapter.RoleSystem, Content: "SYS"}}
+	refs := []filerefs.Ref{{Token: "@first.go", Path: "first.go", Loaded: true, Size: 10}}
+
+	m.injectFileRefs(refs)
+	refs[0].Path = "mutated.go"
+	refs = append(refs, filerefs.Ref{Path: "also-mutated.go"})
+	if got := len(m.activeFileRefs); got != 1 {
+		t.Fatalf("active refs length = %d, want defensive snapshot of 1", got)
+	}
+	if got := m.activeFileRefs[0].Path; got != "first.go" {
+		t.Fatalf("active ref path = %q, want original first.go", got)
+	}
+
+	m.injectFileRefs([]filerefs.Ref{{Token: "@second.go", Path: "second.go", Loaded: true}})
+	if got := len(m.activeFileRefs); got != 1 || m.activeFileRefs[0].Path != "second.go" {
+		t.Fatalf("second injection should replace active refs, got %#v", m.activeFileRefs)
+	}
+}
+
+// TestClearFileRefs_ClearsActiveSnapshot pins the no-ref turn behavior: prompt
+// cleanup and /context attribution must advance together.
+func TestClearFileRefs_ClearsActiveSnapshot(t *testing.T) {
+	m := newTestModel(t)
+	m.sess.Messages = []adapter.Message{{Role: adapter.RoleSystem, Content: "SYS"}}
+	m.injectFileRefs([]filerefs.Ref{{Token: "@x", Path: "x", Loaded: true}})
+
+	m.clearFileRefs()
+
+	if m.activeFileRefs != nil {
+		t.Fatalf("active refs should clear on a no-ref turn, got %#v", m.activeFileRefs)
+	}
+}
+
+func TestClearCommandDropsFileRefs(t *testing.T) {
+	m := newTestModel(t)
+	m.sess.Messages = []adapter.Message{{Role: adapter.RoleSystem, Content: "SYS"}}
+	m.injectFileRefs([]filerefs.Ref{{Token: "@x", Path: "x", Loaded: true, Content: "body"}})
+
+	m, _ = cmdClear(m, nil)
+
+	if m.activeFileRefs != nil {
+		t.Fatalf("active refs survived /clear: %#v", m.activeFileRefs)
+	}
+	if len(m.sess.Messages) != 1 || strings.Contains(m.sess.Messages[0].Content, filerefs.Marker) {
+		t.Fatalf("file-ref block survived /clear: %#v", m.sess.Messages)
+	}
+	if m.sess.Messages[0].Content != "SYS" {
+		t.Fatalf("base system prompt changed: %q", m.sess.Messages[0].Content)
+	}
+}
+
 // TestDirEntryCount validates the helper used by the muted attached-
 // directory notice; off-by-one bugs here would mis-report counts in
 // the user-visible status line.

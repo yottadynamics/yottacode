@@ -70,6 +70,11 @@ const tmpTmpfsSize = "128m"
 // NewPodmanSandbox.
 const execKillTimeout = 5 * time.Second
 
+// execTermGrace gives a canceled command tree a brief chance to exit after
+// SIGTERM before Command escalates survivors to SIGKILL. Cleanup remains
+// bounded by execKillTimeout, including the podman exec round-trip.
+const execTermGrace = time.Second
+
 // execMarkerSeq numbers each Command call so its wrapped shell script has
 // a marker unique within the process — used to find and signal the right
 // process inside the container on cancellation (see Command).
@@ -186,11 +191,7 @@ func currentSandboxOwner() sandboxOwner {
 // plain PID-existence check there. Field 2 (comm) can itself contain
 // spaces or parentheses, so parsing starts after the LAST ')' rather than
 // splitting the whole line on whitespace.
-func processStartTicks(pid int) (int64, bool) {
-	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
-	if err != nil {
-		return 0, false
-	}
+func parseProcessStartTicks(data []byte) (int64, bool) {
 	i := bytes.LastIndexByte(data, ')')
 	if i < 0 || i+2 >= len(data) {
 		return 0, false
@@ -209,6 +210,14 @@ func processStartTicks(pid int) (int64, bool) {
 	return ticks, true
 }
 
+func processStartTicks(pid int) (int64, bool) {
+	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+	if err != nil {
+		return 0, false
+	}
+	return parseProcessStartTicks(data)
+}
+
 // podmanRunArgs builds the podman run argv after mount-root validation.
 // Keeping this pure lets unit tests pin security-sensitive flags (including
 // DNS) without starting a real container. caps gates the resource-limit
@@ -218,6 +227,10 @@ func processStartTicks(pid int) (int64, bool) {
 func podmanRunArgs(cfg config.SandboxConfig, name, mountRoot string, caps hostCapabilities, owner sandboxOwner) ([]string, error) {
 	args := []string{
 		"run", "-d", "--name", name,
+		// This long-lived container hosts many execs. A real init reparents and
+		// reaps descendants that race cancellation instead of accumulating
+		// zombies under `sleep infinity` as PID 1.
+		"--init",
 		"--label", fmt.Sprintf("yottacode.owner_pid=%d", owner.PID),
 		// Namespace isolation (PID/IPC/UTS/mount/user/network) is podman's
 		// own default for every rootless container — verified via
@@ -284,7 +297,7 @@ func podmanRunArgs(cfg config.SandboxConfig, name, mountRoot string, caps hostCa
 		// an already-running sandbox container.
 		args = append(args, "-v", m.Path+":"+m.Path+":"+m.SELinuxLabel)
 	}
-	goCacheDir, err := sandboxcache.GoHostCacheDir()
+	goCacheDir, err := sandboxcache.GoHostCacheDirForWorkspace(mountRoot)
 	if err != nil {
 		return nil, err
 	}
@@ -409,8 +422,8 @@ func sameOrContains(root, path string) bool {
 // already exists for the host path today.
 //
 // The command is tagged with a unique marker and cmd.Cancel is set to
-// best-effort kill the marked process (and its direct children) inside
-// the container when ctx is canceled or times out. Without this, the
+// best-effort terminate the marked process and its full descendant tree
+// inside the container when ctx is canceled or times out. Without this, the
 // default Cancel behavior (kill the local `podman exec` client) does NOT
 // kill the process it started inside the long-lived container — verified
 // empirically: a canceled `sleep 30` kept running, reparented to the
@@ -418,14 +431,6 @@ func sameOrContains(root, path string) bool {
 // process-group kill doesn't reach it either — this container setup
 // gives no per-exec process group (children inherit the container's own
 // group rather than a fresh one), also verified by direct test.
-//
-// Known residual limitation: only the marked process and its DIRECT
-// children are targeted, covering the wrapper shell + whatever it
-// directly forks — the overwhelming majority of real run_bash shapes. A
-// grandchild the command itself spawns can still survive as an orphan
-// inside the container until Close() removes it. Full recursive-tree
-// cleanup would need per-exec process-group isolation this container
-// doesn't have.
 func (s *PodmanSandbox) Command(ctx context.Context, command, cwd string) *exec.Cmd {
 	marker := fmt.Sprintf("__yc_job_%d__", execMarkerSeq.Add(1))
 	wrapped := ": " + marker + "\n" + command
@@ -433,28 +438,80 @@ func (s *PodmanSandbox) Command(ctx context.Context, command, cwd string) *exec.
 	cmd.Cancel = func() error {
 		killCtx, killCancel := context.WithTimeout(context.Background(), execKillTimeout)
 		defer killCancel()
-		// $$ excludes this kill script's own process from the match —
-		// its own argv necessarily contains the marker literal too, via
-		// the -c script text below, and would otherwise self-match.
-		killScript := `victims=""
-for p in /proc/[0-9]*; do
-  pid=${p#/proc/}
-  [ "$pid" = "$$" ] && continue
-  grep -qa ` + marker + ` "$p/cmdline" 2>/dev/null && victims="$victims $pid"
-done
-for p in /proc/[0-9]*; do
-  cpid=${p#/proc/}
-  [ "$cpid" = "$$" ] && continue
-  ppid=$(sed -n "s/^PPid:[[:space:]]*//p" "$p/status" 2>/dev/null)
-  for v in $victims; do
-    [ "$ppid" = "$v" ] && victims="$victims $cpid"
-  done
-done
-for v in $victims; do kill -9 "$v" 2>/dev/null; done`
+		killScript := markedProcessKillScript(marker, execTermGrace)
 		_ = exec.CommandContext(killCtx, "podman", "exec", s.name, "/bin/sh", "-c", killScript).Run()
 		return cmd.Process.Kill()
 	}
+	// Do not let Wait hang indefinitely if the local podman client remains
+	// wedged after the bounded in-container cancellation attempt.
+	cmd.WaitDelay = execKillTimeout + time.Second
 	return cmd
+}
+
+// markedProcessKillScript repeatedly rescans descendants before and during
+// both signal phases. Commands can fork while TERM handlers run; a one-time
+// snapshot would miss those late children once their parent is reaped and they
+// are adopted by PID 1. Both graceful and forced phases remain bounded.
+func markedProcessKillScript(marker string, termGrace time.Duration) string {
+	steps := int(termGrace / (100 * time.Millisecond))
+	if steps < 1 {
+		steps = 1
+	}
+	// $$ excludes this kill script itself: its argv contains marker via -c.
+	return `victims=""
+scan_descendants() {
+  for p in /proc/[0-9]*; do
+    pid=${p#/proc/}
+    [ "$pid" = "$$" ] && continue
+    grep -qa ` + marker + ` "$p/cmdline" 2>/dev/null && victims="$victims $pid"
+  done
+  changed=1
+  while [ "$changed" = 1 ]; do
+    changed=0
+    for p in /proc/[0-9]*; do
+      cpid=${p#/proc/}
+      [ "$cpid" = "$$" ] && continue
+      case " $victims " in *" $cpid "*) continue;; esac
+      ppid=$(sed -n "s/^PPid:[[:space:]]*//p" "$p/status" 2>/dev/null)
+      for v in $victims; do
+        if [ "$ppid" = "$v" ]; then
+          victims="$victims $cpid"
+          changed=1
+          break
+        fi
+      done
+    done
+  done
+}
+scan_descendants
+i=0
+while [ "$i" -lt ` + strconv.Itoa(steps) + ` ]; do
+  scan_descendants
+  alive=""
+  for v in $victims; do
+    if kill -0 "$v" 2>/dev/null; then
+      kill -TERM "$v" 2>/dev/null
+      alive="$alive $v"
+    fi
+  done
+  [ -z "$alive" ] && exit 0
+  sleep 0.1
+  i=$((i+1))
+done
+i=0
+while [ "$i" -lt ` + strconv.Itoa(steps) + ` ]; do
+  scan_descendants
+  alive=""
+  for v in $victims; do
+    if kill -0 "$v" 2>/dev/null; then
+      kill -KILL "$v" 2>/dev/null
+      alive="$alive $v"
+    fi
+  done
+  [ -z "$alive" ] && exit 0
+  sleep 0.1
+  i=$((i+1))
+done`
 }
 
 // Unambiguously "-sandbox", not just "[podman]" — a bare "[podman]" tag on

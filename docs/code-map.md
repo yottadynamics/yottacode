@@ -54,6 +54,8 @@ allowlists without startup warnings.
 
 ## Phase 1 — Suggested context (done)
 ## Phase 1 — Suggested context (done)
+`/map here` is an explicit context-assembly view: it ranks up to eight changed or related files, labels each suggestion, and lets `a` attach the full set as `@path` prompt references. Opening the picker does not inject files automatically; paths containing whitespace are omitted because the current reference syntax is whitespace-delimited.
+
 
 `/map here` ranks the changed files' neighborhood — `codemap.SuggestedContext`
 scores each candidate by combined reason (changed, imports target, imported

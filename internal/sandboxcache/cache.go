@@ -10,39 +10,57 @@ import (
 	"strings"
 )
 
-// GoCacheHomeSubdir names the ~/.yottacode subdirectory bind-mounted into every
-// sandbox container for persistent Go build and module caches. Keep callers on
-// this helper instead of duplicating the literal path; sandbox startup and
-// run_tests command preparation must agree exactly for the cache to work.
 const GoCacheHomeSubdir = "sandbox-go-cache"
 
-// GoHostCacheDir returns ~/.yottacode/sandbox-go-cache, the host directory
-// bind-mounted at the same absolute path inside every sandbox container.
 func GoHostCacheDir() (string, error) {
-	return yottacodeCacheDir(GoCacheHomeSubdir)
+	return filepath.Join(string(filepath.Separator), "var", "tmp", fmt.Sprintf("yottacode-%d", os.Getuid()), GoCacheHomeSubdir), nil
 }
 
-// HostGoScratchDir returns ~/.yottacode/host-go/<workspace>, the host-side
-// scratch directory used by unsandboxed Go test runs. Keeping HOME/XDG/TMPDIR
-// here prevents Go telemetry and temp/cache files from appearing in the repo.
+// GoHostCacheDirForWorkspace returns the canonical sandbox cache mount. It is
+// intentionally independent of both HOME and the particular checkout path:
+// Podman is created for the repository root while commands may later run from
+// a managed worktree, and both sides must still name the identical mount.
+func GoHostCacheDirForWorkspace(_ string) (string, error) { return GoHostCacheDir() }
+
 func HostGoScratchDir(workspace string) (string, error) {
-	return yottacodeCacheDir("host-go", safePathName(workspace))
+	return yottacodeCacheDir(workspace, "host-go", safePathName(workspace))
 }
 
-// HostShellScratchDir returns ~/.yottacode/host-shell/<workspace>, the
-// host-side scratch directory used by unsandboxed run_bash calls. Keeping
-// HOME/XDG/TMPDIR here prevents approved shell commands from leaking freedesktop
-// state/cache directories into the repo when the parent environment is polluted.
 func HostShellScratchDir(workspace string) (string, error) {
-	return yottacodeCacheDir("host-shell", safePathName(workspace))
+	return yottacodeCacheDir(workspace, "host-shell", safePathName(workspace))
 }
 
-func yottacodeCacheDir(parts ...string) (string, error) {
+func yottacodeCacheDir(workspace string, parts ...string) (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("resolve yottacode cache dir: %w", err)
 	}
-	return filepath.Join(append([]string{home, ".yottacode"}, parts...)...), nil
+	base := filepath.Join(home, ".yottacode")
+	if workspace != "" && PathWithinWorkspace(base, workspace) {
+		// /var/tmp is deliberately used instead of /tmp: sandbox test binaries
+		// need executable, durable scratch and /tmp may be noexec/space-limited.
+		base = filepath.Join(string(filepath.Separator), "var", "tmp", fmt.Sprintf("yottacode-%d", os.Getuid()))
+	}
+	return filepath.Join(append([]string{base}, parts...)...), nil
+}
+
+// PathWithinWorkspace reports whether path resolves to root or one of its
+// descendants. It is shared by host command environment policy and cache
+// placement so both make the same decision for an inherited workspace HOME.
+func PathWithinWorkspace(path, root string) bool {
+	if strings.TrimSpace(path) == "" || strings.TrimSpace(root) == "" {
+		return false
+	}
+	path, err := filepath.Abs(path)
+	if err != nil {
+		return false
+	}
+	root, err = filepath.Abs(root)
+	if err != nil {
+		return false
+	}
+	rel, err := filepath.Rel(root, path)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel)
 }
 
 func safePathName(path string) string {
@@ -50,7 +68,7 @@ func safePathName(path string) string {
 	name = safePathChars.ReplaceAllString(name, "-")
 	name = strings.Trim(name, ".-")
 	if name == "" {
-		return "workspace"
+		name = "workspace"
 	}
 	return name
 }
