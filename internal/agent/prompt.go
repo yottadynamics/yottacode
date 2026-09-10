@@ -112,6 +112,19 @@ Memory hygiene:
 
 Self-improvement: treat every session and every completed task as an opportunity to strengthen the knowledge base. At task boundaries, actively check whether the user taught you something durable, an approach succeeded or failed in a way worth recording, a decision or rationale emerged, or you discovered a constraint, gotcha, subsystem behavior, or pattern that future-you would benefit from knowing. If so, save it before the session context is lost.`
 
+// CodeMapPromptAddendum steers the model toward the indexed navigation tools.
+// Kept separate from DefaultSystemPrompt because those tools are registered only
+// when the experimental Code Map feature is enabled.
+const CodeMapPromptAddendum = `## Code Map navigation (enabled this session)
+
+Use the indexed Code Map tools to navigate efficiently:
+  - Prefer code_map or code_structure_projection for repository orientation instead of starting with a full filesystem survey.
+  - Use code_symbols and the graph tools (code_dependencies, code_dependents, code_impact, code_cycles, code_map_diagram) for focused symbol and relationship lookups.
+  - Use syntax_range when you need parser-backed source ranges.
+  - Fall back to list_project_structure when the Code Map tools are unavailable or their index is insufficient for the task.
+
+The Code Map index is an approximate navigation aid. Verify relevant indexed results against the source with read_file or read_many_files before making edits.`
+
 // DispatchPromptAddendum gives the model explicit steering toward dispatch and
 // integrate for parallel implementation. Kept separate from
 // DefaultSystemPrompt because the steering must only be present when the tools

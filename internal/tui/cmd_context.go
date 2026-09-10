@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 	"math"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -12,6 +13,7 @@ import (
 
 	"github.com/yottadynamics/yottacode/internal/adapter"
 	"github.com/yottadynamics/yottacode/internal/contextwindow"
+	"github.com/yottadynamics/yottacode/internal/filerefs"
 	"github.com/yottadynamics/yottacode/internal/memory"
 	"github.com/yottadynamics/yottacode/internal/skills"
 )
@@ -203,6 +205,9 @@ func renderContextReport(m *Model) string {
 	out.WriteString(styleSplashTitle.Render("Estimated usage by category"))
 	out.WriteString("\n")
 	out.WriteString(renderContextLegend(buckets, window))
+
+	out.WriteString("\n\n")
+	out.WriteString(renderContextWorkingSetSection(m.activeFileRefs, m.cwd))
 
 	out.WriteString("\n\n")
 	out.WriteString(renderContextMCPSection(m))
@@ -549,6 +554,48 @@ func contextPercentLabel(used, window int) string {
 	// the estimate doesn't have.
 	pct := min(int(math.Round(float64(used)/float64(window)*100)), 100)
 	return fmt.Sprintf("%d%%", pct)
+}
+
+// renderContextWorkingSetSection attributes the current turn's injected file
+// references without adding another usage bucket: their content is already part
+// of the system prompt counted above. Files show their loaded byte size,
+// directories show listing entry count, and load errors remain visibly distinct.
+func renderContextWorkingSetSection(refs []filerefs.Ref, cwd string) string {
+	var out strings.Builder
+	out.WriteString(styleSplashTitle.Render("Working set"))
+	out.WriteString("\n")
+	if len(refs) == 0 {
+		out.WriteString("  ")
+		out.WriteString(styleMeta.Render("(no referenced files this turn)"))
+		return out.String()
+	}
+
+	for i, ref := range refs {
+		prefix := "├ "
+		if i == len(refs)-1 {
+			prefix = "└ "
+		}
+		out.WriteString("  ")
+		out.WriteString(styleMeta.Render(prefix))
+
+		path := ref.Path
+		if !filepath.IsAbs(path) && cwd != "" {
+			path = filepath.Join(cwd, path)
+		}
+		path = displayPath(path, cwd)
+		switch {
+		case !ref.Loaded:
+			fmt.Fprintf(&out, "%s   %s\n", path,
+				styleError.Render("failed · "+emptyDash(ref.Error)))
+		case ref.IsDir:
+			fmt.Fprintf(&out, "%s   %s\n", path,
+				styleMeta.Render(fmt.Sprintf("directory · %d entries", dirEntryCount(ref.Content))))
+		default:
+			fmt.Fprintf(&out, "%s   %s\n", path,
+				styleMeta.Render(humanBytes(ref.Size)))
+		}
+	}
+	return strings.TrimRight(out.String(), "\n")
 }
 
 // renderContextMCPSection lists configured MCP servers and their tool

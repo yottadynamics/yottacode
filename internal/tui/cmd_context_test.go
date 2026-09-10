@@ -11,6 +11,7 @@ import (
 	"github.com/yottadynamics/yottacode/internal/agent"
 	"github.com/yottadynamics/yottacode/internal/config"
 	"github.com/yottadynamics/yottacode/internal/contextwindow"
+	"github.com/yottadynamics/yottacode/internal/filerefs"
 	"github.com/yottadynamics/yottacode/internal/skills"
 )
 
@@ -42,6 +43,8 @@ func TestSlash_ContextRendersAllSections(t *testing.T) {
 		"Last summarize:",
 		"Last mid-turn compaction:",
 		"Estimated usage by category",
+		"Working set",
+		"no referenced files this turn",
 		"System prompt:",
 		"System tools:",
 		"MCP tools:",
@@ -91,6 +94,59 @@ func TestSlash_ContextRendersAllSections(t *testing.T) {
 	}
 	if m.contextReportBody != "" {
 		t.Error("dismissing the overlay should release the cached body")
+	}
+}
+
+// TestContextWorkingSet_ZeroOneMultipleAndFailed covers the attribution states
+// independently of token accounting: empty, a single file, and a mixed set with
+// a directory and failed reference.
+func TestContextWorkingSet_ZeroOneMultipleAndFailed(t *testing.T) {
+	cwd := t.TempDir()
+	if got := ansi.Strip(renderContextWorkingSetSection(nil, cwd)); !strings.Contains(got, "Working set") || !strings.Contains(got, "no referenced files this turn") {
+		t.Fatalf("empty working set should be concise, got:\n%s", got)
+	}
+
+	one := ansi.Strip(renderContextWorkingSetSection([]filerefs.Ref{{
+		Path: "main.go", Loaded: true, Size: 1536,
+	}}, cwd))
+	if !strings.Contains(one, "./main.go") || !strings.Contains(one, "1.5 KB") {
+		t.Fatalf("loaded file should show display path and size, got:\n%s", one)
+	}
+
+	many := ansi.Strip(renderContextWorkingSetSection([]filerefs.Ref{
+		{Path: "pkg", Loaded: true, IsDir: true, Content: "(directory listing)\nf a.go\nd sub"},
+		{Path: "missing.go", Error: "no such file"},
+	}, cwd))
+	if !strings.Contains(many, "./pkg") || !strings.Contains(many, "directory · 2 entries") {
+		t.Errorf("directory should show entry count, got:\n%s", many)
+	}
+	failedLine := lineWith(many, "missing.go")
+	if !strings.Contains(failedLine, "failed · no such file") {
+		t.Errorf("failed ref should be distinct and retain its error, got %q", failedLine)
+	}
+}
+
+// TestContextWorkingSet_DoesNotChangeTokenAccounting locks the attribution-only
+// contract: setting active refs must not create a bucket or alter any existing
+// bucket value. The injected content remains counted through System prompt.
+func TestContextWorkingSet_DoesNotChangeTokenAccounting(t *testing.T) {
+	m := newTestModel(t)
+	m.cwd = t.TempDir()
+	m.sess.Messages = []adapter.Message{
+		{Role: adapter.RoleSystem, Content: "system prompt including already-injected content"},
+		{Role: adapter.RoleUser, Content: "hello"},
+	}
+	before := ansi.Strip(renderContextReport(&m))
+	m.activeFileRefs = []filerefs.Ref{{Path: "main.go", Loaded: true, Size: 4096}}
+	after := ansi.Strip(renderContextReport(&m))
+
+	for _, label := range []string{"System prompt", "System tools", "Skills", "MCP tools", "Memory files", "Messages", "Free space"} {
+		if got, want := legendValue(t, after, label), legendValue(t, before, label); got != want {
+			t.Errorf("%s changed from %s to %s after attribution-only refs", label, want, got)
+		}
+	}
+	if strings.Contains(lineWith(after, "Working set:"), "tokens") {
+		t.Errorf("working set must not appear as a token bucket:\n%s", after)
 	}
 }
 

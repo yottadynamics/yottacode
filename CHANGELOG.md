@@ -8,6 +8,10 @@ the project uses semantic versioning once it's past `1.0.0`.
 
 ### Added
 
+worktree-noble-hopping-quail
+- **Explicit Code Map context assembly.** Experimental `/map here` now ranks up to eight high-signal changed or related files, labels each suggestion, and lets `a` attach them as explicit `@path` references. `/context` shows the latest turn working set, and stale references are cleared across turns, `/clear`, and session resume.
+
+harden-syntax-range-selection
 - **Semantic-first research subagents.** The stock `Explore` and `Plan` roles
   now receive read-only LSP navigation and feature-gated Code Map queries, use
   indexed/semantic relationships before targeted grep and file reads, and keep
