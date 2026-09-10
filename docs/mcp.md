@@ -6,7 +6,8 @@ yottacode is a client for Anthropic's [Model Context Protocol](https://modelcont
 
 v1 covers the part of the MCP ecosystem most users actually need:
 
-- **Stdio, streamable HTTP, and legacy SSE transports.** yottacode can launch a server as a local subprocess (stdio, talking JSON-RPC over stdin/stdout — covers every server published as `@modelcontextprotocol/server-*` and most community servers) or connect to a remote server over streamable HTTP or SSE. Mutual-TLS/OAuth-gated remote servers are still out of scope — see below.
+- **Stdio, streamable HTTP, and legacy SSE transports.** yottacode can launch a server as a local subprocess (stdio, talking JSON-RPC over stdin/stdout — covers every server published as `@modelcontextprotocol/server-*` and most community servers) or connect to a remote server over streamable HTTP or SSE.
+- **OAuth 2.1 for streamable-HTTP servers.** `auth = "oauth"` runs the full authorization-code + PKCE flow (RFC 8707 resource indicators, RFC 9728 protected-resource discovery) against servers that require interactive sign-in instead of a static token — see "OAuth authentication" below. Not available over the legacy `sse` transport.
 - **Non-blocking startup.** MCP servers initialize in the background after the TUI renders. A slow server (e.g. `npx -y` downloading a package for the first time) does not block the prompt. `/mcp` shows "starting..." for servers still initializing; tools register automatically once they come up.
 - **Tools only.** MCP's `resources` and `prompts` primitives are deferred — they're rare in practice and add real surface. Most servers ship only tools anyway. Elicitation and sampling are deferred too: yottacode never advertises either capability, so a server that tries one gets a clean "client does not support" error immediately — it can't hang a session waiting on a response yottacode will never send.
 - **Per-tool approval — annotations are advisory, not a bypass.** Each MCP tool defaults to the approval modal. A server's `readOnlyHint` annotation can skip the modal only when you've explicitly opted a server into `trust_annotations` (see "Global MCP policy" below) — and only for tools the server also doesn't mark destructive or open-world. A tool with no annotations at all is treated as destructive and always prompts. Users can still elevate or restrict trust with explicit `MCP(...)` permission rules.
@@ -14,7 +15,6 @@ v1 covers the part of the MCP ecosystem most users actually need:
 
 Deferred to follow-ups:
 
-- **OAuth 2.1 device-flow auth** — needed for remote servers that require interactive/browser-based authentication rather than a static bearer token or API key in a header.
 - **MCP resources and prompts** — rarely used in practice; most servers only expose tools.
 
 ## Configuration
@@ -47,6 +47,15 @@ url       = "https://mcp.linear.app/mcp"
 headers   = { Authorization = "Bearer $LINEAR_API_KEY" }
 include   = ["get_*", "list_*", "create_issue"]
 exclude   = ["delete_*"]
+
+[[mcp_servers]]
+name                = "gmail"
+transport           = "http"
+url                 = "https://gmailmcp.googleapis.com/mcp/v1"
+auth                = "oauth"
+oauth_client_id     = "$GOOGLE_MCP_CLIENT_ID"
+oauth_client_secret = "$GOOGLE_MCP_CLIENT_SECRET"
+oauth_scopes        = ["https://www.googleapis.com/auth/gmail.readonly"]
 ```
 
 Fields:
@@ -61,6 +70,10 @@ Fields:
 | `url` | http/sse only | The server's HTTP/SSE endpoint. Subject to the transport security policy below — see "Remote transport security". |
 | `headers` | no | Sent on every outgoing request — e.g. an `Authorization` bearer token. Values support `$VAR` substitution the same way `env` does; the expanded value is never written back to `config.toml`. http/sse only. |
 | `tls_ca_file` | no | Path to a PEM CA bundle used in addition to the system roots when verifying `url`'s certificate. Does not disable certificate verification or `require_tls`. http/sse only. |
+| `auth` | no | `""`/`"static-header"` (default) authenticates via `headers`. `"oauth"` runs the OAuth 2.1 flow instead — see "OAuth authentication" below. `"none"` documents that the server needs no credential. http/sse only; `"oauth"` additionally requires `transport = "http"` (not `"sse"`). |
+| `oauth_client_id` | `auth = "oauth"` | This MCP client's ID, pre-registered with the server's authorization server. `$VAR`-substituted like `headers`. |
+| `oauth_client_secret` | no | Paired client secret, when the authorization server issued one. `$VAR`-substituted; empty is valid for a true public client. |
+| `oauth_scopes` | no | Explicit scope list to request instead of the server's full advertised set. |
 | `include` / `exclude` | no | Glob lists (`path.Match` syntax, e.g. `"get_*"`) narrowing the registered tool catalog. `include` keeps only matches (empty = everything); `exclude` then drops matches. `/mcp` and `/mcp tools <name>` show the hidden count. |
 | `disabled` | no | `true` skips starting this entry at session start, but it stays visible in `/mcp` with a `disabled` badge — use `/mcp enable <name>` to start it without editing `config.toml`. |
 
@@ -102,7 +115,31 @@ allowed_hosts         = ["mcp.linear.app"]     # empty (default) = any https hos
 - **Redaction.** `Bearer <token>`, `Authorization:` headers, `token=` query params, and `Set-Cookie:` values are scrubbed to `***` before they can reach `/mcp logs`, a start-error message, or the transcript.
 - **`$VAR` in `headers`** is expanded the same way as `env` — against yottacode's process environment, with unresolved references surfaced as a startup warning. The expanded value is never written back to `config.toml`.
 
-This bar is **trusted-vendor PAT over HTTPS**, not OAuth-grade — a static bearer token or API key in a header. Interactive/browser-based OAuth is deferred (see "What v1 ships" above).
+`auth = "static-header"` (the default) is **trusted-vendor PAT over HTTPS** — a static bearer token or API key in a header, good for ~95% of MCP servers. `auth = "oauth"` is the OAuth-grade option for servers that require it — see the next section.
+
+## OAuth authentication
+
+`auth = "oauth"` runs the OAuth 2.1 authorization-code + PKCE flow against the server's real authorization server, built on the pinned `github.com/modelcontextprotocol/go-sdk`'s `auth`/`oauthex` packages (RFC 8707 resource indicators, RFC 9728 protected-resource metadata discovery, refresh tokens). This is the mode Google's official Workspace MCP servers — Gmail, Drive, Docs, Sheets, Slides, Calendar, Chat (`developers.google.com/workspace/guides/configure-mcp-servers`) — require; the config example above targets Gmail.
+
+**You register your own OAuth client.** yottacode does not ship a bundled client ID — create a "Desktop app" (installed-application) OAuth 2.0 client in the vendor's console (e.g. Google Cloud console for Workspace servers) and put its client ID (and secret, if issued) in `oauth_client_id`/`oauth_client_secret`. A Desktop-app client accepts a loopback redirect on any port, which is what the sign-in flow uses; register your own rather than reusing a client meant for a different application (e.g. Claude's own `https://claude.ai/api/mcp/auth_callback` redirect only works for claude.ai).
+
+Sign in with:
+
+```
+/mcp auth gmail          # or: yottacode mcp auth gmail
+```
+
+This opens your browser (best-effort — the URL is also printed so a headless or remote session can complete sign-in by pasting it elsewhere), waits for the redirect on a fixed local port, exchanges the code, and persists the resulting access/refresh token to `~/.yottacode/mcp-auth/<name>.json` (mode `0600`, one file per server, never written to `config.toml` or logged). A later session reuses the persisted refresh token automatically — you only need to run `/mcp auth` again after `/mcp logout` or if the server revokes access.
+
+```
+/mcp logout gmail        # or: yottacode mcp logout gmail
+```
+
+Deletes the persisted token. `/mcp auth <name>` is the **only** place sign-in runs interactively — a session-startup connection or a tool call that finds no valid token never opens a browser or blocks on you; it fails immediately with a message pointing at `/mcp auth <name>`, and the server shows as `failed` in `/mcp` until you run it. This also covers a token that stops working mid-session (revoked access, expired refresh token): the next call to that server fails the same clean way rather than popping a browser mid-turn.
+
+**Google specifically:** Google doesn't support the MCP spec's `offline_access`-scope convention for requesting a refresh token — it uses `access_type=offline&prompt=consent` query parameters instead, which yottacode adds automatically when it detects a Google authorization endpoint. If you don't see a refresh token persist (a `/mcp auth` a few hours later re-prompts every time), your OAuth client's Google Cloud project consent screen may still be in "Testing" status — sensitive/restricted scopes like Gmail's `gmail.modify` need Google's app-verification review to work for any account beyond the ~100 test users you list explicitly.
+
+Out of scope: MCP elicitation and sampling (see "What v1 ships") are unrelated protocol features some servers use for mid-session interactive prompts — yottacode still rejects both unconditionally regardless of `auth` mode.
 
 ## Tool namespacing
 
@@ -144,6 +181,8 @@ The approval modal's "always allow" and "allow for this session" options are ava
 | `/mcp enable <name>` | Start a disabled server and register its tools, without a session restart. |
 | `/mcp disable <name>` | Stop a server and mark it disabled, without removing it from `config.toml`. |
 | `/mcp tools <name>` | Read-only inspector: lists the server's full catalog with a shown/hidden marker per tool, reflecting `include`/`exclude`. |
+| `/mcp auth <name>` | Run the OAuth 2.1 sign-in flow for an `auth = "oauth"` server and persist the resulting token. See "OAuth authentication" above. |
+| `/mcp logout <name>` | Delete a server's persisted OAuth token. |
 
 Examples:
 
@@ -152,6 +191,10 @@ Examples:
 /mcp add filesystem --command npx -y @modelcontextprotocol/server-filesystem /home/me/workspace
 /mcp add excalidraw --command node /path/to/excalidraw-mcp/dist/index.js --stdio
 /mcp add linear --transport http --url https://mcp.linear.app/mcp --header "Authorization=Bearer $LINEAR_API_KEY"
+/mcp add gmail --transport http --url https://gmailmcp.googleapis.com/mcp/v1 \
+    --auth oauth --oauth-client-id "$GOOGLE_MCP_CLIENT_ID" --oauth-client-secret "$GOOGLE_MCP_CLIENT_SECRET" \
+    --oauth-scope https://www.googleapis.com/auth/gmail.readonly
+/mcp auth gmail
 ```
 
 ## Non-text tool results

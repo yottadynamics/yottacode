@@ -1,12 +1,17 @@
 package tui
 
 import (
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
+
+	"golang.org/x/oauth2"
 
 	"github.com/yottadynamics/yottacode/internal/config"
 	"github.com/yottadynamics/yottacode/internal/mcp"
@@ -438,6 +443,116 @@ func TestMCPStartupDoneSkipsFailedServers(t *testing.T) {
 		if strings.HasPrefix(name, "mcp/broken/") {
 			t.Errorf("failed server should not register tools; found %q", name)
 		}
+	}
+}
+
+func TestSlash_MCPAuthUnknownServerErrors(t *testing.T) {
+	m := newTestModel(t)
+	seedConfigTOML(t, "")
+	m.mcpManager = mcp.NewManager(nil, 0, mcp.Policy{})
+
+	m, _ = typeAndEnter(t, m, "/mcp auth ghost")
+	content := m.transcript.String()
+	if !strings.Contains(content, "ghost") {
+		t.Errorf("/mcp auth on an unknown server should mention the name; got %q", content)
+	}
+}
+
+func TestSlash_MCPAuthRejectsNonOAuthServer(t *testing.T) {
+	m := newTestModel(t)
+	seedConfigTOML(t, `
+[[mcp_servers]]
+name      = "linear"
+transport = "http"
+url       = "https://mcp.linear.app/mcp"
+`)
+	m.mcpManager = mcp.NewManager(nil, 0, mcp.Policy{})
+
+	m, _ = typeAndEnter(t, m, "/mcp auth linear")
+	content := m.transcript.String()
+	if !strings.Contains(content, "oauth") {
+		t.Errorf("/mcp auth on a non-oauth server should explain the mismatch; got %q", content)
+	}
+}
+
+func TestSlash_MCPAuthStartsFlowAndSurfacesURL(t *testing.T) {
+	// A 404-everything server: the SDK's protected-resource discovery
+	// misses and falls back to treating the resource server's own root
+	// as the authorization server (2025-03-26 spec fallback) — enough
+	// to build a valid authorize URL without a real IdP, since this test
+	// only exercises the dispatch → cmd → msg wiring up to "URL known",
+	// not a full sign-in (that's covered end to end in
+	// internal/mcp/oauth_test.go).
+	ts := httptest.NewServer(http.NotFoundHandler())
+	t.Cleanup(ts.Close)
+	t.Setenv("HOME", t.TempDir())
+
+	m := newTestModel(t)
+	seedConfigTOML(t, fmt.Sprintf(`
+[[mcp_servers]]
+name            = "gmail"
+transport       = "http"
+url             = "%s/mcp/v1"
+auth            = "oauth"
+oauth_client_id = "test-client"
+`, ts.URL))
+	m.mcpManager = mcp.NewManager(nil, 0, mcp.Policy{})
+
+	m, cmd := typeAndEnter(t, m, "/mcp auth gmail")
+	if cmd == nil {
+		t.Fatal("/mcp auth on a valid oauth server should return a tea.Cmd")
+	}
+	if m.mcpOAuthCancel == nil {
+		t.Error("expected mcpOAuthCancel to be set while a sign-in is starting")
+	}
+
+	msg := cmd()
+	urlMsg, ok := msg.(mcpOAuthURLMsg)
+	if !ok {
+		t.Fatalf("expected mcpOAuthURLMsg, got %T (%+v)", msg, msg)
+	}
+	if urlMsg.err != nil {
+		t.Fatalf("unexpected error building the authorize URL: %v", urlMsg.err)
+	}
+
+	m, _ = applyMsg(m, urlMsg)
+	content := m.transcript.String()
+	if !strings.Contains(content, "opening browser") {
+		t.Errorf("transcript should announce the sign-in; got %q", content)
+	}
+	if !strings.Contains(content, urlMsg.pending.AuthURL) {
+		t.Errorf("transcript should surface the authorize URL as a fallback; got %q", content)
+	}
+	if m.mcpOAuthPending == nil || m.mcpOAuthPendingName != "gmail" {
+		t.Errorf("model should track the pending login; pending=%v name=%q", m.mcpOAuthPending, m.mcpOAuthPendingName)
+	}
+
+	// A concurrent second attempt must be refused, not silently clobber
+	// the first (it would otherwise leak the first attempt's loopback
+	// listener reservation and confuse both flows' results).
+	m2, _ := typeAndEnter(t, m, "/mcp auth gmail")
+	if !strings.Contains(m2.transcript.String(), "already in progress") {
+		t.Errorf("a second /mcp auth while one is pending should be refused; got %q", m2.transcript.String())
+	}
+}
+
+func TestSlash_MCPLogoutDeletesToken(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	if err := mcp.SaveToken("gmail", &oauth2.Token{AccessToken: "at-1"}); err != nil {
+		t.Fatalf("seed token: %v", err)
+	}
+
+	m := newTestModel(t)
+	seedConfigTOML(t, "")
+	m.mcpManager = mcp.NewManager(nil, 0, mcp.Policy{})
+
+	m, _ = typeAndEnter(t, m, "/mcp logout gmail")
+	content := m.transcript.String()
+	if !strings.Contains(content, "logged out") {
+		t.Errorf("/mcp logout should confirm; got %q", content)
+	}
+	if tok, err := mcp.LoadToken("gmail"); err != nil || tok != nil {
+		t.Errorf("LoadToken after logout = (%v, %v), want (nil, nil)", tok, err)
 	}
 }
 

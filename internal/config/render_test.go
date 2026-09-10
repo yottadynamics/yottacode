@@ -114,6 +114,15 @@ func TestRender_RoundTripsMCPServers(t *testing.T) {
 			Headers:   map[string]string{"X-Api-Key": "secret"},
 			Disabled:  true,
 		},
+		{
+			Name:              "gmail",
+			Transport:         "http",
+			URL:               "https://gmailmcp.googleapis.com/mcp/v1",
+			Auth:              "oauth",
+			OAuthClientID:     "$GOOGLE_MCP_CLIENT_ID",
+			OAuthClientSecret: "$GOOGLE_MCP_CLIENT_SECRET",
+			OAuthScopes:       []string{"https://www.googleapis.com/auth/gmail.readonly"},
+		},
 	}
 
 	out := Render(cfg)
@@ -121,8 +130,8 @@ func TestRender_RoundTripsMCPServers(t *testing.T) {
 	if _, err := toml.Decode(out, &got); err != nil {
 		t.Fatalf("decode rendered config: %v\n---\n%s", err, out)
 	}
-	if len(got.MCPServers) != 3 {
-		t.Fatalf("MCPServers = %d entries, want 3\nrendered:\n%s", len(got.MCPServers), out)
+	if len(got.MCPServers) != 4 {
+		t.Fatalf("MCPServers = %d entries, want 4\nrendered:\n%s", len(got.MCPServers), out)
 	}
 
 	stdio := got.MCPServers[0]
@@ -141,5 +150,12 @@ func TestRender_RoundTripsMCPServers(t *testing.T) {
 	sse := got.MCPServers[2]
 	if sse.Transport != "sse" || sse.URL != "https://mcp.example.com/sse" || sse.Headers["X-Api-Key"] != "secret" || !sse.Disabled {
 		t.Errorf("sse entry mangled: %+v\nrendered:\n%s", sse, out)
+	}
+
+	gmail := got.MCPServers[3]
+	if gmail.Auth != "oauth" || gmail.OAuthClientID != "$GOOGLE_MCP_CLIENT_ID" ||
+		gmail.OAuthClientSecret != "$GOOGLE_MCP_CLIENT_SECRET" ||
+		len(gmail.OAuthScopes) != 1 || gmail.OAuthScopes[0] != "https://www.googleapis.com/auth/gmail.readonly" {
+		t.Errorf("oauth entry mangled: %+v\nrendered:\n%s", gmail, out)
 	}
 }

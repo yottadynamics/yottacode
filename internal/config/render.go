@@ -239,6 +239,25 @@ func Render(cfg Config) string {
 				b.WriteString(" }\n")
 			}
 		}
+		if s.Auth != "" {
+			fmt.Fprintf(&b, "auth                = %q\n", s.Auth)
+		}
+		if s.OAuthClientID != "" {
+			fmt.Fprintf(&b, "oauth_client_id     = %q\n", s.OAuthClientID)
+		}
+		if s.OAuthClientSecret != "" {
+			fmt.Fprintf(&b, "oauth_client_secret = %q\n", s.OAuthClientSecret)
+		}
+		if len(s.OAuthScopes) > 0 {
+			b.WriteString("oauth_scopes        = [")
+			for i, sc := range s.OAuthScopes {
+				if i > 0 {
+					b.WriteString(", ")
+				}
+				fmt.Fprintf(&b, "%q", sc)
+			}
+			b.WriteString("]\n")
+		}
 		if s.Disabled {
 			b.WriteString("disabled  = true\n")
 		}

@@ -810,6 +810,38 @@ type MCPServer struct {
 	// certificate verification or the require_tls policy. http/sse only.
 	TLSCAFile string `toml:"tls_ca_file"`
 
+	// Auth selects how outgoing requests to URL are authenticated.
+	// "" and "static-header" both mean the Headers block carries a fixed
+	// credential (e.g. "Authorization = Bearer $VAR") — today's only mode,
+	// made an explicit name. "oauth" runs the OAuth 2.1 authorization-code
+	// + PKCE flow (internal/mcp/oauth.go) instead: the client discovers the
+	// server's protected-resource metadata, sends the user through a
+	// loopback browser sign-in, and injects the resulting bearer token
+	// per request — see OAuthClientID. "none" documents that the server
+	// requires no credential at all. http/sse only; stdio servers get
+	// their auth via Env.
+	Auth string `toml:"auth"`
+
+	// OAuthClientID is this MCP client's identifier, pre-registered with
+	// the server's authorization server (e.g. a Google Cloud OAuth
+	// "Desktop app" client). Values may use $VAR substitution from
+	// yottacode's process env, resolved at connect time. Required when
+	// Auth is "oauth".
+	OAuthClientID string `toml:"oauth_client_id"`
+
+	// OAuthClientSecret is the client secret paired with OAuthClientID,
+	// when the authorization server issued one (most installed-app/CLI
+	// client registrations, Google's included, do). $VAR-substituted the
+	// same way OAuthClientID is — never written back to config.toml.
+	// Empty is valid: a true public client has none. Auth = "oauth" only.
+	OAuthClientSecret string `toml:"oauth_client_secret"`
+
+	// OAuthScopes, when non-empty, is requested explicitly instead of the
+	// server's full advertised scopes_supported — narrows access (e.g.
+	// Gmail's "gmail.readonly" instead of the full "mail.google.com"
+	// scope). Auth = "oauth" only.
+	OAuthScopes []string `toml:"oauth_scopes"`
+
 	// Include, when non-empty, restricts the registered tool catalog to
 	// names matching at least one glob (e.g. "get_*", "create_pull_request").
 	// Applied after tools/list, before Exclude and before the C0 safety
@@ -1269,12 +1301,27 @@ func Validate(cfg Config) error {
 			if strings.TrimSpace(s.Command) == "" {
 				return fmt.Errorf("mcp_servers[%q]: command is required", s.Name)
 			}
+			if s.Auth != "" {
+				return fmt.Errorf("mcp_servers[%q]: auth is not valid for stdio transport", s.Name)
+			}
 		case "http", "sse":
 			if strings.TrimSpace(s.URL) == "" {
 				return fmt.Errorf("mcp_servers[%q]: url is required for transport %q", s.Name, s.Transport)
 			}
 		default:
 			return fmt.Errorf("mcp_servers[%q]: transport %q invalid (expected \"\", \"stdio\", \"http\", or \"sse\")", s.Name, s.Transport)
+		}
+		switch s.Auth {
+		case "", "none", "static-header":
+		case "oauth":
+			if s.Transport == "sse" {
+				return fmt.Errorf("mcp_servers[%q]: auth = \"oauth\" is not supported over the legacy sse transport (use \"http\")", s.Name)
+			}
+			if strings.TrimSpace(s.OAuthClientID) == "" {
+				return fmt.Errorf("mcp_servers[%q]: auth = \"oauth\" requires oauth_client_id", s.Name)
+			}
+		default:
+			return fmt.Errorf("mcp_servers[%q]: auth %q invalid (expected \"\", \"none\", \"static-header\", or \"oauth\")", s.Name, s.Auth)
 		}
 	}
 

@@ -36,7 +36,7 @@ func TestHTTPClient_ToolCallSurvivesUnsolicitedElicitation(t *testing.T) {
 	ts := httptest.NewServer(sdk.NewStreamableHTTPHandler(func(*http.Request) *sdk.Server { return srv }, nil))
 	t.Cleanup(ts.Close)
 
-	c := NewHTTPClient("test", ts.URL, nil, false, Policy{}, "")
+	c := NewHTTPClient("test", ts.URL, nil, false, Policy{}, "", nil)
 	t.Cleanup(func() { _ = c.Stop(context.Background()) })
 	if err := c.Start(context.Background()); err != nil {
 		t.Fatalf("Start: %v", err)
@@ -81,7 +81,7 @@ func TestHTTPClient_ToolCallSurvivesUnsolicitedSampling(t *testing.T) {
 	ts := httptest.NewServer(sdk.NewStreamableHTTPHandler(func(*http.Request) *sdk.Server { return srv }, nil))
 	t.Cleanup(ts.Close)
 
-	c := NewHTTPClient("test", ts.URL, nil, false, Policy{}, "")
+	c := NewHTTPClient("test", ts.URL, nil, false, Policy{}, "", nil)
 	t.Cleanup(func() { _ = c.Stop(context.Background()) })
 	if err := c.Start(context.Background()); err != nil {
 		t.Fatalf("Start: %v", err)

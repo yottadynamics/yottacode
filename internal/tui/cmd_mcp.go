@@ -131,8 +131,20 @@ func cmdMCP(m Model, args []string) (Model, tea.Cmd) {
 			return m, nil
 		}
 		mcpListTools(&m, mgr, args[1])
+	case "auth":
+		if len(args) < 2 {
+			m.appendLine(styleError.Render("usage: /mcp auth <server-name>"))
+			return m, nil
+		}
+		return mcpAuth(m, args[1])
+	case "logout":
+		if len(args) < 2 {
+			m.appendLine(styleError.Render("usage: /mcp logout <server-name>"))
+			return m, nil
+		}
+		return mcpLogout(m, args[1])
 	default:
-		m.appendLine(styleError.Render(fmt.Sprintf("unknown /mcp subcommand %q (try: add, remove, logs, restart, enable, disable, tools)", args[0])))
+		m.appendLine(styleError.Render(fmt.Sprintf("unknown /mcp subcommand %q (try: add, remove, logs, restart, enable, disable, tools, auth, logout)", args[0])))
 	}
 	return m, nil
 }
@@ -514,6 +526,55 @@ func mcpSetDisabled(m Model, mgr *mcp.Manager, name string, disabled bool) (Mode
 		}
 	}
 	m.appendLine(styleMCPOK.Render(fmt.Sprintf("server %q enabled — %d tools registered", name, result.ToolCount)))
+	return m, nil
+}
+
+// mcpAuth implements `/mcp auth <name>`: runs the OAuth 2.1
+// authorization-code + PKCE sign-in for an auth = "oauth" server and
+// dispatches the async URL-then-wait flow (see mcp_oauth_inline.go).
+// Mirrors /provider add's inline openai-auth login UX.
+func mcpAuth(m Model, name string) (Model, tea.Cmd) {
+	cfg := loadConfigForCommand(m)
+	var server *config.MCPServer
+	for i := range cfg.MCPServers {
+		if cfg.MCPServers[i].Name == name {
+			server = &cfg.MCPServers[i]
+			break
+		}
+	}
+	if server == nil {
+		m.appendLine(styleError.Render(fmt.Sprintf("no MCP server named %q (try /mcp to list)", name)))
+		return m, nil
+	}
+	if server.Auth != "oauth" {
+		m.appendLine(styleError.Render(fmt.Sprintf("server %q has auth = %q, not \"oauth\" — nothing to sign in to", name, server.Auth)))
+		return m, nil
+	}
+	if m.mcpOAuthPending != nil {
+		m.appendLine(styleError.Render(fmt.Sprintf("a sign-in for %q is already in progress; finish or wait for it to time out before starting another", m.mcpOAuthPendingName)))
+		return m, nil
+	}
+
+	opts := mcpOAuthOptionsFrom(server.OAuthScopes, server.OAuthClientID, server.OAuthClientSecret)
+	ctx, cancel := context.WithTimeout(m.parentCtx, mcpOAuthLoginTimeout)
+	m.mcpOAuthCancel = cancel
+	return m, startMCPOAuthLoginCmd(ctx, name, server.URL, opts)
+}
+
+// mcpLogout implements `/mcp logout <name>`: deletes the server's
+// persisted OAuth token, if any. The next tool call (or the next
+// /mcp auth) re-triggers interactive sign-in.
+func mcpLogout(m Model, name string) (Model, tea.Cmd) {
+	existed, err := mcp.DeleteToken(name)
+	if err != nil {
+		m.appendLine(styleError.Render(fmt.Sprintf("logout %q: %v", name, err)))
+		return m, nil
+	}
+	if existed {
+		m.appendLine(styleMCPOK.Render(fmt.Sprintf("logged out %q", name)))
+	} else {
+		m.appendLine(styleMCPMeta.Render(fmt.Sprintf("%q was already logged out", name)))
+	}
 	return m, nil
 }
 
