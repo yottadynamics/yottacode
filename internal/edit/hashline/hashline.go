@@ -32,7 +32,7 @@ type Anchor struct {
 	Path   string
 	Offset int
 	Length int
-	Hash   string // hex sha256(normalized_span)[:16]
+	Hash   string // hex sha256(exact span)[:16]
 }
 
 // Hunk replaces Old bytes at Anchor with New bytes after validating the anchor.

@@ -6,6 +6,7 @@ import (
 	"go/parser"
 	"go/token"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -16,6 +17,8 @@ func init() {
 }
 
 type goSyntaxSource struct{}
+
+func (goSyntaxSource) SyntaxMode() string { return "parser" }
 
 func (goSyntaxSource) Symbols(ctx context.Context, path string) ([]Symbol, error) {
 	if err := ctx.Err(); err != nil {
@@ -71,6 +74,7 @@ func (goSyntaxSource) Ranges(ctx context.Context, path string, pos Position) ([]
 		return nil, nil
 	}
 	target := tokFile.Pos(offset)
+	structFields := goStructFields(file)
 	var ranges []SyntaxRange
 	ast.Inspect(file, func(n ast.Node) bool {
 		if n == nil {
@@ -82,7 +86,7 @@ func (goSyntaxSource) Ranges(ctx context.Context, path string, pos Position) ([]
 		if !tokenContains(n.Pos(), n.End(), target) {
 			return true
 		}
-		if item, ok := goSyntaxRangeForNode(text, fset, n); ok {
+		if item, ok := goSyntaxRangeForNode(text, fset, n, structFields); ok {
 			ranges = append(ranges, item)
 		}
 		return true
@@ -91,6 +95,55 @@ func (goSyntaxSource) Ranges(ctx context.Context, path string, pos Position) ([]
 		ranges = append(ranges, SyntaxRange{Kind: "file", Name: file.Name.Name, Detail: "parser", Range: goRange(text, fset, file.Pos(), file.End())})
 	}
 	return sortSyntaxRanges(dedupeSyntaxRanges(ranges)), nil
+}
+
+func (goSyntaxSource) RangesFromSource(ctx context.Context, path string, src []byte, pos Position) ([]SyntaxRange, []string, error) {
+	text := string(src)
+	offset, err := OffsetForPosition(text, pos)
+	if err != nil {
+		return nil, nil, err
+	}
+	fset := token.NewFileSet()
+	file, parseErr := parser.ParseFile(fset, path, src, parser.SkipObjectResolution|parser.AllErrors)
+	if parseErr != nil && file == nil {
+		return nil, nil, parseErr
+	}
+	tokFile := fset.File(file.Pos())
+	if tokFile == nil {
+		return nil, nil, nil
+	}
+	target := tokFile.Pos(offset)
+	structFields := goStructFields(file)
+	var ranges []SyntaxRange
+	ast.Inspect(file, func(n ast.Node) bool {
+		if n == nil || !tokenContains(n.Pos(), n.End(), target) {
+			return true
+		}
+		if item, ok := goSyntaxRangeForNode(text, fset, n, structFields); ok {
+			item.StartByte = fset.Position(n.Pos()).Offset
+			item.EndByte = fset.Position(n.End()).Offset
+			if call, ok := n.(*ast.CallExpr); ok {
+				item.StartByte = fset.Position(call.Fun.Pos()).Offset
+			}
+			ranges = append(ranges, item)
+		}
+		return ctx.Err() == nil
+	})
+	fileName := filepath.Base(path)
+	if file.Name != nil && file.Name.Name != "" {
+		fileName = file.Name.Name
+	}
+	if item, ok := syntaxRangeFromBytes(text, SyntaxKindFile, fileName, "parser", 0, len(src)); ok {
+		ranges = append(ranges, item)
+	}
+	var warnings []string
+	if parseErr != nil {
+		warnings = append(warnings, "Go parser recovered from: "+parseErr.Error())
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, nil, err
+	}
+	return ranges, warnings, nil
 }
 
 func goFuncSymbol(path, text string, fset *token.FileSet, d *ast.FuncDecl) Symbol {
@@ -176,7 +229,7 @@ func exprString(expr ast.Expr) string {
 
 // goSyntaxRangeForNode maps selected Go AST nodes to agent-facing structural
 // ranges. The list stays deliberately small to avoid noisy expression-level rows.
-func goSyntaxRangeForNode(text string, fset *token.FileSet, n ast.Node) (SyntaxRange, bool) {
+func goSyntaxRangeForNode(text string, fset *token.FileSet, n ast.Node, structFields map[*ast.Field]bool) (SyntaxRange, bool) {
 	switch v := n.(type) {
 	case *ast.FuncDecl:
 		kind := "function"
@@ -186,17 +239,34 @@ func goSyntaxRangeForNode(text string, fset *token.FileSet, n ast.Node) (SyntaxR
 			kind = "method"
 			detail = goReceiverName(v.Recv.List[0].Type)
 		}
-		return SyntaxRange{Kind: kind, Name: name, Detail: detail, Range: goRange(text, fset, v.Pos(), v.End())}, true
+		return SyntaxRange{Kind: SyntaxKind(kind), Name: name, Detail: detail, Range: goRange(text, fset, v.Pos(), v.End())}, true
 	case *ast.GenDecl:
+		if v.Tok == token.IMPORT {
+			return SyntaxRange{Kind: SyntaxKindImportBlock, Detail: "parser", Range: goRange(text, fset, v.Pos(), v.End())}, true
+		}
 		kind := goDeclKind(v.Tok)
 		if kind == "" {
 			return SyntaxRange{}, false
 		}
-		return SyntaxRange{Kind: kind, Detail: "parser", Range: goRange(text, fset, v.Pos(), v.End())}, true
+		return SyntaxRange{Kind: SyntaxKind(kind), Detail: "parser", Range: goRange(text, fset, v.Pos(), v.End())}, true
 	case *ast.TypeSpec:
 		return SyntaxRange{Kind: "type", Name: v.Name.Name, Detail: "parser", Range: goRange(text, fset, v.Pos(), v.End())}, true
+	case *ast.Field:
+		if !structFields[v] {
+			return SyntaxRange{}, false
+		}
+		return SyntaxRange{Kind: SyntaxKindField, Name: goFieldName(v), Detail: "parser", Range: goRange(text, fset, v.Pos(), v.End())}, true
 	case *ast.ValueSpec:
 		return SyntaxRange{Kind: "value", Name: goValueSpecName(v), Detail: "parser", Range: goRange(text, fset, v.Pos(), v.End())}, true
+	case *ast.CallExpr:
+		name := ""
+		switch fun := v.Fun.(type) {
+		case *ast.Ident:
+			name = fun.Name
+		case *ast.SelectorExpr:
+			name = fun.Sel.Name
+		}
+		return SyntaxRange{Kind: SyntaxKindCall, Name: name, Detail: "parser", Range: goRange(text, fset, v.Fun.Pos(), v.End())}, true
 	case *ast.BlockStmt:
 		return SyntaxRange{Kind: "block", Detail: "parser", Range: goRange(text, fset, v.Pos(), v.End())}, true
 	case *ast.IfStmt:
@@ -215,6 +285,32 @@ func goSyntaxRangeForNode(text string, fset *token.FileSet, n ast.Node) (SyntaxR
 	return SyntaxRange{}, false
 }
 
+func goStructFields(file *ast.File) map[*ast.Field]bool {
+	fields := map[*ast.Field]bool{}
+	ast.Inspect(file, func(n ast.Node) bool {
+		st, ok := n.(*ast.StructType)
+		if !ok || st.Fields == nil {
+			return true
+		}
+		for _, field := range st.Fields.List {
+			fields[field] = true
+		}
+		return true
+	})
+	return fields
+}
+
+func goFieldName(field *ast.Field) string {
+	if len(field.Names) > 0 {
+		names := make([]string, 0, len(field.Names))
+		for _, name := range field.Names {
+			names = append(names, name.Name)
+		}
+		return strings.Join(names, ",")
+	}
+	return strings.TrimSpace(exprString(field.Type))
+}
+
 func goValueSpecName(v *ast.ValueSpec) string {
 	if v == nil || len(v.Names) == 0 {
 		return ""
@@ -227,14 +323,14 @@ func goValueSpecName(v *ast.ValueSpec) string {
 }
 
 func tokenContains(start, end, target token.Pos) bool {
-	return start.IsValid() && end.IsValid() && target >= start && target <= end
+	return start.IsValid() && end.IsValid() && target >= start && target < end
 }
 
 func dedupeSyntaxRanges(in []SyntaxRange) []SyntaxRange {
 	seen := map[string]bool{}
 	out := make([]SyntaxRange, 0, len(in))
 	for _, item := range in {
-		key := strings.Join([]string{item.Kind, item.Name, item.Detail, rangeKey(item.Range)}, "\x00")
+		key := strings.Join([]string{string(item.Kind), item.Name, item.Detail, strconv.Itoa(item.StartByte), strconv.Itoa(item.EndByte), rangeKey(item.Range)}, "\x00")
 		if seen[key] {
 			continue
 		}
@@ -246,6 +342,17 @@ func dedupeSyntaxRanges(in []SyntaxRange) []SyntaxRange {
 
 func sortSyntaxRanges(in []SyntaxRange) []SyntaxRange {
 	sort.SliceStable(in, func(i, j int) bool {
+		if in[i].EndByte > 0 || in[j].EndByte > 0 {
+			iSpan := in[i].EndByte - in[i].StartByte
+			jSpan := in[j].EndByte - in[j].StartByte
+			if iSpan != jSpan {
+				return iSpan < jSpan
+			}
+			if in[i].StartByte != in[j].StartByte {
+				return in[i].StartByte > in[j].StartByte
+			}
+			return in[i].EndByte < in[j].EndByte
+		}
 		iSpan := rangeLineSpan(in[i].Range)
 		jSpan := rangeLineSpan(in[j].Range)
 		if iSpan != jSpan {

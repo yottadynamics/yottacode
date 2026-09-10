@@ -67,6 +67,7 @@ type PlanProvider struct {
 	Kind         string
 	BaseURL      string
 	APIKeyEnv    string
+	Headers      map[string]string
 	DefaultModel string
 
 	// EnvAlreadySet is true when the wizard saw the API key already
@@ -90,6 +91,7 @@ func (p Plan) ToConfig() config.Config {
 			Kind:         pp.Kind,
 			BaseURL:      pp.BaseURL,
 			APIKeyEnv:    pp.APIKeyEnv,
+			Headers:      cloneHeaders(pp.Headers),
 			DefaultModel: pp.DefaultModel,
 		}
 		// pp.Models intentionally not copied. The wizard stopped
@@ -200,6 +202,17 @@ func (p Plan) RenderTOML() string {
 		if pp.DefaultModel != "" {
 			fmt.Fprintf(&b, "default_model = %q\n", pp.DefaultModel)
 		}
+		if len(pp.Headers) > 0 {
+			keys := make([]string, 0, len(pp.Headers))
+			for key := range pp.Headers {
+				keys = append(keys, key)
+			}
+			sort.Strings(keys)
+			b.WriteString("\n  [providers.headers]\n")
+			for _, key := range keys {
+				fmt.Fprintf(&b, "  %q = %q\n", key, pp.Headers[key])
+			}
+		}
 		// [[providers.models]] blocks are deliberately not emitted —
 		// the embedded catalog (internal/catalog/catalog.gen.json) is
 		// the source of truth for the cloud provider model list, and
@@ -236,6 +249,19 @@ func (p Plan) RenderTOML() string {
 	}
 
 	return b.String()
+}
+
+// cloneHeaders prevents wizard plans and generated config from sharing a
+// mutable provider metadata map.
+func cloneHeaders(src map[string]string) map[string]string {
+	if len(src) == 0 {
+		return nil
+	}
+	dst := make(map[string]string, len(src))
+	for key, value := range src {
+		dst[key] = value
+	}
+	return dst
 }
 
 // RenderEnv renders the .env file contents. Keys are emitted in

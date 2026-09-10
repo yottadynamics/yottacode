@@ -74,6 +74,8 @@ func TestRenderSessionUsage_TokenBreakdown(t *testing.T) {
 			OutputTokens:        3_182,
 			CacheCreationTokens: 1_920,
 			CacheReadTokens:     44_210,
+			CostUSD:             0.42,
+			CostAvailable:       true,
 		},
 		ModelUsage: map[string]adapter.Usage{
 			"claude-sonnet-4-5": {
@@ -101,13 +103,12 @@ func TestRenderSessionUsage_TokenBreakdown(t *testing.T) {
 		"total",
 		"session total",
 		"61,715 tokens", // 12,403 + 3,182 + 1,920 + 44,210
+		"estimated cost",
+		"$0.42",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("missing substring %q in:\n%s", want, got)
 		}
-	}
-	if strings.Contains(got, "$") {
-		t.Errorf("/usage must not show a dollar figure; got:\n%s", got)
 	}
 }
 
@@ -190,9 +191,6 @@ func TestRenderSessionUsage_FoldsSubagents(t *testing.T) {
 	// but there should not be a standalone subagents spending block.
 	if strings.Contains(got, "subagents\n") {
 		t.Errorf("subagent spend must be folded in, not shown as a section; got:\n%s", got)
-	}
-	if strings.Contains(got, "$") {
-		t.Errorf("/usage must not show a dollar figure; got:\n%s", got)
 	}
 }
 

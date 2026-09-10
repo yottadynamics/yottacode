@@ -739,6 +739,7 @@ func newDispatchToolE2E(t *testing.T, repoRoot string) *DispatchTool {
 func TestDispatch_EndToEnd_TwoWriteTasks(t *testing.T) {
 	repoRoot := dispatchTestRepo(t)
 	d := newDispatchToolE2E(t, repoRoot)
+	d.CommitTrailer = "Co-authored-by: yottacode <325888353+yottacode-agent@users.noreply.github.com>"
 
 	args := `{"goal":"build two files","tasks":[
 		{"subagent_type":"writer","description":"file a","prompt":"create the file. TESTWRITE:alpha.txt","files":["alpha.txt"]},
@@ -759,8 +760,15 @@ func TestDispatch_EndToEnd_TwoWriteTasks(t *testing.T) {
 	if len(branchNames) != 2 {
 		t.Fatalf("expected 2 dispatch branches, got %v", branchNames)
 	}
-
-	// Each branch carries its owned file with the expected content.
+	for _, br := range branchNames {
+		body, err := gitOutput(context.Background(), repoRoot, "log", "-1", "--format=%B", br)
+		if err != nil {
+			t.Fatalf("git log %s: %v", br, err)
+		}
+		if !strings.HasSuffix(strings.TrimRight(body, "\n"), "\n\n"+d.CommitTrailer) {
+			t.Errorf("dispatch commit on %s missing trailer: %q", br, body)
+		}
+	}
 	for _, f := range []string{"alpha.txt", "beta.txt"} {
 		found := false
 		for _, br := range branchNames {

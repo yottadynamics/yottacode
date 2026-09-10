@@ -61,6 +61,10 @@ type DispatchTool struct {
 	// read_file can return image blocks.
 	SupportsImages bool
 
+	// CommitTrailer carries the session's resolved attribution into unattended
+	// worker commits. Empty disables attribution.
+	CommitTrailer string
+
 	// SupportsBackground reports whether this session can host detached
 	// background workers (true in the TUI, false in oneshot where there's
 	// no long-running session to surface async completions). When false,
@@ -757,7 +761,7 @@ func (t *DispatchTool) runDispatchChild(ctx context.Context, c *dispatchChild, b
 				c.commitErr = "staging changes failed: " + err.Error()
 			} else {
 				msg := commitSubject(c.cfg.Name, c.spec.Description)
-				res, cErr := ApplyCommit(commitCtx, c.worktree, msg)
+				res, cErr := ApplyCommit(commitCtx, c.worktree, msg, t.CommitTrailer)
 				switch {
 				case cErr != nil:
 					c.commitErr = "commit failed: " + cErr.Error()
@@ -915,6 +919,7 @@ func (t *DispatchTool) buildWorktreeChildRegistry(cfg *subagents.AgentConfig, cw
 		Sandbox:                sandbox,
 		MediaMaxThreads:        t.MediaMaxThreads,
 		MediaRenderTimeout:     t.MediaRenderTimeout,
+		CommitTrailer:          t.CommitTrailer,
 	})
 	out := NewRegistry()
 	for _, tool := range core.Tools() {

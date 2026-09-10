@@ -130,6 +130,11 @@ type Usage struct {
 	CacheCreationTokens int64 `json:"cache_creation_tokens,omitempty"`
 	CacheReadTokens     int64 `json:"cache_read_tokens,omitempty"`
 	ReasoningTokens     int64 `json:"reasoning_tokens,omitempty"`
+	// CostUSD is an optional public-list-price estimate calculated by the
+	// caller, not reported by the provider. CostAvailable distinguishes a
+	// genuine zero-price estimate from an unknown price.
+	CostUSD       float64 `json:"cost_usd,omitempty"`
+	CostAvailable bool    `json:"cost_available,omitempty"`
 }
 
 // Add accumulates other into u. Used by the session accumulator and
@@ -144,6 +149,10 @@ func (u *Usage) Add(other *Usage) {
 	u.CacheCreationTokens += other.CacheCreationTokens
 	u.CacheReadTokens += other.CacheReadTokens
 	u.ReasoningTokens += other.ReasoningTokens
+	if other.CostAvailable {
+		u.CostUSD += other.CostUSD
+		u.CostAvailable = true
+	}
 }
 
 // IsZero reports whether all token counts are zero. A non-nil zero

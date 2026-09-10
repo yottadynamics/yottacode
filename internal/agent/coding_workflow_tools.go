@@ -609,14 +609,15 @@ func (t *RunTestsTool) Execute(ctx context.Context, argsJSON string) (string, er
 	}
 	cmd := sandbox.Command(ctx, runCommand, root)
 	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &capped{buf: &stdout, max: 1 << 20}
-	cmd.Stderr = &capped{buf: &stderr, max: 1 << 20}
+	cmd.Stdout = &capped{buf: &stdout, max: runTestsMaxStreamBytes}
+	cmd.Stderr = &capped{buf: &stderr, max: runTestsMaxStreamBytes}
 	runErr := cmd.Run()
 	exit := 0
 	if cmd.ProcessState != nil {
 		exit = cmd.ProcessState.ExitCode()
 	}
-	result := fmt.Sprintf("$ %s\nexit=%d\n--- stdout ---\n%s--- stderr ---\n%s", runCommand, exit, stdout.String(), stderr.String())
+	rawResult := fmt.Sprintf("$ %s\nexit=%d\n--- stdout ---\n%s--- stderr ---\n%s", runCommand, exit, stdout.String(), stderr.String())
+	result := summarizeRunTestsResult(runCommand, exit, stdout.String(), stderr.String())
 	if runErr != nil {
 		var exitErr *exec.ExitError
 		kind := ResourceFailureUnknown
@@ -628,7 +629,7 @@ func (t *RunTestsTool) Execute(ctx context.Context, argsJSON string) (string, er
 			kind = classifyProcessStartFailure(runErr)
 		}
 		if kind != ResourceFailureUnknown {
-			return formatRunTestsEnvironmentFailure(kind, "test command could not run in the current environment", result), nil
+			return formatRunTestsEnvironmentFailure(kind, "test command could not run in the current environment", rawResult), nil
 		}
 	}
 	var exitErr *exec.ExitError
@@ -640,10 +641,28 @@ func (t *RunTestsTool) Execute(ctx context.Context, argsJSON string) (string, er
 
 func formatRunTestsEnvironmentFailure(kind ResourceFailureKind, detail, evidence string) string {
 	out := fmt.Sprintf("environment_failure=%s: %s; tests were not retried", kind, detail)
-	if strings.TrimSpace(evidence) != "" {
-		out += "\n--- bounded evidence ---\n" + evidence
-	}
+	if strings.TrimSpace(evidence) != "" { out += "\n--- bounded evidence ---\n" + evidence }
 	return out
+}
+
+const (
+	runTestsMaxStreamBytes = 1 << 20
+	runTestsFailureTailBytes = 16 << 10
+)
+
+func summarizeRunTestsResult(command string, exit int, stdout, stderr string) string {
+	if exit == 0 { return fmt.Sprintf("$ %s\nexit=0", command) }
+	var output strings.Builder
+	output.WriteString(fmt.Sprintf("$ %s\nexit=%d\n", command, exit))
+	if failure := tailRunTestsOutput(stderr, stdout); failure != "" { output.WriteString("--- failure output ---\n" + failure) }
+	return output.String()
+}
+
+func tailRunTestsOutput(stderr, stdout string) string {
+	combined := strings.TrimSpace(strings.Join([]string{strings.TrimSpace(stderr), strings.TrimSpace(stdout)}, "\n"))
+	if combined == "" { return "" }
+	if len(combined) <= runTestsFailureTailBytes { return combined }
+	return "…[failure output truncated]\n" + combined[len(combined)-runTestsFailureTailBytes:]
 }
 
 func normalizeRunTestsCommand(command string) string {

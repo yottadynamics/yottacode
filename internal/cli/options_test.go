@@ -327,6 +327,32 @@ default_model = "gpt-4o"
 	}
 }
 
+func TestResolve_ExplicitBaseURLDoesNotInheritProfileHeaders(t *testing.T) {
+	home := isolatedHome(t)
+	mustWriteFile(t, filepath.Join(home, ".yottacode", "config.toml"), `
+[active]
+provider = "openrouter"
+model = "openai/gpt-4o"
+[[providers]]
+name = "openrouter"
+kind = "openai-compatible"
+base_url = "https://openrouter.ai/api/v1"
+api_key_env = "OPENROUTER_API_KEY"
+[providers.headers]
+HTTP-Referer = "https://yottacode.ai"
+`)
+	t.Setenv(EnvModel, "")
+	t.Setenv(EnvBaseURL, "")
+	t.Setenv(EnvAPIKey, "")
+	opts := ChatOptions{BaseURL: "https://private.example/v1"}
+	if err := Resolve(&opts); err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if len(opts.Headers) != 0 {
+		t.Fatalf("profile headers leaked to explicit endpoint: %#v", opts.Headers)
+	}
+}
+
 // TestResolve_DotEnvLoadsAPIKey verifies that an api key in
 // ~/.yottacode/.env is visible via os.Getenv after Resolve, so the
 // profile lookup picks it up. We don't pre-set ANTHROPIC_API_KEY here.
@@ -587,6 +613,56 @@ func TestResolve_PermissionMode_RejectsInvalid(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "permission-mode") {
 		t.Errorf("error should mention permission-mode; got %q", err.Error())
+	}
+}
+
+// Run output format is a closed, normalized value because scripts rely on a
+// deterministic stdout contract rather than silently accepting misspellings.
+func TestResolve_RunFormat_AcceptedValues(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+	}{
+		{"", RunFormatText},
+		{"text", RunFormatText},
+		{"json", RunFormatJSON},
+		{"  JSON  ", RunFormatJSON},
+	}
+	for _, tc := range cases {
+		t.Run(tc.in, func(t *testing.T) {
+			isolatedHome(t)
+			t.Setenv(EnvModel, "m")
+			t.Setenv(EnvBaseURL, "http://x/v1")
+			opts := ChatOptions{RunFormat: tc.in}
+			if err := Resolve(&opts); err != nil {
+				t.Fatalf("Resolve(%q): %v", tc.in, err)
+			}
+			if opts.RunFormat != tc.want {
+				t.Fatalf("RunFormat = %q, want %q", opts.RunFormat, tc.want)
+			}
+		})
+	}
+}
+
+func TestResolve_RunFormat_RejectsInvalid(t *testing.T) {
+	isolatedHome(t)
+	t.Setenv(EnvModel, "m")
+	t.Setenv(EnvBaseURL, "http://x/v1")
+	opts := ChatOptions{RunFormat: "yaml"}
+	err := Resolve(&opts)
+	if err == nil || !strings.Contains(err.Error(), "--format") {
+		t.Fatalf("Resolve error = %v, want invalid --format error", err)
+	}
+}
+
+func TestResolve_RunFormat_RejectsLegacyJSONCombination(t *testing.T) {
+	isolatedHome(t)
+	t.Setenv(EnvModel, "m")
+	t.Setenv(EnvBaseURL, "http://x/v1")
+	opts := ChatOptions{RunFormat: RunFormatJSON, RunJSONStatus: true}
+	err := Resolve(&opts)
+	if err == nil || !strings.Contains(err.Error(), "cannot be combined") {
+		t.Fatalf("Resolve error = %v, want conflicting JSON flags error", err)
 	}
 }
 

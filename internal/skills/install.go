@@ -281,6 +281,9 @@ func Uninstall(name string) (string, error) {
 func classifySource(src string) SourceType {
 	src = strings.TrimSpace(src)
 	if strings.HasPrefix(src, "http://") || strings.HasPrefix(src, "https://") {
+		if isRawGitHubBlobURL(src) {
+			return SourceURL
+		}
 		if isGitHubLikeURL(src) || isSkillsSHURL(src) {
 			return SourceGitHub
 		}
@@ -364,6 +367,23 @@ func isGitHubLikeURL(src string) bool {
 	}
 	host := strings.ToLower(u.Hostname())
 	return host == "github.com" || host == "www.github.com" || host == "raw.githubusercontent.com"
+}
+
+// isRawGitHubBlobURL reports whether src is a raw.githubusercontent.com URL
+// carrying a query string. GitHub attaches a short-lived `?token=...` to raw
+// URLs for files in private/access-controlled repos — that token authorizes
+// only this one blob fetch, not the codeload.github.com archive endpoint the
+// GitHub-shorthand/archive path uses (and codeload never receives it, so a
+// private-repo raw URL 404s there regardless). Routing these through the
+// single-file stageURL fetch instead preserves the query string verbatim on
+// a plain GET, at the cost of not fetching sibling scripts/references/assets
+// — the same trade-off any other single-file URL install already accepts.
+func isRawGitHubBlobURL(src string) bool {
+	u, err := url.Parse(src)
+	if err != nil {
+		return false
+	}
+	return strings.ToLower(u.Hostname()) == "raw.githubusercontent.com" && u.RawQuery != ""
 }
 
 func isSkillsSHURL(src string) bool {

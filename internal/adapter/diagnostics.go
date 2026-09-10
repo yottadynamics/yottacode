@@ -96,6 +96,9 @@ func Probe(ctx context.Context, cfg Config) ProbeResult {
 		res.Issues = uniqueStrings(append(res.Issues, fmt.Sprintf("invalid base URL: %v", err)))
 		return res
 	}
+	for key, value := range cfg.Headers {
+		req.Header.Set(key, value)
+	}
 	if strings.TrimSpace(cfg.APIKey) != "" {
 		req.Header.Set("Authorization", "Bearer "+cfg.APIKey)
 	}

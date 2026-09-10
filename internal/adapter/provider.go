@@ -40,8 +40,10 @@ const (
 
 // Config configures adapter construction and provider-native capabilities.
 type Config struct {
-	BaseURL          string
-	APIKey           string
+	BaseURL string
+	APIKey  string
+	// Headers are non-secret provider metadata applied to supported HTTP requests.
+	Headers          map[string]string
 	Model            string
 	ProviderOverride Provider
 	ReasoningEffort  string
@@ -276,6 +278,9 @@ func providerDiagnostics(cfg Config, profile ProviderProfile) (issues, warnings 
 	// this provider need cfg.APIKey set?" — keeps the static
 	// dispatch check and this warning in lockstep, and exempts
 	// openai-auth (which authenticates via the OAuth token store).
+	if len(cfg.Headers) > 0 && !providerConsumesHeaders(profile.Provider) {
+		warnings = append(warnings, "configured provider headers are ignored by this adapter family")
+	}
 	if configRequiresAPIKey(cfg, profile.Provider) && strings.TrimSpace(cfg.APIKey) == "" {
 		warnings = append(warnings, "API key is empty for a remote provider")
 	}
@@ -288,6 +293,15 @@ func providerDiagnostics(cfg Config, profile ProviderProfile) (issues, warnings 
 		warnings = append(warnings, "model name looks hosted; ensure the Ollama endpoint exposes a matching local alias")
 	}
 	return uniqueStrings(issues), uniqueStrings(warnings)
+}
+
+func providerConsumesHeaders(provider Provider) bool {
+	switch provider {
+	case ProviderOpenAI, ProviderOpenAICompatible, ProviderOllama, ProviderXAI:
+		return true
+	default:
+		return false
+	}
 }
 
 func requestedBuiltinTools(cfg Config) []BuiltinToolKind {

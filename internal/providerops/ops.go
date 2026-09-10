@@ -154,6 +154,7 @@ type AddProvider struct {
 	Kind         string
 	BaseURL      string
 	APIKeyEnv    string
+	Headers      map[string]string
 	DefaultModel string
 	Models       []config.Model
 }
@@ -194,6 +195,7 @@ func Add(cfg config.Config, p AddProvider) (config.Config, error) {
 		Kind:         p.Kind,
 		BaseURL:      p.BaseURL,
 		APIKeyEnv:    p.APIKeyEnv,
+		Headers:      cloneHeaders(p.Headers),
 		DefaultModel: p.DefaultModel,
 		Models:       append([]config.Model(nil), p.Models...),
 	})
@@ -247,4 +249,16 @@ func validKind(k string) bool {
 		}
 	}
 	return false
+}
+
+// cloneHeaders keeps stored providers independent from caller-owned request maps.
+func cloneHeaders(src map[string]string) map[string]string {
+	if len(src) == 0 {
+		return nil
+	}
+	dst := make(map[string]string, len(src))
+	for key, value := range src {
+		dst[key] = value
+	}
+	return dst
 }

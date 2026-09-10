@@ -7,12 +7,18 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/yottadynamics/yottacode/internal/edit/hashline"
 	lspci "github.com/yottadynamics/yottacode/internal/lsp"
 )
 
-// SyntaxRangeTool exposes parser-backed enclosing ranges without starting a
-// language server. Agents use the returned anchor_read hints to re-read the
-// chosen range with anchors before applying edit_anchored.
+const (
+	maxSyntaxRangeReceiptBytes = 64 * 1024
+	maxSyntaxRangeOutputBytes  = 256 * 1024
+)
+
+// SyntaxRangeTool exposes offline AST/scanner ranges without starting a
+// language server. Each result includes a line-oriented anchored-read hint and
+// a byte-exact receipt suitable for apply_hashline.
 type SyntaxRangeTool struct {
 	Cwd           *CwdRef
 	DenyReadPaths []string
@@ -20,7 +26,7 @@ type SyntaxRangeTool struct {
 
 func (t *SyntaxRangeTool) Name() string { return "syntax_range" }
 func (t *SyntaxRangeTool) Description() string {
-	return "Return offline parser-backed syntax ranges around a source position, plus anchored-read hints for safe block edits."
+	return "Return offline AST/scanner syntax ranges with exact byte bounds and apply_hashline receipts."
 }
 func (t *SyntaxRangeTool) Schema() map[string]any {
 	s := positionSchema()
@@ -49,29 +55,67 @@ func (t *SyntaxRangeTool) Execute(ctx context.Context, argsJSON string) (string,
 	}
 	lang, ok := lspci.ResolveFile(path)
 	if !ok {
-		return fmt.Sprintf("unavailable: syntax ranges are not available for %s (supported parser-backed ranges: Go, TypeScript/JavaScript, Python, Rust)\n", path), nil
+		return fmt.Sprintf("unavailable: syntax ranges are not available for %s (supported: Go AST; TypeScript/JavaScript, Python, and Rust scanners)\n", path), nil
 	}
-	ranges, ok, err := lspci.SyntaxFileRanges(ctx, lang, path, lspci.Position{Line: a.Line, Character: a.Character})
+	result, ok, err := lspci.SyntaxFileRanges(ctx, lang, path, lspci.Position{Line: a.Line, Character: a.Character})
 	if err != nil {
 		return "", fmt.Errorf("syntax_range: %w", err)
 	}
 	if !ok {
 		return fmt.Sprintf("unavailable: syntax ranges are not available for %s; use lsp_selection_ranges if a server is installed\n", lang.Name), nil
 	}
-	if len(ranges) == 0 {
+	if len(result.Ranges) == 0 && len(result.Warnings) == 0 {
 		return "(no syntax ranges)\n", nil
 	}
 	limit := normalizedLSPMax(a.MaxResults)
 	var b strings.Builder
-	for i, r := range ranges {
+	for i, r := range result.Ranges {
 		if i >= limit {
 			fmt.Fprintf(&b, "…[truncated at %d results]\n", limit)
 			break
 		}
-		fmt.Fprintf(&b, "%s\t%s\tlines=%d-%d\tanchor_read=%s", syntaxRangeLabel(r), displayRange(path, r.Range), r.Range.Start.Line+1, r.Range.End.Line+1, anchorReadHint(path, r.Range))
-		b.WriteByte('\n')
+		anchor, err := hashline.HashSpan(result.Source, r.StartByte, r.EndByte-r.StartByte)
+		if err != nil {
+			return "", fmt.Errorf("syntax_range: %w", err)
+		}
+		var row string
+		if anchor.Length <= maxSyntaxRangeReceiptBytes {
+			receipt, err := json.Marshal(map[string]any{
+				"offset": anchor.Offset,
+				"length": anchor.Length,
+				"hash":   anchor.Hash,
+				"old":    string(result.Source[r.StartByte:r.EndByte]),
+			})
+			if err != nil {
+				return "", fmt.Errorf("syntax_range: encode receipt: %w", err)
+			}
+			row = fmt.Sprintf("%s\t%s\tlines=%d-%d\tbytes=%d-%d\tanchor_read=%s\treceipt=%s\n", syntaxRangeLabel(r), displayRange(path, r.Range), r.Range.Start.Line+1, r.Range.End.Line+1, r.StartByte, r.EndByte, anchorReadHint(path, r.Range), receipt)
+		} else {
+			row = fmt.Sprintf("%s\t%s\tlines=%d-%d\tbytes=%d-%d\tanchor_read=%s\treceipt_omitted=span_exceeds_%d_bytes\n", syntaxRangeLabel(r), displayRange(path, r.Range), r.Range.Start.Line+1, r.Range.End.Line+1, r.StartByte, r.EndByte, anchorReadHint(path, r.Range), maxSyntaxRangeReceiptBytes)
+		}
+		if b.Len()+len(row) > maxSyntaxRangeOutputBytes {
+			fmt.Fprintf(&b, "…[truncated at %d output bytes]\n", maxSyntaxRangeOutputBytes)
+			break
+		}
+		b.WriteString(row)
+	}
+	if len(result.Warnings) > 0 {
+		fmt.Fprintf(&b, "warning: %s\n", strings.Join(uniqueWarnings(result.Warnings), "; "))
 	}
 	return b.String(), nil
+}
+
+func uniqueWarnings(warnings []string) []string {
+	seen := make(map[string]bool, len(warnings))
+	unique := make([]string, 0, len(warnings))
+	for _, warning := range warnings {
+		if warning == "" || seen[warning] {
+			continue
+		}
+		seen[warning] = true
+		unique = append(unique, warning)
+	}
+	return unique
 }
 
 func (t *SyntaxRangeTool) cwd() string {
@@ -82,7 +126,7 @@ func (t *SyntaxRangeTool) cwd() string {
 }
 
 func syntaxRangeLabel(r lspci.SyntaxRange) string {
-	label := r.Kind
+	label := string(r.Kind)
 	if strings.TrimSpace(r.Name) != "" {
 		label += " " + strings.TrimSpace(r.Name)
 	}

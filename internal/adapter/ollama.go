@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/openai/openai-go"
@@ -60,6 +61,19 @@ func liftedChatMaxTokens(modelMaxOutput int) int64 {
 	return ChatDefaultMaxTokens
 }
 
+func headerOptions(headers map[string]string) []option.RequestOption {
+	keys := make([]string, 0, len(headers))
+	for key := range headers {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	opts := make([]option.RequestOption, 0, len(keys))
+	for _, key := range keys {
+		opts = append(opts, option.WithHeader(key, headers[key]))
+	}
+	return opts
+}
+
 // newChatAdapter builds a chatAdapter. apiKey is sent as Authorization:
 // Bearer; Ollama and Llama Stack ignore it, but the SDK requires a
 // non-empty value.
@@ -75,12 +89,17 @@ func newChatAdapter(cfg Config, extra ...option.RequestOption) *chatAdapter {
 	profile := buildProfile(cfg, false)
 	opts := []option.RequestOption{
 		option.WithBaseURL(cfg.BaseURL),
+	}
+	if providerConsumesHeaders(profile.Provider) {
+		opts = append(opts, headerOptions(cfg.Headers)...)
+	}
+	opts = append(opts,
 		option.WithAPIKey(apiKey),
 		// Snapshot rate-limit headers off every response so /usage can
 		// show live per-minute token/request headroom. Local providers
 		// (Ollama) don't emit these; recordRateLimit no-ops there.
 		option.WithMiddleware(recordRateLimitMiddleware(profile.Provider)),
-	}
+	)
 	opts = append(opts, extra...)
 	c := openai.NewClient(opts...)
 	return &chatAdapter{
