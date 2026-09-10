@@ -267,9 +267,11 @@ Examples:
 - `Write(docs/**)` — allow new/overwritten files under docs.
 - `Document(xlsx reports/**)` — allow generated spreadsheets in a reports directory.
 - `MCP(filesystem/read_*)` — allow filesystem MCP server's read tools (see [MCP](mcp.md)).
-- `MCP(github/*)` — allow every tool from the GitHub MCP server; prefer narrower server/tool rules when possible.
+- `MCP(github/*)` — allow every tool from the GitHub MCP server; prefer narrower server/tool rules when possible. Note: a glob like this can never auto-allow a tool the server marked destructive — only an exact `MCP(github/create_issue)`-style rule can, so a destructive call still prompts even under a broad allow rule.
 
-`/permissions` also highlights risky-but-valid rules, such as broad `Bash(gh *)`, `Bash(python*)`, `Git(-C *)`, namespace-wide `Github(*)` / `MCP(*)`, repo-wide delete allows, and allow rules shadowed by deny rules. Warnings are advisory only: yottacode still honors the policy file exactly as written.
+`/permissions` also highlights risky-but-valid rules, such as broad `Bash(gh *)`, `Bash(python*)`, `Git(-C *)`, namespace-wide `Github(*)` / `MCP(*)`, repo-wide delete allows, and allow rules shadowed by deny rules. Warnings are advisory only: yottacode still honors the policy file exactly as written. Persisting `MCP(*)` from an interactive "always allow" prompt requires an explicit second confirmation, since it covers every server and tool.
+
+MCP tool trust decisions (`approval_mode = "allow-readonly"`, `trust_annotations`) rely on server-declared annotations, which are advisory and unverified, not a guarantee — see [MCP](mcp.md#global-mcp-policy).
 
 ## Testing a rule before you trust it
 

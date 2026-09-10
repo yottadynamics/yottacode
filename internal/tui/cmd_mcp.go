@@ -45,11 +45,15 @@ var (
 
 // cmdMCP implements the /mcp slash command.
 //
-//	/mcp                       — list configured servers, their status, tool count
-//	/mcp add <name> --command  — add a server to config.toml
-//	/mcp remove <name>         — remove a server from config.toml
-//	/mcp logs <name>           — dump recent stderr from a server
-//	/mcp restart <name>        — stop + respawn one server, replace its tools in the registry
+//	/mcp                                          — list configured servers, their status, tool count
+//	/mcp add <name> --command <cmd> [args...]     — add a stdio server to config.toml
+//	/mcp add <name> --transport http|sse --url .. — add a remote server to config.toml
+//	/mcp remove <name>                            — remove a server from config.toml
+//	/mcp logs <name>                               — dump recent log output from a server
+//	/mcp restart <name>                            — stop + respawn one server, replace its tools in the registry
+//	/mcp enable <name>                             — start a disabled server and register its tools
+//	/mcp disable <name>                            — stop a server without removing it from config.toml
+//	/mcp tools <name>                              — list a server's full catalog with shown/hidden filter markers
 func cmdMCP(m Model, args []string) (Model, tea.Cmd) {
 	if len(args) == 0 {
 		m.openMCPPicker()
@@ -63,7 +67,7 @@ func cmdMCP(m Model, args []string) (Model, tea.Cmd) {
 		return mcpRemove(m, args[1:])
 	case "list":
 		mgr := m.mcpManager
-		if mgr == nil || len(mgr.Clients()) == 0 {
+		if mgr == nil || len(mgr.Names()) == 0 {
 			m.appendLine(styleMCPMeta.Render("no MCP servers configured (use /mcp add to add one)"))
 			return m, nil
 		}
@@ -89,17 +93,17 @@ func cmdMCP(m Model, args []string) (Model, tea.Cmd) {
 			m.appendLine(styleError.Render(fmt.Sprintf("no MCP server named %q (try /mcp to list)", name)))
 			return m, nil
 		}
-		sc, ok := client.(*mcp.StdioClient)
+		src, ok := client.(mcp.LogSource)
 		if !ok {
-			m.appendLine(styleMCPMeta.Render(fmt.Sprintf("server %q has no stderr (non-stdio transport)", name)))
+			m.appendLine(styleMCPMeta.Render(fmt.Sprintf("server %q has no logs available", name)))
 			return m, nil
 		}
-		lines := sc.StderrTail()
+		lines := src.LogTail()
 		if len(lines) == 0 {
-			m.appendLine(styleMCPMeta.Render(fmt.Sprintf("server %q has produced no stderr yet", name)))
+			m.appendLine(styleMCPMeta.Render(fmt.Sprintf("server %q has produced no log output yet", name)))
 			return m, nil
 		}
-		m.appendLine(styleMCPHeader.Render(fmt.Sprintf("── %s — stderr (last %d lines) ──", name, len(lines))))
+		m.appendLine(styleMCPHeader.Render(fmt.Sprintf("── %s — logs (last %d lines) ──", name, len(lines))))
 		for _, ln := range lines {
 			m.appendLine(ln)
 		}
@@ -109,26 +113,80 @@ func cmdMCP(m Model, args []string) (Model, tea.Cmd) {
 			return m, nil
 		}
 		restartMCPServer(&m, mgr, args[1])
+	case "enable":
+		if len(args) < 2 {
+			m.appendLine(styleError.Render("usage: /mcp enable <server-name>"))
+			return m, nil
+		}
+		return mcpSetDisabled(m, mgr, args[1], false)
+	case "disable":
+		if len(args) < 2 {
+			m.appendLine(styleError.Render("usage: /mcp disable <server-name>"))
+			return m, nil
+		}
+		return mcpSetDisabled(m, mgr, args[1], true)
+	case "tools":
+		if len(args) < 2 {
+			m.appendLine(styleError.Render("usage: /mcp tools <server-name>"))
+			return m, nil
+		}
+		mcpListTools(&m, mgr, args[1])
 	default:
-		m.appendLine(styleError.Render(fmt.Sprintf("unknown /mcp subcommand %q (try: add, remove, logs, restart)", args[0])))
+		m.appendLine(styleError.Render(fmt.Sprintf("unknown /mcp subcommand %q (try: add, remove, logs, restart, enable, disable, tools)", args[0])))
 	}
 	return m, nil
 }
 
-// mcpAdd implements `/mcp add <name> --command <cmd> [args...]`.
-// Everything after --command is the executable + args. Appends a new
-// [[mcp_servers]] entry to config.toml, starts the server, and
-// registers its tools — no restart needed.
+// mcpAdd implements `/mcp add <name> --command <cmd> [args...]` for a stdio
+// server, or `/mcp add <name> --transport http|sse --url <url> [--header
+// K=V]... [--env K=V]... [--disabled]` for a remote one. Flags other than
+// --command may appear in any order before it; --command consumes every
+// token after it as the executable + args (unchanged from before), so it
+// must come last. --header/--env values may contain spaces (e.g.
+// "Authorization=Bearer sk-...") even though dispatchSlash tokenizes on
+// whitespace with no quote-awareness — consumeFlagValue rejoins tokens
+// until the next "--"-prefixed flag. Appends a new [[mcp_servers]] entry to
+// config.toml; a non-disabled server starts immediately and registers its
+// tools — no restart needed.
 func mcpAdd(m Model, args []string) (Model, tea.Cmd) {
-	var name string
-	var cmdTokens []string
-	for i := 0; i < len(args); i++ {
-		if args[i] == "--command" {
+	var name, transport, url string
+	var cmdTokens, headerFlags, envFlags []string
+	var disabled bool
+	for i := 0; i < len(args); {
+		switch args[i] {
+		case "--command":
 			cmdTokens = args[i+1:]
-			break
-		}
-		if name == "" {
-			name = args[i]
+			i = len(args)
+		case "--transport":
+			if i+1 < len(args) {
+				transport = args[i+1]
+			}
+			i += 2
+		case "--url":
+			if i+1 < len(args) {
+				url = args[i+1]
+			}
+			i += 2
+		case "--header":
+			var val string
+			val, i = consumeFlagValue(args, i)
+			if val != "" {
+				headerFlags = append(headerFlags, val)
+			}
+		case "--env":
+			var val string
+			val, i = consumeFlagValue(args, i)
+			if val != "" {
+				envFlags = append(envFlags, val)
+			}
+		case "--disabled":
+			disabled = true
+			i++
+		default:
+			if name == "" {
+				name = args[i]
+			}
+			i++
 		}
 	}
 	for j := range cmdTokens {
@@ -140,8 +198,29 @@ func mcpAdd(m Model, args []string) (Model, tea.Cmd) {
 			parts = append(parts, t)
 		}
 	}
-	if name == "" || len(parts) == 0 {
-		m.appendLine(styleError.Render("usage: /mcp add <name> --command <cmd> [args...]"))
+	const usage = "usage: /mcp add <name> --command <cmd> [args...]  OR  " +
+		"/mcp add <name> --transport http --url <url> [--header K=V]..."
+	if name == "" || (len(parts) == 0 && url == "") {
+		m.appendLine(styleError.Render(usage))
+		return m, nil
+	}
+	if len(parts) > 0 && url != "" {
+		m.appendLine(styleError.Render("cannot combine --command with --url; pick one transport shape"))
+		return m, nil
+	}
+	for _, tok := range stragglerFlagsIn(parts) {
+		m.appendLine(styleMCPMeta.Render(fmt.Sprintf(
+			"warning: %q looks like an /mcp add flag but appeared after --command — it was passed to the command verbatim instead. Move it before --command if that's not what you wanted.", tok)))
+	}
+
+	headerMap, err := parseKeyValueFlags(headerFlags)
+	if err != nil {
+		m.appendLine(styleError.Render("--header: " + err.Error()))
+		return m, nil
+	}
+	envMap, err := parseKeyValueFlags(envFlags)
+	if err != nil {
+		m.appendLine(styleError.Render("--env: " + err.Error()))
 		return m, nil
 	}
 
@@ -154,10 +233,26 @@ func mcpAdd(m Model, args []string) (Model, tea.Cmd) {
 	}
 
 	server := config.MCPServer{
-		Name:    name,
-		Command: parts[0],
-		Args:    parts[1:],
+		Name:      name,
+		Transport: transport,
+		URL:       url,
+		Headers:   headerMap,
+		Env:       envMap,
+		Disabled:  disabled,
 	}
+	if len(parts) > 0 {
+		server.Command = parts[0]
+		server.Args = parts[1:]
+	}
+
+	if server.Transport == "http" || server.Transport == "sse" {
+		policy := mcp.Policy{RequireTLS: cfg.MCP.RequireTLS, AllowedHosts: cfg.MCP.AllowedHosts}
+		if err := policy.CheckURL(server.URL); err != nil {
+			m.appendLine(styleError.Render(err.Error()))
+			return m, nil
+		}
+	}
+
 	cfg.MCPServers = append(cfg.MCPServers, server)
 
 	if err := writeConfig(cfg); err != nil {
@@ -165,11 +260,32 @@ func mcpAdd(m Model, args []string) (Model, tea.Cmd) {
 		return m, nil
 	}
 
-	argsHint := ""
-	if len(parts) > 1 {
-		argsHint = fmt.Sprintf(" %s", strings.Join(parts[1:], " "))
+	if server.URL != "" {
+		displayTransport := server.Transport
+		if displayTransport == "" {
+			displayTransport = "stdio"
+		}
+		m.appendLine(styleAuto.Render(fmt.Sprintf("[mcp] added %q (%s %s)", name, displayTransport, server.URL)))
+	} else {
+		argsHint := ""
+		if len(parts) > 1 {
+			argsHint = fmt.Sprintf(" %s", strings.Join(parts[1:], " "))
+		}
+		m.appendLine(styleAuto.Render(fmt.Sprintf("[mcp] added %q (%s%s)", name, parts[0], argsHint)))
 	}
-	m.appendLine(styleAuto.Render(fmt.Sprintf("[mcp] added %q (%s%s)", name, parts[0], argsHint)))
+
+	if disabled {
+		// Keep the disabled entry in the live manager so it can be enabled
+		// without restarting the session.
+		if mgr := m.mcpManager; mgr != nil {
+			if _, err := mgr.Add(context.Background(), server); err != nil {
+				m.appendLine(styleError.Render(fmt.Sprintf("[mcp] failed to register %q: %v", name, err)))
+				return m, nil
+			}
+		}
+		m.appendLine(styleAuto.Render(fmt.Sprintf("[mcp] server %q added as disabled — use /mcp enable %s to start it", name, name)))
+		return m, nil
+	}
 
 	mgr := m.mcpManager
 	if mgr == nil {
@@ -190,7 +306,7 @@ func mcpAdd(m Model, args []string) (Model, tea.Cmd) {
 		return m, nil
 	}
 	if result.Err != nil {
-		m.appendLine(styleAuto.Render(fmt.Sprintf("[mcp] server %q failed to start: %v", name, result.Err)))
+		m.appendLine(styleAuto.Render(fmt.Sprintf("[mcp] server %q failed to start: %s", name, mcp.Redact(result.Err.Error()))))
 		m.appendLine(styleAuto.Render("[mcp] check /mcp logs " + name + " for details"))
 		return m, nil
 	}
@@ -205,18 +321,7 @@ func mcpAdd(m Model, args []string) (Model, tea.Cmd) {
 		return m, nil
 	}
 	registry := m.cfg.Registry
-	if registry != nil {
-		for _, td := range tools {
-			registry.Register(&agent.MCPTool{
-				Server:      name,
-				ToolName:    td.Name,
-				Desc:        td.Description,
-				InputSchema: td.InputSchema,
-				ReadOnly:    td.ReadOnlyHint,
-				Client:      fresh,
-			})
-		}
-	}
+	registerMCPTools(registry, cfg, name, fresh, tools)
 	m.appendLine(styleAuto.Render(fmt.Sprintf("[mcp] server %q started — %d tools registered", name, len(tools))))
 	return m, nil
 }
@@ -321,7 +426,7 @@ func restartMCPServer(m *Model, mgr *mcp.Manager, name string) {
 		return
 	}
 	if result.Err != nil {
-		m.appendLine(styleMCPFail.Render(fmt.Sprintf("server %q failed to restart: %v", name, result.Err)))
+		m.appendLine(styleMCPFail.Render(fmt.Sprintf("server %q failed to restart: %s", name, mcp.Redact(result.Err.Error()))))
 		return
 	}
 	for _, w := range result.Warnings {
@@ -338,19 +443,118 @@ func restartMCPServer(m *Model, mgr *mcp.Manager, name string) {
 		m.appendLine(styleError.Render(fmt.Sprintf("restart %q: list tools: %v", name, err)))
 		return
 	}
-	if registry != nil {
-		for _, td := range tools {
-			registry.Register(&agent.MCPTool{
-				Server:      name,
-				ToolName:    td.Name,
-				Desc:        td.Description,
-				InputSchema: td.InputSchema,
-				ReadOnly:    td.ReadOnlyHint,
-				Client:      fresh,
-			})
+	registerMCPTools(registry, m.fileCfg, name, fresh, tools)
+	m.appendLine(styleMCPOK.Render(fmt.Sprintf("server %q restarted — %d tools registered", name, len(tools))))
+}
+
+// mcpSetDisabled implements `/mcp enable <name>` (disabled=false) and
+// `/mcp disable <name>` (disabled=true): persists config.MCPServer.Disabled
+// and starts/stops the live client to match, without requiring a session
+// restart or hand-editing config.toml.
+func mcpSetDisabled(m Model, mgr *mcp.Manager, name string, disabled bool) (Model, tea.Cmd) {
+	cfg := loadConfigForCommand(m)
+	found := false
+	for i := range cfg.MCPServers {
+		if cfg.MCPServers[i].Name == name {
+			cfg.MCPServers[i].Disabled = disabled
+			found = true
+			break
 		}
 	}
-	m.appendLine(styleMCPOK.Render(fmt.Sprintf("server %q restarted — %d tools registered", name, len(tools))))
+	if !found {
+		m.appendLine(styleError.Render(fmt.Sprintf("no MCP server named %q (try /mcp to list)", name)))
+		return m, nil
+	}
+	if err := writeConfig(cfg); err != nil {
+		m.appendLine(styleError.Render(fmt.Sprintf("failed to write config: %v", err)))
+		return m, nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	registry := m.cfg.Registry
+
+	if disabled {
+		if client := mgr.Client(name); client != nil && registry != nil {
+			if tools, err := client.ListTools(ctx); err == nil {
+				for _, td := range tools {
+					registry.Deregister("mcp/" + name + "/" + td.Name)
+				}
+			}
+		}
+		if err := mgr.Disable(ctx, name); err != nil {
+			m.appendLine(styleError.Render(fmt.Sprintf("disable %q: %v", name, err)))
+			return m, nil
+		}
+		if err := writeConfig(cfg); err != nil {
+			m.appendLine(styleError.Render(fmt.Sprintf("failed to persist disable %q: %v", name, err)))
+			return m, nil
+		}
+		m.appendLine(styleMCPOK.Render(fmt.Sprintf("server %q disabled", name)))
+		return m, nil
+	}
+
+	result, err := mgr.Enable(ctx, name)
+	if err != nil {
+		m.appendLine(styleError.Render(fmt.Sprintf("enable %q: %v", name, err)))
+		return m, nil
+	}
+	if result.Err != nil {
+		m.appendLine(styleMCPFail.Render(fmt.Sprintf("server %q failed to start: %s", name, mcp.Redact(result.Err.Error()))))
+		m.appendLine(styleAuto.Render("[mcp] check /mcp logs " + name + " for details"))
+		return m, nil
+	}
+	if err := writeConfig(cfg); err != nil {
+		m.appendLine(styleError.Render(fmt.Sprintf("failed to persist enable %q: %v", name, err)))
+		return m, nil
+	}
+	if client := mgr.Client(name); client != nil {
+		if tools, err := client.ListTools(ctx); err == nil {
+			registerMCPTools(registry, cfg, name, client, tools)
+		}
+	}
+	m.appendLine(styleMCPOK.Render(fmt.Sprintf("server %q enabled — %d tools registered", name, result.ToolCount)))
+	return m, nil
+}
+
+// mcpListTools implements the `/mcp tools <name>` read-only inspector:
+// lists the server's full advertised catalog with a shown/hidden marker
+// per tool, reflecting the server's Include/Exclude filters.
+func mcpListTools(m *Model, mgr *mcp.Manager, name string) {
+	client := mgr.Client(name)
+	if client == nil {
+		m.appendLine(styleError.Render(fmt.Sprintf("no live client for %q (server may be disabled or failed to start)", name)))
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	all, err := client.ListTools(ctx)
+	if err != nil {
+		m.appendLine(styleError.Render(fmt.Sprintf("tools %q: %v", name, err)))
+		return
+	}
+
+	var include, exclude []string
+	for _, s := range loadConfigForCommand(*m).MCPServers {
+		if s.Name == name {
+			include, exclude = s.Include, s.Exclude
+			break
+		}
+	}
+	kept, hidden := mcp.FilterTools(all, include, exclude)
+	shown := make(map[string]bool, len(kept))
+	for _, td := range kept {
+		shown[td.Name] = true
+	}
+
+	m.appendLine(styleMCPHeader.Render(fmt.Sprintf("── %s — %d tools (%d hidden by filter) ──", name, len(kept), hidden)))
+	for _, td := range all {
+		badge := styleMCPOK.Render("shown ")
+		if !shown[td.Name] {
+			badge = styleMCPMeta.Render("hidden")
+		}
+		m.appendLine(fmt.Sprintf("  %s  %s", badge, td.Name))
+	}
 }
 
 // handleMCPStartupDone processes the async MCP startup results: registers
@@ -363,7 +567,7 @@ func (m *Model) handleMCPStartupDone(results []mcp.StartResult) {
 	registry := m.cfg.Registry
 	for _, r := range results {
 		if r.Err != nil {
-			m.appendLine(styleAuto.Render(fmt.Sprintf("[mcp] server %q failed to start: %v", r.Name, r.Err)))
+			m.appendLine(styleAuto.Render(fmt.Sprintf("[mcp] server %q failed to start: %s", r.Name, mcp.Redact(r.Err.Error()))))
 			continue
 		}
 		client := mgr.Client(r.Name)
@@ -377,42 +581,142 @@ func (m *Model) handleMCPStartupDone(results []mcp.StartResult) {
 			m.appendLine(styleAuto.Render(fmt.Sprintf("[mcp] %s: list tools: %v", r.Name, err)))
 			continue
 		}
-		if registry != nil {
-			for _, td := range tools {
-				registry.Register(&agent.MCPTool{
-					Server:      r.Name,
-					ToolName:    td.Name,
-					Desc:        td.Description,
-					InputSchema: td.InputSchema,
-					ReadOnly:    td.ReadOnlyHint,
-					Client:      client,
-				})
+		registerMCPTools(registry, m.fileCfg, r.Name, client, tools)
+	}
+}
+
+// consumeFlagValue reads a --header/--env value starting at args[i+1] and
+// returns it plus the index of the first unconsumed token. The TUI's slash
+// command dispatcher tokenizes on whitespace with no quote-awareness (see
+// dispatchSlash), so a value like "Authorization=Bearer sk-..." would
+// otherwise be split into two tokens and silently truncated — worth
+// handling here since a Bearer header is the primary use case for
+// --header. Every token starting with "--" is treated as the next flag, so
+// consumption stops there; tokens in between are rejoined with a single
+// space, which loses any original multi-space runs but preserves the
+// value's words.
+func consumeFlagValue(args []string, i int) (value string, next int) {
+	j := i + 1
+	var parts []string
+	for j < len(args) && !strings.HasPrefix(args[j], "--") {
+		parts = append(parts, args[j])
+		j++
+	}
+	return strings.Join(parts, " "), j
+}
+
+// mcpAddRecognizedFlags is /mcp add's own flag vocabulary — used by
+// stragglerFlagsIn to catch the ordering footgun where one of these,
+// typed after --command, silently becomes a literal argument to that
+// command instead of being parsed as a flag.
+var mcpAddRecognizedFlags = []string{"--transport", "--url", "--header", "--env", "--disabled"}
+
+// stragglerFlagsIn scans a command's captured argument tokens for
+// anything that looks like one of /mcp add's own flags. It can't tell
+// whether the user meant "pass --disabled to the command" or "I put
+// --disabled in the wrong place" — so it returns candidates for a warning
+// rather than blocking the add.
+func stragglerFlagsIn(cmdTokens []string) []string {
+	var found []string
+	for _, tok := range cmdTokens {
+		for _, flag := range mcpAddRecognizedFlags {
+			if tok == flag {
+				found = append(found, tok)
+				break
 			}
 		}
+	}
+	return found
+}
+
+// parseKeyValueFlags parses repeated "KEY=VALUE" flag values into a map.
+// Returns nil (not an empty map) when kvs is empty, so callers can leave
+// config.MCPServer.Headers/Env unset rather than an empty non-nil map.
+func parseKeyValueFlags(kvs []string) (map[string]string, error) {
+	if len(kvs) == 0 {
+		return nil, nil
+	}
+	out := make(map[string]string, len(kvs))
+	for _, kv := range kvs {
+		k, v, ok := strings.Cut(kv, "=")
+		if !ok || k == "" {
+			return nil, fmt.Errorf("expected KEY=VALUE, got %q", kv)
+		}
+		out[k] = v
+	}
+	return out, nil
+}
+
+func registerMCPTools(registry *agent.Registry, cfg config.Config, server string, client mcp.Client, tools []mcp.ToolDescriptor) {
+	if registry == nil {
+		return
+	}
+	approvalMode := cfg.MCP.ApprovalMode
+	if approvalMode == "" {
+		approvalMode = config.MCPApprovalAsk
+	}
+	var timeout time.Duration
+	if seconds := cfg.MCPCallTimeout(); seconds > 0 {
+		timeout = time.Duration(seconds) * time.Second
+	}
+	for _, s := range cfg.MCPServers {
+		if s.Name == server && (len(s.Include) > 0 || len(s.Exclude) > 0) {
+			tools, _ = mcp.FilterTools(tools, s.Include, s.Exclude)
+			break
+		}
+	}
+	for _, td := range tools {
+		registry.Register(agent.NewMCPTool(
+			server,
+			td,
+			client,
+			approvalMode,
+			cfg.MCP.TrustsAnnotations(server),
+			timeout,
+		))
 	}
 }
 
 // renderMCPStatus prints a single block summarizing every configured
-// MCP server: name, transport, status, tool count, last error.
+// MCP server: name, status (including a disabled badge), tool count
+// (with an include/exclude hidden-count note when the server filters its
+// catalog), last error.
 func renderMCPStatus(m *Model, mgr *mcp.Manager) {
 	names := mgr.Names()
 	statuses := mgr.Statuses()
+	filters := make(map[string]config.MCPServer, len(m.fileCfg.MCPServers))
+	for _, s := range m.fileCfg.MCPServers {
+		filters[s.Name] = s
+	}
 	m.appendLine(styleMCPHeader.Render(fmt.Sprintf("MCP servers (%d configured)", len(names))))
 	for i, st := range statuses {
 		name := names[i]
 		var statusBadge, detail string
-		if st.Name == "" {
+		switch {
+		case st.Disabled:
+			statusBadge = styleMCPMeta.Render("disabled")
+		case st.Name == "":
 			statusBadge = styleMCPMeta.Render("starting...")
-			detail = ""
-		} else if st.Err != nil {
+		case st.Err != nil:
 			statusBadge = styleMCPFail.Render("failed")
-			detail = styleMCPFail.Render(st.Err.Error())
-		} else {
+			detail = styleMCPFail.Render(mcp.Redact(st.Err.Error()))
+		default:
 			statusBadge = styleMCPOK.Render("running")
-			detail = styleMCPMeta.Render(fmt.Sprintf("%d tools", st.ToolCount))
+			toolsText := fmt.Sprintf("%d tools", st.ToolCount)
+			if s := filters[name]; len(s.Include) > 0 || len(s.Exclude) > 0 {
+				if client := mgr.Client(name); client != nil {
+					if all, err := client.ListTools(context.Background()); err == nil {
+						kept, hidden := mcp.FilterTools(all, s.Include, s.Exclude)
+						if hidden > 0 {
+							toolsText = fmt.Sprintf("%d tools (%d hidden by filter)", len(kept), hidden)
+						}
+					}
+				}
+			}
+			detail = styleMCPMeta.Render(toolsText)
 		}
 		m.appendLine(fmt.Sprintf("  %s  %s  %s",
 			styleMCPName.Render(name), statusBadge, detail))
 	}
-	m.appendLine(styleMCPMeta.Render("  type `/mcp logs <name>` to inspect a server's stderr"))
+	m.appendLine(styleMCPMeta.Render("  type `/mcp logs <name>` to inspect a server's log output"))
 }

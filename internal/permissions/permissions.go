@@ -368,13 +368,39 @@ func (p *Permissions) evaluateMultiWithRule(target Target) (Decision, Rule) {
 	return Default, Rule{}
 }
 
+// ErrRequiresConfirmation is returned by AddAllowConfirmed when persisting
+// an MCP(*) rule was attempted without confirmed=true. MCP(*) covers every
+// configured server and tool, so it needs an explicit second confirmation
+// before it's written to disk — see AddAllowConfirmed.
+var ErrRequiresConfirmation = errors.New("permissions: MCP(*) requires explicit confirmation before persisting")
+
 // AddAllow appends a rule to permissions.local.json (creating the file
 // and parent dir if needed). Used by the TUI's "always allow" path.
 // Idempotent: a duplicate rule is silently dropped.
+//
+// AddAllow is a thin wrapper around AddAllowConfirmed with confirmed=false;
+// DeriveAllowRule never itself produces an MCP(*) pattern (see its MCP
+// case), so today's two AddAllow callers never trip the confirmation gate.
+// A future entry point that accepts an arbitrary user-typed rule string
+// must call AddAllowConfirmed directly and handle ErrRequiresConfirmation.
 func (p *Permissions) AddAllow(rule string) error {
+	return p.AddAllowConfirmed(rule, false)
+}
+
+// AddAllowConfirmed is AddAllow with an explicit confirmation flag for the
+// one pattern that needs one: persisting MCP(*) (every MCP server, every
+// tool) requires confirmed=true, or it returns ErrRequiresConfirmation
+// without writing anything. This does not apply to AddSessionAllow (in-memory
+// only, lower stakes) and cannot gate a hand-edited permissions.json/
+// permissions.local.json reload — the /permissions lint warning is the
+// signal there.
+func (p *Permissions) AddAllowConfirmed(rule string, confirmed bool) error {
 	parsed, err := parseRule(rule, "permissions.local.json")
 	if err != nil {
 		return err
+	}
+	if !confirmed && parsed.Tool == "MCP" && parsed.Pattern == "*" {
+		return ErrRequiresConfirmation
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()

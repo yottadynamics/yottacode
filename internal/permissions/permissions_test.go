@@ -2,6 +2,7 @@ package permissions
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -549,6 +550,55 @@ func TestAddAllow_IsIdempotent(t *testing.T) {
 	}
 }
 
+func TestAddAllow_MCPWildcardRequiresConfirmation(t *testing.T) {
+	cwd := t.TempDir()
+	p, _ := Load(cwd)
+	if err := p.AddAllow("MCP(*)"); !errors.Is(err, ErrRequiresConfirmation) {
+		t.Fatalf("AddAllow(MCP(*)) err = %v, want ErrRequiresConfirmation", err)
+	}
+	_, allow, _ := p.Snapshot()
+	if len(allow) != 0 {
+		t.Errorf("unconfirmed MCP(*) must not be persisted; got %d allow rules", len(allow))
+	}
+	b, err := os.ReadFile(filepath.Join(cwd, ".yottacode", "permissions.local.json"))
+	if err == nil {
+		t.Errorf("unconfirmed MCP(*) must not touch disk; file contains %s", b)
+	}
+}
+
+func TestAddAllowConfirmed_MCPWildcardPersistsWhenConfirmed(t *testing.T) {
+	cwd := t.TempDir()
+	p, _ := Load(cwd)
+	if err := p.AddAllowConfirmed("MCP(*)", true); err != nil {
+		t.Fatalf("AddAllowConfirmed(MCP(*), true): %v", err)
+	}
+	b, err := os.ReadFile(filepath.Join(cwd, ".yottacode", "permissions.local.json"))
+	if err != nil {
+		t.Fatalf("local file not written: %v", err)
+	}
+	if !strings.Contains(string(b), "MCP(*)") {
+		t.Errorf("local file missing confirmed MCP(*) rule: %s", b)
+	}
+}
+
+func TestAddAllow_OrdinaryMCPRuleUnaffectedByConfirmationGate(t *testing.T) {
+	cwd := t.TempDir()
+	p, _ := Load(cwd)
+	// Only the literal MCP(*) pattern needs confirmation — a narrow MCP
+	// rule (the only shape DeriveAllowRule ever produces) must go through
+	// the plain AddAllow path exactly like every other tool family.
+	if err := p.AddAllow("MCP(github/create_issue)"); err != nil {
+		t.Fatalf("AddAllow(MCP(github/create_issue)): %v", err)
+	}
+	b, err := os.ReadFile(filepath.Join(cwd, ".yottacode", "permissions.local.json"))
+	if err != nil {
+		t.Fatalf("local file not written: %v", err)
+	}
+	if !strings.Contains(string(b), "MCP(github/create_issue)") {
+		t.Errorf("local file missing rule: %s", b)
+	}
+}
+
 func TestReload_PicksUpExternalEdits(t *testing.T) {
 	cwd := t.TempDir()
 	p, _ := Load(cwd)
@@ -590,6 +640,7 @@ func TestDeriveAllowRule(t *testing.T) {
 		{"move within cwd", "move_file", `{"src":"a/b.go","dst":"c/d.go"}`, true, "Move(" + cwdSlash + "/** -> " + cwdSlash + "/**)"},
 		{"copy top-level", "copy_file", `{"src":"a.txt","dst":"b.txt"}`, true, "Copy(" + cwdSlash + "/** -> " + cwdSlash + "/**)"},
 		{"git", "git", `{"args":["commit","-m","x"]}`, true, "Git(commit *)"},
+		{"mcp", "mcp/github/create_issue", `{}`, true, "MCP(github/create_issue)"},
 		{"tests simple", "run_tests", `{"command":"go test ./..."}`, true, "Tests(go *)"},
 		{"tests default cmd", "run_tests", `{}`, true, "Tests(go *)"},
 		{"tests compound", "run_tests", `{"command":"cd pkg && go test"}`, false, ""},
@@ -603,6 +654,30 @@ func TestDeriveAllowRule(t *testing.T) {
 			}
 			if c.wantRule != "" && rule != c.wantRule {
 				t.Errorf("DeriveAllowRule(%s) rule=%q; want %q", c.name, rule, c.wantRule)
+			}
+		})
+	}
+}
+
+// TestDeriveAllowRule_MCPNeverDerivesAGlob guards the property the
+// destructive-glob-refusal enforcement (internal/agent/loop.go) depends on:
+// DeriveAllowRule must never itself widen an MCP descriptor into a wildcard,
+// regardless of how many path-like segments the tool name has.
+func TestDeriveAllowRule_MCPNeverDerivesAGlob(t *testing.T) {
+	cwd := t.TempDir()
+	cases := []string{
+		"mcp/filesystem/read_file",
+		"mcp/github/delete_repository",
+		"mcp/a/b/c",
+	}
+	for _, toolName := range cases {
+		t.Run(toolName, func(t *testing.T) {
+			rule, ok := DeriveAllowRule(toolName, `{}`, cwd, nil)
+			if !ok {
+				t.Fatalf("DeriveAllowRule(%s) ok=false, want true", toolName)
+			}
+			if strings.ContainsAny(rule, "*?") {
+				t.Errorf("DeriveAllowRule(%s) = %q, must never contain a wildcard", toolName, rule)
 			}
 		})
 	}
