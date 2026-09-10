@@ -242,6 +242,7 @@ func TestMemoryRecallValidation(t *testing.T) {
 		{"memory", "recall", "--query", "q", "--top-k", "0"},
 	} {
 		cmd := newCLI()
+		cmd.SilenceUsage = true
 		cmd.SetArgs(args)
 		if err := cmd.Execute(); err == nil {
 			t.Fatalf("expected validation error for %v", args)
