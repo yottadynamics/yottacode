@@ -10,32 +10,9 @@ mechanical, later step — see `docs/experimental.md`).
 ## Current slice
 
 - Shared `internal/codemap` index with cached, watcher-backed snapshots.
-- Directory, file, symbol, and (for `.md`/`.mdx`) plain doc-file nodes.
-- LSP-backed symbols when available, parser-backed symbols (Go, TypeScript/
-  JavaScript, Python, Rust) otherwise, falling back further to regex symbols
-  for other languages.
-- Import edges: Go resolved module-path-first from `go.mod`, then
-  package-name fallback, narrowed to the specific file(s) whose exported
-  symbols the importing file actually references (see "Precision" below),
-  and never landing an edge on a `_test.go` file (they're excluded from a
-  package's compiled surface for an external importer, so they can only
-  ever be an edge *source*, never a target — this also stops an external
-  test file's `package foo_test` clause from silently shadowing the real
-  package name for its directory); TypeScript/JavaScript resolved for
-  relative
-  specifiers (file-based resolution, trying common extensions and
-  `index.*`); Python resolved for both absolute and relative
-  (`from . import x`-style, including the multi-line parenthesized form)
-  specifiers; Rust resolved for `mod x;`, `use crate::...`, `use self::...`,
-  and `use super::...` — walking the crate's actual module tree (see
-  `internal/codemap/import_edges.go`'s `resolveRustModulePath`) rather than
-  a directory heuristic, so a path like `super::top` naming an item defined
-  directly in the parent module (not a further submodule) resolves
-  correctly. `super::` only resolves when the file's declaring parent is
-  known (i.e. some file has a matching `mod x;` for it) — there's nothing
-  to resolve against otherwise. Bare/external specifiers that don't resolve
-  in-repo are simply skipped in every language, the same as Go's original
-  behavior.
+- Directory, file, and symbol nodes, plus (for `.md`/`.mdx`) plain doc-file nodes.
+- LSP-backed symbols when available, parser-backed symbols (Go, TypeScript/JavaScript, Python, Rust) otherwise, falling back further to regex symbols for other languages.
+- Import edges resolve across Go, TypeScript/JavaScript, Python, and Rust; Go edges narrow to referenced files and never target `_test.go` files.
 - The same parser-backed offline syntax layer also powers the separate,
   now-GA `syntax_range` tool for local edit-range selection before anchored
   edits.
