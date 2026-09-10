@@ -91,6 +91,20 @@ func TestPickFallback_EmptyWhenNoProvidersLeft(t *testing.T) {
 	}
 }
 
+func TestAdd_CopiesProviderHeaders(t *testing.T) {
+	headers := map[string]string{"HTTP-Referer": "https://yottacode.ai"}
+	cfg, err := Add(config.Config{}, AddProvider{
+		Name: "openrouter", Kind: "openai-compatible", BaseURL: "https://openrouter.ai/api/v1", Headers: headers,
+	})
+	if err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	headers["HTTP-Referer"] = "changed"
+	if got := cfg.Providers[0].Headers["HTTP-Referer"]; got != "https://yottacode.ai" {
+		t.Fatalf("stored header aliased caller map: %q", got)
+	}
+}
+
 // SuggestAPIKeyEnv keeps the well-known catalog default for the
 // first profile of a vendor — existing scripts and CI pipelines
 // keep working unchanged.

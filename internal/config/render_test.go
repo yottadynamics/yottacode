@@ -37,6 +37,29 @@ func TestRender_RoundTripsRouterRouting(t *testing.T) {
 	}
 }
 
+func TestRender_RoundTripsProviderHeadersDeterministically(t *testing.T) {
+	cfg := Default()
+	cfg.Providers = []Provider{{
+		Name: "openrouter", Kind: "openai-compatible",
+		BaseURL: "https://openrouter.ai/api/v1",
+		Headers: map[string]string{
+			"X-OpenRouter-Title": "yottacode",
+			"HTTP-Referer":       "https://yottacode.ai",
+		},
+	}}
+	out := Render(cfg)
+	if strings.Index(out, `"HTTP-Referer"`) > strings.Index(out, `"X-OpenRouter-Title"`) {
+		t.Fatalf("headers are not sorted:\n%s", out)
+	}
+	var got Config
+	if _, err := toml.Decode(out, &got); err != nil {
+		t.Fatalf("decode: %v\n%s", err, out)
+	}
+	if got.Providers[0].Headers["HTTP-Referer"] != "https://yottacode.ai" {
+		t.Fatalf("headers dropped: %#v", got.Providers[0].Headers)
+	}
+}
+
 // TestRender_RouterRoutingWithoutMultiProvider verifies the [router]
 // table is emitted even when the multi-provider fallback router is off
 // (Enabled=false, no candidates): cache-safe routing is an orthogonal

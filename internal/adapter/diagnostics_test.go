@@ -9,6 +9,30 @@ import (
 	"testing"
 )
 
+func TestStaticDiagnostics_ProviderHeaders(t *testing.T) {
+	secret := "must-not-appear"
+	for _, tc := range []struct {
+		name        string
+		provider    Provider
+		wantWarning bool
+	}{
+		{name: "supported", provider: ProviderOpenAICompatible},
+		{name: "unsupported", provider: ProviderAnthropic, wantWarning: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := StaticDiagnostics(Config{ProviderOverride: tc.provider, Headers: map[string]string{"X-Project": secret}})
+			joined := strings.Join(got.Warnings, " ")
+			if strings.Contains(joined, secret) {
+				t.Fatalf("diagnostics leaked header value: %q", joined)
+			}
+			hasWarning := strings.Contains(joined, "provider headers are ignored")
+			if hasWarning != tc.wantWarning {
+				t.Fatalf("warning = %q, want warning %v", joined, tc.wantWarning)
+			}
+		})
+	}
+}
+
 func TestProbe_SucceedsAndFindsModel(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if got := r.Header.Get("Authorization"); got != "Bearer sk-test" {

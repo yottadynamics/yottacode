@@ -486,6 +486,7 @@ func adapterConfigFromOptions(opts cli.ChatOptions) adapter.Config {
 	return adapter.Config{
 		BaseURL:                opts.BaseURL,
 		APIKey:                 opts.APIKey,
+		Headers:                cloneHeaders(opts.Headers),
 		Model:                  opts.Model,
 		ProviderOverride:       adapter.Provider(providerOverride),
 		ReasoningEffort:        opts.ReasoningEffort,
@@ -500,6 +501,17 @@ func adapterConfigFromOptions(opts cli.ChatOptions) adapter.Config {
 		XSearchFromDate:        strings.TrimSpace(opts.XSearchFromDate),
 		XSearchToDate:          strings.TrimSpace(opts.XSearchToDate),
 	}
+}
+
+func cloneHeaders(src map[string]string) map[string]string {
+	if len(src) == 0 {
+		return nil
+	}
+	dst := make(map[string]string, len(src))
+	for key, value := range src {
+		dst[key] = value
+	}
+	return dst
 }
 
 func splitCSV(s string) []string {

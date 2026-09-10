@@ -246,6 +246,8 @@ Sessions are saved automatically after completed turns in `~/.yottacode/sessions
 ```bash
 yottacode memory list                              # default scope: project
 yottacode memory list --scope user
+yottacode memory recall --query "testing preferences"
+yottacode memory recall --query "deployment" --scope project --top-k 3 --format json
 yottacode memory audit                             # read-only curation report
 yottacode memory forget --scope <user|project> <name>
 ```

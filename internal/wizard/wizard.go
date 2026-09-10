@@ -252,7 +252,7 @@ func providersForOptions(ctx context.Context, opts Options) ([]CatalogEntry, err
 			}
 		}
 		if len(out) == 0 {
-			return nil, fmt.Errorf("--from-env: no provider keys detected in environment (set ANTHROPIC_API_KEY / OPENAI_API_KEY / GEMINI_API_KEY / XAI_API_KEY / NVIDIA_API_KEY, or run Ollama)")
+			return nil, fmt.Errorf("--from-env: no provider keys detected in environment (set ANTHROPIC_API_KEY / OPENAI_API_KEY / OPENROUTER_API_KEY / GEMINI_API_KEY / XAI_API_KEY / NVIDIA_API_KEY, or run Ollama)")
 		}
 		return out, nil
 	}
@@ -294,6 +294,7 @@ func buildPlanFromOptions(ctx context.Context, opts Options) (Plan, error) {
 			Kind:      e.Kind,
 			BaseURL:   e.BaseURL,
 			APIKeyEnv: e.APIKeyEnv,
+			Headers:   cloneHeaders(e.Headers),
 		}
 		// Non-interactive setup (-y, --from-env) doesn't pick a
 		// default model — there's no curated list to pick a default
@@ -388,4 +389,3 @@ func buildPlanFromOptions(ctx context.Context, opts Options) (Plan, error) {
 	}
 	return plan, nil
 }
-

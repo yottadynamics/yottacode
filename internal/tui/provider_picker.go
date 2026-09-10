@@ -787,6 +787,7 @@ func (m Model) persistProviderAdd(picked wizard.CatalogEntry, name, baseURL, api
 		Kind:         picked.Kind,
 		BaseURL:      baseURL,
 		APIKeyEnv:    effectiveEnv,
+		Headers:      picked.Headers,
 		DefaultModel: defaultModel,
 	}
 	if picked.Kind == "openai-auth" {

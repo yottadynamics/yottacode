@@ -53,12 +53,27 @@ func NewEmbedClient(baseURL, model string) *EmbedClient {
 	}
 }
 
-// embedKeepAlive asks Ollama to keep the embedding model resident
-// after the call. Ollama's default keep_alive is ~5 minutes, so every
-// pause longer than that used to force a cold model load on the next
-// per-turn retrieval — seconds of latency for a model that embeds in
-// milliseconds once resident. Each successful call re-extends the
-// lease, so an active session never pays the cold start twice.
+// ResolveEmbedClient applies the production availability policy for semantic
+// memory retrieval. Keyword and BM25 strategies never probe Ollama. Semantic
+// and auto strategies retain a client only when the configured model is
+// installed, and user-facing embedding calls use InteractiveEmbedTimeout.
+// reachable distinguishes a running Ollama server with a missing model from an
+// unavailable server so interactive callers can emit a targeted warning.
+func ResolveEmbedClient(ctx context.Context, strategy, model, baseURL string) (client *EmbedClient, reachable bool) {
+	if strategy != "semantic" && strategy != "auto" {
+		return nil, false
+	}
+	candidate := NewEmbedClient(baseURL, model)
+	reachable, installed := candidate.Status(ctx)
+	if !installed {
+		return nil, reachable
+	}
+	candidate.Timeout = InteractiveEmbedTimeout
+	return candidate, reachable
+}
+
+// embedKeepAlive asks Ollama to keep the embedding model resident after a
+// successful call so active sessions do not repeatedly pay cold-load latency.
 const embedKeepAlive = "30m"
 
 type embedRequest struct {
