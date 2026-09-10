@@ -135,6 +135,29 @@ func TestRenderApprovalModal_UsesComfortableWidthWithoutOverflow(t *testing.T) {
 	}
 }
 
+func TestRenderApprovalModal_CompactPreviewDoesNotAddBlankSpacerRows(t *testing.T) {
+	m := newTestModel(t)
+	m.width = 80
+	m.awaitingApproval = true
+	m.approvalTool = "pr_update"
+	m.approvalPreview = "pr_update(ref=329, title=\"refresh OAuth\")\n\n## Summary\n- Keep existing Markdown"
+	m.approvalArgs = `{"ref":"329","title":"refresh OAuth","body":"## Summary\n- Keep existing Markdown"}`
+
+	lines := strings.Split(stripANSI(renderApprovalModal(m)), "\n")
+	blankRows := 0
+	for _, line := range lines {
+		if strings.TrimSpace(ansi.Strip(line)) == "" {
+			blankRows++
+		}
+	}
+	if blankRows > 0 {
+		t.Fatalf("approval modal has unexpected blank rows in compact preview: %d\n%s", blankRows, strings.Join(lines, "\n"))
+	}
+	if got := ansi.StringWidth(lines[0]); got < 30 {
+		t.Errorf("approval modal too narrow on an 80-col terminal: width=%d", got)
+	}
+}
+
 func TestRenderApprovalModal_NarrowTerminalDoesNotOverflow(t *testing.T) {
 	m := newTestModel(t)
 	m.width = 60
