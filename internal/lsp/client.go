@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -224,7 +225,11 @@ func NewClient(ctx context.Context, lang Language, root string) (*Client, error)
 	startCtx, cancel := context.WithTimeout(ctx, defaultStartupTimeout)
 	defer cancel()
 	cmd := exec.Command(lang.Command[0], lang.Command[1:]...)
+	configureProcessGroup(cmd)
 	cmd.Dir = root
+	if lang.ID == "go" {
+		cmd.Env = safeGoServerEnvironment(os.Environ(), root)
+	}
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, fmt.Errorf("open stdin: %w", err)
@@ -334,6 +339,9 @@ func (c *Client) Close() error {
 	if c.cmd != nil && c.cmd.Process != nil {
 		select {
 		case err := <-c.processWaitCh():
+			// A cooperative server may still leave helpers behind. The process
+			// group remains addressable by the former leader's PID.
+			c.killProcess()
 			return err
 		case <-time.After(time.Second):
 			c.killProcess()
@@ -1048,7 +1056,7 @@ func (c *Client) killProcess() {
 	}
 	c.killOnce.Do(func() {
 		if c.cmd != nil && c.cmd.Process != nil {
-			_ = c.cmd.Process.Kill()
+			_ = killProcessGroup(c.cmd)
 		}
 	})
 }
@@ -1105,6 +1113,38 @@ func (c *Client) stderrSuffix() string {
 		return ""
 	}
 	return "; stderr=" + strconv.Quote(c.stderr.String())
+}
+
+func safeGoServerEnvironment(base []string, root string) []string {
+	// Keep workspace temp/build state separate, but share the content-addressed
+	// module cache across workspaces. HOME and XDG configuration remain intact so
+	// private module credentials and the user's ordinary Go configuration work.
+	sum := sha256.Sum256([]byte(filepath.Clean(root)))
+	baseScratch := filepath.Join(string(filepath.Separator), "var", "tmp", fmt.Sprintf("yottacode-%d", os.Getuid()), "lsp")
+	workspaceScratch := filepath.Join(baseScratch, fmt.Sprintf("workspace-%x", sum[:8]))
+	values := map[string]string{
+		"TMPDIR": filepath.Join(workspaceScratch, "tmp"), "GOTMPDIR": filepath.Join(workspaceScratch, "tmp"),
+		"GOCACHE": filepath.Join(workspaceScratch, "go-cache"), "GOMODCACHE": filepath.Join(baseScratch, "go-modcache"), "GOTELEMETRY": "off",
+	}
+	for _, path := range []string{baseScratch, workspaceScratch, values["TMPDIR"], values["GOCACHE"], values["GOMODCACHE"]} {
+		_ = os.MkdirAll(path, 0o700)
+		_ = os.Chmod(path, 0o700)
+	}
+	out := make([]string, 0, len(base)+len(values))
+	for _, item := range base {
+		key, _, ok := strings.Cut(item, "=")
+		if !ok {
+			out = append(out, item)
+			continue
+		}
+		if _, replace := values[key]; !replace {
+			out = append(out, item)
+		}
+	}
+	for _, key := range []string{"TMPDIR", "GOTMPDIR", "GOCACHE", "GOMODCACHE", "GOTELEMETRY"} {
+		out = append(out, key+"="+values[key])
+	}
+	return out
 }
 
 func pathToURI(path string) string {

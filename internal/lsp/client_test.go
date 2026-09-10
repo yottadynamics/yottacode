@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -400,6 +401,54 @@ func TestClientReadMessageContextCancelsAndKillsProcess(t *testing.T) {
 	case <-c.processWaitCh():
 	case <-time.After(500 * time.Millisecond):
 		t.Fatal("timed out waiting for killed process")
+	}
+}
+
+func TestSafeGoServerEnvironmentPreservesUnrelatedConfig(t *testing.T) {
+	root := t.TempDir()
+	home := filepath.Join(t.TempDir(), "home")
+	xdgConfig := filepath.Join(t.TempDir(), "config")
+	env := safeGoServerEnvironment([]string{"PATH=/custom/bin", "HTTP_PROXY=http://proxy", "HOME=" + home, "XDG_CONFIG_HOME=" + xdgConfig}, root)
+	values := map[string]string{}
+	for _, item := range env {
+		key, value, ok := strings.Cut(item, "=")
+		if ok {
+			values[key] = value
+		}
+	}
+	if values["PATH"] != "/custom/bin" || values["HTTP_PROXY"] != "http://proxy" {
+		t.Fatalf("unrelated environment suppressed: %v", values)
+	}
+	if values["HOME"] != home || values["XDG_CONFIG_HOME"] != xdgConfig {
+		t.Fatalf("user config discovery was replaced: HOME=%q XDG_CONFIG_HOME=%q", values["HOME"], values["XDG_CONFIG_HOME"])
+	}
+	for _, key := range []string{"TMPDIR", "GOTMPDIR", "GOCACHE", "GOMODCACHE"} {
+		if values[key] == "" || strings.HasPrefix(filepath.Clean(values[key]), filepath.Clean(root)+string(filepath.Separator)) || values[key] == root {
+			t.Errorf("%s is not safely outside workspace: %q", key, values[key])
+		}
+		info, err := os.Stat(values[key])
+		if err != nil {
+			t.Errorf("%s: %v", key, err)
+		} else if info.Mode().Perm() != 0o700 {
+			t.Errorf("%s mode = %o, want 700", key, info.Mode().Perm())
+		}
+	}
+	if values["GOTELEMETRY"] != "off" {
+		t.Errorf("GOTELEMETRY = %q, want off", values["GOTELEMETRY"])
+	}
+	other := safeGoServerEnvironment(nil, filepath.Join(t.TempDir(), "other"))
+	otherValues := map[string]string{}
+	for _, item := range other {
+		key, value, ok := strings.Cut(item, "=")
+		if ok {
+			otherValues[key] = value
+		}
+	}
+	if otherValues["GOMODCACHE"] != values["GOMODCACHE"] {
+		t.Errorf("module cache duplicated per workspace: %q != %q", otherValues["GOMODCACHE"], values["GOMODCACHE"])
+	}
+	if otherValues["GOCACHE"] == values["GOCACHE"] {
+		t.Error("workspace build caches should remain isolated")
 	}
 }
 

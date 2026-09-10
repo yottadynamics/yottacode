@@ -690,13 +690,13 @@ func assertSandboxedGoTestScratch(t *testing.T, cwd string) {
 		t.Fatalf("Execute: %v", err)
 	}
 	repoScratch := filepath.Join("/var/tmp", "yottacode-go", safeScratchName(cwd))
-	// GOCACHE/GOMODCACHE live under a persistent, HOME-rooted directory
-	// (bind-mounted by internal/sandbox.NewPodmanSandbox into every
-	// container — see internal/sandboxcache), NOT the per-workspace,
-	// container-ephemeral repoScratch below: a fresh container per session
-	// would otherwise force a full `go mod download` plus full recompile on
-	// every session's first Go command.
-	goCacheRoot := filepath.Join(fakeHome, ".yottacode", sandboxcache.GoCacheHomeSubdir)
+	// GOCACHE/GOMODCACHE live under the canonical host directory bind-mounted
+	// by internal/sandbox.NewPodmanSandbox. It is HOME- and checkout-independent
+	// so startup at the repo root agrees with commands run in managed worktrees.
+	goCacheRoot, err := sandboxcache.GoHostCacheDirForWorkspace(cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, fragment := range []string{
 		"mkdir -p '" + filepath.Join(repoScratch, "tmp") + "' '" + filepath.Join(goCacheRoot, "cache") + "' '" + filepath.Join(goCacheRoot, "modcache") + "' '" + filepath.Join(repoScratch, "xdg-cache") + "' '" + filepath.Join(repoScratch, "xdg-config") + "'",
 		"HOME='" + repoScratch + "'",

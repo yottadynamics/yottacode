@@ -293,6 +293,9 @@ func (b *Builder) Build(ctx context.Context, spec SessionSpec) (*Runtime, error)
 	if baseSys == "" {
 		baseSys = defaultSystemPrompt
 	}
+	if expSet.IsEnabled(experimental.CodeMap) {
+		baseSys += "\n\n" + agent.CodeMapPromptAddendum
+	}
 	if expSet.IsEnabled(experimental.Dispatch) {
 		baseSys += "\n\n" + agent.DispatchPromptAddendum
 	}

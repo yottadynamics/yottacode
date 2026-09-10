@@ -57,4 +57,7 @@ RUN dnf -y install \
 # checkout through Podman, which is the production shape yottacode uses.
 RUN go version && git --version && gh --version && make --version
 
+# PodmanSandbox launches this image with --init so orphaned exec descendants are
+# reaped. Keep a conventional termination signal for that init-forwarding path.
+STOPSIGNAL SIGTERM
 CMD ["sleep", "infinity"]

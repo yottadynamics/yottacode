@@ -14,6 +14,7 @@ import (
 	"github.com/yottadynamics/yottacode/internal/agent"
 	"github.com/yottadynamics/yottacode/internal/cli"
 	"github.com/yottadynamics/yottacode/internal/config"
+	"github.com/yottadynamics/yottacode/internal/experimental"
 	"github.com/yottadynamics/yottacode/internal/memory"
 	"github.com/yottadynamics/yottacode/internal/subagents"
 )
@@ -73,6 +74,49 @@ func TestBuild_CoreToolsRegistered(t *testing.T) {
 			t.Errorf("expected tool %q to be registered by Build", name)
 		}
 	}
+}
+
+func TestBuild_CodeMapPromptMatchesToolGate(t *testing.T) {
+	t.Run("disabled", func(t *testing.T) {
+		spec := newTestSpec(t)
+		rt := mustBuild(t, spec)
+
+		if strings.Contains(rt.RawSystemPrompt, agent.CodeMapPromptAddendum) {
+			t.Error("RawSystemPrompt includes CodeMapPromptAddendum while Code Map is disabled")
+		}
+		if _, ok := rt.Registry.Get("code_map"); ok {
+			t.Error("code_map tool is registered while Code Map is disabled")
+		}
+	})
+
+	t.Run("enabled with default base", func(t *testing.T) {
+		spec := newTestSpec(t)
+		spec.ChatOptions.Experimental = []string{string(experimental.CodeMap)}
+		rt := mustBuild(t, spec)
+
+		want := defaultSystemPrompt + "\n\n" + agent.CodeMapPromptAddendum
+		if rt.RawSystemPrompt != want {
+			t.Fatalf("RawSystemPrompt did not append CodeMapPromptAddendum before composition\ngot:  %q\nwant: %q", rt.RawSystemPrompt, want)
+		}
+		if _, ok := rt.Registry.Get("code_map"); !ok {
+			t.Error("code_map tool is not registered while Code Map is enabled")
+		}
+	})
+
+	t.Run("enabled with custom base", func(t *testing.T) {
+		spec := newTestSpec(t)
+		spec.ChatOptions.SystemPrompt = "custom base prompt"
+		spec.ChatOptions.Experimental = []string{string(experimental.CodeMap)}
+		rt := mustBuild(t, spec)
+
+		want := "custom base prompt\n\n" + agent.CodeMapPromptAddendum
+		if rt.RawSystemPrompt != want {
+			t.Fatalf("RawSystemPrompt did not preserve the custom base before the Code Map addendum\ngot:  %q\nwant: %q", rt.RawSystemPrompt, want)
+		}
+		if !strings.Contains(rt.BaseSystemPrompt, agent.CodeMapPromptAddendum) {
+			t.Error("composed BaseSystemPrompt lost CodeMapPromptAddendum")
+		}
+	})
 }
 
 // TestBuild_GitHubToolSuiteRegistered is the regression test for a real

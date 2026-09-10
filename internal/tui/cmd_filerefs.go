@@ -160,9 +160,13 @@ func (m *Model) clearFileRefs() {
 // rewriteSystemPromptWithRefs is the shared mutator behind both
 // injectFileRefs and clearFileRefs. Walks sess.Messages for the
 // system role and replaces its content with the result of
-// filerefs.Inject. No-op if no system message is present (which
-// shouldn't happen in practice — Run always seeds one).
+// filerefs.Inject. Prompt rewriting is a no-op if no system message is present
+// (which shouldn't happen in practice — Run always seeds one); the attribution
+// snapshot is still synchronized.
 func (m *Model) rewriteSystemPromptWithRefs(refs []filerefs.Ref) {
+	// Keep attribution independent of the loader's caller-owned slice: callers
+	// commonly reuse it, while /context may be opened after the turn starts.
+	m.activeFileRefs = append([]filerefs.Ref(nil), refs...)
 	for i := range m.sess.Messages {
 		if m.sess.Messages[i].Role == adapter.RoleSystem {
 			m.sess.Messages[i].Content = filerefs.Inject(m.sess.Messages[i].Content, refs)
